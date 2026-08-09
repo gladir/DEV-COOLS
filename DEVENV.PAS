@@ -1187,6 +1187,22 @@ Const
  EXPLORER_TOOLBAR_HEIGHT = 24;     { hauteur de la mini barre d outils }
  EXPLORER_SEARCH_HEIGHT  = 20;     { hauteur du champ de recherche  }
  EXPLORER_TOOLBAR_BTNCOUNT = 3;    { Actualiser/Tout replier/Proprietes }
+ { EXTENSION (2026-08-08) : bande d onglets (Explorateur de solutions/    }
+ { Modification Git/Team Explorer/PasChat) en bas du panneau. }
+ EXPLORER_TABSTRIP_HEIGHT = 24;
+ EXPLORER_TAB_COUNT       = 4;
+ { Onglet "Modification Git" }
+ MAX_GIT_FILES    = 256;
+ GIT_TEMP_OUTPUT  = '_gittmp.out';
+ { Onglet "Team Explorer" }
+ MAX_GIT_BRANCHES = 128;
+ MAX_GIT_LOG      = 200;
+ { Onglet "PasChat" }
+ MAX_CHAT_MESSAGES = 256;
+ { Capture de sortie de commande externe generique (git, ...) }
+ MAX_CMD_OUTPUT_LINES = 300;
+ { Retour a la ligne automatique des bulles de conversation PasChat }
+ MAX_WRAP_LINES = 200;
 
  { Panneau de proprietes }
  PROPS_PANEL_HEIGHT    = 200;      { hauteur par defaut (repli)     }
@@ -2301,6 +2317,62 @@ Type
   EIK_ABAP, EIK_COLDFUSION, EIK_FORTRAN, EIK_BCPL, EIK_AWK, EIK_SQL,
   EIK_ASM, EIK_VB6BASIC
  );
+
+ { EXTENSION (2026-08-08) : le panneau "Explorateur de solutions" devient   }
+ { un conteneur a onglets, comme Visual Studio - 4 onglets partageant           }
+ { la meme zone (titre + bande d onglets communs), un seul visible a la          }
+ { fois. Voir ActiveExplorerTab, DrawExplorer, HandleExplorerEvent. }
+ TExplorerTabKind = (
+  ETAB_SOLUTION,       { Explorateur de solutions (arbre existant)   }
+  ETAB_GITCHANGES,     { Modification Git (git status/add/commit)    }
+  ETAB_TEAMEXPLORER,   { Team Explorer (branches/sync/historique)    }
+  ETAB_PASCHAT         { PasChat (agent conversationnel Pascal)      }
+ );
+
+ { --- Git : etat d un fichier modifie (onglet Modification Git) --- }
+ TGitFileStatus = Record
+  Path      : String[255];   { chemin relatif au depot              }
+  IndexStat : Char;          { statut dans l index (colonne 1 de     }
+                              { "git status --porcelain")            }
+  WorkStat  : Char;          { statut dans l arbre de travail (col 2)}
+  Staged    : Boolean;       { True si IndexStat <> ' ' et <> '?'    }
+  Selected  : Boolean;       { ligne selectionnee (pour l affichage)  }
+ End;
+
+ { --- Git : une branche (locale ou distante) --- }
+ TGitBranch = Record
+  Name    : String[127];
+  Current : Boolean;        { branche courante (marquee "*")        }
+  Remote  : Boolean;        { branche distante (ex. remotes/origin/) }
+ End;
+
+ { --- Git : une entree d historique (un commit) --- }
+ TGitLogEntry = Record
+  Hash    : String[12];
+  Author  : String[63];
+  DateStr : String[19];
+  Subject : String[127];
+ End;
+
+ { --- Team Explorer : vue active (sous-onglet) --- }
+ TTeamViewKind = (TVIEW_BRANCHES, TVIEW_SYNC, TVIEW_HISTORY);
+
+ { --- PasChat : un message de la conversation (bulle) --- }
+ TChatSender = (CHS_USER, CHS_BOT);
+ TChatMessage = Record
+  Sender  : TChatSender;
+  { AnsiString, pas String[255] : le code Pascal genere par PasChat        }
+  { peut largement depasser 255 caracteres. }
+  Text    : AnsiString;
+ End;
+
+ { --- Tampon generique pour capturer la sortie texte d une commande      }
+ { externe (git, ...) - voir RunCommandCaptureOutput. --- }
+ TCmdOutputLines = Array[0..MAX_CMD_OUTPUT_LINES - 1] Of String[255];
+
+ { --- Lignes resultant du retour a la ligne automatique d un texte       }
+ { (bulles de conversation PasChat) - voir WrapText. --- }
+ TWrapLines = Array[0..MAX_WRAP_LINES - 1] Of String[255];
 
  { Noeud dans l arbre de l explorateur }
  TExplorerNode = Record
@@ -3638,6 +3710,46 @@ Var
  ExplorerTooltipTimer   : LongInt;
  ExplorerTooltipBtnIdx  : Integer;
  ExplorerTooltipVisible : Boolean;
+ { EXTENSION (2026-08-08) : icones de la mini barre d outils de l onglet  }
+ { "Modification Git" (Actualiser/Tout indexer/Push/Pull). }
+ GitToolbarIcons : Array[0..3] Of TIcon16;
+ { EXTENSION (2026-08-08) : onglet actif du panneau Explorateur (voir     }
+ { TExplorerTabKind) - un seul contenu visible a la fois, partageant le      }
+ { meme titre/bande d onglets/splitter. }
+ ActiveExplorerTab : TExplorerTabKind;
+ { --- Etat de l onglet "Modification Git" --- }
+ GitFiles        : Array[0..MAX_GIT_FILES - 1] Of TGitFileStatus;
+ GitFileCount    : Integer;
+ GitBranchName   : String[127];       { branche courante (git status -b) }
+ GitAhead        : Integer;           { commits en avance sur le remote  }
+ GitBehind       : Integer;           { commits en retard sur le remote  }
+ GitCommitMsg    : String[255];
+ GitCommitCPos   : Integer;
+ GitCommitFocused: Boolean;
+ GitSelectedIdx  : Integer;
+ GitScrollTop    : Integer;
+ GitStatusMsg    : String[255];       { derniere action (succes/erreur)  }
+ GitBusy         : Boolean;           { une commande git est en cours    }
+ { --- Etat de l onglet "Team Explorer" --- }
+ TeamBranches     : Array[0..MAX_GIT_BRANCHES - 1] Of TGitBranch;
+ TeamBranchCount  : Integer;
+ TeamLog          : Array[0..MAX_GIT_LOG - 1] Of TGitLogEntry;
+ TeamLogCount     : Integer;
+ TeamView         : TTeamViewKind;
+ TeamSelectedIdx  : Integer;
+ TeamScrollTop    : Integer;
+ TeamNewBranchBuf : String[127];
+ TeamNewBranchCPos: Integer;
+ TeamNewBranchFocused: Boolean;
+ TeamStatusMsg    : String[255];
+ { --- Etat de l onglet "PasChat" --- }
+ ChatMessages    : Array[0..MAX_CHAT_MESSAGES - 1] Of TChatMessage;
+ ChatMsgCount    : Integer;
+ ChatInputBuf    : String[255];
+ ChatInputCPos   : Integer;
+ ChatInputFocused: Boolean;
+ ChatScrollTop   : Integer;
+ ChatInitialized : Boolean;
  { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
  { calculee au demarrage par UpdateExplorerWidthForScreen selon la              }
  { largeur d ecran (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_WIDTH_DEFAULT           }
@@ -6036,6 +6148,27 @@ Procedure ShowOptionsDialog(Var Dlg: TOptionsDialog); Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
+{ EXTENSION (2026-08-08) : declarations anticipees pour les 3 nouveaux    }
+{ onglets du panneau Explorateur (Modification Git/Team Explorer/           }
+{ PasChat) - voir TExplorerTabKind. }
+Procedure DrawExplorerTabStrip(Var Exp: TSolutionExplorer); Forward;
+Function ExplorerTabStripHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Integer; Forward;
+Procedure DrawGitChangesContent(Var Exp: TSolutionExplorer); Forward;
+Procedure HandleGitChangesEvent(Var Exp: TSolutionExplorer;
+ Ev: TEvent); Forward;
+Procedure DrawTeamExplorerContent(Var Exp: TSolutionExplorer); Forward;
+Procedure HandleTeamExplorerEvent(Var Exp: TSolutionExplorer;
+ Ev: TEvent); Forward;
+Procedure DrawPasChatContent(Var Exp: TSolutionExplorer); Forward;
+Procedure HandlePasChatEvent(Var Exp: TSolutionExplorer;
+ Ev: TEvent); Forward;
+Function RunCommandCaptureOutput(Cmd: String;
+ Var Lines: TCmdOutputLines; Var LineCount: Integer): Integer; Forward;
+Procedure CleanupTempFile(TempFile: String); Forward;
+Procedure GitRefreshStatus; Forward;
+Procedure TeamExplorerRefresh; Forward;
+Procedure PasChatEnsureInit; Forward;
 
 { Declarations anticipees pour le terminal integre }
 Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
@@ -7531,6 +7664,53 @@ Begin
  IconHLine(Icon, 9, 12, 9, 8);
 End;
 
+{ --- Icones de la mini barre d outils de l onglet "Modification Git" -   }
+{ EXTENSION (2026-08-08). --- }
+
+Procedure MakeIconGitStageAll(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconRect(Icon, 2, 2, 13, 13, 1);
+ { Coche stylisee }
+ IconPutPixel(Icon, 4, 8, 2);
+ IconPutPixel(Icon, 5, 9, 2);
+ IconPutPixel(Icon, 6, 10, 2);
+ IconPutPixel(Icon, 7, 9, 2);
+ IconPutPixel(Icon, 8, 8, 2);
+ IconPutPixel(Icon, 9, 7, 2);
+ IconPutPixel(Icon, 10, 6, 2);
+End;
+
+Procedure MakeIconGitPush(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconVLine(Icon, 7, 9, 13, 1);
+ IconVLine(Icon, 8, 9, 13, 1);
+ IconPutPixel(Icon, 7, 4, 1);
+ IconPutPixel(Icon, 8, 4, 1);
+ IconPutPixel(Icon, 6, 5, 1);
+ IconPutPixel(Icon, 9, 5, 1);
+ IconPutPixel(Icon, 5, 6, 1);
+ IconPutPixel(Icon, 10, 6, 1);
+ IconPutPixel(Icon, 4, 7, 1);
+ IconPutPixel(Icon, 11, 7, 1);
+End;
+
+Procedure MakeIconGitPull(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ IconVLine(Icon, 7, 2, 8, 6);
+ IconVLine(Icon, 8, 2, 8, 6);
+ IconPutPixel(Icon, 7, 13, 6);
+ IconPutPixel(Icon, 8, 13, 6);
+ IconPutPixel(Icon, 6, 12, 6);
+ IconPutPixel(Icon, 9, 12, 6);
+ IconPutPixel(Icon, 5, 11, 6);
+ IconPutPixel(Icon, 10, 11, 6);
+ IconPutPixel(Icon, 4, 10, 6);
+ IconPutPixel(Icon, 11, 10, 6);
+End;
+
 { --- Initialiser toutes les icones de l explorateur de solutions --- }
 
 Procedure InitExplorerIcons;
@@ -7538,6 +7718,10 @@ Begin
  MakeIconExplorerRefresh(ExplorerToolbarIcons[0]);
  MakeIconExplorerCollapseAll(ExplorerToolbarIcons[1]);
  MakeIconExplorerProperties(ExplorerToolbarIcons[2]);
+ MakeIconExplorerRefresh(GitToolbarIcons[0]);
+ MakeIconGitStageAll(GitToolbarIcons[1]);
+ MakeIconGitPush(GitToolbarIcons[2]);
+ MakeIconGitPull(GitToolbarIcons[3]);
  ExplorerToolbarTooltips[0] := 'Actualiser';
  ExplorerToolbarTooltips[1] := 'Tout replier';
  ExplorerToolbarTooltips[2] := 'Proprietes';
@@ -22250,6 +22434,7 @@ Begin
  Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
  Exp.Dragging := False;
  Exp.NeedRepaint := True;
+ ActiveExplorerTab := ETAB_SOLUTION;
  Exp.Renaming := False;
  Exp.RenameIdx := -1;
  Exp.RenameBuf := '';
@@ -22613,10 +22798,20 @@ Begin
   EXPLORER_TOOLBAR_HEIGHT + EXPLORER_SEARCH_HEIGHT;
 End;
 
+{ --- Coordonnee Y ou se termine le CONTENU de n importe quel onglet du  }
+{ panneau (juste au-dessus de la bande d onglets) - EXTENSION                    }
+{ (2026-08-08). Contrepartie de ExplorerContentTop pour la limite               }
+{ inferieure ; utilisee par TOUS les onglets (Explorateur/Git/Team/               }
+{ PasChat), pas seulement l arbre. }
+Function ExplorerContentBottom(Var Exp: TSolutionExplorer): Integer;
+Begin
+ ExplorerContentBottom := Exp.Y + Exp.Height - EXPLORER_TABSTRIP_HEIGHT;
+End;
+
 Function ExplorerVisibleRowCount(Var Exp: TSolutionExplorer): Integer;
 Var N: Integer;
 Begin
- N := (Exp.Y + Exp.Height - ExplorerContentTop(Exp) - 2)
+ N := (ExplorerContentBottom(Exp) - ExplorerContentTop(Exp) - 2)
   Div EXPLORER_NODE_HEIGHT;
  If N < 1 Then N := 1;
  ExplorerVisibleRowCount := N;
@@ -22705,7 +22900,18 @@ Begin
  Bar(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
   Exp.Y + EXPLORER_NODE_HEIGHT - 1);
  SetColor(CLR_EDITOR_BG);
- OutTextXY(Exp.X + 4, Exp.Y + 3, 'Explorateur de solutions');
+ Case ActiveExplorerTab Of
+  ETAB_SOLUTION:     OutTextXY(Exp.X + 4, Exp.Y + 3, 'Explorateur de solutions');
+  ETAB_GITCHANGES:   OutTextXY(Exp.X + 4, Exp.Y + 3, 'Modification Git');
+  ETAB_TEAMEXPLORER: OutTextXY(Exp.X + 4, Exp.Y + 3, 'Team Explorer');
+  ETAB_PASCHAT:      OutTextXY(Exp.X + 4, Exp.Y + 3, 'PasChat');
+ End;
+ { Splitter - commun a tous les onglets }
+ SetFillStyle(SolidFill, CLR_BORDER);
+ Bar(Exp.SplitterX, Exp.Y,
+  Exp.SplitterX + SPLITTER_WIDTH - 1,
+  Exp.Y + Exp.Height - 1);
+ If ActiveExplorerTab = ETAB_SOLUTION Then Begin
  { EXTENSION (2026-08-08) : mini barre d outils (Actualiser/Tout             }
  { replier/Proprietes) sous le titre, comme Visual Studio. }
  SetFillStyle(SolidFill, CLR_TOOLBAR);
@@ -22764,11 +22970,6 @@ Begin
    TextWidth(Copy(Exp.SearchBuf, 1, Exp.SearchCPos));
   Line(CurX, SearchY + 3, CurX, SearchY + EXPLORER_SEARCH_HEIGHT - 5);
  End;
- { Splitter }
- SetFillStyle(SolidFill, CLR_BORDER);
- Bar(Exp.SplitterX, Exp.Y,
-  Exp.SplitterX + SPLITTER_WIDTH - 1,
-  Exp.Y + Exp.Height - 1);
  { Dessiner les noeuds visibles }
  CTop := ExplorerContentTop(Exp);
  DrawY := CTop + 2;
@@ -22779,7 +22980,7 @@ Begin
    Inc(VisCount);
    Continue;
   End;
-  If DrawY + EXPLORER_NODE_HEIGHT > Exp.Y + Exp.Height Then
+  If DrawY + EXPLORER_NODE_HEIGHT > ExplorerContentBottom(Exp) Then
    Break;
   DrawExplorerNode(Exp, I, DrawY);
   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
@@ -22795,7 +22996,7 @@ Begin
    { Couloir de la scrollbar (14 px de large). }
    SetFillStyle(SolidFill, CLR_SCROLLBAR);
    Bar(Exp.X + Exp.Width - 14, CTop,
-    Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+    Exp.X + Exp.Width - 1, ExplorerContentBottom(Exp) - 1);
    { Bouton fleche haut (14x14 sous la recherche). }
    SetFillStyle(SolidFill, CLR_BORDER);
    Bar(Exp.X + Exp.Width - 14, CTop,
@@ -22817,25 +23018,25 @@ Begin
     Exp.X + Exp.Width - 4, CTop + 7);
    { Bouton fleche bas (14x14 en bas). }
    SetFillStyle(SolidFill, CLR_BORDER);
-   Bar(Exp.X + Exp.Width - 14, Exp.Y + Exp.Height - 14,
-    Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+   Bar(Exp.X + Exp.Width - 14, ExplorerContentBottom(Exp) - 14,
+    Exp.X + Exp.Width - 1, ExplorerContentBottom(Exp) - 1);
    SetColor(CLR_EDITOR_BG);
-   Rectangle(Exp.X + Exp.Width - 14, Exp.Y + Exp.Height - 14,
-    Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+   Rectangle(Exp.X + Exp.Width - 14, ExplorerContentBottom(Exp) - 14,
+    Exp.X + Exp.Width - 1, ExplorerContentBottom(Exp) - 1);
    { Triangle bas. }
    SetFillStyle(SolidFill, CLR_EDITOR_BG);
-   Bar(Exp.X + Exp.Width - 11, Exp.Y + Exp.Height - 11,
-    Exp.X + Exp.Width - 4, Exp.Y + Exp.Height - 11);
-   Bar(Exp.X + Exp.Width - 10, Exp.Y + Exp.Height - 10,
-    Exp.X + Exp.Width - 5, Exp.Y + Exp.Height - 10);
-   Bar(Exp.X + Exp.Width - 9, Exp.Y + Exp.Height - 9,
-    Exp.X + Exp.Width - 6, Exp.Y + Exp.Height - 9);
-   Bar(Exp.X + Exp.Width - 8, Exp.Y + Exp.Height - 8,
-    Exp.X + Exp.Width - 7, Exp.Y + Exp.Height - 8);
+   Bar(Exp.X + Exp.Width - 11, ExplorerContentBottom(Exp) - 11,
+    Exp.X + Exp.Width - 4, ExplorerContentBottom(Exp) - 11);
+   Bar(Exp.X + Exp.Width - 10, ExplorerContentBottom(Exp) - 10,
+    Exp.X + Exp.Width - 5, ExplorerContentBottom(Exp) - 10);
+   Bar(Exp.X + Exp.Width - 9, ExplorerContentBottom(Exp) - 9,
+    Exp.X + Exp.Width - 6, ExplorerContentBottom(Exp) - 9);
+   Bar(Exp.X + Exp.Width - 8, ExplorerContentBottom(Exp) - 8,
+    Exp.X + Exp.Width - 7, ExplorerContentBottom(Exp) - 8);
    { Curseur (thumb) proportionnel a la taille visible. }
    Begin
     VisCount := CTop + 14;                          { y debut couloir }
-    DrawY := Exp.Y + Exp.Height - 14;               { y fin couloir   }
+    DrawY := ExplorerContentBottom(Exp) - 14;       { y fin couloir   }
     I := DrawY - VisCount;                          { hauteur couloir }
     If I < 12 Then I := 12;
     { Hauteur du thumb proportionnelle. }
@@ -22860,11 +23061,1450 @@ Begin
      Exp.X + Exp.Width - 2, DrawY + MaxVis);
    End;
   End;
+ End Else Begin
+  { EXTENSION (2026-08-08) : contenu des 3 nouveaux onglets. }
+  Case ActiveExplorerTab Of
+   ETAB_GITCHANGES:   DrawGitChangesContent(Exp);
+   ETAB_TEAMEXPLORER: DrawTeamExplorerContent(Exp);
+   ETAB_PASCHAT:      DrawPasChatContent(Exp);
+  End;
+ End;
+ { EXTENSION (2026-08-08) : bande d onglets, en bas du panneau, commune   }
+ { a tous les onglets - Explorateur de solutions/Modification Git/Team       }
+ { Explorer/PasChat, comme Visual Studio. }
+ DrawExplorerTabStrip(Exp);
  { Bordure }
  SetColor(CLR_BORDER);
  Rectangle(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
   Exp.Y + Exp.Height - 1);
  Exp.NeedRepaint := False;
+End;
+
+{ ============================================================
+  EXTENSION (2026-08-08) - BANDE D ONGLETS DU PANNEAU EXPLORATEUR
+  ============================================================
+  4 onglets partageant le meme panneau (titre + splitter communs,
+  voir DrawExplorer) : Explorateur de solutions (arbre existant),
+  Modification Git, Team Explorer, PasChat - comme Visual Studio, ou
+  ces memes vues cohabitent dans un seul panneau dockable. }
+
+{ --- Dessiner la bande d onglets (bas du panneau) --- }
+
+Procedure DrawExplorerTabStrip(Var Exp: TSolutionExplorer);
+Var
+ TabW, TabX, I, TSY: Integer;
+ Lbl: String;
+Begin
+ TSY := ExplorerContentBottom(Exp);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, TSY, Exp.X + Exp.Width - 1, Exp.Y + Exp.Height - 1);
+ SetColor(CLR_BORDER);
+ Line(Exp.X, TSY, Exp.X + Exp.Width - 1, TSY);
+ TabW := Exp.Width Div EXPLORER_TAB_COUNT;
+ For I := 0 To EXPLORER_TAB_COUNT - 1 Do Begin
+  TabX := Exp.X + I * TabW;
+  If TExplorerTabKind(I) = ActiveExplorerTab Then Begin
+   SetFillStyle(SolidFill, CLR_EDITOR_BG);
+   Bar(TabX, TSY + 1, TabX + TabW - 1, Exp.Y + Exp.Height - 1);
+   SetColor(CLR_TITLEBAR_ACTIVE);
+   Line(TabX, TSY + 1, TabX + TabW - 1, TSY + 1);
+   Line(TabX, TSY + 1, TabX, Exp.Y + Exp.Height - 1);
+   Line(TabX + TabW - 1, TSY + 1, TabX + TabW - 1, Exp.Y + Exp.Height - 1);
+   SetColor(CLR_WINDOWTEXT);
+  End Else Begin
+   SetColor(CLR_GRAYTEXT);
+  End;
+  Case TExplorerTabKind(I) Of
+   ETAB_SOLUTION:     Lbl := 'Explorateur';
+   ETAB_GITCHANGES:   Lbl := 'Git';
+   ETAB_TEAMEXPLORER: Lbl := 'Team';
+   ETAB_PASCHAT:      Lbl := 'PasChat';
+  End;
+  OutTextXY(TabX + (TabW - TextWidth(Lbl)) Div 2, TSY + 5, Lbl);
+  If I > 0 Then Begin
+   SetColor(CLR_BORDER);
+   Line(TabX, TSY + 1, TabX, Exp.Y + Exp.Height - 1);
+  End;
+ End;
+End;
+
+{ --- Trouver l onglet sous la souris (-1 si aucun) --- }
+
+Function ExplorerTabStripHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Integer;
+Var
+ TabW, TSY, Idx: Integer;
+Begin
+ ExplorerTabStripHitTest := -1;
+ TSY := ExplorerContentBottom(Exp);
+ If (MX < Exp.X) Or (MX >= Exp.X + Exp.Width) Then Exit;
+ If (MY < TSY) Or (MY >= Exp.Y + Exp.Height) Then Exit;
+ TabW := Exp.Width Div EXPLORER_TAB_COUNT;
+ Idx := (MX - Exp.X) Div TabW;
+ If Idx >= EXPLORER_TAB_COUNT Then
+  Idx := EXPLORER_TAB_COUNT - 1;
+ ExplorerTabStripHitTest := Idx;
+End;
+
+{ --- Coordonnee Y ou commence le contenu des onglets Git/Team/PasChat -   }
+{ ces 3 onglets n ont pas de mini barre d outils+recherche comme l onglet     }
+{ Explorateur (voir ExplorerContentTop, specifique a celui-ci) - juste            }
+{ sous le titre partage. --- }
+
+Function ExplorerTabContentTop(Var Exp: TSolutionExplorer): Integer;
+Begin
+ ExplorerTabContentTop := Exp.Y + EXPLORER_NODE_HEIGHT;
+End;
+
+{ EXTENSION (2026-08-08) : implementations provisoires des 3 nouveaux    }
+{ onglets - remplacees par leur contenu reel dans les etapes suivantes         }
+{ (Modification Git, Team Explorer, PasChat). Presentes ici pour que la          }
+{ bande d onglets soit deja entierement fonctionnelle (compilable et             }
+{ testable en isolation) avant d y ajouter la logique Git/PasChat. }
+
+{ ============================================================
+  EXTENSION (2026-08-08) - ONGLET "MODIFICATION GIT"
+  ============================================================
+  Utilise la ligne de commande git (voir RunCommandCaptureOutput) - pas
+  de bibliotheque Git, uniquement "git status/add/restore/commit/push/
+  pull" invoques via le shell, exactement comme les compilateurs
+  externes ailleurs dans cet IDE (ExecuteCompiler). }
+
+{ --- Repertoire du depot Git : celui de la solution ouverte, sinon le   }
+{ repertoire courant. --- }
+
+Function GitRepoDir: String;
+Begin
+ If SolutionLoaded And (CurrentSolution.Info.SolutionPath <> '') Then
+  GitRepoDir := CurrentSolution.Info.SolutionPath
+ Else
+  GitRepoDir := '.';
+End;
+
+{ --- Construire une commande "git -C <depot> <args>" --- }
+
+Function GitCmd(Args: String): String;
+Begin
+ GitCmd := 'git -C "' + GitRepoDir + '" ' + Args;
+End;
+
+{ --- Neutraliser les guillemets doubles (pour un message de commit      }
+{ passe entre guillemets sur la ligne de commande). --- }
+
+Function SanitizeForCmdLine(Const S: String): String;
+Var
+ I: Integer;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do
+  If S[I] = '"' Then R := R + ''''
+  Else R := R + S[I];
+ SanitizeForCmdLine := R;
+End;
+
+{ --- Extraire le nombre entier au tout debut d une chaine (pour            }
+{ "ahead 2, behind 1" issu de "git status -b"). --- }
+
+Function ExtractLeadingNumber(Const S: String): Integer;
+Var
+ I, N, ErrCode: Integer;
+ NumStr: String;
+Begin
+ NumStr := '';
+ I := 1;
+ While (I <= Length(S)) And (S[I] In ['0'..'9']) Do Begin
+  NumStr := NumStr + S[I];
+  Inc(I);
+ End;
+ Val(NumStr, N, ErrCode);
+ If ErrCode <> 0 Then N := 0;
+ ExtractLeadingNumber := N;
+End;
+
+{ --- Couleur associee a une lettre de statut Git (M/A/D/R/?/...) --- }
+
+Function GitStatusColor(Ch: Char): Byte;
+Begin
+ Case Ch Of
+  'M': GitStatusColor := 14;  { jaune : modifie          }
+  'A': GitStatusColor := 2;   { vert : ajoute            }
+  'D': GitStatusColor := 4;   { rouge : supprime         }
+  'R': GitStatusColor := 3;   { cyan : renomme           }
+  'C': GitStatusColor := 3;   { cyan : copie             }
+  '?': GitStatusColor := 8;   { gris : non suivi         }
+  'U': GitStatusColor := 5;   { magenta : conflit        }
+ Else
+  GitStatusColor := 8;
+ End;
+End;
+
+{ --- Analyser la ligne d entete de "git status --porcelain -b"             }
+{ ("## branche...origin/branche [ahead N, behind M]"). --- }
+
+Procedure ParseGitStatusHeader(Line: String);
+Var
+ P: Integer;
+Begin
+ GitBranchName := '';
+ GitAhead := 0;
+ GitBehind := 0;
+ If Copy(Line, 1, 3) <> '## ' Then Exit;
+ Line := Copy(Line, 4, Length(Line) - 3);
+ P := Pos('...', Line);
+ If P > 0 Then
+  GitBranchName := Copy(Line, 1, P - 1)
+ Else Begin
+  P := Pos(' [', Line);
+  If P > 0 Then GitBranchName := Copy(Line, 1, P - 1)
+  Else GitBranchName := Line;
+ End;
+ P := Pos('ahead ', Line);
+ If P > 0 Then GitAhead := ExtractLeadingNumber(Copy(Line, P + 6, 10));
+ P := Pos('behind ', Line);
+ If P > 0 Then GitBehind := ExtractLeadingNumber(Copy(Line, P + 7, 10));
+End;
+
+{ --- Analyser une ligne de fichier de "git status --porcelain"             }
+{ ("XY chemin", ou "R  ancien -> nouveau" pour un renommage). --- }
+
+Procedure ParseGitStatusFileLine(Line: String);
+Var
+ Idx, ArrowPos: Integer;
+Begin
+ If Length(Line) < 4 Then Exit;
+ If GitFileCount >= MAX_GIT_FILES Then Exit;
+ Idx := GitFileCount;
+ GitFiles[Idx].IndexStat := Line[1];
+ GitFiles[Idx].WorkStat := Line[2];
+ GitFiles[Idx].Path := Copy(Line, 4, Length(Line) - 3);
+ ArrowPos := Pos(' -> ', GitFiles[Idx].Path);
+ If ArrowPos > 0 Then
+  GitFiles[Idx].Path := Copy(GitFiles[Idx].Path, ArrowPos + 4,
+   Length(GitFiles[Idx].Path) - ArrowPos - 3);
+ GitFiles[Idx].Staged := (GitFiles[Idx].IndexStat <> ' ') And
+  (GitFiles[Idx].IndexStat <> '?');
+ GitFiles[Idx].Selected := False;
+ Inc(GitFileCount);
+End;
+
+{ --- Rafraichir entierement l etat Git (branche + fichiers modifies). --- }
+
+Procedure GitRefreshStatus;
+Var
+ Buf: TCmdOutputLines;
+ Cnt, I: Integer;
+Begin
+ GitFileCount := 0;
+ GitBranchName := '';
+ GitAhead := 0;
+ GitBehind := 0;
+ RunCommandCaptureOutput(GitCmd('status --porcelain=v1 -b'), Buf, Cnt);
+ If Cnt = 0 Then Begin
+  GitStatusMsg := 'Impossible d obtenir l etat Git (pas un depot ?)';
+  Exit;
+ End;
+ ParseGitStatusHeader(Buf[0]);
+ For I := 1 To Cnt - 1 Do
+  If Buf[I] <> '' Then ParseGitStatusFileLine(Buf[I]);
+ If GitSelectedIdx >= GitFileCount Then GitSelectedIdx := -1;
+End;
+
+Procedure GitStageFile(Const Path: String);
+Var Buf: TCmdOutputLines; Cnt: Integer;
+Begin
+ RunCommandCaptureOutput(GitCmd('add "' + Path + '"'), Buf, Cnt);
+ GitRefreshStatus;
+End;
+
+Procedure GitUnstageFile(Const Path: String);
+Var Buf: TCmdOutputLines; Cnt: Integer;
+Begin
+ RunCommandCaptureOutput(GitCmd('restore --staged "' + Path + '"'),
+  Buf, Cnt);
+ GitRefreshStatus;
+End;
+
+Procedure GitStageAllFiles;
+Var Buf: TCmdOutputLines; Cnt: Integer;
+Begin
+ RunCommandCaptureOutput(GitCmd('add -A'), Buf, Cnt);
+ GitStatusMsg := 'Toutes les modifications ont ete indexees.';
+ GitRefreshStatus;
+End;
+
+Procedure GitDoCommit;
+Var
+ Buf: TCmdOutputLines;
+ Cnt, ExitCode: Integer;
+Begin
+ If TrimStr(GitCommitMsg) = '' Then Begin
+  GitStatusMsg := 'Entrez un message de commit.';
+  Exit;
+ End;
+ ExitCode := RunCommandCaptureOutput(
+  GitCmd('commit -m "' + SanitizeForCmdLine(GitCommitMsg) + '"'), Buf, Cnt);
+ If ExitCode = 0 Then Begin
+  GitStatusMsg := 'Commit effectue.';
+  GitCommitMsg := '';
+  GitCommitCPos := 0;
+ End Else
+  GitStatusMsg := 'Echec du commit - verifiez qu il y a des ' +
+   'modifications indexees.';
+ GitRefreshStatus;
+End;
+
+Procedure GitDoPush;
+Var Buf: TCmdOutputLines; Cnt, ExitCode: Integer;
+Begin
+ GitBusy := True;
+ ExitCode := RunCommandCaptureOutput(GitCmd('push'), Buf, Cnt);
+ GitBusy := False;
+ If ExitCode = 0 Then GitStatusMsg := 'Push effectue.'
+ Else GitStatusMsg := 'Echec du push (voir configuration du remote).';
+ GitRefreshStatus;
+End;
+
+Procedure GitDoPull;
+Var Buf: TCmdOutputLines; Cnt, ExitCode: Integer;
+Begin
+ GitBusy := True;
+ ExitCode := RunCommandCaptureOutput(GitCmd('pull'), Buf, Cnt);
+ GitBusy := False;
+ If ExitCode = 0 Then GitStatusMsg := 'Pull effectue.'
+ Else GitStatusMsg := 'Echec du pull (conflits eventuels).';
+ GitRefreshStatus;
+End;
+
+{ --- Position Y du haut de la zone de message de commit (bas du            }
+{ panneau) - factorisee car utilisee par le dessin ET le clic. --- }
+
+Function GitCommitBoxTop(Var Exp: TSolutionExplorer): Integer;
+Begin
+ GitCommitBoxTop := ExplorerContentBottom(Exp) - 48;
+End;
+
+{ --- Dessiner le contenu de l onglet "Modification Git" --- }
+
+Procedure DrawGitChangesContent(Var Exp: TSolutionExplorer);
+Var
+ CTop, CBot, ListTop, ListBot, RowY, I, BtnX, BtnY: Integer;
+ DrawnStaged, DrawnUnstaged: Boolean;
+ CurX: Integer;
+
+ Procedure DrawFileRow(Var GF: TGitFileStatus; Y: Integer);
+ Var StatCh: Char;
+ Begin
+  If GF.Selected Then Begin
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(Exp.X, Y, Exp.X + Exp.Width - 1, Y + EXPLORER_NODE_HEIGHT - 1);
+  End;
+  If GF.Staged Then StatCh := GF.IndexStat Else StatCh := GF.WorkStat;
+  SetColor(GitStatusColor(StatCh));
+  OutTextXY(Exp.X + 6, Y + 3, StatCh);
+  If GF.Selected Then SetColor(CLR_EDITOR_BG) Else SetColor(CLR_WINDOWTEXT);
+  OutTextXY(Exp.X + 20, Y + 3, GF.Path);
+ End;
+
+Begin
+ CTop := ExplorerTabContentTop(Exp);
+ CBot := ExplorerContentBottom(Exp);
+ { Barre d outils : Actualiser / Tout indexer / Push / Pull }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, CTop, Exp.X + Exp.Width - 1, CTop + EXPLORER_TOOLBAR_HEIGHT - 1);
+ For I := 0 To 3 Do Begin
+  BtnX := Exp.X + 2 + I * 22;
+  BtnY := CTop + 2;
+  SetColor(CLR_BORDER);
+  Rectangle(BtnX, BtnY, BtnX + 19, BtnY + 19);
+  DrawIcon16x16(BtnX + 2, BtnY + 2, GitToolbarIcons[I]);
+ End;
+ { Ligne de branche }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, CTop + EXPLORER_TOOLBAR_HEIGHT, Exp.X + Exp.Width - 1,
+  CTop + EXPLORER_TOOLBAR_HEIGHT + EXPLORER_SEARCH_HEIGHT - 1);
+ SetColor(CLR_WINDOWTEXT);
+ If GitBusy Then
+  OutTextXY(Exp.X + 4, CTop + EXPLORER_TOOLBAR_HEIGHT + 4,
+   'Operation Git en cours...')
+ Else If GitBranchName <> '' Then
+  OutTextXY(Exp.X + 4, CTop + EXPLORER_TOOLBAR_HEIGHT + 4,
+   GitBranchName + '  (^' + IntToStr(GitAhead) + ' v' +
+   IntToStr(GitBehind) + ')')
+ Else
+  OutTextXY(Exp.X + 4, CTop + EXPLORER_TOOLBAR_HEIGHT + 4,
+   '(aucun depot Git)');
+ { Liste des fichiers modifies, regroupes Indexes/Non indexes }
+ ListTop := CTop + EXPLORER_TOOLBAR_HEIGHT + EXPLORER_SEARCH_HEIGHT;
+ ListBot := GitCommitBoxTop(Exp);
+ SetFillStyle(SolidFill, CLR_EXPLORER_BG);
+ Bar(Exp.X, ListTop, Exp.X + Exp.Width - 1, ListBot - 1);
+ RowY := ListTop + 2 - GitScrollTop * EXPLORER_NODE_HEIGHT;
+ DrawnStaged := False;
+ DrawnUnstaged := False;
+ For I := 0 To GitFileCount - 1 Do
+  If GitFiles[I].Staged Then Begin
+   If Not DrawnStaged Then Begin
+    If (RowY >= ListTop) And (RowY + EXPLORER_NODE_HEIGHT <= ListBot) Then Begin
+     SetColor(CLR_GRAYTEXT);
+     OutTextXY(Exp.X + 4, RowY + 3, 'Modifications indexees');
+    End;
+    RowY := RowY + EXPLORER_NODE_HEIGHT;
+    DrawnStaged := True;
+   End;
+   If (RowY >= ListTop) And (RowY + EXPLORER_NODE_HEIGHT <= ListBot) Then
+    DrawFileRow(GitFiles[I], RowY);
+   RowY := RowY + EXPLORER_NODE_HEIGHT;
+  End;
+ For I := 0 To GitFileCount - 1 Do
+  If Not GitFiles[I].Staged Then Begin
+   If Not DrawnUnstaged Then Begin
+    If (RowY >= ListTop) And (RowY + EXPLORER_NODE_HEIGHT <= ListBot) Then Begin
+     SetColor(CLR_GRAYTEXT);
+     OutTextXY(Exp.X + 4, RowY + 3, 'Modifications');
+    End;
+    RowY := RowY + EXPLORER_NODE_HEIGHT;
+    DrawnUnstaged := True;
+   End;
+   If (RowY >= ListTop) And (RowY + EXPLORER_NODE_HEIGHT <= ListBot) Then
+    DrawFileRow(GitFiles[I], RowY);
+   RowY := RowY + EXPLORER_NODE_HEIGHT;
+  End;
+ If GitFileCount = 0 Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 4, ListTop + 4, 'Aucune modification.');
+ End;
+ { Zone de message de commit + bouton Commit }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, ListBot, Exp.X + Exp.Width - 1, CBot - 1);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(Exp.X + 2, ListBot + 2, Exp.X + Exp.Width - 3, ListBot + 20);
+ If GitCommitFocused Then SetColor(CLR_TITLEBAR_ACTIVE) Else SetColor(CLR_BORDER);
+ Rectangle(Exp.X + 2, ListBot + 2, Exp.X + Exp.Width - 3, ListBot + 20);
+ If (GitCommitMsg = '') And (Not GitCommitFocused) Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 6, ListBot + 5, 'Message de commit');
+ End Else Begin
+  SetColor(CLR_WINDOWTEXT);
+  OutTextXY(Exp.X + 6, ListBot + 5, GitCommitMsg);
+ End;
+ If GitCommitFocused And ExplorerSearchCursorVisible Then Begin
+  SetColor(CLR_WINDOWTEXT);
+  CurX := Exp.X + 6 + TextWidth(Copy(GitCommitMsg, 1, GitCommitCPos));
+  Line(CurX, ListBot + 4, CurX, ListBot + 18);
+ End;
+ SetFillStyle(SolidFill, CLR_BTNFACE);
+ Bar(Exp.X + 2, ListBot + 23, Exp.X + Exp.Width - 3, CBot - 3);
+ SetColor(CLR_BORDER);
+ Rectangle(Exp.X + 2, ListBot + 23, Exp.X + Exp.Width - 3, CBot - 3);
+ SetColor(CLR_WINDOWTEXT);
+ OutTextXY(Exp.X + (Exp.Width Div 2) - 20, ListBot + 27, 'Commit');
+End;
+
+{ --- Trouver le bouton de la mini barre d outils Git sous la souris     }
+{ (0=Actualiser, 1=Tout indexer, 2=Push, 3=Pull ; -1 si aucun). --- }
+
+Function GitToolbarHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Integer;
+Var
+ I, BtnX, BtnY, CTop: Integer;
+Begin
+ GitToolbarHitTest := -1;
+ CTop := ExplorerTabContentTop(Exp);
+ BtnY := CTop + 2;
+ If (MY < BtnY) Or (MY > BtnY + 19) Then Exit;
+ For I := 0 To 3 Do Begin
+  BtnX := Exp.X + 2 + I * 22;
+  If (MX >= BtnX) And (MX <= BtnX + 19) Then Begin
+   GitToolbarHitTest := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Trouver l index (dans GitFiles[]) du fichier sous la souris - re-  }
+{ produit EXACTEMENT la disposition de DrawGitChangesContent (sections     }
+{ "indexees"/"non indexees" intercalees) pour que le clic corresponde          }
+{ toujours a la bonne ligne. Retourne -1 sur un en-tete de section ou           }
+{ une zone vide. --- }
+
+Function GitFileRowHitTest(Var Exp: TSolutionExplorer; MY: Integer): Integer;
+Var
+ ListTop, ListBot, RowY, I: Integer;
+ DrawnStaged, DrawnUnstaged: Boolean;
+Begin
+ GitFileRowHitTest := -1;
+ ListTop := ExplorerTabContentTop(Exp) + EXPLORER_TOOLBAR_HEIGHT +
+  EXPLORER_SEARCH_HEIGHT;
+ ListBot := GitCommitBoxTop(Exp);
+ RowY := ListTop + 2 - GitScrollTop * EXPLORER_NODE_HEIGHT;
+ DrawnStaged := False;
+ DrawnUnstaged := False;
+ For I := 0 To GitFileCount - 1 Do
+  If GitFiles[I].Staged Then Begin
+   If Not DrawnStaged Then Begin
+    RowY := RowY + EXPLORER_NODE_HEIGHT;
+    DrawnStaged := True;
+   End;
+   If (MY >= RowY) And (MY < RowY + EXPLORER_NODE_HEIGHT) And
+      (RowY >= ListTop) And (RowY + EXPLORER_NODE_HEIGHT <= ListBot) Then Begin
+    GitFileRowHitTest := I;
+    Exit;
+   End;
+   RowY := RowY + EXPLORER_NODE_HEIGHT;
+  End;
+ For I := 0 To GitFileCount - 1 Do
+  If Not GitFiles[I].Staged Then Begin
+   If Not DrawnUnstaged Then Begin
+    RowY := RowY + EXPLORER_NODE_HEIGHT;
+    DrawnUnstaged := True;
+   End;
+   If (MY >= RowY) And (MY < RowY + EXPLORER_NODE_HEIGHT) And
+      (RowY >= ListTop) And (RowY + EXPLORER_NODE_HEIGHT <= ListBot) Then Begin
+    GitFileRowHitTest := I;
+    Exit;
+   End;
+   RowY := RowY + EXPLORER_NODE_HEIGHT;
+  End;
+End;
+
+{ --- Zones de la boite de commit (message / bouton Commit) --- }
+
+Function GitCommitMsgBoxHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Boolean;
+Var CTop: Integer;
+Begin
+ CTop := GitCommitBoxTop(Exp);
+ GitCommitMsgBoxHitTest := (MX >= Exp.X + 2) And (MX <= Exp.X + Exp.Width - 3)
+  And (MY >= CTop + 2) And (MY <= CTop + 20);
+End;
+
+Function GitCommitButtonHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Boolean;
+Var CTop, CBot: Integer;
+Begin
+ CTop := GitCommitBoxTop(Exp);
+ CBot := ExplorerContentBottom(Exp);
+ GitCommitButtonHitTest := (MX >= Exp.X + 2) And
+  (MX <= Exp.X + Exp.Width - 3) And
+  (MY >= CTop + 23) And (MY <= CBot - 3);
+End;
+
+{ --- Gerer les evenements de l onglet "Modification Git" --- }
+
+Procedure HandleGitChangesEvent(Var Exp: TSolutionExplorer; Ev: TEvent);
+Var
+ HitIdx: Integer;
+Begin
+ { Saisie du message de commit : meme principe que le champ de              }
+ { recherche live de l onglet Explorateur. }
+ If GitCommitFocused Then Begin
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #13 Then Begin { Entree : valider le commit }
+    GitDoCommit;
+    GitCommitFocused := False;
+   End
+   Else If Ev.KeyChar = #27 Then { Escape : quitter le champ }
+    GitCommitFocused := False
+   Else If Ev.KeyChar = #8 Then Begin { Backspace }
+    If GitCommitCPos > 0 Then Begin
+     Delete(GitCommitMsg, GitCommitCPos, 1);
+     Dec(GitCommitCPos);
+    End;
+   End
+   Else If (Ev.KeyChar >= #32) And (Ev.KeyChar <= #126) Then Begin
+    If Length(GitCommitMsg) < 255 Then Begin
+     Insert(Ev.KeyChar, GitCommitMsg, GitCommitCPos + 1);
+     Inc(GitCommitCPos);
+    End;
+   End;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+ End;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  HitIdx := GitToolbarHitTest(Exp, Ev.MouseX, Ev.MouseY);
+  If HitIdx >= 0 Then Begin
+   Case HitIdx Of
+    0: GitRefreshStatus;
+    1: GitStageAllFiles;
+    2: GitDoPush;
+    3: GitDoPull;
+   End;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+  If GitCommitMsgBoxHitTest(Exp, Ev.MouseX, Ev.MouseY) Then Begin
+   GitCommitFocused := True;
+   GitCommitCPos := Length(GitCommitMsg);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End Else
+   GitCommitFocused := False;
+  If GitCommitButtonHitTest(Exp, Ev.MouseX, Ev.MouseY) Then Begin
+   GitDoCommit;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+  HitIdx := GitFileRowHitTest(Exp, Ev.MouseY);
+  If HitIdx >= 0 Then Begin
+   If GitFiles[HitIdx].Staged Then
+    GitUnstageFile(GitFiles[HitIdx].Path)
+   Else
+    GitStageFile(GitFiles[HitIdx].Path);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+ End
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Ev.KeyCode = 72 Then Begin { Fleche haut }
+   If GitScrollTop > 0 Then Dec(GitScrollTop);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End
+  Else If Ev.KeyCode = 80 Then Begin { Fleche bas }
+   Inc(GitScrollTop);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End;
+ End;
+End;
+
+{ ============================================================
+  EXTENSION (2026-08-08) - ONGLET "TEAM EXPLORER"
+  ============================================================
+  3 vues (Branches/Sync/Historique), meme principe que le vrai Team
+  Explorer de Visual Studio pour les parties non couvertes par l onglet
+  "Modification Git" (qui couvre deja les fichiers modifies/le commit). }
+
+{ --- Rafraichir la liste des branches (locales + distantes) --- }
+
+Procedure TeamRefreshBranches;
+Var
+ Buf: TCmdOutputLines;
+ Cnt, I: Integer;
+ Line, Name: String;
+ IsCur: Boolean;
+Begin
+ TeamBranchCount := 0;
+ RunCommandCaptureOutput(GitCmd('branch -a'), Buf, Cnt);
+ For I := 0 To Cnt - 1 Do Begin
+  Line := Buf[I];
+  If Length(Line) < 3 Then Continue;
+  IsCur := Line[1] = '*';
+  Name := TrimStr(Copy(Line, 3, Length(Line) - 2));
+  If Pos('-> ', Name) > 0 Then Continue; { ex. "remotes/origin/HEAD -> ..." }
+  If TeamBranchCount < MAX_GIT_BRANCHES Then Begin
+   TeamBranches[TeamBranchCount].Name := Name;
+   TeamBranches[TeamBranchCount].Current := IsCur;
+   TeamBranches[TeamBranchCount].Remote := Pos('remotes/', Name) = 1;
+   Inc(TeamBranchCount);
+  End;
+ End;
+End;
+
+{ --- Rafraichir l historique des commits --- }
+
+Procedure TeamRefreshLog;
+Var
+ Buf: TCmdOutputLines;
+ Cnt, I, P1, P2, P3: Integer;
+ Line: String;
+Begin
+ TeamLogCount := 0;
+ RunCommandCaptureOutput(
+  GitCmd('log --pretty=format:"%h|%an|%ad|%s" --date=short -n ' +
+   IntToStr(MAX_GIT_LOG)), Buf, Cnt);
+ For I := 0 To Cnt - 1 Do Begin
+  Line := Buf[I];
+  If Line = '' Then Continue;
+  If TeamLogCount >= MAX_GIT_LOG Then Break;
+  P1 := Pos('|', Line);
+  If P1 = 0 Then Continue;
+  P2 := Pos('|', Copy(Line, P1 + 1, Length(Line)));
+  If P2 = 0 Then Continue;
+  P2 := P1 + P2;
+  P3 := Pos('|', Copy(Line, P2 + 1, Length(Line)));
+  If P3 = 0 Then Continue;
+  P3 := P2 + P3;
+  TeamLog[TeamLogCount].Hash := Copy(Line, 1, P1 - 1);
+  TeamLog[TeamLogCount].Author := Copy(Line, P1 + 1, P2 - P1 - 1);
+  TeamLog[TeamLogCount].DateStr := Copy(Line, P2 + 1, P3 - P2 - 1);
+  TeamLog[TeamLogCount].Subject := Copy(Line, P3 + 1, Length(Line) - P3);
+  Inc(TeamLogCount);
+ End;
+End;
+
+Procedure TeamExplorerRefresh;
+Begin
+ TeamRefreshBranches;
+ TeamRefreshLog;
+ GitRefreshStatus; { pour la branche courante / avance-retard de la vue Sync }
+ TeamStatusMsg := '';
+End;
+
+{ --- Basculer vers une branche (locale ou distante) --- }
+
+Procedure TeamCheckoutBranch(Const Name: String);
+Var
+ Buf: TCmdOutputLines;
+ Cnt, ExitCode: Integer;
+ LocalName: String;
+Begin
+ LocalName := Name;
+ If Pos('remotes/origin/', LocalName) = 1 Then
+  LocalName := Copy(LocalName, Length('remotes/origin/') + 1,
+   Length(LocalName));
+ ExitCode := RunCommandCaptureOutput(
+  GitCmd('checkout "' + LocalName + '"'), Buf, Cnt);
+ If ExitCode = 0 Then
+  TeamStatusMsg := 'Branche courante : ' + LocalName
+ Else
+  TeamStatusMsg := 'Echec du changement de branche (modifications ' +
+   'non validees ?).';
+ TeamExplorerRefresh;
+End;
+
+{ --- Creer une nouvelle branche et y basculer --- }
+
+Procedure TeamCreateBranch(Const Name: String);
+Var
+ Buf: TCmdOutputLines;
+ Cnt, ExitCode: Integer;
+Begin
+ If TrimStr(Name) = '' Then Exit;
+ ExitCode := RunCommandCaptureOutput(
+  GitCmd('checkout -b "' + TrimStr(Name) + '"'), Buf, Cnt);
+ If ExitCode = 0 Then
+  TeamStatusMsg := 'Branche creee : ' + TrimStr(Name)
+ Else
+  TeamStatusMsg := 'Echec de la creation de branche (nom deja pris ?).';
+ TeamExplorerRefresh;
+End;
+
+Procedure TeamDoFetch;
+Var Buf: TCmdOutputLines; Cnt, ExitCode: Integer;
+Begin
+ ExitCode := RunCommandCaptureOutput(GitCmd('fetch'), Buf, Cnt);
+ If ExitCode = 0 Then TeamStatusMsg := 'Fetch effectue.'
+ Else TeamStatusMsg := 'Echec du fetch.';
+ TeamExplorerRefresh;
+End;
+
+{ --- Position Y du haut du contenu propre a chaque vue (sous le titre   }
+{ partage ET la rangee de sous-onglets Branches/Sync/Historique). --- }
+
+Function TeamViewContentTop(Var Exp: TSolutionExplorer): Integer;
+Begin
+ TeamViewContentTop := ExplorerTabContentTop(Exp) + EXPLORER_TOOLBAR_HEIGHT;
+End;
+
+{ --- Dessiner la rangee de sous-onglets Branches/Sync/Historique --- }
+
+Procedure DrawTeamSubTabs(Var Exp: TSolutionExplorer);
+Var
+ CTop, SubW, SubX, I: Integer;
+ Lbl: String;
+Begin
+ CTop := ExplorerTabContentTop(Exp);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, CTop, Exp.X + Exp.Width - 1, CTop + EXPLORER_TOOLBAR_HEIGHT - 1);
+ SubW := Exp.Width Div 3;
+ For I := 0 To 2 Do Begin
+  SubX := Exp.X + I * SubW;
+  Case I Of
+   0: Lbl := 'Branches';
+   1: Lbl := 'Sync';
+   2: Lbl := 'Historique';
+  End;
+  If Ord(TeamView) = I Then Begin
+   SetFillStyle(SolidFill, CLR_EDITOR_BG);
+   Bar(SubX + 1, CTop + 1, SubX + SubW - 1, CTop + EXPLORER_TOOLBAR_HEIGHT - 1);
+   SetColor(CLR_WINDOWTEXT);
+  End Else
+   SetColor(CLR_GRAYTEXT);
+  OutTextXY(SubX + (SubW - TextWidth(Lbl)) Div 2, CTop + 4, Lbl);
+ End;
+End;
+
+Function TeamSubTabHitTest(Var Exp: TSolutionExplorer; MX, MY: Integer): Integer;
+Var
+ CTop, SubW, Idx: Integer;
+Begin
+ TeamSubTabHitTest := -1;
+ CTop := ExplorerTabContentTop(Exp);
+ If (MY < CTop) Or (MY >= CTop + EXPLORER_TOOLBAR_HEIGHT) Then Exit;
+ If (MX < Exp.X) Or (MX >= Exp.X + Exp.Width) Then Exit;
+ SubW := Exp.Width Div 3;
+ Idx := (MX - Exp.X) Div SubW;
+ If Idx > 2 Then Idx := 2;
+ TeamSubTabHitTest := Idx;
+End;
+
+{ --- Vue "Branches" --- }
+
+Procedure DrawTeamBranchesView(Var Exp: TSolutionExplorer);
+Var
+ CTop, CBot, RowY, I, InputTop: Integer;
+ CurX: Integer;
+Begin
+ CTop := TeamViewContentTop(Exp);
+ CBot := ExplorerContentBottom(Exp);
+ InputTop := CBot - 24;
+ SetFillStyle(SolidFill, CLR_EXPLORER_BG);
+ Bar(Exp.X, CTop, Exp.X + Exp.Width - 1, InputTop - 1);
+ RowY := CTop + 2 - TeamScrollTop * EXPLORER_NODE_HEIGHT;
+ For I := 0 To TeamBranchCount - 1 Do Begin
+  If (RowY >= CTop) And (RowY + EXPLORER_NODE_HEIGHT <= InputTop) Then Begin
+   If I = TeamSelectedIdx Then Begin
+    SetFillStyle(SolidFill, CLR_SELECTION);
+    Bar(Exp.X, RowY, Exp.X + Exp.Width - 1, RowY + EXPLORER_NODE_HEIGHT - 1);
+    SetColor(CLR_EDITOR_BG);
+   End Else If TeamBranches[I].Current Then
+    SetColor(CLR_TITLEBAR_ACTIVE)
+   Else If TeamBranches[I].Remote Then
+    SetColor(CLR_GRAYTEXT)
+   Else
+    SetColor(CLR_WINDOWTEXT);
+   If TeamBranches[I].Current Then
+    OutTextXY(Exp.X + 4, RowY + 3, '* ' + TeamBranches[I].Name)
+   Else
+    OutTextXY(Exp.X + 14, RowY + 3, TeamBranches[I].Name);
+  End;
+  RowY := RowY + EXPLORER_NODE_HEIGHT;
+ End;
+ { Champ "nouvelle branche" + bouton Creer }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, InputTop, Exp.X + Exp.Width - 1, CBot - 1);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(Exp.X + 2, InputTop + 2, Exp.X + Exp.Width - 48, InputTop + 20);
+ If TeamNewBranchFocused Then SetColor(CLR_TITLEBAR_ACTIVE)
+ Else SetColor(CLR_BORDER);
+ Rectangle(Exp.X + 2, InputTop + 2, Exp.X + Exp.Width - 48, InputTop + 20);
+ If (TeamNewBranchBuf = '') And (Not TeamNewBranchFocused) Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 5, InputTop + 5, 'Nouvelle branche');
+ End Else Begin
+  SetColor(CLR_WINDOWTEXT);
+  OutTextXY(Exp.X + 5, InputTop + 5, TeamNewBranchBuf);
+ End;
+ If TeamNewBranchFocused And ExplorerSearchCursorVisible Then Begin
+  CurX := Exp.X + 5 + TextWidth(Copy(TeamNewBranchBuf, 1, TeamNewBranchCPos));
+  Line(CurX, InputTop + 4, CurX, InputTop + 18);
+ End;
+ SetFillStyle(SolidFill, CLR_BTNFACE);
+ Bar(Exp.X + Exp.Width - 45, InputTop + 2, Exp.X + Exp.Width - 3,
+  InputTop + 20);
+ SetColor(CLR_BORDER);
+ Rectangle(Exp.X + Exp.Width - 45, InputTop + 2, Exp.X + Exp.Width - 3,
+  InputTop + 20);
+ SetColor(CLR_WINDOWTEXT);
+ OutTextXY(Exp.X + Exp.Width - 40, InputTop + 5, 'Creer');
+End;
+
+{ --- Vue "Sync" --- }
+
+Procedure DrawTeamSyncView(Var Exp: TSolutionExplorer);
+Var
+ CTop, BtnY, I, BtnX: Integer;
+ Lbl: String;
+Begin
+ CTop := TeamViewContentTop(Exp);
+ SetFillStyle(SolidFill, CLR_EXPLORER_BG);
+ Bar(Exp.X, CTop, Exp.X + Exp.Width - 1, ExplorerContentBottom(Exp) - 1);
+ SetColor(CLR_WINDOWTEXT);
+ If GitBranchName <> '' Then
+  OutTextXY(Exp.X + 4, CTop + 6, 'Branche : ' + GitBranchName)
+ Else
+  OutTextXY(Exp.X + 4, CTop + 6, '(aucun depot Git)');
+ OutTextXY(Exp.X + 4, CTop + 24, 'Commits en avance : ' + IntToStr(GitAhead));
+ OutTextXY(Exp.X + 4, CTop + 40, 'Commits en retard : ' + IntToStr(GitBehind));
+ BtnY := CTop + 64;
+ For I := 0 To 2 Do Begin
+  BtnX := Exp.X + 4 + I * 70;
+  Case I Of
+   0: Lbl := 'Fetch';
+   1: Lbl := 'Push';
+   2: Lbl := 'Pull';
+  End;
+  SetFillStyle(SolidFill, CLR_BTNFACE);
+  Bar(BtnX, BtnY, BtnX + 64, BtnY + 22);
+  SetColor(CLR_BORDER);
+  Rectangle(BtnX, BtnY, BtnX + 64, BtnY + 22);
+  SetColor(CLR_WINDOWTEXT);
+  OutTextXY(BtnX + (64 - TextWidth(Lbl)) Div 2, BtnY + 5, Lbl);
+ End;
+ If TeamStatusMsg <> '' Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 4, BtnY + 32, TeamStatusMsg);
+ End;
+End;
+
+{ --- Vue "Historique" --- }
+
+Procedure DrawTeamHistoryView(Var Exp: TSolutionExplorer);
+Var
+ CTop, CBot, RowY, I: Integer;
+Begin
+ CTop := TeamViewContentTop(Exp);
+ CBot := ExplorerContentBottom(Exp);
+ SetFillStyle(SolidFill, CLR_EXPLORER_BG);
+ Bar(Exp.X, CTop, Exp.X + Exp.Width - 1, CBot - 1);
+ RowY := CTop + 2 - TeamScrollTop * EXPLORER_NODE_HEIGHT;
+ For I := 0 To TeamLogCount - 1 Do Begin
+  If (RowY >= CTop) And (RowY + EXPLORER_NODE_HEIGHT <= CBot) Then Begin
+   If I = TeamSelectedIdx Then Begin
+    SetFillStyle(SolidFill, CLR_SELECTION);
+    Bar(Exp.X, RowY, Exp.X + Exp.Width - 1, RowY + EXPLORER_NODE_HEIGHT - 1);
+    SetColor(CLR_EDITOR_BG);
+   End Else Begin
+    SetColor(CLR_LINE_HIGHLIGHT);
+   End;
+   OutTextXY(Exp.X + 4, RowY + 3, TeamLog[I].Hash);
+   If I <> TeamSelectedIdx Then SetColor(CLR_WINDOWTEXT);
+   OutTextXY(Exp.X + 50, RowY + 3, TeamLog[I].Subject);
+  End;
+  RowY := RowY + EXPLORER_NODE_HEIGHT;
+ End;
+ If TeamLogCount = 0 Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 4, CTop + 4, '(aucun historique)');
+ End;
+End;
+
+{ --- Dispatch principal de dessin de l onglet Team Explorer --- }
+
+Procedure DrawTeamExplorerContent(Var Exp: TSolutionExplorer);
+Begin
+ DrawTeamSubTabs(Exp);
+ Case TeamView Of
+  TVIEW_BRANCHES: DrawTeamBranchesView(Exp);
+  TVIEW_SYNC:     DrawTeamSyncView(Exp);
+  TVIEW_HISTORY:  DrawTeamHistoryView(Exp);
+ End;
+End;
+
+{ --- Hit-tests pour la vue Branches (liste + champ + bouton) --- }
+
+Function TeamBranchRowHitTest(Var Exp: TSolutionExplorer; MY: Integer): Integer;
+Var CTop, InputTop, RowY, I: Integer;
+Begin
+ TeamBranchRowHitTest := -1;
+ CTop := TeamViewContentTop(Exp);
+ InputTop := ExplorerContentBottom(Exp) - 24;
+ RowY := CTop + 2 - TeamScrollTop * EXPLORER_NODE_HEIGHT;
+ For I := 0 To TeamBranchCount - 1 Do Begin
+  If (MY >= RowY) And (MY < RowY + EXPLORER_NODE_HEIGHT) And
+     (RowY >= CTop) And (RowY + EXPLORER_NODE_HEIGHT <= InputTop) Then Begin
+   TeamBranchRowHitTest := I;
+   Exit;
+  End;
+  RowY := RowY + EXPLORER_NODE_HEIGHT;
+ End;
+End;
+
+Function TeamNewBranchBoxHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Boolean;
+Var InputTop: Integer;
+Begin
+ InputTop := ExplorerContentBottom(Exp) - 24;
+ TeamNewBranchBoxHitTest := (MX >= Exp.X + 2) And
+  (MX <= Exp.X + Exp.Width - 48) And
+  (MY >= InputTop + 2) And (MY <= InputTop + 20);
+End;
+
+Function TeamCreateBtnHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Boolean;
+Var InputTop: Integer;
+Begin
+ InputTop := ExplorerContentBottom(Exp) - 24;
+ TeamCreateBtnHitTest := (MX >= Exp.X + Exp.Width - 45) And
+  (MX <= Exp.X + Exp.Width - 3) And
+  (MY >= InputTop + 2) And (MY <= InputTop + 20);
+End;
+
+Function TeamSyncBtnHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Integer;
+Var CTop, BtnY, I, BtnX: Integer;
+Begin
+ TeamSyncBtnHitTest := -1;
+ CTop := TeamViewContentTop(Exp);
+ BtnY := CTop + 64;
+ If (MY < BtnY) Or (MY > BtnY + 22) Then Exit;
+ For I := 0 To 2 Do Begin
+  BtnX := Exp.X + 4 + I * 70;
+  If (MX >= BtnX) And (MX <= BtnX + 64) Then Begin
+   TeamSyncBtnHitTest := I;
+   Exit;
+  End;
+ End;
+End;
+
+Function TeamHistoryRowHitTest(Var Exp: TSolutionExplorer; MY: Integer): Integer;
+Var CTop, CBot, RowY, I: Integer;
+Begin
+ TeamHistoryRowHitTest := -1;
+ CTop := TeamViewContentTop(Exp);
+ CBot := ExplorerContentBottom(Exp);
+ RowY := CTop + 2 - TeamScrollTop * EXPLORER_NODE_HEIGHT;
+ For I := 0 To TeamLogCount - 1 Do Begin
+  If (MY >= RowY) And (MY < RowY + EXPLORER_NODE_HEIGHT) And
+     (RowY >= CTop) And (RowY + EXPLORER_NODE_HEIGHT <= CBot) Then Begin
+   TeamHistoryRowHitTest := I;
+   Exit;
+  End;
+  RowY := RowY + EXPLORER_NODE_HEIGHT;
+ End;
+End;
+
+{ --- Gerer les evenements de l onglet "Team Explorer" --- }
+
+Procedure HandleTeamExplorerEvent(Var Exp: TSolutionExplorer; Ev: TEvent);
+Var
+ HitIdx: Integer;
+Begin
+ If TeamNewBranchFocused Then Begin
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #13 Then Begin
+    TeamCreateBranch(TeamNewBranchBuf);
+    TeamNewBranchBuf := '';
+    TeamNewBranchCPos := 0;
+    TeamNewBranchFocused := False;
+   End
+   Else If Ev.KeyChar = #27 Then
+    TeamNewBranchFocused := False
+   Else If Ev.KeyChar = #8 Then Begin
+    If TeamNewBranchCPos > 0 Then Begin
+     Delete(TeamNewBranchBuf, TeamNewBranchCPos, 1);
+     Dec(TeamNewBranchCPos);
+    End;
+   End
+   Else If (Ev.KeyChar >= #32) And (Ev.KeyChar <= #126) Then Begin
+    If Length(TeamNewBranchBuf) < 127 Then Begin
+     Insert(Ev.KeyChar, TeamNewBranchBuf, TeamNewBranchCPos + 1);
+     Inc(TeamNewBranchCPos);
+    End;
+   End;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+ End;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  HitIdx := TeamSubTabHitTest(Exp, Ev.MouseX, Ev.MouseY);
+  If HitIdx >= 0 Then Begin
+   TeamView := TTeamViewKind(HitIdx);
+   TeamSelectedIdx := -1;
+   TeamScrollTop := 0;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+  Case TeamView Of
+   TVIEW_BRANCHES: Begin
+    If TeamNewBranchBoxHitTest(Exp, Ev.MouseX, Ev.MouseY) Then Begin
+     TeamNewBranchFocused := True;
+     TeamNewBranchCPos := Length(TeamNewBranchBuf);
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+     Exit;
+    End Else
+     TeamNewBranchFocused := False;
+    If TeamCreateBtnHitTest(Exp, Ev.MouseX, Ev.MouseY) Then Begin
+     TeamCreateBranch(TeamNewBranchBuf);
+     TeamNewBranchBuf := '';
+     TeamNewBranchCPos := 0;
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+     Exit;
+    End;
+    HitIdx := TeamBranchRowHitTest(Exp, Ev.MouseY);
+    If HitIdx >= 0 Then Begin
+     TeamSelectedIdx := HitIdx;
+     If Not TeamBranches[HitIdx].Current Then
+      TeamCheckoutBranch(TeamBranches[HitIdx].Name);
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+     Exit;
+    End;
+   End;
+   TVIEW_SYNC: Begin
+    HitIdx := TeamSyncBtnHitTest(Exp, Ev.MouseX, Ev.MouseY);
+    If HitIdx >= 0 Then Begin
+     Case HitIdx Of
+      0: TeamDoFetch;
+      1: GitDoPush;
+      2: GitDoPull;
+     End;
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+     Exit;
+    End;
+   End;
+   TVIEW_HISTORY: Begin
+    HitIdx := TeamHistoryRowHitTest(Exp, Ev.MouseY);
+    If HitIdx >= 0 Then Begin
+     TeamSelectedIdx := HitIdx;
+     Exp.NeedRepaint := True;
+     DrawExplorer(Exp);
+     Exit;
+    End;
+   End;
+  End;
+ End
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Ev.KeyCode = 72 Then Begin { Fleche haut }
+   If TeamScrollTop > 0 Then Dec(TeamScrollTop);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End
+  Else If Ev.KeyCode = 80 Then Begin { Fleche bas }
+   Inc(TeamScrollTop);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End;
+ End;
+End;
+
+{ ============================================================
+  EXTENSION (2026-08-09) - ONGLET "PASCHAT"
+  ============================================================
+  Interface de clavardage (bulles utilisateur/agent) qui appelle
+  PASCHAT.exe comme un programme externe independant, exactement comme
+  les compilateurs et Git ailleurs dans cet IDE (Exec + fichiers
+  temporaires) - PAS de code partage, PAS d unite, PAS de duplication
+  du moteur PasChat dans ce fichier. PASCHAT.PAS expose pour cela deux
+  nouveaux parametres, /INFILE:<fichier> et /OUTFILE:<fichier> : la
+  question est ecrite dans le premier, PASCHAT.exe repond dans le
+  second puis se termine immediatement (voir RunBatchMode dans
+  PASCHAT.PAS). }
+
+{ --- Decouper un texte (avec eventuels retours a la ligne explicites    }
+{ #10, comme le code Pascal genere) pour qu il tienne dans MaxChars              }
+{ caracteres par ligne - coupe au dernier espace si possible, sinon             }
+{ coupure "dure" pour un mot plus long que MaxChars. --- }
+
+Procedure WrapText(Const S: AnsiString; MaxChars: Integer;
+ Var Lines: TWrapLines; Var LineCount: Integer);
+Var
+ I, LastSpace, RawCount, R: Integer;
+ RawLine: String;
+ AllRaw: Array[0..MAX_WRAP_LINES - 1] Of String[255];
+Begin
+ LineCount := 0;
+ If MaxChars < 4 Then MaxChars := 4;
+ RawCount := 0;
+ RawLine := '';
+ For I := 1 To Length(S) Do Begin
+  If S[I] = #10 Then Begin
+   If RawCount < MAX_WRAP_LINES Then Begin
+    AllRaw[RawCount] := RawLine;
+    Inc(RawCount);
+   End;
+   RawLine := '';
+  End Else If S[I] <> #13 Then Begin
+   If Length(RawLine) < 255 Then RawLine := RawLine + S[I];
+  End;
+ End;
+ If RawCount < MAX_WRAP_LINES Then Begin
+  AllRaw[RawCount] := RawLine;
+  Inc(RawCount);
+ End;
+ For R := 0 To RawCount - 1 Do Begin
+  RawLine := AllRaw[R];
+  If RawLine = '' Then Begin
+   If LineCount < MAX_WRAP_LINES Then Begin
+    Lines[LineCount] := '';
+    Inc(LineCount);
+   End;
+   Continue;
+  End;
+  While Length(RawLine) > MaxChars Do Begin
+   LastSpace := MaxChars;
+   While (LastSpace > 1) And (RawLine[LastSpace] <> ' ') Do Dec(LastSpace);
+   If LastSpace <= 1 Then LastSpace := MaxChars;
+   If LineCount < MAX_WRAP_LINES Then Begin
+    Lines[LineCount] := Copy(RawLine, 1, LastSpace);
+    Inc(LineCount);
+   End;
+   RawLine := Copy(RawLine, LastSpace + 1, Length(RawLine) - LastSpace);
+  End;
+  If LineCount < MAX_WRAP_LINES Then Begin
+   Lines[LineCount] := RawLine;
+   Inc(LineCount);
+  End;
+ End;
+End;
+
+{ --- Largeur d une bulle de conversation (jusqu a 75% du panneau). --- }
+
+Function ChatBubbleWidth(Var Exp: TSolutionExplorer): Integer;
+Begin
+ ChatBubbleWidth := (Exp.Width * 3) Div 4;
+End;
+
+{ --- Initialiser l onglet (message d accueil), une seule fois            }
+{ (paresseux, au premier affichage de l onglet) - ne lance PAS               }
+{ PASCHAT.exe (uniquement au premier envoi de message, voir                    }
+{ PasChatSendMessage). --- }
+
+Procedure PasChatEnsureInit;
+Begin
+ If ChatInitialized Then Exit;
+ ChatMsgCount := 0;
+ ChatMessages[ChatMsgCount].Sender := CHS_BOT;
+ ChatMessages[ChatMsgCount].Text := 'Bonjour! Je suis PasChat, votre ' +
+  'assistant Pascal. Posez-moi une question ou demandez-moi de ' +
+  'generer du code (ex. "Ecris-moi un programme bonjour en Pascal").';
+ Inc(ChatMsgCount);
+ ChatInputBuf := '';
+ ChatInputCPos := 0;
+ ChatScrollTop := 0;
+ ChatInitialized := True;
+End;
+
+{ --- Chemin de PASCHAT.exe : meme repertoire que DEVENV.exe (meme          }
+{ convention que RunTranspilerOnFile pour les transpilateurs PAS2XXX),         }
+{ sinon simple nom (recherche via PATH par le shell). --- }
+
+Function PasChatExePath: String;
+Var
+ P: String;
+Begin
+ P := ExtractFilePath(ParamStr(0)) + 'PASCHAT.exe';
+ If Not FileExists(P) Then
+  P := 'PASCHAT.exe';
+ PasChatExePath := P;
+End;
+
+{ --- Poser une question a PASCHAT.exe (processus externe independant)   }
+{ et renvoyer sa reponse - ecrit la question dans un fichier temporaire,     }
+{ lance "PASCHAT.exe /INFILE:... /OUTFILE:...", puis relit la reponse            }
+{ depuis le fichier de sortie. Memes fichiers temporaires que                       }
+{ RunCommandCaptureOutput (Exec + fichier), aucun code ni etat partage             }
+{ avec PASCHAT.exe. --- }
+
+Function PasChatAskExternal(Const Question: AnsiString): AnsiString;
+Const
+ PASCHAT_Q_FILE = '_paschat_q.tmp';
+ PASCHAT_A_FILE = '_paschat_a.tmp';
+Var
+ F: Text;
+ Line: String;
+ R: AnsiString;
+ Buf: TCmdOutputLines;
+ Cnt: Integer;
+Begin
+ {$I-}
+ Assign(F, PASCHAT_Q_FILE);
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  PasChatAskExternal := 'Erreur : impossible d ecrire la question ' +
+   'dans un fichier temporaire.';
+  Exit;
+ End;
+ WriteLn(F, Question);
+ Close(F);
+
+ RunCommandCaptureOutput('"' + PasChatExePath + '" /INFILE:' +
+  PASCHAT_Q_FILE + ' /OUTFILE:' + PASCHAT_A_FILE, Buf, Cnt);
+
+ R := '';
+ {$I-}
+ Assign(F, PASCHAT_A_FILE);
+ Reset(F);
+ {$I+}
+ If IOResult = 0 Then Begin
+  While Not Eof(F) Do Begin
+   ReadLn(F, Line);
+   If R <> '' Then R := R + #10;
+   R := R + Line;
+  End;
+  Close(F);
+ End Else
+  R := 'PasChat n a pas repondu (PASCHAT.exe introuvable, verifiez ' +
+   'qu il est bien a cote de DEVENV.exe).';
+
+ CleanupTempFile(PASCHAT_Q_FILE);
+ CleanupTempFile(PASCHAT_A_FILE);
+ PasChatAskExternal := R;
+End;
+
+{ --- Envoyer le contenu du champ de saisie et ajouter la reponse de     }
+{ PasChat comme nouvelle bulle. --- }
+
+Procedure PasChatSendMessage(Var Exp: TSolutionExplorer);
+Var
+ Response: AnsiString;
+ Question: AnsiString;
+Begin
+ If TrimStr(ChatInputBuf) = '' Then Exit;
+ Question := ChatInputBuf;
+ If ChatMsgCount < MAX_CHAT_MESSAGES Then Begin
+  ChatMessages[ChatMsgCount].Sender := CHS_USER;
+  ChatMessages[ChatMsgCount].Text := Question;
+  Inc(ChatMsgCount);
+ End;
+ ChatInputBuf := '';
+ ChatInputCPos := 0;
+ { BOGUE REEL (2026-08-09) : un appel direct a DrawExplorer ICI, suivi        }
+ { IMMEDIATEMENT par l appel bloquant a PASCHAT.exe (Exec) ci-dessous,           }
+ { provoquait un EStackOverflow des l envoi d une question - aucun               }
+ { autre appel Exec de cet IDE (compilateurs, Git) n est jamais precede           }
+ { d un dessin direct comme celui-ci. Retire : le rafraichissement de la           }
+ { bulle utilisateur attend desormais le retour de PasChatAskExternal,             }
+ { comme partout ailleurs (seul Exp.NeedRepaint est positionne ici, le            }
+ { dessin reel se fait normalement au retour de HandlePasChatEvent). }
+ Response := PasChatAskExternal(Question);
+ If (Response <> '') And (ChatMsgCount < MAX_CHAT_MESSAGES) Then Begin
+  ChatMessages[ChatMsgCount].Sender := CHS_BOT;
+  ChatMessages[ChatMsgCount].Text := Response;
+  Inc(ChatMsgCount);
+ End;
+ { Faire defiler vers le bas pour montrer la nouvelle reponse - une        }
+ { valeur volontairement excessive, DrawPasChatContent la ramene a la          }
+ { limite reelle au prochain dessin (meme principe que le clic sur la           }
+ { fleche bas de l explorateur). }
+ ChatScrollTop := 30000;
+ Exp.NeedRepaint := True;
+End;
+
+{ --- Dessiner le contenu de l onglet "PasChat" --- }
+
+Procedure DrawPasChatContent(Var Exp: TSolutionExplorer);
+Var
+ CTop, CBot, InputTop, MsgBot, Y, TotalH, I, J, BubW, BubX, LC: Integer;
+ Lines: TWrapLines;
+ BgColor, FgColor: Byte;
+ CurX: Integer;
+Begin
+ PasChatEnsureInit;
+ CTop := ExplorerTabContentTop(Exp);
+ CBot := ExplorerContentBottom(Exp);
+ InputTop := CBot - 24;
+ MsgBot := InputTop;
+ BubW := ChatBubbleWidth(Exp);
+ { Hauteur totale de la conversation (pour plafonner le defilement). }
+ TotalH := 4;
+ For I := 0 To ChatMsgCount - 1 Do Begin
+  WrapText(ChatMessages[I].Text, BubW Div 8, Lines, LC);
+  TotalH := TotalH + LC * 14 + 12;
+ End;
+ If ChatScrollTop > TotalH - (MsgBot - CTop) Then
+  ChatScrollTop := TotalH - (MsgBot - CTop);
+ If ChatScrollTop < 0 Then ChatScrollTop := 0;
+ SetFillStyle(SolidFill, CLR_EXPLORER_BG);
+ Bar(Exp.X, CTop, Exp.X + Exp.Width - 1, MsgBot - 1);
+ Y := CTop + 4 - ChatScrollTop;
+ For I := 0 To ChatMsgCount - 1 Do Begin
+  WrapText(ChatMessages[I].Text, BubW Div 8, Lines, LC);
+  If ChatMessages[I].Sender = CHS_USER Then Begin
+   BgColor := CLR_TITLEBAR_ACTIVE;
+   FgColor := CLR_EDITOR_BG;
+   BubX := Exp.X + Exp.Width - BubW - 6;
+  End Else Begin
+   BgColor := CLR_BTNFACE;
+   FgColor := CLR_WINDOWTEXT;
+   BubX := Exp.X + 6;
+  End;
+  If (Y + LC * 14 + 6 >= CTop) And (Y <= MsgBot) Then Begin
+   SetFillStyle(SolidFill, BgColor);
+   Bar(BubX, Y, BubX + BubW, Y + LC * 14 + 6);
+   SetColor(FgColor);
+   For J := 0 To LC - 1 Do
+    If (Y + 3 + J * 14 >= CTop - 14) And (Y + 3 + J * 14 <= MsgBot) Then
+     OutTextXY(BubX + 4, Y + 3 + J * 14, Lines[J]);
+  End;
+  Y := Y + LC * 14 + 12;
+ End;
+ { Zone de saisie }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(Exp.X, InputTop, Exp.X + Exp.Width - 1, CBot - 1);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(Exp.X + 2, InputTop + 2, Exp.X + Exp.Width - 3, InputTop + 20);
+ If ChatInputFocused Then SetColor(CLR_TITLEBAR_ACTIVE)
+ Else SetColor(CLR_BORDER);
+ Rectangle(Exp.X + 2, InputTop + 2, Exp.X + Exp.Width - 3, InputTop + 20);
+ If (ChatInputBuf = '') And (Not ChatInputFocused) Then Begin
+  SetColor(CLR_GRAYTEXT);
+  OutTextXY(Exp.X + 5, InputTop + 5, 'Posez une question...');
+ End Else Begin
+  SetColor(CLR_WINDOWTEXT);
+  OutTextXY(Exp.X + 5, InputTop + 5, ChatInputBuf);
+ End;
+ If ChatInputFocused And ExplorerSearchCursorVisible Then Begin
+  CurX := Exp.X + 5 + TextWidth(Copy(ChatInputBuf, 1, ChatInputCPos));
+  Line(CurX, InputTop + 4, CurX, InputTop + 18);
+ End;
+End;
+
+{ --- Zone de saisie : hit-test --- }
+
+Function ChatInputBoxHitTest(Var Exp: TSolutionExplorer;
+ MX, MY: Integer): Boolean;
+Var InputTop: Integer;
+Begin
+ InputTop := ExplorerContentBottom(Exp) - 24;
+ ChatInputBoxHitTest := (MX >= Exp.X + 2) And (MX <= Exp.X + Exp.Width - 3)
+  And (MY >= InputTop + 2) And (MY <= InputTop + 20);
+End;
+
+{ --- Gerer les evenements de l onglet "PasChat" --- }
+
+Procedure HandlePasChatEvent(Var Exp: TSolutionExplorer; Ev: TEvent);
+Begin
+ If ChatInputFocused Then Begin
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #13 Then { Entree : envoyer le message }
+    PasChatSendMessage(Exp)
+   Else If Ev.KeyChar = #27 Then { Escape : quitter le champ }
+    ChatInputFocused := False
+   Else If Ev.KeyChar = #8 Then Begin { Backspace }
+    If ChatInputCPos > 0 Then Begin
+     Delete(ChatInputBuf, ChatInputCPos, 1);
+     Dec(ChatInputCPos);
+    End;
+   End
+   Else If (Ev.KeyChar >= #32) And (Ev.KeyChar <= #126) Then Begin
+    If Length(ChatInputBuf) < 255 Then Begin
+     Insert(Ev.KeyChar, ChatInputBuf, ChatInputCPos + 1);
+     Inc(ChatInputCPos);
+    End;
+   End;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End;
+ End;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If ChatInputBoxHitTest(Exp, Ev.MouseX, Ev.MouseY) Then Begin
+   ChatInputFocused := True;
+   ChatInputCPos := Length(ChatInputBuf);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+   Exit;
+  End Else
+   ChatInputFocused := False;
+ End
+ Else If Ev.Kind = EV_KEY_DOWN Then Begin
+  If Ev.KeyCode = 72 Then Begin { Fleche haut }
+   If ChatScrollTop > 0 Then Dec(ChatScrollTop, 14);
+   If ChatScrollTop < 0 Then ChatScrollTop := 0;
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End
+  Else If Ev.KeyCode = 80 Then Begin { Fleche bas }
+   Inc(ChatScrollTop, 14);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End;
+ End;
 End;
 
 { --- Trouver le noeud sous la souris --- }
@@ -22882,7 +24522,7 @@ Begin
  { d outils ET le champ de recherche (voir ExplorerContentTop), pas          }
  { directement sous le titre. }
  If (MY < ExplorerContentTop(Exp)) Or
-    (MY >= Exp.Y + Exp.Height) Then Exit;
+    (MY >= ExplorerContentBottom(Exp)) Then Exit;
  DrawY := ExplorerContentTop(Exp) + 2;
  VisCount := 0;
  For I := 0 To Exp.NodeCount - 1 Do Begin
@@ -22891,7 +24531,7 @@ Begin
    Inc(VisCount);
    Continue;
   End;
-  If DrawY + EXPLORER_NODE_HEIGHT > Exp.Y + Exp.Height Then
+  If DrawY + EXPLORER_NODE_HEIGHT > ExplorerContentBottom(Exp) Then
    Break;
   If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
    ExplorerNodeHitTest := I;
@@ -23249,6 +24889,62 @@ Var
  MaxScroll: Integer;
  Now: LongInt;
 Begin
+ { EXTENSION (2026-08-08) : bande d onglets - toujours active, quel que    }
+ { soit l onglet courant. Verifiee EN PREMIER, avant tout le reste. }
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  HitIdx := ExplorerTabStripHitTest(Exp, Ev.MouseX, Ev.MouseY);
+  If HitIdx >= 0 Then Begin
+   If TExplorerTabKind(HitIdx) <> ActiveExplorerTab Then Begin
+    ActiveExplorerTab := TExplorerTabKind(HitIdx);
+    { Rafraichir automatiquement les donnees Git en changeant d onglet,   }
+    { comme le ferait Visual Studio en activant ses propres outils Git. }
+    If ActiveExplorerTab = ETAB_GITCHANGES Then GitRefreshStatus
+    Else If ActiveExplorerTab = ETAB_TEAMEXPLORER Then TeamExplorerRefresh
+    Else If ActiveExplorerTab = ETAB_PASCHAT Then PasChatEnsureInit;
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+   End;
+   Exit;
+  End;
+ End;
+ { EXTENSION (2026-08-08) : si un onglet AUTRE que "Explorateur de           }
+ { solutions" est actif, tout le code d origine ci-dessous (renommage,          }
+ { recherche live, arbre, mini barre d outils, barre de defilement) ne          }
+ { s applique PAS - il est entierement specifique a l arbre de solution.        }
+ { On delegue donc l evenement entier au gestionnaire propre de l onglet          }
+ { actif, SAUF le redimensionnement du splitter (Exp.Dragging) qui doit          }
+ { rester possible quel que soit l onglet affiche - reimplemente ici a           }
+ { l identique du bloc plus bas (voir sa note) pour ne RIEN modifier du            }
+ { code existant, deja verifie, de l onglet Explorateur. }
+ If ActiveExplorerTab <> ETAB_SOLUTION Then Begin
+  If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseX >= Exp.SplitterX) And
+     (Ev.MouseX < Exp.SplitterX + SPLITTER_WIDTH) Then Begin
+   Exp.Dragging := True;
+   Exit;
+  End;
+  If (Ev.Kind = EV_MOUSE_UP) And Exp.Dragging Then Begin
+   Exp.Dragging := False;
+   Exit;
+  End;
+  If (Ev.Kind = EV_MOUSE_MOVE) And Exp.Dragging Then Begin
+   If (Ev.MouseX >= GetScreenWidth - EXPLORER_MAX_WIDTH) And
+      (Ev.MouseX <= GetScreenWidth - EXPLORER_MIN_WIDTH) Then Begin
+    Exp.Width := GetScreenWidth - Ev.MouseX;
+    Exp.X := Ev.MouseX;
+    Exp.SplitterX := Exp.X - SPLITTER_WIDTH;
+    Exp.NeedRepaint := True;
+   End;
+   Exit;
+  End;
+  Case ActiveExplorerTab Of
+   ETAB_GITCHANGES:   HandleGitChangesEvent(Exp, Ev);
+   ETAB_TEAMEXPLORER: HandleTeamExplorerEvent(Exp, Ev);
+   ETAB_PASCHAT:      HandlePasChatEvent(Exp, Ev);
+  End;
+  Exit;
+ End;
+ { --- A partir d ici : code d origine, specifique a l onglet                }
+ { "Explorateur de solutions" - entierement inchange. --- }
  { Mode renommage : intercepter les evenements clavier }
  If Exp.Renaming Then Begin
   If Ev.Kind = EV_KEY_CHAR Then Begin
@@ -23424,17 +25120,17 @@ Begin
   If (Ev.MouseX >= Exp.X + Exp.Width - 14) And
      (Ev.MouseX < Exp.X + Exp.Width) And
      (Ev.MouseY >= ExplorerContentTop(Exp)) And
-     (Ev.MouseY < Exp.Y + Exp.Height) Then Begin
+     (Ev.MouseY < ExplorerContentBottom(Exp)) Then Begin
    MaxScroll := ExplorerVisibleRowCount(Exp);
    { Bouton haut. }
    If Ev.MouseY < ExplorerContentTop(Exp) + 14 Then
     Dec(Exp.ScrollTop)
    { Bouton bas. }
-   Else If Ev.MouseY >= Exp.Y + Exp.Height - 14 Then
+   Else If Ev.MouseY >= ExplorerContentBottom(Exp) - 14 Then
     Inc(Exp.ScrollTop)
    { Page haut/bas selon position dans le couloir. }
    Else If Ev.MouseY < ExplorerContentTop(Exp) + 14 +
-                       ((Exp.Y + Exp.Height - ExplorerContentTop(Exp) - 28)
+                       ((ExplorerContentBottom(Exp) - ExplorerContentTop(Exp) - 28)
                         Div 2) Then
     Dec(Exp.ScrollTop, MaxScroll)
    Else
@@ -54617,6 +56313,43 @@ Begin
  Erase(F);
  {$I+}
  If IOResult <> 0 Then ; { ignorer l erreur }
+End;
+
+{ EXTENSION (2026-08-08) : capturer TOUTE la sortie texte d une commande }
+{ externe (git status/branch/log/...) dans un tableau de lignes, plutot     }
+{ que directement dans un TOutputPanel comme ExecuteCompiler/                  }
+{ ReadOutputFile ci-dessus (destines a la sortie de compilation) - meme          }
+{ mecanisme exact (redirection shell vers un fichier temporaire, relu             }
+{ ligne par ligne), reutilise pour Git (onglets Modification Git/Team           }
+{ Explorer). --- }
+
+Function RunCommandCaptureOutput(Cmd: String;
+ Var Lines: TCmdOutputLines; Var LineCount: Integer): Integer;
+Var
+ FullCmd: String;
+ F: Text;
+ Ln: String;
+Begin
+ LineCount := 0;
+ FullCmd := Cmd + ' > ' + GIT_TEMP_OUTPUT + ' 2>&1';
+ {$IFDEF WINDOWS}
+ Exec(GetEnv('COMSPEC'), '/C ' + FullCmd);
+ {$ELSE}
+ Exec('/bin/sh', '-c ' + FullCmd);
+ {$ENDIF}
+ RunCommandCaptureOutput := DosExitCode;
+ {$I-}
+ Assign(F, GIT_TEMP_OUTPUT);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While (Not Eof(F)) And (LineCount < MAX_CMD_OUTPUT_LINES) Do Begin
+  ReadLn(F, Ln);
+  Lines[LineCount] := Ln;
+  Inc(LineCount);
+ End;
+ Close(F);
+ CleanupTempFile(GIT_TEMP_OUTPUT);
 End;
 
 { --- Compiler un seul fichier C# --- }

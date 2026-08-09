@@ -960,6 +960,15 @@ Type
     ShowHelp  : Boolean;
     LearnFileCount : Integer;
     LearnFileNames : Array[1..MAX_LEARN] of TString;
+    { EXTENSION (2026-08-09) : mode question/reponse non-interactif -    }
+    { /INFILE:<fichier> contient la question, /OUTFILE:<fichier> recoit     }
+    { la reponse, puis PASCHAT se termine immediatement (aucune bannniere,      }
+    { aucune boucle interactive) - permet a un autre programme (DEVENV.PAS,      }
+    { onglet PasChat) d appeler PASCHAT.exe comme un simple outil en ligne          }
+    { de commande, exactement comme les autres compilateurs externes. }
+    InFile    : TString;
+    OutFile   : TString;
+    BatchMode : Boolean;
   End;
 
   { TODO 02 - Fichiers d'apprentissage }
@@ -1733,6 +1742,9 @@ Begin
   Options.DebugMode := False;
   Options.ShowHelp := False;
   Options.LearnFileCount := 0;
+  Options.InFile := '';
+  Options.OutFile := '';
+  Options.BatchMode := False;
 End;
 
 Procedure ParseArgs;
@@ -1750,7 +1762,11 @@ Begin
       Options.Verbose := True
     Else If (Arg = '-d') or (Arg = '--debug') Then
       Options.DebugMode := True
-    Else If Arg[1] <> '-' Then Begin
+    Else If UpCaseStr(Copy(Arg, 1, 8)) = '/INFILE:' Then
+      Options.InFile := Copy(Arg, 9, Length(Arg) - 8)
+    Else If UpCaseStr(Copy(Arg, 1, 9)) = '/OUTFILE:' Then
+      Options.OutFile := Copy(Arg, 10, Length(Arg) - 9)
+    Else If (Arg[1] <> '-') And (Arg[1] <> '/') Then Begin
       { C'est un fichier d'apprentissage }
       If Options.LearnFileCount < MAX_LEARN Then Begin
         Inc(Options.LearnFileCount);
@@ -1761,6 +1777,7 @@ Begin
       WarnMsg('Option inconnue: ' + Arg);
     Inc(I);
   End;
+  Options.BatchMode := (Options.InFile <> '') And (Options.OutFile <> '');
 End;
 
 { --- TODO 01 : Fonctions d'initialisation et utilitaires --- }
@@ -10958,6 +10975,178 @@ Begin
 End;
 
 { ============================================================
+  EXTENSION (2026-08-09) - MODE QUESTION/REPONSE NON-INTERACTIF
+  ============================================================
+  Declenche par /INFILE:<fichier> et /OUTFILE:<fichier> (voir ParseArgs,
+  TOptions.BatchMode) - permet a un autre programme (DEVENV.PAS, onglet
+  PasChat) d'appeler PASCHAT.exe comme un simple outil externe (Exec +
+  fichiers), exactement comme les autres compilateurs de cet IDE, sans
+  jamais toucher la console ni entrer dans la boucle interactive
+  (MainLoop/ReadUserInput). }
+
+{ --- Lire la question (tout le contenu du fichier, lignes jointes par  }
+{ un espace) depuis Options.InFile. --- }
+
+Function ReadQuestionFromFile(Const FileName: String): AnsiString;
+Var
+  F: Text;
+  Line: String;
+  R: AnsiString;
+Begin
+  R := '';
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult = 0 Then Begin
+    While Not Eof(F) Do Begin
+      ReadLn(F, Line);
+      If R <> '' Then R := R + ' ';
+      R := R + Line;
+    End;
+    Close(F);
+  End;
+  ReadQuestionFromFile := Trim(R);
+End;
+
+{ --- Ecrire la reponse dans Options.OutFile (ecrase le fichier s'il      }
+{ existe deja). --- }
+
+Procedure WriteResponseToFile(Const FileName: String; Const Text: AnsiString);
+Var
+  F: Text;
+Begin
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  WriteLn(F, Text);
+  Close(F);
+End;
+
+{ --- Rediriger la sortie standard (Output) vers un fichier temporaire   }
+{ le temps d'appeler une procedure historiquement ecrite pour la               }
+{ console (WriteLn) - meme principe que RunCommandCaptureOutput dans          }
+{ DEVENV.PAS pour les commandes externes, mais ici en interne : Assign/         }
+{ Rewrite sur "Output" plutot qu'un Exec separe. --- }
+
+Const
+  BATCH_CAPTURE_FILE = '_paschat_batch.tmp';
+
+Procedure BatchCaptureBegin;
+Begin
+  Assign(Output, BATCH_CAPTURE_FILE);
+  {$I-} Rewrite(Output); {$I+}
+  If IOResult <> 0 Then ; { ignoree - BatchCaptureEnd le detectera }
+End;
+
+Function BatchCaptureEnd: AnsiString;
+Var
+  F: Text;
+  Line: String;
+  R: AnsiString;
+Begin
+  {$I-} Close(Output); {$I+}
+  If IOResult <> 0 Then ;
+  R := '';
+  Assign(F, BATCH_CAPTURE_FILE);
+  {$I-} Reset(F); {$I+}
+  If IOResult = 0 Then Begin
+    While Not Eof(F) Do Begin
+      ReadLn(F, Line);
+      If R <> '' Then R := R + #10;
+      R := R + Line;
+    End;
+    Close(F);
+    {$I-} Erase(F); {$I+}
+    If IOResult <> 0 Then ;
+  End;
+  BatchCaptureEnd := R;
+End;
+
+{ --- Repondre a UNE question lue dans Options.InFile, ecrire la          }
+{ reponse dans Options.OutFile, puis terminer immediatement - un              }
+{ sous-ensemble DELIBEREMENT restreint des intentions de ProcessCommand         }
+{ (TODO 04), limite a celles sans risque de blocage console (aucun               }
+{ ReadLn cache) : IK_SAVE (confirmation possible via ConfirmOverwrite)             }
+{ et IK_QUIT (n'a pas de sens hors session interactive) recoivent une              }
+{ reponse fixe plutot que d'executer le code original. --- }
+
+Procedure RunBatchMode;
+Var
+  Question, Response: AnsiString;
+  I: Integer;
+Begin
+  LoadAllLearnFiles;
+  IndexLearnContent;
+  InitChat;
+
+  Question := ReadQuestionFromFile(Options.InFile);
+  If Question = '' Then Begin
+    WriteResponseToFile(Options.OutFile, '');
+    Halt(EXIT_OK);
+  End;
+
+  ParseUserInput(Question);
+  Case CurrentIntent.Kind Of
+    IK_HELLO:
+      Response := GenerateTextResponse(IK_HELLO);
+    IK_PROGRAM: Begin
+      BatchCaptureBegin;
+      ProcessProgramRequest;
+      BatchCaptureEnd; { ignoree : on lit GeneratedCode directement }
+      If GeneratedCount > 0 Then Begin
+        Response := 'Voici le code Pascal genere :' + #10;
+        For I := 1 To GeneratedCount Do
+          Response := Response + GeneratedCode[I] + #10;
+      End Else
+        Response := 'Je n''ai pas pu generer de code pour cette demande.';
+    End;
+    IK_UNIT: Begin
+      BatchCaptureBegin;
+      ProcessUnitRequest;
+      BatchCaptureEnd;
+      If GeneratedCount > 0 Then Begin
+        Response := 'Voici l''unite Pascal generee :' + #10;
+        For I := 1 To GeneratedCount Do
+          Response := Response + GeneratedCode[I] + #10;
+      End Else
+        Response := 'Je n''ai pas pu generer d''unite pour cette demande.';
+    End;
+    IK_EXPLAIN: Begin
+      Response := FindInLearnFiles(Question);
+      If Response = '' Then
+        Response := 'Je n''ai pas trouve d''information sur ce sujet.';
+    End;
+    IK_HELP: Begin
+      BatchCaptureBegin;
+      ShowHelpCommand;
+      Response := BatchCaptureEnd;
+    End;
+    IK_LIST: Begin
+      BatchCaptureBegin;
+      ShowHistory;
+      Response := BatchCaptureEnd;
+    End;
+    IK_CLEAR: Begin
+      ClearHistory;
+      Response := 'Historique efface.';
+    End;
+    IK_SAVE:
+      Response := 'La sauvegarde de fichier n''est pas disponible en ' +
+        'mode question/reponse - utilisez PASCHAT en mode interactif.';
+    IK_QUIT:
+      Response := 'Posez une autre question quand vous voulez.';
+  Else
+    Response := GenerateTextResponse(IK_UNKNOWN);
+  End;
+  AddToHistory(Question, Response, GeneratedCount > 0);
+  WriteResponseToFile(Options.OutFile, Response);
+  Halt(EXIT_OK);
+End;
+
+{ ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
 BEGIN
@@ -10971,6 +11160,13 @@ BEGIN
   InitOptState;
 
   ParseArgs;
+
+  { EXTENSION (2026-08-09) : mode question/reponse non-interactif -        }
+  { court-circuite tout le reste (bannieres, mode debug, boucle              }
+  { interactive) des que /INFILE et /OUTFILE sont tous deux fournis.               }
+  { RunBatchMode se termine elle-meme (Halt). }
+  If Options.BatchMode Then
+    RunBatchMode;
 
   { Mettre a jour les compteurs d'options }
   If Options.Verbose Then Inc(OptVerboseCount);
