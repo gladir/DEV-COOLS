@@ -998,6 +998,7 @@ Type
     IK_FUNCTION,   { Demande de fonction }
     IK_EXPLAIN,    { Demande d'explication }
     IK_CAPITAL,    { Demande de capitale (pays/province) }
+    IK_MODIFY,     { Demande d'ajout dans un fichier existant }
     IK_HELP,       { Demande d'aide }
     IK_SAVE,       { Commande de sauvegarde }
     IK_LIST,       { Demande de liste }
@@ -1196,6 +1197,7 @@ Var
   IntFuncCount   : Integer;
   IntExplainCount: Integer;
   IntCapitalCount: Integer;
+  IntModifyCount : Integer;
   IntHelpCount   : Integer;
   IntQuitCount   : Integer;
   IntKeywordCount: Integer;
@@ -2537,6 +2539,10 @@ Begin
   { "quelle est..." tombe dans IK_UNKNOWN faute de mot-cle de programme. }
   Else If (Pos('CAPITALE', UI) > 0) Then
     DetectIntent := IK_CAPITAL
+  { Demande d'ajout dans un fichier existant - AVANT les demandes de     }
+  { programme, sinon "CREE"/"AFFICHE" absents ici tomberait dans IK_UNKNOWN. }
+  Else If (Pos('AJOUTE', UI) > 0) or (Pos('RAJOUTE', UI) > 0) Then
+    DetectIntent := IK_MODIFY
   { Demandes de programme - AVANT salutations pour eviter "programme bonjour" }
   Else If (Pos('PROGRAMME', UI) > 0) or (Pos('PROGRAM', UI) > 0) or
           (Pos('CODE', UI) > 0) or (Pos('ECRIS', UI) > 0) or
@@ -2585,6 +2591,7 @@ Begin
     IK_FUNCTION  : Inc(IntFuncCount);
     IK_EXPLAIN   : Inc(IntExplainCount);
     IK_CAPITAL   : Inc(IntCapitalCount);
+    IK_MODIFY    : Inc(IntModifyCount);
     IK_HELP      : Inc(IntHelpCount);
     IK_QUIT      : Inc(IntQuitCount);
   End;
@@ -2611,6 +2618,7 @@ Begin
   IntFuncCount   := 0;
   IntExplainCount := 0;
   IntCapitalCount := 0;
+  IntModifyCount := 0;
   IntHelpCount   := 0;
   IntQuitCount   := 0;
   IntKeywordCount := 0;
@@ -8626,6 +8634,175 @@ Begin
 End;
 
 { ============================================================
+  EXTENSION - Modification d'un fichier deja genere (ex: "Rajoute le
+  pays Afghanistan dans le fichier PAYS.PAS") - lit le fichier existant,
+  ajoute une entree dans son dernier tableau de chaines et reecrit le
+  fichier, plutot que de le regenerer entierement.
+  ============================================================ }
+
+{ Retire recursivement les mots de liaison francais en tete de S       }
+{ (LE/LA/LES/UN/UNE/DES/L'/PAYS/VILLE) jusqu'a ce qu'il n'en reste plus, }
+{ pour isoler le nom de l'element a partir de "le pays Afghanistan". }
+Function StripLeadingFillers(S: String): String;
+Const
+  NB_FILLERS = 8;
+  Fillers: Array[1..NB_FILLERS] of String[8] = (
+    'LES ', 'LE ', 'LA ', 'UNE ', 'UN ', 'DES ', 'PAYS ', 'VILLE '
+  );
+Var
+  Changed: Boolean;
+  I: Integer;
+  UP: String;
+Begin
+  S := Trim(S);
+  Repeat
+    Changed := False;
+    UP := UpCaseStr(S);
+    If Copy(UP, 1, 2) = 'L''' Then Begin
+      S := Trim(Copy(S, 3, Length(S) - 2));
+      Changed := True;
+    End Else Begin
+      I := 1;
+      While (I <= NB_FILLERS) And (Not Changed) Do Begin
+        If Copy(UP, 1, Length(Fillers[I])) = Fillers[I] Then Begin
+          S := Trim(Copy(S, Length(Fillers[I]) + 1, Length(S)));
+          Changed := True;
+        End;
+        Inc(I);
+      End;
+    End;
+  Until Not Changed;
+  StripLeadingFillers := S;
+End;
+
+{ Repond a "Rajoute le pays Afghanistan ..." -> extrait "Afghanistan" }
+{ (Question doit deja avoir passe par ExtractOutputFileName, pour que        }
+{ la clause "dans le fichier X" ne s y trouve plus). }
+Function ExtractAddedItem(Const Question: String): String;
+Var
+  UI, S: String;
+  P: Integer;
+Begin
+  UI := UpCaseStr(Question);
+  P := Pos('RAJOUTE', UI);
+  If P = 0 Then P := Pos('AJOUTE', UI);
+  If P = 0 Then Begin
+    ExtractAddedItem := '';
+    Exit;
+  End;
+  While (P <= Length(UI)) And (UI[P] <> ' ') Do Inc(P);
+  S := Trim(Copy(Question, P, Length(Question) - P + 1));
+  While (Length(S) > 0) And (S[Length(S)] in ['?', '.', '!']) Do
+    Delete(S, Length(S), 1);
+  ExtractAddedItem := Trim(StripLeadingFillers(S));
+End;
+
+{ Ajoute NewItem comme nouvelle entree dans le dernier tableau de        }
+{ chaines ('... of String = ( ... );') trouve dans FileName, incremente         }
+{ la constante utilisee comme borne (Array[1..NOM_CONST]) et reecrit le          }
+{ fichier. Retourne False si le fichier ou la forme attendue est                }
+{ introuvable. --- }
+Function ModifyFileAddItem(FileName, NewItem: String): Boolean;
+Var
+  F: Text;
+  Lines: Array[1..MAX_CODE_LINES] of AnsiString;
+  LineCount, I, StartIdx, EndIdx: Integer;
+  Indent, BoundName, LastLine, UpLine, NumStr: String;
+  P, Q, R: Integer;
+  N: LongInt;
+  Code: Integer;
+Begin
+  ModifyFileAddItem := False;
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  LineCount := 0;
+  While (Not Eof(F)) And (LineCount < MAX_CODE_LINES - 1) Do Begin
+    Inc(LineCount);
+    ReadLn(F, Lines[LineCount]);
+  End;
+  Close(F);
+
+  { 1) Reperer le dernier tableau de chaines du fichier. }
+  StartIdx := 0;
+  For I := 1 To LineCount Do
+    If Pos('OF STRING = (', UpCaseStr(Lines[I])) > 0 Then StartIdx := I;
+  If StartIdx = 0 Then Exit;
+
+  { 2) Reperer sa ligne de fermeture ");". }
+  EndIdx := 0;
+  For I := StartIdx + 1 To LineCount Do
+    If (EndIdx = 0) And (Trim(Lines[I]) = ');') Then EndIdx := I;
+  If (EndIdx = 0) Or (EndIdx <= StartIdx + 1) Then Exit;
+
+  { 3) Ajouter une virgule a l'ancienne derniere entree (elle n'en avait  }
+  { pas, etant la derniere de la liste), et en deduire l'indentation. }
+  LastLine := Lines[EndIdx - 1];
+  While (Length(LastLine) > 0) And (LastLine[Length(LastLine)] = ' ') Do
+    Delete(LastLine, Length(LastLine), 1);
+  If (Length(LastLine) > 0) And (LastLine[Length(LastLine)] <> ',') Then
+    LastLine := LastLine + ',';
+  Lines[EndIdx - 1] := LastLine;
+
+  Indent := '';
+  I := 1;
+  While (I <= Length(LastLine)) And (LastLine[I] = ' ') Do Begin
+    Indent := Indent + ' ';
+    Inc(I);
+  End;
+  If Indent = '' Then Indent := '    ';
+
+  { 4) Decaler les lignes suivantes d'un cran et inserer la nouvelle      }
+  { entree juste avant la ligne de fermeture. }
+  For I := LineCount + 1 DownTo EndIdx + 1 Do
+    Lines[I] := Lines[I - 1];
+  Lines[EndIdx] := Indent + '''' + NewItem + '''';
+  Inc(LineCount);
+
+  { 5) Incrementer la constante utilisee comme borne du tableau          }
+  { (Array[1..NOM_CONST]) - les generateurs de cet outil utilisent            }
+  { toujours une constante nommee (jamais un nombre litteral) ici. }
+  BoundName := '';
+  For I := StartIdx DownTo 1 Do
+    If (BoundName = '') And (Pos('ARRAY[1..', UpCaseStr(Lines[I])) > 0) Then Begin
+      P := Pos('ARRAY[1..', UpCaseStr(Lines[I])) + 9;
+      Q := P;
+      While (Q <= Length(Lines[I])) And (Lines[I][Q] <> ']') Do Inc(Q);
+      BoundName := Trim(Copy(Lines[I], P, Q - P));
+    End;
+
+  If BoundName <> '' Then
+    For I := 1 To LineCount Do Begin
+      UpLine := UpCaseStr(Lines[I]);
+      P := Pos(UpCaseStr(BoundName) + ' =', UpLine);
+      If P > 0 Then Begin
+        Q := Pos('=', Lines[I]) + 1;
+        R := Pos(';', Lines[I]);
+        If R > Q Then Begin
+          NumStr := Trim(Copy(Lines[I], Q, R - Q));
+          Val(NumStr, N, Code);
+          If Code = 0 Then
+            Lines[I] := Copy(Lines[I], 1, Q - 1) + ' ' + IntToStr(N + 1) +
+              Copy(Lines[I], R, Length(Lines[I]) - R + 1);
+        End;
+      End;
+    End;
+
+  { 6) Reecrire le fichier avec la nouvelle entree. }
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  For I := 1 To LineCount Do
+    WriteLn(F, Lines[I]);
+  Close(F);
+  ModifyFileAddItem := True;
+End;
+
+{ ============================================================
   EXTENSION - Generateurs supplementaires pour ProcessProgramRequest
   (boucles, tri, recherche, recursivite) et extraction de bornes
   numeriques depuis la question en langage naturel.
@@ -11533,7 +11710,7 @@ End;
 
 Procedure RunBatchMode;
 Var
-  Question, Response, OutputFileName: AnsiString;
+  Question, Response, OutputFileName, NewItemName: AnsiString;
   I: Integer;
 Begin
   LoadAllLearnFiles;
@@ -11596,6 +11773,22 @@ Begin
     End;
     IK_CAPITAL:
       Response := AnswerCapitalQuestion(Question);
+    IK_MODIFY: Begin
+      If OutputFileName = '' Then
+        Response := 'Precisez le fichier a modifier (ex: "... dans le ' +
+          'fichier PAYS.PAS").'
+      Else Begin
+        NewItemName := ExtractAddedItem(Question);
+        If NewItemName = '' Then
+          Response := 'Je n''ai pas compris quel element ajouter.'
+        Else If ModifyFileAddItem(OutputFileName, NewItemName) Then
+          Response := '@OPENFILE:' + OutputFileName + #10 + '"' +
+            NewItemName + '" a ete ajoute a "' + OutputFileName + '".'
+        Else
+          Response := 'Je n''ai pas pu modifier "' + OutputFileName +
+            '" (fichier introuvable ou format non reconnu).';
+      End;
+    End;
     IK_HELP: Begin
       BatchCaptureBegin;
       ShowHelpCommand;

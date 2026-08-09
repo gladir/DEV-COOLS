@@ -3750,6 +3750,11 @@ Var
  ChatInputFocused: Boolean;
  ChatScrollTop   : Integer;
  ChatInitialized : Boolean;
+ { EXTENSION (2026-08-09) : dernier fichier cree/modifie par PasChat -   }
+ { permet a l utilisateur de dire "le fichier que tu viens de modifier"          }
+ { sans le renommer, puisque PASCHAT.exe (invoque a chaque question dans          }
+ { un processus neuf, sans memoire) ne peut pas le savoir lui-meme. }
+ PasChatLastFile : String;
  { EXTENSION (2026-08-02) : largeur effective/maximale du panneau,           }
  { calculee au demarrage par UpdateExplorerWidthForScreen selon la              }
  { largeur d ecran (EXPLORER_WIDTH_DEFAULT/EXPLORER_MAX_WIDTH_DEFAULT           }
@@ -24265,6 +24270,7 @@ Begin
  ChatInputBuf := '';
  ChatInputCPos := 0;
  ChatScrollTop := 0;
+ PasChatLastFile := '';
  ChatInitialized := True;
 End;
 
@@ -24357,7 +24363,14 @@ Begin
  End;
  WIdx := FindEditorByFileName(FullPath);
  If WIdx >= 0 Then Begin
+  { Le fichier a pu etre modifie sur disque depuis (ex: "rajoute X dans   }
+  { le fichier ...") - ActivateWindow appelle SyncActiveWindowOut, qui           }
+  { ecrase Editors[WIdx]^ avec le contenu (encore ancien) d ActiveEditor;      }
+  { il faut donc activer D ABORD, puis recharger le fichier APRES, sinon           }
+  { ce recharger serait aussitot efface par cette synchronisation. }
   ActivateWindow(WIdx);
+  LoadFile(Editors[WIdx]^.Buffer, FullPath);
+  ActiveEditor := Editors[WIdx]^;
   FullRepaintNeeded := True;
   Exit;
  End;
@@ -24376,6 +24389,7 @@ Var
  Question: AnsiString;
  OpenFileName: String;
  NLPos: Integer;
+ UIQ: String;
 Begin
  If TrimStr(ChatInputBuf) = '' Then Exit;
  Question := ChatInputBuf;
@@ -24386,6 +24400,18 @@ Begin
  End;
  ChatInputBuf := '';
  ChatInputCPos := 0;
+ { PASCHAT.exe demarre un processus neuf a chaque question (aucune         }
+ { memoire entre les appels) : il ne peut donc pas savoir ce qu est "le          }
+ { fichier que tu viens de modifier". Quand la question y fait reference        }
+ { sans le nommer, on substitue ici son vrai nom (connu de DEVENV.PAS,           }
+ { qui lui persiste entre les questions) pour que PASCHAT.exe le retrouve            }
+ { via son analyse habituelle de "... dans le fichier X". }
+ If PasChatLastFile <> '' Then Begin
+  UIQ := UpCaseStr(Question);
+  If (Pos('QUE TU VIENS DE', UIQ) > 0) or (Pos('CE FICHIER', UIQ) > 0) or
+     (Pos('LE FICHIER PRECEDENT', UIQ) > 0) or (Pos('MEME FICHIER', UIQ) > 0) Then
+   Question := Question + ' dans le fichier ' + PasChatLastFile;
+ End;
  { BOGUE REEL (2026-08-09) : un appel direct a DrawExplorer ICI, suivi        }
  { IMMEDIATEMENT par l appel bloquant a PASCHAT.exe (Exec) ci-dessous,           }
  { provoquait un EStackOverflow des l envoi d une question - aucun               }
@@ -24404,8 +24430,10 @@ Begin
   If NLPos = 0 Then NLPos := Length(Response) + 1;
   OpenFileName := Copy(Response, 11, NLPos - 11);
   Response := Copy(Response, NLPos + 1, Length(Response) - NLPos);
-  If OpenFileName <> '' Then
+  If OpenFileName <> '' Then Begin
    PasChatOpenGeneratedFile(OpenFileName);
+   PasChatLastFile := OpenFileName;
+  End;
  End;
  If (Response <> '') And (ChatMsgCount < MAX_CHAT_MESSAGES) Then Begin
   ChatMessages[ChatMsgCount].Sender := CHS_BOT;
