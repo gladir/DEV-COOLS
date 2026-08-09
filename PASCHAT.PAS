@@ -8802,6 +8802,86 @@ Begin
   ModifyFileAddItem := True;
 End;
 
+{ Insere dans FileName, juste avant son "Begin" principal, la section     }
+{ declarative (Const/Type/Var, sans l'entete "Program ...;" ni le corps         }
+{ "Begin..End.") du code que ProcessProgramRequest vient de generer dans          }
+{ GeneratedCode - pour "Rajoute dans le fichier X un tableau/une            }
+{ constante/une liste de ..." (par opposition a l'ajout d'un seul               }
+{ element dans un tableau deja present, voir ModifyFileAddItem). --- }
+Function InsertGeneratedBlockIntoFile(FileName: String): Boolean;
+Var
+  F: Text;
+  OldLines: Array[1..MAX_CODE_LINES] of AnsiString;
+  NewLines: Array[1..MAX_CODE_LINES] of AnsiString;
+  OldCount, NewCount, I, InsertAt, GenStart, GenLast: Integer;
+Begin
+  InsertGeneratedBlockIntoFile := False;
+  {$I-}
+  Assign(F, FileName);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  OldCount := 0;
+  While (Not Eof(F)) And (OldCount < MAX_CODE_LINES Div 2) Do Begin
+    Inc(OldCount);
+    ReadLn(F, OldLines[OldCount]);
+  End;
+  Close(F);
+
+  { Trouver le "Begin" du programme principal existant. }
+  InsertAt := 0;
+  For I := 1 To OldCount Do
+    If (InsertAt = 0) And (Trim(OldLines[I]) = 'Begin') Then InsertAt := I;
+  If InsertAt = 0 Then Exit;
+
+  { Isoler, dans le code fraichement genere, tout ce qui se trouve entre  }
+  { son en-tete "Program ...;" et son propre "Begin". }
+  GenStart := 0;
+  GenLast := 0;
+  For I := 1 To GeneratedCount Do Begin
+    If (GenStart = 0) And (Pos('PROGRAM ', UpCaseStr(GeneratedCode[I])) = 1) Then
+      GenStart := I + 1;
+    If (GenLast = 0) And (GenStart > 0) And (Trim(GeneratedCode[I]) = 'Begin') Then
+      GenLast := I - 1;
+  End;
+  If (GenStart = 0) Or (GenLast < GenStart) Then Exit;
+  While (GenStart <= GenLast) And (Trim(GeneratedCode[GenStart]) = '') Do Inc(GenStart);
+  While (GenLast >= GenStart) And (Trim(GeneratedCode[GenLast]) = '') Do Dec(GenLast);
+  If GenLast < GenStart Then Exit;
+
+  { Reconstruire le fichier : lignes existantes avant "Begin", puis le    }
+  { bloc genere, puis le reste du fichier existant tel quel. }
+  NewCount := 0;
+  For I := 1 To InsertAt - 1 Do Begin
+    Inc(NewCount);
+    If NewCount > MAX_CODE_LINES Then Exit;
+    NewLines[NewCount] := OldLines[I];
+  End;
+  For I := GenStart To GenLast Do Begin
+    Inc(NewCount);
+    If NewCount > MAX_CODE_LINES Then Exit;
+    NewLines[NewCount] := GeneratedCode[I];
+  End;
+  Inc(NewCount);
+  If NewCount > MAX_CODE_LINES Then Exit;
+  NewLines[NewCount] := '';
+  For I := InsertAt To OldCount Do Begin
+    Inc(NewCount);
+    If NewCount > MAX_CODE_LINES Then Exit;
+    NewLines[NewCount] := OldLines[I];
+  End;
+
+  {$I-}
+  Assign(F, FileName);
+  Rewrite(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  For I := 1 To NewCount Do
+    WriteLn(F, NewLines[I]);
+  Close(F);
+  InsertGeneratedBlockIntoFile := True;
+End;
+
 { ============================================================
   EXTENSION - Generateurs supplementaires pour ProcessProgramRequest
   (boucles, tri, recherche, recursivite) et extraction de bornes
@@ -11671,7 +11751,13 @@ Begin
       While (Length(FileTok) > 0) And
             (FileTok[Length(FileTok)] in ['?', ',', '!']) Do
         Delete(FileTok, Length(FileTok), 1);
-      Question := Trim(Copy(Question, 1, P - 1));
+      { Ne retirer QUE la clause "... dans le fichier X" elle-meme - le    }
+      { reste de la question peut contenir la vraie demande APRES cette          }
+      { clause (ex: "Rajoute dans le fichier X, un tableau ..."), qui ne          }
+      { doit surtout pas etre perdu (BOGUE corrige le 2026-08-09 : un              }
+      { Copy(Question, 1, P - 1) seul l'ecrasait completement). }
+      Question := Trim(Copy(Question, 1, P - 1) + ' ' +
+        Copy(Question, I, Length(Question) - I + 1));
       ExtractOutputFileName := FileTok;
       Exit;
     End;
@@ -11712,6 +11798,7 @@ Procedure RunBatchMode;
 Var
   Question, Response, OutputFileName, NewItemName: AnsiString;
   I: Integer;
+  UI: String;
 Begin
   LoadAllLearnFiles;
   IndexLearnContent;
@@ -11778,15 +11865,34 @@ Begin
         Response := 'Precisez le fichier a modifier (ex: "... dans le ' +
           'fichier PAYS.PAS").'
       Else Begin
-        NewItemName := ExtractAddedItem(Question);
-        If NewItemName = '' Then
-          Response := 'Je n''ai pas compris quel element ajouter.'
-        Else If ModifyFileAddItem(OutputFileName, NewItemName) Then
-          Response := '@OPENFILE:' + OutputFileName + #10 + '"' +
-            NewItemName + '" a ete ajoute a "' + OutputFileName + '".'
-        Else
-          Response := 'Je n''ai pas pu modifier "' + OutputFileName +
-            '" (fichier introuvable ou format non reconnu).';
+        UI := UpCaseStr(Question);
+        If (Pos('TABLEAU', UI) > 0) or (Pos('LISTE', UI) > 0) or
+           (Pos('CONSTANTE', UI) > 0) or (Pos('ARRAY', UI) > 0) Then Begin
+          { "Rajoute dans le fichier X un tableau/une liste/une            }
+          { constante de ..." - generer le bloc demande (memes            }
+          { generateurs que pour IK_PROGRAM) et l'inserer dans le            }
+          { fichier existant, plutot que d'y ajouter un seul element. }
+          BatchCaptureBegin;
+          ProcessProgramRequest;
+          BatchCaptureEnd;
+          If (GeneratedCount > 0) and
+             InsertGeneratedBlockIntoFile(OutputFileName) Then
+            Response := '@OPENFILE:' + OutputFileName + #10 +
+              'Le code a ete ajoute dans "' + OutputFileName + '".'
+          Else
+            Response := 'Je n''ai pas pu ajouter ce code dans "' +
+              OutputFileName + '".';
+        End Else Begin
+          NewItemName := ExtractAddedItem(Question);
+          If NewItemName = '' Then
+            Response := 'Je n''ai pas compris quel element ajouter.'
+          Else If ModifyFileAddItem(OutputFileName, NewItemName) Then
+            Response := '@OPENFILE:' + OutputFileName + #10 + '"' +
+              NewItemName + '" a ete ajoute a "' + OutputFileName + '".'
+          Else
+            Response := 'Je n''ai pas pu modifier "' + OutputFileName +
+              '" (fichier introuvable ou format non reconnu).';
+        End;
       End;
     End;
     IK_HELP: Begin
