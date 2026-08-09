@@ -1521,6 +1521,13 @@ Const
  TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
 
+ { Norton Commander (5e shell du panneau Terminal) }
+ MAX_NC_ENTRIES        = 512;     { entrees max par panneau (repertoire) }
+ NC_DEFAULT_IMAGE      = '_NC_A.IMG';  { image disquette virtuelle par defaut }
+ NC_FLOPPY_SECTORS     = 2880;    { 1.44 Mo = 2880 secteurs de 512 octets }
+ MAX_NC_TREE_NODES     = 400;     { noeuds max pour l arbre NCD (Commandes) }
+ NC_TREE_MAX_DEPTH     = 6;       { profondeur max de l arbre NCD  }
+
  { Codes de retour }
  EXIT_OK               = 0;
  EXIT_ERROR            = 1;
@@ -2508,7 +2515,7 @@ Type
  End;
 
  { Type de shell du terminal }
- TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS);
+ TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS, SK_NCOMMANDER);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -2573,6 +2580,81 @@ Type
   VolLabel       : String[11];
   CachedFatLBA   : LongInt;
   CachedFatBuf   : Array[0..511] Of Byte;
+ End;
+
+ { Norton Commander (5e shell du panneau Terminal, DEVENV.PAS) - navigation
+   double-panneau sur la disquette virtuelle FAT deja utilisee par les 4
+   autres shells (jamais le systeme de fichiers reel de la machine). }
+ TNCEntry = Record
+  Name    : String[80];            { nom (8.3 sur disque virtuel, long }
+                                    { possible sur le systeme hote)  }
+  Size    : LongInt;                { taille en octets (0 si repert.)}
+  IsDir   : Boolean;                { True = sous-repertoire         }
+  FTime   : Word;                   { heure DOS empaquetee (FAT)     }
+  FDate   : Word;                   { date DOS empaquetee (FAT)      }
+  PackedDT: LongInt;                { date/heure empaquetee (hote,   }
+                                    { format SearchRec.Time/UnpackTime) }
+  Cluster : LongInt;                { 1er cluster (disque virtuel)   }
+ End;
+
+ TNCPane = Record
+  Path      : String;              { chemin courant (chemin hote absolu }
+                                    { avec lettre de lecteur, ou '\..'       }
+                                    { sur disque virtuel)            }
+  Entries   : Array[0..MAX_NC_ENTRIES - 1] Of TNCEntry;
+  Count     : Integer;
+  Cursor    : Integer;             { entree selectionnee (0-based)  }
+  ScrollTop : Integer;             { 1ere entree visible             }
+  Marked    : Array[0..MAX_NC_ENTRIES - 1] Of Boolean; { selection multiple }
+  MarkCount : Integer;
+  SortMode  : Integer;             { 0=Nom 1=Extension 2=Heure(date) }
+                                    { 3=Taille 4=Desordre (menu Gauche/Droite) }
+ End;
+
+ { TODO NC 2/3 : navigation, dialogues modaux pour les operations sur    }
+ { fichiers (F5 Copier, F6 RenDep, F7 CreRep, F8 Supprimer), apercu             }
+ { (F3) et menu deroulant complet (F9). }
+ TNCMode = (
+  ncBrowse,          { navigation normale                            }
+  ncPromptMkDir,     { F7 : saisie du nom du nouveau repertoire       }
+  ncPromptCopy,      { F5 : saisie du chemin destination              }
+  ncPromptRenMov,    { F6 : saisie du nouveau nom/chemin              }
+  ncConfirmDelete,   { F8 : confirmation Oui/Non                      }
+  ncViewFile,        { F3 : apercu texte en lecture seule             }
+  ncMenuBar,         { F9 : menu deroulant Gauche/Fichiers/Disque/    }
+                     { Commandes/Droite                               }
+  ncMessage,         { message simple (ex: "non implemente"), toute   }
+                     { touche le ferme                                }
+  ncHistory,         { Commandes/Historique : liste des commandes           }
+                     { tapees dans ce panneau (NC.PAS: DialogHistory)  }
+  ncTree             { Commandes/Arbre NCD : arborescence des                 }
+                     { sous-repertoires du lecteur du panneau actif    }
+ );
+
+ TNCTreeNode = Record
+  Path  : String;                  { chemin absolu complet          }
+  Depth : Integer;                 { niveau d indentation (0=racine) }
+ End;
+
+ TNCState = Record
+  Panes       : Array[0..1] Of TNCPane;
+  Active      : Integer;           { 0 = gauche, 1 = droite          }
+  Slot        : ShortInt;          { -1 = systeme hote, >=0 = FatVol }
+  Mode        : TNCMode;
+  Initialized : Boolean;
+  CharW       : Integer;           { largeur de caractere mesuree    }
+  CharH       : Integer;           { hauteur de ligne mesuree        }
+  PromptBuf   : String;            { texte saisi dans le dialogue actif }
+  ViewLines   : Array[0..199] Of String; { lignes affichees par F3    }
+  ViewCount   : Integer;
+  ViewTop     : Integer;           { defilement de l apercu         }
+  MenuTop     : Integer;           { 0..4 : menu superieur selectionne }
+  MenuItem    : Integer;           { item selectionne dans le menu deroulant }
+  HistCursor  : Integer;           { index (1-based) dans TP.TermHistory }
+  TreeNodes   : Array[0..MAX_NC_TREE_NODES - 1] Of TNCTreeNode;
+  TreeCount   : Integer;
+  TreeCursor  : Integer;           { 0-based }
+  TreeTop     : Integer;           { defilement de l arbre          }
  End;
 
  { Severite d une erreur }
@@ -3782,6 +3864,7 @@ Var
  { Terminal integre : deux instances independantes (PS et CMD) }
  TermPanels   : Array[TShellKind] Of TTerminalPanel;
  ActiveShell  : TShellKind;        { shell actuellement affiche      }
+ NCState      : TNCState;          { etat de Norton Commander (SK_NCOMMANDER) }
  TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
  ExplorerHasFocus : Boolean;       { l'explorateur a le focus clavier}
  TermVisible  : Boolean;           { le panneau terminal est visible }
@@ -30472,6 +30555,7 @@ End;
 Procedure InitTerminals;
 Var
  ScrW, ScrH, BottomY: Integer;
+ NCCwd: String;
 Begin
  ScrW := GetScreenWidth;
  ScrH := GetScreenHeight;
@@ -30492,6 +30576,1484 @@ Begin
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
  InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
  InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
+ InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
+ { Comme l original sur DOS reel (et comme les 4 autres shells de ce      }
+ { panneau) : demarrer sur le repertoire courant de la machine hote,           }
+ { lettre de lecteur incluse (ex: C:\SOURCE\GITHUB\DEV-COOLS), pas sur           }
+ { une disquette virtuelle isolee - bien plus utile au quotidien. }
+ GetDir(0, NCCwd);
+ NCState.Active := 0;
+ NCState.Slot := -1;
+ NCState.Mode := ncBrowse;
+ NCState.Initialized := False;
+ NCState.PromptBuf := '';
+ NCState.Panes[0].Path := NCCwd;
+ NCState.Panes[0].Count := 0;
+ NCState.Panes[0].Cursor := 0;
+ NCState.Panes[0].ScrollTop := 0;
+ NCState.Panes[0].MarkCount := 0;
+ NCState.Panes[1].Path := NCCwd;
+ NCState.Panes[1].Count := 0;
+ NCState.Panes[1].Cursor := 0;
+ NCState.Panes[1].ScrollTop := 0;
+ NCState.Panes[1].MarkCount := 0;
+End;
+
+{ ============================================================
+  NORTON COMMANDER (5e shell du panneau Terminal) - TODO NC 1 :
+  squelette, disquette virtuelle par defaut, listage structure,
+  navigation double-panneau (pas encore de touches de fonction).
+  ============================================================ }
+
+{ Creer une image de disquette virtuelle 1.44 Mo vierge, formatee
+  FAT12 (secteur de demarrage + BPB minimal + FAT/racine vides), pour
+  que Norton Commander ait toujours un support a parcourir des le
+  premier lancement, sans obliger l utilisateur a monter une image
+  existante au prealable (menu "Disque virtuel"). --- }
+Function NCCreateBlankFloppyImage(FileName: String): Boolean;
+Var
+ F: File;
+ Boot: Array[0..511] Of Byte;
+ Fat: Array[0..511] Of Byte;
+ Root: Array[0..511] Of Byte;
+ I: Integer;
+ Zero: Byte;
+Begin
+ NCCreateBlankFloppyImage := False;
+ FillChar(Boot, SizeOf(Boot), 0);
+ { Instruction de saut + nom OEM }
+ Boot[0] := $EB; Boot[1] := $3C; Boot[2] := $90;
+ Boot[3] := Ord('N'); Boot[4] := Ord('C'); Boot[5] := Ord('D');
+ Boot[6] := Ord('E'); Boot[7] := Ord('V'); Boot[8] := Ord('E');
+ Boot[9] := Ord('N'); Boot[10] := Ord('V');
+ { BPB : 512 octets/secteur, 1 secteur/cluster, 1 secteur reserve,
+   2 FAT, 224 entrees racine, 2880 secteurs totaux, 9 secteurs/FAT,
+   18 secteurs/piste, 2 tetes. }
+ Boot[11] := 0; Boot[12] := 2;               { BytesPerSector = 512  }
+ Boot[13] := 1;                              { SectorsPerCluster     }
+ Boot[14] := 1; Boot[15] := 0;               { ReservedSectors = 1   }
+ Boot[16] := 2;                              { NumFATs = 2           }
+ Boot[17] := 224; Boot[18] := 0;             { RootEntries = 224     }
+ Boot[19] := Lo(NC_FLOPPY_SECTORS);
+ Boot[20] := Hi(NC_FLOPPY_SECTORS);          { TotalSectors16 = 2880 }
+ Boot[21] := $F0;                            { MediaDescriptor       }
+ Boot[22] := 9; Boot[23] := 0;               { SectorsPerFAT = 9     }
+ Boot[24] := 18; Boot[25] := 0;              { SectorsPerTrack       }
+ Boot[26] := 2; Boot[27] := 0;               { NumHeads              }
+ { Etiquette de volume (offset 43, 11 caracteres) }
+ Boot[38] := $29;                            { signature EBPB        }
+ For I := 0 To 10 Do Boot[43 + I] := Ord(' ');
+ Boot[43] := Ord('N'); Boot[44] := Ord('C'); Boot[45] := Ord('_');
+ Boot[46] := Ord('A');
+ Boot[510] := $55; Boot[511] := $AA;
+
+ FillChar(Fat, SizeOf(Fat), 0);
+ Fat[0] := $F0; Fat[1] := $FF; Fat[2] := $FF;  { entrees reservees 0/1 }
+ FillChar(Root, SizeOf(Root), 0);              { racine vide (0 = fin) }
+
+ {$I-}
+ Assign(F, FileName);
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockWrite(F, Boot, 512);
+ For I := 1 To 9 Do BlockWrite(F, Fat, 512);   { FAT #1 }
+ For I := 1 To 9 Do BlockWrite(F, Fat, 512);   { FAT #2 }
+ For I := 1 To 14 Do BlockWrite(F, Root, 512); { zone racine (224 * 32) }
+ { Etendre le fichier a sa taille finale (1.44 Mo) sans ecrire tous les
+   secteurs de donnees un par un - le dernier octet suffit. }
+ Zero := 0;
+ Seek(F, LongInt(NC_FLOPPY_SECTORS) * 512 - 1);
+ BlockWrite(F, Zero, 1);
+ Close(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ NCCreateBlankFloppyImage := True;
+End;
+
+{ S assurer qu un support est monte pour Norton Commander : reutilise
+  un lecteur virtuel deja monte (A: ou B:) s il y en a un, sinon cree
+  et monte l image par defaut. Renvoie l index FatVol (0 ou 1), ou -1
+  en cas d echec. --- }
+Function NCEnsureMounted: ShortInt;
+Begin
+ If EmuFloppyOpen[0] And FatVol[0].Mounted Then Begin
+  NCEnsureMounted := 0;
+  Exit;
+ End;
+ If EmuFloppyOpen[1] And FatVol[1].Mounted Then Begin
+  NCEnsureMounted := 1;
+  Exit;
+ End;
+ NCEnsureMounted := -1;
+ If Not FileExists(NC_DEFAULT_IMAGE) Then
+  If Not NCCreateBlankFloppyImage(NC_DEFAULT_IMAGE) Then Exit;
+ If Emu_MountDiskSlot(0, NC_DEFAULT_IMAGE) Then
+  NCEnsureMounted := 0;
+End;
+
+{ Comparer deux entrees pour le tri Norton Commander habituel :
+  repertoires d abord, puis ordre alphabetique du nom. --- }
+{ Extension d un nom de fichier (partie apres le dernier '.'), ou chaine  }
+{ vide s il n y en a pas - utilise par le tri "Extension" du menu           }
+{ Gauche/Droite (NC.PAS: TypeTri). --- }
+Function NCExtractExt(Const Name: String): String;
+Var
+ P: Integer;
+Begin
+ P := Length(Name);
+ While (P > 0) And (Name[P] <> '.') Do Dec(P);
+ If P > 0 Then NCExtractExt := Copy(Name, P + 1, Length(Name) - P)
+ Else NCExtractExt := '';
+End;
+
+{ Comparateur de tri generalise pour le menu Gauche/Droite (NC.PAS:           }
+{ TypeTri) : 0=Nom 1=Extension 2=Heure(date) 3=Taille 4=Desordre (ordre     }
+{ naturel du disque, aucun tri). Les repertoires restent groupes en tete       }
+{ dans tous les modes sauf Desordre. --- }
+Function NCEntryBefore(Const A, B: TNCEntry; SortMode: Integer; IsHost: Boolean): Boolean;
+Var
+ KeyA, KeyB: LongInt;
+Begin
+ NCEntryBefore := False;
+ If SortMode = 4 Then Exit; { Desordre : conserver l ordre naturel du disque }
+ If A.IsDir <> B.IsDir Then Begin
+  NCEntryBefore := A.IsDir;
+  Exit;
+ End;
+ Case SortMode Of
+  1: { Extension }
+   If UpCaseStr(NCExtractExt(A.Name)) <> UpCaseStr(NCExtractExt(B.Name)) Then
+    NCEntryBefore := UpCaseStr(NCExtractExt(A.Name)) < UpCaseStr(NCExtractExt(B.Name))
+   Else
+    NCEntryBefore := UpCaseStr(A.Name) < UpCaseStr(B.Name);
+  2: Begin { Heure/Date }
+   If IsHost Then Begin
+    KeyA := A.PackedDT; KeyB := B.PackedDT;
+   End Else Begin
+    KeyA := (LongInt(A.FDate) Shl 16) Or A.FTime;
+    KeyB := (LongInt(B.FDate) Shl 16) Or B.FTime;
+   End;
+   NCEntryBefore := KeyA < KeyB;
+  End;
+  3: NCEntryBefore := A.Size < B.Size; { Taille }
+ Else
+  NCEntryBefore := UpCaseStr(A.Name) < UpCaseStr(B.Name); { Nom (0) par defaut }
+ End;
+End;
+
+{ Lister le repertoire Pane.Path dans Pane.Entries/Count (donnees          }
+{ structurees). Slot < 0 : systeme de fichiers HOTE reel (FindFirst/           }
+{ FindNext, mode par defaut) - Slot >= 0 : disquette virtuelle FAT             }
+{ montee (reutilise les memes primitives bas niveau que Fat_ListDir). --- }
+Procedure NCListDir(Slot: ShortInt; Var Pane: TNCPane);
+Var
+ Buf: Array[0..511] Of Byte;
+ IsRoot: Boolean;
+ StartCl, Cur: LongInt;
+ SecInClu, I, EntOff: Integer;
+ RootCnt, S2: Integer;
+ LBA: LongInt;
+ EntName: String;
+ Attr: Byte;
+ Sz: LongInt;
+ Done, Swapped: Boolean;
+ J: Integer;
+ Tmp: TNCEntry;
+ SR: SearchRec;
+ SearchPath: String;
+Begin
+ Pane.Count := 0;
+ Pane.Cursor := 0;
+ Pane.ScrollTop := 0;
+ Pane.MarkCount := 0;
+ FillChar(Pane.Marked, SizeOf(Pane.Marked), False);
+
+ If Slot < 0 Then Begin
+  { Systeme hote reel. }
+  SearchPath := Pane.Path;
+  If (Length(SearchPath) = 0) Or
+     (SearchPath[Length(SearchPath)] <> '\') Then
+   SearchPath := SearchPath + '\';
+  SearchPath := SearchPath + '*.*';
+  { FindFirst/FindNext ne passent PAS par le protocole IOResult standard -  }
+  { l etat de reussite est dans DosError, pas dans IOResult (qui pourrait      }
+  { encore contenir une valeur perimee d une AUTRE operation anterieure          }
+  { et faire sortir la fonction immediatement a tort). }
+  FindFirst(SearchPath, AnyFile, SR);
+  While (DosError = 0) And (Pane.Count < MAX_NC_ENTRIES) Do Begin
+   If (SR.Name <> '.') And (SR.Name <> '..') Then Begin
+    Pane.Entries[Pane.Count].Name := SR.Name;
+    Pane.Entries[Pane.Count].IsDir := (SR.Attr And Directory) <> 0;
+    If Pane.Entries[Pane.Count].IsDir Then Pane.Entries[Pane.Count].Size := 0
+    Else Pane.Entries[Pane.Count].Size := SR.Size;
+    Pane.Entries[Pane.Count].PackedDT := SR.Time;
+    Inc(Pane.Count);
+   End;
+   FindNext(SR);
+  End;
+  {$IFDEF FPC} FindClose(SR); {$ENDIF}
+ End Else Begin
+  { Disquette virtuelle FAT montee. }
+  If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
+  Done := False;
+  If IsRoot Then Begin
+   RootCnt := 0;
+   For S2 := 0 To FatVol[Slot].RootDirSectors - 1 Do Begin
+    If Done Then Break;
+    LBA := FatVol[Slot].RootStart + S2;
+    If Not Fat_ReadSector(Byte(Slot), LBA, Buf) Then Break;
+    For I := 0 To 15 Do Begin
+     If RootCnt >= FatVol[Slot].RootEntries Then Begin Done := True; Break; End;
+     Inc(RootCnt);
+     EntOff := I * 32;
+     If Buf[EntOff] = 0 Then Begin Done := True; Break; End;
+     EntName := Fat_EntryName(Buf, EntOff);
+     If EntName = '' Then Continue;
+     Attr := Fat_EntryAttr(Buf, EntOff);
+     If (Attr And $08) <> 0 Then Continue; { etiquette de volume }
+     If Pane.Count >= MAX_NC_ENTRIES Then Begin Done := True; Break; End;
+     Sz := Fat_EntrySize(Buf, EntOff);
+     Pane.Entries[Pane.Count].Name := EntName;
+     Pane.Entries[Pane.Count].Size := Sz;
+     Pane.Entries[Pane.Count].IsDir := (Attr And $10) <> 0;
+     Pane.Entries[Pane.Count].FTime := Fat_LE16(Buf, EntOff + 22);
+     Pane.Entries[Pane.Count].FDate := Fat_LE16(Buf, EntOff + 24);
+     Pane.Entries[Pane.Count].Cluster := Fat_LE16(Buf, EntOff + 26);
+     Inc(Pane.Count);
+    End;
+   End;
+  End Else Begin
+   Cur := StartCl;
+   While (Cur >= 2) And (Not Fat_IsEOC(Byte(Slot), Cur)) And (Not Done) Do Begin
+    For SecInClu := 0 To FatVol[Slot].SectorsPerCluster - 1 Do Begin
+     If Done Then Break;
+     LBA := Fat_ClusterToLBA(Byte(Slot), Cur) + SecInClu;
+     If Not Fat_ReadSector(Byte(Slot), LBA, Buf) Then Begin Done := True; Break; End;
+     For I := 0 To 15 Do Begin
+      EntOff := I * 32;
+      If Buf[EntOff] = 0 Then Begin Done := True; Break; End;
+      EntName := Fat_EntryName(Buf, EntOff);
+      If EntName = '' Then Continue;
+      Attr := Fat_EntryAttr(Buf, EntOff);
+      If (Attr And $08) <> 0 Then Continue;
+      If (EntName = '.') Or (EntName = '..') Then Continue;
+      If Pane.Count >= MAX_NC_ENTRIES Then Begin Done := True; Break; End;
+      Sz := Fat_EntrySize(Buf, EntOff);
+      Pane.Entries[Pane.Count].Name := EntName;
+      Pane.Entries[Pane.Count].Size := Sz;
+      Pane.Entries[Pane.Count].IsDir := (Attr And $10) <> 0;
+      Pane.Entries[Pane.Count].FTime := Fat_LE16(Buf, EntOff + 22);
+      Pane.Entries[Pane.Count].FDate := Fat_LE16(Buf, EntOff + 24);
+      Pane.Entries[Pane.Count].Cluster := Fat_LE16(Buf, EntOff + 26);
+      Inc(Pane.Count);
+     End;
+    End;
+    If Done Then Break;
+    Cur := Fat_NextCluster(Byte(Slot), Cur);
+   End;
+  End;
+ End;
+
+ { Tri a bulles (nombre d'entrees d'un repertoire reste modeste) :
+   repertoires d abord, puis alphabetique. }
+ Repeat
+  Swapped := False;
+  For J := 0 To Pane.Count - 2 Do
+   If NCEntryBefore(Pane.Entries[J + 1], Pane.Entries[J], Pane.SortMode, Slot < 0) Then Begin
+    Tmp := Pane.Entries[J];
+    Pane.Entries[J] := Pane.Entries[J + 1];
+    Pane.Entries[J + 1] := Tmp;
+    Swapped := True;
+   End;
+ Until Not Swapped;
+End;
+
+{ Construire le chemin absolu du parent de Path : '\' si deja racine        }
+{ virtuelle, ou la racine du lecteur (ex: "C:\") si deja a la racine            }
+{ d un chemin hote - remonter plus haut demanderait un changement de           }
+{ lecteur, non gere ici. --- }
+Function NCParentPath(Const Path: String): String;
+Var
+ P: Integer;
+Begin
+ If (Path = '\') Or (Path = '') Then Begin
+  NCParentPath := '\';
+  Exit;
+ End;
+ If (Length(Path) = 3) And (Path[2] = ':') And (Path[3] = '\') Then Begin
+  NCParentPath := Path; { deja a la racine du lecteur hote }
+  Exit;
+ End;
+ P := Length(Path);
+ While (P > 1) And (Path[P] <> '\') Do Dec(P);
+ If P <= 1 Then NCParentPath := '\'
+ Else If (P = 3) And (Path[2] = ':') Then
+  NCParentPath := Copy(Path, 1, 3) { garder "C:\", pas "C:" }
+ Else
+  NCParentPath := Copy(Path, 1, P - 1);
+End;
+
+{ Recharger les deux panneaux (apres changement de repertoire, retour
+  au selecteur de shell, etc.). --- }
+Procedure NCRefreshPanes;
+Begin
+ { Slot < 0 = systeme hote (mode par defaut, PAS "pas encore monte") -   }
+ { ne jamais sortir prematurement ici (BOGUE REEL 2026-08-09 : cette          }
+ { garde, heritee de l etape 1 ou -1 signifiait "aucune disquette              }
+ { montee", empechait tout listage en mode hote). }
+ NCListDir(NCState.Slot, NCState.Panes[0]);
+ NCListDir(NCState.Slot, NCState.Panes[1]);
+End;
+
+{ Creer un repertoire DirName dans ParentPath du volume FatVol[Slot] -   }
+{ contrairement a TermCmd_MKDIR (qui appelle le vrai MkDir de l HOTE et    }
+{ ne touche donc jamais la disquette virtuelle), ceci ecrit reellement          }
+{ une nouvelle entree de repertoire + un nouveau cluster ('.'/'..') sur           }
+{ la disquette virtuelle, comme l original le ferait sur une vraie             }
+{ disquette. Reutilise les primitives FAT bas niveau deja ecrites pour           }
+{ Fat_WriteFileFromHost (Fat_AllocCluster, Fat_FindFreeSlot, etc.). --- }
+Function NCCmd_MkDir(Slot: Byte; ParentPath, DirName: String): Boolean;
+Var
+ IsRoot: Boolean;
+ StartCl, ParentClu, NewClu: LongInt;
+ SlotLBA: LongInt;
+ SlotIdx, I: Integer;
+ N11: Array[0..10] Of Byte;
+ Buf: Array[0..511] Of Byte;
+Begin
+ NCCmd_MkDir := False;
+ If DirName = '' Then Exit;
+ If Not Fat_ResolveDir(Slot, ParentPath, IsRoot, StartCl) Then Exit;
+ If Not Fat_MakeName11(DirName, N11) Then Exit;
+ If Not Fat_FindFreeSlot(Slot, IsRoot, StartCl, SlotLBA, SlotIdx) Then Exit;
+ NewClu := Fat_AllocCluster(Slot);
+ If NewClu < 2 Then Exit;
+ If IsRoot Then ParentClu := 0 Else ParentClu := StartCl;
+
+ { Initialiser le nouveau repertoire avec ses propres entrees "." et    }
+ { ".." (convention FAT standard), puis vider le reste du cluster. }
+ FillChar(Buf, SizeOf(Buf), 0);
+ Buf[0] := Ord('.');
+ For I := 1 To 10 Do Buf[I] := Ord(' ');
+ Buf[11] := $10;
+ Buf[26] := Byte(NewClu And $FF);
+ Buf[27] := Byte((NewClu Shr 8) And $FF);
+ Buf[32] := Ord('.'); Buf[33] := Ord('.');
+ For I := 34 To 42 Do Buf[I] := Ord(' ');
+ Buf[32 + 11] := $10;
+ Buf[32 + 26] := Byte(ParentClu And $FF);
+ Buf[32 + 27] := Byte((ParentClu Shr 8) And $FF);
+ If Not Fat_WriteSector(Slot, Fat_ClusterToLBA(Slot, NewClu), Buf) Then Exit;
+ FillChar(Buf, SizeOf(Buf), 0);
+ For I := 1 To FatVol[Slot].SectorsPerCluster - 1 Do
+  Fat_WriteSector(Slot, Fat_ClusterToLBA(Slot, NewClu) + I, Buf);
+
+ NCCmd_MkDir := Fat_WriteDirEntry(Slot, SlotLBA, SlotIdx, N11, $10, NewClu, 0);
+End;
+
+{ Dessiner le double panneau Norton Commander (remplace entierement le
+  rendu ligne de commande / historique des 4 autres shells). --- }
+{ Formater la date/heure d une entree (hote : PackedDT via UnpackTime ; }
+{ disquette virtuelle : FDate/FTime, champs de bits FAT deja empaquetes). }
+Function NCFormatDateTime(Const E: TNCEntry; IsHost: Boolean): String;
+Var
+ DT: DateTime;
+ Yr, Mo, Dy, Hr, Mn: Word;
+Begin
+ If IsHost Then Begin
+  UnpackTime(E.PackedDT, DT);
+  Yr := DT.Year; Mo := DT.Month; Dy := DT.Day; Hr := DT.Hour; Mn := DT.Min;
+ End Else Begin
+  Yr := ((E.FDate Shr 9) And $7F) + 1980;
+  Mo := (E.FDate Shr 5) And $0F;
+  Dy := E.FDate And $1F;
+  Hr := (E.FTime Shr 11) And $1F;
+  Mn := (E.FTime Shr 5) And $3F;
+ End;
+ NCFormatDateTime := PadLeft(IntToStr(Mo), 2, '0') + '/' +
+  PadLeft(IntToStr(Dy), 2, '0') + '/' + PadLeft(IntToStr(Yr Mod 100), 2, '0') +
+  ' ' + PadLeft(IntToStr(Hr), 2, '0') + ':' + PadLeft(IntToStr(Mn), 2, '0');
+End;
+
+{ Dessiner une petite boite modale centree (dialogues F5/F6/F7/F8 et       }
+{ visionneuse F3) par-dessus le panneau. --- }
+Procedure NCDrawModalBox(PX, PY, PW, PH: Integer; Title: String);
+Var
+ BX1, BY1, BX2, BY2: Integer;
+Begin
+ BX1 := PX + PW Div 6;
+ BX2 := PX + PW - PW Div 6;
+ BY1 := PY + PH Div 3;
+ BY2 := PY + PH Div 3 + 3 * TERM_LINE_HEIGHT;
+ SetFillStyle(SolidFill, 3);
+ Bar(BX1, BY1, BX2, BY2);
+ SetColor(15);
+ Rectangle(BX1, BY1, BX2, BY2);
+ SetFillStyle(SolidFill, 1);
+ Bar(BX1 + 2, BY1 + 2, BX2 - 2, BY1 + TERM_LINE_HEIGHT);
+ SetColor(15);
+ OutTextXY(BX1 + 6, BY1 + 4, Title);
+End;
+
+{ Menu deroulant F9 (NC.PAS:2824-2946, PullDnMenu) - libelles francais       }
+{ authentiques (MainMenuChoice/MenuLeft/MenuFiles/MenuDisk/MenuCommands),        }
+{ portes tels quels (sans accents, comme le reste des chaines de ce            }
+{ fichier). MenuLeft sert a la fois au menu "Gauche" (Top=0) et "Droite"           }
+{ (Top=4), exactement comme dans l original. --- }
+Const
+ NC_MENU_TOP_COUNT = 5;
+ NC_MENU_TOP: Array[0..NC_MENU_TOP_COUNT - 1] Of String[9] = (
+  'Gauche', 'Fichiers', 'Disque', 'Commandes', 'Droite'
+ );
+ NC_MENU_LEFT_COUNT = 16;
+ NC_MENU_LEFT: Array[0..NC_MENU_LEFT_COUNT - 1] Of String[20] = (
+  'Arbre', 'Bref', 'Info', 'Link', 'Plein', 'Regard', 'Ouvert', 'Fermer',
+  'Nom', 'Extension', 'Heure', 'Taille', 'Desordre', 'Relire', 'Filtre',
+  'Disque'
+ );
+ NC_MENU_FILES_COUNT = 14;
+ NC_MENU_FILES: Array[0..NC_MENU_FILES_COUNT - 1] Of String[24] = (
+  'Aide', 'Menu utilisateur', 'Afficher', 'Editer', 'Copier',
+  'Renommer/deplacer', 'Cree un repertoire', 'Supprimer',
+  'Attribut de fichiers', 'Selectionner un groupe',
+  'Deselectionner un groupe', 'Inverser la selection',
+  'Restaurer la selection', 'Quitter'
+ );
+ NC_MENU_DISK_COUNT = 5;
+ NC_MENU_DISK: Array[0..NC_MENU_DISK_COUNT - 1] Of String[26] = (
+  'Copier une disquette...', 'Formater une disquette...',
+  'Nommer un disque', 'Utilitaire reseau...', 'Nettoyage disque...'
+ );
+ NC_MENU_CMD_COUNT = 13;
+ NC_MENU_CMD: Array[0..NC_MENU_CMD_COUNT - 1] Of String[30] = (
+  'Arbre NCD', 'Recherche de fichiers', 'Historique', 'Ligne EGA',
+  'Permuter les panneaux', 'Afficher/effacer les panneaux',
+  'Compare les repertoires', 'Synchroniser les repertoires',
+  'Emulation de terminal', 'Editer le fichier menu...',
+  'Editer le fichier extension...', 'Editeurs...', 'Configuration...'
+ );
+
+{ Nombre d entrees du menu deroulant Top (0=Gauche 1=Fichiers 2=Disque    }
+{ 3=Commandes 4=Droite). --- }
+Function NCMenuItemCount(Top: Integer): Integer;
+Begin
+ Case Top Of
+  0, 4: NCMenuItemCount := NC_MENU_LEFT_COUNT;
+  1:    NCMenuItemCount := NC_MENU_FILES_COUNT;
+  2:    NCMenuItemCount := NC_MENU_DISK_COUNT;
+  3:    NCMenuItemCount := NC_MENU_CMD_COUNT;
+ Else
+  NCMenuItemCount := 0;
+ End;
+End;
+
+{ Libelle de l entree Item du menu deroulant Top. --- }
+Function NCMenuItemLabel(Top, Item: Integer): String;
+Begin
+ Case Top Of
+  0, 4: NCMenuItemLabel := NC_MENU_LEFT[Item];
+  1:    NCMenuItemLabel := NC_MENU_FILES[Item];
+  2:    NCMenuItemLabel := NC_MENU_DISK[Item];
+  3:    NCMenuItemLabel := NC_MENU_CMD[Item];
+ Else
+  NCMenuItemLabel := '';
+ End;
+End;
+
+{ Dernier segment d un chemin (nom affiche dans l arbre NCD, Commandes  }
+{ item 0) - utilise par DrawNCommanderPanel (etape 4). --- }
+Function NCLastComponent(Const Path: String): String;
+Var
+ P: Integer;
+ R: String;
+Begin
+ P := Length(Path);
+ While (P > 0) And (Path[P] <> '\') Do Dec(P);
+ R := Copy(Path, P + 1, Length(Path) - P);
+ If R = '' Then R := Path; { racine "C:\" }
+ NCLastComponent := R;
+End;
+
+Procedure DrawNCommanderPanel(Var TP: TTerminalPanel; PX, PY, PW, PH: Integer);
+Const
+ { Libelles francais authentiques de NC.PAS (FunctionKeyValue). }
+ NC_FKEY_LABELS: Array[1..10] Of String[7] = (
+  'Aide', 'Menu', 'Affich', 'Editer', 'Copier', 'RenDep', 'CreRep',
+  'Suppr.', 'Menu', 'Sortie'
+ );
+Var
+ CW, RH: Integer;
+ PaneW: Integer;
+ Side, Row, VisRows, Idx: Integer;
+ Y, X0, PaneRight: Integer;
+ E: TNCEntry;
+ S: String;
+ HeaderY, ColHeadY, ListTop, ListBot, InfoY, PromptY, FKeyY: Integer;
+ NameCols, DTCols: Integer;
+ FKeyColW, I, CurX, CenterX: Integer;
+ IsHost: Boolean;
+ HistTop: Integer;
+Begin
+ If Not NCState.Initialized Then Begin
+  NCRefreshPanes;
+  NCState.Initialized := True;
+ End;
+ IsHost := NCState.Slot < 0;
+ CW := TextWidth('M');
+ If CW < 1 Then CW := 8;
+ RH := TERM_LINE_HEIGHT;
+ NCState.CharW := CW;
+ NCState.CharH := RH;
+
+ SetFillStyle(SolidFill, 1);
+ Bar(PX, PY + TERM_TAB_HEIGHT, PX + PW - 1, PY + PH - 1);
+
+ { Barre de touches de fonction F1..F10 - fond noir, numeros gris,      }
+ { libelles noirs sur fond cyan, exactement comme l original (ShowKeyFunc). }
+ FKeyY := PY + PH - RH;
+ SetFillStyle(SolidFill, 0);
+ Bar(PX, FKeyY, PX + PW - 1, PY + PH - 1);
+ FKeyColW := (PW - 2 * CW) Div 10;
+ If FKeyColW < 8 * CW Then FKeyColW := 8 * CW;
+ X0 := PX;
+ For I := 1 To 10 Do Begin
+  SetColor(7);
+  OutTextXY(X0, FKeyY + 1, IntToStr(I));
+  SetFillStyle(SolidFill, 3);
+  Bar(X0 + 2 * CW, FKeyY, X0 + FKeyColW - 1, FKeyY + RH - 1);
+  SetColor(0);
+  OutTextXY(X0 + 2 * CW + 2, FKeyY + 1, NC_FKEY_LABELS[I]);
+  X0 := X0 + FKeyColW;
+ End;
+
+ { Ligne de commande - gris sur fond noir, comme une vraie invite DOS. }
+ PromptY := FKeyY - RH;
+ SetFillStyle(SolidFill, 0);
+ Bar(PX, PromptY, PX + PW - 1, PromptY + RH - 1);
+ SetColor(7);
+ S := NCState.Panes[NCState.Active].Path + '>' + TP.InputLine;
+ OutTextXY(PX + 2, PromptY + 1, S);
+ If ExplorerSearchCursorVisible Then Begin
+  CurX := PX + 2 + TextWidth(S);
+  Line(CurX, PromptY, CurX, PromptY + RH - 1);
+ End;
+
+ PaneW := (PW - 2) Div 2;
+ HeaderY := PY + TERM_TAB_HEIGHT + 4;
+ ColHeadY := HeaderY + RH;
+ ListTop := ColHeadY + RH + 1;
+ InfoY := PromptY - 2 - RH;
+ ListBot := InfoY - 1;
+ VisRows := (ListBot - ListTop) Div RH;
+ If VisRows < 1 Then VisRows := 1;
+ DTCols := 15; { " MM/DD/YY HH:MM" }
+ NameCols := (PaneW Div CW) - 11 - DTCols;
+ If NameCols < 8 Then NameCols := 8;
+
+ For Side := 0 To 1 Do Begin
+  X0 := PX + Side * PaneW;
+  If Side = 0 Then PaneRight := X0 + PaneW - 2
+  Else PaneRight := PX + PW - 2;
+
+  If Side = NCState.Active Then SetColor(15) Else SetColor(7);
+  Rectangle(X0, HeaderY - 3, PaneRight, InfoY + RH);
+
+  { Repertoire courant, centre en haut du panneau. }
+  SetFillStyle(SolidFill, 1);
+  Bar(X0 + 1, HeaderY - 2, PaneRight - 1, HeaderY + RH - 3);
+  If Side = NCState.Active Then SetColor(11) Else SetColor(9);
+  S := NCState.Panes[Side].Path;
+  If Length(S) > (PaneRight - X0) Div CW - 1 Then
+   S := Copy(S, 1, (PaneRight - X0) Div CW - 1);
+  CenterX := X0 + ((PaneRight - X0) - TextWidth(S)) Div 2;
+  OutTextXY(CenterX, HeaderY - 2, S);
+
+  { Entete de colonnes (Nom / Octets / Date Heure) }
+  SetColor(11);
+  S := PadRight('Nom', NameCols, ' ') + ' ' + PadLeft('Octets', 9, ' ') +
+   '  ' + PadRight('Date/Heure', DTCols - 2, ' ');
+  OutTextXY(X0 + 3, ColHeadY, S);
+  SetColor(15);
+  Line(X0 + 1, ColHeadY + RH - 2, PaneRight - 1, ColHeadY + RH - 2);
+
+  If NCState.Panes[Side].Cursor < NCState.Panes[Side].ScrollTop Then
+   NCState.Panes[Side].ScrollTop := NCState.Panes[Side].Cursor;
+  If NCState.Panes[Side].Cursor >= NCState.Panes[Side].ScrollTop + VisRows Then
+   NCState.Panes[Side].ScrollTop := NCState.Panes[Side].Cursor - VisRows + 1;
+  If NCState.Panes[Side].ScrollTop < 0 Then NCState.Panes[Side].ScrollTop := 0;
+
+  Y := ListTop;
+  For Row := 0 To VisRows - 1 Do Begin
+   Idx := NCState.Panes[Side].ScrollTop + Row;
+   If Idx < NCState.Panes[Side].Count Then Begin
+    E := NCState.Panes[Side].Entries[Idx];
+    If Idx = NCState.Panes[Side].Cursor Then Begin
+     If Side = NCState.Active Then SetFillStyle(SolidFill, 3)
+     Else SetFillStyle(SolidFill, 8);
+     Bar(X0 + 1, Y, PaneRight - 1, Y + RH - 1);
+    End Else Begin
+     SetFillStyle(SolidFill, 1);
+     Bar(X0 + 1, Y, PaneRight - 1, Y + RH - 1);
+    End;
+    If NCState.Panes[Side].Marked[Idx] Then SetColor(14)
+    Else If E.IsDir Then SetColor(15)
+    Else SetColor(11);
+    S := E.Name;
+    If Length(S) > NameCols Then S := Copy(S, 1, NameCols);
+    S := PadRight(S, NameCols, ' ');
+    If E.IsDir Then
+     S := S + ' ' + PadLeft('<DIR>', 9, ' ')
+    Else
+     S := S + ' ' + PadLeft(IntToStr(E.Size), 9, ' ');
+    S := S + '  ' + NCFormatDateTime(E, IsHost);
+    OutTextXY(X0 + 3, Y + 1, S);
+   End;
+   Y := Y + RH;
+  End;
+
+  { Barre d info : ligne du fichier courant du panneau. }
+  SetFillStyle(SolidFill, 3);
+  Bar(X0 + 1, InfoY, PaneRight - 1, InfoY + RH - 1);
+  SetColor(0);
+  If NCState.Panes[Side].Count > 0 Then Begin
+   E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+   If E.IsDir Then
+    S := E.Name + '  <DIR>'
+   Else
+    S := E.Name + '  ' + IntToStr(E.Size) + ' octets  ' +
+     NCFormatDateTime(E, IsHost);
+  End Else
+   S := '(repertoire vide)';
+  If Length(S) > (PaneRight - X0 - 4) Div CW Then
+   S := Copy(S, 1, (PaneRight - X0 - 4) Div CW);
+  OutTextXY(X0 + 3, InfoY + 1, S);
+ End;
+
+ { Dialogues modaux (F5/F6/F7 saisie, F8 confirmation, F3 apercu) -      }
+ { dessines par-dessus les panneaux. --- }
+ Case NCState.Mode Of
+  ncPromptMkDir: Begin
+   NCDrawModalBox(PX, PY, PW, PH, 'Creer un repertoire');
+   SetColor(15);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
+    'Nom : ' + NCState.PromptBuf + '_');
+  End;
+  ncPromptCopy: Begin
+   NCDrawModalBox(PX, PY, PW, PH, 'Copier');
+   SetColor(15);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
+    'Vers : ' + NCState.PromptBuf + '_');
+  End;
+  ncPromptRenMov: Begin
+   NCDrawModalBox(PX, PY, PW, PH, 'Renommer/Deplacer');
+   SetColor(15);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
+    'Nouveau nom : ' + NCState.PromptBuf + '_');
+  End;
+  ncConfirmDelete: Begin
+   NCDrawModalBox(PX, PY, PW, PH, 'Supprimer');
+   SetColor(15);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
+    'Confirmer la suppression ? (O/N)');
+  End;
+  ncViewFile: Begin
+   SetFillStyle(SolidFill, 1);
+   Bar(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+   SetColor(15);
+   Rectangle(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+   Y := PY + TERM_TAB_HEIGHT + 8;
+   I := NCState.ViewTop;
+   While (I < NCState.ViewCount) And (Y < InfoY + RH - RH) Do Begin
+    S := NCState.ViewLines[I];
+    If Length(S) > (PW - 16) Div CW Then S := Copy(S, 1, (PW - 16) Div CW);
+    OutTextXY(PX + 8, Y, S);
+    Y := Y + RH;
+    Inc(I);
+   End;
+   SetColor(11);
+   OutTextXY(PX + 8, InfoY + RH - RH,
+    '-- Echap pour fermer, Haut/Bas pour defiler --');
+  End;
+  ncMenuBar: Begin
+   { Barre superieure des 5 menus (Gauche/Fichiers/Disque/Commandes/       }
+   { Droite), l entree active en surbrillance, puis le sous-menu           }
+   { deroulant de l entree active juste en dessous (NC.PAS: PullDnMenu). }
+   Y := PY + TERM_TAB_HEIGHT;
+   SetFillStyle(SolidFill, 3);
+   Bar(PX, Y, PX + PW - 1, Y + RH - 1);
+   X0 := PX + CW;
+   For I := 0 To NC_MENU_TOP_COUNT - 1 Do Begin
+    S := ' ' + NC_MENU_TOP[I] + ' ';
+    If I = NCState.MenuTop Then Begin
+     SetFillStyle(SolidFill, 0);
+     Bar(X0 - 2, Y, X0 + TextWidth(S) + 1, Y + RH - 1);
+     SetColor(11);
+    End Else
+     SetColor(0);
+    OutTextXY(X0, Y + 1, S);
+    X0 := X0 + TextWidth(S) + 3 * CW;
+   End;
+
+   { Position horizontale du sous-menu deroulant : alignee sur l entree   }
+   { superieure active, calculee par le meme parcours que ci-dessus. }
+   X0 := PX + CW;
+   For I := 0 To NCState.MenuTop - 1 Do
+    X0 := X0 + TextWidth(' ' + NC_MENU_TOP[I] + ' ') + 3 * CW;
+
+   CurX := NCMenuItemCount(NCState.MenuTop);
+   NameCols := 0;
+   For I := 0 To CurX - 1 Do
+    If Length(NCMenuItemLabel(NCState.MenuTop, I)) > NameCols Then
+     NameCols := Length(NCMenuItemLabel(NCState.MenuTop, I));
+   PaneRight := X0 + (NameCols + 4) * CW;
+   If PaneRight > PX + PW - 2 Then Begin
+    X0 := PX + PW - 2 - (NameCols + 4) * CW;
+    PaneRight := PX + PW - 2;
+   End;
+   ListTop := Y + RH;
+   ListBot := ListTop + CurX * RH;
+   SetFillStyle(SolidFill, 3);
+   Bar(X0, ListTop, PaneRight, ListBot + 1);
+   SetColor(15);
+   Rectangle(X0, ListTop, PaneRight, ListBot + 1);
+   For I := 0 To CurX - 1 Do Begin
+    If I = NCState.MenuItem Then Begin
+     SetFillStyle(SolidFill, 0);
+     Bar(X0 + 1, ListTop + I * RH, PaneRight - 1, ListTop + (I + 1) * RH - 1);
+     SetColor(11);
+    End Else Begin
+     SetFillStyle(SolidFill, 3);
+     Bar(X0 + 1, ListTop + I * RH, PaneRight - 1, ListTop + (I + 1) * RH - 1);
+     SetColor(0);
+    End;
+    OutTextXY(X0 + 2 * CW Div 2 + 2, ListTop + I * RH + 1,
+     NCMenuItemLabel(NCState.MenuTop, I));
+   End;
+  End;
+  ncMessage: Begin
+   NCDrawModalBox(PX, PY, PW, PH, 'Norton Commander');
+   SetColor(15);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6, NCState.PromptBuf);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 2 * RH + 6,
+    '-- Appuyez sur une touche --');
+  End;
+  ncHistory: Begin
+   SetFillStyle(SolidFill, 1);
+   Bar(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+   SetColor(15);
+   Rectangle(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+   OutTextXY(PX + 8, PY + TERM_TAB_HEIGHT + 6, 'Historique des commandes');
+   VisRows := (InfoY + RH - (PY + TERM_TAB_HEIGHT + 4 + RH + 4)) Div RH;
+   If VisRows < 1 Then VisRows := 1;
+   HistTop := NCState.HistCursor - VisRows Div 2;
+   If HistTop > TP.NumberHistory - VisRows + 1 Then
+    HistTop := TP.NumberHistory - VisRows + 1;
+   If HistTop < 1 Then HistTop := 1;
+   Y := PY + TERM_TAB_HEIGHT + 4 + RH + 4;
+   For I := HistTop To TP.NumberHistory Do Begin
+    If Y > InfoY + RH - RH Then Break;
+    If I = NCState.HistCursor Then Begin
+     SetFillStyle(SolidFill, 3);
+     Bar(PX + 6, Y, PX + PW - 7, Y + RH - 1);
+     SetColor(0);
+    End Else Begin
+     SetFillStyle(SolidFill, 1);
+     SetColor(15);
+    End;
+    S := TP.TermHistory[I];
+    If Length(S) > (PW - 16) Div CW Then S := Copy(S, 1, (PW - 16) Div CW);
+    OutTextXY(PX + 8, Y, S);
+    Y := Y + RH;
+   End;
+   SetColor(11);
+   OutTextXY(PX + 8, InfoY + RH - RH,
+    '-- Entree pour utiliser, Echap pour fermer --');
+  End;
+  ncTree: Begin
+   SetFillStyle(SolidFill, 1);
+   Bar(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+   SetColor(15);
+   Rectangle(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+   OutTextXY(PX + 8, PY + TERM_TAB_HEIGHT + 6, 'Arbre NCD');
+   VisRows := (InfoY + RH - (PY + TERM_TAB_HEIGHT + 4 + RH + 4)) Div RH;
+   If VisRows < 1 Then VisRows := 1;
+   If NCState.TreeCursor < NCState.TreeTop Then
+    NCState.TreeTop := NCState.TreeCursor;
+   If NCState.TreeCursor >= NCState.TreeTop + VisRows Then
+    NCState.TreeTop := NCState.TreeCursor - VisRows + 1;
+   If NCState.TreeTop < 0 Then NCState.TreeTop := 0;
+   Y := PY + TERM_TAB_HEIGHT + 4 + RH + 4;
+   For I := NCState.TreeTop To NCState.TreeCount - 1 Do Begin
+    If Y > InfoY + RH - RH Then Break;
+    If I = NCState.TreeCursor Then Begin
+     SetFillStyle(SolidFill, 3);
+     Bar(PX + 6, Y, PX + PW - 7, Y + RH - 1);
+     SetColor(0);
+    End Else Begin
+     SetFillStyle(SolidFill, 1);
+     SetColor(15);
+    End;
+    S := PadLeft('', NCState.TreeNodes[I].Depth * 2, ' ') +
+     NCLastComponent(NCState.TreeNodes[I].Path);
+    If Length(S) > (PW - 16) Div CW Then S := Copy(S, 1, (PW - 16) Div CW);
+    OutTextXY(PX + 8, Y, S);
+    Y := Y + RH;
+   End;
+   If NCState.TreeCount = 0 Then Begin
+    SetColor(15);
+    OutTextXY(PX + 8, PY + TERM_TAB_HEIGHT + 4 + RH + 4, '(aucun sous-repertoire)');
+   End;
+   SetColor(11);
+   OutTextXY(PX + 8, InfoY + RH - RH,
+    '-- Entree pour se deplacer, Echap pour fermer --');
+  End;
+ End;
+End;
+
+{ Aller dans le sous-repertoire nomme Name du panneau Side (ou remonter }
+{ d un niveau si Name = '..'), puis recharger ce panneau. --- }
+Procedure NCEnterDir(Side: Integer; Const Name: String);
+Var
+ NewPath: String;
+Begin
+ If Name = '..' Then
+  NewPath := NCParentPath(NCState.Panes[Side].Path)
+ Else Begin
+  NewPath := NCState.Panes[Side].Path;
+  { Deja termine par '\' ("\" virtuel ou "C:\" hote) : ne pas doubler. }
+  If (Length(NewPath) > 0) And (NewPath[Length(NewPath)] = '\') Then
+   NewPath := NewPath + Name
+  Else
+   NewPath := NewPath + '\' + Name;
+ End;
+ NCState.Panes[Side].Path := NewPath;
+ NCListDir(NCState.Slot, NCState.Panes[Side]);
+End;
+
+{ Construire le chemin absolu Name a l interieur de DirPath, sans           }
+{ doubler le separateur si DirPath se termine deja par '\'. --- }
+Function NCFullPath(Const DirPath, Name: String): String;
+Begin
+ If (Length(DirPath) > 0) And (DirPath[Length(DirPath)] = '\') Then
+  NCFullPath := DirPath + Name
+ Else
+  NCFullPath := DirPath + '\' + Name;
+End;
+
+{ --- F7/MKDIR, F8/Supprimer, F6/RenDep sur le systeme HOTE reel : ces   }
+{ operations sont plus simples que sur la disquette virtuelle puisque       }
+{ le Pascal standard (MkDir/RmDir/Erase/Rename) suffit. --- }
+Function NCCmd_MkDirHost(ParentPath, DirName: String): Boolean;
+Var
+ Err: Word;
+Begin
+ NCCmd_MkDirHost := False;
+ If DirName = '' Then Exit;
+ {$I-} MkDir(NCFullPath(ParentPath, DirName)); {$I+}
+ Err := IOResult;
+ NCCmd_MkDirHost := (Err = 0);
+End;
+
+Function NCCmd_DeleteHost(FullPath: String; IsDir: Boolean): Boolean;
+Var
+ F: File;
+ Err: Word;
+Begin
+ If IsDir Then Begin
+  {$I-} RmDir(FullPath); {$I+}
+ End Else Begin
+  {$I-} Assign(F, FullPath); Erase(F); {$I+}
+ End;
+ Err := IOResult;
+ NCCmd_DeleteHost := (Err = 0);
+End;
+
+Function NCCmd_RenameHost(OldFullPath, NewFullPath: String): Boolean;
+Var
+ F: File;
+ Err: Word;
+Begin
+ {$I-} Assign(F, OldFullPath); Rename(F, NewFullPath); {$I+}
+ Err := IOResult;
+ NCCmd_RenameHost := (Err = 0);
+End;
+
+{ F3 : charger jusqu a 200 lignes du fichier hote FullPath pour la      }
+{ visionneuse en lecture seule (NCState.ViewLines/ViewCount). --- }
+Procedure NCCmd_ViewFile(FullPath: String);
+Var
+ F: Text;
+Begin
+ NCState.ViewCount := 0;
+ NCState.ViewTop := 0;
+ {$I-} Assign(F, FullPath); Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  NCState.ViewLines[0] := '(impossible d''ouvrir le fichier)';
+  NCState.ViewCount := 1;
+  Exit;
+ End;
+ While (Not Eof(F)) And (NCState.ViewCount < 200) Do Begin
+  {$I-} ReadLn(F, NCState.ViewLines[NCState.ViewCount]); {$I+}
+  If IOResult <> 0 Then Break;
+  Inc(NCState.ViewCount);
+ End;
+ Close(F);
+End;
+
+{ --- Actions F3/F4/F5/F6/F7/F8/F10, extraites de HandleNCommanderEvent  }
+{ pour etre appelables a la fois par la touche directe ET par le menu    }
+{ deroulant F9 (NCMenuExecute, menu "Fichiers") - meme comportement,           }
+{ un seul endroit a maintenir. --- }
+Procedure NCActionView(Side: Integer);
+Var
+ E: TNCEntry;
+Begin
+ If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
+  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+  If Not E.IsDir Then Begin
+   NCCmd_ViewFile(NCFullPath(NCState.Panes[Side].Path, E.Name));
+   NCState.Mode := ncViewFile;
+  End;
+ End;
+End;
+
+Procedure NCActionEdit(Side: Integer);
+Var
+ E: TNCEntry;
+Begin
+ If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
+  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+  If Not E.IsDir Then
+   PasChatOpenGeneratedFile(NCFullPath(NCState.Panes[Side].Path, E.Name));
+ End;
+End;
+
+Procedure NCActionCopyStart(Side, OtherSide: Integer);
+Begin
+ If NCState.Panes[Side].Count > 0 Then Begin
+  NCState.PromptBuf := NCState.Panes[OtherSide].Path;
+  NCState.Mode := ncPromptCopy;
+ End;
+End;
+
+Procedure NCActionRenMovStart(Side: Integer);
+Begin
+ If NCState.Panes[Side].Count > 0 Then Begin
+  NCState.PromptBuf := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name;
+  NCState.Mode := ncPromptRenMov;
+ End;
+End;
+
+Procedure NCActionMkDirStart;
+Begin
+ NCState.PromptBuf := '';
+ NCState.Mode := ncPromptMkDir;
+End;
+
+Procedure NCActionDeleteStart(Side: Integer);
+Begin
+ If (NCState.Panes[Side].Count > 0) Or (NCState.Panes[Side].MarkCount > 0) Then
+  NCState.Mode := ncConfirmDelete;
+End;
+
+Procedure NCActionQuit;
+Begin
+ ActiveShell := SK_POWERSHELL;
+ TermPanels[ActiveShell].NeedRepaint := True;
+End;
+
+{ Afficher un message simple (mode ncMessage) - reproduit fidelement          }
+{ DialogNotImplement (NC.PAS:1373), deja un stub dans l ORIGINAL pour les          }
+{ items du menu qui ne correspondent a aucune fonction cablee. --- }
+Procedure NCShowMessage(Const Msg: String);
+Begin
+ NCState.PromptBuf := Msg;
+ NCState.Mode := ncMessage;
+End;
+
+{ Trier le panneau Side selon SortKind (0=Nom 1=Extension 2=Heure                }
+{ 3=Taille 4=Desordre) - menu Gauche/Droite, items 8..12 (NC.PAS: TypeTri). --- }
+Procedure NCActionSort(Side, SortKind: Integer);
+Begin
+ NCState.Panes[Side].SortMode := SortKind;
+ NCListDir(NCState.Slot, NCState.Panes[Side]);
+End;
+
+{ "Permuter les panneaux" (menu Commandes, item 4) - echange entierement }
+{ l etat des deux panneaux (chemin, curseur, tri, selection). --- }
+Procedure NCActionSwapPanels;
+Var
+ Tmp: TNCPane;
+Begin
+ Tmp := NCState.Panes[0];
+ NCState.Panes[0] := NCState.Panes[1];
+ NCState.Panes[1] := Tmp;
+End;
+
+{ --- Etape 4 : Historique, Comparer/Synchroniser repertoires, Arbre NCD }
+{ (menu Commandes). Le menu Disque reste entierement non implemente,           }
+{ fidele a l ORIGINAL (deja confirme a l etape 3) - "Formater" n a donc  }
+{ pas ete cable ici. --- }
+
+{ Chercher Name (insensible a la casse) dans Pane ; -1 si absent. --- }
+Function NCFindEntryByName(Const Pane: TNCPane; Const Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ NCFindEntryByName := -1;
+ For I := 0 To Pane.Count - 1 Do
+  If UpCaseStr(Pane.Entries[I].Name) = UpCaseStr(Name) Then Begin
+   NCFindEntryByName := I;
+   Exit;
+  End;
+End;
+
+{ "Compare les repertoires" (Commandes, item 6) : marque dans chaque      }
+{ panneau les fichiers absents de l autre cote ou dont la taille differe. }
+Procedure NCActionCompareDirs;
+Var
+ I, J: Integer;
+Begin
+ FillChar(NCState.Panes[0].Marked, SizeOf(NCState.Panes[0].Marked), False);
+ FillChar(NCState.Panes[1].Marked, SizeOf(NCState.Panes[1].Marked), False);
+ NCState.Panes[0].MarkCount := 0;
+ NCState.Panes[1].MarkCount := 0;
+ For I := 0 To NCState.Panes[0].Count - 1 Do
+  If Not NCState.Panes[0].Entries[I].IsDir Then Begin
+   J := NCFindEntryByName(NCState.Panes[1], NCState.Panes[0].Entries[I].Name);
+   If (J < 0) Or
+      (NCState.Panes[1].Entries[J].Size <> NCState.Panes[0].Entries[I].Size) Then Begin
+    NCState.Panes[0].Marked[I] := True;
+    Inc(NCState.Panes[0].MarkCount);
+   End;
+  End;
+ For I := 0 To NCState.Panes[1].Count - 1 Do
+  If Not NCState.Panes[1].Entries[I].IsDir Then Begin
+   J := NCFindEntryByName(NCState.Panes[0], NCState.Panes[1].Entries[I].Name);
+   If (J < 0) Or
+      (NCState.Panes[0].Entries[J].Size <> NCState.Panes[1].Entries[I].Size) Then Begin
+    NCState.Panes[1].Marked[I] := True;
+    Inc(NCState.Panes[1].MarkCount);
+   End;
+  End;
+End;
+
+{ "Synchroniser les repertoires" (Commandes, item 7) : copie de Side vers }
+{ l autre cote chaque fichier absent ou de taille differente, pour que          }
+{ l autre panneau finisse par correspondre a celui-ci - systeme hote           }
+{ uniquement, meme limitation que Copier/RenDep/Supprimer (etape 2). --- }
+Procedure NCActionSyncDirs(Var TP: TTerminalPanel; Side: Integer);
+Var
+ OtherSide, I, J: Integer;
+Begin
+ If NCState.Slot >= 0 Then Begin
+  NCShowMessage('La synchronisation n''est pas encore implementee pour la disquette virtuelle.');
+  Exit;
+ End;
+ OtherSide := Side Xor 1;
+ For I := 0 To NCState.Panes[Side].Count - 1 Do
+  If Not NCState.Panes[Side].Entries[I].IsDir Then Begin
+   J := NCFindEntryByName(NCState.Panes[OtherSide], NCState.Panes[Side].Entries[I].Name);
+   If (J < 0) Or
+      (NCState.Panes[OtherSide].Entries[J].Size <> NCState.Panes[Side].Entries[I].Size) Then
+    TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+     NCState.Panes[Side].Entries[I].Name), NCState.Panes[OtherSide].Path);
+  End;
+ NCListDir(NCState.Slot, NCState.Panes[0]);
+ NCListDir(NCState.Slot, NCState.Panes[1]);
+End;
+
+{ "Historique" (Commandes, item 2) : ouvre la liste des commandes deja   }
+{ tapees dans ce panneau (NC.PAS: DialogHistory, TP.TermHistory partage  }
+{ avec les 4 autres shells). --- }
+Procedure NCActionHistoryStart(Var TP: TTerminalPanel);
+Begin
+ If TP.NumberHistory <= 0 Then Begin
+  NCShowMessage('Aucune commande dans l''historique.');
+  Exit;
+ End;
+ NCState.HistCursor := TP.NumberHistory;
+ NCState.Mode := ncHistory;
+End;
+
+{ Parcours recursif des sous-repertoires de Path (systeme hote), borne  }
+{ par MAX_NC_TREE_NODES et NC_TREE_MAX_DEPTH pour rester rapide sur une   }
+{ arborescence reelle potentiellement tres grande (NC.PAS: NCD Arbre). --- }
+Procedure NCTreeScan(Const Path: String; Depth: Integer);
+Var
+ SR: SearchRec;
+Begin
+ If (NCState.TreeCount >= MAX_NC_TREE_NODES) Or (Depth > NC_TREE_MAX_DEPTH) Then
+  Exit;
+ FindFirst(Path + '\*.*', Directory, SR);
+ While (DosError = 0) And (NCState.TreeCount < MAX_NC_TREE_NODES) Do Begin
+  If (SR.Name <> '.') And (SR.Name <> '..') And
+     ((SR.Attr And Directory) <> 0) Then Begin
+   NCState.TreeNodes[NCState.TreeCount].Path := NCFullPath(Path, SR.Name);
+   NCState.TreeNodes[NCState.TreeCount].Depth := Depth;
+   Inc(NCState.TreeCount);
+   NCTreeScan(NCFullPath(Path, SR.Name), Depth + 1);
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC} FindClose(SR); {$ENDIF}
+End;
+
+{ "Arbre NCD" (Commandes, item 0) : construit l arbre des sous-           }
+{ repertoires du lecteur du panneau Side puis ouvre le mode ncTree. --- }
+Procedure NCActionTreeStart(Side: Integer);
+Var
+ Root: String;
+Begin
+ If NCState.Slot >= 0 Then Begin
+  NCShowMessage('L''arbre NCD n''est pas encore implemente pour la disquette virtuelle.');
+  Exit;
+ End;
+ NCState.TreeCount := 0;
+ If Length(NCState.Panes[Side].Path) >= 2 Then
+  Root := Copy(NCState.Panes[Side].Path, 1, 2) + '\'
+ Else
+  Root := NCState.Panes[Side].Path;
+ NCTreeScan(Root, 0);
+ NCState.TreeCursor := 0;
+ NCState.TreeTop := 0;
+ NCState.Mode := ncTree;
+End;
+
+{ Dispatcher central du menu deroulant F9 - reproduit fidelement le          }
+{ Case PosMenu/PosItem de PullDnMenu (NC.PAS:2824-2946), y compris les          }
+{ items reellement non implementes dans l ORIGINAL lui-meme : tout le          }
+{ menu Disque, la plupart de Commandes, et les modes d affichage 0..7 de       }
+{ Gauche/Droite (Arbre/Bref/Info/Link/Plein/Regard/Ouvert/Fermer). --- }
+Procedure NCMenuExecute(Var TP: TTerminalPanel; Side, Top, Item: Integer);
+Var
+ TargetSide: Integer;
+Begin
+ Case Top Of
+  0, 4: Begin
+   { Gauche (Top=0) et Droite (Top=4) agissent toujours sur leur propre  }
+   { cote, quel que soit le panneau actif - comme dans l original. }
+   If Top = 0 Then TargetSide := 0 Else TargetSide := 1;
+   Case Item Of
+    0..7: NCShowMessage('Ce mode d''affichage n''est pas encore implemente.');
+    8:  NCActionSort(TargetSide, 0);  { Nom }
+    9:  NCActionSort(TargetSide, 1);  { Extension }
+    10: NCActionSort(TargetSide, 2);  { Heure }
+    11: NCActionSort(TargetSide, 3);  { Taille }
+    12: NCActionSort(TargetSide, 4);  { Desordre }
+    13: NCListDir(NCState.Slot, NCState.Panes[TargetSide]); { Relire }
+    14: NCShowMessage('Cette option n''est pas encore implementee.'); { Filtre }
+    15: NCShowMessage('Le changement de lecteur n''est pas encore implemente.');
+   End;
+  End;
+  1: { Fichiers }
+   Case Item Of
+    2: NCActionView(Side);
+    3: NCActionEdit(Side);
+    4: NCActionCopyStart(Side, Side Xor 1);
+    5: NCActionRenMovStart(Side);
+    6: NCActionMkDirStart;
+    7: NCActionDeleteStart(Side);
+    13: NCActionQuit;
+   Else
+    NCShowMessage('Cette option n''est pas encore implementee.');
+   End;
+  2: { Disque : entierement non implemente, meme dans l ORIGINAL. }
+   NCShowMessage('Cette option n''est pas encore implementee.');
+  3: { Commandes : Arbre NCD, Historique, Permuter, Comparer et                 }
+     { Synchroniser sont reellement cables (etape 4) ; le reste           }
+     { (Recherche, Ligne EGA, Emulation terminal, editeurs/configuration)  }
+     { reste hors-cadre, comme dans l ORIGINAL au-dela de ce sous-ensemble. }
+   Case Item Of
+    0: NCActionTreeStart(Side);      { Arbre NCD }
+    2: NCActionHistoryStart(TP);     { Historique }
+    4: NCActionSwapPanels;           { Permuter les panneaux }
+    6: NCActionCompareDirs;          { Compare les repertoires }
+    7: NCActionSyncDirs(TP, Side);   { Synchroniser les repertoires }
+   Else
+    NCShowMessage('Cette option n''est pas encore implementee.');
+   End;
+ End;
+End;
+
+{ Gerer un evenement clavier/souris pour Norton Commander : navigation,   }
+{ dialogues modaux (F5/F6/F7 saisie, F8 confirmation, F3 visionneuse),          }
+{ et les touches de fonction elles-memes (TODO NC 2). --- }
+Procedure HandleNCommanderEvent(Var TP: TTerminalPanel; Var Ev: TEvent);
+Var
+ Side, OtherSide, I: Integer;
+ E: TNCEntry;
+ CmdUp, CmdArg, FullSrc, FullDst: String;
+Begin
+ Side := NCState.Active;
+ OtherSide := Side Xor 1;
+
+ { --- Dialogues modaux : capturent le clavier avant la navigation. --- }
+ If NCState.Mode <> ncBrowse Then Begin
+  If Ev.Kind = EV_KEY_DOWN Then Begin
+   If NCState.Mode = ncViewFile Then Case Ev.KeyCode Of
+    72: If NCState.ViewTop > 0 Then Dec(NCState.ViewTop);
+    80: If NCState.ViewTop < NCState.ViewCount - 1 Then Inc(NCState.ViewTop);
+   End;
+   If NCState.Mode = ncMenuBar Then Case Ev.KeyCode Of
+    75: Begin { Gauche : menu superieur precedent, avec bouclage }
+     If NCState.MenuTop = 0 Then NCState.MenuTop := NC_MENU_TOP_COUNT - 1
+     Else Dec(NCState.MenuTop);
+     NCState.MenuItem := 0;
+    End;
+    77: Begin { Droite : menu superieur suivant, avec bouclage }
+     NCState.MenuTop := (NCState.MenuTop + 1) Mod NC_MENU_TOP_COUNT;
+     NCState.MenuItem := 0;
+    End;
+    72: { Haut : item precedent dans le menu deroulant, avec bouclage }
+     If NCState.MenuItem = 0 Then
+      NCState.MenuItem := NCMenuItemCount(NCState.MenuTop) - 1
+     Else
+      Dec(NCState.MenuItem);
+    80: { Bas : item suivant dans le menu deroulant, avec bouclage }
+     NCState.MenuItem := (NCState.MenuItem + 1) Mod NCMenuItemCount(NCState.MenuTop);
+   End;
+   If NCState.Mode = ncHistory Then Case Ev.KeyCode Of
+    72: If NCState.HistCursor > 1 Then Dec(NCState.HistCursor);
+    80: If NCState.HistCursor < TP.NumberHistory Then Inc(NCState.HistCursor);
+   End;
+   If NCState.Mode = ncTree Then Begin
+    Case Ev.KeyCode Of
+     72: If NCState.TreeCursor > 0 Then Dec(NCState.TreeCursor);
+     80: If NCState.TreeCursor < NCState.TreeCount - 1 Then Inc(NCState.TreeCursor);
+     73: Begin { PgUp }
+      Dec(NCState.TreeCursor, 10);
+      If NCState.TreeCursor < 0 Then NCState.TreeCursor := 0;
+     End;
+     81: Begin { PgDn }
+      Inc(NCState.TreeCursor, 10);
+      If NCState.TreeCursor > NCState.TreeCount - 1 Then
+       NCState.TreeCursor := NCState.TreeCount - 1;
+      If NCState.TreeCursor < 0 Then NCState.TreeCursor := 0;
+     End;
+    End;
+    If NCState.TreeCursor < NCState.TreeTop Then
+     NCState.TreeTop := NCState.TreeCursor;
+   End;
+   If NCState.Mode = ncMessage Then NCState.Mode := ncBrowse; { toute touche ferme }
+  End;
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   Case NCState.Mode Of
+    ncPromptMkDir, ncPromptCopy, ncPromptRenMov: Case Ev.KeyChar Of
+     #27: Begin NCState.Mode := ncBrowse; NCState.PromptBuf := ''; End;
+     #13: Begin
+      Case NCState.Mode Of
+       ncPromptMkDir:
+        If NCState.PromptBuf <> '' Then Begin
+         If NCState.Slot < 0 Then
+          NCCmd_MkDirHost(NCState.Panes[Side].Path, NCState.PromptBuf)
+         Else
+          NCCmd_MkDir(NCState.Slot, NCState.Panes[Side].Path, NCState.PromptBuf);
+         NCListDir(NCState.Slot, NCState.Panes[Side]);
+        End;
+       ncPromptCopy:
+        If (NCState.PromptBuf <> '') And (NCState.Slot < 0) Then Begin
+         If NCState.Panes[Side].MarkCount > 0 Then Begin
+          For I := 0 To NCState.Panes[Side].Count - 1 Do
+           If NCState.Panes[Side].Marked[I] Then
+            TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+             NCState.Panes[Side].Entries[I].Name), NCState.PromptBuf);
+         End Else If NCState.Panes[Side].Count > 0 Then
+          TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+           NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name),
+           NCState.PromptBuf);
+         NCListDir(NCState.Slot, NCState.Panes[0]);
+         NCListDir(NCState.Slot, NCState.Panes[1]);
+        End;
+       ncPromptRenMov:
+        If (NCState.PromptBuf <> '') And (NCState.Slot < 0) And
+           (NCState.Panes[Side].Count > 0) Then Begin
+         FullSrc := NCFullPath(NCState.Panes[Side].Path,
+          NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name);
+         If Pos('\', NCState.PromptBuf) > 0 Then
+          FullDst := NCState.PromptBuf
+         Else
+          FullDst := NCFullPath(NCState.Panes[Side].Path, NCState.PromptBuf);
+         NCCmd_RenameHost(FullSrc, FullDst);
+         NCListDir(NCState.Slot, NCState.Panes[Side]);
+        End;
+      End;
+      NCState.Mode := ncBrowse;
+      NCState.PromptBuf := '';
+     End;
+     #8:
+      If Length(NCState.PromptBuf) > 0 Then
+       NCState.PromptBuf := Copy(NCState.PromptBuf, 1, Length(NCState.PromptBuf) - 1);
+    Else
+     If (Ord(Ev.KeyChar) >= 32) And (Length(NCState.PromptBuf) < 200) Then
+      NCState.PromptBuf := NCState.PromptBuf + Ev.KeyChar;
+    End;
+    ncConfirmDelete: Case UpCase(Ev.KeyChar) Of
+     'O': Begin
+      If NCState.Slot < 0 Then Begin
+       If NCState.Panes[Side].MarkCount > 0 Then Begin
+        For I := 0 To NCState.Panes[Side].Count - 1 Do
+         If NCState.Panes[Side].Marked[I] Then
+          NCCmd_DeleteHost(NCFullPath(NCState.Panes[Side].Path,
+           NCState.Panes[Side].Entries[I].Name),
+           NCState.Panes[Side].Entries[I].IsDir);
+       End Else If NCState.Panes[Side].Count > 0 Then Begin
+        E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+        NCCmd_DeleteHost(NCFullPath(NCState.Panes[Side].Path, E.Name), E.IsDir);
+       End;
+       NCListDir(NCState.Slot, NCState.Panes[Side]);
+      End;
+      NCState.Mode := ncBrowse;
+     End;
+     #27, 'N': NCState.Mode := ncBrowse;
+    End;
+    ncViewFile: If Ev.KeyChar = #27 Then NCState.Mode := ncBrowse;
+    ncMenuBar: Case Ev.KeyChar Of
+     #27: NCState.Mode := ncBrowse;
+     #13: Begin
+      NCMenuExecute(TP, Side, NCState.MenuTop, NCState.MenuItem);
+      { NCMenuExecute peut deja avoir bascule vers un autre mode (saisie,   }
+      { message...) - ne revenir a la navigation normale que s il ne l a   }
+      { pas fait. }
+      If NCState.Mode = ncMenuBar Then NCState.Mode := ncBrowse;
+     End;
+    End;
+    ncMessage: NCState.Mode := ncBrowse; { toute touche ferme le message }
+    ncHistory: Case Ev.KeyChar Of
+     #27: NCState.Mode := ncBrowse;
+     #13: Begin
+      TP.InputLine := TP.TermHistory[NCState.HistCursor];
+      TP.InputCol := Length(TP.InputLine) + 1;
+      NCState.Mode := ncBrowse;
+     End;
+    End;
+    ncTree: Case Ev.KeyChar Of
+     #27: NCState.Mode := ncBrowse;
+     #13: Begin
+      If NCState.TreeCount > 0 Then Begin
+       NCState.Panes[Side].Path := NCState.TreeNodes[NCState.TreeCursor].Path;
+       NCListDir(NCState.Slot, NCState.Panes[Side]);
+      End;
+      NCState.Mode := ncBrowse;
+     End;
+    End;
+   End;
+  End;
+  TP.NeedRepaint := True;
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+
+ { --- Navigation et touches de fonction (mode normal). --- }
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  Case Ev.KeyCode Of
+   72: { Haut }
+    If NCState.Panes[Side].Cursor > 0 Then
+     Dec(NCState.Panes[Side].Cursor);
+   80: { Bas }
+    If NCState.Panes[Side].Cursor < NCState.Panes[Side].Count - 1 Then
+     Inc(NCState.Panes[Side].Cursor);
+   73: { PgUp }
+    Begin
+     Dec(NCState.Panes[Side].Cursor, 10);
+     If NCState.Panes[Side].Cursor < 0 Then NCState.Panes[Side].Cursor := 0;
+    End;
+   81: { PgDn }
+    Begin
+     Inc(NCState.Panes[Side].Cursor, 10);
+     If NCState.Panes[Side].Cursor > NCState.Panes[Side].Count - 1 Then
+      NCState.Panes[Side].Cursor := NCState.Panes[Side].Count - 1;
+     If NCState.Panes[Side].Cursor < 0 Then NCState.Panes[Side].Cursor := 0;
+    End;
+   71: { Home }
+    NCState.Panes[Side].Cursor := 0;
+   79: { End }
+    If NCState.Panes[Side].Count > 0 Then
+     NCState.Panes[Side].Cursor := NCState.Panes[Side].Count - 1;
+   82: { Insert : marquer/demarquer l entree courante }
+    If NCState.Panes[Side].Count > 0 Then Begin
+     NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor] :=
+      Not NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor];
+     If NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor] Then
+      Inc(NCState.Panes[Side].MarkCount)
+     Else
+      Dec(NCState.Panes[Side].MarkCount);
+     If NCState.Panes[Side].Cursor < NCState.Panes[Side].Count - 1 Then
+      Inc(NCState.Panes[Side].Cursor);
+    End;
+   $3D: NCActionView(Side);           { F3 : Voir }
+   $3E: NCActionEdit(Side);            { F4 : Editer }
+   $3F: NCActionCopyStart(Side, OtherSide); { F5 : Copier }
+   $40: NCActionRenMovStart(Side);     { F6 : RenDep }
+   $41: NCActionMkDirStart;            { F7 : CreRep }
+   $42: NCActionDeleteStart(Side);     { F8 : Supprimer }
+   $43: Begin { F9 : ouvrir le menu deroulant Gauche/Fichiers/Disque/       }
+             { Commandes/Droite (NC.PAS: PullDnMenu). }
+    NCState.MenuTop := 0;
+    NCState.MenuItem := 0;
+    NCState.Mode := ncMenuBar;
+   End;
+   $44: NCActionQuit;                  { F10 : Sortie - revenir a PowerShell dev }
+   $3B, $3C:
+    ; { F1 (Aide) / F2 (Menu utilisateur) : deja des stubs dans l ORIGINAL }
+       { pour ce sous-ensemble - restent hors-cadre pour l instant. }
+  End;
+  TP.NeedRepaint := True;
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  Case Ev.KeyChar Of
+   #9: { Tab : changer de panneau actif }
+    NCState.Active := NCState.Active Xor 1;
+   #13: { Entree : executer la ligne de commande si non vide, sinon    }
+         { ouvrir le repertoire sous le curseur. }
+    If TrimStr(TP.InputLine) <> '' Then Begin
+     CmdUp := UpCaseStr(TrimStr(TP.InputLine));
+     If Copy(CmdUp, 1, 6) = 'MKDIR ' Then
+      CmdArg := TrimStr(Copy(TP.InputLine, 7, Length(TP.InputLine) - 6))
+     Else If Copy(CmdUp, 1, 3) = 'MD ' Then
+      CmdArg := TrimStr(Copy(TP.InputLine, 4, Length(TP.InputLine) - 3))
+     Else
+      CmdArg := '';
+     If CmdArg <> '' Then Begin
+      { MKDIR/MD : chemin absolu explicite (hote ou disquette virtuelle) }
+      { plutot que de dependre du repertoire courant reel du processus,      }
+      { que TermExecuteCommand seul ne synchronise pas de facon fiable. }
+      If NCState.Slot < 0 Then
+       NCCmd_MkDirHost(NCState.Panes[Side].Path, CmdArg)
+      Else
+       NCCmd_MkDir(NCState.Slot, NCState.Panes[Side].Path, CmdArg);
+      NCListDir(NCState.Slot, NCState.Panes[Side]);
+     End Else Begin
+      { Toute autre commande : moteur partage des 4 autres shells      }
+      { (limitation connue pour le mode disque virtuel uniquement). }
+      TP.VirtDrive := NCState.Slot;
+      TP.VirtCwd := NCState.Panes[Side].Path;
+      TermExecuteCommand(TP, TP.InputLine);
+      NCState.Panes[Side].Path := TP.VirtCwd;
+      NCListDir(NCState.Slot, NCState.Panes[Side]);
+     End;
+     TP.InputLine := '';
+     TP.InputCol := 1;
+    End Else If NCState.Panes[Side].Count > 0 Then Begin
+     E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+     If E.IsDir Then NCEnterDir(Side, E.Name);
+    End;
+   #8: { Retour arriere : effacer la ligne de commande, sinon remonter }
+    If Length(TP.InputLine) > 0 Then
+     TP.InputLine := Copy(TP.InputLine, 1, Length(TP.InputLine) - 1)
+    Else
+     NCEnterDir(Side, '..');
+  Else
+   If (Ord(Ev.KeyChar) >= 32) And (Length(TP.InputLine) < 200) Then
+    TP.InputLine := TP.InputLine + Ev.KeyChar;
+  End;
+  TP.NeedRepaint := True;
+  FullRepaintNeeded := True;
+  Exit;
+ End;
 End;
 
 { --- Dessiner le panneau terminal avec selecteur deroulant --- }
@@ -30540,6 +32102,7 @@ Begin
   SK_POWERSHELL: SelLabel := 'PowerShell dev';
   SK_BASH:       SelLabel := 'Bash';
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
+  SK_NCOMMANDER: SelLabel := 'Norton Commander';
  End;
  SetColor(15);
  OutTextXY(SBX + 4, SBY + 3, SelLabel);
@@ -30548,129 +32111,136 @@ Begin
  { Bordure du panneau }
  SetColor(CLR_BORDER);
  Rectangle(PX, PY, PX + PW - 1, PY + PH - 1);
- { Zone de texte (reserver TERM_SCROLLBAR_WIDTH a droite) }
  SBarX := PX + PW - TERM_SCROLLBAR_WIDTH - 1;
- TextRight := SBarX - 1;
- VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
-  Div TERM_LINE_HEIGHT;
- If VisLines < 1 Then VisLines := 1;
- MaxCols := (TextRight - (PX + 4)) Div TERM_CHAR_WIDTH;
- If MaxCols < 10 Then MaxCols := 10;
- { Borner le decalage de defilement }
- If TP.HistCount = 0 Then TP.ScrollOffset := 0
- Else Begin
-  If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
-  If TP.ScrollOffset > TP.HistCount - 1 Then
-   TP.ScrollOffset := TP.HistCount - 1;
- End;
- { Trouver le noeud le plus en haut de la fenetre visible.
-   Depuis le tail, reculer de (ScrollOffset + VisLines - 1) noeuds. }
- Node := TP.HistTail;
- SkipBack := TP.ScrollOffset + VisLines - 1;
- While (SkipBack > 0) And (Node <> Nil) And (Node^.Prev <> Nil) Do Begin
-  Node := Node^.Prev;
-  Dec(SkipBack);
- End;
- { Afficher VisLines lignes en avant }
- SetColor(15);
- YPos := PY + TERM_TAB_HEIGHT + 2;
- TextLines := 0;
- For I := 0 To VisLines - 1 Do Begin
-  If Node <> Nil Then Begin
-   S := Node^.S;
-   If Length(S) > MaxCols Then
-    S := Copy(S, 1, MaxCols);
-   OutTextXY(PX + 4, YPos, S);
-   Node := Node^.Next;
-   Inc(TextLines);
-  End;
-  YPos := YPos + TERM_LINE_HEIGHT;
- End;
- { Ligne de saisie : visible uniquement si on n est pas remonte
-   dans l historique (ScrollOffset = 0). Sinon on conserve la
-   ligne pour le prochain affichage. }
- SetColor(10);
- If TextLines < VisLines Then
-  YPos := PY + TERM_TAB_HEIGHT + 2
-   + TextLines * TERM_LINE_HEIGHT
- Else
-  YPos := PY + TERM_TAB_HEIGHT + 2
-   + VisLines * TERM_LINE_HEIGHT;
- GetDir(0, PromptStr);
- If TP.VirtDrive >= 0 Then
-  PromptStr := Term_VirtFullPath(TP);
- Case TP.Shell Of
-  SK_POWERSHELL:
-   PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_';
-  SK_BASH:
-   PromptStr := 'user$ ' + TP.InputLine + '_';
-  SK_AMIGADOS:
-   PromptStr := '1.SYS:> ' + TP.InputLine + '_';
- Else
-  PromptStr := PromptStr + '> ' + TP.InputLine + '_';
- End;
- If TP.ScrollOffset > 0 Then
-  PromptStr := '-- defilement (PgUp/PgDn pour naviguer) --';
- If Length(PromptStr) > MaxCols Then
-  PromptStr := Copy(PromptStr, 1, MaxCols);
- OutTextXY(PX + 4, YPos, PromptStr);
- { ===== Barre de defilement a droite ===== }
- { Fond de la barre }
- SetFillStyle(SolidFill, 7);
- Bar(SBarX, PY + TERM_TAB_HEIGHT,
-  SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
- { Bordure }
- SetColor(CLR_BORDER);
- Rectangle(SBarX, PY + TERM_TAB_HEIGHT,
-  SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
- { Bouton fleche haut }
- SetFillStyle(SolidFill, 8);
- Bar(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
-  SBarX + TERM_SCROLLBAR_WIDTH - 2,
-  PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H - 1);
- SetColor(CLR_BORDER);
- Rectangle(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
-  SBarX + TERM_SCROLLBAR_WIDTH - 2,
-  PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H - 1);
- SetColor(15);
- OutTextXY(SBarX + 3, PY + TERM_TAB_HEIGHT + 3, #30);
- { Bouton fleche bas }
- SetFillStyle(SolidFill, 8);
- Bar(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
-  SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
- SetColor(CLR_BORDER);
- Rectangle(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
-  SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
- SetColor(15);
- OutTextXY(SBarX + 3, PY + PH - 1 - TERM_SCROLL_BTN_H + 2, #31);
- { Zone du curseur (entre les deux fleches) }
- TrackTop := PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H + 1;
- TrackBottom := PY + PH - 3 - TERM_SCROLL_BTN_H;
- TrackH := TrackBottom - TrackTop + 1;
- If TrackH < 4 Then TrackH := 4;
- { Curseur proportionnel : taille = VisLines / HistCount }
- If TP.HistCount > VisLines Then Begin
-  ThumbH := (LongInt(VisLines) * TrackH) Div TP.HistCount;
-  If ThumbH < 8 Then ThumbH := 8;
-  If ThumbH > TrackH Then ThumbH := TrackH;
-  { Position : 0 (bas) -> bas du track, max -> haut du track }
-  { Position depuis le bas : ScrollOffset / (HistCount - VisLines) }
-  If TP.HistCount > VisLines Then
-   ThumbY := TrackBottom - ThumbH + 1
-    - (LongInt(TP.ScrollOffset) * (TrackH - ThumbH))
-      Div (TP.HistCount - VisLines)
-  Else
-   ThumbY := TrackTop;
+ If TP.Shell = SK_NCOMMANDER Then Begin
+  { Norton Commander remplace entierement le corps du panneau (grille
+    double-panneau) - seule la liste deroulante du selecteur (dessinee
+    plus bas, commune aux 5 shells) reste partagee. }
+  DrawNCommanderPanel(TP, PX, PY, PW, PH);
  End Else Begin
-  ThumbH := TrackH;
-  ThumbY := TrackTop;
+  { Zone de texte (reserver TERM_SCROLLBAR_WIDTH a droite) }
+  TextRight := SBarX - 1;
+  VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+   Div TERM_LINE_HEIGHT;
+  If VisLines < 1 Then VisLines := 1;
+  MaxCols := (TextRight - (PX + 4)) Div TERM_CHAR_WIDTH;
+  If MaxCols < 10 Then MaxCols := 10;
+  { Borner le decalage de defilement }
+  If TP.HistCount = 0 Then TP.ScrollOffset := 0
+  Else Begin
+   If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
+   If TP.ScrollOffset > TP.HistCount - 1 Then
+    TP.ScrollOffset := TP.HistCount - 1;
+  End;
+  { Trouver le noeud le plus en haut de la fenetre visible.
+    Depuis le tail, reculer de (ScrollOffset + VisLines - 1) noeuds. }
+  Node := TP.HistTail;
+  SkipBack := TP.ScrollOffset + VisLines - 1;
+  While (SkipBack > 0) And (Node <> Nil) And (Node^.Prev <> Nil) Do Begin
+   Node := Node^.Prev;
+   Dec(SkipBack);
+  End;
+  { Afficher VisLines lignes en avant }
+  SetColor(15);
+  YPos := PY + TERM_TAB_HEIGHT + 2;
+  TextLines := 0;
+  For I := 0 To VisLines - 1 Do Begin
+   If Node <> Nil Then Begin
+    S := Node^.S;
+    If Length(S) > MaxCols Then
+     S := Copy(S, 1, MaxCols);
+    OutTextXY(PX + 4, YPos, S);
+    Node := Node^.Next;
+    Inc(TextLines);
+   End;
+   YPos := YPos + TERM_LINE_HEIGHT;
+  End;
+  { Ligne de saisie : visible uniquement si on n est pas remonte
+    dans l historique (ScrollOffset = 0). Sinon on conserve la
+    ligne pour le prochain affichage. }
+  SetColor(10);
+  If TextLines < VisLines Then
+   YPos := PY + TERM_TAB_HEIGHT + 2
+    + TextLines * TERM_LINE_HEIGHT
+  Else
+   YPos := PY + TERM_TAB_HEIGHT + 2
+    + VisLines * TERM_LINE_HEIGHT;
+  GetDir(0, PromptStr);
+  If TP.VirtDrive >= 0 Then
+   PromptStr := Term_VirtFullPath(TP);
+  Case TP.Shell Of
+   SK_POWERSHELL:
+    PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_';
+   SK_BASH:
+    PromptStr := 'user$ ' + TP.InputLine + '_';
+   SK_AMIGADOS:
+    PromptStr := '1.SYS:> ' + TP.InputLine + '_';
+  Else
+   PromptStr := PromptStr + '> ' + TP.InputLine + '_';
+  End;
+  If TP.ScrollOffset > 0 Then
+   PromptStr := '-- defilement (PgUp/PgDn pour naviguer) --';
+  If Length(PromptStr) > MaxCols Then
+   PromptStr := Copy(PromptStr, 1, MaxCols);
+  OutTextXY(PX + 4, YPos, PromptStr);
+  { ===== Barre de defilement a droite ===== }
+  { Fond de la barre }
+  SetFillStyle(SolidFill, 7);
+  Bar(SBarX, PY + TERM_TAB_HEIGHT,
+   SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
+  { Bordure }
+  SetColor(CLR_BORDER);
+  Rectangle(SBarX, PY + TERM_TAB_HEIGHT,
+   SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
+  { Bouton fleche haut }
+  SetFillStyle(SolidFill, 8);
+  Bar(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
+   SBarX + TERM_SCROLLBAR_WIDTH - 2,
+   PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
+   SBarX + TERM_SCROLLBAR_WIDTH - 2,
+   PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H - 1);
+  SetColor(15);
+  OutTextXY(SBarX + 3, PY + TERM_TAB_HEIGHT + 3, #30);
+  { Bouton fleche bas }
+  SetFillStyle(SolidFill, 8);
+  Bar(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
+   SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
+  SetColor(CLR_BORDER);
+  Rectangle(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
+   SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
+  SetColor(15);
+  OutTextXY(SBarX + 3, PY + PH - 1 - TERM_SCROLL_BTN_H + 2, #31);
+  { Zone du curseur (entre les deux fleches) }
+  TrackTop := PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H + 1;
+  TrackBottom := PY + PH - 3 - TERM_SCROLL_BTN_H;
+  TrackH := TrackBottom - TrackTop + 1;
+  If TrackH < 4 Then TrackH := 4;
+  { Curseur proportionnel : taille = VisLines / HistCount }
+  If TP.HistCount > VisLines Then Begin
+   ThumbH := (LongInt(VisLines) * TrackH) Div TP.HistCount;
+   If ThumbH < 8 Then ThumbH := 8;
+   If ThumbH > TrackH Then ThumbH := TrackH;
+   { Position : 0 (bas) -> bas du track, max -> haut du track }
+   { Position depuis le bas : ScrollOffset / (HistCount - VisLines) }
+   If TP.HistCount > VisLines Then
+    ThumbY := TrackBottom - ThumbH + 1
+     - (LongInt(TP.ScrollOffset) * (TrackH - ThumbH))
+       Div (TP.HistCount - VisLines)
+   Else
+    ThumbY := TrackTop;
+  End Else Begin
+   ThumbH := TrackH;
+   ThumbY := TrackTop;
+  End;
+  SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+  Bar(SBarX + 2, ThumbY,
+   SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(SBarX + 2, ThumbY,
+   SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
  End;
- SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
- Bar(SBarX + 2, ThumbY,
-  SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
- SetColor(CLR_BORDER);
- Rectangle(SBarX + 2, ThumbY,
-  SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
  { Dessiner la liste deroulante PAR-DESSUS le texte }
  If TermSelectOpen Then Begin
   { Item 1 : Invite de commandes }
@@ -30720,11 +32290,23 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H + 3,
    'AmigaDOS');
+  { Item 5 : Norton Commander }
+  If TermSelectIdx = 4 Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H + 3,
+   'Norton Commander');
   { Bordure de la liste }
   SetColor(CLR_BORDER);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H - 1);
  End;
  TP.NeedRepaint := False;
 End;
@@ -30837,6 +32419,20 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Item 5 : Norton Commander }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 4 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 5 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_NCOMMANDER;
+    TermSelectOpen := False;
+    ActiveShell := NewShell;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    { Clic ailleurs : fermer la liste }
    TermSelectOpen := False;
    FullRepaintNeeded := True;
@@ -30853,6 +32449,7 @@ Begin
      SK_POWERSHELL: TermSelectIdx := 1;
      SK_BASH:       TermSelectIdx := 2;
      SK_AMIGADOS:   TermSelectIdx := 3;
+     SK_NCOMMANDER: TermSelectIdx := 4;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -30923,7 +32520,7 @@ Begin
     Exit;
    End;
    If Ev.KeyCode = $50 Then Begin { Fleche bas }
-    If TermSelectIdx < 3 Then
+    If TermSelectIdx < 4 Then
      Inc(TermSelectIdx);
     FullRepaintNeeded := True;
     Exit;
@@ -30936,6 +32533,7 @@ Begin
      1: NewShell := SK_POWERSHELL;
      2: NewShell := SK_BASH;
      3: NewShell := SK_AMIGADOS;
+     4: NewShell := SK_NCOMMANDER;
     End;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -30966,6 +32564,13 @@ Begin
     Exit;
    End;
   End;
+  Exit;
+ End;
+ { Norton Commander : modele d interaction completement different       }
+ { (grille double-panneau + touches de fonction), pas de ligne de           }
+ { commande partagee - delegue entierement a son propre gestionnaire. }
+ If TP.Shell = SK_NCOMMANDER Then Begin
+  HandleNCommanderEvent(TP, Ev);
   Exit;
  End;
  { Clavier }
@@ -63475,8 +65080,15 @@ Begin
   HandleStartPageEvent(StartPage, MRUList, Ev);
   Exit;
  End;
- { Raccourcis clavier globaux (touches speciales uniquement) }
- If (Ev.Kind = EV_KEY_DOWN) Then Begin
+ { Raccourcis clavier globaux (touches speciales uniquement) - sauf       }
+ { quand Norton Commander a le focus : il reutilise lui-meme F1..F10          }
+ { (menu deroulant F9, Copier F5, etc., NC.PAS) et doit les recevoir en          }
+ { priorite plutot que de les voir absorbes ici par les raccourcis du          }
+ { debogueur (BOGUE REEL 2026-08-09 : F9 n atteignait jamais                     }
+ { HandleNCommanderEvent a cause de ce court-circuit). }
+ If (Ev.Kind = EV_KEY_DOWN) And
+    Not (TermVisible And TerminalHasFocus And (ActiveShell = SK_NCOMMANDER))
+    Then Begin
   Case Ev.KeyCode Of
    $6B: Begin { Alt+F4 : quitter }
     TryQuit;
