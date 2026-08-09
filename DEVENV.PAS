@@ -24383,6 +24383,7 @@ Var
  Lines: TWrapLines;
  BgColor, FgColor: Byte;
  CurX: Integer;
+ BarTop, BarBot: Integer;
 Begin
  PasChatEnsureInit;
  CTop := ExplorerTabContentTop(Exp);
@@ -24414,8 +24415,14 @@ Begin
    BubX := Exp.X + 6;
   End;
   If (Y + LC * 14 + 6 >= CTop) And (Y <= MsgBot) Then Begin
-   SetFillStyle(SolidFill, BgColor);
-   Bar(BubX, Y, BubX + BubW, Y + LC * 14 + 6);
+   BarTop := Y;
+   If BarTop < CTop Then BarTop := CTop;
+   BarBot := Y + LC * 14 + 6;
+   If BarBot > MsgBot Then BarBot := MsgBot;
+   If BarBot > BarTop Then Begin
+    SetFillStyle(SolidFill, BgColor);
+    Bar(BubX, BarTop, BubX + BubW, BarBot);
+   End;
    SetColor(FgColor);
    For J := 0 To LC - 1 Do
     If (Y + 3 + J * 14 >= CTop - 14) And (Y + 3 + J * 14 <= MsgBot) Then
