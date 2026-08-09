@@ -31257,6 +31257,14 @@ Begin
    Y := Y + RH;
   End;
 
+  { Lignes verticales cyan clair separant les colonnes Nom/Taille/           }
+  { Date/Heure - dessinees apres les lignes de la liste pour rester              }
+  { visibles par-dessus leurs fonds (curseur, marquage...). }
+  SetColor(11);
+  Line(X0 + 3 + NameCols * CW, ColHeadY - 1, X0 + 3 + NameCols * CW, Y - 1);
+  Line(X0 + 3 + (NameCols + 10) * CW + CW Div 2, ColHeadY - 1,
+   X0 + 3 + (NameCols + 10) * CW + CW Div 2, Y - 1);
+
   { Barre d info : ligne du fichier courant du panneau. }
   SetFillStyle(SolidFill, 3);
   Bar(X0 + 1, InfoY, PaneRight - 1, InfoY + RH - 1);
