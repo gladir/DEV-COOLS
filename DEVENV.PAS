@@ -31208,9 +31208,9 @@ Begin
   SetColor(0);
   OutTextXY(CenterX, HeaderY - 2, S);
 
-  { Entete de colonnes (Nom / Taille / Date Heure) - fond noir, texte    }
-  { jaune (palette 0 redefinie en noir reel, voir SetBkColor plus haut). }
-  SetFillStyle(SolidFill, 0);
+  { Entete de colonnes (Nom / Taille / Date Heure) - fond bleu, texte    }
+  { jaune, comme dans l original. }
+  SetFillStyle(SolidFill, 1);
   Bar(X0 + 1, ColHeadY - 1, PaneRight - 1, ColHeadY + RH - 2);
   SetColor(14);
   S := PadRight('Nom', NameCols, ' ') + ' ' + PadLeft('Taille', 9, ' ') +
