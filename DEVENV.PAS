@@ -30762,6 +30762,8 @@ Var
  Tmp: TNCEntry;
  SR: SearchRec;
  SearchPath: String;
+ AtRoot: Boolean;
+ RootChk: String;
 Begin
  Pane.Count := 0;
  Pane.Cursor := 0;
@@ -30867,6 +30869,27 @@ Begin
     Swapped := True;
    End;
  Until Not Swapped;
+
+ { Epingler ".." en tete de liste, sauf a la racine - BOGUE REEL             }
+ { 2026-08-09 : NC.PAS original affiche toujours cette entree pour           }
+ { remonter au repertoire parent (deja gere par NCEnterDir), mais elle       }
+ { avait ete purement et simplement omise de l affichage. Ajoutee apres           }
+ { le tri pour qu elle reste toujours premiere, quel que soit SortMode. }
+ If Slot < 0 Then Begin
+  RootChk := Pane.Path;
+  If (Length(RootChk) > 0) And (RootChk[Length(RootChk)] = '\') Then
+   RootChk := Copy(RootChk, 1, Length(RootChk) - 1);
+  AtRoot := (Length(RootChk) = 2) And (RootChk[2] = ':');
+ End Else
+  AtRoot := (Pane.Path = '\') Or (Pane.Path = '');
+ If Not AtRoot Then Begin
+  If Pane.Count < MAX_NC_ENTRIES Then Inc(Pane.Count);
+  For J := Pane.Count - 1 DownTo 1 Do
+   Pane.Entries[J] := Pane.Entries[J - 1];
+  FillChar(Pane.Entries[0], SizeOf(Pane.Entries[0]), 0);
+  Pane.Entries[0].Name := '..';
+  Pane.Entries[0].IsDir := True;
+ End;
 End;
 
 { Construire le chemin absolu du parent de Path : '\' si deja racine        }
@@ -31222,7 +31245,10 @@ Begin
      S := S + ' ' + PadLeft('<DIR>', 9, ' ')
     Else
      S := S + ' ' + PadLeft(IntToStr(E.Size), 9, ' ');
-    S := S + '  ' + NCFormatDateTime(E, IsHost);
+    If E.Name = '..' Then
+     S := S + '  ' + PadRight('', DTCols - 2, ' ') { pas de date pour ".." }
+    Else
+     S := S + '  ' + NCFormatDateTime(E, IsHost);
     OutTextXY(X0 + 3, Y + 1, S);
    End;
    Y := Y + RH;
@@ -31457,6 +31483,15 @@ Begin
   NCFullPath := DirPath + '\' + Name;
 End;
 
+{ Le curseur du panneau Side est-il sur l entree ".." (remontee au      }
+{ parent, NCListDir) ? Elle ne doit jamais etre marquable ni la cible   }
+{ de Copier/RenDep/Supprimer, seulement de la navigation (Entree). --- }
+Function NCCursorOnDotDot(Side: Integer): Boolean;
+Begin
+ NCCursorOnDotDot := (NCState.Panes[Side].Count > 0) And
+  (NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name = '..');
+End;
+
 { --- F7/MKDIR, F8/Supprimer, F6/RenDep sur le systeme HOTE reel : ces   }
 { operations sont plus simples que sur la disquette virtuelle puisque       }
 { le Pascal standard (MkDir/RmDir/Erase/Rename) suffit. --- }
@@ -31547,7 +31582,8 @@ End;
 
 Procedure NCActionCopyStart(Side, OtherSide: Integer);
 Begin
- If NCState.Panes[Side].Count > 0 Then Begin
+ If (NCState.Panes[Side].Count > 0) And
+    ((NCState.Panes[Side].MarkCount > 0) Or Not NCCursorOnDotDot(Side)) Then Begin
   NCState.PromptBuf := NCState.Panes[OtherSide].Path;
   NCState.Mode := ncPromptCopy;
  End;
@@ -31555,7 +31591,7 @@ End;
 
 Procedure NCActionRenMovStart(Side: Integer);
 Begin
- If NCState.Panes[Side].Count > 0 Then Begin
+ If (NCState.Panes[Side].Count > 0) And Not NCCursorOnDotDot(Side) Then Begin
   NCState.PromptBuf := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name;
   NCState.Mode := ncPromptRenMov;
  End;
@@ -31569,7 +31605,8 @@ End;
 
 Procedure NCActionDeleteStart(Side: Integer);
 Begin
- If (NCState.Panes[Side].Count > 0) Or (NCState.Panes[Side].MarkCount > 0) Then
+ If (NCState.Panes[Side].MarkCount > 0) Or
+    ((NCState.Panes[Side].Count > 0) And Not NCCursorOnDotDot(Side)) Then
   NCState.Mode := ncConfirmDelete;
 End;
 
@@ -31987,14 +32024,17 @@ Begin
    79: { End }
     If NCState.Panes[Side].Count > 0 Then
      NCState.Panes[Side].Cursor := NCState.Panes[Side].Count - 1;
-   82: { Insert : marquer/demarquer l entree courante }
+   82: { Insert : marquer/demarquer l entree courante (jamais ".." - comme  }
+       { dans l original, elle ne se marque pas, on avance juste dessus). }
     If NCState.Panes[Side].Count > 0 Then Begin
-     NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor] :=
-      Not NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor];
-     If NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor] Then
-      Inc(NCState.Panes[Side].MarkCount)
-     Else
-      Dec(NCState.Panes[Side].MarkCount);
+     If Not NCCursorOnDotDot(Side) Then Begin
+      NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor] :=
+       Not NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor];
+      If NCState.Panes[Side].Marked[NCState.Panes[Side].Cursor] Then
+       Inc(NCState.Panes[Side].MarkCount)
+      Else
+       Dec(NCState.Panes[Side].MarkCount);
+     End;
      If NCState.Panes[Side].Cursor < NCState.Panes[Side].Count - 1 Then
       Inc(NCState.Panes[Side].Cursor);
     End;
