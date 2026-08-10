@@ -3162,6 +3162,52 @@ Type
   StatusMsg  : String[127];      { message d etat affiche en bas   }
  End;
 
+ { En-tete de fichier ELF64 (executable Linux x86-64) - seuls les champs  }
+ { necessaires au chargement d un executable statique sont exploites.    }
+ TELF64Header = Record
+  Ident0, Ident1, Ident2, Ident3: Byte;  { 7F 45 4C 46                 }
+  EIClass   : Byte;    { 1=32 bits, 2=64 bits                          }
+  EIData    : Byte;    { 1=little endian, 2=big endian                 }
+  EIVersion : Byte;
+  EIOSABI   : Byte;
+  EIABIVer  : Byte;
+  EIPad     : Array[0..6] Of Byte;
+  EType     : Word;    { 2=ET_EXEC, 3=ET_DYN                           }
+  EMachine  : Word;    { $3E=EM_X86_64                                 }
+  EVersion  : LongInt;
+  EEntry    : QWord;   { point d entree virtuel                        }
+  EPhOff    : QWord;   { offset fichier de la table des program headers}
+  EShOff    : QWord;
+  EFlags    : LongInt;
+  EEhSize   : Word;
+  EPhEntSize: Word;
+  EPhNum    : Word;
+  EShEntSize: Word;
+  EShNum    : Word;
+  EShStrNdx : Word;
+ End;
+
+ { Index des registres generaux dans ELF64_Reg (encodage x86-64 standard,
+   utilise tel quel par les champs ModRM.reg/rm et REX.B/X/R). }
+Const
+ REG_RAX = 0;  REG_RCX = 1;  REG_RDX = 2;  REG_RBX = 3;
+ REG_RSP = 4;  REG_RBP = 5;  REG_RSI = 6;  REG_RDI = 7;
+ REG_R8  = 8;  REG_R9  = 9;  REG_R10 = 10; REG_R11 = 11;
+ REG_R12 = 12; REG_R13 = 13; REG_R14 = 14; REG_R15 = 15;
+
+Type
+ { Entree de la table des program headers ELF64 (56 octets) }
+ TELF64ProgHeader = Record
+  PType  : LongInt;   { 1=PT_LOAD, 2=PT_DYNAMIC, 3=PT_INTERP...        }
+  PFlags : LongInt;   { 1=X, 2=W, 4=R                                  }
+  POffset: QWord;
+  PVAddr : QWord;
+  PPAddr : QWord;
+  PFileSz: QWord;
+  PMemSz : QWord;
+  PAlign : QWord;
+ End;
+
  { Categories des options de l IDE }
  TOptionCategory = (
   OC_ENV_GENERAL,        { Environnement > General            }
@@ -4119,6 +4165,38 @@ Var
  CRAY1_ExitCode : Integer;
  CRAY1_Cycles   : LongInt;
  CRAY1_Panel    : ^TEmulatorPanel;
+ { Etat de l emulateur Linux ELF64 x86-64 integre (mode utilisateur      }
+ { seul, executables statiques non-PIE generes par Free Pascal Linux -   }
+ { pas de chargeur dynamique, pas de PLT/GOT, pas de threads).           }
+ ELF64_Mem       : Array[0..$7FFFFFF] Of Byte; { 128 Mo d espace virtuel emule }
+ { Registres generaux, indexes selon l encodage x86-64 standard :        }
+ { 0=RAX 1=RCX 2=RDX 3=RBX 4=RSP 5=RBP 6=RSI 7=RDI 8=R8..15=R15 - cet     }
+ { ordre (PAS alphabetique) est celui utilise par les champs ModRM/REX.  }
+ ELF64_Reg       : Array[0..15] Of QWord;
+ ELF64_RIP       : QWord;
+ ELF64_RFlags    : QWord;
+ ELF64_FSBase    : QWord;       { base %fs (arch_prctl ARCH_SET_FS)      }
+ ELF64_EntryPoint: QWord;
+ ELF64_LoadBase  : QWord;       { plus petite adresse virtuelle chargee  }
+ ELF64_LoadTop   : QWord;       { plus grande adresse virtuelle chargee  }
+ ELF64_BrkStart  : QWord;       { debut du tas (brk), juste apres l image}
+ ELF64_BrkCur    : QWord;       { position courante du tas (brk)         }
+ ELF64_Halted    : Boolean;
+ ELF64_ExitCode  : Integer;
+ ELF64_InstrCount: LongInt;
+ ELF64_SegCount  : Integer;     { nombre de segments PT_LOAD charges     }
+ ELF64_Panel     : ^TEmulatorPanel;
+ { Fanions arithmetiques (booleens directs plutot que bits de RFlags -   }
+ { plus simple pour Jcc/SETcc/arithmetique ; RFlags n est pas maintenu   }
+ { en synchronisation, aucune instruction PUSHF/POPF n est supportee).  }
+ ELF64_FCF       : Boolean;     { retenue (Carry)                        }
+ ELF64_FZF       : Boolean;     { zero                                   }
+ ELF64_FSF       : Boolean;     { signe                                  }
+ ELF64_FOF       : Boolean;     { debordement (Overflow)                 }
+ ELF64_FDF       : Boolean;     { direction (False=avant, True=arriere)  }
+ { Diagnostic d arret / instruction non supportee }
+ ELF64_LastBadRIP: QWord;
+ ELF64_HaltReason: String;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : Array[0..$FFFF] Of Byte;
  CPU6502_A      : Byte;
@@ -4608,6 +4686,11 @@ End;
 Function HexLong(L: LongInt): String;
 Begin
  HexLong := HexWord(Word(L Shr 16)) + HexWord(Word(L And $FFFF));
+End;
+
+Function HexQWord(Q: QWord): String;
+Begin
+ HexQWord := HexLong(LongInt(Q Shr 32)) + HexLong(LongInt(Q And $FFFFFFFF));
 End;
 
 Function MinInt(A, B: LongInt): LongInt;
@@ -30244,12 +30327,43 @@ Begin
  If FileExists(Candidate) Then TermFindDosExecutable := Candidate;
 End;
 
+{ Cherche un executable Linux (ELF64 x86-64, sans extension - c est ainsi }
+{ que les compilateurs *CW32 de ce projet nomment leur sortie Linux, voir }
+{ BINLINUX\*) dans Dir - meme principe que TermFindDosExecutable ci-      }
+{ dessus, mais la reconnaissance se fait sur la signature magique du      }
+{ fichier (7F 45 4C 46) plutot que sur son extension, puisqu un binaire   }
+{ Linux n en porte generalement pas. Renvoie le chemin complet, ou ''.   }
+Function TermFindElfExecutable(Const Dir, CmdName: String): String;
+Var
+ Base, Candidate: String;
+ F: File;
+ Magic: Array[0..3] Of Byte;
+ BytesReaded: Word;
+Begin
+ TermFindElfExecutable := '';
+ Base := Dir;
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ Candidate := Base + CmdName;
+ If Not FileExists(Candidate) Then Exit;
+ {$I-}
+ Assign(F, Candidate);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FillChar(Magic, SizeOf(Magic), 0);
+ BlockRead(F, Magic, SizeOf(Magic), BytesReaded);
+ Close(F);
+ If (BytesReaded = 4) And (Magic[0] = $7F) And (Magic[1] = Ord('E')) And
+    (Magic[2] = Ord('L')) And (Magic[3] = Ord('F')) Then
+  TermFindElfExecutable := Candidate;
+End;
+
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
 Var
  CurrCmd, ParamStr, PipeS: String;
  Err: Word;
- CurDir, DosExe: String;
+ CurDir, DosExe, ElfExe: String;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -30347,12 +30461,20 @@ Begin
     { taper le nom d un vrai .EXE/.COM 16 bits ne faisait jusqu ici             }
     { jamais rien de plus que cette erreur, comme les 4 autres shells. }
     DosExe := '';
+    ElfExe := '';
     If TP.VirtDrive < 0 Then Begin
      GetDir(0, CurDir);
      DosExe := TermFindDosExecutable(CurDir, CurrCmd);
+     { Idem pour un binaire Linux ELF64 x86-64 (ex : BINLINUX\tp2js) -    }
+     { BOGUE REEL 2026-08-10 signale par l utilisateur : lancer un        }
+     { programme Linux dans le terminal affichait "non reconnue" au lieu }
+     { d etre execute par l emulateur integre.                            }
+     If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
      ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+    Else If ElfExe <> '' Then
+     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64')
     Else
      TermAddLine(TP,
       '''' + CurrCmd +
@@ -30416,9 +30538,24 @@ Begin
    Else If (CurrCmd = 'HELP') Or
     (CurrCmd = 'GET-HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
-   Else
-    TermAddLine(TP, CurrCmd +
-     ' : le terme n''est pas reconnu comme nom de cmdlet.');
+   Else Begin
+    { Meme repli que le shell CMD (voir plus haut) : un vrai PowerShell }
+    { execute egalement un binaire DOS/Linux tape par son nom.          }
+    DosExe := '';
+    ElfExe := '';
+    If TP.VirtDrive < 0 Then Begin
+     GetDir(0, CurDir);
+     DosExe := TermFindDosExecutable(CurDir, CurrCmd);
+     If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
+    End;
+    If DosExe <> '' Then
+     ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+    Else If ElfExe <> '' Then
+     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64')
+    Else
+     TermAddLine(TP, CurrCmd +
+      ' : le terme n''est pas reconnu comme nom de cmdlet.');
+   End;
   End;
   SK_BASH: Begin
    If CurrCmd = 'EXIT' Then
@@ -40244,6 +40381,942 @@ Begin
   EmuNextFreeSeg := Word((Addr + 15) Shr 4) + Exe.MinParagraph;
  If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
  Emu_LoadExe := True;
+End;
+
+{ --- Acces a la memoire virtuelle emulee de l ELF64 (petit-boutiste) --- }
+
+Procedure Emu64_PutByte(Addr: QWord; V: Byte);
+Begin
+ If Addr <= QWord(High(ELF64_Mem)) Then ELF64_Mem[LongInt(Addr)] := V;
+End;
+
+Function Emu64_GetByte(Addr: QWord): Byte;
+Begin
+ If Addr <= QWord(High(ELF64_Mem)) Then
+  Emu64_GetByte := ELF64_Mem[LongInt(Addr)]
+ Else
+  Emu64_GetByte := 0;
+End;
+
+Procedure Emu64_PutQWord(Addr: QWord; V: QWord);
+Var
+ I: Integer;
+Begin
+ For I := 0 To 7 Do
+  Emu64_PutByte(Addr + QWord(I), Byte(V Shr (I * 8)));
+End;
+
+Function Emu64_GetQWord(Addr: QWord): QWord;
+Var
+ I: Integer;
+ R: QWord;
+Begin
+ R := 0;
+ For I := 7 DownTo 0 Do
+  R := (R Shl 8) Or Emu64_GetByte(Addr + QWord(I));
+ Emu64_GetQWord := R;
+End;
+
+Procedure Emu64_PutWord(Addr: QWord; V: Word);
+Begin
+ Emu64_PutByte(Addr, Byte(V And $FF));
+ Emu64_PutByte(Addr + 1, Byte(V Shr 8));
+End;
+
+Function Emu64_GetWord(Addr: QWord): Word;
+Begin
+ Emu64_GetWord := Word(Emu64_GetByte(Addr)) Or (Word(Emu64_GetByte(Addr + 1)) Shl 8);
+End;
+
+Procedure Emu64_PutDWord(Addr: QWord; V: LongWord);
+Var
+ I: Integer;
+Begin
+ For I := 0 To 3 Do
+  Emu64_PutByte(Addr + QWord(I), Byte(V Shr (I * 8)));
+End;
+
+Function Emu64_GetDWord(Addr: QWord): LongWord;
+Var
+ I: Integer;
+ R: LongWord;
+Begin
+ R := 0;
+ For I := 3 DownTo 0 Do
+  R := (R Shl 8) Or Emu64_GetByte(Addr + QWord(I));
+ Emu64_GetDWord := R;
+End;
+
+Function Emu64_GetDWordSigned(Addr: QWord): LongInt;
+Begin
+ Emu64_GetDWordSigned := LongInt(Emu64_GetDWord(Addr));
+End;
+
+{ --- Charger un executable Linux ELF64 x86-64 statique dans la memoire  }
+{ virtuelle emulee, et preparer la pile initiale (argc/argv/envp/auxv)  }
+{ selon l ABI SysV Linux x86-64. Ne prend en charge que les binaires    }
+{ statiques (ET_EXEC, sans PT_INTERP/PT_DYNAMIC) - c est le cas de tous }
+{ les binaires generes par les compilateurs *CW32 de ce projet pour la  }
+{ cible Linux (ex: BINLINUX\*.exe), qui n ont pas d editeur de liens     }
+{ dynamique a resoudre. --- }
+Function Emu_LoadELF64(Const FileName: String): Boolean;
+Var
+ F: File;
+ Hdr: TELF64Header;
+ PH: TELF64ProgHeader;
+ BytesReaded: Word;
+ I: Integer;
+ SegBuf: Array[0..4095] Of Byte;
+ SegLeft: LongInt;
+ SegAddr: QWord;
+ ToRead: Word;
+ MaxAddr: QWord;
+ StackTop: QWord;
+ SP: QWord;
+ Arg0Addr: QWord;
+Begin
+ Emu_LoadELF64 := False;
+ ELF64_Halted := False;
+ ELF64_ExitCode := 0;
+ ELF64_InstrCount := 0;
+ ELF64_SegCount := 0;
+ ELF64_LoadBase := 0;
+ ELF64_LoadTop := 0;
+ FillChar(ELF64_Mem, SizeOf(ELF64_Mem), 0);
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FillChar(Hdr, SizeOf(Hdr), 0);
+ BlockRead(F, Hdr, SizeOf(Hdr), BytesReaded);
+ If BytesReaded <> SizeOf(Hdr) Then Begin Close(F); Exit; End;
+ { Verifier la signature magique 7F 45 4C 46 et le format }
+ If (Hdr.Ident0 <> $7F) Or (Hdr.Ident1 <> Ord('E')) Or
+    (Hdr.Ident2 <> Ord('L')) Or (Hdr.Ident3 <> Ord('F')) Then Begin
+  Close(F); Exit;
+ End;
+ If Hdr.EIClass <> 2 Then Begin Close(F); Exit; End; { seul le 64 bits }
+ If Hdr.EMachine <> $3E Then Begin Close(F); Exit; End; { EM_X86_64    }
+ ELF64_EntryPoint := Hdr.EEntry;
+ MaxAddr := 0;
+ { Parcourir la table des program headers et charger chaque segment       }
+ { PT_LOAD a son adresse virtuelle - le reste (PMemSz - PFileSz) est du   }
+ { BSS, deja mis a zero par le FillChar ci-dessus.                        }
+ For I := 0 To Integer(Hdr.EPhNum) - 1 Do Begin
+  {$I-}
+  Seek(F, LongInt(Hdr.EPhOff) + LongInt(I) * LongInt(Hdr.EPhEntSize));
+  {$I+}
+  If IOResult <> 0 Then Begin Close(F); Exit; End;
+  FillChar(PH, SizeOf(PH), 0);
+  BlockRead(F, PH, SizeOf(PH), BytesReaded);
+  If BytesReaded <> SizeOf(PH) Then Begin Close(F); Exit; End;
+  If PH.PType = 1 Then Begin { PT_LOAD }
+   If (ELF64_SegCount = 0) Or (PH.PVAddr < ELF64_LoadBase) Then
+    ELF64_LoadBase := PH.PVAddr;
+   If PH.PVAddr + PH.PMemSz > MaxAddr Then MaxAddr := PH.PVAddr + PH.PMemSz;
+   If PH.PVAddr + PH.PMemSz > QWord(High(ELF64_Mem)) Then Begin
+    Close(F); Exit; { hors de l espace virtuel emule (128 Mo) }
+   End;
+   If PH.PFileSz > 0 Then Begin
+    {$I-}
+    Seek(F, LongInt(PH.POffset));
+    {$I+}
+    If IOResult <> 0 Then Begin Close(F); Exit; End;
+    SegAddr := PH.PVAddr;
+    SegLeft := LongInt(PH.PFileSz);
+    While SegLeft > 0 Do Begin
+     If SegLeft > SizeOf(SegBuf) Then ToRead := SizeOf(SegBuf)
+                                  Else ToRead := Word(SegLeft);
+     BlockRead(F, SegBuf, ToRead, BytesReaded);
+     If BytesReaded = 0 Then Break;
+     Move(SegBuf, ELF64_Mem[LongInt(SegAddr)], BytesReaded);
+     SegAddr := SegAddr + QWord(BytesReaded);
+     SegLeft := SegLeft - BytesReaded;
+    End;
+   End;
+   Inc(ELF64_SegCount);
+  End;
+ End;
+ Close(F);
+ If ELF64_SegCount = 0 Then Exit; { aucun segment PT_LOAD trouve }
+ ELF64_LoadTop := MaxAddr;
+ { Le tas (brk) commence juste apres le dernier octet charge, aligne 4 Ko }
+ ELF64_BrkStart := (MaxAddr + 4095) And Not QWord(4095);
+ ELF64_BrkCur := ELF64_BrkStart;
+ { --- Mise en place de la pile initiale (ABI SysV Linux x86-64) ---      }
+ { Le sommet de la pile emulee est fixe pres du haut de l espace virtuel  }
+ { de 128 Mo (la pile croissant vers le bas). On y pousse d abord la      }
+ { chaine argv[0] (chemin du binaire), puis - en remontant vers des       }
+ { adresses plus basses - la zone canonique attendue par le code de       }
+ { demarrage du runtime : argc, argv[], NULL, envp[], NULL, auxv,        }
+ { AT_NULL. Un auxv minimal (AT_NULL seul) suffit a eviter un parcours    }
+ { incorrect par le crt0 genere par Free Pascal.                          }
+ StackTop := QWord(High(ELF64_Mem)) - $10000; { marge de securite en haut }
+ StackTop := StackTop And Not QWord(15);      { alignement 16 octets      }
+ SP := StackTop;
+ SP := SP - QWord(Length(FileName) + 1);
+ For I := 1 To Length(FileName) Do
+  Emu64_PutByte(SP + QWord(I) - 1, Ord(FileName[I]));
+ Emu64_PutByte(SP + QWord(Length(FileName)), 0);
+ Arg0Addr := SP;
+ SP := SP And Not QWord(15); { realigner avant argc/argv/envp/auxv }
+ { auxv : AT_NULL (type=0, valeur=0) }
+ SP := SP - 16;
+ Emu64_PutQWord(SP, 0);
+ Emu64_PutQWord(SP + 8, 0);
+ { envp[] : tableau vide (NULL final seulement) }
+ SP := SP - 8;
+ Emu64_PutQWord(SP, 0);
+ { argv[] : argv[0] puis NULL }
+ SP := SP - 8;
+ Emu64_PutQWord(SP, 0);
+ SP := SP - 8;
+ Emu64_PutQWord(SP, Arg0Addr);
+ { argc = 1 }
+ SP := SP - 8;
+ Emu64_PutQWord(SP, 1);
+ FillChar(ELF64_Reg, SizeOf(ELF64_Reg), 0);
+ ELF64_Reg[REG_RSP] := SP;
+ ELF64_RIP := ELF64_EntryPoint;
+ ELF64_RFlags := $202; { IF=1, bit reserve 1=1 (etat initial standard)    }
+ ELF64_FSBase := 0;
+ Emu_LoadELF64 := True;
+End;
+
+{ ==========================================================================
+  Coeur d execution x86-64 (mode utilisateur) de l emulateur Linux ELF64.
+  Decodeur ModRM/SIB/REX generique + jeu d instructions suffisant pour
+  parcourir le prologue/corps d un binaire genere par Free Pascal Linux
+  jusqu au premier SYSCALL (la table de dispatch des appels systeme
+  elle-meme est ajoutee a l etape suivante de la feuille de route).
+  ========================================================================== }
+
+Function Elf64_FetchByte: Byte;
+Begin
+ Elf64_FetchByte := Emu64_GetByte(ELF64_RIP);
+ ELF64_RIP := ELF64_RIP + 1;
+End;
+
+Function Elf64_FetchImm32Signed: LongInt;
+Begin
+ Elf64_FetchImm32Signed := Emu64_GetDWordSigned(ELF64_RIP);
+ ELF64_RIP := ELF64_RIP + 4;
+End;
+
+Function Elf64_FetchImm64: QWord;
+Begin
+ Elf64_FetchImm64 := Emu64_GetQWord(ELF64_RIP);
+ ELF64_RIP := ELF64_RIP + 8;
+End;
+
+Function Elf64_FetchImm8Signed: ShortInt;
+Begin
+ Elf64_FetchImm8Signed := ShortInt(Elf64_FetchByte);
+End;
+
+Type
+ { Operande decode a partir d un octet ModR/M (+ eventuel SIB) x86-64 }
+ TElf64EA = Record
+  IsReg   : Boolean;    { True : operande registre (RegIdx)             }
+  RegIdx  : Integer;    { si IsReg                                       }
+  IsRipRel: Boolean;    { True : adressage relatif a RIP (RipDisp)       }
+  RipDisp : LongInt;    { deplacement signe, si IsRipRel                 }
+  Addr    : QWord;      { adresse effective deja calculee, sinon         }
+ End;
+
+{ Lecture/ecriture d un registre general a la largeur voulue (8/16/32/64).
+  Simplification assumee : les registres 8 bits 4..7 sont toujours traites
+  comme SPL/BPL/SIL/DIL (forme "avec REX"), jamais comme AH/CH/DH/BH -
+  ce que produit toujours un compilateur moderne generant du code 64 bits. }
+Function Elf64_GetReg(Idx, Size: Integer): QWord;
+Begin
+ Case Size Of
+  8:  Elf64_GetReg := ELF64_Reg[Idx] And $FF;
+  16: Elf64_GetReg := ELF64_Reg[Idx] And $FFFF;
+  32: Elf64_GetReg := ELF64_Reg[Idx] And $FFFFFFFF;
+  Else Elf64_GetReg := ELF64_Reg[Idx];
+ End;
+End;
+
+Procedure Elf64_SetReg(Idx, Size: Integer; Val: QWord);
+Begin
+ Case Size Of
+  8:  ELF64_Reg[Idx] := (ELF64_Reg[Idx] And Not QWord($FF)) Or (Val And $FF);
+  16: ELF64_Reg[Idx] := (ELF64_Reg[Idx] And Not QWord($FFFF)) Or (Val And $FFFF);
+  32: ELF64_Reg[Idx] := Val And $FFFFFFFF; { ecrire un registre 32 bits remet les 32 bits hauts a zero (ABI x86-64) }
+  Else ELF64_Reg[Idx] := Val;
+ End;
+End;
+
+Function Elf64_ResolveEA(Const EA: TElf64EA): QWord;
+Begin
+ If EA.IsRipRel Then
+  Elf64_ResolveEA := ELF64_RIP + QWord(Int64(EA.RipDisp))
+ Else
+  Elf64_ResolveEA := EA.Addr;
+End;
+
+{ Decode un octet ModR/M (et son eventuel octet SIB + deplacement) en      }
+{ commencant a ELF64_RIP, qu il avance d autant d octets que necessaire.   }
+{ RegField recoit le champ Reg (etendu par REX.R) - utilise soit comme     }
+{ numero de registre, soit comme extension d opcode (groupes 80/81/83,     }
+{ F6/F7, FF) selon l instruction appelante.                                }
+Function Elf64_DecodeModRM(RexR, RexX, RexB: Boolean; Var RegField: Integer): TElf64EA;
+Var
+ EA: TElf64EA;
+ ModRMByte, SibByte: Byte;
+ Md, Rm, Scale, Idx, Base: Byte;
+ Disp8: ShortInt;
+ Disp32: LongInt;
+ HasIndex, HasBase: Boolean;
+ IdxVal, BaseVal: QWord;
+Begin
+ FillChar(EA, SizeOf(EA), 0);
+ ModRMByte := Elf64_FetchByte;
+ Md := (ModRMByte Shr 6) And 3;
+ RegField := (ModRMByte Shr 3) And 7;
+ If RexR Then RegField := RegField Or 8;
+ Rm := ModRMByte And 7;
+ If Md = 3 Then Begin
+  EA.IsReg := True;
+  EA.RegIdx := Rm;
+  If RexB Then EA.RegIdx := EA.RegIdx Or 8;
+  Elf64_DecodeModRM := EA;
+  Exit;
+ End;
+ HasIndex := False; IdxVal := 0;
+ HasBase := True; BaseVal := 0;
+ Disp32 := 0;
+ If Rm = 4 Then Begin
+  { octet SIB present }
+  SibByte := Elf64_FetchByte;
+  Scale := (SibByte Shr 6) And 3;
+  Idx := (SibByte Shr 3) And 7;
+  Base := SibByte And 7;
+  If (Idx = 4) And Not RexX Then
+   HasIndex := False
+  Else Begin
+   HasIndex := True;
+   If RexX Then Idx := Idx Or 8;
+   IdxVal := ELF64_Reg[Idx] Shl Scale;
+  End;
+  If (Base = 5) And (Md = 0) Then Begin
+   HasBase := False;
+   Disp32 := Elf64_FetchImm32Signed;
+  End Else Begin
+   If RexB Then Base := Base Or 8;
+   BaseVal := ELF64_Reg[Base];
+  End;
+ End Else If (Rm = 5) And (Md = 0) Then Begin
+  { Adressage relatif a RIP : resolu plus tard (une fois l instruction    }
+  { entiere, y compris un eventuel immediat final, consommee).            }
+  Disp32 := Elf64_FetchImm32Signed;
+  EA.IsRipRel := True;
+  EA.RipDisp := Disp32;
+  Elf64_DecodeModRM := EA;
+  Exit;
+ End Else Begin
+  Base := Rm;
+  If RexB Then Base := Base Or 8;
+  BaseVal := ELF64_Reg[Base];
+ End;
+ If Md = 1 Then Begin
+  Disp8 := Elf64_FetchImm8Signed;
+  Disp32 := Disp8;
+ End Else If Md = 2 Then
+  Disp32 := Elf64_FetchImm32Signed;
+ EA.Addr := 0;
+ If HasBase Then EA.Addr := EA.Addr + BaseVal;
+ If HasIndex Then EA.Addr := EA.Addr + IdxVal;
+ EA.Addr := EA.Addr + QWord(Int64(Disp32));
+ Elf64_DecodeModRM := EA;
+End;
+
+Function Elf64_ReadOperand(Const EA: TElf64EA; Size: Integer): QWord;
+Var
+ A: QWord;
+Begin
+ If EA.IsReg Then
+  Elf64_ReadOperand := Elf64_GetReg(EA.RegIdx, Size)
+ Else Begin
+  A := Elf64_ResolveEA(EA);
+  Case Size Of
+   8:  Elf64_ReadOperand := Emu64_GetByte(A);
+   16: Elf64_ReadOperand := Emu64_GetWord(A);
+   32: Elf64_ReadOperand := Emu64_GetDWord(A);
+   Else Elf64_ReadOperand := Emu64_GetQWord(A);
+  End;
+ End;
+End;
+
+Procedure Elf64_WriteOperand(Const EA: TElf64EA; Size: Integer; Val: QWord);
+Var
+ A: QWord;
+Begin
+ If EA.IsReg Then
+  Elf64_SetReg(EA.RegIdx, Size, Val)
+ Else Begin
+  A := Elf64_ResolveEA(EA);
+  Case Size Of
+   8:  Emu64_PutByte(A, Byte(Val And $FF));
+   16: Emu64_PutWord(A, Word(Val And $FFFF));
+   32: Emu64_PutDWord(A, LongWord(Val And $FFFFFFFF));
+   Else Emu64_PutQWord(A, Val);
+  End;
+ End;
+End;
+
+Procedure Elf64_SizeMaskAndSign(Size: Integer; Var Mask, SignBit: QWord);
+Begin
+ Case Size Of
+  8:  Begin Mask := $FF; SignBit := $80; End;
+  16: Begin Mask := $FFFF; SignBit := $8000; End;
+  32: Begin Mask := $FFFFFFFF; SignBit := $80000000; End;
+  Else Begin Mask := QWord($FFFFFFFFFFFFFFFF); SignBit := QWord($8000000000000000); End;
+ End;
+End;
+
+Procedure Elf64_SetFlagsLogic(ResVal: QWord; Size: Integer);
+Var
+ Mask, SignBit: QWord;
+Begin
+ Elf64_SizeMaskAndSign(Size, Mask, SignBit);
+ ResVal := ResVal And Mask;
+ ELF64_FZF := (ResVal = 0);
+ ELF64_FSF := (ResVal And SignBit) <> 0;
+ ELF64_FCF := False;
+ ELF64_FOF := False;
+End;
+
+Procedure Elf64_SetFlagsAdd(A, B, ResVal: QWord; Size: Integer);
+Var
+ Mask, SignBit: QWord;
+ SignA, SignB, SignR: Boolean;
+Begin
+ Elf64_SizeMaskAndSign(Size, Mask, SignBit);
+ A := A And Mask; B := B And Mask; ResVal := ResVal And Mask;
+ ELF64_FZF := (ResVal = 0);
+ ELF64_FSF := (ResVal And SignBit) <> 0;
+ ELF64_FCF := (ResVal < A);
+ SignA := (A And SignBit) <> 0;
+ SignB := (B And SignBit) <> 0;
+ SignR := (ResVal And SignBit) <> 0;
+ ELF64_FOF := (SignA = SignB) And (SignR <> SignA);
+End;
+
+Procedure Elf64_SetFlagsSub(A, B, ResVal: QWord; Size: Integer);
+Var
+ Mask, SignBit: QWord;
+ SignA, SignB, SignR: Boolean;
+Begin
+ Elf64_SizeMaskAndSign(Size, Mask, SignBit);
+ A := A And Mask; B := B And Mask; ResVal := ResVal And Mask;
+ ELF64_FZF := (ResVal = 0);
+ ELF64_FSF := (ResVal And SignBit) <> 0;
+ ELF64_FCF := (A < B);
+ SignA := (A And SignBit) <> 0;
+ SignB := (B And SignBit) <> 0;
+ SignR := (ResVal And SignBit) <> 0;
+ ELF64_FOF := (SignA <> SignB) And (SignR <> SignA);
+End;
+
+{ Calcule et applique les fanions pour l une des 8 operations ALU         }
+{ standard (encodage x86 : 0=ADD 1=OR 2=ADC 3=SBB 4=AND 5=SUB 6=XOR       }
+{ 7=CMP) - CMP se comporte comme SUB mais sans ecrire le resultat         }
+{ (l appelant ne doit pas rappeler Elf64_WriteOperand pour AluOp=7).      }
+Function Elf64_AluCompute(AluOp: Integer; A, B: QWord; Size: Integer): QWord;
+Var
+ R, CarryIn: QWord;
+Begin
+ CarryIn := 0;
+ If ELF64_FCF Then CarryIn := 1;
+ Case AluOp Of
+  0: Begin R := A + B; Elf64_SetFlagsAdd(A, B, R, Size); End;
+  1: Begin R := A Or B; Elf64_SetFlagsLogic(R, Size); End;
+  2: Begin R := A + B + CarryIn; Elf64_SetFlagsAdd(A, B + CarryIn, R, Size); End;
+  3: Begin R := A - B - CarryIn; Elf64_SetFlagsSub(A, B + CarryIn, R, Size); End;
+  4: Begin R := A And B; Elf64_SetFlagsLogic(R, Size); End;
+  5: Begin R := A - B; Elf64_SetFlagsSub(A, B, R, Size); End;
+  6: Begin R := A Xor B; Elf64_SetFlagsLogic(R, Size); End;
+  7: Begin R := A - B; Elf64_SetFlagsSub(A, B, R, Size); End;
+  Else R := A;
+ End;
+ Elf64_AluCompute := R;
+End;
+
+Procedure Elf64_Push(Val: QWord);
+Begin
+ ELF64_Reg[REG_RSP] := ELF64_Reg[REG_RSP] - 8;
+ Emu64_PutQWord(ELF64_Reg[REG_RSP], Val);
+End;
+
+Function Elf64_Pop: QWord;
+Begin
+ Elf64_Pop := Emu64_GetQWord(ELF64_Reg[REG_RSP]);
+ ELF64_Reg[REG_RSP] := ELF64_Reg[REG_RSP] + 8;
+End;
+
+{ Conditions Jcc/SETcc standard (0..F). Limitation connue (etape          }
+{ ulterieure) : le fanion de parite PF n est pas suivi - JP/JPE/JNP/JPO   }
+{ renvoient une valeur fixe plutot que le vrai calcul de parite.          }
+Function Elf64_EvalCond(CondCode: Byte): Boolean;
+Begin
+ Case CondCode Of
+  $0: Elf64_EvalCond := ELF64_FOF;
+  $1: Elf64_EvalCond := Not ELF64_FOF;
+  $2: Elf64_EvalCond := ELF64_FCF;
+  $3: Elf64_EvalCond := Not ELF64_FCF;
+  $4: Elf64_EvalCond := ELF64_FZF;
+  $5: Elf64_EvalCond := Not ELF64_FZF;
+  $6: Elf64_EvalCond := ELF64_FCF Or ELF64_FZF;
+  $7: Elf64_EvalCond := (Not ELF64_FCF) And (Not ELF64_FZF);
+  $8: Elf64_EvalCond := ELF64_FSF;
+  $9: Elf64_EvalCond := Not ELF64_FSF;
+  $A: Elf64_EvalCond := False;
+  $B: Elf64_EvalCond := True;
+  $C: Elf64_EvalCond := ELF64_FSF <> ELF64_FOF;
+  $D: Elf64_EvalCond := ELF64_FSF = ELF64_FOF;
+  $E: Elf64_EvalCond := ELF64_FZF Or (ELF64_FSF <> ELF64_FOF);
+  $F: Elf64_EvalCond := (Not ELF64_FZF) And (ELF64_FSF = ELF64_FOF);
+  Else Elf64_EvalCond := False;
+ End;
+End;
+
+{ MOVSB/MOVSW/MOVSD/MOVSQ : copie [RSI]->[RDI] puis avance RSI/RDI de     }
+{ Sz/8 octets (sens donne par ELF64_FDF, mis a jour par CLD/STD).         }
+Procedure Elf64_DoMovs(Sz: Integer);
+Var
+ Step: QWord;
+Begin
+ Case Sz Of
+  8:  Emu64_PutByte(ELF64_Reg[REG_RDI], Emu64_GetByte(ELF64_Reg[REG_RSI]));
+  16: Emu64_PutWord(ELF64_Reg[REG_RDI], Emu64_GetWord(ELF64_Reg[REG_RSI]));
+  32: Emu64_PutDWord(ELF64_Reg[REG_RDI], Emu64_GetDWord(ELF64_Reg[REG_RSI]));
+  Else Emu64_PutQWord(ELF64_Reg[REG_RDI], Emu64_GetQWord(ELF64_Reg[REG_RSI]));
+ End;
+ Step := QWord(Sz Div 8);
+ If ELF64_FDF Then Begin
+  ELF64_Reg[REG_RSI] := ELF64_Reg[REG_RSI] - Step;
+  ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - Step;
+ End Else Begin
+  ELF64_Reg[REG_RSI] := ELF64_Reg[REG_RSI] + Step;
+  ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + Step;
+ End;
+End;
+
+{ STOSB/STOSW/STOSD/STOSQ : ecrit AL/AX/EAX/RAX en [RDI] puis avance RDI. }
+Procedure Elf64_DoStos(Sz: Integer);
+Begin
+ Case Sz Of
+  8:  Emu64_PutByte(ELF64_Reg[REG_RDI], Byte(ELF64_Reg[REG_RAX] And $FF));
+  16: Emu64_PutWord(ELF64_Reg[REG_RDI], Word(ELF64_Reg[REG_RAX] And $FFFF));
+  32: Emu64_PutDWord(ELF64_Reg[REG_RDI], LongWord(ELF64_Reg[REG_RAX] And $FFFFFFFF));
+  Else Emu64_PutQWord(ELF64_Reg[REG_RDI], ELF64_Reg[REG_RAX]);
+ End;
+ If ELF64_FDF Then
+  ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - QWord(Sz Div 8)
+ Else
+  ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + QWord(Sz Div 8);
+End;
+
+{ Execute UNE instruction a partir de ELF64_RIP. En cas d opcode non      }
+{ reconnu ou de fonctionnalite non implementee, arrete proprement         }
+{ l emulation (ELF64_Halted) avec un message diagnostic plutot que de     }
+{ planter ou de continuer sur un etat incorrect.                         }
+Procedure Elf64_Step;
+Var
+ StartRIP: QWord;
+ B, Op, Op2: Byte;
+ RexW, RexR, RexX, RexB: Boolean;
+ OpSize: Integer;
+ EA: TElf64EA;
+ RegField, GroupOp: Integer;
+ Imm8: ShortInt;
+ Imm32: LongInt;
+ Imm64: QWord;
+ Val1, Val2, ResVal: QWord;
+ Saw66, SawF3: Boolean;
+Begin
+ If ELF64_Halted Then Exit;
+ StartRIP := ELF64_RIP;
+ RexW := False; RexR := False; RexX := False; RexB := False;
+ Saw66 := False; SawF3 := False;
+
+ { Prefixes : la plupart (segment, REPNE, LOCK, taille d adresse) sont    }
+ { simplement consommes - 66 (taille d operande) et F3 (REP, utilise par  }
+ { MOVS/STOS) influencent le decodage ci-dessous.                         }
+ Repeat
+  B := Emu64_GetByte(ELF64_RIP);
+  Case B Of
+   $66: Begin Saw66 := True; ELF64_RIP := ELF64_RIP + 1; End;
+   $F3: Begin SawF3 := True; ELF64_RIP := ELF64_RIP + 1; End;
+   $67, $2E, $36, $3E, $26, $64, $65, $F0, $F2:
+    ELF64_RIP := ELF64_RIP + 1;
+   Else Break;
+  End;
+ Until False;
+
+ B := Emu64_GetByte(ELF64_RIP);
+ If (B And $F0) = $40 Then Begin
+  RexW := (B And $08) <> 0;
+  RexR := (B And $04) <> 0;
+  RexX := (B And $02) <> 0;
+  RexB := (B And $01) <> 0;
+  ELF64_RIP := ELF64_RIP + 1;
+ End;
+
+ If RexW Then OpSize := 64
+ Else If Saw66 Then OpSize := 16
+ Else OpSize := 32;
+
+ Op := Elf64_FetchByte;
+
+ If (Op < $40) And ((Op And 7) <= 5) Then Begin
+  { Groupe ALU standard (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP), 6 formes }
+  GroupOp := Op Shr 3;
+  Case Op And 7 Of
+   0: Begin { Eb, Gb }
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Val1 := Elf64_ReadOperand(EA, 8);
+    Val2 := Elf64_GetReg(RegField, 8);
+    ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, 8);
+    If GroupOp <> 7 Then Elf64_WriteOperand(EA, 8, ResVal);
+   End;
+   1: Begin { Ev, Gv }
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Val1 := Elf64_ReadOperand(EA, OpSize);
+    Val2 := Elf64_GetReg(RegField, OpSize);
+    ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, OpSize);
+    If GroupOp <> 7 Then Elf64_WriteOperand(EA, OpSize, ResVal);
+   End;
+   2: Begin { Gb, Eb }
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Val1 := Elf64_GetReg(RegField, 8);
+    Val2 := Elf64_ReadOperand(EA, 8);
+    ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, 8);
+    If GroupOp <> 7 Then Elf64_SetReg(RegField, 8, ResVal);
+   End;
+   3: Begin { Gv, Ev }
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Val1 := Elf64_GetReg(RegField, OpSize);
+    Val2 := Elf64_ReadOperand(EA, OpSize);
+    ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, OpSize);
+    If GroupOp <> 7 Then Elf64_SetReg(RegField, OpSize, ResVal);
+   End;
+   4: Begin { AL, ib }
+    Imm8 := Elf64_FetchImm8Signed;
+    Val1 := Elf64_GetReg(REG_RAX, 8);
+    ResVal := Elf64_AluCompute(GroupOp, Val1, QWord(Byte(Imm8)), 8);
+    If GroupOp <> 7 Then Elf64_SetReg(REG_RAX, 8, ResVal);
+   End;
+   Else Begin { 5 : eAX, iz }
+    Imm32 := Elf64_FetchImm32Signed;
+    Val1 := Elf64_GetReg(REG_RAX, OpSize);
+    If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+    ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, OpSize);
+    If GroupOp <> 7 Then Elf64_SetReg(REG_RAX, OpSize, ResVal);
+   End;
+  End;
+ End Else Case Op Of
+
+  $90: ; { NOP }
+
+  $0F: Begin
+   Op2 := Elf64_FetchByte;
+   Case Op2 Of
+    $1E: Elf64_FetchByte; { F3 0F 1E FA/FB = ENDBR64/ENDBR32, deja consomme }
+    $05: Begin { SYSCALL }
+     ELF64_Halted := True;
+     ELF64_HaltReason := 'Appel systeme rencontre (numero ' +
+      IntToStr(LongInt(ELF64_Reg[REG_RAX])) +
+      ') - le repartiteur d''appels systeme n''est pas encore implemente';
+    End;
+    $B6: Begin { MOVZX r, r/m8 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Elf64_SetReg(RegField, OpSize, Elf64_ReadOperand(EA, 8));
+    End;
+    $B7: Begin { MOVZX r, r/m16 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Elf64_SetReg(RegField, OpSize, Elf64_ReadOperand(EA, 16));
+    End;
+    $BE: Begin { MOVSX r, r/m8 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Val1 := Elf64_ReadOperand(EA, 8);
+     Elf64_SetReg(RegField, OpSize, QWord(Int64(ShortInt(Val1))));
+    End;
+    $BF: Begin { MOVSX r, r/m16 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Val1 := Elf64_ReadOperand(EA, 16);
+     Elf64_SetReg(RegField, OpSize, QWord(Int64(SmallInt(Val1))));
+    End;
+    $80..$8F: Begin { Jcc rel32 }
+     Imm32 := Elf64_FetchImm32Signed;
+     If Elf64_EvalCond(Op2 And $0F) Then
+      ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm32));
+    End;
+    Else Begin
+     ELF64_Halted := True;
+     ELF64_LastBadRIP := StartRIP;
+     ELF64_HaltReason := 'Opcode 0F ' + HexByte(Op2) + ' non supporte';
+    End;
+   End;
+  End;
+
+  $63: Begin { MOVSXD r64, r/m32 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Val1 := Elf64_ReadOperand(EA, 32);
+   Elf64_SetReg(RegField, 64, QWord(Int64(LongInt(LongWord(Val1)))));
+  End;
+
+  $80: Begin { groupe 1 : Eb, ib }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Imm8 := Elf64_FetchImm8Signed;
+   Val1 := Elf64_ReadOperand(EA, 8);
+   ResVal := Elf64_AluCompute(GroupOp, Val1, QWord(Byte(Imm8)), 8);
+   If GroupOp <> 7 Then Elf64_WriteOperand(EA, 8, ResVal);
+  End;
+  $81: Begin { groupe 1 : Ev, iz }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Imm32 := Elf64_FetchImm32Signed;
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+   ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, OpSize);
+   If GroupOp <> 7 Then Elf64_WriteOperand(EA, OpSize, ResVal);
+  End;
+  $83: Begin { groupe 1 : Ev, ib (signe-etendu) }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Imm8 := Elf64_FetchImm8Signed;
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   ResVal := Elf64_AluCompute(GroupOp, Val1, QWord(Int64(Imm8)), OpSize);
+   If GroupOp <> 7 Then Elf64_WriteOperand(EA, OpSize, ResVal);
+  End;
+
+  $84: Begin { TEST r/m8, r8 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Val1 := Elf64_ReadOperand(EA, 8);
+   Val2 := Elf64_GetReg(RegField, 8);
+   Elf64_SetFlagsLogic(Val1 And Val2, 8);
+  End;
+  $85: Begin { TEST r/m, r }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   Val2 := Elf64_GetReg(RegField, OpSize);
+   Elf64_SetFlagsLogic(Val1 And Val2, OpSize);
+  End;
+
+  $88: Begin { MOV r/m8, r8 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Elf64_WriteOperand(EA, 8, Elf64_GetReg(RegField, 8));
+  End;
+  $89: Begin { MOV r/m, r }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Elf64_WriteOperand(EA, OpSize, Elf64_GetReg(RegField, OpSize));
+  End;
+  $8A: Begin { MOV r8, r/m8 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Elf64_SetReg(RegField, 8, Elf64_ReadOperand(EA, 8));
+  End;
+  $8B: Begin { MOV r, r/m }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Elf64_SetReg(RegField, OpSize, Elf64_ReadOperand(EA, OpSize));
+  End;
+  $8D: Begin { LEA r, m }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Elf64_SetReg(RegField, OpSize, Elf64_ResolveEA(EA));
+  End;
+
+  $B8..$BF: Begin { MOV r32/r64, imm32/imm64 (registre code dans l opcode) }
+   RegField := (Op - $B8);
+   If RexB Then RegField := RegField Or 8;
+   If RexW Then Begin
+    Imm64 := Elf64_FetchImm64;
+    Elf64_SetReg(RegField, 64, Imm64);
+   End Else Begin
+    Imm32 := Elf64_FetchImm32Signed;
+    Elf64_SetReg(RegField, 32, QWord(LongWord(Imm32)));
+   End;
+  End;
+
+  $C6: Begin { MOV r/m8, imm8 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Imm8 := Elf64_FetchImm8Signed;
+   Elf64_WriteOperand(EA, 8, QWord(Byte(Imm8)));
+  End;
+  $C7: Begin { MOV r/m, imm32 (signe-etendu si REX.W) }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Imm32 := Elf64_FetchImm32Signed;
+   If OpSize = 64 Then
+    Elf64_WriteOperand(EA, 64, QWord(Int64(Imm32)))
+   Else
+    Elf64_WriteOperand(EA, OpSize, QWord(LongWord(Imm32)));
+  End;
+
+  $50..$57: Elf64_Push(ELF64_Reg[(Op - $50) Or Ord(RexB) Shl 3]);
+  $58..$5F: Begin
+   RegField := (Op - $58);
+   If RexB Then RegField := RegField Or 8;
+   ELF64_Reg[RegField] := Elf64_Pop;
+  End;
+
+  $C3: ELF64_RIP := Elf64_Pop; { RET }
+
+  $E8: Begin { CALL rel32 }
+   Imm32 := Elf64_FetchImm32Signed;
+   Elf64_Push(ELF64_RIP);
+   ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm32));
+  End;
+  $E9: Begin { JMP rel32 }
+   Imm32 := Elf64_FetchImm32Signed;
+   ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm32));
+  End;
+  $EB: Begin { JMP rel8 }
+   Imm8 := Elf64_FetchImm8Signed;
+   ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
+  End;
+
+  $70..$7F: Begin { Jcc rel8 }
+   Imm8 := Elf64_FetchImm8Signed;
+   If Elf64_EvalCond(Op And $0F) Then
+    ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
+  End;
+
+  $FC: ELF64_FDF := False; { CLD }
+  $FD: ELF64_FDF := True;  { STD }
+
+  $A4: Begin { MOVSB, repete si prefixe REP (F3) vu }
+   If SawF3 Then
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Elf64_DoMovs(8);
+     Dec(ELF64_Reg[REG_RCX]);
+    End
+   Else
+    Elf64_DoMovs(8);
+  End;
+  $A5: Begin { MOVSW/MOVSD/MOVSQ, repete si prefixe REP (F3) vu }
+   If SawF3 Then
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Elf64_DoMovs(OpSize);
+     Dec(ELF64_Reg[REG_RCX]);
+    End
+   Else
+    Elf64_DoMovs(OpSize);
+  End;
+  $AA: Begin { STOSB, repete si prefixe REP (F3) vu }
+   If SawF3 Then
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Elf64_DoStos(8);
+     Dec(ELF64_Reg[REG_RCX]);
+    End
+   Else
+    Elf64_DoStos(8);
+  End;
+  $AB: Begin { STOSW/STOSD/STOSQ, repete si prefixe REP (F3) vu }
+   If SawF3 Then
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Elf64_DoStos(OpSize);
+     Dec(ELF64_Reg[REG_RCX]);
+    End
+   Else
+    Elf64_DoStos(OpSize);
+  End;
+
+  $F6: Begin { groupe 3 : Eb }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Case GroupOp Of
+    0, 1: Begin
+     Imm8 := Elf64_FetchImm8Signed;
+     Val1 := Elf64_ReadOperand(EA, 8);
+     Elf64_SetFlagsLogic(Val1 And QWord(Byte(Imm8)), 8);
+    End;
+    2: Begin
+     Val1 := Elf64_ReadOperand(EA, 8);
+     Elf64_WriteOperand(EA, 8, (Not Val1) And $FF);
+    End;
+    3: Begin
+     Val1 := Elf64_ReadOperand(EA, 8);
+     ResVal := ((Not Val1) + 1) And $FF;
+     Elf64_SetFlagsSub(0, Val1, ResVal, 8);
+     Elf64_WriteOperand(EA, 8, ResVal);
+    End;
+    Else Begin
+     ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+     ELF64_HaltReason := 'Groupe F6 /' + IntToStr(GroupOp) + ' (MUL/IMUL/DIV/IDIV) non supporte';
+    End;
+   End;
+  End;
+  $F7: Begin { groupe 3 : Ev }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Case GroupOp Of
+    0, 1: Begin
+     Imm32 := Elf64_FetchImm32Signed;
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+     Elf64_SetFlagsLogic(Val1 And Val2, OpSize);
+    End;
+    2: Begin
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     Elf64_WriteOperand(EA, OpSize, Not Val1);
+    End;
+    3: Begin
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     ResVal := (Not Val1) + 1;
+     Elf64_SetFlagsSub(0, Val1, ResVal, OpSize);
+     Elf64_WriteOperand(EA, OpSize, ResVal);
+    End;
+    Else Begin
+     ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+     ELF64_HaltReason := 'Groupe F7 /' + IntToStr(GroupOp) + ' (MUL/IMUL/DIV/IDIV) non supporte';
+    End;
+   End;
+  End;
+
+  $FF: Begin { groupe 5 : INC/DEC/CALL/JMP indirect/PUSH }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Case GroupOp Of
+    0: Begin { INC r/m - simplification : CF est egalement recalcule, }
+              { alors qu INC ne devrait pas y toucher.                }
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     ResVal := Val1 + 1;
+     Elf64_SetFlagsAdd(Val1, 1, ResVal, OpSize);
+     Elf64_WriteOperand(EA, OpSize, ResVal);
+    End;
+    1: Begin { DEC r/m - meme simplification pour CF }
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     ResVal := Val1 - 1;
+     Elf64_SetFlagsSub(Val1, 1, ResVal, OpSize);
+     Elf64_WriteOperand(EA, OpSize, ResVal);
+    End;
+    2: Begin { CALL r/m64 (indirect pres) }
+     Val1 := Elf64_ReadOperand(EA, 64);
+     Elf64_Push(ELF64_RIP);
+     ELF64_RIP := Val1;
+    End;
+    4: Begin { JMP r/m64 (indirect pres) }
+     ELF64_RIP := Elf64_ReadOperand(EA, 64);
+    End;
+    6: Elf64_Push(Elf64_ReadOperand(EA, 64)); { PUSH r/m64 }
+    Else Begin
+     ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+     ELF64_HaltReason := 'Groupe FF /' + IntToStr(GroupOp) + ' non supporte';
+    End;
+   End;
+  End;
+
+  Else Begin
+   ELF64_Halted := True;
+   ELF64_LastBadRIP := StartRIP;
+   ELF64_HaltReason := 'Opcode ' + HexByte(Op) + ' non supporte';
+  End;
+ End;
+
+ If Not ELF64_Halted Then Inc(ELF64_InstrCount);
 End;
 
 { --- Charger un binaire DOS (auto-detection .COM / .EXE) --- }
@@ -54710,6 +55783,7 @@ Var
  Is6502: Boolean;
  IsZ80: Boolean;
  Is6809: Boolean;
+ IsELF64: Boolean;
  CPUName: String;
  EntryAddr: LongInt;
  EntryAddr16: Word;
@@ -54774,8 +55848,18 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CELF64' Then
+ Begin
+  { Emulateur Linux ELF64 : 80x25, fond noir, texte gris (console typique) }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
+ IsELF64 := (TargetCPU = '-CELF64');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
@@ -54795,6 +55879,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CAMIGA'  Then CPUName := 'Amiga 68000'
  Else If TargetCPU = '-CD'      Then CPUName := 'Intel 8086 mode reel'
  Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
+ Else If TargetCPU = '-CELF64'  Then CPUName := 'Linux x86-64 (ELF statique)'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CAPPLEII'Then CPUName := 'Apple II (6502)'
  Else If TargetCPU = '-CC64'    Then CPUName := 'Commodore 64 (6510)'
@@ -55772,6 +56857,77 @@ Begin NesActive := False;
   P.Running := False;
   P.Fault := sfEndProgram;
   P.StatusMsg := 'Emulateur 6809 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If IsELF64 Then Begin
+  { ----- Emulateur Linux ELF64 x86-64 (Stage 1 : chargement seul) ----- }
+  Loaded := Emu_LoadELF64(BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : binaire ELF64 invalide ou illisible.');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P,
+    'Seuls les executables statiques ELF64 x86-64 (ET_EXEC, sans');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    'interpreteur dynamique) sont pris en charge pour le moment.');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement ELF64';
+   Exit;
+  End;
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Binaire ELF64 charge : ' +
+   IntToStr(ELF64_SegCount) + ' segment(s) PT_LOAD, ' +
+   IntToStr(LongInt(ELF64_LoadTop - ELF64_LoadBase)) + ' octets d''image.');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, 'Point d''entree   : 0x' + HexQWord(ELF64_EntryPoint));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Pile initiale RSP: 0x' + HexQWord(ELF64_Reg[REG_RSP]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Debut du tas brk : 0x' + HexQWord(ELF64_BrkStart));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  { Executer le programme : boucle bornee, comme les autres emulateurs   }
+  { integres (M6809, 6502...). S arrete des qu une instruction inconnue  }
+  { ou un SYSCALL (dispatche a l etape suivante de la feuille de route)  }
+  { est rencontree.                                                      }
+  Steps := 0;
+  While (Not ELF64_Halted) And (Steps < 5000000) Do Begin
+   Elf64_Step;
+   Inc(Steps);
+  End;
+  If ELF64_Halted Then Begin
+   P.CurFg := 11;
+   EmuVScr_WriteStr(P, '[' + ELF64_HaltReason + ']');
+  End Else Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(Steps) + ' instructions atteinte]');
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, IntToStr(Steps) + ' instruction(s) executee(s).');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RIP : 0x' + HexQWord(ELF64_RIP) +
+   '   RAX : 0x' + HexQWord(ELF64_Reg[REG_RAX]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RSP : 0x' + HexQWord(ELF64_Reg[REG_RSP]) +
+   '   RDI : 0x' + HexQWord(ELF64_Reg[REG_RDI]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If ELF64_LastBadRIP <> 0 Then Begin
+   EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
+    HexQWord(ELF64_LastBadRIP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.CurFg := OldFg; P.CurBg := OldBg;
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := ELF64_HaltReason;
   Exit;
  End;
  If Not IsX86 Then Begin
