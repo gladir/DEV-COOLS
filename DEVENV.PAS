@@ -32586,6 +32586,9 @@ Begin
   Case Ev.KeyChar Of
    #9: { Tab : changer de panneau actif }
     NCState.Active := NCState.Active Xor 1;
+   #12: { Ctrl+L : basculer Fichiers/Info sur l AUTRE panneau (pas          }
+        { celui actif) - menu Gauche/Droite, item "Info", NC.PAS. }
+    NCState.Panes[OtherSide].InfoMode := Not NCState.Panes[OtherSide].InfoMode;
    #13: { Entree : executer la ligne de commande si non vide, sinon    }
          { ouvrir le repertoire sous le curseur. }
     If TrimStr(TP.InputLine) <> '' Then Begin
@@ -32905,6 +32908,8 @@ Var
  Dir: String;
  SBX, SBY: Integer;
  NewShell: TShellKind;
+ FKBarCW, FKBarY, FKBarColW, FKBarSlot: Integer;
+ FakeEv: TEvent;
 Begin
  If Not TermVisible Then Exit;
  { Position du SelectBox }
@@ -33049,6 +33054,29 @@ Begin
    If TermSelectOpen Then Begin
     TermSelectOpen := False;
     FullRepaintNeeded := True;
+   End;
+   { Clic sur la barre de touches de fonction de Norton Commander : agit }
+   { comme la touche F correspondante (le "message du bouton" clique),   }
+   { pour les utilisateurs qui preferent la souris au clavier. Fonctionne  }
+   { quel que soit le mode courant (parcours, dialogue, visionneuse F3)   }
+   { puisqu on simule simplement l appui de touche - HandleNCommanderEvent  }
+   { route deja correctement chaque code de touche selon le mode actif. }
+   If ActiveShell = SK_NCOMMANDER Then Begin
+    FKBarCW := NCState.CharW;
+    If FKBarCW < 1 Then FKBarCW := 8;
+    FKBarY := TermY + TermHeight - TERM_LINE_HEIGHT;
+    If (Ev.MouseY >= FKBarY) And (Ev.MouseY < TermY + TermHeight) Then Begin
+     FKBarColW := (TermWidth - 2 * FKBarCW) Div 10;
+     If FKBarColW < 8 * FKBarCW Then FKBarColW := 8 * FKBarCW;
+     FKBarSlot := (Ev.MouseX - TermX) Div FKBarColW + 1;
+     If (FKBarSlot >= 1) And (FKBarSlot <= 10) Then Begin
+      FillChar(FakeEv, SizeOf(FakeEv), 0);
+      FakeEv.Kind := EV_KEY_DOWN;
+      FakeEv.KeyCode := $3A + FKBarSlot; { F1=$3B .. F10=$44 }
+      HandleNCommanderEvent(TP, FakeEv);
+     End;
+     Exit;
+    End;
    End;
    { Defilement via la barre a droite }
    If (Ev.MouseX >= TermX + TermWidth - TERM_SCROLLBAR_WIDTH - 1)
