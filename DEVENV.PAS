@@ -3194,6 +3194,9 @@ Const
  REG_RSP = 4;  REG_RBP = 5;  REG_RSI = 6;  REG_RDI = 7;
  REG_R8  = 8;  REG_R9  = 9;  REG_R10 = 10; REG_R11 = 11;
  REG_R12 = 12; REG_R13 = 13; REG_R14 = 14; REG_R15 = 15;
+ { Nombre max de fichiers hote ouverts simultanement par le programme    }
+ { emule (descripteurs 0/1/2 restent reserves a stdin/stdout/stderr).   }
+ ELF64_MAX_FD = 32;
 
 Type
  { Entree de la table des program headers ELF64 (56 octets) }
@@ -4181,6 +4184,12 @@ Var
  ELF64_LoadTop   : QWord;       { plus grande adresse virtuelle chargee  }
  ELF64_BrkStart  : QWord;       { debut du tas (brk), juste apres l image}
  ELF64_BrkCur    : QWord;       { position courante du tas (brk)         }
+ ELF64_MmapNext  : QWord;       { allocateur lineaire pour mmap anonyme  }
+ { Table des fichiers hote ouverts par le programme emule (open/openat/  }
+ { close/read/write/lseek/fstat) - descripteurs 3..ELF64_MAX_FD-1.       }
+ ELF64_FDFile    : Array[0..ELF64_MAX_FD - 1] Of File;
+ ELF64_FDOpen    : Array[0..ELF64_MAX_FD - 1] Of Boolean;
+ ELF64_FDRead    : Array[0..ELF64_MAX_FD - 1] Of Boolean; { True = lecture seule }
  ELF64_Halted    : Boolean;
  ELF64_ExitCode  : Integer;
  ELF64_InstrCount: LongInt;
@@ -40544,6 +40553,11 @@ Begin
  { Le tas (brk) commence juste apres le dernier octet charge, aligne 4 Ko }
  ELF64_BrkStart := (MaxAddr + 4095) And Not QWord(4095);
  ELF64_BrkCur := ELF64_BrkStart;
+ { Zone mmap anonyme : allocateur lineaire simple demarrant a 96 Mo, loin }
+ { de l image chargee et du tas brk - largement suffisant pour un        }
+ { executable statique dont l espace virtuel emule ne fait que 128 Mo.   }
+ ELF64_MmapNext := QWord($6000000);
+ FillChar(ELF64_FDOpen, SizeOf(ELF64_FDOpen), 0);
  { --- Mise en place de la pile initiale (ABI SysV Linux x86-64) ---      }
  { Le sommet de la pile emulee est fixe pres du haut de l espace virtuel  }
  { de 128 Mo (la pile croissant vers le bas). On y pousse d abord la      }
@@ -40920,6 +40934,301 @@ Begin
   ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + QWord(Sz Div 8);
 End;
 
+{ Lit une chaine terminee par zero depuis la memoire emulee (chemin de   }
+{ fichier passe a open/openat) - tronquee a 255 caracteres (String court)}
+Function Elf64_ReadCString(Addr: QWord): String;
+Var
+ S: String;
+ Ch: Byte;
+Begin
+ S := '';
+ Ch := Emu64_GetByte(Addr);
+ While (Ch <> 0) And (Length(S) < 255) Do Begin
+  S := S + Chr(Ch);
+  Addr := Addr + 1;
+  Ch := Emu64_GetByte(Addr);
+ End;
+ Elf64_ReadCString := S;
+End;
+
+Function Elf64_AllocFD: Integer;
+Var
+ I: Integer;
+Begin
+ Elf64_AllocFD := -1;
+ For I := 3 To ELF64_MAX_FD - 1 Do
+  If Not ELF64_FDOpen[I] Then Begin
+   Elf64_AllocFD := I;
+   Exit;
+  End;
+End;
+
+{ sys_open/sys_openat : ouvre un fichier HOTE (chemin resolu comme par    }
+{ n importe quel Assign/Reset Pascal, donc relatif au repertoire courant }
+{ du processus DEVENV - identique a ce que fait deja TermFindElfExecutable}
+{ pour la resolution des chemins). Seuls O_RDONLY/O_WRONLY/O_RDWR,        }
+{ O_CREAT et O_TRUNC sont distingues ; les autres indicateurs (O_APPEND, }
+{ O_EXCL...) sont ignores.                                                }
+Function Elf64_DoOpen(PathAddr: QWord; Flags: LongInt): Int64;
+Const
+ O_CREAT = $40;
+ O_TRUNC = $200;
+Var
+ Path: String;
+ FD: Integer;
+ AccessMode: LongInt;
+Begin
+ Path := Elf64_ReadCString(PathAddr);
+ FD := Elf64_AllocFD;
+ If FD < 0 Then Begin Elf64_DoOpen := -24; Exit; End; { -EMFILE }
+ AccessMode := Flags And 3; { 0=O_RDONLY 1=O_WRONLY 2=O_RDWR }
+ {$I-}
+ Assign(ELF64_FDFile[FD], Path);
+ If AccessMode = 0 Then Begin
+  Reset(ELF64_FDFile[FD], 1);
+  ELF64_FDRead[FD] := True;
+ End Else Begin
+  If ((Flags And O_CREAT) <> 0) And Not FileExists(Path) Then
+   Rewrite(ELF64_FDFile[FD], 1)
+  Else Begin
+   Reset(ELF64_FDFile[FD], 1);
+   If (IOResult = 0) And ((Flags And O_TRUNC) <> 0) Then Begin
+    Close(ELF64_FDFile[FD]);
+    Rewrite(ELF64_FDFile[FD], 1);
+   End;
+  End;
+  ELF64_FDRead[FD] := False;
+ End;
+ {$I+}
+ If IOResult <> 0 Then Begin
+  Elf64_DoOpen := -2; { -ENOENT }
+  Exit;
+ End;
+ ELF64_FDOpen[FD] := True;
+ Elf64_DoOpen := FD;
+End;
+
+Procedure Elf64_DoClose(FD: Integer);
+Begin
+ If (FD >= 3) And (FD < ELF64_MAX_FD) And ELF64_FDOpen[FD] Then Begin
+  {$I-}
+  Close(ELF64_FDFile[FD]);
+  {$I+}
+  If IOResult <> 0 Then ;
+  ELF64_FDOpen[FD] := False;
+ End;
+End;
+
+Function Elf64_DoRead(FD: Integer; BufAddr, Count: QWord): Int64;
+Var
+ Chunk: Array[0..511] Of Byte;
+ ToRead, Got: Word;
+ Total: QWord;
+ J: Integer;
+Begin
+ If (FD < 3) Or (FD >= ELF64_MAX_FD) Or Not ELF64_FDOpen[FD] Then Begin
+  Elf64_DoRead := -9; { -EBADF }
+  Exit;
+ End;
+ Total := 0;
+ While Total < Count Do Begin
+  If Count - Total > QWord(SizeOf(Chunk)) Then ToRead := SizeOf(Chunk)
+                                           Else ToRead := Word(Count - Total);
+  {$I-}
+  BlockRead(ELF64_FDFile[FD], Chunk, ToRead, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got = 0) Then Break;
+  For J := 0 To Got - 1 Do
+   Emu64_PutByte(BufAddr + Total + QWord(J), Chunk[J]);
+  Total := Total + QWord(Got);
+  If Got < ToRead Then Break;
+ End;
+ Elf64_DoRead := Int64(Total);
+End;
+
+Function Elf64_DoWriteFile(FD: Integer; BufAddr, Count: QWord): Int64;
+Var
+ Chunk: Array[0..511] Of Byte;
+ ToWrite, Wrote: Word;
+ Total: QWord;
+ J: Integer;
+Begin
+ If (FD < 3) Or (FD >= ELF64_MAX_FD) Or Not ELF64_FDOpen[FD] Then Begin
+  Elf64_DoWriteFile := -9; { -EBADF }
+  Exit;
+ End;
+ Total := 0;
+ While Total < Count Do Begin
+  If Count - Total > QWord(SizeOf(Chunk)) Then ToWrite := SizeOf(Chunk)
+                                           Else ToWrite := Word(Count - Total);
+  For J := 0 To ToWrite - 1 Do
+   Chunk[J] := Emu64_GetByte(BufAddr + Total + QWord(J));
+  {$I-}
+  BlockWrite(ELF64_FDFile[FD], Chunk, ToWrite, Wrote);
+  {$I+}
+  If (IOResult <> 0) Or (Wrote = 0) Then Break;
+  Total := Total + QWord(Wrote);
+  If Wrote < ToWrite Then Break;
+ End;
+ Elf64_DoWriteFile := Int64(Total);
+End;
+
+Function Elf64_DoLseek(FD: Integer; Offset: Int64; Whence: Integer): Int64;
+Var
+ NewPos: Int64;
+Begin
+ If (FD < 3) Or (FD >= ELF64_MAX_FD) Or Not ELF64_FDOpen[FD] Then Begin
+  Elf64_DoLseek := -9; { -EBADF }
+  Exit;
+ End;
+ Case Whence Of
+  1: NewPos := Int64(FilePos(ELF64_FDFile[FD])) + Offset;   { SEEK_CUR }
+  2: NewPos := Int64(FileSize(ELF64_FDFile[FD])) + Offset;  { SEEK_END }
+  Else NewPos := Offset;                                    { SEEK_SET }
+ End;
+ If NewPos < 0 Then NewPos := 0;
+ {$I-}
+ Seek(ELF64_FDFile[FD], NewPos);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  Elf64_DoLseek := -22; { -EINVAL }
+  Exit;
+ End;
+ Elf64_DoLseek := NewPos;
+End;
+
+{ Ecrit une struct stat Linux x86-64 minimale (144 octets) : tout a zero }
+{ sauf st_nlink, st_mode (fichier regulier, 0644) et st_size - suffisant }
+{ pour les usages les plus courants (verifier une taille ou S_ISREG).    }
+Procedure Elf64_DoFstat(FD: Integer; StatAddr: QWord);
+Var
+ I: Integer;
+ Sz: QWord;
+Begin
+ For I := 0 To 143 Do
+  Emu64_PutByte(StatAddr + QWord(I), 0);
+ If (FD >= 3) And (FD < ELF64_MAX_FD) And ELF64_FDOpen[FD] Then
+  Sz := QWord(FileSize(ELF64_FDFile[FD]))
+ Else
+  Sz := 0;
+ Emu64_PutQWord(StatAddr + 16, 1);       { st_nlink = 1 }
+ Emu64_PutDWord(StatAddr + 24, $81A4);   { st_mode = S_IFREG | 0644 }
+ Emu64_PutQWord(StatAddr + 48, Sz);      { st_size }
+End;
+
+{ Repartiteur d appels systeme Linux x86-64 (ABI SysV : numero dans RAX,  }
+{ arguments dans RDI/RSI/RDX/R10/R8/R9, retour dans RAX). Geres pour le   }
+{ moment : read/write/open/openat/close/lseek/fstat/exit/exit_group/brk/ }
+{ mmap/munmap/arch_prctl.                                                 }
+Procedure Elf64_DoSyscall;
+Var
+ SysNum: QWord;
+ FD: Int64;
+ BufAddr, Count, I: QWord;
+ Ch: Byte;
+ ExitCode: Integer;
+ ReqAddr, ReqLen, PageLen: QWord;
+Begin
+ SysNum := ELF64_Reg[REG_RAX];
+ Case SysNum Of
+  0: Begin { sys_read(fd, buf, count) }
+   FD := Int64(ELF64_Reg[REG_RDI]);
+   If (FD >= 3) And (FD < ELF64_MAX_FD) And ELF64_FDOpen[FD] Then
+    ELF64_Reg[REG_RAX] := QWord(Elf64_DoRead(Integer(FD),
+     ELF64_Reg[REG_RSI], ELF64_Reg[REG_RDX]))
+   Else
+    ELF64_Reg[REG_RAX] := 0; { stdin non interactif pour le moment : fin de flux }
+  End;
+  1: Begin { sys_write(fd, buf, count) }
+   FD := Int64(ELF64_Reg[REG_RDI]);
+   BufAddr := ELF64_Reg[REG_RSI];
+   Count := ELF64_Reg[REG_RDX];
+   If (FD = 1) Or (FD = 2) Then Begin
+    If ELF64_Panel <> Nil Then Begin
+     I := 0;
+     While I < Count Do Begin
+      Ch := Emu64_GetByte(BufAddr + I);
+      { Un vrai terminal traduit NL en CR+NL a l affichage (mode "onlcr") }
+      { - sans cela, un simple \n Linux ne ramenerait pas le curseur en  }
+      { debut de ligne dans notre console virtuelle.                     }
+      If Ch = 10 Then Begin
+       EmuVScr_PutChar(ELF64_Panel^, #13);
+       EmuVScr_PutChar(ELF64_Panel^, #10);
+      End Else If Ch <> 13 Then
+       EmuVScr_PutChar(ELF64_Panel^, Chr(Ch));
+      I := I + 1;
+     End;
+    End;
+    ELF64_Reg[REG_RAX] := Count;
+   End Else If (FD >= 3) And (FD < ELF64_MAX_FD) And ELF64_FDOpen[FD] Then
+    ELF64_Reg[REG_RAX] := QWord(Elf64_DoWriteFile(Integer(FD), BufAddr, Count))
+   Else
+    ELF64_Reg[REG_RAX] := QWord(Int64(-9)); { -EBADF : descripteur non gere }
+  End;
+  2: { sys_open(path, flags, mode) }
+   ELF64_Reg[REG_RAX] := QWord(Elf64_DoOpen(ELF64_Reg[REG_RDI],
+    LongInt(ELF64_Reg[REG_RSI])));
+  257: { sys_openat(dirfd, path, flags, mode) - dirfd ignore (relatif au }
+       { repertoire courant du processus hote, comme AT_FDCWD).          }
+   ELF64_Reg[REG_RAX] := QWord(Elf64_DoOpen(ELF64_Reg[REG_RSI],
+    LongInt(ELF64_Reg[REG_RDX])));
+  3: Begin { sys_close(fd) }
+   Elf64_DoClose(Integer(ELF64_Reg[REG_RDI]));
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  8: { sys_lseek(fd, offset, whence) }
+   ELF64_Reg[REG_RAX] := QWord(Elf64_DoLseek(Integer(ELF64_Reg[REG_RDI]),
+    Int64(ELF64_Reg[REG_RSI]), Integer(ELF64_Reg[REG_RDX])));
+  5: Begin { sys_fstat(fd, statbuf) }
+   Elf64_DoFstat(Integer(ELF64_Reg[REG_RDI]), ELF64_Reg[REG_RSI]);
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  12: Begin { sys_brk(addr) - addr=0 interroge la position courante,     }
+            { sinon tente de la deplacer ; renvoie toujours la valeur    }
+            { resultante, comme le vrai appel systeme (pas le wrapper    }
+            { libc, qui traduit cela en succes/echec de son cote).       }
+   ReqAddr := ELF64_Reg[REG_RDI];
+   If (ReqAddr <> 0) And (ReqAddr < QWord(High(ELF64_Mem))) Then
+    ELF64_BrkCur := ReqAddr;
+   ELF64_Reg[REG_RAX] := ELF64_BrkCur;
+  End;
+  9: Begin { sys_mmap(addr, length, prot, flags, fd, offset) - allocateur }
+           { lineaire simplifie : renvoie toujours de la memoire a zero,  }
+           { comme le ferait une zone anonyme fraichement mappee. Le     }
+           { mmap de fichier (fd >= 0) n est pas distingue de l anonyme   }
+           { pour le moment (le contenu du fichier n est pas projete).   }
+   ReqLen := ELF64_Reg[REG_RSI];
+   PageLen := (ReqLen + 4095) And Not QWord(4095);
+   If PageLen = 0 Then PageLen := 4096;
+   If ELF64_MmapNext + PageLen >= QWord(High(ELF64_Mem)) - $20000 Then
+    ELF64_Reg[REG_RAX] := QWord(Int64(-12)) { -ENOMEM }
+   Else Begin
+    ELF64_Reg[REG_RAX] := ELF64_MmapNext;
+    ELF64_MmapNext := ELF64_MmapNext + PageLen;
+   End;
+  End;
+  11: ELF64_Reg[REG_RAX] := 0; { sys_munmap : demappage non suivi, "reussi" }
+  158: Begin { sys_arch_prctl(code, addr) }
+   If ELF64_Reg[REG_RDI] = $1002 Then { ARCH_SET_FS }
+    ELF64_FSBase := ELF64_Reg[REG_RSI];
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  60, 231: Begin { sys_exit / sys_exit_group }
+   ExitCode := Integer(ELF64_Reg[REG_RDI] And $FF);
+   ELF64_Halted := True;
+   ELF64_ExitCode := ExitCode;
+   ELF64_HaltReason := 'Fin d''execution : fin de programme (code ' +
+    IntToStr(ExitCode) + ') apres ' + IntToStr(ELF64_InstrCount) + ' instructions';
+  End;
+  Else Begin
+   ELF64_Halted := True;
+   ELF64_LastBadRIP := ELF64_RIP;
+   ELF64_HaltReason := 'Appel systeme numero ' + IntToStr(LongInt(SysNum)) +
+    ' non implemente';
+  End;
+ End;
+End;
+
 { Execute UNE instruction a partir de ELF64_RIP. En cas d opcode non      }
 { reconnu ou de fonctionnalite non implementee, arrete proprement         }
 { l emulation (ELF64_Halted) avec un message diagnostic plutot que de     }
@@ -41026,12 +41335,7 @@ Begin
    Op2 := Elf64_FetchByte;
    Case Op2 Of
     $1E: Elf64_FetchByte; { F3 0F 1E FA/FB = ENDBR64/ENDBR32, deja consomme }
-    $05: Begin { SYSCALL }
-     ELF64_Halted := True;
-     ELF64_HaltReason := 'Appel systeme rencontre (numero ' +
-      IntToStr(LongInt(ELF64_Reg[REG_RAX])) +
-      ') - le repartiteur d''appels systeme n''est pas encore implemente';
-    End;
+    $05: Elf64_DoSyscall; { SYSCALL }
     $B6: Begin { MOVZX r, r/m8 }
      EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
      Elf64_SetReg(RegField, OpSize, Elf64_ReadOperand(EA, 8));
@@ -56860,7 +57164,8 @@ Begin NesActive := False;
   Exit;
  End;
  If IsELF64 Then Begin
-  { ----- Emulateur Linux ELF64 x86-64 (Stage 1 : chargement seul) ----- }
+  { ----- Emulateur Linux ELF64 x86-64 ----- }
+  ELF64_Panel := @P;
   Loaded := Emu_LoadELF64(BinaryPath);
   If Not Loaded Then Begin
    P.CurFg := 12;
