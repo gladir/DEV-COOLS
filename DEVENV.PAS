@@ -1527,6 +1527,11 @@ Const
  NC_FLOPPY_SECTORS     = 2880;    { 1.44 Mo = 2880 secteurs de 512 octets }
  MAX_NC_TREE_NODES     = 400;     { noeuds max pour l arbre NCD (Commandes) }
  NC_TREE_MAX_DEPTH     = 6;       { profondeur max de l arbre NCD  }
+ MAX_NC_VIEW_RAW       = 65536;   { octets bruts charges par F3 (mode Hex }
+                                   { et recherche) - fichiers plus grands  }
+                                   { tronques a ce nombre d octets. }
+ MAX_NC_VIEW_LINES     = 2000;    { lignes de texte max decoupees pour   }
+                                   { le mode Texte de la visionneuse F3 }
 
  { Codes de retour }
  EXIT_OK               = 0;
@@ -2609,6 +2614,10 @@ Type
   MarkCount : Integer;
   SortMode  : Integer;             { 0=Nom 1=Extension 2=Heure(date) }
                                     { 3=Taille 4=Desordre (menu Gauche/Droite) }
+  InfoMode  : Boolean;             { menu Gauche/Droite, item "Info" -    }
+                                    { affiche l espace disque/l etiquette  }
+                                    { de volume/les stats du repertoire       }
+                                    { a la place de la liste de fichiers }
  End;
 
  { TODO NC 2/3 : navigation, dialogues modaux pour les operations sur    }
@@ -2627,8 +2636,12 @@ Type
                      { touche le ferme                                }
   ncHistory,         { Commandes/Historique : liste des commandes           }
                      { tapees dans ce panneau (NC.PAS: DialogHistory)  }
-  ncTree             { Commandes/Arbre NCD : arborescence des                 }
+  ncTree,            { Commandes/Arbre NCD : arborescence des                 }
                      { sous-repertoires du lecteur du panneau actif    }
+  ncViewSearch,      { F7 dans la visionneuse F3 : saisie du texte     }
+                     { recherche                                      }
+  ncViewSelectViewer { F8 dans la visionneuse F3 : choix du format          }
+                     { d affichage (WPVIEW: "Select Viewer")          }
  );
 
  TNCTreeNode = Record
@@ -2645,9 +2658,25 @@ Type
   CharW       : Integer;           { largeur de caractere mesuree    }
   CharH       : Integer;           { hauteur de ligne mesuree        }
   PromptBuf   : String;            { texte saisi dans le dialogue actif }
-  ViewLines   : Array[0..199] Of String; { lignes affichees par F3    }
+  MessageReturnMode : TNCMode;     { mode a restaurer apres fermeture de   }
+                                    { ncMessage (pas toujours ncBrowse -    }
+                                    { ex: message depuis la visionneuse F3) }
+  ViewLines   : Array[0..MAX_NC_VIEW_LINES - 1] Of String; { lignes texte  }
   ViewCount   : Integer;
-  ViewTop     : Integer;           { defilement de l apercu         }
+  ViewTop     : Integer;           { defilement (ligne ou rangee hex)  }
+  ViewHex     : Boolean;           { F4 : False=Texte True=Hexadecimal }
+  ViewWrap    : Boolean;           { F2 : renvoi a la ligne (mode Texte) }
+  ViewCol     : Integer;           { defilement horizontal (mode Texte      }
+                                    { non renvoye a la ligne)          }
+  ViewCharsPerRow : Integer;       { cache : largeur d affichage en           }
+                                    { caracteres, mesuree au dernier tracer }
+  ViewFileName: String;            { chemin complet du fichier visualise }
+  ViewFileSize: LongInt;           { taille reelle du fichier (peut          }
+                                    { depasser MAX_NC_VIEW_RAW)        }
+  ViewRaw     : Array[0..MAX_NC_VIEW_RAW - 1] Of Byte; { octets bruts     }
+  ViewRawSize : LongInt;           { nombre d octets reellement charges }
+  ViewSearchBuf : String;          { F7 : texte recherche              }
+  ViewSelIdx  : Integer;           { F8 : curseur dans Select Viewer  }
   MenuTop     : Integer;           { 0..4 : menu superieur selectionne }
   MenuItem    : Integer;           { item selectionne dans le menu deroulant }
   HistCursor  : Integer;           { index (1-based) dans TP.TermHistory }
@@ -31057,6 +31086,23 @@ Const
   'Editer le fichier extension...', 'Editeurs...', 'Configuration...'
  );
 
+ { Visionneuse F3 (inspiree de WPVIEW/NC original) - F8 "Select Viewer" :  }
+ { seuls Text View et Hex sont reellement cables (indices 5 et 6), les    }
+ { 5 formats de traitement de texte historiques restent des stubs "non   }
+ { implemente", n ayant pas de sens sans un vrai parseur de leur format. }
+ NC_VIEWER_COUNT = 7;
+ NC_VIEWER_NAMES: Array[0..NC_VIEWER_COUNT - 1] Of String[24] = (
+  'WordPerfect', 'WordStar', 'Word, Works or Write', 'WordStar 2000',
+  'XyWrite', 'Text View', 'Hex'
+ );
+ { Barre F1..F10 specifique a la visionneuse (remplace la barre de           }
+ { navigation habituelle pendant que ncViewFile/ncViewSearch/                     }
+ { ncViewSelectViewer est actif) - '' = case laissee vide, comme dans           }
+ { WPVIEW (F3/F5/F6/F9 non utilisees). --- }
+ NC_VIEWFKEY_LABELS: Array[1..10] Of String[7] = (
+  'Aide', 'Unwrap', '', 'Hex', '', '', 'Search', 'Viewer', '', 'Quit'
+ );
+
 { Nombre d entrees du menu deroulant Top (0=Gauche 1=Fichiers 2=Disque    }
 { 3=Commandes 4=Droite). --- }
 Function NCMenuItemCount(Top: Integer): Integer;
@@ -31098,6 +31144,132 @@ Begin
  NCLastComponent := R;
 End;
 
+{ Formate un entier avec des virgules tous les 3 chiffres (10220 ->      }
+{ "10,220") - barre de titre de la visionneuse F3, comme WPVIEW. --- }
+Function NCFormatThousands(N: LongInt): String;
+Var
+ S, R: String;
+ I, Cnt: Integer;
+Begin
+ S := IntToStr(N);
+ R := '';
+ Cnt := 0;
+ For I := Length(S) DownTo 1 Do Begin
+  R := S[I] + R;
+  Inc(Cnt);
+  If (Cnt Mod 3 = 0) And (I > 1) And (S[I - 1] <> '-') Then R := ',' + R;
+ End;
+ NCFormatThousands := R;
+End;
+
+{ Meme principe que NCFormatThousands mais pour un Int64 - necessaire   }
+{ pour l espace disque (menu Gauche/Droite, item "Info") : la taille           }
+{ totale/libre d un disque moderne depasse largement les 2 Go du         }
+{ LongInt 32 bits utilise partout ailleurs dans ce fichier. Str() (et           }
+{ non IntToStr, qui ne prend qu un LongInt) gere nativement l Int64. --- }
+Function NCFormatBytes64(N: Int64): String;
+Var
+ S, R: String;
+ I, Cnt: Integer;
+Begin
+ Str(N, S);
+ R := '';
+ Cnt := 0;
+ For I := Length(S) DownTo 1 Do Begin
+  R := S[I] + R;
+  Inc(Cnt);
+  If (Cnt Mod 3 = 0) And (I > 1) And (S[I - 1] <> '-') Then R := ',' + R;
+ End;
+ NCFormatBytes64 := R;
+End;
+
+{ Etiquette de volume du lecteur DriveCh (ex: 'C') - parcourt la racine   }
+{ a la recherche de l entree speciale VolumeID (NC.PAS: menu Gauche/          }
+{ Droite, item "Info"). Renvoie '(aucune)' si absente ou si le systeme   }
+{ hote ne l expose pas via FindFirst. --- }
+Function NCGetVolumeLabel(DriveCh: Char): String;
+Var
+ SR: SearchRec;
+ Found: String;
+Begin
+ Found := '';
+ FindFirst(DriveCh + ':\*.*', VolumeID, SR);
+ While (DosError = 0) And (Found = '') Do Begin
+  If (SR.Attr And VolumeID) <> 0 Then Found := SR.Name;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC} FindClose(SR); {$ENDIF}
+ If Found = '' Then Found := '(aucune)';
+ NCGetVolumeLabel := Found;
+End;
+
+{ Tronque un chemin trop long pour la barre de titre de la visionneuse   }
+{ en gardant le debut (lettre de lecteur) et la fin (nom de fichier),      }
+{ separes par "..." - imite l affichage "C:\...e\tp\bin\binobj.exe" de   }
+{ WPVIEW plutot que de couper brutalement la fin utile du chemin. --- }
+Function NCTruncatePathMiddle(Const Path: String; MaxLen: Integer): String;
+Var
+ Keep: Integer;
+Begin
+ If Length(Path) <= MaxLen Then Begin
+  NCTruncatePathMiddle := Path;
+  Exit;
+ End;
+ Keep := MaxLen - 6; { 3 caracteres de tete + les 3 points }
+ If Keep < 1 Then Keep := 1;
+ NCTruncatePathMiddle := Copy(Path, 1, 3) + '...' +
+  Copy(Path, Length(Path) - Keep + 1, Keep);
+End;
+
+{ Nombre total de rangees d affichage du fichier charge, selon le mode   }
+{ courant (Hex : groupes de 16 octets ; Texte non renvoye a la ligne :   }
+{ une rangee par ligne source ; Texte renvoye a la ligne : chaque ligne   }
+{ source longue occupe plusieurs rangees, recalculees a partir de           }
+{ ViewCharsPerRow, mis a jour au dernier tracer). Utilise pour borner           }
+{ le defilement (Fin/PgDn) et calculer le pourcentage affiche. --- }
+Function NCViewTotalRows: LongInt;
+Var
+ SrcLine, ChunkStart, Cnt, CPR: LongInt;
+ LineStr: String;
+Begin
+ If NCState.ViewHex Then
+  Cnt := (NCState.ViewRawSize + 15) Div 16
+ Else If Not NCState.ViewWrap Then
+  Cnt := NCState.ViewCount
+ Else Begin
+  CPR := NCState.ViewCharsPerRow;
+  If CPR < 1 Then CPR := 1;
+  Cnt := 0;
+  For SrcLine := 0 To NCState.ViewCount - 1 Do Begin
+   LineStr := NCState.ViewLines[SrcLine];
+   ChunkStart := 1;
+   Repeat
+    Inc(Cnt);
+    ChunkStart := ChunkStart + CPR;
+   Until ChunkStart > Length(LineStr);
+  End;
+ End;
+ If Cnt < 1 Then Cnt := 1;
+ NCViewTotalRows := Cnt;
+End;
+
+{ Represente N en hexadecimal sur exactement Digits chiffres (zeros a   }
+{ gauche) - dump hexadecimal du mode Hex (F4) de la visionneuse. --- }
+Function NCHexDigits(N: LongInt; Digits: Integer): String;
+Const
+ HexChars: Array[0..15] Of Char = '0123456789ABCDEF';
+Var
+ R: String;
+ I: Integer;
+Begin
+ R := '';
+ For I := 1 To Digits Do Begin
+  R := HexChars[N And $F] + R;
+  N := N Shr 4;
+ End;
+ NCHexDigits := R;
+End;
+
 Procedure DrawNCommanderPanel(Var TP: TTerminalPanel; PX, PY, PW, PH: Integer);
 Const
  { Libelles francais authentiques de NC.PAS (FunctionKeyValue). }
@@ -31117,12 +31289,28 @@ Var
  FKeyColW, I, CurX, CenterX: Integer;
  IsHost: Boolean;
  HistTop: Integer;
+ InViewer: Boolean;
+ LabelStr: String[7];
+ CharsPerRow, BodyTop, BodyBottom, TotalRows, Percent: Integer;
+ HexRow, HexOffset: LongInt;
+ J, SrcLine, ChunkStart: Integer;
+ HexLine, AsciiPart, TitlePrefix: String;
+ ByteVal: Byte;
+ DriveCh: Char;
+ TotalBytes64, FreeBytes64: Int64;
+ FileCnt: Integer;
+ TotalSz: LongInt;
+ VolLabel: String;
 Begin
  If Not NCState.Initialized Then Begin
   NCRefreshPanes;
   NCState.Initialized := True;
  End;
  IsHost := NCState.Slot < 0;
+ InViewer := NCState.Mode In [ncViewFile, ncViewSearch, ncViewSelectViewer];
+ If (NCState.Mode = ncMessage) And
+    (NCState.MessageReturnMode In [ncViewFile, ncViewSearch, ncViewSelectViewer]) Then
+  InViewer := True;
  CW := TextWidth('M');
  If CW < 1 Then CW := 8;
  RH := TERM_LINE_HEIGHT;
@@ -31156,38 +31344,125 @@ Begin
   Bar(X0, FKeyY, X0 + 2 * CW - 1, FKeyY + RH - 1);
   SetColor(7);
   OutTextXY(X0, FKeyY + 1, IntToStr(I));
-  SetFillStyle(SolidFill, 3);
-  Bar(X0 + 2 * CW, FKeyY, X0 + FKeyColW - 1, FKeyY + RH - 1);
-  SetColor(0);
-  OutTextXY(X0 + 2 * CW + 2, FKeyY + 1, NC_FKEY_LABELS[I]);
+  { La visionneuse F3 a son propre jeu de libelles (WPVIEW) - certaines   }
+  { cases (3/5/6/9) y restent vides, comme dans l original. }
+  If InViewer Then LabelStr := NC_VIEWFKEY_LABELS[I] Else LabelStr := NC_FKEY_LABELS[I];
+  If LabelStr <> '' Then Begin
+   SetFillStyle(SolidFill, 3);
+   Bar(X0 + 2 * CW, FKeyY, X0 + FKeyColW - 1, FKeyY + RH - 1);
+   SetColor(0);
+   OutTextXY(X0 + 2 * CW + 2, FKeyY + 1, LabelStr);
+  End;
   X0 := X0 + FKeyColW;
  End;
 
- { Ligne de commande - gris sur fond noir, comme une vraie invite DOS. }
- PromptY := FKeyY - RH;
- SetFillStyle(SolidFill, 0);
- Bar(PX, PromptY, PX + PW - 1, PromptY + RH - 1);
- SetColor(7);
- S := NCState.Panes[NCState.Active].Path + '>' + TP.InputLine;
- OutTextXY(PX + 2, PromptY + 1, S);
- If ExplorerSearchCursorVisible Then Begin
-  CurX := PX + 2 + TextWidth(S);
-  Line(CurX, PromptY, CurX, PromptY + RH - 1);
- End;
+ If InViewer Then Begin
+  { --- Visionneuse F3 (WPVIEW) : prend tout le panneau, comme dans           }
+  { l original - pas de double panneau ni de ligne de commande visibles   }
+  { pendant la visualisation. --- }
+  BodyTop := PY + TERM_TAB_HEIGHT + RH;
+  BodyBottom := FKeyY;
+  CharsPerRow := (PW - 4) Div CW;
+  If CharsPerRow < 10 Then CharsPerRow := 10;
+  NCState.ViewCharsPerRow := CharsPerRow;
 
- PaneW := (PW - 2) Div 2;
- HeaderY := PY + TERM_TAB_HEIGHT + 4;
- ColHeadY := HeaderY + RH;
- ListTop := ColHeadY + RH + 1;
- InfoY := PromptY - 2 - RH;
- ListBot := InfoY - 1;
- VisRows := (ListBot - ListTop) Div RH;
- If VisRows < 1 Then VisRows := 1;
- DTCols := 15; { " MM/DD/YY HH:MM" }
- NameCols := (PaneW Div CW) - 11 - DTCols;
- If NameCols < 8 Then NameCols := 8;
+  { Barre de titre : fond cyan, texte noir - nom (tronque au milieu),      }
+  { colonne, taille en octets et pourcentage visualise, comme WPVIEW. }
+  SetFillStyle(SolidFill, 3);
+  Bar(PX, PY + TERM_TAB_HEIGHT, PX + PW - 1, BodyTop - 1);
+  SetColor(0);
+  TotalRows := NCViewTotalRows;
+  If TotalRows > 1 Then Percent := (NCState.ViewTop * 100) Div (TotalRows - 1)
+  Else Percent := 0;
+  If Percent > 100 Then Percent := 100;
+  If Percent < 0 Then Percent := 0;
+  If NCState.ViewHex Then TitlePrefix := 'Hex View: ' Else TitlePrefix := 'Text View: ';
+  S := '   Col ' + IntToStr(NCState.ViewCol) + '   ' +
+   NCFormatThousands(NCState.ViewFileSize) + ' Bytes   ' + IntToStr(Percent) + '%';
+  J := CharsPerRow - Length(TitlePrefix) - Length(S);
+  If J < 10 Then J := 10;
+  S := TitlePrefix + NCTruncatePathMiddle(NCState.ViewFileName, J) + S;
+  If Length(S) > CharsPerRow Then S := Copy(S, 1, CharsPerRow);
+  OutTextXY(PX + 2, PY + TERM_TAB_HEIGHT + 1, S);
 
- For Side := 0 To 1 Do Begin
+  { Corps : dump hexadecimal (F4) ou texte, renvoye a la ligne (F2) ou    }
+  { defilant horizontalement (Col, fleches Gauche/Droite). }
+  SetColor(11);
+  Y := BodyTop;
+  If NCState.ViewHex Then Begin
+   HexRow := NCState.ViewTop;
+   While Y + RH <= BodyBottom Do Begin
+    HexOffset := HexRow * 16;
+    If HexOffset >= NCState.ViewRawSize Then Break;
+    HexLine := NCHexDigits(HexOffset, 8) + '  ';
+    AsciiPart := '';
+    For J := 0 To 15 Do Begin
+     If HexOffset + J < NCState.ViewRawSize Then Begin
+      ByteVal := NCState.ViewRaw[HexOffset + J];
+      HexLine := HexLine + NCHexDigits(ByteVal, 2) + ' ';
+      If (ByteVal < 32) Or (ByteVal > 126) Then AsciiPart := AsciiPart + '.'
+      Else AsciiPart := AsciiPart + Chr(ByteVal);
+     End Else Begin
+      HexLine := HexLine + '   ';
+      AsciiPart := AsciiPart + ' ';
+     End;
+     If J = 7 Then HexLine := HexLine + ' ';
+    End;
+    OutTextXY(PX + 2, Y, HexLine + ' ' + AsciiPart);
+    Y := Y + RH;
+    Inc(HexRow);
+   End;
+  End Else If Not NCState.ViewWrap Then Begin
+   SrcLine := NCState.ViewTop;
+   While (Y + RH <= BodyBottom) And (SrcLine < NCState.ViewCount) Do Begin
+    OutTextXY(PX + 2, Y,
+     Copy(NCState.ViewLines[SrcLine], NCState.ViewCol + 1, CharsPerRow));
+    Y := Y + RH;
+    Inc(SrcLine);
+   End;
+  End Else Begin
+   SrcLine := 0;
+   J := 0; { compteur de rangees d affichage, y compris celles sautees }
+   While (SrcLine < NCState.ViewCount) And (Y + RH <= BodyBottom) Do Begin
+    S := NCState.ViewLines[SrcLine];
+    ChunkStart := 1;
+    Repeat
+     If (J >= NCState.ViewTop) And (Y + RH <= BodyBottom) Then Begin
+      OutTextXY(PX + 2, Y, Copy(S, ChunkStart, CharsPerRow));
+      Y := Y + RH;
+     End;
+     Inc(J);
+     ChunkStart := ChunkStart + CharsPerRow;
+    Until (ChunkStart > Length(S)) Or (Y + RH > BodyBottom);
+    Inc(SrcLine);
+   End;
+  End;
+ End Else Begin
+  { Ligne de commande - gris sur fond noir, comme une vraie invite DOS. }
+  PromptY := FKeyY - RH;
+  SetFillStyle(SolidFill, 0);
+  Bar(PX, PromptY, PX + PW - 1, PromptY + RH - 1);
+  SetColor(7);
+  S := NCState.Panes[NCState.Active].Path + '>' + TP.InputLine;
+  OutTextXY(PX + 2, PromptY + 1, S);
+  If ExplorerSearchCursorVisible Then Begin
+   CurX := PX + 2 + TextWidth(S);
+   Line(CurX, PromptY, CurX, PromptY + RH - 1);
+  End;
+
+  PaneW := (PW - 2) Div 2;
+  HeaderY := PY + TERM_TAB_HEIGHT + 4;
+  ColHeadY := HeaderY + RH;
+  ListTop := ColHeadY + RH + 1;
+  InfoY := PromptY - 2 - RH;
+  ListBot := InfoY - 1;
+  VisRows := (ListBot - ListTop) Div RH;
+  If VisRows < 1 Then VisRows := 1;
+  DTCols := 15; { " MM/DD/YY HH:MM" }
+  NameCols := (PaneW Div CW) - 11 - DTCols;
+  If NameCols < 8 Then NameCols := 8;
+
+  For Side := 0 To 1 Do Begin
   X0 := PX + Side * PaneW;
   If Side = 0 Then PaneRight := X0 + PaneW - 2
   Else PaneRight := PX + PW - 2;
@@ -31208,68 +31483,110 @@ Begin
   SetColor(0);
   OutTextXY(CenterX, HeaderY - 2, S);
 
-  { Entete de colonnes (Nom / Taille / Date Heure) - fond bleu, texte    }
-  { jaune, comme dans l original. }
-  SetFillStyle(SolidFill, 1);
-  Bar(X0 + 1, ColHeadY - 1, PaneRight - 1, ColHeadY + RH - 2);
-  SetColor(14);
-  S := PadRight('Nom', NameCols, ' ') + ' ' + PadLeft('Taille', 9, ' ') +
-   '  ' + PadRight('Date/Heure', DTCols - 2, ' ');
-  OutTextXY(X0 + 3, ColHeadY, S);
-  SetColor(15);
-  Line(X0 + 1, ColHeadY + RH - 2, PaneRight - 1, ColHeadY + RH - 2);
-
-  If NCState.Panes[Side].Cursor < NCState.Panes[Side].ScrollTop Then
-   NCState.Panes[Side].ScrollTop := NCState.Panes[Side].Cursor;
-  If NCState.Panes[Side].Cursor >= NCState.Panes[Side].ScrollTop + VisRows Then
-   NCState.Panes[Side].ScrollTop := NCState.Panes[Side].Cursor - VisRows + 1;
-  If NCState.Panes[Side].ScrollTop < 0 Then NCState.Panes[Side].ScrollTop := 0;
-
-  Y := ListTop;
-  For Row := 0 To VisRows - 1 Do Begin
-   Idx := NCState.Panes[Side].ScrollTop + Row;
-   If Idx < NCState.Panes[Side].Count Then Begin
-    E := NCState.Panes[Side].Entries[Idx];
-    If Idx = NCState.Panes[Side].Cursor Then Begin
-     If Side = NCState.Active Then SetFillStyle(SolidFill, 3)
-     Else SetFillStyle(SolidFill, 8);
-     Bar(X0 + 1, Y, PaneRight - 1, Y + RH - 1);
-    End Else Begin
-     SetFillStyle(SolidFill, 1);
-     Bar(X0 + 1, Y, PaneRight - 1, Y + RH - 1);
+  If NCState.Panes[Side].InfoMode Then Begin
+   { Menu Gauche/Droite, item "Info" : espace disque, etiquette de           }
+   { volume et statistiques du repertoire courant, a la place de la       }
+   { liste de fichiers - a partir des entrees deja chargees (aucune           }
+   { E/S supplementaire pour les stats de repertoire). }
+   If (NCState.Slot < 0) And (Length(NCState.Panes[Side].Path) >= 1) Then
+    DriveCh := UpCase(NCState.Panes[Side].Path[1])
+   Else
+    DriveCh := 'C';
+   TotalBytes64 := DiskSize(Ord(DriveCh) - Ord('A') + 1);
+   FreeBytes64 := DiskFree(Ord(DriveCh) - Ord('A') + 1);
+   VolLabel := NCGetVolumeLabel(DriveCh);
+   FileCnt := 0;
+   TotalSz := 0;
+   For Idx := 0 To NCState.Panes[Side].Count - 1 Do
+    If Not NCState.Panes[Side].Entries[Idx].IsDir Then Begin
+     Inc(FileCnt);
+     TotalSz := TotalSz + NCState.Panes[Side].Entries[Idx].Size;
     End;
-    If NCState.Panes[Side].Marked[Idx] Then SetColor(14)
-    Else If E.IsDir Then SetColor(15)
-    Else SetColor(11);
-    S := E.Name;
-    If Length(S) > NameCols Then S := Copy(S, 1, NameCols);
-    S := PadRight(S, NameCols, ' ');
-    If E.IsDir Then
-     S := S + ' ' + PadLeft('<DIR>', 9, ' ')
-    Else
-     S := S + ' ' + PadLeft(IntToStr(E.Size), 9, ' ');
-    If E.Name = '..' Then
-     S := S + '  ' + PadRight('', DTCols - 2, ' ') { pas de date pour ".." }
-    Else
-     S := S + '  ' + NCFormatDateTime(E, IsHost);
-    OutTextXY(X0 + 3, Y + 1, S);
-   End;
+   Y := ColHeadY;
+   SetColor(14);
+   S := 'Informations';
+   OutTextXY(X0 + ((PaneRight - X0) - TextWidth(S)) Div 2, Y, S);
+   Y := Y + 2 * RH;
+   SetColor(11);
+   OutTextXY(X0 + 4, Y, 'Espace disque total : ' +
+    NCFormatBytes64(TotalBytes64) + ' octets');
    Y := Y + RH;
+   OutTextXY(X0 + 4, Y, 'Espace disque libre : ' +
+    NCFormatBytes64(FreeBytes64) + ' octets');
+   Y := Y + 2 * RH;
+   OutTextXY(X0 + 4, Y, 'Etiquette de volume : ' + VolLabel);
+   Y := Y + 2 * RH;
+   OutTextXY(X0 + 4, Y, IntToStr(FileCnt) + ' fichier(s), ' +
+    NCFormatThousands(TotalSz) + ' octets');
+   Y := Y + RH;
+   OutTextXY(X0 + 4, Y, 'dans ' + NCState.Panes[Side].Path);
+  End Else Begin
+   { Entete de colonnes (Nom / Taille / Date Heure) - fond bleu, texte    }
+   { jaune, comme dans l original. }
+   SetFillStyle(SolidFill, 1);
+   Bar(X0 + 1, ColHeadY - 1, PaneRight - 1, ColHeadY + RH - 2);
+   SetColor(14);
+   S := PadRight('Nom', NameCols, ' ') + ' ' + PadLeft('Taille', 9, ' ') +
+    '  ' + PadRight('Date/Heure', DTCols - 2, ' ');
+   OutTextXY(X0 + 3, ColHeadY, S);
+   SetColor(15);
+   Line(X0 + 1, ColHeadY + RH - 2, PaneRight - 1, ColHeadY + RH - 2);
+
+   If NCState.Panes[Side].Cursor < NCState.Panes[Side].ScrollTop Then
+    NCState.Panes[Side].ScrollTop := NCState.Panes[Side].Cursor;
+   If NCState.Panes[Side].Cursor >= NCState.Panes[Side].ScrollTop + VisRows Then
+    NCState.Panes[Side].ScrollTop := NCState.Panes[Side].Cursor - VisRows + 1;
+   If NCState.Panes[Side].ScrollTop < 0 Then NCState.Panes[Side].ScrollTop := 0;
+
+   Y := ListTop;
+   For Row := 0 To VisRows - 1 Do Begin
+    Idx := NCState.Panes[Side].ScrollTop + Row;
+    If Idx < NCState.Panes[Side].Count Then Begin
+     E := NCState.Panes[Side].Entries[Idx];
+     If Idx = NCState.Panes[Side].Cursor Then Begin
+      If Side = NCState.Active Then SetFillStyle(SolidFill, 3)
+      Else SetFillStyle(SolidFill, 8);
+      Bar(X0 + 1, Y, PaneRight - 1, Y + RH - 1);
+     End Else Begin
+      SetFillStyle(SolidFill, 1);
+      Bar(X0 + 1, Y, PaneRight - 1, Y + RH - 1);
+     End;
+     If NCState.Panes[Side].Marked[Idx] Then SetColor(14)
+     Else If E.IsDir Then SetColor(15)
+     Else SetColor(11);
+     S := E.Name;
+     If Length(S) > NameCols Then S := Copy(S, 1, NameCols);
+     S := PadRight(S, NameCols, ' ');
+     If E.IsDir Then
+      S := S + ' ' + PadLeft('<DIR>', 9, ' ')
+     Else
+      S := S + ' ' + PadLeft(IntToStr(E.Size), 9, ' ');
+     If E.Name = '..' Then
+      S := S + '  ' + PadRight('', DTCols - 2, ' ') { pas de date pour ".." }
+     Else
+      S := S + '  ' + NCFormatDateTime(E, IsHost);
+     OutTextXY(X0 + 3, Y + 1, S);
+    End;
+    Y := Y + RH;
+   End;
+
+   { Lignes verticales cyan clair separant les colonnes Nom/Taille/           }
+   { Date/Heure - dessinees apres les lignes de la liste pour rester              }
+   { visibles par-dessus leurs fonds (curseur, marquage...). }
+   SetColor(11);
+   Line(X0 + 3 + NameCols * CW, ColHeadY - 1, X0 + 3 + NameCols * CW, Y - 1);
+   Line(X0 + 3 + (NameCols + 10) * CW + CW Div 2, ColHeadY - 1,
+    X0 + 3 + (NameCols + 10) * CW + CW Div 2, Y - 1);
   End;
 
-  { Lignes verticales cyan clair separant les colonnes Nom/Taille/           }
-  { Date/Heure - dessinees apres les lignes de la liste pour rester              }
-  { visibles par-dessus leurs fonds (curseur, marquage...). }
-  SetColor(11);
-  Line(X0 + 3 + NameCols * CW, ColHeadY - 1, X0 + 3 + NameCols * CW, Y - 1);
-  Line(X0 + 3 + (NameCols + 10) * CW + CW Div 2, ColHeadY - 1,
-   X0 + 3 + (NameCols + 10) * CW + CW Div 2, Y - 1);
-
-  { Barre d info : ligne du fichier courant du panneau. }
+  { Barre d info : ligne du fichier courant du panneau (ou rappel du      }
+  { mode Info si actif). }
   SetFillStyle(SolidFill, 3);
   Bar(X0 + 1, InfoY, PaneRight - 1, InfoY + RH - 1);
   SetColor(0);
-  If NCState.Panes[Side].Count > 0 Then Begin
+  If NCState.Panes[Side].InfoMode Then
+   S := 'Mode Info'
+  Else If NCState.Panes[Side].Count > 0 Then Begin
    E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
    If E.IsDir Then
     S := E.Name + '  <DIR>'
@@ -31281,10 +31598,12 @@ Begin
   If Length(S) > (PaneRight - X0 - 4) Div CW Then
    S := Copy(S, 1, (PaneRight - X0 - 4) Div CW);
   OutTextXY(X0 + 3, InfoY + 1, S);
+  End;
  End;
 
- { Dialogues modaux (F5/F6/F7 saisie, F8 confirmation, F3 apercu) -      }
- { dessines par-dessus les panneaux. --- }
+ { Dialogues modaux (F5/F6/F7 saisie, F8 confirmation, menu deroulant,   }
+ { historique, arbre NCD, recherche/choix de visionneuse F3) - dessines  }
+ { par-dessus les panneaux ou par-dessus la visionneuse. --- }
  Case NCState.Mode Of
   ncPromptMkDir: Begin
    NCDrawModalBox(PX, PY, PW, PH, 'Creer un repertoire');
@@ -31310,23 +31629,45 @@ Begin
    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
     'Confirmer la suppression ? (O/N)');
   End;
-  ncViewFile: Begin
-   SetFillStyle(SolidFill, 1);
-   Bar(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
+  ncViewSearch: Begin
+   NCDrawModalBox(PX, PY, PW, PH, 'Rechercher');
    SetColor(15);
-   Rectangle(PX + 4, PY + TERM_TAB_HEIGHT + 4, PX + PW - 5, InfoY + RH);
-   Y := PY + TERM_TAB_HEIGHT + 8;
-   I := NCState.ViewTop;
-   While (I < NCState.ViewCount) And (Y < InfoY + RH - RH) Do Begin
-    S := NCState.ViewLines[I];
-    If Length(S) > (PW - 16) Div CW Then S := Copy(S, 1, (PW - 16) Div CW);
-    OutTextXY(PX + 8, Y, S);
-    Y := Y + RH;
-    Inc(I);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
+    'Texte : ' + NCState.ViewSearchBuf + '_');
+  End;
+  ncViewSelectViewer: Begin
+   { Boite centree listant les formats (WPVIEW: "Select Viewer") - seuls  }
+   { Text View et Hex sont reellement cables (voir NC_VIEWER_NAMES). }
+   NameCols := 0;
+   For I := 0 To NC_VIEWER_COUNT - 1 Do
+    If Length(NC_VIEWER_NAMES[I]) > NameCols Then
+     NameCols := Length(NC_VIEWER_NAMES[I]);
+   PaneW := (NameCols + 4) * CW;
+   VisRows := (NC_VIEWER_COUNT + 2) * RH;
+   X0 := PX + (PW - PaneW) Div 2;
+   PaneRight := X0 + PaneW;
+   HeaderY := PY + (PH - VisRows) Div 2;
+   InfoY := HeaderY + VisRows;
+   SetFillStyle(SolidFill, 3);
+   Bar(X0, HeaderY, PaneRight, InfoY);
+   SetColor(15);
+   Rectangle(X0, HeaderY, PaneRight, InfoY);
+   SetColor(0);
+   S := 'Select Viewer';
+   OutTextXY(X0 + ((PaneRight - X0) - TextWidth(S)) Div 2, HeaderY + 4, S);
+   For I := 0 To NC_VIEWER_COUNT - 1 Do Begin
+    Y := HeaderY + RH + I * RH + 4;
+    If I = NCState.ViewSelIdx Then Begin
+     SetFillStyle(SolidFill, 0);
+     Bar(X0 + 2, Y - 2, PaneRight - 2, Y + RH - 2);
+     SetColor(11);
+    End Else Begin
+     SetFillStyle(SolidFill, 3);
+     Bar(X0 + 2, Y - 2, PaneRight - 2, Y + RH - 2);
+     SetColor(0);
+    End;
+    OutTextXY(X0 + 2 * CW, Y, NC_VIEWER_NAMES[I]);
    End;
-   SetColor(11);
-   OutTextXY(PX + 8, InfoY + RH - RH,
-    '-- Echap pour fermer, Haut/Bas pour defiler --');
   End;
   ncMenuBar: Begin
    { Barre superieure des 5 menus (Gauche/Fichiers/Disque/Commandes/       }
@@ -31541,26 +31882,83 @@ Begin
  NCCmd_RenameHost := (Err = 0);
 End;
 
-{ F3 : charger jusqu a 200 lignes du fichier hote FullPath pour la      }
-{ visionneuse en lecture seule (NCState.ViewLines/ViewCount). --- }
+{ Convertit Len octets de Buf (a partir de Start, 0-based) en une chaine  }
+{ affichable pour le mode Texte : les octets non imprimables (hors           }
+{ 32..126) sont remplaces par '.', comme la colonne ASCII d un dump           }
+{ hexadecimal classique - evite tout risque lie a des octets nuls ou           }
+{ codes de controle dans un ShortString. Tronque a 255 caracteres           }
+{ (limite native d un String en mode Turbo Pascal). --- }
+Function NCViewBytesToLine(Const Buf: Array Of Byte; Start, Len: LongInt): String;
+Var
+ I: LongInt;
+ B: Byte;
+ R: String;
+Begin
+ If Len > 255 Then Len := 255;
+ R := '';
+ For I := 0 To Len - 1 Do Begin
+  B := Buf[Start + I];
+  If (B < 32) Or (B > 126) Then B := Ord('.');
+  R := R + Chr(B);
+ End;
+ NCViewBytesToLine := R;
+End;
+
+{ F3 : charger le fichier hote FullPath pour la visionneuse en lecture   }
+{ seule - lecture binaire brute (NCState.ViewRaw/ViewRawSize, plafonnee  }
+{ a MAX_NC_VIEW_RAW octets) qui alimente a la fois le mode Hexadecimal   }
+{ (F4) et la recherche (F7), puis decoupage en lignes de texte           }
+{ (NCState.ViewLines/ViewCount) pour le mode Texte par defaut. --- }
 Procedure NCCmd_ViewFile(FullPath: String);
 Var
- F: Text;
+ F: File;
+ LineStart, I: LongInt;
 Begin
  NCState.ViewCount := 0;
  NCState.ViewTop := 0;
- {$I-} Assign(F, FullPath); Reset(F); {$I+}
+ NCState.ViewCol := 0;
+ NCState.ViewHex := False;
+ NCState.ViewWrap := True;
+ NCState.ViewFileName := FullPath;
+ NCState.ViewFileSize := 0;
+ NCState.ViewRawSize := 0;
+ {$I-} Assign(F, FullPath); Reset(F, 1); {$I+}
  If IOResult <> 0 Then Begin
   NCState.ViewLines[0] := '(impossible d''ouvrir le fichier)';
   NCState.ViewCount := 1;
   Exit;
  End;
- While (Not Eof(F)) And (NCState.ViewCount < 200) Do Begin
-  {$I-} ReadLn(F, NCState.ViewLines[NCState.ViewCount]); {$I+}
-  If IOResult <> 0 Then Break;
+ NCState.ViewFileSize := FileSize(F);
+ I := NCState.ViewFileSize;
+ If I > MAX_NC_VIEW_RAW Then I := MAX_NC_VIEW_RAW;
+ {$I-} BlockRead(F, NCState.ViewRaw, I, NCState.ViewRawSize); {$I+}
+ IOResult;
+ Close(F);
+
+ { Decoupage en lignes sur CR, LF ou CRLF. }
+ LineStart := 0;
+ I := 0;
+ While (I < NCState.ViewRawSize) And (NCState.ViewCount < MAX_NC_VIEW_LINES) Do Begin
+  If (NCState.ViewRaw[I] = 13) Or (NCState.ViewRaw[I] = 10) Then Begin
+   NCState.ViewLines[NCState.ViewCount] :=
+    NCViewBytesToLine(NCState.ViewRaw, LineStart, I - LineStart);
+   Inc(NCState.ViewCount);
+   If (NCState.ViewRaw[I] = 13) And (I + 1 < NCState.ViewRawSize) And
+      (NCState.ViewRaw[I + 1] = 10) Then Inc(I); { sauter le LF du CRLF }
+   Inc(I);
+   LineStart := I;
+  End Else
+   Inc(I);
+ End;
+ If (LineStart < NCState.ViewRawSize) And (NCState.ViewCount < MAX_NC_VIEW_LINES) Then Begin
+  NCState.ViewLines[NCState.ViewCount] :=
+   NCViewBytesToLine(NCState.ViewRaw, LineStart, NCState.ViewRawSize - LineStart);
   Inc(NCState.ViewCount);
  End;
- Close(F);
+ If NCState.ViewCount = 0 Then Begin
+  NCState.ViewLines[0] := '';
+  NCState.ViewCount := 1;
+ End;
 End;
 
 { --- Actions F3/F4/F5/F6/F7/F8/F10, extraites de HandleNCommanderEvent  }
@@ -31629,11 +32027,50 @@ End;
 
 { Afficher un message simple (mode ncMessage) - reproduit fidelement          }
 { DialogNotImplement (NC.PAS:1373), deja un stub dans l ORIGINAL pour les          }
-{ items du menu qui ne correspondent a aucune fonction cablee. --- }
-Procedure NCShowMessage(Const Msg: String);
+{ items du menu qui ne correspondent a aucune fonction cablee. ReturnMode  }
+{ precise le mode a restaurer a la fermeture (ncBrowse depuis le menu           }
+{ F9, mais ncViewFile depuis un choix non cable de "Select Viewer" F8,   }
+{ pour ne pas ejecter l utilisateur de la visionneuse). --- }
+Procedure NCShowMessage(Const Msg: String; ReturnMode: TNCMode);
 Begin
+ NCState.MessageReturnMode := ReturnMode;
  NCState.PromptBuf := Msg;
  NCState.Mode := ncMessage;
+End;
+
+{ F7 dans la visionneuse F3 : cherche NCState.ViewSearchBuf (insensible  }
+{ a la casse) dans les lignes de texte a partir de la ligne suivant           }
+{ la position courante, en bouclant sur tout le fichier si necessaire.   }
+{ Bascule en mode Texte non renvoye a la ligne pour que ViewTop (index   }
+{ de ligne) reste coherent avec le resultat trouve. --- }
+Procedure NCViewPerformSearch;
+Var
+ I, StartLine: Integer;
+ Found: Boolean;
+ UpNeedle: String;
+Begin
+ If NCState.ViewSearchBuf = '' Then Exit;
+ NCState.ViewHex := False;
+ NCState.ViewWrap := False;
+ NCState.ViewCol := 0;
+ UpNeedle := UpCaseStr(NCState.ViewSearchBuf);
+ Found := False;
+ StartLine := NCState.ViewTop + 1;
+ For I := StartLine To NCState.ViewCount - 1 Do
+  If Pos(UpNeedle, UpCaseStr(NCState.ViewLines[I])) > 0 Then Begin
+   NCState.ViewTop := I;
+   Found := True;
+   Break;
+  End;
+ If Not Found Then
+  For I := 0 To StartLine - 1 Do
+   If Pos(UpNeedle, UpCaseStr(NCState.ViewLines[I])) > 0 Then Begin
+    NCState.ViewTop := I;
+    Found := True;
+    Break;
+   End;
+ If Not Found Then
+  NCShowMessage('Chaine introuvable : ' + NCState.ViewSearchBuf, ncViewFile);
 End;
 
 { Trier le panneau Side selon SortKind (0=Nom 1=Extension 2=Heure                }
@@ -31712,7 +32149,7 @@ Var
  OtherSide, I, J: Integer;
 Begin
  If NCState.Slot >= 0 Then Begin
-  NCShowMessage('La synchronisation n''est pas encore implementee pour la disquette virtuelle.');
+  NCShowMessage('La synchronisation n''est pas encore implementee pour la disquette virtuelle.', ncBrowse);
   Exit;
  End;
  OtherSide := Side Xor 1;
@@ -31734,7 +32171,7 @@ End;
 Procedure NCActionHistoryStart(Var TP: TTerminalPanel);
 Begin
  If TP.NumberHistory <= 0 Then Begin
-  NCShowMessage('Aucune commande dans l''historique.');
+  NCShowMessage('Aucune commande dans l''historique.', ncBrowse);
   Exit;
  End;
  NCState.HistCursor := TP.NumberHistory;
@@ -31771,7 +32208,7 @@ Var
  Root: String;
 Begin
  If NCState.Slot >= 0 Then Begin
-  NCShowMessage('L''arbre NCD n''est pas encore implemente pour la disquette virtuelle.');
+  NCShowMessage('L''arbre NCD n''est pas encore implemente pour la disquette virtuelle.', ncBrowse);
   Exit;
  End;
  NCState.TreeCount := 0;
@@ -31800,15 +32237,18 @@ Begin
    { cote, quel que soit le panneau actif - comme dans l original. }
    If Top = 0 Then TargetSide := 0 Else TargetSide := 1;
    Case Item Of
-    0..7: NCShowMessage('Ce mode d''affichage n''est pas encore implemente.');
+    2: NCState.Panes[TargetSide].InfoMode :=
+     Not NCState.Panes[TargetSide].InfoMode; { Info }
+    0, 1, 3..7:
+     NCShowMessage('Ce mode d''affichage n''est pas encore implemente.', ncBrowse);
     8:  NCActionSort(TargetSide, 0);  { Nom }
     9:  NCActionSort(TargetSide, 1);  { Extension }
     10: NCActionSort(TargetSide, 2);  { Heure }
     11: NCActionSort(TargetSide, 3);  { Taille }
     12: NCActionSort(TargetSide, 4);  { Desordre }
     13: NCListDir(NCState.Slot, NCState.Panes[TargetSide]); { Relire }
-    14: NCShowMessage('Cette option n''est pas encore implementee.'); { Filtre }
-    15: NCShowMessage('Le changement de lecteur n''est pas encore implemente.');
+    14: NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse); { Filtre }
+    15: NCShowMessage('Le changement de lecteur n''est pas encore implemente.', ncBrowse);
    End;
   End;
   1: { Fichiers }
@@ -31821,10 +32261,10 @@ Begin
     7: NCActionDeleteStart(Side);
     13: NCActionQuit;
    Else
-    NCShowMessage('Cette option n''est pas encore implementee.');
+    NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse);
    End;
   2: { Disque : entierement non implemente, meme dans l ORIGINAL. }
-   NCShowMessage('Cette option n''est pas encore implementee.');
+   NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse);
   3: { Commandes : Arbre NCD, Historique, Permuter, Comparer et                 }
      { Synchroniser sont reellement cables (etape 4) ; le reste           }
      { (Recherche, Ligne EGA, Emulation terminal, editeurs/configuration)  }
@@ -31836,7 +32276,7 @@ Begin
     6: NCActionCompareDirs;          { Compare les repertoires }
     7: NCActionSyncDirs(TP, Side);   { Synchroniser les repertoires }
    Else
-    NCShowMessage('Cette option n''est pas encore implementee.');
+    NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse);
    End;
  End;
 End;
@@ -31858,7 +32298,47 @@ Begin
   If Ev.Kind = EV_KEY_DOWN Then Begin
    If NCState.Mode = ncViewFile Then Case Ev.KeyCode Of
     72: If NCState.ViewTop > 0 Then Dec(NCState.ViewTop);
-    80: If NCState.ViewTop < NCState.ViewCount - 1 Then Inc(NCState.ViewTop);
+    80: If NCState.ViewTop < NCViewTotalRows - 1 Then Inc(NCState.ViewTop);
+    73: Begin { PgUp }
+     Dec(NCState.ViewTop, 10);
+     If NCState.ViewTop < 0 Then NCState.ViewTop := 0;
+    End;
+    81: Begin { PgDn }
+     Inc(NCState.ViewTop, 10);
+     If NCState.ViewTop > NCViewTotalRows - 1 Then
+      NCState.ViewTop := NCViewTotalRows - 1;
+     If NCState.ViewTop < 0 Then NCState.ViewTop := 0;
+    End;
+    71: NCState.ViewTop := 0; { Home }
+    79: NCState.ViewTop := NCViewTotalRows - 1; { Fin }
+    75: { Gauche : defilement horizontal (Texte non renvoye a la ligne) }
+     If (Not NCState.ViewHex) And (Not NCState.ViewWrap) And
+        (NCState.ViewCol > 0) Then Dec(NCState.ViewCol);
+    77: { Droite : idem }
+     If (Not NCState.ViewHex) And (Not NCState.ViewWrap) Then
+      Inc(NCState.ViewCol);
+    $3B: NCShowMessage('Aide non disponible pour l''instant.', ncViewFile); { F1 }
+    $3C: Begin { F2 : Unwrap - bascule le renvoi a la ligne }
+     NCState.ViewWrap := Not NCState.ViewWrap;
+     NCState.ViewTop := 0;
+     NCState.ViewCol := 0;
+    End;
+    $3E: Begin { F4 : Hex - bascule Texte/Hexadecimal }
+     NCState.ViewHex := Not NCState.ViewHex;
+     NCState.ViewTop := 0;
+     NCState.ViewCol := 0;
+    End;
+    $41: NCState.Mode := ncViewSearch; { F7 : Search }
+    $42: Begin { F8 : Viewer - liste "Select Viewer" }
+     If NCState.ViewHex Then NCState.ViewSelIdx := 6 Else NCState.ViewSelIdx := 5;
+     NCState.Mode := ncViewSelectViewer;
+    End;
+    $44: NCState.Mode := ncBrowse; { F10 : Quit - retour aux 2 panneaux }
+   End;
+   If NCState.Mode = ncViewSelectViewer Then Case Ev.KeyCode Of
+    72: If NCState.ViewSelIdx = 0 Then NCState.ViewSelIdx := NC_VIEWER_COUNT - 1
+     Else Dec(NCState.ViewSelIdx);
+    80: NCState.ViewSelIdx := (NCState.ViewSelIdx + 1) Mod NC_VIEWER_COUNT;
    End;
    If NCState.Mode = ncMenuBar Then Case Ev.KeyCode Of
     75: Begin { Gauche : menu superieur precedent, avec bouclage }
@@ -31900,7 +32380,8 @@ Begin
     If NCState.TreeCursor < NCState.TreeTop Then
      NCState.TreeTop := NCState.TreeCursor;
    End;
-   If NCState.Mode = ncMessage Then NCState.Mode := ncBrowse; { toute touche ferme }
+   If NCState.Mode = ncMessage Then
+    NCState.Mode := NCState.MessageReturnMode; { toute touche ferme }
   End;
   If Ev.Kind = EV_KEY_CHAR Then Begin
    Case NCState.Mode Of
@@ -31973,6 +32454,37 @@ Begin
      #27, 'N': NCState.Mode := ncBrowse;
     End;
     ncViewFile: If Ev.KeyChar = #27 Then NCState.Mode := ncBrowse;
+    ncViewSearch: Case Ev.KeyChar Of
+     #27: NCState.Mode := ncViewFile;
+     #13: Begin
+      NCViewPerformSearch;
+      NCState.Mode := ncViewFile;
+     End;
+     #8:
+      If Length(NCState.ViewSearchBuf) > 0 Then
+       NCState.ViewSearchBuf :=
+        Copy(NCState.ViewSearchBuf, 1, Length(NCState.ViewSearchBuf) - 1);
+    Else
+     If (Ord(Ev.KeyChar) >= 32) And (Length(NCState.ViewSearchBuf) < 120) Then
+      NCState.ViewSearchBuf := NCState.ViewSearchBuf + Ev.KeyChar;
+    End;
+    ncViewSelectViewer: Case Ev.KeyChar Of
+     #27: NCState.Mode := ncViewFile;
+     #13: Begin
+      Case NCState.ViewSelIdx Of
+       5: NCState.ViewHex := False; { Text View }
+       6: NCState.ViewHex := True;  { Hex }
+      Else
+       NCShowMessage('Ce format de visualisation n''est pas encore implemente.',
+        ncViewFile);
+      End;
+      If NCState.Mode = ncViewSelectViewer Then Begin
+       NCState.ViewTop := 0;
+       NCState.ViewCol := 0;
+       NCState.Mode := ncViewFile;
+      End;
+     End;
+    End;
     ncMenuBar: Case Ev.KeyChar Of
      #27: NCState.Mode := ncBrowse;
      #13: Begin
@@ -31983,7 +32495,7 @@ Begin
       If NCState.Mode = ncMenuBar Then NCState.Mode := ncBrowse;
      End;
     End;
-    ncMessage: NCState.Mode := ncBrowse; { toute touche ferme le message }
+    ncMessage: NCState.Mode := NCState.MessageReturnMode; { toute touche ferme }
     ncHistory: Case Ev.KeyChar Of
      #27: NCState.Mode := ncBrowse;
      #13: Begin
