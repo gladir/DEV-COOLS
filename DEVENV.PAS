@@ -4202,7 +4202,28 @@ Var
  ELF64_FZF       : Boolean;     { zero                                   }
  ELF64_FSF       : Boolean;     { signe                                  }
  ELF64_FOF       : Boolean;     { debordement (Overflow)                 }
+ ELF64_FPF       : Boolean;     { parite (Parity) - alimentee par les    }
+                                 { comparaisons x87 ; sinon non calculee  }
+                                 { pour les instructions entieres.        }
  ELF64_FDF       : Boolean;     { direction (False=avant, True=arriere)  }
+ { Etat du coprocesseur x87 (mode utilisateur). ELF64_FpuReg[0] = ST(0)  }
+ { et ainsi de suite - la pile est simulee par decalage physique du      }
+ { tableau (PUSH/POP deplacent les valeurs) plutot que par un pointeur   }
+ { de sommet circulaire, ce qui simplifie ST(i) en un simple indice.     }
+ { Extended = reel 80 bits x87 natif sur cette cible (i386), ce qui      }
+ { permet de reutiliser directement l arithmetique flottante de FPC      }
+ { plutot que de reimplementer un format 80 bits a la main.              }
+ ELF64_FpuReg    : Array[0..7] Of Extended;
+ ELF64_FpuCW     : Word;        { mot de controle (suivi seulement, la   }
+                                 { precision/l arrondi reel ne sont pas   }
+                                 { appliques - limitation connue).        }
+ ELF64_FpuC0     : Boolean;     { fanions de condition x87 (resultat des }
+ ELF64_FpuC2     : Boolean;     { comparaisons FCOM/FUCOM, exposes via   }
+ ELF64_FpuC3     : Boolean;     { FNSTSW ou directement par FCOMI/FUCOMI)}
+ ELF64_MXCSR     : LongWord;    { registre de controle/etat SSE (suivi   }
+                                 { seulement, aucun effet sur l arrondi)  }
+ { Registres XMM0-XMM15 (128 bits, indexe [i,0]=moitie basse, [i,1]=haute)}
+ ELF64_Xmm       : Array[0..15, 0..1] Of QWord;
  { Diagnostic d arret / instruction non supportee }
  ELF64_LastBadRIP: QWord;
  ELF64_HaltReason: String;
@@ -40558,6 +40579,11 @@ Begin
  { executable statique dont l espace virtuel emule ne fait que 128 Mo.   }
  ELF64_MmapNext := QWord($6000000);
  FillChar(ELF64_FDOpen, SizeOf(ELF64_FDOpen), 0);
+ For I := 0 To 7 Do ELF64_FpuReg[I] := 0;
+ ELF64_FpuCW := $037F;
+ ELF64_FpuC0 := False; ELF64_FpuC2 := False; ELF64_FpuC3 := False;
+ ELF64_MXCSR := $1F80;
+ FillChar(ELF64_Xmm, SizeOf(ELF64_Xmm), 0);
  { --- Mise en place de la pile initiale (ABI SysV Linux x86-64) ---      }
  { Le sommet de la pile emulee est fixe pres du haut de l espace virtuel  }
  { de 128 Mo (la pile croissant vers le bas). On y pousse d abord la      }
@@ -40661,6 +40687,30 @@ Begin
   32: ELF64_Reg[Idx] := Val And $FFFFFFFF; { ecrire un registre 32 bits remet les 32 bits hauts a zero (ABI x86-64) }
   Else ELF64_Reg[Idx] := Val;
  End;
+End;
+
+{ Etend le signe d une valeur de Size bits (8/16/32/64) vers un Int64 -    }
+{ utilise par IMUL/IDIV pour interpreter correctement les operandes.      }
+Function Elf64_SignExtend(Val: QWord; Size: Integer): Int64;
+Begin
+ Case Size Of
+  8:  Elf64_SignExtend := Int64(ShortInt(Val And $FF));
+  16: Elf64_SignExtend := Int64(SmallInt(Val And $FFFF));
+  32: Elf64_SignExtend := Int64(LongInt(Val And $FFFFFFFF));
+  Else Elf64_SignExtend := Int64(Val);
+ End;
+End;
+
+{ Construit un TElf64EA pointant directement sur une adresse memoire      }
+{ deja calculee (utilise par CMPS/SCAS, qui adressent [RSI]/[RDI]         }
+{ directement plutot que via un ModRM).                                   }
+Function Elf64_MemEA(Addr: QWord): TElf64EA;
+Var
+ EA: TElf64EA;
+Begin
+ FillChar(EA, SizeOf(EA), 0);
+ EA.Addr := Addr;
+ Elf64_MemEA := EA;
 End;
 
 Function Elf64_ResolveEA(Const EA: TElf64EA): QWord;
@@ -40871,9 +40921,11 @@ Begin
  ELF64_Reg[REG_RSP] := ELF64_Reg[REG_RSP] + 8;
 End;
 
-{ Conditions Jcc/SETcc standard (0..F). Limitation connue (etape          }
-{ ulterieure) : le fanion de parite PF n est pas suivi - JP/JPE/JNP/JPO   }
-{ renvoient une valeur fixe plutot que le vrai calcul de parite.          }
+{ Conditions Jcc/SETcc standard (0..F). ELF64_FPF (JP/JPE/JNP/JPO) n est  }
+{ alimente que par les comparaisons x87 (FCOM/FUCOM/FNSTSW+SAHF), le cas  }
+{ d usage reel de ces conditions - la parite d un resultat ALU entier     }
+{ n est elle pas calculee (limitation connue, rarement testee en          }
+{ pratique par du code genere par un compilateur).                        }
 Function Elf64_EvalCond(CondCode: Byte): Boolean;
 Begin
  Case CondCode Of
@@ -40887,8 +40939,8 @@ Begin
   $7: Elf64_EvalCond := (Not ELF64_FCF) And (Not ELF64_FZF);
   $8: Elf64_EvalCond := ELF64_FSF;
   $9: Elf64_EvalCond := Not ELF64_FSF;
-  $A: Elf64_EvalCond := False;
-  $B: Elf64_EvalCond := True;
+  $A: Elf64_EvalCond := ELF64_FPF;
+  $B: Elf64_EvalCond := Not ELF64_FPF;
   $C: Elf64_EvalCond := ELF64_FSF <> ELF64_FOF;
   $D: Elf64_EvalCond := ELF64_FSF = ELF64_FOF;
   $E: Elf64_EvalCond := ELF64_FZF Or (ELF64_FSF <> ELF64_FOF);
@@ -40932,6 +40984,423 @@ Begin
   ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - QWord(Sz Div 8)
  Else
   ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + QWord(Sz Div 8);
+End;
+
+{ Avance RSI et RDI de Sz/8 octets (sens ELF64_FDF) sans copier - utilise }
+{ par CMPSB/CMPSW/CMPSD/CMPSQ.                                            }
+Procedure Elf64_AdvanceSIDI(Sz: Integer);
+Var
+ Step: QWord;
+Begin
+ Step := QWord(Sz Div 8);
+ If ELF64_FDF Then Begin
+  ELF64_Reg[REG_RSI] := ELF64_Reg[REG_RSI] - Step;
+  ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - Step;
+ End Else Begin
+  ELF64_Reg[REG_RSI] := ELF64_Reg[REG_RSI] + Step;
+  ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + Step;
+ End;
+End;
+
+{ Decalages/rotations (groupe 2 : C0/C1/D0/D1/D2/D3). AluOp : 0=ROL 1=ROR }
+{ 2=RCL 3=RCR (non geres, traites en no-op - limitation connue) 4/6=SHL   }
+{ 5=SHR 7=SAR. Limitation connue : OF n est calcule que pour un compte de }
+{ 1 (comme l exige reellement le processeur, qui le laisse indefini au   }
+{ dela) ; CF/ZF/SF sont mis a jour a chaque decalage effectue.           }
+Function Elf64_DoShift(GroupOp: Integer; Val: QWord; Cnt, Size: Integer): QWord;
+Var
+ Mask, SignBit: QWord;
+ Res: QWord;
+ CFOut, SignWasSet: Boolean;
+ I: Integer;
+Begin
+ Elf64_SizeMaskAndSign(Size, Mask, SignBit);
+ Res := Val And Mask;
+ CFOut := ELF64_FCF;
+ Case GroupOp Of
+  4, 6: { SHL/SAL }
+   For I := 1 To Cnt Do Begin
+    CFOut := (Res And SignBit) <> 0;
+    Res := (Res Shl 1) And Mask;
+   End;
+  5: { SHR }
+   For I := 1 To Cnt Do Begin
+    CFOut := (Res And 1) <> 0;
+    Res := Res Shr 1;
+   End;
+  7: { SAR }
+   For I := 1 To Cnt Do Begin
+    CFOut := (Res And 1) <> 0;
+    SignWasSet := (Res And SignBit) <> 0;
+    Res := Res Shr 1;
+    If SignWasSet Then Res := Res Or SignBit;
+   End;
+  0: { ROL }
+   For I := 1 To Cnt Do Begin
+    CFOut := (Res And SignBit) <> 0;
+    Res := ((Res Shl 1) Or QWord(Ord(CFOut))) And Mask;
+   End;
+  1: { ROR }
+   For I := 1 To Cnt Do Begin
+    CFOut := (Res And 1) <> 0;
+    Res := (Res Shr 1);
+    If CFOut Then Res := Res Or SignBit;
+   End;
+  { Else : RCL/RCR non geres, Res reste inchange }
+ End;
+ If Cnt > 0 Then Begin
+  ELF64_FCF := CFOut;
+  ELF64_FZF := (Res = 0);
+  ELF64_FSF := (Res And SignBit) <> 0;
+  If Cnt = 1 Then
+   Case GroupOp Of
+    4, 6: ELF64_FOF := (((Res And SignBit) <> 0) <> CFOut);
+    5:    ELF64_FOF := (Val And SignBit) <> 0;
+    7:    ELF64_FOF := False;
+   End;
+ End;
+ Elf64_DoShift := Res;
+End;
+
+{ IMUL a 2/3 operandes (0F AF, 69, 6B) : ne conserve que les Size bits    }
+{ de poids faible du produit signe (comme le fait reellement le          }
+{ processeur pour ces formes). Limitation connue : pour Size=64, le      }
+{ debordement (CF/OF) n est pas detecte precisement (necessiterait une   }
+{ multiplication 128 bits complete) - seul le resultat tronque compte    }
+{ pour la plupart du code genere par un compilateur.                     }
+Function Elf64_ImulTrunc(A, B: QWord; Size: Integer): QWord;
+Var
+ Full: Int64;
+ Res: QWord;
+Begin
+ If Size = 64 Then Begin
+  Res := A * B;
+  ELF64_FCF := False; ELF64_FOF := False;
+  Elf64_ImulTrunc := Res;
+  Exit;
+ End;
+ Full := Elf64_SignExtend(A, Size) * Elf64_SignExtend(B, Size);
+ Case Size Of
+  8: Begin
+   Res := QWord(Full) And $FF;
+   ELF64_FCF := (Full < -128) Or (Full > 127);
+  End;
+  16: Begin
+   Res := QWord(Full) And $FFFF;
+   ELF64_FCF := (Full < -32768) Or (Full > 32767);
+  End;
+  Else Begin
+   Res := QWord(Full) And $FFFFFFFF;
+   ELF64_FCF := (Full < -2147483648) Or (Full > 2147483647);
+  End;
+ End;
+ ELF64_FOF := ELF64_FCF;
+ Elf64_ImulTrunc := Res;
+End;
+
+{ Multiplication non signee 64x64 -> 128 bits (schoolbook, par moities   }
+{ 32 bits) - necessaire car FPC 3.2.0 n a pas de type entier 128 bits    }
+{ natif en mode TP. Utilisee par MUL/IMUL pleine largeur (F7 /4 et /5).  }
+Procedure Elf64_UMul64(A, B: QWord; Var HiOut, LoOut: QWord);
+Var
+ ALo, AHi, BLo, BHi: QWord;
+ Lo, M1, M2, Hi, T, Carry: QWord;
+Begin
+ ALo := A And $FFFFFFFF; AHi := A Shr 32;
+ BLo := B And $FFFFFFFF; BHi := B Shr 32;
+ Lo := ALo * BLo;
+ M1 := ALo * BHi;
+ M2 := AHi * BLo;
+ Hi := AHi * BHi;
+ T := Lo + (M1 Shl 32);
+ If T < Lo Then Carry := 1 Else Carry := 0;
+ Hi := Hi + (M1 Shr 32) + Carry;
+ Lo := T;
+ T := Lo + (M2 Shl 32);
+ If T < Lo Then Carry := 1 Else Carry := 0;
+ Hi := Hi + (M2 Shr 32) + Carry;
+ LoOut := T;
+ HiOut := Hi;
+End;
+
+{ Multiplication signee 64x64 -> 128 bits, via valeurs absolues puis     }
+{ correction de signe sur le resultat 128 bits.                          }
+Procedure Elf64_SMul64(A, B: QWord; Var HiOut, LoOut: QWord);
+Var
+ NegA, NegB: Boolean;
+ AbsA, AbsB: QWord;
+Begin
+ NegA := (A And QWord($8000000000000000)) <> 0;
+ NegB := (B And QWord($8000000000000000)) <> 0;
+ If NegA Then AbsA := (Not A) + 1 Else AbsA := A;
+ If NegB Then AbsB := (Not B) + 1 Else AbsB := B;
+ Elf64_UMul64(AbsA, AbsB, HiOut, LoOut);
+ If NegA <> NegB Then Begin
+  LoOut := Not LoOut;
+  HiOut := Not HiOut;
+  LoOut := LoOut + 1;
+  If LoOut = 0 Then HiOut := HiOut + 1;
+ End;
+End;
+
+{ Division non signee d un dividende 128 bits (NHi:NLo) par un diviseur  }
+{ 64 bits D, par division binaire restauree bit a bit (128 iterations).  }
+{ Renvoie False si D=0 ou si le quotient deborde 64 bits (NHi >= D),      }
+{ exactement comme le declenchement de l exception #DE reelle. Limitation}
+{ connue : pour un diviseur D > 2^63, le calcul intermediaire du reste   }
+{ peut deborder un QWord - cas extremement rare en code compile normal.  }
+Function Elf64_UDiv128(NHi, NLo, D: QWord; Var Quot, Rem: QWord): Boolean;
+Var
+ I: Integer;
+ R, Q, Bit: QWord;
+Begin
+ If (D = 0) Or (NHi >= D) Then Begin
+  Elf64_UDiv128 := False;
+  Exit;
+ End;
+ R := 0; Q := 0;
+ For I := 63 DownTo 0 Do Begin
+  Bit := (NHi Shr I) And 1;
+  R := (R Shl 1) Or Bit;
+  Q := Q Shl 1;
+  If R >= D Then Begin R := R - D; Q := Q Or 1; End;
+ End;
+ For I := 63 DownTo 0 Do Begin
+  Bit := (NLo Shr I) And 1;
+  R := (R Shl 1) Or Bit;
+  Q := Q Shl 1;
+  If R >= D Then Begin R := R - D; Q := Q Or 1; End;
+ End;
+ Quot := Q; Rem := R;
+ Elf64_UDiv128 := True;
+End;
+
+{ Division signee 128/64 : valeurs absolues via Elf64_UDiv128, puis       }
+{ correction de signe (quotient = signe(N) xor signe(D), reste = signe   }
+{ du dividende, comme l ABI). Limitation connue : le cas limite           }
+{ MinInt64 div -1 (debordement signe) n est pas detecte specifiquement.  }
+Function Elf64_SDiv128(NHi, NLo, D: QWord; Var Quot, Rem: QWord): Boolean;
+Var
+ NegN, NegD: Boolean;
+ UHi, ULo, UD, UQuot, URem, Carry: QWord;
+Begin
+ NegD := (D And QWord($8000000000000000)) <> 0;
+ If NegD Then UD := (Not D) + 1 Else UD := D;
+ NegN := (NHi And QWord($8000000000000000)) <> 0;
+ If NegN Then Begin
+  ULo := (Not NLo) + 1;
+  If ULo = 0 Then Carry := 1 Else Carry := 0;
+  UHi := (Not NHi) + Carry;
+ End Else Begin
+  UHi := NHi; ULo := NLo;
+ End;
+ If Not Elf64_UDiv128(UHi, ULo, UD, UQuot, URem) Then Begin
+  Elf64_SDiv128 := False;
+  Exit;
+ End;
+ If NegN <> NegD Then Quot := (Not UQuot) + 1 Else Quot := UQuot;
+ If NegN Then Rem := (Not URem) + 1 Else Rem := URem;
+ Elf64_SDiv128 := True;
+End;
+
+{ ==========================================================================
+  Coprocesseur x87 (mode utilisateur). La pile de registres est simulee
+  par decalage physique du tableau ELF64_FpuReg (PUSH/POP deplacent les
+  valeurs), ce qui permet d adresser ST(i) par un simple indice constant
+  plutot que par un pointeur de sommet circulaire. L arithmetique est
+  deleguee au type Extended natif de FPC (reel 80 bits x87 sur cette
+  cible), ce qui evite de reimplementer un format flottant a la main.
+  ========================================================================== }
+
+Procedure Elf64_FpuPush(V: Extended);
+Var
+ I: Integer;
+Begin
+ For I := 7 DownTo 1 Do ELF64_FpuReg[I] := ELF64_FpuReg[I - 1];
+ ELF64_FpuReg[0] := V;
+End;
+
+Function Elf64_FpuPop: Extended;
+Var
+ I: Integer;
+Begin
+ Elf64_FpuPop := ELF64_FpuReg[0];
+ For I := 0 To 6 Do ELF64_FpuReg[I] := ELF64_FpuReg[I + 1];
+ ELF64_FpuReg[7] := 0;
+End;
+
+{ Met a jour les fanions de condition x87 C0/C2/C3 (image de FCOM/FUCOM) }
+{ - non ordonne (NaN) traite comme "non comparable" (C0=C2=C3=1).        }
+Procedure Elf64_FpuCompare(A, B: Extended);
+Begin
+ If A > B Then Begin ELF64_FpuC0 := False; ELF64_FpuC2 := False; ELF64_FpuC3 := False; End
+ Else If A < B Then Begin ELF64_FpuC0 := True; ELF64_FpuC2 := False; ELF64_FpuC3 := False; End
+ Else If A = B Then Begin ELF64_FpuC0 := False; ELF64_FpuC2 := False; ELF64_FpuC3 := True; End
+ Else Begin ELF64_FpuC0 := True; ELF64_FpuC2 := True; ELF64_FpuC3 := True; End;
+End;
+
+{ FCOMI/FUCOMI : comme Elf64_FpuCompare, mais expose directement le      }
+{ resultat dans les fanions entiers (CF=C0, PF=C2, ZF=C3) sans passer    }
+{ par FNSTSW+SAHF - c est la forme que les compilateurs modernes         }
+{ preferent pour brancher sur une comparaison flottante.                 }
+Procedure Elf64_FpuCompareToFlags(A, B: Extended);
+Begin
+ Elf64_FpuCompare(A, B);
+ ELF64_FCF := ELF64_FpuC0;
+ ELF64_FPF := ELF64_FpuC2;
+ ELF64_FZF := ELF64_FpuC3;
+End;
+
+Function Elf64_ReadSingle(Addr: QWord): Extended;
+Var
+ Buf: Array[0..3] Of Byte;
+ S: Single;
+ I: Integer;
+Begin
+ For I := 0 To 3 Do Buf[I] := Emu64_GetByte(Addr + QWord(I));
+ Move(Buf, S, SizeOf(S));
+ Elf64_ReadSingle := S;
+End;
+
+Procedure Elf64_WriteSingle(Addr: QWord; V: Extended);
+Var
+ S: Single;
+ Buf: Array[0..3] Of Byte;
+ I: Integer;
+Begin
+ S := V;
+ Move(S, Buf, SizeOf(S));
+ For I := 0 To 3 Do Emu64_PutByte(Addr + QWord(I), Buf[I]);
+End;
+
+Function Elf64_ReadDouble(Addr: QWord): Extended;
+Var
+ Buf: Array[0..7] Of Byte;
+ D: Double;
+ I: Integer;
+Begin
+ For I := 0 To 7 Do Buf[I] := Emu64_GetByte(Addr + QWord(I));
+ Move(Buf, D, SizeOf(D));
+ Elf64_ReadDouble := D;
+End;
+
+Procedure Elf64_WriteDouble(Addr: QWord; V: Extended);
+Var
+ D: Double;
+ Buf: Array[0..7] Of Byte;
+ I: Integer;
+Begin
+ D := V;
+ Move(D, Buf, SizeOf(D));
+ For I := 0 To 7 Do Emu64_PutByte(Addr + QWord(I), Buf[I]);
+End;
+
+{ Charge/ecrit un reel 80 bits (m80real) directement, sans conversion -   }
+{ le format memoire ELF64 et le type Extended de FPC sur cette cible     }
+{ (i386) partagent le meme codage x87.                                   }
+Function Elf64_ReadExtended(Addr: QWord): Extended;
+Var
+ Buf: Array[0..9] Of Byte;
+ E: Extended;
+ I: Integer;
+Begin
+ For I := 0 To 9 Do Buf[I] := Emu64_GetByte(Addr + QWord(I));
+ E := 0;
+ Move(Buf, E, SizeOf(E));
+ Elf64_ReadExtended := E;
+End;
+
+Procedure Elf64_WriteExtended(Addr: QWord; V: Extended);
+Var
+ Buf: Array[0..9] Of Byte;
+ I: Integer;
+Begin
+ FillChar(Buf, SizeOf(Buf), 0);
+ Move(V, Buf, SizeOf(V));
+ For I := 0 To 9 Do Emu64_PutByte(Addr + QWord(I), Buf[I]);
+End;
+
+Function Elf64_FildMem(Addr: QWord; Size: Integer): Extended;
+Var
+ V: Int64;
+Begin
+ Case Size Of
+  16: V := Elf64_SignExtend(Emu64_GetWord(Addr), 16);
+  32: V := Elf64_SignExtend(Emu64_GetDWord(Addr), 32);
+  Else V := Int64(Emu64_GetQWord(Addr));
+ End;
+ Elf64_FildMem := V;
+End;
+
+{ Arrondit au plus proche (approximation du mode d arrondi controle par  }
+{ le mot de controle x87, non applique ici - limitation connue) puis     }
+{ ecrit l entier resultant en memoire ; SizeOf(Extended)-large donc le   }
+{ Round(Extended) natif de FPC est directement utilisable.               }
+Procedure Elf64_FistpMem(Addr: QWord; Size: Integer; V: Extended; DoPop: Boolean);
+Var
+ IV: Int64;
+Begin
+ IV := Round(V);
+ Case Size Of
+  16: Emu64_PutWord(Addr, Word(IV));
+  32: Emu64_PutDWord(Addr, LongWord(IV));
+  Else Emu64_PutQWord(Addr, QWord(IV));
+ End;
+ If DoPop Then Elf64_FpuPop;
+End;
+
+{ ==========================================================================
+  SSE2 scalaire (registres XMM0-XMM15). Seules les formes couramment
+  emises par un compilateur pour de l arithmetique flottante scalaire
+  sont geres (MOVSS/MOVSD/MOVAPS/MOVAPD, ADD/SUB/MUL/DIV SS/SD, les
+  conversions entier<->flottant, les comparaisons et les deplacements
+  GPR<->XMM) - les instructions vectorielles empaquetees (arithmetique
+  sur plusieurs elements a la fois) ne sont pas implementees.
+  ========================================================================== }
+
+Function Elf64_XmmGetDouble(Idx: Integer): Extended;
+Var
+ D: Double;
+Begin
+ Move(ELF64_Xmm[Idx, 0], D, SizeOf(D));
+ Elf64_XmmGetDouble := D;
+End;
+
+{ ZeroUpper : True pour un chargement depuis la memoire (remet a zero les}
+{ 64 bits hauts, comme l exige reellement MOVSD/MOVSS depuis m64/m32) ;  }
+{ False pour une forme registre-a-registre ou arithmetique (fusion, les  }
+{ bits hauts du registre destination sont preserves).                    }
+Procedure Elf64_XmmSetDoubleLow(Idx: Integer; V: Extended; ZeroUpper: Boolean);
+Var
+ D: Double;
+Begin
+ D := V;
+ Move(D, ELF64_Xmm[Idx, 0], SizeOf(D));
+ If ZeroUpper Then ELF64_Xmm[Idx, 1] := 0;
+End;
+
+Function Elf64_XmmGetSingle(Idx: Integer): Extended;
+Var
+ S: Single;
+ W: LongWord;
+Begin
+ W := LongWord(ELF64_Xmm[Idx, 0] And $FFFFFFFF);
+ Move(W, S, SizeOf(S));
+ Elf64_XmmGetSingle := S;
+End;
+
+Procedure Elf64_XmmSetSingleLow(Idx: Integer; V: Extended; ZeroRest: Boolean);
+Var
+ S: Single;
+ W: LongWord;
+Begin
+ S := V;
+ Move(S, W, SizeOf(S));
+ If ZeroRest Then Begin
+  ELF64_Xmm[Idx, 0] := QWord(W);
+  ELF64_Xmm[Idx, 1] := 0;
+ End Else
+  ELF64_Xmm[Idx, 0] := (ELF64_Xmm[Idx, 0] And QWord($FFFFFFFF00000000)) Or QWord(W);
 End;
 
 { Lit une chaine terminee par zero depuis la memoire emulee (chemin de   }
@@ -41208,6 +41677,25 @@ Begin
    End;
   End;
   11: ELF64_Reg[REG_RAX] := 0; { sys_munmap : demappage non suivi, "reussi" }
+  13: Begin { sys_rt_sigaction(signum, act, oldact, sigsetsize) : aucun   }
+            { signal n est reellement delivre par cet emulateur, donc     }
+            { installer un gestionnaire est un no-op sans consequence -   }
+            { on renvoie simplement succes (et SIG_DFL dans oldact si     }
+            { demande).                                                   }
+   If ELF64_Reg[REG_RDX] <> 0 Then Begin
+    Emu64_PutQWord(ELF64_Reg[REG_RDX], 0);
+    Emu64_PutQWord(ELF64_Reg[REG_RDX] + 8, 0);
+    Emu64_PutQWord(ELF64_Reg[REG_RDX] + 16, 0);
+   End;
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  97: Begin { sys_getrlimit(resource, rlim) : renvoie systematiquement    }
+            { "illimite" (RLIM_INFINITY) pour les deux champs - aucune    }
+            { limite reelle n est appliquee par cet emulateur.            }
+   Emu64_PutQWord(ELF64_Reg[REG_RSI], QWord($FFFFFFFFFFFFFFFF));
+   Emu64_PutQWord(ELF64_Reg[REG_RSI] + 8, QWord($FFFFFFFFFFFFFFFF));
+   ELF64_Reg[REG_RAX] := 0;
+  End;
   158: Begin { sys_arch_prctl(code, addr) }
    If ELF64_Reg[REG_RDI] = $1002 Then { ARCH_SET_FS }
     ELF64_FSBase := ELF64_Reg[REG_RSI];
@@ -41245,22 +41733,28 @@ Var
  Imm32: LongInt;
  Imm64: QWord;
  Val1, Val2, ResVal: QWord;
- Saw66, SawF3: Boolean;
+ Saw66, SawF3, SawF2: Boolean;
+ HiRes, LoRes, QuotR, RemR, FullU: QWord;
+ FullS, DivS: Int64;
+ I: Integer;
+ FVal: Extended;
+ Addr: QWord;
 Begin
  If ELF64_Halted Then Exit;
  StartRIP := ELF64_RIP;
  RexW := False; RexR := False; RexX := False; RexB := False;
- Saw66 := False; SawF3 := False;
+ Saw66 := False; SawF3 := False; SawF2 := False;
 
- { Prefixes : la plupart (segment, REPNE, LOCK, taille d adresse) sont    }
- { simplement consommes - 66 (taille d operande) et F3 (REP, utilise par  }
- { MOVS/STOS) influencent le decodage ci-dessous.                         }
+ { Prefixes : la plupart (segment, LOCK, taille d adresse) sont           }
+ { simplement consommes - 66 (taille d operande), F3 (REP/REPE) et F2     }
+ { (REPNE, utilises par MOVS/STOS/CMPS/SCAS) influencent le decodage.     }
  Repeat
   B := Emu64_GetByte(ELF64_RIP);
   Case B Of
    $66: Begin Saw66 := True; ELF64_RIP := ELF64_RIP + 1; End;
    $F3: Begin SawF3 := True; ELF64_RIP := ELF64_RIP + 1; End;
-   $67, $2E, $36, $3E, $26, $64, $65, $F0, $F2:
+   $F2: Begin SawF2 := True; ELF64_RIP := ELF64_RIP + 1; End;
+   $67, $2E, $36, $3E, $26, $64, $65, $F0:
     ELF64_RIP := ELF64_RIP + 1;
    Else Break;
   End;
@@ -41335,6 +41829,7 @@ Begin
    Op2 := Elf64_FetchByte;
    Case Op2 Of
     $1E: Elf64_FetchByte; { F3 0F 1E FA/FB = ENDBR64/ENDBR32, deja consomme }
+    $1F: EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField); { NOP r/m multi-octets (remplissage d alignement) }
     $05: Elf64_DoSyscall; { SYSCALL }
     $B6: Begin { MOVZX r, r/m8 }
      EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
@@ -41359,12 +41854,251 @@ Begin
      If Elf64_EvalCond(Op2 And $0F) Then
       ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm32));
     End;
+    $90..$9F: Begin { SETcc r/m8 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Elf64_EvalCond(Op2 And $0F) Then
+      Elf64_WriteOperand(EA, 8, 1)
+     Else
+      Elf64_WriteOperand(EA, 8, 0);
+    End;
+    $AF: Begin { IMUL r, r/m (2 operandes, ne garde que les bits de poids faible) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Val1 := Elf64_GetReg(RegField, OpSize);
+     Val2 := Elf64_ReadOperand(EA, OpSize);
+     Elf64_SetReg(RegField, OpSize, Elf64_ImulTrunc(Val1, Val2, OpSize));
+    End;
+    $AE: Begin { FXSAVE/FXRSTOR/LDMXCSR/STMXCSR/(L|M|S)FENCE/CLFLUSH }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If EA.IsReg Then Begin
+      { formes registre (mod=11) : LFENCE(rm=5)/MFENCE(rm=6)/SFENCE(rm=7) - }
+      { simples barrieres memoire, sans effet dans cet emulateur mono-fil.  }
+      If Not (EA.RegIdx In [5, 6, 7]) Then Begin
+       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+       ELF64_HaltReason := 'Opcode 0F AE (registre) non supporte';
+      End;
+     End Else Case RegField Of
+      0: FillChar(ELF64_Mem[LongInt(Elf64_ResolveEA(EA))], 512, 0); { FXSAVE : etat fige a zero (limitation connue) }
+      1: ; { FXRSTOR : aucun effet (limitation connue) }
+      2: ELF64_MXCSR := Emu64_GetDWord(Elf64_ResolveEA(EA));        { LDMXCSR }
+      3: Emu64_PutDWord(Elf64_ResolveEA(EA), ELF64_MXCSR);          { STMXCSR }
+      7: ; { CLFLUSH : sans effet (pas de cache simule) }
+      Else Begin
+       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+       ELF64_HaltReason := 'Groupe 0F AE /' + IntToStr(RegField) + ' non supporte';
+      End;
+     End;
+    End;
+
+    $10: Begin { MOVSS/MOVSD/MOVUPS/MOVUPD : xmm(RegField) <- EA }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If SawF2 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetDouble(EA.RegIdx)
+                  Else FVal := Elf64_ReadDouble(Elf64_ResolveEA(EA));
+      Elf64_XmmSetDoubleLow(RegField, FVal, Not EA.IsReg);
+     End Else If SawF3 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetSingle(EA.RegIdx)
+                  Else FVal := Elf64_ReadSingle(Elf64_ResolveEA(EA));
+      Elf64_XmmSetSingleLow(RegField, FVal, Not EA.IsReg);
+     End Else Begin
+      If EA.IsReg Then Begin
+       ELF64_Xmm[RegField, 0] := ELF64_Xmm[EA.RegIdx, 0];
+       ELF64_Xmm[RegField, 1] := ELF64_Xmm[EA.RegIdx, 1];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       ELF64_Xmm[RegField, 0] := Emu64_GetQWord(Addr);
+       ELF64_Xmm[RegField, 1] := Emu64_GetQWord(Addr + 8);
+      End;
+     End;
+    End;
+    $11: Begin { MOVSS/MOVSD/MOVUPS/MOVUPD : EA <- xmm(RegField) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If SawF2 Then Begin
+      FVal := Elf64_XmmGetDouble(RegField);
+      If EA.IsReg Then Elf64_XmmSetDoubleLow(EA.RegIdx, FVal, False)
+                  Else Elf64_WriteDouble(Elf64_ResolveEA(EA), FVal);
+     End Else If SawF3 Then Begin
+      FVal := Elf64_XmmGetSingle(RegField);
+      If EA.IsReg Then Elf64_XmmSetSingleLow(EA.RegIdx, FVal, True)
+                  Else Elf64_WriteSingle(Elf64_ResolveEA(EA), FVal);
+     End Else Begin
+      If EA.IsReg Then Begin
+       ELF64_Xmm[EA.RegIdx, 0] := ELF64_Xmm[RegField, 0];
+       ELF64_Xmm[EA.RegIdx, 1] := ELF64_Xmm[RegField, 1];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       Emu64_PutQWord(Addr, ELF64_Xmm[RegField, 0]);
+       Emu64_PutQWord(Addr + 8, ELF64_Xmm[RegField, 1]);
+      End;
+     End;
+    End;
+    $28: Begin { MOVAPS/MOVAPD (traite comme MOVUPS/MOVUPD - pas de controle d alignement) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If EA.IsReg Then Begin
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[EA.RegIdx, 0];
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[EA.RegIdx, 1];
+     End Else Begin
+      Addr := Elf64_ResolveEA(EA);
+      ELF64_Xmm[RegField, 0] := Emu64_GetQWord(Addr);
+      ELF64_Xmm[RegField, 1] := Emu64_GetQWord(Addr + 8);
+     End;
+    End;
+    $29: Begin { MOVAPS/MOVAPD, sens inverse }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If EA.IsReg Then Begin
+      ELF64_Xmm[EA.RegIdx, 0] := ELF64_Xmm[RegField, 0];
+      ELF64_Xmm[EA.RegIdx, 1] := ELF64_Xmm[RegField, 1];
+     End Else Begin
+      Addr := Elf64_ResolveEA(EA);
+      Emu64_PutQWord(Addr, ELF64_Xmm[RegField, 0]);
+      Emu64_PutQWord(Addr + 8, ELF64_Xmm[RegField, 1]);
+     End;
+    End;
+    $2A: Begin { CVTSI2SD/CVTSI2SS : entier (GPR/m) -> flottant }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If RexW Then FVal := Int64(Elf64_ReadOperand(EA, 64))
+             Else FVal := Elf64_SignExtend(Elf64_ReadOperand(EA, 32), 32);
+     If SawF2 Then Elf64_XmmSetDoubleLow(RegField, FVal, False)
+     Else If SawF3 Then Elf64_XmmSetSingleLow(RegField, FVal, False);
+    End;
+    $2C: Begin { CVTTSD2SI/CVTTSS2SI : flottant -> entier, troncature vers zero }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If SawF2 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetDouble(EA.RegIdx) Else FVal := Elf64_ReadDouble(Elf64_ResolveEA(EA));
+     End Else Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetSingle(EA.RegIdx) Else FVal := Elf64_ReadSingle(Elf64_ResolveEA(EA));
+     End;
+     If RexW Then Elf64_SetReg(RegField, 64, QWord(Trunc(FVal)))
+             Else Elf64_SetReg(RegField, 32, QWord(LongWord(Trunc(FVal))));
+    End;
+    $2D: Begin { CVTSD2SI/CVTSS2SI : flottant -> entier, arrondi au plus proche }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If SawF2 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetDouble(EA.RegIdx) Else FVal := Elf64_ReadDouble(Elf64_ResolveEA(EA));
+     End Else Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetSingle(EA.RegIdx) Else FVal := Elf64_ReadSingle(Elf64_ResolveEA(EA));
+     End;
+     If RexW Then Elf64_SetReg(RegField, 64, QWord(Round(FVal)))
+             Else Elf64_SetReg(RegField, 32, QWord(LongWord(Round(FVal))));
+    End;
+    $2E, $2F: Begin { (U)COMISS/(U)COMISD : compare et fixe ZF/PF/CF directement }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Saw66 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetDouble(EA.RegIdx) Else FVal := Elf64_ReadDouble(Elf64_ResolveEA(EA));
+      Elf64_FpuCompareToFlags(Elf64_XmmGetDouble(RegField), FVal);
+     End Else Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetSingle(EA.RegIdx) Else FVal := Elf64_ReadSingle(Elf64_ResolveEA(EA));
+      Elf64_FpuCompareToFlags(Elf64_XmmGetSingle(RegField), FVal);
+     End;
+    End;
+    $54, $57: Begin { ANDPS/ANDPD (54) et XORPS/XORPD (57), 128 bits empaquetes }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If EA.IsReg Then Begin
+      Val1 := ELF64_Xmm[EA.RegIdx, 0]; Val2 := ELF64_Xmm[EA.RegIdx, 1];
+     End Else Begin
+      Addr := Elf64_ResolveEA(EA);
+      Val1 := Emu64_GetQWord(Addr); Val2 := Emu64_GetQWord(Addr + 8);
+     End;
+     If Op2 = $57 Then Begin
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] Xor Val1;
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] Xor Val2;
+     End Else Begin
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] And Val1;
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] And Val2;
+     End;
+    End;
+    $58, $59, $5C, $5E: Begin { ADD/MUL/SUB/DIV SS/SD : arithmetique scalaire }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If SawF2 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetDouble(EA.RegIdx) Else FVal := Elf64_ReadDouble(Elf64_ResolveEA(EA));
+      Case Op2 Of
+       $58: Elf64_XmmSetDoubleLow(RegField, Elf64_XmmGetDouble(RegField) + FVal, False);
+       $59: Elf64_XmmSetDoubleLow(RegField, Elf64_XmmGetDouble(RegField) * FVal, False);
+       $5C: Elf64_XmmSetDoubleLow(RegField, Elf64_XmmGetDouble(RegField) - FVal, False);
+       $5E: Elf64_XmmSetDoubleLow(RegField, Elf64_XmmGetDouble(RegField) / FVal, False);
+      End;
+     End Else If SawF3 Then Begin
+      If EA.IsReg Then FVal := Elf64_XmmGetSingle(EA.RegIdx) Else FVal := Elf64_ReadSingle(Elf64_ResolveEA(EA));
+      Case Op2 Of
+       $58: Elf64_XmmSetSingleLow(RegField, Elf64_XmmGetSingle(RegField) + FVal, False);
+       $59: Elf64_XmmSetSingleLow(RegField, Elf64_XmmGetSingle(RegField) * FVal, False);
+       $5C: Elf64_XmmSetSingleLow(RegField, Elf64_XmmGetSingle(RegField) - FVal, False);
+       $5E: Elf64_XmmSetSingleLow(RegField, Elf64_XmmGetSingle(RegField) / FVal, False);
+      End;
+     End Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode SSE 0F ' + HexByte(Op2) + ' (forme empaquetee) non supporte';
+     End;
+    End;
+    $6E: Begin { MOVD/MOVQ : xmm(RegField) <- r/m (32 ou 64 bits selon REX.W) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If RexW Then Begin
+      ELF64_Xmm[RegField, 0] := Elf64_ReadOperand(EA, 64);
+     End Else
+      ELF64_Xmm[RegField, 0] := QWord(LongWord(Elf64_ReadOperand(EA, 32)));
+     ELF64_Xmm[RegField, 1] := 0;
+    End;
+    $7E: Begin { MOVD/MOVQ (66, entier) ou MOVQ xmm<-xmm/m64 (F3) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If SawF3 Then Begin
+      If EA.IsReg Then Begin
+       ELF64_Xmm[RegField, 0] := ELF64_Xmm[EA.RegIdx, 0];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       ELF64_Xmm[RegField, 0] := Emu64_GetQWord(Addr);
+      End;
+      ELF64_Xmm[RegField, 1] := 0;
+     End Else Begin
+      If RexW Then Elf64_WriteOperand(EA, 64, ELF64_Xmm[RegField, 0])
+              Else Elf64_WriteOperand(EA, 32, ELF64_Xmm[RegField, 0] And $FFFFFFFF);
+     End;
+    End;
     Else Begin
      ELF64_Halted := True;
      ELF64_LastBadRIP := StartRIP;
      ELF64_HaltReason := 'Opcode 0F ' + HexByte(Op2) + ' non supporte';
     End;
    End;
+  End;
+
+  $69: Begin { IMUL r, r/m, imm32 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   Imm32 := Elf64_FetchImm32Signed;
+   If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+   Elf64_SetReg(RegField, OpSize, Elf64_ImulTrunc(Val1, Val2, OpSize));
+  End;
+  $6B: Begin { IMUL r, r/m, imm8 (signe-etendu) }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   Imm8 := Elf64_FetchImm8Signed;
+   Elf64_SetReg(RegField, OpSize, Elf64_ImulTrunc(Val1, QWord(Int64(Imm8)), OpSize));
+  End;
+
+  $99: Begin { CDQ/CQO/CWD : etend le signe de RAX/EAX/AX dans RDX/EDX/DX }
+   If RexW Then Begin
+    If (ELF64_Reg[REG_RAX] And QWord($8000000000000000)) <> 0 Then
+     ELF64_Reg[REG_RDX] := QWord($FFFFFFFFFFFFFFFF)
+    Else
+     ELF64_Reg[REG_RDX] := 0;
+   End Else If Saw66 Then Begin
+    If (ELF64_Reg[REG_RAX] And $8000) <> 0 Then Elf64_SetReg(REG_RDX, 16, $FFFF)
+                                            Else Elf64_SetReg(REG_RDX, 16, 0);
+   End Else Begin
+    If (ELF64_Reg[REG_RAX] And $80000000) <> 0 Then Elf64_SetReg(REG_RDX, 32, $FFFFFFFF)
+                                               Else Elf64_SetReg(REG_RDX, 32, 0);
+   End;
+  End;
+
+  $9B: ; { FWAIT/WAIT : synchronisation avec le x87 - sans effet ici,   }
+        { aucune exception flottante asynchrone n est suivie.            }
+
+  $9E: Begin { SAHF : charge AH dans les fanions (CF/PF/ZF/SF) - utilise }
+            { avec FNSTSW AX pour brancher sur une comparaison x87.      }
+   Val1 := Elf64_GetReg(REG_RAX, 16) Shr 8;
+   ELF64_FCF := (Val1 And $01) <> 0;
+   ELF64_FPF := (Val1 And $04) <> 0;
+   ELF64_FZF := (Val1 And $40) <> 0;
+   ELF64_FSF := (Val1 And $80) <> 0;
   End;
 
   $63: Begin { MOVSXD r64, r/m32 }
@@ -41397,6 +42131,126 @@ Begin
    Val1 := Elf64_ReadOperand(EA, OpSize);
    ResVal := Elf64_AluCompute(GroupOp, Val1, QWord(Int64(Imm8)), OpSize);
    If GroupOp <> 7 Then Elf64_WriteOperand(EA, OpSize, ResVal);
+  End;
+
+  $C0: Begin { groupe 2 : Eb, ib (decalage/rotation, compte immediat) }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Imm8 := Elf64_FetchImm8Signed;
+   Val1 := Elf64_ReadOperand(EA, 8);
+   Elf64_WriteOperand(EA, 8, Elf64_DoShift(GroupOp, Val1, Byte(Imm8) And 31, 8));
+  End;
+  $C1: Begin { groupe 2 : Ev, ib }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Imm8 := Elf64_FetchImm8Signed;
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   If OpSize = 64 Then I := Byte(Imm8) And 63 Else I := Byte(Imm8) And 31;
+   Elf64_WriteOperand(EA, OpSize, Elf64_DoShift(GroupOp, Val1, I, OpSize));
+  End;
+  $D0: Begin { groupe 2 : Eb, 1 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Val1 := Elf64_ReadOperand(EA, 8);
+   Elf64_WriteOperand(EA, 8, Elf64_DoShift(GroupOp, Val1, 1, 8));
+  End;
+  $D1: Begin { groupe 2 : Ev, 1 }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   Elf64_WriteOperand(EA, OpSize, Elf64_DoShift(GroupOp, Val1, 1, OpSize));
+  End;
+  $D2: Begin { groupe 2 : Eb, CL }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Val1 := Elf64_ReadOperand(EA, 8);
+   Elf64_WriteOperand(EA, 8, Elf64_DoShift(GroupOp, Val1,
+    Integer(Elf64_GetReg(REG_RCX, 8)) And 31, 8));
+  End;
+  $D3: Begin { groupe 2 : Ev, CL }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   GroupOp := RegField And 7;
+   Val1 := Elf64_ReadOperand(EA, OpSize);
+   If OpSize = 64 Then I := Integer(Elf64_GetReg(REG_RCX, 8)) And 63
+                  Else I := Integer(Elf64_GetReg(REG_RCX, 8)) And 31;
+   Elf64_WriteOperand(EA, OpSize, Elf64_DoShift(GroupOp, Val1, I, OpSize));
+  End;
+
+  $A6: Begin { CMPSB, repete si prefixe REPE/REPNE (F3/F2) vu }
+   If SawF3 Or SawF2 Then Begin
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Val1 := Emu64_GetByte(ELF64_Reg[REG_RSI]);
+     Val2 := Emu64_GetByte(ELF64_Reg[REG_RDI]);
+     Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, 8);
+     Elf64_AdvanceSIDI(8);
+     ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+     If SawF3 And Not ELF64_FZF Then Break;
+     If SawF2 And ELF64_FZF Then Break;
+    End;
+   End Else Begin
+    Val1 := Emu64_GetByte(ELF64_Reg[REG_RSI]);
+    Val2 := Emu64_GetByte(ELF64_Reg[REG_RDI]);
+    Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, 8);
+    Elf64_AdvanceSIDI(8);
+   End;
+  End;
+  $A7: Begin { CMPSW/CMPSD/CMPSQ, repete si prefixe REPE/REPNE (F3/F2) vu }
+   If SawF3 Or SawF2 Then Begin
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Val1 := Elf64_ReadOperand(Elf64_MemEA(ELF64_Reg[REG_RSI]), OpSize);
+     Val2 := Elf64_ReadOperand(Elf64_MemEA(ELF64_Reg[REG_RDI]), OpSize);
+     Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, OpSize);
+     Elf64_AdvanceSIDI(OpSize);
+     ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+     If SawF3 And Not ELF64_FZF Then Break;
+     If SawF2 And ELF64_FZF Then Break;
+    End;
+   End Else Begin
+    Val1 := Elf64_ReadOperand(Elf64_MemEA(ELF64_Reg[REG_RSI]), OpSize);
+    Val2 := Elf64_ReadOperand(Elf64_MemEA(ELF64_Reg[REG_RDI]), OpSize);
+    Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, OpSize);
+    Elf64_AdvanceSIDI(OpSize);
+   End;
+  End;
+  $AE: Begin { SCASB, repete si prefixe REPE/REPNE (F3/F2) vu }
+   If SawF3 Or SawF2 Then Begin
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Val1 := Elf64_GetReg(REG_RAX, 8);
+     Val2 := Emu64_GetByte(ELF64_Reg[REG_RDI]);
+     Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, 8);
+     If ELF64_FDF Then ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - 1
+                  Else ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + 1;
+     ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+     If SawF3 And Not ELF64_FZF Then Break;
+     If SawF2 And ELF64_FZF Then Break;
+    End;
+   End Else Begin
+    Val1 := Elf64_GetReg(REG_RAX, 8);
+    Val2 := Emu64_GetByte(ELF64_Reg[REG_RDI]);
+    Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, 8);
+    If ELF64_FDF Then ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - 1
+                 Else ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + 1;
+   End;
+  End;
+  $AF: Begin { SCASW/SCASD/SCASQ, repete si prefixe REPE/REPNE (F3/F2) vu }
+   If SawF3 Or SawF2 Then Begin
+    While ELF64_Reg[REG_RCX] <> 0 Do Begin
+     Val1 := Elf64_GetReg(REG_RAX, OpSize);
+     Val2 := Elf64_ReadOperand(Elf64_MemEA(ELF64_Reg[REG_RDI]), OpSize);
+     Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, OpSize);
+     If ELF64_FDF Then ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - QWord(OpSize Div 8)
+                  Else ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + QWord(OpSize Div 8);
+     ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+     If SawF3 And Not ELF64_FZF Then Break;
+     If SawF2 And ELF64_FZF Then Break;
+    End;
+   End Else Begin
+    Val1 := Elf64_GetReg(REG_RAX, OpSize);
+    Val2 := Elf64_ReadOperand(Elf64_MemEA(ELF64_Reg[REG_RDI]), OpSize);
+    Elf64_SetFlagsSub(Val1, Val2, Val1 - Val2, OpSize);
+    If ELF64_FDF Then ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] - QWord(OpSize Div 8)
+                 Else ELF64_Reg[REG_RDI] := ELF64_Reg[REG_RDI] + QWord(OpSize Div 8);
+   End;
   End;
 
   $84: Begin { TEST r/m8, r8 }
@@ -41547,9 +42401,54 @@ Begin
      Elf64_SetFlagsSub(0, Val1, ResVal, 8);
      Elf64_WriteOperand(EA, 8, ResVal);
     End;
+    4: Begin { MUL : AX = AL * r/m8 (non signe) }
+     Val1 := Elf64_ReadOperand(EA, 8);
+     FullU := (ELF64_Reg[REG_RAX] And $FF) * (Val1 And $FF);
+     Elf64_SetReg(REG_RAX, 16, FullU And $FFFF);
+     ELF64_FCF := (FullU And $FF00) <> 0; ELF64_FOF := ELF64_FCF;
+    End;
+    5: Begin { IMUL : AX = AL * r/m8 (signe) }
+     Val1 := Elf64_ReadOperand(EA, 8);
+     FullS := Elf64_SignExtend(ELF64_Reg[REG_RAX], 8) * Elf64_SignExtend(Val1, 8);
+     Elf64_SetReg(REG_RAX, 16, QWord(FullS) And $FFFF);
+     ELF64_FCF := (FullS < -128) Or (FullS > 127); ELF64_FOF := ELF64_FCF;
+    End;
+    6: Begin { DIV : AL=quotient AH=reste = AX / r/m8 (non signe) }
+     Val1 := Elf64_ReadOperand(EA, 8);
+     If Val1 = 0 Then Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Division par zero (DIV 8 bits)';
+     End Else Begin
+      FullU := ELF64_Reg[REG_RAX] And $FFFF;
+      QuotR := FullU Div (Val1 And $FF);
+      RemR := FullU Mod (Val1 And $FF);
+      If QuotR > 255 Then Begin
+       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+       ELF64_HaltReason := 'Depassement de quotient (DIV 8 bits)';
+      End Else
+       Elf64_SetReg(REG_RAX, 16, (RemR Shl 8) Or QuotR);
+     End;
+    End;
+    7: Begin { IDIV : AL=quotient AH=reste = AX / r/m8 (signe) }
+     Val1 := Elf64_ReadOperand(EA, 8);
+     If Val1 = 0 Then Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Division par zero (IDIV 8 bits)';
+     End Else Begin
+      FullS := Elf64_SignExtend(ELF64_Reg[REG_RAX], 16);
+      DivS := Elf64_SignExtend(Val1, 8);
+      QuotR := QWord(FullS Div DivS);
+      RemR := QWord(FullS Mod DivS);
+      If (Int64(QuotR) < -128) Or (Int64(QuotR) > 127) Then Begin
+       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+       ELF64_HaltReason := 'Depassement de quotient (IDIV 8 bits)';
+      End Else
+       Elf64_SetReg(REG_RAX, 16, (RemR And $FF) Shl 8 Or (QuotR And $FF));
+     End;
+    End;
     Else Begin
      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
-     ELF64_HaltReason := 'Groupe F6 /' + IntToStr(GroupOp) + ' (MUL/IMUL/DIV/IDIV) non supporte';
+     ELF64_HaltReason := 'Groupe F6 /' + IntToStr(GroupOp) + ' non supporte';
     End;
    End;
   End;
@@ -41573,9 +42472,83 @@ Begin
      Elf64_SetFlagsSub(0, Val1, ResVal, OpSize);
      Elf64_WriteOperand(EA, OpSize, ResVal);
     End;
+    4: Begin { MUL : RDX:RAX (ou EDX:EAX) = RAX * r/m (non signe) }
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If OpSize = 64 Then Begin
+      Elf64_UMul64(ELF64_Reg[REG_RAX], Val1, HiRes, LoRes);
+      ELF64_Reg[REG_RAX] := LoRes;
+      ELF64_Reg[REG_RDX] := HiRes;
+      ELF64_FCF := (HiRes <> 0); ELF64_FOF := ELF64_FCF;
+     End Else Begin
+      FullU := (ELF64_Reg[REG_RAX] And $FFFFFFFF) * (Val1 And $FFFFFFFF);
+      Elf64_SetReg(REG_RAX, OpSize, FullU And $FFFFFFFF);
+      Elf64_SetReg(REG_RDX, OpSize, FullU Shr 32);
+      ELF64_FCF := ((FullU Shr 32) <> 0); ELF64_FOF := ELF64_FCF;
+     End;
+    End;
+    5: Begin { IMUL : RDX:RAX (ou EDX:EAX) = RAX * r/m (signe) }
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If OpSize = 64 Then Begin
+      Elf64_SMul64(ELF64_Reg[REG_RAX], Val1, HiRes, LoRes);
+      ELF64_Reg[REG_RAX] := LoRes;
+      ELF64_Reg[REG_RDX] := HiRes;
+      If (LoRes And QWord($8000000000000000)) <> 0 Then
+       ELF64_FCF := (HiRes <> QWord($FFFFFFFFFFFFFFFF))
+      Else
+       ELF64_FCF := (HiRes <> 0);
+      ELF64_FOF := ELF64_FCF;
+     End Else Begin
+      FullS := Elf64_SignExtend(ELF64_Reg[REG_RAX], 32) * Elf64_SignExtend(Val1, 32);
+      Elf64_SetReg(REG_RAX, OpSize, QWord(FullS) And $FFFFFFFF);
+      Elf64_SetReg(REG_RDX, OpSize, QWord(FullS Shr 32));
+      ELF64_FCF := (FullS < -2147483648) Or (FullS > 2147483647);
+      ELF64_FOF := ELF64_FCF;
+     End;
+    End;
+    6: Begin { DIV : RAX=quotient RDX=reste = RDX:RAX / r/m (non signe) }
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If Val1 = 0 Then Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Division par zero (DIV)';
+     End Else If OpSize = 64 Then Begin
+      If Not Elf64_UDiv128(ELF64_Reg[REG_RDX], ELF64_Reg[REG_RAX], Val1, QuotR, RemR) Then Begin
+       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+       ELF64_HaltReason := 'Depassement de quotient (DIV 64 bits)';
+      End Else Begin
+       ELF64_Reg[REG_RAX] := QuotR;
+       ELF64_Reg[REG_RDX] := RemR;
+      End;
+     End Else Begin
+      FullU := (Elf64_GetReg(REG_RDX, OpSize) Shl OpSize) Or Elf64_GetReg(REG_RAX, OpSize);
+      QuotR := FullU Div Val1;
+      RemR := FullU Mod Val1;
+      Elf64_SetReg(REG_RAX, OpSize, QuotR);
+      Elf64_SetReg(REG_RDX, OpSize, RemR);
+     End;
+    End;
+    7: Begin { IDIV : RAX=quotient RDX=reste = RDX:RAX / r/m (signe) }
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If Val1 = 0 Then Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Division par zero (IDIV)';
+     End Else If OpSize = 64 Then Begin
+      If Not Elf64_SDiv128(ELF64_Reg[REG_RDX], ELF64_Reg[REG_RAX], Val1, QuotR, RemR) Then Begin
+       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+       ELF64_HaltReason := 'Depassement de quotient (IDIV 64 bits)';
+      End Else Begin
+       ELF64_Reg[REG_RAX] := QuotR;
+       ELF64_Reg[REG_RDX] := RemR;
+      End;
+     End Else Begin
+      FullS := Int64((Elf64_GetReg(REG_RDX, OpSize) Shl OpSize) Or Elf64_GetReg(REG_RAX, OpSize));
+      DivS := Elf64_SignExtend(Val1, OpSize);
+      Elf64_SetReg(REG_RAX, OpSize, QWord(FullS Div DivS));
+      Elf64_SetReg(REG_RDX, OpSize, QWord(FullS Mod DivS));
+     End;
+    End;
     Else Begin
      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
-     ELF64_HaltReason := 'Groupe F7 /' + IntToStr(GroupOp) + ' (MUL/IMUL/DIV/IDIV) non supporte';
+     ELF64_HaltReason := 'Groupe F7 /' + IntToStr(GroupOp) + ' non supporte';
     End;
    End;
   End;
@@ -41609,6 +42582,246 @@ Begin
     Else Begin
      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
      ELF64_HaltReason := 'Groupe FF /' + IntToStr(GroupOp) + ' non supporte';
+    End;
+   End;
+  End;
+
+  $D8: Begin { x87 : ST0 op= (m32real ou ST(i)), reel simple precision }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   If EA.IsReg Then FVal := ELF64_FpuReg[EA.RegIdx]
+               Else FVal := Elf64_ReadSingle(Elf64_ResolveEA(EA));
+   Case RegField Of
+    0: ELF64_FpuReg[0] := ELF64_FpuReg[0] + FVal; { FADD }
+    1: ELF64_FpuReg[0] := ELF64_FpuReg[0] * FVal; { FMUL }
+    2: Elf64_FpuCompare(ELF64_FpuReg[0], FVal);   { FCOM }
+    3: Begin Elf64_FpuCompare(ELF64_FpuReg[0], FVal); Elf64_FpuPop; End; { FCOMP }
+    4: ELF64_FpuReg[0] := ELF64_FpuReg[0] - FVal; { FSUB }
+    5: ELF64_FpuReg[0] := FVal - ELF64_FpuReg[0]; { FSUBR }
+    6: ELF64_FpuReg[0] := ELF64_FpuReg[0] / FVal; { FDIV }
+    7: ELF64_FpuReg[0] := FVal / ELF64_FpuReg[0]; { FDIVR }
+   End;
+  End;
+
+  $D9: Begin { x87 : chargement/format/constantes/transcendantes }
+   B := Emu64_GetByte(ELF64_RIP);
+   If (B And $C0) = $C0 Then Begin
+    B := Elf64_FetchByte;
+    Case B Of
+     $C0..$C7: Elf64_FpuPush(ELF64_FpuReg[B And 7]); { FLD ST(i) }
+     $C8..$CF: Begin { FXCH ST(i) }
+      FVal := ELF64_FpuReg[0];
+      ELF64_FpuReg[0] := ELF64_FpuReg[B And 7];
+      ELF64_FpuReg[B And 7] := FVal;
+     End;
+     $D0: ; { FNOP }
+     $E0: ELF64_FpuReg[0] := -ELF64_FpuReg[0];      { FCHS }
+     $E1: ELF64_FpuReg[0] := Abs(ELF64_FpuReg[0]);  { FABS }
+     $E4: Elf64_FpuCompare(ELF64_FpuReg[0], 0);     { FTST }
+     $E8: Elf64_FpuPush(1.0);                       { FLD1 }
+     $EE: Elf64_FpuPush(0.0);                       { FLDZ }
+     $FA: ELF64_FpuReg[0] := Sqrt(ELF64_FpuReg[0]); { FSQRT }
+     $FC: ELF64_FpuReg[0] := Int(ELF64_FpuReg[0]);  { FRNDINT (troncature, mode d arrondi non applique) }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode x87 D9 ' + HexByte(B) + ' non supporte';
+     End;
+    End;
+   End Else Begin
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Case RegField Of
+     0: Elf64_FpuPush(Elf64_ReadSingle(Elf64_ResolveEA(EA)));               { FLD m32real }
+     2: Elf64_WriteSingle(Elf64_ResolveEA(EA), ELF64_FpuReg[0]);            { FST m32real }
+     3: Begin Elf64_WriteSingle(Elf64_ResolveEA(EA), ELF64_FpuReg[0]); Elf64_FpuPop; End; { FSTP m32real }
+     5: ELF64_FpuCW := Emu64_GetWord(Elf64_ResolveEA(EA));                  { FLDCW }
+     7: Emu64_PutWord(Elf64_ResolveEA(EA), ELF64_FpuCW);                    { FNSTCW }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Groupe x87 D9 /' + IntToStr(RegField) + ' non supporte';
+     End;
+    End;
+   End;
+  End;
+
+  $DA: Begin { x87 : entier 32 bits memoire, ou FUCOMPP/FCMOVcc en registre }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   If EA.IsReg Then Begin
+    If (RegField = 5) And (EA.RegIdx = 1) Then Begin { DA E9 = FUCOMPP }
+     Elf64_FpuCompare(ELF64_FpuReg[0], ELF64_FpuReg[1]);
+     Elf64_FpuPop; Elf64_FpuPop;
+    End Else Begin
+     ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+     ELF64_HaltReason := 'Opcode x87 DA (FCMOVcc) non supporte';
+    End;
+   End Else Begin
+    FVal := Elf64_SignExtend(Emu64_GetDWord(Elf64_ResolveEA(EA)), 32);
+    Case RegField Of
+     0: ELF64_FpuReg[0] := ELF64_FpuReg[0] + FVal;
+     1: ELF64_FpuReg[0] := ELF64_FpuReg[0] * FVal;
+     4: ELF64_FpuReg[0] := ELF64_FpuReg[0] - FVal;
+     5: ELF64_FpuReg[0] := FVal - ELF64_FpuReg[0];
+     6: ELF64_FpuReg[0] := ELF64_FpuReg[0] / FVal;
+     7: ELF64_FpuReg[0] := FVal / ELF64_FpuReg[0];
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Groupe x87 DA /' + IntToStr(RegField) + ' non supporte';
+     End;
+    End;
+   End;
+  End;
+
+  $DB: Begin { x87 : entier 32 bits / reel 80 bits, controle }
+   B := Emu64_GetByte(ELF64_RIP);
+   If (B And $C0) = $C0 Then Begin
+    B := Elf64_FetchByte;
+    Case B Of
+     $E3: Begin { FNINIT }
+      For I := 0 To 7 Do ELF64_FpuReg[I] := 0;
+      ELF64_FpuCW := $037F;
+     End;
+     $E2: ; { FNCLEX : aucun etat d exception suivi }
+     $E8..$EF: Elf64_FpuCompareToFlags(ELF64_FpuReg[0], ELF64_FpuReg[B And 7]); { FUCOMI }
+     $F0..$F7: Elf64_FpuCompareToFlags(ELF64_FpuReg[0], ELF64_FpuReg[B And 7]); { FCOMI }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode x87 DB ' + HexByte(B) + ' non supporte';
+     End;
+    End;
+   End Else Begin
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Case RegField Of
+     0: Elf64_FpuPush(Elf64_FildMem(Elf64_ResolveEA(EA), 32));              { FILD m32int }
+     2: Elf64_FistpMem(Elf64_ResolveEA(EA), 32, ELF64_FpuReg[0], False);    { FIST m32int }
+     3: Elf64_FistpMem(Elf64_ResolveEA(EA), 32, ELF64_FpuReg[0], True);     { FISTP m32int }
+     5: Elf64_FpuPush(Elf64_ReadExtended(Elf64_ResolveEA(EA)));             { FLD m80real }
+     7: Begin Elf64_WriteExtended(Elf64_ResolveEA(EA), ELF64_FpuReg[0]); Elf64_FpuPop; End; { FSTP m80real }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Groupe x87 DB /' + IntToStr(RegField) + ' non supporte';
+     End;
+    End;
+   End;
+  End;
+
+  $DC: Begin { x87 : ST(i) op= (m64real ou ST0), reel double precision }
+   EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+   If EA.IsReg Then Begin
+    { forme registre : destination ST(i), inversee par rapport a D8 }
+    Case RegField Of
+     0: ELF64_FpuReg[EA.RegIdx] := ELF64_FpuReg[EA.RegIdx] + ELF64_FpuReg[0];
+     1: ELF64_FpuReg[EA.RegIdx] := ELF64_FpuReg[EA.RegIdx] * ELF64_FpuReg[0];
+     2: Elf64_FpuCompare(ELF64_FpuReg[0], ELF64_FpuReg[EA.RegIdx]);
+     3: Begin Elf64_FpuCompare(ELF64_FpuReg[0], ELF64_FpuReg[EA.RegIdx]); Elf64_FpuPop; End;
+     4: ELF64_FpuReg[EA.RegIdx] := ELF64_FpuReg[EA.RegIdx] - ELF64_FpuReg[0];
+     5: ELF64_FpuReg[EA.RegIdx] := ELF64_FpuReg[0] - ELF64_FpuReg[EA.RegIdx];
+     6: ELF64_FpuReg[EA.RegIdx] := ELF64_FpuReg[EA.RegIdx] / ELF64_FpuReg[0];
+     7: ELF64_FpuReg[EA.RegIdx] := ELF64_FpuReg[0] / ELF64_FpuReg[EA.RegIdx];
+    End;
+   End Else Begin
+    FVal := Elf64_ReadDouble(Elf64_ResolveEA(EA));
+    Case RegField Of
+     0: ELF64_FpuReg[0] := ELF64_FpuReg[0] + FVal;
+     1: ELF64_FpuReg[0] := ELF64_FpuReg[0] * FVal;
+     2: Elf64_FpuCompare(ELF64_FpuReg[0], FVal);
+     3: Begin Elf64_FpuCompare(ELF64_FpuReg[0], FVal); Elf64_FpuPop; End;
+     4: ELF64_FpuReg[0] := ELF64_FpuReg[0] - FVal;
+     5: ELF64_FpuReg[0] := FVal - ELF64_FpuReg[0];
+     6: ELF64_FpuReg[0] := ELF64_FpuReg[0] / FVal;
+     7: ELF64_FpuReg[0] := FVal / ELF64_FpuReg[0];
+    End;
+   End;
+  End;
+
+  $DD: Begin { x87 : reel double precision (chargement/format), FST(P) ST(i) }
+   B := Emu64_GetByte(ELF64_RIP);
+   If (B And $C0) = $C0 Then Begin
+    B := Elf64_FetchByte;
+    Case B Of
+     $C0..$C7: ; { FFREE ST(i) : tags non suivis, sans effet }
+     $D0..$D7: ELF64_FpuReg[B And 7] := ELF64_FpuReg[0];                   { FST ST(i) }
+     $D8..$DF: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[0]; Elf64_FpuPop; End; { FSTP ST(i) }
+     $E0..$E7: Elf64_FpuCompare(ELF64_FpuReg[0], ELF64_FpuReg[B And 7]);   { FUCOM }
+     $E8..$EF: Begin Elf64_FpuCompare(ELF64_FpuReg[0], ELF64_FpuReg[B And 7]); Elf64_FpuPop; End; { FUCOMP }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode x87 DD ' + HexByte(B) + ' non supporte';
+     End;
+    End;
+   End Else Begin
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Case RegField Of
+     0: Elf64_FpuPush(Elf64_ReadDouble(Elf64_ResolveEA(EA)));              { FLD m64real }
+     2: Elf64_WriteDouble(Elf64_ResolveEA(EA), ELF64_FpuReg[0]);           { FST m64real }
+     3: Begin Elf64_WriteDouble(Elf64_ResolveEA(EA), ELF64_FpuReg[0]); Elf64_FpuPop; End; { FSTP m64real }
+     7: Emu64_PutWord(Elf64_ResolveEA(EA), (Ord(ELF64_FpuC3) Shl 14) Or    { FNSTSW m2byte }
+        (Ord(ELF64_FpuC2) Shl 10) Or (Ord(ELF64_FpuC0) Shl 8));
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Groupe x87 DD /' + IntToStr(RegField) + ' non supporte';
+     End;
+    End;
+   End;
+  End;
+
+  $DE: Begin { x87 : entier 16 bits memoire, ou *P (pop) en registre }
+   B := Emu64_GetByte(ELF64_RIP);
+   If (B And $C0) = $C0 Then Begin
+    B := Elf64_FetchByte;
+    Case B Of
+     $C0..$C7: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[B And 7] + ELF64_FpuReg[0]; Elf64_FpuPop; End; { FADDP }
+     $C8..$CF: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[B And 7] * ELF64_FpuReg[0]; Elf64_FpuPop; End; { FMULP }
+     $D9: Begin Elf64_FpuCompare(ELF64_FpuReg[0], ELF64_FpuReg[1]); Elf64_FpuPop; Elf64_FpuPop; End; { FCOMPP }
+     $E0..$E7: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[0] - ELF64_FpuReg[B And 7]; Elf64_FpuPop; End; { FSUBRP }
+     $E8..$EF: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[B And 7] - ELF64_FpuReg[0]; Elf64_FpuPop; End; { FSUBP }
+     $F0..$F7: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[0] / ELF64_FpuReg[B And 7]; Elf64_FpuPop; End; { FDIVRP }
+     $F8..$FF: Begin ELF64_FpuReg[B And 7] := ELF64_FpuReg[B And 7] / ELF64_FpuReg[0]; Elf64_FpuPop; End; { FDIVP }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode x87 DE ' + HexByte(B) + ' non supporte';
+     End;
+    End;
+   End Else Begin
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    FVal := Elf64_SignExtend(Emu64_GetWord(Elf64_ResolveEA(EA)), 16);
+    Case RegField Of
+     0: ELF64_FpuReg[0] := ELF64_FpuReg[0] + FVal;
+     1: ELF64_FpuReg[0] := ELF64_FpuReg[0] * FVal;
+     4: ELF64_FpuReg[0] := ELF64_FpuReg[0] - FVal;
+     5: ELF64_FpuReg[0] := FVal - ELF64_FpuReg[0];
+     6: ELF64_FpuReg[0] := ELF64_FpuReg[0] / FVal;
+     7: ELF64_FpuReg[0] := FVal / ELF64_FpuReg[0];
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Groupe x87 DE /' + IntToStr(RegField) + ' non supporte';
+     End;
+    End;
+   End;
+  End;
+
+  $DF: Begin { x87 : entier 16/64 bits, FNSTSW AX, FUCOMIP/FCOMIP }
+   B := Emu64_GetByte(ELF64_RIP);
+   If (B And $C0) = $C0 Then Begin
+    B := Elf64_FetchByte;
+    Case B Of
+     $E0: Elf64_SetReg(REG_RAX, 16, (Ord(ELF64_FpuC3) Shl 14) Or           { FNSTSW AX }
+          (Ord(ELF64_FpuC2) Shl 10) Or (Ord(ELF64_FpuC0) Shl 8));
+     $E8..$EF: Begin Elf64_FpuCompareToFlags(ELF64_FpuReg[0], ELF64_FpuReg[B And 7]); Elf64_FpuPop; End; { FUCOMIP }
+     $F0..$F7: Begin Elf64_FpuCompareToFlags(ELF64_FpuReg[0], ELF64_FpuReg[B And 7]); Elf64_FpuPop; End; { FCOMIP }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode x87 DF ' + HexByte(B) + ' non supporte';
+     End;
+    End;
+   End Else Begin
+    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+    Case RegField Of
+     0: Elf64_FpuPush(Elf64_FildMem(Elf64_ResolveEA(EA), 16));             { FILD m16int }
+     3: Elf64_FistpMem(Elf64_ResolveEA(EA), 16, ELF64_FpuReg[0], True);    { FISTP m16int }
+     5: Elf64_FpuPush(Elf64_FildMem(Elf64_ResolveEA(EA), 64));             { FILD m64int }
+     7: Elf64_FistpMem(Elf64_ResolveEA(EA), 64, ELF64_FpuReg[0], True);    { FISTP m64int }
+     Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Groupe x87 DF /' + IntToStr(RegField) + ' non supporte';
+     End;
     End;
    End;
   End;
