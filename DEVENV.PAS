@@ -32281,6 +32281,57 @@ Begin
  End;
 End;
 
+{ Support souris du menu deroulant F9 (Gauche/Fichiers/Disque/Commandes/  }
+{ Droite) - ces deux fonctions recalculent EXACTEMENT la meme geometrie  }
+{ que le tracer de ncMenuBar (DrawNCommanderPanel) pour que les zones           }
+{ cliquables correspondent pixel pour pixel a ce qui est affiche. --- }
+
+{ Index (0..4) du menu superieur sous MouseX, ou -1 si aucun. --- }
+Function NCMenuHitTopItem(MouseX: Integer): Integer;
+Var
+ X0, W, I, CW: Integer;
+ S: String;
+Begin
+ NCMenuHitTopItem := -1;
+ CW := NCState.CharW;
+ If CW < 1 Then CW := 8;
+ X0 := TermX + CW;
+ For I := 0 To NC_MENU_TOP_COUNT - 1 Do Begin
+  S := ' ' + NC_MENU_TOP[I] + ' ';
+  W := TextWidth(S);
+  If (MouseX >= X0 - 2) And (MouseX <= X0 + W + 1) Then Begin
+   NCMenuHitTopItem := I;
+   Exit;
+  End;
+  X0 := X0 + W + 3 * CW;
+ End;
+End;
+
+{ Rectangle du sous-menu deroulant actuellement ouvert (NCState.MenuTop). --- }
+Procedure NCMenuDropdownBounds(Var DDLeft, DDRight, DDTop, DDBottom: Integer);
+Var
+ I, NameCols, CurCount, CW, RH: Integer;
+Begin
+ CW := NCState.CharW;
+ If CW < 1 Then CW := 8;
+ RH := TERM_LINE_HEIGHT;
+ DDLeft := TermX + CW;
+ For I := 0 To NCState.MenuTop - 1 Do
+  DDLeft := DDLeft + TextWidth(' ' + NC_MENU_TOP[I] + ' ') + 3 * CW;
+ CurCount := NCMenuItemCount(NCState.MenuTop);
+ NameCols := 0;
+ For I := 0 To CurCount - 1 Do
+  If Length(NCMenuItemLabel(NCState.MenuTop, I)) > NameCols Then
+   NameCols := Length(NCMenuItemLabel(NCState.MenuTop, I));
+ DDRight := DDLeft + (NameCols + 4) * CW;
+ If DDRight > TermX + TermWidth - 2 Then Begin
+  DDLeft := TermX + TermWidth - 2 - (NameCols + 4) * CW;
+  DDRight := TermX + TermWidth - 2;
+ End;
+ DDTop := TermY + TERM_TAB_HEIGHT + RH;
+ DDBottom := DDTop + CurCount * RH;
+End;
+
 { Gerer un evenement clavier/souris pour Norton Commander : navigation,   }
 { dialogues modaux (F5/F6/F7 saisie, F8 confirmation, F3 visionneuse),          }
 { et les touches de fonction elles-memes (TODO NC 2). --- }
@@ -32910,6 +32961,7 @@ Var
  NewShell: TShellKind;
  FKBarCW, FKBarY, FKBarColW, FKBarSlot: Integer;
  FakeEv: TEvent;
+ DDLeft, DDRight, DDTop, DDBottom, TopHit, ItemHit: Integer;
 Begin
  If Not TermVisible Then Exit;
  { Position du SelectBox }
@@ -33075,6 +33127,42 @@ Begin
       FakeEv.KeyCode := $3A + FKBarSlot; { F1=$3B .. F10=$44 }
       HandleNCommanderEvent(TP, FakeEv);
      End;
+     Exit;
+    End;
+    { Clic dans le menu deroulant F9 (Gauche/Fichiers/Disque/Commandes/    }
+    { Droite), quand il est ouvert - meme geometrie que ncMenuBar dans           }
+    { DrawNCommanderPanel (NCMenuHitTopItem/NCMenuDropdownBounds). }
+    If NCState.Mode = ncMenuBar Then Begin
+     TopHit := NCMenuHitTopItem(Ev.MouseX);
+     If (Ev.MouseY >= TermY + TERM_TAB_HEIGHT) And
+        (Ev.MouseY < TermY + TERM_TAB_HEIGHT + TERM_LINE_HEIGHT) And
+        (TopHit >= 0) Then Begin
+      { Clic sur un des 5 menus superieurs : y basculer (comme            }
+      { Gauche/Droite au clavier), sans executer d item. }
+      NCState.MenuTop := TopHit;
+      NCState.MenuItem := 0;
+      FullRepaintNeeded := True;
+      Exit;
+     End;
+     NCMenuDropdownBounds(DDLeft, DDRight, DDTop, DDBottom);
+     If (Ev.MouseX >= DDLeft) And (Ev.MouseX <= DDRight) And
+        (Ev.MouseY >= DDTop) And (Ev.MouseY < DDBottom + 1) Then Begin
+      { Clic sur un item du sous-menu : le selectionner ET l executer,       }
+      { comme Entree au clavier. }
+      ItemHit := (Ev.MouseY - DDTop) Div TERM_LINE_HEIGHT;
+      If ItemHit < 0 Then ItemHit := 0;
+      If ItemHit > NCMenuItemCount(NCState.MenuTop) - 1 Then
+       ItemHit := NCMenuItemCount(NCState.MenuTop) - 1;
+      NCState.MenuItem := ItemHit;
+      NCMenuExecute(TP, NCState.Active, NCState.MenuTop, NCState.MenuItem);
+      If NCState.Mode = ncMenuBar Then NCState.Mode := ncBrowse;
+      FullRepaintNeeded := True;
+      Exit;
+     End;
+     { Clic en dehors de la barre et du sous-menu : fermer le menu,             }
+     { comme Echap (convention habituelle des menus deroulants). }
+     NCState.Mode := ncBrowse;
+     FullRepaintNeeded := True;
      Exit;
     End;
    End;
