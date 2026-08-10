@@ -30216,11 +30216,40 @@ Begin
  End;
 End;
 
+{ Cherche un executable DOS 16 bits (CmdName.COM puis CmdName.EXE, ou      }
+{ CmdName tel quel s il a deja une extension .COM/.EXE) dans Dir - pour   }
+{ le "fallback" du shell CMD : une commande non reconnue qui correspond   }
+{ a un vrai binaire DOS present dans le repertoire courant est lancee           }
+{ dans l emulateur 8086 integre plutot que de simplement s afficher            }
+{ "non reconnue", comme le ferait authentiquement un vrai DOS. Renvoie   }
+{ le chemin complet, ou '' si rien de correspondant n a ete trouve. --- }
+Function TermFindDosExecutable(Const Dir, CmdName: String): String;
+Var
+ Base, UpName, Candidate: String;
+Begin
+ TermFindDosExecutable := '';
+ Base := Dir;
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ UpName := UpCaseStr(CmdName);
+ If (Length(UpName) > 4) And
+    ((Copy(UpName, Length(UpName) - 3, 4) = '.COM') Or
+     (Copy(UpName, Length(UpName) - 3, 4) = '.EXE')) Then Begin
+  Candidate := Base + CmdName;
+  If FileExists(Candidate) Then TermFindDosExecutable := Candidate;
+  Exit;
+ End;
+ Candidate := Base + CmdName + '.COM';
+ If FileExists(Candidate) Then Begin TermFindDosExecutable := Candidate; Exit; End;
+ Candidate := Base + CmdName + '.EXE';
+ If FileExists(Candidate) Then TermFindDosExecutable := Candidate;
+End;
+
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
 Var
  CurrCmd, ParamStr, PipeS: String;
  Err: Word;
+ CurDir, DosExe: String;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -30310,10 +30339,25 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
-   Else
-    TermAddLine(TP,
-     '''' + CurrCmd +
-     ''' n''est pas reconnu comme commande interne.');
+   Else Begin
+    { Commande inconnue : si un binaire DOS 16 bits du meme nom existe   }
+    { dans le repertoire courant (systeme hote uniquement), le lancer          }
+    { dans l emulateur 8086 integre plutot que d afficher "non              }
+    { reconnue" - BOGUE REEL 2026-08-10 signale par l utilisateur :       }
+    { taper le nom d un vrai .EXE/.COM 16 bits ne faisait jusqu ici             }
+    { jamais rien de plus que cette erreur, comme les 4 autres shells. }
+    DosExe := '';
+    If TP.VirtDrive < 0 Then Begin
+     GetDir(0, CurDir);
+     DosExe := TermFindDosExecutable(CurDir, CurrCmd);
+    End;
+    If DosExe <> '' Then
+     ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+    Else
+     TermAddLine(TP,
+      '''' + CurrCmd +
+      ''' n''est pas reconnu comme commande interne.');
+   End;
   End;
   SK_POWERSHELL: Begin
    If CurrCmd = 'EXIT' Then
