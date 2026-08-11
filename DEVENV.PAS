@@ -40591,6 +40591,7 @@ Begin
  Emu_LoadELF64 := False;
  ELF64_BinaryPath := FileName;
  ELF64_Halted := False;
+ ELF64_LastBadRIP := 0;
  ELF64_ExitCode := 0;
  ELF64_InstrCount := 0;
  ELF64_TraceCount := 0;
@@ -59125,8 +59126,12 @@ Begin NesActive := False;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   { Historique des dernieres adresses executees (etat 7d : diagnostic    }
   { leger avant un vrai debogueur pas-a-pas) - aide a retracer le chemin }
-  { d execution ayant mene a l arret, notamment un saut errant.          }
-  If ELF64_Halted Then Begin
+  { d execution ayant mene a l arret, notamment un saut errant. Affiche   }
+  { uniquement en cas d arret anormal (ELF64_LastBadRIP <> 0, mis a jour  }
+  { par tous les points d arret d erreur) - PAS lors d une fin de         }
+  { programme normale (sys_exit), sinon ce bruit de diagnostic masque le  }
+  { resultat reel affiche par le programme invite juste au-dessus.        }
+  If ELF64_Halted And (ELF64_LastBadRIP <> 0) Then Begin
    EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
