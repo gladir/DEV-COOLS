@@ -30682,9 +30682,25 @@ Begin
     TermCmd_HELP(TP)
    Else If CurrCmd = 'HELP' Then
     TermCmd_HELP(TP)
-   Else
-    TermAddLine(TP, 'bash: ' + CurrCmd +
-     ': command not found');
+   Else Begin
+    { Meme repli que les shells CMD/PowerShell (voir plus haut) : un vrai }
+    { bash execute egalement un binaire tape par son nom - c est meme le  }
+    { cas d usage le plus naturel pour un binaire Linux ELF64.            }
+    DosExe := '';
+    ElfExe := '';
+    If TP.VirtDrive < 0 Then Begin
+     GetDir(0, CurDir);
+     DosExe := TermFindDosExecutable(CurDir, CurrCmd);
+     If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
+    End;
+    If DosExe <> '' Then
+     ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+    Else If ElfExe <> '' Then
+     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64')
+    Else
+     TermAddLine(TP, 'bash: ' + CurrCmd +
+      ': command not found');
+   End;
   End;
   SK_AMIGADOS: Begin
    If (CurrCmd = 'QUIT') Or (CurrCmd = 'ENDCLI') Then
