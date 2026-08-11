@@ -3240,6 +3240,7 @@ Type
   OC_PROJ_BUILD,         { Projets et solutions > Build       }
   OC_DEBUG_GENERAL,      { Debogage > General                 }
   OC_DEBUG_OUTPUT,       { Debogage > Sortie                  }
+  OC_EMU_GENERAL,        { Emulateur > General                }
   OC_EMU_NES,            { Emulateur > NES                    }
   OC_EMU_DOS,            { Emulateur > DOS                    }
   OC_EMU_LINUX,          { Emulateur > Linux x86-64           }
@@ -3309,6 +3310,10 @@ Type
   BreakOnFirstError: Boolean;    { arreter au premier point arret }
   StepIntoProperties: Boolean;   { pas a pas dans proprietes      }
   ShowDebugMessages: Boolean;    { afficher messages de debogage  }
+  { Emulateur > General }
+  EmuShowDebugMessages: Boolean; { afficher Cible/Binaire/Point   }
+                                  { d entree/registres... dans le  }
+                                  { panneau de l emulateur         }
   { Emulateur > NES }
   NesStandard     : Integer;     { 0=NTSC 1=PAL 2=Dendy           }
   { Emulateur > DOS }
@@ -32440,6 +32445,29 @@ Begin
  NCIsDos16Exe := True;
 End;
 
+{ Binaire Linux ELF64 x86-64 (ex: BINLINUX\tp2js) - ces binaires n ont   }
+{ generalement pas d extension, contrairement aux .EXE/.COM DOS ; seule }
+{ la signature magique (7F 45 4C 46 = #$7F,'E','L','F') permet de les   }
+{ reconnaitre. Meme verification que TermFindElfExecutable, mais sur un }
+{ chemin deja connu plutot que par recherche-par-nom dans un repertoire.}
+Function NCIsElfExecutable(Const Path: String): Boolean;
+Var
+ F: File;
+ Magic: Array[0..3] Of Byte;
+ BytesRead: Word;
+Begin
+ NCIsElfExecutable := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockRead(F, Magic, SizeOf(Magic), BytesRead);
+ Close(F);
+ NCIsElfExecutable := (BytesRead = 4) And (Magic[0] = $7F) And
+  (Magic[1] = Ord('E')) And (Magic[2] = Ord('L')) And (Magic[3] = Ord('F'));
+End;
+
 { Entree sur un fichier associe a un emulateur integre plutot que de ne  }
 { rien faire (comme le ferait NC pour un fichier non associe) - seul le }
 { disque hote est supporte (comme NCActionView/NCActionEdit), la        }
@@ -32464,6 +32492,10 @@ Begin
    Else If (Ext = 'COM') Or
     ((Ext = 'EXE') And NCIsDos16Exe(FullPath)) Then Begin
     ShowEmulatorPanel(EmuPanel, FullPath, '-CD', '');
+    NCActionOpenAssociated := True;
+   End
+   Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
+    ShowEmulatorPanel(EmuPanel, FullPath, '-CELF64', '');
     NCActionOpenAssociated := True;
    End;
   End;
@@ -58512,10 +58544,15 @@ Begin NesActive := False;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := OldFg; P.CurBg := OldBg;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P, 'Cible    : ' + TargetCPU + ' (' + CPUName + ')');
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P, 'Binaire  : ' + BinaryPath);
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ { En-tete Cible/Binaire - masque quand Options > Emulateur > General >  }
+ { "Afficher les messages de debogage..." est decoche, pour ne montrer  }
+ { que la sortie du programme lui-meme. }
+ If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+  EmuVScr_WriteStr(P, 'Cible    : ' + TargetCPU + ' (' + CPUName + ')');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Binaire  : ' + BinaryPath);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ End;
  If IsM68K Then Begin
   { ----- Emulateur Motorola 68000 ----- }
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
@@ -58574,12 +58611,14 @@ Begin NesActive := False;
   { ce qui sera detecte par M68K_Step pour arreter proprement.       }
   M68K_A[7] := M68K_A[7] - 4;
   M68K_Write32(M68K_A[7], $00FFFFFE);
-  P.CurFg := 10;
-  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
-   M68K_HexN(M68K_PC, 6) + ')');
-  P.CurFg := 7;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+    M68K_HexN(M68K_PC, 6) + ')');
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   { Boucle d execution }
   Steps := 0;
   While (Not M68K_Halted) And (Steps < MAX_CYCLES) Do Begin
@@ -58637,12 +58676,14 @@ Begin NesActive := False;
   { l entree COS pointe ailleurs ($0200 typiquement). On execute    }
   { directement le code utilisateur.                                }
   CRAY1_PC := 0;
-  P.CurFg := 10;
-  EmuVScr_WriteStr(P, 'Programme charge (entree COS=$' +
-   M68K_HexN(EntryAddr, 4) + ', execution depuis $0000)');
-  P.CurFg := 7;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Programme charge (entree COS=$' +
+    M68K_HexN(EntryAddr, 4) + ', execution depuis $0000)');
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   Steps := 0;
   While (Not CRAY1_Halted) And (Steps < 1000000) Do Begin
    CRAY1_Step;
@@ -58988,12 +59029,14 @@ Begin NesActive := False;
    Exit;
   End;
   CPU6502_Reset(EntryAddr16);
-  P.CurFg := 10;
-  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
-   M68K_HexN(CPU6502_PC, 4) + ')');
-  P.CurFg := 7;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+    M68K_HexN(CPU6502_PC, 4) + ')');
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   Steps := 0;
   If NesActive And (TargetCPU = '-CNES') Then Begin
    { ----- Boucle NES par trame (60 Hz approx.) ----- }
@@ -59279,12 +59322,14 @@ Begin NesActive := False;
    Exit;
   End;
   Z80_Reset(EntryAddr16);
-  P.CurFg := 10;
-  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
-   M68K_HexN(Z80_PC, 4) + ')');
-  P.CurFg := 7;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+    M68K_HexN(Z80_PC, 4) + ')');
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   Steps := 0;
   While (Not Z80_Halted) And (Steps < 1000000) Do Begin
    Z80_Step;
@@ -59377,12 +59422,14 @@ Begin NesActive := False;
       (Pos('.ROM', UpCaseStr(BinaryPath)) > 0)) Then
     Coco3_Active := True;
   M6809_Reset(EntryAddr16);
-  P.CurFg := 10;
-  EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
-   M68K_HexN(M6809_PC, 4) + ')');
-  P.CurFg := 7;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
+    M68K_HexN(M6809_PC, 4) + ')');
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   Steps := 0;
   If (TargetCPU = '-CCOCO3') And Coco3_Active Then Coco3_InitState;
   If (TargetCPU = '-CCOCO3') And Coco3_Active Then Begin
@@ -59489,19 +59536,21 @@ Begin NesActive := False;
    P.StatusMsg := 'Echec de chargement ELF64';
    Exit;
   End;
-  P.CurFg := 10;
-  EmuVScr_WriteStr(P, 'Binaire ELF64 charge : ' +
-   IntToStr(ELF64_SegCount) + ' segment(s) PT_LOAD, ' +
-   IntToStr(LongInt(ELF64_LoadTop - ELF64_LoadBase)) + ' octets d''image.');
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 7;
-  EmuVScr_WriteStr(P, 'Point d''entree   : 0x' + HexQWord(ELF64_EntryPoint));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Pile initiale RSP: 0x' + HexQWord(ELF64_Reg[REG_RSP]));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Debut du tas brk : 0x' + HexQWord(ELF64_BrkStart));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Binaire ELF64 charge : ' +
+    IntToStr(ELF64_SegCount) + ' segment(s) PT_LOAD, ' +
+    IntToStr(LongInt(ELF64_LoadTop - ELF64_LoadBase)) + ' octets d''image.');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P, 'Point d''entree   : 0x' + HexQWord(ELF64_EntryPoint));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Pile initiale RSP: 0x' + HexQWord(ELF64_Reg[REG_RSP]));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Debut du tas brk : 0x' + HexQWord(ELF64_BrkStart));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   { Executer le programme : boucle bornee, comme les autres emulateurs   }
   { integres (M6809, 6502...). S arrete des qu une instruction inconnue  }
   { ou un SYSCALL (dispatche a l etape suivante de la feuille de route)  }
@@ -59519,52 +59568,55 @@ Begin NesActive := False;
    EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(Steps) + ' instructions atteinte]');
   End;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 7;
-  EmuVScr_WriteStr(P, IntToStr(Steps) + ' instruction(s) executee(s).');
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'RIP : 0x' + HexQWord(ELF64_RIP) +
-   '   RAX : 0x' + HexQWord(ELF64_Reg[REG_RAX]));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'RSP : 0x' + HexQWord(ELF64_Reg[REG_RSP]) +
-   '   RDI : 0x' + HexQWord(ELF64_Reg[REG_RDI]));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'RCX : 0x' + HexQWord(ELF64_Reg[REG_RCX]) +
-   '   RDX : 0x' + HexQWord(ELF64_Reg[REG_RDX]));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'RSI : 0x' + HexQWord(ELF64_Reg[REG_RSI]) +
-   '   RBX : 0x' + HexQWord(ELF64_Reg[REG_RBX]));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'RBP : 0x' + HexQWord(ELF64_Reg[REG_RBP]));
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  If ELF64_LastBadRIP <> 0 Then Begin
-   EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
-    HexQWord(ELF64_LastBadRIP));
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P, IntToStr(Steps) + ' instruction(s) executee(s).');
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  { Historique des dernieres adresses executees (etat 7d : diagnostic    }
-  { leger avant un vrai debogueur pas-a-pas) - aide a retracer le chemin }
-  { d execution ayant mene a l arret, notamment un saut errant. Affiche   }
-  { en cas d arret anormal (ELF64_LastBadRIP <> 0, mis a jour par tous    }
-  { les points d arret d erreur) OU quand la limite d instructions est    }
-  { atteinte (Not ELF64_Halted a ce point - utile pour diagnostiquer une  }
-  { veritable boucle infinie) - PAS lors d une fin de programme normale   }
-  { (sys_exit), sinon ce bruit de diagnostic masque le resultat reel      }
-  { affiche par le programme invite juste au-dessus.                     }
-  If (ELF64_LastBadRIP <> 0) Or (Not ELF64_Halted) Then Begin
-   EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
+   EmuVScr_WriteStr(P, 'RIP : 0x' + HexQWord(ELF64_RIP) +
+    '   RAX : 0x' + HexQWord(ELF64_Reg[REG_RAX]));
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
-   For TraceI := TraceN - 1 DownTo 0 Do Begin
-    TraceLine := 'RIP=0x' +
-     HexQWord(ELF64_TraceRIP[(ELF64_TraceCount - 1 - TraceI) And 1023]) +
-     '  RSP=0x' +
-     HexQWord(ELF64_TraceRSP[(ELF64_TraceCount - 1 - TraceI) And 1023]);
-    EmuVScr_WriteStr(P, TraceLine);
+   EmuVScr_WriteStr(P, 'RSP : 0x' + HexQWord(ELF64_Reg[REG_RSP]) +
+    '   RDI : 0x' + HexQWord(ELF64_Reg[REG_RDI]));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'RCX : 0x' + HexQWord(ELF64_Reg[REG_RCX]) +
+    '   RDX : 0x' + HexQWord(ELF64_Reg[REG_RDX]));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'RSI : 0x' + HexQWord(ELF64_Reg[REG_RSI]) +
+    '   RBX : 0x' + HexQWord(ELF64_Reg[REG_RBX]));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'RBP : 0x' + HexQWord(ELF64_Reg[REG_RBP]));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   If ELF64_LastBadRIP <> 0 Then Begin
+    EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
+     HexQWord(ELF64_LastBadRIP));
     EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    End;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   { Historique des dernieres adresses executees (etat 7d : diagnostic    }
+   { leger avant un vrai debogueur pas-a-pas) - aide a retracer le chemin }
+   { d execution ayant mene a l arret, notamment un saut errant. Affiche   }
+   { en cas d arret anormal (ELF64_LastBadRIP <> 0, mis a jour par tous    }
+   { les points d arret d erreur) OU quand la limite d instructions est    }
+   { atteinte (Not ELF64_Halted a ce point - utile pour diagnostiquer une  }
+   { veritable boucle infinie) - PAS lors d une fin de programme normale   }
+   { (sys_exit), sinon ce bruit de diagnostic masque le resultat reel      }
+   { affiche par le programme invite juste au-dessus.                     }
+   If (ELF64_LastBadRIP <> 0) Or (Not ELF64_Halted) Then Begin
+    EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+    If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
+    For TraceI := TraceN - 1 DownTo 0 Do Begin
+     TraceLine := 'RIP=0x' +
+      HexQWord(ELF64_TraceRIP[(ELF64_TraceCount - 1 - TraceI) And 1023]) +
+      '  RSP=0x' +
+      HexQWord(ELF64_TraceRSP[(ELF64_TraceCount - 1 - TraceI) And 1023]);
+     EmuVScr_WriteStr(P, TraceLine);
+     EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+    End;
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   End;
   End;
+  P.CurFg := 7;
   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
   P.CurFg := OldFg; P.CurBg := OldBg;
   P.Running := False;
@@ -59636,13 +59688,15 @@ Begin NesActive := False;
   Emu_Done(P.CPU);
   Exit;
  End;
- P.CurFg := 10;
- EmuVScr_WriteStr(P, 'Programme charge en memoire (CS:IP=');
- EmuVScr_WriteStr(P, IntToStr(P.CPU.Segs.CS) + ':' +
-  IntToStr(P.CPU.IP) + ')');
- P.CurFg := 7;
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+  P.CurFg := 10;
+  EmuVScr_WriteStr(P, 'Programme charge en memoire (CS:IP=');
+  EmuVScr_WriteStr(P, IntToStr(P.CPU.Segs.CS) + ':' +
+   IntToStr(P.CPU.IP) + ')');
+  P.CurFg := 7;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ End;
  { Dumper les bytes bruts du segment de code AVANT execution }
  {$I-} Assign(EmuDumpF, 'EMUCODE.LOG'); Rewrite(EmuDumpF); {$I+}
  If IOResult = 0 Then Begin
@@ -60075,6 +60129,7 @@ Begin
   OC_PROJ_BUILD:         OptionCategoryName := 'Build et execution';
   OC_DEBUG_GENERAL:      OptionCategoryName := 'General';
   OC_DEBUG_OUTPUT:       OptionCategoryName := 'Sortie';
+  OC_EMU_GENERAL:        OptionCategoryName := 'General';
   OC_EMU_NES:            OptionCategoryName := 'NES';
   OC_EMU_DOS:            OptionCategoryName := 'DOS';
   OC_EMU_LINUX:          OptionCategoryName := 'Linux x86-64';
@@ -60150,6 +60205,7 @@ Begin
  D.BreakOnFirstError := True;
  D.StepIntoProperties := False;
  D.ShowDebugMessages := True;
+ D.EmuShowDebugMessages := True;
  D.NesStandard := 0;
  D.DosType := 1;
  D.DosCPUIDDetect := True;
@@ -60280,6 +60336,7 @@ Begin
  { UpdateOptionsTreeVisibility) pour que l arbre garde a peu pres sa      }
  { hauteur d origine tant que l utilisateur ne le deplie pas explicitement.}
  AddNode('Emulateur', -1, 0, False, OC_EMU_NES);
+ AddNode('General', 15, 1, False, OC_EMU_GENERAL);
  AddNode('NES', 15, 1, False, OC_EMU_NES);
  AddNode('DOS', 15, 1, False, OC_EMU_DOS);
  AddNode('Linux x86-64', 15, 1, False, OC_EMU_LINUX);
@@ -60871,6 +60928,30 @@ Begin
   'Afficher les messages de debogage', CLR_WINDOWTEXT);
 End;
 
+{ --- Dessiner la page Emulateur > General --- }
+
+Procedure DrawOptionsEmuGeneral(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > General', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.EmuShowDebugMessages Then
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+ { Libelle sur deux lignes - un seul long DrawText deborderait la     }
+ { largeur du panneau (620px, deja au maximum permis par la           }
+ { resolution graphique, voir OPT_DLG_HEIGHT). }
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Afficher les messages de debogage', CLR_WINDOWTEXT);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY + 16,
+  'directement dans l''emulateur', CLR_WINDOWTEXT);
+End;
+
 { --- Dessiner la page Emulateur > NES --- }
 
 Procedure DrawOptionsEmuNES(Var Dlg: TOptionsDialog);
@@ -61084,6 +61165,7 @@ Begin
   OC_PROJ_BUILD:          DrawOptionsProjBuild(Dlg);
   OC_DEBUG_GENERAL:       DrawOptionsDebugGeneral(Dlg);
   OC_DEBUG_OUTPUT:        DrawOptionsDebugOutput(Dlg);
+  OC_EMU_GENERAL:         DrawOptionsEmuGeneral(Dlg);
   OC_EMU_DOS:             DrawOptionsEmuDOS(Dlg);
   OC_EMU_NES:             DrawOptionsEmuNES(Dlg);
   OC_EMU_LINUX:           DrawOptionsEmuStub(Dlg, 'Linux x86-64');
@@ -61468,6 +61550,13 @@ Begin
         Not Dlg.Data.ShowDebugMessages;
        Dlg.Modified := True;
       End;
+     OC_EMU_GENERAL:
+      If FieldIdx = 0 Then
+      Begin
+       Dlg.Data.EmuShowDebugMessages :=
+        Not Dlg.Data.EmuShowDebugMessages;
+       Dlg.Modified := True;
+      End;
      OC_EMU_NES:
       Case FieldIdx Of
        1: Begin
@@ -61679,6 +61768,10 @@ Begin
  WriteCfgLine(F, 'ShowDebugMessages',
   BoolToStr(Data.ShowDebugMessages));
  WriteLn(F, '');
+ WriteLn(F, '[Emulateur.General]');
+ WriteCfgLine(F, 'EmuShowDebugMessages',
+  BoolToStr(Data.EmuShowDebugMessages));
+ WriteLn(F, '');
  WriteLn(F, '[Emulateur.NES]');
  Str(Data.NesStandard, S);
  WriteCfgLine(F, 'NesStandard', S);
@@ -61803,6 +61896,8 @@ Begin
    Data.StepIntoProperties := StrToBool(Value)
   Else If Key = 'ShowDebugMessages' Then
    Data.ShowDebugMessages := StrToBool(Value)
+  Else If Key = 'EmuShowDebugMessages' Then
+   Data.EmuShowDebugMessages := StrToBool(Value)
   Else If Key = 'NesStandard' Then
   Begin
    Val(Value, Data.NesStandard, Code);
