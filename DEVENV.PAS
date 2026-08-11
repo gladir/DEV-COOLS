@@ -1308,7 +1308,9 @@ Const
 
  { Boite de dialogue des options de l IDE }
  OPT_DLG_WIDTH        = 620;     { largeur dialogue options         }
- OPT_DLG_HEIGHT       = 440;     { hauteur dialogue options         }
+ OPT_DLG_HEIGHT       = 480;     { hauteur dialogue options (agrandie }
+                                  { pour la page Emulateur > DOS,      }
+                                  { la plus chargee - 13 lignes)       }
  OPT_TREE_WIDTH       = 200;     { largeur arbre de categories      }
  OPT_TREE_NODE_HEIGHT = 20;      { hauteur noeud arbre              }
  OPT_TREE_INDENT      = 16;      { indentation noeuds enfants       }
@@ -1318,6 +1320,10 @@ Const
  OPT_ROW_SPACING      = 28;      { espacement vertical entre lignes }
  OPT_CHECK_SIZE       = 14;      { taille case a cocher             }
  OPT_SBAR_WIDTH       = 14;      { largeur scrollbar arbre categories}
+ OPT_DROPDOWN_ITEM_H  = 20;      { hauteur d un item de liste deroulante}
+ DOS_TYPE_COUNT       = 7;       { nombre de types de DOS emulables }
+ DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
+ DOS_HARDWARE_COUNT   = 10;      { nombre de modeles de materiel    }
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -3297,7 +3303,15 @@ Type
   BreakOnFirstError: Boolean;    { arreter au premier point arret }
   StepIntoProperties: Boolean;   { pas a pas dans proprietes      }
   ShowDebugMessages: Boolean;    { afficher messages de debogage  }
+  { Emulateur > NES }
+  NesStandard     : Integer;     { 0=NTSC 1=PAL 2=Dendy           }
   { Emulateur > DOS }
+  DosType         : Integer;     { 0=PC-DOS 1=MS-DOS 2=DR-DOS      }
+                                  { 3=FreeDOS 4=IBM DOS 5=PTS-DOS   }
+                                  { 6=OS/2                          }
+  DosCPUIDDetect  : Boolean;     { CPUID detecte                  }
+  DosCPUVendor    : Integer;     { fabricant CPU rapporte par CPUID}
+  DosHardware     : Integer;     { modele de materiel emule        }
   DosEmu8087      : Boolean;     { emulation 8087 activee         }
   DosEmu80286     : Boolean;     { emulation 80286                }
   DosEmu80386     : Boolean;     { emulation 80386                }
@@ -3323,6 +3337,8 @@ Type
   OriginalData    : TOptionsDialogData;  { copie pour annulation  }
   Modified        : Boolean;     { parametres modifies            }
   Confirmed       : Boolean;     { True si valide par OK          }
+  DosDropdownOpen : Integer;     { 0=aucun 1=Type 2=CPU 3=Materiel }
+                                  { menu deroulant ouvert page DOS  }
  End;
 
  { Portee de recherche }
@@ -36286,6 +36302,88 @@ Begin
   Y + (BoxSize - TextHeight('X')) Div 2, 'X');
 End;
 
+{ Dessine un bouton radio (cercle + point central si selectionne) suivi   }
+{ de son libelle, sur le meme modele visuel que le bouton radio du        }
+{ systeme de widgets de base (DrawRadioButton) - reutilise ici pour les   }
+{ pages de la boite de dialogue Options, qui dessinent en immediat plutot }
+{ que via ce systeme de widgets.                                          }
+Procedure DrawOptRadio(X, Y: Integer; Selected: Boolean; Const Caption: String);
+Var
+ CX, CY: Integer;
+Begin
+ CX := X + OPT_CHECK_SIZE Div 2;
+ CY := Y + OPT_CHECK_SIZE Div 2;
+ SetColor(CLR_BORDER);
+ Circle(CX, CY, OPT_CHECK_SIZE Div 2 - 1);
+ If Selected Then Begin
+  SetColor(CLR_WINDOWTEXT);
+  Circle(CX, CY, 2);
+ End;
+ DrawText(X + OPT_CHECK_SIZE + 6, Y, Caption, CLR_WINDOWTEXT);
+End;
+
+{ Coordonnee Y de la ligne RowIdx (0-based) d une page d options, sur le  }
+{ meme calcul que celui repete au fil de chaque DrawOptions* (le titre    }
+{ de page occupe le "rang -1" implicite) - centralise ici pour que le     }
+{ menu deroulant de la page Emulateur > DOS puisse retrouver la position  }
+{ exacte d une ligne sans dupliquer ce calcul entre dessin et clic.       }
+Function OptRowY(Var Dlg: TOptionsDialog; RowIdx: Integer): Integer;
+Begin
+ OptRowY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING +
+  OPT_ROW_SPACING * (RowIdx + 1);
+End;
+
+{ --- Noms affichables des listes deroulantes de la page Emulateur > DOS -}
+
+Function DosTypeName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosTypeName := 'PC-DOS';
+  1: DosTypeName := 'MS-DOS';
+  2: DosTypeName := 'DR-DOS';
+  3: DosTypeName := 'FreeDOS';
+  4: DosTypeName := 'IBM DOS';
+  5: DosTypeName := 'PTS-DOS';
+  6: DosTypeName := 'OS/2';
+ Else
+  DosTypeName := '???';
+ End;
+End;
+
+Function DosCPUVendorName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosCPUVendorName := 'Intel';
+  1: DosCPUVendorName := 'AMD';
+  2: DosCPUVendorName := 'Cyrix';
+  3: DosCPUVendorName := 'VIA';
+  4: DosCPUVendorName := 'Transmeta';
+  5: DosCPUVendorName := 'NexGen';
+  6: DosCPUVendorName := 'UMC';
+  7: DosCPUVendorName := 'IBM';
+ Else
+  DosCPUVendorName := '???';
+ End;
+End;
+
+Function DosHardwareName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosHardwareName := 'IBM PC 5150';
+  1: DosHardwareName := 'IBM PC XT';
+  2: DosHardwareName := 'IBM PC AT';
+  3: DosHardwareName := 'IBM PS/2';
+  4: DosHardwareName := 'Amdek System/88';
+  5: DosHardwareName := 'Tandy 1000';
+  6: DosHardwareName := 'Compaq Deskpro 386';
+  7: DosHardwareName := 'Olivetti M24';
+  8: DosHardwareName := 'Zenith Z-150';
+  9: DosHardwareName := 'NCR PC4i';
+ Else
+  DosHardwareName := '???';
+ End;
+End;
+
 { ============================================================
   TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
   ============================================================ }
@@ -59884,6 +59982,11 @@ Begin
  D.BreakOnFirstError := True;
  D.StepIntoProperties := False;
  D.ShowDebugMessages := True;
+ D.NesStandard := 0;
+ D.DosType := 1;
+ D.DosCPUIDDetect := True;
+ D.DosCPUVendor := 0;
+ D.DosHardware := 2;
  D.DosEmu8087 := True;
  D.DosEmu80286 := True;
  D.DosEmu80386 := True;
@@ -60040,6 +60143,7 @@ Begin
  Dlg.ScrollTop := 0;
  Dlg.Modified := False;
  Dlg.Confirmed := False;
+ Dlg.DosDropdownOpen := 0;
 End;
 
 { --- Dessiner l arbre de categories a gauche --- }
@@ -60593,12 +60697,37 @@ Begin
   'Afficher les messages de debogage', CLR_WINDOWTEXT);
 End;
 
+{ --- Dessiner la page Emulateur > NES --- }
+
+Procedure DrawOptionsEmuNES(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > NES', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ { Row 0 : etiquette seule, ne reagit pas au clic }
+ DrawText(FX, BaseY, 'Norme video :', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawOptRadio(FX, BaseY, Dlg.Data.NesStandard = 0,   { Row 1 }
+  'NTSC (60 Hz - Amerique du Nord, Japon)');
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawOptRadio(FX, BaseY, Dlg.Data.NesStandard = 1,   { Row 2 }
+  'PAL (50 Hz - Europe)');
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawOptRadio(FX, BaseY, Dlg.Data.NesStandard = 2,   { Row 3 }
+  'Dendy (50 Hz - clones russes/d Europe de l Est)');
+End;
+
 { --- Dessiner la page Emulateur > DOS --- }
 
 Procedure DrawOptionsEmuDOS(Var Dlg: TOptionsDialog);
 Var
- FX, BaseY, PX: Integer;
+ FX, FW, BaseY, PX: Integer;
  S: String;
+ ListTop, ItemY: Integer;
 
  Procedure Check(Checked: Boolean; Const Caption: String);
  Begin
@@ -60609,38 +60738,97 @@ Var
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
- Procedure SizeField(Const Caption: String; KoValue: Integer);
+ { Case a cocher + champ "Taille" sur la MEME ligne (au lieu de deux      }
+ { lignes separees) pour gagner de la place vu le nombre de lignes que    }
+ { cette page comporte deja. }
+ Procedure CheckWithSize(Checked: Boolean; Const Caption: String;
+  KoValue: Integer);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  DrawText(FX + 130, BaseY, 'Taille :', CLR_WINDOWTEXT);
+  Str(KoValue, S);
+  DrawFilledRect(FX + 200, BaseY - 2, FX + 280, BaseY + OPT_FIELD_HEIGHT,
+   CLR_WINDOW);
+  DrawRect(FX + 200, BaseY - 2, FX + 280, BaseY + OPT_FIELD_HEIGHT,
+   CLR_BORDER);
+  DrawText(FX + 204, BaseY, S + ' Ko', CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+ Procedure Dropdown(Const Caption, ValueText: String);
  Begin
   DrawText(FX, BaseY, Caption, CLR_WINDOWTEXT);
-  Str(KoValue, S);
-  DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
-   FX + OPT_LABEL_WIDTH + 80, BaseY + OPT_FIELD_HEIGHT,
-   CLR_WINDOW);
-  DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
-   FX + OPT_LABEL_WIDTH + 80, BaseY + OPT_FIELD_HEIGHT,
-   CLR_BORDER);
-  DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S + ' Ko',
-   CLR_WINDOWTEXT);
+  DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2, FX + FW,
+   BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
+  DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2, FX + FW,
+   BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
+  DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, ValueText, CLR_WINDOWTEXT);
+  DrawText(FX + FW - 14, BaseY, 'v', CLR_WINDOWTEXT);
   BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+ { Dessine la liste ouverte d un menu deroulant (Count items nommes par  }
+ { NameOf) juste sous la ligne RowIdx, en recouvrant les lignes          }
+ { suivantes - comme un vrai menu deroulant. }
+ Procedure OpenList(RowIdx, Count, CurIdx: Integer);
+ Var
+  LI: Integer;
+ Begin
+  ListTop := OptRowY(Dlg, RowIdx) + OPT_FIELD_HEIGHT + 2;
+  For LI := 0 To Count - 1 Do Begin
+   ItemY := ListTop + LI * OPT_DROPDOWN_ITEM_H;
+   If LI = CurIdx Then
+    DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
+     ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_TITLEBAR_ACTIVE)
+   Else
+    DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
+     ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_WINDOW);
+   DrawRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
+    ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_BORDER);
+   Case Dlg.DosDropdownOpen Of
+    1: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(LI),
+        CLR_WINDOWTEXT);
+    2: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosCPUVendorName(LI),
+        CLR_WINDOWTEXT);
+    3: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosHardwareName(LI),
+        CLR_WINDOWTEXT);
+   End;
+  End;
  End;
 
 Begin
  PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
  FX := PX;
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
  DrawText(FX, BaseY, 'Emulateur > DOS', CLR_WINDOWTEXT);
  BaseY := BaseY + OPT_ROW_SPACING;
- Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');    { Row 0 }
- Check(Dlg.Data.DosEmu80286, 'Emulation 80286');          { Row 1 }
- Check(Dlg.Data.DosEmu80386, 'Emulation 80386');          { Row 2 }
- Check(Dlg.Data.DosXMS, 'XMS');                           { Row 3 }
- SizeField('Taille XMS :', Dlg.Data.DosXMSSize);          { Row 4 }
- Check(Dlg.Data.DosEMS, 'EMS');                           { Row 5 }
- SizeField('Taille EMS :', Dlg.Data.DosEMSSize);          { Row 6 }
- Check(Dlg.Data.DosMSCDEX, 'MSCDEX');                     { Row 7 }
- Check(Dlg.Data.DosSouris, 'Souris');                     { Row 8 }
- Check(Dlg.Data.DosNovell, 'Reseau Novell NetWare');      { Row 9 }
- Check(Dlg.Data.DosLAN, 'Reseau LAN');                    { Row 10 }
+ Dropdown('Type de DOS :', DosTypeName(Dlg.Data.DosType));      { Row 0 }
+ Check(Dlg.Data.DosCPUIDDetect, 'CPUID detecte');                { Row 1 }
+ Dropdown('Identifiant CPU :',                                   { Row 2 }
+  DosCPUVendorName(Dlg.Data.DosCPUVendor));
+ Dropdown('Materiel :', DosHardwareName(Dlg.Data.DosHardware));  { Row 3 }
+ Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');           { Row 4 }
+ Check(Dlg.Data.DosEmu80286, 'Emulation 80286');                 { Row 5 }
+ Check(Dlg.Data.DosEmu80386, 'Emulation 80386');                 { Row 6 }
+ CheckWithSize(Dlg.Data.DosXMS, 'XMS', Dlg.Data.DosXMSSize);     { Row 7 }
+ CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize);     { Row 8 }
+ Check(Dlg.Data.DosMSCDEX, 'MSCDEX');                            { Row 9 }
+ Check(Dlg.Data.DosSouris, 'Souris');                            { Row 10 }
+ Check(Dlg.Data.DosNovell, 'Reseau Novell NetWare');             { Row 11 }
+ Check(Dlg.Data.DosLAN, 'Reseau LAN');                           { Row 12 }
+
+ { Liste deroulante ouverte, le cas echeant - dessinee EN DERNIER pour   }
+ { recouvrir les lignes qui suivent son champ, comme un vrai menu        }
+ { deroulant. }
+ Case Dlg.DosDropdownOpen Of
+  1: OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType);
+  2: OpenList(2, DOS_CPU_VENDOR_COUNT, Dlg.Data.DosCPUVendor);
+  3: OpenList(3, DOS_HARDWARE_COUNT, Dlg.Data.DosHardware);
+ End;
 End;
 
 { --- Dessiner une page Emulateur > X pas encore detaillee (stub) --- }
@@ -60692,7 +60880,7 @@ Begin
   OC_DEBUG_GENERAL:       DrawOptionsDebugGeneral(Dlg);
   OC_DEBUG_OUTPUT:        DrawOptionsDebugOutput(Dlg);
   OC_EMU_DOS:             DrawOptionsEmuDOS(Dlg);
-  OC_EMU_NES:             DrawOptionsEmuStub(Dlg, 'NES');
+  OC_EMU_NES:             DrawOptionsEmuNES(Dlg);
   OC_EMU_LINUX:           DrawOptionsEmuStub(Dlg, 'Linux x86-64');
   OC_EMU_AMIGA:           DrawOptionsEmuStub(Dlg, 'Amiga');
   OC_EMU_ATARIST:         DrawOptionsEmuStub(Dlg, 'Atari ST');
@@ -60826,6 +61014,41 @@ Begin
  EnsureOptionsCategoryVisible(Dlg);
 End;
 
+{ Gere un clic pendant qu un menu deroulant de la page Emulateur > DOS   }
+{ est ouvert (Dlg.DosDropdownOpen <> 0) - le clic est intercepte avant   }
+{ toute autre zone de la page puisque la liste ouverte recouvre          }
+{ visuellement les lignes suivantes. Un clic sur un item le selectionne, }
+{ un clic ailleurs referme simplement le menu sans rien changer -        }
+{ comportement standard d un menu deroulant. }
+Procedure HandleDosDropdownClick(Var Dlg: TOptionsDialog; MX, MY: Integer);
+Var
+ FX, FW, ListTop, Count, Idx: Integer;
+Begin
+ FX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
+ Case Dlg.DosDropdownOpen Of
+  1: Begin ListTop := OptRowY(Dlg, 0) + OPT_FIELD_HEIGHT + 2;
+      Count := DOS_TYPE_COUNT; End;
+  2: Begin ListTop := OptRowY(Dlg, 2) + OPT_FIELD_HEIGHT + 2;
+      Count := DOS_CPU_VENDOR_COUNT; End;
+  3: Begin ListTop := OptRowY(Dlg, 3) + OPT_FIELD_HEIGHT + 2;
+      Count := DOS_HARDWARE_COUNT; End;
+  Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
+ End;
+ If (MX >= FX + OPT_LABEL_WIDTH) And (MX <= FX + FW) And
+    (MY >= ListTop) And (MY < ListTop + Count * OPT_DROPDOWN_ITEM_H) Then
+ Begin
+  Idx := (MY - ListTop) Div OPT_DROPDOWN_ITEM_H;
+  Case Dlg.DosDropdownOpen Of
+   1: Dlg.Data.DosType := Idx;
+   2: Dlg.Data.DosCPUVendor := Idx;
+   3: Dlg.Data.DosHardware := Idx;
+  End;
+  Dlg.Modified := True;
+ End;
+ Dlg.DosDropdownOpen := 0;
+End;
+
 { --- Gestion des evenements du dialogue options --- }
 
 Procedure HandleOptionsEvent(Var Dlg: TOptionsDialog;
@@ -60846,6 +61069,19 @@ Begin
   End;
   EV_MOUSE_DOWN:
   Begin
+   { Un menu deroulant ouvert (page Emulateur > DOS) intercepte le clic  }
+   { AVANT toute autre zone - il recouvre visuellement les lignes qui    }
+   { suivent son champ, donc les tester normalement donnerait de faux    }
+   { resultats tant qu il reste ouvert. }
+   If (Dlg.SelectedCategory >= 0) And
+      (Dlg.SelectedCategory < Dlg.CategoryCount) And
+      (Dlg.Categories[Dlg.SelectedCategory].Category = OC_EMU_DOS) And
+      (Dlg.DosDropdownOpen <> 0) Then
+   Begin
+    HandleDosDropdownClick(Dlg, Ev.MouseX, Ev.MouseY);
+    DrawOptionsDialog(Dlg);
+    Exit;
+   End;
    { Clic dans la barre de defilement de l arbre de categories - teste   }
    { avant les noeuds eux-memes, sur le meme modele que le menu deroulant}
    { "Target CPU" des Proprietes du projet (fleches haut/bas + case). }
@@ -60901,6 +61137,7 @@ Begin
     Dlg.Categories[Dlg.SelectedCategory].Selected := False;
     Dlg.SelectedCategory := CatIdx;
     Dlg.Categories[CatIdx].Selected := True;
+    Dlg.DosDropdownOpen := 0;
     DrawOptionsDialog(Dlg);
     Exit;
    End;
@@ -61004,41 +61241,63 @@ Begin
         Not Dlg.Data.ShowDebugMessages;
        Dlg.Modified := True;
       End;
-     OC_EMU_DOS:
+     OC_EMU_NES:
       Case FieldIdx Of
-       0: Begin
-        Dlg.Data.DosEmu8087 := Not Dlg.Data.DosEmu8087;
-        Dlg.Modified := True;
-       End;
        1: Begin
-        Dlg.Data.DosEmu80286 := Not Dlg.Data.DosEmu80286;
+        Dlg.Data.NesStandard := 0;
         Dlg.Modified := True;
        End;
        2: Begin
-        Dlg.Data.DosEmu80386 := Not Dlg.Data.DosEmu80386;
+        Dlg.Data.NesStandard := 1;
         Dlg.Modified := True;
        End;
        3: Begin
-        Dlg.Data.DosXMS := Not Dlg.Data.DosXMS;
+        Dlg.Data.NesStandard := 2;
+        Dlg.Modified := True;
+       End;
+      End;
+     OC_EMU_DOS:
+      Case FieldIdx Of
+       0: Dlg.DosDropdownOpen := 1;  { Type de DOS }
+       1: Begin
+        Dlg.Data.DosCPUIDDetect := Not Dlg.Data.DosCPUIDDetect;
+        Dlg.Modified := True;
+       End;
+       2: Dlg.DosDropdownOpen := 2;  { Identifiant CPU }
+       3: Dlg.DosDropdownOpen := 3;  { Materiel }
+       4: Begin
+        Dlg.Data.DosEmu8087 := Not Dlg.Data.DosEmu8087;
         Dlg.Modified := True;
        End;
        5: Begin
-        Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
+        Dlg.Data.DosEmu80286 := Not Dlg.Data.DosEmu80286;
+        Dlg.Modified := True;
+       End;
+       6: Begin
+        Dlg.Data.DosEmu80386 := Not Dlg.Data.DosEmu80386;
         Dlg.Modified := True;
        End;
        7: Begin
-        Dlg.Data.DosMSCDEX := Not Dlg.Data.DosMSCDEX;
+        Dlg.Data.DosXMS := Not Dlg.Data.DosXMS;
         Dlg.Modified := True;
        End;
        8: Begin
-        Dlg.Data.DosSouris := Not Dlg.Data.DosSouris;
+        Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
         Dlg.Modified := True;
        End;
        9: Begin
-        Dlg.Data.DosNovell := Not Dlg.Data.DosNovell;
+        Dlg.Data.DosMSCDEX := Not Dlg.Data.DosMSCDEX;
         Dlg.Modified := True;
        End;
        10: Begin
+        Dlg.Data.DosSouris := Not Dlg.Data.DosSouris;
+        Dlg.Modified := True;
+       End;
+       11: Begin
+        Dlg.Data.DosNovell := Not Dlg.Data.DosNovell;
+        Dlg.Modified := True;
+       End;
+       12: Begin
         Dlg.Data.DosLAN := Not Dlg.Data.DosLAN;
         Dlg.Modified := True;
        End;
@@ -61188,7 +61447,18 @@ Begin
  WriteCfgLine(F, 'ShowDebugMessages',
   BoolToStr(Data.ShowDebugMessages));
  WriteLn(F, '');
+ WriteLn(F, '[Emulateur.NES]');
+ Str(Data.NesStandard, S);
+ WriteCfgLine(F, 'NesStandard', S);
+ WriteLn(F, '');
  WriteLn(F, '[Emulateur.DOS]');
+ Str(Data.DosType, S);
+ WriteCfgLine(F, 'DosType', S);
+ WriteCfgLine(F, 'DosCPUIDDetect', BoolToStr(Data.DosCPUIDDetect));
+ Str(Data.DosCPUVendor, S);
+ WriteCfgLine(F, 'DosCPUVendor', S);
+ Str(Data.DosHardware, S);
+ WriteCfgLine(F, 'DosHardware', S);
  WriteCfgLine(F, 'DosEmu8087', BoolToStr(Data.DosEmu8087));
  WriteCfgLine(F, 'DosEmu80286', BoolToStr(Data.DosEmu80286));
  WriteCfgLine(F, 'DosEmu80386', BoolToStr(Data.DosEmu80386));
@@ -61297,6 +61567,34 @@ Begin
    Data.StepIntoProperties := StrToBool(Value)
   Else If Key = 'ShowDebugMessages' Then
    Data.ShowDebugMessages := StrToBool(Value)
+  Else If Key = 'NesStandard' Then
+  Begin
+   Val(Value, Data.NesStandard, Code);
+   If (Code <> 0) Or (Data.NesStandard < 0) Or
+      (Data.NesStandard > 2) Then Data.NesStandard := 0;
+  End
+  Else If Key = 'DosType' Then
+  Begin
+   Val(Value, Data.DosType, Code);
+   If (Code <> 0) Or (Data.DosType < 0) Or
+      (Data.DosType >= DOS_TYPE_COUNT) Then Data.DosType := 1;
+  End
+  Else If Key = 'DosCPUIDDetect' Then
+   Data.DosCPUIDDetect := StrToBool(Value)
+  Else If Key = 'DosCPUVendor' Then
+  Begin
+   Val(Value, Data.DosCPUVendor, Code);
+   If (Code <> 0) Or (Data.DosCPUVendor < 0) Or
+      (Data.DosCPUVendor >= DOS_CPU_VENDOR_COUNT) Then
+    Data.DosCPUVendor := 0;
+  End
+  Else If Key = 'DosHardware' Then
+  Begin
+   Val(Value, Data.DosHardware, Code);
+   If (Code <> 0) Or (Data.DosHardware < 0) Or
+      (Data.DosHardware >= DOS_HARDWARE_COUNT) Then
+    Data.DosHardware := 2;
+  End
   Else If Key = 'DosEmu8087' Then
    Data.DosEmu8087 := StrToBool(Value)
   Else If Key = 'DosEmu80286' Then
