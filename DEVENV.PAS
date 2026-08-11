@@ -40561,6 +40561,11 @@ Var
  SP: QWord;
  Arg0Addr: QWord;
 Begin
+ { Demasquer les exceptions arithmetiques du x87 HOTE reel (division par   }
+ { zero, invalide, depassement...) pour qu'une division par zero du         }
+ { programme invite produise Inf/NaN (IEEE-754) au lieu de declencher une   }
+ { exception FPU non geree qui terminerait DEVENV.exe silencieusement.      }
+ Set8087CW($037F);
  Emu_LoadELF64 := False;
  ELF64_BinaryPath := FileName;
  ELF64_Halted := False;
