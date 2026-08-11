@@ -60210,7 +60210,11 @@ Procedure InitOptionsDialog(Var Dlg: TOptionsDialog);
 Begin
  InitDialog(Dlg.Base, 'Options', OPT_DLG_WIDTH, OPT_DLG_HEIGHT);
  Dlg.Base.HasCancel := True;
- InitOptionsDialogData(Dlg.Data);
+ { Dlg.Data N EST PAS reinitialise ici : il doit conserver les valeurs   }
+ { chargees au demarrage (LoadOptions, voir le programme principal) ou   }
+ { confirmees par un OK precedent dans cette meme session. Le remettre   }
+ { aux valeurs par defaut a CHAQUE ouverture (comme avant) effacait      }
+ { silencieusement tout changement des qu on rouvrait le dialogue.       }
  Dlg.OriginalData := Dlg.Data;
  BuildOptionsCategoryTree(Dlg);
  Dlg.SelectedCategory := 1;
@@ -61052,15 +61056,23 @@ End;
 Function OptionsPageFieldHitTest(Var Dlg: TOptionsDialog;
  MX, MY: Integer): Integer;
 Var
- PX, BaseY, Row: Integer;
+ PX, BaseY, Row, ContentBottom: Integer;
 Begin
  OptionsPageFieldHitTest := -1;
  PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING +
   OPT_ROW_SPACING;
+ { La derniere bande testee ne doit jamais empieter sur la zone des      }
+ { boutons OK/Annuler (meme marge que SbTreeBottom dans                  }
+ { HandleOptionsEvent) - sinon un clic sur OK tombe dans une "bande      }
+ { fantome" qui ne correspond a aucun FieldIdx reel, mais qui avale      }
+ { quand meme le clic (Exit) avant qu il atteigne le test des boutons    }
+ { plus bas. C etait la cause du bouton OK "qui ne repond pas". }
+ ContentBottom := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+  DLG_BUTTON_HEIGHT - DLG_PADDING;
  Row := 0;
- While BaseY + OPT_ROW_SPACING * Row <
-  Dlg.Base.Y + Dlg.Base.Height Do
+ While BaseY + OPT_ROW_SPACING * Row + OPT_FIELD_HEIGHT <=
+  ContentBottom Do
  Begin
   If (MY >= BaseY + OPT_ROW_SPACING * Row - 2) And
    (MY < BaseY + OPT_ROW_SPACING * Row +
@@ -70439,13 +70451,20 @@ Begin
  If OptionsDlg.Base.Visible Then Begin
   HandleOptionsEvent(OptionsDlg, Ev);
   If Not OptionsDlg.Base.Visible Then Begin
-   If OptionsDlg.Confirmed And EditorReady Then Begin
-    ActiveEditor.TabSize         := OptionsDlg.Data.TabSize;
-    ActiveEditor.AutoIndent      := OptionsDlg.Data.AutoIndent;
-    ActiveEditor.ShowLineNumbers := OptionsDlg.Data.ShowLineNumbers;
-    ActiveEditor.ShowWhitespace  := OptionsDlg.Data.ShowWhitespace;
-    AppendOutput(OutputPanel,
-     'Options appliquees a l editeur courant.', 0);
+   If OptionsDlg.Confirmed Then Begin
+    { Persister sur disque - sans cet appel, les changements ne          }
+    { survivaient qu en memoire le temps de la session (et meme pas,     }
+    { avant la correction de InitOptionsDialog qui les effacait des la   }
+    { reouverture du dialogue). }
+    SaveOptions(OptionsDlg.Data, OPT_CFG_FILENAME);
+    If EditorReady Then Begin
+     ActiveEditor.TabSize         := OptionsDlg.Data.TabSize;
+     ActiveEditor.AutoIndent      := OptionsDlg.Data.AutoIndent;
+     ActiveEditor.ShowLineNumbers := OptionsDlg.Data.ShowLineNumbers;
+     ActiveEditor.ShowWhitespace  := OptionsDlg.Data.ShowWhitespace;
+     AppendOutput(OutputPanel,
+      'Options appliquees a l editeur courant.', 0);
+    End;
    End;
    FullRepaintNeeded := True;
   End;
@@ -71029,6 +71048,7 @@ BEGIN
  FileMode := 0;
  InitOptions(Opts);
  ParseCommandLine(Opts);
+ LoadOptions(OptionsDlg.Data, OPT_CFG_FILENAME);
  Emu_FloppyOpenAll;
  Emu_HardDiskOpenAll;
  If Opts.Verbose Then
