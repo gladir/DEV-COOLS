@@ -1317,6 +1317,7 @@ Const
  OPT_LABEL_WIDTH      = 180;     { largeur etiquette                }
  OPT_ROW_SPACING      = 28;      { espacement vertical entre lignes }
  OPT_CHECK_SIZE       = 14;      { taille case a cocher             }
+ OPT_SBAR_WIDTH       = 14;      { largeur scrollbar arbre categories}
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -3243,6 +3244,13 @@ Type
   OC_EMU_COCO3,          { Emulateur > CoCo 3                 }
   OC_EMU_CRAY1           { Emulateur > Cray 1                 }
  );
+
+ { Liste des index de categories actuellement visibles (Visible=True),  }
+ { dans l ordre d affichage - utilisee pour le defilement de l arbre     }
+ { (BuildOptionsVisibleList) car ScrollTop se compte en lignes VISIBLES, }
+ { pas en index bruts dans Categories[] (certaines sont masquees quand   }
+ { leur groupe parent est replie). }
+ TOptVisList = Array[0..MAX_OPT_CATEGORIES - 1] Of Integer;
 
  { Noeud de l arbre de categories }
  TOptCategoryNode = Record
@@ -36266,6 +36274,18 @@ Begin
  OutTextXY(X, Y, S);
 End;
 
+{ Dessine la marque "X" d une case a cocher correctement CENTREE dans le }
+{ carre de BoxSize pixels de cote commencant a (X,Y) - remplace un        }
+{ decalage fixe (+2,-1) qui plaçait le X dans le coin superieur gauche    }
+{ de la case plutot qu en son centre (rendu "de travers" signale par      }
+{ l utilisateur pour la boite de dialogue Options).                       }
+Procedure DrawCheckMark(X, Y, BoxSize: Integer);
+Begin
+ SetColor(CLR_WINDOWTEXT);
+ OutTextXY(X + (BoxSize - TextWidth('X')) Div 2,
+  Y + (BoxSize - TextHeight('X')) Div 2, 'X');
+End;
+
 { ============================================================
   TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
   ============================================================ }
@@ -59886,6 +59906,48 @@ End;
 { ne posait pas de probleme visible tant qu il n y avait que 3 groupes    }
 { toujours deplies, mais deviendrait un arbre bien trop long une fois le  }
 { groupe Emulateur - 15 elements - ajoute s il restait toujours deplie).  }
+{ Construit la liste (List) des index de Dlg.Categories dont Visible=True,}
+{ dans l ordre d affichage, et renvoie leur nombre - sert de base au      }
+{ defilement de l arbre (une ligne visible a l ecran = un element de      }
+{ cette liste, pas un index brut dans Categories[]).                      }
+Function BuildOptionsVisibleList(Var Dlg: TOptionsDialog;
+ Var List: TOptVisList): Integer;
+Var
+ I, N: Integer;
+Begin
+ N := 0;
+ For I := 0 To Dlg.CategoryCount - 1 Do
+  If Dlg.Categories[I].Visible Then Begin
+   List[N] := I;
+   Inc(N);
+  End;
+ BuildOptionsVisibleList := N;
+End;
+
+{ Ajuste Dlg.ScrollTop si besoin pour que Dlg.SelectedCategory reste      }
+{ visible a l ecran - appelee apres une navigation clavier (fleches),     }
+{ puisqu un Page Up/Down ou une simple fleche peut deplacer la selection  }
+{ hors de la fenetre de defilement actuelle sans passer par un clic.      }
+Procedure EnsureOptionsCategoryVisible(Var Dlg: TOptionsDialog);
+Var
+ VisList: TOptVisList;
+ VisCount, Pos, NodesFit, TreeY, TreeBottom: Integer;
+Begin
+ VisCount := BuildOptionsVisibleList(Dlg, VisList);
+ Pos := 0;
+ While (Pos < VisCount) And (VisList[Pos] <> Dlg.SelectedCategory) Do
+  Inc(Pos);
+ If Pos >= VisCount Then Exit;
+ TreeY := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
+ TreeBottom := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+  DLG_BUTTON_HEIGHT - DLG_PADDING;
+ NodesFit := (TreeBottom - TreeY) Div OPT_TREE_NODE_HEIGHT;
+ If NodesFit < 1 Then NodesFit := 1;
+ If Pos < Dlg.ScrollTop Then Dlg.ScrollTop := Pos;
+ If Pos >= Dlg.ScrollTop + NodesFit Then
+  Dlg.ScrollTop := Pos - NodesFit + 1;
+End;
+
 Procedure UpdateOptionsTreeVisibility(Var Dlg: TOptionsDialog);
 Var
  I: Integer;
@@ -59986,32 +60048,47 @@ Procedure DrawOptionsCategoryTree(Var Dlg: TOptionsDialog);
 Var
  I, X, Y, TX, TY: Integer;
  BG, FG: Integer;
+ TreeBottom, TextRight: Integer;
+ VisList: TOptVisList;
+ VisCount, NodesFit, Row, CatIdx: Integer;
+ SbLeft, SbTop, SbBottom, SbUpY, SbDnY: Integer;
+ TrackH, ThumbH, ThumbY, MaxTop: Integer;
 Begin
  X := Dlg.Base.X + 1;
  Y := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
- { Fond de l arbre }
- DrawFilledRect(X, Y, X + OPT_TREE_WIDTH - 1,
-  Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
-  DLG_BUTTON_HEIGHT - DLG_PADDING,
-  CLR_EDITOR_BG);
- { Separateur vertical }
- DrawRect(X + OPT_TREE_WIDTH, Y,
-  X + OPT_TREE_WIDTH,
-  Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
-  DLG_BUTTON_HEIGHT - DLG_PADDING,
+ TreeBottom := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+  DLG_BUTTON_HEIGHT - DLG_PADDING;
+ TextRight := X + OPT_TREE_WIDTH - OPT_SBAR_WIDTH - 1;
+ { Fond de l arbre (zone de texte, hors scrollbar) }
+ DrawFilledRect(X, Y, TextRight, TreeBottom, CLR_EDITOR_BG);
+ { Separateur vertical (bord droit de tout l arbre, scrollbar incluse) }
+ DrawRect(X + OPT_TREE_WIDTH, Y, X + OPT_TREE_WIDTH, TreeBottom,
   CLR_BORDER);
+
+ { Liste des noeuds actuellement visibles (groupes replies exclus) et    }
+ { bornage du defilement en fonction de ce qui tient reellement a l ecran.}
+ VisCount := BuildOptionsVisibleList(Dlg, VisList);
+ NodesFit := (TreeBottom - Y) Div OPT_TREE_NODE_HEIGHT;
+ If NodesFit < 1 Then NodesFit := 1;
+ MaxTop := VisCount - NodesFit;
+ If MaxTop < 0 Then MaxTop := 0;
+ If Dlg.ScrollTop > MaxTop Then Dlg.ScrollTop := MaxTop;
+ If Dlg.ScrollTop < 0 Then Dlg.ScrollTop := 0;
+
+ { Lignes visibles (fenetre de defilement) }
  TY := Y + 2;
- For I := 0 To Dlg.CategoryCount - 1 Do
+ For Row := 0 To NodesFit - 1 Do
  Begin
-  If Not Dlg.Categories[I].Visible Then Continue;
-  TX := X + 4 + Dlg.Categories[I].Level * OPT_TREE_INDENT;
+  I := Dlg.ScrollTop + Row;
+  If I >= VisCount Then Break;
+  CatIdx := VisList[I];
+  TX := X + 4 + Dlg.Categories[CatIdx].Level * OPT_TREE_INDENT;
   { Fond de selection }
-  If I = Dlg.SelectedCategory Then
+  If CatIdx = Dlg.SelectedCategory Then
   Begin
    BG := CLR_TITLEBAR_ACTIVE;
    FG := 15;
-   DrawFilledRect(X, TY, X + OPT_TREE_WIDTH - 1,
-    TY + OPT_TREE_NODE_HEIGHT - 1, BG);
+   DrawFilledRect(X, TY, TextRight, TY + OPT_TREE_NODE_HEIGHT - 1, BG);
   End
   Else
   Begin
@@ -60019,17 +60096,54 @@ Begin
    FG := CLR_MENU_TEXT;
   End;
   { Indicateur depliage pour les parents }
-  If Dlg.Categories[I].Level = 0 Then
+  If Dlg.Categories[CatIdx].Level = 0 Then
   Begin
-   If Dlg.Categories[I].Expanded Then
+   If Dlg.Categories[CatIdx].Expanded Then
     DrawText(TX, TY + 2, '-', FG)
    Else
     DrawText(TX, TY + 2, '+', FG);
-   DrawText(TX + 10, TY + 2, Dlg.Categories[I].Name, FG);
+   DrawText(TX + 10, TY + 2, Dlg.Categories[CatIdx].Name, FG);
   End
   Else
-   DrawText(TX, TY + 2, Dlg.Categories[I].Name, FG);
+   DrawText(TX, TY + 2, Dlg.Categories[CatIdx].Name, FG);
   TY := TY + OPT_TREE_NODE_HEIGHT;
+ End;
+
+ { Barre de defilement a droite de l arbre : boutons flechants haut/bas  }
+ { plus case (thumb) proportionnelle, sur le meme modele que celle du    }
+ { menu deroulant "Target CPU" des Proprietes du projet.                 }
+ SbLeft := X + OPT_TREE_WIDTH - OPT_SBAR_WIDTH;
+ SbTop := Y;
+ SbBottom := TreeBottom;
+ DrawFilledRect(SbLeft, SbTop, X + OPT_TREE_WIDTH, SbBottom,
+  CLR_SCROLLBAR);
+ SbUpY := SbTop;
+ DrawFilledRect(SbLeft, SbUpY, X + OPT_TREE_WIDTH,
+  SbUpY + OPT_SBAR_WIDTH, CLR_BTNFACE);
+ DrawRect(SbLeft, SbUpY, X + OPT_TREE_WIDTH,
+  SbUpY + OPT_SBAR_WIDTH, CLR_BORDER);
+ DrawText(SbLeft + 4, SbUpY + 3, '^', CLR_WINDOWTEXT);
+ SbDnY := SbBottom - OPT_SBAR_WIDTH;
+ DrawFilledRect(SbLeft, SbDnY, X + OPT_TREE_WIDTH, SbBottom,
+  CLR_BTNFACE);
+ DrawRect(SbLeft, SbDnY, X + OPT_TREE_WIDTH, SbBottom, CLR_BORDER);
+ DrawText(SbLeft + 4, SbDnY + 3, 'v', CLR_WINDOWTEXT);
+ TrackH := SbDnY - (SbUpY + OPT_SBAR_WIDTH);
+ If TrackH < 8 Then TrackH := 8;
+ If VisCount > NodesFit Then
+ Begin
+  ThumbH := (TrackH * NodesFit) Div VisCount;
+  If ThumbH < 12 Then ThumbH := 12;
+  If ThumbH > TrackH Then ThumbH := TrackH;
+  If MaxTop > 0 Then
+   ThumbY := SbUpY + OPT_SBAR_WIDTH +
+    ((TrackH - ThumbH) * Dlg.ScrollTop) Div MaxTop
+  Else
+   ThumbY := SbUpY + OPT_SBAR_WIDTH;
+  DrawFilledRect(SbLeft + 2, ThumbY, X + OPT_TREE_WIDTH - 2,
+   ThumbY + ThumbH, CLR_BTNFACE);
+  DrawRect(SbLeft + 2, ThumbY, X + OPT_TREE_WIDTH - 2,
+   ThumbY + ThumbH, CLR_BORDER);
  End;
 End;
 
@@ -60174,7 +60288,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.AutoSaveEnabled Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Activer l enregistrement automatique', CLR_WINDOWTEXT);
  { Intervalle }
@@ -60207,7 +60321,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.ShowLineNumbers Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Afficher les numeros de ligne', CLR_WINDOWTEXT);
  { Retour a la ligne }
@@ -60215,7 +60329,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.WordWrap Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Retour a la ligne automatique', CLR_WINDOWTEXT);
  { Espaces visibles }
@@ -60223,7 +60337,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.ShowWhitespace Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Afficher les espaces', CLR_WINDOWTEXT);
  { Guides d indentation }
@@ -60231,7 +60345,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.ShowIndentGuides Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Guides d indentation', CLR_WINDOWTEXT);
 End;
@@ -60266,7 +60380,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.InsertSpaces Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Inserer des espaces', CLR_WINDOWTEXT);
  { Taille d indentation }
@@ -60301,7 +60415,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.SmoothScroll Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Defilement fluide', CLR_WINDOWTEXT);
  { Marge de defilement }
@@ -60352,7 +60466,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.AutoIndent Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Indentation automatique', CLR_WINDOWTEXT);
  { Accolades automatiques }
@@ -60360,7 +60474,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.AutoBraces Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Accolades automatiques', CLR_WINDOWTEXT);
 End;
@@ -60391,7 +60505,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.ShowOutputOnBuild Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Afficher la sortie au build', CLR_WINDOWTEXT);
 End;
@@ -60414,7 +60528,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.BuildVerbose Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Build en mode verbeux', CLR_WINDOWTEXT);
  { Nombre de builds paralleles }
@@ -60446,7 +60560,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.BreakOnFirstError Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Arreter au premier point d arret', CLR_WINDOWTEXT);
  { Pas a pas dans les proprietes }
@@ -60454,7 +60568,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.StepIntoProperties Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Pas a pas dans les proprietes', CLR_WINDOWTEXT);
 End;
@@ -60474,7 +60588,7 @@ Begin
  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
  If Dlg.Data.ShowDebugMessages Then
-  DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
   'Afficher les messages de debogage', CLR_WINDOWTEXT);
 End;
@@ -60490,7 +60604,7 @@ Var
  Begin
   DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
    BaseY + OPT_CHECK_SIZE, CLR_BORDER);
-  If Checked Then DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
   DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
@@ -60611,19 +60725,27 @@ End;
 Function OptionsCategoryHitTest(Var Dlg: TOptionsDialog;
  MX, MY: Integer): Integer;
 Var
- I, X, Y, TY: Integer;
+ Row, X, Y, TY, TextRight, TreeBottom, NodesFit: Integer;
+ VisList: TOptVisList;
+ VisCount: Integer;
 Begin
  OptionsCategoryHitTest := -1;
  X := Dlg.Base.X + 1;
  Y := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
+ TreeBottom := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+  DLG_BUTTON_HEIGHT - DLG_PADDING;
+ TextRight := X + OPT_TREE_WIDTH - OPT_SBAR_WIDTH - 1;
+ If (MX < X) Or (MX > TextRight) Then Exit; { hors zone de texte (scrollbar) }
+ VisCount := BuildOptionsVisibleList(Dlg, VisList);
+ NodesFit := (TreeBottom - Y) Div OPT_TREE_NODE_HEIGHT;
+ If NodesFit < 1 Then NodesFit := 1;
  TY := Y + 2;
- For I := 0 To Dlg.CategoryCount - 1 Do
+ For Row := 0 To NodesFit - 1 Do
  Begin
-  If Not Dlg.Categories[I].Visible Then Continue;
-  If (MX >= X) And (MX < X + OPT_TREE_WIDTH) And
-   (MY >= TY) And (MY < TY + OPT_TREE_NODE_HEIGHT) Then
+  If Dlg.ScrollTop + Row >= VisCount Then Break;
+  If (MY >= TY) And (MY < TY + OPT_TREE_NODE_HEIGHT) Then
   Begin
-   OptionsCategoryHitTest := I;
+   OptionsCategoryHitTest := VisList[Dlg.ScrollTop + Row];
    Exit;
   End;
   TY := TY + OPT_TREE_NODE_HEIGHT;
@@ -60701,6 +60823,7 @@ Begin
    Dlg.Categories[Dlg.SelectedCategory].Selected := True;
   End;
  End;
+ EnsureOptionsCategoryVisible(Dlg);
 End;
 
 { --- Gestion des evenements du dialogue options --- }
@@ -60710,6 +60833,9 @@ Procedure HandleOptionsEvent(Var Dlg: TOptionsDialog;
 Var
  CatIdx, BtnR, FieldIdx: Integer;
  Cat: TOptionCategory;
+ SbX, SbTreeY, SbTreeBottom, SbUpY, SbDnY, SbNodesFit,
+  SbVisCount, SbMaxTop: Integer;
+ SbVisList: TOptVisList;
 Begin
  If Not Dlg.Base.Visible Then Exit;
  Case Ev.Kind Of
@@ -60720,6 +60846,46 @@ Begin
   End;
   EV_MOUSE_DOWN:
   Begin
+   { Clic dans la barre de defilement de l arbre de categories - teste   }
+   { avant les noeuds eux-memes, sur le meme modele que le menu deroulant}
+   { "Target CPU" des Proprietes du projet (fleches haut/bas + case). }
+   SbX := Dlg.Base.X + 1 + OPT_TREE_WIDTH - OPT_SBAR_WIDTH;
+   SbTreeY := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
+   SbTreeBottom := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING -
+    DLG_BUTTON_HEIGHT - DLG_PADDING;
+   If (Ev.MouseX >= SbX) And
+      (Ev.MouseX <= Dlg.Base.X + 1 + OPT_TREE_WIDTH) And
+      (Ev.MouseY >= SbTreeY) And (Ev.MouseY <= SbTreeBottom) Then
+   Begin
+    SbVisCount := BuildOptionsVisibleList(Dlg, SbVisList);
+    SbNodesFit := (SbTreeBottom - SbTreeY) Div OPT_TREE_NODE_HEIGHT;
+    If SbNodesFit < 1 Then SbNodesFit := 1;
+    SbMaxTop := SbVisCount - SbNodesFit;
+    If SbMaxTop < 0 Then SbMaxTop := 0;
+    SbUpY := SbTreeY;
+    SbDnY := SbTreeBottom - OPT_SBAR_WIDTH;
+    If Ev.MouseY < SbUpY + OPT_SBAR_WIDTH Then
+    Begin
+     If Dlg.ScrollTop > 0 Then Dec(Dlg.ScrollTop);
+    End
+    Else If Ev.MouseY >= SbDnY Then
+    Begin
+     If Dlg.ScrollTop < SbMaxTop Then Inc(Dlg.ScrollTop);
+    End
+    Else Begin
+     { Piste : page haut/bas }
+     If Ev.MouseY < (SbTreeY + SbTreeBottom) Div 2 Then
+     Begin
+      Dlg.ScrollTop := Dlg.ScrollTop - SbNodesFit;
+      If Dlg.ScrollTop < 0 Then Dlg.ScrollTop := 0;
+     End Else Begin
+      Dlg.ScrollTop := Dlg.ScrollTop + SbNodesFit;
+      If Dlg.ScrollTop > SbMaxTop Then Dlg.ScrollTop := SbMaxTop;
+     End;
+    End;
+    DrawOptionsDialog(Dlg);
+    Exit;
+   End;
    { Clic sur l arbre de categories }
    CatIdx := OptionsCategoryHitTest(Dlg, Ev.MouseX,
     Ev.MouseY);
