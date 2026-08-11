@@ -40745,6 +40745,15 @@ Type
   Simplification assumee : les registres 8 bits 4..7 sont toujours traites
   comme SPL/BPL/SIL/DIL (forme "avec REX"), jamais comme AH/CH/DH/BH -
   ce que produit toujours un compilateur moderne generant du code 64 bits. }
+{ $Q-/$R- pour tout le sous-systeme ELF64 (jusqu a la fin de Elf64_Step) : }
+{ l ALU x86-64 emulee doit boucler (wraparound) sur les depassements       }
+{ signes/non signes comme le ferait un vrai processeur (ADD/SUB/IMUL/NEG   }
+{ sur QWord/Int64, divisions 128 bits...) - sans cela, EIntOverflow ou     }
+{ ERangeError termine tout DEVENV.exe des qu un programme invite execute   }
+{ une operation arithmetique parfaitement legale qui deborde              }
+{ arithmetiquement (meme convention deja appliquee aux autres emulateurs   }
+{ de ce fichier pour Z80/6502/6809...).                                   }
+{$PUSH}{$Q-}{$R-}
 Function Elf64_GetReg(Idx, Size: Integer): QWord;
 Begin
  Case Size Of
@@ -41907,6 +41916,24 @@ Begin
    If FileExists(S) Then ELF64_Reg[REG_RAX] := 0
                      Else ELF64_Reg[REG_RAX] := QWord(Int64(-2));
   End;
+  23: Begin { sys_select(nfds, readfds, writefds, exceptfds, timeout) :      }
+            { stdin n est pas interactif dans cet emulateur (sys_read sur   }
+            { fd 0 renvoie deja systematiquement 0 = fin de flux), donc on  }
+            { signale fd 0 immediatement "pret" quand il est demande dans   }
+            { readfds - le programme invite appelle alors read(), recoit    }
+            { EOF, et se termine normalement au lieu de boucler.            }
+   Count := 0;
+   If ELF64_Reg[REG_RSI] <> 0 Then Begin
+    If (Emu64_GetQWord(ELF64_Reg[REG_RSI]) And 1) <> 0 Then Begin
+     Emu64_PutQWord(ELF64_Reg[REG_RSI], 1);
+     Count := 1;
+    End Else
+     Emu64_PutQWord(ELF64_Reg[REG_RSI], 0);
+   End;
+   If ELF64_Reg[REG_RDX] <> 0 Then Emu64_PutQWord(ELF64_Reg[REG_RDX], 0);
+   If ELF64_Reg[REG_R10] <> 0 Then Emu64_PutQWord(ELF64_Reg[REG_R10], 0);
+   ELF64_Reg[REG_RAX] := Count;
+  End;
   39: ELF64_Reg[REG_RAX] := 1000; { sys_getpid : PID fixe, arbitraire }
   63: Begin { sys_uname(buf) }
    Elf64_DoUname(ELF64_Reg[REG_RDI]);
@@ -41948,6 +41975,12 @@ Begin
     Emu64_PutQWord(ELF64_Reg[REG_RDI] + 8, 0); { microsecondes non suivies }
    End;
    ELF64_Reg[REG_RAX] := 0;
+  End;
+  201: Begin { sys_time(tloc) : renvoie les secondes depuis l epoque, et    }
+             { les ecrit aussi a *tloc si le pointeur n est pas NULL.       }
+   If ELF64_Reg[REG_RDI] <> 0 Then
+    Emu64_PutQWord(ELF64_Reg[REG_RDI], QWord(Int64(Elf64_UnixTime)));
+   ELF64_Reg[REG_RAX] := QWord(Int64(Elf64_UnixTime));
   End;
   131: ELF64_Reg[REG_RAX] := 0; { sys_sigaltstack : no-op reussi }
   228: Begin { sys_clock_gettime(clockid, timespec) }
@@ -42166,6 +42199,12 @@ Begin
      EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
      Val1 := Elf64_ReadOperand(EA, 16);
      Elf64_SetReg(RegField, OpSize, QWord(Int64(SmallInt(Val1))));
+    End;
+    $40..$4F: Begin { CMOVcc r, r/m }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If Elf64_EvalCond(Op2 And $0F) Then
+      Elf64_SetReg(RegField, OpSize, Val1);
     End;
     $80..$8F: Begin { Jcc rel32 }
      Imm32 := Elf64_FetchImm32Signed;
@@ -43270,6 +43309,7 @@ Begin
 
  If Not ELF64_Halted Then Inc(ELF64_InstrCount);
 End;
+{$POP}
 
 { --- Charger un binaire DOS (auto-detection .COM / .EXE) --- }
 
