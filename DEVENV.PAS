@@ -6467,7 +6467,7 @@ Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
 { Declarations anticipees pour l emulateur 8086 integre }
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
- BinaryPath, TargetCPU: String); Forward;
+ BinaryPath, TargetCPU: String; Args: String); Forward;
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -30558,9 +30558,9 @@ Begin
      If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64')
+     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
     Else
      TermAddLine(TP,
       '''' + CurrCmd +
@@ -30635,9 +30635,9 @@ Begin
      If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64')
+     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
     Else
      TermAddLine(TP, CurrCmd +
       ' : le terme n''est pas reconnu comme nom de cmdlet.');
@@ -30694,9 +30694,9 @@ Begin
      If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, DosExe, '-CD')
+     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64')
+     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
     Else
      TermAddLine(TP, 'bash: ' + CurrCmd +
       ': command not found');
@@ -40561,7 +40561,9 @@ End;
 { les binaires generes par les compilateurs *CW32 de ce projet pour la  }
 { cible Linux (ex: BINLINUX\*.exe), qui n ont pas d editeur de liens     }
 { dynamique a resoudre. --- }
-Function Emu_LoadELF64(Const FileName: String): Boolean;
+Function Emu_LoadELF64(Const FileName: String; Const ArgStr: String): Boolean;
+Const
+ MAX_ELF_ARGS = 16;
 Var
  F: File;
  Hdr: TELF64Header;
@@ -40576,6 +40578,10 @@ Var
  StackTop: QWord;
  SP: QWord;
  Arg0Addr: QWord;
+ ArgAddr: Array[1..MAX_ELF_ARGS - 1] Of QWord;
+ ArgCount: Integer;
+ ArgTok: String;
+ APos: Integer;
 Begin
  { Demasquer les exceptions arithmetiques du x87 HOTE reel (division par   }
  { zero, invalide, depassement...) pour qu'une division par zero du         }
@@ -40670,7 +40676,9 @@ Begin
  { adresses plus basses - la zone canonique attendue par le code de       }
  { demarrage du runtime : argc, argv[], NULL, envp[], NULL, auxv,        }
  { AT_NULL. Un auxv minimal (AT_NULL seul) suffit a eviter un parcours    }
- { incorrect par le crt0 genere par Free Pascal.                          }
+ { incorrect par le crt0 genere par Free Pascal. ArgStr (ex: "/? foo")    }
+ { est decoupe sur les espaces en argv[1..N] (argv[0] restant le chemin   }
+ { du binaire), jusqu a MAX_ELF_ARGS-1 arguments supplementaires.         }
  StackTop := QWord(High(ELF64_Mem)) - $10000; { marge de securite en haut }
  StackTop := StackTop And Not QWord(15);      { alignement 16 octets      }
  SP := StackTop;
@@ -40679,6 +40687,27 @@ Begin
   Emu64_PutByte(SP + QWord(I) - 1, Ord(FileName[I]));
  Emu64_PutByte(SP + QWord(Length(FileName)), 0);
  Arg0Addr := SP;
+ { Decouper ArgStr en jetons separes par des espaces, chacun pousse comme }
+ { chaine C terminee par zero, son adresse memorisee dans ArgAddr[].      }
+ ArgCount := 0;
+ APos := 1;
+ While APos <= Length(ArgStr) Do Begin
+  While (APos <= Length(ArgStr)) And (ArgStr[APos] = ' ') Do Inc(APos);
+  If APos > Length(ArgStr) Then Break;
+  ArgTok := '';
+  While (APos <= Length(ArgStr)) And (ArgStr[APos] <> ' ') Do Begin
+   ArgTok := ArgTok + ArgStr[APos];
+   Inc(APos);
+  End;
+  If ArgCount < MAX_ELF_ARGS - 1 Then Begin
+   Inc(ArgCount);
+   SP := SP - QWord(Length(ArgTok) + 1);
+   For I := 1 To Length(ArgTok) Do
+    Emu64_PutByte(SP + QWord(I) - 1, Ord(ArgTok[I]));
+   Emu64_PutByte(SP + QWord(Length(ArgTok)), 0);
+   ArgAddr[ArgCount] := SP;
+  End;
+ End;
  SP := SP And Not QWord(15); { realigner avant argc/argv/envp/auxv }
  { auxv : AT_NULL (type=0, valeur=0) }
  SP := SP - 16;
@@ -40687,14 +40716,20 @@ Begin
  { envp[] : tableau vide (NULL final seulement) }
  SP := SP - 8;
  Emu64_PutQWord(SP, 0);
- { argv[] : argv[0] puis NULL }
+ { argv[] : argv[0], argv[1..ArgCount], puis NULL - pousse en ordre       }
+ { inverse (NULL d abord, argv[0] en dernier) pour que argv[0] finisse a  }
+ { l adresse la plus basse, celle que RSP pointera au final.              }
  SP := SP - 8;
  Emu64_PutQWord(SP, 0);
+ For I := ArgCount DownTo 1 Do Begin
+  SP := SP - 8;
+  Emu64_PutQWord(SP, ArgAddr[I]);
+ End;
  SP := SP - 8;
  Emu64_PutQWord(SP, Arg0Addr);
- { argc = 1 }
+ { argc = 1 + ArgCount }
  SP := SP - 8;
- Emu64_PutQWord(SP, 1);
+ Emu64_PutQWord(SP, QWord(1 + ArgCount));
  FillChar(ELF64_Reg, SizeOf(ELF64_Reg), 0);
  ELF64_Reg[REG_RSP] := SP;
  ELF64_RIP := ELF64_EntryPoint;
@@ -42079,6 +42114,15 @@ Var
  PD0, PD1, QD0, QD1: Double;
  PS0, PS1, PS2, PS3, QS0, QS1, QS2, QS3: Single;
  WScratch: LongWord;
+ DstLoQ, SrcLoQ: QWord;
+ PunpckDstB, PunpckSrcB: Array[0..7] Of Byte;
+ PunpckRes: Array[0..15] Of Byte;
+ PunpckElemSize, PunpckNElem, PunpckI: Integer;
+ PshufImm: Byte;
+ PshufSrcDW, PshufResDW: Array[0..3] Of LongWord;
+ CmpDstB, CmpSrcB, CmpResB: Array[0..15] Of Byte;
+ CmpElemSize, CmpNElem, CmpI: Integer;
+ CmpEqual: Boolean;
 Begin
  If ELF64_Halted Then Exit;
  StartRIP := ELF64_RIP;
@@ -42215,6 +42259,40 @@ Begin
      EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
      Val1 := Elf64_ReadOperand(EA, 16);
      Elf64_SetReg(RegField, OpSize, QWord(Int64(SmallInt(Val1))));
+    End;
+    $BC: Begin { BSF reg, r/m : indice du premier bit a 1 (LSB en premier).  }
+               { Si la source est nulle, ZF=1 et le registre destination    }
+               { reste inchange, comme sur un vrai processeur (resultat     }
+               { architecturalement indefini dans ce cas).                  }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If Val1 = 0 Then
+      ELF64_FZF := True
+     Else Begin
+      ELF64_FZF := False;
+      ResVal := 0;
+      While (Val1 And 1) = 0 Do Begin
+       Val1 := Val1 Shr 1;
+       ResVal := ResVal + 1;
+      End;
+      Elf64_SetReg(RegField, OpSize, ResVal);
+     End;
+    End;
+    $BD: Begin { BSR reg, r/m : indice du dernier bit a 1 (MSB en premier) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     Val1 := Elf64_ReadOperand(EA, OpSize);
+     If Val1 = 0 Then
+      ELF64_FZF := True
+     Else Begin
+      ELF64_FZF := False;
+      ResVal := 0;
+      For I := OpSize - 1 DownTo 0 Do
+       If (Val1 And (QWord(1) Shl I)) <> 0 Then Begin
+        ResVal := QWord(I);
+        Break;
+       End;
+      Elf64_SetReg(RegField, OpSize, ResVal);
+     End;
     End;
     $40..$4F: Begin { CMOVcc r, r/m }
      EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
@@ -42492,6 +42570,117 @@ Begin
      End Else Begin
       ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] Or Val1;
       ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] Or Val2;
+     End;
+    End;
+    $60, $61, $62: Begin { PUNPCKLBW/WD/DQ xmm(RegField), xmm/m128 (SSE2) :   }
+                          { entrelace les elements de poids faible (8 octets }
+                          { bas) de la destination et de la source.          }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Saw66 Then Begin
+      If EA.IsReg Then SrcLoQ := ELF64_Xmm[EA.RegIdx, 0]
+      Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       SrcLoQ := Emu64_GetQWord(Addr);
+      End;
+      DstLoQ := ELF64_Xmm[RegField, 0];
+      Move(DstLoQ, PunpckDstB, 8);
+      Move(SrcLoQ, PunpckSrcB, 8);
+      Case Op2 Of
+       $60: PunpckElemSize := 1;
+       $61: PunpckElemSize := 2;
+       Else PunpckElemSize := 4;
+      End;
+      PunpckNElem := 8 Div PunpckElemSize;
+      For PunpckI := 0 To PunpckNElem - 1 Do Begin
+       Move(PunpckDstB[PunpckI * PunpckElemSize],
+        PunpckRes[2 * PunpckI * PunpckElemSize], PunpckElemSize);
+       Move(PunpckSrcB[PunpckI * PunpckElemSize],
+        PunpckRes[(2 * PunpckI + 1) * PunpckElemSize], PunpckElemSize);
+      End;
+      Move(PunpckRes[0], ELF64_Xmm[RegField, 0], 8);
+      Move(PunpckRes[8], ELF64_Xmm[RegField, 1], 8);
+     End Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode 0F ' + HexByte(Op2) + ' (MMX) non supporte';
+     End;
+    End;
+    $70: Begin { PSHUFD xmm(RegField), xmm/m128, imm8 (SSE2, prefixe 66) :    }
+              { chaque dword du resultat est choisi parmi les 4 dwords de la }
+              { source, selon 2 bits de l immediat par position.             }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     PshufImm := Elf64_FetchByte;
+     If Saw66 Then Begin
+      If EA.IsReg Then Begin
+       SrcLoQ := ELF64_Xmm[EA.RegIdx, 0];
+       Val2   := ELF64_Xmm[EA.RegIdx, 1];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       SrcLoQ := Emu64_GetQWord(Addr);
+       Val2   := Emu64_GetQWord(Addr + 8);
+      End;
+      Move(SrcLoQ, PshufSrcDW[0], 8);
+      Move(Val2, PshufSrcDW[2], 8);
+      For PunpckI := 0 To 3 Do
+       PshufResDW[PunpckI] := PshufSrcDW[(PshufImm Shr (2 * PunpckI)) And 3];
+      Move(PshufResDW[0], ELF64_Xmm[RegField, 0], 8);
+      Move(PshufResDW[2], ELF64_Xmm[RegField, 1], 8);
+     End Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode 0F 70 (PSHUFB/W, prefixe non 66) non supporte';
+     End;
+    End;
+    $74, $75, $76: Begin { PCMPEQB/W/D xmm(RegField), xmm/m128 (SSE2) :       }
+                         { compare chaque element ; resultat tout-a-1 si     }
+                         { egal, sinon tout-a-0 (masque classique strlen/    }
+                         { memchr vectorise).                                }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Saw66 Then Begin
+      If EA.IsReg Then Begin
+       SrcLoQ := ELF64_Xmm[EA.RegIdx, 0]; Val2 := ELF64_Xmm[EA.RegIdx, 1];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       SrcLoQ := Emu64_GetQWord(Addr); Val2 := Emu64_GetQWord(Addr + 8);
+      End;
+      DstLoQ := ELF64_Xmm[RegField, 0];
+      Move(DstLoQ, CmpDstB[0], 8);
+      Move(ELF64_Xmm[RegField, 1], CmpDstB[8], 8);
+      Move(SrcLoQ, CmpSrcB[0], 8);
+      Move(Val2, CmpSrcB[8], 8);
+      Case Op2 Of
+       $74: CmpElemSize := 1;
+       $75: CmpElemSize := 2;
+       Else CmpElemSize := 4;
+      End;
+      CmpNElem := 16 Div CmpElemSize;
+      For CmpI := 0 To CmpNElem - 1 Do Begin
+       CmpEqual := True;
+       For I := 0 To CmpElemSize - 1 Do
+        If CmpDstB[CmpI * CmpElemSize + I] <> CmpSrcB[CmpI * CmpElemSize + I] Then
+         CmpEqual := False;
+       If CmpEqual Then FillChar(CmpResB[CmpI * CmpElemSize], CmpElemSize, $FF)
+       Else FillChar(CmpResB[CmpI * CmpElemSize], CmpElemSize, 0);
+      End;
+      Move(CmpResB[0], ELF64_Xmm[RegField, 0], 8);
+      Move(CmpResB[8], ELF64_Xmm[RegField, 1], 8);
+     End Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode 0F ' + HexByte(Op2) + ' (MMX) non supporte';
+     End;
+    End;
+    $D7: Begin { PMOVMSKB reg32, xmm (SSE2) : bit de poids fort de chaque    }
+               { octet de la source -> un bit du masque 16 bits resultat    }
+               { (forme registre uniquement, pas de forme memoire).         }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Saw66 And EA.IsReg Then Begin
+      Move(ELF64_Xmm[EA.RegIdx, 0], CmpDstB[0], 8);
+      Move(ELF64_Xmm[EA.RegIdx, 1], CmpDstB[8], 8);
+      ResVal := 0;
+      For I := 0 To 15 Do
+       If (CmpDstB[I] And $80) <> 0 Then ResVal := ResVal Or (QWord(1) Shl I);
+      Elf64_SetReg(RegField, 32, ResVal);
+     End Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode 0F D7 (MMX ou forme memoire) non supporte';
      End;
     End;
     $6E: Begin { MOVD/MOVQ : xmm(RegField) <- r/m (32 ou 64 bits selon REX.W) }
@@ -57780,7 +57969,7 @@ End;
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
- BinaryPath, TargetCPU: String);
+ BinaryPath, TargetCPU: String; Args: String);
 Var
  OldFg, OldBg: Byte;
  Loaded: Boolean;
@@ -58872,7 +59061,7 @@ Begin NesActive := False;
  If IsELF64 Then Begin
   { ----- Emulateur Linux ELF64 x86-64 ----- }
   ELF64_Panel := @P;
-  Loaded := Emu_LoadELF64(BinaryPath);
+  Loaded := Emu_LoadELF64(BinaryPath, Args);
   If Not Loaded Then Begin
    P.CurFg := 12;
    EmuVScr_WriteStr(P, 'Erreur : binaire ELF64 invalide ou illisible.');
@@ -65435,7 +65624,7 @@ Begin
    If CurrentProject.Info.TargetCPU = '-CADAM' Then
     ExeName := SrcDir + BaseName + '.com';
    ShowEmulatorPanel(EmuPanel, ExeName,
-    CurrentProject.Info.TargetCPU);
+    CurrentProject.Info.TargetCPU, '');
   End;
  End
  Else If (Ext = '.cs') Then Begin
@@ -65616,7 +65805,7 @@ Begin
     AppendOutput(OutputPanel,
      '========== Build: 1 succeeded, 0 failed ==========',
      Ord(OTK_BUILD));
-    ShowEmulatorPanel(EmuPanel, ExeName, '-C68000');
+    ShowEmulatorPanel(EmuPanel, ExeName, '-C68000', '');
    End Else
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',
@@ -65639,7 +65828,7 @@ Begin
     AppendOutput(OutputPanel,
      '========== Build: 1 succeeded, 0 failed ==========',
      Ord(OTK_BUILD));
-    ShowEmulatorPanel(EmuPanel, ExeName, EffectiveCPU);
+    ShowEmulatorPanel(EmuPanel, ExeName, EffectiveCPU, '');
    End Else
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',
@@ -69584,7 +69773,7 @@ Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
   EmuStartCmdLine := Opts.EmuArgs;
-  ShowEmulatorPanel(EmuPanel, Opts.EmuFile, Opts.EmuTarget);
+  ShowEmulatorPanel(EmuPanel, Opts.EmuFile, Opts.EmuTarget, Opts.EmuArgs);
  End
  { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
  Else If Opts.SourceFile <> '' Then Begin
