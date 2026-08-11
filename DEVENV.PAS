@@ -30840,6 +30840,31 @@ Begin
     TermAddLine(TP, CurrCmd +
      ': Unknown command');
   End;
+  SK_NCOMMANDER: Begin
+   { Ce Case n avait ici AUCUNE branche pour SK_NCOMMANDER : une         }
+   { commande tapee dans la ligne de commande de Norton Commander        }
+   { (ex: "asm86 /?") tombait dans le vide et ne faisait donc            }
+   { litteralement rien - BOGUE REEL signale par l utilisateur. Meme     }
+   { repli "commande inconnue -> executable DOS/ELF" que SK_CMD          }
+   { ci-dessus, mais recherche dans TP.VirtCwd (le chemin du panneau NC  }
+   { actuellement parcouru, synchronise par l appelant juste avant cet   }
+   { appel) plutot que GetDir(0,...) (repertoire reel du PROCESSUS, sans }
+   { rapport avec la navigation virtuelle propre a NC). }
+   DosExe := '';
+   ElfExe := '';
+   If TP.VirtDrive < 0 Then Begin
+    DosExe := TermFindDosExecutable(TP.VirtCwd, CurrCmd);
+    If DosExe = '' Then ElfExe := TermFindElfExecutable(TP.VirtCwd, CurrCmd);
+   End;
+   If DosExe <> '' Then
+    ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
+   Else If ElfExe <> '' Then
+    ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+   Else
+    TermAddLine(TP,
+     '''' + CurrCmd +
+     ''' n''est pas reconnu comme commande interne.');
+  End;
  End;
 End;
 
