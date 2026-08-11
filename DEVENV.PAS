@@ -1317,7 +1317,7 @@ Const
  OPT_LABEL_WIDTH      = 180;     { largeur etiquette                }
  OPT_ROW_SPACING      = 28;      { espacement vertical entre lignes }
  OPT_CHECK_SIZE       = 14;      { taille case a cocher             }
- MAX_OPT_CATEGORIES   = 16;      { nombre max de categories         }
+ MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
 
@@ -3226,7 +3226,22 @@ Type
   OC_PROJ_GENERAL,       { Projets et solutions > General     }
   OC_PROJ_BUILD,         { Projets et solutions > Build       }
   OC_DEBUG_GENERAL,      { Debogage > General                 }
-  OC_DEBUG_OUTPUT        { Debogage > Sortie                  }
+  OC_DEBUG_OUTPUT,       { Debogage > Sortie                  }
+  OC_EMU_NES,            { Emulateur > NES                    }
+  OC_EMU_DOS,            { Emulateur > DOS                    }
+  OC_EMU_LINUX,          { Emulateur > Linux x86-64           }
+  OC_EMU_AMIGA,          { Emulateur > Amiga                  }
+  OC_EMU_ATARIST,        { Emulateur > Atari ST               }
+  OC_EMU_C64,            { Emulateur > Commodore 64           }
+  OC_EMU_APPLEII,        { Emulateur > Apple II               }
+  OC_EMU_ATARI400,       { Emulateur > Atari 400              }
+  OC_EMU_ATARI800,       { Emulateur > Atari 800              }
+  OC_EMU_ATARI2600,      { Emulateur > Atari 2600             }
+  OC_EMU_MSX,            { Emulateur > MSX                    }
+  OC_EMU_TRS80,          { Emulateur > TRS80                  }
+  OC_EMU_ADAM,           { Emulateur > Adam                   }
+  OC_EMU_COCO3,          { Emulateur > CoCo 3                 }
+  OC_EMU_CRAY1           { Emulateur > Cray 1                 }
  );
 
  { Noeud de l arbre de categories }
@@ -3274,6 +3289,18 @@ Type
   BreakOnFirstError: Boolean;    { arreter au premier point arret }
   StepIntoProperties: Boolean;   { pas a pas dans proprietes      }
   ShowDebugMessages: Boolean;    { afficher messages de debogage  }
+  { Emulateur > DOS }
+  DosEmu8087      : Boolean;     { emulation 8087 activee         }
+  DosEmu80286     : Boolean;     { emulation 80286                }
+  DosEmu80386     : Boolean;     { emulation 80386                }
+  DosXMS          : Boolean;     { memoire XMS activee            }
+  DosXMSSize      : Integer;     { taille XMS en Ko               }
+  DosEMS          : Boolean;     { memoire EMS activee            }
+  DosEMSSize      : Integer;     { taille EMS en Ko               }
+  DosMSCDEX       : Boolean;     { pilote MSCDEX (CD-ROM)         }
+  DosSouris       : Boolean;     { pilote souris                  }
+  DosNovell       : Boolean;     { reseau Novell NetWare          }
+  DosLAN          : Boolean;     { reseau LAN generique           }
  End;
 
  { Dialogue des options de l IDE }
@@ -32291,6 +32318,31 @@ Begin
  End;
 End;
 
+{ Entree sur un fichier ".NES" : lance l emulateur NES integre plutot que }
+{ de ne rien faire (comme le ferait NC pour un fichier non associe) -    }
+{ seul le disque hote est supporte (comme NCActionView/NCActionEdit),    }
+{ la disquette virtuelle FAT n exposant pas de chemin hote direct que    }
+{ ShowEmulatorPanel puisse ouvrir. Renvoie True si le fichier a ete pris }
+{ en charge (l appelant ne doit alors rien faire d autre).               }
+Function NCActionOpenAssociated(Side: Integer): Boolean;
+Var
+ E: TNCEntry;
+ Ext: String;
+Begin
+ NCActionOpenAssociated := False;
+ If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
+  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+  If Not E.IsDir Then Begin
+   Ext := UpCaseStr(NCExtractExt(E.Name));
+   If Ext = 'NES' Then Begin
+    ShowEmulatorPanel(EmuPanel, NCFullPath(NCState.Panes[Side].Path, E.Name),
+     '-CNES', '');
+    NCActionOpenAssociated := True;
+   End;
+  End;
+ End;
+End;
+
 Procedure NCActionCopyStart(Side, OtherSide: Integer);
 Begin
  If (NCState.Panes[Side].Count > 0) And
@@ -32974,7 +33026,8 @@ Begin
      TP.InputCol := 1;
     End Else If NCState.Panes[Side].Count > 0 Then Begin
      E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
-     If E.IsDir Then NCEnterDir(Side, E.Name);
+     If E.IsDir Then NCEnterDir(Side, E.Name)
+     Else NCActionOpenAssociated(Side);
     End;
    #8: { Retour arriere : effacer la ligne de commande, sinon remonter }
     If Length(TP.InputLine) > 0 Then
@@ -59736,6 +59789,21 @@ Begin
   OC_PROJ_BUILD:         OptionCategoryName := 'Build et execution';
   OC_DEBUG_GENERAL:      OptionCategoryName := 'General';
   OC_DEBUG_OUTPUT:       OptionCategoryName := 'Sortie';
+  OC_EMU_NES:            OptionCategoryName := 'NES';
+  OC_EMU_DOS:            OptionCategoryName := 'DOS';
+  OC_EMU_LINUX:          OptionCategoryName := 'Linux x86-64';
+  OC_EMU_AMIGA:          OptionCategoryName := 'Amiga';
+  OC_EMU_ATARIST:        OptionCategoryName := 'Atari ST';
+  OC_EMU_C64:            OptionCategoryName := 'Commodore 64';
+  OC_EMU_APPLEII:        OptionCategoryName := 'Apple II';
+  OC_EMU_ATARI400:       OptionCategoryName := 'Atari 400';
+  OC_EMU_ATARI800:       OptionCategoryName := 'Atari 800';
+  OC_EMU_ATARI2600:      OptionCategoryName := 'Atari 2600';
+  OC_EMU_MSX:            OptionCategoryName := 'MSX';
+  OC_EMU_TRS80:          OptionCategoryName := 'TRS80';
+  OC_EMU_ADAM:           OptionCategoryName := 'Adam';
+  OC_EMU_COCO3:          OptionCategoryName := 'CoCo 3';
+  OC_EMU_CRAY1:          OptionCategoryName := 'Cray 1';
  Else
   OptionCategoryName := '???';
  End;
@@ -59796,6 +59864,38 @@ Begin
  D.BreakOnFirstError := True;
  D.StepIntoProperties := False;
  D.ShowDebugMessages := True;
+ D.DosEmu8087 := True;
+ D.DosEmu80286 := True;
+ D.DosEmu80386 := True;
+ D.DosXMS := True;
+ D.DosXMSSize := 16384;
+ D.DosEMS := False;
+ D.DosEMSSize := 4096;
+ D.DosMSCDEX := False;
+ D.DosSouris := True;
+ D.DosNovell := False;
+ D.DosLAN := False;
+End;
+
+{ Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
+{ Expanded de leur parent direct (les noeuds de niveau 0 - les groupes -  }
+{ restent toujours visibles) - centralise ici pour etre appelable a la    }
+{ fois a la construction de l arbre et chaque fois qu un groupe est       }
+{ deplie/replie par un clic (auparavant Expanded changeait bien mais      }
+{ Visible restait fige a True pour tout le monde depuis AddNode, ce qui   }
+{ ne posait pas de probleme visible tant qu il n y avait que 3 groupes    }
+{ toujours deplies, mais deviendrait un arbre bien trop long une fois le  }
+{ groupe Emulateur - 15 elements - ajoute s il restait toujours deplie).  }
+Procedure UpdateOptionsTreeVisibility(Var Dlg: TOptionsDialog);
+Var
+ I: Integer;
+Begin
+ For I := 0 To Dlg.CategoryCount - 1 Do
+  If (Dlg.Categories[I].Level = 0) Or (Dlg.Categories[I].ParentIdx < 0) Then
+   Dlg.Categories[I].Visible := True
+  Else
+   Dlg.Categories[I].Visible :=
+    Dlg.Categories[Dlg.Categories[I].ParentIdx].Expanded;
 End;
 
 { --- Construire l arbre de categories --- }
@@ -59841,6 +59941,26 @@ Begin
  AddNode('Build et execution', 12, 1, False, OC_PROJ_BUILD);
  { Debogage (index 15) -- utilise le dernier slot disponible }
  { Note : 16 noeuds au total = MAX_OPT_CATEGORIES }
+ { Emulateur (index 15) - replie par defaut (voir                        }
+ { UpdateOptionsTreeVisibility) pour que l arbre garde a peu pres sa      }
+ { hauteur d origine tant que l utilisateur ne le deplie pas explicitement.}
+ AddNode('Emulateur', -1, 0, False, OC_EMU_NES);
+ AddNode('NES', 15, 1, False, OC_EMU_NES);
+ AddNode('DOS', 15, 1, False, OC_EMU_DOS);
+ AddNode('Linux x86-64', 15, 1, False, OC_EMU_LINUX);
+ AddNode('Amiga', 15, 1, False, OC_EMU_AMIGA);
+ AddNode('Atari ST', 15, 1, False, OC_EMU_ATARIST);
+ AddNode('Commodore 64', 15, 1, False, OC_EMU_C64);
+ AddNode('Apple II', 15, 1, False, OC_EMU_APPLEII);
+ AddNode('Atari 400', 15, 1, False, OC_EMU_ATARI400);
+ AddNode('Atari 800', 15, 1, False, OC_EMU_ATARI800);
+ AddNode('Atari 2600', 15, 1, False, OC_EMU_ATARI2600);
+ AddNode('MSX', 15, 1, False, OC_EMU_MSX);
+ AddNode('TRS80', 15, 1, False, OC_EMU_TRS80);
+ AddNode('Adam', 15, 1, False, OC_EMU_ADAM);
+ AddNode('CoCo 3', 15, 1, False, OC_EMU_COCO3);
+ AddNode('Cray 1', 15, 1, False, OC_EMU_CRAY1);
+ UpdateOptionsTreeVisibility(Dlg);
 End;
 
 { --- Initialiser le dialogue des options --- }
@@ -60359,6 +60479,72 @@ Begin
   'Afficher les messages de debogage', CLR_WINDOWTEXT);
 End;
 
+{ --- Dessiner la page Emulateur > DOS --- }
+
+Procedure DrawOptionsEmuDOS(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+ S: String;
+
+ Procedure Check(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawText(FX + 2, BaseY - 1, 'X', CLR_WINDOWTEXT);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+ Procedure SizeField(Const Caption: String; KoValue: Integer);
+ Begin
+  DrawText(FX, BaseY, Caption, CLR_WINDOWTEXT);
+  Str(KoValue, S);
+  DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+   FX + OPT_LABEL_WIDTH + 80, BaseY + OPT_FIELD_HEIGHT,
+   CLR_WINDOW);
+  DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2,
+   FX + OPT_LABEL_WIDTH + 80, BaseY + OPT_FIELD_HEIGHT,
+   CLR_BORDER);
+  DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S + ' Ko',
+   CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > DOS', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');    { Row 0 }
+ Check(Dlg.Data.DosEmu80286, 'Emulation 80286');          { Row 1 }
+ Check(Dlg.Data.DosEmu80386, 'Emulation 80386');          { Row 2 }
+ Check(Dlg.Data.DosXMS, 'XMS');                           { Row 3 }
+ SizeField('Taille XMS :', Dlg.Data.DosXMSSize);          { Row 4 }
+ Check(Dlg.Data.DosEMS, 'EMS');                           { Row 5 }
+ SizeField('Taille EMS :', Dlg.Data.DosEMSSize);          { Row 6 }
+ Check(Dlg.Data.DosMSCDEX, 'MSCDEX');                     { Row 7 }
+ Check(Dlg.Data.DosSouris, 'Souris');                     { Row 8 }
+ Check(Dlg.Data.DosNovell, 'Reseau Novell NetWare');      { Row 9 }
+ Check(Dlg.Data.DosLAN, 'Reseau LAN');                    { Row 10 }
+End;
+
+{ --- Dessiner une page Emulateur > X pas encore detaillee (stub) --- }
+
+Procedure DrawOptionsEmuStub(Var Dlg: TOptionsDialog; Const EmuName: String);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > ' + EmuName, CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  '(Options specifiques a venir pour cet emulateur)',
+  CLR_BORDER);
+End;
+
 { --- Dispatcher vers la page de parametres appropriee --- }
 
 Procedure DrawOptionsPage(Var Dlg: TOptionsDialog);
@@ -60391,6 +60577,21 @@ Begin
   OC_PROJ_BUILD:          DrawOptionsProjBuild(Dlg);
   OC_DEBUG_GENERAL:       DrawOptionsDebugGeneral(Dlg);
   OC_DEBUG_OUTPUT:        DrawOptionsDebugOutput(Dlg);
+  OC_EMU_DOS:             DrawOptionsEmuDOS(Dlg);
+  OC_EMU_NES:             DrawOptionsEmuStub(Dlg, 'NES');
+  OC_EMU_LINUX:           DrawOptionsEmuStub(Dlg, 'Linux x86-64');
+  OC_EMU_AMIGA:           DrawOptionsEmuStub(Dlg, 'Amiga');
+  OC_EMU_ATARIST:         DrawOptionsEmuStub(Dlg, 'Atari ST');
+  OC_EMU_C64:             DrawOptionsEmuStub(Dlg, 'Commodore 64');
+  OC_EMU_APPLEII:         DrawOptionsEmuStub(Dlg, 'Apple II');
+  OC_EMU_ATARI400:        DrawOptionsEmuStub(Dlg, 'Atari 400');
+  OC_EMU_ATARI800:        DrawOptionsEmuStub(Dlg, 'Atari 800');
+  OC_EMU_ATARI2600:       DrawOptionsEmuStub(Dlg, 'Atari 2600');
+  OC_EMU_MSX:             DrawOptionsEmuStub(Dlg, 'MSX');
+  OC_EMU_TRS80:           DrawOptionsEmuStub(Dlg, 'TRS80');
+  OC_EMU_ADAM:            DrawOptionsEmuStub(Dlg, 'Adam');
+  OC_EMU_COCO3:           DrawOptionsEmuStub(Dlg, 'CoCo 3');
+  OC_EMU_CRAY1:           DrawOptionsEmuStub(Dlg, 'Cray 1');
  End;
 End;
 
@@ -60529,6 +60730,7 @@ Begin
     Begin
      Dlg.Categories[CatIdx].Expanded :=
       Not Dlg.Categories[CatIdx].Expanded;
+     UpdateOptionsTreeVisibility(Dlg);
     End;
     Dlg.Categories[Dlg.SelectedCategory].Selected := False;
     Dlg.SelectedCategory := CatIdx;
@@ -60635,6 +60837,45 @@ Begin
        Dlg.Data.ShowDebugMessages :=
         Not Dlg.Data.ShowDebugMessages;
        Dlg.Modified := True;
+      End;
+     OC_EMU_DOS:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.DosEmu8087 := Not Dlg.Data.DosEmu8087;
+        Dlg.Modified := True;
+       End;
+       1: Begin
+        Dlg.Data.DosEmu80286 := Not Dlg.Data.DosEmu80286;
+        Dlg.Modified := True;
+       End;
+       2: Begin
+        Dlg.Data.DosEmu80386 := Not Dlg.Data.DosEmu80386;
+        Dlg.Modified := True;
+       End;
+       3: Begin
+        Dlg.Data.DosXMS := Not Dlg.Data.DosXMS;
+        Dlg.Modified := True;
+       End;
+       5: Begin
+        Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
+        Dlg.Modified := True;
+       End;
+       7: Begin
+        Dlg.Data.DosMSCDEX := Not Dlg.Data.DosMSCDEX;
+        Dlg.Modified := True;
+       End;
+       8: Begin
+        Dlg.Data.DosSouris := Not Dlg.Data.DosSouris;
+        Dlg.Modified := True;
+       End;
+       9: Begin
+        Dlg.Data.DosNovell := Not Dlg.Data.DosNovell;
+        Dlg.Modified := True;
+       End;
+       10: Begin
+        Dlg.Data.DosLAN := Not Dlg.Data.DosLAN;
+        Dlg.Modified := True;
+       End;
       End;
     End;
     DrawOptionsDialog(Dlg);
@@ -60780,6 +61021,21 @@ Begin
   BoolToStr(Data.StepIntoProperties));
  WriteCfgLine(F, 'ShowDebugMessages',
   BoolToStr(Data.ShowDebugMessages));
+ WriteLn(F, '');
+ WriteLn(F, '[Emulateur.DOS]');
+ WriteCfgLine(F, 'DosEmu8087', BoolToStr(Data.DosEmu8087));
+ WriteCfgLine(F, 'DosEmu80286', BoolToStr(Data.DosEmu80286));
+ WriteCfgLine(F, 'DosEmu80386', BoolToStr(Data.DosEmu80386));
+ WriteCfgLine(F, 'DosXMS', BoolToStr(Data.DosXMS));
+ Str(Data.DosXMSSize, S);
+ WriteCfgLine(F, 'DosXMSSize', S);
+ WriteCfgLine(F, 'DosEMS', BoolToStr(Data.DosEMS));
+ Str(Data.DosEMSSize, S);
+ WriteCfgLine(F, 'DosEMSSize', S);
+ WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
+ WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
+ WriteCfgLine(F, 'DosNovell', BoolToStr(Data.DosNovell));
+ WriteCfgLine(F, 'DosLAN', BoolToStr(Data.DosLAN));
  Close(F);
 End;
 
@@ -60874,7 +61130,35 @@ Begin
   Else If Key = 'StepIntoProperties' Then
    Data.StepIntoProperties := StrToBool(Value)
   Else If Key = 'ShowDebugMessages' Then
-   Data.ShowDebugMessages := StrToBool(Value);
+   Data.ShowDebugMessages := StrToBool(Value)
+  Else If Key = 'DosEmu8087' Then
+   Data.DosEmu8087 := StrToBool(Value)
+  Else If Key = 'DosEmu80286' Then
+   Data.DosEmu80286 := StrToBool(Value)
+  Else If Key = 'DosEmu80386' Then
+   Data.DosEmu80386 := StrToBool(Value)
+  Else If Key = 'DosXMS' Then
+   Data.DosXMS := StrToBool(Value)
+  Else If Key = 'DosXMSSize' Then
+  Begin
+   Val(Value, Data.DosXMSSize, Code);
+   If Code <> 0 Then Data.DosXMSSize := 16384;
+  End
+  Else If Key = 'DosEMS' Then
+   Data.DosEMS := StrToBool(Value)
+  Else If Key = 'DosEMSSize' Then
+  Begin
+   Val(Value, Data.DosEMSSize, Code);
+   If Code <> 0 Then Data.DosEMSSize := 4096;
+  End
+  Else If Key = 'DosMSCDEX' Then
+   Data.DosMSCDEX := StrToBool(Value)
+  Else If Key = 'DosSouris' Then
+   Data.DosSouris := StrToBool(Value)
+  Else If Key = 'DosNovell' Then
+   Data.DosNovell := StrToBool(Value)
+  Else If Key = 'DosLAN' Then
+   Data.DosLAN := StrToBool(Value);
  End;
  Close(F);
 End;
