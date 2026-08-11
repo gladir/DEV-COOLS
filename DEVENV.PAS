@@ -4194,6 +4194,8 @@ Var
  ELF64_ExitCode  : Integer;
  ELF64_InstrCount: LongInt;
  ELF64_SegCount  : Integer;     { nombre de segments PT_LOAD charges     }
+ ELF64_BinaryPath: String;      { chemin hote du binaire charge - sert de}
+                                 { reponse a readlink("/proc/self/exe")  }
  ELF64_Panel     : ^TEmulatorPanel;
  { Fanions arithmetiques (booleens directs plutot que bits de RFlags -   }
  { plus simple pour Jcc/SETcc/arithmetique ; RFlags n est pas maintenu   }
@@ -4227,6 +4229,19 @@ Var
  { Diagnostic d arret / instruction non supportee }
  ELF64_LastBadRIP: QWord;
  ELF64_HaltReason: String;
+ { Historique circulaire des dernieres instructions executees (RIP et    }
+ { RSP au debut de chacune) - permet de retracer non seulement le CHEMIN }
+ { d execution ayant mene a un arret/saut errant, mais aussi d observer  }
+ { la progression de la pile pour reperer un desequilibre PUSH/CALL vs   }
+ { POP/RET. 1024 entrees (16 Ko) offrent un historique large sans cout   }
+ { notable.                                                               }
+ ELF64_TraceRIP  : Array[0..1023] Of QWord;
+ ELF64_TraceRSP  : Array[0..1023] Of QWord;
+ ELF64_TraceCount: LongInt;
+ { Point d arret optionnel (etape 8 : debogueur minimal) - regle par la  }
+ { commande terminal ELFBP ; l execution s arrete proprement des que RIP }
+ { atteint cette adresse, avant meme de decoder l instruction.           }
+ ELF64_BreakAddr : QWord;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : Array[0..$FFFF] Of Byte;
  CPU6502_A      : Byte;
@@ -30029,6 +30044,45 @@ Begin
  TermAddLine(TP, ' Volume Serial Number is 1234-5678');
 End;
 
+{ --- ELFBP (etape 8 : debogueur minimal pour l emulateur Linux ELF64) --- }
+{ Regle (ou desactive) un point d arret par adresse : la prochaine fois   }
+{ qu un binaire ELF64 est lance dans ce terminal, son execution s arrete  }
+{ proprement des que RIP atteint cette adresse, avec un vidage de         }
+{ l historique RIP/RSP menant jusque-la - utile pour retracer un          }
+{ desequilibre de pile sans avoir a rejouer 2 millions d instructions.    }
+Function Elf64_ParseHexQWord(Const S: String): QWord;
+Var
+ I: Integer;
+ Ch: Char;
+ V: QWord;
+ Digits: String;
+Begin
+ Digits := S;
+ If (Length(Digits) > 1) And (Digits[1] = '0') And (UpCase(Digits[2]) = 'X') Then
+  Digits := Copy(Digits, 3, Length(Digits) - 2);
+ V := 0;
+ For I := 1 To Length(Digits) Do Begin
+  Ch := UpCase(Digits[I]);
+  V := V Shl 4;
+  If (Ch >= '0') And (Ch <= '9') Then V := V + QWord(Ord(Ch) - Ord('0'))
+  Else If (Ch >= 'A') And (Ch <= 'F') Then V := V + QWord(Ord(Ch) - Ord('A') + 10);
+ End;
+ Elf64_ParseHexQWord := V;
+End;
+
+Procedure TermCmd_ELFBP(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ ParamStr := TermTrim(ParamStr);
+ If (ParamStr = '') Or (UpCaseStr(ParamStr) = 'OFF') Then Begin
+  ELF64_BreakAddr := 0;
+  TermAddLine(TP, 'Point d''arret ELF64 desactive.');
+ End Else Begin
+  ELF64_BreakAddr := Elf64_ParseHexQWord(ParamStr);
+  TermAddLine(TP, 'Point d''arret ELF64 regle a 0x' + HexQWord(ELF64_BreakAddr) +
+   ' (prendra effet au prochain programme Linux lance dans ce terminal).');
+ End;
+End;
+
 { --- DF (Bash) : afficher les disquettes montees via /DISK0 et /DISK1 --- }
 
 Procedure TermCmd_DF(Var TP: TTerminalPanel);
@@ -30481,6 +30535,8 @@ Begin
     TermCmd_SET(TP, ParamStr)
    Else If CurrCmd = 'VOL' Then
     TermCmd_VOL(TP, ParamStr)
+   Else If CurrCmd = 'ELFBP' Then
+    TermCmd_ELFBP(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else Begin
@@ -40506,9 +40562,11 @@ Var
  Arg0Addr: QWord;
 Begin
  Emu_LoadELF64 := False;
+ ELF64_BinaryPath := FileName;
  ELF64_Halted := False;
  ELF64_ExitCode := 0;
  ELF64_InstrCount := 0;
+ ELF64_TraceCount := 0;
  ELF64_SegCount := 0;
  ELF64_LoadBase := 0;
  ELF64_LoadTop := 0;
@@ -40653,6 +40711,19 @@ End;
 Function Elf64_FetchImm8Signed: ShortInt;
 Begin
  Elf64_FetchImm8Signed := ShortInt(Elf64_FetchByte);
+End;
+
+{ Immediat 16 bits (utilise par les formes "iz" des opcodes C7/81/69/B8-BF }
+{ /F7 quand le prefixe 66 selectionne un operande 16 bits - sans ceci, un  }
+{ immediat de 4 octets est lu a la place de 2, ce qui desynchronise tout   }
+{ le decodage des instructions suivantes).                                 }
+Function Elf64_FetchImm16Signed: SmallInt;
+Var
+ Lo, Hi: Byte;
+Begin
+ Lo := Elf64_FetchByte;
+ Hi := Elf64_FetchByte;
+ Elf64_FetchImm16Signed := SmallInt(Word(Lo) Or (Word(Hi) Shl 8));
 End;
 
 Type
@@ -41403,6 +41474,38 @@ Begin
   ELF64_Xmm[Idx, 0] := (ELF64_Xmm[Idx, 0] And QWord($FFFFFFFF00000000)) Or QWord(W);
 End;
 
+Procedure Elf64_XmmGetPackedDoubles(Idx: Integer; Var D0, D1: Double);
+Begin
+ Move(ELF64_Xmm[Idx, 0], D0, SizeOf(D0));
+ Move(ELF64_Xmm[Idx, 1], D1, SizeOf(D1));
+End;
+
+Procedure Elf64_XmmSetPackedDoubles(Idx: Integer; D0, D1: Double);
+Begin
+ Move(D0, ELF64_Xmm[Idx, 0], SizeOf(D0));
+ Move(D1, ELF64_Xmm[Idx, 1], SizeOf(D1));
+End;
+
+Procedure Elf64_XmmGetPackedSingles(Idx: Integer; Var S0, S1, S2, S3: Single);
+Var
+ W: LongWord;
+Begin
+ W := LongWord(ELF64_Xmm[Idx, 0] And $FFFFFFFF); Move(W, S0, SizeOf(S0));
+ W := LongWord(ELF64_Xmm[Idx, 0] Shr 32);        Move(W, S1, SizeOf(S1));
+ W := LongWord(ELF64_Xmm[Idx, 1] And $FFFFFFFF); Move(W, S2, SizeOf(S2));
+ W := LongWord(ELF64_Xmm[Idx, 1] Shr 32);        Move(W, S3, SizeOf(S3));
+End;
+
+Procedure Elf64_XmmSetPackedSingles(Idx: Integer; S0, S1, S2, S3: Single);
+Var
+ W0, W1, W2, W3: LongWord;
+Begin
+ Move(S0, W0, SizeOf(S0)); Move(S1, W1, SizeOf(S1));
+ Move(S2, W2, SizeOf(S2)); Move(S3, W3, SizeOf(S3));
+ ELF64_Xmm[Idx, 0] := QWord(W0) Or (QWord(W1) Shl 32);
+ ELF64_Xmm[Idx, 1] := QWord(W2) Or (QWord(W3) Shl 32);
+End;
+
 { Lit une chaine terminee par zero depuis la memoire emulee (chemin de   }
 { fichier passe a open/openat) - tronquee a 255 caracteres (String court)}
 Function Elf64_ReadCString(Addr: QWord): String;
@@ -41585,10 +41688,80 @@ Begin
  Emu64_PutQWord(StatAddr + 48, Sz);      { st_size }
 End;
 
+{ Jours ecoules depuis 1970-01-01 pour une date Y/M/D donnee (algorithme }
+{ "days_from_civil" de Howard Hinnant - exact sur tout le calendrier     }
+{ gregorien, sans boucle). Sert de base a gettimeofday/clock_gettime.    }
+Function Elf64_DaysFromEpoch(Y, M, D: LongInt): LongInt;
+Var
+ Era, YOE, DOY, DOE: LongInt;
+Begin
+ If M <= 2 Then Y := Y - 1;
+ If Y >= 0 Then Era := Y Div 400 Else Era := (Y - 399) Div 400;
+ YOE := Y - Era * 400;
+ If M > 2 Then DOY := (153 * (M - 3) + 2) Div 5 + D - 1
+           Else DOY := (153 * (M + 9) + 2) Div 5 + D - 1;
+ DOE := YOE * 365 + YOE Div 4 - YOE Div 100 + DOY;
+ Elf64_DaysFromEpoch := Era * 146097 + DOE - 719468;
+End;
+
+Function Elf64_UnixTime: LongInt;
+Var
+ Y, M, D, DOW: Word;
+ H, Mi, S, S100: Word;
+Begin
+ GetDate(Y, M, D, DOW);
+ GetTime(H, Mi, S, S100);
+ Elf64_UnixTime := Elf64_DaysFromEpoch(Y, M, D) * 86400 +
+  LongInt(H) * 3600 + LongInt(Mi) * 60 + LongInt(S);
+End;
+
+{ struct utsname Linux x86-64 : 6 champs de 65 octets (390 octets total).}
+Procedure Elf64_DoUname(Addr: QWord);
+ Procedure PutStr(Ofs: QWord; Const Txt: String);
+ Var
+  J: Integer;
+ Begin
+  For J := 1 To Length(Txt) Do Emu64_PutByte(Ofs + QWord(J) - 1, Ord(Txt[J]));
+  Emu64_PutByte(Ofs + QWord(Length(Txt)), 0);
+ End;
+Var
+ K: Integer;
+Begin
+ For K := 0 To 389 Do Emu64_PutByte(Addr + QWord(K), 0);
+ PutStr(Addr, 'Linux');
+ PutStr(Addr + 65, 'devenv');
+ PutStr(Addr + 130, '5.0.0-devenv');
+ PutStr(Addr + 195, '#1 SMP');
+ PutStr(Addr + 260, 'x86_64');
+ PutStr(Addr + 325, '');
+End;
+
+{ Ecrit Count octets depuis la memoire emulee vers la console virtuelle  }
+{ du panneau (fd 1/2) - factorise entre sys_write et sys_writev.         }
+Procedure Elf64_ConsoleWrite(BufAddr, Count: QWord);
+Var
+ K: QWord;
+ Ch: Byte;
+Begin
+ If ELF64_Panel = Nil Then Exit;
+ K := 0;
+ While K < Count Do Begin
+  Ch := Emu64_GetByte(BufAddr + K);
+  If Ch = 10 Then Begin
+   EmuVScr_PutChar(ELF64_Panel^, #13);
+   EmuVScr_PutChar(ELF64_Panel^, #10);
+  End Else If Ch <> 13 Then
+   EmuVScr_PutChar(ELF64_Panel^, Chr(Ch));
+  K := K + 1;
+ End;
+End;
+
 { Repartiteur d appels systeme Linux x86-64 (ABI SysV : numero dans RAX,  }
 { arguments dans RDI/RSI/RDX/R10/R8/R9, retour dans RAX). Geres pour le   }
-{ moment : read/write/open/openat/close/lseek/fstat/exit/exit_group/brk/ }
-{ mmap/munmap/arch_prctl.                                                 }
+{ moment : read/write/writev/open/openat/close/lseek/fstat/stat/lstat/   }
+{ access/getcwd/readlink/ioctl(TCGETS)/uname/gettimeofday/clock_gettime/ }
+{ getpid/sigaltstack/rt_sigprocmask/rt_sigaction/getrlimit/prlimit64/    }
+{ exit/exit_group/brk/mmap/munmap/arch_prctl.                            }
 Procedure Elf64_DoSyscall;
 Var
  SysNum: QWord;
@@ -41597,6 +41770,11 @@ Var
  Ch: Byte;
  ExitCode: Integer;
  ReqAddr, ReqLen, PageLen: QWord;
+ S: String;
+ TmpF: File;
+ Sz: QWord;
+ J, IovCnt: Integer;
+ IovBase, IovLen: QWord;
 Begin
  SysNum := ELF64_Reg[REG_RAX];
  Case SysNum Of
@@ -41613,21 +41791,7 @@ Begin
    BufAddr := ELF64_Reg[REG_RSI];
    Count := ELF64_Reg[REG_RDX];
    If (FD = 1) Or (FD = 2) Then Begin
-    If ELF64_Panel <> Nil Then Begin
-     I := 0;
-     While I < Count Do Begin
-      Ch := Emu64_GetByte(BufAddr + I);
-      { Un vrai terminal traduit NL en CR+NL a l affichage (mode "onlcr") }
-      { - sans cela, un simple \n Linux ne ramenerait pas le curseur en  }
-      { debut de ligne dans notre console virtuelle.                     }
-      If Ch = 10 Then Begin
-       EmuVScr_PutChar(ELF64_Panel^, #13);
-       EmuVScr_PutChar(ELF64_Panel^, #10);
-      End Else If Ch <> 13 Then
-       EmuVScr_PutChar(ELF64_Panel^, Chr(Ch));
-      I := I + 1;
-     End;
-    End;
+    Elf64_ConsoleWrite(BufAddr, Count);
     ELF64_Reg[REG_RAX] := Count;
    End Else If (FD >= 3) And (FD < ELF64_MAX_FD) And ELF64_FDOpen[FD] Then
     ELF64_Reg[REG_RAX] := QWord(Elf64_DoWriteFile(Integer(FD), BufAddr, Count))
@@ -41677,6 +41841,125 @@ Begin
    End;
   End;
   11: ELF64_Reg[REG_RAX] := 0; { sys_munmap : demappage non suivi, "reussi" }
+  4, 6: Begin { sys_stat/sys_lstat(path, statbuf) : pas de distinction    }
+              { symlink sur cet hote - traites de facon identique.       }
+   S := Elf64_ReadCString(ELF64_Reg[REG_RDI]);
+   If Not FileExists(S) Then
+    ELF64_Reg[REG_RAX] := QWord(Int64(-2)) { -ENOENT }
+   Else Begin
+    {$I-}
+    Assign(TmpF, S);
+    Reset(TmpF, 1);
+    {$I+}
+    If IOResult <> 0 Then
+     ELF64_Reg[REG_RAX] := QWord(Int64(-2))
+    Else Begin
+     Sz := QWord(FileSize(TmpF));
+     Close(TmpF);
+     I := 0;
+     While I <= 143 Do Begin Emu64_PutByte(ELF64_Reg[REG_RSI] + I, 0); I := I + 1; End;
+     Emu64_PutQWord(ELF64_Reg[REG_RSI] + 16, 1);
+     Emu64_PutDWord(ELF64_Reg[REG_RSI] + 24, $81A4);
+     Emu64_PutQWord(ELF64_Reg[REG_RSI] + 48, Sz);
+     ELF64_Reg[REG_RAX] := 0;
+    End;
+   End;
+  End;
+  14: Begin { sys_rt_sigprocmask : aucun signal reel n est bloque/debloque}
+            { - no-op reussi (oldset mis a zero si demande).             }
+   If ELF64_Reg[REG_RDX] <> 0 Then Emu64_PutQWord(ELF64_Reg[REG_RDX], 0);
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  16: Begin { sys_ioctl : seul TCGETS (verification terminal) est simule,}
+            { en repondant "oui" pour stdin/stdout/stderr - suffisant    }
+            { pour satisfaire les verifications d interactivite (isatty).}
+   If (ELF64_Reg[REG_RSI] = $5401) And (ELF64_Reg[REG_RDI] <= 2) Then Begin
+    I := 0;
+    While I <= 35 Do Begin Emu64_PutByte(ELF64_Reg[REG_RDX] + I, 0); I := I + 1; End;
+    ELF64_Reg[REG_RAX] := 0;
+   End Else
+    ELF64_Reg[REG_RAX] := QWord(Int64(-25)); { -ENOTTY }
+  End;
+  20: Begin { sys_writev(fd, iov, iovcnt) }
+   FD := Int64(ELF64_Reg[REG_RDI]);
+   IovCnt := Integer(ELF64_Reg[REG_RDX]);
+   IovBase := ELF64_Reg[REG_RSI];
+   Count := 0;
+   If (FD = 1) Or (FD = 2) Or ((FD >= 3) And (FD < ELF64_MAX_FD) And ELF64_FDOpen[FD]) Then Begin
+    For J := 0 To IovCnt - 1 Do Begin
+     BufAddr := Emu64_GetQWord(IovBase + QWord(J) * 16);
+     IovLen := Emu64_GetQWord(IovBase + QWord(J) * 16 + 8);
+     If (FD = 1) Or (FD = 2) Then Elf64_ConsoleWrite(BufAddr, IovLen)
+                              Else Elf64_DoWriteFile(Integer(FD), BufAddr, IovLen);
+     Count := Count + IovLen;
+    End;
+    ELF64_Reg[REG_RAX] := Count;
+   End Else
+    ELF64_Reg[REG_RAX] := QWord(Int64(-9)); { -EBADF }
+  End;
+  21: Begin { sys_access(path, mode) : approxime par une simple existence }
+   S := Elf64_ReadCString(ELF64_Reg[REG_RDI]);
+   If FileExists(S) Then ELF64_Reg[REG_RAX] := 0
+                     Else ELF64_Reg[REG_RAX] := QWord(Int64(-2));
+  End;
+  39: ELF64_Reg[REG_RAX] := 1000; { sys_getpid : PID fixe, arbitraire }
+  63: Begin { sys_uname(buf) }
+   Elf64_DoUname(ELF64_Reg[REG_RDI]);
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  79: Begin { sys_getcwd(buf, size) - renvoie la longueur (avec le zero   }
+            { final) sur succes, comme le veut le vrai appel systeme.    }
+   GetDir(0, S);
+   S := S + Chr(0);
+   If Length(S) > Integer(ELF64_Reg[REG_RSI]) Then
+    ELF64_Reg[REG_RAX] := QWord(Int64(-34)) { -ERANGE }
+   Else Begin
+    I := 1;
+    While I <= QWord(Length(S)) Do Begin
+     Emu64_PutByte(ELF64_Reg[REG_RDI] + I - 1, Ord(S[Integer(I)]));
+     I := I + 1;
+    End;
+    ELF64_Reg[REG_RAX] := QWord(Length(S));
+   End;
+  End;
+  89: Begin { sys_readlink : seul /proc/self/exe est reconnu, necessaire  }
+            { a l implementation de ParamStr(0) par le runtime FPC.      }
+   S := Elf64_ReadCString(ELF64_Reg[REG_RDI]);
+   If S = '/proc/self/exe' Then Begin
+    S := ELF64_BinaryPath;
+    If Length(S) > Integer(ELF64_Reg[REG_RDX]) Then S := Copy(S, 1, Integer(ELF64_Reg[REG_RDX]));
+    I := 1;
+    While I <= QWord(Length(S)) Do Begin
+     Emu64_PutByte(ELF64_Reg[REG_RSI] + I - 1, Ord(S[Integer(I)]));
+     I := I + 1;
+    End;
+    ELF64_Reg[REG_RAX] := QWord(Length(S));
+   End Else
+    ELF64_Reg[REG_RAX] := QWord(Int64(-2)); { -ENOENT }
+  End;
+  96: Begin { sys_gettimeofday(tv, tz) }
+   If ELF64_Reg[REG_RDI] <> 0 Then Begin
+    Emu64_PutQWord(ELF64_Reg[REG_RDI], QWord(Int64(Elf64_UnixTime)));
+    Emu64_PutQWord(ELF64_Reg[REG_RDI] + 8, 0); { microsecondes non suivies }
+   End;
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  131: ELF64_Reg[REG_RAX] := 0; { sys_sigaltstack : no-op reussi }
+  228: Begin { sys_clock_gettime(clockid, timespec) }
+   If ELF64_Reg[REG_RSI] <> 0 Then Begin
+    Emu64_PutQWord(ELF64_Reg[REG_RSI], QWord(Int64(Elf64_UnixTime)));
+    Emu64_PutQWord(ELF64_Reg[REG_RSI] + 8, 0); { nanosecondes non suivies }
+   End;
+   ELF64_Reg[REG_RAX] := 0;
+  End;
+  302: Begin { sys_prlimit64(pid, resource, new_limit, old_limit) :       }
+             { meme reponse "illimite" que getrlimit.                    }
+   If ELF64_Reg[REG_R10] <> 0 Then Begin
+    Emu64_PutQWord(ELF64_Reg[REG_R10], QWord($FFFFFFFFFFFFFFFF));
+    Emu64_PutQWord(ELF64_Reg[REG_R10] + 8, QWord($FFFFFFFFFFFFFFFF));
+   End;
+   ELF64_Reg[REG_RAX] := 0;
+  End;
   13: Begin { sys_rt_sigaction(signum, act, oldact, sigsetsize) : aucun   }
             { signal n est reellement delivre par cet emulateur, donc     }
             { installer un gestionnaire est un no-op sans consequence -   }
@@ -41739,9 +42022,38 @@ Var
  I: Integer;
  FVal: Extended;
  Addr: QWord;
+ PD0, PD1, QD0, QD1: Double;
+ PS0, PS1, PS2, PS3, QS0, QS1, QS2, QS3: Single;
+ WScratch: LongWord;
 Begin
  If ELF64_Halted Then Exit;
  StartRIP := ELF64_RIP;
+ { Garde-fou anti-saut-errant : si RIP tombe sous le debut de l image     }
+ { chargee, arreter IMMEDIATEMENT plutot que de continuer a "executer"    }
+ { silencieusement des octets a zero (ce qui se decode comme une longue   }
+ { suite de ADD [RAX],AL sans jamais planter, masquant le vrai probleme   }
+ { pendant des millions d instructions). Cela garantit que l historique   }
+ { ELF64_TraceBuf contient encore les instructions ayant reellement       }
+ { cause le saut (RET avec pile corrompue, appel indirect invalide...).   }
+ If (StartRIP < ELF64_LoadBase) And (ELF64_LoadBase > 0) Then Begin
+  ELF64_Halted := True;
+  ELF64_LastBadRIP := StartRIP;
+  ELF64_HaltReason := 'Saut errant detecte : RIP (0x' + HexQWord(StartRIP) +
+   ') est tombe sous le debut de l''image chargee (0x' +
+   HexQWord(ELF64_LoadBase) +
+   ') - probablement un RET avec une pile corrompue ou un appel indirect ' +
+   'via un pointeur de fonction invalide.';
+  Exit;
+ End;
+ If (ELF64_BreakAddr <> 0) And (StartRIP = ELF64_BreakAddr) Then Begin
+  ELF64_Halted := True;
+  ELF64_LastBadRIP := StartRIP;
+  ELF64_HaltReason := 'Point d''arret atteint : RIP = 0x' + HexQWord(StartRIP);
+  Exit;
+ End;
+ ELF64_TraceRIP[ELF64_TraceCount And 1023] := StartRIP;
+ ELF64_TraceRSP[ELF64_TraceCount And 1023] := ELF64_Reg[REG_RSP];
+ Inc(ELF64_TraceCount);
  RexW := False; RexR := False; RexX := False; RexB := False;
  Saw66 := False; SawF3 := False; SawF2 := False;
 
@@ -41830,6 +42142,7 @@ Begin
    Case Op2 Of
     $1E: Elf64_FetchByte; { F3 0F 1E FA/FB = ENDBR64/ENDBR32, deja consomme }
     $1F: EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField); { NOP r/m multi-octets (remplissage d alignement) }
+    $18: EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField); { PREFETCHx : indice de cache sans effet architectural }
     $05: Elf64_DoSyscall; { SYSCALL }
     $B6: Begin { MOVZX r, r/m8 }
      EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
@@ -42024,9 +42337,101 @@ Begin
        $5C: Elf64_XmmSetSingleLow(RegField, Elf64_XmmGetSingle(RegField) - FVal, False);
        $5E: Elf64_XmmSetSingleLow(RegField, Elf64_XmmGetSingle(RegField) / FVal, False);
       End;
+     End Else If Saw66 Then Begin
+      { PD : forme empaquetee, 2 doubles independants (ADDPD/MULPD/SUBPD/DIVPD) }
+      Elf64_XmmGetPackedDoubles(RegField, PD0, PD1);
+      If EA.IsReg Then Elf64_XmmGetPackedDoubles(EA.RegIdx, QD0, QD1)
+      Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       Move(Emu64_GetQWord(Addr), QD0, SizeOf(QD0));
+       Move(Emu64_GetQWord(Addr + 8), QD1, SizeOf(QD1));
+      End;
+      Case Op2 Of
+       $58: Begin PD0 := PD0 + QD0; PD1 := PD1 + QD1; End;
+       $59: Begin PD0 := PD0 * QD0; PD1 := PD1 * QD1; End;
+       $5C: Begin PD0 := PD0 - QD0; PD1 := PD1 - QD1; End;
+       $5E: Begin PD0 := PD0 / QD0; PD1 := PD1 / QD1; End;
+      End;
+      Elf64_XmmSetPackedDoubles(RegField, PD0, PD1);
+     End Else Begin
+      { PS : forme empaquetee, 4 flottants simple precision independants }
+      Elf64_XmmGetPackedSingles(RegField, PS0, PS1, PS2, PS3);
+      If EA.IsReg Then Elf64_XmmGetPackedSingles(EA.RegIdx, QS0, QS1, QS2, QS3)
+      Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       Val1 := Emu64_GetQWord(Addr); Val2 := Emu64_GetQWord(Addr + 8);
+       WScratch := LongWord(Val1 And $FFFFFFFF); Move(WScratch, QS0, SizeOf(QS0));
+       WScratch := LongWord(Val1 Shr 32);        Move(WScratch, QS1, SizeOf(QS1));
+       WScratch := LongWord(Val2 And $FFFFFFFF); Move(WScratch, QS2, SizeOf(QS2));
+       WScratch := LongWord(Val2 Shr 32);        Move(WScratch, QS3, SizeOf(QS3));
+      End;
+      Case Op2 Of
+       $58: Begin PS0 := PS0+QS0; PS1 := PS1+QS1; PS2 := PS2+QS2; PS3 := PS3+QS3; End;
+       $59: Begin PS0 := PS0*QS0; PS1 := PS1*QS1; PS2 := PS2*QS2; PS3 := PS3*QS3; End;
+       $5C: Begin PS0 := PS0-QS0; PS1 := PS1-QS1; PS2 := PS2-QS2; PS3 := PS3-QS3; End;
+       $5E: Begin PS0 := PS0/QS0; PS1 := PS1/QS1; PS2 := PS2/QS2; PS3 := PS3/QS3; End;
+      End;
+      Elf64_XmmSetPackedSingles(RegField, PS0, PS1, PS2, PS3);
+     End;
+    End;
+
+    $6F: Begin { MOVDQA (66) / MOVDQU (F3) : xmm(RegField) <- EA, 128 bits entiers }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Saw66 Or SawF3 Then Begin
+      If EA.IsReg Then Begin
+       ELF64_Xmm[RegField, 0] := ELF64_Xmm[EA.RegIdx, 0];
+       ELF64_Xmm[RegField, 1] := ELF64_Xmm[EA.RegIdx, 1];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       ELF64_Xmm[RegField, 0] := Emu64_GetQWord(Addr);
+       ELF64_Xmm[RegField, 1] := Emu64_GetQWord(Addr + 8);
+      End;
      End Else Begin
       ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
-      ELF64_HaltReason := 'Opcode SSE 0F ' + HexByte(Op2) + ' (forme empaquetee) non supporte';
+      ELF64_HaltReason := 'Opcode 0F 6F (MMX) non supporte';
+     End;
+    End;
+    $7F: Begin { MOVDQA/MOVDQU, sens inverse : EA <- xmm(RegField) }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If Saw66 Or SawF3 Then Begin
+      If EA.IsReg Then Begin
+       ELF64_Xmm[EA.RegIdx, 0] := ELF64_Xmm[RegField, 0];
+       ELF64_Xmm[EA.RegIdx, 1] := ELF64_Xmm[RegField, 1];
+      End Else Begin
+       Addr := Elf64_ResolveEA(EA);
+       Emu64_PutQWord(Addr, ELF64_Xmm[RegField, 0]);
+       Emu64_PutQWord(Addr + 8, ELF64_Xmm[RegField, 1]);
+      End;
+     End Else Begin
+      ELF64_Halted := True; ELF64_LastBadRIP := StartRIP;
+      ELF64_HaltReason := 'Opcode 0F 7F (MMX) non supporte';
+     End;
+    End;
+    $EF: Begin { PXOR xmm(RegField), xmm/m128 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If EA.IsReg Then Begin
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] Xor ELF64_Xmm[EA.RegIdx, 0];
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] Xor ELF64_Xmm[EA.RegIdx, 1];
+     End Else Begin
+      Addr := Elf64_ResolveEA(EA);
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] Xor Emu64_GetQWord(Addr);
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] Xor Emu64_GetQWord(Addr + 8);
+     End;
+    End;
+    $DB, $EB: Begin { PAND (DB) / POR (EB) xmm(RegField), xmm/m128 }
+     EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+     If EA.IsReg Then Begin
+      Val1 := ELF64_Xmm[EA.RegIdx, 0]; Val2 := ELF64_Xmm[EA.RegIdx, 1];
+     End Else Begin
+      Addr := Elf64_ResolveEA(EA);
+      Val1 := Emu64_GetQWord(Addr); Val2 := Emu64_GetQWord(Addr + 8);
+     End;
+     If Op2 = $DB Then Begin
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] And Val1;
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] And Val2;
+     End Else Begin
+      ELF64_Xmm[RegField, 0] := ELF64_Xmm[RegField, 0] Or Val1;
+      ELF64_Xmm[RegField, 1] := ELF64_Xmm[RegField, 1] Or Val2;
      End;
     End;
     $6E: Begin { MOVD/MOVQ : xmm(RegField) <- r/m (32 ou 64 bits selon REX.W) }
@@ -42060,11 +42465,15 @@ Begin
    End;
   End;
 
-  $69: Begin { IMUL r, r/m, imm32 }
+  $69: Begin { IMUL r, r/m, imm (imm16 si prefixe 66, sinon imm32) }
    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
    Val1 := Elf64_ReadOperand(EA, OpSize);
-   Imm32 := Elf64_FetchImm32Signed;
-   If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+   If OpSize = 16 Then
+    Val2 := QWord(Word(Elf64_FetchImm16Signed))
+   Else Begin
+    Imm32 := Elf64_FetchImm32Signed;
+    If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+   End;
    Elf64_SetReg(RegField, OpSize, Elf64_ImulTrunc(Val1, Val2, OpSize));
   End;
   $6B: Begin { IMUL r, r/m, imm8 (signe-etendu) }
@@ -42115,12 +42524,16 @@ Begin
    ResVal := Elf64_AluCompute(GroupOp, Val1, QWord(Byte(Imm8)), 8);
    If GroupOp <> 7 Then Elf64_WriteOperand(EA, 8, ResVal);
   End;
-  $81: Begin { groupe 1 : Ev, iz }
+  $81: Begin { groupe 1 : Ev, iz (iz = imm16 si prefixe 66, sinon imm32) }
    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
    GroupOp := RegField And 7;
-   Imm32 := Elf64_FetchImm32Signed;
    Val1 := Elf64_ReadOperand(EA, OpSize);
-   If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+   If OpSize = 16 Then
+    Val2 := QWord(Word(Elf64_FetchImm16Signed))
+   Else Begin
+    Imm32 := Elf64_FetchImm32Signed;
+    If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+   End;
    ResVal := Elf64_AluCompute(GroupOp, Val1, Val2, OpSize);
    If GroupOp <> 7 Then Elf64_WriteOperand(EA, OpSize, ResVal);
   End;
@@ -42287,13 +42700,20 @@ Begin
    Elf64_SetReg(RegField, OpSize, Elf64_ResolveEA(EA));
   End;
 
-  $B8..$BF: Begin { MOV r32/r64, imm32/imm64 (registre code dans l opcode) }
+  $B0..$B7: Begin { MOV r8, imm8 (registre code dans l opcode) }
+   RegField := (Op - $B0);
+   If RexB Then RegField := RegField Or 8;
+   Elf64_SetReg(RegField, 8, QWord(Elf64_FetchByte));
+  End;
+  $B8..$BF: Begin { MOV r16/r32/r64, imm (registre code dans l opcode) }
    RegField := (Op - $B8);
    If RexB Then RegField := RegField Or 8;
    If RexW Then Begin
     Imm64 := Elf64_FetchImm64;
     Elf64_SetReg(RegField, 64, Imm64);
-   End Else Begin
+   End Else If Saw66 Then
+    Elf64_SetReg(RegField, 16, QWord(Word(Elf64_FetchImm16Signed)))
+   Else Begin
     Imm32 := Elf64_FetchImm32Signed;
     Elf64_SetReg(RegField, 32, QWord(LongWord(Imm32)));
    End;
@@ -42304,13 +42724,19 @@ Begin
    Imm8 := Elf64_FetchImm8Signed;
    Elf64_WriteOperand(EA, 8, QWord(Byte(Imm8)));
   End;
-  $C7: Begin { MOV r/m, imm32 (signe-etendu si REX.W) }
+  $C7: Begin { MOV r/m, imm (imm16 si prefixe 66, sinon imm32 signe-etendu }
+             { si REX.W) - l immediat DOIT suivre la taille d operande,   }
+             { sinon le decodage des instructions suivantes se desynchronise.}
    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
-   Imm32 := Elf64_FetchImm32Signed;
-   If OpSize = 64 Then
-    Elf64_WriteOperand(EA, 64, QWord(Int64(Imm32)))
-   Else
-    Elf64_WriteOperand(EA, OpSize, QWord(LongWord(Imm32)));
+   If OpSize = 16 Then
+    Elf64_WriteOperand(EA, 16, QWord(Word(Elf64_FetchImm16Signed)))
+   Else Begin
+    Imm32 := Elf64_FetchImm32Signed;
+    If OpSize = 64 Then
+     Elf64_WriteOperand(EA, 64, QWord(Int64(Imm32)))
+    Else
+     Elf64_WriteOperand(EA, OpSize, QWord(LongWord(Imm32)));
+   End;
   End;
 
   $50..$57: Elf64_Push(ELF64_Reg[(Op - $50) Or Ord(RexB) Shl 3]);
@@ -42456,10 +42882,14 @@ Begin
    EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
    GroupOp := RegField And 7;
    Case GroupOp Of
-    0, 1: Begin
-     Imm32 := Elf64_FetchImm32Signed;
+    0, 1: Begin { TEST Ev, iz (iz = imm16 si prefixe 66, sinon imm32) }
      Val1 := Elf64_ReadOperand(EA, OpSize);
-     If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+     If OpSize = 16 Then
+      Val2 := QWord(Word(Elf64_FetchImm16Signed))
+     Else Begin
+      Imm32 := Elf64_FetchImm32Signed;
+      If OpSize = 64 Then Val2 := QWord(Int64(Imm32)) Else Val2 := QWord(LongWord(Imm32));
+     End;
      Elf64_SetFlagsLogic(Val1 And Val2, OpSize);
     End;
     2: Begin
@@ -57301,6 +57731,8 @@ Var
  IsZ80: Boolean;
  Is6809: Boolean;
  IsELF64: Boolean;
+ TraceI, TraceN: LongInt;
+ TraceLine: String;
  CPUName: String;
  EntryAddr: LongInt;
  EntryAddr16: Word;
@@ -58441,6 +58873,23 @@ Begin NesActive := False;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  { Historique des dernieres adresses executees (etat 7d : diagnostic    }
+  { leger avant un vrai debogueur pas-a-pas) - aide a retracer le chemin }
+  { d execution ayant mene a l arret, notamment un saut errant.          }
+  If ELF64_Halted Then Begin
+   EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
+   For TraceI := TraceN - 1 DownTo 0 Do Begin
+    TraceLine := 'RIP=0x' +
+     HexQWord(ELF64_TraceRIP[(ELF64_TraceCount - 1 - TraceI) And 1023]) +
+     '  RSP=0x' +
+     HexQWord(ELF64_TraceRSP[(ELF64_TraceCount - 1 - TraceI) And 1023]);
+    EmuVScr_WriteStr(P, TraceLine);
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   End;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
   P.CurFg := OldFg; P.CurBg := OldBg;
   P.Running := False;
