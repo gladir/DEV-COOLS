@@ -4174,6 +4174,13 @@ Var
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
  EmuStepsToTick : LongInt;       { decompte avant prochain tick }
  EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
+ { --- CMOS RAM/RTC (MC146818-like, 64 registres) - accessible via les   }
+ { ports 70h/71h (defaut) ou E0h/E1h quand Materiel = Amdek System/88,   }
+ { voir Emu_PortRead/Emu_PortWrite et Emu_CMOSPorts. Persiste pour toute }
+ { la session DEVENV (pile de sauvegarde simulee), pas seulement pour    }
+ { l execution emulee en cours - comme la pile CMOS d un vrai AT. }
+ EmuCMOS_Index  : Byte;          { registre d index (bit7 = masque NMI) }
+ EmuCMOS_Reg    : Array[0..63] Of Byte; { registres 02h-3Fh (RAM/config) }
  EmuTraceBuf    : Array[0..8191] Of Record
    CS, IP: Word; Op: Byte;
    ES, DI, CX, AX: Word;
@@ -44872,11 +44879,90 @@ Begin
  End;
 End;
 
+{ --- CMOS RAM/RTC (type MC146818, comme un AT) : les registres 00h-09h }
+{ (horloge/date) sont calcules a la volee depuis l horloge hote (BCD,   }
+{ le mode par defaut d un vrai AT) ; 0Ah-3Fh sont de la RAM generale    }
+{ conservee dans EmuCMOS_Reg (initialisee par Emu_CMOSInit). Les ports  }
+{ d acces dependent du Materiel choisi dans Options > Emulateur > DOS : }
+{ 70h/71h partout, SAUF pour l Amdek System/88 qui a le meme CMOS "de   }
+{ type AT" mais sur des ports differents (E0h/E1h) - voir               }
+{ https://www.gladir.com/LEXIQUE/PORTS/00e0to00e1.htm et                }
+{ https://www.gladir.com/LEXIQUE/SYSTEM/amdeksystem88.htm.              }
+Function Emu_BCD(V: Byte): Byte;
+Begin
+ Emu_BCD := ((V Div 10) Shl 4) Or (V Mod 10);
+End;
+
+Procedure Emu_CMOSInit;
+Begin
+ FillChar(EmuCMOS_Reg, SizeOf(EmuCMOS_Reg), 0);
+ EmuCMOS_Index := 0;
+ EmuCMOS_Reg[$0A] := $26; { Registre A : frequences par defaut }
+ EmuCMOS_Reg[$0B] := $02; { Registre B : format 24h, mode BCD }
+ EmuCMOS_Reg[$0D] := $80; { Registre D : pile CMOS valide (VRT) }
+ EmuCMOS_Reg[$10] := $40; { Type lecteurs disquette : A: 1,44 Mo }
+ EmuCMOS_Reg[$14] := $2D; { Octet d equipement : disquette, VGA, 2 ports }
+ EmuCMOS_Reg[$15] := $80; { Memoire conventionnelle 640 Ko, octet bas }
+ EmuCMOS_Reg[$16] := $02; { Memoire conventionnelle 640 Ko, octet haut }
+End;
+
+{ Determine les deux ports d acces au CMOS (index/donnees) selon le     }
+{ materiel emule actuellement selectionne. }
+Procedure Emu_CMOSPorts(Var IdxPort, DataPort: Word);
+Begin
+ If OptionsDlg.Data.DosHardware = 4 Then Begin { Amdek System/88 }
+  IdxPort := $E0;
+  DataPort := $E1;
+ End Else Begin
+  IdxPort := $70;
+  DataPort := $71;
+ End;
+End;
+
+Function Emu_CMOS_ReadReg(Reg: Byte): Byte;
+Var
+ Yr, Mo, Dy, Wd: Word;
+ Hr, Mn, Sc, Cs: Word;
+Begin
+ Case Reg Of
+  $00: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Sc); End;
+  $02: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Mn); End;
+  $04: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Hr); End;
+  $06: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Wd + 1; End;
+  $07: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Emu_BCD(Dy); End;
+  $08: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Emu_BCD(Mo); End;
+  $09: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Emu_BCD(Yr Mod 100); End;
+  { Registre A : bit7 (UIP) toujours a 0 - jamais "en cours de mise a jour" }
+  $0A: Emu_CMOS_ReadReg := EmuCMOS_Reg[$0A] And $7F;
+  { Registre D : bit7 (VRT) toujours a 1 - pile CMOS toujours valide }
+  $0D: Emu_CMOS_ReadReg := EmuCMOS_Reg[$0D] Or $80;
+  Else Emu_CMOS_ReadReg := EmuCMOS_Reg[Reg];
+ End;
+End;
+
+Procedure Emu_CMOS_WriteReg(Reg: Byte; Value: Byte);
+Begin
+ { 00h-09h (horloge/alarme) : lecture seule - l heure emulee vient de    }
+ { l horloge hote, on ne simule pas le reglage de l heure/alarme. }
+ If Reg > $09 Then EmuCMOS_Reg[Reg] := Value;
+End;
+
 { --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
       Les ports non ger?s retournent 0. --- }
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
+Var
+ CmosIdxPort, CmosDataPort: Word;
 Begin
  Emu_PortRead := 0;
+ Emu_CMOSPorts(CmosIdxPort, CmosDataPort);
+ If Port = CmosIdxPort Then Begin
+  Emu_PortRead := EmuCMOS_Index;
+  Exit;
+ End;
+ If Port = CmosDataPort Then Begin
+  Emu_PortRead := Emu_CMOS_ReadReg(EmuCMOS_Index And $3F);
+  Exit;
+ End;
  Case Port Of
   $40, $41, $42: Begin
    { PIT 8253 - lecture de compteur. Retourne un compteur libre. }
@@ -44886,13 +44972,23 @@ Begin
   $43: Emu_PortRead := 0;
   $60: Emu_PortRead := P.CPU.NextRawKey;
   $61: Emu_PortRead := EmuVideo.StatusRetrace Xor $30;
-  $70, $71: Emu_PortRead := 0;
   $3B4..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
  End;
 End;
 
 Procedure Emu_PortWrite(Var P: TEmulatorPanel; Port: Word; Value: Byte);
+Var
+ CmosIdxPort, CmosDataPort: Word;
 Begin
+ Emu_CMOSPorts(CmosIdxPort, CmosDataPort);
+ If Port = CmosIdxPort Then Begin
+  EmuCMOS_Index := Value;
+  Exit;
+ End;
+ If Port = CmosDataPort Then Begin
+  Emu_CMOS_WriteReg(EmuCMOS_Index And $3F, Value);
+  Exit;
+ End;
  Case Port Of
   $3B4..$3DF: Emu_VidPortWrite(Port, Value);
  End;
@@ -71238,6 +71334,7 @@ BEGIN
  InitOptions(Opts);
  ParseCommandLine(Opts);
  LoadOptions(OptionsDlg.Data, OPT_CFG_FILENAME);
+ Emu_CMOSInit;
  Emu_FloppyOpenAll;
  Emu_HardDiskOpenAll;
  If Opts.Verbose Then
