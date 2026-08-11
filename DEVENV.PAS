@@ -32351,25 +32351,94 @@ Begin
  End;
 End;
 
-{ Entree sur un fichier ".NES" : lance l emulateur NES integre plutot que }
-{ de ne rien faire (comme le ferait NC pour un fichier non associe) -    }
-{ seul le disque hote est supporte (comme NCActionView/NCActionEdit),    }
-{ la disquette virtuelle FAT n exposant pas de chemin hote direct que    }
+{ Un ".EXE" peut etre un vrai executable DOS 16 bits (en-tete MZ pur) ou }
+{ un executable Win32/Win64 moderne (en-tete MZ suivi d un en-tete PE,   }
+{ le classique stub "This program cannot be run in DOS mode") - seul le }
+{ premier cas doit etre lance dans l emulateur 8086 integre. Le champ   }
+{ e_lfanew (offset $3C) pointe vers la signature secondaire : 'PE'#0#0  }
+{ pour Win32/Win64, 'NE' pour Windows 16 bits, 'LE'/'LX' pour OS/2/VxD  }
+{ - toute autre valeur (ou l absence d en-tete secondaire exploitable)  }
+{ signe un executable MZ classique. Un ".COM" n a pas d en-tete du tout }
+{ (code brut charge a CS:0100h) et est donc toujours du DOS 16 bits.    }
+Function NCIsDos16Exe(Const Path: String): Boolean;
+Var
+ F: File;
+ Sig: Array[0..1] Of Char;
+ LfanewBuf: Array[0..3] Of Byte;
+ HdrSig: Array[0..3] Of Char;
+ Lfanew: LongInt;
+ FSize: LongInt;
+ BytesRead: Word;
+Begin
+ NCIsDos16Exe := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FSize := FileSize(F);
+ If FSize < 64 Then Begin
+  Close(F);
+  Exit;
+ End;
+ BlockRead(F, Sig, 2, BytesRead);
+ If (BytesRead <> 2) Or (Sig[0] <> 'M') Or (Sig[1] <> 'Z') Then Begin
+  Close(F);
+  Exit;
+ End;
+ Seek(F, $3C);
+ BlockRead(F, LfanewBuf, 4, BytesRead);
+ If BytesRead <> 4 Then Begin
+  Close(F);
+  NCIsDos16Exe := True;
+  Exit;
+ End;
+ Lfanew := LongInt(LfanewBuf[0]) Or (LongInt(LfanewBuf[1]) Shl 8) Or
+  (LongInt(LfanewBuf[2]) Shl 16) Or (LongInt(LfanewBuf[3]) Shl 24);
+ If (Lfanew <= 0) Or (Lfanew + 4 > FSize) Then Begin
+  Close(F);
+  NCIsDos16Exe := True;
+  Exit;
+ End;
+ Seek(F, Lfanew);
+ BlockRead(F, HdrSig, 4, BytesRead);
+ Close(F);
+ If BytesRead <> 4 Then Begin
+  NCIsDos16Exe := True;
+  Exit;
+ End;
+ If (HdrSig[0] = 'P') And (HdrSig[1] = 'E') And (HdrSig[2] = #0) And
+    (HdrSig[3] = #0) Then Exit;
+ If (HdrSig[0] = 'N') And (HdrSig[1] = 'E') Then Exit;
+ If (HdrSig[0] = 'L') And ((HdrSig[1] = 'E') Or (HdrSig[1] = 'X')) Then
+  Exit;
+ NCIsDos16Exe := True;
+End;
+
+{ Entree sur un fichier associe a un emulateur integre plutot que de ne  }
+{ rien faire (comme le ferait NC pour un fichier non associe) - seul le }
+{ disque hote est supporte (comme NCActionView/NCActionEdit), la        }
+{ disquette virtuelle FAT n exposant pas de chemin hote direct que      }
 { ShowEmulatorPanel puisse ouvrir. Renvoie True si le fichier a ete pris }
 { en charge (l appelant ne doit alors rien faire d autre).               }
 Function NCActionOpenAssociated(Side: Integer): Boolean;
 Var
  E: TNCEntry;
- Ext: String;
+ Ext, FullPath: String;
 Begin
  NCActionOpenAssociated := False;
  If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
   E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
   If Not E.IsDir Then Begin
    Ext := UpCaseStr(NCExtractExt(E.Name));
+   FullPath := NCFullPath(NCState.Panes[Side].Path, E.Name);
    If Ext = 'NES' Then Begin
-    ShowEmulatorPanel(EmuPanel, NCFullPath(NCState.Panes[Side].Path, E.Name),
-     '-CNES', '');
+    ShowEmulatorPanel(EmuPanel, FullPath, '-CNES', '');
+    NCActionOpenAssociated := True;
+   End
+   Else If (Ext = 'COM') Or
+    ((Ext = 'EXE') And NCIsDos16Exe(FullPath)) Then Begin
+    ShowEmulatorPanel(EmuPanel, FullPath, '-CD', '');
     NCActionOpenAssociated := True;
    End;
   End;
