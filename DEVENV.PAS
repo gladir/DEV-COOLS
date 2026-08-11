@@ -1310,7 +1310,12 @@ Const
  OPT_DLG_WIDTH        = 620;     { largeur dialogue options         }
  OPT_DLG_HEIGHT       = 480;     { hauteur dialogue options (agrandie }
                                   { pour la page Emulateur > DOS,      }
-                                  { la plus chargee - 13 lignes)       }
+                                  { la plus chargee - 13 lignes) -     }
+                                  { DEJA au maximum permis par la      }
+                                  { resolution graphique (480px) : ne  }
+                                  { plus agrandir, combiner des lignes }
+                                  { de cases a cocher si de nouveaux   }
+                                  { champs sont ajoutes.               }
  OPT_TREE_WIDTH       = 200;     { largeur arbre de categories      }
  OPT_TREE_NODE_HEIGHT = 20;      { hauteur noeud arbre              }
  OPT_TREE_INDENT      = 16;      { indentation noeuds enfants       }
@@ -1324,6 +1329,7 @@ Const
  DOS_TYPE_COUNT       = 7;       { nombre de types de DOS emulables }
  DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
  DOS_HARDWARE_COUNT   = 10;      { nombre de modeles de materiel    }
+ DOS_VIDEO_COUNT      = 21;      { nombre de cartes video emulables }
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -3312,6 +3318,8 @@ Type
   DosCPUIDDetect  : Boolean;     { CPUID detecte                  }
   DosCPUVendor    : Integer;     { fabricant CPU rapporte par CPUID}
   DosHardware     : Integer;     { modele de materiel emule        }
+  DosVideo1       : Integer;     { carte video primaire emulee    }
+  DosVideo2       : Integer;     { carte video secondaire emulee  }
   DosEmu8087      : Boolean;     { emulation 8087 activee         }
   DosEmu80286     : Boolean;     { emulation 80286                }
   DosEmu80386     : Boolean;     { emulation 80386                }
@@ -3338,6 +3346,7 @@ Type
   Modified        : Boolean;     { parametres modifies            }
   Confirmed       : Boolean;     { True si valide par OK          }
   DosDropdownOpen : Integer;     { 0=aucun 1=Type 2=CPU 3=Materiel }
+                                  { 4=Video1 5=Video2               }
                                   { menu deroulant ouvert page DOS  }
  End;
 
@@ -36384,6 +36393,71 @@ Begin
  End;
 End;
 
+Function DosVideoName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosVideoName := 'CGA';
+  1: DosVideoName := 'MDA';
+  2: DosVideoName := 'Hercules';
+  3: DosVideoName := 'Graphics Solutions d''ATI';
+  4: DosVideoName := 'PC Junior';
+  5: DosVideoName := 'EGA';
+  6: DosVideoName := 'ATI EGA Wonder';
+  7: DosVideoName := 'Lava Chrome II EGA';
+  8: DosVideoName := 'VGA';
+  9: DosVideoName := 'Orchid ProDesigner VGA';
+  10: DosVideoName := 'XGA';
+  11: DosVideoName := 'IBM 8514/A';
+  12: DosVideoName := 'Tseng Labs ET3000';
+  13: DosVideoName := 'Tseng Labs ET4000';
+  14: DosVideoName := 'Tseng Labs ET6000';
+  15: DosVideoName := 'Trident VGA/8900';
+  16: DosVideoName := 'Matrox MGA Millennium';
+  17: DosVideoName := 'Matrox Mystique';
+  18: DosVideoName := 'Matrox Millennium G200';
+  19: DosVideoName := 'Matrox Millennium G400';
+  20: DosVideoName := 'NVidia GeForce 6';
+ Else
+  DosVideoName := '???';
+ End;
+End;
+
+{ Une liste deroulante de la page Emulateur > DOS peut compter plus     }
+{ d items (ex: Video 1/2, DOS_VIDEO_COUNT=21) que de place disponible   }
+{ entre le champ et le bas du dialogue - sans quoi les derniers items   }
+{ seraient dessines hors du canevas graphique (rogne par le ClipOn du   }
+{ SetViewPort) et donc inaccessibles au clic. Ces deux fonctions        }
+{ calculent une fenetre de defilement centree sur l item courant ;      }
+{ DrawOptionsEmuDOS (dessin) et HandleDosDropdownClick (clic) DOIVENT   }
+{ appeler les deux avec les memes RowIdx/Count/CurIdx pour rester       }
+{ synchronises. }
+Function DosDropdownVisibleCount(Var Dlg: TOptionsDialog;
+ RowIdx, Count: Integer): Integer;
+Var
+ ListTop, AvailBelow, MaxVisible: Integer;
+Begin
+ ListTop := OptRowY(Dlg, RowIdx) + OPT_FIELD_HEIGHT + 2;
+ AvailBelow := (Dlg.Base.Y + Dlg.Base.Height) - ListTop;
+ MaxVisible := AvailBelow Div OPT_DROPDOWN_ITEM_H;
+ If MaxVisible < 1 Then MaxVisible := 1;
+ If MaxVisible > Count Then MaxVisible := Count;
+ DosDropdownVisibleCount := MaxVisible;
+End;
+
+Function DosDropdownScrollStart(CurIdx, Count, MaxVisible: Integer): Integer;
+Var
+ Start: Integer;
+Begin
+ If Count <= MaxVisible Then Begin
+  DosDropdownScrollStart := 0;
+  Exit;
+ End;
+ Start := CurIdx - MaxVisible Div 2;
+ If Start < 0 Then Start := 0;
+ If Start > Count - MaxVisible Then Start := Count - MaxVisible;
+ DosDropdownScrollStart := Start;
+End;
+
 { ============================================================
   TODO 22 - BOITES DE DIALOGUE : PROJET ET SOLUTION [IMPLEMENTE]
   ============================================================ }
@@ -59987,6 +60061,8 @@ Begin
  D.DosCPUIDDetect := True;
  D.DosCPUVendor := 0;
  D.DosHardware := 2;
+ D.DosVideo1 := 8;
+ D.DosVideo2 := 8;
  D.DosEmu8087 := True;
  D.DosEmu80286 := True;
  D.DosEmu80386 := True;
@@ -60738,6 +60814,25 @@ Var
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
+ { Deux cases a cocher independantes sur UNE seule ligne (la seconde     }
+ { debutant a X2 pixels de FX) - permet de gagner des lignes vu le       }
+ { nombre de champs de cette page ; X2 doit correspondre au seuil        }
+ { utilise cote clic dans HandleOptionsEvent (OC_EMU_DOS, FieldIdx       }
+ { 11 et 12). }
+ Procedure Check2(Checked1: Boolean; Const Cap1: String; X2: Integer;
+  Checked2: Boolean; Const Cap2: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked1 Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Cap1, CLR_WINDOWTEXT);
+  DrawRect(FX + X2, BaseY, FX + X2 + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked2 Then DrawCheckMark(FX + X2, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + X2 + OPT_CHECK_SIZE + 6, BaseY, Cap2, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
  { Case a cocher + champ "Taille" sur la MEME ligne (au lieu de deux      }
  { lignes separees) pour gagner de la place vu le nombre de lignes que    }
  { cette page comporte deja. }
@@ -60770,17 +60865,23 @@ Var
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
- { Dessine la liste ouverte d un menu deroulant (Count items nommes par  }
- { NameOf) juste sous la ligne RowIdx, en recouvrant les lignes          }
- { suivantes - comme un vrai menu deroulant. }
+ { Dessine la liste ouverte d un menu deroulant (Count items) juste sous }
+ { la ligne RowIdx, en recouvrant les lignes suivantes - comme un vrai   }
+ { menu deroulant. Si Count depasse ce qui tient entre le champ et le    }
+ { bas du dialogue (ex: les 21 cartes video), seule une fenetre de       }
+ { DosDropdownVisibleCount items centree sur CurIdx est dessinee - voir  }
+ { le commentaire pres de DosDropdownScrollStart. }
  Procedure OpenList(RowIdx, Count, CurIdx: Integer);
  Var
-  LI: Integer;
+  LI, MaxVisible, ScrollStart, ActualIdx: Integer;
  Begin
   ListTop := OptRowY(Dlg, RowIdx) + OPT_FIELD_HEIGHT + 2;
-  For LI := 0 To Count - 1 Do Begin
+  MaxVisible := DosDropdownVisibleCount(Dlg, RowIdx, Count);
+  ScrollStart := DosDropdownScrollStart(CurIdx, Count, MaxVisible);
+  For LI := 0 To MaxVisible - 1 Do Begin
+   ActualIdx := ScrollStart + LI;
    ItemY := ListTop + LI * OPT_DROPDOWN_ITEM_H;
-   If LI = CurIdx Then
+   If ActualIdx = CurIdx Then
     DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
      ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_TITLEBAR_ACTIVE)
    Else
@@ -60789,12 +60890,14 @@ Var
    DrawRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
     ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_BORDER);
    Case Dlg.DosDropdownOpen Of
-    1: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(LI),
+    1: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(ActualIdx),
         CLR_WINDOWTEXT);
-    2: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosCPUVendorName(LI),
-        CLR_WINDOWTEXT);
-    3: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosHardwareName(LI),
-        CLR_WINDOWTEXT);
+    2: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
+        DosCPUVendorName(ActualIdx), CLR_WINDOWTEXT);
+    3: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
+        DosHardwareName(ActualIdx), CLR_WINDOWTEXT);
+    4, 5: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
+        DosVideoName(ActualIdx), CLR_WINDOWTEXT);
    End;
   End;
  End;
@@ -60811,15 +60914,17 @@ Begin
  Dropdown('Identifiant CPU :',                                   { Row 2 }
   DosCPUVendorName(Dlg.Data.DosCPUVendor));
  Dropdown('Materiel :', DosHardwareName(Dlg.Data.DosHardware));  { Row 3 }
- Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');           { Row 4 }
- Check(Dlg.Data.DosEmu80286, 'Emulation 80286');                 { Row 5 }
- Check(Dlg.Data.DosEmu80386, 'Emulation 80386');                 { Row 6 }
- CheckWithSize(Dlg.Data.DosXMS, 'XMS', Dlg.Data.DosXMSSize);     { Row 7 }
- CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize);     { Row 8 }
- Check(Dlg.Data.DosMSCDEX, 'MSCDEX');                            { Row 9 }
- Check(Dlg.Data.DosSouris, 'Souris');                            { Row 10 }
- Check(Dlg.Data.DosNovell, 'Reseau Novell NetWare');             { Row 11 }
- Check(Dlg.Data.DosLAN, 'Reseau LAN');                           { Row 12 }
+ Dropdown('Video 1 :', DosVideoName(Dlg.Data.DosVideo1));        { Row 4 }
+ Dropdown('Video 2 :', DosVideoName(Dlg.Data.DosVideo2));        { Row 5 }
+ Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');           { Row 6 }
+ Check(Dlg.Data.DosEmu80286, 'Emulation 80286');                 { Row 7 }
+ Check(Dlg.Data.DosEmu80386, 'Emulation 80386');                 { Row 8 }
+ CheckWithSize(Dlg.Data.DosXMS, 'XMS', Dlg.Data.DosXMSSize);     { Row 9 }
+ CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize);     { Row 10 }
+ Check2(Dlg.Data.DosMSCDEX, 'MSCDEX', 150,                       { Row 11 }
+  Dlg.Data.DosSouris, 'Souris');
+ Check2(Dlg.Data.DosNovell, 'Reseau Novell NetWare', 230,        { Row 12 }
+  Dlg.Data.DosLAN, 'Reseau LAN');
 
  { Liste deroulante ouverte, le cas echeant - dessinee EN DERNIER pour   }
  { recouvrir les lignes qui suivent son champ, comme un vrai menu        }
@@ -60828,6 +60933,8 @@ Begin
   1: OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType);
   2: OpenList(2, DOS_CPU_VENDOR_COUNT, Dlg.Data.DosCPUVendor);
   3: OpenList(3, DOS_HARDWARE_COUNT, Dlg.Data.DosHardware);
+  4: OpenList(4, DOS_VIDEO_COUNT, Dlg.Data.DosVideo1);
+  5: OpenList(5, DOS_VIDEO_COUNT, Dlg.Data.DosVideo2);
  End;
 End;
 
@@ -61022,27 +61129,41 @@ End;
 { comportement standard d un menu deroulant. }
 Procedure HandleDosDropdownClick(Var Dlg: TOptionsDialog; MX, MY: Integer);
 Var
- FX, FW, ListTop, Count, Idx: Integer;
+ FX, FW, ListTop, Count, RowIdx, CurIdx, MaxVisible, ScrollStart,
+  Idx: Integer;
 Begin
  FX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
  FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
  Case Dlg.DosDropdownOpen Of
-  1: Begin ListTop := OptRowY(Dlg, 0) + OPT_FIELD_HEIGHT + 2;
-      Count := DOS_TYPE_COUNT; End;
-  2: Begin ListTop := OptRowY(Dlg, 2) + OPT_FIELD_HEIGHT + 2;
-      Count := DOS_CPU_VENDOR_COUNT; End;
-  3: Begin ListTop := OptRowY(Dlg, 3) + OPT_FIELD_HEIGHT + 2;
-      Count := DOS_HARDWARE_COUNT; End;
+  1: Begin RowIdx := 0; Count := DOS_TYPE_COUNT;
+      CurIdx := Dlg.Data.DosType; End;
+  2: Begin RowIdx := 2; Count := DOS_CPU_VENDOR_COUNT;
+      CurIdx := Dlg.Data.DosCPUVendor; End;
+  3: Begin RowIdx := 3; Count := DOS_HARDWARE_COUNT;
+      CurIdx := Dlg.Data.DosHardware; End;
+  4: Begin RowIdx := 4; Count := DOS_VIDEO_COUNT;
+      CurIdx := Dlg.Data.DosVideo1; End;
+  5: Begin RowIdx := 5; Count := DOS_VIDEO_COUNT;
+      CurIdx := Dlg.Data.DosVideo2; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
+ { Meme fenetre de defilement que celle dessinee par OpenList (voir      }
+ { DosDropdownVisibleCount/DosDropdownScrollStart) - indispensable pour  }
+ { que le clic tombe sur l item reellement affiche quand la liste est    }
+ { plus longue que l espace disponible (ex: les 21 cartes video). }
+ ListTop := OptRowY(Dlg, RowIdx) + OPT_FIELD_HEIGHT + 2;
+ MaxVisible := DosDropdownVisibleCount(Dlg, RowIdx, Count);
+ ScrollStart := DosDropdownScrollStart(CurIdx, Count, MaxVisible);
  If (MX >= FX + OPT_LABEL_WIDTH) And (MX <= FX + FW) And
-    (MY >= ListTop) And (MY < ListTop + Count * OPT_DROPDOWN_ITEM_H) Then
+    (MY >= ListTop) And (MY < ListTop + MaxVisible * OPT_DROPDOWN_ITEM_H) Then
  Begin
-  Idx := (MY - ListTop) Div OPT_DROPDOWN_ITEM_H;
+  Idx := ScrollStart + (MY - ListTop) Div OPT_DROPDOWN_ITEM_H;
   Case Dlg.DosDropdownOpen Of
    1: Dlg.Data.DosType := Idx;
    2: Dlg.Data.DosCPUVendor := Idx;
    3: Dlg.Data.DosHardware := Idx;
+   4: Dlg.Data.DosVideo1 := Idx;
+   5: Dlg.Data.DosVideo2 := Idx;
   End;
   Dlg.Modified := True;
  End;
@@ -61265,40 +61386,45 @@ Begin
        End;
        2: Dlg.DosDropdownOpen := 2;  { Identifiant CPU }
        3: Dlg.DosDropdownOpen := 3;  { Materiel }
-       4: Begin
+       4: Dlg.DosDropdownOpen := 4;  { Video 1 }
+       5: Dlg.DosDropdownOpen := 5;  { Video 2 }
+       6: Begin
         Dlg.Data.DosEmu8087 := Not Dlg.Data.DosEmu8087;
         Dlg.Modified := True;
        End;
-       5: Begin
+       7: Begin
         Dlg.Data.DosEmu80286 := Not Dlg.Data.DosEmu80286;
         Dlg.Modified := True;
        End;
-       6: Begin
+       8: Begin
         Dlg.Data.DosEmu80386 := Not Dlg.Data.DosEmu80386;
         Dlg.Modified := True;
        End;
-       7: Begin
+       9: Begin
         Dlg.Data.DosXMS := Not Dlg.Data.DosXMS;
         Dlg.Modified := True;
        End;
-       8: Begin
+       10: Begin
         Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
         Dlg.Modified := True;
        End;
-       9: Begin
-        Dlg.Data.DosMSCDEX := Not Dlg.Data.DosMSCDEX;
-        Dlg.Modified := True;
-       End;
-       10: Begin
-        Dlg.Data.DosSouris := Not Dlg.Data.DosSouris;
-        Dlg.Modified := True;
-       End;
        11: Begin
-        Dlg.Data.DosNovell := Not Dlg.Data.DosNovell;
+        { Deux cases sur une ligne (voir Check2 dans DrawOptionsEmuDOS) - }
+        { le seuil 150 doit rester identique a celui passe a Check2.      }
+        If Ev.MouseX < Dlg.Base.X + OPT_TREE_WIDTH +
+         OPT_PANEL_PADDING + 150 Then
+         Dlg.Data.DosMSCDEX := Not Dlg.Data.DosMSCDEX
+        Else
+         Dlg.Data.DosSouris := Not Dlg.Data.DosSouris;
         Dlg.Modified := True;
        End;
        12: Begin
-        Dlg.Data.DosLAN := Not Dlg.Data.DosLAN;
+        { Idem, seuil 230 - voir Check2 dans DrawOptionsEmuDOS. }
+        If Ev.MouseX < Dlg.Base.X + OPT_TREE_WIDTH +
+         OPT_PANEL_PADDING + 230 Then
+         Dlg.Data.DosNovell := Not Dlg.Data.DosNovell
+        Else
+         Dlg.Data.DosLAN := Not Dlg.Data.DosLAN;
         Dlg.Modified := True;
        End;
       End;
@@ -61459,6 +61585,10 @@ Begin
  WriteCfgLine(F, 'DosCPUVendor', S);
  Str(Data.DosHardware, S);
  WriteCfgLine(F, 'DosHardware', S);
+ Str(Data.DosVideo1, S);
+ WriteCfgLine(F, 'DosVideo1', S);
+ Str(Data.DosVideo2, S);
+ WriteCfgLine(F, 'DosVideo2', S);
  WriteCfgLine(F, 'DosEmu8087', BoolToStr(Data.DosEmu8087));
  WriteCfgLine(F, 'DosEmu80286', BoolToStr(Data.DosEmu80286));
  WriteCfgLine(F, 'DosEmu80386', BoolToStr(Data.DosEmu80386));
@@ -61594,6 +61724,20 @@ Begin
    If (Code <> 0) Or (Data.DosHardware < 0) Or
       (Data.DosHardware >= DOS_HARDWARE_COUNT) Then
     Data.DosHardware := 2;
+  End
+  Else If Key = 'DosVideo1' Then
+  Begin
+   Val(Value, Data.DosVideo1, Code);
+   If (Code <> 0) Or (Data.DosVideo1 < 0) Or
+      (Data.DosVideo1 >= DOS_VIDEO_COUNT) Then
+    Data.DosVideo1 := 8;
+  End
+  Else If Key = 'DosVideo2' Then
+  Begin
+   Val(Value, Data.DosVideo2, Code);
+   If (Code <> 0) Or (Data.DosVideo2 < 0) Or
+      (Data.DosVideo2 >= DOS_VIDEO_COUNT) Then
+    Data.DosVideo2 := 8;
   End
   Else If Key = 'DosEmu8087' Then
    Data.DosEmu8087 := StrToBool(Value)
