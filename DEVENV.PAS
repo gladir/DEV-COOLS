@@ -4242,6 +4242,12 @@ Var
  { commande terminal ELFBP ; l execution s arrete proprement des que RIP }
  { atteint cette adresse, avant meme de decoder l instruction.           }
  ELF64_BreakAddr : QWord;
+ { Compteur d occurrences (etape 11 : debogueur a compteur de passages) - }
+ { ELFBP <adresse> <n> n arrete qu au n-ieme passage par cette adresse,   }
+ { ce qui permet d observer l etat des registres a une iteration donnee  }
+ { d une boucle profonde plutot que seulement la toute premiere fois.    }
+ ELF64_BreakHitTarget : QWord;
+ ELF64_BreakHitCount  : QWord;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : Array[0..$FFFF] Of Byte;
  CPU6502_A      : Byte;
@@ -30071,15 +30077,28 @@ Begin
 End;
 
 Procedure TermCmd_ELFBP(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ AddrPart, CountPart: String;
 Begin
  ParamStr := TermTrim(ParamStr);
  If (ParamStr = '') Or (UpCaseStr(ParamStr) = 'OFF') Then Begin
   ELF64_BreakAddr := 0;
+  ELF64_BreakHitTarget := 1;
   TermAddLine(TP, 'Point d''arret ELF64 desactive.');
  End Else Begin
-  ELF64_BreakAddr := Elf64_ParseHexQWord(ParamStr);
+  { Syntaxe : ELFBP <adresse> [n] - n (optionnel, defaut 1) : ne s arrete }
+  { qu au n-ieme passage par cette adresse, pas le premier - utile pour   }
+  { inspecter l etat des registres a une iteration donnee d une boucle    }
+  { profonde plutot que seulement la toute premiere fois.                 }
+  AddrPart := TermExtractParam(ParamStr, 1);
+  CountPart := TermExtractParam(ParamStr, 2);
+  ELF64_BreakAddr := Elf64_ParseHexQWord(AddrPart);
+  If CountPart = '' Then ELF64_BreakHitTarget := 1
+                    Else ELF64_BreakHitTarget := Elf64_ParseHexQWord(CountPart);
+  If ELF64_BreakHitTarget = 0 Then ELF64_BreakHitTarget := 1;
   TermAddLine(TP, 'Point d''arret ELF64 regle a 0x' + HexQWord(ELF64_BreakAddr) +
-   ' (prendra effet au prochain programme Linux lance dans ce terminal).');
+   ' (passage numero ' + IntToStr(LongInt(ELF64_BreakHitTarget)) +
+   ') - prendra effet au prochain programme Linux lance dans ce terminal.');
  End;
 End;
 
@@ -40592,6 +40611,7 @@ Begin
  ELF64_BinaryPath := FileName;
  ELF64_Halted := False;
  ELF64_LastBadRIP := 0;
+ ELF64_BreakHitCount := 0;
  ELF64_ExitCode := 0;
  ELF64_InstrCount := 0;
  ELF64_TraceCount := 0;
@@ -42145,10 +42165,14 @@ Begin
   Exit;
  End;
  If (ELF64_BreakAddr <> 0) And (StartRIP = ELF64_BreakAddr) Then Begin
-  ELF64_Halted := True;
-  ELF64_LastBadRIP := StartRIP;
-  ELF64_HaltReason := 'Point d''arret atteint : RIP = 0x' + HexQWord(StartRIP);
-  Exit;
+  Inc(ELF64_BreakHitCount);
+  If ELF64_BreakHitCount >= ELF64_BreakHitTarget Then Begin
+   ELF64_Halted := True;
+   ELF64_LastBadRIP := StartRIP;
+   ELF64_HaltReason := 'Point d''arret atteint : RIP = 0x' + HexQWord(StartRIP) +
+    ' (passage numero ' + IntToStr(LongInt(ELF64_BreakHitCount)) + ')';
+   Exit;
+  End;
  End;
  ELF64_TraceRIP[ELF64_TraceCount And 1023] := StartRIP;
  ELF64_TraceRSP[ELF64_TraceCount And 1023] := ELF64_Reg[REG_RSP];
@@ -42950,6 +42974,29 @@ Begin
    Elf64_SetReg(RegField, OpSize, Elf64_ResolveEA(EA));
   End;
 
+  $A0: Begin { MOV AL, moffs8 : AL <- octet a l adresse absolue (64 bits)   }
+             { qui suit directement l opcode (pas de ModRM pour cette forme}
+             { rare d adressage direct, utilisee par certains acces a des  }
+             { variables globales statiquement connues).                  }
+   Addr := Elf64_FetchImm64;
+   Elf64_SetReg(REG_RAX, 8, Emu64_GetByte(Addr));
+  End;
+  $A1: Begin { MOV eAX/rAX, moffs (32/64 bits selon la taille d operande) }
+   Addr := Elf64_FetchImm64;
+   If OpSize = 64 Then Elf64_SetReg(REG_RAX, 64, Emu64_GetQWord(Addr))
+   Else If OpSize = 16 Then Elf64_SetReg(REG_RAX, 16, Emu64_GetWord(Addr))
+   Else Elf64_SetReg(REG_RAX, 32, Emu64_GetDWord(Addr));
+  End;
+  $A2: Begin { MOV moffs8, AL }
+   Addr := Elf64_FetchImm64;
+   Emu64_PutByte(Addr, Byte(ELF64_Reg[REG_RAX] And $FF));
+  End;
+  $A3: Begin { MOV moffs, eAX/rAX }
+   Addr := Elf64_FetchImm64;
+   If OpSize = 64 Then Emu64_PutQWord(Addr, ELF64_Reg[REG_RAX])
+   Else If OpSize = 16 Then Emu64_PutWord(Addr, Word(ELF64_Reg[REG_RAX] And $FFFF))
+   Else Emu64_PutDWord(Addr, LongWord(ELF64_Reg[REG_RAX] And $FFFFFFFF));
+  End;
   $B0..$B7: Begin { MOV r8, imm8 (registre code dans l opcode) }
    RegField := (Op - $B0);
    If RexB Then RegField := RegField Or 8;
@@ -43010,6 +43057,30 @@ Begin
   $EB: Begin { JMP rel8 }
    Imm8 := Elf64_FetchImm8Signed;
    ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
+  End;
+
+  $E2: Begin { LOOP rel8 : decremente RCX, saute si RCX <> 0 }
+   Imm8 := Elf64_FetchImm8Signed;
+   ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+   If ELF64_Reg[REG_RCX] <> 0 Then
+    ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
+  End;
+  $E1: Begin { LOOPE/LOOPZ rel8 : saute si RCX<>0 apres decrement ET ZF=1 }
+   Imm8 := Elf64_FetchImm8Signed;
+   ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+   If (ELF64_Reg[REG_RCX] <> 0) And ELF64_FZF Then
+    ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
+  End;
+  $E0: Begin { LOOPNE/LOOPNZ rel8 : saute si RCX<>0 apres decrement ET ZF=0 }
+   Imm8 := Elf64_FetchImm8Signed;
+   ELF64_Reg[REG_RCX] := ELF64_Reg[REG_RCX] - 1;
+   If (ELF64_Reg[REG_RCX] <> 0) And (Not ELF64_FZF) Then
+    ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
+  End;
+  $E3: Begin { JRCXZ rel8 : saute si RCX = 0 (sans decrement) }
+   Imm8 := Elf64_FetchImm8Signed;
+   If ELF64_Reg[REG_RCX] = 0 Then
+    ELF64_RIP := QWord(Int64(ELF64_RIP) + Int64(Imm8));
   End;
 
   $70..$7F: Begin { Jcc rel8 }
@@ -59118,6 +59189,14 @@ Begin NesActive := False;
   EmuVScr_WriteStr(P, 'RSP : 0x' + HexQWord(ELF64_Reg[REG_RSP]) +
    '   RDI : 0x' + HexQWord(ELF64_Reg[REG_RDI]));
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RCX : 0x' + HexQWord(ELF64_Reg[REG_RCX]) +
+   '   RDX : 0x' + HexQWord(ELF64_Reg[REG_RDX]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RSI : 0x' + HexQWord(ELF64_Reg[REG_RSI]) +
+   '   RBX : 0x' + HexQWord(ELF64_Reg[REG_RBX]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RBP : 0x' + HexQWord(ELF64_Reg[REG_RBP]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   If ELF64_LastBadRIP <> 0 Then Begin
    EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
     HexQWord(ELF64_LastBadRIP));
@@ -59127,11 +59206,13 @@ Begin NesActive := False;
   { Historique des dernieres adresses executees (etat 7d : diagnostic    }
   { leger avant un vrai debogueur pas-a-pas) - aide a retracer le chemin }
   { d execution ayant mene a l arret, notamment un saut errant. Affiche   }
-  { uniquement en cas d arret anormal (ELF64_LastBadRIP <> 0, mis a jour  }
-  { par tous les points d arret d erreur) - PAS lors d une fin de         }
-  { programme normale (sys_exit), sinon ce bruit de diagnostic masque le  }
-  { resultat reel affiche par le programme invite juste au-dessus.        }
-  If ELF64_Halted And (ELF64_LastBadRIP <> 0) Then Begin
+  { en cas d arret anormal (ELF64_LastBadRIP <> 0, mis a jour par tous    }
+  { les points d arret d erreur) OU quand la limite d instructions est    }
+  { atteinte (Not ELF64_Halted a ce point - utile pour diagnostiquer une  }
+  { veritable boucle infinie) - PAS lors d une fin de programme normale   }
+  { (sys_exit), sinon ce bruit de diagnostic masque le resultat reel      }
+  { affiche par le programme invite juste au-dessus.                     }
+  If (ELF64_LastBadRIP <> 0) Or (Not ELF64_Halted) Then Begin
    EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
