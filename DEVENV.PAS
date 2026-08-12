@@ -1322,6 +1322,12 @@ Const
  OPT_PANEL_PADDING    = 12;      { marge dans le panneau parametres }
  OPT_FIELD_HEIGHT     = 22;      { hauteur champ de saisie          }
  OPT_LABEL_WIDTH      = 180;     { largeur etiquette                }
+ { Largeur d etiquette reduite specifique au champ "Version EMS" (DOS: OS) }
+ { dont les valeurs sont plus longues que ce que OPT_LABEL_WIDTH laisse de }
+ { place - voir DrawOptionsEmuDOSOS et HandleDosDropdownClick, qui         }
+ { doivent tous deux utiliser cette meme constante pour rester synchronises}
+ { entre l affichage et la detection de clic. }
+ OPT_EMS_VER_LABEL_WIDTH = 100;
  OPT_ROW_SPACING      = 28;      { espacement vertical entre lignes }
  OPT_CHECK_SIZE       = 14;      { taille case a cocher             }
  OPT_SBAR_WIDTH       = 14;      { largeur scrollbar arbre categories}
@@ -3680,6 +3686,10 @@ Type
   DosDropdownOpen : Integer;     { 0=aucun 1=Type 2=CPU 3=Materiel }
                                   { 4=Video1 5=Video2               }
                                   { menu deroulant ouvert page DOS  }
+  { Edition du champ "Taille" (Ko) de XMS/EMS (page DOS: OS) : voir       }
+  { DrawOptionsEmuDOSOS (CheckWithSize) et HandleOptionsEvent/Key. }
+  SizeEditField   : Integer;     { 0=aucun, 1=XMS, 2=EMS           }
+  SizeEditBuf     : String[6];   { texte en cours de frappe (Ko)   }
  End;
 
  { Portee de recherche }
@@ -64535,36 +64545,55 @@ Var
  S: String;
  ListTop, ItemY: Integer;
 
+ { FieldId identifie ce champ "Taille" pour l edition au clavier (1=XMS,   }
+ { 2=EMS - voir Dlg.SizeEditField/SizeEditBuf, HandleOptionsEvent/Key).    }
+ { Tant que ce champ est en cours d edition, affiche le texte en train    }
+ { d etre tape (avec un curseur "_") sur fond blanc en surbrillance au     }
+ { lieu de la valeur statique "NNNN Ko". }
  Procedure CheckWithSize(Checked: Boolean; Const Caption: String;
-  KoValue: Integer);
+  KoValue, FieldId: Integer);
  Begin
   DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
    BaseY + OPT_CHECK_SIZE, CLR_BORDER);
   If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
   DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
   DrawText(FX + 130, BaseY, 'Taille :', CLR_WINDOWTEXT);
-  Str(KoValue, S);
   DrawFilledRect(FX + 200, BaseY - 2, FX + 280, BaseY + OPT_FIELD_HEIGHT,
    CLR_WINDOW);
-  DrawRect(FX + 200, BaseY - 2, FX + 280, BaseY + OPT_FIELD_HEIGHT,
-   CLR_BORDER);
-  DrawText(FX + 204, BaseY, S + ' Ko', CLR_WINDOWTEXT);
+  If Dlg.SizeEditField = FieldId Then Begin
+   DrawRect(FX + 200, BaseY - 2, FX + 280, BaseY + OPT_FIELD_HEIGHT,
+    CLR_TITLEBAR_ACTIVE);
+   DrawText(FX + 204, BaseY, Dlg.SizeEditBuf + '_', CLR_WINDOWTEXT);
+  End Else Begin
+   DrawRect(FX + 200, BaseY - 2, FX + 280, BaseY + OPT_FIELD_HEIGHT,
+    CLR_BORDER);
+   Str(KoValue, S);
+   DrawText(FX + 204, BaseY, S + ' Ko', CLR_WINDOWTEXT);
+  End;
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
- Procedure Dropdown(Const Caption, ValueText: String);
+ { LabelW : largeur reservee a l etiquette avant le champ - normalement   }
+ { OPT_LABEL_WIDTH (coherent avec toutes les autres pages), mais reduite   }
+ { pour "Version EMS" dont les valeurs (ex. "LIM/Microsoft EMS 4.0 (+      }
+ { 4Eh-59h)") sont plus longues que ce que la largeur standard laisse de   }
+ { place une fois l etiquette "Version EMS :" (bien plus courte que le     }
+ { pire cas "Fabricant reseau LAN :" qui dimensionne OPT_LABEL_WIDTH) -    }
+ { voir aussi HandleDosDropdownClick qui doit utiliser la MEME valeur pour }
+ { que les clics tombent au bon endroit. }
+ Procedure Dropdown(Const Caption, ValueText: String; LabelW: Integer);
  Begin
   DrawText(FX, BaseY, Caption, CLR_WINDOWTEXT);
-  DrawFilledRect(FX + OPT_LABEL_WIDTH, BaseY - 2, FX + FW,
+  DrawFilledRect(FX + LabelW, BaseY - 2, FX + FW,
    BaseY + OPT_FIELD_HEIGHT, CLR_WINDOW);
-  DrawRect(FX + OPT_LABEL_WIDTH, BaseY - 2, FX + FW,
+  DrawRect(FX + LabelW, BaseY - 2, FX + FW,
    BaseY + OPT_FIELD_HEIGHT, CLR_BORDER);
-  DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, ValueText, CLR_WINDOWTEXT);
+  DrawText(FX + LabelW + 4, BaseY, ValueText, CLR_WINDOWTEXT);
   DrawText(FX + FW - 14, BaseY, 'v', CLR_WINDOWTEXT);
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
- Procedure OpenList(RowIdx, Count, CurIdx: Integer);
+ Procedure OpenList(RowIdx, Count, CurIdx, LabelW: Integer);
  Var
   LI, MaxVisible, ScrollStart, ActualIdx, FG: Integer;
   ListRight, ListBottom, SbLeft, SbUpY, SbDnY, TrackH, ThumbH, ThumbY: Integer;
@@ -64577,23 +64606,23 @@ Var
   HasScroll := Count > MaxVisible;
   ListRight := FX + FW;
   If HasScroll Then ListRight := ListRight - OPT_SBAR_WIDTH;
-  DrawFilledRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
+  DrawFilledRect(FX + LabelW, ListTop, ListRight, ListBottom - 1,
    CLR_WINDOW);
   For LI := 0 To MaxVisible - 1 Do Begin
    ActualIdx := ScrollStart + LI;
    ItemY := ListTop + LI * OPT_DROPDOWN_ITEM_H;
    If ActualIdx = CurIdx Then Begin
-    DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, ListRight,
+    DrawFilledRect(FX + LabelW, ItemY, ListRight,
      ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_TITLEBAR_ACTIVE);
     FG := 15;
    End Else
     FG := CLR_WINDOWTEXT;
    If Dlg.DosDropdownOpen = 1 Then
-    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(ActualIdx), FG)
+    DrawText(FX + LabelW + 4, ItemY + 2, DosTypeName(ActualIdx), FG)
    Else If Dlg.DosDropdownOpen = 7 Then
-    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosEMSVersionName(ActualIdx), FG);
+    DrawText(FX + LabelW + 4, ItemY + 2, DosEMSVersionName(ActualIdx), FG);
   End;
-  DrawRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
+  DrawRect(FX + LabelW, ListTop, ListRight, ListBottom - 1,
    CLR_BORDER);
   If Not HasScroll Then Exit;
   SbLeft := ListRight;
@@ -64628,16 +64657,18 @@ Begin
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
  DrawText(FX, BaseY, 'Emulateur > DOS: OS', CLR_WINDOWTEXT);
  BaseY := BaseY + OPT_ROW_SPACING;
- Dropdown('Type de DOS :', DosTypeName(Dlg.Data.DosType));      { Row 0 }
- CheckWithSize(Dlg.Data.DosXMS, 'XMS', Dlg.Data.DosXMSSize);    { Row 1 }
- CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize);    { Row 2 }
+ Dropdown('Type de DOS :', DosTypeName(Dlg.Data.DosType),       { Row 0 }
+  OPT_LABEL_WIDTH);
+ CheckWithSize(Dlg.Data.DosXMS, 'XMS', Dlg.Data.DosXMSSize, 1); { Row 1 }
+ CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize, 2); { Row 2 }
  Dropdown('Version EMS :',                                     { Row 3 }
-  DosEMSVersionName(Dlg.Data.DosEMSVersion));
+  DosEMSVersionName(Dlg.Data.DosEMSVersion), OPT_EMS_VER_LABEL_WIDTH);
 
  If Dlg.DosDropdownOpen = 1 Then
-  OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType)
+  OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType, OPT_LABEL_WIDTH)
  Else If Dlg.DosDropdownOpen = 7 Then
-  OpenList(3, DOS_EMS_VERSION_COUNT, Dlg.Data.DosEMSVersion);
+  OpenList(3, DOS_EMS_VERSION_COUNT, Dlg.Data.DosEMSVersion,
+   OPT_EMS_VER_LABEL_WIDTH);
 End;
 
 { --- Dessiner la page Emulateur > DOS: Logiciel --- }
@@ -64895,6 +64926,29 @@ Begin
  End;
 End;
 
+{ Valide (ou abandonne si vide/invalide) le champ "Taille" XMS/EMS en      }
+{ cours d edition (voir Dlg.SizeEditField/SizeEditBuf) et referme          }
+{ l edition - appelee a la fois par Entree (HandleOptionsKey) et par tout  }
+{ clic ailleurs dans le dialogue (HandleOptionsEvent), comme un champ de   }
+{ saisie Windows normal qui valide en perdant le focus. }
+Procedure CommitSizeEdit(Var Dlg: TOptionsDialog);
+Var V, Code: Integer;
+Begin
+ If Dlg.SizeEditField = 0 Then Exit;
+ If Length(Dlg.SizeEditBuf) > 0 Then Begin
+  Val(Dlg.SizeEditBuf, V, Code);
+  If (Code = 0) And (V > 0) Then Begin
+   Case Dlg.SizeEditField Of
+    1: Dlg.Data.DosXMSSize := V;
+    2: Dlg.Data.DosEMSSize := V;
+   End;
+   Dlg.Modified := True;
+  End;
+ End;
+ Dlg.SizeEditField := 0;
+ Dlg.SizeEditBuf := '';
+End;
+
 { --- Gestion des touches dans le dialogue options --- }
 
 Procedure HandleOptionsKey(Var Dlg: TOptionsDialog;
@@ -64902,6 +64956,28 @@ Procedure HandleOptionsKey(Var Dlg: TOptionsDialog;
 Var
  DDCount, DDCur: Integer;
 Begin
+ { Champ "Taille" XMS/EMS en cours d edition (voir CommitSizeEdit) : les   }
+ { caracteres tapes arrivent ici avec Key=Ord(caractere) - EV_KEY_CHAR     }
+ { pose TOUJOURS Ev.KeyCode:=Ord(Ev.KeyChar) (voir PollEvents), donc les   }
+ { chiffres, Retour arriere (8), Entree (13) et Echap (27) sont tous       }
+ { directement testables sur Key comme pour n importe quel autre champ de }
+ { texte de cet IDE. }
+ If Dlg.SizeEditField <> 0 Then
+ Begin
+  If (Key >= Ord('0')) And (Key <= Ord('9')) Then Begin
+   If Length(Dlg.SizeEditBuf) < 6 Then
+    Dlg.SizeEditBuf := Dlg.SizeEditBuf + Chr(Key);
+  End Else If Key = 8 Then Begin { Retour arriere }
+   If Length(Dlg.SizeEditBuf) > 0 Then
+    Delete(Dlg.SizeEditBuf, Length(Dlg.SizeEditBuf), 1);
+  End Else If Key = 13 Then { Entree : valider }
+   CommitSizeEdit(Dlg)
+  Else If Key = 27 Then Begin { Echap : abandonner sans changer la valeur }
+   Dlg.SizeEditField := 0;
+   Dlg.SizeEditBuf := '';
+  End;
+  Exit;
+ End;
  { Menu deroulant ouvert (page Emulateur > DOS) : les fleches haut/bas    }
  { deplacent la selection DANS la liste (comme un vrai combobox Windows) }
  { au lieu de deplacer la selection dans l arbre de categories ; Entree   }
@@ -64991,7 +65067,7 @@ End;
 Procedure HandleDosDropdownClick(Var Dlg: TOptionsDialog; MX, MY: Integer);
 Var
  FX, FW, ListTop, ListBottom, ListRight, SbUpY, SbDnY: Integer;
- Count, RowIdx, CurIdx, MaxVisible, ScrollStart, Idx: Integer;
+ Count, RowIdx, CurIdx, MaxVisible, ScrollStart, Idx, LabelW: Integer;
  HasScroll: Boolean;
 
  Procedure Apply(NewIdx: Integer);
@@ -65031,6 +65107,10 @@ Begin
       CurIdx := Dlg.Data.DosEMSVersion; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
+ { LabelW doit rester synchronise avec DrawOptionsEmuDOSOS (Dropdown/       }
+ { OpenList) - voir OPT_EMS_VER_LABEL_WIDTH. }
+ If Dlg.DosDropdownOpen = 7 Then LabelW := OPT_EMS_VER_LABEL_WIDTH
+ Else LabelW := OPT_LABEL_WIDTH;
  { Meme geometrie que celle dessinee par OpenList (voir                  }
  { DosDropdownVisibleCount/DosDropdownScrollStart) - indispensable pour  }
  { que le clic tombe sur l item/le bouton reellement affiche. }
@@ -65042,7 +65122,7 @@ Begin
  ListRight := FX + FW;
  If HasScroll Then ListRight := ListRight - OPT_SBAR_WIDTH;
  { Clic sur un item de la liste : le selectionne et referme. }
- If (MX >= FX + OPT_LABEL_WIDTH) And (MX < ListRight) And
+ If (MX >= FX + LabelW) And (MX < ListRight) And
     (MY >= ListTop) And (MY < ListBottom - 1) Then
  Begin
   Apply(ScrollStart + (MY - ListTop) Div OPT_DROPDOWN_ITEM_H);
@@ -65089,6 +65169,12 @@ Begin
   End;
   EV_MOUSE_DOWN:
   Begin
+   { Un champ "Taille" XMS/EMS en cours d edition valide (ou abandonne si  }
+   { vide) des qu on clique ailleurs, comme un champ de texte Windows      }
+   { normal qui perd le focus - avant tout autre traitement du clic, pour }
+   { qu un clic qui ouvre par ailleurs un autre champ/menu voie un etat    }
+   { deja propre. }
+   CommitSizeEdit(Dlg);
    { Un menu deroulant ouvert (page Emulateur > DOS) intercepte le clic  }
    { AVANT toute autre zone - il recouvre visuellement les lignes qui    }
    { suivent son champ, donc les tester normalement donnerait de faux    }
@@ -65314,12 +65400,27 @@ Begin
       Case FieldIdx Of
        0: Dlg.DosDropdownOpen := 1;  { Type de DOS }
        1: Begin
-        Dlg.Data.DosXMS := Not Dlg.Data.DosXMS;
-        Dlg.Modified := True;
+        { Clic sur le champ "Taille" (a partir de X=200 sur la ligne,      }
+        { voir CheckWithSize dans DrawOptionsEmuDOSOS) : entrer en         }
+        { edition plutot que basculer la case a cocher XMS. }
+        If Ev.MouseX >= Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING + 200
+        Then Begin
+         Dlg.SizeEditField := 1;
+         Str(Dlg.Data.DosXMSSize, Dlg.SizeEditBuf);
+        End Else Begin
+         Dlg.Data.DosXMS := Not Dlg.Data.DosXMS;
+         Dlg.Modified := True;
+        End;
        End;
        2: Begin
-        Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
-        Dlg.Modified := True;
+        If Ev.MouseX >= Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING + 200
+        Then Begin
+         Dlg.SizeEditField := 2;
+         Str(Dlg.Data.DosEMSSize, Dlg.SizeEditBuf);
+        End Else Begin
+         Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
+         Dlg.Modified := True;
+        End;
        End;
        3: Dlg.DosDropdownOpen := 7;  { Version EMS }
       End;
