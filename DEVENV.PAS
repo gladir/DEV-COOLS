@@ -48456,6 +48456,25 @@ Begin
  End;
 End;
 
+{ INT 1Ah : services horloge temps reel. Seul AH=00h (lire le compteur de  }
+{ ticks 18.2 Hz depuis minuit, deja tenu a jour dans la BDA 0040:006C par  }
+{ Emu_TimerTick) est implante - c est le seul sous-service dont dependent  }
+{ les logiciels DOS classiques pour cadencer une boucle sur le temps reel  }
+{ (ex. GSDEMO1.COM qui mesure la frequence du retrace video via ce        }
+{ compteur). Sans ce handler, INT 1Ah ne faisait rien : AX/CX/DX du       }
+{ programme restaient inchanges et une boucle "attendre que le compteur   }
+{ change" tournait indefiniment. }
+Procedure Emu_DoInt1A(Var P: TEmulatorPanel);
+Begin
+ Case P.CPU.Regs.AH Of
+  $00: Begin
+   P.CPU.Regs.CX := Emu_ReadWord(P.CPU, $40, $6E); { poids fort }
+   P.CPU.Regs.DX := Emu_ReadWord(P.CPU, $40, $6C); { poids faible }
+   P.CPU.Regs.AL := 0; { drapeau minuit : non gere }
+  End;
+ End;
+End;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
@@ -48488,6 +48507,7 @@ Begin
    P.CPU.Regs.AX := 640;
   $13: Emu_DoInt13(P);
   $16: Emu_DoInt16(P);
+  $1A: Emu_DoInt1A(P);
   $20: P.CPU.Fault := sfEndProgram;
   $27: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
