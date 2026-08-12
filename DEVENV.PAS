@@ -3147,7 +3147,9 @@ Type
   CGAMode    : Byte;    { Mode Control Register $3D8         }
   CGAColor   : Byte;    { Color Select Register $3D9         }
   { --- Status (lecture de $3DA) --- }
-  StatusRetrace : Byte; { bit 0 = HRetrace, bit 3 = VRetrace }
+  StatusRetrace : Byte; { bit 0 = HRetrace (bascule a la lecture), bit 3 = }
+                         { VRetrace (libre, cadencee par VRetraceAcc)     }
+  VRetraceAcc   : LongInt; { accumulateur de pas CPU pour la bascule VRetrace }
   { --- Dirty flag pour le rendu graphique --- }
   GfxDirty   : Boolean;
   { --- Registres etendus ATI Graphics Solution ($3DD/$3DF) - carte sans   }
@@ -44942,10 +44944,14 @@ Begin
   $3D8: Emu_VidPortRead := EmuVideo.CGAMode;
   $3D9: Emu_VidPortRead := EmuVideo.CGAColor;
   $3BA, $3DA: Begin
-   { Status register : alterner pour simuler un retrace.
-     Tous les programmes regardent ces bits pour synchroniser. }
+   { Status register. Bit 3 (VRetrace) est cadence en temps reel par le  }
+   { pas CPU (voir boucle principale) et non par la lecture : certains   }
+   { logiciels (ex. GSDEMO1.COM) mesurent la frequence du retrace via le }
+   { timer BIOS pour detecter le type de moniteur, ce qui echoue si le   }
+   { bit ne bascule qu au gre des lectures. Bit 0 (HRetrace) continue de }
+   { basculer a chaque lecture pour les boucles anti-neige classiques.   }
    EmuVideo.ACFlipFlop := False;  { reset l'AC flip-flop sur lecture }
-   EmuVideo.StatusRetrace := EmuVideo.StatusRetrace Xor 9;
+   EmuVideo.StatusRetrace := EmuVideo.StatusRetrace Xor 1;
    Emu_VidPortRead := EmuVideo.StatusRetrace Or $06;
   End;
  End;
@@ -48578,6 +48584,8 @@ Begin
  EmuStepsPerTick := 5000;
  EmuStepsToTick  := EmuStepsPerTick;
  EmuIrqPending   := 0;
+ EmuVideo.StatusRetrace := 0;
+ EmuVideo.VRetraceAcc   := 0;
  { DOS demarre l application avec IF=1 (interruptions activees). }
  Include(P.CPU.Flags.s, EFG_IF);
 End;
@@ -60179,6 +60187,16 @@ Begin NesActive := False;
   EmuDbg_OnBeforeStep8086;
   Emu_StepOne(P);
   Inc(Steps);
+  { --- VRetrace ($3DA bit 3) libre, cadencee sur le nombre de pas CPU et }
+  { non sur la lecture du port : a 750 pas/demi-periode et               }
+  { EmuStepsPerTick=5000 pas/tick BIOS (18.2 Hz), on obtient ~60 cycles   }
+  { complets par 18 ticks BIOS, soit ~60 Hz - ce que des logiciels comme  }
+  { GSDEMO1.COM mesurent via INT 1Ah pour detecter le type de moniteur.  }
+  Inc(EmuVideo.VRetraceAcc);
+  If EmuVideo.VRetraceAcc >= 750 Then Begin
+    EmuVideo.VRetraceAcc := 0;
+    EmuVideo.StatusRetrace := EmuVideo.StatusRetrace Xor 8;
+  End;
   { --- IRQ mat?rielles --- }
   Dec(EmuStepsToTick);
   If EmuStepsToTick <= 0 Then Begin
