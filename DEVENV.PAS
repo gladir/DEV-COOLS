@@ -1632,6 +1632,15 @@ Const
  EMU_SPX_HDR_SIZE     = 12; { taille de l en-tete SPX (apres l en-tete IPX) }
  EMU_IPX_PKT_TYPE_SPX = 5;
 
+ { --- Zones memoire "scratch" (segment $F000, inutilise par ailleurs par }
+ { l emulateur 8086) reservees aux tampons du pilote de paquets generique }
+ { (INT 60h) pour les structures retournees par pointeur (get_statistics, }
+ { get_parameters) - voir Emu_Pkt_GetStatistics/GetParameters. }
+ EMU_PKT_STATS_SEG    = $F000;
+ EMU_PKT_STATS_OFS    = $0080;
+ EMU_PKT_PARAMS_SEG   = $F000;
+ EMU_PKT_PARAMS_OFS   = $00A0;
+
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
  MAX_CYCLES    = 100000;    { limite de surete 68k }
@@ -3254,6 +3263,80 @@ Type
   StubSeg, StubOfs : Word;         { adresse du stub resident CD 7A CB    }
  End;
 
+ { --- Pilote de paquets generique (Options > Emulateur > DOS > "Reseau    }
+ { LAN") - PC/TCP Packet Driver Specification (FTP Software/Crynwr,       }
+ { 1983), INT 60h. Voir Emu_DoInt60/Emu_PktInit. Modele "boucle locale"    }
+ { identique a la pile IPX : un seul noeud virtuel, tout SEND_PKT est      }
+ { compare aux filtres de TOUTES les poignees ouvertes et livre a celles   }
+ { qui correspondent - la difference fondamentale avec IPX est que la     }
+ { livraison d un paquet recu se fait EXCLUSIVEMENT par "upcall" (appel    }
+ { far synchrone en 2 temps dans la fonction receiver enregistree par     }
+ { l application, jamais par sondage d une structure comme le ECB IPX) :  }
+ { il n y a donc pas de raccourci possible, contrairement a l ESR IPX -    }
+ { voir Emu_PktCont/Emu_PktStartDelivery pour l injection reelle de code   }
+ { invite (meme principe que Emu_FireHwInt pour les IRQ materielles, mais  }
+ { enchainee sur 2 appels via un point de retour interne prive, INT FDh,   }
+ { plutot qu un simple IRET). }
+ TEmuPktHandle = Record
+  InUse    : Boolean;
+  IfClass  : Byte;                 { classe demandee (access_type AL)     }
+  TypeSpec : Array[0..15] Of Byte; { motif de correspondance du type      }
+  TypeLen  : Byte;                 { 0 = tout accepter (mode promiscuous) }
+  RecvSeg, RecvOfs : Word;         { ES:DI du recepteur enregistre        }
+  RcvMode  : Byte;                 { set_rcv_mode/get_rcv_mode, defaut 3  }
+ End;
+
+ { Machine a etats pour l injection de code invite en cours (livraison    }
+ { reception 2 temps OU upcall as_send_pkt 1 temps - Stage disambigue) :  }
+ {   Stage 0 = 1er appel recepteur (AX=0, demande de tampon) en vol       }
+ {   Stage 1 = 2e appel recepteur (AX=1, livraison) en vol                }
+ {   Stage 2 = upcall as_send_pkt (AX=resultat) en vol                    }
+ TEmuPktCont = Record
+  Pending  : Boolean;
+  Stage    : Byte;
+  HandleIdx: Integer;              { Stage 0/1 uniquement                }
+  PktLen   : Word;
+  Data     : TIpxBuf;
+  BufSeg, BufOfs   : Word;         { tampon fourni par l appli (Stage 0->1)}
+  SavedCS, SavedIP : Word;         { point de reprise apres toute la cascade}
+  UpcallSeg, UpcallOfs : Word;     { Stage 2 uniquement                  }
+ End;
+
+ TEmuPktBacklogItem = Record
+  InUse    : Boolean;
+  HandleIdx: Integer;
+  Len      : Word;
+  Data     : TIpxBuf;
+ End;
+
+ TEmuPktStats = Record
+  PacketsIn, PacketsOut : LongInt;
+  BytesIn, BytesOut     : LongInt;
+  ErrorsIn, ErrorsOut   : LongInt;
+  PacketsLost           : LongInt;
+ End;
+
+ TEmuPktState = Record
+  Active   : Boolean;
+  Vector   : Byte;                 { = $60, seul vecteur emule            }
+  LocalMAC : Array[0..5] Of Byte;  { adresse "materielle" synthetique     }
+  Handles  : Array[0..7] Of TEmuPktHandle;
+  NextHandleNum : Word;
+  Cont     : TEmuPktCont;
+  Backlog  : Array[0..7] Of TEmuPktBacklogItem; { autres poignees en      }
+                                    { attente pour le MEME paquet envoye  }
+  Stats    : TEmuPktStats;
+  StubSeg, StubOfs : Word;         { signature de decouverte (jmp+PKT DRVR)}
+  ContSeg, ContOfs : Word;         { trampoline de continuation (INT FDh) }
+  NameSeg, NameOfs : Word;         { chaine ASCIIZ du nom (driver_info)   }
+  { Upcall as_send_pkt (AH=11) en attente - voir Emu_PktFireAsSendUpcall  }
+  { et la limite documentee (un seul upcall en vol a la fois). }
+  AsSendPending    : Boolean;
+  AsSendUpcallSeg, AsSendUpcallOfs : Word;
+  AsSendBufSeg, AsSendBufOfs       : Word;
+  AsSendResult     : Word;
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -4313,6 +4396,8 @@ Var
  EmuVideo       : TEmuVideoState;
  { --- Etat de la pile reseau IPX/SPX (INT 7Ah/INT 2Fh AX=7A00h) --- }
  EmuIpx         : TEmuIpxState;
+ { --- Etat du pilote de paquets generique (INT 60h) --- }
+ EmuPkt         : TEmuPktState;
  { --- Etat de la souris emulee (INT 33h) --- }
  EmuMouseInst   : Boolean;       { driver "installe" }
  EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
@@ -6691,6 +6776,10 @@ Function Emu_CGAActive: Boolean; Forward;
 Function Emu_ATIActive: Boolean; Forward;
 Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
 Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
+{ Necessaire a NCCmd_ViewNetworkStatus (Disque > "Utilitaire reseau...") }
+{ pour lire la BDA (ports COM) bien avant la definition complete du      }
+{ sous-systeme d emulation 8086 plus bas dans ce fichier. }
+Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -32485,6 +32574,186 @@ Begin
  End;
 End;
 
+{ Disque > "Utilitaire reseau..." - extension DEV-COOLS sans equivalent   }
+{ dans l ORIGINAL : etat courant de tout ce qui touche au reseau dans     }
+{ l emulateur DOS 8086 (EmuPanel), pour qu un developpeur testant un      }
+{ programme reseau DOS puisse voir d un coup d oeil ce qui est reellement }
+{ emule (et donc pourquoi un programme peut echouer). Reutilise le        }
+{ visualiseur texte F3 (NCState.ViewLines/ViewCount) comme un fichier      }
+{ genere a la volee plutot qu un mode d affichage dedie. }
+Procedure NCCmd_ViewNetworkStatus;
+Var
+ I, TotalChars: Integer;
+ S: String;
+ AnyFound: Boolean;
+
+ Procedure Add(Const T: String);
+ Begin
+  If NCState.ViewCount < MAX_NC_VIEW_LINES Then Begin
+   NCState.ViewLines[NCState.ViewCount] := T;
+   Inc(NCState.ViewCount);
+  End;
+ End;
+
+Begin
+ NCState.ViewCount := 0;
+ NCState.ViewTop := 0;
+ NCState.ViewCol := 0;
+ NCState.ViewHex := False;
+ NCState.ViewWrap := False;
+ NCState.ViewFileName := 'Utilitaires reseau - etat de l''emulateur DOS';
+ NCState.ViewRawSize := 0;
+
+ Add('ETAT RESEAU DE L''EMULATEUR DOS (Options > Emulateur > DOS)');
+ Add('================================================================');
+ Add('');
+ Add('Reseau Novell (IPX/SPX) - INT 7Ah / INT 2Fh AX=7A00h');
+ Add('----------------------------------------------------------------');
+ If OptionsDlg.Data.DosNovell Then
+  Add('  Case "Reseau Novell NetWare"  : cochee')
+ Else
+  Add('  Case "Reseau Novell NetWare"  : DEcochee (pile inactive)');
+ If EmuIpx.Active Then Begin
+  Add('  Etat de la pile               : ACTIVE');
+  S := '  Adresse locale                : reseau ' +
+   HexByte(EmuIpx.LocalNet[0]) + '-' + HexByte(EmuIpx.LocalNet[1]) + '-' +
+   HexByte(EmuIpx.LocalNet[2]) + '-' + HexByte(EmuIpx.LocalNet[3]) +
+   ', noeud ' +
+   HexByte(EmuIpx.LocalNode[0]) + '-' + HexByte(EmuIpx.LocalNode[1]) + '-' +
+   HexByte(EmuIpx.LocalNode[2]) + '-' + HexByte(EmuIpx.LocalNode[3]) + '-' +
+   HexByte(EmuIpx.LocalNode[4]) + '-' + HexByte(EmuIpx.LocalNode[5]);
+  Add(S);
+  Add('');
+  Add('  Sockets ouverts :');
+  AnyFound := False;
+  For I := 0 To High(EmuIpx.Sockets) Do
+   If EmuIpx.Sockets[I].InUse Then Begin
+    Add('    - ' + HexWord(EmuIpx.Sockets[I].SocketNum) + 'h');
+    AnyFound := True;
+   End;
+  If Not AnyFound Then Add('    (aucun)');
+  Add('');
+  Add('  Ecoutes en attente (LISTEN poste, aucun paquet recu) :');
+  AnyFound := False;
+  For I := 0 To High(EmuIpx.Pending) Do
+   If EmuIpx.Pending[I].InUse Then Begin
+    Add('    - socket ' + HexWord(EmuIpx.Pending[I].SocketNum) + 'h, ECB a ' +
+     HexWord(EmuIpx.Pending[I].ECBSeg) + ':' + HexWord(EmuIpx.Pending[I].ECBOfs));
+    AnyFound := True;
+   End;
+  If Not AnyFound Then Add('    (aucune)');
+  Add('');
+  Add('  Paquets en file (SEND effectue, aucune ecoute correspondante) :');
+  AnyFound := False;
+  For I := 0 To High(EmuIpx.Queue) Do
+   If EmuIpx.Queue[I].InUse Then Begin
+    Add('    - destination ' + HexWord(EmuIpx.Queue[I].DestSocket) + 'h, ' +
+     IntToStr(EmuIpx.Queue[I].Len) + ' octets');
+    AnyFound := True;
+   End;
+  If Not AnyFound Then Add('    (aucun)');
+  Add('');
+  Add('  Connexions SPX actives :');
+  AnyFound := False;
+  For I := 0 To High(EmuIpx.Conns) Do
+   If EmuIpx.Conns[I].InUse Then Begin
+    S := '    - id ' + IntToStr(I + 1) + ' : local ' +
+     HexWord(EmuIpx.Conns[I].LocalSocket) + 'h <-> distant ' +
+     HexWord(EmuIpx.Conns[I].RemoteSocket) + 'h';
+    If EmuIpx.Conns[I].Established Then S := S + ' (etablie)'
+    Else S := S + ' (non etablie)';
+    Add(S);
+    AnyFound := True;
+   End;
+  If Not AnyFound Then Add('    (aucune)');
+ End Else Begin
+  Add('  Etat de la pile               : INACTIVE');
+  Add('  (INT 7Ah/INT 2Fh AX=7A00h ne repondent pas - comme une vraie');
+  Add('   machine sans IPX.COM/IPXODI charge)');
+ End;
+ Add('');
+
+ Add('Ports serie (COM1-COM4) - INT 14h');
+ Add('----------------------------------------------------------------');
+ If EmuPanel.CPU.MemReady Then Begin
+  Add('  COM1 (BDA 0040:0000) : ' + HexWord(Emu_ReadWord(EmuPanel.CPU, $40, $00)) + 'h');
+  Add('  COM2 (BDA 0040:0002) : ' + HexWord(Emu_ReadWord(EmuPanel.CPU, $40, $02)) + 'h');
+  Add('  COM3 (BDA 0040:0004) : ' + HexWord(Emu_ReadWord(EmuPanel.CPU, $40, $04)) + 'h');
+  Add('  COM4 (BDA 0040:0006) : ' + HexWord(Emu_ReadWord(EmuPanel.CPU, $40, $06)) + 'h');
+ End Else Begin
+  Add('  (zone de donnees BIOS indisponible - aucune session emulateur');
+  Add('   active pour l''instant : lancez d''abord un programme DOS)');
+ End;
+ Add('  => INT 14h (services serie BIOS) n''est PAS implante dans cet');
+ Add('     emulateur : tout logiciel DOS s''appuyant sur un modem ou un');
+ Add('     cable null-modem (jeux multijoueur par COM, LapLink/Interlnk,');
+ Add('     BBS/terminal) ne pourra pas fonctionner ici.');
+ Add('');
+
+ Add('Reseau LAN generique (PC/TCP Packet Driver Specification, INT 60h)');
+ Add('----------------------------------------------------------------');
+ If OptionsDlg.Data.DosLAN Then
+  Add('  Case "Reseau LAN"             : cochee')
+ Else
+  Add('  Case "Reseau LAN"             : DEcochee (pilote inactif)');
+ If EmuPkt.Active Then Begin
+  Add('  Etat du pilote                : ACTIF (vecteur INT 60h)');
+  S := '  Adresse locale                : ' +
+   HexByte(EmuPkt.LocalMAC[0]) + '-' + HexByte(EmuPkt.LocalMAC[1]) + '-' +
+   HexByte(EmuPkt.LocalMAC[2]) + '-' + HexByte(EmuPkt.LocalMAC[3]) + '-' +
+   HexByte(EmuPkt.LocalMAC[4]) + '-' + HexByte(EmuPkt.LocalMAC[5]);
+  Add(S);
+  Add('');
+  Add('  Poignees ouvertes (access_type) :');
+  AnyFound := False;
+  For I := 0 To High(EmuPkt.Handles) Do
+   If EmuPkt.Handles[I].InUse Then Begin
+    S := '    - handle ' + IntToStr(I + 1) + ' : classe ' +
+     IntToStr(EmuPkt.Handles[I].IfClass) + ', ';
+    If EmuPkt.Handles[I].TypeLen = 0 Then
+     S := S + 'tout accepter (promiscuous)'
+    Else
+     S := S + IntToStr(EmuPkt.Handles[I].TypeLen) + ' octet(s) de filtre';
+    S := S + ', mode reception ' + IntToStr(EmuPkt.Handles[I].RcvMode) +
+     ', recepteur ' + HexWord(EmuPkt.Handles[I].RecvSeg) + ':' +
+     HexWord(EmuPkt.Handles[I].RecvOfs);
+    Add(S);
+    AnyFound := True;
+   End;
+  If Not AnyFound Then Add('    (aucune)');
+  Add('');
+  Add('  Livraison en cours (cascade upcall recepteur/as_send_pkt) : ' );
+  If EmuPkt.Cont.Pending Then
+   Add('    oui (etape ' + IntToStr(EmuPkt.Cont.Stage) + ')')
+  Else
+   Add('    non');
+  Add('');
+  Add('  Statistiques :');
+  Add('    Paquets recus     : ' + IntToStr(EmuPkt.Stats.PacketsIn));
+  Add('    Paquets envoyes   : ' + IntToStr(EmuPkt.Stats.PacketsOut));
+  Add('    Octets recus      : ' + IntToStr(EmuPkt.Stats.BytesIn));
+  Add('    Octets envoyes    : ' + IntToStr(EmuPkt.Stats.BytesOut));
+  Add('    Paquets perdus    : ' + IntToStr(EmuPkt.Stats.PacketsLost) +
+   ' (file de livraison saturee)');
+ End Else Begin
+  Add('  Etat du pilote                : INACTIF');
+  Add('  (INT 60h ne repond pas - comme une vraie machine sans pilote de');
+  Add('   paquets charge : aucun octet "PKT DRVR" trouvable en memoire)');
+ End;
+ Add('  => Seule la specification Packet Driver (FTP Software/Crynwr) est');
+ Add('     emulee. Un logiciel cherchant specifiquement un pilote ODI');
+ Add('     (Novell Open Data-Link Interface) ou NDIS (Microsoft/3Com),');
+ Add('     architectures a chainage de pilotes distinctes, ne trouvera');
+ Add('     rien - seul le vecteur INT 60h "brut" ci-dessus existe.');
+
+ { Estimation de la taille pour l affichage (cosmetique, comme pour un   }
+ { vrai fichier charge par F3 - voir NCCmd_ViewFile). }
+ TotalChars := 0;
+ For I := 0 To NCState.ViewCount - 1 Do
+  TotalChars := TotalChars + Length(NCState.ViewLines[I]) + 2;
+ NCState.ViewFileSize := TotalChars;
+End;
+
 { --- Actions F3/F4/F5/F6/F7/F8/F10, extraites de HandleNCommanderEvent  }
 { pour etre appelables a la fois par la touche directe ET par le menu    }
 { deroulant F9 (NCMenuExecute, menu "Fichiers") - meme comportement,           }
@@ -32908,8 +33177,16 @@ Begin
    Else
     NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse);
    End;
-  2: { Disque : entierement non implemente, meme dans l ORIGINAL. }
-   NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse);
+  2: { Disque : le reste du menu (Copier/Formater une disquette, Nommer  }
+     { un disque, Nettoyage disque) reste non implemente, comme dans     }
+     { l ORIGINAL. "Utilitaire reseau..." (item 3) est une extension     }
+     { DEV-COOLS sans equivalent dans l ORIGINAL - voir                  }
+     { NCCmd_ViewNetworkStatus. }
+   If Item = 3 Then Begin
+    NCCmd_ViewNetworkStatus;
+    NCState.Mode := ncViewFile;
+   End Else
+    NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse);
   3: { Commandes : Arbre NCD, Historique, Permuter, Comparer et                 }
      { Synchroniser sont reellement cables (etape 4) ; le reste           }
      { (Recherche, Ligne EGA, Emulation terminal, editeurs/configuration)  }
@@ -49233,6 +49510,532 @@ Begin
  End;
 End;
 
+{ ========================================================================= }
+{ Pilote de paquets generique (Options > Emulateur > DOS > "Reseau LAN") -  }
+{ PC/TCP Packet Driver Specification (FTP Software / Crynwr Software,      }
+{ 1983), INT 60h. Source verifiee : http://www.ibiblio.org/towfiq/         }
+{ packet-d.html (texte integral de la specification). Modele "boucle      }
+{ locale" identique a la pile IPX/SPX ci-dessus (voir la section IPX pour  }
+{ la justification) : un seul noeud virtuel, tout SEND_PKT est compare aux }
+{ filtres de TOUTES les poignees ouvertes et livre a celles qui             }
+{ correspondent.                                                           }
+{                                                                          }
+{ Difference architecturale majeure avec IPX : la specification ne         }
+{ prevoit AUCUN mecanisme de sondage pour la reception - un paquet recu    }
+{ est TOUJOURS livre par un "upcall", un appel FAR synchrone en DEUX temps }
+{ dans la fonction "receiver" enregistree par l application (1er appel :   }
+{ demande de tampon, AX=0 ; 2e appel : livraison effective, AX=1). Il n y  }
+{ a donc pas de raccourci "on ecrit juste les champs et on laisse le        }
+{ programme sonder" comme pour l ECB IPX - il faut reellement rediriger    }
+{ le CPU emule vers le code de l application, le laisser executer          }
+{ normalement jusqu a son RETF, puis enchainer le second appel. Ceci       }
+{ reutilise le meme principe que Emu_FireHwInt (empiler une adresse de     }
+{ retour, sauter dans le gestionnaire) mais enchaine sur 2 appels via un   }
+{ point de retour interne prive (INT FDh, jamais utilise par du logiciel   }
+{ DOS reel) plutot qu un simple IRET - voir Emu_PktCont.                   }
+{                                                                          }
+{ Limite assumee : un seul upcall as_send_pkt() peut etre "en vol" a la    }
+{ fois (EmuPkt.AsSendPending) ; un second appel as_send_pkt() avant que    }
+{ le premier upcall n ait ete livre ecrase silencieusement le premier -    }
+{ cas limite juge acceptable (AH=11 est une extension haute performance    }
+{ rarement utilisee, contrairement a SEND_PKT/AH=4).                       }
+{ ========================================================================= }
+
+Function Emu_PktHandleSlot(HandleNum: Word): Integer;
+Var Idx: Integer;
+Begin
+ Emu_PktHandleSlot := -1;
+ If (HandleNum < 1) Or (HandleNum > High(EmuPkt.Handles) + 1) Then Exit;
+ Idx := HandleNum - 1;
+ If EmuPkt.Handles[Idx].InUse Then Emu_PktHandleSlot := Idx;
+End;
+
+{ Une poignee correspond si TypeLen=0 (mode "tout recevoir") ou si les     }
+{ TypeLen octets a l offset 12 de la trame (position de l "ethertype"      }
+{ DIX Ethernet, la seule classe d interface emulee - classe 1) egalent     }
+{ le motif enregistre. }
+Function Emu_PktMatchType(Var H: TEmuPktHandle; Var Frame: TIpxBuf;
+ FrameLen: Word): Boolean;
+Var I: Integer;
+Begin
+ Emu_PktMatchType := False;
+ If H.TypeLen = 0 Then Begin
+  Emu_PktMatchType := True;
+  Exit;
+ End;
+ If FrameLen < Word(12 + H.TypeLen) Then Exit;
+ For I := 0 To H.TypeLen - 1 Do
+  If Frame[12 + I] <> H.TypeSpec[I] Then Exit;
+ Emu_PktMatchType := True;
+End;
+
+{ Demarre (ou enchaine, si un upcall etait deja en attente) l upcall       }
+{ as_send_pkt - voir la limite documentee plus haut. Ne touche SavedCS/IP  }
+{ que si aucune cascade n etait en cours (Cont.Pending=False), pour ne pas }
+{ ecraser le point de reprise d une cascade de reception deja demarree. }
+Procedure Emu_PktFireAsSendUpcall(Var P: TEmulatorPanel);
+Begin
+ If Not EmuPkt.Cont.Pending Then Begin
+  EmuPkt.Cont.SavedCS := P.CPU.Segs.CS;
+  EmuPkt.Cont.SavedIP := P.CPU.IP;
+ End;
+ EmuPkt.AsSendPending := False;
+ EmuPkt.Cont.Pending := True;
+ EmuPkt.Cont.Stage := 2;
+ Emu_PushWord(P.CPU, EmuPkt.ContSeg);
+ Emu_PushWord(P.CPU, EmuPkt.ContOfs);
+ P.CPU.Regs.AX := EmuPkt.AsSendResult;
+ P.CPU.Segs.ES := EmuPkt.AsSendBufSeg;
+ P.CPU.Regs.DI := EmuPkt.AsSendBufOfs;
+ P.CPU.Segs.CS := EmuPkt.AsSendUpcallSeg;
+ P.CPU.IP := EmuPkt.AsSendUpcallOfs;
+End;
+
+{ Un "temps" de la cascade de reception vient de se terminer (soit le 2e   }
+{ appel recepteur, soit un refus au 1er appel) : sert le prochain paquet   }
+{ en file (Backlog) le cas echeant, sinon declenche un upcall as_send_pkt  }
+{ en attente, sinon reprend l execution du programme qui a declenche toute }
+{ la cascade (SavedCS/SavedIP). }
+Procedure Emu_PktContFinishOne(Var P: TEmulatorPanel);
+Var I: Integer; Found: Boolean;
+Begin
+ Found := False;
+ For I := 0 To High(EmuPkt.Backlog) Do
+  If EmuPkt.Backlog[I].InUse Then Begin
+   EmuPkt.Cont.Stage := 0;
+   EmuPkt.Cont.HandleIdx := EmuPkt.Backlog[I].HandleIdx;
+   EmuPkt.Cont.PktLen := EmuPkt.Backlog[I].Len;
+   EmuPkt.Cont.Data := EmuPkt.Backlog[I].Data;
+   EmuPkt.Backlog[I].InUse := False;
+   Emu_PushWord(P.CPU, EmuPkt.ContSeg);
+   Emu_PushWord(P.CPU, EmuPkt.ContOfs);
+   P.CPU.Regs.AX := 0;
+   P.CPU.Regs.BX := EmuPkt.Cont.HandleIdx + 1;
+   P.CPU.Regs.CX := EmuPkt.Cont.PktLen;
+   P.CPU.Segs.CS := EmuPkt.Handles[EmuPkt.Cont.HandleIdx].RecvSeg;
+   P.CPU.IP := EmuPkt.Handles[EmuPkt.Cont.HandleIdx].RecvOfs;
+   Found := True;
+   Break;
+  End;
+ If Found Then Exit;
+ If EmuPkt.AsSendPending Then
+  Emu_PktFireAsSendUpcall(P)
+ Else Begin
+  P.CPU.Segs.CS := EmuPkt.Cont.SavedCS;
+  P.CPU.IP := EmuPkt.Cont.SavedIP;
+  EmuPkt.Cont.Pending := False;
+ End;
+End;
+
+{ Gestionnaire du point de retour interne (INT FDh) : execute uniquement   }
+{ parce qu un RETF invite vient de "revenir" sur ce trampoline apres que    }
+{ Emu_PktDeliverToHandle/Emu_PktContFinishOne/Emu_PktFireAsSendUpcall ont   }
+{ redirige le CPU emule vers du code invite - voir l en-tete de section    }
+{ pour la justification de ce mecanisme. }
+Procedure Emu_PktCont(Var P: TEmulatorPanel);
+Var BufSeg, BufOfs: Word; I: Integer;
+Begin
+ If Not EmuPkt.Cont.Pending Then Exit; { securite, ne devrait pas arriver }
+ Case EmuPkt.Cont.Stage Of
+  0: Begin
+   { 1er appel recepteur (AX=0) vient de rendre la main : ES:DI = tampon   }
+   { fourni par l application, ou 0000:0000 si elle refuse le paquet.      }
+   BufSeg := P.CPU.Segs.ES; BufOfs := P.CPU.Regs.DI;
+   If (BufSeg = 0) And (BufOfs = 0) Then
+    Emu_PktContFinishOne(P)
+   Else Begin
+    For I := 0 To Integer(EmuPkt.Cont.PktLen) - 1 Do
+     Emu_WriteByte(P.CPU, BufSeg, Word(BufOfs + I), EmuPkt.Cont.Data[I]);
+    EmuPkt.Cont.BufSeg := BufSeg; EmuPkt.Cont.BufOfs := BufOfs;
+    EmuPkt.Cont.Stage := 1;
+    Emu_PushWord(P.CPU, EmuPkt.ContSeg);
+    Emu_PushWord(P.CPU, EmuPkt.ContOfs);
+    P.CPU.Regs.AX := 1;
+    P.CPU.Regs.BX := EmuPkt.Cont.HandleIdx + 1;
+    P.CPU.Regs.CX := EmuPkt.Cont.PktLen;
+    P.CPU.Segs.DS := BufSeg;
+    P.CPU.Regs.SI := BufOfs;
+    P.CPU.Segs.CS := EmuPkt.Handles[EmuPkt.Cont.HandleIdx].RecvSeg;
+    P.CPU.IP := EmuPkt.Handles[EmuPkt.Cont.HandleIdx].RecvOfs;
+   End;
+  End;
+  1: Emu_PktContFinishOne(P); { 2e appel (AX=1) termine pour cette poignee }
+  2: Begin { upcall as_send_pkt termine }
+   P.CPU.Segs.CS := EmuPkt.Cont.SavedCS;
+   P.CPU.IP := EmuPkt.Cont.SavedIP;
+   EmuPkt.Cont.Pending := False;
+  End;
+ End;
+End;
+
+{ Point d entree unique de livraison "boucle locale" pour la reception :   }
+{ demarre la cascade d upcall immediatement si aucune n est en cours,      }
+{ sinon met Data/Len en file (Backlog) pour etre servi une fois la         }
+{ cascade en cours terminee - voir Emu_PktContFinishOne. }
+Procedure Emu_PktDeliverToHandle(Var P: TEmulatorPanel; HandleIdx: Integer;
+ Var Data: TIpxBuf; Len: Word);
+Var I: Integer;
+Begin
+ If EmuPkt.Cont.Pending Then Begin
+  For I := 0 To High(EmuPkt.Backlog) Do
+   If Not EmuPkt.Backlog[I].InUse Then Begin
+    EmuPkt.Backlog[I].InUse := True;
+    EmuPkt.Backlog[I].HandleIdx := HandleIdx;
+    EmuPkt.Backlog[I].Len := Len;
+    EmuPkt.Backlog[I].Data := Data;
+    Exit;
+   End;
+  Inc(EmuPkt.Stats.PacketsLost); { file de reception saturee }
+  Exit;
+ End;
+ EmuPkt.Cont.Pending := True;
+ EmuPkt.Cont.Stage := 0;
+ EmuPkt.Cont.HandleIdx := HandleIdx;
+ EmuPkt.Cont.PktLen := Len;
+ EmuPkt.Cont.Data := Data;
+ EmuPkt.Cont.SavedCS := P.CPU.Segs.CS;
+ EmuPkt.Cont.SavedIP := P.CPU.IP;
+ Emu_PushWord(P.CPU, EmuPkt.ContSeg);
+ Emu_PushWord(P.CPU, EmuPkt.ContOfs);
+ P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BX := HandleIdx + 1;
+ P.CPU.Regs.CX := Len;
+ P.CPU.Segs.CS := EmuPkt.Handles[HandleIdx].RecvSeg;
+ P.CPU.IP := EmuPkt.Handles[HandleIdx].RecvOfs;
+End;
+
+{ --- AH=1 : driver_info --- }
+Procedure Emu_Pkt_DriverInfo(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.BX := 1;   { "version materielle" }
+ P.CPU.Regs.CH := 1;   { classe 1 = DIX Ethernet }
+ P.CPU.Regs.DX := 1;   { type (specifique au pilote, generique ici) }
+ P.CPU.Regs.CL := 0;   { numero d interface (une seule carte emulee) }
+ P.CPU.Segs.DS := EmuPkt.NameSeg;
+ P.CPU.Regs.SI := EmuPkt.NameOfs;
+ P.CPU.Regs.AL := 6; { fonctions de base + haute performance + etendues }
+End;
+
+{ --- AH=2 : access_type --- }
+Procedure Emu_Pkt_AccessType(Var P: TEmulatorPanel);
+Var IfClass: Byte; TypeLen: Word; Slot, I: Integer;
+Begin
+ IfClass := P.CPU.Regs.AL;
+ If (IfClass <> 0) And (IfClass <> 1) Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 2; { NO_CLASS }
+  Exit;
+ End;
+ Slot := -1;
+ For I := 0 To High(EmuPkt.Handles) Do
+  If Not EmuPkt.Handles[I].InUse Then Begin Slot := I; Break; End;
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 9; { NO_SPACE }
+  Exit;
+ End;
+ TypeLen := P.CPU.Regs.CX;
+ If TypeLen > High(EmuPkt.Handles[Slot].TypeSpec) + 1 Then
+  TypeLen := High(EmuPkt.Handles[Slot].TypeSpec) + 1;
+ EmuPkt.Handles[Slot].InUse := True;
+ EmuPkt.Handles[Slot].IfClass := 1;
+ EmuPkt.Handles[Slot].TypeLen := TypeLen;
+ For I := 0 To Integer(TypeLen) - 1 Do
+  EmuPkt.Handles[Slot].TypeSpec[I] :=
+   Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.SI + I));
+ EmuPkt.Handles[Slot].RecvSeg := P.CPU.Segs.ES;
+ EmuPkt.Handles[Slot].RecvOfs := P.CPU.Regs.DI;
+ EmuPkt.Handles[Slot].RcvMode := 3; { defaut : adresse propre + diffusion }
+ P.CPU.Regs.AX := Word(Slot + 1); { handle }
+End;
+
+{ --- AH=3 : release_type --- }
+Procedure Emu_Pkt_ReleaseType(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ EmuPkt.Handles[Slot].InUse := False;
+End;
+
+{ --- AH=4 : send_pkt --- }
+Procedure Emu_Pkt_SendPacket(Var P: TEmulatorPanel);
+Var Buf: TIpxBuf; Len: Word; I: Integer;
+Begin
+ Len := P.CPU.Regs.CX;
+ If Len > SizeOf(Buf) Then Len := SizeOf(Buf);
+ For I := 0 To Integer(Len) - 1 Do
+  Buf[I] := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.SI + I));
+ Inc(EmuPkt.Stats.PacketsOut);
+ EmuPkt.Stats.BytesOut := EmuPkt.Stats.BytesOut + Len;
+ For I := 0 To High(EmuPkt.Handles) Do
+  If EmuPkt.Handles[I].InUse And
+     Emu_PktMatchType(EmuPkt.Handles[I], Buf, Len) Then Begin
+   Inc(EmuPkt.Stats.PacketsIn); EmuPkt.Stats.BytesIn := EmuPkt.Stats.BytesIn + Len;
+   Emu_PktDeliverToHandle(P, I, Buf, Len);
+  End;
+End;
+
+{ --- AH=5 : terminate --- }
+Procedure Emu_Pkt_Terminate(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ EmuPkt.Handles[Slot].InUse := False;
+End;
+
+{ --- AH=6 : get_address --- }
+Procedure Emu_Pkt_GetAddress(Var P: TEmulatorPanel);
+Var Slot, I: Integer; Len: Word;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ Len := P.CPU.Regs.CX;
+ If Len > 6 Then Len := 6;
+ For I := 0 To Integer(Len) - 1 Do
+  Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.DI + I), EmuPkt.LocalMAC[I]);
+ P.CPU.Regs.CX := Len;
+End;
+
+{ --- AH=7 : reset_interface --- }
+Procedure Emu_Pkt_ResetInterface(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ { Rien a reinitialiser physiquement dans le modele "boucle locale" -     }
+ { aucune transmission en cours ne peut rester bloquee (SEND_PKT est      }
+ { toujours instantane). }
+End;
+
+{ --- AH=10 : get_parameters (haute performance) --- }
+Procedure Emu_Pkt_GetParameters(Var P: TEmulatorPanel);
+Begin
+ Emu_WriteByte(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS,      1); { major_rev }
+ Emu_WriteByte(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 1,  9); { minor_rev }
+ Emu_WriteByte(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 2, 14); { length }
+ Emu_WriteByte(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 3,  6); { addr_len }
+ Emu_WriteWord(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 4,  1514); { mtu }
+ Emu_WriteWord(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 6,     0); { multicast_aval }
+ Emu_WriteWord(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 8,     8); { rcv_bufs }
+ Emu_WriteWord(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 10,    8); { xmt_bufs }
+ Emu_WriteWord(P.CPU, EMU_PKT_PARAMS_SEG, EMU_PKT_PARAMS_OFS + 12,
+  EmuPkt.Vector); { int_num }
+ P.CPU.Segs.ES := EMU_PKT_PARAMS_SEG;
+ P.CPU.Regs.DI := EMU_PKT_PARAMS_OFS;
+End;
+
+{ --- AH=11 : as_send_pkt (haute performance, envoi + upcall de           }
+{ confirmation) --- }
+Procedure Emu_Pkt_AsSendPacket(Var P: TEmulatorPanel);
+Var Buf: TIpxBuf; Len: Word; I: Integer;
+Begin
+ Len := P.CPU.Regs.CX;
+ If Len > SizeOf(Buf) Then Len := SizeOf(Buf);
+ For I := 0 To Integer(Len) - 1 Do
+  Buf[I] := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.SI + I));
+ Inc(EmuPkt.Stats.PacketsOut);
+ EmuPkt.Stats.BytesOut := EmuPkt.Stats.BytesOut + Len;
+ EmuPkt.AsSendPending := True;
+ EmuPkt.AsSendUpcallSeg := P.CPU.Segs.ES;
+ EmuPkt.AsSendUpcallOfs := P.CPU.Regs.DI;
+ EmuPkt.AsSendBufSeg := P.CPU.Segs.DS;
+ EmuPkt.AsSendBufOfs := P.CPU.Regs.SI;
+ EmuPkt.AsSendResult := 0; { la boucle locale reussit toujours }
+ For I := 0 To High(EmuPkt.Handles) Do
+  If EmuPkt.Handles[I].InUse And
+     Emu_PktMatchType(EmuPkt.Handles[I], Buf, Len) Then Begin
+   Inc(EmuPkt.Stats.PacketsIn); EmuPkt.Stats.BytesIn := EmuPkt.Stats.BytesIn + Len;
+   Emu_PktDeliverToHandle(P, I, Buf, Len);
+  End;
+ { Si aucune poignee ne correspondait (donc aucune cascade demarree),     }
+ { declencher l upcall de confirmation immediatement ; sinon              }
+ { Emu_PktContFinishOne s en chargera automatiquement une fois la         }
+ { cascade de reception videe. }
+ If Not EmuPkt.Cont.Pending Then Emu_PktFireAsSendUpcall(P);
+End;
+
+{ --- AH=20 : set_rcv_mode (etendu) --- }
+Procedure Emu_Pkt_SetRcvMode(Var P: TEmulatorPanel);
+Var Slot: Integer; Mode: Word;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ Mode := P.CPU.Regs.CX;
+ If (Mode < 1) Or (Mode > 6) Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 8; { BAD_MODE }
+  Exit;
+ End;
+ EmuPkt.Handles[Slot].RcvMode := Mode;
+End;
+
+{ --- AH=21 : get_rcv_mode (etendu) --- }
+Procedure Emu_Pkt_GetRcvMode(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ P.CPU.Regs.AX := EmuPkt.Handles[Slot].RcvMode;
+End;
+
+{ --- AH=22/23 : set/get_multicast_list (etendu) - le materiel "virtuel"  }
+{ emule n a pas de filtre multicast distinct (comme beaucoup de vrais      }
+{ pilotes simples de cette epoque), d ou NO_MULTICAST dans les deux cas. }
+Procedure Emu_Pkt_SetMulticastList(Var P: TEmulatorPanel);
+Begin
+ Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 6; { NO_MULTICAST }
+End;
+
+Procedure Emu_Pkt_GetMulticastList(Var P: TEmulatorPanel);
+Begin
+ Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 6; { NO_MULTICAST }
+End;
+
+Procedure Emu_PktWriteLong(Var P: TEmulatorPanel; Seg, Ofs: Word; V: LongInt);
+Begin
+ Emu_WriteWord(P.CPU, Seg, Ofs, Word(V And $FFFF));
+ Emu_WriteWord(P.CPU, Seg, Ofs + 2, Word((V Shr 16) And $FFFF));
+End;
+
+{ --- AH=24 : get_statistics (etendu) --- }
+Procedure Emu_Pkt_GetStatistics(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_PktHandleSlot(P.CPU.Regs.BX);
+ If Slot < 0 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 1; { BAD_HANDLE }
+  Exit;
+ End;
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS,      EmuPkt.Stats.PacketsIn);
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS + 4,  EmuPkt.Stats.PacketsOut);
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS + 8,  EmuPkt.Stats.BytesIn);
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS + 12, EmuPkt.Stats.BytesOut);
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS + 16, EmuPkt.Stats.ErrorsIn);
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS + 20, EmuPkt.Stats.ErrorsOut);
+ Emu_PktWriteLong(P, EMU_PKT_STATS_SEG, EMU_PKT_STATS_OFS + 24, EmuPkt.Stats.PacketsLost);
+ P.CPU.Segs.DS := EMU_PKT_STATS_SEG;
+ P.CPU.Regs.SI := EMU_PKT_STATS_OFS;
+End;
+
+{ --- AH=25 : set_address (etendu) --- }
+Procedure Emu_Pkt_SetAddress(Var P: TEmulatorPanel);
+Var I: Integer; AnyOpen: Boolean; Len: Word;
+Begin
+ AnyOpen := False;
+ For I := 0 To High(EmuPkt.Handles) Do
+  If EmuPkt.Handles[I].InUse Then AnyOpen := True;
+ If AnyOpen Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 13; { CANT_SET }
+  Exit;
+ End;
+ Len := P.CPU.Regs.CX;
+ If Len <> 6 Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.DH := 14; { BAD_ADDRESS }
+  Exit;
+ End;
+ For I := 0 To 5 Do
+  EmuPkt.LocalMAC[I] := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.DI + I));
+ P.CPU.Regs.CX := 6;
+End;
+
+{ --- Repartiteur INT 60h : numero de fonction dans AH. N est jamais       }
+{ appele si EmuPkt.Active=False (voir Emu_DoInt) - c est le cas dans       }
+{ lequel une vraie machine sans pilote de paquets charge laisserait ce     }
+{ vecteur inutilise. --- }
+Procedure Emu_DoInt60(Var P: TEmulatorPanel);
+Begin
+ Exclude(P.CPU.Flags.s, EFG_CF); { succes par defaut, comme la specif. }
+ Case P.CPU.Regs.AH Of
+  1:  Emu_Pkt_DriverInfo(P);
+  2:  Emu_Pkt_AccessType(P);
+  3:  Emu_Pkt_ReleaseType(P);
+  4:  Emu_Pkt_SendPacket(P);
+  5:  Emu_Pkt_Terminate(P);
+  6:  Emu_Pkt_GetAddress(P);
+  7:  Emu_Pkt_ResetInterface(P);
+  10: Emu_Pkt_GetParameters(P);
+  11: Emu_Pkt_AsSendPacket(P);
+  20: Emu_Pkt_SetRcvMode(P);
+  21: Emu_Pkt_GetRcvMode(P);
+  22: Emu_Pkt_SetMulticastList(P);
+  23: Emu_Pkt_GetMulticastList(P);
+  24: Emu_Pkt_GetStatistics(P);
+  25: Emu_Pkt_SetAddress(P);
+ Else Begin
+  Include(P.CPU.Flags.s, EFG_CF);
+  P.CPU.Regs.DH := 11; { BAD_COMMAND }
+ End;
+ End;
+End;
+
+{ Reinitialise le pilote de paquets et, si la case "Reseau LAN" est        }
+{ cochee, installe le vecteur INT 60h, le stub de signature de decouverte  }
+{ ("PKT DRVR"), le trampoline de continuation interne et le nom du         }
+{ pilote. Appelee a chaque (re)demarrage de l emulateur, comme             }
+{ Emu_InitBDA/Emu_IpxInit. }
+Procedure Emu_PktInit(Var P: TEmulatorPanel);
+Var I: Integer; NameStr: String;
+Begin
+ FillChar(EmuPkt, SizeOf(EmuPkt), 0);
+ EmuPkt.Active := OptionsDlg.Data.DosLAN;
+ EmuPkt.Vector := $60;
+ EmuPkt.LocalMAC[0] := $02; EmuPkt.LocalMAC[1] := $00; EmuPkt.LocalMAC[2] := $00;
+ EmuPkt.LocalMAC[3] := $00; EmuPkt.LocalMAC[4] := $00; EmuPkt.LocalMAC[5] := $02;
+ For I := 0 To High(EmuPkt.Handles) Do
+  EmuPkt.Handles[I].RcvMode := 3;
+ If Not EmuPkt.Active Then Exit;
+ EmuPkt.StubSeg := $F000; EmuPkt.StubOfs := $0010;
+ EmuPkt.ContSeg := $F000; EmuPkt.ContOfs := $0030;
+ EmuPkt.NameSeg := $F000; EmuPkt.NameOfs := $0050;
+
+ { Vecteur reel INT 60h : pointe vers le stub de signature, pour les       }
+ { applications qui SONDENT LA MEMOIRE a la recherche du motif "PKT DRVR" }
+ { (voir la specification, section decouverte) - l appel fonctionnel      }
+ { INT 60h lui-meme est intercepte directement par Emu_DoInt et n execute }
+ { jamais ce stub (voir Emu_DoInt, case $60). }
+ Emu_WriteWord(P.CPU, 0, Word(EmuPkt.Vector) * 4, EmuPkt.StubOfs);
+ Emu_WriteWord(P.CPU, 0, Word(EmuPkt.Vector) * 4 + 2, EmuPkt.StubSeg);
+
+ { Stub : JMP SHORT +0Ah ; NOP ; "PKT DRVR",0 (9 octets) ; IRET (jamais    }
+ { execute, juste pour que la zone ait l air d un vrai gestionnaire). }
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs,     $EB);
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 1, $0A);
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 2, $90);
+ NameStr := 'PKT DRVR';
+ For I := 1 To Length(NameStr) Do
+  Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 2 + I, Ord(NameStr[I]));
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 11, 0);
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 12, $CF); { IRET, inerte }
+
+ { Trampoline de continuation interne : INT FDh, jamais utilise par du     }
+ { logiciel DOS reel - voir Emu_PktCont. }
+ Emu_WriteByte(P.CPU, EmuPkt.ContSeg, EmuPkt.ContOfs,     $CD);
+ Emu_WriteByte(P.CPU, EmuPkt.ContSeg, EmuPkt.ContOfs + 1, $FD);
+
+ { Nom du pilote (driver_info, DS:SI). }
+ NameStr := 'DEV-COOLS PKTDRV';
+ For I := 1 To Length(NameStr) Do
+  Emu_WriteByte(P.CPU, EmuPkt.NameSeg, EmuPkt.NameOfs + I - 1, Ord(NameStr[I]));
+ Emu_WriteByte(P.CPU, EmuPkt.NameSeg, EmuPkt.NameOfs + Length(NameStr), 0);
+End;
+
 { --- INT 2Fh AX=7A00h : verification d installation IPX. Toute autre      }
 { sous-fonction (ou si le reseau Novell n est pas configure) suit le       }
 { meme comportement generique que les autres interruptions non geree -    }
@@ -49290,6 +50093,22 @@ Begin
   $21: Emu_DoInt21(P);
   $2F: Emu_DoInt2F(P);
   $33: Emu_DoInt33(P);
+  $60: Begin
+   { N intercepter reellement que si la case "Reseau LAN" est cochee       }
+   { (EmuPkt.Active) - sinon, comportement identique a toute autre         }
+   { interruption non geree (branche Else) : une vraie machine sans        }
+   { pilote de paquets charge ne repond pas non plus sur ce vecteur. }
+   If EmuPkt.Active Then Emu_DoInt60(P)
+   Else Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($60) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($60) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, $60);
+    If IvtOfs = IvtOfs Then ;
+   End;
+  End;
+  $FD: If EmuPkt.Cont.Pending Then Emu_PktCont(P); { continuation interne  }
+       { du protocole d upcall recepteur/as_send_pkt du pilote de paquets  }
+       { - voir Emu_PktCont. Jamais atteint par du logiciel DOS reel. }
   $7A: Begin
    { N intercepter reellement que si la case "Reseau Novell NetWare" est   }
    { cochee (EmuIpx.Active) - sinon, se comporter EXACTEMENT comme pour    }
@@ -60922,6 +61741,7 @@ Begin NesActive := False;
  {$I+} If IOResult <> 0 Then ;
  Emu_InitBDA(P);
  Emu_IpxInit(P);
+ Emu_PktInit(P);
  EmuPumpCnt := 0;
  { Initialiser etat souris emulee. }
  EmuMouseInst := True;
