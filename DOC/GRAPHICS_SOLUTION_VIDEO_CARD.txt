@@ -1,0 +1,457 @@
+==============================================================================
+  GRAPHICS SOLUTION D'ATI - Carte video graphique pour PC/XT
+  Documentation de reference (registres, modes, memoire video)
+==============================================================================
+
+Document de reference technique de la carte "Graphics Solution" d'ATI
+Technologies, regroupant tout ce qui a ete verifie contre des sources
+primaires (code source d'epoque) pendant l'implementation de son support
+dans l'emulateur DOS 8086 du projet DEV-COOLS (DEVENV.PAS, procedures
+Emu_ATIDetectMode / Emu_VidPortRead / Emu_VidPortWrite / Emu_VidSetPixel /
+Emu_VidGetPixel).
+
+Sources :
+  - https://www.gladir.com/LEXIQUE/CARD/graphicssolution.htm
+  - https://raw.githubusercontent.com/gladir/GRAPHICSSOLUTIONLIB-TP/main/
+    MODES.PAS (bibliotheque Turbo Pascal d'epoque, les 9 sequences de
+    registres de ce document en sont extraites telles quelles)
+  - GSDEMO1.C et IOX.ASM (programme de demonstration d'epoque fourni avec
+    la carte - code source C original, retrouve et analyse pendant cette
+    session pour corriger l'emulation)
+  - SAMPLES/ASM8086/T18ATI16.ASM (reproduction assembleur verifiee de la
+    sequence GSColors640x200_16Colors, testee dans l'emulateur)
+
+Date : Aout 2026
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+   1.  Vue d'ensemble
+   2.  Caracteristiques generales - absence de BIOS
+   3.  Table des ports d'entree/sortie
+   4.  Le controleur CRT (6845) et ses 16 registres
+   5.  Les 9 sequences de mode verifiees
+   6.  Organisation de la memoire video
+   7.  Detection du type de moniteur (couleur / emulation monochrome)
+   8.  Sequences de programmation logicielle completes
+   9.  Implementation dans l'emulateur DEV-COOLS
+  10.  References
+
+==============================================================================
+1. VUE D'ENSEMBLE
+==============================================================================
+
+  La "Graphics Solution" est une carte video pour PC/XT commercialisee par
+  ATI Technologies (avant que la societe ne devienne connue pour ses cartes
+  EGA Wonder puis ses cartes VGA/Radeon). Elle offre, en plus d'une
+  compatibilite CGA de base, des modes graphiques etendus a 16 couleurs
+  inhabituels pour une carte de cette generation :
+
+    - Texte 132 colonnes x 25 lignes (couleur ou "emulation" monochrome)
+    - Graphique 320x200 en 16 couleurs
+    - Graphique 640x200 en 16 couleurs
+    - Graphique 640x200 en 4 couleurs
+
+  Particularite notable : chacun de ces 4 modes existe en deux variantes,
+  "Couleur" (moniteur CGA/RGB couleur standard) et "Emulation" (moniteur
+  monochrome, qui simule les 16 couleurs via un mecanisme different -
+  voir section 5). Le logiciel doit determiner lui-meme, au demarrage,
+  quel type de moniteur est branche (section 7) avant de choisir la
+  bonne variante.
+
+==============================================================================
+2. CARACTERISTIQUES GENERALES - ABSENCE DE BIOS
+==============================================================================
+
+  Contrairement a la quasi-totalite des cartes video PC de son epoque
+  (MDA, CGA, EGA, VGA), la Graphics Solution n'a PAS de BIOS video propre.
+  Aucun de ses modes etendus n'est accessible via INT 10h AH=00h (Set
+  Video Mode) : seuls les modes CGA standards (03h texte, 04h/05h/06h
+  graphique) repondent a l'appel BIOS classique, en tant que carte CGA
+  ordinaire.
+
+  Consequence directe : tout logiciel voulant utiliser les modes etendus
+  de la carte doit programmer ses registres DIRECTEMENT par ecriture de
+  ports d'E/S (instructions OUT), jamais via une interruption BIOS. C'est
+  exactement ce que font GSDEMO1.C et la bibliotheque GRAPHICSSOLUTIONLIB-
+  TP/MODES.PAS (voir sections 5 et 8).
+
+  Cette absence de BIOS a une seconde consequence pour la detection de
+  presence de la carte : un logiciel ne peut pas "demander poliment" a la
+  carte de s'identifier. A la place, GSDEMO1.C determine indirectement le
+  type de materiel present en mesurant la frequence du signal de retrace
+  vertical (bit 3 du registre de statut $3DA) par rapport a l'horloge
+  systeme (INT 1Ah) - voir section 7.
+
+==============================================================================
+3. TABLE DES PORTS D'ENTREE/SORTIE
+==============================================================================
+
+  La carte reutilise les ports CGA standards pour ses fonctions de base,
+  et ajoute deux ports etendus proprietaires ($3DD et $3DF) pour piloter
+  ses modes 16 couleurs. Aucune autre carte video standard (CGA, MDA,
+  EGA, VGA) ne repond a $3DD/$3DF - ces deux ports sont donc un moyen
+  fiable pour un logiciel de savoir qu'une Graphics Solution est presente
+  (en pratique, aucune verification de ce genre n'a ete trouvee dans le
+  logiciel d'epoque analyse ; voir plutot la section 7).
+
+    +--------+------+---------------------------------------------------+
+    | Port   | Acces| Fonction                                          |
+    +--------+------+---------------------------------------------------+
+    | $3D4   | R/W  | Registre CRTC - index (0-15, voir section 4)      |
+    | $3D5   | R/W  | Registre CRTC - donnee                            |
+    | $3D8   | R/W  | Registre de mode CGA (Mode Control Register)      |
+    | $3D9   | R/W  | Registre de selection couleur CGA (Color Select)  |
+    | $3DA   | R    | Registre de statut (bit 3 = retrace vertical)     |
+    | $3DD   | R/W* | Registre etendu 1 (extension proprietaire ATI)    |
+    | $3DF   | R/W* | Registre etendu 2 / controle de fonctionnalites   |
+    +--------+------+---------------------------------------------------+
+    * En lecture, ces deux ports ne sont documentes nulle part dans le
+      logiciel d'epoque analyse - seule l'ecriture est utilisee par
+      GSDEMO1.C et MODES.PAS pour programmer les modes.
+
+  $3D8 (Mode Control Register) et $3D9 (Color Select Register) sont les
+  memes registres CGA classiques ; ils sont ecrits avant, pendant et
+  apres la sequence de programmation du CRTC dans chacune des 9
+  sequences de mode (section 5), avec des valeurs qui different d'un
+  mode a l'autre - ils font partie integrante de la signature de mode.
+
+  $3DD et $3DF sont ecrits par un octet de "commande" a chaque
+  changement de mode. Leurs valeurs observees dans les 9 sequences
+  verifiees sont ($3DD) : 00h, 10h, 20h, 80h ; et ($3DF) : 90h, A8h,
+  A0h. La signification exacte de chaque bit individuel de ces deux
+  registres n'a pas ete documentee dans les sources consultees - seule
+  la valeur globale ecrite est connue et utilisee pour la detection de
+  mode (section 5).
+
+==============================================================================
+4. LE CONTROLEUR CRT (6845) ET SES 16 REGISTRES
+==============================================================================
+
+  Comme toute carte CGA/MDA de cette generation, la Graphics Solution
+  integre un controleur CRT compatible Motorola 6845, programme via les
+  ports $3D4 (index) / $3D5 (donnee), avec les 16 registres standards :
+
+    Registre  Nom                              Note
+    --------  -------------------------------  --------------------------
+       0      Horizontal Total
+       1      Horizontal Displayed
+       2      Horizontal Sync Position
+       3      Horizontal Sync Width (+Vert.)
+       4      Vertical Total
+       5      Vertical Total Adjust
+       6      Vertical Displayed
+       7      Vertical Sync Position
+       8      Interlace Mode / Skew            Valeur variable selon le mode
+       9      Maximum Scan Line
+      10      Cursor Start
+      11      Cursor End
+      12      Start Address (High)
+      13      Start Address (Low)
+      14      Cursor Address (High)
+      15      Cursor Address (Low)
+
+  Dans les 9 sequences verifiees (section 5), les registres 0 a 7
+  suffisent a distinguer chaque "forme" de mode (resolution, timing) et
+  sont ceux utilises pour la reconnaissance de signature. Les registres
+  8 a 15 sont bien ecrits par le logiciel d'epoque (16 registres a
+  chaque changement de mode, jamais seulement 8) mais leurs valeurs ne
+  sont pas necessaires pour distinguer un mode d'un autre une fois
+  combinees a l'octet ecrit sur $3DD/$3DF - a noter neanmoins qu'elles
+  varient legerement elles aussi d'un mode a l'autre (ex. registre 9 =
+  07h en mode couleur contre 03h en mode emulation pour le mode
+  640x200x16, d'apres GSDEMO1.C).
+
+==============================================================================
+5. LES 9 SEQUENCES DE MODE VERIFIEES
+==============================================================================
+
+  Neuf sequences de registres distinctes ont ete identifiees dans
+  GRAPHICSSOLUTIONLIB-TP/MODES.PAS (verifie octet par octet). Chacune
+  ecrit $3D8, puis $3DD, puis a nouveau $3D8, puis les 16 registres CRTC
+  (0 a 15) via $3D4/$3D5, puis $3D8 et $3D9 une derniere fois, et enfin
+  $3DF (parfois suivi d'un second $3DD) - voir le detail complet en
+  section 8.
+
+  Table de signature (CRTC 0-7 + $3DD final + $3DF final -> mode) :
+
+  +-----+----------------------------------+----------------------------------+--------+--------+
+  | Sig | Nom (MODES.PAS)                  | CRTC[0..7] (hexadecimal)          | $3DD   | $3DF   |
+  +-----+----------------------------------+----------------------------------+--------+--------+
+  |  2  | GSTextModeC132x25                | B5 84 97 0A 1F 06 19 1C            |  00h   |  90h   |
+  |  3  | GSEmulTextModeC132x25            | B5 84 97 0A 1F 06 19 1C            |  00h   |  A8h   |
+  |  4  | GSColors320x200_16Colors         | 38 28 2D 0A 7F 06 64 70            |  10h   |   -    |
+  |  5  | GSColors640x200_4Colors          | 38 28 2D 0A 7F 06 64 70            |  20h   |   -    |
+  |  6  | GSColors640x200_16Colors         | 70 50 58 0A 40 06 32 38            |  80h   |   -    |
+  |  7  | GSEmul320x200_16Colors           | 36 28 2D 08 64 06 64 64            |  10h   |  A0h   |
+  |  8  | GSEmul640x200_4Colors            | 36 28 2D 08 64 06 64 64            |  20h   |  A0h   |
+  |  9  | GSEmul640x200_16Colors           | 61 50 52 08 32 06 32 32            |  80h   |  A0h   |
+  +-----+----------------------------------+----------------------------------+--------+--------+
+
+  Notes :
+    - Les modes 2/3 (texte 132x25) partagent exactement le meme CRTC et
+      le meme $3DD (00h) - seule la valeur finale de $3DF les distingue
+      (90h = couleur, A8h = emulation monochrome).
+    - Les modes 4/5 partagent le meme CRTC (les deux resolutions 320x200
+      et 640x200 utilisent le meme timing de balayage) - seul $3DD les
+      distingue (10h = 320x16, 20h = 640x4). $3DF n'est pas ecrit dans
+      cette sequence particuliere (registre laisse a sa valeur
+      precedente).
+    - Les modes 7/8 suivent le meme principe que 4/5 mais en variante
+      "emulation" (moniteur monochrome), avec $3DF=A0h en plus.
+    - Le mode 6 (couleur 640x200x16) et le mode 9 (emulation
+      640x200x16) sont les deux seuls a avoir un CRTC entierement
+      distinct l'un de l'autre malgre la meme resolution logique.
+    - Resolutions/couleurs : mode 2/3 = texte 132x25 (16 couleurs) ;
+      mode 4/7 = graphique 320x200x16 couleurs ; mode 5/8 = graphique
+      640x200x4 couleurs ; mode 6/9 = graphique 640x200x16 couleurs.
+
+==============================================================================
+6. ORGANISATION DE LA MEMOIRE VIDEO
+==============================================================================
+
+  6.1 Modes texte (132x25)
+  ------------------------
+
+  Comme un CGA/MDA classique, la memoire texte occupe le segment B800h
+  (2 octets par caractere : code ASCII puis attribut couleur), avec 132
+  colonnes par ligne au lieu des 80 habituelles.
+
+  6.2 Mode graphique 640x200 en 16 couleurs (modes 6 et 9)
+  ---------------------------------------------------------
+
+  C'est le mode le mieux documente (grace a GSDEMO1.C et a
+  T18ATI16.ASM). Il utilise DEUX plans de bits separes, chacun codant 2
+  des 4 bits de couleur par pixel :
+
+    - Segment B000h ("Lo") : 2 bits de POIDS FAIBLE de la couleur
+    - Segment B800h ("Hi") : 2 bits de POIDS FORT de la couleur
+
+  Chaque plan est organise en 4 bancs entrelaces de 8192 octets (comme
+  l'entrelacement CGA classique a 2 bancs de 8192, mais avec 4 bancs au
+  lieu de 2), chaque ligne occupant 160 octets (640 pixels x 2 bits /
+  8 bits par octet) :
+
+    Decalage(X,Y) = (Y div 4) * 160 + (Y mod 4) * 8192 + (X div 4)
+
+  Chaque octet contient donc 4 pixels consecutifs, 2 bits par pixel :
+  pour le pixel X, le decalage de bits dans l'octet (le pixel le plus a
+  gauche occupe les bits de poids fort) est :
+
+    DecalageBits(X) = (3 - (X mod 4)) * 2
+
+  Encodage de la couleur (K, 4 bits, valeur 0-15) dans les deux plans :
+
+    Plan Lo (valeur 2 bits ecrite a chaque position de pixel) = (K >> 1) & 3
+    Plan Hi (valeur 2 bits ecrite a chaque position de pixel) =
+        ((K & 1) << 1) | ((K >> 3) & 1)
+
+  Decodage inverse (LoV et HiV = valeurs 2 bits lues dans chaque plan) :
+
+    bit3 de K = (HiV & 1)
+    bit2 de K = (LoV >> 1) & 1
+    bit1 de K = (LoV & 1)
+    bit0 de K = (HiV >> 1) & 1
+
+  Cet encodage/decodage a ete verifie algebriquement contre la routine
+  Putpixel() de GSDEMO1.C (qui l'implemente via des decalages sur un mot
+  16 bits construit comme K<<12) ET contre le GetPixel de
+  GS640200.PAS ; les deux methodes concordent.
+
+  Remarque pratique : puisque les 4 positions de pixel d'un meme octet
+  recoivent toujours exactement la meme paire de bits (LoV/HiV ne
+  dependent pas de la position dans l'octet, seulement de K), un
+  remplissage de zone solide (Fill_box) produit naturellement un octet
+  uniforme, quelle que soit la position/largeur du rectangle rempli.
+
+  6.3 Modes 640x200 en 4 couleurs et 320x200 en 16 couleurs (modes 5/8 et 4/7)
+  ------------------------------------------------------------------------------
+
+  Aucune source primaire dediee a ces deux modes n'a ete trouvee (a la
+  difference du mode 640x200x16 ci-dessus). Ils sont geres par
+  deduction/analogie a partir du meme entrelacement CGA a 4 bancs de
+  8192 octets et du meme decalage de ligne (160 octets/ligne), avec un
+  seul plan (segment B800h) :
+
+    640x200x4 couleurs : 2 bits/pixel, 4 pixels/octet, meme formule de
+      decalage que le mode 640x200x16 (un seul plan au lieu de deux).
+
+    320x200x16 couleurs : 4 bits/pixel, 2 pixels/octet :
+      Decalage(X,Y) = (Y div 4) * 160 + (Y mod 4) * 8192 + (X div 2)
+      DecalageBits(X) = (1 - (X mod 2)) * 4
+
+  Ces deux formules sont marquees "confiance moderee" dans
+  l'implementation (DEVENV.PAS) - a verifier si une source primaire
+  dediee a ces deux modes specifiques est retrouvee.
+
+==============================================================================
+7. DETECTION DU TYPE DE MONITEUR (COULEUR / EMULATION MONOCHROME)
+==============================================================================
+
+  Puisque la carte n'a pas de BIOS pour repondre a une requete
+  d'identification, GSDEMO1.C determine le type de moniteur branche
+  (et donc quelle variante de mode utiliser, "Couleur" ou "Emulation")
+  par une methode de mesure de frequence, implementee dans sa fonction
+  Terminal_type() :
+
+  Etape 1 - Verification prealable :
+    Le mot a l'adresse 0040:0063 de la zone de donnees BIOS (BDA) doit
+    valoir 03D4h (adresse de base standard du controleur CRTC pour une
+    carte couleur). Si ce n'est pas le cas, la fonction abandonne
+    immediatement (retour -1, "impossible a determiner").
+
+  Etape 2 - Mesure de frequence du retrace vertical :
+    Le bit 3 du registre de statut ($3DA) bascule a la frequence de
+    balayage vertical reel du moniteur. Le programme compte le nombre
+    de cycles complets (haut->bas->haut) de ce bit pendant une fenetre
+    de 18 tics de l'horloge systeme (~1 seconde, mesuree via INT 1Ah
+    AH=00h, compteur de tics 18.2 Hz).
+
+    - Si le compte est proche de 50 (+/- 5)  -> mode "Emulation"
+      (moniteur monochrome, rafraichissement ~50 Hz)
+    - Si le compte est proche de 60 (+/- 5)  -> mode "Couleur"
+      (moniteur RVB/CGA standard, rafraichissement ~60 Hz)
+    - Sinon -> indetermine (retour -1)
+
+  En cas d'echec (retour -1), GSDEMO1.C affiche "Invalid mode setting"
+  et n'essaie aucune sequence de programmation de mode.
+
+==============================================================================
+8. SEQUENCES DE PROGRAMMATION LOGICIELLE COMPLETES
+==============================================================================
+
+  Extraites telles quelles de GSDEMO1.C (programme de demonstration
+  d'epoque). Toutes suivent le meme schema : $3D8, $3DD, $3D8, 16
+  registres CRTC (0 a 15) via $3D4/$3D5, $3D8, $3D9, puis $3DF/$3DD
+  selon le mode.
+
+  8.1 Mode 640x200x16 couleurs, variante "Emulation" (moniteur mono)
+  ---------------------------------------------------------------------
+    parms[16] = { 61h,50h,52h,08h, 32h,06h,32h,32h,
+                   02h,07h,06h,07h, 00h,00h,00h,00h }
+
+    OUT 3D8h, 02h
+    OUT 3DDh, 80h
+    OUT 3D8h, 02h
+    ; pour i = 0 a 15 : OUT 3D4h,i ; OUT 3D5h,parms[i]
+    OUT 3D8h, 0Ah
+    OUT 3D9h, 30h
+    OUT 3DFh, A0h
+    OUT 3DDh, 80h
+    ; efface B000h et B800h (16 Ko chacun)
+
+  8.2 Mode 640x200x16 couleurs, variante "Couleur"
+  ---------------------------------------------------
+    parms[16] = { 70h,50h,58h,0Ah, 40h,06h,32h,38h,
+                   02h,03h,06h,07h, 00h,00h,00h,00h }
+
+    OUT 3D8h, 02h
+    OUT 3DDh, 80h
+    OUT 3D8h, 02h
+    ; pour i = 0 a 15 : OUT 3D4h,i ; OUT 3D5h,parms[i]
+    OUT 3D8h, 0Ah
+    OUT 3D9h, 30h
+    OUT 3DDh, 80h
+    ; efface B000h et B800h (16 Ko chacun)
+
+    (Note : contrairement a la variante "Emulation" ci-dessus, cette
+    sequence n'ecrit jamais $3DF - le registre garde sa valeur
+    precedente.)
+
+  8.3 Retour au mode texte 80x25 standard
+  -----------------------------------------
+    parms[16] = { 71h,50h,5Ah,0Ah, 1Fh,06h,19h,1Ch,
+                   02h,07h,06h,07h, 00h,00h,00h,00h }
+
+    OUT 3D8h, 02h
+    OUT 3DDh, 00h
+    OUT 3D8h, 25h
+    ; pour i = 0 a 15 : OUT 3D4h,i ; OUT 3D5h,parms[i]
+    OUT 3D8h, 2Dh
+    OUT 3D9h, 30h
+    OUT 3DDh, 00h
+    ; efface B800h (8 Ko, remplis d'espaces attribut 07h)
+
+  8.4 Reference assembleur testee : SAMPLES/ASM8086/T18ATI16.ASM
+  ------------------------------------------------------------------
+    Reproduit exactement la sequence 8.2 (GSColors640x200_16Colors) en
+    assembleur 8086 brut, puis dessine une bande de 16 blocs de 4
+    pixels (une couleur 0-15 chacun) a la ligne Y=0, directement dans
+    les segments B000h/B800h - utilise pour verifier l'implementation
+    de l'emulateur.
+
+==============================================================================
+9. IMPLEMENTATION DANS L'EMULATEUR DEV-COOLS
+==============================================================================
+
+  9.1 Selection de la carte (Options > Emulateur > DOS)
+  --------------------------------------------------------
+
+  La Graphics Solution est l'entree d'indice 3 de la liste "Video 1" /
+  "Video 2" (fonction DosVideoName). L'emulateur modelise fidelement le
+  fait que cette carte est independante des familles CGA/EGA/VGA :
+  selectionner la Graphics Solution sur un emplacement video ne rend
+  disponibles NI les registres EGA/VGA ($3C0-$3CF), NI les modes
+  graphiques CGA standards au-dela de ce que la carte reelle supporte -
+  et inversement, selectionner une VGA ne rend PAS les ports etendus
+  $3DD/$3DF fonctionnels (Emu_ATIActive doit etre vrai, c'est-a-dire
+  Video 1 ou Video 2 = "Graphics Solutions d'ATI"). Voir
+  Emu_CGAActive / Emu_EGAActive / Emu_VGAActive / Emu_ATIActive dans
+  DEVENV.PAS.
+
+  9.2 Fonctions principales
+  -----------------------------
+
+    Emu_ATIActive        - vrai si Video 1 ou Video 2 = Graphics
+                            Solution d'ATI (index 3)
+    Emu_ATIDetectMode     - reconnaissance de signature (section 5),
+                            appelee apres chaque ecriture sur
+                            $3D5/$3D8/$3D9/$3DD/$3DF
+    Emu_VidPortRead/Write - ports $3D4-$3DF (voir section 3), n'agissent
+                            que si Emu_ATIActive (pour $3DD/$3DF) ou
+                            Emu_CGAActive Or Emu_ATIActive (pour
+                            $3D8/$3D9, partages avec le CGA)
+    Emu_VidSetPixel/GetPixel - modes EMU_MODE_GS640x16 ($50),
+                            EMU_MODE_GS640x4 ($51), EMU_MODE_GS320x16
+                            ($52) : encodage/decodage pixel (section 6)
+    Emu_WriteByte/Emu_ReadBlock/Emu_WriteBlock - redirection des acces
+                            memoire directs a B000h/B800h vers les
+                            plans virtuels ($20000+ pour B800h "Hi",
+                            $30000+ pour B000h "Lo") en mode
+                            EMU_MODE_GS640x16, pour les LECTURES autant
+                            que les ECRITURES (necessaire pour les
+                            logiciels qui font un cycle lecture-
+                            modification-ecriture octet par octet,
+                            comme Putpixel() dans GSDEMO1.C)
+    Emu_InitBDA           - initialise 0040:0063 = 03D4h (necessaire
+                            a la section 7, etape 1) et cadence le bit
+                            3 du registre $3DA (retrace vertical) sur
+                            le nombre de pas CPU plutot que sur chaque
+                            lecture, pour que la mesure de frequence de
+                            la section 7 (etape 2) converge vers ~60 Hz
+
+  9.3 Limitations connues
+  ----------------------------
+
+    - Modes 640x200x4 et 320x200x16 : formules d'adressage "confiance
+      moderee" (section 6.3), deduites par analogie plutot que
+      verifiees contre une source primaire dediee.
+    - La signification bit-a-bit exacte des registres $3DD/$3DF n'est
+      pas documentee - seule la valeur globale ecrite est utilisee
+      pour la reconnaissance de mode.
+    - Aucune lecture n'est geree sur $3DD/$3DF (aucun logiciel d'epoque
+      analyse n'en a besoin).
+
+==============================================================================
+10. REFERENCES
+==============================================================================
+
+  - https://www.gladir.com/LEXIQUE/CARD/graphicssolution.htm
+  - https://raw.githubusercontent.com/gladir/GRAPHICSSOLUTIONLIB-TP/main/
+    MODES.PAS
+  - GSDEMO1.C / GSDEMO1.COM / IOX.ASM (C:\BACKUP\GS - archive personnelle
+    de l'utilisateur, programme de demonstration d'epoque fourni avec
+    la carte ATI Graphics Solution)
+  - SAMPLES/ASM8086/T18ATI16.ASM (ce depot)
+  - DEVENV.PAS (ce depot) - procedures citees en section 9
