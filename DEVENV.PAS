@@ -40386,6 +40386,28 @@ Var
  Row, Col: Integer;
  B: Byte;
 Begin
+ { Mode ATI Graphics Solution 640x200x16 couleurs : lire depuis les plans  }
+ { graphiques ($20000+/$30000+, voir Emu_ATIDetectMode/Emu_WriteByte), PAS }
+ { depuis la grille de texte generique ci-dessous. Indispensable : les     }
+ { logiciels qui font un read-modify-write octet par octet sur B000h/B800h }
+ { (ex. GSDEMO1.COM/Get_bb) doivent relire l octet plan reellement ecrit,  }
+ { sinon les bits preserves viennent de la grille texte (donnees sans      }
+ { rapport) et corrompent chaque octet ecrit ensuite.                      }
+ If (EmuVideo.Mode = EMU_MODE_GS640x16) And
+    (((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000)) And
+    (SizeBytes > 0) Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   If (Seg And $F800) = $B800 Then
+    BPtr^ := Emu_VidReadByte($20000 +
+     ((LongInt(Seg) Shl 4) + Ofs + I - $B8000) And $7FFF)
+   Else
+    BPtr^ := Emu_VidReadByte($30000 +
+     ((LongInt(Seg) Shl 4) + Ofs + I - $B0000) And $7FFF);
+   Inc(BPtr);
+  End;
+  Exit;
+ End;
  { Redirection depuis la VRAM virtuelle pour la memoire video texte
    $B800/$B000 : la lecture doit retourner ce qui a ete vu/ecrit
    precedemment (BIOS scroll, sauvegarde d ecran, etc.). }
@@ -40476,6 +40498,27 @@ Begin
     ' SI=', HexWord(EmuPanel.CPU.Regs.SI));
   Close(WLog);
   {$I+} If IOResult <> 0 Then ;
+ End;
+ { Mode ATI Graphics Solution 640x200x16 couleurs : ecrire dans les plans  }
+ { graphiques, pas dans la grille de texte generique - voir la meme        }
+ { redirection dans Emu_ReadBlock ci-dessus et dans Emu_WriteByte. Sans    }
+ { ceci, un REP STOSW (ex. Fill_ram de GSDEMO1.COM) n efface jamais la     }
+ { VRAM graphique reelle. }
+ If (EmuVideo.Mode = EMU_MODE_GS640x16) And
+    (((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000)) And
+    (SizeBytes > 0) Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   If (Seg And $F800) = $B800 Then
+    Emu_VidWriteByte($20000 +
+     ((LongInt(Seg) Shl 4) + Ofs + I - $B8000) And $7FFF, BPtr^)
+   Else
+    Emu_VidWriteByte($30000 +
+     ((LongInt(Seg) Shl 4) + Ofs + I - $B0000) And $7FFF, BPtr^);
+   Inc(BPtr);
+  End;
+  Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
+  Exit;
  End;
  { Redirection vers VRAM virtuelle pour memoire video texte $B800/$B000 }
  If (((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000)) And
