@@ -1641,6 +1641,15 @@ Const
  EMU_PKT_STATS_OFS    = $0080;
  EMU_PKT_PARAMS_SEG   = $F000;
  EMU_PKT_PARAMS_OFS   = $00A0;
+ EMU_XMS_STUB_SEG     = $F000;
+ EMU_XMS_STUB_OFS     = $00C0;
+
+ { Plafond materiel arbitraire du tampon "memoire etendue" XMS, independant}
+ { de la taille configuree par l utilisateur (DosXMSSize) qui ne peut que  }
+ { l approcher par le bas - voir Emu_XmsInit. 64 Mo est tres genereux pour }
+ { du logiciel DOS d epoque tout en restant une allocation triviale sur    }
+ { une machine hote moderne. }
+ EMU_XMS_CAP_KB       = 65536; { 64 Mo }
 
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
@@ -3338,6 +3347,40 @@ Type
   AsSendResult     : Word;
  End;
 
+ { --- Pilote XMS (Options > Emulateur > DOS: OS > "XMS") - eXtended       }
+ { Memory Specification version 3.0 (Microsoft/Lotus/Intel/AST, 1991),     }
+ { source verifiee : texte integral de la specification (xms30.txt).       }
+ { Contrairement a IPX/Packet Driver, XMS n a PAS de numero d interruption }
+ { dedie : l installation se verifie via INT 2Fh AX=4300h, et l adresse    }
+ { d un point d entree "appel far direct" est obtenue via AX=4310h -       }
+ { toutes les fonctions XMM (numero dans AH) passent ensuite par ce SEUL   }
+ { appel far, jamais par interruption - voir Emu_DoIntFE/Emu_XmsInit.      }
+ { Aucune des fonctions XMM de base ne necessite de rappeler du code       }
+ { invite (pas d "upcall" comme Packet Driver) : chaque appel est          }
+ { entierement synchrone, ce qui rend cette pile plus simple que les deux  }
+ { precedentes malgre son nombre de fonctions. }
+ TEmuXmsBuf = Array[0..EMU_XMS_CAP_KB * 1024 - 1] Of Byte;
+
+ TEmuXmsHandle = Record
+  InUse      : Boolean;
+  SizeKB     : LongInt; { taille en Ko (32 bits pour AH=89h/8Fh) }
+  LockCount  : Byte;
+  StoreOffset: LongInt; { decalage en octets dans EmuXmsMem^ }
+ End;
+
+ TEmuXmsState = Record
+  Active    : Boolean;
+  StubSeg, StubOfs : Word;    { trampoline "appel far direct" (INT FEh)   }
+  TotalKB   : LongInt;        { taille totale annoncee (DosXMSSize plafonne)}
+  UsedBytes : LongInt;        { allocateur "bump" - voir Emu_XmsAlloc     }
+  { Handle 0 = "memoire conventionnelle" par convention XMS (voir MOVE) - }
+  { la table commence donc a l indice 1, comme les vrais handles XMS.     }
+  Handles   : Array[1..64] Of TEmuXmsHandle;
+  HmaOwned  : Boolean;         { HMA attribuee (fonctions 01h/02h)        }
+  A20LocalCount : Integer;     { compteur local (fonctions 05h/06h)       }
+  A20Global : Boolean;         { drapeau global (fonctions 03h/04h)       }
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -4406,6 +4449,11 @@ Var
  EmuIpx         : TEmuIpxState;
  { --- Etat du pilote de paquets generique (INT 60h) --- }
  EmuPkt         : TEmuPktState;
+ { --- Etat du pilote XMS (INT 2Fh AX=4300h/4310h) --- }
+ EmuXms         : TEmuXmsState;
+ EmuXmsMem      : ^TEmuXmsBuf;   { tampon "memoire etendue" separe des     }
+                                  { 1 Mo conventionnels (C.Memory) - voir   }
+                                  { Emu_XmsInit. Nil tant que XMS inactif.  }
  { --- Etat de la souris emulee (INT 33h) --- }
  EmuMouseInst   : Boolean;       { driver "installe" }
  EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
@@ -50083,10 +50131,521 @@ Begin
  Emu_WriteByte(P.CPU, EmuPkt.NameSeg, EmuPkt.NameOfs + Length(NameStr), 0);
 End;
 
-{ --- INT 2Fh AX=7A00h : verification d installation IPX. Toute autre      }
-{ sous-fonction (ou si le reseau Novell n est pas configure) suit le       }
-{ meme comportement generique que les autres interruptions non geree -    }
-{ voir Emu_DoInt. --- }
+{ ========================================================================= }
+{ Pilote XMS (Options > Emulateur > DOS: OS > "XMS") - eXtended Memory     }
+{ Specification version 3.0 (Microsoft/Lotus/Intel/AST, janvier 1991).     }
+{ Source verifiee : texte integral de la specification (xms30.txt,        }
+{ phatcode.net/res/219/files/xms30.txt). Toutes les fonctions AH=00h-12h   }
+{ et leurs variantes 32 bits AH=88h/89h/8Eh/8Fh sont implantees.           }
+{                                                                          }
+{ Limites assumees (documentees ici plutot que devinees) :                }
+{  - Allocateur "bump" : la memoire liberee (FreeExtendedMemoryBlock)      }
+{    n est reellement recuperee que lorsque TOUTES les poignees sont       }
+{    liberees simultanement (auquel cas le pointeur d allocation repart   }
+{    de zero). Suffisant pour l usage typique (allouer, utiliser, liberer  }
+{    a la fin) mais un programme qui alloue/libere en boucle sans jamais   }
+{    tout liberer d un coup finira par epuiser les 64 Mo du tampon.        }
+{  - Agrandir un bloc (Resize, AH=0Fh/8Fh) au-dela de sa taille actuelle   }
+{    n est possible que s il s agit du DERNIER bloc alloue (le seul cas    }
+{    ou l allocateur bump peut l etendre en place sans deplacer de         }
+{    donnees) - sinon erreur A0h, comme si la memoire etait pleine.        }
+{  - HMA (fonctions 01h/02h) et le "verrouillage" (0Ch/0Dh) sont de la     }
+{    pure comptabilite : aucune adresse physique reelle n est fournie      }
+{    derriere le DX:BX retourne par Lock (les acces au-dela de 1 Mo sont   }
+{    de toute facon ignores sans risque par Emu_ReadAbsBlock/WriteAbsBlock,}
+{    donc aucun logiciel ne peut se fier a une vraie adresse physique      }
+{    utilisable ici). Les UMB (10h-12h) repondent honnetement "aucune      }
+{    UMB disponible" plutot que d en fabriquer qui risqueraient de         }
+{    chevaucher la VRAM ($A000-$BFFF) ou les stubs internes ($F000).       }
+{ ========================================================================= }
+
+Function Emu_XmsHandleValid(H: Word): Boolean;
+Begin
+ Emu_XmsHandleValid := (H >= 1) And (H <= High(EmuXms.Handles)) And
+  EmuXms.Handles[H].InUse;
+End;
+
+{ --- Allocateur "bump" (voir la limite documentee plus haut) --- }
+{ Retourne 0 en cas de succes, sinon le code d erreur XMS (BL). }
+Function Emu_XmsAllocBlock(SizeKB: LongInt; Var OutHandle: Word): Byte;
+Var H: Word; Slot: Integer; NeedBytes: LongInt;
+Begin
+ Slot := -1;
+ For H := 1 To High(EmuXms.Handles) Do
+  If Not EmuXms.Handles[H].InUse Then Begin Slot := H; Break; End;
+ If Slot < 0 Then Begin
+  Emu_XmsAllocBlock := $A1; { pas de poignee disponible }
+  Exit;
+ End;
+ NeedBytes := SizeKB * 1024;
+ If EmuXms.UsedBytes + NeedBytes > EmuXms.TotalKB * 1024 Then Begin
+  Emu_XmsAllocBlock := $A0; { memoire etendue toute allouee }
+  Exit;
+ End;
+ EmuXms.Handles[Slot].InUse := True;
+ EmuXms.Handles[Slot].SizeKB := SizeKB;
+ EmuXms.Handles[Slot].LockCount := 0;
+ EmuXms.Handles[Slot].StoreOffset := EmuXms.UsedBytes;
+ EmuXms.UsedBytes := EmuXms.UsedBytes + NeedBytes;
+ OutHandle := Slot;
+ Emu_XmsAllocBlock := 0;
+End;
+
+Function Emu_XmsFreeBlock(H: Word): Byte;
+Var I: Integer; AnyLeft: Boolean;
+Begin
+ If Not Emu_XmsHandleValid(H) Then Begin
+  Emu_XmsFreeBlock := $A2; { poignee invalide }
+  Exit;
+ End;
+ If EmuXms.Handles[H].LockCount > 0 Then Begin
+  Emu_XmsFreeBlock := $AB; { bloc verrouille }
+  Exit;
+ End;
+ EmuXms.Handles[H].InUse := False;
+ AnyLeft := False;
+ For I := 1 To High(EmuXms.Handles) Do
+  If EmuXms.Handles[I].InUse Then AnyLeft := True;
+ If Not AnyLeft Then EmuXms.UsedBytes := 0; { recupere tout le tampon }
+ Emu_XmsFreeBlock := 0;
+End;
+
+{ --- AH=00h : Get Version Number --- }
+Procedure Emu_Xms_GetVersion(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AX := $0300; { version 3.00 (BCD) }
+ P.CPU.Regs.BX := $0000; { revision interne, sans objet ici }
+ P.CPU.Regs.DX := 1;     { la HMA existe (voir AH=01h) }
+End;
+
+{ --- AH=01h/02h : Request/Release High Memory Area --- }
+{ Comptabilite seule - voir la limite documentee plus haut. }
+Procedure Emu_Xms_RequestHMA(Var P: TEmulatorPanel);
+Begin
+ If EmuXms.HmaOwned Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $91; { HMA deja utilisee }
+  Exit;
+ End;
+ EmuXms.HmaOwned := True;
+ P.CPU.Regs.AX := 1;
+End;
+
+Procedure Emu_Xms_ReleaseHMA(Var P: TEmulatorPanel);
+Begin
+ If Not EmuXms.HmaOwned Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $93; { HMA non attribuee }
+  Exit;
+ End;
+ EmuXms.HmaOwned := False;
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=03h/04h : Global Enable/Disable A20 --- }
+{ AH=05h/06h : Local Enable/Disable A20 --- }
+{ AH=07h : Query A20 --- }
+{ Purement comptable (drapeau/compteur) : le modele memoire plat de cet    }
+{ emulateur ne depend d aucun etat reel de la ligne A20 - voir la limite   }
+{ documentee plus haut. }
+Procedure Emu_Xms_GlobalEnableA20(Var P: TEmulatorPanel);
+Begin
+ EmuXms.A20Global := True;
+ P.CPU.Regs.AX := 1;
+End;
+
+Procedure Emu_Xms_GlobalDisableA20(Var P: TEmulatorPanel);
+Begin
+ EmuXms.A20Global := False;
+ P.CPU.Regs.AX := 1;
+End;
+
+Procedure Emu_Xms_LocalEnableA20(Var P: TEmulatorPanel);
+Begin
+ Inc(EmuXms.A20LocalCount);
+ P.CPU.Regs.AX := 1;
+End;
+
+Procedure Emu_Xms_LocalDisableA20(Var P: TEmulatorPanel);
+Begin
+ If EmuXms.A20LocalCount > 0 Then Dec(EmuXms.A20LocalCount);
+ P.CPU.Regs.AX := 1;
+End;
+
+Procedure Emu_Xms_QueryA20(Var P: TEmulatorPanel);
+Begin
+ If (EmuXms.A20LocalCount > 0) Or EmuXms.A20Global Then
+  P.CPU.Regs.AX := 1
+ Else
+  P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BL := 0;
+End;
+
+{ --- AH=08h : Query Free Extended Memory (16 bits, Ko) --- }
+Procedure Emu_Xms_QueryFreeMem(Var P: TEmulatorPanel);
+Var FreeKB: LongInt;
+Begin
+ FreeKB := EmuXms.TotalKB - (EmuXms.UsedBytes Div 1024);
+ If FreeKB > 65535 Then FreeKB := 65535; { plafond 16 bits, voir AH=88h }
+ If FreeKB < 0 Then FreeKB := 0;
+ P.CPU.Regs.AX := Word(FreeKB); { plus grand bloc libre = tout le reste,  }
+ P.CPU.Regs.DX := Word(FreeKB); { l allocateur bump n a pas de fragments  }
+ If FreeKB = 0 Then P.CPU.Regs.BL := $A0;
+End;
+
+{ --- AH=09h : Allocate Extended Memory Block (16 bits, Ko) --- }
+Procedure Emu_Xms_AllocBlock(Var P: TEmulatorPanel);
+Var H: Word; Err: Byte;
+Begin
+ Err := Emu_XmsAllocBlock(P.CPU.Regs.DX, H);
+ If Err = 0 Then Begin
+  P.CPU.Regs.AX := 1; P.CPU.Regs.DX := H;
+ End Else Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := Err;
+ End;
+End;
+
+{ --- AH=0Ah : Free Extended Memory Block --- }
+Procedure Emu_Xms_FreeBlock(Var P: TEmulatorPanel);
+Var Err: Byte;
+Begin
+ Err := Emu_XmsFreeBlock(P.CPU.Regs.DX);
+ If Err = 0 Then P.CPU.Regs.AX := 1
+ Else Begin P.CPU.Regs.AX := 0; P.CPU.Regs.BL := Err; End;
+End;
+
+Function Emu_XmsReadDWord(Var C: TEmuCPU; Seg, Ofs: Word): LongInt;
+Begin
+ Emu_XmsReadDWord := LongInt(Emu_ReadWord(C, Seg, Ofs)) Or
+  (LongInt(Emu_ReadWord(C, Seg, Ofs + 2)) Shl 16);
+End;
+
+{ --- AH=0Bh : Move Extended Memory Block --- }
+{ DS:SI -> structure de 16 octets (voir l en-tete de section) : Length     }
+{ (DD), SourceHandle (DW), SourceOffset (DD), DestHandle (DW), DestOffset  }
+{ (DD). Handle=0 signifie memoire conventionnelle, auquel cas le champ     }
+{ Offset correspondant est relu comme un pointeur reel segment:offset      }
+{ (mot bas = offset, mot haut = segment - "notation DWORD Intel"). }
+Procedure Emu_Xms_MoveBlock(Var P: TEmulatorPanel);
+Var StructSeg, StructOfs: Word;
+ Length_: LongInt; SrcHandle, DstHandle: Word;
+ SrcOfs, DstOfs: LongInt;
+ SrcSeg, SrcRealOfs, DstSeg, DstRealOfs: Word;
+ I: LongInt; B: Byte;
+Begin
+ StructSeg := P.CPU.Segs.DS; StructOfs := P.CPU.Regs.SI;
+ Length_   := Emu_XmsReadDWord(P.CPU, StructSeg, StructOfs);
+ SrcHandle := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 4);
+ SrcOfs    := Emu_XmsReadDWord(P.CPU, StructSeg, StructOfs + 6);
+ DstHandle := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 10);
+ DstOfs    := Emu_XmsReadDWord(P.CPU, StructSeg, StructOfs + 12);
+
+ If (Length_ And 1) <> 0 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A7; { longueur invalide (impaire) }
+  Exit;
+ End;
+ If SrcHandle <> 0 Then Begin
+  If Not Emu_XmsHandleValid(SrcHandle) Then Begin
+   P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A3; Exit;
+  End;
+  If SrcOfs + Length_ > EmuXms.Handles[SrcHandle].SizeKB * 1024 Then Begin
+   P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A4; Exit;
+  End;
+ End Else Begin
+  SrcRealOfs := Word(SrcOfs And $FFFF);
+  SrcSeg     := Word((SrcOfs Shr 16) And $FFFF);
+ End;
+ If DstHandle <> 0 Then Begin
+  If Not Emu_XmsHandleValid(DstHandle) Then Begin
+   P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A5; Exit;
+  End;
+  If DstOfs + Length_ > EmuXms.Handles[DstHandle].SizeKB * 1024 Then Begin
+   P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A6; Exit;
+  End;
+ End Else Begin
+  DstRealOfs := Word(DstOfs And $FFFF);
+  DstSeg     := Word((DstOfs Shr 16) And $FFFF);
+ End;
+
+ { Copie octet par octet - simple et correcte quel que soit le sens (pas  }
+ { besoin d optimiser un "memmove" pour des tailles DOS-era typiques), a   }
+ { la difference d un vrai pilote qui doit gerer le chevauchement en       }
+ { copiant en sens inverse le cas echeant ; la specification elle-meme ne  }
+ { garantit le resultat que pour les copies "vers l avant" (voir l en-tete }
+ { de section), donc une copie octet-par-octet en ordre croissant reste    }
+ { conforme au contrat documente. }
+ For I := 0 To Length_ - 1 Do Begin
+  If SrcHandle <> 0 Then
+   B := EmuXmsMem^[EmuXms.Handles[SrcHandle].StoreOffset + SrcOfs + I]
+  Else
+   B := Emu_ReadByte(P.CPU, SrcSeg, Word(SrcRealOfs + I));
+  If DstHandle <> 0 Then
+   EmuXmsMem^[EmuXms.Handles[DstHandle].StoreOffset + DstOfs + I] := B
+  Else
+   Emu_WriteByte(P.CPU, DstSeg, Word(DstRealOfs + I), B);
+ End;
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=0Ch : Lock Extended Memory Block --- }
+Procedure Emu_Xms_LockBlock(Var P: TEmulatorPanel);
+Var H: Word; Phys: LongInt;
+Begin
+ H := P.CPU.Regs.DX;
+ If Not Emu_XmsHandleValid(H) Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A2; Exit;
+ End;
+ If EmuXms.Handles[H].LockCount = 255 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $AC; { debordement du compteur }
+  Exit;
+ End;
+ Inc(EmuXms.Handles[H].LockCount);
+ { Adresse "physique" synthetique (voir la limite documentee plus haut) - }
+ { base arbitraire 1 Mo (debut conventionnel de la memoire etendue) plus  }
+ { le decalage du bloc dans notre tampon interne. }
+ Phys := $100000 + EmuXms.Handles[H].StoreOffset;
+ P.CPU.Regs.DX := Word((Phys Shr 16) And $FFFF);
+ P.CPU.Regs.BX := Word(Phys And $FFFF);
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=0Dh : Unlock Extended Memory Block --- }
+Procedure Emu_Xms_UnlockBlock(Var P: TEmulatorPanel);
+Var H: Word;
+Begin
+ H := P.CPU.Regs.DX;
+ If Not Emu_XmsHandleValid(H) Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A2; Exit;
+ End;
+ If EmuXms.Handles[H].LockCount = 0 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $AA; { pas verrouille }
+  Exit;
+ End;
+ Dec(EmuXms.Handles[H].LockCount);
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=0Eh : Get EMB Handle Information (16 bits) --- }
+Procedure Emu_Xms_GetHandleInfo(Var P: TEmulatorPanel);
+Var H, FreeCount, I: Word;
+Begin
+ H := P.CPU.Regs.DX;
+ If Not Emu_XmsHandleValid(H) Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A2; Exit;
+ End;
+ FreeCount := 0;
+ For I := 1 To High(EmuXms.Handles) Do
+  If Not EmuXms.Handles[I].InUse Then Inc(FreeCount);
+ P.CPU.Regs.BH := EmuXms.Handles[H].LockCount;
+ P.CPU.Regs.BL := Byte(FreeCount And $FF); { plafonne 8 bits, comme le    }
+                                            { veut la specification 16 bits}
+ P.CPU.Regs.DX := Word(EmuXms.Handles[H].SizeKB);
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=0Fh : Reallocate Extended Memory Block (16 bits, Ko) --- }
+{ Voir la limite documentee en tete de section : n agrandit en place que   }
+{ le DERNIER bloc alloue (celui dont StoreOffset+Taille = UsedBytes). }
+Procedure Emu_Xms_ResizeBlock(Var P: TEmulatorPanel);
+Var H: Word; NewSizeKB: LongInt; OldSizeKB: LongInt; IsLast: Boolean;
+Begin
+ H := P.CPU.Regs.DX;
+ NewSizeKB := P.CPU.Regs.BX;
+ If Not Emu_XmsHandleValid(H) Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A2; Exit;
+ End;
+ If EmuXms.Handles[H].LockCount > 0 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $AB; Exit;
+ End;
+ OldSizeKB := EmuXms.Handles[H].SizeKB;
+ IsLast := EmuXms.Handles[H].StoreOffset + OldSizeKB * 1024 =
+  EmuXms.UsedBytes;
+ If NewSizeKB <= OldSizeKB Then Begin
+  { Retrecir est toujours possible ; si c est le dernier bloc, recuperer  }
+  { immediatement l espace libere. }
+  If IsLast Then
+   EmuXms.UsedBytes := EmuXms.UsedBytes - (OldSizeKB - NewSizeKB) * 1024;
+  EmuXms.Handles[H].SizeKB := NewSizeKB;
+  P.CPU.Regs.AX := 1;
+  Exit;
+ End;
+ If Not IsLast Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A0; { simplification assumee }
+  Exit;
+ End;
+ If EmuXms.UsedBytes + (NewSizeKB - OldSizeKB) * 1024 >
+    EmuXms.TotalKB * 1024 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A0;
+  Exit;
+ End;
+ EmuXms.UsedBytes := EmuXms.UsedBytes + (NewSizeKB - OldSizeKB) * 1024;
+ EmuXms.Handles[H].SizeKB := NewSizeKB;
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=10h/11h/12h : UMB - voir la limite documentee en tete de section, }
+{ aucune UMB n est fabriquee. --- }
+Procedure Emu_Xms_RequestUMB(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BL := $B1; { aucune UMB disponible }
+ P.CPU.Regs.DX := 0;   { plus grande taille disponible = aucune }
+End;
+
+Procedure Emu_Xms_ReleaseUMB(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BL := $B2; { segment invalide : aucune UMB n a jamais ete accordee }
+End;
+
+Procedure Emu_Xms_ResizeUMB(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BL := $B2;
+ P.CPU.Regs.DX := 0;
+End;
+
+{ --- AH=88h : Query Any Free Extended Memory (32 bits) --- }
+Procedure Emu_Xms_QueryFreeMem32(Var P: TEmulatorPanel);
+Var FreeKB: LongInt;
+Begin
+ If Not OptionsDlg.Data.DosEmu80386 Then Begin
+  P.CPU.Regs.BL := $80; Exit; { reserve aux 80386+, voir la specification }
+ End;
+ FreeKB := EmuXms.TotalKB - (EmuXms.UsedBytes Div 1024);
+ If FreeKB < 0 Then FreeKB := 0;
+ P.CPU.Regs.EAX := FreeKB;
+ P.CPU.Regs.EDX := FreeKB;
+ P.CPU.Regs.ECX := $100000 + EmuXms.UsedBytes; { plus haute adresse       }
+                                                { "physique" utilisee      }
+ P.CPU.Regs.BL := 0;
+ If FreeKB = 0 Then P.CPU.Regs.BL := $A0;
+End;
+
+{ --- AH=89h : Allocate Any Extended Memory Block (32 bits) --- }
+Procedure Emu_Xms_AllocBlock32(Var P: TEmulatorPanel);
+Var H: Word; Err: Byte;
+Begin
+ If Not OptionsDlg.Data.DosEmu80386 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $80; Exit;
+ End;
+ Err := Emu_XmsAllocBlock(LongInt(P.CPU.Regs.EDX), H);
+ If Err = 0 Then Begin
+  P.CPU.Regs.AX := 1; P.CPU.Regs.DX := H;
+ End Else Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := Err;
+ End;
+End;
+
+{ --- AH=8Eh : Get Extended EMB Handle Information (32 bits) --- }
+Procedure Emu_Xms_GetHandleInfo32(Var P: TEmulatorPanel);
+Var H, I: Word; FreeCount: Word;
+Begin
+ If Not OptionsDlg.Data.DosEmu80386 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $80; Exit;
+ End;
+ H := P.CPU.Regs.DX;
+ If Not Emu_XmsHandleValid(H) Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $A2; Exit;
+ End;
+ FreeCount := 0;
+ For I := 1 To High(EmuXms.Handles) Do
+  If Not EmuXms.Handles[I].InUse Then Inc(FreeCount);
+ P.CPU.Regs.BH := EmuXms.Handles[H].LockCount;
+ P.CPU.Regs.CX := FreeCount;
+ P.CPU.Regs.EDX := EmuXms.Handles[H].SizeKB;
+ P.CPU.Regs.AX := 1;
+End;
+
+{ --- AH=8Fh : Reallocate Any Extended Memory Block (32 bits) --- }
+Procedure Emu_Xms_ResizeBlock32(Var P: TEmulatorPanel);
+Var Save: Word;
+Begin
+ If Not OptionsDlg.Data.DosEmu80386 Then Begin
+  P.CPU.Regs.AX := 0; P.CPU.Regs.BL := $80; Exit;
+ End;
+ { Reutilise Emu_Xms_ResizeBlock (16 bits) : BX y attend la nouvelle       }
+ { taille - EBX depasse rarement 65535 Ko en pratique (64 Mo de tampon     }
+ { total de toute facon), donc le mot bas suffit. }
+ Save := P.CPU.Regs.BX;
+ P.CPU.Regs.BX := Word(P.CPU.Regs.EBX And $FFFF);
+ Emu_Xms_ResizeBlock(P);
+ If Save = Save Then ; { evite un avertissement }
+End;
+
+{ --- Repartiteur du point d entree XMM (appel far, jamais par            }
+{ interruption reelle - voir Emu_DoIntFE, atteint uniquement via le        }
+{ trampoline installe par Emu_XmsInit). Numero de fonction dans AH. --- }
+Procedure Emu_DoIntFE(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.BL := 0; { pas d erreur par defaut }
+ Case P.CPU.Regs.AH Of
+  $00: Emu_Xms_GetVersion(P);
+  $01: Emu_Xms_RequestHMA(P);
+  $02: Emu_Xms_ReleaseHMA(P);
+  $03: Emu_Xms_GlobalEnableA20(P);
+  $04: Emu_Xms_GlobalDisableA20(P);
+  $05: Emu_Xms_LocalEnableA20(P);
+  $06: Emu_Xms_LocalDisableA20(P);
+  $07: Emu_Xms_QueryA20(P);
+  $08: Emu_Xms_QueryFreeMem(P);
+  $09: Emu_Xms_AllocBlock(P);
+  $0A: Emu_Xms_FreeBlock(P);
+  $0B: Emu_Xms_MoveBlock(P);
+  $0C: Emu_Xms_LockBlock(P);
+  $0D: Emu_Xms_UnlockBlock(P);
+  $0E: Emu_Xms_GetHandleInfo(P);
+  $0F: Emu_Xms_ResizeBlock(P);
+  $10: Emu_Xms_RequestUMB(P);
+  $11: Emu_Xms_ReleaseUMB(P);
+  $12: Emu_Xms_ResizeUMB(P);
+  $88: Emu_Xms_QueryFreeMem32(P);
+  $89: Emu_Xms_AllocBlock32(P);
+  $8E: Emu_Xms_GetHandleInfo32(P);
+  $8F: Emu_Xms_ResizeBlock32(P);
+ Else Begin
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := $80; { fonction non implantee }
+ End;
+ End;
+End;
+
+{ Reinitialise le pilote XMS et, si la case "XMS" est cochee, alloue le    }
+{ tampon "memoire etendue" (separe des 1 Mo conventionnels de C.Memory)    }
+{ et installe le trampoline "appel far direct" (INT FEh) retourne par      }
+{ INT 2Fh AX=4310h. Appelee a chaque (re)demarrage de l emulateur, comme   }
+{ Emu_IpxInit/Emu_PktInit. }
+Procedure Emu_XmsInit(Var P: TEmulatorPanel);
+Begin
+ FillChar(EmuXms, SizeOf(EmuXms), 0);
+ EmuXms.Active := OptionsDlg.Data.DosXMS;
+ If EmuXmsMem <> Nil Then Begin
+  Dispose(EmuXmsMem);
+  EmuXmsMem := Nil;
+ End;
+ If Not EmuXms.Active Then Exit;
+ EmuXms.TotalKB := OptionsDlg.Data.DosXMSSize;
+ If EmuXms.TotalKB > EMU_XMS_CAP_KB Then EmuXms.TotalKB := EMU_XMS_CAP_KB;
+ If EmuXms.TotalKB < 0 Then EmuXms.TotalKB := 0;
+ New(EmuXmsMem);
+ If EmuXmsMem = Nil Then Begin
+  EmuXms.Active := False; { echec d allocation hote : agir comme inactif }
+  Exit;
+ End;
+ FillChar(EmuXmsMem^, SizeOf(EmuXmsMem^), 0);
+ EmuXms.StubSeg := EMU_XMS_STUB_SEG;
+ EmuXms.StubOfs := EMU_XMS_STUB_OFS;
+ { Trampoline "appel far direct" : INT FEh ; RETF - INT FEh est intercepte }
+ { directement par Emu_DoInt (jamais execute pour de vrai, comme les       }
+ { stubs IPX/Packet Driver), le RETF n est donc la que pour completude.    }
+ Emu_WriteByte(P.CPU, EmuXms.StubSeg, EmuXms.StubOfs,     $CD);
+ Emu_WriteByte(P.CPU, EmuXms.StubSeg, EmuXms.StubOfs + 1, $FE);
+ Emu_WriteByte(P.CPU, EmuXms.StubSeg, EmuXms.StubOfs + 2, $CB);
+End;
+
+{ --- INT 2Fh AX=7A00h : verification d installation IPX ; AX=4300h/4310h  }
+{ : verification d installation XMS et adresse du point d entree. Toute    }
+{ autre sous-fonction (ou si le service correspondant n est pas configure) }
+{ suit le meme comportement generique que les autres interruptions non    }
+{ gerees - voir Emu_DoInt. --- }
 Procedure Emu_DoInt2F(Var P: TEmulatorPanel);
 Var IvtOfs, IvtSeg: Word;
 Begin
@@ -50094,6 +50653,15 @@ Begin
   P.CPU.Regs.AL := $FF;
   P.CPU.Segs.ES := EmuIpx.StubSeg;
   P.CPU.Regs.DI := EmuIpx.StubOfs;
+  Exit;
+ End;
+ If EmuXms.Active And (P.CPU.Regs.AX = $4300) Then Begin
+  P.CPU.Regs.AL := $80;
+  Exit;
+ End;
+ If EmuXms.Active And (P.CPU.Regs.AX = $4310) Then Begin
+  P.CPU.Segs.ES := EmuXms.StubSeg;
+  P.CPU.Regs.BX := EmuXms.StubOfs;
   Exit;
  End;
  IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
@@ -50156,6 +50724,10 @@ Begin
   $FD: If EmuPkt.Cont.Pending Then Emu_PktCont(P); { continuation interne  }
        { du protocole d upcall recepteur/as_send_pkt du pilote de paquets  }
        { - voir Emu_PktCont. Jamais atteint par du logiciel DOS reel. }
+  $FE: If EmuXms.Active Then Emu_DoIntFE(P); { point d entree XMM du       }
+       { pilote XMS, atteint uniquement via le trampoline installe par     }
+       { Emu_XmsInit (jamais un vrai numero d interruption DOS/BIOS,       }
+       { contrairement a $60/$7A - pas de repli generique necessaire). }
   $7A: Begin
    { N intercepter reellement que si la case "Reseau Novell NetWare" est   }
    { cochee (EmuIpx.Active) - sinon, se comporter EXACTEMENT comme pour    }
@@ -61789,6 +62361,7 @@ Begin NesActive := False;
  Emu_InitBDA(P);
  Emu_IpxInit(P);
  Emu_PktInit(P);
+ Emu_XmsInit(P);
  EmuPumpCnt := 0;
  { Initialiser etat souris emulee. }
  EmuMouseInst := True;
