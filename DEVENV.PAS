@@ -1329,7 +1329,8 @@ Const
  DOS_TYPE_COUNT       = 7;       { nombre de types de DOS emulables }
  DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
  DOS_HARDWARE_COUNT   = 10;      { nombre de modeles de materiel    }
- DOS_VIDEO_COUNT      = 21;      { nombre de cartes video emulables }
+ DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
+ EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -6586,6 +6587,16 @@ Procedure Emu_VidSetPixel(X, Y: Integer; Color: Byte); Forward;
 Function  Emu_VidGetPixel(X, Y: Integer): Byte; Forward;
 Function  Emu_VidPortRead(Port: Word): Byte; Forward;
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte); Forward;
+{ Capacites de la carte video reellement configuree (Options > Emulateur > }
+{ DOS > Video 1/2) - permet de faire reagir l emulateur comme le vrai      }
+{ materiel : une config CGA seule ne doit pas repondre aux registres EGA/  }
+{ VGA, une config VGA ne doit pas repondre aux ports etendus ATI Graphics  }
+{ Solution, etc. Voir Emu_VidPortRead/Write et Emu_VidSetMode. }
+Function Emu_AnyVideoActive: Boolean; Forward;
+Function Emu_VGAActive: Boolean; Forward;
+Function Emu_EGAActive: Boolean; Forward;
+Function Emu_CGAActive: Boolean; Forward;
+Function Emu_ATIActive: Boolean; Forward;
 Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
 Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
 
@@ -36572,6 +36583,7 @@ Begin
   18: DosVideoName := 'Matrox Millennium G200';
   19: DosVideoName := 'Matrox Millennium G400';
   20: DosVideoName := 'NVidia GeForce 6';
+  21: DosVideoName := 'Aucune';
  Else
   DosVideoName := '???';
  End;
@@ -44876,10 +44888,27 @@ Begin
  End;
 End;
 
+{ Vrai si la carte configuree (Video 1/2) sait afficher ce mode graphique  }
+{ - un BIOS reel de CGA seule n a tout simplement pas les modes EGA/VGA    }
+{ dans sa table, donc INT 10h AH=00h avec un tel AL doit etre sans effet.  }
+Function Emu_VidModeSupported(Mode: Byte): Boolean;
+Begin
+ Case Mode Of
+  $04, $05, $06: Emu_VidModeSupported := Emu_CGAActive;
+  $0D, $0E, $0F, $10: Emu_VidModeSupported := Emu_EGAActive;
+  $11, $12, $13: Emu_VidModeSupported := Emu_VGAActive;
+ Else
+  Emu_VidModeSupported := True; { modes texte de base : toujours dispo }
+ End;
+End;
+
 { --- Definir le mode video courant --- }
 Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel);
 Begin
  If Not EmuVideo.MemReady Then Emu_VidInit;
+ { Carte absente pour ce mode : un vrai BIOS n aurait pas cette entree de }
+ { table de modes, INT 10h AH=00h reste donc sans effet (mode inchange). }
+ If Not Emu_VidModeSupported(NewMode And $7F) Then Exit;
  EmuVideo.Mode := NewMode And $7F;
  EmuDiag_LastMode := EmuVideo.Mode;
  { Reinitialiser registres de base }
@@ -44959,33 +44988,49 @@ Begin
  End;
 End;
 
-{ --- Acces aux ports I/O video --- }
+{ --- Acces aux ports I/O video ---
+  Chaque groupe de ports n est lu que si la carte qui l implante sur le
+  vrai materiel est effectivement configuree (Options > Emulateur > DOS >
+  Video 1/2) : sans cette garde, un programme qui sonde la presence d une
+  EGA/VGA (ports $3C0-$3CF) verrait toujours une reponse meme sur une
+  configuration CGA seule, ce qui fausserait sa detection de materiel. }
 Function Emu_VidPortRead(Port: Word): Byte;
 Var V: Byte;
 Begin
  Emu_VidPortRead := 0;
+ If Not Emu_AnyVideoActive Then Exit;
  Case Port Of
-  $3C0: Emu_VidPortRead := EmuVideo.ACIdx;
-  $3C1: If EmuVideo.ACIdx < 32 Then Emu_VidPortRead := EmuVideo.ACReg[EmuVideo.ACIdx];
-  $3C4: Emu_VidPortRead := EmuVideo.SeqIdx;
-  $3C5: If EmuVideo.SeqIdx < 8 Then Emu_VidPortRead := EmuVideo.SeqReg[EmuVideo.SeqIdx];
-  $3C6: Emu_VidPortRead := EmuVideo.DACMask;
-  $3C7: Emu_VidPortRead := EmuVideo.DACState;
-  $3C8: Emu_VidPortRead := EmuVideo.DACWriteIdx Div 3;
-  $3C9: Begin
+  $3C0: If Emu_EGAActive Then Emu_VidPortRead := EmuVideo.ACIdx;
+  $3C1: If Emu_EGAActive And (EmuVideo.ACIdx < 32) Then
+   Emu_VidPortRead := EmuVideo.ACReg[EmuVideo.ACIdx];
+  $3C4: If Emu_EGAActive Then Emu_VidPortRead := EmuVideo.SeqIdx;
+  $3C5: If Emu_EGAActive And (EmuVideo.SeqIdx < 8) Then
+   Emu_VidPortRead := EmuVideo.SeqReg[EmuVideo.SeqIdx];
+  { DAC couleur ($3C6-$3C9) : materiel VGA uniquement, une EGA n a pas ce }
+  { registre (palette fixe 64 couleurs via l Attribute Controller).      }
+  $3C6: If Emu_VGAActive Then Emu_VidPortRead := EmuVideo.DACMask;
+  $3C7: If Emu_VGAActive Then Emu_VidPortRead := EmuVideo.DACState;
+  $3C8: If Emu_VGAActive Then Emu_VidPortRead := EmuVideo.DACWriteIdx Div 3;
+  $3C9: If Emu_VGAActive Then Begin
    V := EmuVideo.DAC[EmuVideo.DACReadIdx];
    EmuVideo.DACReadIdx := (EmuVideo.DACReadIdx + 1) Mod 768;
    Emu_VidPortRead := V;
   End;
-  $3CC: Emu_VidPortRead := $C7; { Misc Output : couleur, 480, sync }
-  $3CE: Emu_VidPortRead := EmuVideo.GCIdx;
-  $3CF: If EmuVideo.GCIdx < 16 Then Emu_VidPortRead := EmuVideo.GCReg[EmuVideo.GCIdx];
+  $3CC: If Emu_EGAActive Then
+   Emu_VidPortRead := $C7; { Misc Output : couleur, 480, sync }
+  $3CE: If Emu_EGAActive Then Emu_VidPortRead := EmuVideo.GCIdx;
+  $3CF: If Emu_EGAActive And (EmuVideo.GCIdx < 16) Then
+   Emu_VidPortRead := EmuVideo.GCReg[EmuVideo.GCIdx];
+  { CRTC : commun a toutes les cartes (MDA/CGA/EGA/VGA/ATI GS), aucune   }
+  { garde specifique au-dela de "une carte quelconque est presente".    }
   $3D4, $3B4: Emu_VidPortRead := EmuVideo.CRTCIdx;
   $3D5, $3B5:
    If EmuVideo.CRTCIdx < 32 Then
     Emu_VidPortRead := EmuVideo.CRTCReg[EmuVideo.CRTCIdx];
-  $3D8: Emu_VidPortRead := EmuVideo.CGAMode;
-  $3D9: Emu_VidPortRead := EmuVideo.CGAColor;
+  $3D8: If Emu_CGAActive Or Emu_ATIActive Then
+   Emu_VidPortRead := EmuVideo.CGAMode;
+  $3D9: If Emu_CGAActive Or Emu_ATIActive Then
+   Emu_VidPortRead := EmuVideo.CGAColor;
   $3BA, $3DA: Begin
    { Status register. Bit 3 (VRetrace) est cadence en temps reel par le  }
    { pas CPU (voir boucle principale) et non par la lecture : certains   }
@@ -44998,6 +45043,45 @@ Begin
    Emu_VidPortRead := EmuVideo.StatusRetrace Or $06;
   End;
  End;
+End;
+
+{ Vrai si au moins un des deux emplacements Video 1/Video 2 porte une      }
+{ carte reelle (different de "Aucune", EMU_VID_NONE=21). }
+Function Emu_AnyVideoActive: Boolean;
+Begin
+ Emu_AnyVideoActive := (OptionsDlg.Data.DosVideo1 <> EMU_VID_NONE) Or
+  (OptionsDlg.Data.DosVideo2 <> EMU_VID_NONE);
+End;
+
+{ VGA et compatibles (index 8 a 20 de DosVideoName). }
+Function Emu_VGAActive: Boolean;
+Var D1, D2: Integer;
+Begin
+ D1 := OptionsDlg.Data.DosVideo1;
+ D2 := OptionsDlg.Data.DosVideo2;
+ Emu_VGAActive := ((D1 >= 8) And (D1 <= 20)) Or ((D2 >= 8) And (D2 <= 20));
+End;
+
+{ EGA et compatibles (index 5 a 7). Une VGA est retrocompatible EGA sur le }
+{ vrai materiel, donc Emu_VGAActive implique Emu_EGAActive. }
+Function Emu_EGAActive: Boolean;
+Var D1, D2: Integer;
+Begin
+ D1 := OptionsDlg.Data.DosVideo1;
+ D2 := OptionsDlg.Data.DosVideo2;
+ Emu_EGAActive := ((D1 >= 5) And (D1 <= 7)) Or ((D2 >= 5) And (D2 <= 7)) Or
+  Emu_VGAActive;
+End;
+
+{ CGA et PCjr (index 0 et 4). Une EGA/VGA est retrocompatible CGA sur le   }
+{ vrai materiel, donc Emu_EGAActive implique Emu_CGAActive. }
+Function Emu_CGAActive: Boolean;
+Var D1, D2: Integer;
+Begin
+ D1 := OptionsDlg.Data.DosVideo1;
+ D2 := OptionsDlg.Data.DosVideo2;
+ Emu_CGAActive := (D1 = 0) Or (D1 = 4) Or (D2 = 0) Or (D2 = 4) Or
+  Emu_EGAActive;
 End;
 
 { La carte "Graphics Solutions d'ATI" (Options > Emulateur > DOS > Video 1/  }
@@ -45115,8 +45199,9 @@ End;
 
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte);
 Begin
+ If Not Emu_AnyVideoActive Then Exit;
  Case Port Of
-  $3C0: Begin
+  $3C0: If Emu_EGAActive Then Begin
    { AC : flip-flop alterne entre index et data }
    If Not EmuVideo.ACFlipFlop Then
     EmuVideo.ACIdx := Value And $1F
@@ -45125,35 +45210,49 @@ Begin
    EmuVideo.ACFlipFlop := Not EmuVideo.ACFlipFlop;
   End;
   $3C2: ; { Misc Output, ignore }
-  $3C4: EmuVideo.SeqIdx := Value And 7;
-  $3C5: If EmuVideo.SeqIdx < 8 Then EmuVideo.SeqReg[EmuVideo.SeqIdx] := Value;
-  $3C6: EmuVideo.DACMask := Value;
-  $3C7: Begin
+  $3C4: If Emu_EGAActive Then EmuVideo.SeqIdx := Value And 7;
+  $3C5: If Emu_EGAActive And (EmuVideo.SeqIdx < 8) Then
+   EmuVideo.SeqReg[EmuVideo.SeqIdx] := Value;
+  { DAC couleur ($3C6-$3C9) : materiel VGA uniquement. }
+  $3C6: If Emu_VGAActive Then EmuVideo.DACMask := Value;
+  $3C7: If Emu_VGAActive Then Begin
    EmuVideo.DACReadIdx := (Value And $FF) * 3;
    EmuVideo.DACState := 3;
   End;
-  $3C8: Begin
+  $3C8: If Emu_VGAActive Then Begin
    EmuVideo.DACWriteIdx := (Value And $FF) * 3;
    EmuVideo.DACState := 0;
   End;
-  $3C9: Begin
+  $3C9: If Emu_VGAActive Then Begin
    EmuVideo.DAC[EmuVideo.DACWriteIdx] := Value And $3F;
    EmuVideo.DACWriteIdx := (EmuVideo.DACWriteIdx + 1) Mod 768;
   End;
-  $3CE: EmuVideo.GCIdx := Value And $0F;
-  $3CF: If EmuVideo.GCIdx < 16 Then EmuVideo.GCReg[EmuVideo.GCIdx] := Value;
+  $3CE: If Emu_EGAActive Then EmuVideo.GCIdx := Value And $0F;
+  $3CF: If Emu_EGAActive And (EmuVideo.GCIdx < 16) Then
+   EmuVideo.GCReg[EmuVideo.GCIdx] := Value;
+  { CRTC : commun a toutes les cartes, aucune garde specifique au-dela de }
+  { "une carte quelconque est presente" (deja verifie plus haut). }
   $3D4, $3B4: EmuVideo.CRTCIdx := Value And $1F;
   $3D5, $3B5: Begin
    If EmuVideo.CRTCIdx < 32 Then
     EmuVideo.CRTCReg[EmuVideo.CRTCIdx] := Value;
    Emu_ATIDetectMode;
   End;
-  $3D8: Begin EmuVideo.CGAMode := Value; Emu_ATIDetectMode; End;
-  $3D9: Begin EmuVideo.CGAColor := Value; Emu_ATIDetectMode; End;
+  $3D8: If Emu_CGAActive Or Emu_ATIActive Then Begin
+   EmuVideo.CGAMode := Value; Emu_ATIDetectMode;
+  End;
+  $3D9: If Emu_CGAActive Or Emu_ATIActive Then Begin
+   EmuVideo.CGAColor := Value; Emu_ATIDetectMode;
+  End;
   { $3DD/$3DF : registres etendus ATI Graphics Solution, ignores par tout  }
-  { autre materiel (aucune carte standard n y repond). }
-  $3DD: Begin EmuVideo.GSExt := Value; Emu_ATIDetectMode; End;
-  $3DF: Begin EmuVideo.GSFeature := Value; Emu_ATIDetectMode; End;
+  { autre materiel (aucune carte standard n y repond) - donc n existent    }
+  { que si Video 1/2 pointe reellement sur cette carte. }
+  $3DD: If Emu_ATIActive Then Begin
+   EmuVideo.GSExt := Value; Emu_ATIDetectMode;
+  End;
+  $3DF: If Emu_ATIActive Then Begin
+   EmuVideo.GSFeature := Value; Emu_ATIDetectMode;
+  End;
  End;
 End;
 
@@ -45352,7 +45451,11 @@ Begin
    Begin
     Mode := P.CPU.Regs.AL And $7F;
     Emu_VidSetMode(P.CPU.Regs.AL, P);
-    Emu_WriteByte(P.CPU, $40, $49, Mode);
+    { EmuVideo.Mode (et non Mode ci-dessus) : si la carte configuree ne  }
+    { supporte pas ce mode (voir Emu_VidModeSupported), Emu_VidSetMode   }
+    { n a rien change et la BDA doit refleter le mode reellement actif,  }
+    { pas la demande rejetee - un vrai BIOS n aurait pas altere l ecran. }
+    Emu_WriteByte(P.CPU, $40, $49, EmuVideo.Mode);
     Emu_WriteWord(P.CPU, $40, $4A, EmuVideo.TextCols);
     Emu_WriteWord(P.CPU, $40, $4C,
       LongInt(EmuVideo.TextCols) * EmuVideo.TextRows * 2);
@@ -60622,8 +60725,8 @@ Begin
  D.DosCPUIDDetect := True;
  D.DosCPUVendor := 0;
  D.DosHardware := 2;
- D.DosVideo1 := 8;
- D.DosVideo2 := 8;
+ D.DosVideo1 := 8;             { VGA }
+ D.DosVideo2 := EMU_VID_NONE;  { un PC reel n a qu une seule carte video }
  D.DosEmu8087 := True;
  D.DosEmu80286 := True;
  D.DosEmu80386 := True;
@@ -61457,39 +61560,82 @@ Var
 
  { Dessine la liste ouverte d un menu deroulant (Count items) juste sous }
  { la ligne RowIdx, en recouvrant les lignes suivantes - comme un vrai   }
- { menu deroulant. Si Count depasse ce qui tient entre le champ et le    }
- { bas du dialogue (ex: les 21 cartes video), seule une fenetre de       }
- { DosDropdownVisibleCount items centree sur CurIdx est dessinee - voir  }
- { le commentaire pres de DosDropdownScrollStart. }
+ { menu deroulant Windows : UN SEUL cadre autour de toute la liste (pas  }
+ { un par ligne - c etait ce qui donnait l aspect "en cages" signale),   }
+ { fond plein uniforme, et seule la ligne selectionnee est surlignee.    }
+ { Si Count depasse ce qui tient entre le champ et le bas du dialogue    }
+ { (ex: les 21 cartes video), seule une fenetre de DosDropdownVisibleCount}
+ { items centree sur CurIdx est dessinee, avec une barre de defilement   }
+ { verticale (boutons haut/bas + case proportionnelle, meme modele que   }
+ { celle de l arbre de categories) - voir le commentaire pres de         }
+ { DosDropdownScrollStart. Cf. HandleDosDropdownClick (clic souris) et   }
+ { HandleOptionsKey (fleches haut/bas) qui doivent rester synchronises   }
+ { avec le meme calcul de geometrie. }
  Procedure OpenList(RowIdx, Count, CurIdx: Integer);
  Var
-  LI, MaxVisible, ScrollStart, ActualIdx: Integer;
+  LI, MaxVisible, ScrollStart, ActualIdx, FG: Integer;
+  ListRight, ListBottom, SbLeft, SbUpY, SbDnY, TrackH, ThumbH, ThumbY: Integer;
+  HasScroll: Boolean;
  Begin
   ListTop := OptRowY(Dlg, RowIdx) + OPT_FIELD_HEIGHT + 2;
   MaxVisible := DosDropdownVisibleCount(Dlg, RowIdx, Count);
   ScrollStart := DosDropdownScrollStart(CurIdx, Count, MaxVisible);
+  ListBottom := ListTop + MaxVisible * OPT_DROPDOWN_ITEM_H;
+  HasScroll := Count > MaxVisible;
+  ListRight := FX + FW;
+  If HasScroll Then ListRight := ListRight - OPT_SBAR_WIDTH;
+  { Fond uniforme + un seul cadre pour toute la liste. }
+  DrawFilledRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
+   CLR_WINDOW);
   For LI := 0 To MaxVisible - 1 Do Begin
    ActualIdx := ScrollStart + LI;
    ItemY := ListTop + LI * OPT_DROPDOWN_ITEM_H;
-   If ActualIdx = CurIdx Then
-    DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
-     ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_TITLEBAR_ACTIVE)
-   Else
-    DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
-     ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_WINDOW);
-   DrawRect(FX + OPT_LABEL_WIDTH, ItemY, FX + FW,
-    ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_BORDER);
+   If ActualIdx = CurIdx Then Begin
+    DrawFilledRect(FX + OPT_LABEL_WIDTH, ItemY, ListRight,
+     ItemY + OPT_DROPDOWN_ITEM_H - 1, CLR_TITLEBAR_ACTIVE);
+    FG := 15; { texte blanc sur fond de selection, comme l arbre }
+   End Else
+    FG := CLR_WINDOWTEXT;
    Case Dlg.DosDropdownOpen Of
-    1: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(ActualIdx),
-        CLR_WINDOWTEXT);
+    1: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(ActualIdx), FG);
     2: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
-        DosCPUVendorName(ActualIdx), CLR_WINDOWTEXT);
+        DosCPUVendorName(ActualIdx), FG);
     3: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
-        DosHardwareName(ActualIdx), CLR_WINDOWTEXT);
+        DosHardwareName(ActualIdx), FG);
     4, 5: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
-        DosVideoName(ActualIdx), CLR_WINDOWTEXT);
+        DosVideoName(ActualIdx), FG);
    End;
   End;
+  DrawRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
+   CLR_BORDER);
+  If Not HasScroll Then Exit;
+  { Barre de defilement verticale, meme modele que celle de l arbre de   }
+  { categories (voir DrawOptionsCategoryTree) : boutons ^/v + case       }
+  { proportionnelle. Geometrie reutilisee telle quelle par              }
+  { HandleDosDropdownClick pour les clics. }
+  SbLeft := ListRight;
+  DrawFilledRect(SbLeft, ListTop, FX + FW, ListBottom - 1, CLR_SCROLLBAR);
+  SbUpY := ListTop;
+  DrawFilledRect(SbLeft, SbUpY, FX + FW, SbUpY + OPT_SBAR_WIDTH, CLR_BTNFACE);
+  DrawRect(SbLeft, SbUpY, FX + FW, SbUpY + OPT_SBAR_WIDTH, CLR_BORDER);
+  DrawText(SbLeft + 4, SbUpY + 3, '^', CLR_WINDOWTEXT);
+  SbDnY := ListBottom - 1 - OPT_SBAR_WIDTH;
+  DrawFilledRect(SbLeft, SbDnY, FX + FW, ListBottom - 1, CLR_BTNFACE);
+  DrawRect(SbLeft, SbDnY, FX + FW, ListBottom - 1, CLR_BORDER);
+  DrawText(SbLeft + 4, SbDnY + 3, 'v', CLR_WINDOWTEXT);
+  TrackH := SbDnY - (SbUpY + OPT_SBAR_WIDTH);
+  If TrackH < 8 Then TrackH := 8;
+  ThumbH := (TrackH * MaxVisible) Div Count;
+  If ThumbH < 10 Then ThumbH := 10;
+  If ThumbH > TrackH Then ThumbH := TrackH;
+  If Count - MaxVisible > 0 Then
+   ThumbY := SbUpY + OPT_SBAR_WIDTH +
+    ((TrackH - ThumbH) * ScrollStart) Div (Count - MaxVisible)
+  Else
+   ThumbY := SbUpY + OPT_SBAR_WIDTH;
+  DrawFilledRect(SbLeft + 2, ThumbY, FX + FW - 2, ThumbY + ThumbH,
+   CLR_BTNFACE);
+  DrawRect(SbLeft + 2, ThumbY, FX + FW - 2, ThumbY + ThumbH, CLR_BORDER);
  End;
 
 Begin
@@ -61677,7 +61823,42 @@ End;
 
 Procedure HandleOptionsKey(Var Dlg: TOptionsDialog;
  Key: Integer);
+Var
+ DDCount, DDCur: Integer;
 Begin
+ { Menu deroulant ouvert (page Emulateur > DOS) : les fleches haut/bas    }
+ { deplacent la selection DANS la liste (comme un vrai combobox Windows) }
+ { au lieu de deplacer la selection dans l arbre de categories ; Entree   }
+ { ou Echap referment juste la liste, sans fermer tout le dialogue. }
+ If Dlg.DosDropdownOpen <> 0 Then
+ Begin
+  Case Dlg.DosDropdownOpen Of
+   1: Begin DDCount := DOS_TYPE_COUNT; DDCur := Dlg.Data.DosType; End;
+   2: Begin DDCount := DOS_CPU_VENDOR_COUNT; DDCur := Dlg.Data.DosCPUVendor; End;
+   3: Begin DDCount := DOS_HARDWARE_COUNT; DDCur := Dlg.Data.DosHardware; End;
+   4: Begin DDCount := DOS_VIDEO_COUNT; DDCur := Dlg.Data.DosVideo1; End;
+   5: Begin DDCount := DOS_VIDEO_COUNT; DDCur := Dlg.Data.DosVideo2; End;
+  Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
+  End;
+  If Key = $48 Then Begin { Fleche haut }
+   If DDCur > 0 Then Dec(DDCur);
+  End Else If Key = $50 Then Begin { Fleche bas }
+   If DDCur < DDCount - 1 Then Inc(DDCur);
+  End Else If (Key = $1B) Or (Key = $0D) Then Begin { Echap / Entree }
+   Dlg.DosDropdownOpen := 0;
+   Exit;
+  End Else
+   Exit;
+  Case Dlg.DosDropdownOpen Of
+   1: Dlg.Data.DosType := DDCur;
+   2: Dlg.Data.DosCPUVendor := DDCur;
+   3: Dlg.Data.DosHardware := DDCur;
+   4: Dlg.Data.DosVideo1 := DDCur;
+   5: Dlg.Data.DosVideo2 := DDCur;
+  End;
+  Dlg.Modified := True;
+  Exit;
+ End;
  If Key = $1B Then { Echap }
  Begin
   Dlg.Confirmed := False;
@@ -61723,13 +61904,28 @@ End;
 { Gere un clic pendant qu un menu deroulant de la page Emulateur > DOS   }
 { est ouvert (Dlg.DosDropdownOpen <> 0) - le clic est intercepte avant   }
 { toute autre zone de la page puisque la liste ouverte recouvre          }
-{ visuellement les lignes suivantes. Un clic sur un item le selectionne, }
-{ un clic ailleurs referme simplement le menu sans rien changer -        }
-{ comportement standard d un menu deroulant. }
+{ visuellement les lignes suivantes. Un clic sur un item le selectionne  }
+{ et referme la liste ; un clic sur la barre de defilement (si presente) }
+{ deplace la selection sans refermer, comme un vrai combobox Windows ;   }
+{ un clic ailleurs referme simplement le menu sans rien changer. }
 Procedure HandleDosDropdownClick(Var Dlg: TOptionsDialog; MX, MY: Integer);
 Var
- FX, FW, ListTop, Count, RowIdx, CurIdx, MaxVisible, ScrollStart,
-  Idx: Integer;
+ FX, FW, ListTop, ListBottom, ListRight, SbUpY, SbDnY: Integer;
+ Count, RowIdx, CurIdx, MaxVisible, ScrollStart, Idx: Integer;
+ HasScroll: Boolean;
+
+ Procedure Apply(NewIdx: Integer);
+ Begin
+  Case Dlg.DosDropdownOpen Of
+   1: Dlg.Data.DosType := NewIdx;
+   2: Dlg.Data.DosCPUVendor := NewIdx;
+   3: Dlg.Data.DosHardware := NewIdx;
+   4: Dlg.Data.DosVideo1 := NewIdx;
+   5: Dlg.Data.DosVideo2 := NewIdx;
+  End;
+  Dlg.Modified := True;
+ End;
+
 Begin
  FX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
  FW := Dlg.Base.Width - OPT_TREE_WIDTH - OPT_PANEL_PADDING * 2;
@@ -61746,26 +61942,41 @@ Begin
       CurIdx := Dlg.Data.DosVideo2; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
- { Meme fenetre de defilement que celle dessinee par OpenList (voir      }
+ { Meme geometrie que celle dessinee par OpenList (voir                  }
  { DosDropdownVisibleCount/DosDropdownScrollStart) - indispensable pour  }
- { que le clic tombe sur l item reellement affiche quand la liste est    }
- { plus longue que l espace disponible (ex: les 21 cartes video). }
+ { que le clic tombe sur l item/le bouton reellement affiche. }
  ListTop := OptRowY(Dlg, RowIdx) + OPT_FIELD_HEIGHT + 2;
  MaxVisible := DosDropdownVisibleCount(Dlg, RowIdx, Count);
  ScrollStart := DosDropdownScrollStart(CurIdx, Count, MaxVisible);
- If (MX >= FX + OPT_LABEL_WIDTH) And (MX <= FX + FW) And
-    (MY >= ListTop) And (MY < ListTop + MaxVisible * OPT_DROPDOWN_ITEM_H) Then
+ ListBottom := ListTop + MaxVisible * OPT_DROPDOWN_ITEM_H;
+ HasScroll := Count > MaxVisible;
+ ListRight := FX + FW;
+ If HasScroll Then ListRight := ListRight - OPT_SBAR_WIDTH;
+ { Clic sur un item de la liste : le selectionne et referme. }
+ If (MX >= FX + OPT_LABEL_WIDTH) And (MX < ListRight) And
+    (MY >= ListTop) And (MY < ListBottom - 1) Then
  Begin
-  Idx := ScrollStart + (MY - ListTop) Div OPT_DROPDOWN_ITEM_H;
-  Case Dlg.DosDropdownOpen Of
-   1: Dlg.Data.DosType := Idx;
-   2: Dlg.Data.DosCPUVendor := Idx;
-   3: Dlg.Data.DosHardware := Idx;
-   4: Dlg.Data.DosVideo1 := Idx;
-   5: Dlg.Data.DosVideo2 := Idx;
-  End;
-  Dlg.Modified := True;
+  Apply(ScrollStart + (MY - ListTop) Div OPT_DROPDOWN_ITEM_H);
+  Dlg.DosDropdownOpen := 0;
+  Exit;
  End;
+ { Clic sur la barre de defilement : boutons haut/bas = -1/+1, piste =   }
+ { page de MaxVisible items ; la liste reste ouverte. }
+ If HasScroll And (MX >= ListRight) And (MX < FX + FW) And
+    (MY >= ListTop) And (MY < ListBottom - 1) Then
+ Begin
+  SbUpY := ListTop;
+  SbDnY := ListBottom - 1 - OPT_SBAR_WIDTH;
+  If MY < SbUpY + OPT_SBAR_WIDTH Then Idx := CurIdx - 1
+  Else If MY >= SbDnY Then Idx := CurIdx + 1
+  Else If MY < (SbUpY + SbDnY) Div 2 Then Idx := CurIdx - MaxVisible
+  Else Idx := CurIdx + MaxVisible;
+  If Idx < 0 Then Idx := 0;
+  If Idx > Count - 1 Then Idx := Count - 1;
+  Apply(Idx);
+  Exit;
+ End;
+ { Clic ailleurs que sur la liste ou sa barre : referme sans rien changer. }
  Dlg.DosDropdownOpen := 0;
 End;
 
