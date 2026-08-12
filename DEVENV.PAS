@@ -1598,6 +1598,40 @@ Const
  EMU_MODE_GS320x16 = $52; { 320x200, 16 couleurs, 1 plan B800h (best-effort)}
  EMU_MODE_GSTXT132 = $53; { Texte 132x25 couleur (normal ou emulation)     }
 
+ { --- Offsets dans le ECB (Event Control Block) IPX/SPX, verifies contre  }
+ { la structure ECBStructure de ipx/IPXNET.H (id-Software/DOOM) : Link[2]  }
+ { WORD, ESRAddress[2] WORD, InUseFlag BYTE, CompletionCode BYTE,          }
+ { ECBSocket WORD, IPXWorkspace[4], DriverWorkspace[12], ImmediateAddress  }
+ { [6] (confirme aussi par l article Dr Dobb's "IPX: the Great             }
+ { Communicator", octets 28-33), FragmentCount WORD, puis un ou plusieurs  }
+ { descripteurs de fragment (adresse far 4 octets + taille 2 octets). }
+ EMU_ECB_ESR_OFS    = 4;  { WORD : offset du ESR (far pointer, mot bas)    }
+ EMU_ECB_ESR_SEG    = 6;  { WORD : segment du ESR                         }
+ EMU_ECB_INUSE      = 8;  { BYTE : 0 = complete, <>0 = en attente         }
+ EMU_ECB_COMPLETION = 9;  { BYTE : code de completion (0 = succes)        }
+ EMU_ECB_SOCKET     = 10; { WORD : numero de socket                       }
+ EMU_ECB_IMMEDIATE  = 28; { 6 octets : adresse materielle immediate       }
+ EMU_ECB_FRAGCOUNT  = 34; { WORD : nombre de descripteurs de fragment     }
+ EMU_ECB_FRAG0      = 36; { premier descripteur (offset,segment,taille)   }
+ EMU_ECB_FRAG_SIZE  = 6;  { taille d un descripteur (4+2 octets)          }
+
+ { --- Offsets dans l en-tete de paquet IPX (30 octets), verifies contre   }
+ { IPXPacketStructure de ipx/IPXNET.H : tous les champs multi-octets       }
+ { (Length, *Network, *Socket) sont en ordre reseau (octet fort en         }
+ { premier), contrairement aux champs de l API (DX, ECBSocket) qui sont    }
+ { utilises tels quels. }
+ EMU_IPX_HDR_LEN     = 2;  { WORD reseau : longueur totale du paquet      }
+ EMU_IPX_HDR_TYPE    = 5;  { BYTE : type de paquet (5 = SPX, 17 = NCP)    }
+ EMU_IPX_HDR_DNET     = 6;  { 4 octets : reseau destination                }
+ EMU_IPX_HDR_DNODE    = 10; { 6 octets : noeud destination                 }
+ EMU_IPX_HDR_DSOCKET  = 16; { WORD reseau : socket destination             }
+ EMU_IPX_HDR_SNET     = 18; { 4 octets : reseau source                     }
+ EMU_IPX_HDR_SNODE    = 22; { 6 octets : noeud source                      }
+ EMU_IPX_HDR_SSOCKET  = 28; { WORD reseau : socket source                  }
+ EMU_IPX_HDR_SIZE     = 30; { taille totale de l en-tete IPX                }
+ EMU_SPX_HDR_SIZE     = 12; { taille de l en-tete SPX (apres l en-tete IPX) }
+ EMU_IPX_PKT_TYPE_SPX = 5;
+
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
  MAX_CYCLES    = 100000;    { limite de surete 68k }
@@ -3164,6 +3198,62 @@ Type
                          { monochrome), Faux = GSTextModeC132x25 (couleur) }
  End;
 
+ { --- Pile reseau Novell IPX/SPX (Options > Emulateur > DOS > "Reseau     }
+ { Novell NetWare") - voir Emu_DoInt7A/Emu_DoInt2F. Modele "boucle         }
+ { locale" : aucune autre machine sur le fil, donc tout paquet envoye est  }
+ { livre a une ecoute active du MEME programme emule sur le meme socket,  }
+ { instantanement ou des qu une ecoute correspondante est postee. Base sur }
+ { la disposition verifiee du ECB (Event Control Block) et de l en-tete   }
+ { IPX du pilote reseau de DOOM (id-Software/DOOM, ipx/IPXNET.H) et sur    }
+ { les numeros de fonction INT 7Ah du Ralph Brown Interrupt List.         }
+ TIpxBuf = Array[0..1023] Of Byte;
+
+ TEmuIpxSocket = Record
+  InUse     : Boolean;
+  SocketNum : Word;
+ End;
+
+ { ECB en attente d une livraison (LISTEN FOR PACKET poste, aucun paquet   }
+ { correspondant encore en file). }
+ TEmuIpxPending = Record
+  InUse     : Boolean;
+  SocketNum : Word;
+  ECBSeg, ECBOfs : Word;
+ End;
+
+ { Paquet IPX complet (en-tete 30 octets + charge utile) en attente d une  }
+ { ecoute correspondante (SEND PACKET arrive avant tout LISTEN). }
+ TEmuIpxQPacket = Record
+  InUse      : Boolean;
+  DestSocket : Word;
+  Len        : Word;
+  Data       : TIpxBuf;
+ End;
+
+ { Connexion SPX (au-dessus de la meme file de livraison IPX ci-dessus -   }
+ { un paquet SPX EST un paquet IPX de PacketType=5h avec un en-tete SPX de }
+ { 12 octets ajoute apres les 30 octets d en-tete IPX). }
+ TEmuSpxConn = Record
+  InUse        : Boolean;
+  LocalSocket  : Word;
+  RemoteSocket : Word;
+  Established  : Boolean;
+ End;
+
+ TEmuIpxState = Record
+  Active   : Boolean;              { vrai si case "Reseau Novell NetWare" }
+                                    { cochee ET pile initialisee          }
+  LocalNet  : Array[0..3] Of Byte; { numero de reseau synthetique         }
+  LocalNode : Array[0..5] Of Byte; { adresse "materielle" synthetique     }
+  Sockets   : Array[0..31] Of TEmuIpxSocket;
+  Pending   : Array[0..15] Of TEmuIpxPending;
+  Queue     : Array[0..15] Of TEmuIpxQPacket;
+  NextDynSocket : Word;            { prochain socket dynamique (DX=0)     }
+  Conns     : Array[0..15] Of TEmuSpxConn;
+  NextConnId    : Word;
+  StubSeg, StubOfs : Word;         { adresse du stub resident CD 7A CB    }
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -4221,6 +4311,8 @@ Var
  EmuDumpI: Word;
  { --- Etat unifie de la carte video CGA/EGA/VGA --- }
  EmuVideo       : TEmuVideoState;
+ { --- Etat de la pile reseau IPX/SPX (INT 7Ah/INT 2Fh AX=7A00h) --- }
+ EmuIpx         : TEmuIpxState;
  { --- Etat de la souris emulee (INT 33h) --- }
  EmuMouseInst   : Boolean;       { driver "installe" }
  EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
@@ -48621,6 +48713,545 @@ Begin
  End;
 End;
 
+{ ========================================================================= }
+{ Pile reseau Novell IPX/SPX (Options > Emulateur > DOS > "Reseau Novell    }
+{ NetWare") - INT 2Fh AX=7A00h (verification d installation + adresse du   }
+{ point d entree) et INT 7Ah (toutes les fonctions IPX et SPX, numero de   }
+{ fonction dans BX). Modele "boucle locale" (choisi explicitement) : il    }
+{ n y a aucune autre machine sur le fil virtuel, donc un paquet envoye est }
+{ livre a une ecoute (LISTEN) active du MEME programme emule sur le meme   }
+{ socket - immediatement si l ecoute existe deja, sinon des qu elle est    }
+{ postee. Sources verifiees : la structure ECB/en-tete IPX du pilote       }
+{ reseau de DOOM (id-Software/DOOM, ipx/IPXNET.H, code reellement          }
+{ expedie et interoperable avec de vrais pilotes IPX/IPXODI d epoque) et   }
+{ les numeros de fonction/registres du Ralph Brown Interrupt List (INT     }
+{ 7Ah). Limites assumees (documentees ici plutot que devinees) :           }
+{  - L ESR (Event Service Routine) d une ECB n est PAS appelee de facon    }
+{    asynchrone : completer une ECB en attente ecrit directement ses       }
+{    champs InUseFlag/CompletionCode/donnees, sans executer de code invite }
+{    en arriere-plan. La grande majorite des logiciels de l epoque (dont   }
+{    le pilote IPX de DOOM lui-meme) sondent InUseFlag plutot que de       }
+{    dependre exclusivement de l ESR, donc cette simplification couvre     }
+{    l ecrasante majorite des cas reels sans le risque d une injection     }
+{    d appel far asynchrone mal imbriquee dans le CPU emule.               }
+{  - Cote SPX, aucune disposition verifiee du CCB etendu n a ete trouvee ; }
+{    les fonctions SPX reutilisent donc le MEME ECB que IPX (ce que la     }
+{    documentation elle-meme indique pour Send/Listen SPX Packet) et       }
+{    s appuient sur la table de connexions interne EmuIpx.Conns plutot     }
+{    que sur des champs CCB non verifies. Establish/Listen For Connection  }
+{    aboutissent immediatement (pas de vraie poignee de main a simuler     }
+{    sans pair distant) - coherent avec le modele "boucle locale".         }
+{ ========================================================================= }
+
+{ Reinitialise toute la pile IPX/SPX et, si la case "Reseau Novell         }
+{ NetWare" est cochee, installe le stub resident (3 octets CD 7Ah/RETF a   }
+{ $F000:0000 - segment inutilise par le reste de l emulateur 8086) qui     }
+{ sert de point d entree "appel far direct" retourne par INT 2Fh AX=7A00h  }
+{ en plus de INT 7Ah lui-meme. Appelee a chaque (re)demarrage de           }
+{ l emulateur, comme Emu_InitBDA. }
+Procedure Emu_IpxInit(Var P: TEmulatorPanel);
+Begin
+ FillChar(EmuIpx, SizeOf(EmuIpx), 0);
+ EmuIpx.Active := OptionsDlg.Data.DosNovell;
+ EmuIpx.NextDynSocket := $4000; { plage habituelle des sockets dynamiques }
+ EmuIpx.NextConnId := 1;
+ { Adresse "materielle" synthetique (bit 02h du 1er octet = adresse geree  }
+ { localement, convention IEEE normale pour une adresse qui n est pas une  }
+ { vraie adresse MAC gravee) - aucune carte reseau reelle n existe ici.    }
+ EmuIpx.LocalNode[0] := $02; EmuIpx.LocalNode[1] := $00;
+ EmuIpx.LocalNode[2] := $00; EmuIpx.LocalNode[3] := $00;
+ EmuIpx.LocalNode[4] := $00; EmuIpx.LocalNode[5] := $01;
+ EmuIpx.LocalNet[0] := $00; EmuIpx.LocalNet[1] := $00;
+ EmuIpx.LocalNet[2] := $00; EmuIpx.LocalNet[3] := $01;
+ If Not EmuIpx.Active Then Exit;
+ EmuIpx.StubSeg := $F000;
+ EmuIpx.StubOfs := $0000;
+ Emu_WriteByte(P.CPU, EmuIpx.StubSeg, EmuIpx.StubOfs,     $CD); { INT }
+ Emu_WriteByte(P.CPU, EmuIpx.StubSeg, EmuIpx.StubOfs + 1, $7A); {  7Ah }
+ Emu_WriteByte(P.CPU, EmuIpx.StubSeg, EmuIpx.StubOfs + 2, $CB); { RETF }
+End;
+
+{ Renvoie dans FSeg/FOfs/FSize le descripteur de fragment Idx (0-based) de }
+{ l ECB a ECBSeg:ECBOfs. False si Idx depasse FragmentCount. }
+Function Emu_IpxFragGet(Var P: TEmulatorPanel; ECBSeg, ECBOfs: Word;
+ Idx: Integer; Var FSeg, FOfs, FSize: Word): Boolean;
+Var FragCount: Word; Base: Word;
+Begin
+ Emu_IpxFragGet := False;
+ FragCount := Emu_ReadWord(P.CPU, ECBSeg, ECBOfs + EMU_ECB_FRAGCOUNT);
+ If (Idx < 0) Or (Idx >= FragCount) Then Exit;
+ Base := ECBOfs + EMU_ECB_FRAG0 + Word(Idx * EMU_ECB_FRAG_SIZE);
+ FOfs  := Emu_ReadWord(P.CPU, ECBSeg, Base);
+ FSeg  := Emu_ReadWord(P.CPU, ECBSeg, Base + 2);
+ FSize := Emu_ReadWord(P.CPU, ECBSeg, Base + 4);
+ Emu_IpxFragGet := True;
+End;
+
+{ Concatene tous les fragments de l ECB dans Buf (borne a SizeOf(TIpxBuf)) }
+{ et renvoie la longueur totale copiee. }
+Function Emu_IpxCopyFragsToBuf(Var P: TEmulatorPanel; ECBSeg, ECBOfs: Word;
+ Var Buf: TIpxBuf): Word;
+Var FragCount, Pos: Word; I, J: Integer; FSeg, FOfs, FSize: Word;
+Begin
+ Pos := 0;
+ FragCount := Emu_ReadWord(P.CPU, ECBSeg, ECBOfs + EMU_ECB_FRAGCOUNT);
+ For I := 0 To FragCount - 1 Do Begin
+  If Not Emu_IpxFragGet(P, ECBSeg, ECBOfs, I, FSeg, FOfs, FSize) Then Break;
+  For J := 0 To Integer(FSize) - 1 Do Begin
+   If Pos > High(Buf) Then Break;
+   Buf[Pos] := Emu_ReadByte(P.CPU, FSeg, Word(FOfs + J));
+   Inc(Pos);
+  End;
+ End;
+ Emu_IpxCopyFragsToBuf := Pos;
+End;
+
+{ Ecrit les Len premiers octets de Buf dans les fragments de l ECB (autant }
+{ que necessaire), en s arretant si les fragments sont epuises avant Len - }
+{ le paquet livre est alors tronque, comme sur du vrai materiel avec des   }
+{ tampons applicatifs trop petits. }
+Procedure Emu_IpxCopyBufToFrags(Var P: TEmulatorPanel; ECBSeg, ECBOfs: Word;
+ Var Buf: TIpxBuf; Len: Word);
+Var FragCount, Pos: Word; I, J: Integer; FSeg, FOfs, FSize: Word;
+Begin
+ Pos := 0;
+ FragCount := Emu_ReadWord(P.CPU, ECBSeg, ECBOfs + EMU_ECB_FRAGCOUNT);
+ For I := 0 To FragCount - 1 Do Begin
+  If Pos >= Len Then Break;
+  If Not Emu_IpxFragGet(P, ECBSeg, ECBOfs, I, FSeg, FOfs, FSize) Then Break;
+  For J := 0 To Integer(FSize) - 1 Do Begin
+   If Pos >= Len Then Break;
+   Emu_WriteByte(P.CPU, FSeg, Word(FOfs + J), Buf[Pos]);
+   Inc(Pos);
+  End;
+ End;
+End;
+
+{ Marque l ECB comme terminee (InUseFlag=0, CompletionCode=Completion). }
+Procedure Emu_IpxSetECBDone(Var P: TEmulatorPanel; ECBSeg, ECBOfs: Word;
+ Completion: Byte);
+Begin
+ Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_INUSE, 0);
+ Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_COMPLETION, Completion);
+End;
+
+Function Emu_IpxSocketSlot(Num: Word): Integer;
+Var I: Integer;
+Begin
+ Emu_IpxSocketSlot := -1;
+ For I := 0 To High(EmuIpx.Sockets) Do
+  If EmuIpx.Sockets[I].InUse And (EmuIpx.Sockets[I].SocketNum = Num) Then Begin
+   Emu_IpxSocketSlot := I; Exit;
+  End;
+End;
+
+{ Met Buf/Len en file d attente pour DestSocket (livraison differee tant   }
+{ qu aucun LISTEN correspondant n est poste). File pleine = paquet perdu,  }
+{ comme un vrai tampon materiel sature - pas d erreur remontee au          }
+{ programme, puisque SEND PACKET ne renvoie pas de statut synchrone. }
+Procedure Emu_IpxQueuePush(DestSocket: Word; Var Buf: TIpxBuf; Len: Word);
+Var I: Integer;
+Begin
+ For I := 0 To High(EmuIpx.Queue) Do
+  If Not EmuIpx.Queue[I].InUse Then Begin
+   EmuIpx.Queue[I].InUse := True;
+   EmuIpx.Queue[I].DestSocket := DestSocket;
+   EmuIpx.Queue[I].Len := Len;
+   EmuIpx.Queue[I].Data := Buf;
+   Exit;
+  End;
+End;
+
+{ Cherche dans la file un paquet pour SocketNum et le livre directement    }
+{ dans les fragments de l ECB donnee (utilise par LISTEN quand un paquet   }
+{ attendait deja). }
+Function Emu_IpxQueuePopInto(Var P: TEmulatorPanel; SocketNum: Word;
+ ECBSeg, ECBOfs: Word): Boolean;
+Var I: Integer;
+Begin
+ Emu_IpxQueuePopInto := False;
+ For I := 0 To High(EmuIpx.Queue) Do
+  If EmuIpx.Queue[I].InUse And
+     (EmuIpx.Queue[I].DestSocket = SocketNum) Then Begin
+   Emu_IpxCopyBufToFrags(P, ECBSeg, ECBOfs, EmuIpx.Queue[I].Data,
+    EmuIpx.Queue[I].Len);
+   Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_IMMEDIATE,     EmuIpx.LocalNode[0]);
+   Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_IMMEDIATE + 1, EmuIpx.LocalNode[1]);
+   Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_IMMEDIATE + 2, EmuIpx.LocalNode[2]);
+   Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_IMMEDIATE + 3, EmuIpx.LocalNode[3]);
+   Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_IMMEDIATE + 4, EmuIpx.LocalNode[4]);
+   Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_IMMEDIATE + 5, EmuIpx.LocalNode[5]);
+   Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, 0);
+   EmuIpx.Queue[I].InUse := False;
+   Emu_IpxQueuePopInto := True;
+   Exit;
+  End;
+End;
+
+{ Enregistre une ECB LISTEN en attente pour SocketNum. False si la table   }
+{ des ecoutes en attente est pleine (cas limite : trop de LISTEN postees   }
+{ sans jamais etre servies). }
+Function Emu_IpxPendingAdd(SocketNum, ECBSeg, ECBOfs: Word): Boolean;
+Var I: Integer;
+Begin
+ Emu_IpxPendingAdd := False;
+ For I := 0 To High(EmuIpx.Pending) Do
+  If Not EmuIpx.Pending[I].InUse Then Begin
+   EmuIpx.Pending[I].InUse := True;
+   EmuIpx.Pending[I].SocketNum := SocketNum;
+   EmuIpx.Pending[I].ECBSeg := ECBSeg;
+   EmuIpx.Pending[I].ECBOfs := ECBOfs;
+   Emu_IpxPendingAdd := True;
+   Exit;
+  End;
+End;
+
+{ Cherche une ECB LISTEN deja en attente sur DestSocket et lui livre       }
+{ directement Buf/Len (utilise par SEND quand une ecoute attendait deja). }
+Function Emu_IpxPendingDeliver(Var P: TEmulatorPanel; DestSocket: Word;
+ Var Buf: TIpxBuf; Len: Word): Boolean;
+Var I: Integer;
+Begin
+ Emu_IpxPendingDeliver := False;
+ For I := 0 To High(EmuIpx.Pending) Do
+  If EmuIpx.Pending[I].InUse And
+     (EmuIpx.Pending[I].SocketNum = DestSocket) Then Begin
+   Emu_IpxCopyBufToFrags(P, EmuIpx.Pending[I].ECBSeg, EmuIpx.Pending[I].ECBOfs,
+    Buf, Len);
+   Emu_WriteByte(P.CPU, EmuIpx.Pending[I].ECBSeg,
+    EmuIpx.Pending[I].ECBOfs + EMU_ECB_IMMEDIATE,     EmuIpx.LocalNode[0]);
+   Emu_WriteByte(P.CPU, EmuIpx.Pending[I].ECBSeg,
+    EmuIpx.Pending[I].ECBOfs + EMU_ECB_IMMEDIATE + 1, EmuIpx.LocalNode[1]);
+   Emu_WriteByte(P.CPU, EmuIpx.Pending[I].ECBSeg,
+    EmuIpx.Pending[I].ECBOfs + EMU_ECB_IMMEDIATE + 2, EmuIpx.LocalNode[2]);
+   Emu_WriteByte(P.CPU, EmuIpx.Pending[I].ECBSeg,
+    EmuIpx.Pending[I].ECBOfs + EMU_ECB_IMMEDIATE + 3, EmuIpx.LocalNode[3]);
+   Emu_WriteByte(P.CPU, EmuIpx.Pending[I].ECBSeg,
+    EmuIpx.Pending[I].ECBOfs + EMU_ECB_IMMEDIATE + 4, EmuIpx.LocalNode[4]);
+   Emu_WriteByte(P.CPU, EmuIpx.Pending[I].ECBSeg,
+    EmuIpx.Pending[I].ECBOfs + EMU_ECB_IMMEDIATE + 5, EmuIpx.LocalNode[5]);
+   Emu_IpxSetECBDone(P, EmuIpx.Pending[I].ECBSeg, EmuIpx.Pending[I].ECBOfs, 0);
+   EmuIpx.Pending[I].InUse := False;
+   Emu_IpxPendingDeliver := True;
+   Exit;
+  End;
+End;
+
+{ Point d entree unique de livraison "boucle locale" : livre a une ecoute  }
+{ deja en attente si possible, sinon met en file pour une ecoute future. }
+Procedure Emu_IpxDeliverOrQueue(Var P: TEmulatorPanel; DestSocket: Word;
+ Var Buf: TIpxBuf; Len: Word);
+Begin
+ If Not Emu_IpxPendingDeliver(P, DestSocket, Buf, Len) Then
+  Emu_IpxQueuePush(DestSocket, Buf, Len);
+End;
+
+{ --- IPX : OPEN SOCKET (BX=0000h) --- }
+Procedure Emu_Ipx_OpenSocket(Var P: TEmulatorPanel);
+Var Want: Word; Slot, I: Integer;
+Begin
+ Want := P.CPU.Regs.DX;
+ If Want <> 0 Then Begin
+  If Emu_IpxSocketSlot(Want) >= 0 Then Begin
+   P.CPU.Regs.AL := $FF; { deja ouvert }
+   Exit;
+  End;
+ End Else Begin
+  { allocation dynamique }
+  While Emu_IpxSocketSlot(EmuIpx.NextDynSocket) >= 0 Do
+   Inc(EmuIpx.NextDynSocket);
+  Want := EmuIpx.NextDynSocket;
+  Inc(EmuIpx.NextDynSocket);
+ End;
+ Slot := -1;
+ For I := 0 To High(EmuIpx.Sockets) Do
+  If Not EmuIpx.Sockets[I].InUse Then Begin
+   Slot := I; Break;
+  End;
+ If Slot < 0 Then Begin
+  P.CPU.Regs.AL := $FE; { table des sockets pleine }
+  Exit;
+ End;
+ EmuIpx.Sockets[Slot].InUse := True;
+ EmuIpx.Sockets[Slot].SocketNum := Want;
+ P.CPU.Regs.AL := 0;
+ P.CPU.Regs.DX := Want;
+End;
+
+{ --- IPX : CLOSE SOCKET (BX=0001h) --- }
+Procedure Emu_Ipx_CloseSocket(Var P: TEmulatorPanel);
+Var Slot, I: Integer; Num: Word;
+Begin
+ Num := P.CPU.Regs.DX;
+ Slot := Emu_IpxSocketSlot(Num);
+ If Slot >= 0 Then EmuIpx.Sockets[Slot].InUse := False;
+ { Annule toute ECB LISTEN encore en attente sur ce socket - une vraie     }
+ { pile IPX annule aussi les ev?nements en cours a la fermeture. }
+ For I := 0 To High(EmuIpx.Pending) Do
+  If EmuIpx.Pending[I].InUse And (EmuIpx.Pending[I].SocketNum = Num) Then Begin
+   Emu_IpxSetECBDone(P, EmuIpx.Pending[I].ECBSeg, EmuIpx.Pending[I].ECBOfs, $FC);
+   EmuIpx.Pending[I].InUse := False;
+  End;
+End;
+
+{ --- IPX : GET LOCAL TARGET (BX=0002h) --- }
+{ ES:SI -> adresse internetwork cible (4 octets reseau + 6 octets noeud),  }
+{ ES:DI -> tampon 6 octets pour la cible locale. Sur un segment non route  }
+{ (notre seul cas ici), la "cible locale" est simplement le noeud cible    }
+{ lui-meme - pas de pont/routeur a resoudre. }
+Procedure Emu_Ipx_GetLocalTarget(Var P: TEmulatorPanel);
+Var I: Integer; B: Byte;
+Begin
+ For I := 0 To 5 Do Begin
+  B := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.SI + 4 + I));
+  Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.DI + I), B);
+ End;
+ P.CPU.Regs.AL := 0;
+ P.CPU.Regs.CX := 1; { temps de transfert estime (tick), boucle locale }
+End;
+
+{ --- IPX : SEND PACKET (BX=0003h) --- }
+{ ES:SI -> ECB dont le premier fragment contient un en-tete IPX de 30      }
+{ octets deja construit par l application. Comme un vrai pilote, on        }
+{ complete la longueur totale et l adresse source dans cet en-tete avant   }
+{ de livrer le paquet. }
+Procedure Emu_Ipx_SendPacket(Var P: TEmulatorPanel);
+Var Buf: TIpxBuf; Len, DestSocket, SrcSocket: Word; ECBSeg, ECBOfs: Word;
+ FSeg, FOfs, FSize: Word;
+Begin
+ ECBSeg := P.CPU.Segs.ES; ECBOfs := P.CPU.Regs.SI;
+ Len := Emu_IpxCopyFragsToBuf(P, ECBSeg, ECBOfs, Buf);
+ If Len < EMU_IPX_HDR_SIZE Then Begin
+  Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, $FF); { en-tete IPX incomplet }
+  Exit;
+ End;
+ SrcSocket := Emu_ReadWord(P.CPU, ECBSeg, ECBOfs + EMU_ECB_SOCKET);
+ DestSocket := (Word(Buf[EMU_IPX_HDR_DSOCKET]) Shl 8) Or
+  Buf[EMU_IPX_HDR_DSOCKET + 1];
+ { Complete longueur (reseau, octet fort en premier) et adresse source,    }
+ { comme le fait un vrai pilote IPX (voir SEND PACKET dans le RBIL). }
+ Buf[EMU_IPX_HDR_LEN]     := Hi(Len);
+ Buf[EMU_IPX_HDR_LEN + 1] := Lo(Len);
+ Buf[EMU_IPX_HDR_SNET]     := EmuIpx.LocalNet[0];
+ Buf[EMU_IPX_HDR_SNET + 1] := EmuIpx.LocalNet[1];
+ Buf[EMU_IPX_HDR_SNET + 2] := EmuIpx.LocalNet[2];
+ Buf[EMU_IPX_HDR_SNET + 3] := EmuIpx.LocalNet[3];
+ Buf[EMU_IPX_HDR_SNODE]     := EmuIpx.LocalNode[0];
+ Buf[EMU_IPX_HDR_SNODE + 1] := EmuIpx.LocalNode[1];
+ Buf[EMU_IPX_HDR_SNODE + 2] := EmuIpx.LocalNode[2];
+ Buf[EMU_IPX_HDR_SNODE + 3] := EmuIpx.LocalNode[3];
+ Buf[EMU_IPX_HDR_SNODE + 4] := EmuIpx.LocalNode[4];
+ Buf[EMU_IPX_HDR_SNODE + 5] := EmuIpx.LocalNode[5];
+ Buf[EMU_IPX_HDR_SSOCKET]     := Hi(SrcSocket);
+ Buf[EMU_IPX_HDR_SSOCKET + 1] := Lo(SrcSocket);
+ { Recopie les octets corriges dans le 1er fragment de l application (un   }
+ { vrai pilote modifie aussi le tampon appelant). }
+ If Emu_IpxFragGet(P, ECBSeg, ECBOfs, 0, FSeg, FOfs, FSize) And
+    (FSize >= EMU_IPX_HDR_SIZE) Then
+  Emu_IpxCopyBufToFrags(P, ECBSeg, ECBOfs, Buf, EMU_IPX_HDR_SIZE);
+ { SEND PACKET revient immediatement ; le statut n est jamais dans AL mais }
+ { dans l ECB - ici toujours un succes instantane (boucle locale). }
+ Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, 0);
+ Emu_IpxDeliverOrQueue(P, DestSocket, Buf, Len);
+End;
+
+{ --- IPX : LISTEN FOR PACKET (BX=0004h) --- }
+Procedure Emu_Ipx_ListenForPacket(Var P: TEmulatorPanel);
+Var ECBSeg, ECBOfs: Word; Sock: Word;
+Begin
+ ECBSeg := P.CPU.Segs.ES; ECBOfs := P.CPU.Regs.SI;
+ Sock := Emu_ReadWord(P.CPU, ECBSeg, ECBOfs + EMU_ECB_SOCKET);
+ If Emu_IpxQueuePopInto(P, Sock, ECBSeg, ECBOfs) Then Begin
+  P.CPU.Regs.AL := 0;
+  Exit;
+ End;
+ { Aucun paquet deja en file : poser l ECB en attente. InUseFlag reste     }
+ { non nul jusqu a livraison (l application est censee le sonder). }
+ Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_INUSE, $FF);
+ If Emu_IpxPendingAdd(Sock, ECBSeg, ECBOfs) Then
+  P.CPU.Regs.AL := 0
+ Else
+  P.CPU.Regs.AL := $FF; { table des ecoutes en attente pleine }
+End;
+
+{ --- IPX : GET INTERNETWORK ADDRESS (BX=0009h) --- }
+Procedure Emu_Ipx_GetInternetworkAddress(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ For I := 0 To 3 Do
+  Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.SI + I), EmuIpx.LocalNet[I]);
+ For I := 0 To 5 Do
+  Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.SI + 4 + I),
+   EmuIpx.LocalNode[I]);
+End;
+
+{ --- SPX : trouve une connexion par son identifiant --- }
+Function Emu_SpxConnSlot(ConnId: Word): Integer;
+Var I: Integer;
+Begin
+ Emu_SpxConnSlot := -1;
+ For I := 0 To High(EmuIpx.Conns) Do
+  If EmuIpx.Conns[I].InUse And (I + 1 = Integer(ConnId)) Then Begin
+   Emu_SpxConnSlot := I; Exit;
+  End;
+ { NextConnId demarre a 1 et l ID retourne = index+1 (voir              }
+ { Emu_Spx_Establish/ListenForConnection), donc ce calcul reste valide   }
+ { tant que les connexions ne sont jamais reindexees. }
+End;
+
+{ --- SPX : INITIALIZE / INSTALLATION CHECK (BX=0010h) --- }
+Procedure Emu_Spx_Initialize(Var P: TEmulatorPanel);
+Var I, Free: Integer;
+Begin
+ Free := 0;
+ For I := 0 To High(EmuIpx.Conns) Do If Not EmuIpx.Conns[I].InUse Then Inc(Free);
+ P.CPU.Regs.AL := $FF; { SPX charge }
+ P.CPU.Regs.BH := 1; P.CPU.Regs.BL := 2; { version synthetique 1.2 }
+ P.CPU.Regs.CX := High(EmuIpx.Conns) + 1; { connexions max }
+ P.CPU.Regs.DX := Free; { connexions disponibles }
+End;
+
+{ --- SPX : ESTABLISH / LISTEN FOR CONNECTION (BX=0011h/0012h) ---
+  Modele "boucle locale" : comme il n y a pas de second programme pour     }
+{ repondre a une vraie poignee de main, les deux aboutissent               }
+{ immediatement (pas d attente indefinie sans pair). Le socket local       }
+{ vient de l ECB (ECBSocket) ; le socket distant est extrait de l en-tete  }
+{ IPX deja construit dans le 1er fragment (Etablir uniquement). }
+Procedure Emu_Spx_EstablishOrListen(Var P: TEmulatorPanel; IsListen: Boolean);
+Var ECBSeg, ECBOfs: Word; Buf: TIpxBuf; Len: Word; Slot, I: Integer;
+Begin
+ ECBSeg := P.CPU.Segs.ES; ECBOfs := P.CPU.Regs.SI;
+ Slot := -1;
+ For I := 0 To High(EmuIpx.Conns) Do
+  If Not EmuIpx.Conns[I].InUse Then Begin
+   Slot := I; Break;
+  End;
+ If Slot < 0 Then Begin
+  P.CPU.Regs.AL := $EF; { plus de connexion SPX disponible }
+  Exit;
+ End;
+ EmuIpx.Conns[Slot].InUse := True;
+ EmuIpx.Conns[Slot].Established := True;
+ EmuIpx.Conns[Slot].LocalSocket :=
+  Emu_ReadWord(P.CPU, ECBSeg, ECBOfs + EMU_ECB_SOCKET);
+ EmuIpx.Conns[Slot].RemoteSocket := EmuIpx.Conns[Slot].LocalSocket;
+ If Not IsListen Then Begin
+  Len := Emu_IpxCopyFragsToBuf(P, ECBSeg, ECBOfs, Buf);
+  If Len >= EMU_IPX_HDR_SIZE Then
+   EmuIpx.Conns[Slot].RemoteSocket :=
+    (Word(Buf[EMU_IPX_HDR_DSOCKET]) Shl 8) Or Buf[EMU_IPX_HDR_DSOCKET + 1];
+ End;
+ Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, 0);
+ P.CPU.Regs.AL := 0;
+ P.CPU.Regs.DX := Word(Slot + 1); { identifiant de connexion attribue }
+End;
+
+{ --- SPX : TERMINATE/ABORT CONNECTION (BX=0013h/0014h) --- }
+Procedure Emu_Spx_EndConnection(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_SpxConnSlot(P.CPU.Regs.DX);
+ If Slot >= 0 Then EmuIpx.Conns[Slot].InUse := False;
+ P.CPU.Regs.AL := 0;
+End;
+
+{ --- SPX : GET CONNECTION STATUS (BX=0015h) --- }
+{ Seul AL est renseigne (connectee ou non) : la disposition exacte d un    }
+{ eventuel tampon d etat etendu (ES:SI) n a pas de source verifiee, donc   }
+{ elle n est pas fabriquee ici plutot que de risquer un mauvais format. }
+Procedure Emu_Spx_GetStatus(Var P: TEmulatorPanel);
+Var Slot: Integer;
+Begin
+ Slot := Emu_SpxConnSlot(P.CPU.Regs.DX);
+ If (Slot >= 0) And EmuIpx.Conns[Slot].Established Then
+  P.CPU.Regs.AL := 0
+ Else
+  P.CPU.Regs.AL := $FF;
+End;
+
+{ --- SPX : SEND / LISTEN FOR SPX PACKET (BX=0016h/0017h) --- }
+{ Un paquet SPX voyage comme un paquet IPX (PacketType=5) sur le meme      }
+{ "fil" virtuel que les paquets IPX bruts ; on reutilise donc directement  }
+{ Emu_IpxDeliverOrQueue/Emu_IpxQueuePopInto/Emu_IpxPendingAdd, indexes par  }
+{ le socket local/distant de la connexion plutot que par un socket ouvert  }
+{ explicitement par l application. }
+Procedure Emu_Spx_SendPacket(Var P: TEmulatorPanel);
+Var ECBSeg, ECBOfs: Word; Slot: Integer; Buf: TIpxBuf; Len: Word;
+Begin
+ ECBSeg := P.CPU.Segs.ES; ECBOfs := P.CPU.Regs.SI;
+ Slot := Emu_SpxConnSlot(P.CPU.Regs.DX);
+ If (Slot < 0) Or Not EmuIpx.Conns[Slot].Established Then Begin
+  Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, $FF);
+  Exit;
+ End;
+ Len := Emu_IpxCopyFragsToBuf(P, ECBSeg, ECBOfs, Buf);
+ Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, 0);
+ Emu_IpxDeliverOrQueue(P, EmuIpx.Conns[Slot].RemoteSocket, Buf, Len);
+End;
+
+Procedure Emu_Spx_ListenForPacket(Var P: TEmulatorPanel);
+Var ECBSeg, ECBOfs: Word; Slot: Integer;
+Begin
+ ECBSeg := P.CPU.Segs.ES; ECBOfs := P.CPU.Regs.SI;
+ Slot := Emu_SpxConnSlot(P.CPU.Regs.DX);
+ If (Slot < 0) Or Not EmuIpx.Conns[Slot].Established Then Begin
+  Emu_IpxSetECBDone(P, ECBSeg, ECBOfs, $FF);
+  Exit;
+ End;
+ If Emu_IpxQueuePopInto(P, EmuIpx.Conns[Slot].LocalSocket, ECBSeg, ECBOfs) Then
+  Exit;
+ Emu_WriteByte(P.CPU, ECBSeg, ECBOfs + EMU_ECB_INUSE, $FF);
+ Emu_IpxPendingAdd(EmuIpx.Conns[Slot].LocalSocket, ECBSeg, ECBOfs);
+End;
+
+{ --- Repartiteur INT 7Ah : numero de fonction dans BX (IPX 0000h-001Fh,   }
+{ SPX 0010h-0017h). N est jamais appele si EmuIpx.Active=False (voir       }
+{ Emu_DoInt) - c est le cas dans lequel une vraie machine sans pilote      }
+{ IPX charge laisserait juste ce vecteur inutilise. --- }
+Procedure Emu_DoInt7A(Var P: TEmulatorPanel);
+Begin
+ Case P.CPU.Regs.BX Of
+  $0000: Emu_Ipx_OpenSocket(P);
+  $0001: Emu_Ipx_CloseSocket(P);
+  $0002: Emu_Ipx_GetLocalTarget(P);
+  $0003: Emu_Ipx_SendPacket(P);
+  $0004: Emu_Ipx_ListenForPacket(P);
+  $0005, $0006, $0007: ; { Schedule/Cancel (Special) Event : pas de       }
+                          { minuterie interne emulee - accepte silencieux }
+  $0008: P.CPU.Regs.AX := Word(EmuTickCounter); { Get Interval Marker }
+  $0009: Emu_Ipx_GetInternetworkAddress(P);
+  $000A: ; { Relinquish Control : rien a faire (pas de tache de fond) }
+  $000B: P.CPU.Regs.AL := 0; { Disconnect From Target : sans objet ici }
+  $0010: Emu_Spx_Initialize(P);
+  $0011: Emu_Spx_EstablishOrListen(P, False);
+  $0012: Emu_Spx_EstablishOrListen(P, True);
+  $0013, $0014: Emu_Spx_EndConnection(P);
+  $0015: Emu_Spx_GetStatus(P);
+  $0016: Emu_Spx_SendPacket(P);
+  $0017: Emu_Spx_ListenForPacket(P);
+  $001A: P.CPU.Regs.CX := SizeOf(TIpxBuf) - EMU_IPX_HDR_SIZE; { taille max }
+ End;
+End;
+
+{ --- INT 2Fh AX=7A00h : verification d installation IPX. Toute autre      }
+{ sous-fonction (ou si le reseau Novell n est pas configure) suit le       }
+{ meme comportement generique que les autres interruptions non geree -    }
+{ voir Emu_DoInt. --- }
+Procedure Emu_DoInt2F(Var P: TEmulatorPanel);
+Var IvtOfs, IvtSeg: Word;
+Begin
+ If EmuIpx.Active And (P.CPU.Regs.AX = $7A00) Then Begin
+  P.CPU.Regs.AL := $FF;
+  P.CPU.Segs.ES := EmuIpx.StubSeg;
+  P.CPU.Regs.DI := EmuIpx.StubOfs;
+  Exit;
+ End;
+ IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
+ IvtSeg := Emu_ReadWord(P.CPU, 0, Word($2F) * 4 + 2);
+ If IvtSeg <> 0 Then Emu_FireHwInt(P, $2F);
+ If IvtOfs = IvtOfs Then ; { evite un avertissement }
+End;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
@@ -48657,7 +49288,22 @@ Begin
   $20: P.CPU.Fault := sfEndProgram;
   $27: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
+  $2F: Emu_DoInt2F(P);
   $33: Emu_DoInt33(P);
+  $7A: Begin
+   { N intercepter reellement que si la case "Reseau Novell NetWare" est   }
+   { cochee (EmuIpx.Active) - sinon, se comporter EXACTEMENT comme pour    }
+   { toute autre interruption non geree (branche Else ci-dessous) : une    }
+   { vraie machine sans pilote IPX charge ne repond pas non plus sur ce    }
+   { vecteur. }
+   If EmuIpx.Active Then Emu_DoInt7A(P)
+   Else Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($7A) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($7A) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, $7A);
+    If IvtOfs = IvtOfs Then ;
+   End;
+  End;
   Else Begin
    { Pour les autres INT, si l application a installe un ISR
      via INT 21h AH=25h, on saute dedans. Sinon on ignore. }
@@ -60275,6 +60921,7 @@ Begin NesActive := False;
  End;
  {$I+} If IOResult <> 0 Then ;
  Emu_InitBDA(P);
+ Emu_IpxInit(P);
  EmuPumpCnt := 0;
  { Initialiser etat souris emulee. }
  EmuMouseInst := True;
