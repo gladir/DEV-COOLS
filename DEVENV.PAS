@@ -1332,6 +1332,7 @@ Const
  DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
  EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
  DOS_LAN_VENDOR_COUNT = 8;       { nombre de produits pilote LAN emulables }
+ DOS_EMS_VERSION_COUNT = 3;      { nombre de versions LIM EMS emulables   }
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -1650,6 +1651,21 @@ Const
  { du logiciel DOS d epoque tout en restant une allocation triviale sur    }
  { une machine hote moderne. }
  EMU_XMS_CAP_KB       = 65536; { 64 Mo }
+
+ { Plafond du tampon "memoire expansee" EMS - 32 Mo correspond au maximum  }
+ { reellement supporte par la specification LIM/Microsoft EMS 4.0 elle-    }
+ { meme (voir Emu_EmsInit), contrairement au plafond XMS ci-dessus qui est }
+ { un choix arbitraire (XMS n a pas de limite fixee par sa specification). }
+ EMU_EMS_CAP_KB       = 32768; { 32 Mo }
+ EMU_EMS_PAGE_SIZE    = 16384; { taille fixe d une page EMS (16 Ko), toutes}
+                                { versions confondues                     }
+ EMU_EMS_MAX_HANDLES  = 64;    { plafond de poignees ouvertes simultanement}
+ EMU_EMS_FRAME_SEG    = $E000; { segment de la fenetre "page frame" (4    }
+                                { emplacements de 16 Ko = 64 Ko), choix    }
+                                { historiquement courant, hors de portee   }
+                                { de la VRAM ($A000-$BFFF) et de nos stubs }
+                                { internes ($F000, voir IPX/Packet Driver/ }
+                                { XMS)                                    }
 
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
@@ -3381,6 +3397,69 @@ Type
   A20Global : Boolean;         { drapeau global (fonctions 03h/04h)       }
  End;
 
+ { --- Pilote EMS (Options > Emulateur > DOS: OS > "EMS") - LIM/Microsoft  }
+ { Expanded Memory Specification, versions 3.0/3.2/4.0 (source verifiee : }
+ { limems40.txt, RBIL). INT 67h, numero de fonction dans AH (et parfois    }
+ { un sous-numero dans AL, ex. 4Eh/50h/52h/53h/54h/57h/58h/59h). A         }
+ { la difference de XMS, EMS est un VRAI numero d interruption (comme      }
+ { Packet Driver) et non un point d entree obtenu par appel indirect.      }
+ {                                                                        }
+ { La case a cocher "Version EMS" (DosEMSVersion, 0=3.0/1=3.2/2=4.0)       }
+ { determine QUELLES fonctions repondent - voir Emu_EmsVerAtLeast. C est   }
+ { la demande explicite qui justifie ce champ : un developpeur qui teste   }
+ { un programme cense fonctionner sous EMS 3.2 doit voir les fonctions     }
+ { 4.0 echouer avec le code 84h ("fonction non definie"), exactement       }
+ { comme sur un vrai gestionnaire EMS 3.2 qui ne les connait pas -         }
+ { sans cette restriction, un programme mal ecrit qui suppose a tort la    }
+ { presence de fonctions 4.0 pourrait sembler fonctionner alors qu il       }
+ { echouerait sur du materiel/logiciel reel plus ancien.                   }
+ {                                                                        }
+ { Modele memoire : un tampon "memoire expansee" separe (EmuEmsMem, comme  }
+ { EmuXmsMem) decoupe en pages fixes de 16 Ko, et une fenetre "page frame" }
+ { de 4 emplacements de 16 Ko (EMU_EMS_FRAME_SEG) dans les 1 Mo            }
+ { conventionnels (C.Memory) - Map/Unmap (44h) fait un VRAI va-et-vient de }
+ { donnees entre les deux (bascule de banc), pas une simple redirection    }
+ { d adresse, pour que la persistance des donnees d une page demappee      }
+ { soit correcte quand elle est remappee plus tard - voir                  }
+ { Emu_EmsSetSlot/Emu_EmsFlushSlot/Emu_EmsLoadSlot.                        }
+ {                                                                        }
+ { Limite assumee : le mode "adresse segment" de la fonction 50h (4.0,     }
+ { AL=01h, qui permet en theorie de mapper une page EMS dans N IMPORTE     }
+ { QUEL segment, pas seulement les 4 emplacements fixes de la page frame)  }
+ { fait une copie ponctuelle sans suivi de banc persistant - les ecritures }
+ { du programme dans ce segment ne seront pas reportees vers la memoire    }
+ { expansee lors d un remappage ulterieur. Le mode "numero de page         }
+ { physique" standard (AL=00h) et la fonction 44h, eux, ont une bascule    }
+ { de banc complete et correcte. }
+ TEmuEmsBuf = Array[0..EMU_EMS_CAP_KB * 1024 - 1] Of Byte;
+
+ TEmuEmsHandle = Record
+  InUse        : Boolean;
+  PageCount    : Word;          { nombre de pages logiques de 16 Ko       }
+  StorePageBase: LongInt;       { index de la 1ere page dans le pool EMS  }
+  Attribute    : Byte;          { 0=volatile (EMS 4.0, fn 52h)            }
+  Name         : Array[0..7] Of Byte; { nom 8 caracteres (EMS 4.0, fn 53h)}
+ End;
+
+ TEmuEmsSlot = Record          { un des 4 emplacements de la page frame   }
+  MappedHandle : Word;          { 0 = aucune poignee mappee ici           }
+  MappedPage   : Word;          { page logique actuellement chargee       }
+ End;
+
+ TEmuEmsState = Record
+  Active     : Boolean;
+  Version    : Byte;            { 0=3.0, 1=3.2, 2=4.0 (voir DosEMSVersion)}
+  TotalPages : LongInt;         { capacite totale, en pages de 16 Ko      }
+  UsedPages  : LongInt;         { allocateur "bump" en pages              }
+  { Handle 0 n existe pas en EMS reel (contrairement a XMS) - la table     }
+  { commence donc a l indice 1 comme les vrais handles EMM. }
+  Handles    : Array[1..EMU_EMS_MAX_HANDLES] Of TEmuEmsHandle;
+  Slots      : Array[0..3] Of TEmuEmsSlot;
+  { Contexte de sauvegarde par poignee (fonctions 47h/48h, EMS 3.2+). }
+  SavedSlots      : Array[1..EMU_EMS_MAX_HANDLES] Of Array[0..3] Of TEmuEmsSlot;
+  SavedSlotsValid : Array[1..EMU_EMS_MAX_HANDLES] Of Boolean;
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -3578,6 +3657,7 @@ Type
   DosXMSSize      : Integer;     { taille XMS en Ko               }
   DosEMS          : Boolean;     { memoire EMS activee            }
   DosEMSSize      : Integer;     { taille EMS en Ko               }
+  DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
   DosMSCDEX       : Boolean;     { pilote MSCDEX (CD-ROM)         }
   DosSouris       : Boolean;     { pilote souris                  }
   DosNovell       : Boolean;     { reseau Novell NetWare          }
@@ -4454,6 +4534,10 @@ Var
  EmuXmsMem      : ^TEmuXmsBuf;   { tampon "memoire etendue" separe des     }
                                   { 1 Mo conventionnels (C.Memory) - voir   }
                                   { Emu_XmsInit. Nil tant que XMS inactif.  }
+ { --- Etat du pilote EMS (INT 67h) --- }
+ EmuEms         : TEmuEmsState;
+ EmuEmsMem      : ^TEmuEmsBuf;   { tampon "memoire expansee" separe, voir  }
+                                  { Emu_EmsInit. Nil tant que EMS inactif.  }
  { --- Etat de la souris emulee (INT 33h) --- }
  EmuMouseInst   : Boolean;       { driver "installe" }
  EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
@@ -37040,6 +37124,22 @@ Begin
  End;
 End;
 
+{ Version LIM EMS emulee (INT 67h, voir EmuEms) - determine QUELLES        }
+{ fonctions repondent : voir Emu_EmsVerOK. Choisie explicitement pour les  }
+{ tests (l enonce du champ precise que certains programmes doivent etre    }
+{ verifies contre une version specifique plutot que contre "tout ce que    }
+{ l emulateur sait faire"). }
+Function DosEMSVersionName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosEMSVersionName := 'LIM EMS 3.0 (fonctions 40h-46h)';
+  1: DosEMSVersionName := 'LIM EMS 3.2 (+ 47h-4Dh)';
+  2: DosEMSVersionName := 'LIM/Microsoft EMS 4.0 (+ 4Eh-59h)';
+ Else
+  DosEMSVersionName := '???';
+ End;
+End;
+
 { Une liste deroulante de la page Emulateur > DOS peut compter plus     }
 { d items (ex: Video 1/2, DOS_VIDEO_COUNT=21) que de place disponible   }
 { entre le champ et le bas du dialogue - sans quoi les derniers items   }
@@ -50641,6 +50741,713 @@ Begin
  Emu_WriteByte(P.CPU, EmuXms.StubSeg, EmuXms.StubOfs + 2, $CB);
 End;
 
+{ ========================================================================= }
+{ Pilote EMS (Options > Emulateur > DOS: OS > "EMS" + "Version EMS") -     }
+{ LIM/Microsoft Expanded Memory Specification, versions 3.0/3.2/4.0.       }
+{ Source verifiee : texte integral limems40.txt + Ralph Brown Interrupt    }
+{ List (fonctions 50h/57h). INT 67h, fonction dans AH (sous-fonction dans  }
+{ AL pour 4Eh/50h/52h/53h/54h/57h/58h/59h). Voir l en-tete du type          }
+{ TEmuEmsState pour le modele memoire (page frame a bascule reelle) et la  }
+{ justification du gating par version.                                    }
+{                                                                          }
+{ Fonctions volontairement NON implantees, quelle que soit la version      }
+{ (retournent 84h "fonction non definie" - honnete plutot que fabrique) :  }
+{  - 4Fh (Get/Set Partial Page Map) - variante partielle de 4Eh, rarement  }
+{    utilisee en pratique une fois 4Eh disponible.                        }
+{  - 55h/56h (Alter Page Map and Jump/Call) - exigeraient une injection    }
+{    de code invite (changer de banc puis sauter/appeler une adresse       }
+{    invite) d une complexite disproportionnee face a leur usage reel      }
+{    tres marginal.                                                       }
+{  - 5Ah (Allocate Standard/Raw Pages) - alias mineur de 43h sans valeur    }
+{    ajoutee dans notre modele (nous ne distinguons pas les deux types).   }
+{  - 5Bh (jeux de registres de correspondance alternatifs / DMA) - fonction}
+{    tres rarement utilisee (pilotes materiels specifiques), dont l ajout  }
+{    n apporterait rien pour tester un programme DOS ordinaire.            }
+{  - 5Ch (preparation redemarrage a chaud) - sans objet dans un emulateur. }
+{  - 5Dh (fonctions OS/E) - extension multitache jamais adoptee en         }
+{    pratique.                                                            }
+{ ========================================================================= }
+
+{ EmuEms.Version (0/1/2) -> Needed utilise le MEME codage - vrai si la     }
+{ version configuree est au moins celle requise par la fonction demandee. }
+Function Emu_EmsVerAtLeast(Needed: Byte): Boolean;
+Begin
+ Emu_EmsVerAtLeast := EmuEms.Version >= Needed;
+End;
+
+{ Octet de version BCD retourne par AH=46h (Get EMM Version). }
+Function Emu_EmsVersionBCD: Byte;
+Begin
+ Case EmuEms.Version Of
+  0: Emu_EmsVersionBCD := $30;
+  1: Emu_EmsVersionBCD := $32;
+ Else
+  Emu_EmsVersionBCD := $40;
+ End;
+End;
+
+Function Emu_EmsHandleValid(H: Word): Boolean;
+Begin
+ Emu_EmsHandleValid := (H >= 1) And (H <= EMU_EMS_MAX_HANDLES) And
+  EmuEms.Handles[H].InUse;
+End;
+
+Function Emu_EmsSlotSeg(Slot: Integer): Word;
+Begin
+ Emu_EmsSlotSeg := EMU_EMS_FRAME_SEG + Word(Slot * (EMU_EMS_PAGE_SIZE Div 16));
+End;
+
+{ Copie les 16 Ko actuellement visibles dans l emplacement Slot de la      }
+{ fenetre "page frame" (memoire conventionnelle C.Memory) VERS le pool     }
+{ EMS, a l endroit ou vit la page logique qui y etait chargee - c est ce   }
+{ qui rend le contenu ecrit par le programme persistant quand la page      }
+{ sera remappee plus tard (vraie bascule de banc, pas une simple           }
+{ redirection d adresse). Ne fait rien si l emplacement n a rien de mappe. }
+Procedure Emu_EmsFlushSlot(Var P: TEmulatorPanel; Slot: Integer);
+Var H, Pg: Word; PoolOfs: LongInt;
+Begin
+ H := EmuEms.Slots[Slot].MappedHandle;
+ If H = 0 Then Exit;
+ Pg := EmuEms.Slots[Slot].MappedPage;
+ PoolOfs := (EmuEms.Handles[H].StorePageBase + Pg) * EMU_EMS_PAGE_SIZE;
+ Move(P.CPU.Memory^[Emu_Addr(Emu_EmsSlotSeg(Slot), 0)],
+  EmuEmsMem^[PoolOfs], EMU_EMS_PAGE_SIZE);
+End;
+
+{ Copie la page logique Pg de la poignee H DEPUIS le pool EMS VERS         }
+{ l emplacement Slot de la page frame, et met a jour le suivi de banc. }
+Procedure Emu_EmsLoadSlot(Var P: TEmulatorPanel; Slot: Integer; H, Pg: Word);
+Var PoolOfs: LongInt;
+Begin
+ PoolOfs := (EmuEms.Handles[H].StorePageBase + Pg) * EMU_EMS_PAGE_SIZE;
+ Move(EmuEmsMem^[PoolOfs],
+  P.CPU.Memory^[Emu_Addr(Emu_EmsSlotSeg(Slot), 0)], EMU_EMS_PAGE_SIZE);
+ EmuEms.Slots[Slot].MappedHandle := H;
+ EmuEms.Slots[Slot].MappedPage := Pg;
+End;
+
+{ Point d entree unique pour changer ce qui est mappe dans un emplacement  }
+{ de la page frame - flush de l ancien contenu (si different) puis         }
+{ chargement du nouveau (ou simple demappage si NewHandle=0). Reutilise    }
+{ par Map/Unmap (44h), Restore Page Map (48h), Set Page Map (4Eh01) et     }
+{ Map Multiple Handle Pages (50h00). }
+Procedure Emu_EmsSetSlot(Var P: TEmulatorPanel; Slot: Integer;
+ NewHandle, NewPage: Word);
+Begin
+ If (EmuEms.Slots[Slot].MappedHandle <> 0) And
+    ((EmuEms.Slots[Slot].MappedHandle <> NewHandle) Or
+     (EmuEms.Slots[Slot].MappedPage <> NewPage)) Then
+  Emu_EmsFlushSlot(P, Slot);
+ If NewHandle = 0 Then
+  EmuEms.Slots[Slot].MappedHandle := 0
+ Else
+  Emu_EmsLoadSlot(P, Slot, NewHandle, NewPage);
+End;
+
+{ --- Allocateur "bump" en pages de 16 Ko - meme principe et meme limite   }
+{ documentee que Emu_XmsAllocBlock (la memoire liberee n est recuperee     }
+{ que lorsque TOUTES les poignees sont liberees en meme temps). --- }
+Function Emu_EmsAllocHandle(PageCount: Word; Var OutHandle: Word): Byte;
+Var H: Word; Slot: Integer;
+Begin
+ If (PageCount = 0) And Not Emu_EmsVerAtLeast(2) Then Begin
+  Emu_EmsAllocHandle := $89; { allocation de zero page (interdit avant 4.0)}
+  Exit;
+ End;
+ If PageCount > EmuEms.TotalPages Then Begin
+  Emu_EmsAllocHandle := $87; { pas assez de pages dans tout le systeme }
+  Exit;
+ End;
+ If EmuEms.UsedPages + PageCount > EmuEms.TotalPages Then Begin
+  Emu_EmsAllocHandle := $88; { pas assez de pages NON allouees }
+  Exit;
+ End;
+ Slot := -1;
+ For H := 1 To EMU_EMS_MAX_HANDLES Do
+  If Not EmuEms.Handles[H].InUse Then Begin Slot := H; Break; End;
+ If Slot < 0 Then Begin
+  Emu_EmsAllocHandle := $85; { toutes les poignees sont utilisees }
+  Exit;
+ End;
+ EmuEms.Handles[Slot].InUse := True;
+ EmuEms.Handles[Slot].PageCount := PageCount;
+ EmuEms.Handles[Slot].StorePageBase := EmuEms.UsedPages;
+ EmuEms.Handles[Slot].Attribute := 0;
+ FillChar(EmuEms.Handles[Slot].Name, SizeOf(EmuEms.Handles[Slot].Name), 0);
+ EmuEms.UsedPages := EmuEms.UsedPages + PageCount;
+ OutHandle := Word(Slot);
+ Emu_EmsAllocHandle := 0;
+End;
+
+Function Emu_EmsFreeHandle(Var P: TEmulatorPanel; H: Word): Byte;
+Var I, Slot: Integer; AnyLeft: Boolean;
+Begin
+ If Not Emu_EmsHandleValid(H) Then Begin
+  Emu_EmsFreeHandle := $83; { poignee introuvable }
+  Exit;
+ End;
+ { Demapper (sans flush - la memoire de la poignee va disparaitre) tout    }
+ { emplacement de la page frame qui pointait encore vers cette poignee.   }
+ For Slot := 0 To 3 Do
+  If EmuEms.Slots[Slot].MappedHandle = H Then
+   EmuEms.Slots[Slot].MappedHandle := 0;
+ EmuEms.Handles[H].InUse := False;
+ EmuEms.SavedSlotsValid[H] := False;
+ AnyLeft := False;
+ For I := 1 To EMU_EMS_MAX_HANDLES Do
+  If EmuEms.Handles[I].InUse Then AnyLeft := True;
+ If Not AnyLeft Then EmuEms.UsedPages := 0; { recupere tout le pool }
+ Emu_EmsFreeHandle := 0;
+ If P.CPU.Regs.AX = P.CPU.Regs.AX Then ; { evite un avertissement }
+End;
+
+{ --- AH=40h : Get Manager Status --- }
+Procedure Emu_Ems_GetStatus(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=41h : Get Page Frame Segment --- }
+Procedure Emu_Ems_GetPageFrame(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.BX := EMU_EMS_FRAME_SEG;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=42h : Get Unallocated Page Count --- }
+Procedure Emu_Ems_GetUnallocatedPageCount(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.BX := Word(EmuEms.TotalPages - EmuEms.UsedPages);
+ P.CPU.Regs.DX := Word(EmuEms.TotalPages);
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=43h : Allocate Pages --- }
+Procedure Emu_Ems_AllocatePages(Var P: TEmulatorPanel);
+Var H: Word; Err: Byte;
+Begin
+ Err := Emu_EmsAllocHandle(P.CPU.Regs.BX, H);
+ P.CPU.Regs.AH := Err;
+ If Err = 0 Then P.CPU.Regs.DX := H;
+End;
+
+{ --- AH=44h : Map/Unmap Handle Page --- }
+Procedure Emu_Ems_MapPage(Var P: TEmulatorPanel);
+Var Phys: Byte; Logical, H: Word;
+Begin
+ Phys := P.CPU.Regs.AL;
+ Logical := P.CPU.Regs.BX;
+ H := P.CPU.Regs.DX;
+ If Phys > 3 Then Begin
+  P.CPU.Regs.AH := $8B; { page physique hors limites }
+  Exit;
+ End;
+ If Not Emu_EmsHandleValid(H) Then Begin
+  P.CPU.Regs.AH := $83;
+  Exit;
+ End;
+ If Logical <> $FFFF Then Begin
+  If Logical >= EmuEms.Handles[H].PageCount Then Begin
+   P.CPU.Regs.AH := $8A; { page logique hors limites }
+   Exit;
+  End;
+  Emu_EmsSetSlot(P, Phys, H, Logical);
+ End Else
+  Emu_EmsSetSlot(P, Phys, 0, 0); { BX=FFFFh = demapper cet emplacement }
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=45h : Deallocate Pages --- }
+Procedure Emu_Ems_DeallocatePages(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AH := Emu_EmsFreeHandle(P, P.CPU.Regs.DX);
+End;
+
+{ --- AH=46h : Get EMM Version --- }
+Procedure Emu_Ems_GetVersion(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs.AL := Emu_EmsVersionBCD;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=47h/48h : Save/Restore Page Map (EMS 3.2+) --- }
+Procedure Emu_Ems_SavePageMap(Var P: TEmulatorPanel);
+Var H: Word; I: Integer;
+Begin
+ H := P.CPU.Regs.DX;
+ If Not Emu_EmsHandleValid(H) Then Begin
+  P.CPU.Regs.AH := $83; Exit;
+ End;
+ If EmuEms.SavedSlotsValid[H] Then Begin
+  P.CPU.Regs.AH := $8D; { la zone de sauvegarde contient deja un contexte }
+  Exit;
+ End;
+ For I := 0 To 3 Do EmuEms.SavedSlots[H][I] := EmuEms.Slots[I];
+ EmuEms.SavedSlotsValid[H] := True;
+ P.CPU.Regs.AH := 0;
+End;
+
+Procedure Emu_Ems_RestorePageMap(Var P: TEmulatorPanel);
+Var H: Word; I: Integer;
+Begin
+ H := P.CPU.Regs.DX;
+ If Not Emu_EmsHandleValid(H) Then Begin
+  P.CPU.Regs.AH := $83; Exit;
+ End;
+ If Not EmuEms.SavedSlotsValid[H] Then Begin
+  P.CPU.Regs.AH := $8E; { aucun contexte en zone de sauvegarde }
+  Exit;
+ End;
+ For I := 0 To 3 Do
+  Emu_EmsSetSlot(P, I, EmuEms.SavedSlots[H][I].MappedHandle,
+   EmuEms.SavedSlots[H][I].MappedPage);
+ EmuEms.SavedSlotsValid[H] := False;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=4Bh/4Ch/4Dh : infos poignees (EMS 3.2+) --- }
+Procedure Emu_Ems_GetHandleCount(Var P: TEmulatorPanel);
+Var I: Integer; Cnt: Word;
+Begin
+ Cnt := 0;
+ For I := 1 To EMU_EMS_MAX_HANDLES Do If EmuEms.Handles[I].InUse Then Inc(Cnt);
+ P.CPU.Regs.BX := Cnt;
+ P.CPU.Regs.AH := 0;
+End;
+
+Procedure Emu_Ems_GetHandlePages(Var P: TEmulatorPanel);
+Var H: Word;
+Begin
+ H := P.CPU.Regs.DX;
+ If Not Emu_EmsHandleValid(H) Then Begin
+  P.CPU.Regs.AH := $83; Exit;
+ End;
+ P.CPU.Regs.BX := EmuEms.Handles[H].PageCount;
+ P.CPU.Regs.AH := 0;
+End;
+
+Procedure Emu_Ems_GetAllHandlePages(Var P: TEmulatorPanel);
+Var I: Integer; Cnt: Word; Seg, Ofs: Word;
+Begin
+ Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.DI;
+ Cnt := 0;
+ For I := 1 To EMU_EMS_MAX_HANDLES Do
+  If EmuEms.Handles[I].InUse Then Begin
+   Emu_WriteWord(P.CPU, Seg, Ofs, Word(I));
+   Emu_WriteWord(P.CPU, Seg, Ofs + 2, EmuEms.Handles[I].PageCount);
+   Ofs := Ofs + 4;
+   Inc(Cnt);
+  End;
+ P.CPU.Regs.BX := Cnt;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=4Eh : Get/Set Page Map (EMS 4.0+) - format de tableau propre a    }
+{ cet emulateur (la specification laisse ce format au choix du pilote,    }
+{ voir l en-tete de section) : 4 entrees de 4 octets (WORD poignee mappee, }
+{ WORD page logique mappee), une par emplacement de la page frame. --- }
+Procedure Emu_Ems_GetPageMap(Var P: TEmulatorPanel);
+Var I: Integer; Seg, Ofs: Word;
+Begin
+ Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.DI;
+ For I := 0 To 3 Do Begin
+  Emu_WriteWord(P.CPU, Seg, Ofs, EmuEms.Slots[I].MappedHandle);
+  Emu_WriteWord(P.CPU, Seg, Ofs + 2, EmuEms.Slots[I].MappedPage);
+  Ofs := Ofs + 4;
+ End;
+ P.CPU.Regs.AH := 0;
+End;
+
+Procedure Emu_Ems_SetPageMap(Var P: TEmulatorPanel);
+Var I: Integer; Seg, Ofs: Word; NH, NP: Word;
+Begin
+ Seg := P.CPU.Segs.DS; Ofs := P.CPU.Regs.SI;
+ For I := 0 To 3 Do Begin
+  NH := Emu_ReadWord(P.CPU, Seg, Ofs);
+  NP := Emu_ReadWord(P.CPU, Seg, Ofs + 2);
+  If (NH <> 0) And Not Emu_EmsHandleValid(NH) Then Begin
+   P.CPU.Regs.AH := $83; Exit;
+  End;
+  Emu_EmsSetSlot(P, I, NH, NP);
+  Ofs := Ofs + 4;
+ End;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=50h : Map/Unmap Multiple Handle Pages (EMS 4.0+) - format         }
+{ verifie (RBIL) : tableau d entrees de 4 octets (WORD page logique ou      }
+{ FFFFh pour demapper, WORD page physique [AL=00h] ou segment [AL=01h]).   }
+{ Voir la limite documentee en tete de section pour le mode segment. --- }
+Procedure Emu_Ems_MapMultiple(Var P: TEmulatorPanel);
+Var Mode: Byte; H, Count, I: Word; Seg, Ofs: Word;
+ Logical, PhysOrSeg: Word; PoolOfs: LongInt;
+Begin
+ Mode := P.CPU.Regs.AL;
+ H := P.CPU.Regs.DX;
+ Count := P.CPU.Regs.CX;
+ Seg := P.CPU.Segs.DS; Ofs := P.CPU.Regs.SI;
+ If Not Emu_EmsHandleValid(H) Then Begin
+  P.CPU.Regs.AH := $83; Exit;
+ End;
+ For I := 0 To Count - 1 Do Begin
+  Logical := Emu_ReadWord(P.CPU, Seg, Ofs);
+  PhysOrSeg := Emu_ReadWord(P.CPU, Seg, Ofs + 2);
+  If (Logical <> $FFFF) And (Logical >= EmuEms.Handles[H].PageCount) Then Begin
+   P.CPU.Regs.AH := $8A; Exit;
+  End;
+  If Mode = 0 Then Begin { AL=00h : numero de page physique (0-3) }
+   If PhysOrSeg > 3 Then Begin P.CPU.Regs.AH := $8B; Exit; End;
+   If Logical = $FFFF Then Emu_EmsSetSlot(P, PhysOrSeg, 0, 0)
+   Else Emu_EmsSetSlot(P, PhysOrSeg, H, Logical);
+  End Else Begin { AL=01h : segment arbitraire - copie ponctuelle, voir   }
+                 { la limite documentee en tete de section }
+   If Logical <> $FFFF Then Begin
+    PoolOfs := (EmuEms.Handles[H].StorePageBase + Logical) * EMU_EMS_PAGE_SIZE;
+    Move(EmuEmsMem^[PoolOfs], P.CPU.Memory^[Emu_Addr(PhysOrSeg, 0)],
+     EMU_EMS_PAGE_SIZE);
+   End;
+  End;
+  Ofs := Ofs + 4;
+ End;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=51h : Reallocate Pages (EMS 4.0+) - meme limite que le resize     }
+{ XMS (Emu_Xms_ResizeBlock) : n agrandit en place que le DERNIER bloc      }
+{ alloue. --- }
+Procedure Emu_Ems_ReallocatePages(Var P: TEmulatorPanel);
+Var H, NewCount: Word; OldCount: Word; IsLast: Boolean;
+Begin
+ H := P.CPU.Regs.DX;
+ NewCount := P.CPU.Regs.BX;
+ If Not Emu_EmsHandleValid(H) Then Begin
+  P.CPU.Regs.AH := $83; Exit;
+ End;
+ OldCount := EmuEms.Handles[H].PageCount;
+ IsLast := EmuEms.Handles[H].StorePageBase + OldCount = EmuEms.UsedPages;
+ If NewCount <= OldCount Then Begin
+  If IsLast Then EmuEms.UsedPages := EmuEms.UsedPages - (OldCount - NewCount);
+  EmuEms.Handles[H].PageCount := NewCount;
+  P.CPU.Regs.AH := 0;
+  Exit;
+ End;
+ If (Not IsLast) Or
+    (EmuEms.UsedPages + (NewCount - OldCount) > EmuEms.TotalPages) Then Begin
+  P.CPU.Regs.AH := $88; { simplification assumee, voir Emu_Xms_ResizeBlock }
+  Exit;
+ End;
+ EmuEms.UsedPages := EmuEms.UsedPages + (NewCount - OldCount);
+ EmuEms.Handles[H].PageCount := NewCount;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=52h : Get/Set Handle Attribute, Get Attribute Capability          }
+{ (EMS 4.0+) - notre modele ne distingue pas volatile/persistant (aucune   }
+{ des deux n a d effet observable dans un emulateur sans veille froide),   }
+{ donc seule la valeur est memorisee/restituee fidelement. --- }
+Procedure Emu_Ems_HandleAttribute(Var P: TEmulatorPanel);
+Var H: Word;
+Begin
+ Case P.CPU.Regs.AL Of
+  0: Begin { Get }
+   H := P.CPU.Regs.DX;
+   If Not Emu_EmsHandleValid(H) Then Begin P.CPU.Regs.AH := $83; Exit; End;
+   P.CPU.Regs.AL := EmuEms.Handles[H].Attribute;
+   P.CPU.Regs.AH := 0;
+  End;
+  1: Begin { Set }
+   H := P.CPU.Regs.DX;
+   If Not Emu_EmsHandleValid(H) Then Begin P.CPU.Regs.AH := $83; Exit; End;
+   EmuEms.Handles[H].Attribute := P.CPU.Regs.BL;
+   P.CPU.Regs.AH := 0;
+  End;
+  2: Begin { Get Attribute Capability }
+   P.CPU.Regs.AL := 1; { seul l attribut "volatile" (0) est reellement    }
+                        { distinct dans notre modele - bit0=1 uniquement  }
+   P.CPU.Regs.AH := 0;
+  End;
+ Else
+  P.CPU.Regs.AH := $8F; { sous-fonction invalide }
+ End;
+End;
+
+{ --- AH=53h : Get/Set Handle Name (EMS 4.0+) --- }
+Procedure Emu_Ems_HandleName(Var P: TEmulatorPanel);
+Var H: Word; I: Integer; Seg, Ofs: Word;
+Begin
+ Case P.CPU.Regs.AL Of
+  0: Begin { Get }
+   H := P.CPU.Regs.DX;
+   If Not Emu_EmsHandleValid(H) Then Begin P.CPU.Regs.AH := $83; Exit; End;
+   Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.DI;
+   For I := 0 To 7 Do
+    Emu_WriteByte(P.CPU, Seg, Ofs + I, EmuEms.Handles[H].Name[I]);
+   P.CPU.Regs.AH := 0;
+  End;
+  1: Begin { Set }
+   H := P.CPU.Regs.DX;
+   If Not Emu_EmsHandleValid(H) Then Begin P.CPU.Regs.AH := $83; Exit; End;
+   Seg := P.CPU.Segs.DS; Ofs := P.CPU.Regs.SI;
+   For I := 0 To 7 Do
+    EmuEms.Handles[H].Name[I] := Emu_ReadByte(P.CPU, Seg, Ofs + I);
+   P.CPU.Regs.AH := 0;
+  End;
+ Else
+  P.CPU.Regs.AH := $8F;
+ End;
+End;
+
+{ --- AH=54h : Get Handle Directory / Search Named Handle / Get Total      }
+{ Handles (EMS 4.0+) --- }
+Procedure Emu_Ems_HandleDirectory(Var P: TEmulatorPanel);
+Var I, J: Integer; Cnt: Word; Seg, Ofs: Word; Name: Array[0..7] Of Byte;
+ Match: Boolean;
+Begin
+ Case P.CPU.Regs.AL Of
+  0: Begin { Get Handle Directory : ES:DI <- (poignee WORD, nom 8 octets) x N }
+   Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.DI;
+   Cnt := 0;
+   For I := 1 To EMU_EMS_MAX_HANDLES Do
+    If EmuEms.Handles[I].InUse Then Begin
+     Emu_WriteWord(P.CPU, Seg, Ofs, Word(I));
+     For J := 0 To 7 Do
+      Emu_WriteByte(P.CPU, Seg, Ofs + 2 + J, EmuEms.Handles[I].Name[J]);
+     Ofs := Ofs + 10;
+     Inc(Cnt);
+    End;
+   P.CPU.Regs.BX := Cnt;
+   P.CPU.Regs.AH := 0;
+  End;
+  1: Begin { Search Named Handle : DS:SI -> nom 8 octets, DX <- poignee }
+   Seg := P.CPU.Segs.DS; Ofs := P.CPU.Regs.SI;
+   For J := 0 To 7 Do Name[J] := Emu_ReadByte(P.CPU, Seg, Ofs + J);
+   For I := 1 To EMU_EMS_MAX_HANDLES Do
+    If EmuEms.Handles[I].InUse Then Begin
+     Match := True;
+     For J := 0 To 7 Do
+      If EmuEms.Handles[I].Name[J] <> Name[J] Then Match := False;
+     If Match Then Begin
+      P.CPU.Regs.DX := Word(I);
+      P.CPU.Regs.AH := 0;
+      Exit;
+     End;
+    End;
+   P.CPU.Regs.AH := $83; { aucune poignee ne porte ce nom }
+  End;
+  2: Begin { Get Total Handles }
+   P.CPU.Regs.BX := EMU_EMS_MAX_HANDLES;
+   P.CPU.Regs.AH := 0;
+  End;
+ Else
+  P.CPU.Regs.AH := $8F;
+ End;
+End;
+
+{ --- AH=57h : Move/Exchange Memory Region (EMS 4.0+) - structure de 18    }
+{ octets verifiee (RBIL) : Length(DD) SrcType(B) SrcHandle(W)              }
+{ SrcOffset(W) SrcSeg-ou-Page(W) DstType(B) DstHandle(W) DstOffset(W)      }
+{ DstSeg-ou-Page(W). Type=00h -> memoire conventionnelle (Offset=offset    }
+{ reel, Seg-ou-Page=segment reel) ; Type=01h -> memoire expansee           }
+{ (Offset=offset dans la page, Seg-ou-Page=numero de page logique) - les   }
+{ pages d une poignee etant deja contigues dans notre pool, page*16Ko+     }
+{ offset se ramene a un simple decalage plat, comme pour Emu_Xms_MoveBlock.}
+Procedure Emu_Ems_MoveExchange(Var P: TEmulatorPanel);
+Var StructSeg, StructOfs: Word;
+ Length_: LongInt;
+ SrcType, DstType: Byte;
+ SrcHandle, DstHandle: Word;
+ SrcOfs16, DstOfs16, SrcSegPage, DstSegPage: Word;
+ SrcFlat, DstFlat: LongInt;
+ I: LongInt; B, B2: Byte;
+Begin
+ StructSeg := P.CPU.Segs.DS; StructOfs := P.CPU.Regs.SI;
+ Length_    := Emu_XmsReadDWord(P.CPU, StructSeg, StructOfs);
+ SrcType    := Emu_ReadByte(P.CPU, StructSeg, StructOfs + 4);
+ SrcHandle  := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 5);
+ SrcOfs16   := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 7);
+ SrcSegPage := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 9);
+ DstType    := Emu_ReadByte(P.CPU, StructSeg, StructOfs + 11);
+ DstHandle  := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 12);
+ DstOfs16   := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 14);
+ DstSegPage := Emu_ReadWord(P.CPU, StructSeg, StructOfs + 16);
+
+ If SrcType = 1 Then Begin
+  If Not Emu_EmsHandleValid(SrcHandle) Then Begin P.CPU.Regs.AH := $83; Exit; End;
+  SrcFlat := LongInt(SrcSegPage) * EMU_EMS_PAGE_SIZE + SrcOfs16;
+  If SrcFlat + Length_ > LongInt(EmuEms.Handles[SrcHandle].PageCount) *
+     EMU_EMS_PAGE_SIZE Then Begin P.CPU.Regs.AH := $8A; Exit; End;
+ End;
+ If DstType = 1 Then Begin
+  If Not Emu_EmsHandleValid(DstHandle) Then Begin P.CPU.Regs.AH := $83; Exit; End;
+  DstFlat := LongInt(DstSegPage) * EMU_EMS_PAGE_SIZE + DstOfs16;
+  If DstFlat + Length_ > LongInt(EmuEms.Handles[DstHandle].PageCount) *
+     EMU_EMS_PAGE_SIZE Then Begin P.CPU.Regs.AH := $8A; Exit; End;
+ End;
+
+ For I := 0 To Length_ - 1 Do Begin
+  If SrcType = 1 Then
+   B := EmuEmsMem^[(EmuEms.Handles[SrcHandle].StorePageBase *
+    EMU_EMS_PAGE_SIZE) + SrcFlat + I]
+  Else
+   B := Emu_ReadByte(P.CPU, SrcSegPage, Word(SrcOfs16 + I));
+  If P.CPU.Regs.AL = 1 Then Begin { echanger : lire aussi la destination }
+   If DstType = 1 Then
+    B2 := EmuEmsMem^[(EmuEms.Handles[DstHandle].StorePageBase *
+     EMU_EMS_PAGE_SIZE) + DstFlat + I]
+   Else
+    B2 := Emu_ReadByte(P.CPU, DstSegPage, Word(DstOfs16 + I));
+  End Else
+   B2 := 0;
+  If DstType = 1 Then
+   EmuEmsMem^[(EmuEms.Handles[DstHandle].StorePageBase *
+    EMU_EMS_PAGE_SIZE) + DstFlat + I] := B
+  Else
+   Emu_WriteByte(P.CPU, DstSegPage, Word(DstOfs16 + I), B);
+  If P.CPU.Regs.AL = 1 Then Begin
+   If SrcType = 1 Then
+    EmuEmsMem^[(EmuEms.Handles[SrcHandle].StorePageBase *
+     EMU_EMS_PAGE_SIZE) + SrcFlat + I] := B2
+   Else
+    Emu_WriteByte(P.CPU, SrcSegPage, Word(SrcOfs16 + I), B2);
+  End;
+ End;
+ P.CPU.Regs.AH := 0;
+End;
+
+{ --- AH=58h : Get Mappable Physical Address Array (EMS 4.0+) --- }
+Procedure Emu_Ems_MappableArray(Var P: TEmulatorPanel);
+Var I: Integer; Seg, Ofs: Word;
+Begin
+ Case P.CPU.Regs.AL Of
+  0: Begin
+   Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.DI;
+   For I := 0 To 3 Do Begin
+    Emu_WriteWord(P.CPU, Seg, Ofs, Emu_EmsSlotSeg(I));
+    Emu_WriteWord(P.CPU, Seg, Ofs + 2, Word(I));
+    Ofs := Ofs + 4;
+   End;
+   P.CPU.Regs.AH := 0;
+  End;
+  1: Begin
+   P.CPU.Regs.CX := 4;
+   P.CPU.Regs.AH := 0;
+  End;
+ Else
+  P.CPU.Regs.AH := $8F;
+ End;
+End;
+
+{ --- AH=59h : Get Hardware Configuration / Get Number of Raw Pages        }
+{ (EMS 4.0+) - structure synthetique documentee (aucune des fonctionnalites}
+{ avancees qu elle decrit habituellement - jeux de registres alternatifs,  }
+{ DMA - n est implantee ici, voir l en-tete de section). --- }
+Procedure Emu_Ems_HardwareInfo(Var P: TEmulatorPanel);
+Var Seg, Ofs: Word;
+Begin
+ Case P.CPU.Regs.AL Of
+  0: Begin
+   Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.DI;
+   Emu_WriteWord(P.CPU, Seg, Ofs,      EMU_EMS_PAGE_SIZE Div 16); { taille}
+   Emu_WriteWord(P.CPU, Seg, Ofs + 2,  0); { jeux de registres alternatifs}
+   Emu_WriteWord(P.CPU, Seg, Ofs + 4,  0); { taille zone de sauvegarde    }
+   Emu_WriteWord(P.CPU, Seg, Ofs + 6,  0); { jeux de registres DMA        }
+   Emu_WriteWord(P.CPU, Seg, Ofs + 8,  0); { drapeaux                     }
+   P.CPU.Regs.AH := 0;
+  End;
+  1: Begin { Get Number of Raw Pages - pas de distinction standard/brut }
+   P.CPU.Regs.BX := Word(EmuEms.TotalPages - EmuEms.UsedPages);
+   P.CPU.Regs.DX := Word(EmuEms.TotalPages);
+   P.CPU.Regs.AH := 0;
+  End;
+ Else
+  P.CPU.Regs.AH := $8F;
+ End;
+End;
+
+{ --- Repartiteur INT 67h : fonction dans AH, sous-fonction dans AL pour   }
+{ certaines fonctions 4.0. Le gating par version (Emu_EmsVerAtLeast) est   }
+{ fait ICI, pas dans chaque fonction, pour qu il soit impossible d oublier }
+{ de le verifier quelque part - voir l en-tete de section. --- }
+Procedure Emu_DoInt67(Var P: TEmulatorPanel);
+Begin
+ Case P.CPU.Regs.AH Of
+  $40: Emu_Ems_GetStatus(P);
+  $41: Emu_Ems_GetPageFrame(P);
+  $42: Emu_Ems_GetUnallocatedPageCount(P);
+  $43: Emu_Ems_AllocatePages(P);
+  $44: Emu_Ems_MapPage(P);
+  $45: Emu_Ems_DeallocatePages(P);
+  $46: Emu_Ems_GetVersion(P);
+  $47: If Emu_EmsVerAtLeast(1) Then Emu_Ems_SavePageMap(P)
+       Else P.CPU.Regs.AH := $84;
+  $48: If Emu_EmsVerAtLeast(1) Then Emu_Ems_RestorePageMap(P)
+       Else P.CPU.Regs.AH := $84;
+  $4B: If Emu_EmsVerAtLeast(1) Then Emu_Ems_GetHandleCount(P)
+       Else P.CPU.Regs.AH := $84;
+  $4C: If Emu_EmsVerAtLeast(1) Then Emu_Ems_GetHandlePages(P)
+       Else P.CPU.Regs.AH := $84;
+  $4D: If Emu_EmsVerAtLeast(1) Then Emu_Ems_GetAllHandlePages(P)
+       Else P.CPU.Regs.AH := $84;
+  $4E: If Emu_EmsVerAtLeast(2) Then Begin
+        Case P.CPU.Regs.AL Of
+         0: Emu_Ems_GetPageMap(P);
+         1: Emu_Ems_SetPageMap(P);
+         2: Begin Emu_Ems_GetPageMap(P);
+             If P.CPU.Regs.AH = 0 Then Emu_Ems_SetPageMap(P); End;
+         3: Begin P.CPU.Regs.AL := 16; P.CPU.Regs.AH := 0; End;
+        Else
+         P.CPU.Regs.AH := $8F;
+        End;
+       End Else P.CPU.Regs.AH := $84;
+  $50: If Emu_EmsVerAtLeast(2) Then Emu_Ems_MapMultiple(P)
+       Else P.CPU.Regs.AH := $84;
+  $51: If Emu_EmsVerAtLeast(2) Then Emu_Ems_ReallocatePages(P)
+       Else P.CPU.Regs.AH := $84;
+  $52: If Emu_EmsVerAtLeast(2) Then Emu_Ems_HandleAttribute(P)
+       Else P.CPU.Regs.AH := $84;
+  $53: If Emu_EmsVerAtLeast(2) Then Emu_Ems_HandleName(P)
+       Else P.CPU.Regs.AH := $84;
+  $54: If Emu_EmsVerAtLeast(2) Then Emu_Ems_HandleDirectory(P)
+       Else P.CPU.Regs.AH := $84;
+  $57: If Emu_EmsVerAtLeast(2) Then Emu_Ems_MoveExchange(P)
+       Else P.CPU.Regs.AH := $84;
+  $58: If Emu_EmsVerAtLeast(2) Then Emu_Ems_MappableArray(P)
+       Else P.CPU.Regs.AH := $84;
+  $59: If Emu_EmsVerAtLeast(2) Then Emu_Ems_HardwareInfo(P)
+       Else P.CPU.Regs.AH := $84;
+ Else
+  P.CPU.Regs.AH := $84; { fonction non definie - inclut 4Fh/55h/56h/5Ah/   }
+                         { 5Bh/5Ch/5Dh, volontairement non implantees }
+ End;
+End;
+
+{ Reinitialise le pilote EMS et, si la case "EMS" est cochee, alloue le    }
+{ tampon "memoire expansee" separe et prepare la page frame (4             }
+{ emplacements vides). Appelee a chaque (re)demarrage de l emulateur,      }
+{ comme Emu_IpxInit/Emu_PktInit/Emu_XmsInit. }
+Procedure Emu_EmsInit(Var P: TEmulatorPanel);
+Begin
+ FillChar(EmuEms, SizeOf(EmuEms), 0);
+ EmuEms.Active := OptionsDlg.Data.DosEMS;
+ EmuEms.Version := Byte(OptionsDlg.Data.DosEMSVersion);
+ If EmuEmsMem <> Nil Then Begin
+  Dispose(EmuEmsMem);
+  EmuEmsMem := Nil;
+ End;
+ If Not EmuEms.Active Then Exit;
+ EmuEms.TotalPages := OptionsDlg.Data.DosEMSSize Div (EMU_EMS_PAGE_SIZE Div 1024);
+ If EmuEms.TotalPages > EMU_EMS_CAP_KB Div (EMU_EMS_PAGE_SIZE Div 1024) Then
+  EmuEms.TotalPages := EMU_EMS_CAP_KB Div (EMU_EMS_PAGE_SIZE Div 1024);
+ If EmuEms.TotalPages < 0 Then EmuEms.TotalPages := 0;
+ New(EmuEmsMem);
+ If EmuEmsMem = Nil Then Begin
+  EmuEms.Active := False;
+  Exit;
+ End;
+ FillChar(EmuEmsMem^, SizeOf(EmuEmsMem^), 0);
+ If P.CPU.Regs.AX = P.CPU.Regs.AX Then ; { evite un avertissement }
+End;
+
 { --- INT 2Fh AX=7A00h : verification d installation IPX ; AX=4300h/4310h  }
 { : verification d installation XMS et adresse du point d entree. Toute    }
 { autre sous-fonction (ou si le service correspondant n est pas configure) }
@@ -50728,6 +51535,19 @@ Begin
        { pilote XMS, atteint uniquement via le trampoline installe par     }
        { Emu_XmsInit (jamais un vrai numero d interruption DOS/BIOS,       }
        { contrairement a $60/$7A - pas de repli generique necessaire). }
+  $67: Begin
+   { N intercepter reellement que si la case "EMS" est cochee (EmuEms.     }
+   { Active) - sinon, comportement identique a toute autre interruption    }
+   { non geree (branche Else) : une vraie machine sans gestionnaire EMS    }
+   { charge ne repond pas non plus sur ce vecteur. }
+   If EmuEms.Active Then Emu_DoInt67(P)
+   Else Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($67) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($67) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, $67);
+    If IvtOfs = IvtOfs Then ;
+   End;
+  End;
   $7A: Begin
    { N intercepter reellement que si la case "Reseau Novell NetWare" est   }
    { cochee (EmuIpx.Active) - sinon, se comporter EXACTEMENT comme pour    }
@@ -62362,6 +63182,7 @@ Begin NesActive := False;
  Emu_IpxInit(P);
  Emu_PktInit(P);
  Emu_XmsInit(P);
+ Emu_EmsInit(P);
  EmuPumpCnt := 0;
  { Initialiser etat souris emulee. }
  EmuMouseInst := True;
@@ -62823,6 +63644,7 @@ Begin
  D.DosXMSSize := 16384;
  D.DosEMS := False;
  D.DosEMSSize := 4096;
+ D.DosEMSVersion := 2; { 4.0 par defaut - la plus complete }
  D.DosMSCDEX := False;
  D.DosSouris := True;
  D.DosNovell := False;
@@ -63767,7 +64589,9 @@ Var
    End Else
     FG := CLR_WINDOWTEXT;
    If Dlg.DosDropdownOpen = 1 Then
-    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(ActualIdx), FG);
+    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosTypeName(ActualIdx), FG)
+   Else If Dlg.DosDropdownOpen = 7 Then
+    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosEMSVersionName(ActualIdx), FG);
   End;
   DrawRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
    CLR_BORDER);
@@ -63807,9 +64631,13 @@ Begin
  Dropdown('Type de DOS :', DosTypeName(Dlg.Data.DosType));      { Row 0 }
  CheckWithSize(Dlg.Data.DosXMS, 'XMS', Dlg.Data.DosXMSSize);    { Row 1 }
  CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize);    { Row 2 }
+ Dropdown('Version EMS :',                                     { Row 3 }
+  DosEMSVersionName(Dlg.Data.DosEMSVersion));
 
  If Dlg.DosDropdownOpen = 1 Then
-  OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType);
+  OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType)
+ Else If Dlg.DosDropdownOpen = 7 Then
+  OpenList(3, DOS_EMS_VERSION_COUNT, Dlg.Data.DosEMSVersion);
 End;
 
 { --- Dessiner la page Emulateur > DOS: Logiciel --- }
@@ -64087,6 +64915,7 @@ Begin
    4: Begin DDCount := DOS_VIDEO_COUNT; DDCur := Dlg.Data.DosVideo1; End;
    5: Begin DDCount := DOS_VIDEO_COUNT; DDCur := Dlg.Data.DosVideo2; End;
    6: Begin DDCount := DOS_LAN_VENDOR_COUNT; DDCur := Dlg.Data.DosLANVendor; End;
+   7: Begin DDCount := DOS_EMS_VERSION_COUNT; DDCur := Dlg.Data.DosEMSVersion; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
   End;
   If Key = $48 Then Begin { Fleche haut }
@@ -64105,6 +64934,7 @@ Begin
    4: Dlg.Data.DosVideo1 := DDCur;
    5: Dlg.Data.DosVideo2 := DDCur;
    6: Dlg.Data.DosLANVendor := DDCur;
+   7: Dlg.Data.DosEMSVersion := DDCur;
   End;
   Dlg.Modified := True;
   Exit;
@@ -64173,6 +65003,7 @@ Var
    4: Dlg.Data.DosVideo1 := NewIdx;
    5: Dlg.Data.DosVideo2 := NewIdx;
    6: Dlg.Data.DosLANVendor := NewIdx;
+   7: Dlg.Data.DosEMSVersion := NewIdx;
   End;
   Dlg.Modified := True;
  End;
@@ -64196,6 +65027,8 @@ Begin
       CurIdx := Dlg.Data.DosVideo2; End;
   6: Begin RowIdx := 2; Count := DOS_LAN_VENDOR_COUNT;
       CurIdx := Dlg.Data.DosLANVendor; End;
+  7: Begin RowIdx := 3; Count := DOS_EMS_VERSION_COUNT;
+      CurIdx := Dlg.Data.DosEMSVersion; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
  { Meme geometrie que celle dessinee par OpenList (voir                  }
@@ -64488,6 +65321,7 @@ Begin
         Dlg.Data.DosEMS := Not Dlg.Data.DosEMS;
         Dlg.Modified := True;
        End;
+       3: Dlg.DosDropdownOpen := 7;  { Version EMS }
       End;
      OC_EMU_DOS_SW:
       Case FieldIdx Of
@@ -64687,6 +65521,8 @@ Begin
  WriteCfgLine(F, 'DosEMS', BoolToStr(Data.DosEMS));
  Str(Data.DosEMSSize, S);
  WriteCfgLine(F, 'DosEMSSize', S);
+ Str(Data.DosEMSVersion, S);
+ WriteCfgLine(F, 'DosEMSVersion', S);
  WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
  WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
  WriteCfgLine(F, 'DosNovell', BoolToStr(Data.DosNovell));
@@ -64851,6 +65687,13 @@ Begin
   Begin
    Val(Value, Data.DosEMSSize, Code);
    If Code <> 0 Then Data.DosEMSSize := 4096;
+  End
+  Else If Key = 'DosEMSVersion' Then
+  Begin
+   Val(Value, Data.DosEMSVersion, Code);
+   If (Code <> 0) Or (Data.DosEMSVersion < 0) Or
+      (Data.DosEMSVersion >= DOS_EMS_VERSION_COUNT) Then
+    Data.DosEMSVersion := 2;
   End
   Else If Key = 'DosMSCDEX' Then
    Data.DosMSCDEX := StrToBool(Value)
