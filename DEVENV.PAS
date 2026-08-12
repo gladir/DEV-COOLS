@@ -1588,6 +1588,15 @@ Const
  sfBreakPoint  = 7;
  sfDivision0   = 8;
 
+ { Pseudo-modes video ATI Graphics Solution (EmuVideo.Mode) - numeros      }
+ { hors de la plage BIOS reelle (0..13h) puisque cette carte n a PAS de    }
+ { BIOS et n est jamais selectionnee via INT 10h AH=00h, voir              }
+ { Emu_ATIDetectMode. }
+ EMU_MODE_GS640x16 = $50; { 640x200, 16 couleurs, 2 plans B000h/B800h      }
+ EMU_MODE_GS640x4  = $51; { 640x200, 4 couleurs, 1 plan B800h              }
+ EMU_MODE_GS320x16 = $52; { 320x200, 16 couleurs, 1 plan B800h (best-effort)}
+ EMU_MODE_GSTXT132 = $53; { Texte 132x25 couleur (normal ou emulation)     }
+
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
  MAX_CYCLES    = 100000;    { limite de surete 68k }
@@ -3141,6 +3150,15 @@ Type
   StatusRetrace : Byte; { bit 0 = HRetrace, bit 3 = VRetrace }
   { --- Dirty flag pour le rendu graphique --- }
   GfxDirty   : Boolean;
+  { --- Registres etendus ATI Graphics Solution ($3DD/$3DF) - carte sans   }
+  { BIOS, programmee uniquement par sequences de ports directes. Voir      }
+  { Emu_ATIDetectMode. --- }
+  GSExt      : Byte;    { dernier octet ecrit sur $3DD                     }
+  GSFeature  : Byte;    { dernier octet ecrit sur $3DF                     }
+  GSLastSig  : Byte;    { dernier mode ATI detecte (0=aucun), evite les    }
+                         { reinitialisations redondantes                   }
+  GSTxt132Emul: Boolean;{ Vrai = GSEmulTextModeC132x25 (132 col, moniteur  }
+                         { monochrome), Faux = GSTextModeC132x25 (couleur) }
  End;
 
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
@@ -3153,7 +3171,9 @@ Type
   TargetCPU  : String[16];       { drapeau cible (-CD ou -CP)      }
   CPU        : TEmuCPU;          { etat complet du processeur 8086 }
   { Ecran virtuel 80 colonnes x 25 lignes }
-  VRAM       : Array[0..24, 0..79] Of TEmuCell;
+  { Borne a 131 (132 colonnes) pour supporter le mode texte couleur       }
+  { 132x25 de la carte ATI Graphics Solution (Options > Emulateur > DOS). }
+  VRAM       : Array[0..24, 0..131] Of TEmuCell;
   CursorX    : Byte;             { colonne curseur (0..79)         }
   CursorY    : Byte;             { ligne curseur (0..24)           }
   CurFg      : Byte;             { couleur courante FG             }
@@ -40175,6 +40195,12 @@ Begin
  GridW := P.Cols * P.CharW;
  GridH := P.Rows * P.CharH;
  P.PanelX := (ScrW - GridW) Div 2;
+ { En mode texte 132 colonnes (ATI Graphics Solution), la grille peut     }
+ { depasser la largeur d ecran disponible (132*8=1056px) - aligner a      }
+ { gauche plutot que de centrer, pour garder au moins les premieres       }
+ { colonnes entierement visibles au lieu de rogner symetriquement les     }
+ { deux bords. }
+ If P.PanelX < 0 Then P.PanelX := 0;
  P.PanelY := 80;                 { sous menu+toolbar }
  If P.PanelY + GridH + 60 > ScrH Then
   P.PanelY := 60;
@@ -40365,10 +40391,10 @@ Begin
     (SizeBytes > 0) Then Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
-   Row := ((Ofs + I) Shr 1) Div 80;
-   Col := ((Ofs + I) Shr 1) Mod 80;
+   Row := ((Ofs + I) Shr 1) Div EmuPanel.Cols;
+   Col := ((Ofs + I) Shr 1) Mod EmuPanel.Cols;
    B := 0;
-   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
+   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 131) Then Begin
     If ((Ofs + I) And 1) = 0 Then
      B := Byte(Ord(EmuPanel.VRAM[Row, Col].Ch))
     Else
@@ -40455,9 +40481,9 @@ Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
    B := BPtr^;
-   Row := ((Ofs + I) Shr 1) Div 80;
-   Col := ((Ofs + I) Shr 1) Mod 80;
-   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
+   Row := ((Ofs + I) Shr 1) Div EmuPanel.Cols;
+   Col := ((Ofs + I) Shr 1) Mod EmuPanel.Cols;
+   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 131) Then Begin
     If ((Ofs + I) And 1) = 0 Then
      EmuPanel.VRAM[Row, Col].Ch := Chr(B)
     Else Begin
@@ -40504,15 +40530,34 @@ Begin
  End;
  { Redirection vers VRAM virtuelle si ecriture en memoire video texte $B800/$B000 }
  If ((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000) Then Begin
+  { Mode ATI Graphics Solution 640x200x16 couleurs : 2 plans separes,     }
+  { B800h ("Hi", 2 bits de poids fort de la couleur) et B000h ("Lo", 2    }
+  { bits de poids faible) - voir Emu_ATIDetectMode/Emu_VidSetPixel. Doit  }
+  { etre teste AVANT le cas CGA generique ci-dessous, qui ne redirige que }
+  { B800h (B000h y tomberait a tort dans le chemin texte VRAM). }
+  If EmuVideo.Mode = EMU_MODE_GS640x16 Then Begin
+   If (Seg And $F800) = $B800 Then
+    Emu_VidWriteByte($20000 +
+     ((LongInt(Seg) Shl 4) + Ofs - $B8000) And $7FFF, X)
+   Else
+    Emu_VidWriteByte($30000 +
+     ((LongInt(Seg) Shl 4) + Ofs - $B0000) And $7FFF, X);
+   Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), X, 1);
+   Exit;
+  End;
   { En mode graphique CGA (4/5/6), rediriger vers la VRAM unifiee. }
   If EmuVideo.IsGraphic And ((Seg And $F800) = $B800) Then Begin
    Emu_VidWriteByte($20000 + ((LongInt(Seg) Shl 4) + Ofs - $B8000) And $7FFF, X);
    Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), X, 1);  { copie aussi en RAM }
    Exit;
   End;
-  Row := (Ofs Shr 1) Div 80;
-  Col := (Ofs Shr 1) Mod 80;
-  If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 79) Then Begin
+  { EmuPanel.Cols vaut normalement 80, mais 132 en mode texte ATI         }
+  { Graphics Solution (EMU_MODE_GSTXT132, voir Emu_ATIDetectMode) -       }
+  { calculer dynamiquement plutot que de coder 80 en dur, sinon le texte  }
+  { au-dela de la colonne 80 serait perdu. }
+  Row := (Ofs Shr 1) Div EmuPanel.Cols;
+  Col := (Ofs Shr 1) Mod EmuPanel.Cols;
+  If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 131) Then Begin
    If (Ofs And 1) = 0 Then Begin
     EmuPanel.VRAM[Row, Col].Ch := Chr(X);
    End Else Begin
@@ -44673,6 +44718,50 @@ Begin
    If Lin < $10000 Then
     EmuVideo.Mem^[Lin] := Color;
   End;
+  EMU_MODE_GS640x16: Begin
+   { ATI Graphics Solution 640x200x16 couleurs : entrelacement CGA a 4   }
+   { bancs de 8192 (au lieu des bancs 2x80 du CGA natif), 2 plans de     }
+   { 32 Ko - "Hi" (2 bits de poids fort) a $20000+, "Lo" (2 bits de      }
+   { poids faible) a $30000+ (voir Emu_WriteByte pour le brochage des    }
+   { segments B800h/B000h). Formules verifiees contre GS640200.PAS       }
+   { (RealRawY/RawXv/RawKrLo/RawKrHi) - voir le plan d implementation.   }
+   Lin := (Y Div 4) * 160 + (Y Mod 4) * 8192 + (X Div 4);
+   BitPos := (3 - (X And 3)) * 2;
+   Mask := 3 Shl BitPos;
+   OldByte := EmuVideo.Mem^[$30000 + Lin]; { plan "Lo" }
+   OldByte := (OldByte And (Not Mask)) Or
+    (((Color Shr 1) And 3) Shl BitPos);
+   EmuVideo.Mem^[$30000 + Lin] := OldByte;
+   OldByte := EmuVideo.Mem^[$20000 + Lin]; { plan "Hi" }
+   OldByte := (OldByte And (Not Mask)) Or
+    ((((Color And 1) Shl 1) Or ((Color Shr 3) And 1)) Shl BitPos);
+   EmuVideo.Mem^[$20000 + Lin] := OldByte;
+  End;
+  EMU_MODE_GS640x4: Begin
+   { ATI Graphics Solution 640x200x4 couleurs - meme timing CRTC (donc    }
+   { memes 160 octets/ligne) que le mode 320x200x16 ci-dessous et que le  }
+   { plan individuel du mode 640x200x16 ci-dessus ; deduit par analogie   }
+   { (confiance moderee, aucune source primaire dediee trouvee - voir le  }
+   { plan d implementation) : 1 seul segment B800h, meme entrelacement    }
+   { CGA a 4 bancs de 8192. }
+   Lin := $20000 + (Y Div 4) * 160 + (Y Mod 4) * 8192 + (X Div 4);
+   BitPos := (3 - (X And 3)) * 2;
+   Mask := 3 Shl BitPos;
+   OldByte := EmuVideo.Mem^[Lin];
+   OldByte := (OldByte And (Not Mask)) Or ((Color And 3) Shl BitPos);
+   EmuVideo.Mem^[Lin] := OldByte;
+  End;
+  EMU_MODE_GS320x16: Begin
+   { ATI Graphics Solution 320x200x16 couleurs - meme principe (confiance }
+   { moderee) : 1 seul segment B800h, 4 bits/pixel empaquetes 2/octet,    }
+   { meme entrelacement CGA a 4 bancs de 8192. }
+   Lin := $20000 + (Y Div 4) * 160 + (Y Mod 4) * 8192 + (X Div 2);
+   BitPos := (1 - (X And 1)) * 4;
+   Mask := $F Shl BitPos;
+   OldByte := EmuVideo.Mem^[Lin];
+   OldByte := (OldByte And (Not Mask)) Or ((Color And $F) Shl BitPos);
+   EmuVideo.Mem^[Lin] := OldByte;
+  End;
  End;
  EmuVideo.GfxDirty := True;
 End;
@@ -44682,6 +44771,7 @@ Var Lin: LongInt;
     Plane, BitPos: Byte;
     Color: Byte;
     BankOfs: LongInt;
+    LoV, HiV: Byte;
 Begin
  Emu_VidGetPixel := 0;
  If Not EmuVideo.MemReady Then Exit;
@@ -44717,6 +44807,26 @@ Begin
    Lin := Y * 320 + X;
    If Lin < $10000 Then
     Emu_VidGetPixel := EmuVideo.Mem^[Lin];
+  End;
+  EMU_MODE_GS640x16: Begin
+   { Meme adressage que Emu_VidSetPixel ci-dessus ; decodage inverse      }
+   { verifie algebriquement contre le GetPixel ASM de GS640200.PAS.       }
+   Lin := (Y Div 4) * 160 + (Y Mod 4) * 8192 + (X Div 4);
+   BitPos := (3 - (X And 3)) * 2;
+   LoV := (EmuVideo.Mem^[$30000 + Lin] Shr BitPos) And 3;
+   HiV := (EmuVideo.Mem^[$20000 + Lin] Shr BitPos) And 3;
+   Emu_VidGetPixel := ((HiV And 1) Shl 3) Or (((LoV Shr 1) And 1) Shl 2) Or
+    ((LoV And 1) Shl 1) Or ((HiV Shr 1) And 1);
+  End;
+  EMU_MODE_GS640x4: Begin
+   Lin := $20000 + (Y Div 4) * 160 + (Y Mod 4) * 8192 + (X Div 4);
+   BitPos := (3 - (X And 3)) * 2;
+   Emu_VidGetPixel := (EmuVideo.Mem^[Lin] Shr BitPos) And 3;
+  End;
+  EMU_MODE_GS320x16: Begin
+   Lin := $20000 + (Y Div 4) * 160 + (Y Mod 4) * 8192 + (X Div 2);
+   BitPos := (1 - (X And 1)) * 4;
+   Emu_VidGetPixel := (EmuVideo.Mem^[Lin] Shr BitPos) And $F;
   End;
  End;
 End;
@@ -44841,6 +44951,119 @@ Begin
  End;
 End;
 
+{ La carte "Graphics Solutions d'ATI" (Options > Emulateur > DOS > Video 1/  }
+{ Video 2, index 3 de DosVideoName) est active si l un des deux champs     }
+{ Video la selectionne. }
+Function Emu_ATIActive: Boolean;
+Begin
+ Emu_ATIActive := (OptionsDlg.Data.DosVideo1 = 3) Or
+  (OptionsDlg.Data.DosVideo2 = 3);
+End;
+
+{ Detection des modes ATI Graphics Solution par signature de registres -   }
+{ cette carte n a PAS de BIOS (confirme par l utilisateur et par           }
+{ https://www.gladir.com/LEXIQUE/CARD/graphicssolution.htm) : les          }
+{ logiciels d epoque la programment exclusivement par ecriture directe de  }
+{ ports, jamais via INT 10h AH=00h. Les 9 sequences exactes viennent de    }
+{ https://raw.githubusercontent.com/gladir/GRAPHICSSOLUTIONLIB-TP/main/    }
+{ MODES.PAS (verifie octet pres via telechargement direct, pas seulement   }
+{ un resume) : chacune ecrit $3DD (avant la boucle CRTC), 16 registres     }
+{ CRTC 0-7 (seuls 0-7 varient d un mode a l autre, 8-15 sont communs), et   }
+{ eventuellement $3DF (apres). Cette fonction est appelee apres CHAQUE     }
+{ ecriture sur $3D5/$3D8/$3D9/$3DD/$3DF (idempotent : tant que la          }
+{ sequence n est pas terminee, l etat courant ne correspond a aucune       }
+{ signature complete, donc aucun risque a l appeler trop souvent).         }
+Procedure Emu_ATIDetectMode;
+Var
+ Sig: Byte;
+
+ Function CrtcIs(A, B, C, D, E, F, G, H: Byte): Boolean;
+ Begin
+  CrtcIs := (EmuVideo.CRTCReg[0] = A) And (EmuVideo.CRTCReg[1] = B) And
+   (EmuVideo.CRTCReg[2] = C) And (EmuVideo.CRTCReg[3] = D) And
+   (EmuVideo.CRTCReg[4] = E) And (EmuVideo.CRTCReg[5] = F) And
+   (EmuVideo.CRTCReg[6] = G) And (EmuVideo.CRTCReg[7] = H);
+ End;
+
+Begin
+ If Not Emu_ATIActive Then Exit;
+ Sig := 0;
+ { GSTextModeC132x25 / GSEmulTextModeC132x25 : meme CRTC, distinguees par  }
+ { la valeur finale de $3DF (90h = couleur, A8h = emulation mono).         }
+ If CrtcIs($B5, $84, $97, $0A, $1F, $06, $19, $1C) And
+    (EmuVideo.GSExt = 0) Then Begin
+  If EmuVideo.GSFeature = $90 Then Sig := 2
+  Else If EmuVideo.GSFeature = $A8 Then Sig := 3;
+ End
+ { GSColors320x200_16Colors / GSColors640x200_4Colors : meme CRTC,         }
+ { distinguees par $3DD (10h = 320x16, 20h = 640x4).                       }
+ Else If CrtcIs($38, $28, $2D, $0A, $7F, $06, $64, $70) Then Begin
+  If EmuVideo.GSExt = $10 Then Sig := 4
+  Else If EmuVideo.GSExt = $20 Then Sig := 5;
+ End
+ Else If CrtcIs($70, $50, $58, $0A, $40, $06, $32, $38) And
+    (EmuVideo.GSExt = $80) Then
+  Sig := 6
+ { GSEmul320x200_16Colors / GSEmul640x200_4Colors : meme CRTC, idem. }
+ Else If CrtcIs($36, $28, $2D, $08, $64, $06, $64, $64) And
+    (EmuVideo.GSFeature = $A0) Then Begin
+  If EmuVideo.GSExt = $10 Then Sig := 7
+  Else If EmuVideo.GSExt = $20 Then Sig := 8;
+ End
+ Else If CrtcIs($61, $50, $52, $08, $32, $06, $32, $32) And
+    (EmuVideo.GSExt = $80) And (EmuVideo.GSFeature = $A0) Then
+  Sig := 9;
+ If (Sig = 0) Or (Sig = EmuVideo.GSLastSig) Then Exit;
+ EmuVideo.GSLastSig := Sig;
+ EmuVideo.IsGraphic := False;
+ EmuVideo.IsPlanar := False;
+ EmuVideo.ChainFour := False;
+ EmuVideo.GSTxt132Emul := False;
+ Case Sig Of
+  2, 3: Begin
+   EmuVideo.TextCols := 132; EmuVideo.TextRows := 25;
+   EmuVideo.Width := 660; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GSTXT132;
+   EmuVideo.GSTxt132Emul := (Sig = 3);
+   EmuPanel.Cols := 132; EmuPanel.Rows := 25;
+  End;
+  4: Begin { GSColors320x200_16Colors }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 320; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GS320x16;
+  End;
+  5: Begin { GSColors640x200_4Colors }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 2;
+   EmuVideo.Width := 640; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GS640x4;
+  End;
+  6: Begin { GSColors640x200_16Colors }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 640; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GS640x16;
+  End;
+  7: Begin { GSEmul320x200_16Colors }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 320; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GS320x16;
+  End;
+  8: Begin { GSEmul640x200_4Colors }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 2;
+   EmuVideo.Width := 640; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GS640x4;
+  End;
+  9: Begin { GSEmul640x200_16Colors }
+   EmuVideo.IsGraphic := True; EmuVideo.BitsPerPix := 4;
+   EmuVideo.Width := 640; EmuVideo.Height := 200;
+   EmuVideo.Mode := EMU_MODE_GS640x16;
+  End;
+ End;
+ FillChar(EmuVideo.Mem^, SizeOf(EmuVideo.Mem^), 0);
+ If Not EmuVideo.IsGraphic Then EmuVScr_Clear(EmuPanel);
+ EmuVideo.GfxDirty := True;
+ EmuPanel.NeedRepaint := True;
+End;
+
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte);
 Begin
  Case Port Of
@@ -44871,11 +45094,17 @@ Begin
   $3CE: EmuVideo.GCIdx := Value And $0F;
   $3CF: If EmuVideo.GCIdx < 16 Then EmuVideo.GCReg[EmuVideo.GCIdx] := Value;
   $3D4, $3B4: EmuVideo.CRTCIdx := Value And $1F;
-  $3D5, $3B5:
+  $3D5, $3B5: Begin
    If EmuVideo.CRTCIdx < 32 Then
     EmuVideo.CRTCReg[EmuVideo.CRTCIdx] := Value;
-  $3D8: EmuVideo.CGAMode := Value;
-  $3D9: EmuVideo.CGAColor := Value;
+   Emu_ATIDetectMode;
+  End;
+  $3D8: Begin EmuVideo.CGAMode := Value; Emu_ATIDetectMode; End;
+  $3D9: Begin EmuVideo.CGAColor := Value; Emu_ATIDetectMode; End;
+  { $3DD/$3DF : registres etendus ATI Graphics Solution, ignores par tout  }
+  { autre materiel (aucune carte standard n y repond). }
+  $3DD: Begin EmuVideo.GSExt := Value; Emu_ATIDetectMode; End;
+  $3DF: Begin EmuVideo.GSFeature := Value; Emu_ATIDetectMode; End;
  End;
 End;
 
@@ -48331,6 +48560,11 @@ Begin
   EqLo := $21;
  End;
  Emu_WriteByte(P.CPU, $40, $10, EqLo);
+ { Adresse de base des ports du controleur CRT (0040:0063) : 03D4h pour  }
+ { les cartes couleur (CGA/EGA/Graphics Solution), 03B4h en monochrome.  }
+ { De nombreux logiciels (dont GSDEMO1.COM) sondent ce mot pour valider  }
+ { la presence d une carte avant de programmer les ports directement.    }
+ Emu_WriteWord(P.CPU, $40, $63, $3D4);
  Emu_WriteByte(P.CPU, $40, $13, $80);
  Emu_WriteByte(P.CPU, $40, $14, $02);
  Emu_WriteByte(P.CPU, $40, $1A, $1E);
