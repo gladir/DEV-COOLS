@@ -1339,6 +1339,11 @@ Const
  EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
  DOS_LAN_VENDOR_COUNT = 8;       { nombre de produits pilote LAN emulables }
  DOS_EMS_VERSION_COUNT = 3;      { nombre de versions LIM EMS emulables   }
+ DOS_MOUSE_VENDOR_COUNT  = 6;    { nombre de fabricants pilote souris     }
+ DOS_MOUSE_VERSION_COUNT = 4;    { nombre de versions pilote INT 33h      }
+ EMU_ISO_SECTOR = 2048;          { taille de secteur ISO9660 - universelle}
+                                  { pour les CD-ROM, jamais lue dynamique- }
+                                  { ment depuis le PVD (voir Emu_CdromOpenOne) }
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -1650,6 +1655,10 @@ Const
  EMU_PKT_PARAMS_OFS   = $00A0;
  EMU_XMS_STUB_SEG     = $F000;
  EMU_XMS_STUB_OFS     = $00C0;
+ EMU_MOUSE_STUB_SEG   = $F000; { trampoline d upcall souris/BIOS PS/2, voir}
+ EMU_MOUSE_STUB_OFS   = $0100; { Emu_MouseInit/Emu_MouseFireOne           }
+ EMU_MSCDEX_INFO_SEG  = $F000; { "adresse d en-tete de pilote" cosmetique, }
+ EMU_MSCDEX_INFO_OFS  = $0110; { jamais dereferencee - voir AX=1501h      }
 
  { Plafond materiel arbitraire du tampon "memoire etendue" XMS, independant}
  { de la taille configuree par l utilisateur (DosXMSSize) qui ne peut que  }
@@ -1711,6 +1720,8 @@ Type
   DiskImg1        : TString;   { /DISK1:fichier.img -> unite B:     }
   DiskImg80       : TString;   { /DISK80:fichier.img -> disque dur C: }
   DiskImg81       : TString;   { /DISK81:fichier.img -> disque dur D: }
+  CdromImg0       : TString;   { /CDROM0:fichier.iso -> 1er lecteur CD}
+  CdromImg1       : TString;   { /CDROM1:fichier.iso -> 2e lecteur CD }
  End;
 
  { Types d evenements }
@@ -2684,6 +2695,43 @@ Type
   CachedFatLBA   : LongInt;
   CachedFatBuf   : Array[0..511] Of Byte;
  End;
+
+ { Volume CD-ROM ISO9660 monte en lecture seule depuis une image .iso     }
+ { (/CDROM0:/CDROM1:) - voir Emu_CdromOpenOne/Emu_IsoResolve. Contrairement}
+ { a TFatVol (FAT12/16, mutable, avec cache), c est une simple "racine"   }
+ { de depart (LBA+taille de l extent racine ISO9660) : la resolution de   }
+ { chemin parcourt directement les enregistrements de repertoire (pas de  }
+ { table des chemins ni d arbre pre-charge), suffisant pour un lecteur    }
+ { en lecture seule sans ecriture. }
+ TEmuCdromVol = Record
+  Open          : Boolean;
+  FileName      : String;
+  F             : File;
+  IsoSize       : LongInt;
+  RootLBA       : LongInt;
+  RootSize      : LongInt;
+  VolLabel      : String[32];
+  CopyrightFile : String[38];
+  AbstractFile  : String[37];
+  BiblioFile    : String[37];
+  DriveLetter   : Byte;          { 0=A: .. 25=Z: ; 255 si Open=False }
+ End;
+
+ { Un enregistrement de repertoire ISO9660 decode (voir                  }
+ { Emu_IsoEntryFromRecord) - Name est deja en majuscules, sans le         }
+ { suffixe ";n" de version, tronque a 12 caracteres (8.3) si l identifiant}
+ { d origine (Niveau 2, jusqu a 30 caracteres) est plus long - voir le    }
+ { commentaire pres de Emu_IsoEntryFromRecord pour cette simplification. }
+ TEmuIsoEntry = Record
+  IsDir  : Boolean;
+  Name   : String[12];
+  LBA    : LongInt;
+  Size   : LongInt;
+  Year, Month, Day, Hour, Minute, Second : Byte;
+ End;
+
+ { Un secteur logique ISO9660 brut (2048 octets, voir EMU_ISO_SECTOR). }
+ TEmuIsoSector = Array[0..EMU_ISO_SECTOR - 1] Of Byte;
 
  { Norton Commander (5e shell du panneau Terminal, DEVENV.PAS) - navigation
    double-panneau sur la disquette virtuelle FAT deja utilisee par les 4
@@ -3666,6 +3714,9 @@ Type
   DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
   DosMSCDEX       : Boolean;     { pilote MSCDEX (CD-ROM)         }
   DosSouris       : Boolean;     { pilote souris                  }
+  DosMousePS2BIOS : Boolean;     { BIOS souris PS/2 (INT 15h AH=C2h) }
+  DosMouseVendor  : Integer;     { fabricant du pilote INT 33h    }
+  DosMouseVersion : Integer;     { version du pilote INT 33h      }
   DosNovell       : Boolean;     { reseau Novell NetWare          }
   DosLAN          : Boolean;     { reseau LAN generique           }
   DosLANVendor    : Integer;     { fabricant/produit du pilote LAN}
@@ -4455,6 +4506,30 @@ Var
  EmuFloppyBATFileOfs: Array[0..3] Of LongInt;
  EmuFloppyGTEsPerGT : Array[0..3] Of LongInt;
  FatVol         : Array[0..3] Of TFatVol; { volumes FAT12/16 montes  }
+ { --- CD-ROM ISO9660 montes (option /CDROM0:/CDROM1:), voir            }
+ { Emu_CdromOpenAll/Emu_IsoResolve - lettre de lecteur assignee          }
+ { uniquement si Open=True (voir Emu_CdromOpenAll), au plus tot D:. }
+ EmuCdrom          : Array[0..1] Of TEmuCdromVol;
+ EmuMscdexActive   : Boolean;   { case "MSCDEX" (DosMSCDEX), voir        }
+                                 { Emu_MscdexInit - gate INT 2Fh AX=15xxh}
+ { Fichiers ouverts (handles 5..31, voir EmuFileOpen ci-dessus) dont le  }
+ { contenu vient d un volume CD-ROM monte plutot que du systeme de       }
+ { fichiers hote - voir Emu_CdromOpenFile/Emu_CdromReadFile. }
+ EmuFileIsCdrom : Array[5..31] Of Boolean;
+ EmuCdFileVol   : Array[5..31] Of Byte;     { 0 ou 1, index dans EmuCdrom}
+ EmuCdFileLBA   : Array[5..31] Of LongInt;
+ EmuCdFileSize  : Array[5..31] Of LongInt;
+ EmuCdFilePos   : Array[5..31] Of LongInt;
+ { Resultats de FindFirst/FindNext ($4E/$4F) quand la recherche porte    }
+ { sur un lecteur CD-ROM - tableaux paralleles a EmuFindResults, remplis }
+ { d un coup (comme EmuFindResults) puisqu on enumere directement les    }
+ { enregistrements de repertoire ISO9660 sans passer par le systeme de   }
+ { fichiers hote. }
+ EmuFindIsCdrom : Boolean;
+ EmuCdFindSize  : Array[0..63] Of LongInt;
+ EmuCdFindIsDir : Array[0..63] Of Boolean;
+ EmuCdFindDate  : Array[0..63] Of Word;
+ EmuCdFindTime  : Array[0..63] Of Word;
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
@@ -4571,6 +4646,45 @@ Var
  EmuMouseHandlerSeg : Word;
  EmuMouseHandlerOfs : Word;
  EmuMouseHandlerMsk : Word;
+ { Gestionnaire utilisateur alternatif (fn 18h/19h, voir Emu_DoInt33). }
+ EmuMouseAltHandlerSeg : Word;
+ EmuMouseAltHandlerOfs : Word;
+ EmuMouseAltHandlerMsk : Word;
+ { Configuration issue de Options > Emulateur > DOS: Logiciel - voir       }
+ { Emu_MouseInit. }
+ EmuMouseActive        : Boolean;    { case a cocher "Souris" (DosSouris)  }
+ EmuMousePS2Active      : Boolean;   { case "Souris BIOS PS/2" (INT 15h)   }
+ EmuMouseVendor         : Byte;      { DosMouseVendor, purement declaratif }
+ EmuMouseVersion        : Byte;      { DosMouseVersion, voir Emu_MouseVerOK}
+ { Page d affichage (fn 1Dh/1Eh) et etat "logiciel desactive" (fn 1Fh/20h,}
+ { distinct de la case a cocher EmuMouseActive ci-dessus). }
+ EmuMouseDisplayPage   : Byte;
+ EmuMouseSoftDisabled  : Boolean;
+ { --- Interface BIOS PS/2 emulee (INT 15h AH=C2h, voir Emu_DoInt15C2) --- }
+ EmuMouseBiosEnabled     : Boolean;
+ EmuMouseBiosCallbackSeg : Word;
+ EmuMouseBiosCallbackOfs : Word;
+ EmuMouseBiosSampleRate  : Byte;
+ EmuMouseBiosResolution  : Byte;
+ { --- Upcall interne (invocation reelle des gestionnaires/callback par    }
+ { injection de code invite) - voir Emu_MouseFireEvents/Emu_MouseCont, }
+ { meme principe que EmuPkt.Cont (Emu_PktCont). Un seul appel peut etre    }
+ { "en vol" a la fois puisque CS:IP est unique. }
+ EmuMouseContSeg      : Word;
+ EmuMouseContOfs      : Word;
+ EmuMouseCallPending  : Boolean;
+ EmuMouseCallKind     : Byte;     { 0=principal 1=alternatif 2=BIOS PS/2  }
+ EmuMouseCallMask     : Word;
+ EmuMouseCallPrimDone : Boolean;
+ EmuMouseCallAltDone  : Boolean;
+ EmuMouseCallBiosDone : Boolean;
+ EmuMouseCallBtn      : Byte;
+ EmuMouseCallCX       : Word;
+ EmuMouseCallDX       : Word;
+ EmuMouseCallSI       : Word;
+ EmuMouseCallDI       : Word;
+ EmuMouseCallSavedCS  : Word;
+ EmuMouseCallSavedIP  : Word;
  { Etat de l emulateur Motorola 68000 integre }
  M68K_D         : Array[0..7] Of LongInt;
  M68K_A         : Array[0..7] Of LongInt;
@@ -5268,6 +5382,10 @@ Procedure ShowHelp;Begin
  WriteLn('                 Le terminal CMD/PowerShell integre peut');
  WriteLn('                 utiliser A:/B:/C:/D: et les commandes DIR,');
  WriteLn('                 TYPE, CD, VOL pour explorer l image (FAT12/16).');
+ WriteLn('  /CDROM0:img    Image ISO9660 (.iso) montee comme 1er lecteur');
+ WriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
+ WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
+ WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -5307,6 +5425,8 @@ Begin
  Opts.DiskImg1        := '';
  Opts.DiskImg80       := '';
  Opts.DiskImg81       := '';
+ Opts.CdromImg0       := '';
+ Opts.CdromImg1       := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -5423,6 +5543,28 @@ Begin
    If Not FileExists(EmuFn) Then
     FatalError('Image disque introuvable: ' + EmuFn);
    Opts.DiskImg81 := EmuFn;
+  End
+  Else If (Length(Arg) >= 8) And
+          ((Copy(Arg, 1, 8) = '/CDROM0:') Or (Copy(Arg, 1, 8) = '/cdrom0:') Or
+           (Copy(Arg, 1, 8) = '-CDROM0:') Or (Copy(Arg, 1, 8) = '-cdrom0:') Or
+           (Copy(Arg, 1, 8) = '/Cdrom0:') Or (Copy(Arg, 1, 8) = '-Cdrom0:')) Then Begin
+   EmuFn := Copy(Arg, 9, Length(Arg) - 8);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /CDROM0 attendue : /CDROM0:fichier.iso');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image CD-ROM introuvable: ' + EmuFn);
+   Opts.CdromImg0 := EmuFn;
+  End
+  Else If (Length(Arg) >= 8) And
+          ((Copy(Arg, 1, 8) = '/CDROM1:') Or (Copy(Arg, 1, 8) = '/cdrom1:') Or
+           (Copy(Arg, 1, 8) = '-CDROM1:') Or (Copy(Arg, 1, 8) = '-cdrom1:') Or
+           (Copy(Arg, 1, 8) = '/Cdrom1:') Or (Copy(Arg, 1, 8) = '-Cdrom1:')) Then Begin
+   EmuFn := Copy(Arg, 9, Length(Arg) - 8);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /CDROM1 attendue : /CDROM1:fichier.iso');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image CD-ROM introuvable: ' + EmuFn);
+   Opts.CdromImg1 := EmuFn;
   End
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
@@ -6934,6 +7076,17 @@ Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
 { bien avant la definition des noms de listes deroulantes de la page      }
 { Emulateur > DOS plus bas dans ce fichier. }
 Function DosLANVendorName(Idx: Integer): String; Forward;
+{ Necessaire a Emu_DoInt21 (unite(s) CD-ROM montees, voir                 }
+{ Emu_CdromOpenAll) bien avant la definition complete du lecteur ISO9660  }
+{ plus bas dans ce fichier (pres de Emu_HardDiskOpenAll). }
+Function Emu_CdromDriveFromPath(Const DosName: String; Var Idx: Integer;
+ Var Rel: String): Boolean; Forward;
+Function Emu_CdromOpenFile(Idx: Integer; Const Rel: String; H: Integer): Word; Forward;
+Function Emu_CdromReadFile(Var P: TEmulatorPanel; H: Integer;
+ GuestOfs: Word; Count: Word): Word; Forward;
+Function Emu_IsoResolve(Idx: Byte; DosPath: String;
+ Var Entry: TEmuIsoEntry): Boolean; Forward;
+Function Emu_CdromFindFirst(Idx: Integer; Const DirRel, Pattern: String): Boolean; Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -37150,6 +37303,42 @@ Begin
  End;
 End;
 
+{ Fabricant/produit du pilote souris emule (INT 33h, voir DosMouseVendor) - }
+{ purement declaratif (une seule implementation generique sous-tend tous    }
+{ ces choix), mais change le nom retourne le cas echeant par les outils de  }
+{ diagnostic - meme principe que DosLANVendorName pour le reseau. }
+Function DosMouseVendorName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosMouseVendorName := 'Microsoft Mouse';
+  1: DosMouseVendorName := 'Logitech';
+  2: DosMouseVendorName := 'Genius (GMOUSE)';
+  3: DosMouseVendorName := 'Dexxa';
+  4: DosMouseVendorName := 'Mouse Systems (PC Mouse)';
+  5: DosMouseVendorName := 'Generique (compatible Microsoft)';
+ Else
+  DosMouseVendorName := '???';
+ End;
+End;
+
+{ Version du pilote INT 33h emule (voir EmuMouseVerAtLeast) - determine     }
+{ QUELLES fonctions repondent, meme principe que DosEMSVersionName : un     }
+{ programme teste contre une version precise ne doit voir QUE les fonctions }
+{ que cette version reelle offrait. Paliers approximatifs (aucune date      }
+{ d introduction par fonction n a ete confirmee avec la meme certitude que  }
+{ pour EMS ; regroupement par plage de fonctions documentee dans le RBIL). }
+Function DosMouseVersionName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosMouseVersionName := 'v1.0 (fonctions 00h-0Fh)';
+  1: DosMouseVersionName := 'v3.0 (+ 10h-1Bh, gestionnaire alternatif)';
+  2: DosMouseVersionName := 'v6.0 (+ 1Ch-21h)';
+  3: DosMouseVersionName := 'v8.0 (+ 22h-27h)';
+ Else
+  DosMouseVersionName := '???';
+ End;
+End;
+
 { Une liste deroulante de la page Emulateur > DOS peut compter plus     }
 { d items (ex: Video 1/2, DOS_VIDEO_COUNT=21) que de place disponible   }
 { entre le champ et le bas du dialogue - sans quoi les derniers items   }
@@ -47198,6 +47387,12 @@ Var
  W: Word;
  SR: SearchRec;
  KW: Word;
+ { --- CD-ROM ISO9660 (voir Emu_CdromDriveFromPath/Emu_IsoResolve) --- }
+ CdIdx: Integer;
+ CdRel, CdDir, CdPattern: String;
+ CdErr: Word;
+ CdSplit: Integer;
+ CdEntry: TEmuIsoEntry;
 Begin
  Case P.CPU.Regs.AH Of
   $00:
@@ -47487,22 +47682,36 @@ Begin
   $3D:
    Begin
     FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
-    HPath := Emu_HostPath(FName);
-    H := Emu_AllocHandle;
-    If (H = 0) Or (Length(HPath) = 0) Then Emu_SetDosErr(P, 4)
-    Else Begin
-     Assign(EmuFileH[H], HPath);
-     OpenMode := P.CPU.Regs.AL And 3;
-     If OpenMode = 0 Then FileMode := 0 Else FileMode := 2;
-     {$I-} Reset(EmuFileH[H], 1); {$I+}
-     If IOResult <> 0 Then Emu_SetDosErr(P, 2)
+    If Emu_CdromDriveFromPath(FName, CdIdx, CdRel) Then Begin
+     H := Emu_AllocHandle;
+     If H = 0 Then Emu_SetDosErr(P, 4)
      Else Begin
-      EmuFileOpen[H] := True;
-      EmuFileName[H] := HPath;
-      EmuFileMode[H] := OpenMode;
-      EmuFileFirstRd[H] := True;
-      Exclude(P.CPU.Flags.s, EFG_CF);
-      P.CPU.Regs.AX := H;
+      CdErr := Emu_CdromOpenFile(CdIdx, CdRel, H);
+      If CdErr <> 0 Then Emu_SetDosErr(P, CdErr)
+      Else Begin
+       Exclude(P.CPU.Flags.s, EFG_CF);
+       P.CPU.Regs.AX := H;
+      End;
+     End;
+    End Else Begin
+     HPath := Emu_HostPath(FName);
+     H := Emu_AllocHandle;
+     If (H = 0) Or (Length(HPath) = 0) Then Emu_SetDosErr(P, 4)
+     Else Begin
+      Assign(EmuFileH[H], HPath);
+      OpenMode := P.CPU.Regs.AL And 3;
+      If OpenMode = 0 Then FileMode := 0 Else FileMode := 2;
+      {$I-} Reset(EmuFileH[H], 1); {$I+}
+      If IOResult <> 0 Then Emu_SetDosErr(P, 2)
+      Else Begin
+       EmuFileOpen[H] := True;
+       EmuFileIsCdrom[H] := False;
+       EmuFileName[H] := HPath;
+       EmuFileMode[H] := OpenMode;
+       EmuFileFirstRd[H] := True;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+       P.CPU.Regs.AX := H;
+      End;
      End;
     End;
    End;
@@ -47510,9 +47719,12 @@ Begin
    Begin
     H := P.CPU.Regs.BX;
     If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
-     {$I-} Close(EmuFileH[H]); {$I+}
-     If IOResult <> 0 Then ;
+     If Not EmuFileIsCdrom[H] Then Begin
+      {$I-} Close(EmuFileH[H]); {$I+}
+      If IOResult <> 0 Then ;
+     End;
      EmuFileOpen[H] := False;
+     EmuFileIsCdrom[H] := False;
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 0) And (H <= 4) Then
      Exclude(P.CPU.Flags.s, EFG_CF)
@@ -47537,6 +47749,9 @@ Begin
       End;
      End;
      P.CPU.Regs.AX := Word(I);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] And EmuFileIsCdrom[H] Then Begin
+     P.CPU.Regs.AX := Emu_CdromReadFile(P, H, Ofs, P.CPU.Regs.CX);
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
      IoI := 0;
@@ -47571,7 +47786,9 @@ Begin
     End Else If (H = 3) Or (H = 4) Then Begin
      P.CPU.Regs.AX := P.CPU.Regs.CX;
      Exclude(P.CPU.Flags.s, EFG_CF);
-    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] And EmuFileIsCdrom[H] Then
+     Emu_SetDosErr(P, 5) { acces refuse : un CD-ROM ne s ecrit jamais }
+    Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
      IoI := 0;
      BytesIO := 0;
      While IoI < P.CPU.Regs.CX Do Begin
@@ -47601,7 +47818,19 @@ Begin
    Begin
     H := P.CPU.Regs.BX;
     SeekPos := (LongInt(P.CPU.Regs.CX) Shl 16) Or P.CPU.Regs.DX;
-    If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+    If (H >= 5) And (H <= 31) And EmuFileOpen[H] And EmuFileIsCdrom[H] Then Begin
+     Case P.CPU.Regs.AL Of
+      0: ;
+      1: SeekPos := SeekPos + EmuCdFilePos[H];
+      2: SeekPos := SeekPos + EmuCdFileSize[H];
+     End;
+     If SeekPos < 0 Then SeekPos := 0;
+     If SeekPos > EmuCdFileSize[H] Then SeekPos := EmuCdFileSize[H];
+     EmuCdFilePos[H] := SeekPos;
+     P.CPU.Regs.AX := Word(SeekPos And $FFFF);
+     P.CPU.Regs.DX := Word((SeekPos Shr 16) And $FFFF);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
      Case P.CPU.Regs.AL Of
       0: ;
       1: SeekPos := SeekPos + FilePos(EmuFileH[H]);
@@ -47618,31 +47847,44 @@ Begin
   $43:
    Begin
     FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
-    HPath := Emu_HostPath(FName);
-    Case P.CPU.Regs.AL Of
-     0: Begin
-         {$I-}
-         FindFirst(HPath, AnyFile, SR);
-         IORes := DosError;
-         FindClose(SR);
-         {$I+}
-         If IOResult <> 0 Then ;
-         If IORes = 0 Then Begin
-          P.CPU.Regs.CX := SR.Attr And $3F;
+    If Emu_CdromDriveFromPath(FName, CdIdx, CdRel) Then Begin
+     Case P.CPU.Regs.AL Of
+      0: If Emu_IsoResolve(CdIdx, CdRel, CdEntry) Then Begin
+          P.CPU.Regs.CX := 1; { toujours lecture seule (ISO9660 monte) }
+          If CdEntry.IsDir Then P.CPU.Regs.CX := P.CPU.Regs.CX Or $10;
           Exclude(P.CPU.Flags.s, EFG_CF);
          End Else Emu_SetDosErr(P, 2);
-        End;
-     1: Begin
-         {$I-}
-         FindFirst(HPath, AnyFile, SR);
-         IORes := DosError;
-         FindClose(SR);
-         {$I+}
-         If IOResult <> 0 Then ;
-         If IORes = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
-         Else Emu_SetDosErr(P, 2);
-        End;
+      1: Emu_SetDosErr(P, 5); { impossible de modifier les attributs d un  }
+                              { fichier sur un volume en lecture seule     }
      Else Emu_SetDosErr(P, 1);
+     End;
+    End Else Begin
+     HPath := Emu_HostPath(FName);
+     Case P.CPU.Regs.AL Of
+      0: Begin
+          {$I-}
+          FindFirst(HPath, AnyFile, SR);
+          IORes := DosError;
+          FindClose(SR);
+          {$I+}
+          If IOResult <> 0 Then ;
+          If IORes = 0 Then Begin
+           P.CPU.Regs.CX := SR.Attr And $3F;
+           Exclude(P.CPU.Flags.s, EFG_CF);
+          End Else Emu_SetDosErr(P, 2);
+         End;
+      1: Begin
+          {$I-}
+          FindFirst(HPath, AnyFile, SR);
+          IORes := DosError;
+          FindClose(SR);
+          {$I+}
+          If IOResult <> 0 Then ;
+          If IORes = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+          Else Emu_SetDosErr(P, 2);
+         End;
+      Else Emu_SetDosErr(P, 1);
+     End;
     End;
    End;
   $44:
@@ -47785,51 +48027,110 @@ Begin
      les FindNext suivants. }
    Begin
     FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
-    HPath := Emu_HostPath(FName);
-    EmuFindMask := HPath;
-    EmuFindAttr := Byte(P.CPU.Regs.CX);
-    EmuFindCount := 0;
-    EmuFindIndex := 0;
-    {$I-}
-    FindFirst(HPath, EmuFindAttr, SR);
-    While (DosError = 0) And (EmuFindCount < 64) Do Begin
-     EmuFindResults[EmuFindCount] := SR.Name;
-     Inc(EmuFindCount);
-     FindNext(SR);
-    End;
-    FindClose(SR);
-    {$I+} If IOResult <> 0 Then ;
-    If EmuFindCount = 0 Then Emu_SetDosErr(P, 18)
-    Else Begin
-     Ofs := EmuDtaOfs;
-     Ofs2 := EmuDtaSeg;
-     For I := 0 To 20 Do Emu_WriteByte(P.CPU, Ofs2, Ofs + I, 0);
-     Emu_WriteByte(P.CPU, Ofs2, Ofs, $FF);
-     Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, EmuFindAttr);
-     {$I-}
-     FindFirst(EmuFindMask, EmuFindAttr, SR);
-     If DosError = 0 Then Begin
+    EmuFindIsCdrom := Emu_CdromDriveFromPath(FName, CdIdx, CdRel);
+    If EmuFindIsCdrom Then Begin
+     { Separer le repertoire du motif (dernier "\") - CdRel est deja       }
+     { debarrasse de la lettre de lecteur par Emu_CdromDriveFromPath. }
+     CdSplit := 0;
+     For I := Length(CdRel) DownTo 1 Do
+      If CdRel[I] = '\' Then Begin CdSplit := I; Break; End;
+     If CdSplit = 0 Then Begin CdDir := ''; CdPattern := CdRel; End
+     Else Begin
+      CdDir := Copy(CdRel, 1, CdSplit - 1);
+      CdPattern := Copy(CdRel, CdSplit + 1, Length(CdRel) - CdSplit);
+     End;
+     If Not Emu_CdromFindFirst(CdIdx, CdDir, CdPattern) Then
+      Emu_SetDosErr(P, 18)
+     Else Begin
+      Ofs := EmuDtaOfs;
+      Ofs2 := EmuDtaSeg;
+      For I := 0 To 20 Do Emu_WriteByte(P.CPU, Ofs2, Ofs + I, 0);
+      Emu_WriteByte(P.CPU, Ofs2, Ofs, $FF);
+      If EmuCdFindIsDir[0] Then
+       Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, $10)
+      Else
+       Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, 1);
+      FName := EmuFindResults[0];
       For I := 1 To 12 Do
-       If I <= Length(SR.Name) Then
-        Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + I - 1, Byte(SR.Name[I]));
-      Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + Length(SR.Name), 0);
-      Emu_WriteWord(P.CPU, Ofs2, Ofs + 22, Word(SR.Time And $FFFF));
-      Emu_WriteWord(P.CPU, Ofs2, Ofs + 24, Word((SR.Time Shr 16) And $FFFF));
-      Emu_WriteWord(P.CPU, Ofs2, Ofs + 26, Word(SR.Size And $FFFF));
-      Emu_WriteWord(P.CPU, Ofs2, Ofs + 28, Word((SR.Size Shr 16) And $FFFF));
+       If I <= Length(FName) Then
+        Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + I - 1, Byte(FName[I]));
+      Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + Length(FName), 0);
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 22, EmuCdFindTime[0]);
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 24, EmuCdFindDate[0]);
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 26, Word(EmuCdFindSize[0] And $FFFF));
+      Emu_WriteWord(P.CPU, Ofs2, Ofs + 28, Word((EmuCdFindSize[0] Shr 16) And $FFFF));
+      EmuFindIndex := 1;
+      P.CPU.Regs.AX := 0;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    End Else Begin
+     HPath := Emu_HostPath(FName);
+     EmuFindMask := HPath;
+     EmuFindAttr := Byte(P.CPU.Regs.CX);
+     EmuFindCount := 0;
+     EmuFindIndex := 0;
+     {$I-}
+     FindFirst(HPath, EmuFindAttr, SR);
+     While (DosError = 0) And (EmuFindCount < 64) Do Begin
+      EmuFindResults[EmuFindCount] := SR.Name;
+      Inc(EmuFindCount);
+      FindNext(SR);
      End;
      FindClose(SR);
      {$I+} If IOResult <> 0 Then ;
-     EmuFindIndex := 1;
-     P.CPU.Regs.AX := 0;
-     Exclude(P.CPU.Flags.s, EFG_CF);
+     If EmuFindCount = 0 Then Emu_SetDosErr(P, 18)
+     Else Begin
+      Ofs := EmuDtaOfs;
+      Ofs2 := EmuDtaSeg;
+      For I := 0 To 20 Do Emu_WriteByte(P.CPU, Ofs2, Ofs + I, 0);
+      Emu_WriteByte(P.CPU, Ofs2, Ofs, $FF);
+      Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, EmuFindAttr);
+      {$I-}
+      FindFirst(EmuFindMask, EmuFindAttr, SR);
+      If DosError = 0 Then Begin
+       For I := 1 To 12 Do
+        If I <= Length(SR.Name) Then
+         Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + I - 1, Byte(SR.Name[I]));
+       Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + Length(SR.Name), 0);
+       Emu_WriteWord(P.CPU, Ofs2, Ofs + 22, Word(SR.Time And $FFFF));
+       Emu_WriteWord(P.CPU, Ofs2, Ofs + 24, Word((SR.Time Shr 16) And $FFFF));
+       Emu_WriteWord(P.CPU, Ofs2, Ofs + 26, Word(SR.Size And $FFFF));
+       Emu_WriteWord(P.CPU, Ofs2, Ofs + 28, Word((SR.Size Shr 16) And $FFFF));
+      End;
+      FindClose(SR);
+      {$I+} If IOResult <> 0 Then ;
+      EmuFindIndex := 1;
+      P.CPU.Regs.AX := 0;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
     End;
    End;
   $4F:
    Begin
     If (EmuFindIndex >= EmuFindCount) Or (EmuFindCount = 0) Then
      Emu_SetDosErr(P, 18)
-    Else Begin
+    Else If EmuFindIsCdrom Then Begin
+     Ofs := EmuDtaOfs;
+     Ofs2 := EmuDtaSeg;
+     For I := 0 To 20 Do Emu_WriteByte(P.CPU, Ofs2, Ofs + I, 0);
+     Emu_WriteByte(P.CPU, Ofs2, Ofs, $FF);
+     If EmuCdFindIsDir[EmuFindIndex] Then
+      Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, $10)
+     Else
+      Emu_WriteByte(P.CPU, Ofs2, Ofs + 21, 1);
+     FName := EmuFindResults[EmuFindIndex];
+     For I := 1 To 12 Do
+      If I <= Length(FName) Then
+       Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + I - 1, Byte(FName[I]));
+     Emu_WriteByte(P.CPU, Ofs2, Ofs + 30 + Length(FName), 0);
+     Emu_WriteWord(P.CPU, Ofs2, Ofs + 22, EmuCdFindTime[EmuFindIndex]);
+     Emu_WriteWord(P.CPU, Ofs2, Ofs + 24, EmuCdFindDate[EmuFindIndex]);
+     Emu_WriteWord(P.CPU, Ofs2, Ofs + 26, Word(EmuCdFindSize[EmuFindIndex] And $FFFF));
+     Emu_WriteWord(P.CPU, Ofs2, Ofs + 28, Word((EmuCdFindSize[EmuFindIndex] Shr 16) And $FFFF));
+     Inc(EmuFindIndex);
+     P.CPU.Regs.AX := 0;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
      Ofs := EmuDtaOfs;
      Ofs2 := EmuDtaSeg;
      FName := EmuFindResults[EmuFindIndex];
@@ -47975,11 +48276,37 @@ Procedure Emu_FireHwInt(Var P: TEmulatorPanel; Num: Byte); Forward;
   coordonnees logiques de l ecran emule par EmuMouse_UpdateFromHost.
   Les coordonnees rendues sont en PIXELS pour les modes graphiques
   et en COLONNES DE 8 PIXELS pour les modes texte (convention IBM). }
+{ Palier de version (0..3, voir DosMouseVersionName) auquel appartient une }
+{ fonction INT 33h donnee - regroupement par PLAGE DE NUMERO DE FONCTION   }
+{ (aucune date d introduction par fonction n a pu etre confirmee avec la   }
+{ meme certitude que pour EMS/LIM, dont les paliers viennent directement   }
+{ de la specification - voir DosMouseVersionName). }
+Function Emu_MouseFuncTier(Func: Word): Byte;
+Begin
+ If Func <= $0F Then Emu_MouseFuncTier := 0
+ Else If Func <= $1B Then Emu_MouseFuncTier := 1
+ Else If Func <= $21 Then Emu_MouseFuncTier := 2
+ Else Emu_MouseFuncTier := 3;
+End;
+
+{ Vrai si la version de pilote configuree (EmuMouseVersion) sait repondre  }
+{ a la fonction demandee - voir Emu_MouseFuncTier. Meme principe que       }
+{ Emu_EmsVerAtLeast : une fonction "trop recente" pour la version choisie  }
+{ ne repond pas, exactement comme un vrai pilote plus ancien ignorerait un}
+{ numero de fonction qu il ne connait pas (c est le but recherche : tester }
+{ un programme contre une version precise plutot que contre "tout ce que   }
+{ l emulateur sait faire"). }
+Function Emu_MouseVerOK(Func: Word): Boolean;
+Begin
+ Emu_MouseVerOK := EmuMouseVersion >= Emu_MouseFuncTier(Func);
+End;
+
 Procedure Emu_DoInt33(Var P: TEmulatorPanel);
 Var
  BIdx: Integer;
 Begin
- EmuMouseInst := True;
+ If Not Emu_MouseVerOK(P.CPU.Regs.AX) Then Exit; { fonction trop recente     }
+                                                  { pour la version choisie   }
  Case P.CPU.Regs.AX Of
   $0000: Begin   { Reset / detect driver }
    P.CPU.Regs.AX := $FFFF;     { driver present }
@@ -47990,6 +48317,9 @@ Begin
    EmuMouseMickX := 0; EmuMouseMickY := 0;
    EmuMouseHandlerMsk := 0;
    EmuMouseHandlerSeg := 0; EmuMouseHandlerOfs := 0;
+   EmuMouseAltHandlerMsk := 0;
+   EmuMouseAltHandlerSeg := 0; EmuMouseAltHandlerOfs := 0;
+   EmuMouseSoftDisabled := False;
    For BIdx := 0 To 2 Do Begin
     EmuMousePressCnt[BIdx] := 0; EmuMouseRelCnt[BIdx] := 0;
     EmuMousePressX[BIdx] := 0;   EmuMousePressY[BIdx] := 0;
@@ -48069,7 +48399,8 @@ Begin
    P.CPU.Regs.DX := Word(EmuMouseMickY);
    EmuMouseMickX := 0; EmuMouseMickY := 0;
   End;
-  $000C: Begin   { Set user handler }
+  $000C: Begin   { Set user handler - invoque reellement par              }
+                 { Emu_MouseFireEvents/Emu_MouseNextCall. }
    EmuMouseHandlerMsk := P.CPU.Regs.CX;
    EmuMouseHandlerSeg := P.CPU.Segs.ES;
    EmuMouseHandlerOfs := P.CPU.Regs.DX;
@@ -48080,6 +48411,8 @@ Begin
    If P.CPU.Regs.DX > 0 Then EmuMouseVRatio := P.CPU.Regs.DX;
   End;
   $0010: ; { Conditional off (ignore) }
+  $0011, $0012: ; { Reserve / non implante - ignore, comme une vraie        }
+                  { machine sans cette fonction. }
   $0013: ; { Set max mickey speed (ignore) }
   $0014: Begin   { Swap interrupt subroutine }
    P.CPU.Regs.CX := EmuMouseHandlerMsk;
@@ -48091,30 +48424,297 @@ Begin
    P.CPU.Regs.BX := 64;
   End;
   $0016, $0017: ; { Save / restore driver state (stubs) }
-  $001A: ; { Set sensitivity }
+  $0018: Begin   { Set Alternate Mouse User Handler - meme mecanisme d      }
+                 { invocation que le gestionnaire principal (0Ch), en plus }
+                 { et non a la place (voir Emu_MouseNextCall). }
+   EmuMouseAltHandlerMsk := P.CPU.Regs.CX;
+   EmuMouseAltHandlerSeg := P.CPU.Segs.ES;
+   EmuMouseAltHandlerOfs := P.CPU.Regs.DX;
+  End;
+  $0019: Begin   { Get Alternate Mouse User Handler Address }
+   P.CPU.Regs.CX := EmuMouseAltHandlerMsk;
+   P.CPU.Segs.ES := EmuMouseAltHandlerSeg;
+   P.CPU.Regs.DX := EmuMouseAltHandlerOfs;
+  End;
+  $001A: Begin   { Set mouse sensitivity. BX=horiz CX=vert DX=seuil double }
+                 { vitesse - bogue corrige : la version precedente          }
+                 { ignorait totalement les valeurs recues. }
+   If P.CPU.Regs.BX > 0 Then EmuMouseHRatio := P.CPU.Regs.BX;
+   If P.CPU.Regs.CX > 0 Then EmuMouseVRatio := P.CPU.Regs.CX;
+  End;
   $001B: Begin   { Get sensitivity }
    P.CPU.Regs.BX := EmuMouseHRatio;
    P.CPU.Regs.CX := EmuMouseVRatio;
    P.CPU.Regs.DX := 50;
   End;
-  $0020: ; { Enable mouse driver }
+  $001C: ; { Set mouse interrupt rate (souris serie InPort - accepte,      }
+            { sans effet sur une souris PS/2 emulee) }
+  $001D: EmuMouseDisplayPage := P.CPU.Regs.BX;      { Set display page }
+  $001E: P.CPU.Regs.BX := EmuMouseDisplayPage;      { Get display page }
+  $001F: Begin   { Disable Mouse Driver (non documente officiellement) -    }
+                 { la chaine du vecteur INT 33h precedent n est pas suivie  }
+                 { par cet emulateur, contrairement a un vrai pilote. }
+   EmuMouseSoftDisabled := True;
+   P.CPU.Regs.AX := 0;
+   P.CPU.Segs.ES := 0; P.CPU.Regs.BX := 0;
+  End;
+  $0020: EmuMouseSoftDisabled := False; { Enable mouse driver }
   $0021: Begin   { Software reset }
    P.CPU.Regs.AX := $FFFF;
    P.CPU.Regs.BX := 3;
+   EmuMouseSoftDisabled := False;
   End;
-  $0024: Begin   { Get driver version / mouse type / IRQ }
-   P.CPU.Regs.BX := $0800;     { v8.00 }
+  $0022: ; { Set language for messages (accepte, aucun message texte emis  }
+            { par ce pilote) }
+  $0023: P.CPU.Regs.BX := 0;   { Get language number (0=anglais) }
+  $0024: Begin   { Get driver version / mouse type / IRQ - reflete la       }
+                 { "Version pilote" choisie dans Options > Emulateur > DOS: }
+                 { Logiciel (DosMouseVersionName). }
+   Case EmuMouseVersion Of
+    0: P.CPU.Regs.BX := $0100;  { v1.00 }
+    1: P.CPU.Regs.BX := $0300;  { v3.00 }
+    2: P.CPU.Regs.BX := $0600;  { v6.00 }
+   Else
+    P.CPU.Regs.BX := $0800;     { v8.00 }
+   End;
    P.CPU.Regs.CH := 4;         { PS/2 }
    P.CPU.Regs.CL := 0;
   End;
   $0025: ; { Get general driver info }
   $0026: Begin   { Get max virtual coords }
-   P.CPU.Regs.BX := 0;         { mouse enabled }
+   P.CPU.Regs.BX := Byte(EmuMouseSoftDisabled); { 0=actif 1=desactive }
    P.CPU.Regs.CX := EmuMouseXMax;
    P.CPU.Regs.DX := EmuMouseYMax;
   End;
+  $0027: Begin   { Get Screen/Cursor Mask and Mickey Counts (combine 03h+   }
+                 { 0Bh) - approximation raisonnable, voir le commentaire    }
+                 { pres de DosMouseVersionName. }
+   P.CPU.Regs.AX := EmuMouseBtns;
+   P.CPU.Regs.CX := Word(EmuMouseMickX);
+   P.CPU.Regs.DX := Word(EmuMouseMickY);
+   EmuMouseMickX := 0; EmuMouseMickY := 0;
+  End;
  Else
   ;
+ End;
+End;
+
+{ ========================================================================= }
+{ Invocation reelle du/des gestionnaire(s) utilisateur INT 33h (fn 0Ch/    }
+{ 18h) et du callback BIOS PS/2 (INT 15h AH=C2h fn 07h) par injection de   }
+{ code invite - meme principe que l upcall du pilote de paquets (voir      }
+{ Emu_PktFireAsSendUpcall/Emu_PktCont) : empiler ContSeg:ContOfs (un        }
+{ trampoline prive "INT FCh", jamais rencontre par du logiciel DOS reel)    }
+{ comme le ferait un vrai CALL FAR, rediriger CS:IP vers le gestionnaire    }
+{ invite avec les registres d appel attendus, et laisser la boucle          }
+{ d execution normale executer ce code ; le RETF final atterrit sur le      }
+{ trampoline, qui repasse par Emu_DoInt (case $FC) pour enchainer sur le    }
+{ prochain gestionnaire en attente ou reprendre le programme interrompu.    }
+{ Un seul appel peut etre "en vol" a la fois (CS:IP est unique) : un        }
+{ evenement qui survient pendant qu un appel precedent est encore en cours  }
+{ est tout simplement perdu (limitation documentee, comme le Backlog        }
+{ sature du pilote de paquets - voir EmuPkt.Stats.PacketsLost). }
+{ ========================================================================= }
+
+{ Demarre le "temps" de cascade correspondant a Kind (0=gestionnaire        }
+{ principal 1=alternatif 2=callback BIOS PS/2) - suppose EmuMouseCallMask/  }
+{ Btn/CX/DX/SI/DI deja renseignes par Emu_MouseFireEvents. }
+Procedure Emu_MouseFireOne(Var P: TEmulatorPanel; Kind: Byte);
+Begin
+ EmuMouseCallKind := Kind;
+ Emu_PushWord(P.CPU, EmuMouseContSeg);
+ Emu_PushWord(P.CPU, EmuMouseContOfs);
+ Case Kind Of
+  0, 1: Begin
+   P.CPU.Regs.AX := EmuMouseCallMask;
+   P.CPU.Regs.BX := EmuMouseCallBtn;
+   P.CPU.Regs.CX := EmuMouseCallCX;
+   P.CPU.Regs.DX := EmuMouseCallDX;
+   P.CPU.Regs.SI := EmuMouseCallSI;
+   P.CPU.Regs.DI := EmuMouseCallDI;
+   If Kind = 0 Then Begin
+    P.CPU.Segs.CS := EmuMouseHandlerSeg; P.CPU.IP := EmuMouseHandlerOfs;
+   End Else Begin
+    P.CPU.Segs.CS := EmuMouseAltHandlerSeg; P.CPU.IP := EmuMouseAltHandlerOfs;
+   End;
+  End;
+  2: Begin
+   { Convention du callback BIOS PS/2 (fn 07h) d apres la documentation la  }
+   { plus repandue (AL=octet d etat, BX=delta X, CX=delta Y, DX=reserve) -  }
+   { voir le commentaire pres de Emu_DoInt15C2 pour la reserve de confiance }
+   { sur cette convention precise. }
+   P.CPU.Regs.AL := EmuMouseCallBtn;
+   P.CPU.Regs.BX := EmuMouseCallSI; { delta X }
+   P.CPU.Regs.CX := EmuMouseCallDI; { delta Y }
+   P.CPU.Regs.DX := 0;
+   P.CPU.Segs.CS := EmuMouseBiosCallbackSeg; P.CPU.IP := EmuMouseBiosCallbackOfs;
+  End;
+ End;
+End;
+
+{ Determine et demarre le prochain "temps" de la cascade (ou la termine et }
+{ restaure CS:IP si plus rien a appeler) - appelee au demarrage            }
+{ (Emu_MouseFireEvents) et a chaque retour de gestionnaire (Emu_MouseCont).}
+Procedure Emu_MouseNextCall(Var P: TEmulatorPanel);
+Begin
+ If (Not EmuMouseCallPrimDone) And
+    ((EmuMouseHandlerMsk And EmuMouseCallMask) <> 0) Then Begin
+  EmuMouseCallPrimDone := True;
+  Emu_MouseFireOne(P, 0);
+  Exit;
+ End;
+ EmuMouseCallPrimDone := True;
+ If (Not EmuMouseCallAltDone) And
+    ((EmuMouseAltHandlerMsk And EmuMouseCallMask) <> 0) Then Begin
+  EmuMouseCallAltDone := True;
+  Emu_MouseFireOne(P, 1);
+  Exit;
+ End;
+ EmuMouseCallAltDone := True;
+ If (Not EmuMouseCallBiosDone) And EmuMouseBiosEnabled And
+    (EmuMouseBiosCallbackSeg <> 0) Then Begin
+  EmuMouseCallBiosDone := True;
+  Emu_MouseFireOne(P, 2);
+  Exit;
+ End;
+ { Plus rien a appeler : reprendre le programme interrompu. }
+ P.CPU.Segs.CS := EmuMouseCallSavedCS;
+ P.CPU.IP := EmuMouseCallSavedIP;
+ EmuMouseCallPending := False;
+End;
+
+{ Point d entree appele par EmuMouse_UpdateFromHost a chaque evenement      }
+{ souris (mouvement et/ou changement de bouton) - Mask = bits de condition  }
+{ (bit0=mouvement, bit1/2=bouton gauche presse/relache, bit3/4=droit,       }
+{ bit5/6=milieu, meme codage que le masice d appel fn 0Ch/18h). }
+Procedure Emu_MouseFireEvents(Var P: TEmulatorPanel; Mask: Word;
+ CX_, DX_, SI_, DI_: Word);
+Begin
+ If Mask = 0 Then Exit;
+ If EmuMouseCallPending Then Exit; { appel deja en cours - evenement perdu,  }
+                                    { voir le commentaire d en-tete de       }
+                                    { section. }
+ EmuMouseCallMask := Mask;
+ EmuMouseCallBtn  := EmuMouseBtns;
+ EmuMouseCallCX := CX_; EmuMouseCallDX := DX_;
+ EmuMouseCallSI := SI_; EmuMouseCallDI := DI_;
+ EmuMouseCallPrimDone := False;
+ EmuMouseCallAltDone  := False;
+ EmuMouseCallBiosDone := False;
+ EmuMouseCallSavedCS := P.CPU.Segs.CS;
+ EmuMouseCallSavedIP := P.CPU.IP;
+ EmuMouseCallPending := True;
+ Emu_MouseNextCall(P);
+End;
+
+{ Gestionnaire du point de retour interne (INT FCh) : execute uniquement    }
+{ parce qu un RETF invite vient de "revenir" sur ce trampoline apres que    }
+{ Emu_MouseFireOne a redirige le CPU emule vers du code invite - voir l en- }
+{ tete de section pour la justification de ce mecanisme. }
+Procedure Emu_MouseCont(Var P: TEmulatorPanel);
+Begin
+ If Not EmuMouseCallPending Then Exit; { securite, ne devrait pas arriver }
+ Emu_MouseNextCall(P);
+End;
+
+{ Reinitialise le pilote souris et, si la case "Souris" est cochee,        }
+{ installe le trampoline d upcall interne (voir Emu_MouseFireOne). Appelee }
+{ a chaque (re)demarrage de l emulateur, comme                             }
+{ Emu_IpxInit/Emu_PktInit/Emu_XmsInit/Emu_EmsInit. }
+Procedure Emu_MouseInit(Var P: TEmulatorPanel);
+Var BIdx: Integer;
+Begin
+ EmuMouseActive := OptionsDlg.Data.DosSouris;
+ EmuMousePS2Active := OptionsDlg.Data.DosMousePS2BIOS;
+ EmuMouseVendor := Byte(OptionsDlg.Data.DosMouseVendor);
+ EmuMouseVersion := Byte(OptionsDlg.Data.DosMouseVersion);
+ EmuMouseInst := EmuMouseActive;
+ EmuMouseVis := -1;
+ EmuMouseX := 0; EmuMouseY := 0;
+ EmuMouseBtns := 0;
+ EmuMouseXMin := 0; EmuMouseYMin := 0;
+ EmuMouseXMax := 639; EmuMouseYMax := 199;
+ EmuMouseHRatio := 8; EmuMouseVRatio := 16;
+ EmuMouseMickX := 0; EmuMouseMickY := 0;
+ EmuMouseHandlerMsk := 0;
+ EmuMouseHandlerSeg := 0; EmuMouseHandlerOfs := 0;
+ EmuMouseAltHandlerMsk := 0;
+ EmuMouseAltHandlerSeg := 0; EmuMouseAltHandlerOfs := 0;
+ EmuMouseDisplayPage := 0;
+ EmuMouseSoftDisabled := False;
+ For BIdx := 0 To 2 Do Begin
+  EmuMousePressCnt[BIdx] := 0; EmuMouseRelCnt[BIdx] := 0;
+  EmuMousePressX[BIdx] := 0;   EmuMousePressY[BIdx] := 0;
+  EmuMouseRelX[BIdx]   := 0;   EmuMouseRelY[BIdx]   := 0;
+ End;
+ EmuMouseBiosEnabled := False;
+ EmuMouseBiosCallbackSeg := 0; EmuMouseBiosCallbackOfs := 0;
+ EmuMouseBiosSampleRate := 3;  { 100 echantillons/s, valeur par defaut reelle}
+ EmuMouseBiosResolution := 2;  { 4 comptes/mm, valeur par defaut reelle }
+ EmuMouseCallPending := False;
+ If Not EmuMouseActive Then Exit;
+ EmuMouseContSeg := EMU_MOUSE_STUB_SEG; EmuMouseContOfs := EMU_MOUSE_STUB_OFS;
+ { Trampoline de continuation interne : INT FCh, jamais rencontre par du    }
+ { logiciel DOS reel - voir Emu_MouseCont. }
+ Emu_WriteByte(P.CPU, EmuMouseContSeg, EmuMouseContOfs,     $CD);
+ Emu_WriteByte(P.CPU, EmuMouseContSeg, EmuMouseContOfs + 1, $FC);
+End;
+
+{ ========================================================================= }
+{ INT 15h AH=C2h : interface BIOS PS/2 du pointeur (Pointing Device BIOS   }
+{ Interface), gatee par la case "Souris BIOS PS/2" (voir Emu_DoInt et       }
+{ EmuMousePS2Active). Sous-fonctions AL=00h-07h implantees d apres la       }
+{ documentation la plus repandue (Ralph Brown Interrupt List) ; la          }
+{ convention exacte des registres du callback installe par AL=07h (utilisee}
+{ ici : AL=octet d etat, BX=delta X, CX=delta Y, DX=reserve/0) est celle    }
+{ la plus couramment documentee mais n a pas pu etre recoupee avec          }
+{ plusieurs sources primaires independantes lors de la recherche - a        }
+{ traiter comme une approximation raisonnable plutot qu une certitude       }
+{ absolue, contrairement au reste de cette section (voir Emu_MouseFireOne   }
+{ pour le point d injection reel). }
+{ ========================================================================= }
+Procedure Emu_DoInt15C2(Var P: TEmulatorPanel);
+Begin
+ Exclude(P.CPU.Flags.s, EFG_CF);
+ P.CPU.Regs.AH := 0; { succes par defaut }
+ Case P.CPU.Regs.AL Of
+  $00: Begin   { Enable/Disable : BH=00 disable 01 enable }
+   If P.CPU.Regs.BH = 0 Then EmuMouseBiosEnabled := False
+   Else If P.CPU.Regs.BH = 1 Then EmuMouseBiosEnabled := True
+   Else Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AH := 1; End;
+  End;
+  $01: Begin   { Reset }
+   EmuMouseBiosSampleRate := 3; EmuMouseBiosResolution := 2;
+   P.CPU.Regs.BX := 0; { ID peripherique : 00h = souris standard 2 boutons }
+  End;
+  $02: Begin   { Set Sample Rate : BH=0..7 }
+   If P.CPU.Regs.BH <= 7 Then EmuMouseBiosSampleRate := P.CPU.Regs.BH
+   Else Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AH := 2; End;
+  End;
+  $03: Begin   { Set Resolution : BH=0..3 }
+   If P.CPU.Regs.BH <= 3 Then EmuMouseBiosResolution := P.CPU.Regs.BH
+   Else Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AH := 2; End;
+  End;
+  $04: P.CPU.Regs.BH := 0;   { Get Device ID (souris standard 2 boutons) }
+  $05: If P.CPU.Regs.BH = 0 Then P.CPU.Regs.BH := 3; { Initialize : taille  }
+                                                      { paquet (3 standard) }
+  $06: Begin   { Extended commands (mise a l echelle, resolution...) }
+   Case P.CPU.Regs.BH Of
+    0, 1, 2: ; { Get status / Set scaling 1:1 / 2:1 - acceptees, sans effet }
+                { sur les donnees produites par cet emulateur. }
+    3: If P.CPU.Regs.CL <= 3 Then EmuMouseBiosResolution := P.CPU.Regs.CL;
+   Else
+    Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AH := 1; End;
+   End;
+  End;
+  $07: Begin   { Set Device Handler Address : ES:BX = callback invoque par  }
+               { Emu_MouseFireOne (Kind=2). }
+   EmuMouseBiosCallbackSeg := P.CPU.Segs.ES;
+   EmuMouseBiosCallbackOfs := P.CPU.Regs.BX;
+  End;
+ Else
+  Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AH := 1; End; { fonction  }
+                                                                  { invalide }
  End;
 End;
 
@@ -48122,7 +48722,9 @@ End;
   evenement hote (PollEvents). Convertit les coords ecran de DEVENV
   vers les coords logiques de l ecran emule (pixel pour graphique,
   ColonneDe8 pour texte). PressMask/ReleaseMask = bits L/R/M qui
-  changent. }
+  changent. Declenche aussi l invocation reelle du/des gestionnaire(s)     }
+  { INT 33h et du callback BIOS PS/2 le cas echeant - voir                }
+  { Emu_MouseFireEvents. }
 Procedure EmuMouse_UpdateFromHost(Var P: TEmulatorPanel;
                                   HostX, HostY: Integer;
                                   NewBtns: Byte);
@@ -48131,6 +48733,8 @@ Var
  GfxW, GfxH, Scale, GridX, GridY: Integer;
  Changed: Byte;
  BIdx: Integer;
+ EvMask: Word;
+ DeltaMickX, DeltaMickY: Integer;
 Begin
  If Not EmuMouseInst Then Exit;
  { Recalculer offsets/scale comme DrawEmulatorPanel }
@@ -48154,8 +48758,12 @@ Begin
   LY := ((HostY - GridY) * 8) Div P.CharH;
  End;
  { Mettre a jour les compteurs mickeys avant de cliper }
- EmuMouseMickX := EmuMouseMickX + (LX - EmuMouseX);
- EmuMouseMickY := EmuMouseMickY + (LY - EmuMouseY);
+ EvMask := 0;
+ DeltaMickX := LX - EmuMouseX;
+ DeltaMickY := LY - EmuMouseY;
+ If (DeltaMickX <> 0) Or (DeltaMickY <> 0) Then EvMask := EvMask Or 1;
+ EmuMouseMickX := EmuMouseMickX + DeltaMickX;
+ EmuMouseMickY := EmuMouseMickY + DeltaMickY;
  { Cliper aux plages courantes }
  If LX < EmuMouseXMin Then LX := EmuMouseXMin;
  If LX > EmuMouseXMax Then LX := EmuMouseXMax;
@@ -48171,14 +48779,19 @@ Begin
     Inc(EmuMousePressCnt[BIdx]);
     EmuMousePressX[BIdx] := LX;
     EmuMousePressY[BIdx] := LY;
+    EvMask := EvMask Or (1 Shl (1 + BIdx * 2));
    End Else Begin
     Inc(EmuMouseRelCnt[BIdx]);
     EmuMouseRelX[BIdx] := LX;
     EmuMouseRelY[BIdx] := LY;
+    EvMask := EvMask Or (1 Shl (2 + BIdx * 2));
    End;
   End;
  End;
  EmuMouseBtns := NewBtns And $07;
+ If EmuMouseActive And (Not EmuMouseSoftDisabled) Then
+  Emu_MouseFireEvents(P, EvMask, Word(EmuMouseX), Word(EmuMouseY),
+   Word(DeltaMickX), Word(DeltaMickY));
 End;
 
 { ============================================================
@@ -48785,6 +49398,389 @@ Begin
  If EmuFloppyOpen[3] Then Begin Fat_TryMount(3); Fat_FindVolLabel(3); End;
  Emu_ReportDiskMount(2);
  Emu_ReportDiskMount(3);
+End;
+
+{ ============================================================
+  Lecteur ISO9660 en lecture seule pour les CD-ROM montes via
+  /CDROM0:/CDROM1: (voir TEmuCdromVol/TEmuIsoEntry) - consulte par
+  Emu_DoInt21 (unite CD-ROM) et Emu_DoInt2F AX=15xxh (MSCDEX). Format
+  ISO9660 "brut" (secteurs de 2048 octets, Niveau 1/2, systeme de
+  fichiers en "d-characters") uniquement - PAS de support Joliet ni
+  Rock Ridge (superflu ici : les programmes DOS testes ne voient de
+  toute facon que des noms courts 8.3, jamais les noms longs exposes
+  par ces extensions). Resolution de chemin par parcours direct des
+  enregistrements de repertoire (pas de table des chemins ISO9660 -
+  optionnelle dans la specification, simple raccourci de performance
+  qu un lecteur correct n a pas besoin d implanter). }
+
+{ Lire le secteur logique LBA (EMU_ISO_SECTOR octets) du volume Idx dans
+  Buf. Retourne False si le volume n est pas monte ou en cas d erreur E/S. }
+Function Emu_IsoReadLBA(Idx: Byte; LBA: LongInt;
+ Var Buf: TEmuIsoSector): Boolean;
+Var BytesIO: Word;
+Begin
+ Emu_IsoReadLBA := False;
+ If Not EmuCdrom[Idx].Open Then Exit;
+ {$I-}
+ Seek(EmuCdrom[Idx].F, LongInt(LBA) * EMU_ISO_SECTOR);
+ BlockRead(EmuCdrom[Idx].F, Buf, EMU_ISO_SECTOR, BytesIO);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Emu_IsoReadLBA := BytesIO = EMU_ISO_SECTOR;
+End;
+
+{ Decoder un enregistrement de repertoire ISO9660 a Buf[Ofs..] dans Entry.
+  Retourne False pour un enregistrement vide (fin de la zone utile du
+  secteur - le reste est du remplissage jusqu a la fin du secteur, les
+  enregistrements ne pouvant pas chevaucher deux secteurs) ou pour les
+  entrees speciales "." (identifiant=00h) et ".." (identifiant=01h), que
+  l appelant reconstruit lui-meme si necessaire (voir Emu_CdromFindFirst)
+  plutot que de les exposer ici. }
+Function Emu_IsoEntryFromRecord(Var Buf: TEmuIsoSector; Ofs: Integer;
+ Var Entry: TEmuIsoEntry): Boolean;
+Var
+ IdLen, I, Semi: Integer;
+ Raw: String;
+Begin
+ Emu_IsoEntryFromRecord := False;
+ If Buf[Ofs] = 0 Then Exit;
+ IdLen := Buf[Ofs + 32];
+ If IdLen = 0 Then Exit;
+ If (IdLen = 1) And ((Buf[Ofs + 33] = 0) Or (Buf[Ofs + 33] = 1)) Then Exit;
+ Raw := '';
+ For I := 0 To IdLen - 1 Do
+  Raw := Raw + Chr(Buf[Ofs + 33 + I]);
+ { Retirer le suffixe ";n" (numero de version, toujours ";1" en pratique  }
+ { sur les images produites par les outils modernes). }
+ Semi := Pos(';', Raw);
+ If Semi > 0 Then Raw := Copy(Raw, 1, Semi - 1);
+ { "NOM." (extension vide, forme valide en ISO9660) -> "NOM" }
+ If (Length(Raw) > 0) And (Raw[Length(Raw)] = '.') Then
+  Raw := Copy(Raw, 1, Length(Raw) - 1);
+ Raw := UpCaseStr(Raw);
+ { Troncature defensive : le Niveau 2 autorise jusqu a 30 caracteres,     }
+ { mais cet emulateur ne reformate pas un nom long en 8.3 "abbrege"      }
+ { (algorithme MSCDEX reel non implante ici) - se contente de tronquer.  }
+ { Sans effet sur des images conformes au Niveau 1 (8.3 des la gravure). }
+ If Length(Raw) > 12 Then Raw := Copy(Raw, 1, 12);
+ Entry.IsDir  := (Buf[Ofs + 25] And 2) <> 0;
+ Entry.Name   := Raw;
+ Entry.LBA    := Emu_BufLE32(Buf, Ofs + 2);
+ Entry.Size   := Emu_BufLE32(Buf, Ofs + 10);
+ Entry.Year   := Buf[Ofs + 18];
+ Entry.Month  := Buf[Ofs + 19];
+ Entry.Day    := Buf[Ofs + 20];
+ Entry.Hour   := Buf[Ofs + 21];
+ Entry.Minute := Buf[Ofs + 22];
+ Entry.Second := Buf[Ofs + 23];
+ Emu_IsoEntryFromRecord := True;
+End;
+
+{ Chercher l entree nommee Name (comparaison insensible a la casse) dans le
+  repertoire dont l extent est DirLBA/DirSize (en octets). }
+Function Emu_IsoFindInDir(Idx: Byte; DirLBA, DirSize: LongInt;
+ Const Name: String; Var Entry: TEmuIsoEntry): Boolean;
+Var
+ Buf: TEmuIsoSector;
+ SecCount, S: LongInt;
+ RecOfs: Integer;
+ UpName: String;
+Begin
+ Emu_IsoFindInDir := False;
+ UpName := UpCaseStr(Name);
+ SecCount := (DirSize + EMU_ISO_SECTOR - 1) Div EMU_ISO_SECTOR;
+ For S := 0 To SecCount - 1 Do Begin
+  If Not Emu_IsoReadLBA(Idx, DirLBA + S, Buf) Then Exit;
+  RecOfs := 0;
+  While RecOfs < EMU_ISO_SECTOR - 1 Do Begin
+   If Buf[RecOfs] = 0 Then Break; { fin des enregistrements de ce secteur }
+   If Emu_IsoEntryFromRecord(Buf, RecOfs, Entry) Then
+    If UpCaseStr(Entry.Name) = UpName Then Begin
+     Emu_IsoFindInDir := True;
+     Exit;
+    End;
+   Inc(RecOfs, Buf[RecOfs]);
+  End;
+ End;
+End;
+
+{ Resoudre un chemin DOS ("\SOUSREP\FICHIER.EXT", sans lettre de lecteur -
+  voir Emu_CdromDriveFromPath qui la retire avant l appel ; "" = racine)
+  dans le volume ISO9660 Idx. Retourne True et remplit Entry si trouve. }
+Function Emu_IsoResolve(Idx: Byte; DosPath: String;
+ Var Entry: TEmuIsoEntry): Boolean;
+Var
+ Seg: String;
+ P: Integer;
+ CurLBA, CurSize: LongInt;
+Begin
+ Emu_IsoResolve := False;
+ If Not EmuCdrom[Idx].Open Then Exit;
+ For P := 1 To Length(DosPath) Do
+  If DosPath[P] = '/' Then DosPath[P] := '\';
+ While (Length(DosPath) > 0) And (DosPath[1] = '\') Do Delete(DosPath, 1, 1);
+ CurLBA := EmuCdrom[Idx].RootLBA;
+ CurSize := EmuCdrom[Idx].RootSize;
+ If DosPath = '' Then Begin
+  Entry.IsDir := True; Entry.Name := '';
+  Entry.LBA := CurLBA; Entry.Size := CurSize;
+  Entry.Year := 100; Entry.Month := 1; Entry.Day := 1;
+  Entry.Hour := 0; Entry.Minute := 0; Entry.Second := 0;
+  Emu_IsoResolve := True;
+  Exit;
+ End;
+ While DosPath <> '' Do Begin
+  P := Pos('\', DosPath);
+  If P = 0 Then Begin Seg := DosPath; DosPath := ''; End
+  Else Begin Seg := Copy(DosPath, 1, P - 1); Delete(DosPath, 1, P); End;
+  If Not Emu_IsoFindInDir(Idx, CurLBA, CurSize, Seg, Entry) Then Exit;
+  If DosPath <> '' Then Begin
+   If Not Entry.IsDir Then Exit; { segment intermediaire non-repertoire }
+   CurLBA := Entry.LBA; CurSize := Entry.Size;
+  End;
+ End;
+ Emu_IsoResolve := True;
+End;
+
+{ Monter Idx (0 ou 1) depuis l image ISO FName - lit le Volume Descriptor
+  Primaire (secteur logique 16, le premier apres la "zone systeme"
+  reservee de 16 secteurs) et en extrait l extent racine, l etiquette de
+  volume et les 3 noms de fichiers "documentaires" (copyright/abstract/
+  bibliographique, voir Emu_DoInt2F AX=1502h/1503h/1504h). }
+Procedure Emu_CdromOpenOne(Idx: Byte; FName: String);
+Var
+ Buf: TEmuIsoSector;
+ I: Integer;
+Begin
+ EmuCdrom[Idx].Open := False;
+ EmuCdrom[Idx].FileName := '';
+ EmuCdrom[Idx].DriveLetter := 255;
+ If FName = '' Then Exit;
+ {$I-}
+ Assign(EmuCdrom[Idx].F, FName);
+ FileMode := 0;  { lecture seule - un CD-ROM ne s ecrit jamais }
+ Reset(EmuCdrom[Idx].F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  WriteLn('DEVENV: impossible d ouvrir l image CD-ROM : ', FName);
+  Exit;
+ End;
+ EmuCdrom[Idx].IsoSize := FileSize(EmuCdrom[Idx].F);
+ { Emu_IsoReadLBA exige EmuCdrom[Idx].Open=True pour accepter de lire -   }
+ { l activer des maintenant (desactive plus bas en cas d echec). }
+ EmuCdrom[Idx].Open := True;
+ If Not Emu_IsoReadLBA(Idx, 16, Buf) Then Begin
+  EmuCdrom[Idx].Open := False;
+  {$I-} Close(EmuCdrom[Idx].F); {$I+} If IOResult <> 0 Then ;
+  WriteLn('DEVENV: image CD-ROM trop petite ou illisible : ', FName);
+  Exit;
+ End;
+ If (Buf[0] <> 1) Or (Chr(Buf[1]) <> 'C') Or (Chr(Buf[2]) <> 'D') Or
+    (Chr(Buf[3]) <> '0') Or (Chr(Buf[4]) <> '0') Or (Chr(Buf[5]) <> '1') Then Begin
+  EmuCdrom[Idx].Open := False;
+  {$I-} Close(EmuCdrom[Idx].F); {$I+} If IOResult <> 0 Then ;
+  WriteLn('DEVENV: pas un volume ISO9660 valide (PVD introuvable) : ', FName);
+  Exit;
+ End;
+ { Le repertoire racine porte l identifiant special "." (00h) : passer   }
+ { directement par Emu_BufLE32 plutot que par Emu_IsoEntryFromRecord,    }
+ { qui exclut expres ce cas (voir son commentaire d en-tete). }
+ EmuCdrom[Idx].RootLBA  := Emu_BufLE32(Buf, 156 + 2);
+ EmuCdrom[Idx].RootSize := Emu_BufLE32(Buf, 156 + 10);
+ EmuCdrom[Idx].VolLabel := '';
+ For I := 40 To 71 Do
+  If Buf[I] <> 32 Then EmuCdrom[Idx].VolLabel := EmuCdrom[Idx].VolLabel + Chr(Buf[I])
+  Else Break;
+ EmuCdrom[Idx].CopyrightFile := '';
+ For I := 702 To 739 Do
+  If Buf[I] <> 32 Then EmuCdrom[Idx].CopyrightFile := EmuCdrom[Idx].CopyrightFile + Chr(Buf[I])
+  Else Break;
+ EmuCdrom[Idx].AbstractFile := '';
+ For I := 740 To 776 Do
+  If Buf[I] <> 32 Then EmuCdrom[Idx].AbstractFile := EmuCdrom[Idx].AbstractFile + Chr(Buf[I])
+  Else Break;
+ EmuCdrom[Idx].BiblioFile := '';
+ For I := 777 To 813 Do
+  If Buf[I] <> 32 Then EmuCdrom[Idx].BiblioFile := EmuCdrom[Idx].BiblioFile + Chr(Buf[I])
+  Else Break;
+ EmuCdrom[Idx].FileName := FName;
+End;
+
+{ Monter les 2 lecteurs CD-ROM depuis Opts.CdromImg0/1 (appelee une seule
+  fois au demarrage de l IDE, comme Emu_FloppyOpenAll/Emu_HardDiskOpenAll -
+  un CD-ROM monte reste insere pour toute la session, independamment des
+  demarrages/arrets de l emulateur DOS, exactement comme un vrai lecteur).
+  Les lettres de lecteur sont assignees de facon contigue a partir de D:,
+  uniquement aux unites reellement montees (voir Emu_DoInt2F AX=1500h). }
+Procedure Emu_CdromOpenAll;
+Begin
+ Emu_CdromOpenOne(0, Opts.CdromImg0);
+ Emu_CdromOpenOne(1, Opts.CdromImg1);
+ If EmuCdrom[0].Open Then EmuCdrom[0].DriveLetter := 3;  { D: }
+ If EmuCdrom[1].Open Then Begin
+  If EmuCdrom[0].Open Then EmuCdrom[1].DriveLetter := 4  { E: }
+  Else EmuCdrom[1].DriveLetter := 3;                     { D: }
+ End;
+ If EmuCdrom[0].Open Then
+  WriteLn('DEVENV: ', Chr(65 + EmuCdrom[0].DriveLetter), ': ', Opts.CdromImg0,
+   ' -> CD-ROM ISO9660 "', EmuCdrom[0].VolLabel, '"');
+ If EmuCdrom[1].Open Then
+  WriteLn('DEVENV: ', Chr(65 + EmuCdrom[1].DriveLetter), ': ', Opts.CdromImg1,
+   ' -> CD-ROM ISO9660 "', EmuCdrom[1].VolLabel, '"');
+End;
+
+{ Si DosName commence par "X:" ou X est la lettre d un lecteur CD-ROM     }
+{ monte, retourne True, Idx=son index EmuCdrom et Rel=le reste du chemin  }
+{ (sans la lettre ni le ":"). Utilise par Emu_DoInt21 pour intercepter    }
+{ les operations fichier AVANT qu elles n atteignent Emu_HostPath, qui ne }
+{ connait aucune notion de lecteur. }
+Function Emu_CdromDriveFromPath(Const DosName: String; Var Idx: Integer;
+ Var Rel: String): Boolean;
+Var Letter: Char;
+Begin
+ Emu_CdromDriveFromPath := False;
+ If (Length(DosName) < 2) Or (DosName[2] <> ':') Then Exit;
+ Letter := UpCase(DosName[1]);
+ If EmuCdrom[0].Open And (Chr(65 + EmuCdrom[0].DriveLetter) = Letter) Then Idx := 0
+ Else If EmuCdrom[1].Open And (Chr(65 + EmuCdrom[1].DriveLetter) = Letter) Then Idx := 1
+ Else Exit;
+ Rel := Copy(DosName, 3, Length(DosName) - 2);
+ Emu_CdromDriveFromPath := True;
+End;
+
+{ Ouvrir en lecture un fichier du volume CD-ROM Idx (chemin Rel deja      }
+{ debarrasse de sa lettre de lecteur, voir Emu_CdromDriveFromPath) sur le }
+{ handle H (alloue via Emu_AllocHandle par l appelant). Retourne un code   }
+{ d erreur DOS standard (0=succes, 2=introuvable, 5=acces refuse si c est }
+{ un repertoire, la encore comme pour un vrai fichier hote). }
+Function Emu_CdromOpenFile(Idx: Integer; Const Rel: String; H: Integer): Word;
+Var Entry: TEmuIsoEntry;
+Begin
+ If Not Emu_IsoResolve(Idx, Rel, Entry) Then Begin Emu_CdromOpenFile := 2; Exit; End;
+ If Entry.IsDir Then Begin Emu_CdromOpenFile := 5; Exit; End;
+ EmuFileOpen[H]    := True;
+ EmuFileIsCdrom[H] := True;
+ EmuFileFirstRd[H] := False;
+ EmuCdFileVol[H]  := Idx;
+ EmuCdFileLBA[H]  := Entry.LBA;
+ EmuCdFileSize[H] := Entry.Size;
+ EmuCdFilePos[H]  := 0;
+ Emu_CdromOpenFile := 0;
+End;
+
+{ Lire jusqu a Count octets du handle CD-ROM H a partir de sa position     }
+{ courante (EmuCdFilePos[H]) vers DS:Ofs du CPU emule, en traversant au    }
+{ besoin plusieurs secteurs logiques - meme forme de retour (nombre reel   }
+{ d octets lus) que la boucle BlockRead de l AH=3Fh existant. }
+Function Emu_CdromReadFile(Var P: TEmulatorPanel; H: Integer;
+ GuestOfs: Word; Count: Word): Word;
+Var
+ Idx: Integer;
+ Remain, ToRead, ChunkLen, LBA, SecOfs: LongInt;
+ Buf: TEmuIsoSector;
+ GotTotal: Word;
+ W: Integer;
+Begin
+ Idx := EmuCdFileVol[H];
+ Remain := EmuCdFileSize[H] - EmuCdFilePos[H];
+ If Remain < 0 Then Remain := 0;
+ ToRead := Count;
+ If ToRead > Remain Then ToRead := Remain;
+ GotTotal := 0;
+ While ToRead > 0 Do Begin
+  LBA := EmuCdFileLBA[H] + (EmuCdFilePos[H] Div EMU_ISO_SECTOR);
+  SecOfs := EmuCdFilePos[H] Mod EMU_ISO_SECTOR;
+  If Not Emu_IsoReadLBA(Idx, LBA, Buf) Then Break;
+  ChunkLen := EMU_ISO_SECTOR - SecOfs;
+  If ChunkLen > ToRead Then ChunkLen := ToRead;
+  For W := 0 To ChunkLen - 1 Do
+   Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Word(GuestOfs + GotTotal + W),
+    Buf[SecOfs + W]);
+  Inc(EmuCdFilePos[H], ChunkLen);
+  Inc(GotTotal, ChunkLen);
+  Dec(ToRead, ChunkLen);
+ End;
+ Emu_CdromReadFile := GotTotal;
+End;
+
+{ Convertir une date ISO9660 decodee (Emu_IsoEntryFromRecord) en date/heure}
+{ DOS empaquetee (meme format que SR.Time apres decoupage 16 bits haut/bas }
+{ utilise par l AH=4Eh existant - voir Emu_PackDate/Emu_PackTime). }
+Procedure Emu_IsoDateToDos(Const Entry: TEmuIsoEntry; Var DDate, DTime: Word);
+Var Y: Word;
+Begin
+ Y := Word(Entry.Year) + 1900;
+ If Y < 1980 Then Y := 1980;
+ DDate := Emu_PackDate(Y, Entry.Month, Entry.Day);
+ DTime := Emu_PackTime(Entry.Hour, Entry.Minute, Entry.Second);
+End;
+
+{ Correspondance de motif DOS classique ('*' et '?', insensible a la      }
+{ casse) - algorithme iteratif standard avec point de reprise sur le      }
+{ dernier '*' rencontre (pas de recursion, donc pas de limite de          }
+{ profondeur liee a la pile). }
+Function Emu_DosWildMatch(Const Name, Pattern: String): Boolean;
+Var
+ NI, PI, StarNI, StarPI: Integer;
+Begin
+ NI := 1; PI := 1; StarPI := 0; StarNI := 0;
+ While NI <= Length(Name) Do Begin
+  If (PI <= Length(Pattern)) And
+     ((Pattern[PI] = '?') Or (UpCase(Pattern[PI]) = UpCase(Name[NI]))) Then Begin
+   Inc(NI); Inc(PI);
+  End Else If (PI <= Length(Pattern)) And (Pattern[PI] = '*') Then Begin
+   StarPI := PI; StarNI := NI;
+   Inc(PI);
+  End Else If StarPI > 0 Then Begin
+   Inc(StarNI);
+   NI := StarNI;
+   PI := StarPI + 1;
+  End Else Begin
+   Emu_DosWildMatch := False;
+   Exit;
+  End;
+ End;
+ While (PI <= Length(Pattern)) And (Pattern[PI] = '*') Do Inc(PI);
+ Emu_DosWildMatch := PI > Length(Pattern);
+End;
+
+{ FindFirst ($4E) pour un repertoire resolu (DirRel) sur un lecteur       }
+{ CD-ROM, filtre par le motif DOS Pattern (nom de fichier seul, sans      }
+{ chemin - voir Emu_DosWildMatch) : enumere le repertoire dans            }
+{ EmuFindResults/EmuCdFind* comme le fait l AH=4Eh existant via l hote.   }
+{ Retourne False si le repertoire est introuvable ou vide apres filtrage. }
+Function Emu_CdromFindFirst(Idx: Integer; Const DirRel, Pattern: String): Boolean;
+Var
+ DirEntry: TEmuIsoEntry;
+ Buf: TEmuIsoSector;
+ SecCount, S: LongInt;
+ RecOfs: Integer;
+ Entry: TEmuIsoEntry;
+Begin
+ Emu_CdromFindFirst := False;
+ EmuFindCount := 0;
+ EmuFindIndex := 0;
+ If Not Emu_IsoResolve(Idx, DirRel, DirEntry) Then Exit;
+ If Not DirEntry.IsDir Then Exit;
+ SecCount := (DirEntry.Size + EMU_ISO_SECTOR - 1) Div EMU_ISO_SECTOR;
+ For S := 0 To SecCount - 1 Do Begin
+  If Not Emu_IsoReadLBA(Idx, DirEntry.LBA + S, Buf) Then Break;
+  RecOfs := 0;
+  While RecOfs < EMU_ISO_SECTOR - 1 Do Begin
+   If Buf[RecOfs] = 0 Then Break;
+   If Emu_IsoEntryFromRecord(Buf, RecOfs, Entry) And (EmuFindCount < 64) And
+      Emu_DosWildMatch(Entry.Name, Pattern) Then Begin
+    EmuFindResults[EmuFindCount] := Entry.Name;
+    EmuCdFindSize[EmuFindCount]  := Entry.Size;
+    EmuCdFindIsDir[EmuFindCount] := Entry.IsDir;
+    Emu_IsoDateToDos(Entry, EmuCdFindDate[EmuFindCount], EmuCdFindTime[EmuFindCount]);
+    Inc(EmuFindCount);
+   End;
+   Inc(RecOfs, Buf[RecOfs]);
+  End;
+ End;
+ EmuFindIsCdrom := True;
+ Emu_CdromFindFirst := EmuFindCount > 0;
 End;
 
 { ============================================================
@@ -51458,6 +52454,277 @@ Begin
  If P.CPU.Regs.AX = P.CPU.Regs.AX Then ; { evite un avertissement }
 End;
 
+{ Active ou desactive la reponse MSCDEX (INT 2Fh AX=15xxh) selon la case  }
+{ "MSCDEX" (DosMSCDEX) - contrairement a Emu_EmsInit/Emu_XmsInit/etc, ne   }
+{ touche PAS aux volumes CD-ROM eux-memes (EmuCdrom, montes une seule fois}
+{ au demarrage de l IDE par Emu_CdromOpenAll, voir le commentaire pres de }
+{ cette derniere) : un CD-ROM reste "insere" d un demarrage a l autre de   }
+{ l emulateur DOS, exactement comme sur une vraie machine - seule la      }
+{ visibilite du pilote MSCDEX lui-meme (et donc l acces au(x) lecteur(s)  }
+{ via Emu_DoInt21) suit la case a cocher. }
+Procedure Emu_MscdexInit(Var P: TEmulatorPanel);
+Begin
+ EmuMscdexActive := OptionsDlg.Data.DosMSCDEX;
+ If P.CPU.Regs.AX = P.CPU.Regs.AX Then ; { evite un avertissement }
+End;
+
+{ ========================================================================= }
+{ INT 2Fh AH=15h : API MSCDEX (MS-DOS CD-ROM Extensions), gatee par la     }
+{ case "MSCDEX" (EmuMscdexActive, voir Emu_MscdexInit). Fonctions AL=00h-  }
+{ 10h implantees d apres la documentation la plus repandue et recoupee     }
+{ (Ralph Brown Interrupt List et documentation MSCDEX communautaire) -     }
+{ couvre toute la surface "haut niveau" documentee de l API (les fonctions }
+{ au-dela de 10h sont reservees/non definies, meme dans la specification   }
+{ reelle). La fonction 10h (Send Device Driver Request) decode l en-tete   }
+{ de requete pilote DOS standard (voir Emu_MscdexDeviceRequest) mais       }
+{ repond aux sous-commandes IOCTL Entree/Sortie par un succes generique    }
+{ "sans effet reel" : il n y a pas de vrai lecteur audio derriere une      }
+{ image .iso montee, donc aucune fonction de lecture/arret audio ne peut   }
+{ avoir d effet reel de toute facon ; les codes precis de sous-commande    }
+{ IOCTL specifiques au controle audio/plateau (lecture/pause/ejection/     }
+{ verrouillage) n ont pas pu etre confirmes contre une specification       }
+{ Microsoft primaire lors de la recherche pour cette implementation -      }
+{ traiter ce point precis comme une simplification assumee, pas une        }
+{ negligence (voir aussi Emu_DoInt15C2 pour un cas similaire deja assume   }
+{ dans ce fichier). }
+{ ========================================================================= }
+
+{ Traduit une lettre de lecteur (0=A:..25=Z:) en index EmuCdrom, si cette  }
+{ lettre correspond bien a un lecteur CD-ROM effectivement monte. }
+Function Emu_CdromIdxFromLetter(DL: Byte; Var Idx: Integer): Boolean;
+Begin
+ Emu_CdromIdxFromLetter := False;
+ If EmuCdrom[0].Open And (EmuCdrom[0].DriveLetter = DL) Then Begin
+  Idx := 0; Emu_CdromIdxFromLetter := True;
+ End Else If EmuCdrom[1].Open And (EmuCdrom[1].DriveLetter = DL) Then Begin
+  Idx := 1; Emu_CdromIdxFromLetter := True;
+ End;
+End;
+
+{ Ecrit une chaine ASCIIZ (au plus MaxLen-1 caracteres utiles) vers ES:BX -}
+{ utilise par AX=1502h/1503h/1504h (noms de fichiers copyright/abstract/   }
+{ bibliographique). }
+Procedure Emu_MscdexWriteAsciiz(Var P: TEmulatorPanel; Const S: String;
+ MaxLen: Integer);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  If I < MaxLen Then
+   Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.BX + I - 1), Byte(S[I]));
+ Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.BX + Length(S)), 0);
+End;
+
+{ Ecrit un champ both-endian ISO9660 (8 octets : LE32 puis BE32, voir      }
+{ EMU_ISO_SECTOR / Emu_IsoEntryFromRecord) - utilise par AX=150Fh pour     }
+{ reconstruire un enregistrement de repertoire. }
+Procedure Emu_WriteBoth32(Var P: TEmulatorPanel; Seg, Ofs: Word; V: LongInt);
+Var I: Integer;
+Begin
+ For I := 0 To 3 Do
+  Emu_WriteByte(P.CPU, Seg, Ofs + I, Byte(V Shr (I * 8)));
+ For I := 0 To 3 Do
+  Emu_WriteByte(P.CPU, Seg, Ofs + 4 + I, Byte(V Shr ((3 - I) * 8)));
+End;
+
+{ Fonction 10h (Send Device Driver Request) : decode l en-tete de requete  }
+{ pilote DOS standard (octet 0=longueur, 1=sous-unite, 2=code commande,    }
+{ mot 3=statut - voir le commentaire de tete de section pour la reserve    }
+{ sur les sous-commandes IOCTL). }
+Procedure Emu_MscdexDeviceRequest(Var P: TEmulatorPanel);
+Var
+ Idx: Integer;
+ ReqSeg, ReqOfs: Word;
+ Cmd: Byte;
+ StatusW: Word;
+Begin
+ If Not Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then Begin
+  Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 15; Exit;
+ End;
+ ReqSeg := P.CPU.Segs.ES; ReqOfs := P.CPU.Regs.BX;
+ Cmd := Emu_ReadByte(P.CPU, ReqSeg, ReqOfs + 2);
+ Case Cmd Of
+  0, 1, 13, 14, 15: StatusW := $0100;  { Init/MediaCheck/Open/Close/       }
+                                        { RemovableMedia : succes trivial  }
+  3, 12: StatusW := $0100;             { IOCTL Entree/Sortie : accepte     }
+                                        { "sans effet reel" (voir ci-dessus)}
+ Else
+  StatusW := $8103;  { bit15=erreur, bit8=Done, 03h=commande inconnue }
+ End;
+ Emu_WriteWord(P.CPU, ReqSeg, ReqOfs + 3, StatusW);
+ Exclude(P.CPU.Flags.s, EFG_CF);
+ If Idx = Idx Then ; { evite un avertissement }
+End;
+
+Procedure Emu_DoMscdex(Var P: TEmulatorPanel);
+Var
+ Idx: Integer;
+ I, N: Integer;
+ Buf: TEmuIsoSector;
+ Entry: TEmuIsoEntry;
+ Path: String;
+ SecIdx, LBA0: LongInt;
+ RecLen: Byte;
+ Ok: Boolean;
+Begin
+ Case P.CPU.Regs.AL Of
+  $00: Begin  { Installation check / nombre de lettres de lecteur CD-ROM.  }
+              { BX reste a 0 (et CX inchange) si aucun lecteur n est monte,}
+              { exactement comme un MSCDEX charge mais sans pilote bas     }
+              { niveau detecte - voir le commentaire de tete de section.  }
+   N := 0;
+   If EmuCdrom[0].Open Then Inc(N);
+   If EmuCdrom[1].Open Then Inc(N);
+   P.CPU.Regs.BX := N;
+   If N > 0 Then Begin
+    If EmuCdrom[0].Open Then P.CPU.Regs.CX := EmuCdrom[0].DriveLetter
+    Else P.CPU.Regs.CX := EmuCdrom[1].DriveLetter;
+   End;
+  End;
+  $01: Begin  { Get CD-ROM Drive Device List - l adresse d en-tete de      }
+              { pilote retournee est purement cosmetique (jamais           }
+              { dereferencee par cet emulateur, comme le stub "PKT DRVR"   }
+              { de Emu_PktInit). }
+   N := 0;
+   For Idx := 0 To 1 Do
+    If EmuCdrom[Idx].Open Then Begin
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + N * 5, Byte(Idx));
+     Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + N * 5 + 1, EMU_MSCDEX_INFO_OFS);
+     Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + N * 5 + 3, EMU_MSCDEX_INFO_SEG);
+     Inc(N);
+    End;
+  End;
+  $02, $03, $04: Begin  { Get Copyright/Abstract/Bibliographic filename }
+   If Not Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 15;
+   End Else Begin
+    Case P.CPU.Regs.AL Of
+     2: Emu_MscdexWriteAsciiz(P, EmuCdrom[Idx].CopyrightFile, 38);
+     3: Emu_MscdexWriteAsciiz(P, EmuCdrom[Idx].AbstractFile, 38);
+     4: Emu_MscdexWriteAsciiz(P, EmuCdrom[Idx].BiblioFile, 38);
+    End;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $05: Begin  { Read VTOC : DX = index de secteur relatif au premier       }
+              { Volume Descriptor (secteur logique 16 + DX). }
+   If Not Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AL := 15;
+   End Else If Not Emu_IsoReadLBA(Idx, 16 + LongInt(P.CPU.Regs.DX), Buf) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AL := 21;
+   End Else Begin
+    For I := 0 To EMU_ISO_SECTOR - 1 Do
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.BX + I), Buf[I]);
+    If Buf[0] = 255 Then P.CPU.Regs.AX := $FF
+    Else If Buf[0] = 1 Then P.CPU.Regs.AX := 1
+    Else P.CPU.Regs.AX := 0;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $06, $07: Exclude(P.CPU.Flags.s, EFG_CF);  { Debogage on/off - non       }
+                                              { fonctionnel, comme sur un   }
+                                              { pilote reel en production. }
+  $08: Begin  { Absolute Disk Read : SI:DI = secteur de depart (32 bits,   }
+              { SI=poids fort), DX = nombre de secteurs. }
+   If Not Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AL := 15;
+   End Else Begin
+    LBA0 := (LongInt(P.CPU.Regs.SI) Shl 16) Or P.CPU.Regs.DI;
+    N := P.CPU.Regs.DX;
+    If N < 1 Then N := 1;
+    Ok := True;
+    For SecIdx := 0 To N - 1 Do Begin
+     If Not Emu_IsoReadLBA(Idx, LBA0 + SecIdx, Buf) Then Begin Ok := False; Break; End;
+     For I := 0 To EMU_ISO_SECTOR - 1 Do
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES,
+       Word(P.CPU.Regs.BX + SecIdx * EMU_ISO_SECTOR + I), Buf[I]);
+    End;
+    If Not Ok Then Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AL := 21; End
+    Else Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $09: Begin  { Absolute Disk Write - reserve/non supporte (media en       }
+              { lecture seule). }
+   Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AL := 5;
+  End;
+  $0B: Begin  { CD-ROM Drive Check }
+   P.CPU.Regs.BX := $ADAD;
+   If Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then P.CPU.Regs.AX := 1
+   Else P.CPU.Regs.AX := 0;
+  End;
+  $0C: P.CPU.Regs.BX := $020A;  { Version MSCDEX simulee : v2.10 }
+  $0D: Begin  { Get CD-ROM Drive Letters }
+   N := 0;
+   If EmuCdrom[0].Open Then Begin
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + N, EmuCdrom[0].DriveLetter);
+    Inc(N);
+   End;
+   If EmuCdrom[1].Open Then Begin
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + N, EmuCdrom[1].DriveLetter);
+    Inc(N);
+   End;
+  End;
+  $0E: Begin  { Get/Set Volume Descriptor Preference - seul le PVD est     }
+              { supporte (pas de Joliet/SVD, voir le commentaire de tete   }
+              { de la section lecteur ISO9660 pres de Emu_CdromOpenAll). }
+   If Not Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 15;
+   End Else If P.CPU.Regs.BX = 0 Then Begin { get }
+    P.CPU.Regs.DX := 1;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End Else Begin { set }
+    If P.CPU.Regs.DH = 1 Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 1; End;
+   End;
+  End;
+  $0F: Begin  { Get Directory Entry : ES:BX = chemin ASCIIZ, SI:DI =        }
+              { tampon de sortie. Reconstruit un enregistrement MINIMAL    }
+              { (LBA/taille/indicateurs/nom) plutot qu une copie brute de   }
+              { l original (deja perdue apres decodage par Emu_IsoResolve),}
+              { suffisant pour les usages reels documentes de cette         }
+              { fonction. }
+   If Not Emu_CdromIdxFromLetter(Byte(P.CPU.Regs.CX), Idx) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 15;
+   End Else Begin
+    Path := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX);
+    If Not Emu_IsoResolve(Idx, Path, Entry) Then Begin
+     Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 2;
+    End Else Begin
+     RecLen := 33 + Length(Entry.Name);
+     If (RecLen And 1) = 1 Then Inc(RecLen);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI, RecLen);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 1, 0);
+     Emu_WriteBoth32(P, P.CPU.Regs.SI, P.CPU.Regs.DI + 2, Entry.LBA);
+     Emu_WriteBoth32(P, P.CPU.Regs.SI, P.CPU.Regs.DI + 10, Entry.Size);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 18, Entry.Year);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 19, Entry.Month);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 20, Entry.Day);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 21, Entry.Hour);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 22, Entry.Minute);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 23, Entry.Second);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 24, 0);
+     If Entry.IsDir Then Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 25, 2)
+     Else Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 25, 0);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 26, 0);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 27, 0);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 28, 1);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 29, 0);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 30, 0);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 31, 1);
+     Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 32, Length(Entry.Name));
+     For I := 1 To Length(Entry.Name) Do
+      Emu_WriteByte(P.CPU, P.CPU.Regs.SI, P.CPU.Regs.DI + 32 + I, Byte(Entry.Name[I]));
+     P.CPU.Regs.AX := 1;  { 1=ISO9660 (0=High Sierra, jamais produit ici) }
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+   End;
+  End;
+  $10: Emu_MscdexDeviceRequest(P);  { Send Device Driver Request }
+ Else
+  Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AX := 1; End; { fonction }
+                                                                  { non definie}
+ End;
+End;
+
 { --- INT 2Fh AX=7A00h : verification d installation IPX ; AX=4300h/4310h  }
 { : verification d installation XMS et adresse du point d entree. Toute    }
 { autre sous-fonction (ou si le service correspondant n est pas configure) }
@@ -51479,6 +52746,10 @@ Begin
  If EmuXms.Active And (P.CPU.Regs.AX = $4310) Then Begin
   P.CPU.Segs.ES := EmuXms.StubSeg;
   P.CPU.Regs.BX := EmuXms.StubOfs;
+  Exit;
+ End;
+ If EmuMscdexActive And (P.CPU.Regs.AH = $15) Then Begin
+  Emu_DoMscdex(P);
   Exit;
  End;
  IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
@@ -51524,7 +52795,39 @@ Begin
   $27: P.CPU.Fault := sfEndProgram;
   $21: Emu_DoInt21(P);
   $2F: Emu_DoInt2F(P);
-  $33: Emu_DoInt33(P);
+  $15: Begin
+   { N intercepter reellement que AH=C2h (BIOS souris PS/2) et seulement    }
+   { si la case "Souris BIOS PS/2" est cochee (EmuMousePS2Active) - toute   }
+   { autre sous-fonction ou tout autre etat de la case suit le meme         }
+   { comportement generique que les autres interruptions non gerees        }
+   { (branche Else) : les nombreux autres services INT 15h (A20, E820,      }
+   { clavier etendu, etc.) restent hors de portee de cet emulateur. }
+   If (P.CPU.Regs.AH = $C2) And EmuMousePS2Active Then Emu_DoInt15C2(P)
+   Else Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($15) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($15) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, $15);
+    If IvtOfs = IvtOfs Then ;
+   End;
+  End;
+  $33: Begin
+   { N intercepter reellement que si la case "Souris" est cochee            }
+   { (EmuMouseActive) - sinon, comportement identique a toute autre         }
+   { interruption non geree (branche Else) : une vraie machine sans pilote  }
+   { souris charge ne repond pas non plus sur ce vecteur (le "test d        }
+   { installation" AX=0000h d un programme invite echouerait alors          }
+   { legitimement, exactement comme sur une vraie machine). }
+   If EmuMouseActive Then Emu_DoInt33(P)
+   Else Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($33) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($33) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, $33);
+    If IvtOfs = IvtOfs Then ;
+   End;
+  End;
+  $FC: If EmuMouseCallPending Then Emu_MouseCont(P); { continuation interne  }
+       { de l upcall gestionnaire souris/callback BIOS PS/2 - voir           }
+       { Emu_MouseCont. Jamais atteint par du logiciel DOS reel. }
   $60: Begin
    { N intercepter reellement que si la case "Reseau LAN" est cochee       }
    { (EmuPkt.Active) - sinon, comportement identique a toute autre         }
@@ -63193,18 +64496,9 @@ Begin NesActive := False;
  Emu_PktInit(P);
  Emu_XmsInit(P);
  Emu_EmsInit(P);
+ Emu_MouseInit(P);
+ Emu_MscdexInit(P);
  EmuPumpCnt := 0;
- { Initialiser etat souris emulee. }
- EmuMouseInst := True;
- EmuMouseVis := -1;
- EmuMouseX := 0; EmuMouseY := 0;
- EmuMouseBtns := 0;
- EmuMouseXMin := 0; EmuMouseYMin := 0;
- EmuMouseXMax := 639; EmuMouseYMax := 199;
- EmuMouseHRatio := 8; EmuMouseVRatio := 16;
- EmuMouseMickX := 0; EmuMouseMickY := 0;
- EmuMouseHandlerMsk := 0;
- EmuMouseHandlerSeg := 0; EmuMouseHandlerOfs := 0;
  { Premier rendu : afficher le panneau (banniere + ecran emule) avant
    d entrer dans la boucle d execution. Sinon le panneau peut rester
    invisible plusieurs secondes selon la charge. }
@@ -63657,6 +64951,9 @@ Begin
  D.DosEMSVersion := 2; { 4.0 par defaut - la plus complete }
  D.DosMSCDEX := False;
  D.DosSouris := True;
+ D.DosMousePS2BIOS := False;
+ D.DosMouseVendor := 0;
+ D.DosMouseVersion := 2; { v6.0 par defaut - compatible avec la plupart des programmes }
  D.DosNovell := False;
  D.DosLAN := False;
  D.DosLANVendor := 0;
@@ -64694,6 +65991,15 @@ Var
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
+ Procedure Check(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
  Procedure Dropdown(Const Caption, ValueText: String);
  Begin
   DrawText(FX, BaseY, Caption, CLR_WINDOWTEXT);
@@ -64731,7 +66037,11 @@ Var
    End Else
     FG := CLR_WINDOWTEXT;
    If Dlg.DosDropdownOpen = 6 Then
-    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosLANVendorName(ActualIdx), FG);
+    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosLANVendorName(ActualIdx), FG)
+   Else If Dlg.DosDropdownOpen = 8 Then
+    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosMouseVendorName(ActualIdx), FG)
+   Else If Dlg.DosDropdownOpen = 9 Then
+    DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2, DosMouseVersionName(ActualIdx), FG);
   End;
   DrawRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
    CLR_BORDER);
@@ -64770,13 +66080,23 @@ Begin
  BaseY := BaseY + OPT_ROW_SPACING;
  Check2(Dlg.Data.DosMSCDEX, 'MSCDEX', 150,                       { Row 0 }
   Dlg.Data.DosSouris, 'Souris');
- Check2(Dlg.Data.DosNovell, 'Reseau Novell NetWare', 230,        { Row 1 }
+ Check(Dlg.Data.DosMousePS2BIOS,                                 { Row 1 }
+  'Souris BIOS PS/2 (INT 15h AH=C2h)');
+ Check2(Dlg.Data.DosNovell, 'Reseau Novell NetWare', 230,        { Row 2 }
   Dlg.Data.DosLAN, 'Reseau LAN');
- Dropdown('Fabricant reseau LAN :',                              { Row 2 }
+ Dropdown('Fabricant reseau LAN :',                              { Row 3 }
   DosLANVendorName(Dlg.Data.DosLANVendor));
+ Dropdown('Fabricant pilote souris :',                           { Row 4 }
+  DosMouseVendorName(Dlg.Data.DosMouseVendor));
+ Dropdown('Version pilote (INT 33h) :',                          { Row 5 }
+  DosMouseVersionName(Dlg.Data.DosMouseVersion));
 
  If Dlg.DosDropdownOpen = 6 Then
-  OpenList(2, DOS_LAN_VENDOR_COUNT, Dlg.Data.DosLANVendor);
+  OpenList(3, DOS_LAN_VENDOR_COUNT, Dlg.Data.DosLANVendor)
+ Else If Dlg.DosDropdownOpen = 8 Then
+  OpenList(4, DOS_MOUSE_VENDOR_COUNT, Dlg.Data.DosMouseVendor)
+ Else If Dlg.DosDropdownOpen = 9 Then
+  OpenList(5, DOS_MOUSE_VERSION_COUNT, Dlg.Data.DosMouseVersion);
 End;
 
 { --- Dessiner une page Emulateur > X pas encore detaillee (stub) --- }
@@ -64992,6 +66312,8 @@ Begin
    5: Begin DDCount := DOS_VIDEO_COUNT; DDCur := Dlg.Data.DosVideo2; End;
    6: Begin DDCount := DOS_LAN_VENDOR_COUNT; DDCur := Dlg.Data.DosLANVendor; End;
    7: Begin DDCount := DOS_EMS_VERSION_COUNT; DDCur := Dlg.Data.DosEMSVersion; End;
+   8: Begin DDCount := DOS_MOUSE_VENDOR_COUNT; DDCur := Dlg.Data.DosMouseVendor; End;
+   9: Begin DDCount := DOS_MOUSE_VERSION_COUNT; DDCur := Dlg.Data.DosMouseVersion; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
   End;
   If Key = $48 Then Begin { Fleche haut }
@@ -65011,6 +66333,8 @@ Begin
    5: Dlg.Data.DosVideo2 := DDCur;
    6: Dlg.Data.DosLANVendor := DDCur;
    7: Dlg.Data.DosEMSVersion := DDCur;
+   8: Dlg.Data.DosMouseVendor := DDCur;
+   9: Dlg.Data.DosMouseVersion := DDCur;
   End;
   Dlg.Modified := True;
   Exit;
@@ -65080,6 +66404,8 @@ Var
    5: Dlg.Data.DosVideo2 := NewIdx;
    6: Dlg.Data.DosLANVendor := NewIdx;
    7: Dlg.Data.DosEMSVersion := NewIdx;
+   8: Dlg.Data.DosMouseVendor := NewIdx;
+   9: Dlg.Data.DosMouseVersion := NewIdx;
   End;
   Dlg.Modified := True;
  End;
@@ -65101,10 +66427,14 @@ Begin
       CurIdx := Dlg.Data.DosVideo1; End;
   5: Begin RowIdx := 4; Count := DOS_VIDEO_COUNT;
       CurIdx := Dlg.Data.DosVideo2; End;
-  6: Begin RowIdx := 2; Count := DOS_LAN_VENDOR_COUNT;
+  6: Begin RowIdx := 3; Count := DOS_LAN_VENDOR_COUNT;
       CurIdx := Dlg.Data.DosLANVendor; End;
   7: Begin RowIdx := 3; Count := DOS_EMS_VERSION_COUNT;
       CurIdx := Dlg.Data.DosEMSVersion; End;
+  8: Begin RowIdx := 4; Count := DOS_MOUSE_VENDOR_COUNT;
+      CurIdx := Dlg.Data.DosMouseVendor; End;
+  9: Begin RowIdx := 5; Count := DOS_MOUSE_VERSION_COUNT;
+      CurIdx := Dlg.Data.DosMouseVersion; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
  { LabelW doit rester synchronise avec DrawOptionsEmuDOSOS (Dropdown/       }
@@ -65438,6 +66768,10 @@ Begin
         Dlg.Modified := True;
        End;
        1: Begin
+        Dlg.Data.DosMousePS2BIOS := Not Dlg.Data.DosMousePS2BIOS;
+        Dlg.Modified := True;
+       End;
+       2: Begin
         { Idem, seuil 230 - voir Check2 dans DrawOptionsEmuDOSSoftware. }
         If Ev.MouseX < Dlg.Base.X + OPT_TREE_WIDTH +
          OPT_PANEL_PADDING + 230 Then
@@ -65446,7 +66780,9 @@ Begin
          Dlg.Data.DosLAN := Not Dlg.Data.DosLAN;
         Dlg.Modified := True;
        End;
-       2: Dlg.DosDropdownOpen := 6;  { Fabricant reseau LAN }
+       3: Dlg.DosDropdownOpen := 6;  { Fabricant reseau LAN }
+       4: Dlg.DosDropdownOpen := 8;  { Fabricant pilote souris }
+       5: Dlg.DosDropdownOpen := 9;  { Version pilote souris (INT 33h) }
       End;
     End;
     DrawOptionsDialog(Dlg);
@@ -65626,6 +66962,11 @@ Begin
  WriteCfgLine(F, 'DosEMSVersion', S);
  WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
  WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
+ WriteCfgLine(F, 'DosMousePS2BIOS', BoolToStr(Data.DosMousePS2BIOS));
+ Str(Data.DosMouseVendor, S);
+ WriteCfgLine(F, 'DosMouseVendor', S);
+ Str(Data.DosMouseVersion, S);
+ WriteCfgLine(F, 'DosMouseVersion', S);
  WriteCfgLine(F, 'DosNovell', BoolToStr(Data.DosNovell));
  WriteCfgLine(F, 'DosLAN', BoolToStr(Data.DosLAN));
  Str(Data.DosLANVendor, S);
@@ -65800,6 +67141,22 @@ Begin
    Data.DosMSCDEX := StrToBool(Value)
   Else If Key = 'DosSouris' Then
    Data.DosSouris := StrToBool(Value)
+  Else If Key = 'DosMousePS2BIOS' Then
+   Data.DosMousePS2BIOS := StrToBool(Value)
+  Else If Key = 'DosMouseVendor' Then
+  Begin
+   Val(Value, Data.DosMouseVendor, Code);
+   If (Code <> 0) Or (Data.DosMouseVendor < 0) Or
+      (Data.DosMouseVendor >= DOS_MOUSE_VENDOR_COUNT) Then
+    Data.DosMouseVendor := 0;
+  End
+  Else If Key = 'DosMouseVersion' Then
+  Begin
+   Val(Value, Data.DosMouseVersion, Code);
+   If (Code <> 0) Or (Data.DosMouseVersion < 0) Or
+      (Data.DosMouseVersion >= DOS_MOUSE_VERSION_COUNT) Then
+    Data.DosMouseVersion := 2;
+  End
   Else If Key = 'DosNovell' Then
    Data.DosNovell := StrToBool(Value)
   Else If Key = 'DosLAN' Then
@@ -75084,6 +76441,7 @@ BEGIN
  Emu_CMOSInit;
  Emu_FloppyOpenAll;
  Emu_HardDiskOpenAll;
+ Emu_CdromOpenAll;
  If Opts.Verbose Then
   ShowVersion;
  InitializeGraphics;
