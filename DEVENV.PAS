@@ -3622,6 +3622,17 @@ Type
   CbRealOfs : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Word;
  End;
 
+ { Operande decode a partir d un octet ModR/M (+ eventuel SIB) par          }
+ { Dpmi_DecodeModRM - equivalent 32 bits proteges de TEmuOperand (coeur     }
+ { 8086), mais LinAddr est deja l adresse LINEAIRE finale (base du          }
+ { selecteur + deplacement), pas un couple segment:offset. }
+ TDpmiOperand = Record
+  IsReg  : Boolean;
+  RegNum : Byte;
+  LinAddr: LongInt;
+  Len    : Integer;      { octets consommes (ModRM + SIB + deplacement) }
+ End;
+
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
  TEmulatorPanel = Record
   Base       : TDialog;          { dialogue de base                }
@@ -53400,6 +53411,646 @@ Begin
  End;
 End;
 
+{ ========================================================================= }
+{ Dpmi_Step - decodeur/executeur d instructions 32 bits proteges (ETAPE 2). }
+{ Sous-ensemble VOLONTAIREMENT borne (pas les ~256 opcodes x86 au complet) :}
+{ ALU 6 voies (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP, les 6 formes standard),      }
+{ MOV, LEA, TEST, PUSH/POP (registre et immediat), INC/DEC, Jcc court et    }
+{ proche, CALL/RET proches, INT (necessaire pour atteindre Emu_DoInt31),    }
+{ groupe F6/F7 partiel (TEST/NOT/NEG), groupe FE/FF partiel (INC/DEC/CALL/  }
+{ JMP indirects/PUSH). PAS encore geres (opcode inconnu = arret propre du   }
+{ programme protege plutot qu une execution incorrecte silencieuse, voir    }
+{ la branche Else finale) : chaines (MOVS/STOS/CMPS/SCAS/REP), decalages/   }
+{ rotations (C0/C1/D0-D3), MUL/IMUL/DIV/IDIV, x87 FPU, adressage 16 bits    }
+{ (seul l adressage 32 bits est decode par Dpmi_DecodeModRM - suffisant    }
+{ pour du code DJGPP/DOS4GW plat, mais pas pour un segment de code "16      }
+{ bits proteges" Borland qui utiliserait l adressage classique BX+SI...).   }
+{ AUCUNE verification de limite de segment n est appliquee (pas d exception}
+{ 0Dh GPF simulee) - portee delib. reduite a un CPU "de confiance". }
+{ ========================================================================= }
+
+Function Dpmi_FetchByte(Var P: TEmulatorPanel; Step: Integer): Byte;
+Begin
+ Dpmi_FetchByte := Dpmi_ReadByte(P,
+  Dpmi_LinAddr(DpmiCPU.SegSel[1], DpmiCPU.EIP + Step));
+End;
+
+Function Dpmi_FetchWord(Var P: TEmulatorPanel; Step: Integer): Word;
+Begin
+ Dpmi_FetchWord := Dpmi_ReadWord(P,
+  Dpmi_LinAddr(DpmiCPU.SegSel[1], DpmiCPU.EIP + Step));
+End;
+
+Function Dpmi_FetchDWord(Var P: TEmulatorPanel; Step: Integer): LongInt;
+Begin
+ Dpmi_FetchDWord := Dpmi_ReadDWord(P,
+  Dpmi_LinAddr(DpmiCPU.SegSel[1], DpmiCPU.EIP + Step));
+End;
+
+{ Decode un octet ModR/M (+ eventuel SIB + deplacement) en adressage 32     }
+{ bits uniquement (voir le commentaire de tete ci-dessus pour la portee).   }
+{ DefSeg/HasOvr viennent du prefixe de segment eventuel de Dpmi_Step ;      }
+{ l usage d EBP (ModRM direct ou base SIB) bascule le segment par defaut    }
+{ vers SS SAUF si un prefixe de segment explicite est present (meme regle   }
+{ que le vrai x86). }
+Procedure Dpmi_DecodeModRM(Var P: TEmulatorPanel; ModRM: Byte;
+ DefSeg: Word; HasOvr: Boolean; Var Op: TDpmiOperand);
+Var
+ Mode, RM, Sib, Scale, SIdx, SBase: Byte;
+ Disp, EA: LongInt;
+ Seg: Word;
+ ExtraLen: Integer;
+ StackBased: Boolean;
+Begin
+ Op.IsReg := False; Op.RegNum := 0; Op.LinAddr := 0; Op.Len := 1;
+ Mode := (ModRM Shr 6) And 3;
+ RM := ModRM And 7;
+ If Mode = 3 Then Begin Op.IsReg := True; Op.RegNum := RM; Exit; End;
+ Seg := DefSeg;
+ ExtraLen := 0;
+ StackBased := False;
+ EA := 0;
+ If RM = 4 Then Begin
+  Sib := Dpmi_FetchByte(P, 1);
+  Inc(ExtraLen);
+  Scale := (Sib Shr 6) And 3;
+  SIdx := (Sib Shr 3) And 7;
+  SBase := Sib And 7;
+  If SIdx <> 4 Then
+   EA := Dpmi_GetReg32(DpmiCPU.Reg, SIdx) Shl Scale;
+  If (SBase = 5) And (Mode = 0) Then Begin
+   Disp := Dpmi_FetchDWord(P, 1 + ExtraLen);
+   Inc(ExtraLen, 4);
+   EA := EA + Disp;
+  End Else Begin
+   EA := EA + Dpmi_GetReg32(DpmiCPU.Reg, SBase);
+   StackBased := (SBase = 4) Or (SBase = 5); { ESP ou EBP comme base }
+  End;
+ End Else If (RM = 5) And (Mode = 0) Then Begin
+  Disp := Dpmi_FetchDWord(P, 1);
+  Inc(ExtraLen, 4);
+  EA := Disp;
+ End Else Begin
+  EA := Dpmi_GetReg32(DpmiCPU.Reg, RM);
+  StackBased := (RM = 5); { EBP }
+ End;
+ Case Mode Of
+  1: Begin
+   Disp := Dpmi_FetchByte(P, 1 + ExtraLen);
+   If (Disp And $80) <> 0 Then Disp := Disp Or LongInt($FFFFFF00);
+   EA := EA + Disp;
+   Inc(ExtraLen);
+  End;
+  2: Begin
+   Disp := Dpmi_FetchDWord(P, 1 + ExtraLen);
+   EA := EA + Disp;
+   Inc(ExtraLen, 4);
+  End;
+ End;
+ If StackBased And (Not HasOvr) Then Seg := DpmiCPU.SegSel[2]; { SS }
+ Op.LinAddr := Dpmi_LinAddr(Seg, EA);
+ Op.Len := 1 + ExtraLen;
+End;
+
+Function Dpmi_GetOp(Var P: TEmulatorPanel; Var Op: TDpmiOperand;
+ Size: Byte): LongInt;
+Begin
+ Case Size Of
+  1: If Op.IsReg Then Dpmi_GetOp := Dpmi_GetReg8(DpmiCPU.Reg, Op.RegNum)
+     Else Dpmi_GetOp := Dpmi_ReadByte(P, Op.LinAddr);
+  2: If Op.IsReg Then Dpmi_GetOp := Dpmi_GetReg16(DpmiCPU.Reg, Op.RegNum)
+     Else Dpmi_GetOp := Dpmi_ReadWord(P, Op.LinAddr);
+ Else If Op.IsReg Then Dpmi_GetOp := Dpmi_GetReg32(DpmiCPU.Reg, Op.RegNum)
+      Else Dpmi_GetOp := Dpmi_ReadDWord(P, Op.LinAddr);
+ End;
+End;
+
+Procedure Dpmi_PutOp(Var P: TEmulatorPanel; Var Op: TDpmiOperand;
+ Size: Byte; V: LongInt);
+Begin
+ Case Size Of
+  1: If Op.IsReg Then Dpmi_SetReg8(DpmiCPU.Reg, Op.RegNum, Byte(V))
+     Else Dpmi_WriteByte(P, Op.LinAddr, Byte(V));
+  2: If Op.IsReg Then Dpmi_SetReg16(DpmiCPU.Reg, Op.RegNum, Word(V))
+     Else Dpmi_WriteWord(P, Op.LinAddr, Word(V));
+ Else If Op.IsReg Then Dpmi_SetReg32(DpmiCPU.Reg, Op.RegNum, V)
+      Else Dpmi_WriteDWord(P, Op.LinAddr, V);
+ End;
+End;
+
+{ ALU generique 8/16/32 bits - meme algorithme (CF/OF via test de plage/    }
+{ XOR de signe, SF/ZF/PF derives du resultat tronque) que Emu_AluByte/Word  }
+{ (coeur 8086), mais operant directement sur DpmiCPU.Flags (independant de }
+{ TEmuCPU). Reutilise P.CPU.ParityTable (deja peuplee par le coeur 8086)    }
+{ plutot que de dupliquer la table. AluOp : 0=ADD 1=OR 2=ADC 3=SBB 4=AND    }
+{ 5=SUB 6=XOR 7=CMP (5 et 7 identiques sauf que l appelant n ecrit pas le   }
+{ resultat pour CMP/TEST, voir Dpmi_AluForm). }
+Function Dpmi_Alu(Var P: TEmulatorPanel; AluOp: Byte; A, B: LongInt;
+ Size: Byte): LongInt;
+Var
+ UA, UB: LongWord;
+ R, MaxU: Int64;
+ Res: LongInt;
+ SignBit: LongWord;
+ OldCF: Integer;
+Begin
+ Case Size Of
+  1: Begin UA := Byte(A); UB := Byte(B); SignBit := $80; MaxU := $FF; End;
+  2: Begin UA := Word(A); UB := Word(B); SignBit := $8000; MaxU := $FFFF; End;
+ Else Begin
+   UA := LongWord(A); UB := LongWord(B);
+   SignBit := $80000000; MaxU := $FFFFFFFF;
+  End;
+ End;
+ OldCF := 0;
+ If EFG_CF In DpmiCPU.Flags.s Then OldCF := 1;
+ Case AluOp Of
+  0: R := Int64(UA) + UB;
+  1: R := Int64(UA) Or UB;
+  2: R := Int64(UA) + UB + OldCF;
+  3: R := Int64(UA) - UB - OldCF;
+  4: R := Int64(UA) And UB;
+  5, 7: R := Int64(UA) - UB;
+  6: R := Int64(UA) Xor UB;
+ Else R := 0;
+ End;
+ Case Size Of
+  1: Res := LongInt(Byte(R And $FF));
+  2: Res := LongInt(Word(R And $FFFF));
+ Else Res := LongInt(LongWord(R And $FFFFFFFF));
+ End;
+ Case AluOp Of
+  0, 2: Begin
+   If R > MaxU Then Include(DpmiCPU.Flags.s, EFG_CF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   If ((UA Xor LongWord(Res)) And (UB Xor LongWord(Res)) And SignBit) <> 0
+    Then Include(DpmiCPU.Flags.s, EFG_OF) Else Exclude(DpmiCPU.Flags.s, EFG_OF);
+  End;
+  3, 5, 7: Begin
+   If R < 0 Then Include(DpmiCPU.Flags.s, EFG_CF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   If ((UA Xor UB) And (UA Xor LongWord(Res)) And SignBit) <> 0
+    Then Include(DpmiCPU.Flags.s, EFG_OF) Else Exclude(DpmiCPU.Flags.s, EFG_OF);
+  End;
+  1, 4, 6: Begin
+   Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+  End;
+ End;
+ If (LongWord(Res) And SignBit) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+ Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+ If Res = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF)
+ Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+ If P.CPU.ParityTable[Byte(Res And $FF)] Then Include(DpmiCPU.Flags.s, EFG_PF)
+ Else Exclude(DpmiCPU.Flags.s, EFG_PF);
+ Dpmi_Alu := Res;
+End;
+
+Function Dpmi_TestCond(CC: Byte): Boolean;
+Var Res: Boolean;
+Begin
+ Res := False;
+ Case CC And $E Of
+  $0: Res := EFG_OF In DpmiCPU.Flags.s;
+  $2: Res := EFG_CF In DpmiCPU.Flags.s;
+  $4: Res := EFG_ZF In DpmiCPU.Flags.s;
+  $6: Res := (EFG_CF In DpmiCPU.Flags.s) Or (EFG_ZF In DpmiCPU.Flags.s);
+  $8: Res := EFG_SF In DpmiCPU.Flags.s;
+  $A: Res := EFG_PF In DpmiCPU.Flags.s;
+  $C: Res := (EFG_SF In DpmiCPU.Flags.s) <> (EFG_OF In DpmiCPU.Flags.s);
+  $E: Res := ((EFG_SF In DpmiCPU.Flags.s) <> (EFG_OF In DpmiCPU.Flags.s))
+          Or (EFG_ZF In DpmiCPU.Flags.s);
+ End;
+ If (CC And 1) <> 0 Then Res := Not Res;
+ Dpmi_TestCond := Res;
+End;
+
+Procedure Dpmi_Push32(Var P: TEmulatorPanel; V: LongInt);
+Begin
+ DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP - 4;
+ Dpmi_WriteDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP), V);
+End;
+
+Function Dpmi_Pop32(Var P: TEmulatorPanel): LongInt;
+Begin
+ Dpmi_Pop32 := Dpmi_ReadDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP));
+ DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + 4;
+End;
+
+Procedure Dpmi_Push16(Var P: TEmulatorPanel; V: Word);
+Begin
+ DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP - 2;
+ Dpmi_WriteWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP), V);
+End;
+
+Function Dpmi_Pop16(Var P: TEmulatorPanel): Word;
+Begin
+ Dpmi_Pop16 := Dpmi_ReadWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP));
+ DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + 2;
+End;
+
+{ Les 6 formes standard d un opcode ALU compact (00h-3Dh, voir Dpmi_Step) : }
+{ 0=Eb,Gb 1=Ev,Gv 2=Gb,Eb 3=Gv,Ev 4=AL,Ib 5=eAX,Iz. Pour AluOp=7 (CMP), le   }
+{ resultat n est jamais ecrit (seuls les drapeaux comptent). }
+Procedure Dpmi_AluForm(Var P: TEmulatorPanel; AluOp, Form, OpSize: Byte;
+ DefSeg: Word; HasOvr: Boolean);
+Var
+ ModRM, Reg: Byte;
+ Op: TDpmiOperand;
+ A, B, Res, Imm: LongInt;
+Begin
+ Case Form Of
+  0, 1: Begin
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If Form = 0 Then Begin
+    A := Dpmi_GetOp(P, Op, 1); B := Dpmi_GetReg8(DpmiCPU.Reg, Reg);
+    Res := Dpmi_Alu(P, AluOp, A, B, 1);
+    If AluOp <> 7 Then Dpmi_PutOp(P, Op, 1, Res);
+   End Else Begin
+    A := Dpmi_GetOp(P, Op, OpSize);
+    If OpSize = 2 Then B := Dpmi_GetReg16(DpmiCPU.Reg, Reg)
+    Else B := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+    Res := Dpmi_Alu(P, AluOp, A, B, OpSize);
+    If AluOp <> 7 Then Dpmi_PutOp(P, Op, OpSize, Res);
+   End;
+  End;
+  2, 3: Begin
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If Form = 2 Then Begin
+    A := Dpmi_GetReg8(DpmiCPU.Reg, Reg); B := Dpmi_GetOp(P, Op, 1);
+    Res := Dpmi_Alu(P, AluOp, A, B, 1);
+    If AluOp <> 7 Then Dpmi_SetReg8(DpmiCPU.Reg, Reg, Byte(Res));
+   End Else Begin
+    If OpSize = 2 Then A := Dpmi_GetReg16(DpmiCPU.Reg, Reg)
+    Else A := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+    B := Dpmi_GetOp(P, Op, OpSize);
+    Res := Dpmi_Alu(P, AluOp, A, B, OpSize);
+    If AluOp <> 7 Then Begin
+     If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
+     Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
+    End;
+   End;
+  End;
+  4: Begin
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   Res := Dpmi_Alu(P, AluOp, DpmiCPU.Reg.AL, Imm, 1);
+   If AluOp <> 7 Then DpmiCPU.Reg.AL := Byte(Res);
+  End;
+  5: Begin
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+    Res := Dpmi_Alu(P, AluOp, DpmiCPU.Reg.AX, Imm, 2);
+    If AluOp <> 7 Then DpmiCPU.Reg.AX := Word(Res);
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+    Res := Dpmi_Alu(P, AluOp, DpmiCPU.Reg.EAX, Imm, 4);
+    If AluOp <> 7 Then DpmiCPU.Reg.EAX := Res;
+   End;
+  End;
+ End;
+End;
+
+{ Execute une seule instruction protegee. Ne fait rien si DpmiCPU.Active   }
+{ est faux (securite - ne devrait pas etre appelee dans ce cas, voir le    }
+{ branchement dans la boucle principale). }
+Procedure Dpmi_Step(Var P: TEmulatorPanel);
+Var
+ B, ModRM, Reg, Sub: Byte;
+ OpSize: Byte;
+ DefSeg: Word;
+ HasOvr: Boolean;
+ Op: TDpmiOperand;
+ A, Imm, Res, Target, OldCF: LongInt;
+ Op2: Byte;
+Begin
+ If Not DpmiCPU.Active Then Exit;
+ HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
+ If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
+ Repeat
+  B := Dpmi_FetchByte(P, 0);
+  Case B Of
+   $66: Begin
+    If OpSize = 2 Then OpSize := 4 Else OpSize := 2;
+    Inc(DpmiCPU.EIP);
+   End;
+   $26: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[0]; Inc(DpmiCPU.EIP); End;
+   $2E: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[1]; Inc(DpmiCPU.EIP); End;
+   $36: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[2]; Inc(DpmiCPU.EIP); End;
+   $3E: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[3]; Inc(DpmiCPU.EIP); End;
+   $64: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[4]; Inc(DpmiCPU.EIP); End;
+   $65: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[5]; Inc(DpmiCPU.EIP); End;
+   $67, $F0, $F2, $F3: Inc(DpmiCPU.EIP); { taille d adresse/LOCK/REP - voir  }
+                                         { le commentaire de tete (portee)   }
+  Else Break;
+  End;
+ Until False;
+ B := Dpmi_FetchByte(P, 0);
+ Inc(DpmiCPU.EIP);
+ If (B < $40) And ((B And 7) <= 5) And (B <> $0F) Then
+  Dpmi_AluForm(P, B Shr 3, B And 7, OpSize, DefSeg, HasOvr)
+ Else Case B Of
+  $0F: Begin
+   Op2 := Dpmi_FetchByte(P, 0);
+   Inc(DpmiCPU.EIP);
+   Case Op2 Of
+    $80..$8F: Begin
+     Target := Dpmi_FetchDWord(P, 0);
+     Inc(DpmiCPU.EIP, 4);
+     If Dpmi_TestCond(Op2 And $F) Then DpmiCPU.EIP := DpmiCPU.EIP + Target;
+    End;
+   Else Begin
+    P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
+   End;
+   End;
+  End;
+  $40..$47: Begin { INC reg32/16 }
+   OldCF := 0; If EFG_CF In DpmiCPU.Flags.s Then OldCF := 1;
+   If OpSize = 2 Then
+    Res := Dpmi_Alu(P, 0, Dpmi_GetReg16(DpmiCPU.Reg, B And 7), 1, 2)
+   Else
+    Res := Dpmi_Alu(P, 0, Dpmi_GetReg32(DpmiCPU.Reg, B And 7), 1, 4);
+   If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, B And 7, Word(Res))
+   Else Dpmi_SetReg32(DpmiCPU.Reg, B And 7, Res);
+   If OldCF <> 0 Then Include(DpmiCPU.Flags.s, EFG_CF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+  End;
+  $48..$4F: Begin { DEC reg32/16 }
+   OldCF := 0; If EFG_CF In DpmiCPU.Flags.s Then OldCF := 1;
+   If OpSize = 2 Then
+    Res := Dpmi_Alu(P, 5, Dpmi_GetReg16(DpmiCPU.Reg, B And 7), 1, 2)
+   Else
+    Res := Dpmi_Alu(P, 5, Dpmi_GetReg32(DpmiCPU.Reg, B And 7), 1, 4);
+   If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, B And 7, Word(Res))
+   Else Dpmi_SetReg32(DpmiCPU.Reg, B And 7, Res);
+   If OldCF <> 0 Then Include(DpmiCPU.Flags.s, EFG_CF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+  End;
+  $50..$57: Begin { PUSH reg }
+   If OpSize = 2 Then Dpmi_Push16(P, Dpmi_GetReg16(DpmiCPU.Reg, B And 7))
+   Else Dpmi_Push32(P, Dpmi_GetReg32(DpmiCPU.Reg, B And 7));
+  End;
+  $58..$5F: Begin { POP reg }
+   If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, B And 7, Dpmi_Pop16(P))
+   Else Dpmi_SetReg32(DpmiCPU.Reg, B And 7, Dpmi_Pop32(P));
+  End;
+  $68: Begin { PUSH Iz }
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2); Dpmi_Push16(P, Word(Imm));
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4); Dpmi_Push32(P, Imm);
+   End;
+  End;
+  $6A: Begin { PUSH Ib (signe) }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If OpSize = 2 Then Dpmi_Push16(P, Word(Imm)) Else Dpmi_Push32(P, Imm);
+  End;
+  $70..$7F: Begin { Jcc rel8 }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If Dpmi_TestCond(B And $F) Then DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+  End;
+  $80, $81, $83: Begin { groupe ALU immediat : Eb,Ib / Ev,Iz / Ev,Ib(signe) }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If B = $80 Then Begin
+    A := Dpmi_GetOp(P, Op, 1);
+    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+    Res := Dpmi_Alu(P, Reg, A, Imm, 1);
+    If Reg <> 7 Then Dpmi_PutOp(P, Op, 1, Res);
+   End Else Begin
+    A := Dpmi_GetOp(P, Op, OpSize);
+    If B = $81 Then Begin
+     If OpSize = 2 Then Begin Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2); End
+     Else Begin Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4); End;
+    End Else Begin
+     Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+     If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+    End;
+    Res := Dpmi_Alu(P, Reg, A, Imm, OpSize);
+    If Reg <> 7 Then Dpmi_PutOp(P, Op, OpSize, Res);
+   End;
+  End;
+  $84, $85: Begin { TEST Eb,Gb / Ev,Gv }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If B = $84 Then
+    Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 1), Dpmi_GetReg8(DpmiCPU.Reg, Reg), 1)
+   Else If OpSize = 2 Then
+    Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 2), Dpmi_GetReg16(DpmiCPU.Reg, Reg), 2)
+   Else
+    Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 4), Dpmi_GetReg32(DpmiCPU.Reg, Reg), 4);
+  End;
+  $88, $89, $8A, $8B: Begin { MOV }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   Case B Of
+    $88: Dpmi_PutOp(P, Op, 1, Dpmi_GetReg8(DpmiCPU.Reg, Reg));
+    $89: If OpSize = 2 Then Dpmi_PutOp(P, Op, 2, Dpmi_GetReg16(DpmiCPU.Reg, Reg))
+         Else Dpmi_PutOp(P, Op, 4, Dpmi_GetReg32(DpmiCPU.Reg, Reg));
+    $8A: Dpmi_SetReg8(DpmiCPU.Reg, Reg, Byte(Dpmi_GetOp(P, Op, 1)));
+    $8B: If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Dpmi_GetOp(P, Op, 2)))
+         Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Dpmi_GetOp(P, Op, 4));
+   End;
+  End;
+  $8D: Begin { LEA Gv,M }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   { L adresse lineaire calculee inclut la base du selecteur - LEA ne doit  }
+   { charger que le DEPLACEMENT (offset dans le segment), pas l adresse     }
+   { lineaire absolue : on retranche donc la base du selecteur de donnees   }
+   { effectif utilise par Dpmi_DecodeModRM. }
+   Res := Op.LinAddr - Dpmi_SelBase(DefSeg);
+   If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
+   Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
+  End;
+  $90: ; { NOP }
+  $A8: Begin { TEST AL,Ib }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   Dpmi_Alu(P, 4, DpmiCPU.Reg.AL, Imm, 1);
+  End;
+  $A9: Begin { TEST eAX,Iz }
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+    Dpmi_Alu(P, 4, DpmiCPU.Reg.AX, Imm, 2);
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+    Dpmi_Alu(P, 4, DpmiCPU.Reg.EAX, Imm, 4);
+   End;
+  End;
+  $B0..$B7: Begin { MOV reg8,Ib }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   Dpmi_SetReg8(DpmiCPU.Reg, B And 7, Byte(Imm));
+  End;
+  $B8..$BF: Begin { MOV reg32/16,Iz/Iw }
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+    Dpmi_SetReg16(DpmiCPU.Reg, B And 7, Word(Imm));
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+    Dpmi_SetReg32(DpmiCPU.Reg, B And 7, Imm);
+   End;
+  End;
+  $C2: Begin { RET Iw (proche) }
+   Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+   If OpSize = 2 Then DpmiCPU.EIP := Dpmi_Pop16(P) Else DpmiCPU.EIP := Dpmi_Pop32(P);
+   DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + Imm;
+  End;
+  $C3: Begin { RET (proche) }
+   If OpSize = 2 Then DpmiCPU.EIP := Dpmi_Pop16(P) Else DpmiCPU.EIP := Dpmi_Pop32(P);
+  End;
+  $C6: Begin { MOV Eb,Ib }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   Dpmi_PutOp(P, Op, 1, Imm);
+  End;
+  $C7: Begin { MOV Ev,Iz }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2); Dpmi_PutOp(P, Op, 2, Imm);
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4); Dpmi_PutOp(P, Op, 4, Imm);
+   End;
+  End;
+  $C9: Begin { LEAVE }
+   DpmiCPU.Reg.ESP := DpmiCPU.Reg.EBP;
+   DpmiCPU.Reg.EBP := Dpmi_Pop32(P);
+  End;
+  $CC: Begin { INT 3 }
+   P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; { non gere,       }
+                                  { voir le commentaire de tete de section }
+  End;
+  $CD: Begin { INT Ib }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   If Imm = $31 Then Emu_DoInt31(P)
+   Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+  End;
+  $E8: Begin { CALL rel32/rel16 (proche) }
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+    Inc(DpmiCPU.EIP, 2);
+    Dpmi_Push16(P, Word(DpmiCPU.EIP));
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0);
+    Inc(DpmiCPU.EIP, 4);
+    Dpmi_Push32(P, DpmiCPU.EIP);
+   End;
+   DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+  End;
+  $E9: Begin { JMP rel32/rel16 (proche) }
+   If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+    Inc(DpmiCPU.EIP, 2);
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0);
+    Inc(DpmiCPU.EIP, 4);
+   End;
+   DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+  End;
+  $EB: Begin { JMP rel8 }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+  End;
+  $F6, $F7: Begin { groupe TEST/NOT/NEG (partiel, voir tete de section) }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Sub := (ModRM Shr 3) And 7;
+   If B = $F6 Then Begin
+    Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+    Inc(DpmiCPU.EIP, Op.Len);
+    Case Sub Of
+     0, 1: Begin
+      Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+      Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 1), Imm, 1);
+     End;
+     2: Dpmi_PutOp(P, Op, 1, Not Dpmi_GetOp(P, Op, 1));
+     3: Dpmi_PutOp(P, Op, 1, Dpmi_Alu(P, 5, 0, Dpmi_GetOp(P, Op, 1), 1));
+    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    End;
+   End Else Begin
+    Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+    Inc(DpmiCPU.EIP, Op.Len);
+    Case Sub Of
+     0, 1: Begin
+      If OpSize = 2 Then Begin
+       Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+       Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 2), Imm, 2);
+      End Else Begin
+       Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+       Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 4), Imm, 4);
+      End;
+     End;
+     2: Dpmi_PutOp(P, Op, OpSize, Not Dpmi_GetOp(P, Op, OpSize));
+     3: Dpmi_PutOp(P, Op, OpSize, Dpmi_Alu(P, 5, 0, Dpmi_GetOp(P, Op, OpSize), OpSize));
+    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    End;
+   End;
+  End;
+  $FE, $FF: Begin { groupe INC/DEC/CALL/JMP indirects/PUSH (partiel) }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Sub := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If B = $FE Then Begin
+    OldCF := 0; If EFG_CF In DpmiCPU.Flags.s Then OldCF := 1;
+    If Sub = 0 Then Dpmi_PutOp(P, Op, 1, Dpmi_Alu(P, 0, Dpmi_GetOp(P, Op, 1), 1, 1))
+    Else If Sub = 1 Then Dpmi_PutOp(P, Op, 1, Dpmi_Alu(P, 5, Dpmi_GetOp(P, Op, 1), 1, 1))
+    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    If OldCF <> 0 Then Include(DpmiCPU.Flags.s, EFG_CF)
+    Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End Else Case Sub Of
+    0: Begin
+     OldCF := 0; If EFG_CF In DpmiCPU.Flags.s Then OldCF := 1;
+     Dpmi_PutOp(P, Op, OpSize, Dpmi_Alu(P, 0, Dpmi_GetOp(P, Op, OpSize), 1, OpSize));
+     If OldCF <> 0 Then Include(DpmiCPU.Flags.s, EFG_CF)
+     Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+    End;
+    1: Begin
+     OldCF := 0; If EFG_CF In DpmiCPU.Flags.s Then OldCF := 1;
+     Dpmi_PutOp(P, Op, OpSize, Dpmi_Alu(P, 5, Dpmi_GetOp(P, Op, OpSize), 1, OpSize));
+     If OldCF <> 0 Then Include(DpmiCPU.Flags.s, EFG_CF)
+     Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+    End;
+    2: Begin { CALL near indirect }
+     Target := Dpmi_GetOp(P, Op, OpSize);
+     If OpSize = 2 Then Dpmi_Push16(P, Word(DpmiCPU.EIP)) Else Dpmi_Push32(P, DpmiCPU.EIP);
+     DpmiCPU.EIP := Target;
+    End;
+    4: DpmiCPU.EIP := Dpmi_GetOp(P, Op, OpSize); { JMP near indirect }
+    6: If OpSize = 2 Then Dpmi_Push16(P, Word(Dpmi_GetOp(P, Op, 2)))
+       Else Dpmi_Push32(P, Dpmi_GetOp(P, Op, 4)); { PUSH Ev }
+   Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   End;
+  End;
+ Else Begin
+  { Opcode non reconnu par ce sous-ensemble (voir le commentaire de tete de}
+  { section) : arreter proprement plutot que de continuer avec un etat CPU}
+  { incorrect - honnete plutot que fabrique. }
+  P.CPU.Fault := sfInvalidCode;
+  DpmiCPU.Active := False;
+ End;
+ End;
+End;
+
 { --- INT 2Fh AX=7A00h : verification d installation IPX ; AX=4300h/4310h  }
 { : verification d installation XMS et adresse du point d entree. Toute    }
 { autre sous-fonction (ou si le service correspondant n est pas configure) }
@@ -65255,7 +65906,14 @@ Begin NesActive := False;
     L emulateur s arrete uniquement sur ESC, faute CPU ou INT 21h AH=4Ch. }
   EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   EmuDbg_OnBeforeStep8086;
-  Emu_StepOne(P);
+  { DPMI (voir Dpmi_Switch) : tant que le programme est en mode protege,   }
+  { chaque "pas" execute une instruction du coeur 32 bits protege PARALLELE}
+  { (DpmiCPU) plutot que le coeur 8086 reel (P.CPU) - la commutation en    }
+  { sens inverse (retour au mode reel) n est pas encore implantee (etape    }
+  { ulterieure), donc DpmiCPU.Active ne redevient jamais faux pour l instant}
+  { une fois passe en mode protege, hormis en cas d opcode non reconnu     }
+  { (voir le commentaire de tete de Dpmi_Step). }
+  If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
   Inc(Steps);
   { --- VRetrace ($3DA bit 3) libre, cadencee sur le nombre de pas CPU et }
   { non sur la lecture du port : a 750 pas/demi-periode et               }
@@ -65487,8 +66145,9 @@ End;
 
 Procedure StepEmulator(Var P: TEmulatorPanel);
 Begin
- If P.Running And (P.CPU.Fault = sfNone) Then
-  Emu_StepOne(P);
+ If P.Running And (P.CPU.Fault = sfNone) Then Begin
+  If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
+ End;
  If P.CPU.Fault <> sfNone Then
   P.Running := False;
 End;
