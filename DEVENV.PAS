@@ -33245,10 +33245,26 @@ End;
 { - toute autre valeur (ou l absence d en-tete secondaire exploitable)  }
 { signe un executable MZ classique. Un ".COM" n a pas d en-tete du tout }
 { (code brut charge a CS:0100h) et est donc toujours du DOS 16 bits.    }
+{                                                                        }
+{ PIEGE (trouve via BP.EXE, Borland Pascal 7.0, 1992, ~490 Ko) : sur un  }
+{ VRAI executable DOS 16 bits ancien, l offset $3C n a jamais ete reserve}
+{ par le linker de l epoque pour un e_lfanew - il contient simplement    }
+{ des octets de programme/donnees quelconques qui, LUS COMME s ils       }
+{ etaient un pointeur, peuvent par pure coincidence tomber sur une paire }
+{ d octets 'N','E' (ou pire) ailleurs dans le fichier et declencher un   }
+{ faux "c est du Win16 NE" - exactement ce qui arrive avec BP.EXE. Pour  }
+{ eviter ce faux positif, on verifie D ABORD e_crlc (offset 6, nombre    }
+{ d entrees de la table de translation) : un vrai executable DOS 16 bits}
+{ RELOCALISABLE (le cas normal pour un programme d une taille pareille)  }
+{ a TOUJOURS e_crlc > 0, alors qu un stub MZ precedant un vrai en-tete   }
+{ PE/NE/LE (genere par le linker specifiquement comme code fixe, jamais  }
+{ realloue) a TOUJOURS e_crlc = 0 - un signal beaucoup plus fiable que   }
+{ de suivre un e_lfanew qui n a jamais ete ecrit intentionnellement.     }
 Function NCIsDos16Exe(Const Path: String): Boolean;
 Var
  F: File;
  Sig: Array[0..1] Of Char;
+ CrlcBuf: Array[0..1] Of Byte;
  LfanewBuf: Array[0..3] Of Byte;
  HdrSig: Array[0..3] Of Char;
  Lfanew: LongInt;
@@ -33269,6 +33285,16 @@ Begin
  BlockRead(F, Sig, 2, BytesRead);
  If (BytesRead <> 2) Or (Sig[0] <> 'M') Or (Sig[1] <> 'Z') Then Begin
   Close(F);
+  Exit;
+ End;
+ Seek(F, 6);
+ BlockRead(F, CrlcBuf, 2, BytesRead);
+ If (BytesRead = 2) And ((CrlcBuf[0] <> 0) Or (CrlcBuf[1] <> 0)) Then Begin
+  { e_crlc > 0 : de vraies relocalisations sont presentes - executable DOS}
+  { 16 bits authentique, voir le commentaire de tete. Inutile (et risque) }
+  { de suivre e_lfanew dans ce cas. }
+  Close(F);
+  NCIsDos16Exe := True;
   Exit;
  End;
  Seek(F, $3C);
