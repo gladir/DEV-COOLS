@@ -1659,6 +1659,21 @@ Const
  EMU_MOUSE_STUB_OFS   = $0100; { Emu_MouseInit/Emu_MouseFireOne           }
  EMU_MSCDEX_INFO_SEG  = $F000; { "adresse d en-tete de pilote" cosmetique, }
  EMU_MSCDEX_INFO_OFS  = $0110; { jamais dereferencee - voir AX=1501h      }
+ EMU_DPMI_STUB_SEG    = $F000; { trampoline point d entree DPMI (INT      }
+ EMU_DPMI_STUB_OFS    = $0120; { 2Fh/1687h), voir Emu_DoInt2F/Dpmi_Switch }
+ { Bump allocator "memoire DOS basse" pour INT 31h AX=0100h (voir          }
+ { Dpmi_AllocDosMem) - zone scratch dediee, largement apres tous les       }
+ { autres trampolines de $F000 pour eviter toute collision. }
+ EMU_DPMI_DOSMEM_SEG    = $F000;
+ EMU_DPMI_DOSMEM_START  = $1000; { offset de debut (paragraphe $100) }
+ EMU_DPMI_DOSMEM_CAP    = $8000; { plafond ~32 Ko, largement suffisant pour }
+                                  { les tampons de transfert mode reel usuels}
+ EMU_DPMI_MAX_SEL       = 255;   { nombre d entrees LDT logicielles }
+ EMU_DPMI_MAX_HANDLE    = 32;    { poignees de memoire etendue DPMI }
+ EMU_DPMI_MAX_CALLBACK  = 16;    { rappels mode reel (AX=0303h) }
+ EMU_DPMI_EXT_BASE      = $100000; { 1 Mo - debut de la "memoire etendue"   }
+                                    { DPMI (voir EmuDpmiExtMem) }
+ EMU_DPMI_EXT_CAP_KB    = 65536;   { plafond 64 Mo, comme EMU_XMS_CAP_KB }
 
  { Plafond materiel arbitraire du tampon "memoire etendue" XMS, independant}
  { de la taille configuree par l utilisateur (DosXMSSize) qui ne peut que  }
@@ -3487,6 +3502,11 @@ Type
  { de banc complete et correcte. }
  TEmuEmsBuf = Array[0..EMU_EMS_CAP_KB * 1024 - 1] Of Byte;
 
+ { Tampon "memoire etendue" DPMI separe (voir TEmuDpmiState/Dpmi_ReadByte) -}
+ { meme principe que TEmuEmsBuf/TEmuXmsBuf : adresses lineaires DPMI       }
+ { >= EMU_DPMI_EXT_BASE (1 Mo) redirigees ici plutot que vers P.CPU.Memory.}
+ TDpmiExtBuf = Array[0..EMU_DPMI_EXT_CAP_KB * 1024 - 1] Of Byte;
+
  TEmuEmsHandle = Record
   InUse        : Boolean;
   PageCount    : Word;          { nombre de pages logiques de 16 Ko       }
@@ -3512,6 +3532,94 @@ Type
   { Contexte de sauvegarde par poignee (fonctions 47h/48h, EMS 3.2+). }
   SavedSlots      : Array[1..EMU_EMS_MAX_HANDLES] Of Array[0..3] Of TEmuEmsSlot;
   SavedSlotsValid : Array[1..EMU_EMS_MAX_HANDLES] Of Boolean;
+ End;
+
+ { ========================================================================
+   DPMI (DOS Protected Mode Interface, voir DOC/DPMI.txt) - coeur CPU 32   }
+ { bits protege PARALLELE au coeur 8086 reel (P.CPU/TEmuCPU), et non une   }
+ { extension de celui-ci : contrairement a l emulateur Linux ELF64 (memoire}
+ { et registres entierement independants du reste de l IDE), ce coeur DOIT }
+ { partager la memoire du programme DOS hote (P.CPU.Memory, voir           }
+ { Dpmi_ReadByte/WriteByte) puisque le "client DPMI" est le MEME programme }
+ { DOS qui vient de commuter en mode protege via INT 2Fh AX=1687h et       }
+ { continue d appeler INT 21h/BIOS via les services DPMI "simuler          }
+ { interruption mode reel" (AX=0300h, etape ulterieure) qui retombent sur  }
+ { Emu_DoInt21 deja existant. Etat conserve en singleton global (DpmiCPU/  }
+ { EmuDpmi), comme EmuEms/EmuXms/EmuMouse - un seul programme DOS          }
+ { s execute a la fois dans cet IDE, donc pas besoin d un champ par panel. }
+ { ======================================================================== }
+
+ { Descripteur de segment logiciel (8 octets reels du x86, voir DOC/       }
+ { DPMI.txt section 2.2) - stocke ici sous forme deja decodee plutot que   }
+ { comme 8 octets bruts, sauf pour AX=000Bh/000Ch (descripteur brut) qui   }
+ { re-assemblent AccessByte/FlagsByte a la volee. }
+ TDpmiDescriptor = Record
+  Present    : Boolean;
+  Base       : LongInt;   { adresse lineaire de base }
+  Limit      : LongInt;   { taille du segment moins 1, en octets (deja     }
+                           { multiplie par 4096 si le bit G etait pose)    }
+  AccessByte : Byte;      { octet de droits d acces brut (P/DPL/S/Type)    }
+  FlagsByte  : Byte;      { octet de flags brut (G/D-B/L/AVL)              }
+  Big        : Boolean;   { D/B=1 : segment "32 bits" (limite/adressage)   }
+  IsCode     : Boolean;
+ End;
+
+ { LDT logicielle du client DPMI courant (voir DOC/DPMI.txt section 2.3 -  }
+ { "le client peut allouer/modifier des descripteurs LDT" - la GDT elle-   }
+ { meme n est pas exposee separement : un seul client actif a la fois dans}
+ { cet emulateur, donc LDT et GDT seraient equivalentes en pratique). }
+ TDpmiLDT = Array[0..EMU_DPMI_MAX_SEL] Of TDpmiDescriptor;
+
+ { Poignee de bloc de memoire etendue DPMI (AX=0501h/0502h/0503h) - meme   }
+ { principe d allocateur "bump" que EmuXms/EmuEms (voir leur commentaire   }
+ { d en-tete respectif) : seulement recupere quand TOUTES les poignees     }
+ { sont liberees simultanement. }
+ TDpmiMemHandle = Record
+  InUse   : Boolean;
+  LinAddr : LongInt;
+  Size    : LongInt;
+ End;
+
+ { Etat de configuration DPMI (case a cocher "DPMI"/"Taille", voir          }
+ { Emu_DpmiInit) - separe de TDpmiCPU (etat d execution) comme              }
+ { EmuEms/EmuXms separent deja configuration et etat d execution. }
+ TEmuDpmiState = Record
+  Active       : Boolean;   { case "DPMI" (DosDPMI) - voir Emu_DpmiInit }
+  ExtCapBytes  : LongInt;   { plafond configure (DosDPMISize, en Ko*1024) }
+  UsedBytes    : LongInt;   { allocateur "bump" de memoire etendue }
+  Handles      : Array[0..EMU_DPMI_MAX_HANDLE - 1] Of TDpmiMemHandle;
+  DosMemUsedOfs: Word;      { allocateur "bump" memoire DOS basse (AX=0100h),}
+                             { offset courant dans EMU_DPMI_DOSMEM_SEG }
+ End;
+
+ { Etat d execution du coeur CPU 32 bits protege - actif seulement entre    }
+ { l entree en mode protege (INT 2Fh AX=1687h) et la sortie finale (fin du }
+ { programme). Reutilise TEmuFlags (drapeaux CF/ZF/SF/OF/... identiques en }
+ { 32 bits) plutot que d en redefinir un jeu distinct. }
+ TDpmiCPU = Record
+  Active  : Boolean;    { le programme est actuellement en mode protege }
+  Is32Bit : Boolean;    { AX=0/1 demande a l entree (16 ou 32 bits) }
+  Reg     : TEmuRegs;   { reutilise le meme record variant EAX/AX/AL... que }
+                         { le coeur 8086 (TEmuCPU.Regs) - memes alias }
+  EIP     : LongInt;
+  Flags   : TEmuFlags;
+  SegSel  : Array[0..5] Of Word; { 0=ES 1=CS 2=SS 3=DS 4=FS 5=GS,           }
+                                  { selecteurs (pas des segments reels)     }
+  LDT      : TDpmiLDT;
+  LDTCount : Integer;   { nombre d entrees allouees, pour AX=0000h }
+  { Point de reprise en mode reel (CS:IP/SS:SP captures au moment de la    }
+  { commutation initiale AX=1687h) - restaure a la sortie DPMI finale.     }
+  RealCS, RealIP, RealSS, RealSP : Word;
+  { Vecteurs d exception/interruption mode protege installes par le        }
+  { client (AX=0203h/0205h, etape ulterieure) - Sel/Ofs par numero 0..FFh. }
+  IntSel : Array[0..255] Of Word;
+  IntOfs : Array[0..255] Of LongInt;
+  { Rappels mode reel installes par AX=0303h (etape ulterieure). }
+  CbUsed    : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Boolean;
+  CbPmSel   : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Word;
+  CbPmOfs   : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of LongInt;
+  CbRealSeg : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Word;
+  CbRealOfs : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Word;
  End;
 
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
@@ -3712,6 +3820,8 @@ Type
   DosEMS          : Boolean;     { memoire EMS activee            }
   DosEMSSize      : Integer;     { taille EMS en Ko               }
   DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
+  DosDPMI         : Boolean;     { support DPMI active (INT 31h)  }
+  DosDPMISize     : Integer;     { taille memoire etendue DPMI en Ko }
   DosMSCDEX       : Boolean;     { pilote MSCDEX (CD-ROM)         }
   DosSouris       : Boolean;     { pilote souris                  }
   DosMousePS2BIOS : Boolean;     { BIOS souris PS/2 (INT 15h AH=C2h) }
@@ -4623,6 +4733,13 @@ Var
  EmuEms         : TEmuEmsState;
  EmuEmsMem      : ^TEmuEmsBuf;   { tampon "memoire expansee" separe, voir  }
                                   { Emu_EmsInit. Nil tant que EMS inactif.  }
+ { --- Etat DPMI (voir Emu_DpmiInit/Dpmi_Step, DOC/DPMI.txt) --- }
+ EmuDpmi        : TEmuDpmiState;
+ EmuDpmiExtMem  : ^TDpmiExtBuf;  { tampon "memoire etendue" DPMI separe,   }
+                                  { voir Emu_DpmiInit. Nil tant qu inactif. }
+ DpmiCPU        : TDpmiCPU;      { etat d execution du coeur 32 bits       }
+                                  { protege (actif seulement entre l entree}
+                                  { et la sortie DPMI, voir Dpmi_Switch).   }
  { --- Etat de la souris emulee (INT 33h) --- }
  EmuMouseInst   : Boolean;       { driver "installe" }
  EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
@@ -52725,6 +52842,564 @@ Begin
  End;
 End;
 
+{ ========================================================================= }
+{ DPMI (DOS Protected Mode Interface, voir DOC/DPMI.txt) - services et      }
+{ traduction memoire du coeur CPU 32 bits protege PARALLELE (DpmiCPU/       }
+{ EmuDpmi, voir leur commentaire de tete pres de leur declaration de type,  }
+{ juste apres TEmuEmsState). Etape 1/5 de cette fonctionnalite : les        }
+{ services descripteurs/memoire (bien specifies, autonomes) et le          }
+{ mecanisme de detection/commutation sont implantes ici ; le decodeur      }
+{ d instructions 32 bits protegees (Dpmi_Step) et son branchement dans la  }
+{ boucle principale suivent plus bas dans ce fichier. Les rappels mode reel}
+{ (AX=0300h-0306h) et la gestion des exceptions (AX=0200h-0205h) sont      }
+{ prevus pour des etapes ulterieures (voir le plan en tete de session). }
+{ ========================================================================= }
+
+{ --- Traduction memoire lineaire -> emplacement physique reel : < 1 Mo    }
+{ (EMU_DPMI_EXT_BASE) redirige vers P.CPU.Memory (memoire conventionnelle, }
+{ PARTAGEE avec le coeur 8086 reel - un programme DPMI qui touche a de la  }
+{ memoire basse doit voir/modifier les MEMES octets que son propre code    }
+{ mode reel, ex. son PSP/tas), >= 1 Mo redirige vers EmuDpmiExtMem (pool   }
+{ separe, comme EmuXmsMem/EmuEmsMem). Hors bornes : 0 en lecture, ignore   }
+{ en ecriture (meme convention defensive que Emu64_GetByte de l emulateur  }
+{ ELF64). --- }
+Function Dpmi_ReadByte(Var P: TEmulatorPanel; LinAddr: LongInt): Byte;
+Begin
+ If (LinAddr >= 0) And (LinAddr < EMU_DPMI_EXT_BASE) Then
+  Dpmi_ReadByte := P.CPU.Memory^[LinAddr]
+ Else If (LinAddr >= EMU_DPMI_EXT_BASE) And
+    (LinAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
+    (EmuDpmiExtMem <> Nil) Then
+  Dpmi_ReadByte := EmuDpmiExtMem^[LinAddr - EMU_DPMI_EXT_BASE]
+ Else
+  Dpmi_ReadByte := 0;
+End;
+
+Procedure Dpmi_WriteByte(Var P: TEmulatorPanel; LinAddr: LongInt; V: Byte);
+Begin
+ If (LinAddr >= 0) And (LinAddr < EMU_DPMI_EXT_BASE) Then
+  P.CPU.Memory^[LinAddr] := V
+ Else If (LinAddr >= EMU_DPMI_EXT_BASE) And
+    (LinAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
+    (EmuDpmiExtMem <> Nil) Then
+  EmuDpmiExtMem^[LinAddr - EMU_DPMI_EXT_BASE] := V;
+End;
+
+Function Dpmi_ReadWord(Var P: TEmulatorPanel; LinAddr: LongInt): Word;
+Begin
+ Dpmi_ReadWord := Word(Dpmi_ReadByte(P, LinAddr)) Or
+  (Word(Dpmi_ReadByte(P, LinAddr + 1)) Shl 8);
+End;
+
+Procedure Dpmi_WriteWord(Var P: TEmulatorPanel; LinAddr: LongInt; V: Word);
+Begin
+ Dpmi_WriteByte(P, LinAddr, Byte(V And $FF));
+ Dpmi_WriteByte(P, LinAddr + 1, Byte(V Shr 8));
+End;
+
+Function Dpmi_ReadDWord(Var P: TEmulatorPanel; LinAddr: LongInt): LongInt;
+Begin
+ Dpmi_ReadDWord := LongInt(Dpmi_ReadWord(P, LinAddr)) Or
+  (LongInt(Dpmi_ReadWord(P, LinAddr + 2)) Shl 16);
+End;
+
+Procedure Dpmi_WriteDWord(Var P: TEmulatorPanel; LinAddr: LongInt; V: LongInt);
+Begin
+ Dpmi_WriteWord(P, LinAddr, Word(V And $FFFF));
+ Dpmi_WriteWord(P, LinAddr + 2, Word((V Shr 16) And $FFFF));
+End;
+
+{ --- Selecteurs -> descripteurs : le TI (bit 2) et le RPL (bits 1-0) sont  }
+{ ignores (un seul client actif a la fois dans cet emulateur, donc LDT et  }
+{ GDT sont confondues - voir le commentaire de tete pres de TDpmiLDT) :    }
+{ seul l INDEX (bits 15-3) est significatif. --- }
+Function Dpmi_SelToIdx(Sel: Word; Var Idx: Integer): Boolean;
+Begin
+ Idx := Sel Shr 3;
+ Dpmi_SelToIdx := (Idx >= 0) And (Idx <= EMU_DPMI_MAX_SEL) And
+  DpmiCPU.LDT[Idx].Present;
+End;
+
+Function Dpmi_SelBase(Sel: Word): LongInt;
+Var Idx: Integer;
+Begin
+ If Dpmi_SelToIdx(Sel, Idx) Then Dpmi_SelBase := DpmiCPU.LDT[Idx].Base
+ Else Dpmi_SelBase := 0;
+End;
+
+Function Dpmi_SelLimit(Sel: Word): LongInt;
+Var Idx: Integer;
+Begin
+ If Dpmi_SelToIdx(Sel, Idx) Then Dpmi_SelLimit := DpmiCPU.LDT[Idx].Limit
+ Else Dpmi_SelLimit := 0;
+End;
+
+{ Adresse lineaire d un couple selecteur:offset - AUCUNE verification de   }
+{ limite n est appliquee (un vrai serveur DPMI declencherait une exception }
+{ 0Dh GPF au-dela de la limite - non implante dans cette premiere etape,   }
+{ voir le commentaire de tete de Dpmi_Step plus bas). }
+Function Dpmi_LinAddr(Sel: Word; Ofs: LongInt): LongInt;
+Begin
+ Dpmi_LinAddr := Dpmi_SelBase(Sel) + Ofs;
+End;
+
+Procedure Dpmi_SetDescBase(Sel: Word; NewBase: LongInt);
+Var Idx: Integer;
+Begin
+ If Dpmi_SelToIdx(Sel, Idx) Then DpmiCPU.LDT[Idx].Base := NewBase;
+End;
+
+Procedure Dpmi_SetDescLimit(Sel: Word; NewLimit: LongInt);
+Var Idx: Integer;
+Begin
+ If Dpmi_SelToIdx(Sel, Idx) Then Begin
+  DpmiCPU.LDT[Idx].Limit := NewLimit;
+  DpmiCPU.LDT[Idx].Big := NewLimit > $FFFF; { deduit, voir AX=0008h }
+ End;
+End;
+
+{ --- Registres 8/16/32 bits par numero ModRM (0=A 1=C 2=D 3=B 4=SP/AH     }
+{ 5=BP/CH 6=SI/DH 7=DI/BH) - equivalent de Emu_GetReg16/SetReg16 (coeur    }
+{ 8086) mais operant directement sur un TEmuRegs autonome (celui de        }
+{ DpmiCPU), reutilise par Dpmi_Step (decodeur d instructions, plus bas). }
+Function Dpmi_GetReg32(Var R: TEmuRegs; Num: Byte): LongInt;
+Begin
+ Case Num And 7 Of
+  0: Dpmi_GetReg32 := R.EAX; 1: Dpmi_GetReg32 := R.ECX;
+  2: Dpmi_GetReg32 := R.EDX; 3: Dpmi_GetReg32 := R.EBX;
+  4: Dpmi_GetReg32 := R.ESP; 5: Dpmi_GetReg32 := R.EBP;
+  6: Dpmi_GetReg32 := R.ESI; 7: Dpmi_GetReg32 := R.EDI;
+ End;
+End;
+
+Procedure Dpmi_SetReg32(Var R: TEmuRegs; Num: Byte; V: LongInt);
+Begin
+ Case Num And 7 Of
+  0: R.EAX := V; 1: R.ECX := V; 2: R.EDX := V; 3: R.EBX := V;
+  4: R.ESP := V; 5: R.EBP := V; 6: R.ESI := V; 7: R.EDI := V;
+ End;
+End;
+
+Function Dpmi_GetReg16(Var R: TEmuRegs; Num: Byte): Word;
+Begin
+ Case Num And 7 Of
+  0: Dpmi_GetReg16 := R.AX; 1: Dpmi_GetReg16 := R.CX;
+  2: Dpmi_GetReg16 := R.DX; 3: Dpmi_GetReg16 := R.BX;
+  4: Dpmi_GetReg16 := R.SP; 5: Dpmi_GetReg16 := R.BP;
+  6: Dpmi_GetReg16 := R.SI; 7: Dpmi_GetReg16 := R.DI;
+ End;
+End;
+
+Procedure Dpmi_SetReg16(Var R: TEmuRegs; Num: Byte; V: Word);
+Begin
+ Case Num And 7 Of
+  0: R.AX := V; 1: R.CX := V; 2: R.DX := V; 3: R.BX := V;
+  4: R.SP := V; 5: R.BP := V; 6: R.SI := V; 7: R.DI := V;
+ End;
+End;
+
+Function Dpmi_GetReg8(Var R: TEmuRegs; Num: Byte): Byte;
+Begin
+ Case Num And 7 Of
+  0: Dpmi_GetReg8 := R.AL; 1: Dpmi_GetReg8 := R.CL;
+  2: Dpmi_GetReg8 := R.DL; 3: Dpmi_GetReg8 := R.BL;
+  4: Dpmi_GetReg8 := R.AH; 5: Dpmi_GetReg8 := R.CH;
+  6: Dpmi_GetReg8 := R.DH; 7: Dpmi_GetReg8 := R.BH;
+ End;
+End;
+
+Procedure Dpmi_SetReg8(Var R: TEmuRegs; Num: Byte; V: Byte);
+Begin
+ Case Num And 7 Of
+  0: R.AL := V; 1: R.CL := V; 2: R.DL := V; 3: R.BL := V;
+  4: R.AH := V; 5: R.CH := V; 6: R.DH := V; 7: R.BH := V;
+ End;
+End;
+
+{ --- AX=0000h : allouer Count descripteurs LDT CONTIGUS (voir DOC/       }
+{ DPMI.txt 4.1) - cherche une plage libre de la bonne taille. --- }
+Function Dpmi_AllocLDT(Count: Integer; Var FirstSel: Word): Boolean;
+Var I, J, Run: Integer;
+Begin
+ Dpmi_AllocLDT := False;
+ If Count < 1 Then Exit;
+ I := 0;
+ While I + Count - 1 <= EMU_DPMI_MAX_SEL Do Begin
+  Run := 0;
+  For J := 0 To Count - 1 Do
+   If Not DpmiCPU.LDT[I + J].Present Then Inc(Run);
+  If Run = Count Then Begin
+   For J := 0 To Count - 1 Do Begin
+    FillChar(DpmiCPU.LDT[I + J], SizeOf(TDpmiDescriptor), 0);
+    DpmiCPU.LDT[I + J].Present := True;
+    DpmiCPU.LDT[I + J].AccessByte := $92; { donnees lire/ecrire present DPL0 }
+   End;
+   FirstSel := Word((I Shl 3) Or 4);  { TI=1 (LDT), RPL=0 - purement       }
+   Inc(DpmiCPU.LDTCount, Count);      { cosmetique ici (voir Dpmi_SelToIdx)}
+   Dpmi_AllocLDT := True;
+   Exit;
+  End;
+  Inc(I, Run + 1);
+ End;
+End;
+
+{ AX=0001h }
+Function Dpmi_FreeLDT(Sel: Word): Boolean;
+Var Idx: Integer;
+Begin
+ Dpmi_FreeLDT := False;
+ If Not Dpmi_SelToIdx(Sel, Idx) Then Exit;
+ FillChar(DpmiCPU.LDT[Idx], SizeOf(TDpmiDescriptor), 0);
+ If DpmiCPU.LDTCount > 0 Then Dec(DpmiCPU.LDTCount);
+ Dpmi_FreeLDT := True;
+End;
+
+{ AX=0002h - creer un selecteur pour le segment reel RealSeg (base =      }
+{ RealSeg*16, limite = 64 Ko - 1), voir DOC/DPMI.txt 4.3. }
+Function Dpmi_SegToSel(RealSeg: Word): Word;
+Var Sel: Word;
+Begin
+ If Not Dpmi_AllocLDT(1, Sel) Then Begin Dpmi_SegToSel := 0; Exit; End;
+ Dpmi_SetDescBase(Sel, LongInt(RealSeg) Shl 4);
+ Dpmi_SetDescLimit(Sel, $FFFF);
+ Dpmi_SegToSel := Sel;
+End;
+
+{ --- AX=0100h/0101h/0102h : memoire DOS basse (bump allocator dedie dans  }
+{ le segment scratch EMU_DPMI_DOSMEM_SEG, voir son commentaire de tete -   }
+{ jamais recupere avant que TOUTE la zone soit consideree libre, meme      }
+{ principe assume que les autres allocateurs "bump" de cette session       }
+{ (XMS/EMS/IPX) - documente comme limitation acceptable). --- }
+Function Dpmi_AllocDosMem(Paragraphs: Word; Var RealSeg, Sel: Word): Boolean;
+Var Bytes: LongInt;
+Begin
+ Dpmi_AllocDosMem := False;
+ Bytes := LongInt(Paragraphs) * 16;
+ If EmuDpmi.DosMemUsedOfs + Bytes > EMU_DPMI_DOSMEM_START + EMU_DPMI_DOSMEM_CAP Then
+  Exit;
+ RealSeg := EMU_DPMI_DOSMEM_SEG + (EmuDpmi.DosMemUsedOfs Shr 4);
+ Sel := Dpmi_SegToSel(RealSeg);
+ If Sel = 0 Then Exit;
+ Inc(EmuDpmi.DosMemUsedOfs, Word(Bytes));
+ Dpmi_AllocDosMem := True;
+End;
+
+{ --- AX=0501h/0502h/0503h : memoire etendue DPMI (bump allocator, meme    }
+{ principe que Emu_XmsAllocBlock/Emu_EmsAllocHandle). --- }
+Function Dpmi_ExtAlloc(SizeBytes: LongInt; Var OutHandle: Integer;
+ Var LinAddr: LongInt): Boolean;
+Var I: Integer;
+Begin
+ Dpmi_ExtAlloc := False;
+ If EmuDpmiExtMem = Nil Then Exit;
+ If EmuDpmi.UsedBytes + SizeBytes > EmuDpmi.ExtCapBytes Then Exit;
+ For I := 0 To EMU_DPMI_MAX_HANDLE - 1 Do
+  If Not EmuDpmi.Handles[I].InUse Then Begin
+   EmuDpmi.Handles[I].InUse := True;
+   EmuDpmi.Handles[I].LinAddr := EMU_DPMI_EXT_BASE + EmuDpmi.UsedBytes;
+   EmuDpmi.Handles[I].Size := SizeBytes;
+   Inc(EmuDpmi.UsedBytes, SizeBytes);
+   OutHandle := I;
+   LinAddr := EmuDpmi.Handles[I].LinAddr;
+   Dpmi_ExtAlloc := True;
+   Exit;
+  End;
+End;
+
+Function Dpmi_ExtFree(H: Integer): Boolean;
+Var I: Integer;
+ AllFree: Boolean;
+Begin
+ Dpmi_ExtFree := False;
+ If (H < 0) Or (H >= EMU_DPMI_MAX_HANDLE) Or (Not EmuDpmi.Handles[H].InUse) Then
+  Exit;
+ EmuDpmi.Handles[H].InUse := False;
+ AllFree := True;
+ For I := 0 To EMU_DPMI_MAX_HANDLE - 1 Do
+  If EmuDpmi.Handles[I].InUse Then AllFree := False;
+ If AllFree Then EmuDpmi.UsedBytes := 0; { recuperation seulement quand TOUT }
+                                          { est libere, voir le commentaire  }
+                                          { de tete de section }
+ Dpmi_ExtFree := True;
+End;
+
+{ Reinitialise l etat DPMI et, si la case "DPMI" est cochee, alloue le     }
+{ tampon "memoire etendue" separe. Appelee a chaque (re)demarrage de       }
+{ l emulateur, comme Emu_EmsInit/Emu_MouseInit. }
+Procedure Emu_DpmiInit(Var P: TEmulatorPanel);
+Begin
+ FillChar(EmuDpmi, SizeOf(EmuDpmi), 0);
+ FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
+ EmuDpmi.Active := OptionsDlg.Data.DosDPMI;
+ If EmuDpmiExtMem <> Nil Then Begin
+  Dispose(EmuDpmiExtMem);
+  EmuDpmiExtMem := Nil;
+ End;
+ EmuDpmi.DosMemUsedOfs := EMU_DPMI_DOSMEM_START;
+ If Not EmuDpmi.Active Then Exit;
+ EmuDpmi.ExtCapBytes := LongInt(OptionsDlg.Data.DosDPMISize) * 1024;
+ If EmuDpmi.ExtCapBytes > EMU_DPMI_EXT_CAP_KB * 1024 Then
+  EmuDpmi.ExtCapBytes := EMU_DPMI_EXT_CAP_KB * 1024;
+ If EmuDpmi.ExtCapBytes < 0 Then EmuDpmi.ExtCapBytes := 0;
+ New(EmuDpmiExtMem);
+ If EmuDpmiExtMem = Nil Then Begin
+  EmuDpmi.Active := False;
+  Exit;
+ End;
+ FillChar(EmuDpmiExtMem^, SizeOf(EmuDpmiExtMem^), 0);
+ { Trampoline de commutation reel -> protege (voir Dpmi_Switch) : INT FBh, }
+ { jamais rencontre par du logiciel DOS reel. }
+ Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS,     $CD);
+ Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS + 1, $FB);
+End;
+
+{ Gestionnaire du point d entree DPMI (voir DOC/DPMI.txt 3.2) - execute    }
+{ quand le CLIENT (encore en mode reel, via Emu_StepOne) execute un CALL   }
+{ FAR sur l adresse retournee par INT 2Fh AX=1687h (EMU_DPMI_STUB_SEG:OFS).}
+{ Depile nous-memes le CS:IP de retour pousses par ce CALL FAR (plutot que }
+{ de laisser un RETF les consommer) : on ne "revient" pas reellement, on   }
+{ POURSUIT au meme point physique mais desormais interprete par Dpmi_Step  }
+{ (voir le branchement dans la boucle principale, plus bas) - c est ce qui }
+{ rend la transition coherente : Base(CS protege) = RealCS*16 et           }
+{ EIP = RealIP, donc Base+EIP tombe exactement sur le meme octet physique  }
+{ que RealCS:RealIP en mode reel. }
+Procedure Dpmi_Switch(Var P: TEmulatorPanel);
+Var
+ RetIP, RetCS: Word;
+ Want32: Boolean;
+ CodeSel, DataSel, EsSel, SsSel: Word;
+ CodeIdx: Integer;
+Begin
+ If Not EmuDpmi.Active Then Exit; { securite, ne devrait pas arriver }
+ RetIP := Emu_PopWord(P.CPU);
+ RetCS := Emu_PopWord(P.CPU);
+ Want32 := P.CPU.Regs.AX <> 0;
+ FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
+ DpmiCPU.Is32Bit := Want32;
+ DpmiCPU.RealCS := RetCS; DpmiCPU.RealIP := RetIP;
+ DpmiCPU.RealSS := P.CPU.Segs.SS; DpmiCPU.RealSP := P.CPU.Regs.SP;
+ CodeSel := Dpmi_SegToSel(RetCS);
+ If Dpmi_SelToIdx(CodeSel, CodeIdx) Then Begin
+  DpmiCPU.LDT[CodeIdx].AccessByte := $9A; { code lire/execute present DPL0 }
+  DpmiCPU.LDT[CodeIdx].IsCode := True;
+ End;
+ DataSel := Dpmi_SegToSel(P.CPU.Segs.DS);
+ EsSel := Dpmi_SegToSel(P.CPU.Segs.ES);
+ SsSel := Dpmi_SegToSel(P.CPU.Segs.SS);
+ DpmiCPU.SegSel[0] := EsSel;   { ES }
+ DpmiCPU.SegSel[1] := CodeSel; { CS }
+ DpmiCPU.SegSel[2] := SsSel;   { SS }
+ DpmiCPU.SegSel[3] := DataSel; { DS }
+ DpmiCPU.SegSel[4] := DataSel; { FS - alias de DS par defaut }
+ DpmiCPU.SegSel[5] := DataSel; { GS - alias de DS par defaut }
+ DpmiCPU.Reg := P.CPU.Regs;    { copie EAX..EDI/AX..DI (le meme record      }
+                                { variant TEmuRegs) pour continuite - ESP    }
+                                { reflete deja la pile APRES le pop ci-dessus}
+ DpmiCPU.EIP := RetIP;
+ DpmiCPU.Flags.s := P.CPU.Flags.s;
+ Exclude(DpmiCPU.Flags.s, EFG_CF); { succes, voir DOC/DPMI.txt 3.2 }
+ DpmiCPU.Active := True;
+End;
+
+{ --- INT 31h : services DPMI eux-memes, dispatches par Dpmi_Step (plus    }
+{ bas) quand le client protege execute CD 31h - opere entierement sur      }
+{ DpmiCPU (pas P.CPU, gele tant que DpmiCPU.Active). Couvre les services   }
+{ descripteurs (0000h-000Eh), memoire DOS basse (0100h-0102h), memoire     }
+{ etendue (0500h-0503h/0604h) et version (0400h) - voir l en-tete de       }
+{ section pour la portee des etapes ulterieures (0200h-0306h). --- }
+Procedure Emu_DoInt31(Var P: TEmulatorPanel);
+Var
+ Sel, NewSel: Word;
+ Idx: Integer;
+ Base, Lim: LongInt;
+ RealSeg: Word;
+ H: Integer;
+ LinAddr: LongInt;
+ Sz: LongInt;
+Begin
+ Exclude(DpmiCPU.Flags.s, EFG_CF);
+ Case DpmiCPU.Reg.AX Of
+  $0000: Begin
+   If Dpmi_AllocLDT(DpmiCPU.Reg.CX, NewSel) Then DpmiCPU.Reg.AX := NewSel
+   Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8011; End;
+  End;
+  $0001: Begin
+   If Not Dpmi_FreeLDT(DpmiCPU.Reg.BX) Then Begin
+    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022;
+   End;
+  End;
+  $0002: Begin
+   RealSeg := DpmiCPU.Reg.BX;
+   NewSel := Dpmi_SegToSel(RealSeg);
+   If NewSel = 0 Then Begin
+    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8011;
+   End Else DpmiCPU.Reg.AX := NewSel;
+  End;
+  $0003: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then
+    DpmiCPU.Reg.AX := Byte(DpmiCPU.LDT[Idx].IsCode)
+   Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $0006: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then Begin
+    Base := DpmiCPU.LDT[Idx].Base;
+    DpmiCPU.Reg.CX := Word((Base Shr 16) And $FFFF);
+    DpmiCPU.Reg.DX := Word(Base And $FFFF);
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $0007: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then
+    Dpmi_SetDescBase(DpmiCPU.Reg.BX,
+     (LongInt(DpmiCPU.Reg.CX) Shl 16) Or DpmiCPU.Reg.DX)
+   Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $0008: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then
+    Dpmi_SetDescLimit(DpmiCPU.Reg.BX,
+     (LongInt(DpmiCPU.Reg.CX) Shl 16) Or DpmiCPU.Reg.DX)
+   Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $0009: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then Begin
+    DpmiCPU.LDT[Idx].AccessByte := DpmiCPU.Reg.CL;
+    DpmiCPU.LDT[Idx].FlagsByte := DpmiCPU.Reg.CH;
+    DpmiCPU.LDT[Idx].IsCode := (DpmiCPU.Reg.CL And $18) = $18;
+    DpmiCPU.LDT[Idx].Big := (DpmiCPU.Reg.CH And $40) <> 0;
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $000A: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then Begin
+    If Dpmi_AllocLDT(1, NewSel) Then Begin
+     Dpmi_SetDescBase(NewSel, DpmiCPU.LDT[Idx].Base);
+     Dpmi_SetDescLimit(NewSel, DpmiCPU.LDT[Idx].Limit);
+     DpmiCPU.Reg.AX := NewSel;
+    End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8011; End;
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $000B: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then Begin
+    Base := DpmiCPU.LDT[Idx].Base; Lim := DpmiCPU.LDT[Idx].Limit;
+    LinAddr := Dpmi_LinAddr(DpmiCPU.SegSel[0], LongInt(DpmiCPU.Reg.DI));
+    Dpmi_WriteWord(P, LinAddr, Word(Lim And $FFFF));
+    Dpmi_WriteWord(P, LinAddr + 2, Word(Base And $FFFF));
+    Dpmi_WriteByte(P, LinAddr + 4, Byte((Base Shr 16) And $FF));
+    Dpmi_WriteByte(P, LinAddr + 5, DpmiCPU.LDT[Idx].AccessByte);
+    Dpmi_WriteByte(P, LinAddr + 6,
+     Byte((Lim Shr 16) And $0F) Or (DpmiCPU.LDT[Idx].FlagsByte And $F0));
+    Dpmi_WriteByte(P, LinAddr + 7, Byte((Base Shr 24) And $FF));
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $000C: Begin
+   If Dpmi_SelToIdx(DpmiCPU.Reg.BX, Idx) Then Begin
+    LinAddr := Dpmi_LinAddr(DpmiCPU.SegSel[0], LongInt(DpmiCPU.Reg.DI));
+    Lim := LongInt(Dpmi_ReadWord(P, LinAddr)) Or
+     (LongInt(Dpmi_ReadByte(P, LinAddr + 6) And $0F) Shl 16);
+    Base := LongInt(Dpmi_ReadWord(P, LinAddr + 2)) Or
+     (LongInt(Dpmi_ReadByte(P, LinAddr + 4)) Shl 16) Or
+     (LongInt(Dpmi_ReadByte(P, LinAddr + 7)) Shl 24);
+    DpmiCPU.LDT[Idx].Base := Base;
+    DpmiCPU.LDT[Idx].Limit := Lim;
+    DpmiCPU.LDT[Idx].AccessByte := Dpmi_ReadByte(P, LinAddr + 5);
+    DpmiCPU.LDT[Idx].FlagsByte := Dpmi_ReadByte(P, LinAddr + 6) And $F0;
+    DpmiCPU.LDT[Idx].IsCode := (DpmiCPU.LDT[Idx].AccessByte And $18) = $18;
+    DpmiCPU.LDT[Idx].Big := (DpmiCPU.LDT[Idx].FlagsByte And $40) <> 0;
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8022; End;
+  End;
+  $000D: Begin
+   Idx := DpmiCPU.Reg.BX;
+   If (Idx < 0) Or (Idx > EMU_DPMI_MAX_SEL) Or DpmiCPU.LDT[Idx].Present Then Begin
+    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8011;
+   End Else Begin
+    FillChar(DpmiCPU.LDT[Idx], SizeOf(TDpmiDescriptor), 0);
+    DpmiCPU.LDT[Idx].Present := True;
+    DpmiCPU.LDT[Idx].AccessByte := $92;
+    Inc(DpmiCPU.LDTCount);
+    DpmiCPU.Reg.AX := Word((Idx Shl 3) Or 4);
+   End;
+  End;
+  $000E: Begin
+   If Dpmi_AllocLDT(1, NewSel) Then Begin
+    Dpmi_SetDescBase(NewSel, 0);
+    Dpmi_SetDescLimit(NewSel, -1); { alias 4 Go complet (limite = $FFFFFFFF, }
+                                    { meme motif binaire que -1 en LongInt)  }
+    DpmiCPU.Reg.AX := NewSel;
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8011; End;
+  End;
+  $0100: Begin
+   If Dpmi_AllocDosMem(DpmiCPU.Reg.BX, RealSeg, NewSel) Then Begin
+    DpmiCPU.Reg.AX := RealSeg;
+    DpmiCPU.Reg.DX := NewSel;
+   End Else Begin
+    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8013;
+    DpmiCPU.Reg.BX := (EMU_DPMI_DOSMEM_CAP -
+     (EmuDpmi.DosMemUsedOfs - EMU_DPMI_DOSMEM_START)) Shr 4;
+   End;
+  End;
+  $0101: Dpmi_FreeLDT(DpmiCPU.Reg.DX); { la zone DOS basse elle-meme n est   }
+                                        { recuperee que globalement, voir    }
+                                        { le commentaire de tete de section  }
+  $0102: Begin
+   { Redimensionnement non supporte par ce bump allocator simplifie -       }
+   { echoue proprement plutot que de fabriquer un resultat incorrect. }
+   Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8013;
+   DpmiCPU.Reg.BX := 0;
+  End;
+  $0400: Begin
+   DpmiCPU.Reg.AX := $005A; { version DPMI 0.90 (BH=0,BL=90 -> voir AH/AL   }
+                             { ci-dessous, ordre different de 0305h) }
+   DpmiCPU.Reg.AH := 0; DpmiCPU.Reg.AL := $5A;
+   DpmiCPU.Reg.BX := 1; { bit0=1 : 32 bits supporte }
+   DpmiCPU.Reg.CL := 3; { 386 }
+   DpmiCPU.Reg.DX := 0;
+  End;
+  $0500: Begin
+   LinAddr := Dpmi_LinAddr(DpmiCPU.SegSel[0], LongInt(DpmiCPU.Reg.DI));
+   Sz := EmuDpmi.ExtCapBytes - EmuDpmi.UsedBytes;
+   If Sz < 0 Then Sz := 0;
+   Dpmi_WriteDWord(P, LinAddr, Sz);       { +00 memoire physique disponible }
+   Dpmi_WriteDWord(P, LinAddr + 4, 0);    { +08 pages libres swap (aucun swap)}
+   Dpmi_WriteDWord(P, LinAddr + 8, 0);
+   Dpmi_WriteDWord(P, LinAddr + 12, 0);   { +10 pages swap lineaires libres }
+   Dpmi_WriteDWord(P, LinAddr + 16, 0);
+   Dpmi_WriteDWord(P, LinAddr + 20, 0);   { +18 taille max swap }
+   Dpmi_WriteDWord(P, LinAddr + 24, 0);
+   Dpmi_WriteDWord(P, LinAddr + 28, Sz);  { +20 espace execute disponible }
+   Dpmi_WriteDWord(P, LinAddr + 32, 0);
+   Dpmi_WriteDWord(P, LinAddr + 36, EmuDpmi.ExtCapBytes); { +28 espace total }
+   Dpmi_WriteDWord(P, LinAddr + 40, 0);
+   Dpmi_WriteDWord(P, LinAddr + 44, 0);
+  End;
+  $0501: Begin
+   Sz := (LongInt(DpmiCPU.Reg.BX) Shl 16) Or DpmiCPU.Reg.CX;
+   If Dpmi_ExtAlloc(Sz, H, LinAddr) Then Begin
+    DpmiCPU.Reg.BX := Word((LinAddr Shr 16) And $FFFF);
+    DpmiCPU.Reg.CX := Word(LinAddr And $FFFF);
+    DpmiCPU.Reg.SI := Word((LongInt(H) Shr 16) And $FFFF);
+    DpmiCPU.Reg.DI := Word(H And $FFFF);
+   End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8012; End;
+  End;
+  $0502: Begin
+   H := (LongInt(DpmiCPU.Reg.SI) Shl 16) Or DpmiCPU.Reg.DI;
+   If Not Dpmi_ExtFree(H) Then Begin
+    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8023;
+   End;
+  End;
+  $0503: Begin
+   { Redimensionnement non supporte par ce bump allocator simplifie (meme  }
+   { limitation que AX=0102h - voir le commentaire correspondant). }
+   Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8012;
+  End;
+  $0600, $0601, $0602, $0603: ; { verrouiller/deverrouiller memoire lineaire}
+                                { - accepte sans effet (pas de pagination   }
+                                { reelle dans cet emulateur) }
+  $0604: Begin
+   DpmiCPU.Reg.BX := 0; DpmiCPU.Reg.CX := 4096;
+  End;
+ Else
+  Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8001; End;
+ End;
+End;
+
 { --- INT 2Fh AX=7A00h : verification d installation IPX ; AX=4300h/4310h  }
 { : verification d installation XMS et adresse du point d entree. Toute    }
 { autre sous-fonction (ou si le service correspondant n est pas configure) }
@@ -52750,6 +53425,19 @@ Begin
  End;
  If EmuMscdexActive And (P.CPU.Regs.AH = $15) Then Begin
   Emu_DoMscdex(P);
+  Exit;
+ End;
+ If EmuDpmi.Active And (P.CPU.Regs.AX = $1687) And (Not DpmiCPU.Active) Then Begin
+  { Detection DPMI (voir DOC/DPMI.txt 3.1) - ES:DI = trampoline de          }
+  { commutation, voir Emu_DpmiInit/Dpmi_Switch. }
+  P.CPU.Regs.AX := 0;          { present, aucune erreur }
+  P.CPU.Regs.BX := 1;          { bit0=1 : 32 bits supporte }
+  P.CPU.Regs.CL := 3;          { processeur : 80386 }
+  P.CPU.Regs.DH := 0; P.CPU.Regs.DL := $5A;  { version DPMI 0.90 }
+  P.CPU.Regs.SI := 1;          { paragraphes requis pour le "commutateur"   }
+                                { (notre trampoline tient dans un seul) }
+  P.CPU.Segs.ES := EMU_DPMI_STUB_SEG;
+  P.CPU.Regs.DI := EMU_DPMI_STUB_OFS;
   Exit;
  End;
  IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
@@ -52828,6 +53516,9 @@ Begin
   $FC: If EmuMouseCallPending Then Emu_MouseCont(P); { continuation interne  }
        { de l upcall gestionnaire souris/callback BIOS PS/2 - voir           }
        { Emu_MouseCont. Jamais atteint par du logiciel DOS reel. }
+  $FB: If EmuDpmi.Active Then Dpmi_Switch(P); { trampoline de commutation    }
+       { reel -> protege DPMI, voir Dpmi_Switch/Emu_DpmiInit. Jamais         }
+       { atteint par du logiciel DOS reel. }
   $60: Begin
    { N intercepter reellement que si la case "Reseau LAN" est cochee       }
    { (EmuPkt.Active) - sinon, comportement identique a toute autre         }
@@ -64498,6 +65189,7 @@ Begin NesActive := False;
  Emu_EmsInit(P);
  Emu_MouseInit(P);
  Emu_MscdexInit(P);
+ Emu_DpmiInit(P);
  EmuPumpCnt := 0;
  { Premier rendu : afficher le panneau (banniere + ecran emule) avant
    d entrer dans la boucle d execution. Sinon le panneau peut rester
@@ -64949,6 +65641,8 @@ Begin
  D.DosEMS := False;
  D.DosEMSSize := 4096;
  D.DosEMSVersion := 2; { 4.0 par defaut - la plus complete }
+ D.DosDPMI := False;
+ D.DosDPMISize := 8192;
  D.DosMSCDEX := False;
  D.DosSouris := True;
  D.DosMousePS2BIOS := False;
@@ -65960,6 +66654,7 @@ Begin
  CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize, 2); { Row 2 }
  Dropdown('Version EMS :',                                     { Row 3 }
   DosEMSVersionName(Dlg.Data.DosEMSVersion), OPT_EMS_VER_LABEL_WIDTH);
+ CheckWithSize(Dlg.Data.DosDPMI, 'DPMI', Dlg.Data.DosDPMISize, 3); { Row 4 }
 
  If Dlg.DosDropdownOpen = 1 Then
   OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType, OPT_LABEL_WIDTH)
@@ -66261,6 +66956,7 @@ Begin
    Case Dlg.SizeEditField Of
     1: Dlg.Data.DosXMSSize := V;
     2: Dlg.Data.DosEMSSize := V;
+    3: Dlg.Data.DosDPMISize := V;
    End;
    Dlg.Modified := True;
   End;
@@ -66753,6 +67449,16 @@ Begin
         End;
        End;
        3: Dlg.DosDropdownOpen := 7;  { Version EMS }
+       4: Begin
+        If Ev.MouseX >= Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING + 200
+        Then Begin
+         Dlg.SizeEditField := 3;
+         Str(Dlg.Data.DosDPMISize, Dlg.SizeEditBuf);
+        End Else Begin
+         Dlg.Data.DosDPMI := Not Dlg.Data.DosDPMI;
+         Dlg.Modified := True;
+        End;
+       End;
       End;
      OC_EMU_DOS_SW:
       Case FieldIdx Of
@@ -66960,6 +67666,9 @@ Begin
  WriteCfgLine(F, 'DosEMSSize', S);
  Str(Data.DosEMSVersion, S);
  WriteCfgLine(F, 'DosEMSVersion', S);
+ WriteCfgLine(F, 'DosDPMI', BoolToStr(Data.DosDPMI));
+ Str(Data.DosDPMISize, S);
+ WriteCfgLine(F, 'DosDPMISize', S);
  WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
  WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
  WriteCfgLine(F, 'DosMousePS2BIOS', BoolToStr(Data.DosMousePS2BIOS));
@@ -67136,6 +67845,13 @@ Begin
    If (Code <> 0) Or (Data.DosEMSVersion < 0) Or
       (Data.DosEMSVersion >= DOS_EMS_VERSION_COUNT) Then
     Data.DosEMSVersion := 2;
+  End
+  Else If Key = 'DosDPMI' Then
+   Data.DosDPMI := StrToBool(Value)
+  Else If Key = 'DosDPMISize' Then
+  Begin
+   Val(Value, Data.DosDPMISize, Code);
+   If Code <> 0 Then Data.DosDPMISize := 8192;
   End
   Else If Key = 'DosMSCDEX' Then
    Data.DosMSCDEX := StrToBool(Value)
