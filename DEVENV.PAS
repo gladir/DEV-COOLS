@@ -6226,6 +6226,50 @@ Var
  NesPpu_Latch    : Boolean;
  NesPpu_NameTable: Array[0..$3FF] Of Byte;
  NesPpu_Rendered : Boolean;
+ { --- Etat C64 complet (variant=1) ------------------------------------ }
+ { Commutation banque materielle reelle via le port CPU $00/$01 (LORAM/  }
+ { HIRAM/CHAREN), VIC-II en mode texte seulement (pas de bitmap/          }
+ { multicolore/ecran etendu), SID reduit a un tampon de registres         }
+ { (aucun son), CIA1 avec matrice clavier + Timer A/B + IRQ reels (la     }
+ { seule partie du chipset dont le comportement doit etre correct pour    }
+ { qu un vrai demarrage KERNAL/BASIC aboutisse a READY.), CIA2 reduit a   }
+ { un tampon de registres (seul PRA bits 0-1, banque VIC, est consulte). }
+ C64_HiRam       : Array[$A000..$FFFF] Of Byte; { RAM "sous" BASIC/E-S/KERNAL }
+ C64_Port01      : Byte;        { valeur ecrite au port CPU $01 (LORAM/   }
+                                 { HIRAM/CHAREN, bits 3-5 cassette ignores) }
+ C64_Port00      : Byte;        { DDR du port CPU $00 (direction, ignore  }
+                                 { pour la commutation banque elle-meme)  }
+ C64_VicReg      : Array[0..$3F] Of Byte; { $D000-$D03E (registres reels  }
+                                 { $00-$2E, reste en miroir/inutilise)    }
+ C64_SidReg      : Array[0..$1F] Of Byte; { $D400-$D41C, pas de son     }
+ C64_ColorRam    : Array[0..$3FF] Of Byte; { $D800-$DBFF, nibble bas seul }
+ C64_Cia1Reg     : Array[0..$0F] Of Byte; { $DC00-$DC0F }
+ C64_Cia2Reg     : Array[0..$0F] Of Byte; { $DD00-$DD0F }
+ C64_Cia1TimerA  : Word;        { compteur vivant Timer A (decompte a     }
+                                 { chaque cycle CPU ecoule)               }
+ C64_Cia1TimerALatch: Word;
+ C64_Cia1TimerB  : Word;
+ C64_Cia1TimerBLatch: Word;
+ C64_Cia1IcrMask : Byte;        { sources d interruption activees ($0D,   }
+                                 { bit7=1 en ecriture -> positionne)      }
+ C64_Cia1IcrPending: Byte;      { sources en attente (efface a la lecture) }
+ C64_IrqPending  : Boolean;     { ligne IRQ maintenue basse (CIA1 ICR)    }
+ { Matrice clavier standard 8x8 (colonne = bit dans KeyCol[ligne]) -     }
+ { True = touche enfoncee. Remplie une fois par trame via GetAsyncKeyState}
+ { (meme motif que NesPollInput/A2600), consultee au moment ou le KERNAL }
+ { lit PRB apres avoir selectionne une ligne via PRA. }
+ C64_KeyMatrix   : Array[0..7, 0..7] Of Boolean;
+ C64_FrameNo     : LongInt;
+Const
+ { Palette C64 (16 couleurs standard, indices $00-$0F du VIC-II) mise en }
+ { correspondance avec la palette EGA 16 couleurs du panneau emulateur - }
+ { rapprochement visuel raisonnable, pas une conversion colorimetrique   }
+ { exacte (le C64 n a pas de palette EGA equivalente native). }
+ C64_PalToEga: Array[0..15] Of Byte = (
+  0,  15, 4,  11, 5,  2,  1,  14,  { noir,blanc,rouge,cyan,violet,vert,bleu,jaune }
+  6,  6,  12, 8,  8,  10, 9,  7);  { orange,brun,rouge clair,gris fonce,gris,     }
+                                   { vert clair,bleu clair,gris clair              }
+Var
  { --- Etat emulateur Atari 2600 / VCS (variant=4) --------------------- }
  { TIA + RIOT minimaux : playfield (PF0/PF1/PF2), joueurs P0/P1,         }
  { missiles M0/M1, balle BL, couleurs COLUPx/COLUPF/COLUBK, controle    }
@@ -60562,6 +60606,9 @@ Procedure A2600_LatchAll(BeamX: Integer); Forward;
 Procedure A2600_HMOVE_Start; Forward;
 Procedure A2600_HMOVE_TickN(N: Integer); Forward;
 Function NesBus_Write(EA: Word; V: Byte): Boolean; Forward;
+Function C64_BusWrite(Addr: Word; V: Byte): Boolean; Forward;
+Function C64_CiaRead(EA: Word): Byte; Forward;
+Function C64_IoActive: Boolean; Forward;
 
 Function CPU6502_Read(Addr: Word): Byte;
 Var V: Byte; H: Boolean;
@@ -60588,6 +60635,8 @@ Begin
   If CPU6502_Variant = 3 Then
     If (((Addr >= $2000) And (Addr <= $4017)) Or (Addr >= $8000)) Then
       If NesBus_Write(Addr, V) Then Exit;
+  If CPU6502_Variant = 1 Then
+    If C64_BusWrite(Addr, V) Then Exit;
   CPU6502_Mem[Addr] := V;
 End;
 
@@ -60897,17 +60946,12 @@ Begin
          CPU6502_PC := CPU6502_Pop16 + 1;
          CPU6502_TryTrap := True;
        End;
-    1: { C64 : CHROUT $FFD2 }
-       If CPU6502_PC = $FFD2 Then
-       Begin
-         If Ch = $0D Then Begin
-           EmuVScr_PutChar(CPU6502_Panel^, #13);
-           EmuVScr_PutChar(CPU6502_Panel^, #10);
-         End Else If (Ch >= 32) And (Ch < 128) Then
-           EmuVScr_PutChar(CPU6502_Panel^, Chr(Ch));
-         CPU6502_PC := CPU6502_Pop16 + 1;
-         CPU6502_TryTrap := True;
-       End;
+    { 1 (C64) : plus de piege CHROUT $FFD2 depuis le demarrage materiel   }
+    { reel (voir C64_Boot) - le vrai KERNAL execute maintenant sa propre  }
+    { routine d ecriture ecran (met a jour la RAM ecran ET le suivi de   }
+    { position du curseur que la visualisation directe de la RAM ecran    }
+    { par C64_RenderFrame doit refleter fidelement) ; un piege court-      }
+    { circuiterait ce suivi d etat interne et desynchroniserait l affichage.}
     2: { Atari 8-bit : CIO Put $E456 (mappable, voir aussi $E459) }
        If (CPU6502_PC = $E456) Or (CPU6502_PC = $E459) Then
        Begin
@@ -61075,6 +61119,73 @@ Begin
   Base := Word(Page) Shl 8;
   For I := 0 To $FF Do
     NesOam[(NesOamAddr + I) And $FF] := CPU6502_Mem[Base + I];
+End;
+
+{ Sondage clavier -> matrice clavier C64 8x8 (Windows uniquement, meme  }
+{ motif que NesPollInput ci-dessous : GetAsyncKeyState directement,      }
+{ aucun evenement TEvent/Ev.KeyCode n atteint les emulateurs 6502 dans   }
+{ ce fichier). Correspondance ligne/colonne = matrice materielle          }
+{ standard C64 (largement republiee dans la communaute retro, jamais     }
+{ recoupee ici avec une source Commodore primaire - a corriger si un      }
+{ programme de test revele une touche mal placee). Couverture volontai-  }
+{ rement partielle : lettres/chiffres/Entree/Espace/Retour arriere/Maj/  }
+{ fleches seulement - RUN/STOP, les touches de fonction, CTRL, C=, la    }
+{ livre sterling et la ponctuation exotique ne sont pas mappees. --- }
+Procedure C64_PollKeyboard;
+Begin
+  FillChar(C64_KeyMatrix, SizeOf(C64_KeyMatrix), False);
+  {$IFDEF WINDOWS}
+  If GetAsyncKeyState(Ord('A')) < 0 Then C64_KeyMatrix[1,2] := True;
+  If GetAsyncKeyState(Ord('B')) < 0 Then C64_KeyMatrix[3,4] := True;
+  If GetAsyncKeyState(Ord('C')) < 0 Then C64_KeyMatrix[2,4] := True;
+  If GetAsyncKeyState(Ord('D')) < 0 Then C64_KeyMatrix[2,2] := True;
+  If GetAsyncKeyState(Ord('E')) < 0 Then C64_KeyMatrix[1,6] := True;
+  If GetAsyncKeyState(Ord('F')) < 0 Then C64_KeyMatrix[2,5] := True;
+  If GetAsyncKeyState(Ord('G')) < 0 Then C64_KeyMatrix[3,2] := True;
+  If GetAsyncKeyState(Ord('H')) < 0 Then C64_KeyMatrix[3,5] := True;
+  If GetAsyncKeyState(Ord('I')) < 0 Then C64_KeyMatrix[4,1] := True;
+  If GetAsyncKeyState(Ord('J')) < 0 Then C64_KeyMatrix[4,2] := True;
+  If GetAsyncKeyState(Ord('K')) < 0 Then C64_KeyMatrix[4,5] := True;
+  If GetAsyncKeyState(Ord('L')) < 0 Then C64_KeyMatrix[5,2] := True;
+  If GetAsyncKeyState(Ord('M')) < 0 Then C64_KeyMatrix[4,4] := True;
+  If GetAsyncKeyState(Ord('N')) < 0 Then C64_KeyMatrix[4,7] := True;
+  If GetAsyncKeyState(Ord('O')) < 0 Then C64_KeyMatrix[4,6] := True;
+  If GetAsyncKeyState(Ord('P')) < 0 Then C64_KeyMatrix[5,1] := True;
+  If GetAsyncKeyState(Ord('Q')) < 0 Then C64_KeyMatrix[7,6] := True;
+  If GetAsyncKeyState(Ord('R')) < 0 Then C64_KeyMatrix[2,1] := True;
+  If GetAsyncKeyState(Ord('S')) < 0 Then C64_KeyMatrix[1,5] := True;
+  If GetAsyncKeyState(Ord('T')) < 0 Then C64_KeyMatrix[2,6] := True;
+  If GetAsyncKeyState(Ord('U')) < 0 Then C64_KeyMatrix[3,6] := True;
+  If GetAsyncKeyState(Ord('V')) < 0 Then C64_KeyMatrix[3,7] := True;
+  If GetAsyncKeyState(Ord('W')) < 0 Then C64_KeyMatrix[1,1] := True;
+  If GetAsyncKeyState(Ord('X')) < 0 Then C64_KeyMatrix[2,7] := True;
+  If GetAsyncKeyState(Ord('Y')) < 0 Then C64_KeyMatrix[3,1] := True;
+  If GetAsyncKeyState(Ord('Z')) < 0 Then C64_KeyMatrix[1,4] := True;
+  If GetAsyncKeyState(Ord('0')) < 0 Then C64_KeyMatrix[4,3] := True;
+  If GetAsyncKeyState(Ord('1')) < 0 Then C64_KeyMatrix[7,0] := True;
+  If GetAsyncKeyState(Ord('2')) < 0 Then C64_KeyMatrix[7,3] := True;
+  If GetAsyncKeyState(Ord('3')) < 0 Then C64_KeyMatrix[1,0] := True;
+  If GetAsyncKeyState(Ord('4')) < 0 Then C64_KeyMatrix[1,3] := True;
+  If GetAsyncKeyState(Ord('5')) < 0 Then C64_KeyMatrix[2,0] := True;
+  If GetAsyncKeyState(Ord('6')) < 0 Then C64_KeyMatrix[2,3] := True;
+  If GetAsyncKeyState(Ord('7')) < 0 Then C64_KeyMatrix[3,0] := True;
+  If GetAsyncKeyState(Ord('8')) < 0 Then C64_KeyMatrix[3,3] := True;
+  If GetAsyncKeyState(Ord('9')) < 0 Then C64_KeyMatrix[4,0] := True;
+  If GetAsyncKeyState($0D) < 0 Then C64_KeyMatrix[0,1] := True; { Entree }
+  If GetAsyncKeyState($20) < 0 Then C64_KeyMatrix[7,4] := True; { Espace }
+  If GetAsyncKeyState($08) < 0 Then C64_KeyMatrix[0,0] := True; { Retour->DEL }
+  If GetAsyncKeyState($10) < 0 Then C64_KeyMatrix[1,7] := True; { Maj->LSHIFT }
+  If GetAsyncKeyState($27) < 0 Then C64_KeyMatrix[0,2] := True; { Droite }
+  If GetAsyncKeyState($25) < 0 Then Begin { Gauche = Maj+CRSR droite }
+    C64_KeyMatrix[0,2] := True;
+    C64_KeyMatrix[1,7] := True;
+  End;
+  If GetAsyncKeyState($28) < 0 Then C64_KeyMatrix[0,7] := True; { Bas }
+  If GetAsyncKeyState($26) < 0 Then Begin { Haut = Maj+CRSR bas }
+    C64_KeyMatrix[0,7] := True;
+    C64_KeyMatrix[1,7] := True;
+  End;
+  {$ENDIF}
 End;
 
 { Sondage clavier -> etat manette 1 (Windows uniquement). }
@@ -61264,6 +61375,25 @@ Begin
   CPU6502_P := CPU6502_P Or $04;            { I=1 }
   CPU6502_PC := CPU6502_Mem[$FFFA] Or
                 (Word(CPU6502_Mem[$FFFB]) Shl 8);
+End;
+{$POP}
+
+{ IRQ 6502 (masquable, contrairement au NMI) : meme sequence de pile que }
+{ CPU6502_NMI, mais chargee via le vecteur $FFFE/$FFFF et SEULEMENT si   }
+{ le drapeau I (interruptions masquees) est actuellement a 0 - c est     }
+{ l appelant qui doit garder la ligne IRQ "maintenue basse" tant que la  }
+{ source materielle (CIA1 Timer A pour le C64) n a pas ete acquittee par }
+{ une lecture de son registre ICR, exactement comme le vrai 6526. --- }
+Procedure CPU6502_IRQ;
+{$PUSH}{$R-}{$Q-}
+Begin
+  If (CPU6502_P And $04) <> 0 Then Exit; { I=1 : interruption masquee }
+  CPU6502_Push((CPU6502_PC Shr 8) And $FF);
+  CPU6502_Push(CPU6502_PC And $FF);
+  CPU6502_Push((CPU6502_P And $EF) Or $20); { B=0, U=1 }
+  CPU6502_P := CPU6502_P Or $04;            { I=1 }
+  CPU6502_PC := CPU6502_Mem[$FFFE] Or
+                (Word(CPU6502_Mem[$FFFF]) Shl 8);
 End;
 {$POP}
 
@@ -61550,6 +61680,20 @@ Begin
       Exit;
     End;
   End;
+  { C64 : registres CIA1/CIA2 "vivants" (minuteries qui decomptent,       }
+  { ICR qui s acquitte a la lecture, clavier lu au travers de PRB) -      }
+  { seulement quand l E/S est effectivement visible dans la banque         }
+  { courante (voir C64_IoActive) ; sinon CPU6502_Mem reflete deja RAM ou   }
+  { le generateur de caracteres via C64_SyncBanks. Les opcodes qui lisent  }
+  { $D000-$DFFF sans passer par NesMemRead (CMP/ADC/AND/OR/EOR/BIT en      }
+  { adressage indirect - meme lacune deja acceptee pour NES) recoivent un  }
+  { instantane fige de CPU6502_Mem plutot que la valeur vivante - limite   }
+  { assumee, sans impact sur un demarrage KERNAL/BASIC standard. }
+  If (CPU6502_Variant = 1) And (EA >= $DC00) And (EA < $DE00) And
+     C64_IoActive Then Begin
+    NesMemRead := C64_CiaRead(EA);
+    Exit;
+  End;
   NesMemRead := CPU6502_Mem[EA];
 End;
 
@@ -61560,6 +61704,403 @@ Begin
     If NesBus_Write(EA, V) Then Exit;
   End;
   CPU6502_Mem[EA] := V;
+End;
+
+{ ===== C64 : commutation banque $01 + VIC-II/SID/CIA1/CIA2/couleur ==== }
+
+{ E/S visible a $D000-$DFFF ssi (LORAM ou HIRAM) et CHAREN - table       }
+{ standard du port CPU 6510, voir le commentaire d en-tete de la          }
+{ section Var C64 plus haut pour la table complete des 3 zones. --- }
+Function C64_IoActive: Boolean;
+Var LoRam, HiRam, Charen: Boolean;
+Begin
+ LoRam := (C64_Port01 And 1) <> 0;
+ HiRam := (C64_Port01 And 2) <> 0;
+ Charen := (C64_Port01 And 4) <> 0;
+ C64_IoActive := (LoRam Or HiRam) And Charen;
+End;
+
+{ Recopie l etat courant des registres CIA1/CIA2/VIC/SID/couleur dans   }
+{ CPU6502_Mem[$D000..$DFFF] - necessaire car certains opcodes lisent     }
+{ cette plage directement via CPU6502_Mem[EA] sans passer par             }
+{ NesMemRead (voir le commentaire dans NesMemRead) - leur donnent au       }
+{ moins un instantane coherent plutot que des octets perimes d une       }
+{ ancienne banque (RAM ou generateur de caracteres). --- }
+Procedure C64_MirrorIoIntoMem;
+Var I: Word;
+Begin
+ For I := 0 To $3FF Do
+  CPU6502_Mem[$D000 + I] := C64_VicReg[I And $3F];
+ For I := 0 To $3FF Do
+  CPU6502_Mem[$D400 + I] := C64_SidReg[I And $1F];
+ For I := 0 To $3FF Do
+  CPU6502_Mem[$D800 + I] := C64_ColorRam[I] Or $F0;
+ For I := 0 To $3FF Do
+  CPU6502_Mem[$DC00 + I] := C64_Cia1Reg[I And $0F];
+ For I := 0 To $3FF Do
+  CPU6502_Mem[$DD00 + I] := C64_Cia2Reg[I And $0F];
+ For I := 0 To $1FF Do
+  CPU6502_Mem[$DE00 + I] := $FF; { E/S cartouche, aucune cartouche }
+End;
+
+{ Reflete la banque materielle courante ($01) dans CPU6502_Mem pour les  }
+{ 3 fenetres commutables - a appeler apres tout changement de C64_Port01 }
+{ et une fois au demarrage. --- }
+Procedure C64_SyncBanks;
+Var LoRam, HiRam, Charen: Boolean;
+Begin
+ LoRam := (C64_Port01 And 1) <> 0;
+ HiRam := (C64_Port01 And 2) <> 0;
+ Charen := (C64_Port01 And 4) <> 0;
+ If LoRam And HiRam Then
+  Move(C64_BASIC_ROM, CPU6502_Mem[$A000], SizeOf(C64_BASIC_ROM))
+ Else
+  Move(C64_HiRam[$A000], CPU6502_Mem[$A000], $2000);
+ If (Not LoRam) And (Not HiRam) Then
+  Move(C64_HiRam[$D000], CPU6502_Mem[$D000], $1000)
+ Else If Not Charen Then
+  Move(C64_CHARSET_ROM, CPU6502_Mem[$D000], SizeOf(C64_CHARSET_ROM))
+ Else
+  C64_MirrorIoIntoMem;
+ If HiRam Then
+  Move(C64_KERNAL_ROM, CPU6502_Mem[$E000], SizeOf(C64_KERNAL_ROM))
+ Else
+  Move(C64_HiRam[$E000], CPU6502_Mem[$E000], $2000);
+End;
+
+{ Ecriture $DC00-$DCFF (CIA1) - seul registre du chipset avec de vrais   }
+{ effets de bord necessaires a un demarrage KERNAL correct : minuteries  }
+{ A/B (rechargees si a l arret, ou si le bit de forcage $10 est ecrit    }
+{ dans CRA/CRB) et masque d interruption ICR (semantique standard 6526 : }
+{ bit7=1 -> positionne les bits indiques du masque, bit7=0 -> les efface).}
+Procedure C64_Cia1Write(Reg: Byte; V: Byte);
+Begin
+ Case Reg Of
+  $04: Begin
+   C64_Cia1TimerALatch := (C64_Cia1TimerALatch And $FF00) Or V;
+   C64_Cia1Reg[Reg] := V;
+  End;
+  $05: Begin
+   C64_Cia1TimerALatch := (C64_Cia1TimerALatch And $00FF) Or (Word(V) Shl 8);
+   If (C64_Cia1Reg[$0E] And 1) = 0 Then C64_Cia1TimerA := C64_Cia1TimerALatch;
+   C64_Cia1Reg[Reg] := V;
+  End;
+  $06: Begin
+   C64_Cia1TimerBLatch := (C64_Cia1TimerBLatch And $FF00) Or V;
+   C64_Cia1Reg[Reg] := V;
+  End;
+  $07: Begin
+   C64_Cia1TimerBLatch := (C64_Cia1TimerBLatch And $00FF) Or (Word(V) Shl 8);
+   If (C64_Cia1Reg[$0F] And 1) = 0 Then C64_Cia1TimerB := C64_Cia1TimerBLatch;
+   C64_Cia1Reg[Reg] := V;
+  End;
+  $0D: { ICR : positionne/efface les bits du masque indiques par V And $7F }
+   If (V And $80) <> 0 Then
+    C64_Cia1IcrMask := C64_Cia1IcrMask Or (V And $7F)
+   Else
+    C64_Cia1IcrMask := C64_Cia1IcrMask And (Not (V And $7F));
+  $0E: Begin
+   C64_Cia1Reg[Reg] := V;
+   If (V And $10) <> 0 Then C64_Cia1TimerA := C64_Cia1TimerALatch; { forcage }
+  End;
+  $0F: Begin
+   C64_Cia1Reg[Reg] := V;
+   If (V And $10) <> 0 Then C64_Cia1TimerB := C64_Cia1TimerBLatch;
+  End;
+ Else
+  C64_Cia1Reg[Reg] := V;
+ End;
+End;
+
+{ Ecriture $D000-$DFFF quand l E/S est banquee (voir C64_IoActive) - }
+{ aiguille vers le sous-systeme concerne, avec mise a jour de           }
+{ CPU6502_Mem pour les lectures directes (voir C64_MirrorIoIntoMem). --- }
+Procedure C64_IoWrite(Addr: Word; V: Byte);
+Var Reg: Byte;
+Begin
+ If Addr < $D400 Then Begin { VIC-II, miroir tous les $40 octets }
+  Reg := Byte(Addr And $3F);
+  If Reg <= $2E Then Begin
+   C64_VicReg[Reg] := V;
+   CPU6502_Mem[Addr] := V;
+  End;
+ End Else If Addr < $D800 Then Begin { SID, miroir tous les $20 octets }
+  Reg := Byte(Addr And $1F);
+  If Reg <= $1C Then Begin
+   C64_SidReg[Reg] := V;
+   CPU6502_Mem[Addr] := V;
+  End;
+ End Else If Addr < $DC00 Then Begin { RAM couleur, nibble bas seul }
+  C64_ColorRam[Addr And $3FF] := V And $0F;
+  CPU6502_Mem[Addr] := (V And $0F) Or $F0;
+ End Else If Addr < $DD00 Then Begin { CIA1, miroir tous les $10 octets }
+  C64_Cia1Write(Byte(Addr And $0F), V);
+  CPU6502_Mem[Addr] := C64_Cia1Reg[Byte(Addr And $0F)];
+ End Else If Addr < $DE00 Then Begin { CIA2, miroir tous les $10 octets }
+  Reg := Byte(Addr And $0F);
+  C64_Cia2Reg[Reg] := V;
+  CPU6502_Mem[Addr] := V;
+ End;
+ { $DE00-$DFFF : E/S cartouche, aucune cartouche montee - ignore. }
+End;
+
+{ Point d entree unique pour toute ecriture C64 (variant=1), appele    }
+{ depuis CPU6502_Write. Gere le port CPU $00/$01 (commutation banque)   }
+{ et les 3 fenetres commutables $A000-$BFFF/$D000-$DFFF/$E000-$FFFF -   }
+{ voir le commentaire de tete de la section Var C64 pour la table.       }
+{ Renvoie True si l ecriture a ete prise en charge ici (l appelant ne    }
+{ doit alors PAS faire CPU6502_Mem[Addr]:=V lui-meme). --- }
+Function C64_BusWrite(Addr: Word; V: Byte): Boolean;
+Var LoRam, HiRam, Charen: Boolean;
+Begin
+ C64_BusWrite := True;
+ If Addr = 0 Then Begin C64_Port00 := V; CPU6502_Mem[0] := V; Exit; End;
+ If Addr = 1 Then Begin
+  C64_Port01 := V;
+  CPU6502_Mem[1] := V;
+  C64_SyncBanks;
+  Exit;
+ End;
+ If Addr < $A000 Then Begin
+  C64_BusWrite := False; { RAM ordinaire, pas de commutation }
+  Exit;
+ End;
+ LoRam := (C64_Port01 And 1) <> 0;
+ HiRam := (C64_Port01 And 2) <> 0;
+ Charen := (C64_Port01 And 4) <> 0;
+ If Addr < $D000 Then Begin { $A000-$BFFF }
+  C64_HiRam[Addr] := V;
+  If Not (LoRam And HiRam) Then CPU6502_Mem[Addr] := V;
+  Exit;
+ End;
+ If Addr < $E000 Then Begin { $D000-$DFFF }
+  If (Not LoRam) And (Not HiRam) Then Begin { RAM banquee }
+   C64_HiRam[Addr] := V;
+   CPU6502_Mem[Addr] := V;
+  End Else If Not Charen Then Begin { generateur de caracteres visible en  }
+   C64_HiRam[Addr] := V;             { lecture, mais la RAM dessous recoit }
+  End Else                           { quand meme l ecriture (vrai         }
+   C64_IoWrite(Addr, V);             { materiel) ; E/S : aucune RAM dessous}
+  Exit;
+ End;
+ { $E000-$FFFF }
+ C64_HiRam[Addr] := V;
+ If Not HiRam Then CPU6502_Mem[Addr] := V;
+End;
+
+{ Lecture "vivante" $DC00-$DDFF (CIA1/CIA2) - minuteries qui refletent   }
+{ leur valeur reelle a l instant present, ICR qui s acquitte a la        }
+{ lecture (semantique standard 6526 : bit7 du resultat = OR des sources  }
+{ en attente ET activees dans le masque, puis toutes les sources en      }
+{ attente sont effacees), PRB qui reflete la matrice clavier selon la    }
+{ ligne selectionnee par PRA (voir C64_KeyboardReadPRB). --- }
+Function C64_KeyboardReadPRB: Byte;
+Var Row, Col: Byte;
+ Result8: Byte;
+Begin
+ Result8 := $FF;
+ For Row := 0 To 7 Do
+  If (C64_Cia1Reg[$00] And (1 Shl Row)) = 0 Then { ligne selectionnee (active bas) }
+   For Col := 0 To 7 Do
+    If C64_KeyMatrix[Row, Col] Then
+     Result8 := Result8 And (Not (1 Shl Col));
+ C64_KeyboardReadPRB := Result8;
+End;
+
+Function C64_CiaRead(EA: Word): Byte;
+Var Reg: Byte;
+ Pend: Byte;
+Begin
+ If EA < $DD00 Then Begin { CIA1 }
+  Reg := Byte(EA And $0F);
+  Case Reg Of
+   $01: C64_CiaRead := C64_KeyboardReadPRB;
+   $04: C64_CiaRead := Byte(C64_Cia1TimerA And $FF);
+   $05: C64_CiaRead := Byte(C64_Cia1TimerA Shr 8);
+   $06: C64_CiaRead := Byte(C64_Cia1TimerB And $FF);
+   $07: C64_CiaRead := Byte(C64_Cia1TimerB Shr 8);
+   $0D: Begin
+    Pend := C64_Cia1IcrPending And $7F;
+    If (Pend And C64_Cia1IcrMask) <> 0 Then Pend := Pend Or $80;
+    C64_Cia1IcrPending := 0;
+    C64_IrqPending := False;
+    C64_CiaRead := Pend;
+   End;
+  Else
+   C64_CiaRead := C64_Cia1Reg[Reg];
+  End;
+ End Else
+  C64_CiaRead := C64_Cia2Reg[Byte(EA And $0F)];
+End;
+
+{ Decompte des minuteries CIA1 (appele une fois par instruction executee }
+{ avec le nombre de cycles reellement ecoules, CPU6502_LastCyc) - seule   }
+{ partie du chipset avec une contrainte de temps reelle : le KERNAL       }
+{ initialise le Timer A pour produire l IRQ ~60 Hz (NTSC) / ~50 Hz (PAL)  }
+{ qui fait avancer l horloge jiffy et scrute le clavier ; ces valeurs de  }
+{ latence viennent du KERNAL lui-meme (poke reel dans $DC04/$DC05/$DC0D  }
+{ pendant IOINIT), rien n est code en dur ici. --- }
+Procedure C64_TickCia1(Cycles: Integer);
+Begin
+ If Cycles <= 0 Then Exit;
+ If (C64_Cia1Reg[$0E] And 1) <> 0 Then Begin { Timer A demarre }
+  If Cycles >= C64_Cia1TimerA Then Begin
+   C64_Cia1TimerA := C64_Cia1TimerALatch;
+   C64_Cia1IcrPending := C64_Cia1IcrPending Or 1;
+   If (C64_Cia1IcrMask And 1) <> 0 Then C64_IrqPending := True;
+  End Else
+   Dec(C64_Cia1TimerA, Cycles);
+ End;
+ If (C64_Cia1Reg[$0F] And 1) <> 0 Then Begin { Timer B demarre }
+  If Cycles >= C64_Cia1TimerB Then Begin
+   C64_Cia1TimerB := C64_Cia1TimerBLatch;
+   C64_Cia1IcrPending := C64_Cia1IcrPending Or 2;
+   If (C64_Cia1IcrMask And 2) <> 0 Then C64_IrqPending := True;
+  End Else
+   Dec(C64_Cia1TimerB, Cycles);
+ End;
+End;
+
+{ Lecture memoire du point de vue du VIC-II : contrairement au CPU, le  }
+{ VIC lit toujours la RAM physique reelle, jamais une ROM commutee par   }
+{ le port $01 (le VIC n a pas connaissance de la commutation banque du   }
+{ CPU - c est une puce separee sur le meme bus memoire). Pour $A000+,    }
+{ on lit donc C64_HiRam (la RAM "sous" les ROM) plutot que CPU6502_Mem   }
+{ (qui peut actuellement montrer BASIC/E-S/KERNAL pour le CPU). --- }
+Function C64_VicRead(Addr: Word): Byte;
+Begin
+ If Addr >= $A000 Then C64_VicRead := C64_HiRam[Addr]
+ Else C64_VicRead := CPU6502_Mem[Addr];
+End;
+
+{ Code ecran (POKE dans la RAM ecran) -> caractere affichable ASCII -    }
+{ numerotation DIFFERENTE du PETSCII utilise en memoire pour le texte    }
+{ (CHROUT etc.) : 0=@, 1-26=A-Z, 27-31=symboles, 32-63=identique a       }
+{ ASCII (espace, ponctuation, chiffres), 64-127=caracteres graphiques    }
+{ PETSCII sans equivalent ASCII (rendus par un espace, limite assumee -  }
+{ ce codebase ne fait pas de rendu pixel du generateur de caracteres,    }
+{ voir C64_RenderFrame). Bit 7 = video inverse, traite a part par        }
+{ l appelant. --- }
+Function C64_ScreenCodeToChar(SC: Byte): Char;
+Var Base: Byte;
+Begin
+ Base := SC And $7F;
+ If Base = 0 Then C64_ScreenCodeToChar := '@'
+ Else If (Base >= 1) And (Base <= 26) Then
+  C64_ScreenCodeToChar := Chr(Ord('A') + Base - 1)
+ Else If Base = 27 Then C64_ScreenCodeToChar := '['
+ Else If Base = 28 Then C64_ScreenCodeToChar := '$'  { livre sterling approximee }
+ Else If Base = 29 Then C64_ScreenCodeToChar := ']'
+ Else If Base = 30 Then C64_ScreenCodeToChar := '^'
+ Else If Base = 31 Then C64_ScreenCodeToChar := '<'  { fleche gauche approximee }
+ Else If (Base >= 32) And (Base <= 63) Then C64_ScreenCodeToChar := Chr(Base)
+ Else C64_ScreenCodeToChar := ' '; { caracteres graphiques PETSCII }
+End;
+
+{ Rendu VIC-II mode texte (40x25 uniquement - pas de bitmap/multicolore/ }
+{ ecran etendu) : lit la RAM ecran (bloc de 1000 octets a l interieur de }
+{ la banque VIC courante, choisie par CIA2 PRA bits 0-1 inverses, et      }
+{ decalee par VIC $D018 bits 4-7) et la RAM couleur (toujours fixe a     }
+{ $D800-$DBFF, independante de la banque) directement dans P.VRAM -      }
+{ meme cellules texte que EmuVScr_PutChar, pas de rendu pixel du            }
+{ generateur de caracteres (voir C64_ScreenCodeToChar). Appele une fois  }
+{ par trame emulee depuis la boucle C64 (voir ShowEmulatorPanel). --- }
+Procedure C64_RenderFrame(Var P: TEmulatorPanel);
+Var
+ VicBankBase, ScreenBase: Word;
+ Row, Col: Byte;
+ SC, ColNib, Bg: Byte;
+Begin
+ VicBankBase := (3 - (C64_Cia2Reg[0] And 3)) * $4000;
+ ScreenBase := VicBankBase + (((C64_VicReg[$18] Shr 4) And $0F) * $400);
+ Bg := C64_PalToEga[C64_VicReg[$21] And $0F];
+ For Row := 0 To 24 Do
+  For Col := 0 To 39 Do Begin
+   SC := C64_VicRead(Word(ScreenBase + Word(Row) * 40 + Col));
+   ColNib := C64_ColorRam[Word(Row) * 40 + Col] And $0F;
+   P.VRAM[Row, Col].Ch := C64_ScreenCodeToChar(SC);
+   If (SC And $80) <> 0 Then Begin { video inverse }
+    P.VRAM[Row, Col].Fg := Bg;
+    P.VRAM[Row, Col].Bg := C64_PalToEga[ColNib];
+   End Else Begin
+    P.VRAM[Row, Col].Fg := C64_PalToEga[ColNib];
+    P.VRAM[Row, Col].Bg := Bg;
+   End;
+  End;
+ P.NeedRepaint := True;
+End;
+
+{ Demarrage materiel reel du C64 : place la banque par defaut ($37 =    }
+{ LORAM=HIRAM=CHAREN=1, BASIC+E-S+KERNAL visibles, comme a la mise sous  }
+{ tension), charge le fichier .PRG demande a son adresse de chargement    }
+{ (octet par octet via CPU6502_Write pour respecter la commutation           }
+{ banque courante, au cas ou l adresse tomberait dans une fenetre         }
+{ commutee), ajuste les pointeurs BASIC (VARTAB/ARYTAB/STREND, $2D-$32)   }
+{ si le fichier se charge a $0801 (convention standard), puis PRE-        }
+{ REMPLIT le tampon clavier avec "RUN"+Entree (fichier BASIC ou stub SYS  }
+{ classique charge a $0801) ou "SYS <adresse>"+Entree (code machine pur   }
+{ a une autre adresse, convention historique C64 authentique) - le        }
+{ KERNAL trouvera ces caracteres deja en attente des qu il en demandera  }
+{ au clavier, exactement comme si l utilisateur les avait tapes juste     }
+{ apres la mise sous tension, sans qu aucune scrutation de matrice ne     }
+{ soit necessaire pour cette injection precise. Renvoie dans EntryAddr    }
+{ le vrai vecteur RESET du KERNAL ($FFFC/$FFFD) - le demarrage passe       }
+{ TOUJOURS par le vrai code KERNAL/BASIC desormais, plus par le             }
+{ raccourci "sauter directement au .PRG" d avant cette fonction. --- }
+Function C64_Boot(Const BinaryPath: String; Var EntryAddr: Word): Boolean;
+Var
+ F: File;
+ Hdr: Array[0..1] Of Byte;
+ LoadAddr, Addr: Word;
+ B: Byte;
+ BR: Word;
+ InjectStr: String;
+ I: Integer;
+Begin
+ C64_Boot := False;
+ FillChar(C64_HiRam, SizeOf(C64_HiRam), 0);
+ FillChar(C64_VicReg, SizeOf(C64_VicReg), 0);
+ FillChar(C64_SidReg, SizeOf(C64_SidReg), 0);
+ FillChar(C64_ColorRam, SizeOf(C64_ColorRam), 0);
+ FillChar(C64_Cia1Reg, SizeOf(C64_Cia1Reg), 0);
+ FillChar(C64_Cia2Reg, SizeOf(C64_Cia2Reg), $FF); { PRA/PRB au repos = 1, comme le vrai materiel }
+ FillChar(C64_KeyMatrix, SizeOf(C64_KeyMatrix), False);
+ C64_Cia1TimerA := $FFFF; C64_Cia1TimerALatch := $FFFF;
+ C64_Cia1TimerB := $FFFF; C64_Cia1TimerBLatch := $FFFF;
+ C64_Cia1IcrMask := 0; C64_Cia1IcrPending := 0;
+ C64_IrqPending := False;
+ C64_FrameNo := 0;
+ C64_Port00 := $2F;
+ C64_Port01 := $37;
+ C64_SyncBanks;
+ Assign(F, BinaryPath);
+ {$I-} Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockRead(F, Hdr, 2, BR);
+ If BR <> 2 Then Begin Close(F); Exit; End;
+ LoadAddr := Hdr[0] Or (Word(Hdr[1]) Shl 8);
+ Addr := LoadAddr;
+ While Not Eof(F) Do Begin
+  BlockRead(F, B, 1, BR);
+  If BR = 1 Then Begin
+   CPU6502_Write(Addr, B);
+   If Addr < $FFFF Then Inc(Addr) Else Break;
+  End;
+ End;
+ Close(F);
+ If LoadAddr = $0801 Then Begin
+  CPU6502_Mem[$2D] := Addr And $FF; CPU6502_Mem[$2E] := Addr Shr 8;
+  CPU6502_Mem[$2F] := Addr And $FF; CPU6502_Mem[$30] := Addr Shr 8;
+  CPU6502_Mem[$31] := Addr And $FF; CPU6502_Mem[$32] := Addr Shr 8;
+  InjectStr := 'RUN' + Chr(13);
+ End Else
+  InjectStr := 'SYS ' + IntToStr(LoadAddr) + Chr(13);
+ If Length(InjectStr) > 10 Then InjectStr := Copy(InjectStr, 1, 10);
+ For I := 1 To Length(InjectStr) Do
+  CPU6502_Mem[$0276 + I] := Ord(InjectStr[I]);
+ CPU6502_Mem[$C6] := Length(InjectStr);
+ EntryAddr := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
+ C64_Boot := True;
 End;
 
 { ===== Atari 2600 : TIA + RIOT minimaux ============================ }
@@ -62998,6 +63539,14 @@ Begin
     CPU6502_NMI;
   End;
 
+  { IRQ materiel C64 (CIA1 Timer A/B - horloge jiffy + scrutation clavier }
+  { par le gestionnaire IRQ par defaut du KERNAL, $EA31 via le vecteur     }
+  { reel $FFFE/$FFFF) - verifiee avant chaque instruction, masquable par  }
+  { le drapeau I (voir CPU6502_IRQ). }
+  If (CPU6502_Variant = 1) And C64_IrqPending And
+     ((CPU6502_P And $04) = 0) Then
+    CPU6502_IRQ;
+
   { Trap OS avant d executer }
   If CPU6502_TryTrap Then Exit;
 
@@ -63005,6 +63554,7 @@ Begin
   CPU6502_LastCyc := CPU6502_CycTab[Op];
   CPU6502_PageCrossed := False;
   Inc(CPU6502_PC);
+  If CPU6502_Variant = 1 Then C64_TickCia1(CPU6502_LastCyc);
   Case Op Of
     { ----- LDA ----- }
     $A9: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_Mem[EA];
@@ -63111,20 +63661,20 @@ Begin
     $69: Begin EA := CPU6502_AmIMM; CPU6502_DoADC(CPU6502_Mem[EA]); End;
     $65: Begin EA := CPU6502_AmZP;  CPU6502_DoADC(CPU6502_Mem[EA]); End;
     $75: Begin EA := CPU6502_AmZPX; CPU6502_DoADC(CPU6502_Mem[EA]); End;
-    $6D: Begin EA := CPU6502_AmABS; CPU6502_DoADC(CPU6502_Mem[EA]); End;
-    $7D: Begin EA := CPU6502_AmABX; CPU6502_DoADC(CPU6502_Mem[EA]); End;
-    $79: Begin EA := CPU6502_AmABY; CPU6502_DoADC(CPU6502_Mem[EA]); End;
-    $61: Begin EA := CPU6502_AmIZX; CPU6502_DoADC(CPU6502_Mem[EA]); End;
-    $71: Begin EA := CPU6502_AmIZY; CPU6502_DoADC(CPU6502_Mem[EA]); End;
+    $6D: Begin EA := CPU6502_AmABS; CPU6502_DoADC(NesMemRead(EA)); End;
+    $7D: Begin EA := CPU6502_AmABX; CPU6502_DoADC(NesMemRead(EA)); End;
+    $79: Begin EA := CPU6502_AmABY; CPU6502_DoADC(NesMemRead(EA)); End;
+    $61: Begin EA := CPU6502_AmIZX; CPU6502_DoADC(NesMemRead(EA)); End;
+    $71: Begin EA := CPU6502_AmIZY; CPU6502_DoADC(NesMemRead(EA)); End;
     { ----- SBC ----- }
     $E9: Begin EA := CPU6502_AmIMM; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
     $E5: Begin EA := CPU6502_AmZP;  CPU6502_DoSBC(CPU6502_Mem[EA]); End;
     $F5: Begin EA := CPU6502_AmZPX; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
-    $ED: Begin EA := CPU6502_AmABS; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
-    $FD: Begin EA := CPU6502_AmABX; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
-    $F9: Begin EA := CPU6502_AmABY; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
-    $E1: Begin EA := CPU6502_AmIZX; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
-    $F1: Begin EA := CPU6502_AmIZY; CPU6502_DoSBC(CPU6502_Mem[EA]); End;
+    $ED: Begin EA := CPU6502_AmABS; CPU6502_DoSBC(NesMemRead(EA)); End;
+    $FD: Begin EA := CPU6502_AmABX; CPU6502_DoSBC(NesMemRead(EA)); End;
+    $F9: Begin EA := CPU6502_AmABY; CPU6502_DoSBC(NesMemRead(EA)); End;
+    $E1: Begin EA := CPU6502_AmIZX; CPU6502_DoSBC(NesMemRead(EA)); End;
+    $F1: Begin EA := CPU6502_AmIZY; CPU6502_DoSBC(NesMemRead(EA)); End;
     { ----- AND/ORA/EOR ----- }
     $29: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
@@ -63132,15 +63682,15 @@ Begin
                CPU6502_SetNZ(CPU6502_A); End;
     $35: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
-    $2D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+    $2D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A And NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $3D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+    $3D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A And NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $39: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+    $39: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A And NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $21: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+    $21: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A And NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $31: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A And CPU6502_Mem[EA];
+    $31: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A And NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
     $09: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
@@ -63148,15 +63698,15 @@ Begin
                CPU6502_SetNZ(CPU6502_A); End;
     $15: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
-    $0D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+    $0D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A Or  NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $1D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+    $1D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A Or  NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $19: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+    $19: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A Or  NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $01: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+    $01: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A Or  NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $11: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A Or  CPU6502_Mem[EA];
+    $11: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A Or  NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
     $49: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
@@ -63164,37 +63714,37 @@ Begin
                CPU6502_SetNZ(CPU6502_A); End;
     $55: Begin EA := CPU6502_AmZPX; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
                CPU6502_SetNZ(CPU6502_A); End;
-    $4D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+    $4D: Begin EA := CPU6502_AmABS; CPU6502_A := CPU6502_A Xor NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $5D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+    $5D: Begin EA := CPU6502_AmABX; CPU6502_A := CPU6502_A Xor NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $59: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+    $59: Begin EA := CPU6502_AmABY; CPU6502_A := CPU6502_A Xor NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $41: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+    $41: Begin EA := CPU6502_AmIZX; CPU6502_A := CPU6502_A Xor NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
-    $51: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A Xor CPU6502_Mem[EA];
+    $51: Begin EA := CPU6502_AmIZY; CPU6502_A := CPU6502_A Xor NesMemRead(EA);
                CPU6502_SetNZ(CPU6502_A); End;
     { ----- CMP/CPX/CPY ----- }
     $C9: Begin EA := CPU6502_AmIMM; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
     $C5: Begin EA := CPU6502_AmZP;  CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
     $D5: Begin EA := CPU6502_AmZPX; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
-    $CD: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
-    $DD: Begin EA := CPU6502_AmABX; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
-    $D9: Begin EA := CPU6502_AmABY; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
-    $C1: Begin EA := CPU6502_AmIZX; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
-    $D1: Begin EA := CPU6502_AmIZY; CPU6502_DoCMP(CPU6502_A, CPU6502_Mem[EA]); End;
+    $CD: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_A, NesMemRead(EA)); End;
+    $DD: Begin EA := CPU6502_AmABX; CPU6502_DoCMP(CPU6502_A, NesMemRead(EA)); End;
+    $D9: Begin EA := CPU6502_AmABY; CPU6502_DoCMP(CPU6502_A, NesMemRead(EA)); End;
+    $C1: Begin EA := CPU6502_AmIZX; CPU6502_DoCMP(CPU6502_A, NesMemRead(EA)); End;
+    $D1: Begin EA := CPU6502_AmIZY; CPU6502_DoCMP(CPU6502_A, NesMemRead(EA)); End;
     $E0: Begin EA := CPU6502_AmIMM; CPU6502_DoCMP(CPU6502_X, CPU6502_Mem[EA]); End;
     $E4: Begin EA := CPU6502_AmZP;  CPU6502_DoCMP(CPU6502_X, CPU6502_Mem[EA]); End;
-    $EC: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_X, CPU6502_Mem[EA]); End;
+    $EC: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_X, NesMemRead(EA)); End;
     $C0: Begin EA := CPU6502_AmIMM; CPU6502_DoCMP(CPU6502_Y, CPU6502_Mem[EA]); End;
     $C4: Begin EA := CPU6502_AmZP;  CPU6502_DoCMP(CPU6502_Y, CPU6502_Mem[EA]); End;
-    $CC: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_Y, CPU6502_Mem[EA]); End;
+    $CC: Begin EA := CPU6502_AmABS; CPU6502_DoCMP(CPU6502_Y, NesMemRead(EA)); End;
     { ----- BIT ----- }
     $24: Begin EA := CPU6502_AmZP;  M := CPU6502_Mem[EA];
                CPU6502_SetZ((M And CPU6502_A) = 0);
                CPU6502_SetN((M And $80) <> 0);
                CPU6502_SetV((M And $40) <> 0); End;
-    $2C: Begin EA := CPU6502_AmABS; M := CPU6502_Mem[EA];
+    $2C: Begin EA := CPU6502_AmABS; M := NesMemRead(EA);
                CPU6502_SetZ((M And CPU6502_A) = 0);
                CPU6502_SetN((M And $80) <> 0);
                CPU6502_SetV((M And $40) <> 0); End;
@@ -63594,9 +64144,11 @@ Begin
   CPU6502_ExitCode := 0;
   CPU6502_Cycles := 0;
   { Sentinelle de fin : push d une adresse de halt sur la pile.       }
-  { En mode NES (3) et Atari 2600 (4), $FFFE/$FFFF est le vecteur     }
-  { IRQ/BRK reel en ROM : ne pas ecraser.                              }
-  If (CPU6502_Variant <> 3) And (CPU6502_Variant <> 4) Then Begin
+  { En mode NES (3), Atari 2600 (4) et C64 (1, demarrage reel au       }
+  { vecteur RESET du KERNAL), $FFFE/$FFFF est le vecteur IRQ/BRK reel  }
+  { en ROM : ne pas ecraser.                                           }
+  If (CPU6502_Variant <> 1) And (CPU6502_Variant <> 3) And
+     (CPU6502_Variant <> 4) Then Begin
     CPU6502_Mem[$FFFE] := $00;
     CPU6502_Mem[$FFFF] := $00;
   End;
@@ -66524,6 +67076,7 @@ Var
  LogF_R: Text;
  Idx_R, KK_R: Integer;
  AllZero: Boolean;
+ C64KeyEsc: Boolean;
 Begin NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -66798,24 +67351,16 @@ Begin NesActive := False;
   End
   Else If TargetCPU = '-CC64' Then Begin
    CPU6502_Variant := 1;
-   { ROM reelles (voir C64_BASIC_ROM/C64_CHARSET_ROM/C64_KERNAL_ROM plus    }
-   { haut) copiees en memoire AVANT le programme .PRG, comme au demarrage   }
-   { d un vrai C64 - un .PRG typique appelle des routines KERNAL (CHROUT    }
-   { $FFD2, GETIN $FFE4, etc.) ou BASIC via JSR/JMP direct plutot que de    }
-   { les reimplanter lui-meme ; sans ces ROM, ces appels tombaient          }
-   { auparavant sur de la memoire a zero (CPU6502_Mem est remis a zero      }
-   { juste avant, voir plus haut) et plantaient ou ne faisaient rien.       }
-   { AUCUN bank-switching (registre $01) n est simule : ces zones restent   }
-   { adressables comme de la ROM "toujours visible", ce qui suffit pour     }
-   { qu un .PRG lance directement y trouve du code KERNAL/BASIC reel, mais  }
-   { ne reproduit pas la commutation ROM/RAM/E-S materielle exacte (VIC-II/ }
-   { CIA/SID a $D000-$DFFF ne sont pas non plus emules - le generateur de   }
-   { caracteres y est charge tel quel, disponible en memoire mais pas       }
-   { encore consulte par le rendu ecran). }
-   Move(C64_BASIC_ROM, CPU6502_Mem[$A000], SizeOf(C64_BASIC_ROM));
-   Move(C64_CHARSET_ROM, CPU6502_Mem[$D000], SizeOf(C64_CHARSET_ROM));
-   Move(C64_KERNAL_ROM, CPU6502_Mem[$E000], SizeOf(C64_KERNAL_ROM));
-   Loaded := CPU6502_LoadC64Prg(BinaryPath, EntryAddr16);
+   { Demarrage materiel reel (2026-08-13) : commutation banque $01, VIC-II }
+   { texte, CIA1 (clavier+minuteries+IRQ), CIA2 (banque VIC), RAM couleur  }
+   { - voir C64_Boot pour le detail. Le CPU demarre desormais au VRAI       }
+   { vecteur RESET du KERNAL ($FFFC/$FFFD) : memoire testee, CIA/VIC        }
+   { initialises, banniere BASIC authentique, READY., puis "RUN" (fichier  }
+   { $0801) ou "SYS <adresse>" (code machine a une autre adresse) pre-       }
+   { rempli dans le tampon clavier comme si l utilisateur venait de le       }
+   { taper - remplace l ancien raccourci "sauter directement au .PRG" qui   }
+   { ne passait jamais par BASIC/KERNAL. }
+   Loaded := C64_Boot(BinaryPath, EntryAddr16);
   End
   Else If (TargetCPU = '-CATARI400') Or (TargetCPU = '-CATARI800') Then Begin
    CPU6502_Variant := 2;
@@ -67346,6 +67891,56 @@ Begin NesActive := False;
     {$ENDIF}
    End;
    A2600_Active := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+  End Else If TargetCPU = '-CC64' Then Begin
+   { ----- Boucle C64 par trame (~50 Hz PAL) : rendu VIC-II texte +      }
+   { scrutation clavier CIA1 a chaque trame - le CPU execute desormais    }
+   { reellement le vrai code KERNAL/BASIC (banniere, READY., puis          }
+   { RUN/SYS pre-injectes par C64_Boot dans le tampon clavier) plutot     }
+   { que de sauter directement au .PRG comme avant. Le decompte des        }
+   { minuteries CIA1 (voir C64_TickCia1, appele depuis CPU6502_Step)       }
+   { utilise les vrais cycles ecoules par instruction, independamment du  }
+   { decoupage en "trames" ici - seuls le rendu/la scrutation clavier/le  }
+   { rythme d affichage en dependent, pas la justesse de l horloge jiffy. }
+   EmuDbg.Active := True;
+   EmuDbg.CPU    := EDC_6502;
+   C64KeyEsc := False;
+   DrawEmulatorPanel(P);
+   {$IFDEF WINDOWS}
+   EntryAddr := GetTimestamp;
+   {$ENDIF}
+   While (Not CPU6502_Halted) And (C64_FrameNo < 36000) And
+         (Not C64KeyEsc) Do Begin
+    While KeyPressed Do Begin
+     NesChrSize := Ord(ReadKey);
+     If NesChrSize = 27 Then C64KeyEsc := True;
+     If NesChrSize = 3 Then EmuDbg_RequestBreak(EDC_6502);
+     If NesChrSize = 0 Then Begin
+      If KeyPressed Then Begin
+       NesChrSize := Ord(ReadKey);
+       If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
+      End Else
+       EmuDbg_RequestBreak(EDC_6502);
+     End;
+    End;
+    If C64KeyEsc Then Break;
+    C64_PollKeyboard;
+    For NesPrgSize := 0 To 4999 Do Begin
+     If CPU6502_Halted Then Break;
+     EmuDbg_OnBeforeStep6502;
+     CPU6502_Step;
+     Inc(Steps);
+    End;
+    C64_RenderFrame(P);
+    DrawEmulatorPanel(P);
+    Inc(C64_FrameNo);
+    {$IFDEF WINDOWS}
+    NesChrSize := GetTimestamp - EntryAddr;
+    If NesChrSize < 20 Then WinSleep(20 - NesChrSize); { ~50 Hz PAL }
+    EntryAddr := GetTimestamp;
+    {$ENDIF}
+   End;
    EmuDbg.Active := False;
    EmuDbg.CPU    := EDC_NONE;
   End Else Begin
