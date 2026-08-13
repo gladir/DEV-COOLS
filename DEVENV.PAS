@@ -33212,7 +33212,11 @@ Begin
      Pane.Entries[Pane.Count].IsDir := False;
      Pane.Entries[Pane.Count].FTime := 0;
      Pane.Entries[Pane.Count].FDate := 0;
-     Pane.Entries[Pane.Count].Cluster := 0;
+     { Pas de "cluster" en CBM DOS - on y empaquete plutot la piste/secteur }
+     { du 1er bloc de donnees (Buf[EntOff+1]/+2), pour que F3 (NCActionView/ }
+     { NCCmd_ViewD64File) puisse retrouver le debut de la chaine du fichier. }
+     Pane.Entries[Pane.Count].Cluster :=
+      (LongInt(Buf[EntOff + 1]) Shl 8) Or Buf[EntOff + 2];
      Inc(Pane.Count);
     End;
    End;
@@ -34323,38 +34327,15 @@ Begin
  NCViewBytesToLine := R;
 End;
 
-{ F3 : charger le fichier hote FullPath pour la visionneuse en lecture   }
-{ seule - lecture binaire brute (NCState.ViewRaw/ViewRawSize, plafonnee  }
-{ a MAX_NC_VIEW_RAW octets) qui alimente a la fois le mode Hexadecimal   }
-{ (F4) et la recherche (F7), puis decoupage en lignes de texte           }
-{ (NCState.ViewLines/ViewCount) pour le mode Texte par defaut. --- }
-Procedure NCCmd_ViewFile(FullPath: String);
+{ Decoupe NCState.ViewRaw[0..ViewRawSize-1] (deja rempli par l appelant, }
+{ hote ou disque virtuel) en lignes de texte sur CR/LF/CRLF               }
+{ (NCState.ViewLines/ViewCount), pour le mode Texte du F3 par defaut -    }
+{ partage entre toutes les sources de donnees de la visionneuse. --- }
+Procedure NCViewSplitLines;
 Var
- F: File;
  LineStart, I: LongInt;
 Begin
  NCState.ViewCount := 0;
- NCState.ViewTop := 0;
- NCState.ViewCol := 0;
- NCState.ViewHex := False;
- NCState.ViewWrap := True;
- NCState.ViewFileName := FullPath;
- NCState.ViewFileSize := 0;
- NCState.ViewRawSize := 0;
- {$I-} Assign(F, FullPath); Reset(F, 1); {$I+}
- If IOResult <> 0 Then Begin
-  NCState.ViewLines[0] := '(impossible d''ouvrir le fichier)';
-  NCState.ViewCount := 1;
-  Exit;
- End;
- NCState.ViewFileSize := FileSize(F);
- I := NCState.ViewFileSize;
- If I > MAX_NC_VIEW_RAW Then I := MAX_NC_VIEW_RAW;
- {$I-} BlockRead(F, NCState.ViewRaw, I, NCState.ViewRawSize); {$I+}
- IOResult;
- Close(F);
-
- { Decoupage en lignes sur CR, LF ou CRLF. }
  LineStart := 0;
  I := 0;
  While (I < NCState.ViewRawSize) And (NCState.ViewCount < MAX_NC_VIEW_LINES) Do Begin
@@ -34378,6 +34359,97 @@ Begin
   NCState.ViewLines[0] := '';
   NCState.ViewCount := 1;
  End;
+End;
+
+{ F3 : charger le fichier hote FullPath pour la visionneuse en lecture   }
+{ seule - lecture binaire brute (NCState.ViewRaw/ViewRawSize, plafonnee  }
+{ a MAX_NC_VIEW_RAW octets) qui alimente a la fois le mode Hexadecimal   }
+{ (F4) et la recherche (F7), puis decoupage en lignes de texte           }
+{ (NCState.ViewLines/ViewCount) pour le mode Texte par defaut. --- }
+Procedure NCCmd_ViewFile(FullPath: String);
+Var
+ F: File;
+ I: LongInt;
+Begin
+ NCState.ViewCount := 0;
+ NCState.ViewTop := 0;
+ NCState.ViewCol := 0;
+ NCState.ViewHex := False;
+ NCState.ViewWrap := True;
+ NCState.ViewFileName := FullPath;
+ NCState.ViewFileSize := 0;
+ NCState.ViewRawSize := 0;
+ {$I-} Assign(F, FullPath); Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  NCState.ViewLines[0] := '(impossible d''ouvrir le fichier)';
+  NCState.ViewCount := 1;
+  Exit;
+ End;
+ NCState.ViewFileSize := FileSize(F);
+ I := NCState.ViewFileSize;
+ If I > MAX_NC_VIEW_RAW Then I := MAX_NC_VIEW_RAW;
+ {$I-} BlockRead(F, NCState.ViewRaw, I, NCState.ViewRawSize); {$I+}
+ IOResult;
+ Close(F);
+ NCViewSplitLines;
+End;
+
+{ F3 sur un fichier d une disquette virtuelle Commodore 64 (.D64) :       }
+{ StartTrack/StartSector viennent de TNCEntry.Cluster (empaquete par        }
+{ NCListDir en Track Shl 8 Or Sector, D64 n a pas de "cluster" FAT).        }
+{ Parcourt la chaine de secteurs de donnees exactement comme le ferait    }
+{ le KERNAL C64 (LOAD) : chaque secteur non terminal contribue ses 254    }
+{ octets de donnees (Buf[2..255]), le dernier secteur de la chaine            }
+{ (Track de chainage = 0) ne contribue que jusqu a l octet indique par       }
+{ le 2e octet de chainage - convention standard 1541 documentee dans          }
+{ plusieurs sources independantes (ex. c1541/cbmconvert), mais jamais         }
+{ recoupee avec la specification Commodore primaire : a corriger si un        }
+{ fichier de test revele un decalage d un octet. --- }
+Procedure NCCmd_ViewD64File(Slot: Byte; StartTrack, StartSector: Byte;
+ Const DisplayName: String);
+Var
+ Buf: Array[0..255] Of Byte;
+ NextT, NextS: Byte;
+ N, Cnt, I, Safety: Integer;
+Begin
+ NCState.ViewCount := 0;
+ NCState.ViewTop := 0;
+ NCState.ViewCol := 0;
+ NCState.ViewHex := False;
+ NCState.ViewWrap := True;
+ NCState.ViewFileName := DisplayName;
+ NCState.ViewFileSize := 0;
+ NCState.ViewRawSize := 0;
+ NextT := StartTrack;
+ NextS := StartSector;
+ Safety := 0;
+ While (NextT <> 0) And (Safety < 800) Do Begin
+  { 800 > nombre total de secteurs d une image 40 pistes (768, le maximum }
+  { supporte) : garde-fou anti-boucle infinie si l image est corrompue        }
+  { (chaine circulaire), sans jamais tronquer un fichier legitime. }
+  Inc(Safety);
+  If Not D64_ReadSector(Slot, NextT, NextS, Buf) Then Break;
+  If Buf[0] = 0 Then Begin
+   N := Buf[1];
+   If N < 2 Then Cnt := 0 Else Cnt := N - 1;
+   For I := 0 To Cnt - 1 Do
+    If NCState.ViewRawSize < MAX_NC_VIEW_RAW Then Begin
+     NCState.ViewRaw[NCState.ViewRawSize] := Buf[2 + I];
+     Inc(NCState.ViewRawSize);
+    End;
+   NextT := 0;
+  End Else Begin
+   For I := 0 To 253 Do
+    If NCState.ViewRawSize < MAX_NC_VIEW_RAW Then Begin
+     NCState.ViewRaw[NCState.ViewRawSize] := Buf[2 + I];
+     Inc(NCState.ViewRawSize);
+    End;
+   NextT := Buf[0];
+   NextS := Buf[1];
+  End;
+ End;
+ NCState.ViewFileSize := NCState.ViewRawSize;
+ NCViewSplitLines;
 End;
 
 { Disque > "Utilitaire reseau..." - extension DEV-COOLS sans equivalent   }
@@ -34570,12 +34642,19 @@ Procedure NCActionView(Side: Integer);
 Var
  E: TNCEntry;
 Begin
- If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
-  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
-  If Not E.IsDir Then Begin
-   NCCmd_ViewFile(NCFullPath(NCState.Panes[Side].Path, E.Name));
-   NCState.Mode := ncViewFile;
-  End;
+ If NCState.Panes[Side].Count = 0 Then Exit;
+ E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+ If E.IsDir Then Exit;
+ If NCState.Slot < 0 Then Begin
+  NCCmd_ViewFile(NCFullPath(NCState.Panes[Side].Path, E.Name));
+  NCState.Mode := ncViewFile;
+ End Else If FatVol[NCState.Slot].IsD64 Then Begin
+  { La disquette virtuelle FAT (Slot >= 0 mais pas D64) reste hors de       }
+  { portee ici, meme limitation preexistante que NCActionEdit/            }
+  { NCActionOpenAssociated : pas de chemin hote direct pour ces fichiers. }
+  NCCmd_ViewD64File(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
+   Byte(E.Cluster And $FF), E.Name);
+  NCState.Mode := ncViewFile;
  End;
 End;
 
