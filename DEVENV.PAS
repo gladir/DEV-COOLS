@@ -8467,6 +8467,10 @@ Function Emu_CdromFindFirst(Idx: Integer; Const DirRel, Pattern: String): Boolea
 { avant la definition complete du coeur 8086 reel plus bas dans ce fichier.}
 Procedure Emu_StepOne(Var P: TEmulatorPanel); Forward;
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte); Forward;
+{ Necessaire a TermFindPrgExecutable (executer un .PRG tape dans un shell  }
+{ terminal) bien avant sa definition complete pres de NCActionOpenAssociated}
+{ plus bas dans ce fichier. }
+Function NCIsAtariSTPrg(Const Path: String): Boolean; Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -30792,6 +30796,158 @@ Begin
  TermAddLine(TP, S + ' BLOCKS FREE.');
 End;
 
+{ Parcourt la chaine de secteurs de donnees d un fichier D64 a partir de   }
+{ StartTrack/StartSector et copie les octets dans OutBuf (jusqu a            }
+{ MaxSize octets) - meme convention 1541 que D64_ListDir : un secteur       }
+{ non terminal fournit ses 254 octets utiles (Buf[2..255]), le secteur      }
+{ terminal est signale par Buf[0]=0 et Buf[1]=index du dernier octet          }
+{ valide. Partagee par la visionneuse F3 (NCCmd_ViewD64File) et             }
+{ l extraction vers un fichier hote temporaire (D64_ExtractToTempFile). --- }
+Procedure D64_ReadFileChain(Slot: Byte; StartTrack, StartSector: Byte;
+ Var OutBuf: Array Of Byte; MaxSize: LongInt; Var OutSize: LongInt);
+Var
+ Buf: Array[0..255] Of Byte;
+ NextT, NextS: Byte;
+ N, Cnt, I, Safety: Integer;
+Begin
+ OutSize := 0;
+ NextT := StartTrack;
+ NextS := StartSector;
+ Safety := 0;
+ While (NextT <> 0) And (Safety < 800) Do Begin
+  { 800 > nombre total de secteurs d une image 40 pistes (768, le maximum }
+  { supporte) : garde-fou anti-boucle infinie si l image est corrompue        }
+  { (chaine circulaire), sans jamais tronquer un fichier legitime. }
+  Inc(Safety);
+  If Not D64_ReadSector(Slot, NextT, NextS, Buf) Then Break;
+  If Buf[0] = 0 Then Begin
+   N := Buf[1];
+   If N < 2 Then Cnt := 0 Else Cnt := N - 1;
+   For I := 0 To Cnt - 1 Do
+    If OutSize < MaxSize Then Begin
+     OutBuf[OutSize] := Buf[2 + I];
+     Inc(OutSize);
+    End;
+   NextT := 0;
+  End Else Begin
+   For I := 0 To 253 Do
+    If OutSize < MaxSize Then Begin
+     OutBuf[OutSize] := Buf[2 + I];
+     Inc(OutSize);
+    End;
+   NextT := Buf[0];
+   NextS := Buf[1];
+  End;
+ End;
+End;
+
+{ Cherche dans le repertoire (a plat) de l image D64 montee sur Slot une   }
+{ entree de type PRG (seul type executable directement lancable) dont le  }
+{ nom decode correspond a BaseNoExt (comparaison insensible a la casse,    }
+{ comme TermFindDosExecutable pour le disque hote). Renvoie la piste/          }
+{ secteur du 1er bloc de donnees si trouvee. --- }
+Function D64_FindPrgEntry(Slot: Byte; Const BaseNoExt: String;
+ Var Track, Sector: Byte): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ NextT, NextS: Byte;
+ E, I, EntOff: Integer;
+ Kind: Byte;
+ Name: String;
+ UpBase: String;
+Begin
+ D64_FindPrgEntry := False;
+ If Not FatVol[Slot].Mounted Then Exit;
+ If Not FatVol[Slot].IsD64 Then Exit;
+ If Not D64_ReadSector(Slot, 18, 0, Buf) Then Exit;
+ UpBase := UpCaseStr(BaseNoExt);
+ NextT := Buf[0];
+ NextS := Buf[1];
+ If (NextT = 0) Or (NextT > 40) Then Begin
+  NextT := 18;
+  NextS := 1;
+ End;
+ While (NextT <> 0) And D64_ReadSector(Slot, NextT, NextS, Buf) Do Begin
+  NextT := Buf[0];
+  NextS := Buf[1];
+  For E := 0 To 7 Do Begin
+   EntOff := 2 + E * 32;
+   Kind := Buf[EntOff];
+   If Kind = 0 Then Continue;
+   If (Kind And 15) <> 2 Then Continue; { seul PRG (2) est executable }
+   Name := '';
+   I := 0;
+   While (I < 16) And (Buf[EntOff + 3 + I] <> $A0) Do Begin
+    Name := Name + D64_PetsciiToAscii(Buf[EntOff + 3 + I]);
+    Inc(I);
+   End;
+   If UpCaseStr(Name) = UpBase Then Begin
+    Track := Buf[EntOff + 1];
+    Sector := Buf[EntOff + 2];
+    D64_FindPrgEntry := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Extrait un fichier PRG d une image D64 montee vers un fichier hote       }
+{ temporaire (necessaire car les chargeurs d emulateur - CPU6502_LoadC64Prg }
+{ - lisent toujours un chemin hote reel, jamais un tampon memoire) et       }
+{ renvoie ce chemin dans OutPath. Ecrit secteur par secteur directement     }
+{ sur disque (meme parcours de chaine que D64_ReadFileChain, mais sans     }
+{ tampon intermediaire pour tout le fichier - inutile de garder jusqu a     }
+{ ~197 Ko en memoire alors que D64_ReadSector lit deja secteur par           }
+{ secteur). Le fichier temporaire est ecrase a chaque appel (nom fixe)     }
+{ plutot que d accumuler des fichiers orphelins. --- }
+Function D64_ExtractToTempFile(Slot: Byte; StartTrack, StartSector: Byte;
+ Var OutPath: String): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ NextT, NextS: Byte;
+ N, Cnt, Safety: Integer;
+ F: File;
+ BW: Word;
+ TotalWritten: LongInt;
+Begin
+ D64_ExtractToTempFile := False;
+ OutPath := GetEnv('TEMP');
+ If OutPath = '' Then OutPath := '.';
+ If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+ OutPath := OutPath + 'DEVENV_NC_D64.PRG';
+ {$I-}
+ Assign(F, OutPath);
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ TotalWritten := 0;
+ NextT := StartTrack;
+ NextS := StartSector;
+ Safety := 0;
+ While (NextT <> 0) And (Safety < 800) Do Begin
+  { 800 > nombre total de secteurs d une image 40 pistes (768) : garde-fou }
+  { anti-boucle infinie si l image est corrompue. }
+  Inc(Safety);
+  If Not D64_ReadSector(Slot, NextT, NextS, Buf) Then Break;
+  If Buf[0] = 0 Then Begin
+   N := Buf[1];
+   If N < 2 Then Cnt := 0 Else Cnt := N - 1;
+   If Cnt > 0 Then Begin
+    BlockWrite(F, Buf[2], Cnt, BW);
+    Inc(TotalWritten, BW);
+   End;
+   NextT := 0;
+  End Else Begin
+   BlockWrite(F, Buf[2], 254, BW);
+   Inc(TotalWritten, BW);
+   NextT := Buf[0];
+   NextS := Buf[1];
+  End;
+ End;
+ Close(F);
+ D64_ExtractToTempFile := (TotalWritten > 0);
+End;
+
 { ============================================================
   ECRITURE FAT12/16 (creation de fichier dans une image montee)
   ============================================================ }
@@ -32434,12 +32590,56 @@ Begin
   TermFindElfExecutable := Candidate;
 End;
 
+{ Cherche un .PRG executable pour CmdName tape dans un shell terminal -   }
+{ soit sur le disque HOTE (TP.VirtDrive<0, dans Dir, tranche entre               }
+{ Commodore 64 et Atari ST par signature GEMDOS, voir NCIsAtariSTPrg),      }
+{ soit sur une disquette virtuelle Commodore 64 montee (TP.VirtDrive>=0     }
+{ et FatVol[TP.VirtDrive].IsD64 - toujours C64, aucune ambiguite possible   }
+{ sur ce format), auquel cas le fichier trouve est extrait vers un           }
+{ fichier hote temporaire (voir D64_ExtractToTempFile) puisque              }
+{ ShowEmulatorPanel/CPU6502_LoadC64Prg n acceptent qu un chemin hote reel.  }
+{ Renvoie True si un .PRG a ete trouve et resolu, avec TargetCPU/                }
+{ ResolvedPath prets pour ShowEmulatorPanel. --- }
+Function TermFindPrgExecutable(Var TP: TTerminalPanel; Const Dir, CmdName: String;
+ Var TargetCPU, ResolvedPath: String): Boolean;
+Var
+ Base, UpName, Candidate, BaseNoExt: String;
+ Track, Sector: Byte;
+Begin
+ TermFindPrgExecutable := False;
+ If TP.VirtDrive < 0 Then Begin
+  Base := Dir;
+  If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+  UpName := UpCaseStr(CmdName);
+  If (Length(UpName) > 4) And (Copy(UpName, Length(UpName) - 3, 4) = '.PRG') Then
+   Candidate := Base + CmdName
+  Else
+   Candidate := Base + CmdName + '.PRG';
+  If Not FileExists(Candidate) Then Exit;
+  ResolvedPath := Candidate;
+  If NCIsAtariSTPrg(Candidate) Then TargetCPU := '-CATARIST'
+  Else TargetCPU := '-CC64';
+  TermFindPrgExecutable := True;
+ End Else If FatVol[TP.VirtDrive].IsD64 Then Begin
+  BaseNoExt := CmdName;
+  If (Length(BaseNoExt) > 4) And
+     (UpCaseStr(Copy(BaseNoExt, Length(BaseNoExt) - 3, 4)) = '.PRG') Then
+   BaseNoExt := Copy(BaseNoExt, 1, Length(BaseNoExt) - 4);
+  If D64_FindPrgEntry(Byte(TP.VirtDrive), BaseNoExt, Track, Sector) Then
+   If D64_ExtractToTempFile(Byte(TP.VirtDrive), Track, Sector, ResolvedPath) Then Begin
+    TargetCPU := '-CC64';
+    TermFindPrgExecutable := True;
+   End;
+ End;
+End;
+
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
 Var
  CurrCmd, ParamStr, PipeS: String;
  Err: Word;
  CurDir, DosExe, ElfExe: String;
+ PrgTarget, PrgPath: String;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -32553,6 +32753,11 @@ Begin
      ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
      ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+    { Idem pour un .PRG Commodore 64/Atari ST - sur le disque hote OU sur }
+    { une disquette virtuelle .D64 montee (TermFindPrgExecutable gere       }
+    { les deux cas et extrait vers un fichier hote temporaire si besoin). }
+    Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
+     ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
     Else
      TermAddLine(TP,
       '''' + CurrCmd +
@@ -32630,6 +32835,8 @@ Begin
      ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
      ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+    Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
+     ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
     Else
      TermAddLine(TP, CurrCmd +
       ' : le terme n''est pas reconnu comme nom de cmdlet.');
@@ -32689,6 +32896,8 @@ Begin
      ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
      ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+    Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
+     ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
     Else
      TermAddLine(TP, 'bash: ' + CurrCmd +
       ': command not found');
@@ -32773,6 +32982,8 @@ Begin
     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
    Else If ElfExe <> '' Then
     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+   Else If TermFindPrgExecutable(TP, TP.VirtCwd, CurrCmd, PrgTarget, PrgPath) Then
+    ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
    Else
     TermAddLine(TP,
      '''' + CurrCmd +
@@ -34407,47 +34618,14 @@ End;
 { fichier de test revele un decalage d un octet. --- }
 Procedure NCCmd_ViewD64File(Slot: Byte; StartTrack, StartSector: Byte;
  Const DisplayName: String);
-Var
- Buf: Array[0..255] Of Byte;
- NextT, NextS: Byte;
- N, Cnt, I, Safety: Integer;
 Begin
- NCState.ViewCount := 0;
  NCState.ViewTop := 0;
  NCState.ViewCol := 0;
  NCState.ViewHex := False;
  NCState.ViewWrap := True;
  NCState.ViewFileName := DisplayName;
- NCState.ViewFileSize := 0;
- NCState.ViewRawSize := 0;
- NextT := StartTrack;
- NextS := StartSector;
- Safety := 0;
- While (NextT <> 0) And (Safety < 800) Do Begin
-  { 800 > nombre total de secteurs d une image 40 pistes (768, le maximum }
-  { supporte) : garde-fou anti-boucle infinie si l image est corrompue        }
-  { (chaine circulaire), sans jamais tronquer un fichier legitime. }
-  Inc(Safety);
-  If Not D64_ReadSector(Slot, NextT, NextS, Buf) Then Break;
-  If Buf[0] = 0 Then Begin
-   N := Buf[1];
-   If N < 2 Then Cnt := 0 Else Cnt := N - 1;
-   For I := 0 To Cnt - 1 Do
-    If NCState.ViewRawSize < MAX_NC_VIEW_RAW Then Begin
-     NCState.ViewRaw[NCState.ViewRawSize] := Buf[2 + I];
-     Inc(NCState.ViewRawSize);
-    End;
-   NextT := 0;
-  End Else Begin
-   For I := 0 To 253 Do
-    If NCState.ViewRawSize < MAX_NC_VIEW_RAW Then Begin
-     NCState.ViewRaw[NCState.ViewRawSize] := Buf[2 + I];
-     Inc(NCState.ViewRawSize);
-    End;
-   NextT := Buf[0];
-   NextS := Buf[1];
-  End;
- End;
+ D64_ReadFileChain(Slot, StartTrack, StartSector, NCState.ViewRaw,
+  MAX_NC_VIEW_RAW, NCState.ViewRawSize);
  NCState.ViewFileSize := NCState.ViewRawSize;
  NCViewSplitLines;
 End;
@@ -34782,38 +34960,86 @@ Begin
   (Magic[1] = Ord('E')) And (Magic[2] = Ord('L')) And (Magic[3] = Ord('F'));
 End;
 
+{ Un ".PRG" est ambigu entre deux plateformes emulees ici : un binaire      }
+{ GEMDOS Atari ST (en-tete 28 octets, magic $60,$1A - voir M68K_LoadPRG)     }
+{ ou un programme Commodore 64 (2 octets d adresse de chargement, aucune    }
+{ signature fiable en soi, mais $60,$1A est un couple d octets qui ne          }
+{ correspond a aucune adresse de chargement C64 plausible). On tranche         }
+{ donc simplement sur la signature GEMDOS : presente -> Atari ST, absente     }
+{ -> Commodore 64 (l hypothese par defaut, plus frequente dans ce depot). --- }
+Function NCIsAtariSTPrg(Const Path: String): Boolean;
+Var
+ F: File;
+ Magic: Array[0..1] Of Byte;
+ BytesRead: Word;
+Begin
+ NCIsAtariSTPrg := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockRead(F, Magic, SizeOf(Magic), BytesRead);
+ Close(F);
+ NCIsAtariSTPrg := (BytesRead = 2) And (Magic[0] = $60) And (Magic[1] = $1A);
+End;
+
 { Entree sur un fichier associe a un emulateur integre plutot que de ne  }
-{ rien faire (comme le ferait NC pour un fichier non associe) - seul le }
-{ disque hote est supporte (comme NCActionView/NCActionEdit), la        }
-{ disquette virtuelle FAT n exposant pas de chemin hote direct que      }
-{ ShowEmulatorPanel puisse ouvrir. Renvoie True si le fichier a ete pris }
-{ en charge (l appelant ne doit alors rien faire d autre).               }
+{ rien faire (comme le ferait NC pour un fichier non associe) - le       }
+{ disque hote (Slot<0) et une disquette virtuelle Commodore 64 montee    }
+{ (Slot>=0 et FatVol[Slot].IsD64) sont tous deux supportes ; la           }
+{ disquette virtuelle FAT reste hors de portee (meme limitation que          }
+{ NCActionView/NCActionEdit, pas de chemin hote direct). Renvoie True si }
+{ le fichier a ete pris en charge (l appelant ne doit alors rien faire      }
+{ d autre). --- }
 Function NCActionOpenAssociated(Side: Integer): Boolean;
 Var
  E: TNCEntry;
- Ext, FullPath: String;
+ Ext, FullPath, TempPath: String;
 Begin
  NCActionOpenAssociated := False;
- If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
-  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
-  If Not E.IsDir Then Begin
-   Ext := UpCaseStr(NCExtractExt(E.Name));
-   FullPath := NCFullPath(NCState.Panes[Side].Path, E.Name);
-   If Ext = 'NES' Then Begin
-    ShowEmulatorPanel(EmuPanel, FullPath, '-CNES', '');
+ If NCState.Panes[Side].Count = 0 Then Exit;
+ E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
+ If E.IsDir Then Exit;
+ If (NCState.Slot >= 0) And FatVol[NCState.Slot].IsD64 Then Begin
+  { Disquette virtuelle .D64 : seul PRG est executable (SEQ/USR/REL/DEL   }
+  { ne le sont pas) - extrait vers un fichier hote temporaire, puisque       }
+  { CPU6502_LoadC64Prg lit toujours un chemin hote reel. }
+  If UpCaseStr(NCExtractExt(E.Name)) = 'PRG' Then Begin
+   If D64_ExtractToTempFile(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
+    Byte(E.Cluster And $FF), TempPath) Then Begin
+    ShowEmulatorPanel(EmuPanel, TempPath, '-CC64', '');
     NCActionOpenAssociated := True;
-   End
-   Else If (Ext = 'COM') Or
-    ((Ext = 'EXE') And NCIsDos16Exe(FullPath)) Then Begin
-    ShowEmulatorPanel(EmuPanel, FullPath, '-CD', '');
-    NCActionOpenAssociated := True;
+   End;
+  End;
+  Exit;
+ End;
+ If NCState.Slot < 0 Then Begin
+  Ext := UpCaseStr(NCExtractExt(E.Name));
+  FullPath := NCFullPath(NCState.Panes[Side].Path, E.Name);
+  If Ext = 'NES' Then Begin
+   ShowEmulatorPanel(EmuPanel, FullPath, '-CNES', '');
+   NCActionOpenAssociated := True;
+  End
+  Else If Ext = 'PRG' Then Begin
+   { .PRG hote : ambigu C64/Atari ST, tranche par la signature GEMDOS      }
+   { (voir NCIsAtariSTPrg). }
+   If NCIsAtariSTPrg(FullPath) Then
+    ShowEmulatorPanel(EmuPanel, FullPath, '-CATARIST', '')
+   Else
+    ShowEmulatorPanel(EmuPanel, FullPath, '-CC64', '');
+   NCActionOpenAssociated := True;
+  End
+  Else If (Ext = 'COM') Or
+   ((Ext = 'EXE') And NCIsDos16Exe(FullPath)) Then Begin
+   ShowEmulatorPanel(EmuPanel, FullPath, '-CD', '');
+   NCActionOpenAssociated := True;
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
     ShowEmulatorPanel(EmuPanel, FullPath, '-CELF64', '');
     NCActionOpenAssociated := True;
    End;
   End;
- End;
 End;
 
 Procedure NCActionCopyStart(Side, OtherSide: Integer);
