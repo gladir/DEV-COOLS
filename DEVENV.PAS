@@ -53438,6 +53438,32 @@ Begin
     DpmiCPU.Reg.AX := NewSel;
    End Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8011; End;
   End;
+  $0200: Begin
+   { Obtenir le vecteur d interruption MODE REEL (la vraie IVT a            }
+   { 0000:BL*4, partagee avec le coeur 8086 reel - voir DOC/DPMI.txt 6.1). }
+   Idx := DpmiCPU.Reg.BL;
+   DpmiCPU.Reg.CX := Emu_ReadWord(P.CPU, 0, Word(Idx) * 4 + 2);
+   DpmiCPU.Reg.DX := Emu_ReadWord(P.CPU, 0, Word(Idx) * 4);
+  End;
+  $0201: Begin
+   Idx := DpmiCPU.Reg.BL;
+   Emu_WriteWord(P.CPU, 0, Word(Idx) * 4, DpmiCPU.Reg.DX);
+   Emu_WriteWord(P.CPU, 0, Word(Idx) * 4 + 2, DpmiCPU.Reg.CX);
+  End;
+  $0202, $0204: Begin
+   { Obtenir le gestionnaire d exception (0202h, BL=00h-1Fh) ou             }
+   { d interruption (0204h, BL=00h-FFh) PROTEGE installe - meme table       }
+   { DpmiCPU.IntSel/IntOfs pour les deux (comme la vraie IDT x86, qui ne     }
+   { distingue pas exceptions et interruptions - voir DOC/DPMI.txt 6.3/6.5).}
+   Idx := DpmiCPU.Reg.BL;
+   DpmiCPU.Reg.CX := DpmiCPU.IntSel[Idx];
+   DpmiCPU.Reg.EDX := DpmiCPU.IntOfs[Idx];
+  End;
+  $0203, $0205: Begin
+   Idx := DpmiCPU.Reg.BL;
+   DpmiCPU.IntSel[Idx] := DpmiCPU.Reg.CX;
+   DpmiCPU.IntOfs[Idx] := DpmiCPU.Reg.EDX;
+  End;
   $0100: Begin
    If Dpmi_AllocDosMem(DpmiCPU.Reg.BX, RealSeg, NewSel) Then Begin
     DpmiCPU.Reg.AX := RealSeg;
@@ -53915,6 +53941,52 @@ Begin
  End;
 End;
 
+{ Invoque le gestionnaire d exception/interruption PROTEGE installe par le }
+{ client (AX=0203h/0205h, voir DpmiCPU.IntSel/IntOfs) pour le vecteur Num -}
+{ empile une trame d interruption minimale (EFLAGS, CS, EIP) sur la pile   }
+{ PROTEGEE du client (SS:ESP) puis saute au gestionnaire, qui doit se      }
+{ terminer par IRET/IRETD (voir Dpmi_Step, opcode CFh) pour reprendre au   }
+{ point d interruption. Aucun changement de niveau de privilege n est      }
+{ simule (anneau unique dans ce modele - voir le commentaire de tete pres  }
+{ de TDpmiLDT). }
+Procedure Dpmi_FireProtectedHandler(Var P: TEmulatorPanel; Num: Byte);
+Begin
+ Dpmi_Push32(P, DpmiCPU.Flags.Abs);
+ Dpmi_Push32(P, LongInt(DpmiCPU.SegSel[1]));
+ Dpmi_Push32(P, DpmiCPU.EIP);
+ DpmiCPU.SegSel[1] := DpmiCPU.IntSel[Num];
+ DpmiCPU.EIP := DpmiCPU.IntOfs[Num];
+End;
+
+{ Forwarde un INT Num execute DIRECTEMENT par le client protege (sans       }
+{ passer par AX=0300h) vers le coeur 8086 REEL (Emu_DoInt), pour le cas ou  }
+{ aucun gestionnaire protege n a ete installe (voir Dpmi_FireProtectedHandler}
+{ ci-dessus, prioritaire) - couvre les programmes qui appellent INT 21h/    }
+{ 10h/16h/etc. directement en confiance plutot que via le service AX=0300h  }
+{ officiellement documente. LIMITATION ASSUMEE : les selecteurs ES/DS/FS/GS }
+{ protege sont traduits en "segment reel" par simple division de leur BASE  }
+{ lineaire par 16 (Base Div 16) - exact pour tout selecteur cree par        }
+{ Dpmi_SegToSel (le cas courant : alias par defaut des segments reels au    }
+{ moment de la commutation, voir Dpmi_Switch), mais approximatif pour un    }
+{ selecteur personnalise dont la base ne serait pas un multiple de 16 ou    }
+{ pointerait au-dela du premier Mo (memoire etendue DPMI, sans equivalent   }
+{ reel) - un programme DPMI correct utilise de toute facon AX=0300h avec sa }
+{ propre traduction pour les appels necessitant un pointeur reel valide     }
+{ (voir DOC/DPMI.txt 10.3), donc cette limitation ne touche en pratique que }
+{ les appels "de confiance" sans pointeur (ex. INT 21h AH=4Ch Exit). }
+Procedure Dpmi_ForwardIntToReal(Var P: TEmulatorPanel; Num: Byte);
+Begin
+ P.CPU.Regs := DpmiCPU.Reg;
+ P.CPU.Segs.ES := Word(Dpmi_SelBase(DpmiCPU.SegSel[0]) Div 16);
+ P.CPU.Segs.DS := Word(Dpmi_SelBase(DpmiCPU.SegSel[3]) Div 16);
+ P.CPU.FS := Word(Dpmi_SelBase(DpmiCPU.SegSel[4]) Div 16);
+ P.CPU.GS := Word(Dpmi_SelBase(DpmiCPU.SegSel[5]) Div 16);
+ Emu_DoInt(P, Num);
+ DpmiCPU.Reg := P.CPU.Regs;
+ If EFG_CF In P.CPU.Flags.s Then Include(DpmiCPU.Flags.s, EFG_CF)
+ Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+End;
+
 { Execute une seule instruction protegee. Ne fait rien si DpmiCPU.Active   }
 { est faux (securite - ne devrait pas etre appelee dans ce cas, voir le    }
 { branchement dans la boucle principale). }
@@ -54133,14 +54205,36 @@ Begin
    DpmiCPU.Reg.ESP := DpmiCPU.Reg.EBP;
    DpmiCPU.Reg.EBP := Dpmi_Pop32(P);
   End;
-  $CC: Begin { INT 3 }
-   P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; { non gere,       }
-                                  { voir le commentaire de tete de section }
+  $CF: Begin { IRET/IRETD - retour d un gestionnaire d exception/interruption}
+             { protege (voir Dpmi_FireProtectedHandler) ou d un rappel mode  }
+             { reel invoque via Dpmi_RunRealProc(..., ViaIret=True). }
+   If OpSize = 2 Then Begin
+    DpmiCPU.EIP := Dpmi_Pop16(P);
+    DpmiCPU.SegSel[1] := Dpmi_Pop16(P);
+    DpmiCPU.Flags.Base := Dpmi_Pop16(P);
+   End Else Begin
+    DpmiCPU.EIP := Dpmi_Pop32(P);
+    DpmiCPU.SegSel[1] := Word(Dpmi_Pop32(P));
+    DpmiCPU.Flags.Abs := Dpmi_Pop32(P);
+   End;
+  End;
+  $CC: Begin { INT 3 (exception 3, Breakpoint - voir DOC/DPMI.txt 6.3) }
+   If DpmiCPU.IntSel[3] <> 0 Then Dpmi_FireProtectedHandler(P, 3)
+   Else Begin
+    P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; { aucun          }
+     { gestionnaire installe : arret propre, voir le commentaire de tete    }
+     { de section (pas de debogueur protege simule dans cet emulateur). }
+   End;
   End;
   $CD: Begin { INT Ib }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
-   If Imm = $31 Then Emu_DoInt31(P)
-   Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   If Imm = $31 Then Emu_DoInt31(P)  { toujours le service DPMI, jamais       }
+                                      { redirigeable par le client (voir     }
+                                      { DOC/DPMI.txt) }
+   Else If DpmiCPU.IntSel[Byte(Imm)] <> 0 Then
+    Dpmi_FireProtectedHandler(P, Byte(Imm))
+   Else
+    Dpmi_ForwardIntToReal(P, Byte(Imm));
   End;
   $E8: Begin { CALL rel32/rel16 (proche) }
    If OpSize = 2 Then Begin
