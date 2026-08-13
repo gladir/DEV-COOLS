@@ -1554,6 +1554,7 @@ Const
  NC_FLOPPY_SECTORS     = 2880;    { 1.44 Mo = 2880 secteurs de 512 octets }
  MAX_NC_TREE_NODES     = 400;     { noeuds max pour l arbre NCD (Commandes) }
  NC_TREE_MAX_DEPTH     = 6;       { profondeur max de l arbre NCD  }
+ MAX_NC_CD_ENTRIES     = 30;      { Alt+F1/Alt+F2 : 26 lecteurs A-Z + 4 slots virtuels }
  MAX_NC_VIEW_RAW       = 65536;   { octets bruts charges par F3 (mode Hex }
                                    { et recherche) - fichiers plus grands  }
                                    { tronques a ce nombre d octets. }
@@ -2807,8 +2808,11 @@ Type
                      { sous-repertoires du lecteur du panneau actif    }
   ncViewSearch,      { F7 dans la visionneuse F3 : saisie du texte     }
                      { recherche                                      }
-  ncViewSelectViewer { F8 dans la visionneuse F3 : choix du format          }
+  ncViewSelectViewer,{ F8 dans la visionneuse F3 : choix du format          }
                      { d affichage (WPVIEW: "Select Viewer")          }
+  ncChangeDrive      { Alt+F1 (panneau gauche) / Alt+F2 (panneau droite) :  }
+                     { choix de la lettre de lecteur (NC.PAS: ChangeDrive), }
+                     { voir NCBuildChangeDriveList/NCState.Cd*             }
  );
 
  TNCTreeNode = Record
@@ -2851,6 +2855,13 @@ Type
   TreeCount   : Integer;
   TreeCursor  : Integer;           { 0-based }
   TreeTop     : Integer;           { defilement de l arbre          }
+  CdSide      : Integer;           { 0=gauche 1=droite - panneau ayant  }
+                                    { declenche Alt+F1/Alt+F2            }
+  CdCount     : Integer;
+  CdLetter    : Array[0..MAX_NC_CD_ENTRIES - 1] Of Char;
+  CdIsVirt    : Array[0..MAX_NC_CD_ENTRIES - 1] Of Boolean;
+  CdSlotIdx   : Array[0..MAX_NC_CD_ENTRIES - 1] Of Integer;
+  CdCursor    : Integer;
  End;
 
  { Severite d une erreur }
@@ -33060,6 +33071,53 @@ Begin
  End;
 End;
 
+{ Alt+F1 (panneau gauche, Side=0) / Alt+F2 (panneau droite, Side=1) :        }
+{ construit la liste des lettres de lecteur disponibles (lecteurs Windows      }
+{ reels A-Z + disquettes virtuelles FAT montees) pour le panneau NC vise,      }
+{ exactement comme ChangeDrive() dans le projet de reference NC.PAS. }
+Procedure NCBuildChangeDriveList(Side: Integer);
+Var
+ L: Char;
+ I: Integer;
+ CurLetter: Char;
+Begin
+ NCState.CdSide := Side;
+ NCState.CdCount := 0;
+ For L := 'A' To 'Z' Do
+  If (DiskSize(Ord(L) - Ord('A') + 1) <> -1) And
+     (NCState.CdCount < MAX_NC_CD_ENTRIES) Then Begin
+   NCState.CdLetter[NCState.CdCount] := L;
+   NCState.CdIsVirt[NCState.CdCount] := False;
+   NCState.CdSlotIdx[NCState.CdCount] := -1;
+   Inc(NCState.CdCount);
+  End;
+ For I := 0 To 3 Do
+  If EmuFloppyOpen[I] And (NCState.CdCount < MAX_NC_CD_ENTRIES) Then Begin
+   NCState.CdLetter[NCState.CdCount] := Term_DriveLetterFromIdx(I);
+   NCState.CdIsVirt[NCState.CdCount] := True;
+   NCState.CdSlotIdx[NCState.CdCount] := I;
+   Inc(NCState.CdCount);
+  End;
+ { Positionner le curseur sur le lecteur actuellement affiche par ce         }
+ { panneau, si on le retrouve dans la liste (sinon debut de liste). }
+ NCState.CdCursor := 0;
+ If NCState.Slot >= 0 Then Begin
+  For I := 0 To NCState.CdCount - 1 Do
+   If NCState.CdIsVirt[I] And (NCState.CdSlotIdx[I] = NCState.Slot) Then Begin
+    NCState.CdCursor := I;
+    Break;
+   End;
+ End Else If Length(NCState.Panes[Side].Path) > 0 Then Begin
+  CurLetter := UpCase(NCState.Panes[Side].Path[1]);
+  For I := 0 To NCState.CdCount - 1 Do
+   If (Not NCState.CdIsVirt[I]) And (NCState.CdLetter[I] = CurLetter) Then Begin
+    NCState.CdCursor := I;
+    Break;
+   End;
+ End;
+ NCState.Mode := ncChangeDrive;
+End;
+
 { Lister le repertoire Pane.Path dans Pane.Entries/Count (donnees          }
 { structurees). Slot < 0 : systeme de fichiers HOTE reel (FindFirst/           }
 { FindNext, mode par defaut) - Slot >= 0 : disquette virtuelle FAT             }
@@ -33082,6 +33140,7 @@ Var
  SearchPath: String;
  AtRoot: Boolean;
  RootChk: String;
+ NextT, NextS, Kind: Byte;
 Begin
  Pane.Count := 0;
  Pane.Cursor := 0;
@@ -33113,6 +33172,51 @@ Begin
    FindNext(SR);
   End;
   {$IFDEF FPC} FindClose(SR); {$ENDIF}
+ End Else If FatVol[Slot].IsD64 Then Begin
+  { Disquette virtuelle Commodore 64 (.D64) : repertoire CBM DOS a plat  }
+  { (pas de sous-repertoires) - lecture directe de la chaine de secteurs }
+  { de repertoire a partir du BAM (piste 18/secteur 0), meme parcours       }
+  { que D64_ListDir mais en remplissant Pane.Entries au lieu d ecrire       }
+  { des lignes de texte dans un panneau Terminal. }
+  If D64_ReadSector(Slot, 18, 0, Buf) Then Begin
+   NextT := Buf[0];
+   NextS := Buf[1];
+   If (NextT = 0) Or (NextT > 40) Then Begin
+    NextT := 18;
+    NextS := 1;
+   End;
+   Done := False;
+   While (NextT <> 0) And (Not Done) And
+         D64_ReadSector(Slot, NextT, NextS, Buf) Do Begin
+    NextT := Buf[0];
+    NextS := Buf[1];
+    For I := 0 To 7 Do Begin
+     EntOff := 2 + I * 32;
+     Kind := Buf[EntOff];
+     If Kind = 0 Then Continue;
+     If Pane.Count >= MAX_NC_ENTRIES Then Begin Done := True; Break; End;
+     EntName := '';
+     J := 0;
+     While (J < 16) And (Buf[EntOff + 3 + J] <> $A0) Do Begin
+      EntName := EntName + D64_PetsciiToAscii(Buf[EntOff + 3 + J]);
+      Inc(J);
+     End;
+     EntName := EntName + '.' + D64_KindName[Kind And 15];
+     Pane.Entries[Pane.Count].Name := EntName;
+     { Approximation assumee : le repertoire CBM DOS ne stocke que le      }
+     { nombre de blocs (254 octets utiles chacun, 2 octets de chainage      }
+     { en moins par secteur de 256), jamais la taille exacte en octets     }
+     { du dernier bloc partiel. }
+     Pane.Entries[Pane.Count].Size :=
+      LongInt(Word(Buf[EntOff + 28]) Or (Word(Buf[EntOff + 29]) Shl 8)) * 254;
+     Pane.Entries[Pane.Count].IsDir := False;
+     Pane.Entries[Pane.Count].FTime := 0;
+     Pane.Entries[Pane.Count].FDate := 0;
+     Pane.Entries[Pane.Count].Cluster := 0;
+     Inc(Pane.Count);
+    End;
+   End;
+  End;
  End Else Begin
   { Disquette virtuelle FAT montee. }
   If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
@@ -34091,6 +34195,32 @@ Begin
    OutTextXY(PX + 8, InfoY + RH - RH,
     '-- Entree pour se deplacer, Echap pour fermer --');
   End;
+  ncChangeDrive: Begin
+   { Alt+F1/Alt+F2 (NC.PAS: ChangeDrive) - petite boite modale avec une      }
+   { rangee horizontale de lettres de lecteur, la selection courante en      }
+   { surbrillance, exactement comme le "Lettre de disque" original. --- }
+   NCDrawModalBox(PX, PY, PW, PH, 'Lettre de disque');
+   SetColor(15);
+   If NCState.CdSide = 0 Then S := 'Choisir le disque gauche :'
+   Else S := 'Choisir le disque droite :';
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6, S);
+   X0 := PX + PW Div 6 + 6;
+   Y := PY + PH Div 3 + 2 * RH + 6;
+   For I := 0 To NCState.CdCount - 1 Do Begin
+    S := NCState.CdLetter[I] + ':';
+    If I = NCState.CdCursor Then Begin
+     SetFillStyle(SolidFill, 0);
+     Bar(X0 - 1, Y - 2, X0 + TextWidth(S) + 3, Y + RH - 2);
+     SetColor(11);
+    End Else Begin
+     SetFillStyle(SolidFill, 3);
+     Bar(X0 - 1, Y - 2, X0 + TextWidth(S) + 3, Y + RH - 2);
+     SetColor(0);
+    End;
+    OutTextXY(X0 + 1, Y, S);
+    X0 := X0 + TextWidth(S) + 6;
+   End;
+  End;
  End;
 End;
 
@@ -35057,6 +35187,16 @@ Begin
     If NCState.TreeCursor < NCState.TreeTop Then
      NCState.TreeTop := NCState.TreeCursor;
    End;
+   If NCState.Mode = ncChangeDrive Then Case Ev.KeyCode Of
+    75: { Gauche : lettre precedente, avec bouclage (NC.PAS: ChangeDrive) }
+     If NCState.CdCount > 0 Then Begin
+      If NCState.CdCursor = 0 Then NCState.CdCursor := NCState.CdCount - 1
+      Else Dec(NCState.CdCursor);
+     End;
+    77: { Droite : lettre suivante, avec bouclage }
+     If NCState.CdCount > 0 Then
+      NCState.CdCursor := (NCState.CdCursor + 1) Mod NCState.CdCount;
+   End;
    If NCState.Mode = ncMessage Then
     NCState.Mode := NCState.MessageReturnMode; { toute touche ferme }
   End;
@@ -35191,6 +35331,26 @@ Begin
       NCState.Mode := ncBrowse;
      End;
     End;
+    ncChangeDrive: Case Ev.KeyChar Of
+     #27: NCState.Mode := ncBrowse;
+     #13: Begin
+      If NCState.CdCount > 0 Then Begin
+       If NCState.CdIsVirt[NCState.CdCursor] Then Begin
+        { NCState.Slot est PARTAGE entre les deux panneaux (limitation      }
+        { architecturale preexistante) - choisir un lecteur virtuel ici    }
+        { change donc aussi l interpretation de l AUTRE panneau. }
+        NCState.Slot := NCState.CdSlotIdx[NCState.CdCursor];
+        NCState.Panes[NCState.CdSide].Path := '\';
+       End Else Begin
+        NCState.Slot := -1;
+        NCState.Panes[NCState.CdSide].Path :=
+         NCState.CdLetter[NCState.CdCursor] + ':\';
+       End;
+       NCListDir(NCState.Slot, NCState.Panes[NCState.CdSide]);
+      End;
+      NCState.Mode := ncBrowse;
+     End;
+    End;
    End;
   End;
   TP.NeedRepaint := True;
@@ -35254,6 +35414,8 @@ Begin
    $3B, $3C:
     ; { F1 (Aide) / F2 (Menu utilisateur) : deja des stubs dans l ORIGINAL }
        { pour ce sous-ensemble - restent hors-cadre pour l instant. }
+   $68: NCBuildChangeDriveList(0);  { Alt+F1 : lettre de disque, panneau gauche }
+   $69: NCBuildChangeDriveList(1);  { Alt+F2 : lettre de disque, panneau droite }
   End;
   TP.NeedRepaint := True;
   FullRepaintNeeded := True;
