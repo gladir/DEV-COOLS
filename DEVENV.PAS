@@ -1661,6 +1661,12 @@ Const
  EMU_MSCDEX_INFO_OFS  = $0110; { jamais dereferencee - voir AX=1501h      }
  EMU_DPMI_STUB_SEG    = $F000; { trampoline point d entree DPMI (INT      }
  EMU_DPMI_STUB_OFS    = $0120; { 2Fh/1687h), voir Emu_DoInt2F/Dpmi_Switch }
+ { Marqueur de retour utilise par Dpmi_RunRealProc (AX=0301h/0302h,       }
+ { "appeler une procedure mode reel") - jamais reellement execute (la      }
+ { boucle de step s arrete des que CS:IP l atteint), donc pas besoin d y   }
+ { ecrire un octet d opcode comme pour les autres trampolines de $F000. }
+ EMU_DPMI_RMCALL_SEG  = $F000;
+ EMU_DPMI_RMCALL_OFS  = $0140;
  { Bump allocator "memoire DOS basse" pour INT 31h AX=0100h (voir          }
  { Dpmi_AllocDosMem) - zone scratch dediee, largement apres tous les       }
  { autres trampolines de $F000 pour eviter toute collision. }
@@ -3631,6 +3637,13 @@ Type
   RegNum : Byte;
   LinAddr: LongInt;
   Len    : Integer;      { octets consommes (ModRM + SIB + deplacement) }
+ End;
+
+ { RealModeCallStructure (50 octets, voir DOC/DPMI.txt 7.1) utilisee par    }
+ { AX=0300h/0301h/0302h - voir Dpmi_ReadRMCall/Dpmi_WriteRMCall. }
+ TDpmiRMCall = Record
+  EDI, ESI, EBP, EBX, EDX, ECX, EAX : LongInt;
+  Flags, ESeg, DSeg, FSeg, GSeg, IPw, CSw, SPw, SSw : Word;
  End;
 
  { Etat de l emulateur 8086 + ecran virtuel + clavier }
@@ -7215,6 +7228,10 @@ Function Emu_CdromReadFile(Var P: TEmulatorPanel; H: Integer;
 Function Emu_IsoResolve(Idx: Byte; DosPath: String;
  Var Entry: TEmuIsoEntry): Boolean; Forward;
 Function Emu_CdromFindFirst(Idx: Integer; Const DirRel, Pattern: String): Boolean; Forward;
+{ Necessaire a Emu_DoInt31 (AX=0300h/0301h/0302h, voir DOC/DPMI.txt 7) bien }
+{ avant la definition complete du coeur 8086 reel plus bas dans ce fichier.}
+Procedure Emu_StepOne(Var P: TEmulatorPanel); Forward;
+Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte); Forward;
 
 { Declarations anticipees pour sauvegarde }
 Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
@@ -53212,12 +53229,93 @@ Begin
  DpmiCPU.Active := True;
 End;
 
+{ --- Lire/ecrire la RealModeCallStructure de 50 octets (voir DOC/DPMI.txt }
+{ 7.1) a l adresse lineaire donnee - utilisee par AX=0300h/0301h/0302h. --- }
+Procedure Dpmi_ReadRMCall(Var P: TEmulatorPanel; LinAddr: LongInt;
+ Var R: TDpmiRMCall);
+Begin
+ R.EDI  := Dpmi_ReadDWord(P, LinAddr);
+ R.ESI  := Dpmi_ReadDWord(P, LinAddr + 4);
+ R.EBP  := Dpmi_ReadDWord(P, LinAddr + 8);
+ R.EBX  := Dpmi_ReadDWord(P, LinAddr + 16);
+ R.EDX  := Dpmi_ReadDWord(P, LinAddr + 20);
+ R.ECX  := Dpmi_ReadDWord(P, LinAddr + 24);
+ R.EAX  := Dpmi_ReadDWord(P, LinAddr + 28);
+ R.Flags := Dpmi_ReadWord(P, LinAddr + 32);
+ R.ESeg := Dpmi_ReadWord(P, LinAddr + 34);
+ R.DSeg := Dpmi_ReadWord(P, LinAddr + 36);
+ R.FSeg := Dpmi_ReadWord(P, LinAddr + 38);
+ R.GSeg := Dpmi_ReadWord(P, LinAddr + 40);
+ R.IPw  := Dpmi_ReadWord(P, LinAddr + 42);
+ R.CSw  := Dpmi_ReadWord(P, LinAddr + 44);
+ R.SPw  := Dpmi_ReadWord(P, LinAddr + 46);
+ R.SSw  := Dpmi_ReadWord(P, LinAddr + 48);
+End;
+
+Procedure Dpmi_WriteRMCall(Var P: TEmulatorPanel; LinAddr: LongInt;
+ Const R: TDpmiRMCall);
+Begin
+ Dpmi_WriteDWord(P, LinAddr, R.EDI);
+ Dpmi_WriteDWord(P, LinAddr + 4, R.ESI);
+ Dpmi_WriteDWord(P, LinAddr + 8, R.EBP);
+ Dpmi_WriteDWord(P, LinAddr + 16, R.EBX);
+ Dpmi_WriteDWord(P, LinAddr + 20, R.EDX);
+ Dpmi_WriteDWord(P, LinAddr + 24, R.ECX);
+ Dpmi_WriteDWord(P, LinAddr + 28, R.EAX);
+ Dpmi_WriteWord(P, LinAddr + 32, R.Flags);
+ Dpmi_WriteWord(P, LinAddr + 34, R.ESeg);
+ Dpmi_WriteWord(P, LinAddr + 36, R.DSeg);
+ Dpmi_WriteWord(P, LinAddr + 38, R.FSeg);
+ Dpmi_WriteWord(P, LinAddr + 40, R.GSeg);
+ Dpmi_WriteWord(P, LinAddr + 42, R.IPw);
+ Dpmi_WriteWord(P, LinAddr + 44, R.CSw);
+ Dpmi_WriteWord(P, LinAddr + 46, R.SPw);
+ Dpmi_WriteWord(P, LinAddr + 48, R.SSw);
+End;
+
+{ --- AX=0301h/0302h : "appeler une procedure mode reel" arbitraire (pas   }
+{ un de nos vecteurs d interruption simules, voir AX=0300h/Emu_DoInt31 ci- }
+{ dessous) - empile une fausse "adresse de retour" pointant sur un         }
+{ marqueur (EMU_DPMI_RMCALL_SEG:OFS, jamais reellement execute puisque la  }
+{ boucle ci-dessous s arrete DES QUE CS:IP l atteint), saute a TargetCS:IP,}
+{ puis fait executer le coeur 8086 REEL (Emu_StepOne, pas Dpmi_Step) tant  }
+{ que ce marqueur n est pas atteint - c est la seule facon pour du code    }
+{ invite arbitraire (pas nos propres gestionnaires INT internes) de        }
+{ s executer en reponse a un service DPMI. Bornee a 2 000 000 pas pour     }
+{ eviter un blocage total de l IDE si le code appele ne retourne jamais    }
+{ (boucle infinie ou bogue du programme teste). }
+Procedure Dpmi_RunRealProc(Var P: TEmulatorPanel; TargetCS, TargetIP: Word;
+ ViaIret: Boolean);
+Var Iter: LongInt;
+Begin
+ If ViaIret Then Begin
+  Emu_PushWord(P.CPU, 0);                    { FLAGS factice, ecrase par IRET}
+  Emu_PushWord(P.CPU, EMU_DPMI_RMCALL_SEG);
+  Emu_PushWord(P.CPU, EMU_DPMI_RMCALL_OFS);
+ End Else Begin
+  Emu_PushWord(P.CPU, EMU_DPMI_RMCALL_SEG);  { RETF proche : pop IP puis CS }
+  Emu_PushWord(P.CPU, EMU_DPMI_RMCALL_OFS);
+ End;
+ P.CPU.Segs.CS := TargetCS;
+ P.CPU.IP := TargetIP;
+ Iter := 0;
+ While ((P.CPU.Segs.CS <> EMU_DPMI_RMCALL_SEG) Or (P.CPU.IP <> EMU_DPMI_RMCALL_OFS))
+    And (P.CPU.Fault = sfNone) And (Iter < 2000000) Do Begin
+  Emu_StepOne(P);
+  Inc(Iter);
+ End;
+End;
+
 { --- INT 31h : services DPMI eux-memes, dispatches par Dpmi_Step (plus    }
 { bas) quand le client protege execute CD 31h - opere entierement sur      }
-{ DpmiCPU (pas P.CPU, gele tant que DpmiCPU.Active). Couvre les services   }
-{ descripteurs (0000h-000Eh), memoire DOS basse (0100h-0102h), memoire     }
-{ etendue (0500h-0503h/0604h) et version (0400h) - voir l en-tete de       }
-{ section pour la portee des etapes ulterieures (0200h-0306h). --- }
+{ DpmiCPU (pas P.CPU, gele tant que DpmiCPU.Active - SAUF pendant          }
+{ AX=0300h/0301h/0302h qui font ponctuellement "revivre" P.CPU pour        }
+{ satisfaire l appel mode reel demande, voir Dpmi_RunRealProc). Couvre les }
+{ services descripteurs (0000h-000Eh), memoire DOS basse (0100h-0102h),    }
+{ memoire etendue (0500h-0503h/0604h), version (0400h) et appels/rappels   }
+{ mode reel (0300h-0306h, ETAPE 3) - voir l en-tete de section pour la     }
+{ portee des etapes ulterieures (0200h-0205h, exceptions, et le retour au  }
+{ mode reel en fin de programme). --- }
 Procedure Emu_DoInt31(Var P: TEmulatorPanel);
 Var
  Sel, NewSel: Word;
@@ -53227,6 +53325,10 @@ Var
  H: Integer;
  LinAddr: LongInt;
  Sz: LongInt;
+ RM: TDpmiRMCall;
+ StructAddr: LongInt;
+ IntNum: Byte;
+ CbIdx: Integer;
 Begin
  Exclude(DpmiCPU.Flags.s, EFG_CF);
  Case DpmiCPU.Reg.AX Of
@@ -53354,6 +53456,104 @@ Begin
    { echoue proprement plutot que de fabriquer un resultat incorrect. }
    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8013;
    DpmiCPU.Reg.BX := 0;
+  End;
+  $0300: Begin
+   { Simuler un appel d interruption mode reel (voir DOC/DPMI.txt 7.1) :    }
+   { BL=numero, ES:EDI=structure. Contrairement a 0301h/0302h ci-dessous,   }
+   { aucune execution reelle de code invite n est necessaire : nos          }
+   { interruptions DOS/BIOS/pilotes sont TOUTES gerees par du code Pascal    }
+   { interne (Emu_DoInt) plutot que par du bytecode invite, donc un simple  }
+   { appel direct suffit - couvre la quasi-totalite des besoins reels d un  }
+   { client DPMI (appeler INT 21h/10h/16h/33h/2Fh depuis le mode protege).  }
+   IntNum := DpmiCPU.Reg.BL;
+   StructAddr := Dpmi_LinAddr(DpmiCPU.SegSel[0], LongInt(DpmiCPU.Reg.EDI));
+   Dpmi_ReadRMCall(P, StructAddr, RM);
+   P.CPU.Regs.EDI := RM.EDI; P.CPU.Regs.ESI := RM.ESI; P.CPU.Regs.EBP := RM.EBP;
+   P.CPU.Regs.EBX := RM.EBX; P.CPU.Regs.EDX := RM.EDX; P.CPU.Regs.ECX := RM.ECX;
+   P.CPU.Regs.EAX := RM.EAX;
+   P.CPU.Segs.ES := RM.ESeg; P.CPU.Segs.DS := RM.DSeg;
+   P.CPU.FS := RM.FSeg; P.CPU.GS := RM.GSeg;
+   Emu_DoInt(P, IntNum);
+   RM.EDI := P.CPU.Regs.EDI; RM.ESI := P.CPU.Regs.ESI; RM.EBP := P.CPU.Regs.EBP;
+   RM.EBX := P.CPU.Regs.EBX; RM.EDX := P.CPU.Regs.EDX; RM.ECX := P.CPU.Regs.ECX;
+   RM.EAX := P.CPU.Regs.EAX;
+   RM.ESeg := P.CPU.Segs.ES; RM.DSeg := P.CPU.Segs.DS;
+   RM.FSeg := P.CPU.FS; RM.GSeg := P.CPU.GS;
+   { Reconstruit un mot FLAGS 16 bits minimal (CF/ZF, les bits que les       }
+   { appelants DPMI verifient en pratique apres un appel DOS/BIOS) plutot   }
+   { que de pretendre reconstituer les 16 bits reels avec exactitude. }
+   RM.Flags := 0;
+   If EFG_CF In P.CPU.Flags.s Then RM.Flags := RM.Flags Or 1;
+   If EFG_ZF In P.CPU.Flags.s Then RM.Flags := RM.Flags Or $40;
+   Dpmi_WriteRMCall(P, StructAddr, RM);
+  End;
+  $0301, $0302: Begin
+   { Appeler une PROCEDURE mode reel arbitraire (CS:IP fournis dans la      }
+   { structure, pas un numero de vecteur) - contrairement a 0300h, ceci     }
+   { exige de reellement executer du code invite : voir Dpmi_RunRealProc. }
+   StructAddr := Dpmi_LinAddr(DpmiCPU.SegSel[0], LongInt(DpmiCPU.Reg.EDI));
+   Dpmi_ReadRMCall(P, StructAddr, RM);
+   P.CPU.Regs.EDI := RM.EDI; P.CPU.Regs.ESI := RM.ESI; P.CPU.Regs.EBP := RM.EBP;
+   P.CPU.Regs.EBX := RM.EBX; P.CPU.Regs.EDX := RM.EDX; P.CPU.Regs.ECX := RM.ECX;
+   P.CPU.Regs.EAX := RM.EAX;
+   P.CPU.Segs.ES := RM.ESeg; P.CPU.Segs.DS := RM.DSeg;
+   P.CPU.FS := RM.FSeg; P.CPU.GS := RM.GSeg;
+   P.CPU.Segs.SS := RM.SSw; P.CPU.Regs.SP := RM.SPw;
+   Dpmi_RunRealProc(P, RM.CSw, RM.IPw, DpmiCPU.Reg.AX = $0302);
+   RM.EDI := P.CPU.Regs.EDI; RM.ESI := P.CPU.Regs.ESI; RM.EBP := P.CPU.Regs.EBP;
+   RM.EBX := P.CPU.Regs.EBX; RM.EDX := P.CPU.Regs.EDX; RM.ECX := P.CPU.Regs.ECX;
+   RM.EAX := P.CPU.Regs.EAX;
+   RM.ESeg := P.CPU.Segs.ES; RM.DSeg := P.CPU.Segs.DS;
+   RM.FSeg := P.CPU.FS; RM.GSeg := P.CPU.GS;
+   RM.SSw := P.CPU.Segs.SS; RM.SPw := P.CPU.Regs.SP;
+   RM.Flags := 0;
+   If EFG_CF In P.CPU.Flags.s Then RM.Flags := RM.Flags Or 1;
+   If EFG_ZF In P.CPU.Flags.s Then RM.Flags := RM.Flags Or $40;
+   Dpmi_WriteRMCall(P, StructAddr, RM);
+  End;
+  $0303: Begin
+   { Allouer un rappel mode reel (voir DOC/DPMI.txt 7.4) : DS:ESI=          }
+   { gestionnaire protege. L ALLOCATION est fonctionnelle (le client obtient}
+   { une adresse mode reel CX:DX valide et distincte a chaque appel), mais  }
+   { l INVOCATION reelle depuis du code mode reel externe (IRQ materielle,  }
+   { TSR) n est pas encore cablee : elle exigerait la commutation retour au }
+   { mode reel, prevue pour une etape ulterieure (voir l en-tete de section)}
+   CbIdx := -1;
+   For Idx := 0 To EMU_DPMI_MAX_CALLBACK - 1 Do
+    If Not DpmiCPU.CbUsed[Idx] Then Begin CbIdx := Idx; Break; End;
+   If CbIdx < 0 Then Begin
+    Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8015;
+   End Else Begin
+    DpmiCPU.CbUsed[CbIdx] := True;
+    DpmiCPU.CbPmSel[CbIdx] := DpmiCPU.SegSel[3];
+    DpmiCPU.CbPmOfs[CbIdx] := DpmiCPU.Reg.ESI;
+    DpmiCPU.CbRealSeg[CbIdx] := EMU_DPMI_STUB_SEG;
+    DpmiCPU.CbRealOfs[CbIdx] := EMU_DPMI_STUB_OFS + 4 + CbIdx * 2;
+    DpmiCPU.Reg.CX := DpmiCPU.CbRealSeg[CbIdx];
+    DpmiCPU.Reg.DX := DpmiCPU.CbRealOfs[CbIdx];
+   End;
+  End;
+  $0304: Begin
+   CbIdx := -1;
+   For Idx := 0 To EMU_DPMI_MAX_CALLBACK - 1 Do
+    If DpmiCPU.CbUsed[Idx] And (DpmiCPU.CbRealSeg[Idx] = DpmiCPU.Reg.CX) And
+       (DpmiCPU.CbRealOfs[Idx] = DpmiCPU.Reg.DX) Then Begin CbIdx := Idx; Break; End;
+   If CbIdx >= 0 Then DpmiCPU.CbUsed[CbIdx] := False
+   Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8024; End;
+  End;
+  $0305: Begin
+   DpmiCPU.Reg.AX := 90;  { version DPMI 0.9 * 100 }
+   DpmiCPU.Reg.BX := 1;   { bit0=1 : 32 bits supporte }
+   DpmiCPU.Reg.CL := 3;   { 80386 }
+   DpmiCPU.Reg.DH := 0; DpmiCPU.Reg.DL := $5A;
+   DpmiCPU.Reg.SI := EMU_DPMI_MAX_CALLBACK;
+  End;
+  $0306: Begin
+   { Adresses "pile de commutation" - sans objet dans ce modele d emulation }
+   { (aucune vraie pile de commutation materielle a exposer) ; valeurs      }
+   { plausibles mais non dereferencees par un client DPMI bien ecrit. }
+   DpmiCPU.Reg.BX := 0; DpmiCPU.Reg.CX := $F000;
+   DpmiCPU.Reg.SI := 0; DpmiCPU.Reg.DI := $F100;
   End;
   $0400: Begin
    DpmiCPU.Reg.AX := $005A; { version DPMI 0.90 (BH=0,BL=90 -> voir AH/AL   }
