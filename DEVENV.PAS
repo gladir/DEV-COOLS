@@ -6260,6 +6260,35 @@ Var
  { lit PRB apres avoir selectionne une ligne via PRA. }
  C64_KeyMatrix   : Array[0..7, 0..7] Of Boolean;
  C64_FrameNo     : LongInt;
+ C64_RasterLine  : Word;    { 0..311 (PAL) - compteur de ligne video reel }
+ C64_RasterAcc   : Integer; { accumulateur de cycles pour l avance de ligne }
+ { "Auto-frappe" de "RUN"/"SYS n"+Entree apres le demarrage : simule de     }
+ { VRAIES touches enfoncees/relachees (via C64_KeyMatrix, la meme matrice  }
+ { que la frappe reelle - voir C64_ApplyAutoType) plutot que d ecrire        }
+ { directement le tampon clavier bas niveau ($0277/$C6). BOGUE REEL           }
+ { rencontre et corrige (2026-08-14) : l ecriture directe du tampon ne         }
+ { suffit PAS a faire "taper" une commande a l invite BASIC - CHRIN (la       }
+ { routine KERNAL qui lit une ligne de commande) lit en realite le texte      }
+ { directement sur l ECRAN a partir du debut de la ligne courante (le          }
+ { celebre "editeur ecran" du C64, qui permet par exemple de re-executer      }
+ { une commande deja affichee en deplacant le curseur dessus et en             }
+ { appuyant sur Entree) - le tampon bas niveau $0277 n alimente que              }
+ { GETIN, pas l entree de ligne complete de BASIC. Emuler de vraies             }
+ { frappes via la matrice laisse le KERNAL lui-meme faire l echo a              }
+ { l ecran et gerer le curseur, exactement comme une vraie frappe.               }
+ C64_PendingInject: String; { texte restant a "taper" (vide = rien/termine) }
+ C64_TypeIdx      : Integer; { index 1-based du caractere en cours (0=pas    }
+                             { encore demarre) }
+ C64_TypeCounter  : Integer; { trames restantes dans la phase courante        }
+ C64_TypePressed  : Boolean; { True = touche actuellement "enfoncee"          }
+ C64_PendingVartab: Word;   { 0 = rien a faire, sinon VARTAB/ARYTAB/STREND    }
+                             { a appliquer au tout debut de l auto-frappe        }
+                             { (ces pointeurs zero-page peuvent eux aussi        }
+                             { etre ecrases par le test memoire du KERNAL). }
+ C64_PendingJumpPC: Word;   { 0 = rien a faire, sinon adresse a laquelle       }
+                             { sauter directement des que READY est atteint     }
+                             { (voie fiable, prioritaire sur C64_PendingInject  }
+                             { - voir C64_Boot). }
 Const
  { Palette C64 (16 couleurs standard, indices $00-$0F du VIC-II) mise en }
  { correspondance avec la palette EGA 16 couleurs du panneau emulateur - }
@@ -61188,6 +61217,106 @@ Begin
   {$ENDIF}
 End;
 
+{ Meme table ligne/colonne que C64_PollKeyboard ci-dessus, mais pour un   }
+{ caractere ASCII isole (utilise par C64_ApplyAutoType pour "taper"          }
+{ RUN/SYS automatiquement) - seul le sous-ensemble necessaire a ces          }
+{ deux commandes est couvert (lettres, chiffres, espace, Entree). --- }
+Function C64_CharToMatrix(Ch: Char; Var Row, Col: Byte): Boolean;
+Begin
+ C64_CharToMatrix := True;
+ Case UpCase(Ch) Of
+  'A': Begin Row := 1; Col := 2; End;
+  'B': Begin Row := 3; Col := 4; End;
+  'C': Begin Row := 2; Col := 4; End;
+  'D': Begin Row := 2; Col := 2; End;
+  'E': Begin Row := 1; Col := 6; End;
+  'F': Begin Row := 2; Col := 5; End;
+  'G': Begin Row := 3; Col := 2; End;
+  'H': Begin Row := 3; Col := 5; End;
+  'I': Begin Row := 4; Col := 1; End;
+  'J': Begin Row := 4; Col := 2; End;
+  'K': Begin Row := 4; Col := 5; End;
+  'L': Begin Row := 5; Col := 2; End;
+  'M': Begin Row := 4; Col := 4; End;
+  'N': Begin Row := 4; Col := 7; End;
+  'O': Begin Row := 4; Col := 6; End;
+  'P': Begin Row := 5; Col := 1; End;
+  'Q': Begin Row := 7; Col := 6; End;
+  'R': Begin Row := 2; Col := 1; End;
+  'S': Begin Row := 1; Col := 5; End;
+  'T': Begin Row := 2; Col := 6; End;
+  'U': Begin Row := 3; Col := 6; End;
+  'V': Begin Row := 3; Col := 7; End;
+  'W': Begin Row := 1; Col := 1; End;
+  'X': Begin Row := 2; Col := 7; End;
+  'Y': Begin Row := 3; Col := 1; End;
+  'Z': Begin Row := 1; Col := 4; End;
+  '0': Begin Row := 4; Col := 3; End;
+  '1': Begin Row := 7; Col := 0; End;
+  '2': Begin Row := 7; Col := 3; End;
+  '3': Begin Row := 1; Col := 0; End;
+  '4': Begin Row := 1; Col := 3; End;
+  '5': Begin Row := 2; Col := 0; End;
+  '6': Begin Row := 2; Col := 3; End;
+  '7': Begin Row := 3; Col := 0; End;
+  '8': Begin Row := 3; Col := 3; End;
+  '9': Begin Row := 4; Col := 0; End;
+  #13: Begin Row := 0; Col := 1; End; { Entree }
+  ' ': Begin Row := 7; Col := 4; End; { Espace }
+ Else
+  C64_CharToMatrix := False;
+ End;
+End;
+
+{ Simule la frappe reelle, caractere par caractere, de C64_PendingInject  }
+{ ("RUN"+Entree ou "SYS <adresse>"+Entree, prepare par C64_Boot) en          }
+{ enfoncant/relachant la touche correspondante dans C64_KeyMatrix quelques }
+{ trames chacune - laisse le KERNAL lui-meme (scrutation clavier de son     }
+{ gestionnaire d IRQ par defaut, deja actif via C64_TickCia1/CPU6502_IRQ)  }
+{ faire l echo a l ecran et gerer le curseur, exactement comme une vraie    }
+{ frappe humaine. Appelee une fois par trame, apres C64_PollKeyboard        }
+{ (dont elle complete la matrice sans l ecraser). --- }
+Procedure C64_ApplyAutoType;
+Const
+ HoldFrames = 4;
+ GapFrames = 3;
+Var
+ Row, Col: Byte;
+Begin
+ If C64_PendingInject = '' Then Exit;
+ If C64_TypeIdx = 0 Then Begin
+  If C64_PendingVartab <> 0 Then Begin
+   CPU6502_Mem[$2D] := Byte(C64_PendingVartab And $FF);
+   CPU6502_Mem[$2E] := Byte(C64_PendingVartab Shr 8);
+   CPU6502_Mem[$2F] := Byte(C64_PendingVartab And $FF);
+   CPU6502_Mem[$30] := Byte(C64_PendingVartab Shr 8);
+   CPU6502_Mem[$31] := Byte(C64_PendingVartab And $FF);
+   CPU6502_Mem[$32] := Byte(C64_PendingVartab Shr 8);
+  End;
+  C64_TypeIdx := 1;
+  C64_TypePressed := True;
+  C64_TypeCounter := HoldFrames;
+ End;
+ If C64_TypeIdx > Length(C64_PendingInject) Then Begin
+  C64_PendingInject := '';
+  Exit;
+ End;
+ If C64_TypePressed And
+    C64_CharToMatrix(C64_PendingInject[C64_TypeIdx], Row, Col) Then
+  C64_KeyMatrix[Row, Col] := True;
+ Dec(C64_TypeCounter);
+ If C64_TypeCounter <= 0 Then Begin
+  If C64_TypePressed Then Begin
+   C64_TypePressed := False;
+   C64_TypeCounter := GapFrames;
+  End Else Begin
+   Inc(C64_TypeIdx);
+   C64_TypePressed := True;
+   C64_TypeCounter := HoldFrames;
+  End;
+ End;
+End;
+
 { Sondage clavier -> etat manette 1 (Windows uniquement). }
 { Bits : 0=A 1=B 2=Sel 3=Start 4=Up 5=Down 6=Left 7=Right }
 Procedure NesPollInput;
@@ -61820,7 +61949,10 @@ Var Reg: Byte;
 Begin
  If Addr < $D400 Then Begin { VIC-II, miroir tous les $40 octets }
   Reg := Byte(Addr And $3F);
-  If Reg <= $2E Then Begin
+  If Reg = $19 Then Begin { IRQST : ecrire 1 dans un bit L ACQUITTE (efface) }
+   C64_VicReg[$19] := C64_VicReg[$19] And (Not V);
+   CPU6502_Mem[Addr] := C64_VicReg[$19];
+  End Else If Reg <= $2E Then Begin
    C64_VicReg[Reg] := V;
    CPU6502_Mem[Addr] := V;
   End;
@@ -61961,6 +62093,58 @@ Begin
  End;
 End;
 
+{ Avance le compteur de ligne video reel (~63 cycles/ligne PAL, 312       }
+{ lignes/trame) - necessaire car le KERNAL (CINT, initialisation ecran    }
+{ au demarrage) attend une VRAIE synchronisation video en scrutant le      }
+{ bit 0 de $D019 (IRQST, positionne par le materiel des que la ligne         }
+{ courante atteint la ligne de comparaison $D012/bit7 de $D011 - meme      }
+{ sans IRQ active, le drapeau materiel se positionne quand meme) : sans     }
+{ cette avance, ce bit ne change jamais et le boot reste bloque              }
+{ indefiniment dans cette boucle d attente (BOGUE REEL 2026-08-14 signale  }
+{ par l utilisateur : "aucun programme ne fonctionne", diagnostique via    }
+{ tracage PC - boucle figee a $FF61 attendant $D019). Ecrire 1 dans un       }
+{ bit de $D019 l acquitte (l efface), comme le vrai materiel - voir          }
+{ C64_IoWrite. --- }
+Procedure C64_TickVic(Cycles: Integer);
+Var CmpLine: Word;
+Begin
+ If Cycles <= 0 Then Exit;
+ Inc(C64_RasterAcc, Cycles);
+ While C64_RasterAcc >= 63 Do Begin
+  Dec(C64_RasterAcc, 63);
+  Inc(C64_RasterLine);
+  If C64_RasterLine >= 312 Then C64_RasterLine := 0;
+  { $D012 (bits 0-7) et le bit 7 de $D011 (bit 8) refletent TOUJOURS la   }
+  { ligne video REELLE en cours pour la LECTURE - meme registre que la    }
+  { valeur de comparaison ECRITE par le programme (utilisee plus bas pour }
+  { savoir quand positionner l IRQ raster), role different en lecture/     }
+  { ecriture sur le vrai VIC-II. BOGUE REEL 2026-08-14 (signale par          }
+  { l utilisateur "aucun programme ne fonctionne") : cette distinction       }
+  { manquait completement - $D012 en lecture montrait la valeur de              }
+  { comparaison figee au lieu de la position reelle, bloquant             }
+  { indefiniment toute boucle "LDA $D012 / BNE" d attente de trame (dont     }
+  { celle du KERNAL lui-meme pendant CINT, l initialisation ecran au           }
+  { demarrage). }
+  If C64_IoActive Then Begin
+   CPU6502_Mem[$D012] := Byte(C64_RasterLine And $FF);
+   CPU6502_Mem[$D011] := (C64_VicReg[$11] And $7F) Or
+    Byte((C64_RasterLine Shr 1) And $80);
+  End;
+  CmpLine := C64_VicReg[$12];
+  If (C64_VicReg[$11] And $80) <> 0 Then CmpLine := CmpLine Or $100;
+  If C64_RasterLine = CmpLine Then Begin
+   C64_VicReg[$19] := C64_VicReg[$19] Or 1;
+   { $D019 est lu par certains opcodes (LDA/CMP/etc. absolu) directement    }
+   { via CPU6502_Mem sans passer par un bus - le tenir a jour ici aussi,    }
+   { mais seulement si l E/S est bien la fenetre actuellement visible a     }
+   { cette adresse (sinon CPU6502_Mem y montre a juste titre la RAM ou le   }
+   { generateur de caracteres banque, pas le registre VIC). }
+   If C64_IoActive Then CPU6502_Mem[$D019] := C64_VicReg[$19];
+   If (C64_VicReg[$1A] And 1) <> 0 Then C64_IrqPending := True;
+  End;
+ End;
+End;
+
 { Lecture memoire du point de vue du VIC-II : contrairement au CPU, le  }
 { VIC lit toujours la RAM physique reelle, jamais une ROM commutee par   }
 { le port $01 (le VIC n a pas connaissance de la commutation banque du   }
@@ -62055,7 +62239,6 @@ Var
  B: Byte;
  BR: Word;
  InjectStr: String;
- I: Integer;
 Begin
  C64_Boot := False;
  FillChar(C64_HiRam, SizeOf(C64_HiRam), 0);
@@ -62070,6 +62253,14 @@ Begin
  C64_Cia1IcrMask := 0; C64_Cia1IcrPending := 0;
  C64_IrqPending := False;
  C64_FrameNo := 0;
+ C64_RasterLine := 0;
+ C64_RasterAcc := 0;
+ C64_PendingInject := '';
+ C64_PendingVartab := 0;
+ C64_PendingJumpPC := 0;
+ C64_TypeIdx := 0;
+ C64_TypeCounter := 0;
+ C64_TypePressed := False;
  C64_Port00 := $2F;
  C64_Port01 := $37;
  C64_SyncBanks;
@@ -62088,17 +62279,31 @@ Begin
   End;
  End;
  Close(F);
- If LoadAddr = $0801 Then Begin
-  CPU6502_Mem[$2D] := Addr And $FF; CPU6502_Mem[$2E] := Addr Shr 8;
-  CPU6502_Mem[$2F] := Addr And $FF; CPU6502_Mem[$30] := Addr Shr 8;
-  CPU6502_Mem[$31] := Addr And $FF; CPU6502_Mem[$32] := Addr Shr 8;
+ { Point d entree apres le demarrage : PRIORITE au saut direct (fiable,   }
+ { deterministe) quand le fichier suit la convention standard "10 SYS     }
+ { xxxx" (stub BASIC de 12 octets a $0801, ligne+numero+token SYS $9E,    }
+ { toujours suivi du code machine a $080D - vrai pour la quasi-totalite   }
+ { des .PRG langage machine reels) ou charge directement en langage        }
+ { machine pur (adresse <> $0801). Reserve a "taper RUN au clavier"        }
+ { (moins fiable - voir C64_ApplyAutoType, BOGUE REEL 2026-08-14 :          }
+ { CHRIN/l editeur ecran du KERNAL ne lit PAS simplement le tampon           }
+ { clavier bas niveau, la simulation de frappe ne s est pas averee            }
+ { fiable a 100% pendant la mise au point) le seul cas ou aucune adresse    }
+ { d entree fiable n existe : un vrai programme BASIC tokenise SANS           }
+ { stub SYS, ou un fichier $0801 avec un stub non standard. }
+ If LoadAddr <> $0801 Then Begin
+  C64_PendingJumpPC := LoadAddr;
+  C64_PendingVartab := 0;
+ End Else If CPU6502_Mem[$0805] = $9E Then Begin
+  C64_PendingJumpPC := $080D; { convention standard "10 SYS 2061" }
+  C64_PendingVartab := Addr;
+ End Else Begin
+  C64_PendingJumpPC := 0;
+  C64_PendingVartab := Addr;
   InjectStr := 'RUN' + Chr(13);
- End Else
-  InjectStr := 'SYS ' + IntToStr(LoadAddr) + Chr(13);
- If Length(InjectStr) > 10 Then InjectStr := Copy(InjectStr, 1, 10);
- For I := 1 To Length(InjectStr) Do
-  CPU6502_Mem[$0276 + I] := Ord(InjectStr[I]);
- CPU6502_Mem[$C6] := Length(InjectStr);
+  If Length(InjectStr) > 10 Then InjectStr := Copy(InjectStr, 1, 10);
+  C64_PendingInject := InjectStr;
+ End;
  EntryAddr := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
  C64_Boot := True;
 End;
@@ -63554,7 +63759,10 @@ Begin
   CPU6502_LastCyc := CPU6502_CycTab[Op];
   CPU6502_PageCrossed := False;
   Inc(CPU6502_PC);
-  If CPU6502_Variant = 1 Then C64_TickCia1(CPU6502_LastCyc);
+  If CPU6502_Variant = 1 Then Begin
+    C64_TickCia1(CPU6502_LastCyc);
+    C64_TickVic(CPU6502_LastCyc);
+  End;
   Case Op Of
     { ----- LDA ----- }
     $A9: Begin EA := CPU6502_AmIMM; CPU6502_A := CPU6502_Mem[EA];
@@ -67926,8 +68134,29 @@ Begin NesActive := False;
     End;
     If C64KeyEsc Then Break;
     C64_PollKeyboard;
+    C64_ApplyAutoType;
     For NesPrgSize := 0 To 4999 Do Begin
      If CPU6502_Halted Then Break;
+     { Voie fiable "sauter directement" (voir C64_Boot) : declenchee            }
+     { exactement quand le CPU atteint pour la premiere fois la boucle          }
+     { d attente clavier du KERNAL ($E5CD, "LDA $C6") - verifiee a CHAQUE       }
+     { instruction (pas seulement une fois par trame) car a la granularite     }
+     { d une trame (5000 instructions), l echantillonnage peut systemati-      }
+     { quement "sauter" l adresse exacte selon la periode de la boucle          }
+     { (BOGUE REEL rencontre pendant la mise au point : PC n etait jamais       }
+     { observe egal a $E5CD en echantillonnant une fois par trame). }
+     If (C64_PendingJumpPC <> 0) And (CPU6502_PC = $E5CD) Then Begin
+      If C64_PendingVartab <> 0 Then Begin
+       CPU6502_Mem[$2D] := Byte(C64_PendingVartab And $FF);
+       CPU6502_Mem[$2E] := Byte(C64_PendingVartab Shr 8);
+       CPU6502_Mem[$2F] := Byte(C64_PendingVartab And $FF);
+       CPU6502_Mem[$30] := Byte(C64_PendingVartab Shr 8);
+       CPU6502_Mem[$31] := Byte(C64_PendingVartab And $FF);
+       CPU6502_Mem[$32] := Byte(C64_PendingVartab Shr 8);
+      End;
+      CPU6502_PC := C64_PendingJumpPC;
+      C64_PendingJumpPC := 0;
+     End;
      EmuDbg_OnBeforeStep6502;
      CPU6502_Step;
      Inc(Steps);
