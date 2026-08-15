@@ -1932,7 +1932,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -3691,6 +3691,70 @@ Type
   Rows       : Integer;          { lignes effectives (typ. 25)     }
   NeedRepaint: Boolean;          { redessin complet requis         }
   StatusMsg  : String[127];      { message d etat affiche en bas   }
+  { Stage 1 "multi-fenetre" (2026-08-15) : Loaded distingue "binaire      }
+  { charge, execution pilotee par petits pas via l idle-tick de MainLoop" }
+  { de l ancien modele "ShowEmulatorPanel bloque jusqu a la fin". Seuls    }
+  { les backends convertis (voir EmuPanel_ContinueStep) positionnent      }
+  { Loaded a True ; les autres restent sur l ancien chemin bloquant        }
+  { inchange (Loaded jamais mis a True pour eux). TotalSteps remplace la   }
+  { variable locale "Steps" qui ne peut plus survivre entre les appels.    }
+  Loaded     : Boolean;
+  TotalSteps : LongInt;
+ End;
+
+ { Stage 2 "multi-onglets emulateur" (2026-08-15) : instantane complet de }
+ { tout l etat C64 qui vit dans des GLOBALES partagees (CPU6502_*/C64_*)  }
+ { plutot que dans TEmulatorPanel - necessaire pour qu un onglet C64 non    }
+ { actif garde son etat intact pendant qu un AUTRE onglet (texte, ou un     }
+ { second C64) est actif. Un seul de ces instantanes est "en vigueur" a la }
+ { fois (celui de l onglet actif est charge dans les globales, voir          }
+ { C64_LoadState/C64_SaveState + SyncActiveWindowOut/In) - PAS d execution }
+ { concurrente reelle, seulement une pause/reprise par bascule d onglet,    }
+ { exactement comme demande ("l emulateur non actif se met en pause"). }
+ { Types NOMMES (pas anonymes) pour les tableaux partages entre les          }
+ { globales CPU6502_*/C64_* et TC64Snapshot - FPC traite deux tableaux         }
+ { anonymes de meme forme comme des types DIFFERENTS, incompatibles pour        }
+ { l affectation (`:=`) meme s ils sont structurellement identiques ; un        }
+ { type nomme partage est necessaire pour que C64_SaveState/C64_LoadState        }
+ { puissent faire de simples affectations de tableau entier. }
+ T6502MemArr      = Array[0..$FFFF] Of Byte;
+ TC64HiRamArr     = Array[$A000..$FFFF] Of Byte;
+ TC64VicRegArr    = Array[0..$3F] Of Byte;
+ TC64SidRegArr    = Array[0..$1F] Of Byte;
+ TC64ColorRamArr  = Array[0..$3FF] Of Byte;
+ TC64CiaRegArr    = Array[0..$0F] Of Byte;
+ TC64KeyMatrixArr = Array[0..7, 0..7] Of Boolean;
+
+ TC64Snapshot = Record
+  Mem            : T6502MemArr;
+  HiRam          : TC64HiRamArr;
+  A, X, Y, P, S  : Byte;
+  PC             : Word;
+  Halted         : Boolean;
+  ExitCode       : Integer;
+  Variant        : Integer;
+  Port01, Port00 : Byte;
+  VicReg         : TC64VicRegArr;
+  SidReg         : TC64SidRegArr;
+  ColorRam       : TC64ColorRamArr;
+  Cia1Reg        : TC64CiaRegArr;
+  Cia2Reg        : TC64CiaRegArr;
+  Cia1TimerA, Cia1TimerALatch: Word;
+  Cia1TimerB, Cia1TimerBLatch: Word;
+  Cia1IcrMask, Cia1IcrPending: Byte;
+  IrqPending     : Boolean;
+  KeyMatrix      : TC64KeyMatrixArr;
+  FrameNo        : LongInt;
+  RasterLine     : Word;
+  RasterAcc      : Integer;
+  PendingInject  : String;
+  TypeIdx        : Integer;
+  TypeCounter    : Integer;
+  TypePressed    : Boolean;
+  PendingVartab  : Word;
+  PendingJumpPC  : Word;
+  AsyncKeyEsc    : Boolean;
+  AsyncLastFrameTS: LongInt;
  End;
 
  { En-tete de fichier ELF64 (executable Linux x86-64) - seuls les champs  }
@@ -4395,6 +4459,13 @@ Var
  { Editeurs de formulaire (un par fenetre de type WK_FORM) }
  FormEditors     : Array[0..MAX_WINDOWS - 1] Of PFormEditor;
  ActiveFormEditor: TFormEditor;
+ { Onglets emulateur (Stage 2, un par fenetre de type WK_EMU) - meme motif }
+ { que Editors[]/ActiveEditor : EmuPanel EST le panneau "actif" (utilise    }
+ { tel quel par les ~200 references existantes dans le fichier), EmuTabs[]  }
+ { stocke celui des onglets INACTIFS. C64Snaps[] stocke en plus l etat      }
+ { C64 qui vit hors de TEmulatorPanel (CPU6502_*/C64_*, voir TC64Snapshot). }
+ EmuTabs      : Array[0..MAX_WINDOWS - 1] Of TEmulatorPanel;
+ C64Snaps     : Array[0..MAX_WINDOWS - 1] Of TC64Snapshot;
  { Coloration syntaxique C }
  CHL          : TCHighlighter;
  { Coloration syntaxique C# }
@@ -4618,6 +4689,26 @@ Var
  VirtAddDiskDlg : TVirtAddDiskDialog;
  { Panneau de l emulateur 8086 integre }
  EmuPanel       : TEmulatorPanel;
+ { Stage 1 "multi-fenetre" (2026-08-15) : approximation legere d un focus }
+ { de fenetre - True tant que le dernier clic reel de l utilisateur etait }
+ { a l interieur du rectangle du panneau emulateur (voir EmuPanel_HitTest)}
+ { ou qu aucun clic n a encore ete fait depuis le lancement. Quand False,  }
+ { le clavier n est PLUS capture par l emulateur (voir le portail dans     }
+ { DispatchEvent) - permet de taper dans le Terminal/Explorateur pendant  }
+ { qu un emulateur convertit (Loaded=True) continue de tourner en fond.   }
+ EmuHasFocus    : Boolean;
+ { Correctifs 2026-08-15 (rapportes par l utilisateur apres test Stage 2) : }
+ { EmuHasFocus seul ne suffit pas a decider si l emulateur doit VRAIMENT    }
+ { continuer a avancer - ouvrir un menu (clic sur la barre de menus, deja   }
+ { toujours laissee passer sans toucher EmuHasFocus) n empechait pas         }
+ { StepEmulator de continuer a appeler DrawEmulatorPanel a chaque trame,     }
+ { ce qui interferait avec l affichage du menu deroulant (items invisibles/ }
+ { grises - meme categorie de piege que le commentaire deja present dans     }
+ { MainLoop au sujet de DrawAllWidgets/DrawToolBar qui "ecrase le menu       }
+ { deroulant", mais pour la branche idle-tick qui n avait pas cette garde). }
+ { EmuLastActiveState memorise l etat actif/pause precedent pour ne         }
+ { redessiner qu UNE fois lors de chaque transition (pas a chaque trame). }
+ EmuLastActiveState: Boolean;
  EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
  { --- Phase DOS+ : gestion fichiers reels (handles 5..31) --- }
  EmuFileH       : Array[5..31] Of File;
@@ -4956,7 +5047,7 @@ Var
  ELF64_BreakHitTarget : QWord;
  ELF64_BreakHitCount  : QWord;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
- CPU6502_Mem    : Array[0..$FFFF] Of Byte;
+ CPU6502_Mem    : T6502MemArr;
  CPU6502_A      : Byte;
  CPU6502_X      : Byte;
  CPU6502_Y      : Byte;
@@ -6253,17 +6344,17 @@ Var
  { seule partie du chipset dont le comportement doit etre correct pour    }
  { qu un vrai demarrage KERNAL/BASIC aboutisse a READY.), CIA2 reduit a   }
  { un tampon de registres (seul PRA bits 0-1, banque VIC, est consulte). }
- C64_HiRam       : Array[$A000..$FFFF] Of Byte; { RAM "sous" BASIC/E-S/KERNAL }
+ C64_HiRam       : TC64HiRamArr; { RAM "sous" BASIC/E-S/KERNAL }
  C64_Port01      : Byte;        { valeur ecrite au port CPU $01 (LORAM/   }
                                  { HIRAM/CHAREN, bits 3-5 cassette ignores) }
  C64_Port00      : Byte;        { DDR du port CPU $00 (direction, ignore  }
                                  { pour la commutation banque elle-meme)  }
- C64_VicReg      : Array[0..$3F] Of Byte; { $D000-$D03E (registres reels  }
+ C64_VicReg      : TC64VicRegArr; { $D000-$D03E (registres reels  }
                                  { $00-$2E, reste en miroir/inutilise)    }
- C64_SidReg      : Array[0..$1F] Of Byte; { $D400-$D41C, pas de son     }
- C64_ColorRam    : Array[0..$3FF] Of Byte; { $D800-$DBFF, nibble bas seul }
- C64_Cia1Reg     : Array[0..$0F] Of Byte; { $DC00-$DC0F }
- C64_Cia2Reg     : Array[0..$0F] Of Byte; { $DD00-$DD0F }
+ C64_SidReg      : TC64SidRegArr; { $D400-$D41C, pas de son     }
+ C64_ColorRam    : TC64ColorRamArr; { $D800-$DBFF, nibble bas seul }
+ C64_Cia1Reg     : TC64CiaRegArr; { $DC00-$DC0F }
+ C64_Cia2Reg     : TC64CiaRegArr; { $DD00-$DD0F }
  C64_Cia1TimerA  : Word;        { compteur vivant Timer A (decompte a     }
                                  { chaque cycle CPU ecoule)               }
  C64_Cia1TimerALatch: Word;
@@ -6277,7 +6368,7 @@ Var
  { True = touche enfoncee. Remplie une fois par trame via GetAsyncKeyState}
  { (meme motif que NesPollInput/A2600), consultee au moment ou le KERNAL }
  { lit PRB apres avoir selectionne une ligne via PRA. }
- C64_KeyMatrix   : Array[0..7, 0..7] Of Boolean;
+ C64_KeyMatrix   : TC64KeyMatrixArr;
  C64_FrameNo     : LongInt;
  C64_RasterLine  : Word;    { 0..311 (PAL) - compteur de ligne video reel }
  C64_RasterAcc   : Integer; { accumulateur de cycles pour l avance de ligne }
@@ -6308,6 +6399,12 @@ Var
                              { sauter directement des que READY est atteint     }
                              { (voie fiable, prioritaire sur C64_PendingInject  }
                              { - voir C64_Boot). }
+ { Etat de la version "asynchrone" (Stage 1, 2026-08-15) de la boucle    }
+ { C64 - voir C64_RunOneFrame/EmuPanel_ContinueStep. Remplace les        }
+ { anciennes variables LOCALES C64KeyEsc/EntryAddr de ShowEmulatorPanel,  }
+ { qui ne pouvaient pas survivre entre deux appels separes. }
+ C64Async_KeyEsc     : Boolean;
+ C64Async_LastFrameTS: LongInt;
 Const
  { Palette C64 (16 couleurs standard, indices $00-$0F du VIC-II) mise en }
  { correspondance avec la palette EGA 16 couleurs du panneau emulateur - }
@@ -8507,6 +8604,13 @@ Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
  BinaryPath, TargetCPU: String; Args: String); Forward;
+{ Stage 2 "multi-onglets emulateur" (2026-08-15) : point d entree PUBLIC a  }
+{ utiliser PARTOUT au lieu d appeler ShowEmulatorPanel(EmuPanel,...)          }
+{ directement - cree l onglet WK_EMU en plus de charger le binaire. }
+Procedure CreateEmulatorTab(BinaryPath, TargetCPU: String;
+ Args: String); Forward;
+Procedure C64_SaveState(Var Snap: TC64Snapshot); Forward;
+Procedure C64_LoadState(Var Snap: TC64Snapshot); Forward;
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -8675,6 +8779,12 @@ Var
 Begin
  { Fond de la barre }
  SetColor(CLR_MENUBAR);
+ { Correctif 2026-08-15 : Bar() utilise la couleur de SetFillStyle (pas   }
+ { celle de SetColor) dans PtcGraph. Sans cet appel, Bar() heritait de la }
+ { derniere couleur de remplissage laissee par DrawFilledRect (utilisee   }
+ { par le rendu de l ecran emulateur), rendant la barre de menus grise    }
+ { uniforme des qu un emulateur avait dessine au moins une fois. }
+ SetFillStyle(SolidFill, CLR_MENUBAR);
  Bar(0, MainMenuBar.Y, GetScreenWidth - 1,
      MainMenuBar.Y + MainMenuBar.Height - 1);
  { Ligne de separation }
@@ -8686,6 +8796,7 @@ Begin
  For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
   If I = OpenMenuIdx Then Begin
    SetColor(CLR_MENU_HIGHLIGHT);
+   SetFillStyle(SolidFill, CLR_MENU_HIGHLIGHT);
    Bar(TX - 4, MainMenuBar.Y,
        TX + Length(MainMenuBar.Menus[I].Title) * 8 + 12,
        MainMenuBar.Y + MainMenuBar.Height - 2);
@@ -8700,6 +8811,7 @@ Begin
  BY := MainMenuBar.Y + (MainMenuBar.Height - SCRZOOM_BTN_SIZE) Div 2;
  If ScrZoomHover Then Begin
   SetColor(CLR_MENU_HIGHLIGHT);
+  SetFillStyle(SolidFill, CLR_MENU_HIGHLIGHT);
   Bar(BX - 2, MainMenuBar.Y, BX + SCRZOOM_BTN_SIZE + 1,
       MainMenuBar.Y + MainMenuBar.Height - 2);
  End;
@@ -8734,10 +8846,16 @@ Begin
  If MX < 0 Then MX := 0;
  { Ombre }
  SetColor(CLR_TITLEBAR);
+ SetFillStyle(SolidFill, CLR_TITLEBAR);
  Bar(MX + 2, MainMenuBar.Height + 2, MX + MW + 2,
      MainMenuBar.Height + MH + 2);
  { Fond du menu }
  SetColor(CLR_EDITOR_BG);
+ { Correctif 2026-08-15 : voir DrawMenuBar - Bar() suit SetFillStyle,       }
+ { pas SetColor ; sans ceci le fond du menu deroulant heritait de la       }
+ { derniere couleur de remplissage de l ecran emulateur (DrawFilledRect),  }
+ { produisant un rectangle gris uniforme sans texte visible. }
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(MX, MainMenuBar.Height, MX + MW, MainMenuBar.Height + MH);
  { Bordure }
  SetColor(CLR_BORDER);
@@ -8752,6 +8870,7 @@ Begin
   End Else Begin
    If I = SelItemIdx Then Begin
     SetColor(CLR_MENU_HIGHLIGHT);
+    SetFillStyle(SolidFill, CLR_MENU_HIGHLIGHT);
     Bar(MX + 1, YPos, MX + MW - 1, YPos + 15);
     SetColor(CLR_EDITOR_BG);
    End Else Begin
@@ -10313,6 +10432,7 @@ Var
 Begin
  { Fond de la barre }
  SetColor(CLR_TOOLBAR);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
  Bar(0, MainToolBar.Y, GetScreenWidth - 1,
      MainToolBar.Y + MainToolBar.Height - 1);
  { Ligne de separation en bas }
@@ -10332,10 +10452,12 @@ Begin
    Case MainToolBar.Buttons[I].State Of
     TB_HOVER: Begin
      SetColor(CLR_MENU_HIGHLIGHT);
+     SetFillStyle(SolidFill, CLR_MENU_HIGHLIGHT);
      Bar(BX, BY, BX + TOOLBTN_WIDTH - 1, BY + TOOLBTN_HEIGHT - 1);
     End;
     TB_PRESSED: Begin
      SetColor(CLR_SELECTION);
+     SetFillStyle(SolidFill, CLR_SELECTION);
      Bar(BX, BY, BX + TOOLBTN_WIDTH - 1, BY + TOOLBTN_HEIGHT - 1);
     End;
    End;
@@ -10388,6 +10510,7 @@ Begin
  TW := Length(Tip) * 8 + 8;
  { Fond }
  SetColor(14);  { jaune clair }
+ SetFillStyle(SolidFill, 14);
  Bar(TX, TY, TX + TW, TY + 16);
  SetColor(CLR_BORDER);
  Rectangle(TX, TY, TX + TW, TY + 16);
@@ -11741,24 +11864,48 @@ Begin
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
   If FormEditors[WinMgr.ActiveIdx] <> Nil Then
    FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
+ End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU Then Begin
+  { Stage 2 : met en securite le panneau ET (pour C64) tout l etat qui vit  }
+  { hors de TEmulatorPanel, dans des globales partagees CPU6502_*/C64_*.   }
+  EmuTabs[WinMgr.ActiveIdx] := EmuPanel;
+  If EmuPanel.TargetCPU = '-CC64' Then
+   C64_SaveState(C64Snaps[WinMgr.ActiveIdx]);
  End Else Begin
   If Editors[WinMgr.ActiveIdx] <> Nil Then
    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
  End;
 End;
 
-{ --- Restaurer dans ActiveEditor/ActiveHexEditor/ActiveFormEditor
-  l etat stocke de la fenetre Idx (texte, hexa ou apercu formulaire) --- }
+{ --- Restaurer dans ActiveEditor/ActiveHexEditor/ActiveFormEditor/EmuPanel
+  l etat stocke de la fenetre Idx (texte, hexa, apercu formulaire ou
+  emulateur) --- }
 
 Procedure SyncActiveWindowIn(Idx: Integer);
 Begin
  If (Idx < 0) Or (Idx >= WinMgr.WinCount) Then Exit;
+ { Stage 2 : par defaut, masquer le panneau emulateur - la branche WK_EMU  }
+ { ci-dessous le restaure a son etat sauvegarde (visible ou non) si          }
+ { l onglet cible en est bien un ; sinon, on bascule vers un onglet texte/  }
+ { hexa/formulaire, qui ne doit jamais laisser le panneau emulateur d un      }
+ { AUTRE onglet rester affiche par-dessus. }
+ EmuPanel.Base.Visible := False;
  If WinMgr.Windows[Idx].Kind = WK_HEX Then Begin
   If HexEditors[Idx] <> Nil Then
    ActiveHexEditor := HexEditors[Idx]^;
  End Else If WinMgr.Windows[Idx].Kind = WK_FORM Then Begin
   If FormEditors[Idx] <> Nil Then
    ActiveFormEditor := FormEditors[Idx]^;
+ End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
+  EmuPanel := EmuTabs[Idx];
+  If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx]);
+  { Naviguer VERS un onglet emulateur vaut "focus" - reprend l affichage   }
+  { "En cours d execution..." (pas "En pause") des le prochain idle-tick,  }
+  { coherent avec le fait que StepEmulator ne fait avancer QUE l onglet     }
+  { actif de toute facon (voir Stage 1/2). }
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  If EmuPanel.StatusMsg = 'En pause (cliquez sur l''ecran pour reprendre)' Then
+   EmuPanel.StatusMsg := '';
  End Else Begin
   If Editors[Idx] <> Nil Then
    ActiveEditor := Editors[Idx]^;
@@ -11787,6 +11934,13 @@ Begin
   Dispose(FormEditors[Index]);
   FormEditors[Index] := Nil;
  End;
+ { Onglet emulateur (Stage 2) : rien a Dispose (EmuTabs[]/C64Snaps[] sont   }
+ { des enregistrements simples, pas des pointeurs) - juste s assurer que    }
+ { l emulateur ne continue pas de tourner "fantome" si c est l onglet ACTIF }
+ { qu on ferme (sinon StepEmulator continuerait de piloter EmuPanel meme     }
+ { apres la fermeture visuelle de son onglet). }
+ If (WinMgr.Windows[Index].Kind = WK_EMU) And (Index = WinMgr.ActiveIdx) Then
+  EmuPanel.Running := False;
  { Decaler les fenetres et editeurs suivants }
  For I := Index To WinMgr.WinCount - 2 Do Begin
   WinMgr.Windows[I] := WinMgr.Windows[I + 1];
@@ -11794,6 +11948,8 @@ Begin
   Editors[I] := Editors[I + 1];
   HexEditors[I] := HexEditors[I + 1];
   FormEditors[I] := FormEditors[I + 1];
+  EmuTabs[I] := EmuTabs[I + 1];
+  C64Snaps[I] := C64Snaps[I + 1];
  End;
  Editors[WinMgr.WinCount - 1] := Nil;
  HexEditors[WinMgr.WinCount - 1] := Nil;
@@ -11837,7 +11993,14 @@ End;
 Procedure NextWindow;
 Begin
  If WinMgr.WinCount <= 1 Then Exit;
+ { Stage 2 (2026-08-15) : BOGUE PREEXISTANT trouve pendant le test des        }
+ { onglets emulateur - cette procedure ne changeait QUE WinMgr.ActiveIdx,     }
+ { sans jamais appeler SyncActiveWindowOut/In, donc ActiveEditor/EmuPanel      }
+ { (et l affichage) ne suivaient jamais le nouvel index actif (Ctrl+F6         }
+ { semblait ne rien faire). Meme correctif que ActivateWindow. }
+ SyncActiveWindowOut;
  WinMgr.ActiveIdx := (WinMgr.ActiveIdx + 1) Mod WinMgr.WinCount;
+ SyncActiveWindowIn(WinMgr.ActiveIdx);
 End;
 
 { --- Fenetre precedente --- }
@@ -11845,10 +12008,12 @@ End;
 Procedure PreviousWindow;
 Begin
  If WinMgr.WinCount <= 1 Then Exit;
+ SyncActiveWindowOut;
  If WinMgr.ActiveIdx > 0 Then
   Dec(WinMgr.ActiveIdx)
  Else
   WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+ SyncActiveWindowIn(WinMgr.ActiveIdx);
 End;
 
 { --- Calculer la largeur d un onglet --- }
@@ -11877,6 +12042,9 @@ Begin
  TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
  { Fond de la barre d onglets }
  SetColor(CLR_BACKGROUND);
+ { Correctif 2026-08-15 : voir DrawMenuBar - Bar() suit SetFillStyle, pas }
+ { SetColor. }
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
  Bar(0, TY, GetScreenWidth - EXPLORER_WIDTH - 1, TY + TAB_HEIGHT - 1);
  TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
@@ -11885,9 +12053,11 @@ Begin
    { Fond de l onglet }
    If I = WinMgr.ActiveIdx Then Begin
     SetColor(CLR_EDITOR_BG);
+    SetFillStyle(SolidFill, CLR_EDITOR_BG);
     Bar(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
    End Else Begin
     SetColor(CLR_BACKGROUND);
+    SetFillStyle(SolidFill, CLR_BACKGROUND);
     Bar(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
     SetColor(CLR_BORDER);
     Rectangle(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
@@ -27866,9 +28036,13 @@ Begin
   Else MH := MH + 16;
  { Ombre }
  SetColor(CLR_TITLEBAR);
+ SetFillStyle(SolidFill, CLR_TITLEBAR);
  Bar(CM.X + 2, CM.Y + 2, CM.X + CM.Width + 2, CM.Y + MH + 2);
  { Fond }
  SetColor(CLR_EDITOR_BG);
+ { Correctif 2026-08-15 : voir DrawMenuBar - Bar() suit SetFillStyle, pas }
+ { SetColor. }
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(CM.X, CM.Y, CM.X + CM.Width, CM.Y + MH);
  { Bordure }
  SetColor(CLR_BORDER);
@@ -27883,6 +28057,7 @@ Begin
   End Else Begin
    If I = CM.SelIdx Then Begin
     SetColor(CLR_MENU_HIGHLIGHT);
+    SetFillStyle(SolidFill, CLR_MENU_HIGHLIGHT);
     Bar(CM.X + 1, YPos, CM.X + CM.Width - 1, YPos + 15);
     SetColor(CLR_EDITOR_BG);
    End Else
@@ -33335,14 +33510,14 @@ Begin
      If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
+     CreateEmulatorTab(DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+     CreateEmulatorTab(ElfExe, '-CELF64', ParamStr)
     { Idem pour un .PRG Commodore 64/Atari ST - sur le disque hote OU sur }
     { une disquette virtuelle .D64 montee (TermFindPrgExecutable gere       }
     { les deux cas et extrait vers un fichier hote temporaire si besoin). }
     Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
-     ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
+     CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
     Else
      TermAddLine(TP,
       '''' + CurrCmd +
@@ -33417,11 +33592,11 @@ Begin
      If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
+     CreateEmulatorTab(DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+     CreateEmulatorTab(ElfExe, '-CELF64', ParamStr)
     Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
-     ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
+     CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
     Else
      TermAddLine(TP, CurrCmd +
       ' : le terme n''est pas reconnu comme nom de cmdlet.');
@@ -33478,11 +33653,11 @@ Begin
      If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
     End;
     If DosExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
+     CreateEmulatorTab(DosExe, '-CD', ParamStr)
     Else If ElfExe <> '' Then
-     ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+     CreateEmulatorTab(ElfExe, '-CELF64', ParamStr)
     Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
-     ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
+     CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
     Else
      TermAddLine(TP, 'bash: ' + CurrCmd +
       ': command not found');
@@ -33564,11 +33739,11 @@ Begin
     If DosExe = '' Then ElfExe := TermFindElfExecutable(TP.VirtCwd, CurrCmd);
    End;
    If DosExe <> '' Then
-    ShowEmulatorPanel(EmuPanel, DosExe, '-CD', ParamStr)
+    CreateEmulatorTab(DosExe, '-CD', ParamStr)
    Else If ElfExe <> '' Then
-    ShowEmulatorPanel(EmuPanel, ElfExe, '-CELF64', ParamStr)
+    CreateEmulatorTab(ElfExe, '-CELF64', ParamStr)
    Else If TermFindPrgExecutable(TP, TP.VirtCwd, CurrCmd, PrgTarget, PrgPath) Then
-    ShowEmulatorPanel(EmuPanel, PrgPath, PrgTarget, ParamStr)
+    CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
    Else
     TermAddLine(TP,
      '''' + CurrCmd +
@@ -35608,7 +35783,7 @@ Begin
   If UpCaseStr(NCExtractExt(E.Name)) = 'PRG' Then Begin
    If D64_ExtractToTempFile(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
     Byte(E.Cluster And $FF), TempPath) Then Begin
-    ShowEmulatorPanel(EmuPanel, TempPath, '-CC64', '');
+    CreateEmulatorTab(TempPath, '-CC64', '');
     NCActionOpenAssociated := True;
    End;
   End;
@@ -35621,7 +35796,7 @@ Begin
   { mecanisme que le .PRG D64 ci-dessus. }
   If UpCaseStr(NCExtractExt(E.Name)) = 'CODE' Then Begin
    If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
-    ShowEmulatorPanel(EmuPanel, TempPath, '-CPCODE', '');
+    CreateEmulatorTab(TempPath, '-CPCODE', '');
     NCActionOpenAssociated := True;
    End;
   End;
@@ -35631,7 +35806,7 @@ Begin
   Ext := UpCaseStr(NCExtractExt(E.Name));
   FullPath := NCFullPath(NCState.Panes[Side].Path, E.Name);
   If Ext = 'NES' Then Begin
-   ShowEmulatorPanel(EmuPanel, FullPath, '-CNES', '');
+   CreateEmulatorTab(FullPath, '-CNES', '');
    NCActionOpenAssociated := True;
   End
   Else If Ext = 'XEX' Then Begin
@@ -35641,31 +35816,31 @@ Begin
    { sans effet sur le format .XEX lui-meme). Atari 800 choisi par         }
    { defaut (plus de RAM, cible la plus courante) - aucune ambiguite         }
    { de format ne permet de deduire 400 vs 800 depuis le fichier seul. }
-   ShowEmulatorPanel(EmuPanel, FullPath, '-CATARI800', '');
+   CreateEmulatorTab(FullPath, '-CATARI800', '');
    NCActionOpenAssociated := True;
   End
   Else If Ext = 'PRG' Then Begin
    { .PRG hote : ambigu C64/Atari ST, tranche par la signature GEMDOS      }
    { (voir NCIsAtariSTPrg). }
    If NCIsAtariSTPrg(FullPath) Then
-    ShowEmulatorPanel(EmuPanel, FullPath, '-CATARIST', '')
+    CreateEmulatorTab(FullPath, '-CATARIST', '')
    Else
-    ShowEmulatorPanel(EmuPanel, FullPath, '-CC64', '');
+    CreateEmulatorTab(FullPath, '-CC64', '');
    NCActionOpenAssociated := True;
   End
   Else If Ext = 'CODE' Then Begin
    { p-code UCSD p-System brut mono-segment (convention DISPCODE/ASMPCODE.PAS }
    { de C:\SOURCE\PCODE) - voir PCode_Step. }
-   ShowEmulatorPanel(EmuPanel, FullPath, '-CPCODE', '');
+   CreateEmulatorTab(FullPath, '-CPCODE', '');
    NCActionOpenAssociated := True;
   End
   Else If (Ext = 'COM') Or
    ((Ext = 'EXE') And NCIsDos16Exe(FullPath)) Then Begin
-   ShowEmulatorPanel(EmuPanel, FullPath, '-CD', '');
+   CreateEmulatorTab(FullPath, '-CD', '');
    NCActionOpenAssociated := True;
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
-    ShowEmulatorPanel(EmuPanel, FullPath, '-CELF64', '');
+    CreateEmulatorTab(FullPath, '-CELF64', '');
     NCActionOpenAssociated := True;
    End;
   End;
@@ -42994,6 +43169,8 @@ Begin
  P.PanelY := 0;
  P.NeedRepaint := True;
  P.StatusMsg := '';
+ P.Loaded := False;
+ P.TotalSteps := 0;
  For Y := 0 To 24 Do
   For X := 0 To 79 Do Begin
    P.VRAM[Y, X].Ch := ' ';
@@ -68185,6 +68362,133 @@ Begin
  Close(F);
 End;
 
+{ Stage 2 "multi-onglets emulateur" (2026-08-15) : capture/restaure TOUT     }
+{ l etat C64 qui vit dans des globales partagees avec le reste du coeur     }
+{ 6502 (CPU6502_Mem est aussi utilise par NES/AppleII/Atari8bit/2600, mais  }
+{ ceux-ci ne sont pas encore "Loaded" - donc aucun conflit reel pour        }
+{ l instant, seuls plusieurs onglets C64 s enchainent proprement). }
+Procedure C64_SaveState(Var Snap: TC64Snapshot);
+Begin
+ Snap.Mem := CPU6502_Mem;
+ Snap.HiRam := C64_HiRam;
+ Snap.A := CPU6502_A; Snap.X := CPU6502_X; Snap.Y := CPU6502_Y;
+ Snap.P := CPU6502_P; Snap.S := CPU6502_S; Snap.PC := CPU6502_PC;
+ Snap.Halted := CPU6502_Halted; Snap.ExitCode := CPU6502_ExitCode;
+ Snap.Variant := CPU6502_Variant;
+ Snap.Port01 := C64_Port01; Snap.Port00 := C64_Port00;
+ Snap.VicReg := C64_VicReg; Snap.SidReg := C64_SidReg;
+ Snap.ColorRam := C64_ColorRam;
+ Snap.Cia1Reg := C64_Cia1Reg; Snap.Cia2Reg := C64_Cia2Reg;
+ Snap.Cia1TimerA := C64_Cia1TimerA; Snap.Cia1TimerALatch := C64_Cia1TimerALatch;
+ Snap.Cia1TimerB := C64_Cia1TimerB; Snap.Cia1TimerBLatch := C64_Cia1TimerBLatch;
+ Snap.Cia1IcrMask := C64_Cia1IcrMask; Snap.Cia1IcrPending := C64_Cia1IcrPending;
+ Snap.IrqPending := C64_IrqPending;
+ Snap.KeyMatrix := C64_KeyMatrix;
+ Snap.FrameNo := C64_FrameNo;
+ Snap.RasterLine := C64_RasterLine; Snap.RasterAcc := C64_RasterAcc;
+ Snap.PendingInject := C64_PendingInject;
+ Snap.TypeIdx := C64_TypeIdx; Snap.TypeCounter := C64_TypeCounter;
+ Snap.TypePressed := C64_TypePressed;
+ Snap.PendingVartab := C64_PendingVartab; Snap.PendingJumpPC := C64_PendingJumpPC;
+ Snap.AsyncKeyEsc := C64Async_KeyEsc; Snap.AsyncLastFrameTS := C64Async_LastFrameTS;
+End;
+
+Procedure C64_LoadState(Var Snap: TC64Snapshot);
+Begin
+ CPU6502_Mem := Snap.Mem;
+ C64_HiRam := Snap.HiRam;
+ CPU6502_A := Snap.A; CPU6502_X := Snap.X; CPU6502_Y := Snap.Y;
+ CPU6502_P := Snap.P; CPU6502_S := Snap.S; CPU6502_PC := Snap.PC;
+ CPU6502_Halted := Snap.Halted; CPU6502_ExitCode := Snap.ExitCode;
+ CPU6502_Variant := Snap.Variant;
+ C64_Port01 := Snap.Port01; C64_Port00 := Snap.Port00;
+ C64_VicReg := Snap.VicReg; C64_SidReg := Snap.SidReg;
+ C64_ColorRam := Snap.ColorRam;
+ C64_Cia1Reg := Snap.Cia1Reg; C64_Cia2Reg := Snap.Cia2Reg;
+ C64_Cia1TimerA := Snap.Cia1TimerA; C64_Cia1TimerALatch := Snap.Cia1TimerALatch;
+ C64_Cia1TimerB := Snap.Cia1TimerB; C64_Cia1TimerBLatch := Snap.Cia1TimerBLatch;
+ C64_Cia1IcrMask := Snap.Cia1IcrMask; C64_Cia1IcrPending := Snap.Cia1IcrPending;
+ C64_IrqPending := Snap.IrqPending;
+ C64_KeyMatrix := Snap.KeyMatrix;
+ C64_FrameNo := Snap.FrameNo;
+ C64_RasterLine := Snap.RasterLine; C64_RasterAcc := Snap.RasterAcc;
+ C64_PendingInject := Snap.PendingInject;
+ C64_TypeIdx := Snap.TypeIdx; C64_TypeCounter := Snap.TypeCounter;
+ C64_TypePressed := Snap.TypePressed;
+ C64_PendingVartab := Snap.PendingVartab; C64_PendingJumpPC := Snap.PendingJumpPC;
+ C64Async_KeyEsc := Snap.AsyncKeyEsc; C64Async_LastFrameTS := Snap.AsyncLastFrameTS;
+End;
+
+{ ========================================================================== }
+{ Stage 1 "multi-fenetre non bloquant" (2026-08-15) - backend pilote : C64.  }
+{ Corps EXACT de l ancienne boucle "While (Not Halted) And (FrameNo<36000)   }
+{ And (Not KeyEsc) Do" de ShowEmulatorPanel, extrait tel quel en une         }
+{ procedure qui execute UNE SEULE trame puis rend la main - appelee par      }
+{ l idle-tick de MainLoop via EmuPanel_ContinueStep plutot que bouclee en    }
+{ interne. C64Async_KeyEsc/P.TotalSteps remplacent les anciennes variables   }
+{ locales C64KeyEsc/Steps (qui ne survivaient pas entre deux appels).        }
+{ ========================================================================== }
+Procedure C64_RunOneFrame(Var P: TEmulatorPanel);
+Var
+ NesChrSize: LongInt;
+ NesPrgSize: LongInt;
+Begin
+ { Stage 2 (2026-08-15) : NE drainer KeyPressed/ReadKey QUE si ce tabulateur }
+ { a le focus emulateur (EmuHasFocus) - sinon cette boucle, executee a       }
+ { CHAQUE trame (~50/s) independamment de ce que l utilisateur regarde,      }
+ { "vole" silencieusement toute frappe destinee au Terminal/NC/Explorateur   }
+ { AVANT que PollEvents/DispatchEvent n aient eu la moindre chance de la      }
+ { voir - un onglet C64 "en pause visuelle mais toujours en arriere-plan"    }
+ { ne doit PAS pouvoir aspirer le clavier du reste de l IDE. GetAsyncKeyState}
+ { (C64_PollKeyboard) n est PAS concerne : il ne consomme rien, juste un    }
+ { etat materiel interroge - laisser tourner meme sans focus est inoffensif. }
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   NesChrSize := Ord(ReadKey);
+   If NesChrSize = 27 Then C64Async_KeyEsc := True;
+   If NesChrSize = 3 Then EmuDbg_RequestBreak(EDC_6502);
+   If NesChrSize = 0 Then Begin
+    If KeyPressed Then Begin
+     NesChrSize := Ord(ReadKey);
+     If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
+    End Else
+     EmuDbg_RequestBreak(EDC_6502);
+   End;
+  End;
+  If C64Async_KeyEsc Then Exit;
+ End;
+ C64_PollKeyboard;
+ C64_ApplyAutoType;
+ For NesPrgSize := 0 To 4999 Do Begin
+  If CPU6502_Halted Then Break;
+  { Voie fiable "sauter directement" (voir C64_Boot) : declenchee            }
+  { exactement quand le CPU atteint pour la premiere fois la boucle          }
+  { d attente clavier du KERNAL ($E5CD, "LDA $C6") - verifiee a CHAQUE       }
+  { instruction (pas seulement une fois par trame) car a la granularite     }
+  { d une trame (5000 instructions), l echantillonnage peut systemati-      }
+  { quement "sauter" l adresse exacte selon la periode de la boucle          }
+  { (BOGUE REEL rencontre pendant la mise au point : PC n etait jamais       }
+  { observe egal a $E5CD en echantillonnant une fois par trame). }
+  If (C64_PendingJumpPC <> 0) And (CPU6502_PC = $E5CD) Then Begin
+   If C64_PendingVartab <> 0 Then Begin
+    CPU6502_Mem[$2D] := Byte(C64_PendingVartab And $FF);
+    CPU6502_Mem[$2E] := Byte(C64_PendingVartab Shr 8);
+    CPU6502_Mem[$2F] := Byte(C64_PendingVartab And $FF);
+    CPU6502_Mem[$30] := Byte(C64_PendingVartab Shr 8);
+    CPU6502_Mem[$31] := Byte(C64_PendingVartab And $FF);
+    CPU6502_Mem[$32] := Byte(C64_PendingVartab Shr 8);
+   End;
+   CPU6502_PC := C64_PendingJumpPC;
+   C64_PendingJumpPC := 0;
+  End;
+  EmuDbg_OnBeforeStep6502;
+  CPU6502_Step;
+  Inc(P.TotalSteps);
+ End;
+ C64_RenderFrame(P);
+ Inc(C64_FrameNo);
+End;
+
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
@@ -68227,7 +68531,6 @@ Var
  LogF_R: Text;
  Idx_R, KK_R: Integer;
  AllZero: Boolean;
- C64KeyEsc: Boolean;
 Begin NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -69104,76 +69407,20 @@ Begin NesActive := False;
    EmuDbg.Active := False;
    EmuDbg.CPU    := EDC_NONE;
   End Else If TargetCPU = '-CC64' Then Begin
-   { ----- Boucle C64 par trame (~50 Hz PAL) : rendu VIC-II texte +      }
-   { scrutation clavier CIA1 a chaque trame - le CPU execute desormais    }
-   { reellement le vrai code KERNAL/BASIC (banniere, READY., puis          }
-   { RUN/SYS pre-injectes par C64_Boot dans le tampon clavier) plutot     }
-   { que de sauter directement au .PRG comme avant. Le decompte des        }
-   { minuteries CIA1 (voir C64_TickCia1, appele depuis CPU6502_Step)       }
-   { utilise les vrais cycles ecoules par instruction, independamment du  }
-   { decoupage en "trames" ici - seuls le rendu/la scrutation clavier/le  }
-   { rythme d affichage en dependent, pas la justesse de l horloge jiffy. }
+   { ----- C64 : Stage 1 non bloquant - charge puis rend la main immediatement }
+   { L execution reelle (trame par trame, ~50 Hz) est desormais pilotee par    }
+   { l idle-tick de MainLoop via EmuPanel_ContinueStep/C64_RunOneFrame, PAS    }
+   { par une boucle interne ici - c est ce qui permet d utiliser les menus,    }
+   { l explorateur, le terminal, etc. PENDANT que le C64 continue de tourner.  }
    EmuDbg.Active := True;
    EmuDbg.CPU    := EDC_6502;
-   C64KeyEsc := False;
+   C64Async_KeyEsc := False;
+   C64Async_LastFrameTS := 0;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
    DrawEmulatorPanel(P);
-   {$IFDEF WINDOWS}
-   EntryAddr := GetTimestamp;
-   {$ENDIF}
-   While (Not CPU6502_Halted) And (C64_FrameNo < 36000) And
-         (Not C64KeyEsc) Do Begin
-    While KeyPressed Do Begin
-     NesChrSize := Ord(ReadKey);
-     If NesChrSize = 27 Then C64KeyEsc := True;
-     If NesChrSize = 3 Then EmuDbg_RequestBreak(EDC_6502);
-     If NesChrSize = 0 Then Begin
-      If KeyPressed Then Begin
-       NesChrSize := Ord(ReadKey);
-       If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
-      End Else
-       EmuDbg_RequestBreak(EDC_6502);
-     End;
-    End;
-    If C64KeyEsc Then Break;
-    C64_PollKeyboard;
-    C64_ApplyAutoType;
-    For NesPrgSize := 0 To 4999 Do Begin
-     If CPU6502_Halted Then Break;
-     { Voie fiable "sauter directement" (voir C64_Boot) : declenchee            }
-     { exactement quand le CPU atteint pour la premiere fois la boucle          }
-     { d attente clavier du KERNAL ($E5CD, "LDA $C6") - verifiee a CHAQUE       }
-     { instruction (pas seulement une fois par trame) car a la granularite     }
-     { d une trame (5000 instructions), l echantillonnage peut systemati-      }
-     { quement "sauter" l adresse exacte selon la periode de la boucle          }
-     { (BOGUE REEL rencontre pendant la mise au point : PC n etait jamais       }
-     { observe egal a $E5CD en echantillonnant une fois par trame). }
-     If (C64_PendingJumpPC <> 0) And (CPU6502_PC = $E5CD) Then Begin
-      If C64_PendingVartab <> 0 Then Begin
-       CPU6502_Mem[$2D] := Byte(C64_PendingVartab And $FF);
-       CPU6502_Mem[$2E] := Byte(C64_PendingVartab Shr 8);
-       CPU6502_Mem[$2F] := Byte(C64_PendingVartab And $FF);
-       CPU6502_Mem[$30] := Byte(C64_PendingVartab Shr 8);
-       CPU6502_Mem[$31] := Byte(C64_PendingVartab And $FF);
-       CPU6502_Mem[$32] := Byte(C64_PendingVartab Shr 8);
-      End;
-      CPU6502_PC := C64_PendingJumpPC;
-      C64_PendingJumpPC := 0;
-     End;
-     EmuDbg_OnBeforeStep6502;
-     CPU6502_Step;
-     Inc(Steps);
-    End;
-    C64_RenderFrame(P);
-    DrawEmulatorPanel(P);
-    Inc(C64_FrameNo);
-    {$IFDEF WINDOWS}
-    NesChrSize := GetTimestamp - EntryAddr;
-    If NesChrSize < 20 Then WinSleep(20 - NesChrSize); { ~50 Hz PAL }
-    EntryAddr := GetTimestamp;
-    {$ENDIF}
-   End;
-   EmuDbg.Active := False;
-   EmuDbg.CPU    := EDC_NONE;
+   P.Loaded := True;
+   Exit;
   End Else Begin
    While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
     CPU6502_Step;
@@ -69995,15 +70242,125 @@ Begin NesActive := False;
  Emu_Done(P.CPU);
 End;
 
-{ --- Stub d execution pas a pas (pour usage futur depuis MainLoop) --- }
-
-Procedure StepEmulator(Var P: TEmulatorPanel);
+{ Rectangle approximatif du panneau emulateur a l ecran (PanelX/PanelY sont }
+{ recalcules a chaque DrawEmulatorPanel), marge incluse pour barre de       }
+{ titre/barre d etat - utilise par DispatchEvent (Stage 1) pour decider si  }
+{ un clic est "pour" l emulateur ou doit retomber sur le reste de l IDE. }
+Function EmuPanel_HitTest(Var P: TEmulatorPanel; MX, MY: Integer): Boolean;
+Var X1, Y1, X2, Y2: Integer;
 Begin
+ X1 := P.PanelX - 4;
+ Y1 := P.PanelY - 24;
+ X2 := P.PanelX + P.Cols * P.CharW + 4;
+ Y2 := P.PanelY + P.Rows * P.CharH + 24;
+ EmuPanel_HitTest := (MX >= X1) And (MX <= X2) And (MY >= Y1) And (MY <= Y2);
+End;
+
+{ --- Pas d execution asynchrone (Stage 1, appele depuis l idle-tick de     }
+{ MainLoop). Chaque backend "converti" (Loaded=True, voir ShowEmulatorPanel)}
+{ execute UN SEUL petit lot ici puis rend la main - c est ce qui remplace   }
+{ l ancienne boucle bloquante. Les backends NON convertis (Loaded reste     }
+{ False) continuent de s executer entierement dans ShowEmulatorPanel comme  }
+{ avant ; seul le chemin DOS/DPMI (deja partiellement pas-a-pas) est encore }
+{ gere via P.CPU.Fault ci-dessous, inchange. --- }
+Procedure StepEmulator(Var P: TEmulatorPanel);
+Var NowTS: LongInt; Finished: Boolean; Active: Boolean;
+Begin
+ If P.Loaded And (P.TargetCPU = '-CC64') Then Begin
+  If Not P.Running Then Exit;
+  { Correctifs 2026-08-15 : un onglet C64 "actif" (celui qu on voit a       }
+  { l ecran) ne doit VRAIMENT avancer (et donc redessiner) que si           }
+  { l utilisateur le regarde reellement - pas seulement s il a le focus     }
+  { clavier (EmuHasFocus), mais aussi si aucun menu/menu contextuel n est   }
+  { ouvert par-dessus (sinon DrawEmulatorPanel, appele a chaque trame,       }
+  { finit par interferer avec l affichage du menu deroulant). }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    { Transition venant de "actif" -> un seul redessin pour afficher "En }
+    { pause", puis on arrete completement de toucher a l ecran/l etat.    }
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  NowTS := 0;
+  {$IFDEF WINDOWS}
+  NowTS := GetTimestamp;
+  If (C64Async_LastFrameTS <> 0) And
+     (NowTS - C64Async_LastFrameTS < 20) Then Exit; { ~50 Hz PAL }
+  C64Async_LastFrameTS := NowTS;
+  {$ENDIF}
+  C64_RunOneFrame(P);
+  Finished := CPU6502_Halted Or (C64_FrameNo >= 36000) Or C64Async_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If CPU6502_Halted Then
+    EmuVScr_WriteStr(P, '[Fin 6502 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(CPU6502_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite de trames atteinte]');
+   P.CurFg := 11; P.CurBg := 1;  { couleurs par defaut C64 (cyan/bleu) }
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur 6502 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
  If P.Running And (P.CPU.Fault = sfNone) Then Begin
   If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
  End;
  If P.CPU.Fault <> sfNone Then
   P.Running := False;
+End;
+
+{ Stage 2 "multi-onglets emulateur" (2026-08-15) : cree un NOUVEL onglet     }
+{ WK_EMU (meme motif que CreateHexWindow/CreateFormWindow) et y CHARGE le    }
+{ binaire via ShowEmulatorPanel - remplace tous les appels directs a         }
+{ CreateEmulatorTab(...) faits depuis NC/le build-run/-emu:, qui   }
+{ auparavant ecrasaient le panneau global unique sans creer d onglet.        }
+{ SyncActiveWindowOut AVANT de charger le nouveau binaire est essentiel :    }
+{ c est ce qui met en securite l etat C64 de l onglet PRECEDENT (globales    }
+{ CPU6502_*/C64_*) dans EmuTabs[]/C64Snaps[] avant que ShowEmulatorPanel ne   }
+{ les reinitialise pour le nouveau binaire. }
+Procedure CreateEmulatorTab(BinaryPath, TargetCPU: String; Args: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ SyncActiveWindowOut;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_EMU;
+ WinMgr.Windows[Idx].FileName := BinaryPath;
+ WinMgr.Windows[Idx].Title := EmuPanelTitleFor(TargetCPU) +
+  ' - ' + GetTabLabel(BinaryPath);
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ ShowEmulatorPanel(EmuPanel, BinaryPath, TargetCPU, Args);
+ EmuTabs[Idx] := EmuPanel;
+ If TargetCPU = '-CC64' Then C64_SaveState(C64Snaps[Idx]);
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
 End;
 
 { --- Traiter un evenement du panneau emulateur --- }
@@ -70019,6 +70376,12 @@ Begin
     If Ev.KeyChar = #27 Then Begin
      P.Base.Visible := False;
      P.Visible := False;
+     { Stage 2 : Echap ferme reellement l onglet emulateur (comme fermer un }
+     { document), pas juste masquer le panneau - sinon l onglet resterait   }
+     { dans la barre d onglets, vide, sans plus rien a afficher. }
+     If (WinMgr.ActiveIdx >= 0) And
+        (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) Then
+      CloseEditorWindow(WinMgr.ActiveIdx);
      Exit;
     End;
     { Toute autre frappe est empilee dans la file clavier }
@@ -70030,6 +70393,9 @@ Begin
     If K = $1B Then Begin
      P.Base.Visible := False;
      P.Visible := False;
+     If (WinMgr.ActiveIdx >= 0) And
+        (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) Then
+      CloseEditorWindow(WinMgr.ActiveIdx);
      Exit;
     End;
     EmuVScr_PushKey(P, K);
@@ -77231,7 +77597,7 @@ Begin
     ExeName := SrcDir + BaseName + '.com';
    If CurrentProject.Info.TargetCPU = '-CADAM' Then
     ExeName := SrcDir + BaseName + '.com';
-   ShowEmulatorPanel(EmuPanel, ExeName,
+   CreateEmulatorTab(ExeName,
     CurrentProject.Info.TargetCPU, '');
   End;
  End
@@ -77413,7 +77779,7 @@ Begin
     AppendOutput(OutputPanel,
      '========== Build: 1 succeeded, 0 failed ==========',
      Ord(OTK_BUILD));
-    ShowEmulatorPanel(EmuPanel, ExeName, '-C68000', '');
+    CreateEmulatorTab(ExeName, '-C68000', '');
    End Else
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',
@@ -77436,7 +77802,7 @@ Begin
     AppendOutput(OutputPanel,
      '========== Build: 1 succeeded, 0 failed ==========',
      Ord(OTK_BUILD));
-    ShowEmulatorPanel(EmuPanel, ExeName, EffectiveCPU, '');
+    CreateEmulatorTab(ExeName, EffectiveCPU, '');
    End Else
     AppendOutput(OutputPanel,
      '========== Build: 0 succeeded, 1 failed ==========',
@@ -81005,7 +81371,30 @@ Begin
   { Quand l emulateur est visible, il ne doit pas absorber les clics
     sur la barre de menus, la toolbar, ni la fenetre du debogueur
     emulateur. On laisse aussi passer Alt+lettre (raccourcis menu)
-    et les raccourcis globaux du debogueur. }
+    et les raccourcis globaux du debogueur.
+    Stage 1 "multi-fenetre non bloquant" (2026-08-15) : pour un backend
+    CONVERTI (EmuPanel.Loaded=True, execution asynchrone via l idle-tick
+    de MainLoop - voir StepEmulator), EmuHasFocus determine en plus si la
+    souris/le clavier va a l emulateur ou retombe sur le reste de l IDE
+    (Explorateur, Terminal, menus...) - un clic DANS le rectangle du
+    panneau (EmuPanel_HitTest) reprend le focus, un clic EN DEHORS le
+    relache. Pour un backend NON converti (Loaded=False, encore bloquant
+    comme avant), le comportement historique (tout capturer) reste la
+    regle PAR DEFAUT.
+    Correctif 2026-08-15 : cette regle par defaut supposait que cette
+    branche n est de toute facon atteinte que pour l ecran final "Appuyez
+    sur Echap pour fermer" (l execution elle-meme bloquant MainLoop
+    entierement pour ces backends) - FAUX des que le debogueur emulateur
+    (EmuDbg, Ctrl+C/point d arret) met l execution en pause : sa boucle
+    `EmuDbg_PumpPause` appelle DispatchEvent EN PLEINE EXECUTION pour
+    preserver l interactivite de l IDE (Explorateur, Terminal, menus),
+    exactement comme le fait deja EmuHasFocus pour un backend converti -
+    mais EmuDbg.Paused n etait jamais verifie ici, donc TOUT clic/touche
+    hors barre de menus/toolbar/fenetre debogueur tombait quand meme dans
+    HandleEmulatorPanelEvent puis Exit, rendant Explorateur et Terminal
+    totalement inertes (souris ET clavier) tant que le debogueur restait
+    en pause. EmuDbg.Paused est donc desormais traite comme "pas le focus
+    emulateur", au meme titre que EmuHasFocus=False. }
   If Ev.Kind In [EV_MOUSE_DOWN, EV_MOUSE_UP, EV_MOUSE_MOVE,
                   EV_MOUSE_DBLCLICK] Then Begin
    If Ev.MouseY < MENUBAR_HEIGHT + TOOLBAR_HEIGHT Then Begin
@@ -81014,7 +81403,15 @@ Begin
    End Else If EmuDbg.WinVisible And
               EmuDbg_HitWindow(Ev.MouseX, Ev.MouseY) Then Begin
     { Clic sur la fenetre du debogueur : la PumpPause s en charge }
+   End Else If EmuPanel.Loaded And (Ev.Kind = EV_MOUSE_DOWN) And
+              Not EmuPanel_HitTest(EmuPanel, Ev.MouseX, Ev.MouseY) Then Begin
+    { Stage 1 : clic HORS du panneau -> relache le focus, l evenement
+      retombe sur le reste de l IDE (voir plus bas dans DispatchEvent). }
+    EmuHasFocus := False;
+   End Else If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus) Then Begin
+    { Debogueur en pause, ou pas (plus) le focus emulateur : laisser passer. }
    End Else Begin
+    If EmuPanel.Loaded And (Ev.Kind = EV_MOUSE_DOWN) Then EmuHasFocus := True;
     HandleEmulatorPanelEvent(EmuPanel, Ev);
     If Not EmuPanel.Base.Visible Then
      FullRepaintNeeded := True
@@ -81036,21 +81433,30 @@ Begin
        pour permettre l ouverture des menus. }
      ;
     Else Begin
-     HandleEmulatorPanelEvent(EmuPanel, Ev);
-     If Not EmuPanel.Base.Visible Then
-      FullRepaintNeeded := True
-     Else
-      DrawEmulatorPanel(EmuPanel);
-     Exit;
+     If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus) Then Begin
+      { Debogueur en pause, ou pas le focus emulateur : laisser passer
+        (ex. touches du Terminal). }
+     End Else Begin
+      HandleEmulatorPanelEvent(EmuPanel, Ev);
+      If Not EmuPanel.Base.Visible Then
+       FullRepaintNeeded := True
+      Else
+       DrawEmulatorPanel(EmuPanel);
+      Exit;
+     End;
     End;
    End;
   End Else Begin
-   HandleEmulatorPanelEvent(EmuPanel, Ev);
-   If Not EmuPanel.Base.Visible Then
-    FullRepaintNeeded := True
-   Else
-    DrawEmulatorPanel(EmuPanel);
-   Exit;
+   If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus) Then Begin
+    { Debogueur en pause, ou pas le focus emulateur : laisser passer. }
+   End Else Begin
+    HandleEmulatorPanelEvent(EmuPanel, Ev);
+    If Not EmuPanel.Base.Visible Then
+     FullRepaintNeeded := True
+    Else
+     DrawEmulatorPanel(EmuPanel);
+    Exit;
+   End;
   End;
  End;
  If GoToLineDlg.Base.Visible Then Begin
@@ -81335,6 +81741,11 @@ Begin
    End;
    LastBlinkState := ProjPropCursorVisible;
   End Else Begin
+   { Stage 1 (2026-08-15) : pas d execution asynchrone pour les backends   }
+   { emulateur "convertis" (P.Loaded=True) - remplace l ancienne boucle     }
+   { bloquante interne a ShowEmulatorPanel. Voir StepEmulator. }
+   If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then
+    StepEmulator(EmuPanel);
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
     DrawTerminalPanel(TermPanels[ActiveShell]);
@@ -81388,7 +81799,7 @@ Begin
   StartPage.Visible := False;
   FullRepaintNeeded := True;
   EmuStartCmdLine := Opts.EmuArgs;
-  ShowEmulatorPanel(EmuPanel, Opts.EmuFile, Opts.EmuTarget, Opts.EmuArgs);
+  CreateEmulatorTab(Opts.EmuFile, Opts.EmuTarget, Opts.EmuArgs);
  End
  { Si un fichier source a ete passe en argument, ouvrir directement l editeur }
  Else If Opts.SourceFile <> '' Then Begin
