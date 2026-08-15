@@ -2696,6 +2696,8 @@ Type
   Mounted        : Boolean;
   IsD64          : Boolean;        { image Commodore 64 .D64        }
   D64Tracks      : Byte;           { nombre de pistes (35 ou 40)    }
+  IsH8D          : Boolean;        { image Heath/Zenith .H8D (HDOS/CP-M-80/UCSD p-System) }
+  H8DFsType      : Byte;           { 1=HDOS 2=CP/M-80 3=UCSD p-System (voir H8D_FS_*) }
   FATType        : Byte;           { 12, 16 ou 32                   }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
@@ -30107,6 +30109,494 @@ Begin
  D64_TryMount := True;
 End;
 
+{ --- Format image Heath/Zenith .H8D : HDOS, CP/M-80 ou UCSD p-System, }
+{ secteurs de 256 octets - reference complete (lecture ET ecriture) :  }
+{ C:\SOURCE\GITHUB\corail\H8D.PAS (meme utilisateur). Ici, lecture       }
+{ seule pour NC (listage F3/Entree + extraction par nom, meme motif       }
+{ que D64_ExtractToTempFile) : CP/M-80 est liste mais son extraction       }
+{ (extents/blocs d allocation chaines par nom) reste hors de portee -    }
+{ seuls HDOS (chaine GRT simple) et UCSD p-System (blocs contigus,       }
+{ necessaire pour executer les .CODE via l emulateur -CPCODE) sont         }
+{ extractibles. }
+
+Const
+ H8D_FS_HDOS = 1;
+ H8D_FS_CPM  = 2;
+ H8D_FS_UCSD = 3;
+ H8D_SECSIZE = 256;
+
+Function H8D_ReadSector(Idx: Byte; SecNo: LongInt; Var Buf: Array Of Byte): Boolean;
+Var
+ Ofs: LongInt;
+ BR: Word;
+Begin
+ H8D_ReadSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If SecNo < 0 Then Exit;
+ Ofs := SecNo * H8D_SECSIZE;
+ If Ofs + H8D_SECSIZE > EmuFloppySize[Idx] Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ BR := 0;
+ BlockRead(EmuFloppyFile[Idx], Buf, H8D_SECSIZE, BR);
+ {$I+} If IOResult <> 0 Then Exit;
+ H8D_ReadSector := (BR = H8D_SECSIZE);
+End;
+
+Function H8D_Read512(Idx: Byte; SecNo: LongInt; Var Buf: Array Of Byte): Boolean;
+Var B1: Array[0..255] Of Byte;
+Begin
+ H8D_Read512 := False;
+ If Not H8D_ReadSector(Idx, SecNo, B1) Then Exit;
+ Move(B1, Buf[0], 256);
+ If H8D_ReadSector(Idx, SecNo + 1, B1) Then Move(B1, Buf[256], 256)
+ Else FillChar(Buf[256], 256, 0);
+ H8D_Read512 := True;
+End;
+
+{ HDOS : signature de secteur de boot (3 variantes historiques) puis    }
+{ en-tete DiskInfo au secteur 9 (DirSector@3, GrtSector@5, Spg@7 -       }
+{ enregistrement octet-a-octet cote source, pas de remplissage d        }
+{ alignement). }
+Function H8D_DetectHDOS(Idx: Byte; Var DirSector, GrtSector: Word;
+ Var Spg: Byte): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ MaxSec: LongInt;
+Begin
+ H8D_DetectHDOS := False;
+ If Not H8D_ReadSector(Idx, 0, Buf) Then Exit;
+ If Not (
+   ((Buf[0] = $C3) And (Buf[1] = $C0) And (Buf[2] = $22) And (Buf[3] = $00)) Or
+   ((Buf[0] = $C3) And (Buf[1] = $A0) And (Buf[2] = $22) And (Buf[3] = $20)) Or
+   ((Buf[0] = $AF) And (Buf[1] = $D3) And (Buf[2] = $7D) And (Buf[3] = $CD))
+ ) Then Exit;
+ If Not H8D_ReadSector(Idx, 9, Buf) Then Exit;
+ DirSector := Word(Buf[3]) Or (Word(Buf[4]) Shl 8);
+ GrtSector := Word(Buf[5]) Or (Word(Buf[6]) Shl 8);
+ Spg := Buf[7];
+ MaxSec := EmuFloppySize[Idx] Div H8D_SECSIZE;
+ If (DirSector <= 0) Or (LongInt(DirSector) >= MaxSec) Or
+    (LongInt(GrtSector) >= MaxSec) Or (Spg = 0) Then Exit;
+ H8D_DetectHDOS := True;
+End;
+
+{ UCSD p-System : balaie les 40 premiers secteurs a la recherche d un    }
+{ en-tete de volume plausible (FirstBlock=0, LastBlock 2..64, FileType=0,}
+{ NameLen 1..7, nom ASCII imprimable). }
+Function H8D_DetectUCSD(Idx: Byte; Var DirSecStart: LongInt): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ S: LongInt;
+ FB, LB, FT: Word;
+ NL, I: Integer;
+ C: Byte;
+ OkName, R: Boolean;
+Begin
+ R := False; S := 0;
+ While (Not R) And (S < 40) And
+       (LongInt(S + 1) * H8D_SECSIZE <= EmuFloppySize[Idx]) Do Begin
+  If Not H8D_ReadSector(Idx, S, Buf) Then Break;
+  FB := Word(Buf[0]) Or (Word(Buf[1]) Shl 8);
+  LB := Word(Buf[2]) Or (Word(Buf[3]) Shl 8);
+  FT := Word(Buf[4]) Or (Word(Buf[5]) Shl 8);
+  NL := Buf[6];
+  If (FB = 0) And (LB >= 2) And (LB <= 64) And (FT = 0) And
+     (NL >= 1) And (NL <= 7) Then Begin
+   OkName := True;
+   For I := 0 To NL - 1 Do Begin
+    C := Buf[7 + I];
+    If (C < $20) Or (C >= $7F) Then OkName := False;
+   End;
+   If OkName Then Begin DirSecStart := S; R := True; End;
+  End;
+  Inc(S);
+ End;
+ H8D_DetectUCSD := R;
+End;
+
+Function H8D_ScanCpmDirSector(Idx: Byte; StartSec: LongInt): Integer;
+Var
+ Buf: Array[0..255] Of Byte;
+ I, K, Score: Integer;
+ U, C: Byte;
+ EmptyEnt, GoodEnt: Integer;
+ OkName: Boolean;
+Begin
+ H8D_ScanCpmDirSector := 0;
+ If LongInt(StartSec + 1) * H8D_SECSIZE > EmuFloppySize[Idx] Then Exit;
+ If Not H8D_ReadSector(Idx, StartSec, Buf) Then Exit;
+ EmptyEnt := 0; GoodEnt := 0;
+ For I := 0 To 7 Do Begin
+  U := Buf[I * 32];
+  If U = $E5 Then Begin
+   If (Buf[I * 32 + 1] = $E5) And (Buf[I * 32 + 2] = $E5) Then Inc(EmptyEnt);
+  End Else If U <= $0F Then Begin
+   OkName := True;
+   For K := 1 To 11 Do Begin
+    C := Buf[I * 32 + K] And $7F;
+    If (C < $20) Or (C >= $7F) Then OkName := False;
+   End;
+   If OkName Then Inc(GoodEnt);
+  End;
+ End;
+ Score := GoodEnt * 4 + EmptyEnt;
+ If (GoodEnt = 0) And (EmptyEnt < 8) Then Score := 0;
+ H8D_ScanCpmDirSector := Score;
+End;
+
+Function H8D_DetectCPM(Idx: Byte; Var DirSector: LongInt): Boolean;
+Const
+ Cand: Array[0..7] Of LongInt = (30, 20, 10, 8, 4, 40, 80, 2);
+Var
+ I: Integer;
+ Best, BestSec, Sc: LongInt;
+Begin
+ Best := 0; BestSec := -1;
+ For I := 0 To 7 Do Begin
+  Sc := H8D_ScanCpmDirSector(Idx, Cand[I]);
+  If Sc > Best Then Begin Best := Sc; BestSec := Cand[I]; End;
+ End;
+ If BestSec >= 0 Then Begin DirSector := BestSec; H8D_DetectCPM := True; End
+ Else H8D_DetectCPM := False;
+End;
+
+Function H8D_TryMount(Idx: Byte; Var V: TFatVol): Boolean;
+Var
+ DirSec, GrtSec: Word;
+ Spg: Byte;
+ LDirSec: LongInt;
+Begin
+ H8D_TryMount := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ { Meme ordre de detection que DetectFs dans H8D.PAS : HDOS d abord     }
+ { (signature de boot fiable), puis UCSD (en-tete distinctif), puis      }
+ { CP/M-80 (heuristique la plus faible, en dernier recours). }
+ If H8D_DetectHDOS(Idx, DirSec, GrtSec, Spg) Then Begin
+  V.IsH8D := True; V.H8DFsType := H8D_FS_HDOS; V.VolLabel := 'HDOS';
+  V.Mounted := True; H8D_TryMount := True; Exit;
+ End;
+ If H8D_DetectUCSD(Idx, LDirSec) Then Begin
+  V.IsH8D := True; V.H8DFsType := H8D_FS_UCSD; V.VolLabel := 'UCSD';
+  V.Mounted := True; H8D_TryMount := True; Exit;
+ End;
+ If H8D_DetectCPM(Idx, LDirSec) Then Begin
+  V.IsH8D := True; V.H8DFsType := H8D_FS_CPM; V.VolLabel := 'CP/M';
+  V.Mounted := True; H8D_TryMount := True; Exit;
+ End;
+End;
+
+Function H8D_TrimName(Var Buf: Array Of Byte; Off, Len: Integer): String;
+Var S: String; I: Integer; C: Char;
+Begin
+ S := '';
+ For I := 0 To Len - 1 Do Begin
+  C := Chr(Buf[Off + I]);
+  If (C <> #0) And (C <> ' ') Then S := S + C;
+ End;
+ H8D_TrimName := S;
+End;
+
+{ Repertoire HDOS : chaine de blocs de 512 octets (2 secteurs), 22       }
+{ entrees de 23 octets par bloc (Name[8]+Ext[3]+Prj+Ver+Clf+Flags+Rsvd+  }
+{ Fgn+Lgn+Lsi+CreDate[2]+ModDate[2]), pointeur de bloc suivant aux           }
+{ octets 510-511 (0 = fin de chaine) - meme parcours que BuildDir. }
+Procedure H8D_ListHDOS(Idx: Byte; Var Pane: TNCPane);
+Var
+ DirSec, GrtSec: Word;
+ Spg: Byte;
+ GrtBuf: Array[0..255] Of Byte;
+ Buf: Array[0..511] Of Byte;
+ NxtSector: LongInt;
+ Block, I, EntOff: Integer;
+ Done: Boolean;
+ NameStr, ExtStr, DName: String;
+ Clu: Byte;
+ CC, SafetyClu: Integer;
+ SizeSec: LongInt;
+Begin
+ If Not H8D_DetectHDOS(Idx, DirSec, GrtSec, Spg) Then Exit;
+ If Not H8D_ReadSector(Idx, GrtSec, GrtBuf) Then Exit;
+ NxtSector := DirSec; Block := 0; Done := False;
+ While Not Done Do Begin
+  If Not H8D_Read512(Idx, NxtSector, Buf) Then Break;
+  Inc(Block);
+  For I := 0 To 21 Do Begin
+   EntOff := I * 23;
+   If (Buf[EntOff] < 32) Or (Buf[EntOff] > 126) Then Continue;
+   If Pane.Count >= MAX_NC_ENTRIES Then Begin Done := True; Break; End;
+   NameStr := H8D_TrimName(Buf, EntOff, 8);
+   ExtStr := H8D_TrimName(Buf, EntOff + 8, 3);
+   DName := NameStr; If ExtStr <> '' Then DName := DName + '.' + ExtStr;
+   Clu := Buf[EntOff + 16]; CC := 0; SafetyClu := 0;
+   Repeat Inc(CC); Clu := GrtBuf[Clu]; Inc(SafetyClu);
+   Until (Clu = 0) Or (SafetyClu > 300);
+   SizeSec := (LongInt(CC) - 1) * Spg + Buf[EntOff + 18];
+   If SizeSec < 0 Then SizeSec := 0;
+   Pane.Entries[Pane.Count].Name := DName;
+   Pane.Entries[Pane.Count].Size := SizeSec * H8D_SECSIZE;
+   Pane.Entries[Pane.Count].IsDir := False;
+   Pane.Entries[Pane.Count].FTime := 0;
+   Pane.Entries[Pane.Count].FDate := 0;
+   Pane.Entries[Pane.Count].Cluster := 0;
+   Inc(Pane.Count);
+  End;
+  If Not Done Then Begin
+   NxtSector := Word(Buf[510]) Or (Word(Buf[511]) Shl 8);
+   If NxtSector = 0 Then Done := True;
+   If Block > 200 Then Done := True;
+  End;
+ End;
+End;
+
+{ Repertoire UCSD p-System : bloc de 512 octets (2 secteurs) a           }
+{ DirSecStart, NumFiles (mot @16), puis NumFiles entrees de 26 octets a  }
+{ partir de l octet 26 (FirstBlk[2]/LastBlk[2]/FileKind[2]/NameLen[1]/    }
+{ Name[15]/LastByte[2]/Access[2]) - fichiers en blocs CONTIGUS (pas de    }
+{ chainage), FileKind=2 = Code (executable p-code). }
+Procedure H8D_ListUCSD(Idx: Byte; Var Pane: TNCPane);
+Var
+ DirSec: LongInt;
+ Buf: Array[0..511] Of Byte;
+ NumFiles, I, J, Off: Integer;
+ NL: Byte;
+ FBlk, LBlk, EovBlk: Word;
+ Name: String;
+Begin
+ If Not H8D_DetectUCSD(Idx, DirSec) Then Exit;
+ If Not H8D_Read512(Idx, DirSec, Buf) Then Exit;
+ NumFiles := Word(Buf[16]) Or (Word(Buf[17]) Shl 8);
+ EovBlk := Word(Buf[14]) Or (Word(Buf[15]) Shl 8);
+ If NumFiles > 78 Then NumFiles := 78;
+ For I := 0 To NumFiles - 1 Do Begin
+  Off := 26 + I * 26;
+  If Off + 26 > 512 Then Break;
+  FBlk := Word(Buf[Off]) Or (Word(Buf[Off + 1]) Shl 8);
+  LBlk := Word(Buf[Off + 2]) Or (Word(Buf[Off + 3]) Shl 8);
+  NL := Buf[Off + 6];
+  If (FBlk >= LBlk) Or (LBlk > EovBlk) Or (NL < 1) Or (NL > 15) Then Break;
+  If Pane.Count >= MAX_NC_ENTRIES Then Break;
+  Name := '';
+  For J := 0 To NL - 1 Do Name := Name + Chr(Buf[Off + 7 + J]);
+  Pane.Entries[Pane.Count].Name := Name;
+  Pane.Entries[Pane.Count].Size := (LongInt(LBlk - FBlk - 1) * 512) +
+   (Word(Buf[Off + 22]) Or (Word(Buf[Off + 23]) Shl 8));
+  Pane.Entries[Pane.Count].IsDir := False;
+  Pane.Entries[Pane.Count].FTime := 0;
+  Pane.Entries[Pane.Count].FDate := 0;
+  Pane.Entries[Pane.Count].Cluster := FBlk;
+  Inc(Pane.Count);
+ End;
+End;
+
+{ Repertoire CP/M-80 : entrees 32 octets, un fichier = un ou plusieurs   }
+{ extents (meme Nom+Ext+User) - regroupe par nom pour l affichage,        }
+{ taille approximee via l extent de plus haut numero (comme CpmFileSize).}
+{ Liste uniquement (voir commentaire d en-tete : extraction non            }
+{ supportee pour ce format). }
+Procedure H8D_ListCPM(Idx: Byte; Var Pane: TNCPane);
+Var
+ DirSec: LongInt;
+ Buf: Array[0..255] Of Byte;
+ S, I, K, J: Integer;
+ U, C, Rc: Byte;
+ OkName: Boolean;
+ Name, Ext, FullName: String;
+ SeenNames: Array[0..255] Of String[12];
+ SeenUser: Array[0..255] Of Byte;
+ SeenMaxExt: Array[0..255] Of Integer;
+ NSeen, Found: Integer;
+ ExtNum: Integer;
+Begin
+ If Not H8D_DetectCPM(Idx, DirSec) Then Exit;
+ NSeen := 0;
+ For S := 0 To 7 Do Begin
+  If LongInt(DirSec + S + 1) * H8D_SECSIZE > EmuFloppySize[Idx] Then Break;
+  If Not H8D_ReadSector(Idx, DirSec + S, Buf) Then Break;
+  For I := 0 To 7 Do Begin
+   U := Buf[I * 32];
+   If U > $0F Then Continue;
+   OkName := True;
+   For K := 1 To 11 Do Begin
+    C := Buf[I * 32 + K] And $7F;
+    If (C < $20) Or (C >= $7F) Then OkName := False;
+   End;
+   If Not OkName Then Continue;
+   Name := '';
+   For K := 0 To 7 Do If (Buf[I * 32 + 1 + K] And $7F) <> 32 Then
+    Name := Name + Chr(Buf[I * 32 + 1 + K] And $7F);
+   Ext := '';
+   For K := 0 To 2 Do If (Buf[I * 32 + 9 + K] And $7F) <> 32 Then
+    Ext := Ext + Chr(Buf[I * 32 + 9 + K] And $7F);
+   FullName := Name; If Ext <> '' Then FullName := FullName + '.' + Ext;
+   Rc := Buf[I * 32 + 15];
+   ExtNum := (Buf[I * 32 + 14] And $3F) * 32 + (Buf[I * 32 + 12] And $1F);
+   Found := -1;
+   For J := 0 To NSeen - 1 Do
+    If (SeenUser[J] = U) And (SeenNames[J] = FullName) Then Begin Found := J; Break; End;
+   If Found < 0 Then Begin
+    If (NSeen >= 256) Or (Pane.Count >= MAX_NC_ENTRIES) Then Continue;
+    Found := NSeen; Inc(NSeen);
+    SeenUser[Found] := U; SeenNames[Found] := FullName; SeenMaxExt[Found] := -1;
+    Pane.Entries[Pane.Count].Name := FullName;
+    Pane.Entries[Pane.Count].Size := 0;
+    Pane.Entries[Pane.Count].IsDir := False;
+    Pane.Entries[Pane.Count].FTime := 0;
+    Pane.Entries[Pane.Count].FDate := 0;
+    Pane.Entries[Pane.Count].Cluster := 0;
+    Inc(Pane.Count);
+   End;
+   If ExtNum > SeenMaxExt[Found] Then Begin
+    SeenMaxExt[Found] := ExtNum;
+    Pane.Entries[Found].Size := (LongInt(ExtNum) * 128 + Rc) * 128;
+   End;
+  End;
+ End;
+End;
+
+Procedure H8D_ListDir(Idx: Byte; Var Pane: TNCPane);
+Begin
+ Case FatVol[Idx].H8DFsType Of
+  H8D_FS_HDOS: H8D_ListHDOS(Idx, Pane);
+  H8D_FS_UCSD: H8D_ListUCSD(Idx, Pane);
+  H8D_FS_CPM:  H8D_ListCPM(Idx, Pane);
+ End;
+End;
+
+Function H8D_ExtractHDOSByName(Idx: Byte; Const Name: String;
+ Var OutPath: String): Boolean;
+Var
+ DirSec, GrtSec: Word;
+ Spg: Byte;
+ GrtBuf: Array[0..255] Of Byte;
+ Buf: Array[0..511] Of Byte;
+ NxtSector: LongInt;
+ Block, I, EntOff: Integer;
+ Done: Boolean;
+ NameStr, ExtStr, DName: String;
+ Clu: Byte;
+ F: File;
+ SizeSec: LongInt;
+ CC, SafetyClu: Integer;
+ SecBuf: Array[0..255] Of Byte;
+ SecsLeft, S: LongInt;
+ BR: Word;
+Begin
+ H8D_ExtractHDOSByName := False;
+ If Not H8D_DetectHDOS(Idx, DirSec, GrtSec, Spg) Then Exit;
+ If Not H8D_ReadSector(Idx, GrtSec, GrtBuf) Then Exit;
+ NxtSector := DirSec; Block := 0; Done := False;
+ While Not Done Do Begin
+  If Not H8D_Read512(Idx, NxtSector, Buf) Then Break;
+  Inc(Block);
+  For I := 0 To 21 Do Begin
+   EntOff := I * 23;
+   If (Buf[EntOff] < 32) Or (Buf[EntOff] > 126) Then Continue;
+   NameStr := H8D_TrimName(Buf, EntOff, 8);
+   ExtStr := H8D_TrimName(Buf, EntOff + 8, 3);
+   DName := NameStr; If ExtStr <> '' Then DName := DName + '.' + ExtStr;
+   If UpCaseStr(DName) = UpCaseStr(Name) Then Begin
+    Clu := Buf[EntOff + 16]; CC := 0; SafetyClu := 0;
+    Repeat Inc(CC); Clu := GrtBuf[Clu]; Inc(SafetyClu);
+    Until (Clu = 0) Or (SafetyClu > 300);
+    SizeSec := (LongInt(CC) - 1) * Spg + Buf[EntOff + 18];
+    If SizeSec < 0 Then SizeSec := 0;
+    OutPath := GetEnv('TEMP');
+    If OutPath = '' Then OutPath := '.';
+    If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+    OutPath := OutPath + 'DEVENV_NC_H8D_HDOS.TMP';
+    {$I-} Assign(F, OutPath); Rewrite(F, 1); {$I+}
+    If IOResult <> 0 Then Exit;
+    Clu := Buf[EntOff + 16];
+    SecsLeft := SizeSec;
+    While SecsLeft > 0 Do Begin
+     For S := 0 To Spg - 1 Do Begin
+      If SecsLeft <= 0 Then Break;
+      If Not H8D_ReadSector(Idx, LongInt(Clu) * Spg + S, SecBuf) Then Begin
+       SecsLeft := 0; Break;
+      End;
+      BlockWrite(F, SecBuf, H8D_SECSIZE, BR);
+      Dec(SecsLeft);
+     End;
+     Clu := GrtBuf[Clu];
+     If Clu = 0 Then Break;
+    End;
+    Close(F);
+    H8D_ExtractHDOSByName := True;
+    Exit;
+   End;
+  End;
+  NxtSector := Word(Buf[510]) Or (Word(Buf[511]) Shl 8);
+  If NxtSector = 0 Then Done := True;
+  If Block > 200 Then Done := True;
+ End;
+End;
+
+Function H8D_ExtractUCSDByName(Idx: Byte; Const Name: String;
+ Var OutPath: String): Boolean;
+Var
+ DirSec: LongInt;
+ Buf: Array[0..511] Of Byte;
+ SecBuf: Array[0..511] Of Byte;
+ NumFiles, I, J, Off: Integer;
+ NL: Byte;
+ FBlk, LBlk, EovBlk: Word;
+ EName: String;
+ F: File;
+ Blk: LongInt;
+ NBytes: Integer;
+ BR: Word;
+Begin
+ H8D_ExtractUCSDByName := False;
+ If Not H8D_DetectUCSD(Idx, DirSec) Then Exit;
+ If Not H8D_Read512(Idx, DirSec, Buf) Then Exit;
+ NumFiles := Word(Buf[16]) Or (Word(Buf[17]) Shl 8);
+ EovBlk := Word(Buf[14]) Or (Word(Buf[15]) Shl 8);
+ If NumFiles > 78 Then NumFiles := 78;
+ For I := 0 To NumFiles - 1 Do Begin
+  Off := 26 + I * 26;
+  If Off + 26 > 512 Then Break;
+  FBlk := Word(Buf[Off]) Or (Word(Buf[Off + 1]) Shl 8);
+  LBlk := Word(Buf[Off + 2]) Or (Word(Buf[Off + 3]) Shl 8);
+  NL := Buf[Off + 6];
+  If (FBlk >= LBlk) Or (LBlk > EovBlk) Or (NL < 1) Or (NL > 15) Then Break;
+  EName := '';
+  For J := 0 To NL - 1 Do EName := EName + Chr(Buf[Off + 7 + J]);
+  If UpCaseStr(EName) = UpCaseStr(Name) Then Begin
+   OutPath := GetEnv('TEMP');
+   If OutPath = '' Then OutPath := '.';
+   If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+   OutPath := OutPath + 'DEVENV_NC_H8D_UCSD.TMP';
+   {$I-} Assign(F, OutPath); Rewrite(F, 1); {$I+}
+   If IOResult <> 0 Then Exit;
+   Blk := FBlk;
+   While Blk < LBlk Do Begin
+    If Not H8D_Read512(Idx, Blk * 2, SecBuf) Then Break;
+    If Blk = LBlk - 1 Then Begin
+     NBytes := Word(Buf[Off + 22]) Or (Word(Buf[Off + 23]) Shl 8);
+     If NBytes = 0 Then NBytes := 512;
+    End Else NBytes := 512;
+    BlockWrite(F, SecBuf, NBytes, BR);
+    Inc(Blk);
+   End;
+   Close(F);
+   H8D_ExtractUCSDByName := True;
+   Exit;
+  End;
+ End;
+End;
+
+Function H8D_ExtractToTempFile(Idx: Byte; Const Name: String;
+ Var OutPath: String): Boolean;
+Begin
+ H8D_ExtractToTempFile := False;
+ Case FatVol[Idx].H8DFsType Of
+  H8D_FS_HDOS: H8D_ExtractToTempFile := H8D_ExtractHDOSByName(Idx, Name, OutPath);
+  H8D_FS_UCSD: H8D_ExtractToTempFile := H8D_ExtractUCSDByName(Idx, Name, OutPath);
+ End;
+End;
+
 { Types de partition MBR pouvant contenir un systeme de fichiers FAT
   (port de IsFATPartitionType, DISKPC.PAS / UNDISKPC.PAS). }
 Function Fat_IsFATPartitionType(T: Byte): Boolean;
@@ -30142,6 +30632,10 @@ Begin
  End;
  { Essayer d abord le format Commodore 64 (.D64) }
  If D64_TryMount(Idx, V) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ If H8D_TryMount(Idx, V) Then Begin
   FatVol[Idx] := V;
   Exit;
  End;
@@ -33523,6 +34017,11 @@ Begin
     End;
    End;
   End;
+ End Else If FatVol[Slot].IsH8D Then Begin
+  { Image Heath/Zenith .H8D (HDOS, CP/M-80 ou UCSD p-System) - voir     }
+  { H8D_ListDir (aiguille sur FatVol[Slot].H8DFsType, chacun des 3        }
+  { formats remplit Pane.Entries directement). }
+  H8D_ListDir(Byte(Slot), Pane);
  End Else Begin
   { Disquette virtuelle FAT montee. }
   If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
@@ -34910,6 +35409,7 @@ End;
 Procedure NCActionView(Side: Integer);
 Var
  E: TNCEntry;
+ TempPath: String;
 Begin
  If NCState.Panes[Side].Count = 0 Then Exit;
  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
@@ -34924,6 +35424,15 @@ Begin
   NCCmd_ViewD64File(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
    Byte(E.Cluster And $FF), E.Name);
   NCState.Mode := ncViewFile;
+ End Else If FatVol[NCState.Slot].IsH8D Then Begin
+  { Image .H8D : extrait vers un fichier hote temporaire (H8D_ExtractToTempFile, }
+  { HDOS/UCSD uniquement - voir commentaire d en-tete du sous-systeme H8D    }
+  { pour la limitation CP/M-80) puis reutilise NCCmd_ViewFile tel quel. }
+  If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
+   NCCmd_ViewFile(TempPath);
+   NCState.ViewFileName := E.Name;
+   NCState.Mode := ncViewFile;
+  End;
  End;
 End;
 
@@ -35100,6 +35609,19 @@ Begin
    If D64_ExtractToTempFile(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
     Byte(E.Cluster And $FF), TempPath) Then Begin
     ShowEmulatorPanel(EmuPanel, TempPath, '-CC64', '');
+    NCActionOpenAssociated := True;
+   End;
+  End;
+  Exit;
+ End;
+ If (NCState.Slot >= 0) And FatVol[NCState.Slot].IsH8D Then Begin
+  { Image .H8D : seuls les fichiers .CODE (p-code UCSD p-System) sont      }
+  { executables - extraits vers un fichier hote temporaire (HDOS ou UCSD,  }
+  { voir H8D_ExtractToTempFile) puis lances par l emulateur -CPCODE, meme  }
+  { mecanisme que le .PRG D64 ci-dessus. }
+  If UpCaseStr(NCExtractExt(E.Name)) = 'CODE' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
+    ShowEmulatorPanel(EmuPanel, TempPath, '-CPCODE', '');
     NCActionOpenAssociated := True;
    End;
   End;
