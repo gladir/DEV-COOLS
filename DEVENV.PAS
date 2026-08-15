@@ -3757,6 +3757,206 @@ Type
   AsyncLastFrameTS: LongInt;
  End;
 
+ { Meme motif que TC64Snapshot (Stage 1+2, meme session 2026-08-15),      }
+ { backends NES/Atari 2600. Contrairement a TC64Snapshot, les champs      }
+ { tableaux ne reutilisent PAS de type nomme partage : Nes_SaveState/     }
+ { Nes_LoadState (et A2600 plus bas) utilisent Move() plutot que `:=`     }
+ { pour ces champs, ce qui contourne l incompatibilite FPC entre deux     }
+ { tableaux anonymes de meme forme SANS avoir a retyper les globales      }
+ { NesXxx/A2600_Xxx elles-memes (Move() ne verifie que la taille, pas le  }
+ { type). CPU/Mem reutilise T6502MemArr (deja partage avec C64/A2600 -    }
+ { meme coeur 6502 generique) car ce champ-la utilise bien `:=`. }
+ TNesSnapshot = Record
+  Mem            : T6502MemArr;
+  A, X, Y, P, S  : Byte;
+  PC             : Word;
+  Halted         : Boolean;
+  ExitCode       : Integer;
+  Variant        : Integer;
+  Chr            : Array[0..$1FFF] Of Byte;
+  NT             : Array[0..$7FF] Of Byte;
+  Pal            : Array[0..$1F] Of Byte;
+  Oam            : Array[0..$FF] Of Byte;
+  FB             : Array[0..239, 0..255] Of Byte;
+  FBPrev         : Array[0..239, 0..255] Of Byte;
+  FBFirst        : Boolean;
+  PpuCtrl, PpuMask, PpuStatus, OamAddr : Byte;
+  ScrollX, ScrollY : Byte;
+  PpuLatch       : Boolean;
+  PpuAddr        : Word;
+  PpuBuf         : Byte;
+  Mirror         : Byte;
+  PadStrobe      : Byte;
+  NmiPending     : Boolean;
+  FrameDone      : Boolean;
+  FrameNo        : LongInt;
+  Pad1, Pad2, Pad1Sh, Pad2Sh : Byte;
+  PrgRom         : Array[0..$7FFFF] Of Byte;
+  ChrRom         : Array[0..$3FFFF] Of Byte;
+  PrgBlocksTotal, ChrBlocksTotal : Integer;
+  Mapper         : Integer;
+  UseChrRam      : Boolean;
+  M1Shift, M1ShiftCount, M1Ctrl, M1Chr0, M1Chr1, M1Prg : Byte;
+  M3BankSelect   : Byte;
+  M3Banks        : Array[0..7] Of Byte;
+  AsyncKeyEsc    : Boolean;
+  AsyncLastFrameTS: LongInt;
+ End;
+
+ { Meme motif que TNesSnapshot (Move() pour les tableaux), backend Atari  }
+ { 2600 - le plus gros des trois par NOMBRE de champs (nombreux schemas   }
+ { de bank-switching de cartouche : F8/F6/F4/F8SC/F6SC/F4SC/FA/FE/E0/3F/  }
+ { E7/3E/3E+/AR, chacun avec son propre etat), mais PAS par taille (les   }
+ { tableaux restent petits, quelques dizaines de Ko au total). Les champs }
+ { dont le nom d origine commence par un chiffre (A2600_3E_xxx, A2600_3EP_}
+ { xxx) sont renommes E3_xxx/E3P_xxx ici - Pascal interdit un identifiant }
+ { commencant par un chiffre. }
+ TA2600Snapshot = Record
+  Mem            : T6502MemArr;
+  A, X, Y, P, S  : Byte;
+  PC             : Word;
+  Halted         : Boolean;
+  ExitCode       : Integer;
+  Variant        : Integer;
+  Active         : Boolean;
+  FB             : Array[0..191, 0..159] Of Byte;
+  FBPrev         : Array[0..191, 0..159] Of Byte;
+  FBFirst        : Boolean;
+  TIA            : Array[0..$7F] Of Byte;
+  RIOTRam        : Array[0..$7F] Of Byte;
+  VSYNCAct, VBLANKAct : Boolean;
+  ScanLine, VisLine   : Integer;
+  FrameNo        : LongInt;
+  WSYNCWait      : Boolean;
+  LineCyc, LineInstr  : Integer;
+  P0X, P1X       : Integer;
+  M0X, M1X, BLX  : Integer;
+  HMP0, HMP1, HMM0, HMM1, HMBL : ShortInt;
+  HMOVEPending   : Boolean;
+  HMOVE_Counter  : Integer;
+  HMOVE_Running  : Boolean;
+  HMxx_Active    : Array[0..4] Of Boolean;
+  GRP0_New, GRP0_Old : Byte;
+  GRP1_New, GRP1_Old : Byte;
+  ENABL_New, ENABL_Old: Byte;
+  VDELP0, VDELP1, VDELBL : Boolean;
+  RESMP0, RESMP1 : Boolean;
+  HMOVEComb      : Boolean;
+  PhantomCombX   : Integer;
+  LastX, CurY    : Integer;
+  P0Fired        : Array[0..2] Of Boolean;
+  P0LStart       : Array[0..2] Of Integer;
+  P0LStretch     : Array[0..2] Of Integer;
+  P0LRefp        : Array[0..2] Of Byte;
+  P0LCnt         : Integer;
+  P1Fired        : Array[0..2] Of Boolean;
+  P1LStart       : Array[0..2] Of Integer;
+  P1LStretch     : Array[0..2] Of Integer;
+  P1LRefp        : Array[0..2] Of Byte;
+  P1LCnt         : Integer;
+  M0Fired        : Array[0..2] Of Boolean;
+  M0LStart       : Array[0..2] Of Integer;
+  M0LSize        : Array[0..2] Of Integer;
+  M1Fired        : Array[0..2] Of Boolean;
+  M1LStart       : Array[0..2] Of Integer;
+  M1LSize        : Array[0..2] Of Integer;
+  BLFired        : Boolean;
+  BLLStart, BLLSize : Integer;
+  KeyEsc         : Boolean;
+  KeyJoy         : Byte;
+  KeyFire        : Boolean;
+  DrivingP0      : Boolean;
+  DriveP0_Pos    : Byte;
+  DriveF4_Prev   : Boolean;
+  BoosterP0      : Boolean;
+  KeyBooster     : Boolean;
+  BoostF5_Prev   : Boolean;
+  INPTLatchEn    : Boolean;
+  INPT4Latch, INPT5Latch : Boolean;
+  Paddle         : Array[0..3] Of Integer;
+  PadCharge      : Array[0..3] Of Integer;
+  PadDumped      : Boolean;
+  LinesPerFrame  : Integer;
+  PAL            : Boolean;
+  LastVsyncLine  : Integer;
+  FrameLineHist  : Array[0..3] Of Integer;
+  FrameLineIdx   : Integer;
+  FrameReady     : Boolean;
+  ROM            : Array[0..32767] Of Byte;
+  ROMSize        : LongInt;
+  BankCnt, CurBank : Integer;
+  HotLo          : Byte;
+  Scheme         : Byte;
+  CartRAM        : Array[0..255] Of Byte;
+  TigerBank      : Integer;
+  E0Slot         : Array[0..2] Of Integer;
+  E7_RAM1K       : Array[0..1023] Of Byte;
+  E7_RAM256      : Array[0..3, 0..255] Of Byte;
+  E7_LowerRAM    : Boolean;
+  E7_R256Bank    : Integer;
+  E7_LowerROM    : Integer;
+  E3_RAM         : Array[0..32767] Of Byte;
+  E3_RAMMode     : Boolean;
+  E3_LowerROM    : Integer;
+  E3_LowerRAM    : Integer;
+  E3P_SlotIsRAM  : Array[0..3] Of Boolean;
+  E3P_SlotBank   : Array[0..3] Of Integer;
+  SC_RAM         : Array[0..6143] Of Byte;
+  SC_BIOS        : Array[0..2047] Of Byte;
+  SC_Cfg         : Byte;
+  SC_WrEn        : Boolean;
+  SWACNT, SWBCNT : Byte;
+  SWACHA_Out, SWCHB_Out : Byte;
+  TimerVal       : Integer;
+  TimerInterval  : Integer;
+  TimerCyc       : Integer;
+  TimerExpired   : Boolean;
+  AsyncLastFrameTS: LongInt;
+ End;
+
+ { Meme motif (Move() pour les tableaux), backend CoCo3 (mode materiel     }
+ { .PAK/.ROM uniquement - Coco3_Active=True ; le mode "programme 6809      }
+ { texte compile" (Pascal/ASM, Coco3_Active=False) reste sur l ancien       }
+ { chemin bloquant, comme Dragon32/64/TO7/TO8/MO5, non convertis). Coeur   }
+ { CPU 6809 (M6809_*) au lieu du coeur 6502 partage par C64/NES/A2600.     }
+ TCoco3Snapshot = Record
+  Mem            : Array[0..$FFFF] Of Byte;
+  Areg, Breg, DP, CC : Byte;
+  Xreg, Yreg, Ureg, Sreg, PC : Word;
+  Halted         : Boolean;
+  ExitCode       : Integer;
+  Cycles         : LongInt;
+  Variant        : Integer;
+  Active         : Boolean;
+  FB             : Array[0..199, 0..255] Of Byte;
+  FBPrev         : Array[0..199, 0..255] Of Byte;
+  FBFirst        : Boolean;
+  FrameNo        : LongInt;
+  PhysMem        : Array[0..$7FFFF] Of Byte;
+  PakRom         : Array[0..$3FFF] Of Byte;
+  PakSize        : LongInt;
+  MMU            : Array[0..1, 0..7] Of Byte;
+  MMUTask        : Byte;
+  MMUEnable      : Boolean;
+  GimeReg        : Array[$90..$DF] Of Byte;
+  TimerInit      : Word;
+  TimerCount     : Word;
+  PIA0_DDRA, PIA0_CRA, PIA0_DDRB, PIA0_CRB, PIA0_PortB : Byte;
+  VsyncCount     : LongInt;
+  PIA1_PB        : Byte;
+  SAM            : Word;
+  SamVidBase     : Word;
+  RomImg         : Array[0..$7FFF] Of Byte;
+  RomLoaded      : Boolean;
+  RomMode        : Byte;
+  SegIsRom       : Array[0..7] Of Boolean;
+  KbdMatrix      : Array[0..6] Of Byte;
+  KbdHold        : Integer;
+  LiveBank       : Array[0..7] Of Byte;
+  AsyncKeyEsc    : Boolean;
+  AsyncLastFrameTS: LongInt;
+ End;
+
  { En-tete de fichier ELF64 (executable Linux x86-64) - seuls les champs  }
  { necessaires au chargement d un executable statique sont exploites.    }
  TELF64Header = Record
@@ -4466,6 +4666,9 @@ Var
  { C64 qui vit hors de TEmulatorPanel (CPU6502_*/C64_*, voir TC64Snapshot). }
  EmuTabs      : Array[0..MAX_WINDOWS - 1] Of TEmulatorPanel;
  C64Snaps     : Array[0..MAX_WINDOWS - 1] Of TC64Snapshot;
+ NesSnaps     : Array[0..MAX_WINDOWS - 1] Of TNesSnapshot;
+ A2600Snaps   : Array[0..MAX_WINDOWS - 1] Of TA2600Snapshot;
+ Coco3Snaps   : Array[0..MAX_WINDOWS - 1] Of TCoco3Snapshot;
  { Coloration syntaxique C }
  CHL          : TCHighlighter;
  { Coloration syntaxique C# }
@@ -6405,6 +6608,14 @@ Var
  { qui ne pouvaient pas survivre entre deux appels separes. }
  C64Async_KeyEsc     : Boolean;
  C64Async_LastFrameTS: LongInt;
+ { Meme motif pour NES/Atari 2600 (conversion Stage 1, meme session) :   }
+ { remplacent les anciennes variables LOCALES NesKeyEsc/A2600_KeyEsc     }
+ { d origine + EntryAddr, qui ne survivaient pas entre deux appels.      }
+ NesAsync_KeyEsc      : Boolean;
+ NesAsync_LastFrameTS : LongInt;
+ A2600Async_LastFrameTS: LongInt;
+ Coco3Async_KeyEsc      : Boolean;
+ Coco3Async_LastFrameTS : LongInt;
 Const
  { Palette C64 (16 couleurs standard, indices $00-$0F du VIC-II) mise en }
  { correspondance avec la palette EGA 16 couleurs du panneau emulateur - }
@@ -8611,6 +8822,12 @@ Procedure CreateEmulatorTab(BinaryPath, TargetCPU: String;
  Args: String); Forward;
 Procedure C64_SaveState(Var Snap: TC64Snapshot); Forward;
 Procedure C64_LoadState(Var Snap: TC64Snapshot); Forward;
+Procedure Nes_SaveState(Var Snap: TNesSnapshot); Forward;
+Procedure Nes_LoadState(Var Snap: TNesSnapshot); Forward;
+Procedure A2600_SaveState(Var Snap: TA2600Snapshot); Forward;
+Procedure A2600_LoadState(Var Snap: TA2600Snapshot); Forward;
+Procedure Coco3_SaveState(Var Snap: TCoco3Snapshot); Forward;
+Procedure Coco3_LoadState(Var Snap: TCoco3Snapshot); Forward;
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -11869,7 +12086,13 @@ Begin
   { hors de TEmulatorPanel, dans des globales partagees CPU6502_*/C64_*.   }
   EmuTabs[WinMgr.ActiveIdx] := EmuPanel;
   If EmuPanel.TargetCPU = '-CC64' Then
-   C64_SaveState(C64Snaps[WinMgr.ActiveIdx]);
+   C64_SaveState(C64Snaps[WinMgr.ActiveIdx])
+  Else If EmuPanel.TargetCPU = '-CNES' Then
+   Nes_SaveState(NesSnaps[WinMgr.ActiveIdx])
+  Else If EmuPanel.TargetCPU = '-CATARI2600' Then
+   A2600_SaveState(A2600Snaps[WinMgr.ActiveIdx])
+  Else If (EmuPanel.TargetCPU = '-CCOCO3') And Coco3_Active Then
+   Coco3_SaveState(Coco3Snaps[WinMgr.ActiveIdx]);
  End Else Begin
   If Editors[WinMgr.ActiveIdx] <> Nil Then
    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
@@ -11897,7 +12120,10 @@ Begin
    ActiveFormEditor := FormEditors[Idx]^;
  End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
   EmuPanel := EmuTabs[Idx];
-  If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx]);
+  If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
+  Else If EmuPanel.TargetCPU = '-CNES' Then Nes_LoadState(NesSnaps[Idx])
+  Else If EmuPanel.TargetCPU = '-CATARI2600' Then A2600_LoadState(A2600Snaps[Idx])
+  Else If EmuPanel.TargetCPU = '-CCOCO3' Then Coco3_LoadState(Coco3Snaps[Idx]);
   { Naviguer VERS un onglet emulateur vaut "focus" - reprend l affichage   }
   { "En cours d execution..." (pas "En pause") des le prochain idle-tick,  }
   { coherent avec le fait que StepEmulator ne fait avancer QUE l onglet     }
@@ -11950,6 +12176,9 @@ Begin
   FormEditors[I] := FormEditors[I + 1];
   EmuTabs[I] := EmuTabs[I + 1];
   C64Snaps[I] := C64Snaps[I + 1];
+  NesSnaps[I] := NesSnaps[I + 1];
+  A2600Snaps[I] := A2600Snaps[I + 1];
+  Coco3Snaps[I] := Coco3Snaps[I + 1];
  End;
  Editors[WinMgr.WinCount - 1] := Nil;
  HexEditors[WinMgr.WinCount - 1] := Nil;
@@ -68489,6 +68718,595 @@ Begin
  Inc(C64_FrameNo);
 End;
 
+{ Meme motif que C64_SaveState/LoadState mais via Move() pour les champs   }
+{ tableaux (voir TNesSnapshot) - evite de retyper les globales NesXxx.     }
+Procedure Nes_SaveState(Var Snap: TNesSnapshot);
+Begin
+ Snap.Mem := CPU6502_Mem;
+ Snap.A := CPU6502_A; Snap.X := CPU6502_X; Snap.Y := CPU6502_Y;
+ Snap.P := CPU6502_P; Snap.S := CPU6502_S; Snap.PC := CPU6502_PC;
+ Snap.Halted := CPU6502_Halted; Snap.ExitCode := CPU6502_ExitCode;
+ Snap.Variant := CPU6502_Variant;
+ Move(NesChr, Snap.Chr, SizeOf(Snap.Chr));
+ Move(NesNT, Snap.NT, SizeOf(Snap.NT));
+ Move(NesPal, Snap.Pal, SizeOf(Snap.Pal));
+ Move(NesOam, Snap.Oam, SizeOf(Snap.Oam));
+ Move(NesFB, Snap.FB, SizeOf(Snap.FB));
+ Move(NesFBPrev, Snap.FBPrev, SizeOf(Snap.FBPrev));
+ Snap.FBFirst := NesFBFirst;
+ Snap.PpuCtrl := NesPpuCtrl; Snap.PpuMask := NesPpuMask;
+ Snap.PpuStatus := NesPpuStatus; Snap.OamAddr := NesOamAddr;
+ Snap.ScrollX := NesScrollX; Snap.ScrollY := NesScrollY;
+ Snap.PpuLatch := NesPpuLatch; Snap.PpuAddr := NesPpuAddr;
+ Snap.PpuBuf := NesPpuBuf; Snap.Mirror := NesMirror;
+ Snap.PadStrobe := NesPadStrobe; Snap.NmiPending := NesNmiPending;
+ Snap.FrameDone := NesFrameDone; Snap.FrameNo := NesFrameNo;
+ Snap.Pad1 := NesPad1; Snap.Pad2 := NesPad2;
+ Snap.Pad1Sh := NesPad1Sh; Snap.Pad2Sh := NesPad2Sh;
+ Move(NesPrgRom, Snap.PrgRom, SizeOf(Snap.PrgRom));
+ Move(NesChrRom, Snap.ChrRom, SizeOf(Snap.ChrRom));
+ Snap.PrgBlocksTotal := NesPrgBlocksTotal; Snap.ChrBlocksTotal := NesChrBlocksTotal;
+ Snap.Mapper := NesMapper; Snap.UseChrRam := NesUseChrRam;
+ Snap.M1Shift := NesM1Shift; Snap.M1ShiftCount := NesM1ShiftCount;
+ Snap.M1Ctrl := NesM1Ctrl; Snap.M1Chr0 := NesM1Chr0;
+ Snap.M1Chr1 := NesM1Chr1; Snap.M1Prg := NesM1Prg;
+ Snap.M3BankSelect := NesM3BankSelect;
+ Move(NesM3Banks, Snap.M3Banks, SizeOf(Snap.M3Banks));
+ Snap.AsyncKeyEsc := NesAsync_KeyEsc; Snap.AsyncLastFrameTS := NesAsync_LastFrameTS;
+End;
+
+Procedure Nes_LoadState(Var Snap: TNesSnapshot);
+Begin
+ CPU6502_Mem := Snap.Mem;
+ CPU6502_A := Snap.A; CPU6502_X := Snap.X; CPU6502_Y := Snap.Y;
+ CPU6502_P := Snap.P; CPU6502_S := Snap.S; CPU6502_PC := Snap.PC;
+ CPU6502_Halted := Snap.Halted; CPU6502_ExitCode := Snap.ExitCode;
+ CPU6502_Variant := Snap.Variant;
+ Move(Snap.Chr, NesChr, SizeOf(NesChr));
+ Move(Snap.NT, NesNT, SizeOf(NesNT));
+ Move(Snap.Pal, NesPal, SizeOf(NesPal));
+ Move(Snap.Oam, NesOam, SizeOf(NesOam));
+ Move(Snap.FB, NesFB, SizeOf(NesFB));
+ Move(Snap.FBPrev, NesFBPrev, SizeOf(NesFBPrev));
+ NesFBFirst := Snap.FBFirst;
+ NesPpuCtrl := Snap.PpuCtrl; NesPpuMask := Snap.PpuMask;
+ NesPpuStatus := Snap.PpuStatus; NesOamAddr := Snap.OamAddr;
+ NesScrollX := Snap.ScrollX; NesScrollY := Snap.ScrollY;
+ NesPpuLatch := Snap.PpuLatch; NesPpuAddr := Snap.PpuAddr;
+ NesPpuBuf := Snap.PpuBuf; NesMirror := Snap.Mirror;
+ NesPadStrobe := Snap.PadStrobe; NesNmiPending := Snap.NmiPending;
+ NesFrameDone := Snap.FrameDone; NesFrameNo := Snap.FrameNo;
+ NesPad1 := Snap.Pad1; NesPad2 := Snap.Pad2;
+ NesPad1Sh := Snap.Pad1Sh; NesPad2Sh := Snap.Pad2Sh;
+ Move(Snap.PrgRom, NesPrgRom, SizeOf(NesPrgRom));
+ Move(Snap.ChrRom, NesChrRom, SizeOf(NesChrRom));
+ NesPrgBlocksTotal := Snap.PrgBlocksTotal; NesChrBlocksTotal := Snap.ChrBlocksTotal;
+ NesMapper := Snap.Mapper; NesUseChrRam := Snap.UseChrRam;
+ NesM1Shift := Snap.M1Shift; NesM1ShiftCount := Snap.M1ShiftCount;
+ NesM1Ctrl := Snap.M1Ctrl; NesM1Chr0 := Snap.M1Chr0;
+ NesM1Chr1 := Snap.M1Chr1; NesM1Prg := Snap.M1Prg;
+ NesM3BankSelect := Snap.M3BankSelect;
+ Move(Snap.M3Banks, NesM3Banks, SizeOf(NesM3Banks));
+ NesAsync_KeyEsc := Snap.AsyncKeyEsc; NesAsync_LastFrameTS := Snap.AsyncLastFrameTS;
+End;
+
+{ ========================================================================== }
+{ Stage 1+2 (2026-08-15, meme session) - backend NES, meme motif que C64.    }
+{ Corps EXACT de l ancienne boucle "While (Not Halted) And (FrameNo<Limit)   }
+{ And (Not KeyEsc) Do" de ShowEmulatorPanel, extrait tel quel en une         }
+{ procedure qui execute UNE SEULE trame puis rend la main. NesAsync_KeyEsc/  }
+{ P.TotalSteps remplacent les anciennes variables locales NesKeyEsc/Steps -  }
+{ NesFrameLimit/NesInstrPerFrame etaient des constantes fixes (36000/7460)   }
+{ recopiees dans des variables locales par l ancien code : reprises ici en   }
+{ litteraux directs, comme C64_RunOneFrame le fait deja pour ses propres     }
+{ constantes (5000 pas/trame, limite 36000 trames dans StepEmulator). }
+{ ========================================================================== }
+Procedure Nes_RunOneFrame(Var P: TEmulatorPanel);
+Var
+ NesChrSize: LongInt;
+ NesPrgSize: LongInt;
+Begin
+ { Meme piege que C64 (voir C64_RunOneFrame) : ne drainer KeyPressed/ReadKey }
+ { que si ce tabulateur a le focus emulateur, sinon vol clavier silencieux. }
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   NesChrSize := Ord(ReadKey);
+   If NesChrSize = 27 Then NesAsync_KeyEsc := True;
+   If NesChrSize = 3  Then EmuDbg_RequestBreak(EDC_6502);
+   If NesChrSize = 0 Then Begin
+    If KeyPressed Then Begin
+     NesChrSize := Ord(ReadKey);
+     If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
+    End Else
+     EmuDbg_RequestBreak(EDC_6502);
+   End;
+  End;
+  If NesAsync_KeyEsc Then Exit;
+ End;
+ { Lire etat manette pour cette trame }
+ NesPollInput;
+ { Effacer vblank/sprite0 hit au debut du prerender (scanline 261) }
+ NesPpuStatus := NesPpuStatus And $7F;
+ NesPpuStatus := NesPpuStatus And $BF;
+ { Phase visible : ~80% des instructions (scanlines 0..239) }
+ For NesPrgSize := 0 To (7460 * 4 Div 5) - 1 Do Begin
+  If CPU6502_Halted Then Break;
+  EmuDbg_OnBeforeStep6502;
+  CPU6502_Step;
+  Inc(P.TotalSteps);
+ End;
+ { Rendre la trame avant le declenchement de vblank pour que    }
+ { le NMI handler voit l ecran deja construit                    }
+ NesPpu_RenderFrame;
+ { Declencher vblank + NMI si active (scanline 241) }
+ NesPpuStatus := NesPpuStatus Or $80;
+ If (NesPpuCtrl And $80) <> 0 Then NesNmiPending := True;
+ { Phase vblank : ~20% des instructions restantes }
+ For NesPrgSize := 0 To (7460 Div 5) - 1 Do Begin
+  If CPU6502_Halted Then Break;
+  EmuDbg_OnBeforeStep6502;
+  CPU6502_Step;
+  Inc(P.TotalSteps);
+ End;
+ Inc(NesFrameNo);
+End;
+
+{ Meme motif que Nes_SaveState/LoadState (Move() pour les tableaux). Champs }
+{ E3_xxx/E3P_xxx = A2600_3E_xxx/A2600_3EP_xxx d origine (voir TA2600Snapshot}
+{ pour l explication du renommage, un identifiant ne peut pas commencer     }
+{ par un chiffre en Pascal). }
+Procedure A2600_SaveState(Var Snap: TA2600Snapshot);
+Begin
+ Snap.Mem := CPU6502_Mem;
+ Snap.A := CPU6502_A; Snap.X := CPU6502_X; Snap.Y := CPU6502_Y;
+ Snap.P := CPU6502_P; Snap.S := CPU6502_S; Snap.PC := CPU6502_PC;
+ Snap.Halted := CPU6502_Halted; Snap.ExitCode := CPU6502_ExitCode;
+ Snap.Variant := CPU6502_Variant;
+ Snap.Active := A2600_Active;
+ Move(A2600_FB, Snap.FB, SizeOf(Snap.FB));
+ Move(A2600_FBPrev, Snap.FBPrev, SizeOf(Snap.FBPrev));
+ Snap.FBFirst := A2600_FBFirst;
+ Move(A2600_TIA, Snap.TIA, SizeOf(Snap.TIA));
+ Move(A2600_RIOTRam, Snap.RIOTRam, SizeOf(Snap.RIOTRam));
+ Snap.VSYNCAct := A2600_VSYNCAct; Snap.VBLANKAct := A2600_VBLANKAct;
+ Snap.ScanLine := A2600_ScanLine; Snap.VisLine := A2600_VisLine;
+ Snap.FrameNo := A2600_FrameNo;
+ Snap.WSYNCWait := A2600_WSYNCWait;
+ Snap.LineCyc := A2600_LineCyc; Snap.LineInstr := A2600_LineInstr;
+ Snap.P0X := A2600_P0X; Snap.P1X := A2600_P1X;
+ Snap.M0X := A2600_M0X; Snap.M1X := A2600_M1X; Snap.BLX := A2600_BLX;
+ Snap.HMP0 := A2600_HMP0; Snap.HMP1 := A2600_HMP1;
+ Snap.HMM0 := A2600_HMM0; Snap.HMM1 := A2600_HMM1; Snap.HMBL := A2600_HMBL;
+ Snap.HMOVEPending := A2600_HMOVEPending;
+ Snap.HMOVE_Counter := A2600_HMOVE_Counter;
+ Snap.HMOVE_Running := A2600_HMOVE_Running;
+ Move(A2600_HMxx_Active, Snap.HMxx_Active, SizeOf(Snap.HMxx_Active));
+ Snap.GRP0_New := A2600_GRP0_New; Snap.GRP0_Old := A2600_GRP0_Old;
+ Snap.GRP1_New := A2600_GRP1_New; Snap.GRP1_Old := A2600_GRP1_Old;
+ Snap.ENABL_New := A2600_ENABL_New; Snap.ENABL_Old := A2600_ENABL_Old;
+ Snap.VDELP0 := A2600_VDELP0; Snap.VDELP1 := A2600_VDELP1; Snap.VDELBL := A2600_VDELBL;
+ Snap.RESMP0 := A2600_RESMP0; Snap.RESMP1 := A2600_RESMP1;
+ Snap.HMOVEComb := A2600_HMOVEComb;
+ Snap.PhantomCombX := A2600_PhantomCombX;
+ Snap.LastX := A2600_LastX; Snap.CurY := A2600_CurY;
+ Move(A2600_P0Fired, Snap.P0Fired, SizeOf(Snap.P0Fired));
+ Move(A2600_P0LStart, Snap.P0LStart, SizeOf(Snap.P0LStart));
+ Move(A2600_P0LStretch, Snap.P0LStretch, SizeOf(Snap.P0LStretch));
+ Move(A2600_P0LRefp, Snap.P0LRefp, SizeOf(Snap.P0LRefp));
+ Snap.P0LCnt := A2600_P0LCnt;
+ Move(A2600_P1Fired, Snap.P1Fired, SizeOf(Snap.P1Fired));
+ Move(A2600_P1LStart, Snap.P1LStart, SizeOf(Snap.P1LStart));
+ Move(A2600_P1LStretch, Snap.P1LStretch, SizeOf(Snap.P1LStretch));
+ Move(A2600_P1LRefp, Snap.P1LRefp, SizeOf(Snap.P1LRefp));
+ Snap.P1LCnt := A2600_P1LCnt;
+ Move(A2600_M0Fired, Snap.M0Fired, SizeOf(Snap.M0Fired));
+ Move(A2600_M0LStart, Snap.M0LStart, SizeOf(Snap.M0LStart));
+ Move(A2600_M0LSize, Snap.M0LSize, SizeOf(Snap.M0LSize));
+ Move(A2600_M1Fired, Snap.M1Fired, SizeOf(Snap.M1Fired));
+ Move(A2600_M1LStart, Snap.M1LStart, SizeOf(Snap.M1LStart));
+ Move(A2600_M1LSize, Snap.M1LSize, SizeOf(Snap.M1LSize));
+ Snap.BLFired := A2600_BLFired;
+ Snap.BLLStart := A2600_BLLStart; Snap.BLLSize := A2600_BLLSize;
+ Snap.KeyEsc := A2600_KeyEsc; Snap.KeyJoy := A2600_KeyJoy; Snap.KeyFire := A2600_KeyFire;
+ Snap.DrivingP0 := A2600_DrivingP0; Snap.DriveP0_Pos := A2600_DriveP0_Pos;
+ Snap.DriveF4_Prev := A2600_DriveF4_Prev;
+ Snap.BoosterP0 := A2600_BoosterP0; Snap.KeyBooster := A2600_KeyBooster;
+ Snap.BoostF5_Prev := A2600_BoostF5_Prev;
+ Snap.INPTLatchEn := A2600_INPTLatchEn;
+ Snap.INPT4Latch := A2600_INPT4Latch; Snap.INPT5Latch := A2600_INPT5Latch;
+ Move(A2600_Paddle, Snap.Paddle, SizeOf(Snap.Paddle));
+ Move(A2600_PadCharge, Snap.PadCharge, SizeOf(Snap.PadCharge));
+ Snap.PadDumped := A2600_PadDumped;
+ Snap.LinesPerFrame := A2600_LinesPerFrame; Snap.PAL := A2600_PAL;
+ Snap.LastVsyncLine := A2600_LastVsyncLine;
+ Move(A2600_FrameLineHist, Snap.FrameLineHist, SizeOf(Snap.FrameLineHist));
+ Snap.FrameLineIdx := A2600_FrameLineIdx;
+ Snap.FrameReady := A2600_FrameReady;
+ Move(A2600_ROM, Snap.ROM, SizeOf(Snap.ROM));
+ Snap.ROMSize := A2600_ROMSize;
+ Snap.BankCnt := A2600_BankCnt; Snap.CurBank := A2600_CurBank;
+ Snap.HotLo := A2600_HotLo; Snap.Scheme := A2600_Scheme;
+ Move(A2600_CartRAM, Snap.CartRAM, SizeOf(Snap.CartRAM));
+ Snap.TigerBank := A2600_TigerBank;
+ Move(A2600_E0Slot, Snap.E0Slot, SizeOf(Snap.E0Slot));
+ Move(A2600_E7_RAM1K, Snap.E7_RAM1K, SizeOf(Snap.E7_RAM1K));
+ Move(A2600_E7_RAM256, Snap.E7_RAM256, SizeOf(Snap.E7_RAM256));
+ Snap.E7_LowerRAM := A2600_E7_LowerRAM;
+ Snap.E7_R256Bank := A2600_E7_R256Bank; Snap.E7_LowerROM := A2600_E7_LowerROM;
+ Move(A2600_3E_RAM, Snap.E3_RAM, SizeOf(Snap.E3_RAM));
+ Snap.E3_RAMMode := A2600_3E_RAMMode;
+ Snap.E3_LowerROM := A2600_3E_LowerROM; Snap.E3_LowerRAM := A2600_3E_LowerRAM;
+ Move(A2600_3EP_SlotIsRAM, Snap.E3P_SlotIsRAM, SizeOf(Snap.E3P_SlotIsRAM));
+ Move(A2600_3EP_SlotBank, Snap.E3P_SlotBank, SizeOf(Snap.E3P_SlotBank));
+ Move(A2600_SC_RAM, Snap.SC_RAM, SizeOf(Snap.SC_RAM));
+ Move(A2600_SC_BIOS, Snap.SC_BIOS, SizeOf(Snap.SC_BIOS));
+ Snap.SC_Cfg := A2600_SC_Cfg; Snap.SC_WrEn := A2600_SC_WrEn;
+ Snap.SWACNT := A2600_SWACNT; Snap.SWBCNT := A2600_SWBCNT;
+ Snap.SWACHA_Out := A2600_SWACHA_Out; Snap.SWCHB_Out := A2600_SWCHB_Out;
+ Snap.TimerVal := A2600_TimerVal; Snap.TimerInterval := A2600_TimerInterval;
+ Snap.TimerCyc := A2600_TimerCyc; Snap.TimerExpired := A2600_TimerExpired;
+ Snap.AsyncLastFrameTS := A2600Async_LastFrameTS;
+End;
+
+Procedure A2600_LoadState(Var Snap: TA2600Snapshot);
+Begin
+ CPU6502_Mem := Snap.Mem;
+ CPU6502_A := Snap.A; CPU6502_X := Snap.X; CPU6502_Y := Snap.Y;
+ CPU6502_P := Snap.P; CPU6502_S := Snap.S; CPU6502_PC := Snap.PC;
+ CPU6502_Halted := Snap.Halted; CPU6502_ExitCode := Snap.ExitCode;
+ CPU6502_Variant := Snap.Variant;
+ A2600_Active := Snap.Active;
+ Move(Snap.FB, A2600_FB, SizeOf(A2600_FB));
+ Move(Snap.FBPrev, A2600_FBPrev, SizeOf(A2600_FBPrev));
+ A2600_FBFirst := Snap.FBFirst;
+ Move(Snap.TIA, A2600_TIA, SizeOf(A2600_TIA));
+ Move(Snap.RIOTRam, A2600_RIOTRam, SizeOf(A2600_RIOTRam));
+ A2600_VSYNCAct := Snap.VSYNCAct; A2600_VBLANKAct := Snap.VBLANKAct;
+ A2600_ScanLine := Snap.ScanLine; A2600_VisLine := Snap.VisLine;
+ A2600_FrameNo := Snap.FrameNo;
+ A2600_WSYNCWait := Snap.WSYNCWait;
+ A2600_LineCyc := Snap.LineCyc; A2600_LineInstr := Snap.LineInstr;
+ A2600_P0X := Snap.P0X; A2600_P1X := Snap.P1X;
+ A2600_M0X := Snap.M0X; A2600_M1X := Snap.M1X; A2600_BLX := Snap.BLX;
+ A2600_HMP0 := Snap.HMP0; A2600_HMP1 := Snap.HMP1;
+ A2600_HMM0 := Snap.HMM0; A2600_HMM1 := Snap.HMM1; A2600_HMBL := Snap.HMBL;
+ A2600_HMOVEPending := Snap.HMOVEPending;
+ A2600_HMOVE_Counter := Snap.HMOVE_Counter;
+ A2600_HMOVE_Running := Snap.HMOVE_Running;
+ Move(Snap.HMxx_Active, A2600_HMxx_Active, SizeOf(A2600_HMxx_Active));
+ A2600_GRP0_New := Snap.GRP0_New; A2600_GRP0_Old := Snap.GRP0_Old;
+ A2600_GRP1_New := Snap.GRP1_New; A2600_GRP1_Old := Snap.GRP1_Old;
+ A2600_ENABL_New := Snap.ENABL_New; A2600_ENABL_Old := Snap.ENABL_Old;
+ A2600_VDELP0 := Snap.VDELP0; A2600_VDELP1 := Snap.VDELP1; A2600_VDELBL := Snap.VDELBL;
+ A2600_RESMP0 := Snap.RESMP0; A2600_RESMP1 := Snap.RESMP1;
+ A2600_HMOVEComb := Snap.HMOVEComb;
+ A2600_PhantomCombX := Snap.PhantomCombX;
+ A2600_LastX := Snap.LastX; A2600_CurY := Snap.CurY;
+ Move(Snap.P0Fired, A2600_P0Fired, SizeOf(A2600_P0Fired));
+ Move(Snap.P0LStart, A2600_P0LStart, SizeOf(A2600_P0LStart));
+ Move(Snap.P0LStretch, A2600_P0LStretch, SizeOf(A2600_P0LStretch));
+ Move(Snap.P0LRefp, A2600_P0LRefp, SizeOf(A2600_P0LRefp));
+ A2600_P0LCnt := Snap.P0LCnt;
+ Move(Snap.P1Fired, A2600_P1Fired, SizeOf(A2600_P1Fired));
+ Move(Snap.P1LStart, A2600_P1LStart, SizeOf(A2600_P1LStart));
+ Move(Snap.P1LStretch, A2600_P1LStretch, SizeOf(A2600_P1LStretch));
+ Move(Snap.P1LRefp, A2600_P1LRefp, SizeOf(A2600_P1LRefp));
+ A2600_P1LCnt := Snap.P1LCnt;
+ Move(Snap.M0Fired, A2600_M0Fired, SizeOf(A2600_M0Fired));
+ Move(Snap.M0LStart, A2600_M0LStart, SizeOf(A2600_M0LStart));
+ Move(Snap.M0LSize, A2600_M0LSize, SizeOf(A2600_M0LSize));
+ Move(Snap.M1Fired, A2600_M1Fired, SizeOf(A2600_M1Fired));
+ Move(Snap.M1LStart, A2600_M1LStart, SizeOf(A2600_M1LStart));
+ Move(Snap.M1LSize, A2600_M1LSize, SizeOf(A2600_M1LSize));
+ A2600_BLFired := Snap.BLFired;
+ A2600_BLLStart := Snap.BLLStart; A2600_BLLSize := Snap.BLLSize;
+ A2600_KeyEsc := Snap.KeyEsc; A2600_KeyJoy := Snap.KeyJoy; A2600_KeyFire := Snap.KeyFire;
+ A2600_DrivingP0 := Snap.DrivingP0; A2600_DriveP0_Pos := Snap.DriveP0_Pos;
+ A2600_DriveF4_Prev := Snap.DriveF4_Prev;
+ A2600_BoosterP0 := Snap.BoosterP0; A2600_KeyBooster := Snap.KeyBooster;
+ A2600_BoostF5_Prev := Snap.BoostF5_Prev;
+ A2600_INPTLatchEn := Snap.INPTLatchEn;
+ A2600_INPT4Latch := Snap.INPT4Latch; A2600_INPT5Latch := Snap.INPT5Latch;
+ Move(Snap.Paddle, A2600_Paddle, SizeOf(A2600_Paddle));
+ Move(Snap.PadCharge, A2600_PadCharge, SizeOf(A2600_PadCharge));
+ A2600_PadDumped := Snap.PadDumped;
+ A2600_LinesPerFrame := Snap.LinesPerFrame; A2600_PAL := Snap.PAL;
+ A2600_LastVsyncLine := Snap.LastVsyncLine;
+ Move(Snap.FrameLineHist, A2600_FrameLineHist, SizeOf(A2600_FrameLineHist));
+ A2600_FrameLineIdx := Snap.FrameLineIdx;
+ A2600_FrameReady := Snap.FrameReady;
+ Move(Snap.ROM, A2600_ROM, SizeOf(A2600_ROM));
+ A2600_ROMSize := Snap.ROMSize;
+ A2600_BankCnt := Snap.BankCnt; A2600_CurBank := Snap.CurBank;
+ A2600_HotLo := Snap.HotLo; A2600_Scheme := Snap.Scheme;
+ Move(Snap.CartRAM, A2600_CartRAM, SizeOf(A2600_CartRAM));
+ A2600_TigerBank := Snap.TigerBank;
+ Move(Snap.E0Slot, A2600_E0Slot, SizeOf(A2600_E0Slot));
+ Move(Snap.E7_RAM1K, A2600_E7_RAM1K, SizeOf(A2600_E7_RAM1K));
+ Move(Snap.E7_RAM256, A2600_E7_RAM256, SizeOf(A2600_E7_RAM256));
+ A2600_E7_LowerRAM := Snap.E7_LowerRAM;
+ A2600_E7_R256Bank := Snap.E7_R256Bank; A2600_E7_LowerROM := Snap.E7_LowerROM;
+ Move(Snap.E3_RAM, A2600_3E_RAM, SizeOf(A2600_3E_RAM));
+ A2600_3E_RAMMode := Snap.E3_RAMMode;
+ A2600_3E_LowerROM := Snap.E3_LowerROM; A2600_3E_LowerRAM := Snap.E3_LowerRAM;
+ Move(Snap.E3P_SlotIsRAM, A2600_3EP_SlotIsRAM, SizeOf(A2600_3EP_SlotIsRAM));
+ Move(Snap.E3P_SlotBank, A2600_3EP_SlotBank, SizeOf(A2600_3EP_SlotBank));
+ Move(Snap.SC_RAM, A2600_SC_RAM, SizeOf(A2600_SC_RAM));
+ Move(Snap.SC_BIOS, A2600_SC_BIOS, SizeOf(A2600_SC_BIOS));
+ A2600_SC_Cfg := Snap.SC_Cfg; A2600_SC_WrEn := Snap.SC_WrEn;
+ A2600_SWACNT := Snap.SWACNT; A2600_SWBCNT := Snap.SWBCNT;
+ A2600_SWACHA_Out := Snap.SWACHA_Out; A2600_SWCHB_Out := Snap.SWCHB_Out;
+ A2600_TimerVal := Snap.TimerVal; A2600_TimerInterval := Snap.TimerInterval;
+ A2600_TimerCyc := Snap.TimerCyc; A2600_TimerExpired := Snap.TimerExpired;
+ A2600Async_LastFrameTS := Snap.AsyncLastFrameTS;
+End;
+
+{ ========================================================================== }
+{ Stage 1+2 (2026-08-15, meme session) - backend Atari 2600, meme motif que  }
+{ NES/C64. Corps EXACT de l ancienne boucle "While (Not Halted) And          }
+{ (FrameNo<36000) And (Not KeyEsc) Do" de ShowEmulatorPanel, extrait tel     }
+{ quel en une procedure qui execute UNE SEULE trame puis rend la main.       }
+{ ========================================================================== }
+Procedure A2600_RunOneFrame(Var P: TEmulatorPanel);
+Var
+ NesChrSize: LongInt;
+ NesPrgSize: LongInt;
+ NesPrgBlocks: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   NesChrSize := Ord(ReadKey);
+   If NesChrSize = 27 Then A2600_KeyEsc := True;
+   If NesChrSize = 3  Then EmuDbg_RequestBreak(EDC_6502);
+   If NesChrSize = 0 Then Begin
+    If KeyPressed Then Begin
+     NesChrSize := Ord(ReadKey);
+     If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
+    End Else
+     EmuDbg_RequestBreak(EDC_6502);
+   End;
+  End;
+  If A2600_KeyEsc Then Exit;
+ End;
+ { Lecture directe du clavier (joystick + tir) via Win32 :       }
+ { Fleches / WASD / Enter+Espace=tir.                            }
+ A2600_KeyJoy := 0;
+ A2600_KeyFire := False;
+ {$IFDEF WINDOWS}
+ If (GetAsyncKeyState($26) < 0) Or (GetAsyncKeyState($57) < 0) Then
+  A2600_KeyJoy := A2600_KeyJoy Or 1;  { Up    / W }
+ If (GetAsyncKeyState($28) < 0) Or (GetAsyncKeyState($53) < 0) Then
+  A2600_KeyJoy := A2600_KeyJoy Or 2;  { Down  / S }
+ If (GetAsyncKeyState($25) < 0) Or (GetAsyncKeyState($41) < 0) Then
+  A2600_KeyJoy := A2600_KeyJoy Or 4;  { Left  / A }
+ If (GetAsyncKeyState($27) < 0) Or (GetAsyncKeyState($44) < 0) Then
+  A2600_KeyJoy := A2600_KeyJoy Or 8;  { Right / D }
+ If (GetAsyncKeyState($20) < 0) Or (GetAsyncKeyState($0D) < 0) Or
+    (GetAsyncKeyState($11) < 0) Or (GetAsyncKeyState($5A) < 0) Or
+    (GetAsyncKeyState($58) < 0) Then
+  A2600_KeyFire := True;             { Espace/Enter/Ctrl/Z/X = tir }
+ If GetAsyncKeyState($1B) < 0 Then A2600_KeyEsc := True;
+ { F4 = toggle controleur Driving (Indy 500) sur port P0,         }
+ { encodage Gray sur SWCHA bits D4-D5. Detection front montant.   }
+ If GetAsyncKeyState($73) < 0 Then Begin
+  If Not A2600_DriveF4_Prev Then Begin
+   A2600_DrivingP0 := Not A2600_DrivingP0;
+   A2600_DriveP0_Pos := 0;
+  End;
+  A2600_DriveF4_Prev := True;
+ End Else
+  A2600_DriveF4_Prev := False;
+ { F5 = toggle Booster Grip (Omega Race, Thrust). Touche B = bouton }
+ { booster (INPT1). Le fire principal reste sur INPT4.              }
+ If GetAsyncKeyState($74) < 0 Then Begin
+  If Not A2600_BoostF5_Prev Then
+   A2600_BoosterP0 := Not A2600_BoosterP0;
+  A2600_BoostF5_Prev := True;
+ End Else
+  A2600_BoostF5_Prev := False;
+ A2600_KeyBooster := A2600_BoosterP0 And (GetAsyncKeyState($42) < 0);
+ {$ENDIF}
+ { Mode Driving : Left/Right font tourner la roue (1 cran Gray par }
+ { frame). Sens : Left = antihoraire, Right = horaire.             }
+ If A2600_DrivingP0 Then Begin
+  If (A2600_KeyJoy And 4) <> 0 Then
+   A2600_DriveP0_Pos := (A2600_DriveP0_Pos + 3) And 3;
+  If (A2600_KeyJoy And 8) <> 0 Then
+   A2600_DriveP0_Pos := (A2600_DriveP0_Pos + 1) And 3;
+ End;
+ { Pour les jeux paddle : Left/Right deplacent le paddle 0.   }
+ { 1 frame = 1 pas de 4 unites (0..255).                       }
+ If Not A2600_DrivingP0 Then Begin
+  If (A2600_KeyJoy And 4) <> 0 Then Begin
+    Dec(A2600_Paddle[0], 4);
+    If A2600_Paddle[0] < 0 Then A2600_Paddle[0] := 0;
+  End;
+  If (A2600_KeyJoy And 8) <> 0 Then Begin
+    Inc(A2600_Paddle[0], 4);
+    If A2600_Paddle[0] > 255 Then A2600_Paddle[0] := 255;
+  End;
+ End;
+ { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports.   }
+ { RIOT I/O est mirrore aux 4 adresses ou bit12=0, bit7=1, bit9=1 :}
+ { $0280, $0680, $0A80, $0E80 (+offset 0..$1F).                     }
+ NesChrSize := $FF;
+ If A2600_DrivingP0 Then Begin
+   NesChrSize := NesChrSize And Not $30;
+   Case A2600_DriveP0_Pos And 3 Of
+     1: NesChrSize := NesChrSize Or $10;
+     2: NesChrSize := NesChrSize Or $30;
+     3: NesChrSize := NesChrSize Or $20;
+   End;
+ End Else Begin
+   If (A2600_KeyJoy And 1) <> 0 Then NesChrSize := NesChrSize And Not $10;
+   If (A2600_KeyJoy And 2) <> 0 Then NesChrSize := NesChrSize And Not $20;
+   If (A2600_KeyJoy And 4) <> 0 Then NesChrSize := NesChrSize And Not $40;
+   If (A2600_KeyJoy And 8) <> 0 Then NesChrSize := NesChrSize And Not $80;
+ End;
+ For NesPrgBlocks := 0 To 3 Do Begin
+  CPU6502_Mem[$0280 + NesPrgBlocks * $0400] := NesChrSize;    { SWCHA }
+  CPU6502_Mem[$0282 + NesPrgBlocks * $0400] := $3F;           { SWCHB }
+  CPU6502_Mem[$0284 + NesPrgBlocks * $0400] := 0;             { INTIM }
+  If A2600_KeyFire Then
+   CPU6502_Mem[$028C + NesPrgBlocks * $0400] := 0
+  Else
+   CPU6502_Mem[$028C + NesPrgBlocks * $0400] := $80;          { INPT4 }
+  CPU6502_Mem[$028D + NesPrgBlocks * $0400] := $80;           { INPT5 }
+ End;
+ { Executer une trame : 262 (NTSC) ou 312 (PAL) scanlines. }
+ { La trame est consideree finie sur front montant VSYNC (FrameReady).}
+ { Si le jeu ne strobe pas VSYNC (jeu bug), repli sur LinesPerFrame.  }
+ A2600_FrameReady := False;
+ A2600_HMOVEComb := False;
+ A2600_PhantomCombX := -1;
+ For NesPrgSize := 0 To 8500 Do Begin
+  If CPU6502_Halted Then Break;
+  If A2600_FrameReady Then Break;
+  If A2600_ScanLine >= A2600_LinesPerFrame Then Begin
+    { Repli sans VSYNC : on simule un wrap manuel pour eviter le gel. }
+    A2600_ScanLine := 0;
+    A2600_VisLine := 0;
+    A2600_CurY := 0;
+    A2600_LastX := -1;
+    Break;
+  End;
+  EmuDbg_OnBeforeStep6502;
+  CPU6502_Step;
+  Inc(P.TotalSteps);
+  A2600_AfterInstr;
+ End;
+ Inc(A2600_FrameNo);
+End;
+
+{ Meme motif que Nes_SaveState/A2600_SaveState (Move() pour les tableaux),  }
+{ coeur CPU 6809 (M6809_*) au lieu du coeur 6502 partage. Champs Areg/Breg/ }
+{ Xreg/Yreg/Ureg/Sreg (pas juste A/B/X/Y/U/S) : purement une question de     }
+{ style choisie lors de l ecriture de TCoco3Snapshot, aucune contrainte     }
+{ Pascal ne l imposait ici (contrairement au renommage 3E_xxx->E3_xxx      }
+{ d A2600, qui LUI etait obligatoire). }
+Procedure Coco3_SaveState(Var Snap: TCoco3Snapshot);
+Begin
+ Move(M6809_Mem, Snap.Mem, SizeOf(Snap.Mem));
+ Snap.Areg := M6809_A; Snap.Breg := M6809_B;
+ Snap.DP := M6809_DP; Snap.CC := M6809_CC;
+ Snap.Xreg := M6809_X; Snap.Yreg := M6809_Y;
+ Snap.Ureg := M6809_U; Snap.Sreg := M6809_S; Snap.PC := M6809_PC;
+ Snap.Halted := M6809_Halted; Snap.ExitCode := M6809_ExitCode;
+ Snap.Cycles := M6809_Cycles; Snap.Variant := M6809_Variant;
+ Snap.Active := Coco3_Active;
+ Move(Coco3_FB, Snap.FB, SizeOf(Snap.FB));
+ Move(Coco3_FBPrev, Snap.FBPrev, SizeOf(Snap.FBPrev));
+ Snap.FBFirst := Coco3_FBFirst;
+ Snap.FrameNo := Coco3_FrameNo;
+ Move(Coco3_PhysMem, Snap.PhysMem, SizeOf(Snap.PhysMem));
+ Move(Coco3_PakRom, Snap.PakRom, SizeOf(Snap.PakRom));
+ Snap.PakSize := Coco3_PakSize;
+ Move(Coco3_MMU, Snap.MMU, SizeOf(Snap.MMU));
+ Snap.MMUTask := Coco3_MMUTask; Snap.MMUEnable := Coco3_MMUEnable;
+ Move(Coco3_GimeReg, Snap.GimeReg, SizeOf(Snap.GimeReg));
+ Snap.TimerInit := Coco3_TimerInit; Snap.TimerCount := Coco3_TimerCount;
+ Snap.PIA0_DDRA := Coco3_PIA0_DDRA; Snap.PIA0_CRA := Coco3_PIA0_CRA;
+ Snap.PIA0_DDRB := Coco3_PIA0_DDRB; Snap.PIA0_CRB := Coco3_PIA0_CRB;
+ Snap.PIA0_PortB := Coco3_PIA0_PortB;
+ Snap.VsyncCount := Coco3_VsyncCount;
+ Snap.PIA1_PB := Coco3_PIA1_PB;
+ Snap.SAM := Coco3_SAM; Snap.SamVidBase := Coco3_SamVidBase;
+ Move(Coco3_RomImg, Snap.RomImg, SizeOf(Snap.RomImg));
+ Snap.RomLoaded := Coco3_RomLoaded; Snap.RomMode := Coco3_RomMode;
+ Move(Coco3_SegIsRom, Snap.SegIsRom, SizeOf(Snap.SegIsRom));
+ Move(Coco3_KbdMatrix, Snap.KbdMatrix, SizeOf(Snap.KbdMatrix));
+ Snap.KbdHold := Coco3_KbdHold;
+ Move(Coco3_LiveBank, Snap.LiveBank, SizeOf(Snap.LiveBank));
+ Snap.AsyncKeyEsc := Coco3Async_KeyEsc;
+ Snap.AsyncLastFrameTS := Coco3Async_LastFrameTS;
+End;
+
+Procedure Coco3_LoadState(Var Snap: TCoco3Snapshot);
+Begin
+ Move(Snap.Mem, M6809_Mem, SizeOf(M6809_Mem));
+ M6809_A := Snap.Areg; M6809_B := Snap.Breg;
+ M6809_DP := Snap.DP; M6809_CC := Snap.CC;
+ M6809_X := Snap.Xreg; M6809_Y := Snap.Yreg;
+ M6809_U := Snap.Ureg; M6809_S := Snap.Sreg; M6809_PC := Snap.PC;
+ M6809_Halted := Snap.Halted; M6809_ExitCode := Snap.ExitCode;
+ M6809_Cycles := Snap.Cycles; M6809_Variant := Snap.Variant;
+ Coco3_Active := Snap.Active;
+ Move(Snap.FB, Coco3_FB, SizeOf(Coco3_FB));
+ Move(Snap.FBPrev, Coco3_FBPrev, SizeOf(Coco3_FBPrev));
+ Coco3_FBFirst := Snap.FBFirst;
+ Coco3_FrameNo := Snap.FrameNo;
+ Move(Snap.PhysMem, Coco3_PhysMem, SizeOf(Coco3_PhysMem));
+ Move(Snap.PakRom, Coco3_PakRom, SizeOf(Coco3_PakRom));
+ Coco3_PakSize := Snap.PakSize;
+ Move(Snap.MMU, Coco3_MMU, SizeOf(Coco3_MMU));
+ Coco3_MMUTask := Snap.MMUTask; Coco3_MMUEnable := Snap.MMUEnable;
+ Move(Snap.GimeReg, Coco3_GimeReg, SizeOf(Coco3_GimeReg));
+ Coco3_TimerInit := Snap.TimerInit; Coco3_TimerCount := Snap.TimerCount;
+ Coco3_PIA0_DDRA := Snap.PIA0_DDRA; Coco3_PIA0_CRA := Snap.PIA0_CRA;
+ Coco3_PIA0_DDRB := Snap.PIA0_DDRB; Coco3_PIA0_CRB := Snap.PIA0_CRB;
+ Coco3_PIA0_PortB := Snap.PIA0_PortB;
+ Coco3_VsyncCount := Snap.VsyncCount;
+ Coco3_PIA1_PB := Snap.PIA1_PB;
+ Coco3_SAM := Snap.SAM; Coco3_SamVidBase := Snap.SamVidBase;
+ Move(Snap.RomImg, Coco3_RomImg, SizeOf(Coco3_RomImg));
+ Coco3_RomLoaded := Snap.RomLoaded; Coco3_RomMode := Snap.RomMode;
+ Move(Snap.SegIsRom, Coco3_SegIsRom, SizeOf(Coco3_SegIsRom));
+ Move(Snap.KbdMatrix, Coco3_KbdMatrix, SizeOf(Coco3_KbdMatrix));
+ Coco3_KbdHold := Snap.KbdHold;
+ Move(Snap.LiveBank, Coco3_LiveBank, SizeOf(Coco3_LiveBank));
+ Coco3Async_KeyEsc := Snap.AsyncKeyEsc;
+ Coco3Async_LastFrameTS := Snap.AsyncLastFrameTS;
+ M6809_Panel := @EmuPanel;
+End;
+
+{ ========================================================================== }
+{ Stage 1+2 (2026-08-15, meme session) - backend CoCo3 (mode materiel        }
+{ .PAK/.ROM, Coco3_Active=True uniquement), meme motif que NES/A2600/C64.    }
+{ Corps EXACT de l ancienne boucle "While (Not KeyEsc) And (FrameNo<36000)   }
+{ Do" de ShowEmulatorPanel, extrait tel quel en une procedure qui execute    }
+{ UNE SEULE trame puis rend la main. }
+{ ========================================================================== }
+Procedure Coco3_RunOneFrame(Var P: TEmulatorPanel);
+Var
+ EntryAddr16: LongInt;
+ Coco3InstrIdx: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   EntryAddr16 := Ord(ReadKey);
+   If EntryAddr16 = 27 Then Coco3Async_KeyEsc := True
+   Else If EntryAddr16 = 3 Then EmuDbg_RequestBreak(EDC_6809)
+   Else If EntryAddr16 = 0 Then Begin
+    If KeyPressed Then Begin
+     EntryAddr16 := Ord(ReadKey);
+     If EntryAddr16 = 0 Then EmuDbg_RequestBreak(EDC_6809);
+    End Else
+     EmuDbg_RequestBreak(EDC_6809);
+   End
+   Else Coco3_PressKey(Chr(EntryAddr16 And $FF));
+  End;
+  If Coco3Async_KeyEsc Then Exit;
+ End;
+ { Si CPU halte, on continue d afficher l ecran fige (l utilisateur
+   presse ESC pour quitter). }
+ If Not M6809_Halted Then
+  For Coco3InstrIdx := 0 To 4999 Do Begin
+   If M6809_Halted Then Break;
+   EmuDbg_OnBeforeStep6809;
+   M6809_Step;
+   Inc(P.TotalSteps);
+   { Jalon 9 : HSYNC toutes les ~19 instructions (262 lignes/trame) }
+   If (Coco3InstrIdx Mod 19) = 18 Then Coco3_HsyncIrq;
+   { Note : pas d auto-halt sur PC=0 pour CoCo 3 (les cartouches
+     peuvent legitimement utiliser cette zone via banking) }
+  End;
+ { Rendre la trame }
+ Coco3_RenderFrame;
+ { Injecter VSYNC IRQ pour la trame suivante }
+ Coco3_VsyncIrq;
+ Inc(Coco3_FrameNo);
+End;
+
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
@@ -69188,224 +70006,42 @@ Begin NesActive := False;
   End;
   Steps := 0;
   If NesActive And (TargetCPU = '-CNES') Then Begin
-   { ----- Boucle NES par trame (60 Hz approx.) ----- }
-   NesFrameLimit    := 36000;  { 10 minutes a 60 Hz }
-   NesInstrPerFrame := 7460;   { ~29780 cycles / 4 cy/instr moyenne }
+   { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
+   { meme motif que C64 (voir CC64 plus bas), l execution reelle (trame par }
+   { trame, ~60 Hz) est desormais pilotee par l idle-tick de MainLoop via   }
+   { StepEmulator/Nes_RunOneFrame, PAS par une boucle interne ici. }
    NesFrameNo := 0;
-   NesKeyEsc := False;
    NesFBFirst := True;
    FillChar(NesFBPrev, SizeOf(NesFBPrev), $FF);
    { Activer le debogueur d emulateur en mode 6502 }
    EmuDbg.Active := True;
    EmuDbg.CPU    := EDC_6502;
+   NesAsync_KeyEsc := False;
+   NesAsync_LastFrameTS := 0;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
    { Premier rendu pour afficher le panneau }
    DrawEmulatorPanel(P);
-   EntryAddr := GetTimestamp;
-   While (Not CPU6502_Halted) And (NesFrameNo < NesFrameLimit) And
-         (Not NesKeyEsc) Do Begin
-    { Drainer tampon clavier (gestion ESC + Ctrl+C/Break + activation focus) }
-    While KeyPressed Do Begin
-     NesChrSize := Ord(ReadKey);
-     If NesChrSize = 27 Then NesKeyEsc := True;
-     If NesChrSize = 3  Then EmuDbg_RequestBreak(EDC_6502);
-     If NesChrSize = 0 Then Begin
-      If KeyPressed Then Begin
-       NesChrSize := Ord(ReadKey);
-       { scancode 0 = Ctrl+Break sur PC BIOS }
-       If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
-      End Else
-       EmuDbg_RequestBreak(EDC_6502);
-     End;
-    End;
-    If NesKeyEsc Then Break;
-    { Lire etat manette pour cette trame }
-    NesPollInput;
-    { Effacer vblank/sprite0 hit au debut du prerender (scanline 261) }
-    NesPpuStatus := NesPpuStatus And $7F;
-    NesPpuStatus := NesPpuStatus And $BF;
-    { Phase visible : ~80% des instructions (scanlines 0..239) }
-    For NesPrgSize := 0 To (NesInstrPerFrame * 4 Div 5) - 1 Do Begin
-     If CPU6502_Halted Then Break;
-     EmuDbg_OnBeforeStep6502;
-     CPU6502_Step;
-     Inc(Steps);
-    End;
-    { Rendre la trame avant le declenchement de vblank pour que    }
-    { le NMI handler voit l ecran deja construit                    }
-    NesPpu_RenderFrame;
-    { Declencher vblank + NMI si active (scanline 241) }
-    NesPpuStatus := NesPpuStatus Or $80;
-    If (NesPpuCtrl And $80) <> 0 Then NesNmiPending := True;
-    { Phase vblank : ~20% des instructions restantes }
-    For NesPrgSize := 0 To (NesInstrPerFrame Div 5) - 1 Do Begin
-     If CPU6502_Halted Then Break;
-     EmuDbg_OnBeforeStep6502;
-     CPU6502_Step;
-     Inc(Steps);
-    End;
-    { Afficher }
-    DrawEmulatorPanel(P);
-    Inc(NesFrameNo);
-    { Pacing 60 Hz : attendre la fin du quantum 16 ms }
-    {$IFDEF WINDOWS}
-    NesChrSize := GetTimestamp - EntryAddr;
-    If NesChrSize < 16 Then WinSleep(16 - NesChrSize);
-    EntryAddr := GetTimestamp;
-    {$ENDIF}
-   End;
-   NesActive := False;
-   EmuDbg.Active := False;
-   EmuDbg.CPU    := EDC_NONE;
+   P.Loaded := True;
+   Exit;
   End Else If TargetCPU = '-CATARI2600' Then Begin
-   { ----- Boucle Atari 2600 par trame (60 Hz approx.) ----- }
+   { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
+   { meme motif que NES/C64, l execution reelle (trame par trame, ~60 Hz)   }
+   { est desormais pilotee par l idle-tick de MainLoop via StepEmulator/    }
+   { A2600_RunOneFrame, PAS par une boucle interne ici. }
    A2600_Active := True;
    A2600_Reset;
    { Activer le debogueur d emulateur en mode 6502 }
    EmuDbg.Active := True;
    EmuDbg.CPU    := EDC_6502;
+   A2600_KeyEsc := False;
+   A2600Async_LastFrameTS := 0;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
    { Premier rendu pour afficher le panneau }
    DrawEmulatorPanel(P);
-   {$IFDEF WINDOWS}
-   EntryAddr := GetTimestamp;
-   {$ENDIF}
-   While (Not CPU6502_Halted) And (A2600_FrameNo < 36000) And
-         (Not A2600_KeyEsc) Do Begin
-    { Drainer tampon clavier (Esc + Ctrl+C/Break) }
-    While KeyPressed Do Begin
-     NesChrSize := Ord(ReadKey);
-     If NesChrSize = 27 Then A2600_KeyEsc := True;
-     If NesChrSize = 3  Then EmuDbg_RequestBreak(EDC_6502);
-     If NesChrSize = 0 Then Begin
-      If KeyPressed Then Begin
-       NesChrSize := Ord(ReadKey);
-       If NesChrSize = 0 Then EmuDbg_RequestBreak(EDC_6502);
-      End Else
-       EmuDbg_RequestBreak(EDC_6502);
-     End;
-    End;
-    If A2600_KeyEsc Then Break;
-    { Lecture directe du clavier (joystick + tir) via Win32 :       }
-    { Fleches / WASD / Enter+Espace=tir.                            }
-    A2600_KeyJoy := 0;
-    A2600_KeyFire := False;
-    {$IFDEF WINDOWS}
-    If (GetAsyncKeyState($26) < 0) Or (GetAsyncKeyState($57) < 0) Then
-     A2600_KeyJoy := A2600_KeyJoy Or 1;  { Up    / W }
-    If (GetAsyncKeyState($28) < 0) Or (GetAsyncKeyState($53) < 0) Then
-     A2600_KeyJoy := A2600_KeyJoy Or 2;  { Down  / S }
-    If (GetAsyncKeyState($25) < 0) Or (GetAsyncKeyState($41) < 0) Then
-     A2600_KeyJoy := A2600_KeyJoy Or 4;  { Left  / A }
-    If (GetAsyncKeyState($27) < 0) Or (GetAsyncKeyState($44) < 0) Then
-     A2600_KeyJoy := A2600_KeyJoy Or 8;  { Right / D }
-    If (GetAsyncKeyState($20) < 0) Or (GetAsyncKeyState($0D) < 0) Or
-       (GetAsyncKeyState($11) < 0) Or (GetAsyncKeyState($5A) < 0) Or
-       (GetAsyncKeyState($58) < 0) Then
-     A2600_KeyFire := True;             { Espace/Enter/Ctrl/Z/X = tir }
-    If GetAsyncKeyState($1B) < 0 Then A2600_KeyEsc := True;
-    { F4 = toggle controleur Driving (Indy 500) sur port P0,         }
-    { encodage Gray sur SWCHA bits D4-D5. Detection front montant.   }
-    If GetAsyncKeyState($73) < 0 Then Begin
-     If Not A2600_DriveF4_Prev Then Begin
-      A2600_DrivingP0 := Not A2600_DrivingP0;
-      A2600_DriveP0_Pos := 0;
-     End;
-     A2600_DriveF4_Prev := True;
-    End Else
-     A2600_DriveF4_Prev := False;
-    { F5 = toggle Booster Grip (Omega Race, Thrust). Touche B = bouton }
-    { booster (INPT1). Le fire principal reste sur INPT4.              }
-    If GetAsyncKeyState($74) < 0 Then Begin
-     If Not A2600_BoostF5_Prev Then
-      A2600_BoosterP0 := Not A2600_BoosterP0;
-     A2600_BoostF5_Prev := True;
-    End Else
-     A2600_BoostF5_Prev := False;
-    A2600_KeyBooster := A2600_BoosterP0 And (GetAsyncKeyState($42) < 0);
-    {$ENDIF}
-    { Mode Driving : Left/Right font tourner la roue (1 cran Gray par }
-    { frame). Sens : Left = antihoraire, Right = horaire.             }
-    If A2600_DrivingP0 Then Begin
-     If (A2600_KeyJoy And 4) <> 0 Then
-      A2600_DriveP0_Pos := (A2600_DriveP0_Pos + 3) And 3;
-     If (A2600_KeyJoy And 8) <> 0 Then
-      A2600_DriveP0_Pos := (A2600_DriveP0_Pos + 1) And 3;
-    End;
-    { Pour les jeux paddle : Left/Right deplacent le paddle 0.   }
-    { 1 frame = 1 pas de 4 unites (0..255).                       }
-    If Not A2600_DrivingP0 Then Begin
-     If (A2600_KeyJoy And 4) <> 0 Then Begin
-       Dec(A2600_Paddle[0], 4);
-       If A2600_Paddle[0] < 0 Then A2600_Paddle[0] := 0;
-     End;
-     If (A2600_KeyJoy And 8) <> 0 Then Begin
-       Inc(A2600_Paddle[0], 4);
-       If A2600_Paddle[0] > 255 Then A2600_Paddle[0] := 255;
-     End;
-    End;
-    { Mettre a jour CPU6502_Mem pour les LDA directs sur les ports.   }
-    { RIOT I/O est mirrore aux 4 adresses ou bit12=0, bit7=1, bit9=1 :}
-    { $0280, $0680, $0A80, $0E80 (+offset 0..$1F).                     }
-    NesChrSize := $FF;
-    If A2600_DrivingP0 Then Begin
-      NesChrSize := NesChrSize And Not $30;
-      Case A2600_DriveP0_Pos And 3 Of
-        1: NesChrSize := NesChrSize Or $10;
-        2: NesChrSize := NesChrSize Or $30;
-        3: NesChrSize := NesChrSize Or $20;
-      End;
-    End Else Begin
-      If (A2600_KeyJoy And 1) <> 0 Then NesChrSize := NesChrSize And Not $10;
-      If (A2600_KeyJoy And 2) <> 0 Then NesChrSize := NesChrSize And Not $20;
-      If (A2600_KeyJoy And 4) <> 0 Then NesChrSize := NesChrSize And Not $40;
-      If (A2600_KeyJoy And 8) <> 0 Then NesChrSize := NesChrSize And Not $80;
-    End;
-    For NesPrgBlocks := 0 To 3 Do Begin
-     CPU6502_Mem[$0280 + NesPrgBlocks * $0400] := NesChrSize;    { SWCHA }
-     CPU6502_Mem[$0282 + NesPrgBlocks * $0400] := $3F;           { SWCHB }
-     CPU6502_Mem[$0284 + NesPrgBlocks * $0400] := 0;             { INTIM }
-     If A2600_KeyFire Then
-      CPU6502_Mem[$028C + NesPrgBlocks * $0400] := 0
-     Else
-      CPU6502_Mem[$028C + NesPrgBlocks * $0400] := $80;          { INPT4 }
-     CPU6502_Mem[$028D + NesPrgBlocks * $0400] := $80;           { INPT5 }
-    End;
-    { Executer une trame : 262 (NTSC) ou 312 (PAL) scanlines. }
-    { La trame est consideree finie sur front montant VSYNC (FrameReady).}
-    { Si le jeu ne strobe pas VSYNC (jeu bug), repli sur LinesPerFrame.  }
-    A2600_FrameReady := False;
-    A2600_HMOVEComb := False;
-    A2600_PhantomCombX := -1;
-    For NesPrgSize := 0 To 8500 Do Begin
-     If CPU6502_Halted Then Break;
-     If A2600_FrameReady Then Break;
-     If A2600_ScanLine >= A2600_LinesPerFrame Then Begin
-       { Repli sans VSYNC : on simule un wrap manuel pour eviter le gel. }
-       A2600_ScanLine := 0;
-       A2600_VisLine := 0;
-       A2600_CurY := 0;
-       A2600_LastX := -1;
-       Break;
-     End;
-     EmuDbg_OnBeforeStep6502;
-     CPU6502_Step;
-     Inc(Steps);
-     A2600_AfterInstr;
-    End;
-    DrawEmulatorPanel(P);
-    Inc(A2600_FrameNo);
-    {$IFDEF WINDOWS}
-    NesChrSize := GetTimestamp - EntryAddr;
-    If A2600_PAL Then Begin
-      If NesChrSize < 20 Then WinSleep(20 - NesChrSize);   { 50 Hz }
-    End Else Begin
-      If NesChrSize < 16 Then WinSleep(16 - NesChrSize);   { 60 Hz }
-    End;
-    EntryAddr := GetTimestamp;
-    {$ENDIF}
-   End;
-   A2600_Active := False;
-   EmuDbg.Active := False;
-   EmuDbg.CPU    := EDC_NONE;
+   P.Loaded := True;
+   Exit;
   End Else If TargetCPU = '-CC64' Then Begin
    { ----- C64 : Stage 1 non bloquant - charge puis rend la main immediatement }
    { L execution reelle (trame par trame, ~50 Hz) est desormais pilotee par    }
@@ -69597,61 +70233,26 @@ Begin NesActive := False;
   Steps := 0;
   If (TargetCPU = '-CCOCO3') And Coco3_Active Then Coco3_InitState;
   If (TargetCPU = '-CCOCO3') And Coco3_Active Then Begin
-   { Activer le debogueur 6809 pour la session CoCo3 }
+   { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
+   { meme motif que NES/A2600/C64, l execution reelle (trame par trame,     }
+   { ~60 Hz) est desormais pilotee par l idle-tick de MainLoop via           }
+   { StepEmulator/Coco3_RunOneFrame, PAS par une boucle interne ici. Ne      }
+   { s applique qu au mode materiel .PAK/.ROM (Coco3_Active=True) - le mode  }
+   { "programme 6809 texte compile" (Pascal/ASM) reste sur l ancien chemin   }
+   { bloquant ci-dessous (branche Else), comme Dragon32/64/TO7/TO8/MO5.     }
    EmuDbg.Active := True;
    EmuDbg.CPU    := EDC_6809;
-   { ----- Boucle CoCo 3 par trame (60 Hz) ----- }
    Coco3_FrameNo := 0;
    Coco3_FBFirst := True;
    FillChar(Coco3_FBPrev, SizeOf(Coco3_FBPrev), $FF);
+   Coco3Async_KeyEsc := False;
+   Coco3Async_LastFrameTS := 0;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
    { Premier rendu pour afficher le panneau }
    DrawEmulatorPanel(P);
-   EntryAddr := GetTimestamp;
-   NesKeyEsc := False;
-   While (Not NesKeyEsc) And (Coco3_FrameNo < 36000) Do Begin
-    { Drainer tampon clavier (gestion ESC + Ctrl+C/Break + injection matrice) }
-    While KeyPressed Do Begin
-     EntryAddr16 := Ord(ReadKey);
-     If EntryAddr16 = 27 Then NesKeyEsc := True
-     Else If EntryAddr16 = 3 Then EmuDbg_RequestBreak(EDC_6809)
-     Else If EntryAddr16 = 0 Then Begin
-      If KeyPressed Then Begin
-       EntryAddr16 := Ord(ReadKey);
-       { scancode 0 = Ctrl+Break sur PC BIOS }
-       If EntryAddr16 = 0 Then EmuDbg_RequestBreak(EDC_6809);
-      End Else
-       EmuDbg_RequestBreak(EDC_6809);
-     End
-     Else Coco3_PressKey(Chr(EntryAddr16 And $FF));
-    End;
-    If NesKeyEsc Then Break;
-    { Si CPU halte, on continue d afficher l ecran fige (l utilisateur
-      presse ESC pour quitter). }
-    If Not M6809_Halted Then
-     For Coco3InstrIdx := 0 To 4999 Do Begin
-      If M6809_Halted Then Break;
-      EmuDbg_OnBeforeStep6809;
-      M6809_Step;
-      Inc(Steps);
-      { Jalon 9 : HSYNC toutes les ~19 instructions (262 lignes/trame) }
-      If (Coco3InstrIdx Mod 19) = 18 Then Coco3_HsyncIrq;
-      { Note : pas d auto-halt sur PC=0 pour CoCo 3 (les cartouches
-        peuvent legitimement utiliser cette zone via banking) }
-     End;
-    { Rendre la trame }
-    Coco3_RenderFrame;
-    DrawEmulatorPanel(P);
-    { Injecter VSYNC IRQ pour la trame suivante }
-    Coco3_VsyncIrq;
-    {$IFDEF WINDOWS}
-    Coco3FrameElapsed := GetTimestamp - EntryAddr;
-    If Coco3FrameElapsed < 16 Then WinSleep(16 - Coco3FrameElapsed);
-    EntryAddr := GetTimestamp;
-    {$ENDIF}
-   End;
-   Coco3_Active := False;
-   EmuDbg.Active := False;
-   EmuDbg.CPU    := EDC_NONE;
+   P.Loaded := True;
+   Exit;
   End Else Begin
    While (Not M6809_Halted) And (Steps < 1000000) Do Begin
     M6809_Step;
@@ -70320,6 +70921,152 @@ Begin
   End;
   Exit;
  End;
+ If P.Loaded And (P.TargetCPU = '-CNES') Then Begin
+  If Not P.Running Then Exit;
+  { Meme motif que C64 (voir plus haut) : pause visuelle/active tant que  }
+  { le focus emulateur n est pas la, ou qu un menu/menu contextuel est    }
+  { ouvert par-dessus. }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  NowTS := 0;
+  {$IFDEF WINDOWS}
+  NowTS := GetTimestamp;
+  If (NesAsync_LastFrameTS <> 0) And
+     (NowTS - NesAsync_LastFrameTS < 16) Then Exit; { ~60 Hz }
+  NesAsync_LastFrameTS := NowTS;
+  {$ENDIF}
+  Nes_RunOneFrame(P);
+  Finished := CPU6502_Halted Or (NesFrameNo >= 36000) Or NesAsync_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   NesActive := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If CPU6502_Halted Then
+    EmuVScr_WriteStr(P, '[Fin 6502 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(CPU6502_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Emulation NES arretee : ' + IntToStr(P.TotalSteps) +
+     ' instr / ' + IntToStr(NesFrameNo) + ' trames]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur NES : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CATARI2600') Then Begin
+  If Not P.Running Then Exit;
+  { Meme motif que NES/C64 (voir plus haut). }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  NowTS := 0;
+  {$IFDEF WINDOWS}
+  NowTS := GetTimestamp;
+  If (A2600Async_LastFrameTS <> 0) And
+     (NowTS - A2600Async_LastFrameTS < (16 + Ord(A2600_PAL) * 4)) Then Exit; { 60/50 Hz }
+  A2600Async_LastFrameTS := NowTS;
+  {$ENDIF}
+  A2600_RunOneFrame(P);
+  Finished := CPU6502_Halted Or (A2600_FrameNo >= 36000) Or A2600_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   A2600_Active := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If CPU6502_Halted Then
+    EmuVScr_WriteStr(P, '[Fin 6502 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(CPU6502_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Emulation A2600 arretee : ' + IntToStr(P.TotalSteps) +
+     ' instr / ' + IntToStr(A2600_FrameNo) + ' trames]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur A2600 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CCOCO3') Then Begin
+  If Not P.Running Then Exit;
+  { Meme motif que NES/A2600/C64 (voir plus haut). }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  NowTS := 0;
+  {$IFDEF WINDOWS}
+  NowTS := GetTimestamp;
+  If (Coco3Async_LastFrameTS <> 0) And
+     (NowTS - Coco3Async_LastFrameTS < 16) Then Exit; { ~60 Hz }
+  Coco3Async_LastFrameTS := NowTS;
+  {$ENDIF}
+  Coco3_RunOneFrame(P);
+  Finished := M6809_Halted Or (Coco3_FrameNo >= 36000) Or Coco3Async_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   Coco3_Active := False;
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If M6809_Halted Then
+    EmuVScr_WriteStr(P, '[Fin 6809 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(M6809_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Emulation CoCo3 arretee : ' + IntToStr(P.TotalSteps) +
+     ' instr / ' + IntToStr(Coco3_FrameNo) + ' trames]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur CoCo3 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
  If P.Running And (P.CPU.Fault = sfNone) Then Begin
   If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
  End;
@@ -70358,7 +71105,11 @@ Begin
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  ShowEmulatorPanel(EmuPanel, BinaryPath, TargetCPU, Args);
  EmuTabs[Idx] := EmuPanel;
- If TargetCPU = '-CC64' Then C64_SaveState(C64Snaps[Idx]);
+ If TargetCPU = '-CC64' Then C64_SaveState(C64Snaps[Idx])
+ Else If TargetCPU = '-CNES' Then Nes_SaveState(NesSnaps[Idx])
+ Else If TargetCPU = '-CATARI2600' Then A2600_SaveState(A2600Snaps[Idx])
+ Else If (TargetCPU = '-CCOCO3') And Coco3_Active Then
+  Coco3_SaveState(Coco3Snaps[Idx]);
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
 End;
