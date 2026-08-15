@@ -4856,6 +4856,23 @@ Var
  CRAY1_ExitCode : Integer;
  CRAY1_Cycles   : LongInt;
  CRAY1_Panel    : ^TEmulatorPanel;
+ { Etat de l emulateur P-Code UCSD p-System integre (p-machine 16 bits, }
+ { flux de p-code brut mono-segment sans dictionnaire - meme convention }
+ { que les outils DISPCODE.PAS/ASMPCODE.PAS de l utilisateur ; voir     }
+ { PCode_Step). PCode_Data fait office A LA FOIS de segment de donnees  }
+ { globales (adresses basses, base 0) ET de pile d execution (SP croit  }
+ { vers le haut) - comme sur la vraie p-machine ou globals+pile ne font }
+ { qu un seul espace adresse par mot de 16 bits.                        }
+ PCode_Mem      : Array[0..65535] Of Byte;    { code p-code brut (.CODE) }
+ PCode_CodeSize : LongInt;
+ PCode_Data     : Array[0..8191] Of Integer;  { globales + pile, mots 16 bits }
+ PCode_PC       : LongInt;   { IPC : index d octet dans PCode_Mem }
+ PCode_SP       : LongInt;   { sommet de pile (index libre suivant dans PCode_Data) }
+ PCode_MP       : LongInt;   { mark pointer : base du cadre courant dans PCode_Data }
+ PCode_Halted   : Boolean;
+ PCode_ExitCode : Integer;
+ PCode_Cycles   : LongInt;
+ PCode_Panel    : ^TEmulatorPanel;
  { Etat de l emulateur Linux ELF64 x86-64 integre (mode utilisateur      }
  { seul, executables statiques non-PIE generes par Free Pascal Linux -   }
  { pas de chargeur dynamique, pas de PLT/GOT, pas de threads).           }
@@ -6933,6 +6950,7 @@ Begin
    Else If EmuUp = 'TO8'       Then Opts.EmuTarget := '-CTO8'
    Else If EmuUp = 'MO5'       Then Opts.EmuTarget := '-CMO5'
    Else If EmuUp = 'CRAY1'     Then Opts.EmuTarget := '-CCRAY1'
+   Else If EmuUp = 'PCODE'     Then Opts.EmuTarget := '-CPCODE'
    Else If EmuUp = 'D'         Then Opts.EmuTarget := '-CD'
    Else If EmuUp = 'P'         Then Opts.EmuTarget := '-CP'
    Else If (EmuUp = 'DOS') Or (EmuUp = 'DOS16') Or
@@ -35113,6 +35131,12 @@ Begin
     ShowEmulatorPanel(EmuPanel, FullPath, '-CC64', '');
    NCActionOpenAssociated := True;
   End
+  Else If Ext = 'CODE' Then Begin
+   { p-code UCSD p-System brut mono-segment (convention DISPCODE/ASMPCODE.PAS }
+   { de C:\SOURCE\PCODE) - voir PCode_Step. }
+   ShowEmulatorPanel(EmuPanel, FullPath, '-CPCODE', '');
+   NCActionOpenAssociated := True;
+  End
   Else If (Ext = 'COM') Or
    ((Ext = 'EXE') And NCIsDos16Exe(FullPath)) Then Begin
    ShowEmulatorPanel(EmuPanel, FullPath, '-CD', '');
@@ -42727,6 +42751,8 @@ Begin
   EmuPanelTitleFor := 'Emulateur Amiga (68000)'
  Else If TargetCPU = '-CCRAY1' Then
   EmuPanelTitleFor := 'Emulateur Cray-1'
+ Else If TargetCPU = '-CPCODE' Then
+  EmuPanelTitleFor := 'Emulateur UCSD p-System (p-machine)'
  Else If TargetCPU = '-CAPPLEII' Then
   EmuPanelTitleFor := 'Emulateur Apple II (6502)'
  Else If TargetCPU = '-CC64' Then
@@ -60611,6 +60637,390 @@ Begin
 End;
 
 { ========================================================================== }
+{ EMULATEUR P-CODE UCSD p-SYSTEM (p-machine) INTEGRE                         }
+{ Cible -CPCODE. Interprete un flux de p-code BRUT MONO-SEGMENT (sans        }
+{ dictionnaire de segments/procedures) demarrant a l octet 0 - exactement la }
+{ convention deja utilisee par les outils DISPCODE.PAS/ASMPCODE.PAS de       }
+{ l utilisateur (C:\SOURCE\PCODE) pour les .CODE UCSD Pascal II.0/II.1       }
+{ (Heath/Apple Pascal). Table des opcodes 128..255 et des CSP/CXP reprise    }
+{ de ces memes outils (deja validee sur du vrai p-code reel : SYSTEM.FILTER.CODE }
+{ contient bien des sequences LCA/LSA coherentes avec cette table).          }
+{                                                                             }
+{ PORTEE ASSUMEE (voir memoire projet pour le detail) :                     }
+{  - Nombres reels : NON supportes (les opcodes *R sont des alias des *I).   }
+{  - Ensembles (SET) : NON supportes (DIF/INT/UNI/INN/SRS/SGS/ADJ/IXS/IXP/   }
+{    LPA/LDB/STB/LDP/STP/SAS/LDE/STE/LAE) -> arret propre, message clair.    }
+{  - Appels de procedure PAR NUMERO (CLP/CGP/CIP/CBP) : NON supportes, car   }
+{    ce format mono-segment n a pas de dictionnaire de procedures pour       }
+{    resoudre un numero en adresse. CXP (appel externe) reste supporte      }
+{    UNIQUEMENT pour l unite 0 (runtime hote, E/S) - voir PCode_CallUnit0.   }
+{  - Programme = UN SEUL bloc de niveau 0 (MP fixe a 0 pour toute la duree   }
+{    d execution) ; LOD/STR/LDA (avec chainage statique DB) restent          }
+{    implementes pour un usage futur mais ne sont pas necessaires pour un    }
+{    programme plat sans procedures imbriquees.                              }
+{ ========================================================================== }
+
+Function PCode_LoadRaw(Const FileName: String): Boolean;
+Var
+ F: File;
+ Sz: LongInt;
+Begin
+ PCode_LoadRaw := False;
+ Assign(F, FileName);
+ {$I-} Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ Sz := FileSize(F);
+ If Sz > SizeOf(PCode_Mem) Then Sz := SizeOf(PCode_Mem);
+ FillChar(PCode_Mem, SizeOf(PCode_Mem), 0);
+ If Sz > 0 Then BlockRead(F, PCode_Mem, Sz);
+ Close(F);
+ PCode_CodeSize := Sz;
+ PCode_LoadRaw := True;
+End;
+
+Function PCode_Fetch(Ofs: LongInt): Byte;
+Begin
+ If (Ofs >= 0) And (Ofs < PCode_CodeSize) Then PCode_Fetch := PCode_Mem[Ofs]
+ Else PCode_Fetch := 0;
+End;
+
+{ BIG : MSB=0 => 1 octet (0..127) ; MSB=1 => 14 bits sur 2 octets (grand-boutiste). }
+Function PCode_ReadBig(Ofs: LongInt; Var Used: Integer): Integer;
+Var B1, B2: Byte;
+Begin
+ B1 := PCode_Fetch(Ofs);
+ If B1 < 128 Then Begin Used := 1; PCode_ReadBig := B1; End
+ Else Begin
+  B2 := PCode_Fetch(Ofs + 1);
+  Used := 2;
+  PCode_ReadBig := (Integer(B1 And $7F) * 256) + B2;
+ End;
+End;
+
+Procedure PCode_Push(V: Integer);
+Begin
+ If PCode_Halted Then Exit;
+ If PCode_SP < High(PCode_Data) Then Begin
+  PCode_Data[PCode_SP] := V;
+  Inc(PCode_SP);
+ End Else Begin
+  EmuVScr_WriteStr(PCode_Panel^, '[depassement de pile p-code]');
+  PCode_Halted := True;
+  PCode_ExitCode := 1;
+ End;
+End;
+
+Function PCode_Pop: Integer;
+Begin
+ If PCode_SP > 0 Then Begin
+  Dec(PCode_SP);
+  PCode_Pop := PCode_Data[PCode_SP];
+ End Else Begin
+  If Not PCode_Halted Then
+   EmuVScr_WriteStr(PCode_Panel^, '[pile p-code vide]');
+  PCode_Halted := True;
+  PCode_ExitCode := 1;
+  PCode_Pop := 0;
+ End;
+End;
+
+Function PCode_DataAt(A: LongInt): Integer;
+Begin
+ If (A >= 0) And (A <= High(PCode_Data)) Then PCode_DataAt := PCode_Data[A]
+ Else Begin PCode_DataAt := 0; End;
+End;
+
+Procedure PCode_DataSet(A: LongInt; V: Integer);
+Begin
+ If (A >= 0) And (A <= High(PCode_Data)) Then PCode_Data[A] := V;
+End;
+
+{ Resout la base de cadre a Lvl chainons statiques (mot 0 du cadre = lien   }
+{ statique) en amont du cadre courant (PCode_MP). Lvl=0 => cadre courant.   }
+Function PCode_StaticBase(Lvl: Integer): LongInt;
+Var FB: LongInt; I: Integer;
+Begin
+ FB := PCode_MP;
+ For I := 1 To Lvl Do FB := PCode_DataAt(FB);
+ PCode_StaticBase := FB;
+End;
+
+Procedure PCode_Unsupported(Const Msg: String);
+Begin
+ If Not PCode_Halted Then Begin
+  EmuVScr_WriteStr(PCode_Panel^, '[' + Msg + ' non supporte]');
+  PCode_Halted := True;
+  PCode_ExitCode := 1;
+ End;
+End;
+
+{ Appel d unite externe (CXP) 0 = runtime hote (E/S console, adapte de la  }
+{ numerotation SYSTEM.PASCAL documentee par DISPCODE/PDECODE, mais avec une }
+{ convention de parametrage SIMPLIFIEE de mon fait : valeurs directement    }
+{ sur la pile, sans descripteur de fichier - voir memoire projet).          }
+Procedure PCode_CallUnit0(ProcNum: Byte);
+Var
+ V, Addr, N, I: Integer;
+ S: String;
+Begin
+ Case ProcNum Of
+  2:  Begin { execerror : arret avec code d erreur } N := PCode_Pop;
+       EmuVScr_WriteStr(PCode_Panel^, '[EXECERROR ' + IntToStr(N) + ']');
+       PCode_Halted := True; PCode_ExitCode := N; End;
+  12: Begin { read integer : pas d entree disponible, pousse 0 } PCode_Push(0); End;
+  13: Begin { write integer } V := PCode_Pop; Str(V, S); EmuVScr_WriteStr(PCode_Panel^, S); End;
+  16: Begin { read char : pas d entree disponible, pousse 0 } PCode_Push(0); End;
+  17: Begin { write char } EmuVScr_PutChar(PCode_Panel^, Chr(Byte(PCode_Pop And $FF))); End;
+  19: Begin { write string : pile = [..., adresse, longueur] (longueur au sommet) }
+       N := PCode_Pop; Addr := PCode_Pop;
+       For I := 0 To N - 1 Do Begin
+        If Addr >= 30000 Then
+         EmuVScr_PutChar(PCode_Panel^, Chr(PCode_Fetch(Addr - 30000 + I)))
+        Else
+         EmuVScr_PutChar(PCode_Panel^, Chr(Byte(PCode_DataAt(Addr + I) And $FF)));
+       End;
+      End;
+  21: Begin { readln : ignore, pas d entree disponible } End;
+  22: Begin { writeln } EmuVScr_PutChar(PCode_Panel^, #13); EmuVScr_PutChar(PCode_Panel^, #10); End;
+ Else
+  PCode_Unsupported('CXP 0,' + IntToStr(ProcNum) + ' (E/S)');
+ End;
+End;
+
+{ Appel de procedure standard (CSP). Table de numeros reprise de           }
+{ DISPCODE.PAS (CSPName) - seules EXIT (4) et les no-op mathematiques sur   }
+{ entiers (18=TRC, 19=RND, pas de reel donc identite) sont implementees.    }
+Procedure PCode_CallCSP(CspNum: Byte);
+Var N: Integer;
+Begin
+ Case CspNum Of
+  4:  Begin { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N; End;
+  18, 19: Begin { trunc/round : deja entier dans ce sous-ensemble, no-op } End;
+ Else
+  PCode_Unsupported('CSP ' + IntToStr(CspNum));
+ End;
+End;
+
+{ Execute UNE instruction p-code a partir de PCode_PC. }
+Procedure PCode_Step;
+Var
+ Op: Byte;
+ B: Byte;
+ SB: ShortInt;
+ W, Used, N, I, Lvl: Integer;
+ A, V1, V2, Addr, FB: LongInt;
+ Temp: Array[0..255] Of Integer;
+Begin
+ If PCode_Halted Then Exit;
+ If (PCode_PC < 0) Or (PCode_PC >= PCode_CodeSize) Then Begin
+  PCode_Halted := True; PCode_ExitCode := 1; Exit;
+ End;
+ Op := PCode_Fetch(PCode_PC);
+ If Op < 128 Then Begin { SLDC n : charge court la constante n (0..127) }
+  PCode_Push(Op);
+  Inc(PCode_PC);
+  Exit;
+ End;
+ Case Op Of
+  128, 129: Begin V1 := PCode_Pop; If V1 < 0 Then V1 := -V1; PCode_Push(V1); Inc(PCode_PC); End; { ABI/ABR }
+  130, 131: Begin V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 + V2); Inc(PCode_PC); End; { ADI/ADR }
+  132: Begin { LAND } V2 := PCode_Pop; V1 := PCode_Pop;
+        PCode_Push(Ord((V1 <> 0) And (V2 <> 0))); Inc(PCode_PC); End;
+  133: PCode_Unsupported('DIF (ensembles)'); { DIF }
+  134, 135: Begin { DVI/DVR } V2 := PCode_Pop; V1 := PCode_Pop;
+        If V2 = 0 Then Begin
+         EmuVScr_WriteStr(PCode_Panel^, '[erreur 300 : division par zero]');
+         PCode_Halted := True; PCode_ExitCode := 300;
+        End Else PCode_Push(V1 Div V2);
+        Inc(PCode_PC); End;
+  136: Begin { CHK : verifie bornes [min,max] sur la valeur au sommet (non depilee) }
+        V2 := PCode_Pop; { max }
+        V1 := PCode_Pop; { min }
+        W := PCode_DataAt(PCode_SP - 1); { valeur, laissee sur la pile }
+        If (W < V1) Or (W > V2) Then Begin
+         EmuVScr_WriteStr(PCode_Panel^, '[erreur 302 : hors bornes]');
+         PCode_Halted := True; PCode_ExitCode := 302;
+        End;
+        Inc(PCode_PC); End;
+  137, 138: Inc(PCode_PC); { FLO/FLT : pas de reels, no-op }
+  139: PCode_Unsupported('INN (ensembles)');
+  140: PCode_Unsupported('INT (ensembles)');
+  141: Begin { IOR : OU booleen } V2 := PCode_Pop; V1 := PCode_Pop;
+        PCode_Push(Ord((V1 <> 0) Or (V2 <> 0))); Inc(PCode_PC); End;
+  142: Begin { MODI } V2 := PCode_Pop; V1 := PCode_Pop;
+        If V2 = 0 Then Begin
+         EmuVScr_WriteStr(PCode_Panel^, '[erreur 300 : division par zero]');
+         PCode_Halted := True; PCode_ExitCode := 300;
+        End Else PCode_Push(V1 Mod V2);
+        Inc(PCode_PC); End;
+  143, 144: Begin V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 * V2); Inc(PCode_PC); End; { MPI/MPR }
+  145, 146: Begin V1 := PCode_Pop; PCode_Push(-V1); Inc(PCode_PC); End; { NGI/NGR }
+  147: Begin V1 := PCode_Pop; PCode_Push(Ord(V1 = 0)); Inc(PCode_PC); End; { LNOT }
+  148: PCode_Unsupported('SRS (ensembles)');
+  149, 150: Begin V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 - V2); Inc(PCode_PC); End; { SBI/SBR }
+  151: PCode_Unsupported('SGS (ensembles)');
+  152, 153: Begin V1 := PCode_Pop; PCode_Push(V1 * V1); Inc(PCode_PC); End; { SQI/SQR }
+  154: Begin { STO : pile = [..., adresse, valeur] } V1 := PCode_Pop; Addr := PCode_Pop;
+        PCode_DataSet(Addr, V1); Inc(PCode_PC); End;
+  155: PCode_Unsupported('IXS (chaines)');
+  156: PCode_Unsupported('UNI (ensembles)');
+  157: PCode_Unsupported('LDE (unite externe)');
+  158: Begin { CSP n } B := PCode_Fetch(PCode_PC + 1); PCode_PC := PCode_PC + 2;
+        PCode_CallCSP(B); End;
+  159: Begin PCode_Push(0); Inc(PCode_PC); End; { LDCN : NIL }
+  160: PCode_Unsupported('ADJ (ensembles)');
+  161: Begin { FJP dep : saut si faux }
+        SB := ShortInt(PCode_Fetch(PCode_PC + 1));
+        V1 := PCode_Pop;
+        If V1 = 0 Then PCode_PC := PCode_PC + 2 + SB
+        Else PCode_PC := PCode_PC + 2;
+       End;
+  162: Begin { INC n } A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
+        PCode_Push(V1 + A); PCode_PC := PCode_PC + 1 + Used; End;
+  163: Begin { IND n : *(pop()+n) }
+        A := PCode_ReadBig(PCode_PC + 1, Used); Addr := PCode_Pop;
+        PCode_Push(PCode_DataAt(Addr + A)); PCode_PC := PCode_PC + 1 + Used; End;
+  164: Begin { IXA n : indexation tableau, taille element n mots }
+        A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop; Addr := PCode_Pop;
+        PCode_Push(Addr + V1 * A); PCode_PC := PCode_PC + 1 + Used; End;
+  165: Begin { LAO n : adresse globale }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(A);
+        PCode_PC := PCode_PC + 1 + Used; End;
+  166: Begin { LSA n,"texte" : adresse (taguee espace code) de la chaine litterale }
+        N := PCode_Fetch(PCode_PC + 1);
+        PCode_Push(30000 + (PCode_PC + 2));
+        PCode_PC := PCode_PC + 2 + N; End;
+  167: PCode_Unsupported('LAE (unite externe)');
+  168: Begin { MOV n : pile = [..., dest, src], copie n mots src->dest }
+        A := PCode_ReadBig(PCode_PC + 1, Used);
+        V2 := PCode_Pop; { src }
+        V1 := PCode_Pop; { dest }
+        For I := 0 To A - 1 Do PCode_DataSet(V1 + I, PCode_DataAt(V2 + I));
+        PCode_PC := PCode_PC + 1 + Used; End;
+  169: Begin { LDO n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_DataAt(A));
+        PCode_PC := PCode_PC + 1 + Used; End;
+  170: PCode_Unsupported('SAS');
+  171: Begin { SRO n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
+        PCode_DataSet(A, V1); PCode_PC := PCode_PC + 1 + Used; End;
+  172: PCode_Unsupported('XJP (table de cas)');
+  173: Begin { RNP n : retour procedure (non testee dans ce sous-ensemble, } { programme = un seul bloc plat sans appel) }
+        N := PCode_Fetch(PCode_PC + 1);
+        Addr := PCode_DataAt(PCode_MP + 2); { retIC }
+        FB := PCode_DataAt(PCode_MP + 1);   { lien dynamique }
+        PCode_SP := PCode_MP - N;
+        PCode_MP := FB;
+        PCode_PC := Addr; End;
+  174: PCode_Unsupported('CIP (appel indirect)');
+  175, 176, 177, 180, 181, 183: Begin { EQU/GEQ/GRT/LEQ/LES/NEQ : octet type ignore, compare entier }
+        Inc(PCode_PC); { consomme l octet discriminant de type }
+        B := PCode_Fetch(PCode_PC); Inc(PCode_PC);
+        V2 := PCode_Pop; V1 := PCode_Pop;
+        Case Op Of
+         175: PCode_Push(Ord(V1 = V2));
+         176: PCode_Push(Ord(V1 >= V2));
+         177: PCode_Push(Ord(V1 > V2));
+         180: PCode_Push(Ord(V1 <= V2));
+         181: PCode_Push(Ord(V1 < V2));
+         183: PCode_Push(Ord(V1 <> V2));
+        End;
+       End;
+  178: Begin { LDA Lvl,Off : adresse via chainage statique }
+        Lvl := PCode_Fetch(PCode_PC + 1);
+        A := PCode_ReadBig(PCode_PC + 2, Used);
+        FB := PCode_StaticBase(Lvl);
+        PCode_Push(FB + A);
+        PCode_PC := PCode_PC + 2 + Used; End;
+  179: Begin { LDC n,$w1,... : charge n constantes 16 bits }
+        N := PCode_Fetch(PCode_PC + 1);
+        For I := 0 To N - 1 Do Begin
+         W := PCode_Fetch(PCode_PC + 2 + I*2) Or (PCode_Fetch(PCode_PC + 3 + I*2) Shl 8);
+         PCode_Push(W);
+        End;
+        PCode_PC := PCode_PC + 2 + N*2; End;
+  182: Begin { LOD Lvl,Off : charge via chainage statique }
+        Lvl := PCode_Fetch(PCode_PC + 1);
+        A := PCode_ReadBig(PCode_PC + 2, Used);
+        FB := PCode_StaticBase(Lvl);
+        PCode_Push(PCode_DataAt(FB + A));
+        PCode_PC := PCode_PC + 2 + Used; End;
+  184: Begin { STR Lvl,Off : stocke via chainage statique }
+        Lvl := PCode_Fetch(PCode_PC + 1);
+        A := PCode_ReadBig(PCode_PC + 2, Used);
+        FB := PCode_StaticBase(Lvl);
+        V1 := PCode_Pop;
+        PCode_DataSet(FB + A, V1);
+        PCode_PC := PCode_PC + 2 + Used; End;
+  185: Begin { UJP dep }
+        SB := ShortInt(PCode_Fetch(PCode_PC + 1));
+        PCode_PC := PCode_PC + 2 + SB; End;
+  186, 187: PCode_Unsupported('LDP/STP (fichiers)'); { LDP/STP }
+  188: Begin { LDM n : empile n mots depuis l adresse au sommet }
+        N := PCode_Fetch(PCode_PC + 1); Addr := PCode_Pop;
+        For I := 0 To N - 1 Do PCode_Push(PCode_DataAt(Addr + I));
+        PCode_PC := PCode_PC + 2; End;
+  189: Begin { STM n : pile = [..., dest, mot1..motN], depile n mots puis dest }
+        N := PCode_Fetch(PCode_PC + 1);
+        For I := N - 1 Downto 0 Do Temp[I] := PCode_Pop;
+        Addr := PCode_Pop;
+        For I := 0 To N - 1 Do PCode_DataSet(Addr + I, Temp[I]);
+        PCode_PC := PCode_PC + 2; End;
+  190, 191: PCode_Unsupported('LDB/STB (octets)'); { LDB/STB }
+  192: PCode_Unsupported('IXP (tableau tasse)');
+  193: Begin { RBP n : retour de bloc = fin de programme }
+        PCode_Halted := True; PCode_ExitCode := 0; End;
+  194: PCode_Unsupported('CBP');
+  195, 196, 197, 200, 201, 203: Begin { EQUI/GEQI/GRTI/LEQI/LESI/NEQI }
+        V2 := PCode_Pop; V1 := PCode_Pop;
+        Case Op Of
+         195: PCode_Push(Ord(V1 = V2));
+         196: PCode_Push(Ord(V1 >= V2));
+         197: PCode_Push(Ord(V1 > V2));
+         200: PCode_Push(Ord(V1 <= V2));
+         201: PCode_Push(Ord(V1 < V2));
+         203: PCode_Push(Ord(V1 <> V2));
+        End;
+        Inc(PCode_PC); End;
+  198: Begin { LLA n : adresse locale MP+n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_MP + A);
+        PCode_PC := PCode_PC + 1 + Used; End;
+  199: Begin { LDCI w : constante entiere 16 bits (Integer 16 bits signe -}
+        { la troncature d affectation fait deja l extension de signe).   }
+        W := PCode_Fetch(PCode_PC + 1) Or (PCode_Fetch(PCode_PC + 2) Shl 8);
+        PCode_Push(W); PCode_PC := PCode_PC + 3; End;
+  202: Begin { LDL n : charge local MP+n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_DataAt(PCode_MP + A));
+        PCode_PC := PCode_PC + 1 + Used; End;
+  204: Begin { STL n : stocke local MP+n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
+        PCode_DataSet(PCode_MP + A, V1); PCode_PC := PCode_PC + 1 + Used; End;
+  205: Begin { CXP unite,proc }
+        B := PCode_Fetch(PCode_PC + 1); N := PCode_Fetch(PCode_PC + 2);
+        PCode_PC := PCode_PC + 3;
+        If B = 0 Then PCode_CallUnit0(N)
+        Else PCode_Unsupported('CXP ' + IntToStr(B) + ',' + IntToStr(N) + ' (unite externe)');
+       End;
+  206: PCode_Unsupported('CLP (appel par numero)');
+  207: PCode_Unsupported('CGP (appel par numero)');
+  208: PCode_Unsupported('LPA (tableau tasse)');
+  209: PCode_Unsupported('STE (unite externe)');
+  210: PCode_Unsupported('opcode reserve ???');
+  211: PCode_Unsupported('EFJ');
+  212: PCode_Unsupported('NFJ');
+  213: Inc(PCode_PC, 2); { BPT : point d arret, ignore }
+  214: Begin PCode_Halted := True; PCode_ExitCode := 0; End; { XIT }
+  215: Inc(PCode_PC); { NOP }
+  216..231: Begin { SLDL1..16 }
+        PCode_Push(PCode_DataAt(PCode_MP + (Op - 215))); Inc(PCode_PC); End;
+  232..247: Begin { SLDO1..16 }
+        PCode_Push(PCode_DataAt(Op - 231)); Inc(PCode_PC); End;
+  248..255: Begin { SIND0..7 }
+        Addr := PCode_Pop; PCode_Push(PCode_DataAt(Addr + (Op - 248))); Inc(PCode_PC); End;
+ End;
+End;
+
+{ ========================================================================== }
 { EMULATEUR 6502 INTEGRE                                                     }
 { Couvre Apple II (-CAPPLEII), Commodore 64 (-CC64), Atari 400/800           }
 { (-CATARI400/-CATARI800), NES (-CNES) et Atari 2600 (-CATARI2600).          }
@@ -67264,6 +67674,7 @@ Var
  IsX86: Boolean;
  IsM68K: Boolean;
  IsCray: Boolean;
+ IsPCode: Boolean;
  Is6502: Boolean;
  IsZ80: Boolean;
  Is6809: Boolean;
@@ -67350,6 +67761,7 @@ Begin NesActive := False;
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
+ IsPCode := (TargetCPU = '-CPCODE');
  Is6502 := (TargetCPU = '-CAPPLEII') Or (TargetCPU = '-CC64') Or
            (TargetCPU = '-CATARI400') Or (TargetCPU = '-CATARI800') Or
            (TargetCPU = '-CNES') Or (TargetCPU = '-CATARI2600');
@@ -67368,6 +67780,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
  Else If TargetCPU = '-CELF64'  Then CPUName := 'Linux x86-64 (ELF statique)'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
+ Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
  Else If TargetCPU = '-CAPPLEII'Then CPUName := 'Apple II (6502)'
  Else If TargetCPU = '-CC64'    Then CPUName := 'Commodore 64 (6510)'
  Else If TargetCPU = '-CATARI400'Then CPUName := 'Atari 400 (6502)'
@@ -67550,6 +67963,63 @@ Begin NesActive := False;
   P.Running := False;
   P.Fault := sfEndProgram;
   P.StatusMsg := 'Emulateur Cray-1 : ' + IntToStr(Steps) + ' instr.';
+  Exit;
+ End;
+ If IsPCode Then Begin
+  { ----- Emulateur UCSD p-System (p-machine) ----- }
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 14;
+  EmuVScr_WriteStr(P, 'Chargement du p-code (segment brut, sans dictionnaire)...');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 7;
+  FillChar(PCode_Data, SizeOf(PCode_Data), 0);
+  PCode_PC := 0;
+  PCode_SP := 0;
+  PCode_MP := 0;
+  PCode_Halted := False;
+  PCode_ExitCode := 0;
+  PCode_Cycles := 0;
+  PCode_Panel := @P;
+  Loaded := PCode_LoadRaw(BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P,
+    'Erreur : impossible de charger ' + BinaryPath);
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec chargement p-code';
+   Exit;
+  End;
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Programme charge (' + IntToStr(PCode_CodeSize) +
+    ' octets de p-code, PC=0)');
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  Steps := 0;
+  While (Not PCode_Halted) And (Steps < 1000000) Do Begin
+   PCode_Step;
+   Inc(Steps);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  P.CurFg := 11;
+  If PCode_Halted Then
+   EmuVScr_WriteStr(P, '[Fin p-machine : ' +
+    IntToStr(Steps) + ' instructions, code=' +
+    IntToStr(PCode_ExitCode) + ']')
+  Else
+   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Emulateur p-machine : ' + IntToStr(Steps) + ' instr.';
   Exit;
  End;
  If Is6502 Then Begin
