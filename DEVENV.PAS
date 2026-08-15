@@ -3957,6 +3957,219 @@ Type
   AsyncLastFrameTS: LongInt;
  End;
 
+ { Backend AppleII/Atari 400/Atari 800 (2026-08-15, suite du chantier      }
+ { NES/A2600/CoCo3) : contrairement a ces 3 backends, AUCUN etat materiel   }
+ { dedie (pas de PPU/TIA/GIME - grep "Apple2_"/"AppleII_"/"Atari8_" sans    }
+ { resultat) - juste le coeur 6502 generique deja partage avec C64/NES/    }
+ { A2600 (`CPU6502_Mem`/registres), donc UN SEUL type partage par les 3    }
+ { cibles (le champ Variant, deja inclus, distingue laquelle). }
+ TAppleAtariSnapshot = Record
+  Mem            : T6502MemArr;
+  A, X, Y, P, S  : Byte;
+  PC             : Word;
+  Halted         : Boolean;
+  ExitCode       : Integer;
+  Variant        : Integer;
+ End;
+
+ { Backends M68K (68000/AtariST/Amiga), Cray-1, P-Code (le VRAI moteur      }
+ { p-machine UCSD utilise par "-CPCODE", jamais converti Stage1+2 avant    }
+ { ce chantier malgre son nom similaire au reste du sous-systeme UCSD/H8D/ }
+ { DISPCODE deja construit une session precedente - seul le chargement/    }
+ { desassemblage etaient finis, PAS l execution non bloquante), Z80        }
+ { (TRS-80/MSX/Adam, 3 variantes partageant DEJA les memes globales Z80_* }
+ { - meme motif que AppleII/Atari8bit/CoCo3-texte : coeur seul, pas de     }
+ { peripherique video, un seul type par famille de coeur. Tailles         }
+ { modestes (<=1 Mo), donc tableaux statiques Array[0..MAX_WINDOWS-1]      }
+ { sans souci - contrairement a ELF64 (128 Mo/onglet, voir plus loin). }
+ TM68KSnapshot = Record
+  Mem      : Array[0..$FFFFF] Of Byte;
+  D, A     : Array[0..7] Of LongInt;
+  PC       : LongInt;
+  SR       : Word;
+  Halted   : Boolean;
+  ExitCode : Integer;
+  Cycles   : LongInt;
+ End;
+
+ TCraySnapshot = Record
+  Mem      : Array[0..65535] Of Word;
+  Reg      : Array[0..7] Of LongInt;
+  PC       : LongInt;
+  Halted   : Boolean;
+  ExitCode : Integer;
+  Cycles   : LongInt;
+ End;
+
+ TPCode2Snapshot = Record
+  Mem       : Array[0..65535] Of Byte;
+  CodeSize  : LongInt;
+  Data      : Array[0..8191] Of Integer;
+  PC, SP, MP: LongInt;
+  Halted    : Boolean;
+  ExitCode  : Integer;
+  Cycles    : LongInt;
+ End;
+
+ TZ80Snapshot = Record
+  Mem                    : Array[0..$FFFF] Of Byte;
+  Areg, F, B, C, D, E, H, L : Byte;
+  AA, FF, BB, CC, DD, EE, HH, LL : Byte;
+  IX, IY, SP, PC         : Word;
+  Ireg, R                : Byte;
+  IFF1, IFF2             : Boolean;
+  IM                     : Byte;
+  Halted                 : Boolean;
+  ExitCode               : Integer;
+  Cycles                 : LongInt;
+  Variant                : Integer;
+ End;
+
+ { Backend DOS/8086 (2026-08-15, suite immediate - "le DOS supporte-t-il le }
+ { multi-onglet ?") : Stage 2 COMPLET, demande explicitement par l         }
+ { utilisateur malgre l ampleur (le plus gros etat peripherique de tous     }
+ { les backends convertis cette session - des dizaines de sous-systemes     }
+ { globaux distincts : video, DPMI, IRQ/minuteries, XMS/EMS, souris,        }
+ { fichiers ouverts par le programme, recherche DOS, IPX/paquet). P.CPU     }
+ { N EST PAS ici (deja sauve generiquement par onglet via EmuTabs[],        }
+ { comme TOUS les backends). }
+ { Records NOMMES (TEmuVideoState/TEmuIpxState/TEmuPktState/TEmuXmsState/   }
+ { TEmuEmsState/TEmuDpmiState/TDpmiCPU) : `:=` fonctionne directement       }
+ { (types deja nommes et partages, pas d incompatibilite FPC). SEUL          }
+ { TEmuVideoState.Mem est un POINTEUR (256 Ko de memoire video allouee      }
+ { dynamiquement, PAS un tableau statique) - meme souci que EmuXmsMem/       }
+ { EmuEmsMem/EmuDpmiExtMem (XMS 64 Mo / EMS 32 Mo / DPMI-etendu 64 Mo,       }
+ { eux aussi des POINTEURS, alloues par New()/Dispose() a chaque            }
+ { (re)demarrage - voir Emu_XmsInit/Emu_EmsInit/Emu_DpmiInit). Pour ces 4    }
+ { tampons, `:=`/Move() de leur CONTENU serait a la fois enorme (jusqu a    }
+ { 160+ Mo/onglet) ET inutile : on echange simplement le POINTEUR lui-meme  }
+ { entre la globale et le champ du snapshot (O(1), aucune copie de donnees) }
+ { - c est ce qui rend ce Stage 2 praticable malgre la taille de ces        }
+ { tampons, contrairement a ELF64 (tableau STATIQUE de 128 Mo, pas un        }
+ { pointeur alloue a la demande, donc impossible a "echanger" de la meme    }
+ { maniere - voir la note ELF64_RunOneChunk plus haut). }
+ TDOSSnapshot = Record
+  { --- Video (TEmuVideoState copiee en bloc, Mem gere a part) --- }
+  Video          : TEmuVideoState;
+  { --- Reseau IPX/SPX et pilote de paquets --- }
+  Ipx            : TEmuIpxState;
+  Pkt            : TEmuPktState;
+  { --- Memoire etendue/EMS/DPMI : etat "petit" + pointeur du tampon --- }
+  Xms            : TEmuXmsState;
+  XmsMemPtr      : ^TEmuXmsBuf;
+  Ems            : TEmuEmsState;
+  EmsMemPtr      : ^TEmuEmsBuf;
+  Dpmi           : TEmuDpmiState;
+  DpmiExtMemPtr  : ^TDpmiExtBuf;
+  DpmiCPUState   : TDpmiCPU;
+  { --- Souris emulee --- }
+  MouseInst, MousePS2Active, MouseActive : Boolean;
+  MouseVis, MouseX, MouseY : Integer;
+  MouseBtns      : Byte;
+  MouseXMin, MouseXMax, MouseYMin, MouseYMax : Integer;
+  MouseHRatio, MouseVRatio : Word;
+  MouseMickX, MouseMickY : Integer;
+  MousePressCnt, MouseRelCnt : Array[0..2] Of Word;
+  MousePressX, MouseRelX : Array[0..2] Of Integer;
+  MousePressY, MouseRelY : Array[0..2] Of Integer;
+  MouseHandlerSeg, MouseHandlerOfs, MouseHandlerMsk : Word;
+  MouseAltHandlerSeg, MouseAltHandlerOfs, MouseAltHandlerMsk : Word;
+  MouseVendor, MouseVersion : Byte;
+  MouseDisplayPage : Byte;
+  MouseSoftDisabled : Boolean;
+  MouseBiosEnabled : Boolean;
+  MouseBiosCallbackSeg, MouseBiosCallbackOfs : Word;
+  MouseBiosSampleRate, MouseBiosResolution : Byte;
+  MouseContSeg, MouseContOfs : Word;
+  MouseCallPending : Boolean;
+  MouseCallKind : Byte;
+  MouseCallMask : Word;
+  MouseCallPrimDone, MouseCallAltDone, MouseCallBiosDone : Boolean;
+  MouseCallBtn : Byte;
+  MouseCallCX, MouseCallDX, MouseCallSI, MouseCallDI : Word;
+  MouseCallSavedCS, MouseCallSavedIP : Word;
+  { --- Fichiers ouverts PAR LE PROGRAMME emule (5..31 - PAS les montages   }
+  { de disque virtuel EmuFloppy*/EmuCdrom, qui restent globaux/partages,    }
+  { voir Why plus bas) --- }
+  FileH          : Array[5..31] Of File;
+  FileOpen       : Array[5..31] Of Boolean;
+  FileFirstRd    : Array[5..31] Of Boolean;
+  FileName       : Array[5..31] Of String;
+  FileMode       : Array[5..31] Of Byte;
+  FileIsCdrom    : Array[5..31] Of Boolean;
+  CdFileVol      : Array[5..31] Of Byte;
+  CdFileLBA      : Array[5..31] Of LongInt;
+  CdFileSize     : Array[5..31] Of LongInt;
+  CdFilePos      : Array[5..31] Of LongInt;
+  DtaSeg, DtaOfs : Word;
+  PspSeg         : Word;
+  NextFreeSeg    : Word;
+  { --- Recherche DOS (FindFirst/FindNext, AH=4E/4F) --- }
+  FindIsCdrom    : Boolean;
+  CdFindSize     : Array[0..63] Of LongInt;
+  CdFindIsDir    : Array[0..63] Of Boolean;
+  CdFindDate     : Array[0..63] Of Word;
+  CdFindTime     : Array[0..63] Of Word;
+  FindMask       : String;
+  FindAttr       : Byte;
+  FindResults    : Array[0..63] Of String;
+  FindCount, FindIndex : Integer;
+  { --- Code/erreur de sortie, drapeaux divers --- }
+  ExitCode2      : Word;
+  ExitType       : Byte;
+  ExtErr         : Word;
+  ExtErrCls, ExtErrAct, ExtErrLoc : Byte;
+  VerifyFlag, BreakFlag : Byte;
+  AllocStrat     : Word;
+  SwitchChar     : Byte;
+  { --- Minuterie/IRQ --- }
+  TickCounter    : LongInt;
+  StepsPerTick   : LongInt;
+  StepsToTick    : LongInt;
+  IrqPending     : Byte;
+  { --- CMOS --- }
+  CMOSIndex      : Byte;
+  CMOSReg        : Array[0..63] Of Byte;
+  { --- Trace circulaire + diagnostics (etat "vivant", pas juste des logs   }
+  { ponctuels - inclus pour une exactitude complete des dumps EMUDIAG.LOG   }
+  { apres bascule d onglet, meme si l impact fonctionnel serait mineur en   }
+  { leur absence) --- }
+  { Meme forme (anonyme) que la globale EmuTraceBuf - Move() ne verifie que }
+  { SizeOf(), mais garder la forme identique evite tout risque de           }
+  { desalignement si l alignement des enregistrements changeait un jour.   }
+  TraceBuf       : Array[0..8191] Of Record
+    CS, IP: Word; Op: Byte;
+    ES, DI, CX, AX: Word;
+   End;
+  TraceIdx, TraceCnt : Integer;
+  Runaway        : Integer;
+  RunawayCS, RunawayIP : Word;
+  RunawayStep    : LongInt;
+  OvrDumped, CallDumped : Boolean;
+  WatchEnabled   : Boolean;
+  WatchPhysLo, WatchPhysHi : LongInt;
+  WatchHits      : Integer;
+  Div0Caught     : Boolean;
+  Div0CS, Div0IP : Word;
+  Div0Op, Div0SubOp : Byte;
+  Div0Div        : LongInt;
+  Div0AX, Div0DX, Div0BX, Div0CX : Word;
+  Div0SI, Div0DI, Div0BP : Word;
+  Div0DS, Div0ES, Div0SS, Div0SP : Word;
+  FpuTrap        : Boolean;
+  FpuLogged      : Integer;
+  OpCount        : Array[0..255] Of LongInt;
+  DiagInt10Cnt, DiagVidWrCnt, DiagPixWrCnt : LongInt;
+  DiagLastMode   : Byte;
+  DiagDrawCnt    : LongInt;
+  { --- Divers --- }
+  ExeDir         : String;
+  FloppyMotor    : Byte;
+  { --- Etat "async" Stage 1 propre a cet onglet --- }
+  AsyncPumpCnt   : LongInt;
+  AsyncLastDraw  : LongInt;
+ End;
+
  { En-tete de fichier ELF64 (executable Linux x86-64) - seuls les champs  }
  { necessaires au chargement d un executable statique sont exploites.    }
  TELF64Header = Record
@@ -4669,6 +4882,12 @@ Var
  NesSnaps     : Array[0..MAX_WINDOWS - 1] Of TNesSnapshot;
  A2600Snaps   : Array[0..MAX_WINDOWS - 1] Of TA2600Snapshot;
  Coco3Snaps   : Array[0..MAX_WINDOWS - 1] Of TCoco3Snapshot;
+ AppleAtariSnaps : Array[0..MAX_WINDOWS - 1] Of TAppleAtariSnapshot;
+ M68KSnaps    : Array[0..MAX_WINDOWS - 1] Of TM68KSnapshot;
+ CraySnaps    : Array[0..MAX_WINDOWS - 1] Of TCraySnapshot;
+ PCode2Snaps  : Array[0..MAX_WINDOWS - 1] Of TPCode2Snapshot;
+ Z80Snaps     : Array[0..MAX_WINDOWS - 1] Of TZ80Snapshot;
+ DOSSnaps     : Array[0..MAX_WINDOWS - 1] Of TDOSSnapshot;
  { Coloration syntaxique C }
  CHL          : TCHighlighter;
  { Coloration syntaxique C# }
@@ -6616,6 +6835,32 @@ Var
  A2600Async_LastFrameTS: LongInt;
  Coco3Async_KeyEsc      : Boolean;
  Coco3Async_LastFrameTS : LongInt;
+ { AppleII/Atari 400/800 : pas de video temps-reel a suivre (pas de PPU/   }
+ { TIA), donc pas de "LastFrameTS" de pacage - juste un drapeau ESC. }
+ AppleAtariAsync_KeyEsc : Boolean;
+ { Meme motif pour le "mode texte" 6809 (CoCo3 Pascal/ASM + Dragon32/64/  }
+ { TO7/TO8/MO5) - pas de peripherique video non plus (pas de GIME/SAM),  }
+ { juste le coeur M6809 en boucle serree comme AppleII/Atari8bit. }
+ M6809TextAsync_KeyEsc : Boolean;
+ { M68K/Cray-1/PCode/Z80/ELF64 : memes backends "boucle serree, pas de   }
+ { video" mais EmuDbg (TEmuDbgCPU) ne connait QUE 6502/8086/6809 - pas   }
+ { de EDC_M68K/EDC_Cray/etc. Ctrl+C -> debogueur n est donc PAS cable    }
+ { pour ces cibles (jamais cable avant Stage 1 non plus - pas une         }
+ { regression), seul ESC pour arreter le reste. }
+ M68KAsync_KeyEsc  : Boolean;
+ CrayAsync_KeyEsc  : Boolean;
+ PCodeAsync_KeyEsc : Boolean;
+ Z80Async_KeyEsc   : Boolean;
+ ELF64Async_KeyEsc : Boolean;
+ { DOS/8086 : contrairement aux 8 autres, cette boucle a DEJA son propre    }
+ { pompage d evenements interne (EmuPumpEv, tous les ~500 pas) qui draine    }
+ { le clavier/souris hote directement dans la machine emulee (BIOS/IRQ) -   }
+ { PAS remplace par le motif KeyPressed/ReadKey des autres backends, juste  }
+ { desormais cadence par EmuHasFocus (voir DOS_RunOneChunk) au lieu de       }
+ { tourner sans condition. DOSAsync_PumpCnt/LastDraw remplacent les          }
+ { anciennes variables LOCALES EmuPumpCnt/EmuLastDraw. }
+ DOSAsync_PumpCnt  : LongInt;
+ DOSAsync_LastDraw : LongInt;
 Const
  { Palette C64 (16 couleurs standard, indices $00-$0F du VIC-II) mise en }
  { correspondance avec la palette EGA 16 couleurs du panneau emulateur - }
@@ -8828,6 +9073,18 @@ Procedure A2600_SaveState(Var Snap: TA2600Snapshot); Forward;
 Procedure A2600_LoadState(Var Snap: TA2600Snapshot); Forward;
 Procedure Coco3_SaveState(Var Snap: TCoco3Snapshot); Forward;
 Procedure Coco3_LoadState(Var Snap: TCoco3Snapshot); Forward;
+Procedure AppleAtari_SaveState(Var Snap: TAppleAtariSnapshot); Forward;
+Procedure AppleAtari_LoadState(Var Snap: TAppleAtariSnapshot); Forward;
+Procedure M68K_SaveState(Var Snap: TM68KSnapshot); Forward;
+Procedure M68K_LoadState(Var Snap: TM68KSnapshot); Forward;
+Procedure Cray_SaveState(Var Snap: TCraySnapshot); Forward;
+Procedure Cray_LoadState(Var Snap: TCraySnapshot); Forward;
+Procedure PCode2_SaveState(Var Snap: TPCode2Snapshot); Forward;
+Procedure PCode2_LoadState(Var Snap: TPCode2Snapshot); Forward;
+Procedure Z80_SaveState(Var Snap: TZ80Snapshot); Forward;
+Procedure Z80_LoadState(Var Snap: TZ80Snapshot); Forward;
+Procedure DOS_SaveState(Var Snap: TDOSSnapshot); Forward;
+Procedure DOS_LoadState(Var Snap: TDOSSnapshot); Forward;
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -10973,11 +11230,29 @@ End;
 
 { --- Creer une nouvelle fenetre d editeur --- }
 
+Procedure SyncActiveWindowOut; Forward;
+
 Procedure CreateEditorWindow(AFileName: String);
 Var
  Idx: Integer;
 Begin
  If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ { BOGUE REEL signale par l utilisateur 2026-08-15 : contrairement a          }
+ { ActivateWindow/NextWindow/PreviousWindow (qui font TOUJOURS                }
+ { SyncActiveWindowOut avant de changer WinMgr.ActiveIdx, puis                 }
+ { SyncActiveWindowIn sur la nouvelle fenetre), cette procedure changeait      }
+ { WinMgr.ActiveIdx DIRECTEMENT sans jamais synchroniser - si un onglet        }
+ { emulateur etait actif, son etat live n etait jamais recopie dans son        }
+ { snapshot (EmuTabs[]/C64Snaps[]/etc, desormais perime) ET                    }
+ { EmuPanel.Base.Visible restait a True indefiniment (seul                     }
+ { SyncActiveWindowIn le remet a False) - l emulateur continuait donc a         }
+ { s executer et a se redessiner PAR-DESSUS le nouvel onglet texte, et         }
+ { DispatchEvent (qui teste EmuPanel.Base.Visible AVANT tout le reste)          }
+ { pouvait continuer a lui router des clics/touches destines au nouvel          }
+ { editeur - source probable du plantage EAccessViolation signale en           }
+ { naviguant ensuite entre les deux onglets. }
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
  InitEditorWindow(WinMgr.Windows[Idx]);
  WinMgr.Windows[Idx].FileName := AFileName;
@@ -11019,6 +11294,11 @@ Var
  Idx: Integer;
 Begin
  If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ { Meme correctif que CreateEditorWindow ci-dessus : synchroniser la      }
+ { fenetre PRECEDEMMENT active (et masquer un panneau emulateur           }
+ { eventuellement laisse actif) avant de basculer WinMgr.ActiveIdx. }
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
  InitEditorWindow(WinMgr.Windows[Idx]);
  WinMgr.Windows[Idx].Kind := WK_HEX;
@@ -11052,6 +11332,11 @@ Var
  Idx: Integer;
 Begin
  If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ { Meme correctif que CreateEditorWindow ci-dessus : synchroniser la      }
+ { fenetre PRECEDEMMENT active (et masquer un panneau emulateur           }
+ { eventuellement laisse actif) avant de basculer WinMgr.ActiveIdx. }
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
  InitEditorWindow(WinMgr.Windows[Idx]);
  WinMgr.Windows[Idx].Kind := WK_FORM;
@@ -11082,7 +11367,6 @@ End;
 { Declarations anticipees : ces routines sont definies plus bas. }
 Procedure ActivateWindow(Index: Integer); Forward;
 Procedure LoadFile(Var Buf: TTextBuffer; AFileName: String); Forward;
-Procedure SyncActiveWindowOut; Forward;
 Procedure SyncActiveWindowIn(Idx: Integer); Forward;
 
 { ============================================================
@@ -12091,8 +12375,28 @@ Begin
    Nes_SaveState(NesSnaps[WinMgr.ActiveIdx])
   Else If EmuPanel.TargetCPU = '-CATARI2600' Then
    A2600_SaveState(A2600Snaps[WinMgr.ActiveIdx])
-  Else If (EmuPanel.TargetCPU = '-CCOCO3') And Coco3_Active Then
-   Coco3_SaveState(Coco3Snaps[WinMgr.ActiveIdx]);
+  Else If (EmuPanel.TargetCPU = '-CCOCO3') Or (EmuPanel.TargetCPU = '-CDRAGON32') Or
+          (EmuPanel.TargetCPU = '-CDRAGON64') Or (EmuPanel.TargetCPU = '-CTO7') Or
+          (EmuPanel.TargetCPU = '-CTO8') Or (EmuPanel.TargetCPU = '-CMO5') Then
+   { Reutilise Coco3_SaveState/Coco3Snaps[] pour les 2 modes CoCo3 (materiel  }
+   { ET texte, voir StepEmulator) ET Dragon32/64/TO7/TO8/MO5 - tous ne          }
+   { partagent que le coeur M6809, deja entierement capture par ce type. }
+   Coco3_SaveState(Coco3Snaps[WinMgr.ActiveIdx])
+  Else If (EmuPanel.TargetCPU = '-CAPPLEII') Or (EmuPanel.TargetCPU = '-CATARI400') Or
+          (EmuPanel.TargetCPU = '-CATARI800') Then
+   AppleAtari_SaveState(AppleAtariSnaps[WinMgr.ActiveIdx])
+  Else If (EmuPanel.TargetCPU = '-C68000') Or (EmuPanel.TargetCPU = '-CATARIST') Or
+          (EmuPanel.TargetCPU = '-CAMIGA') Then
+   M68K_SaveState(M68KSnaps[WinMgr.ActiveIdx])
+  Else If EmuPanel.TargetCPU = '-CCRAY1' Then
+   Cray_SaveState(CraySnaps[WinMgr.ActiveIdx])
+  Else If EmuPanel.TargetCPU = '-CPCODE' Then
+   PCode2_SaveState(PCode2Snaps[WinMgr.ActiveIdx])
+  Else If (EmuPanel.TargetCPU = '-CTRS80') Or (EmuPanel.TargetCPU = '-CMSX') Or
+          (EmuPanel.TargetCPU = '-CADAM') Then
+   Z80_SaveState(Z80Snaps[WinMgr.ActiveIdx])
+  Else If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then
+   DOS_SaveState(DOSSnaps[WinMgr.ActiveIdx]);
  End Else Begin
   If Editors[WinMgr.ActiveIdx] <> Nil Then
    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
@@ -12123,7 +12427,25 @@ Begin
   If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
   Else If EmuPanel.TargetCPU = '-CNES' Then Nes_LoadState(NesSnaps[Idx])
   Else If EmuPanel.TargetCPU = '-CATARI2600' Then A2600_LoadState(A2600Snaps[Idx])
-  Else If EmuPanel.TargetCPU = '-CCOCO3' Then Coco3_LoadState(Coco3Snaps[Idx]);
+  Else If (EmuPanel.TargetCPU = '-CCOCO3') Or (EmuPanel.TargetCPU = '-CDRAGON32') Or
+          (EmuPanel.TargetCPU = '-CDRAGON64') Or (EmuPanel.TargetCPU = '-CTO7') Or
+          (EmuPanel.TargetCPU = '-CTO8') Or (EmuPanel.TargetCPU = '-CMO5') Then
+   Coco3_LoadState(Coco3Snaps[Idx])
+  Else If (EmuPanel.TargetCPU = '-CAPPLEII') Or (EmuPanel.TargetCPU = '-CATARI400') Or
+          (EmuPanel.TargetCPU = '-CATARI800') Then
+   AppleAtari_LoadState(AppleAtariSnaps[Idx])
+  Else If (EmuPanel.TargetCPU = '-C68000') Or (EmuPanel.TargetCPU = '-CATARIST') Or
+          (EmuPanel.TargetCPU = '-CAMIGA') Then
+   M68K_LoadState(M68KSnaps[Idx])
+  Else If EmuPanel.TargetCPU = '-CCRAY1' Then
+   Cray_LoadState(CraySnaps[Idx])
+  Else If EmuPanel.TargetCPU = '-CPCODE' Then
+   PCode2_LoadState(PCode2Snaps[Idx])
+  Else If (EmuPanel.TargetCPU = '-CTRS80') Or (EmuPanel.TargetCPU = '-CMSX') Or
+          (EmuPanel.TargetCPU = '-CADAM') Then
+   Z80_LoadState(Z80Snaps[Idx])
+  Else If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then
+   DOS_LoadState(DOSSnaps[Idx]);
   { Naviguer VERS un onglet emulateur vaut "focus" - reprend l affichage   }
   { "En cours d execution..." (pas "En pause") des le prochain idle-tick,  }
   { coherent avec le fait que StepEmulator ne fait avancer QUE l onglet     }
@@ -12143,8 +12465,36 @@ End;
 Procedure CloseEditorWindow(Index: Integer);
 Var
  I: Integer;
+ ClosingDOSCPU: String;
 Begin
  If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
+ { Onglet DOS/8086 (Stage 2) : contrairement aux autres backends (dont les  }
+ { snapshots sont de simples copies de valeurs), DOS_SaveState/LoadState     }
+ { echangent des POINTEURS geants (video 256 Ko, XMS jusqu a 64 Mo, EMS     }
+ { jusqu a 32 Mo, memoire etendue DPMI jusqu a 64 Mo - voir TDOSSnapshot) -  }
+ { fermer un onglet DOS sans liberer explicitement ces tampons serait une   }
+ { vraie fuite memoire (jusqu a ~160 Mo par onglet DOS ferme, si XMS/EMS/   }
+ { DPMI etaient actifs pour ce programme). L onglet ACTIF garde ses          }
+ { pointeurs dans les GLOBALES (EmuVideo.Mem/EmuXmsMem/EmuEmsMem/            }
+ { EmuDpmiExtMem) ; un onglet INACTIF les garde dans DOSSnaps[Index]. }
+ If WinMgr.Windows[Index].Kind = WK_EMU Then Begin
+  If Index = WinMgr.ActiveIdx Then ClosingDOSCPU := EmuPanel.TargetCPU
+  Else ClosingDOSCPU := EmuTabs[Index].TargetCPU;
+  If (ClosingDOSCPU = '-CD') Or (ClosingDOSCPU = '-CP') Then Begin
+   If Index = WinMgr.ActiveIdx Then Begin
+    If EmuVideo.Mem <> Nil Then Begin Dispose(EmuVideo.Mem); EmuVideo.Mem := Nil; EmuVideo.MemReady := False; End;
+    If EmuXmsMem <> Nil Then Begin Dispose(EmuXmsMem); EmuXmsMem := Nil; End;
+    If EmuEmsMem <> Nil Then Begin Dispose(EmuEmsMem); EmuEmsMem := Nil; End;
+    If EmuDpmiExtMem <> Nil Then Begin Dispose(EmuDpmiExtMem); EmuDpmiExtMem := Nil; End;
+   End Else Begin
+    If DOSSnaps[Index].Video.Mem <> Nil Then Dispose(DOSSnaps[Index].Video.Mem);
+    If DOSSnaps[Index].XmsMemPtr <> Nil Then Dispose(DOSSnaps[Index].XmsMemPtr);
+    If DOSSnaps[Index].EmsMemPtr <> Nil Then Dispose(DOSSnaps[Index].EmsMemPtr);
+    If DOSSnaps[Index].DpmiExtMemPtr <> Nil Then Dispose(DOSSnaps[Index].DpmiExtMemPtr);
+    FillChar(DOSSnaps[Index], SizeOf(DOSSnaps[Index]), 0);
+   End;
+  End;
+ End;
  { Liberer l editeur, l editeur hexadecimal ou l apercu de formulaire }
  If Editors[Index] <> Nil Then Begin
   Dispose(Editors[Index]);
@@ -12179,6 +12529,12 @@ Begin
   NesSnaps[I] := NesSnaps[I + 1];
   A2600Snaps[I] := A2600Snaps[I + 1];
   Coco3Snaps[I] := Coco3Snaps[I + 1];
+  AppleAtariSnaps[I] := AppleAtariSnaps[I + 1];
+  M68KSnaps[I] := M68KSnaps[I + 1];
+  CraySnaps[I] := CraySnaps[I + 1];
+  PCode2Snaps[I] := PCode2Snaps[I + 1];
+  Z80Snaps[I] := Z80Snaps[I + 1];
+  DOSSnaps[I] := DOSSnaps[I + 1];
  End;
  Editors[WinMgr.WinCount - 1] := Nil;
  HexEditors[WinMgr.WinCount - 1] := Nil;
@@ -12188,6 +12544,13 @@ Begin
  If WinMgr.WinCount = 0 Then Begin
   WinMgr.ActiveIdx := -1;
   EditorReady := False;
+  { BOGUE REEL signale par l utilisateur 2026-08-15 : fermer le DERNIER      }
+  { onglet restant, quand c est un onglet emulateur, laissait le panneau      }
+  { emulateur visible a l ecran indefiniment ("l emulateur reste ouvert").   }
+  { Cause : EmuPanel.Base.Visible n est jamais remis a False QUE dans          }
+  { SyncActiveWindowIn (voir plus haut), qui n est jamais appelee ici          }
+  { puisqu il n y a plus aucune fenetre vers laquelle basculer. }
+  EmuPanel.Base.Visible := False;
  End Else Begin
   If WinMgr.ActiveIdx >= WinMgr.WinCount Then
    WinMgr.ActiveIdx := WinMgr.WinCount - 1;
@@ -12363,6 +12726,18 @@ Begin
   If Hit >= 0 Then Begin
    If TabCloseHitTest(Ev.MouseX, Ev.MouseY, Hit) Then Begin
     CloseEditorWindow(Hit);
+    { BOGUE REEL signale par l utilisateur 2026-08-15 (2e volet du meme      }
+    { rapport que le correctif EmuPanel.Base.Visible ci-dessus, dans          }
+    { CloseEditorWindow) : cliquer sur le "x" d un onglet ne redessinait      }
+    { QUE la barre d onglets elle-meme - contrairement aux autres chemins     }
+    { de fermeture (Ctrl+W, Fermer la solution, Echap dans le panneau         }
+    { emulateur) qui positionnent tous FullRepaintNeeded apres avoir           }
+    { ferme l onglet. Consequence : meme une fois EmuPanel.Base.Visible       }
+    { correctement remis a False, les anciens pixels du panneau emulateur    }
+    { restaient affiches a l ecran (jamais effaces/redessines par-dessus)     }
+    { jusqu au prochain evenement qui declenchait un repaint complet par      }
+    { ailleurs. }
+    FullRepaintNeeded := True;
     DrawWindowTabs;
    End Else Begin
     ActivateWindow(Hit);
@@ -43717,7 +44092,7 @@ Var
  GridX, GridY: Integer;
  X, Y: Integer;
  PixX, PixY: Integer;
- ScrW, ScrH: Integer;
+ ScrH: Integer;
  GridW, GridH: Integer;
  Title: String;
  Cell: TEmuCell;
@@ -43729,15 +44104,19 @@ Var
  ColorByte, BgiC: Byte;
  PrevC, RunStart: Integer;
 Begin
- ScrW := GetScreenWidth;
  ScrH := GetScreenHeight;
  { Mode NES : rendu pixel du framebuffer 256x240 ----------------------- }
  If NesActive And (P.TargetCPU = '-CNES') Then Begin
   NesScale := 2;
   GridW := 256 * NesScale;
   GridH := 240 * NesScale;
-  P.PanelX := (ScrW - GridW) Div 2;
-  P.PanelY := 16;
+  { Correctif 2026-08-15 : le panneau doit apparaitre au meme endroit    }
+  { qu un editeur de texte (colle a gauche, sous la barre d onglets),    }
+  { pas centre sur toute la largeur de l ecran (qui empietait visuellement}
+  { sur la zone de l Explorateur de solutions a droite). Meme convention }
+  { que Ed.X/Ed.Y dans InitTextEditor. }
+  P.PanelX := 0;
+  P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
   GridX := P.PanelX;
   GridY := P.PanelY + 22;
   If NesFBFirst Then Begin
@@ -43781,8 +44160,8 @@ Begin
   NesScale := 3;
   GridW := 160 * NesScale;
   GridH := 192 * NesScale;
-  P.PanelX := (ScrW - GridW) Div 2;
-  P.PanelY := 16;
+  P.PanelX := 0;
+  P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
   GridX := P.PanelX;
   GridY := P.PanelY + 22;
   If A2600_FBFirst Then
@@ -43816,8 +44195,8 @@ Begin
   NesScale := 2;
   GridW := 256 * NesScale;
   GridH := 200 * NesScale;
-  P.PanelX := (ScrW - GridW) Div 2;
-  P.PanelY := 16;
+  P.PanelX := 0;
+  P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
   GridX := P.PanelX;
   GridY := P.PanelY + 22;
   If Coco3_FBFirst Then Begin
@@ -43853,20 +44232,15 @@ Begin
   Coco3_FBFirst := False;
   Exit;
  End;
- { Le panneau couvre toute la zone editeur (sous le menu/toolbar,
-   au dessus de la barre d etat). Pour simplicite, on le centre. }
+ { Correctif 2026-08-15 : le panneau doit apparaitre au meme endroit que  }
+ { le ferait un editeur de texte (colle a gauche, sous la barre d         }
+ { onglets), pas centre sur toute la largeur de l ecran - l ancien         }
+ { centrage empietait visuellement sur la zone de l Explorateur de         }
+ { solutions a droite et ne correspondait a aucun autre panneau de l IDE. }
  GridW := P.Cols * P.CharW;
  GridH := P.Rows * P.CharH;
- P.PanelX := (ScrW - GridW) Div 2;
- { En mode texte 132 colonnes (ATI Graphics Solution), la grille peut     }
- { depasser la largeur d ecran disponible (132*8=1056px) - aligner a      }
- { gauche plutot que de centrer, pour garder au moins les premieres       }
- { colonnes entierement visibles au lieu de rogner symetriquement les     }
- { deux bords. }
- If P.PanelX < 0 Then P.PanelX := 0;
- P.PanelY := 80;                 { sous menu+toolbar }
- If P.PanelY + GridH + 60 > ScrH Then
-  P.PanelY := 60;
+ P.PanelX := 0;
+ P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
  GridX := P.PanelX;
  GridY := P.PanelY + 24;          { 24 px de barre de titre }
  { ============================================================
@@ -43882,16 +44256,16 @@ Begin
   Scale := 1;
   If GfxW <= 320 Then Scale := 2;
   If GfxW <= 160 Then Scale := 4;
-  If 80 + GfxH * Scale + 60 > ScrH Then Begin
-   Scale := (ScrH - 140) Div GfxH;
+  If MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT + GfxH * Scale + 60 > ScrH Then Begin
+   Scale := (ScrH - MENUBAR_HEIGHT - TOOLBAR_HEIGHT - TAB_HEIGHT - 60) Div GfxH;
    If Scale < 1 Then Scale := 1;
   End;
   GridW := GfxW * Scale;
   GridH := GfxH * Scale;
-  P.PanelX := (ScrW - GridW) Div 2;
-  If P.PanelX < 4 Then P.PanelX := 4;
-  P.PanelY := 80;
-  If P.PanelY + GridH + 60 > ScrH Then P.PanelY := 60;
+  { Meme convention que le panneau texte ci-dessus : colle a gauche, sous }
+  { la barre d onglets, comme un editeur de texte. }
+  P.PanelX := 0;
+  P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
   GridX := P.PanelX;
   GridY := P.PanelY + 24;
   { Bordure et barre de titre }
@@ -69307,6 +69681,875 @@ Begin
  Inc(Coco3_FrameNo);
 End;
 
+Procedure AppleAtari_SaveState(Var Snap: TAppleAtariSnapshot);
+Begin
+ Snap.Mem := CPU6502_Mem;
+ Snap.A := CPU6502_A; Snap.X := CPU6502_X; Snap.Y := CPU6502_Y;
+ Snap.P := CPU6502_P; Snap.S := CPU6502_S; Snap.PC := CPU6502_PC;
+ Snap.Halted := CPU6502_Halted; Snap.ExitCode := CPU6502_ExitCode;
+ Snap.Variant := CPU6502_Variant;
+End;
+
+Procedure AppleAtari_LoadState(Var Snap: TAppleAtariSnapshot);
+Begin
+ CPU6502_Mem := Snap.Mem;
+ CPU6502_A := Snap.A; CPU6502_X := Snap.X; CPU6502_Y := Snap.Y;
+ CPU6502_P := Snap.P; CPU6502_S := Snap.S; CPU6502_PC := Snap.PC;
+ CPU6502_Halted := Snap.Halted; CPU6502_ExitCode := Snap.ExitCode;
+ CPU6502_Variant := Snap.Variant;
+End;
+
+{ ========================================================================== }
+{ Stage 1+2 (2026-08-15, suite immediate) - backend AppleII/Atari 400/800.   }
+{ Contrairement a NES/A2600/CoCo3, l ancienne boucle n etait PAS deja        }
+{ decoupee par trame (pas de peripherique video a synchroniser - juste une  }
+{ boucle serree "tant que non halte et < 1000000 instructions") : le        }
+{ decoupage ici est PAR LOT D INSTRUCTIONS (20000/appel) plutot que par     }
+{ trame. Aucun pacage GetTimestamp/WinSleep necessaire (rien a synchroniser }
+{ a 50/60 Hz) - contrairement a C64/NES/A2600/CoCo3, cette boucle tournait  }
+{ deja "aussi vite que possible" avant Stage 1, ce comportement est          }
+{ preserve tel quel, juste d ecoupe en morceaux interruptibles. }
+Procedure AppleAtari_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then AppleAtariAsync_KeyEsc := True;
+   If K = 3  Then EmuDbg_RequestBreak(EDC_6502);
+   If K = 0 Then Begin
+    If KeyPressed Then Begin
+     K := Ord(ReadKey);
+     If K = 0 Then EmuDbg_RequestBreak(EDC_6502);
+    End Else
+     EmuDbg_RequestBreak(EDC_6502);
+   End;
+  End;
+  If AppleAtariAsync_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If CPU6502_Halted Then Break;
+  If P.TotalSteps >= 1000000 Then Break;
+  EmuDbg_OnBeforeStep6502;
+  CPU6502_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+{ ========================================================================== }
+{ Stage 1+2 (2026-08-15, suite immediate) - backend "mode texte" 6809 :      }
+{ CoCo3 sans cartouche materielle (programmes Pascal/ASM, Coco3_Active=      }
+{ False) + Dragon32/64/TO7/TO8/MO5 (jamais de mode materiel pour ceux-ci).   }
+{ Meme motif que AppleAtari_RunOneChunk (boucle serree en lots plutot que    }
+{ par trame - pas de peripherique video ici non plus). Reutilise            }
+{ TCoco3Snapshot/Coco3Snaps[]/Coco3_SaveState/Coco3_LoadState TELS QUELS     }
+{ (deja capable de sauver/restaurer le coeur M6809 complet) plutot que de    }
+{ creer un type dedie - les champs Coco3_* (GIME/MMU/PIA) restent simplement}
+{ inutilises/sans effet pour ces cibles, aucun risque a les copier quand     }
+{ meme. Coco3_Active (deja un champ de TCoco3Snapshot) reste a False pour    }
+{ ces onglets et sert de disambiguateur a l execution (voir StepEmulator) : }
+{ un onglet CoCo3 partage le MEME TargetCPU '-CCOCO3' pour ses deux modes,   }
+{ Coco3_Active (restaure par Coco3_LoadState a la bascule d onglet) indique  }
+{ lequel des deux est reellement actif a un instant donne. }
+Procedure M6809Text_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then M6809TextAsync_KeyEsc := True;
+   If K = 3  Then EmuDbg_RequestBreak(EDC_6809);
+   If K = 0 Then Begin
+    If KeyPressed Then Begin
+     K := Ord(ReadKey);
+     If K = 0 Then EmuDbg_RequestBreak(EDC_6809);
+    End Else
+     EmuDbg_RequestBreak(EDC_6809);
+   End;
+  End;
+  If M6809TextAsync_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If M6809_Halted Then Break;
+  If P.TotalSteps >= 1000000 Then Break;
+  EmuDbg_OnBeforeStep6809;
+  M6809_Step;
+  Inc(P.TotalSteps);
+  If M6809_PC = 0 Then Begin
+   M6809_Halted := True;
+   M6809_ExitCode := 0;
+  End;
+ End;
+End;
+
+{ ========================================================================== }
+{ Stage 1+2 (2026-08-15, suite immediate) - M68K/Cray-1/P-Code(UCSD)/Z80.    }
+{ Aucun de ces 4 coeurs n est connu de EmuDbg (TEmuDbgCPU = 6502/8086/6809   }
+{ seulement) - Ctrl+C -> debogueur n est donc PAS cable ici (n a jamais      }
+{ ete cable avant Stage 1 non plus, pas une regression) : seul ESC pour      }
+{ arreter le programme en cours. Meme motif "lots d instructions, pas de     }
+{ pacage" qu AppleII/Atari8bit/mode-texte-6809 (aucun de ces 4 coeurs n a    }
+{ de peripherique video a synchroniser). }
+Procedure M68K_SaveState(Var Snap: TM68KSnapshot);
+Begin
+ Move(M68K_Mem, Snap.Mem, SizeOf(Snap.Mem));
+ Move(M68K_D, Snap.D, SizeOf(Snap.D));
+ Move(M68K_A, Snap.A, SizeOf(Snap.A));
+ Snap.PC := M68K_PC; Snap.SR := M68K_SR;
+ Snap.Halted := M68K_Halted; Snap.ExitCode := M68K_ExitCode;
+ Snap.Cycles := M68K_Cycles;
+End;
+
+Procedure M68K_LoadState(Var Snap: TM68KSnapshot);
+Begin
+ Move(Snap.Mem, M68K_Mem, SizeOf(M68K_Mem));
+ Move(Snap.D, M68K_D, SizeOf(M68K_D));
+ Move(Snap.A, M68K_A, SizeOf(M68K_A));
+ M68K_PC := Snap.PC; M68K_SR := Snap.SR;
+ M68K_Halted := Snap.Halted; M68K_ExitCode := Snap.ExitCode;
+ M68K_Cycles := Snap.Cycles;
+ M68K_Panel := @EmuPanel;
+End;
+
+Procedure M68K_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then M68KAsync_KeyEsc := True;
+  End;
+  If M68KAsync_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If M68K_Halted Then Break;
+  If P.TotalSteps >= MAX_CYCLES Then Break;
+  M68K_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+Procedure Cray_SaveState(Var Snap: TCraySnapshot);
+Begin
+ Move(CRAY1_Mem, Snap.Mem, SizeOf(Snap.Mem));
+ Move(CRAY1_Reg, Snap.Reg, SizeOf(Snap.Reg));
+ Snap.PC := CRAY1_PC;
+ Snap.Halted := CRAY1_Halted; Snap.ExitCode := CRAY1_ExitCode;
+ Snap.Cycles := CRAY1_Cycles;
+End;
+
+Procedure Cray_LoadState(Var Snap: TCraySnapshot);
+Begin
+ Move(Snap.Mem, CRAY1_Mem, SizeOf(CRAY1_Mem));
+ Move(Snap.Reg, CRAY1_Reg, SizeOf(CRAY1_Reg));
+ CRAY1_PC := Snap.PC;
+ CRAY1_Halted := Snap.Halted; CRAY1_ExitCode := Snap.ExitCode;
+ CRAY1_Cycles := Snap.Cycles;
+ CRAY1_Panel := @EmuPanel;
+End;
+
+Procedure Cray_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then CrayAsync_KeyEsc := True;
+  End;
+  If CrayAsync_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If CRAY1_Halted Then Break;
+  If P.TotalSteps >= 1000000 Then Break;
+  CRAY1_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+Procedure PCode2_SaveState(Var Snap: TPCode2Snapshot);
+Begin
+ Move(PCode_Mem, Snap.Mem, SizeOf(Snap.Mem));
+ Snap.CodeSize := PCode_CodeSize;
+ Move(PCode_Data, Snap.Data, SizeOf(Snap.Data));
+ Snap.PC := PCode_PC; Snap.SP := PCode_SP; Snap.MP := PCode_MP;
+ Snap.Halted := PCode_Halted; Snap.ExitCode := PCode_ExitCode;
+ Snap.Cycles := PCode_Cycles;
+End;
+
+Procedure PCode2_LoadState(Var Snap: TPCode2Snapshot);
+Begin
+ Move(Snap.Mem, PCode_Mem, SizeOf(PCode_Mem));
+ PCode_CodeSize := Snap.CodeSize;
+ Move(Snap.Data, PCode_Data, SizeOf(PCode_Data));
+ PCode_PC := Snap.PC; PCode_SP := Snap.SP; PCode_MP := Snap.MP;
+ PCode_Halted := Snap.Halted; PCode_ExitCode := Snap.ExitCode;
+ PCode_Cycles := Snap.Cycles;
+ PCode_Panel := @EmuPanel;
+End;
+
+Procedure PCode2_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then PCodeAsync_KeyEsc := True;
+  End;
+  If PCodeAsync_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If PCode_Halted Then Break;
+  If P.TotalSteps >= 1000000 Then Break;
+  PCode_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+Procedure Z80_SaveState(Var Snap: TZ80Snapshot);
+Begin
+ Move(Z80_Mem, Snap.Mem, SizeOf(Snap.Mem));
+ Snap.Areg := Z80_A; Snap.F := Z80_F; Snap.B := Z80_B; Snap.C := Z80_C;
+ Snap.D := Z80_D; Snap.E := Z80_E; Snap.H := Z80_H; Snap.L := Z80_L;
+ Snap.AA := Z80_AA; Snap.FF := Z80_FF; Snap.BB := Z80_BB; Snap.CC := Z80_CC;
+ Snap.DD := Z80_DD; Snap.EE := Z80_EE; Snap.HH := Z80_HH; Snap.LL := Z80_LL;
+ Snap.IX := Z80_IX; Snap.IY := Z80_IY; Snap.SP := Z80_SP; Snap.PC := Z80_PC;
+ Snap.Ireg := Z80_I; Snap.R := Z80_R;
+ Snap.IFF1 := Z80_IFF1; Snap.IFF2 := Z80_IFF2;
+ Snap.IM := Z80_IM;
+ Snap.Halted := Z80_Halted; Snap.ExitCode := Z80_ExitCode;
+ Snap.Cycles := Z80_Cycles; Snap.Variant := Z80_Variant;
+End;
+
+Procedure Z80_LoadState(Var Snap: TZ80Snapshot);
+Begin
+ Move(Snap.Mem, Z80_Mem, SizeOf(Z80_Mem));
+ Z80_A := Snap.Areg; Z80_F := Snap.F; Z80_B := Snap.B; Z80_C := Snap.C;
+ Z80_D := Snap.D; Z80_E := Snap.E; Z80_H := Snap.H; Z80_L := Snap.L;
+ Z80_AA := Snap.AA; Z80_FF := Snap.FF; Z80_BB := Snap.BB; Z80_CC := Snap.CC;
+ Z80_DD := Snap.DD; Z80_EE := Snap.EE; Z80_HH := Snap.HH; Z80_LL := Snap.LL;
+ Z80_IX := Snap.IX; Z80_IY := Snap.IY; Z80_SP := Snap.SP; Z80_PC := Snap.PC;
+ Z80_I := Snap.Ireg; Z80_R := Snap.R;
+ Z80_IFF1 := Snap.IFF1; Z80_IFF2 := Snap.IFF2;
+ Z80_IM := Snap.IM;
+ Z80_Halted := Snap.Halted; Z80_ExitCode := Snap.ExitCode;
+ Z80_Cycles := Snap.Cycles; Z80_Variant := Snap.Variant;
+ Z80_Panel := @EmuPanel;
+End;
+
+Procedure Z80_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then Z80Async_KeyEsc := True;
+  End;
+  If Z80Async_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If Z80_Halted Then Break;
+  If P.TotalSteps >= 1000000 Then Break;
+  Z80_Step;
+  Inc(P.TotalSteps);
+  If Z80_PC = 0 Then Begin
+   Z80_Halted := True;
+   Z80_ExitCode := 0;
+  End;
+ End;
+End;
+
+{ ========================================================================== }
+{ Stage 1 SEUL (2026-08-15, suite immediate) - backend ELF64. Contrairement  }
+{ aux 8 autres backends convertis dans cette meme session, ELF64 n a PAS de  }
+{ Stage 2 (pas de TELF64Snapshot/tableau de sauvegarde par onglet) : son     }
+{ espace virtuel emule (ELF64_Mem) fait 128 Mo (voir declaration globale),   }
+{ un tableau Array[0..MAX_WINDOWS-1] Of TELF64Snapshot statique reserverait  }
+{ donc jusqu a 32*128 Mo = 4 Go d un coup au demarrage - depasse largement   }
+{ l espace adressable d un executable 32 bits (ce fichier est compile en     }
+{ i386-Win32, voir DEVENV.exe). Une solution correcte existerait (buffer     }
+{ alloue dynamiquement via GetMem/FreeMem seulement pour les onglets ELF64   }
+{ INACTIFS) mais ajoute un risque reel de fuite/double-liberation pour un    }
+{ cas d usage etroit (2 onglets ELF64 simultanes) : NON implante ici, decision}
+{ de portee assumee (voir memoire projet). Consequence concrete : un SEUL    }
+{ onglet ELF64 a la fois est sur reellement independant. Si un second onglet }
+{ ELF64 est ouvert pendant qu un premier tourne encore, ils partageront la    }
+{ MEME memoire/les MEMES registres (meme risque de categorie que documente    }
+{ pour la famille 6502 partagee, mais ici volontairement non corrige) - PAS  }
+{ de crash, juste un etat d execution incorrect si l utilisateur bascule     }
+{ entre les deux puis reprend l un des deux. Cas rare, non demande. }
+Procedure ELF64_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then ELF64Async_KeyEsc := True;
+  End;
+  If ELF64Async_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If ELF64_Halted Then Break;
+  If P.TotalSteps >= 5000000 Then Break;
+  Elf64_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+{ Message + diagnostics de fin d execution ELF64 (registres + historique     }
+{ RIP/RSP) - extrait tel quel de l ancien bloc bloquant de ShowEmulatorPanel }
+{ en procedure reutilisable, appelee desormais depuis StepEmulator plutot    }
+{ que dupliquee. }
+Procedure ELF64_PrintEndMessage(Var P: TEmulatorPanel);
+Var
+ TraceN, TraceI: LongInt;
+ TraceLine: String;
+Begin
+ If ELF64_Halted Then Begin
+  P.CurFg := 11;
+  EmuVScr_WriteStr(P, '[' + ELF64_HaltReason + ']');
+ End Else Begin
+  P.CurFg := 12;
+  EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(P.TotalSteps) + ' instructions atteinte]');
+ End;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, IntToStr(P.TotalSteps) + ' instruction(s) executee(s).');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RIP : 0x' + HexQWord(ELF64_RIP) +
+   '   RAX : 0x' + HexQWord(ELF64_Reg[REG_RAX]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RSP : 0x' + HexQWord(ELF64_Reg[REG_RSP]) +
+   '   RDI : 0x' + HexQWord(ELF64_Reg[REG_RDI]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RCX : 0x' + HexQWord(ELF64_Reg[REG_RCX]) +
+   '   RDX : 0x' + HexQWord(ELF64_Reg[REG_RDX]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RSI : 0x' + HexQWord(ELF64_Reg[REG_RSI]) +
+   '   RBX : 0x' + HexQWord(ELF64_Reg[REG_RBX]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'RBP : 0x' + HexQWord(ELF64_Reg[REG_RBP]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If ELF64_LastBadRIP <> 0 Then Begin
+   EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
+    HexQWord(ELF64_LastBadRIP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If (ELF64_LastBadRIP <> 0) Or (Not ELF64_Halted) Then Begin
+   EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
+   For TraceI := TraceN - 1 DownTo 0 Do Begin
+    TraceLine := 'RIP=0x' +
+     HexQWord(ELF64_TraceRIP[(ELF64_TraceCount - 1 - TraceI) And 1023]) +
+     '  RSP=0x' +
+     HexQWord(ELF64_TraceRSP[(ELF64_TraceCount - 1 - TraceI) And 1023]);
+    EmuVScr_WriteStr(P, TraceLine);
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   End;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+ End;
+ P.CurFg := 7;
+ EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+ P.Running := False;
+ P.Fault := sfEndProgram;
+ P.StatusMsg := ELF64_HaltReason;
+End;
+
+{ ========================================================================== }
+{ Stage 1 SEUL (2026-08-15, suite immediate) - backend DOS/8086 (-CD/-CP).   }
+{ Meme decision de portee qu ELF64 (voir ELF64_RunOneChunk) : l etat          }
+{ periferique DOS deborde largement le seul P.CPU (deja sauve par onglet     }
+{ via EmuTabs[] comme tous les backends) - framebuffer video EmuVideo, CPU   }
+{ 32 bits protege DpmiCPU, IRQ/minuteries, XMS/EMS, souris, IPX/paquet,      }
+{ MSCDEX... des dizaines de sous-systemes globaux distincts, un Stage 2      }
+{ complet serait un chantier a part entiere. Corps de boucle extrait TEL     }
+{ QUEL (aucune logique metier changee, y compris les logs de diagnostic      }
+{ EMUDIAG*.LOG/EMUWATCH.LOG deja presents avant ce chantier) - seul le       }
+{ pompage d evenements interne (EmuPumpEv) est desormais cadence sur         }
+{ EmuHasFocus au lieu de tourner inconditionnellement, pour ne pas voler     }
+{ les evenements destines au reste de l IDE quand cet onglet n est pas       }
+{ celui que l utilisateur regarde (meme categorie de piege que le vol        }
+{ clavier C64 documente plus haut dans ce fichier). }
+Procedure DOS_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ Idx_R, KK_R: Integer;
+ EmuPumpNow: LongInt;
+ LogF_R: Text;
+ EntryAddr16: Word;
+ K: Byte;
+Begin
+ For ChunkI := 0 To 4999 Do Begin
+  If P.CPU.Fault <> sfNone Then Break;
+  EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
+  EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
+  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
+  EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
+  EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
+  EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
+  Inc(EmuOpCount[EmuTraceBuf[EmuTraceIdx].Op]);
+  { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 }
+  If (P.CPU.Segs.CS = 0) And (P.CPU.IP < $0010) And (Not EmuOvrDumped) Then Begin
+   EmuOvrDumped := True;
+   {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
+   If IOResult = 0 Then Begin
+    WriteLn(LogF_R, 'CS:IP = 0000:', HexWord(P.CPU.IP),
+      ' (saut vers IVT/null) Steps=', P.TotalSteps);
+    WriteLn(LogF_R, 'SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+      HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
+      ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+    WriteLn(LogF_R, 'Pile (16 mots a partir de SS:SP) :');
+    For Idx_R := 0 To 15 Do
+     Write(LogF_R, ' ', HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.SP + Idx_R * 2))));
+    WriteLn(LogF_R);
+    WriteLn(LogF_R, 'Trace circulaire (last 64) :');
+    For Idx_R := -64 To -1 Do Begin
+     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+     WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+      HexWord(EmuTraceBuf[KK_R].IP), ' op=',
+      HexByte(EmuTraceBuf[KK_R].Op), ' AX=',
+      HexWord(EmuTraceBuf[KK_R].AX));
+    End;
+    Close(LogF_R);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
+  { Detection : capturer le point d entree dans une zone de 0x20 (espaces).
+    Si on voit le 1er 0x20 apres autre chose, memoriser la position. }
+  If (EmuTraceBuf[EmuTraceIdx].Op = $20) Or
+     (EmuTraceBuf[EmuTraceIdx].Op = $00) Then Begin
+   If EmuRunaway = 0 Then Begin
+    EmuRunawayCS := P.CPU.Segs.CS;
+    EmuRunawayIP := P.CPU.IP;
+    EmuRunawayStep := P.TotalSteps;
+   End;
+   Inc(EmuRunaway);
+  End Else
+   EmuRunaway := 0;
+  { Detecteur runaway desactive : il declenchait des faux positifs
+    sur du code legitime contenant de longues sequences d octets
+    0x00/0x20 (donnees ou instructions ADD/AND repetees).
+    L emulateur s arrete uniquement sur ESC, faute CPU ou INT 21h AH=4Ch. }
+  EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
+  EmuDbg_OnBeforeStep8086;
+  { DPMI (voir Dpmi_Switch) : tant que le programme est en mode protege,   }
+  { chaque "pas" execute une instruction du coeur 32 bits protege PARALLELE}
+  { (DpmiCPU) plutot que le coeur 8086 reel (P.CPU) - la commutation en    }
+  { sens inverse (retour au mode reel) n est pas encore implantee (etape    }
+  { ulterieure), donc DpmiCPU.Active ne redevient jamais faux pour l instant}
+  { une fois passe en mode protege, hormis en cas d opcode non reconnu     }
+  { (voir le commentaire de tete de Dpmi_Step). }
+  If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
+  Inc(P.TotalSteps);
+  { --- VRetrace ($3DA bit 3) libre, cadencee sur le nombre de pas CPU et }
+  { non sur la lecture du port : a 750 pas/demi-periode et               }
+  { EmuStepsPerTick=5000 pas/tick BIOS (18.2 Hz), on obtient ~60 cycles   }
+  { complets par 18 ticks BIOS, soit ~60 Hz - ce que des logiciels comme  }
+  { GSDEMO1.COM mesurent via INT 1Ah pour detecter le type de moniteur.  }
+  Inc(EmuVideo.VRetraceAcc);
+  If EmuVideo.VRetraceAcc >= 750 Then Begin
+    EmuVideo.VRetraceAcc := 0;
+    EmuVideo.StatusRetrace := EmuVideo.StatusRetrace Xor 8;
+  End;
+  { --- IRQ mat?rielles --- }
+  Dec(EmuStepsToTick);
+  If EmuStepsToTick <= 0 Then Begin
+    EmuStepsToTick := EmuStepsPerTick;
+    Emu_TimerTick(P);
+    { Drainer le clavier hote vers buffer BIOS + IRQ 9 }
+    While EmuVScr_HasKey(P) Do Begin
+      EntryAddr16 := EmuVScr_PopKey(P);
+      { Le mot est encode (scancode<<8) Or ASCII. Pour les fleches
+        et touches speciales, ASCII=0 et scancode est valide. }
+      Emu_PushBiosKey(P, Hi(EntryAddr16), Lo(EntryAddr16));
+      EmuIrqPending := EmuIrqPending Or $02;
+      If Emu_ReadWord(P.CPU, $40, $1C) = Emu_ReadWord(P.CPU, $40, $1A) Then Break;
+    End;
+  End;
+  Emu_ServiceIrqs(P);
+  { --- Pompage local ESC/Ctrl+C + redessin periodique -----------------
+    Correctif Stage 1 (2026-08-15) : cette boucle appelait auparavant
+    PollEvents() directement (queue DEVENV partagee avec MainLoop) pour
+    a la fois detecter ESC/Ctrl+C ET injecter clavier/souris - or
+    MainLoop fait EXACTEMENT le meme sondage sur la MEME queue des que
+    cet onglet rend la main entre deux appels (Stage 1) : les deux
+    sondages entraient en course, et un clic destine au menu/a
+    l Explorateur/au Terminal pouvait etre "vole" par ce pompage interne
+    selon lequel des deux gagnait la course - meme categorie de piege que
+    le vol clavier C64 deja documente plus haut, mais touchant en plus la
+    SOURIS ici. Corrige en reprenant le MEME motif que les 8 autres
+    backends convertis dans cette session : KeyPressed/ReadKey (etat
+    clavier bas niveau du systeme, PAS la queue DEVENV - aucune course
+    possible) pour ESC/Ctrl+C uniquement. L injection clavier/souris vers
+    la machine emulee (EmuVScr_PushKey/EmuMouse_UpdateFromHost) se fait
+    desormais UNIQUEMENT via HandleEmulatorPanelEvent, appele par
+    MainLoop APRES avoir deja verifie hit-test/focus - seule autorite de
+    routage, plus de sondage concurrent. }
+  If EmuHasFocus Then Begin
+   While KeyPressed Do Begin
+    K := Ord(ReadKey);
+    If K = 27 Then Begin
+     P.CPU.Fault := sfEndProgram;
+     P.StatusMsg := 'Emulation interrompue par utilisateur';
+    End Else If K = 3 Then
+     EmuDbg_RequestBreak(EDC_8086)
+    Else If K = 0 Then Begin
+     If KeyPressed Then Begin
+      K := Ord(ReadKey);
+      If K = 0 Then EmuDbg_RequestBreak(EDC_8086);
+     End Else
+      EmuDbg_RequestBreak(EDC_8086);
+    End;
+   End;
+   If P.CPU.Fault <> sfNone Then Break;
+   { Redessiner au plus une fois toutes les 80 ms pour eviter le
+     scintillement (un repaint complet est couteux et provoquerait
+     un flash si appele trop souvent). }
+   EmuPumpNow := GetTimestamp;
+   If (EmuPumpNow - DOSAsync_LastDraw) >= 80 Then Begin
+     DrawEmulatorPanel(P);
+     DOSAsync_LastDraw := EmuPumpNow;
+     P.NeedRepaint := False;
+   End;
+  End;
+ End;
+End;
+
+{ Message + diagnostics de fin d execution DOS/8086 - extrait tel quel de   }
+{ l ancien bloc bloquant de ShowEmulatorPanel (memes fichiers .LOG deja      }
+{ presents avant ce chantier) en procedure reutilisable. }
+Procedure DOS_PrintEndMessage(Var P: TEmulatorPanel);
+Var
+ LogF_R: Text;
+ Idx_R, KK_R: Integer;
+Begin
+ { Toujours dumper le trace pour le diagnostic }
+ Emu_DumpTrace;
+ P.Fault := P.CPU.Fault;
+ {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
+ If IOResult = 0 Then Begin
+  WriteLn(LogF_R, 'Sortie de boucle. Steps=', P.TotalSteps,
+   ' Fault=', P.CPU.Fault, ' (', Emu_FaultText(P.CPU.Fault), ')');
+  WriteLn(LogF_R, 'Final CS:IP=', HexWord(P.CPU.Segs.CS), ':',
+   HexWord(P.CPU.IP), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+   HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
+   ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+  WriteLn(LogF_R, 'VIDEO: Int10=', EmuDiag_Int10Cnt,
+                  ' VidWr=', EmuDiag_VidWrCnt,
+                  ' PixWr=', EmuDiag_PixWrCnt,
+                  ' Mode=$', HexByte(EmuDiag_LastMode),
+                  ' IsGfx=', EmuVideo.IsGraphic,
+                  ' Planar=', EmuVideo.IsPlanar,
+                  ' Draws=', EmuDiag_DrawCnt,
+                  ' WxH=', EmuVideo.Width, 'x', EmuVideo.Height);
+  WriteLn(LogF_R, 'Opcodes 80186 / shifts executes :');
+  WriteLn(LogF_R, '  PUSHA(60)=', EmuOpCount[$60],
+                  ' POPA(61)=', EmuOpCount[$61],
+                  ' BOUND(62)=', EmuOpCount[$62],
+                  ' PUSHimm16(68)=', EmuOpCount[$68],
+                  ' IMUL69=', EmuOpCount[$69],
+                  ' PUSHimm8(6A)=', EmuOpCount[$6A],
+                  ' IMUL6B=', EmuOpCount[$6B]);
+  WriteLn(LogF_R, '  INS/OUTS(6C-6F)=', EmuOpCount[$6C]+EmuOpCount[$6D]+
+                                          EmuOpCount[$6E]+EmuOpCount[$6F],
+                  ' ENTER(C8)=', EmuOpCount[$C8],
+                  ' LEAVE(C9)=', EmuOpCount[$C9],
+                  ' SHIFTimm(C0/C1)=', EmuOpCount[$C0]+EmuOpCount[$C1]);
+  WriteLn(LogF_R, '  SHIFT1(D0/D1)=', EmuOpCount[$D0]+EmuOpCount[$D1],
+                  ' SHIFTcl(D2/D3)=', EmuOpCount[$D2]+EmuOpCount[$D3],
+                  ' DIV/IDIV(F6/F7)=', EmuOpCount[$F6]+EmuOpCount[$F7],
+                  ' INT(CD)=', EmuOpCount[$CD]);
+  If EmuDiv0Caught Then Begin
+   WriteLn(LogF_R, 'DIV0 SNAPSHOT (1er fault) :');
+   WriteLn(LogF_R, '  at ', HexWord(EmuDiv0CS), ':', HexWord(EmuDiv0IP),
+    ' op=', HexByte(EmuDiv0Op), ' /', EmuDiv0SubOp,
+    ' divisor=', EmuDiv0Div);
+   WriteLn(LogF_R, '  AX=', HexWord(EmuDiv0AX), ' BX=', HexWord(EmuDiv0BX),
+    ' CX=', HexWord(EmuDiv0CX), ' DX=', HexWord(EmuDiv0DX),
+    ' SI=', HexWord(EmuDiv0SI), ' DI=', HexWord(EmuDiv0DI),
+    ' BP=', HexWord(EmuDiv0BP));
+   WriteLn(LogF_R, '  DS=', HexWord(EmuDiv0DS), ' ES=', HexWord(EmuDiv0ES),
+    ' SS=', HexWord(EmuDiv0SS), ' SP=', HexWord(EmuDiv0SP));
+   WriteLn(LogF_R, '  Bytes au DIV (', HexWord(EmuDiv0CS), ':',
+    HexWord(EmuDiv0IP), '..+1F) :');
+   Write(LogF_R, '   ');
+   For Idx_R := 0 To $1F Do
+    Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
+     Word(EmuDiv0IP + Idx_R))), ' ');
+   WriteLn(LogF_R);
+  End;
+  WriteLn(LogF_R, 'Trace circulaire (last 64 avant arret) :');
+  For Idx_R := -64 To -1 Do Begin
+   KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+   WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+    HexWord(EmuTraceBuf[KK_R].IP), ' op=',
+    HexByte(EmuTraceBuf[KK_R].Op),
+    ' AX=', HexWord(EmuTraceBuf[KK_R].AX),
+    ' ES=', HexWord(EmuTraceBuf[KK_R].ES),
+    ' DI=', HexWord(EmuTraceBuf[KK_R].DI),
+    ' CX=', HexWord(EmuTraceBuf[KK_R].CX));
+  End;
+  Close(LogF_R);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ P.CurFg := 11;
+ EmuVScr_WriteStr(P, '[Fin d execution : ' +
+  Emu_FaultText(P.Fault) + ' apres ' + IntToStr(P.TotalSteps) +
+  ' instructions]');
+ If P.Fault = sfInvalidCode Then Begin
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, '  opcode = ' +
+   Emu_HexByte(P.CPU.LastBadOp) + ' a ' +
+   Emu_HexWord(P.CPU.LastBadCS) + ':' +
+   Emu_HexWord(P.CPU.LastBadIP));
+ End;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+ If P.StatusMsg = '' Then
+  P.StatusMsg := 'Phase 2 (1) : ' + Emu_FaultText(P.Fault);
+ P.Running := False;
+ EmuDbg.Active := False;
+ EmuDbg.CPU    := EDC_NONE;
+ Emu_Done(P.CPU);
+End;
+
+{ Stage 2 (2026-08-15, suite immediate) - backend DOS/8086. Voir TDOSSnapshot}
+{ pour l architecture d ensemble. Ordre important : SaveState DOIT toujours  }
+{ etre appele AVANT que le nouvel onglet ne (re)initialise (que ce soit via  }
+{ un nouvel onglet - ShowEmulatorPanel appelant Emu_XmsInit/EmsInit/DpmiInit/}
+{ Emu_VidInit qui verifient Dispose/MemReady avant de re-allouer - ou via     }
+{ LoadState d un onglet existant qui ecrase tout de toute facon) : SaveState }
+{ met TOUJOURS les 4 pointeurs globaux a Nil apres les avoir voles vers le    }
+{ snapshot, pour que ces verifications Dispose/MemReady se comportent         }
+{ correctement pour la PROCHAINE utilisation (jamais de partage accidentel   }
+{ d un meme tampon entre 2 onglets). }
+Procedure DOS_SaveState(Var Snap: TDOSSnapshot);
+Var I: Integer;
+Begin
+ Snap.Video := EmuVideo;
+ Snap.Video.Mem := EmuVideo.Mem;
+ EmuVideo.Mem := Nil;
+ EmuVideo.MemReady := False;
+ Snap.Ipx := EmuIpx;
+ Snap.Pkt := EmuPkt;
+ Snap.Xms := EmuXms;
+ Snap.XmsMemPtr := EmuXmsMem; EmuXmsMem := Nil;
+ Snap.Ems := EmuEms;
+ Snap.EmsMemPtr := EmuEmsMem; EmuEmsMem := Nil;
+ Snap.Dpmi := EmuDpmi;
+ Snap.DpmiExtMemPtr := EmuDpmiExtMem; EmuDpmiExtMem := Nil;
+ Snap.DpmiCPUState := DpmiCPU;
+ Snap.MouseInst := EmuMouseInst; Snap.MousePS2Active := EmuMousePS2Active;
+ Snap.MouseActive := EmuMouseActive;
+ Snap.MouseVis := EmuMouseVis; Snap.MouseX := EmuMouseX; Snap.MouseY := EmuMouseY;
+ Snap.MouseBtns := EmuMouseBtns;
+ Snap.MouseXMin := EmuMouseXMin; Snap.MouseXMax := EmuMouseXMax;
+ Snap.MouseYMin := EmuMouseYMin; Snap.MouseYMax := EmuMouseYMax;
+ Snap.MouseHRatio := EmuMouseHRatio; Snap.MouseVRatio := EmuMouseVRatio;
+ Snap.MouseMickX := EmuMouseMickX; Snap.MouseMickY := EmuMouseMickY;
+ Move(EmuMousePressCnt, Snap.MousePressCnt, SizeOf(Snap.MousePressCnt));
+ Move(EmuMouseRelCnt, Snap.MouseRelCnt, SizeOf(Snap.MouseRelCnt));
+ Move(EmuMousePressX, Snap.MousePressX, SizeOf(Snap.MousePressX));
+ Move(EmuMouseRelX, Snap.MouseRelX, SizeOf(Snap.MouseRelX));
+ Move(EmuMousePressY, Snap.MousePressY, SizeOf(Snap.MousePressY));
+ Move(EmuMouseRelY, Snap.MouseRelY, SizeOf(Snap.MouseRelY));
+ Snap.MouseHandlerSeg := EmuMouseHandlerSeg; Snap.MouseHandlerOfs := EmuMouseHandlerOfs;
+ Snap.MouseHandlerMsk := EmuMouseHandlerMsk;
+ Snap.MouseAltHandlerSeg := EmuMouseAltHandlerSeg; Snap.MouseAltHandlerOfs := EmuMouseAltHandlerOfs;
+ Snap.MouseAltHandlerMsk := EmuMouseAltHandlerMsk;
+ Snap.MouseVendor := EmuMouseVendor; Snap.MouseVersion := EmuMouseVersion;
+ Snap.MouseDisplayPage := EmuMouseDisplayPage; Snap.MouseSoftDisabled := EmuMouseSoftDisabled;
+ Snap.MouseBiosEnabled := EmuMouseBiosEnabled;
+ Snap.MouseBiosCallbackSeg := EmuMouseBiosCallbackSeg; Snap.MouseBiosCallbackOfs := EmuMouseBiosCallbackOfs;
+ Snap.MouseBiosSampleRate := EmuMouseBiosSampleRate; Snap.MouseBiosResolution := EmuMouseBiosResolution;
+ Snap.MouseContSeg := EmuMouseContSeg; Snap.MouseContOfs := EmuMouseContOfs;
+ Snap.MouseCallPending := EmuMouseCallPending; Snap.MouseCallKind := EmuMouseCallKind;
+ Snap.MouseCallMask := EmuMouseCallMask;
+ Snap.MouseCallPrimDone := EmuMouseCallPrimDone; Snap.MouseCallAltDone := EmuMouseCallAltDone;
+ Snap.MouseCallBiosDone := EmuMouseCallBiosDone;
+ Snap.MouseCallBtn := EmuMouseCallBtn;
+ Snap.MouseCallCX := EmuMouseCallCX; Snap.MouseCallDX := EmuMouseCallDX;
+ Snap.MouseCallSI := EmuMouseCallSI; Snap.MouseCallDI := EmuMouseCallDI;
+ Snap.MouseCallSavedCS := EmuMouseCallSavedCS; Snap.MouseCallSavedIP := EmuMouseCallSavedIP;
+ For I := 5 To 31 Do Begin
+  Snap.FileH[I] := EmuFileH[I];
+  Snap.FileOpen[I] := EmuFileOpen[I];
+  Snap.FileFirstRd[I] := EmuFileFirstRd[I];
+  Snap.FileName[I] := EmuFileName[I];
+  Snap.FileMode[I] := EmuFileMode[I];
+  Snap.FileIsCdrom[I] := EmuFileIsCdrom[I];
+  Snap.CdFileVol[I] := EmuCdFileVol[I];
+  Snap.CdFileLBA[I] := EmuCdFileLBA[I];
+  Snap.CdFileSize[I] := EmuCdFileSize[I];
+  Snap.CdFilePos[I] := EmuCdFilePos[I];
+ End;
+ Snap.DtaSeg := EmuDtaSeg; Snap.DtaOfs := EmuDtaOfs;
+ Snap.PspSeg := EmuPspSeg; Snap.NextFreeSeg := EmuNextFreeSeg;
+ Snap.FindIsCdrom := EmuFindIsCdrom;
+ Move(EmuCdFindSize, Snap.CdFindSize, SizeOf(Snap.CdFindSize));
+ Move(EmuCdFindIsDir, Snap.CdFindIsDir, SizeOf(Snap.CdFindIsDir));
+ Move(EmuCdFindDate, Snap.CdFindDate, SizeOf(Snap.CdFindDate));
+ Move(EmuCdFindTime, Snap.CdFindTime, SizeOf(Snap.CdFindTime));
+ Snap.FindMask := EmuFindMask; Snap.FindAttr := EmuFindAttr;
+ For I := 0 To 63 Do Snap.FindResults[I] := EmuFindResults[I];
+ Snap.FindCount := EmuFindCount; Snap.FindIndex := EmuFindIndex;
+ Snap.ExitCode2 := EmuExitCode; Snap.ExitType := EmuExitType;
+ Snap.ExtErr := EmuExtErr;
+ Snap.ExtErrCls := EmuExtErrCls; Snap.ExtErrAct := EmuExtErrAct; Snap.ExtErrLoc := EmuExtErrLoc;
+ Snap.VerifyFlag := EmuVerifyFlag; Snap.BreakFlag := EmuBreakFlag;
+ Snap.AllocStrat := EmuAllocStrat; Snap.SwitchChar := EmuSwitchChar;
+ Snap.TickCounter := EmuTickCounter;
+ Snap.StepsPerTick := EmuStepsPerTick; Snap.StepsToTick := EmuStepsToTick;
+ Snap.IrqPending := EmuIrqPending;
+ Snap.CMOSIndex := EmuCMOS_Index;
+ Move(EmuCMOS_Reg, Snap.CMOSReg, SizeOf(Snap.CMOSReg));
+ Move(EmuTraceBuf, Snap.TraceBuf, SizeOf(Snap.TraceBuf));
+ Snap.TraceIdx := EmuTraceIdx; Snap.TraceCnt := EmuTraceCnt;
+ Snap.Runaway := EmuRunaway;
+ Snap.RunawayCS := EmuRunawayCS; Snap.RunawayIP := EmuRunawayIP; Snap.RunawayStep := EmuRunawayStep;
+ Snap.OvrDumped := EmuOvrDumped; Snap.CallDumped := EmuCallDumped;
+ Snap.WatchEnabled := EmuWatchEnabled;
+ Snap.WatchPhysLo := EmuWatchPhysLo; Snap.WatchPhysHi := EmuWatchPhysHi;
+ Snap.WatchHits := EmuWatchHits;
+ Snap.Div0Caught := EmuDiv0Caught;
+ Snap.Div0CS := EmuDiv0CS; Snap.Div0IP := EmuDiv0IP;
+ Snap.Div0Op := EmuDiv0Op; Snap.Div0SubOp := EmuDiv0SubOp; Snap.Div0Div := EmuDiv0Div;
+ Snap.Div0AX := EmuDiv0AX; Snap.Div0DX := EmuDiv0DX; Snap.Div0BX := EmuDiv0BX; Snap.Div0CX := EmuDiv0CX;
+ Snap.Div0SI := EmuDiv0SI; Snap.Div0DI := EmuDiv0DI; Snap.Div0BP := EmuDiv0BP;
+ Snap.Div0DS := EmuDiv0DS; Snap.Div0ES := EmuDiv0ES; Snap.Div0SS := EmuDiv0SS; Snap.Div0SP := EmuDiv0SP;
+ Snap.FpuTrap := EmuFpuTrap; Snap.FpuLogged := EmuFpuLogged;
+ Move(EmuOpCount, Snap.OpCount, SizeOf(Snap.OpCount));
+ Snap.DiagInt10Cnt := EmuDiag_Int10Cnt; Snap.DiagVidWrCnt := EmuDiag_VidWrCnt;
+ Snap.DiagPixWrCnt := EmuDiag_PixWrCnt; Snap.DiagLastMode := EmuDiag_LastMode;
+ Snap.DiagDrawCnt := EmuDiag_DrawCnt;
+ Snap.ExeDir := EmuExeDir;
+ Snap.FloppyMotor := EmuFloppyMotor;
+ Snap.AsyncPumpCnt := DOSAsync_PumpCnt; Snap.AsyncLastDraw := DOSAsync_LastDraw;
+End;
+
+Procedure DOS_LoadState(Var Snap: TDOSSnapshot);
+Var I: Integer;
+Begin
+ EmuVideo := Snap.Video;
+ EmuVideo.Mem := Snap.Video.Mem;
+ EmuIpx := Snap.Ipx;
+ EmuPkt := Snap.Pkt;
+ EmuXms := Snap.Xms;
+ EmuXmsMem := Snap.XmsMemPtr;
+ EmuEms := Snap.Ems;
+ EmuEmsMem := Snap.EmsMemPtr;
+ EmuDpmi := Snap.Dpmi;
+ EmuDpmiExtMem := Snap.DpmiExtMemPtr;
+ DpmiCPU := Snap.DpmiCPUState;
+ EmuMouseInst := Snap.MouseInst; EmuMousePS2Active := Snap.MousePS2Active;
+ EmuMouseActive := Snap.MouseActive;
+ EmuMouseVis := Snap.MouseVis; EmuMouseX := Snap.MouseX; EmuMouseY := Snap.MouseY;
+ EmuMouseBtns := Snap.MouseBtns;
+ EmuMouseXMin := Snap.MouseXMin; EmuMouseXMax := Snap.MouseXMax;
+ EmuMouseYMin := Snap.MouseYMin; EmuMouseYMax := Snap.MouseYMax;
+ EmuMouseHRatio := Snap.MouseHRatio; EmuMouseVRatio := Snap.MouseVRatio;
+ EmuMouseMickX := Snap.MouseMickX; EmuMouseMickY := Snap.MouseMickY;
+ Move(Snap.MousePressCnt, EmuMousePressCnt, SizeOf(EmuMousePressCnt));
+ Move(Snap.MouseRelCnt, EmuMouseRelCnt, SizeOf(EmuMouseRelCnt));
+ Move(Snap.MousePressX, EmuMousePressX, SizeOf(EmuMousePressX));
+ Move(Snap.MouseRelX, EmuMouseRelX, SizeOf(EmuMouseRelX));
+ Move(Snap.MousePressY, EmuMousePressY, SizeOf(EmuMousePressY));
+ Move(Snap.MouseRelY, EmuMouseRelY, SizeOf(EmuMouseRelY));
+ EmuMouseHandlerSeg := Snap.MouseHandlerSeg; EmuMouseHandlerOfs := Snap.MouseHandlerOfs;
+ EmuMouseHandlerMsk := Snap.MouseHandlerMsk;
+ EmuMouseAltHandlerSeg := Snap.MouseAltHandlerSeg; EmuMouseAltHandlerOfs := Snap.MouseAltHandlerOfs;
+ EmuMouseAltHandlerMsk := Snap.MouseAltHandlerMsk;
+ EmuMouseVendor := Snap.MouseVendor; EmuMouseVersion := Snap.MouseVersion;
+ EmuMouseDisplayPage := Snap.MouseDisplayPage; EmuMouseSoftDisabled := Snap.MouseSoftDisabled;
+ EmuMouseBiosEnabled := Snap.MouseBiosEnabled;
+ EmuMouseBiosCallbackSeg := Snap.MouseBiosCallbackSeg; EmuMouseBiosCallbackOfs := Snap.MouseBiosCallbackOfs;
+ EmuMouseBiosSampleRate := Snap.MouseBiosSampleRate; EmuMouseBiosResolution := Snap.MouseBiosResolution;
+ EmuMouseContSeg := Snap.MouseContSeg; EmuMouseContOfs := Snap.MouseContOfs;
+ EmuMouseCallPending := Snap.MouseCallPending; EmuMouseCallKind := Snap.MouseCallKind;
+ EmuMouseCallMask := Snap.MouseCallMask;
+ EmuMouseCallPrimDone := Snap.MouseCallPrimDone; EmuMouseCallAltDone := Snap.MouseCallAltDone;
+ EmuMouseCallBiosDone := Snap.MouseCallBiosDone;
+ EmuMouseCallBtn := Snap.MouseCallBtn;
+ EmuMouseCallCX := Snap.MouseCallCX; EmuMouseCallDX := Snap.MouseCallDX;
+ EmuMouseCallSI := Snap.MouseCallSI; EmuMouseCallDI := Snap.MouseCallDI;
+ EmuMouseCallSavedCS := Snap.MouseCallSavedCS; EmuMouseCallSavedIP := Snap.MouseCallSavedIP;
+ For I := 5 To 31 Do Begin
+  EmuFileH[I] := Snap.FileH[I];
+  EmuFileOpen[I] := Snap.FileOpen[I];
+  EmuFileFirstRd[I] := Snap.FileFirstRd[I];
+  EmuFileName[I] := Snap.FileName[I];
+  EmuFileMode[I] := Snap.FileMode[I];
+  EmuFileIsCdrom[I] := Snap.FileIsCdrom[I];
+  EmuCdFileVol[I] := Snap.CdFileVol[I];
+  EmuCdFileLBA[I] := Snap.CdFileLBA[I];
+  EmuCdFileSize[I] := Snap.CdFileSize[I];
+  EmuCdFilePos[I] := Snap.CdFilePos[I];
+ End;
+ EmuDtaSeg := Snap.DtaSeg; EmuDtaOfs := Snap.DtaOfs;
+ EmuPspSeg := Snap.PspSeg; EmuNextFreeSeg := Snap.NextFreeSeg;
+ EmuFindIsCdrom := Snap.FindIsCdrom;
+ Move(Snap.CdFindSize, EmuCdFindSize, SizeOf(EmuCdFindSize));
+ Move(Snap.CdFindIsDir, EmuCdFindIsDir, SizeOf(EmuCdFindIsDir));
+ Move(Snap.CdFindDate, EmuCdFindDate, SizeOf(EmuCdFindDate));
+ Move(Snap.CdFindTime, EmuCdFindTime, SizeOf(EmuCdFindTime));
+ EmuFindMask := Snap.FindMask; EmuFindAttr := Snap.FindAttr;
+ For I := 0 To 63 Do EmuFindResults[I] := Snap.FindResults[I];
+ EmuFindCount := Snap.FindCount; EmuFindIndex := Snap.FindIndex;
+ EmuExitCode := Snap.ExitCode2; EmuExitType := Snap.ExitType;
+ EmuExtErr := Snap.ExtErr;
+ EmuExtErrCls := Snap.ExtErrCls; EmuExtErrAct := Snap.ExtErrAct; EmuExtErrLoc := Snap.ExtErrLoc;
+ EmuVerifyFlag := Snap.VerifyFlag; EmuBreakFlag := Snap.BreakFlag;
+ EmuAllocStrat := Snap.AllocStrat; EmuSwitchChar := Snap.SwitchChar;
+ EmuTickCounter := Snap.TickCounter;
+ EmuStepsPerTick := Snap.StepsPerTick; EmuStepsToTick := Snap.StepsToTick;
+ EmuIrqPending := Snap.IrqPending;
+ EmuCMOS_Index := Snap.CMOSIndex;
+ Move(Snap.CMOSReg, EmuCMOS_Reg, SizeOf(EmuCMOS_Reg));
+ Move(Snap.TraceBuf, EmuTraceBuf, SizeOf(EmuTraceBuf));
+ EmuTraceIdx := Snap.TraceIdx; EmuTraceCnt := Snap.TraceCnt;
+ EmuRunaway := Snap.Runaway;
+ EmuRunawayCS := Snap.RunawayCS; EmuRunawayIP := Snap.RunawayIP; EmuRunawayStep := Snap.RunawayStep;
+ EmuOvrDumped := Snap.OvrDumped; EmuCallDumped := Snap.CallDumped;
+ EmuWatchEnabled := Snap.WatchEnabled;
+ EmuWatchPhysLo := Snap.WatchPhysLo; EmuWatchPhysHi := Snap.WatchPhysHi;
+ EmuWatchHits := Snap.WatchHits;
+ EmuDiv0Caught := Snap.Div0Caught;
+ EmuDiv0CS := Snap.Div0CS; EmuDiv0IP := Snap.Div0IP;
+ EmuDiv0Op := Snap.Div0Op; EmuDiv0SubOp := Snap.Div0SubOp; EmuDiv0Div := Snap.Div0Div;
+ EmuDiv0AX := Snap.Div0AX; EmuDiv0DX := Snap.Div0DX; EmuDiv0BX := Snap.Div0BX; EmuDiv0CX := Snap.Div0CX;
+ EmuDiv0SI := Snap.Div0SI; EmuDiv0DI := Snap.Div0DI; EmuDiv0BP := Snap.Div0BP;
+ EmuDiv0DS := Snap.Div0DS; EmuDiv0ES := Snap.Div0ES; EmuDiv0SS := Snap.Div0SS; EmuDiv0SP := Snap.Div0SP;
+ EmuFpuTrap := Snap.FpuTrap; EmuFpuLogged := Snap.FpuLogged;
+ Move(Snap.OpCount, EmuOpCount, SizeOf(EmuOpCount));
+ EmuDiag_Int10Cnt := Snap.DiagInt10Cnt; EmuDiag_VidWrCnt := Snap.DiagVidWrCnt;
+ EmuDiag_PixWrCnt := Snap.DiagPixWrCnt; EmuDiag_LastMode := Snap.DiagLastMode;
+ EmuDiag_DrawCnt := Snap.DiagDrawCnt;
+ EmuExeDir := Snap.ExeDir;
+ EmuFloppyMotor := Snap.FloppyMotor;
+ DOSAsync_PumpCnt := Snap.AsyncPumpCnt; DOSAsync_LastDraw := Snap.AsyncLastDraw;
+End;
+
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
@@ -69520,29 +70763,14 @@ Begin NesActive := False;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
-  { Boucle d execution }
-  Steps := 0;
-  While (Not M68K_Halted) And (Steps < MAX_CYCLES) Do Begin
-   M68K_Step;
-   Inc(Steps);
-  End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 11;
-  If M68K_Halted Then
-   EmuVScr_WriteStr(P, '[Fin d execution : TRAP #15 termine apres ' +
-    IntToStr(Steps) + ' instructions, code=' +
-    IntToStr(M68K_ExitCode) + ']')
-  Else
-   EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(MAX_CYCLES) +
-    ' cycles atteinte (boucle infinie ?)]');
-  P.CurFg := OldFg;
-  P.CurBg := OldBg;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Emulateur 68000 : ' + IntToStr(Steps) + ' instr.';
+  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
+  { meme motif que les autres backends convertis. Pas de peripherique       }
+  { video ici (voir M68K_RunOneChunk), donc pas de pacage temps-reel. }
+  M68KAsync_KeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
   Exit;
  End;
  If IsCray Then Begin
@@ -69585,27 +70813,12 @@ Begin NesActive := False;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
-  Steps := 0;
-  While (Not CRAY1_Halted) And (Steps < 1000000) Do Begin
-   CRAY1_Step;
-   Inc(Steps);
-  End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 11;
-  If CRAY1_Halted Then
-   EmuVScr_WriteStr(P, '[Fin Cray-1 : ' +
-    IntToStr(Steps) + ' instructions, code=' +
-    IntToStr(CRAY1_ExitCode) + ']')
-  Else
-   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
-  P.CurFg := OldFg;
-  P.CurBg := OldBg;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Emulateur Cray-1 : ' + IntToStr(Steps) + ' instr.';
+  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement. --- }
+  CrayAsync_KeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
   Exit;
  End;
  If IsPCode Then Begin
@@ -69642,27 +70855,12 @@ Begin NesActive := False;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
-  Steps := 0;
-  While (Not PCode_Halted) And (Steps < 1000000) Do Begin
-   PCode_Step;
-   Inc(Steps);
-  End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 11;
-  If PCode_Halted Then
-   EmuVScr_WriteStr(P, '[Fin p-machine : ' +
-    IntToStr(Steps) + ' instructions, code=' +
-    IntToStr(PCode_ExitCode) + ']')
-  Else
-   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
-  P.CurFg := OldFg;
-  P.CurBg := OldBg;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Emulateur p-machine : ' + IntToStr(Steps) + ' instr.';
+  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement. --- }
+  PCodeAsync_KeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
   Exit;
  End;
  If Is6502 Then Begin
@@ -70058,34 +71256,17 @@ Begin NesActive := False;
    P.Loaded := True;
    Exit;
   End Else Begin
-   While (Not CPU6502_Halted) And (Steps < 1000000) Do Begin
-    CPU6502_Step;
-    Inc(Steps);
-   End;
+   { ----- Stage 1 (2026-08-15) : AppleII/Atari 400/800 - charge puis rend  }
+   { la main immediatement, meme motif que NES/A2600/C64/CoCo3. Pas de       }
+   { peripherique video a synchroniser ici (voir AppleAtari_RunOneChunk),   }
+   { donc pas de pacage temps-reel - juste des lots d instructions. }
+   AppleAtariAsync_KeyEsc := False;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
+   DrawEmulatorPanel(P);
+   P.Loaded := True;
+   Exit;
   End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 11;
-  If CPU6502_Halted Then
-   EmuVScr_WriteStr(P, '[Fin 6502 : ' +
-    IntToStr(Steps) + ' instructions, code=' +
-    IntToStr(CPU6502_ExitCode) + ']')
-  Else If TargetCPU = '-CNES' Then
-   EmuVScr_WriteStr(P, '[Emulation NES arretee : ' +
-    IntToStr(Steps) + ' instr / ' + IntToStr(NesFrameNo) + ' trames]')
-  Else If TargetCPU = '-CATARI2600' Then
-   EmuVScr_WriteStr(P, '[Emulation A2600 arretee : ' +
-    IntToStr(Steps) + ' instr / ' + IntToStr(A2600_FrameNo) + ' trames]')
-  Else
-   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
-  P.CurFg := OldFg;
-  P.CurBg := OldBg;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Emulateur 6502 : ' + IntToStr(Steps) + ' instr.';
-  Exit;
  End;
  If IsZ80 Then Begin
   { ----- Emulateur Z80 (TRS-80, MSX, Adam) ----- }
@@ -70130,32 +71311,12 @@ Begin NesActive := False;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
-  Steps := 0;
-  While (Not Z80_Halted) And (Steps < 1000000) Do Begin
-   Z80_Step;
-   Inc(Steps);
-   { Si PC retombe sur la sentinelle de fin -> stopper }
-   If Z80_PC = 0 Then Begin
-    Z80_Halted := True;
-    Z80_ExitCode := 0;
-   End;
-  End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 11;
-  If Z80_Halted Then
-   EmuVScr_WriteStr(P, '[Fin Z80 : ' +
-    IntToStr(Steps) + ' instructions, code=' +
-    IntToStr(Z80_ExitCode) + ']')
-  Else
-   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
-  P.CurFg := OldFg;
-  P.CurBg := OldBg;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Emulateur Z80 : ' + IntToStr(Steps) + ' instr.';
+  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement. --- }
+  Z80Async_KeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
   Exit;
  End;
  If Is6809 Then Begin
@@ -70254,32 +71415,17 @@ Begin NesActive := False;
    P.Loaded := True;
    Exit;
   End Else Begin
-   While (Not M6809_Halted) And (Steps < 1000000) Do Begin
-    M6809_Step;
-    Inc(Steps);
-    If M6809_PC = 0 Then Begin
-     M6809_Halted := True;
-     M6809_ExitCode := 0;
-    End;
-   End;
+   { ----- Stage 1 (2026-08-15) : mode texte 6809 (CoCo3 sans cartouche,   }
+   { Dragon32/64/TO7/TO8/MO5) - charge puis rend la main immediatement,     }
+   { meme motif que le mode materiel CoCo3 ci-dessus. Pas de peripherique  }
+   { video ici (voir M6809Text_RunOneChunk), donc pas de pacage temps-reel.}
+   M6809TextAsync_KeyEsc := False;
+   EmuHasFocus := True;
+   EmuLastActiveState := True;
+   DrawEmulatorPanel(P);
+   P.Loaded := True;
+   Exit;
   End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  P.CurFg := 11;
-  If M6809_Halted Then
-   EmuVScr_WriteStr(P, '[Fin 6809 : ' +
-    IntToStr(Steps) + ' instructions, code=' +
-    IntToStr(M6809_ExitCode) + ']')
-  Else
-   EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
-  P.CurFg := OldFg;
-  P.CurBg := OldBg;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Emulateur 6809 : ' + IntToStr(Steps) + ' instr.';
-  Exit;
  End;
  If IsELF64 Then Begin
   { ----- Emulateur Linux ELF64 x86-64 ----- }
@@ -70316,77 +71462,15 @@ Begin NesActive := False;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
-  { Executer le programme : boucle bornee, comme les autres emulateurs   }
-  { integres (M6809, 6502...). S arrete des qu une instruction inconnue  }
-  { ou un SYSCALL (dispatche a l etape suivante de la feuille de route)  }
-  { est rencontree.                                                      }
-  Steps := 0;
-  While (Not ELF64_Halted) And (Steps < 5000000) Do Begin
-   Elf64_Step;
-   Inc(Steps);
-  End;
-  If ELF64_Halted Then Begin
-   P.CurFg := 11;
-   EmuVScr_WriteStr(P, '[' + ELF64_HaltReason + ']');
-  End Else Begin
-   P.CurFg := 12;
-   EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(Steps) + ' instructions atteinte]');
-  End;
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
-   P.CurFg := 7;
-   EmuVScr_WriteStr(P, IntToStr(Steps) + ' instruction(s) executee(s).');
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   EmuVScr_WriteStr(P, 'RIP : 0x' + HexQWord(ELF64_RIP) +
-    '   RAX : 0x' + HexQWord(ELF64_Reg[REG_RAX]));
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   EmuVScr_WriteStr(P, 'RSP : 0x' + HexQWord(ELF64_Reg[REG_RSP]) +
-    '   RDI : 0x' + HexQWord(ELF64_Reg[REG_RDI]));
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   EmuVScr_WriteStr(P, 'RCX : 0x' + HexQWord(ELF64_Reg[REG_RCX]) +
-    '   RDX : 0x' + HexQWord(ELF64_Reg[REG_RDX]));
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   EmuVScr_WriteStr(P, 'RSI : 0x' + HexQWord(ELF64_Reg[REG_RSI]) +
-    '   RBX : 0x' + HexQWord(ELF64_Reg[REG_RBX]));
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   EmuVScr_WriteStr(P, 'RBP : 0x' + HexQWord(ELF64_Reg[REG_RBP]));
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   If ELF64_LastBadRIP <> 0 Then Begin
-    EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
-     HexQWord(ELF64_LastBadRIP));
-    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   End;
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   { Historique des dernieres adresses executees (etat 7d : diagnostic    }
-   { leger avant un vrai debogueur pas-a-pas) - aide a retracer le chemin }
-   { d execution ayant mene a l arret, notamment un saut errant. Affiche   }
-   { en cas d arret anormal (ELF64_LastBadRIP <> 0, mis a jour par tous    }
-   { les points d arret d erreur) OU quand la limite d instructions est    }
-   { atteinte (Not ELF64_Halted a ce point - utile pour diagnostiquer une  }
-   { veritable boucle infinie) - PAS lors d une fin de programme normale   }
-   { (sys_exit), sinon ce bruit de diagnostic masque le resultat reel      }
-   { affiche par le programme invite juste au-dessus.                     }
-   If (ELF64_LastBadRIP <> 0) Or (Not ELF64_Halted) Then Begin
-    EmuVScr_WriteStr(P, 'Historique RIP / RSP (plus ancien -> plus recent) :');
-    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-    If ELF64_TraceCount < 60 Then TraceN := ELF64_TraceCount Else TraceN := 60;
-    For TraceI := TraceN - 1 DownTo 0 Do Begin
-     TraceLine := 'RIP=0x' +
-      HexQWord(ELF64_TraceRIP[(ELF64_TraceCount - 1 - TraceI) And 1023]) +
-      '  RSP=0x' +
-      HexQWord(ELF64_TraceRSP[(ELF64_TraceCount - 1 - TraceI) And 1023]);
-     EmuVScr_WriteStr(P, TraceLine);
-     EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-    End;
-    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   End;
-  End;
-  P.CurFg := 7;
-  EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
-  P.CurFg := OldFg; P.CurBg := OldBg;
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := ELF64_HaltReason;
+  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
+  { PAS de Stage 2 pour ce backend (voir ELF64_RunOneChunk pour les          }
+  { raisons - espace virtuel de 128 Mo, trop gros pour un tableau de         }
+  { sauvegardes statique par onglet). }
+  ELF64Async_KeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
   Exit;
  End;
  If Not IsX86 Then Begin
@@ -70543,304 +71627,22 @@ Begin NesActive := False;
  Emu_MouseInit(P);
  Emu_MscdexInit(P);
  Emu_DpmiInit(P);
- EmuPumpCnt := 0;
+ { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
+ { PAS de Stage 2 pour ce backend (voir DOS_RunOneChunk pour les raisons - }
+ { etat peripherique DOS bien au-dela du seul P.CPU deja sauve par onglet).}
+ DOSAsync_PumpCnt := 0;
  { Premier rendu : afficher le panneau (banniere + ecran emule) avant
    d entrer dans la boucle d execution. Sinon le panneau peut rester
    invisible plusieurs secondes selon la charge. }
  DrawEmulatorPanel(P);
- EmuLastDraw := GetTimestamp;
+ DOSAsync_LastDraw := GetTimestamp;
  { Activer le debogueur d emulateur en mode 8086 }
  EmuDbg.Active := True;
  EmuDbg.CPU    := EDC_8086;
- { Boucle infinie : seuls ESC, une faute (opcode invalide, etc.) ou
-   sfEndProgram (INT 21h AH=4Ch) terminent l emulation. }
- While P.CPU.Fault = sfNone Do Begin
-  EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
-  EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
-  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
-  EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
-  EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
-  EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
-  EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
-  Inc(EmuOpCount[EmuTraceBuf[EmuTraceIdx].Op]);
-  { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 }
-  If (P.CPU.Segs.CS = 0) And (P.CPU.IP < $0010) And (Not EmuOvrDumped) Then Begin
-   EmuOvrDumped := True;
-   {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
-   If IOResult = 0 Then Begin
-    WriteLn(LogF_R, 'CS:IP = 0000:', HexWord(P.CPU.IP),
-      ' (saut vers IVT/null) Steps=', Steps);
-    WriteLn(LogF_R, 'SS:SP=', HexWord(P.CPU.Segs.SS), ':',
-      HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
-      ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
-    WriteLn(LogF_R, 'Pile (16 mots a partir de SS:SP) :');
-    For Idx_R := 0 To 15 Do
-     Write(LogF_R, ' ', HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
-       Word(P.CPU.Regs.SP + Idx_R * 2))));
-    WriteLn(LogF_R);
-    WriteLn(LogF_R, 'Trace circulaire (last 64) :');
-    For Idx_R := -64 To -1 Do Begin
-     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
-     WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
-      HexWord(EmuTraceBuf[KK_R].IP), ' op=',
-      HexByte(EmuTraceBuf[KK_R].Op), ' AX=',
-      HexWord(EmuTraceBuf[KK_R].AX));
-    End;
-    Close(LogF_R);
-   End;
-   {$I+} If IOResult <> 0 Then ;
-  End;
-  { Detection : capturer le point d entree dans une zone de 0x20 (espaces).
-    Si on voit le 1er 0x20 apres autre chose, memoriser la position. }
-  If (EmuTraceBuf[EmuTraceIdx].Op = $20) Or
-     (EmuTraceBuf[EmuTraceIdx].Op = $00) Then Begin
-   If EmuRunaway = 0 Then Begin
-    EmuRunawayCS := P.CPU.Segs.CS;
-    EmuRunawayIP := P.CPU.IP;
-    EmuRunawayStep := Steps;
-   End;
-   Inc(EmuRunaway);
-  End Else
-   EmuRunaway := 0;
-  { Detecteur runaway desactive : il declenchait des faux positifs
-    sur du code legitime contenant de longues sequences d octets
-    0x00/0x20 (donnees ou instructions ADD/AND repetees).
-    L emulateur s arrete uniquement sur ESC, faute CPU ou INT 21h AH=4Ch. }
-  EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
-  EmuDbg_OnBeforeStep8086;
-  { DPMI (voir Dpmi_Switch) : tant que le programme est en mode protege,   }
-  { chaque "pas" execute une instruction du coeur 32 bits protege PARALLELE}
-  { (DpmiCPU) plutot que le coeur 8086 reel (P.CPU) - la commutation en    }
-  { sens inverse (retour au mode reel) n est pas encore implantee (etape    }
-  { ulterieure), donc DpmiCPU.Active ne redevient jamais faux pour l instant}
-  { une fois passe en mode protege, hormis en cas d opcode non reconnu     }
-  { (voir le commentaire de tete de Dpmi_Step). }
-  If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
-  Inc(Steps);
-  { --- VRetrace ($3DA bit 3) libre, cadencee sur le nombre de pas CPU et }
-  { non sur la lecture du port : a 750 pas/demi-periode et               }
-  { EmuStepsPerTick=5000 pas/tick BIOS (18.2 Hz), on obtient ~60 cycles   }
-  { complets par 18 ticks BIOS, soit ~60 Hz - ce que des logiciels comme  }
-  { GSDEMO1.COM mesurent via INT 1Ah pour detecter le type de moniteur.  }
-  Inc(EmuVideo.VRetraceAcc);
-  If EmuVideo.VRetraceAcc >= 750 Then Begin
-    EmuVideo.VRetraceAcc := 0;
-    EmuVideo.StatusRetrace := EmuVideo.StatusRetrace Xor 8;
-  End;
-  { --- IRQ mat?rielles --- }
-  Dec(EmuStepsToTick);
-  If EmuStepsToTick <= 0 Then Begin
-    EmuStepsToTick := EmuStepsPerTick;
-    Emu_TimerTick(P);
-    { Drainer le clavier hote vers buffer BIOS + IRQ 9 }
-    While EmuVScr_HasKey(P) Do Begin
-      EntryAddr16 := EmuVScr_PopKey(P);
-      { Le mot est encode (scancode<<8) Or ASCII. Pour les fleches
-        et touches speciales, ASCII=0 et scancode est valide. }
-      Emu_PushBiosKey(P, Hi(EntryAddr16), Lo(EntryAddr16));
-      EmuIrqPending := EmuIrqPending Or $02;
-      If Emu_ReadWord(P.CPU, $40, $1C) = Emu_ReadWord(P.CPU, $40, $1A) Then Break;
-    End;
-  End;
-  Emu_ServiceIrqs(P);
-  { --- Pompage des evenements hote pour preserver l interactivite ---
-    Toutes les ~500 instructions on interroge le clavier de DEVENV
-    et on redessine le panneau. ESC arrete l emulation. }
-  Inc(EmuPumpCnt);
-  If EmuPumpCnt >= 500 Then Begin
-    EmuPumpCnt := 0;
-    { Drainer tous les evenements hote en attente (jusqu a 32 par tour)
-      pour ne jamais laisser de touche en file d attente cote hote. }
-    For EmuPumpDrainI := 0 To 31 Do Begin
-     PollEvents(EmuPumpEv);
-     If EmuPumpEv.Kind = EV_NONE Then Break;
-    Case EmuPumpEv.Kind Of
-     EV_KEY_CHAR:
-      Begin
-       If EmuPumpEv.KeyChar = #27 Then Begin
-        P.CPU.Fault := sfEndProgram;
-        P.StatusMsg := 'Emulation interrompue par utilisateur';
-        Break;
-       End;
-       If EmuPumpEv.KeyChar = #3 Then Begin
-        EmuDbg_RequestBreak(EDC_8086);
-       End Else Begin
-        { Pousser directement dans le buffer BIOS pour minimiser
-          la latence. INT 16h y lit en priorite. }
-        Emu_PushBiosKey(P, EmuKey_AsciiToScan(EmuPumpEv.KeyChar),
-          Byte(EmuPumpEv.KeyChar));
-        EmuIrqPending := EmuIrqPending Or $02;
-        P.NeedRepaint := True;
-       End;
-      End;
-     EV_KEY_DOWN:
-      Begin
-       If (EmuPumpEv.KeyCode And $FF) = $1B Then Begin
-        P.CPU.Fault := sfEndProgram;
-        P.StatusMsg := 'Emulation interrompue par utilisateur';
-        Break;
-       End;
-       { Touche etendue (fleche, F1..F12, etc.) : ASCII = 0,
-         scancode = code etendu retourne par ReadKey. }
-       Emu_PushBiosKey(P, Byte(EmuPumpEv.KeyCode And $FF), 0);
-       EmuIrqPending := EmuIrqPending Or $02;
-       P.NeedRepaint := True;
-      End;
-     EV_MOUSE_MOVE:
-      EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX, EmuPumpEv.MouseY,
-        EmuMouseBtns);
-     EV_MOUSE_DOWN:
-      Begin
-       Case EmuPumpEv.MouseBtn Of
-        MB_LEFT  : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
-                     EmuPumpEv.MouseY, EmuMouseBtns Or 1);
-        MB_RIGHT : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
-                     EmuPumpEv.MouseY, EmuMouseBtns Or 2);
-        MB_MIDDLE: EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
-                     EmuPumpEv.MouseY, EmuMouseBtns Or 4);
-       End;
-      End;
-     EV_MOUSE_UP:
-      Begin
-       Case EmuPumpEv.MouseBtn Of
-        MB_LEFT  : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
-                     EmuPumpEv.MouseY, EmuMouseBtns And $FE);
-        MB_RIGHT : EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
-                     EmuPumpEv.MouseY, EmuMouseBtns And $FD);
-        MB_MIDDLE: EmuMouse_UpdateFromHost(P, EmuPumpEv.MouseX,
-                     EmuPumpEv.MouseY, EmuMouseBtns And $FB);
-       End;
-      End;
-    End;
-    End;
-    If P.CPU.Fault <> sfNone Then Break;
-    { Redessiner au plus une fois toutes les 80 ms pour eviter le
-      scintillement (un repaint complet est couteux et provoquerait
-      un flash si appele a chaque pompage). }
-    EmuPumpNow := GetTimestamp;
-    If (EmuPumpNow - EmuLastDraw) >= 80 Then Begin
-      DrawEmulatorPanel(P);
-      EmuLastDraw := EmuPumpNow;
-      P.NeedRepaint := False;
-    End;
-  End;
- End;
- { Toujours dumper le trace pour le diagnostic }
- Emu_DumpTrace;
- P.Fault := P.CPU.Fault;
- {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
- If IOResult = 0 Then Begin
-  WriteLn(LogF_R, 'Sortie de boucle. Steps=', Steps,
-   ' Fault=', P.CPU.Fault, ' (', Emu_FaultText(P.CPU.Fault), ')');
-  WriteLn(LogF_R, 'Final CS:IP=', HexWord(P.CPU.Segs.CS), ':',
-   HexWord(P.CPU.IP), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
-   HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
-   ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
-  WriteLn(LogF_R, 'VIDEO: Int10=', EmuDiag_Int10Cnt,
-                  ' VidWr=', EmuDiag_VidWrCnt,
-                  ' PixWr=', EmuDiag_PixWrCnt,
-                  ' Mode=$', HexByte(EmuDiag_LastMode),
-                  ' IsGfx=', EmuVideo.IsGraphic,
-                  ' Planar=', EmuVideo.IsPlanar,
-                  ' Draws=', EmuDiag_DrawCnt,
-                  ' WxH=', EmuVideo.Width, 'x', EmuVideo.Height);
-  WriteLn(LogF_R, 'Opcodes 80186 / shifts executes :');
-  WriteLn(LogF_R, '  PUSHA(60)=', EmuOpCount[$60],
-                  ' POPA(61)=', EmuOpCount[$61],
-                  ' BOUND(62)=', EmuOpCount[$62],
-                  ' PUSHimm16(68)=', EmuOpCount[$68],
-                  ' IMUL69=', EmuOpCount[$69],
-                  ' PUSHimm8(6A)=', EmuOpCount[$6A],
-                  ' IMUL6B=', EmuOpCount[$6B]);
-  WriteLn(LogF_R, '  INS/OUTS(6C-6F)=', EmuOpCount[$6C]+EmuOpCount[$6D]+
-                                          EmuOpCount[$6E]+EmuOpCount[$6F],
-                  ' ENTER(C8)=', EmuOpCount[$C8],
-                  ' LEAVE(C9)=', EmuOpCount[$C9],
-                  ' SHIFTimm(C0/C1)=', EmuOpCount[$C0]+EmuOpCount[$C1]);
-  WriteLn(LogF_R, '  SHIFT1(D0/D1)=', EmuOpCount[$D0]+EmuOpCount[$D1],
-                  ' SHIFTcl(D2/D3)=', EmuOpCount[$D2]+EmuOpCount[$D3],
-                  ' DIV/IDIV(F6/F7)=', EmuOpCount[$F6]+EmuOpCount[$F7],
-                  ' INT(CD)=', EmuOpCount[$CD]);
-  If EmuDiv0Caught Then Begin
-   WriteLn(LogF_R, 'DIV0 SNAPSHOT (1er fault) :');
-   WriteLn(LogF_R, '  at ', HexWord(EmuDiv0CS), ':', HexWord(EmuDiv0IP),
-    ' op=', HexByte(EmuDiv0Op), ' /', EmuDiv0SubOp,
-    ' divisor=', EmuDiv0Div);
-   WriteLn(LogF_R, '  AX=', HexWord(EmuDiv0AX), ' BX=', HexWord(EmuDiv0BX),
-    ' CX=', HexWord(EmuDiv0CX), ' DX=', HexWord(EmuDiv0DX),
-    ' SI=', HexWord(EmuDiv0SI), ' DI=', HexWord(EmuDiv0DI),
-    ' BP=', HexWord(EmuDiv0BP));
-   WriteLn(LogF_R, '  DS=', HexWord(EmuDiv0DS), ' ES=', HexWord(EmuDiv0ES),
-    ' SS=', HexWord(EmuDiv0SS), ' SP=', HexWord(EmuDiv0SP));
-   WriteLn(LogF_R, '  Bytes au DIV (', HexWord(EmuDiv0CS), ':',
-    HexWord(EmuDiv0IP), '..+1F) :');
-   Write(LogF_R, '   ');
-   For Idx_R := 0 To $1F Do
-    Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
-     Word(EmuDiv0IP + Idx_R))), ' ');
-   WriteLn(LogF_R);
-   WriteLn(LogF_R, '  Bytes -10..+10 autour du DIV :');
-   Write(LogF_R, '   ');
-   For Idx_R := -16 To 15 Do
-    Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuDiv0CS,
-     Word(EmuDiv0IP + Idx_R))), ' ');
-   WriteLn(LogF_R);
-  End;
-  WriteLn(LogF_R, 'Bytes a 0AAC:8740..876F :');
-  For Idx_R := 0 To $2F Do Begin
-   If (Idx_R And 15) = 0 Then Begin
-    WriteLn(LogF_R);
-    Write(LogF_R, ' ', HexWord(Word($8740 + Idx_R)), ': ');
-   End;
-   Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, $0AAC, Word($8740 + Idx_R))), ' ');
-  End;
-  WriteLn(LogF_R);
-  WriteLn(LogF_R, 'Bytes a 0AAC:0070..00AF :');
-  For Idx_R := 0 To $3F Do Begin
-   If (Idx_R And 15) = 0 Then Begin
-    WriteLn(LogF_R);
-    Write(LogF_R, ' ', HexWord(Word($0070 + Idx_R)), ': ');
-   End;
-   Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, $0AAC, Word($0070 + Idx_R))), ' ');
-  End;
-  WriteLn(LogF_R);
-  WriteLn(LogF_R, 'Last 200 trace entries (newest at bottom):');
-  For Idx_R := -200 To -1 Do Begin
-   KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
-   WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
-    HexWord(EmuTraceBuf[KK_R].IP), ' op=',
-    HexByte(EmuTraceBuf[KK_R].Op),
-    ' AX=', HexWord(EmuTraceBuf[KK_R].AX),
-    ' ES=', HexWord(EmuTraceBuf[KK_R].ES),
-    ' DI=', HexWord(EmuTraceBuf[KK_R].DI),
-    ' CX=', HexWord(EmuTraceBuf[KK_R].CX));
-  End;
-  Close(LogF_R);
- End;
- {$I+} If IOResult <> 0 Then ;
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- P.CurFg := 11;
- EmuVScr_WriteStr(P, '[Fin d execution : ' +
-  Emu_FaultText(P.Fault) + ' apres ' + IntToStr(Steps) +
-  ' instructions]');
- If P.Fault = sfInvalidCode Then Begin
-  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-  EmuVScr_WriteStr(P, '  opcode = ' +
-   Emu_HexByte(P.CPU.LastBadOp) + ' a ' +
-   Emu_HexWord(P.CPU.LastBadCS) + ':' +
-   Emu_HexWord(P.CPU.LastBadIP));
- End;
- P.CurFg := OldFg;
- P.CurBg := OldBg;
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
- EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
- If P.StatusMsg = '' Then
-  P.StatusMsg := 'Phase 2 (1) : ' + Emu_FaultText(P.Fault);
- P.Running := False;
- EmuDbg.Active := False;
- EmuDbg.CPU    := EDC_NONE;
- Emu_Done(P.CPU);
+ EmuHasFocus := True;
+ EmuLastActiveState := True;
+ P.Loaded := True;
+ Exit;
 End;
 
 { Rectangle approximatif du panneau emulateur a l ecran (PanelX/PanelY sont }
@@ -71019,7 +71821,12 @@ Begin
   End;
   Exit;
  End;
- If P.Loaded And (P.TargetCPU = '-CCOCO3') Then Begin
+ If P.Loaded And (P.TargetCPU = '-CCOCO3') And Coco3_Active Then Begin
+  { Correctif (suite mode texte ci-dessous) : P.TargetCPU='-CCOCO3' seul est }
+  { AMBIGU entre les 2 modes CoCo3 (materiel .PAK/.ROM vs texte Pascal/ASM,   }
+  { meme TargetCPU pour les deux) - Coco3_Active (restaure par Coco3_LoadState}
+  { a la bascule d onglet, voir M6809Text_RunOneChunk plus bas) est le VRAI   }
+  { disambiguateur, pas juste TargetCPU. }
   If Not P.Running Then Exit;
   { Meme motif que NES/A2600/C64 (voir plus haut). }
   Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
@@ -71067,6 +71874,292 @@ Begin
   End;
   Exit;
  End;
+ If P.Loaded And (((P.TargetCPU = '-CCOCO3') And Not Coco3_Active) Or
+                   (P.TargetCPU = '-CDRAGON32') Or (P.TargetCPU = '-CDRAGON64') Or
+                   (P.TargetCPU = '-CTO7') Or (P.TargetCPU = '-CTO8') Or
+                   (P.TargetCPU = '-CMO5')) Then Begin
+  If Not P.Running Then Exit;
+  { Mode texte 6809 (voir M6809Text_RunOneChunk) - meme motif qu AppleII/    }
+  { Atari8bit : pas de pacage temps-reel, juste des lots d instructions. }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  M6809Text_RunOneChunk(P);
+  Finished := M6809_Halted Or (P.TotalSteps >= 1000000) Or M6809TextAsync_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If M6809_Halted Then
+    EmuVScr_WriteStr(P, '[Fin 6809 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(M6809_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur 6809 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And ((P.TargetCPU = '-CAPPLEII') Or (P.TargetCPU = '-CATARI400') Or
+                   (P.TargetCPU = '-CATARI800')) Then Begin
+  If Not P.Running Then Exit;
+  { Meme motif que les autres backends convertis (voir plus haut) - pas de }
+  { pacage temps-reel ici (voir AppleAtari_RunOneChunk), juste le focus.   }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  AppleAtari_RunOneChunk(P);
+  Finished := CPU6502_Halted Or (P.TotalSteps >= 1000000) Or AppleAtariAsync_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuDbg.Active := False;
+   EmuDbg.CPU    := EDC_NONE;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If CPU6502_Halted Then
+    EmuVScr_WriteStr(P, '[Fin 6502 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(CPU6502_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur 6502 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And ((P.TargetCPU = '-C68000') Or (P.TargetCPU = '-CATARIST') Or
+                   (P.TargetCPU = '-CAMIGA')) Then Begin
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  M68K_RunOneChunk(P);
+  Finished := M68K_Halted Or (P.TotalSteps >= MAX_CYCLES) Or M68KAsync_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If M68K_Halted Then
+    EmuVScr_WriteStr(P, '[Fin d execution : TRAP #15 termine apres ' +
+     IntToStr(P.TotalSteps) + ' instructions, code=' +
+     IntToStr(M68K_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(MAX_CYCLES) +
+     ' cycles atteinte (boucle infinie ?)]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur 68000 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CCRAY1') Then Begin
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  Cray_RunOneChunk(P);
+  Finished := CRAY1_Halted Or (P.TotalSteps >= 1000000) Or CrayAsync_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If CRAY1_Halted Then
+    EmuVScr_WriteStr(P, '[Fin Cray-1 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(CRAY1_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur Cray-1 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CPCODE') Then Begin
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  PCode2_RunOneChunk(P);
+  Finished := PCode_Halted Or (P.TotalSteps >= 1000000) Or PCodeAsync_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If PCode_Halted Then
+    EmuVScr_WriteStr(P, '[Fin p-machine : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(PCode_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur p-machine : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And ((P.TargetCPU = '-CTRS80') Or (P.TargetCPU = '-CMSX') Or
+                   (P.TargetCPU = '-CADAM')) Then Begin
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  Z80_RunOneChunk(P);
+  Finished := Z80_Halted Or (P.TotalSteps >= 1000000) Or Z80Async_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 11;
+   If Z80_Halted Then
+    EmuVScr_WriteStr(P, '[Fin Z80 : ' + IntToStr(P.TotalSteps) +
+     ' instructions, code=' + IntToStr(Z80_ExitCode) + ']')
+   Else
+    EmuVScr_WriteStr(P, '[Limite 1000000 instructions atteinte]');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Emulateur Z80 : ' + IntToStr(P.TotalSteps) + ' instr.';
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CELF64') Then Begin
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  ELF64_RunOneChunk(P);
+  Finished := ELF64_Halted Or (P.TotalSteps >= 5000000) Or ELF64Async_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   ELF64_PrintEndMessage(P);
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) Then Begin
+  If Not P.Running Then Exit;
+  { Meme motif que les autres backends Stage 1. Contrairement a eux, ce   }
+  { backend a DEJA son propre pompage d evenements interne (voir           }
+  { DOS_RunOneChunk) - la pause ici se limite donc a NE PAS appeler ce      }
+  { pompage (EmuHasFocus le verifie lui-meme), pas a sauter la trame        }
+  { entiere, pour ne jamais desynchroniser les minuteries/IRQ du 8086       }
+  { emule pendant que l onglet est visible mais pas focus. }
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  DOS_RunOneChunk(P);
+  DrawEmulatorPanel(P);
+  If P.CPU.Fault <> sfNone Then Begin
+   DOS_PrintEndMessage(P);
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
  If P.Running And (P.CPU.Fault = sfNone) Then Begin
   If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
  End;
@@ -71108,8 +72201,34 @@ Begin
  If TargetCPU = '-CC64' Then C64_SaveState(C64Snaps[Idx])
  Else If TargetCPU = '-CNES' Then Nes_SaveState(NesSnaps[Idx])
  Else If TargetCPU = '-CATARI2600' Then A2600_SaveState(A2600Snaps[Idx])
- Else If (TargetCPU = '-CCOCO3') And Coco3_Active Then
-  Coco3_SaveState(Coco3Snaps[Idx]);
+ Else If (TargetCPU = '-CCOCO3') Or (TargetCPU = '-CDRAGON32') Or
+         (TargetCPU = '-CDRAGON64') Or (TargetCPU = '-CTO7') Or
+         (TargetCPU = '-CTO8') Or (TargetCPU = '-CMO5') Then
+  Coco3_SaveState(Coco3Snaps[Idx])
+ Else If (TargetCPU = '-CAPPLEII') Or (TargetCPU = '-CATARI400') Or
+         (TargetCPU = '-CATARI800') Then
+  AppleAtari_SaveState(AppleAtariSnaps[Idx])
+ Else If (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
+         (TargetCPU = '-CAMIGA') Then
+  M68K_SaveState(M68KSnaps[Idx])
+ Else If TargetCPU = '-CCRAY1' Then
+  Cray_SaveState(CraySnaps[Idx])
+ Else If TargetCPU = '-CPCODE' Then
+  PCode2_SaveState(PCode2Snaps[Idx])
+ Else If (TargetCPU = '-CTRS80') Or (TargetCPU = '-CMSX') Or
+         (TargetCPU = '-CADAM') Then
+  Z80_SaveState(Z80Snaps[Idx]);
+ { PAS de DOS_SaveState ici (contrairement aux autres backends) : au        }
+ { contraire de leurs SaveState (qui font une simple COPIE via `:=`/Move(), }
+ { sans toucher la source), DOS_SaveState VOLE les 4 pointeurs globaux      }
+ { (video/XMS/EMS/DPMI-etendu) vers le snapshot et les met a Nil - correct   }
+ { quand on QUITTE un onglet, mais catastrophique ici puisque cet onglet     }
+ { tout juste cree devient l onglet ACTIF (WinMgr.ActiveIdx:=Idx juste       }
+ { apres) : appeler DOS_SaveState maintenant viderait sa propre memoire      }
+ { video/XMS/EMS a peine allouee. DOSSnaps[Idx] reste a son etat par        }
+ { defaut (vide) jusqu a ce que l utilisateur quitte REELLEMENT cet onglet   }
+ { pour la premiere fois (SyncActiveWindowOut le peuplera alors             }
+ { correctement, au bon moment). }
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
 End;
@@ -71120,7 +72239,19 @@ Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent);
 Var
  K: Byte;
+ IsDOSTarget: Boolean;
 Begin
+ { Correctif Stage 1 (2026-08-15) : la souris emulee DOS (EmuMouse_Update-  }
+ { FromHost) etait mise a jour depuis le pompage d evenements INTERNE de    }
+ { DOS_RunOneChunk (PollEvents direct, hors DispatchEvent) - or ce pompage  }
+ { et celui de MainLoop lisent la MEME file d evenements DEVENV : un clic   }
+ { destine au menu/a l Explorateur/au Terminal pouvait etre "vole" par le   }
+ { pompage interne DOS avant meme d atteindre DispatchEvent, selon lequel   }
+ { des deux sondages arrivait en premier (course). Deplacer la mise a jour  }
+ { souris ICI (appelee UNIQUEMENT par le gestionnaire normal de MainLoop,   }
+ { deja garanti hit-test + focus corrects) elimine la course - DOS_Run-     }
+ { OneChunk ne fait plus AUCUN PollEvents pour la souris. }
+ IsDOSTarget := (P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP');
  Case Ev.Kind Of
   EV_KEY_CHAR:
    Begin
@@ -71150,6 +72281,25 @@ Begin
      Exit;
     End;
     EmuVScr_PushKey(P, K);
+   End;
+  EV_MOUSE_MOVE:
+   If IsDOSTarget Then
+    EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns);
+  EV_MOUSE_DOWN:
+   If IsDOSTarget Then Begin
+    Case Ev.MouseBtn Of
+     MB_LEFT  : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 1);
+     MB_RIGHT : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 2);
+     MB_MIDDLE: EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 4);
+    End;
+   End;
+  EV_MOUSE_UP:
+   If IsDOSTarget Then Begin
+    Case Ev.MouseBtn Of
+     MB_LEFT  : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FE);
+     MB_RIGHT : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FD);
+     MB_MIDDLE: EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FB);
+    End;
    End;
  End;
 End;
