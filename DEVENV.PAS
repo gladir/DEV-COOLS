@@ -35094,6 +35094,16 @@ Begin
    ShowEmulatorPanel(EmuPanel, FullPath, '-CNES', '');
    NCActionOpenAssociated := True;
   End
+  Else If Ext = 'XEX' Then Begin
+   { Format binaire Atari 8-bit (segments [FF FF] start end data...),   }
+   { charge par CPU6502_LoadAtariXex - un seul et meme chargeur pour        }
+   { les deux cibles Atari 400/800 (memoire RAM disponible differente,    }
+   { sans effet sur le format .XEX lui-meme). Atari 800 choisi par         }
+   { defaut (plus de RAM, cible la plus courante) - aucune ambiguite         }
+   { de format ne permet de deduire 400 vs 800 depuis le fichier seul. }
+   ShowEmulatorPanel(EmuPanel, FullPath, '-CATARI800', '');
+   NCActionOpenAssociated := True;
+  End
   Else If Ext = 'PRG' Then Begin
    { .PRG hote : ambigu C64/Atari ST, tranche par la signature GEMDOS      }
    { (voir NCIsAtariSTPrg). }
