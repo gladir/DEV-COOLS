@@ -71653,7 +71653,23 @@ Function EmuPanel_HitTest(Var P: TEmulatorPanel; MX, MY: Integer): Boolean;
 Var X1, Y1, X2, Y2: Integer;
 Begin
  X1 := P.PanelX - 4;
- Y1 := P.PanelY - 24;
+ { BOGUE REEL signale par l utilisateur 2026-08-15 (regression introduite   }
+ { par le correctif de positionnement ci-dessus, meme session) : cette       }
+ { marge de -24 px au-dessus de P.PanelY etait sans consequence tant que     }
+ { le panneau restait CENTRE avec un P.PanelY relativement eloigne de la     }
+ { barre d onglets - une fois le panneau colle juste EN DESSOUS de cette     }
+ { barre (P.PanelY = MENUBAR_HEIGHT+TOOLBAR_HEIGHT+TAB_HEIGHT, voir plus     }
+ { haut), cette marge remontait le rectangle de detection DANS la zone de    }
+ { la barre d onglets elle-meme - un clic sur N IMPORTE QUEL onglet (y       }
+ { compris l onglet texte pour REVENIR depuis l emulateur) tombait alors a   }
+ { tort "dans" le panneau au lieu de le relacher, empechant HandleTabEvent   }
+ { de jamais s executer. Le bord visuel du panneau (barre de titre incluse)  }
+ { commence exactement a P.PanelY (la bordure ne deborde que de 2px, voir    }
+ { DrawEmulatorPanel) - aucune marge negative n est donc necessaire ici, et  }
+ { s en passer garantit que ce rectangle ne remonte plus jamais au-dessus    }
+ { de la barre d onglets, quels que soient les futurs ajustements de mise    }
+ { en page. }
+ Y1 := P.PanelY;
  X2 := P.PanelX + P.Cols * P.CharW + 4;
  Y2 := P.PanelY + P.Rows * P.CharH + 24;
  EmuPanel_HitTest := (MX >= X1) And (MX <= X2) And (MY >= Y1) And (MY <= Y2);
