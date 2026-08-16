@@ -9569,7 +9569,13 @@ Procedure EmuPanel_Pause;
 Begin
  If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then Begin
   EmuPanel.Running := False;
-  EmuPanel.StatusMsg := 'PAUSE (cliquez sur Lecture ou F5 pour reprendre)';
+  { Message volontairement COURT (25 car.) : DrawEmulatorPanel n'effectue   }
+  { AUCUN clipping de texte dans la barre d etat - un message plus long        }
+  { que la largeur du panneau (ex. CoCo3, 32 colonnes = 256px ~ 32 car.)      }
+  { deborderait hors de la zone effacee par le DrawFilledRect qui precede,     }
+  { laissant des caracteres residuels visibles quand un message PLUS COURT   }
+  { le remplace ensuite (bogue reel observe en testant ce chantier). }
+  EmuPanel.StatusMsg := 'PAUSE (F5 pour reprendre)';
   DrawEmulatorPanel(EmuPanel);
  End;
 End;
@@ -9583,7 +9589,7 @@ Procedure EmuPanel_Stop;
 Begin
  If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then Begin
   EmuPanel.Running := False;
-  EmuPanel.StatusMsg := 'Arrete par l''utilisateur';
+  EmuPanel.StatusMsg := 'Arrete par l''utilisateur'; { court, voir EmuPanel_Pause }
   DrawEmulatorPanel(EmuPanel);
  End;
 End;
