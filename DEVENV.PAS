@@ -69300,17 +69300,27 @@ Begin
   { observe egal a $E5CD en echantillonnant une fois par trame). }
   { Corrige 2026-08-15 (suite immediate) : ce saut direct est calibre sur     }
   { l adresse $E5CD de la boucle d attente clavier du KERNAL Commodore        }
-  { ORIGINAL (verifiee empiriquement, voir plus haut "Solution retenue") -    }
-  { RESTE la voie PRIORITAIRE (fiable, deterministe, aucun delai) quand la    }
-  { ROM active y passe bien reellement. Pour toute ROM tierce qui n atteint   }
-  { jamais $E5CD (ex. Pascual's BASIC, mise en page interne differente), le   }
-  { repli "frappe simulee" arme par C64_Boot (C64_PendingJumpTimeout/         }
-  { PendingInjectFallback, verifie une fois par TRAME juste avant cette       }
-  { boucle, voir plus bas) prend le relai automatiquement apres 600 trames    }
-  { sans que $E5CD n ait jamais ete atteint - agnostique de la ROM active     }
-  { puisqu il simule de vraies touches au niveau de la matrice materielle     }
-  { ($DC00/$DC01) plutot que de sauter a une adresse ROM precise. }
-  If (C64_PendingJumpPC <> 0) And (CPU6502_PC = $E5CD) Then Begin
+  { ORIGINAL (verifiee empiriquement, voir plus haut "Solution retenue").     }
+  { Complete 2026-08-16 : cartographie precise de la boucle d attente de la   }
+  { ROM Pascual (trace circulaire de 2048 PC consecutifs, voir                }
+  { C64DbgTrace*) - $E8A8 est le point d appel "JSR GETIN" ($E8A8: 20 22 E8)  }
+  { suivi de "BEQ $E8A8" ($E8AB: F0 FB) qui reboucle tant qu aucune touche    }
+  { n est disponible : boucle d attente clavier stricte equivalente a $E5CD   }
+  { pour la ROM originale (GETIN lui-meme lit juste le compteur $C6, sans    }
+  { jamais atteindre le code de scan matriciel $E61B, ce qui confirme que ce  }
+  { dernier tourne uniquement depuis l IRQ). Restreint a la ROM Pascual       }
+  { (Not C64RomOriginal) par prudence : rien ne garantit que $E8A8 soit une   }
+  { adresse anodine dans la ROM Commodore originale, deja fiable via $E5CD.   }
+  { Les DEUX voies directes RESTENT prioritaires (fiables, deterministes,     }
+  { aucun delai) quand la ROM active y passe bien reellement. Pour toute ROM  }
+  { tierce qui n atteint ni l une ni l autre, le repli "frappe simulee" arme  }
+  { par C64_Boot (C64_PendingJumpTimeout/PendingInjectFallback, verifie une   }
+  { fois par TRAME juste avant cette boucle, voir plus bas) prend le relai    }
+  { automatiquement apres 600 trames - agnostique de la ROM active puisqu il  }
+  { simule de vraies touches au niveau de la matrice materielle ($DC00/       }
+  { $DC01) plutot que de sauter a une adresse ROM precise. }
+  If (C64_PendingJumpPC <> 0) And ((CPU6502_PC = $E5CD) Or
+     ((CPU6502_PC = $E8A8) And Not OptionsDlg.Data.C64RomOriginal)) Then Begin
    C64_ReplayPendingPrg;
    If C64_PendingVartab <> 0 Then Begin
     CPU6502_Mem[$2D] := Byte(C64_PendingVartab And $FF);
