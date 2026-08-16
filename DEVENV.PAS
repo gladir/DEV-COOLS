@@ -3753,6 +3753,11 @@ Type
   TypePressed    : Boolean;
   PendingVartab  : Word;
   PendingJumpPC  : Word;
+  PendingJumpTimeout: LongInt;
+  PendingInjectFallback: String;
+  PendingPrgData : Array[0..65535] Of Byte;
+  PendingPrgLen  : LongInt;
+  PendingPrgLoadAddr: Word;
   AsyncKeyEsc    : Boolean;
   AsyncLastFrameTS: LongInt;
  End;
@@ -6279,7 +6284,7 @@ Const
    $E2,$58,$4C,$8A,$E0,$A9,$7F,$8D,$0D,$DC,$8D,$0D,$DD,$AD,$0D,$DC,$AD,
    $0D,$DD,$A9,$FF,$8D,$02,$DC,$A9,$00,$8D,$03,$DC,$A9,$3F,$8D,$02,$DD,
    $A9,$03,$8D,$00,$DD,$A9,$95,$8D,$04,$DC,$A9,$42,$8D,$05,$DC,$A9,$81,
-   $8D,$0D,$DC,$A9,$11,$8D,$0E,$DC,$60,$A9,$00,$AA,$95,$02,$E8,$D0,$FB,
+   $8D,$0D,$DC,$A9,$11,$8D,$0E,$DC,$60,$A2,$FD,$EA,$95,$02,$CA,$D0,$FB,
    $9D,$00,$02,$E8,$D0,$FA,$85,$A0,$85,$A1,$85,$A2,$A9,$00,$8D,$81,$02,
    $85,$98,$85,$99,$A9,$08,$8D,$82,$02,$A9,$00,$8D,$83,$02,$A9,$A0,$8D,
    $84,$02,$A9,$03,$85,$9A,$60,$A9,$1B,$8D,$11,$D0,$A9,$C8,$8D,$16,$D0,
@@ -6852,6 +6857,41 @@ Var
                              { sauter directement des que READY est atteint     }
                              { (voie fiable, prioritaire sur C64_PendingInject  }
                              { - voir C64_Boot). }
+ { Repli "auto-lancement" 2026-08-15 (voir C64_Boot/C64_RunOneFrame) : le    }
+ { saut direct ci-dessus ne se declenche QUE si le CPU atteint reellement    }
+ { l adresse fixe $E5CD - vraie pour le KERNAL Commodore ORIGINAL, mais PAS  }
+ { garantie pour une ROM tierce (mise en page interne differente, voir         }
+ { [[project-devenv-c64rom]] : Pascual's BASIC n atteint jamais $E5CD). Si    }
+ { C64_PendingJumpTimeout atteint 0 AVANT que le saut direct ne se soit        }
+ { declenche, C64_PendingJumpPC est abandonne et C64_PendingInjectFallback    }
+ { est copie dans C64_PendingInject pour demarrer la frappe simulee          }
+ { ("SYS <adresse>"+Entree ou "RUN"+Entree selon le cas - voir C64_Boot),     }
+ { agnostique de la ROM puisqu elle simule de vraies touches au niveau de     }
+ { la matrice materielle plutot que de sauter a une adresse ROM precise. }
+ C64_PendingJumpTimeout: LongInt; { trames restantes avant d abandonner le    }
+                             { saut direct (0 = saut deja resolu ou jamais     }
+                             { arme, voir C64_Boot/C64_RunOneFrame) }
+ C64_PendingInjectFallback: String; { texte de repli pret a etre copie dans   }
+                             { C64_PendingInject si le timeout expire }
+ { "Rejeu" du .PRG charge (2026-08-15) : BOGUE REEL trouve en testant le    }
+ { repli ci-dessus - le KERNAL de Pascual's BASIC (comme n importe quel      }
+ { KERNAL cold-boot serieux) reinitialise/efface certaines zones de RAM      }
+ { PENDANT son propre demarrage (deja identifie et corrige une fois pour     }
+ { $C000-$CFFF, voir C64_BusWrite) - y COMPRIS potentiellement la zone de     }
+ { texte BASIC ($0801+, ou "NEW" doit placer son marqueur de programme        }
+ { vide). Comme C64_Boot ecrit le .PRG en memoire AVANT que ce demarrage      }
+ { complet ne s execute, un programme charge peut donc se retrouver           }
+ { PARTIELLEMENT ou COMPLETEMENT efface au moment ou l utilisateur (ou le     }
+ { saut/la frappe automatique) tente enfin de l executer. Solution : garder   }
+ { une copie des octets bruts ici et les REJOUER (CPU6502_Write, respecte     }
+ { donc le banquage courant) juste AVANT le saut direct ou juste avant le     }
+ { debut de la frappe de repli (voir C64_ReplayPendingPrg, appelee aux deux   }
+ { endroits dans C64_RunOneFrame) - garantit que le programme est TOUJOURS    }
+ { dans l etat correct au moment precis ou il doit s executer, quel que        }
+ { soit ce que le demarrage KERNAL a fait entre-temps. }
+ C64_PendingPrgData: Array[0..65535] Of Byte;
+ C64_PendingPrgLen : LongInt; { 0 = rien a rejouer }
+ C64_PendingPrgLoadAddr: Word;
  { Etat de la version "asynchrone" (Stage 1, 2026-08-15) de la boucle    }
  { C64 - voir C64_RunOneFrame/EmuPanel_ContinueStep. Remplace les        }
  { anciennes variables LOCALES C64KeyEsc/EntryAddr de ShowEmulatorPanel,  }
@@ -63817,9 +63857,27 @@ Begin
  LoRam := (C64_Port01 And 1) <> 0;
  HiRam := (C64_Port01 And 2) <> 0;
  Charen := (C64_Port01 And 4) <> 0;
- If Addr < $D000 Then Begin { $A000-$BFFF }
+ If Addr < $C000 Then Begin { $A000-$BFFF : BASIC ROM ou RAM banquee }
   C64_HiRam[Addr] := V;
   If Not (LoRam And HiRam) Then CPU6502_Mem[Addr] := V;
+  Exit;
+ End;
+ { BOGUE REEL corrige 2026-08-15 : $C000-$CFFF (le "bloc RAM libre" entre   }
+ { la ROM BASIC et l E/S) est TOUJOURS de la RAM ordinaire sur un vrai C64, }
+ { QUELLE QUE SOIT la configuration LORAM/HIRAM/CHAREN ($01) - contrairement}
+ { a $A000-$BFFF juste au-dessus, jamais banque par une ROM. L ancien code   }
+ { traitait a tort cette plage comme faisant partie de $A000-$BFFF (meme    }
+ { test `Addr < $D000`), donc une ecriture ici pendant que la ROM BASIC      }
+ { etait visible (LoRam Et HiRam, la configuration par defaut au demarrage) }
+ { n atteignait JAMAIS `CPU6502_Mem` (seulement le miroir `C64_HiRam`,       }
+ { jamais lu par le CPU tant que la banque reste active) - un programme      }
+ { charge dans cette plage AVANT la fin du demarrage (voir C64_Boot) restait }
+ { donc invisible du CPU, qui y lisait des zeros (BRK immediat des le saut   }
+ { d auto-lancement). Trouve en isolant ce bogue via un .PRG de test charge  }
+ { volontairement a $C000. }
+ If Addr < $D000 Then Begin { $C000-$CFFF }
+  C64_HiRam[Addr] := V;
+  CPU6502_Mem[Addr] := V;
   Exit;
  End;
  If Addr < $E000 Then Begin { $D000-$DFFF }
@@ -64075,6 +64133,9 @@ Begin
  C64_PendingInject := '';
  C64_PendingVartab := 0;
  C64_PendingJumpPC := 0;
+ C64_PendingJumpTimeout := 0;
+ C64_PendingInjectFallback := '';
+ C64_PendingPrgLen := 0;
  C64_TypeIdx := 0;
  C64_TypeCounter := 0;
  C64_TypePressed := False;
@@ -64088,10 +64149,19 @@ Begin
  If BR <> 2 Then Begin Close(F); Exit; End;
  LoadAddr := Hdr[0] Or (Word(Hdr[1]) Shl 8);
  Addr := LoadAddr;
+ C64_PendingPrgLoadAddr := LoadAddr;
  While Not Eof(F) Do Begin
   BlockRead(F, B, 1, BR);
   If BR = 1 Then Begin
    CPU6502_Write(Addr, B);
+   { Garder aussi une copie brute pour C64_ReplayPendingPrg (voir plus bas  }
+   { et le commentaire pres de C64_PendingPrgData) - le rejeu se fait juste }
+   { avant l execution reelle, pour survivre a un eventuel nettoyage de     }
+   { cette meme zone memoire par le demarrage KERNAL lui-meme. }
+   If C64_PendingPrgLen <= High(C64_PendingPrgData) Then Begin
+    C64_PendingPrgData[C64_PendingPrgLen] := B;
+    Inc(C64_PendingPrgLen);
+   End;
    If Addr < $FFFF Then Inc(Addr) Else Break;
   End;
  End;
@@ -64108,14 +64178,27 @@ Begin
  { fiable a 100% pendant la mise au point) le seul cas ou aucune adresse    }
  { d entree fiable n existe : un vrai programme BASIC tokenise SANS           }
  { stub SYS, ou un fichier $0801 avec un stub non standard. }
+ { Repli "frappe simulee" (2026-08-15) : voir C64_RunOneFrame et le           }
+ { commentaire pres de C64_PendingJumpTimeout - arme un texte de repli        }
+ { PRET A DEMARRER si le saut direct n a jamais atteint $E5CD apres 600       }
+ { trames (~12s a 50 Hz, largement superieur au demarrage KERNAL le plus       }
+ { lent observe - marge volontairement genereuse). Sans effet pour le          }
+ { KERNAL Commodore ORIGINAL (le saut se declenche bien avant), necessaire     }
+ { pour toute ROM tierce dont la mise en page interne ne passe jamais par      }
+ { $E5CD (ex. Pascual's BASIC). }
  If LoadAddr <> $0801 Then Begin
   C64_PendingJumpPC := LoadAddr;
   C64_PendingVartab := 0;
+  C64_PendingJumpTimeout := 600;
+  C64_PendingInjectFallback := 'SYS' + IntToStr(LoadAddr) + Chr(13);
  End Else If CPU6502_Mem[$0805] = $9E Then Begin
   C64_PendingJumpPC := $080D; { convention standard "10 SYS 2061" }
   C64_PendingVartab := Addr;
+  C64_PendingJumpTimeout := 600;
+  C64_PendingInjectFallback := 'RUN' + Chr(13);
  End Else Begin
   C64_PendingJumpPC := 0;
+  C64_PendingJumpTimeout := 0;
   C64_PendingVartab := Addr;
   InjectStr := 'RUN' + Chr(13);
   If Length(InjectStr) > 10 Then InjectStr := Copy(InjectStr, 1, 10);
@@ -64123,6 +64206,30 @@ Begin
  End;
  EntryAddr := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
  C64_Boot := True;
+End;
+
+{ Rejoue en memoire les octets bruts du .PRG charge par C64_Boot (voir le   }
+{ commentaire pres de C64_PendingPrgData) - a appeler juste AVANT le saut    }
+{ direct ($E5CD) ou juste avant le debut de la frappe de repli              }
+{ ("SYS <adresse>"/"RUN"), jamais avant, pour survivre a un eventuel          }
+{ nettoyage de cette meme zone memoire par le demarrage KERNAL lui-meme      }
+{ (BOGUE REEL trouve en testant Pascual's BASIC : le programme charge        }
+{ pouvait se retrouver partiellement efface au moment de l executer,         }
+{ que ce soit en haute memoire - $C000-$CFFF, deja corrige separement dans   }
+{ C64_BusWrite - ou en zone BASIC basse - $0801+, "NEW" implicite au         }
+{ demarrage). Idempotent (peut etre appelee plusieurs fois sans effet de     }
+{ bord) et se desarme elle-meme (C64_PendingPrgLen:=0) apres le premier       }
+{ rejeu, puisqu il n y a plus besoin de rejouer une fois l execution reelle   }
+{ commencee (le programme lui-meme peut legitimement modifier sa propre       }
+{ zone memoire ensuite - un second rejeu ecraserait ces changements). }
+Procedure C64_ReplayPendingPrg;
+Var
+ I: LongInt;
+Begin
+ If C64_PendingPrgLen <= 0 Then Exit;
+ For I := 0 To C64_PendingPrgLen - 1 Do
+  CPU6502_Write(Word(C64_PendingPrgLoadAddr + I), C64_PendingPrgData[I]);
+ C64_PendingPrgLen := 0;
 End;
 
 { ===== Atari 2600 : TIA + RIOT minimaux ============================ }
@@ -69088,6 +69195,11 @@ Begin
  Snap.TypeIdx := C64_TypeIdx; Snap.TypeCounter := C64_TypeCounter;
  Snap.TypePressed := C64_TypePressed;
  Snap.PendingVartab := C64_PendingVartab; Snap.PendingJumpPC := C64_PendingJumpPC;
+ Snap.PendingJumpTimeout := C64_PendingJumpTimeout;
+ Snap.PendingInjectFallback := C64_PendingInjectFallback;
+ Move(C64_PendingPrgData, Snap.PendingPrgData, SizeOf(Snap.PendingPrgData));
+ Snap.PendingPrgLen := C64_PendingPrgLen;
+ Snap.PendingPrgLoadAddr := C64_PendingPrgLoadAddr;
  Snap.AsyncKeyEsc := C64Async_KeyEsc; Snap.AsyncLastFrameTS := C64Async_LastFrameTS;
 End;
 
@@ -69114,6 +69226,11 @@ Begin
  C64_TypeIdx := Snap.TypeIdx; C64_TypeCounter := Snap.TypeCounter;
  C64_TypePressed := Snap.TypePressed;
  C64_PendingVartab := Snap.PendingVartab; C64_PendingJumpPC := Snap.PendingJumpPC;
+ C64_PendingJumpTimeout := Snap.PendingJumpTimeout;
+ C64_PendingInjectFallback := Snap.PendingInjectFallback;
+ Move(Snap.PendingPrgData, C64_PendingPrgData, SizeOf(C64_PendingPrgData));
+ C64_PendingPrgLen := Snap.PendingPrgLen;
+ C64_PendingPrgLoadAddr := Snap.PendingPrgLoadAddr;
  C64Async_KeyEsc := Snap.AsyncKeyEsc; C64Async_LastFrameTS := Snap.AsyncLastFrameTS;
 End;
 
@@ -69156,6 +69273,20 @@ Begin
   If C64Async_KeyEsc Then Exit;
  End;
  C64_PollKeyboard;
+ { Repli "frappe simulee" (2026-08-15) : voir C64_Boot et le commentaire      }
+ { pres de la verification $E5CD plus bas. Une seule decrementation par       }
+ { trame (contrairement au test $E5CD, verifie a CHAQUE instruction) suffit   }
+ { amplement puisque la fenetre de tolerance est de 600 trames, pas de           }
+ { quelques instructions. }
+ If C64_PendingJumpTimeout > 0 Then Begin
+  Dec(C64_PendingJumpTimeout);
+  If C64_PendingJumpTimeout <= 0 Then Begin
+   C64_PendingJumpPC := 0;
+   C64_ReplayPendingPrg;
+   C64_PendingInject := C64_PendingInjectFallback;
+   C64_PendingInjectFallback := '';
+  End;
+ End;
  C64_ApplyAutoType;
  For NesPrgSize := 0 To 4999 Do Begin
   If CPU6502_Halted Then Break;
@@ -69167,7 +69298,20 @@ Begin
   { quement "sauter" l adresse exacte selon la periode de la boucle          }
   { (BOGUE REEL rencontre pendant la mise au point : PC n etait jamais       }
   { observe egal a $E5CD en echantillonnant une fois par trame). }
+  { Corrige 2026-08-15 (suite immediate) : ce saut direct est calibre sur     }
+  { l adresse $E5CD de la boucle d attente clavier du KERNAL Commodore        }
+  { ORIGINAL (verifiee empiriquement, voir plus haut "Solution retenue") -    }
+  { RESTE la voie PRIORITAIRE (fiable, deterministe, aucun delai) quand la    }
+  { ROM active y passe bien reellement. Pour toute ROM tierce qui n atteint   }
+  { jamais $E5CD (ex. Pascual's BASIC, mise en page interne differente), le   }
+  { repli "frappe simulee" arme par C64_Boot (C64_PendingJumpTimeout/         }
+  { PendingInjectFallback, verifie une fois par TRAME juste avant cette       }
+  { boucle, voir plus bas) prend le relai automatiquement apres 600 trames    }
+  { sans que $E5CD n ait jamais ete atteint - agnostique de la ROM active     }
+  { puisqu il simule de vraies touches au niveau de la matrice materielle     }
+  { ($DC00/$DC01) plutot que de sauter a une adresse ROM precise. }
   If (C64_PendingJumpPC <> 0) And (CPU6502_PC = $E5CD) Then Begin
+   C64_ReplayPendingPrg;
    If C64_PendingVartab <> 0 Then Begin
     CPU6502_Mem[$2D] := Byte(C64_PendingVartab And $FF);
     CPU6502_Mem[$2E] := Byte(C64_PendingVartab Shr 8);
@@ -69178,6 +69322,11 @@ Begin
    End;
    CPU6502_PC := C64_PendingJumpPC;
    C64_PendingJumpPC := 0;
+   { Le saut a reussi : desarmer le repli, il ne doit plus jamais se           }
+   { declencher (sinon "SYS <adresse>"/"RUN" serait tape par-dessus le          }
+   { programme deja en train de s executer). }
+   C64_PendingJumpTimeout := 0;
+   C64_PendingInjectFallback := '';
   End;
   EmuDbg_OnBeforeStep6502;
   CPU6502_Step;
