@@ -1744,6 +1744,7 @@ Type
   DiskImg81       : TString;   { /DISK81:fichier.img -> disque dur D: }
   CdromImg0       : TString;   { /CDROM0:fichier.iso -> 1er lecteur CD}
   CdromImg1       : TString;   { /CDROM1:fichier.iso -> 2e lecteur CD }
+  NCMode          : Boolean;   { /NC : ouvrir le Terminal en Norton Commander des le demarrage }
  End;
 
  { Types d evenements }
@@ -5152,6 +5153,27 @@ Var
  { EmuLastActiveState memorise l etat actif/pause precedent pour ne         }
  { redessiner qu UNE fois lors de chaque transition (pas a chaque trame). }
  EmuLastActiveState: Boolean;
+ { Double buffering reel (2026-08-16) pour le rendu generique en mode       }
+ { texte (VRAM) de DrawEmulatorPanel (C64/AppleII/DOS texte/TRS80/MSX/     }
+ { Adam/...) : PtcGraph supporte le page-flip BGI classique (SetActivePage/}
+ { SetVisualPage, verifie par test dedie - voir [[project-devenv]]).       }
+ { EmuDblBufPage memorise la page COURAMMENT active ET visible (0 ou 1) -   }
+ { l invariant "active = visible" est TOUJOURS restaure avant de rendre la  }
+ { main au reste de la boucle principale (qui, elle, ignore totalement       }
+ { l existence de plusieurs pages et suppose une seule page implicite),    }
+ { donc aucune autre fonction de dessin du fichier n a besoin d en avoir     }
+ { connaissance. }
+ EmuDblBufPage: Integer;
+ { Tampon persistant (alloue une seule fois, voir DrawEmulatorPanel) pour     }
+ { recopier l ecran ACTUELLEMENT visible vers la page arriere avant d y       }
+ { dessiner - necessaire pour que tout ce qui n est PAS le panneau            }
+ { emulateur (Explorateur, Terminal, barre d etat...) reste a jour sur les    }
+ { DEUX pages en rotation, puisque ce code est le SEUL du fichier a faire      }
+ { alterner la page active/visible ; sans cette recopie, une mise a jour      }
+ { d un AUTRE panneau survenue pendant que l emulateur tourne ne serait         }
+ { visible qu une trame sur deux. }
+ EmuPageBuf  : Pointer;
+ EmuPageBufSz: LongInt;
  EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
  { --- Phase DOS+ : gestion fichiers reels (handles 5..31) --- }
  EmuFileH       : Array[5..31] Of File;
@@ -7478,6 +7500,7 @@ Procedure ShowHelp;Begin
  WriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
  WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
  WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
+ WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -7519,6 +7542,7 @@ Begin
  Opts.DiskImg81       := '';
  Opts.CdromImg0       := '';
  Opts.CdromImg1       := '';
+ Opts.NCMode          := False;
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -7534,6 +7558,7 @@ Begin
   If(Arg='-maxscreen')Then Opts.MaxScreen := True Else
   If(Arg='-v')Or(Arg='-V')Then Opts.Verbose := True Else
   If(Arg = '-d')Or(Arg='-D')Then Opts.DebugMode := True Else
+  If(Arg='/NC')Or(Arg='/nc')Or(Arg='-NC')Or(Arg='-nc')Then Opts.NCMode := True Else
   If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
            (Copy(Arg, 1, 5) = '-Emu:')) Then Begin
@@ -9510,6 +9535,59 @@ End;
   et FindEditorByFileName car il les utilise. }
 Procedure OpenHelpFile(BaseName: String; Context: String); Forward;
 
+{ --- Lecture/Pause/Arret de l emulateur actif depuis la barre d outils --- }
+
+{ Signale par l utilisateur (2026-08-16) : "les emulateurs ne semblent pas   }
+{ tenir compte des icones de la barre d outils (Lecture, Arret, Pause)" -   }
+{ TEmulatorPanel.Running existait deja et etait deja respecte par           }
+{ StepEmulator pour les 12 backends convertis (`If Not P.Running Then       }
+{ Exit;`, un par backend) mais RIEN dans le fichier ne l exposait a          }
+{ l utilisateur - ni bouton, ni raccourci. Ces 3 fonctions comblent ce       }
+{ manque en reutilisant ce mecanisme deja fiable, sans toucher a             }
+{ StepEmulator lui-meme. }
+
+{ Reprend un emulateur precedemment mis en pause. Retourne True si une      }
+{ reprise a effectivement eu lieu (utilise par l appelant - bouton           }
+{ Lecture/F5 - pour ne PAS declencher en plus le comportement "demarrer un   }
+{ nouveau debogage" quand il ne s agit que de relancer l emulateur deja      }
+{ charge). }
+Function EmuPanel_TryResume: Boolean;
+Begin
+ EmuPanel_TryResume := False;
+ If EmuPanel.Base.Visible And EmuPanel.Loaded And Not EmuPanel.Running Then Begin
+  EmuPanel.Running := True;
+  EmuPanel.StatusMsg := '';
+  DrawEmulatorPanel(EmuPanel);
+  EmuPanel_TryResume := True;
+ End;
+End;
+
+{ Met en pause l emulateur actif (bouton Pause). Reutilise directement       }
+{ EmuPanel.Running, deja verifie par StepEmulator - aucun autre changement   }
+{ necessaire pour que l avancement s arrete effectivement. }
+Procedure EmuPanel_Pause;
+Begin
+ If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then Begin
+  EmuPanel.Running := False;
+  EmuPanel.StatusMsg := 'PAUSE (cliquez sur Lecture ou F5 pour reprendre)';
+  DrawEmulatorPanel(EmuPanel);
+ End;
+End;
+
+{ Arrete l emulateur actif (bouton Arret). Contrairement a Echap (qui ferme  }
+{ completement l onglet, voir HandleEmulatorPanelEvent), Arret se contente   }
+{ de figer l execution - meme etat final que lorsqu un programme emule       }
+{ s arrete de lui-meme (voir StepEmulator, "Finished") - l onglet et son      }
+{ contenu restent consultables. }
+Procedure EmuPanel_Stop;
+Begin
+ If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then Begin
+  EmuPanel.Running := False;
+  EmuPanel.StatusMsg := 'Arrete par l''utilisateur';
+  DrawEmulatorPanel(EmuPanel);
+ End;
+End;
+
 Procedure ExecuteMenuItem(Var Item: TMenuItem);
 Var
  I: Integer;
@@ -9688,13 +9766,19 @@ Begin
         End;
         FullRepaintNeeded := True;
        End;
-  600: Begin { Demarrer le debogage (F5) }
-        If EmuDbg.Paused Then EmuDbg_Continue
-        Else HandleStartDebugging;
+  600: Begin { Lecture : reprendre l emulateur en pause, sinon comportement }
+             { d origine (continuer le debogueur en pause, sinon demarrer   }
+             { un nouveau debogage) (F5) }
+        If Not EmuPanel_TryResume Then Begin
+         If EmuDbg.Paused Then EmuDbg_Continue
+         Else HandleStartDebugging;
+        End;
        End;
   601: Begin { Demarrer sans debogage (Ctrl+F5) }
-        If EmuDbg.Paused Then EmuDbg_Continue
-        Else StartWithoutDebugging(BPMgr, OutputPanel);
+        If Not EmuPanel_TryResume Then Begin
+         If EmuDbg.Paused Then EmuDbg_Continue
+         Else StartWithoutDebugging(BPMgr, OutputPanel);
+        End;
        End;
   610: Begin { Point d arret (F9) }
         If EmuDbg.Active Or EmuDbg.Paused Then Begin
@@ -9713,9 +9797,14 @@ Begin
   622: Begin { Pas a pas sortant (Shift+F11) }
         If EmuDbg.Paused Then EmuDbg_StepOut;
        End;
-  630: Begin { Arreter le debogage (Shift+F5) }
+  630: Begin { Arret : figer l emulateur actif, PUIS comportement d origine }
+             { (arreter le debogueur) (Shift+F5) }
+        EmuPanel_Stop;
         If EmuDbg.Active Or EmuDbg.Paused Then EmuDbg_Stop
         Else StopDebugging(BPMgr, OutputPanel);
+       End;
+  640: Begin { Pause : suspendre l emulateur actif }
+        EmuPanel_Pause;
        End;
   700: Begin { Options... }
         ShowOptionsDialog(OptionsDlg);
@@ -10353,6 +10442,16 @@ Begin
  IconPutPixel(Icon, 10, 7, 2);
 End;
 
+{ --- Icone : Pause --- }
+
+Procedure MakeIconPause(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Deux barres vertes (pause), meme couleur que Demarrer/Lecture }
+ IconFillRect(Icon, 4, 3, 6, 12, 2);
+ IconFillRect(Icon, 9, 3, 11, 12, 2);
+End;
+
 { --- Icone : Arreter --- }
 
 Procedure MakeIconStop(Var Icon: TIcon16);
@@ -10866,14 +10965,15 @@ Begin
  MakeIconRedo(MainToolBar.Buttons[10].Icon);
  { index 11 = separateur }
  MakeIconStart(MainToolBar.Buttons[12].Icon);
- MakeIconStop(MainToolBar.Buttons[13].Icon);
- MakeIconStepOver(MainToolBar.Buttons[14].Icon);
- MakeIconBreakpoint(MainToolBar.Buttons[15].Icon);
- { index 16 = separateur }
- MakeIconFind(MainToolBar.Buttons[17].Icon);
- { index 18 = separateur }
- MakeIconNavBack(MainToolBar.Buttons[19].Icon);
- MakeIconNavForward(MainToolBar.Buttons[20].Icon);
+ MakeIconPause(MainToolBar.Buttons[13].Icon);
+ MakeIconStop(MainToolBar.Buttons[14].Icon);
+ MakeIconStepOver(MainToolBar.Buttons[15].Icon);
+ MakeIconBreakpoint(MainToolBar.Buttons[16].Icon);
+ { index 17 = separateur }
+ MakeIconFind(MainToolBar.Buttons[18].Icon);
+ { index 19 = separateur }
+ MakeIconNavBack(MainToolBar.Buttons[20].Icon);
+ MakeIconNavForward(MainToolBar.Buttons[21].Icon);
 End;
 
 { --- Ajouter un bouton a la barre d outils --- }
@@ -10940,9 +11040,12 @@ Begin
  AddToolButton(MainToolBar, 'Retablir (Ctrl+Y)', 201);
  AddToolSeparator(MainToolBar);
 
- { Groupe Debogage }
- AddToolButton(MainToolBar, 'Demarrer le debogage (F5)', 600);
- AddToolButton(MainToolBar, 'Arreter le debogage (Maj+F5)', 630);
+ { Groupe Debogage/Emulateur : Lecture reprend aussi un emulateur en pause,   }
+ { Arret figes aussi l emulateur actif - voir EmuPanel_TryResume/_Pause/     }
+ { _Stop et les tags 600/640/630 dans ExecuteMenuItem. }
+ AddToolButton(MainToolBar, 'Lecture : demarrer le debogage / reprendre l''emulateur (F5)', 600);
+ AddToolButton(MainToolBar, 'Pause : suspendre l''emulateur actif', 640);
+ AddToolButton(MainToolBar, 'Arret : figer l''emulateur / arreter le debogage (Maj+F5)', 630);
  AddToolButton(MainToolBar, 'Pas a pas principal (F10)', 620);
  AddToolButton(MainToolBar, 'Point d arret (F9)', 610);
  AddToolSeparator(MainToolBar);
@@ -11098,6 +11201,7 @@ Procedure HandleToolBarEvent(Var Ev: TEvent);
 Var
  Hit: Integer;
  Now: LongInt;
+ I: Integer;
 Begin
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
   Hit := ToolBarHitTest(Ev.MouseX, Ev.MouseY);
@@ -11124,13 +11228,28 @@ Begin
   Hit := ToolBarHitTest(Ev.MouseX, Ev.MouseY);
   Now := GetTimestamp;
   { Mettre a jour les etats de survol }
-  For TooltipBtnIdx := 0 To MainToolBar.BtnCount - 1 Do Begin
-   If TooltipBtnIdx = Hit Then Begin
-    If MainToolBar.Buttons[TooltipBtnIdx].State = TB_NORMAL Then
-     MainToolBar.Buttons[TooltipBtnIdx].State := TB_HOVER;
+  { BOGUE REEL corrige 2026-08-16 (signale par l utilisateur : "les icones   }
+  { devraient avoir des info-bulles... lorsque le pointeur passe par-       }
+  { dessus", jamais observees) : cette boucle reutilisait TooltipBtnIdx      }
+  { (la variable GLOBALE qui memorise le bouton actuellement "info-bulle    }
+  { affichee/en attente", lue juste en dessous) comme simple variable de     }
+  { boucle locale - en Pascal standard, la valeur d une variable de boucle   }
+  { For n est plus fiable une fois la boucle terminee (ici, elle vaut         }
+  { `MainToolBar.BtnCount`, une valeur hors limites qui ne correspond a       }
+  { AUCUN bouton reel). La comparaison "Hit <> TooltipBtnIdx" juste apres     }
+  { etait donc TOUJOURS vraie (sauf coincidence), meme si la souris          }
+  { n avait pas bouge de bouton - `TooltipTimer` etait reinitialise a         }
+  { CHAQUE mouvement de souris, empechant `Now - TooltipTimer >=              }
+  { TOOLTIP_DELAY` de jamais devenir vrai. Utiliser une variable de boucle    }
+  { dediee (I) resout le probleme sans toucher au reste de la logique,        }
+  { deja correcte. }
+  For I := 0 To MainToolBar.BtnCount - 1 Do Begin
+   If I = Hit Then Begin
+    If MainToolBar.Buttons[I].State = TB_NORMAL Then
+     MainToolBar.Buttons[I].State := TB_HOVER;
    End Else Begin
-    If MainToolBar.Buttons[TooltipBtnIdx].State = TB_HOVER Then
-     MainToolBar.Buttons[TooltipBtnIdx].State := TB_NORMAL;
+    If MainToolBar.Buttons[I].State = TB_HOVER Then
+     MainToolBar.Buttons[I].State := TB_NORMAL;
    End;
   End;
   { Gestion infobulle }
@@ -44174,6 +44293,7 @@ Var
  ScY: Integer;
  ColorByte, BgiC: Byte;
  PrevC, RunStart: Integer;
+ EmuBackPage: Integer;
 Begin
  ScrH := GetScreenHeight;
  { Mode NES : rendu pixel du framebuffer 256x240 ----------------------- }
@@ -44395,6 +44515,37 @@ Begin
   EmuVideo.GfxDirty := False;
   Exit;
  End;
+ { Double buffering reel (2026-08-16) : tout le rendu ci-dessous (bordure,   }
+ { titre, fond, ~1000 cellules, curseur, barre d etat) est desormais           }
+ { compose sur la page INACTIVE (invisible) plutot que directement sur la    }
+ { page a l ecran - PtcGraph supporte le page-flip BGI classique             }
+ { (SetActivePage/SetVisualPage), verifie par test dedie avant ce chantier.   }
+ { L utilisateur ne voit donc plus jamais un etat partiellement redessine     }
+ { (source du scintillement signale : "il faut systematiquement tout          }
+ { effacer l ecran et la redessiner") - le flip final (voir la fin de cette   }
+ { procedure) est atomique. Volontairement PAS combine avec un rendu           }
+ { differentiel (cellule par cellule) : une tentative anterieure a cause      }
+ { une regression pire que le scintillement d origine (contenu qui              }
+ { disparaissait durablement, voir [[project-devenv]]) - la redondance de     }
+ { tout redessiner integralement CHAQUE trame reste volontaire ici, seul le   }
+ { flip change. }
+ EmuBackPage := 1 - EmuDblBufPage;
+ { Recopier l ecran ACTUELLEMENT visible (page EmuDblBufPage) sur la page     }
+ { arriere AVANT d y dessiner - seul ce code fait alterner la page             }
+ { active/visible dans tout le fichier, donc sans cette recopie toute mise    }
+ { a jour d un AUTRE panneau (Explorateur, Terminal, barre d etat...)           }
+ { survenue pendant que l emulateur tourne ne serait visible qu une trame      }
+ { sur deux. Tampon alloue UNE SEULE fois (taille ecran stable pour la         }
+ { duree du processus - un changement de resolution redemarre tout             }
+ { DEVENV, voir ToggleScreenZoom) et reutilise a chaque trame. }
+ If EmuPageBuf = Nil Then Begin
+  EmuPageBufSz := ImageSize(0, 0, GetScreenWidth - 1, GetScreenHeight - 1);
+  GetMem(EmuPageBuf, EmuPageBufSz);
+ End;
+ SetActivePage(EmuDblBufPage);
+ GetImage(0, 0, GetScreenWidth - 1, GetScreenHeight - 1, EmuPageBuf^);
+ SetActivePage(EmuBackPage);
+ PutImage(0, 0, EmuPageBuf^, NormalPut);
  { Bordure et barre de titre }
  DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
   P.PanelX + GridW + 2, P.PanelY + GridH + 48,
@@ -44453,6 +44604,15 @@ Begin
    'Arrete (code de fin: ' + IntToStr(P.Fault) + ')',
    CLR_HIGHLIGHTTEXT);
  P.NeedRepaint := False;
+ { Flip atomique : la page qu on vient de composer entierement ci-dessus     }
+ { devient visible d un coup, aucun etat intermediaire n est jamais visible. }
+ { SetActivePage restaure ensuite l invariant "page active = page visible"   }
+ { pour le reste de la boucle principale (menus/editeur/etc, qui ignorent     }
+ { totalement l existence de plusieurs pages et dessinent toujours sur la    }
+ { page active courante). }
+ SetVisualPage(EmuBackPage);
+ SetActivePage(EmuBackPage);
+ EmuDblBufPage := EmuBackPage;
 End;
 
 { ============================================================
@@ -83503,9 +83663,12 @@ Begin
     OpenHelpFile('DEVENV.HLP', '');
     Exit;
    End;
-   $3F: Begin { F5 : continuer (debogueur en pause) ou demarrer }
-    If EmuDbg.Paused Then EmuDbg_Continue
-    Else HandleStartDebugging;
+   $3F: Begin { F5 : reprendre l emulateur en pause, sinon comportement    }
+              { d origine (continuer le debogueur en pause, sinon demarrer) }
+    If Not EmuPanel_TryResume Then Begin
+     If EmuDbg.Paused Then EmuDbg_Continue
+     Else HandleStartDebugging;
+    End;
     Exit;
    End;
    $40: Begin { F6 : generer la solution }
@@ -83531,14 +83694,17 @@ Begin
     If EmuDbg.Paused Then EmuDbg_StepOut;
     Exit;
    End;
-   $58: Begin { Shift+F5 : arreter le debogage }
+   $58: Begin { Shift+F5 : arreter l emulateur actif, puis le debogueur }
+    EmuPanel_Stop;
     If EmuDbg.Active Or EmuDbg.Paused Then EmuDbg_Stop
     Else StopDebugging(BPMgr, OutputPanel);
     Exit;
    End;
    $62: Begin { Ctrl+F5 : demarrer sans debogage }
-    If EmuDbg.Paused Then EmuDbg_Continue
-    Else StartWithoutDebugging(BPMgr, OutputPanel);
+    If Not EmuPanel_TryResume Then Begin
+     If EmuDbg.Paused Then EmuDbg_Continue
+     Else StartWithoutDebugging(BPMgr, OutputPanel);
+    End;
     Exit;
    End;
   End;
@@ -84047,6 +84213,19 @@ Begin
     DrawAllWidgets;
     DrawContextMenu(CtxMenu);
    End;
+   { BOGUE REEL corrige 2026-08-16 (signale par l utilisateur : les info-    }
+   { bulles de la barre d outils ne s affichaient jamais) : au-dela du         }
+   { bogue de variable de boucle deja corrige dans HandleToolBarEvent          }
+   { (voir TooltipBtnIdx plus haut), DrawAllWidgets EFFACE l infobulle          }
+   { juste dessinee par HandleToolBarEvent (appele plus haut dans             }
+   { DispatchEvent, DONC avant ce DrawAllWidgets) - DrawWindowTabs (appelee   }
+   { par DrawAllWidgets) redessine la barre d onglets exactement a l endroit  }
+   { ou l infobulle vient d etre affichee (juste sous la barre d outils),      }
+   { l ecrasant AVANT que quiconque n ait la moindre chance de la voir.        }
+   { La redessiner ICI, juste apres, la fait apparaitre par-dessus - meme      }
+   { principe que DrawContextMenu ci-dessus (deja redessine apres              }
+   { DrawAllWidgets pour la meme raison). }
+   If TooltipVisible Then DrawTooltip(TooltipBtnIdx);
    LastBlinkState := ProjPropCursorVisible;
   End Else Begin
    { Stage 1 (2026-08-15) : pas d execution asynchrone pour les backends   }
@@ -84129,6 +84308,26 @@ Begin
   SolExplorer.SelectedIdx := 1;
   SolExplorer.Nodes[1].Selected := True;
   SolExplorer.NeedRepaint := True;
+ End;
+ { /NC : ouvrir le Terminal directement en Norton Commander des le          }
+ { demarrage - evite plusieurs etapes de souris (menu Affichage >           }
+ { Terminal puis selection du shell dans le selecteur). Reproduit             }
+ { exactement l action manuelle equivalente (voir ExecuteMenuItem, tag       }
+ { 303, et le clic sur l item 5 du selecteur de shell du Terminal).           }
+ { Independant des branches ci-dessus (solution/emulateur/fichier          }
+ { source) : peut se combiner avec elles. }
+ If Opts.NCMode Then Begin
+  ActiveShell := SK_NCOMMANDER;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  FullRepaintNeeded := True;
  End;
  DrawAllWidgets;
  MainLoop;
