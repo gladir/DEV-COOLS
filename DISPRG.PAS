@@ -6424,6 +6424,11 @@ Begin
 End;
 
 BEGIN
+ { BOGUE REEL (2026-08-18, meme correctif que DISEXE.PAS) : FileMode par
+   defaut demande un acces en ECRITURE meme pour Reset() en lecture
+   seule - echoue sur tout .PRG en lecture seule. DISPRG n analyse
+   jamais que le fichier source, jamais n y ecrit. }
+ FileMode := 0;
  If (ParamCount >= 1) And
     ((ParamStr(1) = '-h') Or (ParamStr(1) = '--help') Or
      (ParamStr(1) = '/?') Or (ParamStr(1) = '/h') Or

@@ -6524,6 +6524,14 @@ End;
   ============================================================ }
 
 BEGIN
+ { BOGUE REEL (2026-08-18) : FileMode par defaut demande un acces en
+   ECRITURE meme pour Reset() en lecture seule - echoue silencieusement
+   ("impossible d'ouvrir") sur tout fichier .EXE en lecture seule (cas
+   tres courant pour un vieux binaire DOS historique recupere d'un CD-
+   ROM/d'une archive, ex. C:\SYMANTEC\NC3\NC.EXE). DISEXE ne fait jamais
+   qu ANALYSER le fichier source (jamais y ecrire), donc forcer l acces
+   en lecture seule ici est strictement correct et leve la limitation. }
+ FileMode := 0;
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
   ShowHelp;

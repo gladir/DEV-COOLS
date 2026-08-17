@@ -9093,6 +9093,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Activites observees...', '', 650);
+ AddMenuItem(MainMenuBar.Menus[5], 'Desassembler l''executable...', '', 660);
  MainMenuBar.MenuCount := 6;
 
  { Menu Outils }
@@ -9143,6 +9144,9 @@ Procedure DrawAllWidgets; Forward;
 
 { Declaration anticipee : HandleStartDebugging est defini plus loin }
 Procedure HandleStartDebugging; Forward;
+
+{ Declaration anticipee : RunDisassemblerOnEmulatorBinary est definie plus loin }
+Procedure RunDisassemblerOnEmulatorBinary; Forward;
 
 { Declarations anticipees du debogueur emulateur (defini pres de la fin) }
 Procedure EmuDbg_Init; Forward;
@@ -9930,6 +9934,9 @@ Begin
   650: Begin { Activites observees... }
         ShowEmuActivityDialog(EmuActivityDlg);
         FullRepaintNeeded := True;
+       End;
+  660: Begin { Desassembler l executable... }
+        RunDisassemblerOnEmulatorBinary;
        End;
   700: Begin { Options... }
         ShowOptionsDialog(OptionsDlg);
@@ -45130,6 +45137,7 @@ Begin
     HexWord(Seg), ':', HexWord(Ofs),
     ' (phys=', HexLong(LongInt(Seg)*16+Ofs), ')',
     ' size=', SizeBytes,
+    ' steps=', EmuPanel.TotalSteps,
     '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
     HexWord(EmuPanel.CPU.IP),
     ' AX=', HexWord(EmuPanel.CPU.Regs.AX),
@@ -45221,6 +45229,7 @@ Begin
     HexWord(Seg), ':', HexWord(Ofs),
     ' (phys=', HexLong(LongInt(Seg)*16+Ofs), ')',
     ' <- ', HexByte(X),
+    ' steps=', EmuPanel.TotalSteps,
     '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
     HexWord(EmuPanel.CPU.IP),
     ' AX=', HexWord(EmuPanel.CPU.Regs.AX),
@@ -73191,8 +73200,10 @@ Begin NesActive := False;
    HexWord(P.CPU.IP)); Close(LogF_R);
  End;
  {$I+} If IOResult <> 0 Then ;
- { Activer le watch sur la zone 0AAC:8740..87FF pour identifier le code
-   qui ecrase le code TP4 (corruption observee dans la trace). }
+ { Watch desactive par defaut - reactiver EmuWatchEnabled/PhysLo/PhysHi
+   ponctuellement pour une investigation (voir [[project-devenv]] pour
+   les plages deja explorees : $B0000-$BFFFF pour le VRAM B800h, ou
+   $3DF80-$3E050 pour le tampon source du blit NC3 a 3BF2:20A9). }
  EmuWatchEnabled := False;
  EmuWatchPhysLo := 0;
  EmuWatchPhysHi := 0;
@@ -84817,6 +84828,78 @@ Begin
  EditorReady := True;
  FullRepaintNeeded := True;
  AppendOutput(OutputPanel, 'Transpilation terminee : ' + OutPath, 0);
+End;
+
+{ --- Deboguer > "Desassembler l executable..." : appelle DISEXE.PAS
+  (cibles DOS/DPMI -CD/-CP, autodetecte aussi le format PE Windows) ou
+  DISPRG.PAS (cible Atari ST -CATARIST) sur le binaire actuellement
+  charge dans le panneau emulateur, puis ouvre le .ASM/.S resultant
+  dans un nouvel onglet editeur - meme motif que RunTranspilerOnFile
+  ci-dessus, mais la source vient du panneau emulateur (EmuPanel),
+  pas d un noeud de l Explorateur de solutions. }
+
+Procedure RunDisassemblerOnEmulatorBinary;
+Var
+ BinaryPath, OutPath, ExeName, ExePath: String;
+ WIdx: Integer;
+Begin
+ If (Not EmuPanel.Loaded) Or (EmuPanel.BinaryPath = '') Then Begin
+  ShowMessageBox('Desassembler l''executable',
+   'Aucun executable charge dans l''emulateur.', MB_OK, MI_INFO);
+  Exit;
+ End;
+ BinaryPath := EmuPanel.BinaryPath;
+ If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then Begin
+  ExeName := 'DISEXE.exe';
+  OutPath := ChangeFileExt(BinaryPath, '.ASM');
+ End Else If EmuPanel.TargetCPU = '-CATARIST' Then Begin
+  ExeName := 'DISPRG.exe';
+  OutPath := ChangeFileExt(BinaryPath, '.S');
+ End Else Begin
+  ShowMessageBox('Desassembler l''executable',
+   'Cible non prise en charge par cet outil : ' + EmuPanel.TargetCPU +
+   #13#10 + '(seuls DOS/DPMI/Windows -CD/-CP et Atari ST -CATARIST ' +
+   'sont geres, via DISEXE.PAS/DISPRG.PAS).', MB_OK, MI_INFO);
+  Exit;
+ End;
+ { Meme convention de recherche que RunTranspilerOnFile : a cote de
+   DEVENV.exe, puis WIN32\, puis PATH. }
+ ExePath := ExtractFilePath(ParamStr(0)) + ExeName;
+ If Not FileExists(ExePath) Then
+  ExePath := ExtractFilePath(ParamStr(0)) + 'WIN32\' + ExeName;
+ If Not FileExists(ExePath) Then
+  ExePath := ExeName;
+ If Not FileExists(ExePath) Then Begin
+  ShowMessageBox('Desassembler l''executable',
+   'Outil introuvable : ' + ExeName, MB_OK, MI_ERROR);
+  Exit;
+ End;
+ AppendOutput(OutputPanel,
+  'Desassemblage : ' + ExeName + ' "' + BinaryPath + '"', 0);
+ Exec(ExePath, '"' + BinaryPath + '"');
+ If Not FileExists(OutPath) Then Begin
+  ShowMessageBox('Desassembler l''executable',
+   'Aucun fichier produit : ' + OutPath, MB_OK, MI_ERROR);
+  AppendOutput(OutputPanel, 'Echec du desassemblage : ' + OutPath, 2);
+  Exit;
+ End;
+ If EditorReady Then SyncActiveWindowOut;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ WIdx := FindEditorByFileName(OutPath);
+ If WIdx >= 0 Then
+  ActivateWindow(WIdx)
+ Else Begin
+  CreateEditorWindow(OutPath);
+  WIdx := WinMgr.ActiveIdx;
+  LoadFile(Editors[WIdx]^.Buffer, OutPath);
+  ActiveEditor := Editors[WIdx]^;
+ End;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+ AppendOutput(OutputPanel, 'Desassemblage termine : ' + OutPath, 0);
 End;
 
 { --- Appliquer le resultat du dialogue Ajouter une reference : ajoute  }
