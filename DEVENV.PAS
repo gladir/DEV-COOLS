@@ -50292,6 +50292,53 @@ Begin
   Emu_HostPath := S;
 End;
 
+{ Canonicaliser un chemin DOS (AH=60h) : majuscules, '/' -> '\', ajoute la  }
+{ lettre de lecteur par defaut (C:) si absente, resout les composants '.'   }
+{ et '..'. Pas de suivi reel d un "repertoire courant par lecteur" dans cet }
+{ emulateur (aucune convention DOS CHDIR persistante ailleurs non plus) -   }
+{ un chemin relatif est donc toujours resolu depuis la racine du lecteur,   }
+{ suffisant pour l usage typique (normaliser un chemin deja construit par   }
+{ le programme, pas taper un chemin relatif au shell). }
+Function Emu_CanonicalizePath(Const DosPath: String): String;
+Var
+ S, Seg, Res: String;
+ Parts: Array[0..31] Of String;
+ PartCount, CI, P1: Integer;
+Begin
+ S := DosPath;
+ For CI := 1 To Length(S) Do
+  If S[CI] = '/' Then S[CI] := '\';
+ For CI := 1 To Length(S) Do
+  If S[CI] In ['a'..'z'] Then S[CI] := Chr(Ord(S[CI]) - 32);
+ If Not ((Length(S) >= 2) And (S[2] = ':')) Then
+  S := 'C:' + S;
+ If (Length(S) < 3) Or (S[3] <> '\') Then
+  S := Copy(S, 1, 2) + '\' + Copy(S, 3, Length(S) - 2);
+ PartCount := 0;
+ P1 := 4;
+ While P1 <= Length(S) Do Begin
+  Seg := '';
+  While (P1 <= Length(S)) And (S[P1] <> '\') Do Begin
+   Seg := Seg + S[P1]; Inc(P1);
+  End;
+  Inc(P1);
+  If (Seg = '') Or (Seg = '.') Then
+   { ignorer }
+  Else If Seg = '..' Then Begin
+   If PartCount > 0 Then Dec(PartCount);
+  End Else If PartCount < 32 Then Begin
+   Parts[PartCount] := Seg;
+   Inc(PartCount);
+  End;
+ End;
+ Res := Copy(S, 1, 3);
+ For CI := 0 To PartCount - 1 Do Begin
+  Res := Res + Parts[CI];
+  If CI < PartCount - 1 Then Res := Res + '\';
+ End;
+ Emu_CanonicalizePath := Res;
+End;
+
 (* ===== ANCIENNE IMPLEMENTATION INT 21h - DESACTIVEE =====
    Conservee comme reference historique, neutralisee par
    commentaire bloc FreePascal. Remplacee par Emu_DoInt21
@@ -52182,8 +52229,157 @@ Begin
    End;
   $5C:
    Exclude(P.CPU.Flags.s, EFG_CF);
-  $63, $65, $66, $67, $68:
+  $60:
+   { Canonicaliser un chemin (DS:SI -> ES:DI) - voir Emu_CanonicalizePath.  }
+   { Decouvert manquant en comparant avec dos.cpp de DOSBox (AH=60h). }
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
+    HPath := Emu_CanonicalizePath(FName);
+    For I := 1 To Length(HPath) Do
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I - 1, Byte(HPath[I]));
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + Length(HPath), 0);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $63, $67:
    Exclude(P.CPU.Flags.s, EFG_CF);
+  $65:
+   { Informations pays etendues - decouvert manquant en comparant avec       }
+   { dos.cpp de DOSBox (AH=65h), qui lui-meme ne l implante que              }
+   { partiellement (reponse USA fixe, "and a lot of other useless shit"      }
+   { selon son propre commentaire). CORRECTIF IMPORTANT : l ancien           }
+   { comportement de cet emulateur (juste Exclude(CF) SANS RIEN ecrire)      }
+   { etait pire qu un refus honnete - il faisait croire au programme         }
+   { appelant qu une vraie structure avait ete ecrite a ES:DI, qui restait   }
+   { en fait remplie de donnees non initialisees (un programme qui s y fie   }
+   { pour le format de devise/date afficherait n importe quoi). AL=01       }
+   { (structure pays standard, format USA/DOS classique - voir Ralf Brown s }
+   { Interrupt List AX=6501h) et AL=20/21/22 (mise en majuscule             }
+   { caractere/chaine/ASCIIZ, utile independamment de toute table interne)   }
+   { sont reellement implantees ; AL=02..07 (pointeurs vers des tables       }
+   { internes DOS - majuscules, separateurs de nom de fichier...)            }
+   { necessiteraient de construire et exposer de vraies tables en memoire    }
+   { emulee pour un benefice marginal (essentiellement des pilotes clavier   }
+   { non geres ici) - restent explicitement non geerees (CF=1). }
+   Case P.CPU.Regs.AL Of
+    $01:
+     Begin
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI, $01);
+      Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 1, $0026);
+      Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 3, 1);
+      If P.CPU.Regs.CX > 6 Then
+       Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 5, 437);
+      If P.CPU.Regs.CX > 8 Then Begin
+       Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 7, 0);
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 9, Ord('$'));
+       For I := 10 To 13 Do Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I, 0);
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 14, Ord(','));
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 15, 0);
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 16, Ord('.'));
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 17, 0);
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 18, Ord('/'));
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 19, 0);
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 20, Ord(':'));
+       For I := 21 To 40 Do Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I, 0);
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 23, 2); { decimales devise }
+       If P.CPU.Regs.CX > 41 Then P.CPU.Regs.CX := 41;
+      End;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    $20:
+     Begin
+      If P.CPU.Regs.DL In [Ord('a')..Ord('z')] Then P.CPU.Regs.DL := P.CPU.Regs.DL - 32;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    $21, $22:
+     Begin
+      If P.CPU.Regs.AL = $21 Then K := P.CPU.Regs.CX
+      Else Begin
+       K := 0;
+       While Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + K)) <> 0 Do Inc(K);
+      End;
+      For I := 0 To K - 1 Do Begin
+       B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + I));
+       If B In [Ord('a')..Ord('z')] Then B := B - 32;
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + I), B);
+      End;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    Else
+     Emu_SetDosErr(P, 1);
+   End;
+  $66:
+   { Obtenir/definir la page de codes globale - decouvert manquant en       }
+   { comparant avec dos.cpp de DOSBox (AH=66h). Seul AL=01 (obtenir) est     }
+   { gere ; AL=02 (definir) est accepte silencieusement (voir DOSBox         }
+   { lui-meme : "Setting code page table is not supported"). }
+   Begin
+    If P.CPU.Regs.AL = 1 Then Begin
+     P.CPU.Regs.BX := 437;
+     P.CPU.Regs.DX := 437;
+    End;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  $68:
+   { FFLUSH - vider les tampons du fichier vers le disque - decouvert        }
+   { manquant en comparant avec dos.cpp de DOSBox (AH=68h). `EmuFileH` est   }
+   { un `File` non type (BlockRead/BlockWrite), pas un `Text` - `Flush` ne    }
+   { s applique qu aux fichiers `Text`/types en Pascal standard. Accepte      }
+   { silencieusement (succes) : BlockWrite n introduit pas de tampon          }
+   { applicatif supplementaire au-dela de celui du systeme d exploitation      }
+   { dans cet emulateur, donc rien de plus a vider explicitement. }
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  $6C:
+   { Ouverture/creation etendue (DS:SI=nom, BL=mode partage, DL=action si    }
+   { existe/n existe pas) - decouvert manquant en comparant avec dos.cpp     }
+   { de DOSBox (AH=6Ch), utilisee par des programmes DOS 4+ a la place de   }
+   { AH=3Dh/3Ch quand le comportement exact (echouer/ouvrir/tronquer/creer)  }
+   { doit etre choisi en un seul appel. Retourne CX=action realisee          }
+   { (1=ouvert existant, 2=tronque existant, 3=cree). }
+   Begin
+    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
+    HPath := Emu_HostPath(FName);
+    OpenMode := P.CPU.Regs.BL And 3;
+    H := Emu_AllocHandle;
+    If H = 0 Then
+     Emu_SetDosErr(P, 4)
+    Else If FileExists(HPath) Then Begin
+     If (P.CPU.Regs.DL And $0F) = 0 Then
+      Emu_SetDosErr(P, 80)
+     Else Begin
+      Assign(EmuFileH[H], HPath);
+      If (P.CPU.Regs.DL And $0F) = 2 Then Begin
+       {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+       K := 2;
+      End Else Begin
+       {$I-} Reset(EmuFileH[H], 1); {$I+}
+       K := 1;
+      End;
+      If IOResult <> 0 Then
+       Emu_SetDosErr(P, 5)
+      Else Begin
+       EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
+       EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
+       P.CPU.Regs.AX := H; P.CPU.Regs.CX := Word(K);
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    End Else Begin
+     If ((P.CPU.Regs.DL Shr 4) And $0F) = 0 Then
+      Emu_SetDosErr(P, 2)
+     Else Begin
+      Assign(EmuFileH[H], HPath);
+      {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+      If IOResult <> 0 Then
+       Emu_SetDosErr(P, 5)
+      Else Begin
+       EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
+       EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
+       P.CPU.Regs.AX := H; P.CPU.Regs.CX := 3;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    End;
+   End;
   Else
    Emu_SetDosErr(P, 1);
  End;
