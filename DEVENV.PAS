@@ -4491,6 +4491,14 @@ Type
   Confirmed   : Boolean;       { True si valide par OK          }
  End;
 
+ { Deboguer > Activites observees : boite de dialogue en lecture seule qui  }
+ { affiche en direct les compteurs EmuAct* (voir plus haut) - AUCUN champ   }
+ { propre, toute la "donnee" vit dans les globales EmuAct*, ce dialogue ne  }
+ { fait qu offrir une fenetre pour les visualiser. }
+ TEmuActivityDialog = Record
+  Base : TDialog;
+ End;
+
  { Resultat de compilation }
  TCompilerResult = (
   CR_SUCCESS,           { compilation reussie                     }
@@ -5135,6 +5143,8 @@ Var
  GoToLineDlg    : TGoToLineDialog;
  { Dialogue des options de l IDE }
  OptionsDlg     : TOptionsDialog;
+ { Dialogue Deboguer > Activites observees }
+ EmuActivityDlg : TEmuActivityDialog;
  { Contexte compilateur C# }
  CSCContext     : TCSCCompilerContext;
  { Contexte compilateur VB.NET }
@@ -5301,6 +5311,25 @@ Var
  EmuWatchPhysLo : LongInt;  { adresse physique min surveillee }
  EmuWatchPhysHi : LongInt;  { adresse physique max surveillee }
  EmuWatchHits   : Integer;  { nb hits cumules }
+ { Activites observees (Deboguer > Activites observees, voir              }
+ { EmuActivityDlg/DrawEmuActivityDlg) - compteurs mis a jour en direct     }
+ { pendant l execution DOS, remis a zero a chaque demarrage de session     }
+ { (Emu_InitBDA). But : aider a diagnostiquer un programme DOS SANS devoir }
+ { recompiler avec des sondes ad hoc a chaque nouvelle hypothese. }
+ EmuActVramB800 : LongInt;  { ecritures directes segment $B800 }
+ EmuActVramB000 : LongInt;  { ecritures directes segment $B000 }
+ EmuActVramA000 : LongInt;  { ecritures directes segment $A000 }
+ EmuActInt10    : LongInt;  { appels INT 10h (video BIOS) }
+ EmuActBiosId   : Boolean;  { lecture de l octet ID BIOS F000:FFFE }
+ EmuActInt21    : LongInt;  { appels INT 21h (DOS) }
+ EmuActInt22    : LongInt;  { appels INT 22h (adresse de sortie DOS) }
+ EmuActInt23    : LongInt;  { appels INT 23h (Ctrl-Break) }
+ EmuActInt24    : LongInt;  { appels INT 24h (erreur critique) }
+ EmuActInt25    : LongInt;  { appels INT 25h (lecture disque absolue) }
+ EmuActInt28    : LongInt;  { appels INT 28h (DOS idle) }
+ EmuActMouseTest: Boolean;  { INT 33h AX=0000h (test presence souris) vu }
+ EmuActInt33    : LongInt;  { appels INT 33h (pilote souris) }
+ EmuActLastDraw : LongInt;  { horodatage du dernier redessin (throttle) }
  EmuDiv0Caught  : Boolean;  { capture du 1er DIV/0 (diag) }
  EmuDiv0CS      : Word;
  EmuDiv0IP      : Word;
@@ -9049,6 +9078,8 @@ Begin
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Maj+F11', 622);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
+ AddMenuSeparator(MainMenuBar.Menus[5]);
+ AddMenuItem(MainMenuBar.Menus[5], 'Activites observees...', '', 650);
  MainMenuBar.MenuCount := 6;
 
  { Menu Outils }
@@ -9133,6 +9164,10 @@ Procedure DrawContextMenu(Var CM: TContextMenu); Forward;
 Procedure ShowFindDialog(Var Dlg: TFindReplaceDialog); Forward;
 Procedure ShowReplaceDialog(Var Dlg: TFindReplaceDialog); Forward;
 Procedure ShowGoToLineDialog(Var Ed: TEditor); Forward;
+Procedure ShowEmuActivityDialog(Var Dlg: TEmuActivityDialog); Forward;
+Procedure DrawEmuActivityDialog(Var Dlg: TEmuActivityDialog); Forward;
+Procedure HandleEmuActivityEvent(Var Dlg: TEmuActivityDialog;
+ EvtType: Integer; Key: Char; MX, MY: Integer); Forward;
 Procedure TransformSelection(Var Ed: TEditor;
  Var Sel: TSelection; ToUpper: Boolean); Forward;
 Function ShowMessageBox(Title, Text: String;
@@ -9871,6 +9906,10 @@ Begin
        End;
   640: Begin { Pause : suspendre l emulateur actif }
         EmuPanel_Pause;
+       End;
+  650: Begin { Activites observees... }
+        ShowEmuActivityDialog(EmuActivityDlg);
+        FullRepaintNeeded := True;
        End;
   700: Begin { Options... }
         ShowOptionsDialog(OptionsDlg);
@@ -44901,6 +44940,13 @@ Var
  Row, Col: Integer;
  B: Byte;
 Begin
+ { Activites observees : detection de la lecture de l octet ID BIOS reel   }
+ { a F000:FFFEh (dernier octet de la ROM BIOS 64 Ko, voir                  }
+ { DosHardwareBiosId/Emu_InitBDA) - un vrai utilitaire DOS/BIOS d epoque le }
+ { lit pour distinguer PC/XT/AT/PCjr avant d adapter son comportement. }
+ If (Seg = $F000) And (SizeBytes > 0) And
+    (LongInt(Ofs) <= $FFFE) And (LongInt(Ofs) + SizeBytes > $FFFE) Then
+  EmuActBiosId := True;
  { Mode ATI Graphics Solution 640x200x16 couleurs : lire depuis les plans  }
  { graphiques ($20000+/$30000+, voir Emu_ATIDetectMode/Emu_WriteByte), PAS }
  { depuis la grille de texte generique ci-dessous. Indispensable : les     }
@@ -44990,8 +45036,17 @@ Var
  Row, Col: Integer;
  B: Byte;
  WLog: Text; WIO: Integer;
+ DumpJ: Word; DumpB: Byte; DumpS: String; DBPtr: ^Byte;
 Begin
- { Watch : log de toute ecriture dans la zone surveillee. }
+ { Activites observees (Deboguer > Activites observees) : comptage        }
+ { INDEPENDANT du mode video actif (texte/ATI/CGA graphique) - au point    }
+ { d entree commun, plutot que duplique dans chaque branche ci-dessous. }
+ If (Seg And $F800) = $B800 Then Inc(EmuActVramB800)
+ Else If (Seg And $F800) = $B000 Then Inc(EmuActVramB000)
+ Else If (Seg And $F000) = $A000 Then Inc(EmuActVramA000);
+ { Watch : log de toute ecriture dans la zone surveillee, AVEC la valeur    }
+ { reellement ecrite (lue directement dans Buffer, PAS relue depuis la      }
+ { memoire - a cet instant l ecriture reelle n a pas encore eu lieu). }
  If EmuWatchEnabled And (SizeBytes > 0) And
     (LongInt(Seg)*16 + Ofs <= EmuWatchPhysHi) And
     (LongInt(Seg)*16 + Ofs + SizeBytes - 1 >= EmuWatchPhysLo) And
@@ -45011,6 +45066,16 @@ Begin
     ' ES=', HexWord(EmuPanel.CPU.Segs.ES),
     ' DI=', HexWord(EmuPanel.CPU.Regs.DI),
     ' SI=', HexWord(EmuPanel.CPU.Regs.SI));
+  DBPtr := @Buffer;
+  Write(WLog, '   data=');
+  For DumpJ := 0 To SizeBytes - 1 Do Begin
+   DumpB := DBPtr^;
+   DumpS := Chr(DumpB);
+   If (DumpB < 32) Or (DumpB > 126) Then DumpS := '.';
+   Write(WLog, HexByte(DumpB), '(', DumpS, ') ');
+   Inc(DBPtr);
+  End;
+  WriteLn(WLog);
   Close(WLog);
   {$I+} If IOResult <> 0 Then ;
  End;
@@ -45065,6 +45130,13 @@ Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte);
 Var Row, Col: Integer;
     WLog: Text; WIO: Integer;
 Begin
+ { Activites observees : voir le meme comptage en tete de Emu_WriteBlock - }
+ { necessaire ICI AUSSI car les branches B800h/B000h/A000h ci-dessous       }
+ { retournent (Exit) AVANT d atteindre la delegation finale a               }
+ { Emu_WriteBlock, donc ce dernier ne les voit jamais passer. }
+ If (Seg And $F800) = $B800 Then Inc(EmuActVramB800)
+ Else If (Seg And $F800) = $B000 Then Inc(EmuActVramB000)
+ Else If (Seg And $F000) = $A000 Then Inc(EmuActVramA000);
  { Watch : log de toute ecriture dans la zone surveillee. }
  If EmuWatchEnabled And
     (LongInt(Seg) * 16 + Ofs >= EmuWatchPhysLo) And
@@ -58620,6 +58692,24 @@ Begin
   Close(LogF);
   {$I+} If IOResult <> 0 Then ;
  End;
+ { Activites observees (Deboguer > Activites observees) - comptage         }
+ { INDEPENDANT du dispatch ci-dessous (fonctionne meme si l invite a        }
+ { reellement hooke le vecteur et que Emu_FireHwInt est appele a la place   }
+ { du handler interne - on veut savoir que L INVITE a declenche l           }
+ { interruption, peu importe qui la traite au final). }
+ Case Num Of
+  $10: Inc(EmuActInt10);
+  $21: Inc(EmuActInt21);
+  $22: Inc(EmuActInt22);
+  $23: Inc(EmuActInt23);
+  $24: Inc(EmuActInt24);
+  $25: Inc(EmuActInt25);
+  $28: Inc(EmuActInt28);
+  $33: Begin
+   Inc(EmuActInt33);
+   If P.CPU.Regs.AX = 0 Then EmuActMouseTest := True;
+  End;
+ End;
  { Services BIOS/DOS de base geres par stubs internes PAR DEFAUT - mais un   }
  { programme invite qui a REELLEMENT installe son propre gestionnaire via    }
  { INT 21h AH=25h (Emu_IntIsHooked) est desormais chaine pour de bon plutot  }
@@ -58858,6 +58948,13 @@ Begin
  P.AnsiBold := False;
  P.AnsiSaveX := 0;
  P.AnsiSaveY := 0;
+ { Compteurs "Activites observees" (Deboguer > Activites observees) remis  }
+ { a zero pour cette nouvelle session DOS. }
+ EmuActVramB800 := 0; EmuActVramB000 := 0; EmuActVramA000 := 0;
+ EmuActInt10 := 0; EmuActBiosId := False;
+ EmuActInt21 := 0; EmuActInt22 := 0; EmuActInt23 := 0;
+ EmuActInt24 := 0; EmuActInt25 := 0; EmuActInt28 := 0;
+ EmuActMouseTest := False; EmuActInt33 := 0;
  For I := 0 To $FF Do Emu_WriteByte(P.CPU, $40, I, 0);
  { Equipement word (0040:0010), octet de poids faible :
    bits 7-6 = nb FDD - 1, bits 5-4 = video (11b=80x25 color),
@@ -77293,6 +77390,108 @@ Begin
  DrawGoToLineDialog(GoToLineDlg);
 End;
 
+{ --- Deboguer > Activites observees : dialogue en LECTURE SEULE affichant }
+{ en direct les compteurs EmuAct* (voir declaration pres de EmuWatch*) -    }
+{ ecritures VRAM directes ($B800h/$B000h/$A000h), appels INT 10h/21h/22h/   }
+{ 23h/24h/25h/28h/33h, test de l ID BIOS, test de presence souris. Remis a  }
+{ zero a chaque demarrage de session DOS (Emu_InitBDA). But : diagnostiquer}
+{ un programme DOS sans devoir recompiler avec des sondes ad hoc a chaque   }
+{ nouvelle hypothese (voir le mystere NC3 dans la memoire projet). }
+
+{ Une rangee "case a cocher lecture seule + legende + compteur optionnel". }
+Procedure DrawActRow(FX, FY: Integer; Seen: Boolean; Const Caption: String;
+ Count: LongInt; ShowCount: Boolean);
+Var S: String;
+Begin
+ DrawRect(FX, FY, FX + OPT_CHECK_SIZE, FY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Seen Then DrawCheckMark(FX, FY, OPT_CHECK_SIZE);
+ DrawText(FX + OPT_CHECK_SIZE + 6, FY, Caption, CLR_WINDOWTEXT);
+ If ShowCount Then Begin
+  Str(Count, S);
+  DrawText(FX + 360, FY, S + ' fois', CLR_WINDOWTEXT);
+ End;
+End;
+
+Procedure DrawEmuActivityDialog(Var Dlg: TEmuActivityDialog);
+Var FX, FY, BX, BY: Integer;
+Begin
+ DrawDialogFrame(Dlg.Base);
+ FX := Dlg.Base.X + DLG_PADDING;
+ FY := Dlg.Base.Y + DLG_TITLE_HEIGHT + 12;
+
+ DrawText(FX, FY, 'Affichage', CLR_TITLEBAR_ACTIVE); Inc(FY, 18);
+ DrawActRow(FX, FY, EmuActVramB800 > 0,
+  'Ecriture directe memoire video $B800h', EmuActVramB800, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActVramB000 > 0,
+  'Ecriture directe memoire video $B000h', EmuActVramB000, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActVramA000 > 0,
+  'Ecriture directe memoire video $A000h', EmuActVramA000, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActInt10 > 0,
+  'Interruption 10h (BIOS video)', EmuActInt10, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActInt21 > 0,
+  'Interruption 21h (DOS)', EmuActInt21, True);
+ Inc(FY, OPT_ROW_SPACING + 10);
+
+ DrawText(FX, FY, 'BIOS', CLR_TITLEBAR_ACTIVE); Inc(FY, 18);
+ DrawActRow(FX, FY, EmuActBiosId,
+  'Test de l ID BIOS (lecture F000:FFFEh)', 0, False);
+ Inc(FY, OPT_ROW_SPACING + 10);
+
+ DrawText(FX, FY, 'DOS (autres interruptions)', CLR_TITLEBAR_ACTIVE);
+ Inc(FY, 18);
+ DrawActRow(FX, FY, EmuActInt22 > 0,
+  'Interruption 22h (adresse de sortie DOS)', EmuActInt22, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActInt23 > 0,
+  'Interruption 23h (Ctrl-Break)', EmuActInt23, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActInt24 > 0,
+  'Interruption 24h (erreur critique)', EmuActInt24, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActInt25 > 0,
+  'Interruption 25h (lecture disque absolue)', EmuActInt25, True);
+ Inc(FY, OPT_ROW_SPACING);
+ DrawActRow(FX, FY, EmuActInt28 > 0,
+  'Interruption 28h (DOS idle)', EmuActInt28, True);
+ Inc(FY, OPT_ROW_SPACING + 10);
+
+ DrawText(FX, FY, 'Souris', CLR_TITLEBAR_ACTIVE); Inc(FY, 18);
+ DrawActRow(FX, FY, EmuActMouseTest,
+  'Test de presence (INT 33h AX=0000h)', EmuActInt33, True);
+
+ { Bouton "Fermer" unique - meme positionnement que DrawDialogButtons pour }
+ { HasCancel=False (un seul bouton centre), mais legende personnalisee -   }
+ { DialogButtonHitTest reste utilisable tel quel (index 0) pour le clic. }
+ BY := Dlg.Base.Y + Dlg.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT;
+ BX := Dlg.Base.X + (Dlg.Base.Width - DLG_BUTTON_WIDTH) Div 2;
+ DrawDialogButton(BX, BY, 'Fermer', True);
+End;
+
+Procedure HandleEmuActivityEvent(Var Dlg: TEmuActivityDialog;
+ EvtType: Integer; Key: Char; MX, MY: Integer);
+Begin
+ If Not Dlg.Base.Visible Then Exit;
+ If (EvtType = Ord(EV_KEY_CHAR)) Or (EvtType = Ord(EV_KEY_DOWN)) Then Begin
+  If (Key = #27) Or (Key = #13) Then CloseDialog(Dlg.Base);
+ End Else If EvtType = Ord(EV_MOUSE_DOWN) Then Begin
+  If DialogButtonHitTest(Dlg.Base, MX, MY) = 0 Then
+   CloseDialog(Dlg.Base);
+ End;
+End;
+
+Procedure ShowEmuActivityDialog(Var Dlg: TEmuActivityDialog);
+Begin
+ InitDialog(Dlg.Base, 'Activites observees (emulateur DOS)', 520, 560);
+ Dlg.Base.HasCancel := False;
+ Dlg.Base.Visible := True;
+ DrawEmuActivityDialog(Dlg);
+ EmuActLastDraw := GetTimestamp;
+End;
+
 { --- Obtenir le texte de recherche --- }
 
 Function GetFindSearchText(
@@ -82723,6 +82922,8 @@ Begin
   DrawVirtualDiskDialog(VirtualDiskDlg);
  If VirtAddDiskDlg.Base.Visible Then
   DrawVirtAddDiskDialog(VirtAddDiskDlg);
+ If EmuActivityDlg.Base.Visible Then
+  DrawEmuActivityDialog(EmuActivityDlg);
 End;
 
 { ============================================================
@@ -85000,6 +85201,12 @@ Begin
    End;
   End;
  End;
+ If EmuActivityDlg.Base.Visible Then Begin
+  HandleEmuActivityEvent(EmuActivityDlg,
+   Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
+  If Not EmuActivityDlg.Base.Visible Then FullRepaintNeeded := True;
+  Exit;
+ End;
  If GoToLineDlg.Base.Visible Then Begin
   HandleGoToLineEvent(GoToLineDlg,
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
@@ -85265,6 +85472,7 @@ Var
  Ev: TEvent;
  LastBlinkState: Boolean;
  CurBlinkState: Boolean;
+ ActNow: LongInt;
 Begin
  QuitRequested := False;
  LastBlinkState := ProjPropCursorVisible;
@@ -85304,6 +85512,22 @@ Begin
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
     DrawTerminalPanel(TermPanels[ActiveShell]);
+   { Rafraichir les compteurs "Activites observees" en direct pendant que  }
+   { l emulateur DOS avance (voir StepEmulator ci-dessus) - au plus une    }
+   { fois toutes les 200 ms (meme motif que DOSAsync_LastDraw/80 ms pour   }
+   { DrawEmulatorPanel) : un redessin COMPLET a CHAQUE tick d inactivite   }
+   { (potentiellement des centaines de fois par seconde) etait bien trop   }
+   { frequent - constate empiriquement lors des tests : le contenu du      }
+   { dialogue restait partiellement blanc/tronque (redessins tellement     }
+   { rapproches qu ils se marchaient dessus les uns les autres avant que   }
+   { l ecran ait pu presenter une image complete). }
+   If EmuActivityDlg.Base.Visible Then Begin
+    ActNow := GetTimestamp;
+    If (ActNow - EmuActLastDraw) >= 200 Then Begin
+     DrawEmuActivityDialog(EmuActivityDlg);
+     EmuActLastDraw := ActNow;
+    End;
+   End;
    { Faire clignoter le curseur du dialogue Proprietes du projet :
      ne redessiner que lorsque l etat de clignotement change }
    If ProjPropDlg.Base.Visible Then Begin
