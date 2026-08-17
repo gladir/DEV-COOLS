@@ -3685,6 +3685,14 @@ Type
   CurFg      : Byte;             { couleur courante FG             }
   CurBg      : Byte;             { couleur courante BG             }
   CursorOn   : Boolean;          { curseur visible (clignotant)    }
+  { Etat machine ANSI.SYS (Options > Emulateur > DOS: OS >          }
+  { Pilote ANSI.SYS), voir EmuVScr_AnsiFeed/EmuVScr_AnsiExec.        }
+  AnsiState  : Byte;             { 0=normal 1=ESC vu 2=ESC[ vu       }
+  AnsiParams : Array[0..7] Of Integer; { parametres numeriques ESC[n;n...}
+  AnsiNParam : Integer;          { index du parametre en cours       }
+  AnsiSaveX  : Byte;             { colonne sauvee (ESC[s)            }
+  AnsiSaveY  : Byte;             { ligne sauvee (ESC[u)              }
+  AnsiBold   : Boolean;          { attribut "intense" (SGR 1) actif  }
   { File d attente clavier (ring buffer 64 entrees Word :
     octet bas = ASCII, octet haut = scancode BIOS) }
   KeyBuf     : Array[0..63] Of Word;
@@ -4399,6 +4407,7 @@ Type
   DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
   DosDPMI         : Boolean;     { support DPMI active (INT 31h)  }
   DosDPMISize     : Integer;     { taille memoire etendue DPMI en Ko }
+  DosAnsiSys      : Boolean;     { pilote ANSI.SYS (sequences ESC[) }
   DosMSCDEX       : Boolean;     { pilote MSCDEX (CD-ROM)         }
   DosSouris       : Boolean;     { pilote souris                  }
   DosMousePS2BIOS : Boolean;     { BIOS souris PS/2 (INT 15h AH=C2h) }
@@ -44103,10 +44112,167 @@ Begin
  P.NeedRepaint := True;
 End;
 
+{ --- Pilote ANSI.SYS (Options > Emulateur > DOS: OS > Pilote ANSI.SYS) --- }
+{ Un vrai MS-DOS ANSI.SYS s installe en remplacant le pilote CON pour       }
+{ filtrer TOUTE sortie caractere (INT 21h AH=02h/06h/09h/40h vers le        }
+{ handle 1, INT 29h, teletype INT 10h AH=0Eh) au travers d un analyseur de  }
+{ sequences ESC[. Dans cet emulateur, EmuVScr_PutChar est deja l unique     }
+{ point de passage commun a TOUTES ces routines de sortie caractere DOS -   }
+{ y intercepter les sequences ANSI reproduit fidelement ce comportement    }
+{ sans avoir a toucher chaque site d appel individuellement. }
+
+{ Table de conversion couleur ANSI (ordre R-V-B, bit0=rouge/bit2=bleu) vers }
+{ l attribut texte PC/CGA (ordre B-V-R, bit0=bleu/bit2=rouge) - LE piege    }
+{ classique d ANSI.SYS que le vrai pilote MS-DOS gere en interne : sans     }
+{ cette table, le rouge et le bleu ANSI sortiraient inverses a l ecran. }
+Procedure EmuVScr_AnsiSgr(Var P: TEmulatorPanel; Code: Integer);
+Const AnsiToPc: Array[0..7] Of Byte = (0, 4, 2, 6, 1, 5, 3, 7);
+Var Tmp: Byte;
+Begin
+ Case Code Of
+  0: Begin P.CurFg := 7; P.CurBg := 0; P.AnsiBold := False; End; { reset }
+  1: Begin P.AnsiBold := True; P.CurFg := P.CurFg Or 8; End;     { intense }
+  22: Begin P.AnsiBold := False; P.CurFg := P.CurFg And 7; End;  { intensite normale }
+  7: Begin Tmp := P.CurFg; P.CurFg := P.CurBg; P.CurBg := Tmp And 7; End; { video inverse }
+  39: P.CurFg := 7 Or (P.CurFg And 8); { couleur FG par defaut }
+  49: P.CurBg := 0;                    { couleur BG par defaut }
+ Else
+  If (Code >= 30) And (Code <= 37) Then Begin
+   P.CurFg := AnsiToPc[Code - 30];
+   If P.AnsiBold Then P.CurFg := P.CurFg Or 8;
+  End Else If (Code >= 40) And (Code <= 47) Then
+   P.CurBg := AnsiToPc[Code - 40];
+  { 2/4/5/8 (attenue/souligne/clignotant/invisible) : aucun rendu       }
+  { equivalent dans cette grille texte simple - absorbes silencieusement. }
+ End;
+End;
+
+{ Efface les cellules [X1..X2] (bornees a la grille) de la ligne Y. }
+Procedure EmuVScr_AnsiEraseRange(Var P: TEmulatorPanel; Y, X1, X2: Integer);
+Var X: Integer;
+Begin
+ If X1 < 0 Then X1 := 0;
+ If X2 > P.Cols - 1 Then X2 := P.Cols - 1;
+ For X := X1 To X2 Do Begin
+  P.VRAM[Y, X].Ch := ' ';
+  P.VRAM[Y, X].Fg := P.CurFg;
+  P.VRAM[Y, X].Bg := P.CurBg;
+ End;
+End;
+
+{ Execute la commande dont le caractere final est FinalCh, avec les         }
+{ parametres deja accumules dans P.AnsiParams[0..P.AnsiNParam] par          }
+{ EmuVScr_AnsiFeed. Couvre le sous-ensemble ANSI.SYS le plus utilise :       }
+{ deplacement curseur (A/B/C/D), positionnement (H/f), sauvegarde/          }
+{ restauration (s/u), effacement (J/K), attributs (m). }
+Procedure EmuVScr_AnsiExec(Var P: TEmulatorPanel; FinalCh: Char);
+Var I, N, Row, Col, Y: Integer;
+Begin
+ Case FinalCh Of
+  'A': Begin
+   N := P.AnsiParams[0]; If N = 0 Then N := 1;
+   If P.CursorY - N < 0 Then P.CursorY := 0 Else Dec(P.CursorY, N);
+  End;
+  'B': Begin
+   N := P.AnsiParams[0]; If N = 0 Then N := 1;
+   If P.CursorY + N > P.Rows - 1 Then P.CursorY := P.Rows - 1 Else Inc(P.CursorY, N);
+  End;
+  'C': Begin
+   N := P.AnsiParams[0]; If N = 0 Then N := 1;
+   If P.CursorX + N > P.Cols - 1 Then P.CursorX := P.Cols - 1 Else Inc(P.CursorX, N);
+  End;
+  'D': Begin
+   N := P.AnsiParams[0]; If N = 0 Then N := 1;
+   If P.CursorX - N < 0 Then P.CursorX := 0 Else Dec(P.CursorX, N);
+  End;
+  'H', 'f': Begin { CUP/HVP : ligne;colonne, 1-based }
+   Row := P.AnsiParams[0]; Col := P.AnsiParams[1];
+   If Row < 1 Then Row := 1;
+   If Col < 1 Then Col := 1;
+   If Row > P.Rows Then Row := P.Rows;
+   If Col > P.Cols Then Col := P.Cols;
+   EmuVScr_GotoXY(P, Col - 1, Row - 1);
+  End;
+  's': Begin P.AnsiSaveX := P.CursorX; P.AnsiSaveY := P.CursorY; End;
+  'u': EmuVScr_GotoXY(P, P.AnsiSaveX, P.AnsiSaveY);
+  'J': { effacement ecran }
+   Case P.AnsiParams[0] Of
+    1: Begin { debut d ecran -> curseur }
+     For Y := 0 To P.CursorY - 1 Do EmuVScr_AnsiEraseRange(P, Y, 0, P.Cols - 1);
+     EmuVScr_AnsiEraseRange(P, P.CursorY, 0, P.CursorX);
+    End;
+    2: EmuVScr_Clear(P); { tout l ecran }
+   Else { 0 (ou absent) : curseur -> fin d ecran }
+    Begin
+     EmuVScr_AnsiEraseRange(P, P.CursorY, P.CursorX, P.Cols - 1);
+     For Y := P.CursorY + 1 To P.Rows - 1 Do EmuVScr_AnsiEraseRange(P, Y, 0, P.Cols - 1);
+    End;
+   End;
+  'K': { effacement ligne }
+   Case P.AnsiParams[0] Of
+    1: EmuVScr_AnsiEraseRange(P, P.CursorY, 0, P.CursorX);
+    2: EmuVScr_AnsiEraseRange(P, P.CursorY, 0, P.Cols - 1);
+   Else { 0 (ou absent) : curseur -> fin de ligne }
+    EmuVScr_AnsiEraseRange(P, P.CursorY, P.CursorX, P.Cols - 1);
+   End;
+  'm': { SGR : un ou plusieurs codes separes par ';' }
+   For I := 0 To P.AnsiNParam Do EmuVScr_AnsiSgr(P, P.AnsiParams[I]);
+  { Autres lettres finales (ex. ESC[=...h/l changement de mode video) :     }
+  { deliberement non geres - la sequence est neanmoins consommee (jamais   }
+  { affichee comme texte litteral), comportement generique le plus proche  }
+  { de ce qu un vrai ANSI.SYS ferait pour un mode non supporte. }
+ End;
+ P.NeedRepaint := True;
+End;
+
+{ Digere un caractere au travers de la machine a etats ANSI.SYS. Renvoie    }
+{ Vrai si C vient d etre consomme par une sequence ESC[...] en cours (ne    }
+{ doit PAS suivre le chemin d affichage normal), Faux si C est etranger a   }
+{ toute sequence et doit continuer normalement dans EmuVScr_PutChar. }
+Function EmuVScr_AnsiFeed(Var P: TEmulatorPanel; C: Char): Boolean;
+Begin
+ EmuVScr_AnsiFeed := True;
+ Case P.AnsiState Of
+  0:
+   If C = #27 Then P.AnsiState := 1
+   Else EmuVScr_AnsiFeed := False;
+  1:
+   Begin
+    If C = '[' Then Begin
+     P.AnsiState := 2;
+     P.AnsiNParam := 0;
+     P.AnsiParams[0] := 0;
+    End Else
+     P.AnsiState := 0; { ESC non suivi de '[' : sequence non geree, abandon }
+   End;
+  2:
+   Begin
+    If C In ['0'..'9'] Then
+     P.AnsiParams[P.AnsiNParam] :=
+      P.AnsiParams[P.AnsiNParam] * 10 + (Ord(C) - Ord('0'))
+    Else If C = ';' Then Begin
+     If P.AnsiNParam < 7 Then Begin
+      Inc(P.AnsiNParam);
+      P.AnsiParams[P.AnsiNParam] := 0;
+     End;
+    End Else If C = '?' Then
+     { prefixe de mode prive (ex. ESC[?25h, curseur visible/invisible) -    }
+     { ignore silencieusement, la lecture des parametres continue.         }
+    Else Begin
+     EmuVScr_AnsiExec(P, C);
+     P.AnsiState := 0;
+    End;
+   End;
+ End;
+End;
+
 { --- Afficher un caractere a la position courante --- }
 
 Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char);
 Begin
+ If OptionsDlg.Data.DosAnsiSys And
+    ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) And
+    EmuVScr_AnsiFeed(P, C) Then Exit;
  Case C Of
   #8: { Backspace }
    If P.CursorX > 0 Then
@@ -58449,6 +58615,7 @@ Begin
   Assign(LogF, 'EMU21.LOG'); Append(LogF);
   If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
   WriteLn(LogF, '  >> INT ', HexByte(Num), ' AH=', HexByte(P.CPU.Regs.AH),
+    ' AL=', HexByte(P.CPU.Regs.AL),
     ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
   Close(LogF);
   {$I+} If IOResult <> 0 Then ;
@@ -58682,6 +58849,15 @@ End;
 Procedure Emu_InitBDA(Var P: TEmulatorPanel);
 Var I: Integer; EqLo: Byte;
 Begin
+ { Etat machine ANSI.SYS remis a neuf pour cette session (voir             }
+ { EmuVScr_AnsiFeed) - NE PAS confondre avec EmuVScr_Clear, qui efface      }
+ { l ecran sur un ESC[2J du programme invite mais doit preserver les        }
+ { attributs de couleur en cours (comportement reel d un terminal ANSI). }
+ P.AnsiState := 0;
+ P.AnsiNParam := 0;
+ P.AnsiBold := False;
+ P.AnsiSaveX := 0;
+ P.AnsiSaveY := 0;
  For I := 0 To $FF Do Emu_WriteByte(P.CPU, $40, I, 0);
  { Equipement word (0040:0010), octet de poids faible :
    bits 7-6 = nb FDD - 1, bits 5-4 = video (11b=80x25 color),
@@ -73665,6 +73841,7 @@ Begin
  D.DosEMSVersion := 2; { 4.0 par defaut - la plus complete }
  D.DosDPMI := False;
  D.DosDPMISize := 8192;
+ D.DosAnsiSys := True; { coche par defaut - imite CONFIG.SYS DEVICE=ANSI.SYS }
  D.DosMSCDEX := False;
  D.DosSouris := True;
  D.DosMousePS2BIOS := False;
@@ -74647,6 +74824,17 @@ Var
   BaseY := BaseY + OPT_ROW_SPACING;
  End;
 
+ { Case a cocher simple (sans champ "Taille" associe) - meme convention   }
+ { visuelle que Check dans DrawOptionsEmuDOSSoftware. }
+ Procedure CheckSimple(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
  { LabelW : largeur reservee a l etiquette avant le champ - normalement   }
  { OPT_LABEL_WIDTH (coherent avec toutes les autres pages), mais reduite   }
  { pour "Version EMS" dont les valeurs (ex. "LIM/Microsoft EMS 4.0 (+      }
@@ -74738,6 +74926,7 @@ Begin
  Dropdown('Version EMS :',                                     { Row 3 }
   DosEMSVersionName(Dlg.Data.DosEMSVersion), OPT_EMS_VER_LABEL_WIDTH);
  CheckWithSize(Dlg.Data.DosDPMI, 'DPMI', Dlg.Data.DosDPMISize, 3); { Row 4 }
+ CheckSimple(Dlg.Data.DosAnsiSys, 'Pilote ANSI.SYS');           { Row 5 }
 
  If Dlg.DosDropdownOpen = 1 Then
   OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType, OPT_LABEL_WIDTH)
@@ -75646,6 +75835,10 @@ Begin
          Dlg.Modified := True;
         End;
        End;
+       5: Begin
+        Dlg.Data.DosAnsiSys := Not Dlg.Data.DosAnsiSys;
+        Dlg.Modified := True;
+       End;
       End;
      OC_EMU_DOS_SW:
       Case FieldIdx Of
@@ -75873,6 +76066,7 @@ Begin
  WriteCfgLine(F, 'DosDPMI', BoolToStr(Data.DosDPMI));
  Str(Data.DosDPMISize, S);
  WriteCfgLine(F, 'DosDPMISize', S);
+ WriteCfgLine(F, 'DosAnsiSys', BoolToStr(Data.DosAnsiSys));
  WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
  WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
  WriteCfgLine(F, 'DosMousePS2BIOS', BoolToStr(Data.DosMousePS2BIOS));
@@ -76067,6 +76261,8 @@ Begin
    Val(Value, Data.DosDPMISize, Code);
    If Code <> 0 Then Data.DosDPMISize := 8192;
   End
+  Else If Key = 'DosAnsiSys' Then
+   Data.DosAnsiSys := StrToBool(Value)
   Else If Key = 'DosMSCDEX' Then
    Data.DosMSCDEX := StrToBool(Value)
   Else If Key = 'DosSouris' Then
