@@ -5330,6 +5330,16 @@ Var
  EmuActMouseTest: Boolean;  { INT 33h AX=0000h (test presence souris) vu }
  EmuActInt33    : LongInt;  { appels INT 33h (pilote souris) }
  EmuActLastDraw : LongInt;  { horodatage du dernier redessin (throttle) }
+ { Terminal "DEBUG <fichier> /GUI" (voir TermExecuteCommand) : arme AVANT   }
+ { l appel a CreateEmulatorTab/ShowEmulatorPanel pour charger le programme  }
+ { SANS le lancer - tous les backends "Stage 1" (DOS/C64/NES/Atari2600/     }
+ { AppleII/Atari8bit/AtariST/Amiga/CoCo3/...) verifient deja `P.Running`    }
+ { EN PREMIER dans StepEmulator avant de faire quoi que ce soit, donc armer }
+ { ce drapeau la ou `P.Running` est positionne suffit a mettre TOUS ces     }
+ { backends en pause au premier instruction, un seul point d entree pour    }
+ { toutes les extensions (.exe/.com/.prg/.xex). Consomme (remis a False)    }
+ { par ShowEmulatorPanel des utilisation. }
+ EmuDbgArmPauseOnLoad : Boolean;
  EmuDiv0Caught  : Boolean;  { capture du 1er DIV/0 (diag) }
  EmuDiv0CS      : Word;
  EmuDiv0IP      : Word;
@@ -34299,6 +34309,7 @@ Var
  Err: Word;
  CurDir, DosExe, ElfExe: String;
  PrgTarget, PrgPath: String;
+ ArgFile, ArgSwitch, DbgTarget, DbgPath, ResolveDir: String;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -34342,6 +34353,56 @@ Begin
  End;
  { Extraire la commande et les parametres }
  TermExtractCommand(CmdStr, CurrCmd, ParamStr);
+ { "DEBUG <fichier.exe|.com|.prg|.xex> /GUI" (inspire de la vraie commande }
+ { MS-DOS DEBUG.COM) : charge le programme dans l emulateur SANS le        }
+ { lancer et affiche le debogueur pas-a-pas deja existant (Point d arret/   }
+ { Pas a pas, menu Deboguer) a droite du panneau - voir                    }
+ { EmuDbgArmPauseOnLoad/ShowEmulatorPanel. Commun aux 5 shells, intercepte  }
+ { ICI (avant le Case ci-dessous) plutot que duplique dans chacun. Meme     }
+ { restriction "disque hote uniquement" que le repli generique "commande   }
+ { inconnue -> executable" plus bas (lecteurs virtuels non geres ici). }
+ If CurrCmd = 'DEBUG' Then Begin
+  ArgFile := TermExtractParam(ParamStr, 1);
+  ArgSwitch := TermExtractParam(ParamStr, 2);
+  If (ArgFile = '') Or (UpCaseStr(ArgSwitch) <> '/GUI') Then
+   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI')
+  Else If TP.VirtDrive >= 0 Then
+   TermAddLine(TP,
+    'DEBUG /GUI n''est pas pris en charge sur un lecteur virtuel.')
+  Else Begin
+   If TP.Shell = SK_NCOMMANDER Then CurDir := TP.VirtCwd
+   Else GetDir(0, CurDir);
+   { ArgFile peut etre un chemin absolu (ex. C:\SYMANTEC\NC3\NC.EXE) plutot }
+   { qu un simple nom de fichier a chercher dans CurDir - dans ce cas les  }
+   { fonctions ci-dessous doivent recevoir Dir='' pour ne pas concatener   }
+   { CurDir devant un chemin deja complet.                                 }
+   If (Length(ArgFile) >= 2) And (ArgFile[2] = ':') Then ResolveDir := ''
+   Else If (Length(ArgFile) >= 1) And ((ArgFile[1] = '\') Or (ArgFile[1] = '/')) Then ResolveDir := ''
+   Else ResolveDir := CurDir;
+   DbgTarget := ''; DbgPath := '';
+   DbgPath := TermFindDosExecutable(ResolveDir, ArgFile);
+   If DbgPath <> '' Then DbgTarget := '-CD'
+   Else If TermFindPrgExecutable(TP, ResolveDir, ArgFile, PrgTarget, PrgPath) Then Begin
+    DbgTarget := PrgTarget;
+    DbgPath := PrgPath;
+   End Else If (Length(ArgFile) > 4) And
+    (UpCaseStr(Copy(ArgFile, Length(ArgFile) - 3, 4)) = '.XEX') Then Begin
+    DbgPath := ResolveDir;
+    If (Length(DbgPath) > 0) And (DbgPath[Length(DbgPath)] <> '\') Then
+     DbgPath := DbgPath + '\';
+    DbgPath := DbgPath + ArgFile;
+    If FileExists(DbgPath) Then DbgTarget := '-CATARI800'
+    Else DbgPath := '';
+   End;
+   If DbgTarget = '' Then
+    TermAddLine(TP, '''' + ArgFile + ''' introuvable.')
+   Else Begin
+    EmuDbgArmPauseOnLoad := True;
+    CreateEmulatorTab(DbgPath, DbgTarget, '');
+   End;
+  End;
+  Exit;
+ End;
  { Dispatcher selon le type de shell }
  Case TP.Shell Of
   SK_CMD: Begin
@@ -72069,7 +72130,36 @@ Begin NesActive := False;
  P.BinaryPath := BinaryPath;
  P.TargetCPU := TargetCPU; P.Base.Visible := True;
  P.Visible := True;
- P.Running := True;
+ { "DEBUG <fichier> /GUI" tape dans le Terminal (voir EmuDbgArmPauseOnLoad  }
+ { et TermExecuteCommand) : charger SANS lancer, fenetre debogueur visible }
+ { des le depart, positionnee a droite du panneau emulateur. }
+ P.Running := Not EmuDbgArmPauseOnLoad;
+ If EmuDbgArmPauseOnLoad Then Begin
+  EmuDbg.WinVisible := True;
+  EmuDbg.WinW := 380;
+  EmuDbg.WinH := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT -
+   TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT - 8;
+  EmuDbg.WinX := GetScreenWidth - EXPLORER_WIDTH - EmuDbg.WinW - 4;
+  EmuDbg.WinY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT + 4;
+  { Armer un pas-a-pas "detaille" pour la toute premiere instruction :  }
+  { EmuDbg.Active fait que le hook EmuDbg_OnBeforeStepXXX (appele avant }
+  { chaque instruction par la boucle de stepping) est desormais         }
+  { consulte, et ESM_INTO le fait immediatement rappeler                }
+  { EmuDbg_EnterPause des la 1ere instruction quand F5 (EmuPanel_       }
+  { TryResume) met P.Running a True - ce qui fait entrer dans la meme   }
+  { boucle de pause bloquante (EmuDbg_PumpPause) que le point d arret   }
+  { Ctrl+C d origine, rendant F10/F11/F5 utilisables normalement des ce }
+  { moment (EmuDbg.Paused, sur lequel ces touches sont conditionnees,   }
+  { n est mis a True que par EmuDbg_EnterPause elle-meme). }
+  EmuDbg.Active := True;
+  EmuDbg.StepMode := ESM_INTO;
+  EmuDbg.BreakReq := False;
+  { Le texte par defaut ("Arrete (code de fin: ...)") laisserait croire }
+  { a tort que le programme est deja termine alors qu il n a simplement }
+  { pas encore ete demarre - meme convention que EmuPanel_Pause. }
+  P.StatusMsg := 'Charge, en attente (F5 pour demarrer le debogage)';
+  EmuDbgArmPauseOnLoad := False;
+ End;
  P.Fault := 0;
  { Correctif 2026-08-16 (signale par l utilisateur : "ABAP86 ../../samples/  }
  { abap/test.abap" tape dans le Terminal - NC, mais aussi CMD/PowerShell/    }
