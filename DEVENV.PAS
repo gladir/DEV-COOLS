@@ -4054,6 +4054,39 @@ Type
  { tampons, contrairement a ELF64 (tableau STATIQUE de 128 Mo, pas un        }
  { pointeur alloue a la demande, donc impossible a "echanger" de la meme    }
  { maniere - voir la note ELF64_RunOneChunk plus haut). }
+Const
+ MAX_EMU_EXEC_DEPTH = 8;  { profondeur d imbrication EXEC (AH=4Bh) max }
+
+Type
+ { Contexte "processus" sauvegarde par un appel INT 21h AH=4Bh (EXEC) le    }
+ { temps que le programme enfant s execute - permet de le restaurer quand   }
+ { l enfant se termine (AH=00/31/4C), pour "revenir" au parent au lieu de   }
+ { toujours finir toute la session. Ne contient QUE l etat DOS "par         }
+ { processus" (meme sous-ensemble que TDOSSnapshot moins le materiel        }
+ { partage Video/Souris/Xms/Ems/Dpmi/CMOS et moins les handles de fichiers   }
+ { -herites du parent comme sous un vrai DOS- et NextFreeSeg -jamais        }
+ { recycle, cf. AH=49h no-op existant). }
+ TEmuExecFrame = Record
+  Regs           : TEmuRegs;
+  Segs           : TEmuSegs;
+  Flags          : TEmuFlags;
+  IP             : Word;
+  PspSeg         : Word;
+  DtaSeg, DtaOfs : Word;
+  ExeDir         : String;
+  FindIsCdrom    : Boolean;
+  CdFindSize     : Array[0..63] Of LongInt;
+  CdFindIsDir    : Array[0..63] Of Boolean;
+  CdFindDate     : Array[0..63] Of Word;
+  CdFindTime     : Array[0..63] Of Word;
+  FindMask       : String;
+  FindAttr       : Byte;
+  FindResults    : Array[0..63] Of String;
+  FindCount, FindIndex : Integer;
+  ExtErr         : Word;
+  ExtErrCls, ExtErrAct, ExtErrLoc : Byte;
+ End;
+
  TDOSSnapshot = Record
   { --- Video (TEmuVideoState copiee en bloc, Mem gere a part) --- }
   Video          : TEmuVideoState;
@@ -4174,6 +4207,12 @@ Type
   { --- Etat "async" Stage 1 propre a cet onglet --- }
   AsyncPumpCnt   : LongInt;
   AsyncLastDraw  : LongInt;
+  { --- Pile EXEC (INT 21h AH=4Bh) en cours au moment du swap - voir        }
+  { TEmuExecFrame plus haut. Sans ceci, changer d onglet pendant qu un EXEC }
+  { est en cours corromprait EmuExecDepth/EmuExecStack (globales non        }
+  { couvertes autrement par ce swap par-onglet). }
+  ExecStack      : Array[0..MAX_EMU_EXEC_DEPTH - 1] Of TEmuExecFrame;
+  ExecDepth      : Integer;
  End;
 
  { En-tete de fichier ELF64 (executable Linux x86-64) - seuls les champs  }
@@ -5274,6 +5313,8 @@ Var
  EmuFindResults : Array[0..63] Of String;
  EmuFindCount   : Integer;
  EmuFindIndex   : Integer;
+ EmuExecStack   : Array[0..MAX_EMU_EXEC_DEPTH - 1] Of TEmuExecFrame; { AH=4Bh }
+ EmuExecDepth   : Integer;  { 0 = pas d EXEC en cours }
  EmuExitCode    : Word;     { dernier code retour AH=4Ch (AH=4Dh) }
  EmuExitType    : Byte;     { 0=normal 1=Ctrl-C 2=critique 3=TSR }
  EmuExtErr      : Word;     { dernier code erreur DOS (AH=59h) }
@@ -45046,7 +45087,8 @@ End;
 
 { --- Charger un fichier .COM dans la memoire emulee --- }
 
-Function Emu_LoadCom(Var C: TEmuCPU; Const FileName: String): Boolean;
+Function Emu_LoadComAt(Var C: TEmuCPU; Const FileName: String; AtSeg: Word;
+ Const CmdTail: String): Boolean;
 Var
  PSP: TEmuPSPRecord;
  Buffer: Array[0..511] Of Byte;
@@ -45055,15 +45097,17 @@ Var
  ByteReaded: Word;
  ToRead: Word;
  Addr: LongInt;
+ N: LongInt;
+ I: LongInt;
 Begin
- Emu_LoadCom := False;
+ Emu_LoadComAt := False;
  {$I-}
  Assign(Handle, FileName);
  Reset(Handle, 1);
  {$I+}
  If IOResult <> 0 Then Exit;
  { Configurer les segments pour un .COM (tous au meme PSP) }
- C.Segs.CS := $0060;
+ C.Segs.CS := AtSeg;
  C.Segs.DS := C.Segs.CS;
  C.Segs.ES := C.Segs.CS;
  C.Segs.SS := C.Segs.CS;
@@ -45071,6 +45115,12 @@ Begin
  C.Regs.BP := $091C;
  C.IP := $100;
  EmuPspSeg := C.Segs.CS;
+ EmuExeDir := '';
+ For I := Length(FileName) DownTo 1 Do
+  If (FileName[I] = '\') Or (FileName[I] = '/') Then Begin
+   EmuExeDir := Copy(FileName, 1, I - 1);
+   Break;
+  End;
  { Construire un PSP minimal }
  FillChar(PSP, SizeOf(PSP), 0);
  PSP.Int20h := $20CD;
@@ -45082,6 +45132,21 @@ Begin
  PSP.HandlePtrSeg := C.Segs.CS;
  PSP.Int21h := $21CD;
  PSP.RETF := $CB;
+ { Injecter la ligne de commande (meme convention que Emu_LoadExeAt : offset
+   $80 = longueur, $81..$FE = cmdline, terminee par $0D). Absent de la
+   version .COM d origine -jamais reclame par le seul appelant historique-
+   mais necessaire pour un enfant .COM lance via EXEC (AH=4Bh). }
+ If Length(CmdTail) > 0 Then Begin
+  N := Length(CmdTail);
+  If N > 126 Then N := 126;
+  PSP.Buffer[$80] := Byte(N);
+  For I := 1 To N Do
+   PSP.Buffer[$80 + I] := Byte(CmdTail[I]);
+  PSP.Buffer[$81 + N] := $0D;
+ End Else Begin
+  PSP.Buffer[$80] := 0;
+  PSP.Buffer[$81] := $0D;
+ End;
  Emu_WriteBlock(C, C.Segs.CS, 0, PSP.Buffer, $100);
  { Charger le code apres le PSP, par blocs de 512 octets }
  Size := FileSize(Handle);
@@ -45097,18 +45162,35 @@ Begin
   If ByteReaded < ToRead Then Break;
  End;
  Close(Handle);
- Emu_LoadCom := True;
+ { Avancer EmuNextFreeSeg au-dela de l image .COM chargee, meme logique et
+   memes bornes que Emu_LoadExeAt (necessaire pour qu un enfant .COM lance
+   via EXEC (AH=4Bh) qui ferait lui-meme un EXEC imbrique n ecrase pas sa
+   propre image ; absent de la version .COM d origine, dont l unique
+   appelant historique -premier niveau- n en avait pas besoin car AH=48
+   applique deja son propre plancher $2000 quand EmuNextFreeSeg vaut 0). }
+ If ((Addr + 15) Shr 4) > 36864 Then
+  EmuNextFreeSeg := $9000
+ Else
+  EmuNextFreeSeg := Word((Addr + 15) Shr 4);
+ If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
+ Emu_LoadComAt := True;
+End;
+
+Function Emu_LoadCom(Var C: TEmuCPU; Const FileName: String): Boolean;
+Begin
+ Emu_LoadCom := Emu_LoadComAt(C, FileName, $0060, EmuStartCmdLine);
 End;
 
 { --- Charger un fichier .EXE dans la memoire emulee --- }
 
-Function Emu_LoadExe(Var C: TEmuCPU; Const FileName: String): Boolean;
+Function Emu_LoadExeAt(Var C: TEmuCPU; Const FileName: String; AtSeg: Word;
+ Const CmdTail: String): Boolean;
 Var
  HeadSize, Addr, RPos: LongInt;
  N: LongInt;
  I: LongInt;
  LoadSeg: LongInt;
- PSPSeg, ROff, RSeg: Word;
+ PSPSeg, ROff, RSeg, OldPspSeg: Word;
  PSP: TEmuPSPRecord;
  Handle: File;
  ByteReaded: Word;
@@ -45119,7 +45201,7 @@ Var
  EnvName: String;
  LogF: Text;
 Begin
- Emu_LoadExe := False;
+ Emu_LoadExeAt := False;
  {$I-}
  Assign(Handle, FileName);
  Reset(Handle, 1);
@@ -45131,8 +45213,15 @@ Begin
   Close(Handle);
   Exit;
  End;
+ OldPspSeg := EmuPspSeg;     { PSP du parent (0 si premier niveau) - pour   }
+                              { PSP.ParentSeg ci-dessous }
  HeadSize := Exe.SizeOfHeader * 16;
- PSPSeg := $0060;
+ PSPSeg := AtSeg + 15;       { AtSeg = segment du bloc d environnement ;    }
+                              { convention : 15 paragraphes reserves entre   }
+                              { l environnement et le PSP (identique a       }
+                              { l ancien $0051->$0060 fige, desormais         }
+                              { derive de AtSeg pour supporter un chargement }
+                              { a un segment quelconque - voir AH=4Bh EXEC). }
  LoadSeg := PSPSeg + 16;     { convention DOS : programme charge a PSP+16 }
  EmuPspSeg := PSPSeg;
  { Memoriser le repertoire de l EXE pour le fallback de recherche
@@ -45155,8 +45244,8 @@ Begin
  FillChar(PSP, SizeOf(PSP), 0);
  PSP.Int20h := $20CD;
  PSP.EndSegPrg := $9FFF;
- PSP.ParentSeg := $52;
- PSP.EnvSeg := $51;
+ PSP.ParentSeg := OldPspSeg;
+ PSP.EnvSeg := AtSeg;
  PSP.LenHandle := 20;
  PSP.HandlePtrOfs := $18;
  PSP.HandlePtrSeg := C.Segs.CS;
@@ -45164,31 +45253,31 @@ Begin
  PSP.RETF := $CB;
  { Injecter la ligne de commande dans le PSP : offset $80 = longueur,
    $81..$FE = cmdline (max 126 octets), terminee par $0D ($FF reserve). }
- If Length(EmuStartCmdLine) > 0 Then Begin
-  N := Length(EmuStartCmdLine);
+ If Length(CmdTail) > 0 Then Begin
+  N := Length(CmdTail);
   If N > 126 Then N := 126;
   PSP.Buffer[$80] := Byte(N);
   For I := 1 To N Do
-   PSP.Buffer[$80 + I] := Byte(EmuStartCmdLine[I]);
+   PSP.Buffer[$80 + I] := Byte(CmdTail[I]);
   PSP.Buffer[$81 + N] := $0D;
  End Else Begin
   PSP.Buffer[$80] := 0;
   PSP.Buffer[$81] := $0D;
  End;
  Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
- { Installer un MCB (Memory Control Block) DOS a PSPSeg-1 = $005F
+ { Installer un MCB (Memory Control Block) DOS a PSPSeg-1
    pour que le runtime TP/DOS voie la memoire disponible. Format MCB :
    offset 0 : byte 'M' (continue) ou 'Z' (dernier)
    offset 1 : Word owner segment (= PSP du proprietaire)
    offset 3 : Word size en paragraphes (sans le MCB lui-meme)
    offset 5..7 : reserve 3 octets
    offset 8..15 : nom proprietaire (8 octets) }
- Emu_WriteByte(C, $005F, 0, $5A);     { 'Z' bloc final }
- Emu_WriteByte(C, $005F, 1, Lo(PSPSeg));
- Emu_WriteByte(C, $005F, 2, Hi(PSPSeg));
- Emu_WriteByte(C, $005F, 3, Lo($9F9F));
- Emu_WriteByte(C, $005F, 4, Hi($9F9F));
- { Construire un bloc d environnement standard a 0051:0000.
+ Emu_WriteByte(C, Word(PSPSeg - 1), 0, $5A);     { 'Z' bloc final }
+ Emu_WriteByte(C, Word(PSPSeg - 1), 1, Lo(PSPSeg));
+ Emu_WriteByte(C, Word(PSPSeg - 1), 2, Hi(PSPSeg));
+ Emu_WriteByte(C, Word(PSPSeg - 1), 3, Lo($9F9F));
+ Emu_WriteByte(C, Word(PSPSeg - 1), 4, Hi($9F9F));
+ { Construire un bloc d environnement standard a AtSeg:0000.
    Format DOS :
      [chaines "VAR=val\0" successives]
      \0                   (terminateur final de la liste)
@@ -45197,14 +45286,14 @@ Begin
    Pour eviter tout probleme de scan, on ne met aucune variable :
    le bloc commence directement par le \0 final de la liste vide. }
  EnvOfs := 0;
- Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { fin liste vide }
- Emu_WriteByte(C, $0051, EnvOfs, 1); Inc(EnvOfs);  { count = 1 (Lo) }
- Emu_WriteByte(C, $0051, EnvOfs, 0); Inc(EnvOfs);  { count = 1 (Hi) }
+ Emu_WriteByte(C, AtSeg, EnvOfs, 0); Inc(EnvOfs);  { fin liste vide }
+ Emu_WriteByte(C, AtSeg, EnvOfs, 1); Inc(EnvOfs);  { count = 1 (Lo) }
+ Emu_WriteByte(C, AtSeg, EnvOfs, 0); Inc(EnvOfs);  { count = 1 (Hi) }
  EnvName := FileName;
  For I := 1 To Length(EnvName) Do Begin
-  Emu_WriteByte(C, $0051, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
+  Emu_WriteByte(C, AtSeg, EnvOfs, Byte(EnvName[I])); Inc(EnvOfs);
  End;
- Emu_WriteByte(C, $0051, EnvOfs, 0);  { ASCIIZ terminator }
+ Emu_WriteByte(C, AtSeg, EnvOfs, 0);  { ASCIIZ terminator }
  { Charger l image executable a LoadSeg:0000 (toute l image, pas a CS:IP).
    Calculer la taille reelle de l image : (PagesInFile-1)*512 + BytesInLastPage
    - SizeOfHeader (en octets). Le reste du fichier (overlays, donnees) n est
@@ -45241,7 +45330,12 @@ Begin
  Else
   EmuNextFreeSeg := Word((Addr + 15) Shr 4) + Exe.MinParagraph;
  If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
- Emu_LoadExe := True;
+ Emu_LoadExeAt := True;
+End;
+
+Function Emu_LoadExe(Var C: TEmuCPU; Const FileName: String): Boolean;
+Begin
+ Emu_LoadExe := Emu_LoadExeAt(C, FileName, $0051, EmuStartCmdLine);
 End;
 
 { --- Acces a la memoire virtuelle emulee de l ELF64 (petit-boutiste) --- }
@@ -48341,6 +48435,7 @@ Begin
  EmuDtaOfs := $0080;     { DTA par defaut = PSP+80h }
  EmuFindCount := 0;
  EmuFindIndex := 0;
+ EmuExecDepth := 0;    { pas d EXEC (AH=4Bh) en cours pour un nouveau programme de premier niveau }
  EmuExitCode := 0;
  EmuExitType := 0;
  EmuExtErr := 0;
@@ -50879,6 +50974,49 @@ Begin
  P.CPU.Regs.AX := Code;
 End;
 
+{ Fin de programme "gracieuse" (AH=00h/31h/4Ch) : si un INT 21h AH=4Bh       }
+{ (EXEC) est en cours (EmuExecDepth>0), on "revient" au parent - restaure   }
+{ son contexte CPU + etat DOS "par processus" - au lieu de terminer toute   }
+{ la session emulateur. Sinon, comportement inchange (fin de session).      }
+{ EmuExitCode/EmuExitType restent DELIBEREMENT non touches ici : deja       }
+{ assignes par l appelant juste avant, ils doivent "remonter" au parent     }
+{ pour qu AH=4Dh (get return code) lise le code de sortie de l enfant.      }
+Procedure Emu_DosTerminate(Var P: TEmulatorPanel; Const NormalMsg: String);
+Begin
+ If EmuExecDepth > 0 Then Begin
+  Dec(EmuExecDepth);
+  P.CPU.Regs  := EmuExecStack[EmuExecDepth].Regs;
+  P.CPU.Segs  := EmuExecStack[EmuExecDepth].Segs;
+  P.CPU.Flags := EmuExecStack[EmuExecDepth].Flags;
+  P.CPU.IP    := EmuExecStack[EmuExecDepth].IP;
+  EmuPspSeg := EmuExecStack[EmuExecDepth].PspSeg;
+  EmuDtaSeg := EmuExecStack[EmuExecDepth].DtaSeg;
+  EmuDtaOfs := EmuExecStack[EmuExecDepth].DtaOfs;
+  EmuExeDir := EmuExecStack[EmuExecDepth].ExeDir;
+  EmuFindIsCdrom := EmuExecStack[EmuExecDepth].FindIsCdrom;
+  { Move() plutot que := : tableaux anonymes de meme forme mais de types    }
+  { distincts pour FPC (meme convention que DOS_SaveState/DOS_LoadState).   }
+  Move(EmuExecStack[EmuExecDepth].CdFindSize, EmuCdFindSize, SizeOf(EmuCdFindSize));
+  Move(EmuExecStack[EmuExecDepth].CdFindIsDir, EmuCdFindIsDir, SizeOf(EmuCdFindIsDir));
+  Move(EmuExecStack[EmuExecDepth].CdFindDate, EmuCdFindDate, SizeOf(EmuCdFindDate));
+  Move(EmuExecStack[EmuExecDepth].CdFindTime, EmuCdFindTime, SizeOf(EmuCdFindTime));
+  EmuFindMask := EmuExecStack[EmuExecDepth].FindMask;
+  EmuFindAttr := EmuExecStack[EmuExecDepth].FindAttr;
+  Move(EmuExecStack[EmuExecDepth].FindResults, EmuFindResults, SizeOf(EmuFindResults));
+  EmuFindCount := EmuExecStack[EmuExecDepth].FindCount;
+  EmuFindIndex := EmuExecStack[EmuExecDepth].FindIndex;
+  EmuExtErr := EmuExecStack[EmuExecDepth].ExtErr;
+  EmuExtErrCls := EmuExecStack[EmuExecDepth].ExtErrCls;
+  EmuExtErrAct := EmuExecStack[EmuExecDepth].ExtErrAct;
+  EmuExtErrLoc := EmuExecStack[EmuExecDepth].ExtErrLoc;
+  Exclude(P.CPU.Flags.s, EFG_CF);  { EXEC "reussit" du point de vue du parent }
+  P.StatusMsg := '';
+ End Else Begin
+  P.CPU.Fault := sfEndProgram;
+  P.StatusMsg := NormalMsg;
+ End;
+End;
+
 Procedure Emu_DoInt21(Var P: TEmulatorPanel);
 Var
  I: Integer;
@@ -50903,13 +51041,20 @@ Var
  CdErr: Word;
  CdSplit: Integer;
  CdEntry: TEmuIsoEntry;
+ { --- AH=4Bh EXEC (voir Emu_DosTerminate pour le retour au parent) --- }
+ ExecChildPath, ExecHostPath, ExecCmdTail, ExecExt: String;
+ ExecFrame: TEmuExecFrame;
+ ExecChildSeg, ExecTailOfs, ExecTailSeg: Word;
+ ExecTailLen: Byte;
+ ExecLoadOk: Boolean;
+ ExecI: Integer;
 Begin
  Case P.CPU.Regs.AH Of
   $00:
    Begin
     EmuExitCode := 0;
     EmuExitType := 0;
-    P.CPU.Fault := sfEndProgram;
+    Emu_DosTerminate(P, '');
    End;
   $01:
    Begin
@@ -51088,8 +51233,7 @@ Begin
    Begin
     EmuExitCode := P.CPU.Regs.AL;
     EmuExitType := 3;
-    P.CPU.Fault := sfEndProgram;
-    P.StatusMsg := 'Programme termine TSR (code ' + IntToStr(EmuExitCode) + ')';
+    Emu_DosTerminate(P, 'Programme termine TSR (code ' + IntToStr(EmuExitCode) + ')');
    End;
   $33:
    Begin
@@ -51518,13 +51662,101 @@ Begin
      Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   $4B:
-   Emu_SetDosErr(P, 5);
+   { EXEC - Load and Execute Program. Seul AL=0 (charger et executer) est   }
+   { pris en charge ; AL=1/3 (charger sans executer / overlay) retournent   }
+   { une erreur DOS explicite plutot que d echouer silencieusement - rares  }
+   { et non necessaires pour NC.EXE/NCMAIN.EXE. Voir Emu_DosTerminate pour  }
+   { le chemin de retour (AH=00/31/4C de l enfant). }
+   Begin
+    If P.CPU.Regs.AL <> 0 Then
+     Emu_SetDosErr(P, 1)
+    Else If EmuExecDepth >= MAX_EMU_EXEC_DEPTH Then
+     Emu_SetDosErr(P, 8)
+    Else Begin
+     ExecChildPath := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+     ExecHostPath := Emu_HostPath(ExecChildPath);
+     If Not FileExists(ExecHostPath) And (EmuExeDir <> '') Then Begin
+      ExecI := Length(ExecChildPath);
+      While (ExecI > 0) And (ExecChildPath[ExecI] <> '\') And (ExecChildPath[ExecI] <> '/') Do
+       Dec(ExecI);
+      If FileExists(EmuExeDir + '\' + Copy(ExecChildPath, ExecI + 1, Length(ExecChildPath) - ExecI)) Then
+       ExecHostPath := EmuExeDir + '\' + Copy(ExecChildPath, ExecI + 1, Length(ExecChildPath) - ExecI);
+     End;
+     { Lire le pointeur de ligne de commande dans le bloc de parametres     }
+     { EXEC (ES:BX+2 = offset, ES:BX+4 = segment) : a cette adresse, une    }
+     { chaine prefixee par sa longueur (meme format que PSP+$80). FCBs      }
+     { (+6/+0A) et segment d environnement explicite (+0) delibarement       }
+     { ignores - l environnement construit reste toujours le stub minimal   }
+     { existant (voir Emu_LoadExeAt), rien de reel a en heriter. }
+     ExecTailOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + 2);
+     ExecTailSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + 4);
+     ExecTailLen := Emu_ReadByte(P.CPU, ExecTailSeg, ExecTailOfs);
+     ExecCmdTail := '';
+     For ExecI := 1 To ExecTailLen Do
+      ExecCmdTail := ExecCmdTail + Chr(Emu_ReadByte(P.CPU, ExecTailSeg, ExecTailOfs + ExecI));
+     If (Length(ExecCmdTail) > 0) And (ExecCmdTail[Length(ExecCmdTail)] = #13) Then
+      ExecCmdTail := Copy(ExecCmdTail, 1, Length(ExecCmdTail) - 1);
+     If Not FileExists(ExecHostPath) Then
+      Emu_SetDosErr(P, 2)
+     Else Begin
+      { Capturer le contexte du parent AVANT de charger l enfant (les       }
+      { Emu_Load*At ne mutent P.CPU/EmuPspSeg qu apres leur point de non-   }
+      { retour du succes - donc rien a "depiler" si le chargement echoue,   }
+      { on empile ExecFrame seulement APRES confirmation du succes). }
+      ExecFrame.Regs := P.CPU.Regs;
+      ExecFrame.Segs := P.CPU.Segs;
+      ExecFrame.Flags := P.CPU.Flags;
+      ExecFrame.IP := P.CPU.IP;
+      ExecFrame.PspSeg := EmuPspSeg;
+      ExecFrame.DtaSeg := EmuDtaSeg;
+      ExecFrame.DtaOfs := EmuDtaOfs;
+      ExecFrame.ExeDir := EmuExeDir;
+      ExecFrame.FindIsCdrom := EmuFindIsCdrom;
+      Move(EmuCdFindSize, ExecFrame.CdFindSize, SizeOf(ExecFrame.CdFindSize));
+      Move(EmuCdFindIsDir, ExecFrame.CdFindIsDir, SizeOf(ExecFrame.CdFindIsDir));
+      Move(EmuCdFindDate, ExecFrame.CdFindDate, SizeOf(ExecFrame.CdFindDate));
+      Move(EmuCdFindTime, ExecFrame.CdFindTime, SizeOf(ExecFrame.CdFindTime));
+      ExecFrame.FindMask := EmuFindMask;
+      ExecFrame.FindAttr := EmuFindAttr;
+      Move(EmuFindResults, ExecFrame.FindResults, SizeOf(ExecFrame.FindResults));
+      ExecFrame.FindCount := EmuFindCount;
+      ExecFrame.FindIndex := EmuFindIndex;
+      ExecFrame.ExtErr := EmuExtErr;
+      ExecFrame.ExtErrCls := EmuExtErrCls;
+      ExecFrame.ExtErrAct := EmuExtErrAct;
+      ExecFrame.ExtErrLoc := EmuExtErrLoc;
+      { L enfant est charge dans une region libre au-dessus de l image du   }
+      { parent (meme allocateur bump que AH=48) - aucune collision possible. }
+      ExecChildSeg := EmuNextFreeSeg;
+      ExecExt := '';
+      For ExecI := Length(ExecHostPath) DownTo 1 Do
+       If ExecHostPath[ExecI] = '.' Then Begin
+        ExecExt := Copy(ExecHostPath, ExecI, Length(ExecHostPath) - ExecI + 1);
+        Break;
+       End;
+      For ExecI := 1 To Length(ExecExt) Do
+       If ExecExt[ExecI] In ['a'..'z'] Then ExecExt[ExecI] := Chr(Ord(ExecExt[ExecI]) - 32);
+      If ExecExt = '.EXE' Then
+       ExecLoadOk := Emu_LoadExeAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail)
+      Else
+       ExecLoadOk := Emu_LoadComAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail);
+      If Not ExecLoadOk Then
+       Emu_SetDosErr(P, 2)
+      Else Begin
+       EmuExecStack[EmuExecDepth] := ExecFrame;
+       Inc(EmuExecDepth);
+       EmuDtaSeg := EmuPspSeg;
+       EmuDtaOfs := $0080;      { DTA par defaut = PSP+80h du nouveau programme }
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    End;
+   End;
   $4C:
    Begin
     EmuExitCode := P.CPU.Regs.AL;
     EmuExitType := 0;
-    P.CPU.Fault := sfEndProgram;
-    P.StatusMsg := 'Programme termine (code ' + IntToStr(EmuExitCode) + ')';
+    Emu_DosTerminate(P, 'Programme termine (code ' + IntToStr(EmuExitCode) + ')');
    End;
   $4D:
    Begin
@@ -70866,6 +71098,8 @@ Begin
  Snap.ExeDir := EmuExeDir;
  Snap.FloppyMotor := EmuFloppyMotor;
  Snap.AsyncPumpCnt := DOSAsync_PumpCnt; Snap.AsyncLastDraw := DOSAsync_LastDraw;
+ Move(EmuExecStack, Snap.ExecStack, SizeOf(Snap.ExecStack));
+ Snap.ExecDepth := EmuExecDepth;
 End;
 
 Procedure DOS_LoadState(Var Snap: TDOSSnapshot);
@@ -70968,6 +71202,8 @@ Begin
  EmuExeDir := Snap.ExeDir;
  EmuFloppyMotor := Snap.FloppyMotor;
  DOSAsync_PumpCnt := Snap.AsyncPumpCnt; DOSAsync_LastDraw := Snap.AsyncLastDraw;
+ Move(Snap.ExecStack, EmuExecStack, SizeOf(EmuExecStack));
+ EmuExecDepth := Snap.ExecDepth;
 End;
 
 { --- Charger un binaire DOS et lancer l execution --- }
@@ -71019,6 +71255,25 @@ Begin NesActive := False;
  P.Visible := True;
  P.Running := True;
  P.Fault := 0;
+ { Correctif 2026-08-16 (signale par l utilisateur : "ABAP86 ../../samples/  }
+ { abap/test.abap" tape dans le Terminal - NC, mais aussi CMD/PowerShell/    }
+ { Bash, meme repli - ne semblait jamais transmettre l argument au           }
+ { programme DOS lance) : `EmuStartCmdLine` est la SEULE globale que          }
+ { Emu_LoadExe lit pour injecter la ligne de commande dans le PSP           }
+ { ($80..$FE, voir plus bas dans le fichier) - le parametre `Args` de CETTE  }
+ { procedure n etait auparavant recopie dedans QUE pour la branche ELF64      }
+ { (`Emu_LoadELF64(BinaryPath, Args)`), jamais pour la branche DOS           }
+ { (`Emu_LoadProgram(P.CPU, BinaryPath)`, qui ne prend meme pas Args en       }
+ { parametre). Seul le tout premier lancement au demarrage de l IDE (option   }
+ { -emu:, qui affecte EmuStartCmdLine directement AVANT d appeler             }
+ { CreateEmulatorTab) fonctionnait par coincidence - TOUS les autres           }
+ { lancements (Terminal quel qu il soit, "Ouvrir avec l emulateur", etc.)      }
+ { perdaient silencieusement les arguments. Affecter la globale ICI, au        }
+ { tout debut, couvre UNIFORMEMENT tous les points d entree (aucun autre       }
+ { changement necessaire - Emu_LoadExe lit deja correctement cette             }
+ { variable). Inoffensif pour les cibles qui n utilisent pas de ligne de        }
+ { commande (C64, NES, etc.) - elles ignorent simplement EmuStartCmdLine. }
+ EmuStartCmdLine := Args;
  { Geometrie et couleurs specifiques C64 : 40 colonnes, fond bleu, texte cyan }
  If TargetCPU = '-CC64' Then
  Begin
@@ -84322,7 +84577,19 @@ Begin
  { 303, et le clic sur l item 5 du selecteur de shell du Terminal).           }
  { Independant des branches ci-dessus (solution/emulateur/fichier          }
  { source) : peut se combiner avec elles. }
+ { BOGUE REEL corrige 2026-08-16 (trouve en testant une AUTRE demande de     }
+ { l utilisateur, pas signale directement) : utilise SEUL (aucune des 3      }
+ { branches ci-dessus, donc StartPage.Visible jamais mis a False par         }
+ { aucune d elles), /NC laissait la page de demarrage visible PAR-DESSUS      }
+ { le terminal. `DispatchEvent` teste `StartPage.Visible` en TOUTE            }
+ { PRIORITE (avant meme le routage clavier vers le terminal, voir plus bas    }
+ { "Page de demarrage en priorite si visible") - CHAQUE evenement clavier/    }
+ { souris etait donc intercepte par la page de demarrage, empechant           }
+ { totalement de taper quoi que ce soit dans Norton Commander (observe        }
+ { concretement : taper du texte + Entree ouvrait "Nouveau projet", le        }
+ { bouton par defaut de la page). }
  If Opts.NCMode Then Begin
+  StartPage.Visible := False;
   ActiveShell := SK_NCOMMANDER;
   TermVisible := True;
   TermX := 0;
