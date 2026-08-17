@@ -45190,7 +45190,7 @@ Var
  N: LongInt;
  I: LongInt;
  LoadSeg: LongInt;
- PSPSeg, ROff, RSeg, OldPspSeg: Word;
+ PSPSeg, ROff, RSeg, OldPspSeg, McbSize: Word;
  PSP: TEmuPSPRecord;
  Handle: File;
  ByteReaded: Word;
@@ -45272,11 +45272,21 @@ Begin
    offset 3 : Word size en paragraphes (sans le MCB lui-meme)
    offset 5..7 : reserve 3 octets
    offset 8..15 : nom proprietaire (8 octets) }
+ { Taille declaree du bloc : jusqu au plafond reel $9F00 utilise par
+   l allocateur bump AH=48 (Emu_DoInt21), PAS une valeur fixe $9F9F -
+   sinon un programme qui lit cette taille pour dimensionner son propre
+   tas (au lieu de systematiquement passer par AH=48/4A) croirait
+   disposer de bien plus de memoire que ce qui lui est reellement
+   reserve, en particulier pour un enfant EXEC (AH=4Bh) charge haut en
+   memoire (PSPSeg proche de $9F00) - risque concret de corruption par
+   ecriture au-dela de la zone reellement libre. }
+ If PSPSeg < $9F00 Then McbSize := Word($9F00) - PSPSeg
+                   Else McbSize := 1;
  Emu_WriteByte(C, Word(PSPSeg - 1), 0, $5A);     { 'Z' bloc final }
  Emu_WriteByte(C, Word(PSPSeg - 1), 1, Lo(PSPSeg));
  Emu_WriteByte(C, Word(PSPSeg - 1), 2, Hi(PSPSeg));
- Emu_WriteByte(C, Word(PSPSeg - 1), 3, Lo($9F9F));
- Emu_WriteByte(C, Word(PSPSeg - 1), 4, Hi($9F9F));
+ Emu_WriteByte(C, Word(PSPSeg - 1), 3, Lo(McbSize));
+ Emu_WriteByte(C, Word(PSPSeg - 1), 4, Hi(McbSize));
  { Construire un bloc d environnement standard a AtSeg:0000.
    Format DOS :
      [chaines "VAR=val\0" successives]
@@ -51048,6 +51058,15 @@ Var
  ExecTailLen: Byte;
  ExecLoadOk: Boolean;
  ExecI: Integer;
+ { --- FCB (AH=0Fh/10h/14h/16h/29h) : voir Emu_FcbParse/Emu_FcbBuildName --- }
+ FcbName, FcbExt: String;
+ FcbDrive: Byte;
+ FcbH: Integer;
+ FcbRecSize: Word;
+ FcbAbsRec: LongInt;
+ FcbBytesIO: Word;
+ FcbI: Integer;
+ FcbHasWild: Boolean;
 Begin
  Case P.CPU.Regs.AH Of
   $00:
@@ -51161,9 +51180,172 @@ Begin
    ;
   $0E:
    P.CPU.Regs.AL := 4;
-  $0F, $10, $11, $12, $13, $14, $15, $16, $17,
-  $21, $22, $23, $24, $27, $28, $29:
-   { Fonctions FCB non implementees : echec. }
+  $0F:
+   { Ouvrir un fichier via FCB (DS:DX = FCB non ouvert : drive(1) +          }
+   { nom(8) + ext(3), espaces en padding). Le "handle" hote interne est      }
+   { stocke dans l octet reserve du FCB a l offset 24 (jamais interprete     }
+   { par le programme invite, purement une convention de cet emulateur -    }
+   { voir AH=10h/14h qui le relisent). Necessaire : decouvert en tracant      }
+   { NCMAIN.EXE (via NC.EXE/EXEC) - 47600 appels AH=0Fh, tous en echec       }
+   { immediat faute d implementation, entrainant une cascade de messages     }
+   { d erreur affiches caractere par caractere (AH=02, 71961 appels) qui      }
+   { se chevauchent a l ecran faute d effacement propre entre essais. }
+   Begin
+    FcbName := '';
+    For FcbI := 1 To 8 Do Begin
+     B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + FcbI);
+     If B <> 32 Then FcbName := FcbName + Chr(B);
+    End;
+    FcbExt := '';
+    For FcbI := 9 To 11 Do Begin
+     B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + FcbI);
+     If B <> 32 Then FcbExt := FcbExt + Chr(B);
+    End;
+    FName := FcbName;
+    If FcbExt <> '' Then FName := FName + '.' + FcbExt;
+    HPath := Emu_HostPath(FName);
+    If (Not FileExists(HPath)) And (EmuExeDir <> '') And
+       FileExists(EmuExeDir + '\' + FName) Then
+     HPath := EmuExeDir + '\' + FName;
+    If (Length(FName) = 0) Or (Not FileExists(HPath)) Then
+     P.CPU.Regs.AL := $FF
+    Else Begin
+     FcbH := Emu_AllocHandle;
+     If FcbH = 0 Then
+      P.CPU.Regs.AL := $FF
+     Else Begin
+      Assign(EmuFileH[FcbH], HPath);
+      {$I-} Reset(EmuFileH[FcbH], 1); {$I+}
+      If IOResult <> 0 Then
+       P.CPU.Regs.AL := $FF
+      Else Begin
+       EmuFileOpen[FcbH] := True;
+       EmuFileIsCdrom[FcbH] := False;
+       EmuFileName[FcbH] := HPath;
+       EmuFileMode[FcbH] := 0;
+       EmuFileFirstRd[FcbH] := True;
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 24, Byte(FcbH));
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 12, 0);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 16,
+        Word(FileSize(EmuFileH[FcbH]) And $FFFF));
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 18,
+        Word((FileSize(EmuFileH[FcbH]) Shr 16) And $FFFF));
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 32, 0);
+       P.CPU.Regs.AL := 0;
+      End;
+     End;
+    End;
+   End;
+  $10:
+   { Fermer un fichier FCB - handle interne relu depuis l octet reserve }
+   Begin
+    FcbH := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 24);
+    If (FcbH >= 5) And (FcbH <= 31) And EmuFileOpen[FcbH] Then Begin
+     {$I-} Close(EmuFileH[FcbH]); {$I+} If IOResult <> 0 Then ;
+     EmuFileOpen[FcbH] := False;
+     P.CPU.Regs.AL := 0;
+    End Else
+     P.CPU.Regs.AL := $FF;
+   End;
+  $14:
+   { Lecture sequentielle FCB : RecSize (offset 14-15, 128 par defaut si 0)  }
+   { octets a l enregistrement courant (CurBlock*128+CurRec) vers la DTA,    }
+   { puis avance l enregistrement courant (CurRec 0..127, retenue sur       }
+   { CurBlock). }
+   Begin
+    FcbH := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 24);
+    FcbRecSize := Emu_ReadWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 14);
+    If FcbRecSize = 0 Then FcbRecSize := 128;
+    If FcbRecSize > SizeOf(EmuIoBuf) Then FcbRecSize := SizeOf(EmuIoBuf);
+    If (FcbH < 5) Or (FcbH > 31) Or (Not EmuFileOpen[FcbH]) Then
+     P.CPU.Regs.AL := 1
+    Else Begin
+     FcbAbsRec := LongInt(Emu_ReadWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 12)) * 128 +
+      Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 32);
+     {$I-} Seek(EmuFileH[FcbH], FcbAbsRec * LongInt(FcbRecSize));
+     BlockRead(EmuFileH[FcbH], EmuIoBuf, FcbRecSize, FcbBytesIO); {$I+}
+     If IOResult <> 0 Then FcbBytesIO := 0;
+     If FcbBytesIO = 0 Then
+      P.CPU.Regs.AL := 1  { fin de fichier, rien lu }
+     Else Begin
+      For FcbI := FcbBytesIO To FcbRecSize - 1 Do EmuIoBuf[FcbI] := 0;
+      For FcbI := 0 To FcbRecSize - 1 Do
+       Emu_WriteByte(P.CPU, EmuDtaSeg, EmuDtaOfs + FcbI, EmuIoBuf[FcbI]);
+      { Avancer CurRec/CurBlock (CurRec 0..127, retenue sur CurBlock). }
+      B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 32);
+      If B >= 127 Then Begin
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 32, 0);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 12,
+        Emu_ReadWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 12) + 1);
+      End Else
+       Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX + 32, B + 1);
+      If FcbBytesIO < FcbRecSize Then
+       P.CPU.Regs.AL := 3  { enregistrement partiel en fin de fichier }
+      Else
+       P.CPU.Regs.AL := 0;
+     End;
+    End;
+   End;
+  $29:
+   { Analyser un nom de fichier ASCIIZ/espace-termine a DS:SI vers un FCB    }
+   { non ouvert a ES:DI (version simplifiee : ignore les nuances de         }
+   { AL en entree sur les separateurs, gere lettre de lecteur "X:" et       }
+   { les jokers */? de facon minimale). }
+   Begin
+    FcbI := 0;
+    B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
+    While (B = 32) Or (B = 9) Do Begin
+     Inc(FcbI); B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI);
+    End;
+    FcbDrive := 0;
+    If (B <> 0) And (Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI + 1) = Ord(':')) Then Begin
+     If B In [Ord('a')..Ord('z')] Then B := B - 32;
+     FcbDrive := B - Ord('A') + 1;
+     Inc(FcbI, 2);
+     B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI);
+    End;
+    FcbName := ''; FcbHasWild := False;
+    While (B <> 0) And (B <> 32) And (B <> Ord('.')) And (Length(FcbName) < 8) Do Begin
+     If B In [Ord('a')..Ord('z')] Then B := B - 32;
+     If (B = Ord('*')) Then FcbHasWild := True;
+     FcbName := FcbName + Chr(B);
+     Inc(FcbI); B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI);
+    End;
+    While (B <> 0) And (B <> 32) And (B <> Ord('.')) Do Begin
+     Inc(FcbI); B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI);
+    End;
+    FcbExt := '';
+    If B = Ord('.') Then Begin
+     Inc(FcbI); B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI);
+     While (B <> 0) And (B <> 32) And (Length(FcbExt) < 3) Do Begin
+      If B In [Ord('a')..Ord('z')] Then B := B - 32;
+      If (B = Ord('*')) Then FcbHasWild := True;
+      FcbExt := FcbExt + Chr(B);
+      Inc(FcbI); B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + FcbI);
+     End;
+    End;
+    P.CPU.Regs.SI := P.CPU.Regs.SI + FcbI;
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI, FcbDrive);
+    For FcbI := 1 To 8 Do
+     If FcbI <= Length(FcbName) Then
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + FcbI, Byte(FcbName[FcbI]))
+     Else
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + FcbI, 32);
+    For FcbI := 1 To 3 Do
+     If FcbI <= Length(FcbExt) Then
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 8 + FcbI, Byte(FcbExt[FcbI]))
+     Else
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + 8 + FcbI, 32);
+    For FcbI := 12 To 32 Do
+     Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + FcbI, 0);
+    If FcbHasWild Then P.CPU.Regs.AL := 1 Else P.CPU.Regs.AL := 0;
+   End;
+  $11, $12, $13, $15, $16, $17,
+  $21, $22, $23, $24, $27, $28:
+   { Fonctions FCB restantes non implementees (find first/next, ecriture,   }
+   { creation, acces aleatoire...) : echec explicite plutot qu un etat       }
+   { silencieusement incorrect - voir AH=0Fh/10h/14h/29h ci-dessus pour le   }
+   { sous-ensemble reellement exerce par NC.EXE/NCMAIN.EXE. }
    P.CPU.Regs.AL := $FF;
   $19:
    P.CPU.Regs.AL := 2;
