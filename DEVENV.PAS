@@ -1334,7 +1334,7 @@ Const
  OPT_DROPDOWN_ITEM_H  = 20;      { hauteur d un item de liste deroulante}
  DOS_TYPE_COUNT       = 7;       { nombre de types de DOS emulables }
  DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
- DOS_HARDWARE_COUNT   = 10;      { nombre de modeles de materiel    }
+ DOS_HARDWARE_COUNT   = 11;      { nombre de modeles de materiel    }
  DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
  EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
  DOS_LAN_VENDOR_COUNT = 8;       { nombre de produits pilote LAN emulables }
@@ -40749,8 +40749,30 @@ Begin
   7: DosHardwareName := 'Olivetti M24';
   8: DosHardwareName := 'Zenith Z-150';
   9: DosHardwareName := 'NCR PC4i';
+  10: DosHardwareName := 'IBM PCjr';
  Else
   DosHardwareName := '???';
+ End;
+End;
+
+{ Octet "ID materiel" reel place a l adresse F000:FFFE sur un vrai PC/XT/AT  }
+{ (dernier octet de la ROM BIOS 64 Ko) - de nombreux utilitaires DOS/BIOS    }
+{ d epoque le lisent pour distinguer PC/XT/AT/PCjr avant de decider quelles }
+{ routines materiel utiliser (voir Ralf Brown's Interrupt List, "System    }
+{ Model Byte"). Valeurs IBM officiellement documentees pour les entrees IBM }
+{ de DosHardwareName ; les clones (Amdek/Tandy/Compaq/Olivetti/Zenith/NCR)  }
+{ imitaient presque tous la signature $FF du PC 5150 d origine pour rester }
+{ compatibles avec les logiciels qui testent cet octet - valeur retenue    }
+{ faute de documentation constructeur fiable pour chacun individuellement. }
+Function DosHardwareBiosId(Idx: Integer): Byte;
+Begin
+ Case Idx Of
+  1: DosHardwareBiosId := $FE;  { IBM PC XT }
+  2: DosHardwareBiosId := $FC;  { IBM PC AT }
+  3: DosHardwareBiosId := $FC;  { IBM PS/2 (gamme AT-compatible) }
+  10: DosHardwareBiosId := $FD; { IBM PCjr }
+ Else
+  DosHardwareBiosId := $FF;     { IBM PC 5150 et clones compatibles PC }
  End;
 End;
 
@@ -58681,6 +58703,11 @@ Begin
  Emu_WriteByte(P.CPU, $40, $49, $03);
  Emu_WriteByte(P.CPU, $40, $4A, $50);
  Emu_WriteByte(P.CPU, $40, $84, $18);
+ { Octet ID materiel ROM BIOS (F000:FFFE) - voir DosHardwareBiosId. Reflete }
+ { maintenant reellement le "Materiel" choisi dans Options > Emulateur >    }
+ { DOS: Materiel, au lieu de rester a zero (jamais lu par aucun logiciel    }
+ { invite avant ce correctif). }
+ Emu_WriteByte(P.CPU, $F000, $FFFE, DosHardwareBiosId(OptionsDlg.Data.DosHardware));
  EmuTickCounter  := 0;
  EmuStepsPerTick := 5000;
  EmuStepsToTick  := EmuStepsPerTick;
