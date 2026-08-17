@@ -4289,6 +4289,7 @@ Type
   OC_EMU_DOS_HW,         { Emulateur > DOS: Materiel           }
   OC_EMU_DOS_OS,         { Emulateur > DOS: OS                 }
   OC_EMU_DOS_SW,         { Emulateur > DOS: Logiciel           }
+  OC_EMU_DOS_DEBUG,      { Emulateur > DOS: Debug              }
   OC_EMU_LINUX,          { Emulateur > Linux x86-64           }
   OC_EMU_AMIGA,          { Emulateur > Amiga                  }
   OC_EMU_ATARIST,        { Emulateur > Atari ST               }
@@ -4399,6 +4400,8 @@ Type
   DosNovell       : Boolean;     { reseau Novell NetWare          }
   DosLAN          : Boolean;     { reseau LAN generique           }
   DosLANVendor    : Integer;     { fabricant/produit du pilote LAN}
+  DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
+  DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
  End;
 
  { Dialogue des options de l IDE }
@@ -58174,13 +58177,19 @@ Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
 Begin
- {$I-}
- Assign(LogF, 'EMU21.LOG'); Append(LogF);
- If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
- WriteLn(LogF, '  >> INT ', HexByte(Num), ' AH=', HexByte(P.CPU.Regs.AH),
-   ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
- Close(LogF);
- {$I+} If IOResult <> 0 Then ;
+ { Journal EMU21.LOG : voir Options > Emulateur > DOS: Debug              }
+ { (Dlg.Data.DosLogInt21) - desactive par defaut, ecrire ici INCONDITION- }
+ { NELLEMENT sur CHAQUE interruption coute cher (I/O disque a chaque       }
+ { appel systeme du programme emule). }
+ If OptionsDlg.Data.DosLogInt21 Then Begin
+  {$I-}
+  Assign(LogF, 'EMU21.LOG'); Append(LogF);
+  If IOResult <> 0 Then Begin Assign(LogF,'EMU21.LOG'); Rewrite(LogF); End;
+  WriteLn(LogF, '  >> INT ', HexByte(Num), ' AH=', HexByte(P.CPU.Regs.AH),
+    ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+  Close(LogF);
+  {$I+} If IOResult <> 0 Then ;
+ End;
  { Services BIOS/DOS de base toujours geres par stubs internes. }
  Case Num Of
   $10: Emu_DoInt10(P);
@@ -58546,8 +58555,10 @@ Begin
  End;
  ResetSegOvr := False;
  { Diagnostic cibl? : dump instruction + DS:[offset teste] a 0EB7:01B7
-   pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)). }
- If (P.CPU.Segs.CS = $0EB7) And (P.CPU.IP = $01B7) And (Not EmuOvrDumped) Then Begin
+   pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)) - voir     }
+ { Options > Emulateur > DOS: Debug (DosLogDiag) pour activer/desactiver. }
+ If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = $0EB7) And
+    (P.CPU.IP = $01B7) And (Not EmuOvrDumped) Then Begin
   EmuOvrDumped := True;
   {$I-} Assign(LogF_Dbg, 'EMUDIAG.LOG'); Rewrite(LogF_Dbg);
   If IOResult = 0 Then Begin
@@ -70940,8 +70951,10 @@ Begin
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
   EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
   Inc(EmuOpCount[EmuTraceBuf[EmuTraceIdx].Op]);
-  { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 }
-  If (P.CPU.Segs.CS = 0) And (P.CPU.IP < $0010) And (Not EmuOvrDumped) Then Begin
+  { Detection one-shot : 1ere fois que CS:IP passe a 0000:0000 - voir       }
+  { Options > Emulateur > DOS: Debug (DosLogDiag) pour activer/desactiver. }
+  If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = 0) And
+     (P.CPU.IP < $0010) And (Not EmuOvrDumped) Then Begin
    EmuOvrDumped := True;
    {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
    If IOResult = 0 Then Begin
@@ -71076,11 +71089,18 @@ Var
  LogF_R: Text;
  Idx_R, KK_R: Integer;
 Begin
- { Toujours dumper le trace pour le diagnostic }
- Emu_DumpTrace;
  P.Fault := P.CPU.Fault;
- {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
- If IOResult = 0 Then Begin
+ { Resume EMUDIAG.LOG de fin de session - voir Options > Emulateur >      }
+ { DOS: Debug (DosLogDiag) pour activer/desactiver. Ecrit systematiquement }
+ { (pas seulement en cas d anomalie), contrairement aux deux autres        }
+ { sites EMUDIAG.LOG (one-shot, voir DOS_RunOneChunk/Emu_StepOne). Le      }
+ { RESTE de cette procedure (message a l ecran, P.Running, Emu_Done...)     }
+ { doit toujours s executer - seule l ecriture du fichier est optionnelle,  }
+ { PAS de sortie anticipee ici. }
+ If OptionsDlg.Data.DosLogDiag Then Begin
+  Emu_DumpTrace;
+  {$I-} Assign(LogF_R, 'EMUDIAG.LOG'); Rewrite(LogF_R);
+  If IOResult = 0 Then Begin
   WriteLn(LogF_R, 'Sortie de boucle. Steps=', P.TotalSteps,
    ' Fault=', P.CPU.Fault, ' (', Emu_FaultText(P.CPU.Fault), ')');
   WriteLn(LogF_R, 'Final CS:IP=', HexWord(P.CPU.Segs.CS), ':',
@@ -71143,8 +71163,9 @@ Begin
     ' CX=', HexWord(EmuTraceBuf[KK_R].CX));
   End;
   Close(LogF_R);
+  End;
+  {$I+} If IOResult <> 0 Then ;
  End;
- {$I+} If IOResult <> 0 Then ;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  P.CurFg := 11;
  EmuVScr_WriteStr(P, '[Fin d execution : ' +
@@ -73205,6 +73226,7 @@ Begin
   OC_EMU_DOS_HW:         OptionCategoryName := 'DOS: Materiel';
   OC_EMU_DOS_OS:         OptionCategoryName := 'DOS: OS';
   OC_EMU_DOS_SW:         OptionCategoryName := 'DOS: Logiciel';
+  OC_EMU_DOS_DEBUG:      OptionCategoryName := 'DOS: Debug';
   OC_EMU_LINUX:          OptionCategoryName := 'Linux x86-64';
   OC_EMU_AMIGA:          OptionCategoryName := 'Amiga';
   OC_EMU_ATARIST:        OptionCategoryName := 'Atari ST';
@@ -73308,6 +73330,10 @@ Begin
  D.DosNovell := False;
  D.DosLAN := False;
  D.DosLANVendor := 0;
+ { Journaux EMU*.LOG desactives par defaut - ecriture disque a chaque INT21h}
+ { (EMU21.LOG) mesurable sur les performances, reserves au diagnostic. }
+ D.DosLogInt21 := False;
+ D.DosLogDiag := False;
 End;
 
 { Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
@@ -73425,6 +73451,7 @@ Begin
  AddNode('DOS: Materiel', 15, 1, False, OC_EMU_DOS_HW);
  AddNode('DOS: OS', 15, 1, False, OC_EMU_DOS_OS);
  AddNode('DOS: Logiciel', 15, 1, False, OC_EMU_DOS_SW);
+ AddNode('DOS: Debug', 15, 1, False, OC_EMU_DOS_DEBUG);
  AddNode('Linux x86-64', 15, 1, False, OC_EMU_LINUX);
  AddNode('Amiga', 15, 1, False, OC_EMU_AMIGA);
  AddNode('Atari ST', 15, 1, False, OC_EMU_ATARIST);
@@ -74507,6 +74534,47 @@ Begin
   OpenList(5, DOS_MOUSE_VERSION_COUNT, Dlg.Data.DosMouseVersion);
 End;
 
+{ --- Dessiner la page Emulateur > DOS: Debug --- }
+{ Cases a cocher pour activer/desactiver a la volee les journaux de         }
+{ diagnostic EMU*.LOG de l emulateur DOS - EMU21.LOG (un appel INT21h par   }
+{ ligne, ecrit INCONDITIONNELLEMENT par Emu_DoInt avant meme le dispatch    }
+{ vers le service demande) a un cout mesurable sur les performances une      }
+{ fois l ecriture disque comptee a CHAQUE appel systeme du programme         }
+{ emule - desactive par defaut, a activer ponctuellement pour deboguer.      }
+Procedure DrawOptionsEmuDOSDebug(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+
+ Procedure Check(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > DOS: Debug', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Check(Dlg.Data.DosLogInt21,                                     { Row 0 }
+  'Journal des appels INT21h (EMU21.LOG)');
+ Check(Dlg.Data.DosLogDiag,                                      { Row 1 }
+  'Diagnostics ponctuels (EMUDIAG.LOG)');
+ DrawText(FX, BaseY,
+  'Journaux ecrits dans le repertoire de DEVENV.exe. EMU21.LOG grossit',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'vite et ralentit l emulation : a activer ponctuellement, pas en usage',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'normal.', CLR_BORDER);
+End;
+
 { --- Dessiner une page Emulateur > X pas encore detaillee (stub) --- }
 
 Procedure DrawOptionsEmuStub(Var Dlg: TOptionsDialog; Const EmuName: String);
@@ -74559,6 +74627,7 @@ Begin
   OC_EMU_DOS_HW:          DrawOptionsEmuDOSHardware(Dlg);
   OC_EMU_DOS_OS:          DrawOptionsEmuDOSOS(Dlg);
   OC_EMU_DOS_SW:          DrawOptionsEmuDOSSoftware(Dlg);
+  OC_EMU_DOS_DEBUG:       DrawOptionsEmuDOSDebug(Dlg);
   OC_EMU_NES:             DrawOptionsEmuNES(Dlg);
   OC_EMU_LINUX:           DrawOptionsEmuStub(Dlg, 'Linux x86-64');
   OC_EMU_AMIGA:           DrawOptionsEmuStub(Dlg, 'Amiga');
@@ -75265,6 +75334,17 @@ Begin
        4: Dlg.DosDropdownOpen := 8;  { Fabricant pilote souris }
        5: Dlg.DosDropdownOpen := 9;  { Version pilote souris (INT 33h) }
       End;
+     OC_EMU_DOS_DEBUG:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.DosLogInt21 := Not Dlg.Data.DosLogInt21;
+        Dlg.Modified := True;
+       End;
+       1: Begin
+        Dlg.Data.DosLogDiag := Not Dlg.Data.DosLogDiag;
+        Dlg.Modified := True;
+       End;
+      End;
     End;
     DrawOptionsDialog(Dlg);
     Exit;
@@ -75461,6 +75541,8 @@ Begin
  WriteCfgLine(F, 'DosLAN', BoolToStr(Data.DosLAN));
  Str(Data.DosLANVendor, S);
  WriteCfgLine(F, 'DosLANVendor', S);
+ WriteCfgLine(F, 'DosLogInt21', BoolToStr(Data.DosLogInt21));
+ WriteCfgLine(F, 'DosLogDiag', BoolToStr(Data.DosLogDiag));
  Close(F);
 End;
 
@@ -75672,7 +75754,11 @@ Begin
    If (Code <> 0) Or (Data.DosLANVendor < 0) Or
       (Data.DosLANVendor >= DOS_LAN_VENDOR_COUNT) Then
     Data.DosLANVendor := 0;
-  End;
+  End
+  Else If Key = 'DosLogInt21' Then
+   Data.DosLogInt21 := StrToBool(Value)
+  Else If Key = 'DosLogDiag' Then
+   Data.DosLogDiag := StrToBool(Value);
  End;
  Close(F);
 End;
