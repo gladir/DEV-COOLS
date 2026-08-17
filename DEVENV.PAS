@@ -1668,6 +1668,13 @@ Const
  { ecrire un octet d opcode comme pour les autres trampolines de $F000. }
  EMU_DPMI_RMCALL_SEG  = $F000;
  EMU_DPMI_RMCALL_OFS  = $0140;
+ { Trampolines "vecteur par defaut" (chainage reel INT n <-> AH=25h/35h,   }
+ { voir Emu_DefaultVectorsInit/Emu_IntIsHooked/Emu_DoInt) - un emplacement }
+ { de 4 octets par numero d interruption potentiellement chainable (256    }
+ { entrees max, $0300..$06FF), largement apres tous les autres trampolines }
+ { ci-dessus ($0000..$0140) pour eviter toute collision. }
+ EMU_DEFAULT_IVT_SEG  = $F000;
+ EMU_DEFAULT_IVT_OFS0 = $0300;
  { Bump allocator "memoire DOS basse" pour INT 31h AX=0100h (voir          }
  { Dpmi_AllocDosMem) - zone scratch dediee, largement apres tous les       }
  { autres trampolines de $F000 pour eviter toute collision. }
@@ -57959,6 +57966,14 @@ Begin
  P.CPU.Segs.DS := Word(Dpmi_SelBase(DpmiCPU.SegSel[3]) Div 16);
  P.CPU.FS := Word(Dpmi_SelBase(DpmiCPU.SegSel[4]) Div 16);
  P.CPU.GS := Word(Dpmi_SelBase(DpmiCPU.SegSel[5]) Div 16);
+ { Force le chemin "handler interne direct" dans Emu_DoInt (voir             }
+ { Emu_IntIsHooked) : cet appel simule un service reel de facon SYNCHRONE    }
+ { (le resultat est relu immediatement dans Regs/Flags ci-dessous) - un      }
+ { chainage reel via Emu_FireHwInt sauterait CS:IP vers un gestionnaire      }
+ { reel-mode qui ne serait jamais reellement execute (le stepper DPMI fait   }
+ { avancer DpmiCPU.EIP, pas P.CPU.IP, tant que le mode protege est actif),   }
+ { perdant silencieusement le resultat. }
+ P.CPU.Segs.CS := EMU_DEFAULT_IVT_SEG;
  Emu_DoInt(P, Num);
  DpmiCPU.Reg := P.CPU.Regs;
  If EFG_CF In P.CPU.Flags.s Then Include(DpmiCPU.Flags.s, EFG_CF)
@@ -58369,6 +58384,32 @@ Begin
  If IvtOfs = IvtOfs Then ; { evite un avertissement }
 End;
 
+{ Vrai si le programme invite a REELLEMENT remplace le vecteur Num (via     }
+{ INT 21h AH=25h) par le sien - dans ce cas Emu_DoInt doit chainer pour de   }
+{ bon (Emu_FireHwInt : push Flags/CS/IP, saut reel) plutot que d appeler     }
+{ directement le handler interne. Faux si l IVT pointe encore sur notre     }
+{ trampoline par defaut (Emu_DefaultVectorsInit, jamais modifie par         }
+{ l invite) OU si l appel provient d un rappel explicite de l invite VERS ce}
+{ meme trampoline (motif de chainage classique "pushf ; call far [ancien_   }
+{ vecteur]" - a ce moment CS=EMU_DEFAULT_IVT_SEG puisqu on execute déjà le   }
+{ trampoline). Dans les deux cas : executer le handler interne directement, }
+{ jamais reboucler sur l IVT - une relecture de l IVT a cet instant pourrait}
+{ pointer vers le gestionnaire de l invite lui-meme (s il a REELLEMENT      }
+{ installe le sien), causant une recursion infinie au lieu d un simple      }
+{ retour au handler par defaut. }
+Function Emu_IntIsHooked(Var P: TEmulatorPanel; Num: Byte): Boolean;
+Var IvtOfs, IvtSeg: Word;
+Begin
+ If P.CPU.Segs.CS = EMU_DEFAULT_IVT_SEG Then Begin
+  Emu_IntIsHooked := False;
+  Exit;
+ End;
+ IvtOfs := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
+ IvtSeg := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
+ Emu_IntIsHooked := (IvtSeg <> EMU_DEFAULT_IVT_SEG) Or
+                     (IvtOfs <> Word(EMU_DEFAULT_IVT_OFS0 + Word(Num) * 4));
+End;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
@@ -58386,15 +58427,19 @@ Begin
   Close(LogF);
   {$I+} If IOResult <> 0 Then ;
  End;
- { Services BIOS/DOS de base toujours geres par stubs internes. }
+ { Services BIOS/DOS de base geres par stubs internes PAR DEFAUT - mais un   }
+ { programme invite qui a REELLEMENT installe son propre gestionnaire via    }
+ { INT 21h AH=25h (Emu_IntIsHooked) est desormais chaine pour de bon plutot  }
+ { qu ignore, voir Emu_DefaultVectorsInit/Emu_IntIsHooked ci-dessus. }
  Case Num Of
-  $10: Emu_DoInt10(P);
+  $10: If Emu_IntIsHooked(P, $10) Then Emu_FireHwInt(P, $10) Else Emu_DoInt10(P);
   $11:
    { AH=00 (et autres) : equipment list dans AX.
      Bit 0 = floppy installe, bits 5-4 = video initial (11b=80x25 color),
      bits 7-6 = nb FDD-1, bits 9-8 = nb serial. Valeur PC standard
      1 FDD + 80x25 color = $0021. }
-   Begin
+   If Emu_IntIsHooked(P, $11) Then Emu_FireHwInt(P, $11)
+   Else Begin
     Case Emu_FloppyCount Of
      0: P.CPU.Regs.AX := $0020;   { aucun floppy }
      2: P.CPU.Regs.AX := $0061;   { 2 floppies   }
@@ -58404,14 +58449,14 @@ Begin
    End;
   $12:
    { Memory size en KB (640). }
-   P.CPU.Regs.AX := 640;
-  $13: Emu_DoInt13(P);
-  $16: Emu_DoInt16(P);
-  $1A: Emu_DoInt1A(P);
-  $20: P.CPU.Fault := sfEndProgram;
-  $27: P.CPU.Fault := sfEndProgram;
-  $21: Emu_DoInt21(P);
-  $2F: Emu_DoInt2F(P);
+   If Emu_IntIsHooked(P, $12) Then Emu_FireHwInt(P, $12) Else P.CPU.Regs.AX := 640;
+  $13: If Emu_IntIsHooked(P, $13) Then Emu_FireHwInt(P, $13) Else Emu_DoInt13(P);
+  $16: If Emu_IntIsHooked(P, $16) Then Emu_FireHwInt(P, $16) Else Emu_DoInt16(P);
+  $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
+  $20: If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20) Else P.CPU.Fault := sfEndProgram;
+  $27: If Emu_IntIsHooked(P, $27) Then Emu_FireHwInt(P, $27) Else P.CPU.Fault := sfEndProgram;
+  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Emu_DoInt21(P);
+  $2F: If Emu_IntIsHooked(P, $2F) Then Emu_FireHwInt(P, $2F) Else Emu_DoInt2F(P);
   $15: Begin
    { N intercepter reellement que AH=C2h (BIOS souris PS/2) et seulement    }
    { si la case "Souris BIOS PS/2" est cochee (EmuMousePS2Active) - toute   }
@@ -58419,7 +58464,9 @@ Begin
    { comportement generique que les autres interruptions non gerees        }
    { (branche Else) : les nombreux autres services INT 15h (A20, E820,      }
    { clavier etendu, etc.) restent hors de portee de cet emulateur. }
-   If (P.CPU.Regs.AH = $C2) And EmuMousePS2Active Then Emu_DoInt15C2(P)
+   If (P.CPU.Regs.AH = $C2) And EmuMousePS2Active Then Begin
+    If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15C2(P);
+   End
    Else Begin
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($15) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($15) * 4 + 2);
@@ -58434,7 +58481,9 @@ Begin
    { souris charge ne repond pas non plus sur ce vecteur (le "test d        }
    { installation" AX=0000h d un programme invite echouerait alors          }
    { legitimement, exactement comme sur une vraie machine). }
-   If EmuMouseActive Then Emu_DoInt33(P)
+   If EmuMouseActive Then Begin
+    If Emu_IntIsHooked(P, $33) Then Emu_FireHwInt(P, $33) Else Emu_DoInt33(P);
+   End
    Else Begin
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($33) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($33) * 4 + 2);
@@ -58453,7 +58502,9 @@ Begin
    { (EmuPkt.Active) - sinon, comportement identique a toute autre         }
    { interruption non geree (branche Else) : une vraie machine sans        }
    { pilote de paquets charge ne repond pas non plus sur ce vecteur. }
-   If EmuPkt.Active Then Emu_DoInt60(P)
+   If EmuPkt.Active Then Begin
+    If Emu_IntIsHooked(P, $60) Then Emu_FireHwInt(P, $60) Else Emu_DoInt60(P);
+   End
    Else Begin
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($60) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($60) * 4 + 2);
@@ -58473,7 +58524,9 @@ Begin
    { Active) - sinon, comportement identique a toute autre interruption    }
    { non geree (branche Else) : une vraie machine sans gestionnaire EMS    }
    { charge ne repond pas non plus sur ce vecteur. }
-   If EmuEms.Active Then Emu_DoInt67(P)
+   If EmuEms.Active Then Begin
+    If Emu_IntIsHooked(P, $67) Then Emu_FireHwInt(P, $67) Else Emu_DoInt67(P);
+   End
    Else Begin
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($67) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($67) * 4 + 2);
@@ -58487,7 +58540,9 @@ Begin
    { toute autre interruption non geree (branche Else ci-dessous) : une    }
    { vraie machine sans pilote IPX charge ne repond pas non plus sur ce    }
    { vecteur. }
-   If EmuIpx.Active Then Emu_DoInt7A(P)
+   If EmuIpx.Active Then Begin
+    If Emu_IntIsHooked(P, $7A) Then Emu_FireHwInt(P, $7A) Else Emu_DoInt7A(P);
+   End
    Else Begin
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($7A) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($7A) * 4 + 2);
@@ -58524,6 +58579,49 @@ Begin
  Exclude(P.CPU.Flags.s, EFG_TF);
  P.CPU.Segs.CS := NewCS;
  P.CPU.IP := NewIP;
+End;
+
+{ Ecrit le trampoline "vecteur par defaut" pour l interruption Num (voir     }
+{ EMU_DEFAULT_IVT_SEG/EMU_DEFAULT_IVT_OFS0 et Emu_IntIsHooked) : le vrai      }
+{ code INT Num ; IRET a $F000:$0300+Num*4, ET l entree IVT correspondante    }
+{ pointant dessus - exactement ce qu un vrai DOS/BIOS ferait au demarrage    }
+{ pour chaque vecteur qu il gere. Un programme invite qui appelle AH=35h     }
+{ AVANT d installer son propre AH=25h recupere donc cette adresse comme      }
+{ "ancien vecteur", ce qui permet un chainage reel (pushf ; call far         }
+{ [ancien_vecteur]) - voir Emu_IntIsHooked pour la reception cote Emu_DoInt. }
+Procedure Emu_WriteDefaultVector(Var P: TEmulatorPanel; Num: Byte);
+Var Ofs: Word;
+Begin
+ Ofs := EMU_DEFAULT_IVT_OFS0 + Word(Num) * 4;
+ Emu_WriteByte(P.CPU, EMU_DEFAULT_IVT_SEG, Ofs,     $CD); { INT }
+ Emu_WriteByte(P.CPU, EMU_DEFAULT_IVT_SEG, Ofs + 1, Num);
+ Emu_WriteByte(P.CPU, EMU_DEFAULT_IVT_SEG, Ofs + 2, $CF); { IRET }
+ Emu_WriteWord(P.CPU, 0, Word(Num) * 4,     Ofs);
+ Emu_WriteWord(P.CPU, 0, Word(Num) * 4 + 2, EMU_DEFAULT_IVT_SEG);
+End;
+
+{ Initialise, au demarrage d une session DOS (voir ShowEmulatorPanel), les   }
+{ trampolines par defaut de TOUTES les interruptions dotees d un handler     }
+{ interne dans Emu_DoInt - les 10 toujours actives, PLUS les 5 dependant     }
+{ d une case a cocher materiel/reseau (Souris BIOS PS/2, Souris, Reseau LAN, }
+{ EMS, Novell IPX) mais SEULEMENT si celle-ci est effectivement active :     }
+{ si le materiel n est pas emule, une vraie machine ne repondrait pas non    }
+{ plus sur ce vecteur, donc ne PAS y ecrire de trampoline (sinon un          }
+{ programme invite testant AH=35h croirait a tort qu un gestionnaire est     }
+{ deja installe). Doit etre appele APRES les Emu_XxxInit correspondants      }
+{ (qui positionnent les .Active) et APRES Emu_LoadProgram (zone reservee     }
+{ $F000, jamais utilisee par le programme charge). }
+Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel);
+Const
+ Always: Array[0..9] Of Byte = ($10,$11,$12,$13,$16,$1A,$20,$21,$27,$2F);
+Var I: Integer;
+Begin
+ For I := 0 To 9 Do Emu_WriteDefaultVector(P, Always[I]);
+ If EmuMousePS2Active Then Emu_WriteDefaultVector(P, $15);
+ If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
+ If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
+ If EmuEms.Active     Then Emu_WriteDefaultVector(P, $67);
+ If EmuIpx.Active     Then Emu_WriteDefaultVector(P, $7A);
 End;
 
 { Tentative de trap divide-by-zero via INT 0. Si l application a installe
@@ -71176,6 +71274,21 @@ Begin
    End;
    {$I+} If IOResult <> 0 Then ;
   End;
+  { CS=0 n est JAMAIS une valeur legitime pour du code programme reel (c est}
+  { exclusivement la zone IVT/BDA) - un vrai DOS ne charge et n execute       }
+  { jamais rien a CS=0. Avant ce correctif, un saut errant vers CS=0        }
+  { (cause racine pre-existante encore non identifiee, voir le diagnostic    }
+  { ci-dessus) continuait a interpreter des octets de donnees (table d IVT,  }
+  { BDA, etc.) comme du code - "marchait" parfois par pure coincidence       }
+  { jusqu a un motif d octets ressemblant a INT 20h/21h AH=4Ch (fin          }
+  { "chanceuse"), sinon plantait sur le premier octet non decode par ce      }
+  { sous-ensemble d opcodes. Traiter CS=0 comme la fin du programme          }
+  { (comportement deterministe et honnete, au lieu d executer des donnees    }
+  { par accident) corrige les deux cas a la fois. }
+  If P.CPU.Segs.CS = 0 Then Begin
+   P.CPU.Fault := sfEndProgram;
+   Break;
+  End;
   { Detection : capturer le point d entree dans une zone de 0x20 (espaces).
     Si on voit le 1er 0x20 apres autre chose, memoriser la position. }
   If (EmuTraceBuf[EmuTraceIdx].Op = $20) Or
@@ -72701,6 +72814,9 @@ Begin NesActive := False;
  Emu_MouseInit(P);
  Emu_MscdexInit(P);
  Emu_DpmiInit(P);
+ { Chainage reel IVT (AH=25h/35h) : voir Emu_DefaultVectorsInit/            }
+ { Emu_IntIsHooked - doit venir APRES les Init ci-dessus (lit leurs .Active).}
+ Emu_DefaultVectorsInit(P);
  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
  { PAS de Stage 2 pour ce backend (voir DOS_RunOneChunk pour les raisons - }
  { etat peripherique DOS bien au-dela du seul P.CPU deja sauve par onglet).}
