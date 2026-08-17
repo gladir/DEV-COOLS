@@ -4862,6 +4862,8 @@ Type
   DisasmAddrs   : Array[0..63] Of LongInt; { adresses des lignes    }
   DataOfs       : Word;          { offset courant du dump DS        }
   NeedRepaint   : Boolean;       { redessiner au prochain tour      }
+  Animating     : Boolean;       { "Animer" : pas a pas continu     }
+  AnimLastStep  : LongInt;       { GetTimestamp du dernier pas auto }
  End;
 
  { Mode d insertion }
@@ -9086,6 +9088,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas principal', 'F10', 620);
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas detaille', 'F11', 621);
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Maj+F11', 622);
+ AddMenuItem(MainMenuBar.Menus[5], 'Animer', '', 623);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
  AddMenuSeparator(MainMenuBar.Menus[5]);
@@ -9149,6 +9152,7 @@ Procedure EmuDbg_StepInto; Forward;
 Procedure EmuDbg_StepOver; Forward;
 Procedure EmuDbg_StepOut; Forward;
 Procedure EmuDbg_ToggleBPAtPC; Forward;
+Function EmuDbg_IsBreakKey(Var Ev: TEvent): Boolean; Forward;
 Procedure EmuDbg_OnBeforeStep6502; Forward;
 Procedure EmuDbg_OnBeforeStep8086; Forward;
 Procedure EmuDbg_OnBeforeStep6809; Forward;
@@ -9907,6 +9911,12 @@ Begin
        End;
   622: Begin { Pas a pas sortant (Shift+F11) }
         If EmuDbg.Paused Then EmuDbg_StepOut;
+       End;
+  623: Begin { Animer : pas a pas continu, 1 pas/seconde (bascule) }
+        If EmuDbg.Paused Then Begin
+         EmuDbg.Animating := Not EmuDbg.Animating;
+         If EmuDbg.Animating Then EmuDbg.AnimLastStep := GetTimestamp;
+        End;
        End;
   630: Begin { Arret : figer l emulateur actif, PUIS comportement d origine }
              { (arreter le debogueur) (Shift+F5) }
@@ -72154,6 +72164,7 @@ Begin NesActive := False;
   EmuDbg.Active := True;
   EmuDbg.StepMode := ESM_INTO;
   EmuDbg.BreakReq := False;
+  EmuDbg.Animating := False;
   { Le texte par defaut ("Arrete (code de fin: ...)") laisserait croire }
   { a tort que le programme est deja termine alors qu il n a simplement }
   { pas encore ete demarre - meme convention que EmuPanel_Pause. }
@@ -82986,8 +82997,6 @@ Begin
   DrawOutputPanel(OutputPanel);
  End;
  DrawErrorList(ErrorList);
- { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) }
- If EmuDbg.WinVisible And (Not MenuActive) Then EmuDbg_DrawWindow;
  DrawStatusBar(StatusBar);
  { Dessiner le dialogue par-dessus si visible }
  If NewFileDlg.Base.Visible Then
@@ -83002,6 +83011,24 @@ Begin
   DrawAddReferenceDialog(AddRefDlg);
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
+ { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) -
+   DOIT etre dessinee APRES DrawEmulatorPanel : ce dernier compose son
+   rendu sur une page BGI inactive (double buffering reel, voir son
+   commentaire "Flip atomique") puis la rend visible via SetActivePage/
+   SetVisualPage. EmuDbg_DrawWindow, elle, dessine en immediat sur la
+   page COURANTE (pas de gestion de page propre) - appelee AVANT
+   DrawEmulatorPanel (position d origine), son rendu se faisait sur la
+   page qui devient ensuite la source d une copie GetImage/PutImage vers
+   la nouvelle page arriere, puis DrawEmulatorPanel dessinait par-dessus
+   uniquement SON PROPRE rectangle (a gauche, sans toucher EmuDbg) avant
+   de flipper - en pratique reproductible et systematique, ce rendu se
+   retrouvait tronque (desassemblage coupe a 1 ligne, dump ds: absent)
+   des qu un evenement (ex. ouverture/fermeture d un menu PENDANT la
+   pause) declenchait un DrawAllWidgets complet. La dessiner ICI, apres
+   DrawEmulatorPanel, l affiche en immediat sur la page qui est deja la
+   VRAIE page active/visible finale de cette passe - plus de dependance
+   envers le cycle de copie de DrawEmulatorPanel. }
+ If EmuDbg.WinVisible And (Not MenuActive) Then EmuDbg_DrawWindow;
  If FindReplaceDlg.Base.Visible Then
   DrawFindReplaceDialog(FindReplaceDlg);
  If GoToLineDlg.Base.Visible Then
@@ -83075,6 +83102,8 @@ Begin
  For I := 0 To 63 Do EmuDbg.DisasmAddrs[I] := 0;
  EmuDbg.DataOfs := 0;
  EmuDbg.NeedRepaint := False;
+ EmuDbg.Animating := False;
+ EmuDbg.AnimLastStep := 0;
 End;
 
 { --- Demander une pause depuis l interieur d une boucle d emulateur --- }
@@ -84268,6 +84297,7 @@ Begin
  EmuDbg.Paused := False;
  EmuDbg.ContinueReq := True;
  EmuDbg.BreakReq := False;
+ EmuDbg.Animating := False;
  EmuDbg.Dragging := False;
  EmuDbg.Resizing := False;
  EmuDbg.WinVisible := False;
@@ -84279,6 +84309,7 @@ Begin
  EmuDbg.Paused := False;
  EmuDbg.StepMode := ESM_NONE;
  EmuDbg.BreakReq := False;
+ EmuDbg.Animating := False;
  EmuDbg.Dragging := False;
  EmuDbg.Resizing := False;
  EmuDbg.WinVisible := False;
@@ -84378,6 +84409,19 @@ Begin
  { Si un menu deroulant est ouvert, le laisser traiter les touches
    (Esc/fleches/Entree pour la navigation menu) et ne rien absorber. }
  If MenuActive Then Exit;
+ { Animer : Echap/Ctrl+C/Ctrl+Break interrompent l animation en cours -
+   ne consomme la touche que si une animation est REELLEMENT active,
+   pour ne rien changer au comportement existant (Echap notamment,
+   deliberement laissee passer plus bas sinon - voir commentaire en
+   fin de fonction) quand aucune animation ne tourne. }
+ If EmuDbg.Animating Then Begin
+  If EmuDbg_IsBreakKey(Ev) Or
+     ((Ev.Kind = EV_KEY_CHAR) And (Ev.KeyChar = #27)) Then Begin
+   EmuDbg.Animating := False;
+   EmuDbg_HandleKey := True;
+   Exit;
+  End;
+ End;
  L := EmuDbg.DisasmLines;
  If L < 1 Then L := 1;
  If Ev.Kind = EV_KEY_DOWN Then Begin
@@ -84532,6 +84576,20 @@ Begin
        (Not EmuDbg.StopReq) And (Not QuitRequested) Do Begin
   PollEvents(Ev);
   If Ev.Kind = EV_NONE Then Begin
+   { Animer : un pas automatique toutes les 1000 ms. EmuDbg_StepInto
+     met Paused a False (le While ci-dessus se termine alors de lui
+     meme au prochain tour) - l instruction s execute reellement plus
+     haut dans la pile d appel (hook pre-instruction), puis rappelle
+     EmuDbg_EnterPause/EmuDbg_PumpPause pour le pas suivant : c est ce
+     va-et-vient qui produit l effet "anime" sans boucle bloquante
+     dediee. AnimLastStep est mis a jour ICI (pas seulement a l
+     activation) pour que la cadence de 1s/pas reste correcte d un
+     passage a l autre dans EmuDbg_PumpPause. }
+   If EmuDbg.Animating And
+      ((GetTimestamp - EmuDbg.AnimLastStep) >= 1000) Then Begin
+    EmuDbg.AnimLastStep := GetTimestamp;
+    EmuDbg_StepInto;
+   End;
    { Pas d evenement : on reste idle. Pas de Sleep car le pump host
      gere deja le pacing. }
    Continue;
@@ -84552,11 +84610,19 @@ Begin
   If FullRepaintNeeded Then Begin
    DrawAllWidgets;
    FullRepaintNeeded := False;
+  End Else If Not MenuActive Then Begin
+   { Ne pas redessiner la fenetre debug si un menu deroulant est ouvert :
+     cela ecraserait le menu. Le menu reste en avant-plan tant qu il est
+     ouvert ; il restaurera l arriere-plan a sa fermeture. Si un repaint
+     complet vient d avoir lieu (branche ci-dessus), NE PAS redessiner
+     une 2e fois ici : DrawAllWidgets a deja redessine EmuDbg lui-meme
+     (voir son propre `If EmuDbg.WinVisible And (Not MenuActive) Then
+     EmuDbg_DrawWindow`) - un second appel redondant juste apres a ete
+     empiriquement observe corrompre l affichage (desassemblage/dump
+     tronques a 1 ligne apres une simple ouverture/fermeture de menu
+     PENDANT la pause, reproduit meme sans aucun rapport avec "Animer"). }
+   EmuDbg_DrawWindow;
   End;
-  { Ne pas redessiner la fenetre debug si un menu deroulant est ouvert :
-    cela ecraserait le menu. Le menu reste en avant-plan tant qu il est
-    ouvert ; il restaurera l arriere-plan a sa fermeture. }
-  If Not MenuActive Then EmuDbg_DrawWindow;
  End;
  { Si l utilisateur a demande de quitter pendant la pause (Alt+X /
    Alt+F4), forcer l arret de l emulateur pour sortir proprement. }
