@@ -40760,16 +40760,20 @@ End;
 { d epoque le lisent pour distinguer PC/XT/AT/PCjr avant de decider quelles }
 { routines materiel utiliser (voir Ralf Brown's Interrupt List, "System    }
 { Model Byte"). Valeurs IBM officiellement documentees pour les entrees IBM }
-{ de DosHardwareName ; les clones (Amdek/Tandy/Compaq/Olivetti/Zenith/NCR)  }
-{ imitaient presque tous la signature $FF du PC 5150 d origine pour rester }
-{ compatibles avec les logiciels qui testent cet octet - valeur retenue    }
-{ faute de documentation constructeur fiable pour chacun individuellement. }
+{ de DosHardwareName ; les clones (Tandy 1000/Compaq Deskpro 386/Olivetti   }
+{ M24/Zenith Z-150/NCR PC4i) imitaient presque tous la signature $FF du PC  }
+{ 5150 d origine pour rester compatibles avec les logiciels qui testent cet }
+{ octet - valeur retenue faute de documentation constructeur fiable pour    }
+{ chacun individuellement. L Amdek System/88 est un clone PC/XT reel (voir  }
+{ aussi Emu_CMOSPorts) et se presente comme tel : $FE, pas la valeur par    }
+{ defaut $FF. }
 Function DosHardwareBiosId(Idx: Integer): Byte;
 Begin
  Case Idx Of
   1: DosHardwareBiosId := $FE;  { IBM PC XT }
   2: DosHardwareBiosId := $FC;  { IBM PC AT }
   3: DosHardwareBiosId := $FC;  { IBM PS/2 (gamme AT-compatible) }
+  4: DosHardwareBiosId := $FE;  { Amdek System/88 (clone PC/XT) }
   10: DosHardwareBiosId := $FD; { IBM PCjr }
  Else
   DosHardwareBiosId := $FF;     { IBM PC 5150 et clones compatibles PC }
