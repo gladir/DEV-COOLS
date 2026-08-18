@@ -1,0 +1,703 @@
+PROGRAMMATION D'IBM TOPVIEW
+============================
+
+Objet et portée
+---------------
+
+Ce document décrit l'interface de programmation en mode réel de TopView,
+l'environnement multitâche et fenêtré publié par IBM en 1985 pour les PC sous
+DOS. Il se concentre sur les interfaces demandées : INT 50h à INT 57h et
+INT 15h avec AH=10h, AH=11h et AH=12h. Les exemples ciblent un 8086/8088,
+MASM/TASM et Turbo Pascal 5.x/6.x/7.x en mode réel.
+
+TopView sépare essentiellement :
+
+  * les services directs, sélectionnés par AX=10xxh ;
+  * les commandes étendues, sélectionnées par AH=11h ;
+  * l'envoi de messages aux objets, sélectionné par AH=12h ;
+  * les interruptions matérielles remappées, qui ne sont pas une API.
+
+Les objets TopView sont les fenêtres/tâches, boîtes aux lettres, claviers,
+temporisateurs, pointeurs, panneaux et files d'objets (OBJECTQ). Un handle est
+généralement une adresse éloignée (segment:décalage). Plusieurs appels anciens
+n'utilisent que le segment du handle, le décalage étant implicitement nul.
+
+Les informations ci-dessous réunissent l'interface IBM publiée et les
+précisions historiques compilées dans la Ralf Brown Interrupt List (RBIL).
+Les remarques explicitement étiquetées « DESQview » ne sont pas garanties par
+IBM TopView.
+
+
+1. Détection et règles générales
+--------------------------------
+
+La détection historique la plus simple est GETVER :
+
+    AX = 1022h
+    BX = 0000h
+    INT 15h
+    BX = 0000h : TopView ou compatible absent
+    sinon BL = version majeure, BH = version mineure
+
+TaskView renvoie 0001h ; DESQview 2.00+ renvoie notamment 0A01h. Il faut donc
+tester BX contre zéro et ne pas identifier TopView au moyen d'une seule valeur
+de version.
+
+Conventions importantes :
+
+  * les appels modifient potentiellement les registres documentés en sortie ;
+    préserver les autres si le compilateur ou l'appelant l'exige ;
+  * une adresse « ES:DI -> » est un pointeur far ;
+  * le mot DWORD employé par la documentation signifie ici quatre octets ;
+  * les messages AH=12h passent fréquemment leurs paramètres et résultats sur
+    la pile, en DWORD, même quand la valeur logique ne fait que 16 bits ;
+  * empiler d'abord le mot de poids fort puis le mot de poids faible produit,
+    sur une pile 8086 descendante, un DWORD dont le faible mot est au sommet ;
+  * TopView exige sa pile interne pour plusieurs opérations. Encadrer ces
+    opérations par OSTACK/USTACK quand le manuel de l'appel l'exige ;
+  * ne jamais supposer qu'une API ordinaire est réentrante depuis une IRQ.
+    Depuis une interruption matérielle, différer le travail avec GETBIT/SETBIT ;
+  * BEGINC doit toujours être équilibré par ENDC. PAUSE dans une région critique
+    rend volontairement le processeur mais la région redevient critique lorsque
+    la tâche reprend ;
+  * appeler DOS dans une région ou un callback non réentrant peut bloquer ou
+    corrompre l'état du système.
+
+
+2. INT 50h à INT 57h : IRQ remappées, pas appels TopView
+---------------------------------------------------------
+
+INT 50h..57h sont les emplacements par défaut utilisés par les anciennes
+versions de DESQview pour remapper les huit IRQ du contrôleur 8259 maître.
+Ils ne constituent pas huit fonctions que l'application appelle par INT 50h,
+INT 51h, etc. TopView et les compatibles protègent ainsi leur ordonnanceur et
+virtualisent les interruptions matérielles propres à chaque tâche.
+
+    Vecteur par défaut    IRQ d'origine    Matériel PC habituel
+    ------------------    -------------    --------------------
+    INT 50h               IRQ0             temporisateur système
+    INT 51h               IRQ1             clavier
+    INT 52h               IRQ2             cascade (ou périphérique XT)
+    INT 53h               IRQ3             COM2/COM4
+    INT 54h               IRQ4             COM1/COM3
+    INT 55h               IRQ5             LPT2 / périphérique d'extension
+    INT 56h               IRQ6             contrôleur de disquette
+    INT 57h               IRQ7             LPT1 / IRQ parasite possible
+
+La correspondance matérielle varie avec la machine et les cartes installées.
+Le code d'une application normale ne doit ni appeler ces vecteurs, ni les
+remplacer sans chaînage correct, ni envoyer lui-même un EOI au 8259 en dehors
+d'un véritable gestionnaire matériel.
+
+DESQview 2.26+ cherche dynamiquement deux plages libres alignées sur huit : une
+pour IRQ0..IRQ7 et une pour IRQ8..IRQ15. La RBIL donne pour 2.26 les candidats
+50h, 58h, 68h, 78h et F8h ; pour 2.31+, 68h, 78h, 88h..B8h et F8h. Il est donc
+incorrect de coder en dur INT 50h..57h pour un pilote destiné aux versions
+récentes. La plage est jugée libre lorsque ses huit vecteurs sont identiques et
+qu'elle n'a pas été exclue par l'option /XB:nn.
+
+Pour une application, la bonne méthode de traitement différé d'une IRQ est :
+
+    IRQ réelle -> gestionnaire court -> acquittement matériel approprié
+               -> SETBIT (AX=1015h) -> retour d'interruption
+               -> routine de second niveau exécutée par TopView
+
+Exemple conceptuel MASM/TASM (la sauvegarde des registres et l'EOI doivent être
+adaptés au périphérique et au gestionnaire chaîné) :
+
+    TvBitMask  dw 0
+
+    ; À l'initialisation : ES:DI = routine de second niveau.
+    mov  ax, 1013h                 ; GETBIT
+    mov  di, OFFSET DeferredWork
+    push cs
+    pop  es
+    int  15h
+    mov  TvBitMask, bx             ; 0 = plus de bit disponible
+
+    ; Dans le gestionnaire matériel, après le travail matériel minimal :
+    mov  ax, 1015h                 ; SETBIT est autorisé depuis une IRQ
+    mov  bx, TvBitMask
+    int  15h
+    ; puis chaînage/EOI et IRET selon le pilote
+
+    DeferredWork PROC FAR
+        ; TopView fournit ES = segment du handle de la prochaine tâche.
+        ; Effectuer ici le travail qui ne pouvait être fait dans l'IRQ.
+        ; ES doit encore désigner un handle de tâche au retour.
+        retf
+    DeferredWork ENDP
+
+À la désinstallation, AX=1014h et BX=masque libèrent le bit. Il faut d'abord
+empêcher toute nouvelle IRQ de programmer le callback et attendre qu'aucun
+callback ne soit encore en vol.
+
+
+3. INT 15h / AH=10h : services directs
+---------------------------------------
+
+Table générale
+~~~~~~~~~~~~~~
+
+    AX      Nom       Entrées principales / résultat
+    ------  --------  -------------------------------------------------------
+    1000h   PAUSE     cède volontairement le processeur
+    1001h   GETMEM    BX=octets ; retourne ES:DI=bloc (ou 0000:0000)
+    1002h   PUTMEM    ES:DI=bloc précédemment alloué
+    1003h   PRINTC    BH=attribut, BL=caractère, DX=segment fenêtre
+    1004h-
+    1012h   --        non implantés dans DESQview 2.x
+    1013h   GETBIT    ES:DI=routine far ; BX=masque ou zéro
+    1014h   FREEBIT   BX=masque obtenu par GETBIT
+    1015h   SETBIT    BX=masque(s) à programmer
+    1016h   ISOBJ     ES:DI=handle possible ; BX=FFFFh valide, 0000h invalide
+    1017h   --        non implanté dans DESQview 2.x
+    1018h   LOCATE    BH=colonne, BL=ligne, ES=fenêtre de départ
+    1019h   SOUND     BX=Hz, CX=durée en tops de 18,2 Hz
+    101Ah   OSTACK    passe sur la pile interne de la tâche
+    101Bh   BEGINC    entre dans une région critique
+    101Ch   ENDC      quitte la région critique
+    101Dh   STOP      ES=segment du handle de la tâche
+    101Eh   START     ES=segment du handle de la tâche
+    101Fh   DISPEROR  affiche une fenêtre d'erreur modale
+    1020h   --        non implanté dans DESQview 2.00+
+    1021h   PGMINT    BX=tâche, DX:CX=routine far à injecter
+    1022h   GETVER    BX=0 à l'entrée ; version dans BX
+    1023h   POSWIN    positionne une fenêtre
+    1024h   GETBUF    obtient l'écran virtuel
+    1025h   USTACK    restaure la pile utilisateur
+    1026h-
+    102Ah   --        non implantés dans DESQview 2.x
+
+PAUSE (1000h)
+~~~~~~~~~~~~~
+
+PAUSE abandonne le reste du quantum pour permettre aux autres tâches de
+travailler. L'appel revient lorsque la tâche est de nouveau planifiée. Il faut
+l'utiliser dans toute boucle d'attente qui ne bloque pas déjà sur un objet.
+
+    mov ax, 1000h
+    int 15h
+
+Sous DESQview, si la tâche a détourné INT 08h, le quantum expire au prochain
+top d'horloge plutôt qu'immédiatement.
+
+GETMEM et PUTMEM (1001h, 1002h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+GETMEM alloue BX octets de mémoire système et renvoie ES:DI. Une adresse nulle
+signale l'échec sur les compatibles récents. DESQview 2.42 renvoie en plus AX=0
+en cas de succès et AX=1 en cas d'échec. TopView historique pouvait afficher
+une invite en cas de manque de mémoire : un programme portable doit surtout
+vérifier le pointeur, ne pas dépendre du contenu initial et libérer exactement
+le pointeur reçu avec PUTMEM.
+
+    mov  ax, 1001h
+    mov  bx, 1024
+    int  15h
+    mov  ax, es
+    or   ax, di
+    jz   NoMemory
+    ; ... utilisation de ES:DI ...
+    mov  ax, 1002h
+    int  15h
+
+PRINTC (1003h)
+~~~~~~~~~~~~~~
+
+BH contient l'attribut vidéo, BL le caractère et DX le segment du handle de la
+fenêtre. BX=0000h n'affiche rien : il synchronise le curseur matériel sur la
+position du curseur logique.
+
+    mov ax, 1003h
+    mov bh, 1Eh                    ; jaune sur bleu
+    mov bl, 'A'
+    mov dx, WindowHandleSegment
+    int 15h
+
+GETBIT, FREEBIT et SETBIT (1013h..1015h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+GETBIT associe une routine far ES:DI à un bit et rend son masque dans BX ; zéro
+signifie qu'aucun bit n'est disponible. SETBIT programme une ou plusieurs
+routines en combinant leurs masques dans BX. Dans DESQview 2.0x elles sont
+appelées au prochain changement de tâche ; dans 2.2x, dès le retour de l'IRQ
+matérielle. SETBIT et ENDC font partie des rares appels admis dans une IRQ.
+
+Le callback reçoit dans ES le segment du handle de la prochaine tâche. Au
+retour, ES doit encore être le segment d'un handle de tâche valide. Il doit être
+FAR et finir par RETF, pas IRET.
+
+ISOBJ (1016h)
+~~~~~~~~~~~~~
+
+Teste ES:DI. BX=FFFFh indique un handle d'objet valide, BX=0000h un handle
+invalide. Les types connus sont : 00h fenêtre/tâche, 01h boîte aux lettres,
+02h clavier, 03h temporisateur, 04h pointeur, 05h panneau, 06h OBJECTQ.
+Ne pas lire directement les structures internes : leur représentation change
+entre TopView et les versions de DESQview.
+
+LOCATE (1018h)
+~~~~~~~~~~~~~~
+
+BH=colonne et BL=ligne. ES=0000h commence à la fenêtre supérieure ; sinon la
+recherche commence sous la fenêtre indiquée. ES retourne le segment du handle
+de la fenêtre visible à cet emplacement, ou zéro.
+
+SOUND (1019h)
+~~~~~~~~~~~~~
+
+BX est la fréquence en hertz et CX la durée en tops d'horloge (18,2/s). L'appel
+rend la main immédiatement. Les sons sont mis en file (jusqu'à 32 selon la
+RBIL). BX=0 produit un silence ; CX=0 annule la note courante et, si BX=0 aussi,
+vide la file.
+
+OSTACK et USTACK (101Ah, 1025h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+OSTACK commute sur la pile privée de la tâche ; il n'est pas imbriquable.
+USTACK doit être appelé exactement une fois ensuite. Ne placez pas entre les
+deux appels des variables automatiques ou paramètres adressés via SS:SP/BP : le
+changement de pile les rendrait inaccessibles. Une routine assembleur dédiée
+est préférable.
+
+BEGINC et ENDC (101Bh, 101Ch)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+BEGINC attend que DOS soit libre puis désactive les changements de tâche.
+ENDC les réactive. Garder la région extrêmement courte ; ne pas attendre une
+entrée utilisateur ni un objet en conservant le verrou. ENDC est autorisé dans
+une interruption matérielle.
+
+STOP et START (101Dh, 101Eh)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ES est le segment du handle de la tâche, identique au handle de sa fenêtre
+principale. STOP la prive de CPU jusqu'à START. Les appels répétés sont sans
+effet. DESQview 2.00 ignore STOP si la cible n'est pas la tâche courante.
+
+DISPEROR (101Fh)
+~~~~~~~~~~~~~~~~
+
+    AX = 101Fh
+    BX bits 0..12 = longueur du texte
+       bits 13..14 = bouton fermant (00 l'un ou l'autre, 01 gauche,
+                     10 droit, 11 l'un ou l'autre)
+       bit 15 = émettre un bip
+    ES:DI -> texte
+    CH = largeur (0 = défaut), CL = hauteur (0 = défaut)
+    DX = segment du handle de fenêtre
+    retour BX = 1 gauche, 2 droit, 27 Échap
+
+La fenêtre reste affichée jusqu'au bouton autorisé ou à Échap.
+
+PGMINT (1021h)
+~~~~~~~~~~~~~~
+
+BX désigne la tâche cible (pas soi-même), DX:CX la routine far appelée lors de
+sa prochaine exécution. La routine tourne sur la pile interne de cette tâche et
+doit préserver SS:SP ; DS, ES, SI, DI et BP gardent les valeurs de la tâche.
+Plusieurs injections sont traitées en LIFO. Si la cible exécute DOS ou l'API,
+l'injection attend le retour de cet appel. Ce service est puissant et convient
+surtout aux outils système maîtrisant parfaitement les piles et la réentrance.
+
+POSWIN (1023h)
+~~~~~~~~~~~~~~
+
+BX=segment de la fenêtre parente (0 pour l'écran entier), ES=segment de la
+fenêtre à placer, CH=décalage horizontal, CL=décalage vertical. DL contient :
+
+    bits 1..0 : 00 actuelle, 01 centre, 10 gauche, 11 droite
+    bits 3..2 : 00 actuelle, 01 centre, 10 haut,    11 bas
+    bit 4     : ne pas redessiner
+
+GETBUF (1024h)
+~~~~~~~~~~~~~~
+
+BX est le segment du handle de fenêtre, ou zéro pour la fenêtre par défaut.
+Retour : ES:DI pointe vers l'écran virtuel, CX donne sa taille en octets et DL
+vaut 0 pour le texte, 1 pour le graphique. Le pointeur appartient à TopView ;
+ne pas le libérer. Après modification directe d'un tampon texte, prévenir la
+virtualisation au moyen du protocole vidéo prévu (notamment INT 10h/AH=FFh sur
+les compatibles), au lieu de supposer que l'affichage se mettra à jour seul.
+
+
+4. INT 15h / AH=11h : commandes
+--------------------------------
+
+Dans TopView, AH=11h sélectionne un ensemble de commandes par AL. Dans
+DESQview 2.x, presque toutes (sauf AL=17h) sont des alias de AH=DEh avec le même
+AL. Cette famille est donc moins portable que AH=10h et AH=12h. Les valeurs
+DE00h..DE30h souvent décrites dans les références sont des extensions
+DESQview, pas des fonctions IBM TopView à attribuer sans nuance à TopView.
+
+Le cas documenté séparément est :
+
+    AX = 1117h             ASSERTMAP (DESQview 2.20+)
+    BX = 0000h             lire le contexte sans le changer
+       = autre valeur      installer ce contexte
+    retour BX = ancien contexte ; interruptions activées
+
+Le contexte de mappage détermine quelles zones conventionnelles d'un programme
+sont présentes et adressables. Il sert aux pilotes, TSR et programmes partagés.
+La pile utilisée ne doit pas appartenir à une zone susceptible d'être évincée.
+
+Résumé des alias AH=11h observés sous DESQview (AL est le xx de DExxh) : nom du
+programme, mise à jour du menu, mémoire disponible, numéro d'application,
+allocation/libération mémoire, recherche de mailbox, activation d'extensions,
+injection de touches, justification de fenêtre, niveau API, gestion d'erreur,
+contexte de mappage, mémoire commune et état d'une tâche. Pour du code TopView
+strict, ne les employer que si le manuel IBM donne explicitement leur AL et
+leur contrat ; sinon utiliser les services 10xxh et les messages AH=12h.
+
+
+5. INT 15h / AH=12h : messages et objets
+-----------------------------------------
+
+Modèle d'appel
+~~~~~~~~~~~~~~
+
+AH=12h envoie un message à une classe d'objet. BH contient généralement le
+verbe et BL la manière de désigner l'objet. Le sélecteur BL le plus courant est
+00h : le handle DWORD est au sommet de la pile. D'autres valeurs désignent les
+objets par défaut de la tâche : 01h fenêtre, 03h mailbox, 05h clavier, 07h
+OBJECTQ. Les variantes « tâche donnée » reçoivent le handle de cette tâche sur
+la pile.
+
+Les verbes génériques IBM sont :
+
+    BH    Nom       Rôle
+    ----  --------  ------------------------------------------------------
+    00h   HANDLE    obtenir un handle d'objet
+    01h   NEW       créer un objet
+    02h   FREE      détruire/libérer un objet
+    03h   ADDR      obtenir l'expéditeur du dernier message mailbox
+    04h   READ      lire/attendre un enregistrement ou une ligne
+    05h   WRITE     écrire dans un objet
+    08h   SIZEOF    obtenir la capacité de l'objet
+    09h   LEN       obtenir sa longueur occupée
+    0Ah   ADDTO     ajouter/écrire caractères et attributs ; configurer
+    0Bh   SUBFROM   retirer/lire ; écrire seulement des attributs fenêtre
+    0Ch   OPEN      ouvrir/attacher un objet
+    0Dh   CLOSE     fermer/détacher un objet
+    0Eh   ERASE     vider/effacer un objet
+    0Fh   STATUS    lire l'état
+    10h   EOF       lire l'état de fin
+    11h   AT        positionner le curseur/compteur
+    12h   READN     lire N octets
+    13h   REDRAW    redessiner une fenêtre
+    14h   SETESC    installer une routine d'échappement
+
+BH=06h/07h (priorité), 15h/16h (flags) et 80h..96h (récupération d'erreur)
+sont des extensions DESQview, pas des verbes IBM TopView de base.
+
+HANDLE (BH=00h)
+~~~~~~~~~~~~~~~~
+
+BL=00h remplace le DWORD au sommet de pile par le handle correspondant ;
+BL=01h renvoie la fenêtre courante, 03h la mailbox, 05h le clavier et 07h
+l'OBJECTQ. BL=02h/04h/06h prennent le handle d'une tâche et renvoient sa
+mailbox/son clavier/son OBJECTQ.
+
+NEW et FREE (BH=01h, 02h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+NEW crée une classe selon BL : 08h WINDOW, 09h MAILBOX, 0Ah KEYBOARD, 0Bh TIMER
+(compteur 32 bits par pas de 10 ms), 0Fh POINTER, 10h PANEL. Le nouveau handle
+DWORD remplace les paramètres au sommet de pile. La création d'une fenêtre
+requiert huit DWORD : adresse d'entrée, indicateur tâche/fenêtre, taille de pile
+privée, tampon d'entrée, colonnes, lignes, longueur et adresse du titre.
+
+FREE avec BL=00h prend le handle au sommet. Libérer une fenêtre libère aussi son
+clavier et son pointeur ; une fenêtre-tâche entraîne en plus ses mailbox,
+OBJECTQ, panneaux et tâches enfants. FREE de la fenêtre principale tue la tâche
+et ne revient pas.
+
+READ et WRITE (BH=04h, 05h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Pour une fenêtre, READ renvoie l'adresse et le nombre d'octets de la prochaine
+ligne logique et avance le curseur. Pour mailbox, clavier et pointeur, READ
+attend le prochain enregistrement. Pour OBJECTQ, il attend une activité et rend
+le handle de l'objet prêt. Les tampons retournés appartiennent au système et
+peuvent être invalidés par le prochain READ, ERASE, CLOSE ou FREE du même objet.
+
+WRITE écrit une chaîne, un flux de contrôle ou un message. Pour une mailbox, le
+message conserve le handle de la tâche émettrice, récupérable par ADDR. Une
+attente READ/WRITE sur objet est préférable à une boucle de scrutation ; elle
+libère naturellement le CPU.
+
+SIZEOF, LEN, STATUS et EOF (BH=08h,09h,0Fh,10h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SIZEOF donne la capacité, LEN le nombre d'octets ou d'enregistrements présents,
+STATUS les bits propres à la classe et EOF l'état de fin. Leur résultat est en
+général un DWORD sur la pile. L'interprétation précise dépend de la classe :
+fenêtre, clavier, mailbox, timer, pointer ou panel.
+
+OPEN, CLOSE et ERASE (BH=0Ch..0Eh)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+OPEN associe ou active l'objet (par exemple clavier à une fenêtre, panneau à un
+fichier, pointeur à une fenêtre). CLOSE rompt cette association sans détruire
+l'objet. ERASE vide un tampon/mailbox, efface une fenêtre ou réinitialise l'état
+selon la classe. Toujours fermer avant de libérer lorsque le contrat de la
+classe le demande ; FREE ferme automatiquement panel et pointer.
+
+AT, READN, REDRAW et SETESC (BH=11h..14h)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+AT place le curseur logique ou la position dans l'objet. READN lit exactement
+au plus N octets et avance la position. REDRAW force le gestionnaire de fenêtres
+à repeindre la zone. SETESC enregistre l'adresse far appelée lors d'une séquence
+d'échappement d'un flux ; la routine doit suivre strictement la convention de
+pile et de registres du ToolKit.
+
+Sélecteurs spécialisés documentés :
+
+    BX=0300h  DIR       répertoire d'un fichier de panneaux
+    BX=0400h  READ      attendre l'expiration d'un TIMER
+    BX=1100h  SETSCALE  facteur d'échelle du pointeur
+    BX=1200h  GETSCALE  lire ce facteur
+    BX=1300h  SETICON   définir l'icône du pointeur
+
+DIR retourne une adresse et une longueur ; chaque entrée de panneau fait 14
+octets (nom de 8 octets, offset DWORD, longueur WORD). READ d'un timer retourne
+l'heure d'expiration en centièmes de seconde après minuit.
+
+
+6. Exemples MASM/TASM
+---------------------
+
+Détection, coopération et son
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    .model small
+    .stack 256
+    .data
+    TvVersion dw 0
+    .code
+    mov ax, @data
+    mov ds, ax
+
+    xor bx, bx
+    mov ax, 1022h
+    int 15h
+    mov TvVersion, bx
+    or  bx, bx
+    jz  NotUnderTopView
+
+    mov ax, 1019h
+    mov bx, 440                   ; la 440 Hz
+    mov cx, 9                     ; environ 0,49 seconde
+    int 15h
+
+WorkLoop:
+    ; ... une petite unité de travail ...
+    mov ax, 1000h                 ; laisser travailler les autres tâches
+    int 15h
+    jmp WorkLoop
+
+Région critique équilibrée
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    mov ax, 101Bh                 ; BEGINC
+    int 15h
+    ; opération atomique, courte, sans attente utilisateur
+    mov ax, 101Ch                 ; ENDC, même sur le chemin d'erreur
+    int 15h
+
+Tampon virtuel
+~~~~~~~~~~~~~~~
+
+    xor bx, bx                    ; fenêtre par défaut
+    mov ax, 1024h
+    int 15h
+    ; ES:DI=tampon, CX=octets, DL=0 texte/1 graphique
+    cmp dl, 0
+    jne NotText
+    cmp cx, 2
+    jb  NotText
+    mov byte ptr es:[di], 'X'
+    mov byte ptr es:[di+1], 1Eh
+    ; notifier ensuite le système de la région modifiée
+
+Gabarit de message avec handle DWORD sur la pile
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    ; Exemple : demander le handle de la fenêtre courante (HANDLE, BL=01h).
+    ; Réserver un DWORD qui sera remplacé par le résultat.
+    xor ax, ax
+    push ax                       ; mot haut
+    push ax                       ; mot bas, au sommet
+    mov  ax, 1200h                ; AH=12h, BH=00h HANDLE
+    mov  bl, 01h
+    int  15h
+    pop  WindowOff
+    pop  WindowSeg
+
+Le détail exact du nettoyage de pile varie pour les verbes qui consomment ou
+produisent plusieurs DWORD. Écrire un wrapper assembleur par message évite de
+laisser au compilateur Pascal une pile incohérente.
+
+
+7. Exemples Turbo Pascal
+------------------------
+
+L'unité DOS et le type Registers conviennent aux appels sans changement de pile
+ni paramètres DWORD empilés. Les wrappers inline assembleur sont préférables
+pour OSTACK/USTACK et AH=12h.
+
+    program TvDemo;
+    uses Dos;
+
+    function TopViewVersion: Word;
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1022;
+      R.BX := 0;
+      Intr($15, R);
+      TopViewVersion := R.BX;
+    end;
+
+    procedure TvPause;
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1000;
+      Intr($15, R);
+    end;
+
+    procedure TvSound(Frequency, Ticks: Word);
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1019;
+      R.BX := Frequency;
+      R.CX := Ticks;
+      Intr($15, R);
+    end;
+
+    var V: Word;
+    begin
+      V := TopViewVersion;
+      if V = 0 then begin
+        WriteLn('TopView ou compatible absent.');
+        Halt(1)
+      end;
+      WriteLn('Version ', Lo(V), '.', Hi(V));
+      TvSound(440, 9);
+      TvPause
+    end.
+
+Allocation système dans Turbo Pascal
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    function TvGetMem(Bytes: Word): Pointer;
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1001;
+      R.BX := Bytes;
+      Intr($15, R);
+      if (R.ES = 0) and (R.DI = 0) then TvGetMem := nil
+      else TvGetMem := Ptr(R.ES, R.DI)
+    end;
+
+Version complète et sûre de la libération :
+
+    procedure TvPutMem(P: Pointer);
+    var R: Registers;
+    begin
+      if P = nil then Exit;
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1002;
+      R.ES := Seg(P^);
+      R.DI := Ofs(P^);
+      Intr($15, R)
+    end;
+
+Affichage d'un caractère
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+    procedure TvPrintChar(WindowSegment: Word; Ch, Attr: Byte);
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1003;
+      R.BX := (Word(Attr) shl 8) or Ch;
+      R.DX := WindowSegment;
+      Intr($15, R)
+    end;
+
+Région critique avec sortie garantie
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Turbo Pascal classique ne possède pas try/finally. Tous les chemins, y compris
+les erreurs, doivent rejoindre l'appel ENDC :
+
+    procedure AtomicUpdate;
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $101B; Intr($15, R);
+      { aucune attente, aucun Halt, aucun Exit ici }
+      { ... mise à jour courte ... }
+      R.AX := $101C; Intr($15, R)
+    end;
+
+Attention : ne pas encapsuler OSTACK puis USTACK dans deux appels séparés à
+Intr. Le code de la bibliothèque Pascal continue d'utiliser sa propre pile
+entre les deux. Écrire un seul wrapper assembleur qui commute, effectue l'appel
+requis et restaure la pile avant de revenir au Pascal.
+
+
+8. Erreurs fréquentes et compatibilité
+--------------------------------------
+
+  * Confondre INT 50h..57h avec des services : ce sont des IRQ remappées.
+  * Coder 50h en dur : DESQview récent choisit sa plage dynamiquement.
+  * Attendre activement sans PAUSE ou READ d'objet : les autres tâches perdent
+    inutilement du temps CPU.
+  * Employer une adresse near là où ES:DI ou un DWORD far est demandé.
+  * Oublier qu'un handle peut être représenté autrement qu'un pointeur dans les
+    compatibles récents ; utiliser ISOBJ et les messages, pas les offsets
+    internes.
+  * Appeler une fonction TopView arbitraire dans une IRQ ; programmer un second
+    niveau avec SETBIT.
+  * Déséquilibrer BEGINC/ENDC ou OSTACK/USTACK.
+  * Conserver un pointeur rendu par READ après une autre opération sur l'objet.
+  * Supposer que les extensions DESQview AH=DEh sont des fonctions IBM.
+  * Omettre de tester GETVER avant d'exécuter INT 15h/10xxh : un BIOS sans
+    TopView peut interpréter AH=10h autrement ou signaler une fonction inconnue.
+  * Utiliser les fonctions DOS non réentrantes depuis un callback ou une IRQ.
+
+
+9. Sources et pistes de lecture
+-------------------------------
+
+  * IBM TopView Programmer's ToolKit Reference, 1985. Le ToolKit contenait le
+    manuel de référence, une carte de référence, les outils et des exemples de
+    langages de haut niveau.
+  * Ralf Brown's Interrupt List, version 61 (16 juillet 2000), fichiers
+    INTERRUP.C, INTERRUP.N et INTERRUP.O :
+      https://www.cs.cmu.edu/~ralf/files.html
+      https://fd.lod.bz/rbil/interrup/quarterdeck/index.html
+  * Copie textuelle navigable de la RBIL :
+      https://github.com/cirosantilli/ralf-brown-interrupt-list
+  * IBM PC Information Exchange, octobre 1985, article « TopView Programming
+    Conventions » :
+      https://www.bitsavers.org/pdf/ibm/pc/IBM_PC_Information_Exchange/
+             G320-0846-00_198510.pdf
+  * Programmer's Journal, septembre/octobre 1985, revue du TopView Programmer's
+    ToolKit (présentation des classes Keyboard, Mailbox, Object, Panel, Pointer,
+    Timer et Window) :
+      https://ftp.unz.com/PDF/PERIODICAL/ProgrammersJournal-1985sep/40-44/
+
+La RBIL mélange volontairement TopView et ses compatibles (DESQview, TaskView,
+OmniView). Ce document marque les extensions connues, mais un logiciel visant
+IBM TopView strict doit être validé contre le manuel du ToolKit et testé sous la
+version exacte de TopView. Les exemples montrent les conventions essentielles ;
+ils ne remplacent pas les exigences de chaînage, d'acquittement du 8259 et de
+réentrance d'un véritable pilote matériel.
