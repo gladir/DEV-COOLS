@@ -84985,23 +84985,35 @@ End;
 
 { --- Geometrie : positionnee entre EmuPanel et EmuDbg --- }
 
+{ La console est un COMPLEMENT au debogueur (voir retour utilisateur du
+  2026-08-19) : elle ne doit JAMAIS restreindre l interaction avec EmuDbg
+  (clics, menu contextuel), donc son rectangle ne doit JAMAIS chevaucher
+  celui d EmuDbg, meme sur un ecran etroit - contrairement a la premiere
+  version de cette fonction, qui chevauchait deliberement le bord gauche
+  d EmuDbg en repli. Si l espace HORIZONTAL entre le panneau emulateur et
+  EmuDbg est insuffisant, la console se positionne EN DESSOUS des DEUX
+  fenetres plutot que de s intercaler - garantit un non-chevauchement
+  total quelle que soit la taille d ecran. }
 Procedure EmuCmdConsole_ComputeRect(Var NX, NY, NW, NH: Integer);
 Const MIN_CONSOLE_W = 280;
-Var GridRight: Integer;
+Var GridRight, GridBottom, DbgBottom, BelowY: Integer;
 Begin
  GridRight := EmuPanel.PanelX + (EmuPanel.Cols * EmuPanel.CharW);
  NX := GridRight + 4;
  NW := EmuDbg.WinX - NX - 4;
- If NW < MIN_CONSOLE_W Then Begin
-  { Ecran etroit : chevaucher legerement le bord gauche d EmuDbg plutot
-    que de devenir inutilisable - meme esprit que le chevauchement deja
-    tolere entre EmuDbg et EXPLORER_WIDTH sur petit ecran. }
-  NW := MIN_CONSOLE_W;
-  NX := EmuDbg.WinX - NW + 20;
-  If NX < GridRight + 4 Then NX := GridRight + 4;
- End;
  NY := EmuDbg.WinY;
  NH := EmuDbg.WinH;
+ If NW < MIN_CONSOLE_W Then Begin
+  GridBottom := EmuPanel.PanelY + (EmuPanel.Rows * EmuPanel.CharH);
+  DbgBottom := EmuDbg.WinY + EmuDbg.WinH;
+  BelowY := GridBottom;
+  If DbgBottom > BelowY Then BelowY := DbgBottom;
+  NX := 4;
+  NW := GetScreenWidth - EXPLORER_WIDTH - 8;
+  NY := BelowY + 4;
+  NH := GetScreenHeight - STATUSBAR_HEIGHT - NY - 4;
+  If NH < 80 Then NH := 80;
+ End;
 End;
 
 Procedure EmuCmdConsole_TabRect(Var C: TEmuCmdConsole; Idx: Integer;
