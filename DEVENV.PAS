@@ -4831,6 +4831,9 @@ Type
   CPU      : TEmuDbgCPU;         { CPU concerne                     }
   Enabled  : Boolean;            { point actif                      }
   HitCount : LongInt;            { compteur de passages             }
+  HitCountTarget : LongInt;      { 0 = pause a chaque passage ; sinon }
+                                  { pause seulement au Nieme passage   }
+                                  { (voir DEBUG .../BP:SEG:OFS:N)      }
  End;
 
  { Etat global du debogueur emulateur }
@@ -9157,6 +9160,7 @@ Procedure EmuDbg_StepOver; Forward;
 Procedure EmuDbg_StepOut; Forward;
 Procedure EmuDbg_ToggleBPAtPC; Forward;
 Procedure EmuDbg_AddBP(Addr: LongInt; ACPU: TEmuDbgCPU); Forward;
+Function EmuDbg_FindBP(Addr: LongInt; ACPU: TEmuDbgCPU): Integer; Forward;
 Function EmuDbg_IsBreakKey(Var Ev: TEvent): Boolean; Forward;
 Procedure EmuDbg_OnBeforeStep6502; Forward;
 Procedure EmuDbg_OnBeforeStep8086; Forward;
@@ -34328,8 +34332,10 @@ Var
  CurDir, DosExe, ElfExe: String;
  PrgTarget, PrgPath: String;
  ArgFile, ArgSwitch, DbgTarget, DbgPath, ResolveDir: String;
- ArgBP, BPSegStr, BPOfsStr: String;
- BPSeg, BPOfs, BPColonPos, BPErr1, BPErr2: Word;
+ ArgBP, BPSegStr, BPOfsStr, RestBP, BPNStr: String;
+ BPSeg, BPOfs, BPColonPos, BPColonPos2, BPErr1, BPErr2, BPErr3: Word;
+ BPN: LongInt;
+ BPIdx: Integer;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -34389,7 +34395,7 @@ Begin
   ArgFile := TermExtractParam(ParamStr, 1);
   ArgSwitch := TermExtractParam(ParamStr, 2);
   If (UpCaseStr(ArgFile) = '/?') Or (UpCaseStr(ArgSwitch) = '/?') Then Begin
-   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS]');
+   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS[:N]]');
    TermAddLine(TP, '  /GUI          Charge le programme sans le lancer et affiche');
    TermAddLine(TP, '                le Debogueur 8086/6502/6809 (fenetre a droite).');
    TermAddLine(TP, '  /BP:SEG:OFS   Pose un point d''arret machine (hexa) des le');
@@ -34397,11 +34403,16 @@ Begin
    TermAddLine(TP, '                meme pour du code atteint via EXEC (AH=4Bh),');
    TermAddLine(TP, '                donc utile pour retrouver l''appelant d''une');
    TermAddLine(TP, '                routine sans faire defiler le desassemblage.');
-   TermAddLine(TP, '  Exemple : DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:265B');
+   TermAddLine(TP, '  /BP:SEG:OFS:N Meme chose, mais ne pause qu au Nieme passage');
+   TermAddLine(TP, '                (N en decimal) - utile pour une routine partagee');
+   TermAddLine(TP, '                appelee de nombreuses fois avant l occurrence');
+   TermAddLine(TP, '                qui interesse (ex. juste avant un plantage).');
+   TermAddLine(TP, '  Exemples : DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:265B');
+   TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:B6A2:50');
    Exit;
   End;
   If (ArgFile = '') Or (UpCaseStr(ArgSwitch) <> '/GUI') Then
-   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS]')
+   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS[:N]]')
   Else If TP.VirtDrive >= 0 Then
    TermAddLine(TP,
     'DEBUG /GUI n''est pas pris en charge sur un lecteur virtuel.')
@@ -34445,15 +34456,35 @@ Begin
     { manuellement le desassemblage jusqu a une adresse arbitraire. }
     ArgBP := TermExtractParam(ParamStr, 3);
     If (Length(ArgBP) > 4) And (UpCaseStr(Copy(ArgBP, 1, 4)) = '/BP:') Then Begin
-     BPColonPos := Pos(':', Copy(ArgBP, 5, Length(ArgBP) - 4));
+     RestBP := Copy(ArgBP, 5, Length(ArgBP) - 4);
+     BPColonPos := Pos(':', RestBP);
      If BPColonPos > 0 Then Begin
-      BPSegStr := Copy(ArgBP, 5, BPColonPos - 1);
-      BPOfsStr := Copy(ArgBP, 5 + BPColonPos, Length(ArgBP) - 4 - BPColonPos);
+      BPSegStr := Copy(RestBP, 1, BPColonPos - 1);
+      RestBP := Copy(RestBP, BPColonPos + 1, Length(RestBP) - BPColonPos);
+      { RestBP est maintenant OFS seul, ou OFS:N (Nieme passage recherche -   }
+      { voir EmuDbg_CheckBPHit/HitCountTarget, evite de s arreter a un        }
+      { appel normal d une routine partagee avant l occurrence recherchee). }
+      BPColonPos2 := Pos(':', RestBP);
+      If BPColonPos2 > 0 Then Begin
+       BPOfsStr := Copy(RestBP, 1, BPColonPos2 - 1);
+       BPNStr := Copy(RestBP, BPColonPos2 + 1, Length(RestBP) - BPColonPos2);
+      End Else Begin
+       BPOfsStr := RestBP;
+       BPNStr := '';
+      End;
       Val('$' + BPSegStr, BPSeg, BPErr1);
       Val('$' + BPOfsStr, BPOfs, BPErr2);
-      If (BPErr1 = 0) And (BPErr2 = 0) Then Begin
+      BPN := 0; BPErr3 := 0;
+      If BPNStr <> '' Then Val(BPNStr, BPN, BPErr3);
+      If (BPErr1 = 0) And (BPErr2 = 0) And (BPErr3 = 0) Then Begin
        EmuDbg_AddBP((LongInt(BPSeg) Shl 4) + BPOfs, EDC_8086);
-       TermAddLine(TP, 'Point d''arret pose : ' + BPSegStr + ':' + BPOfsStr);
+       If BPN > 0 Then Begin
+        BPIdx := EmuDbg_FindBP((LongInt(BPSeg) Shl 4) + BPOfs, EDC_8086);
+        If BPIdx >= 0 Then EmuDbg.BPs[BPIdx].HitCountTarget := BPN;
+        TermAddLine(TP, 'Point d''arret pose : ' + BPSegStr + ':' + BPOfsStr +
+         ' (au passage numero ' + IntToStr(BPN) + ')');
+       End Else
+        TermAddLine(TP, 'Point d''arret pose : ' + BPSegStr + ':' + BPOfsStr);
       End Else
        TermAddLine(TP, 'Adresse /BP invalide : ' + ArgBP);
      End;
@@ -73250,6 +73281,7 @@ Begin NesActive := False;
  EmuWatchPhysLo := 0;
  EmuWatchPhysHi := 0;
  EmuWatchHits := 0;
+ OptionsDlg.Data.DosLogDiag := True;
  EmuDiv0Caught := False;
  EmuFpuLogged := 0;
  EmuFpuTrap := False;
@@ -83203,7 +83235,29 @@ Begin
  EmuDbg.BPs[EmuDbg.BPCount].CPU := ACPU;
  EmuDbg.BPs[EmuDbg.BPCount].Enabled := True;
  EmuDbg.BPs[EmuDbg.BPCount].HitCount := 0;
+ EmuDbg.BPs[EmuDbg.BPCount].HitCountTarget := 0;
  Inc(EmuDbg.BPCount);
+End;
+
+{ --- Tester si un point d arret machine doit REELEMENT declencher une   }
+{ pause maintenant, en tenant compte de HitCountTarget (voir DEBUG       }
+{ .../BP:SEG:OFS:N) - incremente HitCount a CHAQUE passage sur l adresse }
+{ (utile pour observer combien de fois une routine partagee est appelee }
+{ avant l occurrence recherchee), mais ne renvoie True qu au bon moment :}
+{ immediatement si HitCountTarget=0 (comportement classique, pause a    }
+{ chaque passage), sinon seulement quand HitCount atteint HitCountTarget.}
+Function EmuDbg_CheckBPHit(Addr: LongInt; ACPU: TEmuDbgCPU): Boolean;
+Var
+ Idx: Integer;
+Begin
+ EmuDbg_CheckBPHit := False;
+ Idx := EmuDbg_FindBP(Addr, ACPU);
+ If (Idx < 0) Or (Not EmuDbg.BPs[Idx].Enabled) Then Exit;
+ Inc(EmuDbg.BPs[Idx].HitCount);
+ If EmuDbg.BPs[Idx].HitCountTarget <= 0 Then
+  EmuDbg_CheckBPHit := True
+ Else
+  EmuDbg_CheckBPHit := (EmuDbg.BPs[Idx].HitCount = EmuDbg.BPs[Idx].HitCountTarget);
 End;
 
 { --- Supprimer un point d arret machine --- }
@@ -84037,7 +84091,7 @@ Begin
   EmuDbg_ShouldBreak := True;
   Exit;
  End;
- If EmuDbg_HasBP(Addr, ACPU) Then Begin
+ If EmuDbg_CheckBPHit(Addr, ACPU) Then Begin
   EmuDbg_ShouldBreak := True;
   Exit;
  End;
