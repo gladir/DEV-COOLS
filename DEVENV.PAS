@@ -85065,7 +85065,14 @@ Begin
   End;
   { Souris dans la fenetre debug : absorber }
   If EmuDbg_HandleMouse(Ev) Then Begin
-   EmuDbg_DrawWindow;
+   { BOGUE REEL (2026-08-18) : si ce clic vient d ouvrir le menu contextuel  }
+   { (EmuDbg_ShowContextMenu, voir EmuDbg_HandleMouse), NE PAS redessiner    }
+   { EmuDbg_DrawWindow ici - il repeindrait PAR-DESSUS le menu tout juste    }
+   { affiche (le menu est positionne DANS/pres du rectangle de la fenetre   }
+   { Debogueur), l effacant instantanement ("flash puis rien" signale par   }
+   { l utilisateur). Meme raisonnement deja documente plus bas pour         }
+   { MenuActive - manquait ici pour CtxMenu. }
+   If Not CtxMenu.Visible Then EmuDbg_DrawWindow;
    Continue;
   End;
   { Sinon laisser le dispatcher normal traiter l evenement (menus,
@@ -85073,6 +85080,15 @@ Begin
   DispatchEvent(Ev);
   If FullRepaintNeeded Then Begin
    DrawAllWidgets;
+   { BOGUE REEL (2026-08-18, signale par l utilisateur : "flash puis rien"    }
+   { en cliquant sur le menu contextuel du Debogueur) : DrawAllWidgets        }
+   { efface le menu contextuel (DrawToolBar/DrawWindowTabs le recouvrent),    }
+   { EXACTEMENT le meme bogue deja corrige dans la boucle PRINCIPALE (voir    }
+   { plus bas dans ce fichier, "DrawAllWidgets appelle DrawToolBar qui         }
+   { ecrase le menu deroulant") - manquait ici, dans la boucle DEDIEE de      }
+   { EmuDbg_PumpPause, ou s ouvre desormais aussi EmuDbg_ShowContextMenu.     }
+   { Meme correctif : redessiner le menu contextuel PAR-DESSUS juste apres. }
+   If CtxMenu.Visible Then DrawContextMenu(CtxMenu);
    FullRepaintNeeded := False;
   End Else If Not MenuActive Then Begin
    { Ne pas redessiner la fenetre debug si un menu deroulant est ouvert :
