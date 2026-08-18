@@ -3355,9 +3355,31 @@ Type
  { repetes sur 64h-6Fh sur le materiel PC/XT d origine (decodage incomplet  }
  { 2 bits d adresse, voir Emu_IsATClassHw) ; le port A (60h, scancode       }
  { clavier) reste servi par P.CPU.NextRawKey deja existant, pas stocke ici. }
+ { Port A (60h) n a pas de stockage : lecture directe soit du scancode      }
+ { clavier (P.CPU.NextRawKey), soit des commutateurs SW1 (Emu_PPI_SW1),      }
+ { selon PortB bit7 - voir Emu_PPI_ReadA. Port C (62h) est de meme calcule  }
+ { a la volee (Emu_PPI_ReadC), pas stocke : ce sont des ports d ENTREE pure  }
+ { sur le vrai 8255A (ecriture ignoree), rien a memoriser. }
  TEmuPPI = Record
-  PortB   : Byte; { 61h : reel (gate/donnees haut-parleur, horloge clavier) }
+  PortB   : Byte; { 61h : reel (gate/donnees haut-parleur, mux SW1/clavier) }
   CtrlReg : Byte; { 63h : registre de mode, ecriture seule sur le vrai chip, relu tel quel ici }
+ End;
+
+ { --- Controleur clavier 8042 (materiel classe AT+, voir Emu_IsATClassHw) - }
+ { PROTOCOLE DIFFERENT du 8255A ci-dessus : 60h=tampon sortie/entree,        }
+ { 64h=registre etat (lecture)/commande (ecriture). Le port de sortie       }
+ { (commande D0h/D1h) porte le bit reel de gate A20 (bit1) - lu/ecrit        }
+ { fidelement, mais SANS effet sur l adressage memoire emule (aucun          }
+ { consommateur de ce drapeau ailleurs dans le fichier actuellement ; hors   }
+ { perimetre demande, voir le commentaire d Emu_8042_WriteCmd). }
+ TEmu8042 = Record
+  OutBuf     : Byte;    { tampon de sortie (60h en lecture) }
+  OutBufFull : Boolean;
+  CmdByte    : Byte;    { octet de commande interne (mode) }
+  OutputPort : Byte;    { registre "port de sortie" (bit1 = gate A20) }
+  A20Enabled : Boolean;
+  PendingCmd : Byte;    { commande 64h en attente d un octet de donnees sur 60h ; 0 = aucune }
+  KbdEnabled : Boolean;
  End;
 
  { --- UART 8250/16450 generique (COM2 02F8h-02FFh, COM4 02E8h-02EFh). Rien }
@@ -4256,6 +4278,7 @@ Type
   LPT1, LPT2     : TEmuLPT;
   COM2, COM4     : TEmuUART;
   NE2000         : TEmuNE2000;
+  Kbd8042        : TEmu8042;
   { --- CMOS --- }
   CMOSIndex      : Byte;
   CMOSReg        : Array[0..63] Of Byte;
@@ -5515,7 +5538,8 @@ Var
  { --- 8259A/8255A/UART/LPT/NE2000 : voir Emu_PortRead/Emu_PortWrite. --- }
  EmuPICMaster   : TEmuPICChip;   { 20h/21h, tout materiel }
  EmuPICSlave    : TEmuPICChip;   { A0h/A1h, materiel classe AT+ seulement }
- EmuPPI         : TEmuPPI;       { 60h-63h (+ miroir 64h-6Fh hors AT) }
+ EmuPPI         : TEmuPPI;       { 60h-63h (+ miroir 64h-6Fh), materiel PC/XT }
+ Emu8042        : TEmu8042;      { 60h/64h, materiel classe AT+ }
  EmuLPT1        : TEmuLPT;       { 03BCh-03BFh }
  EmuLPT2        : TEmuLPT;       { 0278h-027Fh }
  EmuCOM2        : TEmuUART;      { 02F8h-02FFh }
@@ -50418,59 +50442,168 @@ Begin
 End;
 
 { ============================================================
-  8255A PPI (60h-63h, miroir 64h-6Fh hors materiel AT+).
+  8255A PPI (60h-63h, miroir 64h-6Fh) - materiel PC/PC-XT/clones (voir
+  Emu_IsATClassHw). Sur materiel classe AT+, 60h/64h suivent un protocole
+  DIFFERENT (controleur clavier 8042 reel, voir plus bas) ; 62h/63h et le
+  miroir 65h-6Fh n existent pas du tout sur un vrai AT (pas de PPI), d ou
+  les gardes "Not Emu_IsATClassHw" separees plutot qu un simple partage
+  de code entre les deux familles de materiel.
   ============================================================ }
+
+{ Commutateurs de configuration SW1 (nb lecteurs disquette, mode video,
+  presence coprocesseur) - source unique partagee par la lecture directe
+  Port A (mux PortB bit7, voir Emu_PPI_ReadA) ET la lecture demi-octet
+  Port C (mux PortB bit3, voir Emu_PPI_ReadC) : simplification assumee
+  (un vrai 5150 distingue SW1 d un second banc SW2 pour la RAM systeme,
+  non modelise ici faute de consommateur reel dans cet emulateur), mais
+  la valeur elle-meme est deja verifiee fonctionnelle (GSDEMO1.COM). }
+Function Emu_PPI_SW1: Byte;
+Begin
+ Case Emu_FloppyCount Of
+  0: Emu_PPI_SW1 := $20;
+  2: Emu_PPI_SW1 := $61;
+ Else
+  Emu_PPI_SW1 := $21;
+ End;
+End;
+
+{ Lecture 60h (Port A) sur materiel PC/XT reel : mux materiel reel par
+  PortB bit7 - 0 = scancode clavier courant (comportement historique de
+  cet emulateur), 1 = commutateurs SW1 complets. Jamais implante avant
+  cette revision (le mux etait ignore, toujours le scancode). }
+Function Emu_PPI_ReadA(Var P: TEmulatorPanel): Byte;
+Begin
+ If (EmuPPI.PortB And $80) <> 0 Then
+  Emu_PPI_ReadA := Emu_PPI_SW1
+ Else
+  Emu_PPI_ReadA := P.CPU.NextRawKey;
+End;
 
 { Lecture 61h : bits 3-5 = ancien mecanisme de bascule d actualisation
   (StatusRetrace Xor $30, deja verifie fonctionnel pour la detection de
   frequence moniteur par GSDEMO1.COM - NE PAS modifier) ; bits 0-1
-  (haut-parleur : gate timer2 + donnees) et bits 6-7 (horloge/latch
-  clavier) refletent maintenant reellement la derniere ecriture OUT 61h,
-  necessaire pour les sequences lecture-modification-ecriture
-  (IN AL,61h / OR AL,3 / OUT 61h,AL) qui n avaient auparavant aucun effet
-  (OUT 61h n etait pas gere du tout par Emu_PortWrite). }
+  (haut-parleur : gate timer2 + donnees) et bits 6-7 (mux SW1/clavier +
+  horloge clavier) refletent la derniere ecriture OUT 61h. Registre
+  IDENTIQUE sur PC/XT et AT+ (les cartes meres AT le conservent tel quel
+  pour la compatibilite logicielle, meme si le clavier lui-meme passe par
+  un 8042 des 60h/64h - voir plus bas). }
 Function Emu_PPI_ReadB: Byte;
 Begin
  Emu_PPI_ReadB := ((EmuVideo.StatusRetrace Xor $30) And $38) Or (EmuPPI.PortB And $C3);
 End;
 
 { Lecture 62h (Port C) : bascule reelle SW1 haut/bas selon PortB bit3
-  (mux materiel reel), synthetise depuis le nombre de lecteurs disquette
-  deja connu de l emulateur plutot qu une valeur figee. }
+  (mux materiel reel). N existe que sur PC/XT (voir Emu_IsATClassHw). }
 Function Emu_PPI_ReadC: Byte;
-Var Sw: Byte;
 Begin
- Case Emu_FloppyCount Of
-  0: Sw := $20;
-  2: Sw := $61;
- Else
-  Sw := $21;
- End;
  If (EmuPPI.PortB And $08) <> 0 Then
-  Emu_PPI_ReadC := Sw And $0F
+  Emu_PPI_ReadC := Emu_PPI_SW1 And $0F
  Else
-  Emu_PPI_ReadC := (Sw Shr 4) And $0F;
+  Emu_PPI_ReadC := (Emu_PPI_SW1 Shr 4) And $0F;
 End;
 
-{ Dispatche un port PPI deja normalise (60h/61h/62h/63h) - reutilise tel     }
-{ quel pour le miroir 64h-6Fh (decodage materiel incomplet, PC/XT d origine,}
-{ voir Emu_IsATClassHw) afin de ne pas dupliquer la logique par registre. }
-Function Emu_PPI_Read(Var P: TEmulatorPanel; RegPort: Word): Byte;
+{ Miroir 64h-6Fh (decodage materiel incomplet, PC/XT uniquement) : Port
+  normalise vers 60h/61h/62h/63h par ses 2 bits de poids faible. }
+Function Emu_PPI_MirrorRead(Var P: TEmulatorPanel; Port: Word): Byte;
 Begin
- Emu_PPI_Read := 0;
- Case RegPort Of
-  $60: Emu_PPI_Read := P.CPU.NextRawKey;
-  $61: Emu_PPI_Read := Emu_PPI_ReadB;
-  $62: Emu_PPI_Read := Emu_PPI_ReadC;
-  $63: Emu_PPI_Read := EmuPPI.CtrlReg;
+ Case Port And 3 Of
+  0: Emu_PPI_MirrorRead := Emu_PPI_ReadA(P);
+  1: Emu_PPI_MirrorRead := Emu_PPI_ReadB;
+  2: Emu_PPI_MirrorRead := Emu_PPI_ReadC;
+ Else
+  Emu_PPI_MirrorRead := EmuPPI.CtrlReg;
  End;
 End;
 
-Procedure Emu_PPI_Write(RegPort: Word; Value: Byte);
+Procedure Emu_PPI_MirrorWrite(Port: Word; Value: Byte);
 Begin
- Case RegPort Of
-  $61: EmuPPI.PortB := Value;
-  $63: EmuPPI.CtrlReg := Value;
+ Case Port And 3 Of
+  1: EmuPPI.PortB := Value;
+  3: EmuPPI.CtrlReg := Value;
+ Else
+  ; { Port A (scancode) et Port C (commutateurs) : entrees pures sur le  }
+    { vrai 8255A programme en mode 0, ecriture sans effet. }
+ End;
+End;
+
+{ ============================================================
+  Controleur clavier 8042 (60h/64h, materiel classe AT+ uniquement - voir
+  Emu_IsATClassHw). Protocole reel : 60h = tampon de sortie (lecture,
+  scancode/reponse de commande) et tampon d entree (ecriture, donnee pour
+  une commande 64h en attente ou commande directe au clavier) ; 64h =
+  registre d etat (lecture) et registre de commande (ecriture). Le
+  registre "port de sortie" (commandes D0h/D1h) porte le VRAI bit de gate
+  A20 (bit1), fidelement lu/ecrit - mais SANS effet sur l adressage
+  memoire emule : aucun code de ce fichier ne consulte EmuA20 pour
+  determiner un adressage au-dela de 1 Mo, ce qui depasserait largement
+  le "rendre les ports 60h-63h fideles au materiel" demande ici. Un
+  logiciel qui active puis relit la gate A20 verra donc un comportement
+  materiel correct (bit qui "tient"), meme si aucun repli sur 1 Mo n est
+  simule cote memoire.
+  ============================================================ }
+
+Procedure Emu_8042_Init;
+Begin
+ FillChar(Emu8042, SizeOf(Emu8042), 0);
+ Emu8042.CmdByte := $45;    { IRQ1 active, indicateur systeme, translation activee }
+ Emu8042.OutputPort := $02; { gate A20 active par defaut, comme un vrai AT apres POST }
+ Emu8042.A20Enabled := True;
+ Emu8042.KbdEnabled := True;
+End;
+
+Function Emu_8042_ReadData(Var P: TEmulatorPanel): Byte;
+Begin
+ If Emu8042.OutBufFull Then Begin
+  Emu_8042_ReadData := Emu8042.OutBuf;
+  Emu8042.OutBufFull := False;
+ End Else
+  Emu_8042_ReadData := P.CPU.NextRawKey; { pas de reponse en attente : scancode direct }
+End;
+
+Procedure Emu_8042_WriteData(Value: Byte);
+Begin
+ If Emu8042.PendingCmd <> 0 Then Begin
+  Case Emu8042.PendingCmd Of
+   $60: Emu8042.CmdByte := Value;
+   $D1: Begin
+         Emu8042.OutputPort := Value;
+         Emu8042.A20Enabled := (Value And $02) <> 0;
+        End;
+  End;
+  Emu8042.PendingCmd := 0;
+  Exit;
+ End;
+ { Commande directe au clavier : aucun peripherique reel simule, mais les }
+ { reponses ACK/autotest les plus courantes sont plausibles - suffisant   }
+ { pour la detection/reinitialisation logicielle standard. }
+ Case Value Of
+  $FF: Begin Emu8042.OutBuf := $AA; Emu8042.OutBufFull := True; End; { reset -> BAT OK }
+  $F4, $F5, $F6: Begin Emu8042.OutBuf := $FA; Emu8042.OutBufFull := True; End; { ACK }
+ Else
+  ;
+ End;
+End;
+
+Function Emu_8042_ReadStatus: Byte;
+Var S: Byte;
+Begin
+ S := $14; { bit4=clavier deverrouille, bit2=indicateur systeme (POST reussi) }
+ If Emu8042.OutBufFull Then S := S Or $01;
+ Emu_8042_ReadStatus := S;
+End;
+
+Procedure Emu_8042_WriteCmd(Value: Byte);
+Begin
+ Case Value Of
+  $20: Begin Emu8042.OutBuf := Emu8042.CmdByte; Emu8042.OutBufFull := True; End;
+  $60: Emu8042.PendingCmd := $60;
+  $AD: Emu8042.KbdEnabled := False;
+  $AE: Emu8042.KbdEnabled := True;
+  $D0: Begin Emu8042.OutBuf := Emu8042.OutputPort; Emu8042.OutBufFull := True; End;
+  $D1: Emu8042.PendingCmd := $D1;
+ Else
+  ; { autotest 0AAh, lecture/ecriture RAM interne 20h-3Fh/60h-7Fh, reset  }
+    { systeme FEh, etc. : acceptees sans effet, hors perimetre demande.  }
  End;
 End;
 
@@ -50652,12 +50785,20 @@ Begin
    Emu_PortRead := Byte(EmuTickCounter);
   End;
   $43: Emu_PortRead := 0;
-  $60..$63: Emu_PortRead := Emu_PPI_Read(P, Port);
-  { 8255A : decodage materiel incomplet (2 bits d adresse) sur PC/XT       }
-  { d origine uniquement - un vrai 8042 (materiel AT+) repond differemment}
-  { et n est PAS emule ici (hors perimetre demande). }
-  $64..$6F: If Not Emu_IsATClassHw Then
-             Emu_PortRead := Emu_PPI_Read(P, $60 + (Port And 3));
+  { 60h/64h : 8255A PPI (PC/XT/clones) ou 8042 (AT/PS2/Compaq Deskpro 386,  }
+  { voir Emu_IsATClassHw) - PROTOCOLE REELLEMENT DIFFERENT selon le        }
+  { materiel choisi (Options > Emulateur > DOS: Materiel), pas juste un    }
+  { alias. 61h identique sur les deux familles (voir Emu_PPI_ReadB). 62h/  }
+  { 63h et le miroir 65h-6Fh n existent que sur PC/XT (un vrai AT n a pas  }
+  { de PPI du tout a ces adresses). }
+  $60: If Emu_IsATClassHw Then Emu_PortRead := Emu_8042_ReadData(P)
+       Else Emu_PortRead := Emu_PPI_ReadA(P);
+  $61: Emu_PortRead := Emu_PPI_ReadB;
+  $62: If Not Emu_IsATClassHw Then Emu_PortRead := Emu_PPI_ReadC;
+  $63: If Not Emu_IsATClassHw Then Emu_PortRead := EmuPPI.CtrlReg;
+  $64: If Emu_IsATClassHw Then Emu_PortRead := Emu_8042_ReadStatus
+       Else Emu_PortRead := Emu_PPI_MirrorRead(P, Port);
+  $65..$6F: If Not Emu_IsATClassHw Then Emu_PortRead := Emu_PPI_MirrorRead(P, Port);
   { Unite d extension 5161 (PC/XT uniquement) : aucune unite reelle       }
   { emulee, mais repond 0 au lieu de rester totalement muette, pour       }
   { les rares utilitaires de diagnostic d epoque qui la sondent. }
@@ -50704,8 +50845,12 @@ Begin
  Case Port Of
   $20, $21: Emu_PIC_Out(EmuPICMaster, Port = $20, Value);
   $A0, $A1: If Emu_IsATClassHw Then Emu_PIC_Out(EmuPICSlave, Port = $A0, Value);
-  $60..$63: Emu_PPI_Write(Port, Value);
-  $64..$6F: If Not Emu_IsATClassHw Then Emu_PPI_Write($60 + (Port And 3), Value);
+  $60: If Emu_IsATClassHw Then Emu_8042_WriteData(Value); { XT : Port A entree pure }
+  $61: EmuPPI.PortB := Value;
+  $63: If Not Emu_IsATClassHw Then EmuPPI.CtrlReg := Value;
+  $64: If Emu_IsATClassHw Then Emu_8042_WriteCmd(Value)
+       Else Emu_PPI_MirrorWrite(Port, Value);
+  $65..$6F: If Not Emu_IsATClassHw Then Emu_PPI_MirrorWrite(Port, Value);
   $260..$277, $27B..$27F:
    If OptionsDlg.Data.DosLAN And (OptionsDlg.Data.DosLANVendor = 0) Then
     Emu_NE2000_Write(EmuNE2000, Byte(Port - $260), Value);
@@ -59761,6 +59906,7 @@ Begin
  Emu_UART_Init(EmuCOM2);
  Emu_UART_Init(EmuCOM4);
  Emu_NE2000_Init(EmuNE2000);
+ Emu_8042_Init;
  { DOS demarre l application avec IF=1 (interruptions activees). }
  Include(P.CPU.Flags.s, EFG_IF);
 End;
@@ -72668,6 +72814,7 @@ Begin
  Snap.PICMaster := EmuPICMaster; Snap.PICSlave := EmuPICSlave;
  Snap.PPI := EmuPPI; Snap.LPT1 := EmuLPT1; Snap.LPT2 := EmuLPT2;
  Snap.COM2 := EmuCOM2; Snap.COM4 := EmuCOM4; Snap.NE2000 := EmuNE2000;
+ Snap.Kbd8042 := Emu8042;
  Snap.CMOSIndex := EmuCMOS_Index;
  Move(EmuCMOS_Reg, Snap.CMOSReg, SizeOf(Snap.CMOSReg));
  Move(EmuTraceBuf, Snap.TraceBuf, SizeOf(Snap.TraceBuf));
@@ -72775,6 +72922,7 @@ Begin
  EmuPICMaster := Snap.PICMaster; EmuPICSlave := Snap.PICSlave;
  EmuPPI := Snap.PPI; EmuLPT1 := Snap.LPT1; EmuLPT2 := Snap.LPT2;
  EmuCOM2 := Snap.COM2; EmuCOM4 := Snap.COM4; EmuNE2000 := Snap.NE2000;
+ Emu8042 := Snap.Kbd8042;
  EmuCMOS_Index := Snap.CMOSIndex;
  Move(Snap.CMOSReg, EmuCMOS_Reg, SizeOf(EmuCMOS_Reg));
  Move(Snap.TraceBuf, EmuTraceBuf, SizeOf(EmuTraceBuf));
