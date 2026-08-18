@@ -73968,7 +73968,20 @@ Begin
   { pompage (EmuHasFocus le verifie lui-meme), pas a sauter la trame        }
   { entiere, pour ne jamais desynchroniser les minuteries/IRQ du 8086       }
   { emule pendant que l onglet est visible mais pas focus. }
-  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  { BOGUE REEL (2026-08-19, enquete NC3 via la console) : cliquer DANS la  }
+  { Console de commandes du debogueur (necessaire pour lui donner le       }
+  { focus clavier) est un clic HORS du panneau emulateur, ce qui remet     }
+  { EmuHasFocus a False (voir DispatchEvent, "clic hors du panneau") -     }
+  { G/T/P tapes dans la console semblaient alors ne RIEN faire (le         }
+  { programme ne recevait plus jamais un seul pas). La console EXISTE     }
+  { justement pour piloter l emulateur SANS avoir a cliquer dessus entre   }
+  { chaque commande (usage SoftICE/GDB normal) - la considerer comme une   }
+  { justification ALTERNATIVE a EmuHasFocus (et non modifier EmuHasFocus   }
+  { lui-meme depuis la console, ce qui perturberait plutot le routage      }
+  { clavier ailleurs dans DispatchEvent - premiere tentative essayee et    }
+  { rejetee, voir EmuCmdConsole_CmdG). }
+  Active := (EmuHasFocus Or EmuCmdConsole.Base.Visible) And
+   Not MenuActive And Not CtxMenu.Visible;
   If Not Active Then Begin
    If EmuLastActiveState Then Begin
     P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
@@ -85386,6 +85399,38 @@ Begin
  End;
 End;
 
+{ BOGUE REEL trouve en reprenant l enquete NC3 avec la console (2026-08-19) :
+  cliquer DANS la console (necessaire pour lui donner le focus clavier) est
+  un clic HORS du rectangle du panneau emulateur, ce qui declenche le code
+  EXISTANT de DispatchEvent "clic hors du panneau -> EmuHasFocus := False"
+  (~ligne 86982) - or StepEmulator (DOS_RunOneChunk) EXIGE EmuHasFocus=True
+  pour avancer ne serait-ce que d une instruction (piege deja documente
+  pour le clavier/souris, jamais applique a la console puisqu elle n
+  existait pas encore). PREMIERE tentative de correctif (mettre
+  EmuHasFocus:=True depuis la console avant G/T/P) etait INCOMPLETE : ce
+  drapeau sert AUSSI a router le clavier dans DispatchEvent, donc le
+  forcer a True depuis la console lui faisait perdre le focus clavier des
+  la commande suivante (le clic sur l ecran emulateur devenait
+  prioritaire). Corrige a la RACINE a la place, directement dans
+  StepEmulator (voir plus bas, branche '-CD'/'-CP') : la console visible
+  est desormais une justification ALTERNATIVE a EmuHasFocus, sans jamais
+  toucher ce drapeau depuis ici - le clavier reste donc correctement
+  route vers la console entre deux commandes.
+  DEUXIEME bogue trouve en poursuivant la MEME enquete : meme apres ce
+  premier correctif, G/T/P depuis la console ne faisaient toujours RIEN
+  avancer - `StepEmulator` sortait avant meme d atteindre le test
+  EmuHasFocus/console via son tout premier `If Not P.Running Then Exit;`.
+  `EmuPanel.Running` (alias `P.Running` ici) n est JAMAIS mis a True par
+  `EmuDbg_Continue`/`StepInto`/`StepOver`/`StepOut` (qui ne touchent que
+  les champs `EmuDbg.*`, un record DIFFERENT) - il n est mis a True QUE
+  par `EmuPanel_TryResume` (~ligne 9723), elle-meme appelee UNIQUEMENT par
+  le tout premier F5 clavier alors qu on n est PAS encore dans une pause
+  du debogueur (raccourci global de DispatchEvent, PAS EmuDbg_HandleKey -
+  cette branche est court-circuitee des le 2e F5, une fois a l interieur
+  de la pause). Toute commande console qui reprend/avance l execution doit
+  donc appeler `EmuPanel_TryResume;` (resultat ignore) AVANT le primitif
+  EmuDbg_* correspondant, pour reproduire fidelement ce que fait F5 la
+  toute premiere fois - sinon P.Running reste bloque a False pour de bon. }
 Procedure EmuCmdConsole_CmdG(Var C: TEmuCmdConsole; Const Args: String);
 Var Seg, Ofs: Word; A: String;
 Begin
@@ -85400,6 +85445,7 @@ Begin
    HexWord(Ofs) + ', execution en cours (G)... (BC pour le retirer)');
  End Else
   EmuCmdConsole_AddLine(C, 'Execution (G)...');
+ EmuPanel_TryResume;
  EmuDbg_Continue;
 End;
 
@@ -85445,6 +85491,104 @@ Begin
   EmuCmdConsole_AddLine(C, 'Expression non reconnue : ' + Tok);
 End;
 
+{ --- WATCH : arme/desarme le watchpoint memoire existant (EmuWatchEnabled/
+  PhysLo/PhysHi/Hits, deja utilise ponctuellement par edition manuelle du
+  code + recompilation lors de l enquete NC3 - expose ici de facon
+  PERMANENTE via la console pour eviter cet aller-retour a chaque fois). }
+Procedure EmuCmdConsole_CmdWatch(Var C: TEmuCmdConsole; Const Args: String);
+Var A, LenStr: String; Seg, Ofs: Word; Len: LongInt; ErrPos: Word; V: LongInt;
+Begin
+ A := TermExtractParam(Args, 1);
+ If UpCaseStr(A) = 'OFF' Then Begin
+  EmuWatchEnabled := False;
+  EmuCmdConsole_AddLine(C, 'Watch desactive (' + IntToStr(EmuWatchHits) + ' evenement(s) journalise(s)).');
+  Exit;
+ End;
+ If A = '' Then Begin
+  If EmuWatchEnabled Then
+   EmuCmdConsole_AddLine(C, 'Watch actif : ' + HexLong(EmuWatchPhysLo) + '-' +
+    HexLong(EmuWatchPhysHi) + '  hits=' + IntToStr(EmuWatchHits) +
+    '  (EMUWATCH.LOG, plafond 200)')
+  Else
+   EmuCmdConsole_AddLine(C, 'Watch inactif. Syntaxe : WATCH seg:ofs [longueur] | WATCH OFF');
+  Exit;
+ End;
+ If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
+  EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
+  Exit;
+ End;
+ LenStr := TermExtractParam(Args, 2);
+ If LenStr = '' Then Len := 1
+ Else Begin
+  Val(LenStr, V, ErrPos);
+  If ErrPos <> 0 Then Val('$' + LenStr, V, ErrPos);
+  If ErrPos <> 0 Then Len := 1 Else Len := V;
+ End;
+ If Len < 1 Then Len := 1;
+ EmuWatchPhysLo := (LongInt(Seg) Shl 4) + Ofs;
+ EmuWatchPhysHi := EmuWatchPhysLo + Len - 1;
+ EmuWatchHits := 0;
+ EmuWatchEnabled := True;
+ EmuCmdConsole_AddLine(C, 'Watch arme sur ' + HexLong(EmuWatchPhysLo) + '-' +
+  HexLong(EmuWatchPhysHi) + ' (' + HexWord(Seg) + ':' + HexWord(Ofs) +
+  ', ' + IntToStr(Len) + ' octet(s)) -> EMUWATCH.LOG, plafond 200 evenements.');
+End;
+
+{ --- TRACELOG : vide sur demande le tampon circulaire des 8192 dernieres
+  instructions executees (Emu_DumpTrace, deja existant, normalement
+  reserve a la fin de session/entree en pause sous Options DOS:Debug) vers
+  EMUTRACE.LOG - complement a T/P/G qui n a PAS d equivalent direct dans
+  la table SoftICE originale, ajoute explicitement pour cette console. }
+Procedure EmuCmdConsole_CmdTraceLog(Var C: TEmuCmdConsole);
+Begin
+ Emu_DumpTrace;
+ EmuCmdConsole_AddLine(C, 'Historique des dernieres instructions -> EMUTRACE.LOG');
+End;
+
+{ --- ENTROPY seg:ofs [longueur] : meme calcul que EmuDbg_CtxEntropy (menu
+  contextuel du Debogueur) mais sur une adresse ARBITRAIRE (pas seulement
+  CS:IP) et affiche directement dans la console - complement sans
+  equivalent SoftICE natif, ajoute explicitement pour cette console
+  (technique deja centrale a l enquete NC3 : ~5.5-6.5 bits/octet = code
+  x86 authentique, ~8.0 = donnees compressees/chiffrees). }
+Procedure EmuCmdConsole_CmdEntropy(Var C: TEmuCmdConsole; Const Args: String);
+Const MAX_SZ = 4096;
+Var
+ A, LenStr: String; Seg, Ofs: Word; Sz: LongInt; ErrPos: Word; V: LongInt;
+ Addr: LongInt; Buf: Array[0..MAX_SZ - 1] Of Byte;
+ Freq: Array[0..255] Of LongInt; I: Integer; Pr, Ent: Double; EntStr: String;
+Begin
+ A := TermExtractParam(Args, 1);
+ If A = '' Then Begin
+  Seg := EmuPanel.CPU.Segs.CS; Ofs := EmuPanel.CPU.IP;
+ End Else If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
+  EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
+  Exit;
+ End;
+ LenStr := TermExtractParam(Args, 2);
+ If LenStr = '' Then Sz := MAX_SZ
+ Else Begin
+  Val(LenStr, V, ErrPos);
+  If ErrPos = 0 Then Sz := V Else Sz := MAX_SZ;
+ End;
+ If (Sz < 1) Or (Sz > MAX_SZ) Then Sz := MAX_SZ;
+ Addr := (LongInt(Seg) Shl 4) + Ofs;
+ Emu_ReadAbsBlock(EmuPanel.CPU, Addr, Buf, Word(Sz));
+ FillChar(Freq, SizeOf(Freq), 0);
+ For I := 0 To Sz - 1 Do Inc(Freq[Buf[I]]);
+ Ent := 0.0;
+ For I := 0 To 255 Do
+  If Freq[I] > 0 Then Begin
+   Pr := Freq[I] / Sz;
+   Ent := Ent - Pr * (Ln(Pr) / Ln(2));
+  End;
+ Str(Ent:0:3, EntStr);
+ EmuCmdConsole_AddLine(C, 'Entropie de ' + IntToStr(Sz) + ' octets depuis ' +
+  HexWord(Seg) + ':' + HexWord(Ofs) + ' (phys=' + HexLong(Addr) + ') : ' +
+  EntStr + ' bits/octet (max 8.0)');
+ EmuCmdConsole_AddLine(C, '  ~5.5-6.5 = code x86 authentique typique ; ~8.0 = donnees compressees/chiffrees.');
+End;
+
 Procedure EmuCmdConsole_CmdHelp(Var C: TEmuCmdConsole);
 Begin
  Case C.Dialect Of
@@ -85464,7 +85608,10 @@ Begin
    EmuCmdConsole_AddLine(C, '  ? expr         Evaluer (registre ou litteral)');
    EmuCmdConsole_AddLine(C, '  CLS            Effacer la console');
    EmuCmdConsole_AddLine(C, '  SET RADIX n    Changer la base d''affichage (10/16)');
-   EmuCmdConsole_AddLine(C, '  STACK/WATCH/SYM  (pas encore implementees)');
+   EmuCmdConsole_AddLine(C, '  WATCH seg:ofs [len] | WATCH OFF  Watchpoint memoire -> EMUWATCH.LOG');
+   EmuCmdConsole_AddLine(C, '  TRACELOG       Vider les 8192 dernieres instr. -> EMUTRACE.LOG');
+   EmuCmdConsole_AddLine(C, '  ENTROPY [seg:ofs] [len]  Entropie Shannon (code vs donnees compressees)');
+   EmuCmdConsole_AddLine(C, '  STACK/SYM      (pas encore implementees)');
    EmuCmdConsole_AddLine(C, '  QUIT/EXIT/Q    Fermer la console');
    EmuCmdConsole_AddLine(C, 'Les commandes specifiques au noyau Windows NT sont');
    EmuCmdConsole_AddLine(C, 'reconnues mais signalees non applicables.');
@@ -85497,10 +85644,12 @@ Begin
  Else If (Cmd = 'U') Or (Cmd = 'UNASSEMBLE') Then EmuCmdConsole_CmdU(C, Args)
  Else If (Cmd = 'G') Or (Cmd = 'GO') Then EmuCmdConsole_CmdG(C, Args)
  Else If (Cmd = 'T') Or (Cmd = 'TRACE') Then Begin
-  EmuDbg_StepInto; EmuCmdConsole_AddLine(C, 'Trace (T)...');
+  EmuPanel_TryResume; EmuDbg_StepInto;
+  EmuCmdConsole_AddLine(C, 'Trace (T)...');
  End
  Else If Cmd = 'P' Then Begin
-  EmuDbg_StepOver; EmuCmdConsole_AddLine(C, 'Pas a pas (P)...');
+  EmuPanel_TryResume; EmuDbg_StepOver;
+  EmuCmdConsole_AddLine(C, 'Pas a pas (P)...');
  End
  Else If (Cmd = 'BPX') Or (Cmd = 'BP') Then EmuCmdConsole_CmdBPX(C, Args)
  Else If Cmd = 'BC' Then EmuCmdConsole_CmdBC(C, Args)
@@ -85514,8 +85663,10 @@ Begin
   C.Base.Visible := False
  Else If Cmd = 'SET' Then EmuCmdConsole_CmdSet(C, Args)
  Else If (Cmd = 'STACK') Or (Cmd = 'K') Then EmuCmdConsole_NotYetImplemented(C, Cmd)
- Else If Cmd = 'WATCH' Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If Cmd = 'WATCH' Then EmuCmdConsole_CmdWatch(C, Args)
  Else If Cmd = 'SYM' Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If Cmd = 'TRACELOG' Then EmuCmdConsole_CmdTraceLog(C)
+ Else If Cmd = 'ENTROPY' Then EmuCmdConsole_CmdEntropy(C, Args)
  Else If EmuCmdConsole_IsNtKernelCmd(Cmd) Then EmuCmdConsole_NotApplicable(C, Cmd)
  Else EmuCmdConsole_Unknown(C, RawLine);
 End;
@@ -85526,7 +85677,8 @@ Var VisIdx: LongInt;
 Begin
  If Cmd = 'DEBUG.START' Then Begin
   If EmuDbg.Paused Then Begin
-   EmuDbg_Continue; EmuCmdConsole_AddLine(C, 'Demarrage (Debug.Start)...');
+   EmuPanel_TryResume; EmuDbg_Continue;
+   EmuCmdConsole_AddLine(C, 'Demarrage (Debug.Start)...');
   End Else
    EmuCmdConsole_AddLine(C, 'Aucune session en pause a demarrer.');
  End
@@ -85539,13 +85691,16 @@ Begin
  End
  Else If Cmd = 'DEBUG.RESTART' Then EmuCmdConsole_NotYetImplemented(C, Cmd)
  Else If Cmd = 'DEBUG.STEPINTO' Then Begin
-  EmuDbg_StepInto; EmuCmdConsole_AddLine(C, 'Pas a pas detaille (Debug.StepInto)...');
+  EmuPanel_TryResume; EmuDbg_StepInto;
+  EmuCmdConsole_AddLine(C, 'Pas a pas detaille (Debug.StepInto)...');
  End
  Else If Cmd = 'DEBUG.STEPOVER' Then Begin
-  EmuDbg_StepOver; EmuCmdConsole_AddLine(C, 'Pas a pas principal (Debug.StepOver)...');
+  EmuPanel_TryResume; EmuDbg_StepOver;
+  EmuCmdConsole_AddLine(C, 'Pas a pas principal (Debug.StepOver)...');
  End
  Else If Cmd = 'DEBUG.STEPOUT' Then Begin
-  EmuDbg_StepOut; EmuCmdConsole_AddLine(C, 'Pas a pas sortant (Debug.StepOut)...');
+  EmuPanel_TryResume; EmuDbg_StepOut;
+  EmuCmdConsole_AddLine(C, 'Pas a pas sortant (Debug.StepOut)...');
  End
  Else If Cmd = 'DEBUG.RUNTOCURSOR' Then Begin
   VisIdx := EmuDbg.SelOfs - EmuDbg.DisasmTopOfs;
@@ -85553,7 +85708,7 @@ Begin
    EmuDbg_AddBP(EmuDbg.DisasmAddrs[VisIdx], EDC_8086)
   Else
    EmuDbg_AddBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP, EDC_8086);
-  EmuDbg_Continue;
+  EmuPanel_TryResume; EmuDbg_Continue;
   EmuCmdConsole_AddLine(C, 'Execution jusqu''au curseur (Debug.RunToCursor)...');
  End
  Else EmuCmdConsole_Unknown(C, RawLine);
@@ -85564,19 +85719,23 @@ Procedure EmuCmdConsole_ExecGDB(Var C: TEmuCmdConsole;
 Begin
  If (Cmd = 'RUN') Or (Cmd = 'R') Then Begin
   If EmuDbg.Paused Then Begin
-   EmuDbg_Continue; EmuCmdConsole_AddLine(C, 'Demarrage (run)...');
+   EmuPanel_TryResume; EmuDbg_Continue;
+   EmuCmdConsole_AddLine(C, 'Demarrage (run)...');
   End Else
    EmuCmdConsole_AddLine(C, 'Aucune session en pause a demarrer.');
  End
  Else If (Cmd = 'BREAK') Or (Cmd = 'B') Then EmuCmdConsole_CmdBPX(C, Args)
  Else If (Cmd = 'CONTINUE') Or (Cmd = 'C') Then Begin
-  EmuDbg_Continue; EmuCmdConsole_AddLine(C, 'continue...');
+  EmuPanel_TryResume; EmuDbg_Continue;
+  EmuCmdConsole_AddLine(C, 'continue...');
  End
  Else If (Cmd = 'NEXT') Or (Cmd = 'N') Then Begin
-  EmuDbg_StepOver; EmuCmdConsole_AddLine(C, 'next...');
+  EmuPanel_TryResume; EmuDbg_StepOver;
+  EmuCmdConsole_AddLine(C, 'next...');
  End
  Else If (Cmd = 'STEP') Or (Cmd = 'S') Then Begin
-  EmuDbg_StepInto; EmuCmdConsole_AddLine(C, 'step...');
+  EmuPanel_TryResume; EmuDbg_StepInto;
+  EmuCmdConsole_AddLine(C, 'step...');
  End
  Else If (Cmd = 'PRINT') Or (Cmd = 'P') Then EmuCmdConsole_CmdEval(C, Args)
  Else If (Cmd = 'BACKTRACE') Or (Cmd = 'BT') Then EmuCmdConsole_NotYetImplemented(C, Cmd)
