@@ -85342,16 +85342,46 @@ Begin
  C.LastUnasmSeg := Seg; C.LastUnasmOfs := Ofs;
 End;
 
+{ Syntaxe etendue BPX SEG:OFS[:N[:LEN]] - meme parametres que le parametre
+  /BP:SEG:OFS:N:LEN deja existant de la commande Terminal DEBUG (N =
+  Nieme passage decimal avant de vraiment declencher la pause,
+  EmuDbg_CheckBPHit/HitCountTarget ; LEN = octets de memoire EMULEE REELLE
+  a vider dans EMUDUMP.BIN/.LOG au declenchement, EmuDbg_DumpMemoryAt) -
+  ajoute explicitement pour cibler une occurrence PRECISE d une routine
+  visitee de nombreuses fois (necessaire pour l enquete NC3 : le premier
+  passage par le gestionnaire de recouvrements $2999 est loin d etre le
+  seul, ni le plus interessant). }
 Procedure EmuCmdConsole_CmdBPX(Var C: TEmuCmdConsole; Const Args: String);
-Var Seg, Ofs: Word; A: String;
+Var
+ Seg, Ofs: Word; A, NStr, LenStr: String; Addr: LongInt; Idx: Integer;
+ N, Len: LongInt; ErrPos: Word;
 Begin
  A := TermExtractParam(Args, 1);
  If (A = '') Or (Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs)) Then Begin
-  EmuCmdConsole_AddLine(C, 'Syntaxe : BPX SEG:OFS');
+  EmuCmdConsole_AddLine(C, 'Syntaxe : BPX SEG:OFS[:N[:LEN]]');
   Exit;
  End;
- EmuDbg_AddBP((LongInt(Seg) Shl 4) + Ofs, EDC_8086);
- EmuCmdConsole_AddLine(C, 'Point d''arret pose : ' + HexWord(Seg) + ':' + HexWord(Ofs));
+ Addr := (LongInt(Seg) Shl 4) + Ofs;
+ EmuDbg_AddBP(Addr, EDC_8086);
+ NStr := TermExtractParam(Args, 2);
+ LenStr := TermExtractParam(Args, 3);
+ If (NStr <> '') Or (LenStr <> '') Then Begin
+  Idx := EmuDbg_FindBP(Addr, EDC_8086);
+  If Idx >= 0 Then Begin
+   If NStr <> '' Then Begin
+    Val(NStr, N, ErrPos);
+    If ErrPos = 0 Then EmuDbg.BPs[Idx].HitCountTarget := N;
+   End;
+   If LenStr <> '' Then Begin
+    Val(LenStr, Len, ErrPos);
+    If ErrPos = 0 Then EmuDbg.BPs[Idx].DumpLen := Len;
+   End;
+  End;
+ End;
+ A := 'Point d''arret pose : ' + HexWord(Seg) + ':' + HexWord(Ofs);
+ If NStr <> '' Then A := A + ' (passage #' + NStr + ')';
+ If LenStr <> '' Then A := A + ' (vidage ' + LenStr + ' octets -> EMUDUMP.LOG)';
+ EmuCmdConsole_AddLine(C, A);
 End;
 
 Procedure EmuCmdConsole_CmdBC(Var C: TEmuCmdConsole; Const Args: String);
@@ -85602,7 +85632,7 @@ Begin
    EmuCmdConsole_AddLine(C, '  G [seg:ofs]    Executer (jusqu''a l''adresse si donnee)');
    EmuCmdConsole_AddLine(C, '  T / TRACE      Pas a pas detaille');
    EmuCmdConsole_AddLine(C, '  P              Pas a pas principal');
-   EmuCmdConsole_AddLine(C, '  BPX/BP seg:ofs Poser un point d''arret');
+   EmuCmdConsole_AddLine(C, '  BPX/BP seg:ofs[:N[:LEN]] Poser un point d''arret (Nieme passage, vidage LEN octets)');
    EmuCmdConsole_AddLine(C, '  BC/BD/BE n     Retirer/desactiver/activer un point d''arret');
    EmuCmdConsole_AddLine(C, '  BL             Lister les points d''arret');
    EmuCmdConsole_AddLine(C, '  ? expr         Evaluer (registre ou litteral)');
