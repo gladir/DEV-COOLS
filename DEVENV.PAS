@@ -85090,7 +85090,7 @@ Begin
    { Meme correctif : redessiner le menu contextuel PAR-DESSUS juste apres. }
    If CtxMenu.Visible Then DrawContextMenu(CtxMenu);
    FullRepaintNeeded := False;
-  End Else If Not MenuActive Then Begin
+  End Else If Not MenuActive And Not CtxMenu.Visible Then Begin
    { Ne pas redessiner la fenetre debug si un menu deroulant est ouvert :
      cela ecraserait le menu. Le menu reste en avant-plan tant qu il est
      ouvert ; il restaurera l arriere-plan a sa fermeture. Si un repaint
@@ -85100,7 +85100,16 @@ Begin
      EmuDbg_DrawWindow`) - un second appel redondant juste apres a ete
      empiriquement observe corrompre l affichage (desassemblage/dump
      tronques a 1 ligne apres une simple ouverture/fermeture de menu
-     PENDANT la pause, reproduit meme sans aucun rapport avec "Animer"). }
+     PENDANT la pause, reproduit meme sans aucun rapport avec "Animer").
+     BOGUE REEL (2026-08-18, suite) : `Not CtxMenu.Visible` manquait ICI
+     AUSSI - un simple survol souris (EV_MOUSE_MOVE, ne declenche PAS
+     FullRepaintNeeded, seulement HandleContextMenuEvent qui redessine le
+     menu tout seul) tombait dans cette branche EmuDbg_DrawWindow, effacant
+     le menu contextuel a CHAQUE mouvement de souris - invisible avec un
+     clic automatise (teleporte le curseur sans MOUSE_MOVE intermediaire)
+     mais rendait le menu impossible a utiliser a la souris reelle (signale
+     par l utilisateur : "le debogueur redessine par dessus... je ne suis
+     jamais capable de selectionner les options"). }
    EmuDbg_DrawWindow;
   End;
  End;
