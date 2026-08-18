@@ -4499,6 +4499,42 @@ Type
   Base : TDialog;
  End;
 
+ { Deboguer > Commandes... : console de commandes textuelle pilotant le
+   debogueur emulateur (EmuDbg), avec un dialecte au choix parmi SoftICE
+   (par defaut), Visual Studio et GDB. Fenetre flottante non-modale,
+   positionnee entre le panneau emulateur et la fenetre EmuDbg (voir
+   EmuCmdConsole_ComputeRect). }
+ TEmuCmdDialect = (ECD_SOFTICE, ECD_VSTUDIO, ECD_GDB);
+
+ PEmuCmdLine = ^TEmuCmdLine;
+ TEmuCmdLine = Record
+  S    : String;
+  Prev : PEmuCmdLine;
+  Next : PEmuCmdLine;
+ End;
+
+ TEmuCmdConsole = Record
+  Base         : TDialog;
+  Dialect      : TEmuCmdDialect;
+  Radix        : Integer;              { 10 ou 16, via SET RADIX }
+  OutHead      : PEmuCmdLine;          { historique de sortie (motif TermAddLine) }
+  OutTail      : PEmuCmdLine;
+  OutCount     : LongInt;
+  ScrollOffset : LongInt;              { 0 = defile automatiquement en bas }
+  InputText    : String[255];
+  InputCursor  : Integer;
+  CmdHist      : Array[0..63] Of String[255];
+  CmdHistCount : Integer;
+  CmdHistPos   : Integer;              { -1 = pas en rappel d historique }
+  LastDumpSeg, LastDumpOfs : Word;     { position courante pour D sans argument }
+  LastUnasmSeg, LastUnasmOfs : Word;   { position courante pour U sans argument }
+  Dragging     : Boolean;
+  DragOfsX     : Integer;
+  DragOfsY     : Integer;
+  WinFocused   : Boolean;
+  NeedRepaint  : Boolean;
+ End;
+
  { Resultat de compilation }
  TCompilerResult = (
   CR_SUCCESS,           { compilation reussie                     }
@@ -5155,6 +5191,9 @@ Var
  OptionsDlg     : TOptionsDialog;
  { Dialogue Deboguer > Activites observees }
  EmuActivityDlg : TEmuActivityDialog;
+ { Deboguer > Commandes... : console de commandes SoftICE/Visual Studio/GDB }
+ EmuCmdConsole : TEmuCmdConsole;
+ EmuCmdConsoleArmOnLoad : Boolean;
  { Contexte compilateur C# }
  CSCContext     : TCSCCompilerContext;
  { Contexte compilateur VB.NET }
@@ -9101,6 +9140,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Activites observees...', '', 650);
+ AddMenuItem(MainMenuBar.Menus[5], 'Commandes...', '', 651);
  AddMenuItem(MainMenuBar.Menus[5], 'Desassembler l''executable...', '', 660);
  MainMenuBar.MenuCount := 6;
 
@@ -9197,6 +9237,9 @@ Procedure ShowEmuActivityDialog(Var Dlg: TEmuActivityDialog); Forward;
 Procedure DrawEmuActivityDialog(Var Dlg: TEmuActivityDialog); Forward;
 Procedure HandleEmuActivityEvent(Var Dlg: TEmuActivityDialog;
  EvtType: Integer; Key: Char; MX, MY: Integer); Forward;
+Procedure ShowEmuCmdConsole(Var C: TEmuCmdConsole); Forward;
+Procedure DrawEmuCmdConsole(Var C: TEmuCmdConsole); Forward;
+Function  HandleEmuCmdConsoleEvent(Var C: TEmuCmdConsole; Var Ev: TEvent): Boolean; Forward;
 Procedure TransformSelection(Var Ed: TEditor;
  Var Sel: TSelection; ToUpper: Boolean); Forward;
 Function ShowMessageBox(Title, Text: String;
@@ -9944,6 +9987,10 @@ Begin
        End;
   650: Begin { Activites observees... }
         ShowEmuActivityDialog(EmuActivityDlg);
+        FullRepaintNeeded := True;
+       End;
+  651: Begin { Commandes... }
+        ShowEmuCmdConsole(EmuCmdConsole);
         FullRepaintNeeded := True;
        End;
   660: Begin { Desassembler l executable... }
@@ -34343,6 +34390,7 @@ Var
  BPErr1, BPErr2, BPErr3, BPErr4: Word;
  BPN, BPLen: LongInt;
  BPIdx: Integer;
+ ArgCmd3, ArgCmd4: String;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -34422,9 +34470,14 @@ Begin
    TermAddLine(TP, '                du desassemblage statique du .EXE au repos. N peut');
    TermAddLine(TP, '                etre omis (deux-points doubles, colon vide) pour vider');
    TermAddLine(TP, '                des le 1er passage.');
+   TermAddLine(TP, '  /CMD          Ouvre en plus la Console de commandes du');
+   TermAddLine(TP, '                debogueur (SoftICE/Visual Studio/GDB),');
+   TermAddLine(TP, '                entre le panneau emulateur et le debogueur.');
+   TermAddLine(TP, '                Implique /GUI (inutile de le repeter).');
    TermAddLine(TP, '  Exemples : DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:265B');
    TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:B6A2:50');
    TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:30BD::256');
+   TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /CMD');
    Exit;
   End;
   If (ArgFile = '') Or (UpCaseStr(ArgSwitch) <> '/GUI') Then
@@ -34460,6 +34513,15 @@ Begin
    If DbgTarget = '' Then
     TermAddLine(TP, '''' + ArgFile + ''' introuvable.')
    Else Begin
+    { /CMD (optionnel, n importe quelle position parmi les parametres 3/4 -
+      un utilisateur peut le taper sans /BP: du tout) : ouvre en plus la
+      Console de commandes du debogueur (SoftICE/Visual Studio/GDB) une
+      fois la fenetre EmuDbg positionnee - voir EmuCmdConsoleArmOnLoad
+      ci-dessous, consomme dans CreateEmulatorTab. }
+    ArgCmd3 := TermExtractParam(ParamStr, 3);
+    ArgCmd4 := TermExtractParam(ParamStr, 4);
+    If (UpCaseStr(ArgCmd3) = '/CMD') Or (UpCaseStr(ArgCmd4) = '/CMD') Then
+     EmuCmdConsoleArmOnLoad := True;
     EmuDbgArmPauseOnLoad := True;
     CreateEmulatorTab(DbgPath, DbgTarget, '');
     { Parametre optionnel /BP:SEG:OFS (hexa, ex. /BP:201F:265B) : pose un   }
@@ -72315,6 +72377,14 @@ Begin NesActive := False;
   { pas encore ete demarre - meme convention que EmuPanel_Pause. }
   P.StatusMsg := 'Charge, en attente (F5 pour demarrer le debogage)';
   EmuDbgArmPauseOnLoad := False;
+  { "DEBUG ... /CMD" : ouvrir aussi la Console de commandes du debogueur,
+    maintenant qu EmuDbg.WinX/WinY/WinW/WinH viennent d etre fixes
+    ci-dessus - EmuCmdConsole_ComputeRect en depend pour se positionner
+    entre le panneau emulateur et la fenetre EmuDbg. }
+  If EmuCmdConsoleArmOnLoad Then Begin
+   ShowEmuCmdConsole(EmuCmdConsole);
+   EmuCmdConsoleArmOnLoad := False;
+  End;
  End;
  P.Fault := 0;
  { Correctif 2026-08-16 (signale par l utilisateur : "ABAP86 ../../samples/  }
@@ -83189,6 +83259,8 @@ Begin
   DrawVirtAddDiskDialog(VirtAddDiskDlg);
  If EmuActivityDlg.Base.Visible Then
   DrawEmuActivityDialog(EmuActivityDlg);
+ If EmuCmdConsole.Base.Visible Then
+  DrawEmuCmdConsole(EmuCmdConsole);
 End;
 
 { ============================================================
@@ -83383,6 +83455,91 @@ Begin
   Close(FLog);
  End;
  {$I+} If IOResult <> 0 Then ;
+End;
+
+{ --- Helpers pour la Console de commandes du debogueur (SoftICE/Visual   }
+{ Studio/GDB, menu Deboguer > Commandes...) : aucune table nom-de-registre }
+{ -> valeur ni fonction de formatage memoire en chaine n existait avant ce }
+{ chantier - extraites/creees ici pour etre partagees par les 3 dialectes. }
+
+{ Table de correspondance nom-de-registre -> valeur, insensible a la casse.
+  Retourne -1 si le nom est inconnu (l appelant teste ce cas). }
+Function EmuDbg_RegByName(Const Name: String; Var C: TEmuCPU): LongInt;
+Var N: String;
+Begin
+ N := UpCaseStr(Name);
+ If N = 'AX' Then EmuDbg_RegByName := Emu_GetReg16(C, 0)
+ Else If N = 'CX' Then EmuDbg_RegByName := Emu_GetReg16(C, 1)
+ Else If N = 'DX' Then EmuDbg_RegByName := Emu_GetReg16(C, 2)
+ Else If N = 'BX' Then EmuDbg_RegByName := Emu_GetReg16(C, 3)
+ Else If N = 'SP' Then EmuDbg_RegByName := Emu_GetReg16(C, 4)
+ Else If N = 'BP' Then EmuDbg_RegByName := Emu_GetReg16(C, 5)
+ Else If N = 'SI' Then EmuDbg_RegByName := Emu_GetReg16(C, 6)
+ Else If N = 'DI' Then EmuDbg_RegByName := Emu_GetReg16(C, 7)
+ Else If N = 'AL' Then EmuDbg_RegByName := Emu_GetReg8(C, 0)
+ Else If N = 'CL' Then EmuDbg_RegByName := Emu_GetReg8(C, 1)
+ Else If N = 'DL' Then EmuDbg_RegByName := Emu_GetReg8(C, 2)
+ Else If N = 'BL' Then EmuDbg_RegByName := Emu_GetReg8(C, 3)
+ Else If N = 'AH' Then EmuDbg_RegByName := Emu_GetReg8(C, 4)
+ Else If N = 'CH' Then EmuDbg_RegByName := Emu_GetReg8(C, 5)
+ Else If N = 'DH' Then EmuDbg_RegByName := Emu_GetReg8(C, 6)
+ Else If N = 'BH' Then EmuDbg_RegByName := Emu_GetReg8(C, 7)
+ Else If N = 'ES' Then EmuDbg_RegByName := Emu_GetSReg(C, 0)
+ Else If N = 'CS' Then EmuDbg_RegByName := Emu_GetSReg(C, 1)
+ Else If N = 'SS' Then EmuDbg_RegByName := Emu_GetSReg(C, 2)
+ Else If N = 'DS' Then EmuDbg_RegByName := Emu_GetSReg(C, 3)
+ Else If N = 'IP' Then EmuDbg_RegByName := C.IP
+ Else If (N = 'FLAGS') Or (N = 'FL') Then EmuDbg_RegByName := C.Flags.Base
+ Else EmuDbg_RegByName := -1;
+End;
+
+{ Meme table, en ecriture. Ne fait rien si le nom est inconnu (l appelant
+  doit avoir deja verifie via EmuDbg_RegByName <> -1 s il veut detecter
+  l erreur avant d ecrire). }
+Procedure EmuDbg_SetRegByName(Const Name: String; Var C: TEmuCPU; Value: Word);
+Var N: String;
+Begin
+ N := UpCaseStr(Name);
+ If N = 'AX' Then Emu_SetReg16(C, 0, Value)
+ Else If N = 'CX' Then Emu_SetReg16(C, 1, Value)
+ Else If N = 'DX' Then Emu_SetReg16(C, 2, Value)
+ Else If N = 'BX' Then Emu_SetReg16(C, 3, Value)
+ Else If N = 'SP' Then Emu_SetReg16(C, 4, Value)
+ Else If N = 'BP' Then Emu_SetReg16(C, 5, Value)
+ Else If N = 'SI' Then Emu_SetReg16(C, 6, Value)
+ Else If N = 'DI' Then Emu_SetReg16(C, 7, Value)
+ Else If N = 'AL' Then Emu_SetReg8(C, 0, Byte(Value))
+ Else If N = 'CL' Then Emu_SetReg8(C, 1, Byte(Value))
+ Else If N = 'DL' Then Emu_SetReg8(C, 2, Byte(Value))
+ Else If N = 'BL' Then Emu_SetReg8(C, 3, Byte(Value))
+ Else If N = 'AH' Then Emu_SetReg8(C, 4, Byte(Value))
+ Else If N = 'CH' Then Emu_SetReg8(C, 5, Byte(Value))
+ Else If N = 'DH' Then Emu_SetReg8(C, 6, Byte(Value))
+ Else If N = 'BH' Then Emu_SetReg8(C, 7, Byte(Value))
+ Else If N = 'ES' Then Emu_SetSReg(C, 0, Value)
+ Else If N = 'CS' Then Emu_SetSReg(C, 1, Value)
+ Else If N = 'SS' Then Emu_SetSReg(C, 2, Value)
+ Else If N = 'DS' Then Emu_SetSReg(C, 3, Value)
+ Else If N = 'IP' Then C.IP := Value
+ Else If (N = 'FLAGS') Or (N = 'FL') Then C.Flags.Base := Value;
+End;
+
+{ Formate une ligne "SEG:OFS  XX XX XX ...  ascii" (Len octets, motif deja
+  utilise en ligne dans EmuDbg_DrawWindow - dump ds:/ss:) - extrait ici en
+  fonction reutilisable pour la commande D de la console. }
+Function EmuDbg_FormatMemLine(Var CPU: TEmuCPU; Seg, Ofs: Word; Len: Integer): String;
+Var I: Integer; B: Byte; HexPart, AscPart: String;
+Begin
+ If Len > 16 Then Len := 16;
+ HexPart := ''; AscPart := '';
+ For I := 0 To Len - 1 Do Begin
+  B := Emu_ReadByte(CPU, Seg, Word(Ofs + I));
+  HexPart := HexPart + HexByte(B) + ' ';
+  If (B >= 32) And (B <= 126) Then AscPart := AscPart + Chr(B)
+  Else AscPart := AscPart + '.';
+ End;
+ EmuDbg_FormatMemLine := HexWord(Seg) + ':' + HexWord(Ofs) + '  ' +
+  HexPart + ' ' + AscPart;
 End;
 
 { --- Menu contextuel (clic droit) sur la fenetre du Debogueur : outils    }
@@ -84817,6 +84974,836 @@ Begin
  EmuDbg.NeedRepaint := True;
 End;
 
+{ ============================================================
+  Console de commandes du debogueur (SoftICE / Visual Studio / GDB)
+  Menu Deboguer > Commandes..., ou "DEBUG <fichier> /GUI /CMD" au Terminal.
+  Fenetre flottante non-modale, positionnee entre le panneau emulateur et
+  la fenetre EmuDbg. Pilote les memes primitifs que celle-ci (points
+  d arret, pas-a-pas, memoire, desassemblage) via une ligne de commande
+  textuelle plutot que clavier/souris.
+  ============================================================ }
+
+{ --- Geometrie : positionnee entre EmuPanel et EmuDbg --- }
+
+Procedure EmuCmdConsole_ComputeRect(Var NX, NY, NW, NH: Integer);
+Const MIN_CONSOLE_W = 280;
+Var GridRight: Integer;
+Begin
+ GridRight := EmuPanel.PanelX + (EmuPanel.Cols * EmuPanel.CharW);
+ NX := GridRight + 4;
+ NW := EmuDbg.WinX - NX - 4;
+ If NW < MIN_CONSOLE_W Then Begin
+  { Ecran etroit : chevaucher legerement le bord gauche d EmuDbg plutot
+    que de devenir inutilisable - meme esprit que le chevauchement deja
+    tolere entre EmuDbg et EXPLORER_WIDTH sur petit ecran. }
+  NW := MIN_CONSOLE_W;
+  NX := EmuDbg.WinX - NW + 20;
+  If NX < GridRight + 4 Then NX := GridRight + 4;
+ End;
+ NY := EmuDbg.WinY;
+ NH := EmuDbg.WinH;
+End;
+
+Procedure EmuCmdConsole_TabRect(Var C: TEmuCmdConsole; Idx: Integer;
+ Var TX, TY, TW, TH: Integer);
+Begin
+ TW := (C.Base.Width - 2 * DLG_PADDING) Div 3;
+ TX := C.Base.X + DLG_PADDING + Idx * TW;
+ TY := C.Base.Y + DLG_TITLE_HEIGHT + 4;
+ TH := 18;
+End;
+
+Function EmuCmdConsole_HitTitleBar(Var C: TEmuCmdConsole; MX, MY: Integer): Boolean;
+Begin
+ EmuCmdConsole_HitTitleBar := C.Base.Visible And
+  (MX >= C.Base.X + 1) And (MX < C.Base.X + C.Base.Width - 20) And
+  (MY >= C.Base.Y + 1) And (MY < C.Base.Y + DLG_TITLE_HEIGHT);
+End;
+
+Function EmuCmdConsole_HitCloseBox(Var C: TEmuCmdConsole; MX, MY: Integer): Boolean;
+Begin
+ EmuCmdConsole_HitCloseBox := C.Base.Visible And
+  (MX >= C.Base.X + C.Base.Width - 18) And (MX < C.Base.X + C.Base.Width - 4) And
+  (MY >= C.Base.Y + 1) And (MY < C.Base.Y + DLG_TITLE_HEIGHT);
+End;
+
+Function EmuCmdConsole_HitWindow(Var C: TEmuCmdConsole; MX, MY: Integer): Boolean;
+Begin
+ EmuCmdConsole_HitWindow := C.Base.Visible And
+  (MX >= C.Base.X) And (MX < C.Base.X + C.Base.Width) And
+  (MY >= C.Base.Y) And (MY < C.Base.Y + C.Base.Height);
+End;
+
+Function EmuCmdConsole_HitTab(Var C: TEmuCmdConsole; MX, MY, Idx: Integer): Boolean;
+Var TX, TY, TW, TH: Integer;
+Begin
+ EmuCmdConsole_TabRect(C, Idx, TX, TY, TW, TH);
+ EmuCmdConsole_HitTab := (MX >= TX) And (MX < TX + TW) And
+  (MY >= TY) And (MY < TY + TH);
+End;
+
+{ --- Historique de sortie (motif TermAddLine, liste chainee) --- }
+
+Procedure EmuCmdConsole_AddLine(Var C: TEmuCmdConsole; S: String);
+Var Node, Old: PEmuCmdLine;
+Begin
+ New(Node);
+ Node^.S := S;
+ Node^.Prev := C.OutTail;
+ Node^.Next := Nil;
+ If C.OutTail <> Nil Then C.OutTail^.Next := Node
+ Else C.OutHead := Node;
+ C.OutTail := Node;
+ Inc(C.OutCount);
+ While C.OutCount > MAX_TERM_HIST_LINES Do Begin
+  Old := C.OutHead;
+  If Old = Nil Then Break;
+  C.OutHead := Old^.Next;
+  If C.OutHead <> Nil Then C.OutHead^.Prev := Nil
+  Else C.OutTail := Nil;
+  Dispose(Old);
+  Dec(C.OutCount);
+ End;
+ C.ScrollOffset := 0;
+ C.NeedRepaint := True;
+End;
+
+Procedure EmuCmdConsole_Clear(Var C: TEmuCmdConsole);
+Var Node, NextNode: PEmuCmdLine;
+Begin
+ Node := C.OutHead;
+ While Node <> Nil Do Begin
+  NextNode := Node^.Next;
+  Dispose(Node);
+  Node := NextNode;
+ End;
+ C.OutHead := Nil; C.OutTail := Nil; C.OutCount := 0; C.ScrollOffset := 0;
+End;
+
+Procedure EmuCmdConsole_HistPush(Var C: TEmuCmdConsole; Const CmdLine: String);
+Var I: Integer;
+Begin
+ If CmdLine = '' Then Exit;
+ If C.CmdHistCount < 64 Then Begin
+  C.CmdHist[C.CmdHistCount] := CmdLine;
+  Inc(C.CmdHistCount);
+ End Else Begin
+  For I := 0 To 62 Do C.CmdHist[I] := C.CmdHist[I + 1];
+  C.CmdHist[63] := CmdLine;
+ End;
+ C.CmdHistPos := -1;
+End;
+
+{ --- Utilitaires chaine (idiome de TermExecuteCommand) --- }
+
+Function EmuCmdConsole_FirstWord(S: String): String;
+Var I: Integer;
+Begin
+ S := TermTrim(S);
+ For I := 1 To Length(S) Do
+  If S[I] In [' ', #9] Then Begin
+   EmuCmdConsole_FirstWord := Copy(S, 1, I - 1);
+   Exit;
+  End;
+ EmuCmdConsole_FirstWord := S;
+End;
+
+Function EmuCmdConsole_Rest(S: String): String;
+Var I: Integer;
+Begin
+ S := TermTrim(S);
+ For I := 1 To Length(S) Do
+  If S[I] In [' ', #9] Then Begin
+   EmuCmdConsole_Rest := TermTrimL(Copy(S, I, Length(S) - I + 1));
+   Exit;
+  End;
+ EmuCmdConsole_Rest := '';
+End;
+
+Function EmuCmdConsole_PromptChar(Dialect: TEmuCmdDialect): String;
+Begin
+ Case Dialect Of
+  ECD_SOFTICE: EmuCmdConsole_PromptChar := ':';
+  ECD_VSTUDIO: EmuCmdConsole_PromptChar := '>';
+  ECD_GDB:     EmuCmdConsole_PromptChar := '(gdb) ';
+  Else EmuCmdConsole_PromptChar := '>';
+ End;
+End;
+
+{ Parse "SEG:OFS" (hexa) ou une adresse lineaire seule (hexa, Seg=CS
+  courant). Retourne False si la syntaxe est invalide. }
+Function EmuCmdConsole_ParseSegOfs(S: String; Var Seg, Ofs: Word): Boolean;
+Var ColonPos: Integer; SegStr, OfsStr: String; ErrPos: Word; V: LongInt;
+Begin
+ EmuCmdConsole_ParseSegOfs := False;
+ ColonPos := Pos(':', S);
+ If ColonPos > 0 Then Begin
+  SegStr := Copy(S, 1, ColonPos - 1);
+  OfsStr := Copy(S, ColonPos + 1, Length(S) - ColonPos);
+  Val('$' + SegStr, V, ErrPos);
+  If ErrPos <> 0 Then Exit;
+  Seg := Word(V);
+  Val('$' + OfsStr, V, ErrPos);
+  If ErrPos <> 0 Then Exit;
+  Ofs := Word(V);
+  EmuCmdConsole_ParseSegOfs := True;
+ End Else Begin
+  Val('$' + S, V, ErrPos);
+  If ErrPos <> 0 Then Exit;
+  Seg := EmuPanel.CPU.Segs.CS;
+  Ofs := Word(V);
+  EmuCmdConsole_ParseSegOfs := True;
+ End;
+End;
+
+{ --- Reponses-stub reutilisees par les 3 dialectes --- }
+
+Procedure EmuCmdConsole_NotApplicable(Var C: TEmuCmdConsole; Const CmdName: String);
+Begin
+ EmuCmdConsole_AddLine(C, CmdName + ' : commande non applicable a cet ' +
+  'emulateur DOS 8086 reel-mode (specifique au noyau Windows NT).');
+End;
+
+Procedure EmuCmdConsole_NotYetImplemented(Var C: TEmuCmdConsole; Const CmdName: String);
+Begin
+ EmuCmdConsole_AddLine(C, CmdName + ' : reconnue mais pas encore ' +
+  'implementee dans cette version.');
+End;
+
+Procedure EmuCmdConsole_Unknown(Var C: TEmuCmdConsole; Const RawLine: String);
+Begin
+ EmuCmdConsole_AddLine(C, 'Commande inconnue : ' + RawLine);
+End;
+
+{ Recherche lineaire (pas de Case-de-chaine possible en mode Turbo Pascal)
+  des commandes SoftICE specifiques au noyau Windows NT, sans equivalent
+  dans un emulateur DOS 8086 reel-mode - liste transcrite depuis la
+  reference SoftICE standard. }
+Function EmuCmdConsole_IsNtKernelCmd(Const Cmd: String): Boolean;
+Const
+ NT_COUNT = 74;
+ NtCmds: Array[1..NT_COUNT] Of String = (
+  'DEVICE','DPC','ERESOURCE','FIBER','GDT','HEAP','IDT','INTOBJ','IRP',
+  'IRB','KMUTEX','KEVENT','KOBJECT','KSEM','MSR','OBJDIR','OBJTAB','PAGE',
+  'PCI','SRB','SYMLINK','THREAD','URB','APC','ARBITER','DEVMGR','DM',
+  'DEVNODE','DRIVER','FMUTEX','FOBJ','HWND','CLASS','NETFIND','NTCALL',
+  'NTSTATUS','WINERROR','PROCESS','SVCMGR','SM','SVCSTART','SVCSTOP',
+  'TCONFIG','TDIR','TMKDIR','TMOVE','TRENAME','TRMDIR','TRMFILE','TVOL',
+  'TATTRIB','CONNECT','DISCONNECT','CLOSE','WCONNECT','PING','REBOOT',
+  'SHUTDOWN','HBOOT','WB','WC','WD','WE','WF','WG','WI','WL','WMSG','WP',
+  'WR','WS','WT','WV','WX'
+ );
+Var I: Integer;
+Begin
+ EmuCmdConsole_IsNtKernelCmd := False;
+ For I := 1 To NT_COUNT Do
+  If Cmd = NtCmds[I] Then Begin
+   EmuCmdConsole_IsNtKernelCmd := True;
+   Exit;
+  End;
+End;
+
+{ --- Formatage registres / instruction courante --- }
+
+Procedure EmuCmdConsole_ShowRegs(Var C: TEmuCmdConsole);
+Begin
+ EmuCmdConsole_AddLine(C, 'AX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 0)) +
+  ' BX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 3)) +
+  ' CX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 1)) +
+  ' DX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 2)));
+ EmuCmdConsole_AddLine(C, 'SI=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 6)) +
+  ' DI=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 7)) +
+  ' BP=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 5)) +
+  ' SP=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 4)));
+ EmuCmdConsole_AddLine(C, 'DS=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 3)) +
+  ' ES=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 0)) +
+  ' SS=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 2)) +
+  ' CS=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 1)) +
+  ' IP=' + HexWord(EmuPanel.CPU.IP));
+ EmuCmdConsole_AddLine(C, 'FLAGS=' + HexWord(EmuPanel.CPU.Flags.Base));
+End;
+
+Procedure EmuCmdConsole_ShowCurrentInstr(Var C: TEmuCmdConsole);
+Var Sz: Integer; S: String;
+Begin
+ S := EmuDbg_Disasm8086(EmuPanel.CPU.Segs.CS, EmuPanel.CPU.IP, Sz);
+ EmuCmdConsole_AddLine(C, HexWord(EmuPanel.CPU.Segs.CS) + ':' +
+  HexWord(EmuPanel.CPU.IP) + '  ' + S);
+End;
+
+{ --- Commandes a back-end reel (partagees SoftICE/GDB) --- }
+
+Procedure EmuCmdConsole_CmdR(Var C: TEmuCmdConsole; Const Args: String);
+Var RegName, ValStr: String; V: LongInt; ErrPos: Word;
+Begin
+ RegName := TermExtractParam(Args, 1);
+ If RegName = '' Then Begin
+  EmuCmdConsole_ShowRegs(C);
+  Exit;
+ End;
+ If EmuDbg_RegByName(RegName, EmuPanel.CPU) = -1 Then Begin
+  EmuCmdConsole_AddLine(C, 'Registre inconnu : ' + RegName);
+  Exit;
+ End;
+ ValStr := TermExtractParam(Args, 2);
+ If ValStr = '' Then
+  EmuCmdConsole_AddLine(C, UpCaseStr(RegName) + '=' +
+   HexWord(Word(EmuDbg_RegByName(RegName, EmuPanel.CPU))))
+ Else Begin
+  Val('$' + ValStr, V, ErrPos);
+  If ErrPos <> 0 Then Val(ValStr, V, ErrPos);
+  If ErrPos <> 0 Then
+   EmuCmdConsole_AddLine(C, 'Valeur invalide : ' + ValStr)
+  Else Begin
+   EmuDbg_SetRegByName(RegName, EmuPanel.CPU, Word(V));
+   EmuCmdConsole_AddLine(C, UpCaseStr(RegName) + '=' + HexWord(Word(V)));
+  End;
+ End;
+End;
+
+Procedure EmuCmdConsole_CmdD(Var C: TEmuCmdConsole; Const Args: String);
+Var Seg, Ofs: Word; I: Integer; A: String;
+Begin
+ A := TermExtractParam(Args, 1);
+ If A = '' Then Begin
+  Seg := C.LastDumpSeg; Ofs := C.LastDumpOfs;
+ End Else If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
+  EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
+  Exit;
+ End;
+ For I := 0 To 7 Do
+  EmuCmdConsole_AddLine(C,
+   EmuDbg_FormatMemLine(EmuPanel.CPU, Seg, Word(Ofs + I * 16), 16));
+ C.LastDumpSeg := Seg; C.LastDumpOfs := Word(Ofs + 128);
+End;
+
+Procedure EmuCmdConsole_CmdE(Var C: TEmuCmdConsole; Const Args: String);
+Var Seg, Ofs: Word; A, ValTok: String; I: Integer; V: LongInt; ErrPos: Word;
+Begin
+ A := TermExtractParam(Args, 1);
+ If (A = '') Or (Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs)) Then Begin
+  EmuCmdConsole_AddLine(C, 'Syntaxe : E SEG:OFS valeur [valeur...]');
+  Exit;
+ End;
+ I := 0;
+ Repeat
+  ValTok := TermExtractParam(Args, I + 2);
+  If ValTok <> '' Then Begin
+   Val('$' + ValTok, V, ErrPos);
+   If ErrPos = 0 Then
+    Emu_WriteByte(EmuPanel.CPU, Seg, Word(Ofs + I), Byte(V));
+   Inc(I);
+  End;
+ Until ValTok = '';
+ EmuCmdConsole_AddLine(C, EmuDbg_FormatMemLine(EmuPanel.CPU, Seg, Ofs, 16));
+End;
+
+Procedure EmuCmdConsole_CmdU(Var C: TEmuCmdConsole; Const Args: String);
+Var Seg, Ofs: Word; A: String; I, Sz: Integer; S: String;
+Begin
+ A := TermExtractParam(Args, 1);
+ If A = '' Then Begin
+  Seg := C.LastUnasmSeg; Ofs := C.LastUnasmOfs;
+ End Else If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
+  EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
+  Exit;
+ End;
+ For I := 1 To 10 Do Begin
+  S := EmuDbg_Disasm8086(Seg, Ofs, Sz);
+  If Sz < 1 Then Sz := 1;
+  EmuCmdConsole_AddLine(C, HexWord(Seg) + ':' + HexWord(Ofs) + '  ' + S);
+  Ofs := Word(Ofs + Sz);
+ End;
+ C.LastUnasmSeg := Seg; C.LastUnasmOfs := Ofs;
+End;
+
+Procedure EmuCmdConsole_CmdBPX(Var C: TEmuCmdConsole; Const Args: String);
+Var Seg, Ofs: Word; A: String;
+Begin
+ A := TermExtractParam(Args, 1);
+ If (A = '') Or (Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs)) Then Begin
+  EmuCmdConsole_AddLine(C, 'Syntaxe : BPX SEG:OFS');
+  Exit;
+ End;
+ EmuDbg_AddBP((LongInt(Seg) Shl 4) + Ofs, EDC_8086);
+ EmuCmdConsole_AddLine(C, 'Point d''arret pose : ' + HexWord(Seg) + ':' + HexWord(Ofs));
+End;
+
+Procedure EmuCmdConsole_CmdBC(Var C: TEmuCmdConsole; Const Args: String);
+Var N: Integer; A: String; ErrPos: Word; V: LongInt; Addr: LongInt; ACPU: TEmuDbgCPU;
+Begin
+ A := TermExtractParam(Args, 1);
+ Val(A, V, ErrPos);
+ N := V;
+ If (ErrPos <> 0) Or (N < 0) Or (N >= EmuDbg.BPCount) Then Begin
+  EmuCmdConsole_AddLine(C, 'Index de point d''arret invalide : ' + A);
+  Exit;
+ End;
+ Addr := EmuDbg.BPs[N].Addr;
+ ACPU := EmuDbg.BPs[N].CPU;
+ EmuDbg_RemoveBP(Addr, ACPU);
+ EmuCmdConsole_AddLine(C, 'Point d''arret ' + A + ' supprime.');
+End;
+
+Procedure EmuCmdConsole_CmdBD(Var C: TEmuCmdConsole; Const Args: String; Enable: Boolean);
+Var N: Integer; A: String; ErrPos: Word; V: LongInt;
+Begin
+ A := TermExtractParam(Args, 1);
+ Val(A, V, ErrPos);
+ N := V;
+ If (ErrPos <> 0) Or (N < 0) Or (N >= EmuDbg.BPCount) Then Begin
+  EmuCmdConsole_AddLine(C, 'Index de point d''arret invalide : ' + A);
+  Exit;
+ End;
+ EmuDbg.BPs[N].Enabled := Enable;
+ If Enable Then EmuCmdConsole_AddLine(C, 'Point d''arret ' + A + ' active.')
+ Else EmuCmdConsole_AddLine(C, 'Point d''arret ' + A + ' desactive.');
+End;
+
+Procedure EmuCmdConsole_CmdBL(Var C: TEmuCmdConsole);
+Var I: Integer; St: String;
+Begin
+ If EmuDbg.BPCount = 0 Then Begin
+  EmuCmdConsole_AddLine(C, '(aucun point d''arret)');
+  Exit;
+ End;
+ For I := 0 To EmuDbg.BPCount - 1 Do Begin
+  If EmuDbg.BPs[I].Enabled Then St := 'actif' Else St := 'inactif';
+  EmuCmdConsole_AddLine(C, IntToStr(I) + ': ' + HexLong(EmuDbg.BPs[I].Addr) +
+   '  ' + St + '  hits=' + IntToStr(EmuDbg.BPs[I].HitCount));
+ End;
+End;
+
+Procedure EmuCmdConsole_CmdG(Var C: TEmuCmdConsole; Const Args: String);
+Var Seg, Ofs: Word; A: String;
+Begin
+ A := TermExtractParam(Args, 1);
+ If A <> '' Then Begin
+  If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
+   EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
+   Exit;
+  End;
+  EmuDbg_AddBP((LongInt(Seg) Shl 4) + Ofs, EDC_8086);
+  EmuCmdConsole_AddLine(C, 'Point d''arret pose a ' + HexWord(Seg) + ':' +
+   HexWord(Ofs) + ', execution en cours (G)... (BC pour le retirer)');
+ End Else
+  EmuCmdConsole_AddLine(C, 'Execution (G)...');
+ EmuDbg_Continue;
+End;
+
+Procedure EmuCmdConsole_CmdSet(Var C: TEmuCmdConsole; Const Args: String);
+Var Sub, ValStr: String;
+Begin
+ Sub := UpCaseStr(TermExtractParam(Args, 1));
+ If Sub = 'RADIX' Then Begin
+  ValStr := TermExtractParam(Args, 2);
+  If ValStr = '10' Then Begin
+   C.Radix := 10; EmuCmdConsole_AddLine(C, 'Radix = 10');
+  End Else If ValStr = '16' Then Begin
+   C.Radix := 16; EmuCmdConsole_AddLine(C, 'Radix = 16');
+  End Else
+   EmuCmdConsole_AddLine(C, 'Syntaxe : SET RADIX 10|16');
+ End Else
+  EmuCmdConsole_NotApplicable(C, 'SET ' + Sub);
+End;
+
+{ Evaluateur minimal : un seul jeton (nom de registre ou litteral
+  hexa/decimal). PAS un evaluateur d expressions complet - voir WATCH/SYM
+  ci-dessous pour ce qui reste hors perimetre de ce chantier. }
+Procedure EmuCmdConsole_CmdEval(Var C: TEmuCmdConsole; Const Args: String);
+Var Tok: String; V: LongInt; ErrPos: Word; RegV: LongInt;
+Begin
+ Tok := TermExtractParam(Args, 1);
+ If (Tok = '') Or (TermExtractParam(Args, 2) <> '') Then Begin
+  EmuCmdConsole_AddLine(C, '? : seules les expressions a un seul jeton ' +
+   '(registre ou litteral hexa/decimal) sont gerees dans cette version.');
+  Exit;
+ End;
+ RegV := EmuDbg_RegByName(Tok, EmuPanel.CPU);
+ If RegV <> -1 Then Begin
+  EmuCmdConsole_AddLine(C, Tok + ' = ' + HexWord(Word(RegV)) + ' (' +
+   IntToStr(RegV) + ')');
+  Exit;
+ End;
+ Val('$' + Tok, V, ErrPos);
+ If ErrPos <> 0 Then Val(Tok, V, ErrPos);
+ If ErrPos = 0 Then
+  EmuCmdConsole_AddLine(C, HexLong(V) + ' (' + IntToStr(V) + ')')
+ Else
+  EmuCmdConsole_AddLine(C, 'Expression non reconnue : ' + Tok);
+End;
+
+Procedure EmuCmdConsole_CmdHelp(Var C: TEmuCmdConsole);
+Begin
+ Case C.Dialect Of
+  ECD_SOFTICE: Begin
+   EmuCmdConsole_AddLine(C, 'Commandes SoftICE gerees :');
+   EmuCmdConsole_AddLine(C, '  .              IP courant + instruction');
+   EmuCmdConsole_AddLine(C, '  R [reg [val]]  Afficher/modifier les registres');
+   EmuCmdConsole_AddLine(C, '  D [seg:ofs]    Vider la memoire (hexa+ASCII)');
+   EmuCmdConsole_AddLine(C, '  E seg:ofs v..  Modifier des octets memoire');
+   EmuCmdConsole_AddLine(C, '  U [seg:ofs]    Desassembler');
+   EmuCmdConsole_AddLine(C, '  G [seg:ofs]    Executer (jusqu''a l''adresse si donnee)');
+   EmuCmdConsole_AddLine(C, '  T / TRACE      Pas a pas detaille');
+   EmuCmdConsole_AddLine(C, '  P              Pas a pas principal');
+   EmuCmdConsole_AddLine(C, '  BPX/BP seg:ofs Poser un point d''arret');
+   EmuCmdConsole_AddLine(C, '  BC/BD/BE n     Retirer/desactiver/activer un point d''arret');
+   EmuCmdConsole_AddLine(C, '  BL             Lister les points d''arret');
+   EmuCmdConsole_AddLine(C, '  ? expr         Evaluer (registre ou litteral)');
+   EmuCmdConsole_AddLine(C, '  CLS            Effacer la console');
+   EmuCmdConsole_AddLine(C, '  SET RADIX n    Changer la base d''affichage (10/16)');
+   EmuCmdConsole_AddLine(C, '  STACK/WATCH/SYM  (pas encore implementees)');
+   EmuCmdConsole_AddLine(C, '  QUIT/EXIT/Q    Fermer la console');
+   EmuCmdConsole_AddLine(C, 'Les commandes specifiques au noyau Windows NT sont');
+   EmuCmdConsole_AddLine(C, 'reconnues mais signalees non applicables.');
+  End;
+  ECD_VSTUDIO: Begin
+   EmuCmdConsole_AddLine(C, 'Commandes Visual Studio gerees :');
+   EmuCmdConsole_AddLine(C, '  Debug.Start / Debug.StopDebugging / Debug.BreakAll');
+   EmuCmdConsole_AddLine(C, '  Debug.StepInto / Debug.StepOver / Debug.StepOut');
+   EmuCmdConsole_AddLine(C, '  Debug.RunToCursor');
+   EmuCmdConsole_AddLine(C, '  Debug.Restart (pas encore implementee)');
+  End;
+  ECD_GDB: Begin
+   EmuCmdConsole_AddLine(C, 'Commandes GDB gerees :');
+   EmuCmdConsole_AddLine(C, '  run/r  break/b addr  continue/c  next/n  step/s');
+   EmuCmdConsole_AddLine(C, '  print/p expr  info registers  disassemble  bt  quit/q');
+  End;
+ End;
+End;
+
+{ --- Dispatcheurs par dialecte (idiome If/ElseIf de TermExecuteCommand,
+  le mode Turbo Pascal n a pas de Case-de-chaine) --- }
+
+Procedure EmuCmdConsole_ExecSoftICE(Var C: TEmuCmdConsole;
+ Const Cmd, Args, RawLine: String);
+Begin
+ If Cmd = '.' Then EmuCmdConsole_ShowCurrentInstr(C)
+ Else If Cmd = 'R' Then EmuCmdConsole_CmdR(C, Args)
+ Else If Cmd = 'D' Then EmuCmdConsole_CmdD(C, Args)
+ Else If Cmd = 'E' Then EmuCmdConsole_CmdE(C, Args)
+ Else If (Cmd = 'U') Or (Cmd = 'UNASSEMBLE') Then EmuCmdConsole_CmdU(C, Args)
+ Else If (Cmd = 'G') Or (Cmd = 'GO') Then EmuCmdConsole_CmdG(C, Args)
+ Else If (Cmd = 'T') Or (Cmd = 'TRACE') Then Begin
+  EmuDbg_StepInto; EmuCmdConsole_AddLine(C, 'Trace (T)...');
+ End
+ Else If Cmd = 'P' Then Begin
+  EmuDbg_StepOver; EmuCmdConsole_AddLine(C, 'Pas a pas (P)...');
+ End
+ Else If (Cmd = 'BPX') Or (Cmd = 'BP') Then EmuCmdConsole_CmdBPX(C, Args)
+ Else If Cmd = 'BC' Then EmuCmdConsole_CmdBC(C, Args)
+ Else If Cmd = 'BD' Then EmuCmdConsole_CmdBD(C, Args, False)
+ Else If Cmd = 'BE' Then EmuCmdConsole_CmdBD(C, Args, True)
+ Else If Cmd = 'BL' Then EmuCmdConsole_CmdBL(C)
+ Else If Cmd = '?' Then EmuCmdConsole_CmdEval(C, Args)
+ Else If Cmd = 'CLS' Then EmuCmdConsole_Clear(C)
+ Else If (Cmd = 'HELP') Or (Cmd = 'H') Then EmuCmdConsole_CmdHelp(C)
+ Else If (Cmd = 'QUIT') Or (Cmd = 'EXIT') Or (Cmd = 'Q') Then
+  C.Base.Visible := False
+ Else If Cmd = 'SET' Then EmuCmdConsole_CmdSet(C, Args)
+ Else If (Cmd = 'STACK') Or (Cmd = 'K') Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If Cmd = 'WATCH' Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If Cmd = 'SYM' Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If EmuCmdConsole_IsNtKernelCmd(Cmd) Then EmuCmdConsole_NotApplicable(C, Cmd)
+ Else EmuCmdConsole_Unknown(C, RawLine);
+End;
+
+Procedure EmuCmdConsole_ExecVStudio(Var C: TEmuCmdConsole;
+ Const Cmd, Args, RawLine: String);
+Var VisIdx: LongInt;
+Begin
+ If Cmd = 'DEBUG.START' Then Begin
+  If EmuDbg.Paused Then Begin
+   EmuDbg_Continue; EmuCmdConsole_AddLine(C, 'Demarrage (Debug.Start)...');
+  End Else
+   EmuCmdConsole_AddLine(C, 'Aucune session en pause a demarrer.');
+ End
+ Else If Cmd = 'DEBUG.STOPDEBUGGING' Then Begin
+  EmuDbg_Stop; EmuCmdConsole_AddLine(C, 'Arret (Debug.StopDebugging).');
+ End
+ Else If Cmd = 'DEBUG.BREAKALL' Then Begin
+  EmuDbg.BreakReq := True;
+  EmuCmdConsole_AddLine(C, 'Pause demandee (Debug.BreakAll).');
+ End
+ Else If Cmd = 'DEBUG.RESTART' Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If Cmd = 'DEBUG.STEPINTO' Then Begin
+  EmuDbg_StepInto; EmuCmdConsole_AddLine(C, 'Pas a pas detaille (Debug.StepInto)...');
+ End
+ Else If Cmd = 'DEBUG.STEPOVER' Then Begin
+  EmuDbg_StepOver; EmuCmdConsole_AddLine(C, 'Pas a pas principal (Debug.StepOver)...');
+ End
+ Else If Cmd = 'DEBUG.STEPOUT' Then Begin
+  EmuDbg_StepOut; EmuCmdConsole_AddLine(C, 'Pas a pas sortant (Debug.StepOut)...');
+ End
+ Else If Cmd = 'DEBUG.RUNTOCURSOR' Then Begin
+  VisIdx := EmuDbg.SelOfs - EmuDbg.DisasmTopOfs;
+  If (VisIdx >= 0) And (VisIdx <= 63) Then
+   EmuDbg_AddBP(EmuDbg.DisasmAddrs[VisIdx], EDC_8086)
+  Else
+   EmuDbg_AddBP((LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP, EDC_8086);
+  EmuDbg_Continue;
+  EmuCmdConsole_AddLine(C, 'Execution jusqu''au curseur (Debug.RunToCursor)...');
+ End
+ Else EmuCmdConsole_Unknown(C, RawLine);
+End;
+
+Procedure EmuCmdConsole_ExecGDB(Var C: TEmuCmdConsole;
+ Const Cmd, Args, RawLine: String);
+Begin
+ If (Cmd = 'RUN') Or (Cmd = 'R') Then Begin
+  If EmuDbg.Paused Then Begin
+   EmuDbg_Continue; EmuCmdConsole_AddLine(C, 'Demarrage (run)...');
+  End Else
+   EmuCmdConsole_AddLine(C, 'Aucune session en pause a demarrer.');
+ End
+ Else If (Cmd = 'BREAK') Or (Cmd = 'B') Then EmuCmdConsole_CmdBPX(C, Args)
+ Else If (Cmd = 'CONTINUE') Or (Cmd = 'C') Then Begin
+  EmuDbg_Continue; EmuCmdConsole_AddLine(C, 'continue...');
+ End
+ Else If (Cmd = 'NEXT') Or (Cmd = 'N') Then Begin
+  EmuDbg_StepOver; EmuCmdConsole_AddLine(C, 'next...');
+ End
+ Else If (Cmd = 'STEP') Or (Cmd = 'S') Then Begin
+  EmuDbg_StepInto; EmuCmdConsole_AddLine(C, 'step...');
+ End
+ Else If (Cmd = 'PRINT') Or (Cmd = 'P') Then EmuCmdConsole_CmdEval(C, Args)
+ Else If (Cmd = 'BACKTRACE') Or (Cmd = 'BT') Then EmuCmdConsole_NotYetImplemented(C, Cmd)
+ Else If Cmd = 'INFO' Then Begin
+  If UpCaseStr(Args) = 'REGISTERS' Then EmuCmdConsole_ShowRegs(C)
+  Else EmuCmdConsole_Unknown(C, RawLine);
+ End
+ Else If Cmd = 'DISASSEMBLE' Then EmuCmdConsole_CmdU(C, Args)
+ Else If (Cmd = 'QUIT') Or (Cmd = 'Q') Then C.Base.Visible := False
+ Else EmuCmdConsole_Unknown(C, RawLine);
+End;
+
+Procedure EmuCmdConsole_Submit(Var C: TEmuCmdConsole);
+Var Cmd, Args, InputLine: String;
+Begin
+ InputLine := TermTrim(C.InputText);
+ EmuCmdConsole_AddLine(C, EmuCmdConsole_PromptChar(C.Dialect) + InputLine);
+ EmuCmdConsole_HistPush(C, InputLine);
+ If InputLine <> '' Then Begin
+  Cmd := UpCaseStr(EmuCmdConsole_FirstWord(InputLine));
+  Args := EmuCmdConsole_Rest(InputLine);
+  Case C.Dialect Of
+   ECD_SOFTICE: EmuCmdConsole_ExecSoftICE(C, Cmd, Args, InputLine);
+   ECD_VSTUDIO: EmuCmdConsole_ExecVStudio(C, Cmd, Args, InputLine);
+   ECD_GDB:     EmuCmdConsole_ExecGDB(C, Cmd, Args, InputLine);
+  End;
+ End;
+ C.InputText := ''; C.InputCursor := 0; C.ScrollOffset := 0;
+End;
+
+Procedure EmuCmdConsole_InsertChar(Var C: TEmuCmdConsole; Ch: Char);
+Begin
+ If Length(C.InputText) >= 250 Then Exit;
+ Insert(Ch, C.InputText, C.InputCursor + 1);
+ Inc(C.InputCursor);
+ C.NeedRepaint := True;
+End;
+
+Procedure EmuCmdConsole_Backspace(Var C: TEmuCmdConsole);
+Begin
+ If C.InputCursor <= 0 Then Exit;
+ Delete(C.InputText, C.InputCursor, 1);
+ Dec(C.InputCursor);
+ C.NeedRepaint := True;
+End;
+
+Procedure EmuCmdConsole_DrawTab(TX, TY, TW, TH: Integer; Caption: String;
+ Active: Boolean);
+Var TXOfs: Integer;
+Begin
+ If Active Then Begin
+  SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+  SetColor(15);
+ End Else Begin
+  SetFillStyle(SolidFill, CLR_BACKGROUND);
+  SetColor(CLR_BORDER);
+ End;
+ Bar(TX, TY, TX + TW - 2, TY + TH - 1);
+ Rectangle(TX, TY, TX + TW - 2, TY + TH - 1);
+ { Ne jamais laisser le texte deborder AVANT le debut de l onglet (sur
+   l onglet precedent deja dessine) sur un onglet etroit - au pire il
+   deborde legerement sur sa propre bordure droite, jamais a gauche. }
+ TXOfs := (TW - TextWidth(Caption)) Div 2;
+ If TXOfs < 2 Then TXOfs := 2;
+ OutTextXY(TX + TXOfs, TY + (TH - TextHeight(Caption)) Div 2, Caption);
+End;
+
+{ --- Triptyque Show/Draw/Handle --- }
+
+Procedure ShowEmuCmdConsole(Var C: TEmuCmdConsole);
+Var NX, NY, NW, NH: Integer;
+Begin
+ EmuCmdConsole_ComputeRect(NX, NY, NW, NH);
+ C.Base.Title := 'Console de commandes du debogueur';
+ C.Base.X := NX; C.Base.Y := NY;
+ C.Base.Width := NW; C.Base.Height := NH;
+ C.Base.Result := DR_NONE;
+ C.Base.Visible := True;
+ C.Base.HasCancel := False;
+ If C.OutHead = Nil Then Begin
+  C.Dialect := ECD_SOFTICE;
+  C.Radix := 16;
+  C.LastDumpSeg := EmuPanel.CPU.Segs.DS; C.LastDumpOfs := 0;
+  C.LastUnasmSeg := EmuPanel.CPU.Segs.CS; C.LastUnasmOfs := EmuPanel.CPU.IP;
+  EmuCmdConsole_AddLine(C, 'SoftICE - tapez HELP pour la liste des commandes.');
+ End;
+ C.InputText := ''; C.InputCursor := 0;
+ C.CmdHistPos := -1;
+ C.WinFocused := True;
+ C.NeedRepaint := True;
+End;
+
+{ Tronque S pour que sa largeur en pixels ne depasse pas MaxW - la console
+  n a pas de retour a la ligne automatique, et OutTextXY ne clippe rien
+  tout seul (dessine par-dessus les panneaux voisins si on ne borne pas
+  la largeur explicitement, comme un vrai debogueur en mode texte le
+  ferait). }
+Function EmuCmdConsole_TruncateToWidth(S: String; MaxW: Integer): String;
+Begin
+ While (Length(S) > 1) And (TextWidth(S) > MaxW) Do
+  S := Copy(S, 1, Length(S) - 1);
+ EmuCmdConsole_TruncateToWidth := S;
+End;
+
+Procedure DrawEmuCmdConsole(Var C: TEmuCmdConsole);
+Const MAX_VIS_LINES = 200;
+Var
+ FX, FY, TabX, TabY, TabW, TabH, I, VisRows, TextH, PromptY, MaxTextW: Integer;
+ Node: PEmuCmdLine;
+ Buf: Array[0..MAX_VIS_LINES - 1] Of String;
+ N, Skip: Integer;
+ PS: String;
+Begin
+ DrawDialogFrame(C.Base);
+ EmuCmdConsole_TabRect(C, 0, TabX, TabY, TabW, TabH);
+ EmuCmdConsole_DrawTab(TabX, TabY, TabW, TabH, 'SoftICE', C.Dialect = ECD_SOFTICE);
+ EmuCmdConsole_TabRect(C, 1, TabX, TabY, TabW, TabH);
+ EmuCmdConsole_DrawTab(TabX, TabY, TabW, TabH, 'VStudio', C.Dialect = ECD_VSTUDIO);
+ EmuCmdConsole_TabRect(C, 2, TabX, TabY, TabW, TabH);
+ EmuCmdConsole_DrawTab(TabX, TabY, TabW, TabH, 'GDB', C.Dialect = ECD_GDB);
+ TextH := TextHeight('X') + 2;
+ FX := C.Base.X + DLG_PADDING;
+ FY := C.Base.Y + DLG_TITLE_HEIGHT + TabH + 8;
+ PromptY := C.Base.Y + C.Base.Height - DLG_PADDING - TextH - 4;
+ VisRows := (PromptY - FY) Div TextH;
+ If VisRows > MAX_VIS_LINES Then VisRows := MAX_VIS_LINES;
+ If VisRows < 1 Then VisRows := 1;
+ Node := C.OutTail;
+ Skip := C.ScrollOffset;
+ While (Node <> Nil) And (Skip > 0) Do Begin
+  Node := Node^.Prev; Dec(Skip);
+ End;
+ N := 0;
+ While (Node <> Nil) And (N < VisRows) Do Begin
+  Buf[N] := Node^.S;
+  Inc(N);
+  Node := Node^.Prev;
+ End;
+ MaxTextW := C.Base.X + C.Base.Width - DLG_PADDING - FX;
+ SetColor(CLR_BORDER);
+ For I := N - 1 DownTo 0 Do
+  OutTextXY(FX, FY + (N - 1 - I) * TextH,
+   EmuCmdConsole_TruncateToWidth(Buf[I], MaxTextW));
+ SetColor(8);
+ Line(C.Base.X + 4, PromptY - 2, C.Base.X + C.Base.Width - 4, PromptY - 2);
+ PS := EmuCmdConsole_PromptChar(C.Dialect);
+ SetColor(10);
+ OutTextXY(FX, PromptY, PS + C.InputText);
+ SetColor(15);
+ OutTextXY(FX + TextWidth(PS + Copy(C.InputText, 1, C.InputCursor)), PromptY, '_');
+End;
+
+Function HandleEmuCmdConsoleEvent(Var C: TEmuCmdConsole; Var Ev: TEvent): Boolean;
+Begin
+ HandleEmuCmdConsoleEvent := False;
+ If Not C.Base.Visible Then Exit;
+ If Ev.Kind In [EV_MOUSE_DOWN, EV_MOUSE_UP, EV_MOUSE_MOVE, EV_MOUSE_DBLCLICK] Then Begin
+  If C.Dragging Then Begin
+   If Ev.Kind = EV_MOUSE_MOVE Then Begin
+    C.Base.X := Ev.MouseX - C.DragOfsX;
+    C.Base.Y := Ev.MouseY - C.DragOfsY;
+    If C.Base.X < 0 Then C.Base.X := 0;
+    If C.Base.Y < 0 Then C.Base.Y := 0;
+    HandleEmuCmdConsoleEvent := True;
+    Exit;
+   End Else If Ev.Kind = EV_MOUSE_UP Then Begin
+    C.Dragging := False;
+    HandleEmuCmdConsoleEvent := True;
+    Exit;
+   End;
+  End;
+  If Ev.Kind = EV_MOUSE_DOWN Then Begin
+   If Not EmuCmdConsole_HitWindow(C, Ev.MouseX, Ev.MouseY) Then Begin
+    C.WinFocused := False;
+    Exit;
+   End;
+   C.WinFocused := True;
+   HandleEmuCmdConsoleEvent := True;
+   If EmuCmdConsole_HitCloseBox(C, Ev.MouseX, Ev.MouseY) Then
+    C.Base.Visible := False
+   Else If EmuCmdConsole_HitTitleBar(C, Ev.MouseX, Ev.MouseY) Then Begin
+    C.Dragging := True;
+    C.DragOfsX := Ev.MouseX - C.Base.X;
+    C.DragOfsY := Ev.MouseY - C.Base.Y;
+   End Else If EmuCmdConsole_HitTab(C, Ev.MouseX, Ev.MouseY, 0) Then
+    C.Dialect := ECD_SOFTICE
+   Else If EmuCmdConsole_HitTab(C, Ev.MouseX, Ev.MouseY, 1) Then
+    C.Dialect := ECD_VSTUDIO
+   Else If EmuCmdConsole_HitTab(C, Ev.MouseX, Ev.MouseY, 2) Then
+    C.Dialect := ECD_GDB;
+   Exit;
+  End;
+  Exit;
+ End;
+ If Not C.WinFocused Then Exit;
+ If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
+  HandleEmuCmdConsoleEvent := True;
+  If Ev.Kind = EV_KEY_CHAR Then Begin
+   If Ev.KeyChar = #13 Then EmuCmdConsole_Submit(C)
+   Else If Ev.KeyChar = #8 Then EmuCmdConsole_Backspace(C)
+   Else If Ev.KeyChar = #27 Then C.Base.Visible := False
+   Else If Ev.KeyChar In [#32..#126] Then EmuCmdConsole_InsertChar(C, Ev.KeyChar);
+  End Else Begin
+   Case Ev.KeyCode Of
+    $48: Begin { Fleche haut : rappel historique precedent }
+     If C.CmdHistCount > 0 Then Begin
+      If C.CmdHistPos = -1 Then C.CmdHistPos := C.CmdHistCount - 1
+      Else If C.CmdHistPos > 0 Then Dec(C.CmdHistPos);
+      C.InputText := C.CmdHist[C.CmdHistPos];
+      C.InputCursor := Length(C.InputText);
+     End;
+    End;
+    $50: Begin { Fleche bas : rappel historique suivant }
+     If C.CmdHistPos <> -1 Then Begin
+      If C.CmdHistPos < C.CmdHistCount - 1 Then Begin
+       Inc(C.CmdHistPos);
+       C.InputText := C.CmdHist[C.CmdHistPos];
+      End Else Begin
+       C.CmdHistPos := -1;
+       C.InputText := '';
+      End;
+      C.InputCursor := Length(C.InputText);
+     End;
+    End;
+    $4B: If C.InputCursor > 0 Then Dec(C.InputCursor); { Fleche gauche }
+    $4D: If C.InputCursor < Length(C.InputText) Then Inc(C.InputCursor); { Fleche droite }
+    $49: Begin { Page precedente : remonter dans le defilement }
+     Inc(C.ScrollOffset, 10);
+     If C.ScrollOffset > C.OutCount Then C.ScrollOffset := C.OutCount;
+    End;
+    $51: Begin { Page suivante : redescendre }
+     Dec(C.ScrollOffset, 10);
+     If C.ScrollOffset < 0 Then C.ScrollOffset := 0;
+    End;
+   End;
+  End;
+ End;
+End;
+
 { --- Gerer une touche pendant la pause. Retourne True si consomme. --- }
 
 Function EmuDbg_HandleKey(Var Ev: TEvent): Boolean;
@@ -85935,6 +86922,24 @@ Begin
    Ord(Ev.Kind), Ev.KeyChar, Ev.MouseX, Ev.MouseY);
   If Not EmuActivityDlg.Base.Visible Then FullRepaintNeeded := True;
   Exit;
+ End;
+ If EmuCmdConsole.Base.Visible Then Begin
+  If HandleEmuCmdConsoleEvent(EmuCmdConsole, Ev) Then Begin
+   { PAS d appel direct a DrawEmuCmdConsole ici : EmuDbg_DrawWindow a
+     deja documente (voir commentaire au site de composition, ~ligne
+     83179) que dessiner en dehors du cycle DrawAllWidgets/flip de
+     DrawEmulatorPanel produit un rendu fantome/tronque des qu un
+     evenement suivant redessine par dessus une page BGI differente -
+     meme motif que EmuActivityDlg, qui ne s auto-dessine jamais non
+     plus depuis DispatchEvent. Se contenter de demander un repaint
+     complet, gere ensuite au bon endroit par la boucle principale. }
+   EmuCmdConsole.NeedRepaint := True;
+   FullRepaintNeeded := True;
+   Exit;
+  End;
+  { Non absorbe (clic hors fenetre, ou pas le focus) -> continuer le
+    dispatch normal (Terminal/EmulatorPanel/menus), PAS de Exit ici - la
+    console doit rester non-modale, contrairement a EmuActivityDlg. }
  End;
  If GoToLineDlg.Base.Visible Then Begin
   HandleGoToLineEvent(GoToLineDlg,
