@@ -3329,6 +3329,74 @@ Type
                          { monochrome), Faux = GSTextModeC132x25 (couleur) }
  End;
 
+ { --- Controleur d interruptions programmable 8259A (Options > Emulateur >  }
+ { DOS: Materiel) - un exemplaire "maitre" (20h/21h, tout materiel) et un    }
+ { exemplaire "esclave" (A0h/A1h, IRQ8-15, uniquement materiel classe AT+ :  }
+ { voir Emu_IsATClassHw). Sequence ICW1-4/OCW1-3 reelle ; le registre ISR    }
+ { est reellement mis a jour a la livraison et efface par EOI (OCW2) pour   }
+ { la coherence visible du logiciel invite, mais NE conditionne PAS a lui   }
+ { seul la livraison d une IRQ suivante (voir Emu_ServiceIrqs) - seul l IMR  }
+ { (masque, OCW1) le fait, car Emu_FireHwInt ne modelise pas un retour      }
+ { d interruption trace independamment ; gater sur l ISR pourrait geler     }
+ { pour de bon la minuterie/le clavier pour tout logiciel invite qui utilise}
+ { le gestionnaire par defaut de l emulateur (jamais d EOI explicite emis). }
+ TEmuPICChip = Record
+  IMR         : Byte;    { masque d interruption (OCW1) }
+  ISR         : Byte;    { interruptions "en service" (informatif, voir ci-dessus) }
+  InitState   : Byte;    { 0=normal, 1=attend ICW2, 2=attend ICW3, 3=attend ICW4 }
+  VectorBase  : Byte;    { ICW2 : base des vecteurs INT (defaut reel $08 maitre, $70 esclave) }
+  SnglMode    : Boolean; { ICW1 bit1 : 1=pas de cascade, saute ICW3 }
+  NeedICW4    : Boolean; { ICW1 bit0 : ICW4 attendu }
+  AutoEOI     : Boolean; { ICW4 bit1 }
+  ReadISRNext : Boolean; { OCW3 : prochaine lecture du port commande = ISR sinon IRR }
+ End;
+
+ { --- 8255A PPI (Options > Emulateur > DOS: Materiel) - ports 60h-63h,     }
+ { repetes sur 64h-6Fh sur le materiel PC/XT d origine (decodage incomplet  }
+ { 2 bits d adresse, voir Emu_IsATClassHw) ; le port A (60h, scancode       }
+ { clavier) reste servi par P.CPU.NextRawKey deja existant, pas stocke ici. }
+ TEmuPPI = Record
+  PortB   : Byte; { 61h : reel (gate/donnees haut-parleur, horloge clavier) }
+  CtrlReg : Byte; { 63h : registre de mode, ecriture seule sur le vrai chip, relu tel quel ici }
+ End;
+
+ { --- UART 8250/16450 generique (COM2 02F8h-02FFh, COM4 02E8h-02EFh). Rien }
+ { n est cable a l autre bout (pas de modem/liaison reelle emulee) : les    }
+ { octets transmis (THR) sont perdus SAUF en boucle locale (MCR bit4=Loop), }
+ { LSR indique toujours "pret a transmettre" pour ne jamais bloquer un      }
+ { logiciel qui attend un tampon libre. }
+ TEmuUART = Record
+  RBR, THR   : Byte;
+  IER, IIR   : Byte;
+  LCR, MCR   : Byte;
+  LSR, MSR   : Byte;
+  SCR        : Byte;
+  DLL, DLM   : Byte; { diviseur de baudrate (DLAB=1, LCR bit7) }
+  DataReady  : Boolean;
+ End;
+
+ { --- Port parallele generique (LPT1 03BCh-03BFh, LPT2 0278h-027Fh). }
+ TEmuLPT = Record
+  DataReg : Byte;
+  CtrlReg : Byte;
+ End;
+
+ { --- Registres NE2000/DP8390 (260h-27Fh, Options > Emulateur > DOS:        }
+ { Logiciel > Reseau LAN = NE2000 compatible). Niveau de fidelite           }
+ { DELIBEREMENT limite a la DETECTION/RESET (ce qu un pilote de paquets ou   }
+ { une pile reseau sonde pour confirmer la presence de la carte avant de     }
+ { l utiliser) - le transfert de paquets reel se fait deja plus haut, via    }
+ { le vecteur INT logiciel EmuPkt (voir Emu_DoInt7A-style hook), PAS via ces }
+ { registres materiel : la fenetre DMA distante (10h-17h) est un tampon      }
+ { local sans lien avec cette couche, ne pas s attendre a y voir de vraies   }
+ { trames. }
+ TEmuNE2000 = Record
+  Regs0     : Array[0..15] Of Byte; { Page 0 }
+  Regs1     : Array[0..15] Of Byte; { Page 1 (adresse MAC, page courante) }
+  Regs2     : Array[0..15] Of Byte; { Page 2 }
+  DmaWindow : Array[0..7]  Of Byte; { fenetre DMA distante (10h-17h), locale uniquement }
+ End;
+
  { --- Pile reseau Novell IPX/SPX (Options > Emulateur > DOS > "Reseau     }
  { Novell NetWare") - voir Emu_DoInt7A/Emu_DoInt2F. Modele "boucle         }
  { locale" : aucune autre machine sur le fil, donc tout paquet envoye est  }
@@ -4181,6 +4249,13 @@ Type
   StepsPerTick   : LongInt;
   StepsToTick    : LongInt;
   IrqPending     : Byte;
+  { --- 8259A/8255A/UART/LPT/NE2000 (voir Emu_PortRead/Emu_PortWrite) ---   }
+  PICMaster      : TEmuPICChip;
+  PICSlave       : TEmuPICChip;
+  PPI            : TEmuPPI;
+  LPT1, LPT2     : TEmuLPT;
+  COM2, COM4     : TEmuUART;
+  NE2000         : TEmuNE2000;
   { --- CMOS --- }
   CMOSIndex      : Byte;
   CMOSReg        : Array[0..63] Of Byte;
@@ -5437,6 +5512,15 @@ Var
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
  EmuStepsToTick : LongInt;       { decompte avant prochain tick }
  EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
+ { --- 8259A/8255A/UART/LPT/NE2000 : voir Emu_PortRead/Emu_PortWrite. --- }
+ EmuPICMaster   : TEmuPICChip;   { 20h/21h, tout materiel }
+ EmuPICSlave    : TEmuPICChip;   { A0h/A1h, materiel classe AT+ seulement }
+ EmuPPI         : TEmuPPI;       { 60h-63h (+ miroir 64h-6Fh hors AT) }
+ EmuLPT1        : TEmuLPT;       { 03BCh-03BFh }
+ EmuLPT2        : TEmuLPT;       { 0278h-027Fh }
+ EmuCOM2        : TEmuUART;      { 02F8h-02FFh }
+ EmuCOM4        : TEmuUART;      { 02E8h-02EFh }
+ EmuNE2000      : TEmuNE2000;    { 0260h-027Fh, si Reseau LAN = NE2000 }
  { --- CMOS RAM/RTC (MC146818-like, 64 registres) - accessible via les   }
  { ports 70h/71h (defaut) ou E0h/E1h quand Materiel = Amdek System/88,   }
  { voir Emu_PortRead/Emu_PortWrite et Emu_CMOSPorts. Persiste pour toute }
@@ -9364,6 +9448,7 @@ Function  Emu_VidReadByte(MemOfs: LongInt): Byte; Forward;
 Procedure Emu_VidWriteByte(MemOfs: LongInt; Value: Byte); Forward;
 Procedure Emu_VidSetPixel(X, Y: Integer; Color: Byte); Forward;
 Function  Emu_VidGetPixel(X, Y: Integer): Byte; Forward;
+Function  Emu_FloppyCount: Byte; Forward;
 Function  Emu_VidPortRead(Port: Word): Byte; Forward;
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte); Forward;
 { Capacites de la carte video reellement configuree (Options > Emulateur > }
@@ -50240,6 +50325,304 @@ Begin
  If Reg > $09 Then EmuCMOS_Reg[Reg] := Value;
 End;
 
+{ Vrai si le materiel emule actuellement choisi (Options > Emulateur > DOS:  }
+{ Materiel) est de classe AT ou plus recent (second 8259A esclave present,   }
+{ contoleur clavier 8042 au lieu du decodage incomplet 8255 sur 60h-6Fh).    }
+{ Simplification assumee : seuls AT/PS2/Compaq Deskpro 386 (386, bus AT)     }
+{ sont consideres AT+ ; tous les autres profils (PC 5150, XT, Amdek, Tandy,  }
+{ Olivetti M24, Zenith Z-150, NCR PC4i, PCjr) sont traites comme classe      }
+{ PC/XT (8255A simple, un seul 8259A, ports 210h-215h). }
+Function Emu_IsATClassHw: Boolean;
+Begin
+ Case OptionsDlg.Data.DosHardware Of
+  2, 3, 6: Emu_IsATClassHw := True;
+ Else
+  Emu_IsATClassHw := False;
+ End;
+End;
+
+{ ============================================================
+  8259A PIC (maitre 20h/21h + esclave A0h/A1h) - voir TEmuPICChip.
+  ============================================================ }
+
+Procedure Emu_PIC_HandleEOI(Var C: TEmuPICChip; Value: Byte);
+Var Lvl, B: Byte;
+Begin
+ If (Value And $20) = 0 Then Exit; { ni EOI specifique ni non-specifique }
+ If (Value And $40) <> 0 Then Begin
+  Lvl := Value And $07;
+  C.ISR := C.ISR And Not (Byte(1) Shl Lvl);
+ End Else Begin
+  B := 0;
+  While (B < 8) And ((C.ISR And (Byte(1) Shl B)) = 0) Do Inc(B);
+  If B < 8 Then C.ISR := C.ISR And Not (Byte(1) Shl B);
+ End;
+End;
+
+Procedure Emu_PIC_Reset(Var C: TEmuPICChip; DefaultVectorBase: Byte);
+Begin
+ C.IMR := 0; { rien de masque par defaut : preserve le comportement existant }
+ C.ISR := 0;
+ C.InitState := 0;
+ C.VectorBase := DefaultVectorBase;
+ C.SnglMode := False;
+ C.NeedICW4 := False;
+ C.AutoEOI := False;
+ C.ReadISRNext := False;
+End;
+
+Function Emu_PIC_In(Var C: TEmuPICChip; CmdPort: Boolean; IrrBits: Byte): Byte;
+Begin
+ If CmdPort Then Begin
+  If C.ReadISRNext Then Emu_PIC_In := C.ISR
+  Else Emu_PIC_In := IrrBits;
+ End Else
+  Emu_PIC_In := C.IMR;
+End;
+
+Procedure Emu_PIC_Out(Var C: TEmuPICChip; CmdPort: Boolean; Value: Byte);
+Begin
+ If CmdPort Then Begin
+  If (Value And $10) <> 0 Then Begin { ICW1 : (re)demarre l initialisation }
+   C.SnglMode := (Value And $02) <> 0;
+   C.NeedICW4 := (Value And $01) <> 0;
+   C.InitState := 1;
+   C.ISR := 0;
+  End Else If (Value And $08) <> 0 Then Begin { OCW3 }
+   If (Value And $02) <> 0 Then C.ReadISRNext := (Value And $01) <> 0;
+   { SMM/ESMM (bits 5-6) et Poll (bit2) : accepte sans effet, aucun     }
+   { logiciel DOS courant n en depend. }
+  End Else
+   Emu_PIC_HandleEOI(C, Value); { OCW2 }
+  Exit;
+ End;
+ { Port donnees : ICW2/ICW3/ICW4 pendant l initialisation, sinon OCW1 (masque). }
+ Case C.InitState Of
+  1: Begin
+      C.VectorBase := Value And $F8;
+      If C.SnglMode Then Begin
+       If C.NeedICW4 Then C.InitState := 3 Else C.InitState := 0;
+      End Else
+       C.InitState := 2;
+     End;
+  2: Begin
+      If C.NeedICW4 Then C.InitState := 3 Else C.InitState := 0;
+     End;
+  3: Begin
+      C.AutoEOI := (Value And $02) <> 0;
+      C.InitState := 0;
+     End;
+ Else
+  C.IMR := Value;
+ End;
+End;
+
+{ ============================================================
+  8255A PPI (60h-63h, miroir 64h-6Fh hors materiel AT+).
+  ============================================================ }
+
+{ Lecture 61h : bits 3-5 = ancien mecanisme de bascule d actualisation
+  (StatusRetrace Xor $30, deja verifie fonctionnel pour la detection de
+  frequence moniteur par GSDEMO1.COM - NE PAS modifier) ; bits 0-1
+  (haut-parleur : gate timer2 + donnees) et bits 6-7 (horloge/latch
+  clavier) refletent maintenant reellement la derniere ecriture OUT 61h,
+  necessaire pour les sequences lecture-modification-ecriture
+  (IN AL,61h / OR AL,3 / OUT 61h,AL) qui n avaient auparavant aucun effet
+  (OUT 61h n etait pas gere du tout par Emu_PortWrite). }
+Function Emu_PPI_ReadB: Byte;
+Begin
+ Emu_PPI_ReadB := ((EmuVideo.StatusRetrace Xor $30) And $38) Or (EmuPPI.PortB And $C3);
+End;
+
+{ Lecture 62h (Port C) : bascule reelle SW1 haut/bas selon PortB bit3
+  (mux materiel reel), synthetise depuis le nombre de lecteurs disquette
+  deja connu de l emulateur plutot qu une valeur figee. }
+Function Emu_PPI_ReadC: Byte;
+Var Sw: Byte;
+Begin
+ Case Emu_FloppyCount Of
+  0: Sw := $20;
+  2: Sw := $61;
+ Else
+  Sw := $21;
+ End;
+ If (EmuPPI.PortB And $08) <> 0 Then
+  Emu_PPI_ReadC := Sw And $0F
+ Else
+  Emu_PPI_ReadC := (Sw Shr 4) And $0F;
+End;
+
+{ Dispatche un port PPI deja normalise (60h/61h/62h/63h) - reutilise tel     }
+{ quel pour le miroir 64h-6Fh (decodage materiel incomplet, PC/XT d origine,}
+{ voir Emu_IsATClassHw) afin de ne pas dupliquer la logique par registre. }
+Function Emu_PPI_Read(Var P: TEmulatorPanel; RegPort: Word): Byte;
+Begin
+ Emu_PPI_Read := 0;
+ Case RegPort Of
+  $60: Emu_PPI_Read := P.CPU.NextRawKey;
+  $61: Emu_PPI_Read := Emu_PPI_ReadB;
+  $62: Emu_PPI_Read := Emu_PPI_ReadC;
+  $63: Emu_PPI_Read := EmuPPI.CtrlReg;
+ End;
+End;
+
+Procedure Emu_PPI_Write(RegPort: Word; Value: Byte);
+Begin
+ Case RegPort Of
+  $61: EmuPPI.PortB := Value;
+  $63: EmuPPI.CtrlReg := Value;
+ End;
+End;
+
+{ ============================================================
+  Port parallele generique (LPT1/LPT2) - voir TEmuLPT. Offset 0=donnees,
+  1=etat (lecture seule), 2=controle. Aucune imprimante physique n est
+  emulee : l etat par defaut ($D8 : pret, en ligne, pas d erreur, papier
+  present) evite tout blocage logiciel qui attendrait un vrai peripherique.
+  ============================================================ }
+
+Function Emu_LPT_Read(Var L: TEmuLPT; Ofs: Word): Byte;
+Begin
+ Case Ofs Of
+  0: Emu_LPT_Read := L.DataReg;
+  1: Emu_LPT_Read := $D8;
+  2: Emu_LPT_Read := L.CtrlReg;
+ Else
+  Emu_LPT_Read := 0;
+ End;
+End;
+
+Procedure Emu_LPT_Write(Var L: TEmuLPT; Ofs: Word; Value: Byte);
+Begin
+ Case Ofs Of
+  0: L.DataReg := Value;
+  2: L.CtrlReg := Value;
+ End;
+End;
+
+{ ============================================================
+  UART 8250/16450 generique (COM2/COM4) - voir TEmuUART.
+  ============================================================ }
+
+Procedure Emu_UART_Init(Var U: TEmuUART);
+Begin
+ FillChar(U, SizeOf(U), 0);
+ U.LSR := $60; { THRE + TEMT : toujours pret a transmettre, jamais bloquant }
+ U.MSR := $B0; { CTS + DSR actifs, DCD/RI inactifs : "cable branche, rien en ligne" }
+End;
+
+Function Emu_UART_Read(Var U: TEmuUART; Reg: Byte): Byte;
+Begin
+ Emu_UART_Read := 0;
+ Case Reg Of
+  0: If (U.LCR And $80) <> 0 Then Emu_UART_Read := U.DLL
+     Else Begin
+      Emu_UART_Read := U.RBR;
+      U.DataReady := False;
+      U.LSR := U.LSR And Not Byte($01);
+     End;
+  1: If (U.LCR And $80) <> 0 Then Emu_UART_Read := U.DLM
+     Else Emu_UART_Read := U.IER;
+  2: Emu_UART_Read := U.IIR Or $01; { pas d interruption en attente }
+  3: Emu_UART_Read := U.LCR;
+  4: Emu_UART_Read := U.MCR;
+  5: Emu_UART_Read := U.LSR;
+  6: Emu_UART_Read := U.MSR;
+  7: Emu_UART_Read := U.SCR;
+ End;
+End;
+
+Procedure Emu_UART_Write(Var U: TEmuUART; Reg: Byte; Value: Byte);
+Begin
+ Case Reg Of
+  0: If (U.LCR And $80) <> 0 Then U.DLL := Value
+     Else Begin
+      U.THR := Value;
+      { Boucle locale (MCR bit4) uniquement : rien n est cable a l autre
+        bout de ce port, donc un octet transmis hors boucle est simplement
+        perdu (comportement d un cable debranche), jamais bloquant cote
+        LSR (voir Emu_UART_Init). }
+      If (U.MCR And $10) <> 0 Then Begin
+       U.RBR := Value;
+       U.DataReady := True;
+       U.LSR := U.LSR Or $01;
+      End;
+     End;
+  1: If (U.LCR And $80) <> 0 Then U.DLM := Value
+     Else U.IER := Value;
+  2: ; { FCR (16550+) : sans objet pour un 16450, ecriture ignoree }
+  3: U.LCR := Value;
+  4: U.MCR := Value;
+  7: U.SCR := Value;
+ End;
+End;
+
+{ ============================================================
+  NE2000/DP8390 (260h-27Fh) - voir TEmuNE2000. Detection/reset
+  uniquement, voir commentaire de TEmuNE2000.
+  ============================================================ }
+
+Procedure Emu_NE2000_Init(Var N: TEmuNE2000);
+Begin
+ FillChar(N, SizeOf(N), 0);
+End;
+
+Function Emu_NE2000_CurPage(Var N: TEmuNE2000): Byte;
+Begin
+ Emu_NE2000_CurPage := (N.Regs0[0] Shr 6) And $03;
+End;
+
+Function Emu_NE2000_Read(Var N: TEmuNE2000; Ofs: Byte): Byte;
+Begin
+ Emu_NE2000_Read := 0;
+ If Ofs <= $0F Then Begin { registres, page selectionnee par CR bits 6-7 }
+  Case Emu_NE2000_CurPage(N) Of
+   0: Emu_NE2000_Read := N.Regs0[Ofs];
+   1: Emu_NE2000_Read := N.Regs1[Ofs];
+  Else
+   Emu_NE2000_Read := N.Regs2[Ofs];
+  End;
+  Exit;
+ End;
+ If Ofs <= $17 Then Begin { 10h-17h : fenetre DMA distante locale }
+  Emu_NE2000_Read := N.DmaWindow[Ofs And $07];
+  Exit;
+ End;
+ { 18h-1Fh : port de reinitialisation - la lecture declenche un reset qui
+   se termine immediatement (pas de latence simulee) et se signale via le
+   bit RST (80h) de l ISR (Page 0, registre 07h), exactement la sequence
+   qu un pilote de paquets/pile reseau sonde pour confirmer la presence
+   d une carte NE2000 avant de s en servir. }
+ N.Regs0[$07] := N.Regs0[$07] Or $80;
+End;
+
+Procedure Emu_NE2000_Write(Var N: TEmuNE2000; Ofs: Byte; Value: Byte);
+Begin
+ If Ofs <= $0F Then Begin
+  If Ofs = $07 Then Begin { ISR : ecriture 1 pour effacer (comportement reel) }
+   Case Emu_NE2000_CurPage(N) Of
+    0: N.Regs0[$07] := N.Regs0[$07] And Not Value;
+   Else
+    ; { ISR n existe que page 0 sur le vrai chip }
+   End;
+   Exit;
+  End;
+  Case Emu_NE2000_CurPage(N) Of
+   0: N.Regs0[Ofs] := Value;
+   1: N.Regs1[Ofs] := Value;
+  Else
+   N.Regs2[Ofs] := Value;
+  End;
+  Exit;
+ End;
+ If Ofs <= $17 Then Begin
+  N.DmaWindow[Ofs And $07] := Value;
+  Exit;
+ End;
+ { 18h-1Fh : accuse de reception de la reinitialisation - accepte sans effet
+   supplementaire (le bit RST a deja ete pose par la lecture prealable). }
+End;
+
 { --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
       Les ports non ger?s retournent 0. --- }
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
@@ -50257,15 +50640,51 @@ Begin
   Exit;
  End;
  Case Port Of
+  $20, $21: Emu_PortRead := Emu_PIC_In(EmuPICMaster, Port = $20, EmuIrqPending);
+  { PIC esclave (IRQ8-15) : uniquement sur materiel classe AT+ (voir
+    Emu_IsATClassHw) - un PC/XT d origine n a qu un seul 8259A, sonder
+    A0h/A1h dessus ne doit rien trouver (comportement par defaut : 0). }
+  $A0, $A1: If Emu_IsATClassHw Then
+             Emu_PortRead := Emu_PIC_In(EmuPICSlave, Port = $A0, 0);
   $40, $41, $42: Begin
    { PIT 8253 - lecture de compteur. Retourne un compteur libre. }
    Inc(EmuTickCounter);
    Emu_PortRead := Byte(EmuTickCounter);
   End;
   $43: Emu_PortRead := 0;
-  $60: Emu_PortRead := P.CPU.NextRawKey;
-  $61: Emu_PortRead := EmuVideo.StatusRetrace Xor $30;
-  $3B4..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
+  $60..$63: Emu_PortRead := Emu_PPI_Read(P, Port);
+  { 8255A : decodage materiel incomplet (2 bits d adresse) sur PC/XT       }
+  { d origine uniquement - un vrai 8042 (materiel AT+) repond differemment}
+  { et n est PAS emule ici (hors perimetre demande). }
+  $64..$6F: If Not Emu_IsATClassHw Then
+             Emu_PortRead := Emu_PPI_Read(P, $60 + (Port And 3));
+  { Unite d extension 5161 (PC/XT uniquement) : aucune unite reelle       }
+  { emulee, mais repond 0 au lieu de rester totalement muette, pour       }
+  { les rares utilitaires de diagnostic d epoque qui la sondent. }
+  $210..$215: If Not Emu_IsATClassHw Then Emu_PortRead := 0;
+  { NE2000 (Reseau LAN = NE2000 compatible) : 278h-27Ah reserve a LPT2    }
+  { (conflit reel d adresses connu de l epoque entre une carte reseau     }
+  { configuree en base 260h et un 2e port parallele - voir le commentaire }
+  { du bloc LPT2 ci-dessous) ; le port de reinitialisation canonique      }
+  { (base+1Fh = 27Fh) reste joignable, suffisant pour la sequence de      }
+  { detection standard d un pilote de paquets. }
+  $260..$277, $27B..$27F:
+   If OptionsDlg.Data.DosLAN And (OptionsDlg.Data.DosLANVendor = 0) Then
+    Emu_PortRead := Emu_NE2000_Read(EmuNE2000, Byte(Port - $260));
+  { LPT2 : garde la priorite sur le sous-intervalle partage avec NE2000   }
+  { ci-dessus (278h-27Ah), fidele au compromis reel de l epoque. }
+  $278..$27A: Emu_PortRead := Emu_LPT_Read(EmuLPT2, Port - $278);
+  $2E8..$2EF: Emu_PortRead := Emu_UART_Read(EmuCOM4, Byte(Port - $2E8));
+  $2F8..$2FF: Emu_PortRead := Emu_UART_Read(EmuCOM2, Byte(Port - $2F8));
+  $3B4..$3BB: Emu_PortRead := Emu_VidPortRead(Port);
+  { LPT1 (carte combo mono+imprimante) : 3BCh=donnees,3BDh=etat,3BEh=     }
+  { controle - jamais interprete par Emu_VidPortRead auparavant (son      }
+  { Case interne n a pas d entree pour ces adresses, il retombait sur son }
+  { defaut 0), donc ce nouveau branchement n enleve aucun comportement    }
+  { video existant. }
+  $3BC..$3BE: Emu_PortRead := Emu_LPT_Read(EmuLPT1, Port - $3BC);
+  $3BF: Emu_PortRead := 0;
+  $3C0..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
  End;
 End;
 
@@ -50283,7 +50702,19 @@ Begin
   Exit;
  End;
  Case Port Of
-  $3B4..$3DF: Emu_VidPortWrite(Port, Value);
+  $20, $21: Emu_PIC_Out(EmuPICMaster, Port = $20, Value);
+  $A0, $A1: If Emu_IsATClassHw Then Emu_PIC_Out(EmuPICSlave, Port = $A0, Value);
+  $60..$63: Emu_PPI_Write(Port, Value);
+  $64..$6F: If Not Emu_IsATClassHw Then Emu_PPI_Write($60 + (Port And 3), Value);
+  $260..$277, $27B..$27F:
+   If OptionsDlg.Data.DosLAN And (OptionsDlg.Data.DosLANVendor = 0) Then
+    Emu_NE2000_Write(EmuNE2000, Byte(Port - $260), Value);
+  $278..$27A: Emu_LPT_Write(EmuLPT2, Port - $278, Value);
+  $2E8..$2EF: Emu_UART_Write(EmuCOM4, Byte(Port - $2E8), Value);
+  $2F8..$2FF: Emu_UART_Write(EmuCOM2, Byte(Port - $2F8), Value);
+  $3B4..$3BB: Emu_VidPortWrite(Port, Value);
+  $3BC..$3BE: Emu_LPT_Write(EmuLPT1, Port - $3BC, Value);
+  $3C0..$3DF: Emu_VidPortWrite(Port, Value);
  End;
 End;
 
@@ -59239,7 +59670,7 @@ End;
 
 { Initialiser la BIOS Data Area minimale a 0040:0000. }
 Procedure Emu_InitBDA(Var P: TEmulatorPanel);
-Var I: Integer; EqLo: Byte;
+Var I: Integer; EqLo: Byte; EqWord: Word; SerialCount, ParallelCount: Byte;
 Begin
  { Etat machine ANSI.SYS remis a neuf pour cette session (voir             }
  { EmuVScr_AnsiFeed) - NE PAS confondre avec EmuVScr_Clear, qui efface      }
@@ -59267,7 +59698,31 @@ Begin
  Else
   EqLo := $21;
  End;
- Emu_WriteByte(P.CPU, $40, $10, EqLo);
+ { Table des ports COM (0040:0000-0007) et LPT (0040:0008-000D) - un vrai   }
+ { BIOS y inscrit l adresse de base de chaque port reellement present, et   }
+ { 0000h pour un port absent. COM2/COM4 et LPT1/LPT2 sont desormais de vrais}
+ { ports emules (voir Emu_PortRead/Emu_PortWrite) ; COM1/COM3/LPT3 restent  }
+ { absents (0), non demandes. }
+ Emu_WriteWord(P.CPU, $40, $00, 0);      { COM1 : absent }
+ Emu_WriteWord(P.CPU, $40, $02, $2F8);   { COM2 }
+ Emu_WriteWord(P.CPU, $40, $04, 0);      { COM3 : absent }
+ Emu_WriteWord(P.CPU, $40, $06, $2E8);   { COM4 }
+ Emu_WriteWord(P.CPU, $40, $08, $3BC);   { LPT1 }
+ Emu_WriteWord(P.CPU, $40, $0A, $278);   { LPT2 }
+ Emu_WriteWord(P.CPU, $40, $0C, 0);      { LPT3 : absent }
+ { Octet de poids fort du mot equipement (bits 9-11 = nb ports serie,       }
+ { bits 14-15 = nb ports paralleles, plafonne a 3 par le format reel) -     }
+ { jamais rempli auparavant (restait a 0 quel que soit le materiel emule,   }
+ { donc invisible pour tout logiciel qui consulte l equipement plutot que   }
+ { de sonder les ports directement). Compte honnete du nombre d entrees non }
+ { nulles ci-dessus plutot qu une supposition de contigu?te depuis COM1/    }
+ { LPT1 - voir le commentaire de TEmuUART/TEmuLPT pour le choix des ports   }
+ { reellement implantes. }
+ SerialCount := 2;   { COM2 + COM4 }
+ ParallelCount := 2; { LPT1 + LPT2 }
+ EqWord := Word(EqLo) Or (Word(SerialCount And $07) Shl 9)
+                      Or (Word(ParallelCount And $03) Shl 14);
+ Emu_WriteWord(P.CPU, $40, $10, EqWord);
  { Adresse de base des ports du controleur CRT (0040:0063) : 03D4h pour  }
  { les cartes couleur (CGA/EGA/Graphics Solution), 03B4h en monochrome.  }
  { De nombreux logiciels (dont GSDEMO1.COM) sondent ce mot pour valider  }
@@ -59293,6 +59748,19 @@ Begin
  EmuIrqPending   := 0;
  EmuVideo.StatusRetrace := 0;
  EmuVideo.VRetraceAcc   := 0;
+ { Etat materiel volatil (8259A/8255A/UART/LPT/NE2000) remis a neuf pour    }
+ { cette session, comme EmuIrqPending ci-dessus - a la difference de la     }
+ { CMOS (EmuCMOS_Reg), qui persiste deliberement comme une vraie pile       }
+ { CMOS. Vecteurs par defaut reels ($08 maitre, $70 esclave, memes valeurs  }
+ { qu un vrai BIOS programme au demarrage). }
+ Emu_PIC_Reset(EmuPICMaster, $08);
+ Emu_PIC_Reset(EmuPICSlave, $70);
+ FillChar(EmuPPI, SizeOf(EmuPPI), 0);
+ FillChar(EmuLPT1, SizeOf(EmuLPT1), 0);
+ FillChar(EmuLPT2, SizeOf(EmuLPT2), 0);
+ Emu_UART_Init(EmuCOM2);
+ Emu_UART_Init(EmuCOM4);
+ Emu_NE2000_Init(EmuNE2000);
  { DOS demarre l application avec IF=1 (interruptions activees). }
  Include(P.CPU.Flags.s, EFG_IF);
 End;
@@ -59361,14 +59829,19 @@ Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel);
 Begin
  If Not (EFG_IF In P.CPU.Flags.s) Then Exit;
  If EmuIrqPending = 0 Then Exit;
- If (EmuIrqPending And $01) <> 0 Then Begin
+ { Gate sur l IMR du 8259A maitre (OUT 21h) uniquement, PAS sur son ISR :   }
+ { voir le commentaire de TEmuPICChip - un IRQ masque reste en attente     }
+ { (pas perdu) jusqu a ce que le logiciel invite le demasque explicitement.}
+ If ((EmuIrqPending And $01) <> 0) And ((EmuPICMaster.IMR And $01) = 0) Then Begin
    EmuIrqPending := EmuIrqPending And Not Byte($01);
-   Emu_FireHwInt(P, $08);
+   EmuPICMaster.ISR := EmuPICMaster.ISR Or $01;
+   Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 0));
    Exit;
  End;
- If (EmuIrqPending And $02) <> 0 Then Begin
+ If ((EmuIrqPending And $02) <> 0) And ((EmuPICMaster.IMR And $02) = 0) Then Begin
    EmuIrqPending := EmuIrqPending And Not Byte($02);
-   Emu_FireHwInt(P, $09);
+   EmuPICMaster.ISR := EmuPICMaster.ISR Or $02;
+   Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 1));
    Exit;
  End;
 End;
@@ -72192,6 +72665,9 @@ Begin
  Snap.TickCounter := EmuTickCounter;
  Snap.StepsPerTick := EmuStepsPerTick; Snap.StepsToTick := EmuStepsToTick;
  Snap.IrqPending := EmuIrqPending;
+ Snap.PICMaster := EmuPICMaster; Snap.PICSlave := EmuPICSlave;
+ Snap.PPI := EmuPPI; Snap.LPT1 := EmuLPT1; Snap.LPT2 := EmuLPT2;
+ Snap.COM2 := EmuCOM2; Snap.COM4 := EmuCOM4; Snap.NE2000 := EmuNE2000;
  Snap.CMOSIndex := EmuCMOS_Index;
  Move(EmuCMOS_Reg, Snap.CMOSReg, SizeOf(Snap.CMOSReg));
  Move(EmuTraceBuf, Snap.TraceBuf, SizeOf(Snap.TraceBuf));
@@ -72296,6 +72772,9 @@ Begin
  EmuTickCounter := Snap.TickCounter;
  EmuStepsPerTick := Snap.StepsPerTick; EmuStepsToTick := Snap.StepsToTick;
  EmuIrqPending := Snap.IrqPending;
+ EmuPICMaster := Snap.PICMaster; EmuPICSlave := Snap.PICSlave;
+ EmuPPI := Snap.PPI; EmuLPT1 := Snap.LPT1; EmuLPT2 := Snap.LPT2;
+ EmuCOM2 := Snap.COM2; EmuCOM4 := Snap.COM4; EmuNE2000 := Snap.NE2000;
  EmuCMOS_Index := Snap.CMOSIndex;
  Move(Snap.CMOSReg, EmuCMOS_Reg, SizeOf(EmuCMOS_Reg));
  Move(Snap.TraceBuf, EmuTraceBuf, SizeOf(EmuTraceBuf));
