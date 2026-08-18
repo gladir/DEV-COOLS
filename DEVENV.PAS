@@ -9086,8 +9086,8 @@ Begin
  AddMenuItem(MainMenuBar.Menus[5], 'Point d arret', 'F9', 610);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas principal', 'F10', 620);
- AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas detaille', 'F11', 621);
- AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Maj+F11', 622);
+ AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas detaille', 'F11 ou Ctrl+F10', 621);
+ AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Maj+F11 ou Alt+F10', 622);
  AddMenuItem(MainMenuBar.Menus[5], 'Animer', '', 623);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
@@ -9156,6 +9156,7 @@ Procedure EmuDbg_StepInto; Forward;
 Procedure EmuDbg_StepOver; Forward;
 Procedure EmuDbg_StepOut; Forward;
 Procedure EmuDbg_ToggleBPAtPC; Forward;
+Procedure EmuDbg_AddBP(Addr: LongInt; ACPU: TEmuDbgCPU); Forward;
 Function EmuDbg_IsBreakKey(Var Ev: TEvent): Boolean; Forward;
 Procedure EmuDbg_OnBeforeStep6502; Forward;
 Procedure EmuDbg_OnBeforeStep8086; Forward;
@@ -34327,6 +34328,8 @@ Var
  CurDir, DosExe, ElfExe: String;
  PrgTarget, PrgPath: String;
  ArgFile, ArgSwitch, DbgTarget, DbgPath, ResolveDir: String;
+ ArgBP, BPSegStr, BPOfsStr: String;
+ BPSeg, BPOfs, BPColonPos, BPErr1, BPErr2: Word;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -34370,19 +34373,35 @@ Begin
  End;
  { Extraire la commande et les parametres }
  TermExtractCommand(CmdStr, CurrCmd, ParamStr);
- { "DEBUG <fichier.exe|.com|.prg|.xex> /GUI" (inspire de la vraie commande }
- { MS-DOS DEBUG.COM) : charge le programme dans l emulateur SANS le        }
- { lancer et affiche le debogueur pas-a-pas deja existant (Point d arret/   }
- { Pas a pas, menu Deboguer) a droite du panneau - voir                    }
- { EmuDbgArmPauseOnLoad/ShowEmulatorPanel. Commun aux 5 shells, intercepte  }
- { ICI (avant le Case ci-dessous) plutot que duplique dans chacun. Meme     }
- { restriction "disque hote uniquement" que le repli generique "commande   }
- { inconnue -> executable" plus bas (lecteurs virtuels non geres ici). }
+ { "DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS]" (inspire de la    }
+ { vraie commande MS-DOS DEBUG.COM) : charge le programme dans l emulateur  }
+ { SANS le lancer et affiche le debogueur pas-a-pas deja existant (Point    }
+ { d arret/Pas a pas, menu Deboguer) a droite du panneau - voir             }
+ { EmuDbgArmPauseOnLoad/ShowEmulatorPanel. /BP:SEG:OFS (optionnel) pose en  }
+ { plus un point d arret machine des le chargement, sur une adresse         }
+ { LINEAIRE (Seg Shl 4)+Ofs qui reste actif meme pour du code atteint       }
+ { uniquement via EXEC (AH=4Bh) plus tard - voir EmuDbg_AddBP ci-dessous.   }
+ { DEBUG /? affiche l aide. Commun aux 5 shells, intercepte ICI (avant le   }
+ { Case ci-dessous) plutot que duplique dans chacun. Meme restriction       }
+ { "disque hote uniquement" que le repli generique "commande inconnue ->   }
+ { executable" plus bas (lecteurs virtuels non geres ici). }
  If CurrCmd = 'DEBUG' Then Begin
   ArgFile := TermExtractParam(ParamStr, 1);
   ArgSwitch := TermExtractParam(ParamStr, 2);
+  If (UpCaseStr(ArgFile) = '/?') Or (UpCaseStr(ArgSwitch) = '/?') Then Begin
+   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS]');
+   TermAddLine(TP, '  /GUI          Charge le programme sans le lancer et affiche');
+   TermAddLine(TP, '                le Debogueur 8086/6502/6809 (fenetre a droite).');
+   TermAddLine(TP, '  /BP:SEG:OFS   Pose un point d''arret machine (hexa) des le');
+   TermAddLine(TP, '                chargement, ex. /BP:201F:265B - reste actif');
+   TermAddLine(TP, '                meme pour du code atteint via EXEC (AH=4Bh),');
+   TermAddLine(TP, '                donc utile pour retrouver l''appelant d''une');
+   TermAddLine(TP, '                routine sans faire defiler le desassemblage.');
+   TermAddLine(TP, '  Exemple : DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:265B');
+   Exit;
+  End;
   If (ArgFile = '') Or (UpCaseStr(ArgSwitch) <> '/GUI') Then
-   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI')
+   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS]')
   Else If TP.VirtDrive >= 0 Then
    TermAddLine(TP,
     'DEBUG /GUI n''est pas pris en charge sur un lecteur virtuel.')
@@ -34416,6 +34435,29 @@ Begin
    Else Begin
     EmuDbgArmPauseOnLoad := True;
     CreateEmulatorTab(DbgPath, DbgTarget, '');
+    { Parametre optionnel /BP:SEG:OFS (hexa, ex. /BP:201F:265B) : pose un   }
+    { point d arret machine des le chargement, sur une adresse LINEAIRE    }
+    { (Seg Shl 4)+Ofs - fonctionne meme pour du code atteint uniquement    }
+    { via EXEC (AH=4Bh, cible dans un segment different de celui charge    }
+    { ici), puisque EmuDbg_ShouldBreak compare a CS:IP courant a CHAQUE    }
+    { instruction, quel que soit le programme en cours d execution. Utile  }
+    { pour retrouver l appelant d une routine sans devoir faire defiler    }
+    { manuellement le desassemblage jusqu a une adresse arbitraire. }
+    ArgBP := TermExtractParam(ParamStr, 3);
+    If (Length(ArgBP) > 4) And (UpCaseStr(Copy(ArgBP, 1, 4)) = '/BP:') Then Begin
+     BPColonPos := Pos(':', Copy(ArgBP, 5, Length(ArgBP) - 4));
+     If BPColonPos > 0 Then Begin
+      BPSegStr := Copy(ArgBP, 5, BPColonPos - 1);
+      BPOfsStr := Copy(ArgBP, 5 + BPColonPos, Length(ArgBP) - 4 - BPColonPos);
+      Val('$' + BPSegStr, BPSeg, BPErr1);
+      Val('$' + BPOfsStr, BPOfs, BPErr2);
+      If (BPErr1 = 0) And (BPErr2 = 0) Then Begin
+       EmuDbg_AddBP((LongInt(BPSeg) Shl 4) + BPOfs, EDC_8086);
+       TermAddLine(TP, 'Point d''arret pose : ' + BPSegStr + ':' + BPOfsStr);
+      End Else
+       TermAddLine(TP, 'Adresse /BP invalide : ' + ArgBP);
+     End;
+    End;
    End;
   End;
   Exit;
@@ -84442,6 +84484,19 @@ Begin
    $44: Begin EmuDbg_StepOver;  EmuDbg_HandleKey := True; End; { F10 }
    $85: Begin EmuDbg_StepInto;  EmuDbg_HandleKey := True; End; { F11 }
    $87: Begin EmuDbg_StepOut;   EmuDbg_HandleKey := True; End; { Shift+F11 }
+   { Rechanges de Ctrl+F10/Alt+F10 pour Pas a pas detaille/sortant : F11
+     et Maj+F11 n atteignent JAMAIS le systeme d evenements de cette
+     application (verifie empiriquement - intercepte en amont, tres
+     probablement par Windows/PtcGraph qui reserve F11 pour un bascule
+     plein ecran interne - les touches "clavier etendu" F11/F12 n ont
+     d ailleurs jamais fait partie de la table de scan codes BIOS
+     d origine PC/XT, contrairement a F1-F10, ce qui explique aussi
+     pourquoi F10 lui-meme reste fiable). Ctrl+F10/Alt+F10 restent DANS
+     cette table d origine (comme Ctrl+F5/Maj+F5 deja fiables ci-dessus)
+     et sont donc attendus fiables sur tout clavier, y compris ceux sans
+     rangee de touches de fonction confortable qui motivent ce rechange. }
+   $67: Begin EmuDbg_StepInto;  EmuDbg_HandleKey := True; End; { Ctrl+F10 }
+   $71: Begin EmuDbg_StepOut;   EmuDbg_HandleKey := True; End; { Alt+F10 }
    $58: Begin EmuDbg_Stop;      EmuDbg_HandleKey := True; End; { Shift+F5 }
    $62: Begin EmuDbg_Continue;  EmuDbg_HandleKey := True; End; { Ctrl+F5 }
    $48: Begin { Fleche haut : selection precedente }
