@@ -45589,7 +45589,31 @@ Begin
   Exit;
  End;
  C.MemReady := True;
- FillChar(C.Memory^, SizeOf(TEmuMemBuf), 0);
+ { DECISION PERMANENTE (2026-08-19, demande explicite de l utilisateur
+   "DOSBox a demontre son efficacite") : remplir la RAM emulee avec un
+   octet NON NUL ($F6) plutot que la mettre a zero, pour matcher le
+   comportement d un vrai DOS/DOSBox - confirme via le code source
+   DOSBox-X (dos_execute.cpp, enquete NC3) que DOS_Execute (la fonction
+   EXEC) NE MET JAMAIS LA MEMOIRE A ZERO pour un processus enfant ; une
+   vraie machine DOS recycle des blocs potentiellement DEJA UTILISES
+   (jamais garantis a zero). L allocateur "bump" de cet emulateur
+   (EmuNextFreeSeg, jamais recycle) rendait AUPARAVANT tout segment
+   charge (parent ET tout enfant EXEC, AH=4Bh) TOUJOURS vierge/zero -
+   contrairement a une vraie machine. $F6 (pas zero, pas aleatoire pour
+   rester deterministe/reproductible) est le meme octet deja utilise en
+   experience temporaire lors de l enquete NC3 (voir [[project-devenv]]) :
+   a lui seul, changeait mesurablement le comportement de NC3.EXE (barre
+   de menu rendue propre, barre de touches commence a apparaitre) - mais
+   revelait aussi un vrai bogue SEPARE (vecteur IVT $08 manquant, deja
+   corrige ailleurs dans ce fichier) qui plantait plus tot avec la
+   memoire non nulle seule ; les DEUX correctifs combines n avaient pas
+   encore ete pleinement explores avant cette decision. Large changement
+   PAR CONCEPTION (affecte TOUS les emulateurs DOS de l IDE, pas
+   seulement NC3) - c est la porte etroite de ce fichier ou la memoire
+   emulee est allouee, dont le choix se fait UNE SEULE FOIS ici pour
+   TOUTE la RAM d une session emulateur (parent + tout futur enfant EXEC
+   dans le meme onglet). }
+ FillChar(C.Memory^, SizeOf(TEmuMemBuf), $F6);
  { Taille memoire conventionnelle : 640 Ko a l offset 0040:0013 }
  Emu_WriteWord(C, 0, $0413, 640);
  Emu_MakeIntrAddr(C);
@@ -73996,6 +74020,19 @@ Begin
   End;
   DOS_RunOneChunk(P);
   DrawEmulatorPanel(P);
+  { BOGUE REEL signale par l utilisateur (2026-08-19) : la fenetre du
+    Debogueur devrait rester ouverte et se mettre a jour EN DIRECT
+    (registres + desassemblage) pendant qu on tourne librement (G/F5),
+    pas disparaitre - voir EmuDbg_Continue, qui ne la ferme plus. La
+    redessiner ici, au meme rythme que l ecran emulateur lui-meme (une
+    fois par bloc de 5000 instructions), donne une vue live sans le cout
+    d un redessin a CHAQUE instruction - EmuDbg_DrawWindow lit deja les
+    registres/CS:IP LIVE depuis EmuPanel.CPU a chaque appel (aucune
+    valeur mise en cache), donc aucun autre changement n est necessaire
+    pour que le contenu affiche suive reellement l execution. Meme garde
+    que le site d origine dans DrawAllWidgets (ne pas effacer un menu
+    deroulant ouvert). }
+  If EmuDbg.WinVisible And (Not MenuActive) Then EmuDbg_DrawWindow;
   If P.CPU.Fault <> sfNone Then Begin
    DOS_PrintEndMessage(P);
    DrawEmulatorPanel(P);
@@ -84880,6 +84917,20 @@ End;
 
 { --- Commandes utilisateur (Continuer / Stop / Step) --- }
 
+{ BOGUE REEL signale par l utilisateur (2026-08-19) : la fenetre du
+  Debogueur se fermait/disparaissait des qu on reprenait l execution
+  (G/F5) DEPUIS la Console de commandes - "ca enleve beaucoup
+  d information vitale". Cause : cette procedure mettait TOUJOURS
+  EmuDbg.WinVisible a False en reprenant (motif d origine : le
+  Debogueur "cede la place" pendant qu on tourne librement). Desormais,
+  Continue laisse la fenetre VISIBLE - elle devient une vue LIVE en
+  lecture seule (registres + desassemblage a partir du CS:IP courant, qui
+  se lisent deja tous les deux directement depuis l etat CPU LIVE a
+  chaque appel de EmuDbg_DrawWindow, aucune valeur mise en cache) tant
+  qu on tourne, plutot que de disparaitre completement - voir le nouvel
+  appel periodique dans StepEmulator (branche '-CD'/'-CP') qui la
+  redessine au meme rythme que l ecran emulateur lui-meme. EmuDbg_Stop
+  continue, LUI, a fermer la fenetre (arret volontaire de la session). }
 Procedure EmuDbg_Continue;
 Begin
  EmuDbg.StepMode := ESM_NONE;
@@ -84889,7 +84940,6 @@ Begin
  EmuDbg.Animating := False;
  EmuDbg.Dragging := False;
  EmuDbg.Resizing := False;
- EmuDbg.WinVisible := False;
 End;
 
 Procedure EmuDbg_Stop;
