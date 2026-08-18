@@ -4834,6 +4834,11 @@ Type
   HitCountTarget : LongInt;      { 0 = pause a chaque passage ; sinon }
                                   { pause seulement au Nieme passage   }
                                   { (voir DEBUG .../BP:SEG:OFS:N)      }
+  DumpLen  : LongInt;             { 0 = pas de vidage ; sinon nombre   }
+                                  { d octets a vider depuis Addr vers  }
+                                  { EMUDUMP.BIN/.LOG au moment ou ce   }
+                                  { point d arret declenche reellement }
+                                  { la pause (voir .../BP:SEG:OFS:N:LEN)}
  End;
 
  { Etat global du debogueur emulateur }
@@ -9160,6 +9165,7 @@ Procedure EmuDbg_StepOver; Forward;
 Procedure EmuDbg_StepOut; Forward;
 Procedure EmuDbg_ToggleBPAtPC; Forward;
 Procedure EmuDbg_AddBP(Addr: LongInt; ACPU: TEmuDbgCPU); Forward;
+Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
 Function EmuDbg_FindBP(Addr: LongInt; ACPU: TEmuDbgCPU): Integer; Forward;
 Function EmuDbg_IsBreakKey(Var Ev: TEvent): Boolean; Forward;
 Procedure EmuDbg_OnBeforeStep6502; Forward;
@@ -34332,9 +34338,10 @@ Var
  CurDir, DosExe, ElfExe: String;
  PrgTarget, PrgPath: String;
  ArgFile, ArgSwitch, DbgTarget, DbgPath, ResolveDir: String;
- ArgBP, BPSegStr, BPOfsStr, RestBP, BPNStr: String;
- BPSeg, BPOfs, BPColonPos, BPColonPos2, BPErr1, BPErr2, BPErr3: Word;
- BPN: LongInt;
+ ArgBP, BPSegStr, BPOfsStr, RestBP, BPNStr, BPLenStr: String;
+ BPSeg, BPOfs, BPColonPos, BPColonPos2, BPColonPos3: Word;
+ BPErr1, BPErr2, BPErr3, BPErr4: Word;
+ BPN, BPLen: LongInt;
  BPIdx: Integer;
 Begin
  CmdStr := TermTrim(CmdStr);
@@ -34395,7 +34402,7 @@ Begin
   ArgFile := TermExtractParam(ParamStr, 1);
   ArgSwitch := TermExtractParam(ParamStr, 2);
   If (UpCaseStr(ArgFile) = '/?') Or (UpCaseStr(ArgSwitch) = '/?') Then Begin
-   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS[:N]]');
+   TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS[:N][:LEN]]');
    TermAddLine(TP, '  /GUI          Charge le programme sans le lancer et affiche');
    TermAddLine(TP, '                le Debogueur 8086/6502/6809 (fenetre a droite).');
    TermAddLine(TP, '  /BP:SEG:OFS   Pose un point d''arret machine (hexa) des le');
@@ -34407,8 +34414,17 @@ Begin
    TermAddLine(TP, '                (N en decimal) - utile pour une routine partagee');
    TermAddLine(TP, '                appelee de nombreuses fois avant l occurrence');
    TermAddLine(TP, '                qui interesse (ex. juste avant un plantage).');
+   TermAddLine(TP, '  /BP:SEG:OFS:N:LEN Idem, et au declenchement, vide LEN octets');
+   TermAddLine(TP, '                (decimal) de memoire EMULEE REELLE depuis SEG:OFS');
+   TermAddLine(TP, '                vers EMUDUMP.BIN (brut) et EMUDUMP.LOG (hexa+ASCII)');
+   TermAddLine(TP, '                - capture le contenu VRAI a cet instant, utile pour');
+   TermAddLine(TP, '                un module recouvert (overlay) dont le contenu differe');
+   TermAddLine(TP, '                du desassemblage statique du .EXE au repos. N peut');
+   TermAddLine(TP, '                etre omis (deux-points doubles, colon vide) pour vider');
+   TermAddLine(TP, '                des le 1er passage.');
    TermAddLine(TP, '  Exemples : DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:265B');
    TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:B6A2:50');
+   TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:30BD::256');
    Exit;
   End;
   If (ArgFile = '') Or (UpCaseStr(ArgSwitch) <> '/GUI') Then
@@ -34461,30 +34477,52 @@ Begin
      If BPColonPos > 0 Then Begin
       BPSegStr := Copy(RestBP, 1, BPColonPos - 1);
       RestBP := Copy(RestBP, BPColonPos + 1, Length(RestBP) - BPColonPos);
-      { RestBP est maintenant OFS seul, ou OFS:N (Nieme passage recherche -   }
-      { voir EmuDbg_CheckBPHit/HitCountTarget, evite de s arreter a un        }
-      { appel normal d une routine partagee avant l occurrence recherchee). }
+      { RestBP est maintenant OFS seul, OFS:N (Nieme passage recherche - voir }
+      { EmuDbg_CheckBPHit/HitCountTarget, evite de s arreter a un appel       }
+      { normal d une routine partagee avant l occurrence recherchee), ou      }
+      { OFS:N:LEN (vide en plus, a ce declenchement precis, LEN octets de la  }
+      { memoire EMULEE REELLE vers EMUDUMP.BIN/.LOG - voir                   }
+      { EmuDbg_DumpMemoryAt - utile pour capturer le contenu REEL d un module }
+      { recouvert/overlay, que le desassemblage statique du .EXE ne peut pas  }
+      { refleter). }
       BPColonPos2 := Pos(':', RestBP);
       If BPColonPos2 > 0 Then Begin
        BPOfsStr := Copy(RestBP, 1, BPColonPos2 - 1);
-       BPNStr := Copy(RestBP, BPColonPos2 + 1, Length(RestBP) - BPColonPos2);
+       RestBP := Copy(RestBP, BPColonPos2 + 1, Length(RestBP) - BPColonPos2);
+       BPColonPos3 := Pos(':', RestBP);
+       If BPColonPos3 > 0 Then Begin
+        BPNStr := Copy(RestBP, 1, BPColonPos3 - 1);
+        BPLenStr := Copy(RestBP, BPColonPos3 + 1, Length(RestBP) - BPColonPos3);
+       End Else Begin
+        BPNStr := RestBP;
+        BPLenStr := '';
+       End;
       End Else Begin
        BPOfsStr := RestBP;
        BPNStr := '';
+       BPLenStr := '';
       End;
       Val('$' + BPSegStr, BPSeg, BPErr1);
       Val('$' + BPOfsStr, BPOfs, BPErr2);
       BPN := 0; BPErr3 := 0;
       If BPNStr <> '' Then Val(BPNStr, BPN, BPErr3);
-      If (BPErr1 = 0) And (BPErr2 = 0) And (BPErr3 = 0) Then Begin
+      BPLen := 0; BPErr4 := 0;
+      If BPLenStr <> '' Then Val(BPLenStr, BPLen, BPErr4);
+      If (BPErr1 = 0) And (BPErr2 = 0) And (BPErr3 = 0) And (BPErr4 = 0) Then Begin
        EmuDbg_AddBP((LongInt(BPSeg) Shl 4) + BPOfs, EDC_8086);
+       BPIdx := EmuDbg_FindBP((LongInt(BPSeg) Shl 4) + BPOfs, EDC_8086);
+       If (BPN > 0) And (BPIdx >= 0) Then
+        EmuDbg.BPs[BPIdx].HitCountTarget := BPN;
+       If (BPLen > 0) And (BPIdx >= 0) Then
+        EmuDbg.BPs[BPIdx].DumpLen := BPLen;
        If BPN > 0 Then Begin
-        BPIdx := EmuDbg_FindBP((LongInt(BPSeg) Shl 4) + BPOfs, EDC_8086);
-        If BPIdx >= 0 Then EmuDbg.BPs[BPIdx].HitCountTarget := BPN;
         TermAddLine(TP, 'Point d''arret pose : ' + BPSegStr + ':' + BPOfsStr +
          ' (au passage numero ' + IntToStr(BPN) + ')');
        End Else
         TermAddLine(TP, 'Point d''arret pose : ' + BPSegStr + ':' + BPOfsStr);
+       If BPLen > 0 Then
+        TermAddLine(TP, '  -> vidage memoire de ' + IntToStr(BPLen) +
+         ' octets prevu vers EMUDUMP.BIN/.LOG au declenchement.');
       End Else
        TermAddLine(TP, 'Adresse /BP invalide : ' + ArgBP);
      End;
@@ -58868,6 +58906,15 @@ Begin
  { INT 21h AH=25h (Emu_IntIsHooked) est desormais chaine pour de bon plutot  }
  { qu ignore, voir Emu_DefaultVectorsInit/Emu_IntIsHooked ci-dessus. }
  Case Num Of
+  $08: If Emu_IntIsHooked(P, $08) Then Emu_FireHwInt(P, $08); { voir Emu_DefaultVectorsInit }
+       { : le tic minuterie reel (compteur 0040:006C) est deja gere ailleurs }
+       { par Emu_TimerTick/Emu_ServiceIrqs (tirage materiel direct, PAS via  }
+       { cette instruction "INT 8" logicielle explicite - extremement rare  }
+       { en pratique) - donc RIEN a faire de plus ici si non hooke, sans     }
+       { quoi Emu_FireHwInt sauterait dans notre PROPRE trampoline "INT      }
+       { 8;IRET" et se rappellerait indefiniment (contrairement aux autres   }
+       { entrees Always ci-dessous, qui ont toutes un Emu_DoIntXX interne    }
+       { distinct de leur propre trampoline). }
   $10: If Emu_IntIsHooked(P, $10) Then Emu_FireHwInt(P, $10) Else Emu_DoInt10(P);
   $11:
    { AH=00 (et autres) : equipment list dans AX.
@@ -59049,10 +59096,26 @@ End;
 { $F000, jamais utilisee par le programme charge). }
 Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel);
 Const
- Always: Array[0..9] Of Byte = ($10,$11,$12,$13,$16,$1A,$20,$21,$27,$2F);
+ { BOGUE REEL (2026-08-18) : $08 (IRQ0/minuterie) manquait de cette liste -   }
+ { voir [[project-devenv]], enquete NC3. Emu_MakeIntrAddr remplit l IVT       }
+ { entiere au demarrage avec des valeurs PLACEHOLDER (Tbl[I]:=I+1, PAS de     }
+ { vraies adresses) - pour $08 cela donne littéralement offset=9/segment=0.  }
+ { Un vrai DOS/BIOS installe TOUJOURS un gestionnaire reel (non nul) pour    }
+ { $08 des le demarrage ; un programme invite qui LIT ce vecteur (usage      }
+ { legitime et courant, ex. pour le chainer soi-meme) s attend donc a une    }
+ { adresse valide. NCMAIN.EXE (Norton Commander 3) copie ce vecteur puis     }
+ { saute au travers plus tard (JMP FAR [ptr]) - avec segment=0 celui-ci      }
+ { plante immediatement (CS=0000, deja documente comme "fin de programme"    }
+ { generique) - AVANT d atteindre sa boucle d evenements normale (panneau/   }
+ { barre de boutons jamais affiches). Reproduit A L IDENTIQUE avec DOSBox    }
+ { source verifie (dos_execute.cpp, aucune mise a zero de la memoire a       }
+ { l allocation) : un vrai DOS/DOSBox aurait simplement fourni un vecteur    }
+ { $08 valide des le depart, contrairement a cet emulateur avant ce          }
+ { correctif. }
+ Always: Array[0..10] Of Byte = ($08,$10,$11,$12,$13,$16,$1A,$20,$21,$27,$2F);
 Var I: Integer;
 Begin
- For I := 0 To 9 Do Emu_WriteDefaultVector(P, Always[I]);
+ For I := 0 To 10 Do Emu_WriteDefaultVector(P, Always[I]);
  If EmuMousePS2Active Then Emu_WriteDefaultVector(P, $15);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
@@ -83236,6 +83299,7 @@ Begin
  EmuDbg.BPs[EmuDbg.BPCount].Enabled := True;
  EmuDbg.BPs[EmuDbg.BPCount].HitCount := 0;
  EmuDbg.BPs[EmuDbg.BPCount].HitCountTarget := 0;
+ EmuDbg.BPs[EmuDbg.BPCount].DumpLen := 0;
  Inc(EmuDbg.BPCount);
 End;
 
@@ -83246,18 +83310,266 @@ End;
 { avant l occurrence recherchee), mais ne renvoie True qu au bon moment :}
 { immediatement si HitCountTarget=0 (comportement classique, pause a    }
 { chaque passage), sinon seulement quand HitCount atteint HitCountTarget.}
+Procedure EmuDbg_DumpMemoryAt(Addr: LongInt; Len: LongInt); Forward;
 Function EmuDbg_CheckBPHit(Addr: LongInt; ACPU: TEmuDbgCPU): Boolean;
 Var
  Idx: Integer;
+ Res: Boolean;
 Begin
- EmuDbg_CheckBPHit := False;
+ Res := False;
  Idx := EmuDbg_FindBP(Addr, ACPU);
- If (Idx < 0) Or (Not EmuDbg.BPs[Idx].Enabled) Then Exit;
- Inc(EmuDbg.BPs[Idx].HitCount);
- If EmuDbg.BPs[Idx].HitCountTarget <= 0 Then
-  EmuDbg_CheckBPHit := True
- Else
-  EmuDbg_CheckBPHit := (EmuDbg.BPs[Idx].HitCount = EmuDbg.BPs[Idx].HitCountTarget);
+ If (Idx >= 0) And EmuDbg.BPs[Idx].Enabled Then Begin
+  Inc(EmuDbg.BPs[Idx].HitCount);
+  If EmuDbg.BPs[Idx].HitCountTarget <= 0 Then
+   Res := True
+  Else
+   Res := (EmuDbg.BPs[Idx].HitCount = EmuDbg.BPs[Idx].HitCountTarget);
+  If Res And (EmuDbg.BPs[Idx].DumpLen > 0) Then
+   EmuDbg_DumpMemoryAt(EmuDbg.BPs[Idx].Addr, EmuDbg.BPs[Idx].DumpLen);
+ End;
+ EmuDbg_CheckBPHit := Res;
+End;
+
+{ --- Vider un bloc de memoire EMULEE REELLE (pas le fichier au repos) -   }
+{ EMUDUMP.BIN (binaire brut, utilisable tel quel) + EMUDUMP.LOG (hexa +    }
+{ ASCII, lisible directement) - declenche par un point d arret muni d un   }
+{ 4e champ .../BP:SEG:OFS:N:LEN. Capture le contenu REEL a l instant du    }
+{ declenchement, y compris pour du code recouvert ("overlay") en cours    }
+{ d execution, que le desassemblage statique du fichier .EXE ne peut pas   }
+{ refleter (voir [[project-devenv]], mystere NC3 : recouvrement $2999). }
+Procedure EmuDbg_DumpMemoryAt(Addr: LongInt; Len: LongInt);
+Const MAX_DUMP = 4096;
+Var
+ Buf: Array[0..MAX_DUMP - 1] Of Byte;
+ ActualLen: Word;
+ FBin: File;
+ FLog: Text;
+ I, J: Integer;
+ HexLine, AscLine: String;
+ B: Byte;
+Begin
+ If Len > MAX_DUMP Then Len := MAX_DUMP;
+ ActualLen := Word(Len);
+ Emu_ReadAbsBlock(EmuPanel.CPU, Addr, Buf, ActualLen);
+ {$I-}
+ Assign(FBin, 'EMUDUMP.BIN'); Rewrite(FBin, 1);
+ If IOResult = 0 Then Begin
+  BlockWrite(FBin, Buf, ActualLen);
+  Close(FBin);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+ {$I-}
+ Assign(FLog, 'EMUDUMP.LOG'); Rewrite(FLog);
+ If IOResult = 0 Then Begin
+  WriteLn(FLog, 'Vidage memoire emulee reelle : phys=', HexLong(Addr),
+   ' longueur=', ActualLen, ' octets (EMUDUMP.BIN = memes donnees brutes)');
+  WriteLn(FLog);
+  I := 0;
+  While I < ActualLen Do Begin
+   HexLine := HexLong(Addr + I) + ' : ';
+   AscLine := '';
+   For J := 0 To 15 Do Begin
+    If I + J < ActualLen Then Begin
+     B := Buf[I + J];
+     HexLine := HexLine + HexByte(B) + ' ';
+     If (B >= 32) And (B <= 126) Then AscLine := AscLine + Chr(B)
+     Else AscLine := AscLine + '.';
+    End Else
+     HexLine := HexLine + '   ';
+   End;
+   WriteLn(FLog, HexLine, ' ', AscLine);
+   Inc(I, 16);
+  End;
+  Close(FLog);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+End;
+
+{ --- Menu contextuel (clic droit) sur la fenetre du Debogueur : outils    }
+{ d investigation PERMANENTS, demandes explicitement par l utilisateur     }
+{ pour continuer l enquete NC3 (et toute future investigation similaire)   }
+{ sans repasser par la commande Terminal DEBUG a chaque fois. Reutilise    }
+{ TContextMenu/CtxMenu (systeme deja existant pour l Explorateur de        }
+{ solutions) - un seul menu contextuel actif a la fois de toute facon. }
+
+{ --- 950 : vider 4096 octets de RAM emulee REELLE depuis CS:IP courant --- }
+Procedure EmuDbg_CtxDumpRam;
+Var Addr: LongInt;
+Begin
+ If EmuDbg.CPU <> EDC_8086 Then Exit;
+ Addr := (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP;
+ EmuDbg_DumpMemoryAt(Addr, 4096);
+ AppendOutput(OutputPanel,
+  'RAM videe (4096 octets depuis CS:IP=' + HexWord(EmuPanel.CPU.Segs.CS) +
+  ':' + HexWord(EmuPanel.CPU.IP) + ') : EMUDUMP.BIN / EMUDUMP.LOG', 0);
+End;
+
+{ --- 951 : desassembler 300 instructions depuis CS:IP courant (memoire    }
+{ EMULEE REELLE, PAS le fichier .EXE au repos - voir DISEXE pour ce cas)   }
+{ dans un nouvel onglet editeur. }
+Procedure EmuDbg_CtxDisasmFromIP;
+Var
+ Seg, Ofs: Word;
+ Sz, I, WIdx: Integer;
+ S, OutPath: String;
+ F: Text;
+Begin
+ If EmuDbg.CPU <> EDC_8086 Then Exit;
+ Seg := EmuPanel.CPU.Segs.CS;
+ Ofs := EmuPanel.CPU.IP;
+ OutPath := ExtractFilePath(ParamStr(0)) + 'EMUDISASM.ASM';
+ {$I-} Assign(F, OutPath); Rewrite(F);
+ If IOResult <> 0 Then Begin {$I+} Exit; End;
+ WriteLn(F, '; Desassemblage EN DIRECT de la memoire emulee REELLE (pas le');
+ WriteLn(F, '; fichier .EXE au repos) - utile pour du code recouvert/overlay');
+ WriteLn(F, '; ou auto-modifie, que le desassemblage statique ne peut pas');
+ WriteLn(F, '; refleter. Debut : ', HexWord(Seg), ':', HexWord(Ofs));
+ WriteLn(F, '');
+ For I := 1 To 300 Do Begin
+  S := EmuDbg_Disasm8086(Seg, Ofs, Sz);
+  WriteLn(F, S);
+  If Sz < 1 Then Sz := 1;
+  Ofs := Word(Ofs + Sz);
+ End;
+ Close(F);
+ {$I+} If IOResult <> 0 Then ;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ WIdx := FindEditorByFileName(OutPath);
+ If WIdx >= 0 Then
+  ActivateWindow(WIdx)
+ Else Begin
+  CreateEditorWindow(OutPath);
+  WIdx := WinMgr.ActiveIdx;
+  LoadFile(Editors[WIdx]^.Buffer, OutPath);
+  ActiveEditor := Editors[WIdx]^;
+ End;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+ AppendOutput(OutputPanel,
+  'Desassemblage RAM direct depuis ' + HexWord(Seg) + ':' + HexWord(Ofs) +
+  ' : ' + OutPath, 0);
+End;
+
+{ --- 952 : sauvegarder l etat + le desassemblage actuellement VISIBLE     }
+{ dans la fenetre du Debogueur (registres + lignes affichees) dans un      }
+{ fichier texte simple. }
+Procedure EmuDbg_CtxSaveText;
+Var
+ F: Text;
+ I, Sz: Integer;
+ Seg, Ofs: Word;
+ S, OutPath: String;
+Begin
+ If EmuDbg.CPU <> EDC_8086 Then Exit;
+ OutPath := 'EMUDBGTEXT.LOG';
+ {$I-} Assign(F, OutPath); Rewrite(F);
+ If IOResult <> 0 Then Begin {$I+} Exit; End;
+ WriteLn(F, 'Debogueur 8086 - etat au moment de la sauvegarde');
+ WriteLn(F, 'Cible : ', EmuPanel.BinaryPath);
+ WriteLn(F, '');
+ WriteLn(F, 'AX=', HexWord(EmuPanel.CPU.Regs.AX),
+  '  BX=', HexWord(EmuPanel.CPU.Regs.BX),
+  '  CX=', HexWord(EmuPanel.CPU.Regs.CX),
+  '  DX=', HexWord(EmuPanel.CPU.Regs.DX));
+ WriteLn(F, 'SI=', HexWord(EmuPanel.CPU.Regs.SI),
+  '  DI=', HexWord(EmuPanel.CPU.Regs.DI),
+  '  BP=', HexWord(EmuPanel.CPU.Regs.BP),
+  '  SP=', HexWord(EmuPanel.CPU.Regs.SP));
+ WriteLn(F, 'CS=', HexWord(EmuPanel.CPU.Segs.CS),
+  '  DS=', HexWord(EmuPanel.CPU.Segs.DS),
+  '  ES=', HexWord(EmuPanel.CPU.Segs.ES),
+  '  SS=', HexWord(EmuPanel.CPU.Segs.SS));
+ WriteLn(F, 'IP=', HexWord(EmuPanel.CPU.IP),
+  '  FL=', HexWord(EmuPanel.CPU.Flags.Base));
+ WriteLn(F, '');
+ WriteLn(F, 'Desassemblage (fenetre visible) :');
+ Seg := EmuPanel.CPU.Segs.CS;
+ Ofs := EmuPanel.CPU.IP;
+ For I := 0 To EmuDbg.DisasmTopOfs - 1 Do Begin
+  EmuDbg_Disasm8086(Seg, Ofs, Sz);
+  If Sz < 1 Then Sz := 1;
+  Ofs := Word(Ofs + Sz);
+ End;
+ For I := 0 To EmuDbg.DisasmLines - 1 Do Begin
+  S := EmuDbg_Disasm8086(Seg, Ofs, Sz);
+  WriteLn(F, S);
+  If Sz < 1 Then Sz := 1;
+  Ofs := Word(Ofs + Sz);
+ End;
+ Close(F);
+ {$I+} If IOResult <> 0 Then ;
+ AppendOutput(OutputPanel, 'Texte du debogueur sauvegarde : ' + OutPath, 0);
+End;
+
+{ --- 953 : calculer l entropie de Shannon (bits/octet) de 4096 octets de  }
+{ RAM emulee REELLE depuis CS:IP courant - signature statistique permet-   }
+{ tant de distinguer du code x86 authentique (typiquement 5.5-6.5 bits/    }
+{ octet) de donnees compressees/chiffrees (proche de 8.0, le maximum       }
+{ theorique) - voir [[project-devenv]], mystere NC3, ou cette technique a  }
+{ prouve qu une zone "executee" par erreur etait en fait un module de      }
+{ recouvrement pas encore decompresse. }
+Procedure EmuDbg_CtxEntropy;
+Const SZ = 4096;
+Var
+ Buf: Array[0..SZ - 1] Of Byte;
+ Freq: Array[0..255] Of LongInt;
+ I: Integer;
+ Addr: LongInt;
+ Pr, Ent: Double;
+ F: Text;
+ EntStr: String;
+Begin
+ If EmuDbg.CPU <> EDC_8086 Then Exit;
+ Addr := (LongInt(EmuPanel.CPU.Segs.CS) Shl 4) + EmuPanel.CPU.IP;
+ Emu_ReadAbsBlock(EmuPanel.CPU, Addr, Buf, SZ);
+ FillChar(Freq, SizeOf(Freq), 0);
+ For I := 0 To SZ - 1 Do Inc(Freq[Buf[I]]);
+ Ent := 0.0;
+ For I := 0 To 255 Do
+  If Freq[I] > 0 Then Begin
+   Pr := Freq[I] / SZ;
+   Ent := Ent - Pr * (Ln(Pr) / Ln(2));
+  End;
+ Str(Ent:0:3, EntStr);
+ {$I-} Assign(F, 'EMUENTROPY.LOG'); Rewrite(F);
+ If IOResult = 0 Then Begin
+  WriteLn(F, 'Entropie de ', SZ, ' octets depuis CS:IP=',
+   HexWord(EmuPanel.CPU.Segs.CS), ':', HexWord(EmuPanel.CPU.IP),
+   ' (phys=', HexLong(Addr), ') : ', EntStr, ' bits/octet (max 8.0)');
+  WriteLn(F, 'Reference : ~5.5-6.5 = code x86 authentique typique ;');
+  WriteLn(F, '            proche de 8.0 = donnees compressees/chiffrees.');
+  Close(F);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+ ShowMessageBox('Entropie',
+  'Entropie de ' + IntToStr(SZ) + ' octets depuis CS:IP : ' + EntStr +
+  ' bits/octet (max 8.0)' + #13#10 +
+  '~5.5-6.5 = code x86 authentique  /  ~8.0 = donnees compressees' + #13#10 +
+  #13#10 + '(detail dans EMUENTROPY.LOG)', MB_OK, MI_INFO);
+End;
+
+{ --- Ouvrir le menu contextuel du Debogueur a la position souris --- }
+Procedure EmuDbg_ShowContextMenu(MX, MY: Integer);
+Begin
+ If EmuDbg.CPU <> EDC_8086 Then Exit; { outils 8086 uniquement pour l instant }
+ InitContextMenu(CtxMenu);
+ CtxMenu.Width := 230;
+ CtxMenu.X := MX;
+ CtxMenu.Y := MY;
+ If CtxMenu.X + CtxMenu.Width > GetScreenWidth Then
+  CtxMenu.X := GetScreenWidth - CtxMenu.Width;
+ If CtxMenu.Y + 68 > GetScreenHeight Then
+  CtxMenu.Y := GetScreenHeight - 68;
+ AddContextItem(CtxMenu, 'Vider la RAM dans un fichier',        950);
+ AddContextItem(CtxMenu, 'Desassembler depuis CS:IP',           951);
+ AddContextItem(CtxMenu, 'Sauvegarder le texte du debogueur',   952);
+ AddContextItem(CtxMenu, 'Calculer l''entropie de la RAM',      953);
+ CtxMenu.Visible := True;
+ DrawContextMenu(CtxMenu);
+ FullRepaintNeeded := True;
 End;
 
 { --- Supprimer un point d arret machine --- }
@@ -84516,6 +84828,9 @@ Begin
  { Si un menu deroulant est ouvert, le laisser traiter les touches
    (Esc/fleches/Entree pour la navigation menu) et ne rien absorber. }
  If MenuActive Then Exit;
+ { Idem pour le menu contextuel du Debogueur (EmuDbg_ShowContextMenu) -
+   voir le meme raisonnement dans EmuDbg_HandleMouse ci-dessous. }
+ If CtxMenu.Visible Then Exit;
  { Animer : Echap/Ctrl+C/Ctrl+Break interrompent l animation en cours -
    ne consomme la touche que si une animation est REELLEMENT active,
    pour ne rien changer au comportement existant (Echap notamment,
@@ -84598,6 +84913,12 @@ Var
  NewW, NewH: Integer;
 Begin
  EmuDbg_HandleMouse := False;
+ { Menu contextuel (EmuDbg_ShowContextMenu) ouvert : le laisser gerer TOUS  }
+ { les evenements souris suivants (survol/clic sur ses propres items) via  }
+ { DispatchEvent - sinon ce hit-test "corps de la fenetre" les absorberait }
+ { avant meme qu ils atteignent HandleContextMenuEvent, rendant le menu    }
+ { injouable des qu il chevauche la fenetre du Debogueur (cas courant). }
+ If CtxMenu.Visible Then Exit;
  If Not EmuDbg.WinVisible Then Begin
   EmuDbg.Dragging := False;
   EmuDbg.Resizing := False;
@@ -84663,6 +84984,18 @@ Begin
     EmuDbg.DragOfsY := Ev.MouseY - EmuDbg.WinY;
     EmuDbg.WinFocused := True;
    End;
+   EmuDbg_HandleMouse := True;
+   Exit;
+  End;
+  { Clic droit dans le corps de la fenetre : menu contextuel d outils      }
+  { d investigation (voir EmuDbg_ShowContextMenu) - demande explicite       }
+  { utilisateur, place AVANT le "corps de la fenetre : absorber" generique  }
+  { ci-dessous puisque c est un cas plus specifique du meme hit-test. }
+  If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_RIGHT) And
+     EmuDbg_HitWindow(Ev.MouseX, Ev.MouseY) And
+     (Not EmuDbg_HitTitleBar(Ev.MouseX, Ev.MouseY)) Then Begin
+   EmuDbg.WinFocused := True;
+   EmuDbg_ShowContextMenu(Ev.MouseX, Ev.MouseY);
    EmuDbg_HandleMouse := True;
    Exit;
   End;
@@ -85104,6 +85437,12 @@ Begin
      902: Begin { Cycler le zoom du terminal }
       TermZoomCycle;
      End;
+     { Menu contextuel (clic droit) sur la fenetre du Debogueur - voir       }
+     { EmuDbg_ShowContextMenu/EmuDbg_Ctx* ci-dessus dans le fichier. }
+     950: EmuDbg_CtxDumpRam;
+     951: EmuDbg_CtxDisasmFromIP;
+     952: EmuDbg_CtxSaveText;
+     953: EmuDbg_CtxEntropy;
      311, 411: Begin { Ajouter un fichier }
       InitFileDialog(FileDlg, False);
       LoadDirectoryFiles(FileDlg);
