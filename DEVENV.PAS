@@ -71917,8 +71917,8 @@ Begin
      Word(EmuDiv0IP + Idx_R))), ' ');
    WriteLn(LogF_R);
   End;
-  WriteLn(LogF_R, 'Trace circulaire (last 64 avant arret) :');
-  For Idx_R := -64 To -1 Do Begin
+  WriteLn(LogF_R, 'Trace circulaire (last 8192 avant arret) :');
+  For Idx_R := -8192 To -1 Do Begin
    KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
    WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
     HexWord(EmuTraceBuf[KK_R].IP), ' op=',
@@ -73281,7 +73281,7 @@ Begin NesActive := False;
  EmuWatchPhysLo := 0;
  EmuWatchPhysHi := 0;
  EmuWatchHits := 0;
- OptionsDlg.Data.DosLogDiag := True;
+ OptionsDlg.Data.DosLogDiag := False;
  EmuDiv0Caught := False;
  EmuFpuLogged := 0;
  EmuFpuTrap := False;
@@ -84690,8 +84690,19 @@ Begin
  EmuDbg.WinFocused := True;
  EmuDbg.NeedRepaint := True;
  FullRepaintNeeded := True;
+ { BOGUE REEL (2026-08-18) : DrawAllWidgets dessine DEJA EmuDbg_DrawWindow
+   en interne (voir son propre "If EmuDbg.WinVisible And (Not MenuActive)
+   Then EmuDbg_DrawWindow", desormais place APRES DrawEmulatorPanel pour
+   eviter la troncature via double-buffering - voir son commentaire). Un
+   second appel direct ICI juste apres etait exactement le motif que le
+   commentaire plus bas (voir Continue-loop ci-dessous) documente deja
+   comme corrompant l affichage (desassemblage/dump tronques a 1 ligne) -
+   mais ce site D ENTREE EN PAUSE avait ete oublie lors de ce correctif
+   anterieur, donc le bogue se reproduisait a CHAQUE arret (point d arret/
+   pas-a-pas), pas seulement apres ouverture/fermeture d un menu. Supprime
+   l appel redondant : DrawAllWidgets suffit, comme plus bas dans la
+   boucle de pump. }
  DrawAllWidgets;
- EmuDbg_DrawWindow;
  While EmuDbg.Paused And (Not EmuDbg.ContinueReq) And
        (Not EmuDbg.StopReq) And (Not QuitRequested) Do Begin
   PollEvents(Ev);
@@ -84774,6 +84785,12 @@ Begin
  End
  Else If ACPU = EDC_6809 Then
   EmuDbg.LastAddr := M6809_PC;
+ { Vider le tampon circulaire (8192 dernieres instructions, deja rempli en
+   continu par le coeur d execution) vers EMUTRACE.LOG a CHAQUE entree en
+   pause - pas seulement en fin de session (voir Emu_DumpTrace, qui existait
+   deja pour ce cas). Permet de voir tout ce qui a mene a un point d arret
+   PRECIS (ex. /BP:SEG:OFS:N) sans devoir laisser tourner jusqu a la fin. }
+ If OptionsDlg.Data.DosLogDiag Then Emu_DumpTrace;
  EmuDbg_PumpPause;
  { Sortie de pause : redessiner toute l interface puis le panneau
    emulateur afin que la zone qui etait sous la fenetre debug soit
