@@ -1,0 +1,2032 @@
+==============================================================================
+ MATROX MGA MILLENNIUM
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit principalement la premiere Matrox MGA Millennium de 1995,
+basee sur le processeur IS-MGA-2064W. Il presente aussi les differences majeures
+de la Millennium II MGA-2164W. Il couvre PCI, WRAM, BIOS/VESA, framebuffer
+lineaire, VGA, RAMDAC, registres MMIO et moteur d'acceleration 2D/3D.
+
+Cette carte est tres differente des VGA ISA bancaires : le pilote PCI utilise
+une aperture de controle memory-mapped et une aperture lineaire de framebuffer.
+Le BIOS VGA conserve A000h pour DOS ancien, mais ce n'est pas l'interface la plus
+efficace du MGA.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Modeles et circuits
+  3. Caracteristiques materielles
+  4. Architecture MGA-2064W
+  5. Bus PCI et identification
+  6. Configuration PCI et BAR
+  7. Memoire WRAM et extensions
+  8. ROM BIOS flash
+  9. RAMDAC TI TVP3026
+ 10. Connecteur et moniteurs
+ 11. Compatibilite VGA
+ 12. Modes VESA BIOS
+ 13. VBE 1.2/2.0
+ 14. Aperture de controle MGA
+ 15. Carte des registres MMIO
+ 16. Registres du moteur de dessin
+ 17. Registres hote, FIFO et etat
+ 18. Registres VGA memory-mapped
+ 19. Registres CRTC etendus
+ 20. Framebuffer lineaire
+ 21. Formats de pixels
+ 22. Initialisation globale du moteur
+ 23. Lancement d'une operation
+ 24. Remplissage rectangle/trapeze
+ 25. Lignes, BitBLT, motifs et expansion couleur
+ 26. Z-buffer, Gouraud et texture
+ 27. Interruptions et synchronisation
+ 28. Initialisation WRAM et reset
+ 29. DDC, DPMS et PowerDesk
+ 30. Programmation sous DOS
+ 31. Exemples assembleur x86
+ 32. Exemples Turbo Pascal
+ 33. Conseils pour un pilote
+ 34. Conseils pour un emulateur
+ 35. Plan de validation
+ 36. Millennium II : differences
+ 37. Installation et depannage
+ 38. Pieges frequents
+ 39. Ports d'entrees/sorties VGA detailles
+ 40. Ports PCI CF8h/CFCh et enumeration
+ 41. Carte MMIO exhaustive du MGA-2064W
+ 42. Champs de bits des registres principaux
+ 43. Recettes de programmation du moteur
+ 44. Exemples assembleur avances
+ 45. Exemples Turbo Pascal avances
+ 46. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Matrox Graphics Inc., societe canadienne de Dorval au Quebec, lance la MGA
+Millennium en 1995. La carte vise le haut de gamme Windows, CAO et visualisation
+professionnelle. Elle est reputee pour la qualite de sa sortie analogique, ses
+hautes resolutions et son acceleration 2D.
+
+La premiere Millennium utilise le processeur MGA-2064W, nom de code parfois
+associe a "Storm". Le suffixe W rappelle son interface WRAM. La Millennium II,
+arrivee ensuite, utilise le MGA-2164W et augmente les performances/frequences.
+
+La Millennium n'est pas un accelerateur 3D complet au sens des cartes de jeu de
+la fin des annees 1990. Le 2064W sait tracer, remplir, interpoler couleurs et Z,
+et effectuer certaines operations texturees, mais sa chaine ne remplace pas une
+3Dfx Voodoo ou un moteur Direct3D moderne.
+
+
+==============================================================================
+2. MODELES ET CIRCUITS
+==============================================================================
+
+  Produit             Circuit          PCI Device ID  Bus
+  ------------------  ---------------  -------------  ----------------
+  MGA Millennium      MGA-2064W        0519h          PCI
+  MGA Millennium II   MGA-2164W        051Bh          PCI
+  Millennium II AGP   MGA-2164W-AGP    051Fh          AGP
+
+Vendor ID Matrox : 102Bh.
+
+Revisions MGA-2064W R1/R2 fonctionnent typiquement autour de 50 MHz ; des R3
+ont ete commercialisees a 60 MHz avec WRAM 50 ns et TVP3026 220 MHz. La vitesse
+doit etre lue de la carte/configuration et non deduite du seul Device ID.
+
+Ne pas confondre avec Mystique MGA-1064SG, Millennium G200, Productiva, Impression
+Plus ou MGA-G100/G400. Ils partagent certaines idees mais pas la meme interface.
+
+
+==============================================================================
+3. CARACTERISTIQUES MATERIELLES
+==============================================================================
+
+MGA Millennium typique :
+
+  * carte PCI Plug and Play ;
+  * processeur MGA-2064W ;
+  * 2 ou 4 Mio de WRAM, extensible a 8 Mio suivant modele/module ;
+  * bus memoire large et fonction window/serial access de la WRAM ;
+  * RAMDAC externe Texas Instruments TVP3026, 175/220 MHz suivant carte ;
+  * ROM BIOS flash de 64 Kio ;
+  * sortie VGA analogique DE-15 ;
+  * VGA compatible pour demarrage/DOS ;
+  * VESA BIOS Extensions en DOS, versions dependant du BIOS ;
+  * framebuffer lineaire PCI ;
+  * moteur de dessin MMIO ;
+  * acceleration lignes, rectangles, trapezes, BitBLT, motifs, texte et couleur ;
+  * calcul/interpolation Z et Gouraud ;
+  * interruption PCI ;
+  * DDC et DPMS via BIOS/pilote.
+
+
+==============================================================================
+4. ARCHITECTURE MGA-2064W
+==============================================================================
+
+  CPU / bus PCI
+       |
+       +-- configuration PCI
+       +-- ROM BIOS flash
+       +-- aperture de controle 16 Kio (MGABASE1)
+       |     +-- pseudo-DMA
+       |     +-- moteur de dessin
+       |     +-- registres hote/FIFO/IRQ
+       |     +-- VGA memory-mapped
+       |     +-- RAMDAC/extension
+       +-- aperture framebuffer 8 Mio (MGABASE2)
+       |
+       +-- controleur MGA-2064W
+       |     +-- VGA
+       |     +-- rasterizer 2D/3D
+       |     +-- clipper
+       |     +-- ALU/ROP
+       |     +-- interface WRAM
+       |
+       +-- WRAM 2/4/8 Mio
+       +-- TVP3026 RAMDAC -> RGB analogique
+
+
+==============================================================================
+5. BUS PCI ET IDENTIFICATION
+==============================================================================
+
+Identifiants :
+
+  Vendor ID  = 102Bh
+  Device ID  = 0519h pour MGA-2064W
+  Class Code = 030000h, VGA-compatible display controller
+
+La revision PCI distingue les revisions silicium. Les Subsystem Vendor/Device
+peuvent identifier une carte retail ou OEM, mais les premiers PCI ne fournissent
+pas toujours ces champs de maniere uniforme.
+
+Sous DOS, utiliser PCI BIOS INT 1Ah :
+
+  AX=B101h  installation check
+  AX=B102h  find PCI device, CX=device, DX=vendor, SI=index
+  AX=B108h  read configuration byte
+  AX=B109h  read configuration word
+  AX=B10Ah  read configuration dword
+  AX=B10Bh/B10Ch/B10Dh ecritures, a eviter hors pilote
+
+Le retour PCI BIOS utilise Carry et AH comme code d'etat. BX retourne bus dans
+BH et device/function dans BL pour Find PCI Device.
+
+5.1 Methode de detection recommandee sous DOS
+----------------------------------------------
+
+La Millennium est une carte PCI : sa detection fiable se fait par l'espace de
+configuration PCI, et non par une signature ROM a une adresse fixe ou par un
+port d'E/S secret. La procedure conseillee est :
+
+  1. appeler INT 1Ah/AX=B101h et verifier CF=0, AH=00h et EDX="PCI ";
+  2. rechercher 102Bh:0519h avec AX=B102h, SI=0 ;
+  3. si souhaite, rechercher aussi 102Bh:051Bh et 102Bh:051Fh ;
+  4. conserver BH=bus et BL=(device shl 3)|function ;
+  5. lire le DWORD 08h et verifier Base Class=03h, Subclass=00h ;
+  6. lire PCI Command a 04h et verifier le bit 1 Memory Space Enable ;
+  7. lire les BAR et refuser les valeurs nulles ou FFFFFFFFh ;
+  8. mapper le BAR de controle, puis seulement acceder aux registres MGA.
+
+La signature B101h est EDX=20494350h, soit les octets "PCI " en little-endian.
+BX retourne la version du BIOS PCI (BH majeur, BL mineur), CL le dernier numero
+de bus et AL les mecanismes d'acces supportes. Ces informations ne prouvent pas
+encore que la carte Matrox existe.
+
+Pour B102h, SI est l'indice d'occurrence : zero trouve la premiere carte,
+un la deuxieme, etc. Le code d'erreur AH=86h signifie DEVICE_NOT_FOUND.
+Une machine peut contenir plusieurs cartes identiques ; ne pas arreter une
+enumeration de pilote apres la premiere si toutes doivent etre gerees.
+
+5.2 Niveaux de detection
+------------------------
+
+  Resultat                    Verification
+  --------------------------  ---------------------------------------------
+  PCI disponible              B101h reussit et retourne la signature "PCI "
+  MGA-2064W presente          Vendor=102Bh, Device=0519h
+  Controleur VGA coherent     Class/Subclass=03h/00h au registre 08h
+  Decodage MMIO actif         PCI Command bit 1=1
+  Apertures utilisables       BAR memoire valides et mapping DPMI reussi
+  Moteur utilisable           STATUS/FIFOSTATUS lisibles, etat initialise
+
+Une simple reponse positive de B102h suffit pour afficher le nom de la carte,
+mais pas pour lancer le moteur. Sous Windows, OS/2, EMM386 ou une VDM, le PCI
+BIOS peut etre filtre et le mapping physique refuse : cela signifie
+"inaccessible dans cet environnement", pas necessairement "carte absente".
+
+5.3 Methodes de secours et fausses bonnes idees
+-----------------------------------------------
+
+Si aucun PCI BIOS n'est present, un programme de diagnostic peut enumerer bus,
+device et fonction par Configuration Mechanism 1, ports CF8h/CFCh, apres avoir
+verifie que ce mecanisme existe. Cette methode est detaillee au chapitre 40.
+Elle demande un 386, des I/O 32 bits et une exclusion mutuelle.
+
+Ne pas detecter la Millennium uniquement par :
+
+  * la ROM C000h : son adresse, son activation et son contenu peuvent varier ;
+  * VBE : il identifie un BIOS graphique, pas avec certitude le circuit 2064W ;
+  * les ports VGA : toute VGA compatible repond aux memes ports ;
+  * une lecture MMIO a une adresse codee en dur : les BAR changent de machine ;
+  * le nom VBE OEM : utile comme indice humain, insuffisant comme identifiant.
+
+
+==============================================================================
+6. CONFIGURATION PCI ET BAR
+==============================================================================
+
+Le PCI BIOS/firmware affecte les adresses physiques avant le demarrage du systeme.
+Le 2064W expose notamment :
+
+  MGABASE1  aperture de controle de 16 Kio, offsets 0000h-3FFFh
+  MGABASE2  aperture directe framebuffer de 8 Mio, offsets 000000h-7FFFFFh
+  ROMBASE   ROM d'extension jusqu'a 64 Kio
+
+Les numeros exacts de BAR doivent etre obtenus depuis la configuration du
+peripherique et confirmes avec la specification/revision ; ne pas coder une
+adresse physique observee sur un PC particulier.
+
+Pour decoder un Memory BAR : masquer les bits 0-3. La commande PCI bit 1 doit
+autoriser Memory Space et bit 2 Bus Master si le pilote utilise les fonctions
+correspondantes. Une application DOS ordinaire ne devrait pas reconfigurer les
+BAR poses par le BIOS.
+
+
+==============================================================================
+7. MEMOIRE WRAM ET EXTENSIONS
+==============================================================================
+
+La WRAM (Window RAM) est une memoire video double-port optimisee pour operations
+de fenetrage et transferts. Les cartes de base ont 2 ou 4 Mio. Un module ajoute
+de la WRAM pour atteindre 4 ou 8 Mio selon modele.
+
+Capacites approximatives d'une seule image sans alignement :
+
+  1024x768x32    3 145 728 octets
+  1280x1024x16   2 621 440 octets
+  1280x1024x32   5 242 880 octets
+  1600x1200x8    1 920 000 octets
+  1600x1200x16   3 840 000 octets
+
+Il faut aussi reserver alignement, curseur, buffers et eventuel Z-buffer. Le BIOS
+refuse certains modes si moins de 4 Mio sont presents.
+
+Le bit OPTION interleave doit etre coherent avec 4/8 Mio et un RAMDAC 64 bits.
+Une mauvaise configuration de refresh ou d'interleave corrompt la WRAM.
+
+
+==============================================================================
+8. ROM BIOS FLASH
+==============================================================================
+
+La ROM VGA est typiquement une flash 64 Kio, par exemple TMS28F512A ou equivalent.
+Elle contient POST, VGA BIOS, VBE et tables de moniteurs.
+
+Deux commutateurs sont souvent presents :
+
+  SW1  protection/ecriture du BIOS flash ; OFF protege, ON autorise selon manuel
+  SW2  VGA principal/secondaire pour configuration double affichage
+
+Verifier la serigraphie et le manuel de la revision avant de changer un switch.
+UPDBIOS.EXE met a jour le BIOS sous DOS pur. Une interruption d'alimentation ou
+une mauvaise image peut rendre la carte non amorcable. Reproteger ensuite SW1.
+
+
+==============================================================================
+9. RAMDAC TI TVP3026
+==============================================================================
+
+Le TVP3026 combine palette, PLL pixel/memoire, curseur materiel et conversion
+analogique. Des versions 175 et 220 MHz existent.
+
+Fonctions :
+
+  * palette 256 entrees ;
+  * modes 8, 15, 16, 24 et 32 bits ;
+  * PLL programmable ;
+  * cursor hardware ;
+  * controle synchro et blanking ;
+  * lignes DDC/GPIO suivant carte.
+
+Dans l'aperture MGA, la region RAMDAC se trouve vers MGABASE1+3C00h-3C1Fh. La
+disposition exacte depend du cablage externe. Les ports VGA 3C6h-3C9h restent
+disponibles en mode VGA.
+
+
+==============================================================================
+10. CONNECTEUR ET MONITEURS
+==============================================================================
+
+Sortie analogique VGA DE-15 : rouge, vert, bleu, HSync, VSync, masses et lignes
+DDC. La qualite du PCB, du RAMDAC et du filtre de sortie explique la reputation
+de nettete de la Millennium a haute resolution.
+
+Le pilote utilise DDC quand disponible et permet une selection manuelle via
+MGAMON. Ne jamais choisir une frequence superieure aux limites du moniteur. DPMS
+commande standby/suspend/off par synchronisations.
+
+
+==============================================================================
+11. COMPATIBILITE VGA
+==============================================================================
+
+La Millennium implemente les registres VGA standards et la fenetre A000h pour
+le BIOS, DOS et les modes texte. OPTION.vgaioen active le decodage des ports VGA.
+Le strap vgaboot fournit sa valeur de reset.
+
+Modes IBM 00h-13h, memoire planaire/Chain-4, Attribute Controller, Sequencer,
+Graphics Controller et CRTC restent requis. Le moteur MGA fonctionne dans un
+mode distinct, active par CRTCEXT3.mgamode.
+
+Les registres VGA sont aussi mappes dans MGABASE1+1F00h-1FFFh, utile lorsque les
+ports VGA ne sont pas decodes ou sur une architecture sans espace I/O x86.
+
+
+==============================================================================
+12. MODES VESA BIOS
+==============================================================================
+
+Table du manuel Millennium, disponibilite selon BIOS/RAM :
+
+  Resolution   16 col.  256 col.  32K     64K     16,7M
+  -----------  -------  --------  ------  ------  ------
+  640x400      -        100h      -       -       -
+  640x480      -        101h      110h    111h    112h
+  800x600      102h     103h      113h    114h    115h
+  1024x768     -        105h      116h    117h    118h*
+  1280x1024    -        107h      119h*   11Ah*   -
+  1600x1200    -        11Ch      11Dh*   11Eh*   -
+
+* Certains modes exigent au moins 4 Mio.
+
+La liste renvoyee par VBE 4F00h est normative pour le BIOS installe. Ne pas
+supposer que toutes les revisions offrent exactement ce tableau.
+
+
+==============================================================================
+13. VBE 1.2/2.0
+==============================================================================
+
+Fonctions essentielles :
+
+  AX=4F00h  informations controleur, signature VESA
+  AX=4F01h  informations d'un mode
+  AX=4F02h  definir mode ; BX bit 14 demande Linear Frame Buffer
+  AX=4F03h  lire mode
+  AX=4F05h  fenetre bancaire
+  AX=4F06h  scanline logique
+  AX=4F07h  display start
+  AX=4F08h  largeur du DAC
+  AX=4F09h  palette VBE 2.0
+
+Succes : AX=004Fh. La ModeInfoBlock indique PhysBasePtr, BytesPerScanLine,
+BitsPerPixel, MemoryModel, masques RGB et attributs. Tester ModeAttributes bit 7
+avant le LFB.
+
+MGAVESA peut fournir/ameliorer VBE sur certains ensembles logiciels. En fenetre
+DOS Windows 3.1, l'acceleration Device Bitmaps pouvait entrer en conflit avec
+les applications VESA ; le manuel conseille de la desactiver.
+
+
+==============================================================================
+14. APERTURE DE CONTROLE MGA
+==============================================================================
+
+MGABASE1, 16 Kio :
+
+  Offset         Acces   Bloc
+  -------------  ------  ---------------------------------------------
+  0000h-1BFFh    W/R     pseudo-DMA ILOAD/IDUMP
+  1C00h-1CFFh    W       registres de dessin sans declenchement
+  1D00h-1DFFh    W       miroir de dessin avec declenchement
+  1E00h-1EFFh    R/W     registres hote, FIFO, IRQ, reset, OPMODE
+  1F00h-1FFFh    R/W     registres VGA memory-mapped
+  2000h-3BFFh    -       reserve
+  3C00h-3C1Fh    R/W     RAMDAC
+  3C20h-3DFFh    -       reserve
+  3E00h-3FFFh    R/W     peripheriques d'extension selon carte
+
+Les registres de dessin sont DWORD et FIFO. Les acces doivent respecter largeur,
+alignement et ordre little-endian. Des zones reservees sont decodees : ne pas y
+acceder en supposant qu'elles sont inoffensives.
+
+
+==============================================================================
+15. CARTE DES REGISTRES MMIO
+==============================================================================
+
+Registres de dessin principaux, offsets MGABASE1 :
+
+  1C00 DWGCTL       Drawing Control
+  1C04 MACCESS      Memory Access/pixel format/reset memoire
+  1C0C ZORG         origine Z
+  1C10 PAT0         motif bits bas
+  1C14 PAT1         motif bits hauts
+  1C1C PLNWT        masque d'ecriture des plans
+  1C20 BCOL         couleur arriere-plan
+  1C24 FCOL         couleur avant-plan
+  1C30-1C3C SRC0-3  source/motif
+  1C40 XYSTRT       depart XY
+  1C44 XYEND        fin XY
+  1C50 SHIFT        decalages
+  1C58 SGN          signes/pentes
+  1C5C LEN          longueur
+  1C60-1C78 AR0-6   address registers
+  1C80 CXBNDRY      clip X combine
+  1C84 FXBNDRY      limites fractionnaires
+  1C88 YDSTLEN      Y destination et longueur
+  1C8C PITCH        pas
+  1C90 YDST         Y destination
+  1C94 YDSTORG      origine destination
+  1C98 YTOP         clip haut
+  1C9C YBOT         clip bas
+  1CA0 CXLEFT       clip gauche
+  1CA4 CXRIGHT      clip droite
+  1CC0-1CFC DR0-15  ALU/couleur/Z/pentes selon primitive
+
+Les offsets 1D00-1DFF reproduisent cette carte mais une ecriture y lance
+l'operation associee. Le dernier registre de preparation doit donc etre ecrit
+dans la page 1Dxx uniquement lorsqu'il est temps de demarrer.
+
+
+==============================================================================
+16. REGISTRES DU MOTEUR DE DESSIN
+==============================================================================
+
+DWGCTL
+------
+
+Selectionne opcode, mode d'adressage, ROP, transparence, motif, source, Z et
+interpolation. Ses champs changent de sens selon primitive. Construire la valeur
+a partir des constantes exactes de la specification 2064W, jamais d'une valeur
+magique provenant d'un autre MGA.
+
+MACCESS
+-------
+
+Definit largeur pixel 8/16/24/32 bits et contient memreset. Les limites de
+performances/alignement different par largeur.
+
+PITCH et YDSTORG
+----------------
+
+PITCH configure le pas et la linearisation de destination. YDSTORG donne
+l'origine de l'ecran dans la WRAM. Le moteur exprime plusieurs adresses en pixels
+ou en octets selon format ; suivre le champ iy et la primitive.
+
+Clipping
+--------
+
+CXLEFT/CXRIGHT, YTOP/YBOT ou CXBNDRY limitent le dessin. Il n'existe pas de
+desactivation totale du clipping X : programmer des limites couvrant la surface.
+
+PLNWT
+-----
+
+Masque des bits/plans modifies. Pour une ecriture complete, employer le masque
+approprie a la profondeur, par exemple FFh en 8 bpp ou FFFFFFFFh en 32 bpp.
+
+
+==============================================================================
+17. REGISTRES HOTE, FIFO ET ETAT
+==============================================================================
+
+  1E10h FIFOSTATUS  etat/compte du FIFO
+  1E14h STATUS      etat moteur et interruptions
+  1E18h ICLEAR      acquittement interruptions
+  1E1Ch IEN         activation interruptions
+  1E20h VCOUNT      compteur vertical
+  1E40h RST         reset logiciel
+  1E54h OPMODE      taille/ordre des donnees hote et pseudo-DMA
+
+FIFOSTATUS indique `fifocount`, buffer full et empty. Avant plusieurs ecritures
+de registres FIFO, attendre assez de places. Avant de lire un resultat ou de
+modifier l'etat global, attendre que STATUS n'indique plus busy.
+
+STATUS contient notamment flags pick, vsync, vertical line et externe. Les
+pending flags sont independants de IEN ; ICLEAR efface les sources par ecriture
+d'un bit a 1.
+
+
+==============================================================================
+18. REGISTRES VGA MEMORY-MAPPED
+==============================================================================
+
+Les ports VGA apparaissent a MGABASE1+1Fxxh, par exemple :
+
+  port 3C2h -> offset 1FC2h
+  port 3CCh -> offset 1FCCh
+  port 3BAh -> offset 1FBAh
+  port 3DAh -> offset 1FDAh
+
+Les CRTC et autres blocs conservent leur logique index/data. Cette duplication
+permet au pilote d'eviter les I/O ports et de supporter des hote non x86.
+
+La lecture Input Status 1 garde ses effets VGA, notamment sur la bascule de
+l'Attribute Controller.
+
+
+==============================================================================
+19. REGISTRES CRTC ETENDUS
+==============================================================================
+
+Le MGA ajoute des CRTCEXT indexes. Parmi les fonctions importantes :
+
+  * bits superieurs d'adresses et de timings ;
+  * selection `mgamode` dans CRTCEXT3 ;
+  * CRTCEXT4 `page` pour la fenetre VGA vers la WRAM ;
+  * CRTCEXT5 horizontal video half count pour l'entrelacement.
+
+CRTCEXT4 page fournit jusqu'a sept bits de page. Selon Graphics Controller 6 :
+
+  fenetre 128 Kio : CRTCEXT4 bits 6:1 + adresse CPU 16:0
+  fenetre 64 Kio  : CRTCEXT4 bits 6:0 + adresse CPU 15:0
+
+Il doit etre zero en mode VGA. Il permet d'adresser jusqu'a 8 Mio en mode Power
+Graphic meme sans utiliser le LFB.
+
+
+==============================================================================
+20. FRAMEBUFFER LINEAIRE
+==============================================================================
+
+MGABASE2 expose 8 Mio contigus dans l'espace physique PCI. La WRAM installee
+occupe le debut ; acceder au-dela donne un resultat imprevisible.
+
+Adresse d'un pixel :
+
+  addr = MGABASE2 + y*BytesPerScanLine + x*bytes_per_pixel
+
+BytesPerScanLine doit etre obtenu du VBE ou du pilote, pas calcule uniquement par
+largeur : alignement et virtual width peuvent ajouter du padding.
+
+Sous DOS protege, mapper l'adresse physique via DPMI INT 31h/AX=0800h. Sous DOS
+reel pur, une adresse PCI au-dessus de 1 Mio exige unreal mode, un extender ou
+un service de mapping. Ne pas tronquer PhysBasePtr a 20 bits.
+
+
+==============================================================================
+21. FORMATS DE PIXELS
+==============================================================================
+
+  8 bpp   index palette, un octet
+  15 bpp  RGB 5:5:5, deux octets, confirmer masques VBE
+  16 bpp  RGB 5:6:5, deux octets, confirmer masques VBE
+  24 bpp  trois octets, ordre donne par ModeInfoBlock
+  32 bpp  quatre octets, octet inutilise/alpha selon pilote
+
+La specification MACCESS choisit 8/16/24/32. VBE fournit RedMaskSize,
+RedFieldPosition, etc. Utiliser ces champs plutot qu'imposer BGR ou RGB.
+
+Le moteur a des contraintes particulieres en 24 bpp ; les adresses et masques
+ne se manipulent pas toujours comme une simple profondeur 32.
+
+
+==============================================================================
+22. INITIALISATION GLOBALE DU MOTEUR
+==============================================================================
+
+Avant toute primitive, la specification exige :
+
+  PITCH     pas et linearisation destination
+  YDSTORG   origine ecran
+  MACCESS   format pixel
+  CXBNDRY   limites gauche/droite, ou CXLEFT/CXRIGHT
+  YTOP      clip haut
+  YBOT      clip bas
+  PLNWT     masque d'ecriture
+  ZORG      origine Z si operations de profondeur
+
+Attendre les places FIFO necessaires. Plusieurs primitives peuvent ensuite
+reutiliser cet etat global jusqu'au changement de mode/surface.
+
+
+==============================================================================
+23. LANCEMENT D'UNE OPERATION
+==============================================================================
+
+Deux pages de registres :
+
+  MGABASE1+1Cxxh  ecriture sans lancement
+  MGABASE1+1Dxxh  meme registre, ecriture avec lancement
+
+Procedure :
+
+  1. attendre assez de FIFO ;
+  2. programmer etat global et primitive via 1Cxxh ;
+  3. ecrire le dernier parametre dans son miroir 1Dxxh ;
+  4. le moteur consomme la commande ;
+  5. attendre idle uniquement si le CPU depend du resultat.
+
+Ecrire trop tot dans 1Dxxh lance une operation avec des registres anciens. Un
+emulateur doit declencher sur toute ecriture valide dans cette plage, selon les
+regles du registre, et non uniquement sur un offset favori.
+
+
+==============================================================================
+24. REMPLISSAGE RECTANGLE/TRAPEZE
+==============================================================================
+
+Le moteur represente rectangle et trapeze par bords gauche/droit, haut/bas et
+pentes fractionnaires. Les pixels des bords haut et gauche sont inclus ; les
+bords bas et droit sont exclus. Cette regle permet d'accoler des primitives sans
+double dessin des points communs.
+
+Pour un rectangle plein :
+
+  * definir DWGCTL pour TRAP/solid/ROP souhaite ;
+  * FCOL = couleur ;
+  * FXLEFT/FXRIGHT ou FXBNDRY = bords fixes ;
+  * YDST et LEN/YDSTLEN = haut et hauteur ;
+  * lancer par le miroir 1Dxx correspondant.
+
+Les coordonnees de bord peuvent etre fractionnaires. Pour un code portable entre
+2064W et 2164W, employer les definitions officielles de la specification.
+
+
+==============================================================================
+25. LIGNES, BITBLT, MOTIFS ET EXPANSION COULEUR
+==============================================================================
+
+Lignes
+------
+
+XYSTRT/XYEND offrent une interface simple ; les AR/SGN/LEN permettent une forme
+avancee de Bresenham. Le clipping reste actif.
+
+BitBLT
+------
+
+Les registres AR donnent source/destination et limites. Le sens doit tenir compte
+du chevauchement, comme memmove. DWGCTL choisit copie rapide, ROP et transparence.
+
+Motifs
+------
+
+PAT0/PAT1 ou SRC0-SRC3 decrivent motifs 8x8. SHIFT fixe la phase X/Y. BCOL et
+FCOL donnent les deux couleurs pour un motif monochrome.
+
+Expansion couleur
+------------------
+
+Le pseudo-DMA 0000h-1BFFh peut charger un bitmap monochrome ou des donnees hote,
+que le moteur convertit en BCOL/FCOL. OPMODE definit la taille et l'ordre des
+donnees. Respecter FIFO et alignement DWORD.
+
+
+==============================================================================
+26. Z-BUFFER, GOURAUD ET TEXTURE
+==============================================================================
+
+ZORG donne l'origine du buffer Z. Les registres DR0-DR15 servent, suivant
+l'opcode, aux valeurs et increments Z, rouge, vert et bleu. Les nombres de pente
+sont des formats fixes signes, notamment 17.15 ou 9.15.
+
+Le moteur peut interpoler couleurs et profondeur pour lignes/trapezes. Certaines
+operations texturees existent, avec limitations de format, perspective et
+filtrage. Il ne faut pas annoncer une compatibilite OpenGL/Direct3D complete au
+niveau materiel : une part importante demeure dans le pilote/CPU.
+
+
+==============================================================================
+27. INTERRUPTIONS ET SYNCHRONISATION
+==============================================================================
+
+Sources documentees : pick, vertical sync, vertical line et externe.
+
+  STATUS   pending/status
+  IEN      activation vers PCI INTA
+  ICLEAR   acquittement par ecriture de 1
+
+Le vsync a aussi des bits dans CRTC 11h. VCOUNT permet de suivre la ligne. Un
+pilote doit lire/effacer toutes les sources partagees avant de rendre l'IRQ.
+
+Pour attendre le moteur, lire STATUS/FIFOSTATUS avec une expiration. Une boucle
+infinie gele le systeme si la carte est retiree, suspendue ou mal emulee.
+
+
+==============================================================================
+28. INITIALISATION WRAM ET RESET
+==============================================================================
+
+Resume de la sequence constructeur :
+
+  1. initialiser gclk ;
+  2. programmer OPTION.nogscale ;
+  3. activer CRTCEXT3.mgamode ;
+  4. blanker via SEQ1.scroff ;
+  5. initialiser CRTC ;
+  6. programmer OPTION.rfhcnt ;
+  7. poser RST.softreset ; attendre au moins 200 us ;
+  8. retirer softreset ; attendre au moins 200 us/8 refresh ;
+  9. attendre retrace, activer video, attendre retrace suivant ;
+ 10. poser MACCESS.memreset ; attendre au moins 1 us ;
+ 11. effectuer un remplissage rectangle plein en block mode ;
+ 12. attendre moteur idle.
+
+Les etapes 7-12 doivent etre refaites apres softreset. Elles appartiennent au
+pilote/BIOS, pas a une application. Une erreur de refresh peut detruire le contenu
+et rendre le moteur instable.
+
+
+==============================================================================
+29. DDC, DPMS ET POWERDESK
+==============================================================================
+
+PowerDesk regroupe pilotes Windows et panneau de controle Matrox : resolutions,
+frequences, virtual desktop, couleur et acceleration. MGAMON choisit le moniteur
+pour les pilotes DOS/CAO. MGAVESA fournit le support VESA selon version.
+
+DDC lit les caracteristiques du moniteur par lignes GPIO/RAMDAC. DPMS coupe ou
+module les synchronisations. Toujours respecter les limites EDID et proposer un
+mode de secours 640x480 60 Hz.
+
+
+==============================================================================
+30. PROGRAMMATION SOUS DOS
+==============================================================================
+
+Trois niveaux :
+
+  1. BIOS VGA/INT 10h pour texte et modes anciens ;
+  2. VBE pour modes SVGA et LFB ;
+  3. pilote DPMI PCI/MMIO pour acceleration MGA.
+
+VBE est conseille pour une application graphique portable. L'acces au moteur
+exige : PCI BIOS, mapping DPMI, connaissance des registres, exclusion mutuelle
+avec le pilote resident et restauration. Sous Windows DOS box, l'acces direct
+PCI/MMIO peut etre virtualise ou interdit.
+
+
+==============================================================================
+31. EXEMPLES ASSEMBLEUR X86
+==============================================================================
+
+31.1 Detecter et valider le MGA-2064W par PCI BIOS
+-------------------------------------------------
+
+L'exemple suivant est beaucoup plus significatif qu'un simple B102h. Il exige
+un 386 et un assembleur acceptant les registres 32 bits en code 16 bits. Il
+verifie le PCI BIOS, la signature, l'identifiant, la classe VGA, le decodage
+memoire et deux BAR. Il ne modifie jamais la configuration.
+
+MGA_BusDevFn dw 0
+MGA_BAR0     dd 0
+MGA_BAR1     dd 0
+
+; Retour CF=0 : carte coherente, BX=bus/devfn, EAX=BAR0, EDX=BAR1.
+; Retour CF=1 : absence, BIOS PCI invalide ou ressources inutilisables.
+
+DetectMGA2064:
+        mov     ax,0B101h           ; PCI BIOS installation check
+        int     1Ah
+        jc      short dm_fail
+        or      ah,ah
+        jnz     short dm_fail
+        cmp     edx,20494350h       ; octets "PCI "
+        jne     short dm_fail
+
+        mov     ax,0B102h           ; Find PCI Device
+        mov     cx,0519h            ; MGA-2064W
+        mov     dx,102Bh            ; Matrox
+        xor     si,si               ; occurrence numero zero
+        int     1Ah
+        jc      short dm_fail
+        or      ah,ah
+        jnz     short dm_fail
+        mov     MGA_BusDevFn,bx
+
+        mov     ax,0B10Ah           ; lire DWORD Class/Revision a 08h
+        mov     di,0008h
+        int     1Ah                 ; ECX = [08h]
+        jc      short dm_fail
+        or      ah,ah
+        jnz     short dm_fail
+        mov     eax,ecx
+        and     eax,0FFFF0000h      ; Base Class + Subclass
+        cmp     eax,03000000h       ; VGA-compatible display controller
+        jne     short dm_fail
+
+        mov     bx,MGA_BusDevFn
+        mov     ax,0B109h           ; lire PCI Command a 04h
+        mov     di,0004h
+        int     1Ah                 ; CX = Command
+        jc      short dm_fail
+        or      ah,ah
+        jnz     short dm_fail
+        test    cx,0002h            ; Memory Space Enable
+        jz      short dm_fail
+
+        mov     bx,MGA_BusDevFn
+        mov     ax,0B10Ah
+        mov     di,0010h            ; BAR0
+        int     1Ah
+        jc      short dm_fail
+        or      ah,ah
+        jnz     short dm_fail
+        test    cl,01h              ; doit etre un BAR memoire
+        jnz     short dm_fail
+        mov     eax,ecx
+        and     eax,0FFFFFFF0h
+        jz      short dm_fail
+        cmp     eax,0FFFFFFF0h
+        je      short dm_fail
+        mov     dword ptr MGA_BAR0,eax
+
+        mov     bx,MGA_BusDevFn
+        mov     ax,0B10Ah
+        mov     di,0014h            ; BAR1
+        int     1Ah
+        jc      short dm_fail
+        or      ah,ah
+        jnz     short dm_fail
+        test    cl,01h
+        jnz     short dm_fail
+        mov     edx,ecx
+        and     edx,0FFFFFFF0h
+        jz      short dm_fail
+        cmp     edx,0FFFFFFF0h
+        je      short dm_fail
+        mov     dword ptr MGA_BAR1,edx
+
+        mov     bx,MGA_BusDevFn
+        mov     eax,dword ptr MGA_BAR0
+        clc
+        ret
+dm_fail:
+        stc
+        ret
+
+BAR0 et BAR1 doivent ensuite etre associes aux apertures controle/framebuffer
+d'apres la revision et leurs ressources connues ; ne pas les permuter au hasard.
+La validation finale est le mapping DPMI, pas une lecture physique en mode reel.
+
+31.2 Lire un DWORD de configuration PCI
+----------------------------------------
+
+; BH/BL identifient le device, DI=offset aligne. Retour ECX sur 386+.
+
+ReadPCIDword:
+        mov     ax,0B10Ah
+        int     1Ah
+        ret
+
+Verifier CF et AH avant ECX. Pour BAR, masquer CL bits 0-3 apres sauvegarde du
+DWORD complet. Cet exemple requiert un assembleur/CPU 386 pour ECX.
+
+31.3 Tester VBE
+---------------
+
+; ES:DI -> bloc de 512 octets initialise avec "VBE2" si VBE 2 souhaite.
+
+        mov     dword ptr es:[di],'2EBV' ; bytes "VBE2" little endian
+        mov     ax,04F00h
+        int     10h
+        cmp     ax,004Fh
+        jne     no_vbe
+        cmp     dword ptr es:[di],'ASEV' ; bytes "VESA"
+        jne     no_vbe
+
+31.4 Obtenir les informations du mode 118h
+-------------------------------------------
+
+; ES:DI -> ModeInfoBlock 256 octets.
+        mov     ax,04F01h
+        mov     cx,0118h            ; 1024x768x24 dans BIOS typique
+        int     10h
+        cmp     ax,004Fh
+        jne     mode_absent
+
+31.5 Activer un mode avec LFB
+-----------------------------
+
+        mov     ax,04F02h
+        mov     bx,4118h            ; bit 14 LFB + mode 118h
+        int     10h
+        cmp     ax,004Fh
+        jne     set_failed
+
+31.6 Mapper une adresse physique par DPMI
+-----------------------------------------
+
+; BX:CX = adresse physique, SI:DI = taille. AX=0800h.
+; Retour BX:CX = adresse lineaire. DPMI 0.9+ en mode protege.
+
+        mov     ax,0800h
+        int     31h
+        jc      map_failed
+
+Le client doit ensuite creer/charger un selecteur approprie selon son extender.
+Liberer avec INT 31h/AX=0801h. Les conventions exactes 16/32 bits dependent de
+l'hote DPMI.
+
+31.7 Lire FIFO et STATUS MMIO en 32 bits
+----------------------------------------
+
+; FS ou DS pointe vers MGABASE1 mappee, exemple syntaxe 386.
+
+        mov     eax,dword ptr fs:[01E10h] ; FIFOSTATUS
+        mov     edx,dword ptr fs:[01E14h] ; STATUS
+
+31.8 Attente bornee du moteur
+-----------------------------
+
+; ESI=adresse lineaire MGABASE1, ECX=limite.
+; MGA-2064W : STATUS.dwgengsts est le bit 16.
+
+MGA_BUSY_MASK equ 00010000h
+
+WaitMGAIdle:
+        mov     eax,[esi+01E14h]
+        test    eax,MGA_BUSY_MASK
+        jz      short mga_idle
+        dec     ecx
+        jnz     short WaitMGAIdle
+        stc
+        ret
+mga_idle:
+        clc
+        ret
+
+Le moteur est inactif quand STATUS bit 16 vaut zero. Cette condition signifie
+que la FIFO de dessin est vide, que le dernier dessin est termine et que son
+dernier acces memoire a abouti. Une attente bornee reste indispensable.
+
+31.9 Ecrire un registre sans/lancement
+--------------------------------------
+
+; ESI=MGABASE1, EAX=valeur.
+        mov     [esi+01C24h],eax    ; FCOL, prepare seulement
+        mov     [esi+01D88h],edx    ; YDSTLEN miroir, lance l'operation
+
+Cette sequence n'est valide qu'apres programmation de DWGCTL et de tout l'etat
+global. Elle illustre la difference 1Cxx/1Dxx, pas un rectangle autonome.
+
+
+==============================================================================
+32. EXEMPLES TURBO PASCAL
+==============================================================================
+
+32.1 Detecter VBE
+-----------------
+
+Uses Dos;
+
+Type
+ TVBEInfo=Array[0..511] of Byte;
+
+Function HasVBE(Var Info:TVBEInfo):Boolean;
+Var R:Registers;
+Begin
+ Info[0]:=Ord('V'); Info[1]:=Ord('B'); Info[2]:=Ord('E'); Info[3]:=Ord('2');
+ R.AX:=$4F00;
+ R.ES:=Seg(Info); R.DI:=Ofs(Info);
+ Intr($10,R);
+ HasVBE:=(R.AX=$004F) and
+  (Info[0]=Ord('V')) and (Info[1]=Ord('E')) and
+  (Info[2]=Ord('S')) and (Info[3]=Ord('A'));
+End;
+
+32.2 Structure minimale ModeInfo
+--------------------------------
+
+Type
+ TModeInfo=Packed Record
+  ModeAttributes:Word;
+  WinAAttributes,WinBAttributes:Byte;
+  WinGranularity,WinSize,WinASegment,WinBSegment:Word;
+  WinFuncPtr:Pointer;
+  BytesPerScanLine:Word;
+  XResolution,YResolution:Word;
+  XCharSize,YCharSize,NumberOfPlanes,BitsPerPixel:Byte;
+  NumberOfBanks,MemoryModel,BankSize,NumberOfImagePages:Byte;
+  Reserved1:Byte;
+  RedMaskSize,RedFieldPosition:Byte;
+  GreenMaskSize,GreenFieldPosition:Byte;
+  BlueMaskSize,BlueFieldPosition:Byte;
+  RsvdMaskSize,RsvdFieldPosition,DirectColorModeInfo:Byte;
+  PhysBasePtr:LongInt;
+  Reserved2:Array[0..211] of Byte;
+ End;
+
+Function GetModeInfo(Mode:Word; Var M:TModeInfo):Boolean;
+Var R:Registers;
+Begin
+ R.AX:=$4F01; R.CX:=Mode; R.ES:=Seg(M); R.DI:=Ofs(M);
+ Intr($10,R);
+ GetModeInfo:=R.AX=$004F;
+End;
+
+32.3 Activer le LFB
+-------------------
+
+Function SetVBEMode(Mode:Word; Linear:Boolean):Boolean;
+Var R:Registers;
+Begin
+ R.AX:=$4F02; R.BX:=Mode;
+ If Linear Then R.BX:=R.BX or $4000;
+ Intr($10,R);
+ SetVBEMode:=R.AX=$004F;
+End;
+
+32.4 Calculer l'adresse d'un pixel
+----------------------------------
+
+Function PixelAddress(Base:LongInt; X,Y:Word;
+                      BytesPerLine:Word; BytesPerPixel:Byte):LongInt;
+Begin
+ PixelAddress:=Base+LongInt(Y)*BytesPerLine+LongInt(X)*BytesPerPixel;
+End;
+
+Cette adresse est physique tant qu'elle n'a pas ete mappee par DPMI.
+
+32.5 Detection PCI complete en Turbo Pascal
+-------------------------------------------
+
+L'unite Dos ne donne que des registres 16 bits. Cela suffit : lire un DWORD de
+configuration en deux WORD successifs avec B109h. Cette technique convient aux
+champs stables comme les BAR tant que le programme ne les reprogramme pas.
+
+Const
+ MatroxVendor = $102B;
+ MGA2064Device = $0519;
+
+Type
+ TMGAInfo=Record
+  Bus,DeviceNo,FunctionNo:Byte;
+  DevFn:Byte;
+  Revision:Byte;
+  Command:Word;
+  BAR0,BAR1:LongInt;
+ End;
+
+Function PCIBIOSInstalled:Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B101;
+ Intr($1A,R);
+ PCIBIOSInstalled:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+End;
+
+Function FindPCIDevice(VendorID,DeviceID,Occurrence:Word;
+                       Var Bus,DevFn:Byte):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B102; R.CX:=DeviceID; R.DX:=VendorID; R.SI:=Occurrence;
+ Intr($1A,R);
+ FindPCIDevice:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If FindPCIDevice Then Begin
+  Bus:=Hi(R.BX);
+  DevFn:=Lo(R.BX);
+ End;
+End;
+
+Function PCIReadByte(Bus,DevFn,RegNo:Byte; Var Value:Byte):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B108; R.BX:=Word(Bus) shl 8 or DevFn; R.DI:=RegNo;
+ Intr($1A,R);
+ PCIReadByte:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If PCIReadByte Then Value:=Lo(R.CX);
+End;
+
+Function PCIReadWord(Bus,DevFn:Byte; RegNo:Word;
+                     Var Value:Word):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B109; R.BX:=Word(Bus) shl 8 or DevFn; R.DI:=RegNo;
+ Intr($1A,R);
+ PCIReadWord:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If PCIReadWord Then Value:=R.CX;
+End;
+
+Function PCIReadDWord16(Bus,DevFn:Byte; RegNo:Word;
+                        Var Value:LongInt):Boolean;
+Var LoW,HiW:Word;
+Begin
+ PCIReadDWord16:=PCIReadWord(Bus,DevFn,RegNo,LoW) and
+                  PCIReadWord(Bus,DevFn,RegNo+2,HiW);
+ If PCIReadDWord16 Then
+  Value:=(LongInt(HiW) shl 16) or LongInt(LoW);
+End;
+
+Function DetectMGA2064(Var M:TMGAInfo):Boolean;
+Var BaseClass,SubClass:Byte; Raw0,Raw1:LongInt;
+Begin
+ FillChar(M,SizeOf(M),0);
+ DetectMGA2064:=False;
+ If Not PCIBIOSInstalled Then Exit;
+ If Not FindPCIDevice(MatroxVendor,MGA2064Device,0,M.Bus,M.DevFn)
+  Then Exit;
+ If Not PCIReadByte(M.Bus,M.DevFn,$0B,BaseClass) Then Exit;
+ If Not PCIReadByte(M.Bus,M.DevFn,$0A,SubClass) Then Exit;
+ If (BaseClass<>$03) or (SubClass<>$00) Then Exit;
+ If Not PCIReadByte(M.Bus,M.DevFn,$08,M.Revision) Then Exit;
+ If Not PCIReadWord(M.Bus,M.DevFn,$04,M.Command) Then Exit;
+ If (M.Command and $0002)=0 Then Exit;
+ If Not PCIReadDWord16(M.Bus,M.DevFn,$10,Raw0) Then Exit;
+ If Not PCIReadDWord16(M.Bus,M.DevFn,$14,Raw1) Then Exit;
+ If ((Raw0 and 1)<>0) or ((Raw1 and 1)<>0) Then Exit;
+ M.BAR0:=Raw0 and LongInt($FFFFFFF0);
+ M.BAR1:=Raw1 and LongInt($FFFFFFF0);
+ If (M.BAR0=0) or (M.BAR1=0) or
+    (M.BAR0=LongInt($FFFFFFF0)) or (M.BAR1=LongInt($FFFFFFF0)) Then Exit;
+ M.DeviceNo:=M.DevFn shr 3;
+ M.FunctionNo:=M.DevFn and 7;
+ DetectMGA2064:=True;
+End;
+
+Function MatroxProduct(DeviceID:Word):String;
+Begin
+ Case DeviceID of
+  $0519:MatroxProduct:='MGA-2064W Millennium';
+  $051B:MatroxProduct:='MGA-2164W Millennium II PCI';
+  $051F:MatroxProduct:='MGA-2164W Millennium II AGP';
+ Else MatroxProduct:='Autre Matrox'
+ End
+End;
+
+PCIBIOSInstalled ne peut pas verifier EDX="PCI " avec le type Registers 16
+bits. Pour un outil de diagnostic strict, ajouter une petite routine TASM 386
+qui conserve EDX, comme l'exemple assembleur 31.1. DetectMGA2064 valide tout de
+meme l'existence reelle du service par les appels de lecture qui suivent.
+
+32.6 Lire un registre MMIO avec un selecteur DPMI
+-------------------------------------------------
+
+Function ReadMMIODWord(Sel,Ofs:Word):LongInt; Assembler;
+Asm
+ push ds
+ mov  ax,Sel
+ mov  ds,ax
+ mov  bx,Ofs
+ mov  ax,[bx]                 { Turbo Pascal retourne LongInt dans DX:AX }
+ mov  dx,[bx+2]
+ pop  ds
+End;
+
+FIFOSTATUS, STATUS et les registres hote acceptent les lectures WORD. Ce code
+illustre un client DPMI 16 bits. Le selecteur doit couvrir
+MGABASE1 et etre mappe non cache ou selon les regles PCI de l'extender. Certains
+registres dynamiques doivent toutefois etre lus atomiquement en DWORD avec une
+routine 386 externe si la specification l'exige.
+
+32.7 Ecrire un DWORD MMIO
+-------------------------
+
+Procedure WriteMMIODWord(Sel,Ofs:Word; Value:LongInt); Assembler;
+Asm
+ push ds
+ mov  ax,Sel
+ mov  ds,ax
+ mov  bx,Ofs
+ db   $66
+ mov  ax,word ptr Value       { EAX charge depuis le parametre 32 bits }
+ db   $66
+ mov  [bx],ax
+ pop  ds
+End;
+
+La syntaxe inline et la facon dont Turbo Pascal adresse un parametre LongInt
+peuvent varier. Les prefixes 66h imposent ici un chargement et un stockage DWORD
+atomiques sur CPU 386+. Tester l'encodage produit dans l'extender cible ; un
+module assembleur 32 bits externe est preferable pour un pilote reel.
+
+32.8 Programmer une couleur VBE par masques
+-------------------------------------------
+
+Function Scale8(V:Byte; Bits:Byte):LongInt;
+Begin
+ If Bits=0 Then Scale8:=0
+ Else Scale8:=(LongInt(V)*((LongInt(1) shl Bits)-1)+127) div 255;
+End;
+
+Function PackRGB(R,G,B:Byte; Var M:TModeInfo):LongInt;
+Begin
+ PackRGB:=
+  (Scale8(R,M.RedMaskSize) shl M.RedFieldPosition) or
+  (Scale8(G,M.GreenMaskSize) shl M.GreenFieldPosition) or
+  (Scale8(B,M.BlueMaskSize) shl M.BlueFieldPosition);
+End;
+
+
+==============================================================================
+33. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Identifier Vendor/Device/Revision PCI.
+  * Lire les BAR au lieu de coder leur adresse.
+  * Ne pas reprogrammer les BAR depuis une application.
+  * Mapper control et framebuffer avec attributs memoire adaptes.
+  * Lire la taille WRAM et ne jamais depasser la memoire installee.
+  * Initialiser PITCH,YDSTORG,MACCESS,clip,PLNWT avant le moteur.
+  * Attendre des places FIFO avant les commandes.
+  * Lancer uniquement par la page 1Dxx au dernier parametre.
+  * Utiliser une expiration pour FIFO/idle/vsync.
+  * Identifier TVP3026 et sa frequence.
+  * Utiliser les masques VBE pour les couleurs directes.
+  * Sauvegarder/restaurer mode, palette, IRQ et configuration.
+  * Serialiser l'acces avec PowerDesk ou tout pilote resident.
+
+
+==============================================================================
+34. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+34.1 PCI
+--------
+
+Exposer 102B:0519, class VGA, revision, BAR control 16 Kio, framebuffer 8 Mio et
+ROM 64 Kio. Respecter PCI Command Memory/IO et ROM enable.
+
+34.2 Aperture
+-------------
+
+Decoder les zones reservees sans effets inventes. Imposer largeur/alignment des
+registres DWORD. VGA MMIO doit refleter les ports VGA et leurs effets de bord.
+
+34.3 FIFO et declenchement
+--------------------------
+
+Modeliser FIFO, compteur, full/empty et busy. Les ecritures 1Cxx preparent ; les
+ecritures 1Dxx declenchent. Les commandes peuvent s'executer asynchronement.
+
+34.4 Rasterisation
+------------------
+
+Respecter bords haut/gauche inclus, bas/droit exclus, formats fixes, clipping,
+ROP, masque, motifs, transparence, sens BitBLT et chevauchement.
+
+34.5 WRAM
+---------
+
+Modeliser 2/4/8 Mio et alias/undefined au-dela. Le reset WRAM et memreset doivent
+produire un etat coherent. PITCH/YDSTORG pilotent l'adresse du moteur.
+
+34.6 VGA et CRTC
+----------------
+
+Implementer VGA complete, CRTCEXT, page A000 et passage mgamode. Le BIOS reel
+est utile pour reproduire VBE, DDC et timings.
+
+34.7 RAMDAC
+-----------
+
+TVP3026 demande palette, PLL, cursor, modes directs et GPIO/DDC. La qualite
+analogique peut etre representee idealement, mais les timings numeriques doivent
+etre exacts.
+
+34.8 Interruptions
+------------------
+
+STATUS pending ne depend pas de IEN. IEN controle INTA ; ICLEAR efface. Implementer
+vsync/vertical line/pick/externe et partage PCI.
+
+
+==============================================================================
+35. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] PCI 102B:0519, class/revision corrects
+  [ ] BAR control 16 Kio et framebuffer 8 Mio
+  [ ] ROM enable et BIOS 64 Kio
+  [ ] VGA modes 00h-13h
+  [ ] VBE 4F00/01/02/03/05/06/07/08/09 selon BIOS
+  [ ] tous les modes annonces par la liste VBE
+  [ ] refus des modes demandant trop de WRAM
+  [ ] LFB PhysBasePtr et stride
+  [ ] fenetre VGA CRTCEXT4
+  [ ] VGA MMIO 1Fxx et effets Attribute Controller
+  [ ] FIFO count/full/empty
+  [ ] distinction 1Cxx sans trigger / 1Dxx trigger
+  [ ] rectangle, trapeze et regle des bords
+  [ ] lignes et clipping
+  [ ] BitBLT dans les deux sens et chevauchement
+  [ ] motifs et expansion couleur
+  [ ] formats 8/16/24/32 bpp
+  [ ] PITCH et YDSTORG non nuls
+  [ ] palette et TVP3026
+  [ ] reset/sequence WRAM
+  [ ] vsync, vertical line et ICLEAR/IEN
+  [ ] DDC et DPMS
+  [ ] configurations 2/4/8 Mio
+
+
+==============================================================================
+36. MILLENNIUM II : DIFFERENCES
+==============================================================================
+
+La Millennium II utilise MGA-2164W, Device ID 051Bh en PCI et 051Fh en AGP.
+Elle conserve l'architecture generale : WRAM, TVP3026, control aperture, LFB et
+moteur MGA. Elle augmente performances, frequence et capacites selon revision.
+
+Ne pas utiliser automatiquement la specification 2064W pour tous les registres
+2164W. Les definitions proches doivent etre confirmees dans la Developer's
+Specification MGA-2164W. L'AGP ajoute configuration/semantique de bus qui n'existe
+pas sur la premiere Millennium PCI.
+
+
+==============================================================================
+37. INSTALLATION ET DEPANNAGE
+==============================================================================
+
+Ecran noir au POST : verifier SW2, insertion PCI, carte principale dans BIOS,
+ROM et moniteur. Pour une seule carte, utiliser la position VGA principale du
+manuel exact.
+
+Mode VESA absent : mettre a jour prudemment le BIOS, installer MGAVESA si prevu,
+verifier RAM et liste 4F00h. Ne pas forcer un numero absent.
+
+Corruption haute resolution : module WRAM incompatible/mal installe, refresh,
+stride ou depassement de taille. Tester en 640x480 puis augmenter.
+
+Blocage moteur : FIFO sature, trigger premature, mauvais DWGCTL/PITCH/MACCESS ou
+reset incomplet. Reinitialiser par le pilote/BIOS, pas par ecritures aleatoires.
+
+Flash BIOS : placer SW1 en ecriture uniquement pendant UPDBIOS sous DOS pur,
+assurer alimentation stable, utiliser l'image exacte puis reproteger.
+
+
+==============================================================================
+38. PIEGES FREQUENTS
+==============================================================================
+
+  * Ecrire "Millenium" comme nom officiel du produit.
+  * Confondre MGA-2064W, 2164W, Mystique et G200.
+  * Supposer une carte ISA bancaire au lieu d'un peripherique PCI MMIO.
+  * Coder les adresses BAR en dur.
+  * Utiliser l'adresse physique LFB comme pointeur reel 16 bits.
+  * Calculer stride=largeur*octets sans consulter VBE/PITCH.
+  * Acceder au-dela de la WRAM installee dans l'aperture 8 Mio.
+  * Oublier le FIFO avant les registres de dessin.
+  * Ecrire dans 1Dxx pendant la preparation et lancer trop tot.
+  * Ne jamais programmer le clipping.
+  * Confondre format 24 et 32 bpp.
+  * Imposer RGB/BGR sans lire les masques VBE.
+  * Faire un softreset sans sequence WRAM complete.
+  * Modifier SW1/flash sans sauvegarde et alimentation sure.
+  * Acceder MMIO en concurrence avec un pilote Windows.
+  * Attendre busy ou vsync sans expiration.
+
+
+==============================================================================
+39. PORTS D'ENTREES/SORTIES VGA DETAILLES
+==============================================================================
+
+39.1 Trois espaces d'adressage a ne pas confondre
+-------------------------------------------------
+
+La Millennium expose trois interfaces distinctes :
+
+  * les ports d'E/S VGA historiques, accessibles par IN et OUT ;
+  * MGABASE1, BAR PCI de 16 Ko contenant registres MMIO et fenetre DMA ;
+  * MGABASE2, BAR PCI donnant jusqu'a 8 Mo de framebuffer lineaire.
+
+Un OUT 3C4h n'est donc pas une ecriture a MGABASE1+3C4h. Le miroir MGA du port
+3C4h se trouve a MGABASE1+1FC4h. Ce miroir sert aux pilotes ayant deja mappe le
+BAR ; les vieux programmes DOS continuent d'utiliser IN/OUT.
+
+39.2 Table des ports VGA
+------------------------
+
+ Port       Lecture                         Ecriture
+ ---------- ------------------------------- ------------------------------
+ 3B4h       index CRTC mono                 index CRTC mono
+ 3B5h       donnees CRTC mono               donnees CRTC mono
+ 3BAh       Input Status Register 1 mono    Feature Control mono
+ 3C0h       -                               index/donnee Attribute Controller
+ 3C1h       donnee Attribute Controller     -
+ 3C2h       Input Status Register 0          Miscellaneous Output
+ 3C3h       Video Subsystem Enable           Video Subsystem Enable
+ 3C4h       index Sequencer                 index Sequencer
+ 3C5h       donnee Sequencer                donnee Sequencer
+ 3C6h       PEL Mask                        PEL Mask
+ 3C7h       etat DAC                        index de lecture DAC
+ 3C8h       index d'ecriture DAC            index d'ecriture DAC
+ 3C9h       donnee DAC                      donnee DAC
+ 3CAh       Feature Control                 -
+ 3CCh       Miscellaneous Output            -
+ 3CEh       index Graphics Controller       index Graphics Controller
+ 3CFh       donnee Graphics Controller      donnee Graphics Controller
+ 3D4h       index CRTC couleur              index CRTC couleur
+ 3D5h       donnee CRTC couleur             donnee CRTC couleur
+ 3DAh       Input Status Register 1 couleur Feature Control couleur
+
+Le bit 0 de Miscellaneous Output choisit l'adresse CRTC : zero pour 3B4h/3B5h,
+un pour 3D4h/3D5h. Il faut donc lire 3CCh avant de supposer le couple actif.
+
+39.3 Registres indexes et bascule de l'Attribute Controller
+-----------------------------------------------------------
+
+Sequencer, Graphics Controller et CRTC s'accedent par un port d'index puis un
+port de donnees. Exemple : OUT 3C4h,04h puis lecture/ecriture de 3C5h.
+
+Le controleur d'attributs est different. Le port 3C0h alterne entre index et
+donnee. Toute lecture de 3DAh (ou 3BAh en mode mono) remet la bascule en phase
+index. Le bit 5 de la valeur d'index commande l'affichage : conserver ce bit a
+1 lors d'une modification normale, sinon l'ecran peut devenir noir.
+
+Exemple, lire le registre d'attribut 10h :
+
+        mov     dx,03DAh
+        in      al,dx              ; remet la bascule sur index
+        mov     dx,03C0h
+        mov     al,30h             ; index 10h + affichage valide
+        out     dx,al
+        inc     dx                 ; 3C1h
+        in      al,dx
+
+39.4 DAC et palette
+-------------------
+
+Pour ecrire N entrees : ecrire le premier index a 3C8h, puis trois composantes
+R,G,B successives a 3C9h. L'index s'incremente automatiquement. Le VGA
+historique emploie six bits par composante ; le TVP3026 peut offrir davantage
+dans des modes pilotes, mais un programme DOS portable ne doit pas le supposer.
+
+        mov     dx,03C8h
+        mov     al,1
+        out     dx,al
+        inc     dx                 ; 3C9h
+        mov     al,63              ; rouge
+        out     dx,al
+        xor     al,al              ; vert puis bleu
+        out     dx,al
+        out     dx,al
+
+3C6h masque les bits de l'index de pixel. Sa valeur VGA normale est FFh. Les
+RAMDAC avances multiplexent parfois des registres internes derriere une suite
+d'acces a 3C6h ; ne pas reproduire une recette d'un autre RAMDAC.
+
+39.5 Attente du retour vertical
+-------------------------------
+
+Le bit 3 de Input Status 1 indique le vertical retrace. Pour commencer au bord
+d'une nouvelle periode, attendre d'abord sa fin, puis son debut. Toujours
+ajouter un compteur d'expiration : un VDD, un moniteur eteint ou une emulation
+incomplete peut rendre une attente infinie.
+
+        mov     dx,03DAh
+        mov     cx,0FFFFh
+vr_end: in      al,dx
+        test    al,08h
+        loopnz  vr_end
+        mov     cx,0FFFFh
+vr_begin:
+        in      al,dx
+        test    al,08h
+        jnz     short vr_ok
+        loop    vr_begin
+vr_ok:
+
+39.6 Miroirs MMIO des ports VGA
+--------------------------------
+
+MGABASE1+1F00h..1FFFh contient le bloc VGA. L'offset est forme avec les douze
+bits bas du port : 3C2h devient 1FC2h, 3DAh devient 1FDAh. Respecter la largeur
+d'acces attendue, generalement un octet. Le miroir ne transforme pas un port
+indexe en registre direct : il faut toujours ecrire index puis donnee.
+
+
+==============================================================================
+40. PORTS PCI CF8h/CFCh ET ENUMERATION
+==============================================================================
+
+40.1 Methode recommandee
+------------------------
+
+Sous DOS, preferer le BIOS PCI (INT 1Ah, fonctions B1xxh). Il gere la methode
+de configuration disponible et evite de deviner la topologie. Rechercher le
+vendeur 102Bh et notamment les peripheriques 0519h (MGA-2064W), 051Bh
+(Millennium II PCI) ou 051Fh (variante AGP). Verifier egalement la classe VGA.
+
+40.2 Configuration Mechanism 1
+-------------------------------
+
+Sur un PC PCI compatible avec le mecanisme 1 :
+
+  CF8h, DWORD : CONFIG_ADDRESS
+  CFCh, DWORD : CONFIG_DATA
+
+CONFIG_ADDRESS vaut :
+
+  bit 31      enable
+  bits 23..16 numero de bus
+  bits 15..11 numero de device
+  bits 10..8  numero de fonction
+  bits 7..2   offset DWORD du registre
+  bits 1..0   zero
+
+Formule : 80000000h | bus<<16 | device<<11 | function<<8 | (offset & FCh).
+Les octets CFC..CFF permettent les sous-acces, mais les lectures DWORD alignees
+sont les moins ambigues. CF8h/CFCh sont des ports de la plate-forme PCI, pas des
+ports propres a Matrox. Leur acces doit etre serialise contre tout autre code.
+
+40.3 BAR et decodage
+--------------------
+
+Pour mesurer un BAR, un gestionnaire PCI ecrit FFFFFFFFh, lit le masque, puis
+restaure immediatement la valeur. Cette operation modifie la configuration :
+ne jamais la faire sur une carte en cours d'utilisation. Pour un programme DOS,
+la taille connue et les valeurs attribuees par le BIOS suffisent generalement.
+
+Avant le MMIO, verifier dans PCI Command que Memory Space Enable est actif. Un
+BAR memoire contient des bits de type dans son bas mot ; masquer ceux-ci avant
+de traiter l'adresse. Ne jamais utiliser directement une adresse physique dans
+Turbo Pascal reel : elle doit etre mappee par un hote DPMI ou un extender.
+
+
+==============================================================================
+41. CARTE MMIO EXHAUSTIVE DU MGA-2064W
+==============================================================================
+
+41.1 Grandes zones de MGABASE1
+------------------------------
+
+ Offset         Fonction
+ -------------- ---------------------------------------------------------
+ 0000h-1BFFh    DMAWIN, donnees ILOAD/IDUMP
+ 1C00h-1CFFh    registres de dessin, preparation sans lancement
+ 1D00h-1DFFh    miroirs des registres de dessin, ecriture avec lancement
+ 1E00h-1EFFh    registres hote, FIFO, interruptions, reset et mode
+ 1F00h-1FFFh    VGA memory-mapped
+ 2000h-3BFFh    reserve
+ 3C00h-3C1Fh    acces RAMDAC
+ 3C20h-3DFFh    reserve
+ 3E00h-3FFFh    extension
+
+Une lecture dans 1Dxx n'est pas un mecanisme de lancement. C'est l'ecriture au
+miroir du registre qui arme l'operation. Ecrire tout l'etat par 1Cxx, puis un
+seul dernier registre par 1Dxx rend la transaction comprehensible et robuste.
+
+41.2 Registres de dessin principaux
+------------------------------------
+
+ Offset Nom        Role
+ ------ ---------- ------------------------------------------------------
+ 1C00h  DWGCTL     opcode, ROP, mode source, profondeur et transparence
+ 1C04h  MACCESS    largeur pixel, reset memoire, tramage 15/16 bits
+ 1C0Ch  ZORG       origine Z en octets, alignee sur 512 octets
+ 1C10h  PAT0       motif, moitie basse
+ 1C14h  PAT1       motif, moitie haute
+ 1C1Ch  PLNWT      masque de plans du moteur
+ 1C20h  BCOL       couleur de fond
+ 1C24h  FCOL       couleur de premier plan
+ 1C30h  SRC0       source/stipple 0
+ 1C34h  SRC1       source/stipple 1
+ 1C38h  SRC2       source/stipple 2
+ 1C3Ch  SRC3       source/stipple 3
+ 1C40h  XYSTRT     debut de ligne, Y:X signes sur 16 bits
+ 1C44h  XYEND      fin de ligne
+ 1C50h  SHIFT      decalage source/pattern
+ 1C58h  SGN        signes/increments de l'algorithme
+ 1C5Ch  LEN        longueur vecteur ou nombre de lignes
+ 1C60h  AR0        registre arithmetique 0
+ 1C64h  AR1        registre arithmetique 1
+ 1C68h  AR2        registre arithmetique 2
+ 1C6Ch  AR3        registre arithmetique 3
+ 1C70h  AR4        registre arithmetique 4
+ 1C74h  AR5        registre arithmetique 5
+ 1C78h  AR6        registre arithmetique 6
+ 1C80h  CXBNDRY    clipping X entier, gauche:droite selon champs
+ 1C84h  FXBNDRY    bornes X fractionnaires/entieres du trapeze
+ 1C88h  YDSTLEN    Y destination et longueur/hauteur
+ 1C8Ch  PITCH      pas de ligne et mode d'adressage
+ 1C90h  YDST       destination Y
+ 1C94h  YDSTORG    origine destination en pixels
+ 1C98h  YTOP       premiere adresse lineaire autorisee
+ 1C9Ch  YBOT       derniere adresse lineaire autorisee
+ 1CA0h  CXLEFT     clipping gauche
+ 1CA4h  CXRIGHT    clipping droit
+ 1CA8h  FXLEFT     bord gauche fractionnaire
+ 1CACh  FXRIGHT    bord droit fractionnaire
+ 1CB0h  XDST       destination X
+
+Les registres DR0, DR2, DR3, DR4, DR6, DR7, DR8, DR10, DR11, DR12, DR14 et
+DR15 occupent respectivement 1CC0h, 1CC8h, 1CCCh, 1CD0h, 1CD8h, 1CDCh, 1CE0h,
+1CE8h, 1CECh, 1CF0h, 1CF8h et 1CFCh. Les trous ne doivent pas etre ecrits.
+
+41.3 Registres hote
+-------------------
+
+ Offset Nom         Role
+ ------ ----------- -----------------------------------------------------
+ 1E10h  FIFOSTATUS  places libres et etat FIFO
+ 1E14h  STATUS      moteur busy, retrace et evenements
+ 1E18h  ICLEAR      acquittement d'interruptions
+ 1E1Ch  IEN         activation d'interruptions
+ 1E20h  VCOUNT      compteur de ligne verticale
+ 1E40h  RST         reset logiciel
+ 1E54h  OPMODE      mode DMA et tailles de donnees
+
+Tous ces registres sont naturellement DWORD. Sur PCI, une ecriture partielle
+peut avoir une semantique differente ; utiliser des acces 32 bits atomiques.
+
+
+==============================================================================
+42. CHAMPS DE BITS DES REGISTRES PRINCIPAUX
+==============================================================================
+
+42.1 FIFOSTATUS et STATUS
+-------------------------
+
+FIFOSTATUS bits 5..0 donne le nombre de places libres, de 0 a 32. Apres reset,
+il vaut 32. Le bit 8 indique FIFO pleine ; le bit 9 FIFO vide et duplique en
+pratique l'information du bit 5. Une lecture PCI fournit un instantane stable.
+
+STATUS :
+
+  bit 2   pickpen       evenement pick
+  bit 3   vsyncsts      niveau vertical sync
+  bit 4   vsyncpen      evenement vertical sync pendant
+  bit 5   vlinepen      ligne verticale programmee atteinte
+  bit 6   extpen        interruption externe
+  bit 16  dwgengsts     moteur de dessin occupe
+
+Le pont PCI peut appliquer target retry si une ecriture arrive FIFO pleine,
+mais un pilote doit quand meme verifier les places, borner l'attente et rendre
+l'erreur visible plutot que se figer.
+
+42.2 IEN, ICLEAR et RST
+-----------------------
+
+IEN active pick (bit 2), vline (bit 5) et externe (bit 6). ICLEAR acquitte pick
+avec bit 2 et vline avec bit 5. L'evenement VSYNC est commande/acquitte par les
+bits 5/4 du registre CRTC 11h, et non comme vline dans ICLEAR.
+
+RST bit 0 est softreset. Le maintenir au moins 10 microsecondes. Un reset court,
+inferieur a environ 2 ms, peut conserver la WRAM, mais un pilote ne doit pas en
+faire une garantie apres erreur grave. La reinitialisation complete de WRAM,
+des timings et du RAMDAC suit alors la procedure constructeur.
+
+42.3 MACCESS
+------------
+
+  bits 1..0 pwidth : 00=8, 01=16, 10=32, 11=24 bits par pixel
+  bit 15    memreset : participe a l'initialisation memoire
+  bit 30    nodither : 1 desactive le tramage
+  bit 31    dit555 : 0 selectionne 5:6:5, 1 selectionne 5:5:5
+
+Pour FCOL et BCOL, repliquer la couleur dans le DWORD en 8/16 bpp. En 24 bpp,
+l'octet superieur est normalement ignore hors mode block. PLNWT est le masque
+de plans du moteur ; il n'existe pas de masque de plans equivalent pour les
+ecritures CPU directes dans le framebuffer.
+
+42.4 DWGCTL
+------------
+
+bits 3..0, opcode :
+
+  0 LINE_OPEN       1 AUTOLINE_OPEN   2 LINE_CLOSE
+  3 AUTOLINE_CLOSE  4 TRAP            5 TEXTURE_TRAP
+  8 BITBLT          9 ILOAD           A IDUMP
+  C FBITBLT         D ILOAD_SCALE     F ILOAD_FILTER
+
+6, 7, B et E sont reserves. Le bit 7 linear selectionne un BitBLT lineaire
+(1) plutot qu'en coordonnees XY (0).
+
+bits 6..4, atype : 000 RPL/remplacement, 001 RSTR lecture-modification-ecriture,
+011 ZI avec profondeur et Gouraud, 100 BLK/block, 111 I/Gouraud avec test Z.
+Les autres valeurs sont reservees. BLK force le ROP source-copie.
+
+bits 10..8, zmode : 000 toujours, 010 egal, 011 different, 100 inferieur,
+101 inferieur-ou-egal, 110 superieur, 111 superieur-ou-egal ; 001 est reserve.
+
+  bit 11 solid     force SRC0..SRC3 a FFFFFFFFh
+  bit 12 arzero    remet AR0/1/2/4/5/6 a zero
+  bit 13 sgnzero   remet SGN a zero
+  bit 14 shftzero  remet SHIFT a zero
+  bits 19..16 bop  operation booleenne entre destination D et source S
+  bits 23..20 trans motif de translucidite (ce n'est pas un alpha blend)
+  bits 28..25 bltmod format des donnees source
+  bit 29 pattern   active le motif
+  bit 30 transc    rend la couleur de fond transparente
+
+Table BOP : 0=0, 1=~(D|S), 2=D&~S, 3=~S, 4=~D&S, 5=~D, 6=D^S,
+7=~(D&S), 8=D&S, 9=~(D^S), A=D, B=D|~S, C=S, D=~D|S, E=D|S, F=1.
+
+bltmod : 0=BMONOLEF mono little-endian, 4=BMONOWF mono Windows, 1=BPLAN,
+2=BFCOL couleur formatee, E=BUYUV 4:2:2, 3=BU32BGR, 7=BU32RGB,
+B=BU24BGR, F=BU24RGB. Les autres codes sont reserves.
+
+42.5 OPMODE, PITCH et limites
+-----------------------------
+
+OPMODE.dmamod bits 3..2 : 00 ecriture generale, 01 DMA BitBLT, 10 vecteur,
+11 reserve. dmaDataSiz occupe 9..8 et dirDataSiz 17..16.
+
+PITCH contient le pas en pixels. Son bit 15 ylin vaut zero lorsque le moteur
+doit lineariser X,Y et un lorsque l'adresse est deja lineaire. YDSTORG est aussi
+exprime en pixels. Contraintes d'alignement de PITCH/YDSTORG, selon largeur et
+entrelacement memoire : PW8 64/128, PW16 32/64, PW24 64/128, PW32 32/32 pixels.
+
+YTOP et YBOT sont des adresses linearisees en pixels, calculees comme
+ligne*pitch+YDSTORG, et multiples de 32. Le clipping vertical materiel ne peut
+pas etre desactive : une mauvaise valeur explique de nombreux dessins absents.
+ZORG est en octets, multiple de 512 ; pour superposer Z et destination, la
+specification donne zorg = origine_Z - ydstorg*2.
+
+
+==============================================================================
+43. RECETTES DE PROGRAMMATION DU MOTEUR
+==============================================================================
+
+43.1 Etat global minimal
+------------------------
+
+Avant le premier dessin, programmer au minimum : MACCESS, PITCH, YDSTORG,
+YTOP/YBOT, CXLEFT/CXRIGHT (ou CXBNDRY), PLNWT et, si necessaire, ZORG. Les
+unites ne sont pas toutes des octets : PITCH et YDSTORG sont en pixels, ZORG en
+octets. Le format doit correspondre exactement au mode video etabli.
+
+Ordre conseille pour chaque commande :
+
+  1. attendre assez de places dans FIFOSTATUS ;
+  2. ecrire DWGCTL et les parametres via 1Cxx ;
+  3. ecrire le registre final via son miroir 1Dxx ;
+  4. attendre STATUS bit 16 seulement si le CPU depend du resultat.
+
+43.2 Remplissage rectangulaire par TRAP
+---------------------------------------
+
+Pour un rectangle non incline, utiliser TRAP avec les deux bords X identiques
+d'une ligne a l'autre. FCOL porte la couleur, FXBNDRY les bornes horizontales,
+et YDSTLEN combine Y dans le mot haut et le nombre de lignes dans le mot bas.
+La convention exacte du bord droit doit rester coherente avec le clipping et
+la revision ; tester explicitement les rectangles de largeur 1 et au bord droit.
+
+Une base utile de DWGCTL est : opcode TRAP, atype RPL, SOLID, ARZERO, SGNZERO,
+SHFTZERO, et BOP=C (copie source). Cela donne 000C7804h. Ecrire FCOL et
+FXBNDRY sans lancement, puis YDSTLEN a 1D88h pour lancer.
+
+43.3 BitBLT video-vers-video
+----------------------------
+
+BITBLT recopie des pixels de WRAM vers WRAM. Configurer les adresses source AR,
+la destination, la longueur, le sens SGN et le ROP avant le trigger. Si source
+et destination se chevauchent, choisir un parcours analogue a memmove : vers
+la fin quand la destination commence apres la source, vers le debut sinon.
+Une erreur de sens produit des bandes repetees, symptome tres utile en emulation.
+
+43.4 ILOAD depuis le CPU
+------------------------
+
+ILOAD arme d'abord le moteur, puis le CPU ecrit les donnees dans DMAWIN
+(MGABASE1+0000h..1BFFh). Le compte est contractuel : trop peu de pixels laisse
+le moteur en attente ; trop de DWORD peuvent etre interpretes comme des acces
+aux registres suivants. Ne jamais lancer ILOAD avec une surface vide. Decouper
+les lignes selon le format et traiter explicitement le remplissage du dernier
+DWORD. Le byte order et bltmod doivent correspondre.
+
+43.5 Framebuffer direct et coherence
+-------------------------------------
+
+Une ecriture CPU a MGABASE2 contourne le ROP et PLNWT. Elle peut coexister avec
+le moteur, mais le programme doit synchroniser toute dependance sur les memes
+pixels. Avant de lire un resultat produit par le moteur, attendre dwgengsts=0.
+Avant de lancer un BitBLT lisant des donnees que le CPU vient d'ecrire, employer
+les barrieres/fences offertes par l'extender ou une lecture MMIO serialisante.
+
+
+==============================================================================
+44. EXEMPLES ASSEMBLEUR AVANCES
+==============================================================================
+
+44.1 Attendre N places FIFO (386, ESI=MGABASE1)
+------------------------------------------------
+
+; Entree EAX=N (1..32), ECX=expiration. Sortie CF=1 si timeout.
+WaitFifo:
+        mov     edx,[esi+01E10h]
+        and     edx,3Fh
+        cmp     edx,eax
+        jae     short wf_ok
+        dec     ecx
+        jnz     WaitFifo
+        stc
+        ret
+wf_ok:  clc
+        ret
+
+44.2 Remplir un rectangle
+-------------------------
+
+; ESI = MGABASE1 mappee
+; EAX = couleur FCOL deja repliquee selon le format
+; EBX = (droite << 16) | gauche
+; EDX = (y << 16) | hauteur ; largeur et hauteur non nulles
+; Etat global/clipping deja programme. Detruit ECX.
+
+MGA_DWGCTL_TRAP_COPY equ 000C7804h
+
+MGAFillRect:
+        push    eax
+        mov     eax,4              ; DWGCTL, FCOL, FXBNDRY, trigger
+        mov     ecx,1000000
+        call    WaitFifo
+        pop     eax
+        jc      short mfr_error
+        mov     dword ptr [esi+01C00h],MGA_DWGCTL_TRAP_COPY
+        mov     [esi+01C24h],eax
+        mov     [esi+01C84h],ebx
+        mov     [esi+01D88h],edx   ; miroir YDSTLEN : lance
+        clc
+        ret
+mfr_error:
+        stc
+        ret
+
+Cet exemple illustre le protocole, mais pas l'etablissement du mode. Valider la
+convention de droite et le codage de la couleur sur le materiel cible. Une
+largeur/hauteur nulle doit etre rejetee avant l'appel.
+
+44.3 Lire un registre PCI par CF8h/CFCh
+---------------------------------------
+
+; EAX contient CONFIG_ADDRESS complet. Retour EAX=DWORD de configuration.
+; A n'utiliser qu'apres detection du mecanisme 1 et dans une section critique.
+
+PciReadDword:
+        push    edx
+        mov     dx,0CF8h
+        out     dx,eax
+        mov     dx,0CFCh
+        in      eax,dx
+        pop     edx
+        ret
+
+44.4 Acces indexe VGA sur 3C4h/3C5h
+-----------------------------------
+
+; AL=index, AH=nouvelle valeur. Detruit DX.
+WriteSequencer:
+        mov     dx,03C4h
+        out     dx,al
+        inc     dx
+        mov     al,ah
+        out     dx,al
+        ret
+
+Desactiver les interruptions autour d'une paire index/donnee n'est acceptable
+que si le programme possede la machine. Sous multitache ou VDM, employer les
+services du systeme/pilote ; CLI ne protege pas contre un autre processeur ou
+un VDD.
+
+
+==============================================================================
+45. EXEMPLES TURBO PASCAL AVANCES
+==============================================================================
+
+45.1 Acces aux ports VGA
+------------------------
+
+Turbo Pascal expose Port[] et PortW[]. Exemple de palette VGA :
+
+Procedure SetDAC(Index,R,G,B:Byte);
+Begin
+ Port[$3C8]:=Index;
+ Port[$3C9]:=R;
+ Port[$3C9]:=G;
+ Port[$3C9]:=B;
+End;
+
+Procedure WriteSeq(Index,Value:Byte);
+Begin
+ Port[$3C4]:=Index;
+ Port[$3C5]:=Value;
+End;
+
+Function ReadAttr(Index:Byte):Byte;
+Var Dummy:Byte;
+Begin
+ Dummy:=Port[$3DA];
+ Port[$3C0]:=Index or $20;
+ ReadAttr:=Port[$3C1];
+End;
+
+45.2 Detection PCI BIOS et prudence
+------------------------------------
+
+Un programme Pascal reel doit appeler INT 1Ah/B101h pour verifier le PCI BIOS,
+puis B102h pour rechercher Vendor=102Bh/Device=0519h. Les retours sont valides
+uniquement si CF=0 et AH=00h. Les BAR doivent ensuite etre lus par B10Ah/B109h
+selon largeur. Les registres 32 bits exigent BASM 386 ou un extender ; ne pas
+tronquer une adresse PCI a 16 bits.
+
+45.3 Ecriture DWORD MMIO atomique
+----------------------------------
+
+Turbo Pascal 7 en mode reel ne peut pas dereferencer une adresse physique PCI
+32 bits. Sous un extender DPMI, obtenir d'abord un mapping INT 31h/AX=0800h et
+un selecteur couvrant les 16 Ko. Une routine BASM 386 peut alors faire :
+
+Procedure MMIOWrite32(Sel,Ofs:Word; Value:LongInt); Assembler;
+Asm
+ mov  ax,Sel
+ mov  es,ax
+ mov  bx,Ofs
+ db   $66
+ mov  ax,word ptr Value            { 66h transforme AX en EAX }
+ db   $66
+ mov  word ptr es:[bx],ax          { 66h transforme la cible en DWORD }
+End;
+
+Ce fragment suppose un 386+, un selecteur DPMI valide et un offset inferieur a
+64 Ko (le BAR de controle ne fait que 16 Ko). Les prefixes 66h rendent les deux
+MOV 32 bits malgre l'affichage AX du BASM 16 bits. Verifier le code genere avec
+TDUMP ou un desassembleur : la regle importante est une unique transaction
+DWORD. Une unite TASM externe est preferable pour un pilote de production.
+
+45.4 Strategie portable pour une application DOS
+-------------------------------------------------
+
+Pour une application plutot qu'un pilote :
+
+  * utiliser VBE 4F00h/4F01h pour decouvrir les modes ;
+  * choisir le LFB seulement si ModeAttributes bit 7 l'annonce ;
+  * utiliser PhysBasePtr retourne par le ModeInfoBlock, pas un BAR suppose ;
+  * mapper par DPMI, dessiner dans le LFB, puis liberer le mapping ;
+  * conserver un chemin VBE bancaire 4F05h si le LFB est indisponible ;
+  * reserver le moteur MGA aux programmes qui identifient revision et format.
+
+Cette separation rend le programme utilisable sur une Millennium dont le BIOS
+ou l'extender differe, et limite les conflits avec un gestionnaire resident.
+
+
+==============================================================================
+46. REFERENCES
+==============================================================================
+
+Source constructeur principale
+------------------------------
+
+  * Matrox Graphics Inc., MGA-2064W Specification, Special Internet Edition,
+    document 10470-MS-0300, 29 fevrier 1996, 254 pages.
+
+    https://www.bitsavers.org/components/matrox/_dataSheets/
+    MGA-2064w_199602.pdf
+
+  * Matrox MGA-2164W Developer's Specification for Graphics Acceleration :
+
+    https://vintage3d.org/doc/matrox/2164spec.pdf
+
+Manuels et logiciels
+--------------------
+
+  * Matrox Millennium User Manual / Installation Guide, 1997 :
+
+    https://www.dosdays.co.uk/media/matrox/Millennium/
+    millenium_usermanual.pdf
+
+  * Millennium II Installation Guide :
+
+    https://manx-docs.org/collections/antonio/dec/MDS-2000-01/
+    cd1/SYS_OPT/MATRXIGA.PDF
+
+  * VESA BIOS Extension Core Functions Standard, VBE 1.2 et 2.0.
+
+Sources techniques complementaires
+----------------------------------
+
+  * DOS Days, cartes, memoire, BIOS et modes Millennium :
+
+    https://dosdays.co.uk/topics/Manufacturers/matrox/matrox_millennium.php
+
+  * Linux matroxfb et X.Org mga, pilotes libres utiles pour confronter
+    initialisation, PLL, DDC et registres.
+
+  * Plan 9 mga2164w, autre implementation independante :
+
+    https://9p.io/sources/contrib/quanstro/src/vga/mga2164w.c
+
+  * MAME, modele MGA-2064W en developpement, utile pour tests croises mais non
+    substitut a la specification Matrox.
+
+La specification 2064W est normative pour les registres. Les valeurs d'une
+carte retail ou OEM dependent aussi du PCB, du TVP3026, de la WRAM et du BIOS.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

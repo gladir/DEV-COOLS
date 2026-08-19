@@ -1,0 +1,1126 @@
+==============================================================================
+ HERCULES GRAPHICS CARD (HGC)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Hercules Graphics Card originale, ou HGC, de Hercules
+Computer Technology. Il couvre sa compatibilite IBM Monochrome Display Adapter,
+son mode graphique 720 x 348, sa memoire entrelacee, le controleur 6845, le port
+parallele et la programmation sous DOS en assembleur et Turbo Pascal.
+
+Les Hercules Graphics Card Plus, Hercules InColor, Graphics Station Card et les
+clones sont mentionnes uniquement pour expliquer les differences. Ils ne doivent
+pas etre confondus avec les fonctions garanties par la HGC originale GB101.
+
+Les accents sont omis afin que le fichier reste lisible avec les outils DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Caracteristiques generales
+  3. Architecture materielle
+  4. Moniteur et signaux video
+  5. Compatibilite MDA et mode texte
+  6. Attributs, caracteres et curseur
+  7. Mode graphique 720 x 348
+  8. Organisation des 64 Kio et des deux pages
+  9. Calcul de l'adresse d'un pixel
+ 10. Carte des ports
+ 11. Registres du controleur 6845
+ 12. Valeurs 6845 texte et graphique
+ 13. Mode Control 3B8h
+ 14. Configuration Switch 3BFh
+ 15. Display Status 3BAh
+ 16. Light Pen et fonctions rarement utilisees
+ 17. Port parallele et IRQ7
+ 18. BIOS, DOS et absence de mode graphique standard
+ 19. Detection d'une HGC
+ 20. Changement de mode correct
+ 21. Dessin de pixels, lignes et rectangles
+ 22. Texte en mode graphique et fontes
+ 23. Pages, animation et double buffering
+ 24. Coexistence avec CGA/EGA/VGA
+ 25. Exemples en assembleur
+ 26. Exemples en Turbo Pascal
+ 27. Conseils pour un pilote ou un emulateur
+ 28. Tests de conformite
+ 29. Differences avec HGC+, InColor et clones
+ 30. Pieges frequents
+ 31. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Hercules Computer Technology presenta sa Graphics Card au debut des annees 1980.
+Elle repondait a une limitation de l'IBM Monochrome Display Adapter : l'excellent
+texte 80 x 25 de l'ecran IBM 5151 ne disposait d'aucun mode graphique adresse
+par pixel.
+
+La HGC combine trois fonctions :
+
+  * emulation tres proche de l'IBM MDA pour les applications texte ;
+  * bitmap monochrome 720 x 348, resolution superieure au CGA ;
+  * port parallele compatible IBM, normalement LPT1.
+
+Le mode graphique Hercules ne fut pas assigne a un numero BIOS IBM. Les
+applications le programment directement ou emploient un pilote specifique.
+Lotus 1-2-3, AutoCAD, GEM, Windows et de nombreux logiciels DOS ont contribue
+a en faire un standard de fait largement clone.
+
+
+==============================================================================
+2. CARACTERISTIQUES GENERALES
+==============================================================================
+
+  * carte ISA 8 bits pour IBM PC/XT/AT et compatibles ;
+  * affichage monochrome numerique compatible IBM 5151 ;
+  * texte MDA 80 colonnes x 25 lignes, cellule 9 x 14 ;
+  * resolution texte physique 720 x 350 ;
+  * graphique monochrome 720 x 348 ;
+  * 64 Kio de memoire video, deux pages de 32 Kio ;
+  * controleur CRT Motorola 6845 ou compatible ;
+  * frequence de ligne voisine de 18,432 kHz ;
+  * frequence verticale voisine de 50 Hz ;
+  * port parallele a 3BCh..3BEh, IRQ7 optionnelle ;
+  * aucune palette, aucun DAC, aucun plan couleur, aucun blitter.
+
+Chaque pixel graphique vaut 0 ou 1. L'apparence verte, ambree ou blanche depend
+du phosphore du moniteur, pas d'une valeur de couleur programmee.
+
+
+==============================================================================
+3. ARCHITECTURE MATERIELLE
+==============================================================================
+
+La carte comporte typiquement :
+
+  * un CRTC 6845 qui genere les adresses et synchronisations ;
+  * 64 Kio de DRAM video ;
+  * logique de conversion parallele-serie ;
+  * ROM de caracteres pour le mode texte ;
+  * logique d'attribut MDA ;
+  * registres de controle propres a Hercules ;
+  * interface imprimante Centronics.
+
+Le 6845 ne connait ni les pixels ni les caracteres eux-memes. Il genere une
+adresse de "caractere" MA et un numero de scanline RA. En texte, MA lit code et
+attribut, puis la ROM de fonte transforme le code et RA en points. En graphique,
+la logique Hercules reutilise RA pour choisir l'une des quatre banques de 8 Kio
+et transforme chaque mot logique du CRTC en seize pixels.
+
+Le CPU et le circuit video partagent la DRAM. Sur les premieres cartes, des
+acces durant l'affichage peuvent produire une perturbation ou "neige". Une
+bibliotheque peut synchroniser les copies massives, meme si de nombreux clones
+ont elimine le probleme.
+
+
+==============================================================================
+4. MONITEUR ET SIGNAUX VIDEO
+==============================================================================
+
+La HGC emploie un moniteur TTL monochrome compatible IBM 5151. Le connecteur est
+un DE-9 femelle et transporte video, intensite, synchronisations et masses. Ce
+n'est pas une sortie analogique VGA.
+
+Caracteristiques usuelles :
+
+  * balayage horizontal fixe autour de 18,432 kHz ;
+  * trame autour de 50 Hz ;
+  * video numerique avec intensite ;
+  * absence de support CGA 15,75 kHz et VGA 31,5 kHz.
+
+AVERTISSEMENT : un IBM 5151 n'est pas un moniteur multisynchronisation. Des
+timings fantaisistes peuvent produire une image instable et solliciter ses
+circuits de deflexion hors specifications. Employer les tables Hercules.
+
+Un adaptateur passif DE-9 vers DE-15 ne convertit ni la frequence ni les niveaux
+TTL en RGB analogique. Une conversion vers VGA exige de l'electronique active ou
+un moniteur multisync acceptant explicitement le signal.
+
+
+==============================================================================
+5. COMPATIBILITE MDA ET MODE TEXTE
+==============================================================================
+
+Au demarrage, la HGC se presente comme un MDA. La memoire texte commence a :
+
+  segment B000h, adresse physique B0000h
+
+Chaque cellule occupe deux octets :
+
+  offset = 2 * (ligne * 80 + colonne)
+  octet 0 = code du caractere
+  octet 1 = attribut
+
+La page texte utile occupe 80*25*2 = 4000 octets. Les registres Start Address
+permettent d'afficher une autre partie de la memoire, mais BIOS et DOS supposent
+normalement la page de base.
+
+La ROM de caracteres fournit la fonte MDA 8 points plus une colonne d'espacement
+ou de duplication pour former une cellule 9 x 14. Certains caracteres de lignes
+du bloc C0h..DFh dupliquent le huitieme point dans la neuvieme colonne afin de
+joindre correctement les cadres.
+
+INT 10h fonctionne en texte par l'intermediaire du BIOS MDA : ecriture de
+caracteres, curseur, scrolling et selection du mode 7. Le BIOS IBM ne connait
+pas le bitmap Hercules.
+
+
+==============================================================================
+6. ATTRIBUTS, CARACTERES ET CURSEUR
+==============================================================================
+
+Le MDA/HGC n'interprete pas l'attribut comme les 16 couleurs CGA. Les valeurs
+usuelles combinent noir, video normale, haute intensite, soulignement, inversion
+et clignotement. Les attributs les plus courants sont :
+
+  00h  noir sur noir
+  07h  video normale
+  09h  soulignement
+  0Fh  haute intensite
+  70h  video inverse
+  78h  inverse avec premier plan masque selon implementation
+  80h  bit de clignotement combine a un attribut visible
+
+Tous les 256 octets ne produisent pas des combinaisons independantes. La logique
+MDA reconnait des motifs de bits particuliers. Les clones peuvent differer sur
+les attributs non documentes.
+
+Le curseur materiel est defini par :
+
+  registre 0Ah : premiere scanline et controle
+  registre 0Bh : derniere scanline
+  registres 0Eh/0Fh : adresse du caractere
+
+Le bit Blink Enable de 3B8h autorise le clignotement texte. En graphique, le
+logiciel doit dessiner son propre curseur.
+
+
+==============================================================================
+7. MODE GRAPHIQUE 720 X 348
+==============================================================================
+
+Le bitmap contient 720 colonnes et 348 lignes. Chaque pixel est un bit :
+
+  0 = fond/noir
+  1 = point lumineux
+
+Une ligne fait 720/8 = 90 octets. La taille mathematique visible est :
+
+  90 * 348 = 31 320 octets
+
+Elle tient dans une page de 32 Kio. Les 1 448 octets restants sont dus a
+l'arrangement par banques et aux marges de chaque banque.
+
+Le pixel de gauche est le bit 7, celui de droite le bit 0. Un octet represente
+donc huit pixels consecutifs.
+
+La resolution est parfois annoncee 720 x 350 par analogie avec MDA. Le mode
+graphique Hercules original affiche 348 lignes adressables ; les deux lignes de
+difference ne constituent pas des lignes de bitmap utilisables.
+
+
+==============================================================================
+8. ORGANISATION DES 64 KIO ET DES DEUX PAGES
+==============================================================================
+
+Page 0 : B0000h..B7FFFh, segment B000h, 32 Kio
+Page 1 : B8000h..BFFFFh, segment B800h, 32 Kio
+
+Chaque page est divisee en quatre banques de 8 Kio :
+
+  y mod 4 = 0  base + 0000h
+  y mod 4 = 1  base + 2000h
+  y mod 4 = 2  base + 4000h
+  y mod 4 = 3  base + 6000h
+
+Dans chaque banque se trouvent 87 lignes : 0/4/8..., 1/5/9..., etc. Chaque
+groupe occupe 87*90 = 7830 octets, laissant 362 octets non affiches avant la
+banque suivante.
+
+Cette disposition resulte du cablage des sorties RA0/RA1 du 6845 vers les bits
+d'adresse memoire. Elle permet au CRTC de considerer une "rangee" graphique
+comme quatre scanlines.
+
+Le modele GB101 masque la page 1 tant que le bit correspondant de 3BFh n'est pas
+active. Cette precaution libere B8000h pour une carte couleur coexistante.
+
+
+==============================================================================
+9. CALCUL DE L'ADRESSE D'UN PIXEL
+==============================================================================
+
+Pour x=0..719, y=0..347 :
+
+  offset_octet = (y AND 3)*2000h + (y SHR 2)*90 + (x SHR 3)
+  masque       = 80h SHR (x AND 7)
+
+Adresse physique :
+
+  page 0 : B000:offset_octet
+  page 1 : B800:offset_octet
+
+Exemple x=719,y=347 :
+
+  banque = 3*2000h = 6000h
+  ligne  = 86*90   = 1E3Ch
+  octet  = 89      = 0059h
+  offset = 7E95h
+  masque = 01h
+
+L'offset reste inferieur a 8000h. Une formule `y*90+x/8` est fausse sur HGC :
+elle produirait un bitmap lineaire alors que le materiel est entrelace par 4.
+
+
+==============================================================================
+10. CARTE DES PORTS
+==============================================================================
+
+ Port    Sens    Fonction
+ ---------------------------------------------------------------------------
+ 03B0h   W       miroir de l'index 6845 selon decodage
+ 03B1h   R/W     miroir des donnees 6845
+ 03B2h/3h        miroirs possibles
+ 03B4h   W       index du 6845
+ 03B5h   R/W     donnees du registre selectionne
+ 03B6h/7h        miroirs possibles
+ 03B8h   W       Display Mode Control
+ 03B9h   W       Set Light Pen Flip-Flop
+ 03BAh   R       Display Status
+ 03BBh   W       Reset Light Pen Flip-Flop
+ 03BCh   R/W     Printer Data
+ 03BDh   R       Printer Status
+ 03BEh   R/W     Printer Control
+ 03BFh   W       Hercules Configuration Switch
+
+La carte decode la plage 3B0h..3BFh, comme MDA. Employer les adresses canoniques
+3B4h/3B5h. Certains clones ne reproduisent pas tous les miroirs.
+
+3B8h et 3BFh sont en ecriture seulement sur la HGC originale. Le programme doit
+conserver une copie logicielle de leur derniere valeur ; les lire ne permet pas
+de retrouver l'etat.
+
+
+==============================================================================
+11. REGISTRES DU CONTROLEUR 6845
+==============================================================================
+
+ Index  Fonction
+ ---------------------------------------------------------------------------
+ 00h    Horizontal Total, nombre de caracteres total moins 1
+ 01h    Horizontal Displayed, caracteres visibles
+ 02h    Horizontal Sync Position
+ 03h    Horizontal Sync Width
+ 04h    Vertical Total, rangees totales moins 1
+ 05h    Vertical Total Adjust, scanlines supplementaires
+ 06h    Vertical Displayed, rangees visibles
+ 07h    Vertical Sync Position
+ 08h    Interlace Mode
+ 09h    Maximum Scan Line Address, hauteur de rangee moins 1
+ 0Ah    Cursor Start
+ 0Bh    Cursor End
+ 0Ch    Start Address High
+ 0Dh    Start Address Low
+ 0Eh    Cursor Address High
+ 0Fh    Cursor Address Low
+ 10h    Light Pen Address High, lecture
+ 11h    Light Pen Address Low, lecture
+
+Tous les registres ne sont pas lisibles sur toutes les versions du MC6845. Une
+routine de sauvegarde doit conserver les valeurs qu'elle programme plutot que
+supposer qu'une lecture renvoie l'etat.
+
+Le CRTC compte des caracteres, pas des pixels. En graphique Hercules, un temps
+de caractere correspond a 16 pixels et une rangee a 4 scanlines. Ainsi :
+
+  45 caracteres * 16 pixels = 720 pixels
+  87 rangees * 4 lignes     = 348 lignes
+
+
+==============================================================================
+12. VALEURS 6845 TEXTE ET GRAPHIQUE
+==============================================================================
+
+ Index  Texte   Graphique  Signification abregee
+ ---------------------------------------------------------------------------
+ 00h    61h     35h        horizontal total
+ 01h    50h     2Dh        horizontal visible
+ 02h    52h     2Eh        debut synchro H
+ 03h    0Fh     07h        largeur synchro H
+ 04h    19h     5Bh        vertical total
+ 05h    06h     02h        ajustement vertical
+ 06h    19h     57h        vertical visible
+ 07h    19h     57h        debut synchro V
+ 08h    02h     02h        entrelacement
+ 09h    0Dh     03h        scanlines/rangee moins 1
+ 0Ah    0Bh     00h        debut curseur
+ 0Bh    0Ch     00h        fin curseur
+ 0Ch    00h     00h        adresse affichage haute
+ 0Dh    00h     00h        adresse affichage basse
+
+La table officielle de changement de mode programme les index 00h..0Bh ; les
+adresses sont mises a zero pour la page par defaut. Il est prudent de couper la
+video pendant la reprogrammation afin d'eviter des synchronisations transitoires.
+
+
+==============================================================================
+13. MODE CONTROL 3B8H
+==============================================================================
+
+Le registre est en ecriture seulement et remis a zero au demarrage.
+
+ Bit  Valeur  Fonction
+ ---------------------------------------------------------------------------
+ 0           non utilise sur HGC originale
+ 1    0/1    texte / graphique, si autorise par 3BFh
+ 2           non utilise
+ 3    0/1    video desactivee / activee
+ 4           non utilise
+ 5    0/1    clignotement texte desactive / active
+ 6           non utilise
+ 7    0/1    afficher page 0 B000h / page 1 B800h
+
+Valeurs courantes :
+
+  08h  texte, video active, sans blink
+  20h  texte avec blink mais video coupee
+  28h  texte, video et blink actifs
+  0Ah  graphique page 0, video active
+  8Ah  graphique page 1, video active
+
+Le bit 1 seul ne suffit pas : 3BFh bit 0 doit autoriser le graphique. La page 1
+exige egalement 3BFh bit 1 sur la HGC originale.
+
+
+==============================================================================
+14. CONFIGURATION SWITCH 3BFH
+==============================================================================
+
+Le registre est en ecriture seulement et vaut zero apres reset.
+
+ Bit  Valeur  Fonction
+ ---------------------------------------------------------------------------
+ 0    0       interdire la selection du mode graphique
+      1       autoriser le bit graphique de 3B8h
+ 1    0       masquer la seconde page B8000h
+      1       autoriser la seconde page
+ 2..7         non utilises/reserves sur HGC originale
+
+Valeurs sures :
+
+  00h  comportement MDA, graphique et page 1 interdits
+  01h  graphique autorise, page 1 masquee
+  03h  graphique et page 1 autorises
+
+Le manuel recommande un etat nul pour que les diagnostics IBM MDA reussissent.
+Activer la page 1 entre en conflit avec une CGA utilisant B8000h. C'est pourquoi
+un programme a double affichage doit garder 3BFh=01h et se limiter a la page 0.
+
+Ne jamais recopier aveuglement des bits HGC+ ou InColor dans ce registre : ils
+peuvent avoir une autre fonction sur les descendants.
+
+
+==============================================================================
+15. DISPLAY STATUS 3BAH
+==============================================================================
+
+Le statut indique l'activite du signal video et la synchronisation verticale.
+La polarite exacte est souvent exprimee differemment dans les manuels :
+
+  bit 7  etat de synchronisation verticale, actif bas sur le signal physique
+  bit 3  etat video/horizontal utilise pour determiner la zone d'affichage
+  autres bits reserves ou identifiants sur certaines cartes ulterieures
+
+Pour detecter un adaptateur vivant, observer qu'un bit de synchronisation change
+avec le temps, pas seulement une valeur fixe lue une fois. Une boucle doit avoir
+une expiration si aucune carte ne decode 3BAh.
+
+Pour reduire la neige, attendre une phase hors affichage avant une petite copie.
+Pour une image entiere, attendre chaque ligne serait trop lent ; couper la video
+ou accepter une perturbation transitoire peut etre preferable.
+
+Les bits d'identification des HGC Plus/InColor ne sont pas garantis sur GB101.
+
+
+==============================================================================
+16. LIGHT PEN ET FONCTIONS RAREMENT UTILISEES
+==============================================================================
+
+Les ports 3B9h et 3BBh commandent le flip-flop Light Pen du 6845. Lorsqu'il est
+declenche, l'adresse courante peut etre lue dans les registres 10h/11h.
+
+  OUT 3B9h  force/arme le latch selon la logique de la carte
+  OUT 3BBh  reinitialise le flip-flop
+
+La carte commerciale ne fournit pas necessairement un connecteur de crayon
+optique accessible. Ces ports servent surtout au diagnostic, aux clones ou a
+des montages speciaux. Ne pas les utiliser comme detection destructive.
+
+
+==============================================================================
+17. PORT PARALLELE ET IRQ7
+==============================================================================
+
+La HGC integre l'equivalent du premier adaptateur imprimante IBM :
+
+  3BCh  registre de donnees
+  3BDh  registre d'etat
+  3BEh  registre de controle
+  IRQ7  interruption sur acquittement, si activee
+
+Printer Status 3BDh contient notamment Busy inverse, Acknowledge, Paper Out,
+Select et Error. Printer Control commande Strobe, Auto Feed, Initialize, Select
+In et l'autorisation IRQ7 ; plusieurs sorties sont inversees electriquement.
+
+Le BIOS Data Area contient les bases LPT a 0040:0008h et suivantes. Ne pas
+supposer que 3BCh est LPT1 si la configuration BIOS a choisi un autre ordre.
+
+Un programme graphique ne doit pas modifier 3BCh..3BEh. Inversement, un pilote
+d'imprimante ne doit pas toucher 3B8h ou 3BFh sous pretexte que les ports sont
+dans la meme plage.
+
+
+==============================================================================
+18. BIOS, DOS ET ABSENCE DE MODE GRAPHIQUE STANDARD
+==============================================================================
+
+Le BIOS IBM reconnait la HGC comme MDA et offre le mode 07h texte. Aucun appel
+INT 10h/AH=00h officiel ne selectionne 720 x 348. La HGC originale ne porte pas
+de BIOS video propre qui etendrait INT 10h.
+
+Les programmes graphiques utilisent :
+
+  * acces direct aux ports et a B000h/B800h ;
+  * pilotes fournis par l'application ;
+  * bibliotheques comme GRAPHIX, BGI ou pilotes GEM/Windows ;
+  * TSR d'emulation CGA, avec performances et compatibilite variables.
+
+Les fonctions BIOS de pixel AH=0Ch et de lecture AH=0Dh ne sont pas definies
+pour le mode Hercules direct. Les appeler peut employer l'ancien etat BIOS mode
+7 et produire un resultat sans rapport avec le bitmap.
+
+Lors du retour au texte, reprogrammer le 6845, remettre 3BFh dans l'etat voulu,
+selectionner 3B8h texte/video et, si necessaire, appeler INT 10h mode 7 pour que
+la BIOS Data Area et le curseur soient coherents.
+
+
+==============================================================================
+19. DETECTION D'UNE HGC
+==============================================================================
+
+Il n'existe pas de signature ROM universelle ni d'appel BIOS Hercules original.
+La detection doit etre prudente :
+
+  1. lire 3BAh plusieurs fois avec expiration ;
+  2. verifier que le bit de synchronisation evolue ;
+  3. confirmer la presence d'une configuration monochrome dans la BIOS Data
+     Area ou par INT 11h ;
+  4. distinguer si necessaire MDA/HGC par un test memoire restaure ;
+  5. reconnaitre separement HGC+, InColor et clones.
+
+INT 11h, bit d'equipement video, indique un affichage monochrome mais ne
+distingue pas MDA et Hercules.
+
+Test memoire possible : sauvegarder quelques octets eloignes de la page texte,
+ecrire des motifs a B000h puis verifier l'absence d'alias. Une HGC a 64 Kio,
+contre 4 Kio typiques du MDA. Cependant un clone, un emulateur ou une RAM systeme
+dans un trou peut fausser ce test. Toujours restaurer et ne jamais le faire sur
+un systeme multitache sans exclusivite video.
+
+Ecrire 03h a 3BFh puis verifier B800h est plus discriminant mais active un
+conflit possible avec CGA. Ce test est donc destructif et non recommande.
+
+
+==============================================================================
+20. CHANGEMENT DE MODE CORRECT
+==============================================================================
+
+Passage en graphique, page 0
+----------------------------
+
+  1. sauver l'etat texte utile ;
+  2. ecrire 01h ou 03h a 3BFh ;
+  3. couper la video avec 3B8h bit 3=0 ;
+  4. programmer 6845 index 00h..0Bh avec la table graphique ;
+  5. mettre Start Address a zero ;
+  6. effacer B000:0000..7FFF ;
+  7. ecrire 0Ah a 3B8h pour graphique+video, page 0.
+
+Retour texte
+------------
+
+  1. couper la video ;
+  2. programmer la table texte ;
+  3. ecrire 28h ou 08h a 3B8h selon blink ;
+  4. restaurer/ecrire 00h a 3BFh si seule l'emulation MDA est desiree ;
+  5. restaurer texte, curseur et BIOS Data Area, ou appeler INT 10h mode 7.
+
+L'ordre 3BFh avant 3B8h est important : le mode graphique est bloque tant que
+Configuration Switch bit 0 vaut zero.
+
+
+==============================================================================
+21. DESSIN DE PIXELS, LIGNES ET RECTANGLES
+==============================================================================
+
+Pixel
+-----
+
+Calculer offset et masque. Allumer par OR, eteindre par AND NOT, inverser par
+XOR. L'operation lecture-modification-ecriture partage l'octet avec sept pixels ;
+elle doit etre protegee si plusieurs contextes dessinent simultanement.
+
+Ligne horizontale
+-----------------
+
+Traiter le premier et le dernier octet par masque, puis remplir les octets
+complets avec 00h ou FFh. Ne pas appeler PutPixel 720 fois.
+
+Ligne verticale
+---------------
+
+L'offset ne progresse pas toujours de 90 : y change de banque. Recalculer par la
+formule ou utiliser une table de 348 offsets de debut de ligne.
+
+Rectangle plein
+---------------
+
+Pour chaque ligne, appliquer les masques de bord et remplir le centre. Une table
+`LineOffset[y]` accelere toutes les primitives et coute 696 octets.
+
+BitBLT
+------
+
+La HGC n'a pas de blitter. Le CPU copie. Un sprite non aligne exige decalages et
+fusion de deux octets source par octet destination. Pour la transparence :
+
+  destination = (destination AND NOT masque) OR (source AND masque)
+
+
+==============================================================================
+22. TEXTE EN MODE GRAPHIQUE ET FONTES
+==============================================================================
+
+La ROM de caracteres n'est pas exposee comme un bitmap simple garanti. Une
+application graphique charge une fonte depuis son executable ou demande au BIOS
+un pointeur de fonte si l'interface le permet sur la machine cible.
+
+Pour une fonte 8 x 8 : chaque glyphe occupe 8 octets, un octet par ligne. Pour
+dessiner le caractere c a (x,y), copier les bits de `font[c*8+r]` dans le bitmap
+Hercules en tenant compte de l'alignement x mod 8.
+
+Operations utiles :
+
+  COPY  dessine blanc/noir complet
+  OR    superpose les points blancs
+  XOR   texte reversible
+  AND   masque/effacement
+
+Le texte BIOS INT 10h continue de croire au mode MDA ; ne pas lui confier le
+dessin dans le bitmap HGC.
+
+
+==============================================================================
+23. PAGES, ANIMATION ET DOUBLE BUFFERING
+==============================================================================
+
+Les deux pages permettent de dessiner hors ecran puis de commuter 3B8h bit 7 :
+
+  afficher page 0 : mode graphique 0Ah
+  afficher page 1 : mode graphique 8Ah
+
+Pour eviter une coupure, changer le bit pendant le retrace vertical. Conserver
+les autres bits de la copie logicielle de 3B8h.
+
+La page 1 exige 3BFh=03h. Elle occupe B8000h et entre donc en conflit avec CGA.
+Sur un systeme HGC+CGA a deux ecrans, employer uniquement B0000h et 3BFh=01h.
+
+Un double buffering complet copie/dessine dans la page cachee, attend le
+retrace, bascule l'affichage, puis inverse les roles. Le CPU voit simultanement
+les deux segments ; il n'y a pas de registre de banque CPU.
+
+
+==============================================================================
+24. COEXISTENCE AVEC CGA/EGA/VGA
+==============================================================================
+
+Les ressources monochromes et couleur sont separees :
+
+  HGC/MDA : ports 3Bxh, memoire B0000h
+  CGA     : ports 3Dxh, memoire B8000h
+  EGA/VGA : ports 3Bx/3Dx selon mode, memoires A0000h/B0000h/B8000h
+
+Une HGC et une CGA peuvent piloter deux moniteurs si la page HGC 1 reste masquee.
+DOS MODE peut changer l'adaptateur logique selon configuration.
+
+Avec EGA/VGA, le decode monochrome peut entrer en conflit lorsque le VGA utilise
+B0000h et les ports 3Bxh. Configurer le VGA comme couleur primaire et eviter le
+mode 7 pendant que HGC est active. Les cartes modernes/clones peuvent decoder
+plus largement que le materiel IBM.
+
+Ne jamais brancher simultanement deux sorties sur le meme moniteur par un cable
+passif en Y.
+
+
+==============================================================================
+25. EXEMPLES EN ASSEMBLEUR
+==============================================================================
+
+25.1 Tables de mode
+-------------------
+
+HERC_INDEX equ 03B4h
+HERC_CTRL  equ 03B8h
+HERC_STAT  equ 03BAh
+HERC_CFG   equ 03BFh
+
+GTable db 35h,2Dh,2Eh,07h,5Bh,02h,57h,57h
+       db 02h,03h,00h,00h
+TTable db 61h,50h,52h,0Fh,19h,06h,19h,19h
+       db 02h,0Dh,0Bh,0Ch
+
+25.2 Programmer douze registres 6845
+------------------------------------
+
+; DS:SI -> table. Detruit AX,CX,DX,SI.
+
+Set6845:
+        mov     dx,HERC_INDEX
+        xor     ax,ax               ; AL=index
+        mov     cx,12
+s6845_loop:
+        mov     ah,[si]
+        out     dx,ax               ; index a 3B4h, valeur a 3B5h
+        inc     si
+        inc     al
+        loop    s6845_loop
+        ret
+
+25.3 Entrer en graphique page 0
+--------------------------------
+
+        mov     dx,HERC_CFG
+        mov     al,01h              ; graphique oui, page 1 masquee
+        out     dx,al
+        mov     dx,HERC_CTRL
+        mov     al,02h              ; graphique, video coupee
+        out     dx,al
+        lea     si,GTable
+        call    Set6845
+        mov     ax,0B000h
+        mov     es,ax
+        xor     di,di
+        xor     ax,ax
+        mov     cx,4000h            ; 32768 octets / 2
+        cld
+        rep     stosw
+        mov     dx,HERC_CTRL
+        mov     al,0Ah              ; graphique + video, page 0
+        out     dx,al
+
+25.4 Calculer adresse et masque
+-------------------------------
+
+; Entree BX=x, DX=y. Sortie DI=offset, AL=masque. Detruit CX,DX.
+
+HercAddress:
+        mov     ax,dx
+        and     ax,3
+        mov     cl,13
+        shl     ax,cl               ; (y and 3)*2000h
+        mov     di,ax
+        shr     dx,1
+        shr     dx,1                ; y div 4
+        mov     ax,dx
+        mov     cx,90
+        mul     cx
+        add     di,ax
+        mov     ax,bx
+        shr     ax,1
+        shr     ax,1
+        shr     ax,1
+        add     di,ax               ; x div 8
+        mov     cl,bl
+        and     cl,7
+        mov     al,80h
+        shr     al,cl
+        ret
+
+`SHL AX,CL` avec CL=13 est valide sur 8086 mais lent ; trois rotations/adresses
+ou une table peuvent etre plus rapides. Ici le code privilegie la lisibilite.
+
+25.5 Allumer un pixel page 0
+----------------------------
+
+; BX=x, DX=y, bornes deja verifiees.
+
+        call    HercAddress
+        mov     cx,0B000h
+        mov     es,cx
+        or      es:[di],al
+
+25.6 Attendre le debut du retrace vertical
+------------------------------------------
+
+; CF=1 expiration. Les deux phases evitent de retourner au milieu du retrace.
+
+WaitHercVSync:
+        mov     dx,HERC_STAT
+        mov     cx,0FFFFh
+wh_leave:
+        in      al,dx
+        test    al,80h
+        jz      short wh_wait
+        loop    wh_leave
+        stc
+        ret
+wh_wait:
+        mov     cx,0FFFFh
+wh_enter:
+        in      al,dx
+        test    al,80h
+        jnz     short wh_ok
+        loop    wh_enter
+        stc
+        ret
+wh_ok:  clc
+        ret
+
+Si un clone expose la polarite inverse, detecter un changement plutot qu'un
+niveau fixe. L'objectif du code est de montrer l'expiration obligatoire.
+
+25.7 Basculer la page affichee
+------------------------------
+
+; AL=0 pour page 0, AL non nul pour page 1. 3BFh doit valoir 03h pour page 1.
+
+        or      al,al
+        jz      short show_page0
+        mov     al,8Ah
+        jmp     short show_write
+show_page0:
+        mov     al,0Ah
+show_write:
+        mov     dx,HERC_CTRL
+        out     dx,al
+
+25.8 Retour propre au texte
+---------------------------
+
+        mov     dx,HERC_CTRL
+        xor     al,al               ; couper video
+        out     dx,al
+        lea     si,TTable
+        call    Set6845
+        mov     dx,HERC_CTRL
+        mov     al,28h              ; texte, video, blink
+        out     dx,al
+        mov     dx,HERC_CFG
+        xor     al,al               ; comportement MDA
+        out     dx,al
+        mov     ax,0007h
+        int     10h                 ; synchroniser BIOS et effacer texte
+
+
+==============================================================================
+26. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+26.1 Constantes et tables
+-------------------------
+
+const
+  HercIndex = $3B4;
+  HercCtrl  = $3B8;
+  HercStat  = $3BA;
+  HercCfg   = $3BF;
+  GTable : array[0..11] of Byte =
+    ($35,$2D,$2E,$07,$5B,$02,$57,$57,$02,$03,$00,$00);
+  TTable : array[0..11] of Byte =
+    ($61,$50,$52,$0F,$19,$06,$19,$19,$02,$0D,$0B,$0C);
+
+26.2 Programmer le 6845
+-----------------------
+
+procedure Set6845(var Table);
+var
+  T : array[0..11] of Byte absolute Table;
+  I : Byte;
+begin
+  for I := 0 to 11 do begin
+    Port[HercIndex] := I;
+    Port[HercIndex+1] := T[I];
+  end;
+end;
+
+26.3 Entrer et sortir du mode graphique
+---------------------------------------
+
+procedure HercGraphics(Page1Enabled : Boolean);
+begin
+  if Page1Enabled then Port[HercCfg] := $03
+                  else Port[HercCfg] := $01;
+  Port[HercCtrl] := $02;
+  Set6845(GTable);
+  FillChar(Mem[$B000:0],32768,0);
+  if Page1Enabled then FillChar(Mem[$B800:0],32768,0);
+  Port[HercCtrl] := $0A;
+end;
+
+procedure HercText;
+var R : Registers;
+begin
+  Port[HercCtrl] := 0;
+  Set6845(TTable);
+  Port[HercCtrl] := $28;
+  Port[HercCfg] := 0;
+  R.AX := $0007;
+  Intr($10,R);
+end;
+
+`FillChar` avec 32768 exige que la version de Turbo Pascal accepte une taille
+Word non signee. Sur une bibliotheque declarant Count comme Word, cette valeur
+est valide ; sinon effacer en deux blocs de 16384.
+
+26.4 Offset de ligne et pixel
+-----------------------------
+
+function HercLineOffset(Y : Word) : Word;
+begin
+  HercLineOffset := (Y and 3)*$2000 + (Y shr 2)*90;
+end;
+
+procedure PutPixelHerc(X,Y : Word; OnPixel : Boolean; Page : Byte);
+var
+  S,O : Word;
+  M,V : Byte;
+begin
+  if (X >= 720) or (Y >= 348) then Exit;
+  if Page = 0 then S := $B000 else S := $B800;
+  O := HercLineOffset(Y) + (X shr 3);
+  M := $80 shr (X and 7);
+  V := Mem[S:O];
+  if OnPixel then V := V or M else V := V and not M;
+  Mem[S:O] := V;
+end;
+
+procedure XorPixelHerc(X,Y : Word; Page : Byte);
+var S,O : Word;
+begin
+  if (X >= 720) or (Y >= 348) then Exit;
+  if Page=0 then S:=$B000 else S:=$B800;
+  O := HercLineOffset(Y)+(X shr 3);
+  Mem[S:O] := Mem[S:O] xor ($80 shr (X and 7));
+end;
+
+26.5 Ligne horizontale optimisee
+--------------------------------
+
+procedure HLineHerc(X1,X2,Y : Word; OnPixel : Boolean; Page : Byte);
+var X : Word;
+begin
+  if (Y>=348) or (X1>=720) then Exit;
+  if X2>=720 then X2:=719;
+  if X2<X1 then Exit;
+  { Version sure ; une implementation rapide masque les bords et remplit. }
+  for X:=X1 to X2 do PutPixelHerc(X,Y,OnPixel,Page);
+end;
+
+26.6 Basculer les pages
+-----------------------
+
+procedure ShowHercPage(Page : Byte);
+begin
+  if Page=0 then Port[HercCtrl]:=$0A
+            else Port[HercCtrl]:=$8A;
+end;
+
+26.7 Detection par evolution du statut
+---------------------------------------
+
+function HercStatusChanges : Boolean;
+var
+  FirstValue : Byte;
+  I : Word;
+begin
+  FirstValue := Port[HercStat] and $80;
+  for I:=1 to 65535 do
+    if (Port[HercStat] and $80)<>FirstValue then begin
+      HercStatusChanges:=True;
+      Exit;
+    end;
+  HercStatusChanges:=False;
+end;
+
+Cette fonction detecte une synchronisation monochrome, pas exclusivement une
+HGC. MDA et certains VGA en mode mono peuvent aussi faire evoluer 3BAh.
+
+26.8 Table d'offsets de lignes
+------------------------------
+
+var LineOffset : array[0..347] of Word;
+
+procedure BuildLineOffsets;
+var Y : Word;
+begin
+  for Y:=0 to 347 do LineOffset[Y]:=HercLineOffset(Y);
+end;
+
+Avec cette table, l'adresse d'un pixel devient `LineOffset[Y]+(X shr 3)` et le
+cout de multiplication par 90 disparait des boucles de dessin.
+
+
+==============================================================================
+27. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Un modele fidele doit separer :
+
+  * CRTC 6845 et ses compteurs MA/RA ;
+  * logique texte MDA, ROM de fonte et attributs ;
+  * logique graphique Hercules 16 pixels par caractere ;
+  * deux pages de 32 Kio et quatre banques par page ;
+  * restrictions de 3BFh ;
+  * registre d'affichage 3B8h en ecriture seulement ;
+  * statut et synchronisations a 3BAh ;
+  * contention/neige eventuelle ;
+  * port parallele et IRQ7 independants du video ;
+  * coexistence avec une carte couleur.
+
+Le calcul de rafraichissement en graphique peut etre exprime ainsi :
+
+  adresse banque = RA[1:0] << 13
+  adresse ligne  = MA relatif * 2 octets par "caractere"
+
+Chaque adresse CRTC visible fournit 16 bits serie. RA parcourt 0..3 ; apres la
+quatrieme scanline, MA passe a la rangee suivante.
+
+Les ecritures dans la page cachee ne doivent pas apparaitre. Le bit 7 de 3B8h
+change seulement la source affichee, pas la page adressee par le CPU.
+
+Le raster doit produire 720 x 348 points graphiques, alors que le timing total
+comprend blanking et synchronisations. Ne pas etirer le bitmap a 720 x 350 en
+inventant deux lignes memoire.
+
+
+==============================================================================
+28. TESTS DE CONFORMITE
+==============================================================================
+
+  1. texte 80 x 25, cellule 9 x 14 et duplication des caracteres de cadres ;
+  2. attribut normal, intense, souligne, inverse et clignotant ;
+  3. curseur debut/fin/adresse ;
+  4. valeurs 6845 texte puis graphique ;
+  5. 720 pixels sur 348 lignes exactement ;
+  6. y=0,1,2,3 dans les bases 0000h,2000h,4000h,6000h ;
+  7. y=4 revenant a base+005Ah ;
+  8. dernier pixel x=719,y=347 a offset 7E95h bit 0 ;
+  9. page 1 masquee avec 3BFh=01h ;
+ 10. page 1 accessible/affichable avec 3BFh=03h ;
+ 11. commutation 0Ah/8Ah sans modifier les buffers ;
+ 12. graphique bloque lorsque 3BFh bit 0 vaut zero ;
+ 13. 3B8h/3BFh non lisibles comme registres ordinaires ;
+ 14. transitions verticales/horizontales de 3BAh ;
+ 15. Light Pen latch et reset si implementes ;
+ 16. LPT donnees, etat, controle et IRQ7 ;
+ 17. coexistence CGA lorsque B8000h est masquee ;
+ 18. retour mode 7 avec BIOS Data Area et curseur coherents.
+
+
+==============================================================================
+29. DIFFERENCES AVEC HGC+, INCOLOR ET CLONES
+==============================================================================
+
+Hercules Graphics Card Plus ajoute des fontes chargeables en RAM et des
+registres/identifiants supplementaires. Hercules InColor ajoute couleur, plans
+et attributs etendus. Graphics Station Card offre d'autres fonctions.
+
+Les clones peuvent :
+
+  * integrer 6845, memoire et logique dans un seul ASIC ;
+  * supprimer la neige ;
+  * fournir seulement 32 Kio et une page ;
+  * modifier les bits d'identification de 3BAh ;
+  * rendre 3B8h/3BFh lisibles ;
+  * proposer des fontes selectionnables ;
+  * emuler CGA ou offrir des resolutions supplementaires ;
+  * decodage incomplet ou miroirs de ports differents.
+
+Une application HGC portable n'utilise que les bits 0/1 de 3BFh, les bits
+1/3/5/7 de 3B8h, les tables officielles et les 64 Kio lorsqu'ils sont detectes.
+Les extensions doivent etre identifiees avant usage.
+
+
+==============================================================================
+30. PIEGES FREQUENTS
+==============================================================================
+
+  * Appeler la resolution 720 x 350 au lieu de 720 x 348 graphique.
+  * Calculer l'adresse comme y*90+x/8.
+  * Oublier les quatre banques de 8 Kio.
+  * Confondre page affichee et page adressee par le CPU.
+  * Activer page 1 en presence d'une CGA a B8000h.
+  * Ecrire 3B8h graphique avant d'autoriser 3BFh bit 0.
+  * Lire 3B8h/3BFh pour retrouver leur valeur.
+  * Reprogrammer le 6845 avec des timings CGA/VGA.
+  * Brancher un IBM 5151 sur une sortie VGA par cable passif.
+  * Attendre 3BAh sans expiration.
+  * Identifier HGC uniquement par un affichage monochrome INT 11h.
+  * Faire un test RAM destructif sur la page texte active.
+  * Utiliser INT 10h pixel en mode Hercules direct.
+  * Supposer une fonte programmable de HGC+ sur HGC originale.
+  * Traiter les attributs MDA comme seize couleurs CGA.
+  * Oublier de restaurer mode, texte, curseur et configuration.
+  * Confondre IRQ7 de l'imprimante avec une interruption video.
+
+
+==============================================================================
+31. REFERENCES
+==============================================================================
+
+Source principale
+-----------------
+
+  * Hercules Computer Technology, Hercules Graphics Card GB101 Owner's Manual,
+    edition 2.1, chapitres Installation, Programming et appendices.
+
+    https://minuszerodegrees.net/manuals/Hercules/
+    Hercules%20Graphics%20Card%20GB101%20-%20Owner%27s%20Manual.pdf
+
+Sources techniques complementaires
+-----------------------------------
+
+  * IBM Personal Computer Hardware Reference Library, Monochrome Display and
+    Printer Adapter, mode texte, attributs, 6845 et port parallele.
+
+  * Richard F. Ferraro, Programmer's Guide to the EGA, VGA, and Super VGA
+    Cards, section Hercules Monochrome Graphics Card.
+
+  * John Elliott, MDA/Hercules notes et Hercules Graphics Card Plus notes :
+
+    https://www.seasip.info/VintagePC/mda.html
+    https://www.seasip.info/VintagePC/hercplus.html
+
+  * Documentation Motorola MC6845 CRT Controller.
+
+  * DOS Days, Hercules Graphics Card et scans de documentation :
+
+    https://www.dosdays.co.uk/topics/Manufacturers/hercules/hgc.php
+
+Pour une HGC originale, le manuel GB101 est la reference normative. Pour un
+clone, relever le circuit, la quantite de RAM et ses extensions avant de conclure
+qu'il reproduit tous les comportements electriques de la carte Hercules.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

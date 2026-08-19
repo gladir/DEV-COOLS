@@ -1,0 +1,1237 @@
+==============================================================================
+ IBM PERSONAL COMPUTER PCjr - SOUS-SYSTEME VIDEO
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit le sous-systeme video integre de l'IBM Personal Computer
+PCjr. Il couvre le materiel, la memoire partagee, le controleur 6845, la Video
+Gate Array IBM, les palettes, les modes CGA et PCjr, le BIOS INT 10h et la
+programmation sous DOS en assembleur et Turbo Pascal.
+
+Dans ce document, "Video Gate Array" designe le circuit du PCjr de 1983. Il ne
+s'agit pas du Video Graphics Array (VGA) introduit avec les PS/2 en 1987.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et place du PCjr
+  2. Caracteristiques video
+  3. Architecture materielle
+  4. Sorties et moniteurs
+  5. Memoire video partagee
+  6. Bande passante et ralentissement du 8088
+  7. Table des modes BIOS
+  8. Modes texte
+  9. Modes graphiques CGA
+ 10. Mode 08h : 160 x 200, 16 couleurs
+ 11. Mode 09h : 320 x 200, 16 couleurs
+ 12. Mode 0Ah : 640 x 200, 4 couleurs
+ 13. Organisation des lignes et calcul des pixels
+ 14. Carte des ports video
+ 15. Controleur CRT 6845
+ 16. Video Gate Array au port 3DAh
+ 17. Mode Control 1
+ 18. Palette Mask, Border et Mode Control 2
+ 19. Reset de la Video Gate Array
+ 20. Registres de palette 10h a 1Fh
+ 21. CRT/Processor Page Register 3DFh
+ 22. BIOS INT 10h et BIOS Data Area
+ 23. Detection du PCjr
+ 24. Pages, double buffering et scrolling
+ 25. Interruptions et synchronisation
+ 26. Compatibilite CGA
+ 27. Differences avec Tandy 1000
+ 28. Exemples en assembleur
+ 29. Exemples en Turbo Pascal
+ 30. Conseils pour un pilote ou un emulateur
+ 31. Tests de conformite
+ 32. Pieges frequents
+ 33. References
+
+
+==============================================================================
+1. HISTORIQUE ET PLACE DU PCJR
+==============================================================================
+
+IBM annonca le PCjr fin 1983 et le commercialisa principalement en 1984. La
+machine visait la maison et l'education. Son sous-systeme video reprend les
+idees du Color Graphics Adapter, mais ajoute :
+
+  * 160 x 200 en 16 couleurs ;
+  * 320 x 200 en 16 couleurs ;
+  * 640 x 200 en 4 couleurs ;
+  * une palette de 16 registres programmables ;
+  * plusieurs pages selectionnables dans la RAM systeme ;
+  * une sortie composite et une sortie directe pour le moniteur PCjr.
+
+Le materiel est integre a la carte mere et n'est pas une carte ISA. Les jeux
+King's Quest, Sierra AGI et de nombreux titres PCjr/Tandy ont popularise ses
+graphismes 16 couleurs et sonores, mais la compatibilite directe avec CGA n'est
+pas parfaite.
+
+
+==============================================================================
+2. CARACTERISTIQUES VIDEO
+==============================================================================
+
+  * controleur CRT Motorola MC6845 ou equivalent ;
+  * circuit IBM Video Gate Array (VGA, sans rapport avec VGA PS/2) ;
+  * RAM video prise dans les 128 premiers Kio de RAM systeme ;
+  * fenetre processeur a B8000h..BBFFFh, redirigeable par pages de 16 Kio ;
+  * modes de 1, 2 ou 4 bits par pixel ;
+  * palette 16 x 4 bits, couleurs RGBI fixes ;
+  * texte 40/80 colonnes ;
+  * sortie RGBI numerique, composite et modulation TV selon equipement ;
+  * compatibilite BIOS avec les modes CGA 0..6 ;
+  * nouveaux modes BIOS 08h, 09h et 0Ah ;
+  * possibilite d'interruption liee au retrace vertical sur le PCjr.
+
+Les modes 80 colonnes, 320x200x16 et 640x200x4 sont dits "high bandwidth" et
+requierent l'extension IBM 64 Kio, pour un total d'au moins 128 Kio. Une machine
+de base 64 Kio ne peut pas les utiliser normalement.
+
+
+==============================================================================
+3. ARCHITECTURE MATERIELLE
+==============================================================================
+
+Le 6845 genere les compteurs de caracteres, scanlines, adresse de depart,
+curseur et synchronisations. La Video Gate Array :
+
+  * arbitre les acces entre CPU et affichage ;
+  * genere RAS, CAS et WE de la RAM partagee ;
+  * rafraichit la memoire de base ;
+  * transforme les octets en pixels ;
+  * applique Palette Mask et les 16 registres de palette ;
+  * produit video RGBI directe et composite ;
+  * genere les signaux de statut ;
+  * redirige la fenetre B8000h vers une page physique ;
+  * distingue modes faible et forte bande passante.
+
+La ROM de caracteres fait 2 Kio. Elle n'est ni lisible ni modifiable par le
+logiciel. Le PCjr original ne propose donc pas les fontes RAM chargeables de
+l'EGA/VGA.
+
+
+==============================================================================
+4. SORTIES ET MONITEURS
+==============================================================================
+
+Le PCjr peut fournir :
+
+  * une sortie "direct drive" pour l'IBM PCjr Color Display ;
+  * une sortie video composite couleur/noir et blanc ;
+  * une connexion vers un modulateur RF selon configuration/pays.
+
+Le moniteur PCjr est un affichage RGBI numerique de la famille CGA. Les quatre
+signaux rouge, vert, bleu et intensite produisent 16 couleurs. Il integre aussi
+un haut-parleur amplifie pour les sons du PCjr.
+
+La sortie n'est pas VGA analogique. Un cable passif vers DE-15 ne convertit ni
+les niveaux ni la frequence. Le composite peut produire des couleurs d'artefact
+dependantes de la phase, comme CGA, mais les nouveaux modes RGBI doivent etre
+evalues separement.
+
+Mode Control 1 bit 2 peut supprimer burst/chrominance pour une image composite
+en niveaux de gris.
+
+
+==============================================================================
+5. MEMOIRE VIDEO PARTAGEE
+==============================================================================
+
+Le PCjr n'a pas une VRAM separee a B8000h. L'image reside dans une page des
+128 premiers Kio de RAM systeme. Le port 3DFh choisit :
+
+  * la page physique lue par le circuit CRT ;
+  * la page physique atteinte lorsque le CPU accede a B8000h ;
+  * l'organisation d'adresse texte/basse/haute resolution.
+
+La fenetre CPU est de 16 Kio :
+
+  B800:0000..3FFF -> page de 16 Kio selectionnee
+
+Pour une image de 32 Kio, le programme doit selectionner successivement les deux
+pages de 16 Kio, ou calculer l'adresse physique RAM lorsque le contexte le permet.
+Le BIOS change Processor Page pour atteindre la moitie correcte.
+
+Pages physiques possibles dans les premiers 128 Kio :
+
+  page 0 : 00000h..03FFFh
+  page 1 : 04000h..07FFFh
+  page 2 : 08000h..0BFFFh
+  page 3 : 0C000h..0FFFFh
+  page 4 : 10000h..13FFFh
+  page 5 : 14000h..17FFFh
+  page 6 : 18000h..1BFFFh
+  page 7 : 1C000h..1FFFFh
+
+Sans extension, le bit de page le plus haut n'a pas d'effet et seules quatre
+pages sont utilisables. Le BIOS reserve la RAM video au gestionnaire DOS ; un
+programme ne doit pas choisir une page contenant son code, sa pile ou DOS.
+
+
+==============================================================================
+6. BANDE PASSANTE ET RALENTISSEMENT DU 8088
+==============================================================================
+
+CPU et video se disputent la RAM. Le processeur recoit environ un cycle memoire
+toutes les 1,1 microsecondes pendant les modes concernes. Le manuel indique une
+latence moyenne d'environ 560 ns et en moyenne deux wait states sur une lecture
+RAM processeur.
+
+La bande passante video vaut environ 3,5, 7 ou 14 MHz selon le mode. Les modes
+high bandwidth ralentissent davantage le 8088 et exigent 128 Kio.
+
+Une redirection par B8000h n'ajoute pas en elle-meme une penalite par rapport a
+l'acces a la RAM partagee : l'arbitrage video domine. Les performances varient
+donc avec le mode, meme si le programme ne dessine pas.
+
+Pour un emulateur, ne pas simuler la RAM video comme un tableau independant ;
+les ecritures physiques et B8000h doivent referencer la meme RAM selectionnee.
+
+
+==============================================================================
+7. TABLE DES MODES BIOS
+==============================================================================
+
+ Mode  Type       Resolution/cellule       Couleurs  Buffer logique
+ ---------------------------------------------------------------------------
+ 00h   texte      40 x 25, 8 x 8           16        env. 2 Kio/page
+ 01h   texte      40 x 25, 8 x 8           16        env. 2 Kio/page
+ 02h   texte      80 x 25, 8 x 8           16        env. 4 Kio/page, HBW
+ 03h   texte      80 x 25, 8 x 8           16        env. 4 Kio/page, HBW
+ 04h   graphique  320 x 200                 4         16 Kio
+ 05h   graphique  320 x 200 gris/couleur    4         16 Kio
+ 06h   graphique  640 x 200                 2         16 Kio
+ 07h   texte mono selon BIOS/configuration  attributs dependants
+ 08h   graphique  160 x 200                16         16 Kio
+ 09h   graphique  320 x 200                16         32 Kio, HBW
+ 0Ah   graphique  640 x 200                 4         32 Kio, HBW
+
+HBW = high bandwidth. Les modes 09h/0Ah et 80 colonnes exigent l'extension.
+
+Dans Cartridge BASIC, les numeros SCREEN ne sont pas les numeros INT 10h :
+SCREEN 3 correspond notamment au 160x200x16, SCREEN 5 au 320x200x16 et SCREEN 6
+au 640x200x4 selon la syntaxe PCjr. Ne pas melanger les deux tables.
+
+
+==============================================================================
+8. MODES TEXTE
+==============================================================================
+
+Chaque cellule contient :
+
+  octet 0 : code du caractere
+  octet 1 : attribut
+
+  offset = 2*(ligne*colonnes+colonne)
+
+Quand Mode Control 2 bit 1 active le blink :
+
+  bits 0..3 : premier plan
+  bits 4..6 : fond sur trois bits
+  bit 7     : clignotement
+
+Blink desactive : le bit 7 devient le bit d'intensite du fond, donnant seize
+couleurs de fond. Les index passent ensuite par la palette programmable.
+
+La cellule 8 x 8 produit 200 lignes pour 25 rangees. Le generateur contient les
+256 caracteres IBM. Le curseur et l'adresse de depart viennent du 6845.
+
+Le texte 80 colonnes est high bandwidth. Sur un PCjr 64 Kio de base, le BIOS ne
+doit pas le selectionner comme si l'extension etait presente.
+
+
+==============================================================================
+9. MODES GRAPHIQUES CGA
+==============================================================================
+
+Modes 04h/05h, 320 x 200 x 2 bpp
+----------------------------------
+
+Quatre pixels par octet, pixel gauche dans bits 7..6. Deux groupes de lignes :
+
+  y pair   : offset=(y div 2)*80 + x div 4
+  y impair : offset=2000h+(y div 2)*80 + x div 4
+
+Mode 06h, 640 x 200 x 1 bpp
+-----------------------------
+
+Huit pixels par octet, bit 7 a gauche ; meme entrelacement pair/impair.
+
+La palette PCjr reste programmable meme dans ces modes. Palette Mask vaut
+normalement 03h pour quatre couleurs et 01h pour deux couleurs. Cela permet des
+combinaisons impossibles sur un CGA RGBI ordinaire.
+
+La compatibilite memoire est forte, mais les ports 3D8h/3D9h du CGA ne sont pas
+implementes de la meme facon. Un jeu qui programme directement Color Select peut
+afficher la mauvaise palette sur PCjr.
+
+
+==============================================================================
+10. MODE 08H : 160 X 200, 16 COULEURS
+==============================================================================
+
+Deux pixels par octet :
+
+  pixel pair   : bits 7..4
+  pixel impair : bits 3..0
+
+Chaque ligne contient 80 octets. L'organisation est basse bande passante et
+utilise 16 Kio, avec lignes paires/impaires separees comme CGA :
+
+  offset = (y AND 1)*2000h + (y SHR 1)*80 + (x SHR 1)
+
+Le nibble de pixel est un index 0..15 vers les registres de palette 10h..1Fh.
+Palette Mask vaut normalement 0Fh.
+
+Les pixels sont tres larges horizontalement. Le mode convient aux sprites et
+jeux mais pas au texte fin. Il fonctionne sur un PCjr de base 64 Kio.
+
+
+==============================================================================
+11. MODE 09H : 320 X 200, 16 COULEURS
+==============================================================================
+
+Deux pixels de 4 bits par octet, 160 octets par ligne, image utile de 32 000
+octets. Quatre groupes de lignes sont repartis dans le buffer de 32 Kio :
+
+  offset = (y AND 3)*2000h + (y SHR 2)*160 + (x SHR 1)
+
+Le pixel pair est dans le nibble haut, l'impair dans le nibble bas.
+
+Ce mode est high bandwidth et exige 128 Kio. La fenetre B800h n'en montre que
+16 Kio a la fois : Processor Page doit viser la moitie correspondante. Lorsque
+le framebuffer logique est traite comme deux pages physiques consecutives,
+l'offset 0000h..3FFFh appartient a la premiere et 4000h..7FFFh a la seconde.
+
+Le mode combine la resolution CGA 320 x 200 avec les seize couleurs RGBI et une
+palette reprogrammable, avantage majeur pour les jeux PCjr.
+
+
+==============================================================================
+12. MODE 0AH : 640 X 200, 4 COULEURS
+==============================================================================
+
+Quatre pixels de 2 bits par octet, 160 octets par ligne, 32 000 octets utiles :
+
+  offset = (y AND 3)*2000h + (y SHR 2)*160 + (x SHR 2)
+  decalage = 6-2*(x AND 3)
+
+Les valeurs 0..3 selectionnent les quatre premiers registres apres application
+de Palette Mask=03h. Chacun peut contenir n'importe laquelle des 16 couleurs.
+
+Ce mode est high bandwidth et exige 128 Kio. Il n'est pas un mode 640x200x16 ;
+ce dernier apparait sur certains Tandy ulterieurs, pas sur le PCjr IBM original.
+
+
+==============================================================================
+13. ORGANISATION DES LIGNES ET CALCUL DES PIXELS
+==============================================================================
+
+Resume
+------
+
+ Mode  Bpp  Octets/ligne  Entrelacement  Formule de base
+ ---------------------------------------------------------------------------
+ 04/05 2    80            2 banques      (y&1)*2000h+(y>>1)*80
+ 06    1    80            2 banques      idem
+ 08    4    80            2 banques      idem
+ 09    4    160           4 banques      (y&3)*2000h+(y>>2)*160
+ 0A    2    160           4 banques      idem
+
+Une adresse logique 09h/0Ah superieure a 3FFFh exige de changer Processor Page
+et de soustraire 4000h pour acceder via B800h. Le registre de page physique ne
+change pas l'organisation interne des quatre banques de scanlines.
+
+Toujours effectuer clipping avant le calcul. Un x ou y hors limites peut viser
+une autre page de RAM systeme et corrompre DOS, pas seulement une marge video.
+
+
+==============================================================================
+14. CARTE DES PORTS VIDEO
+==============================================================================
+
+ Port        Sens    Fonction
+ ---------------------------------------------------------------------------
+ 3D0h/3D4h   W       index du 6845, miroirs
+ 3D1h/3D5h   R/W     donnees 6845, miroirs
+ 3DAh        R       statut Video Gate Array et reset de sa bascule
+ 3DAh        W/W     index puis donnee Video Gate Array
+ 3DBh        W       Clear Light Pen Latch
+ 3DCh        W       Preset Light Pen Latch
+ 3DFh        W       CRT/Processor Page Register
+
+Contrairement au CGA :
+
+  * 3D8h Mode Control n'est pas l'interface PCjr equivalente ;
+  * 3D9h Color Select n'est pas pris en charge comme sur CGA ;
+  * les fonctions correspondantes se trouvent dans les registres indexes 3DAh.
+
+Le decodage miroir 3D0/1 et 3D4/5 vient du 6845. Employer 3D4h/3D5h par
+convention.
+
+
+==============================================================================
+15. CONTROLEUR CRT 6845
+==============================================================================
+
+ Index  Fonction
+ ---------------------------------------------------------------------------
+ 00h    Horizontal Total
+ 01h    Horizontal Displayed
+ 02h    Horizontal Sync Position
+ 03h    Horizontal Sync Width
+ 04h    Vertical Total
+ 05h    Vertical Total Adjust
+ 06h    Vertical Displayed
+ 07h    Vertical Sync Position
+ 08h    Interlace Mode
+ 09h    Maximum Scan Line Address
+ 0Ah    Cursor Start
+ 0Bh    Cursor End
+ 0Ch    Start Address High
+ 0Dh    Start Address Low
+ 0Eh    Cursor Address High
+ 0Fh    Cursor Address Low
+ 10h    Light Pen Address High
+ 11h    Light Pen Address Low
+
+Le 6845 ressemble a celui du CGA, mais la Video Gate Array transforme ses
+adresses selon 3DFh bits 6..7. Il ne faut pas supposer que toute table CRTC CGA
+produit le meme resultat sur PCjr.
+
+Les tables IBM different entre 40 colonnes, 80 colonnes, basse et haute bande
+passante. Utiliser INT 10h pour les appliquer.
+
+
+==============================================================================
+16. VIDEO GATE ARRAY AU PORT 3DAH
+==============================================================================
+
+Le meme port sert a l'index, aux donnees et au statut.
+
+Ecriture d'un registre :
+
+  1. IN AL,3DAh pour forcer la bascule en etat "adresse" ;
+  2. OUT 3DAh,index ; la bascule passe en "donnee" ;
+  3. OUT 3DAh,valeur ; la bascule revient en "adresse".
+
+Chaque OUT alterne la bascule. Une interruption entre index et donnee peut
+desynchroniser deux utilisateurs. Desactiver brievement les interruptions ou
+centraliser les acces.
+
+Registres :
+
+  00h      Mode Control 1
+  01h      Palette Mask
+  02h      Border Color
+  03h      Mode Control 2
+  04h      Reset
+  10h-1Fh Palette 0..15
+
+Ils sont en ecriture seulement. Le logiciel/BIOS doit conserver des copies.
+
+Lecture 3DAh retourne :
+
+  bit 0  Display Enable
+  bit 1  Light Pen Trigger Set
+  bit 2  Light Pen Switch, polarite negative dans la documentation
+  bit 3  Vertical Retrace
+  bit 4  Video Dots
+
+
+==============================================================================
+17. MODE CONTROL 1
+==============================================================================
+
+Registre Video Gate Array 00h, cinq bits utiles :
+
+ Bit  Fonction
+ ---------------------------------------------------------------------------
+ 0    0 low bandwidth, 1 high bandwidth
+ 1    0 alphanumerique, 1 graphique
+ 2    1 noir/blanc composite, burst/chrominance coupes
+ 3    video enable
+ 4    mode graphique 16 couleurs
+
+Bit 0 vaut 1 pour 80x25, 320x200x16 et 640x200x4. Il vaut 0 pour les modes a
+faible bande passante.
+
+Bit 4 distingue les modes a 16 couleurs. Mode Control 2 bit 3 distingue le cas
+640x200 deux couleurs.
+
+Changer bit 0 modifie l'arbitrage RAM et exige la sequence de reset synchrone
+IBM. Une simple ecriture directe depuis du code RAM peut rendre la RAM
+inaccessible au milieu de la routine.
+
+
+==============================================================================
+18. PALETTE MASK, BORDER ET MODE CONTROL 2
+==============================================================================
+
+Palette Mask, registre 01h
+--------------------------
+
+Les quatre bits font un AND avec l'index pixel avant la palette :
+
+  mode 2 couleurs  : 01h
+  mode 4 couleurs  : 03h
+  mode 16 couleurs : 0Fh
+
+Mettre un bit a zero replie plusieurs index sur la meme entree. Cette fonction
+permet de cacher des plans logiques ou de produire des effets sans modifier la
+VRAM.
+
+Border Color, registre 02h
+--------------------------
+
+Bits 0..3 = B,G,R,I, couleur RGBI 0..15 de la bordure.
+
+Mode Control 2, registre 03h
+----------------------------
+
+  bit 0  reserve, toujours zero
+  bit 1  Enable Blink
+  bit 2  reserve, toujours zero
+  bit 3  1 uniquement pour 640x200 deux couleurs
+
+En graphique, Blink peut alterner entre les moities basse et haute de palette.
+Seules huit couleurs logiques independantes restent alors disponibles et le bit
+3 de Palette Mask n'agit pas de la maniere normale.
+
+
+==============================================================================
+19. RESET DE LA VIDEO GATE ARRAY
+==============================================================================
+
+Registre 04h :
+
+  bit 0  asynchronous reset
+  bit 1  synchronous reset
+
+Le reset asynchrone est reserve a la mise sous tension. Il tristate les sorties,
+arrete les cycles memoire et peut detruire le contenu RAM. Ne jamais l'utiliser
+pour un changement de mode ordinaire.
+
+Le reset synchrone est necessaire lors du passage entre low et high bandwidth.
+Pendant qu'il est actif, aucun acces RAM n'est possible. Le code qui l'active,
+programme le mode puis le retire doit donc s'executer depuis ROM/EPROM.
+
+IBM prescrit aussi une sequence de lecture RAM : lire 256 emplacements, un octet
+sur deux dans 512 octets, activer reset, changer le mode, retirer reset, puis
+relire les memes emplacements. Cela preserve l'integrite des donnees DRAM.
+
+Conclusion pratique : une application appelle INT 10h. Copier une routine en
+RAM et y faire OUT reset=2 provoque precisement la disparition de la memoire qui
+contient les instructions et la pile.
+
+
+==============================================================================
+20. REGISTRES DE PALETTE 10H A 1FH
+==============================================================================
+
+Seize registres de quatre bits traduisent index logique vers couleur RGBI :
+
+  bit 0  bleu
+  bit 1  vert
+  bit 2  rouge
+  bit 3  intensite
+
+Registre 10h correspond a l'index pixel 0, 11h a 1, ..., 1Fh a 15.
+
+Lors du chargement, la video normale est desactivee et la couleur du registre en
+cours peut apparaitre a l'ecran. Apres le dernier registre, selectionner un index
+inferieur a 10h pour reactiver le chemin video.
+
+Pour masquer l'effet, programmer pendant le retrace vertical. Les registres sont
+write-only : conserver une copie de 16 octets.
+
+Palette par defaut 1:1 :
+
+  0 noir, 1 bleu, 2 vert, 3 cyan, 4 rouge, 5 magenta, 6 brun,
+  7 gris clair, 8 gris fonce, 9 bleu clair, 10 vert clair,
+  11 cyan clair, 12 rouge clair, 13 magenta clair, 14 jaune, 15 blanc.
+
+
+==============================================================================
+21. CRT/PROCESSOR PAGE REGISTER 3DFH
+==============================================================================
+
+Registre 8 bits, write-only :
+
+  bits 0..2  CRT Page 0..2
+  bits 3..5  Processor Page 0..2
+  bits 6..7  Video Address Mode 0..1
+
+CRT Page choisit la page physique de 16 Kio affichee dans 00000h..1FFFFh.
+Processor Page choisit celle qui apparait a B8000h. Pour une image 32 Kio, le
+bit bas CRT est "don't care" parce que le circuit utilise une paire de pages ;
+le logiciel doit respecter l'alignement attendu par le BIOS.
+
+Video Address Mode :
+
+  bit7 bit6  Fonction
+   0    0    modes alphanumeriques
+   0    1    graphiques basse resolution/adressage bas
+   1    1    graphiques haute resolution/adressage haut
+   1    0    reserve
+
+Les noms low/high address mode ne correspondent pas seulement a 160/640 pixels ;
+ils commandent l'emploi des sorties Row Address dans l'adresse RAM.
+
+Comme 3DFh est write-only, le BIOS conserve une ombre. Une application doit la
+lire dans la BIOS Data Area ou maintenir sa propre copie, jamais executer IN
+3DFh en esperant retrouver la valeur.
+
+
+==============================================================================
+22. BIOS INT 10H ET BIOS DATA AREA
+==============================================================================
+
+Le BIOS PCjr connait le partage memoire, les resets et les modes 08h..0Ah. Il
+doit etre prefere aux acces directs pour changer de mode.
+
+Fonctions importantes :
+
+  AH=00h  selection de mode, AL=00h..0Ah
+  AH=01h  forme du curseur
+  AH=02h  position du curseur
+  AH=03h  lecture position/forme
+  AH=05h  page d'affichage active
+  AH=06h  scroll up
+  AH=07h  scroll down
+  AH=08h  lire caractere/attribut
+  AH=09h  ecrire caractere et attribut
+  AH=0Ah  ecrire caractere
+  AH=0Bh  couleur/palette compatible
+  AH=0Ch  ecrire pixel, AL bit7 peut demander XOR
+  AH=0Dh  lire pixel
+  AH=0Eh  teletype
+  AH=0Fh  etat video
+  AH=10h  interface palette PCjr
+
+AH=10h sur PCjr :
+
+  AL=00h, BL=index 0..15, BH=couleur : ecrire une entree
+  AL=01h, BH=couleur : bordure
+  AL=02h, ES:DX -> 17 octets : 16 entrees puis bordure
+
+Le BIOS conserve mode, taille de page, page active, etat palette et valeur 3DFh
+dans sa Data Area. Une programmation directe doit mettre ces ombres en coherence
+si des appels BIOS suivent. Les offsets exacts doivent provenir du Technical
+Reference de la revision BIOS ; eviter de coder une adresse sans verification.
+
+
+==============================================================================
+23. DETECTION DU PCJR
+==============================================================================
+
+Methode recommandee : lire l'octet d'identification du modele dans la ROM BIOS.
+Le PCjr IBM retourne traditionnellement FDh a l'adresse F000:FFFEh.
+
+Completer par :
+
+  * date/version ROM si une revision precise est requise ;
+  * presence des modes 08h..0Ah par BIOS ;
+  * taille RAM suffisante avant un mode high bandwidth ;
+  * aucune ecriture destructive a 3DAh/3DFh pour simplement detecter.
+
+Le test F000:FFFEh peut etre imite par un compatible ou un emulateur. Detecter
+une capacite plutot que la marque lorsque le programme ne requiert qu'un mode.
+
+Ne pas detecter PCjr par les seuls modes graphiques : Tandy 1000 les supporte et
+peut offrir une interface presque compatible, mais son identification machine,
+ses ports CGA et certaines extensions different.
+
+
+==============================================================================
+24. PAGES, DOUBLE BUFFERING ET SCROLLING
+==============================================================================
+
+Les bits CRT Page permettent d'afficher plusieurs buffers dans les 128 Kio de
+base si suffisamment de RAM reste libre. Les pages graphiques 16 Kio peuvent
+etre alignees sur une page ; les modes 32 Kio consomment des paires.
+
+Double buffering :
+
+  1. reserver deux buffers non chevauchants ;
+  2. choisir Processor Page du buffer cache ;
+  3. dessiner par B8000h, en changeant de moitie si 32 Kio ;
+  4. attendre le retrace ;
+  5. changer CRT Page ;
+  6. inverser les roles.
+
+La quantite de RAM disponible a DOS diminue pour chaque buffer reserve. Une page
+choisie arbitrairement peut contenir le vecteur d'interruption, DOS, BASIC ou le
+programme. Le BIOS et le gestionnaire de memoire doivent participer.
+
+Start Address 6845 permet un scrolling fin dans la page, mais l'entrelacement et
+l'alignement 16/32 Kio limitent les valeurs. Tester le wrap autour de la fin du
+buffer reel, pas seulement autour de BFFFFh.
+
+
+==============================================================================
+25. INTERRUPTIONS ET SYNCHRONISATION
+==============================================================================
+
+Le PCjr peut utiliser IRQ5 pour une interruption liee au retrace video. Selon
+l'environnement, cette ligne et son activation peuvent etre partagees avec
+d'autres fonctions. Une application DOS normale peut simplement sonder 3DAh
+bit 3 avec une expiration.
+
+Pour modifier la palette sans artefact :
+
+  attendre sortie du retrace -> attendre entree du retrace -> ecrire palette
+
+Un gestionnaire d'interruption doit sauver les registres, verifier sa source,
+acquitter la logique video/PIC selon le Technical Reference, ne pas appeler DOS
+et chainer si l'evenement ne lui appartient pas.
+
+Le port 3DAh a aussi l'effet de remettre la bascule Video Gate Array en etat
+adresse. Une routine de synchronisation peut donc perturber une autre routine
+qui vient d'ecrire l'index. Proteger les paires d'OUT.
+
+
+==============================================================================
+26. COMPATIBILITE CGA
+==============================================================================
+
+Compatibles :
+
+  * formats memoire des modes 4/5/6 ;
+  * CRTC 6845 en grande partie ;
+  * fenetre B8000h vue par les applications ;
+  * BIOS modes 0..6 ;
+  * sorties RGBI/composite conceptuellement proches.
+
+Incompatibles ou differents :
+
+  * pas de Mode Control CGA compatible a 3D8h ;
+  * pas de Color Select CGA compatible a 3D9h ;
+  * 3DAh est aussi index/donnee de la Video Gate Array ;
+  * B8000h est une fenetre vers RAM systeme ;
+  * B8000h..BFFFFh est continuement decode, contrairement a certains wraps CGA ;
+  * palette entierement programmable ;
+  * timings et contention differents ;
+  * changement de bande passante exige reset special.
+
+Les jeux qui utilisent seulement BIOS et VRAM CGA fonctionnent mieux que ceux
+qui ecrivent directement 3D8h/3D9h ou exploitent un wrap au-dessus de BC000h.
+
+
+==============================================================================
+27. DIFFERENCES AVEC TANDY 1000
+==============================================================================
+
+Les premiers Tandy 1000 copient largement les modes PCjr et sont souvent appeles
+"Tandy/PCjr graphics". Ils restaurent cependant une meilleure compatibilite
+avec les ports CGA 3D8h/3D9h et leur RAM/video n'est pas necessairement geree
+comme celle du PCjr.
+
+Des Tandy ulterieurs ("Tandy Video II") ajoutent 640 x 200 en 16 couleurs et
+modifient la compatibilite registre. Ce mode n'existe pas sur PCjr IBM.
+
+Differences possibles :
+
+  * identification machine ;
+  * registre de page et emplacement de RAM ;
+  * ports de palette ;
+  * quantite de RAM de base ;
+  * interruption ;
+  * mode 640x200x16 ;
+  * timings et sortie moniteur.
+
+Un programme multi-cible doit disposer de chemins PCjr et Tandy separes pour les
+registres, tout en partageant les routines de pixels lorsque les formats sont
+identiques.
+
+
+==============================================================================
+28. EXEMPLES EN ASSEMBLEUR
+==============================================================================
+
+28.1 Detection du modele PCjr
+-----------------------------
+
+; Retour CF=0 si F000:FFFE = FDh.
+
+DetectPCjr:
+        push    ds
+        mov     ax,0F000h
+        mov     ds,ax
+        cmp     byte ptr ds:[0FFFEh],0FDh
+        jne     short not_jr
+        clc
+        jmp     short jr_done
+not_jr: stc
+jr_done:
+        pop     ds
+        ret
+
+28.2 Ecrire un registre Video Gate Array
+----------------------------------------
+
+; AL=index, AH=valeur. Desactive les interruptions pendant la paire.
+
+WriteVGAjr:
+        pushf
+        cli
+        push    ax
+        mov     dx,03DAh
+        in      al,dx               ; forcer etat adresse
+        pop     ax
+        out     dx,al               ; index
+        mov     al,ah
+        out     dx,al               ; donnee
+        popf
+        ret
+
+Le nom de cette procedure signifie Video Gate Array junior, pas VGA PS/2.
+
+28.3 Charger la palette 1:1
+---------------------------
+
+        mov     bl,0
+pal_loop:
+        mov     al,bl
+        add     al,10h
+        mov     ah,bl
+        call    WriteVGAjr
+        inc     bl
+        cmp     bl,16
+        jb      pal_loop
+        mov     al,00h              ; selection <10h pour finir l'effet palette
+        mov     ah,CurrentMode1
+        call    WriteVGAjr
+
+CurrentMode1 doit etre l'ombre correcte, pas une valeur inventee.
+
+28.4 Pixel mode 08h
+--------------------
+
+; BX=x 0..159, DX=y 0..199, CL=couleur 0..15, ES=B800h.
+
+PutPixel08:
+        push    cx
+        mov     ax,dx
+        and     ax,1
+        mov     cl,13
+        shl     ax,cl
+        mov     di,ax
+        shr     dx,1
+        mov     ax,dx
+        mov     cx,80
+        mul     cx
+        add     di,ax
+        mov     ax,bx
+        shr     ax,1
+        add     di,ax
+        pop     cx                  ; CL=couleur
+        mov     al,es:[di]
+        test    bl,1
+        jnz     short p08_low
+        and     al,0Fh
+        mov     ah,cl
+        shl     ah,1
+        shl     ah,1
+        shl     ah,1
+        shl     ah,1
+        or      al,ah
+        jmp     short p08_store
+p08_low:
+        and     al,0F0h
+        and     cl,0Fh
+        or      al,cl
+p08_store:
+        mov     es:[di],al
+        ret
+
+28.5 Calcul d'offset modes 09h/0Ah
+----------------------------------
+
+; DX=y. Sortie DI=debut logique de ligne 0..7FFFh. Detruit AX,CX,DX.
+
+PCjrLine32K:
+        mov     ax,dx
+        and     ax,3
+        mov     cl,13
+        shl     ax,cl
+        mov     di,ax
+        shr     dx,1
+        shr     dx,1
+        mov     ax,dx
+        mov     cx,160
+        mul     cx
+        add     di,ax
+        ret
+
+28.6 Acceder a l'une des deux moities
+-------------------------------------
+
+; DI=offset logique 0..7FFFh. BaseProcessor contient les bits de page physique.
+; Le code montre le calcul ; l'ecriture 3DFh doit conserver CRT/address mode.
+
+        mov     ax,di
+        test    ax,4000h
+        jz      short first_half
+        and     ax,3FFFh
+        mov     di,ax
+        mov     al,SecondProcessorPageValue
+        jmp     short set_proc
+first_half:
+        mov     al,FirstProcessorPageValue
+set_proc:
+        mov     dx,03DFh
+        out     dx,al
+
+28.7 Palette par BIOS
+---------------------
+
+; BL=index, BH=couleur RGBI.
+
+        mov     ax,1000h
+        int     10h
+
+28.8 Attendre le retrace
+------------------------
+
+        mov     dx,03DAh
+        mov     cx,0FFFFh
+wait_not_vr:
+        in      al,dx
+        test    al,08h
+        jz      short wait_vr
+        loop    wait_not_vr
+        stc
+        ret
+wait_vr:
+        mov     cx,0FFFFh
+wait_vr_loop:
+        in      al,dx
+        test    al,08h
+        jnz     short vr_ok
+        loop    wait_vr_loop
+        stc
+        ret
+vr_ok:  clc
+        ret
+
+
+==============================================================================
+29. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+29.1 Detection
+--------------
+
+function IsPCjr : Boolean;
+begin
+  IsPCjr:=Mem[$F000:$FFFE]=$FD;
+end;
+
+29.2 Selection des modes par BIOS
+---------------------------------
+
+uses Dos;
+
+procedure SetVideoMode(Mode : Byte);
+var R : Registers;
+begin
+  R.AH:=0;
+  R.AL:=Mode;
+  Intr($10,R);
+end;
+
+Avant 09h/0Ah ou texte 80 colonnes, verifier la memoire et laisser le BIOS
+refuser proprement une machine sans extension.
+
+29.3 Acces a la Video Gate Array
+--------------------------------
+
+procedure WritePCjrVGA(Index,Value : Byte); assembler;
+asm
+  pushf
+  cli
+  mov dx,3DAh
+  in  al,dx
+  mov al,Index
+  out dx,al
+  mov al,Value
+  out dx,al
+  popf
+end;
+
+Les parametres assembleur inline dependent de la convention Turbo Pascal ; ce
+code est destine a TP 6/7. Verifier le listing genere sur une autre version.
+
+29.4 Palette par BIOS
+---------------------
+
+procedure SetPCjrPalette(Index,Color : Byte);
+var R : Registers;
+begin
+  R.AX:=$1000;
+  R.BL:=Index and $0F;
+  R.BH:=Color and $0F;
+  Intr($10,R);
+end;
+
+procedure SetPCjrBorder(Color : Byte);
+var R : Registers;
+begin
+  R.AX:=$1001;
+  R.BH:=Color and $0F;
+  Intr($10,R);
+end;
+
+29.5 Offset mode 08h
+--------------------
+
+function Offset08(X,Y : Word) : Word;
+begin
+  Offset08:=(Y and 1)*$2000+(Y shr 1)*80+(X shr 1);
+end;
+
+procedure PutPixel08(X,Y : Word; Color : Byte);
+var O : Word; V : Byte;
+begin
+  if (X>=160) or (Y>=200) then Exit;
+  O:=Offset08(X,Y);
+  V:=Mem[$B800:O];
+  if (X and 1)=0 then V:=(V and $0F) or ((Color and $0F) shl 4)
+                 else V:=(V and $F0) or (Color and $0F);
+  Mem[$B800:O]:=V;
+end;
+
+29.6 Offsets modes 09h/0Ah
+--------------------------
+
+function LineOffset32K(Y : Word) : Word;
+begin
+  LineOffset32K:=(Y and 3)*$2000+(Y shr 2)*160;
+end;
+
+Le resultat est logique 0..7FFFh. Une procedure doit selectionner la bonne
+Processor Page pour la moitie contenant l'octet.
+
+29.7 Construction de 3DFh
+-------------------------
+
+function PageRegister(CRTPage,CPUPage,AddressMode : Byte) : Byte;
+begin
+  PageRegister:=(CRTPage and 7) or ((CPUPage and 7) shl 3) or
+               ((AddressMode and 3) shl 6);
+end;
+
+procedure SetPCjrPages(CRTPage,CPUPage,AddressMode : Byte);
+begin
+  Port[$3DF]:=PageRegister(CRTPage,CPUPage,AddressMode);
+end;
+
+AddressMode : 0 texte, 1 graphique bas, 3 graphique haut. Ne jamais passer 2.
+
+29.8 Pixel mode 09h avec fenetre 16 Kio
+---------------------------------------
+
+procedure PutPixel09(X,Y : Word; Color,CRTBasePage : Byte);
+var
+  L,O : Word;
+  CPUPage : Byte;
+  V : Byte;
+begin
+  if (X>=320) or (Y>=200) then Exit;
+  L:=LineOffset32K(Y)+(X shr 1);
+  CPUPage:=CRTBasePage+(L shr 14);
+  O:=L and $3FFF;
+  SetPCjrPages(CRTBasePage,CPUPage,3);
+  V:=Mem[$B800:O];
+  if (X and 1)=0 then V:=(V and $0F) or ((Color and $0F) shl 4)
+                 else V:=(V and $F0) or (Color and $0F);
+  Mem[$B800:O]:=V;
+end;
+
+CRTBasePage doit etre une paire/alignment valide reservee par le BIOS. La valeur
+AddressMode exacte doit rester celle du mode courant ; cet exemple emploie 3
+pour l'adressage graphique haut de la table IBM.
+
+29.9 Pixel mode 0Ah
+-------------------
+
+procedure PutPixel0A(X,Y : Word; Color,CRTBasePage : Byte);
+var L,O : Word; CPUPage,Shift,V,Mask : Byte;
+begin
+  if (X>=640) or (Y>=200) then Exit;
+  L:=LineOffset32K(Y)+(X shr 2);
+  CPUPage:=CRTBasePage+(L shr 14);
+  O:=L and $3FFF;
+  SetPCjrPages(CRTBasePage,CPUPage,3);
+  Shift:=6-2*(X and 3);
+  Mask:=$03 shl Shift;
+  V:=Mem[$B800:O];
+  V:=(V and not Mask) or ((Color and 3) shl Shift);
+  Mem[$B800:O]:=V;
+end;
+
+29.10 Charger les seize couleurs directement
+---------------------------------------------
+
+procedure LoadIdentityPalette;
+var I : Byte;
+begin
+  for I:=0 to 15 do WritePCjrVGA($10+I,I);
+  { Terminer par un registre inferieur a 10h pour rendre la video normale. }
+  WritePCjrVGA($01,$0F);
+end;
+
+Le BIOS est preferable puisqu'il maintient ses valeurs d'ombre.
+
+
+==============================================================================
+30. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Un modele fidele doit separer :
+
+  * MC6845 et ses registres ;
+  * Video Gate Array et sa bascule index/donnee ;
+  * palette 16 x 4 bits write-only ;
+  * RAM systeme partagee, pas une VRAM independante ;
+  * redirection B8000h de 16 Kio ;
+  * CRT Page et Processor Page distinctes ;
+  * adressage texte, graphique bas et graphique haut ;
+  * arbitrage RAM et wait states selon bande passante ;
+  * reset bloquant tous les cycles RAM ;
+  * sorties RGBI et composite ;
+  * blink graphique et Palette Mask ;
+  * statut 3DAh, light pen et interruption ;
+  * BIOS specifique modes 08h..0Ah.
+
+Lors d'une ecriture a B800:O :
+
+  adresse_physique = CPUPage*4000h + O
+
+Lors du rafraichissement :
+
+  adresse provient de CRTPage, 6845 MA/RA et Video Address Mode.
+
+Une implementation qui copie le buffer a chaque changement de page sera fausse
+si le CPU accede aussi a la RAM physique. Les deux chemins doivent partager les
+memes octets.
+
+Simuler le reset avec prudence : le vrai CPU ne peut plus fetcher en RAM. Un
+emulateur peut laisser le BIOS ROM poursuivre, mais doit bloquer lectures,
+ecritures et rafraichissement selon les bits du registre 04h.
+
+
+==============================================================================
+31. TESTS DE CONFORMITE
+==============================================================================
+
+  1. identification FDh et BIOS PCjr ;
+  2. modes 00h..06h puis 08h..0Ah ;
+  3. refus high bandwidth sur machine 64 Kio ;
+  4. texte 40/80 colonnes, blink et fond intense ;
+  5. palette 1:1 puis permutations des seize entrees ;
+  6. Palette Mask 01h,03h,0Fh ;
+  7. bordure RGBI pour les seize couleurs ;
+  8. mode 08h : deux pixels/nibbles et deux banques de lignes ;
+  9. mode 09h : quatre banques, 160 octets par ligne ;
+ 10. mode 0Ah : quatre pixels par octet ;
+ 11. dernier pixel de chaque mode sans debordement ;
+ 12. Processor Page affectant B8000h sans changer CRT Page ;
+ 13. CRT Page commutant sans copie ;
+ 14. pages 32 Kio alignees correctement ;
+ 15. Video Address Mode reserve 10b traite sans comportement invente ;
+ 16. bascule 3DAh remise en adresse par IN ;
+ 17. paire index/donnee protegee contre interruption ;
+ 18. palette chargee pendant retrace ;
+ 19. reset synchrone bloquant la RAM et preservant les donnees avec sequence ;
+ 20. reset asynchrone seulement au power-on ;
+ 21. wait states/performance low contre high bandwidth ;
+ 22. sortie composite couleur puis noir/blanc ;
+ 23. compatibilite CGA BIOS et incompatibilite 3D8h/3D9h directe ;
+ 24. Tandy detecte separement et mode 640x200x16 refuse sur PCjr.
+
+
+==============================================================================
+32. PIEGES FREQUENTS
+==============================================================================
+
+  * Confondre Video Gate Array PCjr et Video Graphics Array PS/2.
+  * Decrire la RAM video comme une carte separee a B8000h.
+  * Oublier que B8000h ne montre que 16 Kio.
+  * Choisir une page contenant DOS ou le programme.
+  * Employer 3D8h/3D9h comme sur CGA.
+  * Ecrire index/donnee 3DAh sans remettre la bascule en phase.
+  * Laisser une interruption separer les deux OUT a 3DAh.
+  * Lire les registres Video Gate Array write-only.
+  * Activer reset synchrone depuis du code place en RAM.
+  * Utiliser le reset asynchrone apres le POST.
+  * Selectionner high bandwidth sur un PCjr 64 Kio.
+  * Confondre modes BIOS 08h..0Ah et numeros BASIC SCREEN.
+  * Traiter le mode 09h comme un framebuffer lineaire a B800h.
+  * Oublier les quatre banques de scanlines en modes 09h/0Ah.
+  * Annoncer 640x200x16, fonction de certains Tandy ulterieurs.
+  * Brancher la sortie RGBI sur un VGA analogique passif.
+  * Attendre le retrace sans expiration.
+  * Supposer qu'un Tandy 1000 est registre-pour-registre un PCjr.
+
+
+==============================================================================
+33. REFERENCES
+==============================================================================
+
+Source IBM principale
+---------------------
+
+  * IBM Personal Computer PCjr Hardware Reference Library,
+    Technical Reference, novembre 1983, section Video Subsystem.
+
+    https://bitsavers.org/pdf/ibm/pc/pc_jr/
+    PCjr_Technical_Reference_Nov83.pdf
+
+  * Copie alternative :
+
+    https://www.retroarchive.org/dos/docs/ibmpcjrtechref.pdf
+
+Sources de programmation complementaires
+-----------------------------------------
+
+  * COMPUTE!'s Mapping the IBM PC and PCjr, memoire, BIOS et modes :
+
+    https://vtda.org/books/Computing/IBM%20PCjr/
+    COMPUTEs%20Mapping%20the%20IBM%20PC%20and%20PCjr.pdf
+
+  * Peter Norton, The New Peter Norton's Programmer's Guide to the IBM PC and
+    PS/2, sections PCjr video :
+
+    https://www.pcjs.org/documents/books/mspl13/msdos/norton/
+
+  * Ralf Brown's Interrupt List, INT 10h PCjr/Tandy et ports video.
+
+  * IBM PCjr Technical Reference Guide, 8-bit Archive :
+
+    https://8-bitarchive.com/download/ibm-pcjr-technical-reference-guide/
+
+  * Articles techniques COMPUTE! sur la palette PCjr et ses modes graphiques :
+
+    https://www.atarimagazines.com/compute/issue67/
+    327_1_Million-Color_Palette_For_IBM_PC_PCjr.php
+
+Pour les registres, resets et pages, le manuel IBM est normatif. Les documents
+Tandy sont utiles pour comparaison mais ne remplacent pas la reference PCjr.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

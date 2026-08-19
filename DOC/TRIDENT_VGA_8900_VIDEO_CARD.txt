@@ -1,0 +1,1200 @@
+==============================================================================
+ TRIDENT VGA / TVGA8900
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille de controleurs video Trident Microsystems
+TVGA8900, principalement TVGA8900B, TVGA8900C et TVGA8900CL/D. Ces circuits ont
+equipe de nombreuses cartes VGA/SVGA ISA et VLB economiques au debut des annees
+1990. Il couvre le materiel, la VGA IBM, les registres Trident, les banques,
+les modes BIOS, la detection et la programmation sous DOS.
+
+Une carte dite "Trident 8900" n'est pas un modele unique. Le fabricant de la
+carte, sa ROM, son RAMDAC, ses oscillateurs, son bus et sa memoire varient. Les
+fonctions du 8900CL ne doivent pas etre attribuees au 8900B.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et famille TVGA8900
+  2. Identification d'une carte
+  3. Caracteristiques generales
+  4. Architecture materielle
+  5. Bus ISA, MCA et VLB
+  6. Memoire video
+  7. ROM BIOS, RAMDAC et horloges
+  8. Sortie video et moniteurs
+  9. Compatibilite VGA/EGA/CGA/MDA/Hercules
+ 10. Modes VGA IBM
+ 11. Modes Trident etendus
+ 12. Organisation des pixels
+ 13. Carte des ports
+ 14. Ancien et nouveau jeux de registres
+ 15. Detection du circuit
+ 16. Sequencer etendu 0Bh-0Fh
+ 17. CRTC etendu
+ 18. Selection des banques
+ 19. Paging mode et adressage
+ 20. Horloges et entrelacement
+ 21. Palette et RAMDAC HiColor
+ 22. BIOS INT 10h Trident
+ 23. Structure d'information BIOS
+ 24. Programmation planaire
+ 25. Programmation packed-pixel
+ 26. Texte, polices et FIFO
+ 27. Synchronisation
+ 28. Exemples assembleur 8086
+ 29. Exemples Turbo Pascal
+ 30. Conseils pour un pilote
+ 31. Conseils pour un emulateur
+ 32. Plan de validation
+ 33. Installation et depannage
+ 34. Pieges frequents
+ 35. References
+
+
+==============================================================================
+1. HISTORIQUE ET FAMILLE TVGA8900
+==============================================================================
+
+Trident Microsystems est un fabricant fabless americain connu pour ses circuits
+VGA integres a bas cout. La serie TVGA8900 succede aux TVGA8800 et corrige en
+particulier leur comportement problematique dans certains modes 256 couleurs.
+
+Principales variantes :
+
+  Circuit       ID Sequencer 0Bh   Caracteristiques distinctives
+  ------------  -----------------  ------------------------------------------
+  TVGA8900B     03h                premiers 8900, 8 horloges usuelles
+  TVGA8900C     04h ou 13h         1 Mio possible, TCK9002, BIOS varies
+  TVGA8900CL/D  33h                banque 3D8h, adresses CRTC supplementaires
+
+Circuits voisins a ne pas confondre :
+
+  01h TVGA8800BR, 02h TVGA8800CS, 23h TVGA9000, 43h TVGA9000i, 53h
+TVGA8900CXr. Les TVGA9000 et TGUI posterieurs partagent des registres mais ne
+sont pas des 8900.
+
+
+==============================================================================
+2. IDENTIFICATION D'UNE CARTE
+==============================================================================
+
+Relever :
+
+  * marquage TVGA8900B/C/CL sur le grand circuit ;
+  * fabricant et numero du circuit imprime ;
+  * etiquette/version de la ROM BIOS ;
+  * nombre, organisation et vitesse des DRAM ;
+  * RAMDAC externe, par exemple Sierra SC11483/SC11487 ou TKD ;
+  * oscillateurs et circuit d'horloge TCK9001/TCK9002 ;
+  * longueur ISA 8/16 bits ou connecteur VLB ;
+  * cavaliers et commutateurs ;
+  * connecteurs DE-15, feature connector et eventuel bus souris.
+
+Le meme TVGA8900C a ete vendu par de nombreux assembleurs avec ROM Quadtel,
+Award ou Trident. Les numeros de modes, le logo POST et les pilotes peuvent donc
+differer alors que le coeur materiel est identique.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Suivant circuit et carte :
+
+  * compatibilite registre VGA IBM ;
+  * emulation EGA, CGA, MDA et Hercules ;
+  * bus hote 8 ou 16 bits ;
+  * 256 Kio, 512 Kio, 768 Kio ou 1 Mio ;
+  * jusqu'a 2 Mio codes sur certaines CL, rarement equipes ainsi ;
+  * fenetre VGA A000h et banques de 64 Kio ;
+  * ancien mode Trident avec aperture de 128 Kio A000h-BFFFh ;
+  * modes planaires 16 couleurs jusqu'a 1024x768 ou davantage ;
+  * modes 256 couleurs 640x400, 640x480, 800x600, parfois 1024x768 ;
+  * modes 15/16 bits avec RAMDAC Sierra approprie ;
+  * modes texte 80 et 132 colonnes ;
+  * selection d'horloge et entrelacement ;
+  * registres de lecture des latches et de l'etat Attribute Controller.
+
+Les resolutions maximales commerciales ne garantissent ni une frequence
+acceptable, ni assez de RAM, ni le bon RAMDAC.
+
+
+==============================================================================
+4. ARCHITECTURE MATERIELLE
+==============================================================================
+
+  Bus ISA/VLB/MCA
+       |
+       +-- ROM BIOS video
+       +-- interface VGA IBM
+       |     +-- Sequencer
+       |     +-- CRTC
+       |     +-- Graphics Controller/latches
+       |     +-- Attribute Controller
+       +-- registres Trident etendus
+       |     +-- old/new mode
+       |     +-- banque/paging
+       |     +-- horloges/interlace
+       |     +-- emulations
+       +-- 256 Kio a 1/2 Mio DRAM
+       +-- RAMDAC externe ou integre selon famille
+              |
+              +-- sortie RGB analogique DE-15
+
+Le 8900 n'est pas un accelerateur 2D de type TGUI. Les operations graphiques
+reposent principalement sur le pipeline VGA, le bus hote et les banques.
+
+
+==============================================================================
+5. BUS ISA, MCA ET VLB
+==============================================================================
+
+Les cartes les plus courantes sont ISA 16 bits. Certaines fonctionnent dans un
+slot 8 bits avec performances moindres. Des implementations MCA utilisent les
+ports d'identification 100h/101h et Video Subsystem Enable 3C3h.
+
+Le TVGA8900CL a aussi equipe des cartes VLB. Le controleur reste programme par
+les ports VGA/Trident, mais la largeur et les timings du bus changent.
+
+Ports d'activation rencontres :
+
+  3C3h   Video Subsystem Enable MCA, bit 0
+  46E8h  Video Subsystem Enable ISA, bit 3
+
+Ne pas ecrire 46E8h dans une application ordinaire : desactiver le decodeur VGA
+peut faire disparaitre carte et ROM jusqu'au redemarrage.
+
+
+==============================================================================
+6. MEMOIRE VIDEO
+==============================================================================
+
+CRTC 1Fh code la quantite declaree :
+
+  TVGA8900B/C, bits 0-1 :
+    0=256 Kio, 1=512 Kio, 2=768 Kio, 3=1 Mio
+
+  TVGA8900CL, bits 0-2 :
+    0=256 Kio, 1=512 Kio, 2=768 Kio, 3=1 Mio,
+    4=256 Kio, 5=512 Kio, 6=768 Kio, 7=2 Mio
+
+Cette valeur est programmee par le BIOS et ne remplace pas un test materiel.
+INT 10h/AH=12h/BL=12h peut retourner AH en blocs de 256 Kio.
+
+Tailles utiles :
+
+  640x480x256   307 200 octets, au moins 512 Kio
+  800x600x256   480 000 octets, au moins 512 Kio
+  1024x768x16   393 216 octets, au moins 512 Kio
+  1024x768x256  786 432 octets, au moins 1 Mio
+  1280x1024x16  655 360 octets, au moins 1 Mio
+
+
+==============================================================================
+7. ROM BIOS, RAMDAC ET HORLOGES
+==============================================================================
+
+La ROM se trouve normalement a C0000h et commence par 55h AAh. La ROM peut etre
+produite par Trident, Quadtel ou l'assembleur de carte. Elle initialise les
+registres et propose des modes 50h et suivants.
+
+Circuits d'horloge documentes :
+
+  TCK9001, TVGA8900B :
+    25,175 ; 28,322 ; 44,9 ; 36 ; 57,272 ; 65 ; 50,35 ; 40 MHz
+
+  TCK9002, TVGA8900C et suivants :
+    les huit frequences precedentes, puis 88 ; 98 ; 118,8 ; 108 MHz ;
+    certaines revisions ajoutent 72 ; 77 ; 80 ; 75 MHz.
+
+Un RAMDAC VGA classique fournit 256 couleurs parmi 262 144. Certaines cartes
+89xx acceptent un Sierra SC11483/SC11487 HiColor pour 15/16 bits. Le BIOS peut
+programmer un mode HiColor sans verifier le DAC : avec un DAC ordinaire, l'image
+et la resolution apparente deviennent incorrectes.
+
+
+==============================================================================
+8. SORTIE VIDEO ET MONITEURS
+==============================================================================
+
+Sortie VGA analogique DE-15 standard :
+
+  1 rouge, 2 vert, 3 bleu, 5-8/10 masses, 13 HSync, 14 VSync.
+
+Les modes 1024x768 sont souvent entrelaces sur les cartes economiques. Les modes
+1280x1024 exigent un moniteur et une horloge adaptes. Toujours laisser le BIOS
+choisir les timings avant toute programmation directe.
+
+Un moniteur LCD moderne peut refuser des timings entrelaces ou non normalises
+que les CRT MultiSync de l'epoque acceptaient.
+
+
+==============================================================================
+9. COMPATIBILITE VGA/EGA/CGA/MDA/HERCULES
+==============================================================================
+
+Le registre Sequencer ancien 0Dh bits 0-2 selectionne l'emulation :
+
+  0 VGA
+  3 EGA
+  5 CGA, MDA ou Hercules selon autres registres
+
+La compatibilite est au niveau des registres et de la memoire, pas seulement du
+BIOS. Les personnalites utilisent :
+
+  VGA/EGA graphique  A000h et ports 3Cxh/3Dxh
+  CGA                B800h et 3Dxh
+  MDA/Hercules       B000h et 3Bxh
+
+Les applications devraient changer de personnalite par BIOS/utilitaire Trident,
+car la selection complete depasse le seul champ d'emulation.
+
+
+==============================================================================
+10. MODES VGA IBM
+==============================================================================
+
+  Mode  Type       Resolution/format        Couleurs  Fenetre
+  ----  ---------  -----------------------  --------  -------
+  00-03 texte      40/80 x 25               16        B800h
+  04-06 CGA        320/640 x 200            4/2       B800h
+  07    texte MDA  80 x 25                  mono      B000h
+  0D    planaire   320 x 200                16        A000h
+  0E    planaire   640 x 200                16        A000h
+  0F    planaire   640 x 350                2         A000h
+  10    planaire   640 x 350                16        A000h
+  11    planaire   640 x 480                2         A000h
+  12    planaire   640 x 480                16        A000h
+  13    packed     320 x 200                256       A000h
+
+
+==============================================================================
+11. MODES TRIDENT ETENDUS
+==============================================================================
+
+Table VGADOC/RBIL, variable selon BIOS, RAM, DAC et circuit :
+
+  Mode  Type  Format                  Remarque
+  ----  ----  ----------------------  -------------------------------------
+  50h   T     80x30, 8x16            16 couleurs
+  51h   T     80x43, 8x11            16 couleurs
+  52h   T     80x60, 8x8             16 couleurs
+  53h   T     132x25, 8x14           16 couleurs
+  54h   T     132x30, 8x16           16 couleurs
+  55h   T     132x43, 8x11           16 couleurs
+  56h   T     132x60, 8x8            16 couleurs
+  57h   T     132x25, 9x14           16 couleurs
+  58h   T     132x30, 9x16           16 couleurs
+  59h   T     132x43, 9x11           16 couleurs
+  5Ah   T     132x60, 9x8            16 couleurs
+  5Bh   G     800x600x16             planaire
+  5Ch   G     640x400x256            packed
+  5Dh   G     640x480x256            packed
+  5Eh   G     800x600x256            packed
+  5Fh   G     1024x768x16            planaire
+  60h   G     1024x768x4             8900 seulement
+  61h   G     768x1024x16            portrait, planaire
+  62h   G     1024x768x256           8900, 1 Mio
+  63h   G     1280x1024x16           selon circuit/BIOS
+  64h   G     1280x1024x256          8900CL, memoire suffisante
+  6Ah   G     800x600x16             cartes plus recentes
+
+Avec DAC Sierra HiColor :
+
+  70h 512x480x32768, 71h 512x480x65536
+  74h 640x480x32768, 75h 640x480x65536
+  76h 800x600x32768, 77h 800x600x65536
+  78h 1024x768x32768, 79h 1024x768x65536, surtout 8900CL
+
+Les modes 6Ch/6Dh true color rapportes pour 8900CL dependent fortement du DAC
+et du BIOS et ne doivent pas etre annonces par defaut.
+
+
+==============================================================================
+12. ORGANISATION DES PIXELS
+==============================================================================
+
+Modes planaires 16 couleurs : quatre plans, un bit par pixel et par plan.
+
+  stride_plan = largeur div 8
+  offset = y*stride_plan + x div 8
+  masque = 80h shr (x and 7)
+
+Modes packed 256 couleurs : un octet par pixel.
+
+  adresse = y*largeur+x
+  banque = adresse div 65536
+  offset = adresse and FFFFh
+
+Modes 15/16 bits : deux octets par pixel, format 5:5:5 ou 5:6:5 selon RAMDAC et
+mode. Ne pas deviner l'ordre des composantes a partir du numero seul.
+
+
+==============================================================================
+13. CARTE DES PORTS
+==============================================================================
+
+  Port       Fonction
+  ---------  ----------------------------------------------------------
+  100/101h   ID Micro Channel sur cartes MCA
+  3B4/3B5h   CRTC monochrome
+  3BAh       Input Status 1 monochrome
+  3C0/3C1h   Attribute Controller
+  3C2h       Misc Output write / Input Status 0 read
+  3C3h       activation VGA MCA
+  3C4/3C5h   Sequencer, y compris extensions Trident
+  3C6-3C9h   RAMDAC
+  3CE/3CFh   Graphics Controller
+  3D4/3D5h   CRTC couleur et extensions Trident
+  3D8h       banque 64 Kio sur 8900CL/D
+  3DAh       Input Status 1 couleur
+  46E8h      activation VGA ISA, bit 3
+
+
+==============================================================================
+14. ANCIEN ET NOUVEAU JEUX DE REGISTRES
+==============================================================================
+
+Particularite centrale Trident : Sequencer index 0Bh est a la fois un registre
+d'identification et un commutateur implicite.
+
+  ecrire Sequencer 0Bh  -> selectionner les OLD mode registers
+  lire Sequencer 0Bh    -> renvoyer Chip ID et selectionner NEW mode registers
+
+Sequencer 0Dh et 0Eh n'ont donc pas la meme signification apres une lecture et
+apres une ecriture de 0Bh. Une interruption qui execute le BIOS peut changer cet
+etat entre l'index et la donnee.
+
+Pour forcer old mode, faire deux ecritures 8 bits : OUT 3C4h,0Bh puis OUT
+3C5h,00h. Ne pas utiliser OUT DX,AX, car le comportement attendu repose sur la
+sequence explicite.
+
+
+==============================================================================
+15. DETECTION DU CIRCUIT
+==============================================================================
+
+Algorithme historique :
+
+  1. ecrire index 0Bh puis valeur 00h pour old mode ;
+  2. lire Sequencer 0Bh : obtient Chip ID et passe en new mode ;
+  3. lire new Sequencer 0Eh ;
+  4. ecrire 00h dans la data de 0Eh ;
+  5. relire et verifier que le nibble bas vaut 2, effet du XOR Trident ;
+  6. restaurer l'ancienne valeur ;
+  7. interpreter Chip ID.
+
+Le nibble de banque new 0Eh doit etre XOR 02h a l'ecriture, mais se lit sans XOR.
+Cette asymetrie sert de signature. Sauvegarder et restaurer les registres et
+masquer les interruptions autour du test.
+
+
+==============================================================================
+16. SEQUENCER ETENDU 0BH-0FH
+==============================================================================
+
+Index 0Bh - Chip Version / selection old-new
+--------------------------------------------
+
+Lecture : ID circuit et passage en new mode. Ecriture : passage en old mode.
+
+Index 0Ch - Power Up Mode 1
+---------------------------
+
+  bit 0    fast decode
+  bit 4    activation POST a 3C3h plutot que 46E8h
+  bit 5    8900C : acces aux 512 Kio hauts hors paging ; zero en texte/CGA
+  bits 5-6 organisation/nombre de DRAM suivant circuit
+  bit 7    interface memoire video 16 bits
+
+Modification autorisee lorsque new 0Eh bit 7 est mis selon documentation.
+
+Old 0Dh - Old Mode Control 2
+----------------------------
+
+  bits 0-2 emulation : 0 VGA, 3 EGA, 5 CGA/MDA/Hercules
+  bit 4    paging mode
+  bit 5    horloge DRAM
+
+New 0Dh - New Mode Control 2
+----------------------------
+
+  bit 0    bit 2 de selection d'horloge
+  bits 1-2 division pixel clock : /1, /2, /4 ou /1,5
+  bit 6    bit 3 d'horloge sur circuits 9xxx
+
+Old 0Eh - Old Mode Control 1
+----------------------------
+
+  bit 0    adresse CRTC haute/region d'affichage sur 8900
+  bits 1-2 banque 128 Kio
+  bit 3    interface video 16 bits
+  bit 4    bit d'horloge supplementaire sur 8900C/CL
+
+New 0Eh - New Mode Control 1
+----------------------------
+
+  bits 0-3 banque 64 Kio ; valeur ecrite XOR 02h
+  bits 0 et 2 seulement significatifs en modes planaires
+  bits 4-6 reserves
+  bit 7    autorisation de mise a jour de 0Ch selon sources
+
+Index 0Fh - Power Up Mode 2
+---------------------------
+
+  bits 0-3 commutateurs
+  bit 4    type de bus
+  bit 5    ports 3xxh si 1, 2xxh si 0
+  bit 6    ROM sur carte active
+  bit 7    acces ROM 16 bits
+
+
+==============================================================================
+17. CRTC ETENDU
+==============================================================================
+
+CRTC 1Eh - Module Testing Register
+----------------------------------
+
+  bit 2  entrelacement vertical
+  bit 3  charger les polices depuis le bas
+  bit 4  reboucler a la ligne 0 au compteur 512
+  bit 5  adresse de depart bit 16
+  bit 7  8900 : adresse hote bit 16/activation associee
+
+En entrelace, CRTC Offset 13h represente les octets de deux scanlines. Les bits
+de line doubling repetent une paire paire/impaire et peuvent produire des bandes.
+
+CRTC 1Fh - Software Programming Register
+----------------------------------------
+
+Code la quantite de RAM, voir section 6. Sur TVGA8800, le sens est different.
+
+CRTC 22h - CPU Latch Read Back
+--------------------------------
+
+Renvoie le latch du plan actuellement selectionne.
+
+CRTC 24h - Attribute State Read Back
+-------------------------------------
+
+Bit 7 indique l'etat de la bascule Attribute Controller : 0 prochain acces index,
+1 prochain acces data.
+
+CRTC 26h - Attribute Index Read Back
+-------------------------------------
+
+Renvoie l'index Attribute Controller courant.
+
+CRTC 27h - Extended Start Address, 8900CL/D
+------------------------------------------------
+
+Bits 0-1 fournissent les bits 17-18 de l'adresse de depart ; bit 16 est CRTC 1Eh
+bit 5.
+
+CRTC 29h, 8900CL/D
+-------------------
+
+Bit 0 est relie a une entree RS2 du RAMDAC sur certaines cartes. Sa fonction
+depend du DAC. Les CRTC 20h,23h,25h,28h-2Ch semblent participer a un FIFO sur
+CL et descendants, mais leur detail n'est pas suffisamment documente.
+
+
+==============================================================================
+18. SELECTION DES BANQUES
+==============================================================================
+
+New mode, tous les 8900 sauf 8800BR : new Sequencer 0Eh bits 0-3 selectionnent
+une banque de 64 Kio, avec XOR 02h lors de l'ecriture.
+
+  valeur_ecrite = (banque and 0Fh) xor 02h
+
+La meme banque sert aux lectures et ecritures. Contrairement a des Tseng/ATI,
+il n'existe pas ici deux banques independantes usuelles.
+
+En modes planaires, seuls bits 0 et 2 forment le numero utile. La combinaison
+avec les quatre plans differe du packed-pixel.
+
+TVGA8900CL/D offre aussi le port 3D8h bits 0-4, banque en unites de 64 Kio. Cette
+interface simplifie l'acces et peut couvrir davantage de memoire. Verifier le
+Chip ID avant de l'utiliser.
+
+
+==============================================================================
+19. PAGING MODE ET ADRESSAGE
+==============================================================================
+
+Deux organisations Trident :
+
+  old mode  aperture de 128 Kio A000h-BFFFh, banque old 0Eh en 128 Kio ;
+  new mode  aperture de 64 Kio A000h-AFFFh, banque new 0Eh en 64 Kio.
+
+Old 0Dh bit 4 active Paging Mode. Alors :
+
+  * CRTC Offset 13h doit etre multiplie par deux ;
+  * l'adresse de depart est exprimee en unites de huit octets au lieu de quatre
+    dans les modes 256 couleurs ;
+  * old 0Eh bit 0 n'a plus le meme effet de limite de region.
+
+Une application qui dessine seulement dans A000h devrait preferer le new mode
+64 Kio employe par les pilotes SVGA classiques.
+
+
+==============================================================================
+20. HORLOGES ET ENTRELACEMENT
+==============================================================================
+
+La selection combine Misc Output bits 2-3, new 0Dh bit 0 et, sur circuits plus
+recents, bit 6 et old 0Eh bit 4. Le 8900B accede normalement aux huit premieres
+horloges ; le 8900C/TCK9002 peut en fournir davantage.
+
+Le pixel clock peut etre divise par 1, 2, 4 ou 1,5 via new 0Dh bits 1-2. Une
+valeur incorrecte change resolution horizontale et frequence simultanement.
+
+CRTC 1Eh bit 2 active l'entrelacement. Dans ce mode, CRTC 13h compte deux lignes.
+Un emulateur doit alterner champs pairs/impairs et ajuster l'adresse, pas seulement
+dupliquer les lignes du framebuffer.
+
+
+==============================================================================
+21. PALETTE ET RAMDAC HICOLOR
+==============================================================================
+
+RAMDAC VGA standard :
+
+  3C6h PEL Mask
+  3C7h Read Index
+  3C8h Write Index
+  3C9h RGB Data, trois composantes 0..63
+
+Les DAC Sierra HiColor utilisent une sequence cachee, souvent plusieurs lectures
+de 3C6h, pour acceder a leur commande. Le format 15 bits est generalement 5:5:5,
+le 16 bits 5:6:5. La sequence exacte depend du SC11483/SC11487.
+
+Un BIOS Trident 3.xx peut proposer les modes HiColor sans detecter le DAC. Un
+pilote doit identifier le RAMDAC ou demander explicitement la configuration.
+
+
+==============================================================================
+22. BIOS INT 10H TRIDENT
+==============================================================================
+
+INT 10h/AH=00h, AL=mode selectionne le mode. Sur BIOS Trident, AH au retour peut
+indiquer :
+
+  00h succes
+  80h mauvais commutateur/configuration
+  81h memoire video insuffisante
+  82h mode non supporte sur 8900, ou cristal 36 MHz insuffisant sur 8800
+  83h mode non supporte/cristal 40 MHz
+  84h mode non supporte/cristal 44,9 MHz
+  85h cristal absent ou defectueux
+  86h mauvaise base CRTC pour double affichage
+  87h mode texte non supporte
+
+Les fonctions VGA standard restent disponibles dans les modes IBM. Dans les
+modes SVGA, les services pixel/scroll peuvent etre absents ou lents.
+
+
+==============================================================================
+23. STRUCTURE D'INFORMATION BIOS
+==============================================================================
+
+INT 10h/AH=12h, BL=11h :
+
+  Retour AL=12h si supporte
+  ES:BP -> structure :
+
+  Offset  Taille  Description
+  ------  ------  ---------------------------------------------
+   00h    BYTE    inconnu, souvent 0
+   01h    BYTE    code OEM, 0 pour Trident original
+   02h    WORD    ID BIOS/circuit, ex. 1073h,1074h,1090h
+   04h    8       date ASCII "mm/dd/yy"
+   0Ch    WORD    champ non completement documente
+   0Eh    8       version ASCII, ex. " C3-128 " ou " D3.51  "
+
+INT 10h/AH=12h, BL=12h :
+
+  Retour AL=12h si supporte ; AH=nombre de blocs de 256 Kio installes.
+
+Verifier AL avant d'interpreter les autres registres.
+
+
+==============================================================================
+24. PROGRAMMATION PLANAIRE
+==============================================================================
+
+Les modes 5Bh,5Fh,63h/6Ah emploient le pipeline VGA a quatre plans. Pour un
+pixel en write mode 2 : calculer offset/masque, regler GC 05h et 08h, lire la
+destination pour charger les latches, puis ecrire la couleur 0..15.
+
+Le mode write 1 copie les quatre latches et accelere les blits alignes. Read mode
+1 compare Color Compare aux pixels et sert aux recherches/remplissages.
+
+
+==============================================================================
+25. PROGRAMMATION PACKED-PIXEL
+==============================================================================
+
+Pour modes 5Ch-5Eh/62h/64h :
+
+  adresse32 = y*largeur+x
+  banque = adresse32 shr 16
+  offset = adresse32 and FFFFh
+
+Selectionner la banque new 0Eh avec XOR 2, ou 3D8h sur CL/D. Couper toute ligne
+qui traverse FFFFh. Une primitive de lecture doit selectionner la meme banque,
+car le 8900 utilise une banque unique.
+
+Le mode 64h 1280x1024x256 exige 1 310 720 octets, donc plus de 1 Mio et une CL
+equipee/configuree en consequence. Il n'est pas universel.
+
+
+==============================================================================
+26. TEXTE, POLICES ET FIFO
+==============================================================================
+
+Les modes 50h-5Ah ajoutent jusqu'a 132x60. Ne pas supposer 80 colonnes : lire la
+BDA 0040h:004Ah et la taille de page a 0040h:004Ch.
+
+CRTC 1Eh bit 3 choisit le chargement de police depuis le bas/haut. La VGA garde
+ses maps de caracteres dans le plan 2. Utiliser INT 10h/AH=11h lorsque possible.
+
+LOCKFIFO.COM expose des fonctions BIOS residentes :
+
+  AX=1200h, BH=14h  obtenir etat FIFO dans CX
+  AX=1201h, BH=14h, CX=etat 0..FFh, FFh desactive
+
+Ces fonctions appartiennent a l'utilitaire, pas au BIOS nu. Les registres FIFO
+du 8900CL restent insuffisamment documentes ; ne pas les deviner.
+
+
+==============================================================================
+27. SYNCHRONISATION
+==============================================================================
+
+Input Status 1 bit 3 a 3DAh/3BAh signale le retrace vertical. La lecture remet
+la bascule Attribute Controller en position index. Une attente doit observer la
+fin du retrace courant puis le debut du suivant, avec expiration.
+
+Pour changer banque, il n'est pas necessaire d'attendre le retrace. Pour modifier
+palette, start address ou timings sans artefacts, synchroniser ou couper la video.
+
+
+==============================================================================
+28. EXEMPLES ASSEMBLEUR 8086
+==============================================================================
+
+28.1 Lire/ecrire un registre indexe
+-----------------------------------
+
+; DX=port index, AL=index. Retour AL=data.
+ReadIndexed:
+        out     dx,al
+        inc     dx
+        in      al,dx
+        dec     dx
+        ret
+
+; DX=port index, AL=index, AH=data.
+WriteIndexed:
+        out     dx,al
+        inc     dx
+        mov     al,ah
+        out     dx,al
+        dec     dx
+        ret
+
+28.2 Detecter un TVGA8900
+-------------------------
+
+; Retour CF=0 et AL=Chip ID si signature new 0Eh presente.
+
+DetectTrident:
+        push    bx
+        push    dx
+        pushf
+        cli
+        mov     dx,03C4h
+        mov     al,0Bh
+        out     dx,al
+        inc     dx
+        xor     al,al
+        out     dx,al              ; old mode, deux OUT 8 bits
+        dec     dx
+        mov     al,0Bh
+        out     dx,al
+        inc     dx
+        in      al,dx              ; AL=ID, bascule new mode
+        mov     bl,al
+        dec     dx
+        mov     al,0Eh
+        out     dx,al
+        inc     dx
+        in      al,dx
+        mov     bh,al              ; sauvegarde new 0Eh
+        xor     al,al
+        out     dx,al
+        in      al,dx
+        and     al,0Fh
+        cmp     al,02h
+        jne     short dt_no
+        mov     al,bh
+        out     dx,al              ; restauration
+        mov     al,bl
+        clc
+        jmp     short dt_done
+dt_no: mov     al,bh
+        out     dx,al
+        stc
+dt_done:
+        popf
+        pop     dx
+        pop     bx
+        ret
+
+28.3 Selectionner une banque new mode
+-------------------------------------
+
+; AL=banque 0..15. Suppose new mode deja selectionne.
+
+SetTridentBank:
+        and     al,0Fh
+        xor     al,02h
+        mov     ah,al
+        mov     dx,03C4h
+        mov     al,0Eh
+        out     dx,al
+        inc     dx
+        mov     al,ah
+        out     dx,al
+        ret
+
+28.4 Banque 8900CL par 3D8h
+----------------------------
+
+; AL=banque 0..31, seulement apres ID 33h.
+        and     al,1Fh
+        mov     dx,03D8h
+        out     dx,al
+
+28.5 Obtenir la RAM par BIOS
+----------------------------
+
+        mov     ah,12h
+        mov     bl,12h
+        int     10h
+        cmp     al,12h
+        jne     bios_non_trident
+        ; AH = nombre de blocs de 256 Kio
+
+28.6 Selectionner un mode et tester le retour
+------------------------------------------------
+
+        mov     ax,005Dh            ; 640x480x256
+        int     10h
+        or      ah,ah
+        jnz     mode_refuse
+
+28.7 Adresse packed 32 bits
+---------------------------
+
+; AX=y, BX=x, CX=largeur. Retour DX=banque, DI=offset.
+PackedAddress:
+        mul     cx
+        add     ax,bx
+        adc     dx,0
+        mov     di,ax
+        ret
+
+28.8 Attendre le retrace
+------------------------
+
+; DX=3DAh, CX=limite. CF=1 si expiration.
+WaitVR:
+w0:     in      al,dx
+        test    al,08h
+        jz      short w1
+        loop    w0
+        stc
+        ret
+w1:     in      al,dx
+        test    al,08h
+        jnz     short wok
+        loop    w1
+        stc
+        ret
+wok:    clc
+        ret
+
+28.9 Programmer une couleur DAC
+-------------------------------
+
+; AL=index, BH=R, BL=G, CH=B, valeurs 0..63.
+SetDAC:
+        mov     dx,03C8h
+        out     dx,al
+        inc     dx
+        mov     al,bh
+        out     dx,al
+        mov     al,bl
+        out     dx,al
+        mov     al,ch
+        out     dx,al
+        ret
+
+
+==============================================================================
+29. EXEMPLES TURBO PASCAL
+==============================================================================
+
+29.1 Registres indexes
+----------------------
+
+Function ReadIndexed(Base:Word; Index:Byte):Byte;
+Begin
+ Port[Base]:=Index;
+ ReadIndexed:=Port[Base+1];
+End;
+
+Procedure WriteIndexed(Base:Word; Index,Value:Byte);
+Begin
+ Port[Base]:=Index;
+ Port[Base+1]:=Value;
+End;
+
+29.2 ID du circuit
+------------------
+
+Function TridentChipID:Byte;
+Begin
+ WriteIndexed($3C4,$0B,0);          { force old mode }
+ TridentChipID:=ReadIndexed($3C4,$0B); { ID et passage new mode }
+End;
+
+Cette fonction seule ne valide pas la signature XOR. Utiliser le test suivant.
+
+29.3 Detection complete
+------------------------
+
+Function IsTrident8900(Var ID:Byte):Boolean;
+Var Old,V:Byte;
+Begin
+ WriteIndexed($3C4,$0B,0);
+ ID:=ReadIndexed($3C4,$0B);
+ Old:=ReadIndexed($3C4,$0E);
+ Port[$3C5]:=0;                    { index 0Eh est encore selectionne }
+ V:=Port[$3C5] and $0F;
+ Port[$3C5]:=Old;
+ IsTrident8900:=(V=2) and
+  ((ID=$03) or (ID=$04) or (ID=$13) or (ID=$33));
+End;
+
+Dans un programme reel, encadrer ce test par CLI et restauration des flags afin
+qu'un TSR video ne change pas le jeu de registres.
+
+29.4 Nom du circuit
+-------------------
+
+Function TridentName(ID:Byte):String;
+Begin
+ Case ID of
+  $03:TridentName:='TVGA8900B';
+  $04,$13:TridentName:='TVGA8900C';
+  $33:TridentName:='TVGA8900CL/D';
+ Else TridentName:='Trident autre/inconnu'
+ End
+End;
+
+29.5 RAM par BIOS
+-----------------
+
+Uses Dos;
+
+Function TridentRAMKB:Word;
+Var R:Registers;
+Begin
+ R.AH:=$12; R.BL:=$12;
+ Intr($10,R);
+ If R.AL=$12 Then TridentRAMKB:=Word(R.AH)*256
+ Else TridentRAMKB:=0;
+End;
+
+29.6 Selectionner un mode
+-------------------------
+
+Function SetTridentMode(Mode:Byte):Byte;
+Var R:Registers;
+Begin
+ R.AX:=Mode;
+ Intr($10,R);
+ SetTridentMode:=R.AH;             { 0 succes, 80h..87h erreur }
+End;
+
+29.7 Banque new mode
+--------------------
+
+Procedure SelectTridentBank(Bank:Byte);
+Begin
+ WriteIndexed($3C4,$0E,(Bank and $0F) xor $02);
+End;
+
+L'appel suppose que le new mode est selectionne. Une lecture de 0Bh le fait mais
+change aussi l'etat global ; une bibliotheque doit gerer explicitement cet etat.
+
+29.8 Banque TVGA8900CL
+-----------------------
+
+Procedure SelectCLBank(Bank:Byte);
+Begin
+ Port[$3D8]:=Bank and $1F;
+End;
+
+29.9 Adresse packed
+--------------------
+
+Procedure PackedAddress(X,Y,Width:Word; Var Bank,Ofs:Word);
+Var A:LongInt;
+Begin
+ A:=LongInt(Y)*Width+X;
+ Bank:=Word(A shr 16);
+ Ofs:=Word(A and $FFFF);
+End;
+
+29.10 Pixel bancaire 256 couleurs
+---------------------------------
+
+Procedure PutPixel256(X,Y,Width:Word; Color:Byte; IsCL:Boolean);
+Var Bank,Ofs:Word;
+Begin
+ PackedAddress(X,Y,Width,Bank,Ofs);
+ If IsCL Then SelectCLBank(Bank)
+ Else SelectTridentBank(Bank);
+ Mem[$A000:Ofs]:=Color;
+End;
+
+29.11 Palette VGA
+-----------------
+
+Procedure SetDAC(Index,R,G,B:Byte);
+Begin
+ Port[$3C8]:=Index;
+ Port[$3C9]:=R and $3F;
+ Port[$3C9]:=G and $3F;
+ Port[$3C9]:=B and $3F;
+End;
+
+29.12 Attendre le retrace
+-------------------------
+
+Function WaitRetrace(Limit:Word):Boolean;
+Begin
+ While ((Port[$3DA] and 8)<>0) and (Limit<>0) do Dec(Limit);
+ While ((Port[$3DA] and 8)=0) and (Limit<>0) do Dec(Limit);
+ WaitRetrace:=Limit<>0;
+End;
+
+
+==============================================================================
+30. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Lire Chip ID et valider le XOR de new 0Eh.
+  * Distinguer B, C et CL avant les registres propres.
+  * Sauvegarder l'etat old/new et les deux versions de 0Dh/0Eh.
+  * Masquer les interruptions pendant toute sequence de changement.
+  * Initialiser les timings par le BIOS.
+  * Tester AH apres INT 10h/AH=00h.
+  * Obtenir RAM par BIOS puis confirmer si necessaire.
+  * Couper les transferts aux frontieres de 64 Kio.
+  * Employer 3D8h uniquement sur CL/D.
+  * Identifier le RAMDAC avant un mode 15/16 bits.
+  * Restaurer banque, palette, mode et registres a la sortie.
+
+
+==============================================================================
+31. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+31.1 Machine d'etats old/new
+----------------------------
+
+Une lecture/ecriture de Sequencer 0Bh change le bank de registres. Conserver deux
+valeurs distinctes pour 0Dh et 0Eh et appliquer l'effet au moment exact de l'I/O.
+
+31.2 Asymetrie XOR
+------------------
+
+En new 0Eh, decoder la valeur ecrite avec XOR 2, mais retourner le numero logique
+sans XOR. Les logiciels utilisent cette propriete pour detecter Trident.
+
+31.3 Memoire
+------------
+
+Implementer old aperture 128 Kio et new aperture 64 Kio, paging, adresse hote
+haute, banque planaire et port 3D8h seulement sur CL. Respecter la RAM installee.
+
+31.4 VGA complete
+-----------------
+
+Plans, latches, read/write modes, Chain-4, Odd/Even, ALU, palette, panning, split
+screen et polices sont requis avant d'ajouter SVGA.
+
+31.5 CRTC et timings
+--------------------
+
+CRTC 1Eh modifie interlace, wrap et adresse. En interlace, Offset represente deux
+lignes. Calculer la frequence depuis l'horloge/diviseur/totaux.
+
+31.6 BIOS et variantes
+----------------------
+
+Associer chaque carte a sa ROM, sa RAM, son DAC et ses oscillateurs. Une ROM
+Quadtel ne doit pas etre remplacee silencieusement par une ROM Trident generique.
+
+31.7 RAMDAC
+-----------
+
+Fournir un DAC VGA standard par defaut et un Sierra selectionnable. Reproduire
+les sequences cachees de 3C6h et les formats 15/16 bits pour ce dernier.
+
+
+==============================================================================
+32. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] ID 03h,04h/13h,33h selon profil
+  [ ] bascule old/new par Sequencer 0Bh
+  [ ] deux valeurs independantes de 0Dh/0Eh
+  [ ] signature XOR new 0Eh
+  [ ] VGA IBM modes 00h-13h
+  [ ] modes texte 50h-5Ah
+  [ ] modes graphiques 5Bh-64h selon profil
+  [ ] erreurs BIOS AH=80h-87h
+  [ ] BIOS info AH=12h/BL=11h
+  [ ] RAM AH=12h/BL=12h
+  [ ] RAM 256/512/768/1024 Kio
+  [ ] old aperture 128 Kio
+  [ ] new bank 64 Kio
+  [ ] banque 3D8h seulement CL
+  [ ] transferts traversant FFFFh
+  [ ] modes planaires et packed
+  [ ] interlace et CRTC Offset double ligne
+  [ ] toutes les horloges du profil
+  [ ] palette VGA
+  [ ] DAC Sierra optionnel et modes HiColor
+  [ ] emulations EGA/CGA/MDA/Hercules
+  [ ] Attribute State/Index Read Back
+  [ ] restauration apres detection
+
+
+==============================================================================
+33. INSTALLATION ET DEPANNAGE
+==============================================================================
+
+Ecran noir : verifier ROM, cavalier d'activation, 46E8h/3C3h, insertion ISA,
+moniteur et DRAM. Ne pas copier les cavaliers d'une autre carte 8900C : le PCB
+et le BIOS peuvent etre differents.
+
+RAM mal detectee : verifier type, vitesse, organisation des DRAM et cavaliers.
+CRTC 1Fh n'ajoute pas physiquement de memoire.
+
+Corruption par blocs de 64 Kio : XOR banque oublie, old/new mode incorrect ou
+ligne non fractionnee. Corruption au-dessus de 512 Kio sur 8900C : verifier
+Sequencer 0Ch bit 5 et le mode paging.
+
+Image instable : mauvais oscillateur, diviseur ou moniteur. Revenir au BIOS et
+a un mode 03h. Couper rapidement un CRT soumis a un timing hors plage.
+
+Couleurs HiColor absurdes : DAC Sierra absent ou mauvais format 555/565.
+
+
+==============================================================================
+34. PIEGES FREQUENTS
+==============================================================================
+
+  * Appeler toute puce Trident une TVGA8900.
+  * Confondre 8900B, C, CL et 9000i.
+  * Oublier que lire/ecrire 0Bh change old/new mode.
+  * Utiliser OUT DX,AX pour forcer old mode.
+  * Oublier XOR 02h lors d'une ecriture new 0Eh.
+  * Retourner la valeur XOR lors d'une lecture emulee.
+  * Employer 3D8h sur un 8900B/C.
+  * Supposer deux banques lecture/ecriture independantes.
+  * Confondre aperture old 128 Kio et new 64 Kio.
+  * Ignorer le doublement de CRTC Offset en paging/interlace.
+  * Annoncer un mode sans RAM suffisante.
+  * Activer HiColor sans identifier le DAC.
+  * Supposer VESA VBE sur toutes les ROM.
+  * Modifier 46E8h depuis une application graphique.
+  * Attendre le retrace sans expiration.
+
+
+==============================================================================
+35. REFERENCES
+==============================================================================
+
+Sources constructeur et manuels
+--------------------------------
+
+  * Trident TVGA-8900C User's Manual, archive Minus Zero Degrees :
+
+    https://www.minuszerodegrees.net/manuals/Trident/
+    Trident%20-%20TVGA-8900C%20-%20User%27s%20Manual.pdf
+
+  * Documentation Trident TVGA9000C/9000i, utile pour les registres communs et
+    pour distinguer la generation suivante :
+
+    https://dosdays.co.uk/media/trident/Trident_TVGA9000_C.pdf
+    https://dosdays.co.uk/media/trident/Trident_TVGA9000i.pdf
+
+References de programmation
+----------------------------
+
+  * VGADOC TRIDENT.TXT, IDs, registres, banques, modes et BIOS :
+
+    https://bearstrong.net/tekst97/data/programmering/vgadoc3/trident/
+
+  * Ralf Brown's Interrupt List, fonctions INT 10h Trident :
+
+    https://www.cs.cmu.edu/~ralf/files.html
+
+  * Richard F. Ferraro, Programmer's Guide to the EGA, VGA, and Super VGA
+    Cards, descriptions des TVGA8800/8900.
+
+  * FreeVGA, registre VGA standard et references historiques :
+
+    https://www.osdever.net/FreeVGA/home.htm
+
+Sources de verification
+-----------------------
+
+  * DOS Days, historique et cartes TVGA8900 :
+
+    https://dosdays.co.uk/topics/Manufacturers/trident/tvga8900.php
+
+  * XFree86/SVGAlib, anciens pilotes libres et tables de registres TVGA8900.
+
+  * 86Box, PCem et MAME, implementations d'emulation a comparer au materiel et
+    aux manuels, sans les prendre seules pour specification.
+
+Les registres reserves et le FIFO CL ne sont pas completement documentes. Pour
+une emulation de haute fidelite, completer ces sources par traces d'I/O, dump de
+ROM et essais sur chaque revision de circuit imprime.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

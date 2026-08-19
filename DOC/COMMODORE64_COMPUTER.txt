@@ -1,0 +1,1383 @@
+==============================================================================
+ COMMODORE 64 / C64C / SX-64
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet et correction historique
+------------------------------
+
+Le Commodore 64 fut concu et commercialise par Commodore Business Machines, avec des circuits 
+MOS Technology / Commodore Semiconductor Group.
+
+Ce document couvre l'architecture, les revisions, le 6510, le VIC-II, le SID,
+les CIA, la memoire, les interfaces, les lecteurs de disquette, le BASIC V2 et
+la programmation assembleur 6502. Les accents sont omis pour conserver un
+fichier ASCII compatible avec les outils historiques.
+
+Date de revision : aout 2026.
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et modeles
+  2. Architecture generale
+  3. Versions PAL et NTSC
+  4. Carte mere et circuits
+  5. CPU MOS 6510
+  6. Carte memoire du CPU
+  7. Registres $0000/$0001 et banking
+  8. ROM BASIC, KERNAL et caracteres
+  9. VIC-II et generation video
+ 10. Registres VIC-II
+ 11. Modes texte et caracteres
+ 12. Modes bitmap
+ 13. Couleurs et color RAM
+ 14. Sprites
+ 15. Raster, badlines et bus CPU
+ 16. Interruptions
+ 17. SID 6581/8580
+ 18. Registres et programmation SID
+ 19. CIA 6526
+ 20. Clavier, joysticks et souris
+ 21. Cassette Datasette
+ 22. Bus serie IEC et lecteurs 1541
+ 23. User Port, RS-232 et GPIO
+ 24. Expansion Port et cartouches
+ 25. Ports video, alimentation et RF
+ 26. BASIC V2
+ 27. KERNAL et vecteurs logiciels
+ 28. Formats de fichiers et supports
+ 29. Exemples BASIC
+ 30. Exemples assembleur 6510
+ 31. Programme assembleur complet
+ 32. Techniques graphiques avancees
+ 33. Techniques audio
+ 34. Optimisation
+ 35. Conseils pour un emulateur
+ 36. Reparation et diagnostic
+ 37. Plan de validation
+ 38. ROMs du C64 et clone compatible
+ 39. References
+
+
+==============================================================================
+1. HISTORIQUE ET MODELES
+==============================================================================
+
+Le Commodore 64 est presente en janvier 1982 et commercialise la meme annee.
+Son nom vient de ses 64 Kio de RAM, capacite importante pour son prix. Son faible
+cout, ses graphismes, son SID et son vaste catalogue en font un des
+micro-ordinateurs 8 bits les plus repandus.
+
+Modeles importants :
+
+  C64 "breadbin"   boitier brun, nombreuses revisions de carte mere;
+  C64C             boitier clair et plus plat, circuits HMOS sur revisions;
+  SX-64            transportable avec ecran couleur et lecteur integre;
+  Educator 64      version scolaire dans un boitier avec moniteur;
+  C64 Games System console sans clavier, commercialisation limitee;
+  C64 Aldi/variantes regionales et nombreux lots OEM.
+
+Le C64 utilise un lecteur externe. Le 1541 est lui-meme un ordinateur avec CPU,
+RAM, ROM et deux VIA; il n'est pas un simple mecanisme passif.
+
+
+==============================================================================
+2. ARCHITECTURE GENERALE
+==============================================================================
+
+                         +-------------------+
+  clavier/joysticks ---> | CIA 1       CIA 2 | ---> IEC/User Port
+                         +---------+---------+
+                                   |
+  cartouche <---- bus ---+---- MOS 6510 ----+---- 64 Kio DRAM
+                              |      |
+                           VIC-II    SID ---> audio
+                              |
+                         video/RF/composite
+
+Caracteristiques generales :
+
+  * CPU 6510 autour de 1 MHz;
+  * 64 Kio de RAM principale;
+  * 20 Kio de ROM : BASIC 8 Kio, KERNAL 8 Kio, caracteres 4 Kio;
+  * 1 Kio de RAM couleur sur 4 bits;
+  * VIC-II : texte, bitmap, 16 couleurs et huit sprites;
+  * SID : trois voix, filtres et entree audio;
+  * deux CIA 6526 : timers, ports, horloge temps reel et serie;
+  * BASIC V2 et KERNAL en ROM;
+  * interfaces cassette, IEC, User Port, expansion, joystick et video.
+
+CPU et VIC-II partagent la DRAM. Le VIC prend des cycles au CPU lors de ses
+lectures, surtout sur les badlines et pour les sprites.
+
+
+==============================================================================
+3. VERSIONS PAL ET NTSC
+==============================================================================
+
+Principaux VIC-II :
+
+  6567 / 8562   NTSC, selon revision;
+  6569 / 8565   PAL-B;
+  variantes     PAL-N, NTSC-M et machines regionales.
+
+Valeurs typiques :
+
+  Systeme  CPU approx.   Cycles/ligne  Lignes/image  Images/s
+  -------  ------------  ------------  ------------  --------
+  PAL      0,985248 MHz  63            312           50,125
+  NTSC     1,022727 MHz  65            262/263       59,826
+
+Les revisions anciennes NTSC ont des timings differents. Un programme raster
+doit detecter le standard ou posseder des chemins PAL/NTSC. La musique appelee
+une fois par image joue environ 20 % plus vite en NTSC si elle fut composee PAL.
+
+
+==============================================================================
+4. CARTE MERE ET CIRCUITS
+==============================================================================
+
+Circuits d'une carte classique :
+
+  6510/8500       CPU et port d'E/S integre;
+  6567/6569/856x  VIC-II;
+  6581 ou 8580    SID;
+  deux 6526/8521  CIA;
+  PLA             decodage memoire;
+  ROM BASIC, KERNAL, character generator;
+  huit ou deux circuits DRAM selon revision;
+  color RAM 4 bits;
+  oscillateurs, logique de colle, modulateur RF et regulation.
+
+Les tensions SID ne sont pas interchangeables : le 6581 est normalement utilise
+avec une alimentation et des condensateurs de filtre differents du 8580. Monter
+un SID sans verifier la carte peut l'endommager.
+
+
+==============================================================================
+5. CPU MOS 6510
+==============================================================================
+
+Le 6510 est un 6502 NMOS avec un port d'E/S a six bits mappe a $0000/$0001. Il
+possede A, X, Y, PC, SP et le registre P : N V - B D I Z C. La pile est en
+$0100-$01FF et descend.
+
+Instructions officielles : chargement/stockage, arithmetique ADC/SBC, logique,
+comparaisons, branches, pile, decalages, JSR/RTS, interruptions et drapeaux.
+Le mode decimal fonctionne, contrairement au 2A03 de la NES.
+
+Particularites 6502 :
+
+  * JMP ($xxFF) lit l'octet haut a $xx00;
+  * branches et lectures indexees peuvent payer un cycle de page;
+  * instructions read-modify-write effectuent des acces bus supplementaires;
+  * opcodes non documentes existent, certains sont utiles mais non portables;
+  * RDY est utilise par le VIC-II pour suspendre les lectures CPU.
+
+
+==============================================================================
+6. CARTE MEMOIRE DU CPU
+==============================================================================
+
+Vue par defaut apres demarrage ($01=$37) :
+
+  $0000-$00FF  page zero, registres port en $00/$01
+  $0100-$01FF  pile
+  $0200-$03FF  buffers/vecteurs du systeme
+  $0400-$07E7  ecran texte par defaut, 1000 octets
+  $07E8-$07FF  pointeurs sprites si ecran a $0400
+  $0800-$9FFF  RAM; BASIC commence normalement a $0801
+  $A000-$BFFF  ROM BASIC, RAM en dessous
+  $C000-$CFFF  RAM libre
+  $D000-$DFFF  E/S, color RAM; RAM et Character ROM superposees
+  $E000-$FFFF  ROM KERNAL, RAM en dessous
+
+Sous les ROM se trouve de la RAM accessible apres changement de banking. Une
+ecriture quand une ROM est visible atteint normalement la RAM sous-jacente,
+tandis qu'une lecture retourne la ROM.
+
+Zone E/S quand visible :
+
+  $D000-$D3FF  VIC-II, registres repetes tous les $40
+  $D400-$D7FF  SID, registres miroirs selon decodage
+  $D800-$DBFF  1000/1024 nibbles de color RAM
+  $DC00-$DCFF  CIA 1, miroirs tous les $10
+  $DD00-$DDFF  CIA 2, miroirs tous les $10
+  $DE00-$DEFF  IO1, cartouches/extensions
+  $DF00-$DFFF  IO2, cartouches/extensions
+
+
+==============================================================================
+7. REGISTRES $0000/$0001 ET BANKING
+==============================================================================
+
+$0000 est le Data Direction Register du port 6510. $0001 est le port. Les bits
+0..2 servent au PLA : LORAM, HIRAM et CHAREN. Les bits superieurs pilotent aussi
+la cassette. Une broche en entree prend sa valeur externe; il faut donc tenir
+compte du DDR, pas seulement de l'octet ecrit.
+
+Configuration usuelle avec partie haute $30 :
+
+  $01 bas  $A000-$BFFF  $D000-$DFFF  $E000-$FFFF
+  -------  -----------  -----------  -----------
+  %000     RAM          RAM          RAM
+  %001     RAM          CHAR ROM     RAM
+  %010     RAM          CHAR ROM     KERNAL
+  %011     BASIC        CHAR ROM     KERNAL
+  %100     RAM          RAM          RAM
+  %101     RAM          I/O          RAM
+  %110     RAM          I/O          KERNAL
+  %111     BASIC        I/O          KERNAL      defaut $37
+
+Sauvegarder $01, modifier seulement les bits necessaires, puis restaurer. Ne pas
+utiliser aveuglement INC/DEC $01 : les bits cassette pourraient mettre en marche
+ou ecrire sur une bande connectee.
+
+
+==============================================================================
+8. ROM BASIC, KERNAL ET CARACTERES
+==============================================================================
+
+ROM BASIC $A000-$BFFF : interpreteur BASIC V2, conversion numerique, flottants,
+tokenisation et evaluation. ROM KERNAL $E000-$FFFF : clavier, ecran, IEC,
+cassette, gestion de fichiers, IRQ/NMI et vecteurs.
+
+Character ROM $D000-$DFFF contient deux jeux de 256 caracteres, majuscules/
+graphiques et minuscules/majuscules. Le CPU la voit avec CHAREN=0 et une ROM
+active. Le VIC la voit dans des fenetres propres de ses banks 0 et 2.
+
+Adresses d'entree KERNAL recommandees (jump table) :
+
+  $FF81 CINT     initialise l'editeur/ecran
+  $FF84 IOINIT   initialise E/S
+  $FFBA SETLFS   numero logique, device, adresse secondaire
+  $FFBD SETNAM   nom de fichier
+  $FFC0 OPEN     ouvrir
+  $FFC3 CLOSE    fermer
+  $FFC6 CHKIN    choisir entree
+  $FFC9 CHKOUT   choisir sortie
+  $FFCC CLRCHN   restaurer canaux
+  $FFCF CHRIN    lire caractere
+  $FFD2 CHROUT   afficher/ecrire caractere
+  $FFD5 LOAD     charger/verifier
+  $FFD8 SAVE     sauvegarder
+  $FFE4 GETIN    lire une entree sans attente
+  $FFE7 CLALL    fermer les fichiers
+  $FFEA UDTIM    mettre a jour horloge
+  $FFF0 PLOT     lire/fixer curseur
+  $FFF3 IOBASE   base CIA selon machine
+
+Appeler la jump table plutot que des adresses internes ameliore la compatibilite
+C64/SX-64 et revisions de ROM.
+
+
+==============================================================================
+9. VIC-II ET GENERATION VIDEO
+==============================================================================
+
+Le VIC-II genere une image autour d'une matrice logique de 320x200 pixels ou
+40x25 caracteres. Il offre 16 couleurs, scroll fin, bordure programmable, modes
+multicolores et huit sprites.
+
+Le VIC ne voit que 16 Kio a la fois. CIA 2 port A bits 1:0, inverses, choisissent
+la bank :
+
+  bits $DD00  bank VIC  plage CPU
+  ----------  --------  ----------------
+  %11         0         $0000-$3FFF
+  %10         1         $4000-$7FFF
+  %01         2         $8000-$BFFF
+  %00         3         $C000-$FFFF
+
+Le VIC voit RAM/Character ROM selon son propre cablage, independamment de $01.
+$D018 choisit l'emplacement relatif de l'ecran et des caracteres/bitmap.
+
+
+==============================================================================
+10. REGISTRES VIC-II
+==============================================================================
+
+Base $D000. Registres reels $D000-$D02E, miroirs tous les $40 jusqu'a $D3FF.
+
+  $D000-$D00F  X/Y des sprites 0..7, octets bas X
+  $D010        bits X numero 8 des huit sprites
+  $D011        Y-scroll, 24/25 lignes, display enable, bitmap, raster bit 8
+  $D012        raster courant/comparaison bits 7..0
+  $D013/$D014  light pen X/Y
+  $D015        activation sprites
+  $D016        X-scroll, 38/40 colonnes, multicolore
+  $D017        double hauteur sprites
+  $D018        pointeurs ecran et caracteres/bitmap
+  $D019        drapeaux IRQ VIC, ecrire 1 pour acquitter
+  $D01A        masque IRQ VIC
+  $D01B        priorite sprites/fond
+  $D01C        mode multicolore de chaque sprite
+  $D01D        double largeur sprites
+  $D01E        collisions sprite-sprite, lecture efface
+  $D01F        collisions sprite-fond, lecture efface
+  $D020        couleur bordure
+  $D021        couleur fond 0
+  $D022-$D024  couleurs fond/multicolore supplementaires
+  $D025/$D026  couleurs multicolores communes aux sprites
+  $D027-$D02E  couleur propre des sprites 0..7
+
+Lire $D019 puis ecrire les bits poses pour acquitter. Un INC $D019 exploite des
+acces read-modify-write et peut acquitter plus d'une source; une ecriture
+explicite est plus claire.
+
+
+==============================================================================
+11. MODES TEXTE ET CARACTERES
+==============================================================================
+
+Mode texte standard : 40x25, chaque cellule contient un code dans screen RAM et
+un nibble de couleur dans $D800. Chaque glyphe 8x8 occupe huit octets.
+
+Mode texte multicolore : si le bit 3 de color RAM vaut 1, les pixels sont par
+paires et choisissent fond $D021, $D022, $D023 ou la couleur basse de la cellule.
+Resolution effective 4x8 par caractere multicolore. Bit 3 a zero conserve un
+caractere hires.
+
+Extended Color Mode : deux bits hauts du code choisissent une de quatre couleurs
+de fond et seulement 64 glyphes sont accessibles. Il se combine mal avec
+certaines autres configurations.
+
+Pour un charset RAM, copier la Character ROM ou fournir ses propres 2048 octets,
+placer l'ensemble dans la bank VIC et regler $D018. L'adresse doit respecter un
+alignement de 2 Kio.
+
+
+==============================================================================
+12. MODES BITMAP
+==============================================================================
+
+Bitmap hires : 320x200, 8000 octets. Chaque groupe 8x8 utilise un octet de screen
+RAM : nibble haut pour les bits 1, nibble bas pour les bits 0.
+
+Bitmap multicolore : 160x200 pixels doubles. Chaque paire de bits choisit :
+
+  00 couleur de fond $D021
+  01 nibble haut de screen RAM
+  10 nibble bas de screen RAM
+  11 color RAM de la cellule
+
+Le bitmap commence a offset $0000 ou $2000 dans la bank VIC, choisi par $D018
+bit 3. Le screen reste aligne sur 1 Kio. Verifier les recouvrements avec sprites,
+code et tables.
+
+
+==============================================================================
+13. COULEURS ET COLOR RAM
+==============================================================================
+
+Indices : 0 noir, 1 blanc, 2 rouge, 3 cyan, 4 violet, 5 vert, 6 bleu, 7 jaune,
+8 orange, 9 brun, 10 rouge clair, 11 gris fonce, 12 gris moyen, 13 vert clair,
+14 bleu clair, 15 gris clair.
+
+Color RAM est large de quatre bits. Une lecture de $D800-$DBFF ne fournit pas
+un octet RAM ordinaire : le nibble haut vient du bus ouvert selon revision.
+Toujours masquer AND #$0F. Les couleurs analogiques exactes varient avec VIC-II,
+luminosite, sortie composite et moniteur.
+
+
+==============================================================================
+14. SPRITES
+==============================================================================
+
+Huit sprites materiels, 24x21 pixels hires ou 12x21 pixels doubles multicolores.
+Ils peuvent etre doubles en largeur/hauteur. X fait neuf bits; Y huit bits.
+
+Chaque sprite occupe 64 octets alignes : 63 octets d'image et un octet inutilise.
+Les huit pointeurs se trouvent aux offsets $03F8-$03FF de l'ecran courant. Un
+pointeur N selectionne bank_base + N*64.
+
+Hires : un bit opaque utilise $D027+n. Multicolore : paires 00 transparent,
+01 $D025, 10 couleur propre, 11 $D026.
+
+Le multiplexage raster reutilise les huit sprites plus bas dans l'image en
+changeant Y, pointeurs et couleurs apres leur derniere ligne. Une interruption
+stable est necessaire pour eviter scintillement et sprites manquants.
+
+
+==============================================================================
+15. RASTER, BADLINES ET BUS CPU
+==============================================================================
+
+Le VIC partage le bus par phases. Il tire BA bas avant de prendre des cycles et
+AEC bas lorsqu'il controle le bus. Une badline se produit dans la zone visible
+quand les bits bas du raster correspondent a YSCROLL et que l'affichage est
+actif; le VIC charge alors 40 codes/couleurs et vole environ 40 cycles CPU.
+
+Les DMA sprites prennent aussi des cycles. Une routine raster comptee doit
+connaitre : region, ligne, badline, sprites actifs, franchissements de page,
+branches et alignement. Les demos utilisent stabilisation double IRQ, NOP,
+branches et parfois opcodes non documentes.
+
+$D011 bit 7 fournit le bit 8 du numero de raster pour la comparaison; $D012 les
+huit bits bas. Lire $D011 pendant une ligne retourne aussi ce bit d'etat.
+
+
+==============================================================================
+16. INTERRUPTIONS
+==============================================================================
+
+Vecteurs materiels 6502 : NMI $FFFA, RESET $FFFC, IRQ/BRK $FFFE. Avec KERNAL
+visible, ses routines passent par des vecteurs RAM :
+
+  $0314/$0315  IRQ
+  $0316/$0317  BRK
+  $0318/$0319  NMI
+
+Sources IRQ : VIC-II et CIA 1. CIA 2 est normalement relie au NMI. Les lignes
+sont combinees; traiter/acquitter chaque source active.
+
+Pour installer un raster IRQ sous KERNAL : SEI, desactiver IRQ CIA, programmer
+$D012/$D011, acquitter $D019, activer $D01A bit 0, changer $0314/$0315, CLI.
+Une routine qui remplace le vecteur materiel doit sauver A/X/Y et finir RTI.
+
+
+==============================================================================
+17. SID 6581/8580
+==============================================================================
+
+Le SID offre trois voix. Chacune possede oscillateur 24 bits, generateur de
+forme d'onde, enveloppe ADSR et ring modulation/sync. Un filtre analogique
+multimode et un volume global completent le circuit.
+
+6581 et 8580 ne sonnent pas pareil : courbe de filtre, niveau DC, combinaison de
+formes, bruit, distorsion et fuite different. Les revisions de masque ont aussi
+des variations. Le digi playback exploite souvent les imperfections du 6581;
+son volume est plus faible ou different sur 8580 sans technique adaptee.
+
+
+==============================================================================
+18. REGISTRES ET PROGRAMMATION SID
+==============================================================================
+
+Base $D400. Pour voix n, sept registres :
+
+  +0/+1 frequence 16 bits
+  +2/+3 largeur pulse 12 bits
+  +4    bruit, pulse, saw, triangle, test, ring, sync, gate
+  +5    attack (haut) / decay (bas)
+  +6    sustain (haut) / release (bas)
+
+Voix 1 $D400-$D406, voix 2 $D407-$D40D, voix 3 $D40E-$D414.
+
+  $D415/$D416  cutoff filtre 11 bits
+  $D417        resonance et routage voix/externe vers filtre
+  $D418        modes high/band/low, voix 3 mute, volume 0..15
+  $D419/$D41A  potentiometres X/Y
+  $D41B        oscillateur voix 3, lecture
+  $D41C        enveloppe voix 3, lecture
+
+Frequence approximative : Fout = registre * Fclock / 2^24. Pour declencher une
+note, regler frequence/ADSR/forme puis gate=1; gate=0 lance release. Le bug ADSR
+delay peut retarder une enveloppe selon l'ancien compteur de taux.
+
+
+==============================================================================
+19. CIA 6526
+==============================================================================
+
+Chaque CIA expose 16 registres :
+
+  $0 PRA, $1 PRB, $2 DDRA, $3 DDRB
+  $4/$5 Timer A bas/haut
+  $6/$7 Timer B bas/haut
+  $8-$B TOD dixiemes, secondes, minutes, heures
+  $C serial data
+  $D Interrupt Control Register
+  $E Control A, $F Control B
+
+Les timers 16 bits comptent PHI2, CNT ou debordements selon configuration. Ils
+peuvent produire IRQ/NMI, basculer des broches ou cadencer le port serie.
+
+ICR : lire retourne et efface les drapeaux. Ecrire bit7=1 ajoute les bits au
+masque; bit7=0 les retire. Ce n'est pas un registre de masque ordinaire.
+
+TOD est cadence par le secteur 50/60 Hz selon carte. Lire les heures verrouille
+un instantane jusqu'a lecture des dixiemes; l'ordre des ecritures distingue
+horloge et alarme via CRB bit 7.
+
+
+==============================================================================
+20. CLAVIER, JOYSTICKS ET SOURIS
+==============================================================================
+
+Le clavier est une matrice 8x8 entre CIA1 ports A/B. Le KERNAL balaie des lignes
+et place les codes dans un buffer. Lecture directe : configurer un port en
+sortie, mettre une colonne a zero, lire les lignes de l'autre port.
+
+Joysticks numeriques, actifs bas :
+
+  port 2 $DC00, port 1 $DC01 (avec interactions clavier)
+  bit0 haut, bit1 bas, bit2 gauche, bit3 droite, bit4 feu.
+
+Les directions/feu partagent les lignes CIA du clavier; une lecture brute peut
+creer des touches fantomes. Les paddles et souris 1351 utilisent entrees POT du
+SID et/ou lignes joystick. Ne jamais configurer en sortie une ligne qu'un
+peripherique externe force a l'etat oppose.
+
+
+==============================================================================
+21. CASSETTE DATASETTE
+==============================================================================
+
+Le port cassette fournit alimentation moteur, sense, lecture et ecriture. Le
+port 6510 $01 controle certaines lignes, CIA/timers et KERNAL assurent le codage.
+Les donnees sont enregistrees comme impulsions temporelles, pas comme audio
+numerique standard.
+
+TAP conserve les durees d'impulsions; T64 est plutot un conteneur logique de
+fichiers et ne represente pas fidelement la bande. Fastloaders changent le
+codage et les timings.
+
+
+==============================================================================
+22. BUS SERIE IEC ET LECTEURS 1541
+==============================================================================
+
+IEC est un bus collecteur ouvert avec ATN, CLOCK, DATA, RESET et masse. Les
+peripheriques ont des numeros : 8 premier lecteur, 9 second, 4 imprimante, etc.
+Les appareils tirent une ligne basse; ils ne doivent pas la forcer haute.
+
+Le 1541 contient un 6502 a environ 1 MHz, 2 Kio RAM, ROM DOS, deux VIA 6522 et
+un mecanisme 5,25 pouces. Capacite formatee classique : 35 pistes, 683 blocs,
+environ 170 Kio. Encodage GCR et nombre de secteurs changent par zone.
+
+Le protocole KERNAL d'origine est lent. Les fastloaders telechargent du code
+dans le lecteur et utilisent des protocoles synchronises. Une emulation de haut
+niveau IEC echoue avec ces programmes; une emulation fidele execute le CPU du
+lecteur et modelise VIA, rotation, GCR et lignes de bus.
+
+Commandes BASIC : LOAD"*",8,1; SAVE"NOM",8; OPEN15,8,15,"I":CLOSE15.
+
+
+==============================================================================
+23. USER PORT, RS-232 ET GPIO
+==============================================================================
+
+Le User Port expose des lignes CIA2, alimentation, masse, CNT/SP, FLAG et autres
+signaux. Il sert aux modems, imprimantes paralleles, EPROM programmers, DAC,
+interfaces MIDI et RS-232 de niveau TTL.
+
+Ce n'est pas du RS-232 +/-12 V directement. Un convertisseur de niveaux est
+necessaire pour un port serie standard. Respecter courant maximal, directions
+DDR et protection ESD; une erreur peut detruire le CIA.
+
+
+==============================================================================
+24. EXPANSION PORT ET CARTOUCHES
+==============================================================================
+
+Le port expose bus adresse/donnees, PHI2, R/W, IRQ, NMI, DMA, RESET, ROML, ROMH,
+IO1, IO2, GAME, EXROM et alimentations. Cartographies classiques :
+
+  8K       ROML $8000-$9FFF
+  16K      ROML $8000-$9FFF, ROMH $A000-$BFFF
+  Ultimax  mapping proche MAX Machine, ROMH haut et RAM limitee
+
+Les cartouches peuvent commuter banques via $DE00/$DF00, geler par NMI, prendre
+le bus avec DMA ou ajouter RAM/REU, Ethernet, stockage et coprocesseurs.
+
+CRT est un conteneur d'image de cartouche avec type materiel et paquets CHIP;
+un dump .bin seul ne decrit pas toujours le banking.
+
+
+==============================================================================
+25. PORTS VIDEO, ALIMENTATION ET RF
+==============================================================================
+
+Sorties selon revision : modulateur RF et connecteur A/V DIN avec composite,
+luminance/chrominance separees et audio. Le cablage DIN varie entre premieres
+cartes 5 broches et versions 8 broches; verifier le schema avant connexion.
+
+L'alimentation fournit typiquement 5 V DC et 9 V AC. Le 9 VAC sert aux horloges,
+au moteur cassette et a des tensions internes. Les blocs anciens encapsules
+peuvent tomber en panne en surtension 5 V et detruire RAM/CI. Mesurer sous charge
+ou employer une alimentation moderne protegee.
+
+
+==============================================================================
+26. BASIC V2
+==============================================================================
+
+BASIC V2 fournit variables numeriques/flottantes, chaines, tableaux, boucles,
+conditions, sous-programmes, DATA/READ, E/S et fichiers. Il ne possede pas de
+commandes graphiques ou sonores specialisees : utiliser POKE/PEEK ou assembleur.
+
+Le programme tokenise commence normalement a $0801. Chaque ligne contient un
+pointeur vers la suivante, numero de ligne, tokens/texte et zero. Deux zeros
+terminent le programme. Les variables et chaines occupent la RAM au-dessus.
+
+SYS adresse appelle du code machine. USR passe par un vecteur. PEEK/POKE utilisent
+des adresses decimales; WAIT attend une condition sur un octet.
+
+
+==============================================================================
+27. KERNAL ET VECTEURS LOGICIELS
+==============================================================================
+
+Avant SETLFS/SETNAM/LOAD/SAVE, respecter la convention de registres documentee.
+Les routines retournent souvent erreur dans Carry et via READST $FFB7.
+
+Vecteurs RAM courants :
+
+  $0300 IERROR, $0302 IMAIN, $0304 ICRNCH, $0306 IQPLOP
+  $0308 IGONE,  $030A IEVAL
+  $0314 IRQ, $0316 BRK, $0318 NMI
+  $031A OPEN, $031C CLOSE, $031E CHKIN, $0320 CHKOUT
+  $0322 CLRCHN, $0324 CHRIN, $0326 CHROUT, $0328 STOP
+  $032A GETIN, $032C CLALL, $032E LOAD, $0330 SAVE
+
+Le KERNAL IRQ balaie clavier, met a jour jiffy clock et curseur. Le remplacer
+entierement supprime ces services; les rappeler explicitement si necessaires.
+
+
+==============================================================================
+28. FORMATS DE FICHIERS ET SUPPORTS
+==============================================================================
+
+  PRG  deux octets d'adresse de chargement little-endian, puis donnees
+  SEQ  fichier sequentiel
+  REL  fichier relatif avec side sectors
+  USR  type utilisateur
+  D64  image logique 1541, 35/40 pistes, erreurs optionnelles
+  G64  representation GCR plus proche de la piste
+  D71  image 1571 double face
+  D81  image 1581 3,5 pouces
+  TAP  impulsions cassette
+  T64  conteneur logique de fichiers cassette
+  CRT  image de cartouche structuree
+  SID  PSID/RSID, musique et metadonnees, pas un format audio echantillonne
+
+Un fichier PRG n'inclut pas son nom Commodore ni son type disque. Les noms PETSCII
+et les metadonnees appartiennent au repertoire du support/conteneur.
+
+
+==============================================================================
+29. EXEMPLES BASIC
+==============================================================================
+
+29.1 Couleurs et ecran
+----------------------
+
+10 POKE 53280,0:POKE 53281,6
+20 PRINT CHR$(147);"COMMODORE 64"
+30 FOR I=0 TO 999:POKE 55296+I,I AND 15:NEXT
+
+29.2 Sprite simple
+------------------
+
+10 S=832:FOR I=0 TO 62:POKE S+I,0:NEXT
+20 POKE 2040,S/64
+30 POKE 53248,100:POKE 53249,100
+40 POKE 53287,1:POKE 53269,1
+50 FOR Y=0 TO 20:POKE S+Y*3,255:NEXT
+
+$0340=832 est dans la RAM utilisee par certaines fonctions du systeme. Pour un
+programme reel, reserver sa zone ou placer le sprite avec le code machine.
+
+29.3 Voix SID
+-------------
+
+10 S=54272:FOR I=0 TO 24:POKE S+I,0:NEXT
+20 POKE S+5,9:POKE S+6,240
+30 POKE S,45:POKE S+1,34
+40 POKE S+24,15:POKE S+4,33
+50 FOR T=1 TO 500:NEXT:POKE S+4,32
+
+29.4 Joystick port 2
+--------------------
+
+10 J=PEEK(56320)
+20 IF (J AND 1)=0 THEN PRINT"HAUT"
+30 IF (J AND 2)=0 THEN PRINT"BAS"
+40 IF (J AND 4)=0 THEN PRINT"GAUCHE"
+50 IF (J AND 8)=0 THEN PRINT"DROITE"
+60 IF (J AND 16)=0 THEN PRINT"FEU"
+
+
+==============================================================================
+30. EXEMPLES ASSEMBLEUR 6510
+==============================================================================
+
+Syntaxe ca65, KickAssembler facilement adaptable.
+
+30.1 Effacer l'ecran et color RAM
+---------------------------------
+
+clear_screen:
+        ldx #0
+        lda #$20
+@l:     sta $0400,x
+        sta $0500,x
+        sta $0600,x
+        sta $06e8,x             ; seuls 232 octets utiles ici
+        inx
+        bne @l
+        ldx #0
+        lda #1
+@c:     sta $d800,x
+        sta $d900,x
+        sta $da00,x
+        sta $dae8,x
+        inx
+        bne @c
+        rts
+
+30.2 Lire joystick 2
+--------------------
+
+read_joy2:
+        lda $dc00
+        eor #$ff
+        and #$1f                 ; bits poses = directions/feu actifs
+        sta joy_state
+        rts
+
+30.3 Copier la Character ROM en RAM $2000
+------------------------------------------
+
+copy_charset:
+        sei
+        lda $01
+        pha
+        and #$fb                 ; CHAREN=0, ROMs encore actives
+        sta $01
+        ldx #0
+@l:     lda $d000,x
+        sta $2000,x
+        lda $d100,x
+        sta $2100,x
+        lda $d200,x
+        sta $2200,x
+        lda $d300,x
+        sta $2300,x
+        lda $d400,x
+        sta $2400,x
+        lda $d500,x
+        sta $2500,x
+        lda $d600,x
+        sta $2600,x
+        lda $d700,x
+        sta $2700,x
+        inx
+        bne @l
+        pla
+        sta $01
+        cli
+        rts
+
+Pour bank VIC 0, $2000 est un emplacement charset valide et $D018 doit pointer
+vers offset $2000. Verifier que le programme ne l'occupe pas.
+
+30.4 Installer une IRQ raster simple
+------------------------------------
+
+install_irq:
+        sei
+        lda #$7f
+        sta $dc0d                 ; masque IRQ CIA1
+        lda $dc0d                 ; efface drapeaux en attente
+        lda #<raster_irq
+        sta $0314
+        lda #>raster_irq
+        sta $0315
+        lda #100
+        sta $d012
+        lda $d011
+        and #$7f                  ; raster bit 8=0
+        sta $d011
+        lda #1
+        sta $d019                 ; acquitte raster
+        sta $d01a                 ; active raster IRQ
+        cli
+        rts
+
+raster_irq:
+        inc $d020
+        dec $d020
+        lda #1
+        sta $d019
+        jmp $ea31                 ; fin IRQ KERNAL
+
+30.5 Afficher un sprite
+-----------------------
+
+show_sprite0:
+        lda #13                   ; $0340 / 64
+        sta $07f8
+        lda #100
+        sta $d000
+        sta $d001
+        lda #1
+        sta $d027
+        lda $d015
+        ora #1
+        sta $d015
+        rts
+
+30.6 Note SID
+-------------
+
+sid_note:
+        lda #0
+        ldx #24
+@z:     sta $d400,x
+        dex
+        bpl @z
+        lda #$45
+        sta $d400
+        lda #$22
+        sta $d401
+        lda #$09
+        sta $d405
+        lda #$f0
+        sta $d406
+        lda #$0f
+        sta $d418
+        lda #%00100001            ; saw + gate
+        sta $d404
+        rts
+
+
+==============================================================================
+31. PROGRAMME ASSEMBLEUR COMPLET
+==============================================================================
+
+Programme chargeable a $0801 avec ligne BASIC "10 SYS2061" :
+
+        .org $0801
+        .word basic_end
+        .word 10
+        .byte $9e                 ; token SYS
+        .byte "2061",0
+basic_end:
+        .word 0
+
+start:  sei                       ; $080d = 2061
+        lda #0
+        sta $d020
+        lda #6
+        sta $d021
+        ldx #0
+@fill:  lda message,x
+        beq @done
+        sta $0400,x
+        lda #1
+        sta $d800,x
+        inx
+        bne @fill
+@done:  cli
+        rts
+
+message:.byte "BONJOUR DU COMMODORE 64",0
+
+Assembler en PRG avec adresse de chargement $0801. Le stub BASIC est une liste
+chainee tokenisee; si le code change d'adresse, recalculer la chaine SYS.
+
+
+==============================================================================
+32. TECHNIQUES GRAPHIQUES AVANCEES
+==============================================================================
+
+  * raster bars : modifier $D020/$D021 a des cycles precis;
+  * splits : changer $D011/$D016/$D018 en cours d'image;
+  * sprite multiplexing : reprogrammer sprites apres leur affichage;
+  * FLD/line crunch : manipuler badlines pour deplacer/compresser l'affichage;
+  * VSP : defilement horizontal rapide mais risque de corruption sur materiel;
+  * FLI : changer pointeurs/couleurs par ligne pour davantage de couleurs;
+  * open borders : modifier largeur/hauteur au moment ou le bord se ferme;
+  * double buffering : changer bank/pointeur ecran entre images.
+
+Ces techniques dependent du timing et parfois de comportements hors
+specification. Documenter les revisions VIC testees et fournir une voie sure.
+
+
+==============================================================================
+33. TECHNIQUES AUDIO
+==============================================================================
+
+Un lecteur musical est appele par IRQ raster ou timer CIA a frequence fixe. Il
+met a jour notes, instruments, gate, filtres et effets (vibrato, arpege, pulse
+width modulation). Garder une cadence identique PAL/NTSC via tables ou timer.
+
+Echantillons numeriques : modulation de $D418, pulse ou autres techniques. Le
+6581 presente un offset qui rend les digis de volume forts; le 8580 demande des
+methodes adaptees. Des changements rapides de volume affectent aussi le filtre.
+
+Les fichiers PSID sont destines aux lecteurs logiciels et peuvent accepter un
+environnement simplifie. RSID exige un comportement plus proche d'un programme
+C64 reel et interdit certaines hypotheses PSID.
+
+
+==============================================================================
+34. OPTIMISATION
+==============================================================================
+
+  * page zero pour pointeurs et variables frequentes;
+  * aligner tables afin d'eviter cycles de franchissement de page;
+  * derouler les boucles critiques;
+  * placer raster code loin des badlines ou les integrer au budget;
+  * utiliser self-modifying code lorsque la RAM et la maintenance le permettent;
+  * predecaler les sprites/tiles plutot que calculer par pixel;
+  * conserver les pointeurs de bank et $01 dans des copies logicielles;
+  * eviter ROM/I/O bank switching dans une IRQ sans protocole NMI;
+  * mesurer PAL et NTSC separement;
+  * ne pas optimiser une routine IEC au detriment de sa tolerance electrique.
+
+
+==============================================================================
+35. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU/PLA :
+
+  * 6510 NMOS cycle exact, BCD et opcodes illegaux;
+  * port $00/$01 avec DDR et lignes externes;
+  * lectures factices, bus ouvert et RAM sous ROM;
+  * GAME/EXROM, Ultimax, DMA et banking complet.
+
+VIC-II :
+
+  * timings par revision PAL/NTSC;
+  * partage PHI2, BA/AEC, badlines et DMA sprites;
+  * compteurs internes, bordures et scroll;
+  * fetch ecran/char/color, Character ROM speciale;
+  * sprites, collisions et priorites;
+  * IRQ raster et comportement read/write des registres;
+  * rendu des modes invalides pour les demos.
+
+SID :
+
+  * oscillateurs, noise LFSR, sync/ring/test;
+  * enveloppes et bug ADSR;
+  * courbes filtre 6581/8580 et mixage non lineaire;
+  * POT, OSC3/ENV3 et entree externe;
+  * filtrage/resampling sans alias excessif.
+
+CIA/peripheriques :
+
+  * timers et sous-debordements cycle exacts;
+  * ICR read-to-clear et masque set/clear;
+  * TOD 50/60 Hz, serial/CNT/FLAG;
+  * clavier ghosting et joysticks;
+  * IEC collecteur ouvert et CPU 1541 complet pour fastloaders;
+  * fichiers D64/G64/TAP avec erreurs et timings.
+
+Tester avec VICE testprogs, Lorenz tests, Klaus Dormann 6502 tests, Wolfgang
+Lorenz CIA/VIC tests et demos connues. Un simple emulateur instructionnel lance
+BASIC, mais pas les fastloaders, protections ni demos raster.
+
+
+==============================================================================
+36. REPARATION ET DIAGNOSTIC
+==============================================================================
+
+Avant toute intervention : verifier alimentation 5 V sous charge, debrancher,
+protection ESD et identifier l'ASSY/revision. Les cartes different sensiblement.
+
+  Symptome              Causes frequentes
+  --------------------  -------------------------------------------------
+  ecran noir            alimentation, PLA, RAM, CPU, VIC, horloge, ROM
+  caracteres aleatoires RAM, Character ROM, VIC, multiplexeurs
+  mauvaises couleurs    color RAM, VIC, logique associee
+  pas de son            SID, alimentation SID, condensateurs, audio DIN
+  clavier defectueux    CIA1, matrice, connecteur, touche
+  IEC bloque            CIA2, peripherique tirant DATA/CLOCK bas
+  READY sans demarrage  KERNAL/BASIC, RAM, cartouche, reset
+  chauffe excessive     alimentation fautive, court-circuit ou circuit degrade
+
+Diagnostic cartridge et dead-test ROM aident, mais leurs motifs de clignotement
+dependent de la version. Une sonde logique/oscilloscope verifie reset, horloges,
+bus, CAS/RAS et video. Ne remplacer des composants au hasard ni brancher un SID
+d'une autre tension.
+
+
+==============================================================================
+37. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] toutes configurations $01 et RAM sous ROM
+  [ ] GAME/EXROM, 8K/16K/Ultimax
+  [ ] Character ROM vue CPU et VIC
+  [ ] VIC banks via $DD00 et $D018
+  [ ] texte, multicolore, ECM, bitmap hires/multicolore
+  [ ] huit sprites, expansion, collisions, priorite
+  [ ] raster IRQ, badlines et DMA sprites PAL/NTSC
+  [ ] 6510 BCD, JMP indirect et opcodes non documentes
+  [ ] SID trois voix, filtres 6581/8580 et ADSR
+  [ ] CIA timers, ICR, TOD, serial et FLAG
+  [ ] clavier, deux joysticks, paddles/souris
+  [ ] cassette TAP et moteur/sense
+  [ ] IEC avec 1541 CPU, fastloaders et erreurs disque
+  [ ] KERNAL LOAD/SAVE/OPEN/CLOSE
+  [ ] D64/G64/T64/TAP/CRT/PRG
+  [ ] comparaison sur plusieurs revisions reelles
+
+
+==============================================================================
+38. ROMS DU C64 ET CLONE COMPATIBLE
+==============================================================================
+
+38.1 Les trois ROM systeme
+--------------------------
+
+Un C64 classique utilise trois images :
+
+  BASIC ROM      8 Kio  $A000-$BFFF  reference courante 901226-01
+  Character ROM  4 Kio  $D000-$DFFF  reference courante 901225-01
+  KERNAL ROM     8 Kio  $E000-$FFFF  revisions 901227-01/-02/-03
+
+Sur certaines cartes tardives, BASIC et KERNAL partagent une ROM physique de
+16 Kio telle que 251913-01, mais leurs fenetres logiques restent distinctes.
+KERNAL est l'orthographe officielle Commodore. Il contient demarrage, editeur,
+clavier, cassette, IEC, fichiers et API. BASIC V2 est l'interpreteur Microsoft.
+Character ROM contient deux jeux de 256 glyphes 8x8.
+
+Les revisions KERNAL -01, -02 et -03 corrigent des erreurs. La revision 3, la
+plus commune, place 3 a $FF80 et la signature "RRBY" a $FFF6-$FFF9. Ces octets
+ne remplacent pas un hash : une ROM modifiee peut les conserver. Il existe aussi
+des ROM PAL/NTSC, SX-64, C64GS, JiffyDOS, DolphinDOS et autres remplacements.
+
+
+38.2 Banking et RAM sous ROM
+----------------------------
+
+La PLA choisit ce que le CPU lit selon $0000/$0001, GAME et EXROM. Une ecriture
+dans une fenetre ROM atteint la RAM sous-jacente. Le VIC-II a une vue differente
+et voit Character ROM dans certaines banks independamment de CHAREN CPU.
+
+Un clone doit reproduire :
+
+  * DDR $0000 et lignes externes du port $0001;
+  * toutes combinaisons LORAM/HIRAM/CHAREN;
+  * RAM sous BASIC/KERNAL et E/S/Character ROM/RAM a $D000;
+  * cartouches 8K, 16K et Ultimax;
+  * vue VIC-II de Character ROM et bus ouvert;
+  * vecteurs provenant de KERNAL, RAM ou cartouche selon le mapping.
+
+Couper KERNAL implique de fournir NMI/RESET/IRQ en RAM ou d'interdire toute
+interruption avant de le remapper.
+
+
+38.3 Demarrage et cartouche CBM80
+---------------------------------
+
+RESET charge PC depuis $FFFC/$FFFD. Le KERNAL initialise pile et port 6510,
+cherche une cartouche, configure CIA/E-S, teste la RAM, installe les vecteurs,
+initialise VIC-II/SID/ecran/clavier puis transfere a BASIC. BASIC fixe ses
+pointeurs, affiche la banniere et entre dans READY.
+
+En-tete cartouche a $8000 :
+
+  $8000/$8001  vecteur cold start, little-endian
+  $8002/$8003  vecteur warm start
+  $8004-$8008  PETSCII "CBM80" = C3 C2 CD 38 30
+
+Une cartouche prend le controle avant l'initialisation complete de BASIC. Un
+clone doit reproduire l'ordre observable et ne pas supposer RAM initialement
+nulle.
+
+
+38.4 Table de sauts KERNAL stable
+---------------------------------
+
+Chaque entree est un JMP de trois octets. C'est l'API officielle a employer au
+lieu des cibles internes :
+
+  Adresse  Nom      Fonction
+  -------  -------  ------------------------------------------------------
+  $FF81    CINT     initialise editeur/ecran
+  $FF84    IOINIT   initialise CIA et E/S
+  $FF87    RAMTAS   teste RAM, pointeurs et zones systeme
+  $FF8A    RESTOR   restaure les vecteurs RAM KERNAL
+  $FF8D    VECTOR   lit ou remplace les vecteurs RAM
+  $FF90    SETMSG   selection des messages KERNAL
+  $FF93    SECOND   adresse secondaire apres LISTEN
+  $FF96    TKSA     adresse secondaire apres TALK
+  $FF99    MEMTOP   lit/fixe limite haute memoire
+  $FF9C    MEMBOT   lit/fixe limite basse memoire
+  $FF9F    SCNKEY   balaie le clavier
+  $FFA2    SETTMO   politique de timeout IEC
+  $FFA5    ACPTR    recoit un octet IEC
+  $FFA8    CIOUT    envoie un octet IEC
+  $FFAB    UNTLK    envoie UNTALK
+  $FFAE    UNLSN    envoie UNLISTEN
+  $FFB1    LISTEN   commande un device a ecouter
+  $FFB4    TALK     commande un device a parler
+  $FFB7    READST   retourne le statut E/S dans A
+  $FFBA    SETLFS   fixe logical file/device/secondaire
+  $FFBD    SETNAM   fixe nom et longueur
+  $FFC0    OPEN     ouvre un fichier logique
+  $FFC3    CLOSE    ferme un fichier logique
+  $FFC6    CHKIN    selectionne l'entree
+  $FFC9    CHKOUT   selectionne la sortie
+  $FFCC    CLRCHN   restaure clavier/ecran
+  $FFCF    CHRIN    lit un caractere du canal
+  $FFD2    CHROUT   ecrit un caractere sur le canal
+  $FFD5    LOAD     charge ou verifie
+  $FFD8    SAVE     sauvegarde une plage
+  $FFDB    SETTIM   fixe l'horloge jiffy
+  $FFDE    RDTIM    lit l'horloge jiffy
+  $FFE1    STOP     teste RUN/STOP
+  $FFE4    GETIN    lecture non bloquante
+  $FFE7    CLALL    ferme tous les fichiers
+  $FFEA    UDTIM    met a jour heure et STOP
+  $FFED    SCREEN   dimensions ecran
+  $FFF0    PLOT     lit/fixe curseur
+  $FFF3    IOBASE   base du premier CIA
+
+$FFF6-$FFF9 ne sont pas des services portables. $FFFA-$FFFF contiennent les
+vecteurs materiels NMI, RESET et IRQ/BRK.
+
+
+38.5 Conventions d'appel essentielles
+-------------------------------------
+
+  Routine  Entree                                   Retour/notes
+  -------  ---------------------------------------  --------------------------
+  MEMTOP   C=1 lire; C=0 fixer X=bas,Y=haut         X/Y valeur
+  MEMBOT   meme convention                          X/Y valeur
+  ACPTR                                              A=octet recu
+  CIOUT    A=octet                                  statut/Carry
+  LISTEN   A=device
+  TALK     A=device
+  READST                                             A=STATUS
+  SETLFS   A=logical, X=device, Y=secondaire
+  SETNAM   A=longueur, X=adresse basse, Y=haute
+  CLOSE    A=numero logique
+  CHKIN    X=numero logique
+  CHKOUT   X=numero logique
+  CHRIN                                              A=caractere
+  CHROUT   A=caractere
+  LOAD     A=0 load, !=0 verify; X/Y adresse         X/Y=fin, C=erreur
+  SAVE     A=adresse ZP du pointeur debut; X/Y fin   C=erreur
+  SETTIM   A/X/Y=jiffies haut/milieu/bas
+  RDTIM                                              A/X/Y=jiffies
+  STOP                                               Z=1 si enfoncee
+  GETIN                                              A=0 si rien
+  SCREEN                                             X=colonnes,Y=lignes
+  PLOT     C=0 fixe X=ligne,Y=col; C=1 lit           X/Y position
+  IOBASE                                             X/Y=$DC00
+
+Les routines peuvent detruire d'autres registres. Consulter le Programmer's
+Reference Guide, sauvegarder les registres necessaires et tester Carry/READST.
+
+
+38.6 Exemple d'appel KERNAL
+---------------------------
+
+CHROUT = $FFD2
+
+print:  ldy #0
+@loop:  lda message,y
+        beq @done
+        jsr CHROUT
+        iny
+        bne @loop
+@done:  rts
+message:.byte "ROM KERNAL",13,0
+
+Exemple LOAD : appeler SETLFS avec A=1,X=8,Y=1, SETNAM avec A=longueur et X/Y
+pointeur, puis LOAD avec A=0. Carry pose indique une erreur et X/Y retourne
+l'adresse de fin. Le sens exact de l'adresse de chargement depend de l'adresse
+secondaire et du device.
+
+
+38.7 Vecteurs RAM KERNAL
+------------------------
+
+RESTOR installe les valeurs par defaut; VECTOR lit/remplace le bloc :
+
+  $0314 CINV IRQ       $0316 CBINV BRK      $0318 NMINV NMI
+  $031A IOPEN          $031C ICLOSE         $031E ICHKIN
+  $0320 ICKOUT         $0322 ICLRCH         $0324 IBASIN/CHRIN
+  $0326 IBSOUT/CHROUT  $0328 ISTOP          $032A IGETIN
+  $032C ICLALL         $032E IUSRCMD/LOAD   $0330 ISAVE
+
+Une extension doit chainer proprement. Intercepter la jump table ne couvre pas
+les appels via vecteurs RAM, et inversement.
+
+
+38.8 Vecteurs et representation BASIC V2
+----------------------------------------
+
+Vecteurs BASIC : $0300 erreur, $0302 warm start, $0304 tokenisation, $0306
+detokenisation/LIST, $0308 execution, $030A evaluation. Les noms courants sont
+IERROR, IMAIN, ICRNCH, IQPLOP, IGONE et IEVAL.
+
+Une ligne tokenisee contient : pointeur little-endian vers la ligne suivante,
+numero de ligne, tokens/texte et zero. Un mot nul termine le programme. Le debut
+par defaut est $0801.
+
+Un clone binaire compatible doit reproduire :
+
+  * tokens BASIC V2 et contextes REM/DATA/guillemets;
+  * flottants Microsoft/Commodore cinq octets et arrondis;
+  * variables, chaines, tableaux et descripteurs;
+  * piles FOR/NEXT et GOSUB, DATA/READ/RESTORE;
+  * garbage collector et codes/messages d'erreur;
+  * pointeurs zero-page et limites programme/variables/heap;
+  * SYS/USR/PEEK/POKE/WAIT et conventions de registres;
+  * edition, LIST, CONT, CLR, NEW et warm start.
+
+Des programmes inspectent leurs tokens, utilisent VARPTR, remplacent $0300 ou
+appellent l'arithmetique ROM. Une compatibilite source ne suffit pas.
+
+
+38.9 Character ROM, PETSCII et editeur
+--------------------------------------
+
+Character ROM contient deux jeux de 256 glyphes. PETSCII, codes ecran et Unicode
+sont distincts. CHROUT interprete PETSCII et controles; screen RAM contient des
+codes ecran. Il faut reproduire glyphes, conversions, reverse, couleurs, curseur,
+effacement, scroll et bascule Shift+Commodore.
+
+L'editeur gere des lignes logiques pouvant couvrir plusieurs lignes physiques,
+guillemets et insertion. CHRIN clavier passe par cet editeur; GETIN lit seulement
+le buffer. SCNKEY balaie CIA1, gere modificateurs/repetition et remplit le buffer
+$0277-$0280. RESTORE declenche NMI par CIA2.
+
+Une traduction directe clavier PC->ASCII ne reproduit ni matrice/ghosting, ni
+PETSCII, ni lectures CIA directes, ni RUN/STOP+RESTORE.
+
+
+38.10 IEC, cassette et compatibilite temporelle
+-----------------------------------------------
+
+Les routines IEC bit-bangent CIA2 et gerent ATN, TALK/LISTEN, secondaires, EOI,
+timeout et STATUS. OPEN/LOAD ont des effets visibles sur le bus. Les fastloaders
+remplacent ces routines et telechargent du code dans le 1541; la compatibilite
+complete exige CPU/VIA/ROM du lecteur et timing des lignes.
+
+La cassette exige moteur, sense, FLAG, timers CIA, leaders, blocs et checksums.
+SX-64 et C64GS n'ont pas exactement ce contrat.
+
+
+38.11 Appels internes et revisions
+----------------------------------
+
+Des programmes appellent $EA31 (fin IRQ), $E544 (effacement ecran dans une ROM),
+$FCE2 (RESET) ou $FD15 (RESTOR interne). Ces cibles populaires ne font pas partie
+de l'API stable. Pour chaque cible emulee, noter hash ROM, registres, pile, zero
+page, cycles, region et modele.
+
+Une ROM de remplacement peut placer des trampolines a ces adresses, mais ne doit
+pas pretendre que tous les octets internes sont compatibles.
+
+
+38.12 Niveaux et methode de clonage
+-----------------------------------
+
+  Niveau 1  console et BASIC source compatible
+  Niveau 2  jump table KERNAL et fichiers usuels
+  Niveau 3  vecteurs RAM, formats BASIC/PETSCII et erreurs
+  Niveau 4  appels internes, timings, fastloaders et cartouches
+  Niveau 5  octets/cycles observables identiques
+
+Procedure : choisir revision/region/modele, verifier les dumps par SHA-256,
+specifier le comportement, implementer banking et materiel, toute la jump table,
+vecteurs, editeur, IEC/cassette, BASIC et Character ROM, puis comparer traces et
+etat contre une vraie revision 3 PAL/NTSC.
+
+BASIC, KERNAL et Character ROM originaux sont proteges par copyright. Une
+reimplementation clean-room legalement distincte ne peut pas etre octet pour
+octet identique. Documenter licence et incompatibilites; ceci n'est pas un avis
+juridique.
+
+
+38.13 Plan de validation ROM
+----------------------------
+
+  [ ] cold/warm reset, RAM aleatoire et CBM80
+  [ ] toutes combinaisons $0000/$0001/GAME/EXROM
+  [ ] 39 appels $FF81-$FFF3, registres et drapeaux
+  [ ] device absent, timeout, EOI, STOP et erreurs
+  [ ] LOAD/VERIFY/SAVE aux limites
+  [ ] vecteurs $0300-$0331 et chainer les hooks
+  [ ] CHROUT pour 256 codes, editeur et curseur
+  [ ] SCNKEY, matrice, repeat, buffer et RESTORE
+  [ ] tokenisation/LIST de chaque mot-cle
+  [ ] flottants limites, chaines/GC et erreurs exactes
+  [ ] lecture des octets Character/BASIC/KERNAL
+  [ ] JiffyDOS/fastloaders avec 1541 cycle exact
+  [ ] cartouches freezer et extensions BASIC
+  [ ] C64/C64C/SX-64 et PAL/NTSC annonces
+
+
+38.14 Outils de reference
+-------------------------
+
+Ultimate C64 Reference rassemble plusieurs disassemblies BASIC/KERNAL, la carte
+memoire et l'API. Les sources originales Commodore/Microsoft disponibles dans
+cbmsrc permettent des builds comparatifs. VICE monitor/testprogs, Lorenz tests,
+Klaus Dormann 6502 et un analyseur IEC completent les tests.
+
+Generer un fichier de symboles par hash. Pour une ROM inconnue, employer seulement
+la jump table au lieu de deviner les cibles internes.
+
+
+==============================================================================
+39. REFERENCES
+==============================================================================
+
+Sources Commodore
+-----------------
+
+  * Commodore 64 Programmer's Reference Guide, Commodore, 1982/1983.
+    Scans par chapitre et schemas :
+    https://www.commodore.ca/manuals/c64_programmers_reference/
+      c64-programmers-reference.htm
+
+  * Commodore 64 User's Guide.
+
+  * Commodore 64 Service Manual et schemas par numero ASSY :
+    https://www.zimmers.net/anonftp/pub/cbm/schematics/computers/c64/
+
+Fiches techniques
+-----------------
+
+  * MOS Technology 6510 Microprocessor Data Sheet.
+  * MOS 6567/6569 VIC-II Data Sheet.
+  * MOS 6581 SID Data Sheet et Commodore 8580 documentation.
+  * MOS 6526 Complex Interface Adapter Data Sheet.
+  * MOS 6522 VIA Data Sheet pour le 1541.
+
+References techniques communautaires
+------------------------------------
+
+  * Codebase 64 : https://codebase64.org/
+  * C64-Wiki : https://www.c64-wiki.com/
+  * Project 64 documents : https://project64.c64.org/
+  * C64 memory map interactive : https://mem64.awsm.de/
+  * Christian Bauer, "The MOS 6567/6569 video controller (VIC-II) and its
+    application in the Commodore 64", description cycle exacte.
+  * VICE source et testprogs : https://vice-emu.sourceforge.io/
+  * Wolfgang Lorenz et suites de validation C64.
+
+ROM, KERNAL et BASIC
+--------------------
+
+  * Ultimate Commodore 64 Reference Guide, disassemblies BASIC/KERNAL,
+    memory map et API : https://github.com/mist64/c64ref
+
+  * Sources originales Commodore de KERNAL/BASIC et variantes :
+    https://github.com/mist64/cbmsrc
+
+  * Archives de sources et disassemblies C64 :
+    https://www.zimmers.net/anonftp/pub/cbm/src/c64/
+
+  * Commodore 64 Programmer's Reference Guide, chapitre KERNAL :
+    https://www.commodore.ca/manuals/c64_programmers_reference/
+      c64-programmers-reference_guide-05-basic_to_machine_language.pdf
+
+Les fiches constructeur donnent l'interface programmee, tandis que de nombreux
+effets de demos, differences SID et timings de lecteurs proviennent de mesures.
+Pour toute affirmation cycle exacte, preciser le modele PAL/NTSC, le numero du
+VIC/SID/CIA, la revision de carte mere et le peripherique teste.

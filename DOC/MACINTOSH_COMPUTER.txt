@@ -1,0 +1,1135 @@
+==============================================================================
+ APPLE MACINTOSH 1984-1999 - MATERIEL ET PROGRAMMATION
+ Reference technique des Macintosh 68K et PowerPC classiques
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit les ordinateurs Macintosh des annees 1980 et 1990 : materiel,
+ROM, System Software/Mac OS, Toolbox et programmation. Il couvre les Macintosh
+128K a 68000, les familles II/LC/Quadra, les portables et les Power Macintosh.
+
+Il ne faut pas traiter "le Macintosh" comme une seule carte mere. Les adresses
+du VIA ou de l'ecran du Macintosh 128K ne sont pas celles d'un Quadra, et un Power
+Macintosh PCI n'est pas un 68000 plus rapide. Les API Toolbox, Gestalt, Slot
+Manager et Driver/Device Manager constituent l'interface compatible.
+
+Notation : $ prefixe l'hexadecimal. Les processeurs 68K et PowerPC Macintosh sont
+big-endian. Les accents sont omis pour conserver un fichier ASCII ancien.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Histoire
+  2. Grandes familles de modeles
+  3. Architecture du Macintosh original
+  4. Evolution materielle
+  5. Processeurs Motorola 68K
+  6. PowerPC et code mixte
+  7. Carte memoire du 128K/512K/Plus
+  8. Memoire sur Macintosh II et suivants
+  9. ROM Macintosh et traps Toolbox
+ 10. Gestion de la memoire
+ 11. Video monochrome originale
+ 12. QuickDraw noir et blanc
+ 13. Color QuickDraw et cartes video
+ 14. NuBus, PDS et Slot Manager
+ 15. PCI et Open Firmware
+ 16. Son
+ 17. VIA, horloge et interruptions
+ 18. SCC et ports serie
+ 19. Clavier, souris, ADB et USB
+ 20. Disquettes, IWM et SWIM
+ 21. SCSI, IDE et stockage
+ 22. AppleTalk et reseaux
+ 23. Ports et connecteurs externes
+ 24. System Software et Mac OS classique
+ 25. Architecture Toolbox et Managers
+ 26. Event Manager et boucle evenementielle
+ 27. Window, Menu, Dialog et Control Managers
+ 28. Resource Manager et resource fork
+ 29. File Manager, volumes et forks
+ 30. HFS, HFS Plus et formats de disque
+ 31. Process Manager, MultiFinder et multitache
+ 32. Segment Loader, CODE, CFM et formats executables
+ 33. Device Manager et pilotes
+ 34. Apple Events, Edition et presse-papiers
+ 35. TextEdit, fontes, Script Manager et Unicode
+ 36. QuickTime, composants et multimedia
+ 37. Detection avec Gestalt
+ 38. Programmation Pascal
+ 39. Programmation C
+ 40. Assembleur 68000 et appel Toolbox
+ 41. Interruptions, VBL tasks et Time Manager
+ 42. Programmation compatible et pieges
+ 43. Developpement et outils
+ 44. Conseils pour un emulateur
+ 45. Plan de validation
+ 46. Maintenance et preservation
+ 47. References
+
+
+==============================================================================
+1. HISTOIRE
+==============================================================================
+
+Apple commercialise le Macintosh 128K en janvier 1984. Son interface graphique,
+souris, ecran bitmap et boitier compact derivent des recherches du Lisa, adaptees
+a une machine moins couteuse. Les premiers developpements sont effectues sur Lisa
+avec Pascal et assembleur 68000.
+
+Le 512K puis le Plus rendent les applications et le disque dur plus pratiques.
+Le Macintosh II (1987) introduit couleur, NuBus, boitier ouvert et 68020. System 7
+(1991) generalise couleur, multitache cooperative, memoire virtuelle, AppleEvents
+et adressage 32 bits. Les Power Macintosh (1994) migrent vers PowerPC tout en
+executant beaucoup de code 68K par emulation. Mac OS 8 et 9 cloturent la periode
+classique avant Mac OS X.
+
+
+==============================================================================
+2. GRANDES FAMILLES DE MODELES
+==============================================================================
+
+Liste representative, non exhaustive :
+
+  Famille/modeles                 CPU                    Caracteristiques
+  128K, 512K, 512Ke              68000 7,8336 MHz       compact mono, floppy
+  Plus                            68000                   SCSI, 1-4 Mio
+  SE, SE/30                       68000 / 68030           PDS, ADB, SCSI
+  Classic, Classic II            68000 / 68030           compacts economiques
+  Macintosh II/IIx/IIcx/IIci     68020/68030             couleur, NuBus
+  IIfx                            68030 40 MHz            I/O specialise
+  LC/LC II/III, Performa         68020/030               compacts modulaires
+  Quadra/Centris                 68040/68LC040           32 bits, video/SCSI
+  Portable, PowerBook 1xx        68000/030/040           portables, LCD
+  Power Macintosh 6100-9600      PowerPC 601/603/604     NuBus puis PCI
+  PowerBook PowerPC              603/603e/G3             PC Card selon modele
+  iMac G3, Power Mac G3/G4       PowerPC G3/G4           PCI, USB, IDE/SCSI
+
+Les numeros Performa recouvrent souvent des cartes LC/Power Mac avec bundle
+different. Les Developer Notes et l'identifiant Gestalt sont plus fiables que le
+nom commercial pour slots, ROM, bus, video, cache et controleurs.
+
+
+==============================================================================
+3. ARCHITECTURE DU MACINTOSH ORIGINAL
+==============================================================================
+
+  * Motorola MC68000 a 7,8336 MHz;
+  * bus donnees 16 bits, adressage logique 24 bits du premier systeme;
+  * 128 Kio de RAM, puis 512 Kio;
+  * ROM 64 Kio, puis 128 Kio sur 512Ke/Plus;
+  * ecran 512x342, 1 bit/pixel, framebuffer dans RAM principale;
+  * son 8 bits par DMA/buffer partage et haut-parleur interne;
+  * VIA 6522 pour timers et signaux systeme;
+  * SCC Zilog 8530 pour deux ports serie;
+  * IWM pour lecteur 3,5 pouces GCR;
+  * clavier serie proprietaire et souris quadrature;
+  * absence de slots utilisateur sur 128K/512K/Plus;
+
+La video et le son volent des cycles RAM au 68000. La logique de Burrell Smith
+derive les timings d'une horloge commune et multiplexe acces CPU/video/son.
+
+
+==============================================================================
+4. EVOLUTION MATERIELLE
+==============================================================================
+
+Macintosh II ajoute 68020, MMU/FPU optionnels, NuBus, Color QuickDraw et slots
+video. SE ajoute PDS et ADB. SE/30 combine boitier compact et architecture IIx.
+
+LC emploie un PDS specifique et bus/memoire economises. Quadra utilise 68040,
+controleurs ASIC, VRAM, Ethernet ou AAUI selon modele. Portables ajoutent gestion
+d'alimentation, batteries, LCD et controledesleep.
+
+Power Macintosh introduit PowerPC, CFM et emulation 68K. Premiere generation a
+NuBus/controleurs derives Quadra; seconde passe au PCI. iMac supprime ADB, SCSI et
+floppy au profit USB, IDE et Ethernet. Aucune carte de ports unique ne couvre ces
+quinze annees.
+
+
+==============================================================================
+5. PROCESSEURS MOTOROLA 68K
+==============================================================================
+
+68000 : D0-D7, A0-A7, PC, SR, modes user/superviseur, big-endian, words/longs
+alignes pairs. Bus/address error ont des frames propres au CPU.
+
+68020 : bus/adressage 32 bits, nouveaux modes et instructions, cache instruction.
+68030 : MMU integree, caches I/D selon revision. 68040 : pipeline, caches et MMU;
+68LC040 sans FPU. 68060 apparait surtout sur accelerateurs non Apple.
+
+Ne pas auto-modifier du code sans FlushInstructionCache/FlushCodeCache ou API
+appropriee. Ne pas supposer wrap 24 bits sur machine 32 bits. Une structure
+partagee avec DMA/slot doit respecter coherence cache et alignement du controleur.
+
+Les appels Toolbox utilisent traps A-line ($Axxx). Le dispatcher ROM/System
+selectionne routine ROM ou patch RAM. Appeler une adresse ROM absolue contourne
+les patches et casse la compatibilite.
+
+
+==============================================================================
+6. POWERPC ET CODE MIXTE
+==============================================================================
+
+PowerPC 601/603/604/G3/G4 : registres 32 bits, link/count register, condition
+register, caches, big-endian dans Mac OS classique. Le systeme contient un
+emulateur 68K et le Mixed Mode Manager pour transitions.
+
+Formats : application 68K traditionnelle, "fat" contenant 68K et PowerPC,
+application PowerPC CFM avec fragments et importations. PEF (Preferred Executable
+Format) porte le code PowerPC/CFM. Les ressources CODE restent pour 68K.
+
+Universal Procedure Pointers et CallUniversalProc() decrivent ABI lors d'un
+callback traversant architectures. Un simple cast de pointeur de fonction peut
+etre incorrect. Ne pas conserver une adresse de code deplaceable non verrouillee.
+
+
+==============================================================================
+7. CARTE MEMOIRE DU 128K/512K/PLUS
+==============================================================================
+
+Carte historique logique, avec decodage partiel et miroirs :
+
+  $000000-$0FFFFF   RAM maximale adressee par cette logique/revision
+  $400000-$5FFFFF   ROM et miroirs suivant taille
+  $580000-$5FFFFF   SCSI NCR 5380 sur Macintosh Plus, decodage specifique
+  $800000-$9FFFFF   SCC, lectures
+  $A00000-$BFFFFF   SCC, ecritures
+  $C00000-$DFFFFF   IWM/floppy
+  $E80000-$EFFFFF   VIA selon decodage
+  $FFFFF8-$FFFFFF   vecteurs reset ROM vus au demarrage selon overlay
+
+Les adresses exactes des registres sont espacees et different lecture/ecriture :
+le SCC utilise typiquement $9FFFF8/$9FFFFA en lecture et $BFFFF9/$BFFFFB en
+ecriture; le VIA est souvent reference autour de $EFE1FE avec stride $200.
+
+Ce tableau est reserve a l'etude du 128K/512K/Plus. Il ne doit pas servir de
+driver universel. Le ROM overlay mappe initialement la ROM a zero pour charger
+SSP/PC, puis le VIA/logique commute la RAM a zero.
+
+
+==============================================================================
+8. MEMOIRE SUR MACINTOSH II ET SUIVANTS
+==============================================================================
+
+L'espace 32 bits contient RAM, ROM, NuBus, I/O et video suivant ASIC. Le Slot
+Manager enumere NuBus; les Developer Notes donnent les registres integres.
+
+Systemes anciens utilisent "24-bit addressing" : pointeurs/handles peuvent
+porter des flags dans l'octet haut, limitant espace. System 7 avec ROMs clean
+32-bit permet adressage 32 bits. MODE32 rend certains Mac II compatibles.
+
+Ne jamais masquer ou utiliser l'octet haut d'un pointeur. StripAddress() et
+Gestalt(gestaltAddressingModeAttr) existaient pour transition. Un programme bien
+ecrit avec Memory Manager fonctionne en 24 et 32 bits.
+
+
+==============================================================================
+9. ROM MACINTOSH ET TRAPS TOOLBOX
+==============================================================================
+
+La ROM contient boot, diagnostics, drivers et routines Toolbox. La table trap
+dispatcher associe les opcodes A-line aux routines; System Software peut les
+patcher avec SetTrapAddress(). Les ROM 64K, 128K, 256K, 512K, 1 Mio et New World
+different profondement.
+
+Catagories : OS traps et Toolbox traps. Les glue routines Pascal/C etablissent
+registres/pile puis executent le trap. N'appeler directement un trap que selon
+la convention documentee dans Inside Macintosh.
+
+TrapAvailable/gestalt permettent de detecter une routine. Comparer l'adresse du
+trap a _Unimplemented est une methode historique qui doit tenir compte du type
+de trap et des patches.
+
+Les New World ROM (iMac/G3 tardifs) chargent une grande partie de la "ROM"
+depuis Mac OS ROM sur disque via Open Firmware. Une image ROM seule ne suffit pas
+necessairement au demarrage.
+
+
+==============================================================================
+10. GESTION DE LA MEMOIRE
+==============================================================================
+
+Le Memory Manager divise chaque application en partition avec system heap,
+application heap, pile et zone libre. Un Ptr est un bloc fixe; un Handle est un
+master pointer vers un bloc deplaceable/purgeable.
+
+Fonctions : NewPtr/DisposePtr/GetPtrSize/SetPtrSize; NewHandle/DisposeHandle/
+GetHandleSize/SetHandleSize; HLock/HUnlock/HPurge/HNoPurge; MoveHHi; MaxMem,
+CompactMem, PurgeMem; MemError.
+
+Regles :
+
+  * une allocation peut deplacer tous les handles non verrouilles;
+  * ne pas garder *h dans un pointeur local a travers un appel qui alloue;
+  * verrouiller le moins longtemps possible;
+  * verifier NULL et MemError;
+  * ne jamais Dispose un Handle encore detenu par Resource Manager;
+  * ne pas utiliser pointeur apres SetHandleSize sans redereferencer.
+
+TempNewHandle utilise Temporary Memory sous MultiFinder/System 7. DisposeHandle
+libere avec la routine correspondant a l'allocation. NewPtrClear/NewHandleClear
+mettent a zero.
+
+
+==============================================================================
+11. VIDEO MONOCHROME ORIGINALE
+==============================================================================
+
+Ecran 512x342, 1 bit/pixel, 64 octets par ligne, 21888 octets visibles. Base du
+framebuffer dans le haut de RAM, selectionnee entre page principale et alternative.
+Sur les premiers Mac, 0 represente blanc et 1 noir.
+
+Adresse conceptuelle :
+
+  byte_offset = y*64 + (x >> 3)
+  mask        = $80 >> (x & 7)
+
+Mais ScrnBase, screenBits et QuickDraw doivent fournir la base : la position
+physique varie avec RAM, page et modele. Ecrire a une constante connue du 128K
+corrompt la RAM sur un autre Mac.
+
+Le balayage video partage RAM avec CPU. VBL a environ 60,15 Hz sur compact mono.
+Le son utilise egalement un buffer alterne; timings sont lies a la logique video.
+
+
+==============================================================================
+12. QUICKDRAW NOIR ET BLANC
+==============================================================================
+
+QuickDraw dessine dans un GrafPort : portBits, portRect, visRgn, clipRgn, pen,
+font, transfer mode, foreground/background. Coordonnees 16 bits et Regions.
+
+Routines : InitGraf/OpenPort/ClosePort/SetPort; MoveTo/LineTo; FrameRect/PaintRect/
+EraseRect/InvertRect/FillRect; FrameOval/RoundRect/Arc; CopyBits; OpenRgn/CloseRgn;
+SectRgn/UnionRgn/DiffRgn; DrawString/DrawText; GetPixel/SetRect.
+
+CopyBits combine source et destination avec srcCopy, srcOr, srcXor, srcBic et
+modes patterns. Regions peuvent etre complexes et sont des Handles mobiles.
+
+Une application ne dessine que pendant update ou dans son window port, avec
+BeginUpdate/EndUpdate. QuickDraw global qd et current port imposent discipline;
+les routines ne sont pas reentrantes dans tous les systemes.
+
+
+==============================================================================
+13. COLOR QUICKDRAW ET CARTES VIDEO
+==============================================================================
+
+Macintosh II introduit Color QuickDraw, GDevice, PixMap, ColorTable et plusieurs
+ecrans. Profondeurs 1,2,4,8 bits indexes puis 16/32 bits direct color selon carte.
+
+PixMap contient rowBytes avec bits drapeaux, bounds, pixelSize, cmpCount/cmpSize,
+pixelFormat et table de couleurs. Masquer rowBytes avec $3FFF dans les anciennes
+structures, ou employer GetPixRowBytes/API adaptee.
+
+Routines : NewGWorld/DisposeGWorld/SetGWorld; CopyBits/CopyPixMap; RGBForeColor/
+RGBBackColor; SetEntries/AnimatePalette; GetGDevice/GetDeviceList; HasDepth,
+SetDepth; GetMainDevice.
+
+Ne pas supposer ecran principal a adresse fixe, rowBytes=width, 8 bits palette,
+ou pixels RGB en ordre natif. QuickDraw GX, QuickTime, DrawSprocket et cartes
+acceleratrices introduisent d'autres chemins.
+
+
+==============================================================================
+14. NUBUS, PDS ET SLOT MANAGER
+==============================================================================
+
+NuBus est un bus 32 bits avec 16 espaces de slot logiques $9-$E typiquement. La
+Declaration ROM de chaque carte contient sResources : identite, type/categorie,
+driver, modes et informations d'initialisation. Slot Manager les enumere.
+
+APIs : SNextTypesRsrc, SGetTypeSRsrc, SGetSRsrc, SFindStruct, SReadStruct,
+SGetBlock, SUpdateSRT. Un driver ne fixe pas "carte video en $F9000000" sans
+lire slot et address space.
+
+PDS (Processor Direct Slot) est propre a une famille : SE, SE/30, LC, IIsi,
+68040, etc. Deux PDS mecaniquement semblables ne sont pas compatibles. Les cartes
+cache/CPU peuvent remplacer timings et MMU.
+
+
+==============================================================================
+15. PCI ET OPEN FIRMWARE
+==============================================================================
+
+Power Macintosh PCI (7500/8500/9500 puis G3) utilise PCI configure par firmware
+et Mac OS. Name Registry et Driver Services remplacent une partie des conventions
+NuBus. Open Firmware construit un device tree et charge le booter.
+
+Les pilotes "ndrv" et services PCI utilisent bibliotheques/structures de la
+generation. Les ROMs Old World et New World ont processus de boot differents.
+Ne pas faire une enumeration x86 CF8/CFC : les mecanismes et endian bridges du
+Mac PowerPC sont differents.
+
+
+==============================================================================
+16. SON
+==============================================================================
+
+Mac 128K/Plus : sortie 8 bits mono pilotee par buffer RAM lu avec video; Sound
+Driver/Manager arbitre. Plus tard, Apple Sound Chip puis Singer/AWACS/DACA ajoutent
+stereo, entree, 16 bits et rates multiples selon modele.
+
+Sound Manager : SndNewChannel, SndDoCommand/SndDoImmediate, SndPlay,
+SndDisposeChannel. Sound Input Manager : SPBOpenDevice, SPBRecord, SPBStopRecording.
+Double buffering et callbacks exigent code resident/non mobile.
+
+Ressources 'snd ' contiennent commandes, synthese ou samples. Formats AIFF/AIFC
+sont big-endian et stockent COMM, SSND et autres chunks. QuickTime gere beaucoup
+d'autres codecs.
+
+Ne pas ecrire le buffer sonore du 128K sur Mac II/Power Mac. Sound Manager peut
+mixer, convertir ou utiliser un hardware completement different.
+
+
+==============================================================================
+17. VIA, HORLOGE ET INTERRUPTIONS
+==============================================================================
+
+Les premiers Mac utilisent MOS/Rockwell 6522 VIA : ports A/B, DDR, timer 1/2,
+shift register, ACR, PCR, IFR et IER. Il commande overlay, son, video, floppy,
+horloge et signaux selon modele.
+
+Registres du VIA original sont espaces de $200 dans la zone $EFE1FE. Le decodage
+incomplet cree miroirs. Sur Mac II, VIA1/VIA2 et ASIC remplacent/etendent les
+fonctions; RBV/Egret/CUDA peuvent emuler ou absorber VIA/ADB/power.
+
+Time Manager/VBL Manager sont les API. Une ISR doit sauver etat, acquitter la
+source, eviter Memory Manager et Toolbox non interrupt-safe, et finir RTE. Les
+interrupt levels et vecteurs changent par carte mere.
+
+PRAM/RTC stocke heure et parametres, avec protocole serie via VIA ou controleur.
+L'epoch Macintosh classique commence le 1 janvier 1904. Les piles PRAM mortes
+provoquent date, video, son ou boot inattendus.
+
+
+==============================================================================
+18. SCC ET PORTS SERIE
+==============================================================================
+
+Zilog Z8530 SCC offre deux canaux, historiquement Printer et Modem, sur mini-DIN
+8 dans les modeles ADB. Il gere asynchrone et protocoles synchrones LocalTalk.
+
+Les premiers acces SCC utilisent adresses distinctes lecture/ecriture et ordre
+de registre indirect. Un timing minimal entre acces est requis sur certaines
+machines; des lectures peuvent produire wait states ou erreurs.
+
+Serial Driver expose .AIn/.AOut et .BIn/.BOut, Control/Status et ParamText selon
+systeme. Communications Toolbox et Open Transport offrent abstractions plus hautes.
+Ne pas prendre le SCC lorsque AppleTalk utilise le port imprimante.
+
+
+==============================================================================
+19. CLAVIER, SOURIS, ADB ET USB
+==============================================================================
+
+128K/512K/Plus : clavier par protocole serie proprietaire et souris quadrature
+DB-9. SE/Mac II introduisent ADB, bus serie mono-fil pour clavier, souris, trackball,
+tablette et autres peripheriques.
+
+ADB Manager : ADBReInit, CountADBs, GetIndADB, GetADBInfo, SetADBInfo, ADBOp.
+Chaque appareil a adresse 4 bits et handler ID. L'enumeration peut changer apres
+reset; ne pas identifier seulement par adresse.
+
+Event Manager traduit souris et clavier en EventRecord. KeyTranslate et KCHR/
+uchr gerent layouts/dead keys. Ne pas utiliser raw keycode comme ASCII.
+
+iMac 1998 adopte USB. USB DDK/USB Manager et HID remplacent ADB. Les logiciels
+ordinaires continuent a recevoir events, donc une application ne doit pas sonder
+ADB pour savoir si une souris existe.
+
+
+==============================================================================
+20. DISQUETTES, IWM ET SWIM
+==============================================================================
+
+IWM (Integrated Woz Machine) controle les lecteurs 3,5 pouces a vitesse variable.
+Mac 400 Kio : une face; 800 Kio : deux faces; encodage GCR, secteurs par piste
+variables. SWIM ajoute MFM et SuperDrive 1,44 Mio lisant disquettes PC.
+
+Disk Driver/File Manager sont l'interface. Les routines Sony/.Sony et Disk
+Initialization Package gerent moteur, eject, format et changement. L'ejection est
+motorisee : ne pas forcer mecaniquement.
+
+Images : raw .dsk peut perdre tags/GCR/protection; Disk Copy 4.2/6, NDIF et flux
+preservent niveaux differents. MFS/HFS ajoutent structures logiques au medium.
+
+L'acces direct IWM depend d'adresses "one-hot", timing cycle et VIA; reserve
+aux pilotes/diagnostics du modele exact.
+
+
+==============================================================================
+21. SCSI, IDE ET STOCKAGE
+==============================================================================
+
+Mac Plus introduit SCSI externe 8 bits via NCR 5380, sans DMA complet. Mac II et
+suivants ajoutent variantes, DMA et SCSI Manager 4.3. IDs 0..7, Mac souvent 7.
+Termination et alimentation TERMPWR sont critiques.
+
+SCSI Manager fournit SCSIGet/SCSISelect/SCSICmd/SCSIRead/SCSIWrite historiques,
+puis PB SCSI Manager 4.3. Driver disque publie Drive Queue et volumes via File
+Manager. Ne pas emettre commandes pendant E/S filesystem sans arbitrage.
+
+PowerBook/LC/Power Mac tardifs utilisent IDE/ATA, parfois SCSI en parallele.
+Driver Manager masque controleur. FireWire apparait fin 1990; USB mass storage
+avec extensions OS. La limite volume depend driver, partition map et filesystem.
+
+Apple Partition Map contient Driver Descriptor Map et partitions identifiees par
+type (Apple_HFS, Apple_Driver...). Ne pas supposer MBR.
+
+
+==============================================================================
+22. APPLETALK ET RESEAUX
+==============================================================================
+
+LocalTalk utilise SCC a 230,4 kbit/s et cablage AppleTalk. EtherTalk transporte
+AppleTalk sur Ethernet. Piles : LAP, DDP, NBP, ATP, ASP, PAP, AFP.
+
+AppleTalk Manager et ADSP/MPP drivers historiques, puis Open Transport a partir
+du milieu des annees 1990. MacTCP fournit TCP/IP avant Open Transport.
+
+Services : Chooser, zones, noms NBP, AppleShare/AFP et imprimantes LaserWriter.
+Un emulateur peut fournir bridge UDP/SLiRP, mais timing LocalTalk, collisions et
+broadcasts influencent les anciens logiciels.
+
+
+==============================================================================
+23. PORTS ET CONNECTEURS EXTERNES
+==============================================================================
+
+Selon modele :
+
+  * floppy externe DB-19;
+  * SCSI DB-25 externe;
+  * deux mini-DIN 8 serie;
+  * ADB mini-DIN 4;
+  * audio entree/sortie jack;
+  * video DB-15 Apple;
+  * AAUI, RJ-45 Ethernet;
+  * GeoPort;
+  * modem interne;
+  * PC Card sur PowerBook;
+  * USB, FireWire et VGA sur modeles tardifs.
+
+DB-15 video Apple n'est pas VGA malgre quinze broches; sense pins annoncent
+resolutions. DB-25 SCSI n'est pas un port serie. ADB fournit alimentation limitee
+et ne doit pas etre branche/debranche a chaud sur tous les materiels.
+
+
+==============================================================================
+24. SYSTEM SOFTWARE ET MAC OS CLASSIQUE
+==============================================================================
+
+Premieres distributions combinent System et Finder. Noms retroactifs System 1 a
+6. MultiFinder ajoute multitache cooperative. System 7 integre MultiFinder,
+couleur, alias, AppleEvents, virtual memory et 32-bit addressing.
+
+Mac OS 7.6 adopte officiellement le nom Mac OS. Mac OS 8/8.1 ajoutent Platinum,
+HFS Plus et evolutions PowerPC; 8.5 abandonne 68K. Mac OS 9 ajoute Multiple Users,
+Keychain et services pour transition vers Mac OS X.
+
+Extensions et Control Panels patchent traps, installent drivers et INIT au boot.
+Ordre et conflits importent. Shift au demarrage peut desactiver les extensions.
+
+Pas de protection memoire generale entre applications et noyau; une ecriture
+erronee peut corrompre tout le systeme. Multitache principalement cooperative.
+
+
+==============================================================================
+25. ARCHITECTURE TOOLBOX ET MANAGERS
+==============================================================================
+
+Managers classiques :
+
+  Memory Manager          Ptr, Handle, heaps
+  Resource Manager        ressources type/ID/nom
+  QuickDraw               graphisme
+  Event Manager           clavier/souris/events
+  Window/Menu/Control     interface
+  Dialog Manager          dialogues et alerts
+  TextEdit/Font Manager   texte
+  File Manager            fichiers/volumes
+  Device Manager          drivers
+  Segment Loader          applications/segments
+  Sound Manager           audio
+  Time/VBL Manager        temporisation
+  Process Manager         applications System 7
+  Apple Event Manager     IPC haut niveau
+  Component Manager       composants QuickTime et autres
+
+Les managers partagent globals A5 et low-memory globals sur 68K. Une application
+moderne n'accede pas directement aux low-memory globals : macros LMGet/LMSet ou
+API. Carbon apparait fin 1990 comme sous-ensemble de transition, hors premier
+Toolbox mais pertinent aux derniers Power Mac.
+
+
+==============================================================================
+26. EVENT MANAGER ET BOUCLE EVENEMENTIELLE
+==============================================================================
+
+EventRecord : what, message, when, where, modifiers. Types : nullEvent,
+mouseDown/up, keyDown/up, autoKey, updateEvt, diskEvt, activateEvt, osEvt.
+
+Boucle cooperative :
+
+  1. WaitNextEvent(mask,&event,sleep,mouseRgn);
+  2. si mouseDown, trouver window/menu et agir;
+  3. keyDown : commandes menus avec Command-key;
+  4. updateEvt : BeginUpdate, redessiner, EndUpdate;
+  5. activateEvt : activer/desactiver controls;
+  6. donner regulierement temps au systeme.
+
+GetNextEvent est ancien et consomme CPU. WaitNextEvent permet sommeil. SystemTask
+et SystemClick sont necessaires sur anciens System/MultiFinder pour desk accessories.
+
+Le champ message key contient keycode et caractere; modifiers inclut Cmd, Option,
+Control, Shift, Caps Lock et bouton. Utiliser conventions Menu Manager.
+
+
+==============================================================================
+27. WINDOW, MENU, DIALOG ET CONTROL MANAGERS
+==============================================================================
+
+Windows : GetNewWindow/NewWindow, ShowWindow, SelectWindow, FrontWindow,
+FindWindow, DragWindow, GrowWindow, ZoomWindow, DisposeWindow.
+
+Menus : GetMenu, InsertMenu, DrawMenuBar, MenuSelect, MenuKey, HiliteMenu,
+GetMenuItemText, EnableItem/DisableItem. Toujours deselectionner titre avec
+HiliteMenu(0) apres commande.
+
+Dialogs : GetNewDialog/NewDialog, ModalDialog, IsDialogEvent/DialogSelect,
+GetDialogItem, SetDialogItemText, DisposeDialog. Alerts via Alert/StopAlert.
+
+Controls : GetNewControl/NewControl, FindControl, TrackControl, SetControlValue,
+HiliteControl, DisposeControl. Appearance Manager ajoute themes/controls nouveaux.
+
+Les definitions sont souvent ressources WIND, MENU, DLOG, DITL, CNTL. Ne pas
+modifier directement une structure devenue opaque dans une version future.
+
+
+==============================================================================
+28. RESOURCE MANAGER ET RESOURCE FORK
+==============================================================================
+
+Un fichier classique peut avoir data fork et resource fork. Ressources sont
+identifiees par type OSType 4 caracteres, ID signe 16 bits et nom optionnel.
+
+Routines : OpenResFile/FSpOpenResFile, CloseResFile, UseResFile, GetResource,
+Get1Resource, GetNamedResource, AddResource, ChangedResource, WriteResource,
+ReleaseResource, DetachResource, CountResources, GetResInfo, ResError.
+
+Types : CODE, cfrg, STR#/STR , MENU, WIND, DLOG, DITL, ICON/ICN#/icl8, CURS,
+PICT, snd , vers, SIZE, BNDL, FREF, MBAR, CNTL, TEXT/styl.
+
+GetResource retourne un Handle deplaceable. HLock si pointeur direct necessaire,
+mais laisser Resource Manager gerer. Une copie vers filesystem non compatible
+peut perdre resource fork et rendre application inutilisable. MacBinary, BinHex,
+AppleDouble et archives StuffIt le preservent.
+
+
+==============================================================================
+29. FILE MANAGER, VOLUMES ET FORKS
+==============================================================================
+
+API synchrones FSOpen/FSRead/FSWrite/SetFPos/FSClose et PB... asynchrones.
+System 7 introduit FSSpec (vRefNum, parID, name) pour identifier sans chemin
+ambigu. Catalog Manager PBGetCatInfo/PBSetCatInfo lit metadata.
+
+Deux forks : data et resource. Finder metadata : type et creator OSType,
+Finder flags, icone, position, dates. Un executable est souvent reconnu par type
+'APPL' et creator, pas extension de nom.
+
+Working Directory IDs et chemins colon-separes historiques : "Disk:Folder:File";
+un nom commencant par ':' est relatif, '::' remonte. HFS est insensible a la casse
+mais conserve la casse.
+
+PB appels asynchrones exigent ParamBlock resident jusqu'a completion, buffer non
+mobile ou verrouille et completion routine respectant contexte interruption.
+
+
+==============================================================================
+30. HFS, HFS PLUS ET FORMATS DE DISQUE
+==============================================================================
+
+MFS (1984) est plat. HFS (1985) ajoute repertoires, allocation blocks, Volume
+Bitmap, Catalog B-tree et Extents Overflow B-tree. Master Directory Block est au
+bloc logique 2. Noms HFS jusqu'a 31 caracteres MacRoman.
+
+HFS Plus (Mac OS 8.1) utilise Unicode, fichiers plus grands, allocation plus fine,
+Catalog/Extents B-trees revises. Volume Header remplace MDB, avec wrapper HFS
+optionnel. Les premiers System ne le lisent pas.
+
+Disquettes : 400/800 Kio GCR, 1,44 Mio MFM. Disques : Apple Partition Map. Images
+Disk Copy peuvent avoir header/checksums/tags; raw image n'est pas toujours
+interchangeable. Desktop Database stocke associations/icones et peut etre reconstruite.
+
+
+==============================================================================
+31. PROCESS MANAGER, MULTIFINDER ET MULTITACHE
+==============================================================================
+
+Process Manager System 7 : GetCurrentProcess, GetNextProcess, GetProcessInformation,
+SetFrontProcess, WakeUpProcess, SameProcess, LaunchApplication.
+
+Chaque application a partition memoire et event loop. Le scheduling applicatif
+est cooperatif : WaitNextEvent, appels Toolbox et yield donnent la main. Interruptions,
+drivers et certaines taches systeme sont asynchrones.
+
+SIZE resource fixe partition preferee/minimale, flags canBackground, needsSuspendResume,
+is32BitCompatible, highLevelEventAware, local/global coordinates selon generation.
+
+Suspend/resume arrivent via osEvt; applications AppleEvent-aware gerent open
+application/documents, print, quit. Ne pas monopoliser CPU dans un calcul : appeler
+WaitNextEvent ou decouper le travail.
+
+
+==============================================================================
+32. SEGMENT LOADER, CODE, CFM ET FORMATS EXECUTABLES
+==============================================================================
+
+68K : ressource CODE 0 contient jump table et informations; autres CODE sont
+segments chargeables/purgeables. _LoadSeg trap charge un segment lorsqu'un stub
+de jump table est appele. Ne pas garder pointeurs vers segment purgeable.
+
+Ressources : CODE, DATA/0 globals, SIZE, vers, signature/creator et resources UI.
+Format exact depend linker MPW/Think/CodeWarrior.
+
+PowerPC CFM : fragment 'cfrg', conteneur PEF, import/export et TOC. Applications
+fat contiennent fragments 68K/PPC. Mixed Mode cree RoutineDescriptor pour callbacks.
+
+Finder lance selon type/creator et bundle. Une copie plate qui conserve seulement
+data fork peut perdre tout le code d'une application 68K stockee en resource fork.
+
+
+==============================================================================
+33. DEVICE MANAGER ET PILOTES
+==============================================================================
+
+Drivers historiques sont ressources DRVR avec routines Open, Prime, Control,
+Status, Close. Noms commencent souvent par point : .Sony, .Print, .Sound.
+
+OpenDriver/CloseDriver, PBRead/PBWrite, PBControl/PBStatus. ParamBlock contient
+ioCompletion; appel async retourne avant fin. Completion s'execute a niveau
+systeme contraint : pas d'allocation/Toolbox non reentrant.
+
+Slot drivers viennent Declaration ROM ou System file. PowerPC introduit Native
+Driver model/Driver Services et ndrv. SCSI/PCI/USB ont DDK distincts.
+
+Un driver doit utiliser Gestalt, Slot Manager, Interrupt Service Routines et
+Deferred Tasks, gerer sleep/wake, hotplug si applicable et ne pas supposer une
+adresse de carte.
+
+
+==============================================================================
+34. APPLE EVENTS, EDITION ET PRESSE-PAPIERS
+==============================================================================
+
+Desk Scrap historique utilise TEToScrap/TEFromScrap et ZeroScrap/PutScrap/GetScrap,
+types 'TEXT', 'PICT', 'styl'. System 7 permet plusieurs representations.
+
+Apple Event Manager fournit IPC structure par classes/IDs et descripteurs :
+kCoreEventClass, kAEOpenApplication, OpenDocuments, PrintDocuments, QuitApplication.
+AEInstallEventHandler installe callbacks; AEProcessAppleEvent traite highLevelEvent.
+
+Edition Manager gere publish/subscribe; AppleScript envoie AppleEvents. Une
+application scriptable publie suite/dictionnaire aete et des objets coherents.
+
+
+==============================================================================
+35. TEXTEDIT, FONTES, SCRIPT MANAGER ET UNICODE
+==============================================================================
+
+TextEdit gere texte editable simple : TENew, TESetText, TEKey, TEClick, TEUpdate,
+TEIdle, TECut/Copy/Paste, TEDispose. Anciennes limites de taille/style imposent
+MLTE ou moteur propre pour gros documents.
+
+Font Manager/QuickDraw Text : GetFNum, TextFont, TextSize, TextFace, DrawText,
+StringWidth, FontMetrics. Fontes bitmap puis TrueType System 7.
+
+Script Manager gere systemes d'ecriture, claviers, dates et bidirectionnel. Ne
+pas supposer MacRoman/ASCII ou un octet=un caractere. Text Encoding Converter et
+Unicode Converter apparaissent dans les systemes tardifs.
+
+Pascal strings ont longueur dans premier octet, maximum 255 : Str255. C strings
+finissent par zero. Convertir explicitement; ne jamais passer char* a une routine
+attendant ConstStr255Param.
+
+
+==============================================================================
+36. QUICKTIME, COMPOSANTS ET MULTIMEDIA
+==============================================================================
+
+QuickTime (1991) ajoute Movie Toolbox, Image Compression Manager, sequence grabber,
+time bases et Component Manager. Un Movie reference tracks, media, data handlers,
+codecs et atoms dans fichiers .mov.
+
+Component Manager : OpenDefaultComponent/OpenComponent, ComponentFunctionUPP,
+CloseComponent. Codecs sont composants 'imdc'/'imco', digitizers et exporters ont
+d'autres types.
+
+Ne pas decoder Cinepak/JPEG en supposant framebuffer. Image Compression Manager
+negocie PixMap, profondeur, clipping et acceleration. QuickTime version se detecte
+par Gestalt; EnterMovies/ExitMovies selon API.
+
+
+==============================================================================
+37. DETECTION AVEC GESTALT
+==============================================================================
+
+Gestalt(selector,&response) est la methode centrale System 6.0.4+. Selecteurs :
+
+  gestaltSystemVersion       version BCD, ex. $0755
+  gestaltMachineType         modele logique
+  gestaltProcessorType       68000/020/030/040 ou PowerPC
+  gestaltFPUType             FPU
+  gestaltMMUType             MMU
+  gestaltQuickdrawVersion    QuickDraw/Color QuickDraw
+  gestaltAddressingModeAttr  24/32 bits
+  gestaltAppleEventsAttr     AppleEvents
+  gestaltVMAttr              memoire virtuelle
+  gestaltPowerMgrAttr        Power Manager
+  gestaltQuickTimeVersion    QuickTime
+
+Un selector inconnu retourne gestaltUndefSelectorErr. Tester le bit/capacite
+necessaire, pas un modele : une extension peut ajouter Color QuickDraw, FPU,
+QuickTime ou reseau a un ancien Mac.
+
+Avant Gestalt, SysEnvirons et TrapAvailable servent de repli. Ne pas lire une
+signature ROM fixe pour identifier un Macintosh.
+
+
+==============================================================================
+38. PROGRAMMATION PASCAL
+==============================================================================
+
+Pascal etait le langage de reference du Toolbox. Squelette evenementiel simplifie :
+
+PROGRAM MiniMac;
+USES
+  MemTypes, QuickDraw, OSIntf, ToolIntf;
+VAR
+  ev: EventRecord;
+  done: Boolean;
+  w: WindowPtr;
+BEGIN
+  InitGraf(@thePort);
+  InitFonts;
+  InitWindows;
+  InitMenus;
+  TEInit;
+  InitDialogs(NIL);
+  InitCursor;
+
+  w := GetNewWindow(128, NIL, WindowPtr(-1));
+  done := FALSE;
+  WHILE NOT done DO BEGIN
+    IF WaitNextEvent(everyEvent, ev, 10, NIL) THEN BEGIN
+      CASE ev.what OF
+        updateEvt:
+          BEGIN
+            w := WindowPtr(ev.message);
+            BeginUpdate(w);
+            SetPort(w);
+            MoveTo(20,40);
+            DrawString('Bonjour Macintosh');
+            EndUpdate(w);
+          END;
+        keyDown:
+          IF BAND(ev.modifiers, cmdKey) <> 0 THEN
+            done := CHR(BAND(ev.message,$FF)) = 'q';
+      END;
+    END;
+  END;
+  DisposeWindow(w);
+END.
+
+Les units et signatures varient Think Pascal/MPW Pascal. La ressource WIND 128
+doit exister. Une vraie application gere menus, activate, mouseDown, quit et
+erreurs.
+
+
+==============================================================================
+39. PROGRAMMATION C
+==============================================================================
+
+Squelette Toolbox C classique :
+
+#include <Types.h>
+#include <QuickDraw.h>
+#include <Windows.h>
+#include <Events.h>
+#include <Fonts.h>
+#include <Menus.h>
+#include <Dialogs.h>
+#include <TextEdit.h>
+#include <ToolUtils.h>
+
+int main(void)
+{
+    EventRecord ev;
+    WindowPtr w;
+    Boolean done = false;
+
+    InitGraf(&qd.thePort);
+    InitFonts(); InitWindows(); InitMenus();
+    TEInit(); InitDialogs(NULL); InitCursor();
+    w = GetNewWindow(128, NULL, (WindowPtr)-1L);
+    if (!w) return 1;
+
+    while (!done) {
+        if (WaitNextEvent(everyEvent, &ev, 10, NULL)) {
+            if (ev.what == updateEvt) {
+                WindowPtr uw = (WindowPtr)ev.message;
+                BeginUpdate(uw); SetPort(uw);
+                MoveTo(20, 40); DrawString("\pBonjour Macintosh");
+                EndUpdate(uw);
+            } else if (ev.what == keyDown && (ev.modifiers & cmdKey)) {
+                if ((char)(ev.message & charCodeMask) == 'q') done = true;
+            }
+        }
+    }
+    DisposeWindow(w);
+    return 0;
+}
+
+"\p" est extension compilateur pour chaine Pascal. En C portable, construire un
+Str255. Headers Universal Interfaces tardifs changent noms et types opaques.
+
+Exemple Gestalt :
+
+long value;
+OSErr err = Gestalt(gestaltSystemVersion, &value);
+if (err == noErr) {
+    /* value encode la version du systeme */
+}
+
+
+==============================================================================
+40. ASSEMBLEUR 68000 ET APPEL TOOLBOX
+==============================================================================
+
+MPW assembler, exemple conceptuel appel _SysBeep, parametre word sur pile :
+
+        move.w  #10,-(sp)
+        dc.w    $A9C8           ; _SysBeep, utiliser equate officiel
+
+Appel d'une routine Pascal : arguments empiles gauche/droite selon definition,
+resultat reserve sur pile si fonction, routine nettoie souvent les parametres.
+Conventions varient OS trap, Toolbox trap et C glue.
+
+A5 World : sur 68K, A5 pointe au centre des globals application; offsets positifs
+globals, negatifs jump table. Les callbacks doivent restaurer A5 avec SetCurrentA5/
+SetA5 ou utiliser conventions de la chaine. Un interrupt handler ne peut supposer
+A5 de son application.
+
+Toujours utiliser equates Traps.a/ToolEqu.a et interfaces du SDK. L'opcode donne
+ici illustre le mecanisme, pas une invitation a maintenir une table manuelle.
+
+
+==============================================================================
+41. INTERRUPTIONS, VBL TASKS ET TIME MANAGER
+==============================================================================
+
+VBL Manager installe VBLTask avec qType, vblAddr, vblCount, vblPhase via VInstall/
+VRemove. La routine est appelee a interruption; code et donnees doivent rester
+resident/verrouilles. Recharger vblCount pour repetition.
+
+Time Manager : InsTime/PrimeTime/RmvTime, puis InsXTime pour extended tasks. Les
+delais sont plus fins que TickCount. Completion ne peut appeler Memory Manager,
+File Manager ou interface.
+
+Deferred Task Manager permet reporter du travail hors ISR mais reste contraint.
+Pour logique applicative, poster event ou mettre flag puis traiter dans event loop.
+
+Sur PowerPC, callbacks exigent UPP/RoutineDescriptor et Mixed Mode. Les routines
+68K auto-modifiantes doivent vider cache.
+
+
+==============================================================================
+42. PROGRAMMATION COMPATIBLE ET PIEGES
+==============================================================================
+
+  * utiliser Gestalt et tester capacites;
+  * ne pas acceder aux low-memory globals sans LMGet/LMSet;
+  * ne pas fixer adresses hardware apres Macintosh Plus;
+  * respecter handles mobiles et allocations implicites;
+  * verifier MemError, ResError, OSErr et IoResult;
+  * gerer plusieurs ecrans, profondeurs et rowBytes;
+  * ne pas supposer MacRoman ni clavier US;
+  * preserver data et resource forks;
+  * utiliser FSSpec plutot qu'un chemin fragile;
+  * donner du temps par WaitNextEvent;
+  * ne pas appeler Toolbox non reentrant dans completion/interrupt;
+  * creer UPP pour callbacks PowerPC;
+  * gerer sleep/wake sur portable;
+  * tester 24/32-bit addressing, VM et caches;
+  * ne pas supposer FPU;
+  * quitter proprement et restaurer ports/cursors/menus.
+
+Les structures WindowRecord, GrafPort, GDevice ou Process peuvent devenir opaques.
+Utiliser accessors sur SDK recent. Les applications System 6 doivent garder un
+chemin ancien conditionnel.
+
+
+==============================================================================
+43. DEVELOPPEMENT ET OUTILS
+==============================================================================
+
+Annees 1980 : Lisa Workshop, Macintosh Programmer's Workshop (MPW), Pascal,
+assembly, Consulair C, Lightspeed/THINK C et Pascal. ResEdit cree ressources.
+
+Annees 1990 : MPW C/C++/Pascal, THINK/Symantec, Metrowerks CodeWarrior, SADE,
+MacsBug, Profiler, Rez/DeRez, resource compilers et Apple Developer CDs.
+
+Rez decrit ressources en texte; DeRez extrait. Linker produit CODE/PEF et cfrg.
+MacsBug s'active sur exception et inspecte heap, traps, stack et registres.
+
+Cross-compilation moderne : Retro68, GCC/m68k outils, resource forks dans AppleDouble
+ou MacBinary. Tester sur ROM/System reels et emulateurs Basilisk II, SheepShaver,
+Mini vMac, QEMU ou MAME selon architecture.
+
+
+==============================================================================
+44. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Profils separes :
+
+  Compact 68000       overlay, RAM/video/son, VIA, SCC, IWM, keyboard/mouse
+  SE/SE30             ADB, PDS, SCSI, nouveaux ASIC
+  Mac II/LC/Quadra    NuBus/PDS, Color QuickDraw, VIA2/RBV, MMU/FPU/cache
+  Power Macintosh     PowerPC, 68K emulator, CFM, PCI/NuBus, Open Firmware
+  Portable            power manager, LCD, PMU, batterie, sleep
+
+Erreurs frequentes :
+
+  * une carte memoire unique pour tous les modeles;
+  * ROM toujours mappee comme le 128K;
+  * ignorer overlay reset;
+  * framebuffer fixe 512x342 sur Mac II;
+  * confondre QuickDraw et hardware video;
+  * pointers 24 bits sur System 7 32-bit;
+  * handles jamais deplaces/purges;
+  * traps ROM non patchables;
+  * SCC sans delais/interruptions;
+  * IWM reduit a secteurs 512 octets, sans GCR/vitesse variable;
+  * ADB sans collision/adressage/reinit;
+  * SCSI sans phases, reset, parity/termination;
+  * NuBus sans Declaration ROM/Slot Manager;
+  * multitache preemptif invente pour applications classiques;
+  * resource fork perdu;
+  * PowerPC sans emulation 68K/Mixed Mode;
+  * caches/MMU/FPU toujours presents;
+  * horloge PRAM et epoch 1904 incorrectes.
+
+Niveaux : Finder/Toolbox demande API et gestion memoire fidele; jeux anciens
+peuvent lire VIA/video; protections floppy demandent IWM/SWIM cycle-accurate;
+Power Mac exige MMU/cache/CFM et nombreux drivers.
+
+Images : Disk Copy, raw, DC42, NDIF, HFS, HFS+, Apple Partition Map, MacBinary,
+BinHex et AppleDouble doivent rester distincts. Un dossier hote ne reproduit pas
+automatiquement creator/type, dates, Finder info, forks et verrouillage.
+
+
+==============================================================================
+45. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] reset SSP/PC, ROM overlay et RAM selon modele
+  [ ] 68000/020/030/040 exceptions, caches, MMU et FPU
+  [ ] PowerPC, emulation 68K, Mixed Mode et CFM
+  [ ] ROM/trap table/patches et _Unimplemented
+  [ ] Memory Manager : Ptr, Handle, move, purge, compact, zones
+  [ ] 24-bit et 32-bit clean avec VM
+  [ ] mono 512x342, page screen et VBL
+  [ ] Color QuickDraw 1/2/4/8/16/32 bits, rowBytes et palettes
+  [ ] multi-ecrans, NuBus Declaration ROM et Slot Manager
+  [ ] VIA timers/IFR/IER, PRAM/RTC et overlay
+  [ ] SCC deux canaux, serie et LocalTalk
+  [ ] clavier original, souris quadrature, ADB et USB tardif
+  [ ] IWM 400/800 Kio GCR et SWIM 1,44 MFM
+  [ ] SCSI phases, DMA selon modele et Apple Partition Map
+  [ ] HFS Catalog/Extents, forks, Finder info et HFS Plus
+  [ ] Event loop, updates, menus, dialogs et desk accessories
+  [ ] Resource Manager et CODE segment purgeable
+  [ ] async PB calls et completion routines
+  [ ] MultiFinder/System 7 suspend-resume et background
+  [ ] AppleEvents open/print/quit
+  [ ] QuickTime components et PixMaps
+  [ ] sleep/wake, battery et portable display
+  [ ] boot Old World/New World et Mac OS ROM
+
+
+==============================================================================
+46. MAINTENANCE ET PRESERVATION
+==============================================================================
+
+Les compacts CRT contiennent haute tension meme debranches. L'intervention sur
+analog board/CRT exige competence, decharge sure et outils adaptes. Ne jamais
+travailler seul ni toucher ventouse/anode sans procedure professionnelle.
+
+Pannes : condensateurs analogiques/logiques, soudures, disques SCSI, engrenages
+floppy, batterie PRAM, corrosion. Macintosh II/SE30/Classic/LC et PowerBooks ont
+souvent condensateurs SMD fuyants; batteries lithium peuvent detruire carte.
+
+Avant mise sous tension, retirer batterie suspecte, inspecter corrosion et tester
+alimentation. Ne pas laver/recapper sans savoir proteger ROM, ASIC et connecteurs.
+
+Preserver : dump ROM avec checksum/revision, image disque incluant partition map,
+resource forks via Disk Copy/StuffIt/MacBinary, PRAM si utile, photos, SIMM, cartes
+NuBus/PDS/PCI et Developer Notes. Respecter licences System/Mac OS et logiciels.
+
+
+==============================================================================
+47. REFERENCES
+==============================================================================
+
+Documentation Apple primaire
+----------------------------
+
+  * Inside Macintosh, Volumes I, II et III, 1984-1985.
+    https://puyoman.net/documentation/Inside_Macintosh.pdf
+    https://bitsavers.computerhistory.org/pdf/apple/mac/
+
+  * Inside Macintosh Volume IV, Macintosh Plus et AppleTalk.
+    https://vintageapple.org/inside_o/pdf/Inside_Macintosh_Volume_IV_1986.pdf
+
+  * Inside Macintosh Volumes V et VI, Macintosh II/SE, couleur et System 7.
+    https://vintageapple.org/inside_o/index_year.html
+
+  * Inside Macintosh, serie par domaines : Memory, Files, Processes,
+    QuickDraw, Devices, Networking, Text, Sound et PowerPC System Software.
+    https://developer.apple.com/library/archive/navigation/
+
+  * Guide to the Macintosh Family Hardware, editions 1988/1990.
+  * Developer Notes propres a chaque Macintosh, PowerBook et Power Macintosh.
+  * Designing Cards and Drivers for Macintosh II and Macintosh SE.
+  * Macintosh Technical Notes et develop, The Apple Technical Journal.
+
+Index et archives
+-----------------
+
+  * Inside Macintosh X-Ref, 1988 : traps, globals et routines mobiles.
+    https://vintageapple.org/macprogramming/pdf/Inside_Macintosh_X-Ref_1988.pdf
+
+  * Bitsavers Macintosh archive :
+    https://bitsavers.computerhistory.org/pdf/apple/mac/
+
+  * Vintage Apple, documentation par annee :
+    https://vintageapple.org/inside_o/index_year.html
+
+  * Motorola M68000 Family Programmer's Reference Manual.
+  * Zilog Z8530 SCC, MOS 6522 VIA, NCR 5380 SCSI et PCI specifications.
+
+Regle de priorite : utiliser Inside Macintosh et les interfaces SDK pour l'API,
+puis le Developer Note du modele exact pour le materiel. Les adresses du Macintosh
+128K ne definissent ni le Macintosh II, ni le LC, ni le Quadra, ni le Power Mac.
+Une application doit programmer le Toolbox; seul un driver ou emulateur modele
+explicitement cible doit toucher directement VIA, SCC, IWM, NuBus ou ASIC.

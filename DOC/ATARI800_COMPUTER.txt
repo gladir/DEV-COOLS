@@ -1,0 +1,1039 @@
+==============================================================================
+ ATARI 800 - MATERIEL, SYSTEME D'EXPLOITATION ET PROGRAMMATION
+ Reference technique de l'ordinateur Atari 800
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'Atari 800 : materiel modulaire, processeur 6502/SALLY,
+memoire, ANTIC, CTIA/GTIA, POKEY, PIA, affichage, son, entrees, SIO, cartouches,
+Operating System et programmation en assembleur 6502 et Atari BASIC.
+
+Le 800 partage son architecture logique avec l'Atari 400, mais possede clavier
+mecanique, compartiment interne a cartes, plusieurs cartes RAM, deux logements
+cartouche et sorties video plus adaptees. Les XL/XE ajoutent BASIC integre, MMU
+et bank switching absents du 800 standard.
+
+Notation : $ prefixe l'hexadecimal; les mots 6502 sont little-endian. Les accents
+sont omis pour conserver un fichier ASCII lisible sur Atari.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et conception
+  2. Caracteristiques
+  3. Construction modulaire
+  4. Comparaison 400, 800 et XL/XE
+  5. Architecture logique
+  6. 6502 et SALLY
+  7. Carte memoire
+  8. Cartes RAM et extensions
+  9. Personality/ROM board et Operating System
+ 10. Carte des registres d'E/S
+ 11. ANTIC et DMA
+ 12. Display Lists
+ 13. Modes ANTIC et BASIC
+ 14. DLI, VBI et synchronisation
+ 15. Defilement fin et Display Lists mixtes
+ 16. CTIA/GTIA, couleurs et priorites
+ 17. Player/Missile Graphics
+ 18. Collisions
+ 19. POKEY audio
+ 20. POKEY clavier, timers, IRQ et serie
+ 21. PIA et quatre ports controleurs
+ 22. Clavier mecanique et touches console
+ 23. SIO
+ 24. Cassette, disquettes et imprimantes
+ 25. Deux logements cartouche
+ 26. Sorties video et audio
+ 27. Interruptions et vecteurs OS
+ 28. Operating System et jump table
+ 29. CIO, handlers et IOCB
+ 30. SIOV et DCB
+ 31. Ecran, clavier et ATASCII
+ 32. DOS et filesystem
+ 33. Atari BASIC
+ 34. Jeu de caracteres
+ 35. Routines flottantes ROM
+ 36. Assembleur : CIO
+ 37. Assembleur : Display List et DLI
+ 38. Assembleur : PMG, son et controleurs
+ 39. Exemples Atari BASIC
+ 40. PAL, NTSC, CTIA et GTIA
+ 41. Extensions et peripheriques
+ 42. Programmation efficace
+ 43. Conseils pour un emulateur
+ 44. Plan de validation
+ 45. Maintenance et restauration
+ 46. References
+
+
+==============================================================================
+1. HISTORIQUE ET CONCEPTION
+==============================================================================
+
+Atari annonce l'Atari 800 avec le 400 en 1979. Le 800 est le modele haut de
+gamme : clavier mecanique, construction robuste, compartiment utilisateur pour
+cartouches et cartes memoire, quatre ports controleurs et sortie moniteur.
+
+Son blindage RF et ses cartes internes refletent les contraintes FCC de l'epoque.
+La machine est concue comme console evoluee et ordinateur complet. ANTIC, CTIA/
+GTIA et POKEY offrent graphisme, sprites, collisions et son sans cartes externes.
+
+La famille 400/800 etablit le logiciel Atari 8-bit. Les 1200XL, 600XL, 800XL et
+XE conservent beaucoup de registres mais modifient OS, memoire et connectique.
+
+
+==============================================================================
+2. CARACTERISTIQUES
+==============================================================================
+
+  * MOS 6502 ou Atari SALLY, ~1,79 MHz NTSC / ~1,77 MHz PAL;
+  * 8 Kio initiaux selon livraison, cartes de 8/16 Kio, jusqu'a 48 Kio standard;
+  * trois logements pour cartes RAM dans le compartiment interne;
+  * ROM OS sur Personality board et ROM flottante;
+  * deux cartouches : Left Cartridge et Right Cartridge;
+  * clavier mecanique 57 touches;
+  * ANTIC programmable par Display List;
+  * CTIA ou GTIA, 128 couleurs nominales;
+  * quatre players et quatre missiles;
+  * POKEY quatre canaux audio;
+  * quatre connecteurs joystick/paddle;
+  * sortie RF et sortie moniteur selon version;
+  * SIO en chaine pour disques, cassette, imprimante et modem.
+
+Le 800 ne contient ni BASIC permanent ni DOS ROM. BASIC est une cartouche; DOS
+est charge depuis disquette et consomme de la RAM.
+
+
+==============================================================================
+3. CONSTRUCTION MODULAIRE
+==============================================================================
+
+Le boitier superieur ouvre une porte cartouches. Une securite coupe l'alimentation
+lors de l'ouverture de la zone interne selon mecanisme. Sous blindage :
+
+  * carte CPU avec 6502/SALLY et ANTIC selon revision;
+  * Personality board avec ROM OS;
+  * jusqu'a trois cartes RAM;
+  * carte mere avec POKEY, PIA, decodage, clavier et connecteurs;
+  * carte video/CTIA-GTIA et modulateur suivant revision.
+
+Ne jamais inserer RAM/ROM/cartouche sous tension. Les connecteurs de bord et
+blindages doivent etre propres et correctement remis; le blindage participe aux
+masses et a la conformite RF.
+
+La modularite facilite remplacement, mais les cartes 400 et 800 ne sont pas
+toutes interchangeables malgre circuits communs. Verifier numero de piece,
+revision, PAL/NTSC et brochage.
+
+
+==============================================================================
+4. COMPARAISON 400, 800 ET XL/XE
+==============================================================================
+
+  Fonction             400                 800                  XL/XE typique
+  Clavier              membrane            mecanique            mecanique
+  Cartouches           1                   2                    1
+  RAM interne          carte limitee       3 slots cartes       DRAM integree
+  Joysticks            4                   4                    2
+  PORTB PIA            joysticks 2/3       joysticks 2/3        banque ROM/RAM
+  BASIC ROM            non                 non                  oui
+  MMU bank switching   non                 non                  oui
+  PBI/ECI              non                 non                  selon modele
+  Chips video/son      ANTIC/GTIA/POKEY    memes                compatibles
+
+Un programme 800 peut utiliser les quatre joysticks et la cartouche droite; ces
+fonctions n'existent pas de la meme facon sur XL/XE. Inversement, ecrire PORTB
+pour masquer OS/BASIC sur XL/XE n'a pas ce sens sur le 800.
+
+
+==============================================================================
+5. ARCHITECTURE LOGIQUE
+==============================================================================
+
+  6502/SALLY   programme, OS et interruptions
+  ANTIC        DMA video, refresh DRAM, Display List, DLI/VBI
+  CTIA/GTIA    couleurs, priorites, Player/Missile, collisions
+  POKEY        quatre sons, clavier, serie, pots, random et IRQ
+  PIA 6520     quatre joysticks et lignes cassette/SIO
+  OS ROM       CIO, SIO, handlers, flottants et boot
+
+ANTIC et CPU partagent RAM. ANTIC arrete CPU par RDY/HALT lors de ses fetches.
+La charge varie avec largeur du playfield, mode, nombre de lignes et PMG DMA.
+
+
+==============================================================================
+6. 6502 ET SALLY
+==============================================================================
+
+Registres A, X, Y, SP, PC, P. Pile $0100-$01FF. Vecteurs materiels en ROM : NMI
+$FFFA, RESET $FFFC, IRQ/BRK $FFFE, adresses little-endian.
+
+Frequence liee a la video : NTSC ~1,78979 MHz; PAL ~1,77345 MHz. Une ligne dure
+un nombre fixe de color clocks, mais cycles CPU disponibles sont retires par DMA.
+
+Cible : NMOS 6502. Bug JMP indirect de page, decimal mode, dummy accesses et
+illegal opcodes doivent etre reproduits par un emulateur si logiciels les emploient.
+SALLY ajoute ligne HALT mais conserve le jeu d'instructions.
+
+
+==============================================================================
+7. CARTE MEMOIRE
+==============================================================================
+
+Avec 48 Kio RAM :
+
+  $0000-$00FF   page zero
+  $0100-$01FF   pile 6502
+  $0200-$02FF   variables/vecteurs OS
+  $0300-$03FF   DCB, IOCB et zones systeme
+  $0400-$7FFF   RAM application/DOS/ecran selon configuration
+  $8000-$9FFF   Right Cartridge lorsqu'elle est selectionnee, sinon RAM
+  $A000-$BFFF   Left Cartridge/BASIC, sinon RAM
+  $C000-$CFFF   espace cartouche/decodage selon type; ne pas generaliser
+  $D000-$D0FF   CTIA/GTIA
+  $D200-$D2FF   POKEY
+  $D300-$D3FF   PIA
+  $D400-$D4FF   ANTIC
+  $D800-$DFFF   ROM Floating Point Package
+  $E000-$FFFF   ROM OS
+
+La cartographie des deux cartouches est determinee par lignes RD4/RD5 et logique
+de cartouche. Le cas usuel est Right 8 Kio a $8000-$9FFF et Left a $A000-$BFFF.
+Une cartouche 16 Kio ou bank-switched a sa propre logique.
+
+RAMTOP $006A donne haut RAM par pages. MEMTOP/MEMLO et APPMHI changent avec DOS,
+display, handlers. Ne pas supposer 48 Kio meme sur boitier 800.
+
+
+==============================================================================
+8. CARTES RAM ET EXTENSIONS
+==============================================================================
+
+Les trois slots acceptent cartes Atari 8 Kio ou 16 Kio selon revision, pour un
+maximum officiel courant de 48 Kio. L'ordre/peuplement doit respecter manuel;
+une carte defectueuse cree ecran noir, blocs absents ou erreurs aleatoires.
+
+Extensions tierces 32/48/64 Kio et bancaires existent. Leur logique peut reutiliser
+plages/cart signals. Une application standard observe RAMTOP; une application
+pour extension utilise son pilote/documentation.
+
+ANTIC ne gere pas automatiquement une RAM bancaire tierce. Display List, PMG et
+ecran doivent rester dans banque visible au DMA ou etre copies.
+
+
+==============================================================================
+9. PERSONALITY/ROM BOARD ET OPERATING SYSTEM
+==============================================================================
+
+La Personality board contient les ROM de l'Operating System. Revisions A et B
+sont communes aux 400/800; revision B corrige plusieurs anomalies. Le Floating
+Point Package est mappe $D800-$DFFF, l'OS $E000-$FFFF.
+
+L'OS initialise RAM, chips, vecteurs, clavier, ecran, CIO et SIO; detecte
+cartouches; tente boot disque puis autres chemins selon touches/etat.
+
+Les routines internes changent. N'utiliser que jump table $E450-$E477, vecteurs
+RAM et tables publiees. Une ROM XL/XE n'est pas un remplacement direct.
+
+
+==============================================================================
+10. CARTE DES REGISTRES D'E/S
+==============================================================================
+
+Registres 8 bits, fonctions lecture/ecriture parfois differentes :
+
+  $D000-$D01F CTIA/GTIA : PMG, palette, collisions, console
+  $D200-$D20F POKEY : audio, pots, clavier, serie, IRQ, random
+  $D300-$D303 PIA : ports A/B et controles
+  $D400-$D40F ANTIC : DMA, Display List, scroll, NMI, beam
+
+Les autres adresses du bloc peuvent etre miroirs par decodage partiel. Utiliser
+les adresses canoniques pour compatibilite avec extensions et emulateurs.
+
+
+==============================================================================
+11. ANTIC ET DMA
+==============================================================================
+
+  $D400 DMACTL  largeur, playfield DMA, missile/player DMA
+  $D401 CHACTL  caracteres blank/inverse
+  $D402 DLISTL  Display List adresse basse
+  $D403 DLISTH  adresse haute
+  $D404 HSCROL  scroll horizontal
+  $D405 VSCROL  scroll vertical
+  $D407 PMBASE  base PMG
+  $D409 CHBASE  base charset
+  $D40A WSYNC   attente fin de ligne par ecriture
+  $D40B VCOUNT  compteur vertical /2
+  $D40C PENH    light pen horizontal
+  $D40D PENV    light pen vertical
+  $D40E NMIEN   DLI/VBI/RESET enable
+  $D40F NMIRES  acquit ecriture / NMIST lecture
+
+Shadows : SDMCTL $022F, SDLSTL/H $0230/$0231, CHBAS $02F4. OS les copie au VBI.
+Modifier shadow pour etat durable; hardware pour changement immediat/DLI.
+
+DMACTL bits : largeur narrow/normal/wide, playfield enable, missile/player enable
+et resolution PM. Valeur BASIC courante $22 pour playfield normal sans PMG.
+
+
+==============================================================================
+12. DISPLAY LISTS
+==============================================================================
+
+Display List est programme ANTIC, octets en RAM :
+
+  bit 7 DLI
+  bit 6 LMS suivi adresse little-endian
+  bit 5 VSCROL
+  bit 4 HSCROL
+  bits 0..3 mode
+
+$00-$70 generent 1..8 blank scanlines. $01 JUMP; $41 JVB attend VBlank puis
+saute. La liste courante est pointee par DLISTL/H.
+
+Contraintes : Display List ne doit pas depasser sa limite de fetch 1 Kio sans
+JMP; donnees de mode doivent recevoir LMS avant frontiere 4 Kio lorsque le
+compteur ANTIC ne propage pas normalement. Un emulateur doit reproduire ce wrap.
+
+Une liste peut melanger texte, bitmap, blancs et scroll, avantage majeur face a
+un framebuffer a mode unique.
+
+
+==============================================================================
+13. MODES ANTIC ET BASIC
+==============================================================================
+
+  Mode ANTIC   Type                    Octets/ligne normal
+  2            texte 40 caracteres     40
+  3            texte descenders        40
+  4/5          texte multicolore       40
+  6/7          texte 20 caracteres     20
+  8            bitmap 40 pixels        10
+  9/A          bitmap 80 pixels        10/20 selon bits
+  B/C          bitmap 160 pixels       20/40
+  D/E          bitmap 160 pixels       40
+  F            bitmap 320 pixels       40
+
+Correspondance BASIC principale : GRAPHICS 0 -> ANTIC 2; 1 -> 6; 2 -> 7;
+3 -> 8; 4 -> 9; 5 -> A; 6 -> B; 7 -> D; 8 -> F. GRAPHICS 9/10/11 utilisent
+ANTIC F avec interpretations GTIA.
+
+Les octets/ligne exacts dependent narrow/normal/wide et mode; consulter table
+ANTIC. GRAPHICS BASIC reserve souvent quatre lignes E: sauf option +16.
+
+
+==============================================================================
+14. DLI, VBI ET SYNCHRONISATION
+==============================================================================
+
+DLI : bit $80 dans instruction, vecteur VDSLST $0200/$0201, NMIEN bit $80. La
+routine sauvegarde registres, peut STA WSYNC, modifie hardware, restaure, RTI.
+
+VBI : NMIEN $40. OS propose immediate VVBLKI $0222 et deferred VVBLKD $0224.
+Installer avec SETVBV $E45C : Y=6/7, X=haut, A=bas. Deferred finit JMP XITVBV
+$E462, pas RTI.
+
+VBI met a jour RTCLOK $12-$14, timers, clavier et shadows. DLI peut interrompre
+VBI; garder temps borne. Une cascade de DLI change palette/scroll/PMG par bandes.
+
+WSYNC suspend le CPU jusqu'au prochain horizontal blank. Ecrire trop tard ou
+trop souvent perd des lignes/cycles.
+
+
+==============================================================================
+15. DEFILEMENT FIN ET DISPLAY LISTS MIXTES
+==============================================================================
+
+HSCROL 0..15 color clocks lorsque instruction bit $10. VSCROL lorsque bit $20.
+Utiliser playfield wide pour marges horizontales.
+
+Scrolling continu : decremente/incremente fine offset; lorsqu'il boucle, ajuste
+adresse LMS de l'unite grossiere et remet offset. Une instruction sans VSCROL
+termine la zone verticale scrollee.
+
+Display List mixte permet panneau de score fixe + terrain scrolle, texte en haut
+et bitmap dessous. Les LMS distincts pointent des buffers differents.
+
+
+==============================================================================
+16. CTIA/GTIA, COULEURS ET PRIORITES
+==============================================================================
+
+Ecritures GTIA :
+
+  $D000-$D003 HPOSP0-3
+  $D004-$D007 HPOSM0-3
+  $D008-$D00B SIZEP0-3
+  $D00C SIZEM
+  $D00D-$D010 GRAFP0-3
+  $D011 GRAFM
+  $D012-$D015 COLPM0-3
+  $D016-$D019 COLPF0-3
+  $D01A COLBK
+  $D01B PRIOR
+  $D01C VDELAY
+  $D01D GRACTL
+  $D01E HITCLR
+  $D01F CONSOL ecriture
+
+Couleur : teinte dans bits 7..4, luminance paire bits 3..1, bit 0 ignore. 128
+combinaisons nominales; rendu PAL/NTSC et modulateur different.
+
+PRIOR choisit superposition PM/playfields, missiles fifth player et modes GTIA.
+GTIA ajoute GRAPHICS 9 (16 luminances), 10 (9 couleurs selectionnees) et 11
+(16 teintes a luminance commune). CTIA doit avoir repli.
+
+Shadows OS : PCOLR0-3 $02C0, COLOR0-4 $02C4, GPRIOR $026F.
+
+
+==============================================================================
+17. PLAYER/MISSILE GRAPHICS
+==============================================================================
+
+Quatre players 8 pixels, quatre missiles 2 pixels, position horizontale et taille
+independantes. DMA PM actif par DMACTL, rendu/latch trigger par GRACTL.
+
+Double-line : bloc 2 Kio aligne, missiles +$300, P0 +$400, P1 +$500, P2 +$600,
+P3 +$700. Single-line : bloc 4 Kio, missiles +$600, players +$800/$A00/$C00/$E00.
+
+PMBASE contient page haute. Effacer buffer avant activation. Deplacer verticalement
+copie octets; horizontalement change HPOSP. SIZEP code largeur 1x,2x,4x. SIZEM
+contient deux bits par missile.
+
+Sans DMA, ecrire GRAFP/GRAFM chaque ligne permet multiplexage mais exige timing.
+Missiles combines en fifth player utilisent COLPF3 selon PRIOR.
+
+
+==============================================================================
+18. COLLISIONS
+==============================================================================
+
+Lectures $D000-$D00F : M0PF-M3PF, P0PF-P3PF, M0PL-M3PL, P0PL-P3PL. Bits latchent
+toute collision depuis dernier HITCLR. Ecrire n'importe quelle valeur $D01E pour
+effacer.
+
+Test typique : HITCLR au debut frame, mouvement/rendu, lecture en VBI, resolution
+logicielle si plusieurs objets, puis HITCLR. Collisions suivent pixels opaques,
+pas bounding box.
+
+
+==============================================================================
+19. POKEY AUDIO
+==============================================================================
+
+  $D200/1 AUDF1/AUDC1
+  $D202/3 AUDF2/AUDC2
+  $D204/5 AUDF3/AUDC3
+  $D206/7 AUDF4/AUDC4
+  $D208   AUDCTL
+  $D209   STIMER ecriture
+
+AUDC bits 0..3 volume, bit 4 volume-only, bits 5..7 distortion. AUDCTL selectionne
+clock 64/15 kHz, 1,79 MHz pour canaux, joint 1+2 et 3+4, polynome 9/17 bits et
+filtres high-pass.
+
+POKEY ne produit pas seulement onde carree : polynomes 4/5/9/17 bits et divisions
+creent bruit/tons. Emulation sonore doit avancer compteurs a l'horloge, pas jouer
+quatre generateurs MIDI.
+
+BASIC SOUND voice,pitch,distortion,volume configure le cas simple. Toujours couper
+les quatre AUDC a la sortie d'un programme autonome.
+
+
+==============================================================================
+20. POKEY CLAVIER, TIMERS, IRQ ET SERIE
+==============================================================================
+
+Lectures : POT0-7 $D200-$D207, ALLPOT $D208, KBCODE $D209, RANDOM $D20A,
+SERIN $D20D, IRQST $D20E, SKSTAT $D20F.
+
+Ecritures : SKREST $D20A, POTGO $D20B, SEROUT $D20D, IRQEN $D20E, SKCTL $D20F.
+
+IRQST bits actifs bas : timers 1/2/4, serial output/input/complete, keyboard,
+BREAK. IRQEN masque. Les timers utilisent compteurs audio et STIMER.
+
+RANDOM est sortie LFSR liee aux polynomes. SKCTL=$03 initialise clavier/serie et
+random sous OS. Une lecture aleatoire hote sans etat/cadence est incorrecte.
+
+KBCODE est scancode, pas ATASCII. Handler K: traduit; CH $02FC contient dernier
+code clavier OS ou $FF.
+
+
+==============================================================================
+21. PIA ET QUATRE PORTS CONTROLEURS
+==============================================================================
+
+PIA 6520 :
+
+  $D300 PORTA ou DDRA selon PACTL bit 2, joysticks 0/1
+  $D301 PORTB ou DDRB selon PBCTL bit 2, joysticks 2/3
+  $D302 PACTL, controle A et cassette motor
+  $D303 PBCTL, controle B et SIO command/interrupt
+
+Directions joystick actives bas dans nibbles : bit0 up, bit1 down, bit2 left,
+bit3 right (selon ordre logique STICK); valeur 15 centre. Shadows STICK0-3
+$0278-$027B.
+
+Boutons lus TRIG0-3 $D010-$D013, shadows STRIG/PTRIG. Huit paddles POT0-7.
+
+Ne pas ecrire DDR/ports sans preserver PACTL/PBCTL : une sortie opposee a un
+joystick peut creer conflit electrique. Sur le 800, PORTB n'est pas le registre
+MMU des XL/XE.
+
+
+==============================================================================
+22. CLAVIER MECANIQUE ET TOUCHES CONSOLE
+==============================================================================
+
+57 touches, matrice scannee par POKEY via multiplexeurs. KBCODE plus Shift/Control
+dans SKSTAT; OS traduit selon tables. BREAK genere IRQ propre.
+
+START, SELECT, OPTION sont lignes CONSOL $D01F, actives bas : bits 0,1,2. Lecture
+7 signifie aucune touche. POKEY keyboard n'envoie pas ces trois touches.
+
+Le click clavier passe par petit haut-parleur/CONSOL et variable NOCLIK $02DB.
+Le clavier 800 est mecanique mais keycaps/switches/revisions varient; pas un
+clavier USB/PS2 passif.
+
+
+==============================================================================
+23. SIO
+==============================================================================
+
+Serial Input/Output relie peripheriques en chaine. Signaux : Data In/Out, Clock
+In/Out, Command, Proceed, Interrupt, Motor Control, alimentations et masse.
+
+Trame commande : device ID, command, AUX1, AUX2, checksum end-around-carry. Le
+device repond ACK/NAK puis data/status et COMPLETE/ERROR. Vitesse standard environ
+19,2 kbit/s avec timing POKEY.
+
+IDs typiques : $31-$38 drives D1-D8, imprimante $40, cassette $60 selon protocole.
+Utiliser SIOV; high-speed SIO est extension.
+
+
+==============================================================================
+24. CASSETTE, DISQUETTES ET IMPRIMANTES
+==============================================================================
+
+Atari 410 : cassette FSK, moteur controle via PIA/SIO, C: handler, BASIC CLOAD/
+CSAVE. Blocs avec leaders, marqueurs et checksums; CAS archive flux logique/audio.
+
+Atari 810 : 5,25 pouces, 40 pistes, 18 secteurs, simple densite 128 octets,
+environ 90 Kio. DOS 2 filesystem sur disque. Lecteurs 815, 1050 et tiers ont
+densites/protocoles differents.
+
+Imprimantes Atari via P: et SIO. Le handler convertit/emet ATASCII selon modele.
+Interfaces 850 ajoutent RS-232 et parallele, avec handler charge.
+
+
+==============================================================================
+25. DEUX LOGEMENTS CARTOUCHE
+==============================================================================
+
+Le compartiment accepte Left Cartridge et Right Cartridge. La cartouche gauche
+est le format principal, incluant Atari BASIC; droite sert a extensions 8 Kio ou
+combinaisons. Lignes RD4/RD5 signalent presence/selection.
+
+Cas habituel : Right a $8000-$9FFF, Left a $A000-$BFFF. Une cartouche 16 Kio
+peut occuper les deux plages. Les vecteurs/flags vers $BFFA-$BFFF indiquent init,
+start et type au boot selon specification.
+
+Le 400 n'a pas ce second logement. XL/XE ont un seul connecteur et conventions
+bank-switch tierces $D5xx. Un emulateur du 800 doit permettre deux images et
+resoudre leur combinaison, pas seulement mapper une ROM 16 Kio.
+
+
+==============================================================================
+26. SORTIES VIDEO ET AUDIO
+==============================================================================
+
+Atari 800 fournit RF et un connecteur monitor suivant marche/revision, avec
+composite, luminance/chrominance ou audio selon brochage. PAL et NTSC ont
+modulateurs distincts. Verifier manuel avant cable.
+
+Signal logique couleur/luminance GTIA traverse circuits analogiques. Une palette
+RGB d'emulateur est approximation; hue, saturation, phase NTSC, PAL et reglage du
+televiseur influencent resultat. Artifacting haute resolution NTSC exploite cette
+chaine et ne se transpose pas directement en PAL.
+
+
+==============================================================================
+27. INTERRUPTIONS ET VECTEURS OS
+==============================================================================
+
+NMI ANTIC : DLI, VBI, Reset. IRQ POKEY/PIA : clavier, Break, timers, serie.
+
+  VDSLST $0200   DLI
+  VPRCED $0202   SIO proceed
+  VINTER $0204   SIO interrupt
+  VBREAK $0206   BREAK
+  VKEYBD $0208   keyboard
+  VSERIN $020A   serial input
+  VSEROR $020C   serial output ready
+  VSEROC $020E   serial complete
+  VTIMR1 $0210   timer 1
+  VTIMR2 $0212   timer 2
+  VTIMR4 $0214   timer 4
+  VVBLKI $0222   VBI immediate
+  VVBLKD $0224   VBI deferred
+
+NMI ne respecte pas SEI. Pour changer VDSLST atomiquement, desactiver DLI dans
+NMIEN ou faire pendant zone sure. IRQ handler teste IRQST, source active bas,
+acquitte sans detruire autres sources et RTI via convention OS.
+
+
+==============================================================================
+28. OPERATING SYSTEM ET JUMP TABLE
+==============================================================================
+
+  $E450 DISKIV
+  $E453 DSKINV
+  $E456 CIOV
+  $E459 SIOV
+  $E45C SETVBV
+  $E45F SYSVBV
+  $E462 XITVBV
+  $E465 SIOINV
+  $E468 SENDEV
+  $E46B INTINV
+  $E46E CIOINV
+  $E471 BLKBDV selon revision
+  $E474 WARMSV
+  $E477 COLDSV
+
+La jump table est stable; code interne ne l'est pas. Cold start efface/init; warm
+start conserve davantage. Variables COLDST/WARMST et touches peuvent influencer.
+
+OS ouvre E: sur IOCB 0, installe tables HATABS, gere shadows et lance cartouche/
+boot. DOS ajoute D: handler apres chargement.
+
+
+==============================================================================
+29. CIO, HANDLERS ET IOCB
+==============================================================================
+
+Handlers : E: editor, S: screen, K: keyboard, P: printer, C: cassette; D:/R:
+installes par logiciel. CIOV $E456, X=IOCB offset multiple de 16.
+
+IOCB $0340 + X :
+
+  +0 ICHID  +1 ICDNO  +2 ICCOM  +3 ICSTA
+  +4/+5 ICBAL/H buffer
+  +6/+7 ICPTL/H interne
+  +8/+9 ICBLL/H longueur
+  +10/+11 ICAX1/2
+  +12..15 ICAX3-6
+
+Commandes : OPEN=3, GET RECORD=5, GET CHARS=7, PUT RECORD=9, PUT CHARS=11,
+CLOSE=12, STATUS=13, SPECIAL>=14.
+
+Retour Y=1 succes, Y $80-$FF erreur. Faire TYA/BMI. CIO peut modifier A/X/Y.
+PUT RECORD traite EOL $9B; PUT CHARS longueur exacte.
+
+
+==============================================================================
+30. SIOV ET DCB
+==============================================================================
+
+DCB : DDEVIC $0300, DUNIT $0301, DCOMND $0302, DSTATS $0303, DBUFLO/HI
+$0304/$0305, DTIMLO $0306, DBYTLO/HI $0308/$0309, DAUX1/2 $030A/$030B.
+
+Remplir puis JSR $E459. DSTATS avant appel code direction : $40 device->RAM,
+$80 RAM->device, $00 pas de data. Apres appel contient status; Y aussi selon OS.
+
+Buffer doit exister pendant transfert; timeout en secondes approximatives.
+Appel direct contourne DOS et ne doit pas interrompre une autre operation SIO.
+
+
+==============================================================================
+31. ECRAN, CLAVIER ET ATASCII
+==============================================================================
+
+E: associe clavier K: et screen S:, curseur, marges, logical lines. IOCB 0 deja
+ouvert. Variables : LMARGN $52, RMARGN $53, ROWCRS $54, COLCRS $55/$56, SAVMSC
+$58/$59, OLDROW/OLDCOL et DINDEX selon OS map.
+
+ATASCII : EOL $9B, clear $7D, controles curseur, inverse via bit 7. Codes ecran
+different des codes ATASCII. Handler traduit.
+
+Ecrire directement screen RAM est rapide mais depend mode/Display List/SAVMSC.
+Pour texte systeme, CIO reste compatible.
+
+
+==============================================================================
+32. DOS ET FILESYSTEM
+==============================================================================
+
+DOS 1/2 est charge depuis D1:. DOS 2 utilise directory fixe, VTOC, fichiers 8.3
+et chaines de secteurs 128 octets. FMS installe D: dans HATABS.
+
+OPEN modes CIO : lecture 4, ecriture 8, append 9, directory 6 selon DOS. XIO
+execute rename/delete/lock/unlock/point/note selon commande.
+
+ATR : header 16 octets. XFD : raw. ATX : pistes/timing/protections. Les secteurs
+boot 1-3 peuvent etre 128 octets sur images densite 256.
+
+Ne pas assimiler DOS 2 a SpartaDOS/MyDOS. Passer par CIO pour application.
+
+
+==============================================================================
+33. ATARI BASIC
+==============================================================================
+
+Cartouche Left, ROM $A000-$BFFF. Nombres BCD flottants 6 octets. Programme
+tokenise, variables et runtime occupent RAM basse/haute selon pointers BASIC.
+
+Commandes materielles : GRAPHICS, SETCOLOR/COLOR, PLOT/DRAWTO, SOUND, STICK,
+STRIG, PADDLE, PTRIG, PEEK/POKE, USR, ADR. I/O : OPEN, CLOSE, GET, PUT, INPUT,
+PRINT, XIO.
+
+Addresses decimales courantes :
+
+  88/89     SAVMSC
+  559       SDMCTL
+  560/561   Display List
+  704-707   player color shadows
+  708-712   playfield/background shadows
+  53248+    GTIA hardware
+  54272+    POKEY
+  54016+    PIA
+  54272?    attention : decimal $D400=54272 ANTIC; $D200=53760 POKEY
+
+Toujours convertir soigneusement hexadecimal : GTIA=53248, POKEY=53760,
+PIA=54016, ANTIC=54272.
+
+
+==============================================================================
+34. JEU DE CARACTERES
+==============================================================================
+
+Charset ROM autour $E000, 128 glyphes x8 octets dans bloc 1 Kio. CHBASE $D409,
+shadow CHBAS $02F4. Bits hauts choisissent page alignee 1 Kio.
+
+Copier charset en RAM, modifier, mettre CHBAS. Modes ANTIC 2/3 noir-blanc/inverse;
+4/5 multicolores interpretes par paires de bits et code caractere.
+
+Code ecran n'est pas ATASCII. Une table/algorithme officiel convertit lettres,
+chiffres, ponctuation et control graphics.
+
+
+==============================================================================
+35. ROUTINES FLOTTANTES ROM
+==============================================================================
+
+$D800-$DFFF offre Floating Point Package BCD 6 octets. FR0 $D4-$D9, FR1 et
+buffers page zero. Routines publiees : ASCII/float AFP/FASC, integer conversion,
+FADD, FSUB, FMUL, FDIV, logarithme/exponentielle.
+
+Utiliser equates du Floating Point User's Manual pour adresses de revision. Les
+routines emploient page zero et sont non reentrantes. Code jeu prefere fixed-point.
+
+
+==============================================================================
+36. ASSEMBLEUR : CIO
+==============================================================================
+
+CIOV   = $E456
+ICCOM  = $0342
+ICBAL  = $0344
+ICBAH  = $0345
+ICBLL  = $0348
+ICBLH  = $0349
+
+print:
+        ldx #0
+        lda #11
+        sta ICCOM,x
+        lda #<text
+        sta ICBAL,x
+        lda #>text
+        sta ICBAH,x
+        lda #textend-text
+        sta ICBLL,x
+        lda #0
+        sta ICBLH,x
+        jsr CIOV
+        tya
+        bmi io_error
+        rts
+text:   .byte "ATARI 800 - DEUX CARTOUCHES",$9B
+textend:
+
+
+==============================================================================
+37. ASSEMBLEUR : DISPLAY LIST ET DLI
+==============================================================================
+
+Exemple de liste 40 colonnes, adresse screen a definir :
+
+dlist:
+        .byte $70,$70,$70
+        .byte $42,<screen,>screen   ; LMS + mode 2
+        .repeat 23
+        .byte $02
+        .endrepeat
+        .byte $41,<dlist,>dlist
+
+Installer pointeur dans SDLSTL/H pendant video coupee ou VBlank. Exemple DLI :
+
+VDSLST = $0200
+NMIEN  = $D40E
+WSYNC  = $D40A
+COLBK  = $D01A
+
+dli:
+        pha
+        lda #0
+        sta WSYNC
+        lda #$86
+        sta COLBK
+        pla
+        rti
+
+La DLI doit etre associee a instruction avec bit $80 et NMIEN=$C0 sous OS. Une
+DLI suivante/VBI restaure couleur.
+
+
+==============================================================================
+38. ASSEMBLEUR : PMG, SON ET CONTROLEURS
+==============================================================================
+
+Initialisation PMG double-line avec bloc pmem aligne 2 Kio :
+
+SDMCTL = $022F
+PMBASE = $D407
+GRACTL = $D01D
+HPOSP0 = $D000
+
+        lda #>pmem
+        sta PMBASE
+        lda SDMCTL
+        ora #$0C            ; DMA missiles (bit 2) + joueurs (bit 3)
+        sta SDMCTL
+        lda #3
+        sta GRACTL
+        lda #100
+        sta HPOSP0
+
+Verifier bits DMACTL dans manuel : conserver largeur et playfield existants;
+allouer/effacer pmem et dessiner P0 a pmem+$400.
+
+Son :
+
+        lda #80
+        sta $D200
+        lda #$AF
+        sta $D201
+        lda #0
+        sta $D208
+        sta $D209
+
+Joystick 2 propre au 800 : lire shadow STICK2 $027A; valeur 15 centre. Bouton
+TRIG2 hardware $D012 ou shadow approprie.
+
+
+==============================================================================
+39. EXEMPLES ATARI BASIC
+==============================================================================
+
+39.1 Identifier les quatre joysticks
+------------------------------------
+
+10 GRAPHICS 0
+20 POSITION 2,5
+30 PRINT #6;"J0=";STICK(0);" J1=";STICK(1)
+40 POSITION 2,7
+50 PRINT #6;"J2=";STICK(2);" J3=";STICK(3)
+60 GOTO 20
+
+39.2 Couleur raster simple par shadow
+--------------------------------------
+
+10 FOR H=0 TO 15
+20 POKE 712,H*16+6
+30 FOR D=1 TO 20:NEXT D
+40 NEXT H
+50 GOTO 10
+
+Ce n'est pas cycle-exact; DLI assembleur est necessaire pour bandes stables.
+
+39.3 Dessin et son
+------------------
+
+10 GRAPHICS 7
+20 COLOR 1
+30 FOR X=0 TO 159:PLOT 80,48:DRAWTO X,0:NEXT X
+40 SOUND 0,100,10,12
+50 FOR D=1 TO 300:NEXT D
+60 SOUND 0,0,0,0
+
+
+==============================================================================
+40. PAL, NTSC, CTIA ET GTIA
+==============================================================================
+
+NTSC : ~262 lignes, 59,92 Hz, 1,78979 MHz. PAL : ~312 lignes, 49,86/50 Hz,
+1,77345 MHz. VCOUNT compte des paires de scanlines. Musique/frame timing varie.
+
+GTIA remplace CTIA sur machines tardives NTSC et PAL. GTIA ajoute trois modes et
+lecture PAL/version. Un 800 ancien CTIA doit afficher logiciel avec repli.
+
+Artifacting 320 pixels depend sous-porteuse NTSC et phase; PAL donne autre rendu.
+Un moniteur composite/S-video/RF et reglage GTIA changent palette observee.
+
+
+==============================================================================
+41. EXTENSIONS ET PERIPHERIQUES
+==============================================================================
+
+  Atari 810/815/1050      lecteurs disquette
+  Atari 410               cassette
+  Atari 820/822/825       imprimantes
+  Atari 850               quatre RS-232 + parallele
+  Atari 830/835           modem/acoustic devices selon marche
+  controllers             joysticks, paddles, driving controller, light pen
+
+Extensions tierces : RAM, Omnimon, interfaces disques, SIO2PC/SD modernes,
+cartouches flash. Chacune peut modifier memoire/boot; documenter profil.
+
+Le SIO +5 V n'alimente pas arbitrairement un appareil gourmand. Les interfaces
+modernes doivent respecter niveaux TTL et protection.
+
+
+==============================================================================
+42. PROGRAMMATION EFFICACE
+==============================================================================
+
+  * page zero pour pointeurs/compteurs;
+  * aligner tables afin d'eviter cycles page crossing;
+  * couper DMA via ancienne SDMCTL pendant calcul lourd si acceptable;
+  * Display List mixte pour reduire RAM;
+  * PMG pour objets plutot que redessiner bitmap;
+  * pre-calculer lignes et masks;
+  * DLI courtes a temps fixe;
+  * shadows pour etat OS, hardware pour raster;
+  * CIO/SIO pour peripheriques;
+  * tester RAMTOP, PAL et GTIA;
+  * restaurer NMIEN, DMACTL, couleurs, son et vecteurs.
+
+Le 800 a davantage de RAM potentielle que le 400, mais DOS+BASIC+ecran reduisent
+fortement 48 Kio. Mesurer MEMLO/APPMHI/MEMTOP.
+
+
+==============================================================================
+43. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Composants : 6502/SALLY NMOS, ANTIC DMA/refresh, CTIA ou GTIA, POKEY complet,
+PIA 6520, clavier 800, quatre ports, double cartouche, SIO, OS A/B et RAM cards.
+
+Points critiques :
+
+  * cycles voles ANTIC et HALT/RDY;
+  * Display List executee au fil du faisceau;
+  * frontieres 1 Kio/4 Kio et LMS;
+  * WSYNC/VCOUNT/DLI exacts;
+  * PMG DMA, VDELAY, sizes, collisions;
+  * priorites et GTIA modes;
+  * POKEY LFSR/distortions/join/filter/timers;
+  * clavier scanne et BREAK IRQ;
+  * PIA DDR/control et quatre joysticks;
+  * deux cartouches avec RD4/RD5;
+  * SIO timing/checksum/status;
+  * revision ROM et PAL/NTSC;
+  * RAM absente donnant bus/open behavior, pas zero rempli.
+
+Une option "Atari 800" ne doit pas etre simple alias de 800XL : PORTB, BASIC,
+OS, cartouches, joysticks et map RAM different.
+
+
+==============================================================================
+44. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] ROM OS A/B, cold/warm start et self-test selon revision
+  [ ] cartes RAM 8/16 Kio dans tous peuplements supportes
+  [ ] RAMTOP/MEMTOP sans RAM fantome
+  [ ] Left seul, Right seul, deux cartouches et 16 Kio
+  [ ] 6502 NMOS, decimal, illegal opcodes utilises et DMA halt
+  [ ] tous modes ANTIC et Display Lists mixtes
+  [ ] limites Display List 1 Kio et data 4 Kio
+  [ ] narrow/normal/wide, HSCROL/VSCROL
+  [ ] DLI/VBI/WSYNC/VCOUNT PAL et NTSC
+  [ ] CTIA et GTIA, modes 9-11 avec repli
+  [ ] PMG single/double, fifth player, collisions
+  [ ] POKEY quatre canaux, poly, timers, random, serial
+  [ ] clavier mecanique, shift/control/break/console
+  [ ] joysticks 0-3, paddles 0-7, trigger latch
+  [ ] PIA DDR/ports et motor cassette
+  [ ] SIO D1-D8, cassette, printer, 850
+  [ ] CIO huit IOCB, E/S/K/P/C/D handlers
+  [ ] DOS 2 directory/VTOC/files et boot
+  [ ] sorties composite/RF et artifact colors
+  [ ] ATR/XFD/ATX/CAS selon fidelite annoncee
+
+
+==============================================================================
+45. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+Deconnecter alimentation. Ouvrir selon Service Manual : porte, blindage et
+interlock ne doivent pas etre forces. Photographier positions des cartes RAM et
+Personality avant retrait. Nettoyer connecteurs avec produit adapte.
+
+Verifier bloc 9 V AC correct, regulateurs 5 V, condensateurs, RAM, socket chips,
+clavier, connecteurs cartouche/SIO et video. Ne pas utiliser alimentation DC ou
+d'un autre Atari simplement parce que fiche semble compatible.
+
+Un clavier mecanique peut necessiter nettoyage switches, mais eviter solvants
+attaquant plastiques/legendes. Le blindage doit etre remonte.
+
+Preserver dumps ROM revision, contenu cartouches gauche/droite, cartes RAM,
+disquettes flux/ATR, cassettes CAS/audio, photos et numeros de serie. Respecter
+droits sur ROMs, DOS, BASIC, jeux et manuels.
+
+
+==============================================================================
+46. REFERENCES
+==============================================================================
+
+Documentation Atari
+-------------------
+
+  * Atari 400/800 Hardware Manual.
+    https://www.atarimania.com/documents/atari-400-800-hardware-manual.pdf
+
+  * Atari 400/800 Operating System User's Manual.
+    https://device.report/m/5cbf9c3856103f9dfc18c7849fd19f42c402104cba8a2228e7c78b50540e9869
+
+  * Atari 400/800 Operating System Source Listing.
+  * Atari 400/800 Service Manual.
+    https://jsobola.atari8.info/DEREATARI/literatdere/400_800sm.pdf
+
+  * De Re Atari, Atari Program Exchange.
+    https://www.atariarchives.org/dere/
+
+  * Atari BASIC Reference Manual.
+  * Atari 810 Disk Drive, 410 Recorder et 850 Interface manuals.
+
+References complementaires
+--------------------------
+
+  * Mapping the Atari, Ian Chadwick.
+    https://www.atarimania.com/documents/Mapping-the-Atari.pdf
+
+  * Altirra Hardware Reference Manual.
+  * Sources Altirra, Atari800 et MAME pour tests croises.
+
+Regle de priorite : Hardware Manual pour registres, OS Manual/Listing pour
+shadows/vecteurs/CIO/SIO, Service Manual pour cartes et cablage. Toujours fixer
+profil Atari 800, RAM, OS A/B, CTIA/GTIA et PAL/NTSC; ne pas importer MMU, PORTB
+ou BASIC ROM du 800XL.

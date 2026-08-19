@@ -1,0 +1,887 @@
+==============================================================================
+ NVIDIA GEFORCE 6 - FAMILLE NV4x
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille NVIDIA GeForce 6 lancee a partir de 2004 :
+GeForce 6800, 6600, 6500, 6200 et variantes mobiles/integrees. Il couvre le
+materiel, AGP/PCI Express, memoire, VGA/VBE, PCI, BAR, MMIO, PFIFO, PGRAPH,
+affichage, shaders, video et programmation sous DOS.
+
+Limite documentaire importante : NVIDIA n'a pas publie de manuel complet des
+registres NV40 comparable a une specification de circuit ouverte. Les donnees
+d'architecture generales viennent de NVIDIA ; beaucoup de registres bas niveau
+proviennent de la retro-ingenierie Nouveau/Envytools. Ils doivent etre verifies
+par chipset et revision avant toute ecriture.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et nomenclature
+  2. Famille de circuits NV4x
+  3. Modeles et identifiants PCI
+  4. Architecture generale
+  5. Pipelines, shaders et Shader Model 3.0
+  6. Memoire video
+  7. AGP, PCI Express et pont HSI
+  8. Sorties, RAMDAC et affichages multiples
+  9. PureVideo et moteurs video
+ 10. BIOS VGA et VESA VBE
+ 11. Detection PCI
+ 12. Configuration PCI et BAR
+ 13. Carte MMIO NV40
+ 14. PMC, identification et interruptions
+ 15. PBUS, PFB, horloges et straps
+ 16. PFIFO et soumission de commandes
+ 17. RAMIN, RAMHT, RAMFC et objets DMA
+ 18. PGRAPH et classes d'objets
+ 19. Moteurs 2D
+ 20. Moteur 3D NV40
+ 21. Vertex et fragment programs
+ 22. Textures, Z, stencil et blending
+ 23. PCRTC, PRAMDAC et VGA
+ 24. PVIDEO, overlay et PureVideo
+ 25. Initialisation et remise a zero
+ 26. Exemple assembleur : detection
+ 27. Exemple assembleur : BAR et MMIO
+ 28. Exemple assembleur : VBE/LFB
+ 29. Exemples Turbo Pascal
+ 30. Strategie DOS realiste
+ 31. Conseils pour un pilote
+ 32. Conseils pour un emulateur
+ 33. Diagnostic et securite
+ 34. Plan de validation
+ 35. References
+
+
+==============================================================================
+1. HISTORIQUE ET NOMENCLATURE
+==============================================================================
+
+NVIDIA annonce la GeForce 6800/NV40 en 2004. La famille GeForce 6 introduit
+Shader Model 3.0 dans la gamme GeForce, une architecture de shaders nettement
+plus flexible, une meilleure precision flottante et une nouvelle generation de
+traitement video. Les 6600 et 6200 etendent ensuite la famille au milieu et bas
+de gamme.
+
+"GeForce 6" n'est pas un seul circuit. NV40, NV41, NV42, NV43, NV44, NV45,
+NV47/G70 derives et C51 ne possedent pas tous le meme nombre d'unites, bus,
+memoire ou video. Un programme doit identifier le chipset, pas seulement la
+chaine du BIOS.
+
+Les noms 6800/6600/6200 sont commerciaux. LE, XT, GS, GT et Ultra indiquent des
+configurations et frequences differentes ; certaines unites peuvent etre
+desactivees par straps/fuses.
+
+
+==============================================================================
+2. FAMILLE DE CIRCUITS NV4x
+==============================================================================
+
+ Circuit  Produits representatifs       Bus courant          Particularite
+ -------  ----------------------------  -------------------  ----------------
+ NV40     6800/GT/Ultra/LE AGP          AGP 8x               premier haut de gamme
+ NV41     6800 PCIe/GS selon carte      PCI Express x16      natif PCIe
+ NV42     certaines 6800 GS/Go          PCI Express          revision 110 nm
+ NV43     6600/6600 GT                  PCIe, parfois AGP     milieu de gamme
+ NV44     6200/6500/TurboCache          PCIe                 bas de gamme
+ NV44A    6200 AGP                      AGP                   controleur AGP natif
+ NV45     6800 PCIe avec pont interne   PCIe                 NV40 + HSI integre
+ C51      GeForce 6100/6150 integre     chipset/HyperTransport memoire partagee
+
+Les cartes AGP derivees d'un GPU PCIe peuvent utiliser un pont HSI. Le bus vu
+par le logiciel, les capabilities PCI/AGP et certains registres changent.
+
+
+==============================================================================
+3. MODELES ET IDENTIFIANTS PCI
+==============================================================================
+
+Vendor ID NVIDIA : 10DEh. Classe graphique attendue : 030000h (VGA) ou, pour
+certaines fonctions secondaires, une classe voisine documentee par PCI.
+
+Identifiants representatifs, non exhaustifs :
+
+ Device  Circuit  Exemples
+ ------  -------  -----------------------------------------------------------
+ 0040h   NV40     GeForce 6800 Ultra
+ 0041h   NV40     GeForce 6800
+ 0042h   NV40     GeForce 6800 LE
+ 0045h   NV40     GeForce 6800 GT
+ 0047h   NV40     certaines 6800 GS
+ 0048h   NV40     certaines 6800 XT
+ 00C0h   NV41     GeForce 6800 GS/variante
+ 0140h   NV43     GeForce 6600 GT
+ 0141h   NV43     GeForce 6600
+ 0142h   NV43     GeForce 6600 LE
+ 0160h   NV44     GeForce 6500
+ 0161h   NV44     GeForce 6200 TurboCache
+ 0162h   NV44     GeForce 6200 SE
+ 0163h   NV44     GeForce 6200 LE
+ 0221h   NV44A    GeForce 6200 AGP
+
+Les tables PCI evoluent et les OEM reutilisent des noms. Lire aussi Revision ID,
+Subsystem Vendor/Device et registre d'identification interne. Une table exacte
+doit provenir de pci.ids/Nouveau correspondant au produit vise.
+
+
+==============================================================================
+4. ARCHITECTURE GENERALE
+==============================================================================
+
+Blocs principaux :
+
+  PMC       controle maitre, interruptions et activation des moteurs
+  PBUS      interface PCI/AGP/PCIe
+  PFIFO     collecte et ordonne les commandes de canaux
+  RAMIN     memoire interne des objets et contextes
+  PGRAPH    moteurs 2D/3D et shaders
+  PFB       controleur framebuffer/memoire
+  PCRTC     controleurs de balayage
+  PRAMDAC   RAMDAC, PLL, curseur et fonctions d'affichage
+  PVIDEO    overlay/video
+  PTIMER    horloge et alarmes
+  PCLOCK    controle d'horloges sur NV40+
+  PVPE/PVP  moteurs video selon chipset
+
+Le CPU ne programme normalement pas PGRAPH registre par registre pour chaque
+triangle. Il cree des objets/classes, configure un canal PFIFO, remplit un push
+buffer en memoire puis avance PUT. PFIFO lit les paquets et livre les methodes
+aux moteurs.
+
+
+==============================================================================
+5. PIPELINES, SHADERS ET SHADER MODEL 3.0
+==============================================================================
+
+Le NV40 complet comporte jusqu'a 16 pipelines de fragments organises en quads
+et 6 unites vertex. Les derives en ont moins. Le registre/fuse map interne
+determine les unites actives ; ne pas deduire le nombre du nom commercial.
+
+Fonctions generales :
+
+  * DirectX 9.0c / Shader Model 3.0 ;
+  * vertex programs et fragment programs avec branchements plus flexibles ;
+  * precision flottante FP32, FP16 selon operation/chemin ;
+  * multiple render targets selon formats ;
+  * filtrage anisotrope, mipmapping et textures flottantes ;
+  * Z/stencil, occlusion query, blending et multisampling ;
+  * support OpenGL expose par le pilote.
+
+Il n'existe ni shaders unifies ni CUDA sur GeForce 6. Vertex et fragment sont
+des unites separees. Les limitations d'instructions, registres temporaires,
+textures et formats dependent du chipset.
+
+
+==============================================================================
+6. MEMOIRE VIDEO
+==============================================================================
+
+Les cartes utilisent DDR, DDR2 ou GDDR3 avec bus de 64, 128 ou 256 bits selon
+modele. Exemples courants : 128/256 Mio sur 6600/6800 ; certains modeles ont
+512 Mio. Les versions TurboCache combinent memoire locale reduite et memoire
+systeme via PCIe. C51 utilise la memoire partagee du systeme.
+
+PFB programme partitions, timings, tiling et compression. La VRAM contient :
+
+  * scanout principal/secondaire ;
+  * surfaces rendues, Z et textures ;
+  * push buffers et objets DMA selon configuration ;
+  * RAMIN reservee ;
+  * buffers video et curseurs.
+
+Le BAR framebuffer ne couvre pas necessairement toute la VRAM simultanement.
+Une taille de BAR ne mesure pas la quantite de memoire. Les surfaces tiled ou
+compressees ne sont pas un tableau lineaire directement interpretable par CPU.
+
+
+==============================================================================
+7. AGP, PCI EXPRESS ET PONT HSI
+==============================================================================
+
+NV40 original est AGP 8x. NV41/NV43/NV44 sont typiquement PCI Express. Des
+cartes emploient HSI pour convertir PCIe vers AGP ou inversement. Le pilote doit
+parcourir les capabilities PCI : AGP et PCIe ne se programment pas pareil.
+
+AGP demande un GART configure par le chipset. PCIe expose lien, largeur,
+payload, erreurs et Power Management. TurboCache depend de transactions PCIe et
+de pages systeme epinglees.
+
+Sous DOS, ne pas creer un GART ou reconfigurer le lien sans manuel du chipset.
+Pour un framebuffer simple, VBE/LFB suffit. Un pilote complet doit gerer DMA,
+coherence cache, adresses physiques et contraintes du pont HSI.
+
+
+==============================================================================
+8. SORTIES, RAMDAC ET AFFICHAGES MULTIPLES
+==============================================================================
+
+Les cartes peuvent offrir VGA, DVI-I/DVI-D, TV-out et deux tetes. Les NV4x ont
+des blocs PCRTC/PRAMDAC par tete dans la carte MMIO, mais le routage depend du
+PCB, des encodeurs TMDS et du BIOS.
+
+Les RAMDAC analogiques sont souvent annonces jusqu'a 400 MHz sur la gamme 6800.
+Cette valeur n'est pas la frequence de tous les modes. Lire EDID par DDC, calculer
+PLL et respecter le moniteur.
+
+Un connecteur DVI-I peut porter numerique et analogique ; DVI-D est numerique.
+La presence physique ne garantit pas deux sorties independantes simultanees.
+
+
+==============================================================================
+9. PUREVIDEO ET MOTEURS VIDEO
+==============================================================================
+
+PureVideo est une combinaison de blocs materiels et de pilote pour MPEG-2,
+deinterlacing, scaling et, selon revision/pilote, assistance WMV9/H.264. Les
+premiers NV40 ont des limitations differentes de NV43/NV44.
+
+Blocs rencontres : PVIDEO overlay, PMPEG, PVPE, PME, PVP1 et encodeur TV. PFIFO
+peut soumettre a plusieurs moteurs sur NV40+. Une fonction commerciale ne
+signifie pas que tout le codec est decode en materiel.
+
+Sous DOS, il n'existe pas d'interruption BIOS standard PureVideo. Utiliser un
+pilote ou programmer les moteurs reverse-engineered avec prudence.
+
+
+==============================================================================
+10. BIOS VGA ET VESA VBE
+==============================================================================
+
+La ROM VGA initialise memoire, horloges, affichage et fournit INT 10h. Elle peut
+contenir une table BIT et des scripts NVIDIA exploites par les pilotes.
+
+VBE :
+
+  AX=4F00h  informations et liste de modes
+  AX=4F01h  ModeInfoBlock
+  AX=4F02h  mode, BX bit 14 pour LFB
+  AX=4F03h  mode courant
+  AX=4F05h  banque
+  AX=4F06h  scanline
+  AX=4F07h  display start
+  AX=4F09h  palette si implemente
+
+Succes : AX=004Fh. Lire pitch, masques RGB, PhysBasePtr et ModeAttributes. Le
+VBE BIOS est l'interface DOS la plus sure ; il ne fournit pas shaders/PFIFO.
+
+
+==============================================================================
+11. DETECTION PCI
+==============================================================================
+
+  1. verifier PCI BIOS par INT 1Ah/AX=B101h ;
+  2. verifier CF=0, AH=00h et EDX="PCI ";
+  3. chercher chaque Device ID vise avec Vendor=10DEh par B102h ;
+  4. ou enumerer tous les peripheriques de classe 0300h et filtrer Vendor ;
+  5. lire revision, subsystem, BAR et capabilities ;
+  6. mapper BAR0 puis lire une identification interne sans ecrire ;
+  7. distinguer NV40/NV41/NV43/NV44 avant toute initialisation.
+
+Une application generaliste doit utiliser une table d'IDs maintenue. La plage
+0040h..0221h contient aussi Quadro et variantes ; un test par intervalle est
+incorrect.
+
+
+==============================================================================
+12. CONFIGURATION PCI ET BAR
+==============================================================================
+
+Disposition typique pre-G80, a confirmer sur chaque fonction PCI :
+
+  BAR0  MMIO registres, souvent 16 Mio, non prefetchable
+  BAR1  aperture framebuffer/VRAM, taille selon carte, prefetchable
+  BAR2/3 ressources supplementaires sur certaines variantes/PCIe
+  ROM BAR BIOS VGA
+
+Ne jamais supposer BAR1=quantite VRAM. Les BAR peuvent etre 64 bits : si type
+bits 2..1=10b, combiner le DWORD suivant. Masquer les bits de drapeau et ne pas
+tronquer une adresse au-dessus de 4 Gio.
+
+PCI Command bit 1 active Memory Space, bit 2 Bus Master. Une application ne doit
+pas modifier les BAR. Le BAR0 peut etre plus grand selon straps NV40+, meme si
+les registres connus tiennent dans 16 Mio.
+
+
+==============================================================================
+13. CARTE MMIO NV40
+==============================================================================
+
+Offsets principaux dans BAR0, d'apres Envytools/Nouveau :
+
+  000000h  PMC        controle maitre
+  001000h  PBUS       bus PCI/AGP/PCIe
+  002000h  PFIFO      canaux et commandes
+  004000h  PCLOCK     horloges NV40+
+  007000h  PRMA       acces indirect mode reel
+  008000h  PVIDEO     overlay
+  009000h  PTIMER     timer/alarmes
+  00A000h  PCOUNTER   compteurs performance
+  00B000h  PVPE       video selon chipset
+  00C000h  PCONTROL   controle divers
+  00D000h  PTV        encodeur TV selon chipset
+  200000h  PMEDIA     mediaport
+  300000h  PROM       fenetre ROM
+  400000h  PGRAPH     moteur 2D/3D
+  600000h  PCRTC0     affichage tete 0
+  601000h  PRMCIO0    VGA CRTC/attribute
+  602000h  PCRTC1     affichage tete 1
+  603000h  PRMCIO1    VGA seconde tete
+  680000h  PRAMDAC0   DAC/PLL/curseur tete 0
+  681000h  PRMDIO0    ports DAC VGA
+  682000h  PRAMDAC1   tete 1
+  683000h  PRMDIO1    DAC VGA tete 1
+  700000h  PRAMIN     acces RAMIN
+  800000h  USER       soumission PIO/DMA canaux anciens
+  C00000h  DMA_USER   zones DMA par canal NV40+
+
+Certaines plages manquent sur NV44/C51 ou ont des effets differents. Lire une
+zone absente peut renvoyer FFFFFFFFh ou bloquer certains chipsets. Une table de
+variants est obligatoire.
+
+
+==============================================================================
+14. PMC, IDENTIFICATION ET INTERRUPTIONS
+==============================================================================
+
+PMC est a BAR0+000000h. Registres largement observes :
+
+  000000h  PMC_BOOT_0 / identification materielle
+  000004h  ENDIAN sur NV1A+
+  000100h  PMC_INTR_0, sources pendantes
+  000140h  PMC_INTR_EN_0
+  000200h  PMC_ENABLE
+  001540h  NV40_GRAPH_UNITS, unites graphiques/fuses
+
+PMC_ENABLE active notamment PFIFO bit 8, PGRAPH bit 12, PTIMER bit 16, PFB bit
+20, PCRTC bit 24, PCRTC2 bit 25, PTV bit 26 et PVIDEO bit 28 selon variante.
+Ne pas ecrire une constante globale : preserve les bits inconnus.
+
+PMC_INTR_0 indique entre autres PFIFO bit 8, PGRAPH bit 12, CRTC0 bit 24 et
+CRTC1 bit 25. Un gestionnaire IRQ lit les sous-blocs, acquitte la cause puis le
+niveau maitre. Les interruptions masquees peuvent rester pendantes.
+
+ENDIAN retourne zero en little-endian ou 01000001h en big-endian. Les alias VGA
+8 bits ne suivent pas necessairement le swap du reste du BAR.
+
+
+==============================================================================
+15. PBUS, PFB, HORLOGES ET STRAPS
+==============================================================================
+
+PBUS reflete/configure l'interface du bus. PFB controle partitions memoire,
+timings, tiling et compression. PSTRAPS/fuses decrivent largeur, RAM et unites.
+PCLOCK programme PLL coeur, memoire et parfois pixel.
+
+Ces blocs sont les plus dangereux a ecrire : une mauvaise valeur memoire ou PLL
+peut figer le bus, corrompre la VRAM ou endommager une carte surcadencee. Un
+pilote doit interpreter la ROM BIOS et suivre une sequence propre au chipset.
+
+La lecture de frequence n'est pas simplement un registre en MHz : decodage M/N/P,
+reference clock et post-diviseurs varient. Ajouter limites VCO et timeout lock.
+
+
+==============================================================================
+16. PFIFO ET SOUMISSION DE COMMANDES
+==============================================================================
+
+PFIFO collecte les commandes de plusieurs canaux et les livre a PGRAPH ou aux
+moteurs video. Depuis NV40, le changement de canal est plus souple et une
+methode YIELD 0080h peut demander un changement rapide.
+
+Registres de base relatifs a PFIFO+0000h :
+
+  0100h INTR             statut/acquittement
+  0140h INTR_ENABLE      masque
+  0210h RAMHT            table de handles
+  0214h RAMFC            contextes FIFO
+  0220h RAMRO/structures selon generation
+  0400h RUNOUT_STATUS
+  0410h RUNOUT_PUT
+  0420h RUNOUT_GET
+  0500h controle changement de canal selon variante
+  1200h CACHE1           cache principal et DMA pusher
+
+Les offsets exacts de RAMFC/RAMRO et champs different de NV4 aux NV4x. Employer
+la base de registres NV40 de Nouveau, pas une table NV4 ancienne.
+
+Mode DMA : le CPU remplit un push buffer, met a jour PUT et PFIFO lit jusqu'a
+GET. Les paquets encodent methode, sous-canal, compte et donnees. Toujours
+reserver de l'espace pour le retour du ring et ne jamais depasser GET.
+
+
+==============================================================================
+17. RAMIN, RAMHT, RAMFC ET OBJETS DMA
+==============================================================================
+
+RAMIN est une zone reservee de VRAM exposee par BAR0+700000h. Elle contient les
+objets, tables de handles et contextes. Sa position/taille reelle depend de la
+generation et de la quantite de VRAM.
+
+  RAMHT  hash handle -> objet/instance
+  RAMFC  contexte sauvegarde de chaque canal
+  objets DMA  classe, cible, limites et adresse
+  contextes PGRAPH  etat moteur par canal
+
+Un handle soumis par une methode est recherche dans RAMHT. Collision, mauvais
+hash ou instance non alignee provoque une faute PFIFO/PGRAPH. Le contexte objet
+doit indiquer la bonne classe et les bonnes permissions.
+
+Ne pas placer une surface utilisateur sur RAMIN. En emulation, modeliser les
+limites et fautes plutot que de faire confiance aux pointeurs invites.
+
+
+==============================================================================
+18. PGRAPH ET CLASSES D'OBJETS
+==============================================================================
+
+PGRAPH implemente plusieurs classes. Une classe definit les methodes et leur
+semantique. Exemples de familles : surface 2D, rectangle/triangle, image blit,
+scaled image, contexte beta/ROP/pattern, NV40 3D et objets de synchronisation.
+
+Le pilote lie une classe a un sous-canal puis envoie les methodes. Une valeur de
+methode n'a de sens qu'avec la classe active. Copier une liste de methodes d'une
+NV30 ou NV50 peut declencher INVALID_METHOD.
+
+BAR0+400000h contient etat bas niveau, interruptions, traps et context control.
+La soumission normale passe par PFIFO, pas par ecriture directe de tout PGRAPH.
+
+
+==============================================================================
+19. MOTEURS 2D
+==============================================================================
+
+Les classes 2D fournissent :
+
+  * solid rectangle et lignes ;
+  * screen-to-screen blit ;
+  * image-from-CPU ;
+  * scaled image et conversion de formats ;
+  * ROP3, pattern, clip et color key ;
+  * surfaces lineaires ou tiled selon classe.
+
+Une operation exige objets de surface, format, pitch, offset VRAM, clip, ROP et
+coordonnees. Verifier alignement/pitch et ordre des copies recouvrantes.
+
+Pour un programme DOS simple, un framebuffer VBE est beaucoup moins complexe.
+Le moteur 2D n'est interessant qu'apres initialisation PFIFO/RAMIN complete.
+
+
+==============================================================================
+20. MOTEUR 3D NV40
+==============================================================================
+
+La classe 3D NV40 configure render targets, Zeta, viewport, scissor, textures,
+vertex arrays, vertex program, fragment program, blending, tests et primitives.
+
+Ordre logique :
+
+  1. creer canal, objets DMA et objet de classe NV40 3D ;
+  2. definir surfaces couleur/Z et formats ;
+  3. charger programmes vertex/fragment ;
+  4. definir constantes et attributs ;
+  5. definir textures/samplers ;
+  6. configurer viewport, scissor et tests ;
+  7. lancer BEGIN_END, fournir indices/sommets, terminer ;
+  8. notifier/semaphore puis attendre avec timeout.
+
+Une methode reservee ou un format illegal leve un trap PGRAPH. Le traitement de
+faute fait partie du pilote, pas seulement du diagnostic.
+
+
+==============================================================================
+21. VERTEX ET FRAGMENT PROGRAMS
+==============================================================================
+
+Les programmes NV40 sont des mots binaires propres au GPU, pas du texte HLSL ou
+GLSL. Le pilote compile l'API vers micro-instructions, charge le code et les
+constantes, puis selectionne les points d'entree.
+
+Le vertex program transforme position, normales et coordonnees ; le fragment
+program calcule couleurs/profondeur et echantillonne les textures. Shader Model
+3.0 autorise davantage de branchements/boucles que les generations precedentes.
+
+Une boucle non bornee peut bloquer PGRAPH. Depuis NV40, PFIFO commute mieux les
+canaux, mais un shader long reste capable de monopoliser un moteur. Prevoir
+watchdog et reset par canal/moteur.
+
+
+==============================================================================
+22. TEXTURES, Z, STENCIL ET BLENDING
+==============================================================================
+
+Chaque texture requiert format, offset, pitch, dimensions, niveaux mip, wrap,
+filtre et swizzle. Les formats compresses DXT ont des dimensions/alignment de
+blocs. Une surface tiled doit employer le descripteur tile coherent de PFB.
+
+Z/stencil : choisir format compatible, pitch et compression. Effacer une
+surface comprimee par le moteur, pas necessairement par memset CPU.
+
+Blending : source/destination factors, equation, write masks et precision
+dependent du render target. Le multisampling augmente stockage/bande passante.
+
+Les textures AGP/PCIe demandent objets DMA et pages accessibles. Ne jamais
+donner au GPU une adresse virtuelle CPU ordinaire.
+
+
+==============================================================================
+23. PCRTC, PRAMDAC ET VGA
+==============================================================================
+
+PCRTC0 commence a 600000h, PCRTC1 a 602000h. PRAMDAC0/1 se trouvent a
+680000h/682000h. Les alias VGA sont a 601000h/603000h et DAC a 681000h/683000h.
+
+Un modeset complet programme : PLL, timings, start address, pitch, format,
+scaler/routage, curseur, DAC/TMDS et blank. Utiliser la table BIOS pour les
+encodeurs externes. Les ecritures doivent etre ordonnees autour du retrace.
+
+Les ports VGA 3C0h..3DAh restent disponibles lorsque l'emulation VGA est active.
+Lire 3DAh remet la bascule Attribute. Le VGA BIOS est preferable sous DOS.
+
+
+==============================================================================
+24. PVIDEO, OVERLAY ET PUREVIDEO
+==============================================================================
+
+PVIDEO a BAR0+008000h gere overlay, buffers, pitch, position, scaling, color key
+et formats YUV/RGB. Utiliser double buffering et basculer au retrace.
+
+Les moteurs MPEG/VPE/PVP different entre NV40, NV43 et NV44. Leur initialisation
+peut exiger microcode du pilote. PureVideo ne doit pas etre emule comme un bloc
+unique uniforme sur toute la serie.
+
+Une carte peut annoncer PureVideo mais deleguer certains codecs/profils au CPU.
+Documenter par chipset, revision de pilote et codec.
+
+
+==============================================================================
+25. INITIALISATION ET REMISE A ZERO
+==============================================================================
+
+Un pilote complet doit :
+
+  * mapper BAR et lire straps/BIOS ;
+  * etablir endian et activer les blocs PMC necessaires ;
+  * initialiser PFB/VRAM sans detruire le scanout actif ;
+  * reserver/configurer RAMIN, RAMHT et RAMFC ;
+  * charger contextes/microcodes necessaires ;
+  * configurer PFIFO et PGRAPH ;
+  * etablir affichage, interruptions et gestion d'erreur.
+
+Desactiver/re-activer PMC_ENABLE reset certains sous-blocs. Ne jamais ecrire
+zero dans tout PMC_ENABLE sur une console active. Sauvegarder les bits, arreter
+les canaux, masquer IRQ, attendre idle, reset cible, restaurer.
+
+Le BIOS a deja initialise une grande partie du materiel. Une application DOS ne
+doit pas refaire l'initialisation memoire/horloges pour obtenir un LFB.
+
+
+==============================================================================
+26. EXEMPLE ASSEMBLEUR : DETECTION
+==============================================================================
+
+; Recherche une GeForce 6800 NV40 parmi quelques IDs representatifs.
+; Mode reel, 386+, PCI BIOS. Retour CF=0, BX=bus/devfn, DX=Device ID.
+
+NVIds   dw 0040h,0041h,0042h,0045h,0047h,0048h
+NVCount equ ($-NVIds)/2
+
+FindGeForce6:
+        mov     ax,0B101h
+        int     1Ah
+        jc      short f6_fail
+        or      ah,ah
+        jnz     short f6_fail
+        cmp     edx,20494350h       ; "PCI "
+        jne     short f6_fail
+        mov     di,offset NVIds
+        mov     bp,NVCount
+f6_next:
+        mov     cx,[di]
+        push    cx
+        mov     ax,0B102h
+        mov     dx,10DEh
+        xor     si,si
+        int     1Ah
+        pop     dx                  ; ID essaye, POP conserve les flags
+        jc      short f6_not_this
+        or      ah,ah
+        jz      short f6_ok
+f6_not_this:
+        add     di,2
+        dec     bp
+        jnz     f6_next
+f6_fail:
+        stc
+        ret
+f6_ok:  clc
+        ret
+
+Pour toute la serie, etendre la table avec une source PCI maintenue et verifier
+classe/subsystem. Ne pas utiliser une plage numerique.
+
+
+==============================================================================
+27. EXEMPLE ASSEMBLEUR : BAR ET MMIO
+==============================================================================
+
+; BH/BL=bus/devfn, DI=offset PCI. Retour ECX si succes.
+PCIReadDword:
+        mov     ax,0B10Ah
+        int     1Ah
+        jc      short prd_fail
+        or      ah,ah
+        jnz     short prd_fail
+        clc
+        ret
+prd_fail:
+        stc
+        ret
+
+; ESI=BAR0 mappe. Lecture non destructive d'informations.
+        mov     eax,[esi+000000h]   ; PMC_BOOT_0, interpretation par chipset
+        mov     edx,[esi+000100h]   ; PMC_INTR_0
+        mov     ecx,[esi+000200h]   ; PMC_ENABLE
+        mov     ebx,[esi+001540h]   ; unites NV40, ne pas ecrire
+
+Ces lectures ne prouvent pas que PGRAPH est initialisable. Une valeur FFFFFFFFh
+indique souvent BAR incorrect, memspace desactive ou peripherique inaccessible.
+
+
+==============================================================================
+28. EXEMPLE ASSEMBLEUR : VBE/LFB
+==============================================================================
+
+; ES:DI pointe un bloc VBE de 512 octets.
+        mov     dword ptr es:[di],'2EBV'
+        mov     ax,04F00h
+        int     10h
+        cmp     ax,004Fh
+        jne     no_vbe
+        cmp     dword ptr es:[di],'ASEV'
+        jne     no_vbe
+
+; Obtenir un ModeInfoBlock pour le mode choisi dans CX.
+        mov     ax,04F01h
+        int     10h
+        cmp     ax,004Fh
+        jne     bad_mode
+
+; Etablir avec LFB.
+        mov     ax,04F02h
+        or      bx,4000h
+        int     10h
+        cmp     ax,004Fh
+        jne     set_failed
+
+Mapper ensuite PhysBasePtr par DPMI AX=0800h et employer BytesPerScanLine.
+
+
+==============================================================================
+29. EXEMPLES TURBO PASCAL
+==============================================================================
+
+Uses Dos;
+
+Function FindNVDevice(DeviceID:Word; Var Bus,DevFn:Byte):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B102; R.CX:=DeviceID; R.DX:=$10DE; R.SI:=0;
+ Intr($1A,R);
+ FindNVDevice:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If FindNVDevice Then Begin Bus:=Hi(R.BX); DevFn:=Lo(R.BX) End;
+End;
+
+Function IsKnownGeForce6(ID:Word):Boolean;
+Begin
+ Case ID of
+  $0040,$0041,$0042,$0045,$0047,$0048,
+  $00C0,$0140,$0141,$0142,$0160,$0161,$0162,$0163,$0221:
+    IsKnownGeForce6:=True;
+ Else IsKnownGeForce6:=False
+ End
+End;
+
+Function PCIReadWord(Bus,DevFn:Byte; RegNo:Word;
+                     Var Value:Word):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B109; R.BX:=Word(Bus) shl 8 or DevFn; R.DI:=RegNo;
+ Intr($1A,R);
+ PCIReadWord:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If PCIReadWord Then Value:=R.CX;
+End;
+
+Procedure SetVGAPalette(Index,R,G,B:Byte);
+Begin
+ Port[$3C8]:=Index;
+ Port[$3C9]:=R; Port[$3C9]:=G; Port[$3C9]:=B;
+End;
+
+Turbo Pascal reel ne peut pas mapper un BAR PCI haut ni effectuer toute la
+gestion PFIFO. Employer un extender DPMI et une unite assembleur 32 bits.
+
+
+==============================================================================
+30. STRATEGIE DOS REALISTE
+==============================================================================
+
+Niveau 1, application portable : VBE, LFB, dessin CPU.
+
+Niveau 2, diagnostic : PCI BIOS, lecture BAR0, ROM et registres read-only.
+
+Niveau 3, acceleration 2D : reprendre une implementation Nouveau NV4x complete,
+adapter allocation physique/DMA/IRQ a l'extender DOS et conserver timeouts.
+
+Niveau 4, 3D : compilateur de shaders, objets, PFIFO, PGRAPH, gestion VRAM,
+textures, fautes et synchronisation. C'est un pilote, pas quelques OUT/IN.
+
+Le chemin VBE offre le meilleur rapport robustesse/effort. Un programme DOS
+peut obtenir haute resolution sans connaitre PFIFO.
+
+
+==============================================================================
+31. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Identifier chipset/revision et non seulement produit commercial.
+  * Analyser la ROM BIOS pour straps, scripts et routage des sorties.
+  * Gerer BAR 64 bits et adresses au-dessus de 4 Gio.
+  * Separer VRAM lineaire, tiled, compressee et RAMIN.
+  * Valider tous les objets DMA et limites.
+  * Proteger le ring contre depassement de GET.
+  * Traiter PFIFO/PGRAPH traps et page faults.
+  * Borner idle, vblank, PLL, I2C et semaphores.
+  * Prevoir watchdog et reset cible.
+  * Ne pas melanger NV40, NV43, NV44, C51 et G70.
+
+
+==============================================================================
+32. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Modeliser au minimum :
+
+  * IDs PCI par chipset, BAR, ROM, AGP/PCIe et PM ;
+  * PMC_ENABLE, interruptions et reset des sous-blocs ;
+  * PFIFO canaux, push buffers, GET/PUT, paquets et fautes ;
+  * RAMHT hash, RAMFC, objets DMA et RAMIN ;
+  * classes/methodes PGRAPH et INVALID_METHOD ;
+  * 2D ROP, clip, blit recouvrant et formats ;
+  * render targets, Z, textures, shaders et blending NV40 ;
+  * tiled/compression ou refus explicite coherent ;
+  * deux PCRTC, PLL, DAC/TMDS, cursor et vblank ;
+  * PVIDEO et moteurs video propres au chipset ;
+  * timing asynchrone, notifications et watchdog.
+
+Une implementation qui accepte toutes les methodes sans faute masque les bugs
+de pilote. Une implementation qui rend tout instantane casse les attentes et
+changements de canal.
+
+
+==============================================================================
+33. DIAGNOSTIC ET SECURITE
+==============================================================================
+
+PCI trouve, BAR0=FFFFFFFFh
+  Verifier PCI Command.memspace, mapping, fonction, adresse 64 bits et D-state.
+
+PFIFO DMA_PUSHER
+  Paquet mal forme, GET/PUT, saut, limite objet DMA ou page inaccessible.
+
+PFIFO CACHE_ERROR
+  Sous-canal/handle/classe invalide ou changement de canal incoherent.
+
+PGRAPH INVALID_METHOD/DATA
+  Mauvaise classe, methode reservee, format ou alignement illegal.
+
+GPU fige
+  Shader non borne, horloge/memoire erronee, deadlock FIFO ou faute non acquittee.
+
+Ecran noir apres modeset
+  PLL, routage DAC/TMDS, CRTC, pitch, start address, EDID ou tete incorrecte.
+
+Ne jamais tester des valeurs inconnues de PCLOCK/PFB sur une carte irremplacable.
+Commencer par lectures, VBE et emulateur ; conserver une seconde carte/console.
+
+
+==============================================================================
+34. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] Vendor 10DE, Device exact, class, revision, subsystem
+  [ ] AGP ou PCIe/HSI, capabilities et lien
+  [ ] BAR0 MMIO, BAR framebuffer, ROM et BAR 64 bits
+  [ ] PMC_BOOT, ENABLE, INTR et endian
+  [ ] quantite VRAM et reservation RAMIN
+  [ ] VGA texte, modes 0Dh/10h/12h/13h
+  [ ] VBE 4F00/01/02/03/05/06/07/09
+  [ ] LFB pitch et formats 8/15/16/24/32
+  [ ] PFIFO ring wrap, GET/PUT, plusieurs canaux et YIELD
+  [ ] handles valides/invalides, collision RAMHT et objets DMA
+  [ ] 2D fill, clip, ROP, image et blit recouvrant
+  [ ] PGRAPH trap, timeout et reset cible
+  [ ] deux tetes, vblank, cursor, DDC et routage
+  [ ] shaders courts/longs, Z, textures, mipmaps et MSAA
+  [ ] PVIDEO par variante, sans supposer PureVideo uniforme
+
+
+==============================================================================
+35. REFERENCES
+==============================================================================
+
+Sources NVIDIA
+----------------
+
+  * NVIDIA GPU Gems 2, chapitre 30, The GeForce 6 Series GPU Architecture.
+
+    https://developer.nvidia.com/gpugems/gpugems2/part-iv-general-purpose-
+    computation-gpus-primer/chapter-30-geforce-6-series-gpu
+
+  * NVIDIA GPU Programming Guide, edition GeForce 7 et precedentes.
+
+    https://developer.nvidia.com/nvidia-gpu-programming-guide
+
+Documentation bas niveau issue de retro-ingenierie
+--------------------------------------------------
+
+  * Envytools, nVidia Hardware Documentation : carte MMIO, PMC, PFIFO,
+    PGRAPH, affichage, objets et classes.
+
+    https://envytools.readthedocs.io/
+
+  * Nouveau, pilotes et headers NV40, source de validation des variants.
+
+    https://nouveau.freedesktop.org/
+    https://github.com/torvalds/linux/tree/master/drivers/gpu/drm/nouveau
+
+Standards
+---------
+
+  * PCI Local Bus, PCI Express, AGP et PCI BIOS Specifications.
+  * VESA BIOS Extension, DPMS, DDC/EDID.
+  * Microsoft DirectX 9 Shader Model 3.0 et specifications OpenGL de l'epoque.
+
+Niveau de confiance
+-------------------
+
+Architecture shaders/fonctions generales : documentation NVIDIA.
+PCI, VGA et VBE : standards publics.
+Offsets MMIO, objets et methodes : Envytools/Nouveau, retro-ingenierie a verifier.
+Valeurs de carte (frequences, memoire, sorties) : BIOS, PCB et Subsystem ID.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

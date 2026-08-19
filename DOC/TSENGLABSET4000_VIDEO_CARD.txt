@@ -1,0 +1,997 @@
+==============================================================================
+ TSENG LABS ET4000 / ET4000AX / ET4000-W32
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille de controleurs video Tseng Labs ET4000. Il vise
+principalement la programmation DOS en mode reel de l'ET4000AX ISA, tout en
+distinguant clairement les ET4000/W32, W32i et W32p acceleres. Il couvre le
+materiel, les ports, les registres, la detection, le BIOS, les modes, la
+memoire a banques et donne des exemples en assembleur 8086/386 et Turbo Pascal.
+
+Le nom de fichier conserve volontairement la forme demandee
+"TSENGLABSET4000". Le fabricant s'ecrit Tseng Labs et la puce ET4000.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+Date de revision : aout 2026.
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et familles
+  2. Ne pas confondre AX et W32
+  3. Architecture de l'ET4000AX
+  4. Bus, composants et memoire
+  5. Sortie video et RAMDAC
+  6. Compatibilite VGA
+  7. Modes video usuels
+  8. BIOS Tseng et VESA VBE
+  9. Carte des ports d'entrees/sorties
+ 10. Deverrouillage des extensions
+ 11. Registre 3CDh et banques
+ 12. Registres CRTC etendus
+ 13. Detection fiable
+ 14. Acces packed-pixel 256 couleurs
+ 15. Acces planaire 16 couleurs
+ 16. Palette et synchronisation verticale
+ 17. Timings, horloges et interlace
+ 18. ET4000/W32, W32i et W32p
+ 19. Detection PCI des W32p
+ 20. Exemples assembleur
+ 21. Exemples Turbo Pascal
+ 22. Architecture d'un pilote DOS
+ 23. Conseils pour un emulateur
+ 24. Diagnostic et pieges
+ 25. Plan de validation
+ 26. References
+
+
+==============================================================================
+1. HISTORIQUE ET FAMILLES
+==============================================================================
+
+L'ET4000 apparait a la fin des annees 1980 et devient un des controleurs Super
+VGA les plus repandus du DOS. Son succes tient a sa bonne compatibilite VGA et
+a son interface memoire efficace. Dans un mode graphique non accelere, le CPU
+ecrit directement les pixels; l'ET4000AX est souvent tres rapide malgre
+l'absence de moteur BitBLT.
+
+Le controleur est vendu a de nombreux fabricants. Une "carte ET4000" n'est donc
+pas un produit unique. Le circuit Tseng, le BIOS, le RAMDAC, les oscillateurs,
+la quantite de memoire et les cavaliers peuvent provenir de sources differentes.
+
+Principales branches :
+
+  ET4000/ET4000AX  Super VGA non accelere, generalement ISA 16 bits, jusqu'a
+                   1 Mio de memoire video.
+
+  ET4000/W32       Generation acceleree Windows, ISA ou bus local suivant la
+                   carte. Ajoute un moteur graphique.
+
+  ET4000/W32i      Evolution du W32, surtout rencontree sur bus local VESA.
+
+  ET4000/W32p      Evolution PCI/VLB plus integree; revisions A, B, C et D.
+
+Le suffixe imprime sur la puce doit toujours etre releve. La presence du mot
+ET4000 ne suffit pas a choisir la documentation des registres accelerateurs.
+
+
+==============================================================================
+2. NE PAS CONFONDRE AX ET W32
+==============================================================================
+
+L'ET4000AX ne possede ni BitBLT, ni traceur de ligne, ni remplissage de
+rectangle. Toutes ces operations sont executees par le CPU. En revanche, les
+W32 ajoutent une file de commandes, des operations raster et un moteur de
+transfert. Ecrire dans un registre W32 sur un AX n'a aucun sens.
+
+Ce qui reste commun ou compatible :
+
+  * les blocs VGA et les ports VGA standards;
+  * la fenetre A0000h et la selection de banque 3CDh;
+  * une partie des extensions CRTC Tseng;
+  * les modes BIOS herites, selon le BIOS de la carte.
+
+Ce qui depend du modele : moteur accelerateur, adressage lineaire, registres
+MMIO, profondeur de couleur, bus hote, taille de memoire et identificateur PCI.
+
+
+==============================================================================
+3. ARCHITECTURE DE L'ET4000AX
+==============================================================================
+
+Schema simplifie :
+
+  CPU/ISA -> interface hote/FIFO -> logique VGA -> memoire video
+                                     |             |
+                                     +-> CRTC -> RAMDAC -> moniteur
+
+Blocs principaux :
+
+  * interface ISA 16 bits et tampon d'ecritures;
+  * Sequencer, Graphics Controller et Attribute Controller compatibles VGA;
+  * CRTC VGA etendu a des compteurs d'adresse et de timing supplementaires;
+  * generateur de banques 64 Kio avec banques lecture/ecriture independantes;
+  * interface memoire DRAM large, selon l'organisation de la carte;
+  * interface vers un RAMDAC externe;
+  * logique de compatibilite MDA, Hercules, CGA, EGA et VGA selon le mode.
+
+Le haut debit provient surtout de l'interface memoire et du FIFO. Il ne faut
+pas le presenter comme une acceleration graphique.
+
+
+==============================================================================
+4. BUS, COMPOSANTS ET MEMOIRE
+==============================================================================
+
+Une carte ET4000AX typique comporte :
+
+  * un connecteur ISA 16 bits;
+  * le controleur ET4000AX;
+  * 256 Kio, 512 Kio ou 1 Mio de DRAM video;
+  * une ROM BIOS VGA mappee a C0000h;
+  * un RAMDAC 256 couleurs;
+  * un ou plusieurs oscillateurs;
+  * une sortie analogique VGA DE-15;
+  * eventuellement un connecteur feature et des cavaliers.
+
+L'espace VGA visible par le CPU est normalement A0000h-AFFFFh, soit 64 Kio.
+Le registre 3CDh choisit quelle tranche de la memoire physique est projetee
+dans cette fenetre. Avec quatre bits de banque, 16 x 64 Kio = 1 Mio sont
+accessibles.
+
+Le bit d'adressage lineaire de CRTC 36h est une capacite materielle particuliere
+et non le framebuffer lineaire VBE moderne. Sa base et son utilisabilite
+dependent de la carte et de la plate-forme. En DOS reel portable, utiliser les
+banques; ne pas inventer une adresse physique lineaire.
+
+
+==============================================================================
+5. SORTIE VIDEO ET RAMDAC
+==============================================================================
+
+Le RAMDAC convertit l'indice de pixel en trois composantes analogiques. Le DAC
+VGA classique contient 256 entrees de 18 bits, soit 6 bits par composante.
+Certaines cartes W32 utilisent un RAMDAC plus evolue pour 15, 16, 24 ou 32 bpp.
+
+Brochage logique usuel du DE-15 : rouge, vert, bleu, masses, synchronisation
+horizontale et verticale, plus lignes d'identification. Les frequences tolerees
+dependent du moniteur. Une mauvaise programmation du CRTC peut produire une
+image absente ou hors plage; sur du materiel ancien elle peut aussi solliciter
+anormalement le moniteur.
+
+
+==============================================================================
+6. COMPATIBILITE VGA
+==============================================================================
+
+Les blocs standards sont programmes comme sur une VGA IBM :
+
+  * Sequencer : index 3C4h, donnees 3C5h;
+  * Graphics Controller : index 3CEh, donnees 3CFh;
+  * CRTC : 3D4h/3D5h en couleur, 3B4h/3B5h en monochrome;
+  * Attribute Controller : index/donnees 3C0h, lecture 3C1h;
+  * DAC : 3C6h a 3C9h;
+  * Miscellaneous Output : ecriture 3C2h, lecture 3CCh.
+
+Les latches, plans, masques, Set/Reset, operations raster et modes d'ecriture
+VGA restent applicables. Un programme peut donc exploiter le mode 12h ou 13h
+sans connaitre Tseng. Les extensions deviennent necessaires pour les modes
+Super VGA, les banques et les grands compteurs.
+
+
+==============================================================================
+7. MODES VIDEO USUELS
+==============================================================================
+
+Les numeros suivants proviennent du BIOS Tseng documente. Un clone OEM peut
+omettre un mode ou modifier ses contraintes. Toujours verifier le retour BIOS.
+
+  Mode   Geometrie             Organisation
+  ----   --------------------  -------------------------------
+  18h    132x44 texte          monochrome
+  19h    132x25 texte          monochrome
+  1Ah    132x28 texte          monochrome
+  22h    132x44 texte          16 couleurs
+  23h    132x25 texte          16 couleurs
+  24h    132x28 texte          16 couleurs
+  25h    640x480x16            planaire
+  26h    80x60 texte           16 couleurs
+  29h    800x600x16            planaire
+  2Ah    100x40 texte          16 couleurs
+  2Dh    640x350x256           packed-pixel, banques
+  2Fh    640x400x256           packed-pixel, banques
+  2Eh    640x480x256           packed-pixel, banques
+  30h    800x600x256           packed-pixel, banques
+  37h    1024x768x16           planaire
+  38h    1024x768x256          packed-pixel, 1 Mio requis
+
+L'ordre 2Dh/2Eh/2Fh parait inhabituel mais doit etre conserve. En 1024x768x256,
+786432 octets sont necessaires; une carte de 512 Kio ne peut contenir l'image.
+
+Pour fixer un mode BIOS :
+
+        mov     ax,002Eh       ; 640x480x256, BIOS Tseng
+        int     10h
+        mov     ah,0Fh
+        int     10h            ; AL = mode courant rapporte par le BIOS
+
+Un appel reussi n'assure pas que le moniteur accepte le timing. Pour un logiciel
+distribuable, VBE est preferable lorsqu'il est present.
+
+
+==============================================================================
+8. BIOS TSENG ET VESA VBE
+==============================================================================
+
+La ROM C0000h initialise la carte, installe INT 10h et contient les tables de
+modes adaptees au RAMDAC et aux oscillateurs. Les chaines "Tseng" ou "ET4000"
+dans la ROM sont de bons indices diagnostiques, pas une interface contractuelle.
+
+Les premieres cartes precedent VBE. Des BIOS plus recents ou des TSR offrent
+VBE 1.x/2.0. Detection VBE : AX=4F00h, ES:DI vers un bloc de 512 octets dont la
+signature initiale est "VBE2" si l'appelant souhaite les informations VBE 2.
+Le succes est AX=004Fh et la reponse commence par "VESA".
+
+Pour un mode VBE :
+
+  AX=4F01h  lire ModeInfoBlock;
+  AX=4F02h  fixer le mode;
+  AX=4F05h  changer la fenetre bancaire;
+  AX=4F07h  regler le debut d'affichage si pris en charge.
+
+Ne pas melanger la banque VBE, exprimee en unites WinGranularity, avec la banque
+Tseng 3CDh de 64 Kio. Si un pilote utilise VBE, il doit respecter les valeurs
+retournees dans ModeInfoBlock.
+
+
+==============================================================================
+9. CARTE DES PORTS D'ENTREES/SORTIES
+==============================================================================
+
+  Port       Direction  Fonction
+  ---------  ---------  ----------------------------------------------
+  3B4/3B5h   E/S        CRTC en adressage monochrome
+  3BAh       lecture    Input Status 1 monochrome
+  3BFh       ecriture   autorisation des extensions Tseng
+  3C0h       E/S        Attribute Controller index/donnees
+  3C1h       lecture    donnees Attribute Controller
+  3C2h       ecriture   Miscellaneous Output
+  3C2h       lecture    Input Status 0
+  3C3h       E/S        Video Subsystem Enable, base alternative
+  3C4/3C5h   E/S        Sequencer index/donnees
+  3C6h       E/S        masque DAC
+  3C7h       E/S        index de lecture DAC
+  3C8h       E/S        index d'ecriture DAC
+  3C9h       E/S        donnees DAC R/G/B
+  3CAh       ecriture   Feature Control
+  3CAh       lecture    Input Status 1, selon decodage
+  3CCh       lecture    Miscellaneous Output
+  3CDh       E/S        Segment Select ET4000, banques R/W
+  3CE/3CFh   E/S        Graphics Controller index/donnees
+  3D4/3D5h   E/S        CRTC en adressage couleur
+  3D8h       ecriture   cle d'extension en adressage couleur
+  3DAh       lecture    Input Status 1 couleur
+  46E8h      E/S        Video Subsystem Enable, base compatible IBM
+
+Le symbole 3#4 signifie 3B4h ou 3D4h selon le bit 0 de Miscellaneous Output.
+Lire 3CCh : bit 0=1 selectionne normalement les ports couleur 3Dxh.
+
+Attention a l'Attribute Controller : la lecture de 3DAh remet sa bascule sur la
+phase index. Apres les ecritures, envoyer 20h a 3C0h pour reactiver l'affichage.
+
+
+==============================================================================
+10. DEVERROUILLAGE DES EXTENSIONS
+==============================================================================
+
+Apres reset, certains registres Tseng sont proteges. Sequence classique :
+
+        mov     dx,03BFh
+        mov     al,03h
+        out     dx,al
+        mov     dx,03D8h        ; 3B8h si ports monochromes
+        mov     al,0A0h
+        out     dx,al
+
+Le choix 3D8h/3B8h suit le decodage couleur/monochrome. Une routine generale lit
+3CCh bit 0. Les pilotes doivent deverrouiller avant de toucher 3CDh ou les CRTC
+etendus et restaurer les registres modifies lorsqu'ils rendent la main.
+
+
+==============================================================================
+11. REGISTRE 3CDh ET BANQUES
+==============================================================================
+
+Segment Select, port 3CDh :
+
+  bits 3..0  banque d'ecriture, 0 a 15;
+  bits 7..4  banque de lecture, 0 a 15.
+
+Lorsque CRTC 36h bit 4 vaut zero, chaque banque represente 64 Kio. Pour choisir
+la meme banque N en lecture et en ecriture :
+
+        valeur = (N AND 0Fh) OR ((N AND 0Fh) SHL 4)
+
+Exemples : banque 0 -> 00h; banque 1 -> 11h; banque 10 -> AAh; banque 15 -> FFh.
+
+Les banques independantes permettent de copier entre deux portions de VRAM :
+placer la source dans le nibble haut, la destination dans le nibble bas, lire
+puis ecrire dans A000h. Conserver une copie logicielle de 3CDh est utile, mais
+une routine respectueuse sauvegarde sa valeur reelle avant une operation locale.
+
+Le calcul d'adresse packed-pixel est :
+
+  adresse_lineaire = Y * octets_par_ligne + X
+  banque            = adresse_lineaire SHR 16
+  decalage           = adresse_lineaire AND FFFFh
+
+Une ligne ou un rectangle peut franchir FFFFh. Decouper chaque transfert a la
+frontiere de banque; ne jamais supposer qu'une ligne reste dans une banque.
+
+
+==============================================================================
+12. REGISTRES CRTC ETENDUS
+==============================================================================
+
+Les registres ci-dessous sont indexes par 3D4h/3D5h ou 3B4h/3B5h. Les bits non
+documentes doivent etre preserves. Le BIOS reste la meilleure source de valeurs
+de timing pour une carte donnee.
+
+CRTC 32h - RAS/CAS Configuration
+  Controle des temporisations et de l'interface memoire. Ces valeurs dependent
+  du type et de la vitesse des DRAM. Ne pas les modifier dans un pilote normal.
+
+CRTC 33h - Extended Start
+  bits 1..0 : Display Start Address bits 17..16
+  bits 3..2 : Cursor Address bits 17..16
+  autres bits : fonctions de synchronisation/configuration selon revision.
+  Le faible nibble est reecrivable sur ET4000 et sert a une detection prudente.
+
+CRTC 34h - Compatibility Control
+  Comprend des choix de compatibilite et le choix de l'adresse Video Subsystem
+  Enable (3C3h ou 46E8h). Preserver les bits inconnus.
+
+CRTC 35h - Overflow High
+  bit 0 : Vertical Blank Start bit 10
+  bit 1 : Vertical Total bit 10
+  bit 2 : Vertical Display End bit 10
+  bit 3 : Vertical Sync Start bit 10
+  bit 4 : Line Compare bit 10
+  bit 5 : controle de synchronisation externe/genlock
+  bit 6 : fonction de cycle memoire selon implementation
+  bit 7 : interlace vertical
+
+CRTC 36h - Video System Configuration 1
+  bit 3 : caracteres de 16 bits de largeur
+  bit 4 : selection d'adressage lineaire/banque
+  bit 6 : chemin de donnees memoire 16 bits
+  bit 7 : operations d'E/S 16 bits
+
+CRTC 37h - Video System Configuration 2
+  Configuration de taille/organisation memoire, acces ROM, bande passante et
+  type DRAM/VRAM. Sa signification exacte depend du masque/revision. Il est
+  initialise par le BIOS et ne doit pas etre devine a partir de la seule taille.
+
+CRTC 3Fh - Hors compatibilite VGA
+  Certaines fonctions de timing supplementaires utilisent cet index suivant la
+  revision. Consulter la fiche du circuit exact avant toute ecriture.
+
+Le Display Start combine CRTC 0Ch/0Dh avec CRTC 33h bits 1..0. Il permet le
+panoramique ou le page flipping dans la memoire disponible. L'unite d'adresse
+depend du mode VGA; elle n'est pas toujours un octet.
+
+
+==============================================================================
+13. DETECTION FIABLE
+==============================================================================
+
+Une detection raisonnable est destructive pendant quelques microsecondes, mais
+doit etre entierement reversible :
+
+  1. verifier la presence d'une VGA par INT 10h/AX=1A00h, AL=1Ah;
+  2. lire le bit couleur dans 3CCh et choisir 3D4h ou 3B4h;
+  3. deverrouiller les extensions Tseng;
+  4. sauvegarder 3CDh et CRTC 33h;
+  5. verifier que les quatre bits de chaque nibble de 3CDh sont reecrits;
+  6. verifier que le faible nibble de CRTC 33h est reecrivable;
+  7. restaurer CRTC 33h puis 3CDh, meme en cas d'echec;
+  8. utiliser eventuellement la chaine ROM comme confirmation.
+
+Pourquoi deux tests? L'ET3000 utilise un registre 3CDh proche, mais ses banques
+ne disposent que de trois bits et ses extensions CRTC different. Un simple
+"out 3CDh" identifie au mieux une famille Tseng, pas necessairement un ET4000.
+
+Ne jamais laisser une banque de test active. Ne pas lancer le test pendant
+qu'un autre pilote graphique ou Windows gere la carte. Sous un systeme protege,
+les IN/OUT peuvent etre interceptes ou interdits.
+
+
+==============================================================================
+14. ACCES PACKED-PIXEL 256 COULEURS
+==============================================================================
+
+Dans les modes Tseng 256 couleurs, un octet represente normalement un pixel.
+Le pas est habituellement la largeur du mode (640, 800 ou 1024), mais un pilote
+doit conserver le pas configure, particulierement avec VBE.
+
+Exemple 640x480 : pixel (639,479)
+
+  L = 479 * 640 + 639 = 307199 = 0004AFFFh
+  banque = 4
+  offset = AFFFh
+  3CDh = 44h si les banques lecture/ecriture doivent etre identiques.
+
+Pour remplir un ecran, selectionner chaque banque une seule fois et utiliser
+REP STOSW/STOSD. Changer de banque pour chaque pixel serait extremement lent.
+
+
+==============================================================================
+15. ACCES PLANAIRE 16 COULEURS
+==============================================================================
+
+Les modes 16 couleurs utilisent quatre plans. Huit pixels horizontaux partagent
+une adresse et chaque plan fournit un bit de couleur. Les registres essentiels :
+
+  Sequencer 02h  Map Mask, choix des plans ecrits;
+  GDC 00h        Set/Reset;
+  GDC 01h        Enable Set/Reset;
+  GDC 03h        Data Rotate / fonction logique;
+  GDC 04h        Read Map Select;
+  GDC 05h        Graphics Mode;
+  GDC 08h        Bit Mask.
+
+Pour modifier un pixel sans detruire les sept voisins : calculer l'adresse,
+faire une lecture factice pour charger les latches, programmer Bit Mask avec
+80h SHR (X AND 7), puis effectuer l'ecriture. Les modes d'ecriture VGA 0 ou 2
+permettent plusieurs compromis. Restaurer GDC 08h a FFh apres la primitive.
+
+En 1024x768x16, les plans consomment ensemble 393216 octets. La banque et les
+compteurs etendus restent pertinents bien que l'organisation soit planaire.
+
+
+==============================================================================
+16. PALETTE ET SYNCHRONISATION VERTICALE
+==============================================================================
+
+Ecrire une couleur DAC :
+
+        mov     dx,03C8h
+        mov     al,index
+        out     dx,al
+        inc     dx              ; 3C9h
+        mov     al,rouge        ; 0..63 sur DAC VGA 6 bits
+        out     dx,al
+        mov     al,vert
+        out     dx,al
+        mov     al,bleu
+        out     dx,al
+
+Attendre le debut d'un nouveau retour vertical en mode couleur :
+
+        mov     dx,03DAh
+@@fin:  in      al,dx
+        test    al,08h
+        jnz     @@fin           ; sortir du retour en cours
+@@deb:  in      al,dx
+        test    al,08h
+        jz      @@deb           ; attendre le prochain
+
+Cette boucle monopolise le CPU et doit posseder un delai de securite dans un
+programme robuste. Lire 3DAh modifie aussi la bascule de l'Attribute Controller.
+
+
+==============================================================================
+17. TIMINGS, HORLOGES ET INTERLACE
+==============================================================================
+
+Un mode video est defini par les totaux horizontal/vertical, debut et fin des
+synchronisations, zone visible, polarites, horloge pixel et division memoire.
+Les bits VGA bas se trouvent dans CRTC 00h..18h; les bits hauts ET4000 notamment
+dans 35h. L'interlace est commande par une extension Tseng.
+
+Regles de securite :
+
+  * partir d'une table valide pour la carte, le RAMDAC et le moniteur;
+  * desactiver l'affichage pendant une reprogrammation complete;
+  * deverrouiller CRTC 00h..07h via CRTC 11h bit 7;
+  * programmer Sequencer, CRTC, GDC et ATC dans l'ordre documente;
+  * preserver les bits reserves;
+  * reactiver l'ATC avec OUT 3C0h,20h;
+  * ne pas copier aveuglement les valeurs d'une carte OEM differente.
+
+
+==============================================================================
+18. ET4000/W32, W32i ET W32p
+==============================================================================
+
+Les W32 conservent une compatibilite VGA/ET4000 mais ajoutent un accelerateur
+GUI. Selon revision, il sait notamment :
+
+  * copier des rectangles (BitBLT);
+  * remplir des rectangles;
+  * tracer des lignes;
+  * appliquer des operations raster (ROP);
+  * transferer des donnees entre hote et memoire video;
+  * gerer transparence, masque ou motif;
+  * signaler l'etat occupe et mettre des commandes en file.
+
+Le pilote doit d'abord identifier la revision, mapper les BAR ou ressources
+locales appropriees, attendre l'espace libre/la fin du moteur, programmer les
+adresses source/destination, les pas, dimensions et ROP, puis lancer l'operation.
+Les adresses, bits et restrictions changent entre W32, W32i et W32p : il serait
+dangereux de publier une unique table comme si elle valait pour tous.
+
+Pour le DOS portable, VBE et les ecritures framebuffer restent le chemin le
+plus simple. La programmation directe du moteur W32 exige le manuel 1994 et une
+branche de code par revision. Les recouvrements lors d'un BitBLT imposent aussi
+le bon sens de copie, comme memmove.
+
+Les cartes W32 disposent souvent de 1, 2 ou 4 Mio et de RAMDAC capables de
+profondeurs superieures. Cela n'est pas garanti par le seul nom "W32".
+
+
+==============================================================================
+19. DETECTION PCI DES W32p
+==============================================================================
+
+L'ET4000AX ISA n'est pas PCI : le BIOS PCI ne le trouvera pas. Certaines W32p
+sont PCI. Un logiciel DOS peut enumerer la configuration PCI par INT 1Ah :
+
+  AX=B101h  installation PCI BIOS; succes si CF=0 et EDX="PCI ".
+  AX=B102h  rechercher un peripherique par Vendor/Device ID.
+  AX=B108h  lire un octet de configuration.
+  AX=B109h  lire un mot.
+  AX=B10Ah  lire un double mot.
+
+Le Vendor ID historique de Tseng Labs est 100Ch. Le Device ID doit etre obtenu
+du sous-modele exact ou par enumeration de classe; ne pas assimiler toutes les
+W32p a un identificateur unique sans verifier la revision.
+
+Exemple d'enumeration par classe VGA (PCI BIOS 2.0) :
+
+        mov     ax,0B103h       ; Find PCI Class Code
+        mov     ecx,00030000h   ; classe 03, sous-classe 00, prog-if 00
+        xor     si,si           ; premier appareil
+        int     1Ah
+        jc      pas_trouve
+        ; BH=bus, BL=(device SHL 3) OR function
+        mov     di,00h
+        mov     ax,0B109h       ; lire Vendor ID au registre 00h
+        int     1Ah             ; CX = Vendor ID si succes
+        cmp     cx,100Ch
+        je      tseng_pci
+
+Verifier la signature PCI BIOS avant B103h. Certains BIOS PCI emploient des
+conventions 32 bits qui exigent un 386. Sauvegarder les registres attendus par
+l'environnement et tester CF apres chaque appel.
+
+
+==============================================================================
+20. EXEMPLES ASSEMBLEUR
+==============================================================================
+
+Les exemples emploient une syntaxe MASM/TASM et supposent le mode couleur.
+
+20.1 Choisir la meme banque en lecture/ecriture
+------------------------------------------------
+
+; Entree AL = banque 0..15. Detruit AH, DX.
+SetET4Bank PROC NEAR
+        and     al,0Fh
+        mov     ah,al
+        shl     ah,1
+        shl     ah,1
+        shl     ah,1
+        shl     ah,1
+        or      al,ah
+        mov     dx,03CDh
+        out     dx,al
+        ret
+SetET4Bank ENDP
+
+20.2 Lire/ecrire un registre CRTC
+---------------------------------
+
+; IN AL=index, retourne AL=valeur; conserve DX.
+ReadCRTC PROC NEAR
+        push    dx
+        mov     dx,03D4h
+        out     dx,al
+        inc     dx
+        in      al,dx
+        pop     dx
+        ret
+ReadCRTC ENDP
+
+; IN AL=index, AH=valeur; conserve DX.
+WriteCRTC PROC NEAR
+        push    dx
+        mov     dx,03D4h
+        out     dx,al
+        inc     dx
+        mov     al,ah
+        out     dx,al
+        pop     dx
+        ret
+WriteCRTC ENDP
+
+20.3 Detection ET4000 reversible
+---------------------------------
+
+; Retour CF=0 si les tests ET4000 reussissent, CF=1 sinon.
+; A appeler uniquement apres verification VGA. Les extensions sont deverrouillees.
+DetectET4000 PROC NEAR
+        push    ax
+        push    bx
+        push    dx
+
+        mov     dx,03BFh
+        mov     al,03h
+        out     dx,al
+        mov     dx,03D8h
+        mov     al,0A0h
+        out     dx,al
+
+        mov     dx,03CDh
+        in      al,dx
+        mov     bl,al           ; sauvegarde banque
+        mov     al,0A5h
+        out     dx,al
+        in      al,dx
+        cmp     al,0A5h         ; 4 bits dans chaque nibble
+        jne     short D4FailBank
+
+        mov     dx,03D4h
+        mov     al,33h
+        out     dx,al
+        inc     dx
+        in      al,dx
+        mov     bh,al           ; sauvegarde CRTC 33h
+        xor     al,05h
+        and     al,0Fh
+        mov     ah,bh
+        and     ah,0F0h
+        or      al,ah
+        out     dx,al
+        in      al,dx
+        and     al,0Fh
+        mov     ah,bh
+        xor     ah,05h
+        and     ah,0Fh
+        cmp     al,ah
+        jne     short D4FailCRTC
+
+        mov     al,bh
+        out     dx,al           ; restaurer CRTC 33h
+        mov     dx,03CDh
+        mov     al,bl
+        out     dx,al
+        pop     dx
+        pop     bx
+        pop     ax
+        clc
+        ret
+
+D4FailCRTC:
+        mov     al,bh
+        out     dx,al
+D4FailBank:
+        mov     dx,03CDh
+        mov     al,bl
+        out     dx,al
+        pop     dx
+        pop     bx
+        pop     ax
+        stc
+        ret
+DetectET4000 ENDP
+
+20.4 PutPixel 1024x768x256 (386)
+--------------------------------
+
+; Entree: CX=X, DX=Y, AL=couleur. Mode 38h deja actif.
+; Utilise EAX/EBX, preserve ES, SI et DI. Le pas vaut 1024.
+PutPixel1024 PROC NEAR
+        push    es
+        push    si
+        push    di
+        xor     ah,ah
+        mov     si,ax           ; couleur conservee dans SI faible
+        movzx   eax,dx
+        shl     eax,10          ; Y*1024
+        movzx   ebx,cx
+        add     eax,ebx
+        mov     ebx,eax
+        shr     eax,16          ; AL=banque
+        and     al,0Fh
+        mov     ah,al
+        shl     ah,4
+        or      al,ah
+        mov     dx,03CDh
+        out     dx,al
+        mov     ax,0A000h
+        mov     es,ax
+        mov     di,bx           ; faible mot de l'adresse
+        mov     ax,si
+        mov     es:[di],al
+        pop     di
+        pop     si
+        pop     es
+        ret
+PutPixel1024 ENDP
+
+
+==============================================================================
+21. EXEMPLES TURBO PASCAL
+==============================================================================
+
+Ces exemples visent Turbo Pascal 6/7 en mode reel. Port[] et Mem[] viennent de
+l'unite System. Ils supposent que le programme a deja fixe un mode ET4000.
+
+21.1 Deverrouillage et banque
+-----------------------------
+
+Procedure ET4000Unlock;
+Begin
+  Port[$03BF] := $03;
+  Port[$03D8] := $A0;       { utiliser $03B8 en decodage monochrome }
+End;
+
+Procedure SetET4000Bank(Bank : Byte);
+Begin
+  Bank := Bank and $0F;
+  Port[$03CD] := Bank or (Bank shl 4);
+End;
+
+Procedure SetET4000Banks(ReadBank, WriteBank : Byte);
+Begin
+  Port[$03CD] := ((ReadBank and $0F) shl 4) or (WriteBank and $0F);
+End;
+
+21.2 Pixel packed-pixel complet
+--------------------------------
+
+Procedure PutPixelET4000(X, Y, Pitch : Word; Color : Byte);
+Var
+  Address : LongInt;
+  Bank    : Byte;
+  Ofs     : Word;
+Begin
+  Address := LongInt(Y) * Pitch + X;
+  Bank := Byte(Address shr 16);
+  Ofs := Word(Address and $FFFF);
+  SetET4000Bank(Bank);
+  Mem[$A000:Ofs] := Color;
+End;
+
+Function GetPixelET4000(X, Y, Pitch : Word) : Byte;
+Var
+  Address : LongInt;
+  Bank    : Byte;
+  Ofs     : Word;
+Begin
+  Address := LongInt(Y) * Pitch + X;
+  Bank := Byte(Address shr 16);
+  Ofs := Word(Address and $FFFF);
+  SetET4000Bank(Bank);
+  GetPixelET4000 := Mem[$A000:Ofs];
+End;
+
+21.3 Detection reversible
+--------------------------
+
+Function ReadCRTC(Index : Byte) : Byte;
+Begin
+  Port[$03D4] := Index;
+  ReadCRTC := Port[$03D5];
+End;
+
+Procedure WriteCRTC(Index, Value : Byte);
+Begin
+  Port[$03D4] := Index;
+  Port[$03D5] := Value;
+End;
+
+Function ET4000Detect : Boolean;
+Var
+  OldBank, Old33, Trial, Got : Byte;
+  BankOK, CRTCOK : Boolean;
+Begin
+  ET4000Unlock;
+
+  OldBank := Port[$03CD];
+  Port[$03CD] := $A5;
+  BankOK := Port[$03CD] = $A5;
+
+  Old33 := ReadCRTC($33);
+  Trial := (Old33 and $F0) or ((Old33 xor $05) and $0F);
+  WriteCRTC($33, Trial);
+  Got := ReadCRTC($33);
+  CRTCOK := (Got and $0F) = (Trial and $0F);
+
+  WriteCRTC($33, Old33);
+  Port[$03CD] := OldBank;
+  ET4000Detect := BankOK and CRTCOK;
+End;
+
+Pour une carte en decodage monochrome, ReadCRTC/WriteCRTC doivent employer
+3B4h/3B5h. Une bibliotheque generale determine la base avec Port[$3CC] and 1.
+
+21.4 Ecriture d'une palette
+----------------------------
+
+Procedure SetDAC(Index, R, G, B : Byte);
+Begin
+  Port[$03C8] := Index;
+  Port[$03C9] := R and $3F;
+  Port[$03C9] := G and $3F;
+  Port[$03C9] := B and $3F;
+End;
+
+21.5 Fixer un mode BIOS Tseng
+-----------------------------
+
+Procedure SetVideoMode(Mode : Byte); Assembler;
+Asm
+  mov ah,00h
+  mov al,Mode
+  int 10h
+End;
+
+Exemple :
+
+  ET4000Unlock;
+  SetVideoMode($2E);        { 640x480x256 selon BIOS Tseng }
+  PutPixelET4000(639, 479, 640, 15);
+  ReadLn;
+  SetVideoMode($03);
+
+
+==============================================================================
+22. ARCHITECTURE D'UN PILOTE DOS
+==============================================================================
+
+Un pilote propre devrait exposer :
+
+  Detect             identifie VGA, Tseng et revision;
+  QueryMemory        determine prudemment la memoire disponible;
+  EnumerateModes     prefere VBE, sinon table BIOS Tseng connue;
+  SetMode            verifie memoire, RAMDAC et moniteur;
+  SetBank            met en cache la banque courante;
+  PutPixel/GetPixel  primitives de reference;
+  HLine/Fill/Blit    decoupent aux frontieres de banque;
+  SetPalette         respecte la largeur du DAC;
+  WaitVBlank         avec temporisation;
+  Restore            rend le mode et les registres initiaux.
+
+Optimisations utiles : regrouper par banque, ecrire par mots/double mots lorsque
+l'alignement le permet, derouler les remplissages et conserver une table
+Y*Pitch. Mesurer sur materiel : certaines optimisations ISA aggravent les
+performances a cause des wait states.
+
+
+==============================================================================
+23. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Un emulateur ET4000 credible doit implementer au minimum :
+
+  * verrouillage/deverrouillage des extensions;
+  * lecture et ecriture coherentes du port 3CDh, quatre bits par banque;
+  * banques lecture/ecriture independantes;
+  * memoire 256/512/1024 Kio et comportement des adresses hors capacite;
+  * CRTC 33h et 35h dans la generation d'adresse/timing;
+  * blocs VGA, latches et modes d'ecriture;
+  * ATC et sa bascule index/donnees;
+  * DAC et masque 3C6h;
+  * retour vertical et Input Status 1;
+  * BIOS/modes coherents avec la quantite de VRAM annoncee.
+
+Points testes par les logiciels historiques : registres reecrits puis relus,
+banques haute et basse differentes, copie a cheval sur 64 Kio, page flipping,
+Line Compare, CRTC protege, ports mono/couleur et bits reserves preserves.
+
+Emuler "toutes les lectures = FFh" casse les detecteurs. Retourner chaque valeur
+ecrite sans appliquer ses effets produit une detection positive mais une image
+incorrecte. Le modele doit coupler registres et adressage reel de la VRAM.
+
+Pour W32, ajouter le moteur seulement sous un identifiant de modele W32. Il faut
+emuler la file, le statut busy, les ROP, les directions, les pas et les acces
+hote; un ET4000AX ne doit jamais annoncer ces capacites.
+
+
+==============================================================================
+24. DIAGNOSTIC ET PIEGES
+==============================================================================
+
+  Symptome                         Causes probables
+  ------------------------------  -------------------------------------------
+  Mode BIOS refuse                BIOS OEM sans ce mode, RAM insuffisante
+  Image repetee chaque 64 Kio     banque 3CDh non changee ou extensions fermees
+  Lecture d'une autre page        nibbles lecture/ecriture inverses
+  Couleurs incorrectes            palette non chargee, DAC 6/8 bits confondu
+  Bandes ou image inclinee        timing/horloge inadaptes au moniteur
+  Pixel au mauvais endroit        Pitch faux ou mode planaire traite en packed
+  Detection ET3000 comme ET4000   seul le port 3CDh a ete teste
+  Ecran noir apres ATC            OUT 3C0h,20h oublie
+  CRTC 00h..07h inchanges         protection CRTC 11h bit 7 active
+  Plantage sous OS protege        privilege IN/OUT absent ou ports virtualises
+  W32 lent comme AX               moteur non utilise, attente busy incorrecte
+
+Autres pieges :
+
+  * mode 38h exige au moins 768 Kio utilisables, normalement 1 Mio installe;
+  * une ROM contenant "ET4000" peut appartenir a un clone ou rester visible
+    alors qu'une autre carte est active;
+  * les numeros de modes Tseng ne sont pas les numeros VBE;
+  * le port 3CDh ET3000 n'a pas la largeur bancaire de l'ET4000;
+  * la memoire lineaire W32/PCI ne se programme pas comme CRTC 36h de l'AX;
+  * le RAMDAC determine les modes high-color, pas seulement le controleur;
+  * sauvegarder seulement les registres VGA standards ne restaure pas un mode
+    ET4000 complet.
+
+
+==============================================================================
+25. PLAN DE VALIDATION
+==============================================================================
+
+Tester au minimum :
+
+  [ ] VGA INT 10h/1A00h puis detection ET4000 reversible
+  [ ] restauration exacte de 3CDh et CRTC 33h
+  [ ] banques 0, 1, 7, 8, 15 et lecture/ecriture independantes
+  [ ] pixels aux offsets FFFEh, FFFFh, 0000h de la banque suivante
+  [ ] premier/dernier pixel de chaque mode
+  [ ] lignes et rectangles traversant une frontiere 64 Kio
+  [ ] palette indices 0 et 255, masque DAC
+  [ ] mode planaire, Map Mask, Bit Mask et latches
+  [ ] retour vertical avec delai de securite
+  [ ] 256, 512 et 1024 Kio simules
+  [ ] ports CRTC couleur et monochrome
+  [ ] BIOS Tseng sans VBE, VBE 1.x et VBE 2.0
+  [ ] distinction ET3000, ET4000AX et ET4000/W32
+  [ ] si PCI : PCI BIOS absent/present et plusieurs fonctions
+
+
+==============================================================================
+26. REFERENCES
+==============================================================================
+
+Sources primaires
+-----------------
+
+  * Tseng Laboratories, ET4000 Graphics Controller Data Book, 1990.
+    Description du materiel, ports, registres, banques et modes BIOS.
+    https://www.dosdays.co.uk/media/tsenglabs/
+      Tseng_Labs_ET4000_Graphics_Controller_1990.pdf
+    Miroir :
+    https://old.vgamuseum.info/images/stories/doc/tseng/et4000.pdf
+
+  * Tseng Laboratories, ET4000/W32 Graphics Controller Data Book, 1994.
+    Famille acceleree, revisions W32 et programmation du moteur.
+    https://bitsavers.org/components/tsengLabs/
+      Tseng_Labs_ET4000w32_Graphics_Controller_1994.pdf
+
+  * IBM, Personal System/2 Hardware Interface Technical Reference,
+    section Video Graphics Array. Reference des registres VGA standards.
+
+  * VESA, VESA BIOS Extension (VBE) Core Functions Standard.
+    Fonctions INT 10h/AX=4Fxx et structure ModeInfoBlock.
+
+Sources techniques secondaires
+------------------------------
+
+  * Ralf Brown's Interrupt List : INT 10h, VBE et PCI BIOS INT 1Ah.
+  * VGADOC / Ferraro, Programmer's Guide to the EGA, VGA, and Super VGA Cards.
+  * Ralph Brown/PCI SIG lists pour les identificateurs PCI historiques.
+
+Regle de priorite : pour un registre W32, employer le manuel de la revision
+exacte. Pour une carte OEM, le manuel du PCB et du RAMDAC complete le manuel du
+controleur. Une table trouvee pour ET3000, ET4000AX ou W32 ne doit pas etre
+transposee automatiquement a une autre branche.

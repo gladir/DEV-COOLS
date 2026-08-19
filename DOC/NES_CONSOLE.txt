@@ -1,0 +1,1234 @@
+==============================================================================
+ NINTENDO ENTERTAINMENT SYSTEM / FAMILY COMPUTER
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Nintendo Entertainment System (NES), la Family Computer
+(Famicom) japonaise et leurs principales variantes. Il couvre l'electronique,
+les bus, le processeur Ricoh, le PPU, l'audio, les manettes, les cartouches, les
+mappers, les formats d'images ROM et la programmation en assembleur 6502.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible par les outils
+anciens. Les adresses precedees de $ sont hexadecimales.
+Date de revision : aout 2026.
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et variantes
+  2. Architecture generale
+  3. Horloges et regions video
+  4. CPU Ricoh 2A03/2A07
+  5. Jeu d'instructions 6502
+  6. Carte memoire CPU
+  7. Interruptions et vecteurs
+  8. PPU Ricoh 2C02/2C07
+  9. Carte memoire PPU
+ 10. Registres PPU
+ 11. Tuiles et tables de motifs
+ 12. Nametables, attributs et mirroring
+ 13. Defilement
+ 14. Sprites et OAM
+ 15. Palette et couleurs
+ 16. Deroulement d'une image
+ 17. APU et registres audio
+ 18. Canaux pulse
+ 19. Triangle, bruit et DMC
+ 20. Melange audio
+ 21. Manettes et peripheriques
+ 22. Connecteur cartouche
+ 23. PRG-ROM, CHR-ROM, RAM et bus conflicts
+ 24. Mappers courants
+ 25. Famicom Disk System et extensions
+ 26. Formats iNES et NES 2.0
+ 27. Initialisation correcte
+ 28. Boucle principale et NMI
+ 29. Exemples assembleur 6502
+ 30. ROM NROM minimale avec ca65
+ 31. Optimisation
+ 32. Developpement et debogage
+ 33. Conseils pour un emulateur
+ 34. Materiel, alimentation et signaux video
+ 35. Diagnostic et pieges
+ 36. Plan de validation
+ 37. References
+
+
+==============================================================================
+1. HISTORIQUE ET VARIANTES
+==============================================================================
+
+Nintendo commercialise la Family Computer au Japon en 1983. La NES, adaptee aux
+marches nord-americain et europeen, arrive ensuite avec un boitier, un connecteur
+de cartouche et un circuit de verrouillage differents. Le coeur logique reste
+proche : CPU Ricoh derive du 6502, PPU a tuiles et audio integre au CPU.
+
+Principales familles :
+
+  Famicom japonaise       60 broches, video composite/RF selon modele,
+                          manettes d'origine souvent captives, port extension.
+
+  NES front-loader        72 broches, connecteur ZIF, CIC 10NES, RF/composite.
+
+  NES top-loader          chargement par le dessus; revisions video variables.
+
+  AV Famicom              sortie composite et manettes detachables.
+
+  PAL NES                 CPU/PPU et timings PAL, 50 Hz environ.
+
+  Dendy/famiclones        timings hybrides et materiel non toujours identique.
+
+  Nintendo Vs. System     variante arcade, PPUs/palettes/protections propres.
+
+  PlayChoice-10           systeme arcade avec NES et materiel de supervision.
+
+Une ROM ne doit pas deduire la region uniquement de la langue ou du boitier.
+NES 2.0 peut encoder le type de timing; le materiel reel reste l'autorite.
+
+
+==============================================================================
+2. ARCHITECTURE GENERALE
+==============================================================================
+
+  cartouche PRG/RAM/mapper <---- bus CPU ----> RP2A03/RP2A07 CPU + APU
+             |                                      |
+             +-------- bus PPU ----> RP2C02/RP2C07 PPU
+                                      |       |
+                                  CHR-ROM/RAM  2 Kio CIRAM
+                                      |
+                                  video composite/RGB selon systeme
+
+Le CPU et le PPU ont chacun un espace d'adresses de 16 bits distinct. Le CPU ne
+voit pas directement la memoire graphique; il passe par les registres $2000 a
+$2007. La cartouche est branchee aux deux bus et peut modifier leur decodage.
+
+Ressources d'une NES NTSC typique :
+
+  * CPU 8 bits, espace CPU de 64 Kio;
+  * 2 Kio de RAM CPU interne a la console;
+  * PPU avec espace video de 16 Kio miroir dans 64 Kio;
+  * 2 Kio de CIRAM pour les nametables;
+  * 256 octets d'OAM pour 64 sprites;
+  * 32 octets de RAM palette;
+  * cinq canaux audio de base;
+  * deux ports manette serie;
+  * memoire et logique supplementaires dans la cartouche.
+
+
+==============================================================================
+3. HORLOGES ET REGIONS VIDEO
+==============================================================================
+
+Valeurs approximatives usuelles :
+
+  Systeme       CPU             PPU             Lignes/image  Images/s
+  ------------  --------------  --------------  ------------  --------
+  NTSC NES      1,789773 MHz    5,369318 MHz    262           60,10
+  PAL NES       1,662607 MHz    5,320342 MHz    312           50,01
+  Dendy         1,773448 MHz    5,320342 MHz    312           50,01
+
+Le PPU NTSC avance normalement de trois points (dots) par cycle CPU. Une ligne
+contient 341 dots. Sur NTSC, la pre-render line perd un dot une image sur deux
+quand le rendu est actif, ce qui complique une synchronisation cycle exacte.
+
+PAL n'est pas simplement NTSC ralenti : rapport CPU/PPU, longueur du vblank,
+comportement OAM et frequences APU different. Un jeu sensible aux cycles doit
+choisir des tables distinctes.
+
+
+==============================================================================
+4. CPU RICOH 2A03/2A07
+==============================================================================
+
+RP2A03 (NTSC) et RP2A07 (PAL) contiennent :
+
+  * un coeur compatible MOS 6502 sans mode decimal fonctionnel;
+  * l'APU;
+  * DMA OAM et DMC;
+  * ports de manettes;
+  * logique d'interruptions IRQ/NMI.
+
+Registres CPU : A, X, Y, SP, PC et P. Drapeaux P :
+
+  N V - B D I Z C
+
+N negatif, V overflow, B representation logicielle de BRK, D decimal, I masque
+IRQ, Z zero, C retenue. SED/CLD modifient D, mais l'arithmetique ADC/SBC du
+2A03/2A07 reste binaire. Un emulateur ne doit pas activer le BCD.
+
+La pile occupe $0100-$01FF. SP est sur 8 bits et descend. Les adresses de page
+zero $0000-$00FF donnent des instructions plus courtes/rapides et plusieurs
+modes d'adressage indirects.
+
+
+==============================================================================
+5. JEU D'INSTRUCTIONS 6502
+==============================================================================
+
+Familles officielles :
+
+  Transfert       LDA LDX LDY STA STX STY TAX TAY TXA TYA TSX TXS
+  Pile            PHA PHP PLA PLP
+  Arithmetique    ADC SBC INC INX INY DEC DEX DEY
+  Logique         AND ORA EOR BIT
+  Decalage        ASL LSR ROL ROR
+  Comparaison     CMP CPX CPY
+  Branchements    BCC BCS BEQ BMI BNE BPL BVC BVS
+  Sauts           JMP JSR RTS RTI BRK
+  Drapeaux        CLC CLD CLI CLV SEC SED SEI
+  Divers          NOP
+
+Modes : immediate, zero page, zero page X/Y, absolu, absolu X/Y, indirect,
+(indirect,X), (indirect),Y, relatif, accumulateur et implicite.
+
+Particularites importantes :
+
+  * une lecture indexee franchissant une page coute souvent un cycle de plus;
+  * une branche prise coute un cycle, plus un si elle franchit une page;
+  * JMP ($xxFF) lit l'octet haut a $xx00, bug du 6502 original;
+  * plusieurs instructions effectuent des lectures factices visibles du mapper;
+  * les opcodes non documentes existent physiquement, mais certains sont
+    instables ou dependent du bus; eviter de les employer sans necessite.
+
+
+==============================================================================
+6. CARTE MEMOIRE CPU
+==============================================================================
+
+  Adresse        Taille  Fonction
+  -------------  ------  -----------------------------------------------
+  $0000-$07FF    2 Kio   RAM interne
+  $0800-$1FFF            miroirs de la RAM tous les $0800
+  $2000-$2007    8       registres PPU
+  $2008-$3FFF            miroirs PPU tous les 8 octets
+  $4000-$4013            registres APU
+  $4014                   DMA OAM
+  $4015                   statut/activation APU
+  $4016                   manette 1 et strobe
+  $4017                   manette 2 lecture / frame counter ecriture
+  $4018-$401F            fonctions de test normalement desactivees
+  $4020-$5FFF            extension cartouche/mapper
+  $6000-$7FFF    8 Kio   souvent PRG-RAM, sauvegarde ou mapper
+  $8000-$FFFF   32 Kio   normalement PRG-ROM et ecritures mapper
+
+La cartouche decide reellement du contenu de $4020-$FFFF. Les plages indiquees
+sont des conventions, pas une memoire integree a la console.
+
+Organisation RAM recommandee, non imposee :
+
+  $0000-$00FF  page zero, variables frequentes et pointeurs
+  $0100-$01FF  pile
+  $0200-$02FF  copie logicielle de l'OAM
+  $0300-$06FF  variables, tampons, file de mises a jour PPU
+  $0700-$07FF  pile audio ou decompression selon le projet
+
+
+==============================================================================
+7. INTERRUPTIONS ET VECTEURS
+==============================================================================
+
+  $FFFA-$FFFB  vecteur NMI, little-endian
+  $FFFC-$FFFD  vecteur RESET
+  $FFFE-$FFFF  vecteur IRQ/BRK
+
+RESET force I=1 et charge PC depuis $FFFC. NMI provient principalement du PPU au
+debut du vblank si PPUCTRL bit 7 est actif. IRQ peut venir du frame counter APU,
+du DMC ou d'un mapper. BRK utilise le vecteur IRQ avec une valeur de pile qui
+permet de le distinguer dans certaines routines.
+
+NMI n'est pas masquable par SEI. Une routine NMI doit sauver les registres
+qu'elle modifie, effectuer un travail borne, acquitter/traiter son etat et finir
+par RTI. Un NMI trop long peut deborder sur le rendu suivant.
+
+
+==============================================================================
+8. PPU RICOH 2C02/2C07
+==============================================================================
+
+Le PPU produit une image de 256x240 pixels logiques a partir de tuiles 8x8 et de
+64 sprites. Le signal analogique et l'overscan font que tous les pixels ne sont
+pas necessairement visibles sur un televiseur.
+
+Variantes principales : RP2C02 NTSC, RP2C07 PAL, puces RGB du Vs. System et
+PlayChoice. Les valeurs de palette ne donnent pas exactement les memes couleurs
+sur toutes les revisions. La NES classique genere directement un signal video
+composite; il n'existe pas de palette RGB numerique officielle unique.
+
+Pendant le rendu, le PPU lit continuellement nametables, attributs et motifs.
+Le CPU ne doit normalement ecrire PPUDATA que pendant vblank ou rendu desactive,
+sauf techniques de raster tres soigneusement synchronisees.
+
+
+==============================================================================
+9. CARTE MEMOIRE PPU
+==============================================================================
+
+  Adresse        Fonction
+  -------------  --------------------------------------------------------
+  $0000-$0FFF    table de motifs 0, CHR-ROM/CHR-RAM de la cartouche
+  $1000-$1FFF    table de motifs 1
+  $2000-$23FF    nametable 0
+  $2400-$27FF    nametable 1
+  $2800-$2BFF    nametable 2
+  $2C00-$2FFF    nametable 3
+  $3000-$3EFF    miroir de $2000-$2EFF
+  $3F00-$3F1F    palette
+  $3F20-$3FFF    miroirs de palette tous les 32 octets
+
+L'adresse PPU fait 14 bits; $4000-$FFFF reflete $0000-$3FFF. Les quatre
+nametables logiques exigeraient 4 Kio, mais la console ne contient que 2 Kio de
+CIRAM. La cartouche cable A10 ou fournit sa propre VRAM.
+
+
+==============================================================================
+10. REGISTRES PPU
+==============================================================================
+
+$2000 PPUCTRL, ecriture
+  bit 7  NMI au debut du vblank
+  bit 6  mode maitre/esclave, normalement 0
+  bit 5  hauteur sprite : 0=8x8, 1=8x16
+  bit 4  table de motifs du fond : 0=$0000, 1=$1000
+  bit 3  table de motifs sprites 8x8
+  bit 2  increment PPUDATA : 0=1, 1=32
+  bits1:0 nametable de base; alimentent aussi le registre de scroll interne
+
+$2001 PPUMASK, ecriture
+  bit 7  accent bleu
+  bit 6  accent vert
+  bit 5  accent rouge
+  bit 4  afficher les sprites
+  bit 3  afficher le fond
+  bit 2  sprites dans les 8 pixels gauches
+  bit 1  fond dans les 8 pixels gauches
+  bit 0  niveaux de gris
+  Les effets des bits d'accent varient sur PPUs RGB/PAL.
+
+$2002 PPUSTATUS, lecture
+  bit 7  vblank; la lecture l'efface
+  bit 6  sprite 0 hit
+  bit 5  sprite overflow
+  bits4:0 bus PPU ouvert, pas un statut stable
+  Lire $2002 remet aussi la bascule d'ecriture $2005/$2006 a son premier temps.
+  Une lecture au bord exact du vblank peut supprimer le drapeau ou le NMI.
+
+$2003 OAMADDR, ecriture
+  Adresse dans l'OAM pour $2004.
+
+$2004 OAMDATA, lecture/ecriture
+  Donnees OAM. Les acces pendant rendu ont des comportements particuliers.
+
+$2005 PPUSCROLL, deux ecritures
+  Premiere : scroll horizontal et fine X.
+  Seconde  : scroll vertical.
+
+$2006 PPUADDR, deux ecritures
+  Premiere : octet haut, seuls 6 bits utiles.
+  Seconde  : octet bas et transfert vers l'adresse PPU courante.
+
+$2007 PPUDATA, lecture/ecriture
+  Acces VRAM a l'adresse courante puis increment de 1 ou 32. Les lectures sont
+  retardees par un tampon, sauf palette $3F00-$3FFF qui retourne immediatement
+  la palette tout en modifiant le tampon par un acces miroir sous-jacent.
+
+$4014 OAMDMA, ecriture
+  L'octet ecrit choisit la page CPU source. Copie 256 octets depuis $xx00-$xxFF
+  vers OAM a partir de OAMADDR. Immobilise le CPU 513 ou 514 cycles selon la
+  parite. Une collision avec DMA DMC complique le timing.
+
+
+==============================================================================
+11. TUILES ET TABLES DE MOTIFS
+==============================================================================
+
+Une tuile 8x8 a 2 bits par pixel occupe 16 octets :
+
+  octets 0..7   plan faible, une ligne par octet
+  octets 8..15  plan fort, une ligne par octet
+
+Le bit 7 est le pixel gauche. Pour chaque pixel :
+
+  index = bit_plan_faible + 2*bit_plan_fort
+
+L'index 0 est transparent pour les sprites et choisit la couleur universelle
+du fond pour les tuiles de fond. Les indices 1..3 sont combines a une palette
+de zone ou de sprite.
+
+CHR-ROM est en lecture seule et programme a la fabrication. CHR-RAM permet au
+CPU de telecharger des motifs via $2006/$2007, rendu desactive. Les mappers
+peuvent changer des banques CHR de 8, 4, 2 ou 1 Kio.
+
+
+==============================================================================
+12. NAMETABLES, ATTRIBUTS ET MIRRORING
+==============================================================================
+
+Chaque nametable logique occupe $400 octets :
+
+  $000-$3BF  960 numeros de tuiles, 32 colonnes x 30 lignes
+  $3C0-$3FF  64 octets d'attributs
+
+Un octet d'attribut decrit quatre zones 2x2 tuiles. Chaque quadrant prend deux
+bits et choisit une des quatre palettes de fond :
+
+  bits 1:0  quadrant haut gauche
+  bits 3:2  haut droite
+  bits 5:4  bas gauche
+  bits 7:6  bas droite
+
+Types de cablage/mirroring :
+
+  Vertical    $2000=$2800, $2400=$2C00; utile au defilement horizontal.
+  Horizontal  $2000=$2400, $2800=$2C00; utile au defilement vertical.
+  One-screen  toutes les nametables vers une page choisie par le mapper.
+  Four-screen VRAM supplementaire dans la cartouche, quatre pages reelles.
+
+Les expressions historiques "horizontal mirroring" et "vertical mirroring"
+sont ambigues : elles nomment parfois la disposition, parfois l'axe de reflet.
+Toujours donner les egalites d'adresses dans une documentation technique.
+
+
+==============================================================================
+13. DEFILEMENT
+==============================================================================
+
+Le PPU utilise des registres internes souvent notes v, t, x et w :
+
+  v  adresse VRAM courante pendant le rendu
+  t  adresse VRAM temporaire
+  x  scroll horizontal fin, 3 bits
+  w  bascule premiere/seconde ecriture
+
+$2000 bits 1:0 modifie t. Deux ecritures $2005 alimentent X grossier/x fin puis
+Y grossier/Y fin. Deux ecritures $2006 fixent l'adresse. Lire $2002 remet w=0.
+
+Pour un jeu simple, la NMI fait :
+
+  1. mises a jour VRAM;
+  2. DMA OAM;
+  3. ecrire deux fois $2005;
+  4. ecrire PPUCTRL si la nametable a change;
+  5. laisser le rendu reprendre.
+
+Les split screens utilisent sprite 0 hit, IRQ de scanline d'un mapper ou code
+cycle par cycle. Les ecritures tardives doivent tenir compte des transferts
+internes horizontaux et verticaux du PPU.
+
+
+==============================================================================
+14. SPRITES ET OAM
+==============================================================================
+
+64 sprites, quatre octets chacun :
+
+  octet 0  Y du haut moins 1; $FF place generalement hors ecran
+  octet 1  numero de tuile
+  octet 2  attributs
+           bits1:0 palette sprite 0..3
+           bit5 priorite : 0 devant fond, 1 derriere pixels fond non nuls
+           bit6 retournement horizontal
+           bit7 retournement vertical
+           autres bits non utilises
+  octet 3  X
+
+En mode 8x16, bit 0 du numero choisit la table de motifs et bits 7..1 la paire
+de tuiles. PPUCTRL bit 3 n'est alors pas utilise pour les sprites.
+
+Le PPU ne rend que huit sprites par ligne. Les suivants disparaissent. Le bit
+overflow a un algorithme materiel defectueux et ne constitue pas un compteur
+fiable. Les jeux alternent parfois l'ordre des sprites pour transformer la
+disparition fixe en scintillement.
+
+Sprite 0 hit est pose lorsqu'un pixel opaque du sprite 0 rencontre un pixel de
+fond opaque, sous diverses exclusions (pixel 255, masques gauche, rendu coupe).
+Il est efface sur la ligne de pre-rendu.
+
+
+==============================================================================
+15. PALETTE ET COULEURS
+==============================================================================
+
+Adresses :
+
+  $3F00       couleur universelle du fond
+  $3F01-$3F0F quatre palettes fond de 4 entrees
+  $3F10       miroir de $3F00
+  $3F11-$3F1F quatre palettes sprites
+
+$3F14, $3F18 et $3F1C refletent egalement $3F04, $3F08 et $3F0C. Les entrees
+zero des palettes ne sont normalement pas affichees comme couleurs distinctes.
+
+Une valeur de palette comporte six bits. Certaines couleurs $xD sont a eviter :
+elles produisent un niveau de signal particulier et peuvent etre noires ou
+problematiques selon le materiel. Les couleurs $0E/$0F, $1E/$1F, etc. ne sont
+pas toutes equivalentes sur chaque PPU.
+
+La couleur RGB affichee depend du modele PPU, du codage composite, du televiseur
+et des bits d'accent. Un emulateur doit annoncer la palette qu'il emploie; il
+n'existe pas une table RGB unique pouvant etre appelee "la palette officielle".
+
+
+==============================================================================
+16. DEROULEMENT D'UNE IMAGE
+==============================================================================
+
+NTSC :
+
+  lignes 0-239    image visible
+  ligne 240       post-render, inactive
+  lignes 241-260  vblank; drapeau pose vers dot 1 de 241
+  ligne 261       pre-render; nettoyage des drapeaux vers dot 1
+
+Chaque ligne fait normalement 341 dots. Le rendu du fond effectue des lectures
+de nametable, attribut et deux plans de motif par groupe de huit pixels. Les
+sprites de la ligne suivante sont evalues et charges en parallele.
+
+Le budget vblank NTSC est court, environ 20 lignes. Un DMA OAM consomme deja
+513/514 cycles CPU. Les grandes cartes doivent etre chargees rendu coupe ou
+decompressees progressivement sur plusieurs images.
+
+
+==============================================================================
+17. APU ET REGISTRES AUDIO
+==============================================================================
+
+  Adresse        Fonction
+  -------------  ---------------------------------------------
+  $4000-$4003    pulse 1
+  $4004-$4007    pulse 2
+  $4008-$400B    triangle
+  $400C-$400F    bruit
+  $4010-$4013    DMC
+  $4015 lecture  statut des canaux et IRQ
+  $4015 ecriture activation des cinq canaux
+  $4017 ecriture frame counter, mode et inhibition IRQ
+
+Le frame counter cadence enveloppes, sweep et length counters en sequences de
+quatre ou cinq etapes. Les timings exacts different NTSC/PAL. Une ecriture a
+$4017 prend effet apres un delai dependant de la parite CPU.
+
+Lire $4015 retourne l'activite des length counters/DMC et les drapeaux IRQ. La
+lecture efface l'IRQ frame counter, mais pas l'IRQ DMC. Ecrire $4015 avec bit 4
+a zero arrete le DMC; desactiver un canal efface son length counter.
+
+
+==============================================================================
+18. CANAUX PULSE
+==============================================================================
+
+Deux generateurs a onde rectangulaire, chacun avec :
+
+  * quatre rapports cycliques 12,5 %, 25 %, 50 %, 25 % inverse;
+  * enveloppe ou volume constant 0..15;
+  * length counter;
+  * sweep de frequence;
+  * timer 11 bits.
+
+$4000/$4004 : duty, boucle/length halt, volume constant/enveloppe et volume.
+$4001/$4005 : sweep enable, periode, signe, decalage.
+$4002/$4006 : huit bits bas du timer.
+$4003/$4007 : trois bits hauts, chargement length et redemarrage enveloppe.
+
+Frequence approximative NTSC : CPU / (16*(timer+1)). Un timer inferieur a 8 ou
+un sweep hors plage rend le canal muet. La negation du sweep differe legerement
+entre pulse 1 et pulse 2 a cause du complement utilise.
+
+
+==============================================================================
+19. TRIANGLE, BRUIT ET DMC
+==============================================================================
+
+Triangle
+  Onde a 32 pas, timer 11 bits, length counter et linear counter. Pas de volume
+  direct. Frequence approximative CPU/(32*(timer+1)). Un timer tres petit donne
+  une sortie ultrasonique/aliasing plutot qu'un silence garanti.
+
+Bruit
+  Registre a decalage a retroaction de 15 bits. $400E choisit une periode et le
+  mode court/long. Enveloppe/volume a $400C, length a $400F. Les tables de
+  periodes sont differentes NTSC et PAL.
+
+DMC
+  Lit des octets dans l'espace CPU, un bit a la fois, et ajuste un DAC 7 bits.
+  $4010 choisit IRQ, boucle et taux; $4011 charge directement le DAC; $4012
+  source = $C000 + valeur*64; $4013 longueur = valeur*16 + 1.
+
+Les lectures DMC volent des cycles CPU et peuvent entrer en conflit avec OAM DMA
+ou les lectures de manette. Elles voient la cartographie PRG courante : un mapper
+doit conserver la banque contenant l'echantillon ou la changer avec prudence.
+
+
+==============================================================================
+20. MELANGE AUDIO
+==============================================================================
+
+Les cinq canaux ne sont pas additionnes lineairement. Le circuit emploie deux
+voies non lineaires : pulse1+pulse2, puis triangle+noise+DMC. La sortie analogique
+melange ces groupes et, sur Famicom, peut recevoir l'audio d'extension de la
+cartouche.
+
+Pour un emulateur, les approximations usuelles sont :
+
+  pulse = 95.88 / (8128/(p1+p2) + 100), si somme non nulle
+  tnd   = 159.79 / (1/(t/8227 + n/12241 + d/22638) + 100)
+
+Ces formules modelisent la non-linearite; elles ne remplacent pas un filtre
+analogique. Ajouter un filtre passe-haut/passe-bas approprie evite offset DC et
+son trop agressif. Les constantes restent des approximations mesurees.
+
+
+==============================================================================
+21. MANETTES ET PERIPHERIQUES
+==============================================================================
+
+Manette standard : A, B, Select, Start, Haut, Bas, Gauche, Droite. Protocole :
+
+  1. ecrire 1 a $4016;
+  2. ecrire 0 a $4016 pour verrouiller l'etat;
+  3. lire huit fois $4016 pour port 1 ou $4017 pour port 2;
+  4. bit 0 contient le bouton courant, ordre ci-dessus.
+
+Les autres bits sont bus ouvert ou signatures de peripheriques. Apres huit
+lectures, une manette standard retourne normalement 1. Les touches opposees
+peuvent exister electriquement meme si certaines manettes les empechent.
+
+Peripheriques : Zapper, Four Score, Famicom microphone, Arkanoid paddle,
+Power Pad, clavier Family BASIC, souris et accessoires regionaux. Le port
+extension Famicom expose davantage de signaux que les deux ports NES.
+
+Le Zapper detecte de la lumiere a l'ecran et un declencheur; le logiciel affiche
+souvent des zones claires pendant des images controlees. Les televiseurs LCD et
+la latence moderne changent fortement son comportement.
+
+
+==============================================================================
+22. CONNECTEUR CARTOUCHE
+==============================================================================
+
+La cartouche recoit adresses/donnees CPU, R/W, ROMSEL, adresses/donnees PPU,
+RD/WR PPU, CIRAM A10/CE, horloge et alimentation. La version NES ajoute des
+broches par rapport a la Famicom 60 broches, notamment pour le CIC et des lignes
+d'extension; un adaptateur ne rend pas tous les accessoires equivalentes.
+
+La cartouche peut :
+
+  * mapper PRG-ROM/RAM sur le bus CPU;
+  * mapper CHR-ROM/RAM sur le bus PPU;
+  * choisir le cablage des nametables;
+  * compter des transitions PPU pour produire une IRQ;
+  * ajouter audio, EEPROM, RTC ou coprocesseur;
+  * communiquer avec le CIC sur une NES verrouillee.
+
+Ne jamais inserer/retirer une cartouche sous tension. Les connecteurs sales ou
+oxydes expliquent beaucoup de resets et ecrans clignotants des front-loaders.
+
+
+==============================================================================
+23. PRG-ROM, CHR-ROM, RAM ET BUS CONFLICTS
+==============================================================================
+
+PRG-ROM contient le programme CPU. NROM emploie 16 ou 32 Kio. Si 16 Kio, la
+meme ROM apparait a $8000-$BFFF et $C000-$FFFF, ce qui place toujours les
+vecteurs a la fin.
+
+CHR-ROM contient les motifs PPU. CHR-RAM est necessaire aux jeux qui generent
+leurs graphismes. PRG-RAM sert aux variables supplementaires ou sauvegardes;
+une pile/batterie, FRAM ou EEPROM assure la non-volatilite selon la carte.
+
+Sur certains mappers discrets, la ROM continue de conduire le bus pendant une
+ecriture de registre. La valeur effective devient souvent CPU AND ROM : bus
+conflict. Le logiciel ecrit alors a une adresse dont l'octet ROM contient FFh ou
+la valeur voulue. Tous les clones/emulateurs ne modelisent pas ce phenomene.
+
+
+==============================================================================
+24. MAPPERS COURANTS
+==============================================================================
+
+Mapper 0, NROM
+  16/32 Kio PRG, 8 Kio CHR-ROM ou RAM, aucun changement de banque. Ideal pour
+  apprendre et pour une ROM minimale.
+
+Mapper 1, MMC1/SxROM
+  Registre serie sur cinq ecritures, banques PRG/CHR, mirroring controlable,
+  souvent PRG-RAM. Des ecritures consecutives liees aux read-modify-write du
+  6502 demandent une protection logicielle.
+
+Mapper 2, UxROM
+  Banque PRG 16 Kio commutable a $8000 et derniere banque fixe a $C000; CHR-RAM.
+  Bus conflicts possibles selon le composant.
+
+Mapper 3, CNROM
+  PRG NROM, banque CHR 8 Kio commutable. Bus conflicts frequents.
+
+Mapper 4, MMC3/MMC6
+  Banques PRG de 8 Kio, CHR de 1/2 Kio, IRQ basee sur l'activite PPU A12,
+  mirroring et PRG-RAM. Tres courant dans les jeux tardifs.
+
+Mapper 5, MMC5
+  Mapping complexe, ExRAM, split screen, attributs etendus, audio pulse/PCM,
+  multiplicateur et IRQ de ligne. Demande une emulation specifique detaillee.
+
+Mapper 7, AxROM
+  Banque PRG 32 Kio et mirroring one-screen selectionnable.
+
+Mapper 9/10, MMC2/MMC4
+  Latches CHR declenches par certaines lectures de motifs PPU.
+
+Mapper 19, Namco 163
+  Mapping, IRQ, RAM audio et jusqu'a huit canaux wavetable partages.
+
+Mapper 20, FDS
+  Format disque, RAM, registres FDS et audio wavetable.
+
+Mapper 24/26, VRC6
+  Banking, IRQ et audio supplementaire (deux pulses et saw).
+
+Mapper 69, Sunsoft FME-7
+  Banking et IRQ; certaines cartes ajoutent audio AY-3-8910 compatible.
+
+Un numero de mapper iNES peut regrouper plusieurs PCB. NES 2.0 ajoute un
+submapper afin de distinguer cablage, bus conflicts ou revision.
+
+
+==============================================================================
+25. FAMICOM DISK SYSTEM ET EXTENSIONS
+==============================================================================
+
+Le Famicom Disk System utilise un RAM Adapter connecte comme une cartouche et un
+lecteur de disquettes proprietaire. Il apporte PRG-RAM, CHR-RAM, BIOS, controle
+du lecteur, IRQ et un canal audio wavetable. Le BIOS est necessaire au systeme
+reel et n'est pas inclus dans une simple image disque.
+
+Les formats .FDS distribues historiquement ne representent pas toujours tous
+les details physiques, protections ou erreurs du disque. Un emulateur doit
+separer image logique, temporisation du lecteur et donnees BIOS.
+
+Audio d'extension japonais : VRC6, VRC7 FM, MMC5, Namco 163, Sunsoft 5B et FDS.
+La NES occidentale ne route pas directement les memes broches audio du
+connecteur; les adaptations physiques exigent un circuit de melange.
+
+
+==============================================================================
+26. FORMATS iNES ET NES 2.0
+==============================================================================
+
+Un fichier .NES n'est pas le contenu brut d'une cartouche. En iNES :
+
+  16 octets  en-tete
+  512 octets trainer optionnel
+  N*16 Kio   PRG-ROM
+  M*8 Kio    CHR-ROM
+  donnees optionnelles historiques
+
+En-tete iNES :
+
+  0-3  4E 45 53 1A, "NES" puis EOF DOS
+  4    nombre d'unites PRG-ROM de 16 Kio
+  5    nombre d'unites CHR-ROM de 8 Kio; zero signifie generalement CHR-RAM
+  6    mapper bas, four-screen, trainer, batterie, mirroring
+  7    mapper haut, Vs./PlayChoice et identification NES 2.0
+  8-15 extensions anciennes ou remplissage
+
+Flags 6 :
+
+  bits7:4 mapper bits 3:0
+  bit3    four-screen
+  bit2    trainer present
+  bit1    memoire non volatile/batterie
+  bit0    disposition des nametables cablee
+
+NES 2.0 est reconnu si (octet7 AND $0C)=$08, sous reserve que la taille du
+fichier soit coherente. Il ajoute mapper 12 bits, submapper, grandes tailles,
+RAM volatile/non volatile PRG/CHR, region de timing, type de console, ROMs
+diverses et peripherique d'entree par defaut.
+
+Ne pas confondre fichier .NES et dump de preservation. L'en-tete est une
+description externe creee par les outils, pas stockee dans la PRG-ROM originale.
+
+
+==============================================================================
+27. INITIALISATION CORRECTE
+==============================================================================
+
+Apres reset, ne pas supposer que la RAM vaut zero. Le PPU necessite environ une
+image avant que ses registres soient entierement utilisables. Procedure robuste :
+
+  1. SEI, CLD, initialiser SP;
+  2. couper PPUCTRL/PPUMASK et IRQ DMC/frame counter;
+  3. lire $2002 puis attendre deux vblanks;
+  4. effacer la RAM necessaire;
+  5. remplir OAM avec Y=$FF;
+  6. charger palette, nametables et CHR-RAM pendant rendu coupe;
+  7. initialiser scroll et compteurs;
+  8. activer rendu puis NMI.
+
+Pourquoi deux vblanks? Le PPU chauffe/initialise son etat apres reset et le
+premier drapeau peut arriver trop tot. Les attentes doivent lire $2002 bit 7,
+pas supposer un nombre de cycles identique sur chaque region.
+
+
+==============================================================================
+28. BOUCLE PRINCIPALE ET NMI
+==============================================================================
+
+Architecture classique :
+
+  Main:
+      attendre qu'un drapeau NMI signale une nouvelle image
+      lire les manettes
+      mettre a jour logique, collisions, IA et audio
+      construire OAM shadow et une courte file de mises a jour VRAM
+      publier atomiquement les tampons pour la prochaine NMI
+
+  NMI:
+      sauver A/X/Y
+      lancer DMA OAM depuis $0200
+      appliquer la file VRAM dans le budget vblank
+      ecrire scroll/PPUCTRL
+      appeler le pilote audio cadence image
+      incrementer le compteur/drapeau d'image
+      restaurer et RTI
+
+La logique principale ne doit pas modifier un tampon pendant que NMI le lit.
+Employer deux tampons, un indicateur pret ou une courte section SEI/CLI. SEI ne
+bloque pas NMI : pour proteger contre NMI, modifier PPUCTRL ou concevoir un
+protocole atomique sur octets.
+
+
+==============================================================================
+29. EXEMPLES ASSEMBLEUR 6502
+==============================================================================
+
+Syntaxe ca65.
+
+29.1 Attendre un vblank
+-----------------------
+
+wait_vblank:
+        bit $2002
+        bpl wait_vblank
+        rts
+
+29.2 Ecrire une palette de 32 octets
+------------------------------------
+
+load_palette:
+        bit $2002              ; w=0
+        lda #$3F
+        sta $2006
+        lda #$00
+        sta $2006
+        ldx #$00
+@loop: lda palette,x
+        sta $2007
+        inx
+        cpx #$20
+        bne @loop
+        rts
+
+29.3 Effacer une nametable
+--------------------------
+
+clear_nt0:
+        bit $2002
+        lda #$20
+        sta $2006
+        lda #$00
+        sta $2006
+        lda #$00
+        ldx #$04               ; 4 pages = 1024 octets
+        ldy #$00
+@byte: sta $2007
+        iny
+        bne @byte
+        dex
+        bne @byte
+        rts
+
+29.4 DMA OAM
+------------
+
+upload_oam:
+        lda #$00
+        sta $2003
+        lda #$02               ; source $0200-$02FF
+        sta $4014
+        rts
+
+29.5 Lire une manette
+---------------------
+
+; Retourne les boutons dans pad1, bit 0=A ... bit 7=Droite.
+read_pad1:
+        lda #$01
+        sta $4016
+        lda #$00
+        sta $4016
+        ldx #$08
+@read: lda $4016
+        lsr a                   ; bouton dans C
+        ror pad1                ; premier bit finit au bit 0 apres 8 tours
+        dex
+        bne @read
+        rts
+
+29.6 NMI minimale
+-----------------
+
+nmi:
+        pha
+        txa
+        pha
+        tya
+        pha
+
+        lda #$00
+        sta $2003
+        lda #$02
+        sta $4014
+
+        lda scroll_x
+        sta $2005
+        lda scroll_y
+        sta $2005
+        lda ppuctrl_copy
+        sta $2000
+        inc frame_ready
+
+        pla
+        tay
+        pla
+        tax
+        pla
+        rti
+
+29.7 Ecriture sure a une adresse PPU
+------------------------------------
+
+; ppu_hi/ppu_lo = adresse, ppu_value = valeur. Appeler pendant vblank.
+ppu_write_one:
+        bit $2002
+        lda ppu_hi
+        sta $2006
+        lda ppu_lo
+        sta $2006
+        lda ppu_value
+        sta $2007
+        rts
+
+
+==============================================================================
+30. ROM NROM MINIMALE AVEC ca65
+==============================================================================
+
+En-tete NES 2.0, mapper 0, 32 Kio PRG et 8 Kio CHR :
+
+.segment "HEADER"
+        .byte $4E,$45,$53,$1A
+        .byte 2                 ; 2*16 Kio PRG
+        .byte 1                 ; 1*8 Kio CHR
+        .byte $00               ; horizontal arrangement, mapper bas 0
+        .byte $08               ; NES 2.0
+        .byte $00               ; submapper/mapper haut
+        .byte $00               ; tailles hautes
+        .byte $00               ; PRG-RAM/NVRAM absentes
+        .byte $00               ; CHR-RAM/NVRAM absentes
+        .byte $00               ; NTSC
+        .byte $00,$00,$00
+
+.segment "ZEROPAGE"
+frame_ready: .res 1
+pad1:        .res 1
+scroll_x:    .res 1
+scroll_y:    .res 1
+ppuctrl_copy:.res 1
+
+.segment "CODE"
+reset:
+        sei
+        cld
+        ldx #$40
+        stx $4017              ; IRQ frame counter inhibee
+        ldx #$FF
+        txs
+        inx                    ; X=0
+        stx $2000
+        stx $2001
+        stx $4010              ; IRQ DMC coupee
+        stx $4015              ; canaux APU coupes
+        bit $2002
+@v1:   bit $2002
+        bpl @v1
+@v2:   bit $2002
+        bpl @v2
+
+        ; Ici : effacer RAM, charger palette/nametable et OAM.
+        lda #%10000000         ; NMI, nametable 0
+        sta ppuctrl_copy
+        sta $2000
+        lda #%00011110         ; fond+sprites, y compris bord gauche
+        sta $2001
+
+main:  lda frame_ready
+        beq main
+        lda #0
+        sta frame_ready
+        jsr read_pad1
+        jmp main
+
+irq:
+        rti
+
+.segment "VECTORS"
+        .word nmi, reset, irq
+
+.segment "CHARS"
+        .incbin "tiles.chr"    ; exactement 8192 octets
+
+Configuration ld65 indicative :
+
+MEMORY {
+  HDR: start=$0000, size=$0010, file=%O, fill=yes;
+  ZP:  start=$0000, size=$0100, type=rw;
+  RAM: start=$0200, size=$0600, type=rw;
+  PRG: start=$8000, size=$8000, file=%O, fill=yes, fillval=$FF;
+  CHR: start=$0000, size=$2000, file=%O, fill=yes;
+}
+SEGMENTS {
+  HEADER:   load=HDR, type=ro;
+  ZEROPAGE: load=ZP,  type=zp;
+  BSS:      load=RAM, type=bss, define=yes;
+  CODE:     load=PRG, type=ro, start=$8000;
+  RODATA:   load=PRG, type=ro;
+  VECTORS:  load=PRG, type=ro, start=$FFFA;
+  CHARS:    load=CHR, type=ro;
+}
+
+Verifier que le fichier final mesure 16+32768+8192=40976 octets.
+
+
+==============================================================================
+31. OPTIMISATION
+==============================================================================
+
+  * placer pointeurs et compteurs frequents en page zero;
+  * aligner tables pour eviter les penalites de franchissement de page;
+  * conserver des copies RAM de PPUCTRL/PPUMASK, registres non lisibles;
+  * mettre a jour seulement les tuiles/attributs modifies;
+  * compresser les ecrans en PRG-ROM et les decomprimer rendu coupe ou par blocs;
+  * utiliser OAM shadow et un seul DMA par image;
+  * separer logique 50/60 Hz si vitesse constante exigee;
+  * changer les banques dans des routines fixes communes a toutes les banques;
+  * placer vecteurs et code NMI/IRQ dans une banque PRG fixe;
+  * mesurer les cycles de la pire branche, pas seulement du chemin moyen.
+
+Le self-modifying code peut accelerer certaines boucles dans la RAM, mais la
+PRG-ROM n'est pas modifiable. Une table precalculee coute de la ROM et parfois
+une page; arbitrer selon mapper et taille.
+
+
+==============================================================================
+32. DEVELOPPEMENT ET DEBOGAGE
+==============================================================================
+
+Outils frequents : ca65/ld65 (cc65), asm6, NESASM, Mesen, FCEUX, Nintendulator,
+mesen2, puNES, EverDrive/PowerPak et cartouches flash modernes.
+
+Bon processus :
+
+  1. assembler avec symboles et carte de liens;
+  2. verifier en-tete et taille;
+  3. tester sur un emulateur avec trace CPU/PPU et visualiseurs;
+  4. activer les avertissements d'acces PPU hors vblank;
+  5. tester NTSC, PAL et Dendy si annonces;
+  6. tester un emulateur cycle exact different;
+  7. tester sur une console reelle et CRT lorsque possible.
+
+Un programme fonctionnant uniquement dans un emulateur peut dependre de RAM
+initialisee a zero, bus ouvert fixe, timing simplifie, absence de bus conflict
+ou palette particuliere.
+
+
+==============================================================================
+33. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU :
+
+  * instructions, drapeaux et adressages cycle par cycle;
+  * lectures/ecritures factices visibles;
+  * bug JMP indirect;
+  * BCD desactive;
+  * NMI edge-sensitive, IRQ level-sensitive;
+  * DMA OAM 513/514 cycles et arbitrage DMC.
+
+PPU :
+
+  * 341 dots, 262/312 lignes et dot saute NTSC;
+  * pipeline de fetch du fond;
+  * v/t/x/w et transferts de scroll;
+  * tampon PPUDATA et bus ouvert;
+  * evaluation sprites et bug overflow;
+  * sprite 0 hit avec exclusions;
+  * effets des lectures/ecritures pendant rendu;
+  * mirroring pilote par cartouche et palette miroir;
+  * NMI et courses autour de $2002.
+
+APU :
+
+  * timers aux bonnes phases CPU;
+  * frame counter et delai $4017;
+  * enveloppes, sweep, length/linear counters;
+  * LFSR bruit;
+  * DMA DMC, IRQ et vol de cycles;
+  * melange non lineaire et filtrage.
+
+Cartouche :
+
+  * mapper et submapper, pas seulement numero iNES;
+  * tailles PRG/CHR/RAM exactes;
+  * bus conflicts, IRQ et audio extension;
+  * memoire non volatile et protection d'ecriture;
+  * acces PPU A12 avec filtres propres au mapper.
+
+Le bus ouvert doit conserver une valeur issue du dernier conducteur pendant un
+temps raisonnable plutot que retourner toujours 00h ou FFh. Les bits faibles de
+PPUSTATUS, les bits hauts des ports manette et certains registres en dependent.
+
+
+==============================================================================
+34. MATERIEL, ALIMENTATION ET SIGNAUX VIDEO
+==============================================================================
+
+Les consoles utilisent une alimentation externe puis regulation interne, avec
+logique principalement 5 V. Les valeurs et polarites du bloc externe different
+entre regions et revisions. Ne jamais substituer une alimentation seulement
+parce que la fiche mecanique entre; verifier AC/DC, polarite et tension.
+
+Sorties suivant modele : RF, composite, parfois audio/video separes. Les PPUs
+RGB existent surtout dans certains systemes arcade; les modifications RGB de
+NES emploient un PPU different ou un encodeur numerique moderne.
+
+Le signal composite encode couleur par phase et luminance. Les motifs de pixels
+peuvent produire des artefacts colorimetriques exploites par certains jeux. Un
+emulateur RGB net et un CRT composite ne donnent donc pas la meme image.
+
+Le CIC 10NES de la console dialogue avec une puce dans la cartouche. En cas
+d'echec, le front-loader redemarre periodiquement, d'ou le voyant clignotant.
+Famicom d'origine et plusieurs top-loaders n'utilisent pas le meme verrouillage.
+
+
+==============================================================================
+35. DIAGNOSTIC ET PIEGES
+==============================================================================
+
+  Symptome                       Cause probable
+  -----------------------------  --------------------------------------------
+  Ecran gris/noir au demarrage   vecteurs faux, CHR absente, rendu jamais actif
+  Image clignotante front-loader contacts/CIC
+  Scroll saute                   $2005/$2006 et bascule w mal geres
+  Palette decalee                adresse $3F00 fausse ou miroirs ignores
+  Premiere lecture VRAM fausse   lecture tamponnee $2007 oubliee
+  Sprites manquants              limite huit par ligne ou Y encode Y-1
+  Sprite 0 hit absent            pixels transparents, bord masque, mauvais X/Y
+  Jeu trop rapide en PAL         logique liee a 50/60 Hz sans compensation
+  Son faux                       tables PAL/NTSC, frame counter ou mix lineaire
+  Clics DMC/manette              DMA DMC perturbant les lectures serie
+  Sauvegarde perdue              PRG-NVRAM/header/protection non geres
+  Mapper instable                mauvaise revision, bus conflict ou IRQ A12
+  Fonctionne seulement emulateur RAM supposee nulle ou timing trop permissif
+
+Autres pieges :
+
+  * $2002 est destructif pour le drapeau vblank et la bascule w;
+  * $2000-$3FFF ne sont pas 8 Kio de registres distincts;
+  * le CPU et le PPU n'ont pas le meme espace d'adresses;
+  * PPUCTRL/PPUMASK ne peuvent pas etre relus comme RAM ordinaire;
+  * la couleur de sprite indice 0 est transparente;
+  * $3F10 n'est pas une couleur de sprite independante;
+  * 256x240 est la trame logique, pas une garantie d'overscan visible;
+  * SEI ne masque pas NMI;
+  * le mode decimal du 6502 n'effectue pas de calcul decimal sur NES;
+  * une ecriture mapper peut subir un bus conflict;
+  * l'en-tete iNES ne fait pas partie de la cartouche originale.
+
+
+==============================================================================
+36. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] RESET, NMI, IRQ/BRK et pile aux limites
+  [ ] instructions officielles et cycles de page/branche
+  [ ] JMP indirect $xxFF et BCD desactive
+  [ ] miroirs RAM et PPU
+  [ ] $2002, bascule w et courses NMI
+  [ ] tampon $2007 et palette non tamponnee
+  [ ] scroll horizontal/vertical et nametables
+  [ ] quatre types de mirroring
+  [ ] sprites 8x8/8x16, flips, priorite et huit par ligne
+  [ ] sprite 0 hit et overflow
+  [ ] DMA OAM pair/impair et collision DMC
+  [ ] cinq canaux APU NTSC/PAL
+  [ ] manettes, touches opposees et bits bus ouvert
+  [ ] NROM 16/32 Kio et CHR-ROM/RAM
+  [ ] MMC1, UxROM, CNROM, MMC3 et bus conflicts
+  [ ] iNES ancien et NES 2.0/submapper
+  [ ] 262 NTSC, 312 PAL/Dendy et dot saute
+  [ ] sauvegarde non volatile et arret brutal
+  [ ] comparaison console reelle, trace et au moins deux emulateurs
+
+
+==============================================================================
+37. REFERENCES
+==============================================================================
+
+Documentation technique communautaire
+--------------------------------------
+
+  * NESdev Wiki, portail principal :
+    https://www.nesdev.org/wiki/Nesdev_Wiki
+
+  * CPU memory map :
+    https://www.nesdev.org/wiki/CPU_memory_map
+
+  * PPU programmer reference et PPU rendering :
+    https://www.nesdev.org/wiki/PPU_programmer_reference
+    https://www.nesdev.org/wiki/PPU_rendering
+
+  * APU, audio et timing :
+    https://www.nesdev.org/wiki/APU
+    https://www.nesdev.org/wiki/Cycle_reference_chart
+
+  * Cartouches et mappers :
+    https://www.nesdev.org/wiki/Cartridge_boards
+    https://www.nesdev.org/wiki/Mapper
+
+Specifications de fichiers
+--------------------------
+
+  * iNES : https://www.nesdev.org/wiki/INES
+  * NES 2.0 : https://www.nesdev.org/wiki/NES_2.0
+  * NES 2.0 submappers :
+    https://www.nesdev.org/wiki/NES_2.0_submappers
+
+Documents historiques et mesures
+---------------------------------
+
+  * Nintendo Entertainment System Documentation (NESDoc) :
+    https://www.nesdev.org/NESDoc.pdf
+
+  * Visual 2A03/Visual 6502 et travaux de decapsulation pour le CPU/APU.
+  * Blargg, suites de tests CPU, PPU et APU.
+  * Kevtris, analyses NES 2.0 et materiel de cartouches.
+  * Brad Taylor, Nerdy Nights et documentation cc65/ca65 pour l'apprentissage.
+
+NESdev est une documentation communautaire vivante issue de mesures, tests et
+decapsulation. Pour une emulation cycle exacte, consulter la page specifique de
+chaque registre/mapper et les suites de tests, car une table generale ne peut
+representer toutes les revisions de puces et tous les comportements analogiques.

@@ -1,0 +1,1066 @@
+==============================================================================
+ LAVA CHROME II EGA
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document rassemble les informations disponibles sur la carte video Lava
+Chrome II EGA de LAVA Computer MFG Inc. Il explique sa place parmi les cartes
+Super EGA, son interface compatible IBM EGA, ses modes BIOS etendus, la memoire
+planaire et les precautions necessaires pour programmer ou emuler la carte.
+
+La documentation primaire de cette carte est aujourd'hui rare. Aucun manuel
+Chrome II complet ni datasheet de ses registres propres n'a ete retrouve dans
+les archives publiques consultees en aout 2026. Les modes proprietaires cites
+proviennent principalement des tables de modes de Ralf Brown et de leurs miroirs.
+Les caracteristiques EGA de base proviennent de la reference technique IBM.
+
+Ce document distingue donc trois niveaux :
+
+  CONFIRME      donne par une source identifiant explicitement Chrome II ;
+  EGA STANDARD  consequence de la compatibilite IBM EGA ;
+  A VERIFIER    depend probablement de la revision de ROM ou du circuit imprime.
+
+Il est preferable de signaler une inconnue que d'attribuer a la Chrome II les
+registres d'une ATI EGA Wonder, d'une Paradise EGA-480 ou d'une Tseng EVA.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Identification et contexte historique
+  2. Ce qui est connu et ce qui ne l'est pas
+  3. Positionnement Super EGA
+  4. Architecture EGA probable
+  5. Bus ISA, ROM et memoire
+  6. Sortie video et moniteurs
+  7. Modes IBM EGA
+  8. Modes BIOS Lava Chrome II
+  9. Interpretation prudente des modes etendus
+ 10. Organisation de la memoire planaire
+ 11. Pipeline de lecture et d'ecriture EGA
+ 12. Carte des ports d'E/S
+ 13. Registres externes
+ 14. Sequencer
+ 15. Graphics Controller
+ 16. Attribute Controller
+ 17. CRT Controller
+ 18. Couleurs et palette
+ 19. BIOS video INT 10h
+ 20. Detection de la Chrome II
+ 21. Initialisation d'un mode
+ 22. Programmation d'un pixel
+ 23. Texte et polices
+ 24. Synchronisation et interruption verticale
+ 25. Exemples assembleur 8086
+ 26. Exemples Turbo Pascal
+ 27. Conseils pour un pilote
+ 28. Conseils pour un emulateur
+ 29. Methode de retro-ingenierie
+ 30. Plan de validation
+ 31. Installation et securite
+ 32. Pieges et confusions
+ 33. References
+
+
+==============================================================================
+1. IDENTIFICATION ET CONTEXTE HISTORIQUE
+==============================================================================
+
+Fabricant : LAVA Computer MFG Inc., Toronto, Canada.
+Produit   : Chrome II EGA.
+Periode   : seconde moitie des annees 1980, a confirmer par document primaire.
+Classe    : adaptateur Super EGA compatible IBM PC.
+
+LAVA Computer MFG Inc. a ete fondee en decembre 1984 par Roman Wynnyckyj. Son
+historique officiel indique que l'entreprise a fabrique dans les dix annees
+suivantes des cartes multifonctions, reseau, graphiques, paralleles et series.
+La Chrome II appartient a cette premiere periode, bien avant les produits de
+communication serie pour lesquels LAVA est ensuite devenue mieux connue.
+
+Les tables BIOS historiques identifient formellement le nom "Lava Chrome II
+EGA" et lui associent des modes depassant le 640x350 de l'EGA IBM, dont 640x480
+et 752x410. Le suffixe II suggere un produit ou une revision precedente, mais
+aucune specification suffisamment fiable de "Chrome I" n'a ete retrouvee.
+
+
+==============================================================================
+2. CE QUI EST CONNU ET CE QUI NE L'EST PAS
+==============================================================================
+
+Confirme par les tables BIOS/RBIL :
+
+  * le nom Lava Chrome II EGA ;
+  * la presence de modes BIOS proprietaires ;
+  * des resolutions 640x200, 640x350, 640x480 et 752x410 ;
+  * des formats texte 80x30, 80x34, 80x60 et 132x43 selon numero de mode ;
+  * une interface reposant sur le modele EGA pour les modes graphiques.
+
+Tres probable mais a verifier sur une carte :
+
+  * bus ISA 8 bits, commun aux EGA de cette epoque ;
+  * ROM BIOS d'extension a C000h ;
+  * 256 Kio pour les modes 16 couleurs haute resolution ;
+  * connecteur numerique DE-9 de type EGA/MultiSync ;
+  * sortie 640x480 entrelacee ou exigeant un moniteur multisynchronisation.
+
+Non documente de facon fiable dans les sources retrouvees :
+
+  * fabricant et reference exacte du chipset ;
+  * quantite de RAM de toutes les revisions ;
+  * brochage propre de tous les connecteurs ;
+  * positions des commutateurs et cavaliers ;
+  * signature ROM propre a LAVA ;
+  * registres proprietaires de selection d'horloge ou d'entrelacement ;
+  * frequences horizontales/verticales exactes des modes etendus ;
+  * signification complete des modes 14h a 18h selon revision.
+
+Ces lacunes sont importantes pour un emulateur : les registres d'une autre EGA
+clone ne constituent pas une approximation historiquement neutre.
+
+
+==============================================================================
+3. POSITIONNEMENT SUPER EGA
+==============================================================================
+
+L'EGA IBM de 1984 atteint 640x350 en 16 couleurs avec 256 Kio. Les cartes dites
+Super EGA ajoutent typiquement :
+
+  * 640x480 ou davantage ;
+  * textes comportant plus de lignes ou de colonnes ;
+  * horloges et bits CRTC etendus ;
+  * pilotes pour AutoCAD, Windows, GEM ou Lotus 1-2-3 ;
+  * support de moniteurs MultiSync.
+
+La Chrome II correspond a ce profil. Elle demeure cependant une EGA : pas de
+RAMDAC VGA 256 couleurs documente, pas de mode VGA 13h garanti et pas d'interface
+VESA VBE native connue.
+
+
+==============================================================================
+4. ARCHITECTURE EGA PROBABLE
+==============================================================================
+
+Les parties marquees EGA STANDARD doivent etre implementees pour executer les
+logiciels EGA :
+
+  Bus ISA
+     |
+     +-- ROM BIOS d'extension ----> INT 10h et modes Lava
+     +-- decodeur d'E/S ----------> ports 3Bxh/3Cxh/3Dxh
+     +-- Sequencer ---------------+--> quatre plans DRAM
+     +-- Graphics Controller -----+--> latches et ALU
+     +-- CRTC --------------------> timings et adresses
+     +-- Attribute Controller ----> palette 16 parmi 64
+     +-- logique Lava ------------> modes 480 lignes/timings etendus
+                                      |
+                                      +--> sortie moniteur
+
+La logique Lava ajoute necessairement des moyens d'exprimer des timings que le
+jeu EGA IBM seul ne peut pas toujours representer. L'adresse de ces extensions
+reste inconnue dans les sources retrouvees.
+
+
+==============================================================================
+5. BUS ISA, ROM ET MEMOIRE
+==============================================================================
+
+EGA STANDARD :
+
+  * fenetre graphique A0000h-AFFFFh ;
+  * texte monochrome B0000h-B7FFFh ;
+  * texte/CGA couleur B8000h-BFFFFh ;
+  * ROM video normalement a C0000h ;
+  * quatre plans de memoire paralleles.
+
+Une image 640x480x16 planaire occupe :
+
+  640*480/8 = 38 400 octets par plan
+  38 400*4 = 153 600 octets au total
+
+Une image 752x410x16 occupe :
+
+  752*410/8 = 38 540 octets par plan
+  154 160 octets au total
+
+Ces modes tiennent dans 256 Kio, quantite donc vraisemblable. Cela ne prouve pas
+que toutes les Chrome II possedent 256 Kio ; il faut compter les DRAM ou tester
+les plans sans detruire l'affichage.
+
+Une ROM d'extension IBM valide commence par 55h AAh. Le troisieme octet indique
+la taille en blocs de 512 octets et la somme modulo 256 de la ROM doit etre nulle.
+
+
+==============================================================================
+6. SORTIE VIDEO ET MONITEURS
+==============================================================================
+
+Une EGA IBM utilise un DE-9 numerique a six bits couleur plus synchronisations.
+Brochage standard EGA :
+
+  Broche  Signal
+  ------  --------------------------------
+    1     masse
+    2     rouge secondaire
+    3     rouge primaire
+    4     vert primaire
+    5     bleu primaire
+    6     vert secondaire / intensite
+    7     bleu secondaire
+    8     synchronisation horizontale
+    9     synchronisation verticale
+
+Le connecteur exact de la Chrome II doit etre inspecte. Une photo ou une mesure
+est necessaire avant d'affirmer que ce brochage s'applique a une revision donnee.
+
+Les modes 640x480/752x410 depassent l'IBM 5154 standard. Ils requierent
+probablement un moniteur MultiSync ou utilisent l'entrelacement. Ne jamais
+brancher un DE-9 EGA sur un VGA HD-15 avec un cable passif sans convertir niveaux,
+brochage et frequences.
+
+
+==============================================================================
+7. MODES IBM EGA
+==============================================================================
+
+  Mode  Type       Resolution/format      Couleurs       Fenetre
+  ----  ---------  ---------------------  -------------  -------
+  00h   texte      40x25, 8x8             16             B800h
+  01h   texte      40x25, 8x8             16             B800h
+  02h   texte      80x25, 8x8             16             B800h
+  03h   texte      80x25, 8x8             16             B800h
+  04h   CGA        320x200                 4              B800h
+  05h   CGA        320x200                 4/gris         B800h
+  06h   CGA        640x200                 2              B800h
+  07h   texte      80x25 monochrome        mono           B000h
+  0Dh   graphique  320x200                 16 parmi 64    A000h
+  0Eh   graphique  640x200                 16 parmi 64    A000h
+  0Fh   graphique  640x350                 mono/4 plans   A000h
+  10h   graphique  640x350                 16 parmi 64    A000h
+
+La Chrome II doit au minimum conserver l'organisation EGA de ces modes pour etre
+compatible. Le BIOS reste la methode d'initialisation recommandee.
+
+
+==============================================================================
+8. MODES BIOS LAVA CHROME II
+==============================================================================
+
+Les tables derivees de RBIL associent les numeros suivants a la Chrome II. Un
+meme numero peut designer un autre mode sur une autre carte :
+
+  Mode  Information associee a Lava Chrome II
+  ----  --------------------------------------------------------------
+  14h   640x200, format/reference 80x25, cellule 8x8
+  15h   640x350, format/reference 80x25, cellule 8x14
+  16h   640x350, format/reference 80x25, cellule 8x14
+  17h   640x480, format/reference 80x34, cellule 8x14
+  18h   640x480, format/reference 80x34, cellule 8x14
+  1Ah   640x480, format/reference 80x30, cellule 8x16
+  49h   640x480, format/reference 80x30, cellule 8x16
+  50h   texte 80x34
+  51h   texte 80x30
+  52h   texte 80x60
+  53h   texte 132x43
+  55h   752x410, format/reference 94x29, cellule 8x14
+
+Certaines compilations plus anciennes listent uniquement 14h-18h, 49h et
+50h-55h. Les doublons 17h/18h et 1Ah/49h peuvent representer des variantes de
+palette, couleur/monochrome, compatibilite ou revisions de BIOS. Sans manuel ou
+ROM desassemblee, leur difference exacte ne doit pas etre inventee.
+
+Les nombres 80x34 ou 94x29 dans une ligne graphique de table BIOS decrivent
+souvent la grille de caracteres utilisee par les services BIOS, pas un mode texte.
+
+
+==============================================================================
+9. INTERPRETATION PRUDENTE DES MODES ETENDUS
+==============================================================================
+
+Les modes BIOS 14h-18h n'ont aucune signification universelle. Sur VGA IBM,
+11h/12h sont 640x480 et 13h est 320x200x256 ; sur Chrome II, les numeros suivants
+sont proprietaires. Une application doit d'abord identifier le BIOS Lava.
+
+Les couleurs des modes graphiques Chrome II ne sont pas indiquees dans toutes
+les tables disponibles. L'architecture et la capacite rendent 16 couleurs
+plausibles, mais une documentation rigoureuse doit lire les registres, tester les
+plans ou examiner le pilote avant d'affirmer une profondeur pour chaque numero.
+
+Une methode de test non destructive :
+
+  1. sauvegarder le mode courant ;
+  2. appeler INT 10h/AH=00h ;
+  3. relire INT 10h/AH=0Fh et la BIOS Data Area ;
+  4. lire Sequencer 04h et Graphics Controller 05h/06h ;
+  5. mesurer le stride par CRTC 13h ;
+  6. tester chaque plan dans une petite zone restauree ensuite ;
+  7. restaurer le mode initial.
+
+
+==============================================================================
+10. ORGANISATION DE LA MEMOIRE PLANAIRE
+==============================================================================
+
+En 16 couleurs, chaque pixel a un bit dans chacun des quatre plans :
+
+  plan 0 = bleu
+  plan 1 = vert
+  plan 2 = rouge
+  plan 3 = intensite
+
+Pour une largeur W divisible par huit :
+
+  octets_par_ligne = W div 8
+  offset = y*octets_par_ligne + x div 8
+  masque = 80h shr (x and 7)
+
+Strides attendus si l'organisation reste lineaire par plan :
+
+  640 pixels -> 80 octets par plan et par ligne
+  752 pixels -> 94 octets par plan et par ligne
+
+Le CRTC Offset 13h code generalement le nombre d'unites d'adresse par ligne ; la
+relation exacte depend du byte/word mode. Le lire vaut mieux que deduire le pas
+du seul numero de mode.
+
+
+==============================================================================
+11. PIPELINE DE LECTURE ET D'ECRITURE EGA
+==============================================================================
+
+EGA STANDARD : une lecture CPU charge quatre latches. Une ecriture combine :
+
+  * donnee CPU et rotation ;
+  * Set/Reset et Enable Set/Reset ;
+  * fonction logique replace/AND/OR/XOR ;
+  * Bit Mask ;
+  * ancienne valeur dans les latches ;
+  * Sequencer Map Mask.
+
+Modes d'ecriture :
+
+  0  chemin general EGA
+  1  copie des latches vers la destination
+  2  les quatre bits bas CPU deviennent la couleur des quatre plans
+
+Modes de lecture :
+
+  0  lire le plan choisi par Read Map Select
+  1  comparer a Color Compare avec Color Don't Care
+
+Un emulateur qui represente A000h comme un tableau lineaire de pixels ne peut pas
+executer correctement les logiciels EGA ou les modes Chrome II planaires.
+
+
+==============================================================================
+12. CARTE DES PORTS D'E/S
+==============================================================================
+
+Ports EGA standards :
+
+  3B4h/3B5h  CRTC monochrome index/data
+  3BAh       Input Status 1 monochrome
+  3C0h       Attribute Controller index/data en ecriture
+  3C1h       Attribute Controller data en lecture
+  3C2h       Miscellaneous Output en ecriture / Input Status 0 lecture
+  3C4h/3C5h  Sequencer index/data
+  3C6h       registre EGA reserve/feature
+  3CAh       Feature Control en lecture
+  3CCh       Miscellaneous Output en lecture
+  3CEh/3CFh  Graphics Controller index/data
+  3D4h/3D5h  CRTC couleur index/data
+  3DAh       Input Status 1 couleur / Feature Control ecriture
+
+Ports de compatibilite CGA : 3D4h,3D5h,3D8h,3D9h,3DAh.
+Ports de compatibilite monochrome : 3B4h,3B5h,3B8h,3BAh.
+
+Aucun port etendu propre a la Chrome II n'est suffisamment documente dans les
+sources retrouvees. Ne pas lui attribuer 1CEh/1CFh (ATI), 3CDh (Tseng) ou les
+registres Paradise sans trace materielle.
+
+
+==============================================================================
+13. REGISTRES EXTERNES
+==============================================================================
+
+Miscellaneous Output 3C2h en ecriture :
+
+  bit 0    selection CRTC couleur/monochrome
+  bit 1    activation RAM
+  bits 2-3 choix d'horloge
+  bit 5    page haute en mode Odd/Even
+  bits 6-7 polarites de synchronisation
+
+Feature Control, Input Status et les bits reserves suivent l'EGA IBM dans les
+modes standards. La Chrome II doit necessairement ajouter des choix d'horloge
+pour 480 lignes ; leur mecanisme exact reste A VERIFIER.
+
+
+==============================================================================
+14. SEQUENCER
+==============================================================================
+
+Ports 3C4h index et 3C5h data :
+
+  00h Reset
+  01h Clocking Mode
+  02h Map Mask
+  03h Character Map Select
+  04h Memory Mode
+
+Map Mask bits 0-3 autorise les plans en ecriture. Memory Mode controle Extended
+Memory, Odd/Even et Sequential addressing. Les modes etendus peuvent employer
+les memes registres avec des valeurs de timing differentes.
+
+
+==============================================================================
+15. GRAPHICS CONTROLLER
+==============================================================================
+
+Ports 3CEh/3CFh :
+
+  00h Set/Reset
+  01h Enable Set/Reset
+  02h Color Compare
+  03h Data Rotate / Logical Operation
+  04h Read Map Select
+  05h Graphics Mode
+  06h Miscellaneous
+  07h Color Don't Care
+  08h Bit Mask
+
+GC 06h selectionne le mode texte/graphique, Odd/Even et la fenetre A000/B000/
+B800. GC 05h selectionne modes de lecture/ecriture et interleave. Sauvegarder
+les registres modifies par une primitive partagee.
+
+
+==============================================================================
+16. ATTRIBUTE CONTROLLER
+==============================================================================
+
+Registres 00h-0Fh : palette logique ; 10h Mode Control ; 11h Overscan ; 12h
+Color Plane Enable ; 13h Horizontal PEL Panning.
+
+Acces delicat :
+
+  1. lire 3DAh ou 3BAh pour remettre la bascule en position index ;
+  2. ecrire index sur 3C0h ;
+  3. ecrire donnee sur 3C0h ;
+  4. reemettre un index avec bit 5 a 1 pour activer l'affichage.
+
+Une interruption ou un TSR qui utilise INT 10h entre les etapes peut inverser
+index et data. Utiliser une courte section critique.
+
+
+==============================================================================
+17. CRT CONTROLLER
+==============================================================================
+
+Le CRTC EGA comprend les registres 00h a 18h : totaux et fins horizontales,
+retrace, totaux verticaux, overflow, maximum scanline, curseur, adresse de
+depart, Light Pen, Offset, Underline, Mode Control et Line Compare.
+
+Les modes 640x480 exigent des bits verticaux ou une interpretation etendue. La
+Chrome II peut employer des registres non documentes, de l'entrelacement ou un
+compteur modifie. Une capture des sorties de ports pendant INT 10h est la methode
+la plus sure pour retrouver ce comportement.
+
+Les registres CRTC 00h-07h peuvent etre proteges. Le bit 7 de CRTC 11h controle
+la protection standard EGA de plusieurs registres verticaux.
+
+
+==============================================================================
+18. COULEURS ET PALETTE
+==============================================================================
+
+L'Attribute Controller transforme quatre bits de pixel en une valeur couleur a
+six bits, soit 16 couleurs simultanees choisies parmi 64 : deux bits par rouge,
+vert et bleu sur une sortie EGA numerique.
+
+INT 10h/AH=10h permet normalement :
+
+  AL=00h  definir un registre palette, BL=index, BH=valeur
+  AL=01h  definir l'overscan
+  AL=02h  charger 16 registres et overscan via ES:DX
+  AL=03h  choisir intensite ou clignotement
+
+Les modes Chrome II peuvent conserver cette palette. Le nombre exact de couleurs
+de chaque mode proprietaire doit etre confirme par test ou manuel.
+
+
+==============================================================================
+19. BIOS VIDEO INT 10H
+==============================================================================
+
+Fonctions EGA usuelles :
+
+  AH=00h  definir le mode
+  AH=01h  forme du curseur
+  AH=02h  position du curseur
+  AH=03h  lire curseur
+  AH=05h  page active
+  AH=06h/07h defilement
+  AH=08h/09h/0Ah caracteres
+  AH=0Bh  palette CGA
+  AH=0Ch  ecrire pixel
+  AH=0Dh  lire pixel
+  AH=0Eh  teletype
+  AH=0Fh  lire mode, colonnes et page
+  AH=10h  palette EGA
+  AH=11h  police
+  AH=12h  fonctions EGA
+  AH=13h  chaine
+
+INT 10h/AH=12h, BL=10h retourne la configuration EGA : BH couleur/mono, BL
+quantite de RAM codee, CH feature bits et CL commutateurs. Un BIOS clone peut
+varier dans les details ; conserver les valeurs observees dans les tests.
+
+
+==============================================================================
+20. DETECTION DE LA CHROME II
+==============================================================================
+
+Aucune signature ROM specifique et fiable n'a ete retrouvee. Une detection ne
+doit donc pas se fonder sur une constante inventee.
+
+Approches possibles, par ordre de surete :
+
+  1. analyser une copie de ROM connue et trouver une chaine complete "LAVA" ou
+     "CHROME II", avec version et checksum ;
+  2. demander un mode proprietaire, puis confirmer le retour AH=0Fh et les
+     registres, en restaurant l'affichage ;
+  3. verifier plusieurs modes exclusifs, pas seulement un numero partage ;
+  4. comparer le checksum/empreinte de la ROM a une base de ROMs identifiees ;
+  5. sur un outil de diagnostic, demander confirmation a l'utilisateur.
+
+Rechercher une chaine dans toute la ROM peut produire un faux positif. Tester
+seulement le mode 55h est egalement insuffisant : ce numero est utilise par ATI,
+Paradise, Oak et d'autres cartes pour des modes differents.
+
+
+==============================================================================
+21. INITIALISATION D'UN MODE
+==============================================================================
+
+Sequence recommandee :
+
+  1. sauvegarder le mode et la page courants ;
+  2. valider que le BIOS est une Chrome II connue ;
+  3. verifier le moniteur ;
+  4. appeler INT 10h/AH=00h, AL=mode ;
+  5. relire le mode avec AH=0Fh ;
+  6. lire la BIOS Data Area et le CRTC Offset ;
+  7. determiner organisation et plans avant l'acces direct ;
+  8. restaurer le mode en cas d'echec.
+
+Programmer un mode etendu uniquement par les registres EGA omettrait les
+extensions Lava. Le BIOS ou un pilote original est donc indispensable tant que
+ces registres ne sont pas connus.
+
+
+==============================================================================
+22. PROGRAMMATION D'UN PIXEL
+==============================================================================
+
+INT 10h/AH=0Ch est lent mais constitue le premier test. Dans un mode planaire
+compatible, le write mode 2 est plus rapide :
+
+  offset = y*stride + x div 8
+  bitmask = 80h shr (x and 7)
+
+Configurer GC 05h en write mode 2, GC 08h avec bitmask, lire l'octet cible pour
+charger les latches puis ecrire la couleur 0..15. Le BIOS doit avoir initialise
+Map Mask, Memory Mode et la fenetre A000h.
+
+
+==============================================================================
+23. TEXTE ET POLICES
+==============================================================================
+
+Modes rapportes : 80x34, 80x30, 80x60 et 132x43. Leurs cellules probables sont
+respectivement proches de 8x14, 8x16, 8x8 et d'une largeur permettant 132
+colonnes, mais seules certaines cellules sont explicites dans les tables.
+
+Ne pas supposer `offset=(row*80+col)*2`. Lire le nombre de colonnes dans la BDA
+a 0040h:004Ah et la taille de page a 0040h:004Ch. INT 10h/AH=0Fh retourne aussi
+AH=nombre de colonnes, mais AH ne peut representer 132 que comme octet, ce qui
+reste possible.
+
+Les polices EGA resident dans le plan 2. INT 10h/AH=11h doit etre prefere a une
+reprogrammation directe pour conserver les metriques BIOS.
+
+
+==============================================================================
+24. SYNCHRONISATION ET INTERRUPTION VERTICALE
+==============================================================================
+
+Input Status 1 bit 3 signale le retrace vertical. Utiliser 3DAh en personnalite
+couleur ou 3BAh en monochrome. Une boucle doit comporter une expiration, car le
+port peut etre absent ou mal emule.
+
+L'EGA standard peut produire une interruption de retrace sur IRQ 2. Rien ne
+confirme que tous les modes Chrome II l'utilisent. Ne pas activer l'IRQ sans
+gestionnaire, acquittement de la source et du PIC, puis restauration du vecteur.
+
+
+==============================================================================
+25. EXEMPLES ASSEMBLEUR 8086
+==============================================================================
+
+25.1 Verifier une ROM video
+---------------------------
+
+; CF=0 si en-tete 55 AA. Ne prouve pas qu'il s'agit de Lava.
+
+CheckVideoROM:
+        push    ds
+        mov     ax,0C000h
+        mov     ds,ax
+        cmp     word ptr [0000h],0AA55h
+        jne     short cvr_bad
+        clc
+        jmp     short cvr_done
+cvr_bad:
+        stc
+cvr_done:
+        pop     ds
+        ret
+
+25.2 Rechercher une chaine indicative
+-------------------------------------
+
+; Exemple diagnostic uniquement. DS=C000h, ES=CS, BX=longueur ROM en octets.
+; Une occurrence de "LAVA" ne suffit pas comme identification definitive.
+
+FindLAVA:
+        xor     si,si
+fl_next:
+        cmp     si,bx
+        jae     short fl_no
+        cmp     word ptr [si],414Ch  ; "LA" little endian
+        jne     short fl_skip
+        cmp     word ptr [si+2],4156h ; "VA"
+        je      short fl_yes
+fl_skip:
+        inc     si
+        jmp     short fl_next
+fl_yes: clc
+        ret
+fl_no:  stc
+        ret
+
+25.3 Selectionner un mode Chrome II
+-----------------------------------
+
+        mov     ax,0055h            ; mode rapporte 752x410
+        int     10h
+        mov     ah,0Fh
+        int     10h
+        cmp     al,55h
+        jne     mode_refuse
+
+Ce code ne doit etre execute qu'apres identification et verification du moniteur.
+
+25.4 Lire un registre EGA indexe
+--------------------------------
+
+; DX=port index, AL=index. Retour AL=data. Pour GC: DX=3CEh.
+
+ReadIndexed:
+        out     dx,al
+        inc     dx
+        in      al,dx
+        dec     dx
+        ret
+
+25.5 Calcul d'offset planaire
+-----------------------------
+
+; AX=y, BX=x, CX=stride. Retour DI=offset, DL=masque. Detruit AX,CX,DX.
+
+PlanarAddress:
+        mul     cx
+        mov     di,ax
+        mov     ax,bx
+        mov     cl,3
+        shr     ax,cl
+        add     di,ax
+        mov     cl,bl
+        and     cl,7
+        mov     dl,80h
+        shr     dl,cl
+        ret
+
+25.6 Pixel en write mode 2
+--------------------------
+
+; ES=A000h, DI=offset, DL=masque, AL=couleur 0..15.
+
+PutPixelEGA:
+        push    ax
+        push    dx
+        mov     ah,al
+        mov     dx,03CEh
+        mov     al,05h
+        out     dx,al
+        inc     dx
+        mov     al,02h
+        out     dx,al              ; write mode 2
+        dec     dx
+        mov     al,08h
+        out     dx,al
+        inc     dx
+        pop     cx                 ; CL=masque original (DL)
+        mov     al,cl
+        out     dx,al
+        mov     al,es:[di]         ; charger latches
+        mov     al,ah
+        mov     es:[di],al
+        pop     ax
+        ret
+
+La routine modifie GC 05h/08h et devrait les restaurer dans une bibliotheque.
+
+25.7 Attendre le retrace avec expiration
+----------------------------------------
+
+; DX=3DAh ou 3BAh, CX=limite.
+
+WaitRetrace:
+wr0:    in      al,dx
+        test    al,08h
+        jz      short wr1
+        loop    wr0
+        stc
+        ret
+wr1:    in      al,dx
+        test    al,08h
+        jnz     short wr_ok
+        loop    wr1
+        stc
+        ret
+wr_ok:  clc
+        ret
+
+
+==============================================================================
+26. EXEMPLES TURBO PASCAL
+==============================================================================
+
+26.1 Tester l'en-tete ROM
+-------------------------
+
+Function VideoROMPresent:Boolean;
+Begin
+ VideoROMPresent:=MemW[$C000:$0000]=$AA55;
+End;
+
+26.2 Calculer et verifier la somme ROM
+--------------------------------------
+
+Function VideoROMChecksumOK:Boolean;
+Var Size,I:Word; Sum:Byte;
+Begin
+ If not VideoROMPresent Then Begin
+  VideoROMChecksumOK:=False; Exit
+ End;
+ Size:=Word(Mem[$C000:$0002])*512;
+ Sum:=0;
+ For I:=0 to Size-1 do Sum:=Sum+Mem[$C000:I];
+ VideoROMChecksumOK:=Sum=0;
+End;
+
+Une ROM de 64 Kio ferait deborder `Size:Word`; les ROM EGA de cette epoque sont
+normalement plus petites. Un outil general doit employer LongInt et gerer les
+segments.
+
+26.3 Rechercher une chaine sans conclure trop vite
+--------------------------------------------------
+
+Function ROMContains(S:String):Boolean;
+Var I,J,Size:Word; Match:Boolean;
+Begin
+ ROMContains:=False;
+ If not VideoROMPresent Then Exit;
+ Size:=Word(Mem[$C000:$0002])*512;
+ For I:=0 to Size-Length(S) do Begin
+  Match:=True;
+  For J:=1 to Length(S) do
+   If Mem[$C000:I+J-1]<>Ord(S[J]) Then Match:=False;
+  If Match Then Begin ROMContains:=True; Exit End
+ End
+End;
+
+26.4 Selectionner et relire un mode
+-----------------------------------
+
+Uses Dos;
+
+Function SetAndCheckMode(Mode:Byte):Boolean;
+Var R:Registers;
+Begin
+ R.AX:=Mode; Intr($10,R);
+ R.AH:=$0F; Intr($10,R);
+ SetAndCheckMode:=R.AL=Mode;
+End;
+
+26.5 Lire le stride CRTC brut
+-----------------------------
+
+Function ReadCRTC(Index:Byte; Color:Boolean):Byte;
+Var P:Word;
+Begin
+ If Color Then P:=$3D4 Else P:=$3B4;
+ Port[P]:=Index;
+ ReadCRTC:=Port[P+1];
+End;
+
+Le registre 13h ne donne pas toujours directement les octets. Il faut interpreter
+byte/word addressing et les extensions Lava eventuelles.
+
+26.6 Adresse et masque planaires
+--------------------------------
+
+Function PlaneOffset(X,Y,Stride:Word):Word;
+Begin
+ PlaneOffset:=Y*Stride+(X div 8);
+End;
+
+Function PlaneMask(X:Word):Byte;
+Begin
+ PlaneMask:=$80 shr (X and 7);
+End;
+
+26.7 Ecrire un pixel par BIOS
+-----------------------------
+
+Procedure PutPixelBIOS(X,Y:Word; Color:Byte);
+Var R:Registers;
+Begin
+ R.AH:=$0C; R.AL:=Color; R.BH:=0; R.CX:=X; R.DX:=Y;
+ Intr($10,R);
+End;
+
+26.8 Lire configuration EGA
+---------------------------
+
+Procedure GetEGAInfo(Var Mono,MemoryCode,Features,Switches:Byte);
+Var R:Registers;
+Begin
+ R.AH:=$12; R.BL:=$10;
+ Intr($10,R);
+ Mono:=R.BH; MemoryCode:=R.BL; Features:=R.CH; Switches:=R.CL;
+End;
+
+26.9 Attendre un retrace
+------------------------
+
+Function WaitVR(Limit:Word):Boolean;
+Begin
+ While ((Port[$3DA] and 8)<>0) and (Limit<>0) do Dec(Limit);
+ While ((Port[$3DA] and 8)=0) and (Limit<>0) do Dec(Limit);
+ WaitVR:=Limit<>0;
+End;
+
+En mode monochrome, employer 3BAh. Toujours conserver une limite.
+
+
+==============================================================================
+27. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Identifier une ROM precise avant les modes proprietaires.
+  * Initialiser par INT 10h, pas par une table d'une autre carte.
+  * Relire mode, colonnes, BDA et CRTC.
+  * Determiner le stride reel.
+  * Tester la profondeur sans detruire l'ecran.
+  * Sauvegarder tous les registres modifies.
+  * Respecter la bascule de l'Attribute Controller.
+  * Ne pas supposer qu'AH=0Ch fonctionne dans chaque mode etendu.
+  * Restaurer mode, palette, police et page en sortie.
+  * Refuser 640x480/752x410 si le moniteur n'est pas compatible.
+
+
+==============================================================================
+28. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+28.1 Ne pas inventer un chipset
+-------------------------------
+
+Commencer par une EGA IBM fidele et executer une ROM Chrome II authentique. Les
+modes standards pourront fonctionner ; les modes etendus reveleront les ports
+non implementes dans une trace.
+
+28.2 Pipeline EGA complet
+-------------------------
+
+Implementer quatre plans, quatre latches, modes read 0/1, write 0/1/2, rotation,
+Set/Reset, ALU, Color Compare, Don't Care, Bit Mask et Map Mask.
+
+28.3 CRTC et Attribute Controller
+---------------------------------
+
+Reproduire overflow, protection, byte/word addressing, start address, panning,
+Line Compare et la bascule index/data 3C0h. Les modes haute resolution sollicitent
+souvent les limites de ces machines d'etat.
+
+28.4 Instrumentation
+--------------------
+
+Journaliser OUT/IN vers 3B0h-3DFh et toutes les adresses inconnues pendant INT
+10h. Comparer mode IBM 10h, mode Lava 17h puis 55h. Les differences repetables
+indiquent les extensions.
+
+28.5 Timings
+------------
+
+Ne pas attacher 640x480 au simple numero 17h. Calculer resolution et frequence
+depuis CRTC, horloge et extensions observees. Modeliser l'entrelacement si la ROM
+le commande.
+
+28.6 Detection
+--------------
+
+Une option d'emulateur selectionne explicitement le profil Chrome II et sa ROM.
+Il est inutile d'inventer une signature que les logiciels historiques n'ont
+peut-etre jamais utilisee.
+
+
+==============================================================================
+29. METHODE DE RETRO-INGENIERIE
+==============================================================================
+
+Pour completer cette documentation a partir d'une carte reelle :
+
+  1. photographier recto/verso en haute resolution ;
+  2. relever PCB, ASIC, oscillateurs, DRAM, EPROM, PAL/GAL et RAMDAC ;
+  3. noter tous les cavaliers et commutateurs avant modification ;
+  4. extraire la ROM avec un programmateur, plusieurs lectures comparees ;
+  5. calculer SHA-256 et verifier checksum ROM ;
+  6. extraire les chaines et desassembler le point d'entree POST ;
+  7. tracer les OUT pendant chaque INT 10h ;
+  8. mesurer HSYNC/VSYNC avec un instrument adapte ;
+  9. tester les plans/strides dans une zone restauree ;
+ 10. publier ROM si les droits le permettent, photos, traces et revision.
+
+Une carte d'acquisition logique doit etre reliee avec precautions au bus ISA.
+Ne pas utiliser un oscilloscope sans masse et isolation correctement comprises.
+
+
+==============================================================================
+30. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] modes IBM 00h-10h
+  [ ] ROM 55 AA, longueur et checksum
+  [ ] chaine fabricant/version observee
+  [ ] modes 14h,15h,16h,17h,18h
+  [ ] modes 1Ah et 49h selon ROM
+  [ ] textes 50h-53h
+  [ ] mode 55h 752x410
+  [ ] retour AH=0Fh de chaque mode
+  [ ] BDA colonnes, lignes et taille de page
+  [ ] stride CRTC et adressage byte/word
+  [ ] quatre plans et profondeur reelle
+  [ ] tous les read/write modes EGA
+  [ ] palette et overscan
+  [ ] polices et textes hauts
+  [ ] retrace vertical
+  [ ] interlacement et frequences mesurees
+  [ ] comportement sur moniteur supporte
+  [ ] restauration du mode apres test
+
+
+==============================================================================
+31. INSTALLATION ET SECURITE
+==============================================================================
+
+Sans manuel, ne jamais deplacer les cavaliers au hasard. Photographier leur etat
+initial et rechercher les inscriptions serigraphiees. Regler la carte mere PC/XT
+pour une carte EGA avant le demarrage.
+
+Utiliser d'abord un moniteur MultiSync historique explicitement compatible avec
+les frequences EGA. Tester le mode texte standard avant un mode haute resolution.
+
+Une image qui roule, se replie ou siffle indique un mauvais timing. Couper
+rapidement l'alimentation. Les moniteurs CRT contiennent des tensions dangereuses
+meme debranches ; ne pas ouvrir leur boitier sans qualification.
+
+
+==============================================================================
+32. PIEGES ET CONFUSIONS
+==============================================================================
+
+  * Confondre LAVA Computer et le mot generique "lava".
+  * Confondre Chrome II avec ATI EGA Wonder ou Paradise EGA-480.
+  * Declarer un chipset sans photo ni manuel.
+  * Attribuer a la carte des ports ATI 1CEh/1CFh ou Tseng 3CDh.
+  * Prendre un numero de mode proprietaire pour une norme.
+  * Affirmer 16 couleurs pour chaque mode sans verification.
+  * Confondre grille BIOS 80x34 et mode texte.
+  * Supposer qu'un IBM 5154 accepte 640x480.
+  * Traiter A000h comme un framebuffer lineaire.
+  * Oublier les latches lors d'un read-modify-write.
+  * Detecter la carte par le seul mode 55h.
+  * Attendre le retrace sans limite.
+
+
+==============================================================================
+33. REFERENCES
+==============================================================================
+
+Sources identifiant la Chrome II
+--------------------------------
+
+  * Ralf Brown's Interrupt List, table des numeros de modes video INT 10h :
+
+    https://www.cs.cmu.edu/~ralf/files.html
+
+  * Miroir osFree de la table RBIL des modes BIOS, entrees explicitement
+    attribuees a "Lava Chrome II EGA" :
+
+    https://osfree.org/doku/doku.php?id=en:docs:bios:api:int10:modes
+
+  * Frolov Library, annexe des modes video issue des memes traditions de
+    documentation DOS :
+
+    https://www.frolov-lib.ru/books/bsp/v03/prilog_4.htm
+
+Contexte constructeur
+---------------------
+
+  * LAVA Computer MFG Inc., historique officiel : fondation en 1984 et production
+    de cartes graphiques pendant la premiere periode de l'entreprise.
+
+    https://lavalink.com/blog/timelines/lava-history/
+
+Reference EGA
+-------------
+
+  * IBM Enhanced Graphics Adapter Technical Reference, registres, ports,
+    memoire planaire, BIOS et interface du moniteur IBM EGA.
+
+  * PC Emulation Book, synthese moderne des registres EGA :
+
+    https://book.martypc.net/appendices/video/ega-registers
+
+Limite documentaire
+-------------------
+
+A la date de revision, aucun manuel Chrome II complet, schema, dump ROM identifie
+ou tableau de registres proprietaires n'a ete trouve dans les archives publiques
+consultees. Toute nouvelle source primaire devrait etre conservee avec sa revision
+et utilisee pour remplacer les hypotheses marquees A VERIFIER.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

@@ -1,0 +1,941 @@
+==============================================================================
+ MATROX MILLENNIUM G200
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Matrox Millennium G200 de 1998, basee sur le processeur
+MGA-G200. Il couvre le materiel, PCI/AGP, SGRAM, VGA/VBE, framebuffer, MMIO,
+moteurs 2D/3D, detection et programmation sous DOS.
+
+La Millennium G200 ne doit pas etre confondue avec la Millennium MGA-2064W,
+la Millennium II MGA-2164W, la Mystique G200 a SDRAM, ni les nombreux G200
+integres plus recents destines aux serveurs.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Variantes et identifiants
+  3. Architecture MGA-G200
+  4. SGRAM et capacite video
+  5. Bus PCI et AGP
+  6. RAMDAC, PLL et sortie analogique
+  7. BIOS, VGA et VESA VBE
+  8. Detection PCI complete
+  9. Configuration PCI
+ 10. BAR et espaces d'adressage
+ 11. Ports VGA
+ 12. Framebuffer lineaire
+ 13. Aperture de controle MMIO
+ 14. Carte des registres du moteur
+ 15. Registres hote, FIFO et interruptions
+ 16. Registres VGA, DAC et CRTC etendus
+ 17. Formats de pixels et clipping
+ 18. Initialisation et synchronisation
+ 19. Remplissage, lignes et BitBLT
+ 20. ILOAD, IDUMP et aperture pseudo-DMA
+ 21. Architecture et programmation 3D
+ 22. Fonctions video et overlay
+ 23. Exemple assembleur : detection PCI
+ 24. Exemple assembleur : lecture des BAR
+ 25. Exemple assembleur : MMIO et rectangle
+ 26. Exemples Turbo Pascal
+ 27. Programmation VBE/DPMI sous DOS
+ 28. Conseils pour un pilote
+ 29. Conseils pour un emulateur
+ 30. Diagnostic et pieges
+ 31. Comparaison des familles Matrox
+ 32. Plan de validation
+ 33. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Matrox introduit le G200 en 1998. La Millennium G200 est le modele haut de
+gamme generaliste, habituellement equipe de SGRAM rapide et d'une sortie
+analogique de qualite. La Mystique G200 vise un prix inferieur, generalement
+avec SDRAM et fonctions de carte differentes.
+
+Le G200 succede aux 1064SG/1164SG et 2064W/2164W. Il conserve le modele de
+programmation MGA pour le moteur 2D, mais ajoute une chaine 3D plus complete,
+un bus AGP reel sur la variante AGP, une nouvelle configuration PCI et une
+aperture ILOAD separee.
+
+La carte etait destinee a Windows 95/98 et Windows NT. Sous DOS, le BIOS offre
+VGA/VBE ; les fonctions accelerees exigent une programmation directe ou un SDK.
+
+
+==============================================================================
+2. VARIANTES ET IDENTIFIANTS
+==============================================================================
+
+ Identifiant PCI  Variante                         Remarque
+ ---------------  -------------------------------  --------------------------
+ 102Bh:0520h      MGA-G200 PCI                     G200 PCI
+ 102Bh:0521h      MGA-G200 AGP                     G200 AGP
+
+La Millennium G200, Mystique G200, Marvel G200 et certaines cartes OEM peuvent
+partager le meme circuit et etre distinguees par Subsystem Vendor/Device, PCB,
+ROM et equipement. Ne pas identifier le nom commercial uniquement par 0520h ou
+0521h. La classe attendue est 030000h, VGA-compatible display controller.
+
+Les G200e de serveurs apparus bien plus tard portent d'autres Device ID et un
+ensemble fonctionnel derive. Un pilote pour 0520/0521 ne doit pas les prendre en
+charge par une comparaison approximative sur le mot "G200".
+
+
+==============================================================================
+3. ARCHITECTURE MGA-G200
+==============================================================================
+
+Le circuit integre :
+
+  * interface PCI 32 bits ou AGP selon variante ;
+  * controleur VGA compatible ;
+  * interface memoire 64 bits SDRAM/SGRAM ;
+  * deux chemins internes 64 bits, commercialises comme DualBus 128 ;
+  * moteur 2D avec ligne, trapeze, BitBLT, motif, ROP et expansion ;
+  * moteur 3D avec Z, Gouraud, texture, filtrage et alpha ;
+  * RAMDAC et PLL integres ;
+  * curseur materiel, palette, overlay/video et interruption.
+
+"128-bit DualBus" ne signifie pas un bus SGRAM externe de 128 bits. Il designe
+deux chemins internes 64 bits destines a permettre des operations paralleles.
+
+Le CPU soumet des registres au FIFO. Le moteur lit/ecrit la memoire graphique,
+tandis que le controleur d'affichage la lit pour le balayage. Un pilote doit
+ordonner explicitement les dependances CPU/moteur/affichage.
+
+
+==============================================================================
+4. SGRAM ET CAPACITE VIDEO
+==============================================================================
+
+La Millennium G200 est couramment livree avec 8 Mio de SGRAM et certaines
+versions permettent 16 Mio. La Mystique G200 emploie typiquement de la SDRAM.
+Verifier straps, OPTION, ROM, Subsystem ID et carte plutot que le seul GPU.
+
+La SGRAM fournit des fonctions graphiques et une bande passante superieure aux
+configurations SDRAM equivalentes. Le bus externe reste 64 bits. Les frequences
+dependent des puces, du PCB et de la revision ; ne pas recopier des timings.
+
+Occupation minimale, hors pitch et buffers :
+
+  800x600x32       1 920 000 octets
+  1024x768x32      3 145 728 octets
+  1280x1024x16     2 621 440 octets
+  1280x1024x32     5 242 880 octets
+  1600x1200x16     3 840 000 octets
+  1600x1200x32     7 680 000 octets
+
+En 3D, ajouter back buffer, Z-buffer et textures. Huit Mio deviennent vite
+insuffisants pour haute resolution, 32 bpp et double buffering.
+
+
+==============================================================================
+5. BUS PCI ET AGP
+==============================================================================
+
+La version PCI utilise le protocole PCI traditionnel. La version AGP expose la
+capability AGP dans l'espace de configuration et supporte les transactions AGP,
+notamment les modes negocies par AGP_STS/AGP_CMD. Le chipset de la carte mere et
+le GART du systeme doivent etre correctement initialises.
+
+La configuration G200 contient notamment :
+
+  00h DEVID       Vendor et Device
+  04h DEVCTRL     Command et Status PCI
+  08h CLASS       revision, ProgIF, subclass, class
+  10h MGABASE2    framebuffer
+  14h MGABASE1    controle MMIO
+  18h MGABASE3    aperture ILOAD/pseudo-DMA
+  2Ch SUBSYSID    Subsystem Vendor/Device en lecture
+  30h ROMBASE     ROM d'extension
+  34h CAP_PTR     liste des capabilities
+  3Ch INTCTRL     ligne/pin d'interruption
+  40h OPTION      option 1
+  44h MGA_INDEX   acces indirect
+  48h MGA_DATA    donnees indirectes
+  50h OPTION2     option 2
+  DCh PM_IDENT    capability gestion d'energie
+  E0h PM_CSR      etat/commande alimentation
+  F0h AGP_IDENT   capability AGP, variante AGP seulement
+  F4h AGP_STS     capacites AGP
+  F8h AGP_CMD     commande AGP
+
+Les emplacements AGP sont reserves et lisent zero sur la variante PCI.
+
+
+==============================================================================
+6. RAMDAC, PLL ET SORTIE ANALOGIQUE
+==============================================================================
+
+Le G200 integre un RAMDAC annonce autour de 230 MHz sur les cartes courantes.
+La frequence exploitable depend de la profondeur, du PCB, du moniteur et des
+timings. Une haute frequence DAC ne garantit pas tous les modes.
+
+La programmation d'un mode direct implique pixel PLL, system PLL, CRTC, DAC,
+SGRAM et blanking. Calculer M/N/P dans les plages du constructeur, attendre le
+lock avec timeout et ne jamais afficher des timings non valides sur un moniteur
+ancien. Pour une application DOS, laisser cette sequence au BIOS VBE.
+
+La sortie principale est un DE-15 VGA analogique. DDC permet normalement de
+lire les capacites du moniteur. La qualite du filtre et du routage du PCB compte
+autant que la resolution numerique.
+
+
+==============================================================================
+7. BIOS, VGA ET VESA VBE
+==============================================================================
+
+La ROM VGA initialise la carte au POST et fournit INT 10h. Les BIOS retail
+offrent normalement VBE 2.0 ou une version voisine, mais un programme doit
+interroger la ROM installee.
+
+  AX=4F00h  informations controleur et liste de modes
+  AX=4F01h  ModeInfoBlock
+  AX=4F02h  etablir un mode, BX bit 14 pour LFB
+  AX=4F03h  lire le mode
+  AX=4F05h  banque VGA
+  AX=4F06h  scanline logique
+  AX=4F07h  display start
+  AX=4F09h  palette, si implemente
+
+Succes : AX=004Fh. Lire ModeAttributes, BytesPerScanLine, BitsPerPixel,
+MemoryModel, masques RGB et PhysBasePtr. Les numeros de modes superieurs a 13h
+ne sont pas universels.
+
+
+==============================================================================
+8. DETECTION PCI COMPLETE
+==============================================================================
+
+Methode recommandee sous DOS :
+
+  1. INT 1Ah/AX=B101h ; verifier CF=0, AH=00h et EDX="PCI ".
+  2. Chercher DX=102Bh, CX=0521h, SI=0 par AX=B102h.
+  3. Si absent, chercher CX=0520h pour la variante PCI.
+  4. Conserver BH=bus et BL=(device shl 3)|function.
+  5. Lire classe 0Bh et subclass 0Ah : 03h et 00h.
+  6. Lire Command 04h : Memory Space Enable, bit 1, doit etre actif.
+  7. Lire BAR 10h, 14h et 18h et verifier leur type/taille attendue.
+  8. Lire Subsystem ID pour distinguer le produit lorsque possible.
+
+Une reponse 102B:0521 prouve un G200 AGP, pas necessairement une carte retail
+nommee Millennium G200. Le Subsystem ID et la ROM completent l'identification.
+
+Sous une VDM, le BIOS PCI ou le mapping physique peut etre filtre. Distinguer
+"materiel absent" de "materiel inaccessible depuis cet environnement".
+
+
+==============================================================================
+9. CONFIGURATION PCI
+==============================================================================
+
+PCI BIOS fournit :
+
+  B108h lecture octet, retour CL
+  B109h lecture mot, retour CX
+  B10Ah lecture DWORD, retour ECX
+
+Verifier CF et AH apres chaque appel. Les ecritures B10Bh..B10Dh sont reservees
+au code qui possede la configuration. Une application ne doit pas deplacer les
+BAR attribues par le BIOS.
+
+Configuration Mechanism 1 utilise CF8h/CFCh. CONFIG_ADDRESS vaut :
+
+  80000000h | bus<<16 | device<<11 | function<<8 | (offset & FCh)
+
+Ce mecanisme est un recours pour diagnostic apres detection de sa disponibilite.
+Il faut serialiser CF8h/CFCh et ne pas l'utiliser concurremment avec un pilote.
+
+
+==============================================================================
+10. BAR ET ESPACES D'ADRESSAGE
+==============================================================================
+
+Attention : l'ordre differe des MGA-1064SG et MGA-2064W.
+
+ Offset PCI  Nom       Fonction                         Taille
+ ----------  --------  -------------------------------  ------------------
+ 10h         MGABASE2  framebuffer                     aperture 16 Mio
+ 14h         MGABASE1  controle MMIO                   16 Kio
+ 18h         MGABASE3  ILOAD/pseudo-DMA                8 Mio
+ 30h         ROMBASE   BIOS d'extension                selon ROM
+
+MGABASE3 est non prefetchable et aligne sur 8 Mio. Il ne s'agit ni d'un second
+framebuffer ni d'une preuve de 8 Mio de memoire physique.
+
+MGABASE2 decode une aperture de 16 Mio, meme si seulement 8 Mio de SGRAM sont
+installes. Les adresses au-dela de la memoire physique ne doivent pas servir a
+mesurer la capacite par essais destructifs.
+
+La priorite de recouvrement est : BIOS EPROM, controle, pseudo-DMA, fenetre VGA,
+puis framebuffer. Le decodage depend aussi de PCI Command, ROM enable et des
+bits de mode. Un emulateur doit appliquer ces priorites.
+
+Masquer les bits 3..0 d'un BAR memoire. Une valeur zero ou FFFFFFFFh est
+inutilisable. Ne pas mesurer la taille par ecriture de FFFFFFFFh sur une carte
+active : cela modifie temporairement son decodage.
+
+
+==============================================================================
+11. PORTS VGA
+==============================================================================
+
+ Port       Lecture/ecriture
+ ---------- ---------------------------------------------------------------
+ 3B4/3B5h   CRTC monochrome index/donnee
+ 3BAh       Input Status 1 mono / Feature Control
+ 3C0h       Attribute Controller index/donnee
+ 3C1h       donnee Attribute Controller en lecture
+ 3C2h       Misc Output ecriture / Input Status 0 lecture
+ 3C3h       Video Subsystem Enable
+ 3C4/3C5h   Sequencer index/donnee
+ 3C6h       PEL Mask
+ 3C7h       DAC read index/etat
+ 3C8h       DAC write index
+ 3C9h       DAC data R,G,B
+ 3CE/3CFh   Graphics Controller index/donnee
+ 3D4/3D5h   CRTC couleur index/donnee
+ 3DAh       Input Status 1 couleur / Feature Control
+
+Lire 3DAh/3BAh remet la bascule Attribute sur index. Le bit 5 de l'index 3C0h
+maintient l'affichage. Le bit 0 de Misc Output choisit les ports CRTC mono ou
+couleur. Les registres VGA possedent aussi des miroirs dans MGABASE1.
+
+
+==============================================================================
+12. FRAMEBUFFER LINEAIRE
+==============================================================================
+
+MGABASE2 est le BAR framebuffer. Dans une application VBE, utiliser PhysBasePtr
+du ModeInfoBlock plutot que supposer qu'il est identique a une valeur codee en
+dur. Mapper l'adresse physique par DPMI INT 31h/AX=0800h.
+
+Adresse pixel :
+
+  PhysBasePtr + Y * BytesPerScanLine + X * octets_par_pixel
+
+BytesPerScanLine inclut le pitch/alignment. Les masques VBE determinent RGB ou
+BGR et les positions de composantes. En 24 bpp, un pixel traverse facilement
+une frontiere DWORD ; ne pas traiter le mode comme du 32 bpp.
+
+Les ecritures CPU directes contournent ROP et PLNWT. Synchroniser avec le
+moteur lorsqu'une zone est partagee.
+
+
+==============================================================================
+13. APERTURE DE CONTROLE MMIO
+==============================================================================
+
+MGABASE1, BAR PCI 14h, couvre 16 Kio :
+
+  0000h-1BFFh  DMAWIN historique/registre selon mode
+  1C00h-1CFFh  registres dessin, sans lancement
+  1D00h-1DFFh  miroirs dessin, ecriture avec lancement
+  1E00h-1EFFh  registres hote, FIFO, interruption et reset
+  1F00h-1FFFh  VGA memory-mapped
+  2000h-3BFFh  reserve
+  3C00h-3CFFh  DAC, PLL et registres associes
+  3D00h-3FFFh  extension/reserve selon bloc
+
+Employer des transactions DWORD alignees pour les registres moteur. Les zones
+reservees lisent une valeur specifiee ou indeterminee et ne doivent pas acquerir
+des effets inventes dans un emulateur.
+
+L'acces indirect PCI MGA_INDEX/MGA_DATA peut atteindre des registres sans BAR
+sur certaines plates-formes, mais il n'est pas un remplacement universel du
+MMIO et comporte des restrictions, notamment avec le strap PowerPC.
+
+
+==============================================================================
+14. CARTE DES REGISTRES DU MOTEUR
+==============================================================================
+
+ Offset Nom        Fonction
+ ------ ---------- ---------------------------------------------------------
+ 1C00h  DWGCTL     opcode, type acces, ROP, Z, texture, transparence
+ 1C04h  MACCESS    largeur pixel et format memoire
+ 1C08h  MCTLWTST   controle/test memoire
+ 1C0Ch  ZORG       origine Z
+ 1C10h  PAT0       motif bas
+ 1C14h  PAT1       motif haut
+ 1C1Ch  PLNWT      masque de plans moteur
+ 1C20h  BCOL       couleur fond
+ 1C24h  FCOL       couleur avant
+ 1C30h-1C3Ch SRC0-3 source/stipple
+ 1C40h  XYSTRT     debut XY
+ 1C44h  XYEND      fin XY
+ 1C50h  SHIFT      decalage
+ 1C54h  DMAPAD     padding DMA
+ 1C58h  SGN        signes/sens
+ 1C5Ch  LEN        longueur/nombre de lignes
+ 1C60h-1C78h AR0-6 registres arithmetiques/adresses
+ 1C80h  CXBNDRY    clipping X combine
+ 1C84h  FXBNDRY    bornes X
+ 1C88h  YDSTLEN    Y destination et longueur
+ 1C8Ch  PITCH      pas en pixels
+ 1C90h  YDST       destination Y
+ 1C94h  YDSTORG    origine destination en pixels
+ 1C98h  YTOP       limite haute linearisee
+ 1C9Ch  YBOT       limite basse linearisee
+ 1CA0h  CXLEFT     clipping gauche
+ 1CA4h  CXRIGHT    clipping droit
+ 1CA8h  FXLEFT     bord gauche fractionnaire
+ 1CACh  FXRIGHT    bord droit fractionnaire
+ 1CB0h  XDST       destination X
+
+Les registres DR0..DR15 contiennent couleurs, Z, texture et increments selon
+l'operation. Leur signification change avec opcode/atype : ne pas les traiter
+comme seize registres interchangeables.
+
+
+==============================================================================
+15. REGISTRES HOTE, FIFO ET INTERRUPTIONS
+==============================================================================
+
+  1E10h FIFOSTATUS  entrees libres, FIFO pleine/vide
+  1E14h STATUS      busy, vsync et evenements
+  1E18h ICLEAR      acquittement
+  1E1Ch IEN         activation
+  1E20h VCOUNT      compteur vertical
+  1E40h RST         reset logiciel
+  1E54h OPMODE      mode et taille des transferts
+
+FIFOSTATUS bits 5..0 retourne jusqu'a 32 places libres. STATUS bit 16
+dwgengsts vaut un tant que le moteur travaille. Attendre avec expiration.
+
+Une interruption PCI peut etre partagee. Le gestionnaire doit verifier la cause
+MGA avant d'acquitter, sauvegarder les registres, rester court et chain/restituer
+correctement. Le polling est souvent plus simple pour une application DOS.
+
+RST ne remplace pas une initialisation video complete. Apres un reset memoire,
+restaurer timings, refresh, DAC, CRTC, pitch, clipping et etat du moteur.
+
+
+==============================================================================
+16. REGISTRES VGA, DAC ET CRTC ETENDUS
+==============================================================================
+
+La zone 1Fxx reflete les ports VGA : par exemple 3C2h correspond au miroir
+1FC2h. L'acces reste indexe pour Sequencer, CRTC, Graphics et Attribute.
+
+Les registres DAC/PLL integres sont accessibles par un ensemble index/donnee
+dans la zone 3Cxx. Les index et bits reserves doivent provenir de la
+specification G200, pas du TVP3026 de la Millennium originale.
+
+Les CRTC etendus portent les bits hauts des timings, pitch, start address et
+mode MGA. Les deverrouiller, modifier pendant blank et reverrouiller selon la
+sequence constructeur. Un bit reserve mal programme peut changer le decodage
+memoire ou les horloges.
+
+
+==============================================================================
+17. FORMATS DE PIXELS ET CLIPPING
+==============================================================================
+
+MACCESS selectionne 8, 16, 24 ou 32 bpp et les variantes 5:5:5/5:6:5. Le BIOS
+VBE reste l'autorite pour le format visible. FCOL/BCOL doivent etre repliquees
+comme exige par le moteur dans les petits formats.
+
+PITCH et YDSTORG sont en pixels. ZORG est en octets. YTOP/YBOT sont des limites
+linearisees et le clipping vertical ne peut pas simplement etre ignore.
+
+Initialiser :
+
+  CXLEFT/CXRIGHT aux limites horizontales ;
+  YTOP = YDSTORG + premiere_ligne * PITCH ;
+  YBOT selon la convention inclusive/exclusive de la specification ;
+  PLNWT au masque correspondant a la profondeur.
+
+Tester les pixels aux quatre bords et les rectangles 1x1.
+
+
+==============================================================================
+18. INITIALISATION ET SYNCHRONISATION
+==============================================================================
+
+Pour une application : etablir d'abord un mode VBE, puis programmer seulement
+l'etat moteur compatible. Pour un pilote de mode complet : blank, PLL, SGRAM,
+CRTC, DAC, start address, pitch, clipping, palette puis unblank.
+
+Soumission d'une commande :
+
+  1. compter les ecritures FIFO necessaires ;
+  2. attendre FIFOSTATUS >= nombre avec timeout ;
+  3. ecrire DWGCTL et parametres par offsets 1Cxx ;
+  4. ecrire le dernier registre par son miroir 1Dxx ;
+  5. attendre STATUS bit 16 seulement si le CPU depend du resultat.
+
+Les lectures MMIO peuvent servir de barriere sur PCI, mais un extender ou une
+plate-forme non x86 peut demander des primitives d'ordre memoire explicites.
+
+
+==============================================================================
+19. REMPLISSAGE, LIGNES ET BITBLT
+==============================================================================
+
+TRAP realise remplissages rectangulaires/trapezes. LINE_OPEN/CLOSE et
+AUTOLINE_OPEN/CLOSE gerent les vecteurs et le dernier pixel des polylignes.
+BITBLT copie en memoire ; FBITBLT exploite les chemins rapides lorsque les
+contraintes sont satisfaites.
+
+DWGCTL bits 3..0 comprend classiquement LINE, AUTOLINE, TRAP, BITBLT, ILOAD,
+IDUMP et variantes texture/filtrage. Bits 19..16 portent le BOP. BOP=C copie la
+source, 6 realise XOR, A conserve la destination.
+
+Lors d'une copie recouvrante, choisir le sens SGN comme memmove. Une direction
+incorrecte produit bandes ou repetitions. Programmer source AR, destination,
+PITCH, clipping et longueur avant le trigger.
+
+
+==============================================================================
+20. ILOAD, IDUMP ET APERTURE PSEUDO-DMA
+==============================================================================
+
+Le G200 ajoute MGABASE3, BAR a 18h, aperture ILOAD de 8 Mio. Une adresse dans
+cette fenetre fournit des donnees au moteur pseudo-DMA selon le mode arme. Cela
+reduit les conflits avec les registres de controle et facilite les transferts.
+
+Programmer OPMODE, DWGCTL, destination, format et compte avant d'ecrire les
+donnees. Le nombre est contractuel : trop peu laisse le moteur en attente ; trop
+peut deborder la primitive. Traiter le dernier DWORD partiel et DMAPAD.
+
+IDUMP transfere dans l'autre sens. Respecter les limitations de lecture PCI et
+ne pas confondre cette interface avec AGP DMA ou un bus master generique.
+
+MGABASE3 n'est pas la memoire video. Ecrire une image a MGABASE3 sans avoir arme
+ILOAD ne constitue pas un dessin valide.
+
+
+==============================================================================
+21. ARCHITECTURE ET PROGRAMMATION 3D
+==============================================================================
+
+Le G200 apporte une chaine 3D plus complete que Mystique :
+
+  * rendu true color et Z-buffer ;
+  * Gouraud et eclairage/specular selon pilote ;
+  * texture avec correction de perspective ;
+  * filtrage bilineaire ;
+  * mipmapping et filtrage trilineaire selon configuration ;
+  * alpha blending, fog et color key ;
+  * anti-aliasing selon primitives/modes pris en charge.
+
+Le triangle setup reste largement pilote/CPU : preparer gradients, coordonnees,
+Z, couleurs et texture dans les DR/AR, puis lancer le trapeze/triangle. Les
+formats et alignements de texture, niveaux mip et pitch doivent etre respectes.
+
+Le support annonce d'une fonction par Direct3D ne signifie pas un registre
+unique. Le pilote peut decomposer ou emuler certains cas. Sous DOS, preferer le
+SDK Matrox approprie ou suivre strictement le chapitre Programmer's
+Specification du G200.
+
+L'AGP permet au GPU d'acceder a des textures en memoire systeme via le GART. Un
+programme DOS ne doit pas inventer une table GART : son initialisation appartient
+au chipset/OS et implique coherence, pages physiques et securite.
+
+
+==============================================================================
+22. FONCTIONS VIDEO ET OVERLAY
+==============================================================================
+
+Le G200 possede un overlay et des fonctions de conversion/mise a l'echelle
+video. Le pilote programme format source, adresse, pitch, fenetre destination,
+color key et filtrage. La presence d'un overlay ne signifie pas decodeur MPEG
+complet : demultiplexage et une partie du decodage restent logiciels.
+
+Marvel G200 ajoute des composants video/capture absents de la Millennium G200.
+Ces fonctions se detectent par la carte/subsystem et leurs peripheriques, pas
+par le seul Device ID G200.
+
+
+==============================================================================
+23. EXEMPLE ASSEMBLEUR : DETECTION PCI
+==============================================================================
+
+; Mode reel, 386+, PCI BIOS. Cherche AGP puis PCI.
+; Retour CF=0, BX=bus/devfn et DX=Device ID trouve.
+
+FindMillenniumG200:
+        mov     ax,0B101h
+        int     1Ah
+        jc      short fg_fail
+        or      ah,ah
+        jnz     short fg_fail
+        cmp     edx,20494350h       ; "PCI "
+        jne     short fg_fail
+
+        mov     cx,0521h            ; AGP d'abord
+        call    FindOneG200
+        jnc     short fg_ok
+        mov     cx,0520h            ; puis PCI
+        call    FindOneG200
+        jc      short fg_fail
+fg_ok:  clc
+        ret
+fg_fail:
+        stc
+        ret
+
+; Entree CX=Device ID. Retour CF=0 et BX=bus/devfn si trouve.
+FindOneG200:
+        push    cx                  ; conserver l'ID essaye
+        mov     ax,0B102h
+        mov     dx,102Bh
+        xor     si,si
+        int     1Ah
+        pop     dx                  ; retourne l'ID, POP preserve les flags
+        jc      short fog_absent
+        or      ah,ah
+        jnz     short fog_absent
+        clc
+        ret
+fog_absent:
+        stc
+        ret
+
+La routine appelante doit encore verifier classe, PCI Command et Subsystem ID.
+
+
+==============================================================================
+24. EXEMPLE ASSEMBLEUR : LECTURE DES BAR
+==============================================================================
+
+G200_BusDevFn dw 0
+G200_FB       dd 0
+G200_CTRL     dd 0
+G200_ILOAD    dd 0
+
+; Entree BX=bus/devfn retourne par FindMillenniumG200.
+; Retour CF=0 si les trois BAR sont des BAR memoire non nuls.
+
+ReadG200BARs:
+        mov     G200_BusDevFn,bx
+        mov     di,0010h
+        mov     ax,0B10Ah
+        int     1Ah
+        jc      short rgb_fail
+        or      ah,ah
+        jnz     short rgb_fail
+        test    cl,1
+        jnz     short rgb_fail
+        mov     eax,ecx
+        and     eax,0FFFFFFF0h
+        jz      short rgb_fail
+        mov     dword ptr G200_FB,eax
+
+        mov     bx,G200_BusDevFn
+        mov     di,0014h
+        mov     ax,0B10Ah
+        int     1Ah
+        jc      short rgb_fail
+        or      ah,ah
+        jnz     short rgb_fail
+        test    cl,1
+        jnz     short rgb_fail
+        mov     eax,ecx
+        and     eax,0FFFFFFF0h
+        jz      short rgb_fail
+        mov     dword ptr G200_CTRL,eax
+
+        mov     bx,G200_BusDevFn
+        mov     di,0018h
+        mov     ax,0B10Ah
+        int     1Ah
+        jc      short rgb_fail
+        or      ah,ah
+        jnz     short rgb_fail
+        test    cl,1
+        jnz     short rgb_fail
+        mov     eax,ecx
+        and     eax,0FFFFFFF0h
+        jz      short rgb_fail
+        mov     dword ptr G200_ILOAD,eax
+        clc
+        ret
+rgb_fail:
+        stc
+        ret
+
+
+==============================================================================
+25. EXEMPLE ASSEMBLEUR : MMIO ET RECTANGLE
+==============================================================================
+
+; ESI=MGABASE1/controle mappee, EAX=N places, ECX=timeout.
+WaitG200FIFO:
+        mov     edx,[esi+01E10h]
+        and     edx,3Fh
+        cmp     edx,eax
+        jae     short wgf_ok
+        dec     ecx
+        jnz     WaitG200FIFO
+        stc
+        ret
+wgf_ok: clc
+        ret
+
+; EAX=couleur, EBX=(droite<<16)|gauche, EDX=(y<<16)|hauteur.
+; Etat global et clipping deja programmes.
+
+G200_TRAP_COPY equ 000C7804h
+
+G200FillRect:
+        push    eax
+        mov     eax,4
+        mov     ecx,1000000
+        call    WaitG200FIFO
+        pop     eax
+        jc      short gfr_fail
+        mov     dword ptr [esi+01C00h],G200_TRAP_COPY
+        mov     [esi+01C24h],eax    ; FCOL
+        mov     [esi+01C84h],ebx    ; FXBNDRY
+        mov     [esi+01D88h],edx    ; YDSTLEN et lancement
+        clc
+        ret
+gfr_fail:
+        stc
+        ret
+
+La constante combine TRAP, RPL, SOLID, ARZERO, SGNZERO, SHFTZERO et BOP=C.
+Rejeter largeur/hauteur nulles et valider la convention du bord droit.
+
+
+==============================================================================
+26. EXEMPLES TURBO PASCAL
+==============================================================================
+
+Uses Dos;
+
+Function FindG200(DeviceID:Word; Var Bus,DevFn:Byte):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B102; R.CX:=DeviceID; R.DX:=$102B; R.SI:=0;
+ Intr($1A,R);
+ FindG200:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If FindG200 Then Begin
+  Bus:=Hi(R.BX); DevFn:=Lo(R.BX);
+ End;
+End;
+
+Function DetectG200(Var Bus,DevFn:Byte; Var IsAGP:Boolean):Boolean;
+Begin
+ IsAGP:=FindG200($0521,Bus,DevFn);
+ If IsAGP Then DetectG200:=True
+          Else DetectG200:=FindG200($0520,Bus,DevFn);
+End;
+
+Function PCIReadWord(Bus,DevFn:Byte; RegNo:Word;
+                     Var Value:Word):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B109; R.BX:=Word(Bus) shl 8 or DevFn; R.DI:=RegNo;
+ Intr($1A,R);
+ PCIReadWord:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If PCIReadWord Then Value:=R.CX;
+End;
+
+Function PCIReadDWord16(Bus,DevFn:Byte; RegNo:Word;
+                        Var Value:LongInt):Boolean;
+Var L,H:Word;
+Begin
+ PCIReadDWord16:=PCIReadWord(Bus,DevFn,RegNo,L) and
+                  PCIReadWord(Bus,DevFn,RegNo+2,H);
+ If PCIReadDWord16 Then Value:=(LongInt(H) shl 16) or L;
+End;
+
+Procedure SetVGAPalette(Index,R,G,B:Byte);
+Begin
+ Port[$3C8]:=Index;
+ Port[$3C9]:=R; Port[$3C9]:=G; Port[$3C9]:=B;
+End;
+
+Le code complet doit appeler B101h avant B102h, verifier classe 03/00 et le bit
+Memory Space Enable. Registers ne contient pas EDX complet ; une routine TASM
+386 est necessaire pour verifier strictement la signature "PCI ".
+
+
+==============================================================================
+27. PROGRAMMATION VBE/DPMI SOUS DOS
+==============================================================================
+
+Chemin portable :
+
+  1. VBE 4F00h et signature VESA ;
+  2. enumeration de la liste de modes ;
+  3. 4F01h et validation des attributs/masques/pitch ;
+  4. 4F02h avec bit 14 si LFB disponible ;
+  5. mapping PhysBasePtr par DPMI 0800h ;
+  6. dessin dans le framebuffer ;
+  7. liberation DPMI 0801h et restauration du mode.
+
+Turbo Pascal reel ne peut pas adresser directement un BAR au-dessus de 1 Mio.
+Un extender doit fournir un selecteur couvrant le mapping. Les registres MMIO
+exigent des ecritures DWORD atomiques ; ne pas les decomposer en deux WORD.
+
+Pour utiliser MGABASE3, mapper separement ses 8 Mio et n'ecrire qu'apres avoir
+arme une operation ILOAD correctement dimensionnee.
+
+
+==============================================================================
+28. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Distinguer 0520 PCI et 0521 AGP.
+  * Utiliser Subsystem ID pour le produit, sans en faire une liste fermee.
+  * Respecter l'ordre G200 BAR0=FB, BAR1=controle, BAR2=ILOAD.
+  * Ne pas reprogrammer AGP/GART depuis une application.
+  * Compter les places FIFO et borner les attentes.
+  * Utiliser des transactions MMIO DWORD alignees.
+  * Initialiser pitch, origine, YTOP/YBOT, clipping et PLNWT.
+  * Synchroniser CPU, moteur, overlay et affichage.
+  * Sauvegarder/restaurer PLL, CRTC, DAC et registres etendus.
+  * Separer le code G200 des G200e, G400 et anciennes MGA.
+
+
+==============================================================================
+29. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Modeliser :
+
+  * PCI 102B:0520/0521, classe, revision et subsystem configurables ;
+  * layout exact des trois BAR et ROM ;
+  * capabilities PM et AGP uniquement sur la variante appropriee ;
+  * priorite de recouvrement des apertures ;
+  * alias 1Cxx/1Dxx et lancement sur ecriture 1Dxx ;
+  * FIFO 32 entrees, target retry/back-pressure et STATUS bit 16 ;
+  * ROP, motifs, clipping et copies recouvrantes ;
+  * VGA plans/latches, chain-4 et bascule 3C0h ;
+  * DAC, PLL, CRTC, retrace, VCOUNT et display start ;
+  * quantite reelle de SGRAM distincte de la taille des BAR ;
+  * aperture ILOAD et compte/padding exacts ;
+  * formats texture, Z, alpha et filtrage documentes.
+
+Ne pas repondre zero a tous les registres non implementes si la specification
+prescrit un autre reset/readback. Ne pas terminer instantanement toutes les
+commandes si les logiciels testent FIFO, busy ou interruption.
+
+
+==============================================================================
+30. DIAGNOSTIC ET PIEGES
+==============================================================================
+
+G200 detecte mais nom commercial incertain
+  Examiner Subsystem ID, ROM, etiquette et type memoire.
+
+MMIO retourne FFFFFFFFh
+  Verifier PCI Command bit 1, BAR1 a 14h, mapping DPMI et privileges.
+
+Le programme ecrit dans le framebuffer mais rien ne change
+  Il a peut-etre confondu BAR0/1 avec une ancienne MGA ; verifier mode et pitch.
+
+ILOAD bloque le moteur
+  Compte incomplet, format, OPMODE, DMAPAD ou mauvaise aperture BAR2.
+
+Rectangle absent
+  Verifier clipping, YTOP/YBOT, PITCH, YDSTORG, PLNWT et MACCESS.
+
+Couleurs incorrectes
+  Verifier masques VBE, 15/16 bpp, RGB/BGR et replication FCOL.
+
+AGP instable
+  Ne pas supposer vitesse x2/SBA ; negocier selon chipset, GART et capability.
+
+
+==============================================================================
+31. COMPARAISON DES FAMILLES MATROX
+==============================================================================
+
+ Carte                 GPU        Memoire typique  PCI Device
+ --------------------  ---------  ----------------  ----------------
+ Millennium            2064W      WRAM              0519h
+ Mystique              1064SG     SGRAM             051Ah
+ Millennium II         2164W      WRAM              051Bh/051Fh
+ Mystique 220          1164SG     SGRAM             051Eh
+ Millennium G200       G200       SGRAM             0520h/0521h
+ Mystique G200         G200       SDRAM typique     0520h/0521h + subsystem
+
+Le G200 conserve beaucoup d'offsets du moteur MGA, mais la configuration PCI,
+les BAR, la memoire, le DAC et la 3D different. La compatibilite de noms de
+registres n'autorise pas a reutiliser une initialisation 1064/2064.
+
+
+==============================================================================
+32. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] PCI BIOS, signature et detection 0520/0521
+  [ ] classe 030000h, revision et Subsystem ID
+  [ ] BAR0 framebuffer, BAR1 controle, BAR2 ILOAD
+  [ ] PCI Command, ROM et capabilities PM/AGP
+  [ ] VGA texte, modes 0Dh/0Eh/10h/12h/13h
+  [ ] VBE 4F00/01/02/03/05/06/07/09 selon BIOS
+  [ ] LFB, pitch et masques pour 8/15/16/24/32 bpp
+  [ ] FIFO vide/pleine, timeout et STATUS busy
+  [ ] rectangle 1x1, clipping aux quatre bords
+  [ ] ROP copy/XOR, motifs et plan mask
+  [ ] lignes ouvertes/fermees et polylignes
+  [ ] BitBLT non recouvrant puis recouvrant dans les deux sens
+  [ ] ILOAD tailles 1, non multiple de 4 et plusieurs lignes
+  [ ] reset/restauration et changement de mode
+  [ ] overlay et 3D seulement si implementation correspondante
+
+
+==============================================================================
+33. REFERENCES
+==============================================================================
+
+Source constructeur principale
+------------------------------
+
+  * Matrox Graphics Inc., MGA-G200 Specification, novembre 1998.
+
+    https://www.bitsavers.org/components/matrox/_dataSheets/
+    MGA-G200_199811.pdf
+
+Standards
+---------
+
+  * PCI Local Bus Specification 2.1.
+  * PCI BIOS Specification.
+  * AGP Interface Specification correspondant a la plate-forme.
+  * VESA BIOS Extension Core Functions Standard, VBE 2.0/3.0.
+
+Sources constructeur complementaires
+-------------------------------------
+
+  * Matrox, anciens pilotes et identification des produits G200.
+
+    https://video.matrox.com/en/apps/drivers/graphics/previous/legacy
+
+Implementations de comparaison
+------------------------------
+
+  * Pilote X.Org mga.
+  * Pilotes Linux DRM mga/mgag200 et anciens matroxfb.
+  * Implementations d'emulateurs utilisant le G200 comme reference.
+
+La specification G200 tranche les valeurs de registres. Une fiche commerciale
+de Millennium G200 renseigne la carte, mais ne remplace pas la specification du
+circuit. Les cartes OEM peuvent differer en memoire, ROM, horloges et subsystem.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

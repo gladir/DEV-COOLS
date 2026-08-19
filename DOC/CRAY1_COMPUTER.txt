@@ -1,0 +1,1407 @@
+==============================================================================
+ CRAY RESEARCH CRAY-1
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit le superordinateur Cray Research CRAY-1 : variantes,
+construction, processeur vectoriel, memoire, entrees/sorties, instruction set,
+CAL, FORTRAN, systemes d'exploitation et principes d'emulation.
+
+Les informations de timing varient avec modele, numero de serie et revision des
+manuels. Les valeurs sans suffixe concernent surtout le CRAY-1A classique.
+Les accents sont omis afin de conserver un fichier ASCII.
+
+Date de revision : aout 2026.
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Modeles CRAY-1A, 1S et 1M
+  3. Construction physique
+  4. Logique et horloge
+  5. Architecture du processeur
+  6. Registres
+  7. Unites fonctionnelles
+  8. Instructions et parcels
+  9. Pipeline, issue et scoreboarding
+ 10. Architecture vectorielle
+ 11. Chaining
+ 12. Memoire centrale
+ 13. Banques et conflits memoire
+ 14. Adressage et chargements
+ 15. Arithmetique entiere
+ 16. Virgule flottante Cray
+ 17. Masques et population count
+ 18. Branchements et instructions speciales
+ 19. Echange et contexte
+ 20. Entrees/sorties et canaux
+ 21. Stations frontales et stockage
+ 22. Fiabilite et maintenance
+ 23. CAL, Cray Assembly Language
+ 24. Exemples CAL
+ 25. CFT FORTRAN
+ 26. Vectorisation des boucles
+ 27. Exemples FORTRAN
+ 28. COS, CTSS et environnement logiciel
+ 29. Chargement, bibliotheques et fichiers
+ 30. Mesure et optimisation
+ 31. Programmation systeme
+ 32. Conseils pour un emulateur
+ 33. Diagnostic et pieges
+ 34. Plan de validation
+ 35. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+Seymour Cray dirige le developpement du CRAY-1 chez Cray Research. Le premier
+systeme est livre au Los Alamos Scientific Laboratory en 1976. L'objectif est
+d'obtenir un tres haut debit scientifique avec un processeur vectoriel, une
+horloge tres rapide et une memoire large plutot qu'avec de nombreux processeurs.
+
+Le CRAY-1 popularise l'architecture vector-register : des vecteurs sont charges
+dans de grands registres, traites par des pipelines, puis ranges. Cette approche
+evite de relire la memoire a chaque operation et permet le chaining entre unites.
+
+Les performances souvent citees en "MFLOPS" dependent enormement du noyau. Le
+pic theorique et un programme reel ne sont pas equivalentes; longueur vectorielle,
+demarrage des pipelines et banques memoire dominent les petits problemes.
+
+
+==============================================================================
+2. MODELES CRAY-1A, 1S ET 1M
+==============================================================================
+
+CRAY-1A
+  Processeur original avec sous-systeme d'E/S par canaux et front-end externe.
+  Memoire selon configuration, jusqu'a environ un million de mots de 64 bits.
+
+CRAY-1S
+  Ajoute un sous-systeme d'E/S plus autonome, davantage de stockage et des
+  processeurs d'E/S, afin de moins interrompre le processeur central.
+
+CRAY-1M
+  Emploie de la memoire MOS, plus dense et moins couteuse, avec caracteristiques
+  de capacite/timing propres au modele.
+
+Les suffixes, numeros de serie et modernisations changent canaux, correction
+d'erreurs, capacite et logiciels. Ne pas appliquer une table 1S a un 1A sans
+verifier le manuel portant le bon numero de publication.
+
+
+==============================================================================
+3. CONSTRUCTION PHYSIQUE
+==============================================================================
+
+Le chassis forme un arc/cylindre entoure de bancs rembourres. La forme raccourcit
+les liaisons : a 12,5 ns, quelques metres de cable deviennent une part importante
+d'un cycle. Les bancs cachent notamment alimentations et composants du systeme.
+
+Les modules logiques sont places dans des colonnes et relies par des faisceaux
+de fils. La machine emploie une logique ECL bipolaire tres rapide, gourmande en
+energie et generatrice de chaleur. Des dizaines d'alimentations fournissent les
+tensions a fort courant.
+
+Le refroidissement utilise un circuit frigorifique au refrigerant et des plaques
+conductrices entre modules. Le site doit fournir energie, eau/rejet thermique,
+plancher, espace de maintenance et controle environnemental conformes au manuel
+de planification. Masse, puissance et dimensions varient selon configuration;
+les valeurs museales arrondies ne servent pas a planifier une installation.
+
+
+==============================================================================
+4. LOGIQUE ET HORLOGE
+==============================================================================
+
+Periode fondamentale : 12,5 ns, soit 80 MHz. Ce chiffre est spectaculaire pour
+1976. La distribution d'horloge et les longueurs de fils sont controlees afin de
+limiter le skew.
+
+La logique est fortement pipelinee. Une unite peut avoir une latence de plusieurs
+cycles mais accepter de nouvelles donnees chaque cycle une fois amorcee. Il faut
+donc distinguer :
+
+  latency       temps avant le premier resultat;
+  functional-unit time temps avant reutilisation/issue compatible;
+  result rate   debit soutenu apres amorcage;
+  chain slot    moment ou une unite consommatrice peut prendre le resultat.
+
+
+==============================================================================
+5. ARCHITECTURE DU PROCESSEUR
+==============================================================================
+
+Le processeur est scalaire et vectoriel dans une meme architecture. Le scalaire
+prepare adresses, boucles et conditions; les pipelines vectoriels traitent
+jusqu'a 64 elements par instruction.
+
+Caracteristiques :
+
+  * mot de donnees 64 bits;
+  * adresses et certains calculs sur 24 bits;
+  * complement a deux pour entiers;
+  * huit registres vectoriels de 64 mots;
+  * unites fonctionnelles independantes et segmentees;
+  * buffers d'instructions;
+  * memoire multi-banques;
+  * pas de cache de donnees conventionnel;
+  * pas de memoire virtuelle au sens moderne.
+
+
+==============================================================================
+6. REGISTRES
+==============================================================================
+
+  Groupe       Nombre  Largeur             Usage
+  -----------  ------  ------------------  -------------------------------
+  A0-A7        8       24 bits             adresses, index, entiers courts
+  B00-B77      64      24 bits             temporaires/sauvegarde des A
+  S0-S7        8       64 bits             scalaires, logique, flottants
+  T00-T77      64      64 bits             temporaires/sauvegarde des S
+  V0-V7        8       64 x 64 bits        vecteurs
+  VL           1       longueur vectorielle nombre d'elements actifs, 0..64
+  VM           1       64 bits             masque vectoriel
+  P            1       24 bits             compteur de programme en parcels
+
+Les numeros B/T sont traditionnellement ecrits en octal, d'ou 00 a 77. VL ne
+modifie pas les elements au-dela de sa longueur lors d'une instruction vectorielle.
+VM autorise les operations conditionnelles element par element.
+
+Les registres d'echange contiennent etat processeur, limites, base, VL/VM et
+informations necessaires a une sauvegarde/reprise. Leur detail depend du modele.
+
+
+==============================================================================
+7. UNITES FONCTIONNELLES
+==============================================================================
+
+Douze unites segmentees classiques :
+
+  Adresse    addition, multiplication
+  Scalaire   addition, decalage, logique, population/leading-zero
+  Vectoriel  addition, decalage, logique
+  Flottant   addition, multiplication, reciprocal approximation
+
+Certaines operations partagent une unite. Deux instructions ne peuvent pas
+occuper une ressource incompatible simultanement. Le controle d'issue attend
+registres, unites et chemins de resultat disponibles.
+
+La reciprocal approximation fournit une estimation; la division est construite
+par multiplication et iterations de Newton. Il n'existe pas une instruction de
+division flottante generale equivalente a celle d'un CPU moderne.
+
+
+==============================================================================
+8. INSTRUCTIONS ET PARCELS
+==============================================================================
+
+Une instruction occupe un ou deux parcels de 16 bits. Un mot memoire de 64 bits
+contient quatre parcels. P adresse les parcels, pas directement des octets.
+
+Le premier parcel comporte des champs traditionnellement notes g, h, i, j, k;
+la combinaison gh identifie la famille, les autres choisissent registres ou
+constantes. Une instruction longue ajoute un champ d'adresse/constante dans le
+second parcel. Les descriptions constructeur sont ordonnees par code gh octal.
+
+Un emulateur doit decoder les bits exacts du manuel. Ne pas deduire l'encodage
+depuis la seule syntaxe CAL : pseudo-instructions, expressions et macros peuvent
+generer plusieurs instructions.
+
+Les buffers d'instructions peuvent recevoir plusieurs parcels par cycle depuis
+la memoire. Les branchements et frontieres de buffers affectent l'alimentation.
+
+
+8.1 NOTATION UTILISEE PAR LES MANUELS
+-------------------------------------
+
+Tous les codes machine de ce chapitre sont OCTAUX. Ainsi, 060ijk n'est ni le
+nombre decimal 60, ni 60h. Le premier parcel a la forme suivante :
+
+  bits du parcel    notation       fonction
+  15..9             gh             code operation sur 7 bits
+  8..6              i              registre destination ou sous-fonction
+  5..3              j              premier operande ou sous-fonction
+  2..0              k              second operande ou sous-fonction
+
+Une instruction a deux parcels remplace certains champs par hijkm et ajoute le
+second parcel m. La documentation note souvent l'ensemble 16/24 bits immediat
+par « exp ». Les lettres h, i, j et k ne designent donc pas toujours des
+registres : leur signification depend de gh.
+
+Notation CAL employee ci-dessous :
+
+  (R)          contenu du registre R
+  Ai, Aj, Ak   registres d'adresse 24 bits
+  Si, Sj, Sk   registres scalaires 64 bits
+  Vi, Vj, Vk   registres vectoriels, jusqu'a VL elements de 64 bits
+  Bjk, Tjk     registres intermediaires B00..B77 et T00..T77
+  ,A0          memoire au mot dont l'adresse est dans A0
+  exp,Ah       memoire au mot (Ah)+exp
+  #X           complement a un de X
+  & ! \\       ET, OU inclusif et OU exclusif bit a bit
+  +F -F *F     addition, soustraction et produit flottants
+  *H, *R       produit flottant demi-precision arrondi, produit arrondi
+  P, Q, Z      population, parite de population, zeros de tete
+
+Les formes abregees comme « Ai Ak », « Si Sk » ou « Vi Vk » sont des syntaxes
+speciales CAL obtenues en mettant un operande cablé a zero. Elles ne constituent
+pas toujours un opcode supplementaire.
+
+
+8.2 CARTE COMPLETE DES FAMILLES gh DU CRAY-1
+--------------------------------------------
+
+La colonne « parcels » donne la longueur normale. Une famille peut comporter
+des valeurs reservees ou des formes speciales detaillees plus bas.
+
+  gh       parcels   famille
+  00       1 ou 2    controle, moniteur, VL/VM et retour indirect
+  01       2         branchements conditionnels sur A0
+  02       2         constantes longues dans les registres A
+  03       1         calcul d'adresse, canaux et transferts B/T en bloc
+  04       1         constantes courtes et logique scalaire
+  05       1         logique, fusion et decalages scalaires
+  06       1         arithmetique entiere/flottante scalaire
+  07       1         conversions, reciprocal et transferts speciaux S
+  10       2         chargement memoire vers A
+  11       2         rangement A vers memoire
+  12       2         chargement memoire vers S
+  13       2         rangement S vers memoire
+  14       1         logique et fusion vectorielles
+  15       1         decalages et arithmetique entiere vectoriels
+  16       1         multiplication flottante vectorielle
+  17       1         flottant, masque et transferts vectoriels memoire
+
+
+8.3 CONTROLE, BRANCHEMENTS ET SORTIES
+-------------------------------------
+
+  Code       Syntaxe CAL     Operation
+  000000     ERR             sortie d'erreur; signale une fin anormale
+  000ijk     ERR exp         meme operation avec information exp
+  001000     PASS            aucune operation utile
+  004000     EX              sortie normale
+  004ijk     EX exp          sortie normale avec information exp
+  0050jk     J Bjk           saut inconditionnel a l'adresse-parcel de Bjk
+  006ijkm    J exp           saut inconditionnel a l'adresse-parcel exp
+  007ijkm    R exp           appel/return-jump; B00 recoit P+2, puis saut
+  010ijkm    JAZ exp         saute si A0 = 0
+  011ijkm    JAN exp         saute si A0 != 0
+  012ijkm    JAP exp         saute si A0 est positif
+  013ijkm    JAM exp         saute si A0 est negatif
+  014ijkm    JSZ exp         saute si S0 = 0
+  015ijkm    JSN exp         saute si S0 != 0
+  016ijkm    JSP exp         saute si S0 est positif
+  017ijkm    JSM exp         saute si S0 est negatif
+
+Une cible de branchement est toujours une adresse de PARCEL. R est l'appel de
+sous-programme primitif du materiel : il n'empile rien. Le retour usuel est
+« J B00 ». Un compilateur doit lui-meme sauver B00 pour les appels imbriques.
+
+
+8.4 ENTREE DE CONSTANTES ET TRANSFERTS DE REGISTRES
+--------------------------------------------------
+
+  Code/famille  Syntaxe CAL       Description
+  01hijkm       Ah exp            constante courte signee dans Ah (h=4..7)
+  020/021ijkm   Ai exp            construit/entre une constante dans Ai
+  022ijk        Ai -1             met tous les 24 bits de Ai a un
+  040/041ijkm   Si exp            construit/entre une constante dans Si
+  042ijk        Si <exp           masque de uns forme depuis la droite
+  042ijk        Si #>exp          masque de zeros forme depuis la gauche
+  043ijk        Si >exp           masque de uns forme depuis la gauche
+  043ijk        Si #<exp          masque de zeros forme depuis la droite
+  043i00        Si 0              efface Si
+  047i00        Si #SB            tous les bits sauf le bit de signe
+  051i00        Si SB             seulement le bit de signe
+  023ij0        Ai Sj             24 bits bas de Sj vers Ai
+  024ijk        Ai Bjk            Bjk vers Ai
+  025ijk        Bjk Ai            Ai vers Bjk
+  027ij7        SBj Ai            Ai vers registre tampon d'adresse SBj
+  030i0k        Ai Ak             copie Ak
+  031i0k        Ai -Ak            oppose entier de Ak
+  071i0k        Si Ak             Ai vers S, sans extension de signe
+  071i1k        Si +Ak            Ai vers S, avec extension de signe
+  071i2k        Si +FAk           Ai converti en flottant non normalise
+  047i0k        Si #Sk            complement a un de Sk
+  051i0k        Si Sk             copie Sk
+  061i0k        Si -Sk            oppose entier de Sk
+  074ijk        Si Tjk            Tjk vers Si
+  075ijk        Tjk Si            Si vers Tjk
+  076ijk        Si Vj,Ak          element numero Ak de Vj vers Si
+  077ijk        Vi,Ak Sj          Sj vers l'element Ak de Vi
+  142i0k        Vi Vk             copie vectorielle Vk vers Vi
+  156i0k        Vi -Vk            oppose entier, element par element
+  00200k        VL Ak             charge la longueur vectorielle depuis Ak
+  0030j0        VM Sj             charge le masque vectoriel depuis Sj
+
+Les constantes flottantes CAL « Si 0.6 », « Si 0.4 », « Si 1. », « Si 2. » et
+« Si 4. » sont des formes speciales utilisant des operandes cablés; 0.6 et 0.4
+sont des nombres octaux historiques, soit respectivement 0,75 et 0,5 decimal.
+
+
+8.5 ARITHMETIQUE ENTIERE
+------------------------
+
+  Code       Syntaxe CAL      Description
+  030ijk     Ai Aj+Ak         addition d'adresse sur 24 bits
+  030ij0     Ai Aj+1          increment de Aj
+  031ijk     Ai Aj-Ak         soustraction d'adresse sur 24 bits
+  031ij0     Ai Aj-1          decrement de Aj
+  032ijk     Ai Aj*Ak         produit; conserve les 24 bits bas
+  060ijk     Si Sj+Sk         addition entiere sur 64 bits
+  061ijk     Si Sj-Sk         soustraction entiere sur 64 bits
+  154ijk     Vi Sj+Vk         Sj + chaque element de Vk
+  155ijk     Vi Vj+Vk         addition vectorielle entiere
+  156ijk     Vi Sj-Vk         Sj - chaque element de Vk
+  157ijk     Vi Vj-Vk         soustraction vectorielle entiere
+
+Les debordements entiers sont tronques a la largeur du registre; il n'existe
+pas de registre general de drapeaux comparable a celui d'un x86.
+
+
+8.6 LOGIQUE, FUSION ET COMPTAGE DE BITS
+---------------------------------------
+
+  Code       Syntaxe CAL       Description
+  044ijk     Si Sj&Sk          ET scalaire
+  045ijk     Si #Sk&Sj         Sj ET complement de Sk
+  046ijk     Si Sj\\Sk         OU exclusif scalaire
+  047ijk     Si #Sj\\Sk        equivalence logique (NON-XOR)
+  050ijk     Si Sj!Si&Sk       fusion scalaire commandee par Si
+  051ijk     Si Sj!Sk          OU inclusif scalaire
+  140ijk     Vi Sj&Vk          ET d'un scalaire et d'un vecteur
+  141ijk     Vi Vj&Vk          ET de deux vecteurs
+  142ijk     Vi Sj!Vk          OU scalaire-vectoriel
+  143ijk     Vi Vj!Vk          OU vectoriel
+  144ijk     Vi Sj\\Vk         XOR scalaire-vectoriel
+  145ijk     Vi Vj\\Vk         XOR vectoriel
+  146ijk     Vi Sj!Vk&VM       fusion Sj/Vk sous VM
+  147ijk     Vi Vj!Vk&VM       fusion Vj/Vk sous VM
+  026ij0     Ai PSj            nombre de bits a un dans Sj
+  026ij1     Ai QSj            parite du nombre de bits a un de Sj
+  027ij0     Ai ZSj            nombre de zeros de tete de Sj
+  174ij1     Vi PVj            population pour chaque element de Vj (*)
+  174ij2     Vi QVj            parite pour chaque element de Vj (*)
+
+Dans une fusion, la definition generale est
+« (operande_vrai & VM) ! (operande_faux & #VM) ». Les variantes utilisant SB
+manipulent le bit de signe cablé. (*) Les operations vectorielles P/Q etaient
+optionnelles sur certains CRAY-1 A/B : un clone doit les rendre configurables.
+
+
+8.7 DECALAGES
+-------------
+
+  Code       Syntaxe CAL       Description
+  052ijk     S0 Si<exp         decalage gauche de Si vers S0
+  053ijk     S0 Si>exp         decalage droit de Si vers S0
+  054ijk     Si Si<exp         decalage gauche immediat
+  055ijk     Si Si>exp         decalage droit immediat
+  056ijk     Si Si,Sj<Ak       decalage gauche d'une concatenation 128 bits
+  057ijk     Si Sj,Si>Ak       decalage droit d'une concatenation 128 bits
+  150ijk     Vi Vj<Ak          decalage gauche de chaque element
+  151ijk     Vi Vj>Ak          decalage droit de chaque element
+  152ijk     Vi Vj,Vj<Ak       double decalage gauche vectoriel
+  153ijk     Vi Vj,Vj>Ak       double decalage droit vectoriel
+
+Les decalages sont logiques. Les formes avec k=0 codent notamment un decalage
+de un par syntaxe CAL speciale. Pour une concatenation, le couple de mots doit
+etre traite comme une quantite de 128 bits; c'est un test utile d'emulateur.
+
+
+8.8 ARITHMETIQUE FLOTTANTE
+--------------------------
+
+  Code       Syntaxe CAL       Description
+  002100     EFI               autorise l'interruption de plage flottante
+  002200     DFI               interdit cette interruption
+  062ijk     Si Sj+FSk         addition flottante scalaire
+  062i0k     Si +FSk           normalise Sk
+  063ijk     Si Sj-FSk         soustraction flottante scalaire
+  063i0k     Si -FSk           oppose et normalise Sk
+  064ijk     Si Sj*FSk         multiplication flottante pleine precision
+  065ijk     Si Sj*HSk         produit arrondi demi-precision
+  066ijk     Si Sj*RSk         produit flottant arrondi
+  067ijk     Si Sj*ISk         etape d'iteration reciproque
+  070ij0     Si /HSj           approximation du reciproque de Sj
+  160ijk     Vi Sj*FVk         produit flottant scalaire-vectoriel
+  161ijk     Vi Vj*FVk         produit flottant vectoriel
+  162ijk     Vi Sj*HVk         produit demi-precision scalaire-vectoriel
+  163ijk     Vi Vj*HVk         produit demi-precision vectoriel
+  164ijk     Vi Sj*RVk         produit arrondi scalaire-vectoriel
+  165ijk     Vi Vj*RVk         produit arrondi vectoriel
+  166ijk     Vi Sj*IVk         iteration reciproque scalaire-vectorielle
+  167ijk     Vi Vj*IVk         iteration reciproque vectorielle
+  170ijk     Vi Sj+FVk         addition flottante scalaire-vectorielle
+  171ijk     Vi Vj+FVk         addition flottante vectorielle
+  172ijk     Vi Sj-FVk         soustraction flottante scalaire-vectorielle
+  173ijk     Vi Vj-FVk         soustraction flottante vectorielle
+  174ij0     Vi /HVj           approximation reciproque vectorielle
+
+« /H » n'est pas une division complete. La division se construit avec une
+approximation reciproque, une ou plusieurs iterations et une multiplication.
+Les resultats, arrondis et cas non normalises doivent reproduire le format Cray,
+pas le format IEEE 754.
+
+
+8.9 TRANSFERTS MEMOIRE
+----------------------
+
+Les adresses suivantes sont des adresses de MOTS de 64 bits. Le suffixe h
+selectionne Ah comme base; exp est le deplacement porte par le second parcel.
+
+  Code       Syntaxe CAL       Description
+  10hijkm    Ai exp,Ah         charge un mot memoire dans Ai (24 bits utiles)
+  11hijkm    exp,Ah Ai         range Ai en memoire
+  12hijkm    Si exp,Ah         charge un mot de 64 bits dans Si
+  13hijkm    exp,Ah Si         range Si en memoire
+  034ijk     Bjk,Ai ,A0        charge Ai mots consecutifs dans B, depuis Bjk
+  035ijk     ,A0 Bjk,Ai        range Ai registres B consecutifs
+  036ijk     Tjk,Ai ,A0        charge Ai mots consecutifs dans T, depuis Tjk
+  037ijk     ,A0 Tjk,Ai        range Ai registres T consecutifs
+  1760ik     Vi ,A0,Ak         charge Vi avec stride Ak
+  1760i0     Vi ,A0,1          charge Vi depuis des mots consecutifs
+  1770jk     ,A0,Ak Vj         range Vj avec stride Ak
+  1770j0     ,A0,1 Vj          range Vj dans des mots consecutifs
+
+Un transfert vectoriel effectue VL references. L'adresse de l'element n est
+normalement (A0)+n*(Ak). Les conflits de banques sont donc directement lies au
+stride. Les formes gather/scatter indexees « Vi ,A0,Vk » et « ,A0,Vk Vj » de
+l'annexe commune sont des extensions CRAY X-MP et ne doivent pas etre acceptees
+par un CRAY-1 strict.
+
+
+8.10 MASQUE VECTORIEL
+---------------------
+
+  Code       Syntaxe CAL       Description
+  1750j0     VM Vj,Z           bit VM=1 si l'element Vj est nul
+  1750j1     VM Vj,N           bit VM=1 si l'element Vj est non nul
+  1750j2     VM Vj,P           bit VM=1 si l'element Vj est positif
+  1750j3     VM Vj,M           bit VM=1 si l'element Vj est negatif
+
+Les formes 175ij4..175ij7 qui ecrivent simultanement Vi et VM appartiennent au
+CRAY X-MP. Sur le CRAY-1, VM contient 64 bits et seules les positions inferieures
+a VL gouvernent l'instruction vectorielle suivante.
+
+
+8.11 CANAUX, HORLOGE ET INSTRUCTIONS MONITEUR
+---------------------------------------------
+
+Ces instructions sont privilegiees. Hors mode moniteur, le materiel les traite
+comme des no-op; un emulateur ne doit pas laisser un programme utilisateur
+commander directement un canal.
+
+  Code       Syntaxe CAL       Description
+  0010jk     CA,Aj Ak          fixe CA du canal Aj et active le canal
+  0011jk     CL,Aj Ak          fixe l'adresse limite du canal Aj
+  0012j0     CI,Aj             efface l'interruption du canal Aj
+  0013j0     XA Aj             charge le registre d'adresse d'echange XA
+  0014j0     RT Sj             charge l'horloge temps reel depuis Sj
+  033i00     Ai CI             numero du canal interrompant prioritaire
+  033ij0     Ai CA,Aj          lit l'adresse courante du canal Aj
+  033ij1     Ai CE,Aj          lit le drapeau d'erreur du canal Aj
+
+Le programmable clock interrupt (PCI/CCI/ECI/DCI) depend de la configuration;
+les instructions interprocesseur, semaphores, cluster, registres partagees et
+controle de memoire bidirectionnelle rencontres dans le manuel SR-0085 sont des
+extensions X-MP, sauf indication explicite du manuel materiel du modele clone.
+
+
+8.12 CE QUE « LISTE COMPLETE » SIGNIFIE ICI
+-------------------------------------------
+
+La liste ci-dessus couvre les instructions architecturales CRAY-1 documentees,
+leurs formes CAL usuelles et les variantes obtenues par operandes cablés. Elle
+n'inclut volontairement pas comme instructions distinctes :
+
+  * les directives, macros et pseudo-instructions de l'assembleur CAL;
+  * les opcodes marques « CRAY X-MP only » dans le manuel commun SR-0085;
+  * les extensions optionnelles sans les signaler comme telles;
+  * les valeurs reservees des champs i/j/k.
+
+Pour un desassembleur, decoder d'abord gh, puis appliquer la table exacte de la
+revision materielle. Pour un assembleur, conserver la distinction entre une
+forme machine et une syntaxe CAL speciale. Pour un clone compatible, tester au
+minimum : instruction longue traversant une frontiere de mot, retour R/J B00,
+decalages de 128 bits, VL=0 et VL=64, masque partiel, conflit de banques,
+flottants non normalises, interruption flottante et instruction moniteur en
+mode utilisateur.
+
+
+==============================================================================
+9. PIPELINE, ISSUE ET SCOREBOARDING
+==============================================================================
+
+Le controle d'issue suit les registres reserves et unites occupees. Une
+instruction attend notamment si :
+
+  * son registre d'entree n'est pas pret;
+  * son registre resultat est encore reserve;
+  * l'unite necessaire ne peut accepter l'operation;
+  * le chemin memoire ou resultat est en conflit;
+  * une condition speciale d'issue du manuel n'est pas satisfaite.
+
+Les instructions sont normalement emises dans l'ordre, mais les unites operent
+en parallele. Le programmeur/compilateur espace les dependances avec travail
+independant. Un simulateur fonctionnel peut produire les bons nombres sans
+reproduire le temps; un simulateur de performance doit modeliser chaque hold.
+
+
+==============================================================================
+10. ARCHITECTURE VECTORIELLE
+==============================================================================
+
+Une instruction vectorielle applique la meme operation aux elements 0..VL-1.
+Exemple conceptuel :
+
+  V2 = V0 + V1
+
+demarre l'unite d'addition; apres sa latence initiale, elle produit typiquement
+un element par cycle. Pour N elements : temps proche de startup+N, pas N fois le
+temps scalaire complet.
+
+VL maximum 64 impose le strip-mining aux tableaux longs : traiter des bandes de
+64 puis une derniere bande de reste. Les registres A calculent les adresses.
+
+Le masque VM permet :
+
+  VM = condition vectorielle
+  operation sous masque
+
+Les elements masques du registre destination suivent la semantique precise de
+l'instruction; ils ne sont pas necessairement mis a zero.
+
+
+==============================================================================
+11. CHAINING
+==============================================================================
+
+Le chaining permet a une seconde unite de consommer chaque element des qu'il
+sort de la premiere, sans attendre la fin du vecteur entier. Exemple :
+
+  V2 = V0 * V1
+  V3 = V2 + V4
+
+Si l'addition est emise dans le chain slot valide, multiplication et addition
+se chevauchent. Le premier resultat final subit les deux latences, puis le debit
+peut approcher un resultat par cycle.
+
+Le chaining n'est pas un renommage moderne. Destination, chemins et temps d'issue
+doivent correspondre. Une instruction emise trop tard attend parfois que le
+vecteur complet soit libere, selon la reservation et le modele.
+
+
+==============================================================================
+12. MEMOIRE CENTRALE
+==============================================================================
+
+La memoire est organisee en mots de 64 bits, repartis sur 16 banques. Une
+configuration classique monte jusqu'a 1 048 576 mots, soit 8 Mio d'octets de
+donnees, capacite enorme a l'epoque.
+
+Le cycle de banque classique est quatre cycles d'horloge, mais les banques
+entrelacees permettent un mot par cycle pour une suite bien repartie. Les
+transferts vers V/B/T peuvent atteindre un mot par cycle; A/S ont des chemins
+dont le debit documente est plus limite selon instruction.
+
+Les premieres documentations parlent de parite; les versions suivantes ajoutent
+correction/detection d'erreurs. Modeliser la revision exacte : nombre de bits de
+controle, syndrome, journalisation et action en cas d'erreur different.
+
+
+==============================================================================
+13. BANQUES ET CONFLITS MEMOIRE
+==============================================================================
+
+La banque est liee aux bits bas de l'adresse mot. Des acces consecutifs tournent
+sur les 16 banques et soutiennent le debit. Un stride multiple de 16 retourne
+toujours a la meme banque : elle ne peut repondre qu'apres son cycle complet.
+
+Exemples :
+
+  stride 1   repartition ideale;
+  stride 2   huit banques utilisees;
+  stride 4   quatre banques;
+  stride 8   deux banques;
+  stride 16  une banque, conflit maximal.
+
+L'alignement de depart, les autres flux et le cycle de banque modifient le cas
+reel. Padding d'une dimension de matrice (par exemple 64 vers 65) peut supprimer
+un conflit catastrophique.
+
+
+==============================================================================
+14. ADRESSAGE ET CHARGEMENTS
+==============================================================================
+
+Les A calculent des adresses mot. Les instructions peuvent charger/ranger A, S,
+B, T ou V selon formats disponibles. Les acces vectoriels acceptent des suites
+d'adresses/strides definies par l'instruction et les A.
+
+Le CRAY-1 est word-addressed. Un pointeur de mot n'est pas une adresse d'octet.
+Le traitement de caracteres emploie decalages/masques dans les mots et des
+conventions logicielles de pointeurs caracteres.
+
+Les mots sont traditionnellement affiches en octal. CAL accepte constantes et
+expressions selon ses regles; toujours indiquer radix dans les outils modernes.
+
+
+==============================================================================
+15. ARITHMETIQUE ENTIERE
+==============================================================================
+
+Les S fournissent logique et addition 64 bits en complement a deux; les A font
+des calculs 24 bits. Multiplication entiere complete et division peuvent exiger
+des sequences ou routines selon largeur.
+
+Debordement, signe et troncature suivent les instructions Cray, pas C moderne.
+Les decalages ont des variantes scalaires/vectorielles et comptages particuliers.
+Pour un emulateur, tester zero, -1, valeurs extremes et compteurs hors largeur.
+
+
+==============================================================================
+16. VIRGULE FLOTTANTE CRAY
+==============================================================================
+
+Le format 64 bits Cray n'est pas IEEE 754 : signe, exposant biaise de 15 bits et
+fraction normalisee d'environ 48 bits. Les valeurs speciales, sous-debordements,
+arrondis et erreurs ne correspondent ni aux NaN/Inf IEEE ni au gradual underflow.
+
+Operations materiel : addition/soustraction, multiplication et approximation du
+reciproque. Une division raffinee calcule une estimation de 1/y puis applique
+des etapes de Newton et multiplie par x.
+
+Le produit peut avoir plusieurs variantes d'arrondi. L'addition n'est pas
+associative; vectoriser/reordonner une reduction change les derniers bits.
+
+Un convertisseur doit traiter entiers, zero, nombres normalises, overflow,
+underflow et operands invalides selon le manuel. Un cast IEEE double direct est
+insuffisant pour une emulation bit-exacte.
+
+
+==============================================================================
+17. MASQUES ET POPULATION COUNT
+==============================================================================
+
+VM contient un bit par element. Les comparaisons ou tests produisent un masque;
+les operations masquees permettent IF vectoriel sans branche par element.
+
+L'unite population/leading-zero compte les bits poses ou trouve un bit directeur
+selon instruction. Usages : nombre d'elements satisfaisant une condition,
+normalisation, recherche et compression logicielle.
+
+Pour transformer un masque en liste compacte, le CRAY-1 n'offre pas toutes les
+instructions gather/scatter des machines posterieures; le logiciel combine
+masques, scalaires et acces memoire.
+
+
+==============================================================================
+18. BRANCHEMENTS ET INSTRUCTIONS SPECIALES
+==============================================================================
+
+Les branchements testent souvent les A/S (zero, signe) ou sont inconditionnels.
+Une prediction speculative moderne n'est pas supposee. Un saut peut invalider ou
+reorienter l'alimentation des buffers d'instructions.
+
+Instructions privilegiees controlent echange, interruptions, canaux et modes.
+Leur execution en programme utilisateur depend du systeme. Les codes reserves
+doivent provoquer l'action documentee, non devenir silencieusement NOP.
+
+
+==============================================================================
+19. ECHANGE ET CONTEXTE
+==============================================================================
+
+Le mecanisme exchange sauvegarde/charge un paquet d'echange en memoire. Il sert
+au passage programme/systeme, interruptions et changement de job. Il contient
+notamment P, limites/base, registres de controle et etat de calcul.
+
+Les grands registres B/T/V ne sont pas tous necessairement dans le paquet de base;
+le systeme applique sa convention de sauvegarde selon besoin. Une commutation
+complete de huit V represente 4096 octets, cout non negligeable.
+
+Un emulateur doit appliquer l'echange atomiquement au point architecturally
+defini et conserver les registres non echanges conformement au manuel.
+
+
+==============================================================================
+20. ENTREES/SORTIES ET CANAUX
+==============================================================================
+
+Le CRAY-1 classique possede 24 chemins materiels : douze d'entree et douze de
+sortie. Une paire entree/sortie forme un lien full-duplex; dire seulement « 12
+canaux » designe donc les douze paires, tandis que le manuel attribue un numero
+distinct a chacun des 24 chemins. Tous les numeros ci-dessous sont OCTAUX.
+
+
+20.1 LISTE COMPLETE DES CANAUX ARCHITECTURAUX
+---------------------------------------------
+
+  Groupe   Direction   Numeros de canal (octal)       Priorite du groupe
+  1        entree      02  06  12  16  22  26         02 la plus haute
+  2        sortie      03  07  13  17  23  27         03 la plus haute
+  3        entree      04  10  14  20  24  30         04 la plus haute
+  4        sortie      05  11  15  21  25  31         05 la plus haute
+
+Les paires duplex naturelles sont donc :
+
+  Entree   Sortie      Entree   Sortie      Entree   Sortie
+  02       03          04       05          06       07
+  10       11          12       13          14       15
+  16       17          20       21          22       23
+  24       25          26       27          30       31
+
+Ces numeros identifient du materiel de canal, pas un type de peripherique fixe.
+Le canal d'une MCU, d'un front-end ou d'un controleur disque depend du cablage
+et de la configuration du site. Une table affirmant universellement que « 04 =
+disque » serait donc fausse. Le logiciel d'exploitation conserve la description
+des appareils effectivement raccordes.
+
+Chaque groupe est interroge une fois tous les quatre cycles. Si plusieurs
+canaux du meme groupe demandent la memoire, le plus petit numero est prioritaire.
+Apres une demande acceptee ou refusee, le canal manque le prochain tour et ne
+peut redemander que huit cycles plus tard. Les quatre groupes peuvent toutefois
+produire ensemble jusqu'a une demande d'E/S par cycle.
+
+
+20.2 COMPOSITION D'UN CANAL
+---------------------------
+
+Chaque chemin comprend :
+
+  * 16 lignes de donnees, soit un parcel;
+  * quatre lignes de parite, une par groupe de quatre bits, parite impaire;
+  * trois lignes de controle : Ready, Resume et Disconnect;
+  * un registre d'assemblage ou desassemblage de 64 bits;
+  * CA, registre d'adresse courante en mots;
+  * CL, registre d'adresse limite en mots;
+  * un etat actif, un drapeau d'interruption et un drapeau d'erreur CE;
+  * selon le module, une ligne externe Master Clear.
+
+Quatre parcels forment un mot memoire, toujours dans cet ordre :
+
+  Parcel canal    Bits du mot CRAY       Ordre
+  0               63..48                 premier
+  1               47..32                 deuxieme
+  2               31..16                 troisieme
+  3               15..0                  quatrieme
+
+Un clone doit conserver cet ordre. Inverser les parcels tout en conservant les
+bits internes produit une image memoire apparemment « byte-swappee ».
+
+
+20.3 TYPES DE LOGIQUE DE CANAL
+------------------------------
+
+Le connecteur electrique general est commun, mais protocole et cadence changent.
+Les lettres sont les noms des modules logiques cites par le manuel revision F :
+
+  Type                         Entree       Sortie   Usage
+  16 bits asynchrone MCU       DJ           DK       interface MCU seulement
+  16 bits asynchrone normal    DU           DK       appareils/front-end usuels
+  16 bits asynchrone special   DV           DK       limite CA=CL cote entree
+  asynchrone haute vitesse     DN           DO       transfert par groupes de 4
+  synchrone disque             SH           SI       DCU et stockage de masse
+
+Les OCR de vieux manuels confondent facilement D avec O; les noms corrects sont
+DJ/DK, DU/DK, DV/DK, DN/DO et SH/SI. Le type de logique n'est pas deduit du
+numero de canal : il depend des modules installes.
+
+Asynchrone ordinaire : chaque parcel est accompagne de Ready et acquitte par un
+Resume. En sortie, Disconnect suit l'acquittement du dernier parcel. En entree,
+le peripherique envoie Disconnect apres le Resume final.
+
+Haute vitesse : les quatre parcels d'un mot sont envoyes en groupe. L'entree DN
+emploie quatre Ready et le CRAY repond par quatre Resume; la sortie DO envoie
+quatre Ready mais le peripherique acquitte le mot par un seul Resume.
+
+Synchrone SH/SI : apres l'amorcage Ready/Resume, les parcels sont cadences en
+blocs par l'horloge du CRAY. Ce canal a ete concu pour le controleur de stockage
+de masse. Le cable et son temps de propagation font partie du timing : le manuel
+indique une longueur totale fixe de 17 pieds (518 cm). Le controleur limite les
+blocs d'entree a 1, 4 ou 512 mots de 64 bits, bien que le canal lui-meme ne pose
+pas cette restriction logique.
+
+
+20.4 SIGNAUX DU PROTOCOLE
+-------------------------
+
+  Signal       Producteur en entree       Producteur en sortie   Sens
+  Ready        peripherique                CRAY-1                 donnees valides
+  Resume       CRAY-1                      peripherique            acquittement
+  Disconnect   peripherique                CRAY-1                 fin de bloc
+  Master Clear CRAY-1/MCU                  CRAY-1/MCU             reinitialisation
+
+Ready ne signifie pas la meme phase exacte pour tous les modules : sur un canal
+asynchrone il accompagne un parcel; sur un canal synchrone il amorce un bloc.
+Un emulateur evenementiel doit modeliser les transitions, pas seulement copier
+un tampon quand CA est programme.
+
+Valeurs de reference du canal asynchrone ordinaire : impulsions d'environ 50 ns;
+les donnees d'entree deviennent valides au plus tard 80 ns apres Ready et restent
+stables jusqu'a Resume. Sur DN/DO, les impulsions d'un groupe sont espacees
+d'environ 100 ns. Ces chiffres sont des contraintes d'interface physique; un
+emulateur fonctionnel peut les abstraire, mais un simulateur temporel non.
+
+
+20.5 REGISTRES, DRAPEAUX ET INSTRUCTIONS D'E/S
+----------------------------------------------
+
+Les quatre familles machine suivantes constituent l'interface CPU/canaux. Les
+codes et numeros sont octaux et les instructions sont privilegiees :
+
+  Code       Syntaxe CAL      Description
+  0010jk     CA,Aj Ak         CA du canal (Aj) = (Ak), puis activation
+  0011jk     CL,Aj Ak         CL du canal (Aj) = (Ak)
+  0012j0     CI,Aj            efface interruption et erreur du canal (Aj)
+  033i00     Ai CI            numero du canal interrompant prioritaire
+  033ij0     Ai CA,Aj         lit CA du canal dont le numero est dans Aj
+  033ij1     Ai CE,Aj         lit le drapeau d'erreur de ce canal
+
+Le numero est place dans Aj et les adresses dans Ak. La mise a jour de CA par
+0010 active immediatement le canal : il faut donc programmer CL AVANT CA. CA et
+CL sont des adresses de mots et CL contient LWA+1, pas l'adresse du dernier mot.
+
+Ai=CI rend le canal demandant une interruption ayant la plus haute priorite,
+c'est-a-dire le plus petit numero. La demande reste presente tant que le moniteur
+ne l'efface pas par CI,Aj; l'interruption suivante devient alors visible.
+
+
+20.6 PROGRAMMATION D'UNE ENTREE
+-------------------------------
+
+Sequence architecturale :
+
+  1. reserver une zone de FWA a LWA inclusivement;
+  2. mettre le numero du canal d'entree dans Aj;
+  3. mettre LWA+1 dans Ak et executer CL,Aj Ak;
+  4. mettre FWA dans Ak et executer CA,Aj Ak, ce qui active le canal;
+  5. attendre l'interruption d'E/S via l'exchange sequence;
+  6. lire Ai=CI, puis Ai=CA,Aj et Ai=CE,Aj;
+  7. effacer l'etat avec CI,Aj.
+
+Le canal assemble quatre parcels puis ecrit le mot a CA et incremente CA. Un
+Disconnect termine normalement l'entree. Si le dernier mot est partiel, les
+parcels recus occupent les positions hautes et les positions basses manquantes
+sont mises a zero. CA final permet de calculer le nombre de mots transferes.
+
+Particularite DV : CA=CL termine aussi l'entree et provoque l'interruption sans
+attendre Disconnect. Sur les autres entrees, la limite ne doit pas etre supposee
+universellement protectrice de la meme facon; le pilote et le peripherique doivent
+respecter la longueur convenue.
+
+Exemple CAL schematique, canal 04, tampon BUFFER de N mots :
+
+        A1 = 4                  ; numero OCTAL du canal d'entree
+        A2 = BUFFER+N
+        CL,A1 A2                ; limite exclusive
+        A2 = BUFFER
+        CA,A1 A2                ; activation, toujours en dernier
+        ; le moniteur poursuit puis recoit une interruption d'E/S
+        A3 = CI                 ; canal prioritaire
+        A4 = CA,A1              ; premiere adresse non encore transferee
+        A5 = CE,A1              ; zero si aucune erreur de canal
+        CI,A1                   ; acquitte interruption et erreur
+
+
+20.7 PROGRAMMATION D'UNE SORTIE
+-------------------------------
+
+La programmation initiale est identique : CL=LWA+1, puis CA=FWA. Le canal lit
+un mot a CA, incremente CA, le desassemble en parcels 0,1,2,3 et les transmet.
+Lorsque CA atteint CL, le mot deja lu est termine, Disconnect est emis, le canal
+devient inactif et demande une interruption.
+
+La seule erreur detectee directement par un canal de sortie ordinaire est un
+Resume recu alors que le canal n'est pas actif. Les erreurs propres au controleur
+(disque hors ligne, fin de bande, etc.) arrivent par son protocole de donnees ou
+de statut, et non par un registre universel du canal CRAY-1.
+
+
+20.8 INTERRUPTIONS ET ERREURS
+-----------------------------
+
+Une demande d'interruption d'E/S met le bit I/O interrupt du registre F; ce bit
+est sauve dans le mot n+3, bit 37, du paquet d'echange. Elle peut provenir de :
+
+  * fin d'une sortie lorsque CA devient egal a CL;
+  * Disconnect recu sur une entree;
+  * CA=CL sur une entree DV;
+  * erreur de parite ou violation du protocole;
+  * Ready/Resume inattendu selon le type de module.
+
+La parite est impaire, independamment sur bits 0..3, 4..7, 8..11 et 12..15.
+Le traitement d'une erreur d'entree differe selon le module :
+
+  * DJ/MCU : erreur immediate, canal desactive, mot incomplet non range;
+  * SH/SI : termine le mot avec zeros dans les parcels non recus, puis arret;
+  * DU/DV : memorise la faute et continue souvent jusqu'a Disconnect/limite;
+  * Ready inattendu inactif : peut etre retenu par DU/DV ou jete avec erreur
+    par les autres types.
+
+Lire CE avant CI,Aj si le logiciel doit conserver le diagnostic, puisque CI,Aj
+efface a la fois le drapeau d'interruption et le drapeau d'erreur.
+
+
+20.9 PROGRAMMED MASTER CLEAR
+----------------------------
+
+Certains modules exposent Master Clear : entrees DJ/DU/DV, sortie DO et sortie
+SI. Le moniteur peut produire une impulsion en programmant temporairement CA et
+CL de maniere a activer puis arreter le canal, avec des delais dependants du
+peripherique, puis retablir une limite. Clear I/O de la MCU peut egalement la
+produire. Ce mecanisme n'est pas une simple ecriture dans un « port »; reproduire
+la sequence du manuel du controleur raccorde. Pour un disque synchrone, le manuel
+recommande ensuite de lire et jeter un statut afin d'eliminer un faux statut.
+
+
+20.10 ACCES MEMOIRE, ARBITRAGE ET VERROUILLAGE
+----------------------------------------------
+
+Une entree ecrit directement la memoire et une sortie la lit directement, sans
+passer par un registre S ou V. L'E/S partage cependant les banques avec fetch,
+references scalaires/vectorielles, transferts B/T et exchange. Un conflit de
+banque retarde la demande, et un transfert bloc CPU peut verrouiller brievement
+l'E/S. Les demandes en attente doivent etre arbitrees conformement aux groupes;
+les ignorer donne un debit irrealiste et peut changer le moment des interruptions.
+
+L'adresse CA n'avance qu'apres acceptation de la reference memoire. Cette regle
+est importante pour reproduire CA observe lors d'une interruption ou d'un arret.
+
+
+20.11 PERIPHERIQUES ET CONTROLEURS
+---------------------------------
+
+Les canaux transportent des parcels et signaux; ils ne definissent pas les
+commandes de haut niveau. Parmi les equipements rencontres figurent :
+
+  * MCU, pour deadstart, maintenance, surveillance et Clear I/O;
+  * controleurs DCU-2 et unites disque DD-19;
+  * front-end computers et I/O stations;
+  * adaptateurs de bandes, reseaux et terminaux propres au site.
+
+Une « liste complete des entrees/sorties » doit donc distinguer les 24 canaux
+architecturaux, listes en 20.1, de l'inventaire physique variable d'une machine.
+Cloner le CRAY-1 seul exige les canaux; demarrer COS exige en plus au moins les
+protocoles des controleurs que la configuration COS declare.
+
+
+20.12 DIFFERENCES CRAY-1A, 1S ET 1M
+-----------------------------------
+
+La description 20.1 a 20.10 est celle de l'architecture d'E/S directe exposee
+par le Hardware Reference CRAY-1 revision F. Le CRAY-1S ajoute un Input/Output
+Subsystem avec processeurs d'E/S et memoire tampon; les programmes de l'IOS,
+tables, boites aux lettres et controleurs ne sont pas des registres de canal CPU
+supplementaires interchangeables avec ceux du 1A. Le CRAY-1M integre la memoire
+a semiconducteurs et doit lui aussi etre modelise d'apres sa revision precise.
+
+Pour un emulateur configurable, separer au minimum :
+
+  CPU/channel core       CA, CL, assemblage, priorites, interruptions
+  channel protocol       DJ/DU/DV/DK, DN/DO ou SH/SI
+  device controller      MCU, DCU, front-end ou appareil simule
+  system variant         1A direct, 1S/IOS, 1M et options installees
+
+Cette separation evite de coder dans le CPU une affectation de peripherique qui
+n'etait en realite qu'un choix de cablage ou de logiciel d'un site particulier.
+
+
+==============================================================================
+21. STATIONS FRONTALES ET STOCKAGE
+==============================================================================
+
+Les premiers sites emploient des mini-ordinateurs frontaux, par exemple Data
+General, pour soumettre jobs, compiler, gerer spool et peripheriques. Les fichiers
+passent par des liens haut debit.
+
+Stockage Cray : controleurs et unites disque DD-19/plus tardives, bandes et
+extensions suivant site. Le format des mots, blocs, labels et EOD depend de COS
+et des utilitaires; une image brute de disque ne suffit pas sans geometrie et
+metadonnees de controleur.
+
+
+==============================================================================
+22. FIABILITE ET MAINTENANCE
+==============================================================================
+
+Maintenance : diagnostics de modules, alimentations, refrigeration, horloge,
+memoire/banks et canaux. Les erreurs peuvent provenir de timing, connecteurs,
+temperature ou alimentation autant que de logique.
+
+Le systeme surveille certaines erreurs memoire et flottantes. Les journaux et
+interruptions permettent de localiser banque/syndrome selon revision. Une copie
+museale ne doit pas etre mise sous tension sans inspection professionnelle des
+alimentations, refrigerant et isolation.
+
+
+==============================================================================
+23. CAL, CRAY ASSEMBLY LANGUAGE
+==============================================================================
+
+CAL fournit labels, expressions, sections, macros, pseudo-operations, donnees et
+instructions symboliques proches des transferts materiels :
+
+  Ai = Aj + Ak
+  Si = Sj + Sk
+  Vi = Vj + Vk
+  Vi = Sj *F Vk
+
+La notation exacte depend de la version CAL/COS. Les nombres de registres B/T et
+beaucoup de codes sont octaux. Les suffixes distinguent entier, logique et
+flottant. Une ligne d'apparence algebrique reste une instruction, pas une
+expression generale avec precedence de langage.
+
+Pseudo-operations courantes : IDENT, ENTRY, EXT, BSS, CON, DATA, END, EQU et
+macros, avec variantes suivant assembleur. Consulter le CAL Reference du systeme.
+
+
+==============================================================================
+24. EXEMPLES CAL
+==============================================================================
+
+Ces fragments illustrent l'architecture; verifier ponctuation/directives avec la
+version CAL visee avant assemblage.
+
+24.1 Addition scalaire
+----------------------
+
+        S2 = S0 + S1             ; addition entiere 64 bits
+        S3 = S0 +F S1            ; addition flottante
+
+24.2 Addition vectorielle
+-------------------------
+
+; Hypothese : A1=N, A2/A3/A4 pointent sur X/Y/Z, N<=64.
+        VL = A1
+        V0 = ,A2,1               ; charger X, stride 1
+        V1 = ,A3,1               ; charger Y
+        V2 = V0 +F V1
+        ,A4,1 = V2               ; ranger Z
+
+24.3 SAXPY conceptuel
+---------------------
+
+; Y(i)=A*X(i)+Y(i), S0 contient A.
+        VL = A1
+        V0 = ,A2,1
+        V1 = ,A3,1
+        V2 = S0 *F V0
+        V3 = V2 +F V1            ; candidat au chaining
+        ,A3,1 = V3
+
+24.4 Strip-mining
+-----------------
+
+Pour N>64 : fixer VL=min(N,64), executer le noyau, incrementer les adresses de
+VL mots, soustraire VL de N et recommencer. La derniere iteration met VL au
+reste; ne jamais charger 64 elements hors tableau.
+
+24.5 Masque
+-----------
+
+Construire VM par comparaison de V0 a zero, puis executer l'operation sur les
+elements selectionnes. Les mnemoniques exacts de comparaison/masked merge sont
+ceux du Symbolic Machine Instructions Reference, pas une syntaxe inventee a
+partir d'un assembleur moderne.
+
+
+==============================================================================
+25. CFT FORTRAN
+==============================================================================
+
+CFT est le compilateur FORTRAN Cray. FORTRAN correspond naturellement aux
+tableaux scientifiques et l'analyseur peut vectoriser les boucles sans dependance.
+Le listing de compilation indique boucles vectorisees et raisons d'echec.
+
+Caracteristiques historiques : FORTRAN 66/77 et extensions Cray, types/mots
+64 bits selon options, bibliotheques scientifiques, directives de vectorisation,
+COMMON/EQUIVALENCE et conventions d'appel propres au systeme.
+
+La taille d'INTEGER/REAL/LOGICAL n'est pas a supposer depuis une plate-forme
+moderne. Les fichiers non formates contiennent des mots Cray et marqueurs du
+runtime, non des IEEE little-endian.
+
+
+==============================================================================
+26. VECTORIZATION DES BOUCLES
+==============================================================================
+
+Vectorisable :
+
+      DO I=1,N
+         C(I)=A(I)+B(I)
+      END DO
+
+Non vectorisable directement :
+
+      DO I=2,N
+         A(I)=A(I-1)+B(I)
+      END DO
+
+La seconde a une recurrence loop-carried. Techniques : reformulation mathematique,
+scan specialise, separation des phases ou scalaire.
+
+Obstacles : appels inconnus, alias entre arguments, indices indirects, branchements,
+dependances possibles et petits trip counts. Donner au compilateur des informations
+valides; une directive fausse produit des resultats faux.
+
+
+==============================================================================
+27. EXEMPLES FORTRAN
+==============================================================================
+
+27.1 Addition
+-------------
+
+      SUBROUTINE VADD(N,A,B,C)
+      INTEGER N,I
+      REAL A(N),B(N),C(N)
+      DO 10 I=1,N
+         C(I)=A(I)+B(I)
+   10 CONTINUE
+      RETURN
+      END
+
+27.2 SAXPY
+----------
+
+      SUBROUTINE SAXPY(N,ALPHA,X,Y)
+      INTEGER N,I
+      REAL ALPHA,X(N),Y(N)
+      DO 20 I=1,N
+         Y(I)=ALPHA*X(I)+Y(I)
+   20 CONTINUE
+      RETURN
+      END
+
+27.3 Reduction
+--------------
+
+      SUM=0.0
+      DO 30 I=1,N
+         SUM=SUM+A(I)
+   30 CONTINUE
+
+Une reduction possede une recurrence. Le compilateur peut utiliser plusieurs
+sommes partielles/vector reductions et changer l'arrondi. Comparer avec tolerance,
+pas necessairement bit a bit, sauf mode de reproductibilite exige.
+
+27.4 Eviter conflit de banques
+------------------------------
+
+Pour une matrice dont la premiere dimension 64 cause un stride de 64, ajouter
+une ligne de padding : REAL A(65,N). Valider l'effet sur l'algorithme et les
+interfaces; ce changement modifie le layout des fichiers/COMMON.
+
+
+==============================================================================
+28. COS, CTSS ET ENVIRONNEMENT LOGICIEL
+==============================================================================
+
+COS (Cray Operating System) est le systeme batch principal de Cray Research pour
+le CRAY-1. Jobs, control statements, datasets, accounting, bibliotheques et
+front-end composent l'environnement.
+
+CTSS, developpe au Lawrence Livermore Laboratory, fournit un environnement temps
+partage distinct. Des sites emploient aussi des logiciels/front-ends propres.
+UNICOS est surtout associe aux generations Cray ulterieures; ne pas le presenter
+comme le systeme original universel du CRAY-1.
+
+Le programme utilisateur ne demarre pas a une adresse fixe comme une ROM de
+micro-ordinateur. Loader, operating system, exchange package et bibliotheques
+definissent le contexte.
+
+
+==============================================================================
+29. CHARGEMENT, BIBLIOTHEQUES ET FICHIERS
+==============================================================================
+
+Le linker resout ENTRY/EXT, construit segments de code/donnees et produit une
+image chargeable sous COS. Les overlays et bibliotheques gerent la memoire selon
+version. Les appels systeme passent par conventions Cray/operating system.
+
+Fichiers : datasets avec attributs, blocs et End-of-Data. Textes emploient des
+encodages/representations Cray et le front-end peut convertir. Pour preservation,
+conserver image de bande/disque, control statements, catalogues et description
+du front-end.
+
+
+==============================================================================
+30. MESURE ET OPTIMISATION
+==============================================================================
+
+Ordre de travail :
+
+  1. mesurer le noyau et les longueurs reelles;
+  2. verifier vectorisation dans le listing CFT;
+  3. supprimer dependances/alias reels;
+  4. augmenter longueur vectorielle;
+  5. limiter transferts memoire;
+  6. favoriser chaining et unites paralleles;
+  7. corriger strides/conflits de banques;
+  8. equilibrer precision et transformations;
+  9. remesurer sur la variante cible.
+
+Modele simple : temps = startup + VL/debit + conflits. Pour petits VL, startup
+domine; une boucle scalaire peut gagner. Une operation par mot charge reste
+limitee par memoire, meme avec beaucoup d'unites.
+
+
+==============================================================================
+31. PROGRAMMATION SYSTEME
+==============================================================================
+
+Un noyau/systeme doit gerer exchange packages, interruptions, canaux, erreurs
+memoire, limites et sauvegarde des registres. Il doit distinguer etat scalaire,
+vectoriel et temporaires B/T.
+
+Les interruptions peuvent arriver avec des pipelines actifs. Le hardware et la
+procedure d'echange definissent quel etat est termine/visible. Ne pas inventer
+une precision d'exception de CPU moderne.
+
+Le demarrage depend d'une station/maintenance et du chargement par canal; le
+CRAY-1 n'a pas un BIOS PC ni une console ROM interactive autonome equivalente.
+
+
+==============================================================================
+32. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Emulation fonctionnelle :
+
+  * adresses mot/parcels et decode 16/32 bits;
+  * A 24 bits, S 64 bits, B/T en numerotation octale;
+  * V0-V7, VL et VM avec elements inactifs preserves;
+  * entier et flottant Cray bit-exacts;
+  * branchements, limites et exchange;
+  * memoire/canaux suffisants au systeme vise.
+
+Emulation temporelle :
+
+  * buffers d'instruction et issue in-order;
+  * reservation des registres/unites;
+  * latences et debits par instruction;
+  * chain slots et chemins resultat;
+  * 16 banques, cycle et arbitrage;
+  * transferts A/S contre B/T/V;
+  * interruptions et E/S par modele.
+
+Representer le flottant avec entiers sur 64/128 bits pour obtenir arrondi et
+exceptions Cray. Le double hote ne suffit pas. Tester chaque instruction avec
+les vecteurs limites du Hardware Reference.
+
+Pour executer COS, il faut aussi front-end/canaux/disques ou une couche de
+simulation compatible. Un simulateur de CPU seul peut executer CAL autonome mais
+pas reproduire un site CRAY-1.
+
+
+==============================================================================
+33. DIAGNOSTIC ET PIEGES
+==============================================================================
+
+  Symptome                         Cause probable
+  ------------------------------  -------------------------------------------
+  resultat numerique different    format/arrondi Cray ou reduction reordonnee
+  vecteur lent                     VL court, chaining manque, conflit banque
+  stride catastrophique           multiple de 16 banques
+  code CAL refuse                  dialecte/directive d'une autre version
+  branche a mauvaise adresse       P compte des parcels, pas des octets
+  dump incomprehensible            octal, mots 64 bits ou format dataset
+  division imprecise               reciprocal sans assez d'iterations
+  COS bloque au boot               canal/front-end/exchange non emules
+  timing faux mais resultats bons   scoreboard/banks/chaining omis
+  programme X-MP incompatible      instruction ou materiel absent du CRAY-1
+
+Autres pieges :
+
+  * 80 MHz n'implique pas une instruction complete par cycle;
+  * 160 MFLOPS est un pic de cas particulier, pas tout programme;
+  * un mot vaut 64 bits et l'adressage n'est pas byte-oriented;
+  * B00-B77 et T00-T77 sont des numeros octaux;
+  * VL maximum 64, pas taille arbitraire;
+  * Cray floating point n'est pas IEEE 754;
+  * CRAY-1A, 1S, 1M et X-MP ne partagent pas tout leur materiel;
+  * CAL symbolique ne garantit pas l'encodage suppose;
+  * les bancs du chassis ne sont pas un detail purement esthetique.
+
+
+==============================================================================
+34. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] decode de tous les codes gh et instructions longues
+  [ ] PC aux quatre parcels d'un mot et branchements de frontiere
+  [ ] masquage 24 bits A et calculs 64 bits S
+  [ ] B/T 00,01,76,77 et huit V
+  [ ] VL=0,1,63,64 et elements hors VL
+  [ ] VM aucun/tous/alterne
+  [ ] flottants zero, normalises, extremes, overflow/underflow
+  [ ] reciprocal et raffinements
+  [ ] issue, dependances RAW/WAR/WAW selon architecture
+  [ ] chaining au bon/mauvais cycle
+  [ ] strides 1,2,4,8,16,17 et alignements
+  [ ] exchange package, interruptions et reprise
+  [ ] erreurs memoire selon revision
+  [ ] canaux et sous-systeme 1A/1S selectionne
+  [ ] noyaux CAL compares au materiel/simulateur de reference
+  [ ] CFT vectorise/non vectorise et resultats numeriques
+  [ ] demarrage COS/CTSS avec peripheriques annonces
+
+
+==============================================================================
+35. REFERENCES
+==============================================================================
+
+Manuels Cray Research
+---------------------
+
+  * CRAY-1 Computer Systems Hardware Reference Manual, HR-0004, revisions C-F.
+    https://bitsavers.org/pdf/cray/CRAY-1/
+    Version F, mai 1982 :
+    HR-0004F_CRAY-1_Computer_Systems_Hardware_Reference_Manual_May82.pdf
+
+  * CRAY-1S Hardware Reference Manual, HR-0808, novembre 1981.
+    Meme repertoire Bitsavers.
+
+  * CRAY-1 Preliminary CAL Assembler Reference Manual.
+    https://cray-history.net/wp-content/uploads/2021/07/
+      CRAY-1_Preliminary-CAL-referance-manual.pdf
+
+  * CRAY-1 FORTRAN (CFT) Reference Manual, 2240009, avril 1978.
+    https://bitsavers.org/pdf/cray/CRAY-1/2240009C_CRAY-1_Fortran_
+      Reference_Apr78.pdf
+
+  * Cray Operating System Version 1 Reference Manual, 2240011.
+  * CRAY-1 Pocket Card, 2240003.
+  * CRAY-1 / X-MP Symbolic Machine Instructions Reference, SR-0085.
+
+Archives et histoire
+--------------------
+
+  * Index CRAY-1 Bitsavers :
+    https://bitsavers.trailing-edge.com/pdf/cray/CRAY-1/
+
+  * Transcription partielle du Hardware Reference revision C :
+    https://www.ed-thelen.org/comp-hist/CRAY-1-HardRefMan/CRAY-1-HRM.html
+
+  * Cray History, catalogue de publications :
+    https://cray-history.net/cray-history-front/
+      cray-publications-and-technical-manuals-lists/
+
+  * Computer History Museum et archives NCAR pour photographies, historiques
+    de sites, logiciels et temoignages.
+
+Regle de priorite : instruction, timing, registre ou canal doit etre verifie dans
+le manuel exact du CRAY-1A/1S/1M et de sa revision. Les manuels X-MP sont utiles
+pour la filiation mais ne definissent pas retroactivement le CRAY-1.

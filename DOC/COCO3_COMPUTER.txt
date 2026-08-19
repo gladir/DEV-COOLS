@@ -1,0 +1,1448 @@
+==============================================================================
+ TANDY / RADIO SHACK COLOR COMPUTER 3 (CoCo 3)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit le Tandy/Radio Shack Color Computer 3, ses circuits, sa
+memoire, le processeur 6809E, le GIME, les interfaces et sa programmation en
+Color BASIC, Disk BASIC, OS-9 et assembleur 6809.
+
+Le CoCo 3 appartient a la famille TRS-80 Color Computer, mais il ne faut pas le
+confondre avec les TRS-80 Model I/III/4 a processeur Z80 ni avec le Tandy 1000
+compatible PC. Les accents sont omis pour conserver un fichier ASCII.
+
+Date de revision : aout 2026.
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et modeles
+  2. Architecture generale
+  3. CPU Motorola 6809E
+  4. Horloges et modes de vitesse
+  5. Memoire physique
+  6. Carte memoire logique
+  7. GIME et compatibilite SAM/VDG
+  8. MMU GIME
+  9. Taches MMU et page constante
+ 10. ROM, RAM et cartouches
+ 11. Registres GIME
+ 12. Video GIME
+ 13. Modes texte
+ 14. Modes graphiques
+ 15. Palette et couleurs
+ 16. Adresse video, scrolling et pages
+ 17. Interruptions GIME
+ 18. Timer GIME
+ 19. PIA 6821
+ 20. Clavier et joysticks
+ 21. Son et DAC
+ 22. Cassette
+ 23. Port serie bit-banger
+ 24. Bus cartouche et Multi-Pak
+ 25. Controleurs de disquette
+ 26. RGB, composite et moniteurs
+ 27. Super Extended Color BASIC
+ 28. Disk Extended Color BASIC
+ 29. OS-9 Level II et NitrOS-9
+ 30. Formats de fichiers et supports
+ 31. Exemples BASIC
+ 32. Exemples assembleur 6809
+ 33. Programme assembleur complet
+ 34. Pilote video et double buffering
+ 35. Conseils d'optimisation
+ 36. Conseils pour un emulateur
+ 37. Reparation et diagnostic
+ 38. Plan de validation
+ 39. ROM DU CoCo 3 ET CLONE COMPATIBLE
+ 40. References
+
+
+==============================================================================
+1. HISTORIQUE ET MODELES
+==============================================================================
+
+Le Color Computer 3 est commercialise par Tandy/Radio Shack en 1986. Il succede
+aux Color Computer 1 et 2 tout en conservant une forte compatibilite avec leurs
+logiciels et peripheriques. Son principal nouveau circuit est l'ASIC video et
+memoire appele officiellement Advanced Color Video Chip et couramment GIME
+(Graphics Interrupt Memory Enhancer).
+
+Configuration commerciale typique :
+
+  * Motorola MC68B09E;
+  * 128 Kio de RAM, extensible officiellement a 512 Kio;
+  * Super Extended Color BASIC en ROM;
+  * sorties composite et RGB analogique;
+  * clavier integral;
+  * port cartouche, cassette, serie et deux joysticks.
+
+Des extensions modernes atteignent 1, 2 Mio ou davantage, mais elles ne suivent
+pas toutes la meme convention pour les bits de page MMU. Un logiciel historique
+ne doit pas supposer qu'une extension moderne est presente.
+
+
+==============================================================================
+2. ARCHITECTURE GENERALE
+==============================================================================
+
+                       +-----------------------------+
+  clavier/joysticks -> | PIA 0             PIA 1    | -> cassette/serie/son
+                       +-------------+---------------+
+                                     |
+  cartouche/disque <---- bus ---- MC6809E ---- GIME ---- RAM 128/512 Kio
+                                      |          |
+                                      |          +---- video RGB/composite
+                                      +---- ROM BASIC/cartouche
+
+Le 6809 possede un espace logique de 64 Kio. Le GIME traduit huit fenetres de
+8 Kio vers la RAM physique. Il gere aussi video, palette, timer, interruptions,
+selection de ROM et compatibilite avec le SAM/VDG des CoCo precedents.
+
+Le CoCo 3 n'a pas de processeur sonore specialise. Il genere du son par un DAC
+6 bits, une sortie 1 bit et les circuits analogiques relies aux PIA. Certaines
+cartouches ajoutent un PSG, un DAC ou d'autres circuits.
+
+
+==============================================================================
+3. CPU MOTOROLA 6809E
+==============================================================================
+
+Registres :
+
+  A, B       accumulateurs 8 bits; ensemble D sur 16 bits
+  X, Y       index 16 bits
+  U, S       deux piles 16 bits, utilisateur et systeme
+  PC         compteur programme
+  DP         page directe, octet haut des adresses directes
+  CC         E F H I N Z V C
+
+F masque FIRQ et I masque IRQ. E indique que l'etat complet fut empile. H est
+la demi-retenue, N negatif, Z zero, V
+overflow et C retenue.
+
+Atouts du 6809 : code position-independent, nombreux modes indexes, deux piles,
+transfert/exchange de registres, multiplication 8x8, branchements longs,
+interruptions rapides et DP deplacable.
+
+Instructions importantes : LDA/LDB/LDD, LDX/LDY/LDU/LDS, STA/STB/STD,
+LEAX/LEAY/LEAU/LEAS, PSHS/PULS, PSHU/PULU, TFR/EXG, ABX, MUL, DAA, branches,
+JSR/RTS, SWI/SWI2/SWI3, CWAI, SYNC et RTI.
+
+Le 6309 Hitachi est un remplacement populaire mais non standard. Il ajoute des
+registres et instructions; un programme 6809 doit rester compatible sauf apres
+detection volontaire.
+
+
+==============================================================================
+4. HORLOGES ET MODES DE VITESSE
+==============================================================================
+
+Le CPU fonctionne approximativement a :
+
+  lent   0,895 MHz, compatibilite CoCo;
+  rapide 1,79 MHz, mode double vitesse.
+
+Les adresses de controle SAM historiques sont des strobes :
+
+  ecrire $FFD8  vitesse lente
+  ecrire $FFD9  vitesse rapide
+
+La donnee ecrite n'importe pas. Le mode rapide peut perturber anciennes
+cartouches ou peripheriques dont les timings reposent sur la vitesse lente.
+Revenir en lent autour des acces incompatibles.
+
+
+==============================================================================
+5. MEMOIRE PHYSIQUE
+==============================================================================
+
+128 Kio : seize pages physiques de 8 Kio, numerotees $30-$3F. Les pages $00-$2F
+sont des miroirs de $30-$3F selon les lignes d'adresse absentes. Le workspace
+BASIC normal emploie $38-$3F; l'autre tranche de 64 Kio est $30-$37.
+
+512 Kio : 64 pages physiques $00-$3F de 8 Kio. Le GIME standard adresse donc
+512 Kio par six bits de numero de page.
+
+Les bits hauts lus dans les registres MMU peuvent contenir du bus parasite sur
+un GIME standard. Ils doivent etre masques pour 128/512 Kio. Certaines extensions
+1/2 Mio capturent ces bits par une logique externe, mais la lecture n'est pas
+uniforme : employer leur API ou documentation.
+
+La RAM video n'est pas separee. Le GIME lit l'image dans la RAM principale. Une
+surface peut resider hors des 64 Kio courants et etre affichee sans etre mappee
+dans l'espace CPU au meme instant.
+
+
+==============================================================================
+6. CARTE MEMOIRE LOGIQUE
+==============================================================================
+
+Configuration BASIC typique, dependante du mode ROM/MMU :
+
+  $0000-$7FFF  RAM programme/variables/systeme
+  $8000-$BFFF  ROM BASIC et/ou RAM selon configuration
+  $C000-$FEFF  ROM, cartouche, RAM et E/S selon selection
+  $FF00-$FF7F  registres PIA, cartouche et GIME
+  $FF80-$FFBF  registres GIME et palette
+  $FFC0-$FFDF  strobes SAM/compatibilite
+  $FFE0-$FFFF  vectors/ROM, avec pages constantes selon mode
+
+Avec MMU active, les huit slots sont :
+
+  slot 0 $0000-$1FFF   slot 4 $8000-$9FFF
+  slot 1 $2000-$3FFF   slot 5 $A000-$BFFF
+  slot 2 $4000-$5FFF   slot 6 $C000-$DFFF
+  slot 3 $6000-$7FFF   slot 7 $E000-$FFFF
+
+Les E/S restent decodees dans la zone $FFxx; la logique ROM/page constante peut
+modifier la fin du slot 7.
+
+
+==============================================================================
+7. GIME ET COMPATIBILITE SAM/VDG
+==============================================================================
+
+Le GIME remplace plusieurs fonctions du SAM et du VDG MC6847 tout en reproduisant
+les anciens modes. INIT0 $FF90 bit 7 choisit :
+
+  1  mode compatible CoCo 1/2;
+  0  modes video natifs CoCo 3.
+
+Les vieux registres/strobes $FFC0-$FFDF continuent de choisir vitesse, pages,
+mode SAM et ROM/RAM. Les logiciels CoCo 1/2 qui manipulent directement SAM/PIA
+fonctionnent souvent, mais les demos sensibles au cycle ou a l'artifact color
+peuvent varier.
+
+Le GIME existe en revisions 1986 et 1987, avec differences et bogues. Un
+emulateur ou programme raster doit preciser la revision visee.
+
+
+==============================================================================
+8. MMU GIME
+==============================================================================
+
+Registres de pages :
+
+  Tache 0 : $FFA0-$FFA7
+  Tache 1 : $FFA8-$FFAF
+
+Chaque registre contient le numero du bloc physique de 8 Kio mappe dans le slot
+correspondant. Exemple sur 512 Kio :
+
+  LDA #$20
+  STA $FFA2
+
+mappe le bloc physique $20, soit les octets $40000-$41FFF, a $4000-$5FFF.
+Adresse physique = bloc*8192 + offset_dans_slot.
+
+INIT0 $FF90 bit 6 active la MMU. Desactivee, une cartographie compatible est
+utilisee. Toujours sauvegarder l'ancien registre et interdire les interruptions
+si leur code/donnees pourraient disparaitre pendant le changement.
+
+La MMU ne protege pas la memoire : lecture/ecriture restent permises. Ce n'est
+pas une MMU avec droits ou pagination virtuelle; c'est un translateur de pages.
+
+
+==============================================================================
+9. TACHES MMU ET PAGE CONSTANTE
+==============================================================================
+
+INIT1 $FF91 selectionne la tache active entre les deux jeux. OS-9 Level II
+emploie cette fonction pour changer rapidement de contexte et mapper les blocs
+d'un processus.
+
+Le mode constant page peut conserver la zone haute contenant E/S et vecteurs
+pendant les changements de tache. INIT0 bit 3 participe a cette selection. Les
+details ROM/RAM et vecteurs doivent suivre le mode du systeme; un programme BASIC
+ne doit pas reconfigurer cette fonction sans remplacer les handlers.
+
+Precautions d'un changement de page contenant la pile ou le code courant :
+
+  * executer la routine depuis un slot qui reste identique;
+  * laisser S, U et vecteurs dans des pages stables;
+  * masquer IRQ/FIRQ ou garantir leurs pages dans les deux taches;
+  * ne pas mapper la page d'instruction avant que le CPU ait fini la sequence;
+  * restaurer exactement le registre, pas une valeur supposee.
+
+
+==============================================================================
+10. ROM, RAM ET CARTOUCHES
+==============================================================================
+
+$FFDE selectionne le mode ROM/RAM; $FFDF le mode RAM, par simple ecriture. En
+mode ROM/RAM, les blocs $3C-$3F peuvent designer les pages ROM selon INIT0 bits
+1:0 et le slot. Les deux bits bas du slot influencent la page ROM effective :
+ecrire $3D dans n'importe quel slot ne garantit pas la seconde page ROM.
+
+Configurations INIT0 bits 1:0 : ROM BASIC internes avec cartouche 16 Kio,
+ensemble interne 32 Kio, ou cartouche externe 32 Kio, selon valeur. Les vecteurs
+de fin restent traites specialement.
+
+Le port cartouche fournit SCS, CTS, CART, IRQ et bus. Une cartouche ROM peut
+demarrer par interruption CART/autostart. Le Multi-Pak Interface selectionne un
+des quatre slots et se programme couramment via $FF7F; les anciennes revisions
+peuvent necessiter une mise a niveau pour CoCo 3.
+
+
+==============================================================================
+11. REGISTRES GIME
+==============================================================================
+
+Carte principale :
+
+  $FF90 INIT0   compatibilite, MMU, IRQ/FIRQ globaux, page constante, ROM
+  $FF91 INIT1   tache MMU et options memoire/timer selon bits
+  $FF92 IRQENR  masque des sources IRQ GIME
+  $FF93 FIRQENR masque des sources FIRQ GIME
+  $FF94 TMRMSB  timer, partie haute
+  $FF95 TMRLSB  timer, partie basse
+  $FF98 VMODE   mode video, bits par pixel et attributs
+  $FF99 VRES    resolution, lignes et largeur de ligne
+  $FF9A BRDR    couleur de bordure
+  $FF9B VSC     scroll vertical/ligne de caractere
+  $FF9C VOFFMSB adresse video/offset haut
+  $FF9D VOFFLSB adresse video/offset bas
+  $FF9E HOFF    offset horizontal
+  $FF9F         reserve/effets dependant de revision
+  $FFA0-$FFA7   MMU tache 0
+  $FFA8-$FFAF   MMU tache 1
+  $FFB0-$FFBF   16 registres de palette, six bits utiles
+
+Certains registres sont write-only ou ont des bits flottants. Conserver des
+copies RAM des valeurs ecrites et faire des read-modify-write uniquement lorsque
+la lecture est definie. Masquer les bits reserves.
+
+INIT0 details fiables :
+
+  bit7 COCO   1=video CoCo 1/2, 0=video GIME
+  bit6 MMUEN  active la MMU
+  bit5 IEN    autorisation IRQ GIME globale
+  bit4 FEN    autorisation FIRQ GIME globale
+  bit3 MC3    page constante/vecteurs RAM
+  bit2 MC2    selection SCS compatible
+  bits1:0     configuration ROM
+
+
+==============================================================================
+12. VIDEO GIME
+==============================================================================
+
+Le GIME offre une sortie logique jusqu'a 640 pixels par ligne et 225 lignes
+actives selon mode/region, 16 couleurs simultanees choisies dans une palette de
+64, et des textes 32/40/64/80 colonnes.
+
+Le nombre de bits par pixel et la largeur determinent les modes reels. Exemples
+courants :
+
+  160x192/200/225  16 couleurs
+  256x192/200/225  4 couleurs
+  320x192/200/225  16 ou 4 couleurs selon organisation
+  512x192/200/225  4 couleurs ou 2 couleurs
+  640x192/200/225  2 couleurs
+
+Toutes les combinaisons de champs ne sont pas forcement utiles ou documentees.
+Super Extended BASIC expose un sous-ensemble coherent via HSCREEN.
+
+La memoire video est lineaire par lignes, mais les champs GIME codent largeur
+et profondeur. Calculer bytes_per_line a partir du mode selectionne et reserver
+assez de blocs physiques.
+
+
+==============================================================================
+13. MODES TEXTE
+==============================================================================
+
+Mode compatible : affichage MC6847/CoCo 1/2, 32 colonnes, caracteres internes et
+semigraphiques.
+
+Texte GIME : 32, 40, 64 ou 80 colonnes, 24/25 lignes selon reglage. Deux octets
+peuvent decrire chaque cellule : code et attribut. L'attribut selectionne avant-
+plan, fond, clignotement/soulignement et variantes selon le mode.
+
+Le GIME utilise des motifs de caracteres en RAM ou une police compatible. Les
+ecrans 80 colonnes sont courants sous OS-9. La taille du buffer et le stride ne
+doivent pas etre deduits de 32x16 historique.
+
+
+==============================================================================
+14. MODES GRAPHIQUES
+==============================================================================
+
+En packed pixels, plusieurs pixels partagent un octet :
+
+  1 bpp  8 pixels/octet, indices 0..1
+  2 bpp  4 pixels/octet, indices 0..3
+  4 bpp  2 pixels/octet, indices 0..15
+
+Le pixel de gauche occupe normalement les bits les plus significatifs du groupe.
+Pour 4 bpp : X pair = nibble haut, X impair = nibble bas.
+
+Adresse logique dans une surface mappee :
+
+  adresse = base + Y*bytes_per_line + (X*pixels_bits)/8
+
+Un pixel doit etre masque et combine avec l'autre pixel de l'octet. Pour une
+surface hors des 64 Kio, mapper successivement ses blocs dans un slot de travail.
+
+
+==============================================================================
+15. PALETTE ET COULEURS
+==============================================================================
+
+$FFB0-$FFBF contiennent 16 entrees. Chaque valeur a six bits, deux bits par
+composante. L'ordre de composantes employe par le GIME doit etre traite selon la
+table materielle; les sorties RGB et composite ne produisent pas exactement le
+meme rendu analogique.
+
+Les valeurs 0..63 forment un cube 4x4x4. Des valeurs courantes incluent noir 0
+et blanc proche de $3F, mais les niveaux/composantes doivent etre testes sur le
+moniteur vise. HPALETTE de BASIC offre une interface plus sure.
+
+Une ecriture de palette pendant l'image permet des raster effects. Elle doit
+etre synchronisee par interruption et tient compte du delai video.
+
+
+==============================================================================
+16. ADRESSE VIDEO, SCROLLING ET PAGES
+==============================================================================
+
+VOFF $FF9C/$FF9D choisit l'adresse physique de debut d'affichage selon une unite
+materielle, pas une adresse CPU brute de 16 bits. HOFF $FF9E effectue un offset
+horizontal; VSC $FF9B intervient dans la ligne de caractere/scroll vertical.
+
+Pour double buffering : reserver deux surfaces physiques alignees, dessiner dans
+la surface cachee en la mappant par MMU, attendre le retour vertical puis changer
+VOFF. Ne modifier qu'apres avoir calcule l'unite exacte du mode.
+
+Les registres d'adresse ont des bits limites; une extension RAM au-dela de la
+plage video GIME ne rend pas automatiquement toute sa memoire affichable.
+
+
+==============================================================================
+17. INTERRUPTIONS GIME
+==============================================================================
+
+Le GIME peut router ses sources vers IRQ ou FIRQ via $FF92/$FF93 et les bits
+globaux INIT0. Sources typiques :
+
+  * timer;
+  * frontiere verticale/retour vertical;
+  * frontiere horizontale;
+  * serial/cartouche;
+  * clavier et signaux externes selon routage.
+
+Lire le registre masque/statut approprie permet d'identifier et acquitter. Les
+semantiques exactes des bits doivent etre reprises du manuel GIME; ne pas ecrire
+FFh a tous les masques en supposant une convention identique au PIA.
+
+FIRQ n'empile par defaut que PC et CC (E=0), d'ou sa rapidite. Si la routine
+emploie A/B/X/Y/U/DP, elle doit les sauver. IRQ empile l'etat complet lorsque E
+est positionne par le materiel.
+
+Vecteurs CPU :
+
+  $FFF2 SWI3  $FFF4 SWI2  $FFF6 FIRQ  $FFF8 IRQ
+  $FFFA SWI   $FFFC NMI   $FFFE RESET
+
+Les ROM CoCo 3 redirigent vers des trampolines en $FExx puis des vecteurs RAM
+autour de $0100, selon environnement. Sous OS-9, employer le gestionnaire du
+systeme et non les adresses BASIC.
+
+
+==============================================================================
+18. TIMER GIME
+==============================================================================
+
+$FF94/$FF95 forment un timer programmable (12 bits utiles sur GIME classique).
+La source d'horloge depend d'INIT1 : cadence ligne video ou horloge plus rapide
+selon configuration. Le compteur peut produire IRQ ou FIRQ.
+
+Programmer les octets dans l'ordre recommande par la documentation et tenir
+compte de la valeur de rechargement/off-by-one specifique aux revisions. Un
+emulateur doit reproduire les cas valeur zero, rechargement et changement de
+source pendant le comptage.
+
+
+==============================================================================
+19. PIA 6821
+==============================================================================
+
+PIA 0 : $FF00-$FF03. PIA 1 : $FF20-$FF23. Chaque PIA a port A/B, Data Direction
+Registers selectionnes par le bit de son Control Register, lignes CA1/CA2 et
+CB1/CB2 avec detection d'edges et interruptions.
+
+Fonctions usuelles :
+
+  PIA0  matrice clavier, joysticks et comparateur analogique;
+  PIA1  DAC, son, cassette, serie, mode VDG compatible et signaux divers.
+
+Avant d'ecrire un DDR, sauvegarder controles et donnees. Une erreur de direction
+peut opposer deux sorties et endommager un PIA/peripherique.
+
+
+==============================================================================
+20. CLAVIER ET JOYSTICKS
+==============================================================================
+
+Le clavier est une matrice 8x7 environ, balayee via PIA0. Le logiciel met une
+colonne a zero et lit les lignes actives basses. Certaines combinaisons creent
+du ghosting car la matrice n'a pas une diode par touche.
+
+Les joysticks analogiques sont des potentiometres. Le DAC produit une tension de
+comparaison et le PIA lit le comparateur; une recherche successive mesure X/Y.
+Les boutons sont numeriques. Les routines ROM JOYSTK fournissent une interface
+BASIC mais prennent du temps.
+
+Les souris CoCo utilisent des protocoles analogiques/quadrature selon modele.
+Ne pas confondre avec une souris PC serie.
+
+
+==============================================================================
+21. SON ET DAC
+==============================================================================
+
+Le DAC 6 bits est controle par PIA1, typiquement bits 7..2 d'un port. Le mux
+analogique selectionne DAC, cassette, cartouche ou autres sources. Un bit audio
+simple peut aussi produire des tonalites.
+
+SOUND et PLAY de BASIC synthetisent notes par logiciel. Pendant la sortie, le CPU
+est fortement sollicite. Pour PCM, envoyer des valeurs au DAC a cadence reguliere
+par boucle, timer ou interruption. La frequence et le jitter dependent du mode
+CPU et des interruptions.
+
+Des cartouches Orchestra-90/CoCo PSG et interfaces modernes offrent stereo ou
+PSG. Elles ne font pas partie du CoCo 3 de base.
+
+
+==============================================================================
+22. CASSETTE
+==============================================================================
+
+Le connecteur cassette fournit entree, sortie, moteur et masse. CSAVE/CLOAD
+emploient un codage FSK/timing controle par ROM et PIA. MOTOR commande le relais
+du magnetophone compatible.
+
+Formats d'archive : WAV represente le signal, CAS represente generalement les
+blocs logiques/impulsions interpretees. Les protections et chargeurs rapides
+peuvent exiger une emulation analogique/timing plus fidele.
+
+
+==============================================================================
+23. PORT SERIE BIT-BANGER
+==============================================================================
+
+Le port serie DIN emploie des lignes PIA et une implementation logicielle,
+d'ou le nom bit-banger. Les niveaux/signaux ne constituent pas toujours un port
+RS-232 complet avec toutes les lignes de controle. Verifier le cable et le
+convertisseur de niveau.
+
+DLOAD et pilotes modem utilisent ce port. La precision de baud depend des cycles
+CPU; mode rapide, IRQ et PAL/NTSC peuvent modifier un logiciel mal ecrit.
+
+
+==============================================================================
+24. BUS CARTOUCHE ET MULTI-PAK
+==============================================================================
+
+Le connecteur expose adresses/donnees, E/Q, R/W, CTS, SCS, CART, IRQ, NMI,
+RESET, alimentation et audio. Peripheriques : ROM Pak, controleur disquette,
+Multi-Pak, modem, orchestre, interface disque dur/SD et extensions memoire.
+
+Le Multi-Pak selectionne les lignes cartouche de quatre slots. Son registre est
+couramment $FF7F; certains modeles sont incompatibles electriquement avec le
+CoCo 3 sans modification PAL/GIME. Sauvegarder la selection avant de parler a
+un peripherique et eviter de commuter le slot contenant le code courant.
+
+
+==============================================================================
+25. CONTROLEURS DE DISQUETTE
+==============================================================================
+
+Le Disk Controller Program Pak contient un FDC (souvent WD17xx), ROM Disk BASIC
+et logique d'adressage. Lecteurs 5,25 pouces, 35/40/80 pistes et simple/double
+face existent selon controleur/systeme.
+
+Disk BASIC ajoute DSKINI, DSKI$/DSKO$, DIR, DRIVE, LOADM/SAVEM, fichiers sequentiels
+et aleatoires. L'image .DSK/.JVC stocke secteurs et parfois un petit en-tete de
+geometrie; DMK conserve davantage d'informations de piste et protections.
+
+OS-9 utilise des descripteurs de peripherique et pilotes RBF. La geometrie est
+dans le descripteur/disque; ne pas supposer 35 pistes depuis l'extension .dsk.
+
+
+==============================================================================
+26. RGB, COMPOSITE ET MONITEURS
+==============================================================================
+
+Le CoCo 3 offre video composite compatible televiseur et sortie RGB analogique
+pour le moniteur CM-8. Les frequences restent de type television; un moniteur
+VGA ne peut pas etre relie directement malgre le mot RGB.
+
+Le composite produit artefacts et couleurs differentes, particulierement dans
+les modes compatibles CoCo 1/2. RGB donne des pixels plus nets et la palette
+GIME plus previsible. Les niveaux et brochages doivent etre verifies dans le
+service manual avant de fabriquer un cable.
+
+
+==============================================================================
+27. SUPER EXTENDED COLOR BASIC
+==============================================================================
+
+Le CoCo 3 ajoute aux commandes Color BASIC/Extended BASIC :
+
+  HSCREEN   selectionne un mode graphique haute resolution;
+  HCLS      efface l'ecran graphique;
+  HCOLOR    couleur de dessin;
+  HSET      pixel;
+  HLINE     ligne/rectangle;
+  HCIRCLE   cercle/ellipse;
+  HDRAW     chaine de dessin;
+  HGET/HPUT capture/restitution de blocs;
+  HPAINT    remplissage;
+  HPALETTE  palette;
+  WIDTH     largeur texte, notamment 32/40/80;
+  ATTR      attributs texte;
+  LOCATE    position curseur haute resolution.
+
+Les numeros/parametres HSCREEN dependent du manuel BASIC. Utiliser la commande
+plutot que des POKE GIME pour une application BASIC portable.
+
+
+==============================================================================
+28. DISK EXTENDED COLOR BASIC
+==============================================================================
+
+Commandes frequentes :
+
+  DIR, DRIVE, DSKINI, KILL, RENAME, COPY
+  LOAD/SAVE pour BASIC, LOADM/SAVEM pour binaire
+  OPEN, CLOSE, PRINT#, INPUT#, LINE INPUT#, FIELD, GET, PUT
+  DSKI$/DSKO$ pour secteurs bruts avec prudence
+
+Un fichier binaire LOADM porte blocs avec adresse et un bloc de transfert. Une
+image cassette binaire emploie un autre conteneur logique. Valider adresses avant
+de charger afin de ne pas ecraser MMU, pile ou systeme.
+
+
+==============================================================================
+29. OS-9 LEVEL II ET NITROS-9
+==============================================================================
+
+OS-9/6809 Level II exploite la MMU du CoCo 3 : processus, modules relocatables,
+pilotes, system calls, pipes, multitache et espaces memoire mappes. BASIC09 est
+un langage structure compile en code intermediaire.
+
+Un module OS-9 comporte sync, taille, nom, type/langue, attribut/revision,
+parite, point d'entree ou informations propres au type, puis CRC. Il est
+position-independent et accede aux donnees via U/DP selon convention.
+
+NitrOS-9 est une continuation libre optimisee pour 6809 et 6309. Les programmes
+doivent utiliser appels systeme et descripteurs plutot que changer directement
+MMU/GIME, sauf pilote en mode systeme.
+
+
+==============================================================================
+30. FORMATS DE FICHIERS ET SUPPORTS
+==============================================================================
+
+  BAS   BASIC tokenise ou ASCII selon transfert
+  BIN   binaire DECB avec blocs/adresse d'execution
+  CAS   image cassette
+  WAV   signal cassette echantillonne
+  DSK   image de secteurs, geometrie contextuelle
+  JVC   image sectorielle avec en-tete optionnel
+  DMK   image de pistes plus fidele
+  OS9   image disque OS-9/RBF
+  ROM   dump brut de ROM Pak, taille/cablage externes
+
+L'extension ne suffit pas a identifier chaque variante. Conserver geometrie,
+write-protect, densite, faces et ordre des secteurs dans les metadonnees.
+
+
+==============================================================================
+31. EXEMPLES BASIC
+==============================================================================
+
+31.1 Texte 80 colonnes et palette
+---------------------------------
+
+10 WIDTH 80
+20 CLS
+30 PRINT "TANDY COLOR COMPUTER 3"
+40 FOR I=0 TO 15:HPALETTE I,I*4:NEXT I
+
+31.2 Graphiques haute resolution
+--------------------------------
+
+10 HSCREEN 2
+20 HCLS 0
+30 HCOLOR 3
+40 HLINE (0,0)-(319,191),PSET,B
+50 HCIRCLE (160,96),70
+60 GOTO 60
+
+Le numero HSCREEN et les coordonnees maximales doivent correspondre au mode de
+la ROM regionale. Consulter la table Super Extended BASIC.
+
+31.3 Joysticks et son
+---------------------
+
+10 X=JOYSTK(0):Y=JOYSTK(1)
+20 PRINT@0,"X=";X;" Y=";Y;"  "
+30 IF PEEK(65280) AND 1 THEN 10
+40 SOUND 100,2:GOTO 10
+
+L'adresse/bouton direct est illustrative; JOYSTK et INKEY$ evitent de dependre
+du cablage brut pour les applications BASIC.
+
+31.4 Chargement d'un binaire
+----------------------------
+
+10 LOADM"MOTEUR.BIN"
+20 EXEC
+
+
+==============================================================================
+32. EXEMPLES ASSEMBLEUR 6809
+==============================================================================
+
+Syntaxe Motorola/EDTASM, adaptable a lwasm.
+
+32.1 Passer en vitesse rapide
+-----------------------------
+
+FAST    CLR   $FFD9          ; toute ecriture selectionne rapide
+        RTS
+SLOW    CLR   $FFD8
+        RTS
+
+32.2 Mapper temporairement une page 8 Kio
+------------------------------------------
+
+; Mappe le bloc B dans le slot 2 ($4000-$5FFF), puis le restaure.
+; Le code, la pile et les interruptions ne doivent pas dependre du slot 2.
+
+MAPWORK:
+        PSHS  CC
+        ORCC  #$50
+        LDA   $FFA2
+        PSHS  A
+        STB   $FFA2
+        ; travail
+        PULS  A
+        STA   $FFA2
+        PULS  CC,PC
+
+32.3 Ecrire la palette
+----------------------
+
+SETPAL: LDX   #$FFB0
+        LDY   #PALETTE
+        LDB   #16
+LOOPP:  LDA   ,Y+
+        ANDA  #$3F
+        STA   ,X+
+        DECB
+        BNE   LOOPP
+        RTS
+
+PALETTE FCB $00,$3F,$30,$0C,$03,$3C,$33,$0F
+        FCB $15,$2A,$20,$08,$02,$38,$23,$2F
+
+32.4 Pixel 4 bpp dans une surface mappee
+----------------------------------------
+
+; Entree X=adresse de l'octet, A=couleur 0..15, B=0 pixel gauche, B=1 droite.
+PUTNIB: PSHS  A,B
+        TSTB
+        BNE   RIGHT
+        ASLA
+        ASLA
+        ASLA
+        ASLA
+        ANDA  #$F0
+        LDB   ,X
+        ANDB  #$0F
+        BRA   MERGE
+RIGHT:  ANDA  #$0F
+        LDB   ,X
+        ANDB  #$F0
+MERGE:  PSHS  B
+        ORA   ,S+
+        STA   ,X
+        PULS  A,B,PC
+
+32.5 Installer un vecteur IRQ RAM
+---------------------------------
+
+; Pour environnement BASIC CoCo 3 seulement, confirmer le trampoline ROM.
+INSTALL:
+        ORCC  #$50
+        LDA   #$7E           ; JMP extended
+        STA   $010C
+        LDX   #MYIRQ
+        STX   $010D
+        ; configurer/acquitter la source GIME ici
+        ANDCC #$EF           ; autorise IRQ, conserve FIRQ masquee
+        RTS
+
+MYIRQ:  PSHS  A,B,X
+        ; lire/acquitter source
+        PULS  A,B,X
+        RTI
+
+Sous OS-9, ne jamais installer ainsi : passer par les services systeme/pilote.
+
+
+==============================================================================
+33. PROGRAMME ASSEMBLEUR COMPLET
+==============================================================================
+
+Exemple positionne a $0E00, change bordure/palette, attend une touche puis rend
+la configuration. Les adresses clavier ROM sont volontairement remplacees par
+un appel BASIC/monitor propre au projet; le coeur illustre la sauvegarde GIME.
+
+        ORG   $0E00
+START:  PSHS  CC
+        ORCC  #$50
+        LDA   $FF90
+        PSHS  A
+        LDA   $FF9A
+        PSHS  A
+
+        LDA   #$00
+        STA   $FF9A          ; bordure palette 0
+        LDX   #$FFB0
+        LDY   #COLORS
+        LDB   #16
+CPAL:   LDA   ,Y+
+        STA   ,X+
+        DECB
+        BNE   CPAL
+
+        ; Le programme appelant peut ici attendre une touche ou dessiner.
+
+        PULS  A
+        STA   $FF9A
+        PULS  A
+        STA   $FF90
+        PULS  CC,PC
+
+COLORS: FCB   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,63
+
+Pour restaurer parfaitement une application, sauvegarder aussi les 16 palettes,
+VMODE, VRES, VSC, VOFF et HOFF modifies.
+
+
+==============================================================================
+34. PILOTE VIDEO ET DOUBLE BUFFERING
+==============================================================================
+
+Architecture recommandee :
+
+  InitMode       sauvegarde GIME, choisit mode et palette;
+  MapSurface     mappe un bloc physique dans une fenetre de travail;
+  AddressPixel   calcule bloc, offset et masque;
+  PutPixel       primitive de reference;
+  HLine/Fill     traite des octets entiers lorsque possible;
+  Blit           traverse proprement les frontieres de 8 Kio;
+  WaitVBlank     IRQ/FIRQ avec timeout ou drapeau;
+  Flip           change VOFF au vblank;
+  Restore        rend tous les registres et la vitesse.
+
+Un framebuffer 320x200x4 bpp prend 32000 octets, soit quatre blocs physiques
+de 8 Kio (32768 octets). Deux buffers prennent huit blocs, 64 Kio. Sur une
+machine 128 Kio, coordonner soigneusement avec ROM/BASIC; sur 512 Kio, placer les
+surfaces hors du workspace courant.
+
+
+==============================================================================
+35. CONSEILS D'OPTIMISATION
+==============================================================================
+
+  * mode CPU rapide pendant calcul/RAM, lent pour peripheriques sensibles;
+  * DP pointe sur les variables critiques pour adressage direct;
+  * D traite deux octets, PSHS/PULS plusieurs registres;
+  * LEAX et adressage auto-incremente pour copies;
+  * aligner surfaces aux blocs 8 Kio;
+  * regrouper le dessin par page pour reduire les changements MMU;
+  * tables Y*stride et masques de pixels precalculees;
+  * utiliser deux taches MMU pour basculer des contextes complets;
+  * FIRQ pour service court et borne;
+  * separer code 6809 et optimisations 6309 apres detection.
+
+
+==============================================================================
+36. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+6809 :
+
+  * cycles et modes indexes complets;
+  * empilement different IRQ/FIRQ/NMI/SWI;
+  * CC.E et RTI partiel/complet;
+  * SYNC/CWAI et reveil par interruptions masquees;
+  * vitesse lente/rapide et E/Q.
+
+GIME/MMU :
+
+  * INIT0/INIT1 et modes ROM precis;
+  * deux taches, huit pages de 8 Kio;
+  * page constante et vecteurs;
+  * RAM 128/512 Kio, miroirs et bits flottants;
+  * E/S $FFxx independantes du mapping ordinaire;
+  * strobes SAM $FFC0-$FFDF;
+  * revisions GIME 1986/1987 lorsque observable.
+
+Video :
+
+  * modes compatibles MC6847 et modes natifs;
+  * VMODE/VRES, stride, texte/attributs;
+  * VOFF, HOFF, VSC et palette 6 bits;
+  * timing PAL/NTSC, bordure, IRQ H/V;
+  * acces video a la RAM physique sans passer par le mapping CPU;
+  * artefacts composite optionnels.
+
+E/S :
+
+  * PIA DDR/controle/edge IRQ;
+  * matrice clavier avec ghosting;
+  * joysticks analogiques, DAC/comparateur;
+  * cassette et serie avec timing;
+  * bus cartouche, CART/SCS/CTS, Multi-Pak;
+  * FDC WD17xx et images JVC/DMK.
+
+Tester avec les suites de validation MAME/XRoar/OVCC, programmes GIME/MMU et
+logiciels OS-9 Level II. Une emulation qui ne lance que BASIC ne valide pas les
+taches MMU, FIRQ, attributs 80 colonnes ou drivers disque.
+
+
+==============================================================================
+37. REPARATION ET DIAGNOSTIC
+==============================================================================
+
+Toujours identifier revision NTSC/PAL, debrancher, appliquer protection ESD et
+verifier l'alimentation avant de remplacer des circuits.
+
+  Symptome                 Causes possibles
+  -----------------------  -----------------------------------------------
+  aucun affichage          alimentation, reset, horloge, 6809E, GIME, ROM, RAM
+  ecran corrompu           RAM, GIME, MMU, buffers/logique adresse
+  128 Kio seulement        carte 512 Kio, connecteurs, DRAM ou detection
+  clavier partiel          membrane, connecteur, PIA, lignes de matrice
+  couleurs RGB fausses     cable/brochage, moniteur, palette, GIME
+  composite sans RGB       connecteur, buffer RGB, cable/moniteur
+  pas de cassette/son      PIA, mux analogique, DAC, cable
+  disque absent            cartouche FDC, Multi-Pak, cable, alimentation lecteur
+  resets avec cartouche    contacts, CART/RESET, alimentation ou incompatibilite
+
+Le service manual fournit points de test, formes d'onde et arbres de panne. Ne
+pas connecter une entree VGA directement au RGB 15 kHz et ne pas injecter de
+tensions RS-232 dans une ligne PIA TTL.
+
+
+==============================================================================
+38. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] 6809 instructions, indexed modes, DAA et empilements
+  [ ] lente/rapide avec peripheriques
+  [ ] RAM 128 et 512 Kio, blocs limites
+  [ ] MMU active/inactive, deux taches, huit slots
+  [ ] ROM/RAM $FFDE/$FFDF et quatre pages ROM
+  [ ] page constante et vecteurs
+  [ ] video compatible CoCo 1/2
+  [ ] texte 32/40/64/80 colonnes
+  [ ] graphismes 1/2/4 bpp et toutes largeurs annoncees
+  [ ] VOFF/HOFF/VSC et double buffering
+  [ ] seize palettes parmi 64 couleurs
+  [ ] timer, IRQ et FIRQ GIME
+  [ ] deux PIA, clavier, joystick analogique et DAC
+  [ ] cassette, serie et son
+  [ ] cartouche, Multi-Pak et FDC
+  [ ] Super Extended BASIC, DECB, OS-9 Level II
+  [ ] NTSC/PAL et GIME 1986/1987
+  [ ] restauration complete apres programme
+
+
+==============================================================================
+39. ROM DU CoCo 3 ET CLONE COMPATIBLE
+==============================================================================
+
+39.1 Pourquoi la ROM merite un chapitre distinct
+------------------------------------------------
+
+La ROM du CoCo 3 n'est pas seulement un ensemble de commandes BASIC. Elle :
+
+  * initialise 6809E, GIME, MMU, PIA, RAM, video et pile;
+  * teste la taille/configuration memoire;
+  * installe les vecteurs secondaires d'interruption;
+  * copie des portions de BASIC et de Disk BASIC en RAM;
+  * corrige ce code par des patches propres au CoCo 3;
+  * gere console, clavier, cassette, joysticks et son;
+  * implemente Microsoft Color/Extended BASIC;
+  * ajoute Super Extended Color BASIC et les fonctions GIME;
+  * detecte une ROM de cartouche/disquette et lui transfere le controle;
+  * fournit les vecteurs materiels visibles en $FFF2-$FFFF.
+
+Une reimplementation ne sera donc pas compatible si elle se contente d'afficher
+un prompt et d'interpreter quelques instructions BASIC.
+
+
+39.2 Organisation logique des ROM
+---------------------------------
+
+Vue classique apres initialisation, selon le mapping choisi :
+
+  $8000-$9FFF   Extended Color BASIC / portion BASIC etendue
+  $A000-$BFFF   Color BASIC Microsoft
+  $C000-$DFFF   Disk BASIC ou cartouche dans le mapping historique
+  $E000-$FDFF   Super Extended BASIC CoCo 3
+  $FE00-$FEFF   trampolines/vecteurs secondaires et page constante
+  $FF00-$FFDF   E/S et registres, non ROM ordinaires
+  $FFE0-$FFFF   image haute/vecteurs selon le mode GIME
+
+La puce ROM physique et le mapping au demarrage ne correspondent pas toujours a
+une simple image lineaire $8000-$FFFF. INIT0, les blocs ROM $3C-$3F, le numero
+du slot MMU et les strobes $FFDE/$FFDF decident de la page visible.
+
+En mode ROM/RAM :
+
+  * blocs logiques $3C-$3F selectionnent les pages ROM;
+  * les deux bits bas du slot remplacent certains bits du numero de page;
+  * INIT0 bits 1:0 choisit ROM interne 16/32 Kio ou cartouche 16/32 Kio;
+  * les vecteurs restent accessibles par un traitement special du GIME.
+
+Un clone materiel doit reproduire ce decodage, y compris une lecture de ROM dans
+un slot inhabituel. Un clone logiciel peut modeliser des pages ROM distinctes,
+mais doit produire le meme octet pour chaque configuration observable.
+
+
+39.3 Versions a identifier
+--------------------------
+
+La pile logicielle peut combiner :
+
+  * Color BASIC, historiquement 1.0, 1.1 ou 1.2;
+  * Extended Color BASIC, puis Extended Color BASIC 2.0 sur CoCo 3;
+  * Super Extended BASIC 1.0/1.1 suivant image et documentation;
+  * Disk Extended Color BASIC 1.0 ou 1.1 dans la cartouche FDC;
+  * HDB-DOS, RGB-DOS, DriveWire ou autre remplacement de Disk BASIC;
+  * ROM regionale/clavier et patches propres a une production.
+
+Les adresses internes de Disk BASIC changent. Exemple documente : la routine
+d'ouverture de fichier est $C483 en Disk BASIC 1.0, mais $C48D en 1.1. Le mot
+a $C004, qui pointe vers DSKCON, vaut notamment $D66C ou $D75F dans ces deux
+versions et peut aider a les distinguer. Ne jamais utiliser ce test comme preuve
+universelle pour une ROM tierce.
+
+Un clone doit annoncer exactement la version qu'il reproduit et fournir un mode
+de compatibilite par image/profil si plusieurs versions sont visees.
+
+
+39.4 Demarrage du CoCo 3
+------------------------
+
+Sequence conceptuelle :
+
+  1. RESET charge PC par $FFFE/$FFFF, interruptions masquees;
+  2. code minimal place pile et GIME dans un etat connu;
+  3. RAM et taille 128/512 Kio sont determinees;
+  4. mappings MMU tache 0/1 et page constante sont construits;
+  5. PIA, clavier, cassette, serie, DAC et video sont initialises;
+  6. vecteurs image ROM sont copies/transformes en trampolines RAM;
+  7. Extended/Color BASIC et Disk BASIC present sont copies en RAM;
+  8. la ROM CoCo 3 applique une liste de patches a ces copies;
+  9. les variables direct-page, piles, buffers et pointeurs BASIC sont fixes;
+ 10. cartouche/autostart et touches speciales de demarrage sont examines;
+ 11. bannieres/messages sont produits puis la boucle READY commence.
+
+La zone ROM $C000-$DFFF du CoCo 3 contient notamment du code temporaire
+d'initialisation et les donnees utilisees pour patcher BASIC. Elle peut ensuite
+etre remplacee dans l'espace logique par Disk BASIC copie en RAM.
+
+Maintenir deux cartes mentales : "octets de la ROM physique" et "code que le CPU
+execute apres copie et patch". Un breakpoint a $Cxxx apres READY peut viser de
+la RAM modifiee, pas l'octet $Cxxx de l'image ROM originale.
+
+
+39.5 Entrees indirectes documentees $A000-$A00C
+------------------------------------------------
+
+Microsoft reserve sept mots contenant des adresses. Il faut effectuer un appel
+indirect JSR [adresse], non JSR adresse. C'est le moyen le plus compatible entre
+revisions de Color BASIC :
+
+  Adresse  Nom      Fonction
+  -------  -------  --------------------------------------------------------
+  $A000    POLCAT   scrute le clavier; Z=1 si aucune nouvelle touche,
+                    sinon Z=0 et A=code du caractere
+  $A002    CHROUT   produit le caractere contenu dans A
+  $A004    CSRDON   met en marche la cassette et commence la lecture
+  $A006    BLKIN    lit un bloc cassette
+  $A008    BLKOUT   ecrit un bloc cassette
+  $A00A    JOYIN    mesure/met a jour les valeurs des joysticks
+  $A00C    WRTLDR   ecrit le leader/synchronisation cassette
+
+Les mots pointent vers les implementations reelles. Exemples souvent observes
+sur une ROM Color BASIC : POLCAT vers $A1CB dans une edition documentee,
+CHROUT vers $A282, CSRDON vers $A77C, BLKIN vers $A70B, BLKOUT vers $A7F4,
+JOYIN vers $A9DE et WRTLDR vers $A7D8. Ces cibles directes ne constituent pas
+l'API; seules les indirections $A000-$A00C evitent la dependance de revision.
+
+Exemple 6809 :
+
+POLCAT  EQU   $A000
+CHROUT  EQU   $A002
+
+WAITKEY:
+         JSR   [POLCAT]
+         BEQ   WAITKEY       ; Z=1, aucune nouvelle touche
+         JSR   [CHROUT]       ; A contient encore le caractere
+         RTS
+
+Le code doit executer avec la page Color BASIC visible a $A000-$BFFF. Si la MMU
+mappe de la RAM a cet endroit, le tableau doit avoir ete copie ou l'appel echoue.
+
+
+39.6 Entrees directes couramment utilisees
+------------------------------------------
+
+Les adresses suivantes sont utiles pour analyser les logiciels, mais elles sont
+moins stables que le tableau indirect :
+
+  Adresse  Fonction courante                       Stabilite
+  -------  --------------------------------------  ---------------------------
+  $A027    entree/reset secondaire selon ROM       depend de version
+  $A0E8    redemarrage a chaud BASIC, selon ROM     depend de version
+  $A176    entree caractere dans certaines ROM      interne, distincte de POLCAT
+  $A282    sortie caractere dans plusieurs ROM      interne; preferer [$A002]
+  $A426    fermeture de fichier BASIC               interne
+  $AC46    traitement d'erreur et hook RAM          interne
+  $C483    ouverture fichier Disk BASIC 1.0         version exacte uniquement
+  $C48D    ouverture fichier Disk BASIC 1.1         version exacte uniquement
+
+Cette table n'est pas une promesse ABI. Avant un appel interne :
+
+  * identifier la ROM par signature/hash/version;
+  * lire la fiche Unravelled correspondante;
+  * satisfaire registres, DP, pile et variables RAM attendues;
+  * noter registres detruits, Carry/Z et chemins d'erreur;
+  * garantir mapping ROM/RAM et vitesse requis;
+  * tester avec/sans Disk BASIC et sur 128/512 Kio.
+
+
+39.7 Entrees officielles Super Extended BASIC
+---------------------------------------------
+
+Le code etendu propre au CoCo 3 commence dans la zone $E000. Le listing Super
+Extended BASIC Unravelled identifie une petite table de donnees/entrees au debut
+comme les seuls points d'acces "sanctionnes" vers la portion amelioree. Le
+premier mot $E000, nomme SUPERVAR dans le listing, pointe vers les variables de
+page directe propres au BASIC etendu.
+
+Il ne faut pas inventer une table partielle a partir d'un seul dump. Pour chaque
+entree $E000 et suivante, recopier du listing de la version cible :
+
+  * adresse du mot/table;
+  * nom symbolique;
+  * type : pointeur, donnees ou routine;
+  * registres d'entree/sortie;
+  * variables direct-page requises;
+  * hooks RAM invoques;
+  * etat GIME attendu;
+  * version ROM et checksum.
+
+Les routines internes telles que SETGRAPH pres de $E04D sont documentees par la
+disassembly, mais ne deviennent pas pour autant une ABI stable. Une ROM clone
+compatible au niveau binaire doit cependant les conserver si des programmes
+historiques les appellent directement.
+
+
+39.8 Vecteurs d'interruption et trampolines
+-------------------------------------------
+
+Vecteurs materiels immuables du 6809 :
+
+  $FFF2 SWI3
+  $FFF4 SWI2
+  $FFF6 FIRQ
+  $FFF8 IRQ
+  $FFFA SWI
+  $FFFC NMI
+  $FFFE RESET
+
+L'image ROM CoCo 3 contient des LBRA/JMP intermediaires dans $FEEE-$FEFF qui
+aboutissent aux vecteurs secondaires RAM :
+
+  $0100 SWI3
+  $0103 SWI2
+  $0106 SWI
+  $0109 NMI
+  $010C IRQ
+  $010F FIRQ
+
+Une installation courante place JMP extended ($7E) puis une adresse 16 bits a
+ces emplacements. Le clone doit reproduire : contenu initial, ordre de copie,
+page constante $FE00-$FEFF, semantique IRQ/FIRQ et etat empile du 6809.
+
+Le drapeau de validite et l'image de vecteurs du code d'initialisation font
+partie de la compatibilite. Un programme peut inspecter les octets, pas seulement
+declencher une interruption.
+
+
+39.9 Hooks RAM et variables importantes
+---------------------------------------
+
+Les ROM BASIC utilisent des variables et hooks RAM comme interface implicite.
+Quelques adresses observees dans les ROM Disk BASIC usuelles :
+
+  $006F  numero de fichier BASIC
+  $0070  drapeau EOF
+  $0191  opcode du hook d'erreur, souvent JMP
+  $0192  adresse du hook d'erreur
+  $094C  buffer de nom de fichier
+  $0957  type de fichier
+  $0958  indicateur ASCII/binaire
+  $095A  lecteur par defaut
+  $097C  longueur d'enregistrement aleatoire
+
+Ces adresses sont utiles a la compatibilite Disk BASIC 1.0/1.1, mais doivent
+etre verifiees avec la version cible. Reproduire un hook implique aussi :
+
+  * valeur d'initialisation;
+  * moment ou il est appele;
+  * convention de pile et registres;
+  * comportement si le hook retourne ou transfere le controle;
+  * interaction avec ON ERROR, fichiers ouverts et nettoyage.
+
+
+39.10 Interpreter BASIC a reproduire
+------------------------------------
+
+Compatibilite source : reconnaitre commandes et produire le meme resultat
+visible. Compatibilite binaire : reproduire en plus tokens, variables et etat
+interne. Pour cette seconde cible, implementer :
+
+  * tokenisation/detokenisation exacte, y compris tokens sur plusieurs octets;
+  * format des lignes chainees en RAM;
+  * ordre des mots-cles et abreviations acceptees;
+  * variables simples, chaines et tableaux;
+  * format flottant Microsoft 5 octets et arrondis;
+  * conversions decimal/binaire et impression des nombres;
+  * precedence, erreurs de type et evaluation gauche/droite;
+  * garbage collection des chaines et erreurs OM/OS/LS, etc.;
+  * DATA/READ/RESTORE, FOR/NEXT, GOSUB/RETURN et pile BASIC;
+  * DEF FN, USR, VARPTR, PEEK/POKE, EXEC et appels machine;
+  * commandes graphiques/sonores et etat conserve entre appels;
+  * fichiers cassette/disque, champs aleatoires et erreurs peripheriques;
+  * messages, codes d'erreur, prompt READY et edition de ligne.
+
+Des logiciels utilisent VARPTR, examinent le programme tokenise, remplacent un
+hook ou appellent l'arithmetique ROM. Une implementation de haut niveau avec des
+structures differentes peut etre source-compatible mais pas binaire-compatible.
+
+
+39.11 Contrat des routines console
+----------------------------------
+
+CHROUT ne signifie pas simplement "dessiner un glyphe". Selon le mode, elle doit
+gerer :
+
+  * caracteres de controle, CR, BS, effacement et cloche;
+  * curseur, largeur 32/40/80 et attribut courant;
+  * scroll en fin d'ecran;
+  * position et variables d'editeur BASIC;
+  * caracteres imprimes vers un fichier/device quand rediriges;
+  * mapping MMU de l'ecran et restauration;
+  * touches BREAK et etat d'interruption lorsque pertinent.
+
+POLCAT doit distinguer "aucune nouvelle touche" d'un caractere nul, mettre Z
+comme attendu, respecter Shift/Control/Alt, verrouillage/repetition de la version
+et restaurer les PIA. Un clone qui retourne seulement un ASCII depuis le clavier
+hote ne reproduit pas les lectures directes de matrice ni les variables RAM.
+
+
+39.12 Contrat cassette, joystick et disque
+------------------------------------------
+
+Les appels cassette officiels manipulent moteur, PIA, timing, checksums, type de
+bloc, leader, erreurs et retour de l'etat analogique. Pour compatibilite cycle
+exacte, emuler le signal; pour compatibilite fonctionnelle, les memes blocs,
+delais visibles, drapeaux et erreurs doivent etre produits.
+
+JOYIN effectue une conversion analogique via DAC/comparateur et met a jour des
+valeurs RAM. Les jeux peuvent lire directement PIA pendant ou apres l'appel.
+
+Disk BASIC communique avec la ROM de la cartouche FDC, DSKCON, buffers de secteur
+et hooks. Un clone de ROM interne ne doit pas simuler le disque dans une couche
+invisible si les programmes peuvent inspecter $C000-$DFFF ou les registres FDC.
+
+
+39.13 Compatibilite au niveau des octets
+----------------------------------------
+
+Il existe plusieurs objectifs, a annoncer sans ambiguite :
+
+  Niveau 1  commandes BASIC usuelles et programmes source;
+  Niveau 2  formats tokenises, fichiers et erreurs compatibles;
+  Niveau 3  entrees documentees et hooks RAM compatibles;
+  Niveau 4  adresses internes courantes et timings assez compatibles;
+  Niveau 5  image binaire identique ou reimplementation observable identique.
+
+Le niveau 5 exige que les programmes lisant la ROM obtiennent les octets attendus.
+Une clean-room ROM legalement distincte ne peut etre a la fois octet pour octet
+identique et independante. Elle peut toutefois viser les memes points d'entree,
+effets et donnees publiques, avec les limites documentees.
+
+
+39.14 Methode de clonage propre
+-------------------------------
+
+Procedure recommandee :
+
+  1. choisir une version cible precise et obtenir des dumps verifies;
+  2. calculer CRC32/SHA-256 par puce/page et dump logique;
+  3. comparer plusieurs machines pour exclure un dump defectueux;
+  4. etablir une specification comportementale depuis manuels et tests;
+  5. separer equipe d'analyse et equipe d'implementation si clean-room requis;
+  6. recreer boot, MMU, vecteurs et services materiels avant BASIC;
+  7. implementer les sept entrees indirectes et leurs conventions;
+  8. reproduire formats RAM BASIC et flottants;
+  9. ajouter Super Extended BASIC puis Disk BASIC par interfaces;
+ 10. executer une suite differentielle contre une machine/revision de reference;
+ 11. tester 128/512 Kio, sans/avec FDC, Multi-Pak, PAL/NTSC;
+ 12. publier version cible, incompatibilites et licence.
+
+La ROM Microsoft/Tandy est historiquement protegee par copyright. La possession
+d'un ordinateur ou d'un dump ne donne pas automatiquement le droit de redistribuer
+l'image. Une reimplementation clean-room et la distribution de patches posent
+des questions juridiques propres au pays; ceci n'est pas un avis juridique.
+
+
+39.15 Tests differentiels indispensables
+----------------------------------------
+
+Demarrage :
+
+  [ ] contenu RAM/MMU/GIME/PIA apres cold et warm reset
+  [ ] 128 contre 512 Kio, GIME 1986/1987, PAL/NTSC
+  [ ] touches de boot, cartouche absente/presente, Disk BASIC 1.0/1.1
+  [ ] bannieres, prompt, curseur et mode video initial
+
+API ROM :
+
+  [ ] sept mots $A000-$A00C et appels indirects
+  [ ] A/X/Y/U/S/DP/CC avant/apres chaque routine
+  [ ] POLCAT sans touche, nouvelle touche, maintien et combinaisons
+  [ ] CHROUT pour les 256 valeurs et chaque largeur d'ecran
+  [ ] cassette erreurs, checksum et BREAK
+  [ ] JOYIN aux limites analogiques
+
+BASIC :
+
+  [ ] tokenisation de chaque mot-cle et LIST inverse
+  [ ] precedences et toutes erreurs avec numero/message exact
+  [ ] flottants : zero signe, extremes, arrondis, division et transcendantales
+  [ ] chaines, garbage collection, tableaux et piles imbriquees
+  [ ] PEEK/POKE/VARPTR/USR/EXEC et programme auto-modifie
+  [ ] HSCREEN/HGET/HPUT/HPAINT/HPALETTE aux limites
+  [ ] fichiers cassette, Disk BASIC sequentiel/aleatoire et EOF
+
+Interruptions/materiel :
+
+  [ ] vecteurs $FFF2-$FFFF, trampolines $FExx et hooks $0100-$010F
+  [ ] IRQ/FIRQ pendant chaque routine longue
+  [ ] mapping ROM dans chacun des huit slots MMU
+  [ ] $FFDE/$FFDF, INIT0 ROM map et page constante
+  [ ] vitesse lente/rapide autour des E/S
+
+
+39.16 Outils de travail
+-----------------------
+
+  * Super Extended BASIC Unravelled II pour $C000-$FDFF et patches;
+  * Extended Color BASIC Unravelled pour la partie Microsoft inferieure;
+  * Disk BASIC Unravelled 1.0/1.1;
+  * EDTASM Appendix F pour les appels ROM documentes;
+  * lwasm/Toolshed pour assembler, images DECB/OS-9 et comparaison;
+  * MAME, XRoar, OVCC/VCC avec breakpoints MMU et traces;
+  * analyseur logique sur RESET, E/Q, bus, GIME et PIA;
+  * scripts de traces differentielles registres/memoire/E-S.
+
+Ne copier aucune adresse depuis un listing sans noter son edition. Generer un
+fichier de symboles par hash de ROM et faire refuser au programme une image non
+reconnue est plus sur qu'une detection approximative.
+
+
+==============================================================================
+40. REFERENCES
+==============================================================================
+
+Sources Tandy/Radio Shack
+-------------------------
+
+  * Color Computer 3 Service Manual, model 26-3334, NTSC/PAL.
+    https://colorcomputerarchive.com/files/Documents/Manuals/Hardware/
+
+  * Color Computer 3 Extended BASIC Manual et Quick Reference.
+    Meme archive, versions anglaise et francaise.
+
+  * Color Computer Technical Reference Manual, Tandy.
+    https://www.bighole.nl/pub/mirror/homepage.ntlworld.com/
+      kryten_droid/coco/coco_tm.htm
+
+  * Color Computer Disk System Manual et Disk EDTASM Manual.
+
+References materiel/programmeur
+-------------------------------
+
+  * John Kowalski (Sock Master), CoCo 3 GIME Chip Reference :
+    https://www.cococommunity.net/socks-gime-register-reference/
+
+  * Chris Lomont, Color Computer 1/2/3 Hardware Programming :
+    https://www.lomont.org/software/misc/coco/Lomont_CoCoHardware_2.pdf
+
+  * Laurence A. Tepolt, Assembly Language Programming for the CoCo 3, 1987.
+    Archive Color Computer Archive, section Books.
+
+  * Motorola MC6809/MC6809E Programming Manual.
+  * Motorola MC6821 Peripheral Interface Adapter Data Sheet.
+  * Western Digital WD17xx Floppy Disk Controller Data Sheets.
+
+ROM et BASIC
+------------
+
+  * Super Extended BASIC Unravelled II, disassembly commentee :
+    https://computerarcheology.com/CoCo/super-extended-basic-unravelled.pdf
+
+  * Extended Color BASIC, Color BASIC et Disk BASIC Unravelled.
+    Index des ressources :
+    https://github.com/dougmasten/awesome-coco
+
+  * Disk EDTASM Remastered, Appendix F, appels ROM documentes :
+    https://colorcomputerarchive.com/repo/Documents/Manuals/Programming/
+      Disk%20EDTASM%20Remastered%20(Tandy).pdf
+
+  * William Astle, exemples d'appels aux fichiers Disk BASIC et detection des
+    versions 1.0/1.1 : https://lost.l-w.ca/0x05/category/coco3/
+
+Logiciels et validation
+-----------------------
+
+  * The Color Computer Archive : https://colorcomputerarchive.com/
+  * NitrOS-9 : https://nitros9.sourceforge.io/
+  * MAME, XRoar et OVCC, sources d'emulation et suites de tests.
+  * LWTools/lwasm, assembleur moderne 6809/6309.
+
+Les registres GIME furent longtemps documentes par observation en plus des
+manuels Tandy. Pour une programmation cycle exacte ou des extensions au-dela de
+512 Kio, recouper la revision du GIME, le schema de l'extension et des tests sur
+materiel reel. Ne pas generaliser les bits hauts flottants des MMU modernes au
+GIME d'origine.

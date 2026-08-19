@@ -1,0 +1,1246 @@
+==============================================================================
+ ATARI ST - MATERIEL, TOS, GEM ET PROGRAMMATION
+ Reference technique pour programmeurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit les ordinateurs Atari ST, STF, STFM, Mega ST et STE. Il couvre
+le processeur Motorola 68000, la memoire, les circuits GLUE/MMU/Shifter, la video,
+le son YM2149, le MFP 68901, les ACIA, l'IKBD, les disquettes, ACSI, le Blitter,
+TOS/GEM et la programmation en assembleur 68000 et en C.
+
+Les TT, Mega STE et Falcon sont cites pour situer les evolutions, mais leurs
+68030, VME, TT Shifter, VIDEL, DSP ou SCSI ne font pas partie du ST de base.
+
+Notation : les adresses prefixees par $ sont hexadecimales. Les mots Motorola
+sont big-endian. Le fichier reste en ASCII pour etre lisible sur un ST ancien.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Histoire et positionnement
+  2. Modeles de la famille
+  3. Architecture generale
+  4. MC68000
+  5. Carte memoire
+  6. ROM, TOS et cartouches
+  7. RAM, MMU et contention
+  8. Carte complete des registres materiels
+  9. GLUE et logique systeme
+ 10. Video Shifter
+ 11. Modes video
+ 12. Organisation bitplane
+ 13. Palette et synchronisation
+ 14. Video STE
+ 15. Blitter
+ 16. Son YM2149
+ 17. Audio DMA STE
+ 18. MFP 68901
+ 19. Interruptions et exceptions
+ 20. ACIA clavier et MIDI
+ 21. IKBD, clavier, souris et joysticks
+ 22. Disquettes WD1772 et DMA
+ 23. ACSI et disques durs
+ 24. Ports externes
+ 25. TOS et couches logicielles
+ 26. GEMDOS
+ 27. BIOS
+ 28. XBIOS
+ 29. GEM AES et VDI
+ 30. Executables PRG/TOS/TTP et processus
+ 31. Systeme de fichiers et formats de disque
+ 32. Variables systeme et Cookie Jar
+ 33. Mode superviseur et acces materiel
+ 34. Exemple assembleur : appel GEMDOS
+ 35. Exemple assembleur : affichage et palette
+ 36. Exemple assembleur : interruption VBL
+ 37. Exemples C
+ 38. Programmation graphique efficace
+ 39. Programmation audio et MIDI
+ 40. Compatibilite et detection
+ 41. Conseils pour un emulateur
+ 42. Plan de validation
+ 43. Maintenance et preservation
+ 44. References
+
+
+==============================================================================
+1. HISTOIRE ET POSITIONNEMENT
+==============================================================================
+
+Atari presente le 520ST en 1985, peu apres le Macintosh et l'Amiga. ST signifie
+generalement Sixteen/Thirty-two : bus de donnees 16 bits et architecture interne
+32 bits du MC68000. La machine associe un prix agressif, une interface graphique
+GEM, MIDI integre et affichage monochrome haute resolution.
+
+Le ST devient important en musique grace aux ports MIDI, dans la PAO grace au
+moniteur monochrome, et dans le jeu grace aux graphismes couleur, au 68000 et a
+un marche europeen actif. Les demoscenes exploitent ensuite des comportements de
+timing non exposes par le systeme d'exploitation.
+
+Les premiers exemplaires chargent une partie de TOS depuis disquette. Les modeles
+courants ont TOS en ROM. Le format de disquette FAT reste proche du PC, mais les
+executables et API ne sont pas DOS.
+
+
+==============================================================================
+2. MODELES DE LA FAMILLE
+==============================================================================
+
+  Modele       RAM nominale     Particularites
+  260ST        512 Kio souvent  designation commerciale initiale europeenne
+  520ST        512 Kio          unite centrale separee ou clavier integre
+  520ST+       1 Mio            extension du 520ST
+  520STF       512 Kio          lecteur de disquette integre
+  1040STF      1 Mio            lecteur et alimentation integres
+  STFM         512 Kio/1 Mio    modulateur RF selon marche
+  Mega ST      1-4 Mio          boitier bureau, clavier separe, Blitter/horloge
+  520STE       512 Kio          palette 4096, scroll, audio DMA, SIMM
+  1040STE      1 Mio            STE le plus courant
+  Mega STE     1-4 Mio          68000 16 MHz/cache, VME/SCSI selon configuration
+  STacy        1-4 Mio          portable, ecran LCD monochrome
+  ST Book      portable         architecture compacte, differences importantes
+
+Les noms F, FM et E decrivent des evolutions, pas seulement la quantite de RAM.
+Un programme doit detecter les fonctions, non comparer uniquement le logo du
+boitier. TOS peut avoir ete remplace et un Blitter ajoute a un ancien modele.
+
+
+==============================================================================
+3. ARCHITECTURE GENERALE
+==============================================================================
+
+Le ST classique comprend :
+
+  * Motorola MC68000 a environ 8 MHz;
+  * RAM dynamique partagee par CPU et video;
+  * MMU Atari pour multiplexage/adressage RAM;
+  * GLUE pour decodage, interruptions et synchronisation;
+  * Shifter pour lecture des bitplanes et sortie video;
+  * YM2149 pour trois voies sonores et ports paralleles;
+  * MK68901 MFP pour timers, interruptions, serie et GPIO;
+  * deux MC6850 ACIA, clavier/IKBD et MIDI;
+  * WD1772 pour disquettes, relie par le controleur DMA Atari;
+  * interface ACSI partageant le DMA disque;
+  * Blitter sur Mega ST/STE et certaines extensions.
+
+Le CPU et le Shifter alternent normalement leurs acces a la RAM. Les registres
+d'E/S occupent la fin de l'espace 24 bits. Ils ne sont accessibles qu'en mode
+superviseur; une lecture directe en mode utilisateur declenche Bus Error.
+
+
+==============================================================================
+4. MC68000
+==============================================================================
+
+Registres : D0-D7 (donnees), A0-A7 (adresses), PC et SR. A7 est USP en mode
+utilisateur et SSP en mode superviseur. Les tailles usuelles sont byte, word et
+long. Les instructions et mots longs doivent etre alignes sur une adresse paire;
+un acces impair provoque Address Error sur 68000.
+
+Le bus d'adresse externe utile est de 24 bits, espace maximal 16 Mio. Le bus de
+donnees est 16 bits. Le processeur est big-endian : $12345678 est range 12 34 56
+78 aux adresses croissantes.
+
+Vecteurs d'exception importants :
+
+  $000000     SSP initial au reset
+  $000004     PC initial
+  $000008     Bus Error
+  $00000C     Address Error
+  $000010     Illegal Instruction
+  $000018     CHK
+  $000020     Privilege Violation
+  $000060     Spurious Interrupt
+  $000064-$7C autovecteurs niveaux 1 a 7
+  $000080-$BC TRAP #0 a #15
+
+TRAP #1 appelle GEMDOS, TRAP #13 le BIOS, TRAP #14 le XBIOS et TRAP #2 GEM
+AES/VDI. Les arguments sont empiles selon l'ABI TOS puis retires par l'appelant.
+
+
+==============================================================================
+5. CARTE MEMOIRE
+==============================================================================
+
+Carte representative du ST :
+
+  $000000-$0007FF   vecteurs, variables basses et zone superviseur reservee
+  $000800-...       RAM systeme, TPA et programmes
+  ...-$3FFFFF       RAM ST maximale normalement decodee (modele/extension)
+  $FA0000-$FBFFFF   port cartouche, 128 Kio
+  $FC0000-$FEFFFF   ROM TOS de 192 Kio sur anciennes versions
+  $E00000-$E3FFFF   ROM TOS de 256 Kio sur versions ulterieures
+  $FF8000-$FFFFFF   registres d'E/S, superviseur seulement
+
+Les cartes acceleratrices et extensions RAM peuvent ajouter d'autres plages. Ne
+pas determiner la RAM en la sondant destructivement : utiliser la variable
+systeme phystop ou les services/cookies appropries.
+
+Les huit premiers octets visibles a zero apres reset fournissent SSP et PC depuis
+la ROM par shadowing materiel, puis la RAM et la table de vecteurs deviennent
+actives. Un emulateur doit reproduire la sequence de reset, pas laisser la ROM
+superposee indefiniment.
+
+
+==============================================================================
+6. ROM, TOS ET CARTOUCHES
+==============================================================================
+
+TOS regroupe BIOS, XBIOS, GEMDOS, AES, VDI de base et Desktop. Versions ST
+frequentes : 1.00, 1.02, 1.04 (Rainbow TOS) et 1.06/1.62 pour STE. TOS 2.06 est
+courant sur STE/Mega STE ou comme mise a niveau. Langue et revision changent les
+ROM; ne pas appeler une adresse interne absolue.
+
+Le port cartouche est mappe a $FA0000-$FBFFFF. Les cartouches de diagnostic,
+langage ou securite peuvent fournir du code ROM et vecteurs d'initialisation.
+L'interface physique expose bus/adresses mais n'est pas un emplacement RAM
+ordinaire. Ecrire dans la ROM ou une zone absente provoque Bus Error.
+
+
+==============================================================================
+7. RAM, MMU ET CONTENTION
+==============================================================================
+
+Le registre de configuration memoire est a $FF8001 (octet). Ses quatre bits bas
+decrivent les deux banques vues par la MMU; les codages dependent de la taille
+des DRAM. TOS le programme au demarrage. Une valeur incorrecte peut aliaser la
+RAM ou detruire le fonctionnement : une application ne doit pas la modifier.
+
+Le Shifter effectue des rafales de lecture video. CPU et video partagent le bus
+selon une phase fixe, ce qui donne au ST des timings memoire particuliers. ROM et
+I/O n'ont pas le meme comportement. Les demos synchronisees comptent cycles,
+wait states, prefetch 68000 et position du faisceau.
+
+STE emploie des SIMM sur de nombreux modeles et accepte typiquement jusqu'a 4
+Mio de ST-RAM. Mega ST peut egalement atteindre 4 Mio par architecture differente.
+
+
+==============================================================================
+8. CARTE COMPLETE DES REGISTRES MATERIELS
+==============================================================================
+
+Adresses principales; les adresses impaires indiquent un registre 8 bits sur la
+moitie basse du bus. Tous ces acces exigent le mode superviseur.
+
+  Adresse/plage      Fonction
+  $FF8001            configuration memoire MMU
+  $FF8201/$FF8203    adresse base ecran, octets haut/milieu
+  $FF8205/07/09      compteur d'adresse video courant (lecture)
+  $FF820A            synchronisation 50/60 Hz
+  $FF820D            adresse base basse (STE)
+  $FF820F            largeur de ligne/offset (STE)
+  $FF8240-$FF825E    seize registres palette, mots
+  $FF8260            resolution ST
+  $FF8264/$FF8265    pixel offset/hardware scroll STE
+  $FF8604            donnees FDC/ACSI ou compteur de secteur DMA
+  $FF8606            mode DMA en ecriture, status DMA en lecture
+  $FF8609/0B/0D      adresse DMA haute/milieu/basse
+  $FF8800            index YM2149 en ecriture, donnees en lecture
+  $FF8802            donnees YM2149 en ecriture
+  $FF8900-$FF893F    audio DMA/microwire STE
+  $FF8A00-$FF8A3D    Blitter
+  $FFFA01-$FFFA2F    MFP 68901
+  $FFFC00/$FFFC02    ACIA clavier controle/status et donnees
+  $FFFC04/$FFFC06    ACIA MIDI controle/status et donnees
+
+Les adresses paires entre registres 8 bits sont souvent inutilisees; effectuer
+un acces word peut toucher une zone non implementee. Respecter la largeur.
+
+
+==============================================================================
+9. GLUE ET LOGIQUE SYSTEME
+==============================================================================
+
+GLUE genere selecteurs, interruptions, cadence video et arbitrage. Il combine
+notamment HBL, VBL, MFP et acces aux blocs d'E/S. Il n'offre pas une grande table
+de registres directement programmable comme un chipset PC.
+
+Le niveau d'interruption 2 porte normalement HBL, le niveau 4 VBL, le niveau 6
+les interruptions MFP vectorisees. Le 68000 compare le niveau au masque IPL de
+SR. Une routine doit sauvegarder les registres employes et finir par RTE.
+
+Les revisions de GLUE/Shifter expliquent plusieurs effets raster et differences
+50/60 Hz. Pour une application, employer VDI/XBIOS; pour une demo cycle-exacte,
+documenter le lot de circuits et la machine cible.
+
+
+==============================================================================
+10. VIDEO SHIFTER
+==============================================================================
+
+Le Shifter lit une zone contigue de RAM et transforme un, deux ou quatre plans
+de bits en indices de palette. L'adresse physique de l'ecran doit etre alignee
+sur 256 octets sur ST; STE ajoute l'octet bas et assouplit le placement.
+
+Registres :
+
+  $FF8201    base bits 23..16
+  $FF8203    base bits 15..8
+  $FF8205    compteur courant bits 23..16, lecture
+  $FF8207    compteur courant bits 15..8, lecture
+  $FF8209    compteur courant bits 7..0, lecture
+  $FF820A    0=60 Hz, 2=50 Hz dans les configurations couleur usuelles
+  $FF8260    0=basse, 1=moyenne, 2=haute resolution
+
+Ecrire resolution ou frequence au milieu d'une trame modifie le timing et peut
+produire des overscan. Ce n'est pas portable entre revisions ni moniteurs.
+
+
+==============================================================================
+11. MODES VIDEO
+==============================================================================
+
+  Mode          Resolution   Plans   Couleurs simultanees   Moniteur
+  ST Low        320x200      4       16 sur 512             couleur
+  ST Medium     640x200      2       4 sur 512              couleur
+  ST High       640x400      1       2                      SM124 mono
+
+Chaque ecran standard occupe 32000 octets. Le ST ne contient pas de framebuffer
+packed : tous les modes sont planar. Le moniteur monochrome force normalement la
+haute resolution par la broche de detection. Changer seulement $FF8260 ne rend
+pas un moniteur couleur capable d'afficher le signal 71 Hz monochrome.
+
+STE conserve resolutions et nombres de couleurs simultanees, mais sa palette
+choisit parmi 4096 couleurs et le scroll materiel enrichit l'affichage.
+
+
+==============================================================================
+12. ORGANISATION BITPLANE
+==============================================================================
+
+Les donnees sont entrelacees par groupes de seize pixels.
+
+ST Low, 4 plans :
+
+  offset +0   mot plan 0 des pixels x..x+15 (bit 15 = pixel gauche)
+  offset +2   mot plan 1
+  offset +4   mot plan 2
+  offset +6   mot plan 3
+  groupe suivant a +8; 20 groupes par ligne; 160 octets/ligne
+
+ST Medium, 2 plans : deux mots par groupe, 4 octets; 40 groupes; 160 octets.
+ST High, 1 plan : un mot par groupe, 2 octets; 40 groupes; 80 octets.
+
+Pour Low :
+
+  groupe = x DIV 16
+  masque = $8000 SHR (x AND 15)
+  adresse = ecran + y*160 + groupe*8
+
+Le bit de couleur n vient du mot du plan n. Pour changer un pixel, mettre ou
+effacer le masque dans chacun des quatre mots. Les sprites rapides predecalent
+masques et donnees pour plusieurs alignements.
+
+
+==============================================================================
+13. PALETTE ET SYNCHRONISATION
+==============================================================================
+
+$FF8240-$FF825E contiennent 16 mots palette. Sur ST, format utile :
+
+  bits 10..8   rouge 0..7
+  bits 6..4    vert 0..7
+  bits 2..0    bleu 0..7
+
+Soit 512 possibilites. Sur STE, un bit bas supplementaire par composante donne
+quatre bits; l'ordre d'intensite est materiellement particulier (le nouveau bit
+est le bit de poids faible), d'ou 4096 couleurs.
+
+Les indices VDI et les registres materiels n'ont pas necessairement le meme ordre.
+Utiliser Setcolor()/Setpalette() ou VDI pour une application GEM.
+
+VBL arrive une fois par trame, typiquement 50, 60 ou environ 71 Hz. HBL arrive a
+chaque ligne. Modifier l'adresse ecran/palette pendant VBL evite les dechirures.
+Les "rasters" changent la palette pendant la zone visible avec timer MFP ou
+comptage cycle-exact.
+
+
+==============================================================================
+14. VIDEO STE
+==============================================================================
+
+STE ajoute :
+
+  * palette 4096 couleurs;
+  * octet bas de base ecran a $FF820D;
+  * compteur video complet modifiable;
+  * line width/offset a $FF820F;
+  * decalage horizontal fin a $FF8265;
+  * support de scroll plus efficace.
+
+Ces registres sont absents d'un ST. Les sonder en ecriture est dangereux. Tester
+le cookie _MCH ou une fonction TOS, puis conserver les bits reserves. Le scroll
+fin et l'offset de ligne interagissent avec le rechargement du compteur video;
+une implementation approximative produit une image decalee apres chaque ligne.
+
+
+==============================================================================
+15. BLITTER
+==============================================================================
+
+Le Blitter deplace et combine des rectangles de mots. Il possede :
+
+  * 16 registres Halftone RAM a $FF8A00-$FF8A1E;
+  * increments X/Y source et destination;
+  * adresses source/destination 24 bits dans des longs;
+  * end masks 1, 2 et 3;
+  * compteurs X/Y;
+  * HOP (halftone operation) et OP (operation logique);
+  * skew, NFSR/FXSR et controle busy/hog.
+
+Plage synthetique :
+
+  $FF8A20-$FF8A2C   increments et adresses source
+  $FF8A2E-$FF8A38   end masks, increments/adresse destination
+  $FF8A36/$FF8A38   compteurs X/Y selon largeur d'acces
+  $FF8A3A           HOP
+  $FF8A3B           OP
+  $FF8A3C           controle de ligne/Halftone
+  $FF8A3D           skew et lancement/etat
+
+Verifier les adresses exactes dans le manuel avant un pilote : plusieurs listes
+melangent byte/word et rendent les offsets trompeurs. Le bit Busy lance le
+transfert. En mode Hog, le Blitter conserve davantage le bus; sinon il partage
+avec le 68000. Une completion peut etre attendue par polling ou interruption
+selon configuration.
+
+Le Blitter n'est pas garanti sur les premiers ST. XBIOS Blitmode() et le cookie
+_BLi permettent de le detecter/configurer. Un logiciel doit avoir un chemin CPU.
+
+
+==============================================================================
+16. SON YM2149
+==============================================================================
+
+Le Yamaha YM2149 fournit trois voies carrees A/B/C, un generateur de bruit, une
+enveloppe et deux ports d'E/S. Horloge ST typique : 2 MHz. Registres :
+
+  R0/R1     periode voie A, 12 bits
+  R2/R3     periode voie B
+  R4/R5     periode voie C
+  R6        periode bruit, 5 bits
+  R7        mixer : desactivation tone/noise et direction ports
+  R8-R10    volumes A/B/C, 4 bits; bit 4 active enveloppe
+  R11/R12   periode enveloppe, 16 bits
+  R13       forme d'enveloppe
+  R14       port A : floppy select, side, serie selon machine
+  R15       port B : parallele/usage systeme selon machine
+
+Acces : ecrire le numero a $FF8800, puis la valeur a $FF8802. La lecture du
+registre selectionne se fait a $FF8800. Les ports R14/R15 controlent du materiel
+critique; une routine sonore doit preserver leurs bits et ne jamais ecrire un
+octet arbitraire dans R7, R14 ou R15.
+
+Frequence approximative d'une voix :
+
+  f = horloge_YM / (16 * periode), periode 1..4095
+
+Le volume n'est pas lineaire. Le YM melange tone et noise suivant R7. Plusieurs
+techniques de sample utilisent des changements rapides de volume et chargent CPU.
+
+
+==============================================================================
+17. AUDIO DMA STE
+==============================================================================
+
+STE ajoute une lecture PCM depuis ST-RAM, mono/stereo, 8 bits signes, avec quatre
+frequences usuelles approximatives : 6258, 12517, 25033 et 50066 Hz. Registres
+principaux dans $FF8900-$FF8921 : controle, adresse debut, adresse courante,
+adresse fin et mode. Le bloc peut jouer une fois ou boucler.
+
+L'adresse de fin est exclusive et les adresses sont sur 24 bits repartis en
+octets. Le moteur DMA lit independamment du CPU. Une programmation sure : arreter,
+charger debut/fin/mode, installer interruption si necessaire, puis demarrer.
+
+Microwire a $FF8922/$FF8924 commande volume, balance et tonalite du codec/mixeur
+sur STE. Attendre la fin d'une transmission avant la suivante. Ces registres
+n'existent pas sur ST, ni sous la meme forme sur Falcon.
+
+
+==============================================================================
+18. MFP 68901
+==============================================================================
+
+Registres 8 bits aux adresses impaires :
+
+  $FFFA01 GPIP    entrees/sorties generales
+  $FFFA03 AER     active edge
+  $FFFA05 DDR     direction GPIP
+  $FFFA07 IERA    interrupt enable A
+  $FFFA09 IERB    interrupt enable B
+  $FFFA0B IPRA    interrupt pending A
+  $FFFA0D IPRB    interrupt pending B
+  $FFFA0F ISRA    interrupt in-service A
+  $FFFA11 ISRB    interrupt in-service B
+  $FFFA13 IMRA    interrupt mask A
+  $FFFA15 IMRB    interrupt mask B
+  $FFFA17 VR      vector base et software-EOI
+  $FFFA19 TACR    timer A control
+  $FFFA1B TBCR    timer B control
+  $FFFA1D TCDCR   timers C/D control
+  $FFFA1F TADR    timer A data
+  $FFFA21 TBDR    timer B data
+  $FFFA23 TCDR    timer C data
+  $FFFA25 TDDR    timer D data
+  $FFFA27 SCR     synchronous character
+  $FFFA29 UCR     USART control
+  $FFFA2B RSR     receiver status
+  $FFFA2D TSR     transmitter status
+  $FFFA2F UDR     USART data
+
+Le MFP fournit 16 sources vectorisees au niveau CPU 6. Le numero de vecteur est
+forme avec la base de VR et le numero de source. IER autorise la logique, IMR
+autorise la presentation au CPU, IPR indique pending, ISR in-service.
+
+Timers A/B ont modes delay/event/pulse; C/D partagent TCDCR. Les prescalers sont
+derives de l'horloge MFP (environ 2,4576 MHz). Timer C sert souvent a l'horloge
+systeme 200 Hz et Timer D au baud serie. Ne pas les accaparer sans restaurer TOS.
+
+
+==============================================================================
+19. INTERRUPTIONS ET EXCEPTIONS
+==============================================================================
+
+Schema courant :
+
+  Niveau 2     HBL, autovecteur $68
+  Niveau 4     VBL, autovecteur $70
+  Niveau 6     MFP, vecteurs programmes par VR
+  Niveau 7     NMI, normalement non utilise
+
+Vecteurs systeme utiles sont installes par Setexc() du BIOS plutot que par une
+ecriture directe. XBIOS Vsync() attend VBL. TOS maintient aussi des listes de
+fonctions VBL; leur format depend du systeme et exige du code superviseur bref.
+
+Une ISR 68000 : sauvegarder D0-Dn/A0-An utilises, acquitter la source correcte,
+ne pas appeler GEMDOS/AES non reentrants, restaurer et RTE. En software EOI MFP,
+effacer le bit ISR approprie; en automatic EOI, ne pas inventer cet acquittement.
+
+
+==============================================================================
+20. ACIA CLAVIER ET MIDI
+==============================================================================
+
+Deux MC6850 :
+
+  $FFFC00   status (lecture) / control (ecriture) clavier
+  $FFFC02   donnees clavier
+  $FFFC04   status/control MIDI
+  $FFFC06   donnees MIDI
+
+Bits de status 6850 typiques : RDRF, TDRE, DCD, CTS, framing error, overrun,
+parity error et IRQ. Le registre control choisit division, format, emission et
+interruptions. TOS initialise les ACIA; une application MIDI doit idealement
+utiliser BIOS Bconin/Bconout ou un pilote, sinon sauvegarder la configuration.
+
+MIDI est a 31250 bit/s, 8 bits, sans parite, un stop. Les ports DIN fournissent
+MIDI IN et OUT/THRU suivant modele. Le flux n'a pas de trames materielles au-dela
+du protocole MIDI; parser status, running status, system common et realtime.
+
+
+==============================================================================
+21. IKBD, CLAVIER, SOURIS ET JOYSTICKS
+==============================================================================
+
+L'Intelligent Keyboard contient un microcontroleur 6301. Il scanne le clavier,
+la souris et les joysticks, puis envoie des paquets par l'ACIA. Le CPU peut lui
+envoyer des commandes : mode souris relatif/absolu, seuil, echelle, position,
+mode joystick, horloge et reset.
+
+Paquets usuels :
+
+  $F6          status/rapport selon commande
+  $F7          position souris absolue
+  $F8-$FB      souris relative, boutons dans le code, puis dx et dy signes
+  $FC          date/heure
+  $FD          rapport des deux joysticks
+  $FE/$FF      joystick 0/1
+
+Les scancodes Atari ne sont ni ASCII ni IBM PC. BIOS Bconin(2) et GEM evnt_keybd
+fournissent une abstraction. Kbshift() retourne l'etat Shift/Ctrl/Alternate.
+
+Ports joystick DE-9 utilisent directions et bouton, compatibles electriquement
+avec de nombreux joysticks Atari 8-bit/Commodore. La souris occupe normalement
+le port 0, joystick le port 1. STE ajoute deux ports analogiques/joystick etendu.
+
+
+==============================================================================
+22. DISQUETTES WD1772 ET DMA
+==============================================================================
+
+Le WD1772 n'est pas directement mappe comme sur une carte simple. Le CPU passe
+par le registre DMA :
+
+  $FF8604   mot donnees FDC selectionne ou compteur de secteurs DMA
+  $FF8606   mode DMA en ecriture, status en lecture
+  $FF8609   adresse DMA bits 23..16
+  $FF860B   adresse DMA bits 15..8
+  $FF860D   adresse DMA bits 7..0
+
+Le mode DMA selectionne registre FDC (commande/status, piste, secteur, donnees),
+direction lecture/ecriture, FDC ou ACSI et acces au compteur. Les bits exacts
+doivent venir du manuel de la revision; toute sequence doit attendre correctement
+busy/DRQ et examiner status DMA plus status WD1772.
+
+Les lignes drive 0/1 et side sont controlees par le port A du YM2149, actives a
+l'etat bas. Il faut faire read-modify-write de R14 pour ne pas changer les autres
+sorties. Le moteur/selection et les delais mecaniques font partie du pilote.
+
+Applications : Rwabs(), Floprd(), Flopwr(), Flopfmt() ou GEMDOS. L'acces direct
+est reserve aux copieurs, pilotes et formats non standard. Le buffer DMA doit
+etre en ST-RAM, adresse accessible sur 24 bits, stable pendant le transfert.
+
+
+==============================================================================
+23. ACSI ET DISQUES DURS
+==============================================================================
+
+ACSI (Atari Computer System Interface) est un bus DMA externe proche dans son
+modele de commande de SCSI mais non electriquement compatible. Il partage les
+registres $FF8604/$FF8606 et l'adresse DMA avec le FDC. Le connecteur DMA externe
+porte donnees, handshakes, select et reset.
+
+Les adaptateurs SH204/Megafile ou tiers convertissent souvent ACSI vers un
+controleur de disque. AHDI fournit pilote, partitionnement et cookies. Ne pas
+brancher un appareil SCSI directement sur ACSI.
+
+Pour un programme normal, utiliser GEMDOS. Pour un pilote, arbitrer FDC/ACSI,
+construire les commandes, gerer timeout, phase status, DMA, media change et les
+limitations de partition de la version TOS/AHDI.
+
+
+==============================================================================
+24. PORTS EXTERNES
+==============================================================================
+
+Selon modele :
+
+  * RGB/monochrome sur DIN 13, avec detection moniteur;
+  * MIDI IN et OUT/THRU sur DIN 5;
+  * souris/joysticks DE-9;
+  * imprimante parallele Centronics;
+  * modem RS-232 pilote par l'USART du MFP;
+  * floppy externe DIN 14;
+  * DMA/ACSI disque dur;
+  * cartouche 40 contacts;
+  * RF/composite sur certains STFM;
+  * ports joystick/paddle et audio RCA sur STE.
+
+Verifier le brochage avant tout cable. Le port moniteur combine signaux qui ne
+sont pas VGA. RS-232 peut utiliser des broches/handshakes particuliers. Le bus
+cartouche et ACSI exposent de la logique 5 V non tolerante aux interfaces modernes.
+
+
+==============================================================================
+25. TOS ET COUCHES LOGICIELLES
+==============================================================================
+
+Pile conceptuelle :
+
+  Application GEM        AES + VDI
+  Application texte      GEMDOS/BIOS
+  Fichiers/processus     GEMDOS, TRAP #1
+  Peripheriques          BIOS, TRAP #13
+  Materiel etendue       XBIOS, TRAP #14
+  Interface graphique    AES/VDI, TRAP #2 via tableaux de controle
+  Materiel               registres superviseur
+
+Une application doit choisir la couche la plus haute qui satisfait son besoin.
+L'acces direct maximise le controle mais casse sur STE/TT/Falcon, cartes video,
+MultiTOS et emulateurs. GEMDOS/VDI sont plus durables.
+
+
+==============================================================================
+26. GEMDOS
+==============================================================================
+
+GEMDOS gere console, fichiers, repertoires, memoire et processus. Appel : empiler
+arguments de droite a gauche, empiler le numero word, TRAP #1, depiler. D0 porte
+le resultat long; une valeur negative est une erreur.
+
+Fonctions centrales :
+
+  $00 Pterm0       termine avec code 0
+  $01 Cconin       caractere console avec echo
+  $02 Cconout      ecrit un caractere
+  $06 Crawio       E/S console brute
+  $09 Cconws       ecrit chaine terminee par zero
+  $0A Cconrs       lit une ligne
+  $19 Dgetdrv      lecteur courant
+  $1A Fsetdta      fixe la DTA
+  $20 Super        change/interroge pile superviseur
+  $2A Tgetdate     date
+  $2B Tsetdate     fixe date
+  $2C Tgettime     heure
+  $2F Fgetdta      retourne DTA
+  $30 Sversion     version GEMDOS
+  $36 Dfree        espace libre
+  $39 Dcreate      cree repertoire
+  $3A Ddelete      supprime repertoire
+  $3B Dsetpath     change chemin
+  $3C Fcreate      cree fichier
+  $3D Fopen        ouvre fichier
+  $3E Fclose       ferme handle
+  $3F Fread        lit
+  $40 Fwrite       ecrit
+  $41 Fdelete      supprime fichier
+  $42 Fseek        positionne
+  $43 Fattrib      attributs
+  $47 Dgetpath     chemin courant
+  $48 Malloc       alloue
+  $49 Mfree        libere
+  $4A Mshrink      reduit un bloc
+  $4B Pexec        charge/lance processus
+  $4C Pterm        termine avec code
+  $4E Fsfirst      premiere correspondance
+  $4F Fsnext       suivante
+  $56 Frename      renomme
+  $57 Fdatime      date/heure fichier
+
+Les pointeurs sont des longs. Les handles standard 0..5 representent console,
+auxiliaire et imprimante selon redirections. GEMDOS historique n'est pas reentrant.
+
+
+==============================================================================
+27. BIOS
+==============================================================================
+
+BIOS s'appelle par TRAP #13 :
+
+  0 Getmpb       construit Memory Parameter Block
+  1 Bconstat     caractere d'entree disponible
+  2 Bconin       lit un caractere long
+  3 Bconout      ecrit un caractere
+  4 Rwabs        E/S secteurs absolus
+  5 Setexc       lit/installe un vecteur
+  6 Tickcal      facteur de calibration timer
+  7 Getbpb       BIOS Parameter Block d'un lecteur
+  8 Bcostat      sortie prete
+  9 Mediach      etat changement media
+ 10 Drvmap       bitmap des lecteurs
+ 11 Kbshift      etat des touches modificatrices
+
+Peripheriques BIOS traditionnels : 0 imprimante, 1 auxiliaire/serie, 2 console,
+3 MIDI, 4 clavier brut, avec extensions possibles. Bconmap() du XBIOS et les
+versions recentes permettent d'autres mappages.
+
+
+==============================================================================
+28. XBIOS
+==============================================================================
+
+XBIOS, TRAP #14, expose fonctions dependantes du materiel. Selection : numero
+word puis arguments. Fonctions ST courantes :
+
+  0 Initmous      configure souris et vecteur
+  1 Ssbrk         reserve memoire systeme (ancien)
+  2 Physbase      adresse ecran physique
+  3 Logbase       adresse ecran logique
+  4 Getrez        resolution
+  5 Setscreen     ecrans logique/physique et resolution
+  6 Setpalette    charge 16 couleurs
+  7 Setcolor      lit/fixe une couleur
+  8 Floprd        lit secteurs disquette
+  9 Flopwr        ecrit secteurs
+ 10 Flopfmt       formate piste
+ 12 Midiws        emet MIDI
+ 13 Mfpint        installe routine source MFP
+ 14 Iorec         retourne buffer d'E/S
+ 15 Rsconf        configure RS-232
+ 16 Keytbl        tables clavier
+ 17 Random        pseudo-aleatoire 24 bits
+ 20 Scrdmp        copie ecran imprimante
+ 21 Cursconf      curseur texte
+ 22 Settime       date/heure
+ 23 Gettime       date/heure
+ 24 Bioskeys      restaure tables clavier
+ 25 Ikbdws        envoie commande IKBD
+ 26 Jdisint       masque interruption MFP
+ 27 Jenabint      autorise interruption MFP
+ 28 Giaccess      acces YM2149
+ 29 Offgibit      efface bits port PSG
+ 30 Ongibit       met bits port PSG
+ 31 Xbtimer       programme timer MFP
+ 32 Dosound       execute une sequence sonore
+ 33 Setprt        configuration imprimante
+ 34 Kbdvbase      vecteurs clavier
+ 35 Kbrate        repetition clavier
+ 36 Prtblk        imprime bloc
+ 37 Vsync         attend synchronisation verticale
+ 38 Supexec       execute une fonction en superviseur
+ 39 Puntaes       fonction historique/debogage
+ 44 Bconmap       mappe ports serie, TOS recent
+ 64 Blitmode      presence/mode Blitter, selon TOS
+
+Les numeros au-dela du socle varient avec TOS et materiel. Tester version/cookies.
+Setscreen emploie -1 pour conserver certains parametres selon version; consulter
+la fiche exacte avant de passer des pointeurs sentinelles.
+
+
+==============================================================================
+29. GEM AES ET VDI
+==============================================================================
+
+AES gere application, evenements, menus, fenetres, boites de dialogue, objets,
+scrap/clipboard et ressources RSC. Appels importants : appl_init/appl_exit,
+evnt_multi, menu_bar, wind_create/open/get/set/close/delete, form_do, objc_draw,
+graf_mouse et rsrc_load.
+
+VDI gere workstation graphique, lignes, remplissages, texte, rasters et metafiles.
+Sequence : ouvrir une workstation virtuelle avec v_opnvwk(), interroger ses
+capacites, dessiner dans les rectangles de clipping AES, puis v_clsvwk().
+
+AES envoie WM_REDRAW avec un rectangle. L'application parcourt la liste des
+rectangles visibles via wind_get(WF_FIRSTXYWH/WF_NEXTXYWH), intersecte et redessine.
+Elle ne doit pas supposer que le contenu masque d'une fenetre est conserve.
+
+AES et VDI utilisent TRAP #2 et des tableaux control/global/intin/intout/addrin/
+addrout. Les bibliotheques C cachent cette ABI. Ne jamais appeler AES depuis une
+interruption.
+
+
+==============================================================================
+30. EXECUTABLES PRG/TOS/TTP ET PROCESSUS
+==============================================================================
+
+Extensions usuelles :
+
+  .PRG    application GEM ou executable lance du Desktop
+  .APP    application GEM
+  .TOS    programme texte plein ecran
+  .TTP    programme texte avec ligne de commande (TOS Takes Parameters)
+  .ACC    accessoire charge au demarrage par AES
+
+Le fichier executable commence par un header GEMDOS : magic $601A, longueurs
+TEXT, DATA, BSS, symboles, reserve/flags, puis TEXT/DATA, symboles et table de
+relocation. Pexec charge et reloge. Le programme recoit une basepage contenant
+segments, tailles, DTA et ligne de commande.
+
+La ligne de commande de basepage commence par sa longueur sur un octet, suivie
+des caracteres. Les environnements modernes peuvent fournir ARGV par variables
+d'environnement. Un programme doit Mshrink sa basepage s'il veut rendre la RAM
+non utilisee avant de lancer un enfant.
+
+
+==============================================================================
+31. SYSTEME DE FICHIERS ET FORMATS DE DISQUE
+==============================================================================
+
+TOS utilise FAT12/FAT16 avec repertoire et BPB proches de MS-DOS. Les disquettes
+double face 720 Kio typiques ont 80 pistes, 9 secteurs/piste, 2 faces, secteurs
+512 octets. Des formats 360 Kio et personnalises existent.
+
+Les deux premiers octets du secteur boot forment aussi une branche 68000 ou un
+mot executable selon disque. Le checksum boot Atari peut rendre le secteur
+executable. Ne jamais executer automatiquement une image non fiable.
+
+Noms historiques 8.3, attributs FAT et horodatage DOS. Les medias PC correctement
+formates sont souvent interchangeables, mais boot sector, numero de serie et
+ordre de formatage peuvent influencer les anciens TOS.
+
+
+==============================================================================
+32. VARIABLES SYSTEME ET COOKIE JAR
+==============================================================================
+
+Certaines variables basses documentees :
+
+  $0420 memvalid    signature de validite memoire
+  $042E phystop     premiere adresse apres ST-RAM physique
+  $0436 _v_bas_ad   base ecran
+  $0446 vblsem      semaphore VBL
+  $044A nvbls       nombre de slots VBL
+  $0454 _frclock    compteur de trames
+  $04BA _hz_200     compteur 200 Hz
+  $05A0 _p_cookies  pointeur vers Cookie Jar sur TOS compatible
+
+Les adresses non garanties changent avec TOS. Preferer appels documentes.
+
+Cookie Jar : suite de paires long {identifiant,valeur}, terminee par identifiant
+zero; la valeur du terminateur indique souvent la capacite. Identifiants :
+
+  _MCH   classe machine (ST, STE, TT, Falcon...)
+  _CPU   processeur
+  _FPU   coprocesseur
+  _VDO   materiel video
+  _SND   capacites sonores
+  _BLi   Blitter
+  MiNT   noyau MiNT
+
+Un cookie peut etre absent sur ancien TOS meme si le materiel existe. Combiner
+cookie, version TOS et appel systeme; ne pas sonder un registre absent.
+
+
+==============================================================================
+33. MODE SUPERVISEUR ET ACCES MATERIEL
+==============================================================================
+
+Zone $FFxxxx et bas vecteurs sont protegees. Trois methodes :
+
+  * GEMDOS Super() pour basculer temporairement et restaurer l'ancienne pile;
+  * XBIOS Supexec() pour executer une courte fonction superviseur;
+  * pilote/ISR deja en mode superviseur.
+
+Supexec est preferable pour une operation courte. Ne pas garder le mode
+superviseur pendant une boucle GEM : AES/GEMDOS ne sont pas concus pour cela.
+Desactiver les interruptions uniquement pendant une mise a jour indivisible et
+restaurer exactement SR.
+
+Les pointeurs volatile sont indispensables en C. Utiliser unsigned char pour un
+registre byte et unsigned short pour word; un mauvais type change la transaction
+bus et peut provoquer Bus Error.
+
+
+==============================================================================
+34. EXEMPLE ASSEMBLEUR : APPEL GEMDOS
+==============================================================================
+
+Devpac/vasm, syntaxe Motorola. Affiche une chaine puis termine.
+
+        section text
+start:
+        pea     message(pc)         ; pointeur long
+        move.w  #9,-(sp)            ; Cconws
+        trap    #1
+        addq.l  #6,sp
+
+        clr.w   -(sp)               ; code retour
+        move.w  #$4c,-(sp)          ; Pterm
+        trap    #1
+
+        section data
+message: dc.b    'Bonjour Atari ST!',13,10,0
+        even
+
+Les arguments sont retires par l'appelant. Empiler un pointeur avec move.w est
+une erreur : les adresses GEMDOS sont longues meme sur bus externe 16 bits.
+
+
+==============================================================================
+35. EXEMPLE ASSEMBLEUR : AFFICHAGE ET PALETTE
+==============================================================================
+
+Obtient Physbase par XBIOS puis place un pixel blanc en ST Low. Le mode doit etre
+Low; pour rester concis, x=10 et y=10 sont constants.
+
+        move.w  #2,-(sp)            ; Physbase()
+        trap    #14
+        addq.l  #2,sp
+        move.l  d0,a0
+
+        ; offset = y*160 + (x/16)*8 = 1600 pour x=10,y=10
+        adda.l  #1600,a0
+        move.w  #$8000,d0
+        lsr.w   #8,d0               ; $0080, x AND 15 = 10 serait 10 shifts
+        lsr.w   #2,d0               ; $0020 = bit du pixel x=10
+        or.w    d0,(a0)             ; plan 0
+        or.w    d0,2(a0)            ; plan 1
+        or.w    d0,4(a0)            ; plan 2
+        or.w    d0,6(a0)            ; plan 3 -> indice 15
+
+Fixer l'entree 1 sans acces direct :
+
+        move.w  #$0700,-(sp)        ; rouge maximal ST
+        move.w  #1,-(sp)            ; index
+        move.w  #7,-(sp)            ; Setcolor
+        trap    #14
+        addq.l  #6,sp
+
+
+==============================================================================
+36. EXEMPLE ASSEMBLEUR : INTERRUPTION VBL
+==============================================================================
+
+Pour une application ordinaire, utiliser Vsync(). Une installation de vecteur
+illustre les exigences mais doit etre restauree avant Pterm. Setexc attend le
+numero de vecteur 28 ($1C), pas son adresse de table $70 :
+
+        move.l  #MyVBL,-(sp)
+        move.w  #28,-(sp)
+        move.w  #5,-(sp)
+        trap    #13
+        addq.l  #8,sp
+        move.l  d0,OldVBL
+
+MyVBL:
+        addq.l  #1,VblCount
+        move.l  OldVBL(pc),-(sp)
+        rts                           ; chaine vers ancien handler
+
+Une vraie routine doit gerer la chaine selon la convention de l'ancien handler,
+sauver les registres qu'elle modifie et restaurer Setexc(28,OldVBL) a la sortie.
+
+
+==============================================================================
+37. EXEMPLES C
+==============================================================================
+
+Interfaces de type Pure C/Sozobon/GCC avec osbind.h; les prototypes peuvent
+varier legerement.
+
+37.1 Afficher et attendre une touche
+------------------------------------
+
+#include <osbind.h>
+
+int main(void)
+{
+    Cconws("Bonjour Atari ST!\r\nAppuyez sur une touche.\r\n");
+    (void)Cconin();
+    return 0;
+}
+
+37.2 Chercher un cookie
+-----------------------
+
+typedef struct { unsigned long id, value; } COOKIE;
+
+long find_cookie(unsigned long id, unsigned long *value)
+{
+    COOKIE *p = *(COOKIE **)0x5A0L; /* appeler cette fonction via Supexec */
+    if (!p) return 0;
+    while (p->id) {
+        if (p->id == id) { *value = p->value; return 1; }
+        ++p;
+    }
+    return 0;
+}
+
+Sur un compilateur ou long n'est pas exactement 32 bits, employer des types a
+largeur fixe adaptes. $5A0 est superviseur sur certaines configurations : lire
+par Supexec ou une bibliotheque systeme.
+
+37.3 Pixel ST Low
+-----------------
+
+void putpixel_low(unsigned short *screen, int x, int y, int color)
+{
+    unsigned short *p;
+    unsigned short mask;
+    int plane;
+
+    p = (unsigned short *)((char *)screen + y * 160 + (x >> 4) * 8);
+    mask = (unsigned short)(0x8000U >> (x & 15));
+    for (plane = 0; plane < 4; ++plane) {
+        if (color & (1 << plane)) p[plane] |= mask;
+        else                      p[plane] &= (unsigned short)~mask;
+    }
+}
+
+Appeler avec (unsigned short *)Physbase(), apres Getrez()==0 et verification des
+coordonnees. Pour une application GEM, VDI est preferable.
+
+37.4 Acces YM par XBIOS
+-----------------------
+
+/* Giaccess(data, reg): bit 7 du numero demande une ecriture selon binding. */
+void silence_psg(void)
+{
+    Giaccess(0, 8 | 0x80);
+    Giaccess(0, 9 | 0x80);
+    Giaccess(0,10 | 0x80);
+}
+
+Verifier le prototype de la bibliotheque : certains headers inversent types ou
+retour mais l'ABI XBIOS reste la reference.
+
+
+==============================================================================
+38. PROGRAMMATION GRAPHIQUE EFFICACE
+==============================================================================
+
+  * aligner les ecrans sur 256 octets ST;
+  * utiliser deux buffers de 32000 octets et Setscreen pendant VBL;
+  * predecaler sprites et masques pour x modulo 16;
+  * traiter des mots/longs plutot que des pixels individuels;
+  * restaurer palette, resolution et adresses a la sortie;
+  * utiliser le Blitter seulement apres detection;
+  * sous GEM, respecter clipping et messages WM_REDRAW;
+  * ne pas supposer 160 octets/ligne sur carte video ou Falcon.
+
+Une operation de sprite masquee classique par plan :
+
+  destination = (destination AND masque) OR donnees
+
+Le Blitter realise cette logique par end masks, skew et OP. Le CPU 68000 peut
+etre plus rapide pour de tres petits objets; mesurer sur la machine cible.
+
+
+==============================================================================
+39. PROGRAMMATION AUDIO ET MIDI
+==============================================================================
+
+Pour une note YM : periode = 2000000/(16*f). Programmer R0/R1, regler R7 sans
+alterer ports, puis R8. Une musique utilise une routine VBL ou timer et ecrit peu
+de registres par tick. Sauvegarder les 14 registres utiles et couper/restaurer a
+la sortie.
+
+Pour PCM STE : detecter _SND/_MCH, allouer en ST-RAM, convertir en 8 bits signe,
+programmer debut/fin et frequence, puis demarrer. Double buffering ou boucle plus
+interruption evite les trous.
+
+Pour MIDI : respecter 31250 bit/s et ne pas bloquer l'ISR. Mettre les octets dans
+un ring buffer, parser hors interruption. Les messages realtime $F8-$FF peuvent
+apparaitre entre les octets d'un autre message.
+
+
+==============================================================================
+40. COMPATIBILITE ET DETECTION
+==============================================================================
+
+Ne pas utiliser uniquement la version TOS. Cookies plus appels documentes :
+
+  * _MCH pour famille machine;
+  * _VDO pour video;
+  * _SND pour PSG/DMA/DSP;
+  * _BLi ou Blitmode() pour Blitter;
+  * _CPU/_FPU avant instructions/coprocesseur non-68000;
+  * Getrez/Physbase/Logbase pour affichage actif.
+
+ST versus STE : palette, $FF820D/$FF820F/$FF8265, audio DMA, ports et RAM. TT et
+Falcon peuvent executer un programme TOS mais ne garantissent ni ST-RAM unique,
+ni framebuffer ST, ni cache absent. Utiliser VDI/GEMDOS pour une application.
+
+Le 68000 n'a pas d'instruction MOVE from CCR non privilegiee identique aux CPU
+ulterieurs dans tous les contextes; les auto-modifications, caches et alignements
+doivent etre traites si le logiciel vise 68020/030.
+
+
+==============================================================================
+41. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Blocs a modeliser :
+
+  68000          prefetch, exceptions, alignement, niveaux IRQ, timing bus
+  MMU/GLUE       decodage, banques, arbitrage, reset, HBL/VBL
+  Shifter        fetch bitplanes, compteur, palette, sync, overscan
+  MFP            GPIP, timers, pending/mask/in-service, USART
+  ACIA/IKBD      FIFO/status, protocole clavier/souris/joystick
+  YM2149         tone, noise LFSR, enveloppe, ports A/B
+  FDC/DMA        commandes WD1772, DRQ, secteurs, adresse, status
+  ACSI           commandes, handshakes, DMA, disque
+  Blitter        tous increments, masks, skew, HOP/OP et partage bus
+  STE            scroll, palette, DMA sound, Microwire, paddles
+
+Erreurs frequentes :
+
+  * autoriser I/O en user mode au lieu d'un Bus Error;
+  * accepter mots/longs impairs;
+  * oublier big-endian;
+  * dessiner un framebuffer chunky au lieu des bitplanes entrelaces;
+  * ne mettre a jour le compteur video qu'une fois par frame;
+  * ignorer changements palette en cours de ligne;
+  * confondre pending, mask et in-service du MFP;
+  * utiliser un timer ideal sans prescaler ni reload exact;
+  * perdre des octets ACIA ou ignorer overrun;
+  * emuler la souris comme des coordonnees GEM sans paquets IKBD;
+  * acceder au WD1772 sans selection DMA;
+  * ne pas conserver bits R14 du PSG en jouant un son;
+  * donner Blitter/audio STE a tous les ST;
+  * executer TOS avec variables internes d'une autre version.
+
+Une emulation fonctionnelle lance GEM avec un timing approximatif. Demos et jeux
+avec rasters, overscan, protections disquette ou samples YM demandent un modele
+cycle-exact du 68000, de la contention et des revisions de circuits.
+
+Images disquette : .ST contient souvent secteurs logiques; .MSA est compresse;
+.STX/IPF preserve davantage les pistes/protections. Un WD1772 correct ne suffit
+pas si le format d'image a deja perdu timing, weak bits ou secteurs anormaux.
+
+
+==============================================================================
+42. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] reset, shadow ROM, SSP/PC et table de vecteurs
+  [ ] Bus/Address Error avec frame de pile 68000 correcte
+  [ ] RAM 512 Kio, 1 Mio, 2 Mio, 4 Mio et alias MMU
+  [ ] TOS 1.00, 1.02, 1.04, 1.06/1.62, 2.06 selon profil
+  [ ] trois resolutions et detection moniteur
+  [ ] bitplanes, palette, base/compteur ecran et VBL/HBL
+  [ ] 50/60 Hz, changements raster et contention
+  [ ] video STE : low byte, line width, fine scroll
+  [ ] seize sources MFP, priorites, software/automatic EOI
+  [ ] timers A-D et horloge 200 Hz
+  [ ] ACIA : TX/RX, IRQ, overrun, clavier et MIDI
+  [ ] tous paquets souris/joystick IKBD et commandes
+  [ ] YM : trois tons, bruit, enveloppes, volumes, ports A/B
+  [ ] DMA audio STE one-shot/loop aux quatre frequences
+  [ ] WD1772 : read/write/seek/CRC/write protect/media change
+  [ ] DMA secteur, adresses 24 bits et conflits FDC/ACSI
+  [ ] ACSI avec AHDI et partitions
+  [ ] Blitter : HOP/OP, skew, end masks, directions et hog
+  [ ] GEMDOS fichiers/processus/memoire et erreurs negatives
+  [ ] AES redraw/clipping et VDI dans chaque resolution
+  [ ] PRG relocation, basepage, accessoires et ligne TTP
+  [ ] images ST/MSA/STX/IPF selon niveau annonce
+
+
+==============================================================================
+43. MAINTENANCE ET PRESERVATION
+==============================================================================
+
+Avant mise sous tension : inspecter alimentation, condensateurs, connecteurs,
+DRAM, lecteur et batterie d'horloge des Mega. Une batterie coulee exige retrait
+et traitement rapide. Mesurer les tensions avant de sacrifier des circuits rares.
+
+Lecteurs : courroie, graisse, tete, capteur piste zero et ejection vieillissent.
+Ne pas aligner une tete sans disque et instrument de reference. Archiver d'abord
+les disquettes protegees avec une interface capable de flux si necessaire.
+
+Conserver dumps ROM avec version/langue, photos, numeros de circuits, jumpers et
+images de disque. Les ROM TOS et logiciels restent soumis au droit d'auteur;
+privilegier liens officiels/licences ou dumps personnels.
+
+
+==============================================================================
+44. REFERENCES
+==============================================================================
+
+References techniques principales
+----------------------------------
+
+  * Atari ST Series Hardware/Technical Reference Manual.
+    https://www.manualslib.com/manual/1059760/Atari-St-Series.html
+
+  * Atari ST Internals / Anatomy of the Atari ST.
+    https://www.atarimania.com/documents/AnatomyOfTheAtariSt.pdf
+
+  * Atari ST GEM Programming, Engineering Hardware Specification.
+    https://www.bitsavers.org/pdf/atari/ST/Atari_ST_GEM_Programming_1986/
+
+  * The Atari Compendium, Scott Sanders : GEMDOS, BIOS, XBIOS, AES, VDI,
+    materiel, cookies, formats et compatibilite TOS.
+    https://frummel.org/~weedz/atari/docs/The_Atari_Compendium.pdf
+    https://bus-error.nokturnal.pl/atari_compendium/html/toc.htm
+
+  * MC68000 Family Programmer's Reference Manual, Motorola.
+  * MK68901 Multi-Function Peripheral Data Sheet, Motorola.
+  * MC6850 ACIA Data Sheet, Motorola.
+  * WD1772 Floppy Disk Controller Data Sheet, Western Digital.
+  * YM2149 Software-Controlled Sound Generator Data Manual, Yamaha.
+
+References complementaires
+--------------------------
+
+  * Atari ST Internals, registre et brochages ST/STFM/STE :
+    https://atarimuseum.ctrl-alt-rees.com/computers/16bits/STINTERN.htm
+
+  * Atari ST/STe/MSTe/TT/F030 Hardware Register Listing :
+    https://www.atari-wiki.com/index.php?title=Atari_ST%2FSTe%2FMSTe%2FTT%2FF030_Hardware_Register_Listing
+
+  * Hatari et Steem SSE : implementations open source utiles pour tests croises.
+  * EmuTOS : reimplementation libre de TOS, documentation et tests.
+
+Regle de priorite : verifier tout bit materiel dans le manuel du modele et de la
+revision exacte. Pour une application, privilegier GEMDOS/BIOS/XBIOS/VDI. Pour
+une demo ou un emulateur, documenter explicitement ST, STF, Mega ST ou STE, type
+de GLUE/Shifter, version TOS, frequence secteur et comportement du WD1772.

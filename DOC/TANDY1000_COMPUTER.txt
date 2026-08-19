@@ -1,0 +1,1057 @@
+==============================================================================
+ TANDY 1000 - MATERIEL, BIOS ET PROGRAMMATION
+ Reference technique pour programmeurs DOS et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille Tandy 1000 : architecture compatible IBM PC,
+memoire, video Tandy/PCjr, son a trois voix, clavier, joysticks, disquettes,
+extensions, BIOS et programmation sous DOS. Il donne des exemples en assembleur
+8086 et en Turbo Pascal.
+
+"Tandy 1000" n'est pas un modele unique. Les premiers appareils sont proches
+du PCjr; les derniers utilisent un 80286 ou 80386SX, VGA et un jeu de circuits
+tres different. Toujours verifier le modele et son Technical Reference Manual.
+
+Les nombres termines par h sont hexadecimaux. Les accents sont omis afin de
+conserver un fichier ASCII facilement exploitable sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Famille et variantes
+  3. Caracteristiques du Tandy 1000 original
+  4. Architecture generale
+  5. Processeur et cadences
+  6. Carte memoire
+  7. Memoire video partagee
+  8. Bus et extensions
+  9. Interruptions, DMA et temporisateurs
+ 10. Carte des ports d'E/S
+ 11. Sous-systeme video
+ 12. Modes video BIOS
+ 13. Organisation des pixels
+ 14. Registres video
+ 15. Palette et pages video
+ 16. Programmation video
+ 17. Son Tandy a trois voix
+ 18. Registres du generateur sonore
+ 19. Programmation du son
+ 20. PSSJ et convertisseur numerique-analogique
+ 21. Clavier
+ 22. Joysticks et souris
+ 23. Disquettes, disques et stockage
+ 24. Ports parallele et serie
+ 25. BIOS et interruptions logicielles
+ 26. Detection du Tandy 1000
+ 27. DOS, DeskMate et ROM de demarrage
+ 28. Compatibilite PC, PCjr, CGA, EGA et VGA
+ 29. Exemple assembleur : detection
+ 30. Exemple assembleur : pixel 320x200x16
+ 31. Exemple assembleur : son a trois voix
+ 32. Exemples Turbo Pascal
+ 33. Conseils pour un emulateur
+ 34. Plan de tests
+ 35. Maintenance et restauration
+ 36. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+Tandy/Radio Shack lance le Tandy 1000 en 1984 comme compatible IBM PC destine
+au foyer, a l'education et aux petites entreprises. La machine reprend les deux
+avantages les plus visibles du PCjr, ses graphismes 16 couleurs et son son a
+trois voix, mais utilise un clavier plus conventionnel et accepte des cartes
+d'extension proches du bus PC.
+
+Le succes des ordinateurs et des magasins Radio Shack fait de "Tandy graphics"
+et "Tandy sound" des cibles standard de nombreux jeux DOS. Sierra, Lucasfilm,
+Electronic Arts et d'autres proposent souvent une option Tandy distincte de
+CGA, EGA, AdLib ou haut-parleur PC.
+
+La famille evolue pendant plusieurs annees. Elle abandonne progressivement la
+compatibilite electrique PCjr, ajoute DMA, processeurs plus rapides, disque dur,
+ROM DOS, audio numerique, EEPROM, video amelioree puis VGA.
+
+
+==============================================================================
+2. FAMILLE ET VARIANTES
+==============================================================================
+
+Table de reperage; frequences et memoires sont les configurations de base les
+plus courantes et peuvent varier avec revision ou extension.
+
+  Modele       CPU typique       Particularites principales
+  1000         8088 4,77 MHz     128 Kio, Tandy video/son, sans DMA de base
+  1000A/HD     8088 4,77 MHz     revision; HD livre avec disque dur
+  1000SX       8088-2 7,16 MHz   RAM accrue, DMA, cinq logements XT
+  1000EX       8088-2 7,16 MHz   boitier clavier, connecteurs PLUS
+  1000HX       8088-2 7,16 MHz   3,5 pouces, DOS en ROM, PLUS
+  1000TX       80286 8 MHz       bus externe 8 bits, RAM et stockage accrus
+  1000SL/SL2   8086 8 MHz        PSSJ, DAC, EEPROM, ROM DOS selon version
+  1000TL       80286 8 MHz       PSSJ, DAC, video Tandy II, ROM DOS
+  TL/2, TL/3   80286 8 MHz       stockage/interfaces revises
+  1000RL       8086 9,54 MHz     compact, sans slots ISA ordinaires
+  1000RLX      80286 10 MHz      VGA; rupture video avec Tandy classique
+  1000RSX      80386SX 25 MHz    VGA, architecture AT tardive
+
+EX/HX emploient les cartes Tandy PLUS a connecteur proprietaire. SX, TX, SL et
+TL ont des logements de type ISA XT, souvent plus courts que la longueur IBM
+maximale. Un 80286 dans le TX ne signifie pas que tous ses slots soient AT 16
+bits. RL/RLX/RSX ne doivent pas etre assimiles au Tandy 1000 original.
+
+
+==============================================================================
+3. CARACTERISTIQUES DU TANDY 1000 ORIGINAL
+==============================================================================
+
+  * Intel 8088 a 4,77 MHz;
+  * bus de donnees externe 8 bits;
+  * 128 Kio de RAM de base, extensible;
+  * ROM BIOS et BASIC suivant revision/configuration;
+  * video compatible CGA et modes PCjr/Tandy 16 couleurs;
+  * RAM video partagee avec la RAM systeme;
+  * sortie RGBI, composite et television selon region/equipement;
+  * generateur sonore compatible TI SN76489/SN76496 a trois voix plus bruit;
+  * haut-parleur interne et sortie audio;
+  * deux connecteurs joystick Tandy;
+  * interface parallele et controleur de disquette integres;
+  * clavier Tandy; pas un clavier PC/XT electriquement interchangeable;
+  * pas de controleur DMA sur la carte mere originale.
+
+L'absence initiale de DMA est une incompatibilite importante. Certaines cartes
+PC utilisent obligatoirement un canal DMA et ne fonctionnent qu'avec une carte
+d'extension memoire/DMA compatible ou sur un modele ulterieur.
+
+
+==============================================================================
+4. ARCHITECTURE GENERALE
+==============================================================================
+
+Les premieres machines combinent des blocs familiers du PC : 8088, controleur
+d'interruptions 8259A, temporisateur 8253/8254, controleur de disquette 765,
+controleur video 6845 et circuits PIO, avec de la logique Tandy specifique.
+
+La video lit la RAM systeme et l'expose aussi par une fenetre a B8000h. Cette
+architecture economise une carte video mais vole des cycles memoire au CPU. Le
+son trois voix est programme par le port C0h. Le clavier et les joysticks ne
+reproduisent pas exactement les interfaces de l'IBM PC.
+
+Un logiciel portable doit privilegier BIOS/DOS. Un jeu ou un pilote peut acceder
+directement au materiel apres detection du modele et du mode.
+
+
+==============================================================================
+5. PROCESSEUR ET CADENCES
+==============================================================================
+
+Les modeles 8088 rapides emploient typiquement 7,16 MHz, soit 1,5 fois 4,77 MHz,
+et offrent un mode lent pour les logiciels sensibles au temps. Les 8086 ont un
+bus interne/externe different; TX/TL utilisent un 80286, puis RSX un 80386SX.
+
+Ne pas temporiser par une boucle vide. Utiliser INT 15h/AH=86h lorsque disponible,
+le compteur BIOS, le PIT ou une calibration. Les attentes video, disquette et
+son doivent tenir compte du mode de vitesse choisi.
+
+Les calculs x87 exigent le coprocesseur adapte et un emplacement disponible :
+8087 avec 8088/8086, 80287 avec certains 286. Ce n'est jamais une capacite a
+supposer sans detection.
+
+
+==============================================================================
+6. CARTE MEMOIRE
+==============================================================================
+
+Carte logique DOS typique des generations Tandy graphiques :
+
+  Adresse physique     Usage
+  00000h-9FFFFh        RAM conventionnelle, quantite selon equipement
+  A0000h-AFFFFh        libre/reservee ou video d'une carte EGA/VGA
+  B0000h-B7FFFh        fenetre MDA/Hercules si carte presente
+  B8000h-BFFFFh        fenetre video Tandy/CGA de 32 Kio
+  C0000h-DFFFFh        ROM d'extension/cartes, selon configuration
+  E0000h-EFFFFh        ROM ou zone reservee selon modele
+  F0000h-FFFFFh        BIOS systeme
+
+Sur les premiers Tandy, la RAM video est prelevee de la RAM principale. La
+memoire annoncee par INT 12h tient compte de la reservation effectuee par le
+BIOS. Les tailles et emplacements physiques changent avec 128, 256, 384, 512,
+640 ou 768 Kio et avec la taille de page video.
+
+Ne pas rechercher le framebuffer en soustrayant aveuglement 16 ou 32 Kio de la
+RAM installee. Le registre 3DFh selectionne quelle portion de RAM est vue par le
+CRT et quelle portion est visible au processeur par B8000h.
+
+
+==============================================================================
+7. MEMOIRE VIDEO PARTAGEE
+==============================================================================
+
+La fenetre CPU reste B800:0000, mais le registre CRT/Processor Page permet de
+la rediriger vers des pages de RAM physique. La page affichee et la page ecrite
+peuvent differer : animation sans scintillement et page flipping sont possibles.
+
+Les modes de 16 Kio utilisent deux banques de 8 000h octets au sens historique
+du manuel (2000h octets chacune). Les modes de 32 Kio utilisent quatre banques.
+La contention video ralentit certains acces CPU; le ralentissement depend du
+mode, de la generation et de la RAM installee.
+
+La RAM reservee au display ne doit pas etre donnee a DOS. Un emulateur doit
+faire pointer RAM physique, lecture CRT et fenetre B800 vers le meme stockage,
+pas maintenir trois copies independantes.
+
+
+==============================================================================
+8. BUS ET EXTENSIONS
+==============================================================================
+
+Le bus des modeles de bureau anciens ressemble au bus IBM PC 8 bits : adresses,
+donnees, IRQ, DMA lorsqu'il existe, horloges et ROM d'extension. Des differences
+de mecanique, alimentation, longueur ou timing peuvent rendre une carte moderne
+incompatible meme si le connecteur s'insere.
+
+EX/HX utilisent PLUS, connecteur empilable proprietaire transportant des signaux
+voisins du bus XT. Une carte ISA ne s'y branche pas directement. RL est encore
+plus integre. TX possede un 286 mais ses extensions ne forment pas necessairement
+un bus AT 16 bits complet.
+
+Avant une carte : verifier dimensions, consommation, conflit de ports, IRQ/DMA,
+ROM, vitesse et version BIOS. Les cartes video peuvent entrer en conflit avec la
+video integree; certains BIOS Tandy ne recherchent pas les ROM video comme un PC
+generique.
+
+
+==============================================================================
+9. INTERRUPTIONS, DMA ET TEMPORISATEURS
+==============================================================================
+
+Attributions PC classiques, sous reserve des options installees :
+
+  IRQ 0       PIT, horloge systeme, INT 08h
+  IRQ 1       clavier, INT 09h
+  IRQ 2       disponible/cascade selon generation
+  IRQ 3/4     serie ou cartes
+  IRQ 5       disque dur, audio DAC ou carte selon modele/configuration
+  IRQ 6       controleur de disquette
+  IRQ 7       imprimante ou carte
+
+Le 8259 principal est aux ports 20h/21h. Le PIT est aux ports 40h-43h. Le PPI ou
+sa logique equivalente occupe 60h-63h. Sur une architecture AT tardive, second
+8259 et second controleur DMA changent les ressources disponibles.
+
+Le Tandy 1000 original n'a pas de DMA integre. Le SX et les generations suivantes
+en ont generalement un. Le DAC PSSJ des SL/TL emploie IRQ et DMA configurables :
+ne pas figer IRQ 7/DMA 1 sans lire la configuration du modele.
+
+
+==============================================================================
+10. CARTE DES PORTS D'E/S
+==============================================================================
+
+Carte commune/representative; "option" signifie que l'adresse depend d'une
+carte ou d'un modele. Les miroirs non documentes ne doivent pas etre utilises.
+
+  Ports        Fonction
+  000h-00Fh    DMA 8237, absent du modele original ou fourni par extension
+  020h-021h    controleur d'interruptions 8259A
+  040h-043h    temporisateur PIT
+  060h-063h    clavier, PPI et controle systeme selon generation
+  080h-083h    registres de page DMA selon modele
+  0A0h         masque NMI/configuration memoire selon modele
+  0C0h         generateur sonore PSG, ecriture
+  0C4h-0C7h    PSSJ/DAC et controle audio sur SL/TL et derives
+  200h-201h    joysticks Tandy
+  278h-27Bh    LPT2 optionnel
+  2F8h-2FFh    COM2 optionnel
+  378h-37Bh    imprimante parallele integree ou LPT1
+  3D0h-3D7h    registres MC6845 couleur, index/data a 3D4h/3D5h
+  3D8h         mode video
+  3D9h         couleur/palette CGA
+  3DAh         etat video; ecriture index/data Video Array
+  3DEh         registre d'index video etendu sur generations concernees
+  3DFh         CRT/Processor Page Register
+  3F0h-3F7h    controleur de disquette
+  3F8h-3FFh    COM1 optionnel
+
+La signification de 0C4h-0C7h et 3DEh varie fortement. Sur une machine sans PSSJ,
+0C4h-0C7h peuvent etre des miroirs incomplets du PSG. L'ecriture exploratoire
+de ports pour "detecter" du materiel peut produire un son, lancer un DMA ou
+modifier la configuration : utiliser BIOS et signatures d'abord.
+
+
+==============================================================================
+11. SOUS-SYSTEME VIDEO
+==============================================================================
+
+Le Tandy Video Graphics Adapter derive de la video PCjr : MC6845 compatible,
+palette RGBI de 16 couleurs et RAM partagee. Il conserve les modes CGA et ajoute
+les modes 08h, 09h et 0Ah. Les TL offrent une generation amelioree parfois
+nommee Tandy Video II. RLX/RSX utilisent VGA et sortent du coeur de cette section.
+
+Sorties rencontrees : RGBI numerique 15 kHz, composite NTSC et sortie RF selon
+modele/pays. Un moniteur VGA analogique ordinaire n'accepte pas directement le
+signal RGBI 15 kHz. Utiliser un convertisseur/scaler concu a cet effet.
+
+
+==============================================================================
+12. MODES VIDEO BIOS
+==============================================================================
+
+  AL   Resolution       Couleurs   Organisation                Taille
+  00h  40x25 texte      16         caracteres/attributs         2 Kio env.
+  01h  40x25 texte      16         idem
+  02h  80x25 texte      mono       idem
+  03h  80x25 texte      16         idem
+  04h  320x200          4          CGA, 2 bits/pixel            16 Kio
+  05h  320x200          4/mono     CGA                          16 Kio
+  06h  640x200          2          CGA, 1 bit/pixel             16 Kio
+  08h  160x200          16         4 bits/pixel                 16 Kio
+  09h  320x200          16         4 bits/pixel                 32 Kio
+  0Ah  640x200          4          2 bits/pixel                 32 Kio
+
+Les modes 08h-0Ah sont les modes PCjr/Tandy. Le mode 09h est la cible Tandy la
+plus connue des jeux. Certaines generations offrent 640x200x16 et d'autres modes
+par extensions BIOS; ne pas les annoncer sur un original sans verification.
+
+Selection BIOS : AH=00h, AL=mode, INT 10h. Utiliser le BIOS pour initialiser
+6845, palette et pages; modifier ensuite seulement les registres necessaires.
+
+
+==============================================================================
+13. ORGANISATION DES PIXELS
+==============================================================================
+
+Les lignes sont entrelacees par banques, non stockees lineairement.
+
+Modes a deux banques (08h, CGA 04h-06h) :
+
+  adresse = (y AND 1)*2000h + (y SHR 1)*octets_par_ligne + x_octet
+
+Modes a quatre banques (09h, 0Ah) :
+
+  adresse = (y AND 3)*2000h + (y SHR 2)*octets_par_ligne + x_octet
+
+Pour 320x200x16, deux pixels occupent un octet : pixel pair dans le quartet haut,
+pixel impair dans le quartet bas. Chaque ligne fait 160 octets.
+
+  offset = (y AND 3)*2000h + (y SHR 2)*160 + (x SHR 1)
+  pair   : nouveau = (ancien AND 0Fh) OR (couleur SHL 4)
+  impair : nouveau = (ancien AND F0h) OR couleur
+
+Pour 160x200x16, deux pixels/octet et 80 octets/ligne, deux banques. Pour
+640x200x4, quatre pixels/octet et 160 octets/ligne, quatre banques. La position
+du pixel dans l'octet choisit le decalage 6,4,2,0.
+
+
+==============================================================================
+14. REGISTRES VIDEO
+==============================================================================
+
+Registres compatibles CGA :
+
+  3D4h ecriture     index MC6845
+  3D5h lecture/ecr. donnees du registre MC6845 selectionne
+  3D8h ecriture     mode control
+  3D9h ecriture     couleur/bordure/palette CGA
+  3DAh lecture      status : display enable et retrace vertical
+
+MC6845 principal :
+
+  Index   Fonction
+  00h     horizontal total
+  01h     horizontal displayed
+  02h     horizontal sync position
+  03h     sync widths
+  04h     vertical total
+  05h     vertical total adjust
+  06h     vertical displayed
+  07h     vertical sync position
+  08h     interlace/skew
+  09h     maximum scan line
+  0Ah     cursor start
+  0Bh     cursor end
+  0Ch/0Dh start address haut/bas
+  0Eh/0Fh cursor address haut/bas
+
+Les registres PCjr/Tandy de la Video Array sont normalement charges par une
+sequence index puis donnee au port 3DAh. L'acces exact et les bits reserves
+dependent de la generation. Les groupes fonctionnels sont :
+
+  00h     Mode Control 1
+  01h     Palette Mask
+  02h     Border Color
+  03h     Mode Control 2
+  10h-1Fh seize registres de palette
+
+Ne pas recopier un tableau EGA dans ces registres : ce n'est pas un Attribute
+Controller EGA meme si le principe index/palette semble proche.
+
+
+==============================================================================
+15. PALETTE ET PAGES VIDEO
+==============================================================================
+
+Chaque entree de palette contient une valeur RGBI de 0 a 15. La couleur logique
+d'un pixel indexe le registre de palette; ce registre choisit la couleur physique.
+Le masque de palette permet de forcer certains bits d'index.
+
+Le port 3DFh selectionne les pages CRT et processeur ainsi que la taille 16/32
+Kio selon la revision. Les bits exacts ne sont pas identiques a tous les Tandy.
+Sur le materiel compatible PCjr classique, la programmation doit conserver les
+bits reserves et passer par le BIOS lorsque possible.
+
+Technique de double buffering :
+
+  1. selectionner une page CPU non affichee;
+  2. dessiner par B800h;
+  3. attendre le retrace vertical via 3DAh;
+  4. selectionner cette page comme page CRT;
+  5. dessiner l'image suivante dans l'ancienne page.
+
+La page doit exister dans la RAM reservee. Une mauvaise valeur peut afficher ou
+ecraser de la RAM DOS.
+
+
+==============================================================================
+16. PROGRAMMATION VIDEO
+==============================================================================
+
+Services BIOS utiles :
+
+  INT 10h/AH=00h       fixe le mode
+  INT 10h/AH=02h       place le curseur
+  INT 10h/AH=03h       lit position/forme du curseur
+  INT 10h/AH=05h       selectionne la page active si supportee
+  INT 10h/AH=06h/07h   defile une fenetre
+  INT 10h/AH=08h/09h   lit/ecrit caractere et attribut
+  INT 10h/AH=0Ch       ecrit un pixel, lent mais portable
+  INT 10h/AH=0Dh       lit un pixel
+  INT 10h/AH=0Fh       retourne mode, colonnes et page
+
+L'ecriture directe est beaucoup plus rapide. Desactiver les interruptions n'est
+pas necessaire pour chaque pixel; proteger seulement une modification atomique
+de registre partagee avec un ISR. Attendre le retrace pour changer palette/page
+si une transition sans artefact est requise.
+
+
+==============================================================================
+17. SON TANDY A TROIS VOIX
+==============================================================================
+
+Le PSG est compatible avec la famille TI SN76489/SN76496 :
+
+  * trois generateurs de tonalite carree;
+  * un generateur de bruit blanc ou periodique;
+  * attenuation independante sur quatre canaux;
+  * 16 niveaux, 0 volume maximal et 15 silence;
+  * registres ecrits en serie par un port de 8 bits;
+  * pas de lecture fiable de l'etat interne.
+
+Le port historique est 0C0h. La frequence d'horloge est derivee de 3,579545 MHz.
+Le diviseur de tonalite N est sur dix bits :
+
+  frequence_sortie = horloge_PSG / (32 * N)
+
+Avec l'horloge NTSC nominale, N=1 donne environ 111,86 kHz. Les frequences tres
+hautes sont filtrees par la sortie reelle. N=0 a un comportement dependant de la
+variante du circuit; l'eviter pour un programme portable.
+
+
+==============================================================================
+18. REGISTRES DU GENERATEUR SONORE
+==============================================================================
+
+Une ecriture dont le bit 7 vaut 1 est un octet latch/data :
+
+  bit 7       1
+  bits 6..5   canal 0..3
+  bit 4       0=tonalite/bruit, 1=volume
+  bits 3..0   quatre bits de donnees
+
+Pour une tonalite, le premier octet fournit N bits 3..0. Un second octet avec
+bit 7=0 fournit N bits 9..4 dans ses six bits bas.
+
+  Latch tonalite canal c = 80h OR (c SHL 5) OR (N AND 0Fh)
+  Data haute               = (N SHR 4) AND 3Fh
+  Volume canal c           = 90h OR (c SHL 5) OR attenuation
+
+Canal 3, registre bruit : bits bas selectionnent bruit periodique/blanc et une
+frequence fixe ou la sortie du canal 2. Programmer le canal 2 avant le bruit si
+celui-ci l'utilise comme horloge.
+
+Pour couper proprement : envoyer 9Fh, BFh, DFh et FFh au port C0h. Le PSG retient
+son etat apres la fin du programme; toujours restaurer le silence.
+
+
+==============================================================================
+19. PROGRAMMATION DU SON
+==============================================================================
+
+Calcul du diviseur avec entiers longs :
+
+  N = arrondi(3579545 / (32 * frequence_Hz))
+  limiter N a 1..1023
+
+Une melodie exige un temporisateur independant. Ne pas reprogrammer IRQ0 sans
+chainer l'ancien gestionnaire et restaurer le PIT. Une solution simple utilise
+INT 1Ah/AH=00h, resolution 18,2 Hz; une solution musicale utilise un ISR plus
+rapide mais doit limiter le travail effectue en interruption.
+
+Le haut-parleur PC aux ports 42h/61h est un circuit distinct. Certains mixages
+Tandy le routent avec le PSG; ne pas confondre les deux generateurs.
+
+
+==============================================================================
+20. PSSJ ET CONVERTISSEUR NUMERIQUE-ANALOGIQUE
+==============================================================================
+
+Les SL/TL et derives regroupent son, joystick et controle systeme dans le PSSJ
+(Peripheral, Sound and System Joystick). Ils conservent les trois voix et ajoutent
+un DAC permettant la lecture d'echantillons PCM par DMA/IRQ.
+
+Les ports C4h-C7h commandent le DAC/PSSJ, mais leur bit mapping, le choix IRQ/DMA
+et les services BIOS doivent etre pris dans le manuel SL ou TL exact. Sur les
+machines anciennes, ces adresses ne prouvent pas la presence du DAC. Un programme
+doit detecter le modele, interroger la configuration et sauvegarder les registres.
+
+Pour un emulateur, le DAC demande : FIFO/latch, cadence programmable, requetes
+DMA, interruption de fin de bloc, volume/mixage et interaction avec le PSG. Une
+emulation qui traite C4h-C7h comme quatre nouvelles voix SN76496 est incorrecte.
+
+
+==============================================================================
+21. CLAVIER
+==============================================================================
+
+Le clavier des premiers Tandy 1000 utilise un connecteur et un protocole Tandy;
+il n'est pas electriquement interchangeable avec un clavier IBM PC/XT ou AT malgre
+des codes de touches largement traduits par le BIOS.
+
+Pour une application DOS :
+
+  INT 16h/AH=00h       attend une touche, AL=ASCII, AH=scan
+  INT 16h/AH=01h       teste sans retirer
+  INT 16h/AH=02h       etat Shift
+
+Le tampon BIOS se trouve normalement dans la BIOS Data Area a 0040:001Ah..003Dh.
+Eviter de lire directement 60h sauf pour un pilote propre au modele. Les touches
+supplementaires, autorepetition et combinaisons Fn des modeles compacts passent
+par des extensions BIOS/PSSJ differentes.
+
+
+==============================================================================
+22. JOYSTICKS ET SOURIS
+==============================================================================
+
+Les deux connecteurs joystick Tandy sont des DIN 6 broches proprietaires et ne
+sont pas directement le connecteur DA-15 IBM. La logique est accessible dans la
+zone 200h-201h. Les axes analogiques sont mesures par temporisation de compteurs
+RC; les boutons sont des bits numeriques.
+
+Le BIOS propose sur certaines revisions INT 15h/AH=84h compatible joystick IBM.
+Tester CF/retour; sinon employer un pilote modele-specifique. Vitesse CPU, valeur
+des potentiometres et interruptions influencent une boucle directe.
+
+La souris est generalement serie ou pilotee par un adaptateur. Utiliser INT 33h
+apres installation du pilote; il n'existe pas une souris Tandy universelle dans
+le coeur de tous les 1000.
+
+
+==============================================================================
+23. DISQUETTES, DISQUES ET STOCKAGE
+==============================================================================
+
+Les premiers modeles utilisent des lecteurs 5,25 pouces double densite, puis des
+3,5 pouces 720 Kio et, sur des generations tardives, 1,44 Mio. Le controleur est
+compatible NEC uPD765 aux ports 3F0h-3F7h avec differences de cablage et de
+selection de lecteur.
+
+Toujours utiliser INT 13h pour une application. Le pilote direct doit gerer
+commande, result phase, moteur, changement de disque, recalibrage, geometrie,
+DMA ou transfert propre au modele et frontiere DMA de 64 Kio.
+
+Les modeles HD/TL/RSX ou options recoivent MFM, RLL, IDE/XTA/SCSI selon epoque.
+"Tandy 1000 HD" ne definit pas un protocole de disque universel. Les ROM
+d'extension et pilotes BIOS exposent normalement le disque par INT 13h.
+
+
+==============================================================================
+24. PORTS PARALLELE ET SERIE
+==============================================================================
+
+Le port parallele integre est souvent a 378h et accessible par INT 17h. Son
+connecteur physique Tandy peut requerir un cable adapte. La BDA 0040:0008h
+contient les bases LPT detectees.
+
+Le modele original n'integre pas necessairement RS-232. Une carte serie utilise
+habituellement un 8250/16450 a 3F8h IRQ4 ou 2F8h IRQ3. Lire les adresses COM dans
+la BDA 0040:0000h et utiliser INT 14h ou un pilote. Ne pas supposer COM1.
+
+
+==============================================================================
+25. BIOS ET INTERRUPTIONS LOGICIELLES
+==============================================================================
+
+Services IBM-compatibles principaux :
+
+  INT 10h      video
+  INT 11h      equipement installe
+  INT 12h      taille de RAM conventionnelle en Kio
+  INT 13h      disque/disquette
+  INT 14h      serie
+  INT 15h      services systeme, configuration et extensions Tandy
+  INT 16h      clavier
+  INT 17h      imprimante
+  INT 1Ah      heure et horloge
+  INT 21h      DOS
+  INT 33h      pilote souris, s'il est charge
+
+Les BIOS SL/TL ajoutent notamment identification/configuration, EEPROM et support
+audio. Les numeros exacts changent avec la generation. Une fonction inconnue doit
+retourner une erreur sans modifier arbitrairement l'etat dans un clone.
+
+La BDA a 0040h conserve ports COM/LPT, equipement, memoire, etat clavier, mode
+video, colonnes, taille/page video, position curseur, compteur d'horloge et etat
+disquette. Les extensions Tandy au-dela des champs IBM ne sont pas uniformes.
+
+
+==============================================================================
+26. DETECTION DU TANDY 1000
+==============================================================================
+
+Aucune methode unique ne couvre parfaitement tous les modeles et clones.
+Strategie recommandee :
+
+  1. appeler INT 15h/AH=C0h et examiner la table si elle est supportee;
+  2. verifier le marqueur BIOS Tandy;
+  3. identifier modele/sous-modele/revision;
+  4. ne tester une capacite video/audio qu'apres cette identification;
+  5. permettre une option utilisateur pour clone ou emulateur imparfait.
+
+Les BIOS Tandy 1000 classiques contiennent 21h a F000:C000h et un identificateur
+FFh a F000:00FAh (ou a l'adresse physique equivalente documentee). Le marqueur
+21h seul n'identifie pas la variante. Les SL/TL peuvent retourner par AH=C0h un
+model byte FFh, sous-modele 00h pour SL ou 01h pour TL, avec revision.
+
+INT 15h/AH=C0h :
+
+  entree   AH=C0h
+  sortie   CF=0, ES:BX -> descripteur
+           mot +00h longueur
+           octet +02h modele
+           octet +03h sous-modele
+           octet +04h revision, si present
+
+Ne pas sonder en ecrivant 0C0h ou 3DFh : cela modifie son ou memoire video. Une
+signature ROM peut etre fausse dans un BIOS remplace; une option "force Tandy"
+reste utile dans un logiciel historique.
+
+
+==============================================================================
+27. DOS, DESKMATE ET ROM DE DEMARRAGE
+==============================================================================
+
+Les premiers Tandy demarrent DOS depuis disquette ou disque. HX, TL et plusieurs
+modeles compacts placent une version de MS-DOS et/ou DeskMate en ROM. Cette ROM
+peut etre exposee comme disque logique ou banque commutee selon modele.
+
+Une ROM DOS n'est pas un lecteur de secteurs ordinaire. Le BIOS intercepte le
+demarrage et fournit une geometrie/interface logique. INT 15h/AX=7003h est associe
+a la selection de page ROM sur certains Tandy, mais ne doit pas etre appele sans
+avoir identifie le modele et preserve la page courante.
+
+DeskMate est l'environnement graphique/productivite de Tandy. Il n'est pas une
+API materielle obligatoire. Emuler le BIOS, la video, le clavier, le stockage et
+le son correctement suffit mieux que detecter le nom d'une application.
+
+
+==============================================================================
+28. COMPATIBILITE PC, PCjr, CGA, EGA ET VGA
+==============================================================================
+
+Compatible PC : DOS et la plupart des appels BIOS fonctionnent. Incompatible
+potentiel : clavier brut, DMA absent, timings, bus, ROM, video integree.
+
+Compatible PCjr : modes 08h-0Ah et PSG sont proches, mais clavier, ports, IRQ,
+pages video et logique systeme ne sont pas tous identiques. Un programme PCjr
+qui contourne le BIOS peut echouer sur Tandy.
+
+Compatible CGA : modes 0-6, B800h et 6845 sont largement compatibles. Composite,
+snow, palette et timings ne sont pas necessairement identiques a une carte IBM.
+
+EGA/VGA : une carte ajoutee peut fournir ses modes mais entrer en conflit avec
+la video integree. RLX/RSX ont une video VGA d'origine et ne doivent pas etre
+classes automatiquement comme Tandy Graphics Adapter classique.
+
+Detection de jeu conseillee : offrir des choix explicites Tandy, PCjr, EGA, CGA,
+VGA, AdLib/Sound Blaster et haut-parleur; ne pas deduire le son de la seule carte
+video active.
+
+
+==============================================================================
+29. EXEMPLE ASSEMBLEUR : DETECTION
+==============================================================================
+
+MASM/TASM, mode reel. Cette routine combine table BIOS et marqueur ROM. Elle
+retourne AL=1 si un indice Tandy est trouve, AL=0 sinon.
+
+        .model small
+        .code
+IsTandy proc near
+        push bx
+        push es
+
+        mov  ah,0C0h
+        int  15h
+        jc   short CheckROM
+        cmp  word ptr es:[bx],3       ; modele+sous-modele accessibles ?
+        jb   short CheckROM
+        cmp  byte ptr es:[bx+2],0FFh
+        je   short Found
+
+CheckROM:
+        mov  ax,0F000h
+        mov  es,ax
+        cmp  byte ptr es:[0C000h],21h
+        jne  short NotFound
+        cmp  byte ptr es:[00FAh],0FFh
+        jne  short NotFound
+Found:  mov  al,1
+        jmp  short Done
+NotFound:
+        xor  al,al
+Done:   pop  es
+        pop  bx
+        ret
+IsTandy endp
+
+Une detection de production doit aussi retourner modele, sous-modele et revision,
+et ne pas conclure que PSSJ, DAC ou TGA existent sur tous les modeles tardifs.
+
+
+==============================================================================
+30. EXEMPLE ASSEMBLEUR : PIXEL 320x200x16
+==============================================================================
+
+Entree : CX=x (0..319), DX=y (0..199), AL=couleur (0..15). Le mode 09h doit deja
+etre initialise et la page processeur correcte selectionnee.
+
+PutPix09 proc near
+        push ax
+        push bx
+        push cx
+        push dx
+        push es
+        push si
+        push di
+
+        and  ax,000Fh
+        mov  si,ax
+        mov  di,dx                 ; conserver y
+        and  dx,3
+        mov  ax,dx
+        mov  bx,2000h
+        mul  bx
+        mov  bx,ax                 ; base de banque
+        mov  ax,di
+        shr  ax,1
+        shr  ax,1                  ; y/4
+        mov  dx,160
+        mul  dx
+        add  bx,ax
+        mov  ax,cx
+        shr  ax,1
+        add  bx,ax
+        mov  ax,0B800h
+        mov  es,ax
+        mov  al,es:[bx]
+        test cx,1
+        jnz  short OddPixel
+        and  al,0Fh
+        mov  dx,si
+        shl  dl,1
+        shl  dl,1
+        shl  dl,1
+        shl  dl,1
+        or   al,dl
+        jmp  short StorePixel
+OddPixel:
+        and  al,0F0h
+        mov  dx,si
+        or   al,dl
+StorePixel:
+        mov  es:[bx],al
+        pop  di
+        pop  si
+        pop  es
+        pop  dx
+        pop  cx
+        pop  bx
+        pop  ax
+        ret
+PutPix09 endp
+
+
+==============================================================================
+31. EXEMPLE ASSEMBLEUR : SON A TROIS VOIX
+==============================================================================
+
+Joue approximativement un La 440 Hz sur le canal 0 puis le coupe. Le diviseur
+3579545/(32*440) vaut environ 254.
+
+        mov  dx,0C0h
+        mov  ax,254
+        mov  bl,al
+        and  al,0Fh
+        or   al,80h                ; latch tone 0 + N bas
+        out  dx,al
+        mov  al,bl
+        mov  cl,4
+        shr  al,cl
+        and  al,3Fh                ; N haut
+        out  dx,al
+        mov  al,90h                ; canal 0, attenuation 0
+        out  dx,al
+
+        ; ... temporisation par horloge BIOS ...
+
+        mov  al,9Fh                ; silence canal 0
+        out  dx,al
+
+Couper tous les canaux avant de rendre la main :
+
+        mov  al,9Fh
+        out  dx,al
+        mov  al,0BFh
+        out  dx,al
+        mov  al,0DFh
+        out  dx,al
+        mov  al,0FFh
+        out  dx,al
+
+
+==============================================================================
+32. EXEMPLES TURBO PASCAL
+==============================================================================
+
+32.1 Detection par ROM
+----------------------
+
+Function IsTandy1000:Boolean;
+Begin
+ IsTandy1000 := (Mem[$F000:$C000] = $21) and
+                (Mem[$F000:$00FA] = $FF);
+End;
+
+Cette fonction est adaptee aux BIOS historiques, pas a tous les compatibles.
+Une version complete appelle INT 15h/C0h avec Intr et examine ES:BX.
+
+32.2 Initialiser le mode 09h
+----------------------------
+
+Procedure SetTandyMode09;
+Var R:Registers;
+Begin
+ R.AX := $0009;
+ Intr($10,R);
+End;
+
+32.3 Pixel 320x200x16
+---------------------
+
+Procedure PutPixelTandy09(X,Y:Word; C:Byte);
+Var
+ O:Word;
+ B:Byte;
+Begin
+ if (X >= 320) or (Y >= 200) then Exit;
+ O := (Y and 3) * $2000 + (Y shr 2) * 160 + (X shr 1);
+ B := Mem[$B800:O];
+ if (X and 1) = 0 then
+  B := (B and $0F) or ((C and $0F) shl 4)
+ else
+  B := (B and $F0) or (C and $0F);
+ Mem[$B800:O] := B;
+End;
+
+32.4 Programmer une voix PSG
+----------------------------
+
+Procedure TandyTone(Channel:Byte; Frequency:Word; Attenuation:Byte);
+Var
+ N:LongInt;
+ L:Byte;
+Begin
+ if Frequency = 0 then Exit;
+ N := (3579545 div 32 + Frequency div 2) div Frequency;
+ if N < 1 then N := 1;
+ if N > 1023 then N := 1023;
+ Channel := Channel and 3;
+ L := $80 or (Channel shl 5) or Byte(N and $0F);
+ Port[$C0] := L;
+ Port[$C0] := Byte((N shr 4) and $3F);
+ Port[$C0] := $90 or (Channel shl 5) or (Attenuation and $0F);
+End;
+
+Procedure TandySilence;
+Begin
+ Port[$C0] := $9F;
+ Port[$C0] := $BF;
+ Port[$C0] := $DF;
+ Port[$C0] := $FF;
+End;
+
+32.5 Attendre approximativement un retrace vertical
+---------------------------------------------------
+
+Procedure WaitVBlank;
+Begin
+ while (Port[$3DA] and 8) <> 0 do ;
+ while (Port[$3DA] and 8) = 0 do ;
+End;
+
+Cette boucle peut rester bloquee si aucun TGA/CGA actif ne repond au port. Ne
+l'appeler qu'apres detection et initialisation video; ajouter un timeout dans un
+programme robuste ou un environnement virtualise.
+
+
+==============================================================================
+33. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Modeliser par composants et profils :
+
+  Profil machine     CPU, cadence, RAM, BIOS, slots, DMA, IRQ
+  Video              6845, Video Array, pages, contention, sorties
+  PSG                latch, 10 bits, bruit LFSR, attenuation, mixage
+  PSSJ                DAC, FIFO/latch, DMA, IRQ, joystick, controle
+  Stockage            FDC, ROM DOS, controleur disque optionnel
+  Entrees             clavier Tandy, joystick RC, souris/pilote
+
+Points souvent mal emules :
+
+  * utiliser une seule page video fixe;
+  * traiter le mode 09h comme framebuffer lineaire;
+  * inverser l'ordre des quatre banques de lignes;
+  * confondre couleur logique et entree de palette;
+  * produire le son avec une horloge ou attenuation incorrecte;
+  * ne pas conserver le registre latch du SN76496;
+  * utiliser le meme polynome de bruit pour toutes les variantes sans option;
+  * donner un DMA au Tandy 1000 original;
+  * exposer le DAC PSSJ sur EX/SX;
+  * annoncer TGA sur RLX/RSX VGA;
+  * accepter tous les claviers comme XT;
+  * ignorer la RAM retiree a DOS par la video;
+  * executer une ROM DOS comme une ROM d'extension lineaire;
+  * identifier la famille par le seul octet F000:FFFEh.
+
+Video : implementer les compteurs 6845 et le retrace, car jeux et demos lisent
+3DAh. Les changements de palette/page en cours de ligne peuvent etre visibles.
+Une emulation par frame entiere suffit aux logiciels ordinaires, pas aux effets
+raster.
+
+Audio : produire les transitions a l'horloge PSG puis filtrer/resampler. Une
+simple sinusoide est fausse : les voix sont carrees et le bruit vient d'un LFSR.
+Le mixage/volume analogique reel n'est pas parfaitement lineaire.
+
+Timing : proposer 4,77/7,16/8/9,54 MHz suivant profil, contention video et mode
+lent. Les jeux anciens peuvent utiliser le nombre de tours de boucle comme temps.
+
+BIOS : utiliser une ROM legalement obtenue ou une reimplementation propre. Une
+ROM synthetique doit fournir BDA, vecteurs, POST, video, clavier, disque et les
+signatures coherentes avec le profil annonce.
+
+
+==============================================================================
+34. PLAN DE TESTS
+==============================================================================
+
+  [ ] POST et demarrage du DOS approprie au modele
+  [ ] INT 11h/12h et taille RAM apres reservation video
+  [ ] INT 15h/C0h et signatures ROM coherentes
+  [ ] modes 00h-06h puis 08h-0Ah par INT 10h
+  [ ] pixels aux quatre premieres lignes du mode 09h
+  [ ] pixels x=0,1,318,319 et y=0,1,2,3,196..199
+  [ ] palette 16 entrees, border et masque
+  [ ] pages CRT/CPU distinctes et flip au retrace
+  [ ] lecture 3DAh avec transitions horizontales/verticales
+  [ ] trois tons simultanes et volumes 0..15
+  [ ] bruit periodique/blanc et horloge par canal 2
+  [ ] silence conserve a la sortie du programme
+  [ ] clavier : make/break, Shift, Ctrl, Alt, autorepetition
+  [ ] deux joysticks, boutons et axes extremes
+  [ ] FDC : lecture/ecriture, changement, erreur CRC, moteur
+  [ ] absence DMA sur original; presence selon profil SX/SL/TL
+  [ ] PSSJ/DAC avec DMA, IRQ, fin de bloc et underrun
+  [ ] ROM DOS : selection de page et demarrage HX/TL
+  [ ] cartes ISA/PLUS, IRQ et ROM d'extension
+  [ ] vitesse lente/rapide et contention video
+  [ ] jeux de reference PCjr/Tandy, CGA et logiciels bureautiques
+
+
+==============================================================================
+35. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+Avant mise sous tension : inspecter alimentation, condensateurs, batterie de
+sauvegarde des modeles tardifs, corrosion, ventilateur, lecteur et cablage. Une
+batterie NiCd coulee peut detruire pistes et vias; la retirer et neutraliser la
+corrosion selon une procedure adaptee.
+
+Nettoyer et lubrifier un lecteur seulement avec son manuel. Les courroies, rails,
+tetes et capteurs vieillissent. Ne pas brancher un clavier AT, joystick DA-15 ou
+moniteur VGA directement a un connecteur ressemblant vaguement au bon format.
+
+Archiver avant reparation : etiquettes, jumpers, version BIOS, ROMs, EEPROM,
+geometrie disque, disquettes et photos haute resolution. Respecter le droit
+d'auteur lors de la diffusion des ROMs et logiciels.
+
+
+==============================================================================
+36. REFERENCES
+==============================================================================
+
+Manuels Tandy
+-------------
+
+  * Tandy 1000 Technical Reference Manual.
+    https://www.manualslib.com/manual/887518/Tandy-1000.html
+
+  * Tandy 1000 Service Manual.
+    https://ftp.oldskool.org/pub/drivers/Tandy/1000/
+      Tandy_1000_Service_Manual.pdf
+
+  * Tandy 1000 SX Technical Reference Manual, catalogue 25-1511.
+    https://www.lo-tech.co.uk/downloads/manuals/tandy/
+      Tandy_1000SX_Technical_Reference_Manual.pdf
+
+  * Tandy 1000 EX Technical Reference Manual, catalogue 25-1510.
+  * Tandy 1000 HX, TX, SL, TL, RL, RLX et RSX Technical Reference Manuals.
+  * Tandy 1000 MS-DOS Programmer's Reference Manual.
+
+Autres references
+-----------------
+
+  * IBM PCjr Technical Reference, pour la filiation video et sonore.
+    https://bitsavers.org/pdf/ibm/pc/pc_jr/
+
+  * Texas Instruments SN76489/SN76496 data manuals.
+  * Ralf Brown's Interrupt List, INT 10h, 15h et identification machine.
+    https://www.delorie.com/djgpp/doc/rbinter/
+
+  * DOSBox, DOSBox-X, MAME et PCem : sources utiles pour comparer une
+    implementation, mais non substituts aux manuels materiels.
+
+Regle de priorite : pour un registre, jumper, IRQ, DMA, port ou bit reserve,
+consulter le Technical Reference Manual du MODELE et de la REVISION exacts. Une
+caracteristique correcte pour le 1000TL peut etre absente, dangereuse ou avoir
+un autre sens sur le 1000 original, le HX ou le RSX.

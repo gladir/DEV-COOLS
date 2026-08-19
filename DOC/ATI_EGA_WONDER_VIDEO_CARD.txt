@@ -1,0 +1,1230 @@
+==============================================================================
+ ATI EGA WONDER
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille ATI EGA Wonder apparue a la fin des annees 1980.
+Il traite surtout l'EGA Wonder originale documentee par le manuel ATI edition
+2.3 de janvier 1988, puis distingue les EGA Wonder 480, 800 et 800+. Il couvre
+le materiel, les sorties, les modes, le BIOS INT 10h, la memoire planaire, la
+detection et les points importants pour un programmeur ou un auteur d'emulateur.
+
+L'EGA Wonder n'est pas seulement une EGA IBM clonee. Son interet historique est
+de faire fonctionner les standards EGA, CGA, MDA et Hercules sur plusieurs types
+de moniteurs. Le materiel convertit les timings et, suivant la configuration,
+double les lignes ou entrelace l'image. Les logiciels voient neanmoins les
+interfaces historiques attendues.
+
+Attention a la terminologie :
+
+  * EGA signifie Enhanced Graphics Adapter ;
+  * l'EGA Wonder originale n'est pas une carte VGA analogique ;
+  * les modes BIOS 11h et 12h proposes sur un MultiSync sont des modes
+    compatibles avec les resolutions VGA, mais la sortie reste celle de la
+    carte et du moniteur configure ;
+  * l'EGA Wonder 800+ est une generation differente, fondee sur l'ATI 18800 ;
+  * les registres ATI index/data 1CEh/1CFh connus des VGA Wonder concernent
+    surtout cette generation 800+/18800, pas automatiquement la carte de 1987.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et famille EGA Wonder
+  2. Caracteristiques principales
+  3. Architecture fonctionnelle
+  4. Bus, memoire et ROM BIOS
+  5. Connecteurs et sorties
+  6. Moniteurs et frequences
+  7. Interlacement, double balayage et SoftSense
+  8. Commutateurs et cavaliers
+  9. Modes BIOS standards
+ 10. Modes ATI etendus
+ 11. Modes texte 132 colonnes
+ 12. Organisation de la memoire EGA
+ 13. Pipeline planaire EGA
+ 14. Carte des ports d'E/S
+ 15. Registres EGA standards
+ 16. Compatibilite CGA
+ 17. Compatibilite MDA et Hercules
+ 18. BIOS video INT 10h
+ 19. Detection de la carte et de sa version
+ 20. Initialisation et changement de mode
+ 21. Programmation d'un pixel
+ 22. Palette et couleurs
+ 23. Polices de caracteres
+ 24. Synchronisation et IRQ 2
+ 25. SuperSwitch et pilotes ATI
+ 26. Exemples en assembleur 8086
+ 27. Exemples en Turbo Pascal
+ 28. Conseils pour un emulateur
+ 29. Plan de validation
+ 30. Depannage et securite
+ 31. References
+
+
+==============================================================================
+1. HISTORIQUE ET FAMILLE EGA WONDER
+==============================================================================
+
+ATI Technologies, entreprise canadienne alors recente, commercialise l'EGA
+Wonder en 1987. La carte repond a un probleme pratique : le parc installe est
+compose de logiciels et de moniteurs CGA, MDA, Hercules et EGA incompatibles
+entre eux. L'EGA Wonder emule ces standards et adapte leur signal au moniteur
+selectionne.
+
+Chronologie simplifiee :
+
+  Modele                 Periode      Particularite
+  ---------------------  -----------  -----------------------------------------
+  EGA Wonder originale   1987         Multi-standard, 256 Kio, ISA 8 bits
+  EGA Wonder 800         1987/1988    Modes etendus pour moniteur MultiSync
+  EGA Wonder 480         1988         Variante economique, connectique reduite
+  EGA Wonder 800+        1989         Generation ATI 18800, detection moniteur
+
+Les revisions de circuit imprime, de ROM et les versions OEM peuvent modifier
+la connectique ou la table des modes. Une identification par la seule photo,
+la seule resolution maximale ou le seul nom commercial n'est donc pas fiable.
+
+La carte originale utilise notamment un circuit ATI 16899-0 associe a un
+controleur compatible EGA. La 800+ utilise l'ATI 18800 et partage davantage de
+technologie avec la VGA Edge/VGA Wonder. Il faut conserver cette distinction
+dans un emulateur.
+
+
+==============================================================================
+2. CARACTERISTIQUES PRINCIPALES
+==============================================================================
+
+Caracteristiques annoncees par le manuel ATI de 1988 :
+
+  * bus compatible IBM PC, donc ISA 8 bits ;
+  * 256 Kio de DRAM video ;
+  * ROM BIOS d'extension ;
+  * compatibilite materielle EGA, CGA, MDA et Hercules ;
+  * modes EGA 320x200, 640x200 et 640x350 en memoire planaire ;
+  * 16 couleurs simultanees parmi 64 en EGA ;
+  * modes haute resolution sur MultiSync : 640x480, 752x410, 800x560 et,
+    selon ROM/revision, 800x600 ;
+  * modes texte ATI 132x25 et 132x44 ;
+  * generateur de caracteres chargeable ;
+  * scrolling doux et panning de pixels herites de l'EGA ;
+  * sortie directe DE-9, composite RCA, connecteurs internes suivant modele ;
+  * support d'un crayon optique ;
+  * conversion des standards vers divers moniteurs ;
+  * utilitaire SuperSwitch pour changer la personnalite active.
+
+La carte ne fournit pas un framebuffer lineaire. Les modes graphiques EGA et
+ATI 16 couleurs restent organises en quatre plans de bits.
+
+
+==============================================================================
+3. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Vue logique :
+
+  Bus ISA 8 bits
+       |
+       +-- ROM BIOS ATI ------> extension INT 10h
+       |
+       +-- decodeur d'E/S ----> personnalites 3Bxh et 3Dxh
+       |
+       +-- controleur EGA ----> sequencer, CRTC, graphics, attributes
+       |          |
+       |          +-----------> 256 Kio DRAM, quatre plans
+       |
+       +-- logique ATI -------> SoftSense, conversion, timings, palette
+                                  |
+                                  +-- DE-9 numerique
+                                  +-- composite et connecteurs internes
+
+La compatibilite est obtenue a deux niveaux :
+
+  1. les logiciels accedent aux ports et a la memoire de l'adaptateur qu'ils
+     croient utiliser ;
+  2. la logique ATI transforme le signal en fonction du moniteur configure.
+
+Un emulateur ne doit donc pas confondre la personnalite visible par le logiciel
+et le signal physique produit. Un programme Hercules peut utiliser B000h et les
+ports 3Bxh alors que la carte produit finalement un signal couleur ou EGA.
+
+
+==============================================================================
+4. BUS, MEMOIRE ET ROM BIOS
+==============================================================================
+
+La carte est utilisable dans les PC, XT, AT, IBM Portable et compatibles. Son
+connecteur ISA ne transporte que huit bits de donnees. Les 256 Kio de DRAM ne
+sont jamais presentes comme un bloc CPU lineaire de 256 Kio : les fenetres sont
+A000h, B000h ou B800h selon le mode et la logique choisit les plans.
+
+Fenetres principales :
+
+  A0000h-AFFFFh   modes graphiques EGA et ATI planaires
+  B0000h-B7FFFh   texte MDA et graphique Hercules
+  B8000h-BFFFFh   texte/couleur et graphique CGA
+  C0000h...       ROM BIOS video ATI, normalement segment C000h
+
+Une ROM d'extension commence normalement par 55h AAh et indique sa taille en
+unites de 512 octets. Le POST l'execute et elle intercepte INT 10h. Le segment
+C000h est usuel, mais un programme robuste devrait d'abord valider l'en-tete ROM
+et ne jamais modifier cette zone.
+
+
+==============================================================================
+5. CONNECTEURS ET SORTIES
+==============================================================================
+
+Le manuel de l'EGA Wonder originale donne :
+
+  * un connecteur direct-drive DE-9 femelle ;
+  * un connecteur de crayon optique BERG 6 broches ;
+  * un connecteur BERG 4 broches pour modulateur RF/IBM Portable ;
+  * une sortie composite RCA J1 ;
+  * une seconde RCA reliee au feature connector suivant revision.
+
+Brochage DE-9 documente :
+
+  Broche  Signal
+  ------  --------------------------------
+     1    masse
+     2    rouge secondaire / masse
+     3    rouge primaire
+     4    vert primaire
+     5    bleu primaire
+     6    vert secondaire / intensite
+     7    bleu secondaire / video mono
+     8    synchronisation horizontale
+     9    synchronisation verticale
+
+Le sens des broches depend de la personnalite et du type de moniteur. Ce DE-9
+ne doit pas etre branche sur une entree VGA HD-15 au moyen d'un cable passif :
+niveaux, codage des couleurs et frequences peuvent differer.
+
+Crayon optique, BERG 6 broches :
+
+  1 entree crayon, 2 inutilisee, 3 commutateur, 4 masse, 5 +5 V, 6 +12 V.
+
+Connecteur RF/Portable :
+
+  1 +12 V, 2 inutilisee, 3 video composite, 4 masse.
+
+Les variantes 480 et certaines OEM peuvent supprimer RCA, cavaliers ou feature
+connector. Toujours identifier le circuit imprime avant cablage.
+
+
+==============================================================================
+6. MONITEURS ET FREQUENCES
+==============================================================================
+
+Types cites par ATI :
+
+  * IBM 5151 monochrome TTL et compatibles ;
+  * IBM 5153 Color Display/RGB 15 kHz ;
+  * IBM 5154 Enhanced Color Display ;
+  * moniteur composite ;
+  * moniteur MultiSync de l'epoque, acceptant typiquement 15 a 31,5 kHz ;
+  * moniteur 25 kHz ;
+  * ecran interne IBM Portable ou Compaq avec cablage approprie.
+
+Frequences nominales indiquees dans le manuel :
+
+  Type                         Horizontale       Verticale
+  ---------------------------  ----------------  ----------
+  EGA                          environ 21,8 kHz  60 Hz
+  RGB/composite CGA            environ 15,75 kHz 60 Hz
+  TTL monochrome               environ 18,432 kHz 50 Hz
+  25 kHz / MultiSync           selon le mode     selon mode
+
+Les valeurs exactes resultent des horloges et registres CRTC. Elles ne doivent
+pas etre imposees a un ecran moderne sans convertisseur adapte.
+
+
+==============================================================================
+7. INTERLACEMENT, DOUBLE BALAYAGE ET SOFTSENSE
+==============================================================================
+
+ATI appelle SoftSense la commutation automatique entre certaines familles de
+modes. Lorsque des fonctions ameliorees sont actives, la carte reconnait les
+acces/modes et adapte le signal au moniteur selectionne.
+
+Exemples :
+
+  * sur EGA/MultiSync/25 kHz, les modes CGA peuvent employer une police 8x14 et
+    les lignes graphiques peuvent etre doublees ;
+  * sur RGB 15 kHz, les modes EGA 640x350 et Hercules 720x348 sont entrelaces ;
+  * sur TTL monochrome, les couleurs sont transformees en nuances/intensites ;
+  * sur 25 kHz, EGA et Hercules peuvent etre affiches sans entrelacement ;
+  * sur MultiSync, la carte peut produire les modes haute resolution ATI.
+
+L'entrelacement sur un moniteur RGB 15 kHz peut scintiller. ATI ne le recommande
+pas pour une utilisation prolongee. Un emulateur devrait reproduire le nombre
+de lignes et les timings logiques, mais peut offrir un filtre visuel optionnel.
+
+
+==============================================================================
+8. COMMUTATEURS ET CAVALIERS
+==============================================================================
+
+Le bloc SW1 a huit positions choisit le mode de demarrage, le moniteur et les
+fonctions ATI. Dans le manuel OEM edition 2.3, les reglages recommandes sont :
+
+  Moniteur             1    2    3    4    5    6    7
+  -------------------  ---  ---  ---  ---  ---  ---  ---
+  MultiSync            OFF  ON   ON   OFF  ON   OFF  ON
+  EGA                   OFF  ON   ON   OFF  ON   OFF  OFF
+  RGB/composite         ON   ON   ON   OFF  ON   ON   OFF
+  TTL monochrome        OFF  ON   ON   OFF  OFF  ON   OFF
+  25 kHz                OFF  ON   ON   OFF  OFF  OFF  ON
+  Composite monochrome  ON   ON   ON   OFF  ON   ON   OFF
+  Compaq                OFF  ON   ON   OFF  OFF  OFF  OFF
+
+SW1/8 active les fonctions ATI ameliorees. Le desactiver est un test de
+compatibilite utile lorsqu'un logiciel programme directement le materiel.
+
+OFF signifie ouvert et ON ferme dans le manuel. Les commutateurs 5 et 6 d'une
+carte mere IBM PC/XT doivent etre configures pour un adaptateur EGA. Les tables
+de double affichage et les cavaliers different selon revision ; il faut suivre
+le manuel correspondant a la carte physique.
+
+Le cavalier P8 selectionne notamment l'option 25 kHz sur certaines revisions.
+P6 peut choisir le type d'EPROM et P7 la plage d'adresses sur certains circuits
+imprimes. Ces noms ne constituent pas une ABI logicielle universelle.
+
+
+==============================================================================
+9. MODES BIOS STANDARDS
+==============================================================================
+
+Modes IBM exposes par INT 10h/AH=00h :
+
+  AL   Type       Organisation/resolution       Couleurs   Fenetre
+  ---  ---------  ----------------------------  ---------  -------
+  00h  texte      40x25, caracteres 8x8         mono       B800h
+  01h  texte      40x25, caracteres 8x8         16         B800h
+  02h  texte      80x25, caracteres 8x8         mono       B800h
+  03h  texte      80x25, caracteres 8x8         16         B800h
+  04h  graphique  320x200 CGA                   4          B800h
+  05h  graphique  320x200 CGA                   4/gris     B800h
+  06h  graphique  640x200 CGA                   2          B800h
+  07h  texte      80x25 monochrome              2          B000h
+  0Dh  graphique  320x200 planaire              16/64      A000h
+  0Eh  graphique  640x200 planaire              16/64      A000h
+  0Fh  graphique  640x350 planaire              2/64       A000h
+  10h  graphique  640x350 planaire              16/64      A000h
+
+La notation 16/64 signifie 16 indices visibles choisis dans une palette de 64.
+Le mode 0Fh est monochrome mais reste un mode EGA, pas Hercules.
+
+Sur un MultiSync, les revisions concernees ajoutent :
+
+  11h  640x480, 2 couleurs parmi 64, A000h
+  12h  640x480, 16 couleurs parmi 64, A000h
+
+Ces numeros deviendront aussi des numeros VGA IBM. Ne pas en conclure que la
+carte possede un DAC VGA analogique ou le mode VGA 13h 320x200x256.
+
+
+==============================================================================
+10. MODES ATI ETENDUS
+==============================================================================
+
+La table du manuel edition 2.3 contient les modes suivants. Leur disponibilite
+depend du moniteur, de la ROM, de la revision et des pilotes :
+
+  Mode  Type       Resolution/format        Couleurs  Memoire
+  ----  ---------  -----------------------  --------  -------
+  23h   texte      132x25, 1056x200         16        B800h
+  27h   texte      132x25, 1056x200         2         B000h
+  33h   texte      132x44, 1056x352         16        B800h
+  37h   texte      132x44, 1056x352         2         B000h
+  51h   graphique  640x480                  16        A000h
+  52h   graphique  752x410                  16        A000h
+  53h   graphique  800x560                  16        A000h
+  54h   graphique  800x600                  16        A000h
+  58h   texte      80x33, 640x462           16        B800h
+
+Le manuel marque 51h a 54h comme modes MultiSync et signale des restrictions
+pour les moniteurs 25 kHz. Le pilote livre avec la carte est souvent necessaire.
+
+La resolution 800x600 en 16 couleurs exige 240 000 octets utiles a quatre bits
+par pixel. L'organisation planaire les repartit en quatre plans de 60 000 octets,
+qui tiennent chacun dans une fenetre de 64 Kio. Les 16 144 octets restants sur
+les quatre plans ne permettent pas une seconde page complete. Il faut suivre la
+table ATI et ne pas extrapoler le nombre de pages.
+
+
+==============================================================================
+11. MODES TEXTE 132 COLONNES
+==============================================================================
+
+Les modes 23h/27h utilisent 132 colonnes sur 25 lignes et les modes 33h/37h 44
+lignes. Un texte 132x25 occupe au minimum 132*25*2 = 6600 octets pour caracteres
+et attributs. Le pas reel et les registres CRTC sont programmes par le BIOS ATI.
+
+Seuls les logiciels ou pilotes connaissant les modes ATI doivent les demander.
+Un programme qui suppose toujours 80 colonnes doit lire le nombre de colonnes
+dans la BIOS Data Area ou via INT 10h/AH=0Fh.
+
+SuperSwitch propose notamment les commandes 132 et 132X44. Il ne transforme pas
+magiquement un programme a largeur fixe : l'application doit gerer 132 colonnes.
+
+
+==============================================================================
+12. ORGANISATION DE LA MEMOIRE EGA
+==============================================================================
+
+En mode EGA 16 couleurs, chaque pixel est forme d'un bit dans chacun des quatre
+plans :
+
+  plan 0 -> bit bleu
+  plan 1 -> bit vert
+  plan 2 -> bit rouge
+  plan 3 -> bit intensite
+
+Pour une largeur W divisible par huit :
+
+  octets_par_ligne = W / 8
+  offset = y * octets_par_ligne + (x div 8)
+  masque = 80h shr (x and 7)
+
+Exemples :
+
+  320x200 : 40 octets par ligne et par plan
+  640x200 : 80 octets
+  640x350 : 80 octets
+  640x480 : 80 octets
+  752x410 : 94 octets
+  800x560 : 100 octets
+
+La CPU ne selectionne pas un plan en changeant l'adresse. Le Sequencer choisit
+les plans en ecriture et le Graphics Controller le plan lu. Les latches internes
+participent a toutes les operations.
+
+
+==============================================================================
+13. PIPELINE PLANAIRE EGA
+==============================================================================
+
+Une lecture charge quatre latches, un octet par plan. Une ecriture combine :
+
+  * la donnee CPU eventuellement tournee ;
+  * Set/Reset et Enable Set/Reset ;
+  * une operation logique AND, OR, XOR ou remplacement ;
+  * le Bit Mask ;
+  * la valeur conservee dans les latches ;
+  * Map Mask du Sequencer, qui autorise les plans.
+
+Modes d'ecriture EGA :
+
+  mode 0  chemin general, donnees CPU/Set-Reset/ALU/masque ;
+  mode 1  recopie directe des latches, utile pour deplacer des blocs ;
+  mode 2  les quatre bits bas de la CPU deviennent une couleur planaire.
+
+Modes de lecture :
+
+  mode 0  renvoie le plan selectionne par Read Map Select ;
+  mode 1  compare les quatre plans a Color Compare, masque par Color Don't Care.
+
+Pour modifier quelques pixels sans detruire les voisins, on effectue normalement
+une lecture de l'octet cible afin de charger les latches, puis une ecriture avec
+un Bit Mask approprie.
+
+
+==============================================================================
+14. CARTE DES PORTS D'E/S
+==============================================================================
+
+Ports EGA/CGA/MDA visibles selon la personnalite :
+
+  Port       Fonction
+  ---------  ----------------------------------------------------------
+  3B4h/3B5h CRTC index/data en personnalite monochrome
+  3BAh      etat monochrome / bascule Attribute Controller
+  3C0h      Attribute Controller index et data en ecriture
+  3C1h      Attribute Controller data en lecture
+  3C2h      Miscellaneous Output en ecriture
+  3C4h/3C5h Sequencer index/data
+  3C6h      registre reserve/feature selon EGA
+  3CAh      Feature Control en lecture
+  3CCh      Miscellaneous Output en lecture
+  3CEh/3CFh Graphics Controller index/data
+  3D4h/3D5h CRTC index/data en personnalite couleur
+  3DAh      etat couleur ; Feature Control en ecriture
+
+Ports de compatibilite directe CGA : 3D4h, 3D5h, 3D8h, 3D9h et 3DAh.
+Ports MDA/Hercules : 3B4h, 3B5h, 3B8h, 3BAh et, pour Hercules, 3BFh.
+
+Generation ATI 18800/EGA Wonder 800+ :
+
+  1CEh      ATI Extended Register Index (ATCREG)
+  1CFh      ATI Extended Register Data
+
+Sur certains circuits/cavaliers, la paire ATI peut etre relocalisee dans une
+plage 2xxh/3xxh. N'utilisez pas 1CEh/1CFh pour identifier l'EGA Wonder originale.
+Le detail bit a bit des registres 18800 doit etre tire du manuel 800+ ou d'une
+specification 18800, et non invente a partir d'un VGA Wonder posterieur.
+
+
+==============================================================================
+15. REGISTRES EGA STANDARDS
+==============================================================================
+
+Sequencer 3C4h/3C5h :
+
+  00h Reset
+  01h Clocking Mode
+  02h Map Mask
+  03h Character Map Select
+  04h Memory Mode
+
+Graphics Controller 3CEh/3CFh :
+
+  00h Set/Reset
+  01h Enable Set/Reset
+  02h Color Compare
+  03h Data Rotate / fonction logique
+  04h Read Map Select
+  05h Graphics Mode
+  06h Miscellaneous
+  07h Color Don't Care
+  08h Bit Mask
+
+Attribute Controller 3C0h/3C1h :
+
+  00h-0Fh palette logique
+  10h      Attribute Mode Control
+  11h      Overscan
+  12h      Color Plane Enable
+  13h      Horizontal PEL Panning
+
+CRTC : registres 00h a 18h compatibles EGA, dont Horizontal Total, Display End,
+Vertical Total, Start Address, Cursor, Offset, Underline, Mode Control et Line
+Compare. Certains bits sont proteges contre l'ecriture.
+
+Acces Attribute Controller : lire 3BAh ou 3DAh remet la bascule index/data en
+position index ; ecrire ensuite l'index sur 3C0h puis la donnee sur 3C0h. Le bit
+5 de l'index commande l'activation de l'affichage. Toute interruption concurrente
+qui touche ce controleur peut desynchroniser la sequence.
+
+
+==============================================================================
+16. COMPATIBILITE CGA
+==============================================================================
+
+En personnalite couleur, les modes 00h a 06h utilisent B800h et l'organisation
+CGA : texte entrelace caractere/attribut et lignes graphiques reparties entre
+deux banques de 8 Kio. Le logiciel peut utiliser les ports CGA 3D8h/3D9h.
+
+Sur un moniteur EGA ou 25 kHz, ATI peut doubler les lignes et employer une
+police 8x14. Ce changement du signal n'autorise pas le logiciel a traiter le
+mode comme un mode EGA planaire : l'interface memoire reste CGA.
+
+La sortie composite est sensible aux couleurs, a la phase et aux timings. Une
+emulation fidele doit distinguer RGBI et composite, notamment pour les artefacts
+CGA. Toutes les variantes EGA Wonder ne possedent pas la meme sortie RCA.
+
+
+==============================================================================
+17. COMPATIBILITE MDA ET HERCULES
+==============================================================================
+
+En mode M80, la carte fournit les ports 3Bxh et la fenetre B000h. Les programmes
+MDA voient le texte 80x25 et les attributs monochromes. Les programmes Hercules
+peuvent employer le graphique 720x348 organise en quatre banques entrelacees.
+
+ATI indique :
+
+  * avec une seule carte video, deux pages Hercules peuvent etre disponibles,
+    comportement analogue a l'utilitaire Hercules FULL ;
+  * avec deux adaptateurs, une seule page est allouee pour permettre la
+    coexistence, comportement analogue a HALF.
+
+Le mode EGA monochrome 0Fh n'est pas Hercules. Le premier est planaire a A000h,
+le second emploie B000h et les registres Hercules. Ne jamais les fusionner dans
+un emulateur.
+
+
+==============================================================================
+18. BIOS VIDEO INT 10H
+==============================================================================
+
+Fonctions essentielles :
+
+  AH=00h  selectionner un mode, AL=numero
+  AH=01h  definir la forme du curseur
+  AH=02h  positionner le curseur
+  AH=03h  lire position et forme du curseur
+  AH=04h  lire le crayon optique
+  AH=05h  selectionner la page affichee
+  AH=06h  defiler vers le haut/effacer une fenetre
+  AH=07h  defiler vers le bas
+  AH=08h  lire caractere et attribut
+  AH=09h  ecrire caractere et attribut
+  AH=0Ah  ecrire un caractere
+  AH=0Bh  palette CGA/bordure
+  AH=0Ch  ecrire un pixel
+  AH=0Dh  lire un pixel
+  AH=0Eh  teletype
+  AH=0Fh  lire mode, colonnes et page
+  AH=10h  palette EGA
+  AH=11h  charger/selectionner une police
+  AH=12h  informations EGA et fonctions auxiliaires
+  AH=13h  ecrire une chaine
+
+INT 10h/AH=12h, BL=10h renvoie les informations EGA. Dans le manuel ATI :
+
+  BH = 0 couleur, 1 monochrome ;
+  BL = quantite de memoire codee, l'EGA Wonder renvoie normalement 3 (256 Kio) ;
+  CH = feature bits ;
+  CL = etat des quatre premiers commutateurs.
+
+Pour la portabilite, selectionner les modes par BIOS. La programmation directe
+reste utile pour les pixels rapides apres que le BIOS a initialise les timings.
+
+
+==============================================================================
+19. DETECTION DE LA CARTE ET DE SA VERSION
+==============================================================================
+
+ATI a utilise dans ses ROM equipees d'un BIOS la signature ASCII :
+
+  C000h:0031h  "761295520"       neuf octets, sans terminateur
+
+Des references de detection ATI donnent ensuite :
+
+  C000h:0040h  "22"  EGA Wonder
+  C000h:0040h  "31"  VGA Wonder
+  C000h:0040h  "32"  EGA Wonder 800+
+  C000h:004Ch  revision majeure du BIOS
+  C000h:004Dh  revision mineure du BIOS
+
+La ROM de toutes les revisions originales n'est pas garantie identique. Methode
+robuste :
+
+  1. verifier 55h AAh a C000h:0000h ;
+  2. verifier la longueur ROM et, si desire, sa somme de controle ;
+  3. comparer exactement les neuf octets de signature ;
+  4. lire le type seulement si la signature est valide ;
+  5. confirmer les capacites avec INT 10h et un essai de mode non destructif.
+
+Ne pas rechercher seulement la chaine "ATI" et ne pas prendre la signature pour
+une preuve que tous les modes ou registres de toutes les generations existent.
+
+Sur la 800+, le manuel donne une lecture du registre ATI DATA_I via ATCREG pour
+identifier le moniteur ; AL AND 0Fh code EGA, TTL mono, RGB ou MultiSync. Ce test
+est propre a la 800+ et doit sauvegarder l'index, interdire les interruptions et
+respecter la documentation exacte de sa revision.
+
+
+==============================================================================
+20. INITIALISATION ET CHANGEMENT DE MODE
+==============================================================================
+
+Sequence recommandee :
+
+  1. detecter le BIOS ATI si une fonction ATI est indispensable ;
+  2. verifier le type de moniteur/configuration ;
+  3. appeler INT 10h/AH=00h avec le mode ;
+  4. relire le mode par INT 10h/AH=0Fh ;
+  5. determiner colonnes, fenetre et organisation ;
+  6. seulement alors programmer directement les pixels.
+
+Lors d'une programmation complete des registres EGA, mettre le Sequencer en
+reset synchrone, couper l'affichage si necessaire, programmer Misc Output,
+Sequencer, CRTC, Graphics et Attribute, puis redemarrer. Une mauvaise horloge ou
+polarite peut produire un signal hors plage. Cette operation est deconseillee
+sur du materiel reel lorsque le BIOS sait deja initialiser le mode.
+
+
+==============================================================================
+21. PROGRAMMATION D'UN PIXEL
+==============================================================================
+
+Approche simple et portable : INT 10h/AH=0Ch. Elle est lente mais respecte le
+mode ATI et le moniteur.
+
+Approche planaire efficace en mode d'ecriture 2 :
+
+  * offset = y*(largeur/8)+(x div 8) ;
+  * Bit Mask = 80h shr (x and 7) ;
+  * Read Map/Map Mask laisses conformes au mode ;
+  * charger les latches par lecture de A000:[offset] ;
+  * ecrire la couleur 0..15, repliquee par le mode 2.
+
+Le read-modify-write est essentiel. Une simple ecriture CPU peut remplacer les
+huit pixels de l'octet ou agir sur les mauvais plans selon les registres restes
+par un logiciel precedent.
+
+
+==============================================================================
+22. PALETTE ET COULEURS
+==============================================================================
+
+Les seize registres de palette de l'Attribute Controller contiennent six bits :
+
+  bit 0 bleu secondaire
+  bit 1 vert secondaire
+  bit 2 rouge secondaire
+  bit 3 bleu primaire
+  bit 4 vert primaire
+  bit 5 rouge primaire
+
+Ils selectionnent 16 couleurs parmi 64. Sur un moniteur CGA a seulement quatre
+lignes RGBI, ATI emploie une conversion propre pour maintenir autant que possible
+la palette. Sur un moniteur monochrome, les couleurs deviennent des intensites.
+
+INT 10h/AH=10h offre :
+
+  AL=00h  definir un registre, BL=index, BH=valeur
+  AL=01h  definir l'overscan, BH=valeur
+  AL=02h  charger 16 palettes plus overscan via ES:DX, 17 octets
+  AL=03h  choisir intensite ou clignotement, BL=0/1
+
+
+==============================================================================
+23. POLICES DE CARACTERES
+==============================================================================
+
+L'EGA dispose de RAM pour les polices et peut adresser jusqu'a 512 caracteres
+par selection de deux blocs. INT 10h/AH=11h charge une police utilisateur ou les
+polices ROM 8x8/8x14 et met a jour les vecteurs INT 1Fh/43h.
+
+Les modes 132 colonnes et les conversions CGA vers EGA utilisent des matrices
+de caracteres adaptees. Un programme ne doit pas supposer huit ou quatorze
+scanlines : INT 10h/AH=11h/AL=30h retourne un pointeur et des metriques suivant
+la sous-fonction demandee.
+
+
+==============================================================================
+24. SYNCHRONISATION ET IRQ 2
+==============================================================================
+
+Le bit de retrace vertical se lit dans Input Status 1, au port 3DAh en couleur
+ou 3BAh en monochrome. Une attente correcte observe d'abord la fin du retrace
+courant, puis le debut du suivant, avec une limite de temps.
+
+L'EGA peut utiliser l'IRQ 2 pour le retrace vertical. Le manuel ATI avertit que
+l'EGA Wonder ne coexiste pas avec une souris bus ou une horloge temps reel
+configuree sur IRQ 2. Sur AT, l'IRQ 2 ISA est cascadee vers IRQ 9.
+
+Ne pas activer une interruption sans installer un gestionnaire, acquitter la
+source et le PIC, et restaurer l'ancien vecteur. Pour une animation DOS simple,
+le polling borne du bit de retrace est plus sur.
+
+
+==============================================================================
+25. SUPERSWITCH ET PILOTES ATI
+==============================================================================
+
+Le disque ATI fournit SuperSwitch, lance par SMS. Commandes documentees :
+
+  SMS M80       texte monochrome 80x25
+  SMS C80       texte couleur 80x25 compatible CGA
+  SMS CE80      texte couleur 80x25 ameliore EGA
+  SMS 132       texte 132x25
+  SMS 132X44    texte 132x44
+  SMS ENAB      activer les fonctions ATI
+  SMS DISAB     desactiver les fonctions ATI
+  SMS J132      ajuster le mode 132 colonnes
+  SMS SAVE n    economiseur apres n minutes
+  SMS SAVE OFF  desactiver l'economiseur
+
+Des pilotes etaient livres pour Lotus 1-2-3, Symphony, Windows, GEM, AutoCAD et
+d'autres applications. Ils programment les modes 640x480, 752x410, 800x560 ou
+800x600. La presence d'un numero de mode dans une table ne garantit donc pas que
+le BIOS de chaque revision l'initialise sans pilote.
+
+
+==============================================================================
+26. EXEMPLES EN ASSEMBLEUR 8086
+==============================================================================
+
+26.1 Detecter la signature ATI et le type EGA Wonder
+----------------------------------------------------
+
+; Sortie CF=0 et AL=type ASCII initial ('2' ou '3') si signature ATI valide.
+
+DetectATI:
+        push    ds
+        push    si
+        push    cx
+        mov     ax,0C000h
+        mov     ds,ax
+        cmp     word ptr [0000h],0AA55h
+        jne     short da_no
+        mov     si,0031h
+        mov     cx,9
+        mov     bx,offset ATISig
+da_loop:
+        mov     al,[si]
+        cmp     al,cs:[bx]
+        jne     short da_no
+        inc     si
+        inc     bx
+        loop    da_loop
+        mov     al,[0040h]
+        clc
+        jmp     short da_done
+da_no:  stc
+da_done:
+        pop     cx
+        pop     si
+        pop     ds
+        ret
+ATISig  db      '761295520'
+
+Pour identifier precisement : comparer les deux octets C000:0040 a "22" ou
+"32". Ce code ne presume pas que toute carte ATI est une EGA Wonder.
+
+26.2 Selectionner un mode ATI
+-----------------------------
+
+        mov     ax,0051h            ; AH=00h, AL=51h : 640x480x16 ATI
+        int     10h
+
+        mov     ah,0Fh
+        int     10h                 ; AL doit confirmer le mode
+        cmp     al,51h
+        jne     mode_non_disponible
+
+26.3 Lire les informations EGA
+------------------------------
+
+        mov     ah,12h
+        mov     bl,10h
+        int     10h
+        ; BH=0 couleur/1 mono, BL=3 normalement, CH=features, CL=switches
+
+26.4 Ecrire un pixel par BIOS
+-----------------------------
+
+        mov     ah,0Ch
+        mov     al,0Eh              ; jaune
+        xor     bh,bh
+        mov     cx,100              ; x
+        mov     dx,80               ; y
+        int     10h
+
+26.5 Calculer l'offset planaire
+--------------------------------
+
+; Entree AX=y, BX=x, CX=octets/ligne. Sortie DI=offset, DL=masque.
+
+PlanarAddress:
+        mul     cx                  ; DX:AX=y*stride, taille ici <64 Kio
+        mov     di,ax
+        mov     ax,bx
+        mov     cl,3
+        shr     ax,cl
+        add     di,ax
+        mov     cl,bl
+        and     cl,7
+        mov     dl,80h
+        shr     dl,cl
+        ret
+
+26.6 Pixel EGA en write mode 2
+------------------------------
+
+; ES=A000h, DI=offset, DL=masque, AL=couleur 0..15.
+; Le BIOS doit avoir initialise un mode planaire normal.
+
+PutPixelWM2:
+        push    ax
+        push    dx
+        mov     dx,03CEh
+        mov     ax,0205h            ; GC index 5, write mode 2
+        out     dx,ax               ; 8086: AL vers 3CE, AH vers 3CF
+        pop     dx
+        mov     ah,al               ; sauver couleur dans AH
+        mov     al,08h              ; index Bit Mask
+        mov     cx,dx               ; sauver masque avant usage de DX
+        mov     dx,03CEh
+        out     dx,al
+        inc     dx
+        mov     al,cl
+        out     dx,al
+        mov     al,es:[di]          ; charger les quatre latches
+        mov     al,ah
+        mov     es:[di],al
+        pop     ax
+        ret
+
+Note : la routine suppose que DL contenait le masque et que le reste de la
+configuration EGA est coherent. Une bibliotheque doit sauvegarder/restaurer le
+registre GC 05h et GC 08h si elle partage l'ecran avec un autre code.
+
+26.7 Attendre un nouveau retrace avec expiration
+------------------------------------------------
+
+; DX=3DAh en couleur ou 3BAh en monochrome. CX limite les lectures.
+
+WaitRetrace:
+wr_out: in      al,dx
+        test    al,08h
+        jz      short wr_in
+        loop    wr_out
+        stc
+        ret
+wr_in:  in      al,dx
+        test    al,08h
+        jnz     short wr_ok
+        loop    wr_in
+        stc
+        ret
+wr_ok:  clc
+        ret
+
+
+==============================================================================
+27. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+27.1 Types et appel de mode
+---------------------------
+
+Uses Dos;
+
+Procedure SetVideoMode(Mode:Byte);
+Var R:Registers;
+Begin
+ R.AX:=Mode;
+ Intr($10,R);
+End;
+
+Function CurrentVideoMode:Byte;
+Var R:Registers;
+Begin
+ R.AH:=$0F;
+ Intr($10,R);
+ CurrentVideoMode:=R.AL;
+End;
+
+27.2 Detection ATI EGA Wonder
+-----------------------------
+
+Function ATIProduct:String;
+Var I:Byte; S:String;
+Begin
+ S:='';
+ If (Mem[$C000:$0000]<>$55) or (Mem[$C000:$0001]<>$AA) Then Begin
+  ATIProduct:=''; Exit
+ End;
+ For I:=0 to 8 do S:=S+Chr(Mem[$C000:$0031+I]);
+ If S<>'761295520' Then ATIProduct:=''
+ Else ATIProduct:=Chr(Mem[$C000:$0040])+Chr(Mem[$C000:$0041]);
+End;
+
+Function IsEGAWonder:Boolean;
+Var S:String;
+Begin
+ S:=ATIProduct;
+ IsEGAWonder:=(S='22') or (S='32');
+End;
+
+27.3 Version de ROM
+-------------------
+
+Procedure ATIBIOSVersion(Var Major,Minor:Byte);
+Begin
+ Major:=Mem[$C000:$004C];
+ Minor:=Mem[$C000:$004D];
+End;
+
+N'appeler cette procedure qu'apres validation de la signature.
+
+27.4 Lire les informations EGA
+------------------------------
+
+Procedure EGAInfo(Var Mono,MemoryCode,Features,Switches:Byte);
+Var R:Registers;
+Begin
+ R.AH:=$12; R.BL:=$10;
+ Intr($10,R);
+ Mono:=R.BH;
+ MemoryCode:=R.BL;
+ Features:=R.CH;
+ Switches:=R.CL;
+End;
+
+27.5 Ecrire et lire un pixel par BIOS
+-------------------------------------
+
+Procedure PutPixelBIOS(X,Y:Word; Color:Byte);
+Var R:Registers;
+Begin
+ R.AH:=$0C; R.AL:=Color; R.BH:=0; R.CX:=X; R.DX:=Y;
+ Intr($10,R);
+End;
+
+Function GetPixelBIOS(X,Y:Word):Byte;
+Var R:Registers;
+Begin
+ R.AH:=$0D; R.BH:=0; R.CX:=X; R.DX:=Y;
+ Intr($10,R);
+ GetPixelBIOS:=R.AL;
+End;
+
+27.6 Programmer un registre indexe
+-----------------------------------
+
+Procedure WriteSeq(Index,Value:Byte); Assembler;
+Asm
+ mov dx,$03C4
+ mov al,Index
+ out dx,al
+ inc dx
+ mov al,Value
+ out dx,al
+End;
+
+Procedure WriteGC(Index,Value:Byte); Assembler;
+Asm
+ mov dx,$03CE
+ mov al,Index
+ out dx,al
+ inc dx
+ mov al,Value
+ out dx,al
+End;
+
+27.7 Ecrire l'Attribute Controller
+----------------------------------
+
+Procedure WriteAttr(Index,Value:Byte); Assembler;
+Asm
+ pushf
+ cli
+ mov dx,$03DA
+ in  al,dx
+ mov dx,$03C0
+ mov al,Index
+ out dx,al
+ mov al,Value
+ out dx,al
+ mov al,$20                    { reactiver l'affichage }
+ out dx,al
+ popf
+End;
+
+Pour un mode monochrome, lire 3BAh plutot que 3DAh. Une bibliotheque generale
+determine la base CRTC a partir du bit 0 du registre Miscellaneous Output.
+
+27.8 Charger une palette par BIOS
+---------------------------------
+
+Procedure SetPaletteRegister(Index,Value:Byte);
+Var R:Registers;
+Begin
+ R.AX:=$1000; R.BL:=Index; R.BH:=Value;
+ Intr($10,R);
+End;
+
+27.9 Calculer l'adresse d'un pixel
+----------------------------------
+
+Function PixelOffset(X,Y,Width:Word):Word;
+Begin
+ PixelOffset:=Y*(Width div 8)+(X div 8);
+End;
+
+Function PixelMask(X:Word):Byte;
+Begin
+ PixelMask:=$80 shr (X and 7);
+End;
+
+27.10 Attendre le retrace
+-------------------------
+
+Function WaitVerticalRetrace(Limit:Word):Boolean;
+Begin
+ While ((Port[$3DA] and 8)<>0) and (Limit<>0) do Dec(Limit);
+ While ((Port[$3DA] and 8)=0) and (Limit<>0) do Dec(Limit);
+ WaitVerticalRetrace:=Limit<>0;
+End;
+
+En mode MDA/Hercules, remplacer 3DAh par 3BAh. La limite evite un blocage sous
+un emulateur incomplet ou lorsque la personnalite active n'utilise pas ce port.
+
+
+==============================================================================
+28. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+28.1 Separer les modeles
+------------------------
+
+Creer des profils distincts : EGA Wonder originale, 800/480 et 800+. Associer a
+chacun sa ROM, ses connecteurs, ses registres et sa table de modes. Ne pas faire
+de 1CEh/1CFh une propriete universelle de toute EGA Wonder.
+
+28.2 Personnalites d'E/S
+------------------------
+
+Le decodeur doit exposer correctement 3Bxh, 3Dxh et l'EGA 3Cxh en fonction du
+mode. B000h, B800h et A000h ne sont pas des alias permanents. La coexistence de
+deux cartes influe sur la page Hercules disponible.
+
+28.3 Pipeline EGA
+-----------------
+
+Modeliser quatre plans, quatre latches, les trois modes d'ecriture EGA, les deux
+modes de lecture, le rotateur, Set/Reset, l'ALU, Bit Mask et Map Mask. Tester les
+ports word OUT : sur 8086, OUT DX,AX ecrit l'octet bas au port DX puis le haut au
+port DX+1.
+
+28.4 Attribute Controller
+-------------------------
+
+La lecture de 3BAh/3DAh remet la bascule en position index. Les ecritures 3C0h
+alternent index et donnee. Le bit 5 de l'index active la sortie. Cette petite
+machine d'etats explique de nombreux ecrans noirs dans les emulateurs.
+
+28.5 Timings et conversion
+--------------------------
+
+Conserver d'une part le timing programme par le logiciel et d'autre part la
+conversion ATI choisie par le moniteur : entrelacement, double scan, traduction
+couleur-vers-nuance. Ne pas simplement doubler la resolution du framebuffer.
+
+28.6 ROM et modes
+-----------------
+
+Executer la ROM correspondant au modele est la solution la plus fidele. Si le
+BIOS est reimplemente, reproduire les modes etendus, la BIOS Data Area, les
+polices, les retours INT 10h et les signatures de la revision choisie.
+
+28.7 Interruptions
+------------------
+
+Implementer le retrace vertical et son statut avant l'IRQ. Respecter le partage
+problematiques d'IRQ 2. Ne jamais generer une tempete d'interruptions si la source
+n'est pas acquittee.
+
+28.8 Composite
+--------------
+
+Pour une emulation avancee, generer le composite depuis le signal CGA avec phase
+et sous-porteuse. Pour un mode pratique, fournir au minimum les couleurs logiques
+et une option d'artefacts. Ne pas appliquer les artefacts aux sorties EGA RGBI.
+
+
+==============================================================================
+29. PLAN DE VALIDATION
+==============================================================================
+
+Tests minimaux :
+
+  [ ] ROM 55 AA et somme de controle valides
+  [ ] signature ATI et type produit corrects
+  [ ] INT 10h modes 00h a 10h
+  [ ] modes 11h/12h uniquement sur configuration compatible
+  [ ] modes ATI 23h,27h,33h,37h,51h-54h,58h selon ROM
+  [ ] INT 10h/AH=0Fh retourne mode, colonnes et page
+  [ ] INT 10h/AH=12h/BL=10h retourne 256 Kio
+  [ ] tous les write/read modes EGA
+  [ ] Color Compare et Color Don't Care
+  [ ] panning et Line Compare
+  [ ] chargement de police et 512 caracteres
+  [ ] ports CGA et organisation B800h
+  [ ] ports MDA/Hercules et organisation B000h
+  [ ] une/deux pages Hercules selon coexistence
+  [ ] palette 16 parmi 64
+  [ ] bascule de l'Attribute Controller
+  [ ] retrace vertical et expiration des boucles
+  [ ] interlacement RGB et double scan
+  [ ] sorties composite, EGA, mono et MultiSync
+  [ ] SuperSwitch ENAB/DISAB et 132 colonnes
+  [ ] registres 1CEh/1CFh uniquement sur 800+/18800
+
+
+==============================================================================
+30. DEPANNAGE ET SECURITE
+==============================================================================
+
+Ecran noir : verifier alimentation, insertion ISA, type de moniteur, SW1/8,
+selection couleur/mono, connecteur, mode BIOS et activation de l'Attribute
+Controller.
+
+Image qui roule : mauvaise frequence de moniteur ou mauvaise configuration des
+commutateurs. Couper rapidement l'affichage ; ne pas chercher a stabiliser un
+mode hors plage avec les reglages du moniteur.
+
+Scintillement : probable mode EGA/Hercules entrelace sur RGB 15 kHz. Employer un
+5154, un 25 kHz ou un MultiSync compatible si possible.
+
+Conflit materiel : verifier IRQ 2, souris bus, horloge temps reel, seconde carte
+video et plages d'E/S. Tester SMS DISAB ou SW1/8 OFF.
+
+Mode etendu refuse : verifier ROM, modele exact, moniteur et pilote ATI. Ne pas
+forcer les registres d'un mode 800+ sur une originale.
+
+Avant manipulation : eteindre et debrancher le PC et le moniteur. Les broches
++12 V des connecteurs internes peuvent endommager une entree video. Ne jamais
+deplacer un cavalier ou un commutateur sous tension.
+
+
+==============================================================================
+31. REFERENCES
+==============================================================================
+
+Source ATI principale
+---------------------
+
+  * ATI Technologies Inc., EGA Wonder Operation Manual, OEM Version,
+    edition 2.3, janvier 1988.
+
+    https://www.minuszerodegrees.net/manuals/ATI/
+    ATI%20-%20EGA%20Wonder%20-%20Operation%20Manual%20
+    %28Edition%202.3%2C%20January%201988%29.pdf
+
+  * Copie du meme manuel et presentation de la carte :
+
+    https://www.dosdays.co.uk/topics/Manufacturers/ati/ati_ega_wonder.php
+
+Variantes
+---------
+
+  * ATI Technologies Inc., EGAWONDER800+ User's Guide, premiere edition,
+    avril 1989.
+
+    https://www.minuszerodegrees.net/manuals/ATI/
+    ATI%20-%20EGA%20Wonder%20800%2B%20-%20Operation%20Manual%20
+    %281st%20Edition%2C%20April%201989%29.pdf
+
+References de programmation
+----------------------------
+
+  * IBM Enhanced Graphics Adapter Technical Reference, pour les registres EGA,
+    la memoire planaire et le BIOS standard.
+
+  * Ralf Brown's Interrupt List, entrees INT 10h et identification ATI :
+
+    https://www.cs.cmu.edu/~ralf/files.html
+
+  * VGADOC/ATI.TXT, compilation historique des identificateurs et modes ATI :
+
+    https://bearstrong.net/tekst97/data/programmering/vgadoc3/ati/
+
+  * 86Box, implementation libre utile pour confronter les comportements des
+    EGA Wonder 800+/ATI 18800, sans remplacer les manuels constructeur :
+
+    https://github.com/86Box/86Box
+
+Les tableaux du manuel ATI sont normatifs pour la carte originale. Les donnees
+RBIL/VGADOC et le code des emulateurs servent a completer la detection et les
+variantes. En cas de divergence, conserver le comportement de la ROM et du
+materiel precis que l'on cherche a reproduire.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

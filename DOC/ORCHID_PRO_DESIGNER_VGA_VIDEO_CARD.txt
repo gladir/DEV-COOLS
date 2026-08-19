@@ -1,0 +1,1087 @@
+==============================================================================
+ ORCHID TECHNOLOGY PRODESIGNER VGA ET PRODESIGNER VGA+
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit les cartes Orchid Technology ProDesigner VGA et ProDesigner
+VGA+ de premiere generation, lancees vers 1988 et basees sur le controleur
+Tseng Labs ET3000. Il couvre le materiel, les cavaliers, la memoire, la
+compatibilite IBM, le BIOS, les banques SVGA et la programmation sous DOS en
+assembleur et Turbo Pascal.
+
+Les Orchid ProDesigner II et IIs emploient un ET4000 et constituent une autre
+generation. Leurs registres, leur memoire, leurs modes et leur RAMDAC ne doivent
+pas etre attribues a la ProDesigner VGA ET3000 sans verification.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Identification et historique
+  2. Famille Designer et noms commerciaux
+  3. Caracteristiques confirmees
+  4. Architecture materielle
+  5. Bus ISA 16 bits et BIOS
+  6. Memoire video 256/512 Kio
+  7. Sortie video et moniteurs
+  8. Cavaliers JP1 et JP2
+  9. NMI et detection automatique des modes
+ 10. Compatibilite VGA, EGA, CGA, MDA et Hercules
+ 11. Modes VGA IBM
+ 12. Modes etendus Orchid/ET3000
+ 13. Organisation de la memoire VGA
+ 14. Carte des ports VGA et ET3000
+ 15. Deblocage des registres Tseng
+ 16. Segment Select 3CDh et banques
+ 17. Registres CRTC etendus ET3000
+ 18. Zoom materiel ET3000
+ 19. Palette et RAMDAC Inmos
+ 20. BIOS video, pilotes et utilitaires Orchid
+ 21. VESA VBE et modes proprietaires
+ 22. Detection de la carte et du chipset
+ 23. Programmation d'un mode bancaire
+ 24. Exemples en assembleur
+ 25. Exemples en Turbo Pascal
+ 26. Installation et diagnostic
+ 27. Conseils pour un pilote ou un emulateur
+ 28. Tests de conformite
+ 29. ProDesigner II/IIs : differences essentielles
+ 30. Pieges frequents
+ 31. References
+
+
+==============================================================================
+1. IDENTIFICATION ET HISTORIQUE
+==============================================================================
+
+Fabricant       : Orchid Technology
+Produit         : ProDesigner VGA / ProDesigner VGA+
+Periode         : a partir de 1988
+Bus             : ISA 16 bits
+Controleur      : Tseng Laboratories ET3000
+Memoire         : 256 Kio (VGA), jusqu'a 512 Kio (VGA+)
+RAMDAC rapporte : Inmos IMSG171P-50 sur des exemplaires documentes
+Sortie          : RGB analogique DE-15
+
+Orchid faisait partie des fabricants qui adopterent rapidement les controleurs
+Tseng. L'ET3000 offrait une interface hote rapide, une forte compatibilite VGA
+et des registres permettant d'adresser plus que les 256 Kio IBM.
+
+References materielles relevees :
+
+  * Designer VGA 8 bits : famille 830-0008-X ;
+  * ProDesigner VGA+ : famille 830-0022-X ;
+  * FCC ID rapporte pour VGA+ : DDS2EF1088-88-PRO.
+
+Les revisions de circuit imprime et de BIOS peuvent differer. Toujours relever
+le numero complet, le marquage ET3000 et la quantite de DRAM avant d'appliquer
+une configuration trouvee pour une autre carte Orchid.
+
+
+==============================================================================
+2. FAMILLE DESIGNER ET NOMS COMMERCIAUX
+==============================================================================
+
+Nom                      Bus       Controleur   Memoire typique
+---------------------------------------------------------------------------
+Designer VGA              ISA 8     ET3000       256 ou 512 Kio selon version
+ProDesigner VGA           ISA 16    ET3000       256 Kio
+ProDesigner VGA+          ISA 16    ET3000       512 Kio maximum
+ProDesigner II / IIs      ISA 16    ET4000       512 Kio/1 Mio selon version
+
+Les fiches d'archives ne sont pas toujours coherentes sur le signe espace,
+"Pro Designer" ou "ProDesigner", ni sur le suffixe Plus. Ce document utilise
+les capacites physiques pour lever l'ambiguite.
+
+La Designer VGA 8 bits pouvait exister avec une sortie DE-9 TTL supplementaire.
+La ProDesigner VGA documentee ici est avant tout une carte analogique 16 bits.
+Ne pas supposer la presence du DE-9 ou d'un Feature Connector sans l'observer.
+
+
+==============================================================================
+3. CARACTERISTIQUES CONFIRMEES
+==============================================================================
+
+  * controleur Tseng Labs ET3000 ;
+  * compatibilite registre avec les modes IBM VGA ;
+  * emulation des standards plus anciens par materiel/logiciel Orchid ;
+  * bus ISA 16 bits ;
+  * 256 Kio sur ProDesigner VGA ;
+  * 512 Kio maximum sur ProDesigner VGA+ ;
+  * sortie analogique VGA 15 broches ;
+  * JP1 pour autoriser le NMI utilise par l'autodetection ;
+  * JP2 pour selectionner l'acces BIOS 8 ou 16 bits sur certaines revisions ;
+  * logiciels Orchid de modes, fontes, zoom/hotkey et pilotes d'applications.
+
+Une fiche de configuration ancienne indique "resolution maximale 640 x 480".
+Cette valeur decrit probablement le sous-ensemble VGA standard ou une revision
+precise. L'ET3000 et les pilotes Orchid conserves comportent des chemins 800 et
+1024, notamment SD800 et SD1024. Il faut donc distinguer capacite du chipset,
+memoire installee, BIOS, pilote et moniteur ; aucune resolution etendue ne doit
+etre promise sur la seule base du nom.
+
+
+==============================================================================
+4. ARCHITECTURE MATERIELLE
+==============================================================================
+
+La carte comporte logiquement :
+
+  * ET3000 : Sequencer, CRTC, Graphics Controller, Attribute Controller et
+    extensions Tseng ;
+  * 256 ou 512 Kio de DRAM organisee en plans/bancs ;
+  * RAMDAC externe 256 entrees ;
+  * oscillateurs/selection d'horloge pour les modes standard et etendus ;
+  * ROM BIOS d'extension ;
+  * logique ISA 8/16 bits, NMI et decodage des ports ;
+  * sortie RGB analogique.
+
+L'ET3000 n'est pas un accelerateur BitBLT. Les pixels, lignes, rectangles et
+copies sont calcules par le CPU. Ses performances proviennent surtout de
+l'interface memoire/bus et de l'adressage etendu. Les moteurs graphiques W32
+appartiennent a des generations Tseng ulterieures.
+
+
+==============================================================================
+5. BUS ISA 16 BITS ET BIOS
+==============================================================================
+
+Le connecteur ISA 16 bits permet des transferts plus larges que sur Designer VGA
+8 bits. Toutefois, largeur de bus, largeur de ROM et largeur effective de la
+memoire video sont des notions distinctes.
+
+JP2 selectionne sur les premieres revisions :
+
+  broches 1-2 : BIOS en acces 8 bits
+  broches 2-3 : BIOS en acces 16 bits
+
+Sur des revisions plus recentes, JP2 est indique non fonctionnel. Un BIOS 16
+bits peut accelerer le POST et les appels ROM sur une carte mere compatible,
+mais une configuration incorrecte peut empecher l'execution de C0000h.
+
+La ROM option commence normalement par :
+
+  C000:0000  55h AAh
+  C000:0002  taille en blocs de 512 octets
+  C000:0003  code d'initialisation
+
+Le checksum de la longueur declaree doit etre nul modulo 256. Une ROM shadowee
+par le chipset de carte mere reste logiquement visible a C0000h.
+
+
+==============================================================================
+6. MEMOIRE VIDEO 256/512 KIO
+==============================================================================
+
+256 Kio suffisent a tous les modes IBM VGA. Les modes VGA planaires repartissent
+la memoire entre quatre plans de 64 Kio. Le mode 13h expose 64 Kio lineaires au
+CPU par Chain-4, bien que les octets soient distribues entre les plans.
+
+512 Kio permettent des images etendues :
+
+ Resolution/profondeur     Taille minimale sans pitch
+ ---------------------------------------------------------------------------
+ 640 x 480 x 8 bpp          307 200 octets
+ 800 x 600 x 4 bpp          240 000 octets
+ 800 x 600 x 8 bpp          480 000 octets
+ 1024 x 768 x 4 bpp         393 216 octets
+ 1024 x 768 x 8 bpp         786 432 octets, ne tient pas dans 512 Kio
+
+La VGA+ peut donc, en theorie, afficher 800 x 600 x 256 ou 1024 x 768 x 16 si
+les horloges, le RAMDAC, le BIOS et le moniteur le supportent. Le pitch et les
+zones reservees peuvent augmenter la taille reelle.
+
+Le registre ET3000 Segment Select n'expose qu'une fenetre a la fois. Il n'existe
+pas de framebuffer lineaire ISA standard au-dessus de 1 Mio garanti par Orchid.
+
+
+==============================================================================
+7. SORTIE VIDEO ET MONITEURS
+==============================================================================
+
+Le DE-15 fournit rouge, vert et bleu analogiques, synchronisations horizontale
+et verticale, masses et lignes d'identification. Les modes VGA a 31,5 kHz sont
+largement compatibles avec les moniteurs analogiques PS/2.
+
+Les modes 800 x 600 et 1024 x 768 utilisent d'autres frequences, parfois
+entrelacees. Un pilote Orchid pouvait demander le type de moniteur ou installer
+une table de mode adaptee. Ne jamais appliquer une table 1024 arbitraire a un
+CRT fixe.
+
+La compatibilite "Hercules/CGA/EGA" peut signifier emulation logique ou mode
+de timing selectionne par Orchid. Une sortie analogique ne devient pas une
+sortie TTL IBM 5151/5153 par un cable passif. Certaines Designer 8 bits avaient
+un DE-9 ; cela ne garantit pas ce connecteur sur ProDesigner VGA.
+
+
+==============================================================================
+8. CAVALIERS JP1 ET JP2
+==============================================================================
+
+JP1 - NMI Select
+----------------
+
+  ferme  : NMI autorise
+  ouvert : NMI interdit
+
+Le logiciel d'autodetection Orchid exige JP1 ferme. Certaines machines Compaq
+peuvent echouer au demarrage avec ce reglage ; le manuel de configuration
+recommande alors de desactiver la fonction et d'utiliser une selection manuelle.
+
+JP2 - BIOS Bus Select
+---------------------
+
+  broches 1-2 : BIOS 8 bits
+  broches 2-3 : BIOS 16 bits
+
+JP2 n'a aucun effet sur certaines revisions. Commencer par le reglage compatible
+8 bits en cas d'ecran noir, puis verifier la documentation du numero de carte.
+
+Toujours couper l'alimentation avant de deplacer un cavalier et noter sa position
+originale. Ne pas confondre JP1 avec une interruption masquable sur IRQ2/9 : NMI
+est une entree processeur non masquable et exige une gestion speciale.
+
+
+==============================================================================
+9. NMI ET DETECTION AUTOMATIQUE DES MODES
+==============================================================================
+
+Les utilitaires Orchid pouvaient surveiller les acces de logiciels anciens et
+adapter la compatibilite/timing. JP1 autorise le mecanisme NMI necessaire a
+l'option Auto Detect. Le detail complet de la logique de declenchement n'est pas
+publie dans les fiches conservees ; il ne faut pas inventer un port d'acquittement.
+
+Risques :
+
+  * NMI partage conceptuellement les erreurs de parite et autres evenements
+    critiques ;
+  * un gestionnaire absent ou incompatible peut bloquer la machine ;
+  * certains BIOS Compaq emploient ou testent le NMI differemment ;
+  * un emulateur qui declenche le NMI sur chaque acces peut entrer en recursion.
+
+Un pilote doit identifier sa propre source, l'acquitter dans la logique Orchid,
+chainer ou restaurer l'ancien vecteur INT 02h et ne jamais appeler DOS pendant
+le NMI. Sans manuel de revision, laisser JP1 ouvert est le choix prudent.
+
+
+==============================================================================
+10. COMPATIBILITE VGA, EGA, CGA, MDA ET HERCULES
+==============================================================================
+
+VGA
+---
+
+Les ports, registres, memoires et BIOS standards sont compatibles. C'est le
+chemin portable recommande.
+
+EGA/CGA
+-------
+
+L'ET3000 reproduit les modes et interfaces utilises par la majorite des
+applications. Les timings sortent cependant par le connecteur analogique et les
+effets CGA composite ne sont pas reproduits.
+
+MDA/Hercules
+------------
+
+L'ET3000 dispose de compatibilite mono et d'un bit CRTC etendu correspondant.
+La disponibilite sur le moniteur branche, le type de sortie et l'utilitaire
+Orchid determinent l'usage pratique. Ne pas supposer qu'un IBM 5151 TTL peut etre
+branche sur le DE-15.
+
+AT&T/Olivetti
+-------------
+
+Des sources Orchid attribuent aussi a la serie Designer la compatibilite avec
+certains modes AT&T/Olivetti. Leurs timings et numeros ne font pas partie d'IBM
+VGA ; employer les pilotes Orchid plutot qu'une programmation deduite.
+
+
+==============================================================================
+11. MODES VGA IBM
+==============================================================================
+
+ Mode  Description                              Memoire
+ ---------------------------------------------------------------------------
+ 00h   texte 40 x 25                            B800h
+ 01h   texte 40 x 25                            B800h
+ 02h   texte 80 x 25                            B800h
+ 03h   texte 80 x 25                            B800h
+ 04h   320 x 200, 4 couleurs CGA                B800h
+ 05h   320 x 200, 4 couleurs CGA                B800h
+ 06h   640 x 200, 2 couleurs                    B800h
+ 07h   texte monochrome                         B000h
+ 0Dh   320 x 200, 16 couleurs planaires         A000h
+ 0Eh   640 x 200, 16 couleurs planaires         A000h
+ 0Fh   640 x 350, monochrome                    A000h
+ 10h   640 x 350, 16 couleurs                   A000h
+ 11h   640 x 480, 2 couleurs                    A000h
+ 12h   640 x 480, 16 couleurs                   A000h
+ 13h   320 x 200, 256 couleurs Chain-4          A000h
+
+Selection : INT 10h, AH=00h, AL=mode. Le bit 7 de AL demande normalement de ne
+pas effacer l'ecran sur EGA/VGA, sous reserve du BIOS.
+
+
+==============================================================================
+12. MODES ETENDUS ORCHID/ET3000
+==============================================================================
+
+Les disquettes conservees contiennent notamment des pilotes SD800 et SD1024,
+VMODE.COM, pilotes AutoCAD, GEM, Windows/386 et Ventura Publisher. Cela confirme
+une utilisation de resolutions etendues, mais pas une table universelle de
+numeros BIOS.
+
+Modes plausibles selon memoire et pilote :
+
+  * 640 x 350/400/480 en 256 couleurs ;
+  * 800 x 600 en 16 couleurs ;
+  * 800 x 600 en 256 couleurs avec 512 Kio ;
+  * 1024 x 768 en 16 couleurs avec 512 Kio.
+
+Frequence, entrelacement et numero changent avec BIOS/driver. Une application
+doit utiliser l'interface du pilote Orchid ou VESA si un TSR VBE est installe.
+Ecrire `mov ax,mode; int 10h` avec un numero copie d'une autre ET3000 peut choisir
+un autre timing ou echouer.
+
+
+==============================================================================
+13. ORGANISATION DE LA MEMOIRE VGA
+==============================================================================
+
+Texte : code et attribut a B800h/B000h.
+
+Modes planaires : quatre plans, chacun un bit par pixel. Sequencer Map Mask
+selectionne les plans ecrits ; Graphics Controller Read Map selectionne le plan
+lu. Les latches et Write Modes effectuent set/reset, rotation, fonctions
+logiques et masque de bits.
+
+Mode 13h : le CPU voit un octet par pixel a A000h. Chain-4 repartit les adresses
+entre les quatre plans.
+
+Modes etendus 8 bpp : framebuffer logique empaquete depassant 64 Kio. Le port
+3CDh choisit les segments de lecture et d'ecriture visibles dans l'aperture.
+
+Modes etendus 4 bpp : organisation planaire et banques eventuelles. Ne pas
+traiter 1024 x 768 x 16 couleurs comme des nibbles empaquetes sans lire le mode
+memory model du pilote.
+
+
+==============================================================================
+14. CARTE DES PORTS VGA ET ET3000
+==============================================================================
+
+ Port       Fonction
+ ---------------------------------------------------------------------------
+ 3C0h/3C1h  Attribute Controller index/donnees
+ 3C2h/3CCh  Miscellaneous Output ecriture/lecture
+ 3C3h       Video Subsystem Enable selon configuration
+ 3C4h/3C5h  Sequencer index/donnees
+ 3C6h       DAC Pixel Mask
+ 3C7h       DAC Read Index / etat
+ 3C8h       DAC Write Index
+ 3C9h       DAC Data
+ 3CAh       Feature Control lecture
+ 3CBh       fonction PEL etendue ET3000 selon revision
+ 3CDh       Segment Select ET3000
+ 3CEh/3CFh  Graphics Controller index/donnees
+ 3B4h/3B5h  CRTC en emulation monochrome
+ 3D4h/3D5h  CRTC en emulation couleur
+ 3BAh/3DAh  Input Status 1
+ 3BFh       cle de compatibilite/deblocage Tseng
+ 3D8h/3B8h  Mode Control utilise dans la sequence de cle
+ 46E8h      Video Subsystem Enable sur certaines configurations
+
+Le caractere `#` des manuels Tseng signifie B ou D selon Miscellaneous Output
+bit 0. Calculer la base CRTC active au lieu de toujours employer 3D4h.
+
+
+==============================================================================
+15. DEBLOCAGE DES REGISTRES TSENG
+==============================================================================
+
+Apres reset, certains registres etendus sont proteges. La sequence Tseng
+couramment documentee est :
+
+  OUT 3BFh,03h
+  OUT 3D8h,A0h        en chemin couleur
+
+En emulation monochrome, le port Mode Control correspondant peut etre 3B8h.
+Cette "KEY" ouvre les registres etendus, y compris Segment Select.
+
+Precautions :
+
+  * identifier Tseng avant la sequence ;
+  * sauver les valeurs logiques/etat du mode ;
+  * ne pas confondre cette cle avec le port Hercules 3BFh d'une vraie HGC ;
+  * un second adaptateur monochrome peut decoder 3BFh simultanement ;
+  * une reinitialisation synchrone du Sequencer peut reverrouiller la cle ;
+  * restaurer un etat compatible avant de rendre la main.
+
+
+==============================================================================
+16. SEGMENT SELECT 3CDH ET BANQUES
+==============================================================================
+
+Pour ET3000, port 3CDh :
+
+  bits 0..2  numero de banque d'ecriture 64 Kio, 0..7
+  bits 3..5  numero de banque de lecture 64 Kio, 0..7
+  bits 6..7  configuration de segment
+
+Configuration rapportee :
+
+  00b  segments de 128 Kio
+  01b  segments de 64 Kio
+  10b  memoire lineaire 1 Mio selon environnement materiel
+  11b  reserve/implementation dependante
+
+La forme ET4000 est differente : quatre bits d'ecriture et quatre bits de
+lecture. Le code classique `(bank shl 4) or bank` est donc FAUX pour ET3000.
+
+Pour selectionner la meme banque ET3000 en lecture/ecriture, mode 64 Kio :
+
+  valeur = 40h OR (bank AND 7) OR ((bank AND 7) SHL 3)
+
+Les bits de configuration doivent etre conserves si le BIOS emploie une autre
+fenetre. La carte 512 Kio utilise au maximum les banques 0..7.
+
+
+==============================================================================
+17. REGISTRES CRTC ETENDUS ET3000
+==============================================================================
+
+Les registres suivants sont rapportes pour ET3000. Ils sont accessibles par le
+CRTC actif apres deblocage.
+
+ Index  Fonction
+ ---------------------------------------------------------------------------
+ 1Bh    debut horizontal de la fenetre Zoom
+ 1Ch    fin horizontale de la fenetre Zoom
+ 1Dh    debut vertical Zoom, bits bas
+ 1Eh    fin verticale Zoom, bits bas
+ 1Fh    bits hauts debut/fin verticale Zoom
+ 20h    adresse Zoom bits 0..7
+ 21h    adresse Zoom bits 8..15
+ 23h    bits d'adresse etendus curseur/display/zoom
+ 24h    Compatibility Control
+ 25h    Overflow High
+ 32h    RAS/CAS Video Configuration
+ 36h    Video System Configuration 1, selon revision
+ 37h    Video System Configuration 2, memoire/largeur
+
+CRTC 23h
+--------
+
+  bit 0  adresse curseur bit 16
+  bit 1  adresse de depart affichage bit 16
+  bit 2  adresse Zoom bit 16
+
+CRTC 24h
+--------
+
+  bit 0  traduction d'horloge
+  bit 1  selection d'horloge maitre supplementaire
+  bit 2  tristate de sorties
+  bit 3  adresse A8 pour DRAM 1M selon configuration
+  bit 5  traduction CRTC par ROM externe
+  bit 6  double scan / attribut underline
+  bit 7  mode de compatibilite CGA/MDA/Hercules
+
+CRTC 25h ajoute les bits 10 de blank, total, display, sync et line compare ;
+bit 7 active l'entrelacement vertical. Les bits reserves doivent etre preserves.
+
+CRTC 32h programme des timings DRAM sensibles. Une mauvaise valeur peut
+corrompre toute la VRAM. Ne jamais la calculer a partir de la seule vitesse
+inscrite sur les puces ; conserver la valeur du BIOS.
+
+
+==============================================================================
+18. ZOOM MATERIEL ET3000
+==============================================================================
+
+L'ET3000 possede une fonction Zoom absente de l'ET4000 standard. Les registres
+1Bh..21h definissent :
+
+  * rectangle de destination a l'ecran ;
+  * lignes horizontales et verticales concernees ;
+  * adresse source en memoire video ;
+  * bits hauts d'adresse via 23h.
+
+Les utilitaires HOTZOOM/HOTKEY distribues dans certains ensembles Tseng/Orchid
+exploitent ce type de fonction. Le zoom agit pendant la lecture d'affichage ; il
+ne recopie pas necessairement les pixels dans le framebuffer.
+
+La programmation exacte depend du mode, du pitch et de la revision ET3000.
+Sauver tous les registres etendus, attendre le retrace et desactiver la fonction
+avant un changement de mode. Ne pas appliquer les index Zoom a ET4000.
+
+
+==============================================================================
+19. PALETTE ET RAMDAC INMOS
+==============================================================================
+
+Les exemplaires documentes utilisent un Inmos IMSG171P-50 ou composant voisin.
+Le chemin VGA fournit 256 entrees avec composantes rouge, verte et bleue de
+6 bits, soit 262 144 couleurs possibles.
+
+  3C6h  masque des index
+  3C7h  index de lecture
+  3C8h  index d'ecriture
+  3C9h  donnees R,G,B successives
+
+Le suffixe -50 caracterise la vitesse du composant, pas une profondeur de 50
+bits. Une ProDesigner revisee peut avoir un autre DAC compatible.
+
+La ProDesigner IIs ulterieure pouvait recevoir un Sierra HiColor RAMDAC. Cette
+option ne doit pas etre attribuee a la premiere ProDesigner VGA. Detecter le DAC
+avant toute sequence cachee a 3C6h.
+
+
+==============================================================================
+20. BIOS VIDEO, PILOTES ET UTILITAIRES ORCHID
+==============================================================================
+
+Logiciels retrouves sur les disquettes Designer/ProDesigner :
+
+  * VMODE.COM : selection/configuration de mode ;
+  * FLOAD.COM et FEDIT.COM : chargement/edition de fontes ;
+  * HOTKEY.COM et HOTZOOM.COM selon ensemble ;
+  * DSORCHID.EXE et programmes d'installation ;
+  * SD800.SYS/.VGA et SD1024.SYS/.VGA ;
+  * pilotes AutoCAD, GEM, Ventura Publisher et Windows/386 ;
+  * outils de diagnostic ou d'information ROM selon version.
+
+Un pilote applicatif peut programmer directement ET3000 sans ajouter de mode a
+INT 10h. La presence d'un fichier "1024" ne signifie donc pas que le BIOS seul
+accepte un numero de mode 1024.
+
+Avant d'installer un pilote : choisir exactement ProDesigner ET3000, memoire
+correcte et moniteur correct. Un pilote ProDesigner II ET4000 peut afficher une
+image noire ou programmer de mauvais registres.
+
+
+==============================================================================
+21. VESA VBE ET MODES PROPRIETAIRES
+==============================================================================
+
+La premiere ProDesigner date du debut de la normalisation VBE. Son BIOS peut ne
+pas contenir INT 10h/4Fxxh. Un TSR VESA tiers peut ajouter l'interface.
+
+Detection correcte :
+
+  AX=4F00h, ES:DI -> tampon 512 octets
+  succes uniquement si AX=004Fh et signature retour "VESA"
+
+Fonctions utiles :
+
+  4F01h  ModeInfo
+  4F02h  SetMode
+  4F03h  GetMode
+  4F05h  Set/Get Window
+
+Lire WinGranularity, WinSize, WinASegment, BytesPerScanLine, BitsPerPixel et
+MemoryModel. Une fonction VBE installee par TSR est preferable au port 3CDh car
+elle connait le mode de segment choisi par le pilote.
+
+
+==============================================================================
+22. DETECTION DE LA CARTE ET DU CHIPSET
+==============================================================================
+
+Il faut distinguer quatre questions :
+
+  1. existe-t-il un VGA ?
+  2. le controleur est-il Tseng ?
+  3. est-ce ET3000 et non ET4000 ?
+  4. le fabricant/BIOS est-il Orchid ProDesigner ?
+
+VGA : INT 10h/AX=1A00h et Display Combination Code.
+
+Tseng : sauvegarder les ports de cle, debloquer, puis tester en lecture/ecriture
+des bits non destructifs d'un registre etendu. Restaurer chaque valeur.
+
+ET3000 : Segment Select utilise 3+3+2 bits et les registres Zoom 1Bh..21h ;
+ET4000 utilise 4+4 bits et CRTC 33h/35h. Une detection publiee teste les bits
+inscriptibles plutot que la simple presence du port.
+
+Orchid : rechercher les chaines constructeur/produit dans une ROM valide et
+verifier numero/version par les utilitaires. Aucune signature fixe universelle
+a un offset unique n'est confirmee pour toutes les revisions.
+
+Ne jamais detecter par ecriture de pixels dans une banque active sans sauver et
+restaurer. Sous Windows, OS/2 ou un gestionnaire multitache, demander au pilote.
+
+
+==============================================================================
+23. PROGRAMMATION D'UN MODE BANCAIRE
+==============================================================================
+
+Pour un mode 8 bpp de pitch P :
+
+  adresse_lineaire = y*P+x
+  banque = adresse_lineaire div 65536
+  offset = adresse_lineaire and FFFFh
+
+En mode ET3000 Segment Select 64 Kio :
+
+  port 3CDh = 40h OR banque OR (banque SHL 3)
+
+Puis ecrire A000:offset. Si une ligne ou un bloc traverse FFFFh, fractionner la
+copie, selectionner la banque suivante et continuer.
+
+En lecture-modification-ecriture, selectionner explicitement les deux champs de
+banque. Une fonction qui ne modifie que la banque d'ecriture peut lire les
+donnees d'une autre banque.
+
+En VBE, le numero DX pour 4F05h est exprime en unites WinGranularity, qui ne sont
+pas necessairement 64 Kio. Utiliser la formule VBE plutot que le port direct.
+
+
+==============================================================================
+24. EXEMPLES EN ASSEMBLEUR
+==============================================================================
+
+24.1 Verifier le BIOS option
+----------------------------
+
+; CF=0 si C0000h contient un en-tete de ROM video plausible.
+
+CheckVideoROM:
+        push    ds
+        mov     ax,0C000h
+        mov     ds,ax
+        cmp     word ptr ds:[0],0AA55h
+        jne     short cvr_no
+        cmp     byte ptr ds:[2],0
+        je      short cvr_no
+        clc
+        jmp     short cvr_done
+cvr_no: stc
+cvr_done:
+        pop     ds
+        ret
+
+Cette routine ne verifie pas le checksum ni la marque Orchid.
+
+24.2 Debloquer ET3000
+---------------------
+
+; A executer seulement apres identification et sauvegarde du contexte.
+
+        mov     dx,03BFh
+        mov     al,03h
+        out     dx,al
+        mov     dx,03D8h
+        mov     al,0A0h
+        out     dx,al
+
+24.3 Selectionner une banque ET3000
+-----------------------------------
+
+; AL=banque 0..7, lecture=ecriture, configuration 64 Kio.
+
+SetET3000Bank:
+        and     al,07h
+        mov     ah,al
+        shl     al,1
+        shl     al,1
+        shl     al,1               ; banque lecture dans bits 3..5
+        or      al,ah               ; banque ecriture bits 0..2
+        or      al,40h              ; segments de 64 Kio
+        mov     dx,03CDh
+        out     dx,al
+        ret
+
+24.4 Pixel 8 bpp bancaire
+-------------------------
+
+; Entree DX:AX=offset lineaire 32 bits, CL=couleur.
+; Hypotheses : offset < 512 Kio, fenetre A000h, banques ET3000 64 Kio.
+
+DX contient les bits 16..31 et la banque est DL seulement lorsque l'offset est
+normalise dans l'intervalle de 512 Kio. La version correcte est :
+
+PutPixelBanked:
+        push    ax
+        mov     al,dl               ; bits 16..23 = numero de banque
+        call    SetET3000Bank
+        pop     di                  ; offset bas 16 bits
+        mov     ax,0A000h
+        mov     es,ax
+        mov     es:[di],cl
+        ret
+
+Verifier que DH=0 et DL<=7 avant l'appel.
+
+24.5 Banque VBE
+----------------
+
+; DX=banque en unites VBE, fenetre A.
+
+        mov     ax,4F05h
+        xor     bx,bx
+        int     10h
+        cmp     ax,004Fh
+        jne     VBEError
+
+24.6 Palette VGA
+----------------
+
+; AL=index, CH=R, CL=G, BL=B, valeurs 0..63.
+
+        mov     dx,03C8h
+        out     dx,al
+        inc     dx
+        mov     al,ch
+        out     dx,al
+        mov     al,cl
+        out     dx,al
+        mov     al,bl
+        out     dx,al
+
+24.7 Lire un registre CRTC etendu
+---------------------------------
+
+; BL=index. Retour AL=valeur. Choisit le CRTC couleur.
+
+        mov     dx,03D4h
+        mov     al,bl
+        out     dx,al
+        inc     dx
+        in      al,dx
+
+En code general, lire Miscellaneous Output 3CCh bit 0 et choisir 3B4h ou 3D4h.
+
+
+==============================================================================
+25. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+25.1 Detecter VGA par le BIOS
+-----------------------------
+
+uses Dos;
+
+function HasVGA : Boolean;
+var R : Registers;
+begin
+  R.AX := $1A00;
+  Intr($10,R);
+  HasVGA := (R.AL=$1A) and ((R.BL=$07) or (R.BL=$08));
+end;
+
+Cela ne detecte ni Tseng ni Orchid.
+
+25.2 Verifier l'en-tete et le checksum ROM
+------------------------------------------
+
+function VideoROMChecksumOK : Boolean;
+var
+  Blocks : Byte;
+  I,Count : LongInt;
+  Sum : Word;
+begin
+  VideoROMChecksumOK:=False;
+  if (Mem[$C000:0]<>$55) or (Mem[$C000:1]<>$AA) then Exit;
+  Blocks:=Mem[$C000:2];
+  Count:=LongInt(Blocks)*512;
+  if (Blocks=0) or (Count>65536) then Exit;
+  Sum:=0;
+  for I:=0 to Count-1 do
+    Sum:=(Sum+Mem[$C000:Word(I)]) and $FF;
+  VideoROMChecksumOK:=Sum=0;
+end;
+
+25.3 Rechercher une chaine Orchid dans la ROM
+---------------------------------------------
+
+function ROMContains(const Needle : String) : Boolean;
+var
+  Size,I : LongInt;
+  J : Word;
+  Match : Boolean;
+begin
+  ROMContains:=False;
+  if not VideoROMChecksumOK then Exit;
+  Size:=LongInt(Mem[$C000:2])*512;
+  if (Length(Needle)=0) or (Size<Length(Needle)) then Exit;
+  for I:=0 to Size-Length(Needle) do begin
+    Match:=True;
+    for J:=1 to Length(Needle) do
+      if Mem[$C000:Word(I+J-1)]<>Ord(Needle[J]) then Match:=False;
+    if Match then begin ROMContains:=True; Exit end;
+  end;
+end;
+
+Exemples : rechercher `ORCHID`, `Orchid` et `PRODESIGNER`. Une chaine est un
+indice constructeur, pas une preuve de revision ET3000.
+
+25.4 Deblocage et banque ET3000
+-------------------------------
+
+procedure UnlockTsengColor;
+begin
+  Port[$3BF]:=$03;
+  Port[$3D8]:=$A0;
+end;
+
+procedure SetET3000Bank(Bank : Byte);
+begin
+  Bank:=Bank and 7;
+  Port[$3CD]:=$40 or Bank or (Bank shl 3);
+end;
+
+Ces routines exigent que ET3000 ait deja ete identifie et que le mode utilise
+des segments de 64 Kio.
+
+25.5 Pixel bancaire 8 bpp
+-------------------------
+
+procedure PutPixelBanked(X,Y,Pitch : Word; Color : Byte);
+var
+  L : LongInt;
+  Bank : Byte;
+  O : Word;
+begin
+  L:=LongInt(Y)*Pitch+X;
+  if (L<0) or (L>524287) then Exit;
+  Bank:=Byte(L shr 16);
+  O:=Word(L and $FFFF);
+  SetET3000Bank(Bank);
+  Mem[$A000:O]:=Color;
+end;
+
+Les bornes X/Y du mode doivent etre verifiees par l'appelant.
+
+25.6 Banques lecture/ecriture separees
+--------------------------------------
+
+procedure SetET3000Banks(ReadBank,WriteBank : Byte);
+begin
+  Port[$3CD]:=$40 or (WriteBank and 7) or ((ReadBank and 7) shl 3);
+end;
+
+25.7 VBE Set Window
+-------------------
+
+function SetVBEWindow(Bank : Word) : Boolean;
+var R : Registers;
+begin
+  R.AX:=$4F05;
+  R.BX:=0;
+  R.DX:=Bank;
+  Intr($10,R);
+  SetVBEWindow:=R.AX=$004F;
+end;
+
+25.8 Palette
+-------------
+
+procedure SetDAC(Index,R,G,B : Byte);
+begin
+  Port[$3C8]:=Index;
+  Port[$3C9]:=R and $3F;
+  Port[$3C9]:=G and $3F;
+  Port[$3C9]:=B and $3F;
+end;
+
+
+==============================================================================
+26. INSTALLATION ET DIAGNOSTIC
+==============================================================================
+
+Installation
+------------
+
+  1. couper alimentation et debrancher le secteur ;
+  2. relever modele, revision, BIOS, ET3000 et DRAM ;
+  3. choisir JP1 ouvert sauf besoin d'Auto Detect ;
+  4. choisir JP2 8 bits en cas d'incertitude ;
+  5. inserer dans un slot ISA 16 bits ;
+  6. desactiver la video integree ou retirer l'autre VGA ;
+  7. brancher un moniteur analogique compatible ;
+  8. demarrer en mode VGA standard avant les utilitaires Orchid.
+
+Diagnostic
+----------
+
+  * verifier la banniere BIOS et checksum C0000h ;
+  * tester modes texte, 12h et 13h ;
+  * identifier 256 ou 512 Kio sans detruire l'ecran actif ;
+  * tester chaque banque par motifs 00/FF/55/AA/adresse ;
+  * restaurer les octets testes ;
+  * tester SD800/SD1024 seulement avec un moniteur autorise ;
+  * comparer JP1 ouvert/ferme si Auto Detect echoue ;
+  * essayer JP2 8 bits si la machine ne POST pas.
+
+Symptomes
+---------
+
+  aucun affichage : conflit C0000h, JP2, slot, ROM ou VGA concurrente
+  VGA fonctionne, SVGA corrompu : DRAM haute, banque ou pilote incorrect
+  plantage Compaq au POST : JP1/NMI Auto Detect
+  image roulee : mauvais pilote/timing moniteur
+  couleurs fausses : RAMDAC, palette, Pixel Mask ou memoire
+  1024 impossible : memoire, moniteur, pilote ou revision BIOS
+
+
+==============================================================================
+27. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Un modele fidele de premiere ProDesigner doit inclure :
+
+  * ET3000 et non ET4000 ;
+  * VGA IBM complet ;
+  * 256/512 Kio configurables ;
+  * Segment Select 3+3+2 bits ;
+  * CRTC etendus 1Bh..25h, 32h, etc. de la revision ;
+  * zoom ET3000 ;
+  * RAMDAC Inmos compatible VGA ;
+  * oscillateurs et timings provenant du BIOS Orchid ;
+  * ROM d'extension et pilotes/modes coherents ;
+  * comportement NMI de JP1 si documente ;
+  * largeur BIOS de JP2 si elle affecte la revision emulee.
+
+Ne pas reutiliser un coeur ET4000 en changeant seulement le nom. Les differences
+de banque sont visibles immediatement : un logiciel ET3000 ecrit les bits 3..5,
+alors que ET4000 attend 4..7 pour la banque de lecture.
+
+La ROM doit etre executee au POST et installer INT 10h. Les modes proprietaires
+doivent correspondre aux fichiers/pilotes de la version retenue. Une emulation
+VBE ajoutee arbitrairement peut masquer les incompatibilites du BIOS original.
+
+
+==============================================================================
+28. TESTS DE CONFORMITE
+==============================================================================
+
+  1. en-tete, longueur et checksum ROM ;
+  2. chaines Orchid et version de BIOS attendues ;
+  3. tous les modes IBM VGA ;
+  4. Attribute Controller et bascule 3C0h ;
+  5. latches et quatre Write Modes VGA ;
+  6. DAC 256 x RGB6 et Pixel Mask ;
+  7. 256 Kio puis 512 Kio sans alias ;
+  8. banque ET3000 ecriture bits 0..2 ;
+  9. banque lecture bits 3..5 independante ;
+ 10. configuration segment bits 6..7 ;
+ 11. frontiere A000:FFFFh vers banque suivante ;
+ 12. CRTC 23h/25h et adresses hautes ;
+ 13. Zoom dans chaque bord de l'ecran ;
+ 14. cle perdue apres reset Sequencer puis restauree ;
+ 15. compatibilite CGA/EGA/MDA/Hercules annoncee ;
+ 16. JP1 sans NMI, puis NMI avec gestionnaire Orchid ;
+ 17. JP2 8/16 bits selon revision ;
+ 18. modes SD800/SD1024 avec timings et memoire corrects ;
+ 19. VBE absent traite proprement ;
+ 20. VBE TSR present sans changer l'identification materielle.
+
+
+==============================================================================
+29. PRODESIGNER II/IIS : DIFFERENCES ESSENTIELLES
+==============================================================================
+
+ProDesigner II/IIs utilise ET4000. Differences majeures :
+
+  * Segment Select : 4 bits ecriture + 4 bits lecture ;
+  * jusqu'a 1 Mio ou plus selon variante, contre 512 Kio ici ;
+  * CRTC etendus 33h/35h au lieu du jeu ET3000 ;
+  * pas le meme mecanisme Zoom ET3000 ;
+  * options de Speed Booster/zero wait state propres au manuel IIs ;
+  * RAMDAC Sierra HiColor disponible sur certaines IIs ;
+  * modes 32K couleurs et pilotes differents ;
+  * cavaliers et commutateurs differents.
+
+La mention "Orchid ProDesigner" dans un pilote ne suffit pas. Chercher II,
+IIs, ET4000, ET3000, quantite de memoire et RAMDAC.
+
+
+==============================================================================
+30. PIEGES FREQUENTS
+==============================================================================
+
+  * Documenter ProDesigner VGA comme ET4000.
+  * Appliquer le manuel ProDesigner IIs a la carte ET3000.
+  * Employer la formule de banque ET4000 `(b shl 4) or b`.
+  * Promettre 1024 x 768 x 256 avec seulement 512 Kio.
+  * Confondre resolution du chipset et mode garanti par le BIOS.
+  * Supposer VESA VBE sur une carte de 1988.
+  * Brancher un ecran MDA TTL au DE-15 analogique.
+  * Activer JP1/NMI sur un Compaq incompatible.
+  * Croire que JP2 accelere aussi la VRAM.
+  * Programmer CRTC 32h et detruire les timings DRAM.
+  * Utiliser les registres Zoom ET3000 sur ET4000.
+  * Supposer le RAMDAC Sierra HiColor de l'IIs.
+  * Ne pas conserver les bits 6..7 du Segment Select.
+  * Changer seulement la banque d'ecriture avant une lecture-modification.
+  * Calculer offset avec largeur au lieu de BytesPerScanLine.
+  * Tester la VRAM active sans sauvegarde/restauration.
+  * Confondre un TSR VESA avec une fonction de la ROM Orchid.
+
+
+==============================================================================
+31. REFERENCES
+==============================================================================
+
+Sources specifiques Orchid
+--------------------------
+
+  * DOS Days, Orchid Designer VGA / Pro Designer VGA / VGA+, historique,
+    composants, photographies et disquettes :
+
+    https://dosdays.co.uk/topics/Manufacturers/orchid/designer.php
+
+  * Total Hardware 1999 / Stason, Orchid ProDesigner VGA/VGA+,
+    JP1, JP2, bus et memoire :
+
+    https://stason.org/TULARC/pc/graphics-cards/M-O/
+    ORCHID-TECHNOLOGY-VGA-PRODESIGNER-VGA-PRODESIGNER.html
+
+  * Orchid Technology, ProDesigner IIs User's Manual, utilise uniquement pour
+    distinguer la generation ET4000 :
+
+    https://minuszerodegrees.net/manuals/Orchid/
+    Orchid%20ProDesigner%20IIs%20-%20User%27s%20Manual.pdf
+
+Sources controleur et programmation
+-----------------------------------
+
+  * Tseng Laboratories ET3000 Technical Manual/Data Book, registres etendus,
+    Segment Select, Zoom et timings. Consulter l'edition de la revision reelle.
+
+  * Tseng Laboratories, ET4000 Graphics Controller Data Book, uniquement pour
+    comparaison et prevention des confusions :
+
+    https://www.dosdays.co.uk/media/tsenglabs/
+    Tseng_Labs_ET4000_Graphics_Controller_1990.pdf
+
+  * Ralf Brown's Interrupt List, ports video Tseng 3CDh et CRTC etendus :
+
+    https://fd.lod.bz/rbil/ports/video/p03d403d5.html
+
+  * IBM VGA Technical Reference, registres et modes standards.
+
+  * VESA BIOS Extension Core Functions Standard, fonctions INT 10h/4Fxxh.
+
+Limite documentaire
+-------------------
+
+Le manuel d'operation complet de la premiere ProDesigner VGA n'est pas conserve
+dans toutes les archives consultees. Les faits propres a Orchid proviennent des
+fiches, photographies, logiciels et temoignages techniques concordants. Pour
+programmer une carte physique, verifier son numero, son BIOS et le marquage du
+controleur avant toute ecriture dans les registres etendus.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

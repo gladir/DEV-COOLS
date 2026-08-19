@@ -1,0 +1,1261 @@
+==============================================================================
+ COMMODORE AMIGA - MATERIEL, AMIGAOS ET PROGRAMMATION
+ Reference technique OCS, ECS et AGA
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille Commodore Amiga, son materiel et sa programmation.
+Il couvre les modeles 1000, 500, 2000, 3000, 500 Plus, 600, 1200, 4000 et CD32,
+les chipsets OCS/ECS/AGA, les processeurs 680x0, la memoire, les circuits custom,
+AmigaOS et des exemples en assembleur 68000 et en C.
+
+L'Amiga n'est pas une machine unique. Une adresse ou un mode correct sur A500
+OCS peut etre absent ou avoir des bits supplementaires sur A1200 AGA. Une carte
+acceleratrice, RTG ou controleur disque ajoute encore d'autres architectures.
+
+Notation : $ prefixe un nombre hexadecimal. Les donnees 680x0 sont big-endian.
+Les accents sont omis afin de conserver un fichier ASCII lisible sur AmigaDOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Histoire
+  2. Modeles
+  3. Chipsets OCS, ECS et AGA
+  4. Architecture generale
+  5. Processeurs 680x0
+  6. Carte memoire
+  7. Chip RAM, Fast RAM et Slow RAM
+  8. Carte des registres custom
+  9. Agnus/Alice et arbitrage DMA
+ 10. Denise/Lisa et modes video
+ 11. Bitplanes et organisation graphique
+ 12. Fenetre d'affichage et fetch DMA
+ 13. Palette, EHB, HAM et dual playfield
+ 14. Sprites materiels et collisions
+ 15. Copper
+ 16. Blitter
+ 17. Paula et audio DMA
+ 18. Filtre audio et mixage
+ 19. Interruptions
+ 20. CIA 8520 et temporisateurs
+ 21. Clavier, souris, joysticks et paddles
+ 22. Lecteur de disquette
+ 23. Serie et parallele
+ 24. Expansion Zorro et Autoconfig
+ 25. IDE, SCSI, PCMCIA et CD-ROM
+ 26. Kickstart, Workbench et AmigaOS
+ 27. Exec
+ 28. Bibliotheques partagees
+ 29. Devices et E/S asynchrones
+ 30. AmigaDOS
+ 31. Intuition, GadTools et BOOPSI
+ 32. graphics.library et affichage compatible
+ 33. IFF, ILBM, 8SVX et autres formats
+ 34. Executables Hunk et demarrage disquette
+ 35. Detection du materiel
+ 36. Acces direct et prise de controle
+ 37. Exemple assembleur : appel Exec
+ 38. Exemple assembleur : attente video et couleur
+ 39. Exemple assembleur : Blitter
+ 40. Exemples C AmigaOS
+ 41. Programmation graphique et double buffering
+ 42. Programmation audio
+ 43. Multitache, messages et synchronisation
+ 44. Compatibilite entre generations
+ 45. Conseils pour un emulateur
+ 46. Plan de validation
+ 47. Maintenance et preservation
+ 48. References
+
+
+==============================================================================
+1. HISTOIRE
+==============================================================================
+
+Amiga Corporation developpe au debut des annees 1980 une machine multimedia
+basee sur le Motorola 68000 et trois circuits specialises. Commodore acquiert la
+societe et lance l'Amiga 1000 en 1985. L'architecture combine multitache
+preemptif, interface graphique, couleurs, sprites, Blitter, Copper et audio PCM.
+
+L'Amiga 500 popularise la plate-forme domestique; l'Amiga 2000 vise l'expansion
+professionnelle. Les 3000/4000 apportent 68030/040 et bus Zorro III. A500 Plus,
+A600 puis A1200 modernisent les modeles compacts. Commodore cesse ses activites
+en 1994, mais AmigaOS, accelerateurs et logiciels continuent d'evoluer.
+
+
+==============================================================================
+2. MODELES
+==============================================================================
+
+Table simplifiee des configurations d'origine les plus courantes :
+
+  Modele   CPU                 Chipset      Chip RAM typique   Particularites
+  A1000    68000 ~7 MHz        OCS          256/512 Kio        Kickstart charge
+  A500     68000 ~7 MHz        OCS          512 Kio            compact
+  A2000    68000 ~7 MHz        OCS/ECS      512 Kio/1 Mio      Zorro II
+  A3000    68030 16/25 MHz     ECS          1-2 Mio            Zorro III, SCSI
+  A500+    68000 ~7 MHz        ECS          1 Mio              Kickstart 2.04
+  A600     68000 ~7 MHz        ECS          1 Mio              IDE, PCMCIA
+  A1200    68EC020 14 MHz      AGA          2 Mio              IDE, PCMCIA
+  A4000    68030/040           AGA          2 Mio              Zorro III, IDE
+  CDTV     68000               OCS/ECS      1 Mio              CD multimedia
+  CD32     68EC020             AGA          2 Mio              console CD
+
+RAM, ROM et CPU sont souvent modifies. A2000 existe en plusieurs revisions; A4000
+desktop et tower different. Identifier capacites, pas seulement nom du boitier.
+
+
+==============================================================================
+3. CHIPSETS OCS, ECS ET AGA
+==============================================================================
+
+OCS (Original Chip Set) : Agnus, Denise, Paula. Jusqu'a 512 Kio de Chip RAM sur
+les premiers Agnus, resolutions PAL/NTSC classiques, palette 12 bits, six plans
+en basse resolution, HAM6 et EHB selon revision.
+
+ECS (Enhanced Chip Set) : Fat Agnus et Super Denise. Jusqu'a 2 Mio de Chip RAM
+avec Agnus compatible, nouvelles resolutions/productivity, registres et controle
+plus souples. Paula reste essentiellement identique.
+
+AGA (Advanced Graphics Architecture) : Alice, Lisa et Paula. Jusqu'a 8 plans,
+palette 24 bits de 256 entrees, fetch 32/64 bits, HAM8, sprites ameliores et
+bande passante superieure. L'audio Paula reste quatre voies 8 bits.
+
+Les noms de circuits et leurs revisions sont significatifs. Une machine peut
+avoir Agnus ECS et Denise OCS. Utiliser graphics.library et GfxBase->ChipRevBits,
+ou expansion.library, plutot qu'une ecriture exploratoire.
+
+
+==============================================================================
+4. ARCHITECTURE GENERALE
+==============================================================================
+
+Le CPU partage la Chip RAM avec les DMA custom :
+
+  Agnus/Alice   controle memoire, DMA, Copper, Blitter, bitplanes et sprites
+  Denise/Lisa   composition video, palette, collisions, sortie pixels
+  Paula         audio, disquette, serie et interruptions
+  CIA-A/B       timers, ports, clavier, parallele, disquette et signaux systeme
+
+Exec gere multitache, interruptions, allocation et messages. Les bibliotheques
+graphics et intuition arbitrent l'affichage. Les devices gerent les peripheriques.
+Un programme qui ecrit directement DMACON ou INTENA sans coordination peut
+arreter le systeme entier.
+
+
+==============================================================================
+5. PROCESSEURS 680x0
+==============================================================================
+
+68000 : D0-D7, A0-A7, PC, SR, bus externe 16 bits, adresses utiles 24 bits,
+alignement word/long pair et caches absents. A7 a USP/SSP suivant mode.
+
+68020/030/040 ajoutent instructions, caches, adressage 32 bits et MMU selon
+variante. 68EC020 n'a pas la MMU complete. 68040 integre FPU sur certaines
+versions; accelerateurs 68060/PPC existent.
+
+Le code partage avec DMA doit utiliser Chip RAM et tenir compte des caches sur
+CPU avances. CacheClearU()/CacheClearE() ou APIs de la version cible assurent la
+coherence; une boucle qui fonctionnait sur A500 peut laisser le Blitter lire des
+donnees anciennes sur accelerateur.
+
+AmigaOS classique utilise largement pointeurs 32 bits meme si le hardware OCS ne
+voit que les bits bas. Ne tronquer aucune adresse CPU en 24 bits hors registre DMA.
+
+
+==============================================================================
+6. CARTE MEMOIRE
+==============================================================================
+
+Carte representative, non universelle :
+
+  $000000-$1FFFFF   Chip RAM possible selon Agnus/Alice et configuration
+  $200000-$9FFFFF   espace Zorro II/extension Fast RAM typique
+  $A00000-$BFFFFF   espace reserve/extension selon machine
+  $C00000-$D7FFFF   Slow/Fake Fast RAM et extensions sur certains A500
+  $D80000-$DBFFFF   reserve
+  $DC0000-$DCFFFF   horloge/extension selon modele
+  $DFF000-$DFFFFF   registres custom, miroir decode selon chipset
+  $BFD000-$BFEFFF   CIA-B/CIA-A avec decodage espace
+  $E80000-$EFFFFF   Autoconfig Zorro II
+  $F00000-$F7FFFF   extension/diagnostic ROM selon machine
+  $F80000-$FFFFFF   Kickstart 512 Kio courant
+
+Anciennes ROM 256 Kio, A1000 WCS, Gayle, Ramsey, Buster, PCMCIA, IDE et Zorro III
+modifient cette carte. L'OS construit sa liste MemHeader : utiliser AllocMem(),
+AvailMem() et expansion.library plutot qu'une plage gravee dans le programme.
+
+
+==============================================================================
+7. CHIP RAM, FAST RAM ET SLOW RAM
+==============================================================================
+
+Chip RAM est visible par CPU et circuits DMA. Toute image bitplane, sprite,
+Copper list, audio DMA ou buffer raw disquette doit y resider et respecter son
+alignement. Allocation : AllocMem(size,MEMF_CHIP|MEMF_CLEAR).
+
+Fast RAM n'est visible que par CPU et extensions bus-master adaptees. Elle libere
+la bande passante Chip RAM et accelere code, pile et donnees ordinaires.
+
+Slow/Fake Fast RAM de la trapdoor A500 vers $C00000 est souvent accessible au
+CPU seulement mais partage certains timings/chip select; elle n'est pas Chip RAM.
+Ne pas tester par adresse : examiner les attributs MEMF_CHIP/MEMF_FAST.
+
+
+==============================================================================
+8. CARTE DES REGISTRES CUSTOM
+==============================================================================
+
+Base $DFF000. Registres 16 bits, generalement adresses paires. Les lectures et
+ecritures n'ont pas toujours le meme registre au meme offset.
+
+Lectures principales :
+
+  $000 BLTDDAT   derniere donnee Blitter D
+  $002 DMACONR   etat DMA/Blitter busy/zero
+  $004 VPOSR     position verticale et identite chipset
+  $006 VHPOSR    position verticale/horizontale
+  $008 DSKDATR   donnee disquette
+  $00A JOY0DAT   compteurs souris/joystick port 0
+  $00C JOY1DAT   compteurs port 1
+  $00E CLXDAT    collisions, lecture efface certains latches
+  $010 ADKCONR   etat audio/disquette
+  $012 POT0DAT   compteurs potentiometres port 0
+  $014 POT1DAT   compteurs port 1
+  $016 POTGOR    lignes potentiometres
+  $018 SERDATR   etat/donnee serie
+  $01A DSKBYTR   etat octet disquette
+  $01C INTENAR   masque interruptions
+  $01E INTREQR   demandes interruptions
+
+Ecritures de controle :
+
+  $020/$022 DSKPTH/L   pointeur DMA disquette
+  $024 DSKLEN          longueur, direction et demarrage disquette
+  $026 DSKDAT          donnee disquette
+  $028 REFPTR          refresh, reserve a l'usage systeme
+  $02A VPOSW           controle position/genlock selon chipset
+  $02C VHPOSW          controle position
+  $02E COPCON          acces Copper dangereux
+  $030 SERDAT          emission serie
+  $032 SERPER          periode/format serie
+  $034 POTGO           demarre/configure potentiometres
+  $036 JOYTEST         test compteurs, ne pas utiliser comme detection
+  $038-$03E STROBE     strobes internes, normalement interdits
+
+Blitter : $040-$074. Copper : $080-$08A. Affichage : $08E-$10A. Audio :
+$0A0-$0DE. Pointeurs bitplanes : $0E0-$0FE. Controle bitplanes : $100-$10A.
+Sprites : $120-$17E. Palette : $180-$1BE. ECS/AGA ajoutent des registres.
+
+Registres set/clear (DMACON, INTENA, INTREQ, ADKCON) : bit 15 SET/CLR vaut 1 pour
+mettre les bits indiques, 0 pour les effacer. Ecrire une valeur totale comme dans
+un registre ordinaire est une cause majeure de panne logicielle.
+
+
+==============================================================================
+9. AGNUS/ALICE ET ARBITRAGE DMA
+==============================================================================
+
+DMACON a $DFF096 commande :
+
+  bit 15 SET/CLR    1=set, 0=clear
+  bit 10 BLTPRI     priorite/hog Blitter
+  bit 9  DMAEN      maitre DMA
+  bit 8  BPLEN      bitplanes
+  bit 7  COPEN      Copper
+  bit 6  BLTEN      Blitter
+  bit 5  SPREN      sprites
+  bits 3..0 AUD3..0 canaux audio
+  bit 4  DSKEN      disque
+
+DMACONR ajoute BBUSY et BZERO en lecture. Pour activer Copper sans alterer le
+reste : move.w #$8280,$DFF096 (SETCLR|DMAEN|COPEN). Pour le couper : #$0080.
+
+Le bus Chip RAM est divise en slots. Refresh, disque, audio et sprites ont des
+slots; bitplanes consomment une part dependante de profondeur/resolution; Copper
+et Blitter utilisent les slots restants. Le CPU attend si aucun slot disponible.
+AGA elargit les fetches mais conserve l'arbitrage conceptuel.
+
+
+==============================================================================
+10. DENISE/LISA ET MODES VIDEO
+==============================================================================
+
+Modes de base PAL/NTSC :
+
+  Lowres       ~320 pixels visibles, jusqu'a 6 plans OCS/ECS
+  Hires        ~640 pixels, jusqu'a 4 plans OCS usuels
+  Interlace    double le nombre de lignes en alternant deux champs
+  SuperHires   ECS/AGA, ~1280 pixels selon timing
+
+BPLCON0 ($DFF100) choisit nombre de plans, hires, lace, HAM, dual playfield et
+bits ECS/AGA. BPLCON1 controle scroll horizontal des playfields. BPLCON2 fixe
+priorites playfield/sprites. BPLCON3/4 sont ECS/AGA.
+
+Les dimensions exactes ne sont pas des constantes universelles : DIWSTRT/STOP,
+DDFSTRT/STOP, PAL/NTSC, overscan et monitor modes les determinent. Pour une
+application, utiliser display database et graphics.library.
+
+
+==============================================================================
+11. BITPLANES ET ORGANISATION GRAPHIQUE
+==============================================================================
+
+Un bitplane est une bitmap 1 bit/pixel. Pour N plans, les N bits de meme position
+forment l'index couleur. Les plans peuvent etre separes en memoire; le DMA suit
+BPL1PT..BPL8PT et ajoute BPL1MOD/BPL2MOD apres chaque ligne.
+
+Exemple planar 320x256, 5 plans : chaque ligne d'un plan fait 40 octets; chaque
+plan 10240 octets; total 51200. Le bit 15 du premier mot est le pixel gauche.
+
+Adresse dans un plan :
+
+  octet = y*bytes_per_row + ((x >> 4) * 2)
+  masque = $8000 >> (x & 15)
+
+Interleaved bitmap place les lignes des plans consecutivement et utilise modulos
+pour faciliter Blitter/affichage. bitmap classique garde les plans separes.
+
+AGA permet 8 plans et fetch 32/64 bits configure par FMODE. Les pointeurs et
+modulos doivent respecter alignement/fetch; copier une Copper list OCS ne suffit
+pas a obtenir un ecran AGA stable.
+
+
+==============================================================================
+12. FENETRE D'AFFICHAGE ET FETCH DMA
+==============================================================================
+
+  DIWSTRT $08E   debut display window vertical/horizontal
+  DIWSTOP $090   fin, avec bits wrap historiques
+  DDFSTRT $092   debut fetch bitplanes
+  DDFSTOP $094   fin fetch
+  BPL1MOD $108   modulo plans impairs
+  BPL2MOD $10A   modulo plans pairs
+
+DIW controle ou les pixels sont visibles; DDF controle quand le DMA charge des
+mots. Les valeurs doivent respecter resolution et contraintes d'alignement.
+Mauvaise combinaison vole tout le bus, affiche des donnees hors buffer ou cree
+des bandes instables.
+
+Les programmes de demo ouvrent les bordures par modifications cycle-exactes.
+Ces techniques dependent PAL/NTSC, Agnus et position du Copper; elles ne doivent
+pas etre utilisees dans une application multitache.
+
+
+==============================================================================
+13. PALETTE, EHB, HAM ET DUAL PLAYFIELD
+==============================================================================
+
+OCS/ECS : COLOR00..COLOR31 a $DFF180-$DFF1BE, format $0RGB avec quatre bits par
+composante, soit 4096 couleurs disponibles et 32 registres physiques.
+
+EHB (Extra Half-Brite) : avec six plans, indices 32..63 reproduisent couleurs
+0..31 a demi-intensite. Certaines anciennes Denise ou configurations peuvent ne
+pas le supporter.
+
+HAM6 : deux bits commandent "palette directe", modifier rouge, vert ou bleu;
+les quatre autres bits fournissent index ou composante. Un pixel depend du pixel
+precedent, ce qui cree franges lors de transitions.
+
+AGA : 256 registres logiques de 24 bits programmes par banques et moities via
+BPLCON3/COLORxx. HAM8 utilise six bits de composante/index et deux bits de commande.
+
+Dual playfield repartit les plans entre deux images superposees, chacune avec
+ses indices et priorite. BPLCON2 determine quel playfield passe devant les sprites.
+
+
+==============================================================================
+14. SPRITES MATERIELS ET COLLISIONS
+==============================================================================
+
+Huit canaux sprites. Chaque sprite standard fait 16 pixels de large, 2 bits par
+pixel et partage des couleurs par paire. Attacher deux sprites fournit 4 bits par
+pixel et 16 couleurs. ECS/AGA et fetch AGA ajoutent capacites/timings.
+
+Pointeurs SPR0PT..SPR7PT a $DFF120-$DFF13E. Donnees : deux mots de controle
+SPRxPOS/SPRxCTL, puis paires SPRxDATA/SPRxDATB pour chaque ligne, terminees par
+deux mots nuls. Le DMA recharge automatiquement.
+
+CLXCON configure les plans/sprites participant aux collisions. CLXDAT retourne
+les latches de collision; lire peut les effacer. Les collisions indiquent des
+groupes, pas necessairement l'objet exact : confirmer en logiciel si necessaire.
+
+Intuition utilise la souris sprite. Prendre tous les sprites sans OwnBlitter/
+gestion graphics.library peut detruire le pointeur de souris.
+
+
+==============================================================================
+15. COPPER
+==============================================================================
+
+Le Copper est un coprocesseur synchronise au faisceau. Instructions de 32 bits :
+
+  MOVE reg,value       ecrit un registre custom autorise
+  WAIT v,h[,masques]   attend une position, optionnellement Blitter termine
+  SKIP v,h[,masques]   saute le MOVE suivant si condition satisfaite
+
+Pointeurs COP1LC/COP2LC a $DFF080-$DFF086; COPJMP1/2 a $088/$08A relancent.
+Une Copper list doit etre en Chip RAM et se termine habituellement par WAIT
+$FFFF,$FFFE. COPCON controle l'acces aux registres bas.
+
+Usages : charger pointeurs bitplanes, changer palette par ligne, multiplexage de
+sprites, split screen et synchronisation. Le Copper ne peut pas lire la memoire
+arbitraire ni effectuer une addition.
+
+Sous AmigaOS, construire UCopList/CopList via graphics.library ou isoler un
+View. Ne pas remplacer COP1LC du Workbench sans posseder l'affichage.
+
+
+==============================================================================
+16. BLITTER
+==============================================================================
+
+Le Blitter combine jusqu'a trois sources A/B/C vers D. Il effectue logique
+booleenne, decalage, masquage de premier/dernier mot et mode ligne.
+
+  $040 BLTCON0     sources, minterm, shift A
+  $042 BLTCON1     descente, ligne, fill, shift B
+  $044 BLTAFWM     first word mask A
+  $046 BLTALWM     last word mask A
+  $048-$056        pointeurs C/B/A/D
+  $058 BLTSIZE     lancement OCS/ECS : hauteur et largeur en mots
+  $060-$066        modulos C/B/A/D
+  $070-$074        latches data C/B/A
+
+ECS/AGA ajoutent BLTSIZV/BLTSIZH pour grandes dimensions. Minterm est une table
+de verite 8 bits des sources A,B,C. Copie masquee classique : D=(A AND B) OR
+(NOT A AND C), minterm calcule selon convention du manuel.
+
+Attendre fin avec WaitBlit() sous OS. Le test materiel BBUSY dans DMACONR demande
+une lecture supplementaire sur certaines anciennes revisions ("blitter nasty
+bug" documente). OwnBlitter()/DisownBlitter() arbitrent graphics.library.
+
+Le mode descending copie de la fin vers le debut pour regions qui se chevauchent.
+Les modulos sont ajoutes apres chaque ligne. Largeur zero dans BLTSIZE code 64
+mots et hauteur zero code 1024 sur OCS : ne jamais passer zero par accident.
+
+
+==============================================================================
+17. PAULA ET AUDIO DMA
+==============================================================================
+
+Quatre canaux PCM 8 bits signes, deux a gauche et deux a droite :
+
+  Canal 0  AUD0 $DFF0A0-$DFF0AA   gauche
+  Canal 1  AUD1 $DFF0B0-$DFF0BA   droite
+  Canal 2  AUD2 $DFF0C0-$DFF0CA   droite
+  Canal 3  AUD3 $DFF0D0-$DFF0DA   gauche
+
+Par canal :
+
+  AUDxLCH/LCL   pointeur Chip RAM
+  AUDxLEN       longueur en mots 16 bits
+  AUDxPER       periode
+  AUDxVOL       volume 0..64
+  AUDxDAT       donnee/latch
+
+Frequence approximative PAL = 3546895/PER, NTSC = 3579545/PER. La periode
+minimale utile depend du chipset et du DMA. Chaque mot fournit deux echantillons,
+octet haut puis bas. A la fin, le pointeur/longueur sont recharges, permettant
+boucle; une interruption AUDx est generee.
+
+ADKCON permet modulation de periode ou volume entre canaux. Elle reduit le nombre
+de voix independantes et exige une sequence precise.
+
+
+==============================================================================
+18. FILTRE AUDIO ET MIXAGE
+==============================================================================
+
+Les quatre voies sont sommees en deux sorties stereo. Le filtre passe-bas analogique
+"LED filter" est commande sur de nombreuses machines par le bit LED du port A
+CIA-A; polarite et circuit dependent du modele. La LED d'alimentation indique
+souvent son etat.
+
+Un emulateur doit utiliser samples signes, volume Paula, panorama fixe, periode
+et hold entre samples. Le DAC reel n'est pas un interpolateur ideal; zero-order
+hold et filtre analogique contribuent au son. Les techniques 14 bits combinent
+deux canaux a volumes differents et exigent une calibration non lineaire.
+
+
+==============================================================================
+19. INTERRUPTIONS
+==============================================================================
+
+INTENA $DFF09A active, INTREQ $DFF09C demande/acquitte, INTENAR/INTREQR lisent.
+Bit 15 suit SET/CLR. Bit 14 INTEN est le maitre.
+
+  Niveau 1   TBE, disque block, soft interrupt
+  Niveau 2   ports CIA-A
+  Niveau 3   Copper, VBlank, Blitter
+  Niveau 4   audio 0..3
+  Niveau 5   serial receive, disk sync
+  Niveau 6   CIA-B/external
+  Niveau 7   NMI
+
+Bits INTREQ classiques : TBE, DSKBLK, SOFT, PORTS, COPER, VERTB, BLIT, AUD0-3,
+RBF, DSKSYN et EXTER. Une ISR lit INTREQR ET INTENAR, traite seulement ses bits,
+puis les efface en ecrivant INTREQ sans SETCLR. Une ecriture doit parfois etre
+suivie d'une seconde ou d'un delai sur CPU rapides afin que Paula voie l'acquit.
+
+Sous Exec, AddIntServer()/RemIntServer() installent un serveur partage; SetIntVector
+est reserve a la possession exclusive appropriee. Ne jamais modifier directement
+la table 68000 dans une application multitache.
+
+
+==============================================================================
+20. CIA 8520 ET TEMPORISATEURS
+==============================================================================
+
+CIA-A est selectionne autour de $BFE001, CIA-B autour de $BFD000; les registres
+sont espaces de $100 dans l'espace d'adressage a cause du cablage bus.
+
+Registres 8520 : PRA, PRB, DDRA, DDRB, timer A low/high, timer B low/high, TOD
+low/mid/high, SDR, ICR, CRA et CRB.
+
+CIA-A gere notamment clavier serial, joystick/fire, floppy ready/track0/protect/
+change et filtre LED selon revision. CIA-B gere parallele, RS-232, moteurs/select
+disquette et signaux d'expansion. Les attributions exactes doivent etre lues dans
+le manuel du modele.
+
+Timers A/B sont 16 bits, one-shot ou continu, horloge E-clock ou evenements. TOD
+du 8520 est un compteur binaire, contrairement au TOD BCD du 6526. Les interruptions
+CIA sont groupees : lire ICR acquitte les bits signales.
+
+Utiliser cia.resource pour allouer timer ou bit partage. Ecrire directement peut
+casser keyboard.device, serial.device ou trackdisk.device.
+
+
+==============================================================================
+21. CLAVIER, SOURIS, JOYSTICKS ET PADDLES
+==============================================================================
+
+Le clavier serie envoie des raw keycodes par CIA-A avec handshake logiciel. La
+famille A1000 differe physiquement; A500/A1200 integrent le clavier. Utiliser
+input.device ou Intuition IDCMP_RAWKEY/VANILLAKEY et keymap.library.
+
+JOY0DAT/JOY1DAT contiennent compteurs quadrature souris; boutons passent par CIA
+et POTGOR. La souris Amiga a deux/trois boutons selon materiel. Joysticks DE-9
+numeriques sont proches Atari/Commodore; ne pas appliquer de tension externe.
+
+POT0DAT/POT1DAT mesurent potentiometres/paddles. POTGO configure/lance. Lire les
+compteurs exige attendre la charge; gameport.device fournit une API plus compatible
+sur OS recentes et adaptateurs.
+
+CD32 ajoute joypad multiplexe avec boutons supplementaires lus par sequence POTGO/
+CIA. Ne pas l'assimiler a un joystick deux boutons sans protocole.
+
+
+==============================================================================
+22. LECTEUR DE DISQUETTE
+==============================================================================
+
+Paula traite un flux MFM brut. Le DMA disquette transfere des mots Chip RAM via
+DSKPT, DSKLEN, DSKSYNC et ADKCON. CIA-B choisit lecteur, moteur, face et direction;
+CIA-A retourne ready, track zero, write protect et disk change.
+
+Format Amiga DD standard : 80 cylindres, 2 faces, 11 secteurs de 512 octets,
+soit 880 Kio. HD : 22 secteurs, 1,76 Mio avec lecteur adapte. Les secteurs Amiga
+ne sont pas physiquement le meme layout MFM que PC, bien que crossdos puisse lire
+des disquettes PC avec un pilote.
+
+Sous OS, trackdisk.device fournit CMD_READ/WRITE, TD_FORMAT, TD_MOTOR, TD_SEEK,
+TD_CHANGESTATE, TD_PROTSTATUS et commandes raw. Disk.resource arbitre le materiel.
+
+Un programme bootable autonome peut acceder directement, mais doit gerer sync
+$4489, MFM odd/even, checksum, index, overflow, write protect, changement et
+timings moteur. DSKLEN demande deux ecritures avec DMAEN pour demarrer, protection
+contre lancement accidentel.
+
+
+==============================================================================
+23. SERIE ET PARALLELE
+==============================================================================
+
+Paula fournit UART serie par SERPER, SERDAT, SERDATR et interruptions TBE/RBF.
+Vitesses et handshake RS-232 utilisent aussi CIA. serial.device est recommande :
+il gere baud, parite, stop, handshakes et E/S asynchrones.
+
+Le port DB-25 serie Amiga n'a pas exactement la meme alimentation/brochage que
+tous les PC. Certaines broches fournissent tensions/signaux speciaux. Verifier
+manuel avant cable null-modem.
+
+Le port parallele est pilote par CIA et parallel.device. Il peut servir a des
+digitizers/samplers, mais l'acces direct doit reserver les ressources. Ne pas
+brancher un peripherique PC bidirectionnel sans verifier direction et handshakes.
+
+
+==============================================================================
+24. EXPANSION ZORRO ET AUTOCONFIG
+==============================================================================
+
+Zorro II est un bus 16 bits autoconfigure dans l'espace 24 bits. Au reset, chaque
+carte expose sa ROM/config a $E80000; le systeme lit fabricant, produit, type,
+taille et drapeaux, assigne une base, puis la carte suivante apparait.
+
+Zorro III, introduit avec A3000, offre espace 32 bits et bus plus large tout en
+supportant les cartes Zorro II. Buster arbitre. Les slots A2000 incluent aussi
+un chemin video et, via bridgeboard, ISA selon configuration.
+
+expansion.library maintient ConfigDev/CurrentBinding. Un pilote cherche la carte
+avec FindConfigDev(), ne suppose jamais une base fixe. L'identifiant fabricant/
+produit n'est pas une adresse et doit etre officiellement unique.
+
+
+==============================================================================
+25. IDE, SCSI, PCMCIA ET CD-ROM
+==============================================================================
+
+A600/A1200 ont IDE 2,5 pouces et PCMCIA 16 bits via Gayle. A4000 a IDE; A3000 a
+SCSI; A2091 et nombreuses cartes ajoutent SCSI. Les pilotes device varient :
+scsi.device, uaehf.device, 2nd.scsi.device, etc.
+
+Utiliser trackdisk.device pour floppy et le device du controleur avec CMD_READ/
+WRITE ou TD64/NSD pour grands disques. Les anciens champs 32 bits limites rendent
+les partitions >4 Gio dangereuses sans pilotes/filesystem adaptes.
+
+CDTV/CD32 integrent CD-ROM et extensions audio/controle. cd.device ou pilotes
+specifiques exposent commandes. Ne pas programmer Gayle/Akiko directement dans
+une application portable.
+
+
+==============================================================================
+26. KICKSTART, WORKBENCH ET AMIGAOS
+==============================================================================
+
+Kickstart est la ROM contenant Exec, bibliotheques et devices essentiels.
+Workbench est le bureau sur disque, pas le nom du noyau. AmigaDOS fournit shell,
+filesystem et processus. Versions historiques : 1.0-1.3, 2.0/2.04, 3.0, 3.1;
+developpements ulterieurs 3.5, 3.9 et 3.1.4/3.2 ont d'autres exigences/licences.
+
+Le seul pointeur fixe officiellement central est ExecBase a adresse 4. Depuis
+Exec, OpenLibrary() ouvre les autres bibliotheques. Ne jamais appeler une adresse
+absolue dans la ROM : les vecteurs et versions changent.
+
+Les numeros de version de library sont testes lors d'OpenLibrary(name,minver).
+Un programme doit refuser proprement ou utiliser un chemin ancien si la version
+requise manque.
+
+
+==============================================================================
+27. EXEC
+==============================================================================
+
+Exec est un micro-noyau multitache preemptif : Tasks, Processes, signals, ports
+de messages, listes, interruptions, allocation memoire, libraries et devices.
+
+APIs essentielles :
+
+  OpenLibrary/CloseLibrary     bibliotheques
+  OpenDevice/CloseDevice       devices
+  DoIO/SendIO/WaitIO/AbortIO   requetes I/O
+  AllocMem/FreeMem             memoire avec attributs
+  AllocVec/FreeVec             allocation avec taille cachee (V36+)
+  FindTask                     task courante ou par nom
+  CreateTask/AddTask/RemTask   taches bas niveau
+  CreateMsgPort/DeleteMsgPort  ports (helpers selon version/compilateur)
+  PutMsg/GetMsg/ReplyMsg       messages
+  Wait/Signal/SetSignal        synchronisation
+  Forbid/Permit                empeche rescheduling, pas les interruptions
+  Disable/Enable               masque interruptions, section tres courte
+  AddIntServer/RemIntServer    chaines d'interruption
+  CacheClearU/CacheClearE      coherence sur CPU avec caches
+
+Forbid n'est pas un verrou SMP ni une permission de dormir. Ne jamais appeler une
+fonction pouvant attendre avec Forbid/Disable actif. Les listes Exec sont
+intrusives : un Node ne peut appartenir a deux listes simultanement.
+
+
+==============================================================================
+28. BIBLIOTHEQUES PARTAGEES
+==============================================================================
+
+En assembleur, A6 contient la Library base et JSR offset(a6) appelle un vecteur
+negatif. En C, les includes/protos et pragmas/stubs generent l'appel. Toujours
+ouvrir, tester, utiliser puis fermer dans l'ordre inverse.
+
+Bibliotheques majeures :
+
+  exec.library       noyau
+  dos.library        fichiers/processus/CLI
+  intuition.library  ecrans, fenetres, evenements
+  graphics.library   View, BitMap, RastPort, Blitter, Copper
+  layers.library     clipping/fenetres superposees
+  utility.library    tags, hooks, dates, noms
+  gadtools.library   gadgets/menu compatibles Release 2
+  asl.library        requesters fichiers/fonts/ecran
+  icon.library       icones Workbench
+  iffparse.library   lecture/ecriture IFF
+  diskfont.library   fontes disque
+  locale.library     internationalisation
+
+Les structures publiques ont des versions. Utiliser tags et fonctions plutot
+qu'acceder aux champs prives. Ne pas fermer une library tant qu'un objet l'utilise.
+
+
+==============================================================================
+29. DEVICES ET E/S ASYNCHRONES
+==============================================================================
+
+Un device recoit un IORequest lie a un MsgPort. Cycle : creer port, creer requete,
+OpenDevice(), remplir commande/donnees/longueur, DoIO() synchrone ou SendIO(),
+WaitIO(), CloseDevice(), detruire requete/port.
+
+Devices courants :
+
+  console.device    console attachee a une fenetre
+  input.device      chaine d'evenements d'entree
+  keyboard.device   clavier brut
+  gameport.device   souris/joystick
+  trackdisk.device  disquettes
+  serial.device     RS-232
+  parallel.device   imprimante/port
+  timer.device      delais et temps
+  audio.device      allocation/lecture des quatre canaux Paula
+  clipboard.device  presse-papiers
+  printer.device    pilotes imprimante
+
+Une IORequest ne doit pas etre reutilisee tant que la precedente n'est pas
+terminee. AbortIO ne garantit pas la completion immediate : appeler WaitIO ensuite.
+
+
+==============================================================================
+30. AMIGADOS
+==============================================================================
+
+dos.library gere fichiers, repertoires, locks, processus, handlers et CLI.
+Handles BPTR historiques sont pointeurs decales de deux bits; utiliser macros
+BADDR/MKBADDR seulement quand l'API l'exige.
+
+Fonctions courantes :
+
+  Open/Close/Read/Write/Seek
+  Lock/UnLock/DupLock/ParentDir
+  Examine/ExNext ou ExamineDir selon version
+  CreateDir/DeleteFile/Rename
+  CurrentDir/SetCurrentDirName
+  Input/Output/ErrorOutput
+  LoadSeg/UnLoadSeg/CreateProc/SystemTagList
+  IoErr/Fault/PrintFault
+  DateStamp/DateToStr/StrToDate
+  MatchFirst/MatchNext/MatchEnd
+
+Noms de volume utilisent "DF0:", "DH0:", "RAM:", "SYS:". "/" remonte
+historiquement un repertoire; les deux-points separent device/assign. Les Assigns
+forment une indirection essentielle.
+
+DosPacket et handlers sont le niveau filesystem; ne les utiliser que si l'API
+normale ne suffit pas. Les fonctions DOS anciennes ne sont pas toutes thread-safe.
+
+
+==============================================================================
+31. INTUITION, GADTOOLS ET BOOPSI
+==============================================================================
+
+Intuition gere Screens, Windows, menus, gadgets, pointeur et IDCMP. Ouvrir une
+fenetre avec OpenWindowTags(), demander les classes IDCMP, attendre le signal du
+UserPort, retirer chaque IntuiMessage, copier ses champs utiles puis ReplyMsg().
+
+Messages : IDCMP_CLOSEWINDOW, NEWSIZE, REFRESHWINDOW, MOUSEBUTTONS, MOUSEMOVE,
+RAWKEY, VANILLAKEY, GADGETUP/DOWN, MENUPICK, ACTIVE/INACTIVE.
+
+Pour rafraichir : BeginRefresh(), redessiner la region, EndRefresh(TRUE). Ne pas
+conserver un IntuiMessage apres ReplyMsg. Fermer menus/gadgets/fenetre/ecran dans
+l'ordre inverse et vider les messages concernant l'objet.
+
+GadTools construit gadgets et menus standards V36+. BOOPSI fournit classes et
+objets via NewObject(), DoMethod(), SetAttrs()/GetAttr(), DisposeObject(). Les
+classes reaction/MUI sont extensions distinctes.
+
+
+==============================================================================
+32. GRAPHICS.LIBRARY ET AFFICHAGE COMPATIBLE
+==============================================================================
+
+Structures : View, ViewPort, RasInfo, BitMap, RastPort, ColorMap, Copper lists.
+Pour application moderne classique, laisser Intuition ouvrir l'ecran; dessiner
+dans Window->RPort avec Move/Draw, RectFill, Text, BltBitMap, BltMaskBitMapRastPort.
+
+APIs :
+
+  InitBitMap/AllocRaster/FreeRaster
+  InitRastPort/SetAPen/SetBPen/SetDrMd
+  Move/Draw/RectFill/WritePixel/ReadPixel
+  BltBitMap/BltTemplate/BltMaskBitMapRastPort
+  WaitBlit/WaitTOF
+  GetColorMap/FreeColorMap/LoadRGB4/LoadRGB32
+  VideoControl/GetDisplayInfo/DataBase functions
+  MakeVPort/MrgCop/LoadView
+  OwnBlitter/DisownBlitter
+
+AllocBitMap() V39 gere interleaved, friend bitmap, displayable et clear. Avant,
+allouer chaque raster en Chip RAM. RTG peut fournir bitmap non directement
+adressable : utiliser LockBitMapTags/P96/CGX selon environnement ou Blt APIs.
+
+
+==============================================================================
+33. IFF, ILBM, 8SVX ET AUTRES FORMATS
+==============================================================================
+
+IFF est un conteneur big-endian : "FORM", taille 32 bits, type sur quatre
+octets, puis chunks {ID,taille,donnees,padding pair}. Un lecteur doit ignorer les
+chunks inconnus et verifier tailles/debordements.
+
+ILBM : BMHD decrit dimensions/plans/compression, CMAP palette RGB octets, BODY
+donnees par lignes et plans. Compression ByteRun1 : octet n 0..127 copie n+1,
+-1..-127 repete l'octet suivant 1-n fois, -128 no-op.
+
+8SVX : VHDR, BODY, CHAN et metadata; echantillons 8 bits signes, parfois Fibonacci
+delta. ANIM contient images/deltas ILBM. SMUS musique, FTXT texte formate.
+
+Utiliser iffparse.library et datatypes.library sur OS recent plutot qu'un parseur
+ad hoc. Les tailles IFF excluent les octets de padding.
+
+
+==============================================================================
+34. EXECUTABLES HUNK ET DEMARRAGE DISQUETTE
+==============================================================================
+
+Les executables Amiga classiques sont des fichiers Hunk big-endian : HUNK_HEADER,
+CODE, DATA, BSS, RELOC32, SYMBOL/DEBUG et END. LoadSeg() charge et reloge en
+segments relies par BPTR. ELF est utilise par certaines chaines modernes mais pas
+charge directement par les anciens AmigaDOS sans outil.
+
+Une disquette bootable commence par "DOS" plus type de filesystem, checksum et
+root block. Le bootblock fait 1024 octets; Exec l'examine et execute si checksum
+valide. Un bootblock custom prend controle tres tot et doit initialiser/restituer
+le materiel lui-meme.
+
+Les jeux "trackloader" ignorent AmigaDOS, utilisent format proprietaire et
+acces DMA direct. Ils sont sensibles aux revisions, caches, Fast RAM et lecteurs.
+
+
+==============================================================================
+35. DETECTION DU MATERIEL
+==============================================================================
+
+Methodes compatibles :
+
+  * OpenLibrary avec version minimale;
+  * GfxBase->ChipRevBits pour capacites chipset documentees;
+  * GetDisplayInfo()/BestModeID() pour modes;
+  * expansion.library FindConfigDev() pour cartes;
+  * Exec AttnFlags pour CPU/FPU;
+  * AvailMem(MEMF_CHIP/MEMF_FAST) et attributs d'allocation;
+  * OpenResource() pour ressources presentes;
+  * fonctions device NSD/TD64 pour capacites de stockage.
+
+Ne pas ecrire dans un registre AGA pour voir s'il repond. Ne pas utiliser le nom
+"A1200" pour conclure 2 Mio/68020 sans accelerateur. Ne pas distinguer PAL/NTSC
+par horloge supposee : consulter graphics.library et timer.
+
+
+==============================================================================
+36. ACCES DIRECT ET PRISE DE CONTROLE
+==============================================================================
+
+Une application AmigaOS doit conserver le multitache. Si un jeu/demos prend
+l'affichage :
+
+  1. allouer toutes les donnees DMA en Chip RAM;
+  2. ouvrir graphics.library et sauvegarder View/etat requis;
+  3. attendre Blitter et VBlank;
+  4. neutraliser/posseder proprement Copper, sprites et Blitter;
+  5. installer serveurs d'interruptions via Exec;
+  6. ne pas appeler DOS/Intuition apres avoir detruit leur affichage;
+  7. restaurer DMA, INTENA, Copper/View, CIA, audio et interruptions;
+  8. RemIntServer et liberer toute memoire.
+
+Forbid() seul ne protege pas le hardware et Disable() ne doit jamais entourer une
+longue boucle. LoadView(NULL), WaitTOF(), deux fois selon pratique, et OwnBlitter
+sont preferables aux hacks qui dereferencent des champs prives de GfxBase.
+
+
+==============================================================================
+37. EXEMPLE ASSEMBLEUR : APPEL EXEC
+==============================================================================
+
+Ouvre dos.library, affiche une chaine par PutStr(), puis ferme. Les offsets LVO
+doivent provenir des includes officiels, pas etre recopies a la main.
+
+        include "exec/exec_lib.i"
+        include "dos/dos_lib.i"
+
+        move.l  4.w,a6                 ; ExecBase
+        lea     DosName(pc),a1
+        moveq   #0,d0                  ; version minimale
+        jsr     _LVOOpenLibrary(a6)
+        tst.l   d0
+        beq.s   fail
+        move.l  d0,a6                  ; DOSBase
+        lea     Text(pc),a0
+        move.l  a0,d1                  ; convention dos.library 68k : D1
+        jsr     _LVOPutStr(a6)
+        move.l  a6,a1
+        move.l  4.w,a6
+        jsr     _LVOCloseLibrary(a6)
+fail:   moveq   #0,d0
+        rts
+
+DosName: dc.b   'dos.library',0
+Text:    dc.b   'Bonjour Amiga!',10,0
+        even
+
+Le startup du compilateur fournit normalement SysBase et appelle main(). Un PRG
+brut doit respecter la convention d'entree AmigaDOS et conserver registres requis.
+
+
+==============================================================================
+38. EXEMPLE ASSEMBLEUR : ATTENTE VIDEO ET COULEUR
+==============================================================================
+
+Acces direct, seulement quand le programme controle l'affichage. Attend une zone
+verticale puis change COLOR00. La comparaison simplifiee n'est pas un synchroniseur
+cycle-exact et doit etre adaptee PAL/NTSC.
+
+CUSTOM  equ $DFF000
+VHPOSR  equ $006
+COLOR00 equ $180
+
+        lea     CUSTOM,a5
+wait1: move.w  VHPOSR(a5),d0
+        and.w  #$FF00,d0              ; huit bits bas de la ligne dans octet haut
+        cmp.w  #$FF00,d0              ; attendre vers la ligne 255
+        bne.s   wait1
+        move.w  #$00F, COLOR00(a5)     ; bleu OCS/ECS
+
+Le neuvieme bit vertical est dans VPOSR; cet exemple ne compare que les huit bits
+bas fournis par VHPOSR. Utiliser les macros du NDK pour une position complete.
+Pour une application : SetRGB4() ou
+LoadRGB32(), jamais ce polling.
+
+
+==============================================================================
+39. EXEMPLE ASSEMBLEUR : BLITTER
+==============================================================================
+
+Fragment conceptuel de copie A vers D, largeur/hauteur non nulles. Pointeurs en
+Chip RAM, largeur en mots. Il faut posseder le Blitter sous OS.
+
+DMACONR equ $002
+DMACON  equ $096
+BLTCON0 equ $040
+BLTCON1 equ $042
+BLTAFWM equ $044
+BLTALWM equ $046
+BLTAPTH equ $050
+BLTDPTH equ $054
+BLTAMOD equ $064
+BLTDMOD equ $066
+BLTSIZE equ $058
+
+        lea     $DFF000,a5
+waitblt:
+        btst    #6,DMACONR(a5)         ; BBUSY est bit 14 du mot, bit 6 octet haut
+        bne.s   waitblt
+        move.w  #$09F0,BLTCON0(a5)    ; use A,D; minterm D=A
+        clr.w   BLTCON1(a5)
+        move.w  #$FFFF,BLTAFWM(a5)
+        move.w  #$FFFF,BLTALWM(a5)
+        move.l  a0,BLTAPTH(a5)
+        move.l  a1,BLTDPTH(a5)
+        clr.w   BLTAMOD(a5)
+        clr.w   BLTDMOD(a5)
+        move.w  d0,BLTSIZE(a5)         ; (height<<6)|width OCS
+
+En production, appeler OwnBlitter(), WaitBlit(), programmer, puis DisownBlitter().
+Verifier le minterm et les offsets avec les includes hardware/blit.h.
+
+
+==============================================================================
+40. EXEMPLES C AMIGAOS
+==============================================================================
+
+40.1 Ouvrir une bibliotheque
+----------------------------
+
+#include <exec/types.h>
+#include <exec/libraries.h>
+#include <proto/exec.h>
+#include <proto/dos.h>
+
+struct Library *DOSBase;
+
+int main(void)
+{
+    DOSBase = OpenLibrary("dos.library", 36);
+    if (!DOSBase) return 20;
+    PutStr("Bonjour Amiga!\n");
+    CloseLibrary(DOSBase);
+    return 0;
+}
+
+Les compilers modernes peuvent declarer les bases autrement. Suivre le NDK et le
+startup de la chaine utilisee.
+
+40.2 Fenetre Intuition avec boucle IDCMP
+----------------------------------------
+
+#include <intuition/intuition.h>
+#include <proto/exec.h>
+#include <proto/intuition.h>
+
+struct Library *IntuitionBase;
+
+int main(void)
+{
+    struct Window *w;
+    BOOL done = FALSE;
+
+    IntuitionBase = OpenLibrary("intuition.library", 36);
+    if (!IntuitionBase) return 20;
+    w = OpenWindowTags(NULL,
+        WA_Title, (ULONG)"Exemple",
+        WA_Width, 320, WA_Height, 100,
+        WA_DragBar, TRUE, WA_DepthGadget, TRUE,
+        WA_CloseGadget, TRUE,
+        WA_IDCMP, IDCMP_CLOSEWINDOW,
+        TAG_DONE);
+    if (w) {
+        while (!done) {
+            struct IntuiMessage *m;
+            Wait(1UL << w->UserPort->mp_SigBit);
+            while ((m = (struct IntuiMessage *)GetMsg(w->UserPort))) {
+                if (m->Class == IDCMP_CLOSEWINDOW) done = TRUE;
+                ReplyMsg((struct Message *)m);
+            }
+        }
+        CloseWindow(w);
+    }
+    CloseLibrary(IntuitionBase);
+    return w ? 0 : 20;
+}
+
+40.3 Allouer un buffer audio/graphique DMA
+------------------------------------------
+
+UBYTE *buffer = (UBYTE *)AllocMem(size, MEMF_CHIP | MEMF_CLEAR);
+if (buffer) {
+    /* remplir, programmer via library/device, attendre toute DMA */
+    FreeMem(buffer, size);
+}
+
+Ne jamais FreeMem tant que Copper, Blitter, audio ou disque peut encore lire le
+buffer. AllocVec/FreeVec ne doit pas etre melange avec AllocMem/FreeMem.
+
+
+==============================================================================
+41. PROGRAMMATION GRAPHIQUE ET DOUBLE BUFFERING
+==============================================================================
+
+Sous Intuition V39+, ScreenBuffer et ChangeScreenBuffer gerent double buffering,
+avec messages DBufInfo safe-to-write/safe-to-change. Sous anciennes versions,
+construire View/BitMap avec graphics.library et synchroniser WaitTOF/WaitBlit.
+
+Ordre general : dessiner buffer cache, attendre Blitter, demander swap, attendre
+confirmation, puis reutiliser ancien buffer. VBlank seul ne garantit pas que
+Intuition a termine avec un bitmap.
+
+Pour scrolling planar, Blitter et interleaved bitmaps reduisent les changements
+de pointeurs. AGA/RTG : BestModeID, OpenScreenTags et cybergraphics/Picasso96
+evitent de supposer nombre de plans ou memoire directement accessible.
+
+
+==============================================================================
+42. PROGRAMMATION AUDIO
+==============================================================================
+
+audio.device arbitre les quatre canaux. ADCMD_ALLOCATE alloue un masque de voies;
+CMD_WRITE joue buffer, periode, volume, cycles. Requetes asynchrones permettent
+double buffering. Liberer avec ADCMD_FREE apres toutes les IO terminees.
+
+AHI, extension devenue standard sur installations recentes, abstrait Paula,
+cartes audio et mixage. Pour compatibilite accelerateur/RTG, preferer AHI si la
+configuration cible le permet, avec repli audio.device.
+
+Modules MOD exploitent quatre voies Paula, samples 8 bits et effets par tick.
+Un player correct gere tempo CIA/VBL, boucles, finetune, periode, volume et
+changement de sample sans cliquer.
+
+
+==============================================================================
+43. MULTITACHE, MESSAGES ET SYNCHRONISATION
+==============================================================================
+
+Task : unite Exec sans contexte DOS complet. Process : Task enrichie par DOS,
+segments, CLI, current directory et handles. Utiliser CreateNewProcTags() pour
+une activite ayant besoin de DOS.
+
+Les signaux sont un masque de bits par task. Wait(mask) consomme les bits recus;
+plusieurs evenements peuvent etre combines. MsgPort associe liste de messages et
+signal. Le recepteur ReplyMsg; l'expediteur ne libere pas avant reponse.
+
+Semaphore Exec protege structures entre tasks. Forbid/Disable ne remplace pas un
+Semaphore pour travail long. Une interruption ne peut appeler les fonctions qui
+allouent, attendent ou utilisent DOS/Intuition.
+
+
+==============================================================================
+44. COMPATIBILITE ENTRE GENERATIONS
+==============================================================================
+
+  OCS -> ECS     plus Chip RAM/modes, mais conserver chemin OCS
+  ECS -> AGA     8 plans/palette/fetch, pas automatiquement RTG
+  68000 -> 020+  caches, alignement, instructions et timing changent
+  OS 1.3 -> 2.x  tags/GadTools, nouvelles structures et look
+  OS 2.x -> 3.x  datatypes, nouveaux modes et APIs
+
+Un programme system-friendly ne suppose pas adresse du framebuffer, palette
+physique, PAL, 512 Kio, absence Fast RAM ou Kickstart 1.3. Un jeu autonome doit
+annoncer explicitement OCS/PAL/1 Mio, etc., et restaurer le systeme.
+
+Les extensions RTG ne sont pas des chipsets AGA : un BitMap peut etre en VRAM de
+carte. Les DMA custom ne voient pas cette memoire. Copier vers Chip RAM pour
+sprites/audio/Copper et utiliser API RTG pour pixels.
+
+
+==============================================================================
+45. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Composants :
+
+  CPU            prefetch, exceptions, timings, caches selon modele
+  Agnus/Alice    slots DMA, Chip RAM, Copper, Blitter, beam counters
+  Denise/Lisa    bitplanes, sprites, collisions, HAM/EHB, genlock
+  Paula          audio, disk MFM, serial, INTENA/INTREQ
+  CIA-A/B        timers, TOD, serial clavier, ports et IRQ
+  Expansion      Autoconfig, Zorro, Gayle, Ramsey, Buster selon profil
+  OS/ROM         Kickstart exact et devices installes
+
+Erreurs frequentes :
+
+  * rendre toute RAM visible aux DMA;
+  * ignorer arbitrage et contention Chip RAM;
+  * traiter SET/CLR comme affectation;
+  * executer Copper une fois par ligne au lieu des positions exactes;
+  * ignorer masques WAIT/SKIP et condition Blitter;
+  * framebuffer chunky au lieu des bitplanes;
+  * oublier modulos, fetch wrap, scroll et priorites;
+  * simplifier HAM comme palette directe;
+  * sprites sans attach, clipping ni collisions;
+  * Blitter sans descending/fill/line/minterms exacts;
+  * audio non signe, ordre des octets inverse ou reload incorrect;
+  * FDC par secteurs seulement, sans flux MFM/sync;
+  * ICR CIA non acquitte a la lecture;
+  * supposer OCS pour tous ou activer AGA sur A500;
+  * ne pas modeliser Bus Error aux trous d'adressage;
+  * caches incoherents avec DMA sur 68020+.
+
+Niveaux d'exactitude : Workbench demande surtout CPU/API/peripheriques corrects;
+jeux trackloader demandent CIA, disk DMA et timing; demos exigent DMA slot par
+slot, Copper/Blitter/faisceau cycle-exacts et revisions PAL/NTSC.
+
+Formats d'image : ADF conserve secteurs logiques Amiga standards mais pas toutes
+les protections. IPF/SCP flux preserve davantage timing, weak bits et pistes
+non standard. HDF represente disque/partition; geometry/RDB/filesystem comptent.
+
+
+==============================================================================
+46. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] reset, ROM, ExecBase a 4 et diagnostics
+  [ ] 68000 exceptions/alignment/prefetch et niveaux IRQ
+  [ ] Chip/Fast/Slow RAM, attributs et DMA inaccessible
+  [ ] OCS/ECS/AGA identifies conformement au profil
+  [ ] DMACON/INTENA/INTREQ set/clear et maitre
+  [ ] bitplanes 1..6/8, modulos, scroll et fetch
+  [ ] PAL/NTSC, interlace, hires/superhires et overscan
+  [ ] palette OCS/ECS/AGA, EHB, HAM6/HAM8, dual playfield
+  [ ] huit sprites, attach, priorite et collisions
+  [ ] Copper MOVE/WAIT/SKIP, masques et danger COPCON
+  [ ] Blitter minterms, shifts, masks, fill, line, descending
+  [ ] quatre audios : boucle, IRQ, modulation, volume, filtre
+  [ ] CIA timers/TOD/ICR, clavier et ports disquette
+  [ ] mouse/joystick/paddles/CD32 pad
+  [ ] MFM floppy, changement, write protect, trackloader
+  [ ] serie/parallele et handshakes
+  [ ] Autoconfig Zorro II/III et ROM de carte
+  [ ] IDE/SCSI/PCMCIA selon modele
+  [ ] Kickstart 1.2/1.3/2.04/3.0/3.1 selon profil
+  [ ] Exec tasks/signals/messages/devices et abort I/O
+  [ ] AmigaDOS locks, assigns, handlers et fichiers
+  [ ] Intuition IDCMP/refresh et graphics.library
+  [ ] IFF ILBM/8SVX avec chunks inconnus/padding
+  [ ] Hunk relocation, bootblock, ADF/IPF/HDF
+
+
+==============================================================================
+47. MAINTENANCE ET PRESERVATION
+==============================================================================
+
+Deconnecter avant ouverture. Inspecter alimentation, condensateurs, corrosion,
+connecteurs, lecteur et batterie. A500 Plus/A2000/A3000/A4000 avec batterie NiCd
+sont particulierement menaces par les fuites; retirer/remplacer et reparer pistes.
+
+Les condensateurs CMS des A600/A1200/A4000/CD32 peuvent fuir sans signe visible.
+Un recap exige equipement et experience pour ne pas arracher pads. Les alimentations
+vieillies doivent etre testees sous charge avec limites de courant.
+
+Archiver ROMs legalement possedees, RDB, partitions, disquettes par flux si
+protegees, EEPROM/config, photos, revisions de carte et chips. Ne pas diffuser
+Kickstart/Workbench commercial sans licence; Amiga Forever et autres offres
+fournissent des ROMs licenciees. EmuTOS n'est pas AmigaOS; AROS/Emu68 ont d'autres
+compatibilites et licences.
+
+
+==============================================================================
+48. REFERENCES
+==============================================================================
+
+Documentation Commodore-Amiga
+------------------------------
+
+  * Amiga Hardware Reference Manual, Third Edition, Commodore-Amiga,
+    Addison-Wesley, 1991, ISBN 0-201-56776-8.
+    https://www.retro-commodore.eu/amiga-development/
+    https://erikarn.github.io/amiga/docs/notes.html
+
+  * Amiga ROM Kernel Reference Manual: Libraries, Release 2.
+    https://tele-work.hu/RKM/AmigaROMKernelManual.pdf
+
+  * Amiga ROM Kernel Reference Manual: Devices, Third Edition.
+    https://www.ikod.se/wp-content/uploads/2020/08/
+      Amiga_ROM_Kernal_Reference_Manual_Devices_Third.pdf
+
+  * Amiga ROM Kernel Reference Manual: Includes and Autodocs.
+    https://www.ikod.se/wp-content/uploads/2020/08/
+      Amiga_ROM_Kernal_Reference_Manual_Includes_and_Autodocs_1989.pdf
+
+  * Amiga Developer CD 2.1, guides, AutoDocs et exemples :
+    https://amigadev.elowar.com/read/ADCD_2.1/
+
+Documentation recente
+---------------------
+
+  * AmigaOS 3 Native Developer Kit et recommandations :
+    https://developer.amigaos3.net/article/13-recommended-reading-amiga-developer
+
+  * ROM Kernel Reference Manual: Changes & Additions, OS 2 a 3.2 :
+    https://developer.amigaos3.net/sites/default/files/downloads/2023-12/
+      ROM-Kernel-Reference-Manual_-The-Coveted-Addendum-%282021-12-26%29.pdf
+
+  * Motorola M68000 Family Programmer's Reference Manual.
+  * MOS/CSG 8520 CIA documentation.
+
+Implementations de comparaison : WinUAE, FS-UAE, vAmiga, MAME, Musashi, AROS et
+AmigaOS NDK. Les sources d'un emulateur aident a tester une interpretation mais
+ne remplacent pas le Hardware Reference Manual et les AutoDocs de la version.
+
+Regle de priorite : utiliser l'AutoDoc et les includes du NDK cible pour chaque
+appel. Pour le materiel, verifier OCS/ECS/AGA et la revision exacte. Une application
+doit preferer Exec/devices/Intuition/graphics; l'acces direct est reserve au code
+qui possede explicitement la ressource et sait restaurer le systeme.

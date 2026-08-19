@@ -1,0 +1,979 @@
+==============================================================================
+ TSENG LABS ET6000 / ET6100
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit les cartes PCI basees sur le controleur graphique Tseng Labs
+ET6000. Il couvre l'architecture, le bus PCI, la MDRAM, la compatibilite VGA,
+le BIOS VESA, le framebuffer lineaire, l'accelerateur 2D, la detection et la
+programmation sous DOS. Des exemples sont donnes en assembleur 386 et en Turbo
+Pascal 7.
+
+Le nom de fichier conserve volontairement la forme demandee
+"TSENGLABSET6000". Le fabricant s'ecrit Tseng Labs et la puce ET6000.
+
+Les accents sont omis afin de conserver un fichier ASCII utilisable sous DOS.
+Date de revision : aout 2026.
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. ET6000, ET6100 et cartes OEM
+  3. Architecture generale
+  4. Interface PCI
+  5. Memoire video DRAM et MDRAM
+  6. RAMDAC et synthese d'horloge
+  7. Compatibilite VGA et Tseng
+  8. Modes et profondeurs de couleur
+  9. BIOS video et VESA VBE
+ 10. Espaces d'adressage
+ 11. Ports VGA et registres etendus
+ 12. Acces bancaire
+ 13. Framebuffer lineaire
+ 14. Detection PCI
+ 15. Detection de la memoire
+ 16. Programmation des modes
+ 17. Formats de pixels
+ 18. Palette et DAC
+ 19. Synchronisation et timings
+ 20. Accelerateur 2D
+ 21. Operations raster et BitBLT
+ 22. Exemples assembleur
+ 23. Exemples Turbo Pascal
+ 24. DPMI et acces physique
+ 25. Architecture d'un pilote
+ 26. Conseils pour un emulateur
+ 27. Diagnostic et pieges
+ 28. Plan de validation
+ 29. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+L'ET6000 est commercialise vers 1995-1996. Il succede aux ET4000/W32 et vise
+les accelerateurs Windows 2D PCI. Il integre davantage de fonctions que ses
+predecesseurs : interface PCI, accelerateur graphique, RAMDAC 24 bits et
+synthese d'horloge programmable.
+
+L'ET6000 est une excellente puce 2D, mais pas un accelerateur 3D moderne. Un jeu
+DOS qui dessine directement dans le framebuffer profite surtout du PCI, de la
+MDRAM et du framebuffer lineaire. Il ne profite pas automatiquement du moteur
+BitBLT. L'ET6300 3D projete par Tseng ne fut pas commercialise. Les actifs de
+Tseng Labs furent ensuite acquis par ATI.
+
+Une carte ET6000 est souvent appelee "VideoLogic GrafixStar 600", "Hercules
+Dynamite 128/Video" ou porte une marque OEM. Le BIOS, la quantite de MDRAM, les
+connecteurs et les frequences certifiees varient avec le fabricant.
+
+
+==============================================================================
+2. ET6000, ET6100 ET CARTES OEM
+==============================================================================
+
+ET6000
+  Premier membre courant. PCI, moteur 2D, DAC et PLL integres, DRAM ou MDRAM.
+  Identifiant PCI Tseng 100Ch, peripherique 3208h.
+
+ET6100
+  Evolution plus rapide et tardive. Elle reste proche pour les pilotes, mais
+  les frequences, temporisations memoire et revisions ne sont pas identiques.
+
+Une chaine "ET6000" dans la ROM n'est qu'un indice. L'identification principale
+doit employer la configuration PCI. Le numero de revision PCI et les registres
+de revision du circuit doivent etre conserves pour choisir les contournements.
+
+Ne pas appliquer directement les registres ET4000AX : l'ET6000 conserve une
+compatibilite, mais son interface PCI, son DAC, sa PLL, sa memoire et son moteur
+sont d'une autre generation.
+
+
+==============================================================================
+3. ARCHITECTURE GENERALE
+==============================================================================
+
+Schema logique simplifie :
+
+  CPU/PCI -------+------> interface hote/FIFO ------> accelerateur 2D
+                 |                                      |
+                 +------> aperture VGA/lineaire --------+----> MDRAM/DRAM
+                                                        |
+  registres VGA/CRTC ---> generateur d'affichage -------+--> DAC --> moniteur
+
+Blocs fonctionnels :
+
+  * fonction PCI VGA, classe 0300h;
+  * decodeur des ports VGA et de la fenetre A0000h;
+  * framebuffer lineaire mappe par une ressource PCI;
+  * controleur DRAM/MDRAM;
+  * moteur BitBLT et remplissage 2D;
+  * CRTC compatible VGA avec extensions Tseng;
+  * LUT-DAC 256 entrees et DAC 24 bits integre;
+  * synthese d'horloge pixel programmable;
+  * curseur materiel et fonctions d'affichage suivant revision.
+
+Le moteur emploie des adresses video de 22 bits. Il ne peut donc adresser que
+4 Mio, meme si davantage de puces memoire semblent physiquement presentes.
+
+
+==============================================================================
+4. INTERFACE PCI
+==============================================================================
+
+Identite connue :
+
+  Vendor ID       100Ch  Tseng Labs
+  Device ID       3208h  ET6000
+  Classe          03h    Display Controller
+  Sous-classe     00h    VGA compatible controller
+
+En-tete PCI type 0, registres importants :
+
+  00h  Vendor ID / Device ID
+  04h  Command / Status
+  08h  Revision / ProgIF / Subclass / Class
+  10h  BAR0, ressource dependante de l'implementation
+  14h  BAR1, ressource dependante de l'implementation
+  18h  BAR2, si implemente
+  30h  adresse de ROM d'extension
+  2Ch  Subsystem Vendor / Subsystem ID, si presents
+  3Ch  ligne et broche d'interruption
+
+Les BAR doivent etre lus et masques selon leur type. Pour un BAR memoire,
+adresse = valeur AND FFFFFFF0h. Pour un BAR E/S, adresse = valeur AND FFFFFFFCh.
+Ne jamais supposer que l'aperture lineaire est E0000000h : le BIOS PCI peut la
+placer ailleurs.
+
+Le bit PCI Command 0 autorise les E/S, le bit 1 les cycles memoire et le bit 2
+le bus mastering. Un pilote d'affichage normal a besoin des deux premiers. Il
+ne doit pas reprogrammer les BAR d'une carte deja initialisee sans gerer toutes
+les collisions de ressources.
+
+
+==============================================================================
+5. MEMOIRE VIDEO DRAM ET MDRAM
+==============================================================================
+
+L'ET6000 accepte de la DRAM et surtout la MDRAM (Multibank DRAM) de MoSys. La
+MDRAM est divisee en nombreuses petites banques internes pouvant etre actives
+independamment. Cette organisation offre un debit eleve et permet des capacites
+qui ne sont pas des puissances de deux.
+
+Capacites rencontrees :
+
+  * 1, 2 ou 4 Mio avec certaines organisations DRAM;
+  * 2 Mio de MDRAM;
+  * 2,25 Mio de MDRAM, capacite tres courante;
+  * cartes annoncees 4 ou 4,5 Mio.
+
+La limite utile demeure 4 Mio :
+
+  * compteur d'adresse de l'accelerateur sur 22 bits;
+  * 64 banques VGA de 64 Kio;
+  * limite du registre de rafraichissement documentee par les pilotes.
+
+Ainsi, 4,5 Mio physiquement installes n'offrent pas 4,5 Mio exploitables. La
+capacite de 2,25 Mio est en revanche utile : 1024x768x24 exige 2359296 octets,
+exactement 2304 Kio, sans compter les alignements ou surfaces hors ecran.
+
+Identification visuelle MDRAM : les puces MoSys portent souvent MD9xx. Le nombre
+xx indique des megabits par circuit; la capacite theorique est :
+
+  (xx * nombre de circuits) / 8 Mio.
+
+Exemple : deux MD909 donnent (9*2)/8 = 2,25 Mio. Il faut toutefois verifier le
+PCB et les marquages reels, non une etiquette commerciale.
+
+
+==============================================================================
+6. RAMDAC ET SYNTHESE D'HORLOGE
+==============================================================================
+
+Contrairement a beaucoup d'ET4000, l'ET6000 integre son DAC et sa PLL. Les
+documents d'epoque indiquent un DAC 24 bits cadence jusqu'a environ 135 MHz. La
+frequence exploitable depend de la revision, du mode, de la memoire, du PCB et
+du moniteur.
+
+La LUT compatible VGA contient 256 couleurs. En 8 bpp, l'octet du framebuffer
+selectionne une entree de palette. En 15/16/24/32 bpp, les composantes sont
+encodees directement dans les pixels; la LUT et les controles DAC peuvent tout
+de meme intervenir selon la configuration.
+
+La PLL ne doit pas etre programmee avec une formule approximative. Le pilote
+choisit des diviseurs qui respectent les plages VCO, attend la stabilisation et
+verifie que la frequence reelle demeure dans les limites du mode. Un BIOS VBE
+reste le moyen le plus sur sous DOS.
+
+
+==============================================================================
+7. COMPATIBILITE VGA ET TSENG
+==============================================================================
+
+L'ET6000 decode les blocs VGA standards :
+
+  * Sequencer 3C4h/3C5h;
+  * Graphics Controller 3CEh/3CFh;
+  * CRTC 3D4h/3D5h ou 3B4h/3B5h;
+  * Attribute Controller 3C0h/3C1h;
+  * Miscellaneous Output 3C2h, lecture 3CCh;
+  * DAC 3C6h a 3C9h;
+  * Input Status 1 a 3DAh ou 3BAh.
+
+Il conserve aussi des mecanismes Tseng, notamment le deverrouillage des
+extensions et l'acces bancaire. Cela permet aux logiciels Super VGA Tseng de
+fonctionner, mais ne constitue pas une garantie de compatibilite registre par
+registre avec un ET4000AX.
+
+Sequence historique de deverrouillage :
+
+        mov dx,03BFh
+        mov al,03h
+        out dx,al
+        mov dx,03D8h          ; 3B8h si decodage monochrome
+        mov al,0A0h
+        out dx,al
+
+
+==============================================================================
+8. MODES ET PROFONDEURS DE COULEUR
+==============================================================================
+
+Le controleur peut gerer les profondeurs suivantes, selon BIOS et memoire :
+
+  4 bpp   modes planaires VGA, 16 couleurs;
+  8 bpp   256 couleurs indexees;
+ 15 bpp   5:5:5, souvent stocke sur 16 bits;
+ 16 bpp   5:6:5;
+ 24 bpp   B, G, R sur trois octets;
+ 32 bpp   pixel sur quatre octets, huit bits inutilises ou reserves.
+
+Modes usuels accessibles par VBE : 640x480, 800x600, 1024x768 et parfois
+1280x1024 a diverses profondeurs. La fiche annonce jusqu'a 1280x1024 en vraies
+couleurs dans des conditions appropriees, mais la memoire et la bande passante
+limitent resolution, profondeur et rafraichissement simultanes.
+
+Memoire minimale sans surfaces auxiliaires :
+
+  640x480x8       307200 octets
+  800x600x16      960000 octets
+  1024x768x8      786432 octets
+  1024x768x16    1572864 octets
+  1024x768x24    2359296 octets = 2,25 Mio
+  1280x1024x16   2621440 octets
+  1280x1024x24   3932160 octets
+
+Le Pitch peut etre superieur a largeur*octets_par_pixel. Toujours utiliser
+BytesPerScanLine retourne par VBE.
+
+
+==============================================================================
+9. BIOS VIDEO ET VESA VBE
+==============================================================================
+
+La ROM d'extension PCI installe INT 10h et initialise PCI, memoire, DAC et PLL.
+La programmation DOS portable doit privilegier VBE :
+
+  AX=4F00h  informations controleur;
+  AX=4F01h  informations d'un mode;
+  AX=4F02h  selection du mode;
+  AX=4F03h  lecture du mode courant;
+  AX=4F05h  selection d'une fenetre bancaire;
+  AX=4F06h  longueur de ligne logique;
+  AX=4F07h  debut d'affichage;
+  AX=4F08h  largeur du DAC, si prise en charge;
+  AX=4F09h  palette, VBE 2.0;
+
+Succes VBE : AX=004Fh. Ne tester ni AL seul, ni seulement CF. ModeInfoBlock doit
+etre conserve dans une structure exactement alignee et assez grande.
+
+Avec VBE 2.0, bit 14 de BX demande le Linear Frame Buffer lors de 4F02h :
+
+        mov ax,4F02h
+        mov bx,mode
+        or  bx,4000h
+        int 10h
+        cmp ax,004Fh
+        jne erreur
+
+Le bit 7 de ModeAttributes doit annoncer le LFB et PhysBasePtr doit etre non
+nul. Ne pas fabriquer PhysBasePtr a partir du nom de la carte.
+
+
+==============================================================================
+10. ESPACES D'ADRESSAGE
+==============================================================================
+
+Trois espaces doivent etre distingues :
+
+  1. ports VGA historiques, accessibles par IN/OUT;
+  2. fenetre VGA A0000h-AFFFFh, 64 Kio et banques;
+  3. aperture lineaire PCI, adresse physique 32 bits retournee par PCI/VBE.
+
+Des registres accelerateurs peuvent etre exposes par une plage d'E/S PCI ou par
+une region mappee. Leur base est une ressource, pas une constante universelle.
+Un programme DOS reel ne peut pas former directement un segment vers une
+adresse comme E0000000h. Il lui faut DPMI, VCPI, mode protege ou pagination.
+
+
+==============================================================================
+11. PORTS VGA ET REGISTRES ETENDUS
+==============================================================================
+
+  Port       Fonction
+  ---------  -----------------------------------------------------------
+  3B4/3B5h   CRTC en decodage monochrome
+  3BAh       Input Status 1 monochrome
+  3BFh       autorisation des extensions Tseng
+  3C0/3C1h   Attribute Controller
+  3C2/3CCh   Miscellaneous Output ecriture/lecture
+  3C4/3C5h   Sequencer
+  3C6-3C9h   masque, index et donnees DAC
+  3CBh       extension de banque Tseng sur ET6000
+  3CDh       selection de banque Tseng
+  3CE/3CFh   Graphics Controller
+  3D4/3D5h   CRTC en decodage couleur
+  3D8h       cle Tseng en decodage couleur
+  3DAh       Input Status 1 couleur
+
+Les registres etendus CRTC conservent notamment des bits hauts pour Display
+Start, timings et configuration. Le pilote doit effectuer un read-modify-write
+et preserver les bits reserves. Les tables ET4000 ne doivent pas etre recopiees
+aveuglement : certaines fonctions ont ete integrees ou deplacees sur ET6000.
+
+Le basculement de l'Attribute Controller reste celui de la VGA : lire 3DAh avant
+l'index, alterner index/donnees sur 3C0h, puis ecrire 20h a 3C0h pour reactiver
+l'affichage.
+
+
+==============================================================================
+12. ACCES BANCAIRE
+==============================================================================
+
+La fenetre A0000h contient 64 Kio. L'ET6000 peut selectionner jusqu'a 64 banques
+de 64 Kio, soit 4 Mio. Il etend donc les quatre bits de banque historiques de
+3CDh. Le detail des bits hauts doit etre programme selon la documentation
+ET6000 ou par VBE 4F05h; une routine ET4000 limitee a 0..15 ne voit qu'un Mio.
+
+La voie sure et portable est :
+
+  1. lire WinASegment/WinBSegment et WinGranularity dans ModeInfoBlock;
+  2. appeler AX=4F05h, BX=fenetre, DX=numero exprime en granularites;
+  3. copier au plus jusqu'a la fin de la fenetre;
+  4. changer de banque et continuer.
+
+Pour une adresse L et une fenetre de 64 Kio/granularite 64 Kio :
+
+  banque = L SHR 16
+  offset = L AND FFFFh
+
+Si WinGranularity vaut 4 ou 16 Kio, le numero transmis a VBE differe. La taille
+de fenetre et la granularite sont deux valeurs distinctes.
+
+
+==============================================================================
+13. FRAMEBUFFER LINEAIRE
+==============================================================================
+
+Le LFB mappe toute la VRAM dans l'espace physique. Il evite les changements de
+banque et est pratiquement indispensable aux modes 15/16/24/32 bpp.
+
+Adresse d'un pixel :
+
+  P = LFB + Y*Pitch + X*BytesPerPixel
+
+Le mapping PCI est non-prefetchable sur certaines cartes Tseng. Des BIOS qui
+activent a tort write combining/byte merging peuvent provoquer des fontes ou
+pixels corrompus. Un pilote doit respecter les attributs PCI et proposer une
+voie sans acceleration/combinaison d'ecritures pour le diagnostic.
+
+Sous DPMI, utiliser INT 31h AX=0800h pour mapper une adresse physique. L'appel
+retourne une adresse lineaire DPMI, qui doit ensuite etre convertie en selecteur
+ou utilisee dans le modele memoire de l'extender. Liberer avec AX=0801h.
+
+
+==============================================================================
+14. DETECTION PCI
+==============================================================================
+
+La detection recommandee :
+
+  1. PCI BIOS installation check INT 1Ah/AX=B101h;
+  2. verifier CF=0, AH=00h et EDX="PCI ";
+  3. Find PCI Device AX=B102h, DX=100Ch, CX=3208h, SI=0;
+  4. recuperer BH=bus et BL=device/function;
+  5. lire revision, Command et BAR avec B108h/B109h/B10Ah;
+  6. confirmer que la classe est 030000h;
+  7. ne modifier aucune ressource pendant la simple detection.
+
+La presence VGA par INT 10h/AX=1A00h n'identifie pas l'ET6000. Inversement, une
+fonction PCI ET6000 peut etre presente mais ne pas etre la VGA primaire.
+
+
+==============================================================================
+15. DETECTION DE LA MEMOIRE
+==============================================================================
+
+Les anciens pilotes ont parfois confondu 2,25 Mio avec 2,5 Mio a cause des
+miroirs internes et de BIOS fautifs. Ordre de preference :
+
+  1. registre de configuration memoire initialise par le BIOS, si sa revision
+     et sa signification sont connues;
+  2. information VBE, en sachant que TotalMemory est exprime en blocs 64 Kio;
+  3. identification physique des circuits MDRAM;
+  4. test VRAM reversible et soigneusement concu.
+
+Un test destructif doit sauvegarder plusieurs motifs a des adresses eloignees,
+ecrire des signatures distinctes, verifier les alias, puis restaurer toutes les
+valeurs. Il faut arreter l'affichage ou choisir une zone hors ecran. Une simple
+ecriture a l'adresse N puis relecture ne distingue pas RAM reelle, miroir et
+cache d'ecriture.
+
+VBE TotalMemory arrondit necessairement aux blocs de 64 Kio. 2,25 Mio donne 36
+blocs. Limiter dans tous les cas la capacite exploitee a 64 blocs, soit 4 Mio.
+
+
+==============================================================================
+16. PROGRAMMATION DES MODES
+==============================================================================
+
+Programmer manuellement un mode exige :
+
+  * suspendre/proteger les acces concurrents;
+  * desactiver l'affichage;
+  * configurer la PLL et attendre sa stabilisation;
+  * regler les timings CRTC et leurs bits etendus;
+  * regler Pitch, profondeur et organisation memoire;
+  * configurer le DAC;
+  * initialiser palette et Display Start;
+  * reinitialiser l'etat de l'accelerateur;
+  * reactiver l'affichage et verifier le retour vertical.
+
+Une valeur erronee peut mettre le moniteur hors plage. Sous DOS, employer INT
+10h/4F02h et les modes annonces par le BIOS. Une table de modelines XFree86 est
+une reference de developpement, pas un remplacement automatique du BIOS.
+
+
+==============================================================================
+17. FORMATS DE PIXELS
+==============================================================================
+
+Les octets sont little-endian sur x86 :
+
+  8 bpp   [index]
+ 15 bpp   mot 0RRRRRGG GGGBBBBB, variante exacte annoncee par VBE
+ 16 bpp   mot RRRRRGGG GGGBBBBB (RGB 5:6:5)
+ 24 bpp   trois octets, generalement B,G,R en memoire
+ 32 bpp   B,G,R,X ou B,G,R,A selon interface
+
+ModeInfoBlock fournit RedMaskSize, RedFieldPosition, etc. Le programme doit
+composer les pixels a partir de ces champs au lieu de supposer RGB565/BGR24.
+
+Pour convertir une composante 0..255 vers N bits :
+
+  valeurN = (composante * ((1 SHL N)-1) + 127) DIV 255
+
+
+==============================================================================
+18. PALETTE ET DAC
+==============================================================================
+
+Palette VGA classique :
+
+        mov dx,03C8h
+        mov al,index
+        out dx,al
+        inc dx                 ; 3C9h
+        mov al,rouge
+        out dx,al
+        mov al,vert
+        out dx,al
+        mov al,bleu
+        out dx,al
+
+Selon le mode DAC, les composantes ont 6 ou 8 bits. VBE 4F08h permet de demander
+8 bits si le BIOS le supporte. Ne pas envoyer 255 a un DAC reste en 6 bits sans
+conversion; employer composante SHR 2.
+
+Pour eviter un changement de palette visible au milieu d'une image, attendre le
+retour vertical ou utiliser VBE 4F09h avec le bit d'attente de retrace lorsque
+le BIOS l'offre.
+
+
+==============================================================================
+19. SYNCHRONISATION ET TIMINGS
+==============================================================================
+
+Input Status 1 bit 3 indique le retour vertical :
+
+        mov dx,03DAh
+finvr:  in  al,dx
+        test al,08h
+        jnz finvr
+debvr:  in  al,dx
+        test al,08h
+        jz  debvr
+
+Ajouter un timeout. Une carte absente, des ports virtualises ou un affichage
+desactive pourraient sinon bloquer le programme. La lecture de 3DAh remet aussi
+la bascule ATC sur la phase index.
+
+La bande passante necessaire augmente avec frequence pixel et octets par pixel.
+La valeur commerciale de bande passante MDRAM ne garantit pas un mode : le CRTC
+et l'accelerateur se partagent la memoire et les timings reels comptent.
+
+
+==============================================================================
+20. ACCELERATEUR 2D
+==============================================================================
+
+Le moteur ET6000 est concu pour les primitives GUI :
+
+  * remplissage de rectangles;
+  * BitBLT memoire vers memoire;
+  * transfert CPU vers ecran et ecran vers CPU;
+  * lignes;
+  * operations raster (ROP);
+  * motifs, masques et expansion monochrome;
+  * transparence selon l'operation;
+  * clipping et curseur, suivant pilote/revision.
+
+Sequence generique d'une commande :
+
+  1. attendre que le moteur accepte une commande;
+  2. regler format/pitch et contexte commun;
+  3. fournir adresses source et destination dans les 4 Mio;
+  4. fournir largeur, hauteur et sens X/Y;
+  5. choisir ROP, couleurs et masque;
+  6. lancer l'operation;
+  7. attendre avant une lecture CPU ou une commande incompatible.
+
+Les registres exacts de l'accelerateur ne sont pas reproduits sans le manuel de
+programmation ET6000 complet. Les pilotes XFree86/X.Org constituent une source
+ouverte verifiable. Il est dangereux de transposer les offsets W32 : meme si le
+modele de commandes est apparente, bases, files et bits ont evolue.
+
+PCI retry peut eviter une boucle busy-wait en faisant patienter le bus lorsque
+le moteur est occupe. Cette option a pose des problemes de compatibilite avec
+certains systemes et peripheriques sensibles; un pilote doit pouvoir la couper.
+
+
+==============================================================================
+21. OPERATIONS RASTER ET BITBLT
+==============================================================================
+
+Pour une copie avec recouvrement :
+
+  * destination avant source : progresser gauche->droite, haut->bas;
+  * destination apres source : progresser droite->gauche, bas->haut.
+
+Cette regle est l'equivalent graphique de memmove. Largeur et hauteur du moteur
+peuvent employer un codage N-1; le manuel de revision decide. Le Pitch est en
+octets ou pixels suivant le registre. Ces deux details sont des sources communes
+de depassement de VRAM.
+
+ROP courantes au sens logique : COPY=S, CLEAR=0, SET=1, XOR=S xor D,
+AND=S and D, OR=S or D, INVERT=not D. Leur code numerique doit venir de la table
+ET6000, non d'une table Windows ou d'un autre constructeur.
+
+Avant que le CPU lise le resultat, imposer une synchronisation complete du
+moteur et du FIFO. Un simple acces volatil ne garantit pas que le BitBLT soit
+termine sur un bus PCI avec ecritures postees.
+
+
+==============================================================================
+22. EXEMPLES ASSEMBLEUR
+==============================================================================
+
+22.1 Detection par PCI BIOS (386, MASM/TASM)
+--------------------------------------------
+
+; Retour CF=0, BH=bus, BL=device/function si ET6000 trouve.
+FindET6000 PROC NEAR
+        mov     ax,0B101h
+        int     1Ah
+        jc      short F6No
+        cmp     ah,00h
+        jne     short F6No
+        cmp     edx,20494350h   ; "PCI " en little-endian
+        jne     short F6No
+        mov     ax,0B102h
+        mov     dx,100Ch        ; Vendor Tseng
+        mov     cx,3208h        ; ET6000
+        xor     si,si           ; premier exemplaire
+        int     1Ah
+        jc      short F6No
+        cmp     ah,00h
+        jne     short F6No
+        clc
+        ret
+F6No:   stc
+        ret
+FindET6000 ENDP
+
+22.2 Lire BAR0
+--------------
+
+; Entree BH/BL retournes par FindET6000. Sortie ECX=BAR0 brut.
+        mov     ax,0B10Ah       ; Read Configuration Dword
+        mov     di,10h
+        int     1Ah
+        jc      erreur_pci
+        test    cl,01h
+        jnz     bar_io
+        and     ecx,0FFFFFFF0h  ; base memoire
+
+Toujours verifier le type et les bits 2:1 d'un BAR memoire. Un BAR 64 bits
+occupe deux entrees. Le code ci-dessus illustre un BAR 32 bits seulement.
+
+22.3 Fixer un mode VBE lineaire
+-------------------------------
+
+; Entree BX=numero de mode VBE. Retour CF=0 si succes.
+SetVBELinear PROC NEAR
+        or      bx,4000h
+        mov     ax,4F02h
+        int     10h
+        cmp     ax,004Fh
+        jne     short SVLFail
+        clc
+        ret
+SVLFail:stc
+        ret
+SetVBELinear ENDP
+
+22.4 Pixel 8 bpp dans une fenetre VBE
+-------------------------------------
+
+; L'adresse 32 bits est Y*Pitch+X. La banque doit etre convertie selon la
+; granularite VBE. Cet exemple suppose fenetre A, segment A000h et granularite
+; egale a 64 Kio.
+; Entree EAX=adresse, CL=couleur. Retour CF=0 si succes.
+Put8Banked PROC NEAR
+        push    ax
+        push    bx
+        push    cx
+        push    di
+        push    si
+        push    es
+        mov     si,ax           ; offset dans la fenetre
+        shr     eax,16
+        mov     dx,ax           ; banque VBE
+        mov     ax,4F05h
+        xor     bx,bx           ; fenetre A, set
+        int     10h
+        cmp     ax,004Fh
+        jne     short P8Fail
+        mov     ax,0A000h
+        mov     es,ax
+        mov     al,cl
+        mov     es:[si],al
+        clc
+        jmp     short P8Done
+P8Fail: stc
+P8Done: pop     es
+        pop     si
+        pop     di
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+Put8Banked ENDP
+
+
+==============================================================================
+23. EXEMPLES TURBO PASCAL
+==============================================================================
+
+23.1 Structures et detection PCI
+--------------------------------
+
+Const
+  TsengVendor = $100C;
+  ET6000Device = $3208;
+
+Function FindET6000(Var Bus, DevFunc : Byte) : Boolean; Assembler;
+Asm
+  mov ax,$B101
+  int $1A
+  jc  @No
+  cmp ah,0
+  jne @No
+  cmp edx,$20494350             { "PCI " }
+  jne @No
+  mov ax,$B102
+  mov dx,TsengVendor
+  mov cx,ET6000Device
+  xor si,si
+  int $1A
+  jc  @No
+  cmp ah,0
+  jne @No
+  les di,Bus
+  mov es:[di],bh
+  les di,DevFunc
+  mov es:[di],bl
+  mov al,1
+  jmp @Done
+@No:
+  xor al,al
+@Done:
+End;
+
+La syntaxe des parametres assembleur varie avec le modele Turbo Pascal. Pour une
+bibliotheque destinee a plusieurs modeles memoire, ecrire l'enveloppe en Pascal
+et une routine assembleur recevant explicitement des pointeurs far.
+
+23.2 Mode VBE lineaire
+----------------------
+
+Function SetVBEModeLinear(Mode : Word) : Boolean; Assembler;
+Asm
+  mov ax,$4F02
+  mov bx,Mode
+  or  bx,$4000
+  int $10
+  cmp ax,$004F
+  jne @Bad
+  mov al,1
+  jmp @Done
+@Bad:
+  xor al,al
+@Done:
+End;
+
+23.3 Pixel bancaire VBE, granularite 64 Kio
+--------------------------------------------
+
+Procedure SetVBEWindow(Bank : Word); Assembler;
+Asm
+  mov ax,$4F05
+  xor bx,bx                    { fenetre A, fonction set }
+  mov dx,Bank
+  int $10
+End;
+
+Procedure PutPixel8(X, Y, Pitch : Word; Color : Byte);
+Var
+  A : LongInt;
+Begin
+  A := LongInt(Y) * Pitch + X;
+  SetVBEWindow(Word(A shr 16));
+  Mem[$A000:Word(A and $FFFF)] := Color;
+End;
+
+Cette routine n'est correcte que si ModeInfoBlock annonce une fenetre A
+ecrivable de 64 Kio et une granularite de 64 Kio. Une version generale calcule
+Bank := (A DIV 1024) DIV WinGranularity et Offset relativement a la fenetre.
+
+23.4 Composition RGB565
+-----------------------
+
+Function RGB565(R, G, B : Byte) : Word;
+Begin
+  RGB565 := (Word(R shr 3) shl 11) or
+            (Word(G shr 2) shl 5) or
+             Word(B shr 3);
+End;
+
+Pour un mode arbitraire, utiliser les tailles et positions de masques VBE.
+
+23.5 Palette VGA
+----------------
+
+Procedure SetPalette6(Index, R, G, B : Byte);
+Begin
+  Port[$3C8] := Index;
+  Port[$3C9] := R and $3F;
+  Port[$3C9] := G and $3F;
+  Port[$3C9] := B and $3F;
+End;
+
+
+==============================================================================
+24. DPMI ET ACCES PHYSIQUE
+==============================================================================
+
+Turbo Pascal DOS produit normalement du code reel 16 bits. Il ne peut pas
+dereferencer PhysBasePtr directement. Solutions :
+
+  * rester en mode bancaire via VBE;
+  * employer un extender DPMI 32 bits;
+  * ecrire une couche DPMI qui mappe le LFB et cree un selecteur;
+  * utiliser un compilateur 32 bits DOS tel que Watcom avec DOS/4GW.
+
+DPMI 0.9, INT 31h AX=0800h : BX:CX=adresse physique, SI:DI=taille; retourne
+BX:CX=adresse lineaire. AX=0801h libere le mapping. Les conventions exactes de
+l'hote doivent etre respectees et tous les mappings ne sont pas acceptes.
+
+Ne pas desactiver la pagination ou passer en mode unreal sans controler tout
+l'environnement. Ces techniques entrent en conflit avec EMM386, Windows 9x et
+les hotes DPMI.
+
+
+==============================================================================
+25. ARCHITECTURE D'UN PILOTE
+==============================================================================
+
+Modules recommandes :
+
+  PCIProbe       identite, revision, BAR, Command;
+  VBEProbe       controleur, modes et fonctions disponibles;
+  Memory         capacite, mapping et limites 4 Mio;
+  ModeSet        BIOS VBE ou tables validees;
+  Bank/LFB       deux backends d'acces aux pixels;
+  PixelFormat    masques et conversion de couleurs;
+  Accel          moteur optionnel, par revision;
+  Sync           FIFO, moteur et retour vertical;
+  SaveRestore    etat VGA, Tseng, DAC, PLL et PCI modifie;
+  Diagnostics    voie sans acceleration et journal des ressources.
+
+Le rendu logiciel doit rester disponible. Il permet de verifier le mode et sert
+de repli si l'accelerateur, PCI retry ou write combining provoque des erreurs.
+
+
+==============================================================================
+26. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Un modele ET6000 utile doit implementer :
+
+  * fonction PCI 100C:3208, classe VGA, revision et BAR coherents;
+  * Command I/O/Memory Enable;
+  * ROM BIOS VBE coherente avec les modes et la VRAM;
+  * ports VGA, latches, ATC et DAC;
+  * deverrouillage Tseng;
+  * 64 banques de 64 Kio et leurs bits hauts;
+  * LFB aliasant exactement la meme VRAM que A0000h;
+  * tailles 2 Mio et 2,25 Mio, sans arrondi errone a 2,5 Mio;
+  * Pitch, Display Start et formats 8/15/16/24/32 bpp;
+  * PLL/timings ou au moins leur effet fonctionnel;
+  * moteur 2D, statut busy, FIFO et synchronisation;
+  * limite d'adresse moteur a 22 bits;
+  * lectures/retours des bits reserves plausibles.
+
+Tests importants : ecrire via LFB et relire via banque; ecrire dans deux banques
+qui ne doivent pas s'aliaser; copier avec recouvrement; lancer un BitBLT puis
+lire immediatement; changer Display Start; utiliser un Pitch non egal a la
+largeur; tester le dernier octet de 2,25 Mio.
+
+Une emulation qui retourne toutes les valeurs ecrites aux registres peut passer
+un detecteur superficiel mais echouer des qu'un pilote attend un effet. A
+l'inverse, des registres toujours a FFh font croire que la carte est absente.
+
+
+==============================================================================
+27. DIAGNOSTIC ET PIEGES
+==============================================================================
+
+  Symptome                       Cause probable
+  -----------------------------  --------------------------------------------
+  ET6000 PCI absent              PCI BIOS absent, carte non primaire, mauvais ID
+  LFB bloque la machine          BAR/PhysBasePtr faux, mapping DPMI invalide
+  Image repetee                  banque haute non programmee, limite ET4000 1 Mio
+  Pixels decales chaque ligne    Pitch suppose egal a largeur*Bpp
+  Rouge et bleu inverses         format BGR/RGB suppose au lieu des masques VBE
+  2,25 Mio detectes 2,5 Mio      alias MDRAM ou ancien algorithme de detection
+  Fontes/pixels corrompus        write combining interdit, synchronisation FIFO
+  Blit inverse avec recouvrement mauvais sens X/Y
+  Gel aleatoire PCI              PCI retry incompatible ou moteur jamais idle
+  Image instable                 PLL/timings ou bande passante hors limite
+  Palette trop sombre            valeurs 6 bits envoyees comme 8 bits ou inverse
+  Mode 24 bpp refuse             memoire, Pitch, BIOS ou mode non annonce
+
+Pieges supplementaires :
+
+  * ET6000 n'est pas ET4000AX et n'est pas une carte ISA;
+  * l'accelerateur est 2D, pas un moteur 3D;
+  * l'adresse physique du LFB n'est pas constante;
+  * une carte de 4,5 Mio ne rend pas 4,5 Mio adressables;
+  * le moteur ne voit que 22 bits d'adresse;
+  * TotalMemory VBE est une estimation BIOS, pas une preuve anti-alias;
+  * 24 bpp utilise trois octets, ce qui complique alignement et clipping;
+  * attendre le retrace n'attend pas necessairement la fin du moteur;
+  * attendre le moteur n'attend pas necessairement un echange d'ecran;
+  * l'acces direct aux ports est interdit sous de nombreux OS proteges.
+
+
+==============================================================================
+28. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] PCI BIOS absent et present
+  [ ] identite 100C:3208 et verification de classe
+  [ ] plusieurs cartes VGA, ET6000 non primaire
+  [ ] lecture BAR memoire/E-S sans modification
+  [ ] VBE 1.x bancaire et VBE 2.0 lineaire
+  [ ] 2 Mio, 2,25 Mio et 4 Mio
+  [ ] banque 0, 15, 16, 35 et 63
+  [ ] coherence banque/LFB
+  [ ] premier et dernier pixel de chaque profondeur
+  [ ] Pitch avec remplissage en fin de ligne
+  [ ] formats 555, 565, 24 et 32 bpp selon masques VBE
+  [ ] palette DAC 6 et 8 bits
+  [ ] Display Start et double buffering
+  [ ] BitBLT sans et avec recouvrement
+  [ ] ROP COPY, XOR, AND, OR
+  [ ] moteur occupe puis lecture CPU
+  [ ] acceleration desactivee comme reference
+  [ ] timeout de retrace et timeout moteur
+  [ ] restauration du mode texte et des ressources PCI
+
+
+==============================================================================
+29. REFERENCES
+==============================================================================
+
+Sources constructeur
+--------------------
+
+  * Tseng Labs, ET6000 Graphics and Multimedia Engine Data Sheet.
+    Vue d'ensemble du circuit, PCI, MDRAM, DAC et accelerateur.
+    Archive :
+    https://hackipedia.org/browse.cgi/Computer/Platform/PC,%20IBM%20compatible/
+      Video/VGA/SVGA/Tseng%20Labs
+
+  * Tseng Labs, manuels ET4000/W32p et documentation technique ET6000.
+    Les manuels W32 expliquent l'heritage, mais ne remplacent pas le manuel de
+    la revision ET6000.
+
+Specifications
+--------------
+
+  * PCI SIG, PCI Local Bus Specification et PCI BIOS Specification.
+  * VESA, VESA BIOS Extension Core Functions Standard, versions 1.2 et 2.0.
+  * IBM, VGA Hardware Technical Reference, registres VGA standards.
+  * Intel, DPMI Specification 0.9/1.0, mapping de memoire physique.
+
+Pilotes et documentation ouverte
+--------------------------------
+
+  * XFree86 Project, Information for Tseng Chipset Users, 3 novembre 1998.
+    https://www.xfree86.org/3.3.6/tseng.html
+    Sections importantes : fonctions ET6000, LFB, acceleration, limites de la
+    MDRAM, bande passante et diagnostic.
+
+  * X.Org, xf86-video-tseng. Pilote ET4000/W32, ET6000 et ET6100.
+    https://www.x.org/releases/individual/driver/
+
+  * SVGAlib, et6000.c et manuel svgalib.et6000(7). Modes, memoire, DAC/PLL et
+    acces lineaire.
+
+  * Linux PCI IDs historiques : Vendor 100Ch, Device 3208h.
+
+  * Ralf Brown's Interrupt List : PCI BIOS INT 1Ah, VBE INT 10h et DPMI INT 31h.
+
+Regle de prudence
+-----------------
+
+La fiche marketing ET6000 ne contient pas toujours la table de programmation
+complete du moteur. Pour produire un pilote accelerateur, recouper le manuel de
+la revision exacte avec les sources XFree86/X.Org et tester sur materiel. Les
+constantes d'un ET4000/W32p ne doivent jamais etre presentees comme ET6000 sans
+verification.

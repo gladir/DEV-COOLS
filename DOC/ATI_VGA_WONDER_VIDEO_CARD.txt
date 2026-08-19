@@ -1,0 +1,1340 @@
+==============================================================================
+ ATI VGA WONDER
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit les cartes ATI VGA Wonder de la fin des annees 1980 et du
+debut des annees 1990 : VGA Wonder originale, revisions V3 a V5, VGA Wonder+,
+VGA Wonder XL et XL24. Il couvre le materiel, la compatibilite IBM VGA, les
+registres ATI, les banques memoire, le BIOS, les modes etendus et la detection.
+
+La denomination recouvre plusieurs puces : ATI 18800, 18800-1, 28800-2,
+28800-4 et 28800-5. Leurs registres se ressemblent sans etre identiques. Une
+routine qui ignore la revision peut modifier un bit reserve ou attribuer une
+fonction 28800 a un 18800.
+
+La VGA Wonder ne doit pas etre confondue avec :
+
+  * l'EGA Wonder originale ;
+  * l'EGA Wonder 800+, proche de la generation 18800 mais sans toutes les
+    sorties/fonctions d'une VGA Wonder ;
+  * l'ATI Graphics Ultra et Mach8/Mach32, qui ajoutent un accelerateur 8514/A ;
+  * l'ATI Prism Elite, fondee sur un circuit Trident ;
+  * les cartes ATI All-in-Wonder beaucoup plus recentes.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et generations
+  2. Caracteristiques generales
+  3. Architecture materielle
+  4. Bus ISA et configuration
+  5. Memoire video
+  6. ROM BIOS et EEPROM
+  7. Sorties video et moniteurs
+  8. Compatibilite VGA, EGA, CGA, MDA et Hercules
+  9. Modes VGA IBM
+ 10. Modes ATI etendus
+ 11. Organisation des pixels
+ 12. Carte des ports VGA
+ 13. Registres ATI 1CEh/1CFh
+ 14. Identification des circuits ATI
+ 15. Registres ATI A0h a AFh
+ 16. Registres ATI B0h a BFh
+ 17. Selection des banques
+ 18. Horloges et timings
+ 19. Palette et RAMDAC
+ 20. BIOS video et extensions ATI
+ 21. Table de mode ATI
+ 22. Detection fiable
+ 23. Programmation des modes planaires
+ 24. Programmation des modes 256 couleurs
+ 25. Modes 15/24 bits XL/XL24
+ 26. Texte, polices et emulations
+ 27. Synchronisation et interruptions
+ 28. Exemples assembleur 8086
+ 29. Exemples Turbo Pascal
+ 30. Conseils pour un pilote
+ 31. Conseils pour un emulateur
+ 32. Plan de validation
+ 33. Installation et depannage
+ 34. Pieges frequents
+ 35. References
+
+
+==============================================================================
+1. HISTORIQUE ET GENERATIONS
+==============================================================================
+
+ATI commercialise la VGA Wonder en 1988, peu apres l'apparition de la VGA IBM.
+La famille conserve la philosophie Wonder : compatibilite avec plusieurs
+standards et moniteurs, tout en ajoutant des resolutions Super VGA.
+
+Correspondance technique couramment documentee :
+
+  Generation  Circuit       Horloge ATI  Nom ou remarque
+  ----------  ------------  -----------  ------------------------------------
+  V3          ATI 18800     non          VGA Wonder, ROM souvent marquee V3M
+  V4          ATI 18800-1   non          VGA Wonder revision suivante
+  V5          ATI 18800-1   ATI 18810    VGA Wonder avec horloge programmable
+  V6          ATI 28800-2   ATI 18810    VGA Wonder+
+  V7          ATI 28800-4   ATI 18810    VGA Wonder XL selon certaines tables
+  suivante    ATI 28800-5   ATI 18810    XL/Graphics Ultra VGA, selon carte
+  XL24        ATI 28800     RAMDAC 24 b   modes true color propres au modele
+
+Les noms V3 a V7 designent surtout des niveaux materiels/BIOS rencontres dans
+la documentation de programmation. Les etiquettes commerciales et revisions de
+PCB ne suivent pas toujours une correspondance parfaitement univoque.
+
+
+==============================================================================
+2. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Selon version :
+
+  * bus ISA 8 ou 16 bits ;
+  * 256 ou 512 Kio sur les premieres cartes ;
+  * jusqu'a 1 Mio sur certaines 28800/XL ;
+  * ROM BIOS ATI au segment C000h ;
+  * EEPROM de configuration sur plusieurs revisions ;
+  * compatibilite VGA BIOS et registres IBM ;
+  * emulation EGA, CGA, MDA et Hercules ;
+  * sortie VGA analogique DE-15 ;
+  * sorties ou connecteurs additionnels suivant le PCB ;
+  * detection du moniteur suivant version ;
+  * 640x480, 800x600 et 1024x768 ;
+  * modes planaires 4 bits et packed-pixel 8 bits ;
+  * 15 bits sur XL avec RAMDAC HiColor ;
+  * 24 bits sur XL24 dans des modes limites ;
+  * banques de 64 Kio dans la fenetre A000h ;
+  * registres etendus indexes, habituellement a 1CEh/1CFh.
+
+Les performances dependent du bus, des wait states, de la DRAM, de la largeur
+8/16 bits et du mode. Une haute resolution peut etre affichee sans permettre une
+mise a jour rapide par un 8088.
+
+
+==============================================================================
+3. ARCHITECTURE MATERIELLE
+==============================================================================
+
+  CPU / bus ISA
+       |
+       +-- ROM BIOS ATI et EEPROM
+       |
+       +-- interface VGA IBM
+       |     +-- Sequencer
+       |     +-- CRTC
+       |     +-- Graphics Controller et latches
+       |     +-- Attribute Controller
+       |
+       +-- registres ATI etendus
+       |     +-- banques
+       |     +-- horloges et timings etendus
+       |     +-- emulations CGA/Hercules
+       |     +-- organisation 256 couleurs
+       |
+       +-- 256/512 Kio ou 1 Mio DRAM
+       |
+       +-- RAMDAC et sortie analogique
+
+La partie VGA traite les logiciels IBM. La logique ATI etend les adresses CRTC,
+choisit les banques, ajoute les hautes resolutions et commande les emulations.
+
+
+==============================================================================
+4. BUS ISA ET CONFIGURATION
+==============================================================================
+
+Les premieres cartes existent sur bus ISA et doivent fonctionner dans les PC,
+XT, AT et compatibles. Une carte 16 bits peut generalement fonctionner dans un
+slot 8 bits avec performances reduites, selon revision et configuration.
+
+Le bit 0 du byte de fonctions ROM C000h:0042h indique une carte 16 bits. Le
+registre ATI B7h contient aussi un bit de fonctionnement 8/16 bits. Ce dernier
+ne doit pas etre force uniquement parce que le connecteur physique est long :
+le BIOS tient compte du bus et du PCB.
+
+Certaines cartes utilisent des cavaliers ou commutateurs ; d'autres enregistrent
+la configuration dans une EEPROM et emploient un programme ATI. Toujours sauver
+la configuration existante avant de lancer un utilitaire de maintenance.
+
+
+==============================================================================
+5. MEMOIRE VIDEO
+==============================================================================
+
+Quantites typiques :
+
+  256 Kio  VGA IBM complete et modes planaires etendus limites
+  512 Kio  modes 256 couleurs jusqu'a 800x600, davantage de pages
+  1 Mio    modes 1024x768x256 ou couleurs directes selon circuit/RAMDAC
+
+La CPU voit principalement :
+
+  A0000h-AFFFFh   graphique VGA/SVGA, fenetre de 64 Kio
+  B0000h-B7FFFh   MDA/Hercules
+  B8000h-BFFFFh   texte couleur/CGA
+
+La memoire au-dela de 64 Kio est atteinte par banque. Les modes planaires peuvent
+exposer 64 Kio par plan dans une meme fenetre, alors que les modes packed-pixel
+font correspondre une banque a une tranche de la memoire lineaire.
+
+Un 640x480x256 occupe 307 200 octets, un 800x600x256 480 000 octets et un
+1024x768x256 786 432 octets. Il faut donc respectivement au moins 5, 8 et 12
+banques de 64 Kio, en tenant compte de la derniere banque partielle.
+
+
+==============================================================================
+6. ROM BIOS ET EEPROM
+==============================================================================
+
+La ROM commence normalement a C0000h par 55h AAh. ATI y place des informations
+de detection :
+
+  C000h:0010h  WORD  port de base des registres ATI, normalement 01CEh
+  C000h:0031h  9     signature ASCII "761295520"
+  C000h:0040h  2     type produit "31" pour ATI Super VGA/VGA Wonder
+  C000h:0042h  BYTE  fonctions de la carte
+  C000h:0043h  BYTE  revision du circuit
+  C000h:0044h  BYTE  fonctions supplementaires
+  C000h:004Ch  BYTE  revision majeure du BIOS
+  C000h:004Dh  BYTE  revision mineure du BIOS
+
+Bits couramment documentes a C000h:0042h :
+
+  bit 0  carte 16 bits
+  bit 1  port souris present
+  bit 2  fonctionnement non entrelace disponible
+  bit 3  bus Micro Channel plutot que PC/AT
+  bit 4  circuit d'horloge programmable
+  bit 7  ROM 16 bits/pagination etendue suivant BIOS
+
+C000h:0044h decrit notamment les capacites 70 Hz, horloge memoire, zero wait
+state, ROM paginee et type de DAC, mais son interpretation depend du circuit.
+
+L'EEPROM peut stocker le moniteur et des choix de frequence. Sa programmation
+bit-serie utilise le registre ATI B3h. Une erreur peut rendre la carte inutilisable
+jusqu'a reconfiguration : un programme graphique ordinaire doit la laisser au
+BIOS ou a l'utilitaire ATI.
+
+
+==============================================================================
+7. SORTIES VIDEO ET MONITEURS
+==============================================================================
+
+La VGA Wonder produit un signal RGB analogique VGA sur DE-15. Selon modele, des
+connecteurs internes ou sorties de compatibilite peuvent aussi etre presents.
+
+Moniteurs reconnus par les tables ATI :
+
+  * VGA/PS/2 analogique monochrome ou couleur ;
+  * EGA numerique ;
+  * TTL monochrome ;
+  * RGB couleur ;
+  * MultiSync ;
+  * IBM 8514 ;
+  * plusieurs MultiSync NEC, Taxan, Seiko, Tatung et TVM.
+
+Le registre ATI BBh fournit un code de moniteur. La liste s'est allongee avec
+les 28800 ; ne pas limiter le code a trois bits sur les generations ou BBh bit 4
+complete le numero.
+
+Un mode 1024x768 entrelace n'est pas adapte a tous les moniteurs VGA fixes. Le
+BIOS choisit les timings d'apres la configuration. Forcer un mode par registres
+peut produire un signal hors plage.
+
+
+==============================================================================
+8. COMPATIBILITE VGA, EGA, CGA, MDA ET HERCULES
+==============================================================================
+
+La carte implemente les ports et memoires VGA IBM. Elle ajoute une emulation
+CGA/Hercules controlee notamment par ATI B4h et des options de double scan dans
+B1h/B3h/B6h.
+
+Compatibilite ne signifie pas identite du signal :
+
+  * VGA : registres 3C0h-3DFh, A000h et RAMDAC 3C6h-3C9h ;
+  * EGA : modes planaires et palette logique 16 parmi 64 ;
+  * CGA : B800h, ports 3Dxh et organisation entrelacee ;
+  * MDA : B000h, texte et ports 3Bxh ;
+  * Hercules : B000h, quatre banques de scanlines et registre 3BFh.
+
+Un emulateur doit changer le decodeur d'E/S et de memoire, pas seulement le
+rendu final. Les protections de registres ATI B4h sont aussi observables.
+
+
+==============================================================================
+9. MODES VGA IBM
+==============================================================================
+
+  Mode  Type       Resolution ou texte     Couleurs   Fenetre
+  ----  ---------  ----------------------  ---------  -------
+  00-03 texte      40/80 x 25              16         B800h
+  04-06 CGA        320/640 x 200           4/2        B800h
+  07    texte MDA  80 x 25                 mono       B000h
+  0D    planaire   320 x 200               16         A000h
+  0E    planaire   640 x 200               16         A000h
+  0F    planaire   640 x 350               mono       A000h
+  10    planaire   640 x 350               16         A000h
+  11    planaire   640 x 480               2          A000h
+  12    planaire   640 x 480               16         A000h
+  13    packed     320 x 200               256        A000h
+
+Le mode 13h utilise un octet par pixel et tient dans 64 000 octets. Les modes
+planaires emploient quatre plans, latches, Map Mask et Bit Mask.
+
+
+==============================================================================
+10. MODES ATI ETENDUS
+==============================================================================
+
+Table historique, a confirmer par le BIOS de la carte :
+
+  Mode  Type  Resolution       Couleurs       Generation/remarque
+  ----  ----  ---------------  --------------  ---------------------------
+  23h   T     132x25           16              texte 8x14
+  27h   T     132x25           2               monochrome
+  33h   T     132x44           16              texte 8x8
+  37h   T     132x44           2               monochrome
+  53h   G     800x560          16, planaire    selon BIOS
+  54h   G     800x600          16, planaire
+  55h   G     1024x768         16, planaire    V4 ou plus recente
+  58h   T     80x33            16              texte 8x8
+  5Bh   T     80x30            16              texte 8x16
+  61h   G     640x400          256, packed
+  62h   G     640x480          256, packed
+  63h   G     800x600          256, packed
+  64h   G     1024x768         256, packed     V6/28800-2 ou plus
+  65h   G     1024x768         16, packed 4 bpp format ATI
+  67h   G     1024x768         4, format ATI particulier
+  6Ah   G     800x600          16, planaire    rapporte/non universel
+  72h   G     640x480          32768            XL/RAMDAC approprie
+  73h   G     800x600          32768            XL/RAMDAC approprie
+  75h   G     640x480          16,7 millions    XL24 seulement
+
+Les modes peuvent varier avec RAM, moniteur, DAC et version de ROM. Tester un
+mode en demandant sa table ATI ou par VESA VBE lorsqu'un BIOS posterieur fournit
+VBE. Les premieres ROM VGA Wonder ne sont pas necessairement VBE.
+
+ATI avertit que ses modes etendus ne prennent pas tous en charge INT 10h avec
+AH=01h a 0Eh, 11h ou 13h. L'affichage de pixels doit donc utiliser la memoire.
+
+
+==============================================================================
+11. ORGANISATION DES PIXELS
+==============================================================================
+
+Planar 4 bpp
+------------
+
+Quatre plans portent chacun un bit du pixel. Pour W pixels :
+
+  stride_par_plan = W div 8
+  offset = y*stride_par_plan + x div 8
+  masque = 80h shr (x and 7)
+
+Packed 8 bpp
+------------
+
+Un octet est un index RAMDAC :
+
+  adresse_lineaire = y*W+x
+  banque = adresse_lineaire div 65536
+  offset = adresse_lineaire and FFFFh
+
+Mode 65h, packed 4 bpp ATI
+--------------------------
+
+Deux pixels partagent un octet. La documentation historique ATI indique le
+pixel pair dans les bits 0-3 et le pixel impair dans les bits 4-7, ordre inverse
+de plusieurs formats packed usuels. Toujours verifier sur le BIOS cible.
+
+Mode 67h
+--------
+
+Le format deux bits/pixel est reparti d'une maniere propre a ATI : les pixels
+pairs utilisent les plans 2 et 3, les impairs les plans 0 et 1. Ce n'est ni un
+framebuffer packed 2 bpp ordinaire ni le planaire EGA standard.
+
+
+==============================================================================
+12. CARTE DES PORTS VGA
+==============================================================================
+
+  Port       Fonction
+  ---------  ---------------------------------------------------------
+  1CEh       index ATI habituel ; lire la vraie base dans la ROM
+  1CFh       donnees ATI habituelles
+  3B4/3B5h   CRTC monochrome index/data
+  3BAh       Input Status 1 monochrome
+  3C0h       Attribute Controller index/data en ecriture
+  3C1h       Attribute Controller data en lecture
+  3C2h       Miscellaneous Output write / Input Status 0 read
+  3C4/3C5h   Sequencer index/data
+  3C6h       PEL Mask / acces etat RAMDAC etendu suivant DAC
+  3C7h       DAC Read Index
+  3C8h       DAC Write Index
+  3C9h       DAC Data
+  3CAh       Feature Control read
+  3CCh       Miscellaneous Output read
+  3CE/3CFh   Graphics Controller index/data
+  3D4/3D5h   CRTC couleur index/data
+  3DAh       Input Status 1 couleur / Feature Control write
+
+Les ports VGA indexes gardent en general leur index. Les registres ATI ont une
+particularite : reemettre l'index avant chaque lecture ou ecriture de donnees.
+
+
+==============================================================================
+13. REGISTRES ATI 1CEH/1CFH
+==============================================================================
+
+Ne pas coder 1CEh en dur. Charger :
+
+  ATIBase = WORD PTR C000h:0010h
+  ATIIndex = ATIBase
+  ATIData  = ATIBase+1
+
+Acces :
+
+  OUT ATIIndex,index
+  OUT ATIData,value
+
+Pour lire :
+
+  OUT ATIIndex,index
+  IN  value,ATIData
+
+L'index doit etre reprogramme a chaque acces. Les interruptions doivent etre
+masquees ou un verrou logiciel utilise lorsqu'un TSR/pilote peut toucher la
+carte. Toujours effectuer un read-modify-write pour preserver les bits reserves.
+
+Les indices A0h-AFh existent surtout sur 28800 et plus. Les indices B0h-BFh
+portent les fonctions communes ou historiques des 18800/28800.
+
+
+==============================================================================
+14. IDENTIFICATION DES CIRCUITS ATI
+==============================================================================
+
+Apres validation de la signature et du type "31", C000h:0043h contient un code
+ASCII couramment interprete ainsi :
+
+  '1' (31h)  ATI 18800, V3
+  '2' (32h)  ATI 18800-1, V4/V5
+  '3' (33h)  ATI 28800-2, V6
+  '4' (34h)  ATI 28800-4, Wonder+/XL suivant carte
+  '5' (35h)  ATI 28800-5
+  'a' (61h)  ATI 68800/Mach32, autre famille
+
+Des codes '6' et 'c' ont aussi ete rapportes. Un code inconnu doit rester
+inconnu ; ne pas le ramener arbitrairement au 28800-5.
+
+Le registre AA bits 0-3 donne un identifiant de revision sur certaines 28800,
+mais n'est pas la methode primaire sur 18800.
+
+
+==============================================================================
+15. REGISTRES ATI A0H A AFH
+==============================================================================
+
+Ces registres concernent principalement les 28800 et generations suivantes.
+
+  Index  Fonctions documentees
+  -----  ---------------------------------------------------------------
+  A0h    activation de l'acces ROM 16 bits
+  A1h    detection numerique du moniteur
+  A2h    reserve
+  A3h    adressage ROM 16 bits ; bits 17 curseur/start address
+  A4h    pages ROM 0 et 1
+  A5h    pages ROM 2 et 3
+  A6h    lecture forcee de 3CCh
+  A7h    true color, type de DAC, skew et division d'horloge
+  A8h    reserve ou fonction de revision
+  A9h    bits superieurs du compteur vertical sur 28800-5+
+  AAh    revision du circuit et configuration de bus
+  ABh    wait states, affichage secondaire, protection DAC selon revision
+  ACh    adressage lineaire/passage palette sur revisions recentes
+  ADh    extensions de timings CRTC et activation de registres etendus
+  AEh    bits de banque supplementaires sur Mach32
+  AFh    reserve
+
+Ne jamais appliquer les fonctions Mach32 a une VGA Wonder. Les bits marques
+reserves doivent conserver leur valeur lue.
+
+
+==============================================================================
+16. REGISTRES ATI B0H A BFH
+==============================================================================
+
+B0h - Memory/Mode Control
+-------------------------
+
+Sur 18800, certains bits activent les modes 256 couleurs et ajoutent des bits a
+l'adresse de depart. Sur 28800, bit 5 active typiquement le mode 256 couleurs,
+bits 3-4 codent la quantite de RAM selon revision et bit 6 complete l'adresse de
+depart. Le sens exact est donc lie au circuit.
+
+B1h - EGA Compatibility and Scan Control
+----------------------------------------
+
+  bit 0  forcer les adresses d'E/S compatibles EGA
+  bit 1  forcer les registres compatibles EGA
+  bit 2  usage general
+  bits 3-5 double scan ou 3/4 scan, texte/graphique
+  bit 6  diviser les timings verticaux par deux
+
+B2h - Memory Page Select
+------------------------
+
+Registre de banques. Sur 18800-1, bits 1-3 selectionnent la banque d'ecriture ou
+unique et bits 5-7 la banque de lecture. Sur 28800, bits 1-4 donnent la banque
+d'ecriture/unique ; bit 0 et bits 5-7 composent la banque de lecture. Sur 18800
+original, les significations different encore et bit 0 commande l'entrelacement.
+
+B3h - EEPROM et fonctions memoire
+---------------------------------
+
+  bits 0-3  interface serie EEPROM : data, clock, enable, chip select
+  bit 4     decodage PS/2 ou limitation RAM selon 18800/18800-1
+  bit 5     largeur de memoire sur 28800
+  bit 6     rapport acces CRT/CPU ou mode 1024 planaire
+  bit 7     double scan des modes 200 lignes
+
+ATI avertit de ne pas modifier B3h sur certaines revisions initiales.
+
+B4h - Emulation Control
+-----------------------
+
+  bit 0  emulation CGA
+  bit 1  emulation Hercules
+  bit 2  proteger certains CRTC etendus
+  bit 3  proteger les timings verticaux
+  bit 4  proteger les registres de curseur
+  bit 5  proteger d'autres CRTC etendus
+  bit 6  modifier la protection CRTC 00h-07h
+  bit 7  outrepasser le verrouillage d'un registre etendu
+
+B5h - Texte, curseur et horloge pixel
+-------------------------------------
+
+Controle blanking/skew, selection de map de police, huit polices simultanees sur
+18800-1+, clignotement du curseur, emulation curseur CGA et horloge pixel.
+
+B6h - High Resolution Enable
+----------------------------
+
+Active selon circuit : depassement de limite memoire, Hercules 640x400,
+adressage lineaire en 256 couleurs, modes haute resolution 4/16 couleurs,
+interruptions verticales et blanking des emulations.
+
+B7h - Configuration
+--------------------
+
+  bit 0  fonctionnement 16 bits si 1, 8 bits si 0
+  bit 1  configuration PS/2
+  bit 2  DRAM si 1, VRAM si 0
+  bit 3  donnee EEPROM lue
+  bit 4  etat du decodage ROM
+  bit 5  selection plage d'E/S 3xxh/2xxh
+
+B8h/B9h/BAh
+------------
+
+Protections et selection d'horloge. Leur interpretation depend fortement du
+circuit et du presence de l'ATI 18810. Le BIOS doit les programmer.
+
+BBh - Input Status/Monitor Type
+-------------------------------
+
+Code bas du moniteur : 0 EGA, 1 analogique mono, 2 TTL mono, 3 PS/2 couleur,
+4 RGB, 5 MultiSync, 7 IBM 8514, puis codes 8-F pour plusieurs moniteurs. Sur
+28800, bit 4 peut etendre ce code. Sur 188xx, bit 5 indique 512 Kio au lieu de
+256 Kio.
+
+BCh
+---
+
+Reserve dans les tables disponibles.
+
+BDh - EGA Switch Settings
+-------------------------
+
+Contient la polarite composite, une option d'adresse CPU selon revision et les
+commutateurs EGA dans les bits hauts.
+
+BEh - Extended Mode/Clock
+-------------------------
+
+Absent ou different sur 18800 original. Sur revisions suivantes : deverrouille
+Vertical Display End, active entrelacement, banque double, selection d'horloge
+et modes 1024x768 16 ou 4 couleurs.
+
+BFh - Miscellaneous
+-------------------
+
+Contient notamment un bit de page ROM et une organisation memoire graphique
+alternative. Les bits non documentes doivent etre preserves.
+
+
+==============================================================================
+17. SELECTION DES BANQUES
+==============================================================================
+
+Les banques sont des blocs de 64 Kio. Deux politiques existent :
+
+  * single bank : une meme banque sert aux lectures et aux ecritures ;
+  * dual bank : banques de lecture et d'ecriture independantes.
+
+ATI B2h selectionne les banques, BEh bit 3 active le double bank sur les circuits
+qui le supportent. Le codage B2h varie :
+
+  18800-1 : write/single bits 1-3, read bits 5-7
+  28800+  : write/single bits 1-4, read bit 0 et bits 5-7
+
+Pour un dessin sequentiel, changer la banque lorsque `(adresse shr 16)` change.
+Une primitive doit remettre l'index B2h avant chaque lecture/ecriture ATI.
+
+Preserver les bits non lies a la banque, surtout sur le 18800 original ou B2h
+commande aussi entrelacement, DIP interne et horloge externe.
+
+
+==============================================================================
+18. HORLOGES ET TIMINGS
+==============================================================================
+
+La VGA Wonder utilise les horloges VGA standards et plusieurs frequences
+supplementaires. Avec ATI 18810, la selection combine Misc Output 3C2h et des
+bits ATI B9h/BEh. Des tables historiques donnent entre autres 30,24, 32, 36,
+37,5, 39, 40, 42,954, 44,9, 48,771, 50,35, 56,64, 65 et 75 MHz.
+
+Ces nombres ne constituent pas une permission de les appliquer a toute carte :
+la presence du circuit d'horloge est indiquee par la ROM et les combinaisons
+changent avec la revision. Un pilote devrait obtenir la table BIOS ATI puis
+laisser le BIOS programmer l'horloge.
+
+Les bits CRTC etendus fournissent les neuviemes/dixiemes bits des totaux,
+blanking, retrace, compteur vertical et adresse de depart. Sans eux, un CRTC VGA
+limite ne peut pas reproduire 800x600 ou 1024x768.
+
+
+==============================================================================
+19. PALETTE ET RAMDAC
+==============================================================================
+
+Le RAMDAC VGA standard utilise :
+
+  3C6h  PEL Mask
+  3C7h  index de lecture
+  3C8h  index d'ecriture
+  3C9h  composantes rouge, verte, bleue
+
+Chaque composante VGA standard a six bits, soit 262 144 couleurs possibles et
+256 entrees simultanees. Une ecriture 3C9h avance R, G, B puis l'index.
+
+Les VGA Wonder XL peuvent employer un RAMDAC Sierra HiColor. Les modes 72h/73h
+utilisent 15 bits, typiquement 5:5:5, mais l'ordre des octets et la sequence de
+deverrouillage doivent suivre le DAC exact. XL24 ajoute un mode 24 bits 75h.
+
+Ne pas detecter un DAC par des ecritures destructrices. Utiliser d'abord les
+octets de fonctions ROM et le BIOS, puis sauvegarder PEL Mask/index/palette.
+
+
+==============================================================================
+20. BIOS VIDEO ET EXTENSIONS ATI
+==============================================================================
+
+Les modes IBM utilisent INT 10h. Pour les modes ATI, le BIOS reste la methode
+d'initialisation recommandee :
+
+  AH=00h, AL=mode       definir le mode
+  AH=0Fh                lire mode, colonnes et page
+  AX=1A00h              Display Combination Code VGA
+  AX=4F00h...           VESA VBE, uniquement si la ROM le fournit
+
+Extension ATI/Tatung/Taxan : INT 10h/AH=12h, BH=55h, BL=sous-fonction :
+
+  BL=00h  desactiver les fonctions ameliorees
+  BL=01h  activer les fonctions ameliorees
+  BL=02h  lire l'etat dans AL
+  BL=03h  desactiver le trapping de registres CGA
+  BL=04h  activer le trapping
+  BL=05h  programmer le mode decrit par ES:BP
+  BL=06h  obtenir la table du mode AL ; ES:BP au retour
+
+Pour BL=02h, AL bit 3 indique les fonctions actives et AL bits 7-5 codent le
+moniteur : PS/2 mono, PS/2 couleur, MultiSync, 25 kHz, RGB, mono, EGA ou ecran
+Compaq selon valeur.
+
+Pour BL=06h, BP=FFFFh signale une erreur. Cette convention est plus utile qu'un
+simple appel AH=00h lorsque l'on veut tester un mode sans changer l'affichage.
+
+
+==============================================================================
+21. TABLE DE MODE ATI
+==============================================================================
+
+La table retournee par AH=12h/BH=55h/BL=06h, pour le mode place dans AL, a la
+structure historique suivante :
+
+  Offset  Taille  Contenu
+  ------  ------  ----------------------------------------------------
+   00h    BYTE    nombre de colonnes
+   01h    BYTE    derniere ligne, donc nombre de lignes moins un
+   02h    BYTE    scanlines par ligne de texte
+   03h    WORD    taille du buffer video
+   05h    4       Sequencer 01h-04h
+   09h    BYTE    Miscellaneous Output
+   0Ah    25      CRTC 00h-18h
+   23h    20      Attribute Controller 00h-13h
+   37h    9       Graphics Controller 00h-08h
+
+Cette table peut etre fournie a BL=05h. Elle reprend le format de parametres EGA
+classique. Le BIOS ATI ajoute en interne la programmation des registres etendus.
+Modifier une copie avec des timings arbitraires peut endommager l'affichage.
+
+
+==============================================================================
+22. DETECTION FIABLE
+==============================================================================
+
+Procedure recommandee :
+
+  1. valider la ROM 55h AAh a C000h:0000h ;
+  2. comparer neuf octets a C000h:0031h avec "761295520" ;
+  3. comparer C000h:0040h-0041h a "31" ;
+  4. lire le port ATI WORD a C000h:0010h ;
+  5. lire le code de circuit a C000h:0043h ;
+  6. lire RAM/DAC/fonctions dans 42h-44h avec interpretation par revision ;
+  7. demander la table du mode au BIOS ;
+  8. utiliser VBE s'il est present pour une interface plus portable.
+
+La signature identifie un produit ATI muni de ce BIOS, pas necessairement une
+VGA Wonder. Le type "31" elimine EGA Wonder "22" et EGA Wonder 800+ "32".
+
+Sous un gestionnaire memoire ou un BIOS shadow, la ROM peut etre copiee en RAM.
+La lecture reste valable ; une tentative d'ecriture ne l'est jamais.
+
+
+==============================================================================
+23. PROGRAMMATION DES MODES PLANAIRES
+==============================================================================
+
+Le pipeline VGA/EGA comporte quatre latches et quatre plans. Une ecriture passe
+par Set/Reset, rotation, fonction logique et Bit Mask. Le Sequencer Map Mask
+choisit les plans accessibles.
+
+Pour poser un pixel en write mode 2 :
+
+  1. calculer offset et masque ;
+  2. GC 05h : write mode 2 ;
+  3. GC 08h : masque du pixel ;
+  4. lire A000:[offset] pour charger les latches ;
+  5. ecrire la couleur 0..15.
+
+Pour copier rapidement huit pixels, charger les latches par une lecture source,
+puis utiliser write mode 1 vers la destination.
+
+
+==============================================================================
+24. PROGRAMMATION DES MODES 256 COULEURS
+==============================================================================
+
+Les modes 61h-64h sont packed-pixel. Une primitive generique calcule une adresse
+32 bits, selectionne la banque par ATI B2h, puis accede A000:offset.
+
+Les bank switches doivent preserver les autres bits de B2h. Sur 18800-1 et
+28800, le codage n'est pas identique. Le pilote selectionne une fonction par
+code de circuit, jamais seulement par resolution.
+
+Pour une ligne traversant FFFFh, la couper en deux : fin de banque, changement de
+banque, debut de la suivante. La meme regle s'applique aux lectures.
+
+Une aperture lineaire existe sur certaines revisions via B6h/ACh, mais elle ne
+constitue pas une adresse ISA standard universelle et peut necessiter une
+plateforme 386. Sous DOS reel 8086/286, les banques restent la methode sure.
+
+
+==============================================================================
+25. MODES 15/24 BITS XL/XL24
+==============================================================================
+
+Mode 72h : 640x480x32768, mode 73h : 800x600x32768, sur XL equipee du RAMDAC
+approprie. Deux octets representent typiquement un pixel 5:5:5. A 640x480, une
+image occupe 614 400 octets ; a 800x600, 960 000 octets.
+
+Mode 75h : 640x480 en 24 bits sur XL24, trois octets par pixel, soit 921 600
+octets. La bande passante ISA et la memoire limitent fortement l'animation.
+
+L'ordre RGB/BGR, les bits inutilises et la banque doivent etre verifies dans le
+manuel du modele/RAMDAC. Ne pas reutiliser aveuglement un code VESA 15/24 bits :
+les modes ATI proprietaires precedent la normalisation complete de VBE.
+
+
+==============================================================================
+26. TEXTE, POLICES ET EMULATIONS
+==============================================================================
+
+La VGA garde jusqu'a huit ou neuf pixels par caractere et 16 scanlines dans le
+mode 03h courant. Les modes ATI proposent 132 colonnes, 30, 33 ou 44 lignes.
+
+B5h peut activer huit polices simultanees sur 18800-1+, en utilisant des bits
+d'attribut comme selecteur ; le fond est alors limite. Cette fonction n'est pas
+le mecanisme VGA standard de deux polices selectionnees par Sequencer 03h.
+
+En emulation CGA ou Hercules, la memoire et les ports historiques doivent etre
+utilises. B4h controle l'emulation et les protections ; B1h/B3h gerent le double
+scan. Le BIOS/SuperSwitch doit etablir cet etat.
+
+
+==============================================================================
+27. SYNCHRONISATION ET INTERRUPTIONS
+==============================================================================
+
+Input Status 1 a 3DAh en couleur ou 3BAh en mono contient le retrace vertical
+au bit 3. Lire ce port remet aussi la bascule de l'Attribute Controller en
+position index.
+
+B6h bit 5 active les interruptions verticales sur les circuits concernes. Une
+routine doit aussi configurer le CRTC et le PIC, acquitter les sources, installer
+un vecteur et le restaurer. Pour une application DOS simple, une attente bornee
+du retrace est moins invasive.
+
+
+==============================================================================
+28. EXEMPLES ASSEMBLEUR 8086
+==============================================================================
+
+28.1 Detection ROM et produit VGA Wonder
+----------------------------------------
+
+; Sortie CF=0 si signature ATI et type "31". Detruit AX,BX,CX,SI.
+
+IsVGAWonder:
+        push    ds
+        mov     ax,0C000h
+        mov     ds,ax
+        cmp     word ptr [0000h],0AA55h
+        jne     short ivw_no
+        mov     si,0031h
+        mov     bx,offset ATISig
+        mov     cx,9
+ivw_cmp:
+        mov     al,[si]
+        cmp     al,cs:[bx]
+        jne     short ivw_no
+        inc     si
+        inc     bx
+        loop    ivw_cmp
+        cmp     word ptr [0040h],3133h ; memoire little endian pour "31"
+        jne     short ivw_no
+        clc
+        jmp     short ivw_done
+ivw_no: stc
+ivw_done:
+        pop     ds
+        ret
+ATISig  db      '761295520'
+
+28.2 Lire le port ATI dans la ROM
+---------------------------------
+
+        push    ds
+        mov     ax,0C000h
+        mov     ds,ax
+        mov     dx,[0010h]          ; normalement 01CEh
+        pop     ds
+
+28.3 Lire et ecrire un registre ATI
+-----------------------------------
+
+; DX=port index ATI, BL=index. Retour AL. Interruption masquee par l'appelant.
+
+ATIRead:
+        mov     al,bl
+        out     dx,al
+        inc     dx
+        in      al,dx
+        dec     dx
+        ret
+
+; DX=port index ATI, BL=index, BH=valeur.
+
+ATIWrite:
+        mov     al,bl
+        out     dx,al
+        inc     dx
+        mov     al,bh
+        out     dx,al
+        dec     dx
+        ret
+
+28.4 Read-modify-write protege
+------------------------------
+
+; Met a 1 les bits BH du registre BL. DX=base ATI.
+
+ATISetBits:
+        pushf
+        cli
+        mov     al,bl
+        out     dx,al
+        inc     dx
+        in      al,dx
+        or      al,bh
+        dec     dx
+        mov     ah,al
+        mov     al,bl              ; reemettre imperativement l'index
+        out     dx,al
+        inc     dx
+        mov     al,ah
+        out     dx,al
+        dec     dx
+        popf
+        ret
+
+28.5 Demander une table de mode ATI
+-----------------------------------
+
+; AL=mode. Retour CF=0 et ES:BP=table ; CF=1 si BP=FFFFh.
+
+ATIGetModeTable:
+        mov     ah,12h
+        mov     bh,55h
+        mov     bl,06h
+        int     10h
+        cmp     bp,0FFFFh
+        je      short agmt_bad
+        clc
+        ret
+agmt_bad:
+        stc
+        ret
+
+28.6 Calcul d'une adresse packed
+--------------------------------
+
+; Entree AX=y, BX=x, CX=largeur. Sortie DX=banque, DI=offset.
+
+PackedAddress:
+        mul     cx                  ; DX:AX=y*largeur
+        add     ax,bx
+        adc     dx,0
+        mov     di,ax
+        ; Puisque la banque vaut adresse div 65536, DX est la banque.
+        ret
+
+28.7 Attente bornee du retrace
+------------------------------
+
+; DX=3DAh ou 3BAh, CX=limite. CF=1 a l'expiration.
+
+WaitVR:
+wvr0:  in      al,dx
+        test    al,08h
+        jz      short wvr1
+        loop    wvr0
+        stc
+        ret
+wvr1:  in      al,dx
+        test    al,08h
+        jnz     short wvr_ok
+        loop    wvr1
+        stc
+        ret
+wvr_ok:
+        clc
+        ret
+
+28.8 Charger une couleur RAMDAC
+-------------------------------
+
+; AL=index, BH=rouge, BL=vert, CH=bleu, composantes 0..63.
+
+SetDAC:
+        mov     dx,03C8h
+        out     dx,al
+        inc     dx
+        mov     al,bh
+        out     dx,al
+        mov     al,bl
+        out     dx,al
+        mov     al,ch
+        out     dx,al
+        ret
+
+
+==============================================================================
+29. EXEMPLES TURBO PASCAL
+==============================================================================
+
+29.1 Detection et revision
+--------------------------
+
+Function ATIString(Ofs:Word; Count:Byte):String;
+Var I:Byte; S:String;
+Begin
+ S:='';
+ For I:=0 to Count-1 do S:=S+Chr(Mem[$C000:Ofs+I]);
+ ATIString:=S;
+End;
+
+Function IsATIVGAWonder:Boolean;
+Begin
+ IsATIVGAWonder:=
+  (MemW[$C000:$0000]=$AA55) and
+  (ATIString($0031,9)='761295520') and
+  (ATIString($0040,2)='31');
+End;
+
+Function ATIChipCode:Byte;
+Begin
+ If IsATIVGAWonder Then ATIChipCode:=Mem[$C000:$0043]
+ Else ATIChipCode:=0;
+End;
+
+29.2 Port de base ATI
+---------------------
+
+Function ATIBase:Word;
+Begin
+ If IsATIVGAWonder Then ATIBase:=MemW[$C000:$0010]
+ Else ATIBase:=0;
+End;
+
+29.3 Acces aux registres ATI
+----------------------------
+
+Function ATIRead(Index:Byte):Byte;
+Var P:Word;
+Begin
+ P:=ATIBase;
+ Port[P]:=Index;
+ ATIRead:=Port[P+1];
+End;
+
+Procedure ATIWrite(Index,Value:Byte);
+Var P:Word;
+Begin
+ P:=ATIBase;
+ Port[P]:=Index;
+ Port[P+1]:=Value;
+End;
+
+Procedure ATIUpdate(Index,ClearMask,SetMask:Byte);
+Var V:Byte;
+Begin
+ V:=ATIRead(Index);
+ V:=(V and not ClearMask) or SetMask;
+ ATIWrite(Index,V);
+End;
+
+Sous DOS multitache ou avec TSR video, entourer la paire d'acces d'une section
+critique assembleur CLI/POPF. Reemettre l'index entre lecture et ecriture.
+
+29.4 Selectionner et verifier un mode
+-------------------------------------
+
+Uses Dos;
+
+Function SetMode(Mode:Byte):Boolean;
+Var R:Registers;
+Begin
+ R.AX:=Mode; Intr($10,R);
+ R.AH:=$0F; Intr($10,R);
+ SetMode:=R.AL=Mode;
+End;
+
+29.5 Tester une table ATI
+-------------------------
+
+Function ATIModeSupported(Mode:Byte):Boolean;
+Var R:Registers;
+Begin
+ R.AL:=Mode; R.AH:=$12; R.BH:=$55; R.BL:=$06;
+ Intr($10,R);
+ ATIModeSupported:=R.BP<>$FFFF;
+End;
+
+29.6 Lire les fonctions ATI
+---------------------------
+
+Function ATIEnhancedStatus:Byte;
+Var R:Registers;
+Begin
+ R.AH:=$12; R.BH:=$55; R.BL:=$02;
+ Intr($10,R);
+ ATIEnhancedStatus:=R.AL;
+End;
+
+29.7 Adresse packed 32 bits sans LongInt signe
+------------------------------------------------
+
+Procedure PackedAddress(X,Y,Width:Word; Var Bank,Ofs:Word);
+Var A:LongInt;
+Begin
+ A:=LongInt(Y)*Width+X;
+ Bank:=Word(A shr 16);
+ Ofs:=Word(A and $FFFF);
+End;
+
+29.8 Pixel mode 13h
+-------------------
+
+Procedure PutPixel13(X,Y:Word; Color:Byte);
+Begin
+ Mem[$A000:Y*320+X]:=Color;
+End;
+
+29.9 Palette VGA
+----------------
+
+Procedure SetDAC(Index,R,G,B:Byte);
+Begin
+ Port[$3C8]:=Index;
+ Port[$3C9]:=R and $3F;
+ Port[$3C9]:=G and $3F;
+ Port[$3C9]:=B and $3F;
+End;
+
+29.10 Retrace vertical
+----------------------
+
+Function WaitRetrace(Limit:Word):Boolean;
+Begin
+ While ((Port[$3DA] and 8)<>0) and (Limit<>0) do Dec(Limit);
+ While ((Port[$3DA] and 8)=0) and (Limit<>0) do Dec(Limit);
+ WaitRetrace:=Limit<>0;
+End;
+
+29.11 Nom du circuit
+--------------------
+
+Function ATIChipName:String;
+Begin
+ Case ATIChipCode of
+  Ord('1'):ATIChipName:='ATI 18800';
+  Ord('2'):ATIChipName:='ATI 18800-1';
+  Ord('3'):ATIChipName:='ATI 28800-2';
+  Ord('4'):ATIChipName:='ATI 28800-4';
+  Ord('5'):ATIChipName:='ATI 28800-5';
+ Else ATIChipName:='ATI inconnu'
+ End;
+End;
+
+
+==============================================================================
+30. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Detecter signature, type et circuit avant tout acces etendu.
+  * Lire le port ATI depuis la ROM.
+  * Preferer le BIOS pour l'initialisation des timings.
+  * Obtenir la table de mode avant de changer l'affichage.
+  * Maintenir une copie des registres ATI que le pilote modifie.
+  * Faire du read-modify-write sur les registres partages.
+  * Reemettre l'index ATI avant chaque acces data.
+  * Distinguer 18800, 18800-1 et 28800 pour B2h/B3h/B0h.
+  * Fractionner les transferts aux frontieres de 64 Kio.
+  * Ne pas supposer que les services BIOS de pixels fonctionnent en SVGA.
+  * Restaurer mode, palette, banque, masque et registres a la sortie.
+  * Utiliser VBE quand le BIOS le propose et qu'il decrit correctement le mode.
+
+
+==============================================================================
+31. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+31.1 Profils distincts
+----------------------
+
+Creer un profil par circuit et ROM. La quantite de RAM, le DAC, le bus et les
+ports derivent de la carte, pas uniquement du nom VGA Wonder.
+
+31.2 Registres indexes ATI
+--------------------------
+
+Modeliser le latch d'index, mais exiger que le logiciel reprogramme l'index avant
+chaque acces comme le materiel ATI. Implementer les valeurs de reset et les bits
+lecture seule/reserves par generation.
+
+31.3 Banques
+------------
+
+B2h doit modifier la traduction A000h pour lectures et ecritures. Implementer
+single/dual bank et le codage different 18800-1/28800. Tester les operations qui
+traversent FFFFh.
+
+31.4 Pipeline VGA
+-----------------
+
+Modeliser plans, latches, read/write modes, Chain-4, Odd/Even, Set/Reset, ALU et
+masques. Les modes packed ATI peuvent reutiliser le moteur VGA avec une autre
+organisation, mais ne sont pas tous Chain-4.
+
+31.5 Timings
+------------
+
+Combiner CRTC VGA et bits ATI etendus. Modeliser interlacement, double scan,
+adresse de depart et Line Compare. La frequence resulte de l'horloge selectionnee
+et des totaux, elle ne doit pas etre attachee au numero de mode seulement.
+
+31.6 RAMDAC
+-----------
+
+Implementer le DAC VGA 6 bits, puis un module DAC HiColor/true color uniquement
+pour le modele qui en est equipe. Les sequences cachees du DAC sont observables.
+
+31.7 BIOS
+---------
+
+Idealement executer une ROM ATI correspondant au profil. Sinon reproduire les
+signatures, tables INT 10h, retours d'erreur, BIOS Data Area et modes. Ne pas
+annoncer VBE pour une ROM qui ne le possedait pas.
+
+31.8 Emulations historiques
+----------------------------
+
+CGA et Hercules changent fenetre, ports, timing et format. L'artefact composite
+CGA est une option de rendu distincte. Les protections de B4h doivent bloquer
+les ecritures concernees.
+
+
+==============================================================================
+32. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] ROM 55 AA, taille et checksum
+  [ ] signature 761295520 et type 31
+  [ ] port ATI lu a C000:0010
+  [ ] codes de circuit 31h a 35h
+  [ ] modes VGA 00h-13h
+  [ ] modes ATI annonces par chaque ROM
+  [ ] INT 10h AH=12h/BH=55h, sous-fonctions 00h-06h
+  [ ] table de mode et BP=FFFFh sur erreur
+  [ ] 256/512 Kio et 1 Mio selon carte
+  [ ] banques single et dual
+  [ ] frontieres de banque en lecture/ecriture
+  [ ] modes planaire, packed 8, packed 4 et mode 67h
+  [ ] Chain-4, Odd/Even et tous les write modes VGA
+  [ ] palette VGA et PEL Mask
+  [ ] DAC HiColor seulement sur XL appropriee
+  [ ] true color seulement sur XL24
+  [ ] 132 colonnes et polices
+  [ ] CGA, MDA et Hercules
+  [ ] protections B4h
+  [ ] double scan et interlacement
+  [ ] toutes les horloges du profil
+  [ ] retrace et interruption verticale
+  [ ] restauration du mode apres programme ATI
+
+
+==============================================================================
+33. INSTALLATION ET DEPANNAGE
+==============================================================================
+
+Ecran absent : verifier slot, alimentation, ROM, moniteur, cable, commutateurs ou
+EEPROM. Tester d'abord un mode VGA 03h sur un moniteur VGA compatible.
+
+Image instable : frequence ou type de moniteur incorrect. Ne pas laisser le
+signal hors plage ; revenir a la configuration ATI sure.
+
+Modes SVGA absents : verifier RAM, DAC, circuit, version du BIOS et moniteur. Un
+18800-1 ne devient pas un 28800 en installant seulement un pilote plus recent.
+
+Corruption tous les 64 Kio : banque mal codee, index ATI non reemis ou transfert
+non coupe a la frontiere.
+
+Couleurs incorrectes : ordre packed direct-color, RAMDAC, PEL Mask ou palette
+non restauree. En 15/24 bits, identifier le DAC exact.
+
+Avant de manipuler la carte : eteindre et debrancher. Ne pas retirer les DRAM ou
+EPROM sous tension. Sauvegarder l'EEPROM avec l'outil ATI si possible.
+
+
+==============================================================================
+34. PIEGES FREQUENTS
+==============================================================================
+
+  * Appeler toute carte ATI ancienne une VGA Wonder.
+  * Confondre le code produit "31" et le code de circuit a C000:0043.
+  * Coder 1CEh au lieu de lire C000:0010.
+  * Ne pas reemettre l'index ATI avant la donnee.
+  * Employer le codage de banque 28800 sur 18800-1.
+  * Modifier B3h sur une revision qui l'interdit.
+  * Ecraser des bits reserves au lieu d'un read-modify-write.
+  * Supposer que tous les BIOS fournissent VESA VBE.
+  * Utiliser INT 10h/AH=0Ch dans tous les modes etendus.
+  * Confondre mode 65h packed 4 bpp et EGA planaire.
+  * Confondre mode 67h et un framebuffer packed 2 bpp.
+  * Annoncer 1024x768x256 avec seulement 512 Kio.
+  * Attribuer les modes 15/24 bits a une carte sans le bon RAMDAC.
+  * Programmer une horloge sans verifier le moniteur.
+  * Oublier le retrace et la bascule de l'Attribute Controller.
+
+
+==============================================================================
+35. REFERENCES
+==============================================================================
+
+Sources ATI
+-----------
+
+  * ATI Technologies Inc., VGAWONDER Operation Manual, premiere edition,
+    juillet 1988, reference VGAW8MAN.
+
+    https://www.minuszerodegrees.net/manuals/ATI/
+    ATI%20-%20VGAWonder%20-%20Operation%20Manual%20
+    %281st%20Edition%2C%20July%201988%29.pdf
+
+  * Manuels VGA Wonder XL et logiciels ATI archives :
+
+    https://www.ibm-pc.se/manuals/other/ati/vgawonder/vgawonder.htm
+
+References de programmation
+----------------------------
+
+  * ATI.TXT, VGADOC, registres 18800/28800, detection, banques et modes :
+
+    https://bearstrong.net/tekst97/data/programmering/vgadoc3/ati/
+
+  * Ralf Brown's Interrupt List, INT 10h et identification ATI :
+
+    https://www.cs.cmu.edu/~ralf/files.html
+
+  * IBM Personal System/2 Hardware Interface Technical Reference, partie VGA,
+    pour les registres et modes IBM.
+
+  * VESA BIOS Extension Core Functions Standard, pour les ROM ATI posterieures
+    qui annoncent effectivement VBE.
+
+Sources de verification pour emulateur
+---------------------------------------
+
+  * 86Box, implementations ATI 18800/28800 et profils de cartes :
+
+    https://github.com/86Box/86Box
+
+  * PCem et MAME, autres implementations independantes utiles pour comparer les
+    comportements, sans remplacer le manuel ATI ou les essais materiels.
+
+Les registres ont change entre revisions. En cas de divergence, le manuel de la
+carte, sa ROM exacte et des traces prises sur le materiel cible ont priorite sur
+une table generique ou le comportement d'une carte ATI posterieure.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

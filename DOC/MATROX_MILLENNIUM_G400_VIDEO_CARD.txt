@@ -1,0 +1,972 @@
+==============================================================================
+ MATROX MILLENNIUM G400 ET G400 MAX
+ Reference materielle et guide de programmation DOS
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit les Matrox Millennium G400 et G400 MAX, lancees en 1999 et
+basees sur le circuit MGA-G400. Il couvre le materiel, AGP, SGRAM, DualHead,
+VGA/VBE, framebuffer, MMIO, moteurs 2D/3D, detection et programmation DOS.
+
+Les G450/G550, Marvel G400-TV et cartes OEM sont mentionnees uniquement pour
+eviter les confusions. Leur programmation ne doit pas etre deduite du seul nom
+commercial.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Modeles et identification
+  3. Architecture MGA-G400
+  4. G400 contre G400 MAX
+  5. SGRAM et organisation memoire
+  6. AGP et configuration PCI
+  7. RAMDAC, sortie principale et PLL
+  8. DualHead, CRTC2 et Maven
+  9. Connecteurs, DDC et TV
+ 10. BIOS VGA et VESA VBE
+ 11. Detection PCI complete
+ 12. BAR et espaces d'adressage
+ 13. Ports VGA
+ 14. Framebuffer et memoire au-dela de 16 Mio
+ 15. Aperture de controle MMIO
+ 16. Carte des registres de dessin
+ 17. Registres hote, FIFO et interruptions
+ 18. Registres video, CRTC2 et CODEC
+ 19. Formats de pixels et clipping
+ 20. Initialisation et synchronisation
+ 21. Remplissage, lignes, motifs et BitBLT
+ 22. ILOAD, IDUMP et pseudo-DMA
+ 23. Architecture 3D
+ 24. Textures, multitexture et EMBM
+ 25. Overlay, video et capture
+ 26. Exemple assembleur : detection
+ 27. Exemple assembleur : BAR
+ 28. Exemple assembleur : MMIO et rectangle
+ 29. Exemples Turbo Pascal
+ 30. Programmation VBE/DPMI
+ 31. Programmation DualHead
+ 32. Conseils pour un pilote
+ 33. Conseils pour un emulateur
+ 34. Diagnostic et pieges
+ 35. Comparaison G200/G400/G450
+ 36. Plan de validation
+ 37. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Matrox lance la famille G400 en 1999. Le circuit, parfois associe au nom Toucan,
+succede au G200. Il conserve la qualite 2D et analogique qui caracterise Matrox,
+augmente fortement les performances 3D et introduit DualHead sur les cartes
+equipees du second chemin d'affichage.
+
+La gamme comprend des cartes 16 et 32 Mio, SingleHead ou DualHead, ainsi que la
+G400 MAX 32 Mio plus rapide. Le nom Millennium devient ici une famille grand
+public/professionnelle commune ; il ne signifie plus WRAM comme sur la premiere
+Millennium MGA-2064W.
+
+Sous Windows, PowerDesk, DirectDraw, Direct3D et OpenGL utilisent le pilote. Sous
+DOS, le BIOS fournit VGA/VBE ; l'acceleration avancee demande du code direct.
+
+
+==============================================================================
+2. MODELES ET IDENTIFICATION
+==============================================================================
+
+PCI Vendor ID Matrox : 102Bh.
+PCI Device ID G400 AGP : 0525h.
+Classe PCI : 030000h, VGA-compatible display controller.
+
+Variantes commerciales courantes :
+
+  * Millennium G400 SingleHead 16 Mio ;
+  * Millennium G400 DualHead 16 Mio ;
+  * Millennium G400 DualHead 32 Mio ;
+  * Millennium G400 MAX DualHead 32 Mio ;
+  * cartes OEM avec SDRAM/SGRAM, subsystem et connecteurs differents ;
+  * Marvel G400-TV avec fonctions video supplementaires.
+
+Le couple 102B:0525 identifie le circuit G400, pas le modele exact. Lire le
+Subsystem Vendor/Device, la revision, la ROM, les straps et la quantite memoire.
+Des listes anciennes donnent par exemple plusieurs Subsystem ID pour 16/32 Mio,
+mais un pilote ne doit pas rejeter une carte OEM inconnue uniquement pour cela.
+
+
+==============================================================================
+3. ARCHITECTURE MGA-G400
+==============================================================================
+
+Le G400 integre :
+
+  * interface AGP compatible PCI ;
+  * controleur VGA ;
+  * controleur memoire 128 bits SGRAM/SDRAM selon implementation ;
+  * moteur 2D MGA a FIFO ;
+  * deux pipelines de pixels 3D ;
+  * texturage, Z, alpha, fog et bump mapping ;
+  * RAMDAC principal et PLL ;
+  * CRTC principal et CRTC2 ;
+  * overlay video et interfaces de capture/CODEC ;
+  * I2C/DDC et interface Maven/MGA-TVO.
+
+Le moteur d'adresse prepare les parametres pendant que le moteur de donnees
+effectue une partie du travail precedent. Programmer d'abord les registres
+marques pour l'address processor peut ameliorer le recouvrement des instructions.
+
+
+==============================================================================
+4. G400 CONTRE G400 MAX
+==============================================================================
+
+ Caracteristique       G400 normale          G400 MAX
+ --------------------  --------------------  -----------------------------
+ Memoire commerciale  16 ou 32 Mio          32 Mio
+ RAMDAC principal     environ 300 MHz       environ 360 MHz
+ Frequences coeur     selon carte/OEM       superieures, selon revision
+ DualHead             selon modele          normalement present
+ Refroidissement      souvent passif        dissipateur, parfois ventilateur
+
+Les frequences exactes ne sont pas une constante du Device ID. Elles dependent
+de la ROM, des straps, des PLL et des composants. Ne pas surcadencer une carte
+pour la transformer par logiciel en MAX.
+
+Le manuel utilisateur donne pour l'affichage principal jusqu'a 2048x1536 selon
+moniteur, DAC et refresh. Le secondaire, autour de 135 MHz sur le G400, est plus
+limite, typiquement jusqu'a 1280x1024 ou des modes TV.
+
+
+==============================================================================
+5. SGRAM ET ORGANISATION MEMOIRE
+==============================================================================
+
+Les cartes retail utilisent generalement 16 ou 32 Mio de SGRAM sur un bus 128
+bits. Certaines OEM peuvent employer une organisation differente. Les straps et
+OPTION/OPTION2/OPTION3 decrivent bus, type et timings.
+
+La memoire contient framebuffer(s), Z-buffer, textures, overlay, curseur et
+surfaces hors ecran. En DualHead Multi-Display, les pilotes peuvent partager la
+memoire entre les deux affichages, reduisant les modes disponibles.
+
+Exemple d'occupation brute :
+
+  1024x768x32      3 145 728 octets par surface
+  1280x1024x32     5 242 880 octets par surface
+  1600x1200x32     7 680 000 octets par surface
+  2048x1536x32    12 582 912 octets par surface
+
+Ajouter pitch, deuxieme ecran, back buffer, Z et textures. Une surface visible
+ne doit jamais recouvrir les allocations de l'autre CRTC.
+
+
+==============================================================================
+6. AGP ET CONFIGURATION PCI
+==============================================================================
+
+Le G400 retail est un peripherique AGP mais conserve un espace de configuration
+PCI. Sa table comprend :
+
+  00h DEVID       Vendor/Device
+  04h DEVCTRL     PCI Command/Status
+  08h CLASS       classe et revision
+  10h MGABASE2    framebuffer
+  14h MGABASE1    controle MMIO
+  18h MGABASE3    aperture ILOAD
+  2Ch SUBSYSID    Subsystem en lecture
+  30h ROMBASE     ROM VGA
+  34h CAP_PTR     liste de capabilities
+  3Ch INTCTRL     interruption
+  40h OPTION      option 1
+  44h MGA_INDEX   acces indirect
+  48h MGA_DATA    donnees indirectes
+  50h OPTION2     option 2
+  54h OPTION3     option 3
+  DCh PM_IDENT    Power Management capability
+  E0h PM_CSR      etat alimentation
+  F0h AGP_IDENT   AGP capability
+  F4h AGP_STS     capacites AGP
+  F8h AGP_CMD     commande AGP negociee
+
+AGP 1x/2x/4x depend de la carte, du chipset et de la negociation. Ne jamais
+forcer un mode uniquement parce que le marketing de la carte mentionne AGP 4x.
+Le GART est gere par le chipset/OS ; un programme DOS ne doit pas inventer ses
+tables sans documentation de la plate-forme.
+
+
+==============================================================================
+7. RAMDAC, SORTIE PRINCIPALE ET PLL
+==============================================================================
+
+Le RAMDAC principal est integre. Les cartes normales sont associees a environ
+300 MHz et la MAX a environ 360 MHz. Ces chiffres sont des maxima de conception,
+pas la frequence a programmer pour chaque mode.
+
+Le pilote calcule pixel PLL et system PLL dans les limites VCO/diviseurs de la
+specification. Sequence sure : blank, programmer, attendre lock avec timeout,
+programmer CRTC/DAC, stabiliser puis unblank. Une erreur peut placer le moniteur
+hors synchronisation.
+
+Le connecteur principal DE-15 utilise le CRTC principal et le DAC rapide. Lire
+DDC/EDID, limiter pixel clock et frequences horizontale/verticale au moniteur.
+
+
+==============================================================================
+8. DUALHEAD, CRTC2 ET MAVEN
+==============================================================================
+
+DualHead n'est pas seulement deux connecteurs relies au meme signal. Le G400
+possede CRTC2, qui lit une seconde surface avec son propre timing. La conversion
+analogique secondaire/TV repose normalement sur un composant externe Matrox
+Maven/MGA-TVO pilote par I2C.
+
+Modes logiciels historiques :
+
+  * Multi-Display : bureaux/surfaces distincts ;
+  * Clone : image du principal reproduite ;
+  * Zoom : portion agrandie sur le second affichage ;
+  * DVDMax : overlay/video dirige vers le second affichage ;
+  * sortie TV PAL/NTSC selon carte et cable.
+
+Le DAC secondaire est beaucoup plus lent, environ 135 MHz sur le G400. Le
+secondaire ne partage donc pas les maxima du principal. En mode Multi-Display,
+la documentation utilisateur indique 16 ou 32 bpp pour le secondaire.
+
+CRTC2 utilise des registres 32 bits dans le bloc video/MMIO, pas les seuls ports
+VGA 3D4/3D5h. Les deux tetes partagent memoire et bande passante.
+
+
+==============================================================================
+9. CONNECTEURS, DDC ET TV
+==============================================================================
+
+Selon modele : DE-15 principal, connecteur secondaire Matrox avec cable
+d'adaptation VGA/TV, feature connector et interfaces video internes. Examiner
+la carte avant d'attribuer une fonction a un connecteur.
+
+Le G400 dispose de bus I2C distincts pour DDC principal, DDC secondaire et
+Maven/peripheriques. Une ligne I2C doit etre pilotee en open-drain : relacher
+pour un, tirer a zero pour zero, verifier ACK et borner l'attente.
+
+PAL et NTSC ont des timings/couleurs differents. Le manuel signale qu'un mauvais
+standard TV peut produire une image absente ou incorrecte. Le support TV des
+modes DOS depend d'utilitaires Matrox et n'est pas garanti par le BIOS seul.
+
+
+==============================================================================
+10. BIOS VGA ET VESA VBE
+==============================================================================
+
+La ROM VGA fournit POST, modes VGA et VESA VBE, normalement VBE 2.0 sur les
+cartes retail. Toujours tester :
+
+  4F00h informations VBE
+  4F01h informations mode
+  4F02h etablir mode, BX bit 14 pour LFB
+  4F03h lire mode
+  4F05h banque
+  4F06h scanline
+  4F07h display start
+  4F09h palette si implemente
+
+Succes : AX=004Fh. Les numeros de modes OEM ne sont pas portables. Lire pitch,
+masques RGB et PhysBasePtr. VBE programme generalement l'affichage principal ;
+il ne constitue pas une API DualHead universelle.
+
+
+==============================================================================
+11. DETECTION PCI COMPLETE
+==============================================================================
+
+  1. INT 1Ah/AX=B101h, CF=0, AH=00h, EDX="PCI ".
+  2. AX=B102h, DX=102Bh, CX=0525h, SI=0.
+  3. Conserver BH=bus et BL=(device shl 3)|function.
+  4. Lire 0Bh/0Ah et verifier classe/subclasse 03h/00h.
+  5. Lire PCI Command a 04h, verifier Memory Space Enable bit 1.
+  6. Lire BAR 10h, 14h, 18h et verifier Memory BAR.
+  7. Lire Subsystem ID 2Ch et revision 08h.
+  8. Parcourir les capabilities pour PM/AGP au lieu de supposer leurs offsets.
+
+Les offsets F0h/F4h/F8h sont ceux de la specification G400, mais un code PCI
+generique suit CAP_PTR et les chaines de capabilities. Le Subsystem ID aide a
+distinguer G400, MAX, DualHead et OEM sans constituer une preuve absolue.
+
+
+==============================================================================
+12. BAR ET ESPACES D'ADRESSAGE
+==============================================================================
+
+ Offset PCI  Nom       Usage                              Ressource typique
+ ----------  --------  ---------------------------------  ------------------
+ 10h         MGABASE2  framebuffer                        32 Mio PCI
+ 14h         MGABASE1  controle MMIO                      16 Kio
+ 18h         MGABASE3  ILOAD/pseudo-DMA                   8 Mio
+ 30h         ROMBASE   BIOS VGA                           64 Kio courant
+
+La carte generale documente l'acces direct MGABASE2+000000h..FFFFFFh, soit une
+fenetre de 16 Mio, alors que les cartes 32 Mio peuvent annoncer une ressource
+PCI de 32 Mio. Les bits de mapping/bank selectionnent la partie utilisable. Ne
+pas supposer que toute la SGRAM est un tableau lineaire unique dans un mapping
+16 Mio ; suivre les champs G400 de rammap/origine.
+
+MGABASE3+000000h..7FFFFFh est une fenetre write-only pseudo-DMA de 8 Mio. Une
+lecture retourne une valeur inconnue. Ce n'est pas un framebuffer.
+
+Priorite de recouvrement : ROM, controle, pseudo-DMA, VGA, framebuffer. Toutes
+les apertures memoire exigent PCI Command.memspace=1.
+
+
+==============================================================================
+13. PORTS VGA
+==============================================================================
+
+ Port       Fonction
+ ---------- ---------------------------------------------------------------
+ 3B4/3B5h   CRTC monochrome index/donnee
+ 3BAh       Input Status 1 mono / Feature Control
+ 3C0h       Attribute Controller index/donnee
+ 3C1h       lecture Attribute Controller
+ 3C2h       Misc Output ecriture / Input Status 0 lecture
+ 3C3h       Video Subsystem Enable
+ 3C4/3C5h   Sequencer index/donnee
+ 3C6h       PEL Mask
+ 3C7h       index lecture/etat DAC
+ 3C8h       index ecriture DAC
+ 3C9h       donnees DAC
+ 3CE/3CFh   Graphics Controller index/donnee
+ 3D4/3D5h   CRTC couleur index/donnee
+ 3DAh       Input Status 1 couleur / Feature Control
+
+Lire 3DAh ou 3BAh remet la bascule 3C0h sur index. Les ports 3Dx/3Bx dependent
+de MISC.ioaddsel. Les ports VGA sont actifs seulement si l'emulation et I/O
+Space Enable sont actifs. CRTC2 n'est pas accessible par ces seuls ports.
+
+
+==============================================================================
+14. FRAMEBUFFER ET MEMOIRE AU-DELA DE 16 MIO
+==============================================================================
+
+Dans un mode VBE, utiliser PhysBasePtr et BytesPerScanLine. Pour une surface :
+
+  adresse = base_mappee + origine_surface + y*pitch + x*octets_par_pixel
+
+La specification limite la plage directe generale montree dans la carte a 16
+Mio. Les configurations 32 Mio emploient les mecanismes de mapping/origine du
+G400. Un pilote doit separer adresses du moteur, offset SGRAM et adresse CPU.
+
+Ne pas tester la taille par ecriture destructive. Lire la configuration memoire
+et verifier par une methode sauvegarde-ecriture-lecture-restauration uniquement
+sur une zone reservee, affichage et moteur arretes, si la documentation l'exige.
+
+Une ecriture CPU directe contourne ROP et PLNWT. Synchroniser les zones utilisees
+par moteur, CRTC principal, CRTC2 et overlay.
+
+
+==============================================================================
+15. APERTURE DE CONTROLE MMIO
+==============================================================================
+
+MGABASE1 couvre 16 Kio :
+
+  0000h-1BFFh  DMAWIN/acces de donnees selon mode
+  1C00h-1CFFh  registres dessin, sans lancement
+  1D00h-1DFFh  miroirs dessin, ecriture avec lancement
+  1E00h-1EFFh  hote, FIFO, interruption, reset
+  1F00h-1FFFh  VGA memory-mapped
+  2000h-2FFFh  DMA general/bus mastering et extensions
+  3000h-3BFFh  registres video/CRTC2 selon table
+  3C00h-3DFFh  DAC, PLL, video et interfaces
+  3E00h-3E50h  entree video/CODEC
+  3E54h-3FFFh  reserve
+
+La table exacte de la specification prime pour chaque offset. Les registres
+principaux utilisent des DWORD alignes. Ecrire au miroir +100h lance une
+operation ; preparer en 1Cxx puis declencher une fois en 1Dxx.
+
+
+==============================================================================
+16. CARTE DES REGISTRES DE DESSIN
+==============================================================================
+
+ Offset Nom         Fonction
+ ------ ----------- --------------------------------------------------------
+ 1C00h  DWGCTL      opcode, ROP, Z, texture, alpha et transparence
+ 1C04h  MACCESS     format pixel/memoire
+ 1C08h  MCTLWTST    controle/test memoire
+ 1C0Ch  ZORG        origine Z
+ 1C10h  PAT0        motif bas
+ 1C14h  PAT1        motif haut
+ 1C1Ch  PLNWT       masque de plans
+ 1C20h  BCOL        couleur fond
+ 1C24h  FCOL        couleur avant
+ 1C30h-1C3Ch SRC0-3 source/stipple
+ 1C40h  XYSTRT      debut XY
+ 1C44h  XYEND       fin XY
+ 1C50h  SHIFT       decalage
+ 1C54h  DMAPAD      padding transfert
+ 1C58h  SGN         signes/sens
+ 1C5Ch  LEN         longueur/lignes
+ 1C60h-1C78h AR0-6 arithmetique/adresses
+ 1C80h  CXBNDRY     clipping X combine
+ 1C84h  FXBNDRY     bornes X
+ 1C88h  YDSTLEN     Y destination et hauteur
+ 1C8Ch  PITCH       pitch en pixels
+ 1C90h  YDST        Y destination
+ 1C94h  YDSTORG     origine destination
+ 1C98h  YTOP        limite haute
+ 1C9Ch  YBOT        limite basse
+ 1CA0h  CXLEFT      clipping gauche
+ 1CA4h  CXRIGHT     clipping droit
+ 1CA8h  FXLEFT      bord gauche fractionnaire
+ 1CACh  FXRIGHT     bord droit fractionnaire
+ 1CB0h  XDST        X destination
+
+DR0..DR15 portent couleurs interpolees, Z, texture et gradients. Les registres
+supplementaires du G400 et les champs DWGCTL et TEXCTL ne doivent pas etre
+remplaces par les definitions G200 sans comparaison de revision.
+
+
+==============================================================================
+17. REGISTRES HOTE, FIFO ET INTERRUPTIONS
+==============================================================================
+
+  1E10h FIFOSTATUS  entrees disponibles
+  1E14h STATUS      moteur busy et evenements
+  1E18h ICLEAR      acquittement
+  1E1Ch IEN         activation
+  1E20h VCOUNT      ligne verticale
+  1E40h RST         reset logiciel
+  1E54h OPMODE      tailles et mode DMA
+
+FIFOSTATUS bits 5..0 indique jusqu'a 32 places. STATUS bit 16 est l'etat du
+moteur. Toujours borner les attentes. Le G400 possede aussi des interruptions
+video/codec dans leurs blocs : une IRQ PCI partagee demande de tester toutes les
+causes pertinentes avant acquittement.
+
+Un reset moteur ne restaure ni les deux CRTC, ni Maven, ni la SGRAM complete.
+Prevoir une restauration par niveaux et un retour BIOS si possible.
+
+
+==============================================================================
+18. REGISTRES VIDEO, CRTC2 ET CODEC
+==============================================================================
+
+La fin du bloc MMIO comprend des registres d'entree video, interruption video et
+CODEC. La specification donne notamment :
+
+  VIEN       3E38h  activation interruptions video
+  VINHEIGHT  3E3Ch  hauteur maximale entree video
+  CODECCTL   3E40h  controle CODEC, write-only
+  CODECADDR  3E44h  adresse debut tampon CODEC, write-only
+  CODECHOSTPTR 3E48h pointeur hote, write-only
+  CODECHARDPTR 3E4Ch pointeur materiel, read-only
+  CODECLCODE 3E50h pointeur LCODE, read-only
+
+3E54h..3FFFh est reserve. Ces registres ne signifient pas qu'une carte retail
+sans composants externes peut capturer de la video. Verifier le PCB/subsystem.
+
+CRTC2 a ses propres start address, pitch, timing horizontal/vertical, controle
+et synchro. Programmer d'abord une surface non recouvrante, blanker le second
+DAC, etablir timings, puis l'activer. Maven est configure par I2C separement.
+
+
+==============================================================================
+19. FORMATS DE PIXELS ET CLIPPING
+==============================================================================
+
+Formats principaux : 8 bpp palette, 15 bpp 5:5:5, 16 bpp 5:6:5, 24 bpp packed
+et 32 bpp. Lire les masques VBE. Le secondaire accepte typiquement 16/32 bpp
+dans les modes Multi-Display des pilotes historiques.
+
+PITCH et YDSTORG sont en pixels ; ZORG et certaines adresses video ont d'autres
+unites. YTOP/YBOT et CXLEFT/CXRIGHT doivent entourer la surface cible. En 32 Mio,
+tenir compte de la banque/origine physique.
+
+Le clipping vertical materiel reste actif. Un mauvais YTOP/YBOT explique une
+commande terminee sans pixels. Tester 1x1 et les quatre bords.
+
+
+==============================================================================
+20. INITIALISATION ET SYNCHRONISATION
+==============================================================================
+
+Application DOS : laisser VBE etablir le mode principal, mapper les BAR, puis
+initialiser l'etat moteur correspondant. Pilote complet : blank, SGRAM, PLL,
+CRTC, DAC, pitch, origine, clipping, palette, overlay, CRTC2/Maven et unblank.
+
+Commande moteur :
+
+  1. calculer le nombre d'ecritures ;
+  2. attendre assez de places FIFO avec timeout ;
+  3. ecrire l'etat en 1Cxx ;
+  4. ecrire le dernier registre en 1Dxx pour lancer ;
+  5. attendre STATUS bit 16 seulement en cas de dependance.
+
+Les deux CRTC et l'overlay lisent de la memoire sans attendre le moteur. Changer
+leurs adresses pendant blank ou au retrace pour eviter tearing et pointeur
+partiellement mis a jour.
+
+
+==============================================================================
+21. REMPLISSAGE, LIGNES, MOTIFS ET BITBLT
+==============================================================================
+
+TRAP remplit rectangles/trapezes. LINE_OPEN/CLOSE et AUTOLINE_OPEN/CLOSE gerent
+les vecteurs. BITBLT/FBITBLT copient les surfaces. BOP=C copie la source, BOP=6
+fait XOR et BOP=A conserve la destination.
+
+Pour un BitBLT recouvrant, choisir le sens SGN comme memmove. Programmer les AR,
+source, destination, pitch, clipping et longueur avant trigger. PAT0/PAT1 et
+SRC0..SRC3 gerent motifs et expansion monochrome.
+
+Les ecritures CPU directes n'appliquent pas PLNWT/ROP. Pour une operation qui en
+a besoin, utiliser le moteur ou effectuer le calcul logiciel.
+
+
+==============================================================================
+22. ILOAD, IDUMP ET PSEUDO-DMA
+==============================================================================
+
+MGABASE3 est write-only et sert a fournir les donnees ILOAD. Programmer OPMODE,
+DWGCTL, destination, format, taille et DMAPAD, lancer, puis ecrire exactement la
+quantite attendue.
+
+Trop peu de donnees laisse le moteur bloque ; trop peut alimenter la primitive
+suivante ou produire une corruption. Rejeter zero pixel et gerer le dernier
+DWORD partiel. IDUMP suit le chemin inverse via les mecanismes documentes.
+
+Le pseudo-DMA n'est pas un DMA bus-master ni une texture AGP. Les acces sont
+ordonnes par le pont et le moteur ; MGABASE3 ne doit pas etre lu.
+
+
+==============================================================================
+23. ARCHITECTURE 3D
+==============================================================================
+
+Le G400 dispose de deux pipelines de pixels et accelere :
+
+  * triangles/trapezes, Z-buffer et Gouraud ;
+  * perspective-correct texture mapping ;
+  * filtrage bilineaire/trilineaire et mipmapping ;
+  * alpha blending, fog, specular et color key ;
+  * stencil/effets selon modes documentes ;
+  * deux textures en une passe dans les configurations prises en charge ;
+  * Environment-Mapped Bump Mapping, EMBM.
+
+Il n'existe pas de transform-and-lighting materiel programmable ni de shaders
+modernes. Le CPU/pilote transforme les sommets, effectue le triangle setup et
+programme gradients, textures, Z et couleurs.
+
+Direct3D/OpenGL sont des interfaces de pilote. Une fonction annoncee peut etre
+decomposee ou emulee ; le registre bas niveau reste la specification G400.
+
+
+==============================================================================
+24. TEXTURES, MULTITEXTURE ET EMBM
+==============================================================================
+
+Une texture exige adresse, pitch, largeur/hauteur, format, wrapping/clamping,
+filtre et niveaux mip. Les adresses doivent pointer vers SGRAM ou, si AGP est
+correctement configure par l'OS, vers une aperture GART coherente.
+
+La multitexture combine deux textures dans une passe pour light maps et effets.
+Elle ne double pas automatiquement toute charge : formats, bande passante,
+filtrage et blending limitent le debit.
+
+EMBM emploie une texture de perturbation pour modifier les coordonnees d'une
+texture d'environnement. Programmer matrices/coefficient de bump, format de la
+bump map et deux etages de texture. Ce n'est pas du displacement mapping : la
+geometrie ne change pas.
+
+En emulation, ne remplacer EMBM par une simple addition de couleurs ; il modifie
+l'echantillonnage de la texture suivante.
+
+
+==============================================================================
+25. OVERLAY, VIDEO ET CAPTURE
+==============================================================================
+
+L'overlay lit une surface video, effectue conversion YUV/RGB et mise a l'echelle,
+puis la compose avec le bureau selon color key. DVDMax peut envoyer cet overlay
+au second affichage sans recopier toute la fenetre.
+
+Programmer adresse, pitch, format, crop, destination, filtres et color key
+pendant blank ou suivant la sequence atomique prevue. Une mauvaise adresse peut
+faire lire le CRTC hors d'une allocation.
+
+Marvel G400-TV ajoute tuner/capture/CODEC. Le G400 expose des interfaces mais la
+Millennium G400 ordinaire ne possede pas necessairement les composants.
+
+
+==============================================================================
+26. EXEMPLE ASSEMBLEUR : DETECTION
+==============================================================================
+
+; Mode reel, 386+, PCI BIOS. Retour CF=0, BX=bus/devfn.
+
+FindG400:
+        mov     ax,0B101h
+        int     1Ah
+        jc      short fg4_fail
+        or      ah,ah
+        jnz     short fg4_fail
+        cmp     edx,20494350h       ; "PCI "
+        jne     short fg4_fail
+        mov     ax,0B102h
+        mov     cx,0525h
+        mov     dx,102Bh
+        xor     si,si
+        int     1Ah
+        jc      short fg4_fail
+        or      ah,ah
+        jnz     short fg4_fail
+        clc
+        ret
+fg4_fail:
+        stc
+        ret
+
+Apres succes, verifier classe 03/00, Command bit 1 et Subsystem ID.
+
+
+==============================================================================
+27. EXEMPLE ASSEMBLEUR : BAR
+==============================================================================
+
+G400_BDF   dw 0
+G400_FB    dd 0
+G400_CTRL  dd 0
+G400_ILOAD dd 0
+
+; Entree BX=bus/devfn. Lit BAR 10h,14h,18h par PCI BIOS.
+
+ReadG400BARs:
+        mov     G400_BDF,bx
+        mov     di,0010h
+        call    ReadG400Dword
+        jc      short rg4_fail
+        mov     eax,ecx
+        test    al,1
+        jnz     short rg4_fail
+        and     eax,0FFFFFFF0h
+        jz      short rg4_fail
+        mov     dword ptr G400_FB,eax
+        mov     bx,G400_BDF
+        mov     di,0014h
+        call    ReadG400Dword
+        jc      short rg4_fail
+        mov     eax,ecx
+        test    al,1
+        jnz     short rg4_fail
+        and     eax,0FFFFFFF0h
+        jz      short rg4_fail
+        mov     dword ptr G400_CTRL,eax
+        mov     bx,G400_BDF
+        mov     di,0018h
+        call    ReadG400Dword
+        jc      short rg4_fail
+        mov     eax,ecx
+        test    al,1
+        jnz     short rg4_fail
+        and     eax,0FFFFFFF0h
+        jz      short rg4_fail
+        mov     dword ptr G400_ILOAD,eax
+        clc
+        ret
+rg4_fail:
+        stc
+        ret
+
+ReadG400Dword:
+        mov     ax,0B10Ah
+        int     1Ah
+        jc      short rgd_fail
+        or      ah,ah
+        jnz     short rgd_fail
+        clc
+        ret
+rgd_fail:
+        stc
+        ret
+
+
+==============================================================================
+28. EXEMPLE ASSEMBLEUR : MMIO ET RECTANGLE
+==============================================================================
+
+; ESI=MGABASE1 mappee, EAX=N, ECX=timeout.
+WaitG400FIFO:
+        mov     edx,[esi+01E10h]
+        and     edx,3Fh
+        cmp     edx,eax
+        jae     short wg4_ok
+        dec     ecx
+        jnz     WaitG400FIFO
+        stc
+        ret
+wg4_ok: clc
+        ret
+
+; EAX=couleur, EBX=(droite<<16)|gauche, EDX=(y<<16)|hauteur.
+G400_TRAP_COPY equ 000C7804h
+
+G400FillRect:
+        push    eax
+        mov     eax,4
+        mov     ecx,1000000
+        call    WaitG400FIFO
+        pop     eax
+        jc      short g4r_fail
+        mov     dword ptr [esi+01C00h],G400_TRAP_COPY
+        mov     [esi+01C24h],eax
+        mov     [esi+01C84h],ebx
+        mov     [esi+01D88h],edx    ; trigger YDSTLEN
+        clc
+        ret
+g4r_fail:
+        stc
+        ret
+
+Etat global, clipping et mapping de la bonne banque doivent deja etre valides.
+
+
+==============================================================================
+29. EXEMPLES TURBO PASCAL
+==============================================================================
+
+Uses Dos;
+
+Function FindG400(Var Bus,DevFn:Byte):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B102; R.CX:=$0525; R.DX:=$102B; R.SI:=0;
+ Intr($1A,R);
+ FindG400:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If FindG400 Then Begin Bus:=Hi(R.BX); DevFn:=Lo(R.BX) End;
+End;
+
+Function PCIReadWord(Bus,DevFn:Byte; RegNo:Word;
+                     Var Value:Word):Boolean;
+Var R:Registers;
+Begin
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$B109; R.BX:=Word(Bus) shl 8 or DevFn; R.DI:=RegNo;
+ Intr($1A,R);
+ PCIReadWord:=((R.Flags and 1)=0) and (Hi(R.AX)=0);
+ If PCIReadWord Then Value:=R.CX;
+End;
+
+Function PCIReadDWord16(Bus,DevFn:Byte; RegNo:Word;
+                        Var Value:LongInt):Boolean;
+Var L,H:Word;
+Begin
+ PCIReadDWord16:=PCIReadWord(Bus,DevFn,RegNo,L) and
+                  PCIReadWord(Bus,DevFn,RegNo+2,H);
+ If PCIReadDWord16 Then Value:=(LongInt(H) shl 16) or L;
+End;
+
+Procedure SetPalette(Index,R,G,B:Byte);
+Begin
+ Port[$3C8]:=Index;
+ Port[$3C9]:=R; Port[$3C9]:=G; Port[$3C9]:=B;
+End;
+
+Le BIOS PCI doit d'abord etre verifie par B101h. Registers n'expose pas EDX
+complet ; une routine TASM 386 est necessaire pour tester la signature "PCI ".
+
+
+==============================================================================
+30. PROGRAMMATION VBE/DPMI
+==============================================================================
+
+  1. VBE 4F00h et signature VESA ;
+  2. choisir un mode de la liste ;
+  3. 4F01h, verifier LFB, pitch, format et memoire ;
+  4. 4F02h avec BX bit 14 ;
+  5. mapper PhysBasePtr par INT 31h/AX=0800h ;
+  6. dessiner puis liberer par AX=0801h ;
+  7. restaurer le mode texte.
+
+Turbo Pascal reel ne peut pas adresser un BAR 32 bits. Un extender fournit les
+selecteurs. Les registres moteur exigent des DWORD atomiques, pas deux WORD.
+
+VBE est le meilleur chemin pour une application mono-ecran. Il ne configure pas
+necessairement CRTC2/Maven ni les 32 Mio de facon directement accessible.
+
+
+==============================================================================
+31. PROGRAMMATION DUALHEAD
+==============================================================================
+
+Une sequence prudente :
+
+  1. detecter DualHead par subsystem/PCB et sonder Maven par I2C ;
+  2. lire EDID du second connecteur ;
+  3. allouer une surface alignee, non recouvrante ;
+  4. blanker la sortie secondaire ;
+  5. programmer Maven/PLL secondaire et standard TV si necessaire ;
+  6. programmer CRTC2 start, pitch, format et timings ;
+  7. attendre stabilisation puis activer ;
+  8. mettre a jour start address au retrace.
+
+Ne pas envoyer les timings du DAC principal au Maven. Verifier bande passante
+totale des deux CRTC, overlay et moteur. En clone, les resolutions/refresh
+peuvent devoir etre compatibles ou demander un scaler.
+
+
+==============================================================================
+32. CONSEILS POUR UN PILOTE
+==============================================================================
+
+  * Detecter 102B:0525 puis revision et subsystem.
+  * Verifier la chaine AGP/PM par capabilities.
+  * Respecter BAR0=FB, BAR1=controle, BAR2=ILOAD.
+  * Distinguer ressource PCI 32 Mio et fenetre directe 16 Mio.
+  * Initialiser SGRAM depuis les straps/ROM, jamais une constante OEM.
+  * Borner FIFO, busy, PLL, retrace et I2C.
+  * Synchroniser moteur, deux CRTC, overlay et CPU.
+  * Proteger allocations et changements de banque.
+  * Traiter Maven comme composant externe I2C.
+  * Separer le code G400, G450 et G550.
+
+
+==============================================================================
+33. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Modeliser :
+
+  * PCI 102B:0525, classe, subsystem, PM et AGP ;
+  * trois BAR, ROM, priorites et memspace ;
+  * 16/32 Mio SGRAM et mecanisme de mapping ;
+  * alias 1Cxx/1Dxx, FIFO de 32 et STATUS busy ;
+  * ROP, motifs, clipping, BitBLT recouvrant ;
+  * VGA plans/latches et bascule Attribute ;
+  * CRTC principal, CRTC2, deux surfaces et retraces ;
+  * DAC principal et Maven/I2C secondaire ;
+  * overlay YUV, color key et scaling ;
+  * MGABASE3 write-only et compte ILOAD ;
+  * textures, mipmaps, filtres, alpha, Z, fog et EMBM ;
+  * interruptions dessin, verticales, video et CODEC.
+
+Un modele DualHead doit autoriser deux timings simultanes et arbitrer la bande
+passante. Un simple clone logiciel ne suffit pas pour tester un pilote CRTC2.
+
+
+==============================================================================
+34. DIAGNOSTIC ET PIEGES
+==============================================================================
+
+0525 trouve mais modele inconnu
+  Lire Subsystem ID, revision, ROM, memoire et sonder Maven.
+
+MMIO vaut FFFFFFFFh
+  Verifier PCI Command bit 1, BAR a 14h, mapping et privileges.
+
+Seuls 16 Mio semblent accessibles
+  Verifier mapping/bank G400 ; ne pas supposer une vue CPU lineaire de 32 Mio.
+
+Second ecran noir
+  Verifier Maven I2C, CRTC2, DAC secondaire, cable, EDID et standard TV.
+
+Moteur bloque apres ILOAD
+  Compte ou DMAPAD incorrect, mauvais format, ecriture dans le mauvais BAR.
+
+Rectangle absent
+  Verifier PITCH, origine, YTOP/YBOT, clipping, PLNWT et banque.
+
+Textures corrompues
+  Verifier adresse, pitch, alignement, mip levels, format et GART.
+
+
+==============================================================================
+35. COMPARAISON G200/G400/G450
+==============================================================================
+
+ Element             G200               G400                 G450
+ ------------------  -----------------  -------------------  ----------------
+ Device courant      0520/0521h         0525h                0527h et variantes
+ Memoire retail      8/16 Mio           16/32 Mio            16/32 Mio
+ Bus memoire         64 bits            128 bits             64 bits DDR/SDR
+ Pipelines pixels    1                  2                    2
+ DualHead            non standard       CRTC2 + Maven ext.    second DAC integre
+ EMBM                non                oui                  oui/derive
+
+Le G450 n'est pas simplement un G400 plus rapide : integration du second DAC,
+bus memoire et registres changent. Les pilotes Linux historiques avertissent
+que le chemin Maven G400 ne fonctionne pas tel quel sur G450.
+
+
+==============================================================================
+36. PLAN DE VALIDATION
+==============================================================================
+
+  [ ] PCI 102B:0525, classe, revision, subsystem
+  [ ] BAR framebuffer, controle, ILOAD et ROM
+  [ ] PM/AGP capabilities et PCI Command
+  [ ] 16/32 Mio et changement de mapping sans corruption
+  [ ] VGA texte, modes 0Dh/10h/12h/13h
+  [ ] VBE 4F00/01/02/03/05/06/07/09
+  [ ] formats 8/15/16/24/32 et pitch non trivial
+  [ ] FIFO pleine/vide, busy, timeout et reset
+  [ ] rectangle 1x1, clipping, ROP XOR, motifs
+  [ ] lignes open/close et BitBLT recouvrant
+  [ ] ILOAD tailles non multiples de DWORD
+  [ ] CRTC2 surface distincte et deux refresh differents
+  [ ] Maven I2C ACK/NACK, DDC et PAL/NTSC
+  [ ] overlay YUV/crop/scaling/color key
+  [ ] Z, alpha, mipmap, multitexture et EMBM
+
+
+==============================================================================
+37. REFERENCES
+==============================================================================
+
+Source constructeur principale
+------------------------------
+
+  * Matrox Graphics Inc., Matrox G400 Specification, juin 1999.
+
+    https://www.bitsavers.org/pdf/matrox/G400SPEC_Jun1999.PDF
+
+    Copie consultable :
+    https://old.vgamuseum.info/images/stories/doc/matrox/mga-g400_spec.pdf
+
+Manuel constructeur
+-------------------
+
+  * Matrox Millennium G400 / G400 MAX User Guide.
+
+    https://video.matrox.com/en/media/2107/download
+
+Standards
+---------
+
+  * PCI Local Bus Specification 2.1.
+  * AGP Interface Specification 2.0.
+  * PCI BIOS Specification.
+  * VESA BIOS Extension VBE 2.0/3.0, DPMS et DDC-2B.
+
+Implementations de comparaison
+------------------------------
+
+  * Pilotes Linux historiques matroxfb, matroxfb_crtc2 et matroxfb_maven.
+  * Pilote X.Org mga et ancien DRM mga G200/G400.
+
+La specification G400 tranche les registres. Les frequences, connecteurs,
+memoire et composants video dependent de la carte retail/OEM et de sa revision.
+
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================
