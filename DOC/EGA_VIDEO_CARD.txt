@@ -1,0 +1,1318 @@
+==============================================================================
+ CARTE IBM ENHANCED GRAPHICS ADAPTER (EGA)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Enhanced Graphics Adapter, annonce en 1984 pour la
+famille IBM PC/XT/AT. Il traite la carte IBM originale, sa memoire planaire, le
+moniteur IBM 5154, les registres, le BIOS INT 10h et la programmation graphique.
+Il sert aussi de specification pratique pour l'auteur d'un emulateur.
+
+EGA est sensiblement plus complexe que CGA. Une ecriture CPU traverse des
+latches, un rotateur, des registres Set/Reset, une unite logique et un masque de
+bits avant d'atteindre jusqu'a quatre plans. Une implementation qui traite
+A000h comme un framebuffer lineaire ne peut pas etre compatible.
+
+Les registres VGA reprennent une grande partie de l'EGA mais ajoutent et
+modifient des fonctions. Les descriptions VGA ne doivent donc pas etre appliquees
+aveuglement au materiel IBM EGA.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et caracteristiques
+  2. Architecture generale
+  3. Memoire et options d'extension
+  4. Moniteurs, connecteur et frequences
+  5. Modes BIOS standards
+  6. Organisation des modes texte et graphiques
+  7. Carte des ports d'E/S
+  8. Registres externes
+  9. Sequencer
+ 10. CRT Controller (CRTC)
+ 11. Graphics Controller
+ 12. Attribute Controller
+ 13. Pipeline de lecture et d'ecriture planaire
+ 14. Calcul de l'adresse d'un pixel
+ 15. Couleurs et palettes
+ 16. BIOS video INT 10h
+ 17. Detection et configuration
+ 18. Sequences de programmation directe
+ 19. Exemples assembleur 8086
+ 20. Exemples Turbo Pascal
+ 21. Defilement, panning, split screen et polices
+ 22. Compatibilite CGA/MDA et differences VGA
+ 23. Conseils pour un emulateur
+ 24. Plan de validation
+ 25. Securite du materiel reel
+ 26. References
+
+
+==============================================================================
+1. HISTORIQUE ET CARACTERISTIQUES
+==============================================================================
+
+L'EGA succede a la CGA et a la MDA sans les rendre immediatement inutiles. Elle
+peut piloter l'IBM Enhanced Color Display 5154, mais aussi fonctionner dans des
+configurations compatibles avec l'IBM Color Display 5153 et le moniteur
+monochrome 5151. Des commutateurs et le BIOS d'extension indiquent la memoire et
+le type de moniteur installes.
+
+Caracteristiques principales de l'IBM EGA :
+
+  - carte ISA 8 bits avec ROM BIOS d'extension;
+  - 64 Kio sur la carte de base, extensibles a 128 puis 256 Kio;
+  - memoire organisee en quatre plans paralleles;
+  - modes CGA 00h a 06h;
+  - modes EGA 0Dh a 10h;
+  - 320x200 et 640x200 en 16 couleurs;
+  - 640x350, jusqu'a 16 couleurs selon la memoire et le moniteur;
+  - 16 couleurs simultanees choisies dans 64 en mode haute resolution;
+  - modes texte 40x25 et 80x25, caracteres 8x8 ou 8x14;
+  - deux jeux de caracteres programmables en RAM;
+  - palette, masque de plans, comparaison de couleur, operations logiques,
+    panning horizontal et separation d'ecran materiels;
+  - sortie numerique a six composantes de couleur sur DE-9;
+  - pas de sortie composite sur l'EGA IBM.
+
+Le BIOS EGA est une ROM sur l'adaptateur. Au POST, elle intercepte INT 10h et
+ajoute les fonctions et modes EGA tout en conservant la compatibilite des appels
+anciens. Le logiciel doit preferer le BIOS pour initialiser un mode standard.
+
+
+==============================================================================
+2. ARCHITECTURE GENERALE
+==============================================================================
+
+  CPU/bus ISA
+      |
+      +--> registres externes et selection d'horloge
+      +--> Sequencer -----------+--> timings RAM et choix des plans
+      +--> Graphics Controller -+--> latches, ALU, masques, serialisation
+      +--> CRTC ----------------+--> adresses de balayage, synchro, curseur
+      +--> Attribute Controller ---> palette, attributs, overscan, panning
+      |
+      +<-> quatre plans DRAM ---> flux pixels ---> six sorties couleur
+
+CRTC
+  Produit les adresses, compteurs horizontal/vertical, blanking, retrace,
+  curseur, line compare et refresh.
+
+Sequencer
+  Produit les cycles DRAM et l'horloge caractere. Il intercale des acces CPU
+  entre les acces d'affichage. Map Mask autorise l'ecriture par plan. Il choisit
+  aussi les cartes de caracteres et l'organisation odd/even.
+
+Graphics Controller (GC)
+  Place quatre octets lus dans quatre latches. Il selectionne le plan rendu au
+  CPU, compare les couleurs et transforme les ecritures par rotation, Set/Reset,
+  fonction logique et Bit Mask.
+
+Attribute Controller (AC)
+  Recoit les quatre bits de pixel, les attributs texte et les informations de
+  timing. Il choisit une des 16 entrees de palette, produit six bits couleur,
+  gere blink, overscan, Color Plane Enable et panning.
+
+Le CRTC EGA n'est pas un simple Motorola 6845 accessible comme sur CGA. Ses
+registres ont une autre numerotation pour plusieurs fonctions et ajoutent
+overflow, blanking vertical, line compare et protection.
+
+
+==============================================================================
+3. MEMOIRE ET OPTIONS D'EXTENSION
+==============================================================================
+
+3.1 Capacites physiques
+-----------------------
+
+Configuration de base : 64 Kio, soit quatre plans de 16 Kio.
+
+Les options IBM portent la carte a 128 Kio puis 256 Kio. A 256 Kio, chacun des
+quatre plans contient 64 Kio. L'aperture CPU A0000h..AFFFFh comporte 64 Kio
+d'adresses; a une meme adresse correspondent quatre octets physiques, un dans
+chaque plan. Le CPU voit un octet selectionne en lecture, mais peut modifier 8,
+16, 24 ou 32 bits physiques en une seule ecriture selon Map Mask.
+
+  adresse CPU A000:1234
+       |-- plan 0 : octet 1234 (bits bleus, convention graphique)
+       |-- plan 1 : octet 1234 (bits verts)
+       |-- plan 2 : octet 1234 (bits rouges)
+       +-- plan 3 : octet 1234 (bits intensite)
+
+Cette association des plans aux composantes vaut pour les modes graphiques
+planaires usuels. En texte, les plans ont des roles differents.
+
+3.2 Apertures configurables
+---------------------------
+
+Le registre Miscellaneous du Graphics Controller choisit l'espace CPU :
+
+  GC6 bits 2..3   Adresse physique       Taille d'aperture
+       00         A0000h..BFFFFh          128 Kio
+       01         A0000h..AFFFFh           64 Kio
+       10         B0000h..B7FFFh           32 Kio
+       11         B8000h..BFFFFh           32 Kio
+
+Cela ne change pas la quantite de DRAM installee. Le Sequencer et le GC
+determinent ensuite comment l'adresse atteint les plans et le mode odd/even.
+
+3.3 Roles des plans en texte
+----------------------------
+
+Dans l'organisation EGA texte :
+
+  plan 0 : codes de caracteres aux adresses paires logiques
+  plan 1 : attributs
+  plan 2 : polices/glyphes programmables
+  plan 3 : generalement reserve/extension d'attribut selon le materiel
+
+Le mecanisme odd/even fait apparaitre au CPU une organisation compatible :
+
+  B800:0000 caractere, B800:0001 attribut, etc.
+
+Pour charger une police, on desactive temporairement odd/even, selectionne le
+plan 2, ecrit les glyphes, puis restaure exactement les registres.
+
+
+==============================================================================
+4. MONITEURS, CONNECTEUR ET FREQUENCES
+==============================================================================
+
+4.1 Connecteur DE-9 femelle, sortie numerique
+---------------------------------------------
+
+Brochage EGA haute resolution usuel :
+
+  Broche  Signal
+     1    masse
+     2    rouge secondaire (R')
+     3    rouge primaire (R)
+     4    vert primaire (G)
+     5    bleu primaire (B)
+     6    vert secondaire (G') / intensite en compatibilite
+     7    bleu secondaire (B')
+     8    synchronisation horizontale
+     9    synchronisation verticale
+
+Les sorties sont TTL numeriques. Les bits primaires et secondaires donnent deux
+niveaux par composante, donc 2^6 = 64 codes. Ce n'est pas du RGB analogique VGA.
+Un cable passif EGA-vers-VGA n'est pas une solution universelle.
+
+En mode compatible CGA/MDA, le role de certaines broches change. Le moniteur
+IBM 5154 detecte le groupe de frequences/polarites et adapte son interpretation.
+Il sait afficher les modes 200 lignes a environ 15,75 kHz et les modes EGA 350
+lignes a environ 21,85 kHz.
+
+4.2 Horloges
+------------
+
+L'EGA offre plusieurs sources d'horloge selectionnees par Miscellaneous Output.
+Les frequences de points usuelles sont approximativement 14,318 MHz, 16,257 MHz
+et 21,053 MHz selon mode et moniteur. Les tables BIOS, le diviseur du Sequencer
+et le CRTC forment ensemble la frequence finale.
+
+Les polarites HSync/VSync indiquent aussi au moniteur la famille de mode. Il ne
+faut pas changer uniquement la resolution logique sans etablir les timings et
+polarites correspondants.
+
+
+==============================================================================
+5. MODES BIOS STANDARDS
+==============================================================================
+
+  Mode  Type       Geometrie       Couleurs       Segment   Moniteur usuel
+  00h   texte      40x25, 8x8      16             B800h     5153/5154
+  01h   texte      40x25, 8x8      16             B800h     5153/5154
+  02h   texte      80x25, 8x8      16             B800h     5153/5154
+  03h   texte      80x25, 8x8      16             B800h     5153/5154
+  04h   graphique  320x200         4 CGA          B800h     5153/5154
+  05h   graphique  320x200         4/gris CGA     B800h     5153/5154
+  06h   graphique  640x200         2 CGA          B800h     5153/5154
+  07h   texte      80x25 mono      attributs MDA  B000h     5151/5154 config.
+  0Dh   graphique  320x200         16             A000h     couleur
+  0Eh   graphique  640x200         16             A000h     couleur
+  0Fh   graphique  640x350         monochrome     A000h     5154/mono
+  10h   graphique  640x350         4 ou 16/64     A000h     5154
+
+En texte EGA haute resolution avec un 5154, le BIOS utilise une police 8x14,
+donnant 640x350 pour 80x25. Les modes 0..3 gardent le meme numero BIOS mais
+leur hauteur raster depend de la configuration active.
+
+Le nombre de couleurs reel du mode 10h depend de la memoire installee. La carte
+de base de 64 Kio fournit quatre couleurs (noir, bleu, rouge et blanc selon le
+mappage IBM). Des que la Graphics Memory Expansion Card porte la memoire a
+128 Kio ou davantage, seize couleurs simultanees sont disponibles. Les 256 Kio
+offrent en plus davantage de pages/espace hors ecran. Toujours interroger la
+configuration EGA au lieu de supposer 256 Kio.
+
+Les modes 0Dh/0Eh utilisent quatre plans et 16 couleurs, contrairement aux
+modes CGA 04h/05h/06h qui conservent le format CGA entrelace dans B800h.
+
+
+==============================================================================
+6. ORGANISATION DES MODES TEXTE ET GRAPHIQUES
+==============================================================================
+
+6.1 Texte
+---------
+
+Vu par un programme DOS en odd/even :
+
+  offset = 2 * (ligne * colonnes + colonne)
+  [offset+0] = caractere
+  [offset+1] = attribut
+
+La cellule est identique a CGA/MDA, mais l'EGA peut lire le glyphe dans l'une de
+deux cartes de caracteres RAM choisies par le Sequencer. Une police EGA reserve
+32 octets par caractere, meme si seuls 8 ou 14 octets sont affiches. Une carte
+complete de 256 glyphes occupe donc 8192 octets dans le plan 2.
+
+6.2 Graphique planaire 16 couleurs
+----------------------------------
+
+Un octet par plan represente huit pixels horizontaux : bit 7 a gauche, bit 0 a
+droite. Les quatre bits situes a la meme position forment l'index couleur :
+
+  couleur = bit_plan0
+          + 2*bit_plan1
+          + 4*bit_plan2
+          + 8*bit_plan3
+
+Chaque adresse CPU correspond donc a huit pixels et a quatre octets physiques.
+
+Largeur en octets-adresses :
+
+  320 pixels -> 40 adresses par ligne et par plan
+  640 pixels -> 80 adresses par ligne et par plan
+
+Taille par plan :
+
+  320x200 -> 40*200 = 8000 octets
+  640x200 -> 80*200 = 16000 octets
+  640x350 -> 80*350 = 28000 octets
+
+Il n'y a pas l'entrelacement pair/impair 0000h/2000h des modes CGA lorsque le
+mode EGA planaire est utilise. Les lignes sont consecutives selon CRTC Offset.
+
+
+==============================================================================
+7. CARTE DES PORTS D'E/S
+==============================================================================
+
+  Port          Acces       Fonction
+  3B4h/3B5h     index/data  CRTC lorsque groupe monochrome selectionne
+  3BAh          R/W         Input Status 1 / Feature Control monochrome
+  3C0h          W           index et donnees Attribute Controller (bascule)
+  3C1h          R           donnees Attribute Controller
+  3C2h          W           Miscellaneous Output Register
+  3C2h          R           Input Status Register 0
+  3C4h/3C5h     index/data  Sequencer
+  3CAh          R           Feature Control lu selon implementation
+  3CEh/3CFh     index/data  Graphics Controller
+  3D4h/3D5h     index/data  CRTC lorsque groupe couleur selectionne
+  3DAh          R/W         Input Status 1 / Feature Control couleur
+
+Le bit 0 de Miscellaneous Output choisit le groupe CRTC 3Bx ou 3Dx. Les ports
+inactifs ne doivent pas necessairement repondre comme les ports actifs.
+
+L'Attribute Controller est particulier : 3C0h alterne entre index et donnee.
+Lire Input Status 1 a 3BAh ou 3DAh remet sa bascule en phase « index ».
+
+
+==============================================================================
+8. REGISTRES EXTERNES
+==============================================================================
+
+8.1 Miscellaneous Output, ecriture 3C2h
+---------------------------------------
+
+  Bit 0      selection d'adresses E/S : 0=3Bx, 1=3Dx
+  Bit 1      activation de l'acces a la RAM video
+  Bits 2..3  selection de l'horloge
+  Bits 4..5  fonctions de pilotage/page selon cablage EGA
+  Bit 6      polarite de synchronisation horizontale
+  Bit 7      polarite de synchronisation verticale
+
+Les definitions VGA des bits reserves ne remplacent pas automatiquement la
+definition EGA IBM. Pour programmer un mode, partir d'une valeur IBM documentee
+et ne modifier que les bits connus.
+
+8.2 Input Status 0, lecture 3C2h
+--------------------------------
+
+Il expose l'etat de commutateurs et des signaux propres a la configuration EGA,
+notamment des informations utilisees par le BIOS pour identifier le moniteur.
+Plusieurs bits sont multiplexes via le diagnostic du Color Plane Enable. La
+valeur n'est pas le Miscellaneous Output relu : l'adresse est seulement partagee
+entre une fonction de lecture et une fonction d'ecriture.
+
+8.3 Input Status 1, lecture 3BAh ou 3DAh
+----------------------------------------
+
+  Bit 0      display enable / zone active
+  Bits 1..2  informations light pen sur EGA
+  Bit 3      retrace vertical
+  Bits 4..5  retours de diagnostic de deux lignes couleur
+
+La lecture remet aussi la bascule de 3C0h en etat index. Cette consequence est
+essentielle : une lecture de statut effectuee par interruption entre l'index et
+la donnee AC peut casser la sequence du programme.
+
+8.4 Feature Control
+-------------------
+
+Il est ecrit au port 3BAh ou 3DAh correspondant au groupe actif. Certains bits
+permettent des fonctions de test et de controle de sortie. Il est rarement
+necessaire aux applications; un emulateur doit toutefois separer ses effets de
+ceux d'Input Status 1, car le meme port change de fonction selon R/W.
+
+
+==============================================================================
+9. SEQUENCER (INDEX 3C4h, DONNEES 3C5h)
+==============================================================================
+
+  Index  Nom
+   00h   Reset
+   01h   Clocking Mode
+   02h   Map Mask
+   03h   Character Map Select
+   04h   Memory Mode
+
+9.1 Reset, index 00h
+--------------------
+
+  bit 0 = asynchronous reset; 0 arrete/reinitialise
+  bit 1 = synchronous reset; 0 arrete proprement
+  valeur 03h = fonctionnement normal
+
+Avant de changer Clocking Mode en preservant la DRAM, employer le reset
+synchronise recommande par IBM. Un reset asynchrone peut compromettre le
+rafraichissement et les donnees sur le materiel original.
+
+9.2 Clocking Mode, index 01h
+----------------------------
+
+Controle notamment largeur 8/9 points, chargement de registres a decalage,
+division de l'horloge et desactivation de l'ecran. Les bits exacts EGA doivent
+etre conserves depuis la table du mode. Couper l'ecran par ce registre libere
+des cycles memoire mais ne remplace pas un mode completement programme.
+
+9.3 Map Mask, index 02h
+-----------------------
+
+  bit 0 = autoriser ecriture plan 0
+  bit 1 = autoriser ecriture plan 1
+  bit 2 = autoriser ecriture plan 2
+  bit 3 = autoriser ecriture plan 3
+
+Une ecriture CPU peut ainsi mettre a jour quatre octets physiques. Map Mask=0
+n'ecrit aucun plan. Ce masque intervient apres le pipeline du GC.
+
+9.4 Character Map Select, index 03h
+-----------------------------------
+
+Choisit les deux cartes de caracteres utilisees par les attributs texte. Les
+bits selectionnent des blocs dans le plan 2. La capacite memoire et la revision
+limitent les selections valides. Cela permet deux polices simultanees sans
+changer la RAM de texte.
+
+9.5 Memory Mode, index 04h
+--------------------------
+
+Controle le mode alpha/graphique, l'adressage odd/even et l'organisation des
+plans. Pour acces planaire lineaire, odd/even doit etre desactive de facon
+coherente dans le Sequencer et le Graphics Controller.
+
+
+==============================================================================
+10. CRT CONTROLLER (CRTC)
+==============================================================================
+
+Index a 3B4h ou 3D4h, donnees a l'adresse suivante.
+
+  Index  Nom
+   00h   Horizontal Total
+   01h   Horizontal Display End
+   02h   Start Horizontal Blanking
+   03h   End Horizontal Blanking
+   04h   Start Horizontal Retrace
+   05h   End Horizontal Retrace
+   06h   Vertical Total
+   07h   Overflow
+   08h   Preset Row Scan
+   09h   Maximum Scan Line
+   0Ah   Cursor Start
+   0Bh   Cursor End
+   0Ch   Start Address High
+   0Dh   Start Address Low
+   0Eh   Cursor Location High
+   0Fh   Cursor Location Low
+   10h   Vertical Retrace Start
+   11h   Vertical Retrace End / protection
+   12h   Vertical Display End
+   13h   Offset
+   14h   Underline Location
+   15h   Start Vertical Blanking
+   16h   End Vertical Blanking
+   17h   Mode Control
+   18h   Line Compare
+
+10.1 Overflow
+-------------
+
+Les compteurs verticaux depassent huit bits. R7 contient les bits hauts de
+Vertical Total, Vertical Display End, Vertical Retrace Start, Start Vertical
+Blanking et Line Compare. Une resolution verticale incorrecte d'un facteur 256
+vient souvent d'un R7 ignore.
+
+10.2 Offset
+-----------
+
+R13 determine l'increment d'adresse entre lignes/rangees selon le mode et le
+mode d'adressage. Dans les modes planaires standard de 640 pixels, la valeur
+effective correspond a 80 octets par ligne. Le CRTC compte en unites internes;
+les bits de Mode Control modifient le rapport entre adresse CRTC et octet CPU.
+
+10.3 Line Compare
+-----------------
+
+Lorsque le compteur atteint Line Compare (avec ses bits hauts), l'adresse de
+balayage est remise a zero pour la partie inferieure. On obtient un ecran separe
+materiel : partie haute defilable, partie basse fixe. Le panning de la partie
+basse depend du mode de compatibilite de l'Attribute Controller.
+
+10.4 Protection
+---------------
+
+Un bit de Vertical Retrace End protege un groupe de registres CRTC contre les
+ecritures. Il faut le deverrouiller avant de charger une table, puis restaurer
+le comportement voulu. Sur VGA, la meme idee subsiste mais certains details
+different.
+
+10.5 IRQ de retrace
+-------------------
+
+L'EGA peut produire une interruption au debut du retrace vertical sur IRQ 2.
+Elle se controle par Vertical Retrace End et les circuits de la carte. Le
+partage, l'acquittement et les differences entre revisions rendent cette voie
+moins portable qu'une interrogation de 3DAh.
+
+
+==============================================================================
+11. GRAPHICS CONTROLLER (INDEX 3CEh, DONNEES 3CFh)
+==============================================================================
+
+  Index  Nom
+   00h   Set/Reset
+   01h   Enable Set/Reset
+   02h   Color Compare
+   03h   Data Rotate / Logical Function
+   04h   Read Map Select
+   05h   Mode
+   06h   Miscellaneous
+   07h   Color Don't Care
+   08h   Bit Mask
+
+11.1 Set/Reset et Enable Set/Reset
+----------------------------------
+
+Set/Reset contient une couleur 4 bits. En mode d'ecriture 0, Enable Set/Reset
+choisit, plan par plan, si la source est FFh/00h selon cette couleur ou l'octet
+CPU tourne. Cela remplit huit pixels d'une couleur avec une seule ecriture.
+
+11.2 Color Compare et Color Don't Care
+---------------------------------------
+
+En mode de lecture 1, les quatre latches sont compares a Color Compare. Color
+Don't Care choisit les plans participant a la comparaison. Le resultat est un
+octet dont chaque bit vaut 1 lorsque le pixel correspondant satisfait toutes
+les comparaisons actives. Cette fonction accelere recherche de couleur, masque
+et remplissage.
+
+11.3 Data Rotate
+----------------
+
+  bits 0..2 = rotation a droite de l'octet CPU, 0..7
+  bits 3..4 = operation entre source et latch :
+              00 replace, 01 AND, 10 OR, 11 XOR
+
+L'operation est effectuee par plan avant Bit Mask. Toujours distinguer le
+rotateur de la position horizontale calculee par le logiciel.
+
+11.4 Read Map Select
+--------------------
+
+En mode de lecture 0, bits 0..1 choisissent quel latch/plan est retourne sur le
+bus CPU. La lecture charge toujours les quatre latches avant de retourner le
+plan selectionne.
+
+11.5 Mode
+---------
+
+Selectionne le mode d'ecriture 0, 1 ou 2, le mode de lecture 0 ou 1, le mode
+odd/even et des fonctions de decalage/compatibilite. Le mode d'ecriture 3 est
+une extension VGA, pas un mode EGA IBM.
+
+11.6 Miscellaneous
+------------------
+
+Choisit alpha/graphique, chain odd/even et l'aperture A000/B000/B800 decrite a
+la section 3. Une incoherence avec Sequencer Memory Mode rend les acces
+apparemment aleatoires.
+
+11.7 Bit Mask
+-------------
+
+Chaque bit a 1 autorise la nouvelle valeur calculee; chaque bit a 0 conserve le
+bit du latch correspondant. Bit Mask=FFh autorise les huit positions. Pour un
+pixel individuel, employer 80h SHR (x AND 7).
+
+
+==============================================================================
+12. ATTRIBUTE CONTROLLER
+==============================================================================
+
+Ecriture index et donnees au meme port 3C0h; lecture des donnees a 3C1h.
+
+  Index     Nom
+  00h..0Fh  Palette 0..15
+  10h       Mode Control
+  11h       Overscan Color
+  12h       Color Plane Enable
+  13h       Horizontal Pixel Panning
+  14h       Color Select (selon revision/fonction EGA)
+
+12.1 Protocole de la bascule
+----------------------------
+
+        mov dx,03DAh          ; ou 3BAh selon groupe actif
+        in  al,dx              ; remet la bascule sur index
+        mov dx,03C0h
+        mov al,index OR 20h    ; index et video palette active
+        out dx,al
+        mov al,valeur
+        out dx,al              ; la meme adresse recoit la donnee
+
+Le bit 5 ecrit avec l'index commande l'acces palette/signal video. Une mauvaise
+valeur peut eteindre l'affichage. Toute interruption qui lit Status 1 entre les
+deux OUT remet la bascule a index; proteger la paire ou la recommencer.
+
+12.2 Palette
+------------
+
+Les seize registres ont six bits et traduisent l'index pixel 0..15 vers les six
+sorties couleur. Ils doivent de preference etre modifies pendant le retrace
+vertical pour eviter des bandes ou glitches visibles.
+
+12.3 Mode Control
+-----------------
+
+Controle notamment graphique/alpha, monochrome, line graphics pour les
+caracteres C0h..DFh, blink/intensite du fond, panning lors de Line Compare et
+d'autres compatibilites. Les bits VGA supplementaires ne sont pas EGA.
+
+12.4 Overscan, Plane Enable et Panning
+--------------------------------------
+
+Overscan choisit la couleur de bordure. Color Plane Enable peut masquer chacun
+des quatre bits de pixel et selectionner des retours de diagnostic. Horizontal
+Pixel Panning decale l'image de 0 a 7 points environ selon largeur de caractere.
+
+
+==============================================================================
+13. PIPELINE DE LECTURE ET D'ECRITURE PLANAIRE
+==============================================================================
+
+13.1 Lecture
+------------
+
+Pour toute lecture CPU d'une adresse video :
+
+  1. lire les quatre octets physiques a cette adresse;
+  2. charger latch[0..3];
+  3. mode lecture 0 : retourner latch[Read Map Select];
+     mode lecture 1 : retourner le masque des pixels correspondant a
+     Color Compare sur les plans actifs de Color Don't Care.
+
+Les latches restent charges apres la lecture et alimentent la prochaine
+ecriture. Lire n'est donc pas sans effet interne.
+
+13.2 Mode d'ecriture 0
+----------------------
+
+Pour chaque plan :
+
+  rot = ROR(donnee_CPU, RotateCount)
+  source = EnableSetReset[plan] ? (SetReset[plan] ? FFh : 00h) : rot
+  alu = source LOGICAL_FUNCTION latch[plan]
+  resultat = (alu AND BitMask) OR (latch[plan] AND NOT BitMask)
+  si MapMask[plan]=1, ecrire resultat dans ce plan
+
+C'est le mode general : pixels, lignes, texte masque, AND/OR/XOR.
+
+13.3 Mode d'ecriture 1
+----------------------
+
+Les latches sont recopies vers l'adresse de destination dans les plans permis
+par Map Mask. La donnee CPU est ignoree. Sequence de copie rapide :
+
+  lire source       -> charge quatre latches
+  ecrire destination avec n'importe quelle valeur -> copie 32 bits physiques
+
+Une lecture parasite entre les deux operations change la source. Ce mode est
+ideal pour deplacer des blocs alignes mais pas pour des regions chevauchantes
+sans choisir le bon sens.
+
+13.4 Mode d'ecriture 2
+----------------------
+
+Les quatre bits bas de la donnee CPU sont developpes par plan :
+
+  source[plan] = bit_CPU[plan] ? FFh : 00h
+
+Puis fonction logique et Bit Mask combinent source et latch. Cela trace une
+couleur 0..15 sans reprogrammer Set/Reset. Les bits CPU 4..7 sont ignores.
+
+13.5 Lecture-modification-ecriture
+----------------------------------
+
+Avant une ecriture partiellement masquee, faire une lecture de la meme adresse
+pour charger les latches avec les pixels existants :
+
+        mov al,es:[di]         ; charge les quatre latches
+        mov es:[di],al         ; le pipeline utilise les latches
+
+Sans cette lecture, les bits proteges par Bit Mask proviennent de l'ancienne
+lecture video, eventuellement a une autre adresse. C'est une cause classique de
+pixels voisins corrompus et un test essentiel pour un emulateur.
+
+
+==============================================================================
+14. CALCUL DE L'ADRESSE D'UN PIXEL
+==============================================================================
+
+Pour un mode planaire standard :
+
+  BytesPerLine = largeur / 8
+  offset = y * BytesPerLine + (x SHR 3)
+  masque = 80h SHR (x AND 7)
+
+  320x200 : BytesPerLine=40
+  640x200 : BytesPerLine=80
+  640x350 : BytesPerLine=80
+
+Pour lire la couleur :
+
+  couleur=0
+  pour plan=0..3 :
+      choisir Read Map Select=plan
+      si (Mem[A000:offset] AND masque)<>0 alors couleur OR=1 SHL plan
+
+Pour ecrire efficacement un pixel, utiliser Write Mode 2, Bit Mask=masque,
+fonction Replace, charger les latches par une lecture puis ecrire la couleur.
+
+Le Start Address CRTC, Preset Row Scan, Pixel Panning et Line Compare peuvent
+faire differer l'adresse affichee de l'adresse logique ci-dessus. La formule
+convient au framebuffer standard initialise par BIOS, origine zero.
+
+
+==============================================================================
+15. COULEURS ET PALETTES
+==============================================================================
+
+15.1 Code six bits
+------------------
+
+Dans un registre palette EGA :
+
+  bit 0 = bleu primaire
+  bit 1 = vert primaire
+  bit 2 = rouge primaire
+  bit 3 = bleu secondaire
+  bit 4 = vert secondaire
+  bit 5 = rouge secondaire
+
+Chaque composante a donc deux bits. Une conversion numerique simple emploie
+quatre niveaux, par exemple 00h, 55h, AAh, FFh, mais un IBM 5154 reel et ses
+circuits TTL ne constituent pas une reference sRGB exacte.
+
+15.2 16 parmi 64
+----------------
+
+La couleur logique issue des quatre plans indexe un des 16 registres AC. Chaque
+registre choisit un code 0..63. Changer la palette recolore instantanement tous
+les pixels sans toucher aux plans.
+
+Dans les modes 200 lignes compatibles avec le 5153, le cablage et le mode du
+moniteur ne rendent pas necessairement les 64 nuances distinctes. La capacite
+« 16 parmi 64 » concerne surtout l'IBM 5154 en famille 350 lignes. Un programme
+ne doit pas promettre 64 teintes discernables sur un moniteur CGA.
+
+15.3 Attribut texte
+-------------------
+
+Les quatre bits de premier plan et ceux du fond/clignotement passent par les
+fonctions de l'Attribute Controller. Blink peut etre remplace par l'intensite du
+fond, donnant 16 couleurs de fond, via la fonction BIOS appropriee ou Mode
+Control. Les deux polices simultanees peuvent aussi modifier l'interpretation
+d'un bit d'attribut selon configuration.
+
+
+==============================================================================
+16. BIOS VIDEO INT 10h
+==============================================================================
+
+Fonctions classiques :
+
+  AH=00h  definir le mode video
+  AH=01h  forme du curseur
+  AH=02h  placer le curseur
+  AH=03h  lire curseur
+  AH=05h  page active
+  AH=06h/07h defilement
+  AH=08h  lire caractere/attribut
+  AH=09h/0Ah ecrire caractere
+  AH=0Ch/0Dh ecrire/lire pixel
+  AH=0Eh  teletype
+  AH=0Fh  lire mode, colonnes, page
+
+Extensions EGA importantes, groupe AH=10h :
+
+  AL=00h  definir un registre de palette
+  AL=01h  definir la couleur de bordure/overscan
+  AL=02h  definir les 16 registres palette et overscan
+  AL=07h  lire un registre de palette (selon BIOS)
+  AL=08h  lire overscan
+  AL=09h  lire palette complete
+  AL=10h+ fonctions DAC appartiennent au VGA, pas a l'EGA IBM
+
+Groupe AH=11h : chargement et selection des generateurs de caracteres. Les
+sous-fonctions permettent de charger des glyphes utilisateur, choisir un bloc,
+et adapter la hauteur/nombre de lignes. Les details et registres varient selon
+la sous-fonction; utiliser la documentation BIOS de la revision cible.
+
+AH=12h, BL=10h : obtenir les informations de configuration EGA. Cette fonction
+est la methode BIOS historique de detection : si elle est supportee, BH indique
+le mode/moniteur, BL la memoire et CH/CL des caracteristiques. Comme les retours
+different entre BIOS/clones, initialiser les registres a une sentinelle et
+valider plusieurs champs.
+
+AX=1003h : activer/desactiver le clignotement et l'intensite du fond sur les
+BIOS EGA/VGA compatibles (BL=0 intensite, BL=1 blink; BH=0).
+
+Le BIOS maintient la BDA et des tables propres a l'EGA. Une programmation
+directe suivie d'un appel BIOS peut etre detruite si l'etat attendu diverge.
+
+
+==============================================================================
+17. DETECTION ET CONFIGURATION
+==============================================================================
+
+17.1 BIOS
+---------
+
+Appeler INT 10h/AH=12h, BL=10h apres avoir place des sentinelles. Un BIOS EGA
+retourne la configuration plutot que de laisser tous les registres inchanges.
+Interroger aussi INT 10h/AH=0Fh et le mot d'equipement INT 11h pour connaitre le
+mode courant, sans confondre cela avec une signature certaine de carte.
+
+Une VGA implemente les fonctions EGA : le test prouve une compatibilite EGA,
+pas la presence physique de la carte IBM 1984.
+
+17.2 Commutateurs
+-----------------
+
+La carte IBM comporte un bloc de commutateurs et des cavaliers qui declarent
+moniteur, coexistence avec un autre adaptateur et memoire. Le BIOS lit ces
+signaux au POST. Une position incorrecte peut selectionner les mauvais ports ou
+envoyer une frequence inadaptee au moniteur. Consulter le Guide to Operations
+IBM pour la combinaison materielle exacte; ne pas deduire les positions d'une
+carte clone.
+
+17.3 Memoire
+------------
+
+Ne pas tester la RAM en ecrivant au hasard sur l'ecran actif. Utiliser la valeur
+BIOS de configuration. Pour un diagnostic, sauvegarder registres et contenu,
+desactiver l'affichage, tester chaque plan/adresse avec plusieurs motifs, puis
+restaurer. Des adresses peuvent se replier lorsque la memoire manque.
+
+
+==============================================================================
+18. SEQUENCES DE PROGRAMMATION DIRECTE
+==============================================================================
+
+Pour etablir un mode complet :
+
+  1. desactiver proprement l'affichage;
+  2. reset synchronise du Sequencer;
+  3. programmer Miscellaneous Output (horloge, groupe CRTC, polarites);
+  4. programmer Sequencer, sauf relance finale;
+  5. deverrouiller et programmer CRTC;
+  6. programmer Graphics Controller;
+  7. remettre a zero la bascule AC par lecture Status 1;
+  8. programmer palettes et registres Attribute Controller;
+  9. initialiser la memoire dans l'organisation correcte;
+ 10. relancer Sequencer et activer l'affichage/palette;
+ 11. mettre a jour BDA et tables BIOS si le BIOS doit etre reutilise.
+
+L'ordre est important. Programmer une horloge pendant que le Sequencer tourne
+peut produire des glitches. Ecrire l'AC avec une bascule inconnue decale toute
+la table d'un registre. Oublier de restaurer Map Mask ou Bit Mask casse les
+ecritures de texte suivantes.
+
+Pour une application, le meilleur compromis est : INT 10h pour le mode, puis
+modification limitee de registres, enfin restauration par INT 10h avant sortie.
+
+
+==============================================================================
+19. EXEMPLES ASSEMBLEUR 8086 (MASM/TASM)
+==============================================================================
+
+19.1 Ecrire un registre indexe
+------------------------------
+
+; Entree AL=index, AH=valeur, DX=port index (3C4h, 3CEh, 3D4h...)
+WriteIndexed proc near
+        out dx,al
+        inc dx
+        mov al,ah
+        out dx,al
+        dec dx
+        ret
+WriteIndexed endp
+
+19.2 Tracer un pixel EGA en Write Mode 2
+----------------------------------------
+
+; Precondition : mode 0Dh/0Eh/10h initialise par BIOS.
+; Entree : BX=x, DX=y, AL=couleur 0..15, CX=octets par ligne.
+; Detruit AX,BX,CX,DX,DI; ES=A000h.
+PutPixelEGA proc near
+        push ax
+        mov ax,dx
+        mul cx                  ; AX=y*BytesPerLine
+        mov di,bx
+        shr di,1
+        shr di,1
+        shr di,1
+        add di,ax
+
+        mov cl,bl
+        and cl,7
+        mov ah,80h
+        shr ah,cl               ; AH=Bit Mask
+
+        mov dx,03CEh
+        mov al,08h
+        out dx,al
+        inc dx
+        mov al,ah
+        out dx,al               ; GC Bit Mask
+
+        dec dx
+        mov ax,0205h            ; AL=GC index 5, AH=Write Mode 2
+        call WriteIndexed
+
+        mov ax,0A000h
+        mov es,ax
+        mov ah,es:[di]          ; charge les quatre latches
+        pop ax                  ; AL retrouve la couleur
+        and al,0Fh
+        mov es:[di],al
+        ret
+PutPixelEGA endp
+
+Dans un vrai programme, sauvegarder/restaurer GC5, GC8 et les autres registres
+modifies. L'exemple suppose fonction logique Replace et Map Mask=0Fh etablis par
+le mode BIOS. Attention : CX est reutilise pour le decalage apres MUL; conserver
+BytesPerLine si plusieurs pixels sont traces dans une boucle.
+
+19.3 Definir une entree de palette AC
+-------------------------------------
+
+; Entree BL=index 0..15, BH=code EGA 0..63. Groupe couleur suppose (3DAh).
+SetEgaPalette proc near
+        push ax
+        push dx
+        pushf
+        cli                     ; aucune lecture de Status 1 ne doit s'intercaler
+        mov dx,03DAh
+        in  al,dx               ; bascule -> index
+        mov dx,03C0h
+        mov al,bl
+        and al,0Fh
+        or  al,20h              ; conserver affichage palette actif
+        out dx,al
+        mov al,bh
+        and al,3Fh
+        out dx,al
+        popf                    ; restaure notamment l'ancien etat IF
+        pop dx
+        pop ax
+        ret
+SetEgaPalette endp
+
+PUSHF/POPF preserve l'etat IF d'origine, contrairement a une paire CLI/STI
+inconditionnelle. La section protegee inclut la lecture qui remet la bascule en
+phase, puis les deux OUT.
+
+19.4 Copie planaire par Write Mode 1
+------------------------------------
+
+; DS:SI et ES:DI pointent dans A000h, CX=nombre d'adresses (8 pixels chacune).
+; GC5 doit etre passe en Write Mode 1; Map Mask=0Fh.
+copyloop:
+        mov al,ds:[si]          ; charge 4 octets dans les latches
+        mov es:[di],al          ; copie les latches, AL ignore
+        inc si
+        inc di
+        loop copyloop
+
+Ne pas inserer d'autre lecture video entre MOV source et MOV destination.
+
+
+==============================================================================
+20. EXEMPLES TURBO PASCAL 6/7
+==============================================================================
+
+20.1 Selection du mode 320x200x16
+---------------------------------
+
+  procedure SetMode(Mode : Byte);
+  var R : Registers;
+  begin
+    R.AH := 0; R.AL := Mode; Intr($10, R)
+  end;
+
+  begin
+    SetMode($0D);
+    { dessin... }
+    ReadKey;
+    SetMode(3)
+  end.
+
+20.2 Acces aux registres indexes
+--------------------------------
+
+  procedure OutReg(IndexPort : Word; Index, Value : Byte);
+  begin
+    Port[IndexPort] := Index;
+    Port[IndexPort + 1] := Value
+  end;
+
+  procedure SetBitMask(M : Byte);
+  begin OutReg($3CE, 8, M) end;
+
+  procedure SetMapMask(M : Byte);
+  begin OutReg($3C4, 2, M and $0F) end;
+
+20.3 PutPixel planaire en mode d'ecriture 2
+--------------------------------------------
+
+  procedure PutPixelEGA(X, Y, BytesPerLine : Word; Color : Byte);
+  var O : Word; M, Dummy : Byte;
+  begin
+    O := Y * BytesPerLine + (X shr 3);
+    M := $80 shr (X and 7);
+    OutReg($3CE, 5, 2);          { Write Mode 2, Read Mode 0 }
+    OutReg($3CE, 3, 0);          { rotation 0, Replace }
+    OutReg($3CE, 8, M);
+    OutReg($3C4, 2, $0F);
+    Dummy := Mem[$A000:O];       { charge les latches }
+    Mem[$A000:O] := Color and $0F
+  end;
+
+Apres une serie, restaurer GC5=0 et GC8=FFh, ou reinitialiser le mode. La
+variable Dummy ne doit pas etre optimisee avant la lecture sur un compilateur
+moderne; Turbo Pascal genere effectivement l'acces memoire.
+
+20.4 Lire la couleur d'un pixel
+-------------------------------
+
+  function GetPixelEGA(X, Y, BytesPerLine : Word) : Byte;
+  var O : Word; M, P, C : Byte;
+  begin
+    O := Y * BytesPerLine + (X shr 3);
+    M := $80 shr (X and 7);
+    OutReg($3CE, 5, 0);          { Read Mode 0, Write Mode 0 }
+    C := 0;
+    for P := 0 to 3 do begin
+      OutReg($3CE, 4, P);
+      if (Mem[$A000:O] and M) <> 0 then C := C or (1 shl P)
+    end;
+    GetPixelEGA := C
+  end;
+
+20.5 Attendre le retrace et programmer l'AC
+--------------------------------------------
+
+  procedure SetAC(Index, Value : Byte);
+  var Dummy : Byte;
+  begin
+    Dummy := Port[$3DA];         { utiliser $3BA si groupe monochrome }
+    Port[$3C0] := (Index and $1F) or $20;
+    Port[$3C0] := Value
+  end;
+
+Une interruption entre les deux ecritures reste possible. Une routine DOS
+reelle doit sauver Flags, faire CLI autour de la paire, puis restaurer Flags.
+
+
+==============================================================================
+21. DEFILEMENT, PANNING, SPLIT SCREEN ET POLICES
+==============================================================================
+
+21.1 Start Address
+------------------
+
+CRTC 0Ch/0Dh choisit le debut d'affichage. En l'avancant d'une ligne logique,
+on obtient un defilement sans recopier les pixels. Ecrire la nouvelle ligne dans
+la memoire hors ecran et changer Start Address pendant le retrace evite le
+tearing. La memoire supplementaire determine la taille de la zone circulaire.
+
+21.2 Panning fin
+----------------
+
+Start Address defile par unites d'adresse; AC Horizontal Pixel Panning ajoute
+un decalage de quelques pixels. La combinaison donne un scrolling horizontal
+fin. Les valeurs et le comportement different entre caracteres de 8 et 9 points.
+
+21.3 Split screen
+-----------------
+
+CRTC Line Compare remet l'adresse a zero dans la partie basse. Cela permet une
+barre d'etat fixe sous une zone defilante. Les bits hauts sont repartis dans
+Overflow/Maximum Scan Line selon la valeur; les oublier limite le split a 8 bits.
+
+21.4 Polices
+------------
+
+Pour charger le plan 2 :
+
+  - sauvegarder Sequencer 2/4 et GC 4/5/6;
+  - desactiver odd/even et selectionner ecriture plan 2 seulement;
+  - mapper A000h si necessaire;
+  - ecrire 32 octets par glyphe, lignes utiles puis remplissage;
+  - restaurer tous les registres, surtout Map Mask et aperture;
+  - selectionner Character Map et adapter CRTC Maximum Scan Line.
+
+Le BIOS AH=11h effectue cette sequence de maniere plus portable. Une faute de
+restauration rend le texte illisible ou dirige les acces DOS vers le plan police.
+
+
+==============================================================================
+22. COMPATIBILITE CGA/MDA ET DIFFERENCES VGA
+==============================================================================
+
+22.1 Compatibilite
+------------------
+
+Les modes BIOS 00h..06h visent la compatibilite CGA, et 07h la compatibilite
+monochrome. Cela ne signifie pas que toute astuce electrique CGA/MDA est
+reproduite :
+
+  - l'EGA n'a pas de sortie composite CGA;
+  - elle n'a normalement pas le snow de la CGA IBM;
+  - son CRTC a des registres differents;
+  - ecrire directement 3D8h/3D9h comme sur CGA ne programme pas tous les blocs
+    EGA necessaires;
+  - les timings et le brochage du connecteur changent selon le moniteur;
+  - certaines lectures de ports ou comportements flottants different.
+
+Un programme CGA conforme au BIOS et a B800h fonctionne bien plus probablement
+qu'une demo raster/composite accedant aux circuits CGA.
+
+22.2 EGA contre VGA
+-------------------
+
+VGA conserve Sequencer, CRTC, GC et AC, mais ajoute notamment :
+
+  - DAC analogique 256 registres de 18 bits via 3C6h..3C9h;
+  - mode 13h 320x200x256 et chain-4;
+  - Write Mode 3;
+  - registres et bits CRTC/GC/AC supplementaires;
+  - nouvelles horloges et modes 400/480 lignes;
+  - lectures de certains registres a des ports differents;
+  - comportement de palette ou de protection parfois etendu.
+
+Ne pas decrire les ports DAC comme EGA. Les six bits EGA sont six sorties
+numeriques par pixel, non une precision de six bits par composante.
+
+
+==============================================================================
+23. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+23.1 Etat a representer
+-----------------------
+
+  - quatre plans avec capacite configuree et eventuel repli d'adresse;
+  - quatre latches independants;
+  - registres externes, Sequencer, GC, CRTC et AC;
+  - bascule index/donnee de 3C0h;
+  - groupe 3Bx/3Dx et comportement des ports inactifs;
+  - compteurs CRTC avec tous les bits Overflow;
+  - phases display, blank, retrace et eventuelle IRQ 2;
+  - deux cartes de caracteres et logique texte 8/9 points;
+  - palette 16x6 bits, overscan, mask et blink;
+  - panning, Start Address et Line Compare;
+  - commutateurs, memoire et profil de moniteur.
+
+23.2 Ordre exact du pipeline
+----------------------------
+
+Ecrire des tests unitaires pour chaque etape : rotation, choix Set/Reset,
+AND/OR/XOR, Bit Mask, Map Mask. Bit Mask conserve les latches, pas une nouvelle
+lecture implicite. Map Mask protege le plan entier apres calcul. Read Mode 1
+compare les quatre latches pixel par pixel.
+
+Une lecture CPU doit charger les quatre latches meme si un seul plan est rendu.
+Une ecriture ne doit pas recharger automatiquement les latches. Cette difference
+separe une emulation correcte d'un framebuffer simplifie.
+
+23.3 Odd/even et texte
+----------------------
+
+Implementer odd/even dans le chemin d'adresse, pas comme une conversion speciale
+limitee au rendu. Le CPU, le BIOS et le chargeur de polices peuvent le basculer.
+Le plan 2 doit rester accessible sans detruire caractere/attribut.
+
+23.4 Temporalite
+----------------
+
+Une emulation par image suffit aux applications ordinaires, mais perd les
+changements de palette par ligne, panning pendant balayage et split dynamique.
+Au minimum, horodater les ecritures de registres et appliquer les changements a
+la ligne correspondante. Pour les demos, progresser au caractere ou au point.
+
+Input Status 1 doit changer avec le temps virtuel. Une valeur constante bloque
+les attentes de retrace. La lecture doit toujours reinitialiser la bascule AC.
+
+23.5 BIOS
+---------
+
+Executer la ROM EGA IBM est la reference la plus fidele si la licence et
+l'architecture du projet le permettent. Sinon, l'interception INT 10h doit
+produire les memes registres, VRAM, BDA, palette, polices et valeurs retournees.
+Ne pas maintenir un framebuffer hote distinct invisible aux acces A000h.
+
+23.6 Configuration et clones
+-----------------------------
+
+Offrir des profils : IBM EGA 64/128/256 Kio, moniteur 5151/5153/5154, puis
+clones separes. Ne pas etendre silencieusement la carte IBM a 512 Kio, SVGA ou
+800x600 parce qu'un clone « Super EGA » le permet.
+
+
+==============================================================================
+24. PLAN DE VALIDATION
+==============================================================================
+
+T01 Executer tous les modes BIOS 00h..10h valides pour chaque taille memoire;
+    comparer registres, BDA, palette et contenu initial a une carte IBM.
+
+T02 Tester chaque plan seul avec Map Mask 1,2,4,8 puis toutes combinaisons.
+
+T03 Verifier Read Map Select : une lecture retourne le bon plan mais charge les
+    quatre latches.
+
+T04 Write Mode 0 : 8 rotations * 4 fonctions logiques * Set/Reset active/inactif
+    * plusieurs Bit Mask, avec valeurs de latch connues.
+
+T05 Write Mode 1 : copier source/destination, plans masques et chevauchement.
+
+T06 Write Mode 2 : les 16 couleurs, quatre fonctions et masques 80h/01h/AAh.
+
+T07 Read Mode 1 : toutes couleurs Compare et masques Don't Care; comparer les
+    huit pixels du resultat.
+
+T08 Odd/even : ecrire texte via B800h, lire plans 0/1 directement, charger plan
+    2, puis restaurer et verifier l'ecran.
+
+T09 AC : alterner index/donnee, inserer une lecture 3DAh entre les OUT et
+    verifier la remise en phase.
+
+T10 Palette : les 64 codes dans chaque entree, overscan et Color Plane Enable,
+    avec profil 5154 puis compatibilite 5153.
+
+T11 CRTC : bits Overflow, Start Address, Offset, panning et Line Compare au-dessus
+    de 255 lignes.
+
+T12 Status : transitions display/retrace, lecture 3BAh contre 3DAh et groupe
+    selectionne par Miscellaneous Output.
+
+T13 Texte : polices 8x8 et 8x14, deux cartes simultanees, blink, soulignement,
+    caracteres de ligne et largeur 8/9 points.
+
+T14 Memoire : 64, 128 et 256 Kio; detecter repli/absence sans acceder hors du
+    tableau hote.
+
+T15 Comparer affichage BIOS et lecture brute des plans; aucun cache de rendu ne
+    doit diverger apres une ecriture par port.
+
+T16 Executer des programmes de reference : diagnostics IBM, jeux EGA,
+    bibliotheques Borland Graph et demos utilisant scrolling/split.
+
+T17 Revenir au mode texte apres chaque test et verifier Map Mask, odd/even,
+    palette, police, curseur et groupe de ports.
+
+
+==============================================================================
+25. SECURITE DU MATERIEL REEL
+==============================================================================
+
+  - Sauvegarder le mode et le restaurer par BIOS avant de quitter.
+  - Ne pas appliquer une table VGA/SVGA a une EGA.
+  - Employer le reset synchronise pour changer les horloges.
+  - Conserver les frequences et polarites prevues pour le moniteur branche.
+  - Ne pas relier une sortie TTL EGA a une entree VGA analogique sans convertisseur.
+  - Verifier les commutateurs carte hors tension selon le manuel IBM.
+  - Ne jamais executer un test RAM destructif sur un ecran ou une police non
+    sauvegardes.
+  - Ajouter un timeout aux attentes de retrace et aux tests de presence.
+  - Sous un OS protege, les instructions IN/OUT exigent un pilote ou un
+    environnement virtualise; les exemples supposent DOS reel.
+
+
+==============================================================================
+26. REFERENCES
+==============================================================================
+
+Source primaire principale :
+
+  IBM Personal Computer, Technical Reference, Options and Adapters, Volume 2,
+  section « IBM Enhanced Graphics Adapter », 2 aout 1984 :
+  https://bitsavers.org/pdf/ibm/pc/cards/Technical_Reference_Options_and_Adapters_Volume_2_Apr84.pdf
+
+Copie isolee de la reference IBM EGA :
+
+  https://fabiensanglard.net/ega/IBM_Enhanced_Graphics_Adapter.pdf
+
+Sources reconstituees du BIOS EGA IBM, archivees par PCjs :
+
+  https://www.pcjs.org/software/pcx86/dev/rom/ibm/ega/
+
+Documentation de l'IBM Enhanced Color Display 5154 :
+
+  https://www.minuszerodegrees.net/5154/doco/5154_documentation.htm
+
+Comparaison des brochages MDA/CGA/EGA et modes du 5154 :
+
+  https://minuszerodegrees.net/mda_cga_ega/mda_cga_ega.htm
+
+Pour verifier une valeur de registre, privilegier le manuel IBM et le source du
+BIOS de la revision cible. Beaucoup de tableaux publies comme « EGA/VGA »
+decrivent en realite le VGA et incluent DAC, Write Mode 3 ou bits absents de
+l'EGA originale.
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
