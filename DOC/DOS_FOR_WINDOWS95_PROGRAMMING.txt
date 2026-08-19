@@ -1,0 +1,943 @@
+PROGRAMMATION DOS SOUS WINDOWS 95, 98 ET MILLENNIUM
+===================================================
+
+1. Objet et modèles d'exécution
+-------------------------------
+
+Ce document décrit les interfaces visibles par un programme DOS 16 bits sous
+Windows 95, Windows 98 et Windows Millennium Edition : extensions INT 21h de
+MS-DOS 7.x/8.0, fonctions de noms longs (LFN), services multiplex INT 2Fh et
+accès aux VxD. Les exemples visent MASM/TASM et Turbo Pascal 5 à 7.
+
+Il faut distinguer :
+
+  * le mode DOS réel après démarrage de Windows 95/98 en ligne de commande ;
+  * une machine virtuelle DOS (VM) gérée par Windows en mode 386 étendu ;
+  * une fenêtre DOS et une VM plein écran ;
+  * Windows Me, qui conserve DOS 8.0 mais limite le démarrage DOS autonome ;
+  * un DOS plus ancien lancé séparément, qui n'offre pas les mêmes extensions.
+
+Les LFN 71xxh dépendent généralement d'IFSMgr. Plusieurs appels existent dans
+une boîte DOS Windows mais pas sous MS-DOS 7 démarré sans l'interface Windows.
+
+
+2. Détection et versions
+------------------------
+
+Version DOS présentée :
+
+    mov ax, 3000h
+    int 21h                      ; AL=majeure, AH=mineure
+
+Version DOS vraie (non modifiée par SETVER sous MS-DOS) :
+
+    mov ax, 3306h
+    int 21h                      ; BL=majeure, BH=mineure, DL=révision
+
+Valeurs usuelles : Windows 95 et 95 SP1 rendent 7.00 ; Windows 95 OSR2 et OSR
+2.5 rendent 7.10 ; Windows 98 conserve 7.10 ; Windows Me utilise DOS 8.00.
+AH=30h peut être influencé par SETVER, donc 3306h convient mieux au diagnostic.
+
+Détection de Windows en mode 386 étendu :
+
+    mov ax, 1600h
+    int 2Fh
+    test al, 7Fh
+    jz   EnhancedWindowsAbsent
+
+La réponse précise varie selon Windows/386, Windows 3.x et Windows 9x. Pour
+identifier type et version Windows 3.1+, AX=160Ah fournit une information plus
+riche. Ne pas confondre la version DOS 7.x avec la présence de l'interface
+graphique active : Windows peut ne pas être démarré.
+
+Test direct de la famille LFN :
+
+    stc
+    mov ax, 71A0h
+    ; fournir les paramètres valides décrits plus loin
+    int 21h
+    ; CF posé et AX=7100h signifie fonction non prise en charge
+
+Pour les appels 71xxh, positionner CF avant INT 21h. Sur un ancien DOS qui ne
+comprend pas AH=71h, cette précaution garantit un résultat d'échec détectable.
+
+
+3. Principales extensions INT 21h de DOS 7/Windows 9x
+-----------------------------------------------------
+
+En plus des fonctions DOS classiques, les familles importantes sont :
+
+    Fonction                  Rôle
+    ------------------------  ----------------------------------------------
+    AX=3306h                  version DOS vraie
+    AX=5704h/5705h            lire/écrire le dernier accès
+    AX=5706h/5707h            lire/écrire la date de création
+    AX=6C00h                  ouverture étendue compatible DOS
+    AX=71xxh                  API des noms longs
+    AX=7302h                  informations étendues sur un volume
+    AX=7303h                  espace disque étendu
+    AX=7304h                  maintenance du DPB pour formatage FAT32
+    AX=7305h                  lecture/écriture absolue étendue
+    AX=440Dh, catégories 08h  verrouillage et services de volumes
+
+Les fonctions 73xxh sont surtout nécessaires à FAT32 et aux volumes dépassant
+les limites des compteurs 16 bits de AH=36h. Elles manipulent des structures
+versionnées : initialiser leur taille, réserver les champs demandés et accepter
+qu'un pilote ou système de fichiers ne prenne pas tout en charge.
+
+Services FAT32 7302h..7305h
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Get_ExtDPB, AX=7302h :
+
+    DL=0 lecteur courant, 1=A:, etc.
+    ES:DI -> tampon
+    CX=003Fh sous Windows 95
+    SI=F1A6h seulement si les pointeurs internes sont réellement requis
+
+Le tampon commence par WORD=003Dh puis un DPB étendu de 61 octets. Il expose
+notamment les compteurs de clusters 32 bits, l'état de miroir des FAT, le secteur
+FSInfo, le boot de secours, le premier secteur de données, la taille d'une FAT et
+le cluster racine. Sans SI=F1A6h, Windows masque les pointeurs internes ; une
+application normale ne doit pas demander ou déréférencer ces pointeurs.
+
+Espace libre étendu, AX=7303h :
+
+    DS:DX -> `C:\` ou `\\serveur\partage`
+    ES:DI -> structure
+    CX=taille du tampon
+
+Structure de 44 octets : WORD taille rendue, WORD version=0, puis DWORD secteurs
+par cluster, octets par secteur, clusters disponibles, clusters totaux, secteurs
+physiques disponibles/totaux, unités d'allocation disponibles/totales et huit
+octets réservés. En mode DOS 7 nu, préciser la lettre ; `\` seul peut rendre
+ERROR_INVALID_DRIVE. Certaines combinaisons Win95/98 et TSR limitent à tort le
+résultat à 2 Go.
+
+AX=7304h modifie ou interroge des champs du DPB pour les outils de formatage :
+invalider les compteurs, reconstruire depuis un BPB, forcer un changement de
+média, gérer FAT active/miroir ou cluster racine. C'est une interface système
+dangereuse ; ne pas l'employer pour une simple statistique de volume.
+
+Lecture/écriture absolue, AX=7305h :
+
+    CX=FFFFh, DL=lecteur (1=A:, jamais 0)
+    SI bit 0=0 lecture, 1 écriture
+       bits 14..13=type écrit : inconnu, FAT, répertoire ou fichier
+    DS:BX -> paquet d'E/S disque étendu
+
+Cette fonction contourne le système de fichiers. Une écriture incorrecte peut
+détruire FAT, répertoires et données ; elle est réservée aux outils disque qui
+verrouillent le volume et connaissent exactement le format utilisé.
+
+
+4. Vue générale de l'API LFN INT 21h/AH=71h
+--------------------------------------------
+
+    AX      Fonction
+    ------  ---------------------------------------------------------------
+    710Dh   vider/réinitialiser un lecteur
+    7139h   créer un répertoire
+    713Ah   supprimer un répertoire
+    713Bh   changer de répertoire
+    7141h   supprimer un fichier
+    7143h   lire/écrire attributs et horodatages
+    7147h   obtenir le répertoire courant
+    714Eh   FindFirst LFN
+    714Fh   FindNext LFN
+    7156h   renommer/déplacer
+    7160h   canoniser et convertir nom long/court
+    716Ch   créer ou ouvrir un fichier
+    71A0h   informations de volume
+    71A1h   FindClose
+    71A6h   informations de fichier par handle
+    71A7h   convertir FILETIME et heure DOS
+    71A8h   générer un nom court
+    71A9h   ouverture serveur, usage interne spécialisé
+    71AAh   créer, supprimer ou interroger SUBST
+
+Convention commune : CF clair = succès ; CF posé = AX code d'erreur. AX=7100h
+signifie que la fonction n'est pas implantée. Le programme doit alors appeler
+la fonction DOS 8.3 correspondante si cette dégradation est acceptable.
+
+Les chaînes utilisées par les fonctions ordinaires sont des ASCIZ dans la page
+de codes OEM de la VM. Les noms sont stockés en Unicode par Windows, mais la
+conversion OEM peut remplacer certains caractères par `_`; les flags rendus
+par FindFirst/FindNext indiquent ces pertes.
+
+
+5. Répertoires et fichiers LFN simples
+--------------------------------------
+
+Créer, supprimer et sélectionner un répertoire :
+
+    AX=7139h, DS:DX -> chemin ASCIZ     créer
+    AX=713Ah, DS:DX -> chemin ASCIZ     supprimer
+    AX=713Bh, DS:DX -> chemin ASCIZ     devenir répertoire courant
+
+Supprimer un fichier :
+
+    AX=7141h
+    DS:DX -> nom ASCIZ
+    SI=0 sans jokers ; SI=1 autorise les jokers
+    CL=attributs admis, CH=attributs obligatoires
+
+Renommer ou déplacer sur le même volume :
+
+    AX=7156h
+    DS:DX -> ancien nom
+    ES:DI -> nouveau nom
+
+Le déplacement entre volumes n'est pas pris en charge par 7156h : copier puis
+supprimer en préservant les métadonnées.
+
+Exemple assembleur :
+
+    LongDir db 'C:\Mes documents\Archives',0
+    stc
+    mov ax, 7139h
+    mov dx, OFFSET LongDir
+    int 21h
+    jnc Created
+    cmp ax, 7100h
+    je  NeedShortNameFallback
+    ; AX contient l'erreur
+
+Turbo Pascal :
+
+    function LFNMakeDir(var Path: string): Word;
+    var R: Registers; Z: array[0..260] of Char; I,N: Integer;
+    begin
+      FillChar(Z, SizeOf(Z), 0);
+      N := Length(Path); if N > 260 then N := 260;
+      for I := 1 to N do Z[I-1] := Path[I];
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $7139; R.DS := Seg(Z); R.DX := Ofs(Z);
+      R.Flags := R.Flags or FCarry;
+      Intr($21, R);
+      if (R.Flags and FCarry) <> 0 then LFNMakeDir := R.AX
+      else LFNMakeDir := 0
+    end;
+
+
+6. Attributs, tailles et horodatages : AX=7143h
+------------------------------------------------
+
+    BL=00h lire attributs              retour CX
+    BL=01h écrire attributs            CX à l'entrée
+    BL=02h taille physique compressée  retour DX:AX
+    BL=03h écrire dernière modification DI=date, CX=heure
+    BL=04h lire dernière modification  retour DI/CX
+    BL=05h écrire dernière date d'accès DI=date
+    BL=06h lire dernière date d'accès  retour DI
+    BL=07h écrire création             DI=date,CX=heure,SI=centièmes
+    BL=08h lire création               retour DI,CX,SI
+
+Le format DOS code l'année depuis 1980, le mois et le jour dans la date, et les
+heures/minutes/secondes divisées par deux dans l'heure. Les centièmes sont des
+unités de 10 ms au-delà de l'heure DOS et vont de 0 à 199.
+
+
+7. Répertoire courant : AX=7147h
+--------------------------------
+
+    DL=0 lecteur courant, 1=A:, 2=B:, etc.
+    DS:SI -> tampon ASCIZ
+
+Le résultat ne contient ni lettre, ni `:`, ni barre oblique initiale. Il peut
+mélanger des composants courts et longs, car Windows rend la forme utilisée au
+dernier changement de répertoire. Le tampon doit avoir au moins la longueur de
+chemin maximale annoncée par 71A0h.
+
+
+8. FindFirst, FindNext et FindClose LFN
+---------------------------------------
+
+FindFirst :
+
+    AX=714Eh
+    CL=masque d'attributs admis, CH=attributs obligatoires
+    SI=0 temps FILETIME 64 bits, SI=1 temps DOS
+    DS:DX -> motif ASCIZ (`*` et `*.*` correspondent à tout)
+    ES:DI -> structure FindData
+    retour AX=handle de recherche, CX=flags de conversion Unicode
+
+FindNext : AX=714Fh, BX=handle, SI=format temps, ES:DI=FindData.
+FindClose : AX=71A1h, BX=handle. Il faut fermer le handle même si la boucle est
+abandonnée avant ERROR_NO_MORE_FILES.
+
+FindData, 318 octets :
+
+    00h DWORD attributs
+    04h QWORD création
+    0Ch QWORD dernier accès
+    14h QWORD dernière modification
+    1Ch DWORD taille haute
+    20h DWORD taille basse
+    24h 8 octets réservés
+    2Ch 260 octets nom long ASCIZ
+    130h 14 octets nom court ASCIZ
+
+Sous Windows 95B, le nom court peut être vide si aucune entrée LFN n'existe ;
+utiliser alors le nom complet. CX bit 0 signale des substitutions `_` dans le
+nom long, bit 1 dans le nom court.
+
+Squelette assembleur :
+
+    FindBuf db 318 dup (0)
+    Pattern db 'C:\Mes documents\*.*',0
+    SearchHandle dw 0
+
+    stc
+    mov ax, 714Eh
+    xor cx, cx
+    mov si, 1
+    mov dx, OFFSET Pattern
+    mov di, OFFSET FindBuf
+    push ds
+    pop  es
+    int 21h
+    jc  FindFailed
+    mov SearchHandle, ax
+NextEntry:
+    ; traiter FindBuf
+    stc
+    mov ax, 714Fh
+    mov bx, SearchHandle
+    mov si, 1
+    mov di, OFFSET FindBuf
+    int 21h
+    jnc NextEntry
+    mov ax, 71A1h
+    mov bx, SearchHandle
+    int 21h
+
+Ces fonctions exigent IFSMgr et ne sont normalement pas présentes sous DOS 7
+nu. Les fonctions 71A2h..71A5h sont internes et ne doivent pas être utilisées.
+
+
+9. Canonisation et conversions 8.3/long : AX=7160h
+----------------------------------------------------
+
+    CL=00h canoniser ; tampon de 261 octets
+    CL=01h obtenir le chemin court 8.3 ; prévoir 128 octets par prudence
+    CL=02h obtenir le chemin long canonique ; tampon de 261 octets
+    CH=00h développer SUBST, CH=80h conserver la lettre SUBST
+    DS:SI -> source, ES:DI -> destination
+
+CL=01h rend un chemin complet en majuscules. CL=02h peut conserver la casse.
+Windows 95 échoue parfois au-delà de 255 caractères bien que MAX_PATH soit 260,
+et interprète à tort deux barres après `X:` comme un chemin UNC lent à résoudre.
+
+Turbo Pascal, conversion vers le nom long :
+
+    function GetLongPath(const Source: string; var Dest: string): Word;
+    var R: Registers; S,D: array[0..260] of Char; I,N: Integer;
+    begin
+      FillChar(S,SizeOf(S),0); FillChar(D,SizeOf(D),0);
+      N:=Length(Source); if N>260 then N:=260;
+      for I:=1 to N do S[I-1]:=Source[I];
+      FillChar(R,SizeOf(R),0);
+      R.AX:=$7160; R.CX:=$0002;
+      R.DS:=Seg(S); R.SI:=Ofs(S); R.ES:=Seg(D); R.DI:=Ofs(D);
+      R.Flags:=R.Flags or FCarry; Intr($21,R);
+      if (R.Flags and FCarry)<>0 then GetLongPath:=R.AX
+      else begin
+        N:=0; while (N<260) and (D[N]<>#0) do Inc(N);
+        Dest[0]:=Chr(N); if N>0 then Move(D,Dest[1],N);
+        GetLongPath:=0
+      end
+    end;
+
+
+10. Créer ou ouvrir : AX=716Ch
+--------------------------------
+
+    BX = accès/partage/flags
+    CX = attributs de création
+    DX = action
+    DS:SI -> nom ASCIZ
+    DI = suggestion de suffixe numérique d'alias
+
+DX bit 0 ouvre si le fichier existe, bit 1 le tronque s'il existe, bit 4 le crée
+s'il n'existe pas. Combinaisons usuelles : 0001h ouvrir seulement, 0010h créer
+seulement, 0011h ouvrir ou créer, 0012h remplacer ou créer.
+
+BX bits 0..2 donnent lecture/écriture ; bits 4..6 le partage ; bit 7 interdit
+l'héritage ; bit 8 demande les E/S non bufferisées ; bit 9 interdit la
+compression ; bit 10 active DI ; bit 13 demande une erreur au lieu d'INT 24h ;
+bit 14 impose le commit après chaque écriture.
+
+Retour : AX=handle et CX=1 ouvert, 2 créé, 3 remplacé.
+
+    FileName db 'C:\Mes documents\rapport final.txt',0
+    stc
+    mov ax, 716Ch
+    mov bx, 2022h                ; lecture/écriture, partage, erreur directe
+    xor cx, cx
+    mov dx, 0011h
+    mov si, OFFSET FileName
+    xor di, di
+    int 21h
+    jc  OpenError
+
+
+11. Informations volume : AX=71A0h
+------------------------------------
+
+    DS:DX -> racine ASCIZ, par exemple `C:\`
+    ES:DI -> tampon du nom de système de fichiers (32 octets suffisent)
+    CX=taille du tampon
+    retour BX=flags, CX=longueur max du nom, DX=longueur max du chemin
+
+BX bit 0 indique casse significative, bit 1 casse préservée, bit 2 Unicode,
+bit 14 fonctions LFN prises en charge, bit 15 volume compressé. Le système de
+fichiers peut être `FAT`, `CDFS`, `NTFS`, etc. Sous Windows 95 SP1, DX peut être
+erronément zéro pour un CD-ROM.
+
+
+12. Informations par handle et FILETIME
+----------------------------------------
+
+AX=71A6h avec BX=handle et DS:DX vers un tampon de 52 octets rend attributs,
+trois FILETIME, numéro de série du volume, taille 64 bits, nombre de liens et
+identifiant 64 bits. Le numéro de volume et l'identifiant repèrent le fichier
+tant qu'il est ouvert, mais l'identifiant peut changer après redémarrage.
+
+AX=71A7h/BL=00h convertit le QWORD FILETIME UTC (100 ns depuis 1/1/1601) pointé
+par DS:SI en heure CX, date DX et centièmes BH locaux. BL=01h fait l'inverse vers
+ES:DI. La plage DOS valide est du 1/1/1980 au 31/12/2107.
+
+
+13. Générer un alias : AX=71A8h
+--------------------------------
+
+DS:SI pointe vers un nom long sans chemin, ES:DI vers le résultat. DH=00h rend
+le format FCB de 11 caractères, DH=01h le format 8.3. Dans DL, chaque nibble
+indique le jeu de caractères : 0 ANSI Windows, 1 OEM courant, 2 Unicode.
+L'algorithme ne garantit pas l'unicité et n'ajoute pas le suffixe `~n`; vérifier
+les collisions ou laisser le système créer réellement le fichier.
+
+
+14. Fonctions LFN SUBST : AX=71AAh
+-----------------------------------
+
+BH=00h crée, BH=01h termine, BH=02h interroge. BL=1 pour A:, 2 pour B:, etc.
+Pour créer, DS:DX pointe vers le chemin ; pour interroger, vers le tampon.
+BL=0 est admis comme lecteur par défaut seulement pour la création.
+
+
+15. Services INT 2Fh de Windows importants pour DOS
+----------------------------------------------------
+
+    AX      Fonction
+    ------  ---------------------------------------------------------------
+    1600h   présence du mode Windows 386 étendu
+    1605h   broadcast d'initialisation Windows/286 DOSX
+    1606h   broadcast de sortie
+    1607h   interface de callout des périphériques virtuels
+    1608h   initialisation terminée
+    1609h   début de sortie
+    160Ah   identifier version et type Windows
+    160Bh   chaîne d'identification des TSR compatibles Windows
+    1611h   paramètres du shell primaire DOS 7 (interne)
+    1613h   chemin de SYSTEM.DAT
+    1615h   détection de SAVE32.COM
+    1680h   céder le reste du quantum de la VM
+    1681h   entrer dans une section critique Windows
+    1682h   quitter la section critique
+    1683h   obtenir l'identifiant de la VM courante
+    1684h   obtenir le point d'entrée API d'un VxD
+
+Les broadcasts 1605h..1609h sont reçus par les pilotes/TSR chaînés à INT 2Fh,
+pas invoqués arbitrairement par une application. Un gestionnaire doit préserver
+l'état, rester réentrant et chaîner les fonctions inconnues.
+
+AX=160Ah rend AX=0000h si pris en charge, BX avec BH=version majeure et
+BL=mineure, et CX=0002h en mode standard ou 0003h en mode étendu. Windows 95
+rapporte 4.00, Windows 95B 4.03. Contrairement à 1600h, l'ordre majeur/mineur est
+ici BH/BL.
+
+AX=160Bh est un appel de chaîne : chaque TSR appelle d'abord l'ancien INT 2Fh,
+ajoute sa structure (PSP, version API, commande Windows éventuelle, identifiant,
+données privées), puis rend ES:DI sur le nouveau maillon. Il sert aux TSR qui
+doivent se déclarer auprès de Windows, pas à une application ordinaire.
+
+Les appels DOS 7 suivants sont utiles à l'analyse mais peu portables : 1611h
+rend DS:DX sur le nom du shell primaire et DS:SI sur sa ligne de commande ;
+1613h copie dans ES:DI le chemin complet de SYSTEM.DAT ; 1614h change ce chemin
+et est interne ; 1615h détecte SAVE32.COM, TSR qui protège les moitiés hautes des
+registres 32 bits contre d'anciens BIOS et TSR défectueux.
+
+1680h est utile dans une boucle d'attente coopérative :
+
+    mov ax, 1680h
+    int 2Fh
+
+Les sections critiques 1681h/1682h empêchent des changements de VM mais doivent
+être extrêmement courtes et équilibrées. Elles ne rendent pas DOS réentrant et
+ne remplacent pas un verrou de données.
+
+
+16. Accès à l'API d'un VxD : INT 2Fh/AX=1684h
+------------------------------------------------
+
+    AX=1684h
+    BX=identifiant du VxD
+    ES:DI -> entrée API, ou 0000h:0000h
+
+Des identifiants historiques incluent VMM, V86MMGR, VKD, BLOCKDEV, DOSMGR,
+IFSMgr, VPICD, VTD et VXDLDR. L'adresse seule ne définit aucun protocole : il
+faut la documentation du VxD pour les registres, fonctions, privilèges et modes
+acceptés. Ne jamais appeler une entrée inconnue.
+
+Sous Windows 95, certains VxD possèdent aussi des variantes spécialisées de
+1684h. Le bit haut des identifiants est réservé. Les interfaces V86 et mode
+protégé peuvent être différentes.
+
+
+17. Presse-papiers Windows pour les applications DOS
+-----------------------------------------------------
+
+WINOLDAP et INT 2Fh/17xxh
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Windows fournit aux anciennes applications en mode caractère une passerelle
+vers le presse-papiers par WINOLDAP.MOD. Cette couche gère aussi historiquement
+des fonctions DDE et de menus. L'API presse-papiers DOS utilise INT 2Fh :
+
+    AX      Fonction
+    ------  ---------------------------------------------------------------
+    1700h   détecter WINOLDAP et obtenir sa version
+    1701h   ouvrir le presse-papiers
+    1702h   vider son contenu
+    1703h   écrire des données
+    1704h   obtenir la taille d'un format
+    1705h   lire les données d'un format
+    1708h   fermer le presse-papiers
+    1709h   compacter/allouer de l'espace pour le presse-papiers
+    170Ah   obtenir des capacités du périphérique d'affichage
+
+Cette interface est antérieure à Windows 95, mais reste disponible dans les
+sessions DOS Windows qui chargent WINOLDAP. Elle n'est pas une fonction du
+noyau DOS 7 nu. Un programme doit donc tester 1700h, pas seulement la version
+DOS ou Windows.
+
+Détection et version : AX=1700h
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    mov ax, 1700h
+    int 2Fh
+    cmp ax, 1700h
+    je  ClipboardUnavailable
+    ; AL=version majeure WINOLDAP, AH=version mineure
+
+Cette détection est inhabituelle : elle ne rend pas AL=FFh comme plusieurs
+autres services multiplex. AX inchangé à 1700h signifie que cette version de
+WINOLDAP ne prend pas en charge le presse-papiers.
+
+Ouverture, fermeture et propriété
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+AX=1701h ouvre le presse-papiers et rend AX non nul. AX=0000h signifie qu'il est
+déjà ouvert ou indisponible. Toute ouverture réussie doit être équilibrée par
+AX=1708h, y compris après une erreur intermédiaire. CloseClipboard rend aussi
+AX non nul en cas de succès.
+
+Le presse-papiers est une ressource globale partagée avec les applications
+Windows et les autres VM. Ne pas le garder ouvert pendant une saisie, une E/S
+disque ou un calcul. Ouvrir, copier, puis fermer immédiatement.
+
+Vider et écrire
+~~~~~~~~~~~~~~~
+
+Pour remplacer le contenu : ouvrir, vider avec AX=1702h, publier un ou plusieurs
+formats avec AX=1703h, puis fermer.
+
+    AX=1703h
+    DX=format
+    ES:BX -> données
+    SI:CX=taille 32 bits, SI mot haut, CX mot bas
+    retour AX non nul si les données ont été copiées
+
+Contrairement à l'API Windows native, WINOLDAP copie les données fournies ; le
+programme DOS conserve la propriété de son tampon. Pour du texte, inclure le NUL
+terminal dans la taille et employer CR/LF pour séparer les lignes.
+
+Formats reconnus :
+
+    DX    Format WINOLDAP           Usage
+    ----  ------------------------  ----------------------------------------
+    01h   texte Windows             texte dans le jeu ANSI Windows
+    02h   bitmap                    structure bitmap WINOLDAP
+    03h   image metafile            structure metafile picture
+    04h   SYLK                      échange tableur
+    05h   DIF                       Data Interchange Format
+    06h   TIFF                      image TIFF
+    07h   texte OEM                 format conseillé à un programme DOS
+    08h   DIB                       bitmap indépendant du périphérique
+    80h   format spécial            utilisé par certains accessoires Windows
+    81h   display text              format d'affichage texte
+    82h   display bitmap            format d'affichage bitmap
+
+Pour maximiser l'interopérabilité, une application DOS peut publier le texte
+OEM 07h et, si elle possède une conversion correcte, le texte ANSI 01h. Ne pas
+étiqueter les mêmes octets avec les deux formats : les caractères 80h..FFh ne
+représentent pas les mêmes glyphes dans les pages OEM et Windows ANSI.
+
+Exemple assembleur : copier du texte OEM
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    ClipText db 'Texte produit par le programme DOS',0
+    ClipLen  EQU ($ - ClipText)
+
+    mov  ax, 1700h
+    int  2Fh
+    cmp  ax, 1700h
+    je   NoClipboard
+
+    mov  ax, 1701h
+    int  2Fh
+    or   ax, ax
+    jz   ClipboardBusy
+
+    mov  ax, 1702h
+    int  2Fh
+    or   ax, ax
+    jz   CloseAfterError
+
+    push ds
+    pop  es
+    mov  bx, OFFSET ClipText
+    xor  si, si                    ; mot haut de la taille
+    mov  cx, ClipLen               ; NUL inclus
+    mov  dx, 0007h                 ; texte OEM
+    mov  ax, 1703h
+    int  2Fh
+    or   ax, ax
+    jz   CloseAfterError
+    ; succès
+
+CloseAfterError:
+    mov  ax, 1708h
+    int  2Fh
+
+Lire la taille et les données
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+AX=1704h avec DX=format rend la taille dans DX:AX, zéro si ce format n'est pas
+présent. Windows arrondit apparemment la taille à un multiple de 32 octets ; le
+tampon doit donc être dimensionné avec cette valeur rendue, pas avec la longueur
+apparente de la chaîne.
+
+AX=1705h prend DX=format et ES:BX vers le tampon, puis rend AX non nul en cas de
+succès. L'appel ne reçoit aucune taille de tampon : appeler d'abord 1704h,
+vérifier le mot haut et la capacité, puis seulement 1705h. Une erreur de calcul
+provoque un débordement de mémoire dans l'application DOS.
+
+Exemple assembleur avec un tampon statique :
+
+    ClipBuf  db 4096 dup (0)
+
+    mov  ax, 1701h
+    int  2Fh
+    or   ax, ax
+    jz   ClipboardBusy
+
+    mov  dx, 0007h
+    mov  ax, 1704h
+    int  2Fh                       ; DX:AX=taille
+    or   dx, dx
+    jnz  TooLarge
+    or   ax, ax
+    jz   FormatAbsent
+    cmp  ax, SIZEOF ClipBuf
+    ja   TooLarge
+
+    push ds
+    pop  es
+    mov  bx, OFFSET ClipBuf
+    mov  dx, 0007h
+    mov  ax, 1705h
+    int  2Fh
+    or   ax, ax
+    jz   ReadFailed
+    ; ClipBuf contient le texte OEM
+
+    mov  ax, 1708h
+    int  2Fh
+
+Dans le code réel, tous les branchements `TooLarge`, `FormatAbsent` et
+`ReadFailed` doivent converger vers CloseClipboard après une ouverture réussie.
+
+Turbo Pascal : détection
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+    function ClipboardAvailable: Boolean;
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1700;
+      Intr($2F, R);
+      ClipboardAvailable := R.AX <> $1700
+    end;
+
+Turbo Pascal : copier une chaîne OEM
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    function ClipboardSetOEMText(const S: string): Boolean;
+    var R: Registers;
+        Z: array[0..255] of Char;
+        I, N: Integer;
+        Opened, OK: Boolean;
+    begin
+      ClipboardSetOEMText := False;
+      if not ClipboardAvailable then Exit;
+      FillChar(Z, SizeOf(Z), 0);
+      N := Length(S); if N > 255 then N := 255;
+      for I := 1 to N do Z[I-1] := S[I];
+
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1701; Intr($2F, R);
+      Opened := R.AX <> 0;
+      if not Opened then Exit;
+
+      R.AX := $1702; Intr($2F, R);
+      OK := R.AX <> 0;
+      if OK then begin
+        R.AX := $1703; R.DX := $0007;
+        R.ES := Seg(Z); R.BX := Ofs(Z);
+        R.SI := 0; R.CX := N + 1;
+        Intr($2F, R);
+        OK := R.AX <> 0
+      end;
+
+      R.AX := $1708; Intr($2F, R);
+      ClipboardSetOEMText := OK
+    end;
+
+Turbo Pascal classique ne possède pas `try/finally`. La structure ci-dessus
+évite tout `Exit` entre l'ouverture et la fermeture.
+
+Turbo Pascal : lire une chaîne OEM
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    function ClipboardGetOEMText(var S: string): Boolean;
+    var R: Registers;
+        B: array[0..4095] of Char;
+        Size, N: Word;
+        OK: Boolean;
+    begin
+      ClipboardGetOEMText := False; S := '';
+      if not ClipboardAvailable then Exit;
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $1701; Intr($2F, R);
+      if R.AX = 0 then Exit;
+
+      R.AX := $1704; R.DX := $0007; Intr($2F, R);
+      Size := R.AX;
+      OK := (R.DX = 0) and (Size > 0) and (Size <= SizeOf(B));
+      if OK then begin
+        FillChar(B, SizeOf(B), 0);
+        R.AX := $1705; R.DX := $0007;
+        R.ES := Seg(B); R.BX := Ofs(B);
+        Intr($2F, R);
+        OK := R.AX <> 0
+      end;
+      if OK then begin
+        N := 0;
+        while (N < Size) and (N < 255) and (B[N] <> #0) do Inc(N);
+        S[0] := Chr(N); if N > 0 then Move(B, S[1], N)
+      end;
+
+      R.AX := $1708; Intr($2F, R);
+      ClipboardGetOEMText := OK
+    end;
+
+Compaction : AX=1709h
+~~~~~~~~~~~~~~~~~~~~~
+
+SI:CX contient la taille 32 bits désirée, en-têtes compris. DX:AX rend la taille
+du plus grand bloc libre. Cette fonction vise la gestion mémoire historique de
+WINOLDAP. Une application texte ordinaire peut se contenter de vérifier 1704h
+et de refuser proprement une donnée trop grande.
+
+Bitmaps et metafiles
+~~~~~~~~~~~~~~~~~~~~
+
+Le bitmap WINOLDAP commence par type WORD=0, largeur, hauteur, octets par ligne,
+plans, bits adjacents par pixel, pointeur de données, dimensions en dixièmes de
+millimètre, puis pixels. La metafile contient mode de mappage, étendues X/Y et
+données. Ces formats dépendent de structures Windows 16 bits et de pointeurs ;
+pour un programme DOS, DIB (08h) est préférable à un bitmap dépendant du
+périphérique, mais exige toujours une construction conforme à la documentation
+Windows du format.
+
+Capacités d'affichage : AX=170Ah
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DX sélectionne une propriété GDI : version du pilote, classification, dimensions
+en millimètres ou pixels, bits par pixel, plans, nombres de brosses, crayons,
+polices ou couleurs. AX rend la valeur entière. Cette fonction appartient à la
+passerelle WINOLDAP ; elle n'est pas une API vidéo DOS générale.
+
+Pièges du presse-papiers
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+  * tester 1700h au lieu de supposer que Windows 95 suffit ;
+  * fermer après toute ouverture réussie, même si Empty/Set/Get échoue ;
+  * ne pas vider le presse-papiers avant d'être certain de pouvoir publier ;
+  * inclure le NUL dans la taille d'un texte écrit ;
+  * distinguer texte OEM 07h et texte ANSI 01h ;
+  * appeler 1704h avant 1705h, car 1705h ne connaît pas la capacité du tampon ;
+  * traiter la taille comme un entier 32 bits SI:CX ou DX:AX ;
+  * ne pas conserver le presse-papiers ouvert pendant une interaction longue ;
+  * ne pas supposer que les formats graphiques natifs Windows sont directement
+    utilisables comme un bloc de pixels DOS.
+
+
+18. Ports d'E/S et virtualisation
+---------------------------------
+
+Les ports visibles restent ceux du PC (60h clavier, 3F8h COM1, 378h LPT1,
+3C0h..3DFh VGA, etc.). Windows et ses VxD peuvent intercepter, émuler, autoriser
+ou refuser IN/OUT. Il n'existe pas de port standard retournant la version de
+Windows. Utiliser INT 2Fh/1600h ou 160Ah.
+
+Les accès directs risquent de perturber une autre VM ou le pilote Windows.
+Préférer BIOS/DOS. Les boucles de polling sur un port intercepté entraînent un
+trap à chaque itération et doivent appeler 1680h ou, mieux, utiliser un service
+bloquant.
+
+
+19. Turbo Pascal : unité minimale de wrappers
+----------------------------------------------
+
+    unit Win95Dos;
+    interface
+    uses Dos;
+    function WindowsEnhanced: Boolean;
+    procedure WinYield;
+    function LFNAvailable: Boolean;
+    implementation
+
+    function WindowsEnhanced: Boolean;
+    var R: Registers;
+    begin
+      FillChar(R,SizeOf(R),0); R.AX:=$1600; Intr($2F,R);
+      WindowsEnhanced := (Lo(R.AX) and $7F) <> 0
+    end;
+
+    procedure WinYield;
+    var R: Registers;
+    begin
+      FillChar(R,SizeOf(R),0); R.AX:=$1680; Intr($2F,R)
+    end;
+
+    function LFNAvailable: Boolean;
+    var R: Registers;
+        Root: array[0..3] of Char;
+        FS: array[0..31] of Char;
+    begin
+      Root[0]:='C'; Root[1]:=':'; Root[2]:='\'; Root[3]:=#0;
+      FillChar(FS,SizeOf(FS),0); FillChar(R,SizeOf(R),0);
+      R.AX:=$71A0; R.DS:=Seg(Root); R.DX:=Ofs(Root);
+      R.ES:=Seg(FS); R.DI:=Ofs(FS); R.CX:=SizeOf(FS);
+      R.Flags:=R.Flags or FCarry; Intr($21,R);
+      LFNAvailable := ((R.Flags and FCarry)=0) and ((R.BX and $4000)<>0)
+    end;
+
+    end.
+
+Dans un programme réel, tester le lecteur effectivement utilisé plutôt que C:.
+Turbo Pascal utilise des chaînes courtes de 255 caractères : les chemins LFN
+de 260 caractères exigent des tableaux de Char et des conversions bornées.
+
+
+20. Stratégie de compatibilité LFN/8.3
+--------------------------------------
+
+Pour chaque opération :
+
+  1. construire une chaîne ASCIZ bornée ;
+  2. positionner CF ;
+  3. appeler 71xxh ;
+  4. si CF est clair, traiter le succès ;
+  5. si AX=7100h, convertir si possible le chemin en 8.3 et appeler l'ancienne
+     fonction ;
+  6. pour toute autre erreur, ne pas masquer le code avec une tentative 8.3 ;
+  7. libérer tout handle de recherche.
+
+Le repli n'est pas toujours possible : un nom long peut n'avoir aucun alias
+accessible, un volume distant peut appliquer d'autres règles, et tronquer le nom
+créera ou visera un fichier différent.
+
+
+21. Pièges fréquents
+---------------------
+
+  * appeler 714Eh sous DOS 7 nu alors qu'IFSMgr n'est pas actif ;
+  * oublier STC avant une fonction 71xxh ;
+  * traiter AX=7100h comme un code fichier ordinaire ;
+  * oublier 71A1h après FindFirst ;
+  * supposer que le nom court de FindData est toujours présent ;
+  * utiliser une string Turbo Pascal pour un tampon de 261 octets ;
+  * confondre ANSI Windows, OEM DOS et Unicode ;
+  * ignorer les flags de substitution Unicode de CX ;
+  * employer 7160h avec source et destination qui se chevauchent ;
+  * croire que MAX_PATH garantit que Windows 95 accepte 260 caractères ;
+  * appeler 1681h sans garantir 1682h sur tous les chemins ;
+  * appeler une API VxD obtenue par 1684h sans contrat documenté ;
+  * déduire Windows actif de la seule version DOS 7.x.
+
+
+22. Table récapitulative
+------------------------
+
+    Interruption  Sélecteur       Catégorie
+    ------------  --------------  ------------------------------------------
+    INT 21h       3306h           version DOS vraie
+    INT 21h       5704h..5707h    dates d'accès et de création
+    INT 21h       6C00h           ouverture étendue 8.3
+    INT 21h       710Dh           reset/flush lecteur
+    INT 21h       7139h..7147h    fichiers/répertoires/attributs LFN
+    INT 21h       714Eh/714Fh     FindFirst/FindNext LFN
+    INT 21h       7156h/7160h     rename et conversion de chemin
+    INT 21h       716Ch           création/ouverture LFN
+    INT 21h       71A0h/71A1h     volume et FindClose
+    INT 21h       71A6h..71AAh    infos, temps, alias, serveur, SUBST
+    INT 21h       7302h..7305h    DPB, espace libre et E/S FAT32 étendus
+    INT 2Fh       1600h           présence Windows étendu
+    INT 2Fh       1605h..1609h    broadcasts/callouts système
+    INT 2Fh       160Ah           version et type Windows
+    INT 2Fh       160Bh           déclaration chaînée des TSR
+    INT 2Fh       1611h/1613h     shell primaire et chemin SYSTEM.DAT
+    INT 2Fh       1615h           détection SAVE32.COM
+    INT 2Fh       1680h           céder le quantum
+    INT 2Fh       1681h/1682h     section critique
+    INT 2Fh       1683h           identifiant VM
+    INT 2Fh       1684h           entrée API VxD
+    INT 2Fh       1700h           détection/version WINOLDAP clipboard
+    INT 2Fh       1701h/1708h     ouvrir/fermer le presse-papiers
+    INT 2Fh       1702h/1703h     vider/écrire des données
+    INT 2Fh       1704h/1705h     taille/lire des données
+    INT 2Fh       1709h/170Ah     compaction et capacités d'affichage
+
+
+23. Sources
+-----------
+
+  * Ralf Brown's Interrupt List, release 61, INTERRUP.H et INTERRUP.L :
+      https://www.cs.cmu.edu/~ralf/files.html
+      https://github.com/cirosantilli/ralf-brown-interrupt-list
+  * Index historique INT 21h :
+      https://www.ctyme.com/intr/int-21.htm
+  * RBIL HTML, fonctions DOS/Windows et LFN :
+      https://fd.lod.bz/rbil/zint/index_21.html
+  * Microsoft Win32 SDK / Platform SDK historiques, Long File Name API et VxD
+    services ; DDK Windows 95 pour les interfaces privées des VxD.
+
+La RBIL inclut des appels publiés, internes, bêta et observés. Ce document marque
+les fonctions internes importantes ; pour une application distribuée, rester
+sur les appels LFN publics, prévoir le repli 8.3 et tester sous chaque version
+de Windows et chaque système de fichiers visé.
