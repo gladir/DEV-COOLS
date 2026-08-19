@@ -55201,9 +55201,16 @@ Var
  Slot, WinBuf, I: Integer;
  TitleStr, FileStr: String;
  Ch: Byte;
+ ReqClass: Byte;
 Begin
+ { IMPORTANT : capturer BL AVANT d ecrire BX=0 ci-dessous - BX et BL/BH     }
+ { partagent le meme octet en memoire (TEmuRegs est un enregistrement      }
+ { variant, voir sa declaration), donc "P.CPU.Regs.BX := 0" ecrase aussi   }
+ { silencieusement BL. Bogue reel trouve en testant NEW WINDOW (BL         }
+ { toujours lu comme 0 malgre un appelant qui le programmait a 08h). }
+ ReqClass := P.CPU.Regs.BL;
  P.CPU.Regs.BX := 0;
- Case P.CPU.Regs.BL Of
+ Case ReqClass Of
   $08: Begin { WINDOW }
    Slot := Emu_Tv_AllocSlot;
    If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
@@ -61690,7 +61697,7 @@ Const
 Var I: Integer;
 Begin
  For I := 0 To 10 Do Emu_WriteDefaultVector(P, Always[I]);
- If EmuMousePS2Active Then Emu_WriteDefaultVector(P, $15);
+ If EmuMousePS2Active Or OptionsDlg.Data.DosTopView Then Emu_WriteDefaultVector(P, $15);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
  If EmuEms.Active     Then Emu_WriteDefaultVector(P, $67);
