@@ -1,0 +1,1220 @@
+==============================================================================
+ IBM PROFESSIONAL GRAPHICS CONTROLLER (PGC)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Professional Graphics Controller, aussi appele
+Professional Graphics Adapter et parfois Professional Graphics Array. Annonce
+en 1984, le PGC est un sous-systeme graphique autonome pour CAO, visualisation
+scientifique et dessin 2D/3D. Il ne doit pas etre confondu avec CGA, EGA, VGA,
+8514/A, XGA, ni avec le logiciel IBM PCPG.
+
+La page demandee par l'utilisateur a ete completee et confrontee a la reference
+IBM :
+
+  https://www.gladir.com/LEXIQUE/CARD/pgc.htm
+
+Le PGC est fondamentalement different d'un framebuffer PC classique. Le PC
+envoie des commandes dans une RAM partagee; un 8088 present sur la carte les
+interprete et dessine dans 320 Kio de memoire locale. Le mode natif n'est pas
+accessible par un numero de mode BIOS INT 10h.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Architecture materielle
+  3. Implantation physique et contraintes
+  4. Sortie video et moniteur
+  5. Modes natif et compatibilite CGA
+  6. Carte memoire vue du PC
+  7. Protocole des trois FIFO
+  8. Demarrage, detection et diagnostic
+  9. Formats de commandes ASCII et hexadecimal
+ 10. Coordonnees, nombres et conventions geometriques
+ 11. Commandes 2D
+ 12. Remplissage, masques et fonctions logiques
+ 13. Texte et caracteres utilisateur
+ 14. Palette et couleurs
+ 15. Commandes d'image/pixels
+ 16. Command lists
+ 17. Transformations et commandes 3D
+ 18. Fenetre, viewport, projection et clipping
+ 19. Lecture d'etat et erreurs
+ 20. Programmation assembleur 8086
+ 21. Programmation Turbo Pascal
+ 22. Absence d'interface BIOS native
+ 23. Compatibilite CGA et divergences
+ 24. Conseils pour un emulateur
+ 25. Plan de validation
+ 26. Clones et logiciels connus
+ 27. Securite et limites
+ 28. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+IBM a concu le PGC pour offrir sur PC/XT et PC/AT des capacites proches d'une
+station de travail graphique :
+
+  - resolution native 640x480;
+  - 256 couleurs simultanees;
+  - choix des 256 entrees dans 4096 couleurs;
+  - primitives 2D et transformations 3D executees localement;
+  - commandes ASCII faciles a produire depuis BASIC;
+  - format binaire compact pour les programmes performants;
+  - listes de commandes stockees sur la carte;
+  - compatibilite CGA optionnelle.
+
+Le prix et l'encombrement limitaient son marche aux applications professionnelles.
+Le produit precede le VGA de trois ans, mais le VGA ne lui est pas compatible.
+Le VGA standard affiche 640x480 en 16 couleurs ou 320x200 en 256 couleurs; il
+n'offre pas le mode PGC 640x480x256 ni son processeur de commandes.
+
+Le PGC est souvent qualifie retrospectivement de premier « GPU » pour PC. Le
+terme est acceptable au sens d'un coprocesseur graphique autonome, mais son
+architecture reste un 8088 executant un firmware, accompagne de logique video,
+et non un pipeline programmable moderne.
+
+
+==============================================================================
+2. ARCHITECTURE MATERIELLE
+==============================================================================
+
+Architecture fonctionnelle :
+
+  PC 8088/286                    Professional Graphics Controller
+  +----------------+             +----------------------------------+
+  | programme DOS  |             | RAM partagee / files circulaires |
+  | copie commandes|<----------->| processeur Intel 8088 dedie      |
+  | C6000h-C63FFh  |             | firmware graphique en ROM        |
+  +----------------+             | primitives 2D/3D, parser ASCII   |
+                                 | framebuffer local 640x480x8      |
+                                 | palette 256 x RGB 4:4:4           |
+                                 | circuits de timing et DAC        |
+                                 +----------------------------------+
+
+Composants et memoires rapportes pour la carte IBM :
+
+  - processeur Intel 8088 dedie;
+  - environ 64 Kio de ROM de firmware principal, certaines descriptions du
+    materiel comptant 68 Kio de ROM au total selon les zones/revisions;
+  - 320 Kio de RAM video/locale;
+  - 2 Kio de RAM partagee entre le PC et le processeur PGC;
+  - DAC a quatre bits par composante;
+  - logique de compatibilite CGA sur une carte intermediaire;
+  - trois cartes reliees par un bus interne.
+
+Les 320 Kio se decomposent fonctionnellement en environ 300 Kio pour l'image :
+
+  640 * 480 = 307200 octets = 300 Kio
+
+et environ 20 Kio pour d'autres besoins du controleur. Le framebuffer natif
+n'est pas directement mappe dans l'espace d'adresse du PC. IMAGEW et IMAGER,
+ainsi que les primitives, servent a le modifier ou le lire.
+
+Dans l'espace du processeur PGC, la RAM partagee vue a C6000h par le PC apparait
+a partir de l'adresse physique interne 28000h selon l'analyse du materiel.
+
+
+==============================================================================
+3. IMPLANTATION PHYSIQUE ET CONTRAINTES
+==============================================================================
+
+Le PGC IBM est un ensemble rigide de trois circuits imprimes :
+
+  - carte processeur/commande, pleine longueur;
+  - carte memoire video, pleine longueur;
+  - carte intermediaire de compatibilite CGA, plus petite.
+
+Les deux cartes principales occupent deux connecteurs ISA voisins et l'ensemble
+prend physiquement l'espace intermediaire. Les slots de l'IBM PC 5150 original
+n'ont pas l'espacement necessaire; l'ensemble peut etre installe dans une unite
+d'extension IBM 5161, un XT ou un AT convenable.
+
+La carte consomme et chauffe sensiblement. Une ventilation correcte est
+necessaire. Des bus ISA beaucoup plus rapides que celui d'un XT/AT peuvent
+produire des lectures/ecritures de RAM partagee peu fiables. Un clone 486 ne
+constitue donc pas automatiquement une plate-forme compatible.
+
+Un cavalier J1 sur la carte processeur commande l'activation de l'emulateur CGA.
+Desactiver celui-ci libere B8000h et 03D0h..03DFh pour une vraie CGA, une EGA ou
+une VGA coexistante. Regler les cavaliers uniquement hors tension et selon le
+manuel de la revision exacte.
+
+
+==============================================================================
+4. SORTIE VIDEO ET MONITEUR
+==============================================================================
+
+4.1 Connecteur DE-9
+-------------------
+
+Brochage releve pour le PGC IBM :
+
+  Broche  Signal
+     1    rouge analogique
+     2    vert analogique
+     3    bleu analogique
+     4    synchronisation composite
+     5    non connectee ou commande de famille 400/480 selon source/revision
+     6    retour rouge
+     7    retour vert
+     8    retour bleu
+     9    masse
+
+Le connecteur ressemble physiquement a celui des cartes CGA/EGA, mais le
+brochage et la nature analogique des signaux different. Ne jamais utiliser un
+cable CGA/EGA TTL en se fondant seulement sur la forme DE-9.
+
+Le moniteur professionnel IBM associe au PGC accepte 640x480 a environ 60 Hz.
+Certains moniteurs multisynchrones plus recents peuvent fonctionner avec un
+adaptateur de cable correctement cable, mais cela ne constitue pas une garantie.
+Verifier frequence, synchronisation, niveaux et masses avant toute connexion.
+
+4.2 Couleur
+-----------
+
+Chaque composante rouge, verte et bleue est choisie sur 4 bits, soit 16 niveaux :
+
+  16 * 16 * 16 = 4096 couleurs possibles
+
+Le framebuffer contient un index 8 bits, donc 256 couleurs simultanees. Une LUT
+traduit chaque index en triplet RGB 4:4:4.
+
+
+==============================================================================
+5. MODES NATIF ET COMPATIBILITE CGA
+==============================================================================
+
+5.1 Mode natif
+--------------
+
+  - 640x480 pixels;
+  - un octet/index de couleur par pixel;
+  - 256 couleurs simultanees parmi 4096;
+  - origine geometrique logique au centre par defaut;
+  - commandes executees de facon asynchrone par le 8088 embarque;
+  - framebuffer non directement visible par le PC.
+
+La commande DISPLA/DISPLAY (forme courte DI) avec parametre 0 selectionne le
+mode natif. Le drapeau de requete C630Ch fournit une autre methode.
+
+5.2 Mode d'emulation CGA
+------------------------
+
+Si l'emulateur materiel est active :
+
+  - RAM CGA exposee a B8000h..BFFFFh;
+  - ports 03D0h..03DFh;
+  - modes et appels BIOS CGA ordinaires;
+  - commande DISPLAY 1 ou drapeau C630Ch=1 pour demander ce mode.
+
+Cette compatibilite est utile pour DOS et les programmes texte, mais n'est pas
+une reproduction electrique parfaite de la carte IBM CGA. Voir la section 23.
+
+
+==============================================================================
+6. CARTE MEMOIRE VUE DU PC
+==============================================================================
+
+La zone de communication officielle occupe 1 Kio dans C6000h..C63FFh. Le
+materiel decode en pratique une fenetre de 2 Kio selon machine/revision; la zone
+C6400h..C67FFh est reservee/interne et ne doit pas etre employee par une
+application.
+
+  Adresse          Fonction
+  C6000h-C60FFh    FIFO sortie : PC -> PGC, commandes et parametres
+  C6100h-C61FFh    FIFO entree : PGC -> PC, resultats de lecture
+  C6200h-C62FFh    FIFO erreur : PGC -> PC, erreurs/avertissements
+  C6300h            pointeur d'ecriture FIFO sortie
+  C6301h            pointeur de lecture FIFO sortie
+  C6302h            pointeur d'ecriture FIFO entree
+  C6303h            pointeur de lecture FIFO entree
+  C6304h            pointeur d'ecriture FIFO erreur
+  C6305h            pointeur de lecture FIFO erreur
+  C6306h            drapeau cold restart
+  C6307h            drapeau warm restart
+  C6308h            activation du rapport d'erreurs
+  C6309h            associe au warm start; usage firmware
+  C630Ah            libre pour diagnostic IBM, pas une API d'application
+  C630Bh            non nul si le mode CGA peut etre selectionne
+  C630Ch            demande d'affichage : 0=natif, 1=CGA
+  C630Dh            acquittement de la demande d'affichage
+  C630Eh            demande framebuffer CGA
+  C630Fh            acquittement framebuffer CGA
+
+Informations de diagnostic observees :
+
+  C6310h-C6321h    registres du 8088 PGC lors d'un point d'arret firmware
+  C6322h-C632Ch    etat CRTC/cursor/adresse de l'emulation CGA
+  C63D8h           derniere valeur emulee du port CGA 3D8h
+  C63D9h           derniere valeur emulee du port CGA 3D9h
+  C63DBh           octet de test de presence
+  C63E0h-C63F3h    dernieres valeurs des registres CRTC CGA emules
+  C63F8h-C63F9h    version du firmware PGC
+  C63FBh           A5h si autotests processeur reussis
+  C63FCh           5Ah si ROM basse correcte, FFh en erreur
+  C63FDh           55h si ROM haute correcte, FFh en erreur
+  C63FEh           AAh si RAM correcte, FFh en erreur
+  C63FFh           sequence de controle/reboot, reservee au diagnostic
+
+Les offsets apres C6308h sont utiles au diagnostic, mais tous ne constituent pas
+une interface IBM stable pour les applications. Un emulateur peut les reproduire
+pour les outils historiques sans autoriser des ecritures dangereuses arbitraires.
+
+
+==============================================================================
+7. PROTOCOLE DES TROIS FIFO
+==============================================================================
+
+Chaque FIFO est un anneau de 256 octets avec pointeurs 8 bits. Les pointeurs se
+replient naturellement de FFh a 00h.
+
+7.1 PC vers PGC
+---------------
+
+  write = Mem[C6300h]
+  read  = Mem[C6301h]
+  next  = write + 1 modulo 256
+
+  si next = read : FIFO pleine, attendre
+  sinon :
+      Mem[C6000h + write] = octet
+      Mem[C6300h] = next
+
+L'ordre est imperatif : publier le pointeur seulement apres l'octet. Le PGC
+consomme tant que read != write et met a jour C6301h.
+
+Avec cette convention pleine/vide, une case reste inutilisee : capacite utile
+maximale 255 octets. Ecraser un octet non consomme desynchronise le parser et
+peut faire executer une commande differente.
+
+7.2 Resultats PGC vers PC
+-------------------------
+
+  write = Mem[C6302h]   (produit par le PGC)
+  read  = Mem[C6303h]   (gere par le PC)
+
+  si read = write : vide
+  sinon :
+      octet = Mem[C6100h + read]
+      Mem[C6303h] = read + 1 modulo 256
+
+Le PC met a jour le pointeur de lecture seulement apres avoir copie l'octet.
+
+7.3 Erreurs PGC vers PC
+-----------------------
+
+Meme algorithme avec FIFO C6200h, write C6304h et read C6305h. Mettre le drapeau
+C6308h a une valeur non nulle active le rapport d'erreurs. Un programme doit
+vider regulierement cette FIFO, meme s'il ne demande pas de resultat.
+
+7.4 Asynchronisme et timeouts
+-----------------------------
+
+Le retour de la fonction d'envoi signifie seulement « octet accepte dans la
+FIFO », pas « dessin termine ». Une commande lente comme AREA peut continuer
+pendant que le PC envoie la suite. Une lecture d'etat, WAIT ou un protocole de
+synchronisation approprie est necessaire avant de supposer le rendu acheve.
+
+Toute attente doit avoir un timeout. Une carte absente laisse des valeurs de bus
+qui peuvent ressembler a une FIFO pleine. Dans un OS multitache, ceder le CPU au
+lieu de boucler sans fin.
+
+
+==============================================================================
+8. DEMARRAGE, DETECTION ET DIAGNOSTIC
+==============================================================================
+
+8.1 Detection prudente
+----------------------
+
+  1. verifier que C6000h est une zone materielle candidate;
+  2. attendre la fin des autotests avec un delai borne;
+  3. verifier les signatures C63FBh..C63FEh et la version C63F8h/C63F9h;
+  4. ne pas modifier C63FFh pour un simple test;
+  5. valider que les pointeurs FIFO evoluent apres une commande sans effet;
+  6. restaurer tout drapeau temporairement change.
+
+Une RAM ordinaire ou une autre ROM peut occuper C6000h. Une seule signature ne
+suffit pas. L'emulation CGA peut etre desactivee, donc l'absence de reponse a
+3D8h ne prouve pas l'absence du PGC.
+
+8.2 Redemarrage
+---------------
+
+L'analyse du firmware indique une sequence 50h puis A0h ecrite a C63FFh, avec
+un delai d'environ deux ticks BIOS, pour redemarrer le processeur PGC. Il s'agit
+d'une operation de diagnostic destructive pour l'etat graphique et les listes.
+Ne jamais l'utiliser comme detection courante.
+
+Cold Restart et Warm Restart ont des drapeaux dedies. Leur protocole exact doit
+etre applique selon la reference IBM; ne pas leur ecrire une valeur supposee.
+
+8.3 Changement natif/CGA par drapeaux
+-------------------------------------
+
+Ecrire 0 ou 1 a Display Request C630Ch, puis attendre que Display Acknowledge
+C630Dh prenne la meme valeur. Ajouter un timeout et verifier C630Bh avant de
+demander CGA. La commande DISPLAY fournit l'interface de haut niveau equivalente.
+
+
+==============================================================================
+9. FORMATS DE COMMANDES ASCII ET HEXADECIMAL
+==============================================================================
+
+9.1 Mode ASCII
+--------------
+
+Le firmware accepte des mots anglais de six lettres au maximum ou leur forme
+courte de trois caracteres au maximum. Les parametres sont des nombres decimaux
+ou du texte entre apostrophes/guillemets selon commande. Espaces, tabulations,
+virgules, points-virgules et d'autres separateurs reconnus delimitent commandes
+et parametres hors chaine.
+
+Exemple IBM :
+
+  MOVE 0,0 CIRCLE 55.05
+
+Il place le point courant au centre logique et trace un cercle de rayon 55,05.
+La forme courte equivalente est :
+
+  M 0,0 CI 55.05
+
+ASCII est facile a debugger et a produire depuis BASIC/Pascal, mais conversion
+decimale et volume de donnees reduisent les performances.
+
+9.2 Mode hexadecimal
+--------------------
+
+Chaque commande est un octet, suivi de parametres binaires sans delimiters.
+Les entiers multi-octets sont little-endian. L'exemple du cercle devient selon
+IBM un flux beaucoup plus court commencant par 10h (MOVE) puis 38h (CIRCLE).
+
+  CX / code D1h  : passer en mode hexadecimal
+  CA / code D2h  : passer en mode ASCII
+
+Les deux lettres ASCII CA/CX sont reconnues de facon permettant de retrouver un
+mode connu. Ne pas melanger parametres ASCII et binaires apres la selection.
+
+9.3 Conversion fiable d'une commande
+------------------------------------
+
+Le firmware stocke les command lists en representation binaire. Une technique
+historique pour connaitre l'encodage exact est :
+
+  CLBEG id
+    commande ASCII
+  CLEND
+  CLRD id
+
+CLRD rend la longueur puis les octets de la liste dans la FIFO de resultats.
+Cela permet de generer des tables binaires sans deviner les formats.
+
+
+==============================================================================
+10. COORDONNEES, NOMBRES ET CONVENTIONS GEOMETRIQUES
+==============================================================================
+
+Types binaires :
+
+  Byte   0..255, un octet
+  Word   -32768..32767, mot signe little-endian
+  Coord  valeur fixe signee 16.16, quatre octets little-endian :
+         partie entiere signee sur 16 bits puis fraction sur 16 bits
+
+La plage Coord approche -32768,9999 a +32767,9999. Pour un entier N positif,
+la representation est N suivi d'une fraction 0000h. Pour les negatifs et les
+fractions, reproduire exactement le format signe du firmware et verifier contre
+une commande relue; ne pas convertir un float hote par simple troncature sans
+definir l'arrondi.
+
+Par defaut, l'origine logique est au centre de l'image. L'axe X positif va vers
+la droite et la convention geometrique place Y positif vers le haut. Les lignes
+IMAGE utilisent des rangees 0..479 avec 0 en bas et 479 en haut. Les angles sont
+mesures en degres, dans le sens antihoraire depuis l'axe X.
+
+Le point courant 2D et le point courant 3D font partie de l'etat. MOVE change la
+position sans tracer; DRAW trace depuis la position courante puis la remplace.
+Les formes relatives ajoutent un delta a cette position.
+
+
+==============================================================================
+11. COMMANDES 2D
+==============================================================================
+
+  ASCII (court)   Hex  Parametres                  Fonction
+  --------------  ---  --------------------------  ---------------------------
+  MOVE (M)        10h  x,y Coord                   position absolue
+  MOVER (MR)      11h  dx,dy Coord                 position relative
+  DRAW (D)        28h  x,y Coord                   ligne absolue
+  DRAWR (DR)      29h  dx,dy Coord                 ligne relative
+  POINT (PT)      08h  aucun                       pixel au point courant
+  POLY (P)        30h  n puis n couples Coord      polyligne absolue
+  POLYR (PR)      31h  n puis n couples Coord      polyligne relative
+  RECT (R)        34h  x,y Coord                   rectangle absolu
+  RECTR (RR)      35h  dx,dy Coord                 rectangle relatif
+  CIRCLE (CI)     38h  rayon Coord                 cercle centre au point
+  ELIPSE (EL)     39h  largeur,hauteur Coord       ellipse centree
+  ARC (AR)        3Ch  rayon Coord, 2 angles Word  arc
+  SECTOR (S)      3Dh  rayon Coord, 2 angles Word  secteur ferme au centre
+
+POLY/POLYR commencent par un compte sur un octet. Les commandes modifient le
+point courant selon leur definition. Les limites d'ecran sont gerees par viewport
+et clipping; envoyer des coordonnees hors ecran n'autorise jamais une ecriture
+hors du framebuffer dans une implementation sure.
+
+Commandes generales :
+
+  COLOR (C)       06h  couleur Byte     index courant 0..255
+  CLEARS (CLS)    0Fh  couleur Byte     efface tout l'ecran
+  FLOOD (F)       07h  couleur Byte     efface/remplit le viewport
+  RESETF (RF)     04h  aucun            etat graphique par defaut
+  WAIT (W)        05h  frames Word      attend un nombre de trames
+
+
+==============================================================================
+12. REMPLISSAGE, MASQUES ET FONCTIONS LOGIQUES
+==============================================================================
+
+  AREA (A)        C0h  aucun          flood fill depuis le point courant
+  AREABC (AB)     C1h  couleur        fill borne par la couleur specifiee
+  AREAPT (AP)     E7h  16 Words       motif de remplissage 16x16
+  PRMFIL (PF)     E9h  mode Byte      remplissage des polygones
+  FILMSK (FM)     EFh  masque Byte    masque des bits pendant fill
+  MASK (MK)       E8h  masque Byte    masque des bits lors du dessin
+  LINFUN (LF)     EBh  mode Byte      0=remplacer, 1=inverser
+  LINPAT (LP)     EAh  motif Word     ligne pleine/pointillee/tiretee
+
+AREAPT recoit seize mots. Le premier represente la ligne inferieure du motif;
+bit 0 est le pixel gauche et bit 15 le pixel droit selon les observations du
+materiel. Le motif se repete dans la zone remplie.
+
+PRMFIL :
+
+  0  contours seulement
+  1  polygon rempli selon motif
+  2  remplissage plus rapide sans certains controles de degenerescence
+
+MASK et FILMSK operent sur les bits de l'index 8 bits. Ils permettent de traiter
+le framebuffer comme plusieurs champs/planes logiques, ou de proteger certains
+bits. LINFUN=1 inverse les pixels; les autres valeurs sont reservees tant que la
+reference IBM ne les definit pas.
+
+Un flood fill peut etre long et doit traiter les limites et surfaces complexes
+sans deborder la pile interne. Un emulateur ne doit pas utiliser une recursion
+non bornee du langage hote.
+
+
+==============================================================================
+13. TEXTE ET CARACTERES UTILISATEUR
+==============================================================================
+
+  TEXT (T)        80h  chaine        texte standard au point courant
+  TSIZE (TS)      81h  taille Coord  espacement/taille horizontale
+  TANGLE (TA)     82h  angle Word    angle de la ligne de base
+  TEXTP (TP)      83h  chaine        texte avec caracteres programmes
+  TDEFIN (TD)     84h  id,w,h,bits   definit un caractere utilisateur
+  TJUST (TJ)      85h  horizontal,vertical Bytes
+
+TJUST :
+
+  horizontal 1=gauche, 2=centre, 3=droite
+  vertical   1=bas,    2=centre, 3=haut
+
+TANGLE change l'angle de la ligne de base, sans necessairement faire tourner la
+forme individuelle des glyphes. TEXT utilise les caracteres du firmware;
+TEXTP emploie ceux definis par TDEFIN. Les chaines doivent etre correctement
+delimitees en ASCII; en hexadecimal, suivre le format de longueur/terminaison du
+manuel ou obtenir l'encodage par CLRD.
+
+
+==============================================================================
+14. PALETTE ET COULEURS
+==============================================================================
+
+  LUT (L)       EEh  index,r,g,b Bytes  definit une entree; RGB 0..15
+  LUTRD (LRD)   50h  index Byte          lit RGB dans FIFO resultats
+  LUTINT (LI)   ECh  palette Byte        palette predefinie
+  LUTSAV (LS)   EDh  aucun               sauvegarde palette courante
+
+Palettes LUTINT connues :
+
+  0    palette IBM par defaut : teinte dans nibble haut, intensite dans bas
+  1    palette organisee pour usages a 16 couleurs/champs
+  2    RGB compact 2-3-3 : B=bits0..2, G=3..5, R=6..7
+  3    RGB compact 3-2-3 : B=0..2, G=3..4, R=5..7
+  4    RGB compact 3-3-2 : B=0..1, G=2..4, R=5..7
+  5    cube de couleur 6x6x6 complete par valeurs restantes
+  255  restaure la palette precedemment sauvee par LUTSAV
+
+Les palettes 2/3/4 sont utiles pour convertir directement un octet RGB compact.
+Un cube 6x6x6 n'emploie que 216 entrees; la table IBM definit les autres. Pour
+une reproduction exacte, relever les 256 triplets sur le firmware vise au lieu
+d'inventer une rampe.
+
+LUT modifie l'affichage de tous les pixels portant l'index sans recopier l'image.
+Une animation de palette doit tenir compte de l'execution asynchrone.
+
+
+==============================================================================
+15. COMMANDES D'IMAGE/PIXELS
+==============================================================================
+
+  IMAGER (IR)  D8h  row,col1,col2 Words       lit une portion de ligne
+  IMAGEW (IW)  D9h  row,col1,col2,data        ecrit une portion de ligne
+
+Bornes natives : row 0..479, col 0..639, avec row 0 en bas. IMAGER retourne
+dans la FIFO entree une commande IMAGEW reutilisable. En mode hexadecimal,
+IMAGEW emploie une compression RLE :
+
+  controle nn < 80h : les nn+1 pixels suivants ont tous la valeur xx;
+                      flux [nn][xx]
+
+  controle nn >=80h : nn-7Fh pixels litteraux suivent;
+                      flux [nn][x1][x2]...[xN]
+
+Exemples :
+
+  00 2A       un pixel de couleur 2Ah
+  09 2A       dix pixels de couleur 2Ah
+  82 01 02 03 trois pixels litteraux 01h,02h,03h
+
+Le nombre de pixels decompresse doit exactement couvrir col1..col2 selon la
+convention inclusive IBM. Un emulateur doit rejeter un flux trop court/long et
+ne jamais ecrire hors des 307200 octets.
+
+Le PC ne doit pas tenter de mapper directement le framebuffer natif a A000h.
+Pour une image complete, transmettre ligne par ligne, en tenant compte du FIFO
+de 255 octets; le producteur doit attendre de la place au milieu d'une commande.
+
+
+==============================================================================
+16. COMMAND LISTS
+==============================================================================
+
+  CLBEG (CB)  70h  id Byte            commence l'enregistrement
+  CLEND (CE)  71h  aucun              termine la liste
+  CLRUN (CR)  72h  id Byte            execute une fois
+  CLOOP (CL)  73h  id Byte,count Word execute plusieurs fois
+  CLDEL (CD)  74h  id Byte            supprime
+  CLRD (CRD)  75h  id Byte            lit longueur+octets binaires
+
+Les identifiants vont de 0 a 255. Les listes sont stockees en forme binaire,
+meme si saisies en ASCII. Une liste peut appeler une autre liste; l'imbrication
+est permise, mais la recursion n'est pas supportee. Un emulateur doit detecter
+les cycles au lieu de epuiser sa pile.
+
+Avantages :
+
+  - reduire le trafic sur le bus ISA;
+  - reutiliser symboles, pieces de dessin et objets;
+  - executer plusieurs fois une geometrie;
+  - convertir/inspecter des commandes ASCII en format binaire.
+
+FLAGRD 25 rend la memoire libre. Verifier celle-ci avant une grande liste et
+gerer proprement une erreur d'allocation.
+
+
+==============================================================================
+17. TRANSFORMATIONS ET COMMANDES 3D
+==============================================================================
+
+Primitives :
+
+  MOVE3 (M3)      12h  x,y,z                 position 3D absolue
+  MOVER3 (MR3)    13h  dx,dy,dz              position relative
+  DRAW3 (D3)      2Ah  x,y,z                 ligne 3D absolue
+  DRAWR3 (DR3)    2Bh  dx,dy,dz              ligne relative
+  POINT3 (PT3)    09h  aucun                 point 3D
+  POLY3 (P3)      32h  n puis n triplets     polyligne 3D
+  POLYR3 (PR3)    33h  n puis n triplets     relative
+  CONVRT (CV)     AFh  aucun                 projette point courant vers 2D
+
+Matrice de modele :
+
+  MDIDEN (MDI)    90h  identite
+  MDORG (MDO)     91h  origine x,y,z
+  MDSCAL (MDS)    92h  facteurs x,y,z
+  MDTRAN (MDT)    code a verifier selon firmware, translation dx,dy,dz
+  MDROTX (MDX)    93h  angle Word
+  MDROTY (MDY)    94h  angle Word
+  MDROTZ (MDZ)    95h  angle Word
+  MDMATX (MDM)    97h  16 Coord, matrice 4x4
+
+Matrice de vue :
+
+  VWIDEN (VWI)    A0h  identite
+  VWRPT (VWR)     A1h  point de reference x,y,z
+  VWROTX (VWX)    A3h  rotation X
+  VWROTY (VWY)    A4h  rotation Y
+  VWROTZ (VWZ)    A5h  rotation Z
+  VWMATX (VWM)    A7h  matrice 4x4
+
+MATXRD (MRD), code 52h, lit la matrice 1 (modele) ou 2 (vue). Certaines sources
+secondaires donnent le meme code a MDSCAL et MDTRAN; cette collision doit etre
+resolue contre l'edition de firmware/manual cible ou par CLBEG/CLRD avant de
+produire du binaire. Le nom ASCII reste preferable en cas d'incertitude.
+
+Le PGC accelere transformations, clipping et projection de lignes, mais ce n'est
+pas un moteur 3D moderne : pas de Z-buffer standard, texture, eclairage ou
+tri automatique general des surfaces. L'application organise sa scene.
+
+
+==============================================================================
+18. FENETRE, VIEWPORT, PROJECTION ET CLIPPING
+==============================================================================
+
+  VWPORT (VWP)  B2h  x1,x2,y1,y2 Words   rectangle physique d'affichage
+  WINDOW (WI)   B3h  x1,x2,y1,y2 Coord   fenetre de coordonnees logiques
+  PROJCT (PRO)  B0h  angle Word           0=orthographique, 1..179=perspective
+  DISTAN (DS)   B1h  distance Coord       oeil au point de reference
+  DISTH (DH)    A8h  distance Coord       plan hither
+  DISTY (DY)    A9h  distance Coord       plan yon
+  CLIPH (CH)    AAh  0/1                  active clipping hither
+  CLIPY (CY)    ABh  0/1                  active clipping yon
+
+Window transforme les coordonnees logiques en viewport. La projection applique
+les matrices et les distances. Les termes hither/yon designent les plans de
+clipping proches/eloignes selon la convention du firmware; ne pas inverser leur
+sens sur la seule intuition. Comparer aux exemples IBM.
+
+Les divisions de perspective et valeurs pres du plan de projection exigent une
+arithmetique definie. Un emulateur doit reproduire saturation/arrondi du 8088 et
+du firmware si une fidelite pixel parfaite est recherchee.
+
+
+==============================================================================
+19. LECTURE D'ETAT ET ERREURS
+==============================================================================
+
+FLAGRD (FRD), code 51h, lit les valeurs internes. Drapeaux connus :
+
+   1 motif AREAPT (16 Words)       14 position courante 2D (2 Coord)
+   2 clipping Hither               15 position courante 3D (3 Coord)
+   3 clipping Yon                  16 mode PRMFIL
+   4 couleur courante              17 angle/type de projection
+   5 mode d'affichage              18 angle texte
+   6 distance de vue               19 justification texte
+   7 distance Hither               20 taille texte
+   8 distance Yon                  21 viewport
+   9 Fill Mask                     22 point de reference de vue
+  10 Line Function                 23 window
+  11 Line Pattern                  24 point 3D transforme
+  12 Draw Mask                     25 memoire libre
+  13 origine modele
+
+Le type et la longueur du resultat dependent du drapeau. Le programme doit lire
+exactement le nombre d'octets attendu dans C6100h, sinon le resultat suivant
+commence au mauvais endroit.
+
+La FIFO C6200h transporte codes d'erreur et avertissements. Activer C6308h,
+vider les anciens codes avant un test, envoyer une seule commande, puis relever
+la sequence. Les tables de codes et leur severite doivent venir du manuel IBM;
+ne pas traiter tout octet non nul comme fatal sans decoder son format.
+
+La commande SCAN 5Fh et BUFFER 4Fh sont observees mais insuffisamment documentees
+par les sources IBM generales. Les classer comme fonctions a verifier, pas comme
+API portable. De meme, la commande binaire de saut vers du code dans la RAM
+partagee est une fonction de diagnostic dangereuse et hors API applicative.
+
+
+==============================================================================
+20. PROGRAMMATION ASSEMBLEUR 8086 (MASM/TASM)
+==============================================================================
+
+20.1 Constantes
+---------------
+
+PGCSEG      equ 0C600h
+OUTFIFO     equ 0000h
+INFIFO      equ 0100h
+ERRFIFO     equ 0200h
+OUTWP       equ 0300h
+OUTRP       equ 0301h
+INWP        equ 0302h
+INRP        equ 0303h
+ERRWP       equ 0304h
+ERRRP       equ 0305h
+
+20.2 Envoyer un octet avec timeout
+----------------------------------
+
+; Entree AL=octet, ES=PGCSEG. Sortie CF=0 succes, CF=1 timeout.
+PgcPutByte proc near
+        push ax
+        push bx
+        push cx
+        push dx
+        mov dl,al               ; donnee a publier
+        mov cx,0FFFFh
+putwait:
+        mov al,es:[OUTWP]
+        mov bl,al
+        inc al                  ; repli 8 bits automatique
+        cmp al,es:[OUTRP]
+        jne putroom
+        loop putwait
+        stc
+        jmp short putdone
+putroom:
+        xor bh,bh
+        mov es:[bx+OUTFIFO],dl
+        mov es:[OUTWP],al       ; publier seulement apres la donnee
+        clc
+putdone:
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
+PgcPutByte endp
+
+20.3 Lire un resultat
+---------------------
+
+; ES=PGCSEG. Sortie CF=0 et AL=octet; CF=1 timeout.
+PgcGetByte proc near
+        push bx
+        push cx
+        mov cx,0FFFFh
+getwait:
+        mov bl,es:[INRP]
+        cmp bl,es:[INWP]
+        jne getdata
+        loop getwait
+        stc
+        jmp short getdone
+getdata:
+        xor bh,bh
+        mov al,es:[bx+INFIFO]
+        inc bl
+        mov es:[INRP],bl
+        clc
+getdone:
+        pop cx
+        pop bx
+        ret
+PgcGetByte endp
+
+20.4 Envoyer une chaine ASCII
+-----------------------------
+
+; DS:SI -> chaine terminee par zero; ES=PGCSEG.
+PgcPutString proc near
+nextchar:
+        lodsb
+        or  al,al
+        jz  strdone
+        call PgcPutByte
+        jc  strfail
+        jmp nextchar
+strdone:
+        clc
+strfail:
+        ret
+PgcPutString endp
+
+Commande exemple :
+
+PgcDemo db 'CA RESETF COLOR 15 CLEARS 0 MOVE 0,0 CIRCLE 100 ',0
+
+Le separateur final aide le parser a reconnaitre la fin du dernier parametre.
+Initialiser ES avec 0C600h et verifier CF apres l'appel.
+
+20.5 Flux binaire minimal
+-------------------------
+
+Pour MOVE 0,0 puis CIRCLE 55.05, la reference IBM donne :
+
+  10 00 00 00 00 00 00 00 00 38 37 00 CD 0C
+
+10h est MOVE, suivi de deux Coord nulles. 38h est CIRCLE; le Coord suivant code
+55 + 0CCDh/65536 environ. Utiliser ce vecteur comme test d'endianite.
+
+
+==============================================================================
+21. PROGRAMMATION TURBO PASCAL 6/7
+==============================================================================
+
+21.1 Acces a la zone partagee
+-----------------------------
+
+  const
+    PGCSEG = $C600;
+    OutFIFO=$0000; InFIFO=$0100; ErrFIFO=$0200;
+    OutWP=$0300; OutRP=$0301;
+    InWP =$0302; InRP =$0303;
+
+  function PgcPutByte(B:Byte):Boolean;
+  var W,N:Byte; Count:LongInt;
+  begin
+    Count:=200000;
+    repeat
+      W:=Mem[PGCSEG:OutWP];
+      if W=$FF then N:=0 else N:=W+1;
+      if N<>Mem[PGCSEG:OutRP] then begin
+        Mem[PGCSEG:OutFIFO+W]:=B;
+        Mem[PGCSEG:OutWP]:=N;
+        PgcPutByte:=True; Exit
+      end;
+      Dec(Count)
+    until Count=0;
+    PgcPutByte:=False
+  end;
+
+L'addition Byte doit se replier de 255 a 0. Selon les options de controle de
+debordement Turbo Pascal, calculer N:=Byte(Word(W)+1) pour garantir le repli.
+
+21.2 Envoyer ASCII
+------------------
+
+  function PgcCommand(const S:String):Boolean;
+  var I:Byte;
+  begin
+    for I:=1 to Length(S) do
+      if not PgcPutByte(Ord(S[I])) then begin
+        PgcCommand:=False; Exit
+      end;
+    if not PgcPutByte(Ord(' ')) then begin
+      PgcCommand:=False; Exit
+    end;
+    PgcCommand:=True
+  end;
+
+  begin
+    if not PgcCommand('CA RESETF CLEARS 0 COLOR 255') then Halt(1);
+    if not PgcCommand('MOVE -200,-100 DRAW 200,100') then Halt(1)
+  end.
+
+21.3 Lire un octet de resultat
+------------------------------
+
+  function PgcGetByte(var B:Byte):Boolean;
+  var R:Byte; Count:LongInt;
+  begin
+    Count:=200000;
+    repeat
+      R:=Mem[PGCSEG:InRP];
+      if R<>Mem[PGCSEG:InWP] then begin
+        B:=Mem[PGCSEG:InFIFO+R];
+        if R=$FF then Mem[PGCSEG:InRP]:=0
+                 else Mem[PGCSEG:InRP]:=R+1;
+        PgcGetByte:=True; Exit
+      end;
+      Dec(Count)
+    until Count=0;
+    PgcGetByte:=False
+  end;
+
+21.4 Changer de mode par drapeaux
+---------------------------------
+
+  function PgcDisplay(Natif:Boolean):Boolean;
+  var V:Byte; Count:LongInt;
+  begin
+    if Natif then V:=0 else V:=1;
+    if (V=1) and (Mem[PGCSEG:$030B]=0) then begin
+      PgcDisplay:=False; Exit
+    end;
+    Mem[PGCSEG:$030C]:=V;
+    Count:=200000;
+    while (Mem[PGCSEG:$030D]<>V) and (Count>0) do Dec(Count);
+    PgcDisplay:=Count<>0
+  end;
+
+Les constantes de boucle dependent de la vitesse. Une bibliotheque reelle doit
+employer les ticks BIOS 0040:006Ch ou un timer et ceder le CPU si possible.
+
+
+==============================================================================
+22. ABSENCE D'INTERFACE BIOS NATIVE
+==============================================================================
+
+Il n'existe pas de mode standard tel que :
+
+  mov ax,00xxh
+  int 10h                 ; 640x480x256 PGC
+
+Le BIOS PC et l'emulation CGA servent au texte/modes CGA. Les hautes fonctions
+PGC passent par C6000h et le langage de commandes. Par consequent :
+
+  - INT 10h/AH=0Fh ne rapporte pas un « mode PGC natif » universel;
+  - A000h n'est pas le framebuffer PGC;
+  - les registres VGA 3C0h..3DAh n'existent pas comme interface native PGC;
+  - VESA INT 10h/AX=4Fxx n'est pas une interface PGC;
+  - copier 307200 octets vers une adresse PC ne dessine pas l'image native.
+
+Les logiciels emploient le protocole IBM directement ou un pilote, par exemple
+IBM GKS ou un pilote AutoCAD. Cette separation doit etre preservee dans un
+emulateur : simuler un faux mode VESA peut aider un logiciel moderne mais ne
+reproduit pas la programmation historique.
+
+
+==============================================================================
+23. COMPATIBILITE CGA ET DIVERGENCES
+==============================================================================
+
+En mode CGA, la carte se comporte assez comme une CGA pour les logiciels
+standards, avec differences connues :
+
+  - le mode texte a 400 lignes physiques au lieu de 200;
+  - la police ressemble a la police EGA 14 lignes plutot qu'a une police CGA
+    8 lignes simplement etiree;
+  - les modes CRTC non standards comme le pseudo 160x100 CGA ne fonctionnent
+    pas necessairement;
+  - une combinaison de 3D8h bit 2 et 3D9h bit 5 produit magenta/cyan/blanc sur
+    certaines revisions PGC la ou la CGA IBM donne rouge/cyan/blanc;
+  - la synchronisation et le moniteur different;
+  - le snow et les details de contention CGA ne sont pas garantis.
+
+Un programme utilisant BIOS, modes 0..6 et B800h a plus de chances de marcher
+qu'une demo CGA cycle-exacte. Le PGC peut coexister avec une autre carte video
+si son emulateur CGA est desactive; deux adaptateurs ne doivent pas decoder les
+memes ressources simultanement.
+
+
+==============================================================================
+24. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+24.1 Deux niveaux possibles
+---------------------------
+
+Emulation firmware : emuler le 8088 PGC, ROM, RAM, circuits video et CGA. C'est
+la voie la plus fidele et elle execute aussi diagnostics/commandes peu connues.
+
+Emulation fonctionnelle : interpreter les FIFO et commandes dans le code hote.
+Elle est plus simple, mais doit reproduire formats, asynchronisme, matrices,
+arrondis, erreurs, listes et etat observable.
+
+24.2 RAM partagee
+-----------------
+
+  - rendre les pointeurs visibles octet par octet;
+  - respecter l'ordre donnee puis pointeur;
+  - gerer le repli modulo 256;
+  - ne jamais consommer un octet avant publication;
+  - conserver trois anneaux independants;
+  - modeler le fait que PC et PGC s'executent concurremment;
+  - definir la granularite des acces sur bus 8 bits;
+  - ne pas mapper arbitrairement C6400h si la machine cible ne le fait pas.
+
+Un interpreteur synchrone qui execute tout pendant l'ecriture du pointeur peut
+faire fonctionner les tests simples mais masque FIFO pleine, commandes longues,
+resultats interlaces et programmes qui observent C6301h.
+
+24.3 Parser
+-----------
+
+Le parser ASCII doit accepter formes longues/courtes, separateurs, nombres
+signes/decimaux et chaines sans confondre un signe avec une nouvelle commande.
+Le parser hexadecimal connait la taille de chaque parametre. Une erreur doit se
+resynchroniser comme le firmware, produire le code correct et ne jamais lire au-
+dela des octets publies.
+
+24.4 Rasterisation
+------------------
+
+  - framebuffer exact 640*480 indices 8 bits;
+  - origine/axes conformes;
+  - clipping avant acces memoire;
+  - algorithmes de lignes, cercles et ellipses avec arrondi firmware;
+  - motifs 16x16 et phase correcte;
+  - remplissage borne et non recursif cote hote;
+  - masques 8 bits et inversion;
+  - IMAGEW RLE strictement borne;
+  - palette 256xRGB4;
+  - execution des command lists et limites memoire.
+
+Pour la fidelite pixel, comparer des empreintes du framebuffer lues par IMAGER
+avec une carte/ROM de reference. Des algorithmes mathematiquement equivalents
+peuvent choisir des pixels differents aux extremites.
+
+24.5 3D
+-------
+
+Representer les Coord en arithmetique fixe plutot qu'en double hote si l'arrondi
+doit correspondre. Appliquer matrices dans le meme ordre que le firmware. Gerer
+overflow, saturation, division de perspective, clipping Hither/Yon et points
+derriere l'oeil de facon deterministe.
+
+24.6 CGA
+--------
+
+Le sous-systeme CGA du PGC est une emulation propre, pas la carte decrite dans
+CGA_VIDEO_CARD.txt. Prevoir un profil PGC-CGA avec 400 lignes, police et palette
+specifiques. Le cavalier desactive completement le decodage B800/3Dx.
+
+24.7 Diagnostics et securite
+----------------------------
+
+Les commandes de saut vers du code dans la RAM partagee permettent au PGC reel
+d'executer du code 8088 arbitraire. Dans un emulateur, elles doivent rester dans
+l'espace PGC et ne jamais devenir une execution native hote. Les tailles, IDs,
+matrices et donnees RLE sont non fiables et doivent etre verifies.
+
+
+==============================================================================
+25. PLAN DE VALIDATION
+==============================================================================
+
+T01 Presence : signatures, firmware, carte absente et timeouts.
+
+T02 FIFO sortie : vide, 254/255 octets, pleine, repli FF->00, producteur plus
+    rapide/lent que consommateur.
+
+T03 FIFO resultat/erreur : lectures partielles, deux resultats consecutifs,
+    erreur pendant resultat et pointeurs independants.
+
+T04 ASCII : long/court, espaces/virgules/points-virgules, nombres negatifs,
+    fractions, chaines, commande coupee entre plusieurs remplissages FIFO.
+
+T05 Hex : vecteur cercle IBM, endianite Word/Coord, bascule CA/CX et commande
+    partagee exactement a la limite de l'anneau.
+
+T06 Primitives : points et lignes dans huit octants, extremites, hors viewport,
+    rectangle, cercle, ellipse, arc et secteur.
+
+T07 Polygones : 0/1/255 sommets, concave, autointersection, degenerescence et
+    modes PRMFIL 0/1/2.
+
+T08 Fill : surface vide/pleine, AREABC, motif 16x16, masque, bord et grande
+    region sans overflow de pile.
+
+T09 Palette : les 256 indices, 4096 triplets, LUTRD, LUTSAV/LUTINT 255 et
+    palettes predefinies 0..5.
+
+T10 IMAGE : lignes 0/479, colonnes 0/639, RLE repete/litteral, runs aux limites,
+    flux trop court/long et lecture IMAGER suivie de reecriture.
+
+T11 Lists : creer/lire/executer/boucler/supprimer, liste pleine, manque memoire,
+    imbrication valide et recursion interdite.
+
+T12 Texte : alignements, tailles, angle de base, chaines vides/longues et glyphes
+    TDEFIN invalides.
+
+T13 3D : identite, translation, echelle, rotations 90/180, ordre de matrices,
+    projection orthographique/perspective et clipping.
+
+T14 FLAGRD : les 25 drapeaux avec type/longueur, position apres chaque primitive
+    et memoire libre apres listes creees/supprimees.
+
+T15 Asynchronisme : AREA longue, commandes ajoutees pendant execution, FIFO
+    pleine, reset en cours de commande et PC interrompu entre donnee/pointeur.
+
+T16 Affichage : request/ack natif-CGA, emulateur CGA absent, changement repetitif
+    et preservation d'etat selon firmware.
+
+T17 CGA : modes BIOS, B800h, ports 3Dx, texte 400 lignes, palette divergente et
+    rejet correct des modes non standards.
+
+T18 Comparaison : capturer chaque resultat par IMAGER et comparer octet par
+    octet a une carte IBM ou a une ROM executee dans MAME.
+
+
+==============================================================================
+26. CLONES ET LOGICIELS CONNUS
+==============================================================================
+
+Materiels cites comme compatibles ou inspires du PGC :
+
+  - Matrox PG-640 et PG-1280;
+  - Matrox QG-640 pour d'autres plates-formes;
+  - NEC MVA-1024;
+  - Orchid TurboPGA;
+  - Vermont Microsystems IM-640;
+  - Everex EPGA.
+
+Un clone peut comprendre le langage graphique sans reproduire le processeur
+8088 ni les fonctions de diagnostic. Le Matrox PG-640 emploie par exemple une
+autre architecture processeur; une commande non documentee executant du code
+8088 ne peut pas etre supposee compatible.
+
+Logiciels historiquement associes :
+
+  - pilote IBM GKS livre avec la carte;
+  - diagnostics XT et AT IBM adaptes;
+  - versions anciennes d'AutoCAD avec pilote PGC;
+  - IBM Graphical Kernel System et applications de CAO;
+  - CompuShow et quelques visualiseurs;
+  - outils modernes PGCBMP/terminal de test;
+  - emulateur MAME, qui possede un peripherique PGC pour IBM PC.
+
+Verifier toujours le pilote exact : « PGA » peut designer une carte compatible
+ou une famille de pilotes et non necessairement la carte IBM.
+
+
+==============================================================================
+27. SECURITE ET LIMITES
+==============================================================================
+
+  - Ne pas confondre le DE-9 PGC analogique avec CGA/EGA TTL.
+  - Assurer une ventilation suffisante aux trois cartes.
+  - Ne pas faire fonctionner le bus ISA au-dela des timings acceptes.
+  - Desactiver les ressources CGA avant d'installer une autre carte aux memes
+    adresses.
+  - Ne pas utiliser C63FFh ou la commande de saut pour detecter la carte.
+  - Ajouter des timeouts a FIFO, demarrage et changement de mode.
+  - Vider la FIFO d'erreurs pour eviter qu'elle se remplisse.
+  - Borner les images RLE, listes, matrices et nombres de sommets.
+  - Sous un OS protege, C6000h doit etre mappe par un pilote; un pointeur DOS
+    segment:offset n'est pas utilisable directement en mode protege moderne.
+  - Restaurer le mode d'affichage attendu avant de rendre le controle a DOS.
+
+
+==============================================================================
+28. REFERENCES
+==============================================================================
+
+Source primaire principale :
+
+  IBM Personal Computer Technical Reference, Options and Adapters, Volume 3,
+  section « Professional Graphics Controller », 15 aout 1984 :
+  https://bitsavers.org/pdf/ibm/pc/cards/Technical_Reference_Options_and_Adapters_Volume_3.pdf
+
+  Copie alternative du meme volume :
+  https://ibm-pc.org/manuals/ibm/options/Technical_Reference_Options_and_Adapters_Volume_3.pdf
+
+Article d'architecture IBM :
+
+  « A professional graphics controller for the IBM Personal Computer »,
+  IBM Systems Journal, volume 24, no 1, 1985 :
+  https://www.bitsavers.org/pdf/ibm/IBM_Systems_Journal/241/ibmsj2401D.pdf
+
+Reference fournie par l'utilisateur :
+
+  https://www.gladir.com/LEXIQUE/CARD/pgc.htm
+
+Analyse du materiel et du firmware, commandes connues, palettes et drapeaux :
+
+  https://www.seasip.info/VintagePC/pgc.html
+
+Emulation :
+
+  MAME Driver:PGC :
+  https://wiki.mamedev.org/index.php?title=Driver%3APGC
+
+Manuel d'un clone compatible, utile uniquement pour comparaison :
+
+  Matrox PG-640A Professional Graphics Board User's Manual :
+  https://www.bitsavers.org/pdf/matrox/277-MU-00_PG-640A_Users_Manual_Rev_5_198707.pdf
+
+Les commandes ou codes marques « observes », « a verifier » ou « non
+documentes » ne doivent pas etre promus au rang d'interface IBM stable. Pour un
+programme portable, employer les commandes ASCII documentees ou les codes
+binaires confirmes par le manuel/CLRD du firmware cible.
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
