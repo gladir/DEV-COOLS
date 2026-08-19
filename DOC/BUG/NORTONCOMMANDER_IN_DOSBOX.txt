@@ -1,0 +1,785 @@
+ENQUETE TECHNIQUE : NORTON COMMANDER DANS DOSBOX
+================================================
+
+Objet du document
+-----------------
+
+Ce document inventorie les incompatibilites connues ou plausibles entre les
+versions DOS de Norton Commander (NC) et DOSBox. Il est surtout concu comme un
+guide de diagnostic et de validation pour l'auteur d'un DOS, d'une machine
+virtuelle ou d'un emulateur compatible PC.
+
+Il faut distinguer trois niveaux de preuve :
+
+  [CONFIRME]  le probleme est decrit dans l'historique officiel de DOSBox ou
+              reproduit et corrige par un developpeur du projet;
+  [CONNEXE]   le defaut concerne une fonction que NC utilise intensivement,
+              mais le rapport original ne cite pas necessairement NC;
+  [HYPOTHESE] piste raisonnable de diagnostic, a confirmer par une trace ou
+              par un programme de test minimal.
+
+Conclusion principale
+---------------------
+
+Norton Commander n'est pas fondamentalement incompatible avec DOSBox. NC 3,
+NC 4 et NC 5 sont couramment utilisables. Il a cependant revele au moins deux
+defauts reels du DOS integre de DOSBox :
+
+  1. [CONFIRME] avant DOSBox 0.74-3, la commande SET pouvait depasser la taille
+     du bloc d'environnement indiquee par son MCB et faire bloquer NC;
+
+  2. [CONFIRME] en 2013, un fichier BAT lance comme le faisait Norton
+     Commander, au moyen de COMMAND.COM /C, perdait incorrectement son contexte
+     lors d'un CALL imbrique. Un correctif DOSBox a ete propose et valide.
+
+Ces deux incidents concernent le DOS et son interpreteur de commandes, pas
+l'emulation du processeur. Norton Commander constitue neanmoins un excellent
+test d'integration : il sollicite simultanement fichiers, repertoires, DTA,
+attributs, dates, EXEC, PSP, environnement, video texte, BIOS clavier et souris.
+
+
+1. NE PAS CONFONDRE « DOSBOX » ET « LE DOS DANS DOSBOX »
+=======================================================
+
+Au demarrage normal, DOSBox ne charge pas MS-DOS. Il fournit son propre noyau
+DOS, son propre COMMAND.COM et des lecteurs virtuels tels que Z:. Les appels
+INT 21h de NC aboutissent donc a une implementation DOSBox.
+
+DOSBox peut aussi amorcer une image contenant PC DOS, MS-DOS ou FreeDOS. Dans
+ce cas, les appels INT 21h sont traites par le DOS invite; DOSBox emule surtout
+le processeur, le BIOS et les peripheriques.
+
+Cette difference donne le test de localisation le plus rentable :
+
+                           meme DOSBox, meme NC
+                                   |
+                    +--------------+--------------+
+                    |                             |
+             DOS interne DOSBox            MS-DOS amorce
+                    |                             |
+          panne seulement ici ?         panne egalement ici ?
+                    |                             |
+          noyau/shell/lecteur DOS        CPU, BIOS, video, entree,
+          interne probablement en        temporisation, configuration
+          cause                          ou defaut propre a NC
+
+Un second axe consiste a comparer un repertoire hote monte par MOUNT et une
+image FAT montee par IMGMOUNT. Une panne seulement sur MOUNT vise plutot la
+traduction entre le systeme de fichiers hote et les regles DOS. Une panne sur
+les deux supports vise plutot l'API DOS commune ou NC.
+
+Toujours relever le produit et la version exacts : DOSBox 0.74, 0.74-3,
+DOSBox SVN, DOSBox Staging et DOSBox-X ne partagent pas toujours le meme code.
+Une correction presente dans une branche peut manquer dans une autre.
+
+
+2. INCIDENTS HISTORIQUES ETABLIS
+================================
+
+2.1 SET, bloc d'environnement et MCB : blocage de NC
+----------------------------------------------------
+
+Statut : [CONFIRME]
+
+Le journal officiel de DOSBox 0.74-3 contient cette correction :
+
+  "Change SET to check the size of the MCB when adding variables.
+   Fixes hangs with Norton Commander."
+
+DOSBox 0.74-3 date de juin 2019. La formulation prouve que NC exposait un
+defaut de controle des limites dans la commande SET integree.
+
+Chemin probable du defaut :
+
+  Norton Commander -> interpreteur de commandes -> SET -> environnement
+       -> ecriture au-dela du bloc alloue -> corruption -> boucle/blocage
+
+Ce que doit garantir un emulateur ou un DOS :
+
+  * le segment d'environnement se trouve dans le mot PSP:002Ch;
+  * si ENV est ce segment, le MCB qui decrit le bloc est a ENV-1:0000h;
+  * la taille utile vaut MCB.size * 16 octets, sans inclure le MCB;
+  * SET calcule la taille finale avant de deplacer ou d'ajouter une chaine;
+  * un manque de place produit un echec defini et ne modifie pas partiellement
+    le bloc;
+  * les deux octets nuls terminaux et les donnees placees apres eux ne doivent
+    jamais etre ecrases;
+  * la chaine des MCB doit rester parcourable apres l'operation.
+
+Structure d'un MCB DOS classique (16 octets)
+--------------------------------------------
+
+  Offset  Taille  Signification
+  00h     octet   'M' si un autre MCB suit, 'Z' pour le dernier
+  01h     mot     PSP proprietaire; 0000h = libre; 0008h = DOS
+  03h     mot     taille du bloc de donnees, en paragraphes de 16 octets
+  05h     3       reserve
+  08h     8       nom du proprietaire sous DOS 4+ (pas toujours significatif)
+
+L'adresse du prochain MCB est : segment_courant + 1 + taille_en_paragraphes.
+Un type autre que 'M' ou 'Z', une taille qui reboucle ou une adresse au-dela de
+la memoire conventionnelle signale une corruption.
+
+Format du bloc d'environnement
+------------------------------
+
+  PATH=C:\DOS;C:\NC\00
+  COMSPEC=C:\COMMAND.COM\00
+  TEMP=C:\TEMP\00
+  \00                         deuxieme NUL : fin des variables
+  01 00                       mot de comptage, DOS 3+
+  C:\NC\NC.EXE\00             chemin complet du programme, DOS 3+
+
+Le nom est conventionnellement insensible a la casse. Une suppression
+(`SET NOM=`) doit compacter le bloc sans perdre son double NUL. Le code doit
+accepter un environnement vide. Il ne doit pas supposer que le bloc occupe
+toute la memoire restante du processus : seule la taille du MCB fait autorite.
+
+Tests limites recommandes : valeur qui tient exactement; valeur trop longue
+d'un octet; remplacement par une valeur plus courte ou plus longue; suppression
+de la premiere, derniere et unique variable; environnement nul; MCB terminal
+'Z'; environnement transmis a plusieurs niveaux d'EXEC.
+
+2.2 COMMAND.COM /C, fichiers BAT et CALL
+----------------------------------------
+
+Statut : [CONFIRME]
+
+Une discussion VOGONS de 2013, « call file.bat not working under Norton
+Commanders », donne une reproduction minimale. Un BAT lance depuis un
+Commander cessait de poursuivre son execution apres un CALL. Un participant a
+identifie la methode de lancement utilisee par ces gestionnaires :
+
+  COMMAND.COM /C QQQ.BAT
+
+Le meme echec etait reproductible sans NC en tapant directement cette commande
+dans DOSBox 0.74. L'auteur du rapport a verifie que le scenario fonctionnait
+sous le DOS 7 de Windows 98. Le developpeur DOSBox ripsaw8080 a ensuite fourni
+un correctif rapprochant la boucle des fichiers BAT internes de celle de
+l'invite de commandes; le rapporteur a confirme la correction.
+
+Jeu de reproduction :
+
+  REM QQQ.BAT
+  @ECHO QQQ-AVANT
+  CALL WWW.BAT
+  @ECHO QQQ-APRES
+
+  REM WWW.BAT
+  @ECHO WWW
+
+Executer successivement :
+
+  QQQ.BAT
+  COMMAND.COM /C QQQ.BAT
+  COMMAND.COM /C CALL QQQ.BAT
+  puis QQQ.BAT depuis Norton Commander.
+
+La sortie doit contenir QQQ-APRES dans chaque cas. Le shell doit conserver une
+pile de contextes BAT. Chaque contexte contient au minimum le fichier courant,
+la position de lecture, les arguments `%0` a `%9`, et l'etat necessaire au
+retour. La fin du BAT appele restaure exactement le contexte appelant. Le mode
+/C doit se terminer seulement quand le contexte racine est fini, pas a la fin
+du premier BAT rencontre.
+
+Variantes indispensables : CALL imbrique sur 3 niveaux; CALL d'un label si la
+version DOS l'offre; BAT absent; enfant qui fixe ERRORLEVEL; `EXIT`; commande
+externe depuis le BAT; redirection; chemin avec lecteur different; Ctrl-C.
+
+
+3. ANOMALIE INT 21h CONNEXE : TRONCATURE D'UN FICHIER
+=====================================================
+
+Statut : [CONNEXE], pas un rapport Norton Commander specifique.
+
+Le ticket DOSBox no 416 decrit un defaut, sous 0.74 et SVN r3914, ou des
+fichiers texte modifies sur des images disque n'etaient generalement pas
+tronques. Le rapport situe le probleme dans la simulation INT 21h.
+
+Sous DOS, la sequence canonique de redimensionnement est :
+
+  INT 21h/AH=42h : placer le pointeur a la nouvelle longueur
+  INT 21h/AH=40h : ecrire CX=0 octet
+
+L'appel de longueur nulle doit tronquer le fichier a la position courante ou
+l'etendre jusque-la. Une implementation qui traite CX=0 comme un simple no-op
+laisse l'ancienne queue du fichier. Un editeur, y compris celui lance par F4
+dans NC, peut alors sembler avoir sauvegarde correctement tout en conservant
+des octets anciens.
+
+Reproduction assembleur (MASM/TASM, fichier deja ouvert dans BX) :
+
+        mov     ax,4200h       ; origine = debut
+        xor     cx,cx
+        mov     dx,10          ; longueur souhaitee : 10 octets
+        int     21h
+        jc      erreur
+        mov     ah,40h
+        xor     cx,cx          ; zero octet = fixer EOF ici
+        int     21h
+        jc      erreur
+
+Verifier ensuite la taille par seek depuis la fin (AX=4202h), fermer, rouvrir
+et verifier encore. Faire le test sur MOUNT et IMGMOUNT.
+
+
+4. POURQUOI NORTON COMMANDER EST UN TEST DOS EXIGEANT
+=====================================================
+
+4.1 Processus, PSP et EXEC
+-------------------------
+
+Le lancement d'un visualiseur, d'un editeur ou d'une commande externe exerce
+INT 21h/AX=4B00h. Le DOS doit :
+
+  * creer un PSP coherent de 256 octets;
+  * transmettre ou copier l'environnement demande;
+  * construire la ligne de commande a PSP:0080h (longueur), puis a 0081h,
+    terminee par CR;
+  * initialiser les FCB par defaut et la DTA par defaut;
+  * heriter correctement les handles selon leur indicateur d'heritage;
+  * sauvegarder/restaurer les vecteurs INT 22h, 23h et 24h;
+  * transferer le controle et recuperer les ressources a INT 21h/AH=4Ch;
+  * rendre le code de sortie par INT 21h/AH=4Dh une seule fois selon les
+    conventions du DOS cible;
+  * restaurer lecteur et repertoire selon le comportement reel du DOS choisi,
+    et non selon une convention du systeme hote.
+
+Bloc de parametres EXEC pour AX=4B00h :
+
+  Offset  Taille  Contenu
+  00h     mot     segment d'environnement; 0000h = heriter une copie
+  02h     dword   pointeur sur la ligne de commande
+  06h     dword   pointeur sur FCB 1
+  0Ah     dword   pointeur sur FCB 2
+
+NC doit retrouver son ecran, son curseur, sa DTA, ses handles et son repertoire
+apres la fin de l'enfant. Une corruption visible uniquement apres F3, F4 ou une
+commande externe est une forte piste EXEC/PSP/termination.
+
+4.2 DTA, FindFirst et FindNext
+-----------------------------
+
+Les deux panneaux sont une sollicitation continue de :
+
+  INT 21h/AH=1Ah  definir la DTA
+  INT 21h/AH=2Fh  obtenir l'adresse de la DTA
+  INT 21h/AH=4Eh  FindFirst
+  INT 21h/AH=4Fh  FindNext
+
+La DTA de recherche classique fait 43 octets :
+
+  00h..14h  21 octets reserves au DOS, etat de continuation
+  15h       attribut du resultat
+  16h       heure DOS
+  18h       date DOS
+  1Ah       taille 32 bits, poids faible d'abord
+  1Eh       nom ASCIIZ 8.3, 13 octets
+
+Les 21 octets reserves ne sont pas une zone de travail appartenant a
+l'application. FindNext doit pouvoir reprendre apres des appels DOS permis par
+le DOS de reference. L'etat ne doit pas etre un iterateur hote global partage
+entre processus. La DTA est attachee au processus et son adresse doit survivre
+a l'execution d'un enfant comme sur le DOS cible.
+
+Semantique a tester : `*.*`, `*`, `?.PAS`, noms sans extension, point final,
+racine, repertoire vide, volume label, fichiers caches/systeme, attribut de
+repertoire, ordre stable, suppression ou creation pendant l'enumeration et fin
+de recherche (CF=1, AX=12h). Le masque d'attribut ne signifie pas une simple
+egalite bit a bit.
+
+Une liste qui saute ou duplique des fichiers, deux panneaux qui interferent, ou
+une liste qui change apres le retour d'un outil indiquent souvent un defaut de
+DTA ou d'etat FindNext.
+
+4.3 Services de fichiers et repertoires les plus sensibles
+----------------------------------------------------------
+
+  AH/AX   Service                         Risque visible dans NC
+  0Eh     selection du lecteur            mauvais lecteur actif
+  19h     lecture du lecteur courant      invite/panneau incoherent
+  1Ah     definition de la DTA            recherches qui s'interferent
+  36h     espace libre                    valeurs negatives/absurdes
+  39h     creation de repertoire          F7 echoue
+  3Ah     suppression de repertoire       suppression erronee
+  3Bh     changement de repertoire        panneau non actualise
+  3Ch     creation/troncature              copie ou edition corrompue
+  3Dh     ouverture                       F3/F4/copie
+  3Eh     fermeture                       fuite de handles, date non fixee
+  3Fh     lecture                         visualiseur/copie
+  40h     ecriture et CX=0                copie/troncature
+  42h     seek 32 bits signe              gros fichiers, viewer
+  43h     attributs                       hidden/system/read-only/archive
+  45h/46h duplication de handle           redirections/enfants
+  47h     repertoire courant              titre et ligne de commande
+  4Bh     EXEC                            lancement d'outils
+  4Ch/4Dh terminaison/code retour          retour au panneau, ERRORLEVEL
+  4Eh/4Fh FindFirst/FindNext              contenu des panneaux
+  56h     rename                          F6 et changements de casse
+  57h     date/heure par handle           preservation des dates
+  59h     erreur etendue                  messages/decision de reprise
+
+Chaque erreur doit positionner CF et AX exactement. Renvoyer « succes » avec un
+resultat partiel est souvent plus destructeur qu'une erreur franche. Respecter
+les limites de 8+3, les caracteres interdits, la casse insensible, les noms de
+peripheriques (CON, PRN, AUX, NUL, COM1, LPT1), le partage et les verrous selon
+la version DOS annoncee.
+
+La copie doit aussi mettre a jour l'attribut archive. Une date DOS contient une
+resolution de deux secondes : comparer des horodatages Unix a la seconde pres
+sans arrondi compatible produit de fausses differences dans les panneaux.
+
+4.4 Repertoire hote monte contre image FAT
+------------------------------------------
+
+MOUNT doit projeter un systeme moderne vers des regles qui n'ont pas les memes
+concepts. Points delicats :
+
+  * generation et stabilite des alias 8.3;
+  * recherches insensibles a la casse sur un hote sensible a la casse;
+  * collisions `FOO`, `foo` et `Foo`;
+  * attributs DOS absents du systeme hote;
+  * dates locales, UTC, heure d'ete et plage 1980..2107;
+  * fichiers ouverts puis renommes ou supprimes;
+  * partage, verrouillage, read-only et permissions de l'hote;
+  * espace libre depassant les champs 16 bits de AH=36h;
+  * chemins `.` et `..`, separateur inverse, racine et lecteur courant;
+  * ordre d'enumeration et modifications concurrentes;
+  * liens symboliques et prevention des sorties de la racine montee.
+
+Pour isoler la traduction hote, repeter l'operation sur une image FAT. Ne pas
+« corriger » un bug MOUNT en modifiant la semantique commune de INT 21h sans ce
+test comparatif.
+
+
+5. VIDEO TEXTE, PAGES DE CODES ET PERFORMANCE
+=============================================
+
+NC utilise une interface texte plein ecran et peut melanger BIOS INT 10h,
+acces direct a la VRAM et ports du controleur video.
+
+5.1 Chemins a emuler
+--------------------
+
+  * segment B800h pour le texte couleur, B000h pour monochrome;
+  * cellule de deux octets : caractere puis attribut;
+  * mode 03h, normalement 80 colonnes par 25 lignes;
+  * pages video, adresse de debut et curseur;
+  * registre CRTC de position du curseur;
+  * attributs premier plan/arriere-plan, clignotement contre intensite;
+  * selection et chargement de police EGA/VGA;
+  * lecture et ecriture BIOS INT 10h coherentes avec la VRAM directe.
+
+Le manuel moderne de DOSBox Staging rappelle que le mode par defaut est CP437
+et que des programmes attendent explicitement 80x25. Une page de codes, une
+police et un clavier sont trois objets distincts. KEYB peut modifier le clavier
+et selectionner une page; la police affichee doit correspondre. Sinon NC reste
+fonctionnel mais ses cadres deviennent des lettres accentuees ou des symboles.
+
+Test visuel minimal : afficher les octets B0h a DFh avec tous les attributs,
+puis verifier les lignes simples/doubles, les jonctions et les blocs. Comparer
+la VRAM lue a ce qui est rendu. Tester CP437, CP850 et la page nationale visee.
+
+5.2 Invalidation et cout du rendu
+---------------------------------
+
+Une demande SourceForge de 2016 a propose un mode terminal pour des outils a
+interface de type NC, car l'emulation/rendu du texte consommait beaucoup de CPU
+sur un MacBook Air. Il s'agit d'une question de performance, pas d'une preuve
+d'incompatibilite NC.
+
+Un emulateur doit toutefois detecter correctement les ecritures directes dans
+B800h, y compris REP MOVSW, remplissages rapides et changement d'attribut sans
+changement de caractere. Une optimisation ne doit pas omettre l'invalidation de
+cellules. Mesurer separement CPU invite, conversion VRAM et presentation hote.
+
+
+6. CLAVIER, SOURIS ET INTERRUPTIONS
+==================================
+
+6.1 Clavier
+-----------
+
+NC depend des touches F1 a F10, des fleches, Insert, Delete, Home, End,
+PgUp/PgDn, du pave numerique et de nombreuses combinaisons Alt/Ctrl. Tester :
+
+  * IRQ 1 et ports 60h/64h si le programme ou un TSR les observe;
+  * tampon BIOS a 0040:001Ah/001Ch et appels INT 16h;
+  * code ASCII dans AL et scan code dans AH;
+  * touches etendues E0/E1 et fonctions BIOS etendues 10h/11h;
+  * etats Shift/Ctrl/Alt, Caps/Num/Scroll Lock;
+  * autorepetition et relachement des touches;
+  * Ctrl-C/Ctrl-Break, INT 23h et indicateurs DOS;
+  * conflit entre raccourcis de l'hote et touches remises a l'invite.
+
+Le keymapper DOSBox peut intercepter une combinaison avant que NC la voie. Une
+touche absente n'est donc pas automatiquement une faute d'INT 16h. Tester avec
+une configuration vierge et journaliser a la fois evenement hote, scan code
+injecte, et valeur retournee par le BIOS.
+
+6.2 Souris
+----------
+
+Le pilote INT 33h doit conserver le compteur d'affichage du curseur, les
+limites, les boutons, le mouvement et les rappels. En mode texte, les
+coordonnees sont souvent exprimees dans une grille logique (classiquement huit
+unites par colonne et huit par ligne suivant le pilote), pas directement en
+pixels de la fenetre SDL.
+
+Tester les deux boutons, double clic, glisser, bords droit/inferieur, changement
+de mode video, masquage pendant un rafraichissement, retour d'un programme
+enfant et capture/liberation de la souris par l'hote. Un curseur dessine deux
+fois ou laisse en VRAM indique une mauvaise coordination pilote/rendu.
+
+
+7. MEMOIRE CONVENTIONNELLE, EMS, XMS ET TSR
+===========================================
+
+NC lui-meme, ses visualiseurs, compresseurs et TSR peuvent exercer :
+
+  * INT 21h/AH=48h, 49h, 4Ah : allouer, liberer, redimensionner;
+  * chaine MCB et strategie d'allocation;
+  * UMB et liaison UMB/memoire conventionnelle;
+  * EMS INT 67h : page frame, handles, mapping, sauvegarde/restauration;
+  * XMS via INT 2Fh/AX=4300h puis AX=4310h;
+  * overlays d'executables et memoire disponible apres retour d'un enfant.
+
+Les rapports associant NC 4/5, F3/F4, QEMM ou ANSIPlus ne suffisent pas a
+prouver un bug DOSBox. QEMM, EMM386, pilotes souris, pilotes ANSI et autres TSR
+interceptent interruptions et memoire. Reproduire d'abord sans CONFIG.SYS ni
+AUTOEXEC.BAT, puis ajouter un composant a la fois. Relever la plus grande zone
+libre et la chaine MCB avant NC, avant l'enfant et apres son retour.
+
+Invariants memoire : aucune boucle MCB; somme des blocs dans les limites; bloc
+libere coalescent comme le DOS cible; proprietaire de chaque allocation enfant
+correct; toutes ses allocations ordinaires liberees a AH=4Ch; environnement
+libere une seule fois; mapping EMS restaure selon l'API.
+
+
+8. SYMPTOME -> SOUS-SYSTEME A EXAMINER
+======================================
+
+  Symptome                              Premieres pistes
+  ------------------------------------  --------------------------------------
+  blocage au demarrage                  environnement, MCB, SET, AUTOEXEC
+  blocage apres une commande externe    EXEC, PSP, handles, terminaison
+  BAT ne revient pas apres CALL         pile BAT de COMMAND.COM /C
+  fichiers absents ou doubles           DTA, 4Eh/4Fh, joker, attributs
+  deux panneaux s'influencent           etat FindNext global ou DTA perdue
+  F3/F4 montre des octets anciens        seek + ecriture CX=0, fermeture
+  F5 copie mais taille/date incorrecte   3Fh/40h/42h/57h, disque plein
+  F6 echoue selon majuscules             alias 8.3, casse, rename hote
+  F7/F8 donne mauvais message            CF/AX, AH=59h, attribut read-only
+  cadres incorrects                     page de codes/police, pas CPU
+  cellules anciennes a l'ecran           invalidation des ecritures B800h
+  curseur mal place                      CRTC, page video, INT 10h
+  F-keys ou Alt ne repondent pas         keymapper hote, scans, INT 16h
+  souris decalee                         echelle texte INT 33h
+  panne avec QEMM seulement              EMS/UMB/TSR, configuration invitee
+  panne sur MOUNT seulement              pont systeme de fichiers hote
+  panne avec DOS interne seulement       noyau DOS/shell interne
+  panne aussi avec vrai DOS amorce       CPU/BIOS/peripherique/timing/NC
+
+
+9. PROTOCOLE D'ENQUETE REPRODUCTIBLE
+====================================
+
+9.1 Figer les variables
+-----------------------
+
+Archiver avec le rapport :
+
+  * nom, version et empreinte du binaire NC.EXE;
+  * langue et fichiers auxiliaires de NC;
+  * variante et revision exacte de DOSBox;
+  * fichier de configuration complet et mapper;
+  * systeme hote, architecture et backend video;
+  * `machine`, `core`, `cycles`, memoire, EMS/XMS/UMB;
+  * methode de montage et image FAT avec empreinte;
+  * DOS amorce et version de COMMAND.COM, le cas echeant;
+  * CONFIG.SYS, AUTOEXEC.BAT, TSR, pilotes ANSI et souris;
+  * sequence de touches exacte depuis un etat froid.
+
+Ne pas se contenter de « NC5 plante dans DOSBox ». Une version localisee, un
+patch de NC ou un executable endommage peut changer le chemin execute.
+
+9.2 Matrice minimale
+--------------------
+
+  Axe              Valeurs minimales
+  ---------------- ----------------------------------------------------------
+  NC               une version affectee + une version voisine
+  DOS              interne / MS-DOS ou PC DOS amorce / FreeDOS si pertinent
+  stockage         MOUNT / image FAT
+  DOSBox           version rapportee / version corrigee / branche moderne
+  configuration    vierge / configuration utilisateur
+  memoire          EMS-XMS actives / desactivees; sans puis avec TSR
+  video            VGA 80x25 CP437 / configuration localisee
+
+Changer un seul axe a la fois. La disparition du bug est une observation, pas
+encore la cause; obtenir ensuite une reproduction minimale hors de NC.
+
+9.3 Instrumentation conseillee dans un emulateur
+------------------------------------------------
+
+Ajouter des traces structurees, activables separement :
+
+  DOSCALL  PSP, AX d'entree, registres/pointeurs, CF et AX de sortie
+  FILE     chemin DOS normalise, chemin hote, handle/SFT, position, taille
+  FIND     DTA, masque, attributs, identifiant et index de recherche
+  EXEC     parent/enfant, PSP, environnement, ligne, handles herites
+  MEMORY   operation, MCB avant/apres, proprietaire, taille
+  BATCH    contexte, fichier, position, CALL/push/pop, /C
+  VIDEO    mode/page/cursor et plages VRAM invalidees
+  INPUT    evenement hote, scan code, file BIOS, retour INT 16h
+  MOUSE    position brute/logique, boutons, compteur show/hide
+
+Eviter qu'une trace modifie la temporisation au point de cacher une panne.
+Prevoir un tampon circulaire en memoire que l'on vide apres le blocage. Pour les
+appels avec pointeur, capturer les donnees avec une limite et valider le
+franchissement de segment; ne jamais dereferencer aveuglement un pointeur invite.
+
+9.4 Assertions utiles
+---------------------
+
+Apres chaque appel DOS en mode diagnostic :
+
+  * verifier la chaine MCB;
+  * verifier que PSP:2Ch vise un bloc valide appartenant au bon processus;
+  * verifier la table de handles et les references SFT;
+  * verifier que DTA ne pointe pas dans une zone liberee;
+  * verifier les bornes des positions et tailles 32 bits;
+  * verifier que le resultat d'une recherche respecte le masque d'attribut;
+  * verifier que les chemins normalises restent dans le lecteur monte.
+
+
+10. BATTERIE DE TEST POUR UN NOUVEL EMULATEUR
+=============================================
+
+T01 Demarrage : lancer chaque NC sans options, ouvrir les deux panneaux, quitter
+    et recommencer 100 fois; aucune perte de memoire ou de handles.
+
+T02 Environnement : remplir l'environnement jusqu'a exactement la taille du
+    MCB, puis tenter un ajout trop grand. Verifier garde memoire et chaine MCB.
+
+T03 SET : remplacer/supprimer premiere, milieu, derniere et unique variable;
+    verifier double NUL, mot 0001h et chemin post-environnement.
+
+T04 EXEC : depuis NC, lancer un COM puis un EXE qui retournent 0, 1 et 255;
+    verifier INT 21h/4Dh, PSP, DTA, lecteurs et handles.
+
+T05 BAT : executer la suite QQQ/WWW directement et par COMMAND.COM /C, puis
+    depuis NC; ajouter trois CALL imbriques.
+
+T06 Enumeration : construire un repertoire avec tous les attributs, tailles 0,
+    noms limites 8.3 et jokers ambigus; comparer octet par octet les DTA avec
+    une machine DOS de reference.
+
+T07 Deux recherches : alterner FindNext entre deux DTA et deux processus. Les
+    curseurs ne doivent jamais se contaminer.
+
+T08 Fichiers : copier des tailles 0, 1, 511, 512, 65535, 65536 et plus; simuler
+    disque plein et ecriture partielle; comparer contenu, taille, date, attribut.
+
+T09 Troncature : reduire 64 Kio a 0, 1 et 10 octets avec 42h+40h/CX=0;
+    agrandir au-dela d'EOF et definir le comportement des zones intermediaires.
+
+T10 Rename/suppression : read-only, cache, ouvert, meme nom avec casse
+    differente, travers deux repertoires et deux lecteurs.
+
+T11 Video : remplir B800h par MOV, MOVSW et REP MOVSW; changer seulement les
+    attributs; deplacer le curseur par BIOS puis par CRTC; comparer rendu/VRAM.
+
+T12 CP437 : capturer une mire des octets 80h..FFh et l'ecran NC. Repeter apres
+    KEYB/page 850 et verifier que clavier et police restent coherents.
+
+T13 Clavier : enregistrer AL/AH pour chaque touche NC et combinaison Alt/Ctrl;
+    maintenir une touche, remplir le tampon, tester Ctrl-Break.
+
+T14 Souris : cliquer chaque cellule aux quatre coins, faire glisser une selection,
+    masquer/afficher repetitivement et lancer un enfant avec pilote souris.
+
+T15 Memoire : repeter F3/F4 et lancement d'archives sous faible memoire, avec et
+    sans EMS/XMS. Comparer la chaine MCB avant/apres 1000 iterations.
+
+T16 Backend : rejouer T06-T10 sur repertoire hote et image FAT; toute divergence
+    doit etre expliquee et documentee.
+
+T17 DOS croise : rejouer le scenario fautif sous DOS interne et vrai DOS amorce
+    dans le meme executable DOSBox.
+
+T18 Robustesse : injecter noms/pointeurs/handles invalides et disque plein. NC ne
+    doit pas pouvoir corrompre l'hote; l'appel DOS doit retourner une erreur.
+
+
+11. PETITS OUTILS DE CONTROLE
+=============================
+
+11.1 Inspecter le MCB de l'environnement (Turbo Pascal 6/7)
+----------------------------------------------------------
+
+Ce programme suppose le modele reel DOS de Turbo Pascal. Il ne modifie rien.
+
+  program EnvMCB;
+  uses Dos;
+  var
+    EnvSeg, MCBseg, Taille : Word;
+    TypeMCB : Char;
+    Owner : Word;
+  begin
+    EnvSeg := MemW[PrefixSeg:$2C];
+    if EnvSeg = 0 then begin
+      WriteLn('Aucun environnement'); Halt(1)
+    end;
+    MCBseg := EnvSeg - 1;
+    TypeMCB := Chr(Mem[MCBseg:0]);
+    Owner := MemW[MCBseg:1];
+    Taille := MemW[MCBseg:3];
+    WriteLn('PSP=', HexStr(PrefixSeg,4),
+            ' ENV=', HexStr(EnvSeg,4),
+            ' MCB=', HexStr(MCBseg,4));
+    WriteLn('Type=', TypeMCB,
+            ' owner=', HexStr(Owner,4),
+            ' paragraphes=', Taille,
+            ' octets=', LongInt(Taille) * 16);
+    if not (TypeMCB in ['M','Z']) then
+      WriteLn('ERREUR: signature MCB invalide');
+  end.
+
+Selon l'unite System disponible, HexStr peut ne pas etre exportee de la meme
+facon; remplacer l'affichage hexadecimal si necessaire. L'essentiel du test est
+l'acces PSP:2Ch puis ENV-1.
+
+11.2 Tester la troncature (Turbo Pascal 6/7, appel DOS direct)
+----------------------------------------------------------------
+
+  procedure Tronque(Handle: Word; NouvelleTaille: LongInt);
+  var R : Registers;
+  begin
+    R.AX := $4200;
+    R.BX := Handle;
+    R.CX := Word(LongInt(NouvelleTaille) shr 16);
+    R.DX := Word(NouvelleTaille);
+    MsDos(R);
+    if (R.Flags and FCarry) <> 0 then Halt(R.AX);
+
+    R.AH := $40;
+    R.BX := Handle;
+    R.CX := 0;
+    R.DS := Seg(NouvelleTaille); { pointeur ignore puisque CX=0 }
+    R.DX := Ofs(NouvelleTaille);
+    MsDos(R);
+    if (R.Flags and FCarry) <> 0 then Halt(R.AX)
+  end;
+
+Le testeur complet doit ouvrir un fichier read/write, appeler Tronque, fermer,
+rouvrir et mesurer. Le pointeur DS:DX ne devrait pas etre lu pour CX=0; fournir
+tout de meme une adresse valide evite de confondre une verification trop zelee
+de l'emulateur avec le comportement teste.
+
+11.3 Sentinelle pour detecter un depassement d'environnement
+------------------------------------------------------------
+
+Un banc de test controle par l'emulateur peut placer une zone sentinelle apres
+la taille annoncee par le MCB, remplir celle-ci de A5h, executer SET, puis
+verifier qu'aucun octet n'a change. Sur un vrai DOS, ne pas ecrire hors du bloc :
+la sentinelle doit etre implementee par instrumentation de memoire ou dans une
+machine virtuelle jetable.
+
+
+12. RECOMMANDATIONS D'IMPLEMENTATION
+====================================
+
+  1. Modeliser PSP, environnement, MCB, DTA, JFT/SFT et contexte BAT comme des
+     objets distincts, mais conserver leur representation memoire observable.
+
+  2. Centraliser la validation adresse segment:offset et les additions 20/32
+     bits. Les tours de segment sont une source classique de corruption.
+
+  3. Faire les modifications de SET en deux phases : calcul/validation, puis
+     commit. Ne jamais compacter avant de savoir que le resultat tient.
+
+  4. Donner a chaque processus son adresse DTA et a chaque recherche son etat.
+     Ne pas exposer directement un iterateur du systeme hote.
+
+  5. Implementer explicitement le cas CX=0 de Write File avant le chemin rapide
+     qui considere une ecriture vide comme terminee.
+
+  6. Tester COMMAND.COM /C comme un interpreteur imbrique. La pile CALL et la
+     duree de vie du contexte racine doivent etre independantes de l'invite
+     interactive.
+
+  7. Separer chemins DOS et chemins hotes. Faire la resolution DOS (lecteur,
+     repertoire, 8.3, casse, peripheriques) avant l'appel hote.
+
+  8. Rendre toutes les divergences volontaires configurables ou documentees par
+     version DOS annoncee. NC peut choisir un chemin selon INT 21h/AH=30h.
+
+  9. Conserver des tests de regression sans Norton Commander. NC est un bon test
+     d'integration, mais les reproductions SET, CALL, DTA et troncature sont plus
+     rapides et permettent d'identifier precisement une regression.
+
+ 10. Comparer les sorties a une machine de reference, y compris CF, AX, DTA,
+     ordre des effets et memoire, pas uniquement ce qui apparait a l'ecran.
+
+
+13. CE QUI N'EST PAS ETABLI
+===========================
+
+Des temoignages mentionnent ANSIPlus, QEMM, EMS/XMS ou des plantages de
+visualiseur/editeur avec NC 4 ou NC 5. Sans reproduction minimale, version,
+configuration et comparaison sur vrai DOS, ils ne doivent pas etre presentes
+comme des bugs DOSBox confirmes.
+
+De meme, un affichage couteux en CPU est une limite de rendu, pas necessairement
+une faute fonctionnelle. Des cadres incorrects sont souvent une incoherence de
+page de codes/police. Une touche capturee par SDL, le systeme hote ou un mapper
+n'est pas un defaut du BIOS clavier invite.
+
+Le principe de l'enquete est donc : symptome, reproduction minimale, matrice
+controlee, trace, comparaison de reference, puis seulement attribution.
+
+
+14. SOURCES ET PISTES DE VERIFICATION
+=====================================
+
+Sources primaires ou quasi primaires consultees :
+
+  * DOSBox 0.74-3 ChangeLog (copie du paquet source Debian), entree explicite
+    « Fixes hangs with Norton Commander » :
+    https://sources.debian.org/src/dosbox/0.74-3-4/ChangeLog
+
+  * Discussion VOGONS, reproduction COMMAND.COM /C et patch de ripsaw8080 :
+    https://www.vogons.org/viewtopic.php?p=302789
+
+  * DOSBox bug no 416, troncature et simulation INT 21h :
+    https://sourceforge.net/p/dosbox/bugs/416/
+
+  * Index du tracker historique DOSBox :
+    https://sourceforge.net/p/dosbox/bugs/
+
+  * Manuel officiel DOSBox 0.74-3, KEYB, pages de codes et configuration :
+    https://www.dosbox.com/DOSBoxManual.html
+
+  * Manuel DOSBox Staging, shell, CP437 et mode 80x25 :
+    https://www.dosbox-staging.org/0.83/manual/using-dosbox-staging/shell/
+
+  * MS-DOS Programmer's Reference, version 5, structures PSP et environnement :
+    https://ftpmirror.your.org/pub/misc/bitsavers/pdf/microsoft/msdos_5/Microsoft_-_MS-DOS_Programmers_Reference_1991.pdf
+
+  * MS-DOS 3.3 Programmer's Reference, reproduction consultable :
+    https://www.pcjs.org/documents/books/mspl13/msdos/dosref33/
+
+Source secondaire utile pour le mecanisme historique de troncature :
+
+  * OS/2 Museum, « Strange File Resizing on DOS » :
+    https://www.os2museum.com/wp/learn-something-old-every-day-part-xii-strange-file-resizing-on-dos/
+
+Pour poursuivre une enquete sur un cas precis, rechercher dans l'ancien SVN,
+le tracker SourceForge et VOGONS avec le numero de version, puis examiner le
+code de la branche correspondante. Ne pas transposer automatiquement une note
+de DOSBox 0.74 a DOSBox Staging ou DOSBox-X.
+
+
+Revision du document : 2026-08-19
+
