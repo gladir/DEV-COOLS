@@ -1337,6 +1337,7 @@ Const
  DOS_HARDWARE_COUNT   = 11;      { nombre de modeles de materiel    }
  DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
  EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
+ DOS_DISK_IF_COUNT    = 13;      { nombre d interfaces de disque emulables }
  DOS_LAN_VENDOR_COUNT = 8;       { nombre de produits pilote LAN emulables }
  DOS_EMS_VERSION_COUNT = 3;      { nombre de versions LIM EMS emulables   }
  DOS_MOUSE_VENDOR_COUNT  = 6;    { nombre de fabricants pilote souris     }
@@ -3419,6 +3420,86 @@ Type
   DmaWindow : Array[0..7]  Of Byte; { fenetre DMA distante (10h-17h), locale uniquement }
  End;
 
+ { ============================================================
+   Interface de disque (Options > Emulateur > DOS: Materiel >
+   Interface de disque, voir DosDiskInterfaceName/Emu_DiskIfFamily) -
+   3 protocoles materiels reels regroupent les 13 entrees choisissables
+   (voir le commentaire complet pres d Emu_DiskIfFamily), plus NVMe/PCIe
+   qui n a authentiquement AUCUN port ISA sur du materiel reel. Toutes
+   les operations de secteur passent par les images virtuelles deja
+   montees (EmuFloppyOpen/Emu_ImageReadSector/WriteSector, unites 2/3 =
+   disque "dur" C:/D:) - memes donnees que INT13h, aucune divergence
+   possible entre acces logiciel bas niveau et acces BIOS.
+   ============================================================ }
+
+ { --- Famille A : ST-506/ST-412 (MFM) et RLL, ports 320h-323h. Protocole  }
+ { reel par bloc de commande de 6 octets ecrit octet-par-octet dans le    }
+ { registre Data (320h) pendant que le registre Status (321h) indique la  }
+ { phase courante (REQ/IO/CD/BSY) - forme fidele au controleur Xebec/IBM  }
+ { Fixed Disk Adapter d origine ; le decoupage EXACT bit-a-bit du bloc de }
+ { commande (au-dela de Commande/Tete/Cylindre/Secteur/Compte, dans cet   }
+ { ordre) est une reconstruction raisonnable et INTERNE A CET EMULATEUR   }
+ { (confiance moindre que pour le protocole ATA ci-dessous, voir          }
+ { Emu_ST506_Exec) - suffisant pour un test reel bout-en-bout coherent.   }
+ TEmuST506 = Record
+  Phase       : Byte;   { 0=IDLE,1=CMD_RECEIVING,2=DATA_OUT,3=DATA_IN,4=STATUS_READY }
+  CmdBuf      : Array[0..5] Of Byte;
+  CmdLen      : Byte;
+  DataBuf     : Array[0..511] Of Byte;
+  DataPos     : Word;
+  ResultByte  : Byte;
+  PendingUnit : Integer;  { unite EmuFloppy visee par la commande en cours }
+  PendingLBA  : LongInt;  { LBA visee, calculee a l execution de la commande }
+ End;
+
+ { --- Famille B : ESDI/IDE/EIDE/ATAPI/UDMA/PATA/SATA, protocole task-file }
+ { ATA reel (canal primaire 1F0h-1F7h+3F6h, secondaire 170h-177h+376h).    }
+ { Un seul disque "dur" mappe par canal dans cet emulateur (2 unites       }
+ { EmuFloppy 2/3 disponibles au total) : maitre canal primaire = unite 2   }
+ { (C:), maitre canal secondaire = unite 3 (D:) - esclaves toujours        }
+ { absents (pas de 3e/4e image montable actuellement). }
+ TEmuATAChannel = Record
+  ErrFeat, SectorCnt, SectorNum, CylLo, CylHi, DriveHead : Byte;
+  Status, DevCtrl : Byte;
+  { Registres "hauts" LBA48 (double ecriture/HOB - voir Emu_ATA_WriteReg) }
+  SectorCntHi, SectorNumHi, CylLoHi, CylHiHi : Byte;
+  { Tampon de transfert PIO (secteur 512o, bloc IDENTIFY 512o, ou paquet   }
+  { ATAPI 12o) }
+  PioBuf      : Array[0..511] Of Byte;
+  PioLen      : Word;    { octets valides pour ce transfert }
+  PioPos      : Word;
+  PioActive   : Boolean;
+  PioIsWrite  : Boolean; { vrai = ecriture hote->disque en cours }
+  PacketPending: Boolean; { commande A0h (PACKET) emise, attend 12 octets }
+  { Commande multi-secteurs en cours }
+  CmdLBA         : LongInt;
+  CmdSectorsLeft : Word;
+  CmdUnit        : Integer; { index EmuFloppy reel (2 ou 3), -1 = absent }
+  MultiCount     : Byte;    { SET MULTIPLE MODE }
+ End;
+
+ { --- Famille C : SASI/SCSI/SAS, protocole hote registre-a-registre reel  }
+ { (330h-333h) construit sur les Command Descriptor Blocks SCSI standard  }
+ { (INQUIRY/READ CAPACITY/READ(6)/READ(10)/etc, bien documentes et        }
+ { stables depuis SCSI-1) - PAS une reproduction bit-a-bit d une carte    }
+ { commerciale precise (Adaptec AHA-154x et consorts utilisent une        }
+ { architecture de mailbox en memoire hote bien plus lourde), mais un     }
+ { protocole registre reel et coherent, suffisant pour un test bout-en-   }
+ { bout verifiable. SASI (protocole DIRECTEMENT ancetre de SCSI) et SAS   }
+ { (meme jeu de commandes SCSI, transport different invisible pour DOS)   }
+ { partagent volontairement ce meme code - voir Emu_DiskIfFamily. }
+ TEmuSCSIHostAdapter = Record
+  Phase      : Byte;  { 0=IDLE,1=CDB_RECEIVING,2=DATA_IN,3=DATA_OUT,4=STATUS_READY }
+  CDB        : Array[0..9] Of Byte;
+  CDBLen     : Byte;
+  CDBExpected: Byte;  { 6 ou 10 selon l opcode (determine des le 1er octet) }
+  DataBuf    : Array[0..511] Of Byte;
+  DataLen    : Word;
+  DataPos    : Word;
+  StatusByte : Byte;  { 0=Good, 2=Check Condition }
+  PendingLBA : LongInt;
+ End;
+
  { --- Pile reseau Novell IPX/SPX (Options > Emulateur > DOS > "Reseau     }
  { Novell NetWare") - voir Emu_DoInt7A/Emu_DoInt2F. Modele "boucle         }
  { locale" : aucune autre machine sur le fil, donc tout paquet envoye est  }
@@ -4279,6 +4360,9 @@ Type
   COM2, COM4     : TEmuUART;
   NE2000         : TEmuNE2000;
   Kbd8042        : TEmu8042;
+  ST506          : TEmuST506;
+  ATA            : Array[0..1] Of TEmuATAChannel;
+  SCSIAdapter    : TEmuSCSIHostAdapter;
   { --- CMOS --- }
   CMOSIndex      : Byte;
   CMOSReg        : Array[0..63] Of Byte;
@@ -4495,6 +4579,7 @@ Type
   DosHardware     : Integer;     { modele de materiel emule        }
   DosVideo1       : Integer;     { carte video primaire emulee    }
   DosVideo2       : Integer;     { carte video secondaire emulee  }
+  DosDiskInterface: Integer;     { interface de disque emulee (voir DosDiskInterfaceName) }
   DosEmu8087      : Boolean;     { emulation 8087 activee         }
   DosEmu80286     : Boolean;     { emulation 80286                }
   DosEmu80386     : Boolean;     { emulation 80386                }
@@ -5545,6 +5630,10 @@ Var
  EmuCOM2        : TEmuUART;      { 02F8h-02FFh }
  EmuCOM4        : TEmuUART;      { 02E8h-02EFh }
  EmuNE2000      : TEmuNE2000;    { 0260h-027Fh, si Reseau LAN = NE2000 }
+ { --- Interface de disque (voir DosDiskInterfaceName/Emu_DiskIfFamily) --- }
+ EmuST506       : TEmuST506;              { 320h-323h }
+ EmuATA         : Array[0..1] Of TEmuATAChannel; { 0=primaire 1F0h.., 1=secondaire 170h.. }
+ EmuSCSI        : TEmuSCSIHostAdapter;    { 330h-333h }
  { --- CMOS RAM/RTC (MC146818-like, 64 registres) - accessible via les   }
  { ports 70h/71h (defaut) ou E0h/E1h quand Materiel = Amdek System/88,   }
  { voir Emu_PortRead/Emu_PortWrite et Emu_CMOSPorts. Persiste pour toute }
@@ -9473,6 +9562,7 @@ Procedure Emu_VidWriteByte(MemOfs: LongInt; Value: Byte); Forward;
 Procedure Emu_VidSetPixel(X, Y: Integer; Color: Byte); Forward;
 Function  Emu_VidGetPixel(X, Y: Integer): Byte; Forward;
 Function  Emu_FloppyCount: Byte; Forward;
+Function  Emu_FloppyCHS2LBA(Idx: Byte; Cyl, Head, Sect: Word): LongInt; Forward;
 Function  Emu_VidPortRead(Port: Word): Byte; Forward;
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte); Forward;
 { Capacites de la carte video reellement configuree (Options > Emulateur > }
@@ -41218,6 +41308,30 @@ Begin
  End;
 End;
 
+{ Voir Emu_DiskIfFamily/Emu_DiskIfCaps pour le regroupement par protocole    }
+{ materiel reel (3 familles + NVMe sans port) et les capacites qui varient   }
+{ a l interieur de chaque famille (LBA/EDD/PACKET/multi-secteur/etc). }
+Function DosDiskInterfaceName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosDiskInterfaceName := 'ST-506 / ST-412 (MFM)';
+  1: DosDiskInterfaceName := 'RLL';
+  2: DosDiskInterfaceName := 'ESDI';
+  3: DosDiskInterfaceName := 'SASI';
+  4: DosDiskInterfaceName := 'SCSI';
+  5: DosDiskInterfaceName := 'IDE / ATA';
+  6: DosDiskInterfaceName := 'EIDE / ATA-2';
+  7: DosDiskInterfaceName := 'ATAPI';
+  8: DosDiskInterfaceName := 'Ultra ATA / UDMA';
+  9: DosDiskInterfaceName := 'PATA';
+  10: DosDiskInterfaceName := 'SATA';
+  11: DosDiskInterfaceName := 'SAS';
+  12: DosDiskInterfaceName := 'NVMe / PCIe';
+ Else
+  DosDiskInterfaceName := '???';
+ End;
+End;
+
 { Produit/fabricant du pilote de paquets emule (INT 60h, voir EmuPkt) -   }
 { purement declaratif cote materiel (une seule implementation generique   }
 { Packet Driver sous-tend tous ces choix), mais change reellement le nom  }
@@ -50366,6 +50480,656 @@ Begin
 End;
 
 { ============================================================
+  Interface de disque (Options > Emulateur > DOS: Materiel > Interface de
+  disque) - voir DosDiskInterfaceName, TEmuST506/TEmuATAChannel/
+  TEmuSCSIHostAdapter. Emu_DiskIfFamily regroupe les 13 entrees
+  choisissables en 3 protocoles materiels reels + 1 cas "aucun port"
+  (NVMe/PCIe), garantissant qu une seule famille de ports repond a la
+  fois (pas de "melange" possible - le materiel reel ne melange jamais
+  deux protocoles de controleur de disque sur les memes ports). Chaque
+  famille est developpee plus bas dans sa propre section.
+  ============================================================ }
+Const
+ DIF_ST506 = 0;
+ DIF_ATA   = 1;
+ DIF_SCSI  = 2;
+ DIF_NONE  = 3;
+
+Function Emu_DiskIfFamily: Integer;
+Begin
+ Case OptionsDlg.Data.DosDiskInterface Of
+  0, 1: Emu_DiskIfFamily := DIF_ST506;    { ST-506/ST-412 (MFM), RLL }
+  3, 4, 11: Emu_DiskIfFamily := DIF_SCSI; { SASI, SCSI, SAS }
+  12: Emu_DiskIfFamily := DIF_NONE;       { NVMe/PCIe : aucun port ISA reel }
+ Else
+  Emu_DiskIfFamily := DIF_ATA;            { ESDI,IDE,EIDE,ATAPI,UDMA,PATA,SATA }
+ End;
+End;
+
+{ Capacites qui varient A L INTERIEUR de la famille ATA - chacune reflete }
+{ une difference reelle et documentee entre generations, pas une          }
+{ simplification arbitraire (voir le commentaire de TEmuATAChannel). }
+Function Emu_ATA_SupportsMulti: Boolean;   { READ/WRITE MULTIPLE, EIDE+ }
+Begin
+ Case OptionsDlg.Data.DosDiskInterface Of
+  6, 7, 8, 9, 10: Emu_ATA_SupportsMulti := True;
+ Else
+  Emu_ATA_SupportsMulti := False;
+ End;
+End;
+
+Function Emu_ATA_SupportsLBA48: Boolean;   { PATA/SATA (derniere generation parallele/serie) }
+Begin
+ Emu_ATA_SupportsLBA48 :=
+  (OptionsDlg.Data.DosDiskInterface = 9) Or (OptionsDlg.Data.DosDiskInterface = 10);
+End;
+
+Function Emu_ATA_IsPacketDevice: Boolean;  { ATAPI }
+Begin
+ Emu_ATA_IsPacketDevice := OptionsDlg.Data.DosDiskInterface = 7;
+End;
+
+{ INT13h etendu (AH=41h-49h, EDD) disponible - pas sur les generations     }
+{ anterieures a la normalisation EDD (1996) : ST-506/RLL/ESDI/SASI/IDE     }
+{ simple n en ont jamais eu besoin ni benefice dans leur epoque reelle.    }
+Function Emu_DiskIfSupportsEDD: Boolean;
+Begin
+ Case OptionsDlg.Data.DosDiskInterface Of
+  4, 6, 7, 8, 9, 10, 11, 12: Emu_DiskIfSupportsEDD := True; { SCSI,EIDE+,SAS,NVMe }
+ Else
+  Emu_DiskIfSupportsEDD := False;
+ End;
+End;
+
+{ ============================================================
+  Famille A : ST-506/ST-412 (MFM) et RLL - ports 320h-323h. Voir le
+  commentaire de TEmuST506 pour la justification du protocole. Deux
+  unites possibles (0=maitre->EmuFloppy 2/C:, 1=esclave->EmuFloppy 3/D:),
+  selectionnees par les bits 7-5 du 1er octet du bloc de commande.
+  ============================================================ }
+
+Procedure Emu_ST506_Complete(Var S: TEmuST506; ResultCode: Byte);
+Begin
+ S.ResultByte := ResultCode;
+ S.Phase := 4; { STATUS_READY }
+End;
+
+Procedure Emu_ST506_Exec(Var S: TEmuST506);
+Var
+ Cmd, Head, Drive, Sect, Cnt: Byte; Cyl: Word; LBA: LongInt; U: Integer;
+Begin
+ Drive := (S.CmdBuf[0] Shr 5) And 1;
+ Cmd   := S.CmdBuf[0] And $1F;
+ Head  := S.CmdBuf[1] And $1F;
+ Cyl   := Word(S.CmdBuf[2]) Or (Word(S.CmdBuf[1] And $E0) Shl 3);
+ Sect  := S.CmdBuf[3];
+ Cnt   := S.CmdBuf[4];
+ If Cnt = 0 Then Cnt := 1;
+ If Drive = 0 Then U := 2 Else U := 3;
+ If Not EmuFloppyOpen[U] Then Begin
+  Emu_ST506_Complete(S, $04); { unite non prete }
+  Exit;
+ End;
+ LBA := Emu_FloppyCHS2LBA(U, Cyl, Head, Sect);
+ S.PendingUnit := U;
+ S.PendingLBA := LBA;
+ Case Cmd Of
+  0: Emu_ST506_Complete(S, 0);   { Test Drive Ready }
+  1: Emu_ST506_Complete(S, 0);   { Recalibrate }
+  8: Begin { Read }
+   If (LBA < 0) Or Not Emu_ImageReadSector(U, LBA, S.DataBuf) Then Begin
+    Emu_ST506_Complete(S, $11); { donnees irrecuperables }
+    Exit;
+   End;
+   S.DataPos := 0; S.Phase := 2; { DATA_OUT }
+  End;
+  $0A: Begin { Write }
+   If (LBA < 0) Or EmuFloppyRO[U] Then Begin
+    Emu_ST506_Complete(S, $03); { defaut d ecriture }
+    Exit;
+   End;
+   FillChar(S.DataBuf, SizeOf(S.DataBuf), 0);
+   S.DataPos := 0; S.Phase := 3; { DATA_IN }
+  End;
+  $0B: Emu_ST506_Complete(S, 0); { Seek }
+  $0C: Emu_ST506_Complete(S, 0); { Initialize }
+ Else
+  Emu_ST506_Complete(S, $20);    { commande invalide }
+ End;
+End;
+
+Function Emu_ST506_ReadStatus(Var S: TEmuST506): Byte;
+Begin
+ { bit0=BSY,bit1=REQ,bit2=CD (1=commande/statut,0=donnees),bit3=IO
+   (1=controleur->hote). Forme fidele au controleur d origine (voir
+   TEmuST506) meme si les valeurs precises ne sont pas garanties
+   identiques a une puce reelle - protocole interne coherent. }
+ Case S.Phase Of
+  2: Emu_ST506_ReadStatus := $0A; { DATA_OUT : REQ+IO }
+  3: Emu_ST506_ReadStatus := $02; { DATA_IN : REQ }
+  4: Emu_ST506_ReadStatus := $0E; { STATUS_READY : REQ+CD+IO }
+ Else
+  Emu_ST506_ReadStatus := $06;    { IDLE/CMD_RECEIVING : REQ+CD }
+ End;
+End;
+
+Function Emu_ST506_ReadData(Var S: TEmuST506): Byte;
+Begin
+ Emu_ST506_ReadData := 0;
+ Case S.Phase Of
+  2: Begin
+   If S.DataPos < 512 Then Begin
+    Emu_ST506_ReadData := S.DataBuf[S.DataPos];
+    Inc(S.DataPos);
+    If S.DataPos >= 512 Then Emu_ST506_Complete(S, 0);
+   End;
+  End;
+  4: Begin
+   Emu_ST506_ReadData := S.ResultByte;
+   S.Phase := 0; { la lecture du statut cloture la transaction }
+  End;
+ End;
+End;
+
+Procedure Emu_ST506_WriteData(Var S: TEmuST506; Value: Byte);
+Begin
+ Case S.Phase Of
+  0: Begin
+   S.CmdBuf[0] := Value; S.CmdLen := 1; S.Phase := 1;
+  End;
+  1: Begin
+   If S.CmdLen < 6 Then Begin
+    S.CmdBuf[S.CmdLen] := Value; Inc(S.CmdLen);
+   End;
+   If S.CmdLen >= 6 Then Emu_ST506_Exec(S);
+  End;
+  3: Begin
+   If S.DataPos < 512 Then Begin
+    S.DataBuf[S.DataPos] := Value; Inc(S.DataPos);
+   End;
+   If S.DataPos >= 512 Then Begin
+    If Emu_ImageWriteSector(S.PendingUnit, S.PendingLBA, S.DataBuf) Then
+     Emu_ST506_Complete(S, 0)
+    Else
+     Emu_ST506_Complete(S, $03);
+   End;
+  End;
+ End;
+End;
+
+{ ============================================================
+  Famille B : ESDI/IDE/EIDE/ATAPI/UDMA/PATA/SATA - protocole task-file ATA
+  reel (canal 0=primaire 1F0h-1F7h/3F6h, canal 1=secondaire 170h-177h/
+  376h). Voir le commentaire de TEmuATAChannel.
+  ============================================================ }
+
+Function Emu_ATA_UnitForChannel(Ch: Integer): Integer;
+Begin
+ If Ch = 0 Then Emu_ATA_UnitForChannel := 2 Else Emu_ATA_UnitForChannel := 3;
+End;
+
+Procedure Emu_ATA_SetSignature(Var C: TEmuATAChannel);
+Begin
+ { Signature ATA standard post-RESET (pas de peripherique ATAPI) }
+ C.SectorCnt := 1; C.SectorNum := 1; C.CylLo := 0; C.CylHi := 0;
+End;
+
+Procedure Emu_ATA_Init(Var C: TEmuATAChannel; ChIdx: Integer);
+Begin
+ FillChar(C, SizeOf(C), 0);
+ C.CmdUnit := Emu_ATA_UnitForChannel(ChIdx);
+ If Not EmuFloppyOpen[C.CmdUnit] Then C.CmdUnit := -1;
+ Emu_ATA_SetSignature(C);
+ C.Status := $50; { DRDY+DSC }
+ C.MultiCount := 1;
+End;
+
+Procedure Emu_ATA_Complete(Var C: TEmuATAChannel; Ok: Boolean; ErrByte: Byte);
+Begin
+ C.PioActive := False;
+ If Ok Then Begin
+  C.Status := $50;
+  C.ErrFeat := 0;
+ End Else Begin
+  C.Status := $41; { DRDY+ERR }
+  C.ErrFeat := ErrByte;
+ End;
+End;
+
+{ LBA a partir des registres task-file courants (CHS, LBA28 ou LBA48).
+  Simplification assumee et documentee : un compte de secteurs egal a 0
+  vaut 256 dans TOUS les cas (le vrai LBA48 autoriserait 65536, au-dela de
+  ce qu un test realiste sur cet emulateur exercerait). }
+Function Emu_ATA_ComputeLBA(Var C: TEmuATAChannel; Var Cnt: Word): LongInt;
+Var LBA: LongInt; Cyl, Head, Sect: Word;
+Begin
+ LBA := -1;
+ If (C.DriveHead And $40) <> 0 Then Begin { mode LBA }
+  If Emu_ATA_SupportsLBA48 And
+     ((C.SectorCntHi <> 0) Or (C.SectorNumHi <> 0) Or (C.CylLoHi <> 0) Or (C.CylHiHi <> 0)) Then Begin
+   LBA := LongInt(C.SectorNum) Or (LongInt(C.CylLo) Shl 8) Or (LongInt(C.CylHi) Shl 16) Or
+    (LongInt(C.SectorNumHi) Shl 24);
+   Cnt := C.SectorCnt;
+  End Else Begin
+   LBA := LongInt(C.SectorNum) Or (LongInt(C.CylLo) Shl 8) Or
+    (LongInt(C.CylHi) Shl 16) Or (LongInt(C.DriveHead And $0F) Shl 24);
+   Cnt := C.SectorCnt;
+  End;
+ End Else Begin { mode CHS }
+  Cyl := Word(C.CylLo) Or (Word(C.CylHi) Shl 8);
+  Head := C.DriveHead And $0F;
+  Sect := C.SectorNum;
+  If C.CmdUnit >= 0 Then LBA := Emu_FloppyCHS2LBA(C.CmdUnit, Cyl, Head, Sect);
+  Cnt := C.SectorCnt;
+ End;
+ If Cnt = 0 Then Cnt := 256;
+ Emu_ATA_ComputeLBA := LBA;
+End;
+
+{ Structure IDENTIFY DEVICE (256 mots) - champs les plus couramment lus   }
+{ par MSDOS/pilotes de l epoque (modele, geometrie CHS, bit LBA, nb total }
+{ de secteurs adressables, bits de capacite specifiques a la generation). }
+Procedure Emu_ATA_FillIdentify(Var C: TEmuATAChannel);
+Var TotalSectors: LongInt; Model: String;
+
+ Procedure PutWord(WordIdx: Integer; V: Word);
+ Begin
+  C.PioBuf[WordIdx * 2]     := Lo(V);
+  C.PioBuf[WordIdx * 2 + 1] := Hi(V);
+ End;
+
+ Procedure PutStringSwapped(WordStart, WordCount: Integer; Const S: String);
+ Var K: Integer; Ch1, Ch2: Byte;
+ Begin
+  For K := 0 To WordCount - 1 Do Begin
+   If K * 2 + 1 <= Length(S) Then Ch1 := Ord(S[K * 2 + 1]) Else Ch1 := Ord(' ');
+   If K * 2 + 2 <= Length(S) Then Ch2 := Ord(S[K * 2 + 2]) Else Ch2 := Ord(' ');
+   C.PioBuf[(WordStart + K) * 2]     := Ch2;
+   C.PioBuf[(WordStart + K) * 2 + 1] := Ch1;
+  End;
+ End;
+
+Begin
+ FillChar(C.PioBuf, SizeOf(C.PioBuf), 0);
+ If C.CmdUnit >= 0 Then
+  TotalSectors := LongInt(EmuFloppyCyls[C.CmdUnit]) * EmuFloppyHeads[C.CmdUnit] * EmuFloppySpt[C.CmdUnit]
+ Else
+  TotalSectors := 0;
+ PutWord(0, $0040); { disque fixe non amovible }
+ If C.CmdUnit >= 0 Then Begin
+  PutWord(1, EmuFloppyCyls[C.CmdUnit]);
+  PutWord(3, EmuFloppyHeads[C.CmdUnit]);
+  PutWord(6, EmuFloppySpt[C.CmdUnit]);
+ End;
+ Case OptionsDlg.Data.DosDiskInterface Of
+  2:  Model := 'DEV-COOLS ESDI EMULATED DRIVE';
+  5:  Model := 'DEV-COOLS IDE/ATA EMULATED DRIVE';
+  6:  Model := 'DEV-COOLS EIDE/ATA-2 EMULATED DRIVE';
+  7:  Model := 'DEV-COOLS ATAPI EMULATED DRIVE';
+  8:  Model := 'DEV-COOLS ULTRA ATA/UDMA EMULATED DRIVE';
+  9:  Model := 'DEV-COOLS PATA EMULATED DRIVE';
+  10: Model := 'DEV-COOLS SATA EMULATED DRIVE';
+ Else
+  Model := 'DEV-COOLS ATA EMULATED DRIVE';
+ End;
+ PutStringSwapped(27, 20, Model);
+ PutWord(49, $0200); { bit9 : LBA supportee }
+ If Emu_ATA_SupportsMulti Then PutWord(47, $8000 Or C.MultiCount);
+ If Emu_ATA_SupportsLBA48 Then PutWord(83, $0400); { bit10 : LBA48 supportee }
+ PutWord(60, Word(TotalSectors)); PutWord(61, Word(TotalSectors Shr 16));
+ If (OptionsDlg.Data.DosDiskInterface = 8) Or (OptionsDlg.Data.DosDiskInterface = 9) Or
+    (OptionsDlg.Data.DosDiskInterface = 10) Then
+  PutWord(88, $2007); { modes UDMA supportes, informatif }
+End;
+
+Procedure Emu_ATA_ProcessPacket(Var C: TEmuATAChannel); Forward;
+
+Procedure Emu_ATA_ExecCommand(Var C: TEmuATAChannel; Cmd: Byte);
+Var LBA: LongInt; Cnt: Word;
+Begin
+ C.PacketPending := False;
+ Case Cmd Of
+  $10..$1F: Emu_ATA_Complete(C, True, 0); { RECALIBRATE (+variantes) }
+  $20, $21, $24: Begin { READ SECTOR(S) [EXT] }
+   If (Cmd = $24) And Not Emu_ATA_SupportsLBA48 Then Begin
+    Emu_ATA_Complete(C, False, $04); Exit;
+   End;
+   LBA := Emu_ATA_ComputeLBA(C, Cnt);
+   If (C.CmdUnit < 0) Or (LBA < 0) Then Begin
+    Emu_ATA_Complete(C, False, $10); Exit; { ID Not Found }
+   End;
+   If Not Emu_ImageReadSector(C.CmdUnit, LBA, C.PioBuf) Then Begin
+    Emu_ATA_Complete(C, False, $40); Exit; { Uncorrectable }
+   End;
+   C.CmdLBA := LBA; C.CmdSectorsLeft := Cnt; C.PioIsWrite := False;
+   C.PioLen := 512; C.PioPos := 0; C.PioActive := True;
+   C.Status := $58; { DRDY+DRQ+DSC }
+  End;
+  $30, $31, $34: Begin { WRITE SECTOR(S) [EXT] }
+   If (Cmd = $34) And Not Emu_ATA_SupportsLBA48 Then Begin
+    Emu_ATA_Complete(C, False, $04); Exit;
+   End;
+   LBA := Emu_ATA_ComputeLBA(C, Cnt);
+   If (C.CmdUnit < 0) Or (LBA < 0) Or EmuFloppyRO[C.CmdUnit] Then Begin
+    Emu_ATA_Complete(C, False, $10); Exit;
+   End;
+   C.CmdLBA := LBA; C.CmdSectorsLeft := Cnt; C.PioIsWrite := True;
+   FillChar(C.PioBuf, SizeOf(C.PioBuf), 0);
+   C.PioLen := 512; C.PioPos := 0; C.PioActive := True;
+   C.Status := $58;
+  End;
+  $C4: Begin { READ MULTIPLE }
+   If Not Emu_ATA_SupportsMulti Then Begin Emu_ATA_Complete(C, False, $04); Exit; End;
+   Emu_ATA_ExecCommand(C, $20);
+  End;
+  $C5: Begin { WRITE MULTIPLE }
+   If Not Emu_ATA_SupportsMulti Then Begin Emu_ATA_Complete(C, False, $04); Exit; End;
+   Emu_ATA_ExecCommand(C, $30);
+  End;
+  $C6: Begin { SET MULTIPLE MODE }
+   If Not Emu_ATA_SupportsMulti Then Begin Emu_ATA_Complete(C, False, $04); Exit; End;
+   C.MultiCount := C.SectorCnt;
+   Emu_ATA_Complete(C, True, 0);
+  End;
+  $90, $91: Emu_ATA_Complete(C, True, 0); { DEVICE DIAGNOSTIC / INIT DEVICE PARAMETERS }
+  $EC: Begin { IDENTIFY DEVICE }
+   If Emu_ATA_IsPacketDevice Then Begin Emu_ATA_Complete(C, False, $04); Exit; End;
+   Emu_ATA_FillIdentify(C);
+   C.PioLen := 512; C.PioPos := 0; C.PioActive := True; C.PioIsWrite := False;
+   C.Status := $58;
+  End;
+  $A1: Begin { IDENTIFY PACKET DEVICE }
+   If Not Emu_ATA_IsPacketDevice Then Begin Emu_ATA_Complete(C, False, $04); Exit; End;
+   Emu_ATA_FillIdentify(C);
+   C.PioLen := 512; C.PioPos := 0; C.PioActive := True; C.PioIsWrite := False;
+   C.Status := $58;
+  End;
+  $A0: Begin { PACKET }
+   If Not Emu_ATA_IsPacketDevice Then Begin Emu_ATA_Complete(C, False, $04); Exit; End;
+   C.PacketPending := True;
+   C.PioLen := 12; C.PioPos := 0; C.PioActive := True; C.PioIsWrite := True;
+   C.Status := $58;
+  End;
+  $E0, $E1, $E7: Emu_ATA_Complete(C, True, 0); { STANDBY/IDLE/FLUSH CACHE }
+ Else
+  Emu_ATA_Complete(C, False, $04); { ABRT : commande non geree }
+ End;
+End;
+
+{ Interprete un paquet ATAPI de 12 octets recu via PIO comme un CDB SCSI  }
+{ minimal (memes commandes que la famille SCSI generique ci-dessous) -    }
+{ suffisant pour qu un pilote CD-ROM/disque ATAPI detecte et utilise      }
+{ l unite. }
+Procedure Emu_ATA_ProcessPacket(Var C: TEmuATAChannel);
+Var Op: Byte; LBA: LongInt;
+Begin
+ Op := C.PioBuf[0];
+ Case Op Of
+  $00: Emu_ATA_Complete(C, True, 0); { TEST UNIT READY }
+  $12: Begin { INQUIRY }
+   FillChar(C.PioBuf, SizeOf(C.PioBuf), 0);
+   C.PioBuf[0] := $05; { type peripherique : CD-ROM }
+   C.PioBuf[1] := $80; { amovible }
+   C.PioBuf[2] := $02;
+   C.PioBuf[4] := 31;
+   Move('DEV-COOLS ATAPI CDROM          '[1], C.PioBuf[8], 28);
+   C.PioLen := 36; C.PioPos := 0; C.PioActive := True; C.PioIsWrite := False;
+   C.Status := $58;
+  End;
+  $25: Begin { READ CAPACITY }
+   FillChar(C.PioBuf, SizeOf(C.PioBuf), 0);
+   If C.CmdUnit >= 0 Then
+    LBA := LongInt(EmuFloppyCyls[C.CmdUnit]) * EmuFloppyHeads[C.CmdUnit] * EmuFloppySpt[C.CmdUnit] - 1
+   Else
+    LBA := 0;
+   C.PioBuf[0] := Byte(LBA Shr 24); C.PioBuf[1] := Byte(LBA Shr 16);
+   C.PioBuf[2] := Byte(LBA Shr 8);  C.PioBuf[3] := Byte(LBA);
+   C.PioBuf[6] := 2; { 512 octets/bloc }
+   C.PioLen := 8; C.PioPos := 0; C.PioActive := True; C.PioIsWrite := False;
+   C.Status := $58;
+  End;
+  $28: Begin { READ(10) }
+   LBA := (LongInt(C.PioBuf[2]) Shl 24) Or (LongInt(C.PioBuf[3]) Shl 16) Or
+    (LongInt(C.PioBuf[4]) Shl 8) Or LongInt(C.PioBuf[5]);
+   If (C.CmdUnit < 0) Or Not Emu_ImageReadSector(C.CmdUnit, LBA, C.PioBuf) Then Begin
+    Emu_ATA_Complete(C, False, $04); Exit;
+   End;
+   C.PioLen := 512; C.PioPos := 0; C.PioActive := True; C.PioIsWrite := False;
+   C.Status := $58;
+  End;
+ Else
+  Emu_ATA_Complete(C, False, $04);
+ End;
+End;
+
+Function Emu_ATA_ReadReg(Var C: TEmuATAChannel; RegIdx: Integer): Byte;
+Var B: Byte;
+Begin
+ Emu_ATA_ReadReg := 0;
+ Case RegIdx Of
+  0: Begin { Data }
+   If C.PioActive And Not C.PioIsWrite And (C.PioPos < C.PioLen) Then Begin
+    B := C.PioBuf[C.PioPos]; Inc(C.PioPos);
+    Emu_ATA_ReadReg := B;
+    If C.PioPos >= C.PioLen Then Begin
+     C.PioActive := False;
+     Dec(C.CmdSectorsLeft);
+     If (C.CmdSectorsLeft > 0) And (C.CmdUnit >= 0) Then Begin
+      Inc(C.CmdLBA);
+      If Emu_ImageReadSector(C.CmdUnit, C.CmdLBA, C.PioBuf) Then Begin
+       C.PioLen := 512; C.PioPos := 0; C.PioActive := True;
+       C.Status := $58;
+      End Else
+       Emu_ATA_Complete(C, False, $40);
+     End Else
+      Emu_ATA_Complete(C, True, 0);
+    End;
+   End;
+  End;
+  1: Emu_ATA_ReadReg := C.ErrFeat;
+  2: Emu_ATA_ReadReg := C.SectorCnt;
+  3: Emu_ATA_ReadReg := C.SectorNum;
+  4: Emu_ATA_ReadReg := C.CylLo;
+  5: Emu_ATA_ReadReg := C.CylHi;
+  6: Emu_ATA_ReadReg := C.DriveHead Or $A0; { bits 7/5 toujours a 1 sur le vrai materiel }
+  7: Emu_ATA_ReadReg := C.Status;
+ End;
+End;
+
+Procedure Emu_ATA_WriteReg(Var C: TEmuATAChannel; RegIdx: Integer; Value: Byte);
+Begin
+ Case RegIdx Of
+  0: Begin { Data }
+   If C.PioActive And C.PioIsWrite And (C.PioPos < C.PioLen) Then Begin
+    C.PioBuf[C.PioPos] := Value; Inc(C.PioPos);
+    If C.PioPos >= C.PioLen Then Begin
+     C.PioActive := False;
+     If C.PacketPending Then Begin
+      C.PacketPending := False;
+      Emu_ATA_ProcessPacket(C);
+     End Else Begin
+      If (C.CmdUnit < 0) Or Not Emu_ImageWriteSector(C.CmdUnit, C.CmdLBA, C.PioBuf) Then Begin
+       Emu_ATA_Complete(C, False, $40); Exit;
+      End;
+      Dec(C.CmdSectorsLeft);
+      If C.CmdSectorsLeft > 0 Then Begin
+       Inc(C.CmdLBA);
+       FillChar(C.PioBuf, SizeOf(C.PioBuf), 0);
+       C.PioLen := 512; C.PioPos := 0; C.PioActive := True;
+       C.Status := $58;
+      End Else
+       Emu_ATA_Complete(C, True, 0);
+     End;
+    End;
+   End;
+  End;
+  1: C.ErrFeat := Value;
+  { Registres 2-5 : mecanisme HOB reel (LBA48) - chaque ecriture pousse   }
+  { l ancienne valeur "courante" dans le registre "haut" (Hi) avant de    }
+  { stocker la nouvelle - apres 2 ecritures, la 1ere est dans *Hi, la 2e  }
+  { (la plus recente) est la valeur courante. }
+  2: Begin C.SectorCntHi := C.SectorCnt; C.SectorCnt := Value; End;
+  3: Begin C.SectorNumHi := C.SectorNum; C.SectorNum := Value; End;
+  4: Begin C.CylLoHi := C.CylLo; C.CylLo := Value; End;
+  5: Begin C.CylHiHi := C.CylHi; C.CylHi := Value; End;
+  6: C.DriveHead := Value;
+  7: Emu_ATA_ExecCommand(C, Value); { Command register }
+ End;
+End;
+
+Function Emu_ATA_ReadAltStatus(Var C: TEmuATAChannel): Byte;
+Begin
+ Emu_ATA_ReadAltStatus := C.Status; { pas d effet de bord simule (pas d IRQ a acquitter) }
+End;
+
+Procedure Emu_ATA_WriteDevCtrl(Var C: TEmuATAChannel; Value: Byte);
+Begin
+ C.DevCtrl := Value;
+ If (Value And $04) <> 0 Then Begin { SRST : reinitialisation logicielle }
+  Emu_ATA_SetSignature(C);
+  C.Status := $50;
+  C.PioActive := False;
+  C.PacketPending := False;
+ End;
+End;
+
+{ ============================================================
+  Famille C : SASI/SCSI/SAS - protocole hote registre-a-registre (330h-
+  333h) construit sur des Command Descriptor Blocks SCSI standard. Voir
+  le commentaire de TEmuSCSIHostAdapter. Une seule unite emulee (EmuFloppy
+  2, "disque dur" C:), comme un adaptateur hote SCSI simple a un seul
+  peripherique connecte.
+  ============================================================ }
+
+Function Emu_SCSI_UnitOpen: Boolean;
+Begin
+ Emu_SCSI_UnitOpen := EmuFloppyOpen[2];
+End;
+
+Procedure Emu_SCSI_Complete(Var S: TEmuSCSIHostAdapter; StatusByte: Byte);
+Begin
+ S.StatusByte := StatusByte;
+ S.Phase := 4; { STATUS_READY }
+End;
+
+Procedure Emu_SCSI_Exec(Var S: TEmuSCSIHostAdapter);
+Var Op: Byte; LBA: LongInt;
+Begin
+ Op := S.CDB[0];
+ Case Op Of
+  $00: Emu_SCSI_Complete(S, 0); { TEST UNIT READY }
+  $12: Begin { INQUIRY }
+   FillChar(S.DataBuf, SizeOf(S.DataBuf), 0);
+   S.DataBuf[0] := 0; { disque direct-access }
+   S.DataBuf[2] := 2; { ANSI SCSI-2 }
+   S.DataBuf[4] := 31;
+   Move('DEV-COOLS SCSI DISK             '[1], S.DataBuf[8], 28);
+   S.DataLen := 36; S.DataPos := 0; S.Phase := 2; { DATA_IN cote hote }
+  End;
+  $25: Begin { READ CAPACITY(10) }
+   FillChar(S.DataBuf, SizeOf(S.DataBuf), 0);
+   If Emu_SCSI_UnitOpen Then
+    LBA := LongInt(EmuFloppyCyls[2]) * EmuFloppyHeads[2] * EmuFloppySpt[2] - 1
+   Else
+    LBA := 0;
+   S.DataBuf[0] := Byte(LBA Shr 24); S.DataBuf[1] := Byte(LBA Shr 16);
+   S.DataBuf[2] := Byte(LBA Shr 8);  S.DataBuf[3] := Byte(LBA);
+   S.DataBuf[6] := 2;
+   S.DataLen := 8; S.DataPos := 0; S.Phase := 2;
+  End;
+  $08: Begin { READ(6) }
+   LBA := (LongInt(S.CDB[1] And $1F) Shl 16) Or (LongInt(S.CDB[2]) Shl 8) Or LongInt(S.CDB[3]);
+   If Not Emu_SCSI_UnitOpen Or Not Emu_ImageReadSector(2, LBA, S.DataBuf) Then Begin
+    Emu_SCSI_Complete(S, 2); Exit;
+   End;
+   S.DataLen := 512; S.DataPos := 0; S.Phase := 2;
+  End;
+  $28: Begin { READ(10) }
+   LBA := (LongInt(S.CDB[2]) Shl 24) Or (LongInt(S.CDB[3]) Shl 16) Or
+    (LongInt(S.CDB[4]) Shl 8) Or LongInt(S.CDB[5]);
+   If Not Emu_SCSI_UnitOpen Or Not Emu_ImageReadSector(2, LBA, S.DataBuf) Then Begin
+    Emu_SCSI_Complete(S, 2); Exit;
+   End;
+   S.DataLen := 512; S.DataPos := 0; S.Phase := 2;
+  End;
+  $0A: Begin { WRITE(6) }
+   If Not Emu_SCSI_UnitOpen Or EmuFloppyRO[2] Then Begin Emu_SCSI_Complete(S, 2); Exit; End;
+   S.PendingLBA := (LongInt(S.CDB[1] And $1F) Shl 16) Or (LongInt(S.CDB[2]) Shl 8) Or LongInt(S.CDB[3]);
+   FillChar(S.DataBuf, SizeOf(S.DataBuf), 0);
+   S.DataLen := 512; S.DataPos := 0; S.Phase := 3; { DATA_OUT cote hote }
+  End;
+  $2A: Begin { WRITE(10) }
+   If Not Emu_SCSI_UnitOpen Or EmuFloppyRO[2] Then Begin Emu_SCSI_Complete(S, 2); Exit; End;
+   S.PendingLBA := (LongInt(S.CDB[2]) Shl 24) Or (LongInt(S.CDB[3]) Shl 16) Or
+    (LongInt(S.CDB[4]) Shl 8) Or LongInt(S.CDB[5]);
+   FillChar(S.DataBuf, SizeOf(S.DataBuf), 0);
+   S.DataLen := 512; S.DataPos := 0; S.Phase := 3;
+  End;
+ Else
+  Emu_SCSI_Complete(S, 2); { Check Condition : commande non geree }
+ End;
+End;
+
+Function Emu_SCSI_ReadStatus(Var S: TEmuSCSIHostAdapter): Byte;
+Begin
+ { Meme forme BSY/REQ/CD/IO que Emu_ST506_ReadStatus, deliberement -      }
+ { protocoles internes coherents, voir le commentaire de TEmuST506. }
+ Case S.Phase Of
+  2: Emu_SCSI_ReadStatus := $0A; { DATA_IN cote hote : REQ+IO }
+  3: Emu_SCSI_ReadStatus := $02; { DATA_OUT cote hote : REQ }
+  4: Emu_SCSI_ReadStatus := $0E; { STATUS_READY : REQ+CD+IO }
+ Else
+  Emu_SCSI_ReadStatus := $06;    { IDLE/CDB_RECEIVING : REQ+CD }
+ End;
+End;
+
+Function Emu_SCSI_ReadData(Var S: TEmuSCSIHostAdapter): Byte;
+Begin
+ Emu_SCSI_ReadData := 0;
+ Case S.Phase Of
+  2: Begin
+   If S.DataPos < S.DataLen Then Begin
+    Emu_SCSI_ReadData := S.DataBuf[S.DataPos];
+    Inc(S.DataPos);
+    If S.DataPos >= S.DataLen Then Emu_SCSI_Complete(S, 0);
+   End;
+  End;
+  4: Begin
+   Emu_SCSI_ReadData := S.StatusByte;
+   S.Phase := 0;
+   S.CDBLen := 0; { arme un nouveau CDB des la prochaine ecriture - voir Emu_SCSI_WriteData }
+  End;
+ End;
+End;
+
+Procedure Emu_SCSI_WriteData(Var S: TEmuSCSIHostAdapter; Value: Byte);
+Begin
+ Case S.Phase Of
+  0, 1: Begin
+   If S.CDBLen = 0 Then Begin
+    If Value < $20 Then S.CDBExpected := 6 Else S.CDBExpected := 10;
+    S.Phase := 1;
+   End;
+   If S.CDBLen < 10 Then Begin
+    S.CDB[S.CDBLen] := Value; Inc(S.CDBLen);
+   End;
+   If S.CDBLen >= S.CDBExpected Then Emu_SCSI_Exec(S);
+  End;
+  3: Begin
+   If S.DataPos < S.DataLen Then Begin
+    S.DataBuf[S.DataPos] := Value; Inc(S.DataPos);
+   End;
+   If S.DataPos >= S.DataLen Then Begin
+    If Emu_ImageWriteSector(2, S.PendingLBA, S.DataBuf) Then
+     Emu_SCSI_Complete(S, 0)
+    Else
+     Emu_SCSI_Complete(S, 2);
+   End;
+  End;
+ End;
+End;
+
+{ ============================================================
   8259A PIC (maitre 20h/21h + esclave A0h/A1h) - voir TEmuPICChip.
   ============================================================ }
 
@@ -50803,6 +51567,28 @@ Begin
   { emulee, mais repond 0 au lieu de rester totalement muette, pour       }
   { les rares utilitaires de diagnostic d epoque qui la sondent. }
   $210..$215: If Not Emu_IsATClassHw Then Emu_PortRead := 0;
+  { Interface de disque (Options > Emulateur > DOS: Materiel) - voir       }
+  { Emu_DiskIfFamily : UNE SEULE famille de ports repond a la fois, jamais }
+  { de melange, fidele au fait qu un PC reel n a jamais deux protocoles de }
+  { controleur de disque actifs sur les memes ports. }
+  $1F0..$1F7: If Emu_DiskIfFamily = DIF_ATA Then
+               Emu_PortRead := Emu_ATA_ReadReg(EmuATA[0], Port - $1F0);
+  $170..$177: If Emu_DiskIfFamily = DIF_ATA Then
+               Emu_PortRead := Emu_ATA_ReadReg(EmuATA[1], Port - $170);
+  $320..$323: If Emu_DiskIfFamily = DIF_ST506 Then
+   Case Port Of
+    $320: Emu_PortRead := Emu_ST506_ReadData(EmuST506);
+    $321: Emu_PortRead := Emu_ST506_ReadStatus(EmuST506);
+   Else
+    Emu_PortRead := 0;
+   End;
+  $330..$333: If Emu_DiskIfFamily = DIF_SCSI Then
+   Case Port Of
+    $330: Emu_PortRead := Emu_SCSI_ReadStatus(EmuSCSI);
+    $331: Emu_PortRead := Emu_SCSI_ReadData(EmuSCSI);
+   Else
+    Emu_PortRead := 0;
+   End;
   { NE2000 (Reseau LAN = NE2000 compatible) : 278h-27Ah reserve a LPT2    }
   { (conflit reel d adresses connu de l epoque entre une carte reseau     }
   { configuree en base 260h et un 2e port parallele - voir le commentaire }
@@ -50826,6 +51612,10 @@ Begin
   $3BC..$3BE: Emu_PortRead := Emu_LPT_Read(EmuLPT1, Port - $3BC);
   $3BF: Emu_PortRead := 0;
   $3C0..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
+  $3F6: If Emu_DiskIfFamily = DIF_ATA Then
+         Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[0]);
+  $376: If Emu_DiskIfFamily = DIF_ATA Then
+         Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[1]);
  End;
 End;
 
@@ -50851,6 +51641,24 @@ Begin
   $64: If Emu_IsATClassHw Then Emu_8042_WriteCmd(Value)
        Else Emu_PPI_MirrorWrite(Port, Value);
   $65..$6F: If Not Emu_IsATClassHw Then Emu_PPI_MirrorWrite(Port, Value);
+  $1F0..$1F7: If Emu_DiskIfFamily = DIF_ATA Then
+               Emu_ATA_WriteReg(EmuATA[0], Port - $1F0, Value);
+  $170..$177: If Emu_DiskIfFamily = DIF_ATA Then
+               Emu_ATA_WriteReg(EmuATA[1], Port - $170, Value);
+  $320..$323: If Emu_DiskIfFamily = DIF_ST506 Then
+   Case Port Of
+    $320: Emu_ST506_WriteData(EmuST506, Value);
+    $322: EmuST506.Phase := 0; { reinitialisation controleur }
+   Else
+    ; { 323h : masque DMA/IRQ, accepte sans effet (voir TEmuST506) }
+   End;
+  $330..$333: If Emu_DiskIfFamily = DIF_SCSI Then
+   Case Port Of
+    $330: If (Value And $80) <> 0 Then EmuSCSI.Phase := 0; { HRST }
+    $331: Emu_SCSI_WriteData(EmuSCSI, Value);
+   Else
+    ;
+   End;
   $260..$277, $27B..$27F:
    If OptionsDlg.Data.DosLAN And (OptionsDlg.Data.DosLANVendor = 0) Then
     Emu_NE2000_Write(EmuNE2000, Byte(Port - $260), Value);
@@ -50860,6 +51668,8 @@ Begin
   $3B4..$3BB: Emu_VidPortWrite(Port, Value);
   $3BC..$3BE: Emu_LPT_Write(EmuLPT1, Port - $3BC, Value);
   $3C0..$3DF: Emu_VidPortWrite(Port, Value);
+  $3F6: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[0], Value);
+  $376: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[1], Value);
  End;
 End;
 
@@ -55239,6 +56049,8 @@ Var
  NSect, Done: Byte;
  Idx: Byte;
  IsHD: Boolean;
+ DapSeg, DapOfs, NSectW, BufOfs, BufSeg, LBALo, LBAHi: Word;
+ TotalLBA: LongInt;
 Begin
  AH := P.CPU.Regs.AH;
  AL := P.CPU.Regs.AL;
@@ -55400,6 +56212,76 @@ Begin
   $17, $18: Begin   { Set DASD / Set media type for format : stubs OK }
    If EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, Idx)
    Else Emu_Int13SetError(P, Idx, $80);
+  End;
+  { INT13h etendu (EDD, AH=41h-49h) - disponible seulement sur les        }
+  { interfaces de disque assez recentes pour en avoir eu besoin/beneficie }
+  { historiquement (voir Emu_DiskIfSupportsEDD). Sur ST-506/RLL/ESDI/     }
+  { SASI/IDE simple, ces AH tombent dans le Else ci-dessous (AH=01h,      }
+  { invalide) - fidele au fait qu un vrai BIOS de cette generation ne les }
+  { reconnait pas du tout. }
+  $41: Begin { Check Extensions Present (entree : BX=55AAh) }
+   If Emu_DiskIfSupportsEDD And (P.CPU.Regs.BX = $55AA) Then Begin
+    P.CPU.Regs.BX := $AA55;
+    P.CPU.Regs.AH := $21; { version EDD 2.1 }
+    P.CPU.Regs.CX := $0001; { bit0 : jeu de fonctions DAP lecture/ecriture etendues }
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End Else Begin
+    P.CPU.Regs.AH := $01;
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $42, $43: Begin { Extended Read / Extended Write - DAP a DS:SI }
+   If Not Emu_DiskIfSupportsEDD Then Begin
+    Emu_Int13SetError(P, Idx, $01); Exit;
+   End;
+   If Not EmuFloppyOpen[Idx] Then Begin
+    Emu_Int13SetError(P, Idx, $80); Exit;
+   End;
+   DapSeg := P.CPU.Segs.DS; DapOfs := P.CPU.Regs.SI;
+   NSectW := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 2);
+   If NSectW > 255 Then NSectW := 255; { voir Emu_FloppyReadSectors, NSect: Byte }
+   BufOfs := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 4);
+   BufSeg := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 6);
+   LBALo  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 8);
+   LBAHi  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 10);
+   LBA := LongInt(LBALo) Or (LongInt(LBAHi) Shl 16);
+   If AH = $42 Then
+    Done := Emu_FloppyReadSectors(P, Idx, LBA, Byte(NSectW), BufSeg, BufOfs)
+   Else Begin
+    If EmuFloppyRO[Idx] Then Begin Emu_Int13SetError(P, Idx, $03); Exit; End;
+    Done := Emu_FloppyWriteSectors(P, Idx, LBA, Byte(NSectW), BufSeg, BufOfs);
+   End;
+   If Done = Byte(NSectW) Then Emu_Int13SetOK(P, Idx)
+   Else Emu_Int13SetError(P, Idx, $04);
+  End;
+  $44: Begin { Extended Verify }
+   If Not Emu_DiskIfSupportsEDD Then Begin Emu_Int13SetError(P, Idx, $01); Exit; End;
+   If Not EmuFloppyOpen[Idx] Then Emu_Int13SetError(P, Idx, $80)
+   Else Emu_Int13SetOK(P, Idx);
+  End;
+  $45, $46, $47, $49: Begin { Lock/Unlock, Eject, Seek, Media Change etendus : stubs OK }
+   If Emu_DiskIfSupportsEDD And EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, Idx)
+   Else Emu_Int13SetError(P, Idx, $01);
+  End;
+  $48: Begin { Extended Get Drive Parameters - tampon a DS:SI }
+   If Not Emu_DiskIfSupportsEDD Then Begin Emu_Int13SetError(P, Idx, $01); Exit; End;
+   If Not EmuFloppyOpen[Idx] Then Begin Emu_Int13SetError(P, Idx, $80); Exit; End;
+   DapSeg := P.CPU.Segs.DS; DapOfs := P.CPU.Regs.SI;
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs, 26);     { taille remplie }
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 2, 3);  { CHS+LBA valides }
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 4, EmuFloppyCyls[Idx]);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 6, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 8, EmuFloppyHeads[Idx]);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 10, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 12, EmuFloppySpt[Idx]);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 14, 0);
+   TotalLBA := EmuFloppySize[Idx] Div 512;
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 16, Word(TotalLBA));
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 18, Word(TotalLBA Shr 16));
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 20, 0); { bits 48-63 : toujours 0 ici }
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 22, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 24, 512); { octets/secteur }
+   Emu_Int13SetOK(P, Idx);
   End;
  Else
   Emu_Int13SetError(P, Idx, $01);  { 01 = invalid function }
@@ -59907,6 +60789,10 @@ Begin
  Emu_UART_Init(EmuCOM4);
  Emu_NE2000_Init(EmuNE2000);
  Emu_8042_Init;
+ FillChar(EmuST506, SizeOf(EmuST506), 0);
+ Emu_ATA_Init(EmuATA[0], 0);
+ Emu_ATA_Init(EmuATA[1], 1);
+ FillChar(EmuSCSI, SizeOf(EmuSCSI), 0);
  { DOS demarre l application avec IF=1 (interruptions activees). }
  Include(P.CPU.Flags.s, EFG_IF);
 End;
@@ -72815,6 +73701,8 @@ Begin
  Snap.PPI := EmuPPI; Snap.LPT1 := EmuLPT1; Snap.LPT2 := EmuLPT2;
  Snap.COM2 := EmuCOM2; Snap.COM4 := EmuCOM4; Snap.NE2000 := EmuNE2000;
  Snap.Kbd8042 := Emu8042;
+ Snap.ST506 := EmuST506; Snap.SCSIAdapter := EmuSCSI;
+ Snap.ATA[0] := EmuATA[0]; Snap.ATA[1] := EmuATA[1];
  Snap.CMOSIndex := EmuCMOS_Index;
  Move(EmuCMOS_Reg, Snap.CMOSReg, SizeOf(Snap.CMOSReg));
  Move(EmuTraceBuf, Snap.TraceBuf, SizeOf(Snap.TraceBuf));
@@ -72923,6 +73811,8 @@ Begin
  EmuPPI := Snap.PPI; EmuLPT1 := Snap.LPT1; EmuLPT2 := Snap.LPT2;
  EmuCOM2 := Snap.COM2; EmuCOM4 := Snap.COM4; EmuNE2000 := Snap.NE2000;
  Emu8042 := Snap.Kbd8042;
+ EmuST506 := Snap.ST506; EmuSCSI := Snap.SCSIAdapter;
+ EmuATA[0] := Snap.ATA[0]; EmuATA[1] := Snap.ATA[1];
  EmuCMOS_Index := Snap.CMOSIndex;
  Move(Snap.CMOSReg, EmuCMOS_Reg, SizeOf(EmuCMOS_Reg));
  Move(Snap.TraceBuf, EmuTraceBuf, SizeOf(EmuTraceBuf));
@@ -74924,6 +75814,7 @@ Begin
  D.DosHardware := 2;
  D.DosVideo1 := 8;             { VGA }
  D.DosVideo2 := EMU_VID_NONE;  { un PC reel n a qu une seule carte video }
+ D.DosDiskInterface := 5;      { IDE/ATA : coherent avec DosHardware=2 (IBM PC AT) par defaut }
  D.DosEmu8087 := True;
  D.DosEmu80286 := True;
  D.DosEmu80386 := True;
@@ -75827,6 +76718,8 @@ Var
         DosHardwareName(ActualIdx), FG);
     4, 5: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
         DosVideoName(ActualIdx), FG);
+    10: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
+        DosDiskInterfaceName(ActualIdx), FG);
    End;
   End;
   DrawRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
@@ -75870,15 +76763,18 @@ Begin
  Dropdown('Materiel :', DosHardwareName(Dlg.Data.DosHardware));  { Row 2 }
  Dropdown('Video 1 :', DosVideoName(Dlg.Data.DosVideo1));        { Row 3 }
  Dropdown('Video 2 :', DosVideoName(Dlg.Data.DosVideo2));        { Row 4 }
- Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');           { Row 5 }
- Check(Dlg.Data.DosEmu80286, 'Emulation 80286');                 { Row 6 }
- Check(Dlg.Data.DosEmu80386, 'Emulation 80386');                 { Row 7 }
+ Dropdown('Interface de disque :',                               { Row 5 }
+  DosDiskInterfaceName(Dlg.Data.DosDiskInterface));
+ Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');           { Row 6 }
+ Check(Dlg.Data.DosEmu80286, 'Emulation 80286');                 { Row 7 }
+ Check(Dlg.Data.DosEmu80386, 'Emulation 80386');                 { Row 8 }
 
  Case Dlg.DosDropdownOpen Of
   2: OpenList(1, DOS_CPU_VENDOR_COUNT, Dlg.Data.DosCPUVendor);
   3: OpenList(2, DOS_HARDWARE_COUNT, Dlg.Data.DosHardware);
   4: OpenList(3, DOS_VIDEO_COUNT, Dlg.Data.DosVideo1);
   5: OpenList(4, DOS_VIDEO_COUNT, Dlg.Data.DosVideo2);
+  10: OpenList(5, DOS_DISK_IF_COUNT, Dlg.Data.DosDiskInterface);
  End;
 End;
 
@@ -76455,6 +77351,7 @@ Begin
    7: Begin DDCount := DOS_EMS_VERSION_COUNT; DDCur := Dlg.Data.DosEMSVersion; End;
    8: Begin DDCount := DOS_MOUSE_VENDOR_COUNT; DDCur := Dlg.Data.DosMouseVendor; End;
    9: Begin DDCount := DOS_MOUSE_VERSION_COUNT; DDCur := Dlg.Data.DosMouseVersion; End;
+   10: Begin DDCount := DOS_DISK_IF_COUNT; DDCur := Dlg.Data.DosDiskInterface; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
   End;
   If Key = $48 Then Begin { Fleche haut }
@@ -76476,6 +77373,7 @@ Begin
    7: Dlg.Data.DosEMSVersion := DDCur;
    8: Dlg.Data.DosMouseVendor := DDCur;
    9: Dlg.Data.DosMouseVersion := DDCur;
+   10: Dlg.Data.DosDiskInterface := DDCur;
   End;
   Dlg.Modified := True;
   Exit;
@@ -76547,6 +77445,7 @@ Var
    7: Dlg.Data.DosEMSVersion := NewIdx;
    8: Dlg.Data.DosMouseVendor := NewIdx;
    9: Dlg.Data.DosMouseVersion := NewIdx;
+   10: Dlg.Data.DosDiskInterface := NewIdx;
   End;
   Dlg.Modified := True;
  End;
@@ -76576,6 +77475,8 @@ Begin
       CurIdx := Dlg.Data.DosMouseVendor; End;
   9: Begin RowIdx := 5; Count := DOS_MOUSE_VERSION_COUNT;
       CurIdx := Dlg.Data.DosMouseVersion; End;
+  10: Begin RowIdx := 5; Count := DOS_DISK_IF_COUNT;
+      CurIdx := Dlg.Data.DosDiskInterface; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
  { LabelW doit rester synchronise avec DrawOptionsEmuDOSOS (Dropdown/       }
@@ -76878,15 +77779,16 @@ Begin
        2: Dlg.DosDropdownOpen := 3;  { Materiel }
        3: Dlg.DosDropdownOpen := 4;  { Video 1 }
        4: Dlg.DosDropdownOpen := 5;  { Video 2 }
-       5: Begin
+       5: Dlg.DosDropdownOpen := 10; { Interface de disque }
+       6: Begin
         Dlg.Data.DosEmu8087 := Not Dlg.Data.DosEmu8087;
         Dlg.Modified := True;
        End;
-       6: Begin
+       7: Begin
         Dlg.Data.DosEmu80286 := Not Dlg.Data.DosEmu80286;
         Dlg.Modified := True;
        End;
-       7: Begin
+       8: Begin
         Dlg.Data.DosEmu80386 := Not Dlg.Data.DosEmu80386;
         Dlg.Modified := True;
        End;
@@ -77145,6 +78047,8 @@ Begin
  WriteCfgLine(F, 'DosVideo1', S);
  Str(Data.DosVideo2, S);
  WriteCfgLine(F, 'DosVideo2', S);
+ Str(Data.DosDiskInterface, S);
+ WriteCfgLine(F, 'DosDiskInterface', S);
  WriteCfgLine(F, 'DosEmu8087', BoolToStr(Data.DosEmu8087));
  WriteCfgLine(F, 'DosEmu80286', BoolToStr(Data.DosEmu80286));
  WriteCfgLine(F, 'DosEmu80386', BoolToStr(Data.DosEmu80386));
@@ -77319,6 +78223,13 @@ Begin
    If (Code <> 0) Or (Data.DosVideo2 < 0) Or
       (Data.DosVideo2 >= DOS_VIDEO_COUNT) Then
     Data.DosVideo2 := 8;
+  End
+  Else If Key = 'DosDiskInterface' Then
+  Begin
+   Val(Value, Data.DosDiskInterface, Code);
+   If (Code <> 0) Or (Data.DosDiskInterface < 0) Or
+      (Data.DosDiskInterface >= DOS_DISK_IF_COUNT) Then
+    Data.DosDiskInterface := 5; { IDE/ATA }
   End
   Else If Key = 'DosEmu8087' Then
    Data.DosEmu8087 := StrToBool(Value)
