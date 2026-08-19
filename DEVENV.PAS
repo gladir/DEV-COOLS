@@ -1687,6 +1687,38 @@ Const
  EMU_DPMI_MAX_HANDLE    = 32;    { poignees de memoire etendue DPMI }
  EMU_DPMI_MAX_CALLBACK  = 16;    { rappels mode reel (AX=0303h) }
  EMU_DPMI_EXT_BASE      = $100000; { 1 Mo - debut de la "memoire etendue"   }
+ { --- TopView (Options > Emulateur > DOS: OS > TopView, INT 15h AH=10h/    }
+ { 11h/12h - voir DOC/TOPVIEW_PROGRAMMING.txt et Emu_Tv*) - dernier bloc    }
+ { encore libre de $F000 : le bump allocator DPMI ci-dessus va jusqu a      }
+ { l offset $9000 (=$1000+$8000), donc $9000..$FFFF (28 Ko) est le seul     }
+ { intervalle restant qui ne recouvre PHYSIQUEMENT rien d autre (un autre   }
+ { segment proche comme $F800 semblerait "libre" a tort : $F800:0000 =      }
+ { adresse physique $F8000, qui EST DEJA a l interieur de la plage DPMI     }
+ { ci-dessus puisque $F000:9000 = $F9000 > $F8000 - donc rester sur LE MEME }
+ { segment $F000, seulement a un offset plus eleve, est le choix sur.       }
+ { Les poignees d objet (HANDLE/ISOBJ/GETBUF...) sont chacune un SEGMENT    }
+ { DISTINCT, decalage toujours nul - fidele a la convention historique      }
+ { documentee ("plusieurs appels anciens n utilisent que le segment du      }
+ { handle, le decalage etant implicitement nul") ET indispensable pour      }
+ { GETBUF, qui ne recoit reellement QUE le segment en entree : deux objets  }
+ { qui partageraient le meme segment seraient impossibles a distinguer.     }
+ { Chaque segment ne coute que 16 octets physiques (un paragraphe), donc    }
+ { TV_MAX_OBJECTS(64) segments consecutifs ne consomment que 1 Ko - places  }
+ { juste apres la pile privee ci-dessous, toujours dans la meme fenetre de  }
+ { 28 Ko libre. }
+ EMU_TV_SEG        = $F000;
+ EMU_TV_WINBUF_OFS = $9000; { tampons virtuels des fenetres, TV_MAX_WINDOWS x TV_WINBUF_SIZE }
+ TV_MAX_WINDOWS    = 4;
+ TV_WINBUF_SIZE    = $1000; { 4096o, largement assez pour 80x25x2=4000o }
+ EMU_TV_HEAP_OFS   = $D000; { tas GETMEM/PUTMEM, TV_HEAP_SIZE octets }
+ TV_HEAP_SIZE      = $2000; { 8192o }
+ EMU_TV_STACK_OFS  = $F000; { pile privee OSTACK/USTACK, TV_STACK_SIZE octets }
+ TV_STACK_SIZE     = $100;  { 256o - fin de zone reelle a $F000:F100 = physique $FF100 }
+ EMU_TV_HANDLE_SEG_BASE = $FF10; { physique $FF100, contigu a la pile ci-dessus }
+ TV_MAX_OBJECTS    = 64;    { -> segments $FF10..$FF4F, physique $FF100..$FF500 }
+ TV_MAX_BITS       = 16;    { GETBIT/FREEBIT/SETBIT }
+ TV_MAX_INJECT     = 8;     { file LIFO d injections PGMINT en attente }
+ TV_MAX_SOUNDS     = 32;    { file de sons SOUND (AX=1019h) }
                                     { DPMI (voir EmuDpmiExtMem) }
  EMU_DPMI_EXT_CAP_KB    = 65536;   { plafond 64 Mo, comme EMU_XMS_CAP_KB }
 
@@ -3500,6 +3532,87 @@ Type
   PendingLBA : LongInt;
  End;
 
+ { ============================================================
+   IBM TopView (Options > Emulateur > DOS: OS > TopView) - INT 15h
+   AH=10h/11h/12h, voir DOC/TOPVIEW_PROGRAMMING.txt et Emu_Tv*.
+   PERIMETRE ASSUME (documente ici une fois, voir aussi les commentaires
+   pres d Emu_DoInt15Tv) : cet emulateur execute UN SEUL programme DOS a
+   la fois (un seul contexte CPU 8086) - il n y a donc PAS de vrai
+   ordonnanceur multitache a proteger. Le modele d objets TopView (fenetres,
+   boites aux lettres, claviers, temporisateurs, pointeurs, panneaux,
+   OBJECTQ) est implante REELLEMENT (etat veritable, verifiable), mais la
+   MULTITACHE PREEMPTIVE/COOPERATIVE elle-meme (executer plusieurs taches
+   invitees en parallele) est HORS PERIMETRE - une fenetre creee avec
+   l indicateur "tache" (NEW WINDOW) est acceptee et inspectable, mais son
+   point d entree n est jamais reellement lance comme un second flux
+   d execution concurrent. INT 50h-57h (IRQ materielles remappees, voir la
+   section 2 du document) ne sont PAS relogees : le 8259A de cet emulateur
+   garde sa base de vecteurs habituelle, car il n y a aucune seconde tache
+   dont il faudrait proteger les IRQ. }
+
+ Const
+  TVOT_WINDOW   = 0;
+  TVOT_MAILBOX  = 1;
+  TVOT_KEYBOARD = 2;
+  TVOT_TIMER    = 3;
+  TVOT_POINTER  = 4;
+  TVOT_PANEL    = 5;
+  TVOT_OBJECTQ  = 6;
+  TVOT_FREE     = 255;
+
+ Type
+ { Detail d une fenetre/tache (classe WINDOW, NEW BL=08h). Le tampon video
+   virtuel reel (voir GETBUF) vient d un pool physique limite a
+   TV_MAX_WINDOWS emplacements (WinBufIdx = -1 si aucun assigne). }
+ TTvWindow = Record
+  Cols, Rows       : Word;
+  Title            : String[64];
+  CursorX, CursorY : Word;
+  PosX, PosY       : Word;    { voir POSWIN/Emu_Tv_ApplyPosWin }
+  WinBufIdx        : Integer; { 0..TV_MAX_WINDOWS-1, -1 si aucun tampon }
+  IsTask           : Boolean; { indicateur tache/fenetre de NEW - voir le
+                                 commentaire de perimetre ci-dessus : accepte
+                                 et memorise, jamais reellement ordonnance }
+  EntrySeg, EntryOfs : Word;
+  KbdSlot, PtrSlot : Integer; { objets clavier/pointeur associes (OPEN), -1 si aucun }
+ End;
+
+ { Detail d une boite aux lettres (classe MAILBOX, NEW BL=09h) - file
+   circulaire d octets simple, READ/WRITE. }
+ TTvMailbox = Record
+  Data          : Array[0..255] Of Byte;
+  Head, Tail, Count : Integer;
+  LastSenderSeg, LastSenderOfs : Word; { pour ADDR - expediteur du dernier message }
+ End;
+
+ TTvKeyboard = Record
+  BoundWindow : Integer; { -1 si non associe a une fenetre (OPEN) }
+ End;
+
+ { Compteur en centiemes de seconde depuis minuit, pas de 10 ms reel
+   (Emu_Tv_ServiceTimers, appele depuis Emu_TimerTick). }
+ TTvTimer = Record
+  ExpiryCenti : LongInt;
+  Running     : Boolean;
+ End;
+
+ { Reflete l etat souris reel existant (EmuMouseX/Y/Btns) au lieu de le
+   dupliquer - voir Emu_Tv_PointerRead. }
+ TTvPointer = Record
+  BoundWindow    : Integer;
+  ScaleX, ScaleY : Word;
+  Icon           : Byte;
+ End;
+
+ { Support PANEL delibirement minimal (voir le commentaire de perimetre) :
+   un fichier de panneaux reel n est pas parse, DIR renvoie une liste vide
+   plutot que d inventer un format non verifie. }
+ TTvPanel = Record
+  FileName : String[80];
+ End;
+
+ { ============================================================ }
+
  { --- Pile reseau Novell IPX/SPX (Options > Emulateur > DOS > "Reseau     }
  { Novell NetWare") - voir Emu_DoInt7A/Emu_DoInt2F. Modele "boucle         }
  { locale" : aucune autre machine sur le fil, donc tout paquet envoye est  }
@@ -4363,6 +4476,29 @@ Type
   ST506          : TEmuST506;
   ATA            : Array[0..1] Of TEmuATAChannel;
   SCSIAdapter    : TEmuSCSIHostAdapter;
+  { --- TopView (voir Emu_Tv_Init) --- }
+  TvObjType    : Array[0..TV_MAX_OBJECTS - 1] Of Byte;
+  TvWindow     : Array[0..TV_MAX_OBJECTS - 1] Of TTvWindow;
+  TvMailbox    : Array[0..TV_MAX_OBJECTS - 1] Of TTvMailbox;
+  TvKeyboard   : Array[0..TV_MAX_OBJECTS - 1] Of TTvKeyboard;
+  TvTimer      : Array[0..TV_MAX_OBJECTS - 1] Of TTvTimer;
+  TvPointer    : Array[0..TV_MAX_OBJECTS - 1] Of TTvPointer;
+  TvPanel      : Array[0..TV_MAX_OBJECTS - 1] Of TTvPanel;
+  TvWinBufUsed : Array[0..TV_MAX_WINDOWS - 1] Of Boolean;
+  TvDefWindow, TvDefMailbox, TvDefKeyboard, TvDefObjectQ : Integer;
+  TvBitSeg, TvBitOfs : Array[0..TV_MAX_BITS - 1] Of Word;
+  TvBitUsed          : Array[0..TV_MAX_BITS - 1] Of Boolean;
+  TvBitPending       : Word;
+  TvInjectSeg, TvInjectOfs : Array[0..TV_MAX_INJECT - 1] Of Word;
+  TvInjectCount            : Integer;
+  TvSoundHz, TvSoundTicks : Array[0..TV_MAX_SOUNDS - 1] Of Word;
+  TvSoundCount            : Integer;
+  TvSoundActiveTicks      : Word;
+  TvSavedSS, TvSavedSP : Word;
+  TvOnPrivStack        : Boolean;
+  TvCritical           : Boolean;
+  TvTaskStopped        : Boolean;
+  TvDefCursorX, TvDefCursorY : Word;
   { --- CMOS --- }
   CMOSIndex      : Byte;
   CMOSReg        : Array[0..63] Of Byte;
@@ -4588,6 +4724,7 @@ Type
   DosEMS          : Boolean;     { memoire EMS activee            }
   DosEMSSize      : Integer;     { taille EMS en Ko               }
   DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
+  DosTopView      : Boolean;     { API IBM TopView (INT 15h AH=10h/11h/12h), voir DOC/TOPVIEW_PROGRAMMING.txt }
   DosDPMI         : Boolean;     { support DPMI active (INT 31h)  }
   DosDPMISize     : Integer;     { taille memoire etendue DPMI en Ko }
   DosAnsiSys      : Boolean;     { pilote ANSI.SYS (sequences ESC[) }
@@ -5634,6 +5771,42 @@ Var
  EmuST506       : TEmuST506;              { 320h-323h }
  EmuATA         : Array[0..1] Of TEmuATAChannel; { 0=primaire 1F0h.., 1=secondaire 170h.. }
  EmuSCSI        : TEmuSCSIHostAdapter;    { 330h-333h }
+ { --- IBM TopView (voir le commentaire de perimetre pres de TVOT_WINDOW) --- }
+ EmuTvObjType   : Array[0..TV_MAX_OBJECTS - 1] Of Byte; { TVOT_*, TVOT_FREE=libre }
+ EmuTvWindow    : Array[0..TV_MAX_OBJECTS - 1] Of TTvWindow;
+ EmuTvMailbox   : Array[0..TV_MAX_OBJECTS - 1] Of TTvMailbox;
+ EmuTvKeyboard  : Array[0..TV_MAX_OBJECTS - 1] Of TTvKeyboard;
+ EmuTvTimer     : Array[0..TV_MAX_OBJECTS - 1] Of TTvTimer;
+ EmuTvPointer   : Array[0..TV_MAX_OBJECTS - 1] Of TTvPointer;
+ EmuTvPanel     : Array[0..TV_MAX_OBJECTS - 1] Of TTvPanel;
+ EmuTvWinBufUsed: Array[0..TV_MAX_WINDOWS - 1] Of Boolean;
+ { Objets "par defaut" de l unique tache emulee (voir HANDLE BL=01h/03h/  }
+ { 05h/07h) - -1 si aucun. }
+ EmuTvDefWindow, EmuTvDefMailbox, EmuTvDefKeyboard, EmuTvDefObjectQ : Integer;
+ { GETBIT/FREEBIT/SETBIT (voir Emu_Tv_ServiceBits, appele depuis la       }
+ { boucle de pas comme Emu_ServiceIrqs). }
+ EmuTvBitSeg, EmuTvBitOfs : Array[0..TV_MAX_BITS - 1] Of Word;
+ EmuTvBitUsed             : Array[0..TV_MAX_BITS - 1] Of Boolean;
+ EmuTvBitPending          : Word;
+ { PGMINT (1021h) - file LIFO d injections en attente. }
+ EmuTvInjectSeg, EmuTvInjectOfs : Array[0..TV_MAX_INJECT - 1] Of Word;
+ EmuTvInjectCount               : Integer;
+ { SOUND (1019h) - file, voir Emu_Tv_ServiceSound (Emu_TimerTick). }
+ EmuTvSoundHz, EmuTvSoundTicks : Array[0..TV_MAX_SOUNDS - 1] Of Word;
+ EmuTvSoundCount               : Integer;
+ EmuTvSoundActiveTicks         : Word;
+ { OSTACK/USTACK (101Ah/1025h) - pile privee reelle, voir EMU_TV_STACK_OFS. }
+ EmuTvSavedSS, EmuTvSavedSP : Word;
+ EmuTvOnPrivStack           : Boolean;
+ { BEGINC/ENDC (101Bh/101Ch) - gate reellement Emu_ServiceIrqs pendant   }
+ { que la region critique est active (voir StepEmulator). }
+ EmuTvCritical    : Boolean;
+ { STOP/START (101Dh/101Eh) - suivi seul, voir le commentaire de         }
+ { perimetre : aucune vraie tache alternative a laquelle ceder le CPU. }
+ EmuTvTaskStopped : Boolean;
+ { PRINTC (1003h) : curseur logique de l "ecran par defaut" (DX qui ne     }
+ { correspond a aucune fenetre TopView suivie) - voir Emu_Tv_ScreenPutChar. }
+ EmuTvDefCursorX, EmuTvDefCursorY : Word;
  { --- CMOS RAM/RTC (MC146818-like, 64 registres) - accessible via les   }
  { ports 70h/71h (defaut) ou E0h/E1h quand Materiel = Amdek System/88,   }
  { voir Emu_PortRead/Emu_PortWrite et Emu_CMOSPorts. Persiste pour toute }
@@ -54730,6 +54903,855 @@ End;
 { absolue, contrairement au reste de cette section (voir Emu_MouseFireOne   }
 { pour le point d injection reel). }
 { ========================================================================= }
+{ ========================================================================= }
+{ IBM TopView (Options > Emulateur > DOS: OS > TopView) - INT 15h AH=10h/   }
+{ 11h/12h. Voir DOC/TOPVIEW_PROGRAMMING.txt et le commentaire de perimetre  }
+{ pres de TVOT_WINDOW (TEmuVideoState/etc, ~ligne 3525) : cet emulateur est }
+{ MONO-TACHE (un seul contexte CPU 8086) - le modele d objets TopView est   }
+{ implante REELLEMENT, mais la multitache preemptive/cooperative et le      }
+{ remappage IRQ (INT 50h-57h) sont HORS PERIMETRE, aucune tache concurrente }
+{ n existe a proteger.                                                      }
+{                                                                            }
+{ Convention d appel AH=12h (messages/objets) : le document precise         }
+{ lui-meme que le nettoyage de pile DWORD "varie" et recommande un wrapper  }
+{ assembleur dedie meme pour du code TopView natif - plutot que de deviner  }
+{ un ordre de pile non verifie, cette implementation utilise une convention }
+{ REGISTRE simple et coherente (BH=verbe, BL=selecteur de cible comme       }
+{ documente, ES=segment de poignee quand BL=00h, CX/DX/DS:SI/ES:DI pour les }
+{ parametres/resultats selon le verbe - documente au cas par cas ci-dessous)}
+{ plutot qu une reproduction bit-a-bit d un format de pile non specifie.    }
+{ ========================================================================= }
+
+Function Emu_Tv_HandleSeg(Slot: Integer): Word;
+Begin
+ Emu_Tv_HandleSeg := EMU_TV_HANDLE_SEG_BASE + Word(Slot);
+End;
+
+Function Emu_Tv_SlotFromSeg(Seg: Word): Integer;
+Var Slot: Integer;
+Begin
+ Emu_Tv_SlotFromSeg := -1;
+ If (Seg < EMU_TV_HANDLE_SEG_BASE) Or (Seg >= EMU_TV_HANDLE_SEG_BASE + TV_MAX_OBJECTS) Then Exit;
+ Slot := Seg - EMU_TV_HANDLE_SEG_BASE;
+ If EmuTvObjType[Slot] = TVOT_FREE Then Exit;
+ Emu_Tv_SlotFromSeg := Slot;
+End;
+
+Function Emu_Tv_AllocSlot: Integer;
+Var I: Integer;
+Begin
+ Emu_Tv_AllocSlot := -1;
+ For I := 0 To TV_MAX_OBJECTS - 1 Do
+  If EmuTvObjType[I] = TVOT_FREE Then Begin
+   Emu_Tv_AllocSlot := I;
+   Exit;
+  End;
+End;
+
+Function Emu_Tv_AllocWinBuf: Integer;
+Var I: Integer;
+Begin
+ Emu_Tv_AllocWinBuf := -1;
+ For I := 0 To TV_MAX_WINDOWS - 1 Do
+  If Not EmuTvWinBufUsed[I] Then Begin
+   EmuTvWinBufUsed[I] := True;
+   Emu_Tv_AllocWinBuf := I;
+   Exit;
+  End;
+End;
+
+Function Emu_Tv_WinBufOfs(Idx: Integer): Word;
+Begin
+ Emu_Tv_WinBufOfs := EMU_TV_WINBUF_OFS + Word(Idx) * TV_WINBUF_SIZE;
+End;
+
+{ --- Tas GETMEM/PUTMEM (1001h/1002h) : liste libre simple, en-tete 4o par }
+{ bloc (Taille utile:Word, Libre 0/1:Word), fusion avec le bloc suivant a   }
+{ la liberation. }
+Procedure Emu_Tv_HeapInit(Var P: TEmulatorPanel);
+Begin
+ Emu_WriteWord(P.CPU, EMU_TV_SEG, EMU_TV_HEAP_OFS, TV_HEAP_SIZE - 4);
+ Emu_WriteWord(P.CPU, EMU_TV_SEG, EMU_TV_HEAP_OFS + 2, 1);
+End;
+
+Function Emu_Tv_HeapAlloc(Var P: TEmulatorPanel; Bytes: Word; Var OutSeg, OutOfs: Word): Boolean;
+Var Cur, BlkSize, Free, Remain: Word;
+Begin
+ Emu_Tv_HeapAlloc := False;
+ OutSeg := 0; OutOfs := 0;
+ If Bytes = 0 Then Bytes := 1;
+ Cur := EMU_TV_HEAP_OFS;
+ While Cur < EMU_TV_HEAP_OFS + TV_HEAP_SIZE Do Begin
+  BlkSize := Emu_ReadWord(P.CPU, EMU_TV_SEG, Cur);
+  Free := Emu_ReadWord(P.CPU, EMU_TV_SEG, Cur + 2);
+  If (Free = 1) And (BlkSize >= Bytes) Then Begin
+   If BlkSize >= LongInt(Bytes) + 4 + 1 Then Begin
+    Remain := BlkSize - Bytes - 4;
+    Emu_WriteWord(P.CPU, EMU_TV_SEG, Cur + 4 + Bytes, Remain);
+    Emu_WriteWord(P.CPU, EMU_TV_SEG, Cur + 4 + Bytes + 2, 1);
+    Emu_WriteWord(P.CPU, EMU_TV_SEG, Cur, Bytes);
+   End;
+   Emu_WriteWord(P.CPU, EMU_TV_SEG, Cur + 2, 0);
+   OutSeg := EMU_TV_SEG; OutOfs := Cur + 4;
+   Emu_Tv_HeapAlloc := True;
+   Exit;
+  End;
+  Cur := Cur + 4 + BlkSize;
+ End;
+End;
+
+Procedure Emu_Tv_HeapFree(Var P: TEmulatorPanel; Seg, Ofs: Word);
+Var Cur, BlkSize, NextSize, NextFree: Word;
+Begin
+ If (Seg <> EMU_TV_SEG) Or (Ofs < EMU_TV_HEAP_OFS + 4) Then Exit;
+ Cur := Ofs - 4;
+ If (Cur < EMU_TV_HEAP_OFS) Or (Cur >= EMU_TV_HEAP_OFS + TV_HEAP_SIZE) Then Exit;
+ Emu_WriteWord(P.CPU, EMU_TV_SEG, Cur + 2, 1);
+ BlkSize := Emu_ReadWord(P.CPU, EMU_TV_SEG, Cur);
+ If Cur + 4 + BlkSize < EMU_TV_HEAP_OFS + TV_HEAP_SIZE Then Begin
+  NextSize := Emu_ReadWord(P.CPU, EMU_TV_SEG, Cur + 4 + BlkSize);
+  NextFree := Emu_ReadWord(P.CPU, EMU_TV_SEG, Cur + 4 + BlkSize + 2);
+  If NextFree = 1 Then
+   Emu_WriteWord(P.CPU, EMU_TV_SEG, Cur, BlkSize + 4 + NextSize);
+ End;
+End;
+
+{ --- Injection d appel FAR "propre" (empile CS:IP courant, saute a la     }
+{ cible) - PAS de fanions empiles, la cible doit finir par RETF (voir       }
+{ GETBIT/PGMINT dans le document, contrairement a un vecteur d IRQ reel qui }
+{ termine par IRET). Reutilisee par le service GETBIT/SETBIT et par PGMINT.}
+Procedure Emu_Tv_FarCallInject(Var P: TEmulatorPanel; TargetSeg, TargetOfs: Word);
+Begin
+ Emu_PushWord(P.CPU, P.CPU.Segs.CS);
+ Emu_PushWord(P.CPU, P.CPU.IP);
+ P.CPU.Segs.CS := TargetSeg;
+ P.CPU.IP := TargetOfs;
+End;
+
+{ Sert au plus UN bit arme par pas CPU (comme Emu_ServiceIrqs) - jamais    }
+{ pendant une region critique BEGINC/ENDC. }
+Procedure Emu_Tv_ServiceBits(Var P: TEmulatorPanel);
+Var B, TargetSlot: Integer;
+Begin
+ If EmuTvCritical Or (EmuTvBitPending = 0) Then Exit;
+ B := 0;
+ While (B < TV_MAX_BITS) And ((EmuTvBitPending And (Word(1) Shl B)) = 0) Do Inc(B);
+ If B >= TV_MAX_BITS Then Exit;
+ EmuTvBitPending := EmuTvBitPending And Not (Word(1) Shl B);
+ If Not EmuTvBitUsed[B] Then Exit;
+ If EmuTvDefWindow >= 0 Then TargetSlot := EmuTvDefWindow
+ Else If EmuTvDefObjectQ >= 0 Then TargetSlot := EmuTvDefObjectQ
+ Else TargetSlot := -1;
+ If TargetSlot >= 0 Then P.CPU.Segs.ES := Emu_Tv_HandleSeg(TargetSlot)
+ Else P.CPU.Segs.ES := EMU_TV_SEG;
+ Emu_Tv_FarCallInject(P, EmuTvBitSeg[B], EmuTvBitOfs[B]);
+End;
+
+{ PGMINT (1021h) : file LIFO, servie au plus une injection par pas CPU. }
+Procedure Emu_Tv_ServiceInjects(Var P: TEmulatorPanel);
+Begin
+ If EmuTvCritical Or (EmuTvInjectCount <= 0) Then Exit;
+ Dec(EmuTvInjectCount);
+ Emu_Tv_FarCallInject(P, EmuTvInjectSeg[EmuTvInjectCount], EmuTvInjectOfs[EmuTvInjectCount]);
+End;
+
+{ SOUND (1019h) : etat REEL du haut-parleur (EmuPPI.PortB bits 0-1, voir   }
+{ Emu_PPI_ReadB) - aucune sortie audio hote n existe dans cet emulateur,   }
+{ mais un logiciel qui relit le port 61h apres un SOUND voit un etat       }
+{ coherent avec une vraie carte mere. }
+Procedure Emu_Tv_ApplySound(Hz: Word);
+Begin
+ If Hz = 0 Then
+  EmuPPI.PortB := EmuPPI.PortB And Not Byte($03)
+ Else
+  EmuPPI.PortB := EmuPPI.PortB Or $03;
+End;
+
+Procedure Emu_Tv_Sound(Hz, Ticks: Word);
+Begin
+ If (Hz = 0) And (Ticks = 0) Then Begin
+  EmuTvSoundCount := 0;
+  EmuTvSoundActiveTicks := 0;
+  Emu_Tv_ApplySound(0);
+  Exit;
+ End;
+ If Ticks = 0 Then Begin
+  EmuTvSoundActiveTicks := 0; { annule la note en cours, la file avance au prochain tick }
+  Exit;
+ End;
+ If EmuTvSoundActiveTicks = 0 Then Begin
+  Emu_Tv_ApplySound(Hz);
+  EmuTvSoundActiveTicks := Ticks;
+ End Else If EmuTvSoundCount < TV_MAX_SOUNDS Then Begin
+  EmuTvSoundHz[EmuTvSoundCount] := Hz;
+  EmuTvSoundTicks[EmuTvSoundCount] := Ticks;
+  Inc(EmuTvSoundCount);
+ End;
+End;
+
+{ Appelee depuis Emu_TimerTick (tops BIOS 18,2 Hz, voir Emu_Tv_ServiceTimers}
+{ ci-dessous pour le meme point d ancrage) - avance la file SOUND. }
+Procedure Emu_Tv_ServiceSound;
+Var I: Integer;
+Begin
+ If EmuTvSoundActiveTicks = 0 Then Exit;
+ Dec(EmuTvSoundActiveTicks);
+ If EmuTvSoundActiveTicks > 0 Then Exit;
+ Emu_Tv_ApplySound(0);
+ If EmuTvSoundCount > 0 Then Begin
+  Emu_Tv_ApplySound(EmuTvSoundHz[0]);
+  EmuTvSoundActiveTicks := EmuTvSoundTicks[0];
+  For I := 0 To EmuTvSoundCount - 2 Do Begin
+   EmuTvSoundHz[I] := EmuTvSoundHz[I + 1];
+   EmuTvSoundTicks[I] := EmuTvSoundTicks[I + 1];
+  End;
+  Dec(EmuTvSoundCount);
+ End;
+End;
+
+{ TIMER (1er type NEW BL=0Bh) : pas de 10 ms reel approxime a 5 centiemes  }
+{ par tick BIOS 18,2 Hz (~5,49 exacts) - assez precis pour un compteur     }
+{ applicatif, documente comme approximation plutot que suppose exact. }
+Procedure Emu_Tv_ServiceTimers;
+Var I: Integer;
+Begin
+ For I := 0 To TV_MAX_OBJECTS - 1 Do
+  If (EmuTvObjType[I] = TVOT_TIMER) And EmuTvTimer[I].Running Then
+   Inc(EmuTvTimer[I].ExpiryCenti, 5);
+End;
+
+{ Ecrit un caractere+attribut dans le tampon virtuel d une fenetre et      }
+{ avance le curseur logique (repli simple en debut de zone en bout de      }
+{ fenetre - pas de vrai defilement, voir le commentaire de perimetre). }
+Procedure Emu_Tv_WindowPutChar(Var P: TEmulatorPanel; Slot: Integer; Ch, Attr: Byte);
+Var Seg, Ofs, CellOfs: Word;
+Begin
+ If EmuTvWindow[Slot].WinBufIdx < 0 Then Exit;
+ Seg := EMU_TV_SEG;
+ Ofs := Emu_Tv_WinBufOfs(EmuTvWindow[Slot].WinBufIdx);
+ CellOfs := (EmuTvWindow[Slot].CursorY * EmuTvWindow[Slot].Cols + EmuTvWindow[Slot].CursorX) * 2;
+ If LongInt(CellOfs) + 1 < TV_WINBUF_SIZE Then Begin
+  Emu_WriteByte(P.CPU, Seg, Ofs + CellOfs, Ch);
+  Emu_WriteByte(P.CPU, Seg, Ofs + CellOfs + 1, Attr);
+ End;
+ Inc(EmuTvWindow[Slot].CursorX);
+ If EmuTvWindow[Slot].CursorX >= EmuTvWindow[Slot].Cols Then Begin
+  EmuTvWindow[Slot].CursorX := 0;
+  Inc(EmuTvWindow[Slot].CursorY);
+  If EmuTvWindow[Slot].CursorY >= EmuTvWindow[Slot].Rows Then EmuTvWindow[Slot].CursorY := 0;
+ End;
+End;
+
+{ Curseur logique de l "ecran par defaut" (DX non reconnu comme une        }
+{ fenetre TopView dans PRINTC) - ecrit directement dans la VRAM texte      }
+{ reelle B800:0000, comme un vrai TopView non-fenetre le ferait pour le    }
+{ moniteur physique. }
+Procedure Emu_Tv_ScreenPutChar(Var P: TEmulatorPanel; Ch, Attr: Byte);
+Var CellOfs: Word;
+Begin
+ CellOfs := (EmuTvDefCursorY * 80 + EmuTvDefCursorX) * 2;
+ Emu_WriteByte(P.CPU, $B800, CellOfs, Ch);
+ Emu_WriteByte(P.CPU, $B800, CellOfs + 1, Attr);
+ Inc(EmuTvDefCursorX);
+ If EmuTvDefCursorX >= 80 Then Begin
+  EmuTvDefCursorX := 0;
+  Inc(EmuTvDefCursorY);
+  If EmuTvDefCursorY >= 25 Then EmuTvDefCursorY := 0;
+ End;
+End;
+
+{ Reinitialise tout l etat TopView - appelee depuis Emu_InitBDA. L etat    }
+{ materiel volatil (comme le reste de cette famille de sous-systemes,      }
+{ EmuPPI/EmuNE2000/etc) est remis a neuf a chaque session DOS. }
+Procedure Emu_Tv_Init(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ For I := 0 To TV_MAX_OBJECTS - 1 Do EmuTvObjType[I] := TVOT_FREE;
+ For I := 0 To TV_MAX_WINDOWS - 1 Do EmuTvWinBufUsed[I] := False;
+ EmuTvDefWindow := -1; EmuTvDefMailbox := -1; EmuTvDefKeyboard := -1; EmuTvDefObjectQ := -1;
+ For I := 0 To TV_MAX_BITS - 1 Do Begin
+  EmuTvBitUsed[I] := False; EmuTvBitSeg[I] := 0; EmuTvBitOfs[I] := 0;
+ End;
+ EmuTvBitPending := 0;
+ EmuTvInjectCount := 0;
+ EmuTvSoundCount := 0;
+ EmuTvSoundActiveTicks := 0;
+ EmuTvSavedSS := 0; EmuTvSavedSP := 0; EmuTvOnPrivStack := False;
+ EmuTvCritical := False;
+ EmuTvTaskStopped := False;
+ EmuTvDefCursorX := 0; EmuTvDefCursorY := 0;
+ If OptionsDlg.Data.DosTopView Then Begin
+  Emu_Tv_HeapInit(P);
+  { Un OBJECTQ est toujours associe a la tache courante dans un vrai       }
+  { environnement TopView - cree implicitement des l activation. }
+  EmuTvDefObjectQ := Emu_Tv_AllocSlot;
+  If EmuTvDefObjectQ >= 0 Then EmuTvObjType[EmuTvDefObjectQ] := TVOT_OBJECTQ;
+ End;
+End;
+
+{ Cree un objet (BH=01h NEW, BL=classe) - convention registre propre a      }
+{ cette implementation (voir le grand commentaire d en-tete de section) :   }
+{ WINDOW(08h) CX=colonnes,DX=lignes,ES:DI=titre ASCIIZ,SI bit0=indicateur   }
+{ tache ; MAILBOX(09h)/KEYBOARD(0Ah)/TIMER(0Bh)/POINTER(0Fh) sans parametre;}
+{ PANEL(10h) ES:DI=nom de fichier ASCIIZ. Resultat : BX=segment de la       }
+{ nouvelle poignee (0 et CF si echec - table pleine ou pool de tampons      }
+{ fenetre epuise). }
+Procedure Emu_Tv_HandleNew(Var P: TEmulatorPanel);
+Var
+ Slot, WinBuf, I: Integer;
+ TitleStr, FileStr: String;
+ Ch: Byte;
+Begin
+ P.CPU.Regs.BX := 0;
+ Case P.CPU.Regs.BL Of
+  $08: Begin { WINDOW }
+   Slot := Emu_Tv_AllocSlot;
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   WinBuf := Emu_Tv_AllocWinBuf;
+   If WinBuf < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   TitleStr := '';
+   I := 0;
+   While I < 63 Do Begin
+    Ch := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I);
+    If Ch = 0 Then Break;
+    TitleStr := TitleStr + Chr(Ch);
+    Inc(I);
+   End;
+   FillChar(EmuTvWindow[Slot], SizeOf(EmuTvWindow[Slot]), 0);
+   EmuTvObjType[Slot] := TVOT_WINDOW;
+   EmuTvWindow[Slot].Cols := P.CPU.Regs.CX;
+   If EmuTvWindow[Slot].Cols = 0 Then EmuTvWindow[Slot].Cols := 80;
+   If EmuTvWindow[Slot].Cols > 80 Then EmuTvWindow[Slot].Cols := 80;
+   EmuTvWindow[Slot].Rows := P.CPU.Regs.DX;
+   If EmuTvWindow[Slot].Rows = 0 Then EmuTvWindow[Slot].Rows := 25;
+   If EmuTvWindow[Slot].Rows > 25 Then EmuTvWindow[Slot].Rows := 25;
+   EmuTvWindow[Slot].Title := TitleStr;
+   EmuTvWindow[Slot].WinBufIdx := WinBuf;
+   EmuTvWindow[Slot].IsTask := (P.CPU.Regs.SI And 1) <> 0;
+   EmuTvWindow[Slot].KbdSlot := -1;
+   EmuTvWindow[Slot].PtrSlot := -1;
+   For I := 0 To TV_WINBUF_SIZE - 1 Do
+    Emu_WriteByte(P.CPU, EMU_TV_SEG, Emu_Tv_WinBufOfs(WinBuf) + I, 0);
+   If EmuTvDefWindow < 0 Then EmuTvDefWindow := Slot;
+   P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot);
+  End;
+  $09: Begin { MAILBOX }
+   Slot := Emu_Tv_AllocSlot;
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   EmuTvObjType[Slot] := TVOT_MAILBOX;
+   FillChar(EmuTvMailbox[Slot], SizeOf(EmuTvMailbox[Slot]), 0);
+   If EmuTvDefMailbox < 0 Then EmuTvDefMailbox := Slot;
+   P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot);
+  End;
+  $0A: Begin { KEYBOARD }
+   Slot := Emu_Tv_AllocSlot;
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   EmuTvObjType[Slot] := TVOT_KEYBOARD;
+   EmuTvKeyboard[Slot].BoundWindow := -1;
+   If EmuTvDefKeyboard < 0 Then EmuTvDefKeyboard := Slot;
+   P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot);
+  End;
+  $0B: Begin { TIMER }
+   Slot := Emu_Tv_AllocSlot;
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   EmuTvObjType[Slot] := TVOT_TIMER;
+   EmuTvTimer[Slot].ExpiryCenti := 0;
+   EmuTvTimer[Slot].Running := False;
+   P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot);
+  End;
+  $0F: Begin { POINTER }
+   Slot := Emu_Tv_AllocSlot;
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   EmuTvObjType[Slot] := TVOT_POINTER;
+   EmuTvPointer[Slot].BoundWindow := -1;
+   EmuTvPointer[Slot].ScaleX := 8; EmuTvPointer[Slot].ScaleY := 16;
+   EmuTvPointer[Slot].Icon := 0;
+   P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot);
+  End;
+  $10: Begin { PANEL }
+   Slot := Emu_Tv_AllocSlot;
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   EmuTvObjType[Slot] := TVOT_PANEL;
+   FileStr := '';
+   I := 0;
+   While I < 79 Do Begin
+    Ch := Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I);
+    If Ch = 0 Then Break;
+    FileStr := FileStr + Chr(Ch);
+    Inc(I);
+   End;
+   EmuTvPanel[Slot].FileName := FileStr;
+   P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot);
+  End;
+ Else
+  Include(P.CPU.Flags.s, EFG_CF);
+ End;
+End;
+
+Procedure Emu_Tv_HandleFree(Var P: TEmulatorPanel; Slot: Integer);
+Begin
+ If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+ Case EmuTvObjType[Slot] Of
+  TVOT_WINDOW: Begin
+   If EmuTvWindow[Slot].WinBufIdx >= 0 Then EmuTvWinBufUsed[EmuTvWindow[Slot].WinBufIdx] := False;
+   If EmuTvDefWindow = Slot Then EmuTvDefWindow := -1;
+  End;
+  TVOT_MAILBOX: If EmuTvDefMailbox = Slot Then EmuTvDefMailbox := -1;
+  TVOT_KEYBOARD: If EmuTvDefKeyboard = Slot Then EmuTvDefKeyboard := -1;
+  TVOT_OBJECTQ: If EmuTvDefObjectQ = Slot Then EmuTvDefObjectQ := -1;
+ End;
+ EmuTvObjType[Slot] := TVOT_FREE;
+End;
+
+{ Vrai si une touche est disponible pour un objet KEYBOARD TopView -       }
+{ tampon BIOS (0040:001A/001C) prioritaire, meme ordre que Emu_DoInt16      }
+{ AH=00h/10h, PUIS la file hote brute EmuVScr en repli (voir le             }
+{ commentaire de Emu_Tv_KeyboardRead pour pourquoi l ordre inverse ferait   }
+{ perdre la course au drainage par tick de StepEmulator). }
+Function Emu_Tv_KeyAvail(Var P: TEmulatorPanel): Boolean;
+Begin
+ Emu_Tv_KeyAvail := Emu_BiosHasKey(P) Or EmuVScr_HasKey(P);
+End;
+
+{ Resout l objet cible d un message AH=12h d apres BL (voir la table       }
+{ HANDLE section 5 du document) : 00h=poignee dans ES, 01h/03h/05h/07h=     }
+{ objet par defaut de l unique tache emulee (fenetre/boite/clavier/OBJECTQ).}
+Function Emu_Tv_TargetSlot(Var P: TEmulatorPanel): Integer;
+Begin
+ Case P.CPU.Regs.BL Of
+  $00: Emu_Tv_TargetSlot := Emu_Tv_SlotFromSeg(P.CPU.Segs.ES);
+  $01: Emu_Tv_TargetSlot := EmuTvDefWindow;
+  $03: Emu_Tv_TargetSlot := EmuTvDefMailbox;
+  $05: Emu_Tv_TargetSlot := EmuTvDefKeyboard;
+  $07: Emu_Tv_TargetSlot := EmuTvDefObjectQ;
+ Else
+  Emu_Tv_TargetSlot := -1;
+ End;
+End;
+
+{ INT 15h AH=12h : messages/objets (voir la table de verbes BH section 5   }
+{ du document, et le commentaire d en-tete sur la convention registre      }
+{ utilisee ici plutot que le format de pile DWORD non totalement specifie).}
+Procedure Emu_DoInt15Tv12(Var P: TEmulatorPanel);
+Var
+ Slot, I, N: Integer;
+ Ch, Attr: Byte;
+Begin
+ Exclude(P.CPU.Flags.s, EFG_CF);
+ Case P.CPU.Regs.BH Of
+  $00: Begin { HANDLE }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot >= 0 Then P.CPU.Regs.BX := Emu_Tv_HandleSeg(Slot)
+   Else Begin P.CPU.Regs.BX := 0; Include(P.CPU.Flags.s, EFG_CF); End;
+  End;
+  $01: Emu_Tv_HandleNew(P);
+  $02: Emu_Tv_HandleFree(P, Emu_Tv_TargetSlot(P));
+  $03: Begin { ADDR (mailbox) / DIR (panel - meme numero de verbe, voir BX=0300h) }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: P.CPU.Regs.BX := EmuTvMailbox[Slot].LastSenderSeg;
+    TVOT_PANEL: Begin
+     P.CPU.Regs.CX := 0; { liste toujours vide, voir le commentaire de TTvPanel }
+     P.CPU.Segs.ES := 0; P.CPU.Regs.DI := 0;
+    End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $04: Begin { READ }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: Begin
+     If EmuTvMailbox[Slot].Count = 0 Then
+      Include(P.CPU.Flags.s, EFG_CF)
+     Else Begin
+      P.CPU.Regs.AL := EmuTvMailbox[Slot].Data[EmuTvMailbox[Slot].Head];
+      EmuTvMailbox[Slot].Head := (EmuTvMailbox[Slot].Head + 1) Mod 256;
+      Dec(EmuTvMailbox[Slot].Count);
+     End;
+    End;
+    TVOT_KEYBOARD: Begin
+     { Tampon BIOS (0040:001A/001C) prioritaire, meme ordre que Emu_DoInt16 }
+     { AH=00h/10h - PAS la file hote brute EmuVScr, deja videe vers ce      }
+     { tampon a chaque tick BIOS (voir StepEmulator) : la lire directement  }
+     { ferait perdre la course a ce drainage et ne verrait jamais rien.     }
+     If Emu_BiosHasKey(P) Then Begin
+      N := Emu_BiosPopKey(P);
+      P.CPU.Regs.AL := Lo(N); P.CPU.Regs.AH := Hi(N);
+     End Else If EmuVScr_HasKey(P) Then Begin
+      N := EmuVScr_PopKey(P);
+      P.CPU.Regs.AL := Lo(N); P.CPU.Regs.AH := Hi(N);
+     End Else
+      Include(P.CPU.Flags.s, EFG_CF);
+    End;
+    TVOT_TIMER: Begin
+     P.CPU.Regs.AX := Word(EmuTvTimer[Slot].ExpiryCenti);
+     P.CPU.Regs.DX := Word(EmuTvTimer[Slot].ExpiryCenti Shr 16);
+    End;
+    TVOT_POINTER: Begin
+     P.CPU.Regs.CX := Word(EmuMouseX); P.CPU.Regs.DX := Word(EmuMouseY);
+     P.CPU.Regs.AL := EmuMouseBtns;
+    End;
+    TVOT_OBJECTQ: Begin
+     { Simplifie (voir le commentaire de perimetre) : verifie clavier puis }
+     { boites aux lettres, renvoie la premiere avec activite - un vrai     }
+     { OBJECTQ multitache attendrait, ici l appel revient immediatement.   }
+     N := -1;
+     If (EmuTvDefKeyboard >= 0) And Emu_Tv_KeyAvail(P) Then N := EmuTvDefKeyboard
+     Else Begin
+      I := 0;
+      While (I < TV_MAX_OBJECTS) And (N < 0) Do Begin
+       If (EmuTvObjType[I] = TVOT_MAILBOX) And (EmuTvMailbox[I].Count > 0) Then N := I;
+       Inc(I);
+      End;
+     End;
+     If N >= 0 Then P.CPU.Regs.BX := Emu_Tv_HandleSeg(N)
+     Else Begin P.CPU.Regs.BX := 0; Include(P.CPU.Flags.s, EFG_CF); End;
+    End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $05: Begin { WRITE }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: Begin
+     N := P.CPU.Regs.CX;
+     For I := 0 To N - 1 Do Begin
+      If EmuTvMailbox[Slot].Count >= 256 Then Break;
+      Ch := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + I);
+      EmuTvMailbox[Slot].Data[EmuTvMailbox[Slot].Tail] := Ch;
+      EmuTvMailbox[Slot].Tail := (EmuTvMailbox[Slot].Tail + 1) Mod 256;
+      Inc(EmuTvMailbox[Slot].Count);
+     End;
+     EmuTvMailbox[Slot].LastSenderSeg := EMU_TV_SEG;
+    End;
+    TVOT_WINDOW: Begin
+     N := P.CPU.Regs.CX;
+     Attr := P.CPU.Regs.DL;
+     For I := 0 To N - 1 Do Begin
+      Ch := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + I);
+      Emu_Tv_WindowPutChar(P, Slot, Ch, Attr);
+     End;
+    End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $08: Begin { SIZEOF }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: P.CPU.Regs.AX := 256;
+    TVOT_WINDOW: P.CPU.Regs.AX := EmuTvWindow[Slot].Cols * EmuTvWindow[Slot].Rows;
+   Else
+    P.CPU.Regs.AX := 0;
+   End;
+  End;
+  $09: Begin { LEN }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   If EmuTvObjType[Slot] = TVOT_MAILBOX Then P.CPU.Regs.AX := EmuTvMailbox[Slot].Count
+   Else P.CPU.Regs.AX := 0;
+  End;
+  $0A: Begin { ADDTO : ecriture avec attribut dans une fenetre (DS:SI,CX=longueur,DL=attribut) }
+   Slot := Emu_Tv_TargetSlot(P);
+   If (Slot < 0) Or (EmuTvObjType[Slot] <> TVOT_WINDOW) Then Begin
+    Include(P.CPU.Flags.s, EFG_CF); Exit;
+   End;
+   N := P.CPU.Regs.CX;
+   Attr := P.CPU.Regs.DL;
+   For I := 0 To N - 1 Do Begin
+    Ch := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + I);
+    Emu_Tv_WindowPutChar(P, Slot, Ch, Attr);
+   End;
+  End;
+  $0C: Begin { OPEN : DX=segment de la fenetre a associer }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   N := Emu_Tv_SlotFromSeg(P.CPU.Regs.DX);
+   Case EmuTvObjType[Slot] Of
+    TVOT_KEYBOARD: EmuTvKeyboard[Slot].BoundWindow := N;
+    TVOT_POINTER: EmuTvPointer[Slot].BoundWindow := N;
+    TVOT_PANEL: ;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $0D: Begin { CLOSE }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_KEYBOARD: EmuTvKeyboard[Slot].BoundWindow := -1;
+    TVOT_POINTER: EmuTvPointer[Slot].BoundWindow := -1;
+   End;
+  End;
+  $0E: Begin { ERASE }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: Begin
+     EmuTvMailbox[Slot].Head := 0; EmuTvMailbox[Slot].Tail := 0; EmuTvMailbox[Slot].Count := 0;
+    End;
+    TVOT_WINDOW: Begin
+     EmuTvWindow[Slot].CursorX := 0; EmuTvWindow[Slot].CursorY := 0;
+     If EmuTvWindow[Slot].WinBufIdx >= 0 Then
+      For I := 0 To TV_WINBUF_SIZE - 1 Do
+       Emu_WriteByte(P.CPU, EMU_TV_SEG, Emu_Tv_WinBufOfs(EmuTvWindow[Slot].WinBufIdx) + I, 0);
+    End;
+   End;
+  End;
+  $0F: Begin { STATUS }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: If EmuTvMailbox[Slot].Count > 0 Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    TVOT_KEYBOARD: If Emu_Tv_KeyAvail(P) Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    TVOT_TIMER: If EmuTvTimer[Slot].Running Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   Else
+    P.CPU.Regs.AX := 0;
+   End;
+  End;
+  $10: Begin { EOF }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: If EmuTvMailbox[Slot].Count = 0 Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    TVOT_KEYBOARD: If Not Emu_Tv_KeyAvail(P) Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   Else
+    P.CPU.Regs.AX := 1;
+   End;
+  End;
+  $11: Begin { AT (fenetre : DH=ligne,DL=colonne ; timer : DX:AX=echeance) / }
+             { SETSCALE (pointeur, CX/DX - meme numero de verbe, BX=1100h)  }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_WINDOW: Begin
+     EmuTvWindow[Slot].CursorY := P.CPU.Regs.DH;
+     EmuTvWindow[Slot].CursorX := P.CPU.Regs.DL;
+     If EmuTvWindow[Slot].CursorX >= EmuTvWindow[Slot].Cols Then EmuTvWindow[Slot].CursorX := 0;
+     If EmuTvWindow[Slot].CursorY >= EmuTvWindow[Slot].Rows Then EmuTvWindow[Slot].CursorY := 0;
+    End;
+    TVOT_TIMER: Begin
+     EmuTvTimer[Slot].ExpiryCenti := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+     EmuTvTimer[Slot].Running := True;
+    End;
+    TVOT_POINTER: Begin
+     EmuTvPointer[Slot].ScaleX := P.CPU.Regs.CX;
+     EmuTvPointer[Slot].ScaleY := P.CPU.Regs.DX;
+    End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $12: Begin { READN (mailbox, ES:DI=tampon,CX=max) / GETSCALE (pointeur, BX=1200h) }
+   Slot := Emu_Tv_TargetSlot(P);
+   If Slot < 0 Then Begin Include(P.CPU.Flags.s, EFG_CF); Exit; End;
+   Case EmuTvObjType[Slot] Of
+    TVOT_MAILBOX: Begin
+     N := P.CPU.Regs.CX;
+     I := 0;
+     While (I < N) And (EmuTvMailbox[Slot].Count > 0) Do Begin
+      Ch := EmuTvMailbox[Slot].Data[EmuTvMailbox[Slot].Head];
+      EmuTvMailbox[Slot].Head := (EmuTvMailbox[Slot].Head + 1) Mod 256;
+      Dec(EmuTvMailbox[Slot].Count);
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I, Ch);
+      Inc(I);
+     End;
+     P.CPU.Regs.AX := I;
+    End;
+    TVOT_POINTER: Begin
+     P.CPU.Regs.CX := EmuTvPointer[Slot].ScaleX;
+     P.CPU.Regs.DX := EmuTvPointer[Slot].ScaleY;
+    End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $13: Begin { REDRAW (accepte sans effet - pas de compositeur reel) / SETICON (pointeur, DL, BX=1300h) }
+   Slot := Emu_Tv_TargetSlot(P);
+   If (Slot >= 0) And (EmuTvObjType[Slot] = TVOT_POINTER) Then
+    EmuTvPointer[Slot].Icon := P.CPU.Regs.DL;
+  End;
+  $14: ; { SETESC : accepte sans effet, voir le commentaire de perimetre }
+ Else
+  Include(P.CPU.Flags.s, EFG_CF);
+ End;
+End;
+
+{ INT 15h AH=11h : seul AL=17h (ASSERTMAP) est documente comme un appel    }
+{ IBM TopView reel (voir la section 4 du document) - le reste (DE00h..     }
+{ DE30h et alias) sont des extensions DESQview, pas des fonctions a         }
+{ implanter sans certitude du contrat IBM. }
+Procedure Emu_DoInt15Tv11(Var P: TEmulatorPanel);
+Begin
+ Case P.CPU.Regs.AL Of
+  $17: Begin { ASSERTMAP - memoire conventionnelle plate unique dans cet     }
+              { emulateur, aucune zone evincable : accepte, ancien contexte }
+              { toujours 0 (le seul qui existe). }
+   P.CPU.Regs.BX := 0;
+   Include(P.CPU.Flags.s, EFG_IF);
+  End;
+ Else
+  Include(P.CPU.Flags.s, EFG_CF);
+ End;
+End;
+
+{ INT 15h AH=10h : services directs (voir la table complete section 3 du   }
+{ document). AX=1004h-1012h/1017h/1020h/1026h+ ne sont implantes ni ici ni  }
+{ dans DESQview 2.x d apres le document - tombent dans le Else (CF, comme   }
+{ AX non reconnu). }
+Procedure Emu_DoInt15Tv10(Var P: TEmulatorPanel);
+Var
+ OutSeg, OutOfs, Len: Word;
+ WinSlot, I, Res, BitIdx: Integer;
+ Ch, Attr: Byte;
+ Txt: String;
+Begin
+ Exclude(P.CPU.Flags.s, EFG_CF);
+ Case P.CPU.Regs.AX Of
+  $1000: ; { PAUSE : rien a ceder, un seul contexte CPU (voir le commentaire de perimetre) }
+  $1001: Begin { GETMEM }
+   If Emu_Tv_HeapAlloc(P, P.CPU.Regs.BX, OutSeg, OutOfs) Then Begin
+    P.CPU.Segs.ES := OutSeg; P.CPU.Regs.DI := OutOfs;
+   End Else Begin
+    P.CPU.Segs.ES := 0; P.CPU.Regs.DI := 0;
+   End;
+  End;
+  $1002: Emu_Tv_HeapFree(P, P.CPU.Segs.ES, P.CPU.Regs.DI); { PUTMEM }
+  $1003: Begin { PRINTC }
+   If P.CPU.Regs.BX <> 0 Then Begin
+    Attr := P.CPU.Regs.BH; Ch := P.CPU.Regs.BL;
+    WinSlot := Emu_Tv_SlotFromSeg(P.CPU.Regs.DX);
+    If (WinSlot >= 0) And (EmuTvObjType[WinSlot] = TVOT_WINDOW) Then
+     Emu_Tv_WindowPutChar(P, WinSlot, Ch, Attr)
+    Else
+     Emu_Tv_ScreenPutChar(P, Ch, Attr);
+   End;
+   { BX=0000h : synchronise seulement le curseur materiel - le curseur     }
+   { logique est deja tenu a jour par les ecritures precedentes. }
+  End;
+  $1013: Begin { GETBIT }
+   BitIdx := -1;
+   For I := 0 To TV_MAX_BITS - 1 Do
+    If Not EmuTvBitUsed[I] Then Begin BitIdx := I; Break; End;
+   If BitIdx < 0 Then P.CPU.Regs.BX := 0
+   Else Begin
+    EmuTvBitUsed[BitIdx] := True;
+    EmuTvBitSeg[BitIdx] := P.CPU.Segs.ES;
+    EmuTvBitOfs[BitIdx] := P.CPU.Regs.DI;
+    P.CPU.Regs.BX := Word(1) Shl BitIdx;
+   End;
+  End;
+  $1014: Begin { FREEBIT }
+   For I := 0 To TV_MAX_BITS - 1 Do
+    If (P.CPU.Regs.BX And (Word(1) Shl I)) <> 0 Then Begin
+     EmuTvBitUsed[I] := False;
+     EmuTvBitPending := EmuTvBitPending And Not (Word(1) Shl I);
+    End;
+  End;
+  $1015: EmuTvBitPending := EmuTvBitPending Or P.CPU.Regs.BX; { SETBIT }
+  $1016: Begin { ISOBJ }
+   If Emu_Tv_SlotFromSeg(P.CPU.Segs.ES) >= 0 Then P.CPU.Regs.BX := $FFFF
+   Else P.CPU.Regs.BX := 0;
+  End;
+  $1018: Begin { LOCATE - pas de vrai Z-order/composition (voir le          }
+   { commentaire de perimetre) : renvoie la fenetre par defaut si elle      }
+   { couvre (BL,BH), sinon 0. }
+   P.CPU.Segs.ES := 0;
+   If EmuTvDefWindow >= 0 Then Begin
+    WinSlot := EmuTvDefWindow;
+    If (P.CPU.Regs.BH >= EmuTvWindow[WinSlot].PosY) And
+       (P.CPU.Regs.BH < EmuTvWindow[WinSlot].PosY + EmuTvWindow[WinSlot].Rows) And
+       (P.CPU.Regs.BL >= EmuTvWindow[WinSlot].PosX) And
+       (P.CPU.Regs.BL < EmuTvWindow[WinSlot].PosX + EmuTvWindow[WinSlot].Cols) Then
+     P.CPU.Segs.ES := Emu_Tv_HandleSeg(WinSlot);
+   End;
+  End;
+  $1019: Emu_Tv_Sound(P.CPU.Regs.BX, P.CPU.Regs.CX); { SOUND }
+  $101A: Begin { OSTACK }
+   If Not EmuTvOnPrivStack Then Begin
+    EmuTvSavedSS := P.CPU.Segs.SS; EmuTvSavedSP := P.CPU.Regs.SP;
+    P.CPU.Segs.SS := EMU_TV_SEG;
+    P.CPU.Regs.SP := EMU_TV_STACK_OFS + TV_STACK_SIZE;
+    EmuTvOnPrivStack := True;
+   End;
+  End;
+  $1025: Begin { USTACK }
+   If EmuTvOnPrivStack Then Begin
+    P.CPU.Segs.SS := EmuTvSavedSS; P.CPU.Regs.SP := EmuTvSavedSP;
+    EmuTvOnPrivStack := False;
+   End;
+  End;
+  $101B: EmuTvCritical := True;  { BEGINC }
+  $101C: EmuTvCritical := False; { ENDC }
+  $101D: EmuTvTaskStopped := True;  { STOP - voir le commentaire de perimetre }
+  $101E: EmuTvTaskStopped := False; { START }
+  $101F: Begin { DISPEROR }
+   Len := P.CPU.Regs.BX And $1FFF;
+   Txt := '';
+   For I := 0 To Len - 1 Do
+    Txt := Txt + Chr(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I));
+   If (P.CPU.Regs.BX And $8000) <> 0 Then Emu_Tv_Sound(800, 2); { bit15 : bip }
+   Res := ShowMessageBox('TopView', Txt, MB_OKCANCEL, MI_ERROR);
+   If Res = DR_OK Then P.CPU.Regs.BX := 1
+   Else If Res = DR_CANCEL Then P.CPU.Regs.BX := 2
+   Else P.CPU.Regs.BX := 27;
+  End;
+  $1021: Begin { PGMINT }
+   If EmuTvInjectCount < TV_MAX_INJECT Then Begin
+    EmuTvInjectSeg[EmuTvInjectCount] := P.CPU.Regs.DX;
+    EmuTvInjectOfs[EmuTvInjectCount] := P.CPU.Regs.CX;
+    Inc(EmuTvInjectCount);
+   End;
+  End;
+  $1022: Begin { GETVER }
+   If P.CPU.Regs.BX = 0 Then
+    P.CPU.Regs.BX := $0001; { v1.0, comme TaskView (BL=1 majeur, BH=0 mineur) }
+  End;
+  $1023: Begin { POSWIN }
+   WinSlot := Emu_Tv_SlotFromSeg(P.CPU.Segs.ES);
+   If (WinSlot >= 0) And (EmuTvObjType[WinSlot] = TVOT_WINDOW) Then Begin
+    EmuTvWindow[WinSlot].PosX := P.CPU.Regs.CH;
+    EmuTvWindow[WinSlot].PosY := P.CPU.Regs.CL;
+   End;
+  End;
+  $1024: Begin { GETBUF }
+   If P.CPU.Regs.BX = 0 Then Begin
+    P.CPU.Segs.ES := $B800; P.CPU.Regs.DI := 0;
+    P.CPU.Regs.CX := 4000; P.CPU.Regs.DL := 0;
+   End Else Begin
+    WinSlot := Emu_Tv_SlotFromSeg(P.CPU.Regs.BX);
+    If (WinSlot >= 0) And (EmuTvObjType[WinSlot] = TVOT_WINDOW) And
+       (EmuTvWindow[WinSlot].WinBufIdx >= 0) Then Begin
+     P.CPU.Segs.ES := EMU_TV_SEG;
+     P.CPU.Regs.DI := Emu_Tv_WinBufOfs(EmuTvWindow[WinSlot].WinBufIdx);
+     P.CPU.Regs.CX := EmuTvWindow[WinSlot].Cols * EmuTvWindow[WinSlot].Rows * 2;
+     P.CPU.Regs.DL := 0;
+    End Else Begin
+     P.CPU.Segs.ES := 0; P.CPU.Regs.DI := 0; P.CPU.Regs.CX := 0;
+    End;
+   End;
+  End;
+ Else
+  Include(P.CPU.Flags.s, EFG_CF);
+ End;
+End;
+
+{ Point d entree unique - voir Emu_DoInt (Case AH=15h). }
+Procedure Emu_DoInt15Tv(Var P: TEmulatorPanel);
+Begin
+ Case P.CPU.Regs.AH Of
+  $10: Emu_DoInt15Tv10(P);
+  $11: Emu_DoInt15Tv11(P);
+  $12: Emu_DoInt15Tv12(P);
+ End;
+End;
+
 Procedure Emu_DoInt15C2(Var P: TEmulatorPanel);
 Begin
  Exclude(P.CPU.Flags.s, EFG_CF);
@@ -60494,6 +61516,14 @@ Begin
    If (P.CPU.Regs.AH = $C2) And EmuMousePS2Active Then Begin
     If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15C2(P);
    End
+   { TopView (Options > Emulateur > DOS: OS > TopView) : AH=10h/11h/12h,    }
+   { voir Emu_DoInt15Tv - meme principe que AH=C2h ci-dessus (gate par la   }
+   { case a cocher, chainage prioritaire si le programme invite a deja      }
+   { hooke INT 15h lui-meme). }
+   Else If (OptionsDlg.Data.DosTopView) And
+    ((P.CPU.Regs.AH = $10) Or (P.CPU.Regs.AH = $11) Or (P.CPU.Regs.AH = $12)) Then Begin
+    If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15Tv(P);
+   End
    Else Begin
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($15) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($15) * 4 + 2);
@@ -60793,6 +61823,7 @@ Begin
  Emu_ATA_Init(EmuATA[0], 0);
  Emu_ATA_Init(EmuATA[1], 1);
  FillChar(EmuSCSI, SizeOf(EmuSCSI), 0);
+ Emu_Tv_Init(P);
  { DOS demarre l application avec IF=1 (interruptions activees). }
  Include(P.CPU.Flags.s, EFG_IF);
 End;
@@ -60854,12 +61885,22 @@ Begin
  Emu_WriteWord(P.CPU, $40, $6C, Word(Counter And $FFFF));
  Emu_WriteWord(P.CPU, $40, $6E, Word((Counter Shr 16) And $FFFF));
  EmuIrqPending := EmuIrqPending Or $01;
+ If OptionsDlg.Data.DosTopView Then Begin
+  Emu_Tv_ServiceSound;  { SOUND (1019h) - avance la file de notes }
+  Emu_Tv_ServiceTimers; { TIMER TopView - avance les compteurs actifs }
+ End;
 End;
 
 { Verifier les IRQ en attente et tirer la plus prioritaire si IF=1. }
 Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel);
 Begin
  If Not (EFG_IF In P.CPU.Flags.s) Then Exit;
+ { TopView BEGINC/ENDC (INT 15h AX=101Bh/101Ch) : "desactive les           }
+ { changements de tache" - la seule chose qui pourrait faire changer de    }
+ { contexte dans cet emulateur mono-tache est une IRQ, donc gater          }
+ { reellement leur livraison ici est une implementation fidele et non un   }
+ { simple suivi d etat (voir le commentaire de perimetre pres de TVOT_*). }
+ If EmuTvCritical Then Exit;
  If EmuIrqPending = 0 Then Exit;
  { Gate sur l IMR du 8259A maitre (OUT 21h) uniquement, PAS sur son ISR :   }
  { voir le commentaire de TEmuPICChip - un IRQ masque reste en attente     }
@@ -73453,6 +74494,13 @@ Begin
     End;
   End;
   Emu_ServiceIrqs(P);
+  { TopView (voir Emu_DoInt15Tv) : au plus un bit GETBIT/SETBIT arme, et au }
+  { plus une injection PGMINT, servis par pas CPU - meme cadence que les    }
+  { IRQ materielles ci-dessus, gates par la meme region critique BEGINC.    }
+  If OptionsDlg.Data.DosTopView Then Begin
+   Emu_Tv_ServiceBits(P);
+   Emu_Tv_ServiceInjects(P);
+  End;
   { --- Pompage local ESC/Ctrl+C + redessin periodique -----------------
     Correctif Stage 1 (2026-08-15) : cette boucle appelait auparavant
     PollEvents() directement (queue DEVENV partagee avec MainLoop) pour
@@ -73703,6 +74751,38 @@ Begin
  Snap.Kbd8042 := Emu8042;
  Snap.ST506 := EmuST506; Snap.SCSIAdapter := EmuSCSI;
  Snap.ATA[0] := EmuATA[0]; Snap.ATA[1] := EmuATA[1];
+ { TopView (voir Emu_Tv_Init) - copie element par element : deux tableaux  }
+ { independamment declares, meme de type structurel identique, ne sont pas }
+ { affectables en bloc en Pascal (deja rencontre pour EmuATA ci-dessus). }
+ For I := 0 To TV_MAX_OBJECTS - 1 Do Begin
+  Snap.TvObjType[I]  := EmuTvObjType[I];
+  Snap.TvWindow[I]   := EmuTvWindow[I];
+  Snap.TvMailbox[I]  := EmuTvMailbox[I];
+  Snap.TvKeyboard[I] := EmuTvKeyboard[I];
+  Snap.TvTimer[I]    := EmuTvTimer[I];
+  Snap.TvPointer[I]  := EmuTvPointer[I];
+  Snap.TvPanel[I]    := EmuTvPanel[I];
+ End;
+ For I := 0 To TV_MAX_WINDOWS - 1 Do Snap.TvWinBufUsed[I] := EmuTvWinBufUsed[I];
+ Snap.TvDefWindow := EmuTvDefWindow; Snap.TvDefMailbox := EmuTvDefMailbox;
+ Snap.TvDefKeyboard := EmuTvDefKeyboard; Snap.TvDefObjectQ := EmuTvDefObjectQ;
+ For I := 0 To TV_MAX_BITS - 1 Do Begin
+  Snap.TvBitSeg[I] := EmuTvBitSeg[I]; Snap.TvBitOfs[I] := EmuTvBitOfs[I];
+  Snap.TvBitUsed[I] := EmuTvBitUsed[I];
+ End;
+ Snap.TvBitPending := EmuTvBitPending;
+ For I := 0 To TV_MAX_INJECT - 1 Do Begin
+  Snap.TvInjectSeg[I] := EmuTvInjectSeg[I]; Snap.TvInjectOfs[I] := EmuTvInjectOfs[I];
+ End;
+ Snap.TvInjectCount := EmuTvInjectCount;
+ For I := 0 To TV_MAX_SOUNDS - 1 Do Begin
+  Snap.TvSoundHz[I] := EmuTvSoundHz[I]; Snap.TvSoundTicks[I] := EmuTvSoundTicks[I];
+ End;
+ Snap.TvSoundCount := EmuTvSoundCount; Snap.TvSoundActiveTicks := EmuTvSoundActiveTicks;
+ Snap.TvSavedSS := EmuTvSavedSS; Snap.TvSavedSP := EmuTvSavedSP;
+ Snap.TvOnPrivStack := EmuTvOnPrivStack;
+ Snap.TvCritical := EmuTvCritical; Snap.TvTaskStopped := EmuTvTaskStopped;
+ Snap.TvDefCursorX := EmuTvDefCursorX; Snap.TvDefCursorY := EmuTvDefCursorY;
  Snap.CMOSIndex := EmuCMOS_Index;
  Move(EmuCMOS_Reg, Snap.CMOSReg, SizeOf(Snap.CMOSReg));
  Move(EmuTraceBuf, Snap.TraceBuf, SizeOf(Snap.TraceBuf));
@@ -73813,6 +74893,35 @@ Begin
  Emu8042 := Snap.Kbd8042;
  EmuST506 := Snap.ST506; EmuSCSI := Snap.SCSIAdapter;
  EmuATA[0] := Snap.ATA[0]; EmuATA[1] := Snap.ATA[1];
+ For I := 0 To TV_MAX_OBJECTS - 1 Do Begin
+  EmuTvObjType[I]  := Snap.TvObjType[I];
+  EmuTvWindow[I]   := Snap.TvWindow[I];
+  EmuTvMailbox[I]  := Snap.TvMailbox[I];
+  EmuTvKeyboard[I] := Snap.TvKeyboard[I];
+  EmuTvTimer[I]    := Snap.TvTimer[I];
+  EmuTvPointer[I]  := Snap.TvPointer[I];
+  EmuTvPanel[I]    := Snap.TvPanel[I];
+ End;
+ For I := 0 To TV_MAX_WINDOWS - 1 Do EmuTvWinBufUsed[I] := Snap.TvWinBufUsed[I];
+ EmuTvDefWindow := Snap.TvDefWindow; EmuTvDefMailbox := Snap.TvDefMailbox;
+ EmuTvDefKeyboard := Snap.TvDefKeyboard; EmuTvDefObjectQ := Snap.TvDefObjectQ;
+ For I := 0 To TV_MAX_BITS - 1 Do Begin
+  EmuTvBitSeg[I] := Snap.TvBitSeg[I]; EmuTvBitOfs[I] := Snap.TvBitOfs[I];
+  EmuTvBitUsed[I] := Snap.TvBitUsed[I];
+ End;
+ EmuTvBitPending := Snap.TvBitPending;
+ For I := 0 To TV_MAX_INJECT - 1 Do Begin
+  EmuTvInjectSeg[I] := Snap.TvInjectSeg[I]; EmuTvInjectOfs[I] := Snap.TvInjectOfs[I];
+ End;
+ EmuTvInjectCount := Snap.TvInjectCount;
+ For I := 0 To TV_MAX_SOUNDS - 1 Do Begin
+  EmuTvSoundHz[I] := Snap.TvSoundHz[I]; EmuTvSoundTicks[I] := Snap.TvSoundTicks[I];
+ End;
+ EmuTvSoundCount := Snap.TvSoundCount; EmuTvSoundActiveTicks := Snap.TvSoundActiveTicks;
+ EmuTvSavedSS := Snap.TvSavedSS; EmuTvSavedSP := Snap.TvSavedSP;
+ EmuTvOnPrivStack := Snap.TvOnPrivStack;
+ EmuTvCritical := Snap.TvCritical; EmuTvTaskStopped := Snap.TvTaskStopped;
+ EmuTvDefCursorX := Snap.TvDefCursorX; EmuTvDefCursorY := Snap.TvDefCursorY;
  EmuCMOS_Index := Snap.CMOSIndex;
  Move(Snap.CMOSReg, EmuCMOS_Reg, SizeOf(EmuCMOS_Reg));
  Move(Snap.TraceBuf, EmuTraceBuf, SizeOf(EmuTraceBuf));
@@ -75823,6 +76932,7 @@ Begin
  D.DosEMS := False;
  D.DosEMSSize := 4096;
  D.DosEMSVersion := 2; { 4.0 par defaut - la plus complete }
+ D.DosTopView := False;
  D.DosDPMI := False;
  D.DosDPMISize := 8192;
  D.DosAnsiSys := True; { coche par defaut - imite CONFIG.SYS DEVICE=ANSI.SYS }
@@ -76914,8 +78024,9 @@ Begin
  CheckWithSize(Dlg.Data.DosEMS, 'EMS', Dlg.Data.DosEMSSize, 2); { Row 2 }
  Dropdown('Version EMS :',                                     { Row 3 }
   DosEMSVersionName(Dlg.Data.DosEMSVersion), OPT_EMS_VER_LABEL_WIDTH);
- CheckWithSize(Dlg.Data.DosDPMI, 'DPMI', Dlg.Data.DosDPMISize, 3); { Row 4 }
- CheckSimple(Dlg.Data.DosAnsiSys, 'Pilote ANSI.SYS');           { Row 5 }
+ CheckSimple(Dlg.Data.DosTopView, 'TopView');                   { Row 4 }
+ CheckWithSize(Dlg.Data.DosDPMI, 'DPMI', Dlg.Data.DosDPMISize, 3); { Row 5 }
+ CheckSimple(Dlg.Data.DosAnsiSys, 'Pilote ANSI.SYS');           { Row 6 }
 
  If Dlg.DosDropdownOpen = 1 Then
   OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType, OPT_LABEL_WIDTH)
@@ -77821,6 +78932,10 @@ Begin
        End;
        3: Dlg.DosDropdownOpen := 7;  { Version EMS }
        4: Begin
+        Dlg.Data.DosTopView := Not Dlg.Data.DosTopView;
+        Dlg.Modified := True;
+       End;
+       5: Begin
         If Ev.MouseX >= Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING + 200
         Then Begin
          Dlg.SizeEditField := 3;
@@ -77830,7 +78945,7 @@ Begin
          Dlg.Modified := True;
         End;
        End;
-       5: Begin
+       6: Begin
         Dlg.Data.DosAnsiSys := Not Dlg.Data.DosAnsiSys;
         Dlg.Modified := True;
        End;
@@ -78060,6 +79175,7 @@ Begin
  WriteCfgLine(F, 'DosEMSSize', S);
  Str(Data.DosEMSVersion, S);
  WriteCfgLine(F, 'DosEMSVersion', S);
+ WriteCfgLine(F, 'DosTopView', BoolToStr(Data.DosTopView));
  WriteCfgLine(F, 'DosDPMI', BoolToStr(Data.DosDPMI));
  Str(Data.DosDPMISize, S);
  WriteCfgLine(F, 'DosDPMISize', S);
@@ -78258,6 +79374,8 @@ Begin
       (Data.DosEMSVersion >= DOS_EMS_VERSION_COUNT) Then
     Data.DosEMSVersion := 2;
   End
+  Else If Key = 'DosTopView' Then
+   Data.DosTopView := StrToBool(Value)
   Else If Key = 'DosDPMI' Then
    Data.DosDPMI := StrToBool(Value)
   Else If Key = 'DosDPMISize' Then
