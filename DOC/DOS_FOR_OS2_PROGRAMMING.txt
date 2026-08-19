@@ -1,0 +1,1583 @@
+PROGRAMMATION DE DOS FOR OS/2 ET DES MACHINES DOS VIRTUELLES IBM OS/2
+====================================================================
+
+1. Objet, vocabulaire et portée
+-------------------------------
+
+Ce document décrit les extensions visibles par un programme DOS dans les
+environnements IBM OS/2. Il se concentre sur les appels supplémentaires de
+INT 21h et INT 2Fh, notamment ceux exposés par DOS for OS/2 1.x et par les
+machines DOS virtuelles (VDM, Virtual DOS Machine) d'OS/2 2.x et suivants.
+Les exemples ciblent le mode réel 8086/286, MASM/TASM et Turbo Pascal 5 à 7.
+
+Il faut distinguer trois interfaces :
+
+  * les Family API (FAPI) d'OS/2 1.x. Un même source pouvait utiliser des API
+    communes à DOS et OS/2 ; dans la Compatibility Box, certaines sont
+    transformées en appels INT 21h ;
+  * les services de la VDM d'OS/2 2.x+, qui permettent à une application DOS
+    de dialoguer avec DOSKRNL ou OS2KRNL ;
+  * les services multiplex INT 2Fh, utilisés pour détecter OS/2, joindre un VDD
+    et recevoir des notifications de passage avant-plan/arrière-plan.
+
+« U » dans la Ralf Brown Interrupt List signifie undocumented. Une fonction
+peut être utilisée par IBM sans être un contrat public stable pour les
+applications. Les appels internes (PTDA, SFT, call gate WinOS2, chargement des
+symboles noyau) sont documentés ici pour l'analyse historique, pas comme API
+recommandée.
+
+
+2. Détection de l'environnement et conventions
+-----------------------------------------------
+
+Détection OS/2 2.0+ dans une session DOS :
+
+    AX = 4010h
+    INT 2Fh
+    AX inchangé (4010h) : OS/2 absent
+    sinon BX = version OS/2
+
+OS/2 Warp 3 renvoie AX=0000h. Il faut donc tester « AX != 4010h » et non une
+seule valeur de succès. La valeur de BX est la version renvoyée par le système ;
+ne pas la confondre avec la version DOS obtenue par INT 21h/AH=30h.
+
+Exemple assembleur :
+
+    mov  ax, 4010h
+    int  2Fh
+    cmp  ax, 4010h
+    je   NotUnderOS2
+    mov  Os2Version, bx
+
+Exemple Turbo Pascal :
+
+    function UnderOS2(var Version: Word): Boolean;
+    var R: Registers;
+    begin
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $4010;
+      Intr($2F, R);
+      UnderOS2 := R.AX <> $4010;
+      if R.AX <> $4010 then Version := R.BX else Version := 0
+    end;
+
+Trois numéros de version différents
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Une session DOS sous OS/2 peut fournir au même programme trois informations
+différentes :
+
+    Interface             Ce qu'elle décrit
+    --------------------  ---------------------------------------------------
+    INT 21h/AH=30h        version DOS présentée au programme courant
+    INT 21h/AX=3306h      version « vraie » du noyau DOS émulé par la VDM
+    INT 2Fh/AX=4010h      présence et version de l'hôte OS/2 2.0+
+
+Les deux premières réponses décrivent la personnalité DOS, pas directement le
+noyau OS/2. La troisième identifie l'hôte OS/2, mais n'est pas disponible dans
+la Compatibility Box d'OS/2 1.x puisqu'elle est définie pour OS/2 2.0+.
+
+Versions DOS synthétiques rapportées par OS/2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+IBM a choisi un numéro majeur DOS artificiel égal à 10 dans la Compatibility
+Box 1.x, puis 20 dans les MVDM 2.x et Warp. Ce numéro ne signifie donc ni
+« MS-DOS 20 » ni « PC DOS 20 » : il code la génération d'OS/2 et évite de se
+faire passer pour une version DOS ordinaire.
+
+    Environnement OS/2                   Version DOS généralement rapportée
+    -----------------------------------   ----------------------------------
+    OS/2 1.0 Compatibility Box           10.00 (famille 10.xx)
+    OS/2 1.1 Compatibility Box           10.10
+    OS/2 1.2 Compatibility Box           10.20
+    OS/2 1.3 Compatibility Box           10.30
+    OS/2 2.0 MVDM                        20.00
+    OS/2 2.1 MVDM                        20.10
+    OS/2 2.11 / SMP                      20.11
+    OS/2 Warp 3                          20.30
+    OS/2 Warp 4                          20.40
+    famille Warp Server for e-business /
+    Convenience Packages dite « 4.5 »   20.45, valeur historiquement observée
+
+La RBIL confirme explicitement le majeur 10 pour OS/2 1.x, le majeur 20 pour
+OS/2 2.x, 20.10 pour OS/2 2.1 via AX=3306h, 20.30 pour Warp 3 et 20.40 pour
+Warp 4. Les valeurs 20.11 et 20.45 proviennent des versions ultérieures et de
+leur usage historique. Les FixPaks, dérivés OEM, eComStation, ArcaOS, une VDM
+configurée ou un Virtual Machine Boot peuvent produire une autre réponse : la
+table est un guide d'identification, pas une preuve cryptographique.
+
+INT 21h/AH=30h : version présentée au programme
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Appel DOS 5+ complet :
+
+    AH = 30h
+    AL = 00h : demander le numéro OEM dans BH
+         01h : demander les flags de version dans BH
+    retour AL = version majeure
+           AH = version mineure exprimée en centièmes
+           BL:CX = numéro de série 24 bits, rarement employé
+           BH = OEM si AL d'entrée=0, ou flags si AL d'entrée=1
+
+Par exemple 20.30 est rendu sous la forme AL=14h (20 décimal), AH=1Eh
+(30 décimal). Il faut afficher ces octets en décimal : afficher AX comme un
+entier hexadécimal produirait une représentation trompeuse.
+
+Cette fonction est la vue de compatibilité. Sa réponse peut être modifiée pour
+un exécutable particulier par un mécanisme de type SETVER. OS/2 possède un
+paramètre de session `DOS_VERSION` permettant d'associer des noms de programmes
+à des versions présentées. Il est donc normal que deux programmes lancés dans
+la même VDM ne voient pas nécessairement la même valeur par AH=30h.
+
+Le réglage `DOS_VERSION` sert aux logiciels anciens qui refusent une version
+inconnue ou exigent artificiellement DOS 3.x/4.x/5.x. Il ne transforme pas les
+fonctions réellement implantées. Un programme ne doit jamais conclure qu'un
+service existe uniquement parce que la version annoncée est élevée.
+
+Exemple assembleur :
+
+    xor  al, al                    ; demander l'identifiant OEM
+    mov  ah, 30h
+    int  21h
+    mov  ReportedMajor, al
+    mov  ReportedMinor, ah
+    mov  ReportedOEM, bh
+
+INT 21h/AX=3306h : version DOS « vraie »
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    AX = 3306h
+    INT 21h
+    retour BL = version majeure
+           BH = version mineure
+           DL bits 2..0 = révision
+           DH bit 3 = DOS en ROM
+              bit 4 = DOS chargé dans la HMA
+           AL = FFh si la version vraie est antérieure à DOS 5.0
+
+L'ordre des octets dans BX surprend souvent : BL est le majeur et BH le mineur.
+OS/2 2.1 rend donc BX=0A14h : BL=14h=20, BH=0Ah=10, soit 20.10.
+
+Contrairement à AH=30h, cet appel est conçu pour contourner SETVER et obtenir
+la version interne. Il existe néanmoins des environnements DOS compatibles qui
+détournent aussi 3306h. La RBIL recommande de n'accepter le résultat que si
+BL>=5 et BH<100 ; même ce test n'est pas absolument universel à cause de vieux
+redirecteurs. Sous une VDM OS/2 détectée par 4010h, une valeur majeure 20 est
+cohérente, mais la disponibilité effective d'une extension doit toujours être
+testée par son propre résultat.
+
+Exemple assembleur comparant version présentée et version vraie :
+
+    mov  ax, 3000h
+    int  21h
+    mov  PresentedMajor, al
+    mov  PresentedMinor, ah
+
+    mov  ax, 3306h
+    int  21h
+    cmp  al, 0FFh
+    je   TrueVersionUnavailable
+    cmp  bl, 5
+    jb   TrueVersionInvalid
+    cmp  bh, 100
+    jae  TrueVersionInvalid
+    mov  TrueMajor, bl
+    mov  TrueMinor, bh
+    mov  TrueRevision, dl
+    mov  TrueFlags, dh
+
+INT 2Fh/AX=4010h : version de l'hôte OS/2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    AX = 4010h
+    INT 2Fh
+    AX = 4010h : service absent, donc OS/2 2.0+ non détecté
+    autrement BX contient la version fournie par OS/2
+
+Warp 3 est notamment connu pour rendre AX=0000h. Il ne faut pas exiger AX=0
+pour toutes les versions : le seul test portable documenté par la RBIL est que
+AX ne soit plus 4010h. BX doit être conservé séparément de la version DOS.
+
+Ce test distingue correctement une MVDM OS/2 2.x+ d'un DOS autonome qui aurait
+simplement été configuré pour annoncer 20.xx. Il ne permet pas à lui seul de
+reconnaître OS/2 1.x, et le multiplex 40xxh peut entrer en conflit avec des
+composants Windows ou vidéo. Une détection robuste croise donc les résultats au
+lieu de rechercher un seul nombre magique.
+
+Matrice d'interprétation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+    4010h      AH=30h/3306h       Interprétation probable
+    ---------- ------------------  -------------------------------------------
+    présent    majeur 20           MVDM intégrée OS/2 2.x ou Warp
+    présent    majeur 2..9         MVDM avec DOS_VERSION ou autre compatibilité
+    absent     majeur 10           Compatibility Box OS/2 1.x probable
+    absent     majeur 20           résultat imité ; ne pas conclure OS/2 2.x
+    absent     majeur DOS normal   DOS autonome, autre DOS box ou émulateur
+
+Virtual Machine Boot constitue un cas particulier : OS/2 2.x+ peut démarrer une
+version réelle de DOS depuis une disquette ou une image dans une VDM. 4010h peut
+alors révéler l'hôte OS/2, tandis que 30h/3306h décrivent le DOS invité démarré,
+et non la personnalité DOS intégrée 20.xx.
+
+Turbo Pascal : lire les trois versions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    type
+      TDosVersionInfo = record
+        PresentedMajor, PresentedMinor: Byte;
+        TrueMajor, TrueMinor, Revision, VersionFlags: Byte;
+        TrueVersionValid: Boolean;
+        UnderOS2_2Plus: Boolean;
+        OS2Version: Word
+      end;
+
+    procedure QueryVersionInfo(var V: TDosVersionInfo);
+    var R: Registers;
+    begin
+      FillChar(V, SizeOf(V), 0);
+
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $3000;
+      Intr($21, R);
+      V.PresentedMajor := Lo(R.AX);
+      V.PresentedMinor := Hi(R.AX);
+
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $3306;
+      Intr($21, R);
+      V.TrueVersionValid := (Lo(R.AX) <> $FF) and
+                            (Lo(R.BX) >= 5) and (Hi(R.BX) < 100);
+      if V.TrueVersionValid then begin
+        V.TrueMajor := Lo(R.BX);
+        V.TrueMinor := Hi(R.BX);
+        V.Revision := Lo(R.DX) and 7;
+        V.VersionFlags := Hi(R.DX)
+      end;
+
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $4010;
+      Intr($2F, R);
+      V.UnderOS2_2Plus := R.AX <> $4010;
+      if V.UnderOS2_2Plus then V.OS2Version := R.BX
+    end;
+
+Ne pas comparer `TrueMajor=TrueMinor` à des constantes emballées dans un WORD
+sans tenir compte de l'ordre BL/BH. Pour OS/2 2.1, `R.BX=$0A14`, et non $140A.
+
+Quelle version employer dans un programme ?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  * pour reproduire le choix de compatibilité voulu par l'administrateur :
+    AH=30h ;
+  * pour diagnostiquer le noyau DOS de la session : AX=3306h ;
+  * pour activer une extension VDM OS/2 2.x : d'abord INT 2Fh/4010h, puis tester
+    la fonction elle-même et son code d'erreur ;
+  * pour reconnaître OS/2 1.x : le majeur DOS 10 est un indice historique,
+    mais prévoir une vérification FAPI sans effet de bord ;
+  * pour afficher une information à l'utilisateur : montrer séparément
+    « DOS présenté », « DOS interne » et « hôte OS/2 », sans les fusionner.
+
+Conventions générales :
+
+  * CF clair signifie généralement succès ; CF positionné signifie erreur et
+    AX contient alors un code d'erreur OS/2/DOS ;
+  * DS:SI, DS:DX et ES:DI sont des pointeurs far segment:décalage ;
+  * les chaînes sont ASCIZ, sauf le message de chargement DX=0008h, terminé par
+    le caractère '$' pour INT 21h/AH=09h ;
+  * les structures FAPI sont compactées, little-endian, et contiennent parfois
+    des pointeurs far 16:16 ; désactiver l'alignement de mots en Pascal avec
+    {$A-} autour des déclarations concernées ;
+  * tester la disponibilité avant un appel non documenté et prévoir une voie
+    DOS standard de repli ;
+  * ne jamais réutiliser AH=64h sans CX=636Ch : OS/2 route autrement l'appel
+    vers le traitement d'AH=6Ch à cause d'une erreur historique de la FAPI 1.x.
+
+
+3. Attributs étendus OS/2 (EA)
+------------------------------
+
+Les Extended Attributes associent au fichier des couples nom/valeur en plus des
+dates, de la taille et des attributs DOS. Un nom d'EA n'inclut pas son NUL ; une
+valeur peut être binaire. Le bit 7 du champ flags indique une EA critique.
+
+Structure FEA (Full EA) compactée :
+
+    Offset  Taille  Contenu
+    00h     BYTE    flags (bit 7 = critique)
+    01h     BYTE    longueur du nom, N
+    02h     WORD    longueur de la valeur, M
+    04h     N       nom
+            BYTE    zéro terminal
+            M       valeur
+
+Une FEAList commence par un DWORD donnant la taille totale, champ compris,
+suivi d'entrées FEA contiguës. Une GEAlist de noms demandés commence également
+par sa taille DWORD ; chaque GEA est BYTE longueur, nom, NUL.
+
+EAOP relie les listes :
+
+    Offset  Taille  Contenu
+    00h     DWORD   pointeur far sur GEAlist
+    04h     DWORD   pointeur far sur FEAList
+    08h     DWORD   erreur renvoyée
+
+Au niveau d'information 3, le premier pointeur indique les noms d'EA à lire.
+Au niveau 4, il doit être 0000:0000 pour demander toutes les EA.
+
+
+4. INT 21h/AX=5702h : DosQFileInfo et DosQPathInfo
+--------------------------------------------------
+
+DosQFileInfo interroge un fichier déjà ouvert :
+
+    AX = 5702h
+    BX = handle DOS du fichier
+    CX = taille du tampon
+    DX = niveau
+         0001h informations standard
+         0002h informations standard + taille des EA
+         0003h EA indiquées par la GEAlist
+         0004h toutes les EA
+    ES:DI -> tampon ou EAOP selon le niveau
+    retour CF clair : succès
+           CF posé  : AX = erreur
+
+Niveaux 1 et 2, structure FILESTATUS :
+
+    00h WORD date de création       02h WORD heure de création
+    04h WORD date du dernier accès  06h WORD heure du dernier accès
+    08h WORD date dernière écriture 0Ah WORD heure dernière écriture
+    0Ch DWORD taille logique
+    10h DWORD espace alloué
+    14h WORD attributs
+    16h DWORD taille totale des EA (niveau 2 seulement)
+
+Les dates/heures emploient le format DOS : date = année depuis 1980 sur 7 bits,
+mois sur 4, jour sur 5 ; heure = heures sur 5, minutes sur 6, secondes/2 sur 5.
+
+DosQPathInfo opère sur un chemin sans handle :
+
+    AX = 5702h
+    BX = FFFFh
+    CX = taille du tampon
+    DX = 0002h
+    DS:SI -> chemin ASCIZ
+    ES:DI -> tampon d'information
+    retour CF clair et AL=00h, ou CF posé et AX=erreur
+
+La structure connue de la Compatibility Box comporte 22 octets non décrits,
+puis à l'offset 16h un DWORD de taille d'EA ; une valeur inférieure à 5 indique
+qu'aucune EA n'est présente. Cette forme partiellement documentée ne doit pas
+être interprétée au-delà des champs connus.
+
+Exemple MASM, informations standard d'un handle :
+
+    FileInfo db 22 dup (0)
+
+    mov  ax, 5702h
+    mov  bx, FileHandle
+    mov  cx, SIZEOF FileInfo
+    mov  dx, 0001h
+    mov  di, OFFSET FileInfo
+    push ds
+    pop  es
+    int  21h
+    jc   QueryError
+    ; DWORD FileInfo+0Ch = taille logique
+
+Exemple Turbo Pascal :
+
+    {$A-}
+    type
+      TOS2FileInfo = record
+        CreationDate, CreationTime: Word;
+        AccessDate, AccessTime: Word;
+        WriteDate, WriteTime: Word;
+        FileSize, AllocatedSize: LongInt;
+        Attr: Word
+      end;
+    {$A+}
+
+    function DosQFileInfo(Handle: Word; var Info: TOS2FileInfo): Word;
+    var R: Registers;
+    begin
+      FillChar(Info, SizeOf(Info), 0);
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $5702; R.BX := Handle;
+      R.CX := SizeOf(Info); R.DX := 1;
+      R.ES := Seg(Info); R.DI := Ofs(Info);
+      Intr($21, R);
+      if (R.Flags and FCarry) <> 0 then DosQFileInfo := R.AX
+      else DosQFileInfo := 0
+    end;
+
+
+5. INT 21h/AX=5703h : DosSetFileInfo et DosSetPathInfo
+------------------------------------------------------
+
+Sur handle :
+
+    AX = 5703h
+    BX = handle
+    CX = taille du tampon
+    DX = niveau d'information
+    ES:DI -> données
+
+Sur chemin :
+
+    AX = 5703h
+    BX = FFFFh
+    CX = taille du tampon
+    DX = niveau
+    DS:SI -> chemin ASCIZ
+    ES:DI -> données
+
+CF clair indique le succès ; sinon AX est le code d'erreur. Les niveaux et le
+tampon doivent correspondre à ceux de l'API OS/2 : FILESTATUS pour les dates et
+attributs, EAOP/FEAList pour les attributs étendus. Ne pas réinjecter aveuglément
+les tailles et attributs en lecture seule : initialiser exactement les champs
+acceptés par le niveau choisi.
+
+Exemple assembleur, mise à jour à partir d'une FILESTATUS préparée :
+
+    mov  ax, 5703h
+    mov  bx, FileHandle
+    mov  cx, SIZEOF FileInfo
+    mov  dx, 0001h
+    mov  di, OFFSET FileInfo
+    push ds
+    pop  es
+    int  21h
+    jc   SetInfoError
+
+Attention : DOS 4.x utilise aussi 5702h/5703h pour son essai d'EA. Il faut
+identifier l'environnement OS/2 et utiliser le contrat correspondant plutôt que
+sélectionner la sémantique à partir d'AX seulement.
+
+
+6. INT 21h/AH=61h, BP=6467h : JOIN/SUBST OS/2
+------------------------------------------------
+
+Cette FAPI est utilisée par JOIN et SUBST pour communiquer avec le système de
+fichiers OS/2 et reste disponible dans les VDM OS/2 2.0+ :
+
+    AH = 61h
+    BP = 6467h                 ; signature "dg"
+    AL = 00h lister, 01h ajouter, 02h supprimer
+    BX = numéro de lecteur
+    CX = taille du tampon
+    SI = 0002h JOIN, 0003h SUBST
+    ES:DI -> tampon
+    retour CF clair, AX=0000h ; sinon CF posé, AX=erreur
+
+Pour AL=00h, le tampon reçoit le chemin ASCIZ ou une chaîne vide. Le numéro de
+lecteur doit être validé sur le système cible ; ne pas supposer sans test si la
+base attendue est 0 ou 1 dans un utilitaire destiné à plusieurs DOS.
+
+Exemple de lecture d'un SUBST :
+
+    PathBuf db 128 dup (0)
+    mov  ax, 6100h
+    mov  bp, 6467h
+    mov  bx, DriveNumber
+    mov  cx, SIZEOF PathBuf
+    mov  si, 0003h
+    mov  di, OFFSET PathBuf
+    push ds
+    pop  es
+    int  21h
+    jc   SubstError
+
+
+7. INT 21h/AH=64h : services spéciaux d'une VDM
+-------------------------------------------------
+
+Tous les sous-appels DX=0000h..0008h exigent :
+
+    AH = 64h, CX = 636Ch, BX = 0000h, DX = fonction
+
+La signature 636Ch correspond aux caractères « cl ». Sans elle, OS/2 traite
+l'appel comme AH=6Ch en raison d'un ancien bogue de la FAPI.
+
+Résumé :
+
+    DX     Version    Fonction et résultat
+    0000h  2.0+       réactiver le titre automatique
+    0001h  2.0+       ES:DI -> titre ASCIZ, 12 caractères maximum
+    0002h  2.0+       ES:DI -> tampon de 13 octets pour lire le titre
+    0003h  2.1        AL = dernier lecteur pris en charge
+    0004h  2.1+       AX = nombre d'entrées de la JFT OS/2 de la VDM
+    0005h  2.1+       DI=handle ; AX=second mot de flags SFT OS/2
+    0006h  2.1+ dbg   décharger les symboles DOSKRNL et charger un programme
+    0007h  2.1+       AX=adresse de call gate WinOS2
+    0008h  2.1+       DS:DX -> message localisé terminé par '$'
+
+Titre de session
+~~~~~~~~~~~~~~~~
+
+DX=0001h fixe le titre ; une chaîne vide restaure le titre par défaut.
+DX=0002h exige réellement 13 octets. Si le titre n'a jamais été changé, le
+premier octet vaut zéro.
+
+    NewTitle db 'COMPILATION',0
+    mov  ah, 64h
+    xor  bx, bx
+    mov  cx, 636Ch
+    mov  dx, 0001h
+    mov  di, OFFSET NewTitle
+    push ds
+    pop  es
+    int  21h
+
+Turbo Pascal :
+
+    procedure OS2SetTitle(const S: string);
+    var R: Registers;
+        Z: array[0..12] of Char;
+        I, N: Integer;
+    begin
+      FillChar(Z, SizeOf(Z), 0);
+      N := Length(S); if N > 12 then N := 12;
+      for I := 1 to N do Z[I-1] := S[I];
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $6400; R.BX := 0; R.CX := $636C; R.DX := 1;
+      R.ES := Seg(Z); R.DI := Ofs(Z);
+      Intr($21, R)
+    end;
+
+    function OS2GetTitle(var S: string): Boolean;
+    var R: Registers;
+        Z: array[0..12] of Char;
+        N: Integer;
+    begin
+      FillChar(Z, SizeOf(Z), 0);
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $6400; R.BX := 0; R.CX := $636C; R.DX := 2;
+      R.ES := Seg(Z); R.DI := Ofs(Z);
+      Intr($21, R);
+      N := 0; while (N < 12) and (Z[N] <> #0) do Inc(N);
+      S[0] := Chr(N); if N > 0 then Move(Z, S[1], N);
+      OS2GetTitle := True
+    end;
+
+Les appels ne documentent pas de code d'erreur fiable ; effectuer d'abord la
+détection 4010h et borner tous les tampons.
+
+LASTDRIVE, PTDA/JFT et SFT
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DX=0003h n'existe que dans OS/2 2.1 et disparaît dans Warp 3 ; sous Warp,
+consulter plutôt la List of Lists DOS. DX=0004h rend la taille de la JFT OS/2.
+Dans une VDM, la JFT du PSP contient un index vers la JFT de la PTDA, pas
+directement un index SFT DOS, car la SFT OS/2 peut dépasser 255 entrées.
+DX=0005h expose le second mot de flags de l'entrée SFT OS/2 pour le handle DI.
+Ces deux appels sont destinés aux outils système et dépendent des internes.
+
+Services internes 0006h..0008h
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DX=0006h n'est pris en charge que par un OS2KRNL de débogage ; ES:DI désigne le
+fichier ASCIZ et DS l'adresse de base de chargement. DX=0007h est utilisé par
+WinOS2 pour appeler OS2KRNL directement. Une application DOS ne doit pas appeler
+arbitrairement le call gate obtenu. DX=0008h fournit le message NLS « Loading.
+Please wait. » destiné au démarrage plein écran de WinOS2.
+
+
+8. INT 21h/AH=64h, CX=636Ch : passerelle vers des API OS/2
+----------------------------------------------------------
+
+Avec CX=636Ch et BX=ordinal, DOSKRNL relaie quelques API OS/2. Les registres
+restants dépendent de l'API. Ordinals recensés :
+
+    0025h DOS32StartSession       0082h DosGetCP
+    00B6h DosQFSAttach            00BFh DosEditName
+    00CBh DosForceDelete
+    0144h..014Ah sémaphores d'événement Create/Open/Close/Reset/Post/Wait/Query
+    014Bh..0150h mutex Create/Open/Close/Request/Release/Query
+    0151h..0157h mux-wait Create/Open/Close/Wait/Add/Delete/Query
+
+Ces interfaces sont non documentées pour les applications DOS ordinaires. Les
+structures sont celles d'OS/2, mais les pointeurs doivent rester accessibles à
+la VDM et respecter les contraintes décrites ci-dessous.
+
+DOS32StartSession, ordinal 0025h
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    AH=64h, BX=0025h, CX=636Ch, DS:SI -> STARTDATA
+    retour AX = code d'erreur OS/2
+
+STARTDATA existe en tailles 18h, 1Eh, 20h, 32h ou 3Ch. Champs principaux :
+
+    00h WORD taille             02h WORD 0 indépendante, 1 enfant
+    04h WORD 0 avant-plan, 1 arrière-plan
+    06h WORD trace (0 aucune)
+    08h DWORD titre ASCIZ       0Ch DWORD programme ASCIZ
+    10h DWORD arguments ASCIZ   14h DWORD réservé = 0
+    18h DWORD environnement     1Ch WORD héritage
+    1Eh WORD type de session : 0 auto, 1 OS/2 plein écran, 2 OS/2 fenêtre,
+             3 PM, 4 VDM plein écran, 7 VDM fenêtre
+    20h DWORD fichier icône     24h DWORD réservé = 0
+    28h WORD PgmControl         2Ah/2Ch colonne/ligne
+    2Eh/30h largeur/hauteur     32h WORD réservé = 0
+    34h DWORD ObjectBuffer=0    38h DWORD ObjectBufferLen=0
+
+Les limites historiques sont 62 caractères pour le titre, 128 pour programme
+et icône, 144 pour les arguments et 486 octets pour l'environnement.
+
+DosQFSAttach, ordinal 00B6h
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    AH=64h, BX=00B6h, CX=636Ch
+    DS = segment commun des données référencées
+    ES:DI -> FSQAttachStruc
+    retour CF clair, AX=0 ou CF posé, AX=erreur
+
+FSQAttachStruc contient : DWORD réservé, pointeur sur longueur de tampon,
+pointeur sur tampon, WORD niveau, WORD index ordinal, pointeur sur nom du
+périphérique. Le tampon, sa longueur et le nom doivent tous résider dans le
+segment DS ; les « pointeurs » de cette structure sont donc employés comme
+offsets dans ce segment selon la passerelle VDM.
+
+DosForceDelete, ordinal 00CBh
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    AH=64h, BX=00CBh, CX=636Ch
+    DS:DX -> chemin ASCIZ
+    CF clair : succès ; CF posé : AX=02h,03h,05h notamment
+
+Il supprime sans envoyer le fichier vers le répertoire de récupération. Cette
+opération est irréversible à ce niveau : confirmer le chemin et préférer
+AH=41h lorsqu'une suppression forcée n'est pas indispensable.
+
+
+9. INT 21h/AX=6C01h : DosOpen2 avec attributs étendus
+-----------------------------------------------------
+
+DosOpen2 est presque identique à l'ouverture étendue DOS AX=6C00h, mais ajoute
+EAOP :
+
+    AX = 6C01h
+    BL = mode : bits 0..2 accès, bits 4..6 partage, bit 7 héritage
+    BH bit 6 = commit automatique après chaque écriture
+       bit 5 = rendre l'erreur au lieu d'appeler INT 24h
+    CX = attribut à la création
+    DL = action si le fichier existe/n'existe pas
+    DH = 00h
+    DS:SI -> nom ASCIZ
+    ES:DI -> EAOP
+    retour CF clair : AX=handle, CX=état de l'action
+           CF posé  : AX=erreur
+
+Bits de DL : bits 7..4 si le fichier n'existe pas (0 échec, 1 créer), bits 3..0
+s'il existe (0 échec, 1 ouvrir, 2 remplacer/ouvrir). Valeurs courantes : 01h
+ouvrir seulement, 10h créer seulement, 11h ouvrir ou créer, 12h remplacer ou
+créer. Vérifier l'état CX pour savoir si le fichier a été ouvert, créé ou
+remplacé.
+
+Exemple assembleur, ouvrir ou créer avec une EAOP vide :
+
+    EaOp      dd 0,0,0
+    FileName  db 'DONNEES.DAT',0
+
+    mov  ax, 6C01h
+    mov  bx, 2022h               ; BH bit 5: retour erreur, BL: mode d'accès
+    mov  cx, 0000h
+    mov  dx, 0011h               ; ouvrir si existe, créer sinon
+    mov  si, OFFSET FileName
+    mov  di, OFFSET EaOp
+    push ds
+    pop  es
+    int  21h
+    jc   OpenError
+    mov  FileHandle, ax
+
+Le codage exact de BX doit être construit symboliquement dans un programme de
+production ; l'exemple illustre surtout le placement des registres.
+
+
+10. INT 21h/AH=6Dh, 6Eh et AX=6F00h
+------------------------------------
+
+DosMkDir2 (AH=6Dh)
+~~~~~~~~~~~~~~~~~~~
+
+Crée un répertoire avec des EA. Les registres exacts ne sont pas conservés dans
+la référence publique consultée. La fonction est signalée comme défectueuse
+sous OS/2 2.0 : la MVDM ne convertit pas le pointeur segment réel de la structure
+EA en sélecteur protégé. Méthode de repli recommandée : créer avec AH=39h puis
+poser les EA avec AX=5703h/BX=FFFFh. Ne pas inventer un wrapper 6Dh sans manuel
+IBM de la version cible.
+
+DosEnumAttrib (AH=6Eh)
+~~~~~~~~~~~~~~~~~~~~~~
+
+    AH=6Eh, DS:SI -> paquet ; CF clair AX=0, sinon AX=erreur
+
+Paquet compacté de 30 octets :
+
+    00h DWORD réservé=0          04h DWORD niveau=1
+    08h DWORD entrées demandées / entrées rendues
+    0Ch DWORD taille tampon      10h DWORD pointeur far résultats
+    14h DWORD première entrée    18h DWORD handle ou chemin ASCIZ
+    1Ch WORD 0=handle, 1=chemin
+
+Le champ 18h est un DWORD : pour un handle, placer la valeur dans le mot faible
+et mettre le mot fort à zéro ; pour un chemin, placer son pointeur far.
+
+DosQMaxEASize (AX=6F00h)
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+    AX=6F00h, DS:SI -> DWORD de résultat
+    CF clair, AX=0 et DWORD rempli ; sinon CF posé, AX=erreur
+
+La valeur indique la taille maximale d'un attribut étendu. Elle ne remplace pas
+les limites du tampon d'une FEAList et peut varier selon le système de fichiers.
+
+Turbo Pascal :
+
+    function DosQMaxEASize(var MaxSize: LongInt): Word;
+    var R: Registers;
+    begin
+      MaxSize := 0;
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $6F00;
+      R.DS := Seg(MaxSize); R.SI := Ofs(MaxSize);
+      Intr($21, R);
+      if (R.Flags and FCarry) <> 0 then DosQMaxEASize := R.AX
+      else DosQMaxEASize := 0
+    end;
+
+
+11. INT 2Fh/AX=4000h : capacités du VDD vidéo
+------------------------------------------------
+
+    AX=4000h
+    retour AL = niveau de virtualisation vidéo
+       01h aucun accès virtualisé
+       02h texte
+       03h texte + graphiques monoplan
+       04h précédent + VGA multiplan
+       FFh virtualisation complète
+
+La RBIL attribue formellement cet appel à Windows 3+ et indique OS/2 2.x avec
+incertitude. Il est utilisé par les pilotes vidéo, pas comme détection générale
+d'OS/2. L'appel donne aussi au pilote l'accès aux registres vidéo et active les
+callbacks de commutation. Une fois activés, le pilote doit réellement traiter
+les callbacks et sauvegarder/restaurer la mémoire vidéo ; une application
+ordinaire ne doit donc pas appeler 4000h « pour voir ».
+
+
+12. INT 2Fh/AX=4001h et 4002h : notifications de commutation
+------------------------------------------------------------
+
+Ces valeurs sont des callouts : OS/2 appelle la chaîne INT 2Fh, elles ne sont
+pas des requêtes qu'une application envoie au système.
+
+    AX=4001h : la boîte DOS va passer en arrière-plan ; sauvegarder l'état vidéo
+    AX=4002h : elle revient à l'avant-plan ; restaurer l'état vidéo
+
+Un gestionnaire doit :
+
+  * vérifier AX et chaîner l'ancien INT 2Fh pour toutes les autres fonctions ;
+  * rester très court et réentrant, sans appel DOS non sûr ;
+  * préserver les registres et drapeaux selon la convention du pilote ;
+  * ne s'installer qu'après avoir négocié les capacités 4000h ;
+  * restaurer le vecteur à la désinstallation seulement s'il est encore en tête.
+
+Squelette MASM conceptuel :
+
+    Old2F dd 0
+
+    New2F PROC FAR
+        cmp ax, 4001h
+        je  GoingBackground
+        cmp ax, 4002h
+        je  GoingForeground
+        jmp DWORD PTR cs:Old2F
+    GoingBackground:
+        ; sauvegarde matérielle courte, sans INT 21h
+        iret
+    GoingForeground:
+        ; restauration matérielle courte, sans INT 21h
+        iret
+    New2F ENDP
+
+Ce squelette ne constitue pas à lui seul un TSR correct : il manque la gestion
+du résident, des races d'installation/désinstallation et du matériel vidéo.
+
+
+13. INT 2Fh/AX=4011h : obtenir l'API d'un VDD
+------------------------------------------------
+
+    AX = 4011h
+    DS:SI -> nom ASCIZ du VDD enregistré par VDHRegisterAPI
+    retour ES:DI -> adresse de breakpoint à appeler
+           0000h:0000h si API absente
+
+L'appel fonctionne en V86 ou en mode protégé et rend l'adresse appropriée au
+mode courant. Le protocole après l'appel dépend entièrement du VDD nommé :
+registres, pile, privilèges et réentrance doivent venir de sa documentation.
+Ne pas exécuter l'adresse simplement parce qu'elle est non nulle.
+
+Exemple de recherche seulement :
+
+    VddName db 'MONVDD',0
+    mov  ax, 4011h
+    mov  si, OFFSET VddName
+    int  2Fh
+    mov  ax, es
+    or   ax, di
+    jz   VddNotPresent
+    ; conserver ES:DI ; appel seulement selon le contrat de MONVDD
+
+Turbo Pascal :
+
+    function GetVDDEntry(const Name: string): Pointer;
+    var R: Registers;
+        Z: array[0..63] of Char;
+        I, N: Integer;
+    begin
+      FillChar(Z, SizeOf(Z), 0);
+      N := Length(Name); if N > 63 then N := 63;
+      for I := 1 to N do Z[I-1] := Name[I];
+      FillChar(R, SizeOf(R), 0);
+      R.AX := $4011; R.DS := Seg(Z); R.SI := Ofs(Z);
+      Intr($2F, R);
+      if (R.ES = 0) and (R.DI = 0) then GetVDDEntry := nil
+      else GetVDDEntry := Ptr(R.ES, R.DI)
+    end;
+
+
+14. Exemple Turbo Pascal intégré
+---------------------------------
+
+Le programme suivant détecte OS/2, lit puis change le titre de la session et
+interroge la taille maximale d'une EA. Il n'appelle pas les services si 4010h
+indique que la VDM OS/2 est absente.
+
+    program OS2VDMDemo;
+    uses Dos;
+    var Version, Err: Word;
+        Title: string;
+        MaxEA: LongInt;
+    begin
+      if not UnderOS2(Version) then begin
+        WriteLn('Ce programme ne tourne pas dans une VDM OS/2.');
+        Halt(1)
+      end;
+      WriteLn('Version OS/2 renvoyee : $', HexStr(Version, 4));
+      if OS2GetTitle(Title) then WriteLn('Titre : ', Title);
+      OS2SetTitle('OUTIL DOS');
+      Err := DosQMaxEASize(MaxEA);
+      if Err = 0 then WriteLn('Taille EA maximale : ', MaxEA)
+      else WriteLn('DosQMaxEASize, erreur ', Err)
+    end.
+
+HexStr n'appartient pas à toutes les versions de Turbo Pascal. La remplacer par
+une routine locale ou afficher Version en décimal si nécessaire. Les procédures
+appelées sont celles données dans les sections précédentes.
+
+
+15. Codes d'erreur et stratégie de repli
+-----------------------------------------
+
+Les erreurs usuelles comprennent fichier/chemin absent (2/3), accès refusé (5),
+handle incorrect (6), mémoire insuffisante (8), données invalides (13) et
+fonction non prise en charge. Après CF posé, conserver AX avant tout autre appel
+DOS. Pour un diagnostic DOS étendu, AH=59h/BX=0000h peut fournir classe, action
+et locus, mais un appel FAPI ne garantit pas que toutes ces informations soient
+significatives.
+
+Stratégies recommandées :
+
+  * DosQFileInfo indisponible : AH=57h/AL=00h pour date/heure et mécanismes DOS
+    standards pour taille/attributs ; les EA ne sont alors pas disponibles ;
+  * DosSetPathInfo indisponible : ouvrir le fichier puis utiliser les services
+    DOS ordinaires possibles ;
+  * DosMkDir2 sous OS/2 2.0 : AH=39h puis AX=5703h/BX=FFFFh ;
+  * titre VDM indisponible : poursuivre sans modifier le titre ;
+  * DosOpen2 indisponible : AX=6C00h ou AH=3Dh, sans création d'EA atomique ;
+  * VDD absent : ne jamais appeler un pointeur nul, désactiver la fonction
+    dépendante du pilote.
+
+
+16. Pièges fréquents
+---------------------
+
+  * Confondre DOS for OS/2 1.x et une VDM OS/2 2.x : les deux exposent INT 21h,
+    mais pas les mêmes contrats ni les mêmes bogues.
+  * Oublier CX=636Ch ou BX=0 pour les fonctions AH=64h/DX=xxxxh.
+  * Interpréter 4001h/4002h comme des fonctions à appeler : ce sont des
+    notifications reçues par le pilote.
+  * Appeler 4000h sans installer les callbacks requis.
+  * Oublier {$A-} : Turbo Pascal peut insérer du remplissage dans une structure
+    dont OS/2 attend les offsets exacts.
+  * Utiliser un pointeur near dans EAOP, STARTDATA ou DosEnumAttrib.
+  * Dépasser les 12 caractères du titre ou fournir moins de 13 octets à GET.
+  * Supposer DX=0003h disponible sous Warp 3 alors qu'il ne l'est pas.
+  * Utiliser DosMkDir2 sous OS/2 2.0 malgré le bogue de conversion de pointeur.
+  * Supprimer par DosForceDelete sans confirmation ni chemin canonique.
+  * Conserver une adresse de VDD après un changement de contexte ou appeler son
+    entrée sans connaître le protocole privé du pilote.
+  * Confondre AX=5702h/5703h OS/2 avec les extensions expérimentales de DOS 4.
+
+
+17. VDD : Virtual Device Drivers d'OS/2
+---------------------------------------
+
+Rôle d'un VDD
+~~~~~~~~~~~~~
+
+Un Virtual Device Driver fournit à chaque VDM une représentation privée d'un
+périphérique qui est en réalité partagé. Une application DOS croit accéder
+seule au clavier, à une UART, aux ports parallèle, à la vidéo ou à un autre
+matériel, tandis que le VDD :
+
+  * conserve un état matériel virtuel distinct pour chaque VDM ;
+  * empêche une VDM de corrompre l'état d'une autre VDM ou celui d'OS/2 ;
+  * arbitre l'accès au périphérique physique ;
+  * intercepte ou simule les entrées/sorties, interruptions et services BIOS ;
+  * peut injecter une interruption matérielle simulée dans une ou plusieurs
+    VDM ;
+  * sauvegarde et restaure l'état lors des changements de contexte ;
+  * fournit éventuellement une API privée aux programmes DOS ou OS/2.
+
+Un VDD OS/2 2.x n'est ni un pilote DOS `.SYS`, ni un VxD Windows, ni un VDD de
+NTVDM. Sa partie principale est un module 32 bits EXE32 à modèle plat exécuté en
+mode protégé au Ring 0. Un stub peut être présent dans l'espace V86 de chaque
+VDM. Les VDD sont normalement chargés par `CONFIG.SYS` et les pilotes IBM se
+trouvent généralement dans `\OS2\MDOS` avec un nom commençant par `V`.
+
+Architecture générale
+~~~~~~~~~~~~~~~~~~~~~~
+
+    application DOS dans une VDM
+        |  INT logiciel, port I/O, IRQ, accès mémoire ou API privée
+        v
+    stub V86 / mécanisme de trap de la VDM
+        |
+        v
+    VDD 32 bits, Ring 0
+        |-- Virtual Device Helper (VDH)
+        |-- autre VDD
+        |-- Physical Device Driver (PDD)
+        `-- matériel, seulement lorsque l'accès direct est justifié
+
+Le VDD utilise les services Virtual Device Helper du noyau MVDM pour obtenir et
+libérer ses ressources. Il dialogue normalement avec un Physical Device Driver
+pour le véritable matériel. Quelques pilotes sensibles aux performances, comme
+la virtualisation vidéo historique, peuvent effectuer certains accès directs.
+
+Un VDD peut contenir les catégories d'objets suivantes : initialisation et
+données d'initialisation, code global swappable, données globales swappables,
+données d'instance swappables et code global résident. Les chemins appelés lors
+d'un trap I/O ou d'une interruption doivent résider en mémoire et rester courts.
+
+VDD, PDD et pilote DOS
+~~~~~~~~~~~~~~~~~~~~~~
+
+    Composant     Mode             Fonction
+    ------------  ---------------  ------------------------------------------
+    pilote DOS    réel/V86         interface visible dans une session DOS
+    stub VDD      V86 par VDM      pont facultatif vers la partie protégée
+    VDD           protégé Ring 0   virtualisation et état propre à chaque VDM
+    PDD           protégé Ring 0   contrôle du périphérique physique partagé
+
+Le VDD ne remplace pas nécessairement le PDD. Il présente le périphérique aux
+programmes DOS et coordonne leur accès ; le PDD reste propriétaire des détails
+physiques utilisables aussi par les applications natives OS/2.
+
+Événements traités par un VDD
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Selon le périphérique, un VDD peut enregistrer des gestionnaires pour :
+
+  * création, initialisation, terminaison et changement d'état d'une VDM ;
+  * passage au premier plan ou à l'arrière-plan ;
+  * lecture ou écriture sur un port I/O intercepté ;
+  * interruption logicielle appelée par le programme DOS ;
+  * interruption matérielle réelle et injection d'une IRQ virtuelle ;
+  * temporisateur, attente, réveil et détection d'une boucle d'inactivité ;
+  * accès à une plage de mémoire ou à un état vidéo virtualisé ;
+  * ouverture, requête et fermeture par un autre pilote ou une application.
+
+Les services VDH recensés dans la documentation IBM incluent notamment les
+familles suivantes :
+
+    Famille                  Exemples de services
+    -----------------------  -----------------------------------------------
+    interception I/O         VDHInstallIOHook, VDHRemoveIOHook,
+                             VDHSelIOHookState
+    API vers la VDM          VDHRegisterAPI
+    communication pilotes   VDHRegisterVDD, VDHOpenVDD, VDHRequestVDD,
+                             VDHCloseVDD, VDHOpenPDD
+    activité d'une VDM       VDHReportPeek, VDHWakeIdle
+    IRQ virtuelle            services de simulation/gestion d'interruptions
+    mémoire et contexte      services VDH propres aux données globales/VDM
+
+Les prototypes exacts, conventions d'appel et numéros de services varient avec
+le DDK OS/2. Ils doivent venir du `Virtual Device Driver Reference`, de ses
+fichiers include et de ses bibliothèques ; ne pas les reconstruire à partir de
+cette table descriptive.
+
+État global et état par VDM
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Le pilote sépare au minimum :
+
+  * l'état global : ressource physique, PDD ouvert, hooks installés, compteurs
+    de références et arbitrage ;
+  * l'état d'instance : registres virtuels, masques d'IRQ, buffers et statut que
+    chaque VDM doit percevoir comme les siens ;
+  * l'état temporaire verrouillé : transaction ou interruption physique en
+    cours, inaccessible concurremment.
+
+Une valeur fournie par une VDM est hostile par principe. Même si le VDD n'est
+pas mappé dans son espace, un pointeur, une longueur, un ordinal ou un numéro de
+port incorrect peut faire exécuter au Ring 0 une lecture ou écriture invalide.
+Le VDD doit valider plages, tailles, alignements, dépassements arithmétiques,
+droits d'accès, contexte de la VDM et état du périphérique avant toute copie.
+
+Cycle de vie recommandé
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Initialisation globale :
+
+  1. vérifier la version du VDH et la présence du PDD ou du matériel requis ;
+  2. initialiser l'état global et les verrous ;
+  3. ouvrir le PDD ou enregistrer les communications inter-VDD ;
+  4. installer les hooks I/O, IRQ, logiciels et événements nécessaires ;
+  5. enregistrer l'API publique avec `VDHRegisterAPI` si elle existe ;
+  6. ne rendre le pilote disponible qu'après réussite de toutes les étapes.
+
+Pour chaque VDM : allouer et initialiser son état virtuel, appliquer les options
+de session, puis libérer buffers et événements à sa destruction. À la fermeture
+globale, refuser de disparaître pendant un callback, désactiver les nouveaux
+appels, retirer les hooks dans l'ordre inverse et fermer VDD/PDD.
+
+Publication d'une API par VDHRegisterAPI
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+`VDHRegisterAPI` associe un nom de VDD à un gestionnaire pour le mode V86 et/ou
+le mode protégé. Un client DOS localise l'entrée V86 avec :
+
+    AX = 4011h
+    DS:SI -> nom ASCIZ enregistré
+    INT 2Fh
+    ES:DI -> entrée du VDD, ou 0000h:0000h
+
+Le nom et l'adresse ne décrivent pas le protocole. Chaque VDD doit publier :
+
+  * une signature et une fonction de négociation de version ;
+  * la convention des registres et de la pile ;
+  * les fonctions admises depuis une IRQ ou un callback ;
+  * les tailles et versions de structures ;
+  * les registres et drapeaux préservés ;
+  * les codes d'erreur et la stratégie en cas de fonction inconnue.
+
+Un bon protocole commence par une fonction sans effet de bord, par exemple
+`AX=0000h` et une signature de retour. Le client ne doit appeler aucune autre
+fonction avant que la signature et une version compatible soient confirmées.
+
+Client DOS assembleur d'une API VDD fictive
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+L'exemple suivant illustre seulement la découverte et la négociation. Les
+valeurs `MVDD`, `AX=0000h` et la signature sont fictives ; elles doivent être
+remplacées par le contrat du VDD réel.
+
+    VddName  db 'MVDD',0
+    VddEntry dd 0
+
+    ; Localiser l'entrée V86.
+    mov  ax, 4011h
+    mov  si, OFFSET VddName
+    int  2Fh
+    mov  WORD PTR VddEntry, di
+    mov  WORD PTR VddEntry+2, es
+    mov  ax, es
+    or   ax, di
+    jz   VddAbsent
+
+    ; Fonction fictive 0000h : installation/version.
+    xor  ax, ax
+    call DWORD PTR VddEntry
+    cmp  bx, 'VM'                ; signature fictive, ordre little-endian
+    jne  VddIncompatible
+    ; CX pourrait alors contenir la version selon le contrat fictif.
+
+Un point d'entrée rendu par 4011h est décrit comme une adresse de breakpoint à
+appeler. Il faut employer exactement la séquence prescrite par le VDD ; certains
+contrats peuvent exiger un stub ou un encodage particulier plutôt qu'un simple
+`CALL FAR`. L'exemple n'autorise pas à appeler une API VDD inconnue.
+
+Client Turbo Pascal
+~~~~~~~~~~~~~~~~~~~
+
+La fonction `GetVDDEntry` de la section 13 effectue la découverte. L'appel de
+l'entrée doit être placé dans un wrapper assembleur spécialisé afin que Turbo
+Pascal ne fasse aucune hypothèse erronée sur les registres :
+
+    type
+      TVDDEntry = Pointer;
+
+    function FindMyVDD: TVDDEntry;
+    begin
+      FindMyVDD := GetVDDEntry('MVDD')
+    end;
+
+Un appel Pascal direct de type `procedure far` n'est sûr que si le contrat du
+VDD utilise précisément la convention Pascal correspondante, ce qui est rare.
+Le wrapper assembleur doit charger les registres, exécuter le mécanisme exigé,
+capturer les drapeaux et restaurer DS, ES, SI, DI et BP selon les besoins du
+compilateur.
+
+Accès depuis une application OS/2 protégée
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Une application native OS/2 ne passe normalement pas par INT 2Fh/4011h. Le
+Control Program API propose :
+
+    DosOpenVDD    ouvrir le VDD nommé et obtenir un handle
+    DosRequestVDD envoyer une requête définie par ce VDD
+    DosCloseVDD   fermer le handle
+
+`DosOpenVDD` peut notamment rendre `ERROR_VDD_NOT_FOUND` (643) ou
+`ERROR_INVALID_CALLER` (644). Cette voie est distincte de l'entrée V86 : elle
+utilise les structures et pointeurs du mode protégé OS/2.
+
+Performances et réentrance
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Chaque accès à un port intercepté provoque un trap Ring 0. Les chemins chauds
+doivent donc éviter les copies et transitions inutiles. Les portions critiques
+d'un gestionnaire de trap I/O sont souvent écrites en assembleur, tandis que le
+reste du VDD peut être en C 32 bits.
+
+Un gestionnaire ne doit ni bloquer à un niveau d'interruption inadéquat, ni
+appeler une API non réentrante, ni conserver un pointeur vers la mémoire d'une
+VDM après que son contexte a pu disparaître. Les données partagées entre IRQ,
+timer, événement VDM et requête API nécessitent les primitives de verrouillage
+fournies par le DDK, jamais un simple indicateur non atomique.
+
+Débogage et validation
+~~~~~~~~~~~~~~~~~~~~~~
+
+Un défaut Ring 0 peut arrêter tout OS/2. Tester d'abord dans une image dédiée et
+conserver une configuration de démarrage permettant de désactiver le pilote.
+La validation doit couvrir : plusieurs VDM concurrentes, fermeture brutale,
+passages plein écran/fenêtre et avant/arrière-plan, paramètres invalides,
+saturation des buffers, IRQ pendant une requête, périphérique absent et repli
+après échec partiel de l'initialisation.
+
+Ne pas confondre les callbacks vidéo 4001h/4002h avec l'API nommée d'un VDD :
+les premiers sont diffusés dans la chaîne INT 2Fh après activation du mécanisme
+vidéo ; la seconde est obtenue explicitement par 4011h.
+
+Références spécifiques aux VDD :
+
+  * IBM OS/2 2.0 Technical Library, Virtual Device Driver Reference ;
+  * IBM OS/2 2.0 Control Program Programming Reference, DosOpenVDD,
+    DosRequestVDD et DosCloseVDD ;
+  * IBM Redbook GG24-3731, OS/2 Version 2.0 Volume 2, DOS and Windows
+    Environment, chapitres sur l'architecture MVDM/VDD ;
+  * The Guide to OS/2 Warp Device Drivers, IBM Redbook SG24-4627 ;
+  * Steven J. Mastrianni, Writing OS/2 2.1 Device Drivers in C, 1993.
+
+
+18. Ports d'entrée/sortie dans une VDM OS/2
+--------------------------------------------
+
+Aucun port de détection OS/2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Il n'existe pas de port d'entrée/sortie x86 standard réservé à OS/2 qui
+permettrait de lire la version ou de reconnaître une VDM avec une séquence du
+genre :
+
+    mov dx, PortOS2
+    in  al, dx                    ; ceci n'existe pas comme convention OS/2
+
+La détection documentée dans ce texte reste `INT 2Fh/AX=4010h`, complétée au
+besoin par `INT 21h/AH=30h` et `INT 21h/AX=3306h`. Un port choisi arbitrairement
+peut appartenir à une carte réelle, être flottant, provoquer un trap, ou avoir
+un effet destructeur. Une valeur FFh ou 00h lue sur un port ne prouve rien sur
+la présence d'OS/2.
+
+Deux notions différentes
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Il ne faut pas confondre :
+
+  * l'adresse d'un port, définie par l'architecture PC ou par un périphérique ;
+  * la décision d'OS/2 et d'un VDD d'intercepter l'instruction qui vise ce port.
+
+Quand une application exécute `IN`, `OUT`, `INS` ou `OUTS` dans une VDM, le
+processeur et le gestionnaire de VDM peuvent :
+
+  1. autoriser l'accès direct au matériel ;
+  2. provoquer un trap et transmettre l'opération au VDD ;
+  3. laisser le VDD émuler une valeur ou mémoriser un état virtuel par VDM ;
+  4. relayer l'opération vers un PDD ou vers le matériel partagé ;
+  5. ignorer ou refuser l'accès selon la configuration de la session.
+
+Le numéro de port reste celui du périphérique. Par exemple, si VCOM virtualise
+03F8h, ce port demeure le port de base traditionnel de COM1 ; il ne devient pas
+un « port OS/2 ».
+
+Ports PC fréquemment rencontrés
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+La table suivante donne des valeurs historiques courantes, pas une autorisation
+d'accès. Le matériel, le BIOS, les cartes Plug and Play et la configuration
+peuvent employer d'autres bases.
+
+    Plage / port       Fonction PC traditionnelle
+    ----------------  ------------------------------------------------------
+    0020h, 0021h      contrôleur d'interruptions 8259 maître
+    0040h..0043h      temporisateur programmable 8253/8254
+    0060h             données clavier / contrôleur 8042
+    0061h             contrôle haut-parleur et fonctions système historiques
+    0064h             état/commande du contrôleur clavier 8042
+    0070h, 0071h      index CMOS/NMI et données CMOS/RTC
+    0080h..008Fh      pages DMA et port de délai historique 0080h
+    00A0h, 00A1h      contrôleur d'interruptions 8259 esclave
+    00C0h..00DFh      second contrôleur DMA sur AT
+    0170h..0177h      contrôleur IDE secondaire traditionnel
+    01F0h..01F7h      contrôleur IDE primaire traditionnel
+    0200h..0207h      port de jeu historique
+    0220h..022Fh      base fréquente Sound Blaster, configurable
+    0278h..027Ah      LPT2 possible
+    02E8h..02EFh      COM4 possible
+    02F8h..02FFh      COM2 traditionnel
+    0378h..037Ah      LPT1 traditionnel
+    03B0h..03BFh      VGA monochrome et registres associés
+    03C0h..03CFh      registres VGA/EGA généraux
+    03D0h..03DFh      VGA couleur et registres associés
+    03E8h..03EFh      COM3 possible
+    03F0h..03F7h      contrôleur de disquette
+    03F8h..03FFh      COM1 traditionnel
+    0CF8h, 0CFCh      configuration PCI mécanisme 1 ; accès très sensible
+
+Les IRQ et canaux DMA ne sont pas des ports. Un UART COM1 peut employer les
+ports 03F8h..03FFh, IRQ4 et éventuellement des buffers gérés par un pilote :
+trois ressources différentes que le VDD doit coordonner.
+
+Comment le VDD virtualise les ports
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Un VDD enregistre auprès du VDH les ports ou plages qu'il veut surveiller, par
+des services de la famille `VDHInstallIOHook`. Le VDH configure le mécanisme de
+trap de la VDM. Lorsqu'une instruction vise une plage interceptée, le VDD reçoit
+notamment l'adresse, le sens entrée/sortie, la largeur et la valeur concernée,
+selon le contrat exact du DDK.
+
+Le VDD peut conserver une copie virtuelle des registres. Ainsi deux sessions
+DOS peuvent chacune croire que le registre de contrôle d'un périphérique a une
+valeur différente, alors qu'un seul composant physique existe. Lorsqu'une VDM
+obtient réellement le périphérique, le pilote restaure ou traduit l'état voulu.
+
+`VDHSelIOHookState` permet à un VDD d'activer ou désactiver sélectivement le
+trapping prévu par son contrat ; `VDHRemoveIOHook` retire un hook. Retirer le
+hook avant qu'aucun callback ne soit encore actif fait partie de la fermeture
+sûre décrite dans la section VDD.
+
+Largeur et instructions concernées
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Un gestionnaire doit distinguer :
+
+    Instruction     Largeur       Particularité
+    --------------  ------------  ------------------------------------------
+    IN/OUT AL       8 bits        accès à un registre octet
+    IN/OUT AX       16 bits       peut couvrir deux registres adjacents
+    IN/OUT EAX      32 bits       possible avec préfixe 386 dans une VDM
+    INS/OUTS        8/16/32 bits  transfert entre port et mémoire
+    REP INS/OUTS    répétée       CX/ECX éléments, coût de trap potentiellement élevé
+
+Un VDD ne doit pas supposer que toutes les applications utilisent uniquement
+des accès octet. Il doit définir le comportement des largeurs invalides, des
+accès non alignés, des instructions répétées et des opérations qui traversent
+la limite de sa plage.
+
+Accès direct, accès émulé et performances
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Autoriser directement un port réduit le coût des traps mais retire au VDD une
+partie de son contrôle. C'est acceptable seulement si le périphérique peut être
+partagé sans danger ou si la session possède temporairement l'accès exclusif.
+L'interception assure une meilleure isolation, au prix d'une transition vers le
+Ring 0 pour chaque opération.
+
+Les boucles de scrutation sont particulièrement coûteuses :
+
+    WaitReady:
+        in   al, dx
+        test al, ReadyBit
+        jz   WaitReady
+
+Si chaque `IN` provoque un trap, cette boucle monopolise le processeur et entre
+continuellement dans le VDD. Un pilote peut signaler cette activité au mécanisme
+d'inactivité avec `VDHReportPeek`, puis réveiller la VDM par `VDHWakeIdle`
+lorsqu'un événement rend le périphérique prêt. Une application DOS devrait
+préférer le BIOS, DOS ou le pilote de périphérique chaque fois qu'une interface
+bloquante existe.
+
+Réglages propres à chaque session DOS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+OS/2 permet de configurer individuellement les VDM. Les options exactes varient
+selon la version et les VDD installés ; on rencontre notamment des réglages pour
+les ports COM, le matériel vidéo, le son, le temporisateur et les plages mémoire.
+Un VDD peut publier ses propres propriétés avec `VDHRegisterProperty` et les
+lire à la création de la VDM avec `VDHQueryProperty`.
+
+La présence d'un réglage « accès direct » ne rend pas l'opération universellement
+sûre : il faut encore que la base corresponde au matériel, qu'aucun autre pilote
+ne possède la ressource et que l'application respecte le protocole électrique
+et temporel du périphérique.
+
+Exemple assembleur : lire l'état COM1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Cet exemple lit le Line Status Register d'un UART compatible 8250 à la base
+COM1 traditionnelle. Il est uniquement illustratif. Le BIOS Data Area, un
+pilote série ou INT 14h doit être préféré pour découvrir et utiliser le port.
+
+    COM1_BASE EQU 03F8h
+    UART_LSR  EQU 5
+
+    mov  dx, COM1_BASE + UART_LSR
+    in   al, dx
+    test al, 20h                   ; THRE : registre d'émission vide
+    jz   TransmitterBusy
+
+Sous OS/2, ce `IN` peut lire l'UART physique ou être émulé par VCOM. Le programme
+ne peut pas le déterminer à partir de la valeur lue et ne doit pas contourner le
+VDD en cherchant une autre voie matérielle.
+
+Exemple assembleur : détection correcte d'OS/2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Une détection ne lit aucun port :
+
+    mov  ax, 4010h
+    int  2Fh
+    cmp  ax, 4010h
+    je   OS2_2PlusAbsent
+    ; BX contient la version renvoyée par l'hôte OS/2.
+
+Turbo Pascal et Port[]
+~~~~~~~~~~~~~~~~~~~~~~
+
+Turbo Pascal expose les tableaux spéciaux `Port[]` et `PortW[]` :
+
+    function ReadPortByte(P: Word): Byte;
+    begin
+      ReadPortByte := Port[P]
+    end;
+
+    procedure WritePortByte(P: Word; V: Byte);
+    begin
+      Port[P] := V
+    end;
+
+    function ReadPortWord(P: Word): Word;
+    begin
+      ReadPortWord := PortW[P]
+    end;
+
+Dans une VDM, ces expressions produisent toujours des instructions d'E/S ;
+elles ne contournent pas la virtualisation. Elles ne doivent pas servir à
+sonder toutes les adresses. Une écriture dans un registre de commande, le CMOS,
+le PIC, le DMA, l'IDE ou la configuration PCI peut bloquer la VDM, perdre des
+données ou perturber le système entier si l'accès est transmis au matériel.
+
+Exemple Turbo Pascal limité à la lecture illustrative du LSR :
+
+    const COM1 = $03F8;
+          LSR  = 5;
+
+    function COM1TransmitterEmpty: Boolean;
+    begin
+      COM1TransmitterEmpty := (Port[COM1 + LSR] and $20) <> 0
+    end;
+
+Cette routine suppose une base COM1 classique et ne prouve ni que l'UART existe,
+ni que la session possède COM1. Pour une application normale, employer INT 14h
+ou un pilote de communication OS/2/DOS.
+
+Vidéo et accès direct
+~~~~~~~~~~~~~~~~~~~~~
+
+Les registres 03C0h..03DFh sont fortement dépendants du contrôleur, du mode
+courant et de séquences index/données. OS/2 virtualise l'écran et peut notifier
+les changements de premier plan par INT 2Fh/4001h et 4002h. Un programme qui
+modifie directement VGA doit être préparé à ce que l'accès soit émulé, différé
+ou visible seulement dans son écran virtuel.
+
+L'appel INT 2Fh/4000h n'est pas un port vidéo : c'est un service multiplex de
+négociation avec le VDD. L'activer oblige le pilote à traiter correctement les
+notifications et à sauvegarder/restaurer l'état vidéo.
+
+Ports sensibles à ne pas sonder
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Éviter tout balayage aveugle et, en particulier, les écritures vers :
+
+  * 20h/21h et A0h/A1h : masquage ou acquittement des interruptions ;
+  * 40h..43h : modification du temporisateur système ;
+  * 60h/64h : commandes du contrôleur clavier, parfois avec reset CPU ;
+  * 70h/71h : NMI et CMOS ;
+  * contrôleurs DMA : transfert vers une adresse arbitraire ;
+  * 1F0h..1F7h et 170h..177h : commandes de stockage ;
+  * CF8h/CFCh : configuration PCI de n'importe quel périphérique.
+
+Même une lecture peut acquitter un événement, avancer une FIFO, effacer un bit
+d'état ou modifier le protocole d'un périphérique. « IN est sans danger, OUT est
+dangereux » est donc une règle fausse.
+
+Règles de programmation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+  * utiliser 4010h, 30h et 3306h pour les versions, jamais un port magique ;
+  * découvrir les ressources par BIOS, pilote ou configuration, pas par scan ;
+  * préférer INT 14h, INT 17h, BIOS vidéo et pilotes DOS aux accès directs ;
+  * documenter base, largeur, bits, effets de lecture et ordre des opérations ;
+  * protéger les séquences index/données contre les accès concurrents ;
+  * prévoir qu'un port peut être émulé et qu'une boucle de polling coûte cher ;
+  * ne jamais désactiver les interruptions longtemps dans une VDM ;
+  * ne pas supposer que CLI garantit l'exclusivité vis-à-vis d'OS/2 ou du VDD ;
+  * tester en fenêtre, plein écran, avant-plan, arrière-plan et avec plusieurs
+    VDM utilisant simultanément le périphérique ;
+  * fournir une voie de repli quand le VDD refuse l'accès.
+
+
+19. Table récapitulative des fonctions OS/2
+--------------------------------------------
+
+Cette section sert d'index rapide. « FAPI » désigne une Family API d'OS/2 1.x,
+« VDM » un service de machine DOS virtuelle d'OS/2 2.x+, « U » une interface
+non documentée pour les applications, et « callback » une notification reçue
+par un gestionnaire plutôt qu'une fonction à appeler.
+
+INT 21h
+~~~~~~~
+
+    Sélecteur                         Version     Nom / fonction
+    --------------------------------  ----------  ----------------------------------
+    AH=30h                            1.x+        version DOS présentée/compatible
+    AX=3306h                          2.x+        version vraie de la personnalité DOS
+    AX=5702h                          1.1+ FAPI   DosQFileInfo
+    AX=5702h, BX=FFFFh                1.1+ FAPI   DosQPathInfo
+    AX=5703h                          1.1+ FAPI   DosSetFileInfo
+    AX=5703h, BX=FFFFh                1.1+ FAPI   DosSetPathInfo
+    AH=61h, BP=6467h, AL=00h          1.x FAPI    lire un JOIN ou SUBST
+    AH=61h, BP=6467h, AL=01h          1.x FAPI    ajouter un JOIN ou SUBST
+    AH=61h, BP=6467h, AL=02h          1.x FAPI    supprimer un JOIN ou SUBST
+    AH=64h, CX=636Ch, BX=0, DX=0000h  2.0+ VDM U  titre automatique de session
+    AH=64h, CX=636Ch, BX=0, DX=0001h  2.0+ VDM U  définir le titre de session
+    AH=64h, CX=636Ch, BX=0, DX=0002h  2.0+ VDM U  lire le titre de session
+    AH=64h, CX=636Ch, BX=0, DX=0003h  2.1 VDM U   obtenir LASTDRIVE
+    AH=64h, CX=636Ch, BX=0, DX=0004h  2.1+ VDM U  taille de la JFT dans la PTDA
+    AH=64h, CX=636Ch, BX=0, DX=0005h  2.1+ VDM U  second mot de flags SFT
+    AH=64h, CX=636Ch, BX=0, DX=0006h  2.1+ dbg U  charger programme/symboles noyau
+    AH=64h, CX=636Ch, BX=0, DX=0007h  2.1+ VDM U  call gate WinOS2
+    AH=64h, CX=636Ch, BX=0, DX=0008h  2.1+ VDM U  message NLS de chargement
+    AH=64h, CX=636Ch, BX=0025h        2.1+ VDM U  DOS32StartSession
+    AH=64h, CX=636Ch, BX=0082h        2.1+ VDM U  DosGetCP
+    AH=64h, CX=636Ch, BX=00B6h        2.1+ VDM U  DosQFSAttach
+    AH=64h, CX=636Ch, BX=00BFh        2.1+ VDM U  DosEditName
+    AH=64h, CX=636Ch, BX=00CBh        2.1+ VDM U  DosForceDelete
+    AH=64h, CX=636Ch, BX=0144h        2.1+ VDM U  Dos32CreateEventSem
+    AH=64h, CX=636Ch, BX=0145h        2.1+ VDM U  Dos32OpenEventSem
+    AH=64h, CX=636Ch, BX=0146h        2.1+ VDM U  Dos32CloseEventSem
+    AH=64h, CX=636Ch, BX=0147h        2.1+ VDM U  Dos32ResetEventSem
+    AH=64h, CX=636Ch, BX=0148h        2.1+ VDM U  Dos32PostEventSem
+    AH=64h, CX=636Ch, BX=0149h        2.1+ VDM U  Dos32WaitEventSem
+    AH=64h, CX=636Ch, BX=014Ah        2.1+ VDM U  Dos32QueryEventSem
+    AH=64h, CX=636Ch, BX=014Bh        2.1+ VDM U  Dos32CreateMutexSem
+    AH=64h, CX=636Ch, BX=014Ch        2.1+ VDM U  Dos32OpenMutexSem
+    AH=64h, CX=636Ch, BX=014Dh        2.1+ VDM U  Dos32CloseMutexSem
+    AH=64h, CX=636Ch, BX=014Eh        2.1+ VDM U  Dos32RequestMutexSem
+    AH=64h, CX=636Ch, BX=014Fh        2.1+ VDM U  Dos32ReleaseMutexSem
+    AH=64h, CX=636Ch, BX=0150h        2.1+ VDM U  Dos32QueryMutexSem
+    AH=64h, CX=636Ch, BX=0151h        2.1+ VDM U  Dos32CreateMuxWaitSem
+    AH=64h, CX=636Ch, BX=0152h        2.1+ VDM U  Dos32OpenMuxWaitSem
+    AH=64h, CX=636Ch, BX=0153h        2.1+ VDM U  Dos32CloseMuxWaitSem
+    AH=64h, CX=636Ch, BX=0154h        2.1+ VDM U  Dos32WaitMuxWaitSem
+    AH=64h, CX=636Ch, BX=0155h        2.1+ VDM U  Dos32AddMuxWaitSem
+    AH=64h, CX=636Ch, BX=0156h        2.1+ VDM U  Dos32DeleteMuxWaitSem
+    AH=64h, CX=636Ch, BX=0157h        2.1+ VDM U  Dos32QueryMuxWaitSem
+    AX=6C01h                          2.0 VDM U   DosOpen2 avec EA
+    AH=6Dh                            1.x FAPI U  DosMkDir2 avec EA
+    AH=6Eh                            1.x FAPI U  DosEnumAttrib
+    AX=6F00h                          1.x FAPI U  DosQMaxEASize
+
+Notes sur cette table :
+
+  * les ordinals 0144h à 0157h sont connus par leur nom, mais le contrat précis
+    de registres de chacun doit provenir du Toolkit ou du pilote OS/2 cible ;
+  * DX=0003h n'est pas pris en charge par OS/2 Warp 3 ;
+  * DX=0006h exige une version de débogage du noyau ;
+  * DosMkDir2 est défectueux sous OS/2 2.0 et doit être remplacé par AH=39h,
+    puis DosSetPathInfo ;
+  * AX=5702h et AX=5703h ont aussi une autre signification sous DOS 4.x ; la
+    détection de l'environnement reste obligatoire.
+
+INT 2Fh
+~~~~~~~
+
+    Sélecteur  Version / statut          Nom / fonction
+    ---------  ------------------------  ------------------------------------
+    AX=4000h   Windows 3+, OS/2 incertain capacités de virtualisation du VDD
+    AX=4001h   Compatibility Box callback passage de DOS à l'arrière-plan
+    AX=4002h   Compatibility Box callback retour de DOS à l'avant-plan
+    AX=4010h   OS/2 2.0+                 détection et version d'OS/2
+    AX=4011h   OS/2                      obtenir l'entrée API d'un VDD
+
+Rappel d'utilisation :
+
+  * 4000h est un appel destiné aux pilotes vidéo. Il active des obligations de
+    sauvegarde et de restauration ; ce n'est pas une détection générale ;
+  * 4001h et 4002h sont placés dans AX par OS/2 lors de l'appel de la chaîne
+    INT 2Fh. Un programme ne doit pas les invoquer comme des requêtes ;
+  * 4010h est le test recommandé ici : AX reste 4010h si OS/2 est absent ;
+  * 4011h prend DS:SI -> nom ASCIZ du VDD et rend ES:DI, ou 0000h:0000h.
+
+
+20. Sources
+-----------
+
+  * Ralf Brown's Interrupt List, release 61, 16 juillet 2000, INTERRUP.G,
+    INTERRUP.H et INTERRUP.L :
+      https://www.cs.cmu.edu/~ralf/files.html
+      https://github.com/cirosantilli/ralf-brown-interrupt-list
+  * Index RBIL INT 21h :
+      https://fd.lod.bz/rbil/zint/index_21.html
+  * Index RBIL OS/2 et autres systèmes :
+      https://fd.lod.bz/rbil/interrup/other_os/index.html
+  * Conversion HTML historique de la RBIL, INT 21h :
+      https://www.ctyme.com/intr/int-21.htm
+  * Résumé francophone INT 21h/AH=64h :
+      https://www.gladir.com/LEXIQUE/INTR/INT21F64.HTM
+  * RBIL, INT 21h/AH=30h, version DOS rapportée :
+      https://fd.lod.bz/rbil/interrup/dos_kernel/2130.html
+  * RBIL, INT 21h/AX=3306h, version DOS vraie :
+      https://fd.lod.bz/rbil/interrup/dos_kernel/213306.html
+  * IBM Redbook GG24-3731, OS/2 2.0, DOS and Windows Environment :
+      https://bitsavers.org/pdf/ibm/pc/os2/OS2_2.x/redbooks/
+             GG24-3731-00_OS2_V2.0_Vol_2_DOS_and_Windows_Environment_199204.pdf
+  * IBM Redbook, architecture des VDD et services VDH :
+      https://www.os2.kr/komh/os2books/gg243731/089_L3_VirtualDeviceDrivers.html
+      https://www.os2.kr/komh/os2books/gg243731/144_L2_DeviceDriverArchitec.html
+  * Steven J. Mastrianni, Writing OS/2 2.1 Device Drivers in C :
+      https://www.bitsavers.org/pdf/ibm/pc/os2/OS2_2.x/
+             Mastriani_Writing_OS2_2.1_Drivers_In_C_1993.pdf
+
+La conversion ctyme facilite la navigation, mais la source textuelle RBIL est
+plus explicite sur le statut documenté/non documenté et les structures. Pour un
+logiciel destiné à une version précise d'OS/2, compléter cette synthèse avec le
+Control Program Programming Reference et le Toolkit IBM correspondant, puis
+tester sous cette version réelle ou une image virtuelle fidèle.
