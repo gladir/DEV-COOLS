@@ -1,0 +1,1069 @@
+==============================================================================
+ INFORMTECH INTERNATIONAL IT-VGA2
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document rassemble les informations disponibles sur la carte video
+IT-VGA2 d'Informtech International, Inc. Il couvre le materiel, les cavaliers,
+la memoire, la compatibilite VGA, le BIOS, la detection par signature ROM et la
+programmation sous DOS en assembleur et en Turbo Pascal.
+
+La documentation publique conservee sur cette carte est rare. Les informations
+specifiques confirmees sont distinguees des caracteristiques VGA generales et
+des extensions Tseng Laboratories qui dependent de la revision du controleur.
+Il ne faut pas transformer une hypothese de chipset en certitude materielle.
+
+Les accents sont omis afin de conserver un fichier ASCII lisible sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Identification et contexte historique
+  2. Caracteristiques confirmees
+  3. Implantation et connecteurs
+  4. Cavaliers J1 a J4
+  5. Configurations de memoire video
+  6. Controleur Tseng : ce qui est connu et inconnu
+  7. Architecture VGA compatible
+  8. Modes VGA standards
+  9. Modes etendus et resolution 1024 x 768
+ 10. Organisation de la memoire VGA
+ 11. Registres et ports VGA
+ 12. Registres Tseng et banques SVGA
+ 13. BIOS video et VESA VBE
+ 14. ROM video et signature IT - VGA2
+ 15. Detection robuste de la carte
+ 16. Palette et RAMDAC
+ 17. Interruptions et IRQ9
+ 18. VESA Feature Connector
+ 19. Reglages Early MEMCS et Pixel Clock Delay
+ 20. Exemples en assembleur
+ 21. Exemples en Turbo Pascal
+ 22. Programmation d'un mode bancaire
+ 23. Installation et diagnostic
+ 24. Conseils pour un pilote ou un emulateur
+ 25. Tests de conformite
+ 26. Pieges frequents
+ 27. References
+
+
+==============================================================================
+1. IDENTIFICATION ET CONTEXTE HISTORIQUE
+==============================================================================
+
+Fabricant : Informtech International, Inc.
+Modele    : IT-VGA2
+Categorie : VGA etendue, souvent classee XVGA ou Super VGA
+Bus       : ISA 16 bits
+Controleur: Tseng Laboratories, reference exacte non confirmee par les sources
+
+La carte appartient a la generation des VGA ISA offrant des resolutions au-dela
+des modes IBM. Sa capacite maximale annoncee est 1024 x 768 et sa memoire peut
+atteindre 1 Mio. Elle n'est pas l'adaptateur USB moderne parfois nomme VGA2.
+
+Le BIOS contient la chaine ASCII :
+
+  IT - VGA2
+
+sur les exemplaires documentes. Lorsque la ROM est mappee a C0000h, elle se
+trouve a l'adresse C000:0181, soit l'adresse physique C0181h. Cette signature
+constitue le moyen de detection specifique le plus utile connu.
+
+
+==============================================================================
+2. CARACTERISTIQUES CONFIRMEES
+==============================================================================
+
+  * bus ISA 16 bits ;
+  * processeur video Tseng Laboratories ;
+  * compatibilite VGA et modes etendus XVGA ;
+  * resolution maximale annoncee : 1024 x 768 ;
+  * DRAM video de 256 Kio, 512 Kio ou 1 Mio ;
+  * sortie analogique DE-15 ;
+  * VESA Feature Connector ;
+  * ROM video avec plage configurable par J1 ;
+  * controle Early MEMCS par J2 ;
+  * retard d'horloge pixel de 20 ns optionnel par J3 ;
+  * generation d'IRQ9 optionnelle par J4.
+
+La profondeur disponible en 1024 x 768 depend de la memoire et du BIOS. Une
+image 1024 x 768 x 8 bpp occupe 786 432 octets et exige au moins 1 Mio. Avec
+512 Kio, cette resolution est normalement limitee a quatre bits par pixel ;
+avec 256 Kio, elle exige deux bits par pixel ou une organisation equivalente.
+Ces calculs indiquent ce qui tient en memoire, pas les modes garantis par une
+version particuliere du BIOS.
+
+
+==============================================================================
+3. IMPLANTATION ET CONNECTEURS
+==============================================================================
+
+ Repere  Fonction
+ ---------------------------------------------------------------------------
+ CN1     connecteur analogique video femelle 15 contacts
+ CN2     VESA Feature Connector
+ J1      plage de la ROM BIOS video
+ J2      Early MEMCS
+ J3      retard de l'horloge pixel
+ J4      activation de l'IRQ9
+
+CN1 suit l'interface VGA analogique : rouge, vert, bleu, masses, synchronisation
+horizontale, synchronisation verticale et lignes d'identification. Le brochage
+exact et les niveaux doivent etre verifies avant de fabriquer un cable.
+
+CN2 expose le flux video numerique et des signaux de synchronisation a une carte
+d'acquisition, d'incrustation ou de traitement. Ce n'est ni un second ecran ni
+une sortie analogique directement raccordable a un moniteur.
+
+Installation physique : couper l'alimentation, eviter les decharges statiques,
+installer la carte dans un slot ISA 16 bits, verifier les cavaliers et desactiver
+une video integree susceptible de decoder les memes ports et memoires.
+
+
+==============================================================================
+4. CAVALIERS J1 A J4
+==============================================================================
+
+J1 - plage BIOS
+---------------
+
+ Position                 Plage documentee
+ ---------------------------------------------------------------------------
+ broches 2-3 fermees       C0000h a C7FFFh, reglage normal
+ broches 1-2 fermees       C0000h a DFFFFh
+
+La seconde indication est conservee telle que publiee dans les archives de
+configuration. Elle semble decrire la plage de decodage ou d'acces, et non une
+ROM de 128 Kio necessairement peuplee. Il ne faut pas en deduire que chaque
+octet C0000h..DFFFFh contient la ROM.
+
+La detection C000:0181 suppose le reglage normal et une image ROM commencant a
+C0000h. Si une revision permet un autre mappage effectif, il faut d'abord
+localiser les ROM d'extension valides entre C0000h et EFFFFh.
+
+J2 - Early MEMCS
+----------------
+
+  broches 1-2 fermees : active, reglage normal
+  broches 2-3 fermees : desactive
+
+Early MEMCS avance l'assertion du signal de selection memoire ISA. Il peut
+ameliorer la marge temporelle ou les performances, mais devenir incompatible
+avec certaines cartes meres, accelerateurs de bus ou wait states.
+
+J3 - Pixel Clock Delay
+----------------------
+
+  broches 1-2 fermees : normal
+  broches 2-3 fermees : retard de 20 ns
+
+Le retard ajuste la phase de l'horloge par rapport aux donnees/DAC. Il sert a
+corriger des pixels instables ou un mauvais alignement avec certains composants.
+Ce n'est pas un reglage de frequence de rafraichissement.
+
+J4 - interruption
+-----------------
+
+  ouvert : IRQ9 desactivee, reglage normal
+  ferme  : IRQ9 activee
+
+N'activer J4 que si un pilote l'exige et si IRQ9 est libre ou correctement
+partagee. Sur PC/AT, IRQ9 correspond a la voie cascadee/redirectee historiquement
+associee a IRQ2 ; une mauvaise configuration peut bloquer d'autres cartes.
+
+
+==============================================================================
+5. CONFIGURATIONS DE MEMOIRE VIDEO
+==============================================================================
+
+ Taille   Bank 0               Bank 1               Bank 2
+ ---------------------------------------------------------------------------
+ 256 Kio  2 x 256K x 4         vide                 vide
+ 512 Kio  2 x 256K x 4         2 x 256K x 4         vide
+   1 Mio  2 x 256K x 4         2 x 256K x 4         4 x 256K x 4
+
+Chaque circuit 256K x 4 stocke 1 048 576 bits, soit 128 Kio. Deux circuits
+forment donc 256 Kio sur une largeur de huit bits. Les supports doivent etre
+peuples par groupes complets avec des DRAM de vitesse et d'organisation adaptees.
+
+Le BIOS ou le pilote detecte la quantite installee et limite les modes. Une
+puce manquante ou defectueuse peut produire :
+
+  * bits ou couleurs manquants ;
+  * bandes verticales ;
+  * corruption seulement dans les hautes banques ;
+  * echec des modes 800 x 600/1024 x 768 alors que VGA fonctionne ;
+  * fausse detection de la taille.
+
+Calculs utiles, sans pitch supplementaire :
+
+ Mode                  Octets necessaires
+ ---------------------------------------------------------------------------
+ 640 x 480 x 4 bpp      153 600
+ 640 x 480 x 8 bpp      307 200
+ 800 x 600 x 4 bpp      240 000
+ 800 x 600 x 8 bpp      480 000
+ 1024 x 768 x 4 bpp     393 216
+ 1024 x 768 x 8 bpp     786 432
+
+
+==============================================================================
+6. CONTROLEUR TSENG : CE QUI EST CONNU ET INCONNU
+==============================================================================
+
+Les archives identifient le fabricant du processeur comme Tseng Laboratories,
+mais ne donnent pas sa reference lisible. Les candidats historiques plausibles
+sont les familles ET3000 et ET4000. Le bus 16 bits, 1 Mio et 1024 x 768 sont
+compatibles avec plusieurs revisions ; ils ne prouvent pas ET4000AX.
+
+Regle de programmation :
+
+  * utiliser le BIOS de la carte pour les modes etendus ;
+  * detecter VESA VBE avant d'appeler 4Fxxh ;
+  * identifier le chipset avant les registres Tseng directs ;
+  * ne jamais annoncer ET4000 seulement parce que le nom est IT-VGA2.
+
+Les sections sur les banques Tseng donnent les conventions courantes. Elles
+doivent etre considerees comme un chemin conditionnel, non comme une garantie
+pour toute IT-VGA2 ou toute revision de ROM.
+
+
+==============================================================================
+7. ARCHITECTURE VGA COMPATIBLE
+==============================================================================
+
+Le chemin VGA comprend :
+
+  * Sequencer : horloges, planes, adressage Chain-4 ;
+  * CRT Controller : timings, adresse de depart, curseur ;
+  * Graphics Controller : latches, modes de lecture/ecriture ;
+  * Attribute Controller : palette 16 couleurs, overscan, selection de mode ;
+  * RAMDAC : 256 entrees RGB ;
+  * au moins 256 Kio de memoire video planaire ;
+  * BIOS d'extension initialise par le POST a C0000h normalement.
+
+Les modes VGA utilisent les apertures A0000h, B0000h ou B8000h. Les modes SVGA
+depassent la fenetre A0000h de 64 Kio et recourent donc a une banque selectionnee
+par registre ou par BIOS.
+
+L'IT-VGA2 n'est pas un accelerateur 2D documente : les operations de ligne,
+rectangle et BitBLT sont effectuees par le CPU, sauf fonction non publiee d'une
+revision. Un controleur ET4000AX classique est un framebuffer rapide, pas le
+W32 accelere apparu plus tard.
+
+
+==============================================================================
+8. MODES VGA STANDARDS
+==============================================================================
+
+ Mode  Geometrie/type                       Memoire
+ ---------------------------------------------------------------------------
+ 00h   texte 40 x 25, 16 couleurs           B800h
+ 01h   texte 40 x 25, 16 couleurs           B800h
+ 02h   texte 80 x 25, 16 couleurs           B800h
+ 03h   texte 80 x 25, 16 couleurs           B800h
+ 04h   CGA 320 x 200, 4 couleurs            B800h
+ 05h   CGA 320 x 200, 4 couleurs            B800h
+ 06h   CGA 640 x 200, 2 couleurs            B800h
+ 07h   texte monochrome 80 x 25             B000h
+ 0Dh   320 x 200, 16 couleurs planaires     A000h
+ 0Eh   640 x 200, 16 couleurs planaires     A000h
+ 0Fh   640 x 350, monochrome                A000h
+ 10h   640 x 350, 16 couleurs               A000h
+ 11h   640 x 480, 2 couleurs                A000h
+ 12h   640 x 480, 16 couleurs planaires     A000h
+ 13h   320 x 200, 256 couleurs, Chain-4     A000h
+
+Ces modes doivent etre selectionnes avec INT 10h/AH=00h. La compatibilite
+registre directe suit IBM VGA, sous reserve des extensions actives.
+
+
+==============================================================================
+9. MODES ETENDUS ET RESOLUTION 1024 X 768
+==============================================================================
+
+La carte annonce une resolution maximale de 1024 x 768. Les numeros de modes,
+profondeurs, frequences et timings sont propres au BIOS Informtech/Tseng. Une
+documentation de cavalier ne permet pas d'en dresser une table certaine.
+
+Trois interfaces peuvent exister :
+
+  1. modes proprietaires par INT 10h/AH=00h ;
+  2. utilitaire/driver Tseng chargeant des modes ;
+  3. VESA BIOS Extensions, si la ROM contient ou recoit un VBE.
+
+Toujours enumerer les modes VBE plutot que supposer 101h, 103h, 105h. Les modes
+VBE classiques correspondants sont souvent 640x480x256, 800x600x256 et
+1024x768x256, mais leur presence n'est pas garantie sur une ROM ancienne.
+
+Le 1024 x 768 peut etre entrelace sur les moniteurs de l'epoque. Envoyer un
+timing incorrect a un CRT fixe peut donner une image instable ou hors plage.
+Employer les valeurs BIOS et la liste de moniteurs supportes.
+
+
+==============================================================================
+10. ORGANISATION DE LA MEMOIRE VGA
+==============================================================================
+
+Texte
+-----
+
+Chaque cellule contient code et attribut. Offset = 2*(y*colonnes+x).
+
+Modes 16 couleurs
+-----------------
+
+Quatre plans contiennent chacun un bit par pixel. Le Graphics Controller charge
+des latches lors d'une lecture ; Write Mode, Set/Reset, Bit Mask et Map Mask
+determinent les plans modifies. Copier un octet sans programmer ces registres
+n'equivaut pas a huit pixels empaquetes.
+
+Mode 13h
+--------
+
+La vue CPU est lineaire : offset=y*320+x, un octet par pixel. En interne, le
+Sequencer Chain-4 distribue les octets entre quatre plans.
+
+Modes SVGA empaquetes
+---------------------
+
+Une adresse logique depasse 64 Kio :
+
+  offset_lineaire = y*pitch + x*octets_par_pixel
+  banque = offset_lineaire div granularite
+  dans_fenetre = offset_lineaire mod taille_fenetre
+
+Granularite et taille de fenetre doivent venir de VBE ModeInfo ou du manuel du
+chipset. Elles sont souvent 64 Kio sur les Tseng ISA, mais ne pas le supposer si
+le BIOS retourne autre chose.
+
+
+==============================================================================
+11. REGISTRES ET PORTS VGA
+==============================================================================
+
+Registres externes et DAC
+-------------------------
+
+ Port   Fonction
+ ---------------------------------------------------------------------------
+ 3C2h   Miscellaneous Output en ecriture
+ 3CCh   Miscellaneous Output en lecture
+ 3C3h   Video Subsystem Enable
+ 3C6h   DAC Pixel Mask
+ 3C7h   DAC Read Index
+ 3C8h   DAC Write Index
+ 3C9h   DAC Data
+ 3CAh   Feature Control en lecture
+ 3BAh/3DAh Input Status 1
+
+Groupes indexes
+---------------
+
+ Groupe                 Index   Donnees
+ ---------------------------------------------------------------------------
+ Sequencer               3C4h    3C5h
+ Graphics Controller     3CEh    3CFh
+ CRTC monochrome         3B4h    3B5h
+ CRTC couleur            3D4h    3D5h
+ Attribute Controller    3C0h    3C0h/3C1h
+
+Attribute Controller emploie une bascule index/donnee. Lire Input Status 1
+remet la bascule en phase index. Toute routine doit proteger les interruptions
+ou restaurer l'etat afin qu'un autre code ne transforme une donnee en index.
+
+Les registres Tseng etendus reutilisent certains index au-dela de la plage IBM
+et peuvent etre verrouilles. Les valeurs reservees doivent etre preservees.
+
+
+==============================================================================
+12. REGISTRES TSENG ET BANQUES SVGA
+==============================================================================
+
+Sur de nombreuses ET3000/ET4000, le port 3CDh est Segment Select. Pour ET4000,
+la convention courante est :
+
+  bits 3..0  banque d'ecriture
+  bits 7..4  banque de lecture
+
+avec une granularite typique de 64 Kio. La valeur `(read shl 4) or write`
+permet donc des banques separees. Certaines ET3000 emploient une repartition ou
+un nombre de bits differents.
+
+Le deblocage historique des registres Tseng utilise souvent :
+
+  OUT 3BFh,03h
+  OUT 3D8h,A0h
+
+Cette sequence est une convention de chipset, PAS une detection IT-VGA2. Elle
+ne doit etre emise qu'apres sauvegarde des ports et verification Tseng, car 3D8h
+est aussi le registre CGA/VGA Mode Control dans certains chemins.
+
+Les CRTC etendus Tseng contiennent notamment des bits d'adresse de depart,
+d'overflow vertical, de compatibilite et de timing. Les index exacts different
+entre ET3000 et ET4000. Utiliser le data book correspondant au marquage du
+circuit, pas une table generique trouvee pour ET4000/W32.
+
+Pour une application DOS, le meilleur ordre de preference est :
+
+  VBE Set Window -> fonction BIOS proprietaire -> port 3CDh apres identification
+
+
+==============================================================================
+13. BIOS VIDEO ET VESA VBE
+==============================================================================
+
+Le BIOS d'extension commence normalement par :
+
+  offset 00h : 55h AAh
+  offset 02h : longueur en blocs de 512 octets
+  offset 03h : code d'initialisation
+
+Le POST appelle la ROM, qui installe INT 10h et initialise la carte. Le checksum
+de la longueur declaree doit donner zero modulo 256.
+
+Detection VBE
+-------------
+
+  AX=4F00h, ES:DI -> tampon de 512 octets initialise par "VBE2" si desire
+  retour AX=004Fh en cas de succes
+  signature retour "VESA"
+
+Fonctions importantes :
+
+  AX=4F01h  informations sur un mode
+  AX=4F02h  selection du mode
+  AX=4F03h  lecture du mode courant
+  AX=4F05h  selection/interrogation de banque
+  AX=4F06h  longueur logique de ligne, versions qui la supportent
+  AX=4F07h  origine d'affichage, versions qui la supportent
+
+Une IT-VGA2 peut etre anterieure a VBE ou disposer d'un BIOS sans VBE. Un TSR
+VESA peut ajouter ces fonctions ; dans ce cas, la presence VBE ne prouve plus
+que le code se trouve dans la ROM Informtech.
+
+
+==============================================================================
+14. ROM VIDEO ET SIGNATURE IT - VGA2
+==============================================================================
+
+Signature documentee
+--------------------
+
+  segment : C000h
+  offset  : 0181h
+  longueur: 9 octets
+  texte   : IT - VGA2
+
+La chaine contient neuf caracteres : I, T, espace, tiret, espace, V, G, A, 2.
+Le code fourni historiquement appelle `RtnChn(...,8)` parce que sa boucle va de
+0 a 8 inclus, donc lit neuf octets. Le parametre nomme `Nombre` represente le
+dernier index et non une longueur. Cette convention est facile a mal employer.
+
+Version historique demandee
+----------------------------
+
+Function RtnChn(Seg,Ofs:Word;Nombre:Byte):String;
+Var
+ Temp:String;
+ I:Byte;
+Begin
+ Temp:='';
+ For I:=0 to Nombre do Temp:=Temp+Chr(Mem[Seg:Ofs+I]);
+ RtnChn:=Temp;
+End;
+
+Function ITVGA2Detect:Boolean;
+Begin
+ ITVGA2Detect:=(RtnChn($C000,$0181,8) = 'IT - VGA2');
+End;
+
+Cette routine detecte bien neuf octets, mais elle devrait verifier d'abord que
+C0000h contient une ROM option valide. Sans ce test, une RAM ou une autre ROM
+contenant fortuitement le texte peut produire un faux positif.
+
+
+==============================================================================
+15. DETECTION ROBUSTE DE LA CARTE
+==============================================================================
+
+Procedure recommandee :
+
+  1. lire C000:0000 et verifier 55h, AAh ;
+  2. lire la taille ROM a C000:0002 et verifier qu'elle couvre 0189h ;
+  3. calculer le checksum sur taille*512 octets ;
+  4. comparer exactement les neuf octets a C000:0181 ;
+  5. confirmer VGA par INT 10h/AX=1A00h ou fonctions BIOS ;
+  6. si necessaire, identifier le chipset Tseng separement ;
+  7. detecter VBE par AX=4F00h, sans le presumer.
+
+La signature peut echouer si :
+
+  * le BIOS a ete remplace par une autre revision ;
+  * la ROM est shadowee, compressee ou remappee ;
+  * un gestionnaire a copie/modifie le BIOS ;
+  * J1 ou la carte mere change la plage decodee ;
+  * une autre carte video est primaire a C0000h.
+
+Il faut alors scanner les ROM d'extension par pas de 2 Kio dans C0000h..EFFFFh,
+valider en-tete/taille/checksum et rechercher la signature a offset 0181h de
+chaque base. Ne jamais rechercher la chaine dans toute la memoire sans valider
+la structure ROM.
+
+
+==============================================================================
+16. PALETTE ET RAMDAC
+==============================================================================
+
+Le chemin VGA standard fournit 256 entrees. Chaque entree contient normalement
+trois composantes de 6 bits, 0..63. La reference exacte du RAMDAC IT-VGA2 n'est
+pas confirmee ; certains composants rapides ajoutent des registres caches ou
+des modes de couleur etendus.
+
+Ecriture standard :
+
+  OUT 3C8h,index
+  OUT 3C9h,rouge
+  OUT 3C9h,vert
+  OUT 3C9h,bleu
+
+Le DAC incremente l'index apres le bleu. Le Pixel Mask 3C6h vaut normalement
+FFh. Des sequences de quatre lectures/ecritures a 3C6h ouvrent des registres
+specifiques sur certains RAMDAC ; ne pas les utiliser sans identifier la puce.
+
+En mode indexe 8 bpp, chaque pixel choisit une entree. En modes planaires 4 bpp,
+l'Attribute Controller transforme d'abord la valeur des plans en index DAC.
+
+
+==============================================================================
+17. INTERRUPTIONS ET IRQ9
+==============================================================================
+
+J4 autorise une sortie d'interruption de la carte sur IRQ9. Selon controleur et
+pilote, elle peut signaler un retrace vertical ou un evenement video. Les
+sources disponibles ne publient pas le registre d'acquittement propre a cette
+revision : ne pas installer de gestionnaire en supposant un bit ET4000 generique.
+
+Un gestionnaire doit :
+
+  * partager/chainer si l'interruption ne vient pas de la carte ;
+  * acquitter la source video avant l'EOI du PIC ;
+  * envoyer l'EOI au PIC esclave puis au maitre pour IRQ9 ;
+  * ne pas appeler DOS depuis l'interruption ;
+  * sauver tous les registres modifies ;
+  * prevoir que VGA BIOS et la plupart des jeux n'utilisent pas IRQ9.
+
+Le reglage normal J4 ouvert est le plus compatible.
+
+
+==============================================================================
+18. VESA FEATURE CONNECTOR
+==============================================================================
+
+Le connecteur VESA feature permet a une autre carte de recevoir ou d'inserer un
+flux de pixels synchronise : cartes video-in-a-window, genlock, capture, MPEG ou
+overlay. Les signaux courants incluent donnees pixel, horloge, blanking,
+synchronisations et commandes de selection.
+
+Limitations :
+
+  * niveaux TTL, pas RGB analogique ;
+  * frequence liee au mode courant ;
+  * largeur et sens du bus dependent de la norme/revision ;
+  * cable court et correctement oriente requis ;
+  * aucun protocole logiciel universel ne configure la carte fille.
+
+Un emulateur peut ignorer CN2 pour afficher VGA, mais une emulation de station
+multimedia doit exposer le flux avant RAMDAC et les signaux de synchronisation.
+
+
+==============================================================================
+19. REGLAGES EARLY MEMCS ET PIXEL CLOCK DELAY
+==============================================================================
+
+Early MEMCS concerne le bus ISA. Une carte mere lente ou chargee peut avoir
+besoin d'une assertion normale ; une interface rapide peut beneficier du reglage
+avance. Symptomes d'un mauvais reglage : lectures incoherentes, corruption lors
+de copies rapides, plantages seulement en 16 bits ou erreurs de ROM shadow.
+
+Pixel Clock Delay agit sur le chemin local entre controleur, memoire et DAC.
+Symptomes possibles : points scintillants, colonnes decalees, couleurs provenant
+du pixel voisin, defaut seulement aux hautes horloges. Il ne corrige pas un
+moniteur incompatible avec la frequence de ligne.
+
+Avant de deplacer J2/J3 : noter la position, couper l'alimentation, changer un
+seul parametre, tester tous les modes et restaurer en cas de degradation.
+
+
+==============================================================================
+20. EXEMPLES EN ASSEMBLEUR
+==============================================================================
+
+20.1 Detection rapide par signature
+------------------------------------
+
+; Retour CF=0 si C000:0181 contient exactement "IT - VGA2".
+
+DetectITVGA2 proc near
+        push    ds
+        push    si
+        push    di
+        push    cx
+        push    es
+        mov     ax,0C000h
+        mov     ds,ax
+        cmp     word ptr ds:[0000h],0AA55h
+        jne     short it_no
+        cmp     byte ptr ds:[0002h],1 ; au moins 512 octets
+        jb      short it_no
+        mov     si,0181h
+        push    cs
+        pop     es
+        mov     di,offset ITSignature
+        mov     cx,9
+        cld
+        repe    cmpsb
+        jne     short it_no
+        clc
+        jmp     short it_done
+it_no:  stc
+it_done:
+        pop     es
+        pop     cx
+        pop     di
+        pop     si
+        pop     ds
+        ret
+
+ITSignature db 'IT - VGA2'
+
+Le checksum devrait aussi etre valide avant de conclure ; il est separe ci-dessous.
+
+20.2 Checksum de ROM
+--------------------
+
+; DS=segment ROM, CL=nombre de blocs de 512 octets non nul.
+; Retour AL=0 si somme valide. Detruit BX,CX.
+
+CheckOptionROM:
+        xor     bx,bx
+        xor     ch,ch
+        shl     cx,1               ; blocs * 512 = blocs * 2 pages de 256
+        xor     al,al
+rom_page:
+        push    cx
+        mov     cx,256
+rom_byte:
+        add     al,ds:[bx]
+        inc     bx
+        loop    rom_byte
+        pop     cx
+        loop    rom_page
+        or      al,al
+        ret
+
+Cette version est limitee aux ROM dont la taille tient dans CL et dont la plage
+est accessible dans le meme segment de 64 Kio, ce qui suffit au BIOS VGA normal
+32 Kio. Pour une ROM plus grande, avancer le segment a chaque 64 Kio.
+
+20.3 Pixel en mode 13h
+----------------------
+
+; BX=x, AX=y, CL=couleur.
+
+        mov     dx,320
+        mul     dx
+        add     ax,bx
+        mov     di,ax
+        mov     ax,0A000h
+        mov     es,ax
+        mov     es:[di],cl
+
+20.4 Changer une banque par VBE
+-------------------------------
+
+; DX = numero de banque dans les unites de granularite VBE.
+; BH=0 selection, BL=0 fenetre A.
+
+        mov     ax,4F05h
+        xor     bx,bx
+        int     10h
+        cmp     ax,004Fh
+        jne     BankError
+
+20.5 Port de banque Tseng conditionnel
+--------------------------------------
+
+; Uniquement apres identification d'un ET4000 compatible.
+; AL = banque, meme banque pour lecture et ecriture.
+
+        and     al,0Fh
+        mov     ah,al
+        shl     al,1
+        shl     al,1
+        shl     al,1
+        shl     al,1
+        or      al,ah
+        mov     dx,03CDh
+        out     dx,al
+
+Ce code ne convient pas automatiquement a ET3000 ni a une granularite VBE qui
+n'est pas 64 Kio.
+
+20.6 Palette standard
+---------------------
+
+; AL=index, CH=rouge, CL=vert, BL=bleu, valeurs 0..63.
+
+        mov     dx,03C8h
+        out     dx,al
+        inc     dx
+        mov     al,ch
+        out     dx,al
+        mov     al,cl
+        out     dx,al
+        mov     al,bl
+        out     dx,al
+
+
+==============================================================================
+21. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+21.1 Routine historique et subtilite de longueur
+------------------------------------------------
+
+Function RtnChn(Seg,Ofs:Word;Nombre:Byte):String;
+Var
+ Temp:String;
+ I:Byte;
+Begin
+ Temp:='';
+ For I:=0 to Nombre do Temp:=Temp+Chr(Mem[Seg:Ofs+I]);
+ RtnChn:=Temp;
+End;
+
+Function ITVGA2Detect:Boolean;
+Begin
+ ITVGA2Detect:=(RtnChn($C000,$0181,8) = 'IT - VGA2');
+End;
+
+`Nombre=8` lit les offsets 0..8, donc neuf caracteres. Renommer le parametre
+`DernierIndex` rendrait le contrat plus clair.
+
+21.2 Version explicite et validee
+---------------------------------
+
+function ROMSignatureOK(SegROM : Word) : Boolean;
+const
+  Signature : string[9] = 'IT - VGA2';
+var
+  I : Byte;
+begin
+  ROMSignatureOK := False;
+  if Mem[SegROM:$0000] <> $55 then Exit;
+  if Mem[SegROM:$0001] <> $AA then Exit;
+  if Mem[SegROM:$0002] < 2 then Exit;
+  for I := 1 to 9 do
+    if Mem[SegROM:$0180 + I] <> Ord(Signature[I]) then Exit;
+  ROMSignatureOK := True;
+end;
+
+function ITVGA2Detect : Boolean;
+begin
+  ITVGA2Detect := ROMSignatureOK($C000);
+end;
+
+La comparaison `0180+I` couvre 0181h..0189h. Ajouter le checksum pour une
+detection forte.
+
+21.3 Checksum Turbo Pascal
+--------------------------
+
+function ROMChecksumOK(SegROM : Word) : Boolean;
+var
+  Blocks : Byte;
+  Count  : LongInt;
+  I      : LongInt;
+  Sum    : Word;
+begin
+  Blocks := Mem[SegROM:$0002];
+  Count := LongInt(Blocks) * 512;
+  Sum := 0;
+  if (Blocks = 0) or (Count > 65536) then begin
+    ROMChecksumOK := False;
+    Exit;
+  end;
+  for I := 0 to Count - 1 do
+    Sum := (Sum + Mem[SegROM:Word(I)]) and $00FF;
+  ROMChecksumOK := (Sum and $00FF) = 0;
+end;
+
+function ITVGA2DetectStrong : Boolean;
+begin
+  ITVGA2DetectStrong := ROMSignatureOK($C000) and ROMChecksumOK($C000);
+end;
+
+21.4 Scanner les ROM d'extension
+--------------------------------
+
+function FindITVGA2ROM : Word;
+var S : Word;
+begin
+  S := $C000;
+  while S <= $EF80 do begin
+    if ROMSignatureOK(S) and ROMChecksumOK(S) then begin
+      FindITVGA2ROM := S;
+      Exit;
+    end;
+    Inc(S,$0080); { 2 Kio = 0080h paragraphes }
+  end;
+  FindITVGA2ROM := 0;
+end;
+
+Une ROM valide indique sa propre longueur. Un scanner perfectionne saute de
+`Blocks*512/16` paragraphes apres une ROM valide, tout en gerant les trous.
+
+21.5 Pixel mode 13h
+-------------------
+
+procedure PutPixel13(X,Y : Word; Color : Byte);
+begin
+  if (X < 320) and (Y < 200) then
+    Mem[$A000:Y*320+X] := Color;
+end;
+
+21.6 Palette
+-------------
+
+procedure SetDAC(Index,R,G,B : Byte);
+begin
+  Port[$3C8] := Index;
+  Port[$3C9] := R and $3F;
+  Port[$3C9] := G and $3F;
+  Port[$3C9] := B and $3F;
+end;
+
+21.7 Banque VBE
+----------------
+
+uses Dos;
+
+function SetVBEBank(Bank : Word) : Boolean;
+var R : Registers;
+begin
+  R.AX := $4F05;
+  R.BX := 0;       { fenetre A, selection }
+  R.DX := Bank;
+  Intr($10,R);
+  SetVBEBank := R.AX = $004F;
+end;
+
+La valeur Bank est exprimee dans les unites de WinGranularity, pas forcement en
+blocs de 64 Kio. Il faut la calculer depuis VBE ModeInfo.
+
+21.8 Banque ET4000 directe, conditionnelle
+------------------------------------------
+
+procedure SetET4000Bank(Bank : Byte);
+begin
+  Bank := Bank and $0F;
+  Port[$3CD] := Bank or (Bank shl 4);
+end;
+
+Ne jamais appeler cette routine seulement apres ITVGA2Detect : la signature
+identifie la carte, pas la revision Tseng. Ajouter une detection ET4000 sure.
+
+
+==============================================================================
+22. PROGRAMMATION D'UN MODE BANCAIRE
+==============================================================================
+
+Supposons une fenetre A0000h de 64 Kio et une granularite G retournee par VBE.
+Pour l'offset lineaire L :
+
+  banque_VBE = L div (G * 1024)
+  base_banque = banque_VBE * G * 1024
+  offset_fenetre = L - base_banque
+
+Mais la fenetre n'est peut-etre pas plus grande que 64 Kio. Si un pixel ou une
+copie traverse sa fin, il faut fractionner l'operation, changer de banque puis
+continuer. Avec une granularite plus petite que la fenetre, plusieurs valeurs
+de banque donnent des fenetres chevauchantes.
+
+Algorithme PutPixel 8 bpp :
+
+  L = y*pitch+x
+  B = L div granularite_octets
+  O = L - B*granularite_octets
+  tant que O >= taille_fenetre : incrementer B et soustraire granularite
+  SetWindow(B)
+  A000:O = couleur
+
+Pitch doit etre lu dans BytesPerScanLine. Employer `largeur` donne une image
+inclinee si le BIOS ajoute un alignement.
+
+Pour les modes 4 bpp planaires ou 15/16 bpp, la formule et les registres de
+pixels changent. Verifier MemoryModel et BitsPerPixel dans VBE ModeInfo.
+
+
+==============================================================================
+23. INSTALLATION ET DIAGNOSTIC
+==============================================================================
+
+Avant mise sous tension
+-----------------------
+
+  * verifier la tension et l'orientation des DRAM ;
+  * J1 sur 2-3 pour le reglage ROM normal ;
+  * J2 Early MEMCS sur 1-2 par defaut ;
+  * J3 horloge normale sur 1-2 ;
+  * J4 ouvert sauf pilote specifique ;
+  * desactiver une VGA integree ou retirer la carte concurrente.
+
+Au demarrage
+------------
+
+  * rechercher la banniere du BIOS Informtech/Tseng ;
+  * verifier 55 AA et le checksum ROM ;
+  * executer un diagnostic memoire dans chaque configuration ;
+  * tester texte, 640x480 VGA, mode 13h puis modes etendus ;
+  * verifier le moniteur avant 1024 x 768.
+
+Diagnostic memoire prudent
+--------------------------
+
+Sauver la zone testee, ecrire 00h, FFh, 55h, AAh et une adresse variable, lire
+et comparer, puis restaurer. Tester banque par banque hors affichage. Ne pas
+executer ce test sur l'ecran actif sans accepter sa destruction temporaire.
+
+Problemes typiques
+------------------
+
+  pas de POST video : conflit C0000h, J1, ROM ou video integree
+  VGA OK, SVGA corrompu : DRAM supplementaire ou banque
+  points aux hautes resolutions : vitesse DRAM, J3, DAC ou timing moniteur
+  corruption sous copie rapide : J2/bus ISA/wait states
+  blocage IRQ : J4 active sans gestionnaire/acquittement correct
+
+
+==============================================================================
+24. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Un modele de l'IT-VGA2 doit comporter :
+
+  * bus ISA 16 bits et ROM d'extension ;
+  * signature exacte a l'offset 0181h de l'image appropriee ;
+  * 256/512/1024 Kio configurables ;
+  * VGA IBM complet ;
+  * controleur Tseng correspondant a la ROM choisie ;
+  * port de banque et registres etendus du bon modele ;
+  * RAMDAC externe et horloges selectionnees par le BIOS ;
+  * IRQ9 optionnelle ;
+  * effets logiques des cavaliers J1-J4 ;
+  * VESA Feature Connector si necessaire.
+
+Ne pas fabriquer une "IT-VGA2 generique" combinant tous les registres ET3000,
+ET4000AX et W32. Choisir une image ROM/carte de reference, relever le marquage
+des circuits et implementer cette revision. Les modes BIOS doivent correspondre
+a la taille memoire et aux tables de timings de cette ROM.
+
+Pour la ROM : executer l'initialisation a POST, respecter la longueur et le
+checksum, installer INT 10h, et exposer le texte sans modifier son offset.
+
+
+==============================================================================
+25. TESTS DE CONFORMITE
+==============================================================================
+
+  1. en-tete 55 AA, taille et checksum ROM ;
+  2. neuf octets "IT - VGA2" a base+0181h ;
+  3. detection negative avec autre VGA a C0000h ;
+  4. VGA texte, modes planaires et Chain-4 ;
+  5. DAC, masque, auto-increment lecture/ecriture ;
+  6. 256, 512 et 1024 Kio sans alias inattendu ;
+  7. dernier octet de chaque banque ;
+  8. banques de lecture et d'ecriture independantes si chipset le permet ;
+  9. VBE absent traite proprement ;
+ 10. VBE present : controleur, mode info, fenetre et pitch ;
+ 11. copies traversant une frontiere de 64 Kio ;
+ 12. modes etendus limites selon memoire ;
+ 13. CRTC et horloges sans acces a des bits reserves ;
+ 14. IRQ9 desactivee puis activee avec acquittement ;
+ 15. conflit de ROM signale pour chaque position J1 ;
+ 16. Early MEMCS modifiant les timings ISA, pas les pixels logiques ;
+ 17. retard 20 ns modifiant la phase, pas la frequence programmee ;
+ 18. preservation des registres VGA apres detection Tseng.
+
+
+==============================================================================
+26. PIEGES FREQUENTS
+==============================================================================
+
+  * Confondre IT-VGA2 avec un adaptateur USB VGA2 moderne.
+  * Affirmer ET4000AX sans avoir lu le marquage ou detecte le chipset.
+  * Prendre "Tseng compatible" pour une reference precise.
+  * Dire que la signature fait huit octets : elle en fait neuf.
+  * Remplacer `0 to Nombre` par `0 to Nombre-1` sans changer l'appel historique.
+  * Lire C000:0181 sans verifier qu'une ROM valide existe.
+  * Supposer que la ROM est toujours primaire a C0000h.
+  * Confondre plage J1 et taille physique de l'image ROM.
+  * Supposer VBE parce que la carte sait afficher 1024 x 768.
+  * Coder des numeros de modes SVGA proprietaires sans interroger le BIOS.
+  * Employer le port 3CDh ET4000 sur une ET3000.
+  * Supposer que banque VBE = offset div 65536.
+  * Oublier BytesPerScanLine dans les modes etendus.
+  * Peupler une demi-banque de DRAM.
+  * Activer IRQ9 sans pilote.
+  * Utiliser J3 pour tenter de changer la frequence du moniteur.
+  * Brancher un moniteur directement au Feature Connector.
+
+
+==============================================================================
+27. REFERENCES
+==============================================================================
+
+Sources specifiques a la carte
+------------------------------
+
+  * Gladir, IT-VGA2, fiche materielle et detection ROM :
+
+    https://www.gladir.com/LEXIQUE/CARD/itvga2.htm
+
+  * Total Hardware 1999 / Stason, Informtech International IT-VGA2,
+    connecteurs, cavaliers et configurations memoire :
+
+    https://stason.org/TULARC/pc/graphics-cards/I-L/
+    INFORMTECH-INTERNATIONAL-INC-XVGA-IT-VGA2.html
+
+Sources pour le controleur et la programmation
+----------------------------------------------
+
+  * Tseng Laboratories, ET4000 Graphics Controller High-Performance Video
+    Technology Data Book. A utiliser seulement si le circuit est identifie.
+
+    https://old.vgamuseum.info/images/stories/doc/tseng/et4000.pdf
+
+  * IBM, VGA Technical Reference, registres VGA standards et BIOS video.
+
+  * VESA, VESA BIOS Extension Core Functions Standard, pour INT 10h/4Fxxh.
+
+Limite documentaire
+-------------------
+
+Aucun manuel Informtech complet ni photographie suffisamment lisible du circuit
+principal n'a ete retrouve dans les sources consultees. Les caracteristiques
+propres a IT-VGA2 sont donc celles des fiches d'archives. Les registres SVGA
+directs doivent etre verifies sur la carte physique ou son BIOS avant usage.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

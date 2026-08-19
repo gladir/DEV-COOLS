@@ -1,0 +1,998 @@
+==============================================================================
+ IBM EXTENDED GRAPHICS ARRAY (XGA)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'architecture IBM Extended Graphics Array (XGA), son
+materiel et ses interfaces de programmation sous DOS. Il traite le XGA integre
+aux PS/2, le XGA Display Adapter/A et les evolutions communement appelees XGA-2
+ou XGA-NI. Il couvre aussi la compatibilite VGA, l'interface pilote IBM, les
+apertures de memoire, le coprocesseur graphique, les PEL maps, PxBlt, le trace
+de lignes, la palette et le sprite materiel.
+
+Attention au vocabulaire : "XGA" designe ici l'architecture IBM apparue en
+1990, et non la simple resolution 1024 x 768 que l'industrie a ensuite appelee
+XGA. Une carte moderne capable de 1024 x 768 n'implemente pas necessairement
+l'interface IBM decrite ici.
+
+Les accents sont volontairement omis pour conserver un fichier ASCII lisible
+sur DOS, dans les editeurs anciens et sur les terminaux de developpement.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Position historique et variantes
+  2. Caracteristiques et modes d'affichage
+  3. Organisation generale du materiel
+  4. Compatibilite VGA et mode Extended Graphics
+  5. Micro Channel, POS et instances
+  6. Decouverte des ressources et DMQS
+  7. Ports d'entree/sortie du controleur XGA
+  8. Memoire video et apertures
+  9. Formats de pixels et organisation des images
+ 10. PEL maps et espace de coordonnees
+ 11. Registres du coprocesseur graphique
+ 12. PxBlt : transferts et remplissages
+ 13. Melanges, masques et comparaison de couleur
+ 14. Lignes de Bresenham et Draw-and-Step
+ 15. Palette, DAC et Direct Color
+ 16. Sprite materiel 64 x 64
+ 17. Adressage virtuel et acces a la memoire systeme
+ 18. Interruptions et synchronisation
+ 19. XGA Adapter Interface IBM
+ 20. Compatibilite 8514/A
+ 21. BIOS, selection d'un mode et restauration
+ 22. Coexistence, commutation d'ecran et EMS
+ 23. Exemples en assembleur 8086/386
+ 24. Exemples en Turbo Pascal
+ 25. Conseils pour un pilote ou un emulateur
+ 26. Pieges frequents
+ 27. References
+
+
+==============================================================================
+1. POSITION HISTORIQUE ET VARIANTES
+==============================================================================
+
+IBM presenta XGA en 1990 dans la famille Personal System/2. L'architecture
+succede fonctionnellement au 8514/A : elle conserve une acceleration 2D de
+haut niveau, mais ajoute une compatibilite VGA, des pixels empaquetes, un
+adressage plus general des images et un coprocesseur accessible en memoire.
+
+Il faut distinguer au moins les implementations suivantes :
+
+  * XGA integre a certaines cartes meres PS/2 ;
+  * IBM XGA Display Adapter/A, carte Micro Channel ;
+  * la revision non entrelacee, souvent nommee XGA-2 ou XGA-NI ;
+  * les implementations OEM compatibles, dont les limites peuvent differer.
+
+Le premier XGA est limite par une horloge de pixels maximale de 45 MHz et son
+mode 1024 x 768 est normalement entrelace a 43,5 Hz. La revision XGA-NI porte
+l'horloge programmable jusqu'a 90 MHz, permet le 1024 x 768 non entrelace et
+offre un DAC plus precis. L'appellation commerciale "XGA-2" ne doit donc pas
+etre employee pour supposer aveuglement un ensemble de registres ou une taille
+de memoire : le niveau d'implementation doit etre demande au pilote.
+
+
+==============================================================================
+2. CARACTERISTIQUES ET MODES D'AFFICHAGE
+==============================================================================
+
+Modes representatifs du XGA original
+------------------------------------
+
+ Resolution   Profondeur   Couleurs       Balayage             Memoire
+ ---------------------------------------------------------------------------
+ 640 x 480     8 bpp        256             60 Hz non entrelace  512 Kio
+ 640 x 480    16 bpp        65 536          60 Hz non entrelace    1 Mio
+ 1024 x 768    4 bpp        16              43,5 Hz entrelace     512 Kio
+ 1024 x 768    8 bpp        256             43,5 Hz entrelace       1 Mio
+
+Capacites supplementaires typiques du XGA-NI/XGA-2
+--------------------------------------------------
+
+  * 640 x 480 en 65 536 couleurs jusqu'a 75 Hz ;
+  * 800 x 600 en 256 couleurs jusqu'a 75 Hz ;
+  * 800 x 600 en 65 536 couleurs jusqu'a 60 Hz ;
+  * 1024 x 768 en 256 couleurs jusqu'a 75 Hz ;
+  * formats 1, 2, 4, 8 et 16 bits par pixel ;
+  * horloge de pixels programmable jusqu'a 90 MHz ;
+  * composantes de palette sur 8 bits, soit 256 parmi 16,7 millions.
+
+Le XGA original selectionne ses 256 couleurs dans une palette de 262 144
+couleurs (6 bits par composante). Les chiffres ci-dessus sont des profils IBM,
+pas une autorisation de fabriquer ses propres timings. Le moniteur, la quantite
+de VRAM, la revision et le fichier d'information d'affichage determinent les
+modes reellement utilisables.
+
+
+==============================================================================
+3. ORGANISATION GENERALE DU MATERIEL
+==============================================================================
+
+Le sous-systeme se compose logiquement de :
+
+  * une partie compatible VGA pour le demarrage et les logiciels DOS ;
+  * un controleur d'affichage XGA programmable par ports indexes ;
+  * de la VRAM, generalement 512 Kio ou 1 Mio sur le XGA original ;
+  * des fenetres CPU de 64 Kio, 1 Mio ou 4 Mio vers la memoire graphique ;
+  * un coprocesseur graphique 2D dont les registres sont mappes en memoire ;
+  * un DAC/palette et un curseur graphique, appele sprite par IBM ;
+  * une ROM d'adaptateur et des donnees de configuration POS ;
+  * le pilote XGA Adapter Interface qui abstrait les differences physiques.
+
+Le coprocesseur travaille sur des rectangles de pixels et sait notamment :
+
+  * copier une image video-vers-video, systeme-vers-video ou inversement ;
+  * remplir un rectangle par une couleur ou un motif ;
+  * appliquer une operation logique ou arithmetique par pixel ;
+  * tester une couleur de destination avant d'ecrire ;
+  * tracer des lignes par l'algorithme de Bresenham ;
+  * executer des operations Draw-and-Step ;
+  * signaler la fin d'une operation par interruption.
+
+Contrairement au VGA, l'acceleration XGA n'est pas commandee principalement
+par une succession de OUT vers un moteur a commandes. L'application construit
+l'etat dans une banque de registres mappes en memoire, puis l'ecriture du
+registre PEL Operation declenche normalement le travail.
+
+
+==============================================================================
+4. COMPATIBILITE VGA ET MODE EXTENDED GRAPHICS
+==============================================================================
+
+Au demarrage, le XGA peut se comporter comme un VGA. Les modes texte, les modes
+BIOS VGA et l'aperture A0000h restent alors accessibles selon les conventions
+VGA. Ce chemin est celui qu'emploient le BIOS, DOS et de nombreux jeux.
+
+L'acceleration et les modes propres au XGA exigent le mode "Extended Graphics".
+Le registre Operating Mode selectionne le sous-systeme actif. La valeur 04h
+est documentee pour Extended Graphics. Changer ce registre sans sauver l'etat
+VGA, sans eteindre proprement l'affichage et sans programmer tous les registres
+necessaires produit un ecran noir ou un signal hors plage.
+
+Une implementation correcte conserve deux ensembles conceptuels :
+
+  VGA/legacy  ---> ports et memoire compatibles, BIOS INT 10h
+  XGA etendu  ---> ports 21x0h, registres indexes, apertures et coprocesseur
+
+La presence d'un VGA n'implique pas celle du coprocesseur XGA ; inversement, un
+pilote XGA ne doit pas supposer que le XGA est l'adaptateur VGA primaire.
+
+
+==============================================================================
+5. MICRO CHANNEL, POS ET INSTANCES
+==============================================================================
+
+Le XGA Display Adapter/A utilise le bus Micro Channel. Les registres POS
+(Programmable Option Select) decrivent et activent les ressources. Le systeme
+peut accueillir jusqu'a huit sous-systemes XGA, numerotes de 0 a 7.
+
+Dans POS Register 2 :
+
+  * les bits 1 a 3 codent le numero d'instance ;
+  * les bits 4 a 7 participent a la selection de l'adresse ROM ;
+  * d'autres bits controlent l'activation de la carte.
+
+Le manuel IBM donne la relation suivante :
+
+  adresse_ROM = C0000h + (champ_adresse_ROM * 2000h)
+
+Le bloc de registres du coprocesseur est place a :
+
+  base_coprocesseur = adresse_ROM + 1C00h + (instance * 80h)
+
+Exemple IBM : avec une ROM a C0000h et l'instance 6, la base est C1F00h.
+
+Chaque banque fait 128 octets. Elle occupe la partie haute d'un bloc de 8 Kio ;
+les 7 Kio inferieurs contiennent la ROM de l'adaptateur, ou peuvent etre vides
+sur une implementation integree.
+
+IMPORTANT : IBM precise que les registres POS sont configures par le systeme et
+ne doivent jamais etre modifies par une application ordinaire. Leur lecture
+directe necessite en outre le mecanisme de setup Micro Channel et peut perturber
+la machine. Un logiciel DOS doit demander les ressources au pilote XGA/DMQS.
+
+
+==============================================================================
+6. DECOUVERTE DES RESSOURCES ET DMQS
+==============================================================================
+
+Les adresses XGA sont relogeables. Il ne faut donc pas coder C1C00h, une adresse
+d'aperture ou un numero d'instance en constante dans une application livree.
+
+IBM fournit DMQS, Display Mode Query and Set. Avec le fichier d'information
+d'affichage correspondant au moniteur et a l'adaptateur, DMQS renseigne :
+
+  * le niveau d'implementation XGA ;
+  * la taille de la memoire video ;
+  * le type et les dimensions physiques de l'affichage ;
+  * les modes autorises et leurs geometries ;
+  * les sequences de valeurs des registres propres au mode ;
+  * les adresses des apertures et des ressources de l'instance.
+
+Cette separation est fondamentale. Le programme choisit un mode abstrait ; les
+donnees DMQS fournissent la sequence materielle sure. Les timings CRTC, la
+polarite des synchronisations et l'horloge ne doivent pas etre deduits de la
+seule resolution.
+
+Un pilote portable suit ce chemin :
+
+  detection du pilote -> interrogation des instances -> interrogation des
+  modes -> selection d'un mode compatible -> application de sa sequence
+
+
+==============================================================================
+7. PORTS D'ENTREE/SORTIE DU CONTROLEUR XGA
+==============================================================================
+
+Pour l'instance x, les ports du controleur sont situes de 21x0h a 21xFh. Ainsi,
+l'instance 0 emploie 2100h..210Fh et l'instance 3, 2130h..213Fh.
+
+ Resume                         Port
+ ---------------------------------------------------------------------------
+ Operating Mode                21x0h
+ commandes/etat d'interruption 21x4h et 21x5h
+ index des registres           21xAh
+ donnees indexees              21xBh..21xFh
+
+Le registre d'index selectionne un registre interne ; les ports de donnees
+permettent des acces de tailles ou d'alignements differents. Les tables IBM
+donnent, pour chaque registre, l'index, le sens et les bits valides. Les octets
+reserves doivent etre preserves ou ecrits a zero selon la prescription de la
+table, jamais utilises comme stockage.
+
+Une sequence d'initialisation IBM comprend typiquement :
+
+  1. interdire les interruptions (21x4h <- 00h) ;
+  2. acquitter les etats pendants (21x5h <- FFh) ;
+  3. selectionner Extended Graphics (21x0h <- 04h) ;
+  4. masquer la palette afin de noircir l'ecran ;
+  5. remettre a zero aperture et adressage virtuel ;
+  6. choisir le format d'acces memoire ;
+  7. executer la sequence de registres fournie par DMQS ;
+  8. charger la palette ;
+  9. reactiver l'image et, si necessaire, les interruptions.
+
+Les valeurs 00h, FFh et 04h ci-dessus sont des valeurs de controle generales
+documentees ; elles ne remplacent pas la sequence de mode obtenue par DMQS.
+
+
+==============================================================================
+8. MEMOIRE VIDEO ET APERTURES
+==============================================================================
+
+La VRAM XGA n'est pas necessairement exposee en permanence comme un framebuffer
+lineaire DOS. Le controleur fournit trois tailles d'aperture :
+
+  * 64 Kio : fenetre etroite, utile dans l'espace d'adresses du 8086 ;
+  * 1 Mio  : acces plus large sur un 286/386 ;
+  * 4 Mio  : grande aperture, selon machine et configuration.
+
+Un registre Aperture Control active la fenetre et un registre Aperture Index
+selectionne la tranche de VRAM visible. Leur adresse physique est determinee
+par la configuration POS et retournee par l'interface, pas par la norme VGA.
+
+Pour une image lineaire de largeur logique L pixels et b bits/pixel :
+
+  octets_par_ligne = plafond(L * b / 8)
+  adresse_pixel    = base + y * octets_par_ligne + plafond(x * b / 8)
+
+Cette formule n'est valable que si le PEL map est lineaire, si son pitch est
+bien celui calcule et si l'aperture montre la page concernee. En 1, 2 ou 4 bpp,
+le pixel partage un octet avec ses voisins et doit etre masque/decale. En 16 bpp,
+les octets sont en ordre Intel sur x86.
+
+La banque de 64 Kio impose de recalculer Aperture Index quand l'offset depasse
+FFFFh. Il faut eviter qu'une ecriture de mot traverse la limite de fenetre.
+
+
+==============================================================================
+9. FORMATS DE PIXELS ET ORGANISATION DES IMAGES
+==============================================================================
+
+Le XGA emploie des PEL (Picture ELement) empaquetes :
+
+ Profondeur  Pixels/octet   Interpretation habituelle
+ ---------------------------------------------------------------------------
+ 1 bpp       8              index de palette 0..1
+ 2 bpp       4              index de palette 0..3
+ 4 bpp       2              index de palette 0..15
+ 8 bpp       1              index de palette 0..255
+ 16 bpp      1 pixel/2 oct. couleur directe, 65 536 valeurs
+
+Le registre PEL Map Format definit la profondeur et l'organisation du PEL map.
+Le format d'acces du CPU doit etre coherent avec le format de la cible. Les
+dimensions logiques peuvent depasser la partie visible : cette propriete permet
+le scrolling, les pages hors ecran, les fontes et les motifs.
+
+Pour 16 bpp, il ne faut pas transposer automatiquement les formats RGB 5:6:5
+des cartes modernes. Employer le codage exact annonce par l'implementation et
+le mode IBM. Un emulateur doit reproduire la repartition des composantes, les
+bits inutilises et l'ordre d'octets documentes, pas seulement afficher une
+couleur approximative.
+
+
+==============================================================================
+10. PEL MAPS ET ESPACE DE COORDONNEES
+==============================================================================
+
+Le coprocesseur ne travaille pas directement sur "l'ecran", mais sur des
+PEL maps. Trois cartes nommees A, B et C peuvent jouer les roles de source,
+motif ou destination ; une Mask Map peut qualifier les pixels a modifier.
+
+Chaque PEL map possede au minimum :
+
+  * une adresse de base 32 bits ;
+  * une largeur et une hauteur ;
+  * un format de pixels ;
+  * une origine X,Y utilisee par l'operation courante.
+
+Le registre PEL Map Index choisit la carte dont les registres Base, Width,
+Height et Format sont programmes. Les coordonnees X et Y des operations vont
+de 0 a 4095 dans l'interface materielle documentee. Il faut toutefois verifier
+les dimensions effectives avant toute commande.
+
+Une carte peut resider en VRAM ou en memoire systeme adressable par le moteur.
+Cela rend possibles les transferts directs depuis un bitmap systeme, sous
+reserve des contraintes d'alignement, de pagination et d'accessibilite.
+
+
+==============================================================================
+11. REGISTRES DU COPROCESSEUR GRAPHIQUE
+==============================================================================
+
+La banque ci-dessous est la vue "Intel format", appropriee au x86. Les champs
+de 32 bits doivent etre ecrits avec la largeur et l'ordre prescrits. Le manuel
+decrit egalement une vue Motorola ; ne pas melanger les deux.
+
+ Offset  Taille  Registre
+ ---------------------------------------------------------------------------
+ 00h     32      Page Directory Base Address
+ 04h     32      Current Virtual Address
+ 08h     32      Auxiliary / Coprocessor Status
+ 0Ch     16+16   State B Length / State A Length
+ 10h     16+16   PEL Map Index / Coprocessor Control
+ 14h     32      PEL Map n Base Pointer
+ 18h     16+16   PEL Map n Width / Height
+ 1Ch     32      PEL Map n Format
+ 20h     32      Bresenham Error Term E
+ 24h     32      Bresenham K1
+ 28h     32      Bresenham K2
+ 2Ch     32      Direction Steps
+ 48h     8+8+... Foreground Mix / Background Mix / compare condition
+ 4Ch     32      Destination Color Compare Value
+ 50h     32      PEL Bit Mask (Plane Mask)
+ 54h     32      Carry Chain Mask
+ 58h     32      Foreground Color
+ 5Ch     32      Background Color
+ 60h     16+16   Operation Dimension 1 / Operation Dimension 2
+ 6Ch     16+16   Mask Map Origin X / Y
+ 70h     16+16   Source Map X / Y
+ 74h     16+16   Pattern Map X / Y
+ 78h     16+16   Destination Map X / Y
+ 7Ch     32      PEL Operation
+
+Les offsets non listes sont reserves. Une ecriture de PEL Operation declenche
+normalement PxBlt ou la fonction selectionnee. Il faut donc programmer tous les
+operandes avant 7Ch et ne jamais effectuer une ecriture speculative a cet
+offset. Les coordonnees sont actualisees par le moteur au cours de l'operation.
+
+Le statut permet de savoir si le coprocesseur est occupe et de diagnostiquer
+certaines fautes. Les masques de bits varient avec le niveau d'implementation :
+utiliser les constantes de l'en-tete IBM associe au pilote, plutot qu'un nombre
+recopie d'un exemple destine a une autre revision.
+
+
+==============================================================================
+12. PXBLT : TRANSFERTS ET REMPLISSAGES
+==============================================================================
+
+PxBlt est l'operation rectangulaire fondamentale. Elle combine, pixel par pixel,
+une source, un motif, des couleurs constantes et la destination. Une commande
+complete fixe :
+
+  1. les PEL maps source, motif, masque et destination ;
+  2. leurs origines X,Y ;
+  3. les deux dimensions du rectangle ;
+  4. le sens horizontal et vertical ;
+  5. Foreground Mix et Background Mix ;
+  6. le Plane Mask, la comparaison et eventuellement le Carry Chain Mask ;
+  7. enfin PEL Operation.
+
+Cas d'emploi :
+
+  copie simple       D <- S
+  remplissage uni    D <- couleur_avant
+  motif              D <- fonction(motif, couleur, D)
+  XOR                D <- S XOR D
+  transparence       ecrire seulement si la comparaison autorise le pixel
+  scrolling          copie VRAM vers VRAM avec traitement du recouvrement
+
+Comme memmove(), une copie chevauchante exige le bon sens. Si la destination
+commence apres la source, parcourir de droite a gauche et/ou de bas en haut
+evite que les pixels deja copies ne remplacent ceux qui restent a lire.
+
+Dimensions, largeur physique et compte materiel ne sont pas toujours exprimes
+de la meme maniere : certaines commandes codent N-1. L'interface IBM resout ces
+details ; en acces direct, consulter la definition exacte de PEL Operation de
+la revision cible avant d'emettre la commande.
+
+
+==============================================================================
+13. MELANGES, MASQUES ET COMPARAISON DE COULEUR
+==============================================================================
+
+Foreground Mix et Background Mix selectionnent une operation logique ou
+arithmetique entre les operandes et la destination. Ils permettent COPY, AND,
+OR, XOR, inversion et plusieurs combinaisons de type raster operation.
+
+PEL Bit Mask
+------------
+
+Le PEL Bit Mask autorise ou interdit la modification de chaque bit/plan. Pour
+une copie 8 bpp complete, les huit bits utiles sont a 1 ; pour une mise a jour
+partielle, seuls certains bits le sont. Les bits au-dela de la profondeur du
+PEL map ne doivent pas affecter les pixels.
+
+Destination Color Compare
+-------------------------
+
+La valeur et la condition de comparaison permettent de subordonner l'ecriture
+a la couleur deja presente dans la destination. On peut construire une forme
+de transparence, de detourage ou de protection d'une couleur.
+
+Carry Chain Mask
+----------------
+
+Les melanges arithmetiques produisent des retenues. Carry Chain Mask coupe la
+propagation aux frontieres des composantes ou des pixels. Sans ce masque, une
+retenue du bleu pourrait modifier le vert, ou celle d'un pixel le pixel voisin.
+Il faut programmer les coupures conformement au format courant.
+
+
+==============================================================================
+14. LIGNES DE BRESENHAM ET DRAW-AND-STEP
+==============================================================================
+
+Le XGA accelere les lignes avec les registres :
+
+  Bresenham Error Term E
+  Bresenham K1
+  Bresenham K2
+  Direction Steps
+  Operation Dimension
+  Destination X,Y
+
+Le logiciel calcule les parametres a partir de dx et dy, choisit l'axe majeur
+et les signes des pas, puis lance l'operation. Le moteur actualise l'erreur et
+la position. L'extremite incluse, la longueur encodee et le comportement des
+lignes nulles doivent suivre la definition IBM pour eviter des jointures avec
+un pixel en trop.
+
+Draw-and-Step associe un dessin elementaire a un deplacement programme. Il est
+utile pour des traits, contours et suites de points sans recharger l'ensemble
+de l'etat. L'ecriture de PEL Operation n'a pas exactement la meme semantique
+de declenchement que PxBlt dans toutes ses variantes ; un pilote doit traiter
+ce cas explicitement.
+
+
+==============================================================================
+15. PALETTE, DAC ET DIRECT COLOR
+==============================================================================
+
+En modes indexes, la valeur du pixel selectionne une des 256 entrees de palette.
+
+  XGA original : composantes rouge, verte, bleue de 6 bits
+                 256 couleurs parmi 262 144
+
+  XGA-NI/XGA-2 : composantes de 8 bits
+                 256 couleurs parmi 16 777 216
+
+Un masque de palette permet de rendre l'ecran noir durant un changement de
+mode, sans effacer la VRAM. Il est recommande de masquer, charger les entrees,
+attendre la phase appropriee si necessaire, puis demasquer.
+
+En Direct Color 16 bpp, la valeur du pixel porte directement l'information de
+couleur ; la palette indexee n'a plus le meme role. La fonction de conversion
+exacte appartient au mode et a la revision. Une application doit obtenir le
+format par l'interface au lieu de supposer le RGB565 d'un VESA moderne.
+
+
+==============================================================================
+16. SPRITE MATERIEL 64 x 64
+==============================================================================
+
+Le controleur possede un sprite materiel de 64 x 64 PEL superpose a l'image.
+Il sert principalement de pointeur de souris. Son image, ses couleurs, sa
+position et son point actif sont programmes dans les registres indexes.
+
+Avantages :
+
+  * aucun sauvetage/restauration du fond a chaque mouvement ;
+  * mouvement independant des PxBlt en cours ;
+  * pointeur visible sans modifier le framebuffer.
+
+Un emulateur doit gerer le rognage aux quatre bords, les coordonnees negatives
+ou decalees par le hotspot, la transparence et la priorite de superposition. Le
+sprite ne doit jamais etre "imprime" dans la VRAM lors d'une lecture du fond.
+
+
+==============================================================================
+17. ADRESSAGE VIRTUEL ET ACCES A LA MEMOIRE SYSTEME
+==============================================================================
+
+Le moteur peut adresser des PEL maps situes hors de la VRAM. Les registres Page
+Directory Base Address et Current Virtual Address participent a la traduction
+des adresses virtuelles XGA. State A et State B decrivent des blocs d'etat et
+le controleur signale les conditions qui exigent l'intervention du pilote.
+
+Ce mecanisme n'est pas l'identite de pagination du 80386 et ne doit pas etre
+programme a partir de CR3 par une application DOS. Le pilote :
+
+  * verrouille les pages qui seront lues par le moteur ;
+  * construit les tables attendues par le XGA ;
+  * maintient leur duree de vie jusqu'a la fin de l'operation ;
+  * traite les fautes et les changements de contexte ;
+  * invalide proprement l'adressage avant de liberer la memoire.
+
+Dans un DOS sans pilote protege, la solution la plus sure consiste a copier par
+l'aperture ou a employer uniquement la VRAM. Un pointeur segment:offset Turbo
+Pascal ne constitue pas automatiquement une adresse valide pour le moteur.
+
+
+==============================================================================
+18. INTERRUPTIONS ET SYNCHRONISATION
+==============================================================================
+
+Le coprocesseur peut interrompre le processeur a la fin d'une operation et lors
+de certains evenements. Les ports 21x4h/21x5h servent au masque/controle et a
+l'etat/acquittement. La sequence generale d'un gestionnaire est :
+
+  lire l'etat -> verifier que l'instance est la source -> acquitter les bits
+  traites -> reveiller le demandeur -> envoyer l'EOI au controleur d'interruption
+
+Le partage de ligne et les cascades Micro Channel interdisent de supposer que
+toute interruption de la ligne appartient au XGA. Le gestionnaire doit chainer
+si l'etat XGA n'indique rien.
+
+Une application simple peut sonder le bit "busy", mais doit prevoir un delai
+d'expiration. Une boucle infinie fige la machine si le moteur est desactive,
+si l'adresse est fausse ou si une faute de pagination attend le pilote.
+
+
+==============================================================================
+19. XGA ADAPTER INTERFACE IBM
+==============================================================================
+
+IBM distribua une interface de programmation commune aux applications. Sous
+DOS elle est fournie comme pilote de peripherique .SYS, par exemple :
+
+  DEVICE=C:\XGAPCDOS\XGAAIDOS.SYS
+
+Le nom et le chemin dependent du produit installe. L'interface propose des
+fonctions de requete, de mode et des ordres graphiques. Le "Base Function Set"
+regroupe les operations communes ; des "Extended Function Sets" annoncent
+les capacites optionnelles. Une application doit demander les ensembles
+installes avant d'utiliser une extension.
+
+Pourquoi preferer cette interface :
+
+  * elle localise chaque instance et sa memoire ;
+  * elle arbitre l'acces entre programmes ;
+  * elle connait le moniteur et les modes DMQS ;
+  * elle gere les differences XGA/XGA-NI ;
+  * elle sauve et restaure l'etat lors des changements de session ;
+  * elle fournit la compatibilite avec l'API 8514/A.
+
+La convention d'appel exacte, les structures et les codes d'ordres doivent
+etre pris dans les fichiers d'inclusion du XGA Adapter Interface Toolkit. Il
+serait dangereux d'inventer ici des numeros d'ordres : plusieurs niveaux du
+pilote et plusieurs langages ont des liaisons distinctes.
+
+
+==============================================================================
+20. COMPATIBILITE 8514/A
+==============================================================================
+
+Le XGA peut executer des applications ecrites pour l'interface 8514/A au moyen
+du pilote de compatibilite IBM. Cela ne signifie pas que ses registres directs
+sont une replique bit pour bit du 8514/A.
+
+Difference importante sous DOS : l'interface XGA est un pilote .SYS charge au
+demarrage, tandis que certaines interfaces 8514/A etaient des TSR. Un logiciel
+qui cherche uniquement une signature de TSR, appelle un vecteur prive ou tente
+de decharger le gestionnaire peut echouer sur XGA bien que les fonctions soient
+disponibles.
+
+Pour une nouvelle application : detecter l'interface, demander son niveau et
+utiliser le Base Function Set. Ne programmer le chemin 8514/A qu'en solution de
+compatibilite explicite.
+
+
+==============================================================================
+21. BIOS, SELECTION D'UN MODE ET RESTAURATION
+==============================================================================
+
+INT 10h reste valable pour la partie VGA. Il n'expose cependant pas toute
+l'acceleration XGA ni toutes les structures DMQS. Les numeros de modes etendus
+peuvent dependre du BIOS et du pilote : une valeur observee sur un PS/2 n'est
+pas une norme universelle.
+
+Procedure recommandee :
+
+  1. detecter XGA Adapter Interface et le niveau d'implementation ;
+  2. enumerer les adaptateurs et identifier celui qui pilote l'ecran ;
+  3. interroger les modes par DMQS ;
+  4. sauver l'etat precedent par l'interface ;
+  5. demander au pilote de selectionner le mode ;
+  6. obtenir pitch, format et apertures ;
+  7. dessiner ;
+  8. attendre la fin du coprocesseur ;
+  9. restaurer l'etat meme en cas d'erreur.
+
+En acces materiel direct, la restauration doit inclure palette, sprite, PEL
+maps, controle d'aperture, registres d'affichage et mode VGA/XGA. Appeler
+simplement INT 10h/AX=0003h ne restaure pas necessairement tout l'etat etendu.
+
+
+==============================================================================
+22. COEXISTENCE, COMMUTATION D'ECRAN ET EMS
+==============================================================================
+
+Plusieurs XGA et un VGA peuvent coexister. Les instances ont des ports distincts
+mais partagent des ressources systeme. Le logiciel ne doit pas conclure que
+l'instance 0 est visible, primaire ou equipee du moniteur desire.
+
+Sous un environnement multitache, l'application doit accepter les notifications
+de commutation d'ecran, notamment celles vehiculees par INT 2Fh dans les
+environnements IBM/Microsoft correspondants. Avant de perdre l'ecran : terminer
+les commandes, rendre le contexte au pilote et cesser les acces directs. Lors
+du retour : faire revalider les adresses et restaurer via l'interface.
+
+Les registres du coprocesseur occupent une zone dans l'espace superieur DOS.
+Un gestionnaire LIM EMS ou un explorateur memoire peut la prendre a tort pour
+de la RAM libre ou une ROM. Le gestionnaire de memoire doit reserver la plage
+annoncee par POS ; une application ne doit ni la tester destructivement ni la
+recouvrir par une page EMS.
+
+
+==============================================================================
+23. EXEMPLES EN ASSEMBLEUR 8086/386
+==============================================================================
+
+23.1 Calculer les bases a partir d'informations deja obtenues
+-------------------------------------------------------------
+
+Cet exemple ne lit pas POS : le pilote a deja fourni ROMFIELD et INSTANCE.
+
+; Entree : AL = champ ROM POS (0..15), BL = instance (0..7)
+; Sortie : DX:AX = adresse physique de la banque coprocesseur
+; 80386, mode reel. Detruit CX.
+
+CalcXGACoproBase:
+        and     ax,000Fh
+        movzx   eax,al
+        shl     eax,13              ; * 2000h
+        add     eax,000C0000h       ; adresse ROM
+        and     ebx,00000007h
+        shl     ebx,7               ; instance * 80h
+        add     eax,00001C00h
+        add     eax,ebx
+        mov     edx,eax
+        shr     edx,16
+        ret
+
+En mode reel, convertir ensuite une adresse sous 1 Mio en segment:offset, par
+exemple segment = adresse >> 4 et offset = adresse AND 0Fh. Cette conversion
+n'est pas valable si le gestionnaire fournit une adresse physique inaccessible
+dans le premier Mio.
+
+23.2 Selectionner Extended Graphics
+-----------------------------------
+
+; BX = numero d'instance 0..7
+; port Operating Mode = 2100h + instance*10h
+
+        and     bx,0007h
+        mov     dx,bx
+        shl     dx,4
+        add     dx,2100h
+        mov     al,04h
+        out     dx,al
+
+Cette ecriture isolee n'est PAS un changement de mode complet. Elle n'est
+montree que pour expliquer le calcul des ports. Employer la sequence DMQS.
+
+23.3 Acces aux registres mappes
+-------------------------------
+
+XGA_PELMAP_INDEX EQU 10h
+XGA_PELMAP_BASE  EQU 14h
+XGA_PELMAP_SIZE  EQU 18h
+XGA_PELMAP_FMT   EQU 1Ch
+XGA_FG_COLOR     EQU 58h
+XGA_OP_DIM       EQU 60h
+XGA_DST_XY       EQU 78h
+XGA_PEL_OP       EQU 7Ch
+
+; ES:DI pointe la banque de 128 octets. 386 en mode reel.
+; Programmer la geometrie du PEL map selectionne.
+
+        mov     word ptr es:[di+XGA_PELMAP_INDEX],0 ; constante du map desire
+        mov     eax,MapPhysicalAddress
+        mov     dword ptr es:[di+XGA_PELMAP_BASE],eax
+        mov     ax,MapWidth
+        mov     word ptr es:[di+XGA_PELMAP_SIZE],ax
+        mov     ax,MapHeight
+        mov     word ptr es:[di+XGA_PELMAP_SIZE+2],ax
+        mov     eax,MapFormat        ; valeur obtenue/composee selon IBM
+        mov     dword ptr es:[di+XGA_PELMAP_FMT],eax
+
+Avant le lancement, il faut programmer les autres maps, les mix, masques,
+origines et dimensions. La derniere ecriture seulement doit etre :
+
+        mov     eax,PelOperationValue
+        mov     dword ptr es:[di+XGA_PEL_OP],eax ; declenche l'operation
+
+PelOperationValue n'est volontairement pas chiffre : ses champs dependent de
+la fonction, des maps et du niveau d'interface. Utiliser les constantes du
+Toolkit IBM empeche de transformer ce squelette en commande destructive.
+
+23.4 Ecrire un pixel 8 bpp par aperture
+---------------------------------------
+
+; ES = segment de la fenetre 64 Kio validee par le pilote
+; DI = offset du pixel dans la banque courante, AL = index de couleur
+
+        mov     es:[di],al
+
+Pour offset = y*pitch+x depassant FFFFh, choisir d'abord Aperture Index, puis
+utiliser seulement les 16 bits bas. Attendre que le coprocesseur n'utilise pas
+la meme zone ou definir une politique de synchronisation.
+
+
+==============================================================================
+24. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+24.1 Calcul des adresses
+------------------------
+
+type
+  LongWord = LongInt;  { Turbo Pascal 6/7 : LongInt signe, bits inchanges }
+
+function XGARomAddress(RomField : Byte) : LongInt;
+begin
+  XGARomAddress := $C0000 + LongInt(RomField and $0F) * $2000;
+end;
+
+function XGACoproAddress(RomField, Instance : Byte) : LongInt;
+begin
+  XGACoproAddress := XGARomAddress(RomField) + $1C00 +
+                     LongInt(Instance and 7) * $80;
+end;
+
+Ces fonctions calculent une adresse ; elles ne prouvent pas la presence du XGA.
+RomField et Instance doivent provenir du pilote ou d'une enumeration POS sure.
+
+24.2 Ports d'une instance
+-------------------------
+
+uses Dos;
+
+function XGAPortBase(Instance : Byte) : Word;
+begin
+  XGAPortBase := $2100 + Word(Instance and 7) shl 4;
+end;
+
+procedure SelectExtendedGraphics(Instance : Byte);
+var P : Word;
+begin
+  P := XGAPortBase(Instance);
+  Port[P] := $04;
+end;
+
+Cette procedure est pedagogique et ne remplace pas SetMode/DMQS.
+
+24.3 Vue typee de la banque coprocesseur
+----------------------------------------
+
+type
+  TXGAWordPair = record
+    Lo, Hi : Word;
+  end;
+
+  TXGACopro = record
+    PageDirectory       : LongInt;       { 00h }
+    CurrentVirtual      : LongInt;       { 04h }
+    AuxStatus           : LongInt;       { 08h }
+    StateLengths        : LongInt;       { 0Ch }
+    MapIndexControl     : LongInt;       { 10h }
+    MapBase             : LongInt;       { 14h }
+    MapWidthHeight      : TXGAWordPair;  { 18h }
+    MapFormat           : LongInt;       { 1Ch }
+    BresE               : LongInt;       { 20h }
+    BresK1              : LongInt;       { 24h }
+    BresK2              : LongInt;       { 28h }
+    DirectionSteps      : LongInt;       { 2Ch }
+    Reserved30          : array[$30..$47] of Byte;
+    MixCompareCondition : LongInt;       { 48h }
+    CompareValue        : LongInt;       { 4Ch }
+    PelBitMask          : LongInt;       { 50h }
+    CarryChainMask      : LongInt;       { 54h }
+    ForegroundColor     : LongInt;       { 58h }
+    BackgroundColor     : LongInt;       { 5Ch }
+    OperationDimensions : TXGAWordPair;  { 60h }
+    Reserved64          : array[$64..$6B] of Byte;
+    MaskXY              : TXGAWordPair;  { 6Ch }
+    SourceXY            : TXGAWordPair;  { 70h }
+    PatternXY           : TXGAWordPair;  { 74h }
+    DestinationXY       : TXGAWordPair;  { 78h }
+    PelOperation        : LongInt;       { 7Ch }
+  end;
+  PXGACopro = ^TXGACopro;
+
+Turbo Pascal aligne normalement les champs de ces types sur l'octet en mode
+DOS, mais verifier SizeOf(TXGACopro)=128. Eviter toute option ou directive qui
+insere du padding. Un pointeur reel ne peut viser que le premier Mio.
+
+24.4 Conversion physique segment:offset
+----------------------------------------
+
+function PhysPtr(A : LongInt) : Pointer;
+begin
+  if (A < 0) or (A >= $100000) then begin
+    PhysPtr := nil;
+    Exit;
+  end;
+  PhysPtr := Ptr(Word(A shr 4), Word(A and $0F));
+end;
+
+var
+  XGA : PXGACopro;
+  A   : LongInt;
+begin
+  A := XGACoproAddress(RomField, Instance);
+  XGA := PhysPtr(A);
+  if XGA = nil then Halt(1);
+  { Ne jamais ecrire PelOperation avant d'avoir initialise tout le contexte. }
+end;
+
+Sous DPMI, utiliser les services de mappage physique de l'hote et un selecteur
+valide ; Ptr() n'est alors pas suffisant. Sous Windows/OS/2, laisser le pilote
+virtuel arbitrer l'acces au materiel.
+
+24.5 Pixel 8 bpp dans une aperture lineaire
+--------------------------------------------
+
+procedure PutPixel8(Aperture : Pointer; Pitch, X, Y : Word; Color : Byte);
+var
+  Offset : LongInt;
+  P   : ^Byte;
+begin
+  Offset := LongInt(Y) * Pitch + X;
+  if Offset >= $10000 then Exit; { changer de banque avant, non montre }
+  P := Ptr(Seg(Aperture^), Ofs(Aperture^) + Word(Offset));
+  P^ := Color;
+end;
+
+Le test ne remplace pas le clipping aux dimensions de l'image. L'addition de
+l'offset du pointeur ne doit pas deborder le segment ; en pratique on normalise
+l'aperture et on emploie un offset retourne par le pilote.
+
+
+==============================================================================
+25. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Un modele fidele doit separer :
+
+  * decode des ports 21x0h..21xFh pour chaque instance ;
+  * banque indexee du controleur d'affichage ;
+  * decode memoire de ROM et de la banque MMIO de 128 octets ;
+  * apertures CPU et selection de banque ;
+  * moteur asynchrone PxBlt/ligne ;
+  * VRAM et PEL maps situes en memoire systeme ;
+  * palette/DAC ;
+  * sprite ;
+  * VGA legacy et arbitrage du mode ;
+  * POS, interruptions et changement de contexte.
+
+Tests minimaux recommandes
+-------------------------
+
+  1. lire les octets/words/dwords MMIO dans la vue Intel ;
+  2. verifier chaque profondeur 1/2/4/8/16 bpp aux limites d'octet ;
+  3. copier un rectangle dans les quatre directions avec chevauchement ;
+  4. tester COPY, XOR, AND et le Plane Mask ;
+  5. tester comparaison vraie/fausse pour chaque pixel ;
+  6. verifier les retenues arithmetiques avec Carry Chain Mask ;
+  7. tracer toutes les pentes et les deux sens de Bresenham ;
+  8. couper chaque cote du sprite 64 x 64 ;
+  9. franchir une limite d'aperture de 64 Kio ;
+ 10. declencher fin normale, interruption masquee et faute virtuelle ;
+ 11. alterner VGA et Extended Graphics sans perdre la palette ;
+ 12. configurer deux instances et confirmer l'absence d'alias ;
+ 13. verifier 1024 x 768 entrelace sur XGA et non entrelace sur XGA-NI ;
+ 14. sauvegarder/restaurer pendant une operation en cours.
+
+Le moteur peut etre simule immediatement tout en maintenant correctement busy
+et l'interruption, mais les logiciels qui synchronisent l'affichage peuvent
+dependre d'un ordre d'evenements plausible. Les lectures pendant PxBlt doivent
+observer une politique coherente et reproductible.
+
+
+==============================================================================
+26. PIEGES FREQUENTS
+==============================================================================
+
+  * Confondre XGA IBM et la resolution generique 1024 x 768.
+  * Appeler XGA-2 toute carte affichant 1024 x 768 non entrelace.
+  * Programmer des timings uniquement a partir de largeur/hauteur/frequence.
+  * Supposer que l'instance est toujours zero.
+  * Ecrire dans POS depuis une application.
+  * Coder en dur C1C00h ou une aperture observee sur une seule PS/2.
+  * Employer INT 10h comme interface complete du moteur XGA.
+  * Confondre la banque MMIO de 128 octets avec de la ROM ordinaire.
+  * Lancer PEL Operation avant les derniers registres d'operandes.
+  * Oublier le sens d'une copie chevauchante.
+  * Confondre largeur visible, largeur du PEL map et pitch en octets.
+  * Supposer RGB565 pour chaque mode 16 bpp.
+  * Liberer une page systeme encore referencee par le coprocesseur.
+  * Ecraser la plage XGA par une page LIM EMS.
+  * Restaurer seulement le mode VGA et laisser palette/sprite/aperture actifs.
+  * Attendre busy sans delai d'expiration.
+
+
+==============================================================================
+27. REFERENCES
+==============================================================================
+
+Sources IBM principales
+-----------------------
+
+  * IBM, Personal System/2 XGA Adapter Interface Technical Reference,
+    publication 15F2154, septembre 1990.
+
+    https://bitsavers.trailing-edge.com/pdf/ibm/pc/ps2/
+    15F2154_PS2_XGA_Adapter_Interface_Technical_Reference_Sep90.pdf
+
+  * IBM, VGA/XGA Technical Reference Manual, mai 1992.
+
+    https://bitsavers.org/pdf/ibm/pc/cards/
+    IBM_VGA_XGA_Technical_Reference_Manual_May92.pdf
+
+  * IBM, Personal System/2 XGA Display Adapter/A Technical Reference,
+    publication 15F2219, septembre 1990.
+
+    https://bitsavers.org/pdf/ibm/pc/ps2/
+    15F2219_PS2_XGA_DIsplay_Adapter_A_Technical_Reference_Sep90.pdf
+
+Sources secondaires utiles
+--------------------------
+
+  * Index des manuels IBM PC et PS/2, Bitsavers :
+    https://www.bitsavers.org/pdf/ibm/pc/ps2/
+
+  * Ardent Tool of Capitalism, documentation technique PS/2 et XGA :
+    https://www.ardent-tool.com/video/
+
+  * Gladir, fiche historique XGA :
+    https://www.gladir.com/LEXIQUE/CARD/xga.htm
+
+Pour programmer un materiel reel, les deux references IBM sont normatives. Les
+valeurs de PEL Operation, les bits de statut, les registres indexes et les
+structures de l'Adapter Interface doivent etre repris de l'edition correspondant
+au pilote et au niveau materiel detectes.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

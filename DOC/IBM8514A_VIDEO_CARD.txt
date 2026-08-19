@@ -1,0 +1,1130 @@
+==============================================================================
+ IBM PERSONAL SYSTEM/2 DISPLAY ADAPTER 8514/A
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Display Adapter 8514/A annonce en 1987 avec les
+Personal System/2. Il couvre la carte Micro Channel, sa relation avec le VGA du
+systeme, la memoire video, le moniteur IBM 8514, l'Advanced Function Controller,
+les registres d'entree/sortie, l'Adapter Interface IBM et la programmation sous
+DOS en assembleur et en Turbo Pascal.
+
+Le nom "8514/A" designe l'adaptateur. "IBM 8514" designe normalement le
+moniteur couleur associe. Le suffixe /A rappelle l'usage du bus Micro Channel.
+Les accents sont omis afin que le fichier reste lisible avec les outils DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Importance historique
+  2. Carte, bus et configuration
+  3. Architecture video et relation avec VGA
+  4. Modes d'affichage et temporisations
+  5. Memoire video et extension
+  6. Palette, DAC et moniteurs
+  7. Interfaces de programmation
+  8. Installation de l'Adapter Interface sous DOS
+  9. Modele de l'Adapter Interface
+ 10. Table des ordres de l'Adapter Interface
+ 11. Etats, taches et changement de contexte
+ 12. Carte complete des ports 8514/A
+ 13. File de commandes et synchronisation
+ 14. Registre COMMAND
+ 15. Coordonnees, rectangles et clipping
+ 16. Couleurs, masques et fonctions MIX
+ 17. Rectangles, BitBLT et transferts CPU
+ 18. Tracage de lignes
+ 19. Registre Multifunction Control
+ 20. Registres CRT et changement de mode
+ 21. Acces aux pixels et limites du framebuffer
+ 22. Texte, fontes, marqueurs et alphanumerique
+ 23. Exemples en assembleur
+ 24. Exemples en Turbo Pascal
+ 25. Compatibles, XGA et portabilite
+ 26. Conseils pour un pilote ou un emulateur
+ 27. Pieges frequents
+ 28. References
+
+
+==============================================================================
+1. IMPORTANCE HISTORIQUE
+==============================================================================
+
+Le 8514/A fut l'un des premiers accelerateurs graphiques 2D IBM largement
+diffuses sur PC. Alors que CGA, EGA et VGA laissent principalement le CPU
+modifier la memoire video, le 8514/A recoit des commandes : tracer une ligne,
+remplir ou copier un rectangle, appliquer une operation logique, transferer une
+image. Le CPU programme quelques registres et le moteur parcourt les pixels.
+
+Ses idees se retrouvent dans les accelerateurs Windows des annees 1990 :
+
+  * BitBLT materiel ;
+  * file d'ecritures ;
+  * clipping rectangulaire materiel ;
+  * raster operations ;
+  * memoire hors ecran pour motifs, fontes et images ;
+  * pilote logiciel independant du materiel, l'Adapter Interface (AI).
+
+Le 8514/A n'est pas un "super VGA" bancaire. Il possede un moteur et une
+memoire distincts du VGA. Sa compatibilite logicielle avec XGA existe surtout
+au niveau Adapter Interface, pas au niveau des registres.
+
+
+==============================================================================
+2. CARTE, BUS ET CONFIGURATION
+==============================================================================
+
+L'adaptateur est une carte Micro Channel Architecture (MCA) a connecteur de
+140 contacts. Il etait notamment propose comme option des PS/2 Model 50, 60, 70
+et 80. La configuration est decrite par un fichier ADF et enregistree dans les
+registres POS par le programme de configuration du PS/2.
+
+Caracteristiques physiques documentees :
+
+  * connecteur MCA 16/32 bits selon les signaux concernes ;
+  * connecteur video analogique femelle a 15 contacts ;
+  * connecteur AVE vers le VGA de la carte mere ;
+  * EPROM d'adaptateur, 16 Kio sur les premieres revisions, 8 Kio sur une
+    revision ulterieure correctement configuree ;
+  * consommation nominale d'environ 11 W sur +5 V et 0,15 W sur -12 V ;
+  * maxima publies d'environ 16 W et 0,22 W respectivement.
+
+Une carte fille, IBM 8514/A Memory Expansion Kit, double le nombre de plans.
+Les cartes filles des principales revisions ne sont pas interchangeables. Une
+reinstallation de l'Adapter Interface est necessaire apres ajout de memoire afin
+que le pilote enregistre la nouvelle configuration.
+
+Les ports historiques du moteur ont des adresses fixes. La selection et
+l'activation de la carte restent toutefois une responsabilite POS. Une
+application ne doit jamais reprogrammer les POS pendant que le systeme tourne.
+
+
+==============================================================================
+3. ARCHITECTURE VIDEO ET RELATION AVEC VGA
+==============================================================================
+
+Dans un PS/2 equipe, le VGA reside normalement sur la carte mere et possede sa
+propre memoire et son propre DAC. Le 8514/A ajoute :
+
+  * l'Advanced Function Controller ;
+  * ses plans video independants ;
+  * son propre DAC/palette ;
+  * une commutation du signal vers le moniteur branche sur le 8514/A.
+
+Au demarrage, le systeme est en VGA mode. Le signal VGA traverse la connexion
+Auxiliary Video Extension (AVE) et est presente au moniteur du 8514/A. Passer
+en Advanced Function mode affiche les plans du 8514/A sans detruire les plans
+VGA. HCLOSE peut donc rendre l'ecran au mode VGA anterieur.
+
+Avec deux moniteurs, le VGA de la carte mere peut continuer d'afficher une
+application VGA pendant que le 8514/A montre une application avancee. En mode
+VGA, les deux sorties peuvent montrer les donnees VGA, mais des differences de
+moniteur peuvent rendre la palette du second ecran incorrecte.
+
+Consequences pour un emulateur : VGA et 8514/A ont des VRAM distinctes. Une
+ecriture VGA pendant Advanced Function mode doit modifier la VRAM VGA cachee,
+qui redevient visible apres HCLOSE.
+
+
+==============================================================================
+4. MODES D'AFFICHAGE ET TEMPORISATIONS
+==============================================================================
+
+Modes Advanced Function officiellement pris en charge :
+
+ Resolution   Balayage       Horloge PEL   Ligne       Trame
+ ---------------------------------------------------------------------------
+ 1024 x 768   entrelace      44,90 MHz     35,52 kHz   43,48 Hz
+  640 x 480   non entrelace  25,17 MHz     31,47 kHz   59,94 Hz
+
+Le 1024 x 768 est entrelace : deux trames dessinent alternativement les lignes.
+Le scintillement est visible, surtout sur les aplats clairs et les lignes fines.
+Le 8514/A n'offre pas le 800 x 600 IBM et ne doit pas etre force dans un timing
+non documente.
+
+La memoire est organisee en plans de 1024 x 1024 bits. La partie visible occupe
+1024 x 768 ou 640 x 480. Le reste est reserve par l'interface pour les fontes,
+les motifs, le remplissage et son espace de travail.
+
+Les valeurs de CRTC doivent provenir du pilote. Une erreur de synchronisation
+peut mettre un CRT hors plage ; les exemples de ce document ne construisent
+donc pas de mode arbitraire.
+
+
+==============================================================================
+5. MEMOIRE VIDEO ET EXTENSION
+==============================================================================
+
+Configuration de base
+---------------------
+
+  4 plans x 1024 x 1024 bits = 512 Kio
+
+Elle autorise 16 couleurs simultanees en 1024 x 768. En 640 x 480, la memoire
+peut etre vue comme deux groupes de quatre plans, technique dite 4 x 4. Les
+deux banques ne forment pas automatiquement un pixel 8 bits unique.
+
+Avec Memory Expansion Kit
+-------------------------
+
+  8 plans x 1024 x 1024 bits = 1 Mio
+
+Les huit plans forment alors un index couleur de 8 bits en 1024 x 768 comme en
+640 x 480, soit 256 couleurs simultanees.
+
+Chaque plan peut etre autorise independamment :
+
+  * Write Mask choisit les plans modifies ;
+  * Read Mask choisit le ou les plans lus ;
+  * le masque d'affichage controle les plans transmis au DAC.
+
+La memoire hors ecran n'est pas une zone libre garantie. L'Adapter Interface y
+place ses caches et tables. Une application directe et une application AI ne
+doivent pas l'utiliser simultanement sans convention commune.
+
+
+==============================================================================
+6. PALETTE, DAC ET MONITEURS
+==============================================================================
+
+Le DAC contient 256 entrees rouge-vert-bleu. Chaque composante utile a 6 bits,
+d'ou 64 niveaux par canon et 262 144 couleurs possibles. Avec quatre plans,
+seules 16 entrees sont selectionnables a un instant ; avec huit plans, les 256.
+
+ Ports   Fonction
+ ---------------------------------------------------------------------------
+ 2EAh    masque d'affichage du DAC
+ 2EBh    index de lecture
+ 2ECh    index d'ecriture
+ 2EDh    donnees R, G, B successives
+
+Les six bits utiles sont traditionnellement places dans les bits 7 a 2 des
+octets de l'Adapter Interface. La programmation directe de clones peut employer
+une justification differente : verifier la documentation de la cible.
+
+L'IBM Color Display 8514 reconnait plusieurs modes par les polarites de
+synchronisation et renvoie une identification sur des broches dediees. Le
+connecteur comporte rouge, vert, bleu, retours de masse, synchro horizontale,
+synchro verticale et trois lignes d'identification de moniteur. Il ressemble au
+DE-15 VGA, mais ne faut jamais deduire le brochage de la seule forme physique.
+
+Le 8514/A accepte aussi les ecrans IBM 8503, 8512 et 8513 jusqu'a 640 x 480.
+L'interface peut indiquer couleur/monochrome et densite de pixels.
+
+
+==============================================================================
+7. INTERFACES DE PROGRAMMATION
+==============================================================================
+
+IBM proposait trois niveaux principaux :
+
+  1. Presentation Manager sous OS/2, haut niveau et multitache ;
+  2. les pilotes VDI des Graphics Development Toolkits ;
+  3. 8514/A Adapter Interface, API bas niveau mais independante des registres.
+
+La documentation IBM publique recommande Adapter Interface. Elle declare que
+l'interface donne acces aux fonctions du materiel, masque les contraintes de la
+file et facilite la migration. IBM ne presenta pas la programmation directe des
+registres comme contrat d'application public. Les registres sont neanmoins
+connus par les DDK, les pilotes, les cartes compatibles et la litterature.
+
+Le code direct est utile pour :
+
+  * un pilote d'ecran ;
+  * un systeme sans AI ;
+  * un diagnostic ou un emulateur ;
+  * comprendre le fonctionnement des compatibles ATI Mach, S3 et autres.
+
+Une application DOS normale devrait employer AI et ne pas melanger les deux
+niveaux. AI conserve un etat logiciel que des OUT directs rendraient faux.
+
+
+==============================================================================
+8. INSTALLATION DE L'ADAPTER INTERFACE SOUS DOS
+==============================================================================
+
+Le logiciel d'installation place l'interface dans un executable resident. Le
+chargeur couramment rencontre est HDILOAD, lance depuis AUTOEXEC.BAT :
+
+  C:\HDIPCDOS\HDILOAD
+
+Le nom du repertoire depend du produit et de la version. GDDM-PCLK emploie
+egalement ce chargeur. L'interface DOS est un TSR, contrairement a l'interface
+XGA plus tardive fournie comme pilote .SYS.
+
+La presence se recherche par le vecteur INT 7Fh puis par la requete definie par
+IBM. La sequence publiee commence ainsi :
+
+        mov     ax,357Fh
+        int     21h                 ; ES:BX = vecteur INT 7Fh
+        mov     ax,es
+        or      ax,bx
+        jz      NoInterface
+        mov     ax,0105h
+        int     7Fh                 ; CF=1 si fonction indisponible
+        jc      NoInterface
+
+La requete retourne l'acces a une table de points d'entree far 32 bits. Sa mise
+en page et son niveau doivent etre verifies avec le manuel/SDK installe avant
+d'appeler un index. Tester seulement que INT 7Fh est non nul n'est pas suffisant.
+
+
+==============================================================================
+9. MODELE DE L'ADAPTER INTERFACE
+==============================================================================
+
+Chaque ordre possede un point d'entree distinct et recoit l'adresse d'un bloc de
+parametres. Meme un ordre sans donnee recoit un bloc dont LEN vaut zero. Sous
+PC-DOS, le code charge expose une table d'adresses segment:offset 32 bits.
+
+La procedure appelee retire elle-meme son argument de la pile. Cela correspond
+a une convention proche de Pascal (callee cleanup), pas a la convention C
+classique. Une declaration incorrecte desequilibre SP des le premier appel.
+
+Les blocs utilisent l'ordre des octets Intel. Coordonnees et dimensions ont les
+tailles indiquees par chaque ordre. Les pointeurs qu'ils contiennent sont des
+adresses valides dans l'environnement appelant.
+
+Sequence minimale :
+
+  detecter -> obtenir la table -> HOPEN -> HINIT -> ordres graphiques ->
+  attendre/synchroniser -> HCLOSE
+
+HOPEN initialise l'etat independant de la tache, selectionne le mode et peut
+effacer les plans et charger la palette. HCLOSE revient au VGA precedent.
+
+
+==============================================================================
+10. TABLE DES ORDRES DE L'ADAPTER INTERFACE
+==============================================================================
+
+Dessin et surfaces
+------------------
+
+ Ordre     Fonction
+ ---------------------------------------------------------------------------
+ HLINE     ligne a une position donnee
+ HCLINE    ligne depuis la position courante
+ HRLINE    ligne relative a une position donnee
+ HCRLINE   ligne relative depuis la position courante
+ HBAR      debut d'une aire fermee
+ HEAR      fin et remplissage d'une aire
+ HRECT     remplissage rapide d'un rectangle
+ HSCOL     selection de la couleur avant
+ HSBCOL    selection de la couleur arriere
+ HSMX      choix des fonctions de melange
+ HSLT      definition du type de ligne
+ HSLW      largeur de ligne
+ HEGS      effacement de l'ecran graphique
+ HSGQ      qualite graphique
+ HSCMP     comparaison de couleur
+ HSPATT    forme du motif
+ HSPATTO   origine du motif
+ HSHS      rectangle de scissor materiel
+
+Bit block transfers
+-------------------
+
+ Ordre     Fonction
+ ---------------------------------------------------------------------------
+ HBBW      ecrire des donnees image a une position
+ HCBBW     ecrire a la position courante
+ HBBR      lire une image depuis les plans
+ HBBCHN    poursuivre un transfert chaine
+ HBBC      copier un rectangle entre zones video
+
+Controle et interrogation
+-------------------------
+
+ Ordre     Fonction
+ ---------------------------------------------------------------------------
+ HOPEN     ouvrir et initialiser l'adaptateur
+ HCLOSE    fermer et restaurer le VGA
+ HSCP      definir la position courante
+ HQCP      interroger la position courante
+ HSMODE    selectionner un mode
+ HQMODE    interroger le mode courant
+ HQMODES   enumerer les modes de l'adaptateur
+ HOMODE    obtenir les caracteristiques
+ HSCOORD   choisir le type de coordonnees
+ HQCOORD   interroger ce type
+ HQDPS     taille de l'etat Drawing Process
+ HINIT     initialiser l'etat d'une tache
+ HSYNC     synchroniser/restaurer un etat
+ HESC      terminer un traitement en erreur
+ HINT      controle/synchronisation lie a l'interface
+
+Palette et plans
+----------------
+
+ Ordre     Fonction
+ ---------------------------------------------------------------------------
+ HLDPAL    charger palette par defaut ou utilisateur
+ HSPAL     sauver palette et masque d'affichage
+ HRPAL     restaurer palette et masque
+ HSBP      masques des plans d'ecriture, lecture et affichage
+ HSLPC     sauver la phase du motif de ligne
+ HRLPC     restaurer cette phase
+
+Texte, caracteres et alphanumerique
+-----------------------------------
+
+ Ordre       Fonction
+ ---------------------------------------------------------------------------
+ HSCS        choisir/definir un jeu de caracteres
+ HCHST       chaine de caracteres a une position
+ HCCHST      chaine depuis la position courante
+ HXLATE      table de traduction de couleur du texte multiplan
+ HSMARK      forme d'un marqueur
+ ABLOCKMFI   bloc de caracteres au format MFI
+ ABLOCKCGA   bloc de caracteres compatible CGA
+ AERASE      effacer un rectangle alphanumerique
+ ASCROLL     faire defiler un rectangle
+ ACURSOR     position du curseur
+ ASCUR       forme du curseur
+ ASFONT      jeu de caracteres alphanumerique
+ AXLATE      table de couleurs alphanumerique
+
+Les noms et certains details peuvent varier legerement entre editions. Il faut
+utiliser l'ordre de la table fournie avec le binaire installe, jamais supposer
+qu'un index derive de ce tableau est universel.
+
+
+==============================================================================
+11. ETATS, TACHES ET CHANGEMENT DE CONTEXTE
+==============================================================================
+
+AI se decrit comme une ressource "serially reusable" : un seul flux programme
+le materiel a un instant, mais plusieurs taches peuvent conserver un contexte.
+
+Etat independant de la tache : mode, configuration materielle, palette et
+ressources communes. HOPEN l'initialise.
+
+Etat dependant : position courante, couleurs, MIX, ligne, motif, scissor,
+masques et autres attributs. HINIT initialise un nouveau tampon ; HSYNC sauve ou
+restaure lors d'un changement de tache. HQDPS indique la taille necessaire.
+
+Ne jamais allouer un tampon d'apres une taille codee en dur. Les versions et
+adaptateurs compatibles peuvent l'etendre. Attendre la fin du moteur avant de
+liberer ou de reutiliser le tampon.
+
+
+==============================================================================
+12. CARTE COMPLETE DES PORTS 8514/A
+==============================================================================
+
+Configuration et DAC
+--------------------
+
+ Port    Lecture/ecriture  Fonction
+ ---------------------------------------------------------------------------
+ 0100h   R                 Setup Mode ID 1
+ 0101h   R                 Setup Mode ID 2
+ 0102h   R/W               Setup Option Select
+ 02EAh   R/W               DAC Mask
+ 02EBh   W                 DAC Read Index
+ 02ECh   W                 DAC Write Index
+ 02EDh   R/W               DAC Data
+
+Controle d'affichage
+--------------------
+
+ Port    Fonction
+ ---------------------------------------------------------------------------
+ 02E8h   R: Display Status       W: Horizontal Total
+ 06E8h   Horizontal Displayed
+ 0AE8h   Horizontal Sync Start
+ 0EE8h   Horizontal Sync Width
+ 12E8h   Vertical Total
+ 16E8h   Vertical Displayed
+ 1AE8h   Vertical Sync Start
+ 1EE8h   Vertical Sync Width
+ 22E8h   Display Control
+ 42E8h   R: Subsystem Status     W: Subsystem Control
+ 46E8h   ROM Page Select
+ 4AE8h   Advanced Function Control
+
+Moteur graphique
+----------------
+
+ Port    Nom usuel          Fonction
+ ---------------------------------------------------------------------------
+ 82E8h   CUR_Y              position Y courante
+ 86E8h   CUR_X              position X courante
+ 8AE8h   DEST_Y/AXSTP       destination Y ou pas axial
+ 8EE8h   DEST_X/DIASTP      destination X ou pas diagonal
+ 92E8h   ERR_TERM           terme d'erreur Bresenham
+ 96E8h   MAJ_AXIS_PCNT      nombre de pixels sur axe majeur
+ 9AE8h   GP_STAT/CMD        statut en lecture, commande en ecriture
+ 9EE8h   SHORT_STROKE       vecteurs courts
+ A2E8h   BKGD_COLOR         couleur d'arriere-plan
+ A6E8h   FRGD_COLOR         couleur d'avant-plan
+ AAE8h   WRT_MASK           masque des plans ecrits
+ AEE8h   RD_MASK            masque de lecture
+ B2E8h   COLOR_CMP          couleur de comparaison
+ B6E8h   BKGD_MIX           melange arriere
+ BAE8h   FRGD_MIX           melange avant
+ BEE8h   MULTIFUNC_CNTL     registre multifonction indexe
+ E2E8h   PIX_TRANS          transfert de pixels CPU/moteur
+
+Ces registres sont majoritairement sur 16 bits. Un OUT DX,AX est atomique du
+point de vue de l'interface attendue ; deux OUT de 8 bits ne sont pas toujours
+equivalents. Sur 8086, DX est indispensable pour les ports superieurs a FFh.
+
+
+==============================================================================
+13. FILE DE COMMANDES ET SYNCHRONISATION
+==============================================================================
+
+Le moteur contient une file de huit positions. Les bits 7..0 de GP_STAT
+representent les entrees occupees (1) ou libres (0). GP_STAT contient aussi :
+
+  bit 9 : GPBUSY, 1 lorsque le moteur travaille ;
+  bit 8 : DATA_READY, donnee disponible pour une lecture PIX_TRANS ;
+  bits 7..0 : etat de la file.
+
+Avant d'ecrire N registres mis en file, attendre au moins N places libres. Une
+implementation simple peut attendre que le moteur soit totalement idle, mais
+elle perd le parallelisme CPU/carte.
+
+Pseudo-code :
+
+  tant que nombre_de_places_libres < N :
+      lire GP_STAT
+      verifier un delai d'expiration
+
+Pour lire des pixels, attendre DATA_READY avant IN AX,PIX_TRANS. Pour modifier
+un registre non mis en file ou changer de mode, attendre GPBUSY=0.
+
+Les clones ne codent pas tous la profondeur de file de facon identique. Une
+bibliotheque doit isoler WaitQueue(), WaitIdle() et WaitData().
+
+
+==============================================================================
+14. REGISTRE COMMAND
+==============================================================================
+
+Le registre 9AE8h est GP_STAT en lecture et COMMAND en ecriture.
+
+ Bits    Signification
+ ---------------------------------------------------------------------------
+ 15..13  commande :
+         000 no operation
+         001 line draw
+         010 rectangle fill rapide
+         011 rectangle fill vertical, variante 1
+         100 rectangle fill vertical, variante 2 / quatre pixels
+         101 line draw, un pixel par scanline
+         110 rectangle copy
+         111 reserve
+ 12      BYTSEQ, ordre des octets lors des transferts
+ 11..10  reserves selon l'original
+ 9       autorise les ecritures BitBLT 16 bits
+ 8       PCDATA : donnees fournies/demandees via PIX_TRANS
+ 7       INC_Y : direction verticale
+ 6       YMAJAXIS : Y est l'axe majeur
+ 5       INC_X : direction horizontale
+ 4       DRAW : tracer et avancer, sinon mouvement seulement
+ 3       LINETYPE : Bresenham ou vecteur directionnel
+ 2       LASTPIX : omission eventuelle du dernier pixel
+ 1       PLANAR : acces un pixel ou groupe de quatre
+ 0       RD/WR : sens de transfert de donnees
+
+Certains noms historiques inversent la formulation de bits actifs a zero. Une
+commande doit etre composee avec les constantes du DDK cible, puis testee sur
+les cas limites. Ecrire un bit reserve comme le fait un clone peut bloquer un
+8514/A IBM original.
+
+
+==============================================================================
+15. COORDONNEES, RECTANGLES ET CLIPPING
+==============================================================================
+
+CUR_X/CUR_Y definissent l'origine. DEST_X/DEST_Y definissent une destination
+ou, pour une ligne, les constantes de pas. MAJ_AXIS_PCNT contient normalement
+un compte de pixels encode selon la commande. Les coordonnees materielles sont
+limitees et peuvent s'enrouler ; le scissor n'empeche pas cet enroulement.
+
+Le scissor materiel contient quatre limites inclusives : gauche, droite, haut,
+bas. Il est programme au moyen des sous-registres Multifunction Control. Il est
+applique apres conversion vecteur-vers-raster et conserve correctement la phase
+des pointilles et la largeur des traits.
+
+Attention : un scissor place hors de l'espace ecran peut laisser une primitive
+enroulee atteindre la zone hors ecran utilisee par AI. Faire d'abord un clipping
+logiciel a l'espace de coordonnees, puis employer le scissor pour la fenetre.
+
+
+==============================================================================
+16. COULEURS, MASQUES ET FONCTIONS MIX
+==============================================================================
+
+FRGD_COLOR et BKGD_COLOR contiennent les index de couleur. WRT_MASK selectionne
+les plans modifiables ; RD_MASK selectionne les plans utilises par les lectures.
+COLOR_CMP sert a la comparaison/transparence avec le controle associe.
+
+FRGD_MIX et BKGD_MIX selectionnent la source (couleur constante ou PIX_TRANS)
+et une operation entre la nouvelle valeur N et la valeur ecran S. L'interface
+offre notamment : remplacement, AND, OR, XOR, NOT, addition, soustraction et
+moyenne. Les codes publies par AI comprennent par exemple XOR et les variantes
+"screen-new" / "new-screen".
+
+Le resultat final est encore limite par WRT_MASK et le scissor. Pour effacer un
+rectangle, programmer couleur, MIX de remplacement, tous les plans voulus,
+dimensions, puis la commande de remplissage.
+
+Pour un curseur logiciel reversible, XOR est tentant, mais le redessiner deux
+fois ne restaure le fond que si palette, plans et pixels n'ont pas change entre
+les deux operations.
+
+
+==============================================================================
+17. RECTANGLES, BITBLT ET TRANSFERTS CPU
+==============================================================================
+
+Rectangle plein
+---------------
+
+Programmer CUR_X/Y, largeur/hauteur via MAJ_AXIS_PCNT et MULTIFUNC, couleur,
+FRGD_MIX et WRT_MASK, puis lancer Fast Fill Rectangle. Les dimensions sont
+souvent codees N-1 au niveau registre ; AI accepte des dimensions logiques.
+
+Copie video-vers-video
+----------------------
+
+La commande Rectangle Copy emploie source, destination et dimensions. En cas
+de chevauchement, choisir INC_X/INC_Y comme memmove :
+
+  destination a droite  -> parcourir de droite a gauche
+  destination en bas    -> parcourir de bas en haut
+
+Une direction incorrecte propage les pixels deja copies.
+
+CPU-vers-video
+--------------
+
+PCDATA demande les donnees via PIX_TRANS. Pour un motif "across planes", un
+bit source choisit FRGD_COLOR ou BKGD_COLOR et leurs MIX respectifs. Pour une
+image "through planes", chaque pixel est un index couleur traversant les
+plans. BYTSEQ et le bit 16-bit transfer definissent l'ordre et la largeur.
+
+Video-vers-CPU
+--------------
+
+Lancer la lecture, attendre DATA_READY pour chaque mot, puis lire PIX_TRANS.
+Ne jamais executer un IN sans readiness : le resultat peut etre ancien et la
+sequence interne des pixels est alors decalee.
+
+
+==============================================================================
+18. TRACAGE DE LIGNES
+==============================================================================
+
+Le moteur propose deux chemins :
+
+  * Bresenham avec ERR_TERM, AXSTP, DIASTP, axe majeur et directions ;
+  * vecteurs directionnels, y compris Short Stroke Vector Transfer.
+
+Pour une ligne (x0,y0)-(x1,y1), calculer :
+
+  dx = abs(x1-x0)
+  dy = abs(y1-y0)
+  axe majeur = X si dx >= dy, sinon Y
+  INC_X/INC_Y d'apres les signes
+
+Les constantes exactes de l'erreur suivent la convention du 8514/A. LASTPIX
+permet d'omettre le dernier pixel pour joindre plusieurs segments sans doubler
+leurs sommets. Les pointilles conservent un compteur de phase ; AI fournit
+HSLPC/HRLPC pour le sauver et le restaurer autour d'un clipping.
+
+SHORT_STROKE encode plusieurs petits vecteurs dans un mot et reduit le nombre
+d'acces au bus. Il convient aux polices vectorielles et aux polylignes courtes.
+
+
+==============================================================================
+19. REGISTRE MULTIFUNCTION CONTROL
+==============================================================================
+
+Le port BEE8h multiplexe plusieurs registres. Les bits hauts selectionnent la
+fonction et les bits bas contiennent la valeur. Les fonctions usuelles sont :
+
+  * rectangle height / minor axis pixel count ;
+  * top scissor ;
+  * left scissor ;
+  * bottom scissor ;
+  * right scissor ;
+  * pixel control ;
+  * multifonctions reservees selon revision/compatible.
+
+Il faut toujours combiner SELECTEUR OR VALEUR et respecter la largeur du champ.
+Une ecriture de hauteur sans selecteur peut modifier une limite de clipping.
+
+Le Pixel Control choisit notamment la source de MIX et le mode de comparaison.
+Comme ces champs ont ete etendus par de nombreux clones, les valeurs directes
+doivent venir de la documentation IBM/DDK correspondant au chemin 8514/A pur.
+
+
+==============================================================================
+20. REGISTRES CRT ET CHANGEMENT DE MODE
+==============================================================================
+
+Les ports 2E8h..22E8h programment total, partie affichee, debut et largeur des
+synchronisations horizontales et verticales. Advanced Function Control commute
+le chemin VGA/8514/A et des fonctions d'affichage. Subsystem Control initialise
+ou reinitialise le moteur et gere les indications d'etat.
+
+Une mise en mode directe correcte doit :
+
+  1. attendre le moteur idle ;
+  2. masquer ou desactiver l'affichage ;
+  3. reinitialiser proprement le sous-systeme ;
+  4. programmer tous les timings du mode IBM ;
+  5. initialiser plans, scissor, MIX et palette ;
+  6. selectionner Advanced Function ;
+  7. reactiver l'affichage.
+
+Utiliser HOPEN/HSMODE est preferable : le pilote connait l'ecran et restaure le
+VGA. Une simple ecriture d'ADVFUNC_CNTL ne constitue pas un changement de mode.
+
+
+==============================================================================
+21. ACCES AUX PIXELS ET LIMITES DU FRAMEBUFFER
+==============================================================================
+
+Le 8514/A original ne fournit pas au CPU un framebuffer lineaire ordinaire. Le
+chemin general vers les pixels est PIX_TRANS, pilote par une commande BitBLT.
+Il n'existe pas d'equivalent garanti de A000:offset permettant d'adresser la
+VRAM avancee pixel par pixel.
+
+Cette contrainte explique l'importance des operations par lot : envoyer une
+image ou un rectangle entier amortit le cout des ports. PutPixel implemente par
+une commande complete pour chaque point est tres lent.
+
+Certaines cartes compatibles ajoutent une aperture lineaire ou bancaire. Ce
+n'est pas une fonction du 8514/A IBM et doit etre detecte comme extension du
+fabricant.
+
+
+==============================================================================
+22. TEXTE, FONTES, MARQUEURS ET ALPHANUMERIQUE
+==============================================================================
+
+AI sait afficher des caracteres definis comme matrices de bits ou vecteurs
+courts. Une definition peut atteindre 255 x 255 PEL. Les fontes fournies
+contiennent les pages de codes 437, 850, 860, 863 et 865, avec choix des pages
+par defaut a l'installation.
+
+L'interface fournit aussi deux cellules fixes de style 3270 en 1024 x 768 :
+
+  * 12 x 20, environ 85 colonnes x 38 lignes ;
+  *  7 x 15, environ 146 colonnes x 51 lignes.
+
+Le curseur alphanumerique occupe la largeur de cellule, a une hauteur reglable,
+et emploie XOR. Le clignotement n'est pas pris en charge par ce mecanisme. Il
+n'existe pas de curseur graphique materiel comparable au sprite XGA ; un
+pointeur se fait avec BitBLT ou une liste vectorielle.
+
+
+==============================================================================
+23. EXEMPLES EN ASSEMBLEUR
+==============================================================================
+
+23.1 Detection de l'Adapter Interface
+-------------------------------------
+
+; Retour : CF=0 si la requete AI 0105h repond, CF=1 sinon.
+
+Detect8514AI proc near
+        push    bx
+        push    es
+        mov     ax,357Fh
+        int     21h
+        mov     ax,es
+        or      ax,bx
+        jz      short ai_absent
+        mov     ax,0105h
+        int     7Fh
+        jc      short ai_absent
+        clc
+        jmp     short ai_done
+ai_absent:
+        stc
+ai_done:
+        pop     es
+        pop     bx
+        ret
+Detect8514AI endp
+
+Conserver les valeurs retour definies par le SDK avant de restaurer ES/BX si la
+version les y place. Le test ne prouve pas qu'un mode a deja ete ouvert.
+
+23.2 Attendre que le moteur soit idle
+-------------------------------------
+
+GP_STAT  equ 09AE8h
+GP_BUSY  equ 0200h
+
+; CX contient un delai. CF=1 en cas d'expiration.
+WaitIdle proc near
+        push    ax
+        push    dx
+        mov     dx,GP_STAT
+wi_loop:
+        in      ax,dx
+        test    ax,GP_BUSY
+        jz      short wi_ok
+        loop    wi_loop
+        stc
+        jmp     short wi_exit
+wi_ok:  clc
+wi_exit:
+        pop     dx
+        pop     ax
+        ret
+WaitIdle endp
+
+Un vrai pilote emploie un delai temporel, pas seulement CX, car la vitesse CPU
+varie enormement.
+
+23.3 Programmer couleurs et masques
+-----------------------------------
+
+FRGD_COLOR equ 0A6E8h
+BKGD_COLOR equ 0A2E8h
+WRT_MASK   equ 0AAE8h
+RD_MASK    equ 0AEE8h
+
+        mov     dx,FRGD_COLOR
+        mov     ax,000Fh             ; blanc dans quatre plans
+        out     dx,ax
+        mov     dx,BKGD_COLOR
+        xor     ax,ax
+        out     dx,ax
+        mov     dx,WRT_MASK
+        mov     ax,000Fh
+        out     dx,ax
+        mov     dx,RD_MASK
+        mov     ax,000Fh
+        out     dx,ax
+
+Attendre quatre places dans la file avant cette sequence, ou attendre idle.
+
+23.4 Squelette de rectangle plein
+---------------------------------
+
+CUR_X       equ 082E8h
+CUR_Y       equ 086E8h
+MAJ_PCNT    equ 096E8h
+MULTIFUNC   equ 0BEE8h
+COMMAND     equ 09AE8h
+
+        ; WaitQueue(5) doit avoir ete appele
+        mov     dx,CUR_X
+        mov     ax,X
+        out     dx,ax
+        mov     dx,CUR_Y
+        mov     ax,Y
+        out     dx,ax
+        mov     dx,MAJ_PCNT
+        mov     ax,WidthMinus1
+        out     dx,ax
+        mov     dx,MULTIFUNC
+        mov     ax,MINOR_AXIS_SELECT OR HeightMinus1
+        out     dx,ax
+        mov     dx,COMMAND
+        mov     ax,RECT_FILL_COMMAND
+        out     dx,ax
+
+MINOR_AXIS_SELECT et RECT_FILL_COMMAND doivent provenir de l'en-tete du DDK.
+Les laisser symboliques evite qu'un exemple incomplet commande le mauvais
+sous-registre ou un sens de transfert errone.
+
+23.5 Charger une entree de palette
+----------------------------------
+
+; BL=index, CH=rouge, CL=vert, BH=bleu, composantes au format du DAC direct.
+
+        mov     dx,02ECh
+        mov     al,bl
+        out     dx,al
+        inc     dx                    ; 2EDh
+        mov     al,ch
+        out     dx,al
+        mov     al,cl
+        out     dx,al
+        mov     al,bh
+        out     dx,al
+
+Pour une application AI, employer HLDPAL afin de respecter le format 6 bits et
+la sauvegarde d'etat du pilote.
+
+
+==============================================================================
+24. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+24.1 Detection du vecteur INT 7Fh
+---------------------------------
+
+uses Dos;
+
+function HasInt7F : Boolean;
+var
+  V : Pointer;
+begin
+  GetIntVec($7F, V);
+  HasInt7F := (Seg(V^) <> 0) or (Ofs(V^) <> 0);
+end;
+
+Ce premier test doit etre suivi de AX=0105h. Turbo Pascal ne permet pas de
+preserver proprement toutes les valeurs retour avec Intr sans examiner Regs :
+
+function Has8514AI : Boolean;
+var
+  R : Registers;
+begin
+  if not HasInt7F then begin
+    Has8514AI := False;
+    Exit;
+  end;
+  R.AX := $0105;
+  Intr($7F, R);
+  Has8514AI := (R.Flags and FCarry) = 0;
+end;
+
+24.2 Acces aux registres 16 bits
+-------------------------------
+
+const
+  GP_STAT    = $9AE8;
+  GP_BUSY    = $0200;
+  CUR_Y      = $82E8;
+  CUR_X      = $86E8;
+  FRGD_COLOR = $A6E8;
+  WRT_MASK   = $AAE8;
+
+function Wait8514Idle(Limit : LongInt) : Boolean;
+begin
+  while (Limit > 0) and ((PortW[GP_STAT] and GP_BUSY) <> 0) do
+    Dec(Limit);
+  Wait8514Idle := (PortW[GP_STAT] and GP_BUSY) = 0;
+end;
+
+procedure SetCurrentPosition(X, Y : Word);
+begin
+  { Dans un pilote, attendre deux places libres avant ces ecritures. }
+  PortW[CUR_X] := X;
+  PortW[CUR_Y] := Y;
+end;
+
+procedure SetFourPlaneColor(Color : Byte);
+begin
+  PortW[FRGD_COLOR] := Color and $0F;
+  PortW[WRT_MASK] := $000F;
+end;
+
+PortW est indispensable : Port[] n'effectue qu'un acces 8 bits.
+
+24.3 Charger une palette par les ports
+--------------------------------------
+
+procedure SetDAC(Index, R, G, B : Byte);
+begin
+  Port[$2EC] := Index;
+  Port[$2ED] := R;
+  Port[$2ED] := G;
+  Port[$2ED] := B;
+end;
+
+La justification des six bits doit correspondre au DAC vise. Avec AI, construire
+le bloc HLDPAL : LEN, identificateur, premier index, nombre et pointeur far vers
+les triplets. AI n'utilise que les six bits significatifs annonces par IBM.
+
+24.4 Type de bloc HOPEN
+----------------------
+
+type
+  THOpen = record
+    Len         : Word;  { 3 octets suivent }
+    Flags       : Byte;  { bit7 ne pas effacer, bit6 ne pas charger palette }
+    Mode        : Byte;
+    ReturnFlags : Byte;
+  end;
+
+var
+  OpenPB : THOpen;
+begin
+  OpenPB.Len := 3;
+  OpenPB.Flags := 0;
+  OpenPB.Mode := 0;       { mode 0 IBM : 1024 x 768, si disponible }
+  OpenPB.ReturnFlags := 0;
+  { Appeler ici le point HOPEN de la table AI avec @OpenPB. }
+  { ReturnFlags=0 signifie ouverture reussie dans l'edition IBM de 1987. }
+end;
+
+La declaration far et la convention Pascal du point d'entree doivent etre
+construites a partir du fichier d'inclusion IBM. Ne pas appeler une adresse de
+table comme une procedure Turbo Pascal ordinaire sans trampoline assembleur.
+
+
+==============================================================================
+25. COMPATIBLES, XGA ET PORTABILITE
+==============================================================================
+
+L'interface et les registres 8514/A ont inspire ATI 8514/Ultra et Mach, IIT AGX,
+S3 et d'autres accelerateurs. "Compatible 8514/A" peut signifier :
+
+  * compatible Adapter Interface seulement ;
+  * sous-ensemble des registres ;
+  * registres plus extensions constructeur ;
+  * compatibilite fournie par un pilote, sans materiel identique.
+
+XGA fournit une compatibilite AI et un jeu d'ordres superieur, mais son moteur
+est mappe en memoire et son organisation est differente. Les incompatibilites
+connues comprennent :
+
+  * le mode 4 x 4 du 8514/A non repris par XGA AI ;
+  * deux buffers VGA/8514 distincts contre un buffer partage sur XGA integre ;
+  * la zone hors ecran employee differemment ;
+  * aucune garantie de compatibilite registre par registre.
+
+Un logiciel portable appelle AI, interroge HOMODE/HQMODES et n'utilise que les
+fonctions annoncees. Un pilote direct identifie precisement le chipset.
+
+
+==============================================================================
+26. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Composants a modeliser
+----------------------
+
+  * configuration MCA/POS et ROM ;
+  * passage du signal VGA et deux VRAM independantes ;
+  * 4 ou 8 plans de 1024 x 1024 ;
+  * palette de 256 x 18 bits et masque ;
+  * file de huit ecritures ;
+  * moteur asynchrone, busy et data ready ;
+  * registres a double fonction lecture/ecriture ;
+  * Multifunction Control et son index ;
+  * BitBLT dans les quatre directions ;
+  * Bresenham, LASTPIX et vecteurs courts ;
+  * scissor inclusif et enroulement des coordonnees ;
+  * transfert PIX_TRANS 8/16 bits et BYTSEQ ;
+  * balayage 1024 x 768 entrelace ;
+  * restauration VGA et double affichage.
+
+Tests de conformite
+-------------------
+
+  1. VGA visible au demarrage et VRAM VGA preservee en mode avance ;
+  2. 4 plans sans extension, 8 plans avec extension ;
+  3. masques de lecture, ecriture et affichage independants ;
+  4. palette 6 bits et DAC Mask ;
+  5. file pleine, file vide, busy et data ready ;
+  6. dimensions 1, maximum et compte N-1 ;
+  7. copies chevauchantes dans les quatre directions ;
+  8. images across-planes et through-planes ;
+  9. ordre des octets PIX_TRANS en 8 et 16 bits ;
+ 10. toutes les pentes de ligne et LASTPIX ;
+ 11. scissor sur chacun des quatre bords ;
+ 12. coordonnee enroulee et protection de la zone hors ecran ;
+ 13. mode entrelace : ordre des champs et frequence correcte ;
+ 14. HCLOSE restaurant mode, palette et contenu VGA ;
+ 15. deux moniteurs avec VGA et Advanced Function simultanes.
+
+L'emulation immediate d'une commande est acceptable si les transitions de
+statut restent coherentes. Les pilotes peuvent toutefois observer la file pour
+recouvrir calcul CPU et dessin ; une file toujours vide masque des bogues de
+synchronisation et peut modifier le comportement chronologique.
+
+
+==============================================================================
+27. PIEGES FREQUENTS
+==============================================================================
+
+  * Confondre le moniteur IBM 8514 et la carte 8514/A.
+  * Croire que la carte contient le VGA primaire.
+  * Traiter sa VRAM comme un framebuffer VGA a A0000h.
+  * Supposer 256 couleurs sans Memory Expansion Kit.
+  * Oublier le mode 4 x 4 particulier au 640 x 480 de base.
+  * Utiliser la memoire hors ecran reservee par Adapter Interface.
+  * Ecrire un registre sans attendre une place dans la file.
+  * Sonder busy sans expiration.
+  * Lire PIX_TRANS avant DATA_READY.
+  * Utiliser deux OUT 8 bits a la place d'un OUT 16 bits.
+  * Oublier le selecteur du registre Multifunction Control.
+  * Inverser INC_X/INC_Y lors d'un BitBLT chevauchant.
+  * Confondre clipping logiciel et scissor apres rasterisation.
+  * Programmer le 1024 x 768 comme mode non entrelace.
+  * Melanger appels AI et acces direct sans resynchroniser l'etat.
+  * Supposer que XGA est compatible au niveau des registres.
+  * Appeler un point AI avec la convention C et corrompre la pile.
+  * Tester uniquement la presence d'un vecteur INT 7Fh.
+  * Modifier les POS depuis une application.
+
+
+==============================================================================
+28. REFERENCES
+==============================================================================
+
+Sources IBM principales
+-----------------------
+
+  * IBM Personal System/2 Display Adapter 8514/A Technical Reference,
+    S68X-2248-0, premiere edition, avril 1987.
+
+    https://bitsavers.org/pdf/ibm/pc/cards/8514/
+    S68X-2248-0_Display_Adapter_8514A_Technical_Reference.pdf
+
+  * IBM Personal Computer Seminar Proceedings, volume 5 numero 2, 1987,
+    presentation "The IBM Personal System/2 Display Adapter 8514/A".
+
+    https://bitsavers.org/pdf/ibm/pc/IBM_Personal_Computer_Seminar_Proceedings/
+    PC_Seminar_V05_N02_198705.pdf
+
+  * IBM XGA Adapter Interface Technical Reference, 15F2154, annexe A :
+    compatibilite avec le Display Adapter 8514/A.
+
+    https://bitsavers.org/pdf/ibm/pc/ps2/
+    15F2154_PS2_XGA_Adapter_Interface_Technical_Reference_Sep90.pdf
+
+Registres et documentation secondaire
+-------------------------------------
+
+  * "Harnessing the 8514/A", MIPS, janvier 1990, tables de ports, statut et
+    commande reproduites par Ardent Tool of Capitalism :
+
+    https://www.ardent-tool.com/video/8514A_Registers.pdf
+
+  * Ardent Tool, IBM Display Adapter 8514/A, ADF, revisions et materiel :
+
+    https://www.ardent-tool.com/video/8514.html
+
+  * IBM Documentation, chargement du pilote 8514/A pour GDDM-PCLK :
+
+    https://www.ibm.com/docs/en/gddm?topic=drivers-loading-8514a-driver
+
+  * Gladir, ports et exemples historiques 8514/A :
+
+    https://www.gladir.com/LEXIQUE/CARD/ibm8514a.htm
+
+Note sur l'autorite des sources
+-------------------------------
+
+Le manuel S68X-2248-0 est normatif pour l'Adapter Interface et les proprietes
+materielles publiees. La carte des registres directs provient de documentation
+de pilotes et de developpeurs, car IBM reservait officiellement ce niveau aux
+pilotes. Pour un produit reel, confronter les valeurs aux DDK IBM/Microsoft et
+a la fiche du chipset compatible vise.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

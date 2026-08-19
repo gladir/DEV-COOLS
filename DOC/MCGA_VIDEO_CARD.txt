@@ -1,0 +1,1073 @@
+==============================================================================
+ IBM MULTI-COLOR GRAPHICS ARRAY (MCGA)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit le sous-systeme video IBM Multi-Color Graphics Array, ou
+MCGA, introduit en 1987 sur les premiers Personal System/2 Model 25 et Model 30.
+Il couvre le materiel, les modes, la memoire, le DAC, le BIOS INT 10h, les
+registres, les fontes et la programmation en assembleur et Turbo Pascal.
+
+MCGA n'a jamais ete commercialise par IBM sous forme de carte enfichable. Le
+terme "carte MCGA" designe donc ici le sous-systeme integre a la carte mere.
+Les accents sont omis pour conserver un fichier ASCII utilisable sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et machines equipees
+  2. Position par rapport a CGA, EGA et VGA
+  3. Architecture materielle
+  4. Memoire video et SRAM de caracteres
+  5. Connecteur et moniteurs analogiques
+  6. Table des modes BIOS
+  7. Organisation des modes texte
+  8. Modes graphiques compatibles CGA
+  9. Mode 11h : 640 x 480 monochrome
+ 10. Mode 13h : 320 x 200 en 256 couleurs
+ 11. Carte des ports
+ 12. Video Memory Controller
+ 13. Video Formatter et compatibilite CGA
+ 14. DAC et programmation des couleurs
+ 15. BIOS INT 10h
+ 16. Detection du MCGA
+ 17. Fontes chargeables et modes 50 lignes
+ 18. Scrolling, pages et adresse de depart
+ 19. Synchronisation et absence de neige CGA
+ 20. Programmation directe et changement de mode
+ 21. Coexistence avec MDA/Hercules et desactivation
+ 22. Exemples en assembleur
+ 23. Exemples en Turbo Pascal
+ 24. Conseils pour un pilote ou un emulateur
+ 25. Compatibilite des logiciels DOS
+ 26. Pieges frequents
+ 27. References
+
+
+==============================================================================
+1. HISTORIQUE ET MACHINES EQUIPEES
+==============================================================================
+
+IBM presenta MCGA en 1987 dans le segment economique de la gamme PS/2. Il fut
+integre aux machines 8086 suivantes :
+
+  * IBM PS/2 Model 25, type 8525, versions 8086 ;
+  * IBM PS/2 Model 30, type 8530, versions 8086 ;
+  * quelques machines derivees de ces cartes meres, dont Personal Typing
+    System, Executive Workstation et Clinical Workstation.
+
+Les Model 25-286, Model 25 SX et Model 30-286 emploient VGA, pas MCGA. Le nom
+commercial de la machine ne suffit donc pas : il faut identifier son modele et
+son sous-modele.
+
+MCGA ne fut pas propose comme option ISA ou Micro Channel par IBM. L'Epson
+Equity Ie/PSE 30 est le principal compatible connu. Les cartes VGA peuvent
+emuler les modes BIOS MCGA, mais leur organisation interne reste differente.
+
+MCGA introduisit deux modes qui devinrent celebres sur VGA : 11h, 640 x 480 en
+deux couleurs, et surtout 13h, 320 x 200 avec un octet par pixel et 256 couleurs.
+
+
+==============================================================================
+2. POSITION PAR RAPPORT A CGA, EGA ET VGA
+==============================================================================
+
+MCGA est essentiellement un sur-ensemble du CGA adapte a un moniteur analogique.
+Il conserve les modes CGA, les ports 3D4h/3D5h et 3D8h..3DAh, ainsi que la
+memoire entrelacee a B800h pour les anciens modes graphiques.
+
+MCGA n'est PAS compatible EGA :
+
+  * aucun ensemble Sequencer/Graphics Controller/Attribute Controller EGA ;
+  * pas de quatre plans EGA a A000h ;
+  * pas de mode BIOS 0Dh, 0Eh, 0Fh, 10h ou 12h ;
+  * pas de 640 x 350 ;
+  * un programme qui ecrit les ports EGA/VGA peut echouer.
+
+MCGA n'est pas non plus un VGA incomplet au niveau des registres. Les deux
+architectures partagent le DAC analogique et les modes 11h/13h, mais leurs
+controleurs et leurs VRAM sont differents. Le mode 13h VGA est configure par
+Chain-4 et des plans internes ; le MCGA possede naturellement un buffer lineaire
+de 64 Kio.
+
+Comparaison rapide
+------------------
+
+ Fonction                 CGA          MCGA             VGA
+ ---------------------------------------------------------------------------
+ Sortie principale        RGBI         RGB analogique   RGB analogique
+ Memoire typique          16 Kio       64 Kio           256 Kio ou plus
+ Compatibilite CGA        native       tres forte       BIOS/partielle HW
+ Compatibilite EGA        non          non              oui
+ 320x200x256 mode 13h     non          oui              oui
+ 640x480x2 mode 11h       non          oui              oui
+ 640x480x16 mode 12h      non          non              oui
+ DAC 256 x 18 bits        non          oui              oui
+ Plans graphiques         CGA empaquete lineaire/CGA    VGA planaires
+
+
+==============================================================================
+3. ARCHITECTURE MATERIELLE
+==============================================================================
+
+Le MCGA IBM se compose de :
+
+  * Video Memory Controller, references 72X8300 ou 11F8028 ;
+  * Video Formatter, reference 72X8205 ;
+  * 64 Kio de DRAM video multiport, deux circuits 64K x 4 ;
+  * 8 Kio de SRAM pour le generateur de caracteres ;
+  * RAMDAC IMSG171 ou equivalent, 256 entrees x 18 bits ;
+  * logique de support, horloges, detection de moniteur et sortie analogique ;
+  * BIOS video integre au BIOS systeme du Model 25/30.
+
+Le Video Memory Controller arbitre les acces CPU et rafraichissement, contient
+un controleur CRT inspire du Motorola 6845 et alimente la voie serie de la
+VRAM. Le Video Formatter transforme octets, attributs ou bits en flux de pixels,
+selectionne les modes et adresse la SRAM des fontes. Le RAMDAC traduit les
+index en tensions rouge, verte et bleue.
+
+La VRAM multiport permet au controleur de lire le flux d'affichage pendant que
+le CPU accede a la partie parallele. Cette architecture elimine la "neige"
+visible sur certains CGA lors d'ecritures non synchronisees.
+
+Une ancienne revision du Video Memory Controller, 72X8300, fut concernee par
+l'ECA 023 du Model 25 : plusieurs fontes chargees pouvaient produire des
+caracteres faux, intermittents ou soulignes. La revision 11F8028 corrige ce
+probleme. Un emulateur n'a normalement pas a reproduire ce defaut.
+
+
+==============================================================================
+4. MEMOIRE VIDEO ET SRAM DE CARACTERES
+==============================================================================
+
+La memoire graphique totale est de 65 536 octets. Son adresse CPU depend du
+mode :
+
+  B800:0000  modes texte couleur et graphiques CGA 4/5/6
+  B000:0000  mode texte monochrome 7, selon configuration
+  A000:0000  modes graphiques MCGA 11h et 13h
+
+En texte, chaque cellule occupe deux octets : code puis attribut. Les pages
+logiques et l'adresse de depart fonctionnent comme sur CGA, sous reserve de la
+taille reelle du buffer et des valeurs maintenues par le BIOS.
+
+La SRAM de caracteres de 8 Kio est distincte de la VRAM d'ecran. Le MCGA peut
+conserver quatre tables de 256 caracteres. Les motifs sont d'abord places dans
+la VRAM par le BIOS, puis transferes vers une page interne du generateur. Cette
+etape explique pourquoi les appels de chargement et de selection de banque ne
+se comportent pas exactement comme sur EGA/VGA.
+
+Ne pas supposer qu'ecrire une fonte dans un plan VGA a A000h fonctionne : MCGA
+n'a pas le plan 2 VGA ni les registres Sequencer necessaires.
+
+
+==============================================================================
+5. CONNECTEUR ET MONITEURS ANALOGIQUES
+==============================================================================
+
+MCGA produit trois signaux RGB analogiques et des synchronisations TTL a
+31,5 kHz dans ses modes PS/2 normaux. Le connecteur du Model 30 est le DE-15
+introduit avec la famille PS/2 et compatible mecaniquement avec VGA. Le Model 25
+integre son ecran mais emploie un raccordement interne de meme famille.
+
+Les lignes essentielles sont : rouge, vert, bleu, masses/retours, synchro
+horizontale, synchro verticale et lignes d'identification du moniteur. Toujours
+verifier le schema du modele avant de fabriquer un cable ; forme et brochage ne
+suffisent pas a garantir les niveaux.
+
+Un affichage analogique couleur ou monochrome peut etre detecte. Sur le Model 25
+monochrome, le BIOS convertit les couleurs en niveaux de gris et envoie le
+signal par la voie appropriee. Le calcul documente est approximativement :
+
+  luminance = 30 % rouge + 59 % vert + 11 % bleu
+
+Le materiel peut afficher jusqu'a 64 niveaux de gris. Un programme qui ecrit le
+DAC directement court-circuite la politique de conversion du BIOS.
+
+
+==============================================================================
+6. TABLE DES MODES BIOS
+==============================================================================
+
+ Mode  Type       Geometrie logique       Couleurs  Memoire  Organisation
+ ---------------------------------------------------------------------------
+ 00h   texte      40 x 25, caracteres 8x16 16       B800h    code/attribut
+ 01h   texte      40 x 25, caracteres 8x16 16       B800h    code/attribut
+ 02h   texte      80 x 25, caracteres 8x16 16       B800h    code/attribut
+ 03h   texte      80 x 25, caracteres 8x16 16       B800h    code/attribut
+ 04h   graphique  320 x 200                4        B800h    CGA entrelace
+ 05h   graphique  320 x 200                4/gris   B800h    CGA entrelace
+ 06h   graphique  640 x 200                2        B800h    CGA entrelace
+ 07h   texte      80 x 25 monochrome       attribut B000h    MDA logique
+ 11h   graphique  640 x 480                2        A000h    lineaire 1 bpp
+ 13h   graphique  320 x 200                256      A000h    lineaire 8 bpp
+
+Les modes texte MCGA emploient 400 lignes physiques : 320 x 400 pour 40
+colonnes, 640 x 400 pour 80 colonnes. Sur VGA, les equivalents ont typiquement
+360 ou 720 pixels horizontaux. Une application qui mesure des pixels et non des
+cellules doit tenir compte de cette difference.
+
+Les modes CGA 200 lignes sont affiches avec doublement vertical afin de produire
+400 lignes physiques. Le contenu memoire et les coordonnees restent 200 lignes.
+
+Le mode 12h, 640 x 480 en 16 couleurs, est absent. Une detection qui considere
+"mode 13h disponible" comme synonyme de VGA classera donc mal MCGA.
+
+
+==============================================================================
+7. ORGANISATION DES MODES TEXTE
+==============================================================================
+
+En modes 0..3, l'adresse d'une cellule (x,y) est :
+
+  offset = 2 * (y * colonnes + x)
+
+  octet offset+0 = code du caractere
+  octet offset+1 = attribut
+
+Attribut couleur :
+
+  bits 0..3  couleur du premier plan
+  bits 4..6  couleur du fond
+  bit 7      clignotement, ou intensite de fond selon le mode BIOS
+
+Le generateur utilise normalement des cellules de 8 x 16. Le BIOS peut charger
+des fontes 8 x 8 et une programmation coherente du CRTC permet alors 50 lignes.
+
+La position du curseur est un index de cellule dans les registres 0Eh/0Fh. Sa
+forme est definie par Cursor Start/End. L'adresse de depart 0Ch/0Dh permet de
+choisir une page ou de faire defiler sans recopier toute la memoire.
+
+Contrairement au CGA, changer le registre couleur 3D9h ne produit pas de bordure
+coloree visible sur MCGA.
+
+
+==============================================================================
+8. MODES GRAPHIQUES COMPATIBLES CGA
+==============================================================================
+
+Les modes 4, 5 et 6 conservent l'organisation CGA a B800:0000 :
+
+  lignes paires   : B800:0000 + (y div 2) * 80
+  lignes impaires : B800:2000 + (y div 2) * 80
+
+Mode 4/5, 320 x 200 x 2 bpp
+--------------------------------
+
+Quatre pixels sont empaquetes par octet, le pixel gauche dans les bits 7..6.
+
+  offset = banque(y) + (y div 2)*80 + x div 4
+  decalage = 6 - 2*(x mod 4)
+
+Les palettes restent celles du CGA au niveau logique, mais leurs 16 couleurs de
+base passent par les premieres entrees du DAC et peuvent donc etre redefinies.
+
+Mode 6, 640 x 200 x 1 bpp
+-------------------------------
+
+Huit pixels par octet, bit 7 a gauche :
+
+  offset = banque(y) + (y div 2)*80 + x div 8
+  masque = 80h shr (x mod 8)
+
+Le MCGA double chaque ligne lors de l'affichage. Le logiciel n'ecrit pas une
+seconde copie de la ligne.
+
+
+==============================================================================
+9. MODE 11H : 640 X 480 MONOCHROME
+==============================================================================
+
+Le mode BIOS 11h expose une image lineaire a A000:0000. Chaque ligne fait 80
+octets et chaque octet contient huit pixels, bit 7 en premier.
+
+  offset = y * 80 + x div 8
+  masque = 80h shr (x and 7)
+
+La taille utile est 80 * 480 = 38 400 octets. Les pixels sont approximativement
+carres, avantage important pour les logiciels de dessin technique.
+
+La couleur 0 et la couleur 1 sont realisees par les entrees de DAC concernees,
+mais le mode reste un bit par pixel : redefinir le DAC change l'apparence, pas
+le nombre de valeurs stockables par point.
+
+Une ecriture de pixel exige une lecture-modification-ecriture :
+
+  nouveau = ancien OR masque       pour allumer
+  nouveau = ancien AND NOT masque  pour eteindre
+
+En contexte partage ou avec interruption graphique, proteger cette operation
+afin de ne pas perdre la modification concurrente d'un autre bit du meme octet.
+
+
+==============================================================================
+10. MODE 13H : 320 X 200 EN 256 COULEURS
+==============================================================================
+
+Le mode 13h est le mode le plus simple du MCGA. A000:0000 contient exactement
+64 000 pixels empaquetes, un octet par pixel :
+
+  offset = y * 320 + x
+  memoire[offset] = index de palette 0..255
+
+Il reste 1 536 octets dans les 64 Kio, mais ils ne constituent pas une page
+complete ni un stockage portable garanti. Une image entiere tient presque
+exactement dans la VRAM ; le MCGA ne permet pas le page flipping de deux ecrans
+320 x 200 complets.
+
+Chaque index choisit une entree du DAC parmi 256, chaque entree etant une
+couleur 18 bits. Les 256 pixels possibles peuvent donc etre affiches
+simultanement parmi 262 144 couleurs.
+
+Le mode VGA 13h presente la meme vue CPU et les memes ports DAC, ce qui explique
+la grande portabilite des jeux. Neanmoins, les astuces VGA "Mode X", Chain-4,
+plans separes, page flipping 320 x 240 ou scrolling CRTC VGA ne fonctionnent
+pas sur MCGA.
+
+
+==============================================================================
+11. CARTE DES PORTS
+==============================================================================
+
+ Port    Sens      Fonction
+ ---------------------------------------------------------------------------
+ 03C6h   R/W       DAC Pixel Mask
+ 03C7h   R/W       index de lecture DAC / etat selon acces
+ 03C8h   R/W       index d'ecriture DAC
+ 03C9h   R/W       donnees DAC rouge, vert, bleu
+ 03D4h   W         index du Video Memory Controller
+ 03D5h   R/W       donnees du registre indexe
+ 03D8h   R/W       Mode Control compatible CGA
+ 03D9h   R/W       Color Select compatible CGA
+ 03DAh   R         Status, phases horizontale et verticale
+ 03DBh-03DFh       fonctions du Video Formatter selon revision/mode
+ 0065h   R/W       System Board Control, bit 2 active le MCGA
+
+Le Video Formatter decode la plage 3D8h..3DFh, mais seules les fonctions
+documentees doivent etre utilisees. Les ports DAC sont les memes que sur VGA ;
+cela ne signifie pas que les autres ports VGA existent.
+
+Il ne faut notamment pas sonder destructivement 3C0h, 3C4h, 3CEh ou 3DCh comme
+s'ils appartenaient a un VGA. Sur MCGA, ils sont absents, reserves ou peuvent
+etre decodes autrement par une extension.
+
+
+==============================================================================
+12. VIDEO MEMORY CONTROLLER
+==============================================================================
+
+Le controleur est selectionne a 3D4h et lu/ecrit a 3D5h.
+
+ Index  Nom/fonction
+ ---------------------------------------------------------------------------
+ 00h    Horizontal Total
+ 01h    Horizontal Displayed
+ 02h    Start Horizontal Sync
+ 03h    Sync Pulse Width
+ 04h    Vertical Total
+ 05h    Vertical Total Adjust
+ 06h    Vertical Displayed
+ 07h    Start Vertical Sync
+ 08h    reserve
+ 09h    Scan Lines per Character
+ 0Ah    Cursor Start
+ 0Bh    Cursor End
+ 0Ch    Start Address High
+ 0Dh    Start Address Low
+ 0Eh    Cursor Location High
+ 0Fh    Cursor Location Low
+ 10h    Mode Control
+ 11h    Interrupt Control
+ 12h    Character Generator / Sync Polarity
+ 13h    Character Generator Pointer
+ 14h    Character Generator Count
+
+Les index 00h..0Fh ressemblent au 6845/CGA, mais leurs valeurs de timing ne
+sont pas interchangeables avec celles d'un CGA. Contrairement au 6845 original,
+les registres MCGA sont lisibles et inscriptibles.
+
+Mode Control index 10h contient notamment :
+
+  bit 7  protection en ecriture des registres de timing 00h..06h
+  bit 4  selection d'horloge ; 1 correspond a 25,175 MHz dans la documentation
+
+La protection est essentielle a la compatibilite : un vieux programme CGA peut
+tenter d'ecrire ses timings 15,7 kHz, dangereux pour un affichage PS/2 31,5 kHz.
+Le BIOS protege les valeurs MCGA tout en laissant fonctionner les registres de
+curseur et d'adresse compatibles.
+
+Les index 12h..14h orchestrent le transfert de motifs depuis la VRAM vers la
+SRAM des fontes. Employer INT 10h/AH=11h est beaucoup plus portable.
+
+
+==============================================================================
+13. VIDEO FORMATTER ET COMPATIBILITE CGA
+==============================================================================
+
+Mode Control 3D8h reprend la logique CGA : largeur texte, mode graphique,
+activation video et clignotement. Color Select 3D9h choisit les couleurs et
+palettes CGA. Status 3DAh indique affichage/retrace.
+
+La compatibilite directe vise les applications CGA raisonnables. Elle n'autorise
+pas les hypotheses suivantes :
+
+  * que les timings soient ceux d'un Motorola 6845 a 15,7 kHz ;
+  * que le bord externe soit colore ;
+  * qu'une synchronisation VRAM soit necessaire pour eviter la neige ;
+  * qu'un moniteur composite ou un televiseur soit raccordable ;
+  * que les couleurs d'artefact NTSC existent.
+
+Le formatter connait texte, pixels CGA 2 bpp, pixels 1 bpp, mode lineaire 8 bpp
+et la SRAM de caracteres. Il transforme le contenu en index DAC. La conversion
+vers gris depend ensuite de la configuration du moniteur et du BIOS.
+
+
+==============================================================================
+14. DAC ET PROGRAMMATION DES COULEURS
+==============================================================================
+
+Le DAC contient 256 triplets R,G,B de 6 bits :
+
+  3 composantes * 6 bits = 18 bits
+  64 * 64 * 64 = 262 144 couleurs possibles
+
+Ecriture directe
+----------------
+
+  OUT 3C8h, index
+  OUT 3C9h, rouge 0..63
+  OUT 3C9h, vert  0..63
+  OUT 3C9h, bleu  0..63
+
+Le DAC incremente automatiquement l'index apres le bleu. Pour charger un bloc,
+ecrire une fois 3C8h puis enchainer les triplets.
+
+Lecture directe
+---------------
+
+  OUT 3C7h, index
+  IN  AL,3C9h  ; rouge
+  IN  AL,3C9h  ; vert
+  IN  AL,3C9h  ; bleu
+
+DAC Pixel Mask a 3C6h effectue un AND logique avec l'index provenant du flux
+avant la consultation de palette. Sa valeur normale est FFh. Une mauvaise
+valeur donne l'impression que des groupes de couleurs sont dupliques.
+
+Dans tous les modes sauf 13h, seuls les seize premiers index sont normalement
+produits par la voie d'affichage. Les 240 autres entrees existent, mais ne
+deviennent pas accessibles par magie a des pixels de quatre bits.
+
+Pour eviter des bandes lors d'une animation de palette, charger pendant le
+retrace vertical ou accepter l'effet de changement en cours de trame.
+
+
+==============================================================================
+15. BIOS INT 10H
+==============================================================================
+
+Le BIOS est l'interface recommandee pour changer de mode et gerer les fontes.
+
+Selection de mode
+-----------------
+
+  AH=00h, AL=mode
+
+Le bit 7 de AL peut demander la conservation du contenu sur certains BIOS PS/2,
+mais il faut verifier la fonction Alternate Select et le comportement du BIOS.
+
+Palette et DAC, AH=10h
+----------------------
+
+ AL     Fonction utile sur MCGA
+ ---------------------------------------------------------------------------
+ 03h    choisir intensite/clignotement en texte
+ 10h    ecrire une entree DAC : BX=index, DH/CH/CL=R/G/B
+ 12h    ecrire un bloc d'entrees DAC
+ 15h    lire une entree DAC
+ 17h    lire un bloc d'entrees DAC
+ 1Bh    appliquer la sommation en niveaux de gris
+
+Les sous-fonctions 07h, 08h, 09h, 13h et 1Ah de la famille palette concernent
+des registres d'attribut/page VGA et ne sont pas toutes disponibles sur MCGA.
+
+Generateur de caracteres, AH=11h
+--------------------------------
+
+ AL=02h  charger la fonte ROM 8 x 8
+ AL=03h  choisir les blocs/font pages
+ AL=04h  charger la fonte ROM 8 x 16
+ AL=14h  charger/activer 8 x 16 et regler le mode texte
+ AL=24h  fonte graphique 8 x 16 selon l'interface PS/2
+
+Alternate Select, AH=12h
+------------------------
+
+ BL=31h  activer/desactiver le chargement automatique de palette
+ BL=32h  activer/desactiver l'adressage video
+ BL=33h  activer/desactiver la sommation grise par defaut
+
+BL=30h, selection du nombre de lignes, est une fonction VGA et ne doit pas etre
+employee comme preuve de MCGA.
+
+Identification et etat
+----------------------
+
+ AX=1A00h  obtenir Display Combination Code ; AL=1Ah si pris en charge
+ AX=1B00h  obtenir les informations d'etat du BIOS dans une table ES:DI
+
+La table d'etat renseigne mode, page, quantite de memoire et autres parametres.
+Sa longueur et ses champs doivent suivre l'IBM BIOS Interface Technical
+Reference de la version cible.
+
+
+==============================================================================
+16. DETECTION DU MCGA
+==============================================================================
+
+Une detection robuste combine :
+
+  1. INT 10h/AX=1A00h pour le Display Combination Code ;
+  2. identification machine BIOS pour distinguer Model 25/30 8086 ;
+  3. interrogation de l'etat video ;
+  4. absence des fonctions EGA/VGA attendues ;
+  5. aucune ecriture destructive dans les registres.
+
+Le Display Combination Code distingue adaptateur actif et alternatif. Utiliser
+la table IBM des codes, pas une comparaison vague "AL=1Ah donc VGA" : AL=1Ah
+signifie seulement que la fonction est implementee.
+
+Mauvaises detections :
+
+  * mode 13h reussi : VGA le supporte aussi ;
+  * DAC 3C8h present : VGA le possede ;
+  * 64 Kio a A000h : un VGA peut presenter la meme fenetre ;
+  * PS/2 Model 30 : la version 286 a un VGA.
+
+Si l'objectif est seulement d'utiliser mode 13h, detecter la fonction necessaire
+plutot que le nom de l'adaptateur est souvent la meilleure strategie.
+
+
+==============================================================================
+17. FONTES CHARGEABLES ET MODES 50 LIGNES
+==============================================================================
+
+La sequence BIOS classique pour 80 x 50 est :
+
+  1. passer en mode texte 3 ;
+  2. INT 10h/AX=1102h, BX=0 : charger les caracteres 8 x 8 ;
+  3. INT 10h/AX=1103h, BX=0 : selectionner/transmettre le bloc ;
+  4. programmer l'index 09h, 0Ah, 0Bh du controleur pour huit scanlines ;
+  5. mettre a jour les variables BIOS de lignes et hauteur.
+
+Le vieux code publie ecrit directement la BIOS Data Area :
+
+  0040:004Ch  taille de page video
+  0040:0084h  nombre de lignes moins un
+  0040:0085h  hauteur de caractere en scanlines
+
+Cette technique est specifique au BIOS IBM et fragile avec un TSR. Preferer une
+fonction BIOS qui regle simultanement la fonte et les variables lorsqu'elle est
+disponible.
+
+Le bogue ECA 023 peut se manifester lorsque plusieurs fontes sont chargees sur
+les anciens planars. Un logiciel de diagnostic devrait enregistrer la reference
+du Video Memory Controller avant d'attribuer le probleme a la fonte.
+
+
+==============================================================================
+18. SCROLLING, PAGES ET ADRESSE DE DEPART
+==============================================================================
+
+Les registres Start Address High/Low choisissent l'adresse de depart du flux.
+En texte, cela autorise pages et scrolling materiel comme sur CGA. La granularite
+est celle du controleur, generalement exprimee en mots pour les modes texte/CGA.
+
+En modes 11h et 13h, les 64 Kio limitent fortement les pages :
+
+  mode 11h : 38 400 octets utiles, marge 27 136 octets
+  mode 13h : 64 000 octets utiles, marge 1 536 octets
+
+Un scrolling par Start Address en mode 13h risque donc de faire revenir le flux
+au debut de la VRAM avant la fin de l'ecran. Le wrapping peut etre exploite avec
+des bandes soigneusement mises a jour, mais ce n'est pas le page flipping VGA.
+
+INT 10h/AH=05h change la page active dans les modes ou le BIOS annonce plusieurs
+pages. Ne pas l'utiliser en mode 13h pour selectionner une seconde image qui
+n'existe pas.
+
+
+==============================================================================
+19. SYNCHRONISATION ET ABSENCE DE NEIGE CGA
+==============================================================================
+
+Le port 3DAh expose les phases d'affichage/retrace selon la convention CGA. Les
+programmes peuvent attendre le retrace vertical pour :
+
+  * changer une palette sans coupure visible ;
+  * modifier Start Address ;
+  * synchroniser une animation avec les trames.
+
+Sur CGA original, les ecritures VRAM durant l'affichage peuvent provoquer de la
+neige. Le MCGA, grace a sa memoire multiport, ne presente normalement pas ce
+defaut. Il n'est donc pas necessaire d'attendre le blanking pour chaque octet.
+
+Une boucle de retrace doit avoir une expiration. Si MCGA est desactive, si un
+autre adaptateur decode les ports ou si l'emulateur ne fait pas evoluer le bit,
+une boucle infinie bloquerait le programme.
+
+
+==============================================================================
+20. PROGRAMMATION DIRECTE ET CHANGEMENT DE MODE
+==============================================================================
+
+Le changement de mode direct exige beaucoup plus que 3D8h :
+
+  * proteger/desactiver l'affichage ;
+  * choisir l'horloge correcte ;
+  * programmer les timings horizontaux et verticaux ;
+  * definir format et adressage du formatter ;
+  * configurer la SRAM de caracteres si texte ;
+  * initialiser DAC, masque et memoire ;
+  * mettre a jour la BIOS Data Area si les services BIOS seront reutilises.
+
+Le bit 7 du registre indexe 10h protege les timings 00h..06h. Il faut le gerer
+dans le bon ordre : deproteger uniquement pendant une sequence valide, puis
+reproteger avant de rendre la main a un logiciel CGA.
+
+Les constantes de modes doivent etre extraites du BIOS ou du Technical Reference
+du modele exact. Des valeurs VGA ne sont pas valides, meme si la resolution et
+le connecteur sont identiques.
+
+Pour une application, appeler INT 10h/AH=00h. La programmation complete n'est
+justifiee que pour un BIOS, un noyau, un diagnostic ou un emulateur.
+
+
+==============================================================================
+21. COEXISTENCE AVEC MDA/HERCULES ET DESACTIVATION
+==============================================================================
+
+Le Model 30 8086 a un bus compatible PC et peut accueillir un adaptateur MDA ou
+Hercules utilisant B000h et les ports 3Bxh. MCGA utilise normalement B800h/3Dxh,
+ce qui rend le double affichage possible.
+
+Le registre System Board Control au port 65h contient un bit d'activation :
+
+  bit 2 = 1  MCGA active
+  bit 2 = 0  MCGA desactive
+
+Sequence de desactivation historique :
+
+  IN   AL,65h
+  AND  AL,0FBh
+  OUT  65h,AL
+
+Cette action est globale et modifie le materiel de la carte mere. Elle ne doit
+etre faite que lorsqu'un autre adaptateur est pret, et la valeur originale doit
+etre preservee pour restauration. Ne jamais ecrire une constante complete au
+port 65h : les autres bits commandent d'autres ressources systeme.
+
+Une carte CGA supplementaire emploierait les memes ports/memoires et provoquerait
+un conflit ; MDA/Hercules est le cas de coexistence raisonnable.
+
+
+==============================================================================
+22. EXEMPLES EN ASSEMBLEUR
+==============================================================================
+
+22.1 Selectionner le mode 13h et restaurer le texte
+---------------------------------------------------
+
+        mov     ax,0013h
+        int     10h
+        ; ... dessin ...
+        mov     ax,0003h
+        int     10h
+
+22.2 Pixel en 320 x 200 x 256
+--------------------------------
+
+; Entree : BX=x (0..319), AX=y (0..199), CL=couleur
+; Detruit AX,DX,DI,ES.
+
+PutPixel13:
+        mov     dx,320
+        mul     dx                  ; DX:AX = y*320, tient sur 16 bits
+        add     ax,bx
+        mov     di,ax
+        mov     ax,0A000h
+        mov     es,ax
+        mov     es:[di],cl
+        ret
+
+22.3 Pixel en mode 11h
+----------------------
+
+; Entree : BX=x, AX=y, CL=0 ou non-zero.
+
+PutPixel11:
+        push    cx
+        mov     dx,80
+        mul     dx
+        mov     di,bx
+        shr     di,1
+        shr     di,1
+        shr     di,1                 ; x div 8
+        add     di,ax
+        mov     cl,bl
+        and     cl,7                 ; x mod 8
+        mov     al,80h
+        shr     al,cl                ; instruction valide sur 8086
+        mov     dx,0A000h
+        mov     es,dx
+        pop     cx
+        or      cl,cl
+        jz      short p11_clear
+        or      es:[di],al
+        ret
+p11_clear:
+        not     al
+        and     es:[di],al
+        ret
+
+La couleur d'entree est preservee par PUSH CX pendant que CL sert au decalage.
+L'instruction SHR r8,CL est disponible sur 8086 ; aucun autre registre ne peut
+contenir le compte variable :
+
+        mov     cl,bl
+        and     cl,7
+        mov     al,80h
+        shr     al,cl
+
+22.4 Charger un bloc de palette
+-------------------------------
+
+; DS:SI -> triplets RGB 0..63, CX=nombre d'entrees, AL=premier index.
+
+LoadDAC:
+        jcxz    short ld_done
+        mov     dx,03C8h
+        out     dx,al
+        inc     dx                    ; 3C9h
+        mov     ax,cx
+        add     cx,cx
+        add     cx,ax                 ; 3 octets par entree
+        cld
+ld_loop:
+        lodsb
+        out     dx,al
+        loop    ld_loop
+ld_done:
+        ret
+
+22.5 Lire/ecrire un registre indexe MCGA
+----------------------------------------
+
+; AL=index, AH=valeur. OUT DX,AX ecrit index puis valeur sur ports consecutifs.
+
+        mov     dx,03D4h
+        out     dx,ax
+
+; Lecture :
+        mov     dx,03D4h
+        mov     al,RegisterIndex
+        out     dx,al
+        inc     dx
+        in      al,dx
+
+22.6 Attendre le retrace avec expiration
+----------------------------------------
+
+        mov     dx,03DAh
+        mov     cx,0FFFFh
+wr_notyet:
+        in      al,dx
+        test    al,08h
+        jnz     short wr_seen
+        loop    wr_notyet
+        stc
+        ret
+wr_seen:
+        clc
+        ret
+
+Le sens exact du bit 3 suit le statut CGA/MCGA. Pour detecter un front complet,
+attendre d'abord sa desactivation puis son activation, avec deux expirations.
+
+
+==============================================================================
+23. EXEMPLES EN TURBO PASCAL
+==============================================================================
+
+23.1 Changement de mode
+-----------------------
+
+uses Dos;
+
+procedure SetVideoMode(Mode : Byte);
+var R : Registers;
+begin
+  R.AH := 0;
+  R.AL := Mode;
+  Intr($10, R);
+end;
+
+23.2 Pixel et ligne en mode 13h
+-------------------------------
+
+procedure PutPixel13(X, Y : Word; Color : Byte);
+begin
+  if (X < 320) and (Y < 200) then
+    Mem[$A000:Y * 320 + X] := Color;
+end;
+
+procedure HLine13(X1, X2, Y : Word; Color : Byte);
+var X : Word;
+begin
+  if (Y >= 200) or (X1 >= 320) then Exit;
+  if X2 >= 320 then X2 := 319;
+  if X2 < X1 then Exit;
+  for X := X1 to X2 do Mem[$A000:Y * 320 + X] := Color;
+end;
+
+23.3 Pixel en mode 11h
+----------------------
+
+procedure PutPixel11(X, Y : Word; OnPixel : Boolean);
+var
+  O : Word;
+  M : Byte;
+begin
+  if (X >= 640) or (Y >= 480) then Exit;
+  O := Y * 80 + (X shr 3);
+  M := $80 shr (X and 7);
+  if OnPixel then
+    Mem[$A000:O] := Mem[$A000:O] or M
+  else
+    Mem[$A000:O] := Mem[$A000:O] and not M;
+end;
+
+En Pascal, ajouter des parentheses a `Y * 80 + (X shr 3)` est recommande pour
+ne pas dependre des priorites retenues par un autre compilateur.
+
+23.4 Palette directe
+--------------------
+
+procedure SetDAC(Index, R, G, B : Byte);
+begin
+  Port[$3C8] := Index;
+  Port[$3C9] := R and $3F;
+  Port[$3C9] := G and $3F;
+  Port[$3C9] := B and $3F;
+end;
+
+procedure SetGrayDAC(Index, R, G, B : Byte);
+var Y : Word;
+begin
+  Y := (Word(R) * 30 + Word(G) * 59 + Word(B) * 11 + 50) div 100;
+  if Y > 63 then Y := 63;
+  SetDAC(Index, Y, Y, Y);
+end;
+
+23.5 DAC par le BIOS
+--------------------
+
+procedure SetDACBIOS(Index, R, G, B : Byte);
+var Regs : Registers;
+begin
+  Regs.AX := $1010;
+  Regs.BX := Index;
+  Regs.DH := R and $3F;
+  Regs.CH := G and $3F;
+  Regs.CL := B and $3F;
+  Intr($10, Regs);
+end;
+
+Cette methode laisse le BIOS appliquer la conversion monochrome configuree.
+
+23.6 Acces au controleur CRT
+----------------------------
+
+function ReadMCGAReg(Index : Byte) : Byte;
+begin
+  Port[$3D4] := Index;
+  ReadMCGAReg := Port[$3D5];
+end;
+
+procedure WriteMCGAReg(Index, Value : Byte);
+begin
+  Port[$3D4] := Index;
+  Port[$3D5] := Value;
+end;
+
+Ne deproteger ni modifier les index 00h..06h dans une application ordinaire.
+
+23.7 Desactivation reversible du MCGA
+-------------------------------------
+
+var SavedSystemControl : Byte;
+
+procedure DisableMCGA;
+begin
+  SavedSystemControl := Port[$65];
+  Port[$65] := SavedSystemControl and $FB;
+end;
+
+procedure RestoreMCGA;
+begin
+  Port[$65] := SavedSystemControl;
+end;
+
+Cette operation est reservee a une machine identifiee et a un programme qui
+possede un autre adaptateur actif. Une terminaison anormale peut laisser l'ecran
+integre desactive.
+
+
+==============================================================================
+24. CONSEILS POUR UN PILOTE OU UN EMULATEUR
+==============================================================================
+
+Un modele fidele doit separer :
+
+  * 64 Kio de VRAM multiport ;
+  * 8 Kio de SRAM de fontes ;
+  * Video Memory Controller indexe ;
+  * Video Formatter et logique CGA ;
+  * RAMDAC 256 x 18 bits et Pixel Mask ;
+  * decode B000h/B800h/A000h selon le mode ;
+  * detection couleur/monochrome ;
+  * BIOS MCGA specifique aux Model 25/30 ;
+  * activation globale par port 65h.
+
+Tests de conformite
+-------------------
+
+  1. modes texte 40/80 colonnes en 400 lignes et fontes 8 x 16 ;
+  2. modes CGA 4/5/6 avec entrelacement B800:0000/B800:2000 ;
+  3. doublement vertical des lignes CGA ;
+  4. mode 11h lineaire, 80 octets par ligne, bit 7 a gauche ;
+  5. mode 13h lineaire, 320 octets par ligne ;
+  6. acces au dernier pixel A000:FA00-1 sans debordement ;
+  7. lecture et ecriture des registres 00h..14h ;
+  8. protection des timings par index 10h bit 7 ;
+  9. Start Address et wrapping a 64 Kio ;
+ 10. curseur, clignotement et intensite de fond ;
+ 11. quatre pages de fontes et transfert vers la SRAM ;
+ 12. palette complete, auto-increment et masque 3C6h ;
+ 13. conversion grise 30/59/11 ;
+ 14. evolution des bits de 3DAh sans neige lors d'acces VRAM ;
+ 15. port 65h desactivant tous les decodages MCGA concernes ;
+ 16. coexistence d'un MDA/Hercules a B000h/3Bxh ;
+ 17. INT 10h/1Ah et 1Bh retournant une description coherente ;
+ 18. refus ou absence propre du mode 12h.
+
+Le rendu ne doit pas transformer MCGA en VGA interne. Une implementation qui
+reutilise son moteur VGA doit masquer les registres EGA/VGA absents, respecter
+la largeur texte 320/640, la SRAM de fontes et les limites de 64 Kio.
+
+
+==============================================================================
+25. COMPATIBILITE DES LOGICIELS DOS
+==============================================================================
+
+Fonctionnent generalement :
+
+  * programmes utilisant le BIOS dans les modes 0..6 ;
+  * programmes CGA directs qui ne reprogramment pas dangereusement les timings ;
+  * jeux en mode 13h qui utilisent seulement A000h et le DAC ;
+  * logiciels 640 x 480 monochrome par BIOS mode 11h.
+
+Echouent ou se degradent souvent :
+
+  * programmes exigeant EGA 320/640 x 350 ;
+  * logiciels VGA mode 12h ;
+  * Mode X et acces aux quatre plans VGA ;
+  * scrolling VGA par registres Sequencer/CRTC specifiques ;
+  * detection "mode 13h = VGA" suivie d'acces VGA directs ;
+  * effets CGA composite/artefacts ;
+  * code dependant d'une bordure CGA coloree.
+
+Pour maximiser la compatibilite, tester chaque capacite separement et proposer
+un chemin CGA ou mode 13h sans registres VGA.
+
+
+==============================================================================
+26. PIEGES FREQUENTS
+==============================================================================
+
+  * Parler d'une carte MCGA IBM enfichable : elle n'a pas existe.
+  * Attribuer MCGA aux Model 25/30 286 ou SX equipes de VGA.
+  * Decrire MCGA comme compatible EGA.
+  * Annoncer le mode 12h 640 x 480 x 16.
+  * Confondre le framebuffer lineaire MCGA avec Chain-4 VGA.
+  * Employer les registres Sequencer, Graphics ou Attribute VGA.
+  * Croire que deux pages mode 13h tiennent dans 64 Kio.
+  * Oublier l'entrelacement des lignes dans les modes CGA a B800h.
+  * Ecrire les timings CGA dans les registres MCGA.
+  * Deproteger les index 00h..06h et ne pas les reproteger.
+  * Attendre la neige CGA ou ralentir chaque ecriture sans necessite.
+  * Attendre 3DAh sans expiration.
+  * Oublier que le bord CGA colore n'est pas rendu.
+  * Charger le DAC directement sur un Model 25 monochrome sans conversion.
+  * Identifier MCGA uniquement par mode 13h ou les ports DAC.
+  * Desactiver le bit 2 du port 65h sans sauver les autres bits.
+  * Modifier la BIOS Data Area sans mettre le materiel en coherence.
+
+
+==============================================================================
+27. REFERENCES
+==============================================================================
+
+Sources IBM principales
+-----------------------
+
+  * IBM Personal System/2 Model 25 Technical Reference, juin 1987,
+    chapitre Video Subsystem.
+
+    https://bitsavers.org/pdf/ibm/pc/ps2/
+    PS2_Model_25_Technical_Reference_Jun87.pdf
+
+  * IBM Personal System/2 Model 30 Technical Reference, 1987,
+    chapitre Video Subsystem.
+
+  * IBM Personal System/2 and Personal Computer BIOS Interface Technical
+    Reference, fonctions video INT 10h.
+
+  * IBM Personal System/2 Hardware Interface Technical Reference,
+    registres de carte mere et identification des affichages.
+
+Sources techniques secondaires
+------------------------------
+
+  * Richard Wilton, "The Ins and Outs of the PS/2 Machines' Video Systems",
+    BYTE, 1987 ; transcription MCGA :
+
+    https://www.ardent-tool.com/video/PS2_Video_Programming.html
+
+  * Ardent Tool of Capitalism, MCGA, composants, registres et ECA 023 :
+
+    https://www.ardent-tool.com/video/MCGA.html
+
+  * Phoenix Technical Reference Series, CBIOS for IBM PS/2 Computers and
+    Compatibles, table des modes Model 25/30 :
+
+    https://bitsavers.org/pdf/ibm/pc/ps2/bios/
+    CBIOS_for_IBM_PS2_Computers_and_Compatibles_198906.pdf
+
+  * Richard Wilton, Programmer's Guide to PC & PS/2 Video Systems,
+    sections MCGA, BIOS, DAC et modes graphiques.
+
+Pour un BIOS ou un emulateur, le Technical Reference du modele exact reste la
+source normative. Les implementations Epson et VGA compatibles avec les modes
+MCGA ne garantissent pas les registres internes IBM.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

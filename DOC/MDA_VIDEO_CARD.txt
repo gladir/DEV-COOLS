@@ -1,0 +1,1081 @@
+==============================================================================
+ IBM MONOCHROME DISPLAY AND PRINTER ADAPTER (MDA/MDPA)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Monochrome Display and Printer Adapter, couramment
+appele MDA ou MDPA, introduit avec l'IBM PC 5150 en 1981. La carte combine un
+adaptateur texte monochrome de haute qualite et une interface parallele pour
+imprimante.
+
+Le materiel IBM MDA original ne possede aucun mode graphique adressable par
+pixel. Le mode graphique 720x348 connu sous DOS appartient a la Hercules
+Graphics Card et a ses compatibles. Cette distinction est essentielle pour la
+programmation et l'emulation.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et caracteristiques
+  2. Architecture materielle
+  3. Moniteur IBM 5151 et connecteur
+  4. Horloges et temporisations
+  5. Memoire video
+  6. Cellules, caracteres et police
+  7. Attributs monochromes
+  8. Ports video
+  9. Registre de controle 3B8h
+ 10. Registre d'etat 3BAh
+ 11. Motorola MC6845 et registres
+ 12. Programmation du CRTC
+ 13. BIOS INT 10h et mode 07h
+ 14. Curseur, pages et defilement
+ 15. Port parallele integre
+ 16. Programmation de l'imprimante
+ 17. Detection de la MDA
+ 18. Coexistence avec CGA/EGA/VGA
+ 19. Exemples assembleur 8086
+ 20. Exemples Turbo Pascal
+ 21. Absence de mode graphique IBM MDA
+ 22. Hercules et autres clones
+ 23. Conseils pour un emulateur
+ 24. Plan de validation
+ 25. Securite du materiel reel
+ 26. References
+
+
+==============================================================================
+1. HISTORIQUE ET CARACTERISTIQUES
+==============================================================================
+
+IBM proposait initialement deux familles d'affichage pour le PC :
+
+  - Color/Graphics Monitor Adapter (CGA), couleur et graphique 200 lignes;
+  - Monochrome Display and Printer Adapter (MDA), texte monochrome tres net.
+
+La MDA visait les traitements de texte, feuilles de calcul, terminaux et
+applications professionnelles. Sa cellule 9x14 et son moniteur a phosphore vert
+donnaient un texte plus lisible que les caracteres 8x8 de la CGA.
+
+Caracteristiques de la carte IBM :
+
+  - carte ISA 8 bits pleine longueur;
+  - controleur CRT Motorola MC6845;
+  - 4 Kio de RAM video sans parite;
+  - memoire video a B0000h;
+  - un seul mode standard : texte 80 colonnes x 25 lignes;
+  - matrice de cellule 9x14, image logique 720x350;
+  - 256 codes de caracteres;
+  - ROM generateur de caracteres de 8 Kio;
+  - attributs normal, intense, souligne, inverse et clignotant;
+  - sortie numerique TTL Video+Intensity sur DE-9;
+  - moniteur IBM 5151, environ 18,432 kHz horizontal et 50 Hz vertical;
+  - interface parallele/imprimante a 3BCh..3BEh, IRQ 7;
+  - aucun mode graphique IBM;
+  - aucun changement logiciel de police sur la carte originale.
+
+Le nom complet inclut « Printer Adapter » parce que la carte offre un port
+parallele complet. Dans les tables DOS/BIOS, ce port est historiquement LPT1
+lorsqu'aucun autre port de base inferieure n'est configure.
+
+
+==============================================================================
+2. ARCHITECTURE MATERIELLE
+==============================================================================
+
+  bus ISA
+  +---------------------------------------------------------------+
+  | decodage B0000h et 03Bxh                                      |
+  |                                                               |
+  | CPU <-> RAM video double acces 4 Kio -> code+attribut          |
+  |                          |                                    |
+  |                       MC6845 -> adresse, HSYNC, VSYNC, curseur |
+  |                          |                                    |
+  | ROM 8 Kio de caracteres -> registre a decalage -> video/int.  |
+  |                                                               |
+  | CPU <-> registres paralleles 3BCh/3BDh/3BEh -> DB-25, IRQ7    |
+  +---------------------------------------------------------------+
+
+Le MC6845 ne contient ni police ni RAM. Il fournit les compteurs de balayage,
+les adresses de cellules, le numero de ligne raster, les synchros et le curseur.
+La logique discrete MDA lit simultanement le caractere et l'attribut, consulte
+la ROM, ajoute soulignement/inversion/intensite/blink, puis genere les sorties.
+
+La RAM a deux chemins d'acces permet au processeur et a l'affichage de partager
+le buffer. IBM indique deux octets lus en environ 553 ns, soit environ 1,8 Mo/s.
+Les acces CPU sont synchronises au caractere et inserent au moins un wait state.
+
+La carte ne fournit pas de parite sur sa RAM video. Une erreur video ne declenche
+donc pas le NMI de parite systeme.
+
+
+==============================================================================
+3. MONITEUR IBM 5151 ET CONNECTEUR
+==============================================================================
+
+3.1 Connecteur DE-9 femelle
+---------------------------
+
+  Broche  Signal MDA IBM
+     1    masse
+     2    masse
+     3    non connectee
+     4    non connectee
+     5    non connectee
+     6    haute intensite
+     7    video
+     8    synchronisation horizontale
+     9    synchronisation verticale active basse
+
+Il s'agit de niveaux TTL, pas de VGA analogique. Le meme boitier DE-9 est utilise
+par CGA/EGA avec un brochage different. Ne jamais relier un IBM 5151 a une CGA,
+une EGA ou un adaptateur inconnu en se fondant sur la forme du connecteur.
+
+3.2 Niveaux visuels
+-------------------
+
+  Video  Intensite  Aspect sur 5151 typique
+    0       0        noir
+    0       1        vert tres sombre ou noir selon reglage/moniteur
+    1       0        vert normal
+    1       1        vert brillant
+
+Des moniteurs compatibles emploient un phosphore ambre ou blanc. Les termes
+« vert » de ce document decrivent le 5151 original; les niveaux logiques restent
+video et intensite.
+
+3.3 Caracteristiques du 5151
+----------------------------
+
+Le 5151 est un CRT monochrome a phosphore P39, balayage fixe, environ 50 Hz. Il
+n'est pas multisynchronisation et ne possede pas les protections des moniteurs
+modernes contre tous les timings incorrects. Une mauvaise configuration de
+carte ou un signal CGA peut endommager le moniteur.
+
+Le manuel signale que la combinaison MDA/affichage P39 ne prend pas en charge
+un stylet lumineux. Le MC6845 possede des registres light pen generiques, mais
+cela ne transforme pas l'ensemble IBM en interface light pen supportee.
+
+
+==============================================================================
+4. HORLOGES ET TEMPORISATIONS
+==============================================================================
+
+Horloge de points MDA : approximativement 16,257 MHz. Une cellule fait neuf
+points, donnant une horloge caractere voisine de 1,806 MHz.
+
+Temporisations standard :
+
+  - 80 caracteres visibles par ligne;
+  - 98 temps caracteres environ au total (R0=61h -> 97+1);
+  - 25 rangees visibles;
+  - 14 lignes raster par caractere;
+  - 720 points visibles horizontalement;
+  - 350 lignes visibles;
+  - horizontal environ 18,432 kHz;
+  - vertical environ 50 Hz.
+
+Le rapport d'aspect physique n'est pas deduit uniquement de 720/350. Le tube
+et les dimensions du 5151 determinent la forme finale des points/caracteres.
+
+Le bit « high resolution » de 3B8h selectionne la bonne horloge. Sur la carte
+IBM, le chemin de basse resolution n'a pas d'horloge normalement installee. Ce
+n'est donc pas un mode 40 colonnes utilisable.
+
+
+==============================================================================
+5. MEMOIRE VIDEO
+==============================================================================
+
+5.1 Adresse et taille
+---------------------
+
+La RAM physique fait 4096 octets et commence a B0000h :
+
+  segment B000h, offsets 0000h..0FFFh
+
+Le decodage d'adresse de la carte IBM est incomplet. La meme RAM se repete tous
+les 4 Kio dans B0000h..B7FFFh :
+
+  B0000h, B1000h, B2000h, ... B7000h -> memes 4096 octets physiques
+
+Un logiciel portable utilise B000:0000. Une Hercules dispose souvent de 32 ou
+64 Kio reels et ne reproduit pas necessairement ces miroirs.
+
+5.2 Organisation
+----------------
+
+Chaque cellule occupe deux octets :
+
+  offset pair    code de caractere
+  offset impair  attribut
+
+  offset = 2 * (ligne*80 + colonne)
+
+La page visible 80*25*2 utilise 4000 octets, laissant 96 octets jusqu'a 1000h.
+Le BIOS annonce normalement une seule page utile en mode 07h. Les 4 Kio ne
+permettent pas deux pages completes.
+
+Exemple cellule colonne 10, ligne 3 :
+
+  offset = 2*(3*80+10) = 01F4h
+
+Sur 8086 little-endian, un mot dont AL=caractere et AH=attribut peut etre ecrit
+directement a ES:[offset].
+
+
+==============================================================================
+6. CELLULES, CARACTERES ET POLICE
+==============================================================================
+
+6.1 Cellule 9x14
+----------------
+
+La ROM contient des glyphes de huit points. La cellule visible en fait neuf :
+
+  - pour la plupart des codes, neuvieme colonne vide;
+  - pour C0h..DFh, neuvieme colonne copie la huitieme afin que les caracteres
+    de cadres CP437 se raccordent horizontalement.
+
+Cette regle explique les cadres continus des interfaces DOS. Un emulateur qui
+met toujours la neuvieme colonne a zero cree des trous dans les traits.
+
+La police normale utilise 14 lignes de cellule. Le dessin utile des lettres est
+souvent de l'ordre de 7x9, entoure d'espacement. Les valeurs exactes sont dans la
+ROM IBM et doivent etre utilisees pour une emulation fidele.
+
+6.2 ROM 8 Kio
+-------------
+
+La ROM 9264 contient la police MDA 14 lignes et aussi des fontes 8x8 partagees
+avec des conceptions CGA. Le MDA normal n'affiche pas ces fontes 8x8. La ROM
+n'est pas mappee dans l'espace CPU et n'est pas modifiable par logiciel.
+
+Pour changer de police sur la carte IBM, il faut remplacer/modifier le composant
+materiel. Les fonctions EGA/VGA INT 10h/AH=11h ne chargent pas une police MDA.
+
+6.3 Jeu de caracteres
+---------------------
+
+Les 256 codes de la ROM IBM correspondent au jeu PC d'origine communement
+associe a la page de codes 437 : ASCII, lettres accentuees, symboles, blocs et
+dessin de cadres. Une page de codes DOS modifie surtout clavier/traduction; elle
+ne reprogramme pas la ROM MDA.
+
+
+==============================================================================
+7. ATTRIBUTS MONOCHROMES
+==============================================================================
+
+L'attribut MDA n'est pas une palette couleur a 4+4 bits. La logique generale :
+
+  bits 0..2  valeur 1 (001b) demande le soulignement; autres = non souligne
+  bit 3      haute intensite du premier plan
+  bits 4..6  participent aux cas normal/inverse/noir particuliers
+  bit 7      blink si active; intensite du fond si blink desactive
+
+Attributs usuels :
+
+  07h  texte normal
+  0Fh  texte brillant
+  01h  texte souligne
+  09h  texte souligne brillant
+  70h  video inverse, noir sur vert
+  78h  video inverse avec niveau de premier plan sombre
+  87h  normal clignotant lorsque blink actif
+  8Fh  brillant clignotant
+  F0h  inverse clignotant, ou fond brillant si blink inactif
+  F8h  variante inverse/intense
+
+Exceptions materielles confirmees :
+
+  00h, 08h, 80h, 88h  affichent un espace noir;
+  70h                   noir sur vert;
+  78h                   vert sombre sur vert, avec halo possible;
+  F0h/F8h               clignotent si blink actif, sinon fond brillant.
+
+Le soulignement apparait sur la ligne choisie par le CRTC, normalement pres du
+bas de la cellule. Un attribut 01h souligne; 07h ne souligne pas, meme si leurs
+trois bits bas sont tous non nuls. Implementer `bits0..2 == 1`, pas `bit0 == 1`.
+
+Quand 3B8h bit 5=1, bit 7 commande le clignotement. Quand il vaut 0, bit 7 peut
+produire un fond de haute intensite. Blink masque le premier plan pendant une
+phase mais ne modifie pas la RAM.
+
+
+==============================================================================
+8. PORTS VIDEO
+==============================================================================
+
+  Port                 Acces  Fonction
+  3B0h,3B2h,3B4h,3B6h  W      index/adresse MC6845 (miroirs)
+  3B1h,3B3h,3B5h,3B7h  R/W*   donnees MC6845 (miroirs)
+  3B8h                 W      controle du mode/sortie
+  3BAh                 R      etat video/retrace
+  3BCh                 R/W    donnees port parallele
+  3BDh                 R      etat port parallele
+  3BEh                 R/W    controle port parallele
+
+* La plupart des registres MC6845 sont en ecriture seule; seuls certains sont
+lisibles. 3B4h/3B5h sont les adresses canoniques. Les miroirs resultent du
+decodage partiel de la carte IBM et peuvent manquer sur un clone.
+
+3BBh et 3BFh n'ont pas la signification Hercules sur la MDA IBM. Un programme
+MDA ne doit pas ecrire 3BFh pour « activer le graphique » : cette interface est
+une extension Hercules.
+
+
+==============================================================================
+9. REGISTRE DE CONTROLE 3B8h
+==============================================================================
+
+Registre en ecriture seule sur MDA IBM :
+
+  bit 0  High Resolution Enable : doit etre 1
+  bit 1  valeur « noir et blanc » memorisee mais sans effet visuel utile
+  bit 2  reserve
+  bit 3  Video Enable : 1=affichage, 0=noir
+  bit 4  reserve
+  bit 5  Blink Enable : 1=blink, 0=bit 7 d'attribut comme fond intense
+  6..7   reserves
+
+Valeur BIOS habituelle du mode 07h : 29h (bits 0,3,5). Pour couper l'affichage
+en gardant horloge haute et blink : 21h. Pour une initialisation froide, IBM
+exige que la premiere commande a la carte soit :
+
+  mov dx,03B8h
+  mov al,01h
+  out dx,al
+
+9.1 Danger du bit 0
+-------------------
+
+Sur la carte originale, bit 0=0 selectionne une entree d'horloge basse qui n'est
+pas normalement cablee. L'horloge synchronise aussi les wait states CPU. Un
+acces memoire ou port ulterieur peut donc ne jamais terminer et bloquer le PC.
+
+Un emulateur compatible simple peut ignorer cet effet pour eviter de geler la
+machine. Un profil IBM fidele doit au moins enregistrer/diagnostiquer le cas et
+peut modeler le wait infini avec un mecanisme recuperable par reset.
+
+9.2 Couper la video
+-------------------
+
+Mettre bit 3 a zero pendant la reprogrammation CRTC reduit les parasites. Ne
+jamais couper aussi bit 0. Restaurer la valeur complete apres programmation.
+
+
+==============================================================================
+10. REGISTRE D'ETAT 3BAh
+==============================================================================
+
+Sur une MDA IBM :
+
+  bit 0  retrace horizontal actif
+  bit 3  pixel video normal ou brillant actuellement emis
+  bits 1..2  zero
+  bits 4..7  un
+
+Ainsi les bits non definis donnent normalement F0h dans leur partie haute. Un
+clone peut retourner autre chose. Bit 3 n'est pas le retrace vertical : il suit
+le signal video/pixel et depend du contenu de l'ecran.
+
+Pour detecter une activite, observer des transitions du bit 0 avec timeout. Un
+ecran rempli de noir peut laisser bit 3 inactif; ne pas l'utiliser seul comme
+horloge. Hercules attribue d'autres sens, notamment vertical sync au bit 7.
+
+
+==============================================================================
+11. MOTOROLA MC6845 ET REGISTRES
+==============================================================================
+
+Selectionner un index a 3B4h puis lire/ecrire 3B5h.
+
+  Reg.  Fonction                            Unite
+  R0    Horizontal Total                    caracteres - 1
+  R1    Horizontal Displayed                caracteres
+  R2    Horizontal Sync Position            caracteres
+  R3    Horizontal Sync Width               caracteres
+  R4    Vertical Total                      rangees - 1
+  R5    Vertical Total Adjust               lignes raster
+  R6    Vertical Displayed                  rangees
+  R7    Vertical Sync Position              rangees
+  R8    Interlace Mode and Skew             controle
+  R9    Maximum Scan Line                   lignes par cellule - 1
+  R10   Cursor Start et mode                ligne/controle
+  R11   Cursor End                          ligne
+  R12   Start Address High                  adresse CRTC
+  R13   Start Address Low                   adresse CRTC
+  R14   Cursor Address High                 adresse CRTC
+  R15   Cursor Address Low                  adresse CRTC
+  R16   Light Pen High                      lecture
+  R17   Light Pen Low                       lecture
+
+R0..R13 sont principalement en ecriture seule; R14/R15 peuvent etre lus/ecrits;
+R16/R17 sont les captures light pen en lecture. Les variantes 6845 divergent :
+masquer les bits comme le composant IBM, pas comme un CRTC VGA.
+
+Adresses CRTC en texte : une unite correspond a une cellule de deux octets.
+
+  offset_RAM = 2 * adresse_CRTC
+  cursor = ligne*80 + colonne
+
+
+==============================================================================
+12. PROGRAMMATION DU CRTC
+==============================================================================
+
+Table MDA IBM usuelle R0..R15 :
+
+  61 50 52 0F 19 06 19 19 02 0D 0B 0C 00 00 00 00
+
+Interpretation principale :
+
+  R0=61h  98 temps caracteres totaux
+  R1=50h  80 affiches
+  R2=52h  synchro H a 82
+  R3=0Fh  largeur synchro H
+  R4=19h  total vertical principal
+  R5=06h  six lignes d'ajustement
+  R6=19h  25 rangees affichees
+  R7=19h  position synchro V
+  R9=0Dh  14 lignes par cellule
+  R10=0Bh/R11=0Ch curseur de deux lignes pres du bas
+
+Sequence :
+
+  1. ecrire 01h a 3B8h si initialisation froide;
+  2. couper video en conservant bit 0;
+  3. ecrire R0..R15 via 3B4h/3B5h;
+  4. initialiser RAM et Start Address;
+  5. activer 29h ou la variante blink voulue.
+
+Des timings incorrects peuvent endommager ou desynchroniser un IBM 5151. Pour
+une application normale, utiliser INT 10h mode 07h.
+
+
+==============================================================================
+13. BIOS INT 10h ET MODE 07h
+==============================================================================
+
+Le mode BIOS MDA est 07h : texte monochrome 80x25.
+
+        mov ax,0007h
+        int 10h
+
+Fonctions utiles :
+
+  AH=00h AL=07h  definir le mode
+  AH=01h          forme curseur CH/CL
+  AH=02h          position BH=page,DH=ligne,DL=colonne
+  AH=03h          lire position/forme
+  AH=05h          page active (une page materielle utile sur MDA)
+  AH=06h/07h      defiler une fenetre
+  AH=08h          lire caractere et attribut
+  AH=09h          ecrire caractere+attribut CX fois
+  AH=0Ah          ecrire caractere sans changer attribut
+  AH=0Eh          teletype
+  AH=0Fh          lire mode/colonnes/page
+
+AH=0Ch/0Dh de lecture/ecriture pixel ne fournissent pas un graphique MDA. Les
+fonctions palette EGA/VGA n'ajoutent aucune couleur a la carte originale.
+
+La BIOS Data Area contient notamment :
+
+  0040:0049  mode courant, 07h
+  0040:004A  colonnes, 80
+  0040:004C  taille de page
+  0040:004E  adresse de page
+  0040:0050  positions curseur
+  0040:0060  forme curseur
+  0040:0062  page active
+  0040:0063  port CRTC de base, 03B4h
+  0040:0065  copie du registre de mode
+
+Une programmation directe doit maintenir la BDA si le BIOS sera reutilise.
+
+
+==============================================================================
+14. CURSEUR, PAGES ET DEFILEMENT
+==============================================================================
+
+R14:R15 est l'adresse de cellule du curseur. R10/R11 choisissent les lignes de
+la cellule. Des bits R10 gerent blink/suppression selon variante MC6845.
+
+Position :
+
+  adresse = StartAddress + ligne*80 + colonne
+
+R12:R13 deplace l'origine visible sans copier la RAM. On peut faire un scrolling
+circulaire, mais la RAM de 2048 cellules ne depasse l'ecran que de 48 cellules.
+Il n'existe donc pas une deuxieme page plein ecran comme sur CGA.
+
+Le BIOS defile habituellement par copie de mots dans B000h puis efface la
+derniere ligne. Pour limiter les artefacts, couper l'affichage ou synchroniser
+les acces, au prix de performances. La RAM double-acces et les wait states de la
+MDA evitent le « snow » CGA typique.
+
+
+==============================================================================
+15. PORT PARALLELE INTEGRE
+==============================================================================
+
+15.1 Registres
+--------------
+
+Base historique de la MDA : 03BCh.
+
+  3BCh R/W  Data Register, huit sorties D0..D7; lecture du latch/ligne
+  3BDh R    Status Register
+  3BEh R/W  Control Register
+
+Status :
+
+  bit 3  /ERROR
+  bit 4  SELECT
+  bit 5  PAPER END / paper out
+  bit 6  /ACKNOWLEDGE
+  bit 7  BUSY avec inversion de l'interface PC; conventionnellement 1=pret
+  bits 0..2 valent 1 sur la carte IBM
+
+La polarite nommee dans les documents varie entre broche electrique et valeur
+lue. Pour un pilote, verifier l'etat « pret » par la convention BIOS/imprimante,
+pas en se fiant seulement au nom BUSY.
+
+Control :
+
+  bit 0  /STROBE, sortie inversee
+  bit 1  /AUTO FEED, sortie inversee
+  bit 2  INITIALIZE, sortie
+  bit 3  /SELECT INPUT, sortie inversee
+  bit 4  IRQ Enable sur transition /ACK
+  5..7   non definis; lecture souvent a 1 sur IBM
+
+Le port offre douze sorties latchees (8 data+4 controle), cinq entrees d'etat
+et IRQ7. Il peut servir d'E/S generale si les niveaux TTL, courants et directions
+sont respectes.
+
+15.2 DB-25 femelle
+------------------
+
+  1      /STROBE
+  2..9   DATA 0..7
+  10     /ACK
+  11     BUSY
+  12     PAPER END
+  13     SELECT
+  14     /AUTO FEED
+  15     /ERROR
+  16     /INITIALIZE selon interface/cablage
+  17     /SELECT INPUT
+  18..25 masses
+
+Le cable IBM transforme ce DB-25 en connecteur Centronics de l'imprimante.
+
+15.3 BIOS imprimante INT 17h
+----------------------------
+
+  AH=00h  imprimer AL; retourne etat dans AH
+  AH=01h  initialiser imprimante
+  AH=02h  lire etat
+  DX=0    LPT1, DX=1 LPT2, etc.
+
+La BDA contient les adresses de base LPT a 0040:0008h et suivantes, ainsi que
+les timeouts a 0040:0078h. Ne pas supposer que LPT1 vaut toujours 3BCh : une
+autre carte peut etre enumeree avant ou la configuration BIOS peut differer.
+
+
+==============================================================================
+16. PROGRAMMATION DE L'IMPRIMANTE
+==============================================================================
+
+Sequence d'interrogation simplifiee :
+
+  1. attendre que l'imprimante soit prete et sans erreur;
+  2. ecrire l'octet a 3BCh;
+  3. activer /STROBE en mettant a 1 le bit 0 du latch (sortie inversee);
+  4. respecter la largeur minimale;
+  5. relacher /STROBE en remettant le bit 0 a zero;
+  6. attendre /ACK ou la disponibilite suivante.
+
+Conserver les autres bits du Control Register. Une paire OUT trop rapide peut
+produire une impulsion hors specification; le temps des instructions 8088
+originales suffisait souvent, mais une machine rapide exige un delai ou BIOS.
+
+Avec IRQ active, /ACK peut declencher IRQ7/INT 0Fh sur le PC original. Le
+gestionnaire doit identifier la source, acquitter le PIC, preserver les registres
+et tenir compte d'autres peripheriques partageant IRQ7. Ne jamais activer une IRQ
+sans gestionnaire installe.
+
+Les sorties du port ne doivent pas alimenter directement une charge importante.
+Employer buffers/optocoupleurs pour une interface non imprimante.
+
+
+==============================================================================
+17. DETECTION DE LA MDA
+==============================================================================
+
+17.1 BIOS
+---------
+
+INT 11h renvoie le mot d'equipement. Les bits video historiques indiquent une
+configuration monochrome 80x25. BDA 0040:0063=03B4h et INT 10h/AH=0Fh mode 07h
+confirment qu'une interface monochrome est active.
+
+Cela ne distingue pas MDA IBM, Hercules, EGA/VGA en mode monochrome, 3270 PC ou
+un chipset emule.
+
+17.2 Observation du statut
+---------------------------
+
+Lire 3BAh de nombreuses fois avec timeout et rechercher les transitions bit 0.
+Sur IBM MDA, bits 7..4 restent a 1 et 2..1 a 0. Ne pas ecrire bit0=0 a 3B8h pour
+tester le materiel. Ne pas modifier la RAM visible sans la sauvegarder.
+
+Une Hercules retourne typiquement un signal vertical/ID dans les bits hauts,
+mais il faut d'abord verifier que ce signal varie; un bus flottant FFh ressemble
+a un identifiant.
+
+17.3 Memoire miroir
+-------------------
+
+La repetition tous les 4 Kio est un indice IBM MDA. Un test destructif doit etre
+fait affichage coupe, contenu sauvegarde, et uniquement apres detection. Une
+carte clone peut reproduire le miroir; ce n'est pas une signature unique.
+
+
+==============================================================================
+18. COEXISTENCE AVEC CGA/EGA/VGA
+==============================================================================
+
+MDA utilise B0000h et 3Bxh; CGA utilise B8000h et 3Dxh. Elles pouvaient donc
+coexister pour un systeme a deux moniteurs. Le BIOS choisit l'adaptateur primaire
+selon les commutateurs de la carte mere et la configuration.
+
+Un programme peut ecrire directement sur l'adaptateur secondaire sans changer
+le BIOS, mais doit initialiser correctement les deux cartes. IBM avertit que
+chaque adaptateur et moniteur doit recevoir ses timings corrects apres reset.
+
+EGA/VGA peuvent selectionner le groupe 3Bx et mapper B000h. Une vraie MDA
+presente en meme temps creerait un conflit si les deux decodent ces ressources.
+Configurer les cartes pour eviter le chevauchement.
+
+DOS MODE MONO/CO80 et certains BIOS permettent de commuter l'adaptateur logique,
+mais le comportement depend de la machine. Sauvegarder mode, CRTC et BDA.
+
+
+==============================================================================
+19. EXEMPLES ASSEMBLEUR 8086 (MASM/TASM)
+==============================================================================
+
+19.1 Passer en mode MDA par BIOS
+--------------------------------
+
+        mov ax,0007h
+        int 10h
+
+19.2 Ecrire une cellule directement
+------------------------------------
+
+; Ecrit 'A' brillant en (10,3).
+        mov ax,0B000h
+        mov es,ax
+        mov di,3
+        mov ax,80
+        mul di
+        add ax,10
+        shl ax,1
+        mov di,ax
+        mov ax,0F41h           ; AH=attribut, AL='A'
+        mov es:[di],ax
+
+19.3 Effacer l'ecran
+--------------------
+
+        mov ax,0B000h
+        mov es,ax
+        xor di,di
+        mov ax,0720h           ; espace, attribut normal
+        mov cx,2000
+        cld
+        rep stosw
+
+19.4 Attendre une transition horizontale avec timeout
+------------------------------------------------------
+
+        mov dx,03BAh
+        mov cx,0FFFFh
+wait0: in  al,dx
+        test al,01h
+        jz  got0
+        loop wait0
+        stc
+        jmp short done
+got0:   mov cx,0FFFFh
+wait1: in  al,dx
+        test al,01h
+        jnz got1
+        loop wait1
+        stc
+        jmp short done
+got1:   clc
+done:
+
+19.5 Programmer le curseur CRTC
+-------------------------------
+
+; BX = adresse cellule (ligne*80+colonne).
+        mov dx,03B4h
+        mov al,0Eh
+        out dx,al
+        inc dx
+        mov al,bh
+        out dx,al
+        dec dx
+        mov al,0Fh
+        out dx,al
+        inc dx
+        mov al,bl
+        out dx,al
+
+19.6 Envoyer un octet au port parallele
+----------------------------------------
+
+; AL=octet. Exemple pedagogique; ajouter timeout/statut pour production.
+        mov dx,03BCh
+        out dx,al
+        mov dx,03BEh
+        in  al,dx              ; copie du latch controle sur IBM
+        or  al,01h             ; bit latch=1 -> broche /STROBE basse
+        out dx,al
+        nop
+        nop
+        and al,0FEh            ; relacher /STROBE
+        out dx,al
+
+Employer INT 17h pour la portabilite et determiner la base via BDA.
+
+
+==============================================================================
+20. EXEMPLES TURBO PASCAL 6/7
+==============================================================================
+
+20.1 Mode et cellule
+--------------------
+
+  program MDADemo;
+  uses Dos, Crt;
+  var R:Registers; O:Word;
+  begin
+    R.AX:=$0007; Intr($10,R);
+    O:=2*(3*80+10);
+    Mem[$B000:O]:=Ord('A');
+    Mem[$B000:O+1]:=$0F;
+    ReadKey
+  end.
+
+20.2 Afficher une chaine directement
+-------------------------------------
+
+  procedure MDAWrite(X,Y:Byte; const S:String; Attr:Byte);
+  var I:Byte; O:Word;
+  begin
+    if (X>=80) or (Y>=25) then Exit;
+    O:=2*(Word(Y)*80+X);
+    for I:=1 to Length(S) do begin
+      if X+I-1>=80 then Exit;
+      Mem[$B000:O]:=Ord(S[I]);
+      Mem[$B000:O+1]:=Attr;
+      Inc(O,2)
+    end
+  end;
+
+20.3 Ecrire un registre CRTC
+----------------------------
+
+  procedure SetCRTC(Index,Value:Byte);
+  begin
+    Port[$3B4]:=Index;
+    Port[$3B5]:=Value
+  end;
+
+20.4 Initialisation directe prudente
+------------------------------------
+
+  const MDARegs:array[0..15] of Byte =
+    ($61,$50,$52,$0F,$19,$06,$19,$19,
+     $02,$0D,$0B,$0C,$00,$00,$00,$00);
+  var I:Byte;
+  begin
+    Port[$3B8]:=$01;            { premiere ecriture : horloge haute }
+    Port[$3B8]:=$21;            { video coupee, high-res+blink conserves }
+    for I:=0 to 15 do SetCRTC(I,MDARegs[I]);
+    Port[$3B8]:=$29             { video active }
+  end;
+
+Sur materiel reel, preferer BIOS. Une interruption video pendant la table peut
+modifier les memes registres; proteger la sequence courte si necessaire.
+
+20.5 Impression BIOS
+---------------------
+
+  function PrintChar(C:Char):Byte;
+  var R:Registers;
+  begin
+    R.AH:=0; R.AL:=Ord(C); R.DX:=0;
+    Intr($17,R);
+    PrintChar:=R.AH
+  end;
+
+Decoder AH selon la reference INT 17h : timeout, error, selected, paper out,
+acknowledge et busy ont des polarites historiques.
+
+
+==============================================================================
+21. ABSENCE DE MODE GRAPHIQUE IBM MDA
+==============================================================================
+
+Il est impossible sur la MDA originale de faire :
+
+  PutPixel(x,y,couleur)
+
+en adressant un bitmap. La RAM contient uniquement codes de caracteres et
+attributs. Le MC6845 genere des adresses, mais la logique MDA passe toujours par
+la ROM de glyphes.
+
+On peut simuler du pseudo-graphique avec les caracteres CP437 : blocs pleins,
+demi-blocs, hachures et cadres. La granularite reste une cellule/glyphe fixe et
+la police ne peut pas etre chargee.
+
+Les affirmations suivantes ne decrivent pas IBM MDA :
+
+  - 720x348 monochrome bitmap;
+  - deux pages graphiques B000h/B800h;
+  - port 3BFh Graphics Enable;
+  - bit 1 de 3B8h selectionnant graphique;
+  - 64 Kio de RAM video.
+
+Ce sont des caracteristiques Hercules ou compatibles.
+
+
+==============================================================================
+22. HERCULES ET AUTRES CLONES
+==============================================================================
+
+22.1 Hercules Graphics Card
+---------------------------
+
+Hercules conserve le mode texte MDA et ajoute un bitmap 720x348. Extensions
+typiques :
+
+  3BFh bit 0  autorise le bit graphique de 3B8h
+  3BFh bit 1  autorise page/second 32 Kio (« full mode »)
+  3B8h bit 1  selection graphique si autorise
+  3B8h bit 7  page graphique B000h/B800h si autorisee
+  3BAh bit 7  signal vertical selon Hercules
+  3BAh bits 6..4 identification sur certaines generations
+
+ID couramment rapporte : 000 Hercules, 001 Hercules Plus, 101 InColor. Ne lire
+l'ID qu'apres avoir verifie que le signal vertical varie; FFh de bus absent ne
+doit pas etre pris pour une carte.
+
+Le bitmap Hercules est entrelace en quatre banques, et ne doit pas etre ajoute
+au moteur MDA sans profil distinct.
+
+22.2 Clones
+-----------
+
+Les clones peuvent :
+
+  - ignorer le bit high-resolution de 3B8h;
+  - fournir 32/64 Kio au lieu du miroir 4 Kio;
+  - modifier les bits non definis de 3BAh;
+  - ne produire que deux niveaux de luminosite;
+  - utiliser une police differente ou chargeable;
+  - emuler MDA sur LCD 640x200;
+  - ajouter couleur, graphique ou selection de ROM;
+  - intercepter les ports par NMI/BIOS.
+
+La carte video du 3270 PC offre une compatibilite MDA avec attributs et police
+legerement differents, plus des modes propres. EGA/VGA en mode 07h sont des
+compatibles fonctionnels, pas une MDA discrete.
+
+
+==============================================================================
+23. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+23.1 Etat minimal
+-----------------
+
+  - RAM physique 4096 octets et miroir B0000h..B7FFFh;
+  - index et registres MC6845 avec masques IBM;
+  - registre 3B8h en ecriture seule;
+  - statut 3BAh derive du balayage et du pixel;
+  - horloge 16,257 MHz, compteurs H/V et wait states selon niveau de fidelite;
+  - ROM de police IBM, 9e colonne C0h..DFh;
+  - logique exacte des 256 attributs;
+  - blink temporel, curseur et soulignement;
+  - port parallele, latches, entrees et IRQ7;
+  - profil moniteur vert/ambre/blanc et niveaux d'intensite.
+
+23.2 Rendu
+----------
+
+Pour chaque cellule/raster : lire code et attribut, lire huit bits ROM, calculer
+neuvieme colonne, appliquer underline/cursor/inverse/blink/intensite, puis sortir
+Video et Intensity. Le curseur est un effet du CRTC et ne modifie pas la RAM.
+
+Ne pas traduire l'attribut comme une couleur CGA standard. Tester explicitement
+00/08/70/78/80/88/F0/F8 et la condition `(attr AND 7)=1` du soulignement.
+
+23.3 Timing et statut
+---------------------
+
+3BAh bit 0 suit le retrace horizontal. Bit 3 suit le pixel lumineux, pas le
+vertical retrace. Une emulation par image peut calculer ces bits depuis le temps
+virtuel. Un statut constant bloque les boucles de synchronisation.
+
+Modeler la premiere ecriture 01h et le cas high-res=0 selon profil. Eviter un
+vrai blocage irrevocable de l'emulateur : signaler l'attente, permettre reset et
+ne pas bloquer le thread d'interface hote.
+
+23.4 Memoire et bus
+-------------------
+
+Les huit miroirs doivent viser le meme tableau. Les acces mot 8086 produisent
+caractere+attribut little-endian. La carte insere des wait states variables;
+ils influencent les logiciels cycle-exacts mais pas le contenu fonctionnel.
+
+DMA peut acceder a la RAM video selon la documentation du bus. Une emulation DMA
+doit passer par le meme decodage/mirroir que la CPU.
+
+23.5 Port parallele
+-------------------
+
+Separer latch Data, entrees Status et latch Control. Appliquer inversions aux
+bonnes frontieres (registre contre broche). Generer IRQ7 sur la transition
+documentee de /ACK seulement si bit 4 Control est actif. Permettre de connecter
+un modele imprimante, fichier, peripherique virtuel ou lignes flottantes.
+
+23.6 Profils
+------------
+
+Ne pas fusionner MDA et Hercules dans un seul comportement automatique. Offrir :
+
+  IBM MDA stricte
+  MDA fonctionnelle tolerante
+  Hercules/Hercules Plus/InColor separes
+  EGA/VGA mode monochrome via leur propre moteur
+
+
+==============================================================================
+24. PLAN DE VALIDATION
+==============================================================================
+
+T01 BIOS mode 07h : BDA, table CRTC, 3B8h, curseur et effacement.
+
+T02 RAM : 4096 octets, miroir B000/B100...B700, lecture/ecriture octet et mot.
+
+T03 Police : les 256 glyphes, 14 lignes, neuvieme colonne vide sauf C0h..DFh.
+
+T04 Attributs : mire des 256 valeurs, blink actif/inactif, niveaux et exceptions.
+
+T05 Soulignement : 01h/09h/81h/89h contre 03h/07h; position CRTC.
+
+T06 Curseur : debut/fin, blink, suppression, adresse aux quatre coins et hors
+    zone visible.
+
+T07 CRTC : table IBM, Start Address, vertical adjust, registres lisibles et
+    miroirs de ports 3B0h..3B7h.
+
+T08 Status : bit 0 au retrace H, bit 3 sur motifs noir/normal/brillant, bits
+    fixes IBM.
+
+T09 High-res : premiere ecriture 01h, coupure video 21h, restauration 29h et
+    comportement controle de bit0=0.
+
+T10 Timing : 720x350, environ 18,432 kHz/50 Hz et rapport d'aspect du 5151.
+
+T11 BIOS texte : AH=02/03/06/07/08/09/0A/0E/0F et coherence VRAM/CRTC/BDA.
+
+T12 LPT Data : ecriture/lecture latch, toutes combinaisons et broches.
+
+T13 LPT Status : Busy/Ack/Paper/Select/Error avec polarites et bits fixes.
+
+T14 LPT Control : sorties inversees, Initialize, Select, lecture latch.
+
+T15 IRQ7 : inactive/active, front /ACK, PIC masque, partage et acquittement.
+
+T16 Double adaptateur : MDA+CGA sans conflit, selection BIOS et initialisation
+    des deux sorties.
+
+T17 Negative : verifier qu'aucun mode graphique Hercules n'existe dans profil
+    IBM MDA; 3BFh sans effet.
+
+T18 Comparaison : captures d'attributs, ROM et timings contre carte/5151 IBM.
+
+
+==============================================================================
+25. SECURITE DU MATERIEL REEL
+==============================================================================
+
+  - Ecrire 01h a 3B8h avant tout autre acces apres initialisation froide.
+  - Ne jamais effacer bit 0 puis acceder a la carte IBM.
+  - Utiliser les timings IBM; un 5151 peut etre endommage par un mauvais signal.
+  - Ne pas connecter CGA/EGA/VGA au DE-9 du 5151.
+  - Ne pas supposer qu'un adaptateur passif VGA-MDA est possible.
+  - Configurer sans conflit B000/3Bx avec une seconde carte.
+  - Ne pas activer IRQ7 sans gestionnaire.
+  - Ne pas brancher une charge directement aux sorties LPT sans interface.
+  - Sauvegarder contenu et registres avant un diagnostic destructif.
+  - Sous un OS protege, les IN/OUT et Mem[B000:] exigent un pilote/emulateur.
+
+
+==============================================================================
+26. REFERENCES
+==============================================================================
+
+Source IBM principale :
+
+  IBM Personal Computer Hardware Reference Library,
+  « Monochrome Display and Printer Adapter », reference 6361511 :
+  https://bitsavers.org/pdf/ibm/pc/cards/Technical_Reference_Options_and_Adapters_Volume_2_Apr84.pdf
+
+  Chapitre materiel IBM isole :
+  https://tunneler.org/files/IBM-Technical-Reference-1983--IBM-Monochrome-Display-and-Parallel-Printer-Adapter--Chapter-2-Hardware.pdf
+
+  IBM Industrial Computer Technical Reference, description MDA :
+  https://bitsavers.org/pdf/ibm/pc/industrial_computer/6523280_Industrial_Computer_Technical_Reference_Options_and_Adapters_Volume_2.pdf
+
+Moniteur IBM 5151 :
+
+  https://minuszerodegrees.net/5151/doco/5151_documentation.htm
+
+Controleur CRT :
+
+  Motorola MC6845 CRT Controller :
+  https://www.bitsavers.org/components/motorola/_dataSheets/6845.pdf
+
+Analyse du materiel IBM, des attributs, miroirs et clones :
+
+  https://www.seasip.info/VintagePC/mda.html
+
+Reference historique complementaire :
+
+  https://www.gladir.com/LEXIQUE/CARD/mda.htm
+
+Les tableaux Hercules ne doivent servir qu'a la section clone. Pour le profil
+IBM MDA, les schemas IBM, la ROM de caracteres de la revision cible et la fiche
+du MC6845 prevalent sur les references generiques « MDA/Hercules ».
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
