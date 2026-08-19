@@ -1,0 +1,1150 @@
+==============================================================================
+ CARTE IBM COLOR/GRAPHICS MONITOR ADAPTER (CGA)
+ Reference materielle et guide de programmation
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la carte IBM Color/Graphics Monitor Adapter, generalement
+appelee CGA (Color Graphics Adapter), introduite avec l'IBM Personal Computer
+5150 en 1981. Il couvre le materiel d'origine IBM, l'interface BIOS, les ports
+d'entree/sortie, le controleur Motorola MC6845, l'organisation de la memoire,
+les palettes, la sortie composite et les points importants pour un emulateur.
+
+Les clones ne reproduisent pas tous les details analogiques, la contention de
+la memoire (« snow »), le decodage incomplet des ports ou les couleurs de la
+sortie composite. Sauf indication contraire, « CGA » designe ici la carte IBM.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et caracteristiques
+  2. Architecture materielle
+  3. Connecteurs et signaux video
+  4. Modes video standards
+  5. Memoire video et adressage des pixels
+  6. Ports d'entree/sortie
+  7. Registres du Motorola MC6845
+  8. Valeurs CRTC des modes IBM
+  9. Couleurs, attributs et palettes
+ 10. Programmation par le BIOS INT 10h
+ 11. Programmation directe
+ 12. Synchronisation, scintillement et « snow »
+ 13. Sortie composite NTSC et couleurs d'artefact
+ 14. Modes non documentes et techniques avancees
+ 15. Detection de la CGA
+ 16. Exemples assembleur 8086
+ 17. Exemples Turbo Pascal
+ 18. Conseils pour l'ecriture d'un emulateur
+ 19. Plan de validation
+ 20. Limites, compatibilite et securite materielle
+ 21. References
+
+
+==============================================================================
+1. HISTORIQUE ET CARACTERISTIQUES
+==============================================================================
+
+La CGA et la Monochrome Display Adapter (MDA) etaient les deux principales
+options d'affichage du PC IBM original. La MDA privilegiait un texte monochrome
+tres lisible; la CGA ajoutait la couleur et de vrais modes graphiques.
+
+Caracteristiques de la carte IBM :
+
+  - carte d'extension sur bus ISA 8 bits du PC/XT;
+  - 16 Kio de memoire video a l'adresse physique B8000h;
+  - controleur de balayage Motorola MC6845;
+  - modes texte 40x25 et 80x25;
+  - caracteres 8x8, donc matrice visible 320x200 ou 640x200;
+  - 16 couleurs RGBI en texte;
+  - 320x200, 4 couleurs parmi une palette imposee;
+  - 640x200, 2 couleurs;
+  - sortie numerique RGBI sur DE-9 femelle;
+  - sortie video composite NTSC sur prise RCA;
+  - synchronisation voisine de 15,75 kHz horizontal et 60 Hz vertical;
+  - pas de police en RAM sur la CGA IBM : le generateur de caracteres est en
+    ROM sur l'adaptateur.
+
+Le MC6845 produit les adresses de balayage, les synchronisations et le curseur.
+Il ne produit ni pixels ni couleurs. La logique IBM lit la RAM, consulte la ROM
+de caracteres en mode texte, decale les bits et construit les signaux RGBI ou
+composite. Il faut donc emuler la carte complete et non un « 6845 colore ».
+
+La documentation IBM souligne que le 6845 rend possibles d'autres geometries
+par programmation intelligente. Ces geometries ne sont pas toutes supportees
+par le BIOS, ni necessairement stables sur tous les moniteurs et clones.
+
+
+==============================================================================
+2. ARCHITECTURE MATERIELLE
+==============================================================================
+
+Chemin simplifie :
+
+  bus ISA                 section video
+  +-----------+           +----------------------------+
+  | adresse   |---------->| decodage B8000h et 03Dxh   |
+  | donnees   |<--------->| RAM video 16 Kio           |
+  | IOR/IOW   |---------->| registres mode/couleur     |
+  | MEMR/MEMW |---------->| MC6845 -> adresse/HS/VS    |
+  +-----------+           | ROM de caracteres (texte)  |
+                          | registres a decalage        |
+                          | logique couleurs RGBI       |
+                          | modulateur composite NTSC   |
+                          +----------------------------+
+
+2.1 Horloges
+------------
+
+La frequence maitresse NTSC est approximativement 14,31818 MHz, soit quatre
+fois la sous-porteuse couleur 3,579545 MHz. La logique selectionne notamment :
+
+  - 14,31818 MHz comme debit de points pour 80 colonnes et 640 pixels;
+  -  7,15909 MHz comme debit de points pour 40 colonnes et 320 pixels.
+
+Le CRTC raisonne en temps de caracteres, pas en pixels. Un caractere visible
+fait 8 points de large. La meme programmation horizontale du CRTC peut donc
+servir a 40 caracteres au debit lent ou a 80 caracteres au debit rapide.
+
+La zone logique 320x200 ou 640x200 est affichee avec un rapport physique proche
+de 4:3. Les pixels ne sont donc pas carres : un emulateur moderne ne doit pas
+necessairement afficher 640x200 avec un rapport 16:5.
+
+2.2 Arbitrage RAM et contention
+-------------------------------
+
+Le processeur et la logique video partagent la RAM. Sur la carte IBM ancienne,
+un acces CPU pendant la lecture d'affichage peut perturber les donnees envoyees
+a l'ecran et creer des tirets ou points aleatoires : le fameux « CGA snow ».
+Le contenu de la RAM n'est pas necessairement corrompu; c'est le flux affiche
+qui l'est. Certains clones ameliorent l'arbitrage et ne produisent aucun snow.
+
+
+==============================================================================
+3. CONNECTEURS ET SIGNAUX VIDEO
+==============================================================================
+
+3.1 Sortie numerique RGBI, connecteur DE-9 femelle
+--------------------------------------------------
+
+Brochage usuel de la carte IBM :
+
+  Broche  Signal
+     1    masse
+     2    masse
+     3    rouge
+     4    vert
+     5    bleu
+     6    intensite
+     7    reservee
+     8    synchronisation horizontale
+     9    synchronisation verticale
+
+Les quatre bits R, G, B et I codent 16 couleurs. Les signaux sont numeriques
+TTL, pas du VGA analogique 0,7 V. Un moniteur VGA ne doit pas etre relie par un
+simple cable passif : niveaux, connecteur et frequences ne sont pas compatibles.
+
+Le moniteur IBM 5153 interprete normalement la combinaison R=1, G=1, B=0,
+I=0 comme brun, et non comme jaune sombre pur. Cette correction dite « brown »
+appartient au moniteur/circuit analogique; certains clones rendent un jaune
+sombre. Un emulateur visant le rendu IBM doit appliquer cette exception.
+
+3.2 Sortie composite
+--------------------
+
+La prise RCA fournit un signal composite compatible avec un moniteur ou un
+televiseur NTSC de l'epoque. Le signal combine luminance, synchronisation et,
+quand elle est activee, salve couleur. Cette sortie permet des couleurs
+d'artefact absentes de la sortie RGBI; voir la section 13.
+
+La CGA IBM est liee au NTSC. Une simple conversion numerique de la palette RGBI
+ne reproduit pas sa sortie composite. Phase, bord des pixels, filtrage, niveau
+de gris et modele de carte influencent le resultat.
+
+
+==============================================================================
+4. MODES VIDEO STANDARDS
+==============================================================================
+
+Modes exposes par BIOS INT 10h/AH=00h :
+
+  Mode  Type        Geometrie   Couleurs   Segment  Taille/page
+  00h   texte       40x25       16          B800h    0800h octets
+  01h   texte       40x25       16          B800h    0800h octets
+  02h   texte       80x25       16          B800h    1000h octets
+  03h   texte       80x25       16          B800h    1000h octets
+  04h   graphique   320x200      4          B800h    4000h octets
+  05h   graphique   320x200      4/gris     B800h    4000h octets
+  06h   graphique   640x200      2          B800h    4000h octets
+
+Les modes 00h/02h et 01h/03h partagent la geometrie. Historiquement, les modes
+pairs sont presentes comme noir et blanc et les impairs comme couleur, mais la
+memoire d'attribut reste capable de coder les couleurs. Le traitement exact
+depend du BIOS et du moniteur. En pratique, 03h est le mode texte couleur DOS
+standard.
+
+Modes 04h et 05h : 2 bits par pixel. Le registre 3D9h choisit le fond et l'une
+des palettes. Le mode 05h supprime normalement la salve couleur composite; sur
+RGBI, une programmation directe de 3D9h peut produire des couleurs.
+
+Mode 06h : 1 bit par pixel. La couleur 0 est noire et la couleur 1 vient des
+bits 0..3 de 3D9h (blanc intense par defaut du BIOS).
+
+Pages texte logiques : les 16 Kio permettent huit pages de 40 colonnes ou quatre
+pages de 80 colonnes. Le BIOS gere le choix de page et programme R12/R13.
+Les modes graphiques standards occupent tout le bloc de 16 Kio.
+
+
+==============================================================================
+5. MEMOIRE VIDEO ET ADRESSAGE DES PIXELS
+==============================================================================
+
+Adresse physique : B8000h a BBFFFh, soit segment B800h, offsets 0000h..3FFFh.
+
+5.1 Mode texte
+--------------
+
+Chaque cellule occupe deux octets :
+
+  offset pair      code du caractere IBM (page materielle CP437 d'origine)
+  offset impair    attribut de couleur
+
+Pour une page commencant a PageBase :
+
+  offset = PageBase + 2 * (ligne * colonnes + colonne)
+
+Exemple en 80x25, cellule (x=10,y=3) de la page 0 :
+
+  offset = 2 * (3*80 + 10) = 01F4h
+
+La ROM de caracteres convertit le code et la ligne RA0..RA2 du 6845 en huit
+points. Modifier B800h change donc le caractere, pas la police. Les extensions
+EGA/VGA qui chargent une police ne decrivent pas le materiel CGA original.
+
+5.2 320x200, 2 bits par pixel
+-----------------------------
+
+Quatre pixels sont ranges dans chaque octet, pixel gauche dans les bits forts :
+
+  bits 7..6 = pixel x+0
+  bits 5..4 = pixel x+1
+  bits 3..2 = pixel x+2
+  bits 1..0 = pixel x+3
+
+80 octets de donnees representent une ligne. Les lignes sont entrelacees en
+deux banques de 8 Kio :
+
+  lignes paires   offset 0000h + (y/2)*80 + x/4
+  lignes impaires offset 2000h + (y/2)*80 + x/4
+
+Formule :
+
+  offset = (y AND 1)*2000h + (y SHR 1)*80 + (x SHR 2)
+  decalage = (3 - (x AND 3))*2
+  masque = 3 SHL decalage
+
+Une ecriture de pixel doit lire l'octet, effacer les deux bits, puis inserer la
+valeur 0..3. Une routine qui ecrit des groupes alignes de quatre pixels peut
+eviter le read-modify-write.
+
+5.3 640x200, 1 bit par pixel
+----------------------------
+
+Huit pixels par octet, pixel gauche en bit 7. L'entrelacement est identique :
+
+  offset = (y AND 1)*2000h + (y SHR 1)*80 + (x SHR 3)
+  masque = 80h SHR (x AND 7)
+
+La formule emploie encore 80 octets par ligne : 640/8 = 80.
+
+5.4 Pourquoi l'entrelacement ?
+-----------------------------
+
+Le MC6845 avance par lignes de caracteres et fournit une adresse ainsi qu'un
+numero de ligne de trame RA. La logique IBM utilise un bit de RA pour choisir
+l'une des banques 0000h/2000h. Deux lignes physiques consecutives ne sont donc
+pas consecutives en RAM. De nombreuses erreurs d'emulation donnent des lignes
+paires correctes suivies des lignes impaires, au lieu de les entrelacer.
+
+
+==============================================================================
+6. PORTS D'ENTREE/SORTIE
+==============================================================================
+
+La plage CGA est 03D0h..03DFh. Les adresses essentielles sont :
+
+  Port  Acces  Fonction
+  3D4h  W      index/adresse du registre MC6845
+  3D5h  R/W*   donnee du registre MC6845 selectionne
+  3D8h  W      registre de controle de mode
+  3D9h  W      registre de selection de couleur/palette
+  3DAh  R      registre d'etat
+  3DBh  W      remise a zero du verrou du stylet lumineux
+  3DCh  W      activation/positionnement du verrou du stylet
+
+* Sur le MC6845, la plupart des registres de programmation sont en ecriture
+seule. R14/R15 et R16/R17 ont des capacites de lecture definies par le composant;
+les clones divergent. Ne pas supposer que toute valeur ecrite peut etre relue.
+
+Le decodage d'adresse du 6845 original est partiel. Des couples dans 3D0h..3D7h
+peuvent agir comme alias de l'index et des donnees (adresse paire/impaire).
+Un logiciel portable utilise 3D4h/3D5h. Un emulateur fidele au materiel IBM peut
+reproduire les miroirs; un emulateur fonctionnel doit au moins implementer les
+ports canoniques.
+
+6.1 Registre de controle de mode, 3D8h
+--------------------------------------
+
+  Bit  Valeur  Signification
+   0     01h   1 = largeur 80 colonnes / horloge haute
+   1     02h   1 = graphique; 0 = texte
+   2     04h   1 = noir et blanc / salve couleur desactivee selon le mode
+   3     08h   1 = signal video active
+   4     10h   1 = graphique haute resolution 640x200
+   5     20h   1 = clignotement des attributs texte active
+  6-7           reserves
+
+Valeurs BIOS IBM courantes :
+
+  2Ch mode 00h     (40 colonnes texte, noir et blanc, video, blink)
+  28h mode 01h     (40 colonnes texte, couleur, video, blink)
+  2Dh mode 02h     (80 colonnes texte, noir et blanc, video, blink)
+  29h mode 03h     (80 colonnes texte, couleur, video, blink)
+  2Ah mode 04h     (320x200 couleur)
+  2Eh mode 05h     (320x200 sans couleur composite)
+  1Eh mode 06h     (640x200 noir et blanc)
+
+Lors d'une reprogrammation du CRTC, couper temporairement la video en mettant
+le bit 3 a zero reduit les parasites et le snow. Restaurer ensuite tous les bits
+du mode voulu, pas seulement le bit 3.
+
+6.2 Registre couleur, 3D9h
+--------------------------
+
+  Bits  Masque  Signification
+  0..3   0Fh    couleur de bordure/fond; couleur de premier plan en 640x200
+    4    10h    intensite des trois couleurs non nulles en 320x200
+    5    20h    selection de palette 320x200
+  6..7          reserves
+
+En texte, bits 0..3 donnent la couleur de bordure (overscan). En 320x200, ils
+donnent la couleur du pixel 0. Les pixels 1..3 viennent d'une palette fixe.
+
+6.3 Registre d'etat, 3DAh
+-------------------------
+
+  Bit 0 : etat d'affichage horizontal/vertical (« display enable » selon la
+          documentation); il change autour de la zone active et du blanking.
+  Bit 3 : retrace vertical.
+
+Les autres bits ne doivent pas etre inventes comme registres VGA. La polarite
+et l'usage historique du bit 0 sont une source de confusion dans les ouvrages;
+pour attendre une periode sure, tester sur la carte visee ou employer le bit 3
+du retrace vertical. Une boucle qui attend une transition, et non un niveau
+suppose permanent, est plus robuste.
+
+Les ports 3DBh/3DCh simulent l'entree stylet lumineux de la carte. Ils causent
+la capture par le MC6845 de l'adresse courante, lisible dans R16/R17. Ce
+dispositif est rarement utilise, mais compte pour une emulation cycle-fidele.
+
+
+==============================================================================
+7. REGISTRES DU MOTOROLA MC6845
+==============================================================================
+
+Ecrire d'abord le numero dans 3D4h, puis la valeur dans 3D5h.
+
+  Reg. Bits utiles  Unite                 Fonction
+  R0    8           caracteres - 1        total horizontal
+  R1    8           caracteres            horizontal affiche
+  R2    8           caracteres            position synchro horizontale
+  R3    4           caracteres            largeur synchro horizontale
+  R4    7           rangees - 1           total vertical
+  R5    5           lignes                ajustement total vertical
+  R6    7           rangees               vertical affiche
+  R7    7           rangees               position synchro verticale
+  R8    variable    -                     entrelacement et skew
+  R9    5           lignes - 1            derniere ligne raster/caractere
+  R10   7           ligne + mode          debut et mode du curseur
+  R11   5           ligne                 fin du curseur
+  R12   6           adresse haute         debut de l'ecran
+  R13   8           adresse basse         debut de l'ecran
+  R14   6           adresse haute         position du curseur
+  R15   8           adresse basse         position du curseur
+  R16   6           adresse haute         capture stylet lumineux
+  R17   8           adresse basse         capture stylet lumineux
+
+Sur le MC6845 Motorola de la CGA IBM, R3 ne programme que la largeur de synchro
+horizontale; la largeur verticale est fixe. Des variantes ulterieures utilisent
+les quatre bits hauts de R3 pour la largeur verticale. Le nombre exact de bits
+et le sens de certains bits R3/R8/R10 changent entre MC6845, HD6845, UM6845 et
+compatibles. La carte IBM doit etre modelee d'apres son composant et son cablage,
+pas uniquement d'apres un « 6845 generique ».
+
+7.1 Adresses de debut et curseur
+--------------------------------
+
+R12:R13 fixe l'adresse de la premiere cellule affichee. R14:R15 fixe la cellule
+du curseur. Ce sont des adresses CRTC, pas directement des offsets octet x86.
+En mode texte, une adresse CRTC correspond a un mot caractere/attribut :
+
+  offset_RAM = 2 * adresse_CRTC
+
+Le defilement peut donc etre realise instantanement en changeant R12/R13, a
+condition de gerer la fin des 16 Kio. Le BIOS utilise ces registres pour les
+pages video et le curseur.
+
+R10 et R11 choisissent les lignes de balayage formant le curseur. Sur le 6845,
+des bits de R10 controlent aussi son clignotement ou sa suppression. Un curseur
+dont le debut est apres la fin peut etre invisible selon le composant.
+
+7.2 Temporisations
+------------------
+
+R0 vaut total horizontal moins un. R4 vaut nombre principal de rangees moins
+un; R5 ajoute des lignes de balayage. R9 vaut hauteur de caractere moins un.
+Modifier ces valeurs change aussi les frequences envoyees au moniteur. Les
+valeurs incorrectes peuvent faire perdre la synchronisation a un CRT reel.
+
+
+==============================================================================
+8. VALEURS CRTC DES MODES IBM
+==============================================================================
+
+Les tables BIOS historiques utilisent typiquement les 16 valeurs R0..R15
+suivantes (hexadecimal) :
+
+  Texte 40x25, modes 00h/01h
+  R0..R15 = 38 28 2D 0A 1F 06 19 1C 02 07 06 07 00 00 00 00
+
+  Texte 80x25, modes 02h/03h
+  R0..R15 = 71 50 5A 0A 1F 06 19 1C 02 07 06 07 00 00 00 00
+
+  Graphique 320x200 et 640x200, modes 04h/05h/06h
+  R0..R15 = 38 28 2D 0A 7F 06 64 70 02 01 06 07 00 00 00 00
+
+R0..R3 ont des temps en caracteres. Le choix d'horloge dans 3D8h explique que
+la table graphique commence comme celle de 40 colonnes, meme en 640 pixels.
+Dans les modes graphiques, R9=1 et la logique externe utilise les adresses RA
+pour alterner les banques de lignes.
+
+Le BIOS initialise aussi le registre de mode, la couleur, la RAM, les variables
+de la zone de donnees BIOS et le curseur. Copier uniquement la table CRTC ne
+reproduit donc pas un appel INT 10h complet.
+
+
+==============================================================================
+9. COULEURS, ATTRIBUTS ET PALETTES
+==============================================================================
+
+9.1 Palette RGBI de 16 couleurs
+-------------------------------
+
+  Code  Nom usuel                 R G B I   RGB moderne approximatif
+   0    noir                      0 0 0 0   00 00 00
+   1    bleu                      0 0 1 0   00 00 AA
+   2    vert                      0 1 0 0   00 AA 00
+   3    cyan                      0 1 1 0   00 AA AA
+   4    rouge                     1 0 0 0   AA 00 00
+   5    magenta                   1 0 1 0   AA 00 AA
+   6    brun                      1 1 0 0   AA 55 00 (correction IBM 5153)
+   7    gris clair                1 1 1 0   AA AA AA
+   8    gris sombre               0 0 0 1   55 55 55
+   9    bleu clair                0 0 1 1   55 55 FF
+   A    vert clair                0 1 0 1   55 FF 55
+   B    cyan clair                0 1 1 1   55 FF FF
+   C    rouge clair               1 0 0 1   FF 55 55
+   D    magenta clair             1 0 1 1   FF 55 FF
+   E    jaune                     1 1 0 1   FF FF 55
+   F    blanc                     1 1 1 1   FF FF FF
+
+Ces triplets numeriques sont une convention d'emulation courante, pas une
+mesure colorimetrique exacte d'un moniteur CRT IBM.
+
+9.2 Attribut texte
+------------------
+
+Avec clignotement active (3D8h bit 5 = 1) :
+
+  bits 0..2  couleur RGB du caractere
+  bit 3      intensite du caractere
+  bits 4..6  couleur RGB du fond
+  bit 7      clignotement
+
+Avec clignotement desactive, de nombreux adaptateurs compatibles utilisent le
+bit 7 comme intensite du fond, donnant 16 fonds. Sur la CGA IBM et selon le
+chemin BIOS/materiel, verifier le comportement cible; la convention est surtout
+connue via la compatibilite EGA/VGA. Pour une CGA stricte, ne pas annoncer une
+fonction BIOS EGA AX=1003h comme si elle etait garantie par IBM CGA.
+
+Le clignotement est temporel : le caractere alterne entre visible et couleur du
+fond; le fond ne disparait pas. L'emulateur doit conserver le contenu VRAM.
+
+9.3 Palettes 320x200
+--------------------
+
+Pixel 0 = fond choisi par 3D9h bits 0..3.
+
+  Bit 5=0 : pixels 1,2,3 = vert, rouge, brun/jaune
+  Bit 5=1 : pixels 1,2,3 = cyan, magenta, gris clair/blanc
+
+Le bit 4 ajoute l'intensite aux trois couleurs non nulles :
+
+  palette 0 sombre : 2,4,6      vert, rouge, brun
+  palette 0 claire : A,C,E      vert clair, rouge clair, jaune
+  palette 1 sombre : 3,5,7      cyan, magenta, gris clair
+  palette 1 claire : B,D,F      cyan clair, magenta clair, blanc
+
+Le fond peut etre n'importe laquelle des 16 couleurs, meme une couleur deja
+presente dans la palette, ce qui reduit visuellement le nombre de couleurs.
+
+
+==============================================================================
+10. PROGRAMMATION PAR LE BIOS INT 10h
+==============================================================================
+
+Utiliser le BIOS est preferable lorsque le mode standard suffit : il maintient
+la zone de donnees BIOS (BDA), les pages et les variables attendues par DOS.
+
+Fonctions importantes :
+
+  AH=00h  definir le mode video, AL=00h..06h
+  AH=01h  definir la forme du curseur, CH/CL
+  AH=02h  placer le curseur, BH=page, DH=ligne, DL=colonne
+  AH=03h  lire position et forme du curseur
+  AH=05h  choisir la page texte active, AL=page
+  AH=06h  defiler une fenetre vers le haut
+  AH=07h  defiler une fenetre vers le bas
+  AH=08h  lire caractere et attribut sous le curseur
+  AH=09h  ecrire caractere et attribut
+  AH=0Ah  ecrire caractere seulement
+  AH=0Bh  palette/bordure CGA
+  AH=0Ch  ecrire un pixel graphique
+  AH=0Dh  lire un pixel graphique
+  AH=0Eh  sortie teletype
+  AH=0Fh  lire le mode, colonnes et page active
+
+10.1 Fonction palette AH=0Bh
+----------------------------
+
+  BH=00h : BL choisit la couleur de fond/bordure (0..15)
+  BH=01h : BL=0 choisit palette 0; BL=1 choisit palette 1
+
+Les BIOS ne donnent pas tous acces par cette fonction a chaque combinaison du
+bit d'intensite. Une ecriture directe de 3D9h est plus precise mais contourne
+l'etat logiciel du BIOS.
+
+10.2 Variables de la BDA
+------------------------
+
+Le BIOS maintient, dans le segment 0040h, le mode courant, le nombre de
+colonnes, la taille de page, l'adresse de page, les positions de curseur et le
+registre de mode. Les offsets usuels incluent :
+
+  0040:0049  mode video courant
+  0040:004A  nombre de colonnes (mot)
+  0040:004C  taille de page (mot)
+  0040:004E  offset de page active (mot)
+  0040:0050  positions des curseurs des pages
+  0040:0060  forme du curseur
+  0040:0062  numero de page active
+  0040:0063  port de base CRTC (03D4h pour CGA)
+  0040:0065  copie du registre de mode
+  0040:0066  copie du registre couleur
+
+Un programme qui change directement 3D8h/3D9h devrait mettre a jour les copies
+pertinentes s'il compte ensuite sur le BIOS. Les offsets de BDA sont exposes
+pour compatibilite, mais le BIOS reste l'autorite pour un mode standard.
+
+
+==============================================================================
+11. PROGRAMMATION DIRECTE
+==============================================================================
+
+Sequence sure de changement de mode personnalise :
+
+  1. masquer ou couper le signal video via 3D8h bit 3=0;
+  2. programmer R0..R15 par 3D4h/3D5h;
+  3. effacer ou construire la RAM B800h;
+  4. programmer 3D9h;
+  5. activer le mode complet dans 3D8h;
+  6. si les services BIOS seront reutilises, synchroniser la BDA ou revenir
+     d'abord a un mode BIOS officiel.
+
+Ne pas laisser les interruptions executer du BIOS video au milieu de la
+sequence. Une section critique tres courte peut etre necessaire. Ne pas garder
+les interruptions desactivees durant l'effacement complet de 16 Kio.
+
+L'instruction OUT exige le privilege materiel. Elle fonctionne sous DOS reel
+sur 8086, mais pas depuis une application protegee moderne sans pilote ou
+emulateur.
+
+
+==============================================================================
+12. SYNCHRONISATION, SCINTILLEMENT ET « SNOW »
+==============================================================================
+
+12.1 Attendre le retrace vertical
+---------------------------------
+
+Principe courant : attendre la fin du retrace en cours, puis le debut du
+suivant, en lisant 3DAh bit 3. Cela evite de retourner immediatement si l'appel
+commence deja pendant le retrace.
+
+        mov dx,03DAh
+fin_vr: in  al,dx
+        test al,08h
+        jnz fin_vr
+deb_vr: in  al,dx
+        test al,08h
+        jz  deb_vr
+
+Cette boucle peut ne jamais finir sur un materiel absent ou un emulateur
+incomplet. Un logiciel robuste ajoute une temporisation ou detecte d'abord la
+carte. Dans un systeme multitache, une attente active gaspille du CPU.
+
+12.2 Eviter le snow
+-------------------
+
+Techniques historiques :
+
+  - ecrire pendant le blanking/retrace, en consultant 3DAh;
+  - couper temporairement la video pour une grosse mise a jour;
+  - construire hors ecran puis changer R12/R13;
+  - accepter le snow pour maximiser les performances;
+  - utiliser un clone sans contention.
+
+Attendre chaque octet rend le code tres lent. La synchronisation au retrace
+vertical ne laisse qu'une petite fenetre pour copier 16 Kio sur un 8088.
+Le compromis depend de la quantite de donnees et de la fidelite recherchee.
+
+
+==============================================================================
+13. SORTIE COMPOSITE NTSC ET COULEURS D'ARTEFACT
+==============================================================================
+
+La sortie composite ne transmet pas quatre fils RGBI. Elle encode la couleur
+dans la phase et l'amplitude autour de 3,579545 MHz. Le debit de points CGA est
+lie a cette frequence. Des alternances rapides de pixels noir/blanc deviennent
+donc, apres decodage NTSC, des couleurs dependantes de leur phase.
+
+Consequences :
+
+  - deux motifs ayant les memes quantites de noir et blanc peuvent avoir des
+    couleurs differentes si leur motif est decale d'un pixel;
+  - la palette depend de la phase (« old CGA » contre variations de cartes), du
+    reglage du moniteur et du filtre;
+  - le mode 640x200 peut montrer des couleurs composites bien qu'il ne possede
+    qu'un bit par pixel en RAM;
+  - le bit 2 de 3D8h supprime la salve couleur et produit une image en niveaux
+    de gris sur composite; cela ne signifie pas necessairement « aucun RGB »;
+  - certains jeux selectionnent volontairement une palette de pixels et
+    comptent sur le melange analogique pour afficher davantage de couleurs.
+
+Pour emuler correctement le composite : generer le signal logique au rythme de
+l'horloge, modeler salve/phase/luminance/chrominance, appliquer un decodeur NTSC
+et echantillonner l'image. Une table de couleurs par pixel ne reproduit ni les
+transitions ni le melange entre pixels voisins.
+
+Le terme « 16 couleurs composites » est une simplification. Des demos modernes
+exploitent des motifs et temporisations pour montrer beaucoup plus de teintes;
+ce ne sont pas de nouveaux codes de pixel dans la RAM CGA.
+
+
+==============================================================================
+14. MODES NON DOCUMENTES ET TECHNIQUES AVANCEES
+==============================================================================
+
+14.1 Pseudo-graphique 160x100 en 16 couleurs
+---------------------------------------------
+
+La forme classique part du mode texte 80 colonnes et reprogramme le CRTC pour
+100 rangees de deux lignes de balayage (R9=1). Chaque cellule fait toujours
+huit points de large, mais le caractere DDh de CP437 est un demi-bloc gauche :
+ses quatre points gauches prennent la couleur de premier plan, et ses quatre
+points droits la couleur de fond. Une cellule represente donc deux « pixels »
+horizontaux : 80*2 = 160, sur 100 rangees.
+
+  attribut bas 4 bits  = couleur du demi-pixel gauche
+  attribut bits 4..7   = couleur du demi-pixel droit
+  caractere DDh        = bloc gauche / fond a droite
+
+Il faut desactiver le clignotement pour employer le bit 7 comme intensite du
+fond sur le materiel compatible, afin d'obtenir 16 couleurs independantes des
+deux cotes. Selon le comportement CGA strict vise, ce point doit etre verifie
+sur la revision materielle. La technique depend aussi du glyphe DDh de la ROM.
+Ce n'est pas un mode BIOS IBM et certains clones peuvent differer.
+
+14.2 Defilement materiel
+------------------------
+
+Changer R12/R13 decale l'origine de l'affichage sans recopier la RAM. En mode
+texte, avancer de 80 adresses CRTC fait defiler une ligne 80 colonnes. Il faut
+gerer le retour modulo la memoire et ecrire la nouvelle ligne dans la partie
+liberee. Les adresses visibles au-dela de la RAM physique peuvent se replier ou
+afficher des donnees non definies selon le clone.
+
+14.3 Changement de palette pendant le balayage
+----------------------------------------------
+
+Des programmes synchronises changent 3D9h ou 3D8h au milieu de l'image pour
+obtenir plusieurs bandes de palettes. Un emulateur qui ne lit les registres
+qu'une fois par image perd cet effet. La precision requise va de la ligne au
+pixel selon la demonstration.
+
+14.4 Modification des timings CRTC
+----------------------------------
+
+On peut obtenir plus ou moins de lignes, changer la bordure, recentrer l'image
+ou creer des effets de split par temporisation. Il n'existe pas de limite de
+compatibilite unique : le moniteur, le 6845 et la logique discretee imposent
+leurs propres bornes. Sur materiel reel, conserver les frequences proches des
+valeurs IBM pour eviter une image instable.
+
+
+==============================================================================
+15. DETECTION DE LA CGA
+==============================================================================
+
+15.1 BIOS et equipement
+-----------------------
+
+INT 11h renvoie le mot d'equipement BIOS. Les bits 4 et 5 codent le mode video
+initial sur les PC historiques : une valeur indiquant 40 ou 80 colonnes couleur
+suggere une CGA. Cela identifie la configuration declaree, pas necessairement le
+modele exact d'une carte compatible.
+
+La BDA 0040:0063 valant 03D4h indique le groupe CRTC couleur. EGA, VGA et clones
+peuvent emuler ces ports; ce test ne prouve donc pas la presence d'une IBM CGA.
+
+INT 10h/AH=0Fh indique le mode actuel, le nombre de colonnes et la page. Il ne
+constitue pas une signature de modele.
+
+15.2 Detection par registres
+----------------------------
+
+La plupart des registres 6845 sont en ecriture seule. Ecrire une valeur pour la
+relire n'est donc pas une methode universelle et peut perturber l'ecran. Les
+tests de synchronisation sur 3DAh detectent une activite CGA-compatible, mais
+doivent avoir un timeout.
+
+EGA/VGA implementent la compatibilite CGA; selon le besoin, il est souvent
+preferable de detecter une « interface CGA utilisable » plutot que d'essayer de
+prouver le numero de piece IBM. Une demo utilisant snow ou composite doit en
+revanche offrir un choix manuel ou un test specialise.
+
+
+==============================================================================
+16. EXEMPLES ASSEMBLEUR 8086 (MASM/TASM)
+==============================================================================
+
+16.1 Passer en 320x200 et tracer un pixel
+-----------------------------------------
+
+        .model small
+        .stack 100h
+        .data
+        oldmode db ?
+        .code
+start:  mov ax,@data
+        mov ds,ax
+
+        mov ah,0Fh             ; conserver le mode courant
+        int 10h
+        mov oldmode,al
+
+        mov ax,0004h           ; 320x200, 4 couleurs
+        int 10h
+
+        ; Pixel x=123, y=77, couleur=3
+        mov ax,0B800h
+        mov es,ax
+        mov ax,77
+        mov bx,ax
+        and bx,1
+        mov cl,13
+        shl bx,cl              ; 0 ou 2000h
+        shr ax,1
+        mov dx,80
+        mul dx                 ; DX:AX = (y/2)*80
+        add bx,ax
+        mov ax,123
+        mov dl,4
+        div dl                 ; AL=x/4, AH=x mod 4
+        xor dx,dx
+        mov dl,al
+        add bx,dx              ; BX = offset video
+
+        ; decalage = (3-reste)*2; masques pre-calcules simplifient le 8086
+        mov al,ah
+        xor ah,ah
+        mov si,ax
+        mov al,es:[bx]
+        mov dl,cs:ClearMask[si]
+        and al,dl
+        mov dl,cs:Color3[si]
+        or  al,dl
+        mov es:[bx],al
+
+        xor ah,ah
+        int 16h
+        mov ah,00h
+        mov al,oldmode
+        int 10h
+        mov ax,4C00h
+        int 21h
+
+ClearMask db 3Fh,0CFh,0F3h,0FCh
+Color3    db 0C0h,30h,0Ch,03h
+        end start
+
+Dans un vrai programme, une routine generale construit ColorMask a partir de
+la couleur 0..3. L'exemple fixe la couleur 3 pour rendre la formule lisible.
+
+16.2 Ecriture rapide d'une cellule texte
+----------------------------------------
+
+; Entree : DL=x, DH=y, AL=caractere, AH=attribut, mode 80x25 page 0.
+PutCell proc near
+        push bx
+        push dx
+        push es
+        push ax
+        mov bx,0B800h
+        mov es,bx
+        pop ax
+        xor bx,bx
+        mov bl,dh
+        push ax
+        mov ax,bx
+        mov bx,80
+        mul bx
+        xor bx,bx
+        mov bl,dl
+        add ax,bx
+        shl ax,1
+        mov bx,ax
+        pop ax
+        mov es:[bx],ax          ; AL=caractere, AH=attribut
+        pop es
+        pop dx
+        pop bx
+        ret
+PutCell endp
+
+Le 8086 est little-endian : MOV word ecrit bien le caractere puis l'attribut.
+Sur une CGA IBM, cette ecriture peut produire du snow.
+
+16.3 Programmer les registres CRTC
+----------------------------------
+
+; DS:SI -> 16 valeurs R0..R15. Les interruptions video doivent etre exclues.
+LoadCRTC proc near
+        push ax
+        push bx
+        push cx
+        push dx
+        mov dx,03D8h
+        xor al,al               ; couper l'affichage pendant la programmation
+        out dx,al
+        mov dx,03D4h
+        xor bx,bx
+        mov cx,16
+nextreg:
+        mov al,bl
+        out dx,al               ; index
+        inc dx
+        mov al,[si+bx]
+        out dx,al               ; donnee
+        dec dx
+        inc bx
+        loop nextreg
+        pop dx
+        pop cx
+        pop bx
+        pop ax
+        ret
+LoadCRTC endp
+
+Le registre de mode doit etre reactive ensuite avec la valeur appropriee.
+
+
+==============================================================================
+17. EXEMPLES TURBO PASCAL 6/7
+==============================================================================
+
+17.1 Selectionner un mode et choisir la palette
+-----------------------------------------------
+
+  program CGAPalette;
+  uses Dos, Crt;
+  var R : Registers;
+  begin
+    R.AX := $0004;             { 320x200 couleur }
+    Intr($10, R);
+
+    R.AH := $0B;
+    R.BH := 0;                 { couleur de fond/bordure }
+    R.BL := 1;                 { bleu }
+    Intr($10, R);
+
+    R.AH := $0B;
+    R.BH := 1;                 { selection de palette }
+    R.BL := 1;                 { cyan, magenta, blanc }
+    Intr($10, R);
+
+    ReadKey;
+    R.AX := $0003;
+    Intr($10, R)
+  end.
+
+17.2 PutPixel 320x200 direct
+----------------------------
+
+  procedure PutPixel320(X, Y : Word; Couleur : Byte);
+  var
+    OfsV : Word;
+    Shift : Byte;
+    V, M : Byte;
+  begin
+    if (X >= 320) or (Y >= 200) then Exit;
+    OfsV := (Y and 1) * $2000 + (Y shr 1) * 80 + (X shr 2);
+    Shift := (3 - (X and 3)) * 2;
+    M := Byte(3 shl Shift);
+    V := Mem[$B800:OfsV];
+    Mem[$B800:OfsV] := (V and not M) or Byte((Couleur and 3) shl Shift)
+  end;
+
+17.3 PutPixel 640x200 direct
+----------------------------
+
+  procedure PutPixel640(X, Y : Word; Allume : Boolean);
+  var OfsV : Word; M, V : Byte;
+  begin
+    if (X >= 640) or (Y >= 200) then Exit;
+    OfsV := (Y and 1) * $2000 + (Y shr 1) * 80 + (X shr 3);
+    M := $80 shr (X and 7);
+    V := Mem[$B800:OfsV];
+    if Allume then V := V or M else V := V and not M;
+    Mem[$B800:OfsV] := V
+  end;
+
+17.4 Attendre le retrace vertical avec timeout
+----------------------------------------------
+
+  function AttendVRetrace : Boolean;
+  var N : LongInt;
+  begin
+    N := 200000;
+    while ((Port[$3DA] and $08) <> 0) and (N > 0) do Dec(N);
+    if N = 0 then begin AttendVRetrace := False; Exit end;
+    N := 200000;
+    while ((Port[$3DA] and $08) = 0) and (N > 0) do Dec(N);
+    AttendVRetrace := N <> 0
+  end;
+
+Le timeout est dependant de la vitesse CPU. Pour une bibliotheque serieuse,
+employer le compteur BIOS ou le timer PIT plutot qu'une constante de boucle.
+
+
+==============================================================================
+18. CONSEILS POUR L'ECRITURE D'UN EMULATEUR
+==============================================================================
+
+18.1 Etat minimal
+-----------------
+
+  - RAM video de 16 Kio;
+  - index CRTC et registres R0..R17 avec masques de bits;
+  - registre mode 3D8h et registre couleur 3D9h;
+  - compteurs horizontal, raster, rangee et adresse memoire;
+  - etats HSYNC, VSYNC, display enable et blink;
+  - position curseur et light pen;
+  - ROM de caracteres correspondant a la revision choisie;
+  - choix de sortie RGBI ou modele composite;
+  - option de contention/snow si la fidelite le demande.
+
+18.2 Ne pas decoder uniquement les modes BIOS
+---------------------------------------------
+
+Une implementation du type « si 3D8=0Ah, rendre 320x200 » fait fonctionner des
+programmes simples mais echoue sur : scrolling R12/R13, modes 160x100,
+changements de palette par ligne, timings modifies, pages non standard et demos
+composite. Le rendu doit idealement provenir des compteurs CRTC et de la logique
+de decodage de RAM.
+
+Une emulation fonctionnelle peut avoir deux niveaux : chemin rapide pour les
+tables IBM reconnues, et chemin CRTC generique des qu'un registre diverge. Le
+passage de l'un a l'autre doit conserver la phase et l'etat des registres.
+
+18.3 Adressage et rendu
+-----------------------
+
+  - masquer les adresses selon les 14 lignes reellement cablees a la RAM;
+  - distinguer adresse CRTC et adresse octet du bus x86;
+  - appliquer RA et l'entrelacement graphique avant de lire la RAM;
+  - prendre les attributs au moment du balayage si les effets raster comptent;
+  - rendre la bordure avec 3D9h, pas toujours en noir;
+  - appliquer blink selon une horloge, sans modifier la RAM;
+  - mettre a jour le curseur meme lorsque la CPU ecrit directement R14/R15;
+  - reproduire l'exception brune dans le profil moniteur IBM 5153;
+  - offrir un rapport d'aspect 4:3 et eventuellement un profil pixels bruts.
+
+18.4 Ports et lectures
+----------------------
+
+Les registres en ecriture seule ne doivent pas automatiquement rendre la valeur
+memorisee. Le vrai bus peut donner FFh, une valeur flottante ou un resultat lie
+au composant. Pour la compatibilite, documenter la politique. Reproduire les
+alias 3D0h..3D7h si des programmes anciens les utilisent.
+
+3DAh doit evoluer au cours de la trame. Un statut fixe bloque les boucles de
+synchronisation. Une emulation non cycle-exacte peut calculer les bits d'apres
+le temps virtuel et les timings CRTC.
+
+18.5 BIOS et materiel doivent partager le meme etat
+--------------------------------------------------
+
+INT 10h ne doit pas dessiner dans une surface parallele. Ses operations doivent
+modifier la meme RAM et les memes registres que les ports et acces B800h. Un
+programme peut ecrire par BIOS, relire directement la VRAM, puis changer le
+debut d'ecran par CRTC.
+
+Le BIOS d'une machine emulee devrait etre execute quand possible. Si INT 10h
+est intercepte par l'hote, reproduire aussi ses effets BDA, palette, curseur,
+effacement et selection de page.
+
+18.6 Composite
+--------------
+
+Proposer plusieurs niveaux :
+
+  1. RGBI net, rapide;
+  2. composite approximatif par table de voisinage/phase;
+  3. signal NTSC encode/decode, plus couteux;
+  4. profils de revisions de CGA et reglages saturation/teinte.
+
+Le choix composite doit venir du connecteur virtuel, pas uniquement du mode.
+Un meme contenu RAM produit simultanement RGBI et composite sur la vraie carte.
+
+
+==============================================================================
+19. PLAN DE VALIDATION
+==============================================================================
+
+T01 Modes BIOS 00h..06h : comparer registres, BDA, effacement, curseur et 3D9h.
+
+T02 Texte : tester les 256 caracteres et 256 attributs, pages, scrolling et
+    position du curseur.
+
+T03 Pixel 320 : ecrire chaque valeur 0..3 aux x=0,3,4,319 et y=0,1,198,199;
+    verifier la RAM et le rendu.
+
+T04 Pixel 640 : memes bords, verifier ordre bit 7 vers bit 0.
+
+T05 Entrelacement : remplir banque 0000h d'un motif, 2000h d'un autre; verifier
+    l'alternance des lignes.
+
+T06 Palette : tester les 16 fonds, deux palettes et deux intensites; verifier
+    que pixel 0 reste le fond.
+
+T07 Status : mesurer transitions bits 0 et 3 de 3DAh sur une trame; verifier
+    qu'une boucle d'attente ne bloque pas.
+
+T08 CRTC : modifier R12/R13 et R14/R15 sans appel BIOS; verifier scrolling et
+    curseur, y compris aux limites de RAM.
+
+T09 Blink : comparer phases visible/invisible et vitesse moyenne; la VRAM doit
+    rester identique.
+
+T10 BDA : apres chaque INT 10h, comparer les offsets 49h..66h a un BIOS IBM de
+    reference.
+
+T11 Snow : selon le profil, verifier absence, simulation visuelle ou contention
+    cycle-fidele; ne jamais corrompre la RAM pour simuler seulement l'affichage.
+
+T12 Composite : motifs alternes 0101, 1010 et decalages d'un pixel; comparer
+    capture a une carte/revision de reference.
+
+T13 Ports miroirs : verifier 3D4/3D5 et, si supportes, leurs alias.
+
+T14 Light pen : activer la capture et lire R16/R17 a plusieurs positions.
+
+T15 Mode non standard : 160x100 et changement de 3D9h par ligne; verifier que
+    l'emulateur ne force pas un framebuffer BIOS standard.
+
+T16 Rapport d'aspect : une mire carree logique choisie pour CGA doit avoir la
+    proportion attendue sur un affichage 4:3.
+
+
+==============================================================================
+20. LIMITES, COMPATIBILITE ET SECURITE MATERIELLE
+==============================================================================
+
+  - CGA, PCjr/Tandy, Plantronics Colorplus, ATI Graphics Solution, EGA et VGA
+    ne sont pas synonymes. Ils peuvent accepter certains ports/modes CGA tout en
+    ajoutant des plans, registres ou palettes.
+
+  - Le mode 320x200 « 16 couleurs » est une extension de certaines cartes; ce
+    n'est pas une capacite graphique RGBI standard de l'IBM CGA.
+
+  - La sortie composite d'un clone PAL ou d'une conversion moderne ne constitue
+    pas automatiquement une reference pour la carte NTSC IBM.
+
+  - Les effets de snow varient selon revision, RAM et clone. Un programme ne
+    doit pas utiliser l'absence de snow comme seule detection.
+
+  - Les timings non standards peuvent faire perdre la synchronisation. Sur un
+    CRT reel, revenir rapidement aux tables IBM et eviter les frequences hors
+    specifications.
+
+  - Ne jamais relier directement les sorties TTL CGA a une entree VGA analogique
+    avec un simple changement de connecteur. Employer un convertisseur concu
+    pour RGBI, les niveaux TTL et 15 kHz.
+
+  - Les appels Port[] et OUT des exemples supposent DOS reel ou une machine
+    virtuelle autorisant les E/S. Sous un OS protege, ils provoquent une faute
+    de privilege ou sont interceptes.
+
+
+==============================================================================
+21. REFERENCES
+==============================================================================
+
+Sources primaires :
+
+  IBM Personal Computer / XT Hardware Technical Reference, section
+  « Color/Graphics Monitor Adapter », description, schemas et BIOS :
+  https://vgamuseum.info/index.php/cpu/item/download/328_0a612ab1f61b6a856945d5d0de9879fa
+
+  IBM Options and Adapters Technical Reference,
+  « IBM Color/Graphics Monitor Adapter » :
+  http://www.minuszerodegrees.net/oa/OA%20-%20IBM%20Color%20Graphics%20Monitor%20Adapter%20(CGA).pdf
+
+  Motorola MC6845 CRT Controller, fiche technique :
+  https://www.bitsavers.org/components/motorola/_dataSheets/6845.pdf
+
+Autres references techniques utiles :
+
+  PCjs, MS-DOS 3.3 Programmer's Reference (services BIOS/DOS) :
+  https://www.pcjs.org/documents/books/mspl13/msdos/dosref33/
+
+  Reference francophone des ports CGA :
+  https://www.gladir.com/LEXIQUE/CARD/cga.htm
+
+  Description detaillee du MC6845 et de ses registres :
+  https://cpctech.cpcwiki.de/docs/mc6845/mc6845.htm
+
+Pour une implementation fidele, les schemas IBM et le listing du BIOS de la
+revision de machine cible doivent prevaloir sur les tableaux generiques. Les
+fiches du MC6845 expliquent le composant, mais le cablage IBM determine comment
+ses adresses et signaux deviennent des cellules CGA.
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
