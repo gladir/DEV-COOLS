@@ -3532,6 +3532,42 @@ Type
   PendingLBA : LongInt;
  End;
 
+ { --- Controleur de disquette (FDC, NEC 765/8272A discret sur PC/XT ou      }
+ { 82077AA integre sur AT+, voir Emu_IsATClassHw) - ports 3F0h-3F7h,         }
+ { TOUJOURS present quel que soit le choix "Interface de disque" (Options > }
+ { Emulateur > DOS: Materiel) : un lecteur de disquette est un peripherique  }
+ { DISTINCT du disque "dur" (ST-506/ATA/SCSI/NVMe ci-dessus), jamais         }
+ { mutuellement exclusif avec lui sur du materiel reel. Protocole PIO        }
+ { complet (pas de vrai canal DMA materiel - meme simplification assumee    }
+ { que pour ST-506/SCSI) : SPECIFY/RECALIBRATE/SEEK/SENSE INTERRUPT STATUS/  }
+ { SENSE DRIVE STATUS/READ ID/READ DATA/WRITE DATA, octets de commande et    }
+ { de resultat via le registre Data (3F5h), phase courante lisible via le    }
+ { registre Status Main (3F4h). 3F0h/3F1h (Status Register A/B) et 3F7h      }
+ { (Digital Input Register en lecture, Configuration Control Register en    }
+ { ecriture) n existent que sur le controleur 82077AA integre des systemes   }
+ { AT+ - un vrai PC/XT avec 8272A discret ne repond pas du tout a ces        }
+ { adresses (voir Emu_PortRead/Write). Unites 0/1 = EmuFloppy 0/1 (A:/B:),   }
+ { memes images que INT13h - aucune divergence possible entre acces bas      }
+ { niveau et acces BIOS. }
+ TEmuFDC = Record
+  DOR      : Byte;   { 3F2h : bit0-1=unite selectionnee, bit2=/RESET (0=     }
+                      { controleur en reset), bit3=DMA/IRQ actif, bit4-7=    }
+                      { moteur unites 0-3 }
+  CCR      : Byte;   { 3F7h ecriture (AT+ seulement) : bit0-1=debit }
+  State    : Byte;   { 0=IDLE, 1=CMD (accumule les parametres), 2=EXEC       }
+                      { (phase donnees), 3=RESULT }
+  CmdBuf   : Array[0..8] Of Byte;
+  CmdLen, CmdExpected : Integer;
+  ResBuf   : Array[0..6] Of Byte;
+  ResLen, ResPos : Integer;
+  DataBuf  : Array[0..511] Of Byte;
+  DataPos, DataLen : Integer;
+  DataIsWrite : Boolean;
+  PCN      : Array[0..3] Of Byte;          { present cylinder number/unite }
+  SeekIntPending : Array[0..3] Of Boolean; { attend SENSE INTERRUPT STATUS }
+  XferUnit, XferCyl, XferHead, XferSec, XferSize : Byte;
+ End;
+
  { ============================================================
    IBM TopView (Options > Emulateur > DOS: OS > TopView) - INT 15h
    AH=10h/11h/12h, voir DOC/TOPVIEW_PROGRAMMING.txt et Emu_Tv*.
@@ -4476,6 +4512,7 @@ Type
   ST506          : TEmuST506;
   ATA            : Array[0..1] Of TEmuATAChannel;
   SCSIAdapter    : TEmuSCSIHostAdapter;
+  FDC            : TEmuFDC;
   { --- TopView (voir Emu_Tv_Init) --- }
   TvObjType    : Array[0..TV_MAX_OBJECTS - 1] Of Byte;
   TvWindow     : Array[0..TV_MAX_OBJECTS - 1] Of TTvWindow;
@@ -5771,6 +5808,7 @@ Var
  EmuST506       : TEmuST506;              { 320h-323h }
  EmuATA         : Array[0..1] Of TEmuATAChannel; { 0=primaire 1F0h.., 1=secondaire 170h.. }
  EmuSCSI        : TEmuSCSIHostAdapter;    { 330h-333h }
+ EmuFDC         : TEmuFDC;                { 3F0h-3F7h, toujours present }
  { --- IBM TopView (voir le commentaire de perimetre pres de TVOT_WINDOW) --- }
  EmuTvObjType   : Array[0..TV_MAX_OBJECTS - 1] Of Byte; { TVOT_*, TVOT_FREE=libre }
  EmuTvWindow    : Array[0..TV_MAX_OBJECTS - 1] Of TTvWindow;
@@ -51693,6 +51731,225 @@ Begin
    supplementaire (le bit RST a deja ete pose par la lecture prealable). }
 End;
 
+{ ============================================================
+  Controleur de disquette (FDC) - ports 3F0h-3F7h. Voir le commentaire de
+  TEmuFDC pour le perimetre (PIO complet, pas de vrai DMA materiel, 3F0h/
+  3F1h/3F7h reserves au materiel classe AT+). Unites 0/1 = EmuFloppy 0/1,
+  memes images/geometrie que INT13h (Emu_FloppyCHS2LBA/Emu_ImageReadSector/
+  Emu_ImageWriteSector, deja utilises par ce dernier).
+  ============================================================ }
+
+{ Registre Status Main (3F4h, lecture seule) : bit7=RQM (pret, toujours 1
+  dans ce modele sans latence simulee), bit6=DIO (1=controleur->hote, actif
+  en phase RESULT ou en phase EXEC-lecture), bit4=CB (commande en cours,
+  actif des que l etat n est plus IDLE). Bits 0-3 (unite en recherche) non
+  modelises (pas de suivi de "busy" par unite dans ce modele instantane). }
+Function Emu_FDC_MSR(Var F: TEmuFDC): Byte;
+Var M: Byte; Dio: Boolean;
+Begin
+ M := $80;
+ Dio := (F.State = 3) Or ((F.State = 2) And (Not F.DataIsWrite));
+ If Dio Then M := M Or $40;
+ If F.State <> 0 Then M := M Or $10;
+ Emu_FDC_MSR := M;
+End;
+
+{ Status Register A (3F0h, 82077AA mode PC-AT, AT+ seulement) : bit2=INDEX
+  (actif bas, 1=inactif - aucune rotation simulee), bit1=WP (actif bas,
+  1=pas protege). Autres bits (STEP/TRK0/HDSEL/DRQ/INT) non modelises. }
+Function Emu_FDC_ReadSRA(Var F: TEmuFDC): Byte;
+Begin
+ Emu_FDC_ReadSRA := $06;
+End;
+
+{ Status Register B (3F1h, AT+ seulement) : rarement sonde en pratique,
+  non modelise en detail. }
+Function Emu_FDC_ReadSRB(Var F: TEmuFDC): Byte;
+Begin
+ Emu_FDC_ReadSRB := $00;
+End;
+
+{ Digital Input Register (3F7h en lecture, AT+ seulement) : bit7=disk
+  change (0=pas de changement depuis le dernier acces - aucune ejection de
+  media simulee dans cet emulateur). }
+Function Emu_FDC_ReadDIR(Var F: TEmuFDC): Byte;
+Begin
+ Emu_FDC_ReadDIR := $00;
+End;
+
+{ Remplit le resultat 7 octets d une commande READ/WRITE DATA ou READ ID
+  (ST0/ST1/ST2/C/H/R/N) et bascule en phase RESULT. }
+Procedure Emu_FDC_BuildDataResult(Var F: TEmuFDC; ST0, ST1, ST2: Byte);
+Begin
+ F.ResBuf[0] := ST0; F.ResBuf[1] := ST1; F.ResBuf[2] := ST2;
+ F.ResBuf[3] := F.XferCyl; F.ResBuf[4] := F.XferHead;
+ F.ResBuf[5] := F.XferSec; F.ResBuf[6] := F.XferSize;
+ F.ResLen := 7; F.ResPos := 0; F.State := 3;
+End;
+
+{ Execute la commande accumulee dans CmdBuf (dernier octet de parametre
+  vient d etre recu - voir Emu_FDC_WriteData). Opcode masque sur 5 bits
+  (bits 7-5 = MT/MFM/SK, modificateurs sans effet sur le protocole simplifie
+  ici, sauf a determiner READ (06h) vs WRITE (05h) qui reste distinct). }
+Procedure Emu_FDC_Exec(Var F: TEmuFDC);
+Var
+ Op, U, Head, Cyl, Sec, Sz: Byte;
+ LBA: LongInt;
+Begin
+ Op := F.CmdBuf[0] And $1F;
+ Case Op Of
+  $03: F.State := 0; { SPECIFY : SRT/HUT+HLT/ND consommes, pas de resultat }
+  $04: Begin { SENSE DRIVE STATUS }
+   U := F.CmdBuf[1] And 3;
+   F.ResBuf[0] := $20 Or U; { TS (deux faces) + unite }
+   If EmuFloppyOpen[U] And (F.PCN[U] = 0) Then F.ResBuf[0] := F.ResBuf[0] Or $10; { TRK0 }
+   F.ResLen := 1; F.ResPos := 0; F.State := 3;
+  End;
+  $07: Begin { RECALIBRATE : retour piste 0, resultat via SENSE INTERRUPT STATUS }
+   U := F.CmdBuf[1] And 3;
+   F.PCN[U] := 0;
+   F.SeekIntPending[U] := True;
+   F.State := 0;
+  End;
+  $0F: Begin { SEEK : idem, cylindre cible explicite }
+   U := F.CmdBuf[1] And 3;
+   F.PCN[U] := F.CmdBuf[2];
+   F.SeekIntPending[U] := True;
+   F.State := 0;
+  End;
+  $08: Begin { SENSE INTERRUPT STATUS }
+   U := 0;
+   While (U < 4) And (Not F.SeekIntPending[U]) Do Inc(U);
+   If U < 4 Then Begin
+    F.ResBuf[0] := $20 Or U; { SE=1 (seek end) + unite }
+    F.ResBuf[1] := F.PCN[U];
+    F.ResLen := 2; F.SeekIntPending[U] := False;
+   End Else Begin
+    F.ResBuf[0] := $80; { commande invalide : aucune interruption en attente }
+    F.ResLen := 1;
+   End;
+   F.ResPos := 0; F.State := 3;
+  End;
+  $0A: Begin { READ ID : identifie le prochain secteur sous la tete }
+   U := F.CmdBuf[1] And 3;
+   Head := (F.CmdBuf[1] Shr 2) And 1;
+   If Not EmuFloppyOpen[U] Then Begin
+    Emu_FDC_BuildDataResult(F, $48 Or U, 0, 0); { unite non prete }
+    Exit;
+   End;
+   F.XferCyl := F.PCN[U]; F.XferHead := Head; F.XferSec := 1; F.XferSize := 2;
+   Emu_FDC_BuildDataResult(F, $20 Or U, 0, 0);
+  End;
+  $06, $05: Begin { READ DATA (06h) / WRITE DATA (05h) }
+   U := F.CmdBuf[1] And 3;
+   Head := (F.CmdBuf[1] Shr 2) And 1;
+   Cyl  := F.CmdBuf[2];
+   Sec  := F.CmdBuf[4];
+   Sz   := F.CmdBuf[5];
+   F.XferUnit := U; F.XferCyl := Cyl; F.XferHead := Head;
+   F.XferSec := Sec; F.XferSize := Sz;
+   If Not EmuFloppyOpen[U] Then Begin
+    Emu_FDC_BuildDataResult(F, $48 Or U, $01, 0); { unite non prete }
+    Exit;
+   End;
+   LBA := Emu_FloppyCHS2LBA(U, Cyl, Head, Sec);
+   If LBA < 0 Then Begin
+    Emu_FDC_BuildDataResult(F, $40 Or U, $01, 0); { fin anormale, pas de donnees }
+    Exit;
+   End;
+   If Op = $06 Then Begin { READ }
+    If Not Emu_ImageReadSector(U, LBA, F.DataBuf) Then Begin
+     Emu_FDC_BuildDataResult(F, $40 Or U, $01, 0);
+     Exit;
+    End;
+    F.DataIsWrite := False;
+   End Else Begin { WRITE }
+    If EmuFloppyRO[U] Then Begin
+     Emu_FDC_BuildDataResult(F, $40 Or U, $02, 0); { protection ecriture }
+     Exit;
+    End;
+    FillChar(F.DataBuf, SizeOf(F.DataBuf), 0);
+    F.DataIsWrite := True;
+   End;
+   F.DataPos := 0; F.DataLen := 512; F.State := 2;
+  End;
+ Else
+  F.ResBuf[0] := $80; F.ResLen := 1; F.ResPos := 0; F.State := 3; { invalide }
+ End;
+End;
+
+{ Ecriture registre Data (3F5h) : selon l etat courant, accumule un octet
+  de commande/parametre (IDLE/CMD) ou recoit un octet de donnees en phase
+  EXEC-ecriture (flush vers l image disque des que DataLen octets recus). }
+Procedure Emu_FDC_WriteData(Var F: TEmuFDC; Value: Byte);
+Var LBA: LongInt;
+Begin
+ Case F.State Of
+  0: Begin
+   F.CmdBuf[0] := Value; F.CmdLen := 1;
+   Case Value And $1F Of
+    $03: F.CmdExpected := 3;
+    $04: F.CmdExpected := 2;
+    $07: F.CmdExpected := 2;
+    $08: F.CmdExpected := 1;
+    $0F: F.CmdExpected := 3;
+    $0A: F.CmdExpected := 2;
+    $06, $05: F.CmdExpected := 9;
+   Else
+    F.CmdExpected := 1;
+   End;
+   If F.CmdLen >= F.CmdExpected Then Emu_FDC_Exec(F) Else F.State := 1;
+  End;
+  1: Begin
+   If F.CmdLen <= 8 Then Begin F.CmdBuf[F.CmdLen] := Value; Inc(F.CmdLen); End;
+   If F.CmdLen >= F.CmdExpected Then Emu_FDC_Exec(F);
+  End;
+  2: If F.DataIsWrite And (F.DataPos < F.DataLen) Then Begin
+    F.DataBuf[F.DataPos] := Value; Inc(F.DataPos);
+    If F.DataPos >= F.DataLen Then Begin
+     LBA := Emu_FloppyCHS2LBA(F.XferUnit, F.XferCyl, F.XferHead, F.XferSec);
+     If (LBA < 0) Or (Not Emu_ImageWriteSector(F.XferUnit, LBA, F.DataBuf)) Then
+      Emu_FDC_BuildDataResult(F, $40 Or F.XferUnit, $02, 0)
+     Else
+      Emu_FDC_BuildDataResult(F, $20 Or F.XferUnit, 0, 0);
+    End;
+   End;
+ End;
+End;
+
+{ Lecture registre Data (3F5h) : octet de donnees en phase EXEC-lecture, ou
+  octet de resultat en phase RESULT (bascule a IDLE une fois tout consomme). }
+Function Emu_FDC_ReadData(Var F: TEmuFDC): Byte;
+Begin
+ Emu_FDC_ReadData := 0;
+ Case F.State Of
+  2: If (Not F.DataIsWrite) And (F.DataPos < F.DataLen) Then Begin
+    Emu_FDC_ReadData := F.DataBuf[F.DataPos]; Inc(F.DataPos);
+    If F.DataPos >= F.DataLen Then Emu_FDC_BuildDataResult(F, $20 Or F.XferUnit, 0, 0);
+   End;
+  3: If F.ResPos < F.ResLen Then Begin
+    Emu_FDC_ReadData := F.ResBuf[F.ResPos]; Inc(F.ResPos);
+    If F.ResPos >= F.ResLen Then F.State := 0;
+   End;
+ End;
+End;
+
+{ Ecriture registre DOR (3F2h) : la transition /RESET 0->1 (sortie de reset)
+  arme les 4 drapeaux SENSE INTERRUPT STATUS d un coup (un vrai 8272A/82077
+  genere 4 interruptions de "polling" successives, une par unite, chacune
+  necessitant son propre SENSE INTERRUPT STATUS pour etre acquittee - le
+  nombre et l effet final sont fideles, l ordre exact d acquittement est une
+  simplification documentee) et reinitialise l etat de commande courant. }
+Procedure Emu_FDC_WriteDOR(Var F: TEmuFDC; Value: Byte);
+Begin
+ If ((F.DOR And $04) = 0) And ((Value And $04) <> 0) Then Begin
+  F.SeekIntPending[0] := True; F.SeekIntPending[1] := True;
+  F.SeekIntPending[2] := True; F.SeekIntPending[3] := True;
+  F.State := 0; F.CmdLen := 0; F.ResLen := 0; F.ResPos := 0;
+ End;
+ F.DOR := Value;
+End;
+
 { --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
       Les ports non ger?s retournent 0. --- }
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
@@ -51789,6 +52046,16 @@ Begin
          Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[0]);
   $376: If Emu_DiskIfFamily = DIF_ATA Then
          Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[1]);
+  { Controleur de disquette (FDC) - TOUJOURS present, independant de       }
+  { l Interface de disque ci-dessus (peripherique distinct, voir TEmuFDC). }
+  { 3F0h/3F1h/3F7h : materiel classe AT+ seulement (82077AA integre), un   }
+  { PC/XT avec 8272A discret ne repond pas du tout a ces adresses. }
+  $3F0: If Emu_IsATClassHw Then Emu_PortRead := Emu_FDC_ReadSRA(EmuFDC);
+  $3F1: If Emu_IsATClassHw Then Emu_PortRead := Emu_FDC_ReadSRB(EmuFDC);
+  $3F2: Emu_PortRead := EmuFDC.DOR;
+  $3F4: Emu_PortRead := Emu_FDC_MSR(EmuFDC);
+  $3F5: Emu_PortRead := Emu_FDC_ReadData(EmuFDC);
+  $3F7: If Emu_IsATClassHw Then Emu_PortRead := Emu_FDC_ReadDIR(EmuFDC);
  End;
 End;
 
@@ -51843,6 +52110,10 @@ Begin
   $3C0..$3DF: Emu_VidPortWrite(Port, Value);
   $3F6: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[0], Value);
   $376: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[1], Value);
+  { Controleur de disquette (FDC) - voir le commentaire de lecture ci-dessus. }
+  $3F2: Emu_FDC_WriteDOR(EmuFDC, Value);
+  $3F5: Emu_FDC_WriteData(EmuFDC, Value);
+  $3F7: If Emu_IsATClassHw Then EmuFDC.CCR := Value And $03;
  End;
 End;
 
@@ -61830,6 +62101,7 @@ Begin
  Emu_ATA_Init(EmuATA[0], 0);
  Emu_ATA_Init(EmuATA[1], 1);
  FillChar(EmuSCSI, SizeOf(EmuSCSI), 0);
+ FillChar(EmuFDC, SizeOf(EmuFDC), 0);
  Emu_Tv_Init(P);
  { DOS demarre l application avec IF=1 (interruptions activees). }
  Include(P.CPU.Flags.s, EFG_IF);
@@ -74758,6 +75030,7 @@ Begin
  Snap.Kbd8042 := Emu8042;
  Snap.ST506 := EmuST506; Snap.SCSIAdapter := EmuSCSI;
  Snap.ATA[0] := EmuATA[0]; Snap.ATA[1] := EmuATA[1];
+ Snap.FDC := EmuFDC;
  { TopView (voir Emu_Tv_Init) - copie element par element : deux tableaux  }
  { independamment declares, meme de type structurel identique, ne sont pas }
  { affectables en bloc en Pascal (deja rencontre pour EmuATA ci-dessus). }
@@ -74900,6 +75173,7 @@ Begin
  Emu8042 := Snap.Kbd8042;
  EmuST506 := Snap.ST506; EmuSCSI := Snap.SCSIAdapter;
  EmuATA[0] := Snap.ATA[0]; EmuATA[1] := Snap.ATA[1];
+ EmuFDC := Snap.FDC;
  For I := 0 To TV_MAX_OBJECTS - 1 Do Begin
   EmuTvObjType[I]  := Snap.TvObjType[I];
   EmuTvWindow[I]   := Snap.TvWindow[I];
