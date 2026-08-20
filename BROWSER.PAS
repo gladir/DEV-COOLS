@@ -282,6 +282,7 @@ Const
  SCROLLBAR_MIN_THUMB = 12;     { Taille minimale de la poignee }
  SCROLL_LINE_STEP = 16;        { Pas de defilement par clic sur une fleche }
  SCROLL_MEASURE_MARGIN = 2000; { Marge d'anticipation pour mesurer le contenu restant }
+ RENDER_LAYOUT_MAX_Y = 30000;  { Limite TP7 pour mesurer tout le document }
 
  { Marges et espacements }
  RENDER_MARGIN_LEFT = 10;
@@ -1000,6 +1001,8 @@ Var
  { Defilement de la page (voir RenderText/InitRenderContext/RenderHTMLDocument) }
  ScrollX: Integer;             { decalage horizontal courant, >= 0 }
  ScrollY: Integer;             { decalage vertical courant, >= 0 }
+ DocumentContentHeight: LongInt; { hauteur totale, independante de ScrollY }
+ MaxScrollY: LongInt;          { DocumentContentHeight - hauteur visible }
  CanScrollUp: Boolean;
  CanScrollDown: Boolean;
  CanScrollLeft: Boolean;
@@ -6646,7 +6649,11 @@ Begin
  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
  Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
  Ctx.MaxX := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - RENDER_MARGIN_LEFT;
- Ctx.MaxY := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) + SCROLL_MEASURE_MARGIN;
+ { Parcourir tout le document a chaque passe. L'ancien plafond situe 2000
+   pixels sous la fenetre ne donnait qu'une hauteur partielle qui changeait
+   avec ScrollY, donc une poignee verticale de taille variable. 30000 reste
+   dans la plage de l'Integer 16 bits de Turbo Pascal. }
+ Ctx.MaxY := RENDER_LAYOUT_MAX_Y;
  Ctx.LineHeight := RENDER_LINE_HEIGHT;
  Ctx.TextColor := RENDER_TEXT_COLOR;
  Ctx.BgColor := RENDER_BG_COLOR;
@@ -14355,10 +14362,15 @@ Begin
  RenderAbsolutePositionedOverlays(Ctx);
  InContentRenderPass := False;
 
- { Determiner s'il reste du contenu a reveler par defilement : Ctx.Y
-   depasse le bas visible si la marge de mesure (SCROLL_MEASURE_MARGIN)
-   a rencontre du contenu au-dela de la zone visible. }
- CanScrollDown := Ctx.Y > (RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+ { Ctx.Y est exprime dans le repere defile de l'ecran. En lui retirant
+   RenderOriginY, on retrouve une hauteur de document stable quelle que
+   soit la valeur courante de ScrollY. }
+ DocumentContentHeight := LongInt(Ctx.Y) - LongInt(RenderOriginY) + Ctx.LineHeight;
+ If DocumentContentHeight < 0 Then DocumentContentHeight := 0;
+ MaxScrollY := DocumentContentHeight - (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+ If MaxScrollY < 0 Then MaxScrollY := 0;
+ If ScrollY > MaxScrollY Then ScrollY := MaxScrollY;
+ CanScrollDown := LongInt(ScrollY) < MaxScrollY;
  CanScrollUp := ScrollY > 0;
  CanScrollRight := ContentOverflowX > (RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE));
  CanScrollLeft := ScrollX > 0;
@@ -14806,7 +14818,9 @@ Begin HScrollTrackX2 := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - S
   haut/bas et poignee proportionnelle a l'avancement). }
 Procedure DrawVScrollBar;
 Var
- TrackH, ThumbH, ThumbY, Range, ArrowColor: Integer;
+ TrackH, ThumbH, ThumbY, ArrowColor: Integer;
+ VisibleH: Integer;
+ ThumbCalc, PosCalc: LongInt;
  CenterX, CenterY: Integer;
 Begin
  { Fond de la barre }
@@ -14837,21 +14851,21 @@ Begin
  Line(CenterX, CenterY + 4, CenterX - 4, CenterY - 3);
  Line(CenterX, CenterY + 4, CenterX + 4, CenterY - 3);
 
- { Poignee : taille et position proportionnelles a ScrollY et a ce
-   qui reste mesurable (CanScrollDown). Approximation raisonnable :
-   on ne connait pas la hauteur totale exacte du document (le rendu
-   s'arrete d'explorer au-dela d'une marge de mesure pour rester
-   rapide), seulement s'il reste du contenu sous le pli. }
+ { La taille depend uniquement du rapport visible/document : elle reste
+   donc constante pendant tout le defilement. La position utilise le
+   rapport ScrollY/MaxScrollY. Calculs en LongInt car TrackH*VisibleH peut
+   depasser 32767 dans le mode Integer 16 bits de Turbo Pascal. }
  TrackH := VScrollTrackY2 - VScrollTrackY1;
  If TrackH < SCROLLBAR_MIN_THUMB Then Exit;
- If CanScrollUp Or CanScrollDown Then Begin
-  Range := ScrollY;
-  If CanScrollDown Then Inc(Range, TrackH) { encore de la place plus bas } ;
-  If Range <= 0 Then Range := 1;
-  ThumbH := (TrackH * TrackH) Div Range;
+ If MaxScrollY > 0 Then Begin
+  VisibleH := RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+  If DocumentContentHeight <= 0 Then DocumentContentHeight := VisibleH;
+  ThumbCalc := (LongInt(TrackH) * LongInt(VisibleH)) Div DocumentContentHeight;
+  ThumbH := ThumbCalc;
   If ThumbH > TrackH Then ThumbH := TrackH;
   If ThumbH < SCROLLBAR_MIN_THUMB Then ThumbH := SCROLLBAR_MIN_THUMB;
-  ThumbY := VScrollTrackY1 + ((TrackH - ThumbH) * ScrollY) Div Range;
+  PosCalc := (LongInt(TrackH - ThumbH) * LongInt(ScrollY)) Div MaxScrollY;
+  ThumbY := VScrollTrackY1 + PosCalc;
   If ThumbY + ThumbH > VScrollTrackY2 Then ThumbY := VScrollTrackY2 - ThumbH;
  End Else Begin
   ThumbH := TrackH;
@@ -14962,8 +14976,12 @@ Begin
  If (DY < 0) And (ScrollY > 0) Then Begin
   ScrollY := ScrollY + DY;
   If ScrollY < 0 Then ScrollY := 0;
- End Else If (DY > 0) And CanScrollDown Then
-  ScrollY := ScrollY + DY;
+ End Else If (DY > 0) And CanScrollDown Then Begin
+  If LongInt(ScrollY) + DY > MaxScrollY Then
+   ScrollY := MaxScrollY
+  Else
+   ScrollY := ScrollY + DY;
+ End;
 
  If (DX < 0) And (ScrollX > 0) Then Begin
   ScrollX := ScrollX + DX;
