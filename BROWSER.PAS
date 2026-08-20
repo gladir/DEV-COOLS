@@ -765,8 +765,11 @@ Type
   TokValue: String;           { Valeur textuelle du token }
   NumValue: Real;             { Valeur numerique (si nombre) }
   KeywordType: Byte;          { Type de mot-cle (si JS_TOK_KEYWORD) }
-  Line: Integer;              { Numero de ligne }
-  Column: Integer;            { Numero de colonne }
+  { Comme pour CSSToken, Column contient actuellement la position absolue
+    dans la source. Integer ne depasse pas 32767 en mode Turbo Pascal et
+    deborde sur les gros scripts tels que JSCookMenu.js. }
+  Line: LongInt;              { Numero de ligne }
+  Column: LongInt;            { Position/colonne dans la source JavaScript }
  End;
 
  { Variables locales de JSEvaluate, allouees sur le TAS (New/Dispose)
@@ -918,11 +921,15 @@ Type
  { Token CSS }
  CSSToken = Record
   TokType: Byte;              { Type du token (CSS_TOK_*) }
-  Value: String;              { Valeur textuelle du token }
-  NumValue: Real;             { Valeur numerique (si nombre) }
-  UnitValue: CSSUnitString;   { Unite (px, em, %, etc.) }
-  Line: Integer;              { Numero de ligne }
-  Column: Integer;            { Numero de colonne }
+ Value: String;              { Valeur textuelle du token }
+ NumValue: Real;             { Valeur numerique (si nombre) }
+ UnitValue: CSSUnitString;   { Unite (px, em, %, etc.) }
+  { En mode compatible Turbo Pascal, Integer reste signe sur 16 bits.
+    Column recoit ici la
+    position absolue dans la feuille CSS concatenee et depasse donc 32767
+    sur cdmhtml5.css. LongInt est necessaire sur FPC comme sur TP7. }
+  Line: LongInt;              { Numero de ligne }
+  Column: LongInt;            { Position/colonne dans la source CSS }
  End;
 
  { Partie d'un selecteur CSS compose }
@@ -5327,11 +5334,14 @@ Begin
  Case Token.TokType Of
   CSS_TOK_HASH: Begin
    Part.PartType := CSS_SEL_ID;
-   Part.Value := Copy(Token.Value, 2, Length(Token.Value) - 1);
+   { Value est un String[64]. Une feuille CSS reelle peut contenir un
+     identificateur arbitrairement long; avec -Cr, la conversion implicite
+     AnsiString -> ShortString levait ERangeError au lieu de le tronquer. }
+   Part.Value := Copy(Token.Value, 2, 64);
   End;
   CSS_TOK_DOT: Begin
    Part.PartType := CSS_SEL_CLASS;
-   Part.Value := CSSReadIdent(S, Pos);
+   Part.Value := Copy(CSSReadIdent(S, Pos), 1, 64);
   End;
   CSS_TOK_STAR: Begin
    Part.PartType := CSS_SEL_UNIVERSAL;
@@ -5339,7 +5349,7 @@ Begin
   End;
   CSS_TOK_IDENT: Begin
    Part.PartType := CSS_SEL_TAG;
-   Part.Value := HTMLLowerCase(Token.Value);
+   Part.Value := Copy(HTMLLowerCase(Token.Value), 1, 64);
   End;
   CSS_TOK_COLON: Begin
    { Pseudo-classe ou pseudo-element }
@@ -5348,13 +5358,13 @@ Begin
     Part.PartType := CSS_SEL_PSEUDO_ELEMENT;
    End
    Else
-    Part.PartType := CSS_SEL_PSEUDO_CLASS;
-   Part.Value := CSSReadIdent(S, Pos);
+   Part.PartType := CSS_SEL_PSEUDO_CLASS;
+   Part.Value := Copy(CSSReadIdent(S, Pos), 1, 64);
   End;
   CSS_TOK_LBRACKET: Begin
    { Selecteur d'attribut }
    Part.PartType := CSS_SEL_ATTRIBUTE;
-   Part.AttrName := CSSReadIdent(S, Pos);
+   Part.AttrName := Copy(CSSReadIdent(S, Pos), 1, 32);
    Pos := CSSSkipWhitespaceAndComments(S, Pos);
 
    { Verifier operateur }
@@ -5379,9 +5389,9 @@ Begin
     Pos := CSSSkipWhitespaceAndComments(S, Pos);
     Token := CSSReadToken(S, Pos);
     If Token.TokType = CSS_TOK_STRING Then
-     Part.AttrValue := Token.Value
+     Part.AttrValue := Copy(Token.Value, 1, 64)
     Else If Token.TokType = CSS_TOK_IDENT Then
-     Part.AttrValue := Token.Value;
+     Part.AttrValue := Copy(Token.Value, 1, 64);
    End;
 
    { Chercher ] }
@@ -5518,7 +5528,11 @@ Begin
   If (Length(PropName) > 0) And (Rule.PropertyCount < MAX_CSS_PROPERTIES) Then Begin
    Inc(Rule.PropertyCount);
    Rule.Properties[Rule.PropertyCount].PropId := CSSGetPropertyId(PropName);
-   Rule.Properties[Rule.PropertyCount].PropName := PropName;
+   { PropName est volontairement compact (String[32]) dans CSSRule pour
+     rester compatible avec Turbo Pascal. Tronquer explicitement les noms
+     inconnus trop longs evite l'exception de plage FPC; PropId a deja ete
+     calcule avec le nom complet juste au-dessus. }
+   Rule.Properties[Rule.PropertyCount].PropName := Copy(PropName, 1, 32);
    Rule.Properties[Rule.PropertyCount].Value := PropValue;
    Rule.Properties[Rule.PropertyCount].Important := Important;
   End;
@@ -5950,9 +5964,22 @@ Begin
  ValCount := 0;
  I := P + 1;
  While (I <= Length(LowerColor)) And (ValCount < 3) Do Begin
-  While (I <= Length(LowerColor)) And (LowerColor[I] In [' ', ',']) Do Inc(I);
+  { En mode Turbo Pascal, AND peut evaluer ses deux operandes. Il ne faut
+    donc jamais combiner le test de borne et LowerColor[I] dans la meme
+    expression : une fonction rgb( mal formee faisait lire Length+1 et
+    provoquait ERangeError avec les controles d'execution de FPC. }
+  While I <= Length(LowerColor) Do Begin
+   If Not (LowerColor[I] In [' ', ',']) Then Break;
+   Inc(I);
+  End;
+  If I > Length(LowerColor) Then Exit;
+
   NumStr := '';
-  While (I <= Length(LowerColor)) And (LowerColor[I] In ['0'..'9']) Do Begin
+  While I <= Length(LowerColor) Do Begin
+   If Not (LowerColor[I] In ['0'..'9']) Then Break;
+   { Dix chiffres suffisent largement pour une composante. Cette limite
+     empeche aussi un entier CSS hostile de deborder Integer dans Val. }
+   If Length(NumStr) >= 10 Then Exit;
    NumStr := NumStr + LowerColor[I];
    Inc(I);
   End;
@@ -5960,8 +5987,16 @@ Begin
   Inc(ValCount);
   Val(NumStr, Vals[ValCount], Code);
   If Code <> 0 Then Exit;
-  While (I <= Length(LowerColor)) And (LowerColor[I] <> ',') And (LowerColor[I] <> ')') Do Inc(I);
-  If (I <= Length(LowerColor)) And (LowerColor[I] = ',') Then Inc(I);
+  { CSS borne les composantes RGB dans l'intervalle representable. }
+  If Vals[ValCount] < 0 Then Vals[ValCount] := 0;
+  If Vals[ValCount] > 255 Then Vals[ValCount] := 255;
+
+  While I <= Length(LowerColor) Do Begin
+   If (LowerColor[I] = ',') Or (LowerColor[I] = ')') Then Break;
+   Inc(I);
+  End;
+  If I > Length(LowerColor) Then Exit;
+  If LowerColor[I] = ',' Then Inc(I);
  End;
  If ValCount < 3 Then Exit;
 
@@ -7691,11 +7726,13 @@ Procedure RenderTagLI(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  BulletText: String;
  IndentX: Integer;
+ ItemStartY: Integer;
  WantsBlock: Boolean;
  NoBullet: Boolean;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  NoBullet := CurrentElementListStyleNone;
+ ItemStartY := Ctx.Y;
  { Nouvelle ligne pour l'element, sauf si le CSS demande
    display:inline/inline-block (ex: menu horizontal en <li>). }
  If WantsBlock Then Begin
@@ -7743,9 +7780,24 @@ Begin
  { Rendre le contenu de l'element }
  RenderChildren(Node, Ctx);
 
- { Espacement apres l'element }
- If WantsBlock Then
+ { Un LI de bloc doit consommer la hauteur de sa derniere ligne avant
+   l'espacement qui le suit. RenderBlockSpacing remet X a la marge mais
+   n'ajoute que quelques pixels : l'ancien code faisait donc croire au LI
+   suivant qu'une nouvelle ligne avait deja commence, et tous les elements
+   se superposaient avec seulement RENDER_LIST_SPACING pixels d'ecart.
+
+   Si une sous-liste/bloc enfant a deja termine la ligne et avance Y, X est
+   revenu a la marge et il ne faut pas ajouter une ligne vide. Un LI vide
+   consomme tout de meme une hauteur de ligne minimale. }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx)
+  Else If Ctx.Y <= ItemStartY Then Begin
+   Ctx.Y := ItemStartY + Ctx.LineHeight;
+   Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+  End;
   RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ End;
 End;
 
 { Procedure pour rendre la balise DL (liste de definitions) }
