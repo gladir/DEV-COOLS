@@ -16240,7 +16240,11 @@ BEGIN
   Halt;
  End;
  { Boucle principale pour gerer le clavier et la souris }
- URLBarFocused := True;
+ { Apres le chargement initial, le document possede le focus clavier.
+   L'ancien True obligeait a cliquer une premiere fois hors de la barre
+   d'adresse avant que Fleche bas/Page Down puissent defiler. La barre URL
+   reprend explicitement le focus lorsque l'utilisateur clique dessus. }
+ URLBarFocused := False;
  Repeat
   { Traiter les evenements de la souris }
   ProcessMouseInput;
