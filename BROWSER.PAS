@@ -371,6 +371,8 @@ Const
  ALIGN_LEFT = 0;
  ALIGN_CENTER = 1;
  ALIGN_RIGHT = 2;
+ ALIGN_JUSTIFY = 3;
+ MAX_JUSTIFY_WORDS = 128;
 
  { =====================================================
    Constantes pour l'interpreteur JavaScript
@@ -704,7 +706,18 @@ Type
   InLink: Boolean;           { Dans un lien hypertexte }
   CurrentLinkHref: String[255]; { URL du lien en cours de rendu }
   NoWrap: Boolean;           { CSS white-space: nowrap }
-  TextAlignMode: Byte;       { CSS text-align : 0=left 1=center 2=right }
+  TextAlignMode: Byte;       { CSS text-align : ALIGN_* }
+  End;
+
+ { Mot differe d'une ligne justifiee. Le rendu est retarde jusqu'au retour
+   automatique afin de connaitre l'espace exact a repartir entre les mots,
+   y compris lorsque la ligne traverse B/I/A/SPAN. }
+ JustifyWordRec = Record
+  Text: String;
+  Width: Integer;
+  TextColor, BgColor: Integer;
+  TextStyle: Byte;
+  LinkHref: String[255];
  End;
 
  { Marges/padding/bordure/fond resolus en pixels pour l'element dont
@@ -998,6 +1011,9 @@ Var
    d'evenements et setTimeout appellent JSExecuteScript directement et ne
    sont donc pas bloques par ce drapeau. }
  ExecuteDocumentScripts: Boolean;
+ JustifyWords: Array[1..MAX_JUSTIFY_WORDS] Of JustifyWordRec;
+ JustifyWordCount: Integer;
+ JustifyLineStartX, JustifyLineY: Integer;
  ContentOverflowX: Integer;    { X maximal atteint pendant le rendu (mots non coupables) }
  RenderOriginX: Integer;       { = RENDER_AREA_X - ScrollX, ancre du contenu }
  RenderOriginY: Integer;       { = RENDER_AREA_Y - ScrollY, ancre du contenu }
@@ -6406,6 +6422,8 @@ Begin
    Ctx.TextAlignMode := ALIGN_CENTER
   Else If HTMLLowerCase(Style.TextAlign) = 'right' Then
    Ctx.TextAlignMode := ALIGN_RIGHT
+  Else If HTMLLowerCase(Style.TextAlign) = 'justify' Then
+   Ctx.TextAlignMode := ALIGN_JUSTIFY
   Else
    Ctx.TextAlignMode := ALIGN_LEFT;
  End;
@@ -6939,9 +6957,15 @@ Begin
            RENDER_AREA_Y + RENDER_AREA_HEIGHT);
 End;
 
+Procedure FlushJustifiedLine(Var Ctx: RenderContext; ExpandSpaces: Boolean); Forward;
+
 { Procedure pour passer a la ligne suivante }
 Procedure RenderNewLine(Var Ctx: RenderContext);
 Begin
+ { Un saut explicite termine la ligne courante sans etirer sa derniere
+   ligne. Lors d'un wrap automatique, RenderText l'a deja videe avec
+   ExpandSpaces=True. }
+ FlushJustifiedLine(Ctx, False);
  { Dans une cellule de tableau, revenir au bord gauche du CONTENU DE
    LA CELLULE plutot qu'a la marge de la page : sans cette
    distinction, un texte qui deborde sur plusieurs lignes a
@@ -6957,6 +6981,7 @@ End;
 { Procedure pour ajouter un espacement de bloc }
 Procedure RenderBlockSpacing(Var Ctx: RenderContext; Spacing: Integer);
 Begin
+ FlushJustifiedLine(Ctx, False);
  Ctx.Y := Ctx.Y + Spacing;
  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
 End;
@@ -7040,6 +7065,57 @@ Begin
  End;
 End;
 
+{ Dessiner les mots accumules d'une ligne. Pour une ligne coupee
+  automatiquement, tout l'espace libre est reparti entre les intervalles;
+  une ligne terminee par le paragraphe conserve des espaces normaux. }
+Procedure FlushJustifiedLine(Var Ctx: RenderContext; ExpandSpaces: Boolean);
+Var
+ I, XPos, WordsWidth, GapCount, Extra, Gap, Remainder: Integer;
+ SavedX, SavedY, SavedColor, SavedBg: Integer;
+ SavedStyle: Byte;
+Begin
+ If JustifyWordCount = 0 Then Exit;
+ WordsWidth := 0;
+ For I := 1 To JustifyWordCount Do
+  Inc(WordsWidth, JustifyWords[I].Width);
+ GapCount := JustifyWordCount - 1;
+ Gap := 8;
+ Remainder := 0;
+ If ExpandSpaces And (GapCount > 0) Then Begin
+  Extra := Ctx.MaxX - JustifyLineStartX - WordsWidth;
+  If Extra < GapCount * 8 Then Extra := GapCount * 8;
+  Gap := Extra Div GapCount;
+  Remainder := Extra Mod GapCount;
+ End;
+
+ SavedX := Ctx.X; SavedY := Ctx.Y;
+ SavedColor := Ctx.TextColor; SavedBg := Ctx.BgColor;
+ SavedStyle := Ctx.TextStyle;
+ XPos := JustifyLineStartX;
+ For I := 1 To JustifyWordCount Do Begin
+  Ctx.X := XPos; Ctx.Y := JustifyLineY;
+  Ctx.TextColor := JustifyWords[I].TextColor;
+  Ctx.BgColor := JustifyWords[I].BgColor;
+  Ctx.TextStyle := JustifyWords[I].TextStyle;
+  If YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.LineHeight) Then
+   RenderStyledWord(Ctx, JustifyWords[I].Text, JustifyWords[I].Width);
+  If Length(JustifyWords[I].LinkHref) > 0 Then
+   AddLinkArea(XPos, JustifyLineY, XPos + JustifyWords[I].Width,
+               JustifyLineY + Ctx.LineHeight, JustifyWords[I].LinkHref, '');
+  Inc(XPos, JustifyWords[I].Width);
+  If I < JustifyWordCount Then Begin
+   Inc(XPos, Gap);
+   If Remainder > 0 Then Begin Inc(XPos); Dec(Remainder); End;
+  End;
+  JustifyWords[I].Text := '';
+  JustifyWords[I].LinkHref := '';
+ End;
+ JustifyWordCount := 0;
+ Ctx.X := SavedX; Ctx.Y := SavedY;
+ Ctx.TextColor := SavedColor; Ctx.BgColor := SavedBg;
+ Ctx.TextStyle := SavedStyle;
+End;
+
 Procedure RenderText(Var Ctx: RenderContext; Const Text: String);
 Var
  I, StartWord, EndWord, WordWidth: Integer;
@@ -7081,15 +7157,36 @@ Begin
     qui demande explicitement de ne jamais retourner a la ligne -
     utilise par ex. par les icones d'en-tete en sprite) }
   If (Not Ctx.NoWrap) And (Ctx.X + WordWidth > Ctx.MaxX) And
-     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then Begin
+   If Ctx.TextAlignMode = ALIGN_JUSTIFY Then
+    FlushJustifiedLine(Ctx, True);
    RenderNewLine(Ctx);
+  End;
 
   { Afficher le mot uniquement s'il est dans la bande visible (entre
     la barre d'URL et la barre de defilement horizontale) ; on avance
     quand meme Ctx.X pour garder une mise en page coherente et pour
     detecter un eventuel debordement (mot plus large que la zone). }
-  If (Ctx.Y >= RENDER_AREA_Y) And
-     (Ctx.Y <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)) Then
+  If Ctx.TextAlignMode = ALIGN_JUSTIFY Then Begin
+   If JustifyWordCount >= MAX_JUSTIFY_WORDS Then
+    FlushJustifiedLine(Ctx, False);
+   If JustifyWordCount = 0 Then Begin
+    JustifyLineStartX := Ctx.X;
+    JustifyLineY := Ctx.Y;
+   End;
+   Inc(JustifyWordCount);
+   JustifyWords[JustifyWordCount].Text := Word;
+   JustifyWords[JustifyWordCount].Width := WordWidth;
+   JustifyWords[JustifyWordCount].TextColor := Ctx.TextColor;
+   JustifyWords[JustifyWordCount].BgColor := Ctx.BgColor;
+   JustifyWords[JustifyWordCount].TextStyle := Ctx.TextStyle;
+   If Ctx.InLink Then
+    JustifyWords[JustifyWordCount].LinkHref := Ctx.CurrentLinkHref
+   Else
+    JustifyWords[JustifyWordCount].LinkHref := '';
+  End
+  Else If (Ctx.Y >= RENDER_AREA_Y) And
+          (Ctx.Y <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)) Then
    RenderStyledWord(Ctx, Word, WordWidth);
   Ctx.X := Ctx.X + WordWidth;
   If Ctx.X > ContentOverflowX Then ContentOverflowX := Ctx.X;
@@ -14251,8 +14348,10 @@ Begin
 
  { Rendre le document avec application des styles CSS }
  ContentOverflowX := RENDER_AREA_X;
+ JustifyWordCount := 0;
  InContentRenderPass := True;
  RenderHTMLNode(Doc, Ctx);
+ FlushJustifiedLine(Ctx, False);
  RenderAbsolutePositionedOverlays(Ctx);
  InContentRenderPass := False;
 
