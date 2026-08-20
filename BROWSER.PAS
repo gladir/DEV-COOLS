@@ -991,6 +991,13 @@ Var
  CanScrollDown: Boolean;
  CanScrollLeft: Boolean;
  CanScrollRight: Boolean;
+ { True uniquement pendant le premier rendu d'un nouveau document. Un
+   defilement repeint le DOM existant et ne doit surtout pas reexecuter les
+   balises SCRIPT (sinon JSCookMenu.js recree fonctions, objets et menus a
+   chaque pression de fleche jusqu'a epuiser le tas). Les gestionnaires
+   d'evenements et setTimeout appellent JSExecuteScript directement et ne
+   sont donc pas bloques par ce drapeau. }
+ ExecuteDocumentScripts: Boolean;
  ContentOverflowX: Integer;    { X maximal atteint pendant le rendu (mots non coupables) }
  RenderOriginX: Integer;       { = RENDER_AREA_X - ScrollX, ancre du contenu }
  RenderOriginY: Integer;       { = RENDER_AREA_Y - ScrollY, ancre du contenu }
@@ -8791,6 +8798,10 @@ Var
  ResolvedPath: String;
  ExtSource: HTMLSourceBuffer;
 Begin
+ { Une balise script est executee au chargement du document, pas a chaque
+   repaint provoque par ScrollPageBy/RescrollPage. }
+ If Not ExecuteDocumentScripts Then Exit;
+
  { Verifier le type de script }
  ScriptType := GetNodeAttribute(Node, 'type');
  ScriptSrc := GetNodeAttribute(Node, 'src');
@@ -10313,8 +10324,10 @@ Type
  JPEGHuffmanTable = Record
   Bits: Array[0..15] Of Byte;    { Nombre de codes par longueur }
   Values: Array[0..255] Of Byte; { Valeurs des symboles }
-  MinCode: Array[0..15] Of Integer; { Code minimum par longueur }
-  MaxCode: Array[0..15] Of Integer; { Code maximum par longueur }
+  { Un code Huffman JPEG peut occuper 16 bits et atteindre $FFFF.
+    Integer est signe sur 16 bits en mode TP : LongInt est indispensable. }
+  MinCode: Array[0..15] Of LongInt; { Code minimum par longueur }
+  MaxCode: Array[0..15] Of LongInt; { Code maximum par longueur }
   ValPtr: Array[0..15] Of Integer;  { Index dans Values }
   NumCodes: Integer;
   Valid: Boolean;
@@ -10539,7 +10552,8 @@ End;
 { Decoder un symbole Huffman }
 Function JPEGDecodeHuffman(Var Table: JPEGHuffmanTable): Integer;
 Var
- Code, BitLen: Integer;
+ Code: LongInt;
+ BitLen: Integer;
  Index: Integer;
 Begin
  JPEGDecodeHuffman := -1;
@@ -10580,7 +10594,8 @@ End;
 { Construire les codes Huffman a partir des bits }
 Procedure JPEGBuildHuffmanCodes(Var Table: JPEGHuffmanTable);
 Var
- Code, I, J: Integer;
+ Code: LongInt;
+ I, J: Integer;
  Count: Integer;
 Begin
  Code := 0;
@@ -14308,7 +14323,9 @@ Begin
   HTMLDocument := Doc;
   ScrollX := 0;
   ScrollY := 0;
+  ExecuteDocumentScripts := True;
   RenderHTMLDocument(HTMLDocument);
+  ExecuteDocumentScripts := False;
  End;
 End;
 
@@ -14317,6 +14334,7 @@ End;
 Procedure RescrollPage;
 Begin
  If HTMLDocument = Nil Then Exit;
+ ExecuteDocumentScripts := False;
  RenderHTMLDocument(HTMLDocument);
 End;
 
