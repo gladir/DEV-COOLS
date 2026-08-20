@@ -1,0 +1,1151 @@
+==============================================================================
+ ATARI 5200 SUPER SYSTEM - MATERIEL ET PROGRAMMATION
+ Reference 6502C, ANTIC, GTIA, POKEY, BIOS et controleurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console Atari 5200 : architecture electronique, variantes
+a quatre et deux ports, CPU 6502C, ANTIC, GTIA, POKEY, memoire, BIOS, cartouches,
+controleurs analogiques et programmation. Il vise les auteurs de jeux, outils,
+cartouches, diagnostics et emulateurs.
+
+La 5200 reutilise la famille de circuits des ordinateurs Atari 400/800, mais elle
+n'est pas compatible binaire : carte memoire, BIOS, connectique et entrees sont
+differents. Elle n'emploie pas le RIOT 6532 de l'Atari VCS. Les accents sont omis
+afin de conserver un fichier ASCII compatible avec les anciens assembleurs.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Modeles a quatre et deux ports
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges, television et cycles
+  6. CPU 6502C/SALLY
+  7. Jeu d'instructions 6502
+  8. Adressage, pile et interruptions
+  9. Carte memoire
+ 10. Cartouches et interlock
+ 11. Formats de cartouches et banking
+ 12. BIOS et sequence de demarrage
+ 13. Services, vecteurs et variables BIOS
+ 14. ANTIC : architecture
+ 15. Registres ANTIC
+ 16. Display lists
+ 17. Modes ANTIC
+ 18. DMA et vol de cycles
+ 19. Defilement fin
+ 20. DLI, VBI et WSYNC
+ 21. GTIA : architecture
+ 22. Registres GTIA
+ 23. Couleurs et modes GTIA
+ 24. Player/Missile Graphics
+ 25. Priorites et collisions
+ 26. POKEY : architecture
+ 27. Registres POKEY
+ 28. Audio POKEY
+ 29. Timers, IRQ et nombres aleatoires
+ 30. Joysticks analogiques
+ 31. Clavier, Start, Pause, Reset et gachettes
+ 32. Trak-Ball et autres controleurs
+ 33. Differences avec Atari 400/800
+ 34. Assembleur : cartouche minimale
+ 35. Assembleur : initialisation video
+ 36. Assembleur : display list
+ 37. Assembleur : DLI et couleurs
+ 38. Assembleur : Player/Missile
+ 39. Assembleur : lecture des controleurs
+ 40. Assembleur : son POKEY
+ 41. C avec cc65
+ 42. RAM, zero page et organisation d'un jeu
+ 43. Graphismes et animation
+ 44. Son, musique et mixage logiciel
+ 45. Optimisation
+ 46. Construction d'une image cartouche
+ 47. Portage depuis Atari 8 bits
+ 48. Debogage et tests sur materiel
+ 49. Conseils pour un emulateur
+ 50. Emulation du 6502C et du bus
+ 51. Emulation ANTIC
+ 52. Emulation GTIA
+ 53. Emulation POKEY et controleurs
+ 54. Emulation BIOS et cartouches
+ 55. Plan de validation
+ 56. Electronique et signaux
+ 57. Diagnostic et maintenance
+ 58. Preservation
+ 59. Securite et limites juridiques
+ 60. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Atari lance la 5200 en 1982 comme successeur haut de gamme de la VCS/2600 et
+reponse a l'Intellivision et a la ColecoVision. Son materiel derive fortement de
+la gamme Atari 400/800 de 1979 : ANTIC genere le playfield, GTIA compose couleurs
+et objets, POKEY produit son et lit les controleurs, et un 6502C execute le jeu.
+
+Cette reutilisation n'apporte pas la compatibilite logicielle avec les ordinateurs.
+Atari change adresses I/O, RAM, ROM, BIOS et connecteurs. La source d'un jeu Atari
+8 bits peut souvent etre adaptee; son executable ne peut pas simplement etre mis
+sur cartouche 5200.
+
+
+==============================================================================
+2. MODELES A QUATRE ET DEUX PORTS
+==============================================================================
+
+Le premier CX5200 possede quatre ports de controleur. Son alimentation passe par
+un boitier RF automatique particulier qui combine secteur et signal television.
+Le modele tardif a deux ports utilise une alimentation branchee directement a la
+console et un commutateur RF plus conventionnel.
+
+La version deux ports modifie logique de controleurs et compatibilite avec le
+VCS Cartridge Adapter. Les quatre ports d'origine ne sont pas tous presents :
+POT4-POT7/TRIG2-3 sont absents ou cablages differents selon carte. Des BIOS C019156
+et C019156A existent; ne pas identifier la machine par BIOS seul.
+
+Un jeu raisonnable accepte deux ports, sonde les autres sans bloquer et ne depend
+pas d'une valeur flottante particuliere sur les entrees absentes.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU          Atari/ MOS 6502C dit SALLY, environ 1,79 MHz NTSC
+RAM          16 Kio, $0000-$3FFF
+ROM cart.    fenetre de 32 Kio, $4000-$BFFF
+Video        ANTIC + GTIA, sortie RF NTSC pour modeles commerciaux US
+Son          POKEY, quatre canaux
+BIOS         2 Kio, $F800-$FFFF; charset et code systeme
+Entrees      2 ou 4 controleurs analogiques a clavier 12 touches
+Resolution   modes playfield de 40 a 320 pixels logiques par ligne
+Sprites      quatre players + quatre missiles materiels
+
+Il n'existe pas de framebuffer unique obligatoire. ANTIC interprete une display
+list et lit les donnees de chaque ligne par DMA. La resolution, le nombre de
+couleurs et le cout bus dependent du mode choisi.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+                 +---------------------+
+                 | 6502C / SALLY       |
+                 +----------+----------+
+                            | bus adresse/donnees
+       +--------------------+--------------------------+
+       |                    |                          |
+ +-----v------+      +------v------+           +-------v------+
+ | ANTIC DMA  |----->| GTIA video  |           | POKEY        |
+ | display    |      | PM/couleurs |           | son/ADC/IRQ  |
+ +------------+      +-------------+           +--------------+
+       |                    |                          |
+  RAM/cartouche          RF video            controleurs/expansion
+
+ANTIC demande le bus par HALT et lit display list, playfield et Player/Missile.
+GTIA combine les flux et produit luminance/chrominance. POKEY mesure les huit
+potentiometres, balaye le clavier et genere quatre voix/timers.
+
+
+==============================================================================
+5. HORLOGES, TELEVISION ET CYCLES
+==============================================================================
+
+NTSC utilise un color clock proche de 3,58 MHz. Le CPU avance normalement a la
+moitie, environ 1,79 MHz. Une ligne video fait 228 color clocks, equivalant a 114
+cycles CPU potentiels avant vols DMA. Une image NTSC comporte typiquement 262
+lignes et une cadence proche de 59,92 Hz.
+
+ANTIC DMA retire des cycles selon largeur/mode, refresh, display list et PMG.
+`WSYNC` arrete le CPU jusqu'a la fin de ligne. Les positions de changements couleur
+se mesurent en color clocks; une instruction 6502 n'a pas un cout constant visible
+si ANTIC vole des cycles.
+
+Des prototypes ou conversions PAL peuvent exister, mais le logiciel retail doit
+etre considere NTSC sauf detection/conception explicite.
+
+
+==============================================================================
+6. CPU 6502C/SALLY
+==============================================================================
+
+SALLY est compatible 6502 NMOS pour les instructions documentees et ajoute une
+entree HALT permettant a ANTIC de prendre le bus proprement. Registres : A, X, Y,
+SP 8 bits, PC 16 bits et P (N,V,bit5,B,D,I,Z,C).
+
+Zero page $0000-$00FF offre adressages courts. Pile est $0100-$01FF, SP pointant
+le bas. Le CPU est little-endian : mot $1234 stocke $34 puis $12. Le mode decimal
+existe; IRQ met I mais ne garantit pas une arithmetique binaire si le programme
+n'a pas execute CLD.
+
+
+==============================================================================
+7. JEU D'INSTRUCTIONS 6502
+==============================================================================
+
+Chargements/transferts : LDA, LDX, LDY, STA, STX, STY, TAX, TAY, TXA, TYA,
+TSX, TXS. Pile : PHA, PHP, PLA, PLP.
+
+ALU : ADC, SBC, AND, ORA, EOR, CMP, CPX, CPY, BIT. Increments/decrements : INC,
+DEC, INX, DEX, INY, DEY. Decalages : ASL, LSR, ROL, ROR.
+
+Controle : JMP, JSR, RTS, RTI, BRK, NOP. Branches : BCC, BCS, BEQ, BNE, BMI,
+BPL, BVC, BVS. Drapeaux : CLC, SEC, CLI, SEI, CLD, SED, CLV.
+
+Adressages : implied, accumulator, immediate, zero page, zp X/Y, absolute,
+absolute X/Y, indirect JMP, indexed indirect `(zp,X)`, indirect indexed `(zp),Y`,
+relative. Une branche prise coute un cycle de plus, plus un si page franchie;
+plusieurs lectures indexees ont page-cross penalty.
+
+Les opcodes NMOS non documentes existent mais ne sont pas une interface portable.
+Certains combinent ALU/memoire; d'autres bloquent le CPU. Les eviter en logiciel.
+
+
+==============================================================================
+8. ADRESSAGE, PILE ET INTERRUPTIONS
+==============================================================================
+
+Vecteurs CPU : NMI $FFFA-$FFFB, RESET $FFFC-$FFFD, IRQ/BRK $FFFE-$FFFF. ANTIC
+VBI/DLI utilise NMI. POKEY et certaines sources utilisent IRQ. Reset vient aussi
+du clavier/BIOs selon circuit.
+
+IRQ/NMI poussent PC haut, PC bas et P, puis chargent vecteur. RTI restaure P et PC.
+Une ISR doit sauver A/X/Y modifies et acquitter la source materielle avant RTI.
+NMI ne respecte pas I; une DLI peut interrompre le code principal meme sous SEI.
+
+Le bug JMP indirect de page NMOS (`JMP ($xxFF)`) lit octet haut dans `$xx00`.
+Un emulateur doit le reproduire.
+
+
+==============================================================================
+9. CARTE MEMOIRE
+==============================================================================
+
+$0000-$3FFF  RAM 16 Kio
+$4000-$BFFF  cartouche, fenetre 32 Kio
+$C000-$CFFF  GTIA, miroirs; registres de base $C000-$C01F
+$D000-$D3FF  non selectionne/open bus selon decodage
+$D400-$D5FF  ANTIC, miroirs; base $D400-$D40F
+$D600-$E7FF  non selectionne/open bus
+$E800-$EFFF  POKEY, miroirs; base $E800-$E80F
+$F000-$F7FF  non selectionne/open bus
+$F800-$FBFF  jeu de caracteres BIOS, egalement partie ROM BIOS
+$FC00-$FFFF  code BIOS et vecteurs
+
+Le BIOS physique fait 2 Kio et occupe $F800-$FFFF. Le charset est lu par ANTIC
+comme donnees ROM; le code se concentre surtout en haut. Les zones ouvertes ne
+doivent pas servir de RAM et leurs valeurs varient avec le dernier bus/modele.
+
+
+==============================================================================
+10. CARTOUCHES ET INTERLOCK
+==============================================================================
+
+Le connecteur fournit A0-A14/selection de demi-fenetres, D0-D7, R/W, horloges,
+alimentation et lignes d'identification/interlock. Deux contacts longs participent
+a la mise sous tension : la console quatre ports est normalement hors tension
+sans cartouche correctement inseree.
+
+La fenetre $4000-$BFFF est dediee, sans RAM sous-jacente comme sur certains Atari
+8 bits. Une cartouche simple peut decoder 4, 8, 16 ou 32 Kio et laisser des miroirs
+selon cablage. Les cartes modernes ajoutent banking/flash, non standard Atari.
+
+Ne jamais inserer/retirer sous tension. Les connecteurs sales augmentent resistance
+et peuvent interrompre interlock ou donnees.
+
+
+==============================================================================
+11. FORMATS DE CARTOUCHES ET BANKING
+==============================================================================
+
+Images brutes sont souvent `.bin` ou `.a52`; l'extension ne decrit pas toujours
+le mapping. Types courants dans emulateurs : ROM 4K/8K/16K/32K, bank-switched et
+formats homebrew. Une image 32K correspond directement $4000-$BFFF.
+
+Petites ROM sont souvent placees/miroirees vers $8000-$BFFF afin que l'en-tete
+$BFE8-$BFFF reste visible. Banking homebrew utilise ecritures/lectures d'adresses
+convenues : documenter le mapper dans metadonnees, car il n'existe pas d'en-tete
+universel dans une ROM brute.
+
+Un emulateur ne doit pas inferer seulement par taille lorsque plusieurs cablages
+sont possibles. Base de donnees/hash ou conteneur explicite est preferable.
+
+
+==============================================================================
+12. BIOS ET SEQUENCE DE DEMARRAGE
+==============================================================================
+
+Apres RESET, le BIOS initialise pile et materiel, valide/presente la cartouche,
+prepare un ecran logo Atari avec effet arc-en-ciel, active VBI/DLI et balayage
+clavier, attend la sequence d'introduction puis transfere au jeu.
+
+Les octets $BFE8-$BFFB contiennent typiquement un titre de 20 caracteres codes
+ANTIC; $BFFC-$BFFD une annee/copyright selon convention. $BFFE-$BFFF contient le
+vecteur d'entree cartouche little-endian. Le BIOS saute indirectement par ce mot.
+
+Le BIOS existe au moins en revisions C019156 et C019156A. Un jeu doit initialiser
+ce dont il depend et ne pas verifier un hash de BIOS pour choisir le nombre de ports.
+
+
+==============================================================================
+13. SERVICES, VECTEURS ET VARIABLES BIOS
+==============================================================================
+
+Le petit BIOS n'est pas un OS CIO/SIO complet. Il fournit surtout reset, logo,
+gestion NMI, VBI, lecture controleurs, ombres video et routage cartouche. Des
+variables en zero page/RAM tiennent horloge, critique, couleurs, display list,
+valeurs POT et vecteurs logiciels immediate/deferred VBI/DLI.
+
+Le handler NMI lit NMIST, acquitte NMIRES, distingue DLI et VBI, puis passe par les
+vecteurs RAM. La VBI sauvegarde A/X/Y, incremente horloge, respecte le drapeau de
+section critique, copie les ombres vers ANTIC/GTIA, lit POT0-7, relance POTGO et
+appelle le vecteur VBI differe.
+
+Pour une compatibilite durable, utiliser un fichier d'equates tire du desassemblage
+de la revision cible et conserver le BIOS actif. Les adresses de routines internes
+non vectorisees ne sont pas une ABI promise. Une cartouche bare metal peut remplacer
+les vecteurs, mais doit alors assurer NMI, clavier et video elle-meme.
+
+
+==============================================================================
+14. ANTIC : ARCHITECTURE
+==============================================================================
+
+ANTIC est un coprocesseur video. Il lit une display list composee d'instructions,
+charge les donnees playfield par DMA et transmet pixels a GTIA. Il gere largeur,
+scrolling, charset, Player/Missile DMA, VBI/DLI, light pen et WSYNC.
+
+Chaque instruction de mode indique mode 2..F, nombre de lignes, LMS optionnel,
+scroll H/V et DLI. Les instructions blank et JVB/JMP construisent la trame.
+ANTIC avance independamment du PC 6502 et peut traverser pages avec restrictions.
+
+
+==============================================================================
+15. REGISTRES ANTIC
+==============================================================================
+
+Base $D400, ecriture sauf indication :
+
+$D400 DMACTL  largeur playfield, DMA missile/player
+$D401 CHACTL  controle caracteres
+$D402 DLISTL  adresse display list bas
+$D403 DLISTH  adresse haut
+$D404 HSCROL  scroll horizontal
+$D405 VSCROL  scroll vertical
+$D407 PMBASE  base Player/Missile
+$D409 CHBASE  base charset
+$D40A WSYNC   attente ligne suivante
+$D40B VCOUNT  lecture compteur vertical /2
+$D40C PENH    lecture light pen horizontal
+$D40D PENV    lecture light pen vertical
+$D40E NMIEN   autorisation DLI/VBI/reset
+$D40F NMIRES  ecriture acquitte; lecture NMIST statut
+
+Les adresses se repetent dans la page decodee. VCOUNT compte par paires de lignes.
+NMIEN bits usuels $80 DLI, $40 VBI, $20 reset selon machine/cablage; RNMI n'est
+pas relie de la meme maniere sur 5200.
+
+
+==============================================================================
+16. DISPLAY LISTS
+==============================================================================
+
+Octet d'instruction : bas nibble mode; bit $10 HSCROL, $20 VSCROL, $40 LMS pour
+modes ou JMP pour instruction 1, $80 DLI. Blank instructions mode 0 utilisent bits
+hauts pour 1..8 lignes. `$41,lo,hi` est JVB (jump and wait for vertical blank).
+
+Exemple 24 lignes texte mode 2 :
+
+DisplayList:
+    .byte $70,$70,$70             ; 24 lignes vides
+    .byte $42,<Screen,>Screen     ; mode 2 + LMS
+    .repeat 23
+      .byte $02
+    .endrepeat
+    .byte $41,<DisplayList,>DisplayList
+
+Une LMS charge le Memory Scan Counter. Sans nouvelle LMS, il avance selon octets
+par ligne. Le compteur a une anomalie de wrap 4 Kio : organiser ecran/LMS afin de
+ne pas traverser une frontiere interdite au milieu d'une region.
+
+
+==============================================================================
+17. MODES ANTIC
+==============================================================================
+
+Modes caracteres :
+
+2  40 octets, 8 lignes, 2 couleurs/caractere haute resolution
+3  40 octets, 10 lignes, descendantes
+4  40 octets, 8 lignes, 4/5 couleurs selon bits du code
+5  40 octets, 16 lignes, version double hauteur mode 4
+6  20 octets, 8 lignes, cinq couleurs via bits hauts
+7  20 octets, 16 lignes, double hauteur mode 6
+
+Modes bitmap :
+
+8  10 octets, 8 lignes, 4 couleurs, pixels tres larges
+9  10 octets, 4 lignes, 2 couleurs
+A  20 octets, 4 lignes, 4 couleurs
+B  20 octets, 2 lignes, 2 couleurs
+C  20 octets, 1 ligne, 2 couleurs
+D  40 octets, 2 lignes, 4 couleurs
+E  40 octets, 1 ligne, 4 couleurs
+F  40 octets, 1 ligne, 2 couleurs haute resolution (320 pixels)
+
+Les couleurs finales et largeur visible dependent de DMACTL et PRIOR/GTIA. Les
+octets par ligne ci-dessus sont pour largeur normale et donnent ordre de grandeur;
+narrow/wide changent DMA et marges.
+
+
+==============================================================================
+18. DMA ET VOL DE CYCLES
+==============================================================================
+
+DMACTL bits 0-1 choisissent playfield none/narrow/normal/wide; bits suivants
+activent missile DMA, player DMA et resolution PM simple/double ligne. ANTIC vole
+cycles pour refresh, display list, playfield et PM. Wide playfield peut charger
+avant/apres zone visible et reduit fortement temps CPU.
+
+Character modes demandent aussi glyphes via CHBASE. Les badlines/chargements sont
+repartis dans la ligne. Une estimation seulement par nombre d'octets ne suffit pas
+aux effets cycle-exacts.
+
+
+==============================================================================
+19. DEFILEMENT FIN
+==============================================================================
+
+HSCROL specifie retard en color clocks pour les instructions marquees HSCROL.
+ANTIC charge davantage de donnees afin de couvrir bord. Pour scrolling continu,
+changer HSCROL jusqu'au pas coarse, puis avancer adresse LMS et reajuster fin.
+
+VSCROL indique premiere ligne dans un bloc vertical scrolle. Les instructions
+marquees VSCROL forment une region; la derniere ligne et le passage a la suivante
+ont des regles particulieres. Modifier en milieu d'image permet splits mais exige
+DLI correctement positionnee.
+
+
+==============================================================================
+20. DLI, VBI ET WSYNC
+==============================================================================
+
+VBI arrive au debut de blank vertical; DLI a la derniere ligne d'une instruction
+marquee. Les deux partagent NMI. Lire NMIST bit $80 DLI/$40 VBI, puis ecrire NMIRES.
+
+Une DLI change souvent couleur/PRIOR/scroll. `STA WSYNC` suspend jusqu'au prochain
+horizontal sync et aligne le changement, mais consomme le reste de ligne. Sauver
+A/X/Y avant usage et restaurer dans ordre inverse; terminer RTI.
+
+Une DLI trop longue chevauche ligne ou VBI. Les DMA ANTIC modifient ses cycles.
+Mesurer avec carte de timings, pas seulement un emulateur permissif.
+
+
+==============================================================================
+21. GTIA : ARCHITECTURE
+==============================================================================
+
+GTIA recoit pixels ANTIC et Player/Missile, applique priorites/collisions, registres
+couleur et modes speciaux, puis produit video. Sur 5200 il est mappe $C000 au lieu
+de $D000 sur Atari 400/800.
+
+Les quatre lignes `CONSOL`, entrees de touches console sur ordinateur, sont ici
+utilisees comme sorties : selection du controleur pour clavier/gachette haute et
+commande de mesure analogique. Les gachettes basses arrivent par TRIG0-3.
+
+
+==============================================================================
+22. REGISTRES GTIA
+==============================================================================
+
+Lecture $C000-$C00F : collisions M0PF..P3PL. $C010-$C013 : TRIG0..TRIG3.
+Ecriture aux memes offsets :
+
+$C000-$C003 HPOSP0-3 positions players
+$C004-$C007 HPOSM0-3 positions missiles
+$C008-$C00B SIZEP0-3 tailles players
+$C00C SIZEM tailles missiles
+$C00D-$C010 GRAFP0-3 donnees players
+$C011 GRAFM donnees missiles
+$C012-$C015 COLPM0-3 couleurs players/missiles
+$C016-$C019 COLPF0-3 couleurs playfield
+$C01A COLBK fond
+$C01B PRIOR priorites et modes GTIA
+$C01C VDELAY retard vertical
+$C01D GRACTL activation players/missiles et latch triggers
+$C01E HITCLR effacement collisions
+$C01F CONSOL lecture/ecriture lignes console selon plateforme
+
+Selon documentation, les offsets autour de GRAFM/COLPM doivent etre verifies avec
+un header materiel : la table complete est identique au GTIA Atari, base changee.
+
+
+==============================================================================
+23. COULEURS ET MODES GTIA
+==============================================================================
+
+Un octet couleur combine teinte bits 7-4 et luminance bits 3-0; le bit bas de
+luminance est non significatif sur sortie normale, donnant huit niveaux utiles.
+La phase analogique, palette et television changent le rendu reel.
+
+PRIOR bits hauts selectionnent modes GTIA 9/10/11 quand ANTIC mode F alimente des
+nibbles : mode 9 donne 16 luminances d'une teinte, mode 11 seize teintes a une
+luminance, mode 10 neuf couleurs issues des registres. Les changements de PRIOR
+en DLI creent plusieurs bandes/modes dans une image.
+
+
+==============================================================================
+24. PLAYER/MISSILE GRAPHICS
+==============================================================================
+
+Quatre players de 8 bits de large et quatre missiles de 2 bits sont positionnes
+horizontalement, elargissables x1/x2/x4. En DMA PM, ANTIC lit une ligne depuis une
+zone basee sur PMBASE; resolution simple ou double ligne determine disposition.
+Sans DMA, le CPU ecrit GRAFP/GRAFM a chaque ligne.
+
+Alignement PMBASE : zone plus grande et base plus fortement alignee en simple-line
+qu'en double-line. Utiliser les masques/equates ANTIC exacts. GRACTL active DMA
+visuel et latch trigger. VDELAY retarde certains objets d'une ligne.
+
+Pour animer : garder position logique, effacer ancien octet dans buffer PM, ecrire
+nouveau, puis HPOS. Reutiliser un player verticalement par DLI/CPU permet plus de
+quatre objets, avec budget strict.
+
+
+==============================================================================
+25. PRIORITES ET COLLISIONS
+==============================================================================
+
+PRIOR choisit ordre players/playfield, fifth player (missiles combines), objets
+superposes et modes GTIA. Les tables exactes sont non triviales : certains joueurs
+fusionnent/masquent selon groupes. Tester les combinaisons utilisees.
+
+Registres collision indiquent chevauchements missile/playfield, player/playfield,
+missile/player et player/player. Ils sont latches depuis dernier HITCLR; lire ne
+les efface pas. Ecrire HITCLR a debut de frame, lire apres rendu, puis traiter.
+Une collision peut etre enregistree meme si la priorite rend un objet invisible.
+
+
+==============================================================================
+26. POKEY : ARCHITECTURE
+==============================================================================
+
+POKEY combine quatre canaux audio, diviseurs/timers, generateurs polynomiaux,
+convertisseur de huit potentiometres, clavier, IRQ, aleatoire et serie. Sur 5200
+il est a $E800 avec miroirs dans $E800-$EFFF.
+
+Les huit POT sont axes X/Y de quatre controleurs. Le clavier POKEY balaie les
+touches du controleur selectionne par CONSOL. Les lignes serie vont au connecteur
+d'expansion mais la console n'a pas le SIO complet des ordinateurs.
+
+
+==============================================================================
+27. REGISTRES POKEY
+==============================================================================
+
+Lecture / ecriture, base $E800 :
+
+$0 POT0 / AUDF1        $1 POT1 / AUDC1
+$2 POT2 / AUDF2        $3 POT3 / AUDC2
+$4 POT4 / AUDF3        $5 POT5 / AUDC3
+$6 POT6 / AUDF4        $7 POT7 / AUDC4
+$8 ALLPOT / AUDCTL     $9 KBCODE / STIMER
+$A RANDOM / SKREST     $B non utilise / POTGO
+$C SERIN / non utilise $D IRQST / SEROUT
+$E SKSTAT / IRQEN      $F non utilise / SKCTL
+
+Les lectures IRQST/SKSTAT sont actives bas pour plusieurs bits. SKREST acquitte
+erreurs serie/clavier; STIMER remet compteurs audio; POTGO relance conversion.
+Bits reserves et miroirs ne sont pas stockage ordinaire.
+
+
+==============================================================================
+28. AUDIO POKEY
+==============================================================================
+
+Chaque AUDFn donne diviseur; AUDCn choisit volume 0-15, volume-only, tonalite pure
+ou bruit par polynomes. AUDCTL selectionne horloge 15/64 kHz, horloge 1,79 MHz
+pour canaux, jointure 1+2/3+4 en 16 bits, filtres high-pass et poly9/poly17.
+
+Frequence approximative depend du mode : `clock/(2*(AUDF+offset))`, mais offset,
+jointure et polynome imposent equations exactes. POKEY produit distorsions 1,2,4,
+5,9 ou 17 bits selon combinaisons. Volume-only permet DAC logiciel 4 bits mais
+consomme CPU et peut avoir artefacts analogiques.
+
+Quatre canaux ne signifient pas quatre oscillateurs independants : AUDCTL les
+couple. Ecrire STIMER remet phases/diviseurs, utile pour synchroniser mais audible.
+
+
+==============================================================================
+29. TIMERS, IRQ ET NOMBRES ALEATOIRES
+==============================================================================
+
+Timers audio 1,2,4 peuvent demander IRQ selon IRQEN. IRQST indique pending en bits
+actifs bas. Le CPU vectorise $FFFE; handler identifie source, l'acquitte/desactive
+correctement puis RTI. Les timers continuent meme si son inaudible.
+
+RANDOM lit l'etat d'un LFSR 9 ou 17 bits choisi par AUDCTL et cadence par horloge.
+SKCTL doit activer POKEY pour fonctionnement normal. La valeur n'est pas un PRNG
+cryptographique; elle depend du temps exact depuis reset/ecritures.
+
+
+==============================================================================
+30. JOYSTICKS ANALOGIQUES
+==============================================================================
+
+Controleur CX52 a stick non centre automatiquement : deux potentiometres donnent
+X/Y. POT0/1 port 1, POT2/3 port 2, POT4/5 port 3, POT6/7 port 4. Valeurs pratiques
+environ 1..228, centre nominal vers 114 mais derive avec usure/calibration.
+
+POKEY mesure temps de charge : ecrire POTGO, attendre conversion ou surveiller
+ALLPOT, puis lire POTn. Le BIOS garde ombres et relance chaque VBI. Ne pas tester
+une egalite au centre; appliquer dead zone et calibrage min/max. Les valeurs hors
+zone ou $E4 indiquent direction extreme, circuit ouvert ou scan incomplet selon cas.
+
+CONSOL bit 2 controle/autorise le circuit potentiometres sur 5200; conserver la
+configuration BIOS avant lecture directe.
+
+
+==============================================================================
+31. CLAVIER, START, PAUSE, RESET ET GACHETTES
+==============================================================================
+
+Chaque controleur a clavier 0-9, `*`, `#`, Start, Pause, Reset, gachettes haute et
+basse. CONSOL bits 0-1 selectionnent le port dont clavier/gachette haute est balaye.
+KBCODE contient un code de touche; SKSTAT/IRQ indiquent key down/overrun.
+
+La gachette basse arrive par TRIG0-3, active bas. La gachette haute est cablee sur
+une ligne clavier POKEY et apparait comme combinaison SHIFT/CONTROL/BREAK; elle peut
+declencher l'IRQ BREAK. Start/Pause/Reset partagent matrice du clavier.
+
+Pour multijoueur, selectionner port, laisser le scanner se stabiliser, lire code/
+etat, puis passer au suivant. Le BIOS effectue ce multiplexage. Des touches pressees
+sur plusieurs ports ne sont pas simultanement visibles par KBCODE.
+
+
+==============================================================================
+32. TRAK-BALL ET AUTRES CONTROLEURS
+==============================================================================
+
+CX53 Trak-Ball se branche comme controleur 5200 et utilise les voies analogiques,
+clavier/gachettes. Son mouvement relatif doit etre interprete/calibre selon mode.
+Des adaptateurs modernes convertissent sticks numeriques en resistances/valeurs
+analogiques; leurs centres et latences varient.
+
+Le VCS Cartridge Adapter ajoute materiel 2600 et n'est pas un simple mapper ROM.
+Sa compatibilite depend de revision deux ports ou modification quatre ports. Les
+interfaces d'expansion/prototypes ne doivent pas etre considerees standard retail.
+
+
+==============================================================================
+33. DIFFERENCES AVEC ATARI 400/800
+==============================================================================
+
+Atari ordinateur              Atari 5200
+RAM souvent $0000...          seulement 16K $0000-$3FFF
+GTIA $D000                    GTIA $C000
+POKEY $D200                   POKEY $E800
+ANTIC $D400                   ANTIC $D400
+OS 10K et CIO/SIO             BIOS 2K minimal
+PIA $D300, joystick digital   pas PIA; analogique via POKEY
+SIO/peripheriques             lignes serie seulement sur expansion
+touches console en entree     CONSOL utilise comme sorties de selection
+cartouches $8000/$A000        grande fenetre $4000-$BFFF
+
+Les registres ANTIC sont presque identiques; GTIA/POKEY changent seulement base et
+cablage externe. Les ombres/vecteurs OS ordinateur ne sont pas tous presents.
+
+
+==============================================================================
+34. ASSEMBLEUR : CARTOUCHE MINIMALE
+==============================================================================
+
+Exemple ca65 pour ROM 32 Kio liee a $4000. Le linker doit placer les derniers
+octets exactement a $BFE8 :
+
+        .segment "CODE"
+Start:  sei
+        cld
+        ldx #$FF
+        txs
+        lda #0
+        sta $D400             ; DMACTL off
+Loop:  jmp Loop
+
+        .segment "HEADER"
+Title:  .byte "MINIMAL 5200        " ; 20 codes a adapter au charset ANTIC
+Year:   .byte "26"
+Entry:  .word Start
+
+Le texte n'est pas ASCII necessairement : le BIOS attend codes ecran ANTIC. La
+configuration linker doit remplir $4000-$BFFF et mettre Entry a $BFFE.
+
+
+==============================================================================
+35. ASSEMBLEUR : INITIALISATION VIDEO
+==============================================================================
+
+DMACTL  = $D400
+DLISTL  = $D402
+DLISTH  = $D403
+CHBASE  = $D409
+COLPF1  = $C017
+COLBK   = $C01A
+
+        sei
+        lda #0
+        sta DMACTL
+        lda #<DisplayList
+        sta DLISTL
+        lda #>DisplayList
+        sta DLISTH
+        lda #$F8              ; charset BIOS $F800
+        sta CHBASE
+        lda #$0E
+        sta COLPF1
+        lda #$00
+        sta COLBK
+        lda #%00100010        ; playfield normal, DMA playfield
+        sta DMACTL
+        cli
+
+Verifier masque DMACTL dans equates utilisees; $22 est un exemple playfield normal
+sans PM DMA dans la convention ANTIC standard.
+
+
+==============================================================================
+36. ASSEMBLEUR : DISPLAY LIST
+==============================================================================
+
+        .align 256
+Screen:
+        .res 40*24,0
+
+DisplayList:
+        .byte $70,$70,$70
+        .byte $42,<Screen,>Screen
+        .repeat 23
+          .byte $02
+        .endrepeat
+        .byte $41,<DisplayList,>DisplayList
+
+L'alignement de Screen simplifie les frontieres 4K mais ne garantit pas a lui seul
+que 960 octets ne franchissent aucune contrainte; calculer adresse finale. Ecrire
+codes ecran, pas ASCII direct (`A` n'a pas necessairement code $41 a l'affichage).
+
+
+==============================================================================
+37. ASSEMBLEUR : DLI ET COULEURS
+==============================================================================
+
+NMIEN   = $D40E
+NMIST   = $D40F
+WSYNC   = $D40A
+COLBK   = $C01A
+
+DLI:
+        pha
+        lda #0
+        sta WSYNC
+        lda #$46
+        sta COLBK
+        lda #0
+        sta NMIST             ; ecriture NMIRES
+        pla
+        rti
+
+Installer le vecteur RAM employe par le handler BIOS, marquer une instruction de
+display list avec $80 et activer NMIEN $80. Si on remplace le vecteur CPU NMI, il
+faut distinguer VBI/DLI soi-meme et ne pas casser la VBI BIOS.
+
+
+==============================================================================
+38. ASSEMBLEUR : PLAYER/MISSILE
+==============================================================================
+
+PMBASE  = $D407
+GRACTL  = $C01D
+HPOSP0  = $C000
+COLPM0  = $C012
+
+; Exemple conceptuel double-line : reserver zone PM alignee selon ANTIC.
+        lda #>PMMemory
+        sta PMBASE
+        lda #$03              ; activer players et missiles
+        sta GRACTL
+        lda #100
+        sta HPOSP0
+        lda #$3A
+        sta COLPM0
+        lda #$FF
+        sta PMMemory+Player0Offset+50
+
+Les offsets et alignement changent avec simple/double-line; utiliser macros de la
+bibliotheque cible. Activer ensuite bits PM DMA de DMACTL.
+
+
+==============================================================================
+39. ASSEMBLEUR : LECTURE DES CONTROLEURS
+==============================================================================
+
+POTGO  = $E80B
+ALLPOT = $E808
+POT0   = $E800
+TRIG0  = $C010
+CONSOL = $C01F
+
+        lda #0
+        sta POTGO
+WaitPot:
+        lda ALLPOT
+        bne WaitPot           ; attendre toutes conversions terminees
+        lda POT0              ; X joueur 1
+        sta JoyX
+        lda POT0+1            ; Y joueur 1
+        sta JoyY
+        lda TRIG0
+        and #1
+        sta LowerFire
+
+La polarite de ALLPOT indique bits encore en conversion; une attente infinie est
+indesirable si controleur/circuit defectueux. Ajouter timeout ou lire les ombres
+BIOS mises a jour chaque VBI.
+
+
+==============================================================================
+40. ASSEMBLEUR : SON POKEY
+==============================================================================
+
+AUDF1  = $E800
+AUDC1  = $E801
+AUDCTL = $E808
+STIMER = $E809
+SKCTL  = $E80F
+
+        lda #3
+        sta SKCTL             ; fonctionnement POKEY normal
+        lda #0
+        sta AUDCTL
+        lda #$40
+        sta AUDF1
+        lda #$AF              ; distorsion/tonalite + volume 15
+        sta AUDC1
+        sta STIMER            ; valeur indifferente, reset timers
+
+Choisir AUDC a partir d'une table de timbres verifiee; `$A0|volume` est une forme
+courante de tonalite, mais AUDCTL et revision influencent resultat.
+
+
+==============================================================================
+41. C AVEC CC65
+==============================================================================
+
+#include <stdint.h>
+#include <atari5200.h>
+#include <_pokey.h>
+#include <_gtia.h>
+
+int main(void) {
+    uint8_t x, y;
+    for (;;) {
+        POKEY_WRITE.potgo = 0;
+        while (POKEY_READ.allpot) { }
+        x = POKEY_READ.pot0;
+        y = POKEY_READ.pot1;
+        GTIA_WRITE.hposp0 = x;
+        (void)y;
+    }
+}
+
+Les noms exacts des champs changent avec la version cc65; consulter `_pokey.h`,
+`_gtia.h`, `_antic.h` et le joystick driver `atr5200std.joy`. cc65 ne fournit pas
+necessairement un driver graphique 5200 : le programme configure ANTIC directement.
+
+
+==============================================================================
+42. RAM, ZERO PAGE ET ORGANISATION D'UN JEU
+==============================================================================
+
+16 Kio doivent contenir zero page/pile, variables, display lists, ecran, PMG,
+buffers audio et code copie en RAM. Le code principal reste en ROM. Reserver les
+locations BIOS avant attribuer zero page; le linker doit les exclure.
+
+Organisation : ROM code/tables/charset; RAM basse BIOS/ZP/pile; donnees jeu; ecran
+et PMG alignes. Une DLI en RAM evite certains conflits/cart banking. Cartouche
+bankee conserve routine de changement et IRQ/NMI visibles dans banque fixe.
+
+
+==============================================================================
+43. GRAPHISMES ET ANIMATION
+==============================================================================
+
+Choisir mode selon besoin : mode 2 pour texte fin, 4/5 couleur characters, E/F
+bitmap, GTIA 9/10/11 pour effets. Character modes economisent fortement RAM.
+
+Animation : modifier charset pour tuiles, changer codes ecran, scrolling LMS,
+players/missiles pour objets mobiles, DLI pour palettes/positions reutilisees.
+Double buffering complet est couteux dans 16K; bufferiser etat logique et faire
+mises a jour pendant VBI.
+
+
+==============================================================================
+44. SON, MUSIQUE ET MIXAGE LOGICIEL
+==============================================================================
+
+Un player musical ecrit AUDF/AUDC chaque VBI ou timer. Repartir basses avec canaux
+joints 16 bits, melodie en pure tone, percussion par polynomes. Les filtres 1->3
+et 2->4 offrent timbres/hautes frequences mais consomment deux canaux.
+
+DAC volume-only permet samples 4 bits a cadence timer/ligne, au prix d'un canal et
+CPU. Stocker samples compacts en ROM; banking ne doit pas interrompre ISR. Eviter
+de reinitialiser STIMER a chaque note si phase sonore doit rester continue.
+
+
+==============================================================================
+45. OPTIMISATION
+==============================================================================
+
+- compter cycles en incluant DMA ANTIC;
+- utiliser zero page pour pointeurs chauds;
+- aligner boucles afin d'eviter page-cross;
+- utiliser character modes plutot que bitmap quand possible;
+- narrow playfield ou DMA coupe durant calcul lourd;
+- VBI pour logique reguliere, DLI tres courte;
+- tables de multiplication/division et adressage de lignes;
+- self-modifying code uniquement en RAM avec discipline;
+- PMG pour objets plutot que restauration de fond CPU;
+- ne pas attendre POTGO en boucle si le BIOS fournit ombres.
+
+
+==============================================================================
+46. CONSTRUCTION D'UNE IMAGE CARTOUCHE
+==============================================================================
+
+Assembler avec ca65, MADS, DASM ou autre 6502. Le linker produit image brute a la
+taille/map choisie et place en-tete BIOS a $BFE8-$BFFF. Verifier vecteur entree,
+codes titre, checksum externe si conteneur/flashcart l'exige et remplissage.
+
+Pour ca65 : fichier cfg MEMORY commence ROM a $4000 taille $8000, segments CODE/
+RODATA et HEADER fixe $BFE8. Generer `.map`/labels. Tester image dans Altirra avec
+type 5200 explicite puis sur cartouche programmable autorisee.
+
+
+==============================================================================
+47. PORTAGE DEPUIS ATARI 8 BITS
+==============================================================================
+
+Travaux : relier a $0000-$3FFF/$4000-$BFFF; changer GTIA D0xx->C0xx, POKEY
+D2xx->E8xx; supprimer PIA/CIO/SIO/keyboard OS; remplacer joystick digital par POT/
+clavier; adapter vecteurs et charset BIOS; reduire RAM et format cartouche.
+
+ANTIC $D400 reste semblable, donc display lists et beaucoup de rendu se portent.
+Ne faire un remplacement aveugle de toutes les adresses : ombres OS et appels ROM
+ordinateur n'existent pas. Le son POKEY se porte surtout si timing identique.
+
+
+==============================================================================
+48. DEBOGAGE ET TESTS SUR MATERIEL
+==============================================================================
+
+Altirra fournit debugger, breakpoints, trace, ANTIC/GTIA viewers et profilage.
+Atari800, MAME et autres offrent comparaison. Une difference commune est le type
+de cartouche ou BIOS selectionne, pas le code CPU.
+
+Sur materiel : cartouche flash, ecran diagnostic, couleurs de bord par checkpoints,
+audio et analyseur logique sur bus/HSYNC. Le manuel de service utilise cartouche
+diagnostic et port board/loopback pour controleurs. Ne sonder RF/secteur sans
+isolation et competence.
+
+
+==============================================================================
+49. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Scheduler a color-clock ou demi-color-clock : ANTIC dirige trame et vole bus;
+6502 execute lorsqu'il l'obtient; GTIA compose pixels; POKEY avance horloges/ADC.
+Les changements de registre prennent effet a des positions precises.
+
+Modules : CPU NMOS+HALT, bus/open bus, cartridge mapper, ANTIC display-list/DMA,
+GTIA pipeline/collisions, POKEY audio/pots/keyboard/IRQ, BIOS et frontend. Save
+state conserve scanline/color clock, DMA, LFSR, pot scan et touches multiplexees.
+
+
+==============================================================================
+50. EMULATION DU 6502C ET DU BUS
+==============================================================================
+
+Implementer chaque acces par cycle : dummy reads/writes, page-cross, RMW ecrit
+ancienne puis nouvelle valeur, IRQ sampling, NMI edge, decimal NMOS, BRK et JMP
+indirect bug. ANTIC peut stopper CPU via HALT/RDY aux points permis.
+
+Decode miroirs GTIA/ANTIC/POKEY et ROM/cart; zones ouvertes retournent bus selon
+modele plutot qu'un $FF universel. Interlock/power est un evenement frontend, mais
+reset et cart removal doivent produire etat plausible.
+
+
+==============================================================================
+51. EMULATION ANTIC
+==============================================================================
+
+Modeliser compteur horizontal/vertical, display list counter, memory scan counter,
+instruction courante, ligne de mode, LMS, scrolling, charset fetch, refresh, PM
+DMA, NMI et WSYNC. Appliquer wrap 1K/4K selon fetch et largeur.
+
+Produire le flux de pixels/metadata par color clock vers GTIA. Les ecritures
+DMACTL/DLIST/scroll/CHBASE en ligne peuvent modifier fetch. VCOUNT et NMIST doivent
+etre lisibles au bon cycle. Acid5200 teste plusieurs anomalies.
+
+
+==============================================================================
+52. EMULATION GTIA
+==============================================================================
+
+Combiner playfield ANTIC, quatre players et missiles avec delais/positions/tailles,
+PRIOR, fifth-player et modes 9/10/11. Latcher collisions independamment de sortie
+visible et effacer sur HITCLR. Implementer TRIG latch/GRACTL.
+
+Palette numerique peut convertir hue/luma en RGB, mais offrir NTSC artifacting,
+phase et filtre en option. Les modes haute resolution peuvent produire artifact
+colors analogiques selon phase; un chemin logique reste necessaire aux tests.
+
+
+==============================================================================
+53. EMULATION POKEY ET CONTROLEURS
+==============================================================================
+
+Audio : compteurs AUDF, jointure, clocks, polynomes 4/5/9/17, filters, volume-only
+et resampling. Timer IRQ et RANDOM partagent ces etats. SKCTL reset/control doit
+agir sur LFSR/clavier/serie.
+
+POT : demarrer huit compteurs a POTGO, comparer a position analogique puis abaisser
+bits ALLPOT. Clavier : matrice du port choisi par CONSOL, debounce, KBCODE, IRQ
+key/BREAK et gachette haute. TRIG bas est GTIA. Deux ports laissent lignes absentes
+selon materiel, pas automatiquement quatre controles neutres parfaits.
+
+
+==============================================================================
+54. EMULATION BIOS ET CARTOUCHES
+==============================================================================
+
+Supporter BIOS 2K dump legal C019156/C019156A ou reimplementation libre. Un HLE
+qui saute a BFFE doit initialiser RAM, registres, display list, vecteurs et ombres
+comme la revision annoncee; sinon les jeux dependants du BIOS echouent.
+
+Mapper 4/8/16/32K avec bons miroirs et bankings homebrew explicites. Valider que
+BFFE est visible avant boot. Ne pas patcher la ROM pour masquer un mauvais mapper.
+
+
+==============================================================================
+55. PLAN DE VALIDATION
+==============================================================================
+
+- tous opcodes 6502 documentes, decimal, IRQ/NMI et HALT;
+- carte memoire, miroirs et open bus;
+- ANTIC chaque mode/largeur, LMS wrap, scrolling, DLI/VBI/WSYNC;
+- GTIA priorites, modes 9/10/11, PMG et collisions;
+- POKEY toutes distorsions, timers, RANDOM, IRQ et serial minimal;
+- POT0-7, ALLPOT, quatre/deux ports, clavier et deux gachettes;
+- BIOS revisions, titre/entree et cartouches 4-32K/bankees;
+- reset, insertion, attract mode et timings image.
+
+Utiliser Acid5200 avec sources/resultats attendus et comparer a plusieurs consoles.
+
+
+==============================================================================
+56. ELECTRONIQUE ET SIGNAUX
+==============================================================================
+
+Carte comprend SALLY, ANTIC, GTIA, POKEY, ROM BIOS, DRAM, logique de decodage,
+oscillateur, modulateur RF, alimentation et interfaces controleurs. Les references
+et nombres de DRAM/TTL changent entre cartes universelles quatre/deux ports.
+
+ANTIC genere HALT/refresh/adresses DMA; multiplexage DRAM utilise RAS/CAS. GTIA
+forme synchro/luminance/chrominance vers RF. POKEY charge condensateurs POT; un
+reseau analogique ajuste plage joystick. Les schemas du manuel de service sont la
+reference pour valeurs et points de test.
+
+
+==============================================================================
+57. DIAGNOSTIC ET MAINTENANCE
+==============================================================================
+
+Pannes courantes : alimentation/switchbox quatre ports, interlock cartouche,
+contacts, manettes (flex/keypad, potentiometres, mecanisme de centrage), DRAM,
+socket/ROM, connecteur RF et condensateurs. Tester rails avant remplacer IC.
+
+Le joystick original ne s'auto-centre pas volontairement et souffre souvent de
+contacts keypad/fire. Nettoyer sans abraser pistes carbone; mesurer potentiometres
+et ajuster selon manuel. La switchbox combine secteur/RF : risque electrique.
+Confier a un technicien si isolation secteur inconnue.
+
+
+==============================================================================
+58. PRESERVATION
+==============================================================================
+
+Dumper cartouche plusieurs fois, identifier PCB, taille, mapper, part numbers et
+calculer SHA-256. Dumper son propre BIOS et noter revision deux/quatre ports. Une
+image `.a52` brute doit etre accompagnee de metadonnees de mapping.
+
+Photographier carte, etiquettes et controleurs; conserver manuel et titre/copyright
+bruts. Pour prototypes/bankings, documenter chaque acces de banque sans publier de
+contenu non autorise.
+
+
+==============================================================================
+59. SECURITE ET LIMITES JURIDIQUES
+==============================================================================
+
+BIOS et jeux sont proteges; utiliser ses propres dumps ou reimplementation libre
+selon droit applicable. Les marques appartiennent a leurs titulaires. Ce document
+n'inclut aucune ROM.
+
+Un emulateur/outil doit borner taille, mapper, vecteur BFFE et fichiers de symboles.
+Une cartouche artisanale doit respecter tension, contacts longs/interlock et ne
+pas mettre le bus en contention.
+
+
+==============================================================================
+60. REFERENCES
+==============================================================================
+
+Documents Atari :
+
+- Atari CX5200 Field Service Manual, theorie, schemas et diagnostics :
+  https://www.atarimania.com/documents/Atari_5200_Field_Service_Manual.pdf
+- autre presentation du manuel officiel :
+  https://gamingdoc.org/technical-documentation/consoles/atari-5200/official/service-manuals/field-service-manual/
+
+References techniques et outils :
+
+- Altirra Hardware Reference Manual, chapitre 5200 et details cycle-exacts :
+  https://www.virtualdub.org/downloads/Altirra%20Hardware%20Reference%20Manual.pdf
+- Altirra, emulateur, manuel et suite Acid5200 :
+  https://www.virtualdub.org/altirra.html
+- cc65, informations cible Atari 5200 :
+  https://cc65.github.io/doc/atari5200.html
+- desassemblage BIOS et exemples 5200 : https://www.atarihq.com/danb/a5200.shtml
+- notes de portage Atari 8 bits vers 5200 :
+  https://atarimuseum.ctrl-alt-rees.com/videogames/consoles/5200/conv_to_5200.html
+- Atari800, mappings de cartouches :
+  https://github.com/atari800/atari800/blob/master/DOC/cart.txt
+
+Les anciennes references contiennent erreurs de timing corrigees par mesures plus
+recentes. Pour un emulateur, confronter manuel Atari, schemas, Altirra, Acid5200 et
+tests sur consoles deux/quatre ports. Marquer toute approximation analogique.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

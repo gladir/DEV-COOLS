@@ -1,0 +1,880 @@
+==============================================================================
+ ATARI VIDEO COMPUTER SYSTEM / ATARI 2600
+ Materiel, programmation et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'Atari Video Computer System, rebaptise Atari 2600 : CPU
+6507, TIA, RIOT 6532, bus cartouche, controleurs, video, audio et programmation
+assembleur. Il couvre les revisions 2600/2600A/Jr, NTSC/PAL/SECAM et les schemas
+de commutation bancaire historiques et modernes.
+
+L'Atari 2600 ne possede pas de framebuffer. Le programme doit modifier le TIA
+pendant que le televiseur balaie chaque ligne : "racing the beam". Les adresses
+precedees de $ sont hexadecimales. Les accents sont omis pour conserver l'ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Modeles et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges NTSC, PAL et SECAM
+  6. Processeur MOS 6507
+  7. Registres et modes d'adressage
+  8. Jeu d'instructions
+  9. Pile, vecteurs et absence d'IRQ
+ 10. Carte memoire
+ 11. Miroirs et decodage partiel
+ 12. TIA : architecture
+ 13. Construction d'une image
+ 14. Synchronisation VSYNC, VBLANK et WSYNC
+ 15. Carte des registres TIA en ecriture
+ 16. Carte des registres TIA en lecture
+ 17. Couleurs et standards video
+ 18. Playfield
+ 19. Players
+ 20. Missiles et balle
+ 21. Positionnement horizontal
+ 22. Mouvement fin et HMOVE
+ 23. Copies, tailles et reflexion
+ 24. Priorites, score et collisions
+ 25. Vertical delay et reutilisation des objets
+ 26. Audio TIA
+ 27. RIOT 6532
+ 28. RAM, pile et variables
+ 29. Timer RIOT
+ 30. Joysticks et boutons
+ 31. Paddles, clavier et autres controleurs
+ 32. Commutateurs de console
+ 33. Connecteur cartouche
+ 34. ROM 2 Kio et 4 Kio
+ 35. Bankswitch F8, F6 et F4
+ 36. Autres bankswitch et RAM cartouche
+ 37. DPC, Supercharger et extensions modernes
+ 38. Format des images ROM
+ 39. Initialisation correcte
+ 40. Kernel assembleur minimal
+ 41. Positionnement d'un joueur
+ 42. Lecture des entrees et timer
+ 43. Son et collisions en assembleur
+ 44. ROM complete avec DASM
+ 45. Techniques avancees de kernel
+ 46. Optimisation et comptage des cycles
+ 47. Conseils pour un emulateur
+ 48. Plan de validation
+ 49. Maintenance et restauration
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+Atari lance le Video Computer System en 1977. Le numero de projet et de modele
+CX2600 donnera ensuite le nom commercial Atari 2600, adopte au debut des annees
+1980. La console est concue autour de trois circuits principaux : 6507, TIA et
+RIOT 6532.
+
+Les premieres cartouches font 2 Kio; la commutation bancaire et les coprocesseurs
+permettront ensuite des jeux beaucoup plus ambitieux. La plateforme est vendue
+sous diverses formes jusqu'au debut des annees 1990 et reste une cible homebrew.
+
+
+==============================================================================
+2. MODELES ET REVISIONS
+==============================================================================
+
+- CX2600 "Heavy Sixer" : premiere caisse, six commutateurs, blindage massif;
+- six-switch puis four-switch woodgrain;
+- 2600A : carte simplifiee, quatre commutateurs en facade;
+- Atari 2600 Jr. : boitier compact et revisions PAL/NTSC;
+- Sears Video Arcade : versions distribuees par Sears;
+- clones et adaptateurs regionaux;
+- Atari 7800 : execute beaucoup de cartouches 2600 mais materiel distinct.
+
+TIA CO10444/CO11903 et variantes regionales different. Le codage couleur et les
+oscillateurs ne sont pas interchangeables sans modification.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU                         MOS 6507, famille 6502
+Espace d'adressage visible  8 Kio, 13 lignes d'adresse
+RAM interne                 128 octets dans RIOT
+Video/audio                 TIA
+Resolution logique          construite par logiciel, environ 160 pixels couleur
+Objets                      playfield, 2 players, 2 missiles, 1 balle
+Son                         2 canaux TIA
+Entrees                     2 ports DE-9, commutateurs console
+Cartouche                   ROM et logique optionnelle
+Interruptions CPU           RESET utilise; IRQ/NMI non cables normalement
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le 6507 lit le programme en cartouche. TIA produit video/audio et lit les entrees
+analogiques/boutons. RIOT fournit RAM, ports paralleles et timer. Le bus 8 bits
+et treize lignes d'adresse sont exposes au connecteur cartouche.
+
+TIA n'enregistre pas une image complete : quelques registres de motifs et compteurs
+horizontaux produisent une ligne. Le CPU change couleurs/motifs/positions au bon
+cycle pour creer l'image suivante.
+
+
+==============================================================================
+5. HORLOGES NTSC, PAL ET SECAM
+==============================================================================
+
+NTSC : oscillateur couleur environ 3,579545 MHz; CPU = color clock / 3, soit
+environ 1,193182 MHz. Une ligne fait 228 color clocks = 76 cycles CPU : environ
+68 clocks de blank horizontal et 160 clocks visibles.
+
+Trame NTSC typique : 3 lignes VSYNC, 37 autres lignes VBLANK, 192 visibles et
+30 overscan, total 262. Certains jeux produisent un total different; un televiseur
+ou capture peut perdre la synchronisation.
+
+PAL : horloge/cadence differente, environ 312 lignes et 50 Hz. Le Stella Guide
+donne couramment 48 lignes de blank comprenant sync, 228 visibles et 36 overscan.
+SECAM emploie une palette fortement reduite. Ne pas convertir seulement les
+couleurs : hauteur, gameplay et hauteur sonore changent aussi.
+
+
+==============================================================================
+6. PROCESSEUR MOS 6507
+==============================================================================
+
+Le 6507 est un 6502 economique avec seulement A0--A12 et moins de broches
+d'interruption. Il voit $0000--$1FFF; le materiel miroite dans l'espace 16 bits
+produit par les instructions/vecteurs.
+
+Registres : A, X, Y, SP, PC et P. Drapeaux N,V,-,B,D,I,Z,C. Le mode decimal
+fonctionne et doit etre initialise; CLD au reset est prudent. Le 6507 est little-
+endian et n'a ni multiplication ni division.
+
+
+==============================================================================
+7. REGISTRES ET MODES D'ADRESSAGE
+==============================================================================
+
+Modes : implicite, accumulateur, immediat, zero page, zero page X/Y, absolu,
+absolu X/Y, indirect JMP, (zp,X), (zp),Y et relatif. La zero page est rapide;
+sur VCS, RAM se trouve a $80--$FF.
+
+Une lecture indexee franchissant une page peut prendre un cycle de plus. Une
+branche prise coute un cycle, plus un si elle franchit une page. Ces variations
+sont cruciales dans le kernel.
+
+
+==============================================================================
+8. JEU D'INSTRUCTIONS
+==============================================================================
+
+Chargement/transfert : LDA, LDX, LDY, STA, STX, STY, TAX, TAY, TXA, TYA, TSX,
+TXS. Pile : PHA, PLA, PHP, PLP. Logique : AND, ORA, EOR, BIT. Arithmetique :
+ADC, SBC, CMP, CPX, CPY, INC, INX, INY, DEC, DEX, DEY. Shifts : ASL, LSR, ROL,
+ROR. Branches : BCC/BCS/BEQ/BNE/BMI/BPL/BVC/BVS. Controle : JMP, JSR, RTS,
+BRK, RTI, CLC/SEC, CLD/SED, CLI/SEI, CLV, NOP.
+
+Les opcodes non documentes existent mais varient en effets bus et ne sont pas
+necessaires. Un emulateur de compatibilite elevee doit cependant les implementer.
+
+
+==============================================================================
+9. PILE, VECTEURS ET ABSENCE D'IRQ
+==============================================================================
+
+La pile CPU est logiquement $0100--$01FF, mais le decodage 13 bits et RIOT font
+qu'elle miroite les 128 octets de RAM. SP ne doit pas descendre sur les variables
+actives. Une convention place variables en bas et pile pres de $FF.
+
+Vecteurs en fin de cartouche visible : NMI $FFFA/B, RESET $FFFC/D, IRQ/BRK
+$FFFE/F; les adresses physiques se replient vers $1FFA--$1FFF. RESET est essentiel.
+IRQ/NMI ne sont normalement pas cables, mais BRK consulte le vecteur IRQ.
+
+
+==============================================================================
+10. CARTE MEMOIRE
+==============================================================================
+
+Adresse canonique  Fonction
+-----------------  -----------------------------------------------------------
+$0000--$002C        TIA ecriture
+$0030--$003D        TIA lecture
+$0080--$00FF        RAM RIOT, 128 octets
+$0280--$0283        ports RIOT
+$0284--$0285        timer/etat RIOT en lecture
+$0294--$0297        programmation timer RIOT
+$1000--$1FFF        fenetre cartouche, 4 Kio
+
+Les plages ont de nombreux miroirs. Les symboles assembleur emploient les
+adresses canoniques ci-dessus pour clarte.
+
+
+==============================================================================
+11. MIROIRS ET DECODAGE PARTIEL
+==============================================================================
+
+A12 selectionne globalement cartouche ou interne. Des bits bas selectionnent
+TIA/RIOT/RAM et beaucoup de bits ne sont pas decodes. Ainsi $0100 peut viser
+un miroir TIA et $0180 un miroir RAM selon lignes.
+
+Les cycles "dummy" d'instructions 6502 sur une adresse miroir peuvent declencher
+un strobe TIA ou hotspot bankswitch. Une emulation qui ne fait que le resultat
+final d'une instruction manque ces effets bus.
+
+
+==============================================================================
+12. TIA : ARCHITECTURE
+==============================================================================
+
+TIA genere synchro, luminance/chrominance, objets, collisions, audio et entrees.
+Il connait la position horizontale du faisceau mais pas un compteur vertical :
+le logiciel compte les lignes et active VSYNC/VBLANK.
+
+Les cinq objets mobiles sont P0, P1, M0, M1 et BL. Le playfield PF est un motif
+20 bits affiche sur chaque moitie. Les registres persistent jusqu'a reecriture.
+
+
+==============================================================================
+13. CONSTRUCTION D'UNE IMAGE
+==============================================================================
+
+Une frame se divise en vertical sync, vertical blank, kernel visible et overscan.
+Pendant blank/overscan, calculer positions, logique, son et entrees. Pendant les
+192 lignes visibles NTSC, le kernel ecrit TIA a des cycles fixes.
+
+Une ecriture WSYNC arrete CPU jusqu'au debut de la ligne suivante. Apres reprise,
+les 68 color clocks de blank horizontal donnent environ 22,67 cycles CPU avant
+la zone visible. Les effets d'une ecriture TIA peuvent avoir leur propre delai.
+
+
+==============================================================================
+14. SYNCHRONISATION VSYNC, VBLANK ET WSYNC
+==============================================================================
+
+VSYNC bit 1 genere synchro verticale. VBLANK bit 1 eteint image; bit 7 decharge
+les condensateurs paddles; autres bits controlent latches d'entree selon TIA.
+
+Sequence NTSC : VBLANK on, VSYNC on pendant trois WSYNC, VSYNC off, attendre
+blank, VBLANK off pour kernel, VBLANK on pour overscan. Compter chaque ligne,
+y compris celle commencee par l'ecriture.
+
+RSYNC remet compteur horizontal a zero et sert rarement; une mauvaise ecriture
+deforme la ligne.
+
+
+==============================================================================
+15. CARTE DES REGISTRES TIA EN ECRITURE
+==============================================================================
+
+$00 VSYNC   $01 VBLANK  $02 WSYNC   $03 RSYNC
+$04 NUSIZ0  $05 NUSIZ1  $06 COLUP0  $07 COLUP1
+$08 COLUPF  $09 COLUBK  $0A CTRLPF  $0B REFP0   $0C REFP1
+$0D PF0     $0E PF1     $0F PF2
+$10 RESP0   $11 RESP1   $12 RESM0   $13 RESM1   $14 RESBL
+$15 AUDC0   $16 AUDC1   $17 AUDF0   $18 AUDF1
+$19 AUDV0   $1A AUDV1   $1B GRP0    $1C GRP1
+$1D ENAM0   $1E ENAM1   $1F ENABL
+$20 HMP0    $21 HMP1    $22 HMM0    $23 HMM1    $24 HMBL
+$25 VDELP0  $26 VDELP1  $27 VDELBL
+$28 RESMP0  $29 RESMP1  $2A HMOVE   $2B HMCLR   $2C CXCLR
+
+RESP*/RESM*/RESBL, WSYNC, HMOVE, HMCLR et CXCLR sont des strobes : la donnee
+ecrite importe peu, mais le cycle exact importe enormement.
+
+
+==============================================================================
+16. CARTE DES REGISTRES TIA EN LECTURE
+==============================================================================
+
+$00 CXM0P   collisions M0-P1/P0
+$01 CXM1P   collisions M1-P0/P1
+$02 CXP0FB  collisions P0-playfield/ball
+$03 CXP1FB  collisions P1-playfield/ball
+$04 CXM0FB  collisions M0-playfield/ball
+$05 CXM1FB  collisions M1-playfield/ball
+$06 CXBLPF  collision ball-playfield
+$07 CXPPMM  P0-P1 et M0-M1
+$08--$0B INPT0--INPT3 paddles
+$0C--$0D INPT4--INPT5 boutons joystick
+
+Ce sont les adresses logiques indiquees par Atari pour une lecture. Les miroirs
+$30--$3D sont aussi couramment employes : TIA ne decode qu'une partie des lignes
+d'adresse. Ne pas en deduire que $00--$0D seraient exclusivement des registres
+d'ecriture : le signal R/W selectionne la banque interne lue ou ecrite.
+
+Les bits non pilotes peuvent contenir le dernier bus. Les collisions sont
+latchees jusqu'a CXCLR; lire ne les efface pas.
+
+
+==============================================================================
+17. COULEURS ET STANDARDS VIDEO
+==============================================================================
+
+COLUP0, COLUP1, COLUPF, COLUBK contiennent teinte dans bits hauts et luminance
+dans bits 3--1; bit 0 est ignore sur TIA courants. NTSC offre 16 teintes x 8
+luminances nominales, avec doublons/noirs selon sortie.
+
+PAL a un codage de teintes different; SECAM fournit essentiellement huit couleurs
+fixes par valeurs de luminance. Une table de conversion est preferable a une
+formule. RF, television et revision TIA modifient les couleurs mesurees.
+
+
+==============================================================================
+18. PLAYFIELD
+==============================================================================
+
+PF0/PF1/PF2 donnent 20 bits pour la moitie gauche : PF0 utilise quatre bits dans
+ordre particulier, PF1 et PF2 ont orientations opposees. La moitie droite repete
+ou reflechit selon CTRLPF bit 0.
+
+CTRLPF bit 1 active mode score : moitie gauche couleur P0, droite P1. Bit 2 place
+playfield/ball devant players/missiles. Bits 4--5 choisissent largeur balle.
+
+Changer PF au milieu de ligne permet playfield asymetrique 40 bits, mais seulement
+dans les fenetres de cycles ou chaque registre affecte la bonne portion.
+
+
+==============================================================================
+19. PLAYERS
+==============================================================================
+
+GRP0/GRP1 sont motifs 8 bits. Chaque bit devient un pixel logique; NUSIZ choisit
+copies et echelle. REFP bit 3 inverse horizontalement. COLUP0/1 donne couleur.
+
+Le player n'a pas de coordonnee X lisible : RESPx remet son compteur relativement
+au faisceau, puis HMPx ajuste. Verticalement, logiciel ecrit GRPx sur les lignes
+ou le sprite existe. Il n'existe pas de coordonnee Y materielle.
+
+
+==============================================================================
+20. MISSILES ET BALLE
+==============================================================================
+
+ENAM0/1 bit 1 active missiles; ENABL bit 1 active balle. NUSIZ bits 4--5 donnent
+largeur missile; CTRLPF bits 4--5 largeur balle. Couleurs missiles suivent leur
+player; balle suit COLUPF.
+
+RESMPx bit 1 verrouille un missile au centre relatif de son player, utile avant
+liberation. Sinon RESMx/HMMx le positionne independamment.
+
+
+==============================================================================
+21. POSITIONNEMENT HORIZONTAL
+==============================================================================
+
+Ecrire RESP0 au moment ou le faisceau atteint une position remet le player apres
+un decalage fixe. La methode grossiere attend WSYNC puis consume un nombre exact
+de cycles (boucle divide-by-15), ecrit RESPx et stocke un reste dans HMPx.
+
+Les cinq objets ont compteurs differents et offsets subtils. Les positions pres
+des bords s'enroulent. Utiliser une routine mesuree et des tables, puis valider
+sur vrai TIA et plusieurs emulateurs.
+
+
+==============================================================================
+22. MOUVEMENT FIN ET HMOVE
+==============================================================================
+
+HMP0/HMP1/HMM0/HMM1/HMBL utilisent le nibble haut comme mouvement signe de
+-8 a +7 color clocks selon codage TIA. HMOVE applique simultanement les cinq.
+HMCLR remet les registres de mouvement a zero.
+
+HMOVE au debut de ligne peut produire une barre noire de huit color clocks sur
+TIA classique (HMOVE blank). Les kernels l'exploitent ou l'evitent par placement
+tardif; l'effet exact depend du cycle et de la revision.
+
+
+==============================================================================
+23. COPIES, TAILLES ET REFLEXION
+==============================================================================
+
+NUSIZ bits 0--2 choisissent un player simple, double/triple avec espacements ou
+largeur double/quadruple. Les missiles partagent le schema de copies du player.
+
+Changer NUSIZ/REFP/GRP pendant la ligne permet plusieurs objets apparents, mais
+les compteurs internes continuent. Les effets de changement au pixel limite sont
+essentiels pour reproduire les kernels commerciaux.
+
+
+==============================================================================
+24. PRIORITES, SCORE ET COLLISIONS
+==============================================================================
+
+Priorite normale place players/missiles devant playfield/ball; CTRLPF priority
+inverse les groupes. Les chevauchements alimentent huit registres de collisions,
+independamment de la couleur visible dans la plupart des cas.
+
+Procedure frame : CXCLR au debut, dessiner toute la zone concernee, lire les bits
+pendant overscan, appliquer logique, puis effacer pour frame suivante. Masquer
+un objet avec couleur de fond ne supprime pas forcement sa collision.
+
+
+==============================================================================
+25. VERTICAL DELAY ET REUTILISATION DES OBJETS
+==============================================================================
+
+VDELP0/1 et VDELBL retardent d'une ligne le motif/enable via latches. Les ecritures
+GRP0/GRP1 declenchent aussi des transferts croises des latches internes. Ce
+mecanisme permet afficher deux players multiples avec un kernel a deux lignes.
+
+La sequence exacte d'ecritures GRP0/GRP1/ENABL est critique. Un clone simplifie
+qui stocke seulement la derniere valeur ne reproduira pas les sprites multiplexes.
+
+
+==============================================================================
+26. AUDIO TIA
+==============================================================================
+
+Deux canaux independants : AUDC0/1 controle type, AUDF0/1 division 5 bits,
+AUDV0/1 volume 4 bits. Les canaux generent tons, polynomes/bruits et divisions
+combinees; ce ne sont pas de simples oscillateurs carres.
+
+AUDC selectionne parmi 16 modes bases sur compteurs et LFSR 4/5/9 bits. La
+frequence depend du standard couleur. Le mixage est non lineaire sur circuit/
+modulateur; une table ou modele analogique donne meilleur resultat.
+
+
+==============================================================================
+27. RIOT 6532
+==============================================================================
+
+RIOT signifie RAM-I/O-Timer. Il contient 128 octets, deux ports 8 bits, DDR et
+timer decrementant. Sur VCS : port A directions joysticks; port B commutateurs
+console. Les lignes sont actives bas avec pull-ups.
+
+Registres : SWCHA $280, SWACNT $281, SWCHB $282, SWBCNT $283, INTIM $284,
+TIMINT $285. Les adresses sont des miroirs du decodage RIOT complet.
+
+
+==============================================================================
+28. RAM, PILE ET VARIABLES
+==============================================================================
+
+$80--$FF seulement : 128 octets pour etat, positions, score, aleatoire, pointeurs
+et pile. Reutiliser les variables dont duree de vie ne se chevauche pas. Les
+pointeurs indirects doivent resider en zero page et ne pas deborder maladroitement.
+
+Limiter JSR imbriques et PHA. Initialiser toute RAM car son etat de mise sous
+tension est indetermine. Ne pas supposer SP=$FF apres reset : TXS explicitement.
+
+
+==============================================================================
+29. TIMER RIOT
+==============================================================================
+
+Ecrire valeur dans : TIM1T $294 intervalle 1 cycle, TIM8T $295 intervalle 8,
+TIM64T $296 intervalle 64, T1024T $297 intervalle 1024. INTIM lit compteur.
+
+Apres passage par zero, timer passe en cadence 1 cycle et positionne drapeau
+TIMINT. Lecture/ecriture ont effets selon 6532. Utilisation typique : charger
+timer pendant VBLANK/overscan, calculer logique, attendre INTIM proche de zero,
+puis WSYNC pour aligner kernel.
+
+
+==============================================================================
+30. JOYSTICKS ET BOUTONS
+==============================================================================
+
+SWCHA bits 7--4 : directions joystick gauche; bits 3--0 droite. Pour chaque port,
+up/down/left/right sont actifs bas. INPT4 bit 7 bouton gauche, INPT5 bouton droit,
+actifs bas.
+
+Configurer SWACNT a $00 pour entrees. Plusieurs directions simultanees sont
+electriquement possibles; ne pas imposer au niveau emulateur une restriction
+physique inexistante.
+
+
+==============================================================================
+31. PADDLES, CLAVIER ET AUTRES CONTROLEURS
+==============================================================================
+
+Paddles emploient INPT0--INPT3 et condensateurs. VBLANK bit 7 decharge; apres
+liberation, le programme mesure le temps jusqu'au bit 7 de l'entree. La valeur
+depend resistance, cadence et region.
+
+Keyboard Controller organise 12 touches en matrice via lignes RIOT/TIA. Driving
+Controller produit quadrature. Booster Grip, joystick deux boutons, Kid's
+Controller et accessoires ont protocoles propres. Detecter/configurer par jeu.
+
+
+==============================================================================
+32. COMMUTATEURS DE CONSOLE
+==============================================================================
+
+SWCHB actif bas : Reset, Select, Color/BW et difficulte gauche/droite. Les bits
+exactes suivent : P0 difficulty bit 6, P1 bit 7, Color/BW bit 3, Select bit 1,
+Reset bit 0. Les positions de difficulte sont souvent interpretees A/B.
+
+Les commutateurs Reset/Select sont momentanés sur certains boitiers, niveaux
+maintenus vus par logiciel; appliquer debouncing logique si necessaire.
+
+
+==============================================================================
+33. CONNECTEUR CARTOUCHE
+==============================================================================
+
+Le connecteur expose A0--A12, D0--D7, lecture/ecriture, horloge/phase, +5 V et
+masse selon brochage. Une ROM simple decode $1000--$1FFF. Le connecteur n'est
+pas protege contre insertion inversee ou court-circuit.
+
+Les cartes avancees observent lectures/ecritures de hotspots, ajoutent RAM,
+coprocesseur ou audio. Les signaux et niveaux doivent suivre schema Atari.
+
+
+==============================================================================
+34. ROM 2 KIO ET 4 KIO
+==============================================================================
+
+Une ROM 2 Kio est miroitee deux fois dans la fenetre 4 Kio. Une ROM 4 Kio occupe
+$1000--$1FFF. Les vecteurs sont places aux six derniers octets visibles, donc
+$1FFA--$1FFF dans l'image 4 Kio ou equivalents miroir en 2 Kio.
+
+Aucun en-tete n'est stocke dans une cartouche brute. Taille et bankswitch doivent
+etre deduits de taille, signatures/hotspots, base de donnees ou metadonnees externes.
+
+
+==============================================================================
+35. BANKSWITCH F8, F6 ET F4
+==============================================================================
+
+Schema Atari standard :
+
+F8, 8 Kio    lecture/acces $1FF8 selectionne banque 0, $1FF9 banque 1
+F6, 16 Kio   $1FF6--$1FF9 selectionnent quatre banques
+F4, 32 Kio   $1FF4--$1FFB selectionnent huit banques
+
+La banque de reset est normalement la derniere, car vecteur doit etre visible.
+Le hotspot reagit souvent a tout acces bus, y compris lecture speculative/dummy.
+Le byte retourne vient de la banque avant ou apres commutation selon circuit :
+les logiciels bien formes n'utilisent pas sa valeur.
+
+
+==============================================================================
+36. AUTRES BANKSWITCH ET RAM CARTOUCHE
+==============================================================================
+
+Schemes courants : FE (Activision), E0 (Parker Brothers, segments), 3F (Tigervision,
+ecriture basse), UA, CV, FA (CBS RAM Plus), F0 et variantes. Certains ont RAM
+avec ports d'ecriture et lecture separes pour eviter conflit de bus.
+
+Une taille identique ne suffit pas a identifier le mapper. Les emulateurs utilisent
+hashes/base de donnees et option utilisateur. Documenter scheme avec chaque ROM.
+
+
+==============================================================================
+37. DPC, SUPERCHARGER ET EXTENSIONS MODERNES
+==============================================================================
+
+DPC de Pitfall II ajoute fetchers, compteurs et generation sonore. DPC+ homebrew
+et coprocessors ARM modernes calculent logique/graphismes puis alimentent un
+kernel 6507. CDF/CDFJ, BUS, ACE et autres sont des plateformes distinctes.
+
+Starpath Supercharger charge des jeux depuis cassette, ajoute RAM et commutation.
+Harmony/UnoCart et multicarts emulent de nombreux schemes. Une console de base
+reste pilotee par 6507/TIA; le coprocesseur ne produit pas directement la video.
+
+
+==============================================================================
+38. FORMAT DES IMAGES ROM
+==============================================================================
+
+Fichiers .bin sont octets bruts, habituellement 2/4/8/16/32 Kio ou davantage.
+Pas de header universel. Formats .a26 restent souvent bruts. Metadonnees Stella
+ou base de donnees indiquent mapper, region, controleur, phosphor et corrections.
+
+Conserver hash SHA-256, taille, provenance, mapper et region. Ne pas modifier le
+dump pour ajouter header proprietaire sans garder l'original.
+
+
+==============================================================================
+39. INITIALISATION CORRECTE
+==============================================================================
+
+Au reset : SEI, CLD, initialiser SP, effacer $80--$FF et registres TIA necessaires,
+activer VBLANK, produire trame stable, puis logique. L'etat TIA/RIOT/RAM ne doit
+pas etre suppose zero.
+
+Boucle frame : VSYNC/VBLANK, timer logique, positionnement horizontal, kernel
+visible, overscan, collisions/entrees. Maintenir total de lignes constant meme
+quand une branche de gameplay differe.
+
+
+==============================================================================
+40. KERNEL ASSEMBLEUR MINIMAL
+==============================================================================
+
+Extrait DASM, 192 lignes de fond :
+
+Frame:
+        lda #2
+        sta VBLANK
+        sta VSYNC
+        sta WSYNC
+        sta WSYNC
+        sta WSYNC
+        lda #0
+        sta VSYNC
+
+        ldx #37
+Blank: sta WSYNC
+        dex
+        bne Blank
+
+        lda #0
+        sta VBLANK
+        ldx #192
+Visible:
+        sta WSYNC
+        dex
+        bne Visible
+
+        lda #2
+        sta VBLANK
+        ldx #30
+Over:  sta WSYNC
+        dex
+        bne Over
+        jmp Frame
+
+Selon convention de comptage, l'ecriture VBLANK/VSYNC et la premiere WSYNC
+peuvent changer le total d'une ligne. Mesurer la sortie et ajuster les compteurs;
+une ROM complete ci-dessous utilise une convention coherente de build/test.
+
+
+==============================================================================
+41. POSITIONNEMENT D'UN JOUEUR
+==============================================================================
+
+Routine classique divide-by-15, A contient X logique :
+
+PositionP0:
+        sta WSYNC
+        sec
+.loop: sbc #15
+        bcs .loop
+        eor #7
+        asl
+        asl
+        asl
+        asl
+        sta HMP0
+        sta RESP0
+        sta WSYNC
+        sta HMOVE
+        rts
+
+L'ordre RESP0/HMP0 et constantes varient avec la convention de coordonnee et le
+cycle de boucle. Cette routine est un point de depart a calibrer, pas une garantie
+pixel absolue pour tous objets.
+
+
+==============================================================================
+42. LECTURE DES ENTREES ET TIMER
+==============================================================================
+
+        lda SWCHA
+        and #%00010000        ; joystick gauche : haut (bit 4), actif bas
+        bne NotPressed
+        ; direction active bas
+NotPressed:
+
+        lda INPT4
+        bmi FireReleased      ; bit 7=1 relache
+        ; feu presse
+FireReleased:
+
+Attente timer sans depasser : charger TIM64T avec budget, effectuer logique,
+puis lire INTIM. Une boucle BMI/BNE doit tenir compte du passage sous zero et
+du fait que le timer continue a cadence 1.
+
+
+==============================================================================
+43. SON ET COLLISIONS EN ASSEMBLEUR
+==============================================================================
+
+Demarrer un son :
+
+        lda #$04             ; mode AUDC a choisir par table/oreille
+        sta AUDC0
+        lda #$10
+        sta AUDF0
+        lda #$0F
+        sta AUDV0
+
+Collision P0-playfield :
+
+        bit CXP0FB           ; bit 7 selon collision P0-PF
+        bpl NoHit
+        ; traiter impact
+NoHit: lda #0
+        sta CXCLR
+
+Couper le canal avec AUDV0=0. AUDC/AUDF ne suivent pas une formule unique de
+frequence a cause des diviseurs/polynomes.
+
+
+==============================================================================
+44. ROM COMPLETE AVEC DASM
+==============================================================================
+
+Squelette 4 Kio :
+
+        processor 6502
+        include "vcs.h"
+        include "macro.h"
+
+        seg Code
+        org $F000
+Reset:
+        sei
+        cld
+        lda #0
+        tax
+Clear:  sta $00,x            ; TIA et les 128 octets RIOT via leurs miroirs
+        inx
+        bne Clear
+        ldx #$FF
+        txs
+        lda #$2E
+        sta COLUBK
+
+Main:   ; inserer ici une frame de 262 lignes comme chapitre 40
+        jmp Main
+
+        org $FFFA
+        .word Reset           ; NMI non cable
+        .word Reset           ; RESET
+        .word Reset           ; IRQ/BRK
+
+Commande typique : dasm demo.asm -f3 -odemo.bin -ldemo.lst -sdemo.sym
+Le format -f3 produit le binaire brut. Completer Main avec un kernel stable avant
+test sur cartouche.
+
+
+==============================================================================
+45. TECHNIQUES AVANCEES DE KERNEL
+==============================================================================
+
+- playfield asymetrique par reecritures PF;
+- sprites six chiffres par GRP/VDEL;
+- repositionnement RESPx en milieu de ligne;
+- changements de couleur multiples;
+- Venetian blinds et alternance de lignes;
+- HMOVE bars cachees ou exploitees;
+- flicker pour depasser cinq objets;
+- tableaux de kernel indexes par ligne;
+- code auto-modifie en RAM impossible en quantite, mais operands en RAM/ROM
+  bankswitch et pointeurs optimisent;
+- illegal opcodes stables pour cycles/operations combines, avec prudence.
+
+
+==============================================================================
+46. OPTIMISATION ET COMPTAGE DES CYCLES
+==============================================================================
+
+Annoter chaque instruction : STA zp 3 cycles, STA abs 4, LDA # 2, DEX 2, branche
+prise 3 et non prise 2, plus page crossing. Placer boucles kernel dans une page
+pour eviter cycle variable. Verifier le chemin le plus long.
+
+Generer un listing avec adresses/cycles, utiliser debugger Stella et color clocks,
+puis verifier sur CRT/capture. Une ligne depassant 76 cycles continue sur la
+suivante et deplace toutes les ecritures.
+
+
+==============================================================================
+47. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU : 6507 cycle par cycle, dummy reads/writes, page crossing, decimal mode,
+opcodes non documentes et bus data residue.
+
+TIA : avancer trois color clocks par cycle CPU; compteurs objets, delayed latches,
+RESP/HMOVE cycle exact, HMOVE blank, playfield, copies, priorites et collisions.
+Un rendu par scanline apres execution ne suffit pas aux changements mi-ligne.
+
+RIOT : RAM miroirs, DDR/ports, timer prescaler, underflow, TIMINT et effets de
+lecture/ecriture. Entrees analogiques doivent evoluer avec le temps.
+
+Cartouche : accesses hotspots y compris dummy, conflits bus, RAM ports, DPC et
+schemas par hash. Ne pas autodetecter uniquement par taille.
+
+Video/audio : profils NTSC/PAL/SECAM, lignes irregulieres, phase couleur, palette,
+LFSR audio exact et filtrage configurable. Exposer trace color-clock.
+
+
+==============================================================================
+48. PLAN DE VALIDATION
+==============================================================================
+
+1. Toutes instructions 6502, decimal, dummy bus et page crossing.
+2. Reset, pile miroir et vecteurs 2/4 Kio.
+3. 262 NTSC, 312 PAL et trames non standard.
+4. Chaque registre TIA a plusieurs color clocks limites.
+5. Playfield/reflet/score/priorite et palette region.
+6. P0/P1/M0/M1/BL, copies, tailles, wrap et VDEL.
+7. RESP/HMP/HMOVE/HMCLR et HMOVE blank.
+8. Toutes collisions et CXCLR.
+9. Audio 16 AUDC x AUDF, deux canaux et region.
+10. RIOT ports/DDR et timer avant/apres underflow.
+11. Joystick, paddle, driving et keypad.
+12. F8/F6/F4/E0/FE/3F/FA/Supercharger/DPC selon profil.
+13. ROMs de diagnostic TIA/RIOT et jeux aux kernels difficiles.
+14. Comparaison color-clock et audio avec plusieurs consoles reelles.
+
+
+==============================================================================
+49. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+- Identifier revision et standard avant remplacer TIA/quartz.
+- Verifier adaptateur secteur, regulateur 7805 et 5 V avant circuits.
+- Nettoyer commutateurs, connecteur cartouche et jacks sans abrasif agressif.
+- Examiner tantales/electrolytiques, diode et soudures du jack.
+- Tester RIOT directions, TIA boutons/paddles/video/audio et 6507 separement.
+- Un mauvais RF peut venir modulateur, cable, reglage television ou alimentation.
+- Les reglages de bobines RF demandent outil non metallique et instrumentation.
+- Ne pas inserer/retirer cartouche sous tension.
+- Conserver blindage, etiquettes, vis et composants regionaux.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Sources Atari :
+
+- Steve Wright, 2600 (Stella) Programmer's Guide, 3 decembre 1979, revisions
+  ulterieures. Registres TIA, image, RIOT, entrees et PAL/SECAM.
+  https://www.arcade-museum.com/manuals/GC/Atari%202600%20Stella%20Programmers%20Guide.pdf
+
+- Atari Video Computer System Field Service Manual, Model 2600/2600A,
+  FD100133 revision 02, 1983 : schemas, diagnostic et pieces.
+  https://datassette.org/manuais/us-estados-unidos-hardware-2600-atari-manuais/atari-vcs-2600-field-service-manual
+
+- Atari TIA 1A Television Interface Adaptor specification.
+- MOS/Rockwell R6532 RAM-I/O-Timer data sheet.
+- MOS Technology MCS6500 Programming Manual.
+
+References modernes :
+
+- Stella emulator, documentation debugger et code source pour tests observes.
+- AtariAge 2600 Programming, bankswitch, cart PCB et homebrew references.
+- DASM assembler, vcs.h et macro.h.
+- Random Terrain, 8blit et guides homebrew, a recouper avec Stella Guide.
+
+Pour une valeur de cycle TIA, privilegier specification, mesures sur silicium et
+tests de regression. Plusieurs comportements exploites par les jeux n'etaient
+pas decrits dans le guide de 1979 et different legerement entre revisions.

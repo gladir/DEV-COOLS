@@ -1,0 +1,1182 @@
+==============================================================================
+ COLECO ADAM FAMILY COMPUTER SYSTEM
+ Materiel, programmation, EOS, AdamNet et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'ordinateur Coleco ADAM : processeur Z80A, memoire bancaire,
+video TMS9928A/TMS9929A, son SN76489A, EOS, OS 7, SmartWriter, AdamNet, clavier,
+imprimante, Digital Data Drive, disquettes, cartouches et extensions. Il traite
+la programmation en assembleur Z80, SmartBASIC et les besoins d'un emulateur.
+
+L'ADAM reutilise une partie de la ColecoVision, mais ce n'est pas simplement une
+console avec 64 Kio. Son reseau de microcontroleurs, ses banques et ses systemes
+d'exploitation constituent une architecture distincte.
+
+Les nombres precedes de $ sont hexadecimaux. Les accents sont omis afin de
+conserver un fichier ASCII compatible avec les anciens outils.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Configurations physiques
+  3. Caracteristiques generales
+  4. Architecture multiprocesseur
+  5. Processeur Z80A
+  6. Microcontroleurs Motorola 6801
+  7. Horloges et synchronisation
+  8. Memoire physique
+  9. Gestion bancaire et port $7F
+ 10. Cartes memoire typiques
+ 11. Ports d'entree-sortie
+ 12. Video TMS9928A/TMS9929A
+ 13. VRAM, modes et sprites
+ 14. Son SN76489A
+ 15. Demarrage et reset
+ 16. SmartWriter ROM
+ 17. EOS : organisation generale
+ 18. Carte memoire EOS
+ 19. Jump table EOS
+ 20. Appels executifs EOS
+ 21. Peripheriques, PCB et DCB
+ 22. AdamNet
+ 23. Clavier
+ 24. Imprimante a marguerite
+ 25. Digital Data Drive et Data Pack
+ 26. Lecteur de disquettes
+ 27. Systeme de fichiers EOS
+ 28. Repertoire et File Control Blocks
+ 29. Appels de fichiers EOS
+ 30. Entrees-sorties par blocs
+ 31. Console texte et ecran
+ 32. Routines VRAM EOS
+ 33. Controleurs de jeu
+ 34. Son par EOS et OS 7
+ 35. OS 7 et mode ColecoVision
+ 36. Cartouches ADAM et ColecoVision
+ 37. SmartBASIC
+ 38. CP/M et T-DOS
+ 39. Autres langages et logiciels
+ 40. Extensions memoire
+ 41. Modems, serie, parallele et stockage moderne
+ 42. Exemple de selection de banque
+ 43. Exemple d'appel EOS
+ 44. Exemple d'ouverture et lecture de fichier
+ 45. Exemple d'acces bloc
+ 46. Exemple clavier et affichage
+ 47. Exemple VDP et son direct
+ 48. Exemple de programme Z80 autonome
+ 49. Programmation SmartBASIC
+ 50. Format des images DDP et DSK
+ 51. Optimisation et robustesse
+ 52. Guide d'implementation d'un emulateur
+ 53. Emulation d'AdamNet et des supports
+ 54. Cas limites et erreurs frequentes
+ 55. Diagnostic et maintenance
+ 56. Preservation des donnees
+ 57. Outils et validation
+ 58. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Coleco presente l'ADAM en 1983 comme ordinateur familial et comme Expansion
+Module #3 de la ColecoVision. Il est livre avec traitement de texte SmartWriter,
+clavier, imprimante a marguerite et stockage sur Digital Data Pack. La version
+autonome integre le coeur compatible ColecoVision; l'autre utilise une console
+et un module d'expansion.
+
+Le lancement souffre de retards, de supports defectueux et d'une alimentation
+liee a l'imprimante. La gamme est abandonnee par Coleco en 1985, mais une
+communaute maintient longtemps CP/M, EOS, T-DOS, extensions memoire et stockage.
+
+
+==============================================================================
+2. CONFIGURATIONS PHYSIQUES
+==============================================================================
+
+- ADAM autonome : Memory Console avec lecteur Data Drive, clavier et imprimante;
+- Expansion Module #3 : ensemble raccorde a une ColecoVision existante;
+- versions NTSC et PAL, avec VDP et alimentation adaptes;
+- configurations avec un second Data Drive, une ou deux disquettes;
+- extensions internes dans trois emplacements et cartes externes;
+- systemes modernes utilisant Gotek, IDE/CF, FujiNet ou emulation.
+
+L'imprimante d'origine contient l'alimentation du systeme. Une machine sans
+imprimante exige une alimentation de remplacement correctement concue; brancher
+un bloc approximatif risque RAM, VDP, lecteurs et peripheriques AdamNet.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU principal          Zilog Z80A, environ 3,579545 MHz
+RAM intrinseque        64 Kio
+ROM SmartWriter        32 Kio
+ROM OS 7               8 Kio
+Video                  TMS9928A NTSC ou TMS9929A PAL
+VRAM                   16 Kio
+Image logique          256 x 192, 16 codes couleur fixes
+Sprites                32, maximum 4 par ligne
+Son                    SN76489A, 3 tons et 1 bruit
+Reseau peripheriques   AdamNet, serie semi-duplex
+Stockage standard      Digital Data Pack, environ 256 Kio
+Disquette optionnelle  5,25 pouces, couramment 160 Kio
+Clavier                clavier complet detache
+Imprimante             marguerite, 80 colonnes
+Cartouche              compatible ColecoVision et logiciels ADAM
+
+Les frequences et capacites "utiles" varient avec region, format, reserve EOS
+et extension. Les 16 Kio VRAM ne font pas partie des 64 Kio CPU.
+
+
+==============================================================================
+4. ARCHITECTURE MULTIPROCESSEUR
+==============================================================================
+
+Le Z80 execute applications et systemes. Un microcontroleur 6801 maitre gere
+AdamNet et deplace des donnees entre RAM intrinseque et les peripheriques. Les
+Data Drives, l'imprimante et d'autres appareils possedent leur propre controleur
+ou partagent un controleur local selon le sous-systeme.
+
+Le logiciel Z80 ne bascule pas directement les moteurs et solenoides. Il remplit
+des Device Control Blocks (DCB), publie une commande et attend l'acquittement du
+processeur maitre. Celui-ci dialogue avec les appareils AdamNet et realise les
+transferts, souvent par DMA dans la RAM intrinseque.
+
+Cette autonomie explique qu'un emulateur doit faire progresser plusieurs CPU et
+evenements. Completer immediatement toute commande masque les temporisations,
+statuts busy, timeouts et erreurs visibles des logiciels.
+
+
+==============================================================================
+5. PROCESSEUR Z80A
+==============================================================================
+
+Registres AF, BC, DE, HL et alternatifs, IX, IY, SP, PC, I et R. Bus adresse
+16 bits, donnees 8 bits, espace I/O distinct. Instructions de transfert, bloc,
+arithmetique, logique, bits, branchement, pile et entree-sortie du Z80 complet.
+
+Les mots sont little-endian. NMI saute a `$0066`, IRQ masquable selon IM. HALT
+attend une interruption. EI devient effectif apres l'instruction suivante. Les
+acces bancaires peuvent faire disparaitre le code ou la pile : une routine qui
+change la banque basse doit s'executer en haute, et inversement.
+
+
+==============================================================================
+6. MICROCONTROLEURS MOTOROLA 6801
+==============================================================================
+
+Le MC6801 combine coeur 6800, RAM, ROM, timers et ports. Le maitre du Memory/I/O
+Board supervise le reseau. Des firmware 6801 specialises pilotent clavier,
+imprimante et bande. Leur code n'est pas du Z80 et ne partage pas directement
+son espace d'adressage.
+
+Pour une reproduction fidele, trois approches existent : emuler chaque firmware
+dumpable, reimplementer le protocole a son interface observable, ou hybrider.
+La seconde doit conserver ordre des commandes, DCB, erreurs, latences, reset et
+concurrence; une simple API de fichier hote n'est pas compatible a elle seule.
+
+
+==============================================================================
+7. HORLOGES ET SYNCHRONISATION
+==============================================================================
+
+Le Z80 et le SN76489A utilisent une reference proche de 3,579545 MHz en NTSC.
+Le VDP genere environ 60 trames/s sur TMS9928A et 50 sur TMS9929A. AdamNet est
+communement decrit a 62 500 bits/s, semi-duplex, avec protocole maitre/esclaves.
+
+Les microcontroleurs et mecanismes ont leurs propres horloges. Les moteurs de
+bande, l'imprimante et le clavier evoluent pendant que le Z80 execute. Un logiciel
+peut sonder le statut ou dependre d'un timeout; ne pas reduire le temps a une
+succession d'appels synchrones instantanes.
+
+
+==============================================================================
+8. MEMOIRE PHYSIQUE
+==============================================================================
+
+- 64 Kio de RAM intrinseque, accessible en deux moities de 32 Kio;
+- 32 Kio de ROM SmartWriter;
+- 8 Kio de ROM OS 7, accompagnee de 24 Kio de RAM dans une option basse;
+- jusqu'a 32 Kio de ROM cartouche dans l'option haute standard;
+- 16 Kio de VRAM derriere les ports du VDP;
+- memoire d'expansion optionnelle, ROM ou RAM;
+- RAM/ROM privees des processeurs 6801, non mappees comme RAM Z80 ordinaire.
+
+La RAM intrinseque est speciale pour AdamNet : les transferts DMA standard y
+operent. Une adresse Z80 visible dans une banque d'expansion ne constitue pas
+necessairement une destination DMA valide.
+
+
+==============================================================================
+9. GESTION BANCAIRE ET PORT $7F
+==============================================================================
+
+Le Z80 ne voit que 64 Kio. Le port I/O `$7F` choisit independamment une source
+pour `$0000-$7FFF` et une pour `$8000-$FFFF` :
+
+Banque basse possible :
+- ROM SmartWriter/EOS;
+- moitie basse de RAM intrinseque;
+- RAM d'expansion;
+- OS 7 dans les premiers 8 Kio et 24 Kio de RAM intrinseque.
+
+Banque haute possible :
+- moitie haute de RAM intrinseque;
+- ROM d'expansion;
+- RAM d'expansion;
+- ROM cartouche.
+
+Les bits 0-1 selectionnent la moitie basse; bits 2-3 la haute. Les autres bits
+sont reserves ou dependants d'extension. Utiliser les constantes du manuel EOS,
+car la numerotation brute des quatre choix est facile a inverser.
+
+EOS offre BANK SWITCH a `$FD14`. L'appelant doit rester dans une moitie qui ne
+sera pas remplacee. Ne jamais retirer la banque contenant EOS pendant un appel
+EOS, sa pile ou son adresse de retour.
+
+
+==============================================================================
+10. CARTES MEMOIRE TYPIQUES
+==============================================================================
+
+Demarrage SmartWriter : ROM SmartWriter/EOS en bas et RAM intrinseque en haut.
+
+Application EOS usuelle : RAM intrinseque basse `$0000-$7FFF`; EOS copie en
+RAM intrinseque haute, approximativement `$D390-$FFFF`, le reste haute disponible
+pour application et buffers selon services conserves.
+
+Mode jeu ColecoVision : OS 7 `$0000-$1FFF`, RAM `$2000-$7FFF` selon cablage ADAM,
+cartouche `$8000-$FFFF`. La console originale n'a que 1 Kio miroir; un jeu ne
+doit pas exiger la RAM ADAM s'il pretend etre ColecoVision.
+
+CP/M : RAM sur la plus grande partie de l'espace, BIOS/BDOS et banques gerees par
+le chargeur. La carte exacte depend de CP/M, T-DOS et extension memoire.
+
+
+==============================================================================
+11. PORTS D'ENTREE-SORTIE
+==============================================================================
+
+$7F       registre de banque memoire
+$80/$C0   selection clavier/joystick des controleurs de jeu
+$BE       donnees VDP
+$BF       controle/statut VDP
+$FC/$FF   lectures controleurs de jeu selon mode
+$FF       ecriture SN76489A
+
+AdamNet et les extensions possedent des ports/signaux supplementaires definis
+par la revision. Les applications EOS doivent employer DCB et jump table plutot
+que commander le maitre 6801 par des ports internes non publies. Les cartes
+serie, parallele, modem et disque dur choisissent leurs propres plages.
+
+Sur Z80, IN/OUT immediats mettent A sur la moitie haute de l'adresse I/O. Le
+decodeur peut ignorer ces bits, mais une extension ne le fera pas necessairement.
+
+
+==============================================================================
+12. VIDEO TMS9928A/TMS9929A
+==============================================================================
+
+Le VDP compatible ColecoVision fournit 16 Kio de VRAM, 256x192 pixels, palette
+fixe de 16 codes, Graphics I, Graphics II, Text, Multicolor et 32 sprites. Le
+TMS9928A vise NTSC; le TMS9929A PAL. L'electronique de certaines machines
+francaises adapte la sortie sans creer un nouveau mode numerique.
+
+`$BE` transfere les donnees. `$BF` recoit deux octets de commande ou retourne le
+statut. Une adresse VRAM s'envoie octet bas puis octet haut; bit 6 du second
+prepare l'ecriture. Bit 7 ecrit un des huit registres. Lire le statut efface NMI,
+collision et debordement et remet le verrou de commande.
+
+
+==============================================================================
+13. VRAM, MODES ET SPRITES
+==============================================================================
+
+La VRAM contient tables de noms, motifs, couleurs, attributs sprites et motifs
+sprites. Leur base vient des registres R2-R6. Graphics II offre un octet couleur
+par ligne de motif, mais seulement deux couleurs dans les huit pixels d'une
+ligne. Text affiche 40 colonnes de 6 pixels; Graphics I/II 32x24 cellules.
+
+Sprites : 8x8 ou 16x16, zoom x2, bit early-clock -32 pixels. Maximum quatre par
+ligne; le cinquieme est masque et signale. `$D0` dans Y termine la liste. Les
+collisions concernent des pixels opaques. EOS possede des routines d'ombre et de
+copie, mais le programme peut gerer directement une table VRAM.
+
+
+==============================================================================
+14. SON SN76489A
+==============================================================================
+
+Trois voies carrees avec diviseurs 10 bits, une voie bruit, quatre attenuations
+4 bits. Un octet latch a bit 7=1 choisit canal/type; un octet data complete le
+diviseur. Volume 0 est maximal, 15 silence. Le bruit est periodique ou pseudo-
+aleatoire et peut tirer sa cadence du canal 2.
+
+Le port canonique est `$FF` en ecriture, partageant seulement son numero avec la
+lecture d'un controleur. EOS/OS 7 offrent un moteur de chansons; l'acces direct
+convient a un programme autonome qui gere priorites et silence au retour.
+
+
+==============================================================================
+15. DEMARRAGE ET RESET
+==============================================================================
+
+Au demarrage, la banque ROM SmartWriter est visible. EOS BOOT initialise le
+materiel, copie les parties EOS necessaires en RAM haute, initialise AdamNet,
+sonde les appareils et recherche un support amorcable. Sans media prioritaire,
+SmartWriter fournit l'environnement integre.
+
+La sequence peut essayer disque/Data Pack selon appareils et revisions. Un
+support amorcable contient un bloc charge a l'adresse attendue puis execute. Une
+cartouche et le reset de jeu peuvent selectionner la configuration OS 7.
+
+Un reset affecte Z80, mapper et peripheriques, mais les mecanismes AdamNet peuvent
+avoir leur propre phase. L'emulateur doit reproduire le resultat visible plutot
+que simplement replacer PC a zero dans la carte memoire courante.
+
+
+==============================================================================
+16. SMARTWRITER ROM
+==============================================================================
+
+SmartWriter est le traitement de texte integre en ROM. Il offre edition,
+formatage, sauvegarde et impression sans charger un programme. Une partie de sa
+ROM contient EOS BOOT et les ressources de demarrage.
+
+La ROM n'est pas une API generale stable. Les applications doivent employer la
+jump table EOS. EXIT TO WP (`$FCE7`) est l'interface publiee pour revenir au
+traitement de texte. Des revisions SmartWriter different et les extensions
+SmartWriter Elite ne garantissent pas les memes adresses internes.
+
+
+==============================================================================
+17. EOS : ORGANISATION GENERALE
+==============================================================================
+
+EOS signifie Elementary Operating System. Il fournit :
+
+- initialisation et banque memoire;
+- decouverte et commandes de peripheriques AdamNet;
+- clavier et imprimante;
+- fichiers, repertoire et blocs de support;
+- console texte et VRAM;
+- controleurs de jeu;
+- son et utilitaires.
+
+EOS est reloge/copie en RAM haute, et non execute uniquement depuis une ROM fixe.
+Sa jump table masque les adresses internes. Toujours appeler les entrees publiees
+afin de survivre aux revisions EOS.
+
+
+==============================================================================
+18. CARTE MEMOIRE EOS
+==============================================================================
+
+$D390-$D3FF  File Control Blocks
+$D400-$DFFF  blocs/tampons de 1 Kio pour repertoire et fichiers
+$E000-$E1F5  routines VRAM
+$E1F6-$E2C6  controleurs de jeu
+$E2C7-$E617  son
+$E618-$F3D9  gestion de fichiers
+$F3DA-$F445  donnees d'initialisation media
+$F446-$F4B9  routines peripheriques
+$F4BA-$F4FB  clavier
+$F4FC-$F5D4  imprimante
+$F5DC-$F831  console/ecran
+$F832-$FA9D  executif
+$FA9E-$FBFD  routines DCB
+$FBFF-$FC2F  tables
+$FC30-$FD5F  jump tables
+$FD60-$FEBF  donnees, stockage et pile EOS
+$FEC0-$FEC3  Processor Control Block
+$FEC4-$FFFE  Device Control Blocks
+
+Si l'application utilise le gestionnaire de fichiers, ne pas ecraser `$D390` et
+au-dessus. Sans fichier mais avec drivers, elle peut conserver seulement depuis
+`$E000`; avec les seuls drivers bas AdamNet, depuis environ `$F400`. Les limites
+exactes sont un contrat EOS : ne pas les deduire de la taille apparente du code.
+
+
+==============================================================================
+19. JUMP TABLE EOS
+==============================================================================
+
+La table `$FC30-$FD5F` contient des JP vers les implementations. Entrees citees
+dans les manuels :
+
+$FC30 INITIALIZE EOS          $FD14 SWITCH MEMORY BANKS
+$FC54/$FC57 FIND DCB          $FC5A FIND PCB
+$FCBA INITIALIZE FILE MANAGER $FCBD INITIALIZE DIRECTORY
+$FCC0 OPEN FILE               $FCC3 CLOSE FILE
+$FCC6 RESET FILE              $FCC9 MAKE FILE
+$FCCC FIND FILE 1             $FCCF UPDATE DIRECTORY ENTRY
+$FCD2 READ FILE               $FCD5 WRITE FILE
+$FCD8 PUT DATE                $FCDB GET DATE
+$FCDE RENAME FILE             $FCE1 DELETE FILE
+$FCE4 GET DEVICE STATUS       $FCE7 EXIT TO WORD PROCESSOR
+$FCED TRIM FILE               $FCF0 FIND FILE IN FCB
+$FCF3 READ BLOCK              $FCF6 WRITE BLOCK
+$FCF9 MODE CHECK              $FCFC LOOK UP DIRECTORY ENTRY
+$FCFF FIND FILE 2
+
+La jump table complete comprend console, imprimante, clavier, VDP, controles,
+son, initialisation, DCB et utilitaires. Les adresses doivent etre recopiees du
+manuel correspondant a la revision; plusieurs guides numerotent aussi chaque
+appel en decimal, ce qui ne remplace pas son adresse hexadecimal.
+
+
+==============================================================================
+20. APPELS EXECUTIFS EOS
+==============================================================================
+
+INITIALIZE EOS `$FC30` configure pile/tables, video, son, banque, AdamNet et
+gestionnaire de fichiers, puis cherche un support boot. Il detruit donc l'etat
+d'une application; ce n'est pas une routine d'initialisation legere.
+
+SWITCH MEMORY BANKS `$FD14` : A recoit la configuration desiree; au retour A/B
+indiquent configuration et C le port memoire, DE/HL preserves selon manuel. Le
+code appelant doit rester visible apres OUT `$7F`.
+
+HARD INIT, SOFT INIT, SCAN DEVICES, RELOCATE PCB/DCB et EXIT TO WP gerent le
+systeme. Une reinitialisation dure peut remettre a zero lecteurs et clavier et
+prendre du temps. Tester Zero Flag et codes d'erreur apres chaque service.
+
+
+==============================================================================
+21. PERIPHERIQUES, PCB ET DCB
+==============================================================================
+
+Le Processor Control Block a `$FEC0` decrit le maitre AdamNet. Les Device Control
+Blocks suivent, un par appareil detecte. FIND PCB `$FC5A` retourne IY. FIND DCB
+`$FC54/$FC57`, avec A=device, retourne IY ou une erreur.
+
+Un DCB contient statut, identite, commande, taille maximale, adresse de tampon,
+compteur, bloc et informations specifiques. L'application remplit les champs
+prevus et emploie les appels EOS; elle ne doit pas changer statut/acquittement
+pendant que le maitre 6801 traite la commande.
+
+Le PCB indique le nombre d'appareils. Un ADAM de base voit typiquement clavier,
+imprimante et controleur de bandes; deux lecteurs de bande commandes ensemble
+peuvent compter comme un appareil processeur avec sous-unites.
+
+
+==============================================================================
+22. ADAMNET
+==============================================================================
+
+AdamNet est un bus serie semi-duplex maitre/esclaves, chainable, transporte par
+un connecteur ressemblant a une prise telephonique. Il ne s'agit ni d'Ethernet,
+ni de RS-232, ni d'un telephone. Le maitre interroge jusqu'a une quinzaine de
+peripheriques logiques selon tables EOS.
+
+Le protocole gere reset, attention, identification, commandes, donnees,
+acquittement et erreurs. Chaque appareil a firmware et identite. Les donnees
+sont transferees entre DCB/tampon RAM intrinseque et appareil; la taille maximale
+est annoncee par le DCB.
+
+Pour creer un peripherique, implementer niveaux electriques, adressage, cadence,
+trames et comportement au reset. Un connecteur RJ identique ne garantit pas le
+cablage : ne jamais relier au reseau telephonique. FujiNet est un exemple moderne
+de peripherique AdamNet, pas une fonction historique d'EOS.
+
+
+==============================================================================
+23. CLAVIER
+==============================================================================
+
+Le clavier complet communique par AdamNet et retourne codes de touches, avec
+modificateurs et touches speciales. EOS fournit initialisation, statut, lecture
+et traduction. Il ne doit pas etre confondu avec le clavier numerique 12 touches
+des controleurs de jeu.
+
+Une lecture bloquante attend un caractere; une lecture/statut non bloquante
+convient a une boucle interactive. Gerer repetition, Shift, Control, Wild Card,
+Home, fleches et touches SmartKey selon table EOS. Les dispositions regionales
+et ROM peuvent differer.
+
+Dans un emulateur, separer evenement physique hote, matrice/code AdamNet et
+caractere EOS. Une touche maintenue n'est pas une rafale instantanee illimitee.
+
+
+==============================================================================
+24. IMPRIMANTE A MARGUERITE
+==============================================================================
+
+L'imprimante standard est une daisy-wheel a impact, 80 colonnes, avec mouvement
+papier et chariot pilotes. Elle contient aussi l'alimentation de l'ADAM. EOS
+offre envoi de caracteres, commandes et statut par AdamNet.
+
+Imprimer est asynchrone et lent. Le pilote doit accepter busy, fin papier,
+position et erreurs. Une emulation peut produire texte/PDF, mais doit conserver
+le protocole et les delais que sonde le logiciel. Les codes de controle ne sont
+pas automatiquement ceux d'Epson ou d'une imprimante parallele moderne.
+
+Ne jamais alimenter les moteurs sans les tensions et drivers prevus. Ruban,
+marguerite, courroie et graisse vieillissent; le mecanisme peut blesser ou
+endommager une tete bloquee.
+
+
+==============================================================================
+25. DIGITAL DATA DRIVE ET DATA PACK
+==============================================================================
+
+Le Digital Data Pack est une cassette haute vitesse formatee, pas une cassette
+audio ordinaire. Deux pistes contiennent typiquement 256 blocs de 1 Kio, soit
+environ 256 Kio bruts/logiques selon reserve et format. Le lecteur peut accelerer,
+freiner, changer de sens et chercher un bloc.
+
+Le firmware gere servo, lecture/ecriture, verification et position. L'acces est
+par bloc via AdamNet; EOS superpose repertoire/fichiers. La recherche est bien
+plus lente qu'un acces disque et l'ordre des blocs influence les performances.
+
+Ne pas poser un Data Pack sur l'imprimante ou pres d'une source magnetique. La
+reputation d'effacement au demarrage est souvent simplifiee, mais l'usage prudent
+consiste a eloigner tout support pendant mise sous tension et maintenance.
+
+
+==============================================================================
+26. LECTEUR DE DISQUETTES
+==============================================================================
+
+Le lecteur officiel 5,25 pouces stocke couramment 160 Kio sur une disquette. Son
+controleur AdamNet traduit commandes par blocs; EOS utilise device 4 pour disque
+1 et 5 pour disque 2 dans les exemples classiques.
+
+La geometrie physique, l'entrelacement et la structure EOS ne doivent pas etre
+confondus avec une image DSK lineaire. CP/M peut formater autrement. Des lecteurs
+320 Kio et controleurs tiers ont leurs propres conventions.
+
+Une emulation doit conserver write protect, media change, erreur CRC/seek, delai
+de rotation et ecriture. Pour un mode rapide optionnel, ne pas modifier les
+resultats fonctionnels ni publier un acquittement avant que le logiciel l'attend.
+
+
+==============================================================================
+27. SYSTEME DE FICHIERS EOS
+==============================================================================
+
+EOS adresse les supports par blocs de 1024 octets. Un repertoire contient les
+entrees de fichiers, nom, debut, longueur, attributs, date et carte de blocs selon
+format. Les fichiers peuvent etre ouverts, lus, ecrits, crees, tronques, renommes
+et supprimes.
+
+EOS n'est pas FAT ni CP/M. Un nom a longueur/jeu de caracteres limites doit etre
+fourni dans le format EOS. Le bit locked interdit certaines modifications; le
+bit deleted marque une entree. La validation du repertoire doit preceder toute
+reparation automatique.
+
+Deux File Control Blocks permettent typiquement deux fichiers ouverts, avec
+contraintes de tampons et support. Copier entre deux media ne se resume pas
+toujours a ouvrir simultanement les deux si les buffers internes sont partages.
+
+
+==============================================================================
+28. REPERTOIRE ET FILE CONTROL BLOCKS
+==============================================================================
+
+Les FCB commencent a `$D390`. Ils memorisent mode, appareil, entree de repertoire,
+bloc courant, dernier bloc, position et tampon. OPEN FILE alloue l'un des deux;
+CLOSE le libere et finalise les metadonnees. RESET FILE replace la position.
+
+Le gestionnaire utilise `$D400-$DFFF` comme tampons de 1 Kio. Un programme peut
+fournir certains buffers mais doit respecter DMA vers RAM intrinseque. Ecraser un
+FCB pendant une operation peut detruire repertoire et support.
+
+Toujours fermer apres ecriture, verifier Zero Flag et conserver le premier code
+d'erreur. En cas de panne, ne pas relancer automatiquement une ecriture non
+idempotente sans connaitre le bloc deja modifie.
+
+
+==============================================================================
+29. APPELS DE FICHIERS EOS
+==============================================================================
+
+OPEN FILE `$FCC0` : A=device, B=mode, HL=nom. Retour Z=succes, A/B numero FCB.
+CLOSE `$FCC3`, RESET `$FCC6`, MAKE `$FCC9`, FIND `$FCCC/$FCFF`, UPDATE `$FCCF`,
+READ `$FCD2`, WRITE `$FCD5`, RENAME `$FCDE`, DELETE `$FCE1`, TRIM `$FCED`.
+
+DELETE exemple du manuel : A=8 pour tape 1, HL=nom; erreur 16 fichier verrouille,
+5 absent, 24 repertoire invalide. Les numeros/codes doivent etre pris dans la
+table EOS de la revision et non deduits de cet exemple.
+
+RENAME ne garantit pas que le nom cible soit absent : FIND target d'abord. Une
+application doit traiter support retire, write protect, appareil absent, media
+plein, fichier absent, FCB indisponible et repertoire corrompu.
+
+
+==============================================================================
+30. ENTREES-SORTIES PAR BLOCS
+==============================================================================
+
+READ BLOCK `$FCF3` et WRITE BLOCK `$FCF6` accedent a un bloc physique/logique via
+le pilote, sans toute la semantique fichier. Ils servent formatage, boot, outils
+de disque et recuperation. Un mauvais numero peut ecraser repertoire ou boot.
+
+Le tampon doit etre en RAM intrinseque et assez grand, normalement 1024 octets.
+Ne pas changer de banque contenant le tampon avant la fin. Verifier statut DCB,
+compteur transfere et erreur, pas seulement retour de CALL.
+
+Les appareils caracteres (clavier/imprimante) ont des commandes start read/write
+et tailles differentes; ne pas leur appliquer aveuglement une operation bloc.
+
+
+==============================================================================
+31. CONSOLE TEXTE ET ECRAN
+==============================================================================
+
+EOS offre initialisation du writer, sortie caractere, chaine, curseur, controle
+d'ecran et conversion vers les tables VDP. L'ecran n'est pas un terminal ANSI :
+les codes de controle et dimensions sont ceux d'EOS/SmartWriter.
+
+Le mode texte TMS99xx fournit 40 colonnes sur 24 lignes avec caracteres de six
+pixels. D'autres routines utilisent Graphics I/II. La fonte et les tables doivent
+etre chargees en VRAM. Un programme qui modifie directement R2-R7 invalide les
+adresses que croit utiliser EOS, sauf s'il appelle SET VRAM TABLE ADDRESS.
+
+
+==============================================================================
+32. ROUTINES VRAM EOS
+==============================================================================
+
+EOS propose SET VDP PORTS, SET VRAM TABLE ADDRESS, FILL VRAM, READ/WRITE VRAM,
+calcul de position, copie de formes et gestion de tables. Un appel publie dans
+certaines references a `$FD2F` lit des donnees de table VRAM vers RAM avec A=
+code de table, DE=index, HL=destination et IY=longueur.
+
+Le VDP exige deux octets de commande. NMI peut interrompre la paire; EOS coordonne
+ses propres routines, mais un acces direct concurrent ne l'est pas. Lire `$BF`
+efface aussi statut et verrou. Conserver des copies de R0/R1.
+
+
+==============================================================================
+33. CONTROLEURS DE JEU
+==============================================================================
+
+Les deux ports compatibles ColecoVision acceptent manche, deux boutons et
+clavier numerique. OUT `$C0` selectionne joystick, OUT `$80` clavier; IN `$FC`
+et `$FF` lisent ports 1 et 2. Les entrees sont actives bas.
+
+EOS/OS 7 savent decoder clavier et certains spinners. Le clavier complet ADAM
+reste un appareil AdamNet distinct. Roller Controller, Super Action Controller
+et volant ont multiplexage/quadrature specifiques.
+
+
+==============================================================================
+34. SON PAR EOS ET OS 7
+==============================================================================
+
+Les moteurs sonores gerent tables de chansons, priorites, notes, enveloppes et
+effets sur quatre voies SN76489A. Ils utilisent RAM et doivent etre appeles/mis a
+jour a la cadence prevue. SOUND OFF remet les volumes au silence.
+
+Un programme peut ecrire directement `$FF`, mais doit alors eviter que EOS ou
+OS 7 ne reprogramme le meme canal. Au retour SmartWriter, couper le son et
+restaurer l'etat video attendu.
+
+
+==============================================================================
+35. OS 7 ET MODE COLECOVISION
+==============================================================================
+
+OS 7 est le BIOS 8 Kio de ColecoVision. En mode jeu, il initialise VDP, son,
+controleurs, logo et vecteurs de cartouche. L'ADAM selectionne OS 7 + 24 Kio RAM
+en banque basse et cartouche en haute.
+
+Une cartouche standard doit respecter l'en-tete `$8000`, signature, pointeurs,
+vecteurs JP et NMI. Elle ne doit pas compter sur 64 Kio si elle veut fonctionner
+sur console. Inversement, une cartouche ADAM peut changer `$7F` et employer EOS,
+mais doit detecter/configurer le materiel explicitement.
+
+
+==============================================================================
+36. CARTOUCHES ADAM ET COLECOVISION
+==============================================================================
+
+Le slot expose normalement 32 Kio `$8000-$FFFF`. Les jeux ColecoVision demarrent
+par OS 7. Les cartouches ADAM peuvent contenir boot, utilitaire, ROM d'extension
+ou mapper. Changer la banque haute vers RAM fait disparaitre la cartouche.
+
+Le reset associe au mode jeu peut restaurer la carte ColecoVision. Ne pas commuter
+pendant l'execution directe en cartouche sans copier une routine de transition
+dans la banque qui demeure visible.
+
+
+==============================================================================
+37. SMARTBASIC
+==============================================================================
+
+SmartBASIC derive fortement d'Applesoft BASIC avec adaptations ADAM : nombres
+flottants, chaines, tableaux, graphiques, son, fichiers et peripheriques. Il se
+charge depuis Data Pack/disquette et utilise EOS.
+
+Commandes usuelles : PRINT, INPUT, LET, IF/THEN, FOR/NEXT, GOTO/GOSUB/RETURN,
+DIM, READ/DATA/RESTORE, PEEK, POKE, CALL, LOAD, SAVE, OPEN, READ/WRITE/CLOSE
+selon dialecte. Les adresses PEEK/POKE dependent de la carte memoire courante.
+
+Une routine machine appelee par BASIC doit sauvegarder IX/IY si le runtime les
+emploie, connaitre le format des arguments et retourner avec la banque/pile
+restaurees. Ne pas effectuer OUT `$7F` depuis un POKE arbitraire.
+
+
+==============================================================================
+38. CP/M ET T-DOS
+==============================================================================
+
+CP/M 2.2 transforme l'ADAM en environnement 8080/Z80 avec CCP, BDOS, BIOS,
+fichiers et logiciels comme WordStar. Le BIOS ADAM traduit disques, console et
+imprimante. Le format CP/M n'est pas celui d'un repertoire EOS ordinaire.
+
+T-DOS, developpe par la communaute, etend/remplace l'usage CP/M avec meilleur
+support des disques, memoires et materiels tiers selon version. "EOS, OS 7 et
+CP/M/T-DOS" sont des environnements differents; leurs appels systeme et cartes
+memoire ne sont pas interchangeables.
+
+
+==============================================================================
+39. AUTRES LANGAGES ET LOGICIELS
+==============================================================================
+
+Logo, assembleurs Z80, Pascal, Forth, C, outils CP/M, traitements de texte,
+tableurs, telecommunications et jeux existent. Chaque chaine impose format de
+boot, runtime et convention de fichier.
+
+Pour un nouveau projet : assembleur Z80 pour controle total; C/SDCC avec CRT
+ADAM pour productivite; SmartBASIC pour experimentation; CP/M pour portage de
+logiciels caracteres. Documenter l'OS requis et fournir une image media valide.
+
+
+==============================================================================
+40. EXTENSIONS MEMOIRE
+==============================================================================
+
+Des cartes 64 Kio, 256 Kio, 320 Kio, 512 Kio, 1 Mio et davantage ont existe.
+Elles utilisent option RAM d'expansion de `$7F` et parfois un registre d'adresse
+supplementaire pour choisir un bloc physique.
+
+La presence d'une option "expansion RAM" ne dit pas combien de banques ni quel
+mapper. Detecter sans detruire : sauvegarder valeur, ecrire motifs dans deux
+banques, verifier independance, restaurer. Ne jamais tester au-dessus d'un fichier
+ou de la pile EOS visible.
+
+
+==============================================================================
+41. MODEMS, SERIE, PARALLELE ET STOCKAGE MODERNE
+==============================================================================
+
+ADAMLink 300 bauds, modems 1200, interfaces RS-232, Centronics, cartes IDE/CF,
+disques durs, ramdisks et imprimantes tierces utilisent emplacements internes ou
+bus externe. Les ports et pilotes dependent du fabricant.
+
+RS-232 n'est pas AdamNet : niveaux electriques, trames et connecteurs different.
+Une interface parallele n'est pas prise en charge automatiquement par les appels
+imprimante EOS sans pilote. FujiNet ajoute images et reseau via AdamNet tout en
+se presentant comme peripherique; ses fonctions avancees sont une extension.
+
+
+==============================================================================
+42. EXEMPLE DE SELECTION DE BANQUE
+==============================================================================
+
+MEMPORT        equ $7F
+EOS_BANK       equ $FD14
+
+; Methode recommandee sous EOS : A = constante tiree du manuel
+SelectBank:
+        call    EOS_BANK
+        ret
+
+; Methode directe, uniquement depuis une banque qui demeure mappee
+SelectDirect:
+        di
+        out     (MEMPORT),a
+        ; Ne plus appeler une adresse ou utiliser une pile disparue.
+        ei
+        ret
+
+Une routine dans la partie haute peut changer la partie basse. Pour changer la
+haute, copier un trampoline et une pile dans la basse. Une interruption/NMI doit
+egalement pointer vers du code encore visible.
+
+
+==============================================================================
+43. EXEMPLE D'APPEL EOS
+==============================================================================
+
+EOS_GET_STATUS equ $FCE4
+
+; A = numero de peripherique
+GetStatus:
+        call    EOS_GET_STATUS
+        ret     z                       ; Z : succes
+        ld      (LastError),a
+        scf
+        ret
+
+LastError: db 0
+
+La convention exacte des sorties de GET DEVICE STATUS depend de sa fiche. Une
+enveloppe d'application devrait uniformiser Z, A et registres detruits, puis ne
+jamais supposer que A=0 suffit si le manuel definit le Zero Flag.
+
+
+==============================================================================
+44. EXEMPLE D'OUVERTURE ET LECTURE DE FICHIER
+==============================================================================
+
+EOS_OPEN   equ $FCC0
+EOS_READ   equ $FCD2
+EOS_CLOSE  equ $FCC3
+DISK1      equ 4
+MODE_READ  equ 0                       ; confirmer dans table EOS
+
+        ld      a,DISK1
+        ld      b,MODE_READ
+        ld      hl,FileName
+        call    EOS_OPEN
+        jr      nz,FileError
+        ld      (FileNo),a
+
+        ; Configurer destination/longueur suivant convention READ FILE.
+        ; Le tampon doit etre en RAM intrinseque et la banque stable.
+        call    EOS_READ
+        jr      nz,CloseAfterError
+
+CloseIt:
+        ld      a,(FileNo)
+        call    EOS_CLOSE
+        jr      nz,FileError
+        ret
+
+CloseAfterError:
+        push    af
+        ld      a,(FileNo)
+        call    EOS_CLOSE
+        pop     af
+FileError:
+        ld      (LastError),a
+        ret
+
+FileNo:   db 0
+FileName: db "DONNEES     "             ; longueur/format exact EOS
+
+Cet exemple montre la discipline d'erreur. Les registres de READ FILE doivent
+etre pris dans le manuel avant assemblage; ne pas inventer une taille implicite.
+
+
+==============================================================================
+45. EXEMPLE D'ACCES BLOC
+==============================================================================
+
+EOS_READ_BLOCK equ $FCF3
+TAPE1          equ 8
+
+; Pseudo-code d'enveloppe :
+; A=TAPE1, bloc et adresse tampon suivant fiche READ BLOCK.
+; Tampon de 1024 octets situe dans RAM intrinseque.
+        ld      a,TAPE1
+        ld      hl,BlockBuffer
+        ; charger numero de bloc et DCB selon convention EOS
+        call    EOS_READ_BLOCK
+        jr      nz,BlockError
+        ret
+
+BlockError:
+        ld      (LastError),a
+        ret
+
+Ne pas fournir ici de registres non confirmes : les editions du manuel distinguent
+appel haut niveau et DCB. L'exemple complet doit suivre la revision EOS cible.
+
+
+==============================================================================
+46. EXEMPLE CLAVIER ET AFFICHAGE
+==============================================================================
+
+Le flux recommande est : FIND DCB clavier, demander/status caractere, attendre
+acquittement, traduire le code, puis appeler WRITE CHARACTER/console EOS.
+
+Pseudo-assembleur :
+
+Loop:
+        call    EOS_KEY_STATUS
+        jr      nz,KeyboardError
+        or      a
+        jr      z,Loop
+        call    EOS_KEY_READ
+        jr      nz,KeyboardError
+        call    EOS_PUT_CHAR
+        jr      Loop
+
+Les symboles EOS_KEY_* doivent etre lies aux adresses de la jump table complete.
+Ne pas lire `$FC/$FF` : ces ports sont les controleurs de jeu, pas le clavier
+ADAM.
+
+
+==============================================================================
+47. EXEMPLE VDP ET SON DIRECT
+==============================================================================
+
+VDPDATA equ $BE
+VDPCTRL equ $BF
+PSG     equ $FF
+
+; R7 = texte blanc sur fond bleu fonce
+        ld      a,$F4
+        out     (VDPCTRL),a
+        ld      a,$87
+        out     (VDPCTRL),a
+
+; Canal 0, diviseur $0FE, volume maximal
+        ld      a,$8E
+        out     (PSG),a
+        ld      a,$0F
+        out     (PSG),a
+        ld      a,$90
+        out     (PSG),a
+
+Sous EOS, mettre aussi a jour ses copies de registres ou reinitialiser le writer
+avant retour. Une NMI ne doit pas separer les deux OUT du registre VDP.
+
+
+==============================================================================
+48. EXEMPLE DE PROGRAMME Z80 AUTONOME
+==============================================================================
+
+        org     $8000                  ; exemple charge en RAM haute/cartouche
+Start:
+        di
+        ld      sp,$D300               ; sous les zones EOS conservees
+        call    InitVDP
+        call    InitKeyboard
+        ei
+Main:
+        halt
+        call    PollKeyboard
+        call    UpdateScreen
+        jr      Main
+
+NMIHandler:
+        push    af
+        in      a,($BF)                ; acquitter VDP si handler proprietaire
+        ld      a,1
+        ld      (FrameReady),a
+        pop     af
+        retn
+
+FrameReady: db 0
+
+Sur ADAM, le vecteur `$0066` peut appartenir a EOS/OS 7 dans une autre banque.
+Installer un handler exige la carte RAM appropriee ou le vecteur logiciel de
+l'environnement. L'adresse ORG seule ne rend pas le programme amorcable : il
+faut un bloc boot et la convention de chargement du support.
+
+
+==============================================================================
+49. PROGRAMMATION SMARTBASIC
+==============================================================================
+
+Exemple pedagogique :
+
+10 HOME
+20 PRINT "ADAM PRET"
+30 FOR I=1 TO 10
+40 PRINT I,I*I
+50 NEXT I
+60 INPUT "VOTRE NOM ? ";N$
+70 PRINT "BONJOUR ";N$
+
+Pour son :
+
+100 REM LES COMMANDES SOUND DEPENDENT DE SMARTBASIC/EXTENSIONS
+110 REM EVITER POKE DES TABLES EOS SANS CARTE MEMOIRE PRECISE
+
+SmartBASIC permet PEEK, POKE et CALL, mais un listing portable doit verifier sa
+version. Sauvegarder avant toute experimentation de banque ou DCB.
+
+
+==============================================================================
+50. FORMAT DES IMAGES DDP ET DSK
+==============================================================================
+
+`.ddp` represente generalement les blocs des deux pistes d'un Data Pack; l'ordre
+peut etre lineaire, interleave ou propre a l'emulateur. `.dsk` represente souvent
+160 Kio de secteurs/blocs, mais EOS et CP/M n'ont pas le meme repertoire.
+
+Une taille seule ne suffit pas a identifier format, geometrie ou ordre. Examiner
+boot, repertoire, motifs connus et documentation de l'outil. Ne jamais convertir
+en reecrivant l'original; travailler sur copie et conserver hash.
+
+Un emulateur devrait exposer write protect, changement de media et sauvegarde
+atomique. Ecrire une image au moment du montage peut corrompre les archives si
+le programme n'a rien demande.
+
+
+==============================================================================
+51. OPTIMISATION ET ROBUSTESSE
+==============================================================================
+
+- conserver EOS et ses tables seulement si les services sont necessaires;
+- placer buffers AdamNet en RAM intrinseque;
+- limiter changements de banque et fournir trampolines stables;
+- tester toutes les erreurs et timeouts de peripheriques;
+- aligner transferts sur blocs de 1 Kio quand approprie;
+- grouper acces bande pour reduire les recherches;
+- mettre a jour VRAM pendant VBlank;
+- adapter animation 50/60 Hz;
+- garder NMI courte;
+- fermer les fichiers et restaurer video/son avant retour.
+
+La bande est mecanique : un algorithme qui alterne blocs eloignes peut etre
+fonctionnel mais tres lent. La disquette beneficie aussi d'un ordre local.
+
+
+==============================================================================
+52. GUIDE D'IMPLEMENTATION D'UN EMULATEUR
+==============================================================================
+
+1. Z80 exact : instructions, flags, NMI, EI delay, HALT et ports.
+2. mapper `$7F`, toutes sources basse/haute et reset.
+3. RAM 64 Kio, SmartWriter, OS 7, cartouche et VRAM separee.
+4. VDP TMS9928A/29A : modes, sprites, statut, read-ahead, WAIT et cadence.
+5. SN76489A : latch, tons, bruit, phases et attenuation.
+6. EOS boot en RAM, jump table, DCB/PCB et DMA intrinseque.
+7. maitre 6801 et AdamNet avec ordonnancement asynchrone.
+8. clavier, imprimante, Data Drives et disquettes.
+9. formats EOS/CP/M, media change et write protect.
+10. controleurs ColecoVision, PAL/NTSC et extensions annoncees.
+
+Le test critique est un boot complet SmartWriter, puis SmartBASIC depuis bande
+et disque, saisie clavier, sauvegarde/relecture et impression. Les jeux testent
+OS 7 mais peu AdamNet; les utilitaires de copie et diagnostic exercent mieux les
+erreurs et banques.
+
+
+==============================================================================
+53. EMULATION D'ADAMNET ET DES SUPPORTS
+==============================================================================
+
+Mode firmware : executer les ROM 6801 avec timers/ports. Il offre la meilleure
+compatibilite si dumps et schemas sont disponibles legalement.
+
+Mode haut niveau : observer commandes DCB et simuler appareils. Reproduire etats
+idle/busy/done/error, compteur, DMA, reset, discovery, latence et timeouts. Ne
+pas traduire un nom EOS directement vers un fichier hote sans passer repertoire,
+allocation et blocs : les outils de disque verraient un autre support.
+
+Le transport hote peut etre rapide, mais l'horloge invite doit rester coherente.
+Prevoir avance rapide optionnelle, determinisme, sauvegarde d'etat incluant
+position de bande, commandes en vol, moteurs et donnees non encore commises.
+
+
+==============================================================================
+54. CAS LIMITES ET ERREURS FREQUENTES
+==============================================================================
+
+- confondre ADAM et ColecoVision avec plus de RAM;
+- compter la VRAM dans les 64 Kio CPU;
+- changer `$7F` depuis le code que l'on retire;
+- faire disparaitre EOS ou sa pile pendant CALL;
+- utiliser une banque expansion comme tampon DMA AdamNet;
+- supposer AdamNet synchrone ou instantane;
+- lire les controleurs de jeu comme clavier ADAM;
+- traiter une DDP comme cassette audio ou fichier plat universel;
+- monter un DSK CP/M comme repertoire EOS;
+- ignorer write protect, media absent et timeouts;
+- ecraser `$D390-$FFFF` puis appeler le gestionnaire EOS;
+- appeler l'interieur de SmartWriter au lieu de la jump table;
+- supposer deux fichiers ouverts sur deux media sans contraintes;
+- attribuer toute extension memoire au meme registre d'adresse;
+- oublier que l'imprimante fournit l'alimentation;
+- utiliser exactement 60 Hz pour la machine NTSC.
+
+
+==============================================================================
+55. DIAGNOSTIC ET MAINTENANCE
+==============================================================================
+
+Verifier alimentation et rails avant tout. Inspecter connecteurs, interrupteur,
+RAM, horloges, reset, cables AdamNet et cartouche. Une tension incorrecte peut
+produire erreurs aleatoires de bande, caracteres ou video avant panne franche.
+
+Demarrage sans ecran : verifier banque initiale, Z80, SmartWriter ROM, VDP et
+VRAM. Clavier absent : reseau/controleur/cable, pas ports joystick. Data Drive :
+courroies, galets, capteurs, tete propre, vitesse et media. Imprimante : chariot,
+marguerite, ruban, papier et controleur.
+
+Utiliser diagnostic officiel/communautaire avec prudence. Oscilloscope/analyseur
+logique : horloges, MREQ, IORQ, RD, WR, bus, AdamNet. Les moteurs et alimentation
+comportent tensions/courants superieurs au TTL. Ne jamais brancher AdamNet a une
+ligne telephonique malgre la forme du connecteur.
+
+
+==============================================================================
+56. PRESERVATION DES DONNEES
+==============================================================================
+
+Proteger les originaux en ecriture. Nettoyer/aligner un lecteur avant lecture
+d'un support unique. Imager plusieurs fois, comparer hashes et conserver erreurs
+avec position plutot que "corriger" silencieusement. Stocker DDP/disquettes au
+sec, loin d'aimants, chaleur et imprimante sous tension.
+
+Conserver : image brute, format/log de capture, photographie etiquette, machine,
+lecteur, date, logiciel de conversion et hash SHA-256. Une image normalisee est
+utile mais ne remplace pas la capture la plus proche du support.
+
+
+==============================================================================
+57. OUTILS ET VALIDATION
+==============================================================================
+
+Assembleurs Z80 : z80asm, sjasmplus, ASxxxx/SDCC. Emulateurs : MAME, AdamEm,
+Virtual ADAM, ColecoDS selon besoin. Outils d'images EOS/CP/M, FujiNet, Gotek et
+cartes modernes simplifient les tests, mais verifier sur une configuration
+historique quand la temporisation compte.
+
+Tests recommandes : toutes les valeurs `$7F`, RAM basse/haute, boot sans media,
+DDP/disque bon et mauvais, deux appareils, clavier maintenu, imprimante busy,
+VDP 50/60, fichiers plein/verrouille/absent et reset durant transfert.
+
+
+==============================================================================
+58. REFERENCES
+==============================================================================
+
+Documents primaires :
+
+- Coleco ADAM Technical Reference Manual :
+  https://www.colecovisionadam.com/Coleco/adam/Documents/Manual/Coleco_ADAM_Technical_Reference_Manual.pdf
+- ADAM EOS Programmer's Manual, edition mise a jour :
+  https://adamarchive.org/archive/Media/Books/ADAM%20E.O.S.%20Programmers%20Manual%20-%20Updated%20%28Eric%20Pearson%29.pdf
+- EOS Programmer's Manual, version HTML consultable :
+  https://www.colecoadam.net/manuals%20%26%20docs/e.o.s%20programming%20manual%20%28199x%29%20%28guy%20cousineau%29.html
+- ColecoVision Technical Reference Manual pour VDP, son et mode OS 7;
+- manuels Zilog Z80, TI TMS9928A/TMS9929A et TI SN76489A.
+
+Archives et materiel complementaire :
+
+- depot de livres et manuels Coleco ADAM :
+  https://www.colecovisionadam.com/Coleco/adam/Library/Repository/Repository.php
+- archives techniques ADAM :
+  https://adamarchive.org/archive/?dir=%2FTechnical%2FADAM+Tech+Manuals
+- documentation FujiNet ADAM, exemple moderne d'appareil AdamNet :
+  https://fujinetwifi.github.io/fujinet-docs/getting-started/coleco-adam/
+
+Pour une implementation compatible, confronter manuel, sources EOS/OS 7,
+firmwares 6801, schemas de la revision et mesures sur materiel. Distinguer faits
+du systeme original, conventions communautaires et extensions tardives.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

@@ -1,0 +1,1094 @@
+==============================================================================
+ ATARI 7800 PROSYSTEM - MATERIEL ET PROGRAMMATION
+ Reference 6502C, MARIA, TIA, RIOT, cartouches et emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'Atari 7800 : processeur 6502C/SALLY, coprocesseur graphique
+MARIA, TIA, RIOT 6532, memoire, BIOS, cartouches, controleurs et programmation.
+Il vise auteurs de jeux, cartouches, outils, diagnostics et emulateurs.
+
+MARIA est tres differente du TIA de la VCS et d'ANTIC sur Atari 5200. En mode
+7800, MARIA construit chaque ligne depuis des display lists et une RAM de ligne
+interne. Le TIA reste surtout utilise pour le son et la compatibilite 2600. Les
+accents sont omis afin de conserver un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et commercialisation
+  2. Modeles, revisions et regions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges et synchronisation
+  6. SALLY/6502C
+  7. Instructions et adressages 6502
+  8. Interruptions, pile et vecteurs
+  9. Modes 2600 et 7800
+ 10. BIOS et authentification
+ 11. Carte memoire complete
+ 12. RAM principale et miroirs
+ 13. MARIA : architecture
+ 14. Registres MARIA
+ 15. Palettes MARIA
+ 16. Display List List
+ 17. Display Lists et objets
+ 18. Modes graphiques
+ 19. Mode direct et mode indirect
+ 20. Line RAM et pipeline video
+ 21. DMA MARIA et holey DMA
+ 22. WSYNC, MSTAT, DLI et NMI
+ 23. Positionnement et clipping
+ 24. Transparence, priorite et collisions
+ 25. TIA en mode 7800
+ 26. Son TIA
+ 27. RIOT 6532
+ 28. Manettes et boutons
+ 29. Light gun et accessoires
+ 30. Cartouches et connecteur
+ 31. Cartouches simples et SuperCart
+ 32. POKEY en cartouche
+ 33. RAM, EEPROM, HSC et extensions audio
+ 34. Format A78
+ 35. Signature interne et vecteurs cartouche
+ 36. Assembleur : ROM minimale
+ 37. Assembleur : initialisation MARIA
+ 38. Assembleur : DLL et display list
+ 39. Assembleur : DLI
+ 40. Assembleur : manette
+ 41. Assembleur : son TIA et POKEY
+ 42. C avec cc65
+ 43. 7800basic et outils graphiques
+ 44. Organisation de la RAM et de la ROM
+ 45. Animation, scrolling et double buffering
+ 46. Optimisation CPU/DMA
+ 47. Construction et validation d'une cartouche
+ 48. Debogage et developpement sur materiel
+ 49. Conseils pour un emulateur
+ 50. Emulation du 6502C et du bus
+ 51. Emulation de MARIA
+ 52. Emulation TIA et RIOT
+ 53. Emulation des cartouches
+ 54. Video NTSC/PAL et palette
+ 55. Plan de validation
+ 56. Electronique
+ 57. Maintenance et diagnostic
+ 58. Preservation
+ 59. Securite et droit
+ 60. References
+
+
+==============================================================================
+1. HISTORIQUE ET COMMERCIALISATION
+==============================================================================
+
+La console est concue chez General Computer Corporation sous le nom 3600, puis
+presentee par Atari en 1984. Le changement de proprietaire d'Atari retarde son
+lancement commercial large jusqu'en 1986. Elle vise la compatibilite VCS/2600
+tout en fournissant MARIA, un moteur graphique beaucoup plus autonome.
+
+Le catalogue officiel exploite des cartouches de tailles et architectures variees,
+parfois avec POKEY pour un meilleur son. La plate-forme homebrew moderne ajoute
+banking, RAM, EEPROM et circuits audio tout en conservant le bus d'origine.
+
+
+==============================================================================
+2. MODELES, REVISIONS ET REGIONS
+==============================================================================
+
+Modeles NTSC nord-americains et PAL europeens different par BIOS, quartz, MARIA,
+TIA/video, cadence et detection cartouche. Les premiers boitiers disposent d'un
+port d'expansion inferieur ensuite retire. Les cartes mere et composants ont des
+revisions; les references MARIA NTSC/PAL ne sont pas interchangeables sans adapter
+le reste du circuit.
+
+La version PAL ne reproduit pas exactement la verification cryptographique NTSC;
+elle utilise une detection differente en raison des contraintes historiques. Un
+jeu doit porter metadonnees region et disposer de timings/palettes adaptes.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU          6502C/SALLY, env. 1,79 MHz, avec phases plus lentes pendant DMA
+RAM          4 Kio de SRAM principale avec nombreux miroirs
+Video        MARIA, jusqu'a environ 320 pixels logiques et 25 couleurs par ligne
+Compat.      TIA + RIOT 6532 pour logiciels Atari 2600
+Son interne  deux canaux TIA; POKEY facultatif dans certaines cartouches
+Cartouche    grand connecteur, espace jusqu'a $4000-$FFFF selon mapper
+Entrees      deux ports DB9; joystick deux boutons ou controleur 2600
+BIOS         ROM interne, region/revision dependantes
+
+Le nombre de couleurs est organise en huit palettes de trois couleurs visibles
+plus un fond commun. Les objets d'une ligne consomment DMA; la resolution maximale
+ne garantit pas tout le temps CPU disponible.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+                  +---------------------+
+                  | SALLY / 6502C       |
+                  +----------+----------+
+                             | bus partage
+       +---------------------+---------------------------+
+       |                     |                           |
+ +-----v------+       +------v------+             +------v------+
+ | MARIA      |       | TIA         |             | RIOT 6532   |
+ | DMA/video  |       | son/VCS     |             | I/O/timer   |
+ +------------+       +-------------+             +-------------+
+       |                     |                           |
+ line RAM/video          audio/video VCS            manettes
+       |
+ RAM et cartouche (ROM, RAM, POKEY ou autre mapper)
+
+En mode 7800, MARIA genere video et vole le bus par HALT. En mode 2600, MARIA est
+desactivee et le materiel se comporte largement comme une VCS avec TIA/RIOT.
+
+
+==============================================================================
+5. HORLOGES ET SYNCHRONISATION
+==============================================================================
+
+NTSC derive d'un master proche de 14,31818 MHz. MARIA travaille en color clocks;
+SALLY execute normalement a environ 1,79 MHz, mais certains acces et phases DMA
+introduisent des cycles a cadence reduite. Une ligne NTSC fait 454 master clocks/
+227 color clocks environ, avec 262 lignes par image.
+
+PAL emploie master et trame differents. Ne pas limiter un jeu par boucle CPU :
+utiliser MSTAT/VBlank ou DLI. Le temps CPU visible depend de la longueur totale des
+objets MARIA; une ligne surchargee peut laisser tres peu de cycles.
+
+
+==============================================================================
+6. SALLY/6502C
+==============================================================================
+
+SALLY est un 6502 NMOS avec entree HALT pour DMA. Registres A, X, Y, SP, PC et P
+(N,V,bit5,B,D,I,Z,C). Bus little-endian, zero page et pile materielle page $01.
+
+Le mode decimal existe. Toujours `CLD` au demarrage et avant routines qui supposent
+binaire. MARIA peut suspendre le CPU entre cycles bus; cela ne change pas le
+resultat architectural mais change le timing video et des IRQ.
+
+
+==============================================================================
+7. INSTRUCTIONS ET ADRESSAGES 6502
+==============================================================================
+
+Chargement/transfert : LDA, LDX, LDY, STA, STX, STY, TAX, TAY, TXA, TYA, TSX,
+TXS. Pile : PHA, PHP, PLA, PLP. ALU : ADC, SBC, AND, ORA, EOR, CMP, CPX, CPY,
+BIT. Memoire : INC, DEC, ASL, LSR, ROL, ROR. Registres : INX, DEX, INY, DEY.
+
+Branches BCC/BCS/BEQ/BNE/BMI/BPL/BVC/BVS; JMP, JSR, RTS, RTI, BRK, NOP;
+CLC/SEC/CLI/SEI/CLD/SED/CLV.
+
+Adressages implied, accumulator, immediate, zero-page, zp X/Y, absolute, abs X/Y,
+indirect, `(zp,X)`, `(zp),Y`, relative. Page crossing ajoute cycles selon opcode.
+RMW fait lecture, ecriture ancienne, ecriture nouvelle. Le JMP indirect de page
+wrappe comme un 6502 NMOS. Eviter les opcodes non documentes.
+
+
+==============================================================================
+8. INTERRUPTIONS, PILE ET VECTEURS
+==============================================================================
+
+NMI sert principalement aux DLI MARIA. IRQ vient notamment du timer RIOT ou d'une
+extension. RESET choisit BIOS/mode. Vecteurs 6502 visibles aux adresses $FFFA NMI,
+$FFFC RESET, $FFFE IRQ/BRK une fois la cartouche/mapping etabli.
+
+Une ISR sauve les registres modifies, acquitte la source, puis RTI. NMI ignore I;
+une DLI peut arriver pendant du code sous SEI. La pile utilise $0100-$01FF, mais la
+carte RAM 7800 a des miroirs particuliers : ne pas ecraser ses zones physiques.
+
+
+==============================================================================
+9. MODES 2600 ET 7800
+==============================================================================
+
+Au boot, BIOS determine si la cartouche est 7800. Si valide, il verrouille le mode
+7800, active MARIA et la carte memoire etendue. Sinon il verrouille mode 2600 :
+MARIA inactive, bus/adressage VCS, TIA genere image et son, RIOT fournit 128 octets,
+I/O et timer.
+
+Le verrouillage n'est normalement pas reversible avant reset. Un logiciel 7800 ne
+doit pas tenter de passer en 2600 a chaud. La compatibilite est materielle, pas une
+emulation logicielle du 2600.
+
+
+==============================================================================
+10. BIOS ET AUTHENTIFICATION
+==============================================================================
+
+Le BIOS NTSC initialise la console, examine une signature placee pres du haut de
+la ROM cartouche et, si elle est valide, affiche le logo puis lance l'entree 7800.
+La signature historique est une authentification cryptographique calculee par Atari;
+les cartouches modernes utilisent des moyens legalement disponibles, BIOS modifie
+ou plates-formes dont la politique l'autorise. Ce document ne fournit aucune cle.
+
+La zone $FF80-$FFF7 est reservee par la documentation tardive a la signature;
+$FFF8-$FFFF contient flags de demarrage et vecteurs. D'anciens documents donnent
+$FF7A-$FFF9 : suivre la convention du BIOS, outil de signature et region cibles.
+
+BIOS PAL et revisions ont flux differents. Un programme ne doit pas appeler des
+adresses internes non documentees comme API stable.
+
+
+==============================================================================
+11. CARTE MEMOIRE COMPLETE
+==============================================================================
+
+$0000-$001F  TIA
+$0020-$003F  MARIA
+$0040-$00FF  RAM principale, bloc zero
+$0100-$013F  miroirs page zero/I/O
+$0140-$01FF  RAM principale, bloc un/pile
+$0200-$027F  miroirs I/O/RAM selon decode
+$0280-$02FF  ports et timer RIOT
+$0300-$03FF  miroirs
+$0400-$047F  disponible extension
+$0480-$04FF  RAM interne RIOT, ne pas utiliser en mode 7800
+$0500-$17FF  disponible extension, avec miroir RIOT a $0580
+$1800-$27FF  RAM principale 4 Kio et miroirs internes aux sous-plages
+$2800-$2FFF  miroir de $2000-$27FF, conflit BIOS historique
+$3000-$FFFF  espace externe/cartouche selon mapper et BIOS
+$FF80-$FFF7  reserve signature (convention courante)
+$FFF8-$FFFF  startup flags et vecteurs
+
+La cartographie exacte des miroirs est donnee au chapitre suivant. Les mappers
+peuvent placer ROM/RAM/peripheriques dans les zones externes.
+
+
+==============================================================================
+12. RAM PRINCIPALE ET MIROIRS
+==============================================================================
+
+Deux SRAM 6116 donnent 4 Kio vus principalement $1800-$27FF. Le decodage les rend
+aussi disponibles comme zero page/pile :
+
+$0040-$00FF correspond a une partie du bloc RAM zero
+$0140-$01FF correspond a une partie du bloc RAM un
+$1800-$203F RAM; $2040-$20FF miroir du bloc zero
+$2100-$213F RAM; $2140-$21FF miroir du bloc un
+$2200-$27FF RAM
+$2800-$2FFF miroir de $2000-$27FF, repete aussi plus haut selon decodage/mode
+
+Les 128 octets RAM du 6532 a $0480 sont lents et signales "don't use" en mode
+7800; ils servent au mode VCS et peuvent disparaitre d'une revision theorique.
+Un linker doit modeliser les alias pour ne pas allouer deux objets au meme octet.
+
+
+==============================================================================
+13. MARIA : ARCHITECTURE
+==============================================================================
+
+MARIA lit au debut de la zone visible un pointeur de Display List List (DLL). Une
+entree DLL donne display list pour un groupe de scanlines, OFFSET et nombre de
+lignes. Chaque display list contient des objets avec adresse graphique, palette,
+largeur, position X et mode direct/indirect.
+
+Pour chaque ligne, MARIA vide deux line RAM internes en alternance, DMA les objets
+dans la line RAM de construction, puis convertit l'autre en pixels. La CPU continue
+quand le budget DMA le permet. Il n'existe pas de framebuffer impose.
+
+
+==============================================================================
+14. REGISTRES MARIA
+==============================================================================
+
+Base $20; registres palette occupent offsets `base+1..3` de chaque groupe de 4.
+Registres speciaux, acces principal :
+
+$20 BACKGRND couleur fond
+$24 WSYNC     attendre prochaine ligne
+$28 MSTAT     lecture statut VBlank
+$2C DPPH      ecriture pointeur haut de DLL
+$30 DPPL      ecriture pointeur bas de DLL
+$34 CHARBASE  base haute graphiques indirects
+$38 OFFSET    interne charge par DLL; lecture/ecriture selon revision/outils
+$3C CTRL      DMA, modes de lecture et controles video
+
+Les adresses $21-$23 sont P0C1-3, $25-$27 P1C1-3, jusqu'a $3D-$3F P7C1-3.
+Plusieurs adresses ont une fonction differente en lecture et ecriture. Les deux
+premieres ecritures CTRL debloquent la propagation HALT vers SALLY; initialiser
+CTRL selon la sequence officielle avant DMA.
+
+
+==============================================================================
+15. PALETTES MARIA
+==============================================================================
+
+Huit palettes P0..P7 ont chacune trois couleurs visibles C1..C3. La valeur pixel
+zero est transparente et montre BACKGRND ou ce qui est deja dans line RAM selon
+mode. Couleur Atari est un octet hue/luminance : teinte nibble haut, luminance
+nibble bas avec resolution analogique limitee.
+
+Un objet selectionne palette par bits de header. Certains modes combinent bits
+de pixels et palette autrement, notamment 160A/160B/320. Les registres sont
+write-only dans l'usage normal; garder des shadows RAM pour effets DLI.
+
+
+==============================================================================
+16. DISPLAY LIST LIST
+==============================================================================
+
+Une entree DLL fait trois octets : flags/offset/compteur de lignes puis adresse
+16 bits de la display list (ordre defini par MARIA, utilise via macros). Le nombre
+de lignes est code comme compteur inverse bas nibble; bit haut peut demander DLI;
+des bits controlent holey DMA 8/16.
+
+DPPH/DPPL pointent la DLL. MARIA les echantillonne au debut de l'ecran visible;
+une DLL peut franchir au plus la frontiere permise de page selon guide. La derniere
+entree doit couvrir jusqu'au blank sans faire lire des donnees arbitraires.
+
+OFFSET est ajoute au haut des adresses graphiques. Changer d'entree permet bandes
+de pages graphiques differentes sans modifier chaque objet.
+
+
+==============================================================================
+17. DISPLAY LISTS ET OBJETS
+==============================================================================
+
+Une display list est une suite de headers objet terminee par un marqueur/zero de
+fin approprie. Header normal encode adresse basse des donnees, palette/largeur,
+adresse haute ou mode, et position horizontale. Header etendu ajoute controle
+de mode/indirect explicite.
+
+`width` est souvent stocke comme complement/taille negative. MARIA lit les octets
+graphiques, les decompresse en pixels selon mode et les ecrit a X. Les objets
+suivants peuvent ecraser/combiner les pixels precedents.
+
+Utiliser les macros de `MARIA.S`, 7800AsmDevKit ou 7800basic : coder les bitfields
+a la main sans distinguer normal/extended, write mode et holey DMA est une source
+frequente de corruption.
+
+
+==============================================================================
+18. MODES GRAPHIQUES
+==============================================================================
+
+Noms modernes courants :
+
+160A  160 pixels, 2 bits/pixel, quatre valeurs avec palette
+160B  160 pixels, encodage permettant davantage de choix de couleur
+320A  320 pixels, 1 bit/pixel avec selection palette/couleur
+320B/C/D variantes 320 utilisant bits/palettes et chroma/luma differemment
+
+Les documents historiques parlent aussi de modes de lecture et write modes. La
+sortie physique est a color-clock; certains pixels 320 ont une demi-largeur 160.
+Les combinaisons de pixels/palettes exactes doivent etre tirees de la table MARIA
+du guide et testees, notamment chroma-kill et artifacting.
+
+
+==============================================================================
+19. MODE DIRECT ET MODE INDIRECT
+==============================================================================
+
+Direct : le header pointe directement vers octets graphiques de la ligne/objet.
+L'adresse progresse avec les lignes via OFFSET/DLL et organisation choisie.
+
+Indirect (character/tile) : le header pointe vers une character map; chaque octet
+est le bas d'une adresse de glyph. CHARBASE + OFFSET forme le haut. Cela rend les
+tile maps compactes et permet animation en changeant charset/map.
+
+Indirect a contraintes d'adresse et peut provoquer DMA supplementaire. Grouper
+glyphes sur pages compatibles. Le "mode caractere" n'est pas une couche texte
+automatique : chaque objet et map restent definis par display list.
+
+
+==============================================================================
+20. LINE RAM ET PIPELINE VIDEO
+==============================================================================
+
+MARIA possede deux buffers line RAM internes, invisibles comme RAM CPU normale.
+Pendant que l'un est affiche, l'autre est rempli par DMA objet. A la ligne suivante,
+ils permutent et le buffer de construction est efface selon regles du chip.
+
+La line RAM contient representation pixel/palette interne. Objets transparents ne
+remplacent pas; l'ordre des headers realise la priorite. Une display list trop
+longue peut depasser la fenetre DMA et produire pixels manquants/corruption.
+
+
+==============================================================================
+21. DMA MARIA ET HOLEY DMA
+==============================================================================
+
+MARIA utilise HALT pour prendre le bus. Le cout inclut lecture DLL/DL, headers,
+donnees graphiques, indirect maps et cycles de demarrage. L'acces a certaines
+regions fonctionne a cadence differente; placer donnees en RAM/ROM influence temps.
+
+Holey DMA permet d'ignorer des blocs d'adresses dont certains bits sont tous a 1,
+afin que la plage correspondante puisse contenir code/donnees CPU sans etre lue
+comme graphiques. Deux granularites historiques, holey 8 et holey 16, se commandent
+par DLL. C'est un filtre d'adresses, pas une compression de pixels.
+
+Le "DMA hole" et les limites par ligne sont fondamentaux pour linker. Une ROM qui
+fonctionne dans un emulateur sans contention peut echouer sur console.
+
+
+==============================================================================
+22. WSYNC, MSTAT, DLI ET NMI
+==============================================================================
+
+MSTAT bit 7 indique VBlank; la sortie de VBlank et le debut DMA visible surviennent
+autour de raster 16 selon guide. WSYNC bloque SALLY jusqu'au prochain horizontal
+sync. Une entree DLL marquee DLI demande NMI a la limite correspondante.
+
+DLI typique sauve A, fait `STA WSYNC`, change palettes/CTRL, acquitte ou suit la
+sequence NMI requise, restaure A et RTI. Le budget depend de MARIA DMA. Plusieurs
+DLI peuvent creer bandes de palette, scrolling et changements de mode.
+
+Pour update d'une DLL active, construire une seconde en RAM puis changer DPP au
+VBlank; eviter un pointeur partiellement ecrit au moment d'echantillonnage.
+
+
+==============================================================================
+23. POSITIONNEMENT ET CLIPPING
+==============================================================================
+
+Position X du header est en unites propres au mode; la zone logique s'etend au-
+dela des pixels visibles pour permettre clipping. La largeur encodee et le wrap
+horizontal peuvent provoquer ecriture line RAM inattendue si l'objet sort trop.
+
+Pour sprites hors ecran, ajuster pointeur/largeur et X plutot que compter sur un
+clip universel. Les modes 160 et 320 n'ont pas le meme pas. Les objets verticaux
+sont re-references par chaque display list/ligne : le logiciel choisit la ligne de
+donnees a afficher.
+
+
+==============================================================================
+24. TRANSPARENCE, PRIORITE ET COLLISIONS
+==============================================================================
+
+MARIA n'a pas les registres collision de GTIA. Priorite vient de l'ordre des objets
+et du write mode; pixel zero est transparent. Les collisions sont normalement
+calculees par logiciel a partir de boites, masks ou carte logique.
+
+Pour une collision pixel-perfect, conserver masque CPU ou tester tuiles; lire la
+line RAM n'est pas une solution. Organiser l'ordre fond->objets ou utiliser write
+mode afin que HUD/sprites se superposent comme souhaite.
+
+
+==============================================================================
+25. TIA EN MODE 7800
+==============================================================================
+
+TIA est mappe $00-$1F avec miroirs. En 7800, MARIA fournit video; les registres
+graphiques TIA ne constituent pas une seconde couche visible normale. Les deux
+canaux audio TIA restent utilises. Les entrees analogiques INPT0-3 lisent les deux
+boutons des manettes 7800 apres configuration RIOT; INPT4/5 concernent triggers
+compatibilite selon controleur/mode.
+
+En mode 2600, TIA reprend scanline video, sprites, playfield, collisions et audio
+exactement comme une VCS dans les limites de compatibilite materielle.
+
+
+==============================================================================
+26. SON TIA
+==============================================================================
+
+Registres : AUDC0/1 controle timbre/diviseur polynomial, AUDF0/1 division, AUDV0/1
+volume 0-15. Deux canaux seulement. Les 16 valeurs AUDC selectionnent tonalites,
+bruits et divisions; plusieurs sont periodiquement proches mais non identiques.
+
+Une musique met a jour AUDF/AUDC/AUDV a cadence VBlank ou timer. Le TIA n'a ni
+enveloppe ni DMA : logiciel gere notes, volume et duree. La sortie analogique
+melange TIA avec l'audio cartouche POKEY selon circuit.
+
+
+==============================================================================
+27. RIOT 6532
+==============================================================================
+
+RIOT fournit ports A/B, directions, timer prescale et IRQ, plus 128 octets RAM.
+En mode 7800, utiliser ses ports a $0280-$02FF; la RAM $0480 est deconseillee.
+
+SWCHA lit directions des deux joysticks actives bas. SWCHB contient boutons console
+Select/Reset/Pause et lignes de controle des seconds boutons. SWACNT/SWBCNT fixent
+direction des ports. INTIM lit timer; TIM1T/TIM8T/TIM64T/T1024T le chargent avec
+prescalers. INSTAT indique expiration/IRQ.
+
+Les adresses exactes ont miroirs selon A7/A9. Employer equates 7800, pas ceux 2600
+supposant seulement 13 bits d'adresse.
+
+
+==============================================================================
+28. MANETTES ET BOUTONS
+==============================================================================
+
+Joystick 7800 : directions, deux boutons independants. Il reste compatible avec
+un joystick 2600 a un bouton. Pour les deux boutons, initialisation officielle :
+
+        lda #$14
+        sta CTLSWB
+        lda #0
+        sta SWCHB
+
+Puis TIA INPT0/INPT1 donnent boutons droit/gauche joueur 0 et INPT2/INPT3 joueur 1,
+bit 7 selon circuit/configuration. Directions sont nibbles actifs bas de SWCHA.
+Verifier polarite avec equates; les boutons 2600 et 7800 peuvent etre detectes.
+
+Console possede Power, Pause, Select et Reset selon facade/revision; Pause est une
+entree propre 7800 que le jeu doit gerer et debouncer.
+
+
+==============================================================================
+29. LIGHT GUN ET ACCESSOIRES
+==============================================================================
+
+Le light gun Atari XG-1 est utilise par quelques jeux. Il detecte luminance du
+balayage CRT et fournit trigger/position estimee par timing. Le jeu affiche une
+zone claire, attend le signal capteur et derive X/Y depuis ligne/cycle.
+
+Un LCD moderne ou scaler casse cette methode. L'emulateur peut simuler coordonnees
+mais doit emuler latch/timing que le jeu observe. Clavier/prototype et port High
+Score/expansion ont documentation historique mais ne sont pas universels.
+
+
+==============================================================================
+30. CARTOUCHES ET CONNECTEUR
+==============================================================================
+
+Le connecteur conserve les contacts centraux compatibles 2600 et ajoute lignes
+d'adresse/controle pour plus grand espace. Une cartouche 7800 peut decoder ROM,
+RAM, POKEY et banque. Le BIOS/cart selection logic masque certaines zones au boot.
+
+Respecter niveaux 5 V, direction bus et timing MARIA DMA. Les cartouches avec
+circuits modernes 3,3 V exigent translation tolerante. Ne jamais hot-plugger.
+
+
+==============================================================================
+31. CARTOUCHES SIMPLES ET SUPERCART
+==============================================================================
+
+ROM simple : tailles 8/16/32/48 Kio mappees en haut ou dans $4000-$FFFF selon
+decode. SuperCart Atari utilise banques de 16 Kio, une banque fixe haute et une
+fenetre commutable; ecrire une adresse/registre cartouche selectionne banque.
+
+Variantes : SuperCart sans RAM, avec RAM a $4000, ROM fixe a $4000, bank 6 fixe,
+Activision mapping et schemes homebrew. Une meme taille binaire n'identifie pas le
+mapper. L'A78 header ou base de donnees doit annoncer le materiel.
+
+Le code de changement de banque, vecteurs NMI/RESET/IRQ et signature doivent rester
+dans une banque fixe visible.
+
+
+==============================================================================
+32. POKEY EN CARTOUCHE
+==============================================================================
+
+Quelques cartouches integrent POKEY, souvent mappe a $4000 ou $0450 selon design
+historique/moderne. POKEY fournit quatre canaux, timers, RANDOM et registres audio
+Atari. Si $4000 est occupe par POKEY, le mapper ROM doit eviter ce conflit.
+
+Registres AUDF1/AUDC1 alternent aux offsets 0/1 jusqu'a canal 4; AUDCTL offset 8,
+STIMER 9, RANDOM lecture A, SKCTL F. Cartouches sans POKEY lisent open bus : ne pas
+sonder en ecrivant au hasard sans metadonnees.
+
+Le melange analogique et gain varient par PCB/revision. Un emulateur doit connaitre
+l'adresse et type audio depuis A78/manifest.
+
+
+==============================================================================
+33. RAM, EEPROM, HSC ET EXTENSIONS AUDIO
+==============================================================================
+
+SuperCart RAM ajoute souvent 16 Kio a $4000-$7FFF. High Score Cartridge prevue
+offrait sauvegarde mais fut peu/commercialement non diffusee; homebrew emploie HSC,
+SaveKey/AtariVox via port manette, EEPROM serie ou flashcart.
+
+Extensions modernes incluent POKEY compatible, YM2151, Covox ou puces combinees
+selon ecosysteme. Elles ne font pas partie du 7800 retail de base. Un logiciel doit
+declarer exigence et fournir repli si possible.
+
+
+==============================================================================
+34. FORMAT A78
+==============================================================================
+
+A78 est un conteneur d'emulateur/flashcart, pas des octets presents dans la ROM de
+la cartouche. Un header de 128 octets precede le dump : version, chaine `ATARI7800`,
+titre, longueur ROM big-endian, flags mapper/audio/RAM, types controleurs, region,
+sauvegarde et extensions. Les versions recentes etendent les anciens bitfields.
+
+Toujours utiliser la specification actuelle et `7800header`; ne copier pas un
+ancien exemple a deux octets de type en supposant qu'il decrit tous nouveaux
+mappers. La ROM physique commence apres les 128 octets.
+
+
+==============================================================================
+35. SIGNATURE INTERNE ET VECTEURS CARTOUCHE
+==============================================================================
+
+Ne pas confondre A78 header et signature BIOS interne. L'A78 est retire avant
+mapping. La signature NTSC reside pres de $FF80; les flags et vecteurs sont aux
+derniers octets visibles. Le processus de release historique chiffrer/signait une
+zone reservee apres linkage.
+
+Pendant developpement, emulation/dev BIOS peut accepter une image non signee. Une
+console retail originale exige une cartouche/BIOS/methode autorisee compatible.
+Preserver $FF80-$FFFF selon l'outil de signature choisi et placer vecteurs 6502
+dans la banque fixe.
+
+
+==============================================================================
+36. ASSEMBLEUR : ROM MINIMALE
+==============================================================================
+
+Exemple ca65 conceptuel, vecteurs en banque fixe :
+
+        .segment "CODE"
+Reset:  sei
+        cld
+        ldx #$FF
+        txs
+        lda #0
+        sta $20               ; BACKGRND
+Loop:   bit $28               ; MSTAT
+        bpl Loop
+WaitOn: bit $28
+        bmi WaitOn
+        jmp Loop
+
+NMI:    rti
+IRQ:    rti
+
+        .segment "VECTORS"
+        .word NMI, Reset, IRQ
+
+Le linker reserve signature/startup. Le BIOS doit transferer a Reset selon format
+de cartouche; un simple vecteur sans signature ne suffit pas sur NTSC retail.
+
+
+==============================================================================
+37. ASSEMBLEUR : INITIALISATION MARIA
+==============================================================================
+
+BACKGRND = $20
+DPPH     = $2C
+DPPL     = $30
+CHARBASE = $34
+CTRL     = $3C
+
+        sei
+        lda #0
+        sta CTRL              ; premiere ecriture d'initialisation
+        sta CTRL              ; seconde : autorise chemin HALT selon guide
+        lda #<DLL
+        sta DPPL
+        lda #>DLL
+        sta DPPH
+        lda #>Charset
+        sta CHARBASE
+        lda #$00
+        sta BACKGRND
+        lda #MARIA_DMA_MODE   ; constante du fichier MARIA.S cible
+        sta CTRL
+        cli
+
+Ne pas inventer la valeur de `MARIA_DMA_MODE` : elle combine DMA, read/write mode,
+chroma et autres bits selon region/effet. Employer les equates officiels corriges.
+
+
+==============================================================================
+38. ASSEMBLEUR : DLL ET DISPLAY LIST
+==============================================================================
+
+Pseudo-source avec macros recommandees :
+
+DLL:
+        DLL_ENTRY DL0, 16, OFFSET0, NO_DLI, HOLEY_NONE
+        DLL_ENTRY DL1, 16, OFFSET1, DLI_ON, HOLEY_16
+        ; autres bandes jusqu'au bas visible
+
+DL0:
+        MARIA_OBJECT SpriteData, 0, 40, 12, MODE_160A, DIRECT
+        MARIA_OBJECT TileMap,    1,  0, 40, MODE_160A, INDIRECT
+        MARIA_END_DL
+
+Les macros ci-dessus sont descriptives; leurs noms exacts dependent du kit. Elles
+doivent produire les 3 octets DLL et headers 4/5 octets dans l'ordre MARIA. Verifier
+le dump binaire et le nombre de cycles DMA par ligne.
+
+
+==============================================================================
+39. ASSEMBLEUR : DLI
+==============================================================================
+
+WSYNC = $24
+P0C1  = $21
+
+DLIHandler:
+        pha
+        lda #0
+        sta WSYNC
+        lda ColorNext
+        sta P0C1
+        pla
+        rti
+
+La DLI n'a pas de registre d'acquittement semblable a ANTIC; la condition vient du
+pipeline/DLL et le retour correct suffit selon sequence. Si X/Y sont utilises, les
+sauver. Ne pas depasser le budget de la ligne sous DMA.
+
+
+==============================================================================
+40. ASSEMBLEUR : MANETTE
+==============================================================================
+
+SWCHA  = $0280
+SWCHB  = $0282
+CTLSWB = $0283
+INPT0  = $08
+
+InitPads:
+        lda #$14
+        sta CTLSWB
+        lda #0
+        sta SWCHB
+        rts
+
+ReadPad0:
+        lda SWCHA
+        and #$F0              ; nibble joueur selon equates/cablage
+        sta Directions
+        lda INPT0
+        and #$80
+        sta FireRight
+        lda INPT0+1
+        and #$80
+        sta FireLeft
+        rts
+
+Les directions sont actives bas. Confirmer quel nibble correspond au joueur avec
+le fichier d'equates; certains headers nomment SWCHA differemment.
+
+
+==============================================================================
+41. ASSEMBLEUR : SON TIA ET POKEY
+==============================================================================
+
+AUDC0 = $15
+AUDC1 = $16
+AUDF0 = $17
+AUDF1 = $18
+AUDV0 = $19
+AUDV1 = $1A
+
+; TIA, deux canaux
+        lda #$04
+        sta AUDC0
+        lda #$10
+        sta AUDF0
+        lda #$0F
+        sta AUDV0
+
+; POKEY optionnel a $4000, seulement si cartouche l'integre
+        lda #$28
+        sta $4000             ; AUDF1
+        lda #$AF
+        sta $4001             ; AUDC1
+        lda #3
+        sta $400F             ; SKCTL
+
+Ne pas executer le second bloc sur une cartouche sans POKEY declare; $4000 peut
+etre ROM, RAM ou registre de banque.
+
+
+==============================================================================
+42. C AVEC CC65
+==============================================================================
+
+#include <stdint.h>
+
+#define BACKGRND (*(volatile uint8_t*)0x20)
+#define MSTAT    (*(volatile uint8_t*)0x28)
+#define SWCHA    (*(volatile uint8_t*)0x0280)
+
+int main(void) {
+    uint8_t frame = 0;
+    BACKGRND = 0;
+    for (;;) {
+        while (!(MSTAT & 0x80)) { }
+        while (MSTAT & 0x80) { }
+        BACKGRND = (uint8_t)((frame++ & 15) << 4);
+        if ((SWCHA & 0x10) == 0) BACKGRND = 0x3A;
+    }
+}
+
+Compiler avec cible `atari7800` et sa configuration linker. Les noms/API cc65
+evoluent; inspecter startup, segments signature/vectors et headers installes.
+
+
+==============================================================================
+43. 7800BASIC ET OUTILS GRAPHIQUES
+==============================================================================
+
+7800basic compile un langage haut niveau en 6502/MARIA, gere zones, sprites,
+display lists, banques, audio et A78. 7800AsmDevKit fournit macros et pipeline
+assembleur. Outils `7800header`, `7800sign` selon environnement, convertisseurs
+graphiques et emulators a7800/BupSystem/JS7800 completent le flux.
+
+Comprendre les donnees produites reste essentiel : mode 160/320, palettes, DMA
+holes, banque fixe et region. Conserver assembleur/map genere pour debug.
+
+
+==============================================================================
+44. ORGANISATION DE LA RAM ET DE LA ROM
+==============================================================================
+
+RAM 4K : zero page/pile, variables, DLL/DL double buffer, etat objets, buffers.
+Graphiques restent en ROM quand mapper permet DMA rapide. Les display lists en RAM
+sont modifiees au VBlank; ne pas changer un header que MARIA lit.
+
+ROM fixe haute : reset/NMI/IRQ, signature, banque switch, constantes critiques.
+Banques : niveaux, graphismes, musique. RAM cartouche : maps/buffers. Linker doit
+connaitre holey DMA et aliases RAM, pas seulement segments lineaires.
+
+
+==============================================================================
+45. ANIMATION, SCROLLING ET DOUBLE BUFFERING
+==============================================================================
+
+Deplacer un sprite revient souvent a modifier X et adresse graphique de son header.
+Animation change pointeur frame. Pour scrolling tile, modifier character map et
+offset/adresses par bandes. Vertical scrolling peut changer DLL/offset et premiere
+ligne de glyph.
+
+Double-bufferiser DLL/DL permet construire prochaine frame sans course. Au VBlank,
+ecrire DPPL puis DPPH ou sequence recommandee avant echantillonnage. Les pixels ne
+sont pas dans un framebuffer CPU, donc page flipping signifie listes, pas ecran.
+
+
+==============================================================================
+46. OPTIMISATION CPU/DMA
+==============================================================================
+
+- mesurer cycles DMA par ligne et garder headers courts;
+- grouper objets et choisir 160 si 320 inutile;
+- holey DMA pour melanger code/graphismes sans lectures inutiles;
+- zero page pour pointeurs/compteurs chauds;
+- eviter page crossing dans boucles et donnees indexees;
+- construire DL hors ligne active puis basculer au VBlank;
+- reduire DLI et `WSYNC` inutiles;
+- banques assez grosses pour eviter switch par objet;
+- tables precalculees pour positions/adresses;
+- son POKEY/TIA a cadence timer ou VBlank stable.
+
+
+==============================================================================
+47. CONSTRUCTION ET VALIDATION D'UNE CARTOUCHE
+==============================================================================
+
+Flux : assembler/compiler, lier ROM brute au mapper, reserver signature/vecteurs,
+produire map/symboles, signer par outil/methode autorisee si console l'exige, puis
+ajouter A78 externe avec longueur/mapper/audio/controleurs/region exacts.
+
+Tester ROM brute et A78; verifier que l'outil ne signe pas les 128 octets A78.
+Calculer hashes avant/apres header. Une flashcart peut utiliser header/mapper propre;
+tester aussi hardware correspondant au PCB final.
+
+
+==============================================================================
+48. DEBOGAGE ET DEVELOPPEMENT SUR MATERIEL
+==============================================================================
+
+Kit Atari historique : Atari ST, downloader, cable parallele, RAM development
+cartridge et outils MADMAC. Aujourd'hui : flashcarts, cartouches RAM/USB, symboles,
+a7800/MAME, BupSystem et debuggers selon plateforme.
+
+Techniques : couleurs BACKGRND autour de sections, DLI marqueurs, compteur VBlank,
+traces mapper et analyseur logique HALT/CPU clock. Un rendu correct en emulateur
+mais instable reel indique souvent surcharge DMA, header modifie en vol ou banking.
+
+
+==============================================================================
+49. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Scheduler en master/color clocks : CPU, MARIA DMA/line RAM, TIA audio/video VCS,
+RIOT timer/I/O, BIOS et mapper. Le mode est verrouille au boot et change toute la
+carte. MARIA ne doit pas etre un renderer instantane par frame.
+
+Modules : NMOS 6502+HALT, bus/mirrors, BIOS/auth decision, MARIA DLL/DL decoder,
+line RAM/output, TIA cycle exact pour mode 2600, RIOT, cartridge devices, inputs,
+PAL/NTSC et audio mixer. Save state conserve ligne, DMA, line RAM et banque.
+
+
+==============================================================================
+50. EMULATION DU 6502C ET DU BUS
+==============================================================================
+
+Chaque opcode par cycles bus, dummy accesses, RMW double write, decimal NMOS,
+IRQ/NMI sampling et JMP indirect bug. HALT MARIA doit suspendre aux limites
+materielles; READY/clock slow influencent nombre de cycles.
+
+Decoder TIA/MARIA mirrors, deux SRAM avec aliases, RIOT ports/RAM, BIOS et cart.
+Ne pas presenter deux copies independantes des miroirs. Open bus et conflits ROM/
+BIOS peuvent etre observes pendant boot et mappers atypiques.
+
+
+==============================================================================
+51. EMULATION DE MARIA
+==============================================================================
+
+Modeliser trame, VBlank/MSTAT, CTRL startup, DLL pointer, entry counter/OFFSET,
+headers normal/extended, direct/indirect, holey DMA, fetch timing, line RAM double,
+write modes, palettes, transparent zero et DLI/NMI.
+
+Decoder objets jusqu'au terminateur en bornant temps DMA. Les objets traversant
+bords, largeurs complement, mode 320 et adresse page doivent suivre hardware. Une
+implementation GPU peut rendre line RAM, mais synchroniser les effets d'ecriture
+CPU a la bonne horloge.
+
+
+==============================================================================
+52. EMULATION TIA ET RIOT
+==============================================================================
+
+Mode 2600 exige TIA complet cycle/color-clock : VSYNC/VBLANK, playfield, players,
+missiles, ball, HMOVE, collisions, paddle et audio. En mode 7800, conserver audio
+TIA et entrees INPT; MARIA fournit video.
+
+RIOT : ports avec DDR et logique broches, console switches, deux boutons, timer
+prescale/underflow/IRQ et RAM seulement selon mode. Les ecritures CTLSWB/SWCHB
+changent cablage visible des boutons.
+
+
+==============================================================================
+53. EMULATION DES CARTOUCHES
+==============================================================================
+
+Supporter ROM simple, SuperCart variantes, Activision, Absolute, RAM a $4000,
+POKEY $4000/$0450, bank fixed schemes et extensions seulement quand manifest les
+demande. Les ecritures de banque peuvent etre a toute adresse decodee, valeur ou
+adresse selectionnant banque selon circuit.
+
+Parser A78 versions sans faire confiance aux tailles; verifier longueur, flags et
+conflits. EEPROM/SaveKey ont protocole/timing/persistance atomique. Mixer POKEY au
+TIA avec gain configure et avancer LFSR/timers independamment de video.
+
+
+==============================================================================
+54. VIDEO NTSC/PAL ET PALETTE
+==============================================================================
+
+NTSC et PAL different lignes, cadence, color carrier, palette et positions. MARIA
+produit quatre bits luminance et chroma; conversion RGB est une approximation du
+decodeur television. Offrir palettes calibrees et mode composite/artifact optionnel.
+
+Les jeux PAL ont souvent timings/DLL adaptes. Ne pas convertir uniquement le flag
+A78. Un emulateur choisit hardware region depuis header/manifest/BIOS et garde un
+mode reference sans overscan crop agressif.
+
+
+==============================================================================
+55. PLAN DE VALIDATION
+==============================================================================
+
+- tous opcodes 6502, decimal, IRQ/NMI et HALT;
+- RAM/RIOT/IO mirrors et mode lock;
+- BIOS NTSC/PAL, signature, flags et vecteurs;
+- MARIA tous modes, normal/extended headers, direct/indirect;
+- palettes/write modes/transparence et positions limites;
+- DLL DLI/OFFSET/holey DMA, line RAM et surcharge DMA;
+- TIA audio et compatibilite 2600 cycle-exacte;
+- RIOT timer, directions et deux boutons;
+- chaque mapper, POKEY, RAM et persistance;
+- NTSC/PAL, light gun et pause/reset.
+
+Comparer a plusieurs revisions et suites de tests homebrew dont sources/resultats
+sont disponibles. Une image de jeu ne constitue pas un test exhaustif.
+
+
+==============================================================================
+56. ELECTRONIQUE
+==============================================================================
+
+Carte : SALLY, MARIA, TIA, RIOT 6532, deux SRAM 6116, BIOS, logique cart/mode,
+quartz, alimentation 5 V, modulateur RF et ports. MARIA genere HALT/clock, video
+luma/chroma/sync et chip selects. TIA audio est somme a l'audio cartouche.
+
+Les schemas NTSC/PAL montrent references, PAL/GAL et points de test. Le port
+d'expansion de premieres unites expose signaux mais n'est pas une interface moderne
+protegee. Ne brancher aucun accessoire sans specification electrique.
+
+
+==============================================================================
+57. MAINTENANCE ET DIAGNOSTIC
+==============================================================================
+
+Pannes : alimentation/regulateur, interrupteur, contacts cartouche, connecteur RF,
+SRAM, BIOS/socket, quartz, ports joystick, condensateurs et soudures. Diagnostiquer
+rails/reset/clock/chip select avant changer MARIA rare.
+
+Nettoyer contacts sans abrasif agressif. Une image noire peut venir d'une cartouche
+non signee/mauvais mapper, pas du video. Comparer mode 2600 : s'il fonctionne mais
+pas 7800, inspecter BIOS/MARIA/RAM/signature. Le secteur et RF exigent prudence.
+
+
+==============================================================================
+58. PRESERVATION
+==============================================================================
+
+Dumper ROM brute plusieurs fois, retirer/identifier A78, noter mapper, PCB, puces
+audio/RAM, region et SHA-256. Conserver A78 versionne separement. Dumper BIOS de sa
+console et documenter part number/revision sans distribuer illegalement.
+
+Pour prototypes, reserver signature mais conserver les octets originaux, photos,
+PAL equations et banking. Sauvegardes EEPROM/HSC doivent etre exportees avec type.
+
+
+==============================================================================
+59. SECURITE ET DROIT
+==============================================================================
+
+BIOS, signatures/cles, SDK et jeux peuvent etre proteges. Utiliser documentation
+publique, outils libres et ses propres dumps selon le droit local. Ce document ne
+fournit ni cle ni bloc de signature.
+
+Un outil A78/ROM doit borner longueur, mapper et offsets; une image hostile ne doit
+pas ecrire hors buffer. Une PCB moderne doit proteger bus 5 V et eviter contention.
+
+
+==============================================================================
+60. REFERENCES
+==============================================================================
+
+Documents Atari/GCC historiques :
+
+- Atari 7800 Software Guide, transcription corrigee et chapitres MARIA :
+  https://7800.8bitdev.org/index.php/7800_Software_Guide
+- scan du Software Guide :
+  https://www.atarihq.com/danb/files/7800%20Software%20Guide.pdf
+- collection historique : MARIA specs, BIOS source, standards et errata :
+  https://7800.8bitdev.org/index.php/Historic_Documents
+- contenu du kit officiel de developpement 2600/7800 :
+  https://github.com/OpenSourcedGames/Atari-7800/tree/master/7800DEVSYS
+- schemas NTSC : https://atariage.com/7800/archives/schematics_ntsc/index.html
+
+Outils et formats modernes :
+
+- specification actuelle de l'A78 :
+  https://7800.8bitdev.org/index.php/A78_Header_Specification
+- documentation cc65, cible Atari 7800 : https://cc65.github.io/doc/
+- exemples devkitPro historiques/7800 :
+  https://www.atari7800.org/manuals/Devcard.htm
+- code et base de donnees MAME/a7800 pour verification des mappers :
+  https://github.com/mamedev/mame/blob/master/hash/a7800.xml
+
+Les documents de 1983-1987 contiennent contradictions, notamment frontieres de
+signature et details MARIA. Toujours lire les errata, confronter sources BIOS,
+schemas, tests materiels et implementations modernes. Marquer toute inference.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

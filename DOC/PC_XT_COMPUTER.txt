@@ -1,0 +1,1329 @@
+==============================================================================
+ IBM PERSONAL COMPUTER XT (5160) - MATERIEL, BIOS ET PROGRAMMATION
+ Reference technique pour programmeurs DOS, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Personal Computer XT, type 5160, annonce en 1983. Il
+traite le materiel original IBM, ses interfaces, son BIOS et sa programmation.
+Il ne faut pas confondre le PC/XT 8088 avec l'IBM Personal Computer XT Model
+286, type 5162, qui est une machine a bus AT tres differente.
+
+Les nombres termines par h sont hexadecimaux. Les accents sont omis pour garder
+un fichier ASCII utilisable sur une machine DOS. Les adresses d'E/S sont des
+ports 16 bits de l'espace IN/OUT du 8088; les adresses sans mention sont des
+adresses physiques de memoire.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Modeles et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Microprocesseur Intel 8088
+  6. Coprocesseur Intel 8087
+  7. Horloges et temporisation
+  8. Carte memoire physique
+  9. Carte memoire du mode reel
+ 10. ROM systeme, BASIC et ROM d'extension
+ 11. Zone de donnees BIOS
+ 12. Bus d'extension 8 bits
+ 13. Signaux et cycle du bus
+ 14. Connecteurs, alimentation et huitieme logement
+ 15. Interruptions materielles et 8259A
+ 16. DMA et controleur 8237A
+ 17. Temporisateur 8253
+ 18. PPI 8255, clavier et commutateurs
+ 19. Haut-parleur
+ 20. Carte des ports d'E/S
+ 21. Carte des interruptions logicielles
+ 22. BIOS : principes et POST
+ 23. INT 10h : video
+ 24. INT 11h et INT 12h : configuration et memoire
+ 25. INT 13h : disquettes et disque fixe
+ 26. INT 14h : communications serie
+ 27. INT 15h, INT 16h, INT 17h et INT 1Ah
+ 28. Vecteurs BIOS et points d'entree utiles
+ 29. Video MDA et CGA
+ 30. Clavier 83 touches
+ 31. Lecteurs de disquettes
+ 32. Disque fixe ST-506/412
+ 33. Port parallele
+ 34. Port serie
+ 35. Manette de jeu et autres adaptateurs
+ 36. Systeme d'exploitation et DOS
+ 37. Programmation DOS par INT 21h
+ 38. Assembleur : detection et inventaire
+ 39. Assembleur : BIOS, ports et interruptions
+ 40. Assembleur : disque et DMA
+ 41. Turbo Pascal : BIOS et ports
+ 42. Turbo Pascal : fichiers, video et temporisation
+ 43. Configuration des commutateurs
+ 44. Extensions et compatibilite
+ 45. Conseils pour un emulateur
+ 46. Plan de validation
+ 47. Maintenance et restauration
+ 48. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+IBM annonce le Personal Computer XT le 8 mars 1983. Le XT reprend l'architecture
+ouverte du PC 5150 mais livre normalement un disque fixe interne, une alimentation
+plus puissante, huit logements d'extension et une carte mere adaptee. Son nom
+signifie "eXtended Technology".
+
+Le XT original repose toujours sur un 8088 a 4,77 MHz et un bus de donnees
+externe de 8 bits. Il n'est donc pas une evolution vers le 80286 : cette rupture
+arrivera avec le PC/AT 5170. La longevite de son architecture a toutefois fait
+de "classe XT" un terme generique pour beaucoup de compatibles 8088/8086.
+
+Le 5160 est vendu jusqu'en 1987. Pendant cette periode, IBM modifie la capacite
+de la carte mere, les ROM BIOS, le clavier et certaines options de stockage.
+
+
+==============================================================================
+2. MODELES ET REVISIONS
+==============================================================================
+
+Principales variantes a distinguer :
+
+- 5160 initial : carte mere 64--256 Kio, huit banques de neuf DRAM 4164;
+- 5160 tardif : carte mere 256--640 Kio, deux banques de 256 Kio et deux de
+  64 Kio, habituellement avec DRAM 41256 et 4164;
+- sous-modeles avec disque fixe de capacite differente et un ou deux lecteurs;
+- BIOS dates differemment, notamment 11/08/82, 01/10/86 et 05/09/86 selon la
+  notation mois/jour/annee gravee en ROM;
+- clavier PC/XT 83 touches, puis prise en charge de claviers ameliores sur des
+  configurations tardives;
+- IBM Portable Personal Computer 5155 : architecture tres proche du XT, mais
+  boitier transportable et affichage integre;
+- XT/286 type 5162 : 80286, jeu de composants et bus de classe AT; hors sujet.
+
+Un logiciel ne doit pas deduire toute la configuration du seul nom "XT". Lire
+le BIOS, la BDA, les services BIOS et, si necessaire, sonder prudemment le
+materiel.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Caracteristique              Valeur typique
+---------------------------  -----------------------------------------------
+Unite centrale               Intel 8088
+Frequence                    4,772727 MHz, derivee de 14,31818 MHz / 3
+Coprocesseur                 support du 8087, optionnel
+Bus externe CPU              donnees 8 bits, adresses 20 bits
+Memoire adressable           1 Mio en mode reel
+RAM carte mere               64--256 Kio ou 256--640 Kio selon revision
+ROM systeme                  BIOS et Cassette BASIC IBM
+Extensions                   8 connecteurs bus PC 8 bits
+Interruptions                Intel 8259A, 8 entrees IRQ
+DMA                          Intel 8237A, 4 canaux dont canal 0 refresh
+Temporisateur                Intel 8253, trois canaux
+Interface systeme            Intel 8255A PPI
+Video                        carte MDA ou CGA; autres cartes possibles
+Disquette                    5,25 pouces, double face, 360 Kio typiquement
+Disque fixe                  interface IBM/Xebec compatible ST-506/412
+Alimentation                 environ 130 W sur le XT IBM
+Clavier                      clavier PC/XT serie synchrone, 83 touches
+
+Le disque, la video, les ports serie et parallele sont sur cartes d'extension,
+pas integres a la carte mere. Une configuration exacte depend donc des cartes.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le 8088 partage ses cycles entre :
+
+- la RAM dynamique et la ROM de la carte mere;
+- l'espace memoire des cartes, notamment video et ROM d'extension;
+- l'espace E/S de 64 Kio, decode partiellement par la carte mere et les cartes;
+- le controleur DMA, qui peut devenir maitre du bus;
+- le 8259A qui concentre les demandes d'interruption;
+- le 8253, le PPI 8255 et le clavier;
+- les connecteurs d'extension.
+
+Le generateur 8284 fournit horloge et synchronisation. Le controleur de bus
+8288 genere les commandes de lecture/ecriture. Des verrous 8282 demultiplexent
+les lignes adresse/donnees AD0--AD7; des transceivers 8286 isolent le bus.
+
+L'architecture est largement documentee, mais elle n'est pas "plug and play" :
+adresses, IRQ et DMA sont choisis par cavaliers, commutateurs et logiciel.
+
+
+==============================================================================
+5. MICROPROCESSEUR INTEL 8088
+==============================================================================
+
+Le 8088 execute le jeu d'instructions 8086, avec une unite d'execution 16 bits
+et un bus externe 8 bits. Sa file de prelecture ne contient que quatre octets.
+Les acces a un mot exigent deux cycles de bus, ce qui rend l'alignement moins
+spectaculaire que sur 8086 mais toujours pertinent.
+
+Registres generaux : AX, BX, CX, DX, SP, BP, SI, DI. Registres de segment : CS,
+DS, SS, ES. L'adresse physique est :
+
+    physique = segment * 16 + deplacement
+
+En l'absence de ligne A20 masquee, une somme depassant FFFFFh reboucle sur 20
+bits. Le 8088 ne possede ni mode protege, ni pagination, ni cache.
+
+Drapeaux significatifs : CF, PF, AF, ZF, SF, TF, IF, DF et OF. CLI/STI ne
+masquent que les interruptions materielles INTR; NMI reste active. Une routine
+d'interruption doit sauvegarder les registres qu'elle altere et terminer par
+IRET.
+
+Instructions propres aux generations ulterieures a eviter sur un vrai XT :
+PUSHA/POPA, PUSH immediat, ENTER/LEAVE, INS/OUTS, SHL r,n et instructions 32
+bits. Utiliser seulement le jeu 8088/8086 si la compatibilite est requise.
+
+
+==============================================================================
+6. COPROCESSEUR INTEL 8087
+==============================================================================
+
+Un support permet d'installer le 8087. Il observe le flot d'instructions ESC
+et partage le bus avec le 8088. Il ajoute une pile de huit registres flottants
+de 80 bits, des operations reelles, entieres et BCD.
+
+Le signal ERROR du 8087 est relie a NMI par la logique systeme. Avant une
+instruction sensible au resultat, le code 8087 ancien utilise souvent WAIT.
+Un programme doit detecter le coprocesseur ou employer une bibliotheque qui
+emule ses operations. INT 11h signale normalement sa presence dans le mot
+d'equipement, mais une verification fonctionnelle est plus robuste.
+
+
+==============================================================================
+7. HORLOGES ET TEMPORISATION
+==============================================================================
+
+Le quartz principal vaut 14,31818 MHz, soit quatre fois la sous-porteuse NTSC.
+Les divisions importantes sont :
+
+- CPU : quartz / 3 = 4,772727 MHz;
+- entree du 8253 : quartz / 12 = 1,193181666 MHz;
+- IRQ0 : 1,193181666 MHz / 65536 = environ 18,2065 Hz;
+- periode du tick BIOS : environ 54,9254 ms;
+- environ 1 573 040 ticks par 24 heures.
+
+Les boucles d'attente calibrees sur le nombre d'instructions sont fragiles :
+elles changent sur turbo-XT, V20, cache ou emulateur. Pour de longues attentes,
+utiliser les ticks BIOS a 0040:006C ou programmer un canal du PIT avec prudence.
+
+
+==============================================================================
+8. CARTE MEMOIRE PHYSIQUE
+==============================================================================
+
+La RAM est organisee en banques de neuf circuits : huit bits de donnees plus
+un bit de parite. Une erreur de parite provoque NMI. Le POST teste la RAM et
+affiche traditionnellement une adresse ou une indication de banque en erreur.
+
+Carte 64--256 Kio :
+
+- quatre banques de 64 Kio, avec neuf DRAM 4164 par banque;
+- banque 0 obligatoire et peuplee en premier;
+- commutateurs indiquant la quantite totale, y compris certaines extensions.
+
+Carte 256--640 Kio :
+
+- 256 Kio de base, extensible a 640 Kio sur la carte;
+- organisation et types de DRAM differents de la premiere carte;
+- ne pas appliquer aveuglement les tableaux de cavaliers de l'ancienne carte.
+
+La parite peut etre inhibee temporairement par le port 61h, mais masquer une
+erreur ne repare ni RAM ni alimentation. Un emulateur fidele doit pouvoir
+modeliser le NMI de parite, meme si l'option est desactivee par defaut.
+
+
+==============================================================================
+9. CARTE MEMOIRE DU MODE REEL
+==============================================================================
+
+Plage physique     Usage conventionnel
+-----------------  ---------------------------------------------------------
+00000h--003FFh      table des 256 vecteurs d'interruption
+00400h--004FFh      zone de donnees BIOS (BDA)
+00500h--09FFFFh     RAM conventionnelle disponible selon configuration
+A0000h--AFFFFh      reserve video/extension; EGA/VGA plus tard
+B0000h--B7FFFh      RAM video MDA, 4 Kio utiles typiquement
+B8000h--BBFFFh      RAM video CGA, 16 Kio
+C0000h--C7FFFh      ROM video typique pour EGA/VGA; CGA/MDA IBM sans ROM
+C8000h--EFFFFh      ROM d'extension ou memoire de cartes
+F0000h--FFFFFh      ROM systeme IBM, y compris BASIC et BIOS
+
+Les 640 Kio ne sont pas une limite du 8088 mais la convention separant RAM et
+espace reserve aux adaptateurs dans le premier Mio. EMS, cartes RAM, UMB et
+disques RAM sont des extensions ulterieures et non des fonctions du XT nu.
+
+La table des vecteurs contient pour chaque INT quatre octets : offset puis
+segment, en little-endian. Modifier un vecteur sans desactiver les interruptions
+peut laisser un pointeur dechire; DOS fournit INT 21h/AH=25h et 35h.
+
+
+==============================================================================
+10. ROM SYSTEME, BASIC ET ROM D'EXTENSION
+==============================================================================
+
+La region F0000h--FFFFFh contient le Cassette BASIC IBM et le BIOS. Contrairement
+au PC 5150, le XT ne possede pas de connecteur cassette externe; le BASIC ROM
+reste present pour compatibilite et peut etre lance si le demarrage disque
+echoue selon la revision.
+
+Le vecteur de remise a zero est a FFFF:0000, adresse physique FFFF0h. Il contient
+un saut vers le POST. La date ASCII du BIOS se trouve classiquement a FFFF:0005
+(physique FFFF5h), sur huit caracteres "MM/DD/YY". Cette date identifie une ROM,
+pas a elle seule toute la machine.
+
+Le POST cherche des ROM d'extension entre C8000h et EFFFFh, sur frontieres de
+2 Kio. Format :
+
+Offset  Taille  Signification
+------  ------  ------------------------------------------------------------
+00h     2       signature 55h AAh
+02h     1       taille en blocs de 512 octets
+03h     code    point d'initialisation appele en far
+
+La somme modulo 256 de tous les octets annonces doit etre zero. Une ROM video
+eventuelle commence normalement a C0000h et est initialisee avant les autres.
+Le controleur de disque fixe XT possede typiquement sa propre ROM a C8000h et
+accroche INT 13h.
+
+
+==============================================================================
+11. ZONE DE DONNEES BIOS
+==============================================================================
+
+La BDA est adressee par le segment 0040h. Quelques champs essentiels :
+
+Adresse       Taille  Contenu
+------------  ------  ------------------------------------------------------
+0040:0000     4 mots  adresses de base COM1--COM4
+0040:0008     4 mots  adresses de base LPT1--LPT4
+0040:0010     mot     mot d'equipement retourne par INT 11h
+0040:0013     mot     memoire conventionnelle en Kio (INT 12h)
+0040:0017     octet   drapeaux clavier 1
+0040:0018     octet   drapeaux clavier 2
+0040:001A     mot     offset tete du tampon clavier
+0040:001C     mot     offset queue du tampon clavier
+0040:001E     32 o    tampon clavier BIOS, jusqu'a 0040:003D
+0040:0049     octet   mode video courant
+0040:004A     mot     nombre de colonnes
+0040:004C     mot     taille de page video en octets
+0040:0050     8 mots  positions curseur des pages
+0040:0060     octet   ligne fin/debut du curseur
+0040:0062     octet   page video active
+0040:0063     mot     port de base CRTC, 3B4h ou 3D4h
+0040:006C     double  compteur de ticks depuis minuit
+0040:0070     octet   indicateur de passage de minuit
+0040:0072     mot     drapeau de redemarrage (1234h = warm boot)
+0040:0075     octet   nombre de disques fixes reconnu
+0040:0080     mot     debut du tampon clavier, BIOS recents
+0040:0082     mot     fin du tampon clavier, BIOS recents
+
+Ces champs sont une interface de fait, mais il vaut mieux employer le BIOS si
+une fonction existe. Le DOS et les TSR peuvent modifier certains champs.
+
+
+==============================================================================
+12. BUS D'EXTENSION 8 BITS
+==============================================================================
+
+Le bus PC, appele retrospectivement ISA 8 bits, expose :
+
+- D0--D7, bus de donnees 8 bits;
+- A0--A19, adresse memoire sur 20 bits;
+- AEN, adresse fournie par DMA;
+- MEMR, MEMW, IOR, IOW, commandes actives a l'etat bas;
+- IRQ2--IRQ7;
+- DRQ1--DRQ3 et DACK1--DACK3; canal 0 reserve au refresh;
+- ALE, OSC 14,318 MHz, CLK environ 4,77 MHz;
+- RESET DRV, IO CH CK, IO CH RDY;
+- alimentation +5 V, -5 V, +12 V, -12 V et masse.
+
+Les cartes decodent souvent seulement dix bits d'adresse E/S, d'ou des miroirs
+possibles tous les 400h. Un emulateur ne doit pas supposer un decodage complet.
+IO CH RDY permet d'ajouter des etats d'attente. IO CH CK produit normalement un
+NMI de controle de canal.
+
+
+==============================================================================
+13. SIGNAUX ET CYCLE DU BUS
+==============================================================================
+
+Pendant un cycle CPU, ALE valide l'adresse; les lignes de commande indiquent
+memoire ou E/S et lecture ou ecriture. Une carte doit respecter les temps de
+setup, maintien et liberation du bus publies par IBM. En DMA, AEN indique que
+les adresses ne proviennent pas du CPU; une carte E/S selectionnee par DACK
+echange les donnees avec la memoire.
+
+Le 8088 effectue les transferts de mots en deux cycles de 8 bits. IN AX,DX et
+OUT DX,AX generent donc deux acces consecutifs aux ports DX et DX+1. Beaucoup
+de peripheriques 8 bits n'acceptent qu'un octet : utiliser AL explicitement.
+
+Une carte moderne de remplacement doit aussi tenir compte des charges TTL,
+des tensions negatives historiques et de l'absence de configuration automatique.
+
+
+==============================================================================
+14. CONNECTEURS, ALIMENTATION ET HUITIEME LOGEMENT
+==============================================================================
+
+Le XT a huit logements contre cinq sur le PC initial. Le logement 8, le plus
+proche du processeur, a une particularite : certaines lignes de selection et
+de temporisation y sont traitees differemment. IBM le destinait a des cartes
+ayant un signal "card selected" approprie; plusieurs cartes ordinaires n'y
+fonctionnent pas. Pour une restauration, placer d'abord les cartes connues
+compatibles avec le slot 8 ou laisser ce logement libre.
+
+L'alimentation fournit les rails requis et un signal POWER GOOD. La charge de
+demarrage d'un ancien disque MFM est importante. Une alimentation moderne sans
+charge minimale ou avec -5 V absent peut poser probleme a certaines cartes.
+Ne jamais brancher/debrancher une carte sous tension.
+
+
+==============================================================================
+15. INTERRUPTIONS MATERIELLES ET 8259A
+==============================================================================
+
+Le 8259A maitre occupe les ports 20h et 21h. Les IRQ sont mappees par le BIOS
+sur INT 08h--0Fh :
+
+IRQ  INT  Usage IBM habituel
+---  ---  ---------------------------------------------------------------
+0    08h  canal 0 du PIT, horloge systeme
+1    09h  clavier
+2    0Ah  disponible sur bus (souvent cartes reseau ou EGA)
+3    0Bh  COM2/COM4
+4    0Ch  COM1/COM3
+5    0Dh  disque fixe XT
+6    0Eh  controleur de disquettes
+7    0Fh  LPT1 ou interruption parasite
+
+Port 20h : commande; ecrire 20h en fin d'ISR envoie un EOI non specifique.
+Port 21h : IMR, bit 1 = IRQ masquee. Sauvegarder et restaurer ce masque.
+
+Une ISR doit etre tres courte : sauvegarder registres et segments, acquitter le
+peripherique, envoyer EOI, puis IRET. Pour chainer une ancienne ISR, soit faire
+un saut FAR apres restauration adaptee, soit l'appeler avec PUSHF/CALL FAR selon
+le contrat. DOS n'est normalement pas reentrant; ne pas appeler INT 21h depuis
+une IRQ arbitraire.
+
+
+==============================================================================
+16. DMA ET CONTROLEUR 8237A
+==============================================================================
+
+Le 8237A offre quatre canaux 8 bits :
+
+Canal  Usage typique
+-----  ---------------------------------------------------------------------
+0      rafraichissement de la DRAM; indisponible aux cartes
+1      libre, souvent audio sur extensions ulterieures
+2      controleur de disquettes
+3      libre ou adaptateur de communication/disque selon carte
+
+Ports principaux :
+
+00/01h canal 0 adresse/compte       02/03h canal 1 adresse/compte
+04/05h canal 2 adresse/compte       06/07h canal 3 adresse/compte
+08h commande/etat                   09h demande logicielle
+0Ah masque d'un canal               0Bh mode
+0Ch remise a zero bascule octet     0Dh master clear
+0Eh effacement masque               0Fh registre de masques
+81h page canal 2                    82h page canal 3
+83h page canal 1                    87h page canal 0
+
+Le registre adresse et le compte sont 16 bits mais accessibles octet bas puis
+octet haut. Le port 0Ch remet la bascule interne dans un etat connu. Le compte
+programme vaut nombre_octets - 1. Les registres de page donnent A16--A19.
+
+Limite fondamentale : un transfert ne doit pas franchir une frontiere de 64
+Kio, car le registre de page ne s'incremente pas. Les tampons DMA doivent etre
+dans le premier Mio, continus physiquement et accessibles sans traduction EMS.
+
+Le refresh utilise le canal 1 du PIT pour produire les demandes du canal DMA 0.
+Une emulation qui ignore ce mecanisme peut executer les logiciels mais manquera
+des diagnostics et effets de contention reels.
+
+
+==============================================================================
+17. TEMPORISATEUR 8253
+==============================================================================
+
+Ports : 40h canal 0, 41h canal 1, 42h canal 2, 43h commande.
+
+- canal 0 : mode 3, diviseur 0000h interprete comme 65536, genere IRQ0;
+- canal 1 : cadence du rafraichissement DRAM via DMA 0;
+- canal 2 : haut-parleur, gate commande par bit 0 du port 61h;
+- entree commune : environ 1,193182 MHz.
+
+Mot de commande du 8253 :
+
+bits 7--6 : canal (00, 01, 10; 11 interdit sur 8253)
+bits 5--4 : latch, LSB, MSB ou LSB puis MSB
+bits 3--1 : mode 0--5
+bit 0     : binaire ou BCD
+
+Reprogrammer le canal 0 change la cadence DOS/BIOS. Un programme qui le fait
+doit maintenir le temps logiciel ou restaurer exactement le mode et le diviseur.
+
+
+==============================================================================
+18. PPI 8255, CLAVIER ET COMMUTATEURS
+==============================================================================
+
+Ports de la carte mere :
+
+60h  port A : code recu du clavier; lecture des commutateurs selon commande
+61h  port B : controle haut-parleur, clavier, parite et selection commutateurs
+62h  port C : etat commutateurs/parite/cassette selon modele et selection
+63h  registre de commande du 8255
+
+Le clavier XT envoie serieusement un code de make a l'appui et, pour la plupart
+des touches, un code avec bit 7 a la liberation. IRQ1 appelle INT 09h. Le BIOS
+interprete Shift/Ctrl/Alt, met a jour 0040:0017 et place les couples ASCII/code
+de balayage dans le tampon clavier.
+
+Pour acquitter l'ancien clavier, INT 09h lit 60h puis pulse la ligne d'horloge
+du clavier par le bit 7 du port 61h. Cette methode n'est pas la commande 8042
+d'un AT. Un emulateur XT ne doit pas substituer sans nuance un controleur AT.
+
+Les bits exacts des ports 61h/62h dependent du mode de lecture et de la revision;
+consulter le schema IBM avant d'ecrire un diagnostic bas niveau. Les usages les
+plus stables du port 61h sont les bits 0 et 1 du haut-parleur.
+
+
+==============================================================================
+19. HAUT-PARLEUR
+==============================================================================
+
+Le canal 2 du PIT produit une onde carree. Le bit 0 du port 61h ouvre sa gate et
+le bit 1 connecte sa sortie au haut-parleur.
+
+Pour une frequence f : diviseur = 1193182 / f. Exemple 440 Hz : environ 2712.
+
+        mov     al,0B6h       ; canal 2, LSB/MSB, mode 3
+        out     43h,al
+        mov     ax,2712
+        out     42h,al
+        mov     al,ah
+        out     42h,al
+        in      al,61h
+        or      al,3
+        out     61h,al
+
+Pour couper le son, effacer les bits 0 et 1 sans modifier les autres :
+
+        in      al,61h
+        and     al,0FCh
+        out     61h,al
+
+
+==============================================================================
+20. CARTE DES PORTS D'E/S
+==============================================================================
+
+Plage          Fonction typique
+-------------  --------------------------------------------------------------
+000h--00Fh     controleur DMA 8237A
+020h--021h     controleur d'interruptions 8259A
+040h--043h     temporisateur 8253
+060h--063h     PPI 8255, clavier, haut-parleur, commutateurs
+080h--083h     registres de page DMA principaux
+0A0h--0A1h     NMI/masques sur certaines cartes; pas le second PIC d'un AT
+200h--207h     adaptateur de jeu
+278h--27Fh     LPT2/LPT3 selon configuration
+2E8h--2EFh     COM4 convention ulterieure
+2F8h--2FFh     COM2, UART 8250
+320h--323h     controleur de disque fixe IBM XT
+378h--37Fh     LPT1/LPT2
+3B0h--3BFh     MDA et imprimante integree 3BCh
+3D0h--3DFh     CGA
+3E8h--3EFh     COM3 convention ulterieure
+3F0h--3F7h     controleur de disquettes
+3F8h--3FFh     COM1, UART 8250
+
+Il s'agit d'affectations usuelles, pas d'une garantie qu'une carte est presente.
+Lire la BDA ou employer le BIOS, puis sonder avec une strategie non destructive.
+Certains ports flottants retournent FFh, d'autres une valeur de dernier bus.
+
+
+==============================================================================
+21. CARTE DES INTERRUPTIONS LOGICIELLES
+==============================================================================
+
+INT   Role sur IBM PC/XT
+----  -----------------------------------------------------------------------
+00h   division par zero
+01h   pas a pas
+02h   NMI
+03h   point d'arret
+04h   debordement INTO
+05h   impression ecran (sur 8088; conflit avec BOUND sur CPU plus recent)
+08h   IRQ0 timer
+09h   IRQ1 clavier
+0Ah   IRQ2
+0Bh   IRQ3
+0Ch   IRQ4
+0Dh   IRQ5
+0Eh   IRQ6
+0Fh   IRQ7
+10h   services video BIOS
+11h   mot d'equipement
+12h   taille RAM conventionnelle
+13h   services disque
+14h   services serie
+15h   services systeme/cassette selon BIOS; fonctions limitees sur XT
+16h   clavier BIOS
+17h   imprimante BIOS
+18h   demarrage BASIC ROM
+19h   bootstrap
+1Ah   heure et date BIOS
+1Bh   Ctrl-Break
+1Ch   crochet utilisateur appele par INT 08h
+1Dh   pointeur table de parametres video
+1Eh   pointeur table parametres disquette
+1Fh   pointeur graphismes des caracteres 80h--FFh
+20h   terminaison DOS
+21h   API principale DOS
+22h   adresse de terminaison DOS
+23h   Ctrl-Break DOS
+24h   erreur critique DOS
+25h   lecture absolue DOS (historique)
+26h   ecriture absolue DOS (historique)
+27h   TSR historique
+28h   DOS idle, utilise par TSR
+2Fh   multiplex DOS, apparu avec logiciels ulterieurs
+
+Le sens d'INT 15h depend fortement de la date du BIOS. Ne pas supposer les
+services AT (A20, memoire etendue, attente microseconde) sur un XT original.
+
+
+==============================================================================
+22. BIOS : PRINCIPES ET POST
+==============================================================================
+
+Le BIOS initialise le 8237, 8259, 8253 et 8255, teste CPU/RAM/ROM, initialise
+les adaptateurs video, execute les ROM d'extension, inventorie les interfaces,
+initialise la BDA puis appelle INT 19h.
+
+Le bootstrap lit le secteur d'amorcage dans 0000:7C00 et lui transfere le
+controle si la lecture reussit. Le contenu et l'ordre exacts varient selon le
+BIOS et la ROM de disque fixe. Les erreurs POST sont signalees par affichage et,
+si la video manque, par des tonalites.
+
+Les fonctions BIOS preservent souvent plus de registres que leur contrat, mais
+un programme ne doit compter que sur les garanties documentees. Le drapeau CF
+signale couramment une erreur et AH contient un code d'etat.
+
+
+==============================================================================
+23. INT 10h : VIDEO
+==============================================================================
+
+Fonctions de base utiles :
+
+AH    Fonction
+----  -----------------------------------------------------------------------
+00h   fixer le mode video, AL=mode
+01h   forme du curseur, CH debut, CL fin
+02h   positionner curseur, BH=page, DH=ligne, DL=colonne
+03h   lire position et forme du curseur
+05h   choisir page active
+06h   defiler fenetre vers le haut
+07h   defiler fenetre vers le bas
+08h   lire caractere et attribut au curseur
+09h   ecrire caractere et attribut
+0Ah   ecrire caractere seulement
+0Bh   palette/couleur CGA
+0Ch   ecrire pixel
+0Dh   lire pixel
+0Eh   sortie teletype
+0Fh   lire mode, colonnes et page active
+
+Modes IBM originaux principaux : 0/1 texte 40 colonnes, 2/3 texte 80 colonnes,
+4/5 CGA 320x200 quatre couleurs, 6 CGA 640x200 monochrome, 7 MDA 80x25. Les
+modes EGA/VGA appartiennent aux cartes ulterieures et a leur BIOS.
+
+
+==============================================================================
+24. INT 11h ET INT 12h : CONFIGURATION ET MEMOIRE
+==============================================================================
+
+INT 11h retourne AX = mot d'equipement de 0040:0010. Interpretation historique :
+
+bit 0       un ou plusieurs lecteurs de disquettes
+bit 1       coprocesseur mathematique
+bits 5--4   mode video initial : 00 reserve/EGA, 01 40x25 couleur,
+            10 80x25 couleur, 11 monochrome
+bits 7--6   nombre de lecteurs de disquettes moins un si bit 0 = 1
+bits 11--9  nombre de ports serie
+bit 12      adaptateur de jeu selon BIOS
+bits 15--14 nombre de ports paralleles
+
+Les bits reserves et conventions ont evolue; utiliser le tableau du BIOS cible.
+
+INT 12h retourne AX = nombre de Kio de RAM conventionnelle. Cette valeur peut
+etre inferieure a la RAM physique si un pilote reserve de la memoire en haut.
+Elle ne detecte ni EMS ni memoire situee au-dessus du premier Mio.
+
+
+==============================================================================
+25. INT 13h : DISQUETTES ET DISQUE FIXE
+==============================================================================
+
+DL identifie le lecteur : 00h=A:, 01h=B:, 80h=premier disque fixe. Fonctions
+CHS classiques :
+
+AH    Fonction
+----  -----------------------------------------------------------------------
+00h   remise a zero du sous-systeme disque
+01h   obtenir etat de la derniere operation
+02h   lire secteurs
+03h   ecrire secteurs
+04h   verifier secteurs
+05h   formater piste (disquette)
+08h   obtenir parametres du lecteur, selon BIOS/ROM
+
+Pour AH=02h/03h : AL=nombre, CH=8 bits bas cylindre, CL bits 0--5=secteur
+(commence a 1), CL bits 6--7=bits hauts cylindre, DH=tete, DL=lecteur, ES:BX=
+tampon. CF=1 en erreur et AH=code. Sur BIOS anciens, ne pas franchir une piste,
+une frontiere DMA de 64 Kio ou une limite de segment en un appel.
+
+Les extensions LBA INT 13h/AH=41h et suivantes ne sont pas dans le BIOS XT IBM;
+elles peuvent etre fournies par XT-IDE ou un BIOS moderne.
+
+
+==============================================================================
+26. INT 14h : COMMUNICATIONS SERIE
+==============================================================================
+
+DX choisit le port logique (0=COM1). Services classiques :
+
+AH=00h initialise, AL code debit/parite/stop/donnees
+AH=01h transmet AL
+AH=02h recoit un caractere
+AH=03h retourne etat modem et ligne
+
+Les fonctions BIOS font souvent de l'attente active et sont lentes. Pour un
+pilote performant, programmer le 8250 et IRQ3/IRQ4 avec tampons circulaires.
+Toujours verifier les timeouts et erreurs d'overrun, parite et framing.
+
+
+==============================================================================
+27. INT 15h, INT 16h, INT 17h ET INT 1Ah
+==============================================================================
+
+INT 15h : interface systeme dependante du BIOS. Sur les premiers PC/XT, elle
+est surtout liee a la cassette ou peut retourner AH=86h (fonction non supportee).
+Les fonctions modernes ne doivent pas etre invoquees sans detection.
+
+INT 16h :
+
+AH=00h attend une touche; AL=ASCII et AH=scan
+AH=01h teste sans retirer; ZF=1 si aucune touche
+AH=02h retourne l'etat Shift dans AL
+
+INT 17h, DX=imprimante : AH=00h imprime AL, AH=01h initialise, AH=02h etat.
+Le resultat AH contient notamment timeout, select, paper out, acknowledge et
+busy, avec polarites historiques parfois contre-intuitives.
+
+INT 1Ah : AH=00h lit CX:DX ticks depuis minuit et AL indicateur de minuit;
+AH=01h fixe CX:DX. Les services RTC CMOS d'un AT ne sont pas presents sur XT.
+
+
+==============================================================================
+28. VECTEURS BIOS ET POINTS D'ENTREE UTILES
+==============================================================================
+
+Le contrat recommande passe par INT, non par une adresse F000:xxxx fixe. Les
+ROM IBM exposent neanmoins des vecteurs de donnees :
+
+- INT 1Dh : table de parametres video;
+- INT 1Eh : table de parametres du lecteur de disquettes;
+- INT 1Fh : glyphes graphiques hauts;
+- INT 41h : table du premier disque fixe, souvent installee par ROM controleur;
+- INT 46h : table du second disque fixe selon extension.
+
+Modifier INT 1Eh permet temporairement de changer temps de chargement, moteur,
+gap ou geometrie disquette, mais il faut copier la table en RAM et restaurer le
+vecteur. Ecrire dans une table ROM est impossible.
+
+
+==============================================================================
+29. VIDEO MDA ET CGA
+==============================================================================
+
+MDA : texte 80x25, caracteres 9x14 affiches, RAM a B000:0000, CRTC Motorola
+6845 aux ports 3B4h/3B5h, controle 3B8h et etat 3BAh. L'adaptateur IBM Monochrome
+Display and Printer Adapter inclut souvent le port parallele 3BCh.
+
+CGA : RAM 16 Kio a B800:0000, modes texte et graphiques 320x200/640x200, CRTC
+aux ports 3D4h/3D5h, controle 3D8h, palette 3D9h et etat 3DAh. La sortie peut
+etre TTL RGBI ou composite NTSC selon modele/marche.
+
+Un acces video direct est rapide mais depend du mode. En texte couleur, chaque
+cellule est un caractere suivi d'un attribut. Sur CGA originale, ecrire pendant
+le balayage visible peut produire de la "neige"; synchroniser avec le retrace
+ou utiliser le BIOS si la qualite prime.
+
+Exemple texte direct en page 0 CGA :
+
+        mov     ax,0B800h
+        mov     es,ax
+        xor     di,di
+        mov     ax,1F41h        ; 'A', blanc brillant sur bleu
+        stosw
+
+
+==============================================================================
+30. CLAVIER 83 TOUCHES
+==============================================================================
+
+Le clavier PC/XT utilise un protocole serie unidirectionnel vers la machine,
+avec horloge produite par le clavier. Son connecteur DIN 5 broches ressemble a
+celui d'un clavier AT, mais le protocole n'est pas automatiquement compatible.
+
+INT 09h convertit le scan set 1 en valeur BIOS. Les touches etendues et codes
+E0h des claviers modernes ne font pas partie du clavier XT initial. Ctrl-Alt-Del
+declenche un redemarrage chaud en placant 1234h a 0040:0072 puis en sautant au
+vecteur reset. Ctrl-Break passe par INT 1Bh et DOS peut appeler INT 23h.
+
+Pour lire une touche dans une application, preferer INT 16h. Lire 60h directement
+vole potentiellement le code au BIOS et oblige a gerer IRQ1 et l'acquittement.
+
+
+==============================================================================
+31. LECTEURS DE DISQUETTES
+==============================================================================
+
+Le controleur IBM emploie un NEC uPD765A ou compatible, ports 3F0h--3F7h,
+IRQ6 et DMA2. Le Digital Output Register a 3F2h commande selection du lecteur,
+reset, DMA/IRQ et moteurs. Le Main Status Register est a 3F4h, le FIFO de
+commande/donnees a 3F5h. 3F7h sert selon controleur.
+
+Format XT courant : 5,25 pouces, 40 cylindres, 2 tetes, 9 secteurs de 512 octets,
+soit 360 Kio. Les premiers formats DOS 160/180/320 Kio existent aussi. Un lecteur
+1,2 Mio AT ne reproduit pas toujours fiablement l'ecriture 360 Kio sans reglage.
+
+Le BIOS gere moteur, recalibrage, recherche, DMA et reprises. Un emulateur doit
+modeliser les commandes 765, leurs phases, IRQ6, terminal count DMA, changements
+de disque et erreurs; retourner immediatement des donnees parfaites cache des
+dependances temporelles de logiciels et diagnostics.
+
+
+==============================================================================
+32. DISQUE FIXE ST-506/412
+==============================================================================
+
+Le XT original est livre avec un disque fixe de 10 Mio et un controleur IBM
+fabrique autour d'une conception Xebec. Le disque presente une interface
+ST-506/412 : cables controle et donnees separes, signaux de tete/cylindre et
+donnees MFM. Il ne s'agit ni d'IDE ni d'un bus sectoriel intelligent moderne.
+
+Le controleur occupe typiquement 320h--323h, IRQ5 et DMA3 selon revision/configu-
+ration. Sa ROM d'extension, souvent a C8000h, effectue diagnostic, installe les
+vecteurs et etend INT 13h pour DL>=80h. Des commutateurs du controleur choisissent
+un "type" de disque, donc cylindres, tetes, precompensation et zone d'atterrissage.
+
+Points de restauration :
+
+- ne jamais lancer un format bas niveau sans sauvegarde et connaissance exacte;
+- ST-506 est une interface, MFM une methode d'encodage;
+- le parcage des tetes peut etre manuel sur certains disques anciens;
+- cables inverses, terminaison ou type incorrect produisent des erreurs trompeuses;
+- la geometrie logique doit correspondre au BIOS/controleur et a la table de
+  partition DOS;
+- XT-IDE remplace l'interface par IDE/CF et apporte sa propre ROM INT 13h; ce
+  n'est pas le comportement du controleur IBM original.
+
+
+==============================================================================
+33. PORT PARALLELE
+==============================================================================
+
+Base typique 378h ou 3BCh :
+
+base+0  donnees D0--D7
+base+1  etat : busy, acknowledge, paper out, select, error
+base+2  controle : strobe, auto feed, initialize, select in, IRQ enable
+
+Plusieurs signaux sont actifs bas; les registres inversent certains bits. Le
+port IBM d'origine est essentiellement une sortie avec lignes d'etat, pas un
+port bidirectionnel ECP/EPP. IRQ7 peut etre utilisee si autorisee par controle.
+
+La BDA liste les bases LPT. INT 17h est portable; l'acces direct convient aux
+protocoles temporels mais doit preserver le registre de controle.
+
+
+==============================================================================
+34. PORT SERIE
+==============================================================================
+
+L'adaptateur asynchrone IBM emploie un UART 8250. A partir de la base :
+
++0 RBR lecture / THR ecriture / DLL si DLAB=1
++1 IER / DLM si DLAB=1
++2 IIR
++3 LCR, bit 7=DLAB
++4 MCR
++5 LSR
++6 MSR
++7 registre scratch selon variante
+
+COM1 est habituellement 3F8h IRQ4; COM2 2F8h IRQ3. Le diviseur vaut 115200/debit.
+Le 8250 original n'a pas les FIFO du 16550A; une ISR tardive perd des caracteres.
+Le niveau electrique RS-232 exige des drivers, et les connecteurs/cablages DTE
+doivent etre verifies avant raccordement.
+
+
+==============================================================================
+35. MANETTE DE JEU ET AUTRES ADAPTATEURS
+==============================================================================
+
+L'adaptateur de jeu utilise 201h. Une ecriture declenche quatre monostables dont
+la duree depend des potentiometres; une lecture teste leurs bits et les boutons.
+Mesurer avec une boucle calibree est tres sensible a la vitesse CPU. Sur XT
+original, cette contrainte fait partie du comportement.
+
+Autres cartes courantes : controleur reseau, carte memoire, horloge RTC, souris
+serie, modem, adaptateurs EGA/VGA, carte son et interfaces industrielles. Elles
+peuvent prendre IRQ2--IRQ7, DMA1/3, ports et ROM. Documenter chaque cavalier.
+
+
+==============================================================================
+36. SYSTEME D'EXPLOITATION ET DOS
+==============================================================================
+
+PC DOS 2.0 accompagne le XT et apporte notamment sous-repertoires, redirection,
+tuyaux et prise en charge du disque fixe. Des versions ulterieures de PC DOS,
+MS-DOS, CP/M-86, Xenix et autres systemes peuvent fonctionner selon RAM/disque.
+
+Demarrage DOS simplifie :
+
+1. BIOS/ROM disque charge le secteur d'amorcage;
+2. le secteur charge les fichiers systeme IBM BIOS/IBMDOS (noms selon version);
+3. DOS traite CONFIG.SYS;
+4. l'interpreteur COMMAND.COM traite AUTOEXEC.BAT;
+5. les programmes .COM ou .EXE s'executent en mode reel.
+
+Un .COM commence a PSP:0100h, partage initialement le segment du PSP et est
+limite a environ 64 Kio. Un .EXE porte relocations et segments distincts.
+
+
+==============================================================================
+37. PROGRAMMATION DOS PAR INT 21h
+==============================================================================
+
+Sous DOS, preferer les handles aux FCB :
+
+AH=3Ch creer fichier, CX attribut, DS:DX nom
+AH=3Dh ouvrir, AL mode, DS:DX nom
+AH=3Eh fermer, BX handle
+AH=3Fh lire, BX handle, CX taille, DS:DX tampon
+AH=40h ecrire, BX handle, CX taille, DS:DX tampon
+AH=42h deplacer pointeur, AL origine, BX handle, CX:DX deplacement
+AH=48h allouer paragraphes, BX quantite
+AH=49h liberer bloc, ES segment
+AH=4Ah redimensionner bloc, ES segment, BX paragraphes
+AH=4Ch terminer, AL code retour
+
+CF=1 indique erreur et AX porte le code. Les fonctions disponibles dependent de
+la version DOS. INT 21h n'est pas reentrante en general; une ISR/TSR doit verifier
+les conditions DOS InDOS et Critical Error avant de l'appeler.
+
+
+==============================================================================
+38. ASSEMBLEUR : DETECTION ET INVENTAIRE
+==============================================================================
+
+Il n'existe pas d'appel donnant infailliblement "IBM 5160". Une identification
+prudente combine date/signature ROM, comportement materiel et inventaire BIOS.
+Les clones peuvent copier la date; ne pas refuser un compatible sur ce critere.
+
+Exemple MASM/TASM 8086 : afficher la date ROM puis obtenir equipement et RAM.
+
+        .model small
+        .stack 100h
+        .data
+msg     db 'BIOS: '
+datebuf db 8 dup(?),13,10,'$'
+rammsg  db 'RAM detectee par INT 12h (Kio) dans AX',13,10,'$'
+equip   dw ?
+ramkb   dw ?
+        .code
+start:  mov ax,@data
+        mov ds,ax
+
+        push ds
+        mov ax,0FFFFh
+        mov es,ax
+        mov si,0005h
+        lea di,datebuf
+        mov cx,8
+copyd:  mov al,es:[si]
+        mov [di],al
+        inc si
+        inc di
+        loop copyd
+        pop ds
+
+        mov ah,09h
+        lea dx,msg
+        int 21h
+
+        int 11h
+        mov equip,ax
+        int 12h
+        mov ramkb,ax
+
+        mov ah,09h
+        lea dx,rammsg
+        int 21h
+        mov ax,4C00h
+        int 21h
+        end start
+
+Un programme reel doit convertir equip/ramkb en decimal ou hexadecimal et
+examiner aussi 0040:0000 pour COM/LPT et 0040:0075 pour les disques fixes.
+
+
+==============================================================================
+39. ASSEMBLEUR : BIOS, PORTS ET INTERRUPTIONS
+==============================================================================
+
+Afficher un caractere par BIOS :
+
+        mov     ah,0Eh
+        mov     al,'X'
+        xor     bh,bh
+        int     10h
+
+Lire une touche sans bloquer :
+
+        mov     ah,01h
+        int     16h
+        jz      aucune
+        xor     ah,ah
+        int     16h             ; retire la touche
+aucune:
+
+Installer une ISR DOS en conservant l'ancien vecteur, exemple INT 1Ch :
+
+old1c   dd 0
+
+        mov ax,351Ch
+        int 21h                 ; ES:BX ancien
+        mov word ptr old1c,bx
+        mov word ptr old1c+2,es
+        push ds
+        push cs
+        pop ds
+        mov dx,offset new1c
+        mov ax,251Ch
+        int 21h
+        pop ds
+        ; ... avant de quitter, restaurer old1c avec AX=251Ch, DS:DX
+
+new1c: push ax
+        inc cs:counter
+        pop ax
+        jmp dword ptr cs:old1c  ; chainage far, l'ancien fera IRET
+counter dw 0
+
+Un programme non resident doit imperativement restaurer le vecteur avant sa fin.
+
+
+==============================================================================
+40. ASSEMBLEUR : DISQUE ET DMA
+==============================================================================
+
+Lecture BIOS d'un secteur de disquette A: vers buffer :
+
+        push    ds
+        pop     es
+        mov     bx,offset buffer
+        mov     ah,02h
+        mov     al,1
+        mov     ch,0             ; cylindre 0
+        mov     cl,1             ; secteur 1
+        mov     dh,0             ; tete 0
+        mov     dl,0             ; A:
+        int     13h
+        jc      disk_error
+
+buffer  db 512 dup(?)
+
+Cet exemple suppose que buffer ne franchit pas une frontiere physique de 64 Kio.
+Pour la verifier, calculer l'adresse lineaire segment*16+offset et s'assurer que
+(adresse AND FFFFh)+taille <= 10000h.
+
+Programmation DMA, ordre sur une machine active : masquer le canal, arreter ou
+acquitter le peripherique, effacer la bascule 0Ch, ecrire adresse basse/haute,
+page, compte bas/haut, mode, puis demasquer. Entourer les acces critiques de
+CLI/STI en preservant l'ancien IF si le contexte l'exige. Le BIOS est preferable
+pour une simple E/S disque.
+
+
+==============================================================================
+41. TURBO PASCAL : BIOS ET PORTS
+==============================================================================
+
+Exemple Turbo Pascal 6/7 DOS, unite Dos :
+
+Program InventaireXT;
+Uses Dos;
+Var R:Registers;
+    Equipement, MemoireK:Word;
+    I:Integer;
+    DateBIOS:String;
+
+Function Hex4(V:Word):String;
+Const H:String[16]='0123456789ABCDEF';
+Var S:String;
+Begin
+  S:='0000';
+  S[1]:=H[((V Shr 12) And $0F)+1];
+  S[2]:=H[((V Shr 8) And $0F)+1];
+  S[3]:=H[((V Shr 4) And $0F)+1];
+  S[4]:=H[(V And $0F)+1];
+  Hex4:=S;
+End;
+
+Begin
+  Intr($11,R);
+  Equipement:=R.AX;
+  Intr($12,R);
+  MemoireK:=R.AX;
+  DateBIOS:='';
+  For I:=0 To 7 Do
+    DateBIOS:=DateBIOS+Chr(Mem[$FFFF:$0005+I]);
+  WriteLn('Date BIOS : ',DateBIOS);
+  WriteLn('Equipement: ',Hex4(Equipement));
+  WriteLn('Memoire   : ',MemoireK,' Kio');
+End.
+
+L'acces Mem[] exige le mode reel DOS.
+
+Exemple haut-parleur :
+
+Procedure Son(Frequence:Word);
+Var D:Word;
+Begin
+  If Frequence=0 Then Exit;
+  D:=1193182 Div Frequence;
+  Port[$43]:=$B6;
+  Port[$42]:=Lo(D);
+  Port[$42]:=Hi(D);
+  Port[$61]:=Port[$61] Or 3;
+End;
+
+Procedure Silence;
+Begin
+  Port[$61]:=Port[$61] And $FC;
+End;
+
+
+==============================================================================
+42. TURBO PASCAL : FICHIERS, VIDEO ET TEMPORISATION
+==============================================================================
+
+Ecriture video texte directe :
+
+Procedure PutCGA(X,Y:Byte; C:Char; Attribut:Byte);
+Var O:Word;
+Begin
+  O:=(Word(Y)*80+X)*2;
+  Mem[$B800:O]:=Ord(C);
+  Mem[$B800:O+1]:=Attribut;
+End;
+
+Cette procedure suppose mode texte 80 colonnes CGA page 0. Pour MDA utiliser
+B000h. Une version portable demande d'abord INT 10h/AH=0Fh ou utilise Crt.
+
+Lecture atomique approximative des ticks BIOS :
+
+Function Ticks:LongInt;
+Var A,B:LongInt;
+Begin
+  Repeat
+    A:=MemL[$0040:$006C];
+    B:=MemL[$0040:$006C];
+  Until A=B;
+  Ticks:=A;
+End;
+
+Deux lectures identiques evitent un melange autour d'une mise a jour, mais INT
+1Ah/AH=00h est l'interface recommandee. MemL est propre aux Turbo Pascal DOS.
+
+Fichiers : les routines BlockRead/BlockWrite ou les fichiers non types passent
+par DOS et gerent mieux erreurs et redirection que des appels disque absolus.
+Ne jamais employer INT 13h pour modifier un fichier DOS ordinaire.
+
+
+==============================================================================
+43. CONFIGURATION DES COMMUTATEURS
+==============================================================================
+
+Deux blocs de commutateurs de la carte mere indiquent au POST la RAM et les
+adaptateurs. Les cartes 64--256 Kio et 256--640 Kio n'utilisent pas necessairement
+les memes tableaux. Les positions peuvent coder :
+
+- quantite de RAM installee sur carte mere et total systeme;
+- nombre de lecteurs de disquettes;
+- presence du 8087;
+- type video de demarrage;
+- autres choix de maintenance selon revision.
+
+Regle de service : relever numero de piece et plan de la carte, puis employer le
+tableau IBM correspondant. Une mauvaise position peut faire ignorer de la RAM,
+selectionner la mauvaise video ou produire une erreur POST. INT 11h reflete le
+mot construit par BIOS, pas une lecture brute universelle de tous les switches.
+
+
+==============================================================================
+44. EXTENSIONS ET COMPATIBILITE
+==============================================================================
+
+Extensions historiques ou modernes :
+
+- RAM conventionnelle jusqu'a 640 Kio;
+- EMS par carte a fenetre paginee, API INT 67h;
+- EGA/VGA avec ROM a C0000h;
+- cartes son AdLib, Sound Blaster ou Covox;
+- reseau Ethernet, Token Ring ou modem;
+- cartes horloge avec pilote;
+- NEC V20 en remplacement du 8088, plus rapide mais pas identique cycle a cycle;
+- accelerateurs 286/386 sur carte;
+- XT-IDE avec CompactFlash ou IDE;
+- cartes serie/parallele modernes et stockage sur carte ISA.
+
+La compatibilite logicielle se mesure au BIOS, a DOS et au materiel effectivement
+utilise. Les programmes qui synchronisent le raster CGA, comptent les cycles du
+8088 ou reprogramment DMA/PIC exigent une fidelite bien superieure a un logiciel
+qui appelle seulement DOS.
+
+
+==============================================================================
+45. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU : implementer exactement le jeu 8088, segmentation 20 bits, drapeaux,
+interruptions aux frontieres d'instruction, NMI, prefetch si le timing compte,
+et comportement des instructions non documentees seulement si vise.
+
+Memoire : IVT/BDA en RAM, parite optionnelle, ROM en lecture seule, decodage des
+ROM d'extension, espace ouvert configurable. Respecter le rebouclage a 20 bits.
+
+PIC : IRR, ISR, IMR, priorite, EOI, masquage, IRQ de niveau/impulsion selon
+source, et IRQ7 parasite. Ne pas livrer le double PIC d'un AT dans le profil XT.
+
+PIT : modes 0--5, latches, diviseur zero=65536, relation IRQ0/refresh/haut-parleur.
+Les changements de frequence en cours de compte doivent avoir un effet coherent.
+
+DMA : bascule octet, registres page, compte terminal, auto-init, modes, priorite,
+frontiere 64 Kio et contention. DMA0/refresh est visible aux diagnostics.
+
+PPI/clavier : protocole XT et acquittement port 61h, pas seulement une file de
+codes AT. Modeliser les make/break et le blocage de l'horloge.
+
+Video : MDA/CGA et 6845, registres masques, pages, retrace, status 3BA/3DA, neige
+CGA optionnelle, palette composite si vise. Ne pas inventer un VGA par defaut
+dans un profil materiel strict.
+
+Disquette : uPD765, DMA2, IRQ6, moteur et changement de disque. Disque fixe :
+permettre une ROM authentique ou implementer son protocole, geometrie et IRQ5.
+
+Bus : conflits d'adresse, ports partiellement decodes, IO CH RDY, ROM checksum,
+IRQ partagees mal gerees historiquement et particularite du slot 8.
+
+BIOS : idealement executer une image legalement obtenue et identifiable. Sinon,
+reproduire les contrats, drapeaux, BDA, vecteurs et erreurs, pas uniquement le
+chemin heureux. Les ROM IBM sont protegees par droit d'auteur.
+
+
+==============================================================================
+46. PLAN DE VALIDATION
+==============================================================================
+
+1. Reset a FFFF0h, POST et initialisation de la BDA.
+2. Test RAM aux tailles 64, 128, 256, 512 et 640 Kio selon carte.
+3. INT 11h/12h et enumeration COM/LPT coherentes avec les cartes.
+4. PIT a 18,2 Hz, passage de minuit et chainage INT 08h/1Ch.
+5. Clavier : appui/liberation, Shift/Ctrl/Alt, Ctrl-Break, tampon plein.
+6. PIC : priorites, masque, EOI, interruptions simultanees et IRQ7 parasite.
+7. DMA : chaque ordre d'octets, terminal count et frontiere 64 Kio.
+8. Disquette 160/180/320/360 Kio, erreurs CRC, write protect et changement.
+9. Disque fixe : reset, lecture/ecriture, erreurs, geometrie et amorcage.
+10. MDA/CGA : modes BIOS, acces direct, CRTC, retrace et pages.
+11. ROM d'extension : signature, taille, checksum, ordre et appel d'init.
+12. DOS : fichiers, allocation, TSR simples, Ctrl-C et redirection.
+13. Logiciels de diagnostic IBM PC/XT et programmes sensibles au timing.
+14. Comparaison des traces de ports/IRQ/DMA avec une vraie carte mere.
+
+
+==============================================================================
+47. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+- Photographier cartes, cables, switches et cavaliers avant intervention.
+- Verifier tensions et POWER GOOD avec une charge appropriee.
+- Rechercher tantale en court-circuit sur les rails, sans remplacer au hasard.
+- Nettoyer et reposer les circuits sur supports avec precautions antistatiques.
+- Utiliser les codes POST et diagnostics IBM pour isoler banque RAM ou carte.
+- Ne pas intervertir un clavier XT et AT sans commutateur/convertisseur adapte.
+- Nettoyer les tetes de disquette avec methode appropriee; ne pas les forcer.
+- Sauvegarder un disque MFM secteur par secteur avant format ou reparation.
+- Respecter terminaison et orientation des cables ST-506.
+- Conserver ROM, etiquettes, numeros de piece et configuration d'origine.
+- Decharger le CRT et l'alimentation uniquement avec competence : tensions
+  dangereuses persistent apres debranchement.
+
+
+==============================================================================
+48. REFERENCES
+==============================================================================
+
+Sources primaires :
+
+- IBM Personal Computer XT Technical Reference, avril 1983, no 1502237.
+  https://www.minuszerodegrees.net/manuals/IBM/IBM_5160_Technical_Reference_APR83.pdf
+
+- IBM Personal Computer XT / Portable PC Technical Reference, mars 1986,
+  no 6280089. Couvre notamment les cartes 64--256 et 256--640 Kio.
+  https://minuszerodegrees.net/manuals/IBM_5155_5160_Technical_Reference_6280089_MAR86.pdf
+
+- IBM Personal Computer XT Guide to Operations, avril 1984, no 6322511.
+  https://www.minuszerodegrees.net/manuals/IBM/IBM_5160_Guide_to_Operations_6322511_APR84.pdf
+
+Autres references techniques utiles :
+
+- Intel, 8086/8088 User's Manual.
+- Intel, 8259A Programmable Interrupt Controller.
+- Intel, 8237A High Performance Programmable DMA Controller.
+- Intel, 8253/8254 Programmable Interval Timer.
+- Intel, 8255A Programmable Peripheral Interface.
+- Intel, 8250 Asynchronous Communications Element.
+- NEC, uPD765A Floppy Disk Controller.
+- IBM PC DOS Technical Reference, edition correspondant au DOS cible.
+- Ralf Brown's Interrupt List, pour variantes BIOS/DOS et extensions.
+- minuszerodegrees.net, index documentaire et informations de maintenance 5160.
+- bitsavers.org/pdf/ibm/pc/xt/, scans des editions IBM.
+
+Pour programmer un modele precis, le numero de piece de la carte mere, la date
+du BIOS, les cartes installees et la version DOS doivent toujours accompagner
+le mot generique "PC/XT".

@@ -1,0 +1,895 @@
+==============================================================================
+ SONY PLAYSTATION 2 - MATERIEL ET PROGRAMMATION
+ Reference pour developpeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console Sony PlayStation 2 (PS2) : Emotion Engine, unites
+vectorielles, Graphics Synthesizer, IOP, SPU2, DMA, SIF, CD/DVD, peripheriques,
+BIOS et programmation. Il distingue les consoles SCPH-10000 a SCPH-90000, les
+modeles "fat" et Slim et les fonctions ajoutees ou retirees.
+
+La PS2 est une machine multiprocesseur. Le processeur principal EE ne programme
+pas normalement les manettes, le disque ou le son seul : il communique avec des
+modules executant sur l'IOP. Les accents sont omis pour conserver un texte ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et gamme
+  2. Revisions SCPH
+  3. Caracteristiques generales
+  4. Architecture et chemins de donnees
+  5. Emotion Engine et coeur R5900
+  6. Registres, instructions et MMI
+  7. Pipeline, caches et exceptions
+  8. Carte memoire EE
+  9. RDRAM et scratchpad
+ 10. DMAC de l'Emotion Engine
+ 11. Chaines DMA et tags
+ 12. INTC et temporisateurs
+ 13. VU0 et VU1
+ 14. Registres et micro-instructions VU
+ 15. VIF0 et VIF1
+ 16. GIF et ses trois chemins
+ 17. Graphics Synthesizer
+ 18. Registres GS et paquets GIF
+ 19. Memoire locale, formats et textures
+ 20. Rasterisation, alpha, Z et tests
+ 21. Video, PAL/NTSC et double buffering
+ 22. IPU et MPEG-2
+ 23. IOP
+ 24. Memoire, IRQ et DMA IOP
+ 25. SIF et communication EE/IOP
+ 26. Modules IRX et RPC
+ 27. SPU2
+ 28. ADPCM, voix, ADSR et mixage
+ 29. CD/DVD
+ 30. Systeme de fichiers et executables
+ 31. Manettes, cartes memoire et multitap
+ 32. USB, i.Link, DEV9, reseau et disque dur
+ 33. Compatibilite PlayStation
+ 34. BIOS, ROM et sequence de demarrage
+ 35. Formats ELF et IRX
+ 36. Initialisation d'un programme EE
+ 37. Assembleur R5900
+ 38. Assembleur VU
+ 39. C : DMA, GIF et GS
+ 40. C : SIF/RPC, manette et fichier
+ 41. Son et lecture en continu
+ 42. Calcul 3D et moteur de rendu
+ 43. Synchronisation et optimisation
+ 44. Outils officiels, Linux et PS2SDK
+ 45. Compatibilite entre revisions
+ 46. Conseils pour un emulateur
+ 47. Plan de validation
+ 48. Maintenance
+ 49. Securite et preservation
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE ET GAMME
+==============================================================================
+
+Sony lance la PlayStation 2 au Japon le 4 mars 2000, puis en Amerique du Nord
+et en Europe la meme annee. Elle ajoute DVD-Video, jeux PS2 sur DVD/CD et une
+compatibilite importante avec la premiere PlayStation.
+
+La conception associe calcul vectoriel programmable et rasteriseur a tres forte
+bande passante. Elle est puissante mais demande une orchestration explicite des
+DMA, VU, GIF, GS, IOP et SPU2. La production se poursuit jusqu'en 2012/2013.
+
+
+==============================================================================
+2. REVISIONS SCPH
+==============================================================================
+
+Familles indicatives :
+
+- SCPH-10000/15000/18000 : premiers modeles japonais, PC Card, logiciel DVD
+  initial sur carte memoire selon version;
+- SCPH-3000x : grande serie fat, baie d'extension et adaptateur reseau/HDD;
+- SCPH-3900x : revision fat reputee robuste, architecture classique;
+- SCPH-5000x : IR integre, ventilation/bruit revus, i.Link retire;
+- SCPH-7000x : premiere Slim, Ethernet integre, alimentation externe;
+- SCPH-7500x/7700x/7900x : integration croissante, compatibilite subtile;
+- SCPH-9000x : Slim tardive, alimentation interne sur plusieurs regions.
+
+Le suffixe regional indique marche et standard video. Les cartes GH-xxx, blocs
+optiques, BIOS, MechaCon et circuits EE+GS changent. Toujours relever SCPH et GH.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Element                 Valeur generale
+----------------------  ------------------------------------------------------
+EE/R5900                 environ 294,912 MHz
+RAM principale          32 Mio RDRAM, bande passante theorique 3,2 Go/s
+Scratchpad EE            16 Kio
+VU0                      4 Kio micro + 4 Kio data
+VU1                      16 Kio micro + 16 Kio data
+GS                       environ 147,456 MHz
+Memoire GS               4 Mio eDRAM, bus interne tres large
+IOP                      coeur R3000A compatible a 33,8688 MHz
+RAM IOP                  2 Mio
+SPU2                     deux coeurs x 24 voix, 2 Mio de RAM sonore
+Audio                    48 kHz interne, stereo/multicanal encode selon sortie
+Support                  CD-ROM, DVD-ROM, CD audio, DVD-Video
+Peripheriques            2 pads, 2 cartes; multitap; USB; autres selon modele
+
+Les nombres "128 bits" de marketing melangent largeur des registres SIMD, bus
+et unite vectorielle. Le R5900 reste une architecture MIPS a adressage 32 bits.
+
+
+==============================================================================
+4. ARCHITECTURE ET CHEMINS DE DONNEES
+==============================================================================
+
+EE Core execute jeu, logique et commandes. VU0 sert comme COP2 ou microprocesseur
+vectoriel; VU1 produit souvent geometrie et paquets. VIF0/VIF1 decompriment et
+distribuent donnees. GIF arbitre trois chemins vers GS. IPU decode MPEG. DMAC
+deplace les QWORD sans charger le CPU.
+
+L'IOP gere CD/DVD, pads, cartes, USB, reseau et SPU2 via modules IRX. SIF relie
+EE et IOP par DMA et RPC. Le GS possede sa memoire locale separee; le SPU2 aussi.
+
+
+==============================================================================
+5. EMOTION ENGINE ET COEUR R5900
+==============================================================================
+
+Le R5900 derive de MIPS III/IV avec extensions Sony : registres generaux vus
+comme 128 bits par MMI, ALU 64 bits, FPU simple precision, COP0 et COP2/VU0.
+Il execute en little-endian.
+
+Registres ABI : $zero, $at, $v0-$v1, $a0-$a3, $t0-$t9, $s0-$s7, $gp, $sp,
+$fp et $ra. HI/LO existent en paires et extensions selon MMI. Les adresses
+utilisateur usuelles sont 32 bits; KSEG0 cache et KSEG1 non cache suivent MIPS.
+
+La FPU ne fournit pas le double IEEE complet attendu d'un poste MIPS. Les cas
+denormalises, NaN et arrondis ont particularites; ne pas compiler en supposant
+une FPU desktop parfaitement IEEE.
+
+
+==============================================================================
+6. REGISTRES, INSTRUCTIONS ET MMI
+==============================================================================
+
+Le coeur accepte arithmetique MIPS 32/64 bits, branches, loads/stores, COP0,
+COP1 et COP2. Les instructions MMI traitent des voies 8/16/32/64 bits dans les
+registres 128 bits : additions saturees, comparaisons, pack/unpack, multiply-
+accumulate, permutations et transferts QWORD.
+
+LQ/SQ exigent alignement 16 octets. Les donnees DMA/VIF/GIF sont naturellement
+des QWORD de 128 bits. Utiliser les types 128 bits/assembleur du compilateur PS2,
+pas un type C portable suppose identique.
+
+
+==============================================================================
+7. PIPELINE, CACHES ET EXCEPTIONS
+==============================================================================
+
+Branches ont delay slot. Loads, FPU et unites d'execution ont latences que le
+compilateur/assembleur ordonnance. Le coeur est superscalaire avec contraintes
+de pairing et ressources partagees.
+
+Caches EE : environ 16 Kio instructions et 8 Kio donnees, plus scratchpad 16 Kio.
+Le DMA ne maintient pas automatiquement toute coherence avec le D-cache : write-
+back avant DMA lecture, invalidation avant lire donnees ecrites par DMA.
+
+COP0 gere Status, Cause, EPC, BadVAddr, TLB et exceptions. Le bit BD indique une
+exception dans delay slot. Kernel PS2 installe ses vecteurs et services; une
+application normale utilise semaphores, handlers et fonctions SDK.
+
+
+==============================================================================
+8. CARTE MEMOIRE EE
+==============================================================================
+
+Adresse EE         Usage principal
+-----------------  -----------------------------------------------------------
+00000000h--01FFFFFFh RDRAM 32 Mio, vue utilisateur
+10000000h+           registres EE : timers, IPU, GIF, VIF, DMAC, INTC, SIF
+11000000h             memoire micro VU0
+11004000h             memoire data VU0
+11008000h             memoire micro VU1
+1100C000h             memoire data VU1
+12000000h+            registres privilegies GS
+1C000000h+            fenetre RAM IOP
+1FC00000h+            ROM/BIOS
+70000000h--70003FFFh  scratchpad EE
+80000000h+            alias KSEG0 cache
+A0000000h+            alias KSEG1 non cache
+
+Plusieurs registres n'acceptent qu'une largeur precise. Les adresses physiques
+DMA sont masquees et certaines destinations sont des canaux, pas memoire.
+
+
+==============================================================================
+9. RDRAM ET SCRATCHPAD
+==============================================================================
+
+La RDRAM a haute bande passante mais latence et penalties de pages. Grouper les
+acces sequentiels et laisser DMAC deplacer de gros blocs. Les lectures aleatoires
+et conflits DMA reduisent fortement le debit.
+
+Le scratchpad 16 Kio est rapide et adresse a 70000000h. DMAC canaux 8/9 deplacent
+depuis/vers SPR. Il convient aux buffers de travail, decompression et chaines
+temporaires, mais sa taille impose un plan explicite.
+
+
+==============================================================================
+10. DMAC DE L'EMOTION ENGINE
+==============================================================================
+
+Canal  Destination/source
+-----  ------------------------------------------------------------
+0      VIF0
+1      VIF1
+2      GIF
+3      IPU from (IPU vers memoire)
+4      IPU to (memoire vers IPU)
+5      SIF0, IOP vers EE
+6      SIF1, EE vers IOP
+7      SIF2
+8      SPR from, scratchpad vers memoire
+9      SPR to, memoire vers scratchpad
+
+Chaque canal a CHCR, MADR, QWC, TADR et registres associes selon type. Le DMAC
+transfere des QWORD. D_CTRL, D_STAT, D_PCR, D_SQWC, D_RBSR/RBOR et enable global
+gerent interruptions, priorites, stall et ring buffer.
+
+
+==============================================================================
+11. CHAINES DMA ET TAGS
+==============================================================================
+
+Un tag DMA de 128 bits indique QWC, ID, IRQ et adresse. IDs principaux : REFE,
+CNTS, CNT, NEXT, REF, REFS, CALL, RET et END. Leur effet sur MADR/TADR/pile de
+retour differe; CALL/RET ont une petite pile materielle.
+
+Les tags source chain permettent flux VIF/GIF sans CPU. TTE peut transferer une
+partie du tag comme donnee. Une adresse ou QWC faux peut faire lire hors buffer,
+bloquer le canal ou envoyer des commandes GS incoherentes.
+
+Aligner tags et paquets sur 16 octets, terminer explicitement, flush D-cache et
+attendre D_STAT/CHCR avant reutiliser la memoire.
+
+
+==============================================================================
+12. INTC ET TEMPORISATEURS
+==============================================================================
+
+INTC_STAT et INTC_MASK regroupent GS, SBUS, VBlank start/end, VIF0/1, VU0/1,
+IPU, timers 0--3 et autres sources selon revision. DMAC a son registre d'etat
+et rejoint une ligne CPU distincte.
+
+Quatre timers EE ont COUNT, MODE, COMP et HOLD. Horloges possibles : bus, bus
+divise, HBlank et sources externes; IRQ sur compare/overflow. Les drapeaux
+s'acquittent avec une semantique precise, pas par affectation C arbitraire.
+
+VBlank start sert souvent au flip/pad; GS FINISH et SIGNAL servent a synchroniser
+le rendu. VSync ne signifie pas que tous les DMA/GS sont termines.
+
+
+==============================================================================
+13. VU0 ET VU1
+==============================================================================
+
+Chaque VU a 32 registres vectoriels vf00--vf31 de quatre floats, 16 registres
+entiers vi00--vi15, accumulateur ACC et registres Q, P, R, I, MAC/clip/status.
+vf00 contient conventionnellement (0,0,0,1); vi00 vaut zero.
+
+VU0 : 4 Kio micro/data, connecte au coeur comme COP2 et a VIF0; bon pour calculs
+co-processeur ou micro-mode. VU1 : 16 Kio micro/data, VIF1 et chemin direct XGKICK
+vers GIF; cible principale des pipelines geometriques autonomes.
+
+Macro mode execute instructions COP2 depuis EE; micro mode execute deux slots
+par cycle, upper vectoriel et lower entier/load/store/branch.
+
+
+==============================================================================
+14. REGISTRES ET MICRO-INSTRUCTIONS VU
+==============================================================================
+
+Upper : ADD, SUB, MUL, MADD/MSUB, MAX/MINI, conversions, ABS, CLIP, OPmula/opmsub.
+Lower : IADD/ISUB, branches, LQ/SQ, ILW/ISW, DIV, SQRT, RSQRT, XGKICK, XTOP,
+XITOP, WAITQ/WAITP et acces aleatoires.
+
+Les pipelines FMAC, FDIV, EFU, load/store et entiers ont latences. Q/P ne sont
+pas immediatement disponibles. Les flags MAC/clip/status ont delai. Un programme
+micro doit inserer instructions utiles ou NOP et poser bits E/M/D/T conformement.
+
+VU1 XGKICK transmet a GIF a partir de sa memoire data, mais le buffer ne doit pas
+etre reecrit avant consommation. Le double buffering VU1 est courant.
+
+
+==============================================================================
+15. VIF0 ET VIF1
+==============================================================================
+
+VIF recoit un flux de codes 32 bits et de donnees. Commandes : NOP, STCYCL,
+OFFSET/BASE, ITOP, STMOD, MARK, FLUSHE/FLUSH/FLUSHA, MSCAL/MSCALF/MSCNT,
+STMASK, STROW/STCOL, MPG, DIRECT/DIRECTHL et UNPACK.
+
+UNPACK convertit V4/V3/V2/S-32/16/8/5 vers memoire VU, avec cycle WL/CL,
+mask, row/column, unsigned et adressage TOP. Les modes fill/skip sont puissants
+mais une mauvaise taille decale toutes les donnees suivantes.
+
+VIF1 DIRECT envoie des paquets au GIF (Path 2); VIF0 ne possede pas ce chemin.
+
+
+==============================================================================
+16. GIF ET SES TROIS CHEMINS
+==============================================================================
+
+Path 1 : VU1 via XGKICK, priorite haute.
+Path 2 : VIF1 DIRECT/DIRECTHL.
+Path 3 : DMAC GIF depuis EE.
+
+Le GIF arbitre et transforme GIFtags/loops en ecritures GS. Un GIFtag contient
+NLOOP, EOP, PRE, PRIM, FLG et NREG, puis liste de registres. Modes PACKED,
+REGLIST et IMAGE. PACKED utilise un QWORD par registre; IMAGE transfere pixels.
+
+La concurrence Path 1/2/3 et les masques/stalls peut bloquer. FLUSHA/FINISH et
+etat GIF sont essentiels avant changer buffers ou contexte.
+
+
+==============================================================================
+17. GRAPHICS SYNTHESIZER
+==============================================================================
+
+Le GS est un rasteriseur fixe a environ 147 MHz avec 4 Mio d'eDRAM. Sa bande
+passante interne enorme favorise fill, Z et blending, mais toute texture/frame-
+buffer tient dans 4 Mio et les transferts host-local sont limites.
+
+Il dessine points, lignes, triangles, sprites; textures, fog, Gouraud, alpha,
+scissor, tests alpha/destination/Z, dithering et masque de trame. Il ne fait pas
+transformation, clipping general, T&L, shaders ni mipmapping automatique.
+
+
+==============================================================================
+18. REGISTRES GS ET PAQUETS GIF
+==============================================================================
+
+Registres de dessin via GIF : PRIM, RGBAQ, ST, UV, XYZF2/XYZ2, TEX0_1/2,
+CLAMP_1/2, FOG, XYOFFSET, PRMODECONT, TEXCLUT, SCANMSK, MIPTBP, TEXA, FOGCOL,
+TEXFLUSH, SCISSOR, ALPHA, DIMX, DTHE, COLCLAMP, TEST, PABE, FBA, FRAME, ZBUF.
+
+Registres privilegies a 12000000h+ : PMODE, SMODE2, DISPFB1/2, DISPLAY1/2,
+EXTBUF/EXTDATA/EXTWRITE, BGCOLOR, CSR, IMR, BUSDIR, SIGLBLID.
+
+Deux contextes de dessin permettent changer framebuffer/Z/texture sans tout
+reecrire. A+D dans un paquet PACKED choisit un registre par son adresse 8 bits.
+
+
+==============================================================================
+19. MEMOIRE LOCALE, FORMATS ET TEXTURES
+==============================================================================
+
+Formats : PSMCT32/24/16/16S couleurs; PSMZ32/24/16/16S profondeur; PSMT8/4 et
+variantes high pour textures indexees. Les adresses sont en pages/blocs avec
+swizzle propre au format, non un framebuffer lineaire universel.
+
+FRAME definit base en unites GS, largeur FBW et masque FBMSK. TEX0 definit TBP,
+TBW, PSM, tailles puissance de deux, CLUT et fonction texture. BITBLTBUF/TRXPOS/
+TRXREG/TRXDIR pilotent transferts host<->local et local<->local.
+
+Les CLUT 16/256 couleurs ont formats et arrangements particuliers. TEXFLUSH est
+necessaire apres mise a jour. Allouer VRAM en tenant compte alignement/page et
+chevauchement de formats, pas seulement nombre d'octets visible.
+
+
+==============================================================================
+20. RASTERISATION, ALPHA, Z ET TESTS
+==============================================================================
+
+Coordonnees XYZ sont en fixe 12.4 pour X/Y apres XYOFFSET; Z est entier. Le GS
+applique scissor, scan conversion et tests. Les sprites sont utiles aux rectangles
+2D; triangles doivent respecter regles d'aretes pour eviter fissures.
+
+TEST configure ATE/ATST/AREF/AFAIL, DATE/DATM et ZTE/ZTST. ALPHA calcule
+((A-B)*C)>>7 + D avec sources Cs, Cd, As, Ad ou FIX. COLCLAMP decide saturation
+ou wrap. PABE choisit blending par bit alpha du pixel source.
+
+Pas de perspective automatique : STQ donne correction par Q; UV est affine.
+Le moteur doit calculer Q avec VU et choisir le mode approprie.
+
+
+==============================================================================
+21. VIDEO, PAL/NTSC ET DOUBLE BUFFERING
+==============================================================================
+
+Le GS peut produire modes entrelaces/non entrelaces, PAL, NTSC, VGA et modes
+progressifs selon BIOS/cable. DISPLAY definit magnification et fenetre; DISPFB
+base/largeur/format. PMODE combine deux circuits de lecture et alpha.
+
+PAL et NTSC different lignes, cadence et centrage. Utiliser les parametres regionaux
+ou bibliotheque graph. Un mode progressif/VGA peut exiger cable et synchro adaptes.
+
+Double buffering : dessiner dans FRAME non affiche, attendre fin du rendu puis
+VBlank, changer DISPFB et contexte. Triple buffering reduit attente au prix VRAM.
+
+
+==============================================================================
+22. IPU ET MPEG-2
+==============================================================================
+
+L'Image Processing Unit aide au decode MPEG-2 : FIFO input/output, variable
+length decode, inverse quantization, IDCT, colorspace et commandes. DMA4 apporte
+le bitstream a l'IPU; DMA3 recupere macroblocs (noms from/to vus du DMAC).
+
+Le logiciel gere demultiplexage Program Stream, buffers circulaires, presentation
+timestamps, audio et transfert GS. IPU_CMD, IPU_CTRL, IPU_BP et TOP exposent etat.
+
+IPU n'est pas un lecteur DVD complet : navigation, CSS, demux, sous-titres et
+audio impliquent firmware/modules. Une emulation HLE de film ne valide pas IPU.
+
+
+==============================================================================
+23. IOP
+==============================================================================
+
+L'Input/Output Processor derive du CPU PlayStation R3000A a 33,8688 MHz et
+dispose de 2 Mio RAM. Il execute un noyau temps reel et modules IRX pour CDVD,
+SIO2, cartes, USB, DEV9, fichiers et SPU2.
+
+Les derniers Slim integrent/remplacent certains blocs par un circuit appele
+DECKARD qui reproduit par logiciel/microcode une partie de l'IOP; cela explique
+des differences de compatibilite. Du point de vue EE, SIF/RPC reste l'interface.
+
+
+==============================================================================
+24. MEMOIRE, IRQ ET DMA IOP
+==============================================================================
+
+La carte IOP conserve beaucoup de ports PS1 mais ajoute SIO2, SPU2, USB, DEV9,
+CDVD et SIF. Son INTC et DMAC sont distincts de ceux de l'EE. L'EE voit la RAM
+IOP par une fenetre mais ne doit pas contourner coherence/protocoles.
+
+Les modules resident en RAM IOP limitee. Charger trop d'IRX provoque echec ou
+fragmentation. IOP reboot charge une image IOPRP; les pointeurs et serveurs RPC
+precedents deviennent invalides et doivent etre reinitialises.
+
+
+==============================================================================
+25. SIF ET COMMUNICATION EE/IOP
+==============================================================================
+
+SIF comporte registres de controle, flags et canaux DMA. SIF0 transfere IOP->EE,
+SIF1 EE->IOP, SIF2 sert a usages particuliers. Les paquets de commande construisent
+une couche SIFCMD; SIFRPC fournit appel client/serveur.
+
+Un RPC contient identifiant serveur, buffer send/receive, fonction, callbacks et
+semaphores. Les buffers DMA doivent etre alignes et cache-coherents. Un appel
+asynchrone ne doit pas reutiliser son buffer avant fin.
+
+
+==============================================================================
+26. MODULES IRX ET RPC
+==============================================================================
+
+IRX est un ELF relogeable IOP avec module info, imports/exports. IOPMOD/LOADCORE
+chargent et lient des bibliotheques comme IOMAN, SIFMAN, SIFCMD, SIFRPC, PADMAN,
+MCMAN, LIBSD, CDVDMAN, USBD et DEV9.
+
+Une application EE charge modules depuis ROM, disque ou buffer, puis bind son
+client RPC. Les versions ROM changent par console; utiliser API et modules
+compatibles, pas des adresses internes.
+
+
+==============================================================================
+27. SPU2
+==============================================================================
+
+SPU2 contient deux coeurs proches du SPU PS1, chacun avec 24 voix : 48 voix au
+total. Ils partagent 2 Mio de Sound RAM et mixent a 48 kHz. Chaque coeur a voix,
+ADSR, noise, pitch modulation, reverb, entrees et sorties.
+
+L'IOP programme SPU2 par registres et DMA, habituellement via libsd/audsrv.
+L'EE envoie commandes et audio par SIF/RPC. Sortie peut etre analogique stereo
+ou numerique S/PDIF; Dolby/DTS sont souvent des flux encode pass-through.
+
+
+==============================================================================
+28. ADPCM, VOIX, ADSR ET MIXAGE
+==============================================================================
+
+Sony ADPCM stocke 28 echantillons dans 16 octets avec predictor/shift et flags
+loop/end. Une voix definit adresse start/loop, pitch, volumes L/R et enveloppe
+ADSR. Key On demarre; Key Off passe en release.
+
+Le SPU2 ajoute routages et effets entre deux coeurs. Streaming PCM/ADPCM utilise
+des demi-buffers et IRQ/DMA : remplir une moitie pendant lecture de l'autre.
+Les caches EE et SIF doivent etre synchronises avant que l'IOP lise les donnees.
+
+
+==============================================================================
+29. CD/DVD
+==============================================================================
+
+Le sous-systeme lit CD-ROM, CD audio, DVD-ROM et DVD-Video. L'IOP et CDVDMAN
+envoient commandes au MechaCon/lecteur, gerent authentification, tray, vitesse,
+seek et secteurs. Les couches DVD simple/double et erreurs ont latence.
+
+Jeux CD utilisent ISO 9660; DVD PS2 souvent UDF/ISO hybride et secteurs 2048
+octets. Lecture asynchrone avec buffers multiples masque seek. Aligner fichiers
+et regrouper donnees utilisees ensemble.
+
+La protection/licence repose sur secteurs/structures pressees et MagicGate/
+MechaCon selon fonction. Une image ISO ne contient pas necessairement toutes les
+informations physiques.
+
+
+==============================================================================
+30. SYSTEME DE FICHIERS ET EXECUTABLES
+==============================================================================
+
+SYSTEM.CNF indique BOOT2 = cdrom0:\\CHEMIN\\PROGRAMME.ELF;1 et version. Les noms
+ISO emploient souvent majuscules et ;1. L'executable EE est ELF32 little-endian
+pour machine MIPS, avec segments PT_LOAD, entree, relocations selon type.
+
+Les fichiers IOP sont IRX/ELF relogeables. Les cartes memoire utilisent mc0:/
+et mc1:/, disque mass:/ sous USB homebrew, host: via outil, hdd0:/ et pfs: avec
+pilotes. Les noms sont des conventions IOMAN/IOMANX.
+
+
+==============================================================================
+31. MANETTES, CARTES MEMOIRE ET MULTITAP
+==============================================================================
+
+SIO2 sur IOP gere deux ports combinant pad/carte. PADMAN et MCMAN exposent RPC.
+DualShock 2 ajoute boutons sensibles a la pression, deux sticks et vibration.
+Le mode/configuration doit etre negocie; la lecture brute a longueur variable.
+
+Carte PS2 standard : 8 Mio, controleur avec ECC et authentification MagicGate.
+Le filesystem contient superblock, FAT et repertoire; ecriture doit etre atomique
+et respecter ECC. Les cartes PS1 128 Kio sont supportees pour sauvegardes PS1.
+
+Multitap porte jusqu'a quatre pads/cartes par connecteur selon jeu. Ne pas fixer
+la topologie a deux peripheriques.
+
+
+==============================================================================
+32. USB, I.LINK, DEV9, RESEAU ET DISQUE DUR
+==============================================================================
+
+Deux ports USB 1.1 sont controles par OHCI sur IOP; clavier, souris, stockage,
+micro/camera et accessoires exigent pilotes. USB n'est pas une API BIOS magique.
+
+i.Link IEEE 1394 existe sur premieres fat et disparait vers SCPH-5000x. DEV9
+relie adaptateur reseau et ATA/HDD sur fat. L'adaptateur officiel offre Ethernet
+et baie disque; Slim integre Ethernet mais pas connecteur HDD ATA officiel.
+
+Le HDD officiel emploie APA partitions puis PFS pour fichiers; logiciels utilisent
+ATAD/DEV9/HDD/PFS. Les capacites, LBA et secteurs doivent suivre les pilotes.
+
+
+==============================================================================
+33. COMPATIBILITE PLAYSTATION
+==============================================================================
+
+En mode PS1, l'IOP/R3000A joue le role CPU principal. Le GS reproduit la sortie
+GPU PS1 via logique/compatibilite, SPU2 reproduit audio et le lecteur adapte les
+commandes. EE n'execute pas simplement un emulateur logiciel complet classique.
+
+Certaines revisions tardives a DECKARD emulent davantage de fonctions IOP et
+ont une liste de jeux incompatibles differente. Vitesse disque rapide et texture
+smoothing sont options BIOS, pas comportements originaux PS1 garantis.
+
+
+==============================================================================
+34. BIOS, ROM ET SEQUENCE DE DEMARRAGE
+==============================================================================
+
+Le Boot ROM initialise EE/IOP/GS, securite et peripheriques, affiche Browser/
+System Configuration, lit carte/HDD/DVD, authentifie le disque et lance ELF.
+ROM0 contient noyau/modules; ROM1/ROM2/EROM et contenus varient selon modele.
+
+Le Browser gere cartes et disque; DVD Player peut etre ROM ou mise a jour selon
+generation. Les appels syscall EE passent par noyau resident : threads, semaphores,
+interruptions, cache, alarmes, SIF et chargement.
+
+Les ROM Sony sont protegees. Un emulateur demande un dump legal ou fournit une
+reimplementation clairement identifiee.
+
+
+==============================================================================
+35. FORMATS ELF ET IRX
+==============================================================================
+
+EE ELF : ELFCLASS32, little-endian, EM_MIPS, point d'entree KUSEG usuel, program
+headers chargeables. Sections ne sont pas necessaires au chargeur si segments
+sont corrects. crt0 initialise $gp, $sp, BSS, heap et bibliotheques.
+
+IRX : ELF IOP relogeable avec structure module, imports/exports et fonction
+_start recevant arguments. Une IRX EE n'est pas executable sur IOP et inversement.
+Alignement, ABI et options compilateur doivent correspondre a ps2sdk/SDK cible.
+
+
+==============================================================================
+36. INITIALISATION D'UN PROGRAMME EE
+==============================================================================
+
+1. crt0, pile, GP, BSS et heap;
+2. initialiser kernel/cache et handlers necessaires;
+3. SIF, RPC et eventuel reboot IOP;
+4. charger modules IRX puis bind PAD/CDVD/MC/SPU;
+5. reset/configurer GS, video et VRAM;
+6. initialiser DMAC, GIF/VIF/VU et buffers alignes;
+7. initialiser pad, fichiers et audio;
+8. boucle : entree, simulation, construction DMA, rendu, audio, VBlank;
+9. synchroniser avant reutiliser buffers.
+
+
+==============================================================================
+37. ASSEMBLEUR R5900
+==============================================================================
+
+Copie QWORD alignee et appel de fonction :
+
+        .set noreorder
+        lq      $t0,0($a0)
+        sq      $t0,0($a1)
+        jr      $ra
+        nop
+
+Lecture d'un registre EE non cache :
+
+        li      $t0,0x1000F010
+        lw      $v0,0($t0)         # INTC_MASK
+        jr      $ra
+        nop
+
+Le pseudo-op LI est developpe en LUI/ORI. Il evite ici le piege de l'immediat
+signe de LW. Les registres 128 bits et QWORD exigent un assembleur R5900; les
+adresses INTC/DMAC doivent venir des en-tetes du SDK.
+
+
+==============================================================================
+38. ASSEMBLEUR VU
+==============================================================================
+
+Exemple micro-code conceptuel, upper | lower executes en parallele :
+
+loop:
+        mul.xyz  vf4,vf1,vf2   | lq      vf1,0(vi1)
+        add.xyz  vf5,vf4,vf3   | iaddiu  vi1,vi1,1
+        sq.xyz   vf5,0(vi2)    | iaddiu  vi2,vi2,1
+        nop                    | ibne    vi1,vi3,loop
+        nop[E]                 | nop
+
+Le vrai ordonnancement doit respecter latence du LQ avant utilisation, delay de
+branche et bit E. Les deux instructions d'une paire ne peuvent pas toujours
+utiliser la meme ressource. Valider avec VU User's Manual et simulateur.
+
+
+==============================================================================
+39. C : DMA, GIF ET GS
+==============================================================================
+
+Pseudo-C avec types 64/128 du SDK :
+
+typedef struct __attribute__((aligned(16))) {
+    unsigned long long lo, hi;
+} qword;
+
+void send_gif(qword *packet, unsigned qwc) {
+    FlushCache(0);              /* ou flush de plage selon SDK */
+    while (GIF_CHCR & 0x100) { }
+    GIF_MADR = ((unsigned)packet) & 0x0FFFFFFF;
+    GIF_QWC  = qwc;
+    GIF_CHCR = DMA_NORMAL_FROM_MEM | DMA_START;
+}
+
+Les constantes exactes viennent des en-tetes. Le paquet commence par GIFtag,
+puis registres PACKED/A+D. Ajouter timeout en outil et ne pas liberer packet
+avant fin du canal et consommation pertinente par GS.
+
+
+==============================================================================
+40. C : SIF/RPC, MANETTE ET FICHIER
+==============================================================================
+
+Avec PS2SDK, schema :
+
+SifInitRpc(0);
+SifLoadModule("rom0:SIO2MAN", 0, NULL);
+SifLoadModule("rom0:PADMAN", 0, NULL);
+padInit(0);
+padPortOpen(0, 0, pad_buffer_aligne);
+
+while (running) {
+    if (padGetState(0,0) == PAD_STATE_STABLE)
+        padRead(0,0,&buttons);
+}
+
+Pour fichiers, initialiser CDVD/fileio puis open/read/lseek/close sur cdrom0:.
+Les noms/modules ROM different : verifier retour de chaque appel et prevoir une
+alternative X-module. Les buffers RPC doivent etre alignes et non caches/flushes.
+
+
+==============================================================================
+41. SON ET LECTURE EN CONTINU
+==============================================================================
+
+Flux audio : lire CD/DVD vers buffers EE, envoyer par SIF au serveur IOP, copier
+vers SPU2 en double buffer. Un semaphore/IRQ signale la moitie consommee. Garder
+plusieurs secteurs d'avance pour absorber seeks et contention.
+
+Pour effets courts, encoder Sony ADPCM, allouer Sound RAM, charger une fois,
+programmer voix et Key On. Pour musique, utiliser ADPCM/PCM stream ou piste selon
+format. Ne pas bloquer boucle rendu sur une lecture disque synchrone.
+
+
+==============================================================================
+42. CALCUL 3D ET MOTEUR DE RENDU
+==============================================================================
+
+Pipeline performant : EE gere scene/animation; VU0 aide physique/skinning; VU1
+transforme, clippe, eclaire et produit GIFtags/primitives; GS rasterise.
+
+Le GS n'a pas de vertex shader ni clipping complet. VU1 doit traiter near plane,
+viewport, perspective et Q. Les textures n'ont pas une memoire illimitee : gerer
+residency, CLUT, upload et formats swizzles dans 4 Mio.
+
+Ordering et Z-buffer sont tous deux possibles. Z consomme VRAM/bande passante;
+tri front-to-back reduit overdraw. Alpha blending peut imposer tri transparent.
+
+
+==============================================================================
+43. SYNCHRONISATION ET OPTIMISATION
+==============================================================================
+
+- double-bufferiser donnees VU, paquets GIF, framebuffer et audio;
+- aligner 16/64 octets selon DMA/cache;
+- flush/invalidate seulement plages necessaires;
+- utiliser chain DMA et scratchpad pour masquer latence RDRAM;
+- faire travailler EE, VU1, GS et IOP en parallele;
+- eviter FINISH/Sync globaux au milieu d'une image;
+- regrouper changements TEX0/TEST/ALPHA et minimiser uploads;
+- mesurer avec compteurs/timers sur vraie console;
+- verifier stalls VIF/GIF et QWC zero;
+- ne pas confondre fin DMA avec fin de rasterisation.
+
+
+==============================================================================
+44. OUTILS OFFICIELS, LINUX ET PS2SDK
+==============================================================================
+
+Le SDK officiel SCE comportait compilateurs EE/IOP, assembleur VU, bibliotheques,
+ProDG/debug stations et manuels. Il est proprietaire; verifier droits.
+
+Le kit Linux for PlayStation 2 a diffuse les manuels EE/GS/VU et permettait un
+environnement GNU, avec limites d'acces. PS2SDK/ps2toolchain est l'alternative
+homebrew libre : GCC/binutils, libc, kernel, graph/draw, SIF/RPC, IRX, pad, CDVD,
+memory card, USB, HDD et reseau.
+
+Emulateurs et debogueurs aident, mais leur tolerance cache/timing depasse parfois
+le materiel. Tester sur console via outil de chargement legal/homebrew.
+
+
+==============================================================================
+45. COMPATIBILITE ENTRE REVISIONS
+==============================================================================
+
+Varient : Boot ROM, modules rom0, MechaCon, EE/GS combines, IOP/DECKARD, RAM,
+lecteur, i.Link, IR, DEV9, Ethernet, HDD, alimentation et timings.
+
+Un jeu doit utiliser API, verifier retours de modules, ne pas exiger i.Link/HDD,
+gerer 50/60 Hz et tester fat/Slim. Les acces non documentes au lecteur, ROM ou
+IOP sont les plus fragiles. La compatibilite PS1 diminue pour certains titres
+sur revisions tardives.
+
+
+==============================================================================
+46. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+EE : R5900, registres 128 bits, MMI, FPU particuliere, delay slots, TLB, caches,
+exceptions et compteurs. Modeliser stalls et coherence DMA.
+
+VU : dual issue, pipelines/latences, flags retardes, Q/P, branches, XGKICK et
+micro/data memories distinctes. Une execution instantanee change les races.
+
+DMAC/VIF/GIF : tous tags, CALL/RET, stall control, masks, UNPACK et arbitrage des
+trois paths. Les deadlocks reels doivent etre possibles puis diagnostiquables.
+
+GS : swizzle de chaque PSM, regles d'aretes, tests, blending formule GS, DATE,
+formats Z, CLUT, texture cache, interlace, CSR/FINISH/SIGNAL et bande passante.
+
+IOP/SIF : CPU PS1 complet ou DECKARD selon profil, noyau/modules, deux DMAC/INTC,
+RPC asynchrone et reboot IOP. HLE seul ne suffit pas a tous les jeux.
+
+SPU2/CDVD/SIO2/USB/DEV9 : timing, DMA, IRQ, erreurs et revisions. Demander dumps
+BIOS legaux; separer configuration fat, Slim et region.
+
+
+==============================================================================
+47. PLAN DE VALIDATION
+==============================================================================
+
+1. Boot ROM, ELF, syscalls et chaque region.
+2. R5900 MIPS/MMI/FPU, exceptions, TLB et caches.
+3. DMAC 0--9, tous tags, stall/ring et D_STAT.
+4. VU0 macro/micro, VU1 dual issue, flags et XGKICK.
+5. VIF UNPACK pour chaque format/mask/cycle.
+6. GIF Path1/2/3 simultanes et interruptions.
+7. GS formats/swizzle, primitives, tests, alpha, Z, CLUT et interlace.
+8. IPU flux MPEG connus et buffers circulaires.
+9. IOP reboot, IRX imports/exports, SIFCMD/RPC.
+10. SPU2 48 voix, ADPCM, ADSR, reverb, streaming.
+11. CD/DVD seek, erreurs, double couche et changement disque.
+12. DualShock 2, pression, vibration, multitap et cartes 8 Mio.
+13. USB, DEV9, reseau/HDD selon modele.
+14. Mode PS1 sur IOP classique et DECKARD.
+15. Comparaison de traces et images/audio avec plusieurs consoles.
+
+
+==============================================================================
+48. MAINTENANCE
+==============================================================================
+
+- Relever SCPH, carte GH, bloc optique et alimentation avant pieces.
+- Les fat ont alimentation secteur interne : danger meme debranchee.
+- Verifier fusibles PS, rails, ventilateur et condensateurs avant remplacer laser.
+- Nettoyer lentille et mecanique sans modifier potentiometres au hasard.
+- Les nappes Slim peuvent se soulever et rayer un disque; les fixer/remplacer.
+- Diagnostiquer bobines laser, spindle, sled, capteurs et MechaCon avec manuel.
+- Sauvegarder cartes memoire et HDD avant Browser/format.
+- Adapter reseau/HDD a connecteurs fragiles : insertion hors tension.
+- Maintenir ventilation; replacer pads thermiques/blindages/vis exactes.
+
+
+==============================================================================
+49. SECURITE ET PRESERVATION
+==============================================================================
+
+BIOS, jeux, DVD Player et SDK officiels sont proteges. Utiliser ses propres dumps
+et respecter la legislation. Conserver images disque avec structure complete,
+identification de region/version et hashes; sauvegarder cartes/HDD secteur par
+secteur lorsque possible.
+
+Ne pas regarder un laser actif. Ne pas travailler sur primaire secteur sans
+competence. Les informations d'authentification sont exposees pour comprendre
+compatibilite et preservation, non pour distribuer des copies illicites.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Manuels techniques Sony Computer Entertainment archives :
+
+- EE Overview Manual : architecture EE, VU, GIF, VIF, DMAC et IPU.
+- EE Core User's Manual et EE Core Instruction Set Manual : R5900/MMI.
+- EE User's Manual : peripheriques EE, DMAC, VIF, GIF, timers et INTC.
+- VU User's Manual et VU Instruction Manual.
+- GS User's Manual et Supplement : registres, PSM, rendu et affichage.
+- SPU2 Overview Manual : deux coeurs, voix, RAM et mixage.
+  Index archive : https://github.com/ninjadynamics/PS2Docs
+
+Documentation libre et code de reference :
+
+- PS2SDK, documentation officielle du projet PS2DEV.
+  https://ps2dev.github.io/ps2sdk/index.html
+  https://github.com/ps2dev/ps2sdk
+
+- Sony, manuels utilisateurs PS2 encore archives sur le support PlayStation.
+  https://www.playstation.com/ja-jp/support/hardware/manuals/
+
+- Service manuals Sony par series SCPH.
+  https://gamingdoc.org/technical-documentation/consoles/sony-playstation-2/official/service-manuals/
+
+Completer avec le manuel de la revision SCPH/GH cible et les sources PS2SDK des
+modules EE/IOP. Les documents officiels historiques peuvent etre soumis a des
+restrictions; verifier les droits avant reutilisation ou redistribution.

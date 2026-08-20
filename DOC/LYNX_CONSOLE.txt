@@ -1,0 +1,1133 @@
+==============================================================================
+ ATARI LYNX
+ Materiel, programmation Mikey/Suzy et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console portable Atari Lynx : processeur 65SC02 integre a
+Mikey, coprocesseur Suzy, ecran LCD, sprite engine, math hardware, audio, timers,
+ComLynx, cartouches et programmation. Il vise les auteurs de jeux, d'outils,
+d'emulateurs et les reparateurs.
+
+La Lynx possede 64 Kio de RAM partagee. La cartouche n'est pas memory-mapped :
+elle est lue par blocs au moyen d'un compteur et de registres de Suzy/Mikey. Les
+registres situes en haut de la RAM sont des overlays visibles seulement du CPU.
+
+Les nombres precedes de `$` sont hexadecimaux. Les accents sont omis afin de
+conserver un fichier ASCII compatible avec les anciens assembleurs.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et conception
+  2. Lynx I, Lynx II et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges et partage du bus
+  6. Processeur 65SC02
+  7. Jeu d'instructions
+  8. Carte memoire
+  9. MAPCTL et RAM sous les overlays
+ 10. Boot ROM et demarrage
+ 11. Format du chargeur cartouche
+ 12. Mikey : vue generale
+ 13. Timers Mikey
+ 14. Interruptions et sommeil CPU
+ 15. Affichage LCD et DMA video
+ 16. Palette et format framebuffer
+ 17. Rotation de l'affichage
+ 18. Audio Mikey
+ 19. LFSR, bruit et chainage sonore
+ 20. Stereo et attenuation
+ 21. UART et ComLynx
+ 22. I/O, alimentation et GPIO
+ 23. Suzy : vue generale
+ 24. Registres Suzy
+ 25. Sprite engine
+ 26. Sprite Control Block
+ 27. Formats des donnees sprites
+ 28. Types de sprites et operations de pixels
+ 29. Position, clipping et world coordinates
+ 30. Scaling, stretching, tilt et flips
+ 31. Chaines de SCB
+ 32. Collisions
+ 33. Moteur mathematique
+ 34. Controleurs et boutons
+ 35. Interface cartouche
+ 36. Lecture des blocs de cartouche
+ 37. EEPROM et flash carts
+ 38. Formats LNX, LYX et images brutes
+ 39. Organisation de la RAM
+ 40. Double buffering
+ 41. Initialisation en assembleur 65SC02
+ 42. Exemple d'interruption VBlank
+ 43. Exemple de palette et framebuffer
+ 44. Exemple de SCB minimal
+ 45. Lancement du sprite engine
+ 46. Exemple de collision
+ 47. Exemple multiplication/division Suzy
+ 48. Exemple audio
+ 49. Exemple ComLynx
+ 50. Exemple de lecture cartouche
+ 51. Programmation en C avec cc65
+ 52. Construction avec BLL, cc65 et llvm-mos
+ 53. Optimisation et contention
+ 54. Guide d'implementation d'un emulateur
+ 55. Emulation de Mikey
+ 56. Emulation de Suzy
+ 57. Emulation cartouche et ComLynx
+ 58. Cas limites et erreurs frequentes
+ 59. Diagnostic et maintenance
+ 60. Preservation et modifications d'ecran
+ 61. Outils, tests et validation
+ 62. References
+
+
+==============================================================================
+1. HISTORIQUE ET CONCEPTION
+==============================================================================
+
+Le projet nait chez Epyx sous le nom Handy, principalement avec R. J. Mical et
+Dave Needle. Atari acquiert les droits et commercialise la Lynx en 1989. Elle se
+distingue par son ecran couleur, ses sprites redimensionnables, son affichage
+rotatif et son port reseau ComLynx.
+
+Le materiel est centre sur deux ASIC : Mikey, qui integre CPU, video, audio,
+timers et I/O; Suzy, qui fournit sprite engine, controles et calculs. Les jeux
+sont charges de la cartouche vers la RAM puis executes depuis celle-ci.
+
+
+==============================================================================
+2. LYNX I, LYNX II ET REVISIONS
+==============================================================================
+
+Lynx I : grand boitier, ecran et commandes d'origine, haut-parleur et prise
+casque. Lynx II, lance en 1991, reduit le boitier, ameliore autonomie, permet de
+couper le retroeclairage et reorganise certains circuits/commandes.
+
+Les ASIC restent programmablement proches, mais revisions de Mikey/Suzy, LCD,
+audio, alimentation et carte mere existent. Lire SUZYHREV aide au diagnostic,
+mais un jeu ne doit pas refuser une revision inconnue.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU                  CMOS 65SC02, jusqu'a 4 MHz
+RAM                  64 Kio DRAM, partagee
+ASIC systeme         Mikey
+ASIC graphique/math  Suzy, logique interne plus rapide
+Ecran                LCD 160 x 102 pixels
+Palette              16 couleurs simultanees parmi 4096
+Framebuffer          4 bits/pixel, 80 octets x 102 = 8160 octets
+Sprites              listes SCB, nombre limite par temps/RAM
+Transformations      scaling, stretch, tilt/shear, flips
+Audio                4 canaux 8 bits avec LFSR/timers
+Entrees              croix, A/B, Option 1/2, Pause
+Communication        ComLynx serie, plusieurs consoles
+Cartouche            jusqu'a environ 2 Mio dans le schema classique
+Alimentation         piles ou adaptateur, regulation interne sensible
+
+Les 4096 couleurs viennent de 4 bits rouge, vert et bleu; seuls 16 indices sont
+actifs dans une palette de trame/ligne donnee.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le CPU execute en RAM. Mikey arbitre DRAM, rafraichit, lit le framebuffer vers
+LCD, produit son, timers et serie. Suzy lit des SCB et pixels, ecrit le buffer
+d'affichage/collision et calcule multiplication/division.
+
+Quand Suzy possede le bus, le CPU est bloque ou endormi. Mikey video et refresh
+volent aussi des cycles. Les performances reelles dependent de l'adresse, du
+mode sequential/page et de la concurrence, pas seulement de 4 MHz.
+
+
+==============================================================================
+5. HORLOGES ET PARTAGE DU BUS
+==============================================================================
+
+Mikey derive CPU et peripheriques d'une horloge principale. Le 65SC02 peut
+atteindre 4 MHz; la moyenne utile est inferieure avec video/refresh/Suzy. Suzy
+travaille avec chemins internes rapides mais lit la meme DRAM.
+
+Un acces RAM sequentiel peut utiliser page mode. MAPCTL bit 7 desactive ce mode
+rapide. Le framebuffer consomme une bande passante continue pendant LCD actif.
+CPUSLEEP permet au CPU d'abandonner proprement le bus a Suzy.
+
+
+==============================================================================
+6. PROCESSEUR 65SC02
+==============================================================================
+
+Registres A, X, Y, SP, PC et P. Accumulateur/index 8 bits, adresse 16 bits, pile
+`$0100-$01FF`, zero page `$0000-$00FF`. Little-endian. Vecteurs NMI `$FFFA`,
+reset `$FFFC`, IRQ/BRK `$FFFE` quand l'overlay vecteur correspondant est actif.
+
+Le coeur est CMOS proche 65C02. Selon revision, les instructions bit RMB/SMB et
+BBR/BBS ne sont pas toutes disponibles, notamment sur Lynx I; ne pas les employer
+pour un binaire universel sans detection.
+
+
+==============================================================================
+7. JEU D'INSTRUCTIONS
+==============================================================================
+
+Transfert : LDA, LDX, LDY, STA, STX, STY, STZ.
+Pile : PHA, PHP, PHX, PHY, PLA, PLP, PLX, PLY, TSX, TXS.
+Transfert registres : TAX, TAY, TXA, TYA.
+Arithmetique : ADC, SBC, INC, DEC, INX, INY, DEX, DEY.
+Logique : AND, ORA, EOR, BIT, TRB, TSB.
+Decalage/rotation : ASL, LSR, ROL, ROR.
+Comparaison : CMP, CPX, CPY.
+Controle : JMP, JSR, RTS, RTI, BRA, branches Bcc, BRK, NOP.
+Systeme : CLC/SEC, CLI/SEI, CLD/SED, CLV, WAI, STP selon coeur.
+
+Modes : immediat, zero page, absolu, indexes X/Y, indirect, `(zp,X)`, `(zp),Y`,
+`(zp)` 65C02, indirect absolu indexe et accumulateur. Decimal mode doit etre
+emule correctement; D est normalement efface a l'initialisation.
+
+
+==============================================================================
+8. CARTE MEMOIRE
+==============================================================================
+
+$0000-$00FF  zero page RAM
+$0100-$01FF  pile CPU
+$0200-$FBFF  RAM generale
+$FC00-$FCFF  registres Suzy, superposes a la RAM
+$FD00-$FDFF  registres Mikey, superposes a la RAM
+$FE00-$FFF7  boot ROM, superposee a la RAM
+$FFF8        reserve/toujours special
+$FFF9        MAPCTL
+$FFFA-$FFFF  vecteurs CPU ou RAM sous-jacente selon MAPCTL
+
+Mikey video, refresh et Suzy voient toujours la RAM physique sous `$FC00-$FFFF`,
+independamment de l'overlay visible par le CPU. Cela permet un framebuffer sous
+les registres/ROM, mais le CPU doit masquer l'overlay pour le lire directement.
+
+
+==============================================================================
+9. MAPCTL ET RAM SOUS LES OVERLAYS
+==============================================================================
+
+MAPCTL `$FFF9` : un bit a 1 revele la RAM a la place du bloc correspondant.
+
+bit 0  masquer registres Suzy `$FC00-$FCFF`
+bit 1  masquer registres Mikey `$FD00-$FDFF`
+bit 2  masquer boot ROM `$FE00-$FFF7`
+bit 3  remplacer espace vecteurs par RAM
+bits 4-6 reserves
+bit 7  sequential disable, desactive acces page-mode rapide
+
+`$FFF8/$FFF9` restent speciaux. Ecrire `$0F` donne presque toute la RAM au CPU;
+`$00` expose materiel, ROM et vecteurs. Sauvegarder MAPCTL avant changement,
+interdire IRQ si Mikey devient invisible, puis restaurer exactement.
+
+
+==============================================================================
+10. BOOT ROM ET DEMARRAGE
+==============================================================================
+
+Au reset, la ROM interne initialise la machine, controle la presence de cartouche,
+authentifie/dechiffre un petit chargeur de cartouche, le copie en RAM et lui
+transfere le controle. Ce chargeur configure le compteur cartouche et charge le
+programme principal ou le premier "fichier" en RAM.
+
+La ROM est petite (`$FE00-$FFF7`) et n'est pas un systeme d'exploitation. Apres
+boot, un jeu peut la masquer et utiliser la RAM sous-jacente. Les bibliotheques
+BLL/cc65 fournissent startup, IRQ, cart I/O et drivers, pas des appels BIOS riches.
+
+
+==============================================================================
+11. FORMAT DU CHARGEUR CARTOUCHE
+==============================================================================
+
+Les cartouches officielles commencent par un bloc de bootstrap chiffre/signe
+attendu par la ROM. La taille historique du loader est limitee; il est souvent
+charge vers `$0200` puis charge le reste vers `$0400` ou une adresse choisie.
+
+La protection ne chiffre pas necessairement toutes les donnees du jeu. Les outils
+homebrew utilisent un loader compatible, un BIOS alternatif ou un environnement
+de flash cart. Un fichier `.lnx` n'est pas directement ce flux electrique.
+
+
+==============================================================================
+12. MIKEY : VUE GENERALE
+==============================================================================
+
+Mikey integre : 65SC02, controle DRAM/refresh, huit timers, quatre canaux audio,
+controle LCD/DMA, palette, IRQ, UART ComLynx, I/O cartouche, alimentation et ROM
+boot. Ses registres CPU sont `$FD00-$FDFF`.
+
+Groupes usuels : timers `$FD00-$FD1F`; audio `$FD20-$FD3F`; attenuation/stereo
+`$FD40-$FD50`; interruption autour de `$FD80`; systeme/I/O/serie `$FD84-$FD93`;
+adresse affichage `$FD94-$FD95`; palette vers `$FDA0-$FDBF`.
+
+
+==============================================================================
+13. TIMERS MIKEY
+==============================================================================
+
+Huit timers 0-7, quatre registres chacun : backup/reload, control A, current
+count, control B. Sources : horloge divisee, timer precedent, video ou externe
+selon timer. Ils peuvent recharger, arreter, produire IRQ et emprunter/chain.
+
+Les timers video generent lignes, trames et DMA LCD. Les timers audio cadencent
+les LFSR. Modifier un timer partage peut casser son ou affichage. Lire le current
+count ne remplace pas l'acquittement IRQ dans control B/INTRST.
+
+
+==============================================================================
+14. INTERRUPTIONS ET SOMMEIL CPU
+==============================================================================
+
+Mikey regroupe sources timer/audio/serie en une IRQ 65SC02. INTRST lit/efface
+les latched bits selon direction; INTSET permet de forcer/configurer. Le handler
+doit sauvegarder A/X/Y, identifier toutes sources, acquitter chacune, restaurer,
+RTI.
+
+CPUSLEEP `$FD91` met CPU en sommeil et cede le bus, notamment pour lancer Suzy.
+Une IRQ/reveil reprend l'execution. La sequence d'ecriture et SDONEACK est
+critique : ne pas traiter CPUSLEEP comme WAI ordinaire.
+
+
+==============================================================================
+15. AFFICHAGE LCD ET DMA VIDEO
+==============================================================================
+
+Mikey lit un framebuffer 160x102, quatre bits par pixel, deux pixels par octet.
+Une ligne logique vaut 80 octets; un buffer compact 8160 octets (`$1FE0`).
+DISPADR pointe vers le buffer; DISPLAY control fixe enable, flip et format.
+
+Le sens d'adressage permet tenir la console horizontalement ou verticalement.
+Mikey lit en continu et bloque/vole RAM. Pour eviter tearing, preparer un second
+buffer et changer DISPADR pendant VBlank/fin de trame.
+
+
+==============================================================================
+16. PALETTE ET FORMAT FRAMEBUFFER
+==============================================================================
+
+Seize entrees palette, chacune avec 4 bits R, G, B. Les registres sont repartis
+en octets green et blue/red selon l'organisation Mikey. L'index pixel 0-15
+selectionne une entree; il n'est pas transparent dans le framebuffer final.
+
+Suzy utilise aussi des "pens" locaux dans le SCB : chaque code sprite est mappe
+vers un index de palette ecran. Transparence et collisions dependent type/pens,
+pas seulement de la couleur RGB actuellement programmee.
+
+
+==============================================================================
+17. ROTATION DE L'AFFICHAGE
+==============================================================================
+
+La Lynx permet jeu tenu avec controles a gauche/droite ou verticalement. La
+rotation est surtout une convention de framebuffer/adressage et de controles,
+pas une rotation arbitraire gratuite par Suzy.
+
+L'en-tete LNX peut indiquer rotation none/left/right. Le logiciel doit transformer
+entrees et coordonnees. Les pixels restent 160x102 physiques; en mode vertical,
+l'espace logique utile devient 102x160 selon driver.
+
+
+==============================================================================
+18. AUDIO MIKEY
+==============================================================================
+
+Quatre canaux independants produisent une valeur 8 bits via LFSR et volume. Chaque
+canal possede volume, feedback, output, shift register et controle/timer. Ils
+peuvent generer tons, bruit et formes complexes en choisissant taps du registre
+a decalage.
+
+Les canaux sont additionnes puis routes/attenues vers sorties. Il n'existe pas de
+PCM DMA general : le CPU/timer peut modifier sortie ou registres pour samples,
+mais consomme du temps. Les moteurs HandyMusic/HSFX planifient les changements.
+
+
+==============================================================================
+19. LFSR, BRUIT ET CHAINAGE SONORE
+==============================================================================
+
+Le coeur de chaque canal est un registre de retroaction d'environ 20 bits avec
+taps programmables. FEEDBACK choisit XOR des bits; le timer decale et produit la
+sortie. Des taps donnant une courte periode produisent ton; une periode longue,
+bruit pseudo-aleatoire.
+
+Les timers audio peuvent etre chaines : sous-debordement d'un canal/timer cadence
+le suivant, offrant frequences basses ou modulation. Un emulateur qui remplace
+chaque canal par onde carree perd les timbres Lynx.
+
+
+==============================================================================
+20. STEREO ET ATTENUATION
+==============================================================================
+
+Mikey possede attenuation gauche/droite par canal et registre MSTEREO de routage.
+La disponibilite analogique depend modele/sortie; Lynx II offre stereo au casque
+alors que le haut-parleur reste mono. Les jeux anciens peuvent ne pas programmer
+les registres stereo.
+
+L'emulateur doit calculer chaque canal, attenuation, pan et saturation/melange,
+puis resampler. Ne pas doubler artificiellement le volume d'un canal route aux
+deux sorties.
+
+
+==============================================================================
+21. UART ET COMLYNX
+==============================================================================
+
+ComLynx est un bus serie a un fil, open-collector, permettant plusieurs consoles.
+UART Mikey utilise format fixe historique, communement 8E1, et cadences jusqu'a
+environ 62 500 bauds; des modes turbo modernes atteignent davantage mais ne sont
+pas universels.
+
+SERCTL controle TX/RX, parite, break, IRQ et erreurs; SERDAT transporte octet.
+Le protocole jeu doit definir election/identite, paquets, checksum, timeout,
+retransmission et synchronisation. Il n'existe pas de TCP fiable sous-jacent.
+
+Plusieurs noeuds partagent la ligne : emettre simultanement cree collision. Un
+emulateur reseau doit simuler latence/ordre et ne pas garantir livraison parfaite.
+
+
+==============================================================================
+22. I/O, ALIMENTATION ET GPIO
+==============================================================================
+
+SYSCTL1 `$FD87`, IODIR `$FD8A`, IODAT `$FD8B` pilotent lignes cartouche, power,
+ComLynx/GPIO selon bits. IODAT est mixte entree/sortie; conserver des ombres des
+valeurs ecrites, car la lecture renvoie etats des broches, pas necessairement le
+latch complet.
+
+Lynx II permet couper retroeclairage. La mise hors tension est en partie logicielle
+mais le programme doit finir sauvegarde avant. Une boucle plantee peut laisser
+l'appareil allume jusqu'a action physique.
+
+
+==============================================================================
+23. SUZY : VUE GENERALE
+==============================================================================
+
+Suzy est mappe `$FC00-$FCFF` pour le CPU. Il fournit sprite engine/blitter,
+decompression de pixels, clipping, scaling, tilt, collision, joystick/boutons,
+interface lecture cartouche et calcul multiplication/division.
+
+Suzy n'execute pas un programme comme un GPU. Le CPU remplit registres et une
+liste SCB en RAM, puis le lance; Suzy devient maitre du bus et interprete la liste.
+
+
+==============================================================================
+24. REGISTRES SUZY
+==============================================================================
+
+Groupes importants :
+
+$FC00...  adresses temporaires, offsets H/V, bases video/collision
+$FC10...  adresses courantes video/collision/SCB/sprite data
+$FC20...  positions, tailles, stretch et tilt
+$FC40...  accumulateurs/decalages sprites
+$FC52...  operandes/resultats multiplication et division
+$FC80...  donnees SCB/palette/collision exposees
+$FC88     SUZYHREV
+$FC90     SUZYBUSEN, autorisation de prise du bus
+$FC91     SPRGO, strobe de depart du sprite engine
+$FC92     SPRSYS, controle/statut du systeme sprite et math
+$FCB0     JOYSTICK
+$FCB1     SWITCHES
+$FCB2     RCART0
+$FCB3     RCART1
+
+Beaucoup de registres 16 bits sont little-endian sur deux adresses. Ecrire bas
+puis haut selon documentation; Suzy peut capturer une valeur entre deux octets
+si actif. Arreter/attendre avant reconfiguration.
+
+
+==============================================================================
+25. SPRITE ENGINE
+==============================================================================
+
+Le sprite engine lit un Sprite Control Block, decode des lignes compressees,
+applique position/scale/tilt/flips, mappe pens vers palette, lit/modifie le
+render buffer et eventuellement collision buffer, puis suit le SCB suivant.
+
+Il sert autant de blitter general que de moteur sprites. Fond, tuiles, texte,
+polygones precalcules et effacement peuvent etre des sprites. Le nombre n'est pas
+fixe en hardware; il est limite par RAM, longueur de liste et temps de trame.
+
+
+==============================================================================
+26. SPRITE CONTROL BLOCK
+==============================================================================
+
+Debut commun :
+
+SPRCTL0  profondeur 1-4 bpp, flips et type de sprite
+SPRCTL1  reload bits, skip, reuse palette, literal/packed et controles
+SPRCOLL  numero collision et options
+NEXT     pointeur 16 bits vers SCB suivant, zero termine
+DATA     pointeur 16 bits vers donnees sprite
+HPOS     position horizontale signee
+VPOS     position verticale signee
+
+Champs optionnels selon reload : HSIZE, VSIZE, STRETCH, TILT et palette de huit
+octets (16 nibbles). Il existe plusieurs structures SCB en C (`SCB_RENONE`, etc.)
+afin de ne pas stocker les champs non recharges.
+
+Le SCB doit rester en RAM stable jusqu'a fin Suzy. NEXT ne doit pas creer boucle.
+
+
+==============================================================================
+27. FORMATS DES DONNEES SPRITES
+==============================================================================
+
+Chaque ligne sprite est encodee en paquets, avec longueur de ligne, offsets et
+fin de sprite/quadrant. Pixels peuvent etre packed run-length ou literal. BPP
+1,2,3,4 fixe le nombre de bits par pen. Les lignes sont paddees/terminees selon
+format Suzy, pas comme bitmap rectangulaire brut.
+
+Les quatre quadrants permettent dessiner autour d'un point de depart et gerer
+flips. Les convertisseurs (`sprpck`, sp65, outils BLL) doivent connaitre type,
+orientation et palette. Un octet de longueur faux fait lire Suzy hors donnees.
+
+
+==============================================================================
+28. TYPES DE SPRITES ET OPERATIONS DE PIXELS
+==============================================================================
+
+SPRCTL0 type : background, background non-colliding, boundary, normal, normal
+non-colliding, XOR, shadow et boundary shadow selon codes. Les modes determinent
+si pixel ecrit, XOR, teste collision ou sert de limite.
+
+Pen 0 et certains pens 14/15 ont roles transparence/collision selon type. Une
+couleur palette noire n'est pas automatiquement transparente. SPRSYS contient
+bits everon, left-handed, unsafe math et comportement collisions.
+
+
+==============================================================================
+29. POSITION, CLIPPING ET WORLD COORDINATES
+==============================================================================
+
+Suzy soustrait HOFF/VOFF globaux aux positions SCB. Cela permet camera/scroll sans
+modifier chaque objet. HPOS/VPOS sont signes 16 bits; les objets peuvent commencer
+hors ecran et etre clippes aux dimensions du world/display buffer.
+
+VIDBAS/COLLBAS pointent buffers, HOFF/VOFF origine monde. OFFSCREEN registres et
+sprdoff definissent pas/largeur de ligne. Une valeur de largeur n'est pas toujours
+80 octets : Suzy travaille avec offsets et orientation configurables.
+
+
+==============================================================================
+30. SCALING, STRETCHING, TILT ET FLIPS
+==============================================================================
+
+HSIZE/VSIZE sont accumulateurs fixes : valeur standard represente 1:1; plus
+petite reduit, plus grande agrandit. STRETCH ajoute a HSIZE par ligne, donnant
+perspective/trapeze. TILT ajoute a position horizontale par ligne, donnant shear.
+
+HFLIP/VFLIP parcourent quadrants dans l'autre sens. Tilt + stretch peuvent imiter
+rotation/sol, mais Suzy ne realise pas une rotation arbitraire filtree d'une image.
+Les pas extremes peuvent sauter lignes ou deborder accumulateurs.
+
+
+==============================================================================
+31. CHAINES DE SCB
+==============================================================================
+
+NEXT relie les objets. REUSEPAL evite recharger palette pour sprites suivants;
+reload flags permettent heriter taille/stretch/tilt. Cela economise RAM et bus,
+mais cree dependance d'ordre. Un sprite retire doit transmettre un etat valide.
+
+Pour double buffering de liste, construire une liste inactive, finir NEXT=0,
+puis publier SCBNEXT quand Suzy idle. Ne pas modifier NEXT que Suzy vient de lire.
+
+
+==============================================================================
+32. COLLISIONS
+==============================================================================
+
+Deux mecanismes : un octet de collision depository associe au SCB indique le
+numero le plus eleve rencontre; un collision buffer plein ecran en RAM permet
+collision par pixel. SPRCOLL porte numero/flags du sprite.
+
+Le buffer collision doit avoir disposition compatible avec render buffer. Les
+types non-colliding n'ecrivent/testent pas de la meme maniere. Pen transparent,
+boundary et dont-collide bits modifient resultat. Effacer buffer/depositories au
+bon moment avant dessiner la nouvelle trame.
+
+
+==============================================================================
+33. MOTEUR MATHEMATIQUE
+==============================================================================
+
+Suzy calcule multiplication 16x16 et division 32/16 avec registres operandes,
+produit/quotient/reste. Modes signed/unsigned et accumulate sont controles par
+SPRSYS ou registres. Le calcul prend du temps mais peut chevaucher CPU selon bus.
+
+Les operandes/resultats sont little-endian sur plusieurs octets. Attendre bit
+MATHWORKING/etat avant lire. Division par zero et overflow ont resultats/flags
+specifiques; ne pas substituer une exception CPU inexistante.
+
+
+==============================================================================
+34. CONTROLEURS ET BOUTONS
+==============================================================================
+
+JOYSTICK `$FCB0` : droite `$10`, gauche `$20`, bas `$40`, haut `$80`, Option 1
+`$08`, Option 2 `$04`, bouton interieur `$02`, exterieur `$01` selon orientation.
+SWITCHES `$FCB1` contient Pause bit 0 et etats cartouche.
+
+La console peut etre retournee; SPRSYS/driver remappe left-handed et boutons.
+Lire brut, appliquer orientation, puis edge detection. Les directions opposees
+peuvent etre presentes par test/adaptateur; ne pas les supprimer dans l'emulateur.
+
+
+==============================================================================
+35. INTERFACE CARTOUCHE
+==============================================================================
+
+La ROM externe est organisee en blocs/pages. Un registre a decalage choisit le
+bloc; un compteur ripple choisit la position. Chaque lecture RCART0 `$FCB2` ou
+RCART1 `$FCB3` strobe la banque et avance automatiquement le compteur.
+
+IODAT bit 1 fournit le bit d'adresse serie; SYSCTL1 bit 0 produit l'horloge du
+shift register. IODIR choisit sortie. Deux banques permettent ROM/donnees ou
+materiel additionnel. Le CPU ne peut pas executer directement depuis cartouche.
+
+
+==============================================================================
+36. LECTURE DES BLOCS DE CARTOUCHE
+==============================================================================
+
+Procedure : conserver ombres IODAT/IODIR; configurer bit adresse en sortie;
+envoyer huit bits de numero de bloc par IODAT et front SYSCTL1; remettre a zero/
+avancer ripple counter par strobes; lire RCART0/1 sequentiellement vers RAM.
+
+La taille de page vient du type cartouche/en-tete LNX, souvent 256, 512, 1024 ou
+2048 octets selon cablage. Atteindre la fin de page exige selection du bloc
+suivant, pas laisser le compteur deborder sans connaissance du materiel.
+
+
+==============================================================================
+37. EEPROM ET FLASH CARTS
+==============================================================================
+
+Des homebrews utilisent EEPROM serie via lignes cartouche/GPIO. Protocoles et
+capacites varient. Flash carts (LynxGD/SD, AgaCart, etc.) ajoutent MCU, stockage
+et commandes propres; elles ne sont pas presentes sur une cartouche originale.
+
+Un emulateur doit selectionner mapper/EEPROM par metadonnees ou base de donnees,
+et simuler busy/persistence. Ne pas creer une sauvegarde EEPROM pour tous les jeux.
+
+
+==============================================================================
+38. FORMATS LNX, LYX ET IMAGES BRUTES
+==============================================================================
+
+LNX ajoute un en-tete de 64 octets : signature `LYNX`, tailles de page banques
+0/1 en little-endian, version, nom 32 octets, fabricant 16, rotation et reserve.
+Les donnees ROM suivent. LYX designe souvent une image brute sans cet en-tete.
+
+`.o`, `.com` ou images BLL peuvent etre executables RAM et non cartouches. Un
+emulateur doit detecter signature/taille, conserver rotation et page size, puis
+emuler le bus; ne pas mapper le fichier a `$0000` par commodite en mode fidele.
+
+
+==============================================================================
+39. ORGANISATION DE LA RAM
+==============================================================================
+
+Zero page/pile : 512 octets. Code charge couramment a `$0200/$0400`. Framebuffer
+simple 8160 octets; double 16 320. Collision buffer peut ajouter une taille
+similaire. Audio, C stack, heap, SCB et sprites partagent le reste.
+
+Planifier avec linker : startup, code, rodata chargee, BSS, C stack, buffers,
+collision, SCB, loader et RAM sous overlays. Suzy/Mikey voient les buffers sous
+`$FC00-$FFFF` meme quand CPU voit registres/ROM.
+
+
+==============================================================================
+40. DOUBLE BUFFERING
+==============================================================================
+
+Mikey affiche buffer A pendant que CPU/Suzy dessinent B. A VBlank, attendre Suzy
+termine, changer DISPADR vers B, inverser pointeurs render/display et lancer la
+prochaine liste sur ancien A.
+
+Publier DISPADR en ordre bas/haut documente et seulement a une frontiere sure.
+Ne pas permuter si Suzy encore actif. Un buffer compact commence idealement a une
+adresse/alignment permettant DMA sequentiel sans wrap.
+
+
+==============================================================================
+41. INITIALISATION EN ASSEMBLEUR 65SC02
+==============================================================================
+
+MAPCTL  = $FFF9
+IODIR   = $FD8A
+IODAT   = $FD8B
+INTRST  = $FD80
+INTSET  = $FD81
+
+Reset:
+        sei
+        cld
+        ldx     #$FF
+        txs
+        lda     #$00                   ; exposer Suzy/Mikey/ROM/vecteurs
+        sta     MAPCTL
+        stz     INTRST                 ; suivre semantique d'acquittement exacte
+        lda     #$1A
+        sta     IODIR
+        lda     #$1B
+        sta     IODAT
+        jsr     InitTimersVideo
+        jsr     InitPalette
+        jsr     InitAudio
+        cli
+Main:  wai
+        jsr     UpdateGame
+        bra     Main
+
+Le startup cartouche est normalement appele par le loader, pas directement par
+le vecteur ROM. Les valeurs INTRST/INTSET et video doivent venir de la table de
+la revision/SDK; ecrire zero peut ne pas effacer les bits souhaites.
+
+
+==============================================================================
+42. EXEMPLE D'INTERRUPTION VBLANK
+==============================================================================
+
+IRQHandler:
+        pha
+        phx
+        phy
+        lda     INTRST
+        sta     IrqPending
+        and     #VBLANK_MASK
+        beq     NotVBlank
+        lda     #VBLANK_MASK
+        sta     INTRST                 ; write-to-clear selon Mikey
+        inc     FrameCounter
+NotVBlank:
+        ; traiter aussi serie/audio/timers restants
+        ply
+        plx
+        pla
+        rti
+
+Lire puis traiter toutes les sources; une IRQ non acquittee reboucle. Le masque
+VBlank depend du timer video employe par l'initialisation.
+
+
+==============================================================================
+43. EXEMPLE DE PALETTE ET FRAMEBUFFER
+==============================================================================
+
+DISPADRL = $FD94
+DISPADRH = $FD95
+GREEN0   = $FDA0
+BLUERED0 = $FDB0
+
+SetDisplay:
+        lda     #<Screen0
+        sta     DISPADRL
+        lda     #>Screen0
+        sta     DISPADRH
+        rts
+
+SetColor0:
+        lda     #$0F                   ; vert = F selon layout
+        sta     GREEN0
+        lda     #$F0                   ; bleu/rouge selon nibbles documentes
+        sta     BLUERED0
+        rts
+
+Pour effacer 8160 octets, utiliser Suzy background sprite ou boucle optimisee;
+ne pas effacer le buffer affiche pendant balayage si tearing interdit.
+
+
+==============================================================================
+44. EXEMPLE DE SCB MINIMAL
+==============================================================================
+
+Structure assembleur conceptuelle :
+
+SpriteSCB:
+        .byte   BPP_4 | TYPE_NORMAL
+        .byte   REUSEPAL
+        .byte   $01                   ; collision number
+        .word   $0000                 ; NEXT, fin
+        .word   SpriteData
+        .word   20                    ; HPOS
+        .word   50                    ; VPOS
+
+SpriteData:
+        .incbin "sprite.spr"
+
+Les mots sont little-endian. Si REUSEPAL est mis, une palette precedente doit
+exister; pour premier sprite, inclure huit octets de pen palette ou initialiser
+les registres/palette Suzy.
+
+
+==============================================================================
+45. LANCEMENT DU SPRITE ENGINE
+==============================================================================
+
+SCBNEXTL = $FC10                   ; verifier offset dans include Suzy
+SCBNEXTH = $FC11
+SUZYBUSEN = $FC90
+SPRGO   = $FC91
+SPRSYS   = $FC92
+SDONEACK = $FD90
+CPUSLEEP = $FD91
+
+DrawSprites:
+        ; attendre previous SDONE, configurer VIDBAS/COLLBAS/OFFSET
+        lda     #<SpriteSCB
+        sta     SCBNEXTL
+        lda     #>SpriteSCB
+        sta     SCBNEXTH
+        lda     #SPRSYS_VALUE
+        sta     SPRSYS
+        lda     #$01
+        sta     SDONEACK               ; acquitte l'ancienne fin Suzy
+        sta     SUZYBUSEN              ; autorise Suzy comme maitre du bus
+        sta     SPRGO                  ; lance la chaine de SCB
+        sta     CPUSLEEP               ; cede le bus jusqu'a fin/IRQ
+        ; reveil IRQ/SDONE selon initialisation
+        rts
+
+Les bits exacts de SPRSYS et l'ordre de reveil doivent etre pris dans les manuels
+et `_suzy.h/_mikey.h`; le handler de fin doit aussi acquitter la source IRQ.
+
+
+==============================================================================
+46. EXEMPLE DE COLLISION
+==============================================================================
+
+Avant trame : effacer collision buffer et chaque depository. Assigner a joueur
+numero 1, ennemis 2..N, types colliding. Apres fin Suzy :
+
+        lda     PlayerCollision
+        beq     NoHit
+        cmp     #ENEMY_FIRST
+        bcc     NoHit
+        jsr     DamagePlayer
+NoHit:
+
+Le depository donne un numero rencontre, pas une liste exhaustive. Pour connaitre
+tous contacts, analyser collision buffer ou dessiner/tester en passes controlees.
+
+
+==============================================================================
+47. EXEMPLE MULTIPLICATION/DIVISION SUZY
+==============================================================================
+
+Pseudo-code registres :
+
+        ; operand A 16 bits -> MATHA, operand B -> MATHB
+        ; ecriture du dernier octet declenche multiplication
+WaitMath:
+        lda     SPRSYS
+        and     #MATHWORKING
+        bne     WaitMath
+        ; lire produit 32 bits MATHD.. selon ordre little-endian
+
+Pour division, charger dividende 32 bits et diviseur 16 bits dans l'ordre impose;
+le dernier write declenche. Verifier divide-by-zero/overflow et mode signed.
+
+
+==============================================================================
+48. EXEMPLE AUDIO
+==============================================================================
+
+AUD0VOL = $FD20
+AUD0FB  = $FD21
+AUD0OUT = $FD22
+AUD0SHFT = $FD23
+AUD0CTL = $FD25
+
+StartTone:
+        lda     #$20
+        sta     AUD0VOL
+        lda     #FEEDBACK_TONE
+        sta     AUD0FB
+        lda     #SHIFT_SEED
+        sta     AUD0SHFT
+        lda     #AUD_ENABLE_RELOAD
+        sta     AUD0CTL
+        rts
+
+Il faut aussi configurer backup/timer du canal et bits hauts du shift register.
+Employer les constantes Mikey officielles; un seed nul peut verrouiller un LFSR.
+
+
+==============================================================================
+49. EXEMPLE COMLYNX
+==============================================================================
+
+SERCTL = $FD8C
+SERDAT = $FD8D
+
+SendByte:
+        ; A = octet
+WaitTx:
+        bit     SERCTL
+        bvc     WaitTx                  ; exemple : verifier vrai bit TX ready
+        sta     SERDAT
+        rts
+
+Receive IRQ : lire statut, distinguer data ready, parity/frame/overrun, lire
+SERDAT puis pousser dans ring buffer. Ne jamais effectuer traitement paquet long
+dans IRQ. Le bit exact de ready doit venir du manuel, pas du mnemonic de branche
+illustratif.
+
+
+==============================================================================
+50. EXEMPLE DE LECTURE CARTOUCHE
+==============================================================================
+
+RCART0  = $FCB2
+SYSCTL1 = $FD87
+
+; Apres selection du bloc et remise en position du ripple counter :
+; X/Y ou compteur 16 bits = longueur, destination zero-page pointer.
+ReadCartLoop:
+        lda     RCART0                  ; lecture strobe et auto-increment
+        sta     (DestPtr)
+        inc     DestPtr
+        bne     NoCarry
+        inc     DestPtr+1
+NoCarry:
+        ; decrementer longueur, changer bloc a la frontiere
+        bne     ReadCartLoop
+
+La forme `STA (zp)` exige 65C02. Selectionner bloc en envoyant huit bits via
+IODAT.1 et fronts SYSCTL1.0, en preservant les autres bits I/O par ombres.
+
+
+==============================================================================
+51. PROGRAMMATION EN C AVEC CC65
+==============================================================================
+
+cc65 fournit cible `lynx`, crt0, `_mikey.h`, `_suzy.h`, `lynx.h`, joystick,
+TGI, sprites, cart et serial. Exemple :
+
+#include <lynx.h>
+#include <conio.h>
+
+int main(void) {
+    tgi_install(tgi_static_stddrv);
+    tgi_init();
+    tgi_clear();
+    tgi_setcolor(COLOR_WHITE);
+    tgi_outtextxy(20, 40, "BONJOUR LYNX");
+    tgi_updatedisplay();
+    while (!kbhit()) { }
+    return 0;
+}
+
+TGI double buffer consomme environ 16 Kio. Pour un jeu intensif, utiliser SCB et
+drivers plus directs. Examiner `.map` : C software stack, heap et buffers peuvent
+se rencontrer silencieusement.
+
+
+==============================================================================
+52. CONSTRUCTION AVEC BLL, CC65 ET LLVM-MOS
+==============================================================================
+
+BLL (Behind Lynx Lines) fournit macros, loaders, debugger et outils sprites.
+cc65 fournit C/ca65/ld65. llvm-mos offre une chaine moderne 6502 avec runtime
+Lynx selon projet. `sp65` et convertisseurs produisent palettes/sprites.
+
+Pipeline cc65 : compiler `.c`, assembler `.s`, linker avec configuration Lynx,
+generer cart image/en-tete, inserer loader, tester Handy/Mednafen/MAME puis vraie
+console ou flash cart. Conserver fichier map et page sizes.
+
+
+==============================================================================
+53. OPTIMISATION ET CONTENTION
+==============================================================================
+
+- zero page pour pointeurs/compteurs critiques;
+- aligner code/donnees aux pages DRAM quand sequentiels;
+- laisser CPU dormir pendant Suzy plutot que polling bus;
+- grouper SCB et reutiliser palette/champs;
+- employer background sprite pour effacement;
+- limiter collision buffer aux jeux qui en ont besoin;
+- double buffer seulement si RAM suffisante;
+- compresser donnees cartouche mais charger par gros blocs;
+- maintenir audio/ComLynx IRQ courts;
+- ne pas desactiver sequential mode MAPCTL;
+- profiler avec LCD DMA actif.
+
+Le sprite engine n'est pas "gratuit" : gros sprites 4 bpp scales lisent/ecrivent
+beaucoup de RAM et peuvent depasser une trame.
+
+
+==============================================================================
+54. GUIDE D'IMPLEMENTATION D'UN EMULATEUR
+==============================================================================
+
+1. 65SC02 : opcodes, decimal, IRQ/NMI, WAI/STP et variantes de revision.
+2. RAM 64 Kio et overlays MAPCTL vus uniquement par CPU.
+3. boot ROM, vectors, loader/dechiffrement ou chemin HLE optionnel.
+4. Mikey DRAM arbitration, refresh, timers chaines et IRQ.
+5. LCD DMA, palette, orientation et double buffer.
+6. quatre audio LFSR/timers, attenuation et stereo.
+7. UART ComLynx et I/O.
+8. Suzy SCB, decompression, scale/tilt/flips et pixel operations.
+9. collision buffer/depository et math unit.
+10. cart shift/ripple counters, bank 0/1 et EEPROM.
+
+Faire avancer CPU, Mikey et Suzy par cycles. Une fonction `draw_all_sprites()`
+instantanee ne reproduit pas CPUSLEEP, bus busy, fin de trame et races SCB.
+
+
+==============================================================================
+55. EMULATION DE MIKEY
+==============================================================================
+
+Chaque timer a compteur, backup, source, reload, borrow-in/out et IRQ. Chainer
+les evenements sans arrondir a la trame. Le display generator lit 80 octets par
+ligne dans l'ordre/orientation, consomme cycles et declenche timers video.
+
+MAPCTL change seulement la traduction des acces CPU. Mikey/Suzy continuent de
+voir RAM sous overlays. Les registres write-only retournent open bus/valeur
+specifique, pas forcement le dernier octet ecrit.
+
+
+==============================================================================
+56. EMULATION DE SUZY
+==============================================================================
+
+Interprete SCB octet par octet, champs reload/herites, NEXT, quadrants et format
+packed/literal. Pour chaque pixel : scale accumulators, clip, lire destination,
+appliquer type/pen, ecrire render/collision, mettre depository. Compter acces bus.
+
+Modeliser registers busy/SDONE, CPUSLEEP/reveil, unsafe math, little-endian et
+resultats division limites. Permettre liste invalide sans boucle infinie de
+l'emulateur, tout en donnant un diagnostic.
+
+
+==============================================================================
+57. EMULATION CARTOUCHE ET COMLYNX
+==============================================================================
+
+Cartouche : shift register de bloc, ripple counter de position, taille de page,
+RCART0/1 strobe, I/O directions et wrap. Le boot lit exactement ce protocole;
+mapper directement peut cacher un mauvais loader.
+
+ComLynx : ligne open-collector, UART, parite, framing, overrun et collision.
+Pour reseau hote, horodater les bits/bytes, definir maitre de synchronisation et
+tamponner contre jitter sans rendre les paquets infaillibles.
+
+
+==============================================================================
+58. CAS LIMITES ET ERREURS FREQUENTES
+==============================================================================
+
+- appeler Suzy un CPU programmable;
+- mapper la cartouche dans l'espace CPU;
+- oublier RAM sous `$FC00-$FFFF`;
+- changer MAPCTL sans proteger IRQ/vecteurs;
+- activer bit 7 et perdre page mode;
+- compter 160x102 octets au lieu de pixels 4 bpp;
+- confondre palette ecran et pen palette SCB;
+- croire que Suzy fait rotation arbitraire;
+- employer RMB/SMB/BBR/BBS sur toute revision;
+- lancer Suzy puis modifier sa liste;
+- omettre fin de chaine NEXT=0;
+- lire collision avant SDONE;
+- utiliser un LFSR seed zero;
+- faire un protocole ComLynx sans timeout;
+- ignorer la taille de page LNX;
+- supposer EEPROM/flash MCU dans toute cartouche.
+
+
+==============================================================================
+59. DIAGNOSTIC ET MAINTENANCE
+==============================================================================
+
+La regulation d'alimentation originale est critique : un MOSFET/transistor en
+panne peut appliquer une tension dangereuse et detruire Mikey/Suzy irremplacables.
+Verifier/reconstruire le circuit d'alimentation avant essais prolonges, avec
+schema de revision et mesures.
+
+Problemes courants : condensateurs, ecran/ruban, retroeclairage, connecteur
+cartouche, haut-parleur/casque, boutons et corrosion de piles. Ecran blanc/noir
+avec son peut etre LCD/ruban; artefacts sprites peuvent etre Suzy/RAM; absence
+d'horloge CPU peut venir de Mikey.
+
+Ne pas remplacer ASIC avant rails, reset, horloge, RAM et bus. ESD, polarite et
+adaptateur corrects. Les kits 5 V/ecran moderne modifient diagnostic et charge.
+
+
+==============================================================================
+60. PRESERVATION ET MODIFICATIONS D'ECRAN
+==============================================================================
+
+Conserver l'ecran original si possible et documenter toute modification. Les kits
+LCD modernes numerisent le signal et peuvent recadrer/corriger couleurs; ils ne
+prouvent pas exactement le rendu/ghosting original.
+
+Pour cartouches, nettoyer contacts, dumper en format brut et LNX avec page sizes,
+calculer SHA-256 et conserver photos PCB. EEPROM doit etre dumpee separement.
+
+
+==============================================================================
+61. OUTILS, TESTS ET VALIDATION
+==============================================================================
+
+Emulateurs : Handy, Mednafen, MAME, ares et Felix selon plateforme. Outils : BLL,
+cc65, llvm-mos, lynxenc, sprpck/sp65, HandyMusic, flash carts et ComLynx adapters.
+
+Tests : CPU decimal/opcodes revision, MAPCTL toutes combinaisons, RAM overlay,
+timers chaines, IRQ simultanees, framebuffer rotations, palette, tous SCB/types/
+BPP/scales/quadrants, collisions, math limites, audio taps, UART errors et cart
+page wrap.
+
+Une ROM qui fonctionne dans un emulateur permissif peut echouer sur Suzy reel a
+cause du bus ou d'un SCB modifie trop tot. Tester Lynx I et II.
+
+
+==============================================================================
+62. REFERENCES
+==============================================================================
+
+Documents Atari/Epyx :
+
+- archives des documents developpeur Lynx :
+  https://atariage.com/Lynx/archives/developer_docs/index.html?SystemID=LYNX
+- Handy Specifications / description materielle et programmation :
+  https://atarilynxdev.net/doku.php/lynx:doc:start
+- article technique "Inside Lynx" et carte memoire :
+  https://www.atarimania.com/mags/pdf/Atari_Explorer_January_February_1991.pdf
+
+References de programmation :
+
+- documentation Lynx pour cc65 : https://cc65.github.io/doc/lynx.html
+- reference SDK moderne lynxcc : https://atarigamer.github.io/lynxcc/
+- tutoriels materiel, sprites, collisions, timers et cartouches :
+  https://atarilynxdeveloper.wordpress.com/
+- Lynx Programming for Dummies / BLL :
+  https://www.retroisle.com/atari/lynx/Technical/Programming/lynxprgdumm.php
+- includes `_mikey.h` et `_suzy.h` du projet cc65;
+- schemas Atari Lynx I/II correspondant a la revision.
+
+Les documents originaux contiennent errata et noms historiques Handy. Pour une
+implementation precise, confronter scans, includes verifies, schemas, tests sur
+Lynx I/II et plusieurs emulateurs; signaler les comportements encore inconnus.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

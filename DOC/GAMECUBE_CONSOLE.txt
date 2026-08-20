@@ -1,0 +1,1117 @@
+==============================================================================
+ NINTENDO GAMECUBE - MATERIEL ET PROGRAMMATION
+ Reference technique pour logiciels, outils et emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Nintendo GameCube : processeur IBM Gekko, ASIC ATI Flipper,
+GPU GX, DSP audio, memoires, lecteur optique, interfaces EXI/SI, cartes memoire,
+demarrage et programmation. Il vise les programmeurs PowerPC/C, auteurs d'outils,
+restaurateurs et developpeurs d'emulateurs.
+
+Les SDK Nintendo et plusieurs manuels internes sont proprietaires. Les adresses
+et comportements presentes ici sont limites aux connaissances publiquement
+documentees ou reconstruites. Les accents sont omis pour garder un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Modeles, regions et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges et bus
+  6. Gekko : architecture PowerPC
+  7. Registres et ABI
+  8. Instructions PowerPC
+  9. Paired Singles et quantification
+ 10. Caches, coherency et locked cache
+ 11. MMU, BAT et carte logique
+ 12. Carte memoire physique et MMIO
+ 13. Exceptions et interruptions
+ 14. Processor Interface et Memory Interface
+ 15. Timers, decrementer et horloge temps reel
+ 16. Flipper : vue generale
+ 17. Command Processor et FIFO GX
+ 18. Vertex descriptors et formats
+ 19. Transform Unit et XF
+ 20. Rasterisation et Setup Unit
+ 21. Texture Environment Unit
+ 22. Pixel Engine
+ 23. Textures, palettes et formats
+ 24. EFB, XFB et copie
+ 25. Video Interface
+ 26. Pipeline GX et synchronisation
+ 27. Display lists et optimisation graphique
+ 28. DSP audio
+ 29. Jeu d'instructions DSP
+ 30. ARAM et DMA audio
+ 31. Audio Interface et sortie
+ 32. Lecteur optique et DVD Interface
+ 33. Disques, partitions et systeme de fichiers
+ 34. Format DOL et chargement
+ 35. IPL, demarrage et SRAM
+ 36. EXI
+ 37. Cartes memoire
+ 38. Serial Interface et manettes
+ 39. Manette standard et WaveBird
+ 40. Game Boy Player et liaison GBA
+ 41. Ports reseau et accessoires
+ 42. Assembleur PowerPC : bases
+ 43. Assembleur : Paired Singles
+ 44. C/libogc : programme minimal
+ 45. C/libogc : initialiser GX
+ 46. C/libogc : triangle et texture
+ 47. C/libogc : manette et carte memoire
+ 48. C/libogc : audio, DVD et reseau
+ 49. Organisation d'un moteur
+ 50. Multithreading, DMA et synchronisation
+ 51. Optimisation
+ 52. Toolchains et formats homebrew
+ 53. Debogage
+ 54. Conseils pour un emulateur
+ 55. Emulation Gekko
+ 56. Emulation Flipper/GX
+ 57. Emulation DSP, DVD, EXI et SI
+ 58. Plan de validation
+ 59. Compatibilite Wii et Triforce
+ 60. Maintenance et preservation
+ 61. Securite et limites juridiques
+ 62. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+La GameCube, nom de code Dolphin, sort au Japon et en Amerique du Nord en 2001,
+puis en Europe et Australie en 2002. Elle succede a la Nintendo 64. Nintendo,
+IBM et ArtX/ATI concoivent une architecture compacte : Gekko execute le jeu,
+Flipper integre graphique, I/O et controle memoire, et un DSP traite l'audio.
+
+La console abandonne la cartouche pour un disque optique de 8 cm. Son API GX est
+une interface fixe mais tres configurable, centree sur les textures et le Texture
+Environment Unit (TEV), plutot qu'un GPU a shaders programmables modernes.
+
+
+==============================================================================
+2. MODELES, REGIONS ET REVISIONS
+==============================================================================
+
+DOL-001 : modele initial avec sorties analogique et numerique AV, deux ports serie,
+un high-speed port et les trappes inferieures. DOL-101 supprime notamment la sortie
+numerique, modifie boitier et certains circuits. Des revisions internes reduisent
+le nombre de puces et changent le lecteur/alimentation.
+
+Regions principales : NTSC-J, NTSC-U et PAL. IPL, codage region, langue et modes
+video different. Une console retail n'est pas un NPDP/NR Reader de developpement.
+Panasonic Q combine GameCube et lecteur DVD-Video avec materiel propre.
+
+Ne pas detecter une revision par couleur ou numero de boitier seul. Pour logiciel,
+interroger video/region via bibliotheque systeme et sonder les interfaces.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU          IBM Gekko PowerPC 32 bits, environ 485 MHz
+Bus systeme  environ 162 MHz
+GPU/ASIC     ATI Flipper, environ 162 MHz
+RAM          24 Mio 1T-SRAM principale
+ARAM         16 Mio DRAM auxiliaire, normalement via DMA
+Memoire GPU  environ 3 Mio embarques dans Flipper (EFB/Z et cache texture)
+DSP          Macronix, coeur 16 bits, environ 81 MHz
+Support      disque optique 8 cm, capacite environ 1,46 Go
+Entrees      quatre manettes, deux cartes memoire
+Video        composite, S-Video/RGB selon region, composante numerique via cable
+Audio        stereo analogique; PCM alimente par Audio Interface
+Reseau       adaptateur modem ou Broadband Adapter optionnel
+
+Les chiffres de polygones marketing ne remplacent pas un budget TEV, textures,
+fillrate, copie EFB et bande passante reel.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+                    +------------------------+
+                    | IBM Gekko + L1/L2      |
+                    +-----------+------------+
+                                | bus 162 MHz
+       +------------------------v-------------------------+
+       | Flipper : CP, XF, raster, TEV, PE, MI, PI, I/O  |
+       +--------+------------+----------+---------+-------+
+                |            |          |         |
+          +-----v----+   +---v---+  +---v---+ +---v---------+
+          | 24M RAM  |   | DSP   |  | DVD   | | EXI/SI/VI   |
+          | 1T-SRAM  |   | 16M   |  | drive | | AI/network  |
+          +----------+   | ARAM  |  +-------+ +-------------+
+                         +-------+
+
+Le GPU lit commandes et sommets en RAM/FIFO, mais EFB et cache textures resident
+dans Flipper. Le DSP accede a ARAM et a la RAM principale par DMA. Les peripheriques
+produisent des interruptions regroupees par le Processor Interface.
+
+
+==============================================================================
+5. HORLOGES ET BUS
+==============================================================================
+
+Gekko derive sa frequence du bus avec multiplicateur. Flipper et bus tournent a
+environ 162 MHz; DSP a la moitie. Le time base PowerPC avance a une fraction de
+l'horloge bus (frequence pratique proche de 40,5 MHz). Les valeurs exactes dependent
+du domaine et de la region video; ne pas chronometrer video par boucle CPU.
+
+La RAM 1T-SRAM fournit faible latence et transactions en rafale. CPU, command
+processor, DVD et DMA partagent la bande passante. Cache flush et invalidation
+sont obligatoires autour des DMA. `sync`, `eieio` et `isync` ordonnent des classes
+differentes d'operations; ils ne sont pas interchangeables.
+
+
+==============================================================================
+6. GEKKO : ARCHITECTURE POWERPC
+==============================================================================
+
+Gekko est un PowerPC big-endian 32 bits proche de la famille 750, avec extensions
+Paired Singles. Il est superscalaire, speculative/out-of-order et dispose de L1
+instructions/donnees, L2 unifie et unite flottante.
+
+Registres : 32 GPR 32 bits, 32 FPR 64 bits, PC interne, LR, CTR, CR a 8 champs,
+XER, FPSCR, MSR, SRR0/SRR1, SPRG, DEC, TBL/TBU, HID, BAT et segment registers.
+Instructions sont codees sur 32 bits et alignees sur quatre octets.
+
+Le mode retail execute normalement en superviseur avec MMU configuree par le
+runtime. Toute hypothese sur valeurs de reset doit etre remplacee par init explicite.
+
+
+==============================================================================
+7. REGISTRES ET ABI
+==============================================================================
+
+ABI EABI PowerPC courante dans devkitPPC/libogc :
+
+r1       stack pointer, pile descendante et alignee
+r2       small-data area / TOC selon ABI
+r3-r10   arguments entiers/pointeurs, r3 retour
+r3-r4    retour 64 bits
+r0,r3-r12 volatils; r13-r31 normalement non volatils
+f1-f8    arguments flottants; f1 retour
+LR       adresse retour; CTR compteur/branche indirecte
+CR       huit champs de condition; CR0 souvent resultat entier
+
+Une fonction qui appelle doit sauver LR; l'appele sauve les registres non volatils
+qu'il modifie. Structures, varargs et alignement `long long` dependent de l'ABI
+exacte. Ne pas melanger objets compiles par ABI incompatibles.
+
+
+==============================================================================
+8. INSTRUCTIONS POWERPC
+==============================================================================
+
+Entiers : add/addc/adde/addi/addis, subf/subfc/subfe, neg, mullw/mulhw/mulhwu,
+divw/divwu, cntlzw, extsb/extsh, compare cmp/cmpl/cmpi/cmpli.
+
+Logique/rotation : and/andc, or/orc, xor, nand, nor, eqv, rlwinm, rlwimi,
+rlwnm, slw, srw, sraw/srawi.
+
+Memoire : lbz/lhz/lha/lwz, stb/sth/stw, lmw/stmw, indexed `x`, update `u`,
+byte-reverse lhbrx/lwbrx/sthbrx/stwbrx, reservation lwarx/stwcx.
+
+Branches : b/bl/ba/bla, bc/bcl, bclr, bcctr. BO/BI selectionnent CTR et CR.
+
+Systeme/cache : sc, rfi, mfspr/mtspr, mfmsr/mtmsr, mftb, sync, eieio, isync,
+dcbf, dcbi, dcbst, dcbz, icbi, tlbie, tlbsync.
+
+Flottants : lfs/lfd, stfs/stfd, fadd/fsub/fmul/fdiv, fmadd/fmsub/fnmadd,
+frsp, fctiw/fctiwz, fcmpo/fcmpu, fabs/fneg/fmr, fres, frsqrte.
+
+Suffixe `.` met a jour CR0/FPSCR selon instruction; `o` active mise a jour overflow
+XER. Les opcodes reserves/SPR inconnus ne doivent pas etre traites comme NOP.
+
+
+==============================================================================
+9. PAIRED SINGLES ET QUANTIFICATION
+==============================================================================
+
+Paired Singles traite deux flottants 32 bits dans un FPR 64 bits : ps_add,
+ps_sub, ps_mul, ps_madd, ps_sum0/1, ps_merge00/01/10/11, ps_cmp*, ps_sel,
+ps_res et ps_rsqrte. C'est utile aux vecteurs, matrices et audio.
+
+`psq_l`/`psq_st` chargent/stokent une ou deux composantes et peuvent convertir
+entiers 8/16 bits signes/non signes via registres GQR. Le champ W permet une seule
+valeur avec seconde composante 1.0 au chargement. GQR definit type et echelle.
+
+Quantifier geometrie reduit cache et bande passante, mais arrondi/saturation exacts
+comptent en emulation. NaN, estimate reciprocal et fused multiply-add divergent
+d'une simple succession d'operations hote.
+
+
+==============================================================================
+10. CACHES, COHERENCY ET LOCKED CACHE
+==============================================================================
+
+Gekko possede caches L1 separes et L2. Les peripheriques ne rendent pas les caches
+CPU coherents automatiquement. Avant DMA CPU->device : terminer ecritures et flush
+des lignes. Apres DMA device->CPU : invalider avant lecture, sans perdre une ligne
+sale partagee. Aligner buffers a 32 octets.
+
+Locked cache fournit une petite zone a latence controlee au moyen de fonctions
+speciales et de `dcbz_l`/extensions. Il sert a donnees critiques et streaming,
+mais n'est pas une RAM generale. Les bibliotheques `LC*` encapsulent allocation,
+chargement et stockage.
+
+Code auto-modifie : nettoyer D-cache, `sync`, invalider I-cache, `isync`. Ecrire
+par alias non cache ne suffit pas toujours a invalider une ancienne instruction.
+
+
+==============================================================================
+11. MMU, BAT ET CARTE LOGIQUE
+==============================================================================
+
+PowerPC utilise pages/segment registers et Block Address Translation (IBAT/DBAT).
+Le runtime mappe typiquement :
+
+$80000000... RAM principale, cachee
+$C0000000... alias RAM principale, cache inhibe
+$CC000000... registres Flipper/MMIO
+$FFF00000... IPL/ROM et vecteurs superieurs selon mapping
+
+Les adresses physiques RAM commencent a zero. Un DMA demande souvent l'adresse
+physique; libogc fournit conversions `MEM_VIRTUAL_TO_PHYSICAL`. Ne pas appliquer
+simplement un masque a un pointeur qui pourrait venir d'un autre mapping.
+
+Exceptions ISI/DSI utilisent SRR0/SRR1, DAR et DSISR. Les pages et BAT possedent
+permissions, WIMG et protection. MMIO doit etre cache-inhibited/guarded.
+
+
+==============================================================================
+12. CARTE MEMOIRE PHYSIQUE ET MMIO
+==============================================================================
+
+RAM physique $00000000-$017FFFFF  24 Mio MEM1
+ARAM                              16 Mio, non mappee comme MEM1
+
+Le runtime reserve des zones de MEM1 pour pile, heap, FIFO, XFB et parfois code
+systeme; leurs frontieres ne sont pas une propriete fixe du silicium.
+
+Bases virtuelles MMIO courantes :
+
+$CC000000  CP, Command Processor          $CC001000  PE, Pixel Engine
+$CC002000  VI, Video Interface            $CC003000  PI, Processor Interface
+$CC004000  MI, Memory Interface           $CC005000  DSP interface
+$CC006000  DI, DVD Interface              $CC006400  SI, Serial Interface
+$CC006800  EXI                            $CC006C00  AI, Audio Interface
+$CC008000  FIFO graphique GX
+
+Registres ont largeurs 16 ou 32 bits et endian big. Plusieurs bits sont
+write-one-to-clear. Faire un acces de mauvaise largeur peut toucher un autre
+registre ou etre ignore; utiliser les definitions libogc.
+
+
+==============================================================================
+13. EXCEPTIONS ET INTERRUPTIONS
+==============================================================================
+
+Vecteurs PowerPC courants : reset $100, machine check $200, DSI $300, ISI $400,
+external $500, alignment $600, program $700, floating unavailable $800,
+decrementer $900, system call $C00, trace $D00, performance monitor $F00.
+
+A l'exception, SRR0/SRR1 recoivent retour/etat, MSR change et le vecteur est pris.
+L'exception externe vient du PI. Une routine doit identifier la source, acquitter
+le bloc producteur puis le PI, sauver contexte necessaire et retourner par `rfi`.
+
+Sources : CP, PE token/finish, VI, DSP, AI, EXI, SI, DI, reset switch et erreurs
+memoire. Ne pas effectuer I/O bloquante ou allocation dans une ISR.
+
+
+==============================================================================
+14. PROCESSOR INTERFACE ET MEMORY INTERFACE
+==============================================================================
+
+PI regroupe causes d'interruptions, masques, reset, FIFO et configuration. Le FIFO
+GX est defini par base, fin, write pointer, read pointer et seuils high/low; CP et
+CPU se synchronisent par ces pointeurs/watermarks.
+
+MI gere protection de regions, interruptions d'erreur et compteurs de requetes.
+Une violation peut signaler adresse/type. Les compteurs MI permettent profiler la
+pression CPU/CP/TC/VI/DSP. Certaines fonctions sont reservees au systeme.
+
+Toujours lire-modifier-ecrire en preservant bits reserves et acquitter uniquement
+les causes traitees.
+
+
+==============================================================================
+15. TIMERS, DECREMENTER ET HORLOGE TEMPS REEL
+==============================================================================
+
+Time Base 64 bits se lit via TBU/TBL avec sequence haut-bas-haut. Decrementer 32
+bits decremente et provoque exception quand son bit de signe transite; le handler
+le recharge pour ticks OS. `OSGetTime`/`gettime` evitent les erreurs de frequence.
+
+RTC et configuration sont accessibles via EXI/SRAM. L'epoch GameCube differe de
+Unix. La pile/condensateur de carte maintient heure et SRAM. Emulateur : distinguer
+temps monotone pour timers et temps civil pour RTC.
+
+
+==============================================================================
+16. FLIPPER : VUE GENERALE
+==============================================================================
+
+Flipper integre controle memoire, I/O, audio DSP et pipeline graphique : Command
+Processor (CP), Transform Unit (XF), Setup/Rasterizer, Texture Environment Unit
+(TEV), texture cache, Embedded Frame Buffer (EFB), Pixel Engine (PE) et Video
+Interface (VI).
+
+GX est une machine a etats. Le CPU ecrit des commandes BP, CP, XF, index arrays,
+vertices et display lists. Il n'existe pas de shaders arbitraires : TEV combine
+couleurs/textures en jusqu'a 16 stages et XF execute transformation/eclairage fixe.
+
+
+==============================================================================
+17. COMMAND PROCESSOR ET FIFO GX
+==============================================================================
+
+Le CPU ecrit octets/mots big-endian au write-gather pipe $CC008000. Le cache de
+gather regroupe 32 octets avant FIFO en RAM. CP lit FIFO, decode commandes et
+alimente pipeline. Commandes conceptuelles : NOP, load CP register, load XF,
+load indexed XF, load BP register, draw primitive et call display list.
+
+Le FIFO doit etre aligne, taille suffisante et pointeurs coherents. High watermark
+peut suspend producteur; low watermark le reveille. `GX_DrawDone` attend PE finish;
+`GX_PixModeSync`/tokens servent d'autres barrieres. Un `sync` CPU seul ne termine
+pas le rendu.
+
+
+==============================================================================
+18. VERTEX DESCRIPTORS ET FORMATS
+==============================================================================
+
+Attributs GX : position, normale ou NBT, couleurs 0/1, texcoords 0..7, matrices
+position/texture. Chaque attribut peut etre absent, direct dans FIFO, index8 ou
+index16 vers un tableau. VtxFmt 0..7 definit composantes, type numerique, fraction
+et nombre de valeurs.
+
+Tableaux sont decrits par base physique et stride. Flush cache avant draw. L'ordre
+des donnees de chaque sommet suit l'ordre materiel, pas celui d'une structure C
+arbitraire. `GX_Begin(primitive, vtxfmt, count)` exige exactement `count` sommets.
+
+Primitives : points, lines, line strip, triangles, triangle strip, triangle fan,
+quads. Quads sont decomposes selon regles GX; le winding/culling doit correspondre.
+
+
+==============================================================================
+19. TRANSFORM UNIT ET XF
+==============================================================================
+
+XF transforme positions/normales, calcule eclairage, texgen et projection. Il
+contient matrices position/normal/texture, lights, channel controls, viewport et
+projection. Palette de matrices permet skinning par index de matrice par sommet.
+
+Jusqu'a huit texcoords peuvent venir de position, normales, couleurs ou autres
+texcoords, avec matrices 2x4/3x4, emboss et post-transform selon configuration.
+L'eclairage combine materiau, ambient, sources directionnelles/positionnelles,
+attenuation et fonctions diffuse.
+
+GX utilise conventions de matrice et profondeur propres; libogc `gu*` aide, mais
+clarifier row/column major et ordre multiplication avant melanger bibliotheques.
+
+
+==============================================================================
+20. RASTERISATION ET SETUP UNIT
+==============================================================================
+
+Le setup calcule equations d'arete et interpolation perspective des attributs.
+Viewport transforme en coordonnees EFB; scissor coupe. Culling none/front/back/all,
+line/point sizes et offsets sont configurables. Multisampling EFB et sample pattern
+peuvent produire antialiasing.
+
+Depth va dans Z24 interne. Projection perspective/orthographique et range Z sont
+definis par GX. Les valeurs flottantes speciales, triangles degeneres et bords
+partages necessitent regles exactes en emulation pour eviter fissures.
+
+
+==============================================================================
+21. TEXTURE ENVIRONMENT UNIT
+==============================================================================
+
+TEV est le coeur programmable fixe. Chaque stage choisit quatre entrees couleur
+a,b,c,d et calcule typiquement `d + (1-c)*a + c*b`, puis bias, scale, clamp et
+destination; alpha possede chemin analogue. Entrees : texture, raster color,
+konst, registres TEV prev/0/1/2, one/half/zero et canaux alpha.
+
+Jusqu'a 16 stages, 8 texture units/coordonnees par passe, 4 registres konst et
+4 swap tables. Operations add/sub et comparaisons 8/16/24 bits permettent alpha
+test, masques, bump, cel shading, light maps et effets multi-textures.
+
+Indirect texturing utilise jusqu'a quatre stages pour modifier coordonnees avec
+texture, matrices, bias, wrap et bump alpha. Un emulateur GPU moderne doit generer
+un shader reproduisant precision fixe, quantification et ordre TEV.
+
+
+==============================================================================
+22. PIXEL ENGINE
+==============================================================================
+
+PE applique Z compare/update, alpha compare, blending logique/arithmetique,
+destination alpha, dithering, fog et ecrit EFB. Blend factors incluent source,
+inverse, alpha source/destination. Logic ops couvrent AND/OR/XOR et variantes.
+
+Z-comp location peut etre avant ou apres texture/alpha. Early Z influence effets
+et performances. Bounding box enregistre limites des pixels passes et est utilise
+par quelques jeux. PE token et finish generent interruptions distinctes.
+
+Formats EFB couleur/depth changent precision. Destination alpha et copy gamma
+font partie du resultat observable.
+
+
+==============================================================================
+23. TEXTURES, PALETTES ET FORMATS
+==============================================================================
+
+Formats : I4/I8, IA4/IA8, RGB565, RGB5A3, RGBA8, CI4/CI8/CI14X2, CMPR et Z8/Z16/
+Z24X8 pour copies. Les donnees sont tilees en blocs; RGBA8 separe AR et GB;
+CMPR ressemble a DXT1 mais ordre de sous-blocs/endian est propre GX.
+
+TLUT contient palettes IA8, RGB565 ou RGB5A3. Texture objects definissent largeur,
+hauteur, format, wrap clamp/repeat/mirror, min/mag filters, LOD bias et mipmaps.
+Dimensions mipmaps descendent jusqu'a 1; chaque niveau respecte son bloc.
+
+Texture cache n'est pas coherent avec ecritures CPU/DMA ou copie EFB : invalider
+avec API GX appropriee. Preconvertir images avec `gxtexconv`/outils devkitPro.
+
+
+==============================================================================
+24. EFB, XFB ET COPIE
+==============================================================================
+
+EFB est une memoire embarquee d'environ 640x528 echantillons avec couleur et Z.
+Elle n'est pas un framebuffer CPU lineaire. PE rend dedans. Une operation copy
+filtre/resout et ecrit un External Frame Buffer (XFB) YUYV en RAM principale ou
+une texture dans RAM.
+
+Copy configure source, destination, echelle verticale, filtre anti-alias/deflicker,
+gamma, clear et format. XFB a largeur alignee et hauteur video. VI lit XFB; double
+buffering alterne deux buffers. Clear EFB peut etre fusionne a la copie.
+
+Les lectures EFB via peek/poke sont lentes et synchronisantes. Render-to-texture
+exige copy, attente/invalidation texture et format approprie.
+
+
+==============================================================================
+25. VIDEO INTERFACE
+==============================================================================
+
+VI lit XFB et produit NTSC/PAL/progressif. Registres definissent timing horizontal/
+vertical, origine framebuffer top/bottom, stride, filtres, interruptions compare
+et status. Entrelace utilise champs; progressive scan 480p exige sortie numerique
+et cable composante sur DOL-001, plus acceptation utilisateur/jeu.
+
+Modes libogc `GXRModeObj` encapsulent TV mode, fbWidth, efbHeight, xfbHeight,
+viWidth/Height, origins, xfbMode, field rendering, AA, sample pattern et vfilter.
+Appeler `VIDEO_WaitVSync`, mais ne supposer 60 Hz : PAL peut etre 50/60.
+
+
+==============================================================================
+26. PIPELINE GX ET SYNCHRONISATION
+==============================================================================
+
+Cadence typique : attendre XFB libre, soumettre commandes/sommets, `GX_DrawDone`
+ou token si donnees doivent etre terminees, copier EFB vers prochain XFB, annoncer
+buffer a VI au VBlank, puis commencer frame suivante. CPU et GPU doivent rester
+en parallele autant que possible.
+
+`GX_Flush` pousse write gather, pas necessairement fin GPU. `GX_DrawDone` est une
+barriere lourde. Tokens PE donnent rendez-vous plus fins. Eviter de modifier un
+tableau, texture ou display list encore lu par CP.
+
+
+==============================================================================
+27. DISPLAY LISTS ET OPTIMISATION GRAPHIQUE
+==============================================================================
+
+Une display list est un flux de commandes GX en RAM, aligne et cache-flushe, appele
+par le FIFO. Elle reduit travail CPU pour geometrie/etat repetes. Sa taille doit
+etre multiple/alignee selon API; ne pas l'editer pendant execution.
+
+Optimisations : attributs indexes/quantifies, triangle strips, matrices palette,
+regroupement par texture/etat, peu de copies EFB, texture formats compacts, TEV en
+moins de stages. Mesurer CP FIFO stalls, cache texture et bande passante MEM1.
+
+
+==============================================================================
+28. DSP AUDIO
+==============================================================================
+
+Flipper contient un DSP Macronix 16 bits a architecture Harvard. Il execute un
+microcode charge en IRAM, traite voix/mixage/ADPCM et communique par mailboxes.
+Il possede IRAM/IROM et DRAM/coefficient ROM en espaces de mots 16 bits, plus
+registres IFX, accelerateur adresse/ADPCM et DMA.
+
+Le CPU charge un bootstrap/microcode, configure DSP, echange commandes puis alimente
+buffers en MEM1/ARAM. SDK officiel fournit microcodes; homebrew utilise notamment
+libasnd/libaesnd et microcodes libres.
+
+
+==============================================================================
+29. JEU D'INSTRUCTIONS DSP
+==============================================================================
+
+Le DSP a deux accumulateurs 40 bits, deux accumulateurs auxiliaires, registres
+d'adresse/index/wrap, quatre piles materielles et produit. Instructions 16/32 bits
+peuvent combiner ALU et mouvement parallele.
+
+Familles : ADD/ADDI/ADDAX/ADDARN, SUB/SUBR, CMP, AND/OR/XOR/NOT, ABS/NEG,
+LSL/LSR/ASR, MUL/MADD/MSUB/MAC, MOV/MRR/LR/SR, ILRR, LOOP/BLOOP,
+CALL/JMP/RET/RTI, IFcc et instructions paralleles suffixees. Conditions utilisent
+drapeaux Z,C,N,V,E,U et logique precise des accumulateurs.
+
+Exceptions DSP, loop stack, saturation et extension de signe sont indispensables
+en LLE. Les opcodes doivent suivre le manuel DSP reconstruit et les tests, pas une
+approximation de CPU audio generique.
+
+
+==============================================================================
+30. ARAM ET DMA AUDIO
+==============================================================================
+
+ARAM 16 Mio est une DRAM auxiliaire, souvent echantillons/streams et stockage de
+ressources. Gekko ne la dereference pas directement comme MEM1. L'interface DSP
+DMA copie des blocs entre adresses MEM1 et ARAM; alignement et granularite sont
+contraints.
+
+Le DSP peut lire des echantillons via accelerateur/DMA selon microcode. CPU flush
+avant MEM1->ARAM et invalide apres ARAM->MEM1. Double-bufferiser musique : pendant
+que DSP lit un bloc, DVD remplit un autre. Une fin DMA produit statut/IRQ.
+
+
+==============================================================================
+31. AUDIO INTERFACE ET SORTIE
+==============================================================================
+
+AI lit un flux PCM stereo 16 bits big-endian en RAM, cadence 32 ou 48 kHz selon
+configuration, et l'envoie au convertisseur. Registres donnent adresse DMA,
+longueur, controle, sample counter et trigger IRQ.
+
+Le DSP mixe normalement vers buffers AI. Une chaine robuste a plusieurs buffers,
+callback/IRQ court et remplissage par thread. Ne jamais allouer ou lire DVD dans
+l'IRQ audio. Emulateur : distinguer horloge AI, DSP et backend hote, puis resampler
+sans piloter tout le systeme par la carte son.
+
+
+==============================================================================
+32. LECTEUR OPTIQUE ET DVD INTERFACE
+==============================================================================
+
+DI expose status/cover, commandes, DMA address/length et control. Une commande
+contient mots immediats, direction et taille. Operations : inquiry, read, seek,
+request error, stop motor, audio streaming et commandes de securite/systeme.
+
+Le disque GameCube tourne avec lecture CAV/zonage logique. Les erreurs et latences
+existent : couvercle ouvert, no disc, timeout, unrecovered read. DMA destination
+doit etre alignee, taille bornee et cache invalide apres lecture.
+
+Utiliser `DVD_*`/filesystem libogc plutot que DI brut. Les commandes de protection
+et firmware ne sont pas une API applicative stable.
+
+
+==============================================================================
+33. DISQUES, PARTITIONS ET SYSTEME DE FICHIERS
+==============================================================================
+
+Une image GameCube contient header disque, apploader, executable main DOL, File
+System Table (FST) et fichiers. Contrairement au Wii, le disque GameCube n'a pas
+les partitions chiffrees usuelles du format Wii. Les offsets doivent etre valides
+contre taille de l'image avant acces.
+
+Header commence par game ID, maker, disc/version, flags audio streaming et magic.
+Apploader charge sections et prepare le DOL. FST est une table compacte noms,
+fichiers et repertoires; noms pointent dans string table.
+
+Formats preservation : ISO/GCM brut, RVZ ou formats lossless documentes. Scrub
+enleve padding et peut compromettre une verification bit-perfect; garder hash du
+dump brut.
+
+
+==============================================================================
+34. FORMAT DOL ET CHARGEMENT
+==============================================================================
+
+DOL contient jusqu'a 7 sections texte et 11 sections data, avec offsets fichier,
+adresses memoire, tailles, adresse BSS/taille et point d'entree. Il n'inclut pas
+de table de relocation ni symboles. Verifier additions/chevauchements avant charger.
+
+Chargeur : copier chaque section, zero BSS sans ecraser sections, flush/invalidate,
+initialiser contexte et sauter au point d'entree. Un ELF devkitPPC est converti
+en DOL pour execution; conserver ELF et `.map` pour symboles/debug.
+
+
+==============================================================================
+35. IPL, DEMARRAGE ET SRAM
+==============================================================================
+
+Au reset, Gekko entre dans l'IPL ROM. Boot ROM initialise materiel, affiche menu,
+lit SRAM/horloge, verifie disque, execute apploader puis DOL. Une partie de l'IPL
+est protegee/chiffree selon revision et ne doit pas etre redistribuee.
+
+SRAM EXI conserve region/video/langue, offsets RTC et flags. Les valeurs et checksum
+doivent rester coherents. Homebrew charge par exploit, disque autorise, adaptateur
+ou bootloader; la methode ne change pas l'ABI materielle du programme.
+
+Un emulateur peut demander un dump legal de l'IPL ou proposer HLE, mais menu,
+timings, fontes et initialisation registers peuvent differer.
+
+
+==============================================================================
+36. EXI
+==============================================================================
+
+External Interface relie cartes memoire, IPL/RTC/SRAM, adaptateur reseau et autres
+devices. Trois canaux ont selection de device/chip select, horloge, immediat ou DMA,
+status et IRQ. Transactions sont serie synchrones et big-endian par mots.
+
+Sequence : verrouiller canal, selectionner device/frequence, envoyer commande,
+lire/ecrire immediat ou DMA, attendre transfer complete, deselectionner/deverrouiller.
+Hotplug et EXI interrupt doivent etre geres. Deux pilotes ne doivent jamais
+selectionner simultanement le meme canal.
+
+
+==============================================================================
+37. CARTES MEMOIRE
+==============================================================================
+
+Les deux slots sont devices EXI. Cartes officielles sont nommees par blocs (59,
+251, 1019...), avec un bloc physique de 8192 octets. Structure : deux blocs header,
+deux copies directory et deux copies block allocation table, puis data. Compteurs
+et checksums choisissent la copie valide.
+
+Une sauvegarde a en-tete directory : game/maker, nom fichier, timestamp, icones,
+banniere, permissions, premier bloc, taille et commentaire. Allocation est une
+chaine dans BAT. Ecrire transactionnellement et mettre a jour copie inactive avant
+basculement. Une interruption pendant erase/write ne doit pas detruire les deux.
+
+Flash a temps d'effacement/programming et duree de vie. Ne pas formater sans accord.
+Emulateur : fichier atomique, geometie exacte et comportement busy/erreur.
+
+
+==============================================================================
+38. SERIAL INTERFACE ET MANETTES
+==============================================================================
+
+SI dessert quatre ports manette. Polling buffer collecte reponses periodiques;
+command/output buffers permettent transactions. Registres gerent poll schedule,
+status, communication et erreurs no response/collision/overrun.
+
+Protocole est serie proprietaire a une ligne bidirectionnelle et timings courts.
+Commande standard demande identite/origine/etat et controle vibration. Un emulateur
+au niveau registres doit reproduire completion/IRQ et erreurs, pas seulement exposer
+un gamepad abstrait.
+
+
+==============================================================================
+39. MANETTE STANDARD ET WAVEBIRD
+==============================================================================
+
+Entrees : A/B/X/Y/Start, D-pad, Z, L/R analogiques avec clic numerique, stick
+principal et C-stick. Reponse code boutons, axes 8 bits et gachettes. Centre et
+course varient; commande origin/calibration fournit reference. Appliquer deadzone
+et ne pas supposer centre $80 parfait.
+
+Moteur rumble recoit stop/on/brake selon commande. WaveBird utilise recepteur radio
+branche au meme port, sans vibration, et reste compatible protocole manette. Les
+bongos et tapis presentent identites/boutons particuliers.
+
+
+==============================================================================
+40. GAME BOY PLAYER ET LIAISON GBA
+==============================================================================
+
+Game Boy Player est un accessoire sous console contenant du materiel GBA; le disque
+de demarrage pilote affichage/controle. Ce n'est pas une emulation GBA par Gekko.
+
+Le cable GBA relie port manette GC au port serie GBA. Jeux peuvent lire controles,
+transferer un petit programme multiboot en RAM GBA et echanger des paquets. Le
+protocole combine SI cote GameCube et mode serie GBA; timing, CRC/handshake et
+absence de cable doivent etre traites.
+
+
+==============================================================================
+41. PORTS RESEAU ET ACCESSOIRES
+==============================================================================
+
+Le High-Speed Port accueille DOL-012 Broadband Adapter Ethernet 10/100 ou modem
+DOL-015. BBA utilise un MAC Macronix et PHY, pilote via EXI avec buffers/IRQ. La
+pile IP est logicielle. Quelques jeux officiels seulement l'utilisent.
+
+Ports serie accueillent notamment Game Boy Player; un modem/broadband n'est pas
+USB. Adaptateurs modernes SD utilisent souvent carte memoire EXI ou serial port.
+Le port numerique AV transporte donnees video numeriques vers DAC du cable, pas
+un HDMI directement.
+
+
+==============================================================================
+42. ASSEMBLEUR POWERPC : BASES
+==============================================================================
+
+Fonction EABI devkitPPC, somme d'un tableau `u32` :
+
+        .text
+        .align 2
+        .global sum_words
+sum_words:                    # r3=ptr, r4=count, retour r3
+        li      r5,0
+        cmpwi   r4,0
+        beq     2f
+        mtctr   r4
+1:      lwz     r6,0(r3)
+        addi    r3,r3,4
+        add     r5,r5,r6
+        bdnz    1b
+2:      mr      r3,r5
+        blr
+
+Les mots memoire sont big-endian. `lwbrx` sert a donnees little-endian, pas a
+MMIO. CTR est volatile selon ABI; cette leaf function ne modifie pas LR.
+
+
+==============================================================================
+43. ASSEMBLEUR : PAIRED SINGLES
+==============================================================================
+
+Produit de deux paires deja dans f1/f2, resultat f1 :
+
+        ps_mul  1,1,2        # f1.ps0*=f2.ps0, ps1*=ps1
+        blr
+
+Charge quantifie conceptuel :
+
+        psq_l   1,0(3),0,0   # deux valeurs, GQR0
+        psq_l   2,8(3),0,0
+        ps_add  1,1,2
+        psq_st  1,0(4),0,0
+        blr
+
+Configurer GQR0 avant conversion et respecter alignement/ABI FPR. La syntaxe
+exacte depend de GNU binutils; utiliser intrinsics/bibliotheques pour portabilite.
+
+
+==============================================================================
+44. C/LIBOGC : PROGRAMME MINIMAL
+==============================================================================
+
+#include <gccore.h>
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    VIDEO_Init();
+    PAD_Init();
+    GXRModeObj *rmode = VIDEO_GetPreferredMode(NULL);
+    void *xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+    console_init(xfb, 20, 20, rmode->fbWidth,
+                 rmode->xfbHeight, rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+    VIDEO_Configure(rmode);
+    VIDEO_SetNextFramebuffer(xfb);
+    VIDEO_SetBlack(FALSE);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    printf("Bonjour GameCube\n");
+    for (;;) {
+        PAD_ScanPads();
+        if (PAD_ButtonsDown(0) & PAD_BUTTON_START) break;
+        VIDEO_WaitVSync();
+    }
+    return 0;
+}
+
+
+==============================================================================
+45. C/LIBOGC : INITIALISER GX
+==============================================================================
+
+Etapes usuelles : allouer FIFO 32 octets aligne, `GX_Init`; choisir clear color/Z;
+configurer viewport/scissor, copy scale/filter, pixel format, culling, Z, blend;
+definir projection, vertex descriptors/formats, channels, texgens et TEV.
+
+static u8 gx_fifo[256 * 1024] ATTRIBUTE_ALIGN(32);
+GX_Init(gx_fifo, sizeof(gx_fifo));
+GX_SetCullMode(GX_CULL_BACK);
+GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
+GX_SetNumChans(1);
+GX_SetNumTexGens(0);
+GX_SetNumTevStages(1);
+GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+
+Une variable oubliee reste l'ancien etat GX. Initialiser explicitement chaque etat
+dont le rendu depend, notamment apres une bibliotheque tierce.
+
+
+==============================================================================
+46. C/LIBOGC : TRIANGLE ET TEXTURE
+==============================================================================
+
+GX_ClearVtxDesc();
+GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
+GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+GX_Begin(GX_TRIANGLES, GX_VTXFMT0, 3);
+    GX_Position3f32(-0.7f, -0.5f, 0.0f); GX_Color4u8(255,0,0,255);
+    GX_Position3f32( 0.7f, -0.5f, 0.0f); GX_Color4u8(0,255,0,255);
+    GX_Position3f32( 0.0f,  0.7f, 0.0f); GX_Color4u8(0,0,255,255);
+GX_End();
+
+Pour texture : convertir/tile layout, flush cache, `GX_InitTexObj`, regler filtre,
+`GX_LoadTexObj`, ajouter texcoord/texgen et TEV `GX_MODULATE`. Ne pas passer PNG
+brut comme texture GX.
+
+
+==============================================================================
+47. C/LIBOGC : MANETTE ET CARTE MEMOIRE
+==============================================================================
+
+PAD_ScanPads();
+u16 down = PAD_ButtonsDown(0);
+s8 sx = PAD_StickX(0), sy = PAD_StickY(0);
+if (down & PAD_BUTTON_A) PAD_ControlMotor(0, PAD_MOTOR_RUMBLE);
+
+Pour carte : initialiser CARD, monter slot avec work area alignee, verifier resultat,
+ouvrir/creer fichier, lire/ecrire blocs selon API, fermer puis unmount. Chaque appel
+peut retourner no card, wrong device, broken, encoding, busy, insufficient space.
+Ne jamais appeler `CARD_Format` automatiquement apres erreur.
+
+
+==============================================================================
+48. C/LIBOGC : AUDIO, DVD ET RESEAU
+==============================================================================
+
+Audio homebrew : ASND/AESND fournit voix sur microcode libre; callbacks doivent
+etre courts. Audio stream direct utilise AUDIO_InitDMA avec buffer PCM aligne et
+flush cache, puis double buffering par callback.
+
+DVD/FAT : preferer interfaces filesystem disponibles; lectures asynchrones evitent
+de bloquer rendu. Reseau : `if_config`, sockets BSD, DHCP/statique selon libogc.
+Mettre pile reseau dans thread et valider endian (`htonl`) et tailles.
+
+
+==============================================================================
+49. ORGANISATION D'UN MOTEUR
+==============================================================================
+
+Frame : lire entree, simulation, animation, culling, construire matrices/display
+lists, soumettre GX, lancer copy EFB, streaming DVD->MEM1->ARAM/texture et audio en
+parallele. Double bufferiser XFB, commandes dynamiques et ressources en vol.
+
+Materiaux compilent etat TEV/texture/blend. Trier opaque par etat, transparent par
+ordre visuel approprie. Preconvertir textures et modeles sur PC. Un gestionnaire
+ARAM garde handles et DMA, jamais pointeurs CPU directs.
+
+
+==============================================================================
+50. MULTITHREADING, DMA ET SYNCHRONISATION
+==============================================================================
+
+libogc fournit LWP threads, mutex, queues, semaphores et callbacks IRQ. Les ISR
+signalent; threads font travail. `volatile` ne remplace ni mutex ni barrieres.
+
+Pour buffer DMA, etablir proprietaire et etat FREE/FILLING/READY/IN_FLIGHT. Flush
+avant transfert sortant, invalider apres entrant, attendre completion avant reuse.
+GX, DSP, DVD et EXI ont chacun leur notion de completion.
+
+
+==============================================================================
+51. OPTIMISATION
+==============================================================================
+
+- profiler CPU, FIFO, cache texture, TEV et copies EFB;
+- aligner donnees/cache/DMA a 32 octets;
+- quantifier vertices avec psq/GQR;
+- employer Paired Singles et matrices libogc;
+- display lists pour objets statiques;
+- regrouper etats/textures, reduire stages TEV;
+- choisir CMPR/CI/I formats quand possible;
+- limiter EFB peeks, `GX_DrawDone` et copies multiples;
+- diffuser DVD en gros blocs et ARAM en double buffer;
+- garder CPU, CP, PE, DSP et DVD occupes en parallele.
+
+
+==============================================================================
+52. TOOLCHAINS ET FORMATS HOMEBREW
+==============================================================================
+
+SDK officiel Dolphin/Nintendo, CodeWarrior et documents GX sont proprietaires.
+Pour libre : devkitPPC (GCC/binutils/Newlib), libogc, libfat, portlibs, examples,
+`elf2dol`, `wiiload`/outils reseau et make/cmake adaptes.
+
+Formats : ELF avec symboles pour debug, DOL chargeable, GCM/ISO pour disque,
+GCI/GCS/SAV pour sauvegardes selon outil (conteneurs non interchangeables sans
+conversion). DOL peut etre charge par un lanceur homebrew autorise.
+
+Compiler `-mcpu=750 -meabi -mhard-float` ou options fournies par templates; ne pas
+inventer flags qui cassent paired singles/ABI. Reproduire la version toolchain.
+
+
+==============================================================================
+53. DEBOGAGE
+==============================================================================
+
+Conserver ELF, map et symboles. GDB/stub reseau, USB Gecko historique, logs serie/
+EXI et Dolphin debugger aident. Un exception handler imprime SRR0, SRR1, LR, CTR,
+CR, XER, DAR, DSISR, GPR et backtrace bornee.
+
+Pour GPU, capturer flux FIFO et etat BP/CP/XF, inserer PE tokens, afficher buffers
+intermediaires. Les bugs sensibles aux logs sont souvent cache/race. Si une texture
+ancienne persiste, verifier flush CPU et invalidate texture, pas seulement pointeur.
+
+
+==============================================================================
+54. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Construire un scheduler commun Gekko, CP, PE, VI, DSP, AI, DI, EXI et SI. Les
+registres busy, DMA progressifs, IRQ et FIFO doivent evoluer dans le temps. Une
+fonction instantanee par commande suffit rarement aux jeux de timing.
+
+Modules : MMU/bus, interpreter/JIT PPC, cache model observable, PI/MI, FIFO decoder,
+XF/TEV/PE, VI scanout, DSP LLE/HLE, ARAM, DVD, EXI devices, SI devices et frontend.
+Save state inclut FIFO, pipeline, DMA et microcode DSP.
+
+
+==============================================================================
+55. EMULATION GEKKO
+==============================================================================
+
+Implementer PowerPC big-endian, CR fields, XER carry/overflow, LR/CTR branches,
+exceptions precises, reservation lwarx/stwcx., BAT/pages, alignment, decrementer,
+time base, caches/barrieres observables et Paired Singles/GQR.
+
+JIT : lier blocs tout en invalidant code modifie, maintenir MMIO ordonne et points
+d'exception. FPU requiert NaN, FPSCR, estimate reciprocal, fused operations et
+conversion conformes. `dcbz` ecrit une ligne zero; locked-cache opcodes different.
+
+
+==============================================================================
+56. EMULATION FLIPPER/GX
+==============================================================================
+
+Decoder FIFO octet par octet avec etats CP/BP/XF. Vertex loader interprete formats,
+arrays, strides, index et matrices. XF reproduit eclairage/texgen/projection. Le
+backend genere shaders TEV et indirect stages en precision compatible.
+
+Implementer EFB formats, Z, alpha compare, fog, blending, logic ops, bbox, copy
+filters, YUYV XFB, texture tiling/TLUT/CMPR/mips et cache invalidation. VI doit
+faire fields, scaling et interrupts par ligne. Les EFB peeks et copies sont points
+de synchronisation CPU/GPU.
+
+Une resolution interne accrue est optionnelle; garder un mode reference natif pour
+tests. Les hacks de texture ne doivent pas contaminer le chemin exact.
+
+
+==============================================================================
+57. EMULATION DSP, DVD, EXI ET SI
+==============================================================================
+
+DSP LLE : instruction decoder, parallel ops, accumulateurs 40 bits, flags, stacks,
+accelerator ADPCM, DMA, mailboxes et IRQ. HLE de microcodes accelere mais depend de
+leur identification; fournir LLE pour inconnus et tests.
+
+DVD : command state machine, DMA, cover, erreur, latence et audio streaming. EXI :
+canaux, chip selects, immediate/DMA, RTC/SRAM, cartes flash et BBA. SI : poll,
+commandes, origin, rumble, erreurs et liaison GBA. Ne pas reduire les cartes memoire
+a fichiers instantanes : busy/checksum/redundance sont observes.
+
+
+==============================================================================
+58. PLAN DE VALIDATION
+==============================================================================
+
+- instructions PPC, exceptions, MMU/BAT, cache et paired singles;
+- time base/decrementer et ordre MMIO;
+- FIFO wrap/watermarks, display lists et IRQ CP;
+- formats vertices/textures/TLUT/CMPR et 16 stages TEV;
+- EFB Z/alpha/blend/fog/copy, bbox et VI NTSC/PAL/progressive;
+- DSP chaque opcode, DMA, mailboxes, ADPCM et AI cadence;
+- DVD commandes/erreurs/audio, FST et DOL malformes;
+- EXI RTC/SRAM/cartes/BBA, SI manette/WaveBird/GBA;
+- reset, IPL/HLE et toutes revisions DOL-001/DOL-101.
+
+Comparer traces, hashes EFB/XFB, audio et timing a une console. Les tests Dolphin
+et homebrew dedies sont complements; aucun jeu commercial seul ne couvre tout.
+
+
+==============================================================================
+59. COMPATIBILITE WII ET TRIFORCE
+==============================================================================
+
+Wii conserve Broadway/Flipper evolue et mode GameCube, mais ajoute MEM2, Hollywood,
+IOS, USB, NAND et interfaces. Le mode compatibilite masque/arrete des blocs; une
+adresse GameCube ne constitue pas une API Wii native.
+
+Triforce est une plate-forme arcade Nintendo/Sega/Namco apparentee, avec media,
+securite, RAM et I/O JVS propres. Ne pas annoncer compatibilite binaire automatique.
+Game Boy Player contient un GBA distinct.
+
+
+==============================================================================
+60. MAINTENANCE ET PRESERVATION
+==============================================================================
+
+Pannes : bloc optique, moteur/rails, interrupteur couvercle, ventilateur, alimentation,
+condensateurs, ports manette et pile RTC. Nettoyer lentille sans pression excessive.
+Regler potentiometre laser sans mesure peut detruire diode et masquer un disque mal
+grave. Decharger et debrancher avant ouverture.
+
+Preservation : dump disque avec lecteur/methode verifiee, plusieurs lectures et
+SHA-256; garder BCA/metadata utiles, IPL/SRAM de sa console, carte memoire et photos
+PCB. Images compressees doivent etre reconvertibles losslessly.
+
+
+==============================================================================
+61. SECURITE ET LIMITES JURIDIQUES
+==============================================================================
+
+BIOS/IPL, SDK Nintendo, jeux et cles ne sont pas libres. Utiliser devkitPPC/libogc
+et ses propres dumps selon le droit applicable. Ce document ne donne pas de cle ou
+procedure de contournement.
+
+Un chargeur/emulateur doit traiter DOL, FST, images disque, GCI et paquets reseau
+comme hostiles : arithmetique bornee, offsets valides, chemins normalises, tailles
+DMA alignees et ecritures sauvegarde atomiques.
+
+
+==============================================================================
+62. REFERENCES
+==============================================================================
+
+Documents constructeurs et architecture :
+
+- ATI Technologies, Implementation of the ATI Flipper Chip, DATE 2001 :
+  https://past.date-conference.com/proceedings-archive/2001/DATE01/PDFFILES/09E_2.PDF
+- IBM PowerPC 750/750CX family documentation, utile avec prudence : Gekko ajoute
+  Paired Singles et possede des differences propres a Nintendo.
+- Nintendo, documentation utilisateur GameCube conservee par le support :
+  https://en-americas-support.nintendo.com/app/answers/detail/a_id/16961
+
+Implementations et documentation libre :
+
+- devkitPro libogc API : https://libogc.devkitpro.org/
+- devkitPro examples : https://github.com/devkitPro/gamecube-examples
+- Dolphin Emulator, sources : https://github.com/dolphin-emu/dolphin
+- manuel DSP GameCube reconstruit dans Dolphin :
+  https://github.com/dolphin-emu/dolphin/tree/master/docs/DSP/GameCube_DSP_Users_Manual
+- documentation architecture Dolphin :
+  https://www.mintlify.com/dolphin-emu/dolphin/architecture/core-emulation
+
+Pour les details GX non publies, confronter libogc, Dolphin, tests homebrew et
+materiel reel. Identifier clairement toute inference. Ne pas recopier des manuels
+SDK confidentiels dans un projet public.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

@@ -1,0 +1,1037 @@
+==============================================================================
+ SEGA MASTER SYSTEM - MATERIEL ET PROGRAMMATION
+ Reference Z80, VDP Mode 4, PSG, mappers et peripheriques
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Sega Master System : CPU Z80, Video Display Processor,
+VRAM/CRAM, SN76489, memoire, BIOS, cartouches, Sega Cards, controleurs et
+programmation. Il vise auteurs de jeux, outils, cartouches, diagnostics et
+emulateurs. Les variantes SG-1000/Mark III, japonaises, PAL et Game Gear sont
+comparees sans les confondre avec la cible Master System internationale.
+
+Les accents sont omis afin de conserver un fichier ASCII compatible avec les
+anciens assembleurs et outils de ROM.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et famille Sega 8 bits
+  2. Modeles, regions et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges, PAL et NTSC
+  6. Processeur Z80
+  7. Registres, drapeaux et interruptions
+  8. Jeu d'instructions Z80
+  9. Carte memoire
+ 10. Mapper Sega
+ 11. Autres mappers
+ 12. BIOS, demarrage et initialisation
+ 13. En-tete ROM Sega
+ 14. Cartouches et Sega Cards
+ 15. Ports d'entree/sortie
+ 16. VDP : architecture
+ 17. Ports et protocole VDP
+ 18. Registres VDP
+ 19. Mode 4 Sega
+ 20. VRAM et allocation
+ 21. Tuiles et format des pixels
+ 22. Name table et attributs
+ 23. Palette CRAM
+ 24. Sprites et SAT
+ 25. Priorites, collision et overflow
+ 26. Scrolling et verrouillage
+ 27. Interruptions VBlank et ligne
+ 28. Compteurs H/V et timing video
+ 29. Modes 192, 224 et 240 lignes
+ 30. Modes TMS9918 compatibles
+ 31. PSG SN76489
+ 32. Programmation du son
+ 33. FM YM2413 japonais
+ 34. Controleurs et ports DB9
+ 35. Pause, Reset et I/O control
+ 36. Light Phaser
+ 37. Paddle, Sports Pad et autres accessoires
+ 38. Assembleur : ROM minimale
+ 39. Assembleur : initialiser le mapper
+ 40. Assembleur : ecrire VRAM et registres
+ 41. Assembleur : charger tuiles et tilemap
+ 42. Assembleur : sprites
+ 43. Assembleur : interruptions
+ 44. Assembleur : lire les manettes
+ 45. Assembleur : son PSG
+ 46. C avec devkitSMS et SMSlib
+ 47. Organisation d'un jeu banque
+ 48. Graphismes et animation
+ 49. Musique, effets et echantillons
+ 50. Optimisation
+ 51. Construction et validation d'une ROM
+ 52. Debogage et outils
+ 53. Conseils pour un emulateur
+ 54. Emulation Z80, bus et mapper
+ 55. Emulation VDP
+ 56. Emulation PSG, FM et entrees
+ 57. Plan de validation
+ 58. Electronique et maintenance
+ 59. Preservation et securite
+ 60. References
+
+
+==============================================================================
+1. HISTORIQUE ET FAMILLE SEGA 8 BITS
+==============================================================================
+
+La Master System derive de la SG-1000 et de la Mark III japonaise. Sega ajoute un
+VDP ameliore, le Mode 4, plus de couleurs et un mapper de cartouche. La Mark III
+sort au Japon en 1985; la Master System est commercialisee internationalement a
+partir de 1986. La Master System II simplifie la machine et integre souvent un jeu.
+
+La Game Gear reutilise Z80, VDP Mode 4, PSG et beaucoup de conventions, mais son
+ecran, CRAM 12 bits, stereo, ports et fenetre visible different. Une ROM ne devient
+pas Game Gear seulement en changeant un octet d'en-tete.
+
+
+==============================================================================
+2. MODELES, REGIONS ET REVISIONS
+==============================================================================
+
+Sega Mark III       Japon, cartouche/Card, extension FM optionnelle
+Master System I     cartouche, Card, expansion, Reset/Pause, AV/RF selon region
+Master System II    cout reduit, souvent sans Card/Reset/AV complet
+Modeles japonais    BIOS/slots/audio FM et pinouts parfois differents
+Modeles PAL         50 Hz, davantage de lignes et horloge CPU differente
+Modeles NTSC        60 Hz environ
+Tec Toy/Samsung     revisions regionales, jeux integres et VDP/memoire variables
+
+Certaines consoles n'ont pas de BIOS ou le desactivent differemment. Les jeux
+doivent initialiser mapper et VDP eux-memes. Les adaptateurs Power Base Converter
+sur Mega Drive exposent un environnement proche, pas toutes les particularites BIOS.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU          Z80 compatible, env. 3,579545 MHz NTSC / 3,546894 MHz PAL
+RAM          8 Kio, miroir dans $C000-$FFFF
+VDP          Sega 315-5124 et revisions, derive TMS9918
+VRAM         16 Kio
+CRAM         32 octets, deux palettes de 16 couleurs
+Video        256x192 standard; 224/240 sur VDP compatibles
+Couleurs     32 simultanees, palette de 64 en SMS Mode 4
+Sprites      64 definitions, maximum 8 par ligne
+Son          PSG SN76489-compatible, 3 tones + bruit
+FM           YM2413 optionnel sur certains systemes japonais
+Entrees      deux ports manette, Pause sur console, Reset selon modele
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+                    +------------------+
+                    | Z80              |
+                    +--------+---------+
+                             | bus memoire/I-O
+       +---------------------+------------------------+
+       |                     |                        |
+ +-----v------+       +------v------+          +------v------+
+ | VDP        |       | PSG         |          | Cartouche   |
+ | VRAM/CRAM  |       | SN76489     |          | ROM/mapper  |
+ +-----+------+       +-------------+          +-------------+
+       |                     |                        |
+   video RGB/RF          audio mono            SRAM/peripheriques
+                             |
+                     I/O chip et manettes
+
+Le Z80 n'accede pas directement a la VRAM : tout passe par les ports VDP. Le VDP
+genere les interruptions ligne/VBlank. Le PSG est write-only dans l'usage normal.
+
+
+==============================================================================
+5. HORLOGES, PAL ET NTSC
+==============================================================================
+
+NTSC part d'un master 10,738635 MHz, CPU divise par trois. PAL utilise environ
+10,640684 MHz. Le VDP travaille avec son horloge pixel/interne et produit 262 lignes
+NTSC ou 313 PAL selon version/mode. Cadence approche 59,92 ou 49,70 Hz.
+
+Une ligne video compte 342 dots VDP. Le Z80 et VDP ne sont pas dans une simple
+relation instruction/pixel fixe a toutes phases; acces VDP peuvent inserer des
+attentes selon modele. Utiliser IRQ et compteurs pour raster.
+
+Le temps VBlank PAL est plus long. Un jeu doit ajuster simulation/musique afin de
+ne pas tourner 5/6 de la vitesse sur PAL.
+
+
+==============================================================================
+6. PROCESSEUR Z80
+==============================================================================
+
+Registres A,F,B,C,D,E,H,L; paires AF,BC,DE,HL; banque alternative; IX/IY; SP,PC;
+I vecteur et R refresh. Drapeaux S,Z,Y,H,X,P/V,N,C. Donnees 8 bits, adresses 16,
+mots little-endian.
+
+Ports I/O ont 16 bits sur bus avec `OUT (C),r`; beaucoup de circuits SMS ne
+decodent que le bas. `OUT (n),A` place A sur l'octet haut, ce qui peut affecter un
+decode partiel. Pile descendante en RAM.
+
+
+==============================================================================
+7. REGISTRES, DRAPEAUX ET INTERRUPTIONS
+==============================================================================
+
+VDP demande INT masqueable. Le logiciel emploie habituellement IM1, vecteur $0038.
+Pause relie NMI, vecteur $0066. `EI` est differe d'une instruction; l'IRQ est
+acquittee/identifiee par lecture du status VDP. NMI Pause doit debouncer par logiciel.
+
+`RETI` restaure comme RET mais signale aux circuits en chaine; l'utiliser en ISR.
+`HALT` attend IRQ/NMI et continue a executer cycles M1. Sauver registres modifies,
+y compris banque alternative si l'ISR fait `EXX`.
+
+
+==============================================================================
+8. JEU D'INSTRUCTIONS Z80
+==============================================================================
+
+Chargement : LD, PUSH, POP, EX, EXX, LDI/R/D/R. ALU : ADD, ADC, SUB, SBC, AND,
+OR, XOR, CP, INC, DEC, NEG, DAA, CPL, CCF, SCF. 16 bits : ADD, ADC/SBC HL.
+
+Bits : BIT, SET, RES. Rotation/decalage : RLC, RL, RRC, RR, SLA, SRA, SRL,
+RLCA/RLA/RRCA/RRA, RLD/RRD; SLL est non documente. Controle : JP, JR, DJNZ,
+CALL, RET, RST, HALT. I/O : IN, OUT et block INI/R/D/R, OUTI/R/D/R.
+
+Systeme : DI, EI, IM 0/1/2, LD I/R, RETI/RETN. Prefixes CB, ED, DD, FD et DDCB/
+FDCB. Flags X/Y et timing des instructions block sont observables en emulation.
+
+
+==============================================================================
+9. CARTE MEMOIRE
+==============================================================================
+
+$0000-$03FF  premier kilo-octet de ROM, garanti fixe avec mapper Sega
+$0400-$3FFF  slot 0, normalement banque choisie par $FFFD
+$4000-$7FFF  slot 1, banque $FFFE
+$8000-$BFFF  slot 2, banque $FFFF ou SRAM selon $FFFC
+$C000-$DFFF  RAM 8 Kio
+$E000-$FFFF  miroir de RAM
+$FFFC-$FFFF  octets RAM visibles et registres mapper sur ecriture
+
+Une lecture $FFFC-$FFFF lit le miroir RAM sur le mapper standard; une ecriture met
+a jour RAM et logique mapper selon implementation. Ne pas placer pile sur ces quatre
+octets. Les 1 Kio fixes permettent initialisation quelle que soit banque au reset.
+
+
+==============================================================================
+10. MAPPER SEGA
+==============================================================================
+
+$FFFC controle : bits de selection SRAM, banque SRAM et options mapper.
+$FFFD selection banque 16 Kio pour $0000-$3FFF, sauf $0000-$03FF fixe banque 0.
+$FFFE selection banque pour $4000-$7FFF.
+$FFFF selection banque pour $8000-$BFFF.
+
+Au reset, ne pas supposer FFFD-FFFF = 0,1,2 sur toutes cartouches sans reset du
+mapper. Code et table d'initialisation doivent etre dans $0000-$03FF : ecrire
+`$00,$00,$01,$02` a FFFC-FFFF, puis sauter au code principal.
+
+SRAM cartouche est souvent 8/16/32 Kio dans slot 2; $FFFC choisit moitie. Sauvegarder
+banque/controle avant usage et desactiver SRAM avant appeler ROM du slot 2.
+
+
+==============================================================================
+11. AUTRES MAPPERS
+==============================================================================
+
+Codemasters : registres de banque par ecritures a $0000, $4000, $8000; variantes
+avec RAM. Korean mappers utilisent adresses $A000, $FFFF ou combinaisons. Certaines
+ROM 32/48 Kio sont sans mapper. Multi-carts/flashcarts ajoutent logique propre.
+
+Taille ROM ne suffit pas a identifier mapper. Utiliser en-tete/manifest/base de
+donnees et ne pas essayer tous les schemes par ecritures destructrices. Un emulateur
+doit declarer mapper par logiciel charge.
+
+
+==============================================================================
+12. BIOS, DEMARRAGE ET INITIALISATION
+==============================================================================
+
+Selon console, BIOS affiche logo/jeu integre, teste region/slot et transfere a ROM.
+Port $3E controle activation BIOS, cartouche, Card, RAM et I/O selon bits actifs
+bas. Une fois BIOS desactive, sa reactivation/comportement varie.
+
+Jeu initialise : DI, IM1, SP en RAM, mapper, RAM, ports I/O, VDP affiche off,
+VRAM/CRAM, registres VDP, status lu, puis IRQ/display. Ne dependre ni du BIOS ni de
+RAM zero afin de fonctionner sur Mark III, SMS II et Game Gear adapte.
+
+
+==============================================================================
+13. EN-TETE ROM SEGA
+==============================================================================
+
+Signature `TMR SEGA` se trouve normalement a $7FF0 pour ROM >=32 Kio, ou aux
+positions alternatives $1FF0/$3FF0 selon taille. Champs contiennent checksum,
+numero produit/version et nibble region/taille.
+
+Checksum couvre une plage definie par code taille, avec exceptions historiques.
+Le BIOS de certaines regions le verifie, d'autres non. Les valeurs region courantes
+distinguent SMS Japon/export et Game Gear. Employer `makesms`/outil moderne, ne pas
+fabriquer le nibble depuis memoire.
+
+Cet en-tete est dans la ROM. Il ne faut pas le confondre avec un header de dump de
+512 octets present dans d'anciens fichiers; supprimer ce dernier pour emulation.
+
+
+==============================================================================
+14. CARTOUCHES ET SEGA CARDS
+==============================================================================
+
+Cartouches peuvent atteindre plusieurs centaines de Kio avec mapper et SRAM.
+Sega Cards/My Cards sont fines et generalement limitees a 32 Kio sans banking.
+Master System II supprime souvent le lecteur de Card. Les connecteurs japonais et
+export ne sont pas mecaniquement identiques sans adaptateur.
+
+Le port expansion de SMS I accueille accessoires regionaux; il ne fait pas partie
+du bus standard de chaque modele. Ne jamais hot-plugger cartouche/Card.
+
+
+==============================================================================
+15. PORTS D'ENTREE/SORTIE
+==============================================================================
+
+$3E  memory control (BIOS/cart/Card/RAM/I-O enables)
+$3F  I/O control, directions/niveaux TH/TR
+$7E  lecture V counter; ecriture PSG
+$7F  lecture H counter; ecriture PSG
+$BE  VDP data
+$BF  VDP control en ecriture, status en lecture
+$DC  I/O port A/B directions/boutons (miroir $C0)
+$DD  I/O port B, TH et signaux (miroir $C1)
+$F0  YM2413 address (Japon/FM)
+$F1  YM2413 data
+$F2  audio control/detection FM selon modele
+
+Le decode est souvent masque; documenter miroirs avant emuler. Les lectures de
+ports non presents donnent pull-ups/open bus selon hardware.
+
+
+==============================================================================
+16. VDP : ARCHITECTURE
+==============================================================================
+
+VDP possede 16 Kio VRAM et 32 octets CRAM accessibles via ports. En Mode 4, il
+lit une name table de tuiles, motifs 4 bpp et Sprite Attribute Table, applique
+scrolling/priorite/palette et produit 256 pixels actifs.
+
+Il maintient adresse 14 bits, code d'acces 2 bits, read buffer, registres, compteur
+ligne, IRQ line/frame, status collision/overflow et logique sprite. Les acces CPU
+partagent le port avec fetch video et ont des contraintes de debit.
+
+
+==============================================================================
+17. PORTS ET PROTOCOLE VDP
+==============================================================================
+
+Une commande VDP se fait par deux OUT successifs a $BF : octet bas adresse puis
+octet haut contenant bits adresse et code : 00 lecture VRAM, 01 ecriture VRAM,
+10 ecriture registre, 11 ecriture CRAM. L'adresse s'auto-incremente apres data.
+
+Lecture VRAM est bufferisee : programmer adresse read precharge, puis `IN A,($BE)`
+retourne buffer et lance lecture suivante. Les details du premier octet dependent
+de la sequence. Lire status $BF reinitialise latch des deux octets de commande et
+acquitte flags/IRQ; ne pas l'intercaler dans une commande.
+
+Lors de longues copies, DI ou protocole ISR doit proteger les deux OUT control.
+
+
+==============================================================================
+18. REGISTRES VDP
+==============================================================================
+
+R0  mode/line IRQ, colonne gauche blank, locks scroll
+R1  display, VBlank IRQ, sprite 8x16/zoom, bits mode
+R2  base name table
+R3  color table modes legacy
+R4  pattern table modes legacy
+R5  base Sprite Attribute Table
+R6  base motifs sprites 0/256
+R7  backdrop/border, entree palette sprite
+R8  scroll horizontal
+R9  scroll vertical
+R10 reload du line counter
+
+Bits inutilises doivent prendre valeurs recommandees, car ils selectionnent modes
+legacy/hauteur. Les bases sont contraintes/alignees par bits effectivement cables.
+
+
+==============================================================================
+19. MODE 4 SEGA
+==============================================================================
+
+Mode 4 fournit tuiles 8x8, 4 bits/pixel, deux palettes, flip H/V et priorite par
+tuile. Ecran standard 32x24 tuiles. Le background scroll modulo 256 horizontal et
+224/256 vertical selon mode, avec options de verrouillage haut/droite.
+
+Contrairement au TMS9918 Graphics II, chaque entree de name table est un mot 16
+bits riche et les patterns ont quatre bitplanes. C'est le mode recommande.
+
+
+==============================================================================
+20. VRAM ET ALLOCATION
+==============================================================================
+
+VRAM unique 16 Kio contient patterns, name table et SAT. Exemple classique :
+
+$0000-$37FF  jusqu'a 448 tuiles (448*32)
+$3800-$3EFF  name table 32x28 mots selon hauteur/allocation
+$3F00-$3FFF  SAT (base configuree R5)
+
+Ce n'est qu'une disposition. Les 512 indices de tuiles couvrent 16K complets;
+name/SAT reduisent l'espace utilisable et peuvent volontairement chevaucher avec
+prudence. Le VDP n'empeche pas les chevauchements.
+
+Mettre a jour VRAM pendant display actif est possible mais debit limite; VBlank ou
+display off est preferable pour gros transferts.
+
+
+==============================================================================
+21. TUILES ET FORMAT DES PIXELS
+==============================================================================
+
+Une tuile Mode 4 occupe 32 octets : pour chaque ligne, quatre octets de bitplanes
+0,1,2,3. Pour pixel x, couleur = somme bit(plane n, 7-x)<<n. Les outils convertissent
+PNG vers ce format et suppriment doublons/flips.
+
+Indice 0..511. Les sprites choisissent moitie basse/haute par R6 et bit d'index;
+en 8x16, bit bas de tuile est ignore/paire selon VDP. Ne pas uploader format linear
+4 bpp ou Game Gear CRAM par erreur.
+
+
+==============================================================================
+22. NAME TABLE ET ATTRIBUTS
+==============================================================================
+
+Chaque entree 16 bits little-endian : bits 0-8 index tuile; bit 9 H flip; bit 10
+V flip; bit 11 palette background/sprite; bit 12 priorite; bits hauts non utilises
+ou propres a extensions. Une tile prioritaire masque les sprites sauf pixels BG
+couleur zero selon regles VDP.
+
+Name table standard 32 colonnes; hauteur memoire depend modes 192/224/240. Scroll
+fait wrap. Ecrire mot bas puis haut via data port, adresse auto-incrementee.
+
+
+==============================================================================
+23. PALETTE CRAM
+==============================================================================
+
+SMS CRAM a 32 octets : palette BG 0-15, sprite 16-31. Chaque octet encode RGB222,
+64 couleurs : deux bits rouge, vert, bleu selon ordre VDP. Couleur sprite zero est
+transparente; backdrop R7 selectionne une entree de palette sprite.
+
+Ecrire CRAM avec code 3. Les changements en ligne creent raster colors mais ont
+timing/artefacts. Game Gear utilise 64 octets RGB444, deux octets par couleur :
+ne pas reutiliser routines SMS sans conversion.
+
+
+==============================================================================
+24. SPRITES ET SAT
+==============================================================================
+
+Jusqu'a 64 sprites. SAT est separee : 64 octets Y a base R5, puis vers base+128
+les paires X/tile. Y est stocke comme position moins un; valeurs wrap permettent
+haut ecran. En mode 192 lignes, $D0 termine la liste Y; valeur/terminateur change
+pour hauteurs et VDP, donc suivre mode.
+
+Sprites 8x8 ou 8x16, zoom x2 optionnel. Tous utilisent palette sprite. R0 peut
+decaler X de -8 pour bord gauche. Il n'existe ni flip sprite ni palette individuelle.
+
+Maintenir shadow SAT en RAM, puis copier pendant VBlank. Ne modifier Y sans X/tile
+coherent pendant scan.
+
+
+==============================================================================
+25. PRIORITES, COLLISION ET OVERFLOW
+==============================================================================
+
+Maximum huit sprites par scanline; les suivants ne sont pas dessines. L'ordre SAT
+donne priorite, premier devant. Status VDP bit 5 signale collision de pixels sprite
+non transparents; bit 6 overflow et les bits bas donnent index du sprite concerne
+sur certains VDP/modes. Bit 7 VBlank.
+
+Lire status efface flags/IRQ. Collision ne donne pas coordonnee et peut etre latch
+meme si background prioritaire masque visuellement. Pour gameplay fiable, calculer
+collisions en logiciel; status peut servir effets/tests.
+
+
+==============================================================================
+26. SCROLLING ET VERROUILLAGE
+==============================================================================
+
+R8 scroll horizontal (sens materiel inverse d'une camera selon convention), R9
+vertical. R0 peut verrouiller horizontal des lignes hautes (HUD) et vertical des
+colonnes droites, plus masquer colonne gauche. Le scroll horizontal bas 0..7 cree
+colonne partielle et wrapping.
+
+Pour monde plus grand, mettre a jour colonne/ligne qui entre dans name table 32x28.
+Faire copies VRAM en VBlank et changer R8/R9 atomiquement via registre.
+
+
+==============================================================================
+27. INTERRUPTIONS VBLANK ET LIGNE
+==============================================================================
+
+R1 active frame/VBlank IRQ. R0 active line IRQ. R10 est valeur de reload d'un
+compteur decrementant durant lignes actives; a underflow, demande IRQ et recharge.
+Le comportement au VBlank et ecriture R10 en vol doit etre reproduit precisement.
+
+Handler IM1 lit status $BF pour distinguer/ack VBlank et maintient un shadow des
+causes; le line IRQ n'a pas un bit status simple sur toutes revisions, donc suivre
+ordre et compteur logiciel. Effectuer raster writes, sauver registres, RETI.
+
+
+==============================================================================
+28. COMPTEURS H/V ET TIMING VIDEO
+==============================================================================
+
+IN $7E lit V counter, IN $7F H counter latch. V counter n'est pas un simple numero
+0..261 : il saute/wrappe selon region et mode. Tables NTSC/PAL sont documentees.
+H counter est capture par transition TH des ports, notamment Light Phaser; lecture
+retourne une valeur avec granularite/decalage propres au VDP.
+
+Pour raster, utiliser line IRQ plutot qu'attente sur V counter seule. Un emulateur
+doit retourner les discontinuites exactes, exploitees par detection region.
+
+
+==============================================================================
+29. MODES 192, 224 ET 240 LIGNES
+==============================================================================
+
+VDP recents supportent Mode 4 a 192, 224 et 240 lignes par combinaison de bits
+M1/M2/M3/M4. Les modes hauts reduisent VBlank et changent name table, terminaison
+sprites, V counter et compatibilite. Les premiers VDP/Mark III peuvent ne pas les
+supporter correctement.
+
+Pour cible universelle, 192 lignes. Detecter type VDP ou declarer exigence avant
+224/240. PAL ne signifie pas automatiquement 240 lignes actives.
+
+
+==============================================================================
+30. MODES TMS9918 COMPATIBLES
+==============================================================================
+
+VDP conserve Graphics I/II, Text et Multicolor pour compatibilite SG-1000. Ils
+emploient R2-R4, pattern/color tables TMS, palette fixe et format sprite different.
+Les details/mirrors dependent des bits M. Mode 4 desactive ces conventions.
+
+Un emulateur Master System doit les implementer pour anciens logiciels/adaptateurs,
+mais un nouveau jeu utilise Mode 4. Ne melanger pas SAT ou pattern layouts.
+
+
+==============================================================================
+31. PSG SN76489
+==============================================================================
+
+Quatre sorties logiques : trois tones avec diviseur 10 bits, un bruit avec LFSR,
+chacun attenuation 4 bits (0 fort, 15 silence). Interface write-only a $7E/$7F.
+
+Premier octet latch : bit7=1, bits6-5 canal, bit4 tone/noise ou volume, nibble data.
+Pour periode tone, envoyer latch avec 4 bits bas puis data byte bit7=0 contenant
+6 bits hauts. Bruit choisit white/periodic et frequence fixe ou derivee tone 2.
+
+La variante Sega a feedback/taps et largeur LFSR a reproduire, differents de
+certaines puces TI. Frequence tone approximative clockPSG/(32*N), N=0 particulier.
+
+
+==============================================================================
+32. PROGRAMMATION DU SON
+==============================================================================
+
+Une musique met a jour periodes/volumes a 50/60 Hz ou cadence plus fine. Comme le
+PSG est write-only, garder shadows des registres. Ecrire volume 15 aux quatre canaux
+avant jouer. Pour SFX, arbitrer canaux et restaurer musique apres effet.
+
+Enveloppes sont logicielles. Arpeges rapides simulent accords; bruit fournit caisse/
+explosions. Les steps volume sont logarithmiques, pas lineaires.
+
+
+==============================================================================
+33. FM YM2413 JAPONAIS
+==============================================================================
+
+Le module FM japonais utilise YM2413, 9 canaux 2 operateurs ou 6 melodies + 5
+percussions, instruments predefinis et un instrument utilisateur. Ports $F0 adresse,
+$F1 data; $F2 controle/detection audio selon materiel.
+
+Jeux compatibles detectent FM puis peuvent couper/combiner PSG. L'extension n'est
+pas standard sur consoles export. Un emulateur doit permettre presence configuree,
+pas activer FM uniquement parce que des ecritures F0 existent.
+
+
+==============================================================================
+34. CONTROLEURS ET PORTS DB9
+==============================================================================
+
+Chaque pad : Up, Down, Left, Right, bouton 1 et 2 actifs bas. $DC regroupe port A
+et une partie B; $DD reste de B et lignes TH. I/O control $3F choisit direction/
+niveau de TH/TR pour peripheriques bidirectionnels.
+
+Pads Mega Drive sont electriquement proches; boutons additionnels demandent
+protocole TH et routine specifique. Ne pas conduire deux sorties opposees : regler
+direction avant niveau et restaurer etat.
+
+
+==============================================================================
+35. PAUSE, RESET ET I/O CONTROL
+==============================================================================
+
+Pause est sur la console, reliee NMI, pas un bit de pad. Handler $0066 met un flag
+et retourne; gameplay traite flag/debounce. Appui maintenu ne doit pas basculer
+plusieurs fois selon comportement edge.
+
+Reset est lu par I/O chip sur SMS I ou absent SMS II; il peut reinitialiser selon
+revision. Port $3F controle TH/TR et region via lignes; une mauvaise ecriture peut
+perturber Light Phaser ou detection. Conserver shadow.
+
+
+==============================================================================
+36. LIGHT PHASER
+==============================================================================
+
+Le Light Phaser detecte faisceau CRT. Le logiciel dessine cible lumineuse, surveille
+TH, puis lit H/V counters pour position. Le H counter est latch sur transition TH.
+Offset depend du canon, television et region; calibrer.
+
+Ecrans plats ne produisent pas le balayage attendu. Emulateur peut mapper souris,
+mais doit generer transition/latch aux bonnes coordonnees et trigger pad. Les jeux
+peuvent eteindre/rallumer ecran pour isoler cibles multiples.
+
+
+==============================================================================
+37. PADDLE, SPORTS PAD ET AUTRES ACCESSOIRES
+==============================================================================
+
+Paddle Controller encode position en deux nibbles alternes avec signal TH. Sports
+Pad est trackball et fournit mouvement via protocole multiplexe. Rapid Fire,
+Handle Controller, lunettes 3-D et clavier regional utilisent ports/expansion.
+
+SegaScope 3-D commute obturateurs gauche/droite via Card/port, synchronises aux
+frames; exige CRT et 60 Hz. Un jeu doit detecter accessoire et proposer pad.
+
+
+==============================================================================
+38. ASSEMBLEUR : ROM MINIMALE
+==============================================================================
+
+        org $0000
+        di
+        im 1
+        jp MapperInit
+
+        org $0038
+IRQ:    push af
+        in a,($BF)            ; status/ack VDP
+        ld (VDPStatus),a
+        pop af
+        ei
+        reti
+
+        org $0066
+NMI:    ld a,1
+        ld (PauseFlag),a
+        retn
+
+Le reset et MapperInit restent dans $0000-$03FF. Placer pile et variables en RAM
+par le linker, et l'en-tete `TMR SEGA` a l'offset adapte.
+
+
+==============================================================================
+39. ASSEMBLEUR : INITIALISER LE MAPPER
+==============================================================================
+
+MapperInit:
+        ld de,$FFFC
+        ld hl,MapperValues
+        ld bc,4
+        ldir
+        jp Main
+
+MapperValues:
+        db $00,$00,$01,$02
+
+Main:
+        ld sp,$DFF0
+        ; initialiser RAM/VDP
+
+Toute cette sequence/table doit etre dans le premier Kio. Sur mapper non Sega,
+utiliser startup propre; ne pas ecrire FFFC au hasard.
+
+
+==============================================================================
+40. ASSEMBLEUR : ECRIRE VRAM ET REGISTRES
+==============================================================================
+
+VDPDATA equ $BE
+VDPCTRL equ $BF
+
+; HL=adresse VRAM, A=octet. L'appelant protege les deux OUT de commande
+; contre une interruption VDP qui accederait elle aussi au port $BF.
+VDPWriteByte:
+        push af
+        ld c,VDPCTRL
+        out (c),l
+        ld a,h
+        and $3F
+        or $40
+        out (c),a
+        pop af
+        ld c,VDPDATA
+        out (c),a
+        ret
+
+Ne pas ajouter aveuglement DI/EI dans cette routine : EI modifierait l'etat
+d'interruption de l'appelant. Entourer l'appel d'une section critique adaptee au
+programme, ou garantir que l'ISR ne touche pas au VDP. Pour le registre R1,
+envoyer la valeur puis `$80|1` au port de controle.
+
+
+==============================================================================
+41. ASSEMBLEUR : CHARGER TUILES ET TILEMAP
+==============================================================================
+
+; HL=source ROM, DE=adresse VRAM, B=taille (1..255; 0 signifie 256)
+CopyToVRAM:
+        ld c,$BF
+        out (c),e
+        ld a,d
+        and $3F
+        or $40
+        out (c),a
+        ld c,$BE
+.loop: ld a,(hl)
+        out (c),a
+        inc hl
+        djnz .loop
+        ret
+
+Proteger les deux OUT control contre ISR. Pour longues copies actives, respecter
+debit VDP; display off ou VBlank est plus sur.
+
+
+==============================================================================
+42. ASSEMBLEUR : SPRITES
+==============================================================================
+
+ShadowSAT:
+        defs 256,0
+
+; Sprite 0 : Y=79 pour afficher vers y=80, X=100, tile=5.
+        ld a,79
+        ld (ShadowSAT+0),a
+        ld a,$D0
+        ld (ShadowSAT+1),a     ; terminateur apres sprite 0 en mode 192
+        ld a,100
+        ld (ShadowSAT+128),a
+        ld a,5
+        ld (ShadowSAT+129),a
+
+Copier la plage SAT vers base R5 pendant VBlank. Initialiser toutes entrees Y au
+terminateur pour ne pas afficher des sprites aleatoires.
+
+
+==============================================================================
+43. ASSEMBLEUR : INTERRUPTIONS
+==============================================================================
+
+IRQHandler:
+        push af
+        push hl
+        in a,($BF)
+        bit 7,a
+        jr z,.line
+        ld hl,FrameCounter
+        inc (hl)
+        jr .done
+.line: ; changements raster bornes
+.done: pop hl
+        pop af
+        ei
+        reti
+
+Lire status une seule fois et conserver. Selon VDP, line et frame peuvent etre
+pending ensemble; une simple branche peut perdre le traitement line. Une version
+robuste suit les deux causes et son compteur.
+
+
+==============================================================================
+44. ASSEMBLEUR : LIRE LES MANETTES
+==============================================================================
+
+        in a,($DC)
+        cpl
+        ld (PadBitsLow),a
+        in a,($DD)
+        cpl
+        ld (PadBitsHigh),a
+
+Les bits exacts : port A directions/boutons dans $DC bas; port B repartis entre
+$DC haut et $DD bas. Utiliser equates. Calculer `pressed=current & ~previous` et
+ignorer bits TH/slot lors de comparaison.
+
+
+==============================================================================
+45. ASSEMBLEUR : SON PSG
+==============================================================================
+
+PSG equ $7F
+
+; Tone canal 0, periode $120, volume fort.
+        ld a,$80 | ($120 & $0F)
+        out (PSG),a
+        ld a,($120 >> 4) & $3F
+        out (PSG),a
+        ld a,$90 | 2          ; attenuation 2
+        out (PSG),a
+
+Les expressions immediates dependent de l'assembleur. Pour couper canal 0, envoyer
+$9F. Initialiser aussi $BF,$DF,$FF pour autres canaux.
+
+
+==============================================================================
+46. C AVEC DEVKITSMS ET SMSLIB
+==============================================================================
+
+#include "SMSlib.h"
+
+void main(void) {
+    SMS_init();               /* crt0 devkitSMS le fait souvent deja */
+    SMS_displayOn();
+    for (;;) {
+        unsigned int pressed;
+        SMS_waitForVBlank();
+        pressed = SMS_getKeysPressed();
+        if (pressed & PORT_A_KEY_1) {
+            SMS_setBackdropColor(1);
+        }
+        SMS_initSprites();
+        SMS_addSprite(80, 80, 0);
+        SMS_finalizeSprites();
+        SMS_copySpritestoSAT();
+    }
+}
+
+L'ordre est : initSprites, addSprite, finalize, copy chaque frame. Charger au
+prealable les motifs et la palette employes. L'API varie avec la version; le crt0
+initialise normalement mapper, VDP, IRQ et traitement du bouton Pause.
+
+
+==============================================================================
+47. ORGANISATION D'UN JEU BANQUE
+==============================================================================
+
+Banque 0/premier Kio : reset, mapper init, IRQ/NMI trampolines. Zone fixe choisie :
+moteur commun et bank switch. Banques : niveaux, code, graphiques, musique. RAM 8K :
+pile, variables, shadow SAT, tile updates et buffers.
+
+Une fonction bankee sauvegarde FFFD/FFFE/FFFF shadow, commute, appelle puis restaure.
+ISR ne doit pas appeler code/data d'une banque temporairement absente. SRAM slot 2
+interdit l'acces ROM correspondante pendant sauvegarde.
+
+
+==============================================================================
+48. GRAPHISMES ET ANIMATION
+==============================================================================
+
+Preconvertir tuiles, palettes et tilemaps. Utiliser flips de name table pour reduire
+patterns. Animation BG change indices ou charge quelques tuiles. Sprites utilisent
+shadow SAT, tri par Y et politique pour limite huit par ligne (flicker/importance).
+
+Scrolling monde : name table circulaire, mettre a jour lignes/colonnes cachees puis
+R8/R9. Line IRQ pour split HUD, palette raster ou status bar. Garder ISR courte.
+
+
+==============================================================================
+49. MUSIQUE, EFFETS ET ECHANTILLONS
+==============================================================================
+
+Players PSG comme PSGlib/VGM-derived mettent a jour shadows. Musique reserve canaux;
+SFX prend canal bruit/tone puis restaure. Adapter tempo 50/60 Hz avec accumulateur
+fractionnaire ou donnees regionales.
+
+PCM 4 bits peut etre simule par ecritures rapides de volume PSG, tres couteux CPU
+et avec niveau logarithmique. Desactiver IRQ ou bufferiser prudemment; VDP/jeu en
+souffrent. FM japonais a son player separe.
+
+
+==============================================================================
+50. OPTIMISATION
+==============================================================================
+
+- placer mapper init dans $0000-$03FF;
+- zero-page n'existe pas sur Z80 : garder pointeurs en HL/DE/BC;
+- utiliser LDIR/OTIR seulement apres mesurer contention VDP;
+- display off pour chargements de niveau;
+- grouper mises a jour VRAM pendant VBlank;
+- shadows VDP/PSG, car plusieurs registres sont write-only;
+- flips/tuiles compressees pour VRAM;
+- limiter sprites par ligne;
+- bank switch en gros lots et ISR en fixe;
+- detecter PAL/NTSC pour temps et musique.
+
+
+==============================================================================
+51. CONSTRUCTION ET VALIDATION D'UNE ROM
+==============================================================================
+
+Assembler WLA-DX/SjASMPlus ou compiler SDCC/devkitSMS, lier banques 16 Kio, remplir
+taille puissance/convention mapper, inserer `TMR SEGA`, taille/region/checksum via
+outil. Produire map/symboles et ROM sans header 512 octets.
+
+Verifier banque 0, vecteurs $0038/$0066, table mapper premier Kio, en-tete a bon
+offset, SRAM et mapper manifest. Tester BIOS/no BIOS, PAL/NTSC, SMS I/II et Power
+Base Converter si cible.
+
+
+==============================================================================
+52. DEBOGAGE ET OUTILS
+==============================================================================
+
+Emulicious, MEKA, MAME, BlastEm et autres offrent debugger Z80, VRAM/tile/SAT,
+breakpoints I/O et trace. devkitSMS/SMSlib, WLA-DX, SDCC, ihx2sms, BMP2Tile,
+PSGlib et outils VGM sont courants.
+
+Sur materiel : flashcart, marqueurs palette/border, port manette et analyseur logique.
+Un crash apres changement banque signale souvent code/ISR hors slot; graphismes
+deplaces indiquent adresse VDP latch ou allocation VRAM.
+
+
+==============================================================================
+53. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Scheduler commun Z80, VDP par dot/scanline, PSG, FM, mapper et I/O. Les IRQ,
+compteurs, status et acces VRAM evoluent pendant frame. Rendu scanline peut suffire
+aux jeux; raster demos et H counter exigent granularite plus fine.
+
+Modules : CPU Z80 complet, bus/memory control, mappers, BIOS, VDP legacy+Mode4,
+PSG Sega, YM2413 optionnel, controllers/light gun/paddle et frontend PAL/NTSC.
+Save state conserve latch VDP, read buffer, line counter, LFSR et banks.
+
+
+==============================================================================
+54. EMULATION Z80, BUS ET MAPPER
+==============================================================================
+
+Implementer prefixes, flags X/Y, refresh R, IFF/EI delay, HALT, IM modes et timing
+I/O. Mapper standard garantit $0000-$03FF fixe; ecritures FFFC-FFFF mettent a jour
+registre et eventuellement RAM miroir. SRAM, Codemasters et Korean schemes distincts.
+
+Port $3E active/desactive devices avec polarite correcte. BIOS/cart/Card conflicts
+et open bus dependent du modele. Ne pas auto-initialiser banques derriere le jeu.
+
+
+==============================================================================
+55. EMULATION VDP
+==============================================================================
+
+Implementer latch deux octets, code/address, read buffer, auto-increment, VRAM/
+CRAM, registres et status side effects. Pipeline Mode4 : fetch name/pattern,
+scroll/locks, palette/priorite, sprite evaluation huit par ligne, collision/overflow.
+
+Compteurs H/V avec tables discontinuite, 192/224/240, PAL/NTSC, line counter/reload,
+frame IRQ et status ack. Modes TMS legacy pour SG-1000. Les ecritures raster et
+CRAM ont latences/artefacts a tester sur revisions VDP.
+
+
+==============================================================================
+56. EMULATION PSG, FM ET ENTREES
+==============================================================================
+
+PSG : latch/data protocol, 10-bit counters, polarite square, volumes mesures,
+noise periodic/white avec taps Sega et tone2 clock. YM2413 : registres, timers/
+rythm/instruments selon niveau d'exactitude; mixer mono/FM control.
+
+Pads actifs bas, TH/TR direction/output, Pause NMI edge, Reset, Mega Drive pad
+handshake, Paddle/Sports Pad et Light Phaser H latch. Ne simuler peripherique que
+si configure/detecte.
+
+
+==============================================================================
+57. PLAN DE VALIDATION
+==============================================================================
+
+- tous opcodes Z80, IRQ/NMI/HALT et timing I/O;
+- mapper Sega reset, premier Kio, SRAM et autres mappers;
+- BIOS/memory control/Card et headers regions;
+- VDP ports/latch/read buffer et registres;
+- Mode4 tuiles/flips/priorite/scroll et palettes;
+- SAT 64 sprites, huit par ligne, collision/overflow;
+- line/VBlank IRQ, H/V counters, 192/224/240 PAL/NTSC;
+- modes TMS9918;
+- PSG bruit/tones/latch, FM optionnel;
+- pads, Pause, Reset, Light Phaser, Paddle et Sports Pad.
+
+Comparer suites de tests publiques, traces et captures a plusieurs revisions.
+
+
+==============================================================================
+58. ELECTRONIQUE ET MAINTENANCE
+==============================================================================
+
+Carte typique : Z80, VDP/custom I/O, VRAM, RAM, BIOS, PSG integre/separe selon
+revision, encodeur video, RF, regulation et ports. Quartz, pinouts AV et polarite
+adaptateur varient region/modeles. Service manual donne schemas et points de test.
+
+Pannes : regulateur/jack, condensateurs, cart/Card contacts, RAM/VRAM, VDP, encodeur
+RGB/composite, quartz, ports et soudures. Tester alimentation, reset, clock et bus
+avant remplacer custom IC. Utiliser adaptateur secteur de tension/polarite exacte.
+
+
+==============================================================================
+59. PRESERVATION ET SECURITE
+==============================================================================
+
+Dumper ROM sans copier header 512, identifier mapper/SRAM/region/PCB et SHA-256.
+Conserver BIOS de sa console, jeu integre, Card et EEPROM/SRAM separement. Documenter
+revisions VDP et service manuals.
+
+ROM/BIOS restent proteges; distribuer uniquement contenus autorises. Un parseur ROM
+borne tailles et mappers. Cartouche moderne doit respecter 5 V et eviter contention.
+Le CRT/RF/alimentation comporte hautes tensions : reparation qualifiee.
+
+
+==============================================================================
+60. REFERENCES
+==============================================================================
+
+Documents Sega et materiel :
+
+- Sega Master System Service Manual :
+  https://datassette.org/manuais/us-estados-unidos-hardware-master-system-sega-manuais/sega-master-system-service-manual
+- index SMS Power des documents officiels et techniques :
+  https://www.smspower.org/Development/Documents
+- Sega Mark III Hardware Reference Manual et documents VDP indexes sur SMS Power.
+
+References de programmation :
+
+- SMS Power Development : https://www.smspower.org/Development/Index
+- guide de demarrage et initialisation sure du mapper :
+  https://www.smspower.org/Development/GettingStarted
+- documentation VDP de Charles MacDonald :
+  https://www.smspower.org/Development/VDP-Index
+- devkitSMS/SMSlib : https://github.com/sverx/devkitSMS
+- API SMSlib : https://github.com/sverx/devkitSMS/blob/master/SMSlib/README.md
+
+Les VDP, BIOS et mappers varient selon region/revision. Pour une implementation
+precise, confronter documents Sega, notes mesurees SMS Power, schemas, tests sur
+console et plusieurs emulateurs. Identifier clairement toute approximation.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

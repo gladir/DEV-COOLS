@@ -1,0 +1,1096 @@
+==============================================================================
+ MATTEL INTELLIVISION
+ Materiel, programmation CP1610, EXEC/STIC et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console Intellivision de Mattel : processeur General
+Instrument CP1610, EXEC, STIC AY-3-8900, GROM, GRAM, RAM systeme, generateur
+sonore AY-3-8914, controleurs, cartouches et extensions. Il comprend la
+programmation assembleur, les contraintes video et un guide pour emulateurs.
+
+L'Intellivision emploie des mots de largeurs differentes : registres CPU 16 bits,
+opcodes/ROM EXEC souvent 10 bits, GROM/GRAM et scratchpad 8 bits, RAM systeme
+16 bits. Le terme "octet" n'est donc pas interchangeable avec "adresse".
+
+Les nombres precedes de $ sont hexadecimaux. Les accents sont omis afin de
+conserver un fichier ASCII exploitable par les outils historiques.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et identite
+  2. Modeles et compatibles
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges NTSC, PAL et cadence CPU
+  6. Processeur CP1610
+  7. Registres, drapeaux et pile
+  8. Modes d'adressage
+  9. Jeu d'instructions CP1610
+ 10. Encodage, mots et bus
+ 11. Carte memoire officielle
+ 12. Miroirs, open bus et zones cartouche
+ 13. Scratchpad RAM
+ 14. System RAM et BACKTAB
+ 15. EXEC ROM
+ 16. GROM et GRAM
+ 17. STIC : architecture video
+ 18. Fenetres d'acces et arbitrage du bus
+ 19. Registres STIC
+ 20. BACKTAB et cartes d'affichage
+ 21. Mode Foreground/Background
+ 22. Mode Color Stack
+ 23. Mode Colored Squares
+ 24. Couleurs et sortie video
+ 25. MOB : objets mobiles
+ 26. Collisions et priorites
+ 27. Bordures, delais et masquage
+ 28. Interruptions et VBlank
+ 29. PSG AY-3-8914
+ 30. Controleurs manuels
+ 31. Disque directionnel et clavier
+ 32. Connecteur cartouche et ROM
+ 33. En-tete EXEC d'une cartouche
+ 34. Formats BIN+CFG, ROM et LUIGI
+ 35. Intellivoice
+ 36. Entertainment Computer System
+ 37. Keyboard Component et PlayCable
+ 38. System Changer et autres extensions
+ 39. Initialisation avec EXEC
+ 40. Programmation sans EXEC
+ 41. Exemple CP1610 minimal
+ 42. Copie en GRAM
+ 43. Affichage d'une carte BACKTAB
+ 44. Affichage et mouvement d'un MOB
+ 45. Lecture des controleurs
+ 46. Programmation sonore
+ 47. Gestion de l'interruption
+ 48. Boucle de jeu et cadence
+ 49. Optimisation CP1610
+ 50. Construction d'une cartouche
+ 51. Guide d'implementation d'un emulateur
+ 52. Emulation du STIC
+ 53. Emulation du son et des entrees
+ 54. Cas limites et erreurs frequentes
+ 55. Diagnostic et maintenance
+ 56. Outils, tests et validation
+ 57. References
+
+
+==============================================================================
+1. HISTORIQUE ET IDENTITE
+==============================================================================
+
+Mattel Electronics lance l'Intellivision apres un test commercial en 1979, avec
+diffusion large en 1980. Son nom contracte "intelligent television". Elle se
+distingue par son CPU 16 bits, ses graphismes a cartes, ses controleurs a disque
+et une ROM Executive fournissant des services communs aux cartouches.
+
+Les jeux Mattel sont initialement developpes sans credit visible; les programmeurs
+se surnomment les Blue Sky Rangers. Mattel ferme sa division electronique en
+1984. INTV Corporation poursuit le materiel et les jeux, puis la communaute
+homebrew developpe nouvelles cartouches, outils et extensions.
+
+
+==============================================================================
+2. MODELES ET COMPATIBLES
+==============================================================================
+
+- Master Component 2609 : premier modele Mattel, controleurs captifs;
+- Sears Super Video Arcade : variante distribuee par Sears;
+- Tandyvision One : variante Radio Shack;
+- Intellivision II : boitier reduit, controleurs detachables, EXEC revise;
+- INTV System III / Super Pro System : production tardive;
+- variantes PAL/SECAM et revisions internes;
+- Tutorvision prototype, Aquarius et Intellivision III non equivalents.
+
+L'Intellivision II ajoute 256 mots d'EXEC a `$0400-$04FF` et contient des
+differences de reset/compatibilite. Certains jeux tiers anciens posent probleme.
+Les sorties RF, alimentations, manettes et support du System Changer varient.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU                  GI CP1610, registres 16 bits, opcodes 10 bits
+Cadence CPU NTSC      environ 894,88625 kHz
+Scratchpad RAM        240 mots de 8 bits, `$0100-$01EF`
+System RAM            352 mots de 16 bits, `$0200-$035F`
+BACKTAB               240 mots dans System RAM, `$0200-$02EF`
+EXEC ROM              4096 mots de 10 bits, `$1000-$1FFF`
+GROM                  2048 mots de 8 bits, `$3000-$37FF`
+GRAM                  512 mots de 8 bits, 64 cartes, `$3800-$39FF`
+Video                 STIC AY-3-8900/8900-1
+Ecran logique         20 x 12 cartes de 8 x 8, soit 160 x 96
+Objets mobiles        8 MOB
+Couleurs              16 codes fixes
+Son                   AY-3-8914, 3 tons + bruit + enveloppe
+Entrees               deux controleurs a 16 directions, clavier 12 touches
+
+Les 352 mots System RAM representent 704 octets physiques, mais l'adressage
+reste par mots. Avec scratchpad et GRAM, annoncer une somme unique de "RAM"
+sans largeurs est trompeur.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le CP1610 execute l'EXEC et la cartouche. System RAM est a double usage : elle
+contient BACKTAB lu par le STIC et les donnees/stack CPU. GROM fournit une police
+et des formes fixes; GRAM fournit 64 formes redefinissables. Le STIC combine
+BACKTAB, GROM/GRAM, bordure et huit MOB pour produire l'image.
+
+Le PSG fournit son et ports d'entree des controleurs. Pendant l'affichage, le
+STIC prend le bus et limite l'acces CPU a ses registres et aux memoires graphiques.
+L'interruption de trame ouvre une fenetre de programmation precise.
+
+
+==============================================================================
+5. HORLOGES NTSC, PAL ET CADENCE CPU
+==============================================================================
+
+NTSC : cycle CP1610 environ 1,117 microseconde, soit 894 886,25 cycles/s. La
+reference biphasee est parfois citee a 1,7897725 MHz; cela ne signifie pas que
+le processeur execute 1,79 million de microcycles utiles par seconde.
+
+PAL/SECAM : cycle proche de 1 microseconde, soit 1 MHz, avec cadence video 50 Hz.
+NTSC produit environ 60 trames/s. Les programmes EXEC historiques mettent souvent
+leur logique a jour a 20 Hz, mais le materiel genere bien une trame a 50/60 Hz.
+
+Une instruction prend plusieurs microcycles. Les requetes de bus STIC retirent
+en plus du temps CPU. Un emulateur ne doit pas confondre oscillateur, phase,
+microcycle, instruction et cadence de logique de jeu.
+
+
+==============================================================================
+6. PROCESSEUR CP1610
+==============================================================================
+
+Le CP1610 derive de la famille CP1600 de General Instrument, influencee par les
+mini-ordinateurs 16 bits. Il offre huit registres 16 bits R0-R7, espace adresse
+16 bits et jeu d'instructions compact code sur mots de 10 bits.
+
+R7 est compteur programme. R6 sert normalement de pointeur de pile; les modes
+indirects lui donnent un comportement de pile. R4/R5 disposent d'auto-increment
+dans plusieurs operations indirectes. R0-R3 sont generaux sans auto-modification.
+
+Reset force le demarrage a `$1000`; l'interruption STIC passe par `$1004` dans
+l'EXEC. Il n'existe pas de vecteur table comparable au 68000.
+
+
+==============================================================================
+7. REGISTRES, DRAPEAUX ET PILE
+==============================================================================
+
+R0-R3  registres generaux
+R4-R5  registres generaux/adresses avec post-increment
+R6     pointeur de pile, conventions push/pop speciales
+R7     PC et branchement indirect
+
+Drapeaux : S signe, Z zero, O overflow, C carry, I autorisation interruption et
+D double-byte-data. Les instructions ne mettent pas toutes les memes flags a
+jour. SDBD active le traitement de donnees en deux octets pour l'instruction
+memoire suivante; son etat et son interruptibilite sont des cas d'emulation.
+
+La pile EXEC est normalement dans System RAM, vers `$02F1-$0318`. Le CP1610
+pousse le PC lors d'une interruption; une pile en scratchpad 8 bits perdrait des
+bits. Eviter que pile, variables EXEC, MOB et BACKTAB se chevauchent.
+
+
+==============================================================================
+8. MODES D'ADRESSAGE
+==============================================================================
+
+Registre : operation entre Rn, sans acces memoire.
+Direct : un mot suivant contient l'adresse absolue.
+Indirect : `@Rn` lit/ecrit l'adresse pointee; R4/R5 post-incrementent, R6 suit
+les regles de pile, R7 peut lire le flux programme.
+Immediat : pseudo-forme utilisant le mot qui suit l'opcode, souvent assemblee
+avec suffixe I ou `#valeur`.
+Branchement relatif : deplacement signe, direction encodee.
+
+Le meme mnemonic peut avoir formes register, direct, indirect et immediate. Le
+mot de donnees d'une ROM 10 bits ne contient pas toujours une constante 16 bits
+en une adresse : les outils emploient DECLE, BIDECLE et SDBD selon largeur.
+
+
+==============================================================================
+9. JEU D'INSTRUCTIONS CP1610
+==============================================================================
+
+Controle CPU : HLT, SDBD, EIS, DIS, TCI, CLRC, SETC, NOP, SIN.
+Sauts/appels : J, JE/JD selon encodage, JSR, JR, branches conditionnelles.
+Unaire registre : INCR, DECR, COMR, NEGR, ADCR, GSWD, RSWD.
+Decalages/rotations : SLL, SLLC, SLR, SAR, SARC, RLC, RRC, SWAP.
+Registre-registre : MOVR, ADDR, SUBR, CMPR, ANDR, XORR.
+Memoire directe : MVO, MVI, ADD, SUB, CMP, AND, XOR.
+Memoire indirecte : MVO@, MVI@, ADD@, SUB@, CMP@, AND@, XOR@.
+Immediat assembleur : MVII, ADDI, SUBI, CMPI, ANDI, XORI.
+
+Branches usuelles : B, BC/BNC, BOV/BNOV, BPL/BMI, BEQ/BNEQ, BLT/BGE,
+BLE/BGT, BUSC/BESC et conditions externes selon assembleur. Certaines sont des
+alias d'une condition et direction. Consulter la table opcode pour cycles,
+flags et mots; ne pas transposer les mnemonics PDP-11.
+
+Instructions non interruptibles et sequences SDBD ont des contraintes precises.
+Un coeur d'emulateur doit tester chaque flag, valeur limite, auto-increment et
+adresse R6/R7.
+
+
+==============================================================================
+10. ENCODAGE, MOTS ET BUS
+==============================================================================
+
+Un "decle" est un mot adresse de 10 bits significatifs, adapte aux ROM GI.
+Le CPU manipule 16 bits; un peripherique 8/10 bits ne pilote pas les bits hauts,
+qui peuvent etre tires a 1 ou completes par logique de bus. Les cartouches
+modernes peuvent fournir de vraies donnees 16 bits.
+
+Le bus multiplexe adresse/donnees et emploie des phases de commande (BAR, IAB,
+DTB, ADAR, etc.). Les composants reconnaissent les phases, pas seulement une
+adresse stable. System RAM a des particularites en phase ADAR : du code peut y
+etre execute, mais les instructions Direct Mode executees depuis cette RAM ne
+fonctionnent pas toujours comme depuis ROM.
+
+
+==============================================================================
+11. CARTE MEMOIRE OFFICIELLE
+==============================================================================
+
+$0000-$003F  registres STIC, acces pendant VBlank phase 1
+$0100-$01EF  Scratchpad RAM, 240 mots de 8 bits
+$01F0-$01FF  registres PSG AY-3-8914
+$0200-$035F  System RAM, 352 mots de 16 bits
+$1000-$1FFF  EXEC ROM
+$3000-$37FF  GROM, acces CPU pendant VBlank phase 2
+$3800-$39FF  GRAM, acces CPU pendant VBlank phase 2
+
+Intellivision II ajoute EXEC `$0400-$04FF`. Le reste sert aux cartouches et
+extensions avec restrictions. Une lecture sans repondant voit normalement les
+pull-up du bus, donc `$FFFF`, mais les collisions/largeurs peuvent modifier cela.
+
+
+==============================================================================
+12. MIROIRS, OPEN BUS ET ZONES CARTOUCHE
+==============================================================================
+
+Decodage incomplet produit : GRAM lisible/ecrivable dans `$3A00-$3FFF` selon
+phase, et alias d'ecriture a `$7800-$7FFF`, `$B800-$BFFF`, `$F800-$FFFF`;
+STIC a `$4000-$403F`, `$8000-$803F`, `$C000-$C03F` en ecriture. Le registre mode
+a des effets via `$4021/$8021/$C021`.
+
+Zones souvent utilisables par ROM cartouche : `$5000-$6FFF`, `$9000-$AFFF`,
+`$D000-$DFFF`, etc. Mais Intellivoice, ECS, PlayCable, EXEC II et alias occupent
+d'autres plages. Une configuration `.cfg` doit declarer chaque segment.
+
+Ne pas mapper de RAM dans `$7800-$7FFF`, `$B800-$BFFF` ou `$F800-$FFFF` si les
+ecritures alias GRAM doivent rester compatibles. ROM peut etre moins problematique
+car les alias mentionnes concernent surtout ecriture.
+
+
+==============================================================================
+13. SCRATCHPAD RAM
+==============================================================================
+
+`$0100-$01EF` contient 240 mots dont seulement huit bits sont memorises. Elle est
+rapide pour compteurs, drapeaux, coordonnees et octets PSG, mais pas pour pointeur
+ou retour 16 bits sans deux cellules et reconstruction SDBD.
+
+L'EXEC reserve des parties selon ses services. Un programme autonome peut
+reutiliser davantage, apres inventaire. Lire un mot peut retourner les bits hauts
+issus des pull-up/chemin de bus; masquer avec `$00FF` quand seule la valeur 8 bits
+est semantique.
+
+
+==============================================================================
+14. SYSTEM RAM ET BACKTAB
+==============================================================================
+
+`$0200-$02EF` contient 240 mots BACKTAB, exactement 20 colonnes x 12 lignes.
+`$02F0-$035F` reste pour EXEC, pile et jeu. Carte EXEC typique :
+
+$02F0         en-tete cartouche actif
+$02F1-$0318  pile CP1610
+$031D-$035C  base de donnees MOB EXEC
+$035D         pointeur dispatch controleur
+$035E         graine aleatoire
+$035F         donnee son
+
+Le STIC lit BACKTAB au moyen d'un FIFO interne d'environ 20 mots et prend le bus.
+Modifier BACKTAB pendant l'affichage peut rencontrer le prechargement; effectuer
+les mises a jour dans la fenetre autorisee ou avec synchronisation.
+
+
+==============================================================================
+15. EXEC ROM
+==============================================================================
+
+L'Executive ROM contient 4096 mots 10 bits `$1000-$1FFF`, environ 5 Kio physiques.
+Il initialise machine, affiche titre, gere interruption, MOB, controles, son,
+tempo, collisions et services. Du code supplementaire reside dans des cartes
+GROM elevees. Intellivision II combine/revise les ROM et ajoute `$0400-$04FF`.
+
+Reset entre a `$1000`; interruption a `$1004`. L'EXEC examine des emplacements
+de boot, trouve l'en-tete cartouche et lance ses processus. Un jeu classique est
+en partie une table/configuration pour EXEC, mais un homebrew peut utiliser une
+bibliotheque autonome comme celle de jzIntv.
+
+Les adresses internes non publiees varient. Conserver EXEC/GROM appaires pour la
+revision. Une reimplementation libre minimale ne remplace pas necessairement
+tous les services attendus par les jeux commerciaux.
+
+
+==============================================================================
+16. GROM ET GRAM
+==============================================================================
+
+GROM `$3000-$37FF` : 2048 mots 8 bits. Il fournit des formes standard et environ
+344 mots de code/donnees EXEC en haut. En affichage Color Stack, GROM adresse
+jusqu'a 256 cartes; certaines sont reservees/non graphiques selon code EXEC.
+
+GRAM physique : 512 mots 8 bits = 64 cartes 8x8, canonique `$3800-$39FF`.
+Chaque carte occupe huit mots, un par ligne, bit gauche/droite selon convention
+STIC. Le CPU ne peut y acceder librement pendant toute la trame.
+
+En mode F/B, les bits d'adresse GROM sont moins completement utilises, limitant
+les cartes GROM selectionnables; GRAM reste 64 cartes. Color Stack permet une
+selection plus large.
+
+
+==============================================================================
+17. STIC : ARCHITECTURE VIDEO
+==============================================================================
+
+Le Standard Television Interface Controller AY-3-8900 produit bordure, fond,
+cartes et huit MOB. Il ne possede pas de framebuffer. BACKTAB decrit 240 cartes,
+GROM/GRAM fournissent bits, et les registres indiquent mode/couleurs/objets.
+
+L'image logique de cartes mesure 160x96. Le signal televiseur agrandit et entoure
+cette zone; parler de "resolution 320x192" de sortie echantillonnee ne change
+pas la grille logique. Les delais H/V peuvent deplacer l'image dans la bordure.
+
+
+==============================================================================
+18. FENETRES D'ACCES ET ARBITRAGE DU BUS
+==============================================================================
+
+Au VBlank, STIC interrompt CP1610. Pendant une premiere periode, le CPU peut
+ecrire les registres STIC et BACKTAB. Une seconde periode rend GROM/GRAM visibles
+au CPU. En dehors, STIC emploie ces ressources pour l'affichage et les acces
+peuvent ne pas atteindre le composant attendu.
+
+Le logiciel doit rapidement : acquitter/activer affichage, copier ombres MOB vers
+`$0000-$001F`, changer couleurs/bordure, mettre BACKTAB a jour et charger GRAM.
+Depasser la fenetre peut desactiver une image ou produire donnees partielles.
+
+Le signal BUSRQ/BUSAK donne le bus au STIC pendant environ 114 cycles CP1610 sur
+une phase NTSC documentee. Un emulateur frame-based qui ne retire jamais ces
+cycles rend les jeux trop rapides et accepte des ecritures impossibles.
+
+
+==============================================================================
+19. REGISTRES STIC
+==============================================================================
+
+$0000-$0007  MOB 0-7, registre X
+$0008-$000F  MOB 0-7, registre Y
+$0010-$0017  MOB 0-7, attribut/image
+$0018-$001F  MOB 0-7, collisions
+$0020        Display Enable, lecture/ecriture d'acquittement selon phase
+$0021        selection de mode F/B ou Color Stack par type d'acces
+$0028-$002B  pile de quatre couleurs Color Stack
+$002C        couleur de bordure
+$0030        retard horizontal, 0-7
+$0031        retard vertical, 0-7
+$0032        masquage/extension bords gauche et haut
+
+Les trous/reserves ne sont pas de la RAM. Plusieurs registres sont strobes ou
+sensibles a une lecture plutot qu'a la valeur. Employer des ombres RAM, car tous
+les champs ne se relisent pas comme ecrits.
+
+
+==============================================================================
+20. BACKTAB ET CARTES D'AFFICHAGE
+==============================================================================
+
+Chaque mot BACKTAB choisit carte GROM/GRAM, couleurs, mode et eventuellement
+avance de la Color Stack. Son interpretation change entre F/B, Color Stack et
+Colored Squares. Une constante correcte dans un mode peut devenir une autre
+forme/couleur dans l'autre.
+
+Adresse `(x,y)` = `$0200 + y*20 + x`, x=0..19, y=0..11. Une routine d'ecran doit
+calculer en mots, non en octets. Les outils `gimini.asm` fournissent masques et
+macros plus surs que des nombres magiques.
+
+
+==============================================================================
+21. MODE FOREGROUND/BACKGROUND
+==============================================================================
+
+Chaque carte choisit une couleur avant-plan et une couleur de fond depuis les
+champs du mot. Les cartes GROM disponibles sont limitees par le decodage propre
+a ce mode; GRAM fournit ses 64 cartes. Il convient aux images dont chaque carte
+a deux couleurs fixes.
+
+Les couleurs hautes et bits GRAM occupent des positions non contigues. Utiliser
+les symboles `X_*`, `C_*`, `GROM/GRAM` de la bibliotheque plutot que supposer un
+format lineaire RGB.
+
+
+==============================================================================
+22. MODE COLOR STACK
+==============================================================================
+
+Le foreground vient du mot BACKTAB; le fond vient de l'une des quatre couleurs
+`$0028-$002B`. Un bit "advance" fait passer la pile a l'entree suivante pour
+la carte courante/les suivantes. Cela permet des bandes et fonds riches avec peu
+de bits de carte.
+
+Une lecture de `$0021` pendant la bonne phase selectionne typiquement Color Stack;
+une ecriture selectionne F/B. Les alias `$4021/$8021/$C021` ont aussi un effet
+du fait du decodage incomplet. Ne pas modeliser R21 comme un simple bit RAM.
+
+
+==============================================================================
+23. MODE COLORED SQUARES
+==============================================================================
+
+Une carte peut demander Colored Squares : elle est divisee en quatre blocs 4x4,
+chacun recevant une couleur encodee. Aucune forme GROM/GRAM n'est lue pour ces
+pixels. Le format reutilise les bits BACKTAB et la pile de couleurs.
+
+Ce sous-mode sert aux damiers, terrains et fonds. Son bit d'activation et ses
+champs different suivant mode principal; confirmer par masque STIC officiel.
+
+
+==============================================================================
+24. COULEURS ET SORTIE VIDEO
+==============================================================================
+
+0 noir          1 bleu          2 rouge          3 tan/brun clair
+4 vert fonce    5 vert          6 jaune         7 blanc
+8 gris          9 cyan          A orange        B brun
+C rose          D bleu clair    E jaune-vert    F violet
+
+Ces noms sont conventionnels. Les valeurs RGB exactes dependent STIC, encodeur,
+NTSC/PAL, RF et capture. La console sort principalement RF; les modifications
+composite/RGB modernes ne font pas partie de la specification numerique.
+
+
+==============================================================================
+25. MOB : OBJETS MOBILES
+==============================================================================
+
+Le STIC offre huit Moving OBjects. Chaque MOB a X, Y, attribut/image et collision.
+Il utilise une carte GROM/GRAM, une couleur, flips horizontal/vertical, priorite,
+interaction et tailles/agrandissements. Largeur de base 8 pixels; hauteur 8 ou
+16 lignes selon bits, avec doubles dimensions possibles.
+
+Les coordonnees contiennent champs de position et bits visible/interactif. Un
+MOB peut etre dessine sans collision ou collisionner sans etre visible selon
+configuration. Les registres de collision enregistrent bordure, background et
+autres MOB sous forme de masque.
+
+
+==============================================================================
+26. COLLISIONS ET PRIORITES
+==============================================================================
+
+Le registre collision de chaque MOB comporte un bit par autre MOB et des bits
+pour fond/bordure. Les collisions sont latchees puis effacees/reinitialisees par
+le logiciel selon sequence STIC. Elles reposent sur pixels actifs et drapeaux
+d'interaction, pas uniquement rectangles englobants.
+
+Le bit "behind foreground" place le MOB derriere les pixels foreground des
+cartes, mais pas necessairement derriere leur fond. L'ordre entre MOB suit leurs
+numeros/priorites materiels. Un emulateur doit d'abord calculer presence/collision,
+puis la couleur visible selon masquage.
+
+
+==============================================================================
+27. BORDURES, DELAIS ET MASQUAGE
+==============================================================================
+
+`$002C` fixe la bordure. `$0030/$0031` retardent la zone de cartes de 0 a 7
+pixels logiques horizontalement/verticalement. `$0032` masque ou etend bord haut
+et gauche pour cacher les pixels qui entrent lors du scrolling fin.
+
+Les MOB peuvent collisionner avec les limites/bordure. Une image capturee inclut
+overscan variable; ne pas rogner exactement a 160x96 dans un emulateur si le jeu
+utilise bordure ou positions hors zone.
+
+
+==============================================================================
+28. INTERRUPTIONS ET VBLANK
+==============================================================================
+
+Le STIC genere l'unique interruption reguliere de la console. CP1610 sauvegarde
+le retour sur la pile et execute le chemin EXEC `$1004`. Le handler met a jour
+les services puis appelle les processus jeu, selon l'en-tete.
+
+EIS autorise, DIS interdit. Certaines instructions/sequences ne peuvent etre
+interrompues immediatement. Le retour EXEC attendu passe souvent par une adresse
+standard comme `$1014`, mais une routine autonome doit suivre exactement la
+convention choisie et ne pas melanger deux epilogues.
+
+L'interruption est aussi le debut du budget d'acces STIC/GRAM. Le handler doit
+eviter division, boucles non bornees et gros travail logique avant les copies.
+
+
+==============================================================================
+29. PSG AY-3-8914
+==============================================================================
+
+Le PSG derive de la famille AY-3-8910 mais son registre et son interface directe
+different. Trois tons, un generateur bruit, enveloppe partagee, melange tone/noise,
+volumes et deux ports I/O pour controleurs.
+
+$01F0-$01F2  periodes basses canaux A/B/C
+$01F3        periode enveloppe basse
+$01F4-$01F6  bits hauts periodes A/B/C
+$01F7        periode enveloppe haute
+$01F8        activation/melange des tons et bruits
+$01F9        periode du bruit
+$01FA        forme/commande enveloppe
+$01FB-$01FD  volumes A/B/C et selection enveloppe
+$01FE-$01FF  ports d'entree-sortie des controleurs
+
+Les registres sont memory-mapped, non des ports I/O separes. Les mots sont 8 bits
+utiles. L'enveloppe et bruit doivent conserver phase. Les niveaux analogiques se
+melangent de facon non parfaitement lineaire.
+
+
+==============================================================================
+30. CONTROLEURS MANUELS
+==============================================================================
+
+Chaque controleur comporte disque 16 directions, clavier 0-9/CLEAR/ENTER et
+quatre boutons lateraux physiquement couples en paires selon modele. Une feuille
+overlay imprimee se glisse au-dessus du clavier pour identifier les commandes.
+
+Les controleurs originaux sont captifs sur Master Component; detachables sur
+Intellivision II avec connecteur particulier. Le PSG lit un code matriciel, pas
+un bit independant pour chaque bouton. Plusieurs pressions peuvent produire des
+codes ambigus ou fantomes.
+
+
+==============================================================================
+31. DISQUE DIRECTIONNEL ET CLAVIER
+==============================================================================
+
+Le disque ferme des combinaisons de contacts pour 16 secteurs. Le logiciel EXEC
+decode la valeur et appelle une table de dispatch. La geometrie permet davantage
+que les huit directions d'un joystick classique.
+
+Le clavier partage les lignes avec boutons/disque. Une table de 16 bits/code
+convertit les motifs actifs bas. Pour l'emulation, reproduire la matrice et le
+code combine; ne pas forcer toute combinaison impossible vers "aucune touche".
+
+Debouncer les choix de menu et gerer autorepetition. Les boutons superieurs/
+inferieurs peuvent etre electriquement identiques sur un cote selon manette.
+
+
+==============================================================================
+32. CONNECTEUR CARTOUCHE ET ROM
+==============================================================================
+
+Le connecteur expose bus multiplexe CP1610 et phases. Les ROM GI repondent par
+pages et fournissent souvent 10 bits par adresse. Une cartouche peut contenir
+plusieurs ROM, RAM, mapper, Intellivoice/ECS pass-through ou composants modernes.
+
+Les cartouches communes placent des segments a `$5000`, `$6000`, `$7000`, `$9000`,
+`$D000`, etc. Il n'existe pas une unique plage continue universelle. Le materiel
+de cartouche doit decoder phases et largeur correcte, pas seulement /CS et /RD
+comme une EPROM 8 bits ordinaire.
+
+
+==============================================================================
+33. EN-TETE EXEC D'UNE CARTOUCHE
+==============================================================================
+
+Un en-tete EXEC-friendly contient typiquement sept champs :
+
+1. pointeur liste images MOB;
+2. pointeur table de processus;
+3. pointeur debut programme;
+4. pointeur image background;
+5. pointeur images GRAM;
+6. pointeur titre/date;
+7. drapeaux de demarrage.
+
+Suivent souvent controle bordure, mode, quatre couleurs stack et donnees. Exemple
+macro as1600 :
+
+ROMHDR: BIDECLE ZERO
+        BIDECLE ZERO
+        BIDECLE MAIN
+        BIDECLE ZERO
+        BIDECLE ONES
+        BIDECLE TITLE
+        DECLE   $03C0
+ZERO:   DECLE   0,0
+ONES:   DECLE   1,1,1,1,1
+TITLE:  STRING  $126,"DEMO INTELLIVISION",0
+
+L'adresse de ROMHDR depend du point de boot declare, souvent autour de `$5000`.
+BIDECLE encode un pointeur 16 bits en deux mots 8/10 bits dans l'ordre attendu.
+
+
+==============================================================================
+34. FORMATS BIN+CFG, ROM ET LUIGI
+==============================================================================
+
+BIN brut ne contient pas toujours ses adresses : un fichier `.cfg` de jzIntv
+decrit segments, largeur, preload, bankswitch et symboles. Sans CFG, le meme flux
+de mots peut etre charge au mauvais endroit.
+
+Le format Intellicart `.rom` encapsule segments et attributs dans un seul fichier.
+CC3/Intellicart et flash carts ont contraintes propres. LUIGI est un conteneur
+moderne avec metadonnees/integrite et possibilites de cartouche etendue.
+
+Ne pas identifier un format par extension seule. Verifier signature, CRC, largeur
+de mot, plages et mapper. Conserver l'image source et le CFG avec le binaire.
+
+
+==============================================================================
+35. INTELLIVOICE
+==============================================================================
+
+Le module Intellivoice contient le synthetiseur vocal GI SP0256-012, ROM de voix
+et connecteur traversant. Il occupe notamment `$0080-$0081` pour controle/statut
+et des plages ROM reservees autour de `$0700-$0FFF` selon composants.
+
+Le SP0256 lit des allophones/microcode et produit parole. Les jeux compatibles
+fournissent donnees vocales supplementaires. Le CPU doit respecter FIFO/ready;
+un echantillon WAV declenche par commande ne reproduit pas timings et transitions.
+
+Sans module, les lectures sont open bus. Un jeu doit continuer sans voix si
+possible. Le module ajoute sa propre sortie au melange audio.
+
+
+==============================================================================
+36. ENTERTAINMENT COMPUTER SYSTEM
+==============================================================================
+
+ECS ajoute clavier, ROM EXEC/BASIC d'environ 12 Kio, RAM, second PSG, deux ports
+manette, cassette et connecteurs. Il transforme l'ensemble en petit ordinateur
+et propose BASIC/music. Le second PSG est souvent a `$00F0-$00FF`; ses ports
+servent au clavier et extensions.
+
+ECS reserve plusieurs zones, notamment `$2000-$2FFF`, `$4000-$47FF`, `$7000-$7FFF`
+ou `$E000-$EFFF` selon ROM/banking. Une cartouche qui les utilise peut entrer en
+conflit. Detecter ECS par interface documentee, non par une valeur RAM au hasard.
+
+
+==============================================================================
+37. KEYBOARD COMPONENT ET PLAYCABLE
+==============================================================================
+
+Le Keyboard Component original, rare, ajoutait processeur 6502, RAM, clavier et
+cassette, avec logiciel/affichage combines. Il est different de l'ECS et ne doit
+pas etre emule comme un clavier ECS plus grand.
+
+PlayCable telechargeait des jeux via cable. Il occupait des plages reservees et
+chargeait une quantite limitee de programme. Les cartouches de grande taille ou
+avec materiel special n'etaient pas representables par ce service.
+
+
+==============================================================================
+38. SYSTEM CHANGER ET AUTRES EXTENSIONS
+==============================================================================
+
+System Changer integre un materiel compatible Atari 2600 et commute video/audio;
+le CP1610 n'emule pas le 6507/TIA. Certaines premieres consoles demandent une
+modification pour le supporter.
+
+Music Synthesizer, Computer Adaptor, imprimante ECS, manettes supplementaires,
+Intellicart, Cuttle Cart 3, LTO Flash!, JLP et cartouches homebrew etendent RAM,
+flash, mapper ou acceleration. JLP offre notamment RAM et fonctions avancees;
+elles ne font pas partie de l'Intellivision nue.
+
+
+==============================================================================
+39. INITIALISATION AVEC EXEC
+==============================================================================
+
+Une cartouche fournit l'en-tete et laisse EXEC :
+
+- initialiser stack, RAM et STIC;
+- charger les cartes GRAM indiquees;
+- construire BACKTAB/MOB;
+- afficher titre;
+- installer table de processus et controleurs;
+- appeler le point MAIN.
+
+MAIN ne doit pas reinitialiser les zones EXEC qu'il continue d'utiliser. Les
+services EXEC simplifient mouvement, collision, hasard, son et temporisation,
+mais consomment RAM et mettent souvent la logique a jour a 20 Hz.
+
+
+==============================================================================
+40. PROGRAMMATION SANS EXEC
+==============================================================================
+
+Une bibliotheque autonome garde le reset EXEC minimal pour atteindre la ROM puis
+remplace processus, interruption et drivers. Elle doit fournir : pile System RAM,
+handler VBlank, copie STIC, chargement GRAM, ecran, controles, PSG et boucle.
+
+On ne peut retirer physiquement EXEC/GROM d'une console standard, et le reset
+commence toujours `$1000`. Les points de boot `$4800/$5000/$7000` et en-tetes
+permettent de reduire son intervention. Tester toutes revisions EXEC.
+
+
+==============================================================================
+41. EXEMPLE CP1610 MINIMAL
+==============================================================================
+
+Syntaxe as1600/jzIntv simplifiee :
+
+        ROMW    16
+        ORG     $5000
+ROMHDR: BIDECLE ZERO
+        BIDECLE ZERO
+        BIDECLE MAIN
+        BIDECLE ZERO
+        BIDECLE ONES
+        BIDECLE TITLE
+        DECLE   $03C0
+ZERO:   DECLE   0,0
+ONES:   DECLE   1,1,1,1,1
+TITLE:  STRING  $126,"DEMO",0
+
+MAIN:   DIS
+        MVII    #$0318,R6              ; pile 16 bits System RAM
+        MVII    #ISR,R0
+        MVO     R0,ISR_VECTOR          ; selon bibliotheque/EXEC
+        EIS
+LOOP:   DECR    R0                     ; travail ou attente drapeau
+        B       LOOP
+
+Le symbole ISR_VECTOR et l'epilogue dependent du framework. Une ROM directement
+utilisable doit inclure CFG, processus EXEC ou bootstrap autonome complet.
+
+
+==============================================================================
+42. COPIE EN GRAM
+==============================================================================
+
+; Appel : JSR R5,COPY_GRAM
+; R3 = source ROM, R2 = destination GRAM, R0 = nombre de mots.
+; R5 conserve l'adresse de retour.
+COPY_GRAM:
+        MVI@    R3,R1                  ; R0-R3 n'auto-incrementent pas
+        INCR    R3
+        MVO@    R1,R2
+        INCR    R2
+        DECR    R0
+        BNEQ    COPY_GRAM
+        JR      R5
+
+GRAM n'est accessible que dans la phase VBlank autorisee. Le code appelant doit
+donc lancer une copie courte depuis l'ISR ou verifier que la fenetre reste ouverte.
+
+
+==============================================================================
+43. AFFICHAGE D'UNE CARTE BACKTAB
+==============================================================================
+
+; Place une carte precomposee en (x=3,y=4)
+        MVII    #$0200 + 4*20 + 3,R4
+        MVII    #CARD_VALUE,R0
+        MVO@    R0,R4
+
+CARD_VALUE doit combiner numero GROM/GRAM, foreground, background/stack et mode.
+Exemple symbolique recommande :
+
+        MVII    #(GROM_CARD_A + X_WHITE + C_BLUE),R0
+
+Les noms exacts viennent de `gimini.asm`. Les additions ne sont sures que si les
+champs ne se chevauchent pas; preferer OR logique/macros du SDK.
+
+
+==============================================================================
+44. AFFICHAGE ET MOUVEMENT D'UN MOB
+==============================================================================
+
+Maintenir 24 mots d'ombre : X[8], Y[8], A[8]. Au VBlank :
+
+        MVII    #MOB_SHADOW,R4
+        MVII    #$0000,R5
+        MVII    #24,R0
+MOB_CP: MVI@    R4,R1
+        MVO@    R1,R5
+        DECR    R0
+        BNEQ    MOB_CP
+
+Pour deplacer MOB0 : masquer position X puis OR bits visible/collision/size.
+Ne pas incrementer le mot brut sans masque, car un carry peut modifier un drapeau.
+Le registre collision `$0018` doit etre lu/sauve avant reinitialisation.
+
+
+==============================================================================
+45. LECTURE DES CONTROLEURS
+==============================================================================
+
+CTRL0   EQU $01FE
+CTRL1   EQU $01FF
+
+READ_CONTROLS:
+        MVI     CTRL0,R0
+        MVI     CTRL1,R1
+        ANDI    #$00FF,R0
+        ANDI    #$00FF,R1
+        COMR    R0                      ; actif bas -> representation positive
+        COMR    R1
+        ANDI    #$00FF,R0
+        ANDI    #$00FF,R1
+        JR      R5
+
+Les huit bits ne sont pas huit boutons independants. Passer par une table de
+codes disque/clavier/boutons. Une pression simultanee peut avoir une valeur
+electrique distincte ou ambigue; conserver un chemin raw pour les tests.
+
+
+==============================================================================
+46. PROGRAMMATION SONORE
+==============================================================================
+
+PSG_A_LO equ $01F0
+PSG_A_HI equ $01F4
+PSG_MIX  equ $01F8
+PSG_VOL_A equ $01FB
+
+; Ton A : periode 12 bits selon horloge, activer tone A, volume
+        MVII    #$0034,R0
+        MVO     R0,PSG_A_LO
+        MVII    #$0002,R0
+        MVO     R0,PSG_A_HI
+        MVII    #MIX_TONE_A,R0
+        MVO     R0,PSG_MIX
+        MVII    #$000A,R0
+        MVO     R0,PSG_VOL_A
+
+Les bits du mixer sont souvent actifs bas et partages avec directions de ports;
+utiliser les constantes AY-3-8914 du SDK. Programmer enveloppe modifie une
+ressource commune aux trois canaux.
+
+
+==============================================================================
+47. GESTION DE L'INTERRUPTION
+==============================================================================
+
+ISR:
+        PSHR    R0
+        PSHR    R1
+        ; acquitter/activer affichage selon protocole STIC
+        ; copier MOB/BACKTAB/GRAM en premier
+        INCR    FRAME
+        PULR    R1
+        PULR    R0
+        B       $1014                   ; epilogue EXEC, si convention EXEC
+
+PSHR/PULR sont macros basees sur MVO@/MVI@ avec R6. Un handler autonome a un
+retour different. `$1014` n'est valide que si l'EXEC correspondant fournit ce
+chemin. EIS trop tot peut permettre une interruption imbriquee non prevue.
+
+
+==============================================================================
+48. BOUCLE DE JEU ET CADENCE
+==============================================================================
+
+Le handler incremente un compteur de trame. La boucle consomme chaque nouvelle
+valeur, lit controleurs, met a jour logique puis prepare les ombres. Pour une
+vitesse identique PAL/NTSC, utiliser accumulateur temporel : ajouter 50 ou 60
+unites normalisees et executer des ticks a seuil commun.
+
+Avec EXEC, les processus peuvent etre planifies tous les trois VBlank, soit
+environ 20 Hz NTSC. Ne pas attribuer cette cadence au STIC. Animation fine peut
+etre 60 Hz tout en gardant IA/logique a 20 Hz.
+
+
+==============================================================================
+49. OPTIMISATION CP1610
+==============================================================================
+
+- garder valeurs frequentes dans R0-R3;
+- exploiter post-increment R4/R5 pour copies;
+- utiliser R6 uniquement avec discipline de pile;
+- precalculer mots BACKTAB et attributs MOB;
+- copier STIC/GRAM au debut du VBlank;
+- mettre logique lourde hors ISR;
+- eviter Direct Mode depuis System RAM a cause de phase ADAR;
+- grouper donnees 8 bits et employer SDBD correctement;
+- compter microcycles, mots ROM et vols de bus STIC;
+- profiler PAL et NTSC.
+
+Une ROM 10 bits economise cout mais rend constantes 16 bits plus couteuses. Les
+tables peuvent etre reparties entre ROM 8/10/16 bits selon cartouche moderne.
+
+
+==============================================================================
+50. CONSTRUCTION D'UNE CARTOUCHE
+==============================================================================
+
+Outils classiques : `as1600` assemble, `bin2rom`/`rom2bin`, jzIntv charge BIN+CFG,
+SDK-1600 fournit includes et bibliotheque. Pipeline :
+
+1. definir plages et largeurs dans CFG;
+2. placer header a une adresse de boot compatible;
+3. assembler listing et symboles;
+4. verifier aucun segment contre EXEC/STIC/GRAM/extensions;
+5. convertir eventuellement en Intellicart ROM/LUIGI;
+6. tester plusieurs EXEC/emulateurs;
+7. tester flash cart et console PAL/NTSC.
+
+Le checksum d'un conteneur ne prouve pas la bonne largeur de mots. Comparer le
+listing adresse par adresse et garder CFG versionne avec source.
+
+
+==============================================================================
+51. GUIDE D'IMPLEMENTATION D'UN EMULATEUR
+==============================================================================
+
+1. CP1610 : opcodes 10 bits, registres, flags, SDBD, interruptions et phases.
+2. bus a largeurs multiples, pull-up/open bus et conflits.
+3. EXEC/GROM exacts et cartes par revision.
+4. scratchpad 8 bits, System RAM 16 bits et particularite ADAR.
+5. STIC : phases, BUSRQ, BACKTAB FIFO et fenetres d'acces.
+6. modes F/B, Color Stack, Colored Squares, bordure et retard.
+7. huit MOB, tailles, flips, priorites et collisions bit a bit.
+8. PSG AY-3-8914, enveloppe, bruit et ports controles.
+9. cartouches multi-segments, CFG, Intellicart et mappers.
+10. PAL/NTSC, Intellivision II, Intellivoice et ECS optionnels.
+
+Faire avancer CPU/STIC/PSG selon une horloge commune. Un rendu complet apres une
+trame ne suffit pas pour acces hors fenetre, changement de bordure, collisions
+et nombre exact de cycles CPU disponibles.
+
+
+==============================================================================
+52. EMULATION DU STIC
+==============================================================================
+
+Pipeline possible par ligne : calculer bordure/delai, obtenir vingt mots BACKTAB
+via FIFO, decoder carte et mode, lire GROM/GRAM, superposer MOB, calculer
+collisions, puis sortir couleurs. Les collisions doivent inclure pixels masques
+si le materiel les evalue avant affichage final selon test.
+
+Modeliser les phases : interruption, periode registres, periode GRAM/GROM,
+display actif et BUSRQ. Les lectures/ecritures aux alias ont des comportements
+asymetriques. R21 est selectionne par lecture/ecriture. Display Enable doit etre
+touche a chaque trame selon protocole, sinon STIC peut blanker.
+
+
+==============================================================================
+53. EMULATION DU SON ET DES ENTREES
+==============================================================================
+
+AY-3-8914 n'est pas strictement AY-3-8910 : conserver disposition de registres,
+diviseurs, ports et mixer Intellivision. Avancer compteurs ton, bruit LFSR et
+enveloppe a leur cadence, puis mixer/resampler sans dependre du tampon hote.
+
+Pour les manettes, representer matrice/contact, puis calculer valeur PSG. Exposer
+disque analogique hote en 16 secteurs avec hysteresis afin d'eviter oscillation
+sur les frontieres. Les overlays sont interface utilisateur, pas donnees console.
+
+
+==============================================================================
+54. CAS LIMITES ET ERREURS FREQUENTES
+==============================================================================
+
+- appeler le CP1610 un CPU 16 bits ordinaire a octets uniformes;
+- annoncer 1,79 MHz sans expliquer les deux phases/894,886 kHz;
+- compter les adresses System RAM comme des octets;
+- stocker une adresse 16 bits dans scratchpad sans deux mots;
+- executer du Direct Mode depuis System RAM sans gerer ADAR;
+- acceder STIC/GRAM hors de leur fenetre;
+- ignorer BUSRQ et donner trop de cycles CPU;
+- confondre 160x96 logique avec un framebuffer 320x192;
+- parler de sprites illimites alors qu'il y a huit MOB;
+- traiter R21 comme registre de donnees ordinaire;
+- oublier les alias GRAM/STIC;
+- decoder chaque bit manette comme bouton independant;
+- emuler AY-3-8914 avec la carte registre AY-3-8910;
+- charger un BIN sans son CFG;
+- supposer une plage ROM unique `$5000-$7FFF`;
+- attribuer parole, clavier ECS ou RAM JLP a la console nue.
+
+
+==============================================================================
+55. DIAGNOSTIC ET MAINTENANCE
+==============================================================================
+
+Verifier alimentation, interrupteur, RF, connecteur cartouche et controleurs.
+Inspecter reset/horloges CP1610, phases bus, EXEC, GROM, RAM, STIC et PSG. Un
+ecran titre partiel peut orienter vers GROM/GRAM/System RAM; objets defectueux
+vers registres STIC ou RAM; son/controleurs vers AY-3-8914 et cablage.
+
+Les membranes et nappes des manettes vieillissent. Nettoyer contacts avec produits
+adaptes, sans user le motif conducteur. Intellivision II a des connecteurs
+detachables mais fragiles. Employer le service manual de la revision.
+
+Un analyseur logique doit respecter bus multiplexe et niveaux; une sonde qui
+charge une ligne peut changer les phases. Le modulateur RF et l'alimentation
+exigent precautions. Ne pas ajuster bobines video sans instrument/reference.
+
+
+==============================================================================
+56. OUTILS, TESTS ET VALIDATION
+==============================================================================
+
+Emulateurs/debogueurs : jzIntv, MAME, Nostalgia, Bliss, FreeIntv et ares selon
+plateforme. Assembleur : as1600/SDK-1600. Outils graphiques et trackers sonores
+existent; verifier leur format GROM/GRAM et PSG.
+
+Tests : chaque instruction/flag CP1610, SDBD interrompu, Direct Mode System RAM,
+open bus, alias, acces STIC par phase, pile couleurs, Colored Squares, huit MOB,
+collisions, bordures, PAL/NTSC, toutes directions/clavier et enveloppe PSG.
+
+Tester sur console via LTO Flash!/CC3/Intellicart. Comparer plusieurs revisions
+EXEC et un Intellivision II. Les jeux commerciaux valident un chemin, pas toute
+la specification.
+
+
+==============================================================================
+57. REFERENCES
+==============================================================================
+
+References techniques :
+
+- Master Component et documents techniques historiques :
+  https://history.blueskyrangers.com/hardware/2609.html
+- Intellivision Service Manual, Model 2609 :
+  https://saskapriest.com/wp-content/uploads/Intellivision_Service_Manual_Model_2609.pdf
+- carte memoire detaillee, composants et alias :
+  https://wiki.intellivision.us/index.php?title=Memory_Map
+- CP1610, registres, instructions et timings :
+  https://wiki.intellivision.us/index.php/Non-interruptible_Instructions
+- GROM/GRAM et modes de decodage :
+  https://wiki.intellivision.us/index.php/Graphics_ROM
+- definitions STIC et memoire `gimini.asm` :
+  https://wiki.intellivision.us/index.php/Gimini.asm
+
+Programmation :
+
+- tutoriels Intellivision Wiki et SDK-1600/as1600;
+- introduction aux interruptions et en-tete EXEC :
+  https://wiki.intellivision.us/index.php/Introducing_Interrupts
+- Intellivision Programming, documents et tutoriels communautaires;
+- fiches General Instrument CP1600/CP1610, AY-3-8900 et AY-3-8914.
+
+Pour un emulateur precis, confronter documents GI/Mattel, schemas, EXEC/GROM de
+la bonne revision, tests materiels et resultats de plusieurs emulateurs. Les
+informations communautaires excellentes doivent rester verifiees sur silicium.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

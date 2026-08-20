@@ -1,0 +1,1093 @@
+==============================================================================
+ SEGA DREAMCAST - MATERIEL ET PROGRAMMATION
+ Reference technique pour logiciels, outils et emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document presente la Dreamcast comme une plate-forme programmable : CPU SH-4,
+ASIC systeme Holly, PowerVR2, AICA, GD-ROM, bus Maple, modem, VMU, demarrage,
+formats logiciels et developpement libre. Il vise le programmeur C/assembleur,
+l'auteur d'emulateur et le restaurateur.
+
+Les registres non publies par Sega ont ete reconstruits par observation. Une
+adresse donnee ici doit etre confrontee aux manuels, aux sources KallistiOS et au
+materiel reel avant de fabriquer un produit. Les accents sont omis afin de garder
+un fichier ASCII utilisable par d'anciens outils.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Histoire et positionnement
+  2. Modeles et revisions
+  3. Caracteristiques generales
+  4. Architecture et bus
+  5. SH-4 : coeur et registres
+  6. Instructions SH-4
+  7. FPU et SIMD
+  8. Pipeline, caches et store queues
+  9. MMU, espaces P0 a P4
+ 10. Carte memoire Dreamcast
+ 11. Exceptions et interruptions
+ 12. TMU, RTC, SCI et DMAC du SH-4
+ 13. Holly et evenements ASIC
+ 14. Memoire principale et DMA
+ 15. PowerVR2 : architecture
+ 16. Tile Accelerator
+ 17. Listes de rendu
+ 18. Parametres de polygones et sommets
+ 19. Textures et formats
+ 20. VRAM et acces 32/64 bits
+ 21. Rasterisation, profondeur et transparence
+ 22. Video et sorties
+ 23. Synchronisation et double buffering
+ 24. AICA et ARM7DI
+ 25. Voix, PCM et ADPCM
+ 26. DSP, mixage et MIDI
+ 27. Memoire sonore et communication SH-4/ARM7
+ 28. Bus G2
+ 29. GD-ROM
+ 30. Commandes, TOC et lecture
+ 31. MIL-CD, CD-ROM et GD-ROM
+ 32. Systeme de fichiers et IP.BIN
+ 33. Demarrage, ROM et securite
+ 34. Executables et chargement
+ 35. Bus Maple
+ 36. Manette et peripheriques
+ 37. VMU
+ 38. Modem et Broadband Adapter
+ 39. Port serie et accessoires
+ 40. Assembleur : demarrage minimal
+ 41. Assembleur : cache et store queues
+ 42. C : affichage direct
+ 43. C/KallistiOS : scene PowerVR
+ 44. C/KallistiOS : manette
+ 45. C/KallistiOS : fichier
+ 46. C/KallistiOS : son
+ 47. C/KallistiOS : reseau
+ 48. Calcul 3D et organisation d'un moteur
+ 49. Multithreading et synchronisation
+ 50. Optimisation
+ 51. Toolchains et SDK
+ 52. Construction d'une image amorcable
+ 53. Debogage
+ 54. Conseils pour un emulateur
+ 55. Emulation du SH-4
+ 56. Emulation PowerVR2
+ 57. Emulation AICA, Maple et GD-ROM
+ 58. Validation et tests
+ 59. Revisions et compatibilite
+ 60. Maintenance et preservation
+ 61. Limites juridiques et securite
+ 62. References
+
+
+==============================================================================
+1. HISTOIRE ET POSITIONNEMENT
+==============================================================================
+
+La Dreamcast succede a la Saturn. Elle sort au Japon en novembre 1998, en
+Amerique du Nord en septembre 1999 et en Europe en octobre 1999. Son nom de code
+materiel est Katana. Sega choisit une architecture plus reguliere que celle de
+la Saturn : un SH-4 effectue logique, transformation et eclairage; PowerVR2 rend
+les scenes; AICA produit le son; Holly relie les blocs et arbitre leurs DMA.
+
+La fabrication des consoles cesse en 2001, mais jeux, serveurs communautaires et
+developpement amateur continuent. Naomi partage les principes SH-4/PowerVR/AICA,
+mais davantage de memoire et une organisation d'arcade : ne pas assimiler ses
+adresses et capacites a celles d'une Dreamcast.
+
+
+==============================================================================
+2. MODELES ET REVISIONS
+==============================================================================
+
+Regions commerciales : NTSC-J, NTSC-U et PAL. Le BIOS, le GD-ROM, le modem et
+l'alimentation varient. Les numeros de carte VA0, VA1 et VA2.1 sont plus utiles
+au programmeur materiel que la couleur du boitier.
+
+- VA0 : premiers modeles, GPU/CPU alimentes differemment, lecteur ancien;
+- VA1 : revision la plus commune et cible de compatibilite prudente;
+- VA2.1 : integration accrue, lecteur et carte mere modifies;
+- HKT-0120 : Broadband Adapter Ethernet, rare;
+- modem amovible : 33,6 ou 56 kbit/s selon le marche;
+- dev kits Katana/SET5 : machines de developpement, pas consoles de detail.
+
+Certaines revisions tardives ne lisent pas la methode audio/data historique
+employee par plusieurs disques homebrew. Tester sur VA0, VA1 et VA2.1.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU          Hitachi SH-4, env. 200 MHz, little-endian sur Dreamcast
+Performance  env. 360 MIPS, FPU vectorielle, produit matrice/vecteur
+RAM          16 Mio SDRAM principale
+Video        PowerVR2 CLX2, tile-based deferred rendering
+VRAM         8 Mio
+Audio        Yamaha AICA, 64 voix, ARM7DI, DSP
+RAM audio    2 Mio
+Support      GD-ROM env. 1 Go; CD-ROM physique egalement lisible
+Entrees      4 ports Maple, deux extensions par manette
+Video        composite, S-Video, RGB et VGA selon cable/mode
+Reseau       modem; Ethernet 10/100 avec Broadband Adapter
+RTC          horloge temps reel avec alimentation autonome
+
+Les chiffres marketing de polygones dependent fortement du remplissage, des
+textures, de la transparence et du tri. Mesurer une charge reelle.
+
+
+==============================================================================
+4. ARCHITECTURE ET BUS
+==============================================================================
+
+                     +------------------+
+                     | SH-4 + cache/FPU |
+                     +---------+--------+
+                               | bus systeme
+       +-----------------------+v-----------------------+
+       | Holly : IRQ, DMA, Maple, G1, G2, PVR interface |
+       +-------+-------------+-------------+------------+
+               |             |             |
+          +----v----+    +---v----+    +---v----------------+
+          | PVR2    |    | GD-ROM |    | AICA/ARM7, modem   |
+          | 8M VRAM |    | G1     |    | G2, 2M sound RAM   |
+          +---------+    +--------+    +--------------------+
+
+DMA evite de monopoliser le SH-4, mais tous les maitres se disputent les bus.
+Alignement, taille de rafale et ordre d'ecriture changent les performances.
+
+
+==============================================================================
+5. SH-4 : COEUR ET REGISTRES
+==============================================================================
+
+Le SH7750 derive est un RISC 32 bits superscalaire. Registres generaux R0-R15;
+R15 sert normalement de pile. R0 a des formes d'adressage speciales. Registres :
+
+ PC       compteur ordinal                 PR       retour de sous-programme
+ SR       etat (T,S,IMASK,Q,M,FD,BL,RB,MD) GBR      base globale
+ VBR      base des vecteurs                 SSR/SPC  retour d'exception
+ SGR      pile sauvegardee                  DBR      debug
+ MACH/MACL resultat multiplication/MAC      FPUL     transfert entier/FPU
+ FPSCR    controle FPU                      FR0-FR15 registres flottants
+ XF0-XF15 seconde banque FPU
+
+R0-R7 possedent une banque alternative en mode privilegie quand SR.RB=1. Une
+routine d'exception doit sauver ce qu'elle modifie et respecter SR/SSR/SPC.
+
+ABI GCC/KOS usuelle : arguments entiers R4-R7 puis pile, retour R0, PR sauve par
+l'appele si necessaire; R8-R14 non volatils. Les flottants emploient FR4-FR11
+selon prototype. Verifier l'ABI de la toolchain pour structures et varargs.
+
+
+==============================================================================
+6. INSTRUCTIONS SH-4
+==============================================================================
+
+Familles principales (instructions codees sur 16 bits) :
+
+Donnees : MOV, MOV.B/W/L, MOVA, MOVT, MOVCA.L, SWAP.B/W, XTRCT
+Entiers : ADD, ADDC, ADDV, SUB, SUBC, SUBV, NEG, NEGC, DT
+Compare : CMP/EQ, HS, GE, HI, GT, PL, PZ, STR; TST
+Logique : AND, OR, XOR, NOT, TAS.B
+Decalage: SHLL/SHLR, SHAL/SHAR, SHLL2/8/16, SHLR2/8/16, ROTL/R
+Branches: BRA, BSR, BRAF, BSRF, BT, BF, BT/S, BF/S, JMP, JSR, RTS
+Systeme : LDC/STC, LDS/STS, RTE, TRAPA, CLRT, SETT, CLRS, SETS, SLEEP
+Cache   : PREF, OCBI, OCBP, OCBWB, ICBI
+Produit : MUL.L, MULS.W, MULU.W, DMULS.L, DMULU.L, MAC.L, MAC.W
+Division: DIV0S, DIV0U, DIV1 (algorithme iteratif)
+
+BRA/BSR/JMP/JSR et plusieurs branches ont une delay slot : l'instruction
+suivante est executee avant le transfert. Une instruction interdite en delay
+slot provoque une exception. BT/S et BF/S ont egalement une slot; BT/BF non.
+
+
+==============================================================================
+7. FPU ET SIMD
+==============================================================================
+
+FADD, FSUB, FMUL, FDIV, FCMP/EQ, FCMP/GT, FLOAT, FTRC, FNEG, FABS, FSQRT,
+FSRRA, FMAC, FLDI0/1, FMOV, FSTS/FLDS, FRCHG et FSCHG couvrent scalaire et
+changement de banque/taille. FIPR calcule un produit scalaire de quatre valeurs;
+FTRV transforme un vecteur 4D par la matrice XMTRX (XF0-XF15).
+
+FPSCR.PR choisit simple/double, SZ la taille de certains mouvements, FR la
+banque. Le code de jeu emploie surtout la simple precision. Sauver/restaurer
+FPSCR autour d'une bibliotheque qui change FR/SZ. Une exception FPU peut etre
+masquee; les differences NaN, denormaux et arrondi sont cruciales en emulation.
+
+Exemple conceptuel : charger la matrice dans XF, le vecteur dans FV0, puis :
+
+        ftrv    xmtrx,fv0       ! FV0 = matrice * FV0
+        fipr    fv0,fv4         ! FR7 recoit le produit scalaire
+
+
+==============================================================================
+8. PIPELINE, CACHES ET STORE QUEUES
+==============================================================================
+
+Cache instructions 8 Kio; operand cache 16 Kio, configurable avec une portion
+RAM. Les alias P1/P2 permettent acces cache/non cache. Apres generation de code,
+purger D-cache et invalider I-cache. DMA exige coherency explicite : write-back
+avant lecture par un peripherique, invalidation avant lecture CPU d'un resultat.
+
+Les deux store queues contiennent chacune huit mots de 32 bits. On ecrit 32
+octets dans l'alias $E0000000/$E0000020, puis PREF sur l'adresse SQ pour pousser
+une rafale vers la destination configuree par QACR0/QACR1. C'est central pour le
+Tile Accelerator. Destination et alignement doivent etre exacts.
+
+
+==============================================================================
+9. MMU, ESPACES P0 A P4
+==============================================================================
+
+SH-4 partage l'espace logique en regions :
+
+P0/U0  $00000000-$7FFFFFFF  traduit en mode utilisateur si MMU active
+P1     $80000000-$9FFFFFFF  privilegie, direct, cache
+P2     $A0000000-$BFFFFFFF  privilegie, direct, non cache
+P3     $C0000000-$DFFFFFFF  privilegie, traduit
+P4     $E0000000-$FFFFFFFF  registres internes/store queues/cache arrays
+
+KallistiOS fonctionne couramment sans traduction generale et utilise les alias
+P1/P2. Ne jamais dereferencer arbitrairement une adresse P4.
+
+
+==============================================================================
+10. CARTE MEMOIRE DREAMCAST
+==============================================================================
+
+Adresses physiques usuelles vues via P0/P1 :
+
+$00000000-$001FFFFF  boot ROM (2 Mio de fenetre)
+$00200000-$0021FFFF  flash systeme (128 Kio)
+$005F6800...         registres system ASIC/Holly
+$005F7000...         registres PVR
+$005F7400...         registres video
+$005F7800...         registres Tile Accelerator
+$00600000...         modem
+$00700000-$00707FFF  registres AICA
+$00710000-$0071000B  RTC
+$00800000-$009FFFFF  RAM AICA, 2 Mio
+$04000000-$047FFFFF  VRAM acces 64 bits
+$05000000-$057FFFFF  VRAM acces 32 bits
+$0C000000-$0CFFFFFF  RAM principale, 16 Mio
+$10000000...         ports FIFO TA/YUV et regions associees
+$A05F....            alias P2 non cache des registres $005F....
+$A0800000...         alias non cache RAM AICA
+$A4000000/$A5000000  alias non cache VRAM
+$AC000000...         alias non cache RAM principale
+
+Les plages sont des fenetres, pas toutes de la RAM lineaire. Certains registres
+exigent acces 32 bits et ordre strict. L'alias cache $8C000000 correspond a la
+RAM physique $0C000000 et constitue la base habituelle des programmes.
+
+
+==============================================================================
+11. EXCEPTIONS ET INTERRUPTIONS
+==============================================================================
+
+Le SH-4 entre via VBR+$100 (reset/general), VBR+$400 (TLB) ou VBR+$600
+(interruptions). EXPEVT et INTEVT identifient la cause; TRA donne le numero de
+TRAPA. SPC/SSR sauvegardent PC/SR. SR.BL bloque, SR.IMASK filtre les niveaux.
+
+Holly regroupe ses evenements en trois niveaux d'IRQ et trois familles de bits :
+normal, external et error. La routine lit le statut, masque les sources, traite
+chaque bit puis acquitte selon le registre. Ne pas effacer tous les bits si un
+autre pilote attend son evenement.
+
+
+==============================================================================
+12. TMU, RTC, SCI ET DMAC DU SH-4
+==============================================================================
+
+TMU fournit trois compteurs descendants avec prescalers et IRQ. TCNT est recharge
+par TCOR; TCR selectionne horloge et indique underflow; TSTR lance les canaux.
+TMU2 possede une capture. Une horloge monotone doit gerer le wraparound.
+
+Le DMAC SH-4 a quatre canaux et registres SAR, DAR, DMATCR, CHCR plus DMAOR.
+Tailles, increments et declenchement dependent de CHCR. Holly possede en plus ses
+DMA specialises. SCI/SCIF servent au serie; le port externe Dreamcast emploie
+SCIF avec adaptation electrique, jamais un RS-232 +/-12 V direct.
+
+RTC est un compteur 32 bits scinde en deux registres. Le format historique compte
+depuis 1950; lire de maniere stable (haut, bas, haut et recommencer si changement).
+
+
+==============================================================================
+13. HOLLY ET EVENEMENTS ASIC
+==============================================================================
+
+Holly integre controle d'interruptions, DMA PVR, Maple, G1/GD-ROM, G2 et chemins
+vers AICA/modem. Registres importants, adresses P2 courantes :
+
+$A05F6800  CH2 DMA destination
+$A05F6804  CH2 DMA length
+$A05F6808  CH2 DMA start
+$A05F6810... registres Sort-DMA (table de liens et lancement)
+$A05F6900  ISTNRM, statut normal
+$A05F6904  ISTEXT, statut externe
+$A05F6908  ISTERR, statut erreur
+$A05F6910... masques niveau 2
+$A05F6920... masques niveau 4
+$A05F6930... masques niveau 6
+$A05F7C00... registres PVR-DMA (adresse, taille, mode et lancement)
+
+Les noms et bits precis doivent venir de `dc/asic.h` de la version KOS cible.
+Une ecriture DMA sans cache flush ou avant fin du transfert corrompt les donnees.
+
+
+==============================================================================
+14. MEMOIRE PRINCIPALE ET DMA
+==============================================================================
+
+Les 16 Mio accueillent programme, pile, heap, listes TA et buffers. Aligner les
+buffers DMA a 32 octets; eviter qu'une ligne de cache contienne a la fois donnees
+DMA et donnees CPU non liees. Employer des adresses physiques pour les moteurs
+qui les exigent. Verifier la limite de 16 Mio avant toute addition de pointeurs.
+
+Ordre generique d'un DMA CPU -> peripherique : attendre canal libre, finir les
+ecritures CPU, purger cache, programmer source/destination/taille, activer IRQ,
+lancer, puis ne plus toucher au buffer avant fin.
+
+
+==============================================================================
+15. POWERVR2 : ARCHITECTURE
+==============================================================================
+
+PowerVR2 CLX2 effectue setup, binning en tuiles et rasterisation differee. Le
+SH-4 transforme et eclaire les sommets. Le Tile Accelerator (TA) classe les
+primitives dans des listes par tuile; le renderer traite ensuite chaque tuile,
+ce qui economise la bande passante et permet un hidden-surface removal efficace.
+
+Ce n'est ni OpenGL immediate mode ni un PC GPU moderne. Les triangles doivent
+etre soumis dans le protocole exact; une fin de liste manqueante peut bloquer ou
+faire reutiliser des donnees anciennes.
+
+
+==============================================================================
+16. TILE ACCELERATOR
+==============================================================================
+
+Une scene comporte : allocation OPB/tile matrix en VRAM, configuration TA,
+initialisation de liste, envoi des en-tetes puis sommets au FIFO, marqueurs de fin,
+attente `TA list complete`, lancement du rendu, attente `render complete`, puis
+basculement au VBlank.
+
+Le FIFO TA est couramment adresse a $10000000; store queues ou DMA fournissent
+des blocs de 32 octets. Les structures PVR font justement 32 octets. Ne pas faire
+des ecritures byte/word arbitraires dans le FIFO.
+
+
+==============================================================================
+17. LISTES DE RENDU
+==============================================================================
+
+Listes materielles :
+
+- opaque polygons;
+- opaque modifiers;
+- translucent polygons;
+- translucent modifiers;
+- punch-through polygons (alpha test).
+
+Opaque doit etre privilegie quand possible. Les modificateurs creent des volumes
+pour ombres. Punch-through traite un seuil d'alpha. La transparence coute plus et
+son tri/mode varie; elle n'est pas une promesse generale d'ordre independant pour
+tous les melanges imaginables.
+
+
+==============================================================================
+18. PARAMETRES DE POLYGONES ET SOMMETS
+==============================================================================
+
+Un en-tete compile et encode type de liste, shading, culling, profondeur,
+blending, texture, filtrage, clamp/flip UV et format pixel. Les sommets portent
+commande, x/y/z, u/v et couleur ARGB ou intensite selon format. Le dernier sommet
+d'un strip porte EOL. Coordonnees ecran sont flottantes; z est une profondeur
+reciproque positive selon convention PVR.
+
+Les structures exactes changent selon vertex type. Utiliser `pvr_poly_compile`,
+`pvr_poly_hdr_t` et `pvr_vertex_t` sous KOS plutot que des bitfields C non
+portables. Un NaN dans x/y/z peut produire des resultats materiel non intuitifs.
+
+
+==============================================================================
+19. TEXTURES ET FORMATS
+==============================================================================
+
+Formats courants : RGB565, ARGB1555, ARGB4444, YUV422, palettise 4/8 bits et
+VQ compresse. Les textures sont generalement twiddlees (ordre Morton), carrees ou
+rectangulaires selon mode. Stride permet certains buffers lineaires. VQ emploie
+une codebook et des indices 2x2, tres economes en VRAM.
+
+Dimensions et alignements sont contraints. Palettes resident dans des registres
+PVR et se partagent entre textures. Bilinear filtre quatre texels; mipmapping
+demande une disposition mipmap specifique. Convertir hors console plutot qu'au
+chargement si temps et espace disque le permettent.
+
+
+==============================================================================
+20. VRAM ET ACCES 32/64 BITS
+==============================================================================
+
+Les deux fenetres VRAM offrent des chemins differents. Le mapping 64 bits est
+adapte au framebuffer/renderer; le mapping 32 bits facilite certains transferts.
+Une meme adresse logique de texel ne se traduit pas necessairement par le meme
+offset entre les fenetres : utiliser les macros KOS.
+
+`pvr_mem_malloc` reserve la VRAM et `pvr_txr_load`/`pvr_txr_load_ex` transfere.
+La VRAM n'est pas cacheable comme RAM ordinaire et ne doit pas etre liberee tant
+qu'une scene en vol la reference.
+
+
+==============================================================================
+21. RASTERISATION, PROFONDEUR ET TRANSPARENCE
+==============================================================================
+
+Tests : profondeur (never, less, equal, lequal, greater, notequal, gequal,
+always), culling, alpha/punch-through. Blending choisit facteurs source/dest,
+ecritures couleur et fog. Gouraud interpole les couleurs; flat garde une couleur.
+
+La geometrie clipped par logiciel evite des coordonnees extremes. PowerVR peut
+clipper par tile/plan de garde, mais un moteur robuste clippe au moins pres de la
+camera avant la division perspective.
+
+
+==============================================================================
+22. VIDEO ET SORTIES
+==============================================================================
+
+Modes typiques : 320x240, 640x480 entrelace/progressif, PAL 50 Hz et NTSC 60 Hz.
+Le cable VGA annonce sa presence par broches et impose un mode compatible 31 kHz.
+Certains jeux refusent VGA par logiciel bien que le materiel puisse l'afficher.
+
+Registres video a partir de $A05F8000 configurent reset PVR, framebuffer lu,
+stride, dimensions, synchro et bordure. Les constantes exactes sont dans les
+headers `dc/video.h`/PVR; programmer une synchro erronee peut perdre l'image.
+
+
+==============================================================================
+23. SYNCHRONISATION ET DOUBLE BUFFERING
+==============================================================================
+
+Deux framebuffers permettent au renderer d'ecrire pendant que l'autre est lu.
+Ne basculer l'adresse d'affichage qu'au VBlank et apres render-complete. Triple
+buffering reduit les attentes mais consomme la VRAM. TA-complete signifie listes
+consommees, pas image terminee.
+
+Un frame limiter doit se baser sur VBlank/temps reel, pas sur une boucle CPU. PAL
+et VGA peuvent modifier cadence et lignes; ne supposer ni 60 Hz exact ni 16 ms.
+
+
+==============================================================================
+24. AICA ET ARM7DI
+==============================================================================
+
+AICA contient 64 slots audio, mixeur, DSP, timers/IRQ, interface MIDI et un coeur
+ARM7DI. Les 2 Mio de sound RAM contiennent echantillons et programme ARM. Le SH-4
+y accede par G2; ARM voit sa propre carte memoire et peut piloter les slots.
+
+Le BIOS utilise un pilote sonore. KOS peut charger son firmware ARM (`snd_init`)
+et communiquer par files de commandes. Arreter/reinitialiser ARM avant de
+remplacer son code, et respecter les barrieres G2.
+
+
+==============================================================================
+25. VOIX, PCM ET ADPCM
+==============================================================================
+
+Chaque slot configure adresse de debut, loop start/end, PCM 16 bits, PCM 8 bits
+ou ADPCM, frequence/pitch, enveloppe ADSR, pan, niveau et routage DSP. Jusqu'a 64
+voix ne signifie pas 64 flux lourds sans cout de bus.
+
+L'ADPCM Yamaha compresse a 4 bits; l'etat predictif rend les points de boucle
+delicats. PCM est signe. Une frequence est encodee par octave et FNS, non en Hz
+direct. Un emulateur doit reproduire enveloppe, interpolation, boucle et clipping.
+
+
+==============================================================================
+26. DSP, MIXAGE ET MIDI
+==============================================================================
+
+Le DSP AICA execute un microprogramme d'effets avec memoire temporaire et lignes
+de delay en sound RAM. Il permet reverberation, echo et routages, mais son format
+est specialise. Les jeux peuvent contourner le firmware standard.
+
+MIDI interne transporte commandes entre SH-4/ARM/AICA; les registres d'IRQ ARM et
+SH-4 ne sont pas interchangeables. Acquitter du bon cote.
+
+
+==============================================================================
+27. MEMOIRE SONORE ET COMMUNICATION SH-4/ARM7
+==============================================================================
+
+La sound RAM apparait au SH-4 vers $A0800000 et a l'ARM depuis zero. Elle est
+partagee sans coherence cache automatique. Protocoles : boites aux lettres,
+anneaux commandes et pointeurs read/write. Le producteur ecrit payload, barriere,
+puis index; le consommateur lit index, payload, puis avance son index.
+
+Ne jamais traverser la limite de RAM ni modifier un echantillon joue. G2 exige
+des acces compatibles avec ses FIFO; les fonctions KOS gerent les attentes.
+
+
+==============================================================================
+28. BUS G2
+==============================================================================
+
+G2 relie Holly a AICA, modem et expansion. Il fonctionne plus lentement que le
+bus principal et possede buffers/DMA. Avant acces CPU, attendre que les FIFO G2
+appropriees soient disponibles; sinon perte ou reordonnancement d'ecritures.
+
+Les DMA G2 ont source, destination, taille, direction, mode et declenchement. Une
+IRQ signale fin/erreur. Emuler les latences au moins fonctionnellement : plusieurs
+jeux attendent les bits de statut, pas seulement les donnees finales.
+
+
+==============================================================================
+29. GD-ROM
+==============================================================================
+
+Le GD-ROM est un lecteur optique proprietaire de plus haute densite qu'un CD. Il
+est relie au bus G1 et expose une interface derivee ATA plus un protocole de
+commandes Sega. Les secteurs peuvent etre 2048, 2336 ou 2352 octets selon piste.
+
+Le SH-4 envoie une commande, transfere parametres, attend statut/IRQ puis lit par
+PIO ou DMA. Timeouts, erreurs media et changement de disque doivent etre geres.
+Ne pas confondre adresse FAD (LBA + 150 usuellement) et LBA.
+
+
+==============================================================================
+30. COMMANDES, TOC ET LECTURE
+==============================================================================
+
+Services usuels : test unit, request status, read TOC, session info, play/seek
+audio, read sectors, init et DMA. Le BIOS offre des appels systeme GD-ROM plus
+stables que les registres bruts, mais leur ABI reste specifique Dreamcast.
+
+Une lecture asynchrone permet de calculer pendant rotation. Regrouper fichiers,
+aligner les donnees diffusees et precharger. Un emulateur doit conserver ordre des
+pistes, pregaps, type data/audio, TOC, FAD et erreurs plausibles.
+
+
+==============================================================================
+31. MIL-CD, CD-ROM ET GD-ROM
+==============================================================================
+
+Les jeux commerciaux utilisent une zone haute densite inaccessible a un graveur
+CD ordinaire. Le format multimedia MIL-CD a permis des disques CD-R homebrew sur
+de nombreuses consoles. Images `.gdi` decrivent les pistes GD dumpees; `.cdi`
+encapsule souvent une image DiscJuggler; `.chd` peut conserver les pistes de
+maniere compressee. ISO seul perd souvent audio et disposition multisession.
+
+Ce document n'explique pas le contournement de protections. Pour preservation,
+conserver pistes brutes, descripteur, sous-canaux utiles, TOC et empreintes.
+
+
+==============================================================================
+32. SYSTEME DE FICHIERS ET IP.BIN
+==============================================================================
+
+Les pistes data emploient ISO 9660. Le secteur de boot contient l'IP.BIN avec
+identifiants materiel, produit, region, peripheriques, nom du binaire et autres
+metadonnees. `1ST_READ.BIN` est un nom courant, pas une loi universelle.
+
+Les noms ISO peuvent etre majuscules/8.3 selon niveau. Ne pas supposer ordre des
+directory entries. Aligner les gros flux sur secteurs et traiter lecture partielle.
+
+
+==============================================================================
+33. DEMARRAGE, ROM ET SECURITE
+==============================================================================
+
+Au reset, boot ROM initialise materiel, affiche le menu/spirale, verifie disque et
+charge l'executable. La flash conserve region/configuration et parametres. Les
+appels BIOS connus couvrent GD-ROM, font/flash et menu systeme; ce ne sont pas des
+API portables vers Naomi ni des fonctions officiellement stables pour homebrew.
+
+Ne distribuer ni BIOS ni cles extraites. Un emulateur peut demander un dump legal
+de la console ou proposer une reimplementation clean-room, mais les differences
+menu, timing GD et fontes influencent la compatibilite.
+
+
+==============================================================================
+34. EXECUTABLES ET CHARGEMENT
+==============================================================================
+
+Le developpement moderne produit un ELF SH little-endian. La console demarre un
+binaire plat place usuellement vers $8C010000, parfois scramble selon methode de
+boot historique. KOS fournit `objcopy` et outils de construction d'image.
+
+ELF conserve symboles/sections pour debug; le disque contient normalement la
+forme chargeable. BSS doit etre mis a zero, pile initialisee, constructeurs C++
+appeles par runtime et caches coherents avant transfert de controle.
+
+
+==============================================================================
+35. BUS MAPLE
+==============================================================================
+
+Maple est un bus serie maitre/esclaves a quatre ports. Une manette est unite
+principale; VMU, vibration ou micro sont sous-unites. Holly execute par DMA une
+liste de descripteurs en RAM et ecrit les reponses. Une trame contient commande,
+adresses source/destination, longueur et mots de donnees.
+
+Commandes typiques : device request, all status, reset, shutdown, get condition,
+get memory information, block read/write et set condition. Les function codes
+annoncent CONTROLLER, MEMCARD, LCD, CLOCK, MICROPHONE, LIGHTGUN, KEYBOARD, MOUSE
+ou PURUPURU. Toujours enumerer, ne pas deviner le peripherique.
+
+
+==============================================================================
+36. MANETTE ET PERIPHERIQUES
+==============================================================================
+
+Manette standard : D-pad, A/B/X/Y, Start, deux gachettes analogiques et stick
+analogique. Les boutons sont souvent actifs a zero dans le paquet condition.
+Calibrer zones mortes et ne pas supposer centre exactement 128.
+
+Clavier retourne modifiers et usages; souris retourne boutons/deltas. Light gun
+depend du balayage CRT et ne fonctionne pas comme pointeur absolu LCD. Fishing
+controller et maracas ajoutent fonctions. Un programme doit accepter hotplug,
+timeouts, CRC/protocole invalide et changement de topologie.
+
+
+==============================================================================
+37. VMU
+==============================================================================
+
+La Visual Memory Unit est a la fois carte memoire Maple et mini-console : CPU
+Sanyo LC8670, LCD 48x32 monochrome, boutons, buzzer, RTC et flash 128 Kio. Une
+carte est divisee en 256 blocs de 512 octets; directory/FAT occupent des blocs
+systeme. Sauvegardes data et mini-jeux ont en-tetes/iconnes/palette.
+
+Ecrire une sauvegarde de facon transactionnelle : place libre, donnees, entree de
+directory/FAT en dernier, verification. Ne pas formater silencieusement. Le LCD
+recoit 48x32 bits avec ordre de lignes/bits defini par Maple. KOS fournit VMUFS.
+
+
+==============================================================================
+38. MODEM ET BROADBAND ADAPTER
+==============================================================================
+
+Le modem amovible emploie G2 et une ligne telephonique analogique. Versions 33,6
+et 56 kbit/s; le 56k descendant depend du reseau. Le BBA HKT-0120 utilise un
+controleur Ethernet Realtek RTL8139C sur l'expansion et offre 10/100BASE-TX.
+
+KOS fournit pile IPv4, DHCP, DNS, TCP/UDP et pilotes selon materiel. Ne jamais
+bloquer la boucle de rendu sur le reseau. Serialiser explicitement endian et
+tailles; le SH-4 Dreamcast est little-endian, les protocoles IP big-endian.
+
+
+==============================================================================
+39. PORT SERIE ET ACCESSOIRES
+==============================================================================
+
+Le connecteur serie arriere expose SCIF avec niveaux electriques specifiques.
+Des cables de developpement `coder's cable` utilisent conversion de niveau;
+certains adaptateurs modernes emploient USB. Debits jusqu'a environ 1,5 Mbit/s
+selon solution. Ne jamais relier directement a un port RS-232 traditionnel.
+
+Le connecteur A/V code le type de cable. VGA box commute identification et sort
+RGBHV. DreamEye, microphone, vibration et autres accessoires passent par Maple.
+
+
+==============================================================================
+40. ASSEMBLEUR : DEMARRAGE MINIMAL
+==============================================================================
+
+Exemple GNU as SH-4, fonction appelable par un runtime deja initialise :
+
+        .section .text
+        .align  2
+        .global addition_saturee
+addition_saturee:             ! r4=a, r5=b, resultat r0
+        mov     r4,r0
+        addv    r5,r0         ! T=1 si overflow signe
+        bf      1f
+        nop
+        mov     #-1,r0        ! exemple de politique, a adapter
+1:      rts
+        nop                    ! delay slot
+
+Un vrai `_start` doit fixer R15, VBR, FPSCR, caches, sections data/BSS et appeler
+le runtime. Il vaut mieux reutiliser le crt0 KOS que recopier une sequence propre
+a une revision de SDK.
+
+
+==============================================================================
+41. ASSEMBLEUR : CACHE ET STORE QUEUES
+==============================================================================
+
+Copie conceptuelle d'un paquet de 32 octets vers la SQ0; QACR0 doit avoir ete
+configure pour la region destination :
+
+        mov     #8,r0
+        mov     #0,r1
+        mov.l   sq_base,r2       ! $E0000000
+loop:  mov.l   @r4+,r3
+        mov.l   r3,@(r1,r2)
+        add     #4,r1
+        dt      r0
+        bf/s    loop
+        nop
+        pref    @r2              ! vide SQ vers destination QACR
+        rts
+        nop
+        .align 2
+sq_base: .long 0xE0000000
+
+Le code reel doit attendre/ordonner les queues et gerer SQ0/SQ1. Une destination
+mal alignee n'est pas une memcpy lente : elle peut ecrire au mauvais endroit.
+
+
+==============================================================================
+42. C : AFFICHAGE DIRECT
+==============================================================================
+
+Avec KallistiOS, un framebuffer simple est utile pour diagnostic :
+
+#include <kos.h>
+
+int main(void) {
+    int x, y;
+    vid_set_mode(DM_640x480, PM_RGB565);
+    for (y = 0; y < 480; ++y)
+        for (x = 0; x < 640; ++x)
+            vram_s[y * 640 + x] = ((x >> 3) << 11) | ((y >> 2) << 5);
+    while (1) thd_pass();
+    return 0;
+}
+
+`vram_s` vise des mots 16 bits. Ce rendu contourne le TA et n'est pas la methode
+efficace pour un jeu 3D.
+
+
+==============================================================================
+43. C/KALLISTIOS : SCENE POWERVR
+==============================================================================
+
+#include <kos.h>
+
+int main(void) {
+    pvr_init_defaults();
+    pvr_poly_cxt_t cxt;
+    pvr_poly_hdr_t hdr;
+    pvr_vertex_t v;
+    pvr_poly_cxt_col(&cxt, PVR_LIST_OP_POLY);
+    pvr_poly_compile(&hdr, &cxt);
+
+    pvr_wait_ready();
+    pvr_scene_begin();
+    pvr_list_begin(PVR_LIST_OP_POLY);
+    pvr_prim(&hdr, sizeof hdr);
+#define VERT(F,X,Y,Z,C) do { v.flags=(F); v.x=(X); v.y=(Y); v.z=(Z); \
+ v.u=v.v=0; v.argb=(C); v.oargb=0; pvr_prim(&v,sizeof v); } while(0)
+    VERT(PVR_CMD_VERTEX,     120, 100, 1, 0xFFFF0000);
+    VERT(PVR_CMD_VERTEX,     520, 100, 1, 0xFF00FF00);
+    VERT(PVR_CMD_VERTEX_EOL, 320, 400, 1, 0xFF0000FF);
+    pvr_list_finish();
+    pvr_scene_finish();
+    for (;;) thd_pass();
+}
+
+En production, soumettre une scene chaque frame et liberer proprement ressources.
+
+
+==============================================================================
+44. C/KALLISTIOS : MANETTE
+==============================================================================
+
+maple_device_t *dev = maple_enum_type(0, MAPLE_FUNC_CONTROLLER);
+if (dev) {
+    cont_state_t *st = (cont_state_t *)maple_dev_status(dev);
+    if (st && (st->buttons & CONT_START)) {
+        /* action */
+    }
+    float x = ((int)st->joyx) / 128.0f;
+    float lt = st->ltrig / 255.0f;
+}
+
+Selon API, verifier polarite/definition des bits. `maple_dev_status` peut retourner
+NULL pendant hotplug. Enumerer chaque frame ou conserver le device avec callbacks.
+
+
+==============================================================================
+45. C/KALLISTIOS : FICHIER
+==============================================================================
+
+#include <kos.h>
+
+file_t f = fs_open("/cd/data/level.bin", O_RDONLY);
+if (f != FILEHND_INVALID) {
+    uint8_t buf[2048];
+    ssize_t n;
+    while ((n = fs_read(f, buf, sizeof buf)) > 0) {
+        /* consommer exactement n octets */
+    }
+    fs_close(f);
+}
+
+Points de montage KOS typiques : `/cd`, `/rd`, `/vmu/a1`, selon pilotes. Une VMU
+n'a ni debit ni espace d'un disque : limiter ecritures et verifier espace libre.
+
+
+==============================================================================
+46. C/KALLISTIOS : SON
+==============================================================================
+
+Pour petits effets, charger un WAV supporte puis jouer via le gestionnaire de
+samples KOS :
+
+snd_stream_hnd_t h;  /* pour musique streamee, avec callback de remplissage */
+
+Le callback ne doit ni bloquer ni allouer massivement. Pour SFX, `snd_sfx_load`,
+`snd_sfx_play` et `snd_sfx_unload` sont preferables. Convertir musique a un format
+et debit soutenables depuis GD-ROM; double-bufferiser et traiter underrun.
+
+
+==============================================================================
+47. C/KALLISTIOS : RESEAU
+==============================================================================
+
+Initialiser le pilote modem/BBA et la pile KOS, obtenir configuration statique ou
+DHCP, puis employer sockets. Une boucle non bloquante ou thread reseau communique
+avec simulation via queues. Valider tous les paquets et borner longueur avant
+copie. Le jeu doit rester utilisable quand DNS, serveur ou lien echoue.
+
+
+==============================================================================
+48. CALCUL 3D ET ORGANISATION D'UN MOTEUR
+==============================================================================
+
+Etapes : animation, transformations SH-4/FTRV, clipping near-plane, projection,
+construction de strips, tri par materiau/liste, submission TA, rendu en parallele
+avec simulation suivante. Grouper textures et etats reduit les en-tetes.
+
+Le SH-4 est performant en float simple aligne. Structures of arrays peuvent aider
+FTRV/FIPR; mesurer les couts de conversion. Precalculer twiddling, VQ, mipmaps et
+stripification sur PC.
+
+
+==============================================================================
+49. MULTITHREADING ET SYNCHRONISATION
+==============================================================================
+
+KOS offre threads, mutex, semaphores, timers et IRQ. Ne pas appeler fonction
+bloquante depuis une IRQ. Une IRQ place un evenement ou reveille un thread. Les
+donnees partagees avec DMA exigent barrieres et cache maintenance, pas seulement
+`volatile`.
+
+AICA ARM7 est un second processeur : definir protocole versionne et proprietaire
+des buffers. Maple/GD/PVR peuvent finir hors ordre relatif; attendre l'evenement
+precis.
+
+
+==============================================================================
+50. OPTIMISATION
+==============================================================================
+
+- profiler avant toute reecriture assembleur;
+- aligner boucles, matrices et buffers a 32 octets;
+- utiliser store queues/DMA pour gros transferts;
+- eviter cache thrashing et alias cache/non-cache simultanes;
+- preferer strips et listes opaques;
+- compresser textures VQ quand artefacts acceptables;
+- limiter overdraw translucide et changements de palette;
+- entrelacer CPU, TA, renderer, GD et AICA;
+- utiliser FTRV/FIPR et reciprocal square root avec precision controlee;
+- ne jamais attendre activement un peripherique si un travail utile existe.
+
+
+==============================================================================
+51. TOOLCHAINS ET SDK
+==============================================================================
+
+SDK officiel historique : Sega Katana, compilateurs Hitachi et bibliotheques
+Shinobi/Kamui; une variante Windows CE/DirectX existe. Ces kits sont proprietaires.
+
+Choix libre recommande : KallistiOS, GCC `sh-elf`, binutils, Newlib, Make/CMake,
+GDB, dc-tool (serie ou IP), mkdcdisc et outils textures. GLdc fournit une couche
+OpenGL adaptee; ne supposer ni toutes extensions ni semantics desktop exactes.
+
+Emulateurs utiles : Flycast, redream, lxdream, Demul (selon plate-forme). Aucun ne
+remplace un test sur plusieurs consoles et cables.
+
+
+==============================================================================
+52. CONSTRUCTION D'UNE IMAGE AMORCABLE
+==============================================================================
+
+Flux homebrew general : compiler ELF SH-4, lier a l'adresse prevue, extraire le
+binaire, preparer IP.BIN legal, construire ISO9660 avec ressources, puis produire
+une image pour emulateur, ODE ou support autorise. Les scripts KOS automatisent
+les differences de boot.
+
+Conserver ELF non strippe, map linker, commit de source et hash de l'image. Ne pas
+inclure BIOS, SDK Sega ou donnees commerciales.
+
+
+==============================================================================
+53. DEBOGAGE
+==============================================================================
+
+`dc-tool` charge et journalise via cable serie ou BBA; GDB permet breakpoints et
+inspection selon stub. Un exception handler doit imprimer PC, PR, SR, GBR, VBR,
+MACH/MACL, registres et EXPEVT/INTEVT, puis une pile bornee.
+
+Afficher aussi etat ASIC/PVR/DMA. Un ecran colore tres tot localise boot. Garder
+un watchdog pendant acces GD/reseau. Les bugs qui disparaissent en P2 indiquent
+souvent cache/coherence; ceux qui changent avec logs indiquent timing/race.
+
+
+==============================================================================
+54. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Modeliser les blocs comme producteurs d'evenements horodates, pas comme appels
+instantanes. CPU, TMU, RTC, DMA, Holly, TA, renderer, AICA, ARM, Maple et GD-ROM
+avancent concurremment. Une premiere implementation peut etre fonctionnelle,
+mais doit conserver registres busy, IRQ, acquittements et ordre observable.
+
+Separations utiles : decode SH-4, MMU/cache, bus/MMIO, scheduler, PVR frontend,
+rasterizer, AICA, media optique et peripheriques. Journal MMIO filtrable.
+
+
+==============================================================================
+55. EMULATION DU SH-4
+==============================================================================
+
+Implementer toutes instructions, delay slots, PC relatif, exceptions de slot,
+banked registers, SR privilege, alignement, little-endian, MAC saturation, DIV1,
+FPU/FPSCR et conversion. Puis MMU TLB, caches visibles, SQ/QACR, TMU, DMAC, RTC,
+SCI, UBC et performance counters utilises.
+
+Un JIT doit maintenir exceptions precises et invalider code auto-modifie. Les
+NaN, denormaux, FTRV et FSRRA necessitent tests differentiels contre hardware.
+
+
+==============================================================================
+56. EMULATION POWERVR2
+==============================================================================
+
+Parser exactement paquets 32 octets, listes, strips et end-of-list. Construire
+bins par tuiles, respecter formats textures/twiddle/VQ/palettes, profondeur,
+culling, modifier volumes, fog, clamp, mipmaps et blending. Un rendu host GPU
+immediat peut diverger sur profondeur/transparence/bords.
+
+Emuler TA-complete et render-complete separement, changements de framebuffer et
+scanout/VBlank. Tests : render-to-texture, palette modifiee en vol, textures
+chevauchantes, listes vides, NaN, stride, interlace et overflow OPB.
+
+
+==============================================================================
+57. EMULATION AICA, MAPLE ET GD-ROM
+==============================================================================
+
+AICA : ARM7DI complet, timers/IRQ, 64 slots, pitch, ADSR, boucle, ADPCM, DSP et
+mixage deterministe. Maple : DMA descriptor chain, topologie, latence, reponses,
+VMU flash/FAT/LCD/RTC et hotplug. GD : machine ATA/proprietaire, PIO/DMA, TOC,
+sessions, audio CD, secteurs et timings raisonnables.
+
+Sauvegardes VMU et flash doivent etre atomiques sur l'hote. Ne jamais monter une
+image non fiable sans borner offsets et tailles.
+
+
+==============================================================================
+58. VALIDATION ET TESTS
+==============================================================================
+
+Suite minimale :
+
+- chaque opcode SH-4, delay slot, exception et drapeau;
+- FPU modes PR/SZ/FR, NaN, zero signe, FTRV/FIPR;
+- MMU/TLB/cache/SQ et code auto-modifie;
+- TMU/DMAC/IRQ simultanes et priorites;
+- toutes listes PVR, formats texture, blending, fog, modifier volumes;
+- scanout NTSC/PAL/VGA, entrelace et changement au VBlank;
+- AICA PCM/ADPCM/loop/ADSR/DSP et ARM IRQ;
+- Maple multiport, hotplug, VMU pleine/corrompue, clavier/souris;
+- GD multi-session/data/audio, DMA, erreurs et changement de disque;
+- modem/BBA, RTC et flash.
+
+Comparer captures, hashes framebuffer/audio et traces sur VA0/VA1/VA2.1.
+
+
+==============================================================================
+59. REVISIONS ET COMPATIBILITE
+==============================================================================
+
+Ne pas detecter une revision par une hypothese unique. Interroger region/mode via
+API systeme, cable via registre prevu et peripheriques via Maple. Les frequences
+video, modem, BIOS et lecteur changent. Eviter de dependre d'une RAM non
+initialisee, d'un timing exact du logo ou d'un registre reserve.
+
+Naomi, Atomiswave et Dreamcast ont une famille commune mais memoire, BIOS,
+securite et I/O differents. Un binaire n'est pas automatiquement compatible.
+
+
+==============================================================================
+60. MAINTENANCE ET PRESERVATION
+==============================================================================
+
+Pannes : alimentation/contacts oxydes, ventilateur, condensateurs, bloc optique,
+fin de course/couvercle, pile RTC rechargeable, ports manette et soudures. Couper
+le secteur avant ouverture; laser et alimentation exposent des risques.
+
+Preservation : dumper flash/BIOS de sa propre machine, images multi-pistes avec
+TOC, VMU, manuels et versions executables; calculer SHA-256. Ne pas recalibrer le
+potentiometre laser sans mesure : un courant excessif raccourcit sa vie.
+
+
+==============================================================================
+61. LIMITES JURIDIQUES ET SECURITE
+==============================================================================
+
+Les SDK, BIOS, jeux, cles et marques restent soumis au droit applicable. Preferer
+KallistiOS et documentation libre. L'interoperabilite et la copie privee varient
+selon pays. Ce document ne fournit ni cle ni methode de contournement.
+
+Pour code reseau et emulateur : verifier overflow, chemin ISO, taille Maple,
+descripteurs DMA et fichiers VMU. Traiter images disque et sauvegardes comme
+entrees hostiles.
+
+
+==============================================================================
+62. REFERENCES
+==============================================================================
+
+Documents constructeurs/composants :
+
+- Sega, Dreamcast Hardware Specification Outline :
+  https://segaretro.org/images/8/8b/Dreamcast_Hardware_Specification_Outline.pdf
+- Renesas, SH7750/SH7750S/SH7750R Hardware User's Manual :
+  https://www.renesas.com/en/document/mah/sh7750-sh7750s-sh7750r-group-users-manual-hardware
+- Renesas, SH-4 Software Manual :
+  https://www.renesas.com/ja/document/mas/sh-4-software-manual?language=en
+
+Documentation libre et implementations consultables :
+
+- KallistiOS, documentation Dreamcast : https://kos-docs.dreamcast.wiki/
+- KallistiOS, sources et en-tetes materiels :
+  https://github.com/KallistiOS/KallistiOS
+- Marcus Comstedt, Dreamcast Programming : https://mc.pp.se/dc/
+- Linux, support de la carte Dreamcast et IRQ Holly :
+  https://codebrowser.dev/linux/linux/arch/sh/boards/mach-dreamcast/
+- collection de documents pour programmation bare metal :
+  https://github.com/Kochise/dreamcast-docs
+
+Les documents Sega historiques peuvent etre confidentiels ou redistribues sans
+autorisation claire. Les consulter selon le droit applicable; ne pas incorporer
+leur texte ou SDK proprietaire dans un projet libre. Pour les registres, comparer
+manuel composant, KallistiOS, Linux, tests materiels et au moins deux emulateurs.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

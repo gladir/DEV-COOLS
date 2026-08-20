@@ -1,0 +1,1215 @@
+==============================================================================
+ ATARI JAGUAR
+ Materiel, programmation Tom/Jerry et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console Atari Jaguar : Motorola 68000, ASIC Tom et Jerry,
+GPU/DSP RISC, Object Processor, Blitter, memoire, video, son, controleurs,
+cartouches et Jaguar CD. Il fournit des cartes de registres, des principes de
+programmation assembleur et les contraintes necessaires a un emulateur fidele.
+
+La Jaguar est dite "64 bits" parce que son bus DRAM, l'Object Processor et le
+Blitter traitent des phrases de 64 bits. Ses CPU programmables ont des registres
+32 bits pour GPU/DSP et 32/16 bits pour le 68000. La denomination commerciale ne
+signifie donc pas que chaque composant est un processeur general 64 bits.
+
+Sauf indication contraire, les adresses sont celles de la carte ROMHI=1 utilisee
+par la console, les nombres precedes de `$` sont hexadecimaux et les accents sont
+omis pour conserver l'ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et positionnement
+  2. Modeles et derives
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges NTSC et PAL
+  6. Bus systeme et phrases 64 bits
+  7. Motorola 68000
+  8. Jeu d'instructions 68000
+  9. Carte memoire au reset
+ 10. Carte memoire ROMHI=1
+ 11. MEMCON1, MEMCON2 et configuration
+ 12. RAM principale
+ 13. ROM de demarrage et authentification
+ 14. Tom : vue generale
+ 15. Registres video et timing
+ 16. Modes couleur CRY, RGB et direct
+ 17. CLUT et line buffers
+ 18. Object Processor
+ 19. Objet bitmap
+ 20. Objet bitmap redimensionne
+ 21. Objets GPU, branchement et stop
+ 22. Construction et restauration d'une object list
+ 23. GPU : architecture
+ 24. GPU : registres et memoire locale
+ 25. Jeu d'instructions RISC Jaguar
+ 26. Pipeline, hazards et banques de registres
+ 27. Blitter : architecture
+ 28. Blitter : registres et commandes
+ 29. Blitter : pixels, phrases, Z et Gouraud
+ 30. Interruptions Tom
+ 31. Jerry : vue generale
+ 32. DSP : architecture et memoire
+ 33. Audio et interface serie
+ 34. Timers, horloges et UART
+ 35. Controleurs et clavier numerique
+ 36. EEPROM de cartouche
+ 37. Cartouches et connecteur
+ 38. Formats ROM et chargement
+ 39. Jaguar CD
+ 40. Memory Track et extensions
+ 41. Demarrage d'un programme
+ 42. Initialisation video en assembleur 68000
+ 43. Exemple minimal d'object list
+ 44. Lancement d'un programme GPU
+ 45. Exemple de boucle GPU
+ 46. Lancement d'un programme DSP
+ 47. Exemple sonore
+ 48. Exemple de copie Blitter
+ 49. Lecture d'un controleur
+ 50. Gestion des interruptions
+ 51. Rendu 2D
+ 52. Rendu 3D
+ 53. Synchronisation et partage de donnees
+ 54. Optimisation et bande passante
+ 55. Bogues et contournements materiels
+ 56. Construction avec RMAC/RLN et GCC
+ 57. Guide d'implementation d'un emulateur
+ 58. Emulation GPU/DSP et Blitter
+ 59. Emulation Object Processor et video
+ 60. Emulation audio, controles et EEPROM
+ 61. Cas limites et erreurs frequentes
+ 62. Diagnostic et maintenance
+ 63. Outils, tests et validation
+ 64. References
+
+
+==============================================================================
+1. HISTORIQUE ET POSITIONNEMENT
+==============================================================================
+
+Atari commercialise la Jaguar aux Etats-Unis a partir de 1993, puis dans d'autres
+regions. Elle est concue autour du chipset Tom/Jerry de Flare Technology. Atari
+la presente comme la premiere console 64 bits et utilise le slogan "Do the
+Math". La production commerciale cesse apres la fusion Atari/JTS en 1996.
+
+La machine est puissante pour les bitmaps, objets redimensionnes, calculs RISC et
+audio programme, mais son architecture parallele et ses errata compliquent le
+developpement. Tempest 2000, Alien vs Predator, Doom et Rayman illustrent des
+utilisations tres differentes du materiel.
+
+
+==============================================================================
+2. MODELES ET DERIVES
+==============================================================================
+
+- Jaguar NTSC et PAL : memes principes, oscillateurs/timings video differents;
+- Jaguar CD : module optique pose sur le connecteur cartouche;
+- Memory Track : cartouche de sauvegarde pour Jaguar CD;
+- Jaguar Test Station : console avec ROM/debug et liaison de developpement;
+- Alpine Board : carte de developpement RAM/ROM et interfaces;
+- CoJag : materiel d'arcade derive, CPU et carte memoire differents;
+- prototypes Jaguar Duo, VR et autres non standards.
+
+CoJag peut utiliser 68020 ou MIPS, davantage de RAM et bus ROM different. Il ne
+doit pas etre traite comme une simple revision de la console de salon.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU hote             Motorola 68000, environ 13,295 MHz
+Tom GPU               RISC 32 bits, environ 26,59 MHz, RAM locale 4 Kio
+Tom Object Processor  moteur d'objets et scanlines, chemin 64 bits
+Tom Blitter           moteur 64 bits, pixels, Z-buffer et Gouraud
+Jerry DSP             RISC 32 bits, environ 26,59 MHz, RAM locale 8 Kio
+RAM principale        2 Mio DRAM, bus 64 bits
+ROM cartouche         jusqu'a 6 Mio dans la fenetre standard
+Video                 timing programmable, palettes/CRY/RGB
+Audio                 DAC stereo via DSP, qualite/cadence programmable
+Controleurs           deux ports, disque D-pad, boutons et clavier 12 touches
+Sauvegarde            EEPROM serie optionnelle dans cartouche
+CD                    double vitesse avec DSP/controleur dedies dans l'extension
+
+Le 68000 coordonne, mais GPU et DSP doivent effectuer le travail intensif. Une
+application qui rend tout sur le 68000 sous-utilise le chipset et sature le bus.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Tom contient video, Object Processor, GPU et Blitter. Jerry contient DSP, audio,
+timers, UART et interfaces. Tous partagent la DRAM avec le 68000 et les moteurs
+DMA. GPU/DSP possedent RAM locale rapide pour code et donnees critiques.
+
+Le rendu typique : GPU calcule geometrie/commandes; Blitter trace ou transforme
+dans des buffers DRAM; Object Processor parcourt une liste a chaque ligne et
+compose les objets dans un line buffer; le bloc video convertit CRY/RGB vers la
+sortie. DSP melange musique/effets et alimente le DAC serie.
+
+
+==============================================================================
+5. HORLOGES NTSC ET PAL
+==============================================================================
+
+L'horloge systeme Tom/Jerry est proche de 26,59 MHz en NTSC; le 68000 recoit
+environ la moitie, 13,295 MHz. PAL utilise une reference legerement differente.
+Le timing video est programmable par compteurs horizontaux/verticaux, permettant
+plusieurs resolutions et cadences autour de 50/60 Hz.
+
+Il n'existe pas une resolution materielle unique. 320x200, 320x240, 320x256,
+overscan et entrelacement sont des choix logiciels et regionaux. La largeur des
+line buffers et le pixel clock imposent les limites reelles.
+
+
+==============================================================================
+6. BUS SYSTEME ET PHRASES 64 BITS
+==============================================================================
+
+Une "phrase" Jaguar vaut 64 bits, soit huit octets. DRAM est organisee pour
+transferts 64 bits et page mode. Object Processor et Blitter lisent des phrases;
+les objets/descripteurs et donnees performantes doivent etre alignes sur 8, 16
+ou 32 octets selon type.
+
+Le 68000 n'a qu'un bus externe 16 bits et exige plusieurs cycles pour une phrase.
+GPU/DSP sont 32 bits, mais le Blitter et OP exploitent la largeur DRAM. La bande
+passante depend ordre d'adresses, page DRAM, priorites, refresh et contention.
+
+Le terme byte order est piegeux : le 68000 est big-endian, alors que les registres
+64 bits de l'OP ont une disposition de mots/phrases particuliere. OLP doit etre
+word-swappe lorsqu'il est ecrit depuis 68000 selon la documentation.
+
+
+==============================================================================
+7. MOTOROLA 68000
+==============================================================================
+
+Huit registres de donnees D0-D7, huit d'adresse A0-A7, A7 pile, SR et PC. Espace
+24 bits sur Jaguar. Les mots/longs doivent etre pairs; un acces impair produit
+Address Error. Vecteurs reset a `$000000/$000004` une fois RAM mappee et chargee.
+
+Le 68000 convient au demarrage, logique, I/O et orchestration. Ses acces DRAM et
+registres 16 bits peuvent interagir avec GPU/Blitter. Les ecritures 32 bits vers
+registres internes sont souvent deux cycles et peuvent etre observees entre eux.
+
+
+==============================================================================
+8. JEU D'INSTRUCTIONS 68000
+==============================================================================
+
+Transfert : MOVE/MOVEA/MOVEQ/MOVEM/MOVEP, LEA, PEA, LINK, UNLK, EXG.
+Arithmetique : ADD, SUB, CMP et variantes, MULS/U, DIVS/U, NEG/X, CLR, EXT.
+Logique/bit : AND, OR, EOR, NOT, BTST, BCHG, BCLR, BSET.
+Decalage : ASL/ASR, LSL/LSR, ROL/ROR, ROXL/ROXR, SWAP.
+Controle : BRA, BSR, Bcc, DBcc, Scc, JMP, JSR, RTS, RTE, RTR, TRAP.
+Systeme : RESET, STOP, NOP, TAS, MOVE SR/CCR/USP.
+
+Le 68000 original n'a ni cache ni MMU. Une boucle de polling agressive consomme
+le bus; preferer interruption ou travail local pendant GPU/DSP.
+
+
+==============================================================================
+9. CARTE MEMOIRE AU RESET
+==============================================================================
+
+Avant la premiere ecriture a MEMCON1, une fenetre ROM0 de 2 Mio est repetee dans
+les 16 Mio. Dans cette vue :
+
+$000000-$0FFFFF  bootstrap ROM/miroirs
+$100000-$10FFFF  registres internes Tom
+$110000-$113FFF  Jerry
+$114000-$117FFF  joysticks/GPIO
+$118000-$11AFFF  DSP Jerry
+$120000-$1FFFFF  bootstrap ROM/miroirs
+
+Cette carte permet de booter avec differents CPU possibles. Le BIOS configure
+MEMCON1, selectionne ROMHI et fait apparaitre DRAM/cartouche. Un emulateur qui
+commence directement dans la carte finale peut rater les acces BIOS initiaux.
+
+
+==============================================================================
+10. CARTE MEMOIRE ROMHI=1
+==============================================================================
+
+$000000-$1FFFFF  DRAM principale 2 Mio sur console, dans zone DRAM0
+$200000-$7FFFFF  reste zone DRAM/reserve selon implementation
+$800000-$DFFFFF  ROM1 cartouche, fenetre maximale 6 Mio
+$E00000-$FFFFFF  ROM0 bootstrap et espaces internes
+
+Sous ROMHI=1, registres internes sont a `$F00000-$F1FFFF`. Le bootstrap physique
+occupe une petite partie de ROM0 mais se repete/partage avec decodage ASIC. La
+carte generique du chipset prevoit deux banques DRAM de 4 Mio; la console n'en
+installe que 2 Mio au total.
+
+Avec ROMHI=0, ROM/cartouche/DRAM permutent vers le bas et le premier chiffre des
+registres documentes devient souvent `$1` au lieu de `$F`. Les logiciels console
+ne doivent pas changer cette configuration apres boot.
+
+
+==============================================================================
+11. MEMCON1, MEMCON2 ET CONFIGURATION
+==============================================================================
+
+MEMCON1 `$F00000` :
+
+bit 0 ROMHI; bits 1-2 largeur ROM 8/16/32/64; bits 3-4 vitesse ROM; bits 5-6
+timing DRAM; bit 7 FASTROM test; bits 11-12 vitesse I/O; bit 14 CPU32. Les bits
+reserves doivent rester zero. Atari indique "ne pas modifier" sur console.
+
+MEMCON2 `$F00002` configure largeur/banques DRAM et autres timings suivant
+silicium. Le BIOS fournit les bonnes valeurs. Une erreur peut faire disparaitre
+ROM, RAM ou ralentir/corrompre les cycles.
+
+
+==============================================================================
+12. RAM PRINCIPALE
+==============================================================================
+
+2 Mio de DRAM partages contiennent code 68000, object lists, images, buffers,
+audio, piles et donnees. Il n'existe pas de VRAM separee : video concurrence les
+CPU. Organiser donnees en pages, aligner phrases et eviter alternance de banques.
+
+Le framebuffer n'est pas obligatoire : OP peut afficher directement plusieurs
+objets. Pour 3D, double buffer couleur et Z-buffer consomment vite la RAM. Un
+buffer 320x240x16 vaut 153 600 octets; deux + Z 16 bits environ 460 800 octets.
+
+
+==============================================================================
+13. ROM DE DEMARRAGE ET AUTHENTIFICATION
+==============================================================================
+
+Le BIOS initialise MEMCON, affiche logo/animation et verifie la cartouche. Le
+GPU calcule une authentification/checksum dont le resultat attendu est associe a
+`$03D0DEAD`; une cartouche commerciale doit porter les donnees signees/validees
+par le processus Atari. Les revisions/regions de BIOS different.
+
+Le mecanisme n'est pas un simple checksum additif d'en-tete. Les environnements
+de developpement, cartouches modernes et BIOS alternatifs ont leurs chemins de
+chargement. Un emulateur peut offrir une option de bypass, mais le mode fidele
+doit executer le BIOS et son dialogue GPU.
+
+
+==============================================================================
+14. TOM : VUE GENERALE
+==============================================================================
+
+Tom couvre `$F00000-$F0FFFF` :
+
+$F00000-$F000FF  configuration, video, OP, interruptions et timers
+$F00400-$F007FF  Color Look-Up Tables
+$F00800...        line buffers via vues internes/externes selon alias
+$F02000-$F021FF  GPU controle/registres
+$F02200-$F022FF  Blitter
+$F03000-$F03FFF  RAM locale GPU, 4 Kio
+$F08800-$F08D9F  line buffer A, acces 32 bits
+$F09000-$F0959F  line buffer B
+$F09800-$F09D9F  line buffer selectionne
+$F0B000-$F0BFFF  alias RAM GPU 32 bits
+
+Les plages exactes et largeurs doivent venir du register list. Plusieurs vues
+existent pour adapter bus I/O 16 bits et chemins internes 32/64 bits.
+
+
+==============================================================================
+15. REGISTRES VIDEO ET TIMING
+==============================================================================
+
+$F00004 HC      compteur horizontal
+$F00006 VC      compteur vertical
+$F00008 LPH     latch position H
+$F0000A LPV     latch position V
+$F00020 OLP     pointeur object list
+$F00026 OBF     drapeau/reprise Object Processor
+$F00028 VMODE   activation et mode pixel
+$F0002A BORD1   couleur bordure, partie 1
+$F0002C BORD2   couleur bordure, partie 2
+$F0002E HP      periode horizontale
+$F00030 HBB     debut blank horizontal
+$F00032 HBE     fin blank horizontal
+$F00034 HS      synchro horizontale
+$F00036 HVS     synchro H/V
+$F00038 HDB1    debut affichage horizontal 1
+$F0003A HDB2    debut affichage horizontal 2
+$F0003C HDE     fin affichage horizontal
+$F0003E VP      periode verticale
+$F00040 VBB     debut blank vertical
+$F00042 VBE     fin blank vertical
+$F00044 VS      synchro verticale
+$F00046 VDB     debut affichage vertical
+$F00048 VDE     fin affichage vertical
+$F0004A VEB     equalisation debut
+$F0004C VEE     equalisation fin
+$F0004E VI      ligne d'interruption video
+$F00050/$52 PIT prescaler/diviseur
+$F00054 HEQ     equalisation horizontale
+$F00058 BG      couleur background du line buffer
+
+Les compteurs utilisent des demi-lignes/horloges video selon champ. Reprendre les
+tables d'initialisation NTSC/PAL officielles; une valeur "320" n'est pas posee
+directement dans HP.
+
+
+==============================================================================
+16. MODES COULEUR CRY, RGB ET DIRECT
+==============================================================================
+
+VMODE selectionne traduction du line buffer : CRY16, RGB24, DIRECT16/RGB16 selon
+bits et mix. CRY code chroma C, intensite R et luminance Y; le circuit convertit
+en RGB 24 bits. RGB16 emploie une repartition compacte des composantes. RGB24
+utilise un mot/chemin 32 bits par pixel avec octet inutilise/commande.
+
+Objets 1, 2, 4 et 8 bpp passent par CLUT vers couleur physique 16 bits. 16 bpp
+est direct. Le mode OP 24/32 bpp produit un pixel par cycle et ne se redimensionne
+pas correctement dans tous les cas. Des objets de profondeurs differentes peuvent
+coexister, sauf restrictions du mode de sortie.
+
+
+==============================================================================
+17. CLUT ET LINE BUFFERS
+==============================================================================
+
+Deux CLUT de 256 entrees logiques/physiques permettent deux pixels paralleles.
+Les objets basse profondeur combinent index et palette offset. Mettre a jour les
+deux moities coherentes si le materiel les expose separement.
+
+Deux line buffers d'environ 360 x 32 bits alternent : pendant que l'un est lu
+vers video, OP remplit l'autre. Ils stockent pixels physiques 16/24 bits. Le
+background initialise la ligne; les objets la modifient par remplacement ou RMW.
+
+Les line buffers ne sont pas les deux framebuffers du jeu. Ils ne contiennent
+qu'une ligne et changent de role au balayage.
+
+
+==============================================================================
+18. OBJECT PROCESSOR
+==============================================================================
+
+Pour chaque ligne, OP suit une liste chainee en DRAM, teste les objets actifs,
+lit des phrases de pixels et ecrit le line buffer. Cinq types materiels : bitmap
+0, bitmap scaled 1, GPU interrupt 2, branch 3, stop 4.
+
+Bitmap non scaled = deux phrases (16 octets) et alignement 16. Scaled = trois
+phrases (24 octets) mais doit commencer sur alignement 32 selon recommandation.
+Les liens codent seulement une partie de l'adresse dans la meme fenetre 4 Mio.
+
+OP ecrit en retour dans les descripteurs : DATA avance, HEIGHT diminue, et pour
+scaled REMAINDER change. La liste doit donc etre en RAM writable et ses champs
+restaures avant la trame suivante, sauf animation volontaire par consommation.
+
+
+==============================================================================
+19. OBJET BITMAP
+==============================================================================
+
+Premiere phrase : TYPE bits 0-2; YPOS 3-13; HEIGHT 14-23; LINK 24-42; DATA
+43-63 sous forme d'adresse phrase.
+
+Deuxieme phrase : XPOS 0-11 signe; DEPTH 12-14; PITCH 15-17; DWIDTH 18-27;
+IWIDTH 28-37; puis index palette, flags reflection, RMW, transparency, release et
+first pixel selon champs documentes.
+
+DEPTH encode 1,2,4,8,16 ou 32/24 bpp. IWIDTH est en phrases et ne doit pas etre
+zero. DWIDTH donne le pas de ligne en phrases. DATA doit pointer vers des donnees
+paddees a une phrase complete; couleur/index zero sert souvent de transparent.
+
+
+==============================================================================
+20. OBJET BITMAP REDIMENSIONNE
+==============================================================================
+
+Les deux premieres phrases ressemblent au bitmap. Troisieme : HSCALE bits 0-7,
+VSCALE 8-15, REMAINDER 16-23, reste zero. Format 3.5 fixe : `$20` vaut 1,0.
+
+REMAINDER commence normalement a VSCALE. A chaque ligne, OP le decremente et
+avance la source selon accumulation. VSCALE au-dela de certaines valeurs (plus
+de 7.0) echoue; RGB24 scaled est limite/deforme hors 1:1.
+
+Le scaling est nearest-neighbor par repetition/saut de pixels/lignes, pas une
+filtration bilineaire. Pour rotation, perspective ou texture mapping, GPU/Blitter
+doivent preparer une image ou des spans.
+
+
+==============================================================================
+21. OBJETS GPU, BRANCHEMENT ET STOP
+==============================================================================
+
+GPU object type 2 interrompt GPU et expose DATA dans OB0-OB3. Le GPU peut
+calculer/alterer liste ou line buffer, puis ecrit OBF pour relancer OP.
+
+Branch type 3 teste YPOS contre VC, flag OP ou demi-ligne et suit LINK si vrai.
+Une liste robuste commence par branches qui excluent les lignes hors affichage
+actif, sinon OP peut consommer/modifier des objets pendant blank.
+
+Stop type 4 termine la liste, optionnellement interrompt le 68000. DATA fournit
+un marqueur. Une liste doit toujours atteindre STOP; une boucle bloque le bus/
+video. Les pseudo-objets nop/jump de RMAC se traduisent en branches materielles.
+
+
+==============================================================================
+22. CONSTRUCTION ET RESTAURATION D'UNE OBJECT LIST
+==============================================================================
+
+Regles : aligner chaque header; placer en DRAM; word-swapper phrases depuis le
+68000 selon macros; ajouter deux branches de clip; finir STOP; initialiser OLP
+une fois de facon atomique, de preference via GPU.
+
+Chaque VBlank, restaurer au minimum DATA et HEIGHT des bitmaps, REMAINDER des
+scaled, puis mettre a jour X/YPOS et liens modifies. Ne pas reconstruire toute la
+liste si seules deux coordonnees changent.
+
+Atari recommande de ne pas changer OLP directement depuis 68000 : OP pourrait
+preempter entre les deux mots du long. Le GPU peut effectuer une ecriture 32 bits
+atomique sur son chemin interne.
+
+
+==============================================================================
+23. GPU : ARCHITECTURE
+==============================================================================
+
+GPU est un RISC 32 bits pipeline dans Tom. Il possede 64 registres 32 bits sous
+forme de deux banques de 32, ALU, multiplieur/diviseur, controle branches et
+interface memoire. Code 16 bits. Horloge systeme ~26,59 MHz.
+
+Il excelle en transformations, decompression, construction de spans, animation
+et pilotage Blitter/OP. Sa RAM locale de 4 Kio est rapide; execution DRAM est
+possible mais lente et exposee a contention. Charger noyau et tables critiques
+localement.
+
+
+==============================================================================
+24. GPU : REGISTRES ET MEMOIRE LOCALE
+==============================================================================
+
+$F02000-$F021FF contient controle/registre externe; registres de controle vers
+`$F02100` : FLAGS, MTX_ADDR, MTX_CTRL, DATA_ORG, PC, CTRL, HIDATA, REMAIN selon
+offsets. `$F03000-$F03FFF` est RAM locale 4 Kio; `$F0B000-$F0BFFF` vue 32 bits.
+
+GPU a deux banques de 32 registres, dont une active et une alternative. FLAGS
+contient drapeaux Z/C/N, masque/clear interruptions et selection banque. CTRL
+controle RUN, host interrupt, GPU->CPU interrupt et endianness/bus.
+
+Le 68000 doit arreter GPU avant de charger code, ecrire RAM locale par longs,
+fixer PC, effacer/initialiser flags puis RUN. Verifier arret avant recharger.
+
+
+==============================================================================
+25. JEU D'INSTRUCTIONS RISC JAGUAR
+==============================================================================
+
+Format general 16 bits : opcode 6 bits, source 5, destination 5.
+
+Arithmetique : ADD, ADDC, ADDQ, ADDQT, SUB, SUBC, SUBQ, SUBQT, NEG.
+Logique/bit : AND, OR, XOR, NOT, BTST, BSET, BCLR.
+Multiplication : MULT, IMULT, IMULTN, IMACN, RESMAC.
+Division/valeur : DIV, ABS.
+Decalage/rotation : SH, SHLQ, SHRQ, SHA, SHARQ, ROR, RORQ.
+Comparaison : CMP, CMPQ.
+Transfert : MOVE, MOVEQ, MOVEI, MOVETA, MOVEFA, MOVE PC.
+Memoire : LOADB, LOADW, LOAD, LOADP, STOREB, STOREW, STORE, STOREP.
+Controle : JUMP, JR et NOP.
+GPU : SAT8, SAT16, SAT24, PACK, UNPACK, MMULT, MTOI, NORMI.
+DSP : ADDQMOD, SUBQMOD, SAT16S/SAT32S, MIRROR et operations MAC associees.
+
+Disponibilite exacte differe GPU/DSP. LOADP/STOREP traitent phrase 64 bits via
+deux registres/chemin special. MOVEI occupe des mots supplementaires. Les quick
+immediates ont encodages particuliers (zero peut signifier 32).
+
+
+==============================================================================
+26. PIPELINE, HAZARDS ET BANQUES DE REGISTRES
+==============================================================================
+
+Le RISC ne fournit pas tous les interlocks. Une instruction qui consomme trop
+vite le resultat d'un LOAD, divide, multiply ou write-back peut lire l'ancienne
+valeur. Inserer NOP ou travail independant selon tableau de latence du manuel.
+
+Les branches ont delai/pipeline et certaines instructions ne doivent pas etre
+placees dans le slot suivant. Le changement de banque de registres lors d'une
+interruption exige sauvegarde des registres partages et retour ordonne.
+
+GPU/DSP ont des bogues silicium connus : scoreboarding, flags, store, branche et
+interruptions. Utiliser les sequences de l'Appendix "Programming Tips" et
+tester sur console, car un emulateur tolerant peut cacher un hazard.
+
+
+==============================================================================
+27. BLITTER : ARCHITECTURE
+==============================================================================
+
+Le Blitter est un moteur 64 bits dans Tom pour copie, remplissage, logique,
+transparence, comparaison, Z-buffer, shading et addition. Deux generateurs
+d'adresse A1/A2 decrivent surfaces avec base, flags, clip, pixel/phrase, pitch,
+width et increment fractionnaire.
+
+Il ne trace pas automatiquement triangles 3D complets. GPU calcule bords/spans,
+puis lance des lignes Blitter. Les increment fractionnaires servent texture,
+Gouraud et interpolation Z.
+
+
+==============================================================================
+28. BLITTER : REGISTRES ET COMMANDES
+==============================================================================
+
+Region `$F02200-$F022FF` :
+
+A1_BASE, A1_FLAGS, A1_CLIP, A1_PIXEL, A1_STEP, A1_FSTEP, A1_FPIXEL, A1_INC,
+A1_FINC; equivalents A2; B_CMD, B_COUNT; B_SRCD, B_DSTD, B_DSTZ, B_SRCZ,
+B_PATD, B_IINC, B_ZINC, B_STOP et donnees/masques.
+
+B_COUNT contient lignes et pixels par ligne; ecrire B_CMD demarre ou la sequence
+documentee lance l'operation. Tester busy avant modifier registres. Le nombre
+zero peut avoir un sens maximal selon champ : ne pas supposer no-op.
+
+B_CMD selectionne sources (memory, pattern, add), LFU logique, compare/inhibit,
+Z compare/write, Gouraud, direction et phrase/pixel. Construire des constantes
+symboliques; un bit errone peut lire une source inactive ou ecraser Z.
+
+
+==============================================================================
+29. BLITTER : PIXELS, PHRASES, Z ET GOURAUD
+==============================================================================
+
+Mode pixel traite profondeur 1/2/4/8/16/32 bpp avec packing; mode phrase atteint
+la meilleure bande passante si bases, largeurs et pas sont alignes. Les FLAGS
+encodent PITCH, PIXEL, ZOFFS, WIDTH et X/Y add control.
+
+Z-buffer compare source/destination selon bits et peut inhiber couleur tout en
+mettant a jour Z. Gouraud interpole intensite/couleur par increment. Les donnees
+couleur et Z peuvent etre entrelacees pour conserver page DRAM.
+
+Les limites de span, premier/dernier pixel et masques de phrase sont sensibles.
+Padder les textures et tester largeur 1, fins non alignees et direction inverse.
+
+
+==============================================================================
+30. INTERRUPTIONS TOM
+==============================================================================
+
+Sources vers 68000 : video, GPU, Object Processor, timer et Blitter. INT1
+`$F000E0` contient enable/latch/clear selon bits; INT2 `$F000E2` complete le
+controle. La source doit etre acquittee dans son bloc et dans Tom selon ordre.
+
+GPU possede ses propres sources : CPU, Jerry, timer, OP et Blitter, avec vecteurs
+logiciels/adresses fixes dans RAM locale selon convention. Une interruption ne
+doit pas frapper pendant chargement de code ou changement de banque.
+
+
+==============================================================================
+31. JERRY : VUE GENERALE
+==============================================================================
+
+$F10000-$F13FFF  registres Jerry : horloges, timers, UART, audio
+$F14000-$F17FFF  joysticks, boutons et GPIO
+$F18000-$F1AFFF  registres/controle DSP
+$F1B000-$F1CFFF  RAM locale DSP, 8 Kio
+$F1D000-$F1DFFF  ROM wavetable
+
+Les peripheriques sont sur chemin 16 bits, certains seulement 8 bits. Les alias
+et offsets exacts doivent suivre la revision du register list.
+
+
+==============================================================================
+32. DSP : ARCHITECTURE ET MEMOIRE
+==============================================================================
+
+DSP partage le coeur RISC GPU mais ajoute MAC, modulo, mirror et saturation audio,
+et n'a pas toutes les instructions graphiques. 64 registres en deux banques,
+pipeline, interruptions et controle RUN/PC semblables.
+
+RAM locale `$F1B000-$F1CFFF` = 8 Kio, suffisante pour mixer, tables et petits
+buffers. ROM wavetable `$F1D000-$F1DFFF` fournit formes/donnees utiles. DSP peut
+lire DRAM, mais le flux audio doit eviter contention et stalls non bornes.
+
+
+==============================================================================
+33. AUDIO ET INTERFACE SERIE
+==============================================================================
+
+La Jaguar n'a pas un synthe musical fixe comparable a un PSG. DSP genere/melange
+PCM, wavetable, FM ou effets en logiciel puis ecrit des echantillons stereo a
+l'interface serie/DAC de Jerry. La cadence est programmee par clocks SCLK/SMODE.
+
+Un handler periodique ou boucle DSP produit gauche/droite, souvent 16 bits. Le
+DAC analogique et filtres fixent la sortie. Les echantillons cartouche/CD peuvent
+etre ADPCM ou compresses par logiciel, sans decodeur universel dans Jerry.
+
+Sous-alimentation du FIFO/serial produit repetition/clic. Double buffer et IRQ
+doivent garantir une borne, meme quand OP/Blitter occupent DRAM.
+
+
+==============================================================================
+34. TIMERS, HORLOGES ET UART
+==============================================================================
+
+Jerry offre deux timers programmables, prescalers, interruption et horloges
+audio. UART sert au developpement/liaisons et n'est pas un port utilisateur
+standard complet sur toutes consoles. GPIO gere signaux cartouche/CD.
+
+Les timers comptent des clocks derives; zero/reload et acquittement ont semantique
+materielle. Employer un timer pour audio seulement si sa priorite/latence est
+compatible avec les autres IRQ DSP.
+
+
+==============================================================================
+35. CONTROLEURS ET CLAVIER NUMERIQUE
+==============================================================================
+
+Chaque manette standard : croix 8 directions, boutons A/B/C, Pause, Option et
+clavier 12 touches 0-9, `*`, `#`. ProController ajoute X/Y/Z, gachettes L/R et
+autres boutons en reutilisant la matrice.
+
+Registres autour de `$F14000` (JOYSTICK/JOYBUTS) selectionnent des lignes puis
+lisent colonnes actives bas. Il faut balayer plusieurs motifs pour reconstruire
+toutes les touches. Les deux ports sont multiplexes dans les mots.
+
+Ne pas exposer seulement A/B/C : de nombreux jeux emploient overlays et clavier.
+Simuler ghosting/combinaisons raisonnablement et laisser Pause/Option distincts.
+
+
+==============================================================================
+36. EEPROM DE CARTOUCHE
+==============================================================================
+
+Certaines cartouches comportent EEPROM serie pour scores/sauvegardes. Les lignes
+sont pilotees via bits GPIO/cartouche; protocole de type serie avec start,
+adresse, donnees, acknowledge et delai d'ecriture selon composant.
+
+Une ecriture n'est pas instantanee. Respecter busy, taille de page, endurance et
+valeur effacee. Un emulateur doit sauvegarder atomiquement dans un fichier par
+jeu, avec EEPROM absente si la cartouche n'en contient pas.
+
+
+==============================================================================
+37. CARTOUCHES ET CONNECTEUR
+==============================================================================
+
+La fenetre ROM1 `$800000-$DFFFFF` offre 6 Mio. Les cartouches commerciales sont
+souvent 2 ou 4 Mio, bus ROM console typiquement 32 bits malgre bus DRAM 64 bits.
+ROMWIDTH/ROMSPEED sont configures par BIOS. Cartouches peuvent ajouter EEPROM,
+RAM, mapper ou pass-through CD.
+
+Le connecteur expose adresses/donnees et controle. Ne pas inserer sous tension.
+Une carte homebrew doit respecter 5 V, temps, largeur, decouplage et authentification
+du boot choisi.
+
+
+==============================================================================
+38. FORMATS ROM ET CHARGEMENT
+==============================================================================
+
+`.j64` est souvent un dump big-endian lineaire charge a `$800000`. `.jag` peut
+etre executable avec en-tete/adresse de chargement pour BJL/debug. `.rom`, `.bin`
+et dumps word-swapped existent. L'extension seule est insuffisante.
+
+Detecter ordre par vecteurs/signatures et metadonnees, sans modifier l'original.
+Conserver taille exacte, hash et provenance. Un emulateur doit proposer swap
+explicite et ne pas corriger silencieusement tous les fichiers.
+
+
+==============================================================================
+39. JAGUAR CD
+==============================================================================
+
+Jaguar CD se branche sur le slot et offre lecteur double vitesse, controleur CD,
+RAM tampon, DSP/ASIC, audio CD et Virtual Light Machine. Il utilise des registres
+et GPIO additionnels et conserve Tom/Jerry pour jeu.
+
+Le format disque contient secteurs, pistes data/audio, TOC et authentification.
+Une image BIN/CUE preserve pistes et gaps mieux qu'un ISO seul. Les jeux peuvent
+streamer audio/donnees et dependre des latences/erreurs.
+
+Le BIOS CD a son propre processus de boot. L'extension Memory Track fournit
+sauvegarde partagee. Programmer le CD exige la reference CD-ROM distincte.
+
+
+==============================================================================
+40. MEMORY TRACK ET EXTENSIONS
+==============================================================================
+
+Memory Track est une cartouche de sauvegarde non volatile utilisee avec Jaguar
+CD. Elle gere fichiers/slots via logiciel CD, pas une EEPROM integree a la console.
+
+JagLink relie consoles pour jeux reseau via port serie; Team Tap ajoute quatre
+manettes par port; CatBox fournit sorties et communications. Skunkboard, GameDrive
+et autres flash carts modernes ont upload, sauvegarde ou debug propres.
+
+
+==============================================================================
+41. DEMARRAGE D'UN PROGRAMME
+==============================================================================
+
+BIOS : reset, MEMCON, RAM/video, logo, verification cartouche, copie/lancement
+du code d'entree. Le programme doit installer pile/vecteurs, arreter ou charger
+GPU/DSP, initialiser video, object list, audio et controles.
+
+Une cartouche peut executer en ROM mais les boucles performantes vont en RAM/GPU.
+Copier donnees avec ordre de mots correct. Avant activer OP, la liste et STOP
+doivent etre complets et caches inexistants ne requierent pas flush, mais les
+ecritures concurrentes exigent synchronisation.
+
+
+==============================================================================
+42. INITIALISATION VIDEO EN ASSEMBLEUR 68000
+==============================================================================
+
+VMODE   equ $F00028
+OLP     equ $F00020
+BORD1   equ $F0002A
+BG      equ $F00058
+VDB     equ $F00046
+VDE     equ $F00048
+
+InitVideo:
+        move.w  #$0000,VMODE           ; garder timebase selon valeur BIOS
+        move.w  #$0000,BORD1
+        move.w  #$0000,BG
+        lea     ObjectList,a0
+        move.l  a0,d0
+        swap    d0                     ; inverse les deux mots pour OLP
+        move.l  d0,OLP
+        move.w  #VMODE_CRY16_ON,VMODE
+        rts
+
+Employer de preference la macro `swapw`/OLP du SDK et verifier le long obtenu
+dans le listing. Conserver les timings BIOS NTSC/PAL
+plutot que reecrire HP..VEE avec une table d'une autre region.
+
+
+==============================================================================
+43. EXEMPLE MINIMAL D'OBJECT LIST
+==============================================================================
+
+Avec les macros RMAC :
+
+        .objproc
+        .phrase
+ObjectList:
+        branch  StopObj,VC_LT,VIDEOBEGIN
+        branch  StopObj,VC_GT,VIDEOEND
+        bitmap  Screen,0,VIDEOBEGIN,40,40,240,3,0,NOTRANS,0,1
+StopObj:
+        stop
+        .68000
+
+Pour 320 pixels a 8 bpp, une ligne vaut 320 octets = 40 phrases. Les parametres
+exactes des macros dependent de RMAC. Apres chaque trame, restaurer DATA/HEIGHT
+du bitmap ou garder une copie modele et recopier les phrases modifiees.
+
+
+==============================================================================
+44. LANCEMENT D'UN PROGRAMME GPU
+==============================================================================
+
+G_RAM   equ $F03000
+G_FLAGS equ $F02100
+G_PC    equ $F02110
+G_CTRL  equ $F02114
+
+StartGPU:
+        bclr    #0,G_CTRL              ; RUN=0 selon largeur/bit documente
+.wait:  btst    #0,G_CTRL
+        bne.s   .wait
+        lea     GPUCode,a0
+        lea     G_RAM,a1
+        move.w  #(GPUCodeEnd-GPUCode)/4-1,d0
+.copy:  move.l  (a0)+,(a1)+
+        dbra    d0,.copy
+        move.l  #G_RAM,G_PC
+        move.l  #GPU_FLAGS_INIT,G_FLAGS
+        bset    #0,G_CTRL
+        rts
+
+Les registres Tom sont souvent accedes avec largeur imposee; `bclr/bset` sur
+memoire peut provoquer read-modify-write indesirable. En production, lire/masquer
+un long puis ecrire selon sequence officielle.
+
+
+==============================================================================
+45. EXEMPLE DE BOUCLE GPU
+==============================================================================
+
+Syntaxe RISC RMAC :
+
+        .gpu
+        .org    G_RAM
+GPU_ENTRY:
+        movei   #CommandPtr,r14
+        load    (r14),r0
+        cmpq    #0,r0
+        jr      eq,GPU_IDLE
+        nop                             ; slot/delai selon pipeline
+        ; traiter commande ou preparer Blitter
+        moveq   #0,r1
+        store   r1,(r14)                ; acquittement
+GPU_IDLE:
+        jump    t,(r31)                 ; convention boucle/retour a definir
+        nop
+
+Un vrai noyau initialise r31 et vecteurs, place NOP/hazards selon manuel et
+emploie une boite aux lettres alignee. `jump t` est condition toujours vraie
+dans plusieurs syntaxes; verifier RMAC.
+
+
+==============================================================================
+46. LANCEMENT D'UN PROGRAMME DSP
+==============================================================================
+
+D_RAM   equ $F1B000
+D_FLAGS equ $F1A100
+D_PC    equ $F1A110
+D_CTRL  equ $F1A114
+
+Procedure identique au GPU : arreter, attendre, copier code par longs dans RAM
+locale, initialiser buffers/serial, fixer PC/FLAGS, lancer. DSP et GPU ont memes
+offsets conceptuels mais bases differentes; ne pas ecrire Tom en pensant Jerry.
+
+Le 68000 publie commandes audio dans DRAM ou DSP RAM. Pour un flux continu,
+double buffer avec index producteur/consommateur et compteur, pas un simple flag
+qui peut perdre deux commandes.
+
+
+==============================================================================
+47. EXEMPLE SONORE
+==============================================================================
+
+Pseudo-RISC DSP :
+
+AudioLoop:
+        load    (r14),r0               ; sample gauche
+        addq    #4,r14
+        load    (r15),r1               ; sample droite
+        addq    #4,r15
+WaitSerial:
+        loadw   (r20),r2               ; statut serie
+        btst    #READY_BIT,r2
+        jr      eq,WaitSerial
+        nop
+        storew  r0,(r21)               ; DAC gauche/droite selon protocole
+        storew  r1,(r21)
+        jr      t,AudioLoop
+        nop
+
+Les adresses SCLK/SMODE/TX et le sens stereo doivent etre pris dans `jerry.inc`.
+La boucle doit gerer fin, interpolation, saturation et interruption sans lire
+au-dela du buffer.
+
+
+==============================================================================
+48. EXEMPLE DE COPIE BLITTER
+==============================================================================
+
+Pseudo-68000 :
+
+        bsr     WaitBlitter
+        move.l  #Source,A1_BASE
+        move.l  #A1_FLAGS_VALUE,A1_FLAGS
+        move.l  #Destination,A2_BASE
+        move.l  #A2_FLAGS_VALUE,A2_FLAGS
+        move.l  #(HEIGHT<<16)|WIDTH,B_COUNT
+        move.l  #CMD_SRC_COPY,B_CMD
+
+WaitBlitter:
+        move.l  B_CMD,d0
+        btst    #BLIT_BUSY_BIT,d0
+        bne.s   WaitBlitter
+        rts
+
+Selon silicium, busy se lit dans commande/controle et les registres ont ordre
+d'ecriture recommande. Les constantes doivent preciser pixel/phrase, largeur,
+pitch, increment et LFU. Tester alignement et chevauchement source/destination.
+
+
+==============================================================================
+49. LECTURE D'UN CONTROLEUR
+==============================================================================
+
+JOYSTICK equ $F14000
+JOYBUTS  equ $F14002
+
+ReadPad1:
+        lea     ScanRows(pc),a0
+        lea     PadRaw,a1
+        moveq   #3,d0
+.row:  move.w  (a0)+,JOYSTICK          ; selection d'une ligne active
+        nop
+        move.w  JOYSTICK,d1
+        move.w  JOYBUTS,d2
+        move.w  d1,(a1)+
+        move.w  d2,(a1)+
+        dbra    d0,.row
+        rts
+
+ScanRows:
+        dc.w ROW0,ROW1,ROW2,ROW3
+PadRaw: ds.w 8
+
+Les masques ROW et tables de decodage viennent du manuel/SDK. Ne pas maintenir
+deux lignes incompatibles et rendre les lignes inactives apres balayage.
+
+
+==============================================================================
+50. GESTION DES INTERRUPTIONS
+==============================================================================
+
+Handler 68000 : sauvegarder seulement registres utilises, lire INT1, traiter
+video/GPU/OP/timer/blitter, acquitter chaque peripherique puis ecrire bits clear
+Tom, restaurer, RTE. Une source non effacee reinterrompt immediatement.
+
+VBlank/VI : restaurer object list, permuter buffers, publier commandes GPU/DSP.
+Stop object peut fournir synchronisation de fin OP. Ne jamais modifier des
+phrases que OP lit sans double buffer ou branche de clip.
+
+
+==============================================================================
+51. RENDU 2D
+==============================================================================
+
+Object Processor affiche fonds, sprites, couches et zoom sans framebuffer. Pour
+scroll, ajuster DATA/XPOS et padding; pour animation, changer DATA ou laisser OP
+parcourir une bande de frames avec hauteur controlee.
+
+Blitter dessine tuiles, texte, particules et surfaces RMW. Les petits objets CLUT
+1-8 bpp economisent bande passante; RELEASE rend le bus entre fetches. Les objets
+16 bpp continus peuvent garder le bus pour eviter page faults.
+
+
+==============================================================================
+52. RENDU 3D
+==============================================================================
+
+Pipeline logiciel : GPU transforme/soustrait/clipe les sommets, calcule bords;
+Blitter trace spans avec texture/Gouraud/Z dans framebuffer; OP affiche buffer.
+Double buffering evite tearing. La Jaguar n'a pas de moteur triangles fixe.
+
+Perspective texture-correct demande division/increments par span ou subdivision.
+Les textures phrase-alignees et petites dans GPU RAM/cache logicielle reduisent
+DRAM. Z 16 bits et couleur peuvent etre entrelaces. Le 68000 gere scene/IA mais
+ne doit pas rasteriser pixel par pixel.
+
+
+==============================================================================
+53. SYNCHRONISATION ET PARTAGE DE DONNEES
+==============================================================================
+
+Le chipset n'offre pas une coherence cache, car il n'y a pas de caches classiques,
+mais ordre et atomicite restent importants. Un long 68000 est deux mots; GPU peut
+voir une valeur intermediaire. Publier structure : ecrire donnees, puis un flag
+16 bits/32 bits atomique du maitre consommateur; le consommateur efface.
+
+Arreter RISC avant modifier son code. Attendre Blitter avant reprogrammer. Ne pas
+changer OLP depuis 68000 pendant OP. Utiliser double buffers pour listes, audio
+et rendu; index monotones pour ne pas perdre evenements.
+
+
+==============================================================================
+54. OPTIMISATION ET BANDE PASSANTE
+==============================================================================
+
+- executer noyaux GPU/DSP en RAM locale;
+- aligner phrases, object lists et images;
+- organiser acces DRAM sequentiels/page mode;
+- utiliser OP plutot que recopier un framebuffer 2D;
+- utiliser Blitter phrase mode sur grandes zones;
+- limiter objets 24 bpp et scaling couteux;
+- construire listes en RAM, jamais directement en ROM lente;
+- ne restaurer que champs OP consommes;
+- eviter polling 68000 continu;
+- profiler contention OP/Blitter/GPU/DSP/audio/refresh;
+- garder audio prioritaire et borne.
+
+Le pic theorique 64 bits par tick n'est pas disponible simultanement pour tous.
+Une operation mal alignee peut diviser la bande passante par plusieurs facteurs.
+
+
+==============================================================================
+55. BOGUES ET CONTOURNEMENTS MATERIELS
+==============================================================================
+
+Les manuels/appendices enumerent de nombreux errata : pipeline RISC sans interlock,
+interruptions et banques, stores, division, Blitter phrase/pixel, fin de ligne RMW,
+Z compare, Object Processor et acces registres.
+
+Exemple OP : dernier groupe de pixels d'un objet RMW peut etre corrompu si un
+autre bitmap suit sur les memes lignes. Contournements : pad transparent, separer
+les lignes ou inserer une branche toujours fausse entre objets.
+
+Ne pas appliquer une liste generique de NOP partout : chaque revision/sequence a
+une cause. Reprendre "Jaguar Hardware Bugs" et Appendix B, puis valider sur
+silicium. Un emulateur doit pouvoir reproduire les bogues exploites, tout en
+offrant des diagnostics aux homebrews.
+
+
+==============================================================================
+56. CONSTRUCTION AVEC RMAC/RLN ET GCC
+==============================================================================
+
+RMAC assemble 68000, GPU, DSP et macros Object Processor; RLN lie. `jaguar.inc`,
+`jerry.inc`, `video.inc` et bibliotheques definissent registres/errata. GCC m68k
+peut compiler C pour logique; les noyaux restent en RISC/assembleur.
+
+Pipeline : linker script RAM/ROM, vecteurs/entry, donnees GPU/DSP binaires,
+object lists phrase-alignees, conversion image/CRY, signature/format cartouche,
+listing/map, test Virtual Jaguar/BigPEmu/MAME puis console flash/dev.
+
+Verifier taille ROM, ordre endian, BSS dans 2 Mio, stack, alignements, adresses
+24 bits et absence de chevauchement des buffers.
+
+
+==============================================================================
+57. GUIDE D'IMPLEMENTATION D'UN EMULATEUR
+==============================================================================
+
+1. 68000 avec exceptions, bus 16 bits et carte reset/MEMCON.
+2. DRAM 2 Mio, ROM, endian et arbitration/page timing.
+3. timing video programmable, VI, line buffers et CLUT.
+4. Object Processor par scanline, cinq objets et write-back headers.
+5. GPU instruction/timing, RAM locale, hazards, IRQ et banques.
+6. Blitter adresses, pixel/phrase, LFU, compare, Z et Gouraud.
+7. Jerry DSP, timers, serial audio, UART et wavetable ROM.
+8. controles matriciels, GPIO et EEPROM.
+9. BIOS/authentification et formats ROM.
+10. PAL/NTSC, CD et extensions en modules separes.
+
+Faire progresser tous les maitres sur une horloge/arbiter commun. Une execution
+GPU complete entre deux instructions 68000 ne reproduit ni contention ni races.
+
+
+==============================================================================
+58. EMULATION GPU/DSP ET BLITTER
+==============================================================================
+
+Decoder instruction 16 bits, appliquer flags et latences. Modeliser write-back,
+scoreboard incomplet, branch delay, MOVEI et bank switch. Les acces locaux ont
+latence differente de DRAM/I/O. Une IRQ arrive a des frontieres precises.
+
+Blitter doit fonctionner incrementalement ou reserver des cycles bus, pas copier
+toute surface instantanement. Reproduire compteurs, mise a jour A1/A2, masques,
+fin de ligne, phrase non alignee et busy. Les jeux peuvent lire positions en vol.
+
+
+==============================================================================
+59. EMULATION OBJECT PROCESSOR ET VIDEO
+==============================================================================
+
+A chaque ligne : remplir background, choisir line buffer, parcourir branches,
+tester YPOS/HEIGHT, fetch phrases, decoder pixels/CLUT, appliquer transparence,
+reflection, RMW/scaling, ecrire line buffer, write-back DATA/HEIGHT/REMAINDER,
+traiter GPU/STOP, puis convertir CRY/RGB et sortir timing.
+
+Respecter LINK dans fenetre 4 Mio, alignement, IWIDTH non nul, PITCH/DWIDTH,
+first pixel et interlace. Une liste invalide doit avoir limite de securite de
+debug sans changer le comportement normal.
+
+
+==============================================================================
+60. EMULATION AUDIO, CONTROLES ET EEPROM
+==============================================================================
+
+DSP produit les echantillons; Jerry serial fixe cadence. Resampler vers hote en
+conservant phase et stereo. CD audio est une source supplementaire melangee selon
+materiel. Les timers/UART continuent pendant stalls DSP.
+
+Controleurs : matrice selectionnee par ecriture, retour actif bas, Team Tap et
+ProController. EEPROM : machine d'etats serie, busy temporise, persistence par
+cartouche. Les savestates doivent inclure ligne courante, object list en vol,
+Blitter, pipeline RISC, serial audio et transaction EEPROM.
+
+
+==============================================================================
+61. CAS LIMITES ET ERREURS FREQUENTES
+==============================================================================
+
+- dire simplement "CPU 64 bits" sans decrire les composants;
+- commencer dans la carte ROMHI finale avant MEMCON1;
+- supposer 8 Mio de DRAM parce que le chipset reserve deux banques;
+- ecrire OLP non atomiquement depuis 68000;
+- oublier word swap des phrases/descripteurs;
+- placer object list en ROM;
+- ne pas restaurer HEIGHT/DATA/REMAINDER;
+- omettre STOP ou branches de clip;
+- executer GPU/DSP intensif depuis DRAM;
+- ignorer hazards RISC parce que l'emulateur interlocke;
+- lancer Blitter avant fin du precedent;
+- appeler scaling une rotation/perspective automatique;
+- traiter line buffers comme framebuffers;
+- lire une manette sans balayer la matrice;
+- confondre `.j64` big-endian et image word-swapped;
+- attribuer CD, EEPROM ou Memory Track a toute console nue.
+
+
+==============================================================================
+62. DIAGNOSTIC ET MAINTENANCE
+==============================================================================
+
+Verifier alimentation, polarite, regulateurs, reset, oscillateurs, cartouche et
+sortie video. Une alimentation incorrecte endommage ASIC rares. Examiner DRAM,
+bus, ROM BIOS, Tom/Jerry, soudures et connecteurs avant remplacement.
+
+Ecran rouge apres logo peut indiquer authentification/cartouche; absence de logo
+oriente vers BIOS/RAM/video. Artefacts ligne/objets : DRAM, OP, timing ou donnees.
+Son absent : DSP RAM, clocks serie, DAC/analogique. Manette : multiplexage/GPIO.
+
+Jaguar CD souffre de mecanique, capteurs, spindle, laser et condensateurs; ne pas
+augmenter le courant laser au hasard. Utiliser service manual et disque test.
+Travailler hors tension, ESD et avec instruments adaptes.
+
+
+==============================================================================
+63. OUTILS, TESTS ET VALIDATION
+==============================================================================
+
+Outils : RMAC/RLN, GCC m68k, JagStudio, U-235, Skunkboard/GameDrive, Alpine,
+Virtual Jaguar, BigPEmu, MAME et debogueurs. Aucun emulateur ne garantit tous les
+errata; toujours tester une vraie console NTSC/PAL.
+
+Tests unitaires : 68000, chaque RISC opcode/flag/hazard, MEMCON reset, endian,
+Blitter largeurs/overlap/Z/Gouraud, OP tous depths/scales/RMW/branches, timings
+video, IRQ, DSP serial, matrice controles et EEPROM busy.
+
+Capturer traces adresse/donnees et hashes de frame/audio. Garder ROM originale,
+map linker, listing GPU/DSP et version des includes.
+
+
+==============================================================================
+64. REFERENCES
+==============================================================================
+
+Documents Atari :
+
+- Jaguar Technical Reference Manual, Tom & Jerry, revision 8 :
+  https://www.jagware.org/jag_uploads/dev/glenn_bruner_atarishowroom/pdf/Jag_v8.pdf
+- Atari Jaguar Developer Reference, transcription croisee des manuels V10 et CD :
+  https://asterick.github.io/jag-docs/
+- Object Processor, formats et conseils Atari :
+  https://asterick.github.io/jag-docs/tom/object-processor.html
+- GPU, registres et programmation :
+  https://asterick.github.io/jag-docs/tom/gpu.html
+- jeu d'instructions GPU/DSP :
+  https://asterick.github.io/jag-docs/reference/risc-instruction-set.html
+- Atari Jaguar Service Manual et schemas selon revision.
+
+Outils et implementations :
+
+- documentation RMAC/RLN : https://rmac.is-slick.com/manual/rmac.html
+- sources MAME Jaguar pour comparaison, non comme specification unique;
+- JagStudio, U-235, Jagware et AtariAge pour techniques homebrew;
+- documentation Motorola M68000.
+
+Le manuel Atari contient erreurs et passages revises. Pour une implementation
+precise, confronter versions 8/10, appendices d'errata, netlists/schemas, tests
+sur console et plusieurs emulateurs. Signaler chaque comportement encore inconnu.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

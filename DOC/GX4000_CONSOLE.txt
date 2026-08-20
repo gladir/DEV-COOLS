@@ -1,0 +1,1039 @@
+==============================================================================
+ AMSTRAD GX4000 - MATERIEL ET PROGRAMMATION
+ Reference Z80, ASIC Plus, CRTC, AY-3-8912 et cartouches
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console Amstrad GX4000 : processeur Z80A, ASIC de la gamme
+Plus, video compatible CPC, sprites, palette 12 bits, raster, DMA audio, AY-3-8912,
+memoire, cartouches et controleurs. Il vise les programmeurs assembleur/C, auteurs
+d'outils, reparateurs et developpeurs d'emulateurs.
+
+La GX4000 appartient a la famille 464+/6128+, mais ne possede normalement ni
+clavier, cassette, lecteur de disquette, PPI complet expose ni seconde banque de
+64 Kio. Les accents sont omis pour conserver un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et gamme Plus
+  2. Modeles et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges et contention
+  6. Processeur Z80A
+  7. Registres, drapeaux et interruptions
+  8. Jeu d'instructions Z80
+  9. Carte memoire
+ 10. Carte des ports d'entree/sortie
+ 11. Demarrage et cartouche systeme
+ 12. Format physique des cartouches
+ 13. Banking des cartouches
+ 14. ASIC Plus : architecture
+ 15. Deverrouillage et verrouillage de l'ASIC
+ 16. Fenetre de registres ASIC
+ 17. Compatibilite Gate Array
+ 18. CRTC type Plus
+ 19. Registres CRTC
+ 20. Modes video CPC
+ 21. Organisation de l'ecran
+ 22. Palette classique et palette 12 bits
+ 23. Sprites materiels
+ 24. Donnees, coordonnees et zoom des sprites
+ 25. Priorites et clipping des sprites
+ 26. Interruptions raster
+ 27. Split screen materiel
+ 28. Scrolling doux et adresse ecran
+ 29. DMA audio
+ 30. Liste d'instructions DMA
+ 31. AY-3-8912
+ 32. Audio, enveloppes et melange
+ 33. Manettes et boutons
+ 34. Pistolet optique et entrees analogiques
+ 35. Differences GX4000, 464+ et 6128+
+ 36. Compatibilite CPC classique
+ 37. Assembleur : demarrage minimal
+ 38. Assembleur : deverrouiller l'ASIC
+ 39. Assembleur : palette 12 bits
+ 40. Assembleur : sprite materiel
+ 41. Assembleur : raster et split
+ 42. Assembleur : DMA audio
+ 43. Assembleur : lecture manette
+ 44. C avec SDCC et CPCTelera
+ 45. Organisation d'un jeu en cartouche
+ 46. Graphismes et animation
+ 47. Musique et effets sonores
+ 48. Optimisation
+ 49. Construction d'une cartouche CPR
+ 50. Debogage et outils
+ 51. Conseils pour un emulateur
+ 52. Emulation Z80 et memoire
+ 53. Emulation CRTC et video classique
+ 54. Emulation ASIC Plus
+ 55. Emulation audio, DMA et entrees
+ 56. Plan de validation
+ 57. Electronique et connectique
+ 58. Maintenance et diagnostic
+ 59. Preservation et securite
+ 60. References
+
+
+==============================================================================
+1. HISTORIQUE ET GAMME PLUS
+==============================================================================
+
+Amstrad lance en 1990 les CPC 464+, 6128+ et la console GX4000. L'objectif est de
+conserver la base logicielle CPC tout en ajoutant palette 4096 couleurs, sprites,
+scrolling, interruption raster, split screen et DMA audio. La GX4000 utilise des
+cartouches et deux ports manette dans un boitier de console.
+
+Son arrivee face aux Mega Drive, PC Engine et futures consoles 16 bits, avec peu
+de jeux exclusifs, limite son succes. Techniquement, l'ASIC Plus offre pourtant
+des fonctions tres utiles et reste une cible homebrew active.
+
+
+==============================================================================
+2. MODELES ET REVISIONS
+==============================================================================
+
+La GX4000 est principalement PAL europeenne. Les cartes peuvent employer des
+revisions ASIC et composants RAM/ROM differentes. Le meme ASIC 160 broches couvre
+les fonctions Gate Array, CRTC, gestion RAM/ROM, sprites et DMA de la gamme Plus.
+
+Les moniteurs Amstrad CM14/MM12 concernent aussi les ordinateurs Plus; la console
+peut sortir RGB analogique et RF/composite selon connectique/region. Ne pas deduire
+le brochage d'une revision depuis la couleur du boitier.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU          Zilog Z80A compatible, 4 MHz nominal
+RAM          64 Kio
+ROM          cartouche, pages de 16 Kio; capacite typique jusqu'a 512 Kio
+Video        ASIC Plus compatible Gate Array/CRTC CPC
+Resolution   modes CPC 160x200, 320x200, 640x200 nominalement
+Palette      32 encres selectionnees parmi 4096 couleurs
+Sprites      16 sprites 16x16, 15 couleurs + transparent, zoom x1/x2/x4
+Son          AY-3-8912, 3 voies + bruit/enveloppe
+DMA          3 canaux de commandes vers AY, interruptions possibles
+Entrees      deux manettes a deux boutons, pause et light gun selon logiciel
+
+Les resolutions changent avec les registres CRTC. Les valeurs ci-dessus decrivent
+les modes standard, non une limite rigide du generateur video.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+                    +-------------------+
+                    | Z80A 4 MHz        |
+                    +---------+---------+
+                              | bus 8/16 bits
+         +--------------------+-----------------------+
+         |                    |                       |
+   +-----v------+       +-----v------+          +-----v-------+
+   | ASIC Plus |       | AY-3-8912 |          | Cartouche   |
+   | CRTC/video|       | son/I-O   |          | ROM pages   |
+   | sprites   |       +------------+          +-------------+
+   | DMA/IRQ   |              |
+   +-----+-----+        manettes/peripheriques
+         |
+      RAM 64K et sorties video
+
+L'ASIC arbitre RAM et Z80, genere video, remplace Gate Array/CRTC classiques et
+execute DMA audio. L'AY reste une puce separee sur plusieurs cartes et fournit
+son ainsi qu'une partie des entrees.
+
+
+==============================================================================
+5. HORLOGES ET CONTENTION
+==============================================================================
+
+Le quartz video PAL et l'ASIC derivent horloges pixel, CRTC et CPU. Z80 est annonce
+a 4 MHz, mais ses acces sont synchronises sur un quadrillage d'un microseconde :
+les instructions ne gagnent pas toujours le temps attendu d'un Z80 sans contention.
+
+L'ASIC lit RAM pour video et sprites et insere WAIT. DMA audio vole aussi des cycles.
+Le nombre de NOP par ligne ne suffit pas si code/ports changent l'alignement. Pour
+raster stable, synchroniser sur interruption/HSYNC et compter des etats mesures.
+
+Une trame PAL standard approche 50 Hz et 312 lignes; CRTC peut modifier totals,
+mais le televiseur impose des limites de synchro.
+
+
+==============================================================================
+6. PROCESSEUR Z80A
+==============================================================================
+
+Registres 8 bits A,F,B,C,D,E,H,L; paires AF,BC,DE,HL; banque alternative AF',
+BC',DE',HL'; index IX/IY; SP, PC; I vecteur interruption et R refresh. Drapeaux
+S,Z,Y,H,X,P/V,N,C. Bus d'adresses 16 bits, donnees 8 bits, little-endian.
+
+La pile descend et SP pointe le sommet. `EXX` et `EX AF,AF'` offrent sauvegarde
+rapide en ISR, mais le code principal ne doit pas utiliser la banque simultanement.
+
+
+==============================================================================
+7. REGISTRES, DRAPEAUX ET INTERRUPTIONS
+==============================================================================
+
+ASIC/Gate Array produit INT masqueable. Z80 accepte si IFF1=1; pousse PC, desactive
+IFF1/IFF2 et utilise IM0, IM1 ($0038) ou IM2 (table `I:data`). `EI` prend effet
+apres l'instruction suivante. `RETI` est recommande pour signaler fin a peripherique.
+
+NMI va $0066 et preserve IFF2. HALT execute des cycles d'attente jusqu'a IRQ/NMI.
+Sur CPC/Plus, les interruptions classiques sont derivees des HSYNC avec cadence
+environ 300 Hz; l'ASIC ajoute raster programmable et DMA IRQ.
+
+
+==============================================================================
+8. JEU D'INSTRUCTIONS Z80
+==============================================================================
+
+Donnees : LD, PUSH, POP, EX, EXX, LDI/LDIR/LDD/LDDR. ALU : ADD, ADC, SUB, SBC,
+AND, OR, XOR, CP, INC, DEC, NEG, DAA, CPL, CCF, SCF. 16 bits : ADD HL/IX/IY,
+ADC/SBC HL,rr, INC/DEC rr.
+
+Bits/rotations : BIT, SET, RES, RLCA/RLA/RRCA/RRA, RLC/RL/RRC/RR, SLA, SRA,
+SRL, SLL non documente, RLD/RRD. Controle : JP, JR, DJNZ, CALL, RET, RST,
+JP (HL/IX/IY), HALT.
+
+I/O : IN, OUT, INI/INIR/IND/INDR, OUTI/OTIR/OUTD/OTDR. Systeme : DI, EI,
+IM 0/1/2, LD I/R, RETI/RETN. Prefixes CB, ED, DD, FD; DDCB/FDCB operent sur
+memoire indexee et parfois copient le resultat dans un registre.
+
+Opcodes non documentes varient; eviter sauf test materiel. Le drapeau X/Y vient
+souvent de bits 3/5 du resultat ou d'une adresse interne, essentiel en emulation.
+
+
+==============================================================================
+9. CARTE MEMOIRE
+==============================================================================
+
+Espace logique Z80 64 Kio divise en quatre blocs de 16 Kio :
+
+$0000-$3FFF  RAM ou ROM basse/cartouche page selectionnee
+$4000-$7FFF  RAM; fenetre registres ASIC quand mappee/deverrouillee
+$8000-$BFFF  RAM
+$C000-$FFFF  RAM ou ROM haute/cartouche selon selection
+
+ASIC maintient configuration RAM/ROM compatible CPC. La GX4000 n'a que 64 Kio
+physiques; les configurations demandant banques supplementaires ne trouvent pas
+de RAM, contrairement au 6128+.
+
+Quand la fenetre ASIC est visible, la RAM sous $4000-$7FFF existe toujours mais
+n'est pas accessible aux memes cycles CPU. Masquer/remapper ASIC pour y acceder.
+
+
+==============================================================================
+10. CARTE DES PORTS D'ENTREE/SORTIE
+==============================================================================
+
+Le CPC decode souvent seulement quelques bits hauts, donc plages se chevauchent :
+
+$7Fxx  Gate Array/ASIC commands (OUT)
+$BCxx  CRTC index                 $BDxx CRTC data write
+$BFxx  CRTC data read selon registre/type
+$F4xx  PPI port A                 $F5xx PPI port B
+$F6xx  PPI port C                 $F7xx PPI control
+$DFxx  selection de page cartouche/ROM Plus
+$F8xx  peripheriques/expansion selon machine
+
+GX4000 integre/emule une partie des fonctions PPI pour AY et manettes, mais ne pas
+supposer tous les connecteurs CPC+. Le Z80 place BC sur bus pour `OUT (C),r`;
+utiliser B pour haut de port et C comme bas indifferente/convenue.
+
+
+==============================================================================
+11. DEMARRAGE ET CARTOUCHE SYSTEME
+==============================================================================
+
+Au reset, la cartouche est indispensable. L'ASIC mappe la page de boot a $0000 et
+le Z80 commence a $0000. La cartouche fournie contient notamment Burnin' Rubber
+et, selon version, BASIC/menu destine aux ordinateurs Plus; GX4000 lance le jeu.
+
+Un programme cartouche initialise pile, interruptions, mapping, video, AY et ASIC.
+Il ne doit pas compter sur RAM a zero. La routine de deverrouillage est executee
+avant les fonctions Plus. Sans cartouche valide, la console ne dispose pas d'un
+OS autonome comparable a un ordinateur.
+
+
+==============================================================================
+12. FORMAT PHYSIQUE DES CARTOUCHES
+==============================================================================
+
+Les cartouches Plus/GX4000 utilisent ROM decoupee en pages de 16 Kio. Le connecteur
+expose adresse, donnees, controles et lignes de selection. Capacite logique classique
+jusqu'a 32 pages, soit 512 Kio, bien que jeux puissent etre plus petits.
+
+Le fichier `.cpr` moderne encapsule les pages sous forme RIFF : signature `RIFF`,
+taille, type `AMS!`, puis chunks `cb00`, `cb01`, etc. Chaque chunk represente une
+banque; trous et tailles doivent etre traites explicitement.
+
+Un dump brut sans CPR ne dit pas toujours quels numeros de banque sont presents.
+
+
+==============================================================================
+13. BANKING DES CARTOUCHES
+==============================================================================
+
+Le registre/port de selection Plus choisit une page cartouche de 16 Kio, normalement
+dans la fenetre ROM basse. La ROM haute peut suivre le mecanisme upper ROM compatible
+CPC selon configuration. Page zero contient le demarrage et routines fixes; code
+bank switch doit rester visible ou etre execute en RAM.
+
+Sequence generale : desactiver IRQ si handler reside en banque changee, selectionner
+page via port $DFxx, appeler/lire donnees, restaurer page, reactiver IRQ. Le numero
+de chunk CPR doit correspondre a la valeur de page attendue.
+
+Les details de `RMR2`/mapping ROM Plus doivent etre pris dans la specification ASIC
+Issue 1.5; ne pas confondre selection de page et enable ROM du Gate Array.
+
+
+==============================================================================
+14. ASIC PLUS : ARCHITECTURE
+==============================================================================
+
+ASIC, nom de specification Arnold V, regroupe Gate Array, CRTC type 3, PAL de
+memoire, interruptions, cartouche, sprites, palette, scrolling/split et trois DMA.
+Au reset il imite un CPC afin de ne pas casser les logiciels classiques.
+
+Les fonctions nouvelles sont protegees par une sequence d'unlock envoyee au port
+CRTC. Une fois deverrouillees, des registres memory-mapped deviennent accessibles
+dans $4000-$7FFF lorsque le mapping ASIC le permet.
+
+
+==============================================================================
+15. DEVERROUILLAGE ET VERROUILLAGE DE L'ASIC
+==============================================================================
+
+Sequence connue de 17 octets envoyee au port CRTC index $BCxx :
+
+$FF,$00,$FF,$77,$B3,$51,$A8,$D4,$62,$39,$9C,$46,$2B,$15,$8A,$CD,$EE
+
+Le detecteur interne cherche la sequence exacte; une erreur recommence/annule selon
+etat. Une nouvelle sequence speciale ou reset peut reverrouiller. Le flux doit etre
+continu et aucune routine concurrente ne doit ecrire au meme decode CRTC.
+
+Deverrouiller ne signifie pas que $4000-$7FFF est immediatement toujours overlay :
+la commande RMR2/ASIC controle mapping. Preserver la RAM masquee.
+
+
+==============================================================================
+16. FENETRE DE REGISTRES ASIC
+==============================================================================
+
+Carte principale lorsque les registres Plus sont mappes :
+
+$4000-$4FFF  RAM motifs sprites, 16 x 256 octets
+$6000-$607F  attributs sprites, huit octets reserves par sprite
+$6400-$643F  32 couleurs x 2 octets
+$6800        PRI, ligne interruption raster
+$6801        SPLT, ligne de split
+$6802-$6803  SSA, adresse ecran apres split
+$6804        SSCR, soft scroll
+$6805        IVR, vecteur/controle interruptions
+$6806-$6807  registres/etat reserves selon revision
+$6C00-$6C0B  canaux DMA 0..2, quatre octets chacun
+$6C0C-$6C0F  controle/statut DMA et registres associes
+
+Acceder avec la largeur/octets documentes. Les zones non listees ne sont pas RAM
+ASIC libre. Les noms exacts DMA (`DCSR`, `DCSR2`) varient entre equates.
+
+
+==============================================================================
+17. COMPATIBILITE GATE ARRAY
+==============================================================================
+
+Commandes OUT $7Fxx, deux bits hauts de la valeur :
+
+00xxxxxx selection encre (0-15, border)
+01xxxxxx choix couleur CPC classique parmi 27
+10xxxxxx mode video, enable ROM et reset compteur IRQ
+11xxxxxx configuration RAM (utile surtout 6128+)
+
+L'ASIC conserve ces commandes pour logiciels CPC. La palette Plus peut ensuite
+remplacer chaque encre par RGB 12 bits. Les ecritures Gate Array peuvent modifier
+etat Plus et palette selon verrouillage; garder une seule couche d'abstraction.
+
+
+==============================================================================
+18. CRTC TYPE PLUS
+==============================================================================
+
+Le CRTC derive du 6845 et genere adresses/HSYNC/VSYNC. Type 3 ASIC corrige ou change
+plusieurs comportements des CRTC 0/1/2 classiques. Il gere compteurs horizontal,
+raster et vertical, start address, cursor/light pen et interactions Plus.
+
+Programmes dependants de tricks de CRTC type 0 peuvent echouer. Sur GX4000, viser
+type Plus et utiliser split/scroll ASIC plutot que ruptures non portables.
+
+
+==============================================================================
+19. REGISTRES CRTC
+==============================================================================
+
+Selection via OUT $BCxx puis donnees $BDxx :
+
+R0 horizontal total             R1 horizontal displayed
+R2 horizontal sync position     R3 sync widths
+R4 vertical total               R5 vertical total adjust
+R6 vertical displayed           R7 vertical sync position
+R8 interlace/skew                R9 maximum raster address
+R10 cursor start                R11 cursor end
+R12 start address high          R13 start address low
+R14 cursor high                 R15 cursor low
+R16 light pen high              R17 light pen low
+
+Tous ne sont pas lisibles. Les adresses CRTC sont en character clocks et converties
+par Gate Array en adresses RAM entrelacees. Des totals invalides peuvent faire
+perdre synchro au moniteur reel.
+
+
+==============================================================================
+20. MODES VIDEO CPC
+==============================================================================
+
+Mode 0 : 2 bits de groupes entrelaces donnent 4 bits/pixel, 16 encres, env. 160x200.
+Mode 1 : 2 bits/pixel, 4 encres, env. 320x200.
+Mode 2 : 1 bit/pixel, 2 encres, env. 640x200.
+Mode 3 non officiel/Plus : combinaison particuliere, a eviter sans test.
+
+Un octet represente 2, 4 ou 8 pixels selon mode, mais les bits ne sont pas ranges
+lineairement. Des tables de conversion ou outils graphiques sont necessaires.
+Palette Plus garde 4096 choix meme si le nombre d'encres simultanees depend du mode.
+
+
+==============================================================================
+21. ORGANISATION DE L'ECRAN
+==============================================================================
+
+En configuration standard, l'ecran 16 Kio commence souvent $C000. L'adressage CPC
+entrelace les lignes : huit rasters d'une ligne de caracteres sont separes par
+$0800, puis les character rows avancent. Formule standard approximative :
+
+addr = base + ((y & 7) << 11) + ((y >> 3) * 80) + octet_x
+
+avec largeur 80 octets. CRTC R12/R13 et registres Plus peuvent changer base/scroll,
+donc utiliser une table de lignes construite depuis mode courant.
+
+
+==============================================================================
+22. PALETTE CLASSIQUE ET PALETTE 12 BITS
+==============================================================================
+
+Palette ASIC a 32 entrees : 16 encres principales, border et entrees supplementaires
+destinees notamment aux sprites. Chaque couleur est RGB 4:4:4, deux octets, soit
+4096 possibilites. L'ordre des nibbles/octets est propre a l'ASIC, non un mot RGB
+host direct; utiliser macros documentees.
+
+Ecrire palette pendant raster permet gradients. L'ASIC lit immediatement avec
+latence precise; synchroniser. Les 27 couleurs Gate Array restent disponibles en
+mode compatible et sont converties vers valeurs Plus correspondantes.
+
+
+==============================================================================
+23. SPRITES MATERIELS
+==============================================================================
+
+Seize sprites, chacun motif 16x16. Chaque pixel occupe un octet de la RAM sprite;
+son nibble bas donne 0 transparent ou 1..15 dans la palette sprite partagee. Le
+nibble haut est reserve/non significatif pour la couleur. Un motif occupe donc
+256 octets et les seize motifs remplissent $4000-$4FFF.
+
+Les sprites sont superposes au playfield sans modifier RAM ecran. Ils ne disposent
+pas de collision hardware : jeu teste logiquement. Tous peuvent apparaitre sur la
+meme ligne, sous limites de pipeline/position.
+
+
+==============================================================================
+24. DONNEES, COORDONNEES ET ZOOM DES SPRITES
+==============================================================================
+
+Chaque bloc attribut contient X 10 bits environ, Y 9 bits environ et MAG. X/Y sont
+en coordonnees raster incluant bord/synchro, pas simplement 0..319/0..199. Des
+constantes d'origine transforment coordonnees jeu en hardware.
+
+MAG choisit horizontal et vertical x1, x2 ou x4; valeur zero/desactivation selon
+bits. Zoom repete pixels/lignes, sans filtrage. Ecrire attributs pendant affichage
+peut couper/repositionner un sprite a la ligne courante.
+
+Pour cacher, mettre MAG a zero ou position hors zone selon convention fiable.
+
+
+==============================================================================
+25. PRIORITES ET CLIPPING DES SPRITES
+==============================================================================
+
+Les sprites ont ordre de priorite fixe par numero; les plus prioritaires masquent
+les autres sur pixels non transparents. Leur relation au border/playfield suit
+ASIC et registre de mode. Ils sont clipses par zone d'affichage/synchro avec des
+cas limites en overscan.
+
+Le sprite n'a pas de palette individuelle complete : les 15 couleurs sprite sont
+partagees. Animation change les 256 octets ou copie un motif depuis cartouche;
+pour beaucoup d'animations, DMA CPU vers sprite RAM durant VBlank est necessaire.
+
+
+==============================================================================
+26. INTERRUPTIONS RASTER
+==============================================================================
+
+PRI $6800 programme une ligne raster. L'ASIC genere une interruption a cette
+position en plus du compteur compatible CPC. IVR configure vecteur IM2 et options
+de partage/acquittement. Une valeur de desactivation est definie par specification.
+
+Handler doit identifier raster/DMA/classique via registres de statut, acquitter la
+source, effectuer peu d'ecritures puis RETI. En IM1, toutes convergent $0038.
+Reprogrammer PRI dans l'ISR permet plusieurs ruptures par frame.
+
+
+==============================================================================
+27. SPLIT SCREEN MATERIEL
+==============================================================================
+
+SPLT choisit une ligne a laquelle l'adresse ecran CRTC est remplacee par SSA. Cela
+cree HUD et aire de jeu avec bases differentes sans modifier R12/R13 en timing
+serre. SSA est encodee dans le format d'adresse ASIC/CRTC, pas un pointeur Z80
+arbitraire.
+
+Le split se produit une fois par frame et interagit avec scrolling. Une valeur
+speciale le desactive. Ecrire trop pres de la ligne peut prendre effet frame suivante.
+
+
+==============================================================================
+28. SCROLLING DOUX ET ADRESSE ECRAN
+==============================================================================
+
+SSCR fournit decalage horizontal fin et vertical/raster fin, avec bits de masque/
+mode. Le coarse scroll reste gere par adresse CRTC/SSA. Pour un monde tile : faire
+defiler SSCR, puis avancer start address et remettre fine scroll au wrap.
+
+Le scrolling augmente parfois le nombre d'octets visibles aux bords; preparer une
+colonne/ligne de garde. Les combinaisons avec mode video, split et overscan ont des
+anomalies documentees; tester sur ASIC reel.
+
+
+==============================================================================
+29. DMA AUDIO
+==============================================================================
+
+Trois canaux lisent une liste en RAM et envoient commandes au registre AY selectionne.
+Chaque canal a adresse 16 bits et prescaler. DCSR active/arrete, signale fin et IRQ.
+DMA s'execute en concurrence et vole des cycles Z80.
+
+Il ne lit normalement pas la cartouche comme une ROM audio arbitraire sans tenir
+compte du mapping : placer listes en RAM visible/stable. Les trois canaux partagent
+l'AY; des commandes simultanees sur le meme registre suivent un ordre materiel.
+
+
+==============================================================================
+30. LISTE D'INSTRUCTIONS DMA
+==============================================================================
+
+Mots DMA 16 bits encodent principalement :
+
+- LOAD : ecrire une valeur dans un registre AY;
+- PAUSE : attendre un nombre de ticks/prescaler;
+- REPEAT : repeter un bloc/compteur;
+- LOOP : reboucler selon compteur;
+- INT : demander une interruption;
+- STOP : arreter le canal.
+
+Les mnemonics et bitfields exacts viennent d'Arnold V Issue 1.5. Les mots sont
+little-endian en RAM Z80. Une liste mal terminee continue dans donnees. Borner et
+aligner les listes; ne pas les modifier pendant lecture DMA.
+
+
+==============================================================================
+31. AY-3-8912
+==============================================================================
+
+AY possede 16 registres : periode ton A/B/C (0-5), periode bruit (6), mixer (7),
+volumes/enveloppe A/B/C (8-10), periode enveloppe (11-12), forme enveloppe (13),
+port I/O A (14); registre 15 absent/non connecte sur 8912.
+
+Acces CPC passe par PPI/ASIC : placer numero registre sur bus AY, fonction latch,
+puis valeur et fonction write via port C. Bibliotheques encapsulent cette sequence.
+La GX4000 conserve compatibilite pour logiciels/cartouches.
+
+
+==============================================================================
+32. AUDIO, ENVELOPPES ET MELANGE
+==============================================================================
+
+Trois generateurs carres partagent bruit et enveloppe. Mixer active/desactive tone
+et noise par canal, bits actifs haut pour disable. Volume 0..15 ou bit enveloppe.
+Enveloppe a 16 formes combinant continue/attack/alternate/hold.
+
+Frequence tone = clockAY/(16*periode), bruit/enveloppe ont diviseurs propres.
+Periode zero a comportement defini par puce, pas silence universel. La sortie
+analogique n'est pas lineaire; une table logarithmique mesuree sonne mieux.
+
+
+==============================================================================
+33. MANETTES ET BOUTONS
+==============================================================================
+
+Deux ports DB9 lisent directions et deux boutons. Le premier bouton suit lignes
+joystick CPC; le second utilise une ligne additionnelle de la gamme Plus. Les
+signaux sont actifs bas et lus via multiplexage AY/PPI/ASIC semblable au clavier.
+
+La console a bouton Pause qui peut etre cable comme entree/interrupt selon ASIC.
+Debouncer et conserver etat precedent pour fronts. Ne pas supposer qu'un joystick
+CPC/Atari standard fournit le second bouton sans cablage adapte.
+
+
+==============================================================================
+34. PISTOLET OPTIQUE ET ENTREES ANALOGIQUES
+==============================================================================
+
+GX4000 supporte un light gun sur certains jeux/accessoires. Le capteur declenche
+light pen CRTC/ASIC et les registres R16/R17 capturent adresse/position de balayage.
+Le logiciel dessine cible lumineuse, attend latch puis convertit coordonnees.
+
+Un ecran LCD ne reproduit pas le balayage CRT. Emulateur peut convertir souris en
+latch mais doit maintenir timing et trigger. Le connecteur analogique/paddle CPC
+Plus n'est pas necessairement peuple/expose sur toutes GX4000.
+
+
+==============================================================================
+35. DIFFERENCES GX4000, 464+ ET 6128+
+==============================================================================
+
+GX4000     64K RAM, cartouche, pas clavier/cassette/disquette standard
+464+       64K RAM, clavier, cassette, cartouche
+6128+      128K RAM, clavier, disquette, cartouche, ports plus complets
+
+Le coeur ASIC/video/audio est commun. Un jeu cartouche peut viser les trois s'il
+n'utilise que 64K, manette et fonctions presentes. Un programme qui attend clavier,
+AMSDOS, FDC, seconde RAM ou ROM BASIC n'est pas directement un jeu GX4000.
+
+
+==============================================================================
+36. COMPATIBILITE CPC CLASSIQUE
+==============================================================================
+
+Z80, modes video, Gate Array, CRTC, AY et 64K permettent beaucoup de code CPC.
+Obstacles : logiciel sur cassette/disquette, clavier obligatoire, CRTC type tricks,
+ROM/OS absent, banking 128K et entrees. Une conversion doit charger tout depuis
+cartouche, initialiser hardware et remplacer commandes clavier.
+
+Les fonctions Plus restent verrouillees pour compatibilite jusqu'a sequence. Un
+jeu classique peut fonctionner sans les connaitre si son support/boot est adapte.
+
+
+==============================================================================
+37. ASSEMBLEUR : DEMARRAGE MINIMAL
+==============================================================================
+
+        org $0000
+Start:  di
+        ld sp,$BFF0
+        ld bc,$7F00
+        xor a
+        out (c),a             ; $7F sur les huit lignes hautes du port
+        call UnlockASIC
+        call InitVideo
+Main:  halt
+        jr Main
+
+La pile ne doit pas chevaucher ecran, registres ASIC mappes ou donnees DMA.
+
+
+==============================================================================
+38. ASSEMBLEUR : DEVERROUILLER L'ASIC
+==============================================================================
+
+UnlockASIC:
+        ld bc,$BC00
+        ld hl,UnlockSeq
+        ld d,17
+.loop: ld a,(hl)
+        out (c),a
+        inc hl
+        dec d
+        jr nz,.loop
+        ret
+
+UnlockSeq:
+        db $FF,$00,$FF,$77,$B3,$51,$A8,$D4,$62
+        db $39,$9C,$46,$2B,$15,$8A,$CD,$EE
+
+Desactiver interruptions autour si une ISR programme CRTC. Apres cela, executer
+la commande de mapping ASIC prevue par les equates Arnold V.
+
+
+==============================================================================
+39. ASSEMBLEUR : PALETTE 12 BITS
+==============================================================================
+
+; ASIC deja deverrouille et fenetre $4000-$7FFF mappee.
+PALETTE equ $6400
+
+; Exemple conceptuel : couleur 0, deux octets selon format ASIC.
+        ld hl,PALETTE
+        ld (hl),$0F
+        inc hl
+        ld (hl),$00
+
+Le format exact distribue R/G/B sur les deux octets; employer macro `ASIC_COLOR
+r,g,b` du SDK choisi. Ne pas supposer RGB565 ni ordre hote.
+
+
+==============================================================================
+40. ASSEMBLEUR : SPRITE MATERIEL
+==============================================================================
+
+SPRDATA equ $4000
+SPRATTR equ $6000
+
+; Copier 256 octets de motif vers sprite 0.
+        ld hl,SpriteImage
+        ld de,SPRDATA
+        ld bc,256
+        ldir
+
+; Attributs conceptuels : X low/high, Y low/high, MAG.
+        ld hl,SPRATTR
+        ld (hl),100
+        inc hl
+        ld (hl),0
+        inc hl
+        ld (hl),80
+        inc hl
+        ld (hl),0
+        inc hl
+        ld (hl),$09           ; zoom/enable selon equates exacts
+
+Utiliser macros pour MAG : valeurs invalides peuvent masquer le sprite.
+
+
+==============================================================================
+41. ASSEMBLEUR : RASTER ET SPLIT
+==============================================================================
+
+PRI  equ $6800
+SPLT equ $6801
+SSAL equ $6802
+SSAH equ $6803
+
+        ld a,100
+        ld (PRI),a            ; IRQ raster ligne 100
+        ld a,160
+        ld (SPLT),a           ; split a la ligne 160
+        ld hl,HUDAddressEncoded
+        ld (SSAL),l
+        ld (SSAH),h
+
+`HUDAddressEncoded` doit respecter format CRTC/ASIC. Programmer IVR et handler IM1/
+IM2, puis activer interruptions. Les lignes hardware incluent bordures/origines.
+
+
+==============================================================================
+42. ASSEMBLEUR : DMA AUDIO
+==============================================================================
+
+DMA0L equ $6C00
+DMA0H equ $6C01
+DMA0P equ $6C02
+DCSR  equ $6C0F             ; DMA control/status register
+
+        ld hl,MusicList
+        ld (DMA0L),l
+        ld (DMA0H),h
+        ld a,4
+        ld (DMA0P),a
+        ld a,DMA0_ENABLE
+        ld (DCSR),a
+
+MusicList:
+        ; utiliser macros DMA_LOAD reg,val / DMA_PAUSE n / DMA_LOOP / DMA_STOP
+
+Ne pas utiliser ces pseudo-mnemonics comme octets sans la table Arnold V.
+
+
+==============================================================================
+43. ASSEMBLEUR : LECTURE MANETTE
+==============================================================================
+
+La lecture passe par selection de ligne de matrice et lecture AY port A/PPI. Une
+routine de bibliotheque est recommandee. Pseudo-sequence :
+
+ReadPads:
+        call SelectJoystickLine
+        call ReadAYPortA
+        cpl                    ; convertir actifs bas vers 1=appuye
+        and JOYSTICK_MASK
+        ret
+
+Deuxieme bouton et Pause exigent lignes Plus. Sauver/restaurer registre AY courant
+si le player audio et l'entree partagent l'acces.
+
+
+==============================================================================
+44. C AVEC SDCC ET CPCTELERA
+==============================================================================
+
+#include <cpctelera.h>
+
+void main(void) {
+    cpct_disableFirmware();
+    cpct_setVideoMode(0);
+    cpct_setBorder(HW_BLACK);
+    for (;;) {
+        cpct_scanKeyboard_f();
+        if (cpct_isKeyPressed(Key_CursorRight)) {
+            /* sur GX4000, configurer mapping manette de la cible */
+        }
+    }
+}
+
+CPCTelera cible d'abord CPC; verifier support de cartouche Plus/GX4000, startup sans
+firmware, ASIC et second bouton dans la version utilisee. Les registres Plus peuvent
+etre declares `volatile __at(address)` ou via assembleur inline/bibliotheque.
+
+
+==============================================================================
+45. ORGANISATION D'UN JEU EN CARTOUCHE
+==============================================================================
+
+Banque 0 : reset, ISR, bank switch, moteur commun. Autres pages : niveaux, code,
+graphismes et musique. Copier code critique/DMA lists en RAM. Reserver ecran 16K,
+pile, variables, sprites dynamiques et buffers dans les 64K sans chevauchement.
+
+Quand ASIC window masque $4000-$7FFF, code qui y reside ne peut continuer. Mapper
+depuis routine hors fenetre, acceder registres, puis restaurer. ISR doit etre dans
+zone toujours visible ou garantir mapping attendu.
+
+
+==============================================================================
+46. GRAPHISMES ET ANIMATION
+==============================================================================
+
+Utiliser ecran CPC pour tilemap/fond et 16 sprites pour personnages/projectiles.
+Mode 0 maximise couleurs, mode 1 detail, mode 2 texte/HUD. Palette 12 bits permet
+cycles/fades. Split separe HUD; SSCR fait scrolling pixel; coarse scroll change CRTC.
+
+Preconvertir images au bitplane CPC et motifs sprite nibble ASIC. Copier seulement
+sprites modifies pendant VBlank. Double-buffer complet demande 32K, possible mais
+serre dans 64K; page flip par start address avec plan RAM soigneux.
+
+
+==============================================================================
+47. MUSIQUE ET EFFETS SONORES
+==============================================================================
+
+DMA AY libere Z80 pour sequences regulieres. Un canal DMA peut gerer musique, un
+autre effets, mais ils ecrivent le meme AY : definir arbitrage de registres. Les
+enveloppes hardware conviennent a certains timbres; les effets peuvent temporairement
+prendre une voie puis rendre son etat au player.
+
+Samples volume-DAC restent couteux et limitees; DMA peut cadencer des changements
+mais debit/memoire et non-linearite AY doivent etre mesures.
+
+
+==============================================================================
+48. OPTIMISATION
+==============================================================================
+
+- aligner boucles raster et mesurer WAIT ASIC;
+- utiliser registres alternatifs Z80 dans ISR avec discipline;
+- `LDIR` pour gros blocs, boucles deroulees pour sprites/raster;
+- tables d'adresses de lignes ecran;
+- bank switch en gros lots;
+- sprites hardware pour eviter restauration fond;
+- split/scroll ASIC plutot que reprogrammer CRTC en cycle serre;
+- DMA pour musique, listes en RAM stable;
+- limiter fenetre ASIC mappee au temps necessaire;
+- profiler sur console et ASIC type 3, pas seulement CPC emulator.
+
+
+==============================================================================
+49. CONSTRUCTION D'UNE CARTOUCHE CPR
+==============================================================================
+
+Compiler/linker chaque page a son adresse logique, remplir a 16K, puis construire
+RIFF `AMS!` avec chunks `cbNN`. Taille RIFF/chunks est little-endian et padding
+RIFF s'applique si taille impaire. Pages absentes ne doivent pas etre compactees
+et renumerotees.
+
+Conserver ROM brute par banque, CPR, map/symboles et SHA-256. Tester reset, appels
+inter-banques, IRQ pendant switch et lecture sur vraie cartouche/flashcart.
+
+
+==============================================================================
+50. DEBOGAGE ET OUTILS
+==============================================================================
+
+Outils : WinAPE, ACE/Caprice/CPCEC, MAME, RVM selon plateforme; debuggers Z80,
+viewer CRTC/ASIC, breakpoints I/O et raster. Rasm, SjASMPlus, z88dk, SDCC,
+CPCTelera et assemblages 7800? (ne pas confondre avec Atari 7800).
+
+Sur materiel : C4CPC/flashcart, couleurs border comme marqueurs, analyseur logique,
+sortie audio. Une divergence frequente vient de CRTC type, unlock incomplet,
+fenetre ASIC non mappee ou chunk CPR mal numero.
+
+
+==============================================================================
+51. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Scheduler au master/pixel clock : Z80 avec WAIT, CRTC counters, Gate Array pixels,
+ASIC sprites/scroll/split/raster/DMA, AY et cartouche. Les ecritures en milieu de
+ligne prennent effet a une position precise; un rendu par frame rate les demos.
+
+Modules : Z80, bus RAM/ROM/I/O, CRTC type 3, pipeline CPC, ASIC unlock/mapping,
+palette/sprites, interrupts, DMA interpreter, AY, inputs et CPR. Save state conserve
+position unlock, compteurs DMA, CRTC et banque cartouche.
+
+
+==============================================================================
+52. EMULATION Z80 ET MEMOIRE
+==============================================================================
+
+Implementer tous prefixes, timings M/T, refresh R, IFF, EI delay, HALT, IM0/1/2,
+flags X/Y et instructions block. Appliquer WAIT a chaque cycle bus selon ASIC,
+pas comme penalite globale apres instruction.
+
+Memoire : quatre segments 16K, ROM enable, page cartouche, RAM 64K, overlay ASIC.
+Les acces CPU, video et DMA peuvent voir des mappings differents selon signal;
+suivre specification. Les ports sont partiellement decodes et peuvent selectionner
+plusieurs devices en cas de valeur inhabituelle.
+
+
+==============================================================================
+53. EMULATION CRTC ET VIDEO CLASSIQUE
+==============================================================================
+
+CRTC : compteurs HCC, VLC, VCC, MA, RA, totals, adjust, displayed, HSYNC/VSYNC,
+start address et light pen. Type 3 readbacks/skews/zero-width sync doivent suivre
+ASIC. Gate Array transforme MA/RA en adresse RAM et decode bits mode 0/1/2.
+
+Produire pixels/border par color clock; appliquer ecritures palette/mode immediates
+avec latence. Gerer overscan, rupture de synchro et frame non standard sans depasser
+buffers hote.
+
+
+==============================================================================
+54. EMULATION ASIC PLUS
+==============================================================================
+
+Machine d'unlock exacte et reset. Mapping $4000-$7FFF, sprite RAM/attributes,
+palette RGB444, 16 sprites/zoom/priorite/transparence, PRI/IVR, SPLT/SSA, SSCR et
+interactions CRTC. Les coordonnees utilisent domaine raster complet.
+
+DMA : trois PC/adresses, prescalers, repeat/loop/stop, writes AY, IRQ, status et
+vol de cycles. Les ecritures DCSR ont bits W1C/enable selon specification.
+
+
+==============================================================================
+55. EMULATION AUDIO, DMA ET ENTREES
+==============================================================================
+
+AY : 12-bit tone periods, noise LFSR, mixer, volumes logarithmiques, enveloppe,
+port A et acces bus via PPI. Resampler depuis horloge AY, pas une mise a jour par
+frame. DMA ecrit les registres aux ticks exacts.
+
+Manettes actives bas, second bouton Plus, Pause et light pen. Mapper clavier hote
+seulement si mode CPC+ le demande. Latch light pen doit capturer compteurs CRTC.
+
+
+==============================================================================
+56. PLAN DE VALIDATION
+==============================================================================
+
+- tous opcodes/prefixes Z80 et timings WAIT;
+- ROM/RAM/cart banking et CPR pages/trous;
+- Gate Array modes/palette/IRQ compatible CPC;
+- CRTC type 3 totals, sync, address et light pen;
+- unlock/lock et overlay ASIC;
+- 4096 couleurs et ecritures raster;
+- 16 sprites, zooms, priorites, bords et modifications en ligne;
+- PRI/IVR, split/SSA et scrolling fin;
+- trois DMA, chaque instruction, conflits et IRQ;
+- AY, manettes deux boutons, Pause et light gun;
+- reset et comportement GX4000/464+/6128+.
+
+Comparer traces et captures a plusieurs cartes/ASIC. Les demos Plus sont de bons
+stress tests mais une suite unitaire dediee est indispensable.
+
+
+==============================================================================
+57. ELECTRONIQUE ET CONNECTIQUE
+==============================================================================
+
+Carte : Z80, ASIC 160 broches, deux DRAM pour 64K, AY-3-8912, ROM/cart interface,
+logique analogique RGB/audio/RF, alimentation et ports. ASIC multiplexe DRAM et
+genere signaux CRTC/Gate Array.
+
+Connecteurs selon modele : cartouche, deux DB9, alimentation, RGB/moniteur, RF,
+audio/joystick/light gun. Le brochage RGB n'est pas VGA; niveaux/synchro exigent
+cable adapte. Le service manual donne tensions, ajustements et schemas.
+
+
+==============================================================================
+58. MAINTENANCE ET DIAGNOSTIC
+==============================================================================
+
+Pannes : alimentation, jack/interrupteur, condensateurs, DRAM, cart contacts,
+quartz, modulateur RF, connecteurs et soudures ASIC. Verifier 5 V, reset, clock et
+activite bus avant suspecter ASIC rare.
+
+Image noire peut etre cartouche/CPR/mapping, pas seulement video. Tester cartouche
+connue, RGB direct puis RF. Ne pas convertir la console en CPC+ sans comprendre
+les revisions et risques de couper des broches ASIC. Debrancher secteur.
+
+
+==============================================================================
+59. PRESERVATION ET SECURITE
+==============================================================================
+
+Dumper chaque page cartouche, conserver CPR original et forme normalisee, chunks,
+etiquette, PCB, mask ROM et SHA-256. Noter revision ASIC/carte et region. Les jeux,
+ROM et marques restent proteges; ne distribuer que contenus autorises.
+
+Un parseur CPR traite tailles/chunks comme hostiles et borne allocations. Une PCB
+moderne doit traduire tensions si necessaire et eviter contention. Les moniteurs
+CRT/RF contiennent hautes tensions, meme debranches : maintenance qualifiee.
+
+
+==============================================================================
+60. REFERENCES
+==============================================================================
+
+Documents constructeurs :
+
+- Amstrad, Arnold V ASIC Specification Issue 1.4 et 1.5 :
+  https://cpctech.cpcwiki.de/docs.html
+- Amstrad 464+/6128+/GX4000 Service Manual :
+  https://retronik.silicium.org/DOCUMENTS/Info/Amstrad_CPC/Amstrad-464plus-6128plus-GX4000-MM12-MM14-Service-Manual.pdf
+- datasheets Z80, UM6845 et AY-3-8910/12 indexes sur :
+  https://cpctech.cpcwiki.de/docs.html
+
+References de programmation :
+
+- CPC Plus/GX4000 ASIC, adressage et exemples :
+  https://sites.google.com/site/asmtradcpc/asic-cpc-gx4000
+- CPCWiki, ASIC/Gate Array et documentation communautaire :
+  https://www.cpcwiki.eu/
+- CPCTelera : https://lronaldo.github.io/cpctelera/
+- Grimware, depot de documents Plus et service manuals :
+  https://www.grimware.org/doku.php/documentations/repository
+
+La specification Arnold V Issue 1.5 et le service manual doivent primer pour les
+bits/adresses. Confronter aux tests sur ASIC reel : les emulateurs et articles plus
+anciens simplifient parfois contention, CRTC type 3, DMA et verrouillage.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

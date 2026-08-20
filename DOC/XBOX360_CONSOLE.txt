@@ -1,0 +1,1066 @@
+==============================================================================
+ MICROSOFT XBOX 360
+ Materiel, programmation PowerPC/Xenos et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Xbox 360 : processeur IBM Xenon, GPU ATI Xenos, eDRAM,
+memoire unifiee, stockage, audio, video, controles, reseau, logiciel systeme,
+developpement XDK/XNA, emulation et diagnostic. Il vise developpeurs, auteurs
+d'outils/emulateurs, chercheurs et restaurateurs.
+
+Les interfaces officielles Xbox 360 etaient distribuees sous licence Microsoft.
+Ce document reste architectural et utilise des exemples originaux. Il ne contient
+ni SDK proprietaire, ni cle, ni firmware, ni methode de contournement de securite.
+
+Les accents sont omis afin de conserver un fichier ASCII facile a traiter.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+1. HISTOIRE
+==============================================================================
+
+La Xbox 360 est lancee en 2005 et succede a la Xbox originale. Elle introduit une
+architecture PowerPC multicore, un GPU a shaders unifies, Xbox Live integre et un
+marche de jeux telechargeables. Les modeles S arrivent en 2010 et E en 2013.
+
+La production evolue fortement pour reduire cout, consommation et pannes : les
+premieres puces 90 nm se transforment en composants 65/45 nm puis XCGPU integre.
+Le logiciel reste globalement compatible, mais cartes meres et alimentations ne
+sont pas interchangeables.
+
+
+==============================================================================
+2. MODELES COMMERCIAUX
+==============================================================================
+
+- Xbox 360 Core/Arcade : stockage limite selon paquet;
+- Xbox 360 Premium/Pro/Elite : disque dur et accessoires variables;
+- Xbox 360 S : boitier compact, Wi-Fi integre, port Kinect, XCGPU;
+- Xbox 360 E : derniere coque, connectique simplifiee;
+- editions speciales avec disques/couleurs differents;
+- Development Kit, Test Kit et Reviewer Kit, non equivalents aux consoles retail.
+
+Capacites HDD ont varie de 20 a plusieurs centaines de Go. Les versions 4 Go
+utilisent stockage flash interne selon revision.
+
+
+==============================================================================
+3. REVISIONS DE CARTES MERES
+==============================================================================
+
+  Revision    Periode approx.  Particularites
+  Xenon       2005             CPU/GPU 90 nm, pas HDMI
+  Zephyr      2007             HDMI, refroidissement revise
+  Falcon      2007             CPU 65 nm, GPU 90 nm
+  Opus        2008             remplacement Xenon sans HDMI
+  Jasper      2008             CPU/GPU 65 nm, consommation reduite
+  Trinity     2010             Slim, XCGPU 45 nm
+  Corona      2011+            Slim/E, plusieurs variantes NAND/eMMC
+  Winchester  2014             XCGPU revise, derniere generation E
+
+Dates et composants varient par lot. Identifier par connecteur alimentation,
+amperage etiquette, NAND/eMMC, HDMI, southbridge et numero de carte.
+
+
+==============================================================================
+4. SPECIFICATIONS RESUMEES
+==============================================================================
+
+- CPU : IBM Xenon, PowerPC 64 bits, 3 coeurs a 3,2 GHz;
+- 2 threads materiels par coeur, 6 contextes;
+- SIMD VMX128 et unite flottante par coeur;
+- cache L2 partage 1 Mio;
+- GPU : ATI Xenos a 500 MHz, shaders unifies;
+- 48 unites de traitement shader;
+- eDRAM : 10 Mio avec logique de rendu;
+- RAM : 512 Mio GDDR3 unifiee, bus 128 bits;
+- bande passante principale theorique autour de 22,4 Go/s;
+- lecteur DVD-ROM, stockage flash et HDD amovible/interne selon modele;
+- Ethernet, USB 2.0, Wi-Fi optionnel ou integre;
+- sortie analogique/HDMI selon revision;
+- audio multicanal, decodeur XMA materiel.
+
+
+==============================================================================
+5. DIAGRAMME GENERAL
+==============================================================================
+
+ +----------------+      FSB      +--------------------+
+ | Xenon CPU      |<------------->| Xenos GPU / MC     |
+ | 3 cores/6 hwth |               | shaders + commands |
+ +----------------+               +----+-----------+---+
+                                       |           |
+                              512 Mio GDDR3   10 Mio eDRAM
+                                       |
+                                  +----+-----+
+                                  | southbridge |
+                                  +--+--+--+--+
+                                     |  |  |
+                                   DVD HDD USB/Ethernet
+
+Le controleur memoire est associe a Xenos. CPU et GPU partagent la GDDR3, tandis
+que l'eDRAM est un render backend specialise, non une VRAM generale.
+
+
+==============================================================================
+6. CPU XENON
+==============================================================================
+
+Xenon est un processeur IBM PowerPC big-endian, trois coeurs symetriques simples et
+in-order. Chaque coeur execute deux threads SMT pour masquer les latences. Il offre
+entier 64 bits, flottant, branchement, cache et extension vectorielle VMX128 adaptee.
+Chaque coeur possede 32 Kio de cache instructions et 32 Kio de cache donnees; le
+cache L2 de 1 Mio est partage par les trois coeurs.
+
+Un thread qui manque le cache peut bloquer des ressources du coeur; six threads ne
+valent donc pas six gros coeurs out-of-order. Repartir travail et donnees est central.
+
+
+==============================================================================
+7. REGISTRES POWERPC
+==============================================================================
+
+- 32 GPR `r0-r31`, 64 bits;
+- 32 FPR flottants;
+- registres vectoriels VMX128;
+- LR (link), CTR (count), CR (8 champs), XER;
+- MSR et SPR privilegies;
+- PC/NIA implicite.
+
+ABI habituelle : r3-r10 arguments, r3/r4 resultats; r1 stack; r2 TOC selon ABI;
+r13 donnees thread/petites donnees selon environnement; r14-r31 non volatils.
+Toujours suivre l'ABI XDK/toolchain employee.
+
+
+==============================================================================
+8. INSTRUCTIONS POWERPC IMPORTANTES
+==============================================================================
+
+- load/store : lbz, lhz, lwz, ld, stb, sth, stw, std, formes indexed/update;
+- entier : add/addi, subf, mullw/mulld, divw/divd, neg;
+- logique : and/or/xor/nor, rlwinm/rldicl et rotations/masques;
+- comparaison : cmp/cmpl, champs CR;
+- controle : b/bl, bc/bcl, bctr/bctrl, blr;
+- atomiques : lwarx/stwcx., ldarx/stdcx.;
+- barrieres : sync, lwsync, eieio, isync;
+- flottant : fadd/fsub/fmul/fdiv, madd, conversions;
+- vectoriel : loads/stores, add/multiply, permute, compare, pack/unpack.
+
+Le byte order est big-endian pour CPU. Les formats GPU, disque ou reseau peuvent
+avoir conventions propres : convertir explicitement.
+
+
+==============================================================================
+9. EXEMPLE ASSEMBLEUR POWERPC
+==============================================================================
+
+Somme de `n` mots 32 bits non signes, r3=pointeur, r4=n, r3=resultat :
+
+        .globl sum_u32
+sum_u32:
+        mr      r5,r3
+        li      r3,0
+        cmpwi   r4,0
+        beqlr
+        mtctr   r4
+1:      lwz     r6,0(r5)
+        addi    r5,r5,4
+        add     r3,r3,r6
+        bdnz    1b
+        blr
+
+Le resultat wrap sur 64 bits de GPR selon extensions produites par les operations;
+preciser si l'API attend 32 ou 64 bits.
+
+
+==============================================================================
+10. EXEMPLE DE VERROU ATOMIQUE
+==============================================================================
+
+; r3 pointe vers un uint32_t, retourne r3=1 si verrou acquis, 0 sinon.
+try_lock:
+1:      lwarx   r4,0,r3
+        cmpwi   r4,0
+        bne     2f
+        li      r5,1
+        stwcx.  r5,0,r3
+        bne-    1b
+        lwsync
+        li      r3,1
+        blr
+2:      li      r3,0
+        blr
+
+La liberation ecrit zero avec semantique release/barriere adaptee. Preferer les
+primitives XDK/C++ de la plateforme plutot qu'un verrou artisanal.
+
+
+==============================================================================
+11. CACHES ET COHERENCE
+==============================================================================
+
+Chaque coeur a caches L1 et partage le L2. CPU et GPU communiquent par memoire et
+command buffers; les API gerent flush/invalidation et fences. Les DMA des moteurs
+I/O/audio exigent aussi alignement et coherence.
+
+False sharing entre threads d'un meme/differents coeurs coute cher. Aligner compteurs,
+partitionner tableaux et eviter un verrou global touche par les six contexts.
+
+
+==============================================================================
+12. SMT ET ORDONNANCEMENT
+==============================================================================
+
+Deux threads partagent les unites d'un coeur. Une paire complementaire (un thread
+calcul, un thread avec attentes/cache misses) utilise mieux le coeur que deux boucles
+vectorielles lourdes identiques. Le systeme reserve egalement du temps/ressources.
+
+Utiliser job system : files par coeur, taches assez grosses, vol de travail mesure,
+affinite pour donnees chaudes. Ne pas supposer que thread logiciel = thread materiel
+dedie permanent.
+
+
+==============================================================================
+13. VMX128
+==============================================================================
+
+VMX128 derive d'Altivec avec 128 registres vectoriels et des encodages propres a
+Xenon. Il traite vecteurs de 128 bits : quatre floats/entiers 32, huit 16 bits ou
+seize octets.
+Il est essentiel pour animation, skinning, audio, particules et decompression.
+
+La compatibilite source avec Altivec est partielle; les intrinsics XDK expriment les
+operations. Aligner les donnees 16 octets et eviter permutes dus a l'endianness.
+
+
+==============================================================================
+14. POINT FLOTTANT
+==============================================================================
+
+Xenon favorise calcul SIMD et fused multiply-add. Les resultats peuvent differer
+d'un PC x86 en precision, contraction, denormals, NaN et ordre. Pour replay reseau
+deterministe, utiliser modele fixe/quantification ou tolerances et meme ordre.
+
+
+==============================================================================
+15. MEMOIRE UNIFIEE GDDR3
+==============================================================================
+
+Les 512 Mio accueillent code, heap, textures, vertex/index buffers, audio, systeme
+et copies de render targets resolves. L'unification permet budget flexible mais CPU,
+GPU et I/O se disputent bande passante.
+
+Une partie est reservee au systeme. La quantite application depend du contexte/XDK.
+Etablir un budget par pool et suivre pics, fragmentation et allocations transitoires.
+
+
+==============================================================================
+16. ADRESSAGE ET POINTEURS
+==============================================================================
+
+Le logiciel retail tourne dans un espace virtuel protege. Adresses CPU, GPU et
+physiques ne sont pas synonymes. Les ressources graphiques sont creees par API qui
+choisit placement, alignement, endian swap et tiling.
+
+Un emulateur doit modeliser traductions et alias observables; une application ne
+doit pas coder une adresse MMIO physique.
+
+
+==============================================================================
+17. GPU XENOS
+==============================================================================
+
+Xenos, concu par ATI, est un precurseur des architectures a shaders unifies : les
+memes unites peuvent executer vertex ou pixel shader selon charge. Ses 48 processeurs
+shader sont groupes en trois ensembles SIMD de 16; leur ALU peut exploiter plusieurs
+composantes par instruction suivant dependances. Le GPU comprend aussi frontend,
+fetch, tessellateur, texture units, command processor et liaison au die eDRAM.
+
+L'API XDK est une variante optimisee de Direct3D 9 avec extensions console. Les
+capacites ne correspondent pas exactement a une Radeon PC ni au Shader Model 3.
+
+
+==============================================================================
+18. SHADERS UNIFIES
+==============================================================================
+
+Le compilateur transforme HLSL en microcode Xenos. Ordonnancement VLIW, predication,
+registres, branchements et latences texture determinent occupancy. Une instruction
+scalaire mal placee ou trop de temporaires peut reduire fortement le debit.
+
+Profiler vertex et pixel phases separement. Un shader plus court en source n'est pas
+forcement plus rapide; inspecter assemblage/statistiques du compilateur autorise.
+
+
+==============================================================================
+19. TESSELLATEUR
+==============================================================================
+
+Xenos dispose d'un tessellateur fixe capable de subdiviser patches/primitives selon
+formats exposes. Il fut utilise de facon variable. Ce n'est pas le pipeline Direct3D
+11 hull/domain shader moderne; la preparation et les shaders suivent l'API 360.
+
+
+==============================================================================
+20. EDRAM 10 MIO
+==============================================================================
+
+L'eDRAM stocke color/depth/stencil pendant rendu et integre ROP, blending, Z et MSAA
+a tres forte bande passante interne. Elle ne stocke pas les textures generales ni
+le code shader. Le GPU resolve ensuite les tiles vers GDDR3.
+
+10 Mio ne suffisent pas a toute combinaison 1280x720, color, depth et MSAA. Le rendu
+est decoupe en tiles eDRAM, idealement avec l'aide des predicated tiling APIs.
+
+
+==============================================================================
+21. CALCUL DE TAILLE RENDER TARGET
+==============================================================================
+
+Approximation sans compression/alignement :
+
+  octets = largeur * hauteur * octets_pixel * echantillons_MSAA
+
+1280x720 RGBA8 sans MSAA vaut environ 3,52 Mio; ajouter depth 32 bits donne environ
+7,03 Mio. En 2x MSAA, ensemble depasse 10 Mio et exige tiling. Alignements eDRAM et
+formats reels modifient le calcul.
+
+
+==============================================================================
+22. PREDICATED TILING
+==============================================================================
+
+Le frame est rendu bande par bande dans eDRAM. Pour chaque tile, le GPU rejoue une
+partie des commandes avec clip/predicate, puis resolve color vers texture/surface en
+memoire principale. Depth peut etre restaure/resolu selon technique et API.
+
+Pieges : effets plein ecran par tile, derivatives aux bordures, queries, occlusion,
+alpha et post-process qui attendent l'image complete. Planifier la passe complete.
+
+
+==============================================================================
+23. TEXTURES ET TILING MEMOIRE
+==============================================================================
+
+Les textures GPU utilisent layouts tiled/swizzled et endian modes afin d'ameliorer
+localite. Formats : DXT/BC, RGBA, flottants, profondeur et autres formats Xenos.
+Pitch, alignement mip, faces/couches et taille bloc sont imposes.
+
+Employer outils/API de texture; ne pas memcpy une image lineaire dans une texture
+tiled. Pour streaming, utiliser staging, fences et ressources en anneau.
+
+
+==============================================================================
+24. COMMAND BUFFERS ET FENCES
+==============================================================================
+
+Le CPU enregistre commandes dans un ring buffer; GPU les consomme asynchronement.
+Fences/interruptions indiquent fin. Ne pas ecraser vertex buffer, constants ou
+texture avant fence correspondante.
+
+Le CPU peut produire plusieurs frames d'avance, ce qui augmente debit mais aussi
+latence. Limiter profondeur selon type de jeu.
+
+
+==============================================================================
+25. EXEMPLE HLSL SIMPLE
+==============================================================================
+
+float4x4 WorldViewProjection;
+
+struct VSIn  { float3 pos : POSITION0; float4 color : COLOR0; };
+struct VSOut { float4 pos : POSITION0; float4 color : COLOR0; };
+
+VSOut VSMain(VSIn v)
+{
+    VSOut o;
+    o.pos = mul(float4(v.pos, 1.0), WorldViewProjection);
+    o.color = v.color;
+    return o;
+}
+
+float4 PSMain(VSOut i) : COLOR0 { return i.color; }
+
+Compiler avec le profil Xenos fourni par l'environnement officiel; un bytecode PC
+D3D9 n'est pas interchangeable.
+
+
+==============================================================================
+26. PIPELINE GRAPHIQUE XDK
+==============================================================================
+
+Flux conceptuel : creer device/presentation, allouer render target/depth, creer
+vertex/index buffers, compiler shaders, fixer fetch/vertex declaration, constants,
+textures et etats, dessiner, resolve eDRAM, presenter. Toutes les ressources vivent
+dans un budget unifie.
+
+Les noms exacts d'extensions 360 appartiennent aux documents XDK autorises. Un port
+PC doit isoler backend plutot que disperser appels Direct3D partout.
+
+
+==============================================================================
+27. RESOLUTION ET SORTIES VIDEO
+==============================================================================
+
+Le systeme supporte modes SD et HD, 480i/p, 720p, 1080i et plus tard 1080p selon
+sortie/dashboard. Les jeux rendent souvent 720p ou resolution interne inferieure,
+puis scalent. HDMI apparait a partir de Zephyr; anciens modeles utilisent AV analogique/
+component/VGA selon cable.
+
+Respecter safe area, aspect 4:3/16:9, overscan et espace couleur. Ne pas deduire la
+resolution de rendu de la resolution HDMI.
+
+
+==============================================================================
+28. AUDIO
+==============================================================================
+
+La 360 offre sortie stereo/5.1 via analogique, S/PDIF ou HDMI selon configuration.
+XAudio/XACT furent les couches courantes. Le materiel accelere notamment la
+decompression XMA; mixage, effets et voix consomment des ressources systeme/CPU.
+
+Architecture robuste : voix source, buffers circulaires, categories, DSP/effects,
+mix final, device change. Le thread audio ne bloque jamais sur disque.
+
+
+==============================================================================
+29. XMA
+==============================================================================
+
+XMA est un codec audio Microsoft adapte au streaming console. Les assets sont
+encodes hors ligne, packetises/alignees puis soumis au decodeur. Boucles, seek tables,
+sample counts et fin de flux doivent etre exacts.
+
+Un emulateur peut decoder en logiciel mais doit reproduire files, positions et
+interruptions visibles. Ne pas confondre XMA avec WMA generique.
+
+
+==============================================================================
+30. DVD-ROM ET DISQUES
+==============================================================================
+
+Le lecteur DVD proprietaire lit jeux sur DVD-ROM double couche et medias autorises.
+Plusieurs fabricants/revisions de lecteurs existent. Le southbridge communique via
+SATA sur generations courantes. Vitesse, seek et couche influencent streaming.
+
+Les disques de jeu, signatures et partitions sont geres par la chaine securisee.
+Aucune procedure de copie/dechiffrement n'est necessaire pour programmer avec XDK.
+
+
+==============================================================================
+31. HD DVD EXTERNE
+==============================================================================
+
+Le lecteur HD DVD USB optionnel lit films HD DVD; les jeux 360 ne sont pas publies
+sur HD DVD. Il fournit un lecteur optique USB et telecommande selon paquet. Le format
+est abandonne; l'accessoire reste distinct du lecteur de jeu interne.
+
+
+==============================================================================
+32. DISQUE DUR
+==============================================================================
+
+HDD amovible sur consoles originales, interne 2,5 pouces dans caddy sur S/E. Le
+systeme utilise partitions et FATX, cache, profils, sauvegardes, jeux installes et
+compatibilite Xbox originale. Capacite/identite sont gerees par le systeme.
+
+Un jeu utilise les API de contenu et doit fonctionner selon exigences sans supposer
+un HDD sur anciens paquets. Gerer disque plein, retrait et echec atomique.
+
+
+==============================================================================
+33. NAND, MEMOIRE INTERNE ET EMMC
+==============================================================================
+
+Xenon/Zephyr/Falcon/Opus et certains Jasper emploient typiquement NAND 16 Mio.
+Certains Jasper ont 256/512 Mio avec Memory Unit interne. Slim/E evoluent vers
+configurations NAND/eMMC et stockage 4 Go selon carte.
+
+La flash contient chaine de demarrage, systeme et donnees specifiques. Sa structure,
+ECC et mauvais blocs dependent du controleur. Une image d'une autre console ne doit
+jamais etre ecrite.
+
+
+==============================================================================
+34. MEMORY UNITS ET USB
+==============================================================================
+
+Memory Units proprietaires existent en 64/256/512 Mio selon generation et se
+branchent aux deux logements des premieres consoles. Elles utilisent un transport
+proche USB avec connecteur/alimentation propre. Des mises a jour ont permis stockage
+USB standard avec limites evolutives.
+
+Ne pas appliquer 5 V a une Memory Unit ancienne donnee pour logique/alimentation
+differente. Utiliser API stockage, jamais des secteurs bruts dans un jeu.
+
+
+==============================================================================
+35. RESEAU
+==============================================================================
+
+Ethernet 100BASE-TX integre; Wi-Fi via adaptateur USB sur anciens modeles, integre
+sur S/E. Xbox Live fournit comptes, matchmaking, presence, contenu et mises a jour.
+
+Un jeu doit tolerer NAT, latence, perte, migration d'hote, deconnexion de profil et
+suspension dashboard. Ne pas ouvrir un protocole non authentifie ou faire confiance
+aux donnees d'un pair.
+
+
+==============================================================================
+36. CONTROLEUR XBOX 360
+==============================================================================
+
+Pad filaire USB ou sans fil proprietaire : deux sticks, croix, A/B/X/Y, LB/RB,
+triggers analogiques, Start/Back, Guide et vibration double moteur. Le controleur
+sans fil utilise batteries/piles; le Play & Charge transporte la charge, pas
+necessairement les donnees de jeu vers PC.
+
+XInput expose boutons, triggers 0-255 et sticks signes. Appliquer dead zones radiales,
+normalisation et edge detection. Gerer retrait et reassignment utilisateur.
+
+
+==============================================================================
+37. ACCESSOIRES
+==============================================================================
+
+- Wireless Racing Wheel;
+- Guitar Hero/Rock Band instruments;
+- Arcade sticks;
+- Chatpad et headset;
+- Xbox Live Vision camera;
+- media remote;
+- Kinect;
+- adaptateurs reseau Wi-Fi;
+- HD DVD drive.
+
+Les jeux ne doivent pas supposer un protocole de pad standard pour accessoires HID/
+XInput speciaux; employer API et capabilities.
+
+
+==============================================================================
+38. KINECT
+==============================================================================
+
+Kinect combine camera couleur, profondeur infrarouge, microphones et moteur tilt
+sur premier modele. Les Xbox 360 S ont port dedie fournissant donnees/alimentation;
+les anciennes exigent adaptateur secteur/USB.
+
+SDK traite skeleton, profondeur, audio et reconnaissance. Prevoir latence, occlusion,
+espace, eclairage et consentement. Ne pas conserver images/micro sans politique.
+
+
+==============================================================================
+39. SOUTHBRIDGE ET SMC
+==============================================================================
+
+Le southbridge gere SATA, USB, Ethernet, NAND, audio/interfaces et liens systeme.
+Le System Management Controller surveille alimentation, boutons, ventilateurs,
+temperature, LEDs et sequences veille/reset. Versions varient avec carte mere.
+
+Ces blocs ne sont pas des peripheriques application ordinaires. En diagnostic,
+leurs signaux aident a separer panne d'alimentation et echec de boot.
+
+
+==============================================================================
+40. CHAINE DE DEMARRAGE ET SECURITE
+==============================================================================
+
+Le boot part d'une racine immuable, verifie plusieurs etages, configuration/fuses,
+hyperviseur, noyau et dashboard. Code et donnees sensibles sont authentifies et
+proteges. Lecteur et contenu participent au modele de confiance.
+
+Les details architecturaux sont utiles a l'emulation et la preservation, mais ce
+document ne decrit ni glitch, ni JTAG, ni extraction de cles, ni image modifiee.
+
+
+==============================================================================
+41. HYPERVISEUR ET NOYAU
+==============================================================================
+
+Un hyperviseur privilegie isole et controle les ressources. Le noyau Xbox fournit
+threads, memoire, objets, I/O, fichiers, reseau, audio, GPU et services. Le titre
+tourne avec droits et budget determines; le Guide/dashboard peut interrompre ou
+superposer l'experience.
+
+Les appels bas niveau non documentes ne sont pas une API stable. Utiliser XDK et
+bibliotheques autorisees.
+
+
+==============================================================================
+42. XEX
+==============================================================================
+
+XEX est le conteneur executable Xbox 360. Il encapsule image PowerPC de type PE,
+headers/metadata, imports, informations de chargement, compression et securite.
+Variantes retail/development et versions existent.
+
+Un outil d'analyse peut parser les structures publiques/recherchees sans contourner
+signature ou chiffrement. Ne pas confondre adresse virtuelle PE et offset fichier.
+
+
+==============================================================================
+43. DASHBOARD ET MISES A JOUR
+==============================================================================
+
+Le dashboard a connu lames originales, New Xbox Experience et Metro. Les mises a
+jour changent noyau, codecs, stockage, securite, UI et compatibilite. Un programme
+doit viser la version minimale declaree et employer feature detection.
+
+La fermeture des services en ligne ou du magasin ne change pas les caracteristiques
+materielles, mais affecte installation, licence et fonctionnalites reseau historiques.
+
+
+==============================================================================
+44. DEVELOPPEMENT OFFICIEL XDK
+==============================================================================
+
+Le Xbox 360 XDK comprenait compilateur PowerPC, Visual Studio integration, headers/
+bibliotheques, shaders, outils de contenu, PIX/profiler, debugger, deployment et
+documentation. Le materiel Development/Test Kit permet execution et inspection.
+
+Les contrats de licence restent applicables. Ne pas telecharger un XDK divulgue;
+pour preservation documentaire, employer sources autorisees.
+
+
+==============================================================================
+45. BOUCLE DE JEU C++ CONCEPTUELLE
+==============================================================================
+
+int GameMain()
+{
+    Platform platform;
+    Renderer renderer;
+    Audio audio;
+    while (!platform.ShouldQuit()) {
+        InputState input = platform.PollInput();
+        double dt = platform.FrameDeltaSeconds();
+        UpdateSimulation(input, dt);
+        renderer.BeginFrame();
+        DrawWorld(renderer);
+        renderer.ResolveAndPresent();
+        audio.ServiceQueues();
+    }
+    return 0;
+}
+
+Les classes sont une abstraction originale, pas des noms XDK. Le backend officiel
+doit gerer eDRAM/tiling, device state et Guide events.
+
+
+==============================================================================
+46. XNA GAME STUDIO
+==============================================================================
+
+XNA permit historiquement de programmer en C# avec XNA Framework et Creators Club,
+deployer sur Xbox 360 et publier via Xbox Live Indie Games. Ce programme est arrete,
+mais reste important pour preservation et education.
+
+XNA masque une partie du GPU/audio mais impose Content Pipeline, profils Reach/HiDef
+selon version et garbage collector .NET Compact Framework adapte.
+
+
+==============================================================================
+47. EXEMPLE XNA C#
+==============================================================================
+
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+
+public sealed class DemoGame : Game
+{
+    readonly GraphicsDeviceManager graphics;
+    public DemoGame() { graphics = new GraphicsDeviceManager(this); }
+
+    protected override void Update(GameTime time)
+    {
+        base.Update(time);
+    }
+
+    protected override void Draw(GameTime time)
+    {
+        GraphicsDevice.Clear(Color.CornflowerBlue);
+        base.Draw(time);
+    }
+}
+
+Il faut un environnement XNA historique legalement conserve. Le deploiement console
+public n'est plus un canal moderne supporte.
+
+
+==============================================================================
+48. DEVELOPPEMENT BARE METAL LIBXENON
+==============================================================================
+
+LibXenon/Free60 est une bibliotheque libre experimentale pour code PowerPC bare
+metal : console, video, USB, stockage et autres pilotes selon etat du projet. Elle
+ne transforme pas une console retail intacte en kit officiel et son support varie
+par revision.
+
+La toolchain `xenon-elf` et les exemples libres servent a l'etude. L'execution sur
+materiel doit rester legale et ne necessite pas de redistribuer firmware/cles.
+
+
+==============================================================================
+49. STRUCTURE D'UN MOTEUR
+==============================================================================
+
+  platform/    threads, fichiers, temps, input
+  renderer/    Xenos/D3D backend
+  audio/       XAudio/XMA streaming
+  jobs/        six hardware threads
+  assets/      textures tiled, shaders, XMA, meshes
+  game/        simulation portable
+  tools/       conversion, packaging, profiling
+
+Garder un backend PC facilite test et preservation. Les assets console sont generes,
+pas edites a la main dans leur format final.
+
+
+==============================================================================
+50. JOB SYSTEM
+==============================================================================
+
+Une frame repart animation, physique, visibility, particules, audio et streaming.
+File lock-free ou deques par worker, dependances explicites et compteur de fin.
+Conserver un thread principal pour API qui l'exigent.
+
+Limiter synchronisations entre les deux threads d'un coeur. Profiler temps actif,
+stall cache, contention et occupation GPU ensemble.
+
+
+==============================================================================
+51. STREAMING DE DONNEES
+==============================================================================
+
+Le DVD a haute bande passante sequentielle mais seeks lents. Grouper fichiers par
+niveau/phase, lire gros blocs asynchrones, decompresser sur worker et uploader GPU
+par ring buffers. L'installation HDD peut accelerer mais ne doit pas etre supposee.
+
+Verifier CRC/version, gerer erreur disque/retrait stockage et ne pas bloquer rendu.
+
+
+==============================================================================
+52. GESTION DE MEMOIRE
+==============================================================================
+
+Pools par duree de vie : permanent, niveau, frame, streaming, GPU et audio. Les
+allocations de frame utilisent arenas. Capturer high-water marks et fragmentation.
+Une allocation reussie sur devkit a memoire/outils supplementaires peut echouer retail.
+
+
+==============================================================================
+53. ENDIANNESS
+==============================================================================
+
+CPU PowerPC est big-endian, alors que beaucoup d'outils PC produisent little-endian.
+Le GPU offre des modes de swap pour certaines ressources. Choisir un format disque
+canonique et convertir une seule fois au chargement/conversion.
+
+Ne jamais serialiser une struct C brute : padding, pointeurs, taille et endian varient.
+
+
+==============================================================================
+54. OPTIMISATION CPU
+==============================================================================
+
+- vectoriser lots avec VMX128;
+- structure-of-arrays pour skinning/particules;
+- prefetch avec mesure;
+- reduire branches imprevisibles;
+- eviter divisions et conversions inutiles;
+- aligner 16/128 octets selon flux;
+- grouper jobs pour cache local;
+- comparer SMT on/off et affinites;
+- utiliser profile guide optimization si toolchain l'autorise.
+
+
+==============================================================================
+55. OPTIMISATION GPU
+==============================================================================
+
+- minimiser eDRAM tiles et resolves;
+- trier par etat/shader/textures;
+- reduire overdraw et alpha;
+- compresser textures DXT;
+- equilibrer vertex/pixel workload sur shaders unifies;
+- limiter registres shader et branchements divergents;
+- utiliser occlusion prudemment;
+- batcher petites draws;
+- profiler memoire principale et eDRAM separement.
+
+
+==============================================================================
+56. MSAA ET POST-TRAITEMENT
+==============================================================================
+
+L'eDRAM rend MSAA efficace en bande passante locale, mais multiplie stockage et
+tiling. Resolve produit surface en GDDR3. Les post-process lisent cette surface et
+peuvent exiger nouvelle passe eDRAM.
+
+Planifier HDR, depth, velocity et bloom avec budget 10 Mio; tous ne tiennent pas
+simultanement. Utiliser formats compacts et resolutions reduites pour buffers d'effet.
+
+
+==============================================================================
+57. SYNCHRONISATION CPU/GPU
+==============================================================================
+
+Eviter attendre GPU en milieu de frame. Triple-bufferer commandes/donnees dynamiques,
+utiliser fences et retirements. Les readbacks GPU->CPU sont chers et cassent le
+parallellisme; remplacer par queries differees ou calcul CPU.
+
+
+==============================================================================
+58. PROFILAGE
+==============================================================================
+
+Mesurer par frame : temps de chaque hardware thread, misses/stalls, allocations,
+command buffer, vertex/pixel load, eDRAM tiling, texture bandwidth, audio underruns,
+DVD seeks. PIX et outils XDK historiques donnent captures GPU; outils libres/emulateur
+ont des vues differentes.
+
+
+==============================================================================
+59. DEBUG
+==============================================================================
+
+Les kits de developpement permettent debugger distant, logs, crash dumps, captures
+et deployment. Symboles/map et identifiant build doivent etre archives. Une exception
+PowerPC exige PC, LR, CTR, CR, XER, GPR, stack et thread.
+
+Sur retail, ne pas inclure console debug non securisee ni donnees personnelles dans
+les rapports.
+
+
+==============================================================================
+60. EMULATION : CPU
+==============================================================================
+
+Un emulateur comme Xenia recompile PowerPC vers ISA hote. Il doit implementer trois
+coeurs/six threads, VMX128, atomiques, exceptions, MMU, endian, floating point et
+ordre memoire. Les jeux exposent courses que le hardware in-order masque/determine.
+
+Le JIT doit invalider code modifie, conserver reservations lwarx/stwcx et traduire
+NaN/saturation vectorielle correctement.
+
+
+==============================================================================
+61. EMULATION : GPU
+==============================================================================
+
+Decoder command processor, registres, fetch constants, shaders, textures tiled,
+render targets eDRAM, resolves, MSAA, endian swap, queries et synchronisation.
+Traduire shaders Xenos vers Vulkan/D3D12 produit des ecarts de precision et formats.
+
+L'eDRAM ne doit pas devenir un framebuffer hote illimite sans reproduire au moins
+les effets de tiling/resolve visibles.
+
+
+==============================================================================
+62. EMULATION : SYSTEME
+==============================================================================
+
+HLE du noyau/XAM fournit threads, objets, fichiers, input, audio, reseau et services;
+LLE demande firmware legalement fourni. Versionner comportement par titre/systeme.
+Sandboxer chemins et contenu invite; ne jamais donner acces arbitraire au disque hote.
+
+
+==============================================================================
+63. EMULATION : AUDIO
+==============================================================================
+
+Decoder XMA, emuler files/voices, resampling, matrices 5.1, effets et horloge. Un
+decodeur qui produit les bons samples mais ignore positions/interruptions peut faire
+bloquer le jeu. Synchroniser audio a l'horloge emulee, pas aux variations du renderer.
+
+
+==============================================================================
+64. COMPATIBILITE XBOX ORIGINALE
+==============================================================================
+
+La retrocompatibilite emploie logiciel d'emulation et profils telecharges/installes,
+souvent avec HDD requis. Elle ne signifie pas que Xenon execute directement du x86
+Xbox. La liste de titres et comportements varie selon mise a jour/region.
+
+
+==============================================================================
+65. RED RING OF DEATH
+==============================================================================
+
+Le RROD est un indicateur general d'erreur materielle, celebre sur premieres revisions.
+Causes possibles : joints/packaging BGA, contraintes thermomecaniques, alimentation,
+RAM, southbridge et autres pannes. Les codes secondaires aident a localiser mais ne
+remplacent pas mesure.
+
+La serviette, chauffe au four et reflow sans profil sont dangereux et temporaires.
+Une reparation durable exige diagnostic, equipement BGA et correction de la cause.
+
+
+==============================================================================
+66. CODES D'ERREUR ET LEDS
+==============================================================================
+
+Le quadrant/centre et codes secondaires indiquent categories : alimentation externe,
+surchauffe, AV, panne generale ou erreur de mise a jour selon modele. Les consoles S/E
+ont affichage different. Documenter code exact avant demontage.
+
+
+==============================================================================
+67. ALIMENTATIONS
+==============================================================================
+
+Blocs externes varient en puissance/connecteur/detrompage : premieres consoles
+203 W, generations suivantes moins, Slim/E encore differentes. Une alimentation de
+capacite superieure peut etre compatible seulement si connecteur/revision le permet;
+ne jamais limer un detrompeur.
+
+LED du bloc aide mais ne prouve pas tous rails sous charge. Decharger et respecter
+secteur; ne pas ouvrir un bloc alimentation sans competence.
+
+
+==============================================================================
+68. REFROIDISSEMENT
+==============================================================================
+
+Radiateurs, heatpipes, ventilateurs, conduits et X-clamps varient. Nettoyer poussiere,
+remplacer pate thermique avec quantite correcte, conserver pression uniforme et
+verifier courbe ventilateur/temperatures. Un ventilateur force a 100 % masque parfois
+un mauvais contact sans le reparer.
+
+
+==============================================================================
+69. LECTEUR DVD : DIAGNOSTIC
+==============================================================================
+
+Verifier courroie/tray, lentille, spindle, rails, cables SATA/alimentation et disque
+connu. Le lecteur fait partie de la securite/identite console; remplacer arbitrairement
+la carte logique peut empecher lecture des jeux.
+
+Ne pas regarder le laser, ne pas tourner le potentiometre sans mesure et ne pas
+neutraliser les interlocks.
+
+
+==============================================================================
+70. CONDENSATEURS ET NAND
+==============================================================================
+
+Inspecter condensateurs gonfles/fuites, rails et ripple. Les pannes NAND/eMMC peuvent
+venir mauvais blocs, alimentation ou donnees; ne pas conclure depuis un seul dump.
+Avant toute ecriture, faire plusieurs lectures coherentes et conserver originales.
+
+Ce document n'explique pas comment modifier l'image securisee.
+
+
+==============================================================================
+71. CONTROLEURS : ENTRETIEN
+==============================================================================
+
+Sticks uses, potentiometres, bumpers, membranes, corrosion batteries et moteurs sont
+pannes courantes. Tester USB/radio, axes bruts, dead zone, triggers et vibration.
+Retirer piles qui fuient; ne pas melanger chimies ou charger des piles non rechargeables.
+
+
+==============================================================================
+72. KINECT : ENTRETIEN ET VIE PRIVEE
+==============================================================================
+
+Ne pas forcer moteur tilt ni regarder un emetteur IR endommage de pres. Verifier
+adaptateur et cable. Pour reutilisation PC/recherche, informer personnes filmees,
+minimiser enregistrement et securiser donnees biometrie/audio.
+
+
+==============================================================================
+73. PRESERVATION
+==============================================================================
+
+Archiver modele, carte mere, lecteur, HDD, accessoires, dashboard visible, region et
+historique sans publier identifiants/cles. Sauvegarder ses donnees par fonctions
+autorisees. Conserver disques au sec, verticalement, sans polissage agressif.
+
+Pour logiciel, conserver source originale, assets, toolchain legalement detenue,
+symbols et instructions de build reproductibles.
+
+
+==============================================================================
+74. ERREURS COURANTES DE DOCUMENTATION
+==============================================================================
+
+- dire six coeurs au lieu de trois coeurs/deux threads;
+- appeler l'eDRAM une VRAM de textures;
+- additionner ses bandes passantes a la GDDR3 sans contexte;
+- supposer 10 Mio suffisants pour toute image 720p MSAA;
+- traiter VMX128 comme Altivec strictement identique;
+- dire que Xenos est une Radeon PC standard;
+- confondre Play & Charge et controleur USB data;
+- croire HD DVD utilise pour les jeux;
+- supposer tous HDD/NAND/PSU interchangeables;
+- recommander reflow domestique pour RROD.
+
+
+==============================================================================
+75. CHECKLIST DE PORTAGE
+==============================================================================
+
+1. etablir budget 512 Mio et pools;
+2. porter endian/alignement PowerPC;
+3. repartir jobs sur trois coeurs/SMT;
+4. vectoriser seulement apres profilage;
+5. convertir textures/shaders pour Xenos;
+6. calculer eDRAM et predicated tiling;
+7. adapter audio XMA/streaming;
+8. gerer pad, profils, Guide et stockage absent;
+9. grouper donnees DVD et chargement asynchrone;
+10. tester retail, kits et sorties SD/HD ciblees.
+
+
+==============================================================================
+76. TABLE RECAPITULATIVE
+==============================================================================
+
+  Bloc          Caracteristique                 Role
+  Xenon         3 PPC cores, 6 threads, 3,2GHz logique/jeu
+  VMX128        SIMD 128 bits                    calcul vectoriel
+  Xenos         48 shaders unifies, 500MHz      rendu/compute graphique
+  eDRAM         10 Mio + ROP                     color/depth/MSAA
+  GDDR3         512 Mio unifies                  code/assets/resources
+  Southbridge   SATA/USB/Ethernet/NAND           entrees-sorties
+  XMA           decode audio materiel            streaming compresse
+  SMC           gestion alimentation/thermique   controle plateforme
+
+
+==============================================================================
+77. REFERENCES
+==============================================================================
+
+Architecture :
+
+- Microsoft/IBM/ATI, Xbox 360 System Architecture, IEEE Micro :
+  https://acg.cis.upenn.edu/milom/cis501-Fall09/papers/xbox-system.pdf
+- presentation ATI Xenos :
+  https://fileadmin.cs.lth.se/cs/Personal/Michael_Doggett/talks/x05-xenos-doggett.pdf
+- description historique GPU Xenos/eDRAM :
+  https://arstechnica.com/uncategorized/2005/06/5000-2/
+
+Documentation communautaire et libre :
+
+- Free60 hardware/software archive : https://free60.org/
+- LibXenon : https://github.com/Free60Project/libxenon
+- documentation LibXenon : https://free60project.github.io/libxenon/
+- Xenia, emulateur open source : https://github.com/xenia-project/xenia
+
+Developpement Microsoft actuel (non Xbox 360, utile pour contexte/migration) :
+
+- Microsoft GDK public : https://github.com/microsoft/GDK
+
+Pour les API Xbox 360 precises, consulter uniquement une documentation XDK obtenue
+sous licence. Pour materiel, confronter schema/revision, mesures et plusieurs sources;
+Free60 resulte de retro-ingenierie et peut contenir des lacunes.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

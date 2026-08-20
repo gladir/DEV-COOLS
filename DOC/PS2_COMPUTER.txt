@@ -1,0 +1,1079 @@
+==============================================================================
+ IBM PERSONAL SYSTEM/2 (PS/2) - MATERIEL, BIOS ET PROGRAMMATION
+ Reference pour programmeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille IBM Personal System/2 lancee en 1987. "PS/2" ne
+designe pas une architecture unique : les Model 25 et 30 utilisent un bus de
+classe ISA, tandis que la plupart des Model 50 et superieurs emploient Micro
+Channel. Les CPU vont du 8086 au 486 et les sous-systemes video de MCGA a XGA.
+
+Le document separe donc interfaces communes, familles de bus et particularites
+de modele. Pour une implementation exacte, il faut toujours le Technical
+Reference du type et sous-modele vise.
+
+Les nombres suffixes par h sont hexadecimaux. Les accents sont omis pour garder
+un fichier ASCII exploitable sous DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et objectifs
+  2. PS/2 n'est pas un modele unique
+  3. Panorama des principaux modeles
+  4. Nomenclature IBM
+  5. Architecture commune
+  6. Processeurs et coprocesseurs
+  7. Mode reel, protege et virtuel 8086
+  8. Memoire
+  9. Carte memoire du premier Mio
+ 10. ROM, BIOS et identification
+ 11. Zone de donnees BIOS
+ 12. Bus ISA des Model 25/30
+ 13. Architecture Micro Channel
+ 14. Connecteur et transferts MCA
+ 15. Arbitrage, bus mastering et fairness
+ 16. Programmable Option Select
+ 17. Fichiers ADF et disquette de reference
+ 18. Interruptions PIC et IRQ
+ 19. DMA
+ 20. Temporisateur et haut-parleur
+ 21. CMOS, RTC et NVRAM
+ 22. Porte A20 et port 92h
+ 23. Controleur clavier
+ 24. Souris PS/2
+ 25. Carte des ports d'E/S
+ 26. BIOS classique
+ 27. INT 15h et identification du systeme
+ 28. Advanced BIOS (ABIOS)
+ 29. MCGA
+ 30. VGA
+ 31. 8514/A et XGA
+ 32. Moniteurs et connecteurs video
+ 33. Controleur de disquettes
+ 34. Disques DBA, ESDI, IDE et SCSI
+ 35. Ports serie et parallele
+ 36. Reseau, audio et autres adaptateurs
+ 37. PC DOS, OS/2 et autres systemes
+ 38. Memoire XMS, EMS, VCPI et DPMI
+ 39. Detection du modele
+ 40. Assembleur : BIOS et identification
+ 41. Assembleur : souris et clavier
+ 42. Assembleur : POS en lecture prudente
+ 43. Assembleur : VGA et port 92h
+ 44. Turbo Pascal : inventaire BIOS
+ 45. Turbo Pascal : souris, CMOS et VGA
+ 46. Compatibilite et pieges
+ 47. Conseils pour un emulateur
+ 48. Plan de validation
+ 49. Maintenance et restauration
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE ET OBJECTIFS
+==============================================================================
+
+IBM annonce les premiers Personal System/2 le 2 avril 1987. La gamme modernise
+le PC par les disquettes 3,5 pouces, VGA/MCGA, connecteurs clavier et souris
+mini-DIN, boitiers plus integres et, sur les modeles moyens/hauts, le bus Micro
+Channel Architecture (MCA).
+
+IBM cherche aussi a reprendre le controle de l'architecture d'extension devenue
+standard avec les compatibles AT. MCA est techniquement plus propre que le bus
+AT, mais incompatible mecaniquement et electriquement avec ISA. Les contraintes
+commerciales et la diffusion d'EISA puis PCI limitent son adoption hors IBM.
+
+Le nom PS/2 reste pourtant important : connecteurs clavier/souris, VGA, port
+rapide A20 et plusieurs conventions BIOS ont durablement influence les PC.
+
+
+==============================================================================
+2. PS/2 N'EST PAS UN MODELE UNIQUE
+==============================================================================
+
+Une phrase comme "le PS/2 a un 286 et MCA" est fausse pour toute la famille :
+
+- Model 25/30 initiaux : 8086 et bus ISA 8/16 bits selon modele;
+- Model 30 286 : 80286 et ISA;
+- Model 50/60 : 80286 et MCA 16 bits;
+- Model 55SX/65SX : 80386SX et MCA;
+- Model 70/80 : 80386DX, MCA 16/32 bits selon carte;
+- Model 90/95 : 486, MCA et architecture plus integree;
+- P70/P75 : transportables avec variantes 386/486;
+- certains systemes industriels, serveurs et portables ont leurs propres plans.
+
+Video, stockage, RAM, BIOS, POS et connecteurs varient encore entre sous-modeles.
+Toujours relever le type IBM a quatre chiffres et le code de modele a trois
+caracteres sur l'etiquette.
+
+
+==============================================================================
+3. PANORAMA DES PRINCIPAUX MODELES
+==============================================================================
+
+Famille       CPU typique            Bus              Video de base typique
+------------  ---------------------  ---------------  -----------------------
+Model 25      8086 8 MHz             ISA              MCGA
+Model 30      8086 8 MHz             ISA              MCGA
+Model 30-286  80286 10 MHz           ISA 16 bits      VGA
+Model 50      80286 10 MHz           MCA 16 bits      VGA
+Model 50 Z    80286 10 MHz           MCA 16 bits      VGA amelioree
+Model 55 SX   80386SX 16 MHz         MCA 16 bits      VGA
+Model 60      80286 10 MHz           MCA 16 bits      VGA, boitier tour
+Model 65 SX   80386SX                MCA 16 bits      VGA
+Model 70      80386DX 16--25 MHz     MCA              VGA
+Model 80      80386DX 16--25 MHz     MCA 16/32 bits   VGA
+Model 90/95   80486, variantes       MCA 32 bits      VGA/XGA selon version
+P70/P75       80386/80486            MCA transportable plasma/VGA
+
+Ce tableau est indicatif. Des variantes CPU, frequence, video et stockage existent.
+Par exemple, le Model 80 type 1 est a 16 MHz et le type 2 a 20 MHz; INT 15h/C0h
+permet de lire modele et sous-modele BIOS.
+
+
+==============================================================================
+4. NOMENCLATURE IBM
+==============================================================================
+
+Une machine est identifiee par :
+
+- famille commerciale, par exemple Model 70;
+- machine type, par exemple 8570;
+- model code, trois caracteres de configuration;
+- model byte, submodel byte et revision retournes par le BIOS;
+- type/revision de carte systeme;
+- date et niveau du BIOS;
+- reference des adaptateurs et leurs Adapter IDs POS.
+
+Deux 8570 visuellement identiques peuvent avoir carte mere, CPU, RAM et stockage
+differents. Les logiciels doivent detecter une fonction, non une apparence.
+
+
+==============================================================================
+5. ARCHITECTURE COMMUNE
+==============================================================================
+
+Les PS/2 restent compatibles avec le modele logiciel PC/AT : mode reel x86,
+IVT, BIOS, DOS, BDA, PIC, PIT, DMA, RTC et controleur clavier. Ils ajoutent ou
+generalisent :
+
+- video integree MCGA/VGA;
+- souris sur second canal du controleur clavier;
+- disquette 3,5 pouces 720 Kio ou 1,44 Mio;
+- port 92h pour A20/reset sur de nombreux modeles;
+- identification BIOS et tables de configuration;
+- POS et MCA sur modeles concernes;
+- ABIOS pour OS/2 sur MCA;
+- stockage DBA/ESDI/SCSI suivant modele.
+
+L'integration est souvent faite par circuits IBM plutot que composants discrets.
+Les registres restent compatibles mais leur timing et leurs extensions changent.
+
+
+==============================================================================
+6. PROCESSEURS ET COPROCESSEURS
+==============================================================================
+
+8086 : mode reel, bus externe 16 bits, espace 1 Mio, aucun mode protege.
+
+80286 : mode reel/protege, bus d'adresse 24 bits, 16 Mio physiques, segments de
+64 Kio, aucun VM86. Le retour au reel requiert une procedure speciale/reset.
+
+80386SX : registres 32 bits, pagination et VM86, bus externe 16 bits, espace
+physique 16 Mio typique.
+
+80386DX : bus 32 bits, adressage 32 bits, pagination et VM86.
+
+80486 : pipeline/cache integres, selon variante FPU integree ou externe.
+
+Coprocesseurs : 8087 avec 8086, 80287 avec 286, 80387 avec 386; 486DX integre
+la FPU. Presence historique dans INT 11h, mais un OS peut emuler ou virtualiser.
+
+
+==============================================================================
+7. MODE REEL, PROTEGE ET VIRTUEL 8086
+==============================================================================
+
+DOS et BIOS s'executent surtout en mode reel. OS/2 1.x exploite le mode protege
+286 et ABIOS; OS/2 2.x utilise les capacites 386 et fournit des VDM DOS.
+
+Le 286 utilise GDT/LDT/IDT/TSS, privileges 0--3 et segments limites a 64 Kio.
+Le 386 ajoute limites/granularite et adresses 32 bits, pagination et VM86. VM86
+permet a un moniteur protege d'executer du code DOS reel en interceptant ports,
+interruptions et fautes.
+
+Un pilote DOS ne doit pas supposer qu'il controle physiquement PIC, A20 ou VGA :
+sous OS/2/Windows, ces acces peuvent etre virtualises.
+
+
+==============================================================================
+8. MEMOIRE
+==============================================================================
+
+Categories :
+
+- conventionnelle : sous A0000h, maximum usuel 640 Kio;
+- video/ROM/UMA : A0000h--FFFFFh;
+- HMA : premiers 65520 octets au-dessus de 1 Mio avec A20 active;
+- etendue : RAM au-dessus de 1 Mio;
+- EMS : fenetre paginee fournie par carte/pilote;
+- XMS : API de gestion de RAM etendue/HMA;
+- Shadow RAM/cache : selon modeles tardifs, non universels.
+
+Les Model 50/60 initiaux emploient des modules memoire IBM; des modeles tardifs
+utilisent diverses barrettes SIMM avec parite. Compatibilite mecanique ne garantit
+ni brochage ni presence detect.
+
+Le BIOS INT 12h donne la RAM conventionnelle. INT 15h/AH=88h et fonctions
+ulterieures donnent une partie de la RAM etendue; un OS moderne utilise ses
+propres tables ou ABIOS.
+
+
+==============================================================================
+9. CARTE MEMOIRE DU PREMIER MIO
+==============================================================================
+
+00000h--003FFh  table des vecteurs
+00400h--004FFh  BDA
+00500h--09FFFFh RAM conventionnelle
+A0000h--AFFFFh  video VGA/MCGA/EGA graphique
+B0000h--B7FFFh  video monochrome
+B8000h--BFFFFh  video couleur/texte
+C0000h--C7FFFh  ROM video
+C8000h--DFFFFh  ROM d'adaptateurs, fenetre EMS ou RAM optionnelle
+E0000h--EFFFFh  ROM/extension/systeme selon modele
+F0000h--FFFFFh  BIOS systeme et reset a FFFF0h
+
+Sur systemes 386/486, la ROM peut etre copiee en RAM cachee, mais les adresses
+visibles restent compatibles. Le chipset peut remapper une partie de RAM perdue
+sous l'UMA au-dessus du premier Mio.
+
+
+==============================================================================
+10. ROM, BIOS ET IDENTIFICATION
+==============================================================================
+
+Le reset arrive pres de FFFF0h. La date BIOS ASCII est classiquement a
+FFFF:0005 et l'octet modele historique a FFFF:000E. Sur PS/2, preferer
+INT 15h/AH=C0h, qui retourne un pointeur vers une table de configuration avec
+model byte, submodel et revision.
+
+Les ROM d'extension utilisent signature 55h AAh, taille en blocs de 512 octets,
+code d'initialisation et checksum modulo 256. Sur MCA, POS et ABIOS completent
+le mecanisme : une carte ne doit pas etre identifiee seulement par sa ROM.
+
+La date/model byte peuvent etre copies par une ROM tierce. Ils identifient le
+BIOS, pas infailliblement le chassis ou les adaptateurs.
+
+
+==============================================================================
+11. ZONE DE DONNEES BIOS
+==============================================================================
+
+Champs stables du segment 0040h :
+
+0000h bases COM                  0008h bases LPT
+0010h mot d'equipement           0013h RAM conventionnelle en Kio
+0017h drapeaux clavier           001A/001Ch tete/queue clavier
+001Eh tampon clavier             0049h mode video
+004Ah colonnes                   004Ch taille page video
+0050h curseurs                   0063h base CRTC
+006Ch ticks depuis minuit        0070h indicateur minuit
+0072h warm boot                  0075h nombre de disques fixes
+0080h/0082h limites tampon clavier sur BIOS etendu
+
+Les BIOS PS/2 ajoutent des champs. Ne pas emprunter une carte BDA d'un XT ou AT
+sans verifier le BIOS Interface Technical Reference vise.
+
+
+==============================================================================
+12. BUS ISA DES MODEL 25/30
+==============================================================================
+
+Les Model 25 et 30 bas de gamme n'emploient pas MCA. Ils conservent des logements
+de classe PC/XT ou AT selon version. Le Model 30 8086 est proche d'un bus ISA
+8 bits avec certaines extensions propres; le Model 30-286 dispose d'un canal
+AT 16 bits.
+
+Ils n'utilisent donc ni POS MCA ni fichiers ADF pour leurs cartes ISA. IRQ, DMA
+et ports se reglent par cavaliers/logiciel, comme sur PC/AT. Une carte MCA ne
+peut pas s'y brancher.
+
+MCGA et connecteurs PS/2 ne prouvent pas la presence de MCA.
+
+
+==============================================================================
+13. ARCHITECTURE MICRO CHANNEL
+==============================================================================
+
+MCA est un bus synchrone/asynchrone evolue, multiplexe selon signaux, avec :
+
+- voies de donnees 16 ou 32 bits suivant connecteur/modele;
+- espace memoire et E/S compatible x86;
+- arbitrage centralise et bus mastering;
+- transfert par blocs et streaming data sur niveaux adaptes;
+- interruptions sensibles au niveau, partageables avec pilotes corrects;
+- controles de parite et Channel Check;
+- configuration logicielle POS au lieu de cavaliers;
+- identifiant d'adaptateur et ressources decrites par ADF;
+- verrouillage mecanique et brochage incompatibles ISA.
+
+MCA n'est pas PCI : aucune enumeration standard moderne, pas de configuration
+space PCI, pas d'INT 1Ah PCI BIOS. La disquette de reference orchestre POS.
+
+
+==============================================================================
+14. CONNECTEUR ET TRANSFERTS MCA
+==============================================================================
+
+Les connecteurs 16 et 32 bits exposent adresses/donnees, commandes, arbitrage,
+IRQ, DMA/bus master, alimentation, presence et signaux POS. Les cartes 16 bits
+peuvent fonctionner dans des logements compatibles; les extensions 32 bits et
+video ont detrompages propres.
+
+Un adaptateur indique la largeur et repond aux cycles memoire/E/S qui lui sont
+attribues par POS. Les transferts peuvent etre simples ou en rafale/streaming.
+La parite est verifiee sur plusieurs chemins.
+
+Pour fabriquer une carte, utiliser les diagrammes temporels IBM : connecter les
+signaux par analogie ISA peut endommager materiel ou causer contention.
+
+
+==============================================================================
+15. ARBITRAGE, BUS MASTERING ET FAIRNESS
+==============================================================================
+
+Chaque maitre MCA possede un niveau d'arbitrage. Il demande le canal, compare
+son niveau sur le bus d'arbitrage puis, s'il gagne, devient maitre. Le niveau 0
+a la priorite la plus haute; un niveau special sert au processeur selon type.
+
+Le mode fairness empeche un maitre de regagner continuellement tant que d'autres
+attendent. Un burst doit respecter latence, preemption et timeout du systeme.
+
+Le bus master adresse directement la RAM selon largeur physique du modele. Un
+pilote doit allouer des buffers accessibles, gerer cache/coherence sur machines
+tardives et ne pas supposer identite adresse virtuelle/physique.
+
+
+==============================================================================
+16. PROGRAMMABLE OPTION SELECT
+==============================================================================
+
+POS remplace cavaliers. Chaque adaptateur fournit au minimum des octets POS :
+
+- POS 0/1 : Adapter ID 16 bits, normalement lecture seule;
+- POS 2 : enable et choix principaux propres a l'ADF;
+- POS 3--5 : ressources/options propres a la carte;
+- POS 6/7 : extensions selon architecture/adaptateur.
+
+Ports communs de setup : 0094h selection setup carte systeme, 0096h selection
+adaptateur/canal; donnees POS a 0100h--0107h. Les significations exactes de
+0094h/0096h dependent du type et doivent venir du Technical Reference.
+
+Regles de securite IBM :
+
+- ne jamais mettre carte systeme et adaptateur en setup simultanement;
+- utiliser uniquement IN/OUT 8 bits sur les registres POS;
+- ne pas activer reset canal pendant la programmation;
+- quitter setup avec 0096h=00h et remettre 0094h=FFh selon le contrat;
+- ne pas ecrire POS depuis une application ordinaire;
+- employer le programme de configuration et l'ADF correspondant.
+
+Une mauvaise ecriture peut provoquer conflit, perte de donnees ou contention.
+
+
+==============================================================================
+17. FICHIERS ADF ET DISQUETTE DE REFERENCE
+==============================================================================
+
+Un Adapter Description File, nomme d'apres l'Adapter ID, decrit en texte les
+choix POS, ressources, invites et contraintes d'une carte. Il n'est pas un
+pilote : il permet au programme de reference de choisir une configuration.
+
+La Reference Diskette contient diagnostics, system configuration et copies des
+ADF. Elle construit/modifie la configuration sauvegardee en NVRAM et parfois
+sur disque. Apres ajout d'une carte ou perte de batterie, le systeme affiche une
+erreur et demande souvent cette disquette.
+
+Procedure prudente :
+
+1. identifier exactement type/modele;
+2. creer une copie de la Reference Diskette correcte;
+3. ajouter l'ADF officiel de chaque option;
+4. sauvegarder configuration existante;
+5. installer hors tension;
+6. lancer configuration automatique puis examiner conflits;
+7. conserver image de disquette et ADF avec la machine.
+
+
+==============================================================================
+18. INTERRUPTIONS PIC ET IRQ
+==============================================================================
+
+Deux 8259A compatibles : maitre 20h/21h, esclave A0h/A1h sur IRQ2. BIOS mappe
+IRQ0--7 sur INT 08h--0Fh et IRQ8--15 sur INT 70h--77h.
+
+IRQ courantes : 0 PIT, 1 clavier, 2 cascade, 3/4 serie, 5 libre/LPT, 6 disquette,
+7 parallele, 8 RTC, 9 compatibilite IRQ2, 12 souris, 13 FPU, 14 disque primaire,
+15 secondaire/adaptateur. MCA permet mieux le partage des IRQ sensibles au
+niveau, mais chaque gestionnaire doit verifier sa source avant EOI.
+
+Une IRQ esclave exige EOI esclave puis maitre. Les IRQ7/15 parasites demandent
+lecture ISR avant acquittement. Un OS peut remapper les PIC.
+
+
+==============================================================================
+19. DMA
+==============================================================================
+
+La compatibilite AT offre deux controleurs de classe 8237 : canaux 0--3 8 bits,
+canal 4 cascade, canaux 5--7 16 bits. Ports 00h--0Fh, C0h--DFh et pages 80h--8Fh.
+
+Contraintes ISA historiques : frontiere 64 Kio sur canal 8 bits, 128 Kio et
+alignement mot sur canal 16 bits, compte = unites-1, adresse physique limitee.
+
+Sur MCA, les adaptateurs performants utilisent souvent bus mastering plutot que
+DMA compatible. Le modele exact peut fournir extensions et traduction. Ne pas
+programmer DMA uniquement d'apres le nom PS/2.
+
+
+==============================================================================
+20. TEMPORISATEUR ET HAUT-PARLEUR
+==============================================================================
+
+Le PIT compatible 8254 reste aux ports 40h--43h. Canal 0 produit IRQ0, canal 1
+participe aux fonctions systeme/refresh selon modele, canal 2 au haut-parleur.
+Entree voisine de 1,193182 MHz; diviseur 65536 donne environ 18,2065 Hz.
+
+Port 61h bits 0/1 commande gate et haut-parleur. Preserver les bits d'etat.
+Les boucles calibrees sur CPU sont invalides entre un Model 30 8086 et un Model
+95 486; utiliser PIT, RTC ou services OS.
+
+
+==============================================================================
+21. CMOS, RTC ET NVRAM
+==============================================================================
+
+Ports 70h index/NMI et 71h donnee conservent l'interface RTC AT. Index classiques :
+00 secondes, 02 minutes, 04 heures, 07 jour, 08 mois, 09 annee, 0A--0D status,
+0E diagnostic, 0F shutdown, 10 disquettes, 12 disques, 14 equipement, 15--18
+memoire et 2E/2F checksum.
+
+Les PS/2 ajoutent des octets de configuration et POS en NVRAM, dont format et
+checksum dependent du modele. Ne pas copier une image CMOS d'un autre sous-modele.
+
+Attendre UIP=0 et obtenir deux lectures coherentes. Lire registre C acquitte
+IRQ8. La batterie maintient RTC/NVRAM; sa perte impose Reference Diskette sur MCA.
+
+
+==============================================================================
+22. PORTE A20 ET PORT 92h
+==============================================================================
+
+Le controleur clavier peut commander A20 comme sur AT. Beaucoup de PS/2 offrent
+aussi le System Control Port A a 92h :
+
+- bit 1 : Fast A20 gate;
+- bit 0 : alternate reset, avec precautions de front/valeur;
+- autres bits : propres au systeme, a preserver.
+
+Le port 92h est une origine importante de la methode "Fast A20" des compatibles,
+mais sa presence doit etre detectee par modele/BIOS. Une application DOS doit
+laisser XMS gerer A20. Une ecriture aveugle peut remettre la machine a zero.
+
+
+==============================================================================
+23. CONTROLEUR CLAVIER
+==============================================================================
+
+Ports 60h donnees et 64h etat/commande. Interface de classe 8042 : OBF bit 0,
+IBF bit 1. Commandes usuelles 20h/60h command byte, AAh self-test, ABh test
+clavier, ADh/AEh disable/enable, D0h/D1h output port.
+
+Le clavier PS/2 utilise mini-DIN 6 broches, lignes Clock/Data bidirectionnelles,
+alimentation 5 V et scan code set 2 sur le cable. Le controleur traduit souvent
+vers set 1. Commandes ED LEDs, F2 ID, F3 typematic, F4 enable, FF reset; reponses
+FA ACK et FE RESEND.
+
+Attendre IBF/OBF avec timeout. Ne pas confondre commande au controleur (64h) et
+au clavier (60h). BIOS INT 16h est recommande aux applications.
+
+
+==============================================================================
+24. SOURIS PS/2
+==============================================================================
+
+La souris partage le controleur par un canal auxiliaire et IRQ12. Pour envoyer
+une commande a la souris : attendre IBF=0, ecrire D4h au port 64h, attendre,
+puis ecrire la commande au port 60h. Le status 64h identifie les donnees AUX
+par un bit de source sur les controleurs compatibles.
+
+Commandes standard : FF reset, F6 defaults, F5 disable reporting, F4 enable,
+F3 sample rate, E8 resolution, EB read data, EA stream, E9 status. Paquet de
+base : trois octets, boutons/sign bits/overflow puis delta X et delta Y.
+
+Le BIOS classique ne fournit pas une API souris universelle. Les applications
+DOS utilisent normalement un pilote et INT 33h. Ne pas accrocher IRQ12 si un
+pilote systeme la possede deja.
+
+
+==============================================================================
+25. CARTE DES PORTS D'E/S
+==============================================================================
+
+000h--00Fh DMA 8 bits             020h--021h PIC maitre
+040h--043h PIT                     060h/064h clavier/souris
+061h system control B              070h/071h RTC/CMOS
+080h--08Fh pages DMA               090h--097h controles systeme/POS
+0A0h--0A1h PIC esclave             0C0h--0DFh DMA 16 bits
+100h--107h POS en setup MCA        170h--177h disque secondaire
+1F0h--1F7h disque primaire         200h--207h jeu si adaptateur
+278h--27Fh LPT secondaire          2F8h--2FFh COM2
+378h--37Fh LPT                     3B0h--3BFh video mono
+3C0h--3CFh VGA/EGA                 3D0h--3DFh video couleur
+3F0h--3F7h disquette               3F8h--3FFh COM1
+
+Les controles MCA, XGA, SCSI et system board ajoutent des ports propres au
+modele. Cette carte n'autorise pas une sonde destructive.
+
+
+==============================================================================
+26. BIOS CLASSIQUE
+==============================================================================
+
+INT 10h video; INT 11h equipement; INT 12h RAM conventionnelle; INT 13h disque;
+INT 14h serie; INT 15h systeme; INT 16h clavier; INT 17h imprimante; INT 19h
+bootstrap; INT 1Ah ticks/RTC.
+
+Les services VGA etendent INT 10h, notamment AH=12h et AX=1A00h pour Display
+Combination Code sur BIOS compatibles. Le stockage peut etendre INT 13h via
+ROM SCSI/ESDI. Les extensions LBA EDD sont posterieures et non garanties.
+
+INT 1Ah AH=02h/04h lit heure/date RTC. Les valeurs sont souvent BCD. Employer
+CF et codes d'erreur; ne pas presumer qu'une fonction existe sur tout modele.
+
+
+==============================================================================
+27. INT 15h ET IDENTIFICATION DU SYSTEME
+==============================================================================
+
+Fonctions importantes selon BIOS :
+
+AH=87h copier bloc vers/depuis memoire etendue
+AH=88h taille memoire etendue historique
+AH=89h bascule protegee 286
+AH=C0h obtenir pointeur vers table de configuration systeme
+AH=C1h obtenir pointeur Extended BIOS Data Area selon BIOS
+AH=C2h interface pointing device BIOS sur certains PS/2
+AH=C4h fonctions MCA/programmable option select selon niveau BIOS
+
+Pour AH=C0h, CF=0 et ES:BX pointe une table dont le premier mot indique
+la longueur des donnees suivantes. Le noyau historique de la structure est :
+
+offset  taille  contenu
+------  ------  -------------------------------------------------------------
+00h     mot     nombre d'octets qui suivent
+02h     octet   model byte
+03h     octet   submodel byte
+04h     octet   revision du BIOS
+05h     octet   feature information byte 1
+06h     octet   feature information byte 2
+07h     octet   feature information byte 3
+08h     octet   feature information byte 4
+09h     octet   feature information byte 5 si longueur suffisante
+
+Lire la longueur avant chaque champ optionnel et interpreter les feature bytes
+avec l'edition du BIOS Interface Technical Reference correspondant au systeme.
+
+Une fonction absente retourne souvent CF=1 et AH=86h. Sous OS protege, utiliser
+les services de l'OS plutot que l'identification materielle BIOS.
+
+
+==============================================================================
+28. ADVANCED BIOS (ABIOS)
+==============================================================================
+
+ABIOS complete le BIOS reel pour les systemes d'exploitation proteges, surtout
+OS/2 sur MCA. Il fournit des blocs de donnees et points d'entree pour peripheriques
+systeme/adaptateurs, avec appels par stades plutot qu'une simple INT synchrone.
+
+Concepts :
+
+- Logical ID identifie un type d'unite;
+- Device Block et Function Transfer Table decrivent instance et services;
+- Request Block contient fonction, parametres et etat;
+- appels Start, Interrupt et Timeout poursuivent une operation asynchrone;
+- Logical Parameter Block initialise l'environnement;
+- adresses reel/protege sont fournies selon phase et interface.
+
+ABIOS n'est ni DOS INT 13h ni UEFI. Son implementation varie selon BIOS et
+adaptateur. Un emulateur visant OS/2 doit reproduire structures, retours et IRQ,
+pas seulement les services BIOS reels.
+
+
+==============================================================================
+29. MCGA
+==============================================================================
+
+MCGA (Multi-Color Graphics Array) equipe notamment Model 25/30. Il offre modes
+CGA et nouveaux modes VGA 320x200x256 (13h) et 640x480 monochrome (11h selon
+BIOS), mais n'implemente pas toutes les fonctions planaires EGA/VGA.
+
+Il utilise RAM video integree/partagee selon modele et un DAC 256 couleurs. Un
+programme ne doit pas conclure "mode 13h = VGA complete". Tester INT 10h AX=1A00h
+et les fonctions necessaires.
+
+Voir DOC/MCGA_VIDEO_CARD.txt pour registres et exemples detailles.
+
+
+==============================================================================
+30. VGA
+==============================================================================
+
+VGA integre sequencer, CRTC, graphics controller, attribute controller et DAC.
+Modes principaux : texte, compatibilite CGA/EGA, 640x480x16 et 320x200x256.
+Memoire video typique 256 Kio, quatre plans de 64 Kio.
+
+Ports : 3C0h attribute, 3C2h misc output, 3C4/3C5 sequencer, 3C6--3C9 DAC,
+3CE/3CF graphics, 3D4/3D5 ou 3B4/3B5 CRTC, 3DA/3BA status.
+
+Le BIOS est preferable. L'acces direct exige gerer flip-flop 3C0h, latches,
+map mask, chain-4, odd/even et protection CRTC. Voir DOC/VGA_VIDEO_CARD.txt.
+
+
+==============================================================================
+31. 8514/A ET XGA
+==============================================================================
+
+8514/A est un adaptateur accelere MCA avec moteur de dessin, resolutions jusqu'a
+1024x768 selon moniteur/memoire et interface registre/API. Il coexiste souvent
+avec VGA pour compatibilite. Voir DOC/IBM8514A_VIDEO_CARD.txt.
+
+XGA est une architecture video IBM plus tardive, integree ou sur MCA, offrant
+acceleration et couleurs/resolutions superieures. Ses registres, apertures et
+POS dependent de la variante XGA/XGA-2. Voir DOC/XGA_VIDEO_CARD.txt.
+
+Ne pas traiter 8514/A ou XGA comme simples modes VGA accessibles uniquement par
+INT 10h. Leurs pilotes utilisent interfaces propres et configuration MCA.
+
+
+==============================================================================
+32. MONITEURS ET CONNECTEURS VIDEO
+==============================================================================
+
+VGA popularise DE-15 a trois rangees : RGB analogique, HSync, VSync, masses et
+broches d'identification. Les ecrans IBM 8503/8512/8513/8514/8515/8517 different
+en frequence, resolution, couleur et synchro.
+
+Brancher un moniteur seulement si ses frequences acceptent le mode. Les anciens
+ecrans a frequence fixe ne sont pas universels. L'identification par broches ID
+est resistive/logique et precede EDID.
+
+
+==============================================================================
+33. CONTROLEUR DE DISQUETTES
+==============================================================================
+
+Les PS/2 introduisent largement les lecteurs 3,5 pouces : 720 Kio (80 pistes,
+2 tetes, 9 secteurs) et 1,44 Mio (18 secteurs). Controleur compatible uPD765,
+ports 3F0h--3F7h, IRQ6 et DMA2.
+
+Registres majeurs : DOR 3F2h, Main Status 3F4h, FIFO 3F5h, Digital Input/CCR
+3F7h selon direction. Le signal disk change et la selection de debit doivent
+etre reproduits. Certains lecteurs PS/2 ont alimentation/signaux sur connecteur
+proprietaire; un adaptateur est requis pour lecteur standard.
+
+
+==============================================================================
+34. DISQUES DBA, ESDI, IDE ET SCSI
+==============================================================================
+
+Le stockage PS/2 varie fortement :
+
+- DBA/Direct Bus Attachment sur certains Model 25/30, interface proprietaire;
+- ESDI sur plusieurs MCA, controleur/adaptateur avec ABIOS/POS;
+- SCSI MCA IBM sur serveurs et extensions;
+- IDE sur certains modeles ISA ou tardifs;
+- controleurs tiers MCA modernes.
+
+Les disques MCA/ESDI ne sont pas simplement IDE mal connectes. Connecteur,
+protocole, geometrie, firmware et alimentation changent. Le BIOS presente INT
+13h, mais un pilote OS/2 utilise ABIOS ou pilote natif.
+
+Une ROM/adaptateur peut traduire CHS. Les fonctions INT 13h EDD/LBA ne sont pas
+universelles. Sauvegarder secteur par secteur avant reconfiguration.
+
+
+==============================================================================
+35. PORTS SERIE ET PARALLELE
+==============================================================================
+
+COM1 typique 3F8h IRQ4, COM2 2F8h IRQ3. Les modeles peuvent integrer UART 16550
+ou compatible; verifier FIFO par registre IIR. Connecteur serie souvent DB-25 ou
+DB-9 selon modele.
+
+LPT utilise 3BCh/378h/278h avec registres data, status, control. ECP/EPP n'est
+pas garanti sur les premiers PS/2. BIOS stocke bases dans BDA; INT 14h/17h offre
+interface portable mais lente.
+
+
+==============================================================================
+36. RESEAU, AUDIO ET AUTRES ADAPTATEURS
+==============================================================================
+
+MCA accueille Token Ring, Ethernet, SCSI, 3270, communications, audio et cartes
+graphiques. Chaque carte porte un Adapter ID, ADF, choix POS et pilote.
+
+Le haut-parleur PC reste le seul son commun. Audio IBM M-Audio, cartes tierces
+ou cartes ISA sur Model 25/30 ne partagent pas une API universelle. Sous DOS,
+un pilote peut programmer directement; sous OS/2, utiliser le pilote systeme.
+
+
+==============================================================================
+37. PC DOS, OS/2 ET AUTRES SYSTEMES
+==============================================================================
+
+Les premiers PS/2 accompagnent PC DOS 3.3 et OS/2 1.x. Des versions ulterieures
+executent DOS, OS/2 2.x/Warp, Windows, AIX PS/2 et Unix selon CPU/RAM/pilotes.
+
+DOS emploie BIOS et pilotes reels. OS/2 1.x exploite 286/ABIOS; OS/2 2.x exige
+386 et virtualise les sessions DOS. AIX et Unix demandent pilotes MCA precis.
+
+La presence physique d'une carte ne suffit pas : ADF configure les ressources,
+ABIOS peut la decrire et le systeme exige encore un pilote compatible.
+
+
+==============================================================================
+38. MEMOIRE XMS, EMS, VCPI ET DPMI
+==============================================================================
+
+XMS : detecter par INT 2Fh/AX=4300h, obtenir entree par AX=4310h; gere HMA,
+A20 et blocs etendus. EMS : INT 67h et fenetre paginee. Sur 386, EMM386 peut
+simuler EMS par pagination.
+
+VCPI permet a certains logiciels proteges de cooperer avec un gestionnaire 386.
+DPMI fournit services mode protege a des applications DOS sous hote compatible.
+Ces interfaces sont logicielles, non des caracteristiques MCA.
+
+Ne pas manipuler A20 ou tables de pages derriere un gestionnaire. Employer son
+API et restaurer tous les etats.
+
+
+==============================================================================
+39. DETECTION DU MODELE
+==============================================================================
+
+Ordre recommande :
+
+1. INT 15h/AH=C0h et longueur de table;
+2. model/submodel/revision;
+3. niveau CPU par test sur FLAGS/CPUID si disponible;
+4. INT 10h AX=1A00h pour video;
+5. services BIOS pour RAM/stockage;
+6. POS seulement par outil/pilote autorise sur MCA;
+7. identifiants de pilote OS plutot que sondes directes sous OS protege.
+
+L'octet FFFF:000Eh est un repli historique. Un modele byte F8h est associe a
+plusieurs PS/2 mais submodel est indispensable; ne pas assimiler F8h a un modele
+unique.
+
+
+==============================================================================
+40. ASSEMBLEUR : BIOS ET IDENTIFICATION
+==============================================================================
+
+MASM/TASM 16 bits, appel de la table systeme :
+
+        mov ah,0C0h
+        int 15h
+        jc  no_table
+        mov cx,es:[bx]         ; nombre d'octets apres le mot longueur
+        cmp cx,3
+        jb  short_table
+        mov al,es:[bx+2]       ; model byte
+        mov ah,es:[bx+3]       ; submodel byte
+        mov dl,es:[bx+4]       ; revision BIOS
+
+Detection VGA/MCGA par Display Combination Code :
+
+        mov ax,1A00h
+        int 10h
+        cmp al,1Ah
+        jne no_dcc
+        ; BL = affichage actif, BH = alternatif selon BIOS
+
+Une routine de production conserve ES:BX, parse chaque feature byte uniquement
+si CX est assez grand et utilise sa definition IBM, car la table est extensible.
+
+
+==============================================================================
+41. ASSEMBLEUR : SOURIS ET CLAVIER
+==============================================================================
+
+Application DOS : preferer le pilote souris INT 33h.
+
+        xor ax,ax
+        int 33h               ; AX=FFFFh si pilote present, BX boutons
+        or  ax,ax
+        jz  no_mouse
+        mov ax,0003h
+        int 33h               ; BX boutons, CX X, DX Y
+
+Attente controleur avec timeout :
+
+        mov cx,0FFFFh
+wait_ibf:
+        in  al,64h
+        test al,02h
+        jz  ready
+        loop wait_ibf
+        stc
+ready:
+
+Un pilote IRQ12 doit differencier OBF auxiliaire, reconstruire paquets, envoyer
+EOI aux deux PIC et coexister avec BIOS/OS. Ne pas l'installer dans une application.
+
+
+==============================================================================
+42. ASSEMBLEUR : POS EN LECTURE PRUDENTE
+==============================================================================
+
+POS ne doit normalement etre lu que par le programme de reference ou un pilote
+hors exploitation. Pseudo-sequence pour un slot deja choisi :
+
+        cli
+        ; sauvegarder et mettre carte systeme hors setup selon modele
+        ; ecrire 0096h pour selectionner UN slot, reset bit 7 a zero
+        in  al,0100h          ; POS0, octet bas Adapter ID
+        mov bl,al
+        in  al,0101h          ; POS1, octet haut
+        mov bh,al
+        mov al,00h
+        out 096h,al           ; quitter adapter setup
+        mov al,0FFh
+        out 094h,al           ; etat system board requis par docs courantes
+        sti
+
+Ce fragment n'est pas executable universel : la valeur de selection du slot,
+l'etat IF initial et le protocole carte systeme dependent du modele. Il illustre
+surtout IN 8 bits et sortie obligatoire du setup. Ne jamais l'utiliser pour
+ecrire POS depuis DOS multitache.
+
+
+==============================================================================
+43. ASSEMBLEUR : VGA ET PORT 92h
+==============================================================================
+
+Selection du mode VGA 13h :
+
+        mov ax,0013h
+        int 10h
+        mov ax,0A000h
+        mov es,ax
+        xor di,di
+        mov al,12
+        stosb                 ; pixel (0,0), seulement si mode reussi
+
+Activation A20 rapide, uniquement apres confirmation port 92h :
+
+        in  al,92h
+        or  al,02h
+        and al,0FEh           ; ne pas demander reset alternatif
+        out 92h,al
+
+Une application doit utiliser XMS. Le fragment est destine a un noyau controle
+et doit tester A20 avant/apres, sauvegarder l'etat et preserver les bits reserves.
+
+
+==============================================================================
+44. TURBO PASCAL : INVENTAIRE BIOS
+==============================================================================
+
+Program InfoPS2;
+Uses Dos;
+Var R:Registers;
+    ModeleROM:Byte;
+Begin
+  ModeleROM:=Mem[$FFFF:$000E];
+  WriteLn('Octet modele BIOS: ',ModeleROM);
+
+  R.AH:=$C0;
+  Intr($15,R);
+  If (R.Flags And FCarry)=0 Then
+    WriteLn('Table configuration a ',R.ES,':',R.BX)
+  Else
+    WriteLn('INT 15h/C0h indisponible');
+
+  R.AX:=$1A00;
+  Intr($10,R);
+  If R.AL=$1A Then
+    WriteLn('Display Combination Code actif: ',R.BL);
+
+  Intr($12,R);
+  WriteLn('RAM conventionnelle: ',R.AX,' Kio');
+End.
+
+Pour parser ES:BX, verifier la longueur et employer Mem[ES:BX+offset] selon
+l'edition IBM du BIOS cible.
+
+
+==============================================================================
+45. TURBO PASCAL : SOURIS, CMOS ET VGA
+==============================================================================
+
+Function MousePresent:Boolean;
+Var R:Registers;
+Begin
+  R.AX:=0;
+  Intr($33,R);
+  MousePresent:=R.AX=$FFFF;
+End;
+
+Function CMOS(Index:Byte):Byte;
+Begin
+  Port[$70]:=Index And $7F;     { garde NMI active }
+  CMOS:=Port[$71];
+End;
+
+Procedure PutMode13(X,Y:Word; Couleur:Byte);
+Begin
+  Mem[$A000:Y*320+X]:=Couleur;
+End;
+
+PutMode13 suppose mode 13h et coordonnees valides. CMOS exige serialisation,
+attente UIP et double lecture pour une horloge robuste. Sous OS/2/Windows, acces
+Port[] peut etre interdit ou virtualise.
+
+
+==============================================================================
+46. COMPATIBILITE ET PIEGES
+==============================================================================
+
+- croire que tous les PS/2 ont MCA;
+- utiliser une carte ISA dans MCA ou inversement;
+- configurer MCA sans ADF/Reference Diskette;
+- supposer que VGA, MCGA, 8514/A et XGA sont interchangeables;
+- traiter un disque ESDI/DBA comme IDE;
+- ecrire POS avec OUT 16 bits;
+- laisser simultanement deux espaces setup actifs;
+- ecraser les bits reserves du port 92h et provoquer reset;
+- piloter souris PS/2 alors qu'INT 33h/OS la possede;
+- supposer que Model 80 et Model 30 partagent chipset, DMA ou timing;
+- installer une SIMM seulement parce qu'elle a 30 broches;
+- oublier que perte batterie peut invalider toute configuration MCA.
+
+
+==============================================================================
+47. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Definir un profil par machine type/model code, non un commutateur global PS/2.
+
+CPU : modele exact, frequence, FPU, cache, reset et A20. Pour 286, retour reel;
+pour 386, pagination, VM86 et exceptions exactes.
+
+Bus : ISA pour 25/30 concernes; MCA 16/32 pour autres. Implementer POS, ADF au
+niveau configuration, arbitrage, fairness, bus master, parite et IRQ de niveau.
+
+BIOS/ABIOS : BDA, INT 15h/C0h, model/submodel, tables et Request Blocks ABIOS.
+OS/2 expose rapidement les approximations.
+
+Clavier/souris : 8042, deux files/sources, commande D4h, ACK/RESEND, IRQ1/12,
+scan translation et latences.
+
+Video : profil MCGA ou VGA exact, DAC, CRTC, latches et moniteur. Ajouter 8514/A
+ou XGA seulement comme adaptateur configure.
+
+Stockage : FDC 720/1,44, disk change, DMA2; DBA/ESDI/SCSI/IDE selon modele,
+avec POS, ROM, ABIOS, IRQ et timing corrects.
+
+CMOS/NVRAM : format/checksum par modele, batterie persistante, erreurs 16x et
+Reference Diskette. Ne pas auto-reparer silencieusement une configuration perdue.
+
+
+==============================================================================
+48. PLAN DE VALIDATION
+==============================================================================
+
+1. Reset, POST, model/submodel/revision et date BIOS.
+2. Profils Model 30 ISA, Model 50 MCA et Model 80 32 bits distincts.
+3. CMOS/NVRAM valide, invalide et batterie perdue.
+4. Reference Diskette, ajout/retrait ADF et conflits POS.
+5. Lecture POS de chaque slot, largeur octet et sortie setup.
+6. MCA arbitrage, fairness, bus master, IRQ partagee et Channel Check.
+7. PIC/DMA/PIT/RTC compatibles et particularites systeme.
+8. Clavier et souris simultanes, ACK/RESEND et IRQ12.
+9. MCGA puis VGA : modes BIOS, DAC, latches et retrace.
+10. FDC 720 Kio/1,44 Mio, changement media et erreurs.
+11. Stockage propre au modele : DBA, ESDI, SCSI ou IDE.
+12. INT 15h/C0h, C1h, C2h et fonctions absentes.
+13. ABIOS avec OS/2, appels Start/Interrupt/Timeout.
+14. DOS, OS/2 et diagnostic IBM correspondant au modele.
+15. Comparer traces de ports/IRQ/POS avec une machine reelle.
+
+
+==============================================================================
+49. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+- Relever machine type, model code, serial, BIOS et cartes avant demontage.
+- Obtenir Reference Diskette et ADF exacts avant de changer la configuration.
+- Sauvegarder disquettes, NVRAM et disques avant essais.
+- Remplacer batteries qui fuient; reparer pistes corrodees et verifier polarite.
+- Ne jamais installer/retirer un adaptateur sous tension.
+- Ne pas forcer carte ISA dans MCA, SIMM standard dans support proprietaire, ni
+  lecteur standard sur connecteur alimentation/signaux combine sans adaptateur.
+- Nettoyer et lubrifier mecanismes de disquette selon manuel de service.
+- Les disques DBA/ESDI anciens peuvent avoir condensateurs, stiction ou media
+  fragile : imager avant tests repetes.
+- Diagnostiquer alimentation et ventilateurs sous charge.
+- Conserver ADF, ROM, vis, rails, cables et etiquettes avec la machine.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Sources primaires IBM :
+
+- IBM Personal System/2 Hardware Interface Technical Reference, mai 1988,
+  no 68X2330.
+  https://bitsavers.org/pdf/ibm/pc/ps2/Personal_System_2_Hardware_Interface_Technical_Reference_May88.pdf
+
+- IBM Personal System/2 and Personal Computer BIOS Interface Technical
+  Reference, avril 1987 et edition mai 1988.
+  https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  https://bitsavers.org/pdf/ibm/pc/ps2/15F0306_PS2_and_PC_BIOS_Interface_Technical_Reference_May88.pdf
+
+- IBM PS/2 Model 80 Technical Reference, mai 1988.
+  https://bitsavers.org/pdf/ibm/pc/ps2/PS2_Model_80_Technical_Reference_May88.pdf
+
+- Technical References propres aux Model 25, 30, 50, 55, 60, 65, 70, 80,
+  90, 95 et portables, dans :
+  https://bitsavers.org/pdf/ibm/pc/ps2/
+
+- IBM Micro Channel Architecture, Adapter et Option Technical References.
+- IBM Hardware Maintenance Library et Reference Diskettes de chaque modele.
+- IBM XGA Adapter Interface Technical Reference.
+
+Autres references :
+
+- Intel, manuels 8086, 80286, 80386 et 80486.
+- Intel, 8259A, 8237A, 8254 et 8042.
+- Motorola MC146818 RTC.
+- DOC/MCGA_VIDEO_CARD.txt, DOC/VGA_VIDEO_CARD.txt,
+  DOC/IBM8514A_VIDEO_CARD.txt et DOC/XGA_VIDEO_CARD.txt dans ce depot.
+- Ralf Brown's Interrupt List pour BIOS, souris, XMS, EMS et extensions.
+- Ardent Tool of Capitalism, index de references et informations MCA/PS/2.
+
+La documentation correcte d'un PS/2 doit toujours associer la reference commune,
+le manuel propre au systeme et le manuel de chaque adaptateur. Aucun de ces trois
+niveaux ne suffit seul a decrire toute la machine.

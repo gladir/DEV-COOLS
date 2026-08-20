@@ -1,0 +1,1070 @@
+==============================================================================
+ SEGA SATURN
+ Materiel, programmation SH-2/VDP/SCSP et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Sega Saturn : deux processeurs Hitachi SH-2, SCU, VDP1,
+VDP2, SCSP, Motorola 68000 audio, SMPC, CD Block, memoires, controleurs,
+cartouches et programmation. Il vise les auteurs de jeux et homebrews, outils,
+emulateurs, FPGA, diagnostics et restaurations.
+
+Les noms et adresses suivent les manuels Sega. Les revisions et regions peuvent
+differer. Les accents sont omis afin de conserver un fichier ASCII compatible
+avec les anciennes chaines de developpement.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+1. HISTOIRE ET POSITIONNEMENT
+==============================================================================
+
+La Saturn sort au Japon en novembre 1994, puis en Amerique du Nord et en Europe
+en 1995. Elle succede a la Mega Drive/Genesis et precede la Dreamcast. Concue dans
+une periode de transition 2D/3D, elle associe de nombreux blocs specialises et un
+lecteur CD double vitesse.
+
+Son architecture excelle en 2D, plans multiples, transformations et effets, mais
+demande une orchestration explicite. Les deux SH-2 ne doublent pas automatiquement
+la vitesse : memoire et bus partages deviennent vite le facteur limitant.
+
+
+==============================================================================
+2. MODELES ET REGIONS
+==============================================================================
+
+Principales familles :
+
+- Saturn japonaise grise, puis blanche et variantes Sega/HST;
+- Saturn noire nord-americaine;
+- Saturn PAL europeenne;
+- Victor V-Saturn et Hitachi Hi-Saturn sous licence;
+- Hi-Saturn Navi, combinaison rare avec navigation automobile;
+- revisions Model 1/Model 2, cartes VA0 a revisions tardives;
+- machines de developpement Sophia/CartDev distinctes des consoles vente.
+
+Japon, Amerique du Nord et Europe different par region BIOS/SMPC, standard video,
+frequence et securite disque. La forme des boutons/coques ne suffit pas a identifier
+la carte mere.
+
+
+==============================================================================
+3. SPECIFICATIONS RESUMEES
+==============================================================================
+
+- 2 x Hitachi SH-2 32 bits, environ 28,6 MHz NTSC ou 26,7 MHz PAL;
+- SCU : controle bus, interruptions, DMA et DSP 32 bits;
+- VDP1 : sprites, lignes et quadrilateres textures/non textures;
+- VDP2 : plans de fond, rotation, scrolling, priorites et composition;
+- 2 Mio de Work RAM : 1 Mio Low + 1 Mio High;
+- VDP1 : 512 Kio VRAM + 512 Kio framebuffer;
+- VDP2 : 512 Kio VRAM + 4 Kio Color RAM;
+- audio : Yamaha SCSP, 32 slots, 512 Kio Sound RAM;
+- CPU audio : Motorola 68EC000, environ 11,3 MHz;
+- CD-ROM double vitesse, CD Block avec SH-1 et tampon;
+- sauvegarde interne batteriee de 32 Kio;
+- deux ports controleurs, multitap, port cartouche.
+
+Les valeurs commerciales arrondies ne remplacent pas les horloges regionales dans
+un emulateur ou pour calculer une temporisation.
+
+
+==============================================================================
+4. DIAGRAMME DE BLOC
+==============================================================================
+
+               +-------------+        +-------------+
+               | Master SH-2 |<------>| Slave SH-2  |
+               +------+------+        +------+------+
+                      |                      |
+                 +----+----------------------+----+
+                 | SCU : bus, DMA, IRQ, DSP       |
+                 +---+-----------+-----------+----+
+                     |           |           |
+                 Work RAM      VDP1        VDP2 ----> video
+                     |           |           |
+     cartouche/CD ----+       VRAM/FB     VRAM/CRAM
+                     |
+             +-------+-------+       +----------------+
+             | CD Block SH-1|       | SCSP + 68EC000 |--> audio
+             +---------------+       +----------------+
+                     SMPC ---- controles, RTC, reset, region
+
+
+==============================================================================
+5. HITACHI SH-2
+==============================================================================
+
+Le SH-2 est un RISC 32 bits big-endian a instructions fixes de 16 bits. Chaque CPU
+dispose de 16 registres R0-R15, PC, PR, GBR, VBR, MACH, MACL et SR. R15 sert de
+pile; PR recoit l'adresse de retour BSR/JSR; VBR pointe la table des vecteurs.
+
+Fonctions : pipeline, cache 4 Kio configurable, multiplication/division, MAC,
+controleur d'interruptions, timers et serial. Pas de FPU : la 3D utilise entier et
+point fixe, tables ou DSP SCU.
+
+
+==============================================================================
+6. JEU D'INSTRUCTIONS SH-2
+==============================================================================
+
+- transfert : MOV, MOV.B/W/L, MOVA, MOVT, SWAP, XTRCT;
+- arithmetique : ADD, ADDC, ADDV, SUB, SUBC, SUBV, NEG, NEGC;
+- multiplication : MUL.L, MULS.W, MULU.W, DMULS.L, DMULU.L, MAC.L/W;
+- division : DIV0S, DIV0U, DIV1;
+- comparaison : CMP/EQ, HS, GE, HI, GT, PL, PZ, STR;
+- logique : AND, OR, XOR, NOT, TST, TAS.B;
+- shifts/rotations : SHLL/SHLR, SHAL/SHAR, SHLL2/8/16, ROTL/ROTR, ROTCL/ROTCR;
+- controle : BRA, BSR, BT/BF, BT/S, BF/S, JMP, JSR, RTS, RTE, TRAPA;
+- systeme : LDC/STC, LDS/STS, CLRT/SETT, CLRMAC, SLEEP, NOP.
+
+Les branchements BRA/BSR, JMP/JSR, RTS/RTE et formes /S ont une delay slot. Une
+instruction illegale dans la delay slot leve une exception. Beaucoup d'adressages
+utilisent R0 implicitement; les immediats sont limites, d'ou les literal pools.
+
+
+==============================================================================
+7. EXEMPLE ASSEMBLEUR SH-2
+==============================================================================
+
+Somme de `n` mots 32 bits, R4=table, R5=nombre, R0=resultat :
+
+        .align 2
+sum_words:
+        mov     #0,r0
+        tst     r5,r5
+        bt      .done
+.loop:
+        mov.l   @r4+,r1
+        add     r1,r0
+        dt      r5
+        bf      .loop
+.done:
+        rts
+        nop                     /* delay slot */
+
+L'adressage post-increment et DT/BF rendent la boucle compacte. Respecter l'ABI de
+la bibliotheque choisie pour les registres preserves.
+
+
+==============================================================================
+8. DOUBLE SH-2
+==============================================================================
+
+Le Master demarre le systeme. Le Slave est libere/initialise par commandes SMPC et
+execute ensuite un programme place en memoire accessible. Les CPU partagent Work
+RAM et peripheriques, sans coherence cache automatique generale.
+
+Bon decoupage : Master construit affichage et gere systeme; Slave transforme
+geometrie, anime, collisionne ou decompresse un bloc independant. Mauvais decoupage :
+deux CPU ecrivent la meme liste ou se disputent la High RAM a chaque mot.
+
+
+==============================================================================
+9. SYNCHRONISATION DES SH-2
+==============================================================================
+
+Utiliser flags/semaphores alignes, protocole producteur-consommateur, zones privees
+et interruptions si utile. TAS.B fournit un test-and-set atomique sur certaines
+memoires, mais son cout bus est important. Les caches doivent etre purges/invalidees
+selon le sens de partage.
+
+Schema double buffer : Master publie index seulement apres avoir termine les donnees;
+Slave traite, ecrit resultat dans autre zone, puis publie done. Une barriere materielle
+doit etre obtenue par sequence documentee; `volatile` C seul ne rend pas coherent.
+
+
+==============================================================================
+10. CACHE SH-2
+==============================================================================
+
+Le cache direct-mapped de 4 Kio peut etre configure, purge ou utiliser une partie
+comme RAM d'adresses. Les deux CPU ont leurs propres caches. Le cache est utile au
+code et aux donnees repetitives, dangereux autour de DMA et donnees partagees.
+
+Les regions d'adresses SH-2 fournissent des alias cache/non-cache et zones de purge.
+Ne pas copier une adresse generique sans lire le chapitre cache du SH7604 : bits
+d'adresse, mode two-way et comportement des accesses different.
+
+
+==============================================================================
+11. CARTE MEMOIRE PRINCIPALE
+==============================================================================
+
+Adresses CPU usuelles :
+
+  $00000000-$0007FFFF  Boot ROM, 512 Kio
+  $00100000...          SMPC registers
+  $00180000...          Backup RAM interne (bus 8 bits/mirrors)
+  $00200000-$002FFFFF  Low Work RAM, 1 Mio
+  $02000000...          A-bus CS0, cartouche
+  $04000000...          A-bus CS1
+  $05800000...          CD Block registers/data
+  $05A00000-$05A7FFFF  Sound RAM, 512 Kio
+  $05B00000...          SCSP registers
+  $05C00000-$05C7FFFF  VDP1 VRAM, 512 Kio
+  $05C80000-$05CFFFFF  VDP1 framebuffer RAM, 512 Kio
+  $05D00000...          VDP1 registers
+  $05E00000-$05E7FFFF  VDP2 VRAM, 512 Kio
+  $05F00000-$05F00FFF  VDP2 Color RAM, 4 Kio
+  $05F80000...          VDP2 registers
+  $05FE0000...          SCU registers
+  $06000000-$060FFFFF  High Work RAM, 1 Mio
+
+Des miroirs et plages reservees existent. Employer tailles d'acces documentees;
+certains registres n'acceptent pas byte/long arbitrairement.
+
+
+==============================================================================
+12. LOW ET HIGH WORK RAM
+==============================================================================
+
+Low Work RAM est plus lente et appropriee aux donnees moins critiques, piles ou
+CD selon organisation. High Work RAM est la zone rapide pour code, geometrie,
+display lists et donnees actives. Toutes deux font 1 Mio mais n'ont pas le meme
+chemin/bande passante.
+
+Placer tout en High RAM provoque contention et depassement. Une carte de liaison
+doit montrer code, BSS, piles Master/Slave, buffers CD/audio et listes graphiques.
+
+
+==============================================================================
+13. SCU : SYSTEM CONTROL UNIT
+==============================================================================
+
+La SCU relie CPU, A-bus, B-bus, memoires et processeurs video/audio. Elle contient :
+
+- trois canaux DMA avec modes direct/indirect;
+- controle/etat DMA;
+- masque et statut d'interruptions;
+- DSP de calcul;
+- controle A-bus et arbitrage.
+
+Le B-bus dessert VDP1, VDP2 et SCSP. Une planification qui lance DMA, remplissage
+VDP1 et chargement VDP2 simultanement peut saturer le bus.
+
+
+==============================================================================
+14. INTERRUPTIONS SCU
+==============================================================================
+
+Sources importantes : VBlank IN/OUT, HBlank IN, timer 0/1, DSP end, sound request,
+SMPC, pad, DMA levels 0/1/2, DMA illegal, VDP1 draw end et A-bus. La SCU applique
+masques/priorites puis interrompt le Master SH-2.
+
+Une ISR acquitte la source au bon bloc, capture seulement l'etat necessaire et
+poste un evenement. Eviter CD parsing, decompression ou construction de listes en
+ISR. Ne pas effacer plusieurs bits sans comprendre leur semantique.
+
+
+==============================================================================
+15. DMA SCU
+==============================================================================
+
+Chaque niveau possede read address, write address, count, address add et mode.
+Modes : lancement logiciel ou par facteur (VBlank, HBlank, etc.), transfert direct
+ou table indirecte. Le DMA peut deplacer Work RAM vers VRAM/sound/A-bus sans CPU.
+
+Contraintes : alignement, taille, increments autorises, domaine source/destination,
+frontieres et acces simultanes. Attendre fin ou interruption avant reutilisation.
+Un DMA mal configure peut ecraser registres ou framebuffer instantanement.
+
+
+==============================================================================
+16. DSP SCU
+==============================================================================
+
+Le DSP est un processeur 32 bits oriente MAC/geometrie, avec RAM de programme et
+quatre banques de donnees. Il peut acceder a la memoire externe par DMA interne et
+executer en parallele certaines operations.
+
+Il convient aux matrices, eclairage ou calculs repetitifs, mais son petit programme,
+ses transferts et sa programmation specifique imposent un cout. Il n'est ni le
+DSP audio du SCSP ni un troisieme SH-2 generaliste.
+
+
+==============================================================================
+17. VDP1 : ROLE
+==============================================================================
+
+VDP1 trace dans un framebuffer : sprites normaux, sprites redimensionnes,
+quadrilateres deformes, polygones non textures, polylignes et lignes. Il applique
+texture, palette/RGB, clipping, Gouraud et divers modes de melange.
+
+Il ne possede pas de Z-buffer ni de triangles perspectifs standards. L'ordre de la
+liste et l'ordre de dessin resolvent la visibilite. Un sprite deforme est un quad;
+les triangles sont souvent representes par quad degenere.
+
+
+==============================================================================
+18. MEMOIRE VDP1
+==============================================================================
+
+VDP1 VRAM contient table de commandes, textures, color lookup tables et Gouraud
+tables. Framebuffer RAM contient deux banques logiques pour dessin/affichage selon
+mode. Les formats et tailles de framebuffer varient avec resolution et rotation.
+
+La VRAM est partagee entre commandes et images : une texture trop grande peut
+chasser la liste. Aligner commandes a 32 octets et textures selon profondeur.
+
+
+==============================================================================
+19. REGISTRES VDP1
+==============================================================================
+
+Base `$05D00000`, registres 16 bits essentiels :
+
+  +$00 TVMR  TV mode
+  +$02 FBCR  framebuffer change/erase
+  +$04 PTMR  plot trigger
+  +$06 EWDR  erase/write data
+  +$08 EWLR  erase window upper-left
+  +$0A EWRR  erase window lower-right
+  +$0C ENDR  force drawing end
+  +$10 EDSR  transfer/draw end status
+  +$12 LOPR  last operation command address
+  +$14 COPR  current operation command address
+  +$16 MODR  mode status/readback
+
+Ecrire les registres avec largeur imposee. PTMR lance ou configure lancement au
+VBlank. EDSR distingue fin precedente/courante.
+
+
+==============================================================================
+20. COMMANDE VDP1 (32 OCTETS)
+==============================================================================
+
+Chaque commande contient :
+
+  CMDCTRL  type, jump/link, end
+  CMDLINK  adresse de branchement
+  CMDPMOD  mode couleur, mesh, clipping, Gouraud, pre-clipping
+  CMDCOLR  couleur/palette/CLUT
+  CMDSRCA  adresse source texture
+  CMDSIZE  largeur/hauteur texture
+  CMDXA..CMDYD coordonnees des sommets
+  CMDGRDA  table Gouraud
+
+Les adresses sont encodees en unites, pas toujours en octets. Le bit END termine
+la liste. Les modes jump permettent next, assign, call, return et skip; une boucle
+de liens peut bloquer le moteur.
+
+
+==============================================================================
+21. TYPES DE PRIMITIVES VDP1
+==============================================================================
+
+- normal sprite : origine + dimensions source;
+- scaled sprite : rectangle destination ou point de zoom;
+- distorted sprite : quatre sommets arbitraires;
+- polygon : quad uni/Gouraud sans texture;
+- polyline : segments relies;
+- line;
+- user clipping rectangle;
+- system clipping rectangle;
+- local coordinate.
+
+Placer system/user clip et local coordinate au debut de liste. Le clipping des
+quads deformes a des limites; le pre-clipping mal utilise cree des disparitions.
+
+
+==============================================================================
+22. FORMATS COULEUR VDP1
+==============================================================================
+
+Modes textures : 4 bpp banque/CLUT, 8 bpp avec plusieurs tailles de palette,
+16 bpp palette et RGB 15 bits selon mode. Pixel `$8000` et bits associes peuvent
+signaler RGB/direct ou MSB selon configuration. End code et transparent pixel ont
+des regles propres.
+
+Options : replace, shadow, half luminance, half transparent, Gouraud, mesh. Les
+melanges VDP1/VDP2 dependent aussi de priorite et Color Calculation Ratio; un mode
+VDP1 seul ne garantit pas le resultat final.
+
+
+==============================================================================
+23. AFFINE TEXTURE ET DISTORSION
+==============================================================================
+
+VDP1 interpole les coordonnees sur un quadrilatere sans correction perspective
+classique. Les grands polygones inclines montrent warping. Solutions : subdiviser
+en petits quads, ordonner soigneusement, eviter croisements et limiter ecarts.
+
+Les regles de remplissage de bords peuvent produire trous entre quads adjacents.
+Partager exactement les coordonnees et tester sur materiel.
+
+
+==============================================================================
+24. TRI ET ABSENCE DE Z-BUFFER
+==============================================================================
+
+Transformer les objets, decouper si necessaire, trier du fond vers l'avant, puis
+emettre les commandes. Pour scenes complexes, utiliser buckets de profondeur plutot
+qu'un tri couteux global. Les intersections cycliques exigent subdivision.
+
+Le framebuffer n'est pas automatiquement efface. Programmer erase window/data ou
+dessiner un fond, et synchroniser le changement de banque.
+
+
+==============================================================================
+25. VDP2 : ROLE
+==============================================================================
+
+VDP2 genere et compose les arriere-plans : quatre Normal Backgrounds NBG0-NBG3,
+deux Rotation Backgrounds RBG0/RBG1 selon modes partages, back screen, line color
+screen et couche sprite provenant du framebuffer VDP1.
+
+Fonctions : tilemaps ou bitmaps, scroll, zoom, line/cell scroll, rotation affine,
+mosaique, fenetres, priorites, color offset et color calculation.
+
+
+==============================================================================
+26. VDP2 VRAM ET COLOR RAM
+==============================================================================
+
+Les 512 Kio VRAM se divisent en banques A0, A1, B0, B1. Elles stockent character
+patterns, pattern name data, bitmaps, tables de rotation/line scroll et commandes
+speciales. La Color RAM de 4 Kio contient palettes selon trois modes.
+
+Chaque acces d'affichage doit obtenir un slot dans les cycle pattern registers.
+Une adresse correcte avec mauvais cycle pattern donne corruption ou plan absent.
+
+
+==============================================================================
+27. CYCLE PATTERNS VDP2
+==============================================================================
+
+Une periode memoire est partagee en slots T0-T7 par banque. Affectations possibles :
+CPU, pattern name, character pattern, vertical cell scroll, rotation coefficients,
+no access. Les besoins changent avec profondeur couleur, largeur et plans actifs.
+
+Procedure : lister tous fetches par plan, repartir sur banques, programmer cycles,
+puis copier donnees pendant VBlank ou slots CPU. Les presets de bibliotheque sont
+preferables au hasard.
+
+
+==============================================================================
+28. NBG ET TILEMAPS
+==============================================================================
+
+Un plan normal peut utiliser cellules 8x8 ou 16x16, pattern names 1 ou 2 mots,
+page/plane/map et palettes. Les dimensions logiques depassent l'ecran et permettent
+scroll wrapping. NBG0/NBG1 offrent plus de modes/couleurs que NBG2/NBG3.
+
+Le pattern name encode numero de character, palette et flips selon supplemental
+character bits. L'encodage change avec taille d'entree : utiliser une fonction de
+packing explicite.
+
+
+==============================================================================
+29. BITMAPS VDP2
+==============================================================================
+
+Certains NBG/RBG peuvent afficher un bitmap aux tailles et profondeurs autorisees.
+Le bitmap simplifie un framebuffer ou decor pre-rendu mais consomme VRAM et bande
+passante. Palette 8/11 bits ou RGB direct sont possibles selon couche.
+
+Ne pas supposer qu'un bitmap 640x480x16 tient ou laisse assez de cycles aux autres
+plans. Calculer octets et fetches.
+
+
+==============================================================================
+30. ROTATION BACKGROUNDS
+==============================================================================
+
+RBG utilise parametres A/B : matrice affine, translation, centre, perspective
+simulee par coefficients, map et overflow. Une table de coefficients peut varier
+par ligne et produire sol Mode 7, eau, tunnel ou perspective.
+
+Les calculs sont en point fixe et champs signes de largeurs precises. Une erreur
+d'echelle d'un bit deplace radicalement l'image. RBG1 partage des ressources/modes
+avec RBG0 et n'est pas toujours simultanement disponible.
+
+
+==============================================================================
+31. PRIORITES ET COMPOSITION
+==============================================================================
+
+VDP2 attribue priorites aux NBG/RBG et aux pixels VDP1 selon sprite type/color bank.
+Le pixel final est choisi puis peut participer au color calculation avec la couche
+sous-jacente, back screen ou line color.
+
+Le numero de sprite VDP2 n'est pas l'index d'une commande VDP1 : des bits du pixel
+VDP1 sont interpretes suivant Sprite Control. C'est un piege majeur des palettes.
+
+
+==============================================================================
+32. FENETRES ET COLOR CALCULATION
+==============================================================================
+
+Deux fenetres rectangulaires, sprite window et logique AND/OR masquent plans ou
+effets. Color calculation realise addition/melange avec ratios par couche; color
+offset ajoute/soustrait des composantes. Shadow et blur ont conditions precises.
+
+Utilisations : transparence, spotlight, eau, HUD masque et fondu. Tester combinaisons
+de priorite, special color code et modes CRAM sur vrai materiel.
+
+
+==============================================================================
+33. RESOLUTIONS ET ENTRELACEMENT
+==============================================================================
+
+Modes horizontaux courants autour de 320/352 ou 640/704 pixels; lignes actives
+224/240/256 selon norme/mode, plus entrelacement simple/double density. Toutes les
+combinaisons ne conviennent pas a toutes regions ou profondeurs.
+
+PAL n'est pas seulement NTSC ralenti : horloge, nombre de lignes et cadence changent.
+Calculer VBlank et audio par region; centrer l'image avec registres appropries.
+
+
+==============================================================================
+34. EXEMPLE C BAS NIVEAU VDP1
+==============================================================================
+
+#include <stdint.h>
+
+#define REG16(a) (*(volatile uint16_t *)(a))
+#define VDP1_VRAM ((volatile uint16_t *)0x05C00000u)
+#define VDP1_PTMR REG16(0x05D00004u)
+
+/* Premiere commande deja construite dans VRAM, terminee par END. */
+static void vdp1_start(void)
+{
+    VDP1_PTMR = 2;            /* lancement immediat de la liste */
+}
+
+Le vrai code attend fin, programme TVMR/FBCR/clipping et construit chaque champ
+big-endian. Une structure C doit etre `packed/aligned(32)` et verifiee par assertions;
+des bitfields C ne sont pas portables.
+
+
+==============================================================================
+35. EXEMPLE DE COMMANDE VDP1
+==============================================================================
+
+typedef struct __attribute__((packed, aligned(32))) {
+    uint16_t ctrl, link, pmod, colr, srca, size;
+    int16_t xa, ya, xb, yb, xc, yc, xd, yd;
+    uint16_t grda, dummy;
+} Vdp1Cmd;
+
+_Static_assert(sizeof(Vdp1Cmd) == 32, "VDP1 command must be 32 bytes");
+
+Toujours remplir les 16 mots, y compris reserve. `srca`, `link` et `grda` utilisent
+des unites d'adresse VDP1 specifiees dans le manuel, pas des pointeurs CPU bruts.
+
+
+==============================================================================
+36. EXEMPLE C VDP2 : ECRITURE CRAM
+==============================================================================
+
+#define VDP2_CRAM ((volatile uint16_t *)0x05F00000u)
+
+static uint16_t rgb555(unsigned r, unsigned g, unsigned b)
+{
+    return (uint16_t)(0x8000u | ((b & 31u) << 10) |
+                      ((g & 31u) << 5) | (r & 31u));
+}
+
+static void set_color(unsigned index, unsigned r, unsigned g, unsigned b)
+{
+    VDP2_CRAM[index] = rgb555(r, g, b);
+}
+
+Cette forme vise un mode CRAM 15 bits compatible. En mode RGB 24 bits ou adressage
+palette different, layout et nombre d'entrees changent.
+
+
+==============================================================================
+37. SCSP : ARCHITECTURE AUDIO
+==============================================================================
+
+Le Yamaha SCSP offre 32 slots PCM/FM, enveloppes, LFO, boucles, interpolation,
+panoramique/niveau, timers, interruptions, mixeur et DSP d'effets 128 pas. Il accede
+a 512 Kio Sound RAM partagee avec le 68000 et les CPU principaux.
+
+Formats PCM 8/16 bits. Les slots peuvent etre modules pour FM. Le DSP utilise
+microprogramme, delay memory et coefficients pour reverb/echo/filtrage.
+
+
+==============================================================================
+38. MOTOROLA 68EC000 AUDIO
+==============================================================================
+
+Le 68EC000 execute pilote musical et effets dans Sound RAM. Le Master charge code
+et samples, configure SCSP, puis libere le CPU audio. Il communique par boites aux
+lettres et interruptions, non par appels C directs.
+
+Architecture 68000 big-endian : D0-D7, A0-A7, SR/PC; instructions MOVE, arithmetic,
+branches, JSR/RTS, MUL/DIV, shifts. Pas de MMU ni FPU.
+
+
+==============================================================================
+39. EXEMPLE ASSEMBLEUR 68000 AUDIO
+==============================================================================
+
+; Copie une commande byte dans une mailbox puis signale disponibilite.
+; A0 = mailbox, D0.b = commande
+send_command:
+        move.b  d0,(a0)
+        move.b  #1,1(a0)
+        rts
+
+Sur materiel, definir protocole pour ne pas ecraser une commande non lue. La Sound
+RAM est partagee : tenir compte de l'arbitrage et de la largeur d'acces.
+
+
+==============================================================================
+40. REGISTRES SCSP ET SLOTS
+==============================================================================
+
+Chaque slot a registres de controle, adresse de debut, boucle, enveloppe, pitch,
+LFO, mixage et routage DSP. Registres globaux gerent master volume, ring buffer,
+MIDI, timers, pending/mask IRQ et statut.
+
+Sequence sure : stopper KEYON, charger sample aligne, ecrire adresses/loop/pitch/
+enveloppe/mixage, puis executer KEYONEX pour le groupe voulu. Une adresse/loop hors
+Sound RAM peut produire bruit ou silence.
+
+
+==============================================================================
+41. AUDIO CD-DA
+==============================================================================
+
+Le lecteur peut lire des pistes audio CD-DA et les melanger via chemin audio. Un
+disque mixed-mode doit respecter sessions, pistes data/audio et pregaps. Les jeux
+peuvent aussi lire fichiers PCM/ADPCM et les mixer en logiciel/SCSP.
+
+Ne jamais supposer une latence fixe de seek. Mettre en file, precharger et traiter
+porte ouverte/changement/erreur.
+
+
+==============================================================================
+42. SMPC
+==============================================================================
+
+Le System Manager and Peripheral Control gere alimentation/reset des CPU, horloges,
+RTC, region, controleurs et etat systeme. Interface par registres IREG/OREG, COMREG
+et status flag. Les commandes sont asynchrones.
+
+Commandes connues : INTBACK (peripheriques/systeme), SETTIME, SETSMEM, NMIREQ,
+RESEN/RESD, SOUND ON/OFF, CD ON/OFF, SYSRES, CKCHG et controle Slave SH-2.
+Attendre SF/etat conformement au manuel; ne pas envoyer pendant une commande.
+
+
+==============================================================================
+43. CONTROLEURS ET INTBACK
+==============================================================================
+
+INTBACK collecte statut et donnees des ports via SMPC. Le resultat peut etre
+decoupe en plusieurs acquisitions avec interruptions. Types : pad numerique,
+analogique 3D, souris, volant, Mission Stick, light guns, clavier et multitap.
+
+Parser identifiant/type et taille; ne pas supposer deux octets fixes. Gerer connexion
+a chaud, ports vides et continuation. Les boutons sont souvent actifs bas dans la
+representation materielle.
+
+
+==============================================================================
+44. PERIPHERIQUES
+==============================================================================
+
+- Control Pad et Japanese/Model 2 pad;
+- 3D Control Pad analogique;
+- Arcade Racer, Mission Stick, Twin Stick;
+- Shuttle Mouse;
+- Virtua Gun/Stunner, depend du balayage CRT;
+- Multi-Terminal 6 et multitaps jusqu'a plusieurs joueurs;
+- clavier NetLink et accessoires regionaux.
+
+La compatibilite peripherique doit etre declaree dans le logiciel et testee avec
+donnees de longueur variable.
+
+
+==============================================================================
+45. CD BLOCK
+==============================================================================
+
+Le CD Block contient controleur Hitachi SH-1, firmware, tampon d'environ 512 Kio,
+lecteur et interfaces. Le SH-2 envoie des commandes via quatre command registers et
+lit quatre response registers. Des partitions/filters routent secteurs vers buffers.
+
+Fonctions : TOC, seek/play, lecture secteurs, filtres, transferts, CD-DA, statut et
+MPEG optionnel. Le firmware masque le bas niveau du lecteur mais impose une machine
+d'etats et des delais.
+
+
+==============================================================================
+46. SYSTEME DE FICHIERS CD
+==============================================================================
+
+Les disques de jeu emploient un secteur d'amorcage Saturn (IP) suivi de contenu
+ISO 9660 et eventuellement pistes audio. Le boot header commence par l'identifiant
+`SEGA SEGASATURN` et contient editeur, produit, version, date, region, peripheriques,
+adresses de chargement et entree.
+
+Les specifications de format ont eu plusieurs revisions; suivre la revision finale
+et les Technical Bulletins. Les fichiers frequemment lus doivent etre contigus et
+ordonnes pour reduire seeks.
+
+
+==============================================================================
+47. DEMARRAGE
+==============================================================================
+
+Au reset, Boot ROM initialise materiel, affiche interface CD si necessaire, verifie
+le disque/region, lit l'IP et charge le programme initial a l'adresse declaree avant
+transfert. L'etat laisse au programme est defini par le Boot ROM System manual.
+
+Un homebrew legal peut produire une image CD avec outils libres. Il ne doit pas
+redistribuer BIOS Sega. Sur console, l'execution requiert un environnement autorise,
+cartouche de developpement/flash ou support approprie.
+
+
+==============================================================================
+48. BIOS ET APPELS SYSTEME
+==============================================================================
+
+La Boot ROM contient vecteurs et routines systeme (SCU interrupts, semaphores,
+CD/backup selon bibliotheques et version). Les jeux peuvent employer services Sega
+ou pilotes propres. Les adresses et contrats doivent venir du Boot ROM System User's
+Manual, pas d'un BIOS d'une autre region suppose identique.
+
+Un clone propre peut reimplementer les interfaces documentees; ne pas copier le
+code ROM. Un emulateur demande normalement a l'utilisateur son BIOS legal.
+
+
+==============================================================================
+49. BACKUP RAM INTERNE
+==============================================================================
+
+La sauvegarde interne batteriee fait 32 Kio physiques mais son bus/format et overhead
+reduisent l'espace utile. La librairie Backup gere formatage, repertoire, lecture,
+ecriture, suppression et checksum. Les fichiers ont nom, commentaire, langue, date
+et blocs.
+
+La pile bouton alimente RAM/RTC. Une pile vide perd donnees et date. Avant changement,
+exporter les sauvegardes si possible.
+
+
+==============================================================================
+50. CARTOUCHES
+==============================================================================
+
+Le port A-bus accepte selon logiciel/materiel :
+
+- Backup Memory Cartridge;
+- extensions RAM 1 Mio ou 4 Mio;
+- ROM de jeu (notamment certaines cartouches);
+- Action Replay/diagnostic/developpement;
+- modem NetLink selon region (connectique/implementation propre).
+
+Les extensions RAM ne sont pas interchangeables pour tous les jeux. Detecter ID et
+type; ne pas ecrire une cartouche inconnue. Le Video CD MPEG Card utilise le logement
+d'extension arriere dedie, pas la cartouche principale.
+
+
+==============================================================================
+51. MPEG / VIDEO CD CARD
+==============================================================================
+
+La carte MPEG optionnelle decode MPEG-1 video et audio pour Video CD et quelques
+logiciels. Elle ajoute memoire/decoder et coopere avec CD Block/VDP2. Variantes PAL,
+NTSC et fabricants existent.
+
+Une emulation doit reproduire commande, flux, synchronisation A/V et composition,
+pas uniquement envoyer la video decodee plein ecran.
+
+
+==============================================================================
+52. DEVELOPPEMENT OFFICIEL HISTORIQUE
+==============================================================================
+
+Sega fournissait compilateurs SH-C/assembleur, bibliotheques SGL/SBL, SNASM selon
+partenaires, ICE, Sophia/CartDev, CD writers et volumineux manuels. SGL offrait une
+couche 3D/scene; SBL exposait davantage de sous-systemes.
+
+Les Technical Bulletins corrigent errata et standards. Une routine conforme a un
+manuel preliminaire peut etre interdite par bulletin ulterieur.
+
+
+==============================================================================
+53. DEVELOPPEMENT LIBRE MODERNE
+==============================================================================
+
+libyaul fournit toolchain `sh2eb-elf`, runtime, linker scripts, pilotes VDP/SCU/SMPC/
+CD et exemples. Jo Engine propose une couche plus accessible. Autres outils creent
+images, convertissent textures/palettes et testent sur emulateur ou cartouche.
+
+Flux : compiler SH-2 big-endian, lier a la carte Saturn, produire IP/ISO/CUE, tester
+sur plusieurs emulateurs, puis sur materiel. Conserver ELF/symboles et map.
+
+
+==============================================================================
+54. EXEMPLE LIBYAUL CONCEPTUEL
+==============================================================================
+
+#include <yaul.h>
+
+void main(void)
+{
+    vdp2_tvmd_display_res_set(VDP2_TVMD_INTERLACE_NONE,
+        VDP2_TVMD_HORZ_NORMAL_A, VDP2_TVMD_VERT_224);
+    vdp2_tvmd_display_set();
+
+    while (true) {
+        vdp2_tvmd_vblank_in_wait();
+        /* mettre a jour commandes, palettes et logique */
+        vdp2_tvmd_vblank_out_wait();
+    }
+}
+
+L'API evolue : utiliser les exemples de la version installee. Une initialisation
+complete configure allocateurs VRAM, cycle patterns, VDP1 et interruption.
+
+
+==============================================================================
+55. POINT FIXE ET MATRICES
+==============================================================================
+
+Sans FPU, employer par exemple Q16.16 :
+
+  multiplication : (int32_t)(((int64_t)a * b) >> 16)
+  division       : (int32_t)(((int64_t)a << 16) / b)
+
+Utiliser 64 bits intermediaires, saturation et convention coherente. Tables sin/cos
+evitent calcul transcendant. Le DSP SCU ou Slave peut transformer lots de sommets.
+
+
+==============================================================================
+56. BOUCLE D'IMAGE RECOMMANDEE
+==============================================================================
+
+1. pendant affichage, CPU simulent et preparent donnees;
+2. Slave transforme un lot independant;
+3. construire prochaine liste VDP1 hors consommation;
+4. pendant VBlank, mettre a jour petites tables VDP2/CRAM;
+5. lancer/chainer DMA sans conflit;
+6. basculer framebuffer et demarrer dessin suivant;
+7. garder audio/CD asynchrones toute l'image.
+
+VBlank n'est pas assez long pour copier toutes les textures chaque frame.
+
+
+==============================================================================
+57. OPTIMISATION
+==============================================================================
+
+- repartir Low/High RAM et banques VDP2;
+- planifier bus avant d'ajouter le Slave;
+- utiliser DMA pour gros blocs alignes;
+- precharger CD par ordre physique;
+- subdiviser seulement les quads qui en ont besoin;
+- bucket-sort plutot que tri general;
+- limiter transparence et overdraw VDP1;
+- reutiliser commandes/templates;
+- profiler Master, Slave, SCU, VDP1, VDP2 et CD separement;
+- tester PAL et NTSC sur materiel.
+
+
+==============================================================================
+58. PIEGES DE CONCURRENCE
+==============================================================================
+
+- Slave lit avant publication complete;
+- DMA lit une ligne encore dans cache CPU;
+- CPU ecrit VRAM pendant fetch VDP2 non alloue;
+- liste VDP1 modifiee pendant dessin;
+- framebuffer recycle avant fin;
+- 68000 et SH-2 modifient meme mailbox;
+- CD Block buffer libere avant transfert;
+- ISR VBlank effectue trop de travail.
+
+Chaque buffer doit avoir proprietaire et transition explicites.
+
+
+==============================================================================
+59. EMULATION DU SH-2
+==============================================================================
+
+Implementer instructions, delay slots, exceptions, interruptions, division unit,
+MAC, timers, DMA interne, serial, cache et bus. Les deux SH-2 doivent avancer avec
+ordre deterministe suffisamment fin pour semaphores et contention.
+
+Un dynarec doit conserver PC de faute/delay slot et invalidation du code automodifie.
+Les lectures de registres ont parfois effets de bord.
+
+
+==============================================================================
+60. EMULATION VDP1
+==============================================================================
+
+Decoder liste, jumps/calls/skips, clipping, coordonnees locales, formats, end code,
+Gouraud, mesh et framebuffer. Reproduire regles de rasterisation Saturn plutot que
+confier des quads generiques au GPU hote : bords, distorsion et transparence different.
+
+Modeliser temps de dessin et draw-end; certains jeux attendent ou depassent le budget.
+
+
+==============================================================================
+61. EMULATION VDP2
+==============================================================================
+
+Emuler maps, characters, bitmaps, scrolls, rotations/coefficient tables, windows,
+mosaique, priorites, sprite decode, color calculation et timings ligne. Les cycle
+patterns doivent au minimum produire restrictions observables.
+
+Composer par pixel/scanline avec VDP1 et line color. Un renderer GPU peut accelerer
+mais doit conserver changements de registres par ligne.
+
+
+==============================================================================
+62. EMULATION AUDIO ET CD
+==============================================================================
+
+SCSP : 32 slots, enveloppes, LFO, interpolation, boucles, timers, IRQ, MIDI, ring
+buffer et DSP. Executer 68EC000 avec synchronisation Sound RAM. Les approximations
+d'enveloppe/pitch s'entendent rapidement.
+
+CD : firmware HLE ou SH-1 LLE, commandes, partitions, filtres, secteurs, erreurs,
+seek, tray, CD-DA et IRQ. Une lecture instantanee masque des courses logicielles.
+
+
+==============================================================================
+63. EMULATION SMPC ET PERIPHERIQUES
+==============================================================================
+
+Reproduire duree/etat des commandes, INTBACK segmente, RTC, region, reset CPU et
+clock change. Mapper controleurs par protocole et longueur. Le light gun depend de
+la position du faisceau; un clic souris HLE est une option, pas le comportement LLE.
+
+
+==============================================================================
+64. TESTS DE COMPATIBILITE
+==============================================================================
+
+- BIOS de chaque region obtenu legalement;
+- 50/60 Hz et resolutions entrelacees;
+- programmes double CPU/cache/DMA;
+- toutes primitives/modes VDP1;
+- cycle patterns et line effects VDP2;
+- DSP SCU et DSP SCSP;
+- CD mixed-mode, seek et erreurs;
+- backup RAM et cartouches 1/4 Mio;
+- multitap, analogique et light gun;
+- changements de registre a mi-trame.
+
+
+==============================================================================
+65. DIAGNOSTIC MATERIEL
+==============================================================================
+
+Ordre : alimentation, reset/horloges, sortie video, BIOS, lecteur, audio, controles,
+cartouche. Tester avec disque presse connu, alimentation et cable connus. Relever
+revision VA avant schema.
+
+Pannes frequentes : condensateurs/alimentation, laser ou mecanique CD, switch de
+couvercle, nappe, pile CR2032, connecteur cartouche, soudures et encodeur video.
+Ne pas augmenter le potentiometre laser sans mesure : cela accelere sa destruction.
+
+
+==============================================================================
+66. LECTEUR CD ET SECURITE LASER
+==============================================================================
+
+Le laser invisible/rouge proche peut etre dangereux. Ne pas regarder l'optique sous
+tension ni neutraliser durablement l'interlock. Nettoyer lentille avec methode
+appropriee; verifier rails, spindle, sled et condensateurs avant de condamner laser.
+
+Les revisions utilisent blocs optiques et cartes differents. Conserver calibration
+et pieces originales etiquetees.
+
+
+==============================================================================
+67. SAUVEGARDES ET PILE
+==============================================================================
+
+La CR2032 alimente sauvegarde interne et RTC. Console hors tension, exporter les
+donnees avant remplacement; respecter polarite et support. Une nouvelle pile ne
+restaure pas des donnees deja perdues.
+
+La cartouche Backup Memory offre une sauvegarde plus durable mais ses contacts et
+flash/RAM vieillissent. Copier les fichiers importants sur plusieurs supports.
+
+
+==============================================================================
+68. MODIFICATIONS VIDEO
+==============================================================================
+
+RGB analogique est disponible selon cable/region; composite et S-Video dependent du
+modele. Un scaler moderne doit accepter 240p/288p et changements 480i/576i. Les
+mods HDMI/RGB bypass doivent etre reversibles, correctement termines et documentes.
+
+Ne pas appliquer un cable SCART d'un autre Sega sans verifier brochage et niveaux.
+
+
+==============================================================================
+69. ERREURS COURANTES DE DOCUMENTATION
+==============================================================================
+
+- additionner les MHz des deux SH-2;
+- appeler SCU DSP un GPU ou DSP audio;
+- dire que VDP1 trace des triangles avec Z-buffer;
+- oublier que VDP2 compose le framebuffer VDP1;
+- traiter Low et High RAM comme identiques;
+- ignorer cycles VRAM VDP2;
+- confondre Sound RAM et samples internes au SCSP;
+- supposer cartouche RAM 1/4 Mio universelle;
+- decrire PAL comme NTSC a 50 Hz seulement;
+- ignorer Technical Bulletins/errata.
+
+
+==============================================================================
+70. CHECKLIST D'UN NOUVEAU PROGRAMME
+==============================================================================
+
+1. initialiser piles, VBR, caches et interruptions;
+2. definir carte memoire/linker et buffers;
+3. configurer VDP2 mode, VRAM cycles et palettes;
+4. configurer VDP1 framebuffer, clipping et liste END;
+5. initialiser SMPC/peripheriques;
+6. charger pilote audio et demarrer 68000;
+7. installer files CD et prechargement;
+8. ajouter Slave seulement avec tache mesuree;
+9. synchroniser VBlank/draw-end/DMA;
+10. tester chaque region et vrai materiel.
+
+
+==============================================================================
+71. REFERENCES
+==============================================================================
+
+Documentation Sega preservee :
+
+- Sega Saturn Developer's Manual et index des manuels :
+  https://docs.exodusemulator.com/Archives/SSDDV1R1E/hyousi.htm
+- catalogue de documentation systeme Saturn :
+  https://techdocs.exodusemulator.com/Console/SegaSaturn/Documentation.html
+- Technical Bulletins Sega, ST-TECH :
+  https://segaretro.org/images/c/c7/ST-TECH.pdf
+- archives Sega DTS : https://antime.kapsi.fi/sega/files/
+- Service Manuals :
+  https://gamingdoc.org/technical-documentation/consoles/sega-saturn/official/service-manuals/
+
+Developpement libre :
+
+- libyaul : https://github.com/yaul-org/libyaul
+- documentation libyaul : https://www.yaul.org/
+- Jo Engine : https://www.jo-engine.org/
+
+Manuels essentiels a consulter separement : SH7604 Hardware/Programming Manual,
+SCU User's Manual, VDP1 User's Manual, VDP2 User's Manual, SCSP User's Manual,
+SMPC User's Manual, Dual CPU User's Guide, CD Block User's Manual, Boot ROM System
+User's Manual et Disc Format Standards. Appliquer leurs errata/Technical Bulletins.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

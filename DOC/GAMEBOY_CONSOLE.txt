@@ -1,0 +1,1084 @@
+==============================================================================
+ NINTENDO GAME BOY - MATERIEL ET PROGRAMMATION
+ Reference DMG, Pocket et Light pour logiciels et emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille Game Boy monochrome : DMG-01, Game Boy Pocket et
+Game Boy Light. Il couvre CPU, instructions, memoire, PPU/LCD, audio, timers,
+interruptions, cartouches, MBC, liaison serie, demarrage et programmation. Les
+extensions Game Boy Color utiles a la compatibilite sont signalees, sans remplacer
+une reference CGB complete.
+
+Le nom courant LR35902 est employe pour le coeur CPU Sharp. Nintendo et Sharp ne
+l'ont pas toujours presente sous ce nom dans les documents publics. Ce processeur
+n'est pas un Z80 complet. Les accents sont omis pour conserver un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Histoire et gamme
+  2. Modeles et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges et cycles
+  6. CPU et registres
+  7. Drapeaux et ALU
+  8. Jeu d'instructions complet par familles
+  9. Instructions CB
+ 10. Instructions absentes et opcodes invalides
+ 11. Interruptions, IME, HALT et STOP
+ 12. Carte memoire
+ 13. Registres d'entrees/sorties
+ 14. Boot ROM et sequence de demarrage
+ 15. En-tete de cartouche
+ 16. PPU et chronologie d'une image
+ 17. LCDC, STAT et interruptions video
+ 18. VRAM, tuiles et tile maps
+ 19. Sprites OAM
+ 20. Palette et nuances DMG
+ 21. Defilement et fenetre
+ 22. Acces interdits et DMA OAM
+ 23. Techniques graphiques
+ 24. Timers DIV/TIMA
+ 25. Joypad
+ 26. Port serie et Link Cable
+ 27. Audio : architecture
+ 28. Canal 1, pulse et sweep
+ 29. Canal 2, pulse
+ 30. Canal 3, wave
+ 31. Canal 4, bruit
+ 32. Mixage, enveloppes et alimentation audio
+ 33. Cartouches et bus
+ 34. ROM only et MBC1
+ 35. MBC2, MBC3 et RTC
+ 36. MBC5, rumble et autres controleurs
+ 37. RAM sauvegardee et piles
+ 38. Camera, imprimante et accessoires
+ 39. Differences CGB importantes
+ 40. Assembleur RGBDS : ROM minimale
+ 41. Assembleur : copie VRAM et DMA
+ 42. Assembleur : interruption VBlank
+ 43. Assembleur : lecture manette
+ 44. Assembleur : son
+ 45. C avec GBDK
+ 46. Bancs et organisation d'un jeu
+ 47. Optimisation
+ 48. Construction, en-tete et tests
+ 49. Debogage sur console
+ 50. Conseils pour un emulateur
+ 51. Emulation CPU et timer
+ 52. Emulation PPU et DMA
+ 53. Emulation APU, MBC et serie
+ 54. Plan de validation
+ 55. Maintenance et preservation
+ 56. References
+
+
+==============================================================================
+1. HISTOIRE ET GAMME
+==============================================================================
+
+La Game Boy est lancee au Japon en avril 1989, puis en Amerique du Nord et en
+Europe. Gunpei Yokoi dirige l'approche : composants sobres, autonomie, robustesse
+et jeux interchangeables plutot que puissance maximale. Son succes repose aussi
+sur Tetris, la compatibilite durable et un vaste catalogue.
+
+La presente cible est la generation 8 bits originale. Game Boy Color conserve
+une forte compatibilite mais ajoute double vitesse, banques VRAM/RAM, palettes et
+DMA; Game Boy Advance ajoute un ARM et constitue une autre architecture.
+
+
+==============================================================================
+2. MODELES ET REVISIONS
+==============================================================================
+
+DMG-01          modele original, LCD vert, 4 piles AA, prise Link grande
+MGB-001 Pocket  boitier compact, LCD gris, 2 piles AAA, petit connecteur Link
+MGL-001 Light   proche Pocket avec retroeclairage electroluminescent, Japon
+SGB/SGB2        adaptateurs Super Famicom/SNES, executent jeux GB avec bordures
+GBC             successeur couleur; mode DMG partiellement compatible
+
+Le Pocket retire le contraste electronique commande par certains signaux internes
+et modifie LCD/alimentation. SGB ajoute protocole par JOYP, couleurs/bordures et
+audio hote. SGB1 execute legerement plus vite qu'un DMG; SGB2 corrige la cadence
+et ajoute un port Link. Ne pas utiliser le modele comme minuterie absolue.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU             coeur Sharp 8 bits, 4,194304 MHz nominal DMG
+Bus             adresses 16 bits, donnees 8 bits
+ROM             32 Kio sans MBC; plusieurs Mio avec controleur
+WRAM            8 Kio internes
+VRAM            8 Kio
+Ecran           160 x 144 pixels, quatre niveaux logiques
+Tuiles          8 x 8, 2 bits/pixel
+Sprites         40 en OAM, 10 maximum par ligne, 8x8 ou 8x16
+Audio           4 canaux : 2 pulse, wave 4 bits, bruit LFSR
+Entrees         D-pad, A, B, Start, Select
+Serie           liaison synchrone 8 bits
+Alimentation    piles/batterie externe selon modele
+
+Une image dure 70224 T-cycles, soit environ 59,7275 images/s. Une ligne dure 456
+T-cycles et 154 lignes sont comptees, LY 0 a 153.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+                +------------------------+
+                | CPU + IRQ + timer      |
+                +-----------+------------+
+                            | bus 8 bits
+       +--------------------+-----------------------+
+       |                    |                       |
+  +----v-----+       +------v------+         +------v-------+
+  | PPU/LCD  |       | APU audio   |         | Cartouche    |
+  | VRAM/OAM |       | 4 canaux    |         | ROM/MBC/RAM  |
+  +----------+       +-------------+         +--------------+
+       |                    |                       |
+  LCD 160x144          casque/HP              RTC/rumble...
+                            |
+                    joypad et port serie
+
+CPU et PPU partagent VRAM/OAM. Le PPU bloque certaines lectures/ecritures pendant
+le rendu. Le DMA OAM bloque presque tout le bus externe. Ces contentions font
+partie du comportement, pas seulement de la performance.
+
+
+==============================================================================
+5. HORLOGES ET CYCLES
+==============================================================================
+
+Documentation moderne distingue :
+
+- T-cycle : periode de l'horloge 4,194304 MHz;
+- M-cycle : cycle machine, quatre T-cycles en vitesse DMG;
+- dot PPU : une horloge pixel; egale a un T-cycle en mode normal.
+
+Une instruction prend un nombre entier de M-cycles, mais timer, PPU, DMA et serie
+evoluent en T-cycles. Le CGB double la cadence CPU sans doubler les dots PPU. Un
+emulateur qui avance tout par instructions entieres rate transitions et glitches.
+
+Oscillateur nominal : 4,194304 MHz = 2^22 Hz. Audio et timers en derivent.
+
+
+==============================================================================
+6. CPU ET REGISTRES
+==============================================================================
+
+Registres 8 bits : A, F, B, C, D, E, H, L. Couples AF, BC, DE et HL offrent des
+operations 16 bits. SP est la pile 16 bits, PC le compteur ordinal. F contient
+seulement les quatre bits hauts; ses quatre bits bas lisent zero.
+
+ A  accumulateur       F  drapeaux Z N H C
+ BC donnees/compteur   DE donnees/adresse
+ HL pointeur courant   SP pile descendante
+ PC prochaine instruction
+
+Le CPU ressemble a un croisement 8080/Z80, mais n'a ni IX/IY, I/R, banque
+alternative, `EXX`, `IN`, `OUT`, prefixes DD/FD/ED, NMI ni interruptions Z80.
+Les entrees/sorties sont memory-mapped. `LDH` accede rapidement a $FF00-$FFFF.
+
+
+==============================================================================
+7. DRAPEAUX ET ALU
+==============================================================================
+
+F bit 7 Z  resultat nul
+F bit 6 N  derniere operation etait une soustraction
+F bit 5 H  retenue/emprunt entre bits 3 et 4 (ou 11/12 en 16 bits)
+F bit 4 C  retenue/emprunt principal
+
+`INC` preserve C; `DEC` aussi. `ADD HL,rr` preserve Z et calcule H au bit 11.
+`ADD SP,e8` et `LD HL,SP+e8` mettent Z=N=0 et calculent H/C sur l'octet bas avec
+le deplacement signe. `DAA` corrige A apres BCD selon N/H/C : tester exhaustivement.
+
+
+==============================================================================
+8. JEU D'INSTRUCTIONS COMPLET PAR FAMILLES
+==============================================================================
+
+Chargements :
+
+ LD r,r8       LD r,n8        LD r,[HL]       LD [HL],r
+ LD A,[BC/DE]  LD [BC/DE],A   LD A,[nn]       LD [nn],A
+ LD A,[HLI]    LD [HLI],A     LD A,[HLD]      LD [HLD],A
+ LDH A,[n8/C]  LDH [n8/C],A   LD rr,n16       LD [nn],SP
+ LD SP,HL      LD HL,SP+e8    PUSH rr         POP rr
+
+`HLI`/`HLD` incrementent/decrementent HL apres acces. `LDH [C],A` vise $FF00+C.
+
+ALU 8 bits :
+
+ ADD A,x  ADC A,x  SUB A,x  SBC A,x  AND A,x  XOR A,x  OR A,x  CP A,x
+ INC r/[HL]     DEC r/[HL]     DAA     CPL     CCF     SCF
+
+ALU 16 bits : `INC rr`, `DEC rr`, `ADD HL,rr`, `ADD SP,e8`.
+
+Rotations A : `RLCA`, `RRCA`, `RLA`, `RRA` mettent Z=0 contrairement aux formes
+CB sur registres qui reglent Z selon resultat.
+
+Controle :
+
+ JP nn / JP cc,nn / JP HL
+ JR e8 / JR cc,e8
+ CALL nn / CALL cc,nn
+ RET / RET cc / RETI
+ RST $00,$08,$10,$18,$20,$28,$30,$38
+ NOP / HALT / STOP / DI / EI
+
+Conditions : NZ, Z, NC, C. `CP` soustrait sans stocker. `RST` est un CALL vers un
+vecteur fixe. Les branches relatives utilisent un deplacement signe depuis le PC
+apres l'operande.
+
+
+==============================================================================
+9. INSTRUCTIONS CB
+==============================================================================
+
+Le prefixe $CB selectionne 256 operations sur B,C,D,E,H,L,[HL],A :
+
+ RLC x  RRC x  RL x  RR x  SLA x  SRA x  SWAP x  SRL x
+ BIT b,x        RES b,x       SET b,x       pour b=0..7
+
+`BIT` preserve C, met H=1, N=0 et Z selon le bit. `RES`/`SET` ne changent aucun
+drapeau. `SRA` conserve le bit de signe; `SRL` injecte zero; `SWAP` echange les
+nibbles. Les variantes `[HL]` coutent des cycles memoire supplementaires.
+
+
+==============================================================================
+10. INSTRUCTIONS ABSENTES ET OPCODES INVALIDES
+==============================================================================
+
+Opcodes non documentes : $D3, $DB, $DD, $E3, $E4, $EB, $EC, $ED, $F4, $FC, $FD.
+Sur le materiel, ils verrouillent typiquement le CPU jusqu'au reset; ne pas les
+traiter comme NOP dans un emulateur de precision.
+
+`STOP` est code $10 $00; le second octet est normalement zero. Les comportements
+avec autre valeur sont non portables. Le CPU ne fournit pas les instructions Z80
+`DJNZ`, block copy, I/O ports ni modes IM0/1/2.
+
+
+==============================================================================
+11. INTERRUPTIONS, IME, HALT ET STOP
+==============================================================================
+
+IE $FFFF et IF $FF0F utilisent cinq bits :
+
+bit  vecteur  source
+0    $0040    VBlank
+1    $0048    LCD STAT
+2    $0050    Timer
+3    $0058    Serial
+4    $0060    Joypad
+
+Une IRQ est demandee dans IF meme si masquee par IE. Si IME=1 et IE&IF!=0, le
+CPU termine l'instruction, desactive IME, pousse PC et saute au vecteur prioritaire
+le plus bas. `RETI` restaure PC et active IME. `EI` active IME apres l'instruction
+suivante; `DI` est immediat.
+
+`HALT` attend une interruption. Si IME=0 mais une IRQ est deja pending, le fameux
+halt bug peut empecher l'increment de PC au fetch suivant. `STOP` arrete oscillation
+selon modele et attend reveil joypad; sur CGB il sert aussi au changement vitesse.
+
+
+==============================================================================
+12. CARTE MEMOIRE
+==============================================================================
+
+$0000-$3FFF  ROM cartouche, banque fixe (mais MBC1 peut remapper une partie)
+$4000-$7FFF  ROM cartouche, banque commutable
+$8000-$9FFF  VRAM, 8 Kio
+$A000-$BFFF  RAM/RTC cartouche, commutable
+$C000-$CFFF  WRAM banque 0
+$D000-$DFFF  WRAM (banque 1 sur DMG)
+$E000-$FDFF  echo de $C000-$DDFF
+$FE00-$FE9F  OAM, 40 entrees de 4 octets
+$FEA0-$FEFF  zone inutilisable
+$FF00-$FF7F  registres I/O
+$FF80-$FFFE  HRAM, 127 octets
+$FFFF        IE
+
+Echo RAM est un miroir materiel, pas une RAM additionnelle. La zone inutilisable
+a des lectures dependantes du modele/bus. Ne pas y stocker de donnees.
+
+
+==============================================================================
+13. REGISTRES D'ENTREES/SORTIES
+==============================================================================
+
+$FF00 JOYP    selection/lignes boutons       $FF01 SB      donnees serie
+$FF02 SC      controle serie                 $FF04 DIV     diviseur
+$FF05 TIMA    compteur timer                 $FF06 TMA     modulo
+$FF07 TAC     controle timer                 $FF0F IF      demandes IRQ
+$FF10-$FF14   canal audio 1                  $FF16-$FF19   canal 2
+$FF1A-$FF1E   canal 3                        $FF20-$FF23   canal 4
+$FF24 NR50    volumes/VIN                    $FF25 NR51    routage
+$FF26 NR52    alimentation/statut APU        $FF30-$FF3F  wave RAM
+$FF40 LCDC    controle LCD                   $FF41 STAT    statut LCD
+$FF42 SCY     scroll Y                       $FF43 SCX     scroll X
+$FF44 LY      ligne courante                 $FF45 LYC     comparaison
+$FF46 DMA     lancement DMA OAM              $FF47 BGP     palette BG
+$FF48 OBP0    palette sprite 0               $FF49 OBP1    palette sprite 1
+$FF4A WY      fenetre Y                      $FF4B WX      fenetre X + 7
+$FF50 BOOT    desactivation boot ROM         $FFFF IE      masque IRQ
+
+Bits non utilises peuvent lire 1, 0 ou open bus selon registre/modele. Employer
+des masques, ne pas attendre que la valeur relue soit exactement celle ecrite.
+
+
+==============================================================================
+14. BOOT ROM ET SEQUENCE DE DEMARRAGE
+==============================================================================
+
+Au reset DMG, une ROM interne de 256 octets occupe $0000-$00FF. Elle initialise
+pile/audio/video, dessine et deroule le logo Nintendo lu dans l'en-tete, calcule
+le checksum d'en-tete, puis ecrit $FF50 pour se demapper et saute a $0100.
+
+L'ecriture non nulle a BOOT est irreversible jusqu'au prochain reset. Les boot ROM
+DMG, Pocket, SGB et CGB different, ainsi que les valeurs de registres laissees au
+jeu. Un programme robuste initialise tout ce dont il depend. Un emulateur sans ROM
+peut simuler l'etat post-boot, mais certains logiciels detectent les differences.
+
+
+==============================================================================
+15. EN-TETE DE CARTOUCHE
+==============================================================================
+
+$0100-$0103  point d'entree (`nop; jp $0150` courant)
+$0104-$0133  bitmap logo Nintendo
+$0134-$0143  titre et champs CGB/manufacturer selon generation
+$0144-$0145  nouveau code licence
+$0146        indicateur SGB
+$0147        type cartouche/MBC
+$0148        taille ROM
+$0149        taille RAM externe
+$014A        destination Japon/non-Japon
+$014B        ancien code licence
+$014C        version masque
+$014D        checksum d'en-tete
+$014E-$014F  checksum global
+
+Checksum en-tete : partir de zero et, pour $0134..$014C, soustraire octet+1;
+le resultat bas doit egaler $014D. Checksum global est somme de tous les octets
+sauf ses deux octets, stockee big-endian; le boot DMG ne l'impose pas.
+
+Le logo est une donnee Nintendo protegee. Les outils comme `rgbfix` savent
+construire un en-tete pour un projet autorise; respecter le droit applicable.
+
+
+==============================================================================
+16. PPU ET CHRONOLOGIE D'UNE IMAGE
+==============================================================================
+
+Lignes visibles 0-143; VBlank 144-153. Une ligne visible a trois modes :
+
+Mode 2  OAM scan       nominalement 80 dots
+Mode 3  pixel transfer longueur variable, environ 172 dots ou davantage
+Mode 0  HBlank         reste jusqu'a 456 dots
+Mode 1  VBlank         dix lignes, 456 dots chacune
+
+Mode 3 varie avec SCX, fenetre et sprites. Le materiel utilise fetchers/FIFO;
+ce n'est pas simplement un rendu instantane a la fin de la ligne. LY a des
+transitions particulieres sur la ligne 153. Pour effets raster, utiliser STAT.
+
+
+==============================================================================
+17. LCDC, STAT ET INTERRUPTIONS VIDEO
+==============================================================================
+
+LCDC $FF40 :
+
+bit 7 LCD enable             bit 6 window tile map $9C00/$9800
+bit 5 window enable          bit 4 tile data $8000 unsigned/$8800 signed
+bit 3 BG tile map            bit 2 sprite 8x16/8x8
+bit 1 sprite enable          bit 0 BG/window enable/priorite selon CGB
+
+STAT $FF41 : bits 0-1 mode, bit 2 coincidence LY=LYC; bits 3-6 autorisent IRQ
+HBlank, VBlank, OAM et LYC. Plusieurs sources partagent une ligne interne : garder
+la condition vraie ne produit pas forcement une nouvelle IRQ. Sur DMG, certaines
+ecritures STAT historiques peuvent provoquer un edge parasite.
+
+Desactiver LCD uniquement pendant VBlank est la pratique sure. Quand LCD est off,
+VRAM/OAM sont accessibles et LY est remis a zero, mais l'ecran est blanc.
+
+
+==============================================================================
+18. VRAM, TUILES ET TILE MAPS
+==============================================================================
+
+VRAM contient deux cartes 32x32 octets a $9800 et $9C00 et les donnees de tuiles.
+Une tuile 8x8 2 bpp occupe 16 octets : deux octets par ligne, plans faible et fort.
+Pour chaque pixel, couleur = bit(plan0) + 2*bit(plan1), bit 7 a gauche.
+
+Mode LCDC.4=1 : indices $00-$FF commencent a $8000. Mode 0 : indices signes
+-128..127 autour de $9000, donc donnees $8800-$97FF. Les sprites emploient toujours
+l'index unsigned depuis $8000.
+
+La map 32x32 donne un monde 256x256; l'ecran en montre 20x18 tuiles plus bordures
+partielles. Mettre a jour hors Mode 3, idealement VBlank ou LCD coupe.
+
+
+==============================================================================
+19. SPRITES OAM
+==============================================================================
+
+Chaque entree : Y+16, X+8, index tuile, attributs. Attributs DMG : bit 7 derriere
+couleurs BG 1-3, bit 6 flip Y, bit 5 flip X, bit 4 palette OBP1/OBP0.
+
+Y=0 ou >=160 masque usuellement; X=0 ou >=168 masque. En mode 8x16, bit 0 de
+l'index est ignore : paire paire/impair. Couleur sprite 0 est transparente.
+
+PPU selectionne les dix premiers sprites en ordre OAM qui croisent la ligne. Sur
+DMG, priorite pixel favorise le plus petit X puis l'ordre OAM en egalite. Le CGB
+peut differer selon mode OPRI. Un sprite rejete par la limite de dix ne reapparait
+pas parce qu'un autre pixel est transparent.
+
+
+==============================================================================
+20. PALETTE ET NUANCES DMG
+==============================================================================
+
+BGP, OBP0 et OBP1 contiennent quatre champs 2 bits : chaque couleur logique 0..3
+est mappee vers une nuance LCD 0..3. Pour objets, couleur logique 0 reste
+transparente quelle que soit palette.
+
+Le LCD DMG reel a inertie, ghosting, contraste et teinte dependants de temperature
+et revision. Un emulateur peut offrir palette esthetique, mais un mode reference
+doit conserver niveaux logiques et cadence avant simulation LCD.
+
+
+==============================================================================
+21. DEFILEMENT ET FENETRE
+==============================================================================
+
+SCX/SCY deplacent la tile map BG modulo 256. Le bas de SCX influence le temps de
+demarrage du pixel transfer. La fenetre commence a l'ecran en X=WX-7 et Y>=WY.
+WX=7 place a x=0; petites valeurs ont comportements/clipping particuliers.
+
+La fenetre possede un compteur de ligne interne, incremente seulement lorsqu'elle
+est effectivement dessinee. Modifier WY/WX/enable pendant l'image permet effets,
+mais depend du timing PPU. Elle n'a pas son propre scroll.
+
+
+==============================================================================
+22. ACCES INTERDITS ET DMA OAM
+==============================================================================
+
+CPU ne peut normalement acceder OAM en modes 2/3, ni VRAM en mode 3. Lectures
+retournent souvent $FF et ecritures sont ignorees. Le DMA OAM demarre en ecrivant
+l'octet haut source dans $FF46 et copie $A0 octets de XX00-XX9F vers FE00-FE9F.
+
+Sur DMG, pendant environ 160 M-cycles, le CPU ne peut fiablement executer que
+depuis HRAM et y acceder; la cartouche/WRAM partagent le bus bloque. La routine
+classique de DMA est donc copiee en HRAM, lance DMA puis attend. Les interactions
+avec redemarrage DMA et corruption OAM sont importantes pour tests materiels.
+
+
+==============================================================================
+23. TECHNIQUES GRAPHIQUES
+==============================================================================
+
+- double buffer de tile maps plutot que framebuffer bitmap;
+- mise a jour fractionnee pendant plusieurs VBlank;
+- animation en remplacant indices/tuiles;
+- scrolling circulaire 32x32 et chargement des nouvelles colonnes;
+- raster splits avec STAT/LYC pour barres et HUD fixe;
+- multiplexage de sprites avec prudence et limite dix par ligne;
+- dithering spatial/temporel en tenant compte du ghosting;
+- pseudo-bitmap par tuiles dynamiques, couteux en VRAM/bande passante.
+
+VBlank dure 4560 T-cycles. Sauver registres et appeler du C peut en consommer une
+part notable. DMA OAM et copies VRAM doivent etre budgetes.
+
+
+==============================================================================
+24. TIMERS DIV/TIMA
+==============================================================================
+
+DIV $FF04 expose les bits hauts d'un compteur interne 16 bits; ecrire n'importe
+quelle valeur remet le compteur a zero. TAC bit 2 active TIMA, bits 1-0 choisissent
+le bit du diviseur : frequences 4096, 262144, 65536, 16384 Hz correspondant aux
+bits internes 9,3,5,7 (numerotation bit zero).
+
+TIMA s'incremente sur front descendant du signal selectionne. Ecrire DIV ou TAC
+peut donc produire un increment parasite. Apres overflow $FF->$00, le rechargement
+depuis TMA et la demande IRQ surviennent apres un court delai; ecritures TIMA/TMA
+pendant cette fenetre ont des effets precis. Un simple accumulateur de periodes
+n'emule pas ces cas.
+
+
+==============================================================================
+25. JOYPAD
+==============================================================================
+
+JOYP $FF00 : bits 5/4 selectionnent lignes boutons/directions, actifs a zero;
+bits 3-0 retournent quatre contacts actifs a zero. Selectionner bit 5=0 pour
+Start/Select/B/A et bit 4=0 pour Down/Up/Left/Right. Si les deux sont selectionnes,
+les lignes sont combinees electriquement.
+
+Exemple : ecrire $20 puis lire directions, ecrire $10 puis lire boutons. Laisser
+un bref temps/instructions entre selection et lecture sur materiel. L'IRQ joypad
+vient d'une transition haute vers basse des lignes, utile pour reveil STOP.
+
+
+==============================================================================
+26. PORT SERIE ET LINK CABLE
+==============================================================================
+
+SB $FF01 contient l'octet. SC $FF02 bit 7 lance transfert; bit 0 choisit horloge
+interne (maitre) ou externe (esclave). DMG transfere un bit par 512 T-cycles avec
+horloge interne, soit 8192 bit/s, MSB d'abord. Apres 8 bits, bit 7 tombe et IRQ
+serie est demandee.
+
+Deux maitres simultanes et absence de pair doivent etre geres. Avec horloge
+externe absente, transfert reste en attente. CGB ajoute vitesse rapide. Cable
+quatre joueurs et imprimante ajoutent un protocole logiciel au-dessus des octets.
+Les connecteurs DMG et Pocket sont differents physiquement.
+
+
+==============================================================================
+27. AUDIO : ARCHITECTURE
+==============================================================================
+
+APU fournit : CH1 pulse+sweep, CH2 pulse, CH3 wave 4 bits, CH4 bruit. NR50 fixe
+volumes gauche/droite et VIN; NR51 route chaque canal; NR52 active globalement et
+indique canaux actifs. Un frame sequencer a 512 Hz cadence length (256 Hz), sweep
+(128 Hz) et enveloppes (64 Hz).
+
+Les registres audio ont masques de lecture particuliers. Power-off NR52 efface la
+plupart des registres, avec differences DMG anciennes. Les sorties analogiques,
+high-pass et mixage saturent/filtrent : addition numerique naive sonne autrement.
+
+
+==============================================================================
+28. CANAL 1, PULSE ET SWEEP
+==============================================================================
+
+NR10 sweep : rythme, direction et shift. NR11 duty/length; NR12 enveloppe/DAC;
+NR13/NR14 periode et trigger. Duty sequences 12,5 %, 25 %, 50 %, 75 %.
+
+Periode pulse = (2048 - frequency) * 4 T-cycles; frequence acoustique approximative
+131072/(2048-frequency) Hz. Trigger recharge length si zero, initialise enveloppe
+et timer. DAC est actif si bits hauts de NR12 ne sont pas tous zero.
+
+Sweep calcule nouvelle frequence a partir du shadow register; overflow >2047
+coupe le canal. Une soustraction suivie d'un changement vers addition peut couper
+CH1 a cause de l'historique negate. Reproduire les doubles calculs de controle.
+
+
+==============================================================================
+29. CANAL 2, PULSE
+==============================================================================
+
+NR21 duty/length, NR22 enveloppe/DAC, NR23/NR24 frequence/length enable/trigger.
+Il est identique au pulse de CH1 sans sweep. Length compte 64 pas; l'activation
+pres d'un clock length comporte un extra clock selon phase frame sequencer.
+
+Un volume enveloppe initial 0 avec direction descendante reste silencieux; DAC
+off desactive immediatement le canal.
+
+
+==============================================================================
+30. CANAL 3, WAVE
+==============================================================================
+
+NR30 active DAC; NR31 length 256 pas; NR32 choisit mute, 100 %, 50 % ou 25 %;
+NR33/NR34 periode et trigger. Wave RAM $FF30-$FF3F contient 32 samples 4 bits,
+nibble haut puis bas.
+
+Periode sample = (2048-frequency)*2 T-cycles, frequence de cycle 65536/(2048-f).
+Sur DMG, l'acces wave RAM pendant lecture est restreint et peut lire l'octet
+courant; trigger au mauvais moment peut corrompre une partie de la wave RAM sur
+certains modeles. CGB se comporte differemment. Les tests audio exploitent ceci.
+
+
+==============================================================================
+31. CANAL 4, BRUIT
+==============================================================================
+
+NR41 length, NR42 enveloppe/DAC, NR43 diviseur/shift/largeur LFSR, NR44 trigger.
+LFSR 15 bits est initialise a $7FFF. A chaque tick, XOR bits 0 et 1 est injecte
+au bit 14; en mode width=1 aussi au bit 6. Sortie est l'inverse du bit 0.
+
+Frequence timer depend du diviseur (0 signifie 0,5, sinon valeur) et du shift.
+Les shifts extremes ont comportements/mute dependants du materiel; suivre les
+equations et tests, pas une table audio arrondie.
+
+
+==============================================================================
+32. MIXAGE, ENVELOPPES ET ALIMENTATION AUDIO
+==============================================================================
+
+NR51 route CH1..4 vers droite bits 0..3 et gauche bits 4..7. NR50 volumes 0..7
+n'equivalent pas a mute pour zero selon modele analogique. VIN est une entree de
+cartouche rarement utilisee. NR52 bit 7 alimente APU; bits 0..3 indiquent channels.
+
+Ordre d'initialisation : activer NR52, configurer routage/volume, DAC et parametres,
+puis trigger. Pour couper proprement, baisser volume ou desactiver DAC; power-off
+reinitialise et peut cliquer. Un emulateur produit les canaux a leur horloge puis
+resample avec filtre, sans lier generation a la cadence video.
+
+
+==============================================================================
+33. CARTOUCHES ET BUS
+==============================================================================
+
+Le connecteur expose A0-A15, D0-D7, /RD, /WR, /CS, /RESET, horloge, audio VIN et
+alimentation. Le CPU voit 32 Kio ROM et 8 Kio RAM a la fois. Ecrire dans la plage
+ROM configure le MBC; cela n'ecrit pas la ROM.
+
+La broche PHI fournit une horloge liee au systeme, utilisee par quelques circuits.
+Les cartouches consommatrices doivent respecter niveaux/timing et ne jamais
+appliquer 5 V externes aux consoles modernes sans adaptation.
+
+
+==============================================================================
+34. ROM ONLY ET MBC1
+==============================================================================
+
+ROM only : jusqu'a 32 Kio, eventuellement 8 Kio RAM sans banking.
+
+MBC1 registres par plage d'adresse :
+
+$0000-$1FFF  RAM enable, nibble bas = $A
+$2000-$3FFF  5 bits bas banque ROM; zero est traduit en 1
+$4000-$5FFF  2 bits hauts ROM ou banque RAM
+$6000-$7FFF  mode 0 ROM banking / mode 1 RAM banking
+
+MBC1 standard adresse jusqu'a 2 Mio ROM et 32 Kio RAM. En mode 0, plage $0000
+reste banque 0; en mode 1, elle peut utiliser bits hauts. Banques $00,$20,$40,$60
+dans la fenetre commutable sont remappees au voisin suivant. Des multicarts MBC1M
+cablent differemment les bits; detecter par contenu, pas seulement header.
+
+
+==============================================================================
+35. MBC2, MBC3 ET RTC
+==============================================================================
+
+MBC2 integre 512 x 4 bits RAM. A8 de l'adresse distingue RAM enable (A8=0) et
+selection ROM 4 bits (A8=1). Lectures RAM ont nibble haut typiquement a 1.
+
+MBC3 : RAM enable $0000-$1FFF, banque ROM 7 bits $2000-$3FFF (0->1), selection
+RAM 0..3 ou registre RTC $08..$0C a $4000-$5FFF, latch par transition 0 puis 1
+a $6000-$7FFF. RTC : secondes, minutes, heures, jour bas et registre jour haut
+avec bit jour 8, halt et carry.
+
+RTC compte le temps meme console eteinte grace a pile. Le compteur jour deborde
+apres 511 et positionne carry. Latch fige une copie lisible, pas necessairement le
+compteur vivant. Un emulateur doit sauvegarder timestamp, halt, subsecondes et
+gerer recul d'horloge hote selon politique documentee.
+
+
+==============================================================================
+36. MBC5, RUMBLE ET AUTRES CONTROLEURS
+==============================================================================
+
+MBC5 : RAM enable $0000-$1FFF; bits ROM 0..7 a $2000-$2FFF, bit 8 a $3000-$3FFF;
+banque RAM a $4000-$5FFF. Banque ROM zero est valide dans la fenetre $4000. Il
+adresse jusqu'a 8 Mio ROM et generalement 128 Kio RAM. Variante rumble partage un
+bit de registre avec moteur et reduit bits banque RAM disponibles.
+
+Autres puces : MMM01, HuC1/HuC3, MBC6, MBC7 (capteur/EEPROM), TAMA5, camera,
+controleurs flash modernes. Ne pas traiter tout type inconnu comme MBC1. MBC7
+emploie protocole serie EEPROM et accelerometre; HuC possede fonctions infrarouges.
+
+
+==============================================================================
+37. RAM SAUVEGARDEE ET PILES
+==============================================================================
+
+RAM SRAM doit etre activee avant acces et desactivee apres pour limiter risques.
+La pile bouton conserve SRAM/RTC; elle ne recharge pas. Sa duree depend puce,
+capacite et temperature. Remplacement exige sauvegarde prealable et precautions
+de soudure/polarite.
+
+Emulateur : fichier `.sav` taille exacte du controleur, ecriture atomique via
+temporaire+rename, flush au changement banque/fermeture raisonnable. Ne pas ecrire
+au disque a chaque octet. EEPROM/flash ont etat busy et commandes, pas SRAM plate.
+
+
+==============================================================================
+38. CAMERA, IMPRIMANTE ET ACCESSOIRES
+==============================================================================
+
+Game Boy Camera combine capteur CMOS, traitement Mitsubishi et MBC; registres
+pilotent exposition, edge enhancement et matrice. Les images sont converties en
+tuiles 2 bpp. Game Boy Printer dialogue par Link avec paquets magic, commande,
+compression RLE facultative, longueur, checksum et statut; elle imprime thermique.
+
+Four Player Adapter arbitre plusieurs liaisons. Barcode Boy, sonar, modem, clavier
+et accessoires regionaux ont protocoles propres. Super Game Boy recoit des paquets
+128 bits en basculant lignes JOYP et peut charger bordure/palettes/sons SNES.
+
+
+==============================================================================
+39. DIFFERENCES CGB IMPORTANTES
+==============================================================================
+
+CGB ajoute : mode double vitesse via KEY1/STOP, deux banques VRAM, huit banques
+WRAM, palettes RGB555, attributs par tuile, priorites, infrarouge, HDMA general et
+HBlank, vitesse serie rapide, nouveaux registres et boot ROM plus grande.
+
+Un jeu DMG sur CGB fonctionne en mode compatibilite avec palette choisie. Un jeu
+CGB peut etre compatible DMG ($0143=$80) ou exclusif ($C0). En double vitesse,
+CPU/timer accelerent relativement au PPU selon domaine; DIV est lie a CPU. OAM DMA
+et blocages ne doivent pas etre extrapoles aveuglement du DMG.
+
+
+==============================================================================
+40. ASSEMBLEUR RGBDS : ROM MINIMALE
+==============================================================================
+
+RGBDS moderne, l'en-tete est complete par `rgbfix` :
+
+SECTION "VBlank", ROM0[$0040]
+    reti
+
+SECTION "Header", ROM0[$0100]
+    nop
+    jp Start
+    ds $0150 - @, 0
+
+SECTION "Main", ROM0[$0150]
+Start:
+    di
+    ld sp, $DFFF
+    xor a
+    ldh [$0F], a             ; IF
+    ld a, %00000001
+    ld [$FFFF], a            ; IE = VBlank
+    ei
+.loop:
+    halt
+    jr .loop
+
+Construction :
+
+  rgbasm -o main.o main.asm
+  rgblink -o game.gb -m game.map -n game.sym main.o
+  rgbfix -v -p 0 -t "MON JEU" game.gb
+
+La syntaxe/options evoluent; consulter la version RGBDS installee.
+
+
+==============================================================================
+41. ASSEMBLEUR : COPIE VRAM ET DMA
+==============================================================================
+
+Attendre LCD coupe ou une periode autorisee avant cette copie :
+
+; HL=source ROM, DE=destination VRAM, BC=taille
+CopyVRAM:
+    ld a, [hli]
+    ld [de], a
+    inc de
+    dec bc
+    ld a, b
+    or c
+    jr nz, CopyVRAM
+    ret
+
+Routine DMA a placer/copier en HRAM :
+
+; A = octet haut source, par exemple $C0
+DMARoutine:
+    ldh [$46], a
+    ld a, 40                 ; attente >= 160 M-cycles via boucle
+.wait:
+    dec a
+    jr nz, .wait
+    ret
+
+Le temps exact de boucle depend des opcodes; executer depuis HRAM. Ne pas appeler
+une routine ROM pendant le blocage du bus.
+
+
+==============================================================================
+42. ASSEMBLEUR : INTERRUPTION VBLANK
+==============================================================================
+
+SECTION "VBlank IRQ", ROM0[$0040]
+    push af
+    push hl
+    ld hl, FrameCounter
+    inc [hl]
+    ; Mettre ici seulement copies VRAM/OAM bornees.
+    pop hl
+    pop af
+    reti
+
+SECTION "State", WRAM0
+FrameCounter: ds 1
+
+Une ISR doit preserver tous registres modifies. IF est acquitte par le materiel
+lors de la prise d'IRQ; si plusieurs bits sont pending, le CPU reprendra le plus
+prioritaire apres RETI. Ne pas faire `ei` dans une ISR ordinaire.
+
+
+==============================================================================
+43. ASSEMBLEUR : LECTURE MANETTE
+==============================================================================
+
+; Retour A : bits 0..3 directions, bits 4..7 boutons, 1 = appuye
+ReadJoypad:
+    ld a, $20
+    ldh [$00], a
+    ldh a, [$00]
+    ldh a, [$00]
+    cpl
+    and $0F
+    ld b, a
+    ld a, $10
+    ldh [$00], a
+    ldh a, [$00]
+    ldh a, [$00]
+    cpl
+    and $0F
+    swap a
+    or b
+    ld b, a
+    ld a, $30                ; deselectionner les deux groupes
+    ldh [$00], a
+    ld a, b
+    ret
+
+Pour detecter pressions nouvelles : `pressed = current AND NOT previous`.
+
+
+==============================================================================
+44. ASSEMBLEUR : SON
+==============================================================================
+
+; Active APU et joue une note pulse CH2.
+    ld a, $80
+    ldh [$26], a             ; NR52 power
+    ld a, $77
+    ldh [$24], a             ; volumes L/R
+    ld a, $22
+    ldh [$25], a             ; CH2 vers L/R
+    ld a, %10000000
+    ldh [$16], a             ; duty 50 %, length
+    ld a, %11110011
+    ldh [$17], a             ; DAC, volume 15, enveloppe
+    ld a, $D6
+    ldh [$18], a             ; frequence bas
+    ld a, %10000110
+    ldh [$19], a             ; trigger + frequence haut
+
+Les valeurs donnent un exemple audible, pas une note musicale calibree.
+
+
+==============================================================================
+45. C AVEC GBDK
+==============================================================================
+
+#include <gb/gb.h>
+#include <stdint.h>
+
+void main(void) {
+    uint8_t old = 0;
+    DISPLAY_ON;
+    while (1) {
+        uint8_t now = joypad();
+        uint8_t pressed = now & (uint8_t)~old;
+        if (pressed & J_A) {
+            move_sprite(0, 80, 72);
+            SHOW_SPRITES;
+        }
+        old = now;
+        vsync();
+    }
+}
+
+GBDK fournit `set_bkg_data`, `set_bkg_tiles`, sprites, son, banques et ISR. Sur
+CPU 8 bits, `int` peut couter cher; employer `uint8_t` lorsque suffisant, eviter
+division/modulo et allocations dynamiques dans la boucle critique.
+
+
+==============================================================================
+46. BANCS ET ORGANISATION D'UN JEU
+==============================================================================
+
+ROM0 contient vecteurs, en-tete, runtime, ISR, commutateur de banque et routines
+communes. ROMX contient niveaux, code et ressources. Une fonction bankee doit
+sauver banque courante, selectionner la nouvelle, appeler, puis restaurer; les ISR
+ne doivent pas surprendre un changement non atomique.
+
+RAM externe sert sauvegarde, pas pile de travail par defaut. Planifier VRAM :
+tuiles BG, sprites, cartes. Compresser maps/RLE et decompresser par morceaux.
+Conserver une shadow OAM en WRAM, puis DMA a chaque VBlank.
+
+
+==============================================================================
+47. OPTIMISATION
+==============================================================================
+
+- budgeter cycles par scanline et VBlank;
+- preferer `ldh` pour I/O/HRAM et `jr` pour branches proches;
+- garder pointeurs dans HL/DE, compteurs 8 bits quand possible;
+- derouler seulement apres mesure;
+- copier OAM par DMA et VRAM en blocs pendant periodes sures;
+- mettre petites tables/routines critiques dans ROM0/HRAM;
+- eviter changements de banque repetes;
+- utiliser tuiles/strips plutot que recalcul pixel;
+- trier sprites pour limiter disparition sur lignes chargees;
+- endormir par HALT entre evenements pour autonomie.
+
+
+==============================================================================
+48. CONSTRUCTION, EN-TETE ET TESTS
+==============================================================================
+
+RGBDS : RGBASM assemble, RGBLINK place banques, RGBFIX complete/verifie en-tete,
+RGBGFX convertit images en tuiles. GBDK-2020 fournit SDCC, bibliotheques et `lcc`.
+Produire `.map` et `.sym`, fixer type MBC/tailles, verifier checksum et taille ROM.
+
+Tester au minimum DMG, Pocket, CGB mode DMG, SGB si fonctionnalite utilisee, puis
+plusieurs emulateurs. Les flashcarts peuvent masquer timings MBC/bus; une vraie
+cartouche cible reste la reference.
+
+
+==============================================================================
+49. DEBOGAGE SUR CONSOLE
+==============================================================================
+
+Emulateurs de debug : breakpoints PC/memoire, viewer tuiles/OAM, trace IRQ et
+compteur cycles. BGB, SameBoy, Emulicious et Mesen2 offrent des ensembles varies.
+No$gmb conserve aussi une importante reference historique.
+
+Sur materiel : flashcart, Link/serie, codes visuels et sonores. Une bordure coloree
+ou ecriture SCX a des points precis mesure le timing a l'oscilloscope/capture.
+Initialiser WRAM; les bugs qui changent au power cycle signalent donnees indefinies.
+
+
+==============================================================================
+50. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+Architecture conseillee : CPU execute une micro-operation ou instruction, puis
+un scheduler avance timer, PPU, APU, DMA, serie et RTC au meme temps T-cycle.
+MMIO appelle des handlers avec effets de bord. Cartouche est un dispositif, pas
+un tableau ROM plat.
+
+Separations : bus/arbitrage, CPU, interrupt controller, timer, PPU FIFO, APU,
+MBC/RTC, serie et frontend. Les save states doivent inclure compteurs internes,
+pipeline PPU, frame sequencer, DMA, IME differe et etat MBC, pas seulement RAM.
+
+
+==============================================================================
+51. EMULATION CPU ET TIMER
+==============================================================================
+
+Pour chaque opcode : longueur, cycles pris/non pris, lectures/ecritures dans leur
+ordre, drapeaux et PC/SP wrap 16 bits. Implementer EI differe, priorite IRQ, HALT
+bug, wake HALT avec IME=0, STOP et opcodes lockup. Les acces memoire peuvent eux-
+memes declencher un evenement entre M-cycles.
+
+Timer : compteur systeme 16 bits, detection de front TAC, reset DIV, pipeline
+overflow/reload TIMA et conflits d'ecriture. Ne deduire DIV depuis temps absolu
+sans conserver phase et resets.
+
+
+==============================================================================
+52. EMULATION PPU ET DMA
+==============================================================================
+
+Un renderer scanline approximatif lance beaucoup de jeux, mais les demos exigent
+fetcher/FIFO dot-level : OAM scan, selection dix sprites, stalls de fetch, SCX
+discard, demarrage fenetre, priorite pixels, STAT line et ligne 153.
+
+Bloquer CPU VRAM/OAM selon mode et modele. DMA OAM copie progressivement, avec
+source, restart et bus conflicts. CGB HDMA est distinct. LCD off/on reinitialise
+sequencer et LY avec timing. Presenter framebuffer apres 160x144 pixels logiques;
+simulation ghosting est un filtre frontend optionnel.
+
+
+==============================================================================
+53. EMULATION APU, MBC ET SERIE
+==============================================================================
+
+APU doit conserver diviseur/frame sequencer, timers de waveform, positions duty,
+LFSR, length, envelope, sweep shadow, DAC et wave RAM. Generer a l'horloge interne,
+mixeur analogique/high-pass, puis resampler. Tester power cycles et triggers.
+
+MBC : decoder seulement lignes reellement cablees, banques interdites/remappees,
+RAM enable, RTC latch et pile. Serie : shift register bit par bit, horloge
+interne/externe et IRQ apres huit fronts. Une liaison entre deux instances exige
+un arbitre commun afin d'eviter deux chronologies independantes.
+
+
+==============================================================================
+54. PLAN DE VALIDATION
+==============================================================================
+
+Tests unitaires et ROMs de test legalement obtenues :
+
+- 500 opcodes documentes, timings et drapeaux;
+- IRQ, EI/DI/RETI, HALT bug et STOP;
+- timer DIV/TIMA glitches et conflits reload;
+- PPU modes, STAT, LY/LYC, fenetre et sprite priority;
+- restrictions VRAM/OAM, DMA et contention;
+- quatre canaux APU, sweep, wave RAM et power;
+- MBC1/2/3/5, RTC, SRAM et tailles atypiques;
+- serie interne/externe, deconnexion et imprimante;
+- boot ROMs/modeles et etat post-boot.
+
+Comparer traces bus, hashes de frames et audio a du materiel DMG/MGB/CGB. Des
+suites connues comme Blargg, Mooneye et dmg-acid2 sont utiles, mais chacune teste
+un sous-ensemble et doit etre acquise depuis son depot/auteur.
+
+
+==============================================================================
+55. MAINTENANCE ET PRESERVATION
+==============================================================================
+
+Pannes frequentes : ecran DMG avec lignes mortes (liaison flex), polariseur brule,
+contacts cartouche oxydes, interrupteur sale, corrosion de piles, haut-parleur,
+condensateurs et prise Link. Nettoyer a l'isopropanol adapte, sans abraser le
+placage. Une reparation du flex LCD demande chaleur controlee et comporte risque.
+
+Avant pile de cartouche : dumper SRAM, verifier tension, remplacer polarite
+correcte et recharger sauvegarde. Pour preservation, dumper ROM plusieurs fois,
+identifier PCB/MBC/masque, conserver RAM/RTC et SHA-256. Ne distribuer ni ROM
+commerciale ni boot ROM sans autorisation.
+
+
+==============================================================================
+56. REFERENCES
+==============================================================================
+
+Documentation historique Nintendo :
+
+- Nintendo, Game Boy Technical Manual (scan du manuel 1991) :
+  https://datassette.org/node/106296
+- Nintendo, Game Boy Programming Manual, a consulter avec ses errata et les
+  mesures modernes; certaines copies sont des scans non officiels.
+
+References ouvertes et outils :
+
+- Game Boy Complete Technical Reference (travail mesure, encore annonce incomplet) :
+  https://gekkio.fi/files/gb-docs/gbctr.pdf
+- sources de cette reference : https://github.com/Gekkio/gb-ctr
+- RGBDS et manuel assembleur/instructions : https://rgbds.gbdev.io/
+- documentation GBDK-2020 : https://gbdk.org/docs/gbdk_manual.pdf
+- Pan Docs, reference communautaire GB/GBC : https://gbdev.io/pandocs/
+
+Pour une implementation precise, confronter manuel Nintendo, decapsulation ou
+mesures publiees, tests sur plusieurs revisions et sources d'emulateurs valides.
+Documenter toute approximation (open bus, LCD analogique, APU ou timing MBC).
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

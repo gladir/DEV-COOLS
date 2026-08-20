@@ -1,0 +1,817 @@
+==============================================================================
+ MAGNAVOX ODYSSEY 1TL200 (1972)
+ Materiel, logique discrete, cartes-programmes et restauration
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Magnavox Odyssey originale, modele 1TL200, premiere console
+de jeu video domestique commercialisee. Il traite histoire, electronique discrete,
+generation video, controles, cartes enfichables, fusil optique, jeux, diagnostic,
+restauration, reproduction et simulation.
+
+Il ne faut pas la confondre avec Odyssey 100/200/300..., Philips Videopac ou
+Magnavox Odyssey2. L'Odyssey 1972 n'a ni microprocesseur, ni RAM, ni ROM, ni son,
+ni score electronique. Sa programmation consiste a interconnecter des blocs
+materiels au moyen de cartes passives.
+
+Les accents sont omis afin de conserver un fichier ASCII utilisable avec des
+outils electroniques anciens.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+1. IMPORTANCE HISTORIQUE
+==============================================================================
+
+Ralph H. Baer imagine en 1966 un appareil interactif utilisant un televiseur
+ordinaire. Avec Bill Harrison et Bill Rusch chez Sanders Associates, il developpe
+plusieurs prototypes, puis la Brown Box. Magnavox obtient une licence, adapte le
+prototype et commercialise l'Odyssey en 1972.
+
+La machine etablit plusieurs concepts fondamentaux : console domestique reliee au
+televiseur, controles separes, jeux selectionnables, interaction entre objets a
+l'ecran et accessoires optiques. Les brevets Baer/Sanders eurent ensuite une grande
+importance dans l'histoire juridique du jeu video.
+
+
+==============================================================================
+2. PERIMETRE : QUELLE ODYSSEY ?
+==============================================================================
+
+Ce fichier couvre :
+
+- Magnavox Odyssey 1TL200 BLAK, BK11, BK12 et BK13;
+- RUN-1, RUN-1B et RUN-2, avec differences de fabrication;
+- edition americaine de 1972 et exportation de 1974;
+- cartes 1 a 12 et Shooting Gallery;
+- accessoires, overlays et elements de jeu de table.
+
+Les Odyssey 100 a 4000 sont des consoles Pong ulterieures, souvent a circuits
+integres. L'Odyssey2 de 1978 est une console a microprocesseur Intel 8048 et
+cartouches ROM : elle n'est pas compatible.
+
+
+==============================================================================
+3. CONTENU DU SYSTEME 1972
+==============================================================================
+
+Le coffret americain typique contient : unite principale, deux controles, cordon
+de jeu/RF switch, six piles C, cartes-programmes 1 a 6, overlays pour deux tailles
+d'ecran, manuel et nombreux accessoires papier/plastique.
+
+Cartes fournies :
+
+  1  Table Tennis
+  2  Ski, Simon Says
+  3  Tennis, Analogic, Hockey, Football (passes/tirs)
+  4  Cat and Mouse, Football (course), Haunted House
+  5  Submarine
+  6  Roulette, States
+
+Une carte peut servir a plusieurs jeux. Les regles, overlays, cartes papier, des,
+jetons et imagination creent l'essentiel des differences.
+
+
+==============================================================================
+4. CE QUE LA MACHINE PEUT AFFICHER
+==============================================================================
+
+Le generateur produit au maximum quelques objets monochromes :
+
+- Player 1 : spot carre de position horizontale/verticale reglable;
+- Player 2 : second spot carre;
+- Ball : petit spot mobile;
+- Wall/line : ligne verticale, centrale ou decalee selon cablage;
+- fond gris/zone lumineuse aidant la visibilite des overlays.
+
+Tous ne sont pas actifs dans chaque carte. Il n'existe ni bitmap, ni texte, ni
+sprites memorises, ni couleur electronique. La Brown Box avait des fonds colores,
+supprimes de la version commerciale pour reduire le cout.
+
+
+==============================================================================
+5. CE QUE LA MACHINE NE FAIT PAS
+==============================================================================
+
+- aucun score a l'ecran;
+- aucun son;
+- aucune intelligence artificielle;
+- aucune sauvegarde;
+- aucune horloge logicielle;
+- aucun dessin de terrain;
+- aucune lecture de programme;
+- aucun rebond automatique sophistique comparable aux consoles Pong suivantes.
+
+Les joueurs appliquent les regles et comptent les points. Certains rebonds ou
+changements de direction exigent le bouton Reset ou l'action des controles.
+
+
+==============================================================================
+6. ARCHITECTURE GENERALE
+==============================================================================
+
+ +----------+      +--------------------+      +------------------+
+ | controles|----->| generateurs spots  |----->| sommation video  |
+ +----------+      | P1, P2, ball, wall |      +--------+---------+
+                   +---------+----------+               |
+                             | collisions                v
+ +--------------+    +-------+--------+          +--------------+
+ | carte passive|--->| gate matrix /  |          | RF canal 3/4 |
+ +--------------+    | flip-flops     |          +------+-------+
+                     +----------------+                 televiseur
+
+La carte selectionne et relie des signaux deja presents. Les generateurs de synchro
+et de spots transforment des rampes/impulsions en rectangles. Une matrice a diodes
+combine coincidences et commandes. Des flip-flops fixent les sens de mouvement.
+
+
+==============================================================================
+7. TECHNOLOGIE ELECTRONIQUE
+==============================================================================
+
+Le circuit repose sur resistances, condensateurs, diodes et transistors discrets,
+environ quarante transistors et quarante diodes selon les descriptions historiques.
+Il combine comportement analogique (rampes, constantes RC, seuils, modulation) et
+logique numerique a niveaux discrets.
+
+Le qualifier de console purement analogique est donc reducteur. Il ne possede pas
+de circuits integres logiques, mais des portes, bascules et comparateurs sont
+realises avec composants discrets.
+
+
+==============================================================================
+8. MODULES INTERNES
+==============================================================================
+
+Le manuel de service organise le schema en blocs :
+
+- horizontal et vertical sync generators;
+- horizontal et vertical blanking;
+- Player 1 generator et son controle;
+- Player 2 generator et son controle;
+- Ball generator;
+- Wall generator;
+- English flip-flop;
+- horizontal et vertical ball flip-flops;
+- coincidence/collision et gate matrix;
+- sommation, oscillateur RF et alimentation/regulation.
+
+Ce sont des fonctions de schema, pas des puces interchangeables.
+
+
+==============================================================================
+9. ALIMENTATION
+==============================================================================
+
+L'unite fonctionne normalement avec six piles de format C, soit environ 9 V en
+serie. Un adaptateur Magnavox optionnel 1A9179 est donne pour 9 V continu, 40 mA.
+Verifier polarite et schema de la revision avant tout adaptateur moderne.
+
+L'insertion d'une carte ferme l'alimentation par la liaison 2-4. Sans carte, la
+console est eteinte. Les piles anciennes fuient frequemment et detruisent contacts,
+fils et cuivre : les retirer immediatement d'un appareil de collection.
+
+
+==============================================================================
+10. SORTIE RF ET CONNEXION TV
+==============================================================================
+
+La sortie est modulee RF pour entree antenne d'un televiseur analogique. Un
+commutateur TV/Game selectionne antenne ou console. Les versions americaines visent
+les canaux VHF 3/4 selon reglage. Les variantes export peuvent differer.
+
+Sur un recepteur moderne, employer un demodulateur/tuner analogique compatible ou
+une modification composite documentee et reversible. Une absence d'image peut
+venir du standard RF, pas de la logique de jeu.
+
+
+==============================================================================
+11. SYNCHRONISATION VIDEO
+==============================================================================
+
+Des multivibrateurs/constantes RC produisent cadence horizontale et verticale,
+blanking et impulsions de synchro compatibles avec le televiseur vise. Les spots
+sont des fenetres temporelles dans chaque ligne et chaque trame.
+
+Representation conceptuelle :
+
+  H_SYNC  ____|--|________________________|--|____
+  H_RAMP      /--------------------------/
+  SPOT_H           |======|
+  VIDEO             objet blanc
+
+La largeur d'un objet correspond a une duree horizontale; sa position, au retard
+depuis la synchro. Verticalement, le meme principe s'applique aux lignes de trame.
+
+
+==============================================================================
+12. GENERATEUR DE SPOT
+==============================================================================
+
+Pour dessiner un rectangle, la logique forme deux fenetres :
+
+  visible = fenetre_horizontale AND fenetre_verticale
+
+Un controle modifie une tension/constante qui deplace le seuil et donc le retard.
+Taille et intensite resultent d'autres signaux. Les sorties des objets sont combinees
+avant modulation RF. Aucun pixel individuel n'est stocke.
+
+Un clone doit reproduire seuils et interactions, pas seulement choisir arbitrairement
+des coordonnees entieres.
+
+
+==============================================================================
+13. CONTROLES DES JOUEURS
+==============================================================================
+
+Chaque boitier possede trois commandes rotatives : position horizontale, position
+verticale et English. Un bouton Reset intervient dans le controle de balle. Les
+potentiometres agissent directement sur le circuit; ils n'envoient aucun paquet ni
+valeur numerique.
+
+La commande English influe sur la trajectoire verticale de la balle. Son effet
+depend du cablage de la carte et du moment de collision. Les deux boitiers ne sont
+donc pas des joysticks numeriques interchangeables avec une interface moderne.
+
+
+==============================================================================
+14. BALLE ET FLIP-FLOPS DE DIRECTION
+==============================================================================
+
+Le mouvement de la balle est genere par evolution temporelle de circuits. Deux
+etats memorisent direction horizontale et verticale. Une collision ou Reset peut
+basculer ces etats selon la matrice active.
+
+Modele logique simplifie :
+
+  si collision_h : direction_x <- NOT direction_x
+  si collision_v : direction_y <- NOT direction_y
+  x <- x + (direction_x ? vitesse_x : -vitesse_x)
+  y <- y + (direction_y ? vitesse_y : -vitesse_y) + english
+
+Ce pseudo-code explique le comportement mais n'est pas le schema exact : l'original
+utilise rampes, impulsions et bascules discretes.
+
+
+==============================================================================
+15. COLLISIONS ET GATE MATRIX
+==============================================================================
+
+Une collision est une coincidence temporelle entre signaux de spots, murs ou zones.
+La gate matrix a diodes choisit quelles coincidences atteignent les flip-flops ou
+d'autres fonctions. La carte programme ces chemins.
+
+Les cartes peuvent ainsi : activer/desactiver balle et ligne, modifier la hauteur
+du mur, choisir collisions balle/joueur ou balle/mur, connecter English et changer
+la topologie. Elles ne changent pas librement les composants ou les constantes.
+
+
+==============================================================================
+16. LA "CARTOUCHE" N'EST PAS UNE ROM
+==============================================================================
+
+Chaque Game Card est un circuit imprime passif. Ses pistes court-circuitent des
+groupes de broches du connecteur. Elle ne contient normalement aucun composant,
+code, donnees, microprocesseur ou memoire.
+
+Par analogie moderne, la console contient une netlist configurable et la carte
+fournit un ensemble de straps. Lire une carte comme une suite d'octets n'a aucun
+sens. Pour l'archiver, enregistrer ses connexions electriques, photos, dimensions
+et numero, pas un faux dump ROM.
+
+
+==============================================================================
+17. CONNECTEUR DES CARTES
+==============================================================================
+
+Le connecteur a 44 contacts. Vu du dessus comme dans la reference technique :
+
+  paire : 2  4  6  8 10 12 14 16 18 20 22 24 26 28 30 32 34 36 38 40 42 44
+  impaire: 1  3  5  7  9 11 13 15 17 19 21 23 25 27 29 31 33 35 37 39 41 43
+
+Le cote impair est le cote portant le numero de carte. Un groupe `6-8-14` signifie
+que les trois contacts sont relies ensemble. Un espace separe les groupes.
+
+
+==============================================================================
+18. MATRICE COMPLETE DES CARTES 1 A 12
+==============================================================================
+
+Transcription du manuel de service, avec correction de la carte 4 signalee par des
+mesures de cartes originales :
+
+  #1   2-4  6-8-14-16-20-22  30-34  31-39  35-37
+  #2   2-4  6-8
+  #3   2-4  6-8-10-20-22  30-34  42-44  31-39  35-37
+  #4   2-4  6-8-18  21-23  33-37-39
+  #5   2-4  6-8-10-20-22  30-34  21-23-25  31-33-39  35-37
+  #6   2-4  26-28-38  3-5-9
+  #7   2-4  6-8-10-14-16-20-22  30-34  42-44  13-27  23-25
+       31-39  35-37
+  #8   2-4  6-8-12-14-20-22  34-36  9-11-13  15-17  31-39  35-37
+  #9   2-4  6-24  21-23
+  #10  2-4  6-8-10-20-22-24  30-34  23-25  31-39  35-37
+  #11  2-4  6-8-12-14  20-22  34-36  38-40  9-11-13  15-17
+       31-39  35-37
+  #12  2-4  6-8-18  26-28  3-5-7  21-23  33-37-39
+
+Toutes relient 2-4, contact de mise sous tension. Avant de fabriquer une carte,
+verifier cette table contre le schema/une carte physique : une erreur peut relier
+deux sorties actives et endommager des transistors.
+
+
+==============================================================================
+19. PROGRAMMER UNE CARTE : METHODE SURE
+==============================================================================
+
+1. partir du schema de la revision exacte;
+2. nommer la fonction electrique de chaque contact;
+3. relever les groupes d'une carte connue hors tension;
+4. verifier qu'aucun groupe ne relie des sorties incompatibles;
+5. simuler la netlist;
+6. fabriquer une carte au bon pas, biseau et epaisseur;
+7. tester a travers resistances/limitation de courant;
+8. fermer 2-4 en dernier.
+
+Une matrice de DIP switches universelle est historiquement plausible, mais ne doit
+jamais permettre des combinaisons arbitraires sans interverrouillage.
+
+
+==============================================================================
+20. REPRESENTATION INFORMATIQUE D'UNE CARTE
+==============================================================================
+
+Une carte peut etre decrite comme ensembles de contacts equipotentiels :
+
+  card3 = {
+    {2,4}, {6,8,10,20,22}, {30,34}, {42,44}, {31,39}, {35,37}
+  }
+
+Pour construire la connectivite, appliquer union-find a chaque groupe. Deux broches
+sont reliees si elles ont le meme representant. Cette representation evite de
+confondre une chaine `6-8-10` avec seulement deux connexions independantes.
+
+
+==============================================================================
+21. EXEMPLE C : CONNECTIVITE D'UNE CARTE
+==============================================================================
+
+#include <stdbool.h>
+#include <stddef.h>
+
+static unsigned parent[45];
+
+static unsigned root(unsigned x) {
+    while (parent[x] != x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    return x;
+}
+
+static void join(unsigned a, unsigned b) {
+    a = root(a); b = root(b);
+    if (a != b) parent[b] = a;
+}
+
+static void init_card3(void) {
+    unsigned i;
+    for (i = 1; i <= 44; ++i) parent[i] = i;
+    join(2,4);
+    join(6,8); join(6,10); join(6,20); join(6,22);
+    join(30,34); join(42,44); join(31,39); join(35,37);
+}
+
+Ce code modelise les pistes, pas le comportement video. Il faut ensuite connecter
+chaque numero au noeud du schema Odyssey.
+
+
+==============================================================================
+22. EXEMPLE VERILOG : GENERATEUR DE SPOT CONCEPTUEL
+==============================================================================
+
+module spot(
+    input  wire [8:0] x, y,
+    input  wire [8:0] left, top,
+    input  wire [8:0] width, height,
+    output wire video
+);
+    assign video = (x >= left) && (x < left + width) &&
+                   (y >= top)  && (y < top + height);
+endmodule
+
+Un clone FPGA peut combiner plusieurs spots puis generer synchro. Cet exemple est
+fonctionnellement equivalent au rectangle, pas transistor/cycle exact : l'Odyssey
+ne possede ni compteurs 9 bits ni horloge pixel numerique.
+
+
+==============================================================================
+23. EXEMPLE VERILOG : MATRICE DE COLLISION
+==============================================================================
+
+wire hit_p1   = ball_video & p1_video;
+wire hit_p2   = ball_video & p2_video;
+wire hit_wall = ball_video & wall_video;
+
+always @(posedge frame_tick) begin
+    if (reset_ball) begin
+        dir_x <= 1'b1;
+    end else if ((card_hit_p1 & hit_p1) |
+                 (card_hit_p2 & hit_p2) |
+                 (card_hit_wall & hit_wall)) begin
+        dir_x <= ~dir_x;
+    end
+end
+
+Le vrai circuit reagit a des impulsions de coincidence, pas uniquement au front de
+trame. Un modele fidele doit conserver duree, priorite et rebonds des bascules.
+
+
+==============================================================================
+24. MODELISATION ANALOGIQUE
+==============================================================================
+
+Une simulation SPICE peut representer chaque transistor, diode et reseau RC depuis
+le manuel. Parametres necessaires : modele de transistor, chute des diodes, valeurs
+et tolerances, charge des modules, alimentation et impedance RF/video.
+
+Pour emulation de jeu, un modele evenementiel est suffisant. Pour restauration,
+compatibilite de cartes ou etude de glitches, SPICE/netlist transistor est preferable.
+Les tolerances expliquent des positions ou vitesses differentes entre consoles.
+
+
+==============================================================================
+25. OVERLAYS
+==============================================================================
+
+Les feuilles transparentes colorees se fixent devant le tube cathodique. Elles
+fournissent terrain, labyrinthe, cibles, chiffres et decor. Deux tailles accompagnent
+generalement chaque jeu afin de correspondre a des diagonales de televiseurs.
+
+L'image electronique doit etre calibree pour que spots et ligne correspondent au
+dessin. Les overlays originaux peuvent se deformer, jaunir ou devenir cassants;
+ne pas utiliser ruban adhesif agressif sur un exemplaire historique.
+
+
+==============================================================================
+26. JEUX DE TABLE ET ARBITRAGE HUMAIN
+==============================================================================
+
+La console est une composante d'un jeu hybride. Scoreboards, argent factice,
+cartes, des, jetons, plateaux et regles portent l'etat que stockerait aujourd'hui
+un programme. Football, Invasion ou Interplanetary Voyage alternent manipulations
+electroniques et actions de plateau.
+
+Une preservation complete doit donc inclure regles et accessoires, pas seulement
+l'unite et ses cartes.
+
+
+==============================================================================
+27. LISTE DES 28 JEUX DOCUMENTES
+==============================================================================
+
+Analogic, Baseball, Basketball, Brain Wave, Cat and Mouse, Dogfight, Football,
+Fun Zoo, Handball, Haunted House, Hockey, Invasion, Interplanetary Voyage,
+Percepts, Prehistoric Safari, Roulette, Shooting Gallery, Shootout, Simon Says,
+Ski, Soccer, States, Submarine, Table Tennis, Tennis, Volleyball, Win et Wipeout.
+
+Le nombre de cartes est inferieur au nombre de jeux parce que plusieurs ensembles
+de regles reutilisent la meme configuration electronique.
+
+
+==============================================================================
+28. CARTES 7 A 12 ET EXTENSIONS
+==============================================================================
+
+- carte 7 : Volleyball;
+- carte 8 : Handball;
+- carte 9 : Shootout, Dogfight, Prehistoric Safari;
+- carte 10 : Shooting Gallery;
+- carte 11 : usage commercial demeure mal documente/rare;
+- carte 12 : Interplanetary Voyage.
+
+Basketball et certaines editions rares ont une attribution moins sure selon les
+ensembles retrouves. Conserver le niveau de confiance dans un catalogue.
+
+
+==============================================================================
+29. SHOOTING GALLERY ET FUSIL OPTIQUE
+==============================================================================
+
+Le fusil optionnel detecte une source lumineuse pointee. Il ne determine pas des
+coordonnees par balayage comme certains light guns a microprocesseur. La gachette
+et le photodetecteur fournissent une indication lorsqu'une zone assez lumineuse
+est visee.
+
+Il peut donc reagir a une lampe ou a une autre source lumineuse. Les overlays
+fournissent les cibles. Son fonctionnement depend de luminosite, contraste et
+technologie d'ecran; un LCD moderne ne reproduit pas necessairement les conditions
+d'un CRT.
+
+
+==============================================================================
+30. TABLE TENNIS ET TENNIS
+==============================================================================
+
+Table Tennis utilise la carte 1 et constitue l'experience la plus directement
+electronique, sans overlay requis. Tennis emploie la carte 3 et un overlay. Les
+joueurs deplacent leur carre, influencent la balle et appliquent le score.
+
+Ne pas decrire le systeme comme Pong avec paddles verticaux automatiques : les spots
+sont carres et le controle/mecanisme de balle est plus manuel.
+
+
+==============================================================================
+31. DIFFERENCES BROWN BOX / ODYSSEY
+==============================================================================
+
+Brown Box : commutateurs de programmation marques par cartes-guides, fonds colores,
+prototype a finition bois et fonctions experimentees. Odyssey : cartes PCB passives,
+fond monochrome, industrialisation Magnavox et accessoires commerciaux.
+
+Une reconstruction de Brown Box n'est donc pas automatiquement un clone Odyssey.
+Les topologies, controles et presentation doivent etre documentes separement.
+
+
+==============================================================================
+32. VARIANTES ET EXPORTATIONS
+==============================================================================
+
+Les references connues incluent 1TL200 BLAK/BK11/BK12/BK13 et RUN-1/RUN-1B/RUN-2.
+L'edition export 1974 propose dix jeux et documentation differente. ITT Schaub-
+Lorenz a distribue une version Odyssee sous licence. Des differences RF, etiquette,
+logo, accessoires et manuel existent.
+
+Ne jamais identifier une carte mere uniquement par la coque. Relever modele, RUN,
+serie, pays, module RF et implantation.
+
+
+==============================================================================
+33. DEMONTAGE
+==============================================================================
+
+1. retirer carte, piles, cables et controles;
+2. photographier etiquette, vis et routage;
+3. ouvrir sur surface ESD sans forcer les plastiques;
+4. ne pas deregler bobines/ajustables avant mesure;
+5. reperer fils fragiles et modules enfichables;
+6. comparer au manuel de la revision.
+
+L'appareil lui-meme est basse tension sur piles, mais le televiseur CRT et le
+modulateur connecte peuvent presenter des risques. Ne jamais ouvrir un CRT sans
+formation haute tension.
+
+
+==============================================================================
+34. DIAGNOSTIC SYSTEMATIQUE
+==============================================================================
+
+Symptome -> controles prioritaires :
+
+- rien : piles, corrosion, 2-4 de la carte, regulateur, masse;
+- neige : RF switch, cable, canal, oscillateur RF;
+- image roule : sync vertical/horizontal, condensateurs, seuils;
+- objet absent : carte, contact, module spot, sommation;
+- balle immobile : generator, flip-flops, Reset, matrice;
+- controle sans effet : cable, potentiometre, transistor du module;
+- collision fausse : diodes gate matrix, niveau des spots, carte.
+
+Tester d'abord carte 1 connue et televiseur/demodulateur connu.
+
+
+==============================================================================
+35. MESURES AU MULTIMETRE
+==============================================================================
+
+Hors tension : continuite des pistes carte, resistance des potentiometres, absence
+de court-circuit alimentation, diodes avec polarite comparee. Sous tension : tension
+regulee et points donnes par le manuel, avec masse correcte.
+
+Un multimetre ne montre pas les impulsions de synchro/collision. Utiliser oscilloscope
+haute impedance. Ne pas injecter directement 5 V TTL dans une logique discrete a
+polarites/niveaux differents.
+
+
+==============================================================================
+36. OSCILLOSCOPE ET CHRONOGRAMMES
+==============================================================================
+
+Ordre de verification : alimentation, vertical sync, horizontal sync, blanking,
+rampes, fenetres P1/P2/wall/ball, coincidences, sommation, porteuse RF. Declencher
+sur sync et comparer frequence, amplitude, largeur et niveau DC au manuel.
+
+Une sonde capacitive ou masse longue peut perturber une constante RC. Utiliser x10,
+masse courte et noter la charge ajoutee.
+
+
+==============================================================================
+37. COMPOSANTS ET SUBSTITUTIONS
+==============================================================================
+
+Les transistors modernes peuvent avoir brochage, gain, capacite et seuil differents.
+Les diodes influencent les niveaux logiques. Remplacer par fonction et parametres,
+pas seulement par categorie NPN/diode. Comparer un canal sain symetrique.
+
+Conserver les pieces originales etiquetees. Eviter recap complet sans diagnostic :
+une valeur/tolerance fait parfois partie du timing.
+
+
+==============================================================================
+38. PILES ET CORROSION
+==============================================================================
+
+Porter protection, retirer cellules qui fuient et isoler selon filiere locale. Le
+traitement depend de la chimie; neutraliser sans connaitre le depot peut aggraver.
+Nettoyer progressivement, verifier sous fils/contacts, stabiliser cuivre puis refaire
+seulement les pistes perdues.
+
+Le connecteur ressemble a un snap 9 V mais le porte-piles original a des dimensions
+particulieres. Ne pas forcer un connecteur incompatible.
+
+
+==============================================================================
+39. NETTOYAGE DU CONNECTEUR
+==============================================================================
+
+Mesurer avant abrasion. Utiliser produit adapte aux contacts et support non agressif.
+Ne pas etamer les doigts d'une carte : l'etain s'use, augmente l'epaisseur et peut
+endommager le connecteur. Restaurer une pression de contact seulement avec outil et
+procedure appropries.
+
+
+==============================================================================
+40. FABRICATION D'UNE CARTE DE REMPLACEMENT
+==============================================================================
+
+Relever epaisseur, pas, largeur des doigts, longueur, chanfrein et detrompage sur une
+carte non rare. Employer finition de contact durable, pistes assez larges et aucune
+via dans la zone d'insertion. Inscrire clairement REPRODUCTION.
+
+Verifier au testeur que seuls les groupes voulus sont relies et qu'ils sont isoles
+entre eux. Inserer hors tension; la liaison 2-4 allume ensuite la console.
+
+
+==============================================================================
+41. CARTE UNIVERSELLE A COMMUTATEURS
+==============================================================================
+
+Une carte de laboratoire peut exposer les 44 contacts sur matrice protegee. Concevoir
+des commutateurs par groupes valides, pas un crossbar libre. Ajouter resistances de
+protection, points de mesure et interrupteur maitre independant de 2-4.
+
+Sequence : alimentation coupee, choisir recette connue, verifier, inserer, fermer
+le maitre. Ne jamais commuter la topologie en fonctionnement : des transitoires
+peuvent basculer les etats ou relier temporairement deux sorties.
+
+
+==============================================================================
+42. CLONE FONCTIONNEL NUMERIQUE
+==============================================================================
+
+Un FPGA/microcontroleur video peut reproduire l'experience : compteurs de balayage,
+rectangles, positions par ADC, balle en point fixe, matrice par table de carte,
+composite/RGB/HDMI et entree photodiode. Il doit conserver controle manuel, absence
+de score/son et geometrie originale s'il vise l'authenticite.
+
+Ce clone ne sera pas electriquement compatible avec cartes/controles sans interfaces
+de niveaux et mesures. Ne pas brancher directement un FPGA 3,3 V.
+
+
+==============================================================================
+43. EMULATEUR LOGICIEL
+==============================================================================
+
+Etat minimal : positions P1/P2, position/vitesse balle, directions, English,
+configuration carte, Reset et phase video si les collisions sont temporelles.
+Rendu : fond, wall, spots puis overlay numerise calibre.
+
+Deux niveaux :
+
+- HLE jeu : rectangles et collisions par coordonnees, simple mais approximatif;
+- LLE circuit : simulateur evenementiel des noeuds/bascules et constantes RC.
+
+Les regles papier restent une couche externe que l'emulateur peut afficher sans
+pretendre qu'elles etaient calculees par la console.
+
+
+==============================================================================
+44. TESTS POUR UN EMULATEUR OU CLONE
+==============================================================================
+
+- chaque carte reproduit objets actifs et topologie;
+- les douze matrices de continuite sont exactes;
+- limites de controles et sens correspondent au materiel;
+- Reset et English agissent au bon moment;
+- collision d'angle et chevauchement prolonges sont testes;
+- RF/overscan et calibration overlay sont parametres;
+- aucun score, son ou rebond moderne n'est ajoute par defaut;
+- variantes/tolerances peuvent etre selectionnees.
+
+
+==============================================================================
+45. PRESERVATION NUMERIQUE
+==============================================================================
+
+Pour chaque objet : photos recto/verso avec echelle, scan non destructif, reference,
+revision, dimensions, materiau, couleurs, texte, continuite et provenance. Pour les
+overlays, scanner a plat avec profil couleur sans adhesif. Pour cartes papier,
+conserver ordre et verso.
+
+Publier metadata et mesures; verifier droits avant diffusion de scans graphiques ou
+manuels. Les connexions factuelles peuvent etre decrites textuellement.
+
+
+==============================================================================
+46. BREVETS ET DOCUMENTATION
+==============================================================================
+
+Les brevets de Baer, Harrison, Rusch et Sanders decrivent principes de generation,
+manipulation de symboles, controles et overlays. Un brevet peut couvrir plusieurs
+prototypes et non le schema exact 1TL200. Le manuel de service Magnavox reste la
+reference principale pour reparer la production.
+
+Ne pas reconstruire un bloc uniquement depuis un dessin de brevet simplifie.
+
+
+==============================================================================
+47. ERREURS COURANTES DANS LES DESCRIPTIONS
+==============================================================================
+
+- appeler les cartes "ROM";
+- attribuer un nombre de bits a la console;
+- dire qu'elle est entierement analogique ou entierement numerique;
+- lui attribuer couleur, son ou score;
+- confondre Odyssey et Odyssey2;
+- appeler les controles de simples paddles un axe;
+- croire qu'un televiseur Magnavox est obligatoire;
+- supposer qu'un LCD remplace fidelement le CRT pour le fusil;
+- ignorer les accessoires physiques dans la definition d'un jeu.
+
+
+==============================================================================
+48. CHECKLIST DE REMISE EN SERVICE
+==============================================================================
+
+1. documenter variante et etat initial;
+2. retirer/traiter piles qui fuient;
+3. inspecter alimentation, masses et connecteurs;
+4. tester continuite de la carte 1;
+5. alimenter avec limitation et polarite verifiee;
+6. mesurer regulation et consommation;
+7. verifier sync puis video avant les collisions;
+8. tester les deux controles et Reset;
+9. tester cartes une par une hors tension;
+10. conserver toutes modifications reversibles et documentees.
+
+
+==============================================================================
+49. TABLE RECAPITULATIVE
+==============================================================================
+
+  Element        Realisation Odyssey
+  CPU            aucun
+  programme      connexions passives sur carte
+  memoire        aucune RAM/ROM de jeu
+  graphisme      generateurs de spots discrets
+  resolution     pas de framebuffer/pixels numeriques
+  couleur        aucune couleur electronique de jeu
+  son            aucun
+  controles      potentiometres + Reset
+  sortie         RF vers televiseur analogique
+  score/etat     joueurs, cartes, des, jetons, plateau
+  alimentation   six piles C; adaptateur 9 V optionnel
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Documents techniques primaires :
+
+- Magnavox Odyssey 1TL200 Service Manual, manuel 6500 :
+  https://consolemods.org/wiki/images/a/ae/Magnavox_Odyssey_Service_Manual.pdf
+- brevet Television Gaming and Training Apparatus, famille Baer/Sanders;
+- US Patent 3,921,161, systeme de jeu TV preprogramme :
+  https://patents.google.com/patent/US3921161A/
+
+Documentation historique et verification :
+
+- Pong-Story, histoire et technologie Odyssey :
+  https://www.pong-story.com/odyssey.htm
+- Magnavox Odyssey FAQ, inventaire et pinout des cartes :
+  https://www.digitpress.com/faq/odyssey1.htm
+- inventaire des elements et accessoires :
+  https://www.pong-story.com/odyitems.htm
+- page du fusil optique :
+  https://consolemods.org/wiki/Odyssey%3AMagnavox_Odyssey_Light_Rifle
+
+Les schemas numerises sont parfois difficiles a lire. Pour toute restauration ou
+reproduction, confronter le PDF haute resolution, une carte physique et des mesures
+non destructives. Noter explicitement les hypotheses.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

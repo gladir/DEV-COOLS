@@ -1,0 +1,1216 @@
+==============================================================================
+ SUPER NINTENDO ENTERTAINMENT SYSTEM / SUPER FAMICOM
+ Materiel, programmation 65C816/PPU/SPC700 et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Super Famicom japonaise et la Super NES (SNES) : CPU Ricoh
+5A22/65C816, PPU, DMA/HDMA, APU SPC700/S-DSP, memoires, cartouches, controles,
+puces d'extension et programmation. Il vise les programmeurs, auteurs d'outils,
+emulateurs/FPGA, concepteurs de cartouches et restaurateurs.
+
+Les valeurs hexadecimales sont prefixees par `$`. Les accents sont omis pour
+conserver un fichier ASCII utilisable par les anciennes chaines de construction.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+1. HISTOIRE ET MODELES
+==============================================================================
+
+Nintendo lance la Super Famicom au Japon en 1990, la Super NES en Amerique du Nord
+en 1991 puis en Europe. Elle succede a la Famicom/NES et precede la Nintendo 64.
+
+Familles principales :
+
+- Super Famicom japonaise;
+- Super NES nord-americaine a coque angulaire;
+- Super NES PAL, coque proche Super Famicom;
+- SNS-101/Super NES Jr. et Super Famicom Jr., revisions compactes;
+- revisions de carte mere SHVC, SNS-CPU et 1CHIP;
+- Play Station CD prototype et Satellaview japonais, extensions distinctes.
+
+Les revisions 1CHIP combinent davantage de logique video et produisent une image
+analogique differente. Regions NTSC/PAL changent cadence, lignes et verrouillage.
+
+
+==============================================================================
+2. SPECIFICATIONS RESUMEES
+==============================================================================
+
+- CPU : Ricoh 5A22, coeur WDC 65C816 16 bits, bus adresse 24 bits;
+- horloge maitre : environ 21,477 MHz NTSC, 21,281 MHz PAL;
+- vitesse CPU variable : cycles de 6, 8 ou 12 master clocks;
+- Work RAM : 128 Kio;
+- PPU : deux puces sur anciens modeles, integration accrue sur 1CHIP;
+- VRAM : 64 Kio;
+- CGRAM : 256 couleurs RGB555, 512 octets;
+- OAM : 544 octets, 128 objets;
+- APU : Sony SPC700 + S-DSP, 64 Kio audio RAM;
+- audio : 8 voix BRR, environ 32 kHz, echo/FIR;
+- cartouche : ROM, SRAM et coprocesseurs optionnels;
+- deux ports controleurs, extension selon modele/region.
+
+Dire "CPU 3,58 MHz" est une simplification : la duree d'un acces depend de la
+zone et de MEMSEL/FastROM.
+
+
+==============================================================================
+3. ARCHITECTURE GENERALE
+==============================================================================
+
+ +--------------+       +-------------------+       +-------------+
+ | cartouche    |<----->| 5A22 / 65C816     |<----->| 128 Kio RAM |
+ | ROM/RAM/chip |       | IRQ, DMA, maths   |       +-------------+
+ +--------------+       +----+----------+---+
+                             | Bus B    |
+                         +---+---+   +--+----------------+
+                         | PPU   |   | ports $2140-$2143 |
+                         | VRAM  |   +---------+----------+
+                         +---+---+             |
+                             | video     +-----+------+
+                                       | SPC700/DSP |--> audio
+                                       | 64 Kio RAM |
+                                       +------------+
+
+Le CPU ne voit directement ni VRAM ni RAM audio. Il les atteint par registres/ports.
+
+
+==============================================================================
+4. RICOH 5A22 ET 65C816
+==============================================================================
+
+Le 5A22 integre un coeur compatible 65C816, DMA/HDMA, multiplication/division,
+timers IRQ, controle des manettes et logique bus. Le CPU peut fonctionner en mode
+emulation 6502 ou mode natif 65C816.
+
+Registres : accumulateur A 16 bits, X/Y 16 bits, D direct page, S stack, DBR data
+bank, PBR program bank, PC, P flags. M choisit largeur A/memoire 8/16 bits; X choisit
+largeur index 8/16 bits. En emulation, plusieurs fonctions sont forcees compatibles.
+
+
+==============================================================================
+5. JEU D'INSTRUCTIONS 65C816
+==============================================================================
+
+- chargement : LDA, LDX, LDY, STA, STX, STY, STZ;
+- transfert : TAX/TAY/TXA/TYA, TSX/TXS, TCD/TDC, TCS/TSC, TXY/TYX;
+- pile : PHA/PLA, PHX/PLX, PHY/PLY, PHP/PLP, PHB/PLB, PHD/PLD, PHK;
+- arithmetique : ADC, SBC, INC/DEC, INX/DEX, INY/DEY;
+- logique : AND, ORA, EOR, BIT, TRB, TSB;
+- comparaison : CMP, CPX, CPY;
+- shifts : ASL, LSR, ROL, ROR;
+- branches : BRA, BRL, conditions BCC/BCS/BEQ/BNE/BMI/BPL/BVC/BVS;
+- appels : JSR/RTS, JSL/RTL, JMP/JML;
+- blocs : MVN, MVP;
+- systeme : BRK, COP, RTI, WAI, STP, WDM;
+- modes : CLC/SEC, CLI/SEI, CLD/SED, CLV, REP/SEP, XCE;
+- permutation : XBA, XCE.
+
+L'opcode immediat de LDA/ADC/etc. change de longueur avec M; LDX/LDY avec X. Un
+desassemblage qui ignore l'etat M/X perd rapidement l'alignement.
+
+
+==============================================================================
+6. MODES D'ADRESSAGE
+==============================================================================
+
+Immediate, accumulator, implied, direct page, direct indexed, absolute, absolute
+indexed, long 24 bits, indirect, indexed indirect, indirect indexed, long indirect,
+stack-relative, stack-relative indirect indexed, PC-relative et block move.
+
+Direct page n'est pas obligatoirement page zero : D peut pointer ailleurs. Une
+penalite apparait si son octet bas n'est pas zero. DBR fournit la banque des acces
+absolus data; PBR celle du code. JSL/JML traversent les banques.
+
+
+==============================================================================
+7. RESET ET INITIALISATION
+==============================================================================
+
+Au reset, CPU est en mode emulation, interruptions masquees, decimal clear, M/X
+forces 8 bits, stack en page 1 et vecteur lu a `$00:FFFC`. Il n'existe pas de BIOS
+console : la cartouche contient directement le vecteur et le code.
+
+Sequence typique : SEI, CLC/XCE pour mode natif, REP/SEP pour largeurs, initialiser
+stack/D/DBR, couper ecran par forced blank, desactiver DMA/HDMA/NMI, initialiser PPU,
+effacer WRAM/OAM/CGRAM/VRAM, charger APU, puis activer NMI et affichage.
+
+
+==============================================================================
+8. EXEMPLE DE RESET 65C816
+==============================================================================
+
+        .a8
+        .i8
+Reset:
+        sei
+        clc
+        xce                     ; mode natif
+        rep     #$38            ; A/X 16 bits, decimal off
+        .a16
+        .i16
+        ldx     #$1FFF
+        txs
+        lda     #$0000
+        tcd
+        sep     #$20
+        .a8
+        lda     #$80
+        sta     $2100           ; forced blank
+        stz     $4200           ; NMI/IRQ/autojoy off
+        stz     $420B
+        stz     $420C
+        jml     Main
+
+Les directives `.a8/.a16/.i8/.i16` informent l'assembleur; elles n'emettent aucune
+instruction. Toujours maintenir leur etat coherent avec REP/SEP/PLP/RTI.
+
+
+==============================================================================
+9. ESPACE D'ADRESSES CPU
+==============================================================================
+
+Le bus A a 24 bits, soit banques `$00-$FF`, offsets `$0000-$FFFF`. Carte generale :
+
+- `$7E:0000-$7F:FFFF` : 128 Kio WRAM;
+- banques `$00-$3F/$80-$BF`, `$0000-$1FFF` : miroir 8 Kio WRAM;
+- memes banques, `$2100-$21FF` : PPU/APU/WRAM ports sur bus B;
+- `$4000-$41FF` : controleurs/serial selon adresses;
+- `$4200-$43FF` : registres CPU, DMA et HDMA;
+- autres plages : cartouche ROM/RAM/chip selon decodeur.
+
+Une adresse absente retourne souvent open bus, pas obligatoirement `$00` ou `$FF`.
+
+
+==============================================================================
+10. WORK RAM ET PORT WRAM
+==============================================================================
+
+WRAM couvre `$7E0000-$7FFFFF`. Les premiers 8 Kio sont miroirs dans chaque banque
+systeme basse. Registres :
+
+  `$2180` WMDATA  lecture/ecriture auto-incrementee
+  `$2181` WMADDL  adresse bits 7-0
+  `$2182` WMADDM  adresse bits 15-8
+  `$2183` WMADDH  adresse bit 16
+
+Le port sert surtout au DMA B-bus/A-bus. Pour CPU, l'acces direct `$7E/$7F` est
+plus simple. Initialiser la WRAM : son contenu au power-on n'est pas garanti.
+
+
+==============================================================================
+11. LOROM
+==============================================================================
+
+Mapping conventionnel LoROM : blocs ROM de 32 Kio a `$8000-$FFFF` dans de nombreuses
+banques. Formule simplifiee pour adresse ROM lineaire :
+
+  rom_offset = ((bank & $7F) << 15) | (address & $7FFF)
+
+Header interne typique a offset fichier `$007FC0`. SRAM apparait souvent dans
+`$70-$7D/$F0-$FF:$0000-$7FFF`, mais le decodeur de carte decide. Ne pas traiter la
+formule comme universelle pour puces d'extension ou grandes ROM.
+
+
+==============================================================================
+12. HIROM ET EXHIROM
+==============================================================================
+
+HiROM expose des blocs de 64 Kio notamment dans `$C0-$FF` et des moities hautes
+ailleurs. Formule simplifiee :
+
+  rom_offset = ((bank & $3F) << 16) | address
+
+Header HiROM typique a `$00FFC0` dans le fichier. ExHiROM et mappings speciaux
+etendent au-dela de 4 Mio en redistribuant les moities. Le champ map mode aide mais
+n'est pas une preuve; validate checksum, taille et vecteurs.
+
+
+==============================================================================
+13. SLOWROM, FASTROM ET TIMING
+==============================================================================
+
+`$420D` MEMSEL bit 0 permet acces FastROM dans banques `$80-$FF` si cartouche le
+supporte. Les banques `$00-$7F` restent lentes. Un acces rapide prend typiquement
+6 master cycles, lent 8, et certaines E/S 12.
+
+Marquer une ROM FastROM sans memoire assez rapide provoque erreurs sur materiel.
+Le CPU n'execute pas toute instruction a une frequence fixe : additionner cycles
+d'instruction exige le timing de chaque acces bus.
+
+
+==============================================================================
+14. EN-TETE INTERNE ROM
+==============================================================================
+
+Champs a partir de `$xFC0` :
+
+  +$00 titre, 21 octets
+  +$15 map mode / vitesse
+  +$16 type cartouche
+  +$17 taille ROM codee
+  +$18 taille SRAM codee
+  +$19 region/destination
+  +$1A licenceur ancien
+  +$1B version
+  +$1C complement checksum
+  +$1E checksum
+  +$20 vecteurs natifs
+  +$30 vecteurs emulation
+
+Les ROMs avec en-tete copieur de 512 octets decalent tous offsets fichier; retirer
+ou detecter ce header externe. Un header interne valide satisfait souvent
+`checksum XOR complement = $FFFF`.
+
+
+==============================================================================
+15. VECTEURS 65C816
+==============================================================================
+
+En mode natif, zone `$FFE4-$FFEF` : COP, BRK, ABORT, NMI, reserved, IRQ. En mode
+emulation, `$FFF4-$FFFF` contient COP, reserved, ABORT, NMI, RESET, IRQ/BRK. Les
+adresses sont 16 bits dans banque 0; les handlers peuvent JML ailleurs.
+
+Une ISR doit sauvegarder A/X/Y selon largeurs attendues, DBR/D si modifies, acquitter
+source et revenir RTI avec P identique.
+
+
+==============================================================================
+16. REGISTRES CPU $4200-$421F
+==============================================================================
+
+  `$4200` NMITIMEN  NMI, IRQ H/V, auto-joy
+  `$4201` WRIO      port programmable
+  `$4202` WRMPYA    multiplicande
+  `$4203` WRMPYB    multiplicateur/lancement
+  `$4204-$4205` WRDIV  dividende 16 bits
+  `$4206` WRDIVB    diviseur/lancement
+  `$4207-$4208` HTIME
+  `$4209-$420A` VTIME
+  `$420B` MDMAEN    lancer DMA canaux
+  `$420C` HDMAEN    activer HDMA
+  `$420D` MEMSEL    FastROM
+  `$4210` RDNMI     flag NMI/version CPU
+  `$4211` TIMEUP    flag IRQ
+  `$4212` HVBJOY    HBlank/VBlank/autojoy busy
+  `$4213` RDIO
+  `$4214-$4215` quotient
+  `$4216-$4217` produit/reste
+  `$4218-$421F` JOY1-JOY4 resultats auto-read
+
+Les resultats maths ne sont pas immediats; attendre le nombre de cycles documente.
+
+
+==============================================================================
+17. NMI, IRQ H/V ET WAIT
+==============================================================================
+
+NMI survient au debut VBlank si `$4200.7`. Lire `$4210` acquitte le flag. IRQ peut
+etre programme horizontal, vertical ou coincidence H+V via HTIME/VTIME; lire `$4211`
+acquitte. WAI endort CPU jusqu'a interruption et evite polling couteux.
+
+Course classique : activer NMI pendant que flag VBlank est deja leve peut declencher
+immediatement. Initialiser et lire flags avant activation.
+
+
+==============================================================================
+18. PPU : MEMOIRES
+==============================================================================
+
+- VRAM : 64 Kio octets, bus interne 16 bits, tuiles/maps;
+- CGRAM : 256 mots RGB555 (512 octets);
+- OAM : 512 octets table basse + 32 octets table haute;
+- registres internes, latches et compteurs H/V.
+
+CPU accede par `$2100-$213F`. Durant affichage actif, beaucoup d'acces VRAM/OAM/
+CGRAM sont bloques ou imprevisibles. Transferer en forced blank, VBlank ou slots
+valides avec DMA/HDMA.
+
+
+==============================================================================
+19. TABLE DES REGISTRES PPU EN ECRITURE
+==============================================================================
+
+  `$2100` INIDISP   forced blank, luminosite
+  `$2101` OBSEL     tailles/base sprites
+  `$2102-$2103` OAMADD
+  `$2104` OAMDATA
+  `$2105` BGMODE
+  `$2106` MOSAIC
+  `$2107-$210A` BG1SC-BG4SC, tilemap
+  `$210B-$210C` BG12NBA/BG34NBA, bases tiles
+  `$210D-$2114` BGnHOFS/BGnVOFS
+  `$2115` VMAIN     increment/remap VRAM
+  `$2116-$2117` VMADD
+  `$2118-$2119` VMDATAL/H
+  `$211A` M7SEL
+  `$211B-$2120` M7A/B/C/D/X/Y
+  `$2121` CGADD
+  `$2122` CGDATA
+  `$2123-$2125` W12SEL/W34SEL/WOBJSEL
+  `$2126-$2129` WH0-WH3
+  `$212A-$212B` WBGLOG/WOBJLOG
+  `$212C-$212D` TM/TS main/sub screen enables
+  `$212E-$212F` TMW/TSW window masks
+  `$2130` CGWSEL
+  `$2131` CGADSUB
+  `$2132` COLDATA
+  `$2133` SETINI    interlace, overscan, pseudo-hires, EXTBG
+
+De nombreux registres de scroll/matrice utilisent un latch partage : ecrire les
+octets dans l'ordre et proteger contre ISR/HDMA concurrente.
+
+
+==============================================================================
+20. REGISTRES PPU EN LECTURE
+==============================================================================
+
+  `$2134-$2136` MPY   resultat multiplication Mode 7
+  `$2137` SLHV        latch compteurs H/V
+  `$2138` OAMDATAREAD
+  `$2139-$213A` VMDATAREAD L/H
+  `$213B` CGDATAREAD
+  `$213C-$213D` OPHCT/OPVCT
+  `$213E` STAT77      status/version PPU1, overflow range/time
+  `$213F` STAT78      status/version PPU2, field/latch/region
+
+Les lectures VRAM sont bufferisees : une lecture factice peut etre necessaire apres
+changement d'adresse. Compteurs H/V se lisent en deux etapes via latch interne.
+
+
+==============================================================================
+21. ACCES VRAM
+==============================================================================
+
+`$2115` choisit increment apres acces bas/haut, pas de 1/32/128 mots et remapping
+d'adresse. `$2116/$2117` fixe adresse en mots; `$2118/$2119` transferent octets bas/
+haut. DMA mode 1 vers `$2118` ecrit alternativement les deux ports.
+
+Exemple : VMAIN `$80` (increment apres haut, +1), VMADD=destination/2, puis DMA
+source -> `$2118` mode 1. La VRAM est adressee en octets dans les assets mais en
+mots par VMADD : source classique d'un facteur deux.
+
+
+==============================================================================
+22. CGRAM ET COULEURS
+==============================================================================
+
+Chaque couleur : `0bbbbbgg gggrrrrr`, 5 bits par composante. `$2121` selectionne
+l'index; deux ecritures `$2122` donnent bas puis haut. Bit 7 du haut n'est pas une
+composante. La couleur 0 est backdrop et transparence de palettes BG.
+
+Organisation frequente : 8 palettes BG de 16 couleurs et 8 OBJ de 16, mais modes
+8 bpp et direct color changent l'usage. Les sprites utilisent moitie haute CGRAM.
+
+
+==============================================================================
+23. OAM ET SPRITES
+==============================================================================
+
+128 objets. Table basse : 4 octets par sprite (X bas, Y, tile, attributs). Table
+haute : deux bits par sprite (X bit 8 et choix taille), quatre sprites par octet.
+
+Attributs : tile haute, palette, priorite, flip H/V. X est signe sur 9 bits pour
+sortie gauche; Y wrap autour de 256. `$2101` choisit base tiles/gap et une paire de
+tailles globales parmi huit combinaisons.
+
+
+==============================================================================
+24. LIMITES SPRITES PAR LIGNE
+==============================================================================
+
+Le PPU evalue au maximum 32 sprites et 34 slivers/tuiles de 8 pixels par ligne.
+Au-dela, STAT77 signale range over/time over et des sprites disparaissent selon
+ordre OAM. La rotation de priorite via OAMADD peut repartir le flicker.
+
+Un grand sprite consomme plusieurs slivers meme partiellement visible. Tester la
+charge par scanline, pas seulement le nombre total de 128.
+
+
+==============================================================================
+25. TUILES ET PLANS
+==============================================================================
+
+Tuiles 8x8 encodees en bitplanes : 2 bpp = 16 octets, 4 bpp = 32, 8 bpp = 64.
+Tilemaps contiennent numero tile, palette, priorite et flip. Chaque BG choisit map
+32x32, 64x32, 32x64 ou 64x64 et tiles 8x8/16x16.
+
+Les bases tilemap sont multiples de `$400` mots; bases graphics configurees en
+pas de 4 Kio. Verifier absence de chevauchement dans 64 Kio VRAM.
+
+
+==============================================================================
+26. MODES GRAPHIQUES 0 A 7
+==============================================================================
+
+  Mode  BG1       BG2       BG3       BG4       Particularite
+   0    2 bpp     2 bpp     2 bpp     2 bpp     palettes par BG
+   1    4 bpp     4 bpp     2 bpp     -         BG3 high priority option
+   2    4 bpp     4 bpp     -         -         offset-per-tile
+   3    8 bpp     4 bpp     -         -
+   4    8 bpp     2 bpp     -         -         offset-per-tile
+   5    4 bpp     2 bpp     -         -         hires
+   6    4 bpp     -         -         -         hires + offset-per-tile
+   7    8 bpp affine map    -         -         -         rotation/scale
+
+Tous les modes conservent OBJ. Mode 1 est le plus courant. Nombre exact de couleurs
+visibles depend palettes, couches, direct color, color math et transparence.
+
+
+==============================================================================
+27. MODE 7
+==============================================================================
+
+Un plan de 128x128 cellules reference 256 tiles 8x8, soit image logique 1024x1024.
+Matrice affine 2x2 A/B/C/D, centre X/Y et scroll H/V transforment coordonnees ecran.
+Coefficients sont signes en point fixe. M7SEL controle flips et comportement hors map.
+
+Mode 7 n'effectue pas une vraie projection 3D. Une perspective de sol est creee en
+changeant matrice/scroll par ligne via HDMA. EXTBG peut fournir une couche Mode 7
+supplementaire a priorite par bit de pixel, avec restrictions.
+
+
+==============================================================================
+28. OFFSET-PER-TILE ET SCROLL
+==============================================================================
+
+Chaque BG a offsets H/V 10 bits environ, ecrits via latch. Modes 2/4/6 permettent
+a une couche de fournir des offsets par colonne/tuile pour une autre, produisant
+ondulation, perspective ou distorsion locale. Les formats varient par mode.
+
+Pour parallaxe simple, changer BGnHOFS durant HBlank via HDMA est plus direct.
+
+
+==============================================================================
+29. FENETRES
+==============================================================================
+
+Deux fenetres horizontales WH0-WH3, inversions par couche et logique OR/AND/XOR/XNOR.
+Elles masquent couches sur main/sub screen et color math. Une fenetre n'est qu'une
+plage horizontale; pour forme 2D, changer ses bords a chaque scanline par HDMA.
+
+
+==============================================================================
+30. MAIN SCREEN, SUB SCREEN ET COLOR MATH
+==============================================================================
+
+TM active BG/OBJ sur main; TS sur sub. CGADSUB choisit couches soumises a addition/
+soustraction, half et operation. CGWSEL choisit second operande (subscreen ou couleur
+fixe) et masquage. COLDATA definit couleur fixe par composantes.
+
+Effets : transparence, ombre, eclairage, fondu colore et pseudo-alpha. Les pixels
+transparents et couleurs 0 ont des regles speciales; "half" ne s'applique pas
+toujours si subscreen absent/fixe.
+
+
+==============================================================================
+31. HIRES, PSEUDO-HIRES, INTERLACE ET OVERSCAN
+==============================================================================
+
+Modes 5/6 produisent 512 pixels horizontaux logiques en alternant main/sub. Pseudo-
+hires (`SETINI`) alterne aussi les ecrans dans d'autres modes. Interlace augmente
+les lignes/champs et modifie rendu OBJ/BG. Overscan expose environ 239 lignes au
+lieu de 224 selon region/mode.
+
+Un emulateur doit conserver champs, 256/512 et 224/239/478, pas redimensionner tout
+en 256x224. Les CRT masquent souvent des bords variables.
+
+
+==============================================================================
+32. DMA : ARCHITECTURE
+==============================================================================
+
+Huit canaux partages DMA/HDMA relient bus A (CPU/cartouche/WRAM) au bus B (`$2100-
+$21FF`). DMA bloque CPU pendant transfert. Il peut aller A->B ou B->A, incrementer,
+decrementer ou fixer adresse A et employer huit patterns de ports B.
+
+Registres canal n, `$43n0-$43nF` :
+
+  DMAPn, BBADn, A1TnL/H, A1Bn, DASnL/H, DASBn,
+  A2AnL/H, NTRLn, registres inutilises.
+
+`$420B` demarre les canaux dont bits sont poses, dans ordre de priorite.
+
+
+==============================================================================
+33. MODES DMA
+==============================================================================
+
+Pattern DMAP bits 0-2 :
+
+  0 : 1 octet vers registre
+  1 : 2 octets vers deux registres (0,1)
+  2 : 2 octets deux fois vers meme registre (0,0)
+  3 : 4 octets vers deux registres (0,0,1,1)
+  4 : 4 octets vers quatre registres (0,1,2,3)
+  5 : 4 octets alternes (0,1,0,1)
+  6 : equivalent pattern deux fois registre
+  7 : 4 octets vers deux registres (0,0,1,1), comme mode 3
+
+Mode 1 convient VRAM `$2118/19`; mode 2 CGRAM/OAM data port ecrit deux fois. Le
+compteur `$0000` signifie 65536 octets, pas zero.
+
+
+==============================================================================
+34. EXEMPLE ASSEMBLEUR DMA VERS VRAM
+==============================================================================
+
+; A 8 bits, X/Y 16 bits. Copie TilesSize octets de banque TilesBank.
+        lda     #$80
+        sta     $2115
+        rep     #$20
+        lda     #$0000
+        sta     $2116           ; destination mot VRAM 0
+        lda     #Tiles
+        sta     $4302
+        lda     #TilesSize
+        sta     $4305
+        sep     #$20
+        lda     #TilesBank
+        sta     $4304
+        lda     #$01            ; A->B, increment, mode 1
+        sta     $4300
+        lda     #$18            ; B-bus $2118
+        sta     $4301
+        lda     #$01
+        sta     $420B
+
+Executer en VBlank ou forced blank; source ne doit pas etre sur bus B.
+
+
+==============================================================================
+35. HDMA
+==============================================================================
+
+HDMA transfere quelques octets a chaque HBlank selon une table. Direct : compteur
+de lignes puis donnees; indirect : compteur puis pointeur 16 bits vers donnees dans
+banque DASBn. Octet compteur zero termine. Bit 7 controle repeat/transfert par ligne.
+
+Usages : gradients, scroll par ligne, Mode 7 perspective, fenetres, color math.
+Budget HBlank est limite et chaque canal ajoute overhead. Trop de donnees HDMA
+retarde CPU et peut perturber acces PPU.
+
+
+==============================================================================
+36. EXEMPLE DE TABLE HDMA
+==============================================================================
+
+; Mode direct, un octet vers INIDISP ($2100) par ligne, canal 0.
+BrightnessTable:
+        .byte $80               ; 128 lignes, repeat=1
+        ; suivent 128 valeurs de luminosite si transfert chaque ligne
+        .incbin "brightness.bin"
+        .byte $00               ; fin
+
+Configurer `$4300=0`, `$4301=$00`, `$4302/3/4=adresse`, puis `$420C=1`. La semantique
+du bit repeat est contre-intuitive : verifier taille exacte de table.
+
+
+==============================================================================
+37. RISQUE DMA/HDMA
+==============================================================================
+
+Certaines revisions peuvent se bloquer si DMA se termine exactement au debut HDMA.
+Recommandation sure : DMA pendant VBlank, ou HDMA desactive, ou transfert dont le
+timing est maitrise selon documentation. Ne pas lancer de gros DMA pendant affichage
+en supposant qu'il sera simplement lent.
+
+
+==============================================================================
+38. VBLANK ET BUDGET DE TRANSFERT
+==============================================================================
+
+NMI ne rend pas VBlank infini. Sauvegarde/restauration ISR, auto-joy, HDMA reload et
+DMA consomment des cycles. Construire shadow OAM/tilemap en WRAM pendant image, puis
+DMA seulement les blocs modifies. Forced blank permet transfert long mais ecran noir.
+
+
+==============================================================================
+39. CONTROLEURS
+==============================================================================
+
+Pad standard : B, Y, Select, Start, Up, Down, Left, Right, A, X, L, R puis bits de
+signature/1. Ecriture `$4016` latch, lectures serie `$4016/$4017`. Auto-read via
+`$4200.0` remplit `$4218-$421F` pres du VBlank; `$4212.0` indique busy.
+
+Directions opposees sont physiquement possibles selon adaptateur; le logiciel doit
+choisir une politique. Detection edge = current & ~previous.
+
+
+==============================================================================
+40. PERIPHERIQUES CONTROLEURS
+==============================================================================
+
+- Super NES Mouse : vitesse, boutons et mouvement relatif;
+- Super Scope : trigger, cursor, turbo/pause et latch faisceau CRT;
+- Super Multitap : jusqu'a quatre pads sur un port;
+- accessoires Hudson/Konami, claviers et dispositifs speciaux;
+- adaptateurs Satellaview/Exertainment selon produits.
+
+Le protocole serie a longueur variable. Ne pas supposer que les bits apres 16 sont
+toujours inutiles. Super Scope depend du balayage et fonctionne mal sur LCD.
+
+
+==============================================================================
+41. APU : SPC700 ET S-DSP
+==============================================================================
+
+L'APU est un sous-systeme presque independant : CPU Sony SPC700 8 bits, 64 Kio RAM,
+IPL ROM 64 octets, timers, quatre ports CPU, S-DSP et DAC. Horloge SPC autour de
+1,024 MHz; sortie DSP nominale 32 kHz.
+
+Le 5A22 communique seulement par quatre ports `$2140-$2143` (APU `$F4-$F7`). Il
+charge un pilote au demarrage, puis envoie commandes. Les deux CPU sont asynchrones.
+
+
+==============================================================================
+42. SPC700 : REGISTRES ET INSTRUCTIONS
+==============================================================================
+
+Registres A, X, Y, SP, PC, PSW. Jeu propre inspire 6502 mais incompatible binaire :
+
+- MOV/MOVW, PUSH/POP;
+- ADC/SBC, INC/DEC, CMP, MUL YA, DIV YA,X;
+- AND/OR/EOR, shifts/rotates;
+- branches, BRA, CBNE, DBNZ, BBS/BBC;
+- CALL/PCALL/TCALL, RET/RETI, BRK;
+- SET1/CLR1, AND1/OR1/EOR1/MOV1/NOT1 bits;
+- DAA/DAS, XCN, SLEEP, STOP.
+
+Direct page peut etre `$0000` ou `$0100` via PSW.P. Stack est page `$0100`.
+
+
+==============================================================================
+43. REGISTRES APU SPC700
+==============================================================================
+
+  `$F0` TEST     normalement ne pas modifier
+  `$F1` CONTROL  timers, clear ports, IPL mapping
+  `$F2` DSPADDR
+  `$F3` DSPDATA
+  `$F4-$F7` ports CPU/APU
+  `$F8-$F9` RAM auxiliaire
+  `$FA-$FC` cibles timers 0-2
+  `$FD-$FF` compteurs timers 4 bits, lecture efface
+
+IPL ROM apparait `$FFC0-$FFFF` quand active. Desactiver apres upload si le pilote
+doit utiliser cette RAM, sans perdre le controle du protocole.
+
+
+==============================================================================
+44. PROTOCOLE D'UPLOAD SPC
+==============================================================================
+
+Au boot, IPL signale une signature sur ports. Le CPU effectue handshake, envoie
+adresse destination, taille/protocole puis chaque octet avec compteur acquitte. Le
+protocole exact doit suivre la documentation IPL; ne pas ecrire des donnees sans
+attendre l'echo, car APU et CPU n'ont pas la meme horloge.
+
+Ensuite, un pilote de jeu definit son propre protocole : sequence number, commande,
+parametres et accuse. Eviter blocage mutuel si une image est longue.
+
+
+==============================================================================
+45. S-DSP : VOIX
+==============================================================================
+
+Huit voix, chacune avec volume L/R, pitch 14 bits, source number, enveloppe ADSR ou
+GAIN et etats ENVX/OUTX. Registres globaux : master/echo volume, key on/off, flags,
+source directory, noise, pitch modulation, echo enable, FIR et ESA/EDL.
+
+Le pitch de base depend echantillon BRR. KON/KOFF sont impulsions avec delais; ne
+pas ecrire KON en supposant un demarrage instantane le meme sample.
+
+
+==============================================================================
+46. BRR
+==============================================================================
+
+Bit Rate Reduction compresse 16 echantillons PCM en bloc de 9 octets : header avec
+range, filtre, loop/end puis 8 octets de nibbles. Le decodeur reconstruit avec quatre
+filtres predictifs et saturation/wrap specifique.
+
+Chaque sample pointe via directory : start et loop addresses. Blocs alignes 9 octets;
+loop doit viser debut de bloc. Un encodeur de qualite choisit filtre/range par bloc.
+
+
+==============================================================================
+47. ECHO ET FIR
+==============================================================================
+
+S-DSP ecrit un ring buffer echo dans APU RAM, taille determinee par EDL et base ESA.
+Huit coefficients FIR filtrent l'echo. Feedback et volumes reinjectent. Cette zone
+ne doit pas chevaucher code, samples, stack ou directory.
+
+FLG mute/reset/echo-write-disable doit etre sequence correctement. L'echo consomme
+une part importante des 64 Kio.
+
+
+==============================================================================
+48. EXEMPLE ASSEMBLEUR SPC700
+==============================================================================
+
+; Lit une commande port 0 et l'acquitte dans port 0.
+poll_command:
+        mov     a,$F4
+        cmp     a,last_cmd
+        beq     poll_command
+        mov     last_cmd,a
+        mov     $F4,a
+        ret
+
+last_cmd:
+        .byte   $00
+
+Un pilote reel ne boucle pas indefiniment si timers/audio exigent du travail; il
+integre polling dans sa boucle de mixage/commande.
+
+
+==============================================================================
+49. REGISTRES DSP
+==============================================================================
+
+Selectionner adresse par `$F2`, lire/ecrire `$F3`. Les registres voix sont groupes
+par pas `$10`; globaux occupent notamment `$0C/$1C` master volume, `$2C/$3C` echo
+volume, `$4C` KON, `$5C` KOFF, `$6C` FLG, `$7C` ENDX, `$5D` DIR, `$6D` ESA,
+`$7D` EDL et coefficients FIR `$0F..$7F`.
+
+ENDX est acquitte selon comportement documente; plusieurs registres sont read-only
+ou write-only. Une copie shadow evite read-modify-write incorrect.
+
+
+==============================================================================
+50. EXEMPLE C AVEC PVSNESLIB
+==============================================================================
+
+#include <snes.h>
+
+int main(void)
+{
+    consoleInitDefaultText(0);
+    bgSetGfxPtr(0, 0x3000);
+    bgSetMapPtr(0, 0x6800, SC_32x32);
+    setMode(BG_MODE1, 0);
+    bgSetDisable(1);
+    bgSetDisable(2);
+    consoleDrawText(5, 12, "BONJOUR SUPER NES");
+    setScreenOn();
+
+    while (1) {
+        WaitForVBlank();
+    }
+    return 0;
+}
+
+Les noms d'API changent selon version; partir des exemples fournis avec la version
+installee. Le code C critique reste souvent complete par assembleur.
+
+
+==============================================================================
+51. PUCE DSP-1 A DSP-4
+==============================================================================
+
+Famille NEC uPD77C25 programmee pour calculs : DSP-1 matrices/trigonometrie/Mode 7,
+DSP-2 conversions graphiques, DSP-3 fonctions specifique, DSP-4 course/track. Elles
+exposent commandes/donnees sur bus cartouche, avec variantes DSP-1A/B.
+
+Un emulateur doit executer firmware DSP ou HLE chaque commande avec timings/etat.
+
+
+==============================================================================
+52. SUPER FX
+==============================================================================
+
+Coprocesseur RISC 16 bits GSU dans cartouche, avec RAM/ROM banking, cache, plot et
+instructions de traitement pixel. Il execute code cartouche pour polygones, sprites
+ou effets puis le 5A22 affiche le framebuffer converti en tiles.
+
+CPU et GSU ne disposent pas librement de ROM/RAM en meme temps. Synchroniser GO/IRQ
+et proprietaire des bus. Super FX/GSU-1/GSU-2 different en capacites/adressage.
+
+
+==============================================================================
+53. SA-1
+==============================================================================
+
+Le SA-1 integre un coeur 65C816 rapide, DMA, arithmetic, bitmap-to-bitplane,
+decompression, timers, IRQ, mapping et BW-RAM. Il partage cartouche avec S-CPU via
+registres et semaphores.
+
+Ce n'est pas simplement "un second CPU a 10 MHz" : mapping, caches/bus, DMA et
+arbitrage determinent performances. Les deux 65C816 ont vecteurs et espaces logiques.
+
+
+==============================================================================
+54. S-DD1 ET SPC7110
+==============================================================================
+
+S-DD1 decompresse des flux graphiques pendant DMA et gere mapping ROM. SPC7110
+decompresse, mappe grandes ROMs, effectue maths et peut etre associe a RTC. Les flux
+sont formats proprietaires documentes par retro-ingenierie.
+
+Un emulateur doit conserver etat bitstream, registres et interaction DMA; pre-
+decompresser les fichiers peut masquer des comportements.
+
+
+==============================================================================
+55. AUTRES PUCES D'EXTENSION
+==============================================================================
+
+- CX4 Capcom : calculs filaires/sprites;
+- OBC-1 : gestion d'objets/memoire;
+- S-RTC et RTC-4513 : horloges;
+- ST010/ST011 : DSP de calcul/IA;
+- ST018 : processeur ARM dans une cartouche;
+- Sharp LR35902/SGB : Super Game Boy, sous-systeme Game Boy;
+- Satellaview BS-X : memoire flash, modem/satellite et RTC;
+- Sufami Turbo : adaptateur double mini-cartouche;
+- MSU-1 : specification homebrew moderne, pas une puce Nintendo originale.
+
+
+==============================================================================
+56. SRAM ET SAUVEGARDES
+==============================================================================
+
+SRAM de cartouche est batteriee ou non volatile selon PCB. Taille codee dans header,
+mais cablage reel decide mapping. Ecrire journal/checksum et eviter coupure pendant
+mise a jour. Une batterie vide perd les donnees; dumper avant remplacement.
+
+Un emulateur doit initialiser SRAM absente/neuvelle de facon compatible, respecter
+mirrors et sauvegarder atomiquement sur l'hote.
+
+
+==============================================================================
+57. CONNECTEUR CARTOUCHE
+==============================================================================
+
+Le bord principal transporte bus A 24 bits, data 8 bits, controles ROM/RAM, horloge,
+reset, alimentation et signaux. Des contacts lateraux supplementaires sur certaines
+coques donnent acces a signaux d'extension/coprocesseurs. La forme US differe de la
+forme JP/PAL, mais un adaptateur mecanique ne resout pas region/mapping.
+
+Ne pas inserer sous tension. Concevoir niveaux 5 V, buffering, temps d'acces et
+contention; une flashcart 3,3 V exige traduction appropriee.
+
+
+==============================================================================
+58. VERROUILLAGE CIC ET REGION
+==============================================================================
+
+Console et cartouche dialoguent via CIC. NTSC/PAL ont familles differentes; jeux
+peuvent aussi lire STAT78/compter trames et verifier region. Des adaptateurs anciens
+utilisent une cartouche donneuse.
+
+Un homebrew sur PCB moderne emploie un CIC compatible legalement implemente. Ce
+document ne fournit pas de code proprietaire Nintendo.
+
+
+==============================================================================
+59. DEVELOPPEMENT HISTORIQUE
+==============================================================================
+
+Nintendo fournissait Development Manual Books I/II, assembleurs/linkers, cartes de
+developpement, emulateurs materiels et outils graphiques/audio. Les studios employaient
+souvent 65816 assembleur et pilotes audio internes.
+
+Les documents preliminaires comportent errata; mesures sur revisions CPU/PPU sont
+necessaires pour effets raster limites.
+
+
+==============================================================================
+60. DEVELOPPEMENT LIBRE MODERNE
+==============================================================================
+
+- PVSnesLib : C + assembleur, outils assets, exemples;
+- ca65/ld65 : assembleur/linker 65816;
+- WLA-DX : assembleur multi-CPU;
+- bass/asar : assemblage/patching selon projet;
+- superfamiconv, gfx2snes et outils graphiques;
+- AddmusicK, SNESMOD/it2spc et pilotes audio selon licences;
+- bsnes-plus/Mesen2/debuggers et flashcarts pour test.
+
+Toujours tester ROM sur materiel, NTSC et PAL si cible, pas seulement un emulateur.
+
+
+==============================================================================
+61. ORGANISATION D'UN PROJET
+==============================================================================
+
+  src/       code 65816/C
+  spc/       pilote et musique SPC700
+  assets/    sources PNG/TMX/audio
+  generated/ tiles/maps/palettes/BRR
+  linker/    mapping LoROM/HiROM
+  build/     ROM, ELF/symboles/map
+
+Le linker place header et vecteurs aux adresses CPU correctes et assets sans
+franchir une banque de facon incompatible avec les acces. Verifier taille/padding,
+checksum et absence d'en-tete copieur.
+
+
+==============================================================================
+62. CONVERSION GRAPHIQUE
+==============================================================================
+
+Pipeline : quantifier couleurs RGB555, repartir palettes, decouper tiles, supprimer
+doublons avec flips, produire bitplanes et tilemap, allouer VRAM, compresser si
+necessaire. Un PNG n'est pas copiable directement en VRAM.
+
+Pour sprites, reserver palettes 8-15 et indices tile compatibles OBSEL/base/name
+select. Pour BG, tenir compte de bpp/mode et taille de map.
+
+
+==============================================================================
+63. COMPRESSION
+==============================================================================
+
+RLE convient runs/maps; LZ convient assets repetitifs; Huffman/autres coutent code
+et RAM. Decompresser en WRAM puis DMA VRAM, ou streamer si le format le permet.
+Mesurer cycles et taille. Les coprocesseurs S-DD1/SPC7110 utilisent leurs propres
+formats, pas un LZ generique.
+
+
+==============================================================================
+64. BOUCLE DE JEU
+==============================================================================
+
+1. WAI jusqu'a NMI;
+2. NMI lance DMA OAM/palettes/tilemap courte et lit controles;
+3. hors NMI, simuler monde et audio commands;
+4. construire shadow OAM/maps et liste de transferts;
+5. publier liste atomiquement pour prochain VBlank;
+6. utiliser HDMA pour effets scanline stables.
+
+Ne pas faire toute la logique dans NMI : elle allonge VBlank et bloque le main loop.
+
+
+==============================================================================
+65. SHADOW OAM
+==============================================================================
+
+Conserver 544 octets en WRAM. Mettre Y hors ecran pour sprites inutilises, remplir
+table haute correctement, puis DMA vers `$2104` apres OAMADD=0. Deux bits taille/X
+de quatre sprites partagent un octet : mise a jour doit masquer sans corrompre voisins.
+
+
+==============================================================================
+66. POINT FIXE
+==============================================================================
+
+Le 65C816 n'a pas FPU. Employer Q8.8 ou Q16.16. Le 5A22 offre multiplication 8x8
+et division 16/8 via registres, avec latence. Pour valeurs plus grandes, routines
+assembleur/table. Mode 7 utilise coefficients point fixe propres.
+
+Toujours preciser signedness et saturation. Les shifts C de negatifs peuvent etre
+non portables sur anciens compilateurs.
+
+
+==============================================================================
+67. OPTIMISATION CPU
+==============================================================================
+
+- placer direct page et stack en WRAM rapide;
+- choisir A/X 8 ou 16 bits pour reduire code/transferts;
+- garder DBR stable par phase;
+- utiliser MVN/MVP pour copies CPU hors bus B;
+- DMA les grands blocs vers PPU;
+- eviter changement frequent de banque;
+- tables precalculees pour trigonometrie;
+- FastROM seulement dans banques/PCB valides;
+- profiler en master cycles, pas nombre d'opcodes.
+
+
+==============================================================================
+68. PIEGES 65C816
+==============================================================================
+
+- oublier largeur M/X apres PLP/RTI;
+- index 8 bits remis a zero dans partie haute lors de SEP X;
+- DBR faux apres appel long;
+- stack wrap en mode emulation;
+- decimal flag laisse actif;
+- literal traverse banque;
+- RMW sur registre write-only;
+- WAI sans source d'interruption active;
+- vecteur bank 0 vers routine placee ailleurs sans trampoline.
+
+
+==============================================================================
+69. PIEGES PPU
+==============================================================================
+
+- acces VRAM pendant rendu actif;
+- oublier lecture factice VRAM;
+- inverser adresse mot/octet;
+- casser latch scroll/Mode 7 avec ISR/HDMA;
+- OAM table haute incorrecte;
+- depasser 34 tiles OBJ par ligne;
+- palette OBJ dans mauvaise moitie CGRAM;
+- color math configuree sur mauvaise couche;
+- supposer que 512 pixels signifie 512 octets/tilemap classique;
+- ignorer differences PPU1/PPU2 et revisions.
+
+
+==============================================================================
+70. EMULATION CPU ET BUS
+==============================================================================
+
+Implementer mode emulation/natif, M/X, toutes instructions/adressages, decimal,
+interruptions, WAI/STP, open bus et timing par acces. DMA vole le bus; HDMA s'insere
+par ligne. Multiplication/division finissent apres delai.
+
+Un dynarec doit specialiser ou suivre M/X car longueur des immediats varie. Les
+lectures opcode peuvent declencher DMA a un point precis sur materiel.
+
+
+==============================================================================
+71. EMULATION PPU
+==============================================================================
+
+Rendre par dot/scanline pour changements raster : backgrounds, Mode 7, offset-per-
+tile, OBJ evaluation, windows, main/sub, color math, hires/interlace/mosaic. Modeliser
+latches, acces interdits, overflow OBJ et compteurs H/V.
+
+Les versions PPU ont comportements differents (couleur, glitches, statut). Une
+sortie RGBA par frame sans timing suffit a certains jeux mais pas aux demos raster.
+
+
+==============================================================================
+72. EMULATION APU
+==============================================================================
+
+Executer SPC700 avec cycles et timers, ports asynchrones, IPL mapping et S-DSP a
+32 kHz. DSP : BRR exact, gaussian interpolation, enveloppes, noise, pitch modulation,
+echo/FIR, saturation et registres. Les bugs audio viennent souvent de details de
+wrap/saturation, pas de la melodie.
+
+
+==============================================================================
+73. EMULATION CARTOUCHES
+==============================================================================
+
+Selectionner mapper et puce par metadata/base de donnees plus validation header.
+Implementer SRAM mirrors, timings et coprocesseur. Une ROM patchee peut avoir header
+incoherent; ne jamais choisir uniquement par extension `.smc`/`.sfc`.
+
+Pour sauvegardes/RTC, conserver format versionne et ecriture atomique.
+
+
+==============================================================================
+74. TESTS MATERIELS ET EMULATEUR
+==============================================================================
+
+- suites 65C816 decimal/M/X/addressing;
+- timing NMI/IRQ/WAI/maths;
+- DMA modes/directions et DMA-HDMA collision;
+- VRAM remap/increment/read buffer;
+- tous modes BG, Mode 7 et offset-per-tile;
+- limites OBJ range/time;
+- windows/color math/hires/interlace;
+- SPC700 opcodes/timers et DSP echo;
+- LoROM/HiROM/ExHiROM/FastROM;
+- chaque coprocesseur;
+- NTSC/PAL et revisions 1CHIP/non-1CHIP.
+
+
+==============================================================================
+75. DIAGNOSTIC MATERIEL
+==============================================================================
+
+Verifier alimentation/regulateur, reset, horloge, CIC, bus cartouche, WRAM, PPU,
+VRAM, APU, encodeur video et controles. Tester avec alimentation/cable/cartouche
+connus, nettoyer connecteur sans abrasion et relever revision carte.
+
+Pannes : oxydation, connecteur sale, condensateurs, fusible/regulateur, PPU/CPU/RAM,
+port manette et plastique jauni/cassant. Un ecran noir n'identifie pas seul le CPU.
+
+
+==============================================================================
+76. VIDEO ANALOGIQUE
+==============================================================================
+
+Selon modele/region, sortie composite, S-Video et RGB par Multi-Out; RF via module
+externe ou modele. Sync/niveaux et composants dans cable different par region.
+Les consoles 1CHIP ont souvent image plus nette et phenomenes de luminosite propres.
+
+Un scaler doit accepter 240p/288p, 480i/576i, changements de resolution et cadence
+non-HDMI exacte. Ne pas employer un cable d'une autre console sans brochage.
+
+
+==============================================================================
+77. RESTAURATION ET SECURITE
+==============================================================================
+
+Debrancher avant ouverture, ESD, photographier vis/blindages. Ne pas retrobright
+une coque rare sans comprendre fragilisation/retour du jaunissement. Remplacer
+condensateurs sur diagnostic, respecter ESR/polarite.
+
+Pour cartouche, dumper SRAM avant pile. Souder batterie avec support/languettes
+appropriees, jamais directement une pile non concue pour soudure.
+
+
+==============================================================================
+78. CHECKLIST D'UN HOMEBREW
+==============================================================================
+
+1. choisir LoROM/HiROM, Slow/FastROM et taille;
+2. definir linker, header et vecteurs;
+3. initialiser CPU/stack/DBR/D et forced blank;
+4. effacer memoires et initialiser PPU;
+5. charger pilote SPC et verifier handshake;
+6. definir layout VRAM/CGRAM/OAM;
+7. installer NMI/IRQ et DMA list;
+8. lire controles et gerer peripheriques;
+9. calculer budgets VBlank/scanline/audio;
+10. tester ROM sans copier header, sur emulateurs puis materiel.
+
+
+==============================================================================
+79. TABLE RECAPITULATIVE
+==============================================================================
+
+  Sous-systeme  Memoire/ports             Fonction
+  S-CPU         24-bit, `$4200-$43FF`     logique, IRQ, DMA
+  WRAM          128 Kio `$7E-$7F`         code/donnees
+  PPU VRAM      64 Kio via `$2115-$2119`  tiles/maps
+  CGRAM         512 o via `$2121-$2122`   palettes
+  OAM           544 o via `$2102-$2104`   128 sprites
+  APU RAM       64 Kio, ports `$2140-43`  code/samples audio
+  S-DSP         128 registres via SPC      8 voix/echo
+  cartouche     mapping variable           ROM/SRAM/chips
+
+
+==============================================================================
+80. REFERENCES
+==============================================================================
+
+Documents Nintendo et references techniques :
+
+- SNES Development Manual, Book II :
+  https://www.backoldgaming.com/data/medias/files/documents/book2.pdf
+- SNESdev Wiki : https://snes.nesdev.org/wiki/Main_Page
+- PPU registers : https://snes.nesdev.org/wiki/PPU_registers
+- DMA registers : https://snes.nesdev.org/wiki/DMA_registers
+- acces aux memoires PPU :
+  https://snes.nesdev.org/wiki/Reading_and_writing_PPU_memory
+- Super Famicom Development Wiki : https://wiki.superfamicom.org/
+- nocash/fullsnes : https://problemkaputt.de/fullsnes.htm
+
+Outils libres :
+
+- PVSnesLib : https://github.com/alekmaul/pvsneslib
+- exemples PVSnesLib : https://alekmaul.github.io/pvsneslib/examples.html
+- cc65/ca65 : https://cc65.github.io/
+- WLA-DX : https://github.com/vhelin/wla-dx
+
+Pour une implementation fidele, confronter manuel Nintendo, fiches WDC/Ricoh/Sony,
+recherches SNESdev, tests sur plusieurs revisions et suites de validation. Documenter
+chaque comportement non confirme plutot que transformer une observation en garantie.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

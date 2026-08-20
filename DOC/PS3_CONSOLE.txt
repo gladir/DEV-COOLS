@@ -1,0 +1,825 @@
+==============================================================================
+ SONY PLAYSTATION 3 - MATERIEL ET PROGRAMMATION
+ Reference pour developpeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console Sony PlayStation 3 (PS3) : processeur Cell
+Broadband Engine, PPE, SPE, MFC, RSX, memoires, stockage, audio, peripheriques,
+systeme, formats executables et programmation. Il distingue les revisions Fat,
+Slim et Super Slim ainsi que leurs formes de compatibilite PS2.
+
+Les informations de securite sont presentees pour comprendre l'architecture et
+la preservation, sans fournir de secrets ni contourner des protections. Les
+accents sont omis afin de conserver un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Familles CECH et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Cell Broadband Engine
+  6. PPE : Power Processor Element
+  7. Jeu d'instructions PPE et VMX
+  8. SPE : Synergistic Processing Element
+  9. Jeu d'instructions SPU
+ 10. Local Store et adressage
+ 11. MFC et DMA des SPE
+ 12. Mailboxes, signaux et evenements
+ 13. EIB, MIC et FlexIO
+ 14. Memoire XDR principale
+ 15. RSX Reality Synthesizer
+ 16. Memoire GDDR3 et acces croises
+ 17. FIFO, canaux et methodes RSX
+ 18. Shaders, textures et rendu
+ 19. Affichage HDMI et analogique
+ 20. Synchronisation CPU/GPU
+ 21. Audio
+ 22. Southbridge et peripheriques
+ 23. Lecteur Blu-ray, DVD et CD
+ 24. Disque dur, flash et filesystem
+ 25. USB, Bluetooth, Ethernet et Wi-Fi
+ 26. Sixaxis, DualShock 3 et accessoires
+ 27. Compatibilite PlayStation et PlayStation 2
+ 28. Demarrage, Syscon et hyperviseur
+ 29. LV1, LV2 et GameOS
+ 30. Syscalls, threads et synchronisation
+ 31. Memoire virtuelle et allocations
+ 32. Formats ELF, SELF, PRX et SPU ELF
+ 33. Modules, bibliotheques et processus
+ 34. Initialisation d'une application
+ 35. C PPE : SIMD et threads
+ 36. C SPU : calcul et DMA
+ 37. Double buffering SPE
+ 38. RSX avec GCM
+ 39. Audio et streaming
+ 40. Fichiers, reseau et manettes
+ 41. Parallelisation d'un moteur
+ 42. Optimisation et profilage
+ 43. SDK officiel, Cell SDK et PSL1GHT
+ 44. Linux et OtherOS
+ 45. Differences de revision
+ 46. Conseils pour un emulateur
+ 47. Plan de validation
+ 48. Maintenance et pannes
+ 49. Securite et preservation
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+Sony lance la PS3 au Japon et en Amerique du Nord en novembre 2006, puis en
+Europe en mars 2007. La plateforme associe le processeur Cell developpe par Sony,
+IBM et Toshiba au GPU RSX de NVIDIA et popularise le Blu-ray.
+
+La programmation heterogene PPE/SPE est exigeante mais offre un debit SIMD et
+DMA eleve. La gamme evolue en Slim en 2009 puis Super Slim en 2012. La production
+s'acheve en 2017 au Japon.
+
+
+==============================================================================
+2. FAMILLES CECH ET REVISIONS
+==============================================================================
+
+Les codes PS3 commencent par CECH, pas SCPH. Familles principales :
+
+- CECHA/CECHB : Fat 60/20 Go, Cell/RSX initiaux, EE+GS PS2 materiels;
+- CECHC/CECHE : GS PS2 conserve mais Emotion Engine remplace en logiciel;
+- CECHG et suivantes Fat : compatibilite PS2 materielle retiree;
+- CECHH--CECHQ : reductions de gravure et consommation;
+- CECH-20xx/21xx/25xx/30xx : Slim, revisions successives;
+- CECH-40xx/42xx/43xx : Super Slim a capot coulissant.
+
+Disque, Wi-Fi, lecteurs de cartes, ports USB, flash NAND/NOR, alimentation,
+Cell/RSX et refroidissement varient. Le Data Code et la carte DIA/VER/COK/etc.
+precisent encore la revision.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Element                     Valeur typique
+--------------------------  -------------------------------------------------
+Cell BE                     3,2 GHz
+PPE                         PowerPC 64 bits, 2 threads materiels
+SPE physiques               8; 7 valides, 6 normalement disponibles au jeu
+Local Store par SPE         256 Kio
+RAM principale              256 Mio XDR
+RSX                         GPU NVIDIA/Sony, environ 500 MHz
+Memoire video               256 Mio GDDR3, environ 650 MHz DDR
+Lecteur                     Blu-ray, DVD, CD
+Stockage                    disque SATA 2,5 pouces remplacable
+Sorties                     HDMI, AV Multi Out, audio numerique selon modele
+Reseau                      Gigabit Ethernet; Wi-Fi selon modele
+Peripheriques               USB 2.0, Bluetooth 2.x + EDR selon revision
+
+Le Cell contient huit SPE sur le die; un est desactive pour rendement de
+fabrication et un est reserve au systeme. Les jeux voient normalement six SPE.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le PPE execute le processus, l'OS et le controle. Les SPE traitent animation,
+physique, audio, decompression, culling et commandes graphiques. Le MIC relie
+Cell a XDR; l'EIB relie PPE, SPE, controle memoire et I/O. FlexIO relie RSX et
+Southbridge.
+
+RSX possede sa GDDR3 mais peut lire une fenetre de XDR mappee. Les peripheriques
+passent par Southbridge. LV1 virtualise materiel; LV2/GameOS fournit processus,
+syscalls et bibliotheques.
+
+
+==============================================================================
+5. CELL BROADBAND ENGINE
+==============================================================================
+
+Cell comporte un PPE, huit SPE, Element Interconnect Bus, Memory Interface
+Controller, Broadband Engine Interface et controleurs. Le PPE est generaliste;
+les SPE sont SIMD et DMA explicite.
+
+La puissance vient du recouvrement calcul/transfert. Un SPE qui attend chaque
+DMA avant calcul perd l'avantage de l'architecture. Les donnees doivent etre
+partitionnees en blocs compatibles avec Local Store et alignement MFC.
+
+
+==============================================================================
+6. PPE : POWER PROCESSOR ELEMENT
+==============================================================================
+
+Le PPE repose sur PowerPC 64 bits big-endian, execution in-order et deux threads
+SMT. Il a registres GPR 64 bits, FPR, VMX 128 bits, registres de condition,
+link/count, MSR et SPR. Caches L1 instruction/donnees de 32 Kio et L2 partage
+d'environ 512 Kio.
+
+Les deux threads partagent pipeline et caches : SMT masque certaines latences
+mais ne double pas le coeur. Le PPE est moins efficace qu'un gros CPU out-of-
+order pour code branche et sert surtout a orchestrer les SPE.
+
+
+==============================================================================
+7. JEU D'INSTRUCTIONS PPE ET VMX
+==============================================================================
+
+Le PPE execute PowerPC v2.02 environ : arithmetique 32/64, branchements, atomiques
+lwarx/stwcx., flottant et VMX/AltiVec. L'ABI PS3 est big-endian; structures de
+fichier/reseau doivent convertir explicitement les endianesses externes.
+
+VMX offre 32 registres vectoriels 128 bits, voies entieres/flottantes, permute,
+pack, compare, multiply-add. Aligner les donnees et eviter casts C violant aliasing.
+
+Instructions privilegiees sont reservees a LV1/LV2. Une application utilise
+syscalls et bibliotheques, pas MSR, page tables ou peripheriques directs libres.
+
+
+==============================================================================
+8. SPE : SYNERGISTIC PROCESSING ELEMENT
+==============================================================================
+
+Un SPE contient SPU, Local Store 256 Kio et Memory Flow Controller. Il n'a ni
+cache ni acces load/store transparent a la RAM principale. Code et donnees
+doivent etre dans Local Store; MFC DMA les deplace vers/depuis l'Effective Address.
+
+Le SPU possede 128 registres de 128 bits. La plupart des instructions sont SIMD;
+les scalaires occupent une voie. Il execute deux pipelines (even/odd) avec regles
+de dual issue et latences visibles.
+
+
+==============================================================================
+9. JEU D'INSTRUCTIONS SPU
+==============================================================================
+
+Familles : load/store Local Store, arithmetique voies 8/16/32/64, flottant simple
+et double limite, compare, shifts/rotates, shuffle bytes, multiply, branch,
+channel read/write et stop-and-signal.
+
+SHUFB est central pour permutations/endian. FMA permet calcul dense. Les branches
+mal predites sont cheres; selection vectorielle et boucle deroulee conviennent.
+Le SPU ne possede pas d'exception IEEE complete comme CPU desktop.
+
+
+==============================================================================
+10. LOCAL STORE ET ADRESSAGE
+==============================================================================
+
+Local Store va de 00000h a 3FFFFh. Il contient programme, pile, donnees, buffers
+DMA et runtime. Une adresse LS est distincte d'une Effective Address XDR.
+
+Le linker SPU doit faire tenir code et donnees resident. Overlays chargent des
+fonctions a la demande. Reserve pile/heap et deux ou trois buffers avant choisir
+taille de bloc.
+
+L'alignement naturel DMA est 16 octets; gros transferts alignes sur 128 octets
+ameliorent debit. Les petites tailles/misalignment suivent des restrictions MFC.
+
+
+==============================================================================
+11. MFC ET DMA DES SPE
+==============================================================================
+
+MFC execute GET (EA vers LS), PUT (LS vers EA), listes DMA, atomiques et barrieres.
+Chaque commande utilise adresse LS, EA 64 bits, taille, tag 0--31 et opcode.
+
+Tailles d'une commande ordinaire jusqu'a 16 Kio; les listes enchainent elements.
+Tags permettent attendre un groupe via tag mask/status sans bloquer les autres.
+FENCE ordonne un tag; BARRIER impose un ordre plus global selon commande.
+
+DMA et cache PPE ne sont pas automatiquement coherents pour toutes sequences :
+utiliser primitives SDK, barrieres et ownership clair. Ne pas modifier un buffer
+pendant que MFC ou RSX le lit.
+
+
+==============================================================================
+12. MAILBOXES, SIGNAUX ET EVENEMENTS
+==============================================================================
+
+Chaque SPE offre inbound mailbox PPE->SPU, outbound mailbox SPU->PPE, outbound
+interrupt mailbox, signal notification registers, event status/mask et decrementer.
+
+Mailbox a profondeur limitee : tester count avant ecrire/lire ou utiliser runtime.
+Les signaux combinent bits selon mode OR/overwrite. Les evenements couvrent fin
+DMA, mailbox, signaux et erreurs. Lire un channel bloquant au mauvais endroit
+peut deadlocker PPE et SPE.
+
+
+==============================================================================
+13. EIB, MIC ET FLEXIO
+==============================================================================
+
+EIB est un anneau interne a haute bande passante qui transporte commandes,
+reponses et donnees entre elements Cell. Les debits marketing additionnent des
+transferts concurrents; contention, direction et alignement comptent.
+
+MIC pilote XDR. FlexIO relie Cell au RSX/Southbridge avec bande passante
+asymetrique. RSX lit efficacement XDR mappee, mais certaines lectures Cell depuis
+GDDR3 sont tres lentes. Placer les donnees selon direction dominante.
+
+
+==============================================================================
+14. MEMOIRE XDR PRINCIPALE
+==============================================================================
+
+256 Mio XDR contiennent LV2, processus, code PPE/SPU, buffers, audio et ressources
+RSX mappees. Le processus ne recoit pas toute la capacite : systeme reserve une
+partie variant avec firmware/configuration.
+
+La MMU PPE traduit Effective Address en pages. Sys_memory et allocateurs SDK
+fournissent blocs; la memoire RSX-visible exige mapping GCM et alignement. Un
+pointeur CPU n'est pas directement un offset RSX.
+
+
+==============================================================================
+15. RSX REALITY SYNTHESIZER
+==============================================================================
+
+RSX est un GPU Sony/NVIDIA derive de la famille G70/G71, adapte au Cell. Il offre
+vertex et fragment shaders de generation Shader Model 3, rasterisation, textures,
+Z/stencil, blending, MSAA et sorties video.
+
+Il est proche d'une GeForce 7 mais ni identique ni expose comme PCI desktop.
+GameOS fournit cellGcm et bibliotheques graphiques. Les unites shaders ne sont
+pas unifiees; les limites vertex/fragment et formats different.
+
+
+==============================================================================
+16. MEMOIRE GDDR3 ET ACCES CROISES
+==============================================================================
+
+RSX possede 256 Mio GDDR3. Les render targets, Z, textures et command buffers
+peuvent etre locaux; une aperture permet a RSX d'acceder a XDR. Cell peut acceder
+a une fenetre locale RSX, mais la lecture est particulierement couteuse.
+
+Conseils : GPU lit ressources XDR si streaming approprie; mettre render targets
+et textures frequentes en local; eviter readback; effectuer copie RSX vers XDR
+avant traitement Cell; respecter tiling, pitch, compression et coherences.
+
+
+==============================================================================
+17. FIFO, CANAUX ET METHODES RSX
+==============================================================================
+
+Le PPE construit un push buffer de commandes : method headers et arguments.
+PUT indique fin produite, GET avance a mesure que RSX consomme. Les methodes
+configurent objets/classes, surfaces, shaders, textures et dessin.
+
+Jump/call/return structurent le flux selon format. References, labels et
+semaphores synchronisent CPU/GPU. Une commande invalide ou longueur fausse
+desaligne FIFO et peut bloquer RSX.
+
+Les offsets GCM identifient memoire locale ou XDR mappee. cellGcmAddressToOffset
+doit etre utilise plutot qu'un cast de pointeur.
+
+
+==============================================================================
+18. SHADERS, TEXTURES ET RENDU
+==============================================================================
+
+Vertex programs transforment attributs et generent position/varyings. Fragment
+programs echantillonnent textures et calculent couleur/depth selon restrictions
+RSX. Les shaders officiels pouvaient etre compiles depuis Cg profils PS3.
+
+Formats texture : linear/swizzled, DXT, entiers, flottants et formats de profondeur
+selon support. Tiling optimise render targets; pitch/alignment sont obligatoires.
+Le RSX applique viewport, scissor, culling, tests alpha/depth/stencil, blending,
+MSAA et conversion sortie.
+
+
+==============================================================================
+19. AFFICHAGE HDMI ET ANALOGIQUE
+==============================================================================
+
+Sorties : HDMI numerique, AV Multi Out composite/S-Video/component/RGB selon
+region/cable, audio optique sur plusieurs modeles. Resolutions 480i/p, 576i/p,
+720p, 1080i et 1080p selon contenu et sortie.
+
+HDCP protege certaines sorties HDMI. Video Out API interroge modes supportes,
+configure resolution/aspect/couleur et fournit pitch/framebuffer. Ne pas forcer
+1080p si ecran ou sortie ne l'accepte pas.
+
+
+==============================================================================
+20. SYNCHRONISATION CPU/GPU
+==============================================================================
+
+Le push buffer est producteur/consommateur. Avant reutiliser une ressource, placer
+label/semaphore/reference dans FIFO et attendre sa valeur, pas seulement que PUT
+ait ete ecrit. Flip est mis en file et callback signale progression.
+
+Les barrieres PPE ordonnent ecritures XDR avant notifier RSX. Les SPE PUT doivent
+etre termines avant commande GPU. Trop de waits vident pipeline; utiliser deux/
+trois frames de ressources et fences fines.
+
+
+==============================================================================
+21. AUDIO
+==============================================================================
+
+La PS3 n'a pas un SPU sonore comparable aux PS1/PS2 : Cell effectue mixage,
+decodage et effets en logiciel, souvent sur SPE. Le systeme fournit ports audio
+PCM et codecs/encodeurs selon SDK, firmware et sortie.
+
+Sorties stereo a 7.1, frequences/formats selon HDMI, optique ou analogique.
+Double/triple buffering audio avec timestamps evite underrun. Les codecs Dolby,
+DTS, AAC, ATRAC et autres sont soumis aux bibliotheques/licences disponibles.
+
+
+==============================================================================
+22. SOUTHBRIDGE ET PERIPHERIQUES
+==============================================================================
+
+Southbridge relie Blu-ray, SATA, USB, Ethernet, Wi-Fi/Bluetooth, flash et autres
+interfaces a Cell/RSX. Hyperviseur et pilotes masquent les registres physiques.
+
+Les jeux programment sys_storage, sys_fs, cellPad, cellNet, cellUsb et autres
+API, pas les controleurs bruts. Les timings restent observables par appels
+asynchrones, interruptions et buffers.
+
+
+==============================================================================
+23. LECTEUR BLU-RAY, DVD ET CD
+==============================================================================
+
+Le lecteur lit BD-ROM PS3, Blu-ray video, DVD, CD et, selon firmware, divers
+formats. Les jeux sont sur Blu-ray avec secteurs logiques 2048 octets. Vitesse,
+seek et debit varient par zone du disque.
+
+La carte fille du lecteur et le controleur sont associes logiquement a la carte
+mere sur plusieurs revisions. Remplacer seulement le mecanisme est different de
+remplacer l'electronique. Super Slim emploie chargement par capot.
+
+
+==============================================================================
+24. DISQUE DUR, FLASH ET FILESYSTEM
+==============================================================================
+
+Disque SATA 2,5 pouces remplacable par utilisateur, capacites variables. Il est
+initialise/chiffre pour la console et partitionne pour GameOS, donnees et cache.
+Le remplacer declenche format/reinstallation selon modele/firmware.
+
+Premieres PS3 utilisent grandes NAND; revisions suivantes NOR avec autres flash
+et stockage. Firmware est reparti entre flash et HDD selon generation.
+
+API sys_fs expose chemins comme /dev_hdd0, /dev_bdvd, /dev_usb000. L'application
+ne voit pas les structures/chiffrement physiques et doit gerer espace libre,
+erreurs, installation partielle et coupure.
+
+
+==============================================================================
+25. USB, BLUETOOTH, ETHERNET ET WI-FI
+==============================================================================
+
+USB 2.0 : deux ou quatre ports selon modele. Bluetooth relie manettes et accessoires.
+Gigabit Ethernet est courant; Wi-Fi absent sur quelques modeles initiaux puis
+integre. Lecteurs de cartes flash n'existent que sur certaines Fat haut de gamme.
+
+Le reseau utilise sockets BSD-like et NP/PSN via bibliotheques. Une application
+doit initialiser pile, gerer endian reseau, timeouts et perte de connexion.
+
+
+==============================================================================
+26. SIXAXIS, DUALSHOCK 3 ET ACCESSOIRES
+==============================================================================
+
+Sixaxis communique USB/Bluetooth, offre boutons analogiques selon API, deux sticks
+et capteurs de mouvement six axes nom commercial. DualShock 3 ajoute vibration.
+
+cellPad initialise jusqu'a plusieurs ports, retourne status connexion, boutons,
+axes, pression et capteurs. Accessoires : PlayStation Eye, Move, Buzz, guitare,
+telecommande BD et peripheriques USB. Lire capability/type avant interpreter la
+longueur du rapport.
+
+
+==============================================================================
+27. COMPATIBILITE PLAYSTATION ET PLAYSTATION 2
+==============================================================================
+
+Jeux PS1 sont principalement emules par logiciel avec support systeme/RSX. La
+compatibilite PS2 depend du modele :
+
+- CECHA/B : Emotion Engine et Graphics Synthesizer PS2 presents;
+- CECHC/E : GS materiel, EE emule par Cell;
+- modeles suivants : pas de compatibilite disque PS2 generale; certains titres
+  distribues numeriquement utilisent un emulateur logiciel configure par titre.
+
+Ports manette/carte PS2 absents : adaptateurs/format virtuel sont requis. Region,
+peripheriques speciaux et timings reduisent la compatibilite.
+
+
+==============================================================================
+28. DEMARRAGE, SYSCON ET HYPERVISEUR
+==============================================================================
+
+Syscon controle alimentation, veille, temperatures, ventilateur et sequence de
+boot. Cell demarre une chaine de confiance depuis ROM/flash; chargeurs verifient
+les etapes puis lancent LV1 et LV2/GameOS.
+
+Metldr/bootldr et loaders appartiennent a la chaine securisee selon generation.
+Ce document n'en donne pas de secrets. Pour emulation/preservation, reproduire
+les interfaces et utiliser ses propres dumps legalement obtenus.
+
+
+==============================================================================
+29. LV1, LV2 ET GAMEOS
+==============================================================================
+
+LV1 est l'hyperviseur privilegie : memoire, SPE, dispositifs, interruptions et
+isolation. LV2 est le noyau GameOS visible aux applications par syscalls. Les
+bibliotheques cell* fournissent API plus stables.
+
+Un jeu s'execute comme processus PPU avec threads et SPU threads/groups. Des SPE
+et de la memoire sont reserves au systeme. Acceder directement a LV1 ou registres
+RSX hors GCM n'est pas une interface applicative portable.
+
+
+==============================================================================
+30. SYSCALLS, THREADS ET SYNCHRONISATION
+==============================================================================
+
+Objets LV2 : PPU thread, SPU thread/group, mutex, condition, semaphore, event
+queue/port, timer, memory container, shared memory, process et module.
+
+Les syscalls retournent codes CELL_OK/CELL_E*. Les event queues recoivent fin
+SPU, I/O et notifications. Les atomiques PPE et reservation loss doivent etre
+associes a barrieres lwsync/sync/eieio appropriees.
+
+SPURS est un runtime officiel de taches SPU; il planifie workloads et dependances.
+PSL1GHT offre primitives plus directes selon fonctions disponibles.
+
+
+==============================================================================
+31. MEMOIRE VIRTUELLE ET ALLOCATIONS
+==============================================================================
+
+Le processus PPU a espace EA 32/64 bits controle par LV2. Pages de 64 Kio et
+1 Mio existent selon allocation/API. Les grands alignements aident DMA, RSX et
+TLB. Memory containers limitent consommation de sous-systemes.
+
+Un EA transmis au MFC doit etre valide et resident pendant DMA. Un pointeur RSX
+doit etre mappe par cellGcmMapMainMemory et converti en offset. Les adresses LS
+SPU sont 18 bits et sans relation directe avec EA.
+
+
+==============================================================================
+32. FORMATS ELF, SELF, PRX ET SPU ELF
+==============================================================================
+
+PPU ELF : ELF64 big-endian PowerPC avec segments, entree et ABI PS3. SPU ELF :
+ELF32 big-endian machine SPU, charge dans Local Store. PRX est un module PPU
+relogeable avec imports/exports. SELF est un conteneur signe/chiffre autour de
+segments/metadonnees executable selon environnement.
+
+EBOOT.BIN est normalement un SELF. Les ressources et bibliotheques resident dans
+USRDIR et autres repertoires du titre. Un outil homebrew legal peut charger ELF
+dans un environnement autorise; ELF et SELF ne sont pas interchangeables.
+
+
+==============================================================================
+33. MODULES, BIBLIOTHEQUES ET PROCESSUS
+==============================================================================
+
+Bibliotheques systeme : sysmodule charge des PRX comme GCM, audio, pad, net,
+filesystem, codecs et utilitaires. Chaque module a version, imports NID et cout
+memoire. Verifier retour et decharger proprement.
+
+Le processus recoit parametres, heap et callbacks systeme. sysutil callback gere
+quitter, menu, changement video et evenements; l'application doit le pomper.
+
+
+==============================================================================
+34. INITIALISATION D'UNE APPLICATION
+==============================================================================
+
+1. runtime/crt, pile, heap et callbacks sysutil;
+2. creer threads et synchronisation;
+3. reserver memoire alignee;
+4. initialiser GCM, command buffer, surfaces et flip;
+5. charger shaders/textures;
+6. initialiser pad, audio, filesystem et reseau requis;
+7. charger images SPU, creer group/threads ou SPURS;
+8. boucle : entrees, taches SPE, simulation, commandes RSX, audio, flip;
+9. fences puis liberation inverse et arret propre.
+
+
+==============================================================================
+35. C PPE : SIMD ET THREADS
+==============================================================================
+
+Exemple VMX conceptuel avec intrinsics compatibles Cell :
+
+typedef vector float vf4;
+
+void add_vectors(const float *a, const float *b, float *c) {
+    vf4 va = *((const vf4 *)a);
+    vf4 vb = *((const vf4 *)b);
+    *((vf4 *)c) = vec_add(va, vb);
+}
+
+a, b et c doivent etre alignes 16 octets ou charges par intrinsics non alignes.
+Pour parallele, creer sys_ppu_thread ou distribuer aux SPE; eviter plus de threads
+PPE actifs que les deux contextes sans raison I/O.
+
+
+==============================================================================
+36. C SPU : CALCUL ET DMA
+==============================================================================
+
+Exemple SPU, buffer aligne et tag :
+
+#include <spu_mfcio.h>
+
+static float local[1024] __attribute__((aligned(128)));
+
+void get_block(unsigned long long ea, unsigned bytes, unsigned tag) {
+    mfc_get(local, ea, bytes, tag, 0, 0);
+    mfc_write_tag_mask(1u << tag);
+    mfc_read_tag_status_all();
+}
+
+bytes doit respecter limites/alignment MFC et ne pas depasser local. Pour PUT,
+utiliser mfc_put puis attendre avant que PPE lise ou libere destination.
+
+
+==============================================================================
+37. DOUBLE BUFFERING SPE
+==============================================================================
+
+Schema : lancer GET bloc 0 tag A; attendre A; lancer GET bloc 1 tag B; calculer
+bloc 0; PUT resultat 0 tag C; attendre B; lancer GET bloc 2 dans buffer 0 apres
+fin C; calculer bloc 1, etc.
+
+Ainsi DMA et calcul se chevauchent. Trois buffers aident si sortie et entree ont
+latences differentes. Partitionner aux frontieres sans partage d'une meme cache
+line PPE afin d'eviter contention/faux partage.
+
+
+==============================================================================
+38. RSX AVEC GCM
+==============================================================================
+
+Pseudo-C :
+
+cellGcmInit(command_size, io_size, io_buffer);
+cellGcmAddressToOffset(vertex_buffer, &vertex_offset);
+cellGcmSetVertexDataArray(ctx, 0, 0, stride, 3,
+                          CELL_GCM_VERTEX_F, CELL_GCM_LOCATION_MAIN,
+                          vertex_offset);
+cellGcmSetDrawArrays(ctx, CELL_GCM_PRIMITIVE_TRIANGLES, 0, 3);
+cellGcmSetFlip(ctx, buffer_index);
+cellGcmFlush(ctx);
+
+Il faut auparavant configurer video, surfaces, viewport, shaders et attributs.
+Verifier espace restant du push buffer; une bibliotheque reserve un callback pour
+attendre GET et continuer. Ne pas reutiliser vertices avant fence RSX.
+
+
+==============================================================================
+39. AUDIO ET STREAMING
+==============================================================================
+
+Creer un port audio, configurer canaux/frequence, obtenir blocs, produire PCM
+float/int selon API, puis notifier/attendre cadence. Un SPE peut mixer, filtrer
+et decoder pendant PPE orchestre.
+
+Pour streaming disque/reseau : trois etages lecture compressee, decode SPE, ring
+PCM audio. Les files portent timestamps et etat end-of-stream. Ne jamais faire
+un read disque bloquant dans callback audio.
+
+
+==============================================================================
+40. FICHIERS, RESEAU ET MANETTES
+==============================================================================
+
+sys_fs_open/read/lseek/close accedent /dev_bdvd et /dev_hdd0. Les lectures
+asynchrones et cache HDD masquent Blu-ray. Verifier alignements et tailles.
+
+cellNetCtl initialise reseau; sockets demandent byte order et timeouts. Les
+services PSN/NP exigent SDK, certificats et serveurs; ne pas les simuler par une
+simple socket.
+
+cellPadInit puis cellPadGetInfo/GetData retourne longueur et boutons/axes.
+Tester port connecte, capability et codes capteur/vibration.
+
+
+==============================================================================
+41. PARALLELISATION D'UN MOTEUR
+==============================================================================
+
+PPE : graphe de taches, gameplay, appels OS/RSX. SPE : animation, skinning,
+culling, collision, physique, particules, audio, decompression, generation de
+commandes. RSX : vertex/fragment, raster et presentation.
+
+Decouper en blocs independants, utiliser queues lock-free/event flags, garder
+donnees SoA SIMD et reduire les synchronisations globales. Un SPE doit recevoir
+assez de travail pour amortir DMA/lancement, mais bloc doit tenir LS.
+
+
+==============================================================================
+42. OPTIMISATION ET PROFILAGE
+==============================================================================
+
+- vectoriser et organiser SoA;
+- aligner 16/128 octets et eviter DMA minuscules;
+- chevaucher MFC, calcul SPE et RSX;
+- limiter PPE branchy et contention SMT;
+- ne pas lire GDDR3 depuis Cell;
+- utiliser XDR comme source RSX streaming lorsque pertinent;
+- regrouper states/draw calls et reduire overdraw;
+- fences par ressource, pas wait-idle global;
+- profiler PPE, SPE stalls/MFC, RSX FIFO et memoire separement;
+- tester sur retail et kits car emulateur masque latences.
+
+
+==============================================================================
+43. SDK OFFICIEL, CELL SDK ET PSL1GHT
+==============================================================================
+
+Le SDK officiel SCE fournit SNC/GCC, SPU tools, ProDG, cellGcm, SPURS, codecs,
+bibliotheques et kits DECR/DECH. Il est proprietaire.
+
+IBM Cell SDK public documente PPE/SPE, MFC, SIMD, outils et simulateur Linux,
+mais n'expose pas les API PS3 GameOS/RSX.
+
+PSL1GHT est un SDK homebrew libre avec toolchain powerpc64/spu, LV2, RSX, pad,
+audio et samples. Son API n'est pas celle du SDK officiel. Utiliser les licences
+et une methode d'execution autorisee.
+
+
+==============================================================================
+44. LINUX ET OTHEROS
+==============================================================================
+
+Les premieres Fat permettaient OtherOS via hyperviseur, avec acces Cell/SPE mais
+RSX fortement limite. Slim n'a jamais propose officiellement OtherOS. Firmware
+3.21 retire la fonction des modeles grand public en 2010.
+
+Le Cell SDK et clusters PS3 ont servi au calcul scientifique. Un programme Linux
+Cell n'est pas automatiquement un jeu PS3 : API graphics, memoire et privileges
+different.
+
+
+==============================================================================
+45. DIFFERENCES DE REVISION
+==============================================================================
+
+Varient : gravure Cell/RSX, consommation, NEC/Tokin/condensateurs, NAND/NOR,
+Southbridge, Syscon, lecteur, Wi-Fi, ports USB/cartes, PS2 EE/GS, refroidissement
+et alimentation.
+
+Le logiciel doit employer API et interroger fonctions. Le technicien doit suivre
+service manual/schematics de la carte exacte. Une mise a jour/flash d'une autre
+revision peut briquer la console.
+
+
+==============================================================================
+46. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+PPE : PowerPC big-endian, SMT, VMX, atomiques, MMU, syscalls et timing. Recompiler
+dynamiquement sans perdre exceptions, reservations ou barriers.
+
+SPU : 128 registres, dual pipeline, channels, local store, MFC lists/tags,
+atomiques, mailboxes et evenements. Le parallelisme/races sont observables.
+
+RSX : FIFO/methodes NV, shaders, formats/tiling, semaphores, caches, reports,
+MSAA, Z/stencil, blending et acces XDR/GDDR asymetriques. Traduction Vulkan/D3D
+doit corriger les differences de precision/regles.
+
+LV1/LV2 : processus, memoire, PRX, syscalls, event queues, SPU groups et erreurs.
+HLE de bibliotheques doit conserver comportement asynchrone.
+
+Peripheriques : Blu-ray/HDD, pad/Bluetooth, audio, reseau et compatibilite PS1/2.
+Definir profil CECH et firmware; demander dumps legaux.
+
+
+==============================================================================
+47. PLAN DE VALIDATION
+==============================================================================
+
+1. Boot, LV1/LV2, SELF/PRX et plusieurs firmwares.
+2. PPE integer/FPU/VMX, MMU, exceptions, atomiques et SMT.
+3. Chaque instruction SPU, dual issue, branches et channels.
+4. MFC GET/PUT/list, tags, barrier, atomiques et erreurs d'alignement.
+5. Mailboxes/events et six SPE concurrents.
+6. RSX FIFO, shaders, textures, tiling, formats, blending et reports.
+7. Mapping XDR/local et coherence/fences.
+8. Audio multicanal et underrun.
+9. Blu-ray/HDD/filesystem, erreurs et lectures asynchrones.
+10. Sixaxis/DualShock 3, USB, Bluetooth et reseau.
+11. Compatibilite PS1 et trois classes PS2.
+12. Profils NAND/NOR, Fat/Slim/Super Slim.
+13. Tests Cell SDK et titres exploitant fortement SPE.
+14. Comparer traces, timings, image et audio a du materiel reel.
+
+
+==============================================================================
+48. MAINTENANCE ET PANNES
+==============================================================================
+
+- Identifier CECH, carte mere et alimentation avant pieces.
+- Nettoyer ventilateur/radiateurs et remplacer pate/pads correctement.
+- Diagnostiquer YLOD par Syscon et mesures, pas uniquement "reflow".
+- Le reflow BGA improvise est temporaire/dangereux; analyser RSX, Cell, VRM,
+  NEC/Tokin et soudures selon revision.
+- Associer correctement carte fille Blu-ray; conserver controleur original.
+- Sauvegarder disque/donnees avant remplacement; la console reformate souvent.
+- Ne pas forcer nappes, connecteurs ZIF ni capot Super Slim.
+- Alimentations internes contiennent tension secteur dangereuse.
+
+
+==============================================================================
+49. SECURITE ET PRESERVATION
+==============================================================================
+
+Conserver dumps de ses disques, flash et donnees avec hashes, region, CECH et
+firmware, dans le respect de la loi. Les SELF, BIOS, cles et SDK officiels sont
+proteges; ne pas redistribuer des secrets ou contenus commerciaux.
+
+La documentation de la chaine de confiance sert a l'interoperabilite, au
+diagnostic et a l'emulation. Elle ne dispense pas d'autorisation pour contourner
+un controle d'acces. Prudence secteur, laser Blu-ray et batteries de manette.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Architecture Cell, sources IBM publiques :
+
+- Cell Broadband Engine Programming Handbook, version 1.1.
+  https://arcb.csc.ncsu.edu/~mueller/cluster/ps3/SDK3.0/docs/programming/CBE_Handbook_v1.1_24APR2007_pub.pdf
+
+- IBM Cell Broadband Engine SDK 3.0 Documentation : architecture, SIMD,
+  bibliotheques, outils, performance et simulateur.
+  https://public.dhe.ibm.com/linux/cellsdk/docs/
+
+Developpement et materiel PS3 :
+
+- PS3 Developer Wiki, pages Cell, RSX, Memory, Syscon, Southbridge, Blu-ray,
+  revisions et formats.
+  https://www.psdevwiki.com/ps3/
+
+- RSX technical summary et commandes.
+  https://www.psdevwiki.com/ps3/index.php?title=RSX
+
+- PSL1GHT, toolchain et bibliotheques homebrew libres.
+- RPCS3, code source et documentation developpeur pour comportement observe.
+  https://github.com/rpcs3/rpcs3/wiki/developer-information
+
+- Manuels utilisateurs et service Sony propres aux familles CECH.
+
+Pour toute valeur de registre RSX, LV1 ou Syscon, verifier la revision et une
+source primaire/mesure. Les interfaces publiques Cell sont bien documentees;
+les interfaces PS3 proprietaires reposent davantage sur SDK sous licence et
+retro-ingenierie communautaire, qui peuvent evoluer.

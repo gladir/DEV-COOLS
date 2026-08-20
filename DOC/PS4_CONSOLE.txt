@@ -1,0 +1,798 @@
+==============================================================================
+ SONY PLAYSTATION 4 - MATERIEL ET PROGRAMMATION
+ Reference pour developpeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la Sony PlayStation 4 : APU AMD Liverpool/variantes, CPU
+Jaguar x86-64, GPU Graphics Core Next, memoire GDDR5, audio, stockage, systeme
+Orbis, executables et programmation. Il distingue PS4 originale, Slim et Pro.
+
+La programmation officielle exige un accord Sony et un SDK sous licence. Les
+exemples restent fondes sur interfaces publiques, concepts generiques et projets
+libres; aucun secret, cle ou methode de contournement n'est fourni. Les accents
+sont omis afin de conserver un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Modeles CUH et revisions
+  3. PS4, Slim et Pro
+  4. Caracteristiques generales
+  5. Architecture fonctionnelle
+  6. APU Liverpool et variantes
+  7. CPU AMD Jaguar
+  8. Jeu d'instructions x86-64
+  9. Caches, coherences et atomiques
+ 10. Memoire GDDR5 unifiee
+ 11. Carte memoire virtuelle
+ 12. GPU Graphics Core Next
+ 13. Compute Units et ordonnanceurs
+ 14. Command processors et files
+ 15. Shaders et ISA GCN
+ 16. Textures, surfaces et tiling
+ 17. Rasterisation, profondeur et blending
+ 18. Compute et asynchronous compute
+ 19. Synchronisation CPU/GPU
+ 20. Affichage, HDMI, HDR et PS4 Pro
+ 21. Audio et codecs
+ 22. Processeur secondaire et veille
+ 23. Stockage interne
+ 24. Lecteur Blu-ray/DVD
+ 25. USB, Ethernet, Wi-Fi et Bluetooth
+ 26. DualShock 4
+ 27. Camera, Move, PS VR et accessoires
+ 28. Compatibilite des generations precedentes
+ 29. Orbis OS et origine FreeBSD
+ 30. Noyau, processus et sandbox
+ 31. Threads, synchronisation et temps
+ 32. Memoire, fichiers et E/S asynchrones
+ 33. Executables SELF, ELF, PRX, PKG et SFO
+ 34. Bibliotheques et modules
+ 35. Initialisation d'une application
+ 36. C/C++ x86-64 et SIMD
+ 37. Programmation graphique GNM/GNMX
+ 38. Compute shader et gestion des ressources
+ 39. Audio et lecture en continu
+ 40. Reseau, manette et sauvegardes
+ 41. Organisation d'un moteur
+ 42. Optimisation et profilage
+ 43. SDK officiel, outils publics et homebrew
+ 44. Differences de revisions et compatibilite
+ 45. PS4 Pro et modes ameliores
+ 46. Conseils pour un emulateur
+ 47. Plan de validation
+ 48. Maintenance et diagnostic
+ 49. Securite et preservation
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+Sony annonce la PS4 en fevrier 2013 et la lance en novembre 2013. Apres
+l'architecture heterogene Cell de la PS3, Sony choisit un APU AMD x86-64 plus
+familier aux studios, avec GPU GCN et 8 Gio de GDDR5 unifiee.
+
+La PS4 Slim apparait en 2016 avec fonctions comparables et consommation reduite.
+La PS4 Pro, lancee la meme annee, augmente GPU, frequence CPU et bande passante
+pour resolutions superieures, checkerboard rendering et meilleures performances.
+
+
+==============================================================================
+2. MODELES CUH ET REVISIONS
+==============================================================================
+
+Les codes commencent par CUH :
+
+- CUH-10xx : premiere PS4, APU 28 nm, boutons tactiles;
+- CUH-11xx : composants et refroidissement ajustes;
+- CUH-12xx : consommation reduite, boutons mecaniques;
+- CUH-20xx/21xx/22xx : PS4 Slim;
+- CUH-70xx/71xx/72xx : PS4 Pro.
+
+Le suffixe indique region/capacite/package. Carte mere, Southbridge, alimentation,
+lecteur, Wi-Fi, ventilateur et disque changent. Identifier CUH et reference de
+carte avant toute reparation.
+
+
+==============================================================================
+3. PS4, SLIM ET PRO
+==============================================================================
+
+Caracteristique      PS4 / Slim                   PS4 Pro
+-------------------  ---------------------------  ---------------------------
+CPU                  8 Jaguar vers 1,6 GHz        8 Jaguar vers 2,1 GHz
+GPU                  18 CU GCN, 800 MHz           36 CU, environ 911 MHz
+Calcul FP32          environ 1,84 TFLOPS          environ 4,2 TFLOPS
+Memoire principale   8 Gio GDDR5                  8 Gio GDDR5
+Bande passante       environ 176 Go/s             environ 218 Go/s
+Memoire auxiliaire   selon composants systeme     1 Gio DDR3 systeme en plus
+Sortie               jusqu'a 1080p/HDR selon jeu  4K sortie, HDR, modes Pro
+Lecteur               Blu-ray/DVD                 Blu-ray/DVD, pas UHD BD
+
+La Pro reste une PS4 : meme ISA CPU et API, pas une generation separee. Un titre
+doit rester fonctionnel sur la PS4 de base.
+
+
+==============================================================================
+4. CARACTERISTIQUES GENERALES
+==============================================================================
+
+- APU AMD semi-custom sur un die;
+- deux modules CPU Jaguar de quatre coeurs, huit coeurs sans SMT;
+- GPU GCN semi-custom, memoire coherente/partagee selon chemins;
+- 8 Gio GDDR5 sur bus 256 bits;
+- disque SATA 2,5 pouces remplacable;
+- lecteur Blu-ray 6x environ et DVD;
+- HDMI, Ethernet, Wi-Fi, Bluetooth et USB;
+- coprocesseur secondaire pour veille, telechargement et multimedia;
+- systeme Orbis derive de FreeBSD avec API Sony.
+
+
+==============================================================================
+5. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+CPU et GPU partagent le controleur GDDR5. Le CPU prepare simulation et commandes;
+GPU execute graphics/compute. Les engines DMA/copieurs deplacent ressources. Un
+bloc audio et codecs dechargent certaines fonctions. Southbridge relie disque,
+Blu-ray, USB, reseau et gestion systeme.
+
+Le partage physique reduit les copies CPU/GPU, mais caches, compression, tiling
+et ownership exigent toujours barriers et flush/invalidate via API.
+
+
+==============================================================================
+6. APU LIVERPOOL ET VARIANTES
+==============================================================================
+
+Liverpool est le nom public/reconstitue du premier APU. Les revisions utilisent
+des variantes/shrinks parfois nommees Liverpool, Liverpool 2, Belize ou autres
+dans la documentation communautaire. Le die regroupe CPU, GPU, controle memoire,
+video et interfaces vers Southbridge.
+
+Le GPU physique peut contenir plus d'unites que celles exposees, afin d'ameliorer
+le rendement. Ne pas sonder des unites desactivees ou supposer le layout d'une
+revision sur une autre.
+
+
+==============================================================================
+7. CPU AMD JAGUAR
+==============================================================================
+
+Huit coeurs sont groupes en deux Compute Units CPU de quatre coeurs. Chaque coeur
+est x86-64 out-of-order modeste, avec L1 instruction 32 Kio et donnees 32 Kio.
+Chaque groupe partage environ 2 Mio de L2. Il n'y a pas de SMT.
+
+Jaguar privilegie faible consommation; IPC et frequence sont limites. Distribuer
+travail sur coeurs aide, mais contention L2/memoire et threads OS reserves
+reduisent la capacite disponible a une application.
+
+
+==============================================================================
+8. JEU D'INSTRUCTIONS X86-64
+==============================================================================
+
+Le CPU execute AMD64 little-endian : registres 64 bits, SSE, SSE2/3, SSSE3,
+SSE4.x, AVX et instructions supplementaires selon configuration. Le SDK definit
+le niveau exact autorise; ne pas compiler pour AVX2/FMA de CPU plus recent.
+
+L'ABI Orbis est proche des conventions System V AMD64 mais les formats, syscalls
+et bibliotheques Sony ne sont pas ceux d'un FreeBSD PC. Utiliser headers et
+toolchain du SDK cible.
+
+
+==============================================================================
+9. CACHES, COHERENCES ET ATOMIQUES
+==============================================================================
+
+Les coeurs CPU sont coherents entre eux. Les atomiques x86, fences et primitives
+kernel assurent synchronisation. Faux partage d'une ligne cache entre threads
+peut detruire les performances.
+
+GPU dispose de L1/L2, caches texture et caches de rendu. Certaines allocations
+sont coherent CPU/GPU, d'autres demandent barrier/cache action. Une fence GPU ne
+remplace pas une release CPU, et inversement. Employer les transitions de
+ressource documentees par l'API.
+
+
+==============================================================================
+10. MEMOIRE GDDR5 UNIFIEE
+==============================================================================
+
+Les 8 Gio sont physiquement communs, avec environ 176 Go/s sur base et 218 Go/s
+sur Pro. GameOS reserve une partie variable; les titres ne voient pas 8 Gio nets.
+La Pro ajoute 1 Gio DDR3 pour certaines fonctions systeme, liberant une partie
+de GDDR5, mais cette DDR3 n'est pas une VRAM programmable par le jeu.
+
+Types d'usage : CPU cached, GPU coherent, write-combined, render target tiled,
+texture read-only, command buffer et video. Le choix influence adresse, cache et
+performances. Eviter lecture CPU d'une surface GPU tiled/compressed.
+
+
+==============================================================================
+11. CARTE MEMOIRE VIRTUELLE
+==============================================================================
+
+Chaque processus x86-64 a un espace virtuel protege. Le noyau mappe executable,
+PRX, heap, stacks, shared/direct memory et zones GPU. ASLR et protections W^X
+varient avec type/version.
+
+Les API de direct memory reservent pages physiques puis les mappent avec type de
+cache et alignement. Un GPU virtual address/offset n'est pas necessairement un
+pointeur CPU. Ne pas conserver un pointeur apres unmap.
+
+
+==============================================================================
+12. GPU GRAPHICS CORE NEXT
+==============================================================================
+
+Le GPU de base a 18 Compute Units actives, 1152 lanes de calcul scalaire au sens
+marketing, unites texture, raster, color/depth et controleurs. Il derive de GCN
+de premiere generation avec extensions console.
+
+Un CU contient quatre unites SIMD16 qui executent un wavefront de 64 threads en
+quatre cycles, registres vectoriels/scalaires, LDS 64 Kio environ et caches.
+Plusieurs wavefronts resident pour masquer latence.
+
+La Pro double a 36 CU et ajoute fonctions/optimisations de generation plus recente,
+mais conserve le modele de programmation PS4.
+
+
+==============================================================================
+13. COMPUTE UNITS ET ORDONNANCEURS
+==============================================================================
+
+Un wavefront partage PC et instructions; une divergence de branche execute les
+chemins sous masques, diminuant rendement. Les workgroups partagent LDS et se
+synchronisent par barrier. Les groupes ne doivent pas supposer un ordre global.
+
+Occupation depend VGPR, SGPR, LDS et taille de groupe. Plus de threads n'est pas
+toujours mieux : un shader gourmand peut limiter le nombre de waves residents.
+
+
+==============================================================================
+14. COMMAND PROCESSORS ET FILES
+==============================================================================
+
+Le GPU consomme des command buffers contenant paquets PM4/methodes. Graphics
+command processor gere pipeline principal; Asynchronous Compute Engines gerent
+plusieurs files compute. DMA engines peuvent copier independamment.
+
+Les queues utilisent read/write pointers, fences, events et labels memoire. Un
+paquet invalide peut bloquer GPU; l'API valide peu en release. Command buffers
+doivent rester resident jusqu'a consommation.
+
+
+==============================================================================
+15. SHADERS ET ISA GCN
+==============================================================================
+
+Stages : vertex, hull/tessellation, domain, geometry, pixel et compute selon
+pipeline. Le langage officiel PlayStation Shader Language ressemble a HLSL/Cg
+et est compile vers ISA GCN avec metadonnees de ressources.
+
+ISA separe instructions scalaires S_* et vectorielles V_*, loads SMEM/VMEM,
+LDS/DS, export et controle EXEC/VCC/SCC. Les details binaires sont dependants du
+GPU et du compilateur; preferer bytecode/outils officiels sous licence.
+
+
+==============================================================================
+16. TEXTURES, SURFACES ET TILING
+==============================================================================
+
+Surfaces peuvent etre lineaires ou tilees selon mode, format, samples et usage.
+Tiling distribue pixels entre banques pour bande passante; l'adresse n'est pas
+y*pitch+x simple. Render targets peuvent employer compression couleur et depth.
+
+Formats : UNORM/SNORM, entiers, float, sRGB, BCn, profondeur/stencil. Une vue
+doit etre compatible avec allocation et metadata. Les transitions render->sample
+demandent decompression/cache flush selon etat.
+
+La PS4 Pro ajoute modes checkerboard/ID buffer et fonctions optimisees selon SDK;
+un titre de base ne doit pas les activer sans detection.
+
+
+==============================================================================
+17. RASTERISATION, PROFONDEUR ET BLENDING
+==============================================================================
+
+Pipeline fixe : assemblage primitives, viewport/scissor, culling, raster, early
+Z/stencil, pixel shader, late tests et blending. MSAA augmente stockage/debit;
+resolve cree une surface echantillonnable/affichable.
+
+Le blending est limite aux equations/formats materiels. UAV/read-write resources
+necessitent hazard tracking explicite. Un meme bloc ne doit pas etre simultanement
+render target et texture sans mecanisme prevu.
+
+
+==============================================================================
+18. COMPUTE ET ASYNCHRONOUS COMPUTE
+==============================================================================
+
+Compute shaders executent physique, culling, particules, post-traitement, audio
+ou decompression. Les ACE permettent chevaucher compute avec graphics si ressources
+et CU sont disponibles.
+
+Async compute n'est pas gratuit : contention CU/cache/memoire peut ralentir le
+frame. Mesurer, limiter priorites et placer fences uniquement aux dependances.
+
+
+==============================================================================
+19. SYNCHRONISATION CPU/GPU
+==============================================================================
+
+CPU produit commandes et ressources, soumet une queue puis continue. GPU ecrit
+labels/fences a des points definis. Double ou triple buffering evite attendre le
+frame courant.
+
+Sequence ressource : CPU write -> flush/release -> commande GPU -> GPU barrier ->
+usage suivant -> fence -> CPU acquire avant lecture. Les API GNM/GNMX fournissent
+paquets de cache/wait. Un simple volatile ne synchronise pas le GPU.
+
+
+==============================================================================
+20. AFFICHAGE, HDMI, HDR ET PS4 PRO
+==============================================================================
+
+La PS4 sort principalement par HDMI. Modes courants 480p/576p, 720p, 1080i/p;
+firmwares ont ajoute HDR aux modeles compatibles. Pro sort jusqu'a 2160p, souvent
+par checkerboard, reconstruction ou resolution dynamique; peu de jeux rendent
+un frame complet 4K natif.
+
+La console compose jeu et overlays systeme. Le jeu fournit buffers au format/
+nombre attendus, gere flip et VBlank. HDCP et modes couleur sont controles par
+systeme; certaines captures exigent option autorisee.
+
+
+==============================================================================
+21. AUDIO ET CODECS
+==============================================================================
+
+L'APU/Southbridge comprend des blocs audio/codec pour decharger mixage, chat et
+compression. Les jeux utilisent API audio haut niveau ou bas niveau du SDK, avec
+voix, effets, buffers et sorties HDMI/optique/analogique selon modele.
+
+Formats PCM et codecs depend licences. Streaming exige ring buffers, callbacks
+temps reel et priorites. Ne pas allouer, verrouiller globalement ou lire disque
+dans le thread audio.
+
+
+==============================================================================
+22. PROCESSEUR SECONDAIRE ET VEILLE
+==============================================================================
+
+Un processeur/SoC secondaire avec sa memoire gere veille, telechargements,
+uploads, encodage video social et certaines E/S lorsque l'APU principal dort.
+Les noms Aeolia/Belize et details changent par revision.
+
+Les applications passent par services Share/systeme. Ce coprocesseur n'est pas
+un coeur de jeu librement programmable.
+
+
+==============================================================================
+23. STOCKAGE INTERNE
+==============================================================================
+
+Disque 2,5 pouces SATA, 500 Go/1 To et variantes. Interface pratique est limitee
+par controleur, disque et filesystem; SSD reduit seek mais pas tous les temps.
+
+Le disque est chiffre/initialise par console. Remplacement exige fichier de
+reinstallation complet selon firmware et efface les donnees. Jeux installent
+des fichiers pour reduire acces Blu-ray; API fournit E/S synchrones/asynchrones.
+
+
+==============================================================================
+24. LECTEUR BLU-RAY/DVD
+==============================================================================
+
+Lit BD-ROM PS4 et DVD/Blu-ray video selon region/licence; pas de CD audio ni de
+jeu CD PS1. PS4 Pro ne lit pas les disques UHD Blu-ray malgre sortie 4K.
+
+Le lecteur et sa carte sont associes a la carte mere selon revision. Pour
+reparation, conserver composants appaires et utiliser mecanisme compatible. Les
+lectures jeux ont authentification et latence physique.
+
+
+==============================================================================
+25. USB, ETHERNET, WI-FI ET BLUETOOTH
+==============================================================================
+
+USB 3.x selon modele, Gigabit Ethernet, Wi-Fi et Bluetooth. Slim/Pro ameliorent
+standards Wi-Fi/Bluetooth. Les jeux ne disposent que des classes/peripheriques
+autorises par le SDK.
+
+Reseau emploie sockets et services NP/PSN. Gerer byte order, NAT, deconnexion,
+latence, chiffrement et callbacks. Les services en ligne exigent autorisation et
+peuvent changer independamment du materiel.
+
+
+==============================================================================
+26. DUALSHOCK 4
+==============================================================================
+
+DualShock 4 offre sticks, D-pad, boutons, gachettes analogiques, pave tactile
+cliquable, gyroscope, accelerometre, vibration, barre lumineuse, haut-parleur et
+prise casque. Communication USB ou Bluetooth.
+
+L'API retourne port, connexion, timestamp, boutons, axes, touches et mouvement;
+commande vibration/lumiere/audio. V1 et V2 ont rapports/USB differents. Ne pas
+parser directement HID si l'API pad convient.
+
+
+==============================================================================
+27. CAMERA, MOVE, PS VR ET ACCESSOIRES
+==============================================================================
+
+PlayStation Camera fournit deux capteurs et microphones. Move, Aim, volants,
+claviers, casques et PS VR utilisent combinaisons USB/Bluetooth/HDMI.
+
+PS VR premiere generation emploie Processor Unit externe pour HDMI/social screen
+et capteurs; le rendu stereo reste GPU PS4. Framerate/reprojection, latence et
+tracking imposent budgets stricts. PS4 Pro peut ameliorer resolution/qualite.
+
+
+==============================================================================
+28. COMPATIBILITE DES GENERATIONS PRECEDENTES
+==============================================================================
+
+La PS4 ne lit pas les disques PS1, PS2 ou PS3 comme jeux. Elle ne contient ni
+Cell, RSX, EE ni GS. Certains titres sont portes/remasterises, distribues avec
+emulateur configure par titre ou diffuses par service cloud selon region/periode.
+
+Un achat numerique ancien n'implique pas automatiquement une licence PS4. Ne pas
+confondre "PS2 Classics" reconditionne avec retrocompatibilite materielle.
+
+
+==============================================================================
+29. ORBIS OS ET ORIGINE FREEBSD
+==============================================================================
+
+Orbis OS utilise des composants issus de FreeBSD 9 et de nombreux logiciels
+open source, ce que Sony publie dans ses notices. Sony ajoute noyau, pilotes,
+securite, interfaces graphiques, services et API proprietaires.
+
+Une application FreeBSD x86-64 ne s'execute donc pas automatiquement sur PS4.
+ABI, syscalls, format SELF, sandbox et bibliotheques sont differents.
+
+
+==============================================================================
+30. NOYAU, PROCESSUS ET SANDBOX
+==============================================================================
+
+Chaque titre s'execute dans un processus isole avec privileges, mounts et budget
+de ressources. Le noyau gere threads, VM, fichiers, reseau, GPU, audio et IPC.
+Services systeme se trouvent dans d'autres processus.
+
+Les applications appellent wrappers sceKernel*/sce* documentes, non numeros de
+syscall bruts. Ceux-ci changent et certains sont reserves. Les erreurs utilisent
+codes SCE propres, parfois derives d'errno.
+
+
+==============================================================================
+31. THREADS, SYNCHRONISATION ET TEMPS
+==============================================================================
+
+API offre pthread-like et primitives noyau : mutex, condition, semaphore, event
+flag, rwlock, direct memory, queues et timers. Les threads ont priorite/affinite;
+les coeurs systeme disponibles peuvent varier avec version SDK/OS.
+
+Utiliser horloge monotone pour simulation, pas heure civile. Une boucle frame
+doit tolerer refresh, suspend/resume et overlay. Atomiques C++ avec memory order
+correct sont preferables a volatile.
+
+
+==============================================================================
+32. MEMOIRE, FICHIERS ET E/S ASYNCHRONES
+==============================================================================
+
+Allocations standard conviennent objets CPU. Direct memory sert gros buffers
+alignes GPU/audio/I/O. Pools evitent fragmentation et allocation en frame.
+
+Fichiers titre, sauvegardes, patch/DLC et disque ont mounts separes. Sauvegardes
+passent par API et quotas, avec utilisateur/transaction. E/S asynchrones et
+decompression en jobs masquent disque/BD.
+
+
+==============================================================================
+33. EXECUTABLES SELF, ELF, PRX, PKG ET SFO
+==============================================================================
+
+ELF64 little-endian x86-64 est la base interne. SELF ajoute metadonnees, segments,
+signature/chiffrement et politiques. EBOOT.BIN est le SELF principal. PRX est
+un module dynamique avec imports/exports NID.
+
+PKG est un conteneur d'installation signe/chiffre. PARAM.SFO contient metadonnees
+comme Title ID, titre, version et categories. Une image disque/app contient une
+arborescence definie par le processus de publication.
+
+Ces formats ne doivent pas etre confondus avec ELF Linux ni PKG d'une autre
+PlayStation. Les cles ne sont pas documentees ici.
+
+
+==============================================================================
+34. BIBLIOTHEQUES ET MODULES
+==============================================================================
+
+Modules officiels couvrent kernel, libc, GNM/GNMX, shaders, audio, video, pad,
+camera, NP, trophies, sauvegardes, compression et codecs. Certains sont stubs
+lies au build puis resolus par firmware.
+
+Version SDK minimale doit correspondre au firmware cible. Verifier retour de
+chargement et disponibilite; ne pas importer une fonction privee par adresse.
+
+
+==============================================================================
+35. INITIALISATION D'UNE APPLICATION
+==============================================================================
+
+1. runtime C/C++, heap et gestion d'erreurs;
+2. callbacks systeme, utilisateur et suspend/resume;
+3. scheduler de jobs/threads;
+4. direct memory, GPU queues et render targets;
+5. shaders, textures et pipelines;
+6. audio, pad, sauvegarde et reseau necessaires;
+7. boucle fixe/variable, commandes GPU, audio et presentation;
+8. fences, flush, sauvegarde et arret propre.
+
+
+==============================================================================
+36. C/C++ X86-64 ET SIMD
+==============================================================================
+
+#include <immintrin.h>
+
+void add4(const float *a, const float *b, float *c) {
+    __m128 va = _mm_load_ps(a);
+    __m128 vb = _mm_load_ps(b);
+    _mm_store_ps(c, _mm_add_ps(va, vb));
+}
+
+Les pointeurs doivent etre alignes 16 octets; sinon employer loadu/storeu.
+Compiler seulement avec le niveau ISA garanti PS4. Pour huit valeurs, AVX peut
+etre employe si toolchain/SDK l'autorise, avec alignement 32 et attention a la
+transition AVX/SSE.
+
+
+==============================================================================
+37. PROGRAMMATION GRAPHIQUE GNM/GNMX
+==============================================================================
+
+GNM est l'API bas niveau officielle proche du materiel; GNMX ajoute commodites.
+Concepts : contexte de commande, draw/constant command buffers, render/depth
+targets, descriptors texture/buffer/sampler, shaders, resource barriers et
+submission.
+
+Pseudo-code, noms volontairement generiques car SDK proprietaire :
+
+allocate_direct_memory();
+init_graphics_queue();
+create_render_target(width, height, tiled_format);
+bind_pipeline(vertex_shader, pixel_shader);
+set_vertex_buffer(vertices);
+draw_indexed(index_count);
+transition_to_display();
+submit_and_flip();
+
+La reference exacte doit venir du SDK sous licence correspondant.
+
+
+==============================================================================
+38. COMPUTE SHADER ET GESTION DES RESSOURCES
+==============================================================================
+
+Un compute shader definit threadgroups et utilise buffers/textures/UAV. Choisir
+taille multiple du wavefront lorsque pertinent, mais mesurer occupation. LDS
+sert aux echanges du groupe; barrier ne synchronise pas deux groupes.
+
+Apres compute ecrivant une ressource lue par graphics, inserer barrier de cache
+et transition. Async compute exige fence entre queues. Eviter atomiques globaux
+contentionnes; reduire localement puis combiner.
+
+
+==============================================================================
+39. AUDIO ET LECTURE EN CONTINU
+==============================================================================
+
+Le moteur produit blocs PCM dans un ring; callback/port audio consomme a cadence
+fixe. Decodage et mixage peuvent utiliser jobs CPU ou blocs dedies selon SDK.
+
+Pipeline : async read -> decompression -> decode -> resample/mix -> output.
+Triple buffering absorbe jitter. Les threads audio ont haute priorite, pas de
+locks longs, allocation ni journalisation synchrone.
+
+
+==============================================================================
+40. RESEAU, MANETTE ET SAUVEGARDES
+==============================================================================
+
+Initialiser contexte reseau, puis sockets non bloquantes/event loops. Les API NP
+gerent identite, matchmaking et trophees; elles exigent environnement autorise.
+
+Pad : interroger connexion et timestamp chaque frame, appliquer dead zones et
+mapper actions plutot que boutons fixes. Sauvegarde : transactionner fichiers,
+icone/metadonnees, quota et espace libre; ne jamais ecrire dans un chemin systeme.
+
+
+==============================================================================
+41. ORGANISATION D'UN MOTEUR
+==============================================================================
+
+Thread principal : evenements, frame graph et submission. Jobs workers : animation,
+physique, culling, particules, decompression. Thread rendu construit commandes;
+audio et I/O ont leurs files asynchrones.
+
+Un frame graph suit lecture/ecriture des ressources et genere transitions.
+Double/triple buffering separe CPU frame N+1 et GPU frame N. La Pro ne doit pas
+changer logique deterministe entre profils.
+
+
+==============================================================================
+42. OPTIMISATION ET PROFILAGE
+==============================================================================
+
+- profiler avant optimiser;
+- reduire serialisation sur les huit Jaguar;
+- SoA, SIMD, jobs assez gros et faible faux partage;
+- limiter draw calls et changements de pipeline;
+- reduire overdraw/bande passante et choisir bons formats;
+- async compute seulement s'il chevauche reellement;
+- pools de direct memory et uploads groupes;
+- resolutions dynamiques et budgets CPU/GPU separes;
+- tester HDD lent, disque plein, resume et reseau perdu;
+- valider base et Pro, pas seulement un PC rapide.
+
+
+==============================================================================
+43. SDK OFFICIEL, OUTILS PUBLICS ET HOMEBREW
+==============================================================================
+
+Le SDK officiel fournit compilateur Clang/LLVM, debogueur, profiler Razor,
+GNM/GNMX, PSSL, bibliotheques et kits de developpement. Il est sous accord Sony.
+
+Les notices open source Sony publient les composants FreeBSD/WebKit/etc., pas
+les pilotes et API proprietaires complets. Projets communautaires documentent
+Orbis/AMD et emulation; leurs interfaces peuvent etre incompletes.
+
+Un projet homebrew doit employer une chaine libre et une methode d'execution
+autorisee. Ne pas integrer des headers/bibliotheques confidentiels redistribues.
+
+
+==============================================================================
+44. DIFFERENCES DE REVISIONS ET COMPATIBILITE
+==============================================================================
+
+Tous les jeux PS4 doivent viser la base. Slim conserve performances generales
+mais modifie consommation, Wi-Fi, sorties et composants. Pro ajoute mode Neo/Pro
+active par titre et firmware.
+
+Ne pas dependre de timing disque, ventilateur, nombre de ports USB ou revision
+APU. Interroger video/HDR, memoire disponible et fonctions API. Les patches
+peuvent changer budget systeme et comportement.
+
+
+==============================================================================
+45. PS4 PRO ET MODES AMELIORES
+==============================================================================
+
+Pro double les CU, augmente horloge GPU/CPU et bande passante. Techniques :
+checkerboard 2160p, temporal reconstruction, resolution dynamique, meilleurs
+effets, framerate ou mode qualite. Un mode Boost systeme peut aider des titres
+non patches sans garantir stabilite parfaite.
+
+Le CPU n'augmente que moderement; un jeu CPU-bound ne double pas son framerate.
+Adapter charge GPU, taille render targets et budget memoire; conserver sauvegardes
+et gameplay identiques.
+
+
+==============================================================================
+46. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU : AMD64 Jaguar, CPUID expose, SSE/AVX, atomiques, exceptions, MMU et timing.
+Virtualisation native aide mais syscalls/privileges doivent etre interceptes.
+
+GPU : GCN/PM4, queues graphics/compute, descriptors, PSSL ISA, tiling, DCC/HTILE,
+fences, labels et precision. Traduction Vulkan doit reproduire hazards implicites
+ou explicites des commandes originales.
+
+Memoire : direct memory, types cache, mappings CPU/GPU, reservations GameOS et
+adresses virtuelles. Une simple RAM plate coherente cache les bogues.
+
+OS : SELF/PRX, linker NID, syscalls, modules, filesystem sandbox, threads, audio,
+pad et network stubs. HLE doit garder asynchronisme et codes d'erreur.
+
+Peripheriques : HDD/BD, suspend/resume, DualShock 4, audio/HDMI et profils CUH
+base/Pro. Demander dumps legalement obtenus.
+
+
+==============================================================================
+47. PLAN DE VALIDATION
+==============================================================================
+
+1. ELF/SELF/PRX, imports NID et processus.
+2. x86-64, SSE/AVX, CPUID, atomiques et exceptions.
+3. VM, direct memory, cache types et mappings GPU.
+4. PM4/queues, fences, labels et erreurs de packet.
+5. Shaders GCN, textures, tiling, depth, blending et MSAA.
+6. Graphics et async compute concurrents.
+7. 720p/1080p/HDR puis modes Pro/checkerboard.
+8. Audio avec underruns et changement de sortie.
+9. HDD/BD, E/S async, disque plein et corruption simulee.
+10. DualShock 4 V1/V2, USB/Bluetooth, motion/touch.
+11. Suspend/resume, overlay et changement utilisateur.
+12. Reseau deconnecte et services indisponibles.
+13. Profils CUH-10xx, Slim et Pro.
+14. Comparaison image, timing et erreurs avec materiel reel.
+
+
+==============================================================================
+48. MAINTENANCE ET DIAGNOSTIC
+==============================================================================
+
+- Identifier CUH, carte, alimentation, lecteur et ventilateur exacts.
+- Nettoyer radiateurs/ventilateur et remplacer pate/pads aux bonnes epaisseurs.
+- Diagnostiquer BLOD/WLOD par rails, logs/UART autorise, APU, RAM, HDMI et firmware;
+  ne pas appliquer un reflow aveugle.
+- Conserver carte fille/controleur optique appaire selon revision.
+- Sauvegarder avant changer HDD; utiliser le bon fichier de reinstallation.
+- Verifier connecteur HDMI, filtres, encodeur et continuites avant remplacer APU.
+- Les alimentations internes exposent tension secteur dangereuse.
+
+
+==============================================================================
+49. SECURITE ET PRESERVATION
+==============================================================================
+
+Preserver disques, sauvegardes, HDD/flash propres et metadonnees avec hashes,
+CUH et firmware, dans le respect du droit. SELF, PKG, firmware, cles et SDK sont
+proteges; ne pas redistribuer secrets ou contenus commerciaux.
+
+Les informations de formats et boot servent a interoperabilite, recherche et
+emulation. Elles n'autorisent pas a contourner un service ou controle d'acces.
+Prudence avec secteur, laser Blu-ray et batteries lithium des manettes.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Sources Sony publiques :
+
+- Specifications techniques officielles PlayStation 4.
+  https://www.playstation.com/en-in/ps4/tech-specs/
+
+- Sony Computer Entertainment, annonce architecturale PS4 du 21 fevrier 2013 :
+  APU x86-64, GPU et 8 Gio GDDR5 unifiee.
+  https://www.sony.com/SonyInfo/IR/news/20130221E.pdf
+
+- Logiciels open source utilises dans PlayStation 4, dont noyau FreeBSD.
+  https://www.playstation.com/en-us/oss/ps4/
+
+Architecture AMD publique :
+
+- AMD Jaguar Software Optimization Guide et AMD64 Architecture Manuals.
+- Documentation AMD Graphics Core Next ISA, formats et modeles de coherence.
+- Analyse de la microarchitecture Jaguar :
+  https://www.anandtech.com/show/6976/amds-jaguar-architecture-the-cpu-powering-xbox-one-playstation-4-kabini-temash
+
+References communautaires :
+
+- PS4 Developer Wiki, APU, Liverpool, Southbridge, memoire et revisions.
+  https://www.psdevwiki.com/ps4/APU
+
+- Projets d'emulation/reimplementation open source, utiles pour verifier les
+  comportements publics mais non substituts au SDK officiel.
+
+Les API exactes GNM/GNMX/PSSL et les manuels developpeur sont sous licence Sony.
+Un programmeur agree doit employer la version de SDK associee a son firmware et
+respecter ses specifications plutot qu'une declaration communautaire isolee.

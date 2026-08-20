@@ -1,0 +1,1140 @@
+==============================================================================
+ IBM PERSONAL COMPUTER PCjr (4860) - MATERIEL, BIOS ET PROGRAMMATION
+ Reference technique pour programmeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Personal Computer PCjr, type 4860 : architecture,
+memoire, clavier, cartouches, bus lateral, video, son, stockage, BIOS et
+programmation sous DOS. Le sous-systeme video est resume ici et traite plus
+profondement dans DOC/PC_JUNIOR_VIDEO_CARD.txt.
+
+Le PCjr n'est ni un PC 5150 miniature ni un Tandy 1000. Il conserve le 8088 et
+une large compatibilite BIOS/DOS, mais remplace plusieurs interfaces materielle.
+Un logiciel qui programme directement un PC ou XT peut donc echouer.
+
+Les valeurs suffixees par h sont hexadecimales. Les accents sont omis afin de
+conserver un fichier ASCII lisible sur DOS.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et objectifs
+  2. Modeles et configurations
+  3. Caracteristiques generales
+  4. Differences avec PC et XT
+  5. Architecture fonctionnelle
+  6. Intel 8088
+  7. Horloges et performances
+  8. Memoire vive
+  9. Carte memoire
+ 10. Memoire video partagee
+ 11. ROM systeme et BIOS
+ 12. Cartouches ROM
+ 13. Format et initialisation d'une cartouche
+ 14. Bus lateral et sidecars
+ 15. Carte des ports d'E/S
+ 16. Interruptions et NMI
+ 17. PIC 8259A
+ 18. Temporisateur 8253
+ 19. Absence de DMA integre
+ 20. Ports systeme 60h--63h et A0h
+ 21. Clavier infrarouge et cable
+ 22. Decodage logiciel du clavier
+ 23. Sous-systeme video
+ 24. Modes video et organisation des pixels
+ 25. Registres video
+ 26. Son SN76496
+ 27. Multiplexage audio et haut-parleur
+ 28. Programmation musicale
+ 29. Joysticks
+ 30. Interface cassette
+ 31. Lecteur de disquettes
+ 32. Interfaces serie et modem
+ 33. Imprimante et extensions
+ 34. BIOS et POST
+ 35. Zone de donnees BIOS
+ 36. Interruptions BIOS
+ 37. Detection du PCjr
+ 38. DOS, Cartridge BASIC et logiciels
+ 39. Compatibilite logicielle
+ 40. Assembleur : detection et BIOS
+ 41. Assembleur : son et joystick
+ 42. Assembleur : video et retrace
+ 43. Assembleur : cartouche ROM
+ 44. Turbo Pascal : detection et BIOS
+ 45. Turbo Pascal : son, joystick et video
+ 46. Extensions modernes et historiques
+ 47. Conseils pour un emulateur
+ 48. Plan de validation
+ 49. Maintenance et restauration
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE ET OBJECTIFS
+==============================================================================
+
+IBM annonce le PCjr le 1er novembre 1983 et le commercialise principalement en
+1984. Il vise la maison, l'education et le divertissement, a un prix inferieur
+au PC. IBM conserve l'environnement logiciel PC tout en ajoutant graphismes 16
+couleurs, son a trois voies, cartouches et deux joysticks.
+
+La premiere version du clavier sans fil, surnommee ensuite "chiclet", est mal
+recue. IBM la remplace par un clavier toujours infrarouge mais aux touches plus
+conventionnelles. Les limites de RAM, d'extension et de stockage nuisent aussi
+au produit. IBM arrete le PCjr en 1985.
+
+Son heritage technique survit surtout dans le Tandy 1000 : de nombreux jeux
+DOS nomment "PCjr/Tandy" leurs modes graphique et sonore. Cette compatibilite
+n'est cependant pas totale au niveau des registres, de la memoire ou du BIOS.
+
+
+==============================================================================
+2. MODELES ET CONFIGURATIONS
+==============================================================================
+
+Modeles IBM courants :
+
+- 4860-004 : systeme de base avec 64 Kio, clavier et deux logements cartouche;
+- 4860-067 : 128 Kio et lecteur de disquettes 360 Kio;
+- extension IBM 64 Kio Memory and Display Expansion;
+- Power Expansion Attachment necessaire a certaines chaines de sidecars;
+- options serie, modem, imprimante, speech et autres accessoires;
+- extensions tierces de 256, 384, 512 ou 640 Kio et stockage.
+
+La machine a 128 Kio est la cible pratique de la plupart des logiciels avances.
+Les modes video a forte bande passante et DOS laissent trop peu de memoire utile
+sur la version 64 Kio.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Element                    Valeur ou composant
+-------------------------  --------------------------------------------------
+CPU                        Intel 8088 a environ 4,77 MHz
+Bus CPU                    donnees 8 bits, adresses 20 bits
+RAM IBM                    64 ou 128 Kio
+ROM                        BIOS, diagnostics, BASIC et Keyboard Adventure
+Video                      MC6845 et IBM Video Gate Array
+RAM video                  prelevee sur la RAM systeme
+Son                        Texas Instruments SN76496, 3 tons + bruit
+Haut-parleur               PIT 8253 ou source selectionnee
+Clavier                    62 touches, infrarouge ou cable, NMI
+Joysticks                  deux interfaces analogiques integrees
+Cartouches                 deux logements ROM
+Disquette                  5,25 pouces 360 Kio, transfert sans DMA interne
+Extension                  connecteur lateral pour sidecars
+Serie                      interface integree a 2F8h selon configuration
+Alimentation               transformateur externe et carte d'alimentation
+
+La video, le son, les joysticks et les logements de cartouche sont integres,
+contrairement aux cartes optionnelles d'un PC 5150.
+
+
+==============================================================================
+4. DIFFERENCES AVEC PC ET XT
+==============================================================================
+
+Sous-systeme        PC/XT                         PCjr
+------------------  ----------------------------  ----------------------------
+Video               MDA/CGA sur carte             integree, RAM partagee
+Graphismes          CGA jusqu'a 4 couleurs        modes 16 couleurs ajoutes
+Son                 PIT/haut-parleur              PIT + SN76496
+Clavier             cable, IRQ1                   infrarouge/cable, NMI
+Disquette           uPD765 + DMA2                 controleur, transfert CPU
+DMA                 8237 sur carte mere           aucun 8237 integre
+Extension           logements bus internes        sidecars lateraux
+Cartouches          aucune                        deux logements ROM
+Joysticks           carte optionnelle             deux ports integres
+RAM IBM             jusqu'a 640 Kio               64/128 Kio officielle
+Parallele           carte optionnelle             sidecar
+
+Les appels DOS/BIOS cachent une partie de ces differences. Les acces directs
+aux ports 60h, A0h, F0h--F7h, 3DAh ou a B800h demandent un chemin PCjr.
+
+
+==============================================================================
+5. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le 8088 partage la RAM avec la Video Gate Array. La logique integree decode les
+ports, arbitre la memoire video, commande les cartouches et expose le canal
+lateral. Un 8259A concentre les IRQ; un 8253 fournit temps, clavier et son; le
+clavier utilise NMI. Le controleur de disquette transfere les octets par le CPU.
+
+Les principaux blocs sont :
+
+- 8088, bus d'adresse 20 bits et bus de donnees 8 bits;
+- RAM dynamique avec rafraichissement sans 8237 conventionnel;
+- ROM systeme et deux fenetres cartouche;
+- Video Gate Array, 6845 et sorties video;
+- SN76496 et multiplexeur audio;
+- interface clavier infrarouge/cable;
+- PIC, PIT, joystick, cassette, serie et disquette;
+- connecteur d'E/S lateral et connecteur d'alimentation lateral.
+
+
+==============================================================================
+6. INTEL 8088
+==============================================================================
+
+Le 8088 execute le jeu 8086 avec unite interne 16 bits et bus externe 8 bits.
+Registres AX, BX, CX, DX, SP, BP, SI, DI; segments CS, DS, SS, ES; IP et FLAGS.
+
+    adresse physique = segment * 16 + offset, modulo 20 bits
+
+Il n'a ni mode protege, cache, pagination ni instructions 80186. Pour garantir
+la compatibilite, ne pas utiliser PUSHA, ENTER, INS/OUTS ou decalage par constante
+immediate. Les interruptions masquees passent par INTR; le clavier emploie NMI.
+
+
+==============================================================================
+7. HORLOGES ET PERFORMANCES
+==============================================================================
+
+Le quartz de 14,31818 MHz fournit environ 4,772727 MHz au CPU et environ
+1,193182 MHz au PIT. IRQ0 conserve environ 18,2065 ticks par seconde.
+
+La video partage la RAM avec le CPU. Les modes a forte bande passante volent
+des cycles memoire et ralentissent visiblement le 8088. La vitesse d'un code ne
+depend donc pas seulement du mode video mais aussi de la page et de l'emplacement
+physique de la RAM. Un emulateur qui rend tous les acces identiques est trop
+rapide et masque des bogues de synchronisation.
+
+
+==============================================================================
+8. MEMOIRE VIVE
+==============================================================================
+
+La configuration IBM offre 64 Kio de base, puis 64 Kio supplementaires pour
+128 Kio. Une partie est reservee a la video, reduisant la memoire DOS annoncee.
+Avec 128 Kio et 16 Kio video, environ 112 Kio restent conventionnels avant les
+autres allocations BIOS/DOS.
+
+Les sidecars tiers ont ensuite apporte jusqu'a 640 Kio. Leur organisation peut
+placer la RAM dans des plages non contigues ou ajouter une logique speciale.
+INT 12h est donc preferable a une supposition fondee sur le modele.
+
+La RAM dynamique est sensible aux wait states video. Les extensions peuvent
+etre plus rapides que les premiers 128 Kio, ce que certains programmes exploitent
+involontairement.
+
+
+==============================================================================
+9. CARTE MEMOIRE
+==============================================================================
+
+Plage physique     Usage PCjr typique
+-----------------  ----------------------------------------------------------
+00000h--003FFh      table des vecteurs
+00400h--004FFh      zone de donnees BIOS
+00500h--01FFFFh     RAM IBM selon configuration et reserve video physique
+020000h--09FFFFh    extensions RAM tierces possibles
+A0000h--AFFFFh      reserve video/extension
+B0000h--B7FFFh      reserve monochrome
+B8000h--BFFFFh      fenetre video processeur, 32 Kio visibles
+C0000h--CFFFFh      extension ROM/peripheriques selon materiel
+D0000h--DFFFFh      premier espace cartouche
+E0000h--EFFFFh      second espace cartouche
+F0000h--F5FFFh      ROM diagnostics/Keyboard Adventure et systeme
+F6000h--FDFFFh      ROM BASIC selon organisation
+FE000h--FFFFFh      BIOS principal et vecteur reset
+
+Les sous-decoupages ROM changent avec images et revisions. Les cartouches peuvent
+remplacer certaines zones ROM par signaux dedies; ne pas deduire leur contenu
+du seul segment.
+
+
+==============================================================================
+10. MEMOIRE VIDEO PARTAGEE
+==============================================================================
+
+La Video Gate Array choisit des pages de 16 Kio dans les 128 premiers Kio :
+
+- CRT page : page lue par le generateur video;
+- processor page : page exposee au CPU dans la fenetre B8000h;
+- les deux peuvent differer pour dessiner hors ecran puis basculer;
+- la taille logique vaut 16 ou 32 Kio selon le mode.
+
+Le registre 3DFh choisit ces pages. La valeur exacte doit etre composee selon le
+manuel; une mauvaise page peut ecraser code, DOS ou donnees. Le BIOS reserve la
+RAM et initialise les registres pour le mode choisi.
+
+La fenetre B8000h--BFFFFh est contigue sur PCjr, contrairement a certains effets
+de rebouclage CGA. Un programme qui suppose la disposition exacte de la CGA peut
+donc produire une image differente.
+
+
+==============================================================================
+11. ROM SYSTEME ET BIOS
+==============================================================================
+
+Le vecteur reset est a FFFF:0000, physique FFFF0h. La date BIOS ASCII se trouve
+classiquement pres de FFFF:0005. La ROM contient POST, BIOS, BASIC, diagnostics
+et le jeu/tutoriel Keyboard Adventure selon revision.
+
+Le BIOS conserve les INT communes PC : video, equipement, RAM, disque, serie,
+clavier, imprimante, bootstrap et temps. Il adapte video, clavier NMI et disquette
+sans DMA. Appeler le BIOS est la meilleure voie de compatibilite.
+
+Les adresses internes F000:xxxx ne constituent pas une API stable. Utiliser les
+vecteurs plutot que les points d'entree d'une liste ROM precise.
+
+
+==============================================================================
+12. CARTOUCHES ROM
+==============================================================================
+
+Deux logements sont accessibles sans ouvrir la machine. Les fenetres principales
+sont :
+
+- premier logement : D0000h--DFFFFh, deux selections de 32 Kio;
+- second logement : E0000h--EFFFFh, deux selections de 32 Kio;
+- signaux supplementaires permettent a une cartouche speciale de substituer
+  des portions de la ROM de base dans F0000h--FFFFFh.
+
+Les signaux /CS2 et /CS3 concernent les deux moities du premier logement; /CS4
+et /CS5 celles du second. /CS6 et /CS7 servent aux substitutions de ROM systeme
+avec les lignes de presence prevues.
+
+Une cartouche est directement dans l'espace d'adressage du 8088 : aucun appel
+d'E/S n'est requis pour lire sa ROM. Des peripheriques actifs peuvent aussi
+decoder ecritures ou ajouter une commutation bancaire, mais cela depasse la
+cartouche ROM IBM simple.
+
+
+==============================================================================
+13. FORMAT ET INITIALISATION D'UNE CARTOUCHE
+==============================================================================
+
+Le BIOS analyse les segments de cartouche par pas et reconnait une signature
+55h AAh. Le format d'en-tete suit l'architecture ROM d'extension IBM : indication
+de taille/checksum et code d'initialisation selon le type de cartouche. Les
+cartouches logicielles PCjr peuvent aussi contenir des en-tetes et vecteurs
+specifiques de chargement; consulter la section Cartridge du Technical Reference
+avant de graver une image.
+
+Regles pratiques :
+
+- positionner la signature et la taille exactement comme l'attend le BIOS PCjr;
+- calculer la somme modulo 256 sur la taille declaree si le format l'exige;
+- n'utiliser ni RAM ni pile avant leur initialisation par le BIOS;
+- preserver les registres imposes par le contrat d'initialisation;
+- terminer par un retour lointain si appele comme ROM d'extension;
+- ne pas supposer qu'un clone ou emulateur traite les deux logements de meme;
+- tester cartouche gauche, droite, deux cartouches et absence de cartouche.
+
+Une image brute de 32/64 Kio sans en-tete peut rester lisible par un programme
+qui la connait, mais ne sera pas automatiquement lancee.
+
+
+==============================================================================
+14. BUS LATERAL ET SIDECARS
+==============================================================================
+
+Le connecteur lateral droit expose le canal d'E/S. Les extensions s'empilent
+horizontalement, d'ou le nom "sidecar". Un autre chemin distribue l'alimentation.
+
+Le canal fournit adresses, donnees, commandes memoire/E/S, IRQ, horloges, reset,
+audio et mecanismes de bus-mastering. Il n'est pas mecaniquement compatible ISA.
+Un adaptateur ne doit pas cabler directement une carte ISA sans logique etudee.
+
+Le signal HRQ permet a un maitre externe de demander le bus; le bit 4 du port
+A0h est reserve a l'inhibition des demandes externes et doit etre implemente
+sur le sidecar maitre. Il n'existe toutefois aucun 8237 integre.
+
+Chaque sidecar ajoute charge electrique et consommation. Le Power Expansion
+Attachment IBM est necessaire dans certaines configurations. L'ordre des modules,
+la terminaison physique et le budget de puissance sont importants.
+
+
+==============================================================================
+15. CARTE DES PORTS D'E/S
+==============================================================================
+
+Plage          Fonction PCjr
+-------------  --------------------------------------------------------------
+020h--021h     PIC 8259A
+040h--043h     PIT 8253
+060h--063h     ports systeme type PPI : clavier, audio, cassette, etat
+0A0h           masque/commande NMI, test IR, horloge, bus externe
+0C0h--0C7h     generateur sonore SN76496, decodage miroir
+0F0h--0FFh     controleur de disquette, decodage partiel
+200h--207h     deux joysticks analogiques
+2F8h--2FFh     interface serie PCjr
+3D0h--3DFh     video 6845 et Video Gate Array
+3F8h--3FFh     modem interne optionnel
+
+Des sidecars ajoutent d'autres plages. La carte PCjr ne decode pas toujours
+tous les bits bas/hauts : plusieurs adresses d'une plage peuvent etre miroirs.
+Ne pas sonder les ports d'ecriture au hasard.
+
+
+==============================================================================
+16. INTERRUPTIONS ET NMI
+==============================================================================
+
+Source                 Ligne/vecteur habituel
+---------------------  ------------------------------------------------------
+PIT canal 0            IRQ0 / INT 08h
+Clavier                NMI / INT 02h, pas IRQ1
+Serie                  IRQ3 selon interface
+Modem                  IRQ4 selon option
+Retrace video          IRQ5 / INT 0Dh lorsqu'autorise
+Disquette              IRQ6 / INT 0Eh
+Extension/imprimante   IRQ selon sidecar
+
+Le routage precis d'une option doit etre confirme par son manuel. IRQ1 existe
+au PIC mais le clavier PCjr utilise une NMI generee au premier front de donnees.
+
+Le BIOS traite NMI clavier, parite/canal et source eventuelle. Une routine qui
+remplace INT 02h doit identifier la cause avant de conclure a une frappe.
+
+
+==============================================================================
+17. PIC 8259A
+==============================================================================
+
+Le PIC unique occupe 20h commande et 21h masque. Les IRQ sont vectorisees sur
+INT 08h--0Fh comme PC/XT. Ecrire 20h au port 20h envoie un EOI non specifique.
+
+Le clavier NMI n'est pas masque par CLI ni par le port 21h. Il est controle par
+le port A0h. Une section critique qui suppose "CLI = aucune interruption" est
+donc incorrecte sur PCjr tant que NMI clavier est active.
+
+Une ISR IRQ doit sauvegarder ses registres, acquitter le peripherique, envoyer
+EOI et terminer par IRET. DOS n'est pas reentrant; ne pas appeler INT 21h depuis
+une IRQ arbitraire.
+
+
+==============================================================================
+18. TEMPORISATEUR 8253
+==============================================================================
+
+Ports 40h canal 0, 41h canal 1, 42h canal 2 et 43h commande.
+
+- canal 0 : tick systeme IRQ0, environ 18,2 Hz;
+- canal 1 : aide a la deserialisation clavier ou capture des debordements du
+  canal 0 pendant certaines operations disquette;
+- canal 2 : tonalite haut-parleur et signal de test infrarouge a 40 kHz;
+- entree principale : environ 1,193 MHz.
+
+Le port A0h bit 5 choisit une entree du canal 1. Le bit 6 active la boucle de
+test IR. Reprogrammer canal 1/2 peut donc casser clavier, diagnostic ou audio.
+
+
+==============================================================================
+19. ABSENCE DE DMA INTEGRE
+==============================================================================
+
+Le PCjr n'a pas le 8237 d'un PC/XT. Le controleur disquette transfere chaque
+octet sous controle du 8088, avec contraintes temporelles fortes. Le BIOS masque
+des interruptions et utilise le PIT pour ne pas perdre totalement l'heure.
+
+Consequences :
+
+- les ports DMA 00h--0Fh ne representent pas un 8237 interne;
+- un pilote de disquette PC qui programme DMA2 ne fonctionne pas;
+- les performances et latences d'interruption sont differentes;
+- un sidecar peut etre maitre du bus via HRQ, mais doit fournir sa logique;
+- les diagnostics et emulateurs doivent reproduire le rythme octet par octet.
+
+Une emulation qui appelle directement le fichier image a chaque INT 13h peut
+faire marcher DOS mais ne valide pas un logiciel accedant a FDC.
+
+
+==============================================================================
+20. PORTS SYSTEME 60h--63h ET A0h
+==============================================================================
+
+Les ports logiques A/B/C et commande reprennent l'idee d'un PPI :
+
+- port A : donnees/fonctions clavier et commutateurs selon selection;
+- port B : cassette, activation/multiplexage audio et controles systeme;
+- port C : etat clavier cable, latch clavier et autres entrees;
+- commande : configuration interne selon contrat PCjr.
+
+Le port B selectionne une des quatre sources audio par deux bits : sortie PIT
+canal 2, entree cassette, audio du canal lateral ou SN76496. Un autre bit controle
+le haut-parleur/beeper et le moteur cassette selon polarite documentee.
+
+Port A0h en ecriture :
+
+bit 7  autorise la NMI clavier
+bit 6  active le test infrarouge
+bit 5  choisit l'horloge du PIT canal 1
+bit 4  demande d'inhibition HRQ aux maitres externes
+
+Une lecture factice du port A0h efface le latch/NMI clavier. Toujours faire un
+read-modify-write logique base sur une ombre logicielle : le port n'est pas un
+registre symetrique dont la lecture rend necessairement la derniere commande.
+
+
+==============================================================================
+21. CLAVIER INFRAROUGE ET CABLE
+==============================================================================
+
+Le clavier 62 touches fonctionne avec piles et transmet par infrarouge. Un cable
+optionnel apporte liaison et alimentation et contourne les problemes de visee.
+Le recepteur IR demodule une porteuse voisine de 40 kHz.
+
+La premiere mecanique a petites touches separees a ete remplacee par un modele
+plus conventionnel. Les deux restent differents du clavier PC 83 touches : moins
+de touches physiques et recours a Fn pour certaines fonctions.
+
+Le flux serie n'est pas livre comme un octet par un 8042. Le BIOS utilise NMI,
+le PIT et des lectures d'etat pour deserialiser les bits, verifier le paquet et
+convertir en codes BIOS. Latence, repetition et erreurs IR font partie du
+comportement reel.
+
+
+==============================================================================
+22. DECODAGE LOGICIEL DU CLAVIER
+==============================================================================
+
+Au premier front, le latch clavier declenche NMI. La routine INT 02h :
+
+1. identifie une NMI clavier plutot qu'une erreur materielle;
+2. echantillonne la trame aux instants requis avec le PIT;
+3. reconstruit le code de la touche PCjr;
+4. convertit le clavier 62 touches en convention BIOS proche du PC;
+5. met a jour Shift/Ctrl/Alt/Fn et le tampon 0040h;
+6. acquitte le latch par lecture de A0h;
+7. revient par IRET.
+
+INT 16h doit etre prefere. Lire directement le clavier necessite de remplacer ou
+chainer proprement la NMI et peut compromettre les NMI de parite.
+
+
+==============================================================================
+23. SOUS-SYSTEME VIDEO
+==============================================================================
+
+Le video integre combine MC6845 et circuit IBM Video Gate Array, sans rapport
+avec le VGA PS/2 de 1987. Il fournit :
+
+- modes CGA BIOS 0--6, avec nuances de compatibilite;
+- mode 08h : 160x200, 16 couleurs;
+- mode 09h : 320x200, 16 couleurs;
+- mode 0Ah : 640x200, 4 couleurs;
+- texte 40/80 colonnes;
+- palette programmable de 16 registres parmi RGBI;
+- pages CRT et CPU distinctes;
+- sortie RGBI, composite et connexion moniteur PCjr;
+- interruption de retrace vertical sur IRQ5.
+
+Les modes 80 colonnes et haute bande passante demandent normalement 128 Kio.
+
+
+==============================================================================
+24. MODES VIDEO ET ORGANISATION DES PIXELS
+==============================================================================
+
+Mode  Resolution/couleurs       Codage principal
+----  ------------------------  ---------------------------------------------
+00/01 texte 40 colonnes         caractere + attribut
+02/03 texte 80 colonnes         caractere + attribut
+04/05 320x200, 4 couleurs       2 bits/pixel
+06    640x200, 2 couleurs       1 bit/pixel
+08    160x200, 16 couleurs      4 bits/pixel
+09    320x200, 16 couleurs      4 bits/pixel, deux pixels par octet
+0A    640x200, 4 couleurs       2 bits/pixel
+
+Les lignes graphiques reprennent l'entrelacement par banques herite de CGA,
+avec extensions pour les bits supplementaires. Le calcul exact depend du mode.
+Ne pas appliquer la formule du mode 4 au mode 9.
+
+INT 10h AH=00h selectionne un mode; AH=0Ch/0Dh ecrit/lit un pixel lentement mais
+de facon plus portable. Les acces directs sont documentes en profondeur dans
+DOC/PC_JUNIOR_VIDEO_CARD.txt.
+
+
+==============================================================================
+25. REGISTRES VIDEO
+==============================================================================
+
+Ports principaux :
+
+3D4h index CRTC                 3D5h donnees CRTC
+3D8h controle mode compatible   3D9h couleur/palette compatible
+3DAh etat en lecture, Video Gate Array en ecriture
+3DFh registre pages CRT/processeur
+
+Le protocole VGate a 3DAh utilise une alternance adresse/donnee et doit etre
+resynchronise avant une serie d'ecritures. Il commande Mode Control 1/2, palette
+mask, border et registres de palette 10h--1Fh. Une lecture 3DAh renseigne retrace
+et remet aussi certains etats internes selon materiel.
+
+Le CRTC n'est pas parfaitement identique a chaque 6845/CGA. Programmer des
+timings hors specification risque ecran instable et incompatibilite composite.
+
+
+==============================================================================
+26. SON SN76496
+==============================================================================
+
+Le SN76496 offre trois generateurs de ton carres et un generateur de bruit. Il
+possede quatre attenuateurs independants, soit huit registres logiques :
+
+- ton 0, attenuation 0;
+- ton 1, attenuation 1;
+- ton 2, attenuation 2;
+- bruit, attenuation bruit.
+
+Les ecritures se font au port C0h; C0h--C7h peuvent etre des miroirs a cause du
+decodage. Il n'existe pas de registre de lecture.
+
+Un octet latch/data avec bit 7=1 choisit canal/type et fournit quatre bits;
+l'octet suivant avec bit 7=0 complete les six bits hauts d'une periode de ton.
+La periode est sur dix bits. L'attenuation 0 est maximale (son fort) et 15 coupe
+le canal. Le bruit choisit bruit blanc/periodique et trois frequences fixes ou
+la periode du canal 2.
+
+
+==============================================================================
+27. MULTIPLEXAGE AUDIO ET HAUT-PARLEUR
+==============================================================================
+
+Un multiplexeur Motorola selectionne la source envoyee aux sorties audio :
+
+PB6 PB5  Source
+--- ---  ---------------------------------------------------------------
+0   0    PIT 8253 canal 2
+0   1    entree cassette
+1   0    entree audio du canal lateral
+1   1    SN76496
+
+Les noms PB5/PB6 suivent le Technical Reference. Les autres bits controlent
+gate/beeper et moteur cassette. Un programme sonore doit sauvegarder l'ombre du
+port B, choisir SN76496, jouer, puis restaurer la configuration necessaire.
+
+Le son PIT et le son complexe ne sont pas simplement additionnes : la source
+est selectionnee. Un emulateur qui melange toujours toutes les sources est faux.
+
+
+==============================================================================
+28. PROGRAMMATION MUSICALE
+==============================================================================
+
+Pour un canal de ton, la relation generale est :
+
+    frequence_sortie = horloge_SN / (32 * periode_10_bits)
+
+Verifier l'horloge exacte de la revision. Une periode zero a un comportement
+materiel particulier et ne doit pas servir comme silence; mettre attenuation 15.
+
+Chaque voie est une onde carree sans enveloppe materielle. Une enveloppe, un
+vibrato ou un accord arpege exige des ecritures periodiques par logiciel. Limiter
+le travail en ISR et eviter d'appeler DOS.
+
+
+==============================================================================
+29. JOYSTICKS
+==============================================================================
+
+Deux joysticks analogiques sont integres. Le port 201h reprend le principe IBM :
+une ecriture declenche les monostables; les bits d'une lecture indiquent quatre
+axes et quatre boutons. Les potentiometres sont mesures par le temps avant chute
+des bits d'axe.
+
+Algorithme :
+
+1. OUT 201h,AL quelconque;
+2. boucler en lisant 201h;
+3. incrementer un compteur pour chaque axe encore actif;
+4. abandonner sur timeout;
+5. lire les boutons actifs bas;
+6. calibrer centre et extremes par utilisateur.
+
+Le resultat depend de la vitesse CPU et de la contention video. Un emulateur
+doit modeliser une duree, pas retourner seulement une position instantanee.
+
+
+==============================================================================
+30. INTERFACE CASSETTE
+==============================================================================
+
+Le PCjr conserve une interface cassette pour stockage/audio, bien que la
+disquette et les cartouches soient plus courantes. Le port systeme commande le
+moteur et selectionne l'audio cassette. Le BIOS INT 15h fournit les fonctions
+historiques d'ouverture/fermeture moteur et lecture/ecriture de blocs selon ROM.
+
+La representation est temporelle : tonalites et transitions, pas secteurs.
+Vitesses moteur, niveau, polarite et seuil rendent les enregistrements sensibles.
+Un emulateur doit definir un format d'onde ou d'impulsions et reproduire erreurs
+et fin de bande si la cassette est supportee.
+
+
+==============================================================================
+31. LECTEUR DE DISQUETTES
+==============================================================================
+
+Le lecteur interne est 5,25 pouces, double face, 40 pistes, neuf secteurs de
+512 octets, soit 360 Kio. Le controleur compatible uPD765 est decode dans
+F0h--FFh; les ports fonctionnels principaux se trouvent autour de F2h, F4h et
+F5h selon registre.
+
+Difference critique : aucun DMA 8237. Le BIOS echange les octets avec le FIFO
+du FDC par programme, dans les delais. IRQ6 signale les evenements du controleur.
+Le PIT canal 1 aide a conserver le temps pendant les sections ou IRQ0 est masquee.
+
+INT 13h reste compatible pour reset, lecture, ecriture, verification et format.
+Un programme DOS doit l'utiliser plutot que recopier un pilote PC DMA.
+
+Un second lecteur ou disque dur exige une extension tierce. Les ROM de ces
+sidecars prolongent INT 13h et consomment espace cartouche/extension.
+
+
+==============================================================================
+32. INTERFACES SERIE ET MODEM
+==============================================================================
+
+L'interface serie PCjr est mappee a 2F8h--2FFh et emploie une logique UART de
+classe 8250 avec cablage/adaptateur propre a la machine. Le modem interne optionnel
+utilise typiquement 3F8h--3FFh. Verifier IRQ3/IRQ4 et la BDA.
+
+Registres UART usuels : RBR/THR/DLL a +0, IER/DLM +1, IIR +2, LCR +3, MCR +4,
+LSR +5, MSR +6. DLAB selectionne le diviseur; debit approximatif 115200/diviseur.
+
+INT 14h cache une partie des differences. Les connecteurs PCjr ne doivent pas
+etre supposes identiques mecaniquement a un DB-25 PC; employer le cable adapte.
+
+
+==============================================================================
+33. IMPRIMANTE ET EXTENSIONS
+==============================================================================
+
+Le port parallele n'est pas standard dans l'unite de base. Un Printer Attachment
+sidecar fournit interface et connecteur. Son adresse logique est inscrite dans
+la BDA et INT 17h fournit impression, initialisation et etat.
+
+Autres options historiques :
+
+- 64/128 Kio Memory and Display Expansion;
+- Power Expansion Attachment;
+- modem interne;
+- Speech Attachment;
+- extensions memoire tierces;
+- adaptations souris, horloge et ports serie/parallele;
+- disques durs et lecteurs supplementaires par sidecar;
+- adaptateurs de clavier PC.
+
+Chaque extension doit documenter ports, IRQ, ROM, RAM, alimentation et ordre
+physique dans la chaine.
+
+
+==============================================================================
+34. BIOS ET POST
+==============================================================================
+
+Au reset, le BIOS initialise PIC/PIT/logique systeme, teste ROM et RAM, detecte
+la video, initialise clavier, inspecte cartouches et extensions, configure la
+BDA puis amorce une cartouche ou un disque selon les regles de la ROM.
+
+Le diagnostic peut afficher des codes, produire des tonalites ou lancer les
+outils ROM. L'absence de clavier IR visible ne doit pas etre confondue avec une
+carte mere morte. Le cable clavier est utile en maintenance.
+
+Les cartouches sont examinees avant ou pendant la sequence d'amorcage et peuvent
+modifier vecteurs/services. Un POST fidele doit respecter leur ordre gauche/
+droite et les checksums.
+
+
+==============================================================================
+35. ZONE DE DONNEES BIOS
+==============================================================================
+
+La BDA commence a 0040:0000. Champs compatibles importants :
+
+0040:0000  bases COM                   0040:0008 bases LPT
+0040:0010  mot d'equipement            0040:0013 RAM en Kio
+0040:0017  drapeaux clavier            0040:001A/1C tete/queue clavier
+0040:001E  tampon clavier              0040:0049 mode video
+0040:004A  colonnes                    0040:004C taille de page
+0040:0050  curseurs                    0040:0063 base CRTC
+0040:006C  ticks depuis minuit         0040:0070 passage de minuit
+0040:0072  drapeau warm boot
+
+Le PCjr ajoute ou reinterprete des octets pour page video, clavier et materiel.
+Leur sens exact doit etre pris dans le listing BIOS PCjr, non dans une table AT.
+
+
+==============================================================================
+36. INTERRUPTIONS BIOS
+==============================================================================
+
+INT 10h  video, y compris modes PCjr 08h--0Ah
+INT 11h  mot d'equipement
+INT 12h  RAM conventionnelle utilisable
+INT 13h  disquette et extensions disque
+INT 14h  interface serie
+INT 15h  cassette et services systeme propres a la ROM
+INT 16h  clavier traduit par BIOS
+INT 17h  imprimante si presente
+INT 18h  BASIC/chemin ROM
+INT 19h  bootstrap
+INT 1Ah  ticks systeme
+
+INT 10h AH=0Fh retourne mode, colonnes et page. INT 16h AH=00h attend une touche,
+01h teste sans retirer et 02h lit Shift. INT 13h suit les conventions CHS du
+PC mais son implementation interne n'emploie pas DMA.
+
+
+==============================================================================
+37. DETECTION DU PCjr
+==============================================================================
+
+La methode BIOS documentee utilise INT 11h : le mot d'equipement et les champs
+reserves permettent au BIOS PCjr de s'identifier selon sa convention. Une autre
+methode courante appelle INT 15h/AH=C0h quand disponible et examine le modele,
+mais ce service n'est pas uniforme sur les tout premiers BIOS.
+
+La methode historique la plus directe lit l'octet d'identification de modele a
+FFFF:000Eh : FDh est communement associe au PCjr. Elle doit rester un indice :
+une ROM clonee ou remplacee peut copier/modifier cette valeur.
+
+Combiner :
+
+1. identifiant ROM FDh;
+2. date/signature BIOS;
+3. presence des modes INT 10h 08h--0Ah;
+4. BDA/mot d'equipement coherents;
+5. uniquement si indispensable, sonde non destructive de la Video Gate Array.
+
+Ne pas ecrire C0h, A0h ou 3DAh pour une simple detection : cela peut produire
+son, perturber NMI ou video.
+
+
+==============================================================================
+38. DOS, CARTRIDGE BASIC ET LOGICIELS
+==============================================================================
+
+PC DOS 2.1 est la version historiquement adaptee au PCjr. DOS reserve la RAM
+video partagee et utilise le BIOS PCjr. Des versions ulterieures peuvent exiger
+plus de memoire, correctifs ou pilotes sur configurations etendues.
+
+Cartridge BASIC ajoute des fonctions graphiques, sonores et de jeu pratiques.
+Il complete la ROM BASIC et libere une partie de RAM par rapport a un interpreteur
+charge sur disquette. Les commandes exactes dependent de la version.
+
+Logiciels emblematiques : King's Quest et autres titres Sierra, jeux PCjr,
+Lotus 1-2-3 adapte et programmes educatifs sur cartouche/disquette. Beaucoup
+detectent machine et RAM plutot que de se limiter au BIOS.
+
+
+==============================================================================
+39. COMPATIBILITE LOGICIELLE
+==============================================================================
+
+Causes typiques d'incompatibilite :
+
+- programme exigeant plus de 112/128 Kio;
+- pilote disquette qui programme DMA2;
+- lecture clavier au port 60h/IRQ1 au lieu d'INT 16h;
+- ISR NMI supposant uniquement une erreur de parite;
+- video CGA directe supposant une RAM dediee ou un rebouclage particulier;
+- logiciel ecrasant la RAM utilisee comme page video;
+- besoin d'un logement ISA, d'un disque dur ou d'un port parallele absent;
+- temporisation CPU faussee par contention video;
+- utilisation de ports occupes par son, cartouche ou sidecar.
+
+Un programme ecrit par INT 10h, 13h, 14h, 16h, 17h et DOS a de meilleures
+chances. La compatibilite Tandy concerne surtout modes video/son, pas tout le
+materiel PCjr.
+
+
+==============================================================================
+40. ASSEMBLEUR : DETECTION ET BIOS
+==============================================================================
+
+Exemple MASM/TASM 8086 :
+
+        mov ax,0FFFFh
+        mov es,ax
+        mov al,es:[000Eh]       ; identifiant modele BIOS
+        cmp al,0FDh
+        jne not_pcjr
+
+        mov ah,0Fh
+        int 10h                 ; AL mode, AH colonnes, BH page
+
+        int 12h                 ; AX = Kio conventionnels utilisables
+
+L'identifiant est une forte indication pour ROM IBM, pas une preuve materielle.
+Pour afficher une touche sans connaitre le clavier physique :
+
+        xor ah,ah
+        int 16h                 ; AL ASCII, AH scan BIOS
+        mov ah,0Eh
+        int 10h
+
+
+==============================================================================
+41. ASSEMBLEUR : SON ET JOYSTICK
+==============================================================================
+
+Ecriture du SN76496, canal ton 0, avec la periode de dix bits dans BX. La
+selection audio via le port B doit avoir ete faite selon l'ombre correcte :
+
+        mov ax,bx
+        and al,0Fh
+        or  al,80h
+        out 0C0h,al
+        mov ax,bx
+        mov cl,4
+        shr ax,cl
+        and al,3Fh
+        out 0C0h,al
+        mov al,090h             ; volume canal 0, attenuation 0
+        out 0C0h,al
+
+Pour couper canal 0 : OUT C0h,9Fh.
+
+Lecture boutons joystick :
+
+        mov dx,201h
+        xor al,al
+        out dx,al               ; declenche axes
+        in  al,dx
+        mov ah,al
+        and ah,0F0h             ; boutons, actifs bas
+
+Les axes exigent une boucle avec timeout et calibration.
+
+
+==============================================================================
+42. ASSEMBLEUR : VIDEO ET RETRACE
+==============================================================================
+
+Selection BIOS du mode 09h :
+
+        mov ax,0009h
+        int 10h
+
+Attente d'un front de retrace, methode par status 3DAh :
+
+        mov dx,3DAh
+out_vr: in  al,dx
+        test al,08h
+        jnz out_vr
+in_vr:  in  al,dx
+        test al,08h
+        jz  in_vr
+
+Cette boucle doit avoir un timeout sur emulateur/materiel absent. Le PCjr peut
+aussi generer IRQ5 de retrace, preferable au polling pour certaines animations.
+Acquitter la source video et le PIC selon le Technical Reference.
+
+
+==============================================================================
+43. ASSEMBLEUR : CARTOUCHE ROM
+==============================================================================
+
+Squelette conceptuel d'une ROM d'extension de 2 Kio, syntaxe dependante de
+l'assembleur et de l'outil de creation d'image :
+
+        org 0
+        db 055h,0AAh
+        db 4                   ; quatre blocs de 512 octets
+entry:  push ds
+        push cs
+        pop ds
+        ; installer vecteur ou annoncer service, sans DOS
+        pop ds
+        retf
+
+        ; remplissage jusqu'a 2048 octets
+        ; dernier octet ajuste pour somme modulo 256 = 0
+
+Le format des cartouches applicatives PCjr peut ajouter des structures au-dela
+de cette forme ROM BIOS. Tester l'image dans le logement vise et verifier le
+manuel IBM avant fabrication electrique.
+
+
+==============================================================================
+44. TURBO PASCAL : DETECTION ET BIOS
+==============================================================================
+
+Program DetectePCjr;
+Uses Dos;
+Var R:Registers;
+    Modele:Byte;
+Begin
+  Modele:=Mem[$FFFF:$000E];
+  If Modele=$FD Then
+    WriteLn('BIOS IBM PCjr detecte')
+  Else
+    WriteLn('PCjr non confirme, identifiant=',Modele);
+
+  Intr($12,R);
+  WriteLn('Memoire DOS/BIOS: ',R.AX,' Kio');
+  R.AH:=$0F;
+  Intr($10,R);
+  WriteLn('Mode video: ',R.AL,'  Colonnes: ',R.AH);
+End.
+
+Mem[] et Intr sont propres au mode reel Turbo Pascal DOS.
+
+
+==============================================================================
+45. TURBO PASCAL : SON, JOYSTICK ET VIDEO
+==============================================================================
+
+Procedure JrSoundPeriod(Canal:Byte; Periode:Word; Attenuation:Byte);
+Var B:Byte;
+Begin
+  Canal:=Canal And 3;
+  If Canal>2 Then Exit;
+  B:=$80 Or (Canal Shl 5) Or (Lo(Periode) And $0F);
+  Port[$C0]:=B;
+  Port[$C0]:=(Periode Shr 4) And $3F;
+  Port[$C0]:=$90 Or (Canal Shl 5) Or (Attenuation And $0F);
+End;
+
+Procedure JrSilence;
+Begin
+  Port[$C0]:=$9F;
+  Port[$C0]:=$BF;
+  Port[$C0]:=$DF;
+  Port[$C0]:=$FF;
+End;
+
+Function Buttons:Byte;
+Begin
+  Port[$201]:=0;
+  Buttons:=(Port[$201] Shr 4) And $0F;
+End;
+
+Avant JrSoundPeriod, selectionner la source SN76496 par le port systeme en
+preservant son etat. Pour la video, preferer Intr($10,R) ou les routines detaillees
+dans DOC/PC_JUNIOR_VIDEO_CARD.txt.
+
+
+==============================================================================
+46. EXTENSIONS MODERNES ET HISTORIQUES
+==============================================================================
+
+Les extensions tierces ont corrige plusieurs limites :
+
+- extensions 256--640 Kio;
+- second lecteur, controleur de disque dur et sidecars IDE modernes;
+- cartes jrIDE et stockage CompactFlash/SD;
+- adaptateurs de clavier PC/XT ou USB;
+- extensions serie/parallele, RTC et reseau;
+- cartouches reprogrammables et developpement;
+- remplacement d'alimentation.
+
+Une extension moderne peut modifier la carte memoire, les wait states, le BIOS
+et la detection. Documenter son firmware et ne pas attribuer ses fonctions au
+PCjr IBM de base.
+
+
+==============================================================================
+47. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU : 8088 reel, prefetch/timing si vise, rebouclage 20 bits et NMI entre les
+instructions. La contention RAM/video doit affecter le temps.
+
+Memoire : RAM 64/128 Kio, reserve physique video, fenetre B8000h, pages CRT/CPU,
+cartouches D/E et substitutions ROM F. Tester conflits et absence de cartouche.
+
+Clavier : trame IR/cable, latch, NMI, port A0h, PIT canal 1, conversion 62 touches,
+Fn et repetition. Ne pas injecter seulement des codes AT sur IRQ1.
+
+Video : MC6845, Video Gate Array, protocole index/data 3DAh, palette, pages,
+IRQ5, retrace, composite et vols de cycles.
+
+Audio : SN76496 exact, latch/data, dix bits, bruit, attenuateurs, multiplexeur
+des quatre sources. Le silence est attenuation 15.
+
+Disquette : uPD765, ports F0h, PIO cadence, IRQ6, commandes et erreurs. Aucun
+DMA2 interne ne doit apparaitre.
+
+Sidecars : decodage partiel, IRQ, HRQ, ROM, audio et budget de puissance au
+niveau logique. Autoriser plusieurs modules et conflits.
+
+BIOS : utiliser une image legalement obtenue ou reproduire POST, BDA, services,
+cartouches et erreurs. Les ROM IBM restent protegees par droit d'auteur.
+
+
+==============================================================================
+48. PLAN DE VALIDATION
+==============================================================================
+
+1. Reset, POST, ROM interne et identification FDh.
+2. Configurations 64/128 Kio et RAM etendue par sidecar.
+3. Reserve video et contention dans chaque mode.
+4. Pages CRT/processeur, double buffering et protection de DOS.
+5. Palette, modes 08h--0Ah, retrace et IRQ5.
+6. SN76496 : tons, bruit, latch, attenuations et multiplexage audio.
+7. Clavier IR et cable : trames, erreurs, NMI, Fn et typematic.
+8. PIC/IRQ et NMI simultanees; CLI ne doit pas bloquer clavier.
+9. PIT : tick, deserialisation clavier et preservation temps pendant FDC.
+10. Disquette 360 Kio par PIO, erreurs CRC, moteur et write protect.
+11. Joysticks : axes temporels, boutons et calibration.
+12. Cartouches gauche/droite, 32/64 Kio, checksum et substitution ROM.
+13. Plusieurs sidecars, alimentation logique, ROM et conflits de ports.
+14. PC DOS 2.1, Cartridge BASIC et jeux PCjr representatifs.
+15. Programmes PC directs connus incompatibles, pour verifier les differences.
+
+
+==============================================================================
+49. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+- Utiliser le transformateur et la carte d'alimentation de specification correcte.
+- Debrancher avant cartouche, sidecar ou intervention interne.
+- Photographier cables, modules et ordre des sidecars.
+- Nettoyer les contacts lateraux et cartouches sans abrasif agressif.
+- Verifier tantales, condensateurs, tensions et ondulation avant longues mises sous
+  tension; un court-circuit peut endommager l'alimentation.
+- Tester le clavier par cable pour distinguer panne IR, piles et carte mere.
+- Examiner compartiment de piles du clavier pour corrosion.
+- Nettoyer et aligner le lecteur seulement avec outils/methode adaptes.
+- Sauvegarder les disquettes et cartouches avant essais d'ecriture.
+- Ne pas connecter directement un clavier PC/AT ou une carte ISA.
+- Ajouter le Power Expansion Attachment si la chaine le requiert.
+- Conserver ROM, etiquettes et composants originaux.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Source primaire :
+
+- IBM Personal Computer PCjr Technical Reference, novembre 1983,
+  Hardware Reference Library, IBM no 1502293.
+  https://bitsavers.org/pdf/ibm/pc/pc_jr/PCjr_Technical_Reference_Nov83.pdf
+
+Cette reference contient schemas, temporisations, carte E/S, BIOS, listing ROM,
+interface cartouche, canal lateral, clavier IR et SN76496.
+
+Autres sources :
+
+- IBM PCjr Guide to Operations.
+- IBM PCjr Hardware Maintenance and Service.
+- IBM PC DOS 2.1 Technical Reference.
+- Intel 8088 User's Manual.
+- Intel 8253 et 8259A documentation.
+- Texas Instruments SN76496 Programmable Tone/Noise Generator documentation.
+- NEC uPD765 Floppy Disk Controller documentation.
+- DOC/PC_JUNIOR_VIDEO_CARD.txt dans ce depot.
+- COMPUTE!'s Mapping the IBM PC and PCjr, pour cartes memoire/BDA annotees.
+- Ralf Brown's Interrupt List, pour BIOS DOS et variantes.
+- PCjs IBM 4860, tests et documentation de machine.
+
+Pour un clone ou emulateur compatible, separer clairement trois niveaux : BIOS
+PCjr, materiel IBM 4860 et extensions tierces. Faire fonctionner INT 10h ne
+suffit pas a reproduire le clavier NMI, la disquette PIO, les cartouches et la
+contention video qui caracterisent reellement la machine.

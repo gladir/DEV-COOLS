@@ -1,0 +1,1151 @@
+==============================================================================
+ COLECOVISION
+ Materiel, programmation, BIOS OS 7 et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console ColecoVision : Zilog Z80A, VDP Texas Instruments
+TMS9928A/TMS9929A, generateur sonore SN76489A, memoires, BIOS OS 7, cartouches,
+controleurs, modules d'extension et programmation bas niveau. Il s'adresse au
+programmeur de jeux, au reparateur et a l'auteur d'un emulateur.
+
+Les nombres precedes de $ sont hexadecimaux. Les ports sont dans l'espace I/O du
+Z80, distinct de sa memoire. Les accents sont omis pour conserver l'ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique et identite
+  2. Modeles et regions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Horloges et cadences
+  6. Processeur Z80A
+  7. Jeu d'instructions Z80
+  8. Carte memoire CPU
+  9. RAM et miroirs
+ 10. Carte des ports d'entree-sortie
+ 11. Demarrage et BIOS OS 7
+ 12. En-tete de cartouche
+ 13. Points d'entree du BIOS
+ 14. RAM reservee et variables du BIOS
+ 15. Interruptions, NMI et RST
+ 16. VDP TMS9928A/TMS9929A
+ 17. Ports et protocole du VDP
+ 18. Registres du VDP
+ 19. VRAM et tables
+ 20. Mode Graphics I
+ 21. Mode Graphics II
+ 22. Modes Text et Multicolor
+ 23. Motifs et couleurs
+ 24. Sprites
+ 25. Statut, collision et cinquieme sprite
+ 26. Video NTSC, PAL et SECAM
+ 27. Son SN76489A
+ 28. Controleurs standards
+ 29. Clavier numerique
+ 30. Spinner et Super Action Controller
+ 31. Roller Controller et autres entrees
+ 32. Connecteur cartouche
+ 33. Port d'extension
+ 34. Modules d'extension officiels
+ 35. ADAM et compatibilite
+ 36. Super Game Module et extensions modernes
+ 37. Tailles de ROM et bank switching
+ 38. Initialisation sans BIOS
+ 39. Ecriture et lecture VRAM
+ 40. Configuration d'un ecran Graphics II
+ 41. Chargement d'un motif et d'une palette
+ 42. Affichage de texte
+ 43. Gestion des sprites
+ 44. Lecture des controleurs
+ 45. Production d'un son
+ 46. Exemple complet de cartouche Z80
+ 47. Programmation en C avec SDCC
+ 48. Optimisation et budget de trame
+ 49. Guide d'implementation d'un emulateur
+ 50. Cas limites et erreurs frequentes
+ 51. Diagnostic et reparation
+ 52. Outils, construction et validation
+ 53. References
+
+
+==============================================================================
+1. HISTORIQUE ET IDENTITE
+==============================================================================
+
+Coleco commercialise la ColecoVision en Amerique du Nord en 1982, puis CBS la
+distribue dans plusieurs marches europeens. Elle vise une reproduction fidele
+des jeux d'arcade contemporains et est livree initialement avec Donkey Kong.
+
+Son materiel repose sur des composants disponibles sur le marche. Le couple
+Z80/TMS9928A/SN76489 rapproche son environnement de certains ordinateurs et de
+la SG-1000, mais les cartes memoire, BIOS, ports et controles ne sont pas ceux
+d'un MSX ou d'une console Sega. La compatibilite ne doit jamais etre supposee.
+
+
+==============================================================================
+2. MODELES ET REGIONS
+==============================================================================
+
+- ColecoVision nord-americaine : VDP TMS9928A, cadence NTSC 60 Hz nominale;
+- CBS ColecoVision europeenne : TMS9929A et sortie adaptee au marche PAL;
+- modele francais SECAM/RGB : electronique de sortie et BIOS particuliers;
+- clones et recreations : Dina/Telegames Personal Arcade, Phoenix et FPGA;
+- ADAM : ordinateur derive, avec memoire et peripheriques supplementaires.
+
+La frequence verticale, le BIOS, l'alimentation, le modulateur RF et parfois le
+connecteur video changent. Un jeu doit consulter l'octet BIOS `$0069` quand sa
+temporisation depend de 50 ou 60 Hz, au lieu de reconnaitre le pays par son nom.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+CPU                  Zilog Z80A, environ 3,579545 MHz NTSC
+ROM systeme          BIOS OS 7, 8 Kio
+RAM CPU              1 Kio, miroir dans une fenetre de 8 Kio
+VDP                  TI TMS9928A NTSC ou TMS9929A PAL
+VRAM                 16 Kio, separee de l'espace CPU
+Image logique        256 x 192 pixels actifs
+Couleurs             palette fixe de 16 codes
+Sprites              32 definissables, 4 visibles par ligne
+Son                  SN76489A, 3 tons + 1 bruit
+Cartouche            normalement ROM dans $8000-$FFFF
+Entrees              2 controleurs, clavier 12 touches et manches
+Extension            connecteur frontal 60 contacts
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le Z80 execute le BIOS en `$0000-$1FFF`, utilise la RAM interne et execute la
+cartouche a partir de `$8000`. Le VDP possede sa propre VRAM : le CPU l'atteint
+par deux ports, jamais avec LD (adresse),A direct. Le SN76489A recoit des octets
+sur un port d'ecriture. Un decodeur selectionne deux modes de lecture des
+controleurs : clavier ou manche.
+
+Le VDP genere une NMI a chaque trame si elle est autorisee. Le BIOS installe une
+routine qui met a jour son, temporisations, sprites et controleurs avant de
+transferer le controle au vecteur logiciel de la cartouche.
+
+
+==============================================================================
+5. HORLOGES ET CADENCES
+==============================================================================
+
+La console NTSC utilise le quartz couleur 3,579545 MHz comme horloge Z80 et
+reference du son. Le VDP derive ses cadences internes d'une horloge multiple.
+Une trame NTSC survient environ 60 fois/s; PAL environ 50 fois/s. Les nombres
+exacts dependent du VDP et du standard, et ne sont pas 60,000/50,000 parfaits.
+
+Le TMS9928A produit normalement 262 lignes NTSC; le TMS9929A environ 313 lignes
+PAL. La zone logique reste 256x192. PAL offre davantage de marge verticale mais
+pas automatiquement davantage de lignes graphiques adressees.
+
+
+==============================================================================
+6. PROCESSEUR Z80A
+==============================================================================
+
+Registres principaux : AF, BC, DE, HL; doubles alternatifs AF', BC', DE', HL';
+IX, IY, SP, PC; I pour vecteur d'interruption et R pour rafraichissement. Les
+drapeaux de F sont S Z 5 H 3 P/V N C. Les bits 3 et 5 recopient souvent le
+resultat et comptent dans les tests de compatibilite fins.
+
+Modes d'interruption IM 0, 1 et 2 existent, mais la video emploie NMI. EI prend
+effet apres l'instruction suivante. HALT repete des cycles jusqu'a interruption.
+NMI pousse PC et saute `$0066`; RETN restaure notamment IFF1 depuis IFF2.
+
+Les ports I/O ont conceptuellement 16 bits : IN A,(n)/OUT (n),A placent A sur
+le haut du bus d'adresse. Le decodeur ColecoVision n'utilise qu'une partie des
+bits, creant de nombreux miroirs.
+
+
+==============================================================================
+7. JEU D'INSTRUCTIONS Z80
+==============================================================================
+
+Transfert : LD, LDI, LDIR, LDD, LDDR, PUSH, POP, EX, EXX.
+Arithmetique : ADD, ADC, SUB, SBC, INC, DEC, NEG, DAA.
+Logique : AND, OR, XOR, CP, CPL, CCF, SCF.
+Bits : BIT, SET, RES.
+Rotation/decalage : RLCA, RLA, RRCA, RRA, RLC, RL, RRC, RR, SLA, SRA, SRL;
+SLL est non documentee mais existe sur les Z80 reels courants.
+Controle : JP, JR, DJNZ, CALL, RET, RETI, RETN, RST.
+Bloc I/O : INI/INIR/IND/INDR et OUTI/OTIR/OUTD/OTDR.
+Systeme : NOP, HALT, DI, EI, IM 0/1/2.
+
+DD/FD remplacent souvent HL/H/L par IX/IY et leurs moities non documentees. Les
+instructions prefixees ont des durees et rafraichissements observables. Un
+emulateur doit appliquer correctement flags, contention WAIT et repetitions.
+
+
+==============================================================================
+8. CARTE MEMOIRE CPU
+==============================================================================
+
+$0000-$1FFF  BIOS OS 7, ROM de 8 Kio
+$2000-$5FFF  inutilise/extension, bus ouvert sur console nue
+$6000-$7FFF  RAM de 1 Kio repetee huit fois
+$8000-$FFFF  cartouche, jusqu'a 32 Kio directement
+
+La zone cartouche peut contenir un mapper ou de la RAM sur materiel moderne.
+L'ADAM et les extensions modifient la carte. Une lecture ouverte ne doit pas
+etre arbitrairement garantie a `$FF`; le dernier bus et les circuits d'extension
+peuvent influencer la valeur.
+
+
+==============================================================================
+9. RAM ET MIROIRS
+==============================================================================
+
+La RAM physique correspond a 1024 octets. Dans `$6000-$7FFF`, les bits A10-A12
+ne selectionnent pas de nouvelle RAM. Ainsi `$6000`, `$6400`, `$7000` et `$7C00`
+designent le meme octet physique. Les sources utilisent souvent `$7000-$73FF`.
+
+Le BIOS occupe plusieurs emplacements vers `$7020` et `$73B9-$73F3`. Une
+cartouche qui appelle OS 7 doit respecter cette convention. Un programme sans
+BIOS peut employer tout le Kio apres avoir remplace NMI et initialise le VDP.
+
+La pile descend depuis SP. La placer vers `$73B9` si les variables BIOS doivent
+rester intactes, ou en haut d'une autre vue miroir ne cree pas de RAM nouvelle :
+les miroirs se recouvrent physiquement.
+
+
+==============================================================================
+10. CARTE DES PORTS D'ENTREE-SORTIE
+==============================================================================
+
+Les plages sont partiellement decodees :
+
+$80-$9F   ecriture : selection du mode clavier des controleurs
+$A0-$BF   VDP; adresse paire = donnees, impaire = controle/statut
+$C0-$DF   ecriture : selection du mode manche/joystick
+$E0-$FF   ecriture : SN76489A
+$E0-$FF   lecture : controleurs selon bits bas d'adresse
+
+Adresses canoniques courantes :
+
+$BE       donnees VDP             $BF       controle/statut VDP
+$80       selection clavier       $C0       selection joystick
+$FC       lecture controleur 1    $FF       lecture controleur 2
+$FF       ecriture son
+
+Le fait que `$FF` serve a lire le controleur 2 et a ecrire le son n'est pas un
+conflit : /IORQ avec /RD ou /WR selectionne des circuits differents. Emuler les
+plages et directions, pas seulement une table de cinq numeros.
+
+
+==============================================================================
+11. DEMARRAGE ET BIOS OS 7
+==============================================================================
+
+Au reset, PC=`$0000`. OS 7 initialise RAM, VDP, NMI, son et controleurs, affiche
+le logo ColecoVision, examine la signature de cartouche et transfere le controle
+au point indique dans l'en-tete. Certaines versions PAL reduisent le delai du
+logo. Le BIOS fait exactement 8192 octets mais existe en revisions regionales.
+
+OS 7 signifie communement "Operating System 7 prime", revision interne du
+BIOS. Il ne s'agit pas d'un systeme de fichiers. Une ROM commerciale peut
+utiliser ses services video, son, hasard, temporisation et controleurs.
+
+Pour rester compatible, appeler uniquement la jump table documentee et utiliser
+les symboles globaux publies. Sauter dans une adresse interne rend le jeu
+dependant d'une revision ou d'un BIOS de remplacement.
+
+
+==============================================================================
+12. EN-TETE DE CARTOUCHE
+==============================================================================
+
+$8000-$8001  signature `$AA55` ou `$55AA` selon chemin de demarrage/logo
+$8002-$8003  pointeur table locale des noms de sprites
+$8004-$8005  pointeur table d'ordre des sprites
+$8006-$8007  pointeur tampon de travail
+$8008-$8009  pointeur carte des controleurs
+$800A-$800B  pointeur START_GAME
+$800C-$801D  six vecteurs logiciels RST 08,10,18,20,28,30, trois octets chacun
+$801E-$8020  vecteur RST 38/IRQ logiciel
+$8021-$8023  vecteur NMI logiciel, normalement `JP handler`
+$8024...      nom du jeu dans le format attendu par le BIOS
+
+Les deux signatures valides selectionnent un comportement de titre different
+dans OS 7; les conventions modernes emploient souvent `$55,$AA` pour demarrer
+sans le long ecran standard. Ne pas s'appuyer sur l'ordre d'un mot Z80 : ecrire
+explicitement les deux octets et tester le BIOS vise.
+
+Les vecteurs sont des instructions JP absolues (`$C3`, bas, haut), pas seulement
+des pointeurs 16 bits. Un en-tete tronque ou un NMI non valide plante des que le
+VDP genere la premiere trame.
+
+
+==============================================================================
+13. POINTS D'ENTREE DU BIOS
+==============================================================================
+
+Jump table OS 7 documentee, adresses principales :
+
+$1F61 PLAY_SONGS          met a jour/joue les donnees sonores
+$1F64 ACTIVATEP           entree Pascal d'activation
+$1F67 PUTOBJP             entree Pascal d'affichage objet
+$1F6A REFLECT_VERTICAL    retourne un motif verticalement
+$1F6D REFLECT_HORIZONTAL  retourne horizontalement
+$1F70 ROTATE_90           rotation de motif
+$1F73 ENLARGE             agrandissement
+$1F76 CONTROLLER_SCAN     lecture brute des controleurs
+$1F79 DECODER             decode les controleurs
+$1F7C GAME_OPT            selection d'option de jeu
+$1F7F LOAD_ASCII          charge les motifs ASCII BIOS
+$1F82 FILL_VRAM           remplit une zone VRAM
+$1F85 MODE_1              configure un mode graphique BIOS
+$1F88 UPDATE_SPINNER      traite les compteurs spinner
+$1F8B INIT_TABLEP         initialise une table, entree Pascal
+$1F8E GET_VRAMP           lit la VRAM, entree Pascal
+$1F91 PUT_VRAMP           ecrit la VRAM, entree Pascal
+$1F94 INIT_SPR_ORDERP     initialise l'ordre des sprites
+$1F97 WR_SPR_NM_TBLP      ecrit table des noms de sprites
+$1F9A INIT_TIMERP         initialise un timer
+$1FAF INIT_WRITERP        initialise le writer BIOS
+$1FB2 SOUND_INITP         initialise les tables sonores
+$1FD6 TURN_OFF_SOUND      coupe tous les canaux
+$1FEE SOUND_INIT          initialise le moteur sonore
+$1FFD RANDOM              genere/met a jour le pseudo-aleatoire
+
+La table complete inclut d'autres services de temporisation, file d'ecritures,
+sprites et variantes Pascal. Les conventions de registres different suivant
+chaque routine : consulter sa fiche OS 7 avant appel. Les suffixes P ne sont pas
+necessairement interchangeables avec les entrees assembleur.
+
+Symboles utiles : `$0069` AMERICA vaut 60 (`$3C`) ou 50 (`$32`); `$006A`
+pointeur ASCII majuscule; `$006C` pointeur chiffres; `$08C0` CALC_OFFSET.
+
+
+==============================================================================
+14. RAM RESERVEE ET VARIABLES DU BIOS
+==============================================================================
+
+$7020-$702A  moteur sonore et pointeurs de canaux
+$73B9-$73C2  pile/espace utilise par OS 7 selon routine
+$73C3-$73C4  copies des registres VDP 0 et 1
+$73C5         octet statut VDP conserve par NMI selon documentation
+$73C6         drapeau d'ecritures VRAM differees
+$73C7         gestion/multiplexage des sprites
+$73C8-$73C9  etat du generateur pseudo-aleatoire
+$73CA-$73D2  routines sprites
+$73D3-$73D6  timers
+$73D7-$73EA  controleurs et decodage
+$73EB-$73EC  valeurs spinner ports 1 et 2
+$73ED         indique libre dans certaines analyses, ne pas generaliser
+$73EE-$73F1  donnees brutes controleurs
+$73F2-$73F3  adresse VRAM de table d'attributs sprites
+
+Cette carte depend des services appeles. Une variable "apparemment inutilisee"
+peut etre detruite lors d'un appel futur. Reserver la zone OS 7 en bloc est plus
+sur que d'exploiter ses trous sans audit du BIOS exact.
+
+
+==============================================================================
+15. INTERRUPTIONS, NMI ET RST
+==============================================================================
+
+Le VDP tire NMI quand le flag de fin de trame est actif et que R1 autorise son
+interruption. Le Z80 saute `$0066`; le BIOS lit le statut VDP, effectue ses
+taches, puis appelle le vecteur cartouche `$8021`. Le handler cartouche termine
+normalement par RETN selon le chemin utilise.
+
+Lire le statut VDP efface le drapeau d'interruption, la collision et l'indication
+du cinquieme sprite. Une seconde lecture dans le code jeu peut donc voler les
+informations attendues par le BIOS ou inversement. Utiliser la copie `$73C5`
+quand le chemin BIOS le demande.
+
+Les RST `$08-$38` traversent les vecteurs logiciels de l'en-tete selon OS 7.
+NMI est non masquable par DI; elle peut interrompre une commande VDP a deux
+octets. Proteger la paire par une strategie logicielle : NMI courte, verrou ou
+commande uniquement dans le handler. RETI et RETN ne sont pas synonymes quant
+aux bascules internes, meme si les circuits externes ne voient pas toujours la
+difference.
+
+
+==============================================================================
+16. VDP TMS9928A/TMS9929A
+==============================================================================
+
+Le VDP gere 16 Kio de VRAM, image 256x192, palette fixe, quatre modes d'affichage
+principaux et 32 sprites. Le TMS9928A sort des composantes analogiques pour NTSC;
+le TMS9929A adapte la synchronisation PAL. Le TMS9918A possede une sortie video
+differente mais une programmation proche; ne pas remplacer aveuglement le type.
+
+Le VDP partage son temps entre lecture des tables, rafraichissement DRAM et acces
+CPU. Son signal READY peut inserer des attentes. Une emulation instantanee des
+ports cache les problemes de cadence de logiciels qui ecrivent pendant l'image.
+
+
+==============================================================================
+17. PORTS ET PROTOCOLE DU VDP
+==============================================================================
+
+Port `$BE` : octet de donnees VRAM. Port `$BF` : commande en ecriture, statut en
+lecture. Une commande se compose de deux octets, bas/adresse d'abord :
+
+- second octet bits 5-0 = adresse VRAM bits 13-8;
+- second bit 6 = 1 pour preparer une ecriture VRAM, 0 pour lecture;
+- second bit 7 = 1 pour ecrire un registre, bits 2-0 choisissant R0-R7.
+
+Ecriture registre : OUT ($BF),valeur puis OUT ($BF),`$80 | numero`.
+Ecriture VRAM : OUT adresse basse, puis adresse haute OR `$40`, puis donnees.
+Lecture VRAM : envoyer adresse basse/haute sans `$40`, effectuer une lecture
+tamponnee. La premiere lecture retourne le read-ahead precedemment charge; apres
+mise en adresse, le VDP precharge normalement l'octet vise selon la sequence.
+
+L'adresse VRAM s'incremente apres chaque acces. Lire le statut reinitialise le
+verrou premier/second octet de commande. Une NMI entre les deux octets peut donc
+corrompre l'adresse si son handler touche `$BF`.
+
+
+==============================================================================
+18. REGISTRES DU VDP
+==============================================================================
+
+R0  controle mode : bit M3/Graphics II et interruption externe selon variante
+R1  affichage, NMI, taille sprite, agrandissement, bits de mode
+R2  base de la table des noms
+R3  base de la table des couleurs
+R4  base de la table des motifs
+R5  base de la table d'attributs sprites
+R6  base de la table des motifs sprites
+R7  couleur texte et couleur de fond
+
+R1 bit 6 active l'affichage; bit 5 autorise l'interruption de trame; bits 1/0
+selectionnent taille 16x16 et agrandissement double. Les bits de base sont
+multiplies par une granularite imposee. En Graphics II, certains bits de R3/R4
+servent aussi de masques d'adresse; une table peut occuper trois tiers.
+
+Conserver en RAM une copie de R0/R1, car le VDP ne permet pas de relire ses
+registres. Toujours documenter le mode correspondant aux valeurs brutes.
+
+
+==============================================================================
+19. VRAM ET TABLES
+==============================================================================
+
+La VRAM `$0000-$3FFF` n'a pas une disposition fixe. Les registres choisissent :
+
+- Pattern Name Table : indices des motifs affiches;
+- Pattern Generator Table : pixels des motifs;
+- Color Table : couleurs par groupe ou par ligne;
+- Sprite Attribute Table : Y, X, motif, couleur;
+- Sprite Pattern Generator Table : pixels sprites.
+
+Une disposition Graphics II typique : noms `$1800`, attributs sprites `$1B00`,
+motifs `$0000-$17FF`, couleurs `$2000-$37FF`, motifs sprites `$3800-$3FFF`.
+Elle doit etre ajustee aux masques R3/R4. Deux tables qui se chevauchent peuvent
+creer un effet volontaire, mais compliquent les mises a jour.
+
+
+==============================================================================
+20. MODE GRAPHICS I
+==============================================================================
+
+Ecran de 32x24 cellules, 256 motifs de 8x8. La table de noms contient 768 octets.
+La table motifs contient 8 octets par motif. La couleur est partagee par groupes
+de huit motifs : un octet donne couleur avant-plan en nibble haut et fond en
+nibble bas.
+
+Graphics I economise la VRAM et convient au texte colore par groupes, mais ne
+permet pas une paire de couleurs differente pour chaque ligne de chaque motif.
+
+
+==============================================================================
+21. MODE GRAPHICS II
+==============================================================================
+
+Toujours 32x24 cellules, mais l'ecran est divise en trois zones verticales de
+huit lignes de caracteres. Chaque zone dispose de 256 motifs logiques. La table
+de motifs atteint 6144 octets et la table couleurs peut fournir un octet par
+ligne de motif, soit 6144 octets.
+
+Chaque octet motif represente huit pixels, bit 7 a gauche. L'octet couleur
+associe choisit avant-plan/fond pour cette ligne. Deux pixels seulement peuvent
+donc etre de couleurs distinctes dans une meme ligne de motif, hors sprites.
+
+Le numero de nom 0-255 selectionne un motif dans le tiers correspondant a la
+position verticale; ce n'est pas un indice global 0-767 stocke sur 16 bits.
+
+
+==============================================================================
+22. MODES TEXT ET MULTICOLOR
+==============================================================================
+
+Text : 40 colonnes de caracteres de 6 pixels dans une zone de 240 pixels. Une
+couleur de texte et une de fond globales viennent de R7; les sprites ne sont pas
+disponibles comme dans les modes graphiques usuels.
+
+Multicolor : chaque motif represente de gros blocs, utile pour images grossieres
+ou effets. Les nibbles donnent directement deux couleurs sur une ligne logique.
+
+Les combinaisons de bits de mode non documentees ne doivent pas etre traitees
+comme des alias propres : les VDP reels peuvent produire un affichage hybride.
+
+
+==============================================================================
+23. MOTIFS ET COULEURS
+==============================================================================
+
+Codes de palette TMS99xx :
+
+0 transparent        1 noir             2 vert moyen       3 vert clair
+4 bleu fonce         5 bleu clair       6 rouge fonce      7 cyan
+8 rouge moyen        9 rouge clair      A jaune fonce      B jaune clair
+C vert fonce         D magenta          E gris             F blanc
+
+La couleur 0 est transparente pour sprite. Dans les tables de fond, son rendu
+et remplacement par la couleur de backdrop dependent du chemin. Les valeurs RGB
+exactes ne sont pas definies numeriquement par une table 8 bits moderne : elles
+dependent du VDP, du modulateur, du televiseur et de la capture.
+
+
+==============================================================================
+24. SPRITES
+==============================================================================
+
+Le VDP definit 32 sprites. Chaque entree d'attribut fait quatre octets : Y, X,
+numero de motif, couleur/early-clock. `$D0` dans le champ Y termine la liste en
+mode 192 lignes. La coordonnee Y est interpretee avec un decalage historique :
+la valeur stockee correspond a la ligne precedant le haut visible.
+
+Taille 8x8 ou 16x16 via R1; agrandissement x2 possible. En 16x16, les deux bits
+bas du numero de motif sont ignores et quatre motifs alignes composent l'objet.
+Le bit early-clock du quatrieme octet decale X de -32, pour entrer par la gauche.
+
+Un maximum de quatre sprites est rendu sur une ligne. Le cinquieme et les
+suivants ne le sont pas pour cette ligne et le statut memorise l'index concerne.
+Le VDP signale aussi la collision de pixels opaques entre sprites.
+
+
+==============================================================================
+25. STATUT, COLLISION ET CINQUIEME SPRITE
+==============================================================================
+
+Lecture de `$BF` :
+
+bit 7  interruption/fin de trame
+bit 6  collision de sprites
+bit 5  cinquieme sprite detecte
+bits 4-0 index du cinquieme sprite ou valeur interne associee
+
+La lecture efface les drapeaux memorises et remet le verrou de commande VDP. Un
+logiciel qui lit plusieurs fois doit sauvegarder la premiere valeur. Les pixels
+de couleur zero ne provoquent normalement pas collision visible. Le flag du
+cinquieme sprite depend de l'evaluation par ligne et de la sentinelle `$D0`.
+
+
+==============================================================================
+26. VIDEO NTSC, PAL ET SECAM
+==============================================================================
+
+`$0069` dans le BIOS vaut `$3C` pour 60 et `$32` pour 50. Deplacer un objet de
+la meme quantite par trame le rend 20 % plus lent sur PAL. Utiliser accumulation
+fractionnaire, tables regionales ou temps logique independant de la trame.
+
+Les consoles francaises peuvent produire RGB adapte au SECAM tout en conservant
+la logique numerique du TMS9929/BIOS regional. SECAM ne fournit pas une nouvelle
+palette programmable. Les bordures, lignes masquees et cadrage varient selon TV.
+
+
+==============================================================================
+27. SON SN76489A
+==============================================================================
+
+Trois canaux de tonalite utilisent chacun un diviseur 10 bits et une attenuation
+4 bits. Un quatrieme canal produit bruit periodique ou pseudo-aleatoire, cadence
+fixe ou derivee du canal 2. Volume 0 = maximum; 15 = silence.
+
+Octet latch, bit 7=1 : bits 6-5 canal, bit 4 type (1 volume, 0 frequence), bits
+3-0 donnee. Octet data, bit 7=0 : complete les six bits hauts du diviseur.
+
+Frequence approximative d'un ton : horloge / (32*N), pour N 1-1023. N=0 et les
+variantes de puce ont des comportements particuliers. Le LFSR, la polarite,
+l'attenuation logarithmique et la phase doivent etre reproduits pour un son
+fidele. READY peut ralentir le Z80 lors d'ecritures rapprochees.
+
+
+==============================================================================
+28. CONTROLEURS STANDARDS
+==============================================================================
+
+Chaque controleur comprend manche huit directions electriquement compose de
+quatre contacts, deux boutons lateraux et clavier 0-9, `*`, `#`. Les entrees sont
+actives bas. Deux directions opposees peuvent etre presentees par du materiel ou
+un adaptateur; l'emulateur ne doit pas les annuler arbitrairement.
+
+Ecrire sur `$C0` selectionne la lecture joystick/boutons; ecrire sur `$80`
+selectionne le clavier. Lire `$FC` pour le joueur 1 et `$FF` pour le joueur 2.
+Les bits retournent aussi des identifiants/valeurs non utilisees selon le mode.
+
+
+==============================================================================
+29. CLAVIER NUMERIQUE
+==============================================================================
+
+En mode clavier, quatre bits codent une touche, avec une valeur signifiant aucune
+touche. La matrice et le decodeur ne garantissent pas plusieurs touches. Le BIOS
+traduit les codes au moyen de la carte pointee depuis l'en-tete `$8008`.
+
+Une carte de controle typique associe les touches aux choix de jeu. Pour un code
+bas niveau, lire, masquer, comparer a "aucune touche", puis appliquer une
+table. Debouncer si une action ne doit survenir qu'une fois.
+
+
+==============================================================================
+30. SPINNER ET SUPER ACTION CONTROLLER
+==============================================================================
+
+Le Super Action Controller ajoute quatre boutons colores et un rouleau spinner.
+Le spinner produit des impulsions qui alimentent une logique d'interruption/
+comptage. OS 7 conserve des deltas vers `$73EB-$73EC` et offre UPDATE_SPINNER.
+
+Le signe et le debordement du compteur doivent etre traites comme une difference
+modulaire, non une position absolue. Les boutons supplementaires reutilisent le
+multiplexage du port et necessitent le decodage approprie.
+
+
+==============================================================================
+31. ROLLER CONTROLLER ET AUTRES ENTREES
+==============================================================================
+
+Le Roller Controller est une trackball avec boutons et alimentation, concue pour
+Slither. Expansion Module #2 est un volant avec pedale pour Turbo. Les interfaces
+utilisent lignes de controle, quadrature ou multiplexage propres au peripherique.
+
+Un pistolet optique standard n'est pas integre au VDP. Des peripheriques modernes
+peuvent ajouter clavier, souris ou quatre joueurs; ils ne font pas partie du
+decodage de la console originale.
+
+
+==============================================================================
+32. CONNECTEUR CARTOUCHE
+==============================================================================
+
+Le connecteur expose bus d'adresse et de donnees Z80, signaux de lecture et
+selections necessaires a la ROM. Une cartouche simple est une ROM 8 bits active
+dans `$8000-$FFFF`. Les images logicielles ont typiquement 8, 16, 24 ou 32 Kio,
+avec remplissage/miroirs selon le cablage.
+
+Ne pas inserer/retirer sous tension. Les contacts oxydes causent ecran noir ou
+signature invalide. Pour concevoir une carte, employer le brochage du manuel,
+niveaux TTL, decouplage et temps d'acces compatibles; ne pas deviner l'orientation
+depuis une photographie retournee.
+
+
+==============================================================================
+33. PORT D'EXTENSION
+==============================================================================
+
+Le connecteur frontal a 60 contacts expose une grande partie du bus CPU, signaux
+de controle, alimentation et chemins audio/video necessaires aux modules. Il
+permet de remplacer ou augmenter des fonctions de la console.
+
+Le bus n'est ni ISA ni un connecteur cartouche secondaire. Une extension doit
+arbitrer les selections et ne jamais piloter deux sources simultanement. Les
+tensions multiples de l'alimentation originale et le courant disponible rendent
+les montages improvises dangereux.
+
+
+==============================================================================
+34. MODULES D'EXTENSION OFFICIELS
+==============================================================================
+
+Expansion Module #1 : adaptateur Atari 2600, contenant essentiellement le
+materiel compatible VCS; la ColecoVision ne l'emule pas par logiciel.
+
+Expansion Module #2 : volant et pedale, livre avec Turbo.
+
+Expansion Module #3 : devient l'ADAM Computer Expansion, avec clavier, RAM,
+stockage Digital Data Pack, imprimante/alimentation et logique supplementaire.
+
+Le Super Game Module annonce par Coleco historiquement etait lie a une autre
+evolution; le SGM homebrew moderne est une extension distincte.
+
+
+==============================================================================
+35. ADAM ET COMPATIBILITE
+==============================================================================
+
+ADAM conserve un Z80, un VDP et le son compatibles, mais ajoute 64 Kio et plus,
+EOS/SmartWriter, AdamNet, controleurs peripheriques, banque memoire et stockage.
+Son mode cartouche peut executer beaucoup de logiciels ColecoVision via OS 7.
+
+Un programme ColecoVision bien forme, limite a la carte et aux points d'entree
+documentes, a davantage de chances de fonctionner. Un code qui depend du bus
+ouvert, de miroirs non documentes, d'une pile exacte ou d'un BIOS particulier
+peut echouer sur ADAM.
+
+
+==============================================================================
+36. SUPER GAME MODULE ET EXTENSIONS MODERNES
+==============================================================================
+
+Le Super Game Module moderne ajoute couramment 32 Kio de RAM et un AY-3-8910
+compatible pour trois voies sonores supplementaires. Les ports de banque/RAM et
+AY sont ceux de la specification SGM, pas du ColecoVision nu.
+
+MegaCart et autres cartes permettent de grandes ROM par banques. Opcode Games,
+Atarimax et FPGA ont popularise plusieurs formats. Identifier explicitement la
+cible dans l'en-tete de projet et fournir un chemin de repli si possible.
+
+
+==============================================================================
+37. TAILLES DE ROM ET BANK SWITCHING
+==============================================================================
+
+Sans mapper, `$8000-$FFFF` offre 32 Kio. Une ROM plus petite peut etre repetee
+par les lignes d'adresse non connectees. Une ROM 24 Kio est souvent placee de
+$A000 a `$FFFF` ou assemblee selon le decodeur de carte.
+
+MegaCart conserve une fenetre fixe et selectionne des banques en lisant/ecrivant
+des adresses de controle proches du haut de l'espace. Les variantes ne sont pas
+universelles. Un emulateur doit utiliser taille, base de donnees et activite du
+mapper, pas uniquement l'extension `.col` ou `.rom`.
+
+
+==============================================================================
+38. INITIALISATION SANS BIOS
+==============================================================================
+
+Exemple Z80 conceptuel :
+
+VDPDATA equ $BE
+VDPCTRL equ $BF
+
+Start:
+        di
+        ld      sp,$73B8
+        xor     a
+        ld      hl,$7000
+        ld      de,$7001
+        ld      bc,$03FF
+        ld      (hl),a
+        ldir
+        call    VDPBlank
+        call    ClearVRAM
+        call    InitVDP
+        ei
+Main:  halt
+        jr      Main
+
+Une cartouche normale demarre via BIOS, donc le code sans BIOS exige un chargeur
+ou un en-tete dont le vecteur est pris apres initialisation minimale OS 7. Il ne
+peut pas remplacer `$0066`, qui reside dans la ROM systeme, sur console standard.
+
+
+==============================================================================
+39. ECRITURE ET LECTURE VRAM
+==============================================================================
+
+; HL = adresse VRAM, BC = longueur, DE = source RAM/ROM
+WriteVRAM:
+        ld      a,l
+        out     (VDPCTRL),a
+        ld      a,h
+        and     $3F
+        or      $40
+        out     (VDPCTRL),a
+.loop: ld      a,(de)
+        out     (VDPDATA),a
+        inc     de
+        dec     bc
+        ld      a,b
+        or      c
+        jr      nz,.loop
+        ret
+
+; HL = adresse VRAM, BC = longueur, DE = destination RAM
+ReadVRAM:
+        ld      a,l
+        out     (VDPCTRL),a
+        ld      a,h
+        and     $3F
+        out     (VDPCTRL),a
+        nop                             ; laisser le read-ahead se charger
+.r:    in      a,(VDPDATA)
+        ld      (de),a
+        inc     de
+        dec     bc
+        ld      a,b
+        or      c
+        jr      nz,.r
+        ret
+
+Des OUTI/OTIR sont rapides, mais B est compteur et le port complet forme BC;
+verifier le decodeur et les contraintes du VDP avant substitution.
+
+
+==============================================================================
+40. CONFIGURATION D'UN ECRAN GRAPHICS II
+==============================================================================
+
+; Ecrire A dans registre VDP B
+SetVDPReg:
+        out     (VDPCTRL),a
+        ld      a,b
+        and     7
+        or      $80
+        out     (VDPCTRL),a
+        ret
+
+InitG2:
+        ld      b,0
+        ld      a,$02                   ; Graphics II, NMI selon bits choisis
+        call    SetVDPReg
+        ld      b,1
+        ld      a,$E0                   ; affichage + NMI + mode
+        call    SetVDPReg
+        ld      b,2
+        ld      a,$06                   ; noms a $1800
+        call    SetVDPReg
+        ld      b,3
+        ld      a,$FF                   ; masque/base couleurs G2
+        call    SetVDPReg
+        ld      b,4
+        ld      a,$03                   ; masque/base motifs G2
+        call    SetVDPReg
+        ld      b,5
+        ld      a,$36                   ; attributs sprites $1B00
+        call    SetVDPReg
+        ld      b,6
+        ld      a,$07                   ; motifs sprites $3800
+        call    SetVDPReg
+        ld      b,7
+        ld      a,$01                   ; fond noir
+        jp      SetVDPReg
+
+Les valeurs R0/R1 exactes doivent conserver les copies OS 7 si le BIOS continue
+a servir. Initialiser les tables avant d'activer l'ecran evite les parasites.
+
+
+==============================================================================
+41. CHARGEMENT D'UN MOTIF ET D'UNE PALETTE
+==============================================================================
+
+Un carre blanc sur fond bleu pour huit lignes :
+
+Pattern:
+        db %11111111,%10000001,%10111101,%10100101
+        db %10111101,%10000001,%11111111,%00000000
+Colors:
+        db $F4,$F4,$F4,$F4,$F4,$F4,$F4,$F4
+
+Copier Pattern a l'adresse du motif dans la table generatrice et Colors a la
+position correspondante de la table couleur. En Graphics II, copier si necessaire
+dans chacun des trois tiers; le meme nom ne partage pas automatiquement ses
+octets entre le haut, le milieu et le bas de l'ecran.
+
+
+==============================================================================
+42. AFFICHAGE DE TEXTE
+==============================================================================
+
+OS 7 contient une fonte ASCII majuscule et une fonte numerique, pointees en
+`$006A/$006C`. LOAD_ASCII peut charger les motifs necessaires. Ensuite, ecrire
+les indices de caracteres dans la table des noms.
+
+Sans BIOS, convertir une fonte en motifs 1 bpp et definir une table ASCII ->
+numero. Les minuscules, accents et ponctuations ne sont pas tous garantis par la
+fonte systeme. En mode Text, une ligne contient 40 noms; en Graphics I/II, 32.
+
+
+==============================================================================
+43. GESTION DES SPRITES
+==============================================================================
+
+; HL = adresse VRAM de la table sprite, DE = quatre octets en RAM
+PutOneSprite:
+        call    SetVRAMWriteAddress     ; meme protocole que WriteVRAM
+        ld      b,4
+.s:    ld      a,(de)
+        out     (VDPDATA),a
+        inc     de
+        djnz    .s
+        ld      a,$D0
+        out     (VDPDATA),a             ; sentinelle Y entree suivante
+        ret
+
+Distribuer les objets sur les lignes pour ne pas depasser quatre. Le flicker
+logiciel alterne ordre/visibilite mais ne supprime pas la limite. Conserver une
+table d'ombre en RAM puis la copier en NMI evite une entree partiellement mise a
+jour pendant l'evaluation VDP.
+
+
+==============================================================================
+44. LECTURE DES CONTROLEURS
+==============================================================================
+
+ReadControllers:
+        ld      a,$00
+        out     ($C0),a                 ; selection joystick (donnee ignoree)
+        in      a,($FC)
+        ld      (Joy1),a
+        in      a,($FF)
+        ld      (Joy2),a
+        out     ($80),a                 ; selection clavier
+        in      a,($FC)
+        ld      (Key1),a
+        in      a,($FF)
+        ld      (Key2),a
+        ret
+
+Les OUT immediats placent A aussi sur les bits hauts de l'adresse I/O, sans effet
+sur le decodeur standard. Masquer et inverser seulement les bits documentes.
+CONTROLLER_SCAN/DECODER du BIOS sont preferables si l'on utilise sa carte de
+controle et le Super Action Controller.
+
+
+==============================================================================
+45. PRODUCTION D'UN SON
+==============================================================================
+
+; Canal tone 0, diviseur $0FE (environ La 440 Hz), volume maximal
+        ld      a,$8E                   ; latch tone0, quatre bits bas
+        out     ($FF),a
+        ld      a,$0F                   ; six bits hauts
+        out     ($FF),a
+        ld      a,$90                   ; latch volume0 = 0
+        out     ($FF),a
+
+; Silence des quatre canaux
+        ld      a,$9F
+        out     ($FF),a
+        ld      a,$BF
+        out     ($FF),a
+        ld      a,$DF
+        out     ($FF),a
+        ld      a,$FF
+        out     ($FF),a
+
+OS 7 offre un format de chansons, priorites et enveloppes en RAM. PLAY_SONGS doit
+etre appele a la cadence attendue, normalement par le traitement de trame.
+
+
+==============================================================================
+46. EXEMPLE COMPLET DE CARTOUCHE Z80
+==============================================================================
+
+Syntaxe proche sjasmplus :
+
+        org     $8000
+        db      $55,$AA
+        dw      SpriteNames,SpriteOrder,WorkBuffer,ControllerMap
+        dw      Start
+        jp      Rst08
+        jp      Rst10
+        jp      Rst18
+        jp      Rst20
+        jp      Rst28
+        jp      Rst30
+        jp      Rst38
+        jp      NMIHandler
+        db      "DEMO/2026",0
+
+        org     $8100
+Start:  di
+        ld      sp,$73B8
+        call    InitGraphics
+        xor     a
+        ld      (Frame),a
+        ei
+.main: halt
+        ld      a,(Frame)
+        or      a
+        jr      z,.main
+        xor     a
+        ld      (Frame),a
+        call    UpdateGame
+        jr      .main
+
+NMIHandler:
+        push    af
+        in      a,($BF)                 ; si BIOS ne l'a pas deja lu
+        ld      a,1
+        ld      (Frame),a
+        pop     af
+        retn
+
+Rst08:  ret
+Rst10:  ret
+Rst18:  ret
+Rst20:  ret
+Rst28:  ret
+Rst30:  ret
+Rst38:  ret
+
+Frame:          db 0
+SpriteNames:    ds 32
+SpriteOrder:    ds 32
+WorkBuffer:     ds 32
+ControllerMap:  ds 16
+
+Cet exemple illustre la forme, pas une ROM directement assemblable : les quatre
+tables ne doivent pas etre placees en ROM si le BIOS doit les modifier; fournir
+des pointeurs vers la RAM et initialiser leur contenu. Choisir aussi soit le
+handler NMI BIOS, soit la lecture directe du statut, jamais les deux sans contrat.
+
+
+==============================================================================
+47. PROGRAMMATION EN C AVEC SDCC
+==============================================================================
+
+Bibliotheques courantes : libcv/libcvu, devkitColeco, CVBasic pour un langage
+plus haut niveau. Exemple de compilation historique :
+
+  sdcc -mz80 --std-c99 -c -Iinclude main.c
+  sdcc -mz80 --no-std-crt0 --code-loc 0x8100 --data-loc 0x7000 \
+       crt0.o main.rel libcv.lib
+
+Le CRT doit fournir l'en-tete ColecoVision, la pile, l'initialisation des donnees
+et le NMI. Le C ne rend pas les acces VDP atomiques : les fonctions critiques
+doivent encore coordonner le handler. Examiner le `.map` pour que code, donnees,
+pile et RAM BIOS ne se chevauchent pas.
+
+
+==============================================================================
+48. OPTIMISATION ET BUDGET DE TRAME
+==============================================================================
+
+- effectuer mises a jour visibles pendant VBlank autant que possible;
+- copier seulement les cellules et attributs modifies;
+- utiliser LDIR pour RAM, OTIR seulement apres verification du port complet;
+- precalculer adresses VRAM et trajectoires;
+- garder le NMI court et borner toutes les boucles;
+- eviter plus de quatre sprites par ligne ou repartir par flicker;
+- compresser les graphismes en ROM mais decomprimer par morceaux;
+- adapter la vitesse 50/60 Hz;
+- economiser la pile et reutiliser les buffers, avec seulement 1 Kio.
+
+Le VDP peut inserer WAIT. Compter uniquement les T-states nominaux du Z80 ne
+suffit pas pour les rafales I/O. Mesurer sur materiel et tester PAL.
+
+
+==============================================================================
+49. GUIDE D'IMPLEMENTATION D'UN EMULATEUR
+==============================================================================
+
+1. Z80 exact : flags, prefixes, EI delay, HALT, NMI, R et timings.
+2. BIOS 8 Kio, cartouche, RAM 1 Kio et huit miroirs.
+3. Decodeur I/O par plages, directions RD/WR et bits pairs/impairs du VDP.
+4. VDP : verrou de commande, read-ahead, auto-increment, registres et statut.
+5. Graphics I/II, Text, Multicolor, palette et bordure.
+6. Sprites : ordre, early clock, taille, zoom, limite de ligne, collision.
+7. NMI a la bonne ligne/cadence et WAIT VDP.
+8. SN76489A : latch, diviseurs, bruit, phase et attenuation.
+9. controleurs multiplexes, clavier, spinner et modules.
+10. PAL/NTSC, mappers, SGM et ADAM si annonces.
+
+Faire progresser CPU, VDP et son sur une base temporelle commune. Une simple NMI
+toutes les 1/60 s ne reproduit ni compteur sprite, ni acces VRAM en zone active,
+ni changement de registre en milieu d'image.
+
+Le BIOS est un logiciel necessaire au comportement original; ne le reimplementer
+qu'avec une compatibilite de jump table, RAM, delais, logo, NMI et erreurs. Une
+image libre de remplacement peut differer tout en executant les jeux propres.
+
+
+==============================================================================
+50. CAS LIMITES ET ERREURS FREQUENTES
+==============================================================================
+
+- annoncer 8 Kio de RAM parce que la fenetre fait 8 Kio : il n'y en a qu'un;
+- adresser la VRAM avec LD au lieu des ports;
+- inverser `$BE` donnees et `$BF` controle;
+- interrompre une commande VDP entre ses deux octets;
+- oublier le tampon de lecture VRAM;
+- lire deux fois le statut et perdre collision/NMI;
+- afficher cinq sprites par ligne sans debordement;
+- confondre couleur fixe TMS avec palette programmable;
+- supposer que NTSC et PAL ont la meme vitesse;
+- traiter `$FF` lecture et ecriture comme le meme peripherique;
+- appeler une adresse interne OS 7 non publiee;
+- ecraser `$7020/$73xx` puis appeler le BIOS;
+- construire les vecteurs de cartouche comme DW au lieu de JP;
+- emuler tout mapper comme MegaCart;
+- attribuer AY et 32 Kio du SGM a la console nue;
+- assimiler ColecoVision, ADAM, MSX et SG-1000.
+
+
+==============================================================================
+51. DIAGNOSTIC ET REPARATION
+==============================================================================
+
+Verifier d'abord alimentation originale et ses rails, interrupteur, connecteur
+cartouche, cable RF/video et controleurs. Le commutateur d'alimentation est une
+cause frequente de tensions instables. Nettoyer les contacts sans abrasif brutal.
+
+Ecran noir : verifier reset Z80, horloge, BIOS, signature cartouche, RAM et VDP.
+Logo corrompu : suspecter VRAM, bus VDP ou alimentation. Son absent : suivre
+ecritures SN76489A, READY et trajet analogique. Controleur absent : examiner
+multiplexeurs et ports avant de condamner le clavier.
+
+Employer le schema et la revision de carte exacts. Mesurer +5 V et autres rails
+avec une masse fiable. Un analyseur logique peut observer MREQ, IORQ, RD, WR,
+adresses et donnees; ne jamais connecter deux sorties. Le bloc alimentation/RF
+et les condensateurs exigent les precautions usuelles contre court-circuit et
+decharge. Une conversion moderne 5 V doit tenir compte de tous les rails utilises.
+
+
+==============================================================================
+52. OUTILS, CONSTRUCTION ET VALIDATION
+==============================================================================
+
+Assembleurs : sjasmplus, z80asm, WLA-DX, ASxxxx/SDCC. Langages/bibliotheques :
+CVBasic, devkitColeco, libcv/libcvu. Emulateurs utiles : MAME, blueMSX, ColEm,
+Gearcoleco et FPGA; aucun ne remplace le test console.
+
+Verifier automatiquement : signature, taille et placement en-tete, opcodes JP,
+pointeurs RAM, carte `.map`, budget RAM, tables VRAM et sentinelle sprites.
+Tester 50/60 Hz, clavier, deux manettes, collision, cinq sprites, son et reset.
+
+Pour valider un emulateur, utiliser tests unitaires Z80, ROM de test VRAM/RAM,
+captures de ports horodatees et comparaison de plusieurs revisions. Les jeux
+commerciaux sont des tests d'integration, pas une specification complete.
+
+
+==============================================================================
+53. REFERENCES
+==============================================================================
+
+Documents primaires et techniques :
+
+- ColecoVision Technical Reference Manual :
+  https://www.colecovisionzone.com/downloads/cv_Technical_Manual.pdf
+- ColecoVision Programmers Manual et documents internes :
+  https://www.colecovisionzone.com/internal.html
+- ColecoVision/ADAM Technical Reference Manual :
+  https://www.colecovisionadam.com/Coleco/adam/Documents/Manual/Coleco_ADAM_Technical_Reference_Manual.pdf
+- Texas Instruments TMS9918A/TMS9928A/TMS9929A Data Manual;
+- Texas Instruments SN76489A Programmable Tone/Noise Generator Data Manual;
+- Zilog Z80 CPU User Manual.
+
+References de travail :
+
+- ColecoVision Coding Guide, OS 7, jump table, son et RAM :
+  https://cdn.hackaday.io/files/1959548383695936/COLECOVISION%20CODING%20GUIDE.pdf
+- Tutoriel materiel et programmation ColecoVision :
+  https://www.colecovision.eu/ColecoVision/development/tutorial1.shtml
+- archives et ressources de programmation :
+  https://www.colecovisionadam.com/ann/programming.html
+
+Les scans, BIOS regionaux et guides communautaires peuvent diverger. Pour une
+implementation fidele, confronter manuels des composants, schema de la revision,
+desassemblage legalement obtenu du BIOS et mesures sur une vraie console.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

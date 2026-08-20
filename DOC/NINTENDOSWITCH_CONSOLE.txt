@@ -1,0 +1,944 @@
+==============================================================================
+ NINTENDO SWITCH - MATERIEL ET PROGRAMMATION
+ Reference Tegra X1, Horizon OS, libnx et developpement AArch64
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la famille Nintendo Switch originale : architecture NVIDIA
+Tegra X1, processeurs ARM, GPU Maxwell, memoire, stockage, affichage, audio,
+reseaux, Joy-Con, cartouches et programmation. Il vise les developpeurs de jeux,
+homebrews autorises, outils, ports, diagnostics et emulateurs.
+
+La Nintendo Switch 2 est une autre architecture et n'est pas couverte. Les
+details publics issus de retro-ingenierie sont identifies comme tels. Aucune cle,
+ROM proprietaire, methode de contournement, procedure d'exploitation ou donnee
+permettant le piratage n'est fournie.
+
+Les accents sont omis afin de conserver un fichier ASCII compatible avec de
+nombreux outils de construction.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+1. CONCEPT ET HISTOIRE
+==============================================================================
+
+La Switch, nom de code NX, est commercialisee en 2017. C'est une console hybride :
+la tablette fonctionne seule, sur support, ou dans un dock HDMI. Les Joy-Con se
+fixent aux rails ou communiquent sans fil. Le logiciel reste le meme entre modes,
+mais resolution, horloges, alimentation et peripheriques disponibles changent.
+
+Generations principales :
+
+- HAC-001, lancement : Tegra X1 de premiere revision, ecran LCD 6,2 pouces;
+- HAC-001(-01), revision 2019 : SoC Mariko plus efficace, autonomie accrue;
+- HDH-001, Switch Lite : portable uniquement, controles integres, LCD 5,5 pouces;
+- HEG-001, Switch OLED : OLED 7 pouces, stockage 64 Gio, dock avec Ethernet;
+- editions regionales et revisions de cartes meres, eMMC, radio et alimentation.
+
+
+==============================================================================
+2. SPECIFICATIONS GENERALES
+==============================================================================
+
+- SoC : NVIDIA Tegra X1 personnalise, Erista ou revision Mariko;
+- CPU applicatif : quatre ARM Cortex-A57 64 bits utilises par Horizon;
+- GPU : Maxwell, 256 coeurs CUDA, rendu programmable;
+- RAM : 4 Gio LPDDR4 partagee CPU/GPU;
+- stockage : eMMC 32 Gio, 64 Gio sur OLED, partie reservee au systeme;
+- extension : microSD/microSDHC/microSDXC;
+- ecran : tactile capacitif 1280x720;
+- sortie dock : HDMI, jusqu'a 1920x1080 a 60 Hz pour les jeux;
+- audio : haut-parleurs stereo, HDMI, USB/Bluetooth selon logiciel/firmware;
+- reseau : Wi-Fi 802.11 a/b/g/n/ac, Bluetooth 4.1 annonce;
+- batterie lithium-ion interne; USB Type-C pour charge/dock/accessoires.
+
+Les frequences maximales du silicium ne sont pas les frequences garanties aux
+applications. Horizon applique profils portable/dock, limites thermiques et DVFS.
+
+
+==============================================================================
+3. DIFFERENCES ENTRE MODELES
+==============================================================================
+
+Modele       Ecran             Stockage  Dock TV       Controles
+HAC-001      LCD 6,2" 720p     32 Gio    oui           Joy-Con amovibles
+HAC-001-01   LCD 6,2" 720p     32 Gio    oui           Joy-Con amovibles
+HDH-001      LCD 5,5" 720p     32 Gio    non           integres
+HEG-001      OLED 7,0" 720p    64 Gio    oui           Joy-Con amovibles
+
+La Lite ne produit pas la sortie TV et n'a ni vibration HD ni camera IR integrees
+aux controles de la console; des Joy-Con externes restent possibles. L'OLED ne
+change pas la resolution portable ni la classe de performances des jeux. Son dock
+ajoute un port LAN et retire un port USB interne par rapport a certains docks.
+
+
+==============================================================================
+4. ARCHITECTURE DU TEGRA X1
+==============================================================================
+
+                 +-----------------------------+
+                 | Tegra X1                    |
+                 | Cortex-A57   GPU Maxwell    |
+                 | caches/CCI   256 CUDA cores |
+                 | memory controller / SMMU    |
+                 | display, audio, USB, SDMMC  |
+                 | encode/decode video         |
+                 +---------+-------------------+
+                           | LPDDR4 partagee
+          +----------------+----------------+
+          | eMMC | microSD | ecran | USB-C  |
+          +------+------+--+-------+----+----+
+                 |      |               dock/HDMI
+             cartouche  Wi-Fi/BT
+
+Le X1 commercial comprend aussi un groupe Cortex-A53, mais le logiciel Switch
+publicement documente utilise les quatre Cortex-A57. Il ne faut donc pas annoncer
+huit coeurs de jeu disponibles. Des microcontroleurs specialises gerent demarrage,
+alimentation, audio ou securite sans etre des CPU applicatifs ordinaires.
+
+
+==============================================================================
+5. CPU ARM CORTEX-A57
+==============================================================================
+
+Les A57 implementent ARMv8-A AArch64 et AArch32, execution superscalaire out-of-
+order, SIMD/FP NEON, caches prives et cache L2 partage. Horizon et les applications
+Switch utilisent principalement AArch64 little-endian.
+
+Registres AArch64 :
+
+- X0-X30, 64 bits; W0-W30 designent leurs 32 bits bas;
+- SP, PC implicite, PSTATE et drapeaux NZCV;
+- V0-V31, 128 bits SIMD/FP;
+- X30 est link register; X29 frame pointer par convention;
+- registres systeme accessibles selon niveau d'exception.
+
+ABI AAPCS64 : X0-X7 arguments/resultats, X8 retour indirect, X9-X15 temporaires,
+X19-X28 preserves, X29 FP, X30 LR. SP reste aligne a 16 octets aux interfaces.
+
+
+==============================================================================
+6. JEU D'INSTRUCTIONS AARCH64
+==============================================================================
+
+Familles utiles :
+
+- arithmetique : ADD/ADDS, SUB/SUBS, ADC/SBC, MUL, MADD/MSUB, UDIV/SDIV;
+- logique : AND/ANDS, ORR, EOR, BIC, shifts et rotates;
+- bitfields : BFM/SBFM/UBFM, EXTR, CLZ, RBIT, REV;
+- comparaisons : CMP/CMN aliases, CSEL/CSINC/CSINV/CSNEG;
+- memoire : LDR/STR, LDP/STP, variantes byte/half/sign-extension;
+- controle : B, BL, BR, BLR, RET, B.cond, CBZ/CBNZ, TBZ/TBNZ;
+- atomiques : LDXR/STXR, LDAXR/STLXR et barrieres DMB/DSB/ISB;
+- SIMD/FP : calcul scalaire/vecteur, conversions, permutations, loads/stores;
+- systeme : SVC, MRS/MSR, TLBI/DC/IC selon privilege.
+
+Il n'existe pas de delay slot. Ecrire Wn met a zero les 32 bits hauts de Xn. Les
+acces non alignes peuvent etre permis pour memoire normale mais restent couteux ou
+interdits pour certains types/device. Respecter l'ordre explicite autour des MMIO.
+
+
+==============================================================================
+7. EXEMPLE ASSEMBLEUR AARCH64
+==============================================================================
+
+Somme de `n` mots 32 bits, ABI AAPCS64 : X0=pointeur, W1=nombre, X0=resultat.
+
+        .text
+        .global sum_u32
+sum_u32:
+        mov     x2, x0
+        mov     x0, xzr
+        cbz     w1, 2f
+1:      ldr     w3, [x2], #4
+        add     x0, x0, x3
+        subs    w1, w1, #1
+        b.ne    1b
+2:      ret
+
+LDR W3 zero-etend dans X3. Cette routine ne touche aucun registre preserve et
+maintient SP intact. Le compilateur peut vectoriser une version C avec NEON.
+
+
+==============================================================================
+8. MEMOIRE ET COHERENCE
+==============================================================================
+
+Les 4 Gio LPDDR4 sont partages. Une partie est reservee au noyau, aux services,
+aux pilotes graphiques et au framebuffer; la quantite application depend du type
+de programme et de la version systeme. Les processus voient un espace virtuel
+ASLR, pas une carte physique stable exploitable directement.
+
+CPU, GPU et moteurs DMA ont domaines d'adresses et caches. Les API de pilotes
+allouent/mappent les tampons et assurent coherences/barrieres. Ne pas passer un
+pointeur CPU brut comme adresse GPU. Respecter alignement de pages, row pitch,
+tiling/block-linear et proprietaire actuel du tampon.
+
+
+==============================================================================
+9. MMU, NIVEAUX D'EXCEPTION ET SMMU
+==============================================================================
+
+ARMv8 definit EL0 application, EL1 noyau, EL2 hyperviseur et EL3 secure monitor.
+Horizon isole les processus par tables de pages et permissions. Les applications
+ordinaires ne programment pas les registres physiques Tegra.
+
+La SMMU/IOMMU traduit les acces de peripheriques et GPU. Elle protege le systeme et
+permet des espaces virtuels GPU. Un emulateur HLE peut reproduire l'effet des API;
+une implementation bas niveau doit modeliser traduction, faults et coherences.
+
+
+==============================================================================
+10. GPU MAXWELL
+==============================================================================
+
+Le GPU integre appartient a la generation Maxwell de NVIDIA avec 256 coeurs CUDA.
+Il execute vertex, tessellation, geometry, fragment et compute shaders selon API.
+Il comprend caches, rasterisation, texture, ROP, compression et engines de copie.
+
+Le pilote Horizon expose une pile NVIDIA adaptee et l'API officielle NVN. Les
+homebrews utilisent notamment deko3d, OpenGL via Mesa/EGL, Vulkan selon pile, SDL
+ou bibliotheques 2D. Les frequences GPU sont choisies par profil; ne pas confondre
+le maximum Tegra catalogue avec une valeur Switch constante.
+
+
+==============================================================================
+11. COMMAND STREAMS ET SYNCHRONISATION GPU
+==============================================================================
+
+Le CPU construit des commandes dans des buffers, le pilote les soumet a un canal,
+et le GPU opere de facon asynchrone. Les fences/semaphores indiquent quand ressources
+et images sont reutilisables. Une application doit suivre :
+
+1. allocation et mapping compatible GPU;
+2. transition d'usage/format/tiling;
+3. enregistrement des commandes;
+4. soumission avec dependances;
+5. presentation au compositeur;
+6. attente avant recyclage.
+
+Oublier une barriere peut marcher sur une image puis produire corruption aleatoire.
+
+
+==============================================================================
+12. FORMATS D'IMAGE ET TILING
+==============================================================================
+
+Le GPU prefere souvent un agencement block-linear NVIDIA plutot qu'une image
+lineaire. Format, largeur, hauteur, pitch, alignement, nombre de mipmaps, couches
+et block height font partie de la description. Les textures compressees reduisent
+bande passante. Les buffers de staging lineaires servent aux transferts.
+
+Ne pas calculer `adresse = y*largeur*bpp+x*bpp` sauf si la surface est explicitement
+lineaire. Employer l'API pour layout, swizzle et transition.
+
+
+==============================================================================
+13. AFFICHAGE INTERNE ET DOCK
+==============================================================================
+
+L'ecran interne est tactile 1280x720 a environ 60 Hz. Le systeme compose les layers
+des applications/applets. En dock, la console fournit video/audio par USB-C vers
+le dock puis HDMI, jusqu'a 1080p60 pour l'interface de jeu standard.
+
+Un jeu peut rendre a une resolution interne differente, dynamique, puis scaler.
+La Switch OLED reste 720p en portable. HDR et 4K ne font pas partie de la sortie
+jeu annoncee pour cette generation.
+
+
+==============================================================================
+14. AUDIO
+==============================================================================
+
+Horizon expose sorties audio, renderers/mixers, voix, effets et peripheriques. Le
+materiel Tegra comprend interfaces I2S, DMA et traitement audio; les applications
+emploient les services, pas les registres directs.
+
+Pour un flux PCM : choisir frequence/canaux/format, allouer plusieurs buffers,
+mettre en file, recevoir la liberation et remplir a temps. Le double buffering
+minimal est fragile; viser une profondeur qui absorbe un retard d'image sans
+augmenter excessivement la latence. SDL2, audren/libnx et bibliotheques middleware
+peuvent fournir des couches superieures.
+
+
+==============================================================================
+15. STOCKAGE eMMC
+==============================================================================
+
+L'eMMC contient logiciel systeme, donnees internes et partitions de maintenance.
+La capacite utilisateur est inferieure a 32/64 Gio annonces. Horizon fournit un
+systeme de fichiers virtuel et des sauvegardes isolees par titre/utilisateur.
+
+Une application ne doit pas supposer chemins physiques ou acces brut. Utiliser les
+API autorisees, faire des ecritures atomiques et synchroniser avant extinction.
+L'usure flash, panne de courant et espace insuffisant doivent etre geres.
+
+
+==============================================================================
+16. MICROSD
+==============================================================================
+
+Les cartes microSD, SDHC et SDXC augmentent le stockage. Performances varient
+fortement avec controleur, fragmentation et petits fichiers. Les donnees logicielles
+commerciales sont gerees par le systeme; les homebrews voient typiquement une
+arborescence montee par leur environnement.
+
+Ne pas retirer pendant ecriture. Utiliser gros transferts alignes, limiter fsync
+inutiles, verifier erreurs et ne jamais considerer la microSD comme RAM virtuelle.
+
+
+==============================================================================
+17. CARTOUCHES DE JEU
+==============================================================================
+
+Les Game Cards sont des supports flash proprietaires avec controleur, identification
+et authentification. Capacites et performances dependent de la generation de carte.
+Le logement est absent de certains contextes de developpement mais present sur les
+modeles vente, Lite et OLED.
+
+Le format logique des contenus installables, le chiffrement et les droits sont
+geres par Horizon. Une programmation legitime passe par SDK et licences Nintendo;
+un homebrew libre n'a pas besoin de cles ou de copier une cartouche commerciale.
+
+
+==============================================================================
+18. USB TYPE-C, CHARGE ET DOCK
+==============================================================================
+
+USB-C transporte USB 2/3 selon chemin, alimentation USB Power Delivery et mode
+alternatif/protocole du dock. Le dock officiel apporte HDMI, alimentation et USB;
+le dock OLED ajoute Ethernet integre.
+
+La negociation de puissance est active : ne jamais cabler une alimentation brute
+sur les broches. Utiliser chargeur/dock conformes. Les roles host/device changent
+selon accessoire et logiciel. Les applications passent par services USB autorises.
+
+
+==============================================================================
+19. RESEAU
+==============================================================================
+
+Wi-Fi 2,4/5 GHz, Bluetooth et Ethernet via adaptateur/dock sont geres par services
+Horizon. Les applications utilisent sockets BSD/libnx ou middleware. Prevoir IPv4/
+IPv6 selon environnement, DNS, perte, MTU, veille, changement d'interface et TLS.
+
+Les services Nintendo imposent comptes, certificats et protocoles non destines a
+etre reimplementes. Un homebrew doit utiliser son propre serveur avec consentement,
+chiffrement et politique de donnees claire.
+
+
+==============================================================================
+20. JOY-CON ET PRO CONTROLLER
+==============================================================================
+
+Chaque Joy-Con comprend boutons, stick, IMU six axes, Bluetooth, batterie et
+vibration HD. Le Joy-Con droit ajoute camera IR et NFC. Rails lateraux assurent
+communication filaire, charge et detection. Le Pro Controller offre fonctions
+proches dans un boitier classique.
+
+HID fournit etats mis a jour dans memoire partagee/ring buffers. Une application
+doit gerer styles (paire, simple horizontal/vertical, handheld, Pro), attribution,
+connexion, batterie, calibration, dead zones et changement a chaud.
+
+
+==============================================================================
+21. BOUTONS, STICKS ET TOUCH
+==============================================================================
+
+Boutons principaux : A/B/X/Y, croix ou boutons directionnels, L/R/ZL/ZR, sticks,
++/-, Home et Capture. Home/Capture sont souvent reserves ou traites par systeme.
+
+Les sticks donnent axes signes avec plage/calibration, pas une valeur mathematique
+parfaite. Normaliser radialement et conserver une dead zone. Le tactile capacitif
+gere plusieurs contacts avec positions et identifiants; adapter aux dimensions
+logiques et a l'orientation.
+
+
+==============================================================================
+22. IMU, VIBRATION HD, IR ET NFC
+==============================================================================
+
+IMU : accelerometre + gyroscope, echantillonnage configure, calibration et fusion
+logicielle. Integrer un gyro sans correction derive rapidement.
+
+Vibration HD : actuateurs lineaires commandes par formes/frequences/amplitudes;
+limiter amplitude et frequence de mise a jour. Camera IR et NFC/Amiibo sont exposes
+par services avec permissions et etats propres. Ne pas supposer leur presence sur
+Switch Lite sans controle externe compatible.
+
+
+==============================================================================
+23. HORIZON OS
+==============================================================================
+
+Horizon est le systeme proprietaire Nintendo. Architecture : noyau ARM64, processus
+systeme, services IPC, applets et applications isolees. Il fournit ordonnanceur,
+memoire virtuelle, handles, evenements, synchronisation, fichiers, reseau, GPU,
+audio, HID, comptes, temps, puissance et interface utilisateur.
+
+Les appels noyau SVC sont une interface basse; les fonctions usuelles passent par
+services. Les interfaces changent selon version, droits et type de processus.
+
+
+==============================================================================
+24. PROCESSUS, THREADS ET SYNCHRONISATION
+==============================================================================
+
+Un processus possede espace virtuel, capabilities, handles et limites de ressources.
+Les threads ont priorite, affinite CPU, pile et TLS. Objets : events, mutex/arbiters,
+semaphores, transfer/shared memory, sessions IPC et ports.
+
+Eviter busy-wait : attendre handles/events. Garder les callbacks courts, ne pas
+bloquer le thread audio, et ne pas modifier une structure partagee sans atomiques
+ou verrou. Les priorites temps reel mal choisies affament le systeme.
+
+
+==============================================================================
+25. SVC (SYSTEM CALLS)
+==============================================================================
+
+Les SVC couvrent memoire, threads, synchronisation, IPC, informations, debug et
+gestion de processus selon capabilities. Exemples conceptuels libnx :
+
+  svcSleepThread(nanosecondes)
+  svcGetSystemTick()
+  svcWaitSynchronization(...)
+  svcQueryMemory(...)
+  svcSendSyncRequest(handle)
+
+Ne pas appeler une fonction interdite en esperant qu'elle soit presente. Verifier
+Result et version. Les valeurs numeriques SVC sont detail d'ABI et doivent venir
+des en-tetes maintenus, non de constantes recopiees.
+
+
+==============================================================================
+26. IPC HIPC, CMIF ET SERVICES
+==============================================================================
+
+HIPC transporte messages dans la zone TLS avec en-tete, descripteurs de buffers,
+handles copies/deplaces et eventuellement PID. CMIF ajoute objets, commandes et
+resultats; TIPC est une variante plus legere utilisee par certains services.
+
+Flux libnx : initialiser service, construire requete par wrapper, envoyer, valider
+Result et reponse, puis fermer la session. Les descripteurs A/B/W/X/C ont sens de
+copie et validation differents. Un handle deplace ne reste plus au demandeur.
+
+
+==============================================================================
+27. SERVICES IMPORTANTS
+==============================================================================
+
+- `sm` : service manager;
+- `fs` : fichiers et stockage;
+- `hid` : controles, tactile, capteurs;
+- `vi` : affichage et surfaces;
+- `audout`/`audren` : audio;
+- `nvdrv` : pilote GPU NVIDIA;
+- `bsd` : sockets;
+- `time`, `set`, `acc`, `applet`, `nifm`, `usb`, `nfc` selon besoin.
+
+Les noms, commandes et permissions peuvent varier. Utiliser les wrappers libnx ou
+SDK correspondant plutot que fabriquer des messages fragiles.
+
+
+==============================================================================
+28. FORMATS EXECUTABLES ET METADONNEES
+==============================================================================
+
+Terminologie publique :
+
+- NSO : executable compresse/segmente utilise par Horizon;
+- NRO : executable relocatable courant pour homebrew;
+- NACP : metadata application (nom, auteur, version, options);
+- RomFS : arborescence de donnees en lecture seule;
+- ExeFS : ensemble de programmes/metadata dans contenus officiels;
+- NCA/NPDM : conteneur et metadata de processus officiels.
+
+`nacptool` et `elf2nro` construisent un NRO homebrew. Les formats commerciaux
+signes/chiffres ne doivent pas etre contournes; employer le SDK officiel.
+
+
+==============================================================================
+29. DEMARRAGE ET SECURITE - VUE ARCHITECTURALE
+==============================================================================
+
+La chaine de confiance part de code immuable dans le SoC, verifie des etages de
+demarrage, configure securite/memoire puis lance Horizon. Secure boot, chiffrement,
+fuses, moteurs cryptographiques, permissions et signatures protegent code et
+donnees. Mariko corrige materiellement des faiblesses de premiere generation.
+
+Pour restauration ou recherche, travailler sur son propre materiel et respecter
+la loi. Ce document n'indique ni points de test, ni payload, ni extraction de cles,
+ni downgrade, ni neutralisation de protections.
+
+
+==============================================================================
+30. DEVELOPPEMENT OFFICIEL
+==============================================================================
+
+Le programme Nintendo Developer Portal fournit, sous accord, SDK, compilateurs,
+documentation, bibliotheques, outils de profilage, materiel de test, exigences de
+soumission et acces eShop. L'API graphique native est NVN; les moteurs commerciaux
+peuvent offrir une couche Switch sous licence.
+
+Un titre doit gerer suspension/reprise, changement dock, utilisateurs, sauvegardes,
+manettes, langues, erreurs reseau et politiques de performance. Les details SDK
+sous NDA ne sont pas reproduits.
+
+
+==============================================================================
+31. DEVKITA64 ET LIBNX
+==============================================================================
+
+La chaine libre devkitPro comprend GCC/binutils AArch64 (`devkitA64`), libnx,
+switch-tools et portlibs. `switch-examples` est la reference executable. Le flux
+type transforme ELF en NRO, y joint NACP, icone et RomFS optionnels.
+
+Variables habituelles : `DEVKITPRO` et `DEVKITA64`; utiliser les scripts/paquets
+officiels devkitPro plutot qu'une archive tierce. Le Makefile inclut `switch_rules`.
+
+
+==============================================================================
+32. STRUCTURE D'UN PROJET LIBNX
+==============================================================================
+
+  projet/
+    Makefile
+    source/main.c
+    include/
+    data/          ressources converties
+    romfs/         fichiers en lecture seule
+    icon.jpg
+
+Le Makefile definit TARGET, BUILD, SOURCES, DATA, INCLUDES, LIBS et metadata. Les
+bibliotheques portees se lient dans le bon ordre. Ne versionner ni cles, ni fichiers
+SDK Nintendo, ni sorties volumineuses.
+
+
+==============================================================================
+33. PREMIER PROGRAMME LIBNX
+==============================================================================
+
+#include <switch.h>
+#include <stdio.h>
+
+int main(int argc, char **argv)
+{
+    consoleInit(NULL);
+    printf("Bonjour Nintendo Switch\n");
+    printf("PLUS pour quitter.\n");
+
+    PadState pad;
+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    padInitializeDefault(&pad);
+
+    while (appletMainLoop()) {
+        padUpdate(&pad);
+        u64 down = padGetButtonsDown(&pad);
+        if (down & HidNpadButton_Plus) break;
+        consoleUpdate(NULL);
+    }
+    consoleExit(NULL);
+    return 0;
+}
+
+Toujours sortir proprement et fermer services/ressources initialises.
+
+
+==============================================================================
+34. EXEMPLE TOUCH ET STICKS
+==============================================================================
+
+PadState pad;
+padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+padInitializeDefault(&pad);
+
+padUpdate(&pad);
+HidAnalogStickState left = padGetStickPos(&pad, 0);
+u64 held = padGetButtons(&pad);
+
+if (held & HidNpadButton_A) {
+    /* action */
+}
+printf("stick: %d,%d\n", left.x, left.y);
+
+Pour le tactile, initialiser hid, appeler `hidGetTouchScreenStates` avec une table
+de `HidTouchScreenState`, puis limiter le nombre retourne. Consulter l'exemple
+officiel correspondant car noms de structures evoluent avec libnx.
+
+
+==============================================================================
+35. EXEMPLE THREAD LIBNX
+==============================================================================
+
+#include <stdatomic.h>
+
+static void worker(void *arg)
+{
+    atomic_bool *run = (atomic_bool *)arg;
+    while (atomic_load_explicit(run, memory_order_acquire))
+        svcSleepThread(1000000L);
+}
+
+Thread t;
+atomic_bool run = ATOMIC_VAR_INIT(true);
+threadCreate(&t, worker, &run, NULL, 0x4000, 0x2C, -2);
+threadStart(&t);
+/* ... */
+atomic_store_explicit(&run, false, memory_order_release);
+threadWaitForExit(&t);
+threadClose(&t);
+
+L'objet atomique evite une data race C entre coeurs. Pour attendre sans polling,
+preferer mutex/condition ou event libnx. Verifier le retour de chaque fonction et
+choisir priorite/affinite documentees.
+
+
+==============================================================================
+36. FICHIERS ET ROMFS
+==============================================================================
+
+#include <switch.h>
+#include <stdio.h>
+
+romfsInit();
+FILE *f = fopen("romfs:/config.txt", "rb");
+if (f) {
+    char line[128];
+    if (fgets(line, sizeof line, f)) printf("%s", line);
+    fclose(f);
+}
+romfsExit();
+
+RomFS est lecture seule. Pour ecriture autorisee, utiliser un filesystem/service
+approprie ou la microSD selon contexte homebrew. Verifier chemins et erreurs.
+
+
+==============================================================================
+37. RESEAU AVEC SOCKETS
+==============================================================================
+
+Initialiser `socketInitializeDefault`, utiliser API BSD (`socket`, `getaddrinfo`,
+`connect`, `send`, `recv`), puis `socketExit`. Implementer timeouts, boucles sur
+transferts partiels et fermeture. Ne jamais supposer qu'un `send` transmet tout.
+
+TLS doit etre fourni par une bibliotheque maintenue et valider certificats/noms.
+Eviter protocoles en clair et secrets compiles dans le programme.
+
+
+==============================================================================
+38. GRAPHIQUE HOMEBREW
+==============================================================================
+
+Choix courants :
+
+- framebuffer console/simple pour outils;
+- SDL2 pour 2D, entrees, audio et ports multiplateformes;
+- deko3d pour controle moderne du GPU Maxwell;
+- OpenGL/EGL via Mesa pour compatibilite;
+- Vulkan si la pile installee le prend en charge.
+
+Un rendu de jeu doit avoir au moins deux images, synchroniser acquire/present,
+adapter resolution au dock et eviter readback GPU. Profiler bande passante et
+temps GPU, pas seulement FPS.
+
+
+==============================================================================
+39. AUDIO HOMEBREW
+==============================================================================
+
+Les exemples libnx montrent audout et audren. Une architecture sure : thread de
+mixage, ring buffer, plusieurs AudioOutBuffer, evenements de liberation et conversion
+au format materiel. Le callback ne charge pas fichiers et n'alloue pas lourdement.
+
+SDL_mixer/OpenAL Soft facilitent les ports mais ajoutent buffering. Mesurer latence,
+underruns et derive entre horloge audio et boucle video.
+
+
+==============================================================================
+40. APPLET LIFECYCLE
+==============================================================================
+
+`appletMainLoop()` signale la continuation et permet le traitement des messages.
+La console peut suspendre, retirer le focus, demander sortie, changer performance
+ou dock. Sauvegarder un etat coherent, stopper/relancer audio et ne pas supposer
+que le programme garde le GPU indefiniment.
+
+En officiel, les applets clavier, utilisateur, album et erreur ont contrats precis.
+En homebrew, employer wrappers disponibles et prevoir l'absence d'un service.
+
+
+==============================================================================
+41. MODES DE PERFORMANCE ET THERMIQUE
+==============================================================================
+
+Portable privilegie batterie/temperature; dock autorise profil GPU superieur grace
+a l'alimentation et au refroidissement. CPU/GPU/memoire peuvent changer d'horloge.
+La revision Mariko reduit consommation, d'ou autonomie accrue sans nouvelle classe
+de rendu imposee aux jeux.
+
+Ne pas forcer des horloges hors API : risques d'instabilite, chaleur, batterie et
+corruption. Concevoir qualite dynamique a partir du temps mesure.
+
+
+==============================================================================
+42. OPTIMISATION CPU
+==============================================================================
+
+- profiler avant optimisation;
+- grouper donnees contigues et eviter pointer chasing;
+- utiliser taches assez grosses pour amortir synchronisation;
+- respecter partage de cache et false sharing;
+- compiler avec niveau adapte et LTO teste;
+- exploiter NEON pour blocs audio/image mesurables;
+- eviter allocations dans boucle de frame;
+- maintenir un chemin portable de reference pour verifier le SIMD.
+
+
+==============================================================================
+43. EXEMPLE NEON
+==============================================================================
+
+#include <arm_neon.h>
+
+static void add_u8_sat(uint8_t *d, const uint8_t *a,
+                       const uint8_t *b, size_t n)
+{
+    size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        uint8x16_t va = vld1q_u8(a + i);
+        uint8x16_t vb = vld1q_u8(b + i);
+        vst1q_u8(d + i, vqaddq_u8(va, vb));
+    }
+    for (; i < n; ++i) {
+        unsigned x = a[i] + b[i];
+        d[i] = (uint8_t)(x > 255 ? 255 : x);
+    }
+}
+
+Les pointeurs peuvent se chevaucher seulement si l'algorithme le supporte. Mesurer
+contre l'auto-vectorisation du compilateur.
+
+
+==============================================================================
+44. OPTIMISATION GPU
+==============================================================================
+
+- reduire overdraw, changements de pipeline et render targets;
+- batcher objets et descriptors;
+- compresser textures et generer mipmaps;
+- garder donnees statiques en memoire GPU appropriee;
+- utiliser resolution dynamique plutot qu'un frame rate instable;
+- equilibrer compute et graphique;
+- synchroniser finement, sans attendre tout le GPU apres chaque passe;
+- tester en portable, dock et sur Erista thermiquement contraint.
+
+
+==============================================================================
+45. COMPILATION ET PORTABILITE
+==============================================================================
+
+Utiliser types fixes (`uint32_t`), ne pas supposer taille de `long`, aligner les
+structures SIMD/GPU et eviter bitfields pour formats binaires. AArch64 Switch est
+little-endian. C/C++ doit rester sans undefined behavior, particulierement shifts,
+aliasing, atomiques et acces concurrents.
+
+Isoler plateforme derriere couches video/audio/input/filesystem. Cela facilite le
+test PC, l'analyse sanitaire et la mise a jour libnx.
+
+
+==============================================================================
+46. DEBUG ET PROFILAGE
+==============================================================================
+
+- journal serie/reseau ou fichier avec rotation;
+- symboles ELF et backtraces conserves par build ID;
+- assertions avec Result decode;
+- compteurs monotones pour CPU et GPU timestamps si disponibles;
+- captures graphiques via outils compatibles/licencies;
+- sanitizers sur version PC des modules portables;
+- test de fuite de handles, memoire et threads;
+- crash reports sans donnees personnelles.
+
+Une erreur asynchrone GPU apparait souvent plusieurs commandes apres sa cause.
+Inserer fences et labels de debug pour reduire la zone.
+
+
+==============================================================================
+47. EMULATION - CPU ET NOYAU
+==============================================================================
+
+Une emulation complete exige ARMv8-A, exceptions, MMU, caches/barrieres observables,
+GIC, timers, SVC, ordonnanceur et IPC Horizon. Les emulateurs HLE executent code
+application et recreent services; LLE du demarrage et des peripheriques est bien
+plus complexe et requiert des donnees obtenues legalement par l'utilisateur.
+
+Le timing multicore, futex/arbiters et memoire atomique influencent les jeux. Les
+SVC inconnus doivent retourner erreur compatible, non reussir silencieusement.
+
+
+==============================================================================
+48. EMULATION - GPU ET MULTIMEDIA
+==============================================================================
+
+Le traducteur Maxwell convertit commandes, shaders, formats block-linear, caches,
+fences et semaphores vers Vulkan/OpenGL/Metal. Il doit gerer precision FP, swizzle,
+compression, formats profondeur et presentation. Les shaders peuvent etre caches
+apres compilation avec invalidation par version/pilote.
+
+Audio/video decode, NVDEC/NVENC et compositeur peuvent etre HLE. Synchronisation
+avec CPU et ordre des files sont plus importants qu'une latence nulle artificielle.
+
+
+==============================================================================
+49. EMULATION - SERVICES ET FICHIERS
+==============================================================================
+
+Modeliser handles, sessions, domaines CMIF, buffers IPC et droits par version.
+Isoler NAND virtuelle et sauvegardes. Les contenus/cles doivent etre fournis
+legalement par l'utilisateur; aucun telechargement automatique ne doit etre integre.
+
+Les differences de firmware imposent tables d'interface versionnees. Ne pas exposer
+le filesystem hote sans sandbox : normaliser chemins et interdire traversal.
+
+
+==============================================================================
+50. DIAGNOSTIC MATERIEL
+==============================================================================
+
+Ordre non destructif :
+
+1. noter modele/revision et symptome;
+2. tester chargeur/cable/dock officiels connus;
+3. verifier connecteur USB-C, rails et logement carte;
+4. essayer demarrage sans accessoires/microSD;
+5. examiner batterie gonflee, corrosion et liquide;
+6. mesurer rails avec schema et protection ESD;
+7. sauvegarder donnees avant intervention stockage.
+
+Un ecran noir peut etre batterie, charge, backlight, ecran, USB-C, M92/charge,
+eMMC, RAM ou SoC. Eviter les diagnostics par remplacement aveugle.
+
+
+==============================================================================
+51. JOY-CON : ENTRETIEN
+==============================================================================
+
+Le drift peut venir usure, contamination, calibration ou mecanique. Commencer par
+mise a jour et calibration, puis nettoyage approprie hors tension. Remplacer un
+stick exige ouverture prudente, nappe fragile et batterie deconnectee.
+
+Ne pas perforer batterie. Les vis et clips different. Apres reparation, verifier
+rail, charge, sans-fil, IMU, vibration et tous les boutons.
+
+
+==============================================================================
+52. BATTERIE ET SECURITE
+==============================================================================
+
+Une batterie gonflee, chaude, percee ou humide ne doit plus etre chargee. Isoler
+selon regles locales et confier a une filiere adaptee. Ne pas la plier ni la jeter
+aux ordures. Debrancher avant microsoudure et proteger cellules contre outils.
+
+Le port USB-C a contacts fins et lignes haute vitesse : une reparation incorrecte
+peut appliquer une tension dangereuse au SoC. Inspecter au microscope et verifier
+courts-circuits avant alimentation.
+
+
+==============================================================================
+53. LIMITES ET VARIATIONS DE VERSION
+==============================================================================
+
+Horizon, libnx et outils evoluent. Un service ou champ documente pour une version
+peut etre absent, renomme ou restreint ailleurs. Les caracteristiques officielles
+peuvent varier par region. Les frequences publiees par outils communautaires ne
+sont pas necessairement une garantie Nintendo.
+
+Dans un document ou emulateur, annoter chaque information : modele SoC, revision
+carte, version systeme, source, mesure et niveau de confiance.
+
+
+==============================================================================
+54. ERREURS CLASSIQUES DE PROGRAMMATION
+==============================================================================
+
+- supposer huit CPU applicatifs;
+- annoncer 4K parce que le SoC peut le traiter;
+- confondre stockage 64 Gio OLED et RAM;
+- lire un tampon GPU avant fence;
+- ignorer pitch/tiling d'une surface;
+- oublier `appletMainLoop` et suspension;
+- bloquer thread audio ou HID;
+- ne pas fermer handle/service;
+- utiliser une constante IPC d'une autre version;
+- compiler du code proprietaire/cles dans un homebrew;
+- tester uniquement en dock ou uniquement sur emulateur.
+
+
+==============================================================================
+55. CHECKLIST D'UN PORTAGE
+==============================================================================
+
+1. separer code portable et backend Switch;
+2. choisir SDL/deko3d/OpenGL selon besoins;
+3. adapter AArch64 little-endian et alignements;
+4. remplacer threads/files/reseau par API supportees;
+5. mapper toutes configurations de controles;
+6. gerer 720p/1080p, portable/dock et safe areas;
+7. adapter audio a buffers asynchrones;
+8. fixer metadata NACP, icone et RomFS;
+9. profiler memoire, CPU, GPU et batterie;
+10. tester sortie, suspension et erreurs de stockage.
+
+
+==============================================================================
+56. TABLE DES COUCHES LOGICIELLES
+==============================================================================
+
+  Couche                 Officielle              Libre/homebrew
+  Application            jeu/app                 NRO
+  Framework              moteur/middleware       SDL2, portlibs
+  Graphique              NVN                     deko3d, Mesa
+  Bibliotheque systeme   SDK Nintendo            libnx
+  Appels services        wrappers SDK            wrappers libnx/HIPC
+  Noyau                  Horizon                  interface SVC observee
+  Materiel               pilotes Tegra            non accessible directement
+
+Cette correspondance est conceptuelle; les interfaces ne sont pas binaires ni
+fonctionnellement identiques.
+
+
+==============================================================================
+57. REFERENCES
+==============================================================================
+
+Materiel officiel :
+
+- Nintendo Switch OLED, specifications :
+  https://www.nintendo.com/en-gb/Hardware/Nintendo-Switch-Family/Nintendo-Switch-OLED-Model/Nintendo-Switch-OLED-Model-2000984.html
+- NVIDIA Tegra X1 Series SoC Technical Reference Manual / Data Sheet :
+  https://developer.nvidia.com/embedded/tegra-x1-reference
+- ARM Architecture Reference Manual ARMv8-A, ARM Limited.
+
+Developpement libre :
+
+- libnx : https://github.com/switchbrew/libnx
+- exemples devkitA64/libnx : https://github.com/switchbrew/switch-examples
+- devkitPro : https://devkitpro.org/
+- documentation Switchbrew : https://www.switchbrew.org/wiki/Main_Page
+- GPU : https://www.switchbrew.org/wiki/GPU
+- HIPC : https://www.switchbrew.org/wiki/HIPC
+- SVC : https://www.switchbrew.org/wiki/SVC
+- disposition memoire : https://www.switchbrew.org/wiki/Memory_layout
+
+Switchbrew resulte de retro-ingenierie communautaire et n'est pas une documentation
+Nintendo. Verifier libnx actuel et les documents officiels autorises avant de
+publier, soumettre un jeu ou prendre une decision materielle.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

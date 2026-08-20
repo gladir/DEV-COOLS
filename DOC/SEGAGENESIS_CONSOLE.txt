@@ -1,0 +1,1126 @@
+==============================================================================
+ SEGA MEGA DRIVE / GENESIS
+ Materiel, programmation et reference pour emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la console 16 bits Sega Mega Drive, nommee Genesis en
+Amerique du Nord : processeurs MC68000 et Z80, VDP, memoires, video, audio,
+entrees-sorties, bus cartouche et programmation bas niveau. Il vise aussi bien
+le programmeur homebrew que l'auteur d'un emulateur.
+
+Sauf indication contraire, les nombres precedes de $ sont hexadecimaux, les
+adresses sont celles du 68000 et les valeurs multi-octets sont big-endian. Les
+accents sont omis pour conserver un fichier ASCII facilement exploitable par
+les outils anciens.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Identite et historique
+  2. Modeles et revisions
+  3. Architecture generale
+  4. Horloges NTSC et PAL
+  5. Processeur Motorola 68000
+  6. Processeur Zilog Z80
+  7. Carte memoire du 68000
+  8. Carte memoire du Z80
+  9. Arbitrage du bus Z80
+ 10. Demarrage, vecteurs et TMSS
+ 11. En-tete d'une cartouche
+ 12. VDP : organisation generale
+ 13. Ports du VDP
+ 14. Registres du VDP
+ 15. Commandes d'acces VRAM/CRAM/VSRAM
+ 16. VRAM et motifs
+ 17. Plans A, B et Window
+ 18. Tables de noms et attributs
+ 19. Defilement horizontal et vertical
+ 20. Sprites
+ 21. Couleurs, CRAM, ombre et surbrillance
+ 22. Modes video, resolutions et entrelacement
+ 23. Synchronisation, interruptions et compteurs
+ 24. DMA du VDP
+ 25. Son PSG SN76489
+ 26. Son FM Yamaha YM2612
+ 27. Z80 comme pilote audio
+ 28. Ports de controleurs
+ 29. Manettes trois et six boutons
+ 30. Autres peripheriques
+ 31. Cartouches, SRAM et EEPROM
+ 32. Bank switching et cartouches speciales
+ 33. Mega-CD, 32X et compatibilite Master System
+ 34. Exemple d'en-tete et de table des vecteurs
+ 35. Initialisation materielle en assembleur 68000
+ 36. Ecriture d'un registre VDP
+ 37. Chargement de la palette et de motifs
+ 38. Affichage d'un plan
+ 39. Affichage d'un sprite
+ 40. Attente VBlank et boucle principale
+ 41. Exemple de DMA
+ 42. Lecture d'une manette trois boutons
+ 43. Detection et lecture d'une manette six boutons
+ 44. Communication 68000-Z80
+ 45. Exemple PSG et YM2612
+ 46. Contraintes de performance
+ 47. Guide d'implementation d'un emulateur
+ 48. Cas limites et erreurs frequentes
+ 49. Developpement, construction et test
+ 50. Diagnostic materiel
+ 51. References
+
+
+==============================================================================
+1. IDENTITE ET HISTORIQUE
+==============================================================================
+
+Sega lance la Mega Drive au Japon en 1988, la Genesis en Amerique du Nord en
+1989 et la Mega Drive en Europe en 1990. Elle succede au Master System. Le nom
+Genesis est une marque regionale; le materiel de base et son logiciel restent
+la meme famille, avec des differences de region, video et revisions internes.
+
+La machine associe un 68000, puissant pour la logique du jeu, a un Z80 surtout
+employe comme processeur sonore. Son VDP derive de l'architecture Sega 8 bits,
+mais ajoute deux plans de tuiles, davantage de sprites, le defilement et le DMA.
+
+
+==============================================================================
+2. MODELES ET REVISIONS
+==============================================================================
+
+- Model 1 : grande coque, prise casque et volume sur beaucoup de versions;
+- Model 2 : carte et boitier reduits, sortie A/V mini-DIN differente;
+- Model 3 nord-americain : cout reduit, fonctions et compatibilites retranchees;
+- revisions VA0, VA1, etc. : ASIC, VDP, encodeur video et audio peuvent changer;
+- Mega Drive II, Multi-Mega/CDX, Nomad et clones sous licence ou non;
+- machines integrees comme Wondermega et Mega PC.
+
+La qualite composite, le melange audio, le TMSS, l'acces Master System et la
+prise d'extension ne sont pas identiques sur toutes les revisions. Un logiciel
+normal ne doit pas dependre d'un numero d'ASIC ou d'un bruit analogique precis.
+
+
+==============================================================================
+3. ARCHITECTURE GENERALE
+==============================================================================
+
+CPU principal       Motorola 68000, bus de donnees 16 bits
+CPU secondaire      Zilog Z80, bus 8 bits
+RAM principale      64 Kio
+RAM Z80             8 Kio
+Video               VDP Sega, 64 Kio VRAM
+Palette             64 entrees, espace 9 bits = 512 couleurs
+Defilement vertical 40 mots VSRAM, 80 octets
+Audio                Yamaha YM2612, 6 canaux FM + DAC; PSG 4 canaux
+Controleurs          deux ports DE-9, un port d'extension selon modele
+Cartouche            bus 68000, ROM et materiel additionnel possibles
+
+Le VDP arbitre ses propres acces VRAM et recoit les commandes du 68000. Le Z80
+peut atteindre le son directement et une fenetre bancaire de l'espace 68000.
+Le 68000 doit demander le bus avant de toucher de facon fiable la RAM Z80.
+
+
+==============================================================================
+4. HORLOGES NTSC ET PAL
+==============================================================================
+
+Les horloges sont derivees de l'oscillateur video principal.
+
+                       NTSC                         PAL
+Master                 ~53,693175 MHz              ~53,203424 MHz
+68000 = master/7       ~7,670454 MHz               ~7,600489 MHz
+Z80 = master/15        ~3,579545 MHz               ~3,546895 MHz
+Cadence verticale      ~59,92 Hz                   ~49,70 Hz
+Lignes nominales       262                         313
+
+Les nombres "7,67 MHz" et "3,58 MHz" sont donc des approximations. Les
+cycles disponibles par ligne changent suivant H32/H40 et certains acces au VDP
+subissent des attentes. Ne pas synchroniser un emulateur avec 60,000 Hz exact.
+
+
+==============================================================================
+5. PROCESSEUR MOTOROLA 68000
+==============================================================================
+
+Le 68000 possede huit registres de donnees D0-D7, huit registres d'adresse
+A0-A7, A7 etant le pointeur de pile, un compteur PC 32 bits logique et le SR.
+Le bus physique Genesis utilise 24 bits d'adresse. Les mots et longs doivent
+etre alignes sur une adresse paire; un acces impair declenche Address Error.
+
+Modes : registre direct, indirect, post-incremente, pre-decremente, deplacement,
+indexe, absolu court/long, relatif PC et immediat. Instructions principales :
+
+- transfert : MOVE, MOVEA, MOVEQ, MOVEM, MOVEP, LEA, PEA, EXG, LINK, UNLK;
+- arithmetique : ADD/ADDA/ADDI/ADDQ/ADDX, SUB variantes, CMP variantes,
+  MULS/MULU, DIVS/DIVU, NEG, NEGX, CLR, EXT;
+- logique/bit : AND, OR, EOR, NOT, BTST, BCHG, BCLR, BSET;
+- decalage/rotation : ASL/ASR, LSL/LSR, ROL/ROR, ROXL/ROXR, SWAP;
+- controle : BRA, BSR, Bcc, DBcc, Scc, JMP, JSR, RTS, RTE, RTR, TRAP, TRAPV;
+- systeme : NOP, RESET, STOP, TAS, MOVE SR/CCR/USP.
+
+La Genesis n'offre pas de systeme d'exploitation : le programme demarre depuis
+la ROM et gere les exceptions. Le niveau d'interruption masque dans SR doit etre
+abaisse seulement apres initialisation des piles, VDP et gestionnaires.
+
+
+==============================================================================
+6. PROCESSEUR ZILOG Z80
+==============================================================================
+
+Le Z80 dispose de AF, BC, DE, HL, jeux alternatifs, IX, IY, SP, PC, I et R. Il
+execute le jeu Z80 complet, y compris prefixes CB, ED, DD et FD. Dans un jeu
+Genesis, il sert typiquement a mettre a jour YM2612/PSG sans bloquer le 68000.
+
+Il possede 8 Kio de RAM locale et une fenetre de 32 Kio vers un banc de l'espace
+68000. Le verrou de banc est charge serie par serie au registre $6000. Les
+interruptions Z80 proviennent notamment du VDP; le pilote doit etre court et
+tenir compte de la contention de bus.
+
+
+==============================================================================
+7. CARTE MEMOIRE DU 68000
+==============================================================================
+
+$000000-$3FFFFF  espace cartouche ROM, SRAM et logique cartouche usuelle
+$400000-$7FFFFF  extension/cartouche, souvent ouvert
+$800000-$9FFFFF  espace 32X/cartouche selon configuration
+$A00000-$A0FFFF  espace Z80 vu par le 68000
+$A10000-$A1001F  version et ports d'entree-sortie
+$A11000           controle memoire
+$A11100           demande/etat du bus Z80
+$A11200           reset Z80
+$A13000-$A130FF  registres cartouche, SRAM ou mapper selon materiel
+$A14000-$A14003  registre TMSS sur les consoles qui en disposent
+$C00000-$C00003  port de donnees VDP
+$C00004-$C00007  port controle/statut VDP
+$C00008-$C0000B  compteur horizontal/vertical
+$C00011           ecriture PSG (octet sur voie impaire)
+$E00000-$FFFFFF  RAM 64 Kio repetee par miroir; canonique $FF0000-$FFFFFF
+
+Le decodage est partiel et les zones ouvertes ne valent pas necessairement
+$00/$FF. Des logiciels utilisent des miroirs. Un emulateur doit modeliser les
+largeurs d'acces, l'alignement, le dernier bus et les bus errors avec prudence.
+
+
+==============================================================================
+8. CARTE MEMOIRE DU Z80
+==============================================================================
+
+$0000-$1FFF  RAM Z80 8 Kio
+$2000-$3FFF  miroirs de RAM selon decodage
+$4000-$4003  ports YM2612
+$6000        registre serie du banc 68000
+$6001-$7EFF  zone de controle/mirrors
+$7F00-$7FFF  VDP/PSG selon adresse et acces autorise
+$8000-$FFFF  fenetre de 32 Kio dans l'espace 68000
+
+Le banc fournit les bits superieurs de l'adresse 68000. On envoie neuf bits,
+bit de poids faible d'abord, au registre $6000. La fenetre ne doit pas servir a
+atteindre la propre zone Z80 d'une maniere recursive non definie.
+
+
+==============================================================================
+9. ARBITRAGE DU BUS Z80
+==============================================================================
+
+$A11100 bit 8 controle BUSREQ. Ecrire $0100 demande le bus; attendre que la
+lecture indique l'acquittement avant d'acceder a $A00000-$A0FFFF. Ecrire $0000
+rend le bus. $A11200 bit 8 est le reset Z80 : $0000 l'affirme, $0100 le libere.
+
+Procedure sure : maintenir reset, demander bus, copier code et donnees dans les
+8 Kio, rendre bus, puis liberer reset. Ne jamais maintenir BUSREQ pendant une
+longue section si le son doit continuer. La polarite apparente de la lecture
+BUSREQ varie dans les descriptions; tester le bit selon le manuel et le bus
+reel, pas selon le nom intuitif du signal actif bas.
+
+
+==============================================================================
+10. DEMARRAGE, VECTEURS ET TMSS
+==============================================================================
+
+Au reset, le 68000 charge SSP depuis $000000 et PC depuis $000004. La table
+standard comporte 256 vecteurs longs : bus error, address error, illegal,
+division par zero, CHK, TRAPV, privilege, trace, line A/F, autovecteurs, TRAP.
+
+Le VDP produit principalement : niveau 6 pour VBlank et niveau 4 pour HBlank.
+Le Z80 peut recevoir une interruption associee a la trame.
+
+Sur les consoles munies du TradeMark Security System, le programme doit ecrire
+les quatre octets ASCII "SEGA" a $A14000 avant d'utiliser normalement le VDP.
+La presence est determinee par le registre de version, pas en ecrivant au hasard
+sur les premiers modeles. TMSS n'est ni un chiffrement ni une signature ROM.
+
+
+==============================================================================
+11. EN-TETE D'UNE CARTOUCHE
+==============================================================================
+
+$000-$0FF  vecteurs d'exception
+$100-$10F  systeme, normalement "SEGA MEGA DRIVE " ou "SEGA GENESIS    "
+$110-$11F  copyright/date
+$120-$14F  titre domestique, 48 caracteres
+$150-$17F  titre international, 48 caracteres
+$180-$18D  type/numero produit/version
+$18E-$18F  checksum
+$190-$19F  peripheriques compatibles
+$1A0-$1A3  debut ROM, normalement $000000
+$1A4-$1A7  fin ROM inclusive
+$1A8-$1AB  debut RAM
+$1AC-$1AF  fin RAM
+$1B0-$1BB  informations sauvegarde/SRAM, "RA" si presente
+$1BC-$1CF  modem
+$1D0-$1EF  memo
+$1F0-$1FF  regions, traditionnellement J, U, E ou masque hexadecimal
+
+Le checksum officiel est en general la somme 16 bits des mots a partir de $200
+jusqu'a la fin declaree. Certains jeux ont une protection supplementaire ou un
+checksum faux. Un emulateur ne doit pas refuser une ROM uniquement pour cela.
+
+
+==============================================================================
+12. VDP : ORGANISATION GENERALE
+==============================================================================
+
+Le Video Display Processor contient :
+
+- 64 Kio de VRAM;
+- 64 mots de CRAM dont 9 bits couleur sont significatifs;
+- 40 mots de VSRAM;
+- plans de tuiles A et B, plan Window et sprites;
+- FIFO d'ecriture, DMA, defilement, priorites et interruptions;
+- compatibilite partielle avec le mode VDP Sega 8 bits.
+
+Il n'existe pas de framebuffer RGB lineaire natif. L'image est composee de
+motifs 8x8, tables de noms, attributs, plans et sprites au cours du balayage.
+
+
+==============================================================================
+13. PORTS DU VDP
+==============================================================================
+
+$C00000/$C00002  donnees, mot ou octet selon acces
+$C00004/$C00006  commande en ecriture, statut en lecture
+$C00008/$C0000A  compteur HV
+$C00011          PSG, ecriture 8 bits
+
+Une commande longue VDP est normalement envoyee en deux mots consecutifs au
+port controle. Une ecriture de registre tient dans un mot `$8000 | reg<<8 |
+valeur`. La lecture du statut annule la commande partiellement assemblee et
+acquitte certains etats. Respecter FIFO et DMA; le VDP peut inserer DTACK tardif.
+
+Bits de statut importants : PAL, DMA occupe, HBlank, VBlank, trame paire,
+collision de sprites, debordement de sprites et FIFO vide/pleine.
+
+
+==============================================================================
+14. REGISTRES DU VDP
+==============================================================================
+
+R00  controle mode 1 : H interrupt, blank gauche, latch HV, mode 8 bits
+R01  controle mode 2 : affichage, V interrupt, DMA, V28/V30, mode MD
+R02  adresse de la table du plan A
+R03  adresse de la table Window
+R04  adresse de la table du plan B
+R05  adresse de la table des sprites
+R06  reserve/adresse sprites mode ancien
+R07  index couleur du fond
+R08-R09 reserves
+R0A  compteur d'interruption horizontale
+R0B  mode 3 : scroll H/V, interruption externe
+R0C  mode 4 : H32/H40, entrelacement, shadow/highlight
+R0D  adresse table de scroll horizontal
+R0E  reserve/motif selon mode
+R0F  auto-increment apres acces au port donnees
+R10  taille horizontale et verticale des plans
+R11  position horizontale de Window
+R12  position verticale de Window
+R13  longueur DMA, octet bas
+R14  longueur DMA, octet haut
+R15  source DMA bits 1-8
+R16  source DMA bits 9-16
+R17  source bits 17-22 et type DMA
+
+Les numeros ci-dessus sont hexadecimaux 00-17. Plusieurs bits sont reserves :
+les conserver a leur valeur documentee. Les masques d'adresse changent entre
+H32/H40; aligner toutes les tables a la granularite imposee.
+
+
+==============================================================================
+15. COMMANDES D'ACCES VRAM/CRAM/VSRAM
+==============================================================================
+
+Une commande VDP code l'adresse sur 16 bits et un code d'operation sur 6 bits.
+Les operations usuelles sont lecture/criture VRAM, lecture/ecriture CRAM,
+lecture/ecriture VSRAM et les variantes DMA. Il est preferable d'utiliser des
+macros verifiees plutot que recomposer les bits dans chaque appel.
+
+Pour une adresse A et un code C (six bits), la commande 32 bits, premier mot
+dans les bits de poids fort, se construit ainsi :
+
+  ((A & $3FFF) << 16) | ((A & $C000) >> 14)
+  | ((C & $03) << 30) | ((C & $3C) << 2)
+
+Cette formule suppose les codes symboliques adaptes. Exemples de constantes
+classiques pour A=0 : VRAM write $40000000, CRAM write $C0000000 et VSRAM write
+$40000010. Une commande mal formee peut viser une autre memoire ou lancer DMA.
+
+R15 fixe l'auto-increment. Valeur 2 convient aux mots successifs; 1 permet des
+effets d'octets et d'entrelacement mais exige de comprendre le chemin 16 bits.
+
+
+==============================================================================
+16. VRAM ET MOTIFS
+==============================================================================
+
+Un motif 8x8 4 bpp occupe 32 octets. Chaque ligne comporte quatre octets; chaque
+nibble est un index 0-15. L'index 0 est transparent pour objets/plans, sauf que
+la couleur de fond finit par remplir l'image si aucun pixel opaque ne gagne.
+
+La VRAM contient librement motifs, tables de noms, sprites et scroll. Le logiciel
+choisit leur disposition par les registres VDP. Eviter tout chevauchement et
+tenir compte des alignements. Le VDP ne connait pas le format d'un fichier PNG :
+les outils de construction doivent convertir pixels, palettes et ordre de mots.
+
+
+==============================================================================
+17. PLANS A, B ET WINDOW
+==============================================================================
+
+Les plans A et B sont des cartes de cellules. A est normalement devant B selon
+les bits de priorite. Window remplace une region du plan A sans defilement, ce
+qui convient aux tableaux de score. Sa frontiere horizontale est exprimee en
+pas de deux cellules et sa frontiere verticale en cellules.
+
+R10 choisit 32, 64 ou 128 cellules par axe, certaines combinaisons 128x128 etant
+invalides faute de largeur interne. La taille d'ecran n'est pas la taille du
+plan : l'adressage se replie modulo les dimensions configurees.
+
+
+==============================================================================
+18. TABLES DE NOMS ET ATTRIBUTS
+==============================================================================
+
+Chaque cellule est un mot :
+
+bit 15      priorite
+bits 14-13  palette 0-3
+bit 12      retournement vertical
+bit 11      retournement horizontal
+bits 10-0   numero de motif 0-2047
+
+Adresse de cellule = base + 2*(y*largeur + x). Les motifs retournes ne sont pas
+dupliques. La priorite ne constitue pas un simple ordre global : le VDP combine
+pixel transparent, priorite des deux plans, sprites et couleur de fond.
+
+
+==============================================================================
+19. DEFILEMENT HORIZONTAL ET VERTICAL
+==============================================================================
+
+R0B selectionne le scroll horizontal global, par cellule ou par ligne. La table
+indiquee par R0D stocke une paire de mots A/B pour chaque unite. Le scroll
+vertical est global ou par bandes de deux cellules; les valeurs A/B resident
+dans VSRAM.
+
+Les valeurs sont des deplacements avec repli. En scroll par ligne, la table doit
+etre assez grande pour toutes les lignes lues, y compris selon entrelacement.
+Une mise a jour pendant l'affichage peut produire des effets raster mais son
+cycle, la FIFO et le prechargement du VDP deviennent observables.
+
+
+==============================================================================
+20. SPRITES
+==============================================================================
+
+Une entree de table sprite occupe 8 octets : position Y, taille et lien, mot
+d'attribut du motif, position X. Le lien chaine les entrees; zero termine la
+liste. Les coordonnees contiennent un biais de $80. Une taille vaut de 1x1 a
+4x4 cellules. Les motifs d'un sprite multi-cellule suivent un ordre impose.
+
+Limites typiques :
+
+Mode H32 : 64 sprites dans la table, 16 par ligne, 256 pixels sprites par ligne.
+Mode H40 : 80 sprites dans la table, 20 par ligne, 320 pixels sprites par ligne.
+
+Le masque de sprite, le debordement, les pixels transparents et la collision
+sprite-sprite ont des comportements subtils. L'ordre de liens, non simplement
+le numero en VRAM, determine la priorite entre sprites de meme priorite.
+
+
+==============================================================================
+21. COULEURS, CRAM, OMBRE ET SURBRILLANCE
+==============================================================================
+
+La CRAM contient quatre palettes de seize couleurs. Le mot couleur utilise
+normalement trois bits par composante : bits 1-3 rouge, 5-7 vert, 9-11 bleu;
+les autres bits sont ignores/reserves. Exemple : $0EEE est blanc maximal.
+
+Le VDP peut afficher simultanement jusqu'a 61 couleurs ordinaires utiles, car
+l'index zero de chaque palette est transparent et une couleur sert au fond.
+Shadow/highlight augmente les intensites possibles et emploie des combinaisons
+speciales de pixels sprite palette 3. Ce mode doit etre emule apres resolution
+des priorites, pas comme une simple palette supplementaire.
+
+Une vraie console convertit le niveau numerique par DAC/encodeur analogique;
+les valeurs RGB modernes exactes dependent revision, region et capture.
+
+
+==============================================================================
+22. MODES VIDEO, RESOLUTIONS ET ENTRELACEMENT
+==============================================================================
+
+Modes courants : 256x224 (H32) et 320x224 (H40). En PAL, 240 lignes actives sont
+disponibles. L'entrelacement peut produire 448/480 lignes de trame; le mode
+interlace 2 modifie aussi l'adressage des motifs pour une definition verticale
+double. Des jeux changent les registres au milieu de l'image.
+
+La sortie peut etre RGB, composite et RF selon modele/region. Le VDP genere un
+signal compatible NTSC ou PAL selon la machine; le champ region de ROM ne change
+pas physiquement l'oscillateur. SECAM commercial utilise generalement une sortie
+adaptee/transcodee, pas une troisieme logique de couleurs VDP.
+
+
+==============================================================================
+23. SYNCHRONISATION, INTERRUPTIONS ET COMPTEURS
+==============================================================================
+
+VBlank est l'intervalle privilegie pour modifier tables, CRAM et sprites. Le bit
+d'autorisation V-int se trouve dans R01; l'autovecteur niveau 6 est le vecteur
+$78. H-int utilise R00, le compteur R0A et le niveau 4, vecteur $70.
+
+Le compteur HV donne la position de balayage, mais ses valeurs sautent et son
+encodage depend du mode. Il peut etre verrouille par entree externe. Lire le
+statut VDP acquitte l'interruption VDP pertinente. Un handler doit sauvegarder
+ses registres, eviter une nouvelle commande VDP incoherente, puis RTE.
+
+L'ecriture au VDP en zone active offre moins de bande passante. Une attente de
+VBlank qui teste seulement un bit peut rater une transition; organiser une
+variable incrementee par l'interruption est souvent plus robuste.
+
+
+==============================================================================
+24. DMA DU VDP
+==============================================================================
+
+Trois operations :
+
+- transfert 68000 -> VRAM/CRAM/VSRAM;
+- remplissage VRAM par repetition d'une valeur;
+- copie VRAM -> VRAM.
+
+Activer DMA dans R01. R13/R14 donnent la longueur; zero represente 65536 mots
+pour un transfert externe. R15-R17 donnent l'adresse source en mots et le type.
+Emettre ensuite la commande de destination avec le bit DMA. Pour un fill, ecrire
+la valeur au port donnees apres la commande.
+
+Le DMA peut suspendre le 68000 ou voler des creneaux memoire. Les sources RAM,
+ROM et zones interdites n'ont pas toutes le meme comportement. La longueur,
+l'auto-increment et l'adresse se mettent a jour. Ne pas lancer un DMA depuis une
+source dont le bus n'est pas accessible, ni modifier ses registres en cours.
+
+
+==============================================================================
+25. SON PSG SN76489
+==============================================================================
+
+Le PSG compatible SN76489 fournit trois voies carrees et une voie de bruit.
+Chaque voie a une attenuation 4 bits. Les frequences tonales utilisent un
+diviseur 10 bits. Le bruit choisit periodique/blanc et une source de cadence.
+
+Ecrire un octet a $C00011. Un octet latch (bit 7=1) choisit canal/type et quatre
+bits de donnee; un octet data (bit 7=0) complete notamment le diviseur. Volume
+$0 = fort, $F = silence. Des variantes internes ont des LFSR et sorties analogiques
+dont les details sont audibles; un emulateur doit reproduire la phase et non
+seulement generer une onde ideale arbitraire.
+
+
+==============================================================================
+26. SON FM YAMAHA YM2612
+==============================================================================
+
+Le YM2612 offre six canaux FM, quatre operateurs chacun, huit algorithmes,
+feedback, enveloppes, LFO, timers A/B, stereo et mode special du canal 3. Le
+canal 6 peut etre remplace par un DAC 8 bits, tres utilise pour les percussions.
+
+Ports vus par Z80 :
+
+$4000 adresse partie I    $4001 donnees partie I
+$4002 adresse partie II   $4003 donnees partie II
+
+Registres essentiels : $22 LFO, $24-$27 timers/mode, $28 key on/off, $2A DAC,
+$2B activation DAC, $30-$9F parametres operateurs, $A0-$A6 frequences, $B0-$B6
+algorithme/feedback/panoramique. Les numeros d'operateur ne sont pas dans un
+ordre lineaire intuitif.
+
+Apres selection d'adresse, respecter le temps busy avant nouvelle ecriture. Le
+statut est lu au port adresse. Un son correct exige enveloppes exponentielles,
+detune, rate scaling, SSG-EG, saturation du DAC et melange analogique plausibles.
+
+
+==============================================================================
+27. Z80 COMME PILOTE AUDIO
+==============================================================================
+
+Le 68000 place commandes et parametres dans une boite aux lettres en RAM Z80,
+en demandant brievement le bus. Le Z80 interprete musique et effets, programme
+YM2612/PSG et alimente le DAC. Une commande doit etre publiee atomiquement :
+donnees d'abord, drapeau en dernier; le consommateur efface le drapeau.
+
+Pour une haute cadence DAC, eviter BUSREQ prolonge. Les lecteurs PCM utilisent
+boucles Z80 comptees, banques 68000 ou echantillons locaux. L'interruption et la
+contention peuvent creer du jitter, qui fait partie des contraintes reelles.
+
+
+==============================================================================
+28. PORTS DE CONTROLEURS
+==============================================================================
+
+$A10001  version materielle/region
+$A10003  donnees port 1
+$A10005  donnees port 2
+$A10007  donnees port extension
+$A10009  controle/direction port 1
+$A1000B  controle/direction port 2
+$A1000D  controle/direction extension
+$A1000F/$11/$13  controle emission serie
+$A10015/$17/$19  emission serie
+$A1001B/$1D/$1F  reception serie
+
+Ces registres sont sur les adresses impaires du bus 68000 et s'accedent en
+octets. Dans le registre de controle, un bit a 1 rend la ligne correspondante
+pilotable en sortie; sinon elle est entree. TH, TR et TL participent aux
+protocoles. Ne pas forcer toutes les lignes en sortie contre un peripherique.
+
+Le registre version encode export/domestique, PAL/NTSC et revision. Les valeurs
+exactes varient; employer des masques. Il sert aussi a decider l'ecriture TMSS.
+
+
+==============================================================================
+29. MANETTES TROIS ET SIX BOUTONS
+==============================================================================
+
+Manette 3 boutons : le logiciel alterne TH. Selon son niveau, il lit directions,
+A, B, C et Start, tous actifs bas. Une paire de lectures avec petites attentes
+fournit l'etat complet.
+
+La manette 6 boutons ajoute X, Y, Z et Mode par un protocole temporel. Elle compte
+les transitions TH. Apres plusieurs phases, une phase d'identification retourne
+un motif bas specifique, puis les nouveaux boutons. Un timeout interne la ramene
+au protocole 3 boutons. Les multitaps et rallonges changent les timings.
+
+Toujours : configurer TH en sortie, conserver les autres lignes en entree,
+laisser quelques cycles entre ecriture et lecture, normaliser les bits actifs
+bas et limiter toute la sequence avant timeout. Une detection une seule fois au
+boot est insuffisante si le joueur branche une manette ensuite.
+
+
+==============================================================================
+30. AUTRES PERIPHERIQUES
+==============================================================================
+
+Sega Mouse, Menacer, Justifier, Team Player, multitaps EA, XE-1 AP, Activator,
+claviers, modems et adaptateurs emploient des protocoles differents sur les memes
+lignes ou le mode serie. Certains demandent un balayage image pour pistolet.
+
+Un emulateur doit exposer niveaux de lignes et transitions temporelles plutot
+que coder uniquement une structure "boutons Genesis". Les deux familles de
+multitap ne partagent pas necessairement le meme protocole.
+
+
+==============================================================================
+31. CARTOUCHES, SRAM ET EEPROM
+==============================================================================
+
+La ROM usuelle commence a $000000 et peut atteindre 4 Mio sans mapper complexe.
+La SRAM de sauvegarde est souvent placee vers $200000 et activee/protegee par
+$A130F1, mais l'en-tete indique plage et organisation. Elle peut etre 8 ou 16
+bits, sur octets pairs ou impairs. Respecter la pile et le checksum avant de la
+mettre en conflit avec la ROM.
+
+Certaines cartouches utilisent EEPROM serie I2C sur lignes d'adresse/donnees;
+les brochages et adresses varient par circuit imprime. Sauvegarder une EEPROM
+comme une SRAM plate sans protocole produit des corruptions. L'emulateur devrait
+identifier le mapper par base de donnees et comportement, pas seulement taille.
+
+
+==============================================================================
+32. BANK SWITCHING ET CARTOUCHES SPECIALES
+==============================================================================
+
+Des ROM de plus de 4 Mio et compilations utilisent des registres de banc dans
+$A130xx. Sega mapper associe typiquement des fenetres de 512 Kio a des numeros
+de banc. Codemasters, Realtec, J-Cart, SVP et protections ont leur logique propre.
+
+J-Cart ajoute deux ports manette sur la cartouche. Virtua Racing contient le
+Sega Virtua Processor (SVP), coprocesseur et RAM. Certaines protections lisent
+des registres calcules, utilisent open bus ou attendent une sequence d'ecriture.
+Ne jamais supposer "taille > 4 Mio = un mapper unique".
+
+
+==============================================================================
+33. MEGA-CD, 32X ET COMPATIBILITE MASTER SYSTEM
+==============================================================================
+
+Mega-CD/Sega CD ajoute un 68000, BIOS, RAM, Word RAM, PCM, CD-ROM et ASIC de
+rotation/zoom. 32X ajoute deux SH-2, RAM, framebuffers, PWM et video superposee.
+Leur programmation depasse le VDP de base et exige arbitrage/communication.
+
+Le Power Base Converter exploite le mode Master System du VDP et le Z80. Cette
+compatibilite depend du materiel present; le Model 3 et certaines machines la
+retranchent. Le Yamaha YM2612 n'est pas le YM2413 du Master System japonais.
+
+Les registres et performances des extensions ne doivent jamais etre attribues a
+la Genesis nue : celle-ci ne possede ni framebuffer 32X, ni CD, ni CPU SH-2.
+
+
+==============================================================================
+34. EXEMPLE D'EN-TETE ET DE TABLE DES VECTEURS
+==============================================================================
+
+Syntaxe GNU as/vasm simplifiee :
+
+        .org    $000000
+        .long   $01000000              /* SSP, juste au-dessus de RAM */
+        .long   Start
+        .long   Error,Error,Error,Error,Error,Error
+        .long   Error,Error,Error,Error,Error,Error,Error,Error
+        /* Completer les vecteurs jusqu'a $FF; niveau 4=$70, niveau 6=$78 */
+        .org    $000070
+        .long   HBlank
+        .org    $000078
+        .long   VBlank
+        .org    $000100
+        .ascii  "SEGA MEGA DRIVE "
+        .ascii  "(C)2026 EXAMPLE "
+        .ascii  "DEMONSTRATION GENESIS                           "
+        .ascii  "DEMONSTRATION GENESIS                           "
+        .ascii  "GM 00000000-00"
+        .word   $0000                   /* checksum a corriger */
+        .ascii  "J               "      /* peripheriques */
+        .long   $000000,$0007FFFF       /* ROM debut/fin */
+        .long   $FF0000,$FFFFFF         /* RAM debut/fin */
+        .ascii  "            "          /* sauvegarde */
+        .ascii  "            "          /* modem */
+        .ascii  "                                        "
+        .ascii  "JUE             "
+
+Les champs ont une taille fixe. Ajouter/remplir exactement les octets manquants;
+verifier avec un hexdump que le code commence a $200 et que les vecteurs pointent
+sur des adresses paires valides.
+
+
+==============================================================================
+35. INITIALISATION MATERIELLE EN ASSEMBLEUR 68000
+==============================================================================
+
+VDP_DATA = $C00000
+VDP_CTRL = $C00004
+VERSION  = $A10001
+TMSS     = $A14000
+Z80BUS   = $A11100
+Z80RESET = $A11200
+
+Start:
+        move    #$2700,sr              /* interruptions masquees */
+        lea     $FF0000,a0
+        moveq   #0,d0
+        move.w  #($10000/4)-1,d1
+.clear: move.l  d0,(a0)+
+        dbra    d1,.clear
+
+        move.b  VERSION,d0
+        andi.b  #$0F,d0
+        beq.s   .no_tmss
+        move.l  #'SEGA',TMSS
+.no_tmss:
+        lea     VDPInit(pc),a0
+        moveq   #23,d0
+.reg:  move.w  (a0)+,VDP_CTRL
+        dbra    d0,.reg
+        move    #$2300,sr              /* autoriser niveaux 4 et 6 */
+        bra     Main
+
+VDPInit:
+        .word $8004,$8174,$8230,$833C,$8407,$856C,$8600,$8700
+        .word $8800,$8900,$8A00,$8B00,$8C81,$8D3F,$8E00,$8F02
+        .word $9001,$9100,$9200,$9300,$9400,$9500,$9600,$9700
+
+Cette table n'est qu'une disposition H40 possible; ses bases VRAM doivent etre
+coherentes avec les donnees chargees. Effacer aussi VRAM, CRAM, VSRAM et table
+sprites avant d'activer l'affichage. Les valeurs reservees meritent verification
+sur le VDP cible.
+
+
+==============================================================================
+36. ECRITURE D'UN REGISTRE VDP
+==============================================================================
+
+/* d0.b = valeur, d1.b = numero 0..$17 */
+SetVDPReg:
+        andi.w  #$00FF,d0
+        andi.w  #$001F,d1
+        lsl.w   #8,d1
+        ori.w   #$8000,d1
+        or.w    d1,d0
+        move.w  d0,VDP_CTRL
+        rts
+
+Une routine reentrante doit proteger la commande VDP contre un handler VBlank.
+Le plus simple est que seul un contexte ecrive le VDP ou qu'une courte section
+masque les interruptions autour des deux mots d'une commande longue.
+
+
+==============================================================================
+37. CHARGEMENT DE LA PALETTE ET DE MOTIFS
+==============================================================================
+
+/* 16 couleurs vers CRAM palette 0 */
+        move.l  #$C0000000,VDP_CTRL
+        lea     Palette(pc),a0
+        moveq   #15,d0
+.pal:  move.w  (a0)+,VDP_DATA
+        dbra    d0,.pal
+
+/* un motif de 32 octets vers VRAM $0000 */
+        move.l  #$40000000,VDP_CTRL
+        lea     Tile(pc),a0
+        moveq   #7,d0
+.tile: move.l  (a0)+,VDP_DATA
+        dbra    d0,.tile
+
+Palette:
+        .word $0000,$000E,$00E0,$0E00,$00EE,$0E0E,$0EE0,$0EEE
+        .word $0002,$0020,$0200,$0222,$0444,$0666,$0888,$0AAA
+Tile:
+        .long $11111111,$12222221,$12333321,$12344321
+        .long $12344321,$12333321,$12222221,$11111111
+
+Le `move.l` au port envoie deux mots successifs sur un 68000 big-endian. Tester
+les outils/clone utilises; des routines mot par mot sont plus explicites.
+
+
+==============================================================================
+38. AFFICHAGE D'UN PLAN
+==============================================================================
+
+Si le plan A commence a VRAM $C000, la commande d'ecriture correspondante est
+calculee par macro. Pour une carte 64 cellules de large :
+
+        /* commande VRAM write $C000 = $40000003 */
+        move.l  #$40000003,VDP_CTRL
+        move.w  #%0110000000000001,VDP_DATA
+
+Le mot place motif 1, palette 3, sans retournement ni priorite. Pour ecrire en
+(x,y), viser `$C000 + 2*(y*64+x)`. Ne pas confondre largeur du plan configuree,
+largeur visible 40 cellules et adresse de base encodee dans R02.
+
+
+==============================================================================
+39. AFFICHAGE D'UN SPRITE
+==============================================================================
+
+Pour une table sprite a $D800 :
+
+        /* entree 0, sprite 1x1, motif 2, x=100, y=80 */
+        /* coordonnees materielles = coordonnee ecran + $80 */
+        move.l  #$58000003,VDP_CTRL     /* VRAM write $D800 */
+        move.w  #($80+80),VDP_DATA
+        move.w  #$0000,VDP_DATA         /* taille 1x1, lien 0 */
+        move.w  #$0002,VDP_DATA         /* palette 0, motif 2 */
+        move.w  #($80+100),VDP_DATA
+
+Une application reelle construit la table en RAM principale puis la transfere
+par DMA chaque VBlank. Chainer toutes les entrees et terminer par lien zero;
+masquer les sprites inutilises hors ecran sans creer une chaine cyclique.
+
+
+==============================================================================
+40. ATTENTE VBLANK ET BOUCLE PRINCIPALE
+==============================================================================
+
+VBlank:
+        movem.l d0-d1/a0,-(sp)
+        move.w  VDP_CTRL,d0             /* acquitte/observe statut */
+        addq.l  #1,FrameCounter
+        movem.l (sp)+,d0-d1/a0
+        rte
+
+Main:
+        stop    #$2300                  /* reveil par interruption autorisee */
+        move.l  FrameCounter,d0
+        cmp.l   LastFrame,d0
+        beq.s   Main
+        move.l  d0,LastFrame
+        bsr     ReadPad
+        bsr     UpdateGame
+        bsr     UploadVBlank
+        bra.s   Main
+
+HBlank:
+        move.w  VDP_CTRL,d0
+        rte
+
+STOP exige le mode superviseur et un masque permettant l'interruption. Les
+donnees partagees entre handler et boucle doivent etre atomiques ou protegees.
+
+
+==============================================================================
+41. EXEMPLE DE DMA
+==============================================================================
+
+Pour transferer N mots, adresse source paire S, vers VRAM D :
+
+1. attendre qu'aucun DMA precedent ne soit actif;
+2. R13=N bas, R14=N haut;
+3. R15=(S>>1) bas, R16=(S>>9), R17=(S>>17) masque;
+4. envoyer commande VRAM write D avec bit DMA;
+5. attendre ou poursuivre selon la memoire source et la phase video.
+
+Macro conceptuelle (pseudo-assembleur) :
+
+        VDPREG  $13,(N & $FF)
+        VDPREG  $14,((N >> 8) & $FF)
+        VDPREG  $15,((S >> 1) & $FF)
+        VDPREG  $16,((S >> 9) & $FF)
+        VDPREG  $17,((S >> 17) & $7F)
+        move.l  #VDP_DMA_VRAM(D),VDP_CTRL
+
+N est un nombre de mots, non d'octets. S est convertie en adresse mot. Calculer
+les constantes a l'assemblage et verifier les octets emis dans le listing.
+
+
+==============================================================================
+42. LECTURE D'UNE MANETTE TROIS BOUTONS
+==============================================================================
+
+PAD1_DATA = $A10003
+PAD1_CTRL = $A10009
+
+ReadPad:
+        move.b  #$40,PAD1_CTRL          /* TH sortie, autres entrees */
+        move.b  #$40,PAD1_DATA          /* TH=1 */
+        nop
+        nop
+        move.b  PAD1_DATA,d0            /* C,B,right,left,down,up */
+        move.b  #$00,PAD1_DATA          /* TH=0 */
+        nop
+        nop
+        move.b  PAD1_DATA,d1            /* Start,A,down,up + identification */
+        move.b  #$40,PAD1_DATA
+        not.b   d0
+        not.b   d1                      /* maintenant actifs haut */
+        rts
+
+Les positions exactes doivent etre masquees et assemblees dans un format de jeu.
+Ne jamais interpreter les deux lectures comme huit boutons independants.
+
+
+==============================================================================
+43. DETECTION ET LECTURE D'UNE MANETTE SIX BOUTONS
+==============================================================================
+
+Sequence simplifiee : effectuer trois cycles TH haut/bas en respectant quelques
+microsecondes, lire la phase d'identification lorsque TH est bas (les quatre
+bits directionnels deviennent normalement zero), puis lire TH haut pour Mode,
+X, Y, Z. Revenir a TH haut et terminer avant le timeout d'environ 1,5 ms.
+
+Pseudo-code :
+
+  phase0 = read(TH=1); phase1 = read(TH=0);
+  phase2 = read(TH=1); phase3 = read(TH=0);
+  phase4 = read(TH=1); ident  = read(TH=0);
+  extra  = read(TH=1);
+  six_buttons = ((ident & $0F) == 0);
+
+Les valeurs doivent etre confirmees sur le port et la manette cibles. Un Team
+Player n'est pas quatre manettes 6 boutons branchees electriquement en parallele.
+
+
+==============================================================================
+44. COMMUNICATION 68000-Z80
+==============================================================================
+
+RequestZ80:
+        move.w  #$0100,Z80BUS
+.wait: btst    #0,Z80BUS
+        bne.s   .wait                   /* polarite selon lecture materielle */
+        rts
+
+ReleaseZ80:
+        move.w  #$0000,Z80BUS
+        rts
+
+        bsr     RequestZ80
+        lea     Z80Driver(pc),a0
+        lea     $A00000,a1
+        move.w  #Z80DriverEnd-Z80Driver-1,d0
+.copy: move.b  (a0)+,(a1)+             /* acces octet recommande */
+        dbra    d0,.copy
+        bsr     ReleaseZ80
+
+DBRA execute compteur+1 iterations. Le 68000 ne doit pas copier par mots vers
+une RAM 8 bits en supposant deux octets utiles. Verifier l'acquittement BUSREQ
+sur console : plusieurs sources expriment le signal avec polarite opposee.
+
+
+==============================================================================
+45. EXEMPLE PSG ET YM2612
+==============================================================================
+
+/* PSG : canal 0, periode approximative $100, volume fort */
+        move.b  #%10000000,$C00011      /* latch tonalite 0, bas */
+        move.b  #%00010000,$C00011      /* bits hauts du diviseur */
+        move.b  #%10010000,$C00011      /* volume canal 0 = 0 */
+
+Pour le YM2612, le Z80 attend busy, selectionne un registre au port adresse puis
+ecrit la donnee. Exemple conceptuel de key-on canal 0 :
+
+WaitYM:
+        in      a,($00)                 /* mapper selon assembleur/port $4000 */
+        rlca
+        jr      c,WaitYM
+        ld      a,$28
+        ld      ($4000),a
+        ld      a,$F0                   /* quatre operateurs, canal 0 */
+        ld      ($4001),a
+
+Il faut d'abord programmer algorithme, operateurs, enveloppes et frequence; un
+key-on seul ne cree pas un timbre defini.
+
+
+==============================================================================
+46. CONTRAINTES DE PERFORMANCE
+==============================================================================
+
+- effectuer gros DMA et mises a jour de CRAM pendant VBlank;
+- precalculer tables et commandes VDP;
+- aligner mots/longs 68000 et utiliser MOVEM pour groupes de registres;
+- eviter divisions 68000 dans les boucles critiques;
+- decomprimer les graphismes hors de la periode d'affichage ou par tranches;
+- respecter la limite de sprites par ligne, pas seulement le total;
+- partager proprement les ressources FM entre musique, SFX et DAC;
+- ne pas bloquer le Z80 avec BUSREQ pendant le flux PCM;
+- profiler NTSC et PAL, dont les budgets par trame different.
+
+Le DMA n'est pas toujours gratuit : il concurrence bus ROM/RAM et VDP. Une copie
+CPU petite peut etre preferable a une reprogrammation DMA lourde.
+
+
+==============================================================================
+47. GUIDE D'IMPLEMENTATION D'UN EMULATEUR
+==============================================================================
+
+Ordre conseille :
+
+1. coeur 68000 avec exceptions, alignement, prefetch et niveaux IRQ;
+2. RAM/ROM, miroirs, I/O, TMSS et en-tete;
+3. VDP tuiles/plans/palette et synchronisation de trame;
+4. sprites, priorites, scroll, Window, statuts et interruptions;
+5. Z80, arbitrage, banque et interruption;
+6. PSG puis YM2612 et melange/resampling;
+7. DMA, FIFO, acces pendant affichage et comportements raster;
+8. controleurs 3/6 boutons, SRAM, EEPROM et mappers;
+9. PAL, entrelacement, shadow/highlight et extensions.
+
+Planifier tous les composants sur une horloge commune ou des compteurs rationnels.
+Ne pas executer "une trame 68000 puis une trame VDP" : les ecritures raster,
+IRQ, FIFO, BUSREQ et DMA exigent une progression entrelacee.
+
+Le rendu par ligne peut suffire a beaucoup de jeux, mais les changements en
+milieu de ligne et le compteur HV demandent des horodatages plus fins. Le son
+doit etre resample sans faire dependre l'emulation de la taille du tampon hote.
+
+
+==============================================================================
+48. CAS LIMITES ET ERREURS FREQUENTES
+==============================================================================
+
+- confondre Genesis et Mega Drive comme deux architectures;
+- supposer exactement 60/50 Hz;
+- oublier TMSS sur les revisions concernees;
+- utiliser un long/mot 68000 a adresse impaire;
+- inverser l'acquittement BUSREQ ou liberer le Z80 trop tot;
+- envoyer un mot VDP de commande incomplet puis lire le statut;
+- ignorer auto-increment, FIFO ou longueur DMA zero;
+- compter 80 sprites sans appliquer la limite par ligne;
+- rendre index couleur zero opaque dans un plan;
+- confondre ordre RGB logique et disposition des bits CRAM;
+- lire une manette 6 boutons comme une 3 boutons;
+- appliquer une unique SRAM a toutes les cartouches;
+- faire confiance au checksum ou a la chaine region pour toute detection;
+- emuler YM2612 comme six oscillateurs sinusoidaux;
+- attribuer les fonctions 32X/Mega-CD a la console de base.
+
+
+==============================================================================
+49. DEVELOPPEMENT, CONSTRUCTION ET TEST
+==============================================================================
+
+Outils possibles : vasm, GNU binutils m68k-elf, SGDK, asm68k compatibles,
+convertisseurs de tuiles/palettes, MAME, BlastEm, Exodus, Genesis Plus GX et
+ares. Tester sur plusieurs emulateurs puis sur console via flash cart.
+
+Verifier automatiquement : taille et alignement ROM, vecteurs, champs d'en-tete,
+fin ROM, checksum, chevauchement VRAM, taille palette, liens sprites et budget
+VBlank. Garder symboles et listing pour le debogueur.
+
+Tests d'emulateur : suites 68000/Z80, motifs VDP, DMA/FIFO, HV counter, IRQ,
+sprite masking, YM2612, PSG, SRAM/EEPROM et controleurs. Les jeux commerciaux ne
+sont pas une specification : ils peuvent ne jamais exercer un cas limite.
+
+
+==============================================================================
+50. DIAGNOSTIC MATERIEL
+==============================================================================
+
+Avant intervention : verifier alimentation regulee, polarite de l'adaptateur,
+cable A/V, cartouche propre et region. Inspecter connecteur, soudures du jack,
+regulateur, oscillateur, reset, RAM et corrosion. Une image instable peut venir
+de l'encodeur/cadence; un son absent du melange analogique, YM2612 ou PSG.
+
+Utiliser oscilloscope et analyseur logique avec masse courte. Observer reset,
+horloges, /AS, /UDS, /LDS, DTACK et bus sans court-circuiter deux sorties. Les
+ASIC et brochages varient selon VA/revision : employer le service manual exact.
+Les condensateurs et modifications RGB/audio ne doivent pas etre remplaces sans
+diagnostic. Toute mesure cote secteur exige competence et isolation adaptees.
+
+
+==============================================================================
+51. REFERENCES
+==============================================================================
+
+Documents Sega :
+
+- Sega Genesis Software Manual, cartes memoire, VDP, son, I/O et programmation :
+  https://segaretro.org/images/9/95/GenesisSoftwareManual.pdf
+- Sega Genesis Technical Overview, version 1.00 :
+  https://segaretro.org/images/1/18/GenesisTechnicalOverview.pdf
+
+Documents des composants :
+
+- Motorola M68000 User's Manual et M68000 Programmer's Reference Manual;
+- Zilog Z80 CPU User Manual;
+- Yamaha YM2612 / OPN2 Application Manual;
+- documentation SN76489 et variantes Sega;
+- service manuals Sega correspondant au modele et a la revision de carte.
+
+References communautaires a confronter au materiel :
+
+- Sega Retro, Mega Drive hardware, VDP, cartouches et documents developpeur;
+- Plutiedev, programmation Mega Drive et Z80;
+- SpritesMind / Gendev;
+- documentation des emulateurs BlastEm, Exodus, MAME et Genesis Plus GX.
+
+La documentation Sega contient quelques ambiguites et erreurs historiques. Pour
+un emulateur cycle-accurate, confronter manuel, schemas, tests sur console et
+comportement de plusieurs revisions; documenter explicitement toute hypothese.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

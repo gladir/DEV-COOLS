@@ -1,0 +1,1248 @@
+==============================================================================
+ IBM PERSONAL COMPUTER AT (5170) - MATERIEL, BIOS ET PROGRAMMATION
+ Reference technique pour programmeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit l'IBM Personal Computer AT, type 5170, introduit en 1984 :
+materiel, interfaces, BIOS, mode protege du 80286 et programmation sous DOS.
+Il distingue la machine IBM originale des innombrables "AT compatibles" et du
+PC/XT Model 286 type 5162.
+
+Les nombres termines par h sont hexadecimaux. Les accents sont omis afin de
+conserver un texte ASCII exploitable sous DOS. Une adresse segment:deplacement
+est une adresse du mode reel; une adresse lineaire est explicitement nommee.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Modeles et cartes meres
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. Intel 80286
+  6. Mode reel
+  7. Mode protege
+  8. Descripteurs, selecteurs et tables
+  9. Interruptions et exceptions du 80286
+ 10. Retour du mode protege et A20
+ 11. Coprocesseur Intel 80287
+ 12. Horloges et performances
+ 13. Memoire physique
+ 14. Carte memoire du mode reel
+ 15. ROM systeme et ROM d'extension
+ 16. Zone de donnees BIOS
+ 17. Bus ISA 16 bits
+ 18. Signaux et cycles ISA
+ 19. Controleurs d'interruptions 8259A
+ 20. Carte des IRQ
+ 21. Controleurs DMA 8237A
+ 22. Temporisateur 8254
+ 23. Controleur clavier 8042
+ 24. Clavier AT
+ 25. Porte A20 et remise a zero
+ 26. CMOS et horloge temps reel MC146818
+ 27. Haut-parleur et port 61h
+ 28. Carte des ports d'E/S
+ 29. Carte des interruptions logicielles
+ 30. BIOS, POST et Setup
+ 31. INT 10h a INT 12h
+ 32. INT 13h : disquettes et disques fixes
+ 33. INT 14h a INT 17h
+ 34. INT 15h : services AT
+ 35. INT 1Ah : horloge et RTC
+ 36. Video
+ 37. Controleur disquette/disque fixe
+ 38. Ports serie et parallele
+ 39. PC DOS et applications
+ 40. Memoire etendue, XMS et EMS
+ 41. Assembleur : detection et inventaire
+ 42. Assembleur : CMOS, A20 et clavier
+ 43. Assembleur : mode protege 286
+ 44. Assembleur : IRQ et BIOS disque
+ 45. Turbo Pascal : BIOS et CMOS
+ 46. Turbo Pascal : ports, video et temps
+ 47. Extensions et compatibilite
+ 48. Conseils pour un emulateur
+ 49. Plan de validation
+ 50. Maintenance et restauration
+ 51. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+IBM annonce le Personal Computer AT le 14 aout 1984. "AT" signifie Advanced
+Technology. Le 5170 introduit dans la famille PC le 80286, un bus de donnees
+16 bits, un adressage physique de 24 bits, la memoire etendue, une horloge
+temps reel avec CMOS, un clavier bidirectionnel et un disque plus performant.
+
+Le PC/AT devient le modele de fait d'une grande partie des compatibles des
+annees 1980 et 1990. Les termes BIOS AT, clavier AT, alimentation AT et ISA
+16 bits survivront longtemps au 5170 original.
+
+Le 5170 est retire en 1987, mais son architecture est prolongee par les clones.
+Les IBM PS/2 modifient ensuite plusieurs interfaces tout en gardant beaucoup de
+compatibilite logicielle.
+
+
+==============================================================================
+2. MODELES ET CARTES MERES
+==============================================================================
+
+Familles IBM importantes :
+
+Modele(s)  Periode       CPU       Carte mere et configuration indicative
+---------  ------------  --------  -------------------------------------------
+068/099    aout 1984     80286 6M  type 1, 256 Kio puis souvent 512 Kio
+239        oct. 1985     80286 6M  type 2, 512 Kio, disque 30 Mio
+319/339    avril 1986    80286 8M  type 3, 512 Kio, performances ameliorees
+
+Les numeros exacts de pieces, ROM et options doivent etre verifies. IBM publie
+des Technical References distincts en mars 1984, septembre 1985 et mars 1986.
+
+Ne pas confondre :
+
+- 5170 PC/AT : sujet de ce document;
+- 5162 PC/XT Model 286 : boitier XT, 80286 et architecture de classe AT;
+- "AT clone" : compatible variable, souvent avec chipset integre, turbo,
+  Shadow RAM et BIOS non IBM;
+- PS/2 : bus Micro Channel sur plusieurs modeles, clavier proche mais nouveau
+  connecteur et autres differences.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Element                       IBM 5170 typique
+----------------------------  -----------------------------------------------
+CPU                           Intel 80286 a 6 ou 8 MHz
+Bus CPU                       donnees 16 bits, adresses 24 bits
+Espace physique               16 Mio
+Mode protege                  segmentation, protection, 16 Mio physiques
+Coprocesseur                  Intel 80287 optionnel
+RAM carte mere                256 ou 512 Kio selon revision
+RAM totale IBM                extensible par cartes, configurations variables
+ROM                           BIOS et Cassette BASIC, 64 Kio
+Bus                           8 logements, ISA 16 bits et compatibilite 8 bits
+Interruptions                 deux 8259A en cascade, 16 IRQ
+DMA                           deux 8237A, canaux 0--3 et 5--7
+Temporisateur                 Intel 8254, trois canaux
+Clavier                       clavier AT 84 touches, protocole bidirectionnel
+RTC/CMOS                      Motorola MC146818 ou compatible, batterie
+Disquette                     1,2 Mio 5,25 pouces et formats anterieurs
+Disque fixe                   interface de classe WD1003, commandes AT
+Video                         MDA/CGA/EGA selon carte achetee
+Alimentation                  environ 192 W sur le systeme IBM
+
+Le controleur disque/disquette, la video et les ports serie/parallele sont des
+cartes. Leur presence et leurs adresses ne doivent pas etre presumees.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le 80286 communique avec RAM, ROM et ISA par un bus 16 bits. La logique systeme
+comprend deux PIC 8259A, deux DMA 8237A, un PIT 8254, un controleur clavier 8042,
+un RTC/CMOS, des registres de page DMA et des circuits de parite.
+
+Innovations par rapport au XT :
+
+- 24 lignes d'adresse et jusqu'a 16 Mio physiques;
+- transferts bus 16 bits et connecteur ISA prolonge;
+- IRQ8--IRQ15 et DMA 16 bits;
+- mode protege materiel;
+- CMOS sauvegarde par batterie au lieu de commutateurs de configuration;
+- RTC avec interruption periodique/alarme;
+- clavier commande par microcontroleur;
+- disque fixe sur IRQ14 plutot qu'IRQ5;
+- controleur de disquette haute densite 1,2 Mio.
+
+
+==============================================================================
+5. INTEL 80286
+==============================================================================
+
+Registres visibles : AX, BX, CX, DX, SP, BP, SI, DI, CS, DS, SS, ES, IP et
+FLAGS. Ils restent 16 bits. Le 286 ajoute MSW, GDTR, IDTR, LDTR et TR, ainsi que
+les instructions ARPL, LAR, LSL, VERR, VERW, SGDT, SIDT, SLDT, STR, LGDT, LIDT,
+LLDT, LTR, LMSW et SMSW.
+
+Le bus d'adresse 24 bits permet 000000h--FFFFFFh. En mode reel, le calcul reste
+segment*16+offset, mais une adresse proche de FFFF:FFFF peut produire jusqu'a
+10FFEFh si A20 est active. Le PC/AT ferme normalement A20 pour reproduire le
+rebouclage 8086 au premier Mio.
+
+Le 286 a une file de prelecture, une protection par segment et des temps
+d'instruction differents du 8088. Une emulation seulement fonctionnelle ne suffit
+pas aux programmes qui mesurent les cycles ou dependent du pipeline.
+
+
+==============================================================================
+6. MODE REEL
+==============================================================================
+
+Au reset, le 80286 se comporte comme un 8086 ameliore et execute le BIOS. DOS
+s'utilise principalement dans ce mode. Les interruptions passent par l'IVT a
+0000:0000 et les segments contiennent directement les paragraphes de base.
+
+Le reset du 286 commence avec une base cachee de CS placee pres du sommet des
+16 Mio, tout en presentant CS=F000h et IP=FFF0h; le premier saut lointain ramene
+le fonctionnement a la carte du premier Mio. Ce detail importe a un emulateur.
+
+Instructions 80186/286 utilisables : PUSHA/POPA, PUSH immediat, IMUL immediat,
+ENTER/LEAVE, INS/OUTS et decalages par constante. Un programme visant aussi PC
+et XT doit les eviter ou choisir dynamiquement un chemin 8086.
+
+
+==============================================================================
+7. MODE PROTEGE
+==============================================================================
+
+Le bit PE (bit 0) du Machine Status Word active le mode protege via LMSW. Les
+segments deviennent des selecteurs vers GDT/LDT. Le 286 verifie type, limite,
+presence et privilege a chaque chargement/acces pertinent.
+
+Proprietes :
+
+- espace physique maximal 16 Mio;
+- segment maximal 64 Kio;
+- quatre niveaux de privilege 0--3;
+- isolation code/donnees/pile;
+- portes d'interruption, trap, task et call;
+- changement de tache materiel via TSS;
+- aucune pagination;
+- aucun mode virtuel 8086, qui apparait avec le 80386;
+- pas d'instruction directe pour effacer PE sur le 286.
+
+Le mode protege du 286 est donc adapte a OS/2 1.x et Xenix, mais peu commode
+pour appeler continuellement DOS/BIOS reel. Les extenders DOS 286 utilisent des
+protocoles de bascule, des services BIOS ou une remise a zero controlee.
+
+
+==============================================================================
+8. DESCRIPTEURS, SELECTEURS ET TABLES
+==============================================================================
+
+Un selecteur 16 bits contient : index sur 13 bits, TI (GDT/LDT) et RPL sur deux
+bits. Un descripteur 286 occupe huit octets : base 24 bits, limite 16 bits,
+octet d'acces et champs reserves.
+
+Octet d'acces :
+
+bit 7 P       segment present
+bits 6--5 DPL niveau de privilege
+bit 4 S       1 code/donnees, 0 systeme
+bits 3--0     type, direction/conformite, lecture/ecriture, accessed
+
+Tables :
+
+- GDT, globale, pointee par GDTR;
+- LDT, locale a une tache, designee par LDTR;
+- IDT, jusqu'a 256 portes, pointee par IDTR;
+- TSS, etat de tache et piles de privilege, designee par TR.
+
+Le premier descripteur GDT doit etre nul. Une limite N autorise les offsets
+0--N pour un segment expand-up. Le 286 ne possede pas le bit de granularite 4
+Kio du 386.
+
+
+==============================================================================
+9. INTERRUPTIONS ET EXCEPTIONS DU 80286
+==============================================================================
+
+En mode protege, l'IDT contient des portes de huit octets, non des pointeurs
+segment:offset de quatre octets. Exceptions importantes :
+
+Vecteur  Nom                         Cause generale
+-------  --------------------------  ----------------------------------------
+00h      divide error                division par zero/debordement
+01h      debug                       trap single-step
+02h      NMI                         parite ou source externe
+03h      breakpoint                  INT 3
+04h      overflow                    INTO
+05h      bounds                      BOUND hors limites
+06h      invalid opcode              instruction invalide
+07h      processor extension absent  WAIT/ESC sans 80287 disponible
+08h      double fault                faute pendant traitement d'une faute
+09h      extension overrun           ancien cas 80287
+0Ah      invalid TSS                 TSS invalide
+0Bh      segment not present         P=0
+0Ch      stack fault                 faute de pile
+0Dh      general protection          violation generale
+
+Plusieurs poussent un code d'erreur. Une routine doit connaitre exactement le
+cadre empile avant IRET. Une faute non traitee peut mener au double fault, puis
+a une remise a zero si celui-ci ne peut etre traite.
+
+
+==============================================================================
+10. RETOUR DU MODE PROTEGE ET A20
+==============================================================================
+
+Sur 80286, LMSW ne peut pas effacer PE une fois active. Le retour standard au
+mode reel passe par une remise a zero du processeur, assez rapide pour sembler
+une transition. Le BIOS et le controleur clavier participent a cette procedure.
+
+La CMOS Shutdown Status (index 0Fh) indique au POST le motif de reset. Pour une
+transition, le logiciel place aussi une adresse de reprise dans la zone BIOS
+(pointeur de reset a 0040:0067 selon le protocole), demande un reset au 8042,
+puis le BIOS saute a la reprise au lieu d'un demarrage complet.
+
+INT 15h/AH=89h offre sur BIOS AT un service de bascule vers le mode protege avec
+tables fournies par l'appelant. Son contrat doit etre lu dans l'edition de BIOS
+cible; il modifie PIC, A20 et environnement d'interruption.
+
+Ne jamais tester cette procedure sur une machine active sans controle total des
+tables, piles et interruptions. Sur 80386+, d'autres methodes existent, mais ne
+font pas partie du 5170 original.
+
+
+==============================================================================
+11. COPROCESSEUR INTEL 80287
+==============================================================================
+
+Le 80287 est optionnel. Son interface et son horloge different de celles d'un
+8087, mais le modele de pile flottante et les instructions x87 sont proches.
+IRQ13 signale une erreur numerique externe. Le BIOS installe un gestionnaire et
+INT 11h indique normalement la presence du coprocesseur.
+
+Le 80287 original conserve certaines limitations historiques de contexte et de
+mode. Un emulateur doit distinguer WAIT/FWAIT, exceptions masquees, mots de
+controle/etat et formats 80 bits. Une bibliotheque Turbo Pascal peut employer
+le 8087/80287 si compilee avec l'option correspondante; elle doit sinon emuler.
+
+
+==============================================================================
+12. HORLOGES ET PERFORMANCES
+==============================================================================
+
+Le CPU fonctionne a 6 MHz sur les premiers types et 8 MHz sur les derniers.
+Le PIT recoit environ 1,193182 MHz, conservant le tick BIOS de 18,2065 Hz avec
+un diviseur de 65536. Le bus ISA original suit l'horloge systeme du modele et
+les cartes doivent respecter les temporisations IBM.
+
+Un compatible "AT turbo" peut etre beaucoup plus rapide et ajouter des wait
+states. Eviter les boucles temporelles. Employer PIT, RTC ou ticks BIOS. Les
+logiciels qui lisent le joystick par boucle restent dependants de la vitesse.
+
+
+==============================================================================
+13. MEMOIRE PHYSIQUE
+==============================================================================
+
+La carte mere fournit 256 ou 512 Kio selon version; des cartes IBM ajoutent de
+la RAM conventionnelle et etendue. Les DRAM ont un neuvieme bit de parite par
+octet. Une erreur de parite carte mere ou bus declenche NMI et laisse un etat
+dans le port 61h.
+
+Definitions :
+
+- conventionnelle : partie DOS sous A0000h, maximum usuel 640 Kio;
+- UMB : trous entre A0000h et FFFFFh recuperes par logiciels ulterieurs;
+- HMA : premiers 65520 octets au-dessus de 1 Mio, accessibles avec A20;
+- etendue : RAM lineaire au-dessus de 1 Mio, native de l'AT;
+- EMS : memoire paginee par fenetre, fournie par carte/pilote, autre concept.
+
+Le BIOS indique la RAM conventionnelle par INT 12h et une quantite etendue par
+INT 15h/AH=88h, avec limites de version. XMS devient ensuite l'API recommandee.
+
+
+==============================================================================
+14. CARTE MEMOIRE DU MODE REEL
+==============================================================================
+
+Adresse             Usage
+------------------  ---------------------------------------------------------
+000000h--0003FFh     table des vecteurs d'interruption
+000400h--0004FFh     zone de donnees BIOS
+000500h--09FFFFh     RAM conventionnelle selon configuration
+0A0000h--0AFFFFh     RAM video EGA ou extension
+0B0000h--0B7FFFh     RAM video MDA/EGA monochrome
+0B8000h--0BFFFFh     RAM video CGA/EGA couleur
+0C0000h--0C7FFFh     ROM video EGA typique
+0C8000h--0EFFFFh     ROM/cartes/memoire d'extension
+0F0000h--0FFFFFh     ROM systeme
+100000h--FFFFFFh     memoire etendue, jusqu'a 15 Mio au-dessus du premier Mio
+
+Avec A20 active, FFFF:0010 atteint 100000h. Avec A20 fermee, cette adresse se
+replie a 000000h. Ce comportement est exploite par la detection A20.
+
+
+==============================================================================
+15. ROM SYSTEME ET ROM D'EXTENSION
+==============================================================================
+
+Le reset se presente a F000:FFF0. La date ASCII BIOS est classiquement visible
+a FFFF:0005. Le 5170 conserve 64 Kio de ROM incluant Cassette BASIC et BIOS,
+bien qu'il n'ait pas d'interface cassette utilisable comme le PC 5150.
+
+ROM d'extension : signature 55h AAh, taille en blocs de 512 octets a l'offset
+2, entree a l'offset 3 et somme modulo 256 nulle. Le BIOS recherche et appelle
+ces ROM; l'EGA a normalement une ROM a C0000h et d'autres cartes utilisent
+C8000h--EFFFFh.
+
+La date ou la signature ROM aide a identifier le BIOS mais ne prouve pas que la
+carte mere est IBM : clones et ROM de remplacement existent.
+
+
+==============================================================================
+16. ZONE DE DONNEES BIOS
+==============================================================================
+
+Champs majeurs du segment 0040h :
+
+0040:0000  quatre mots de bases COM
+0040:0008  quatre mots de bases LPT
+0040:0010  mot d'equipement
+0040:0013  memoire conventionnelle en Kio
+0040:0017  drapeaux clavier
+0040:001A  tete du tampon clavier
+0040:001C  queue du tampon clavier
+0040:001E  tampon clavier historique
+0040:0049  mode video
+0040:004A  colonnes
+0040:004C  taille page video
+0040:0050  positions curseur
+0040:0063  base CRTC
+0040:0067  pointeur utilise par certains retours/reset protege
+0040:006C  compteur de ticks depuis minuit, double mot
+0040:0070  indicateur de minuit
+0040:0072  drapeau warm boot, 1234h
+0040:0075  nombre de disques fixes
+0040:0080  debut tampon clavier, BIOS recents
+0040:0082  fin tampon clavier
+
+Les extensions de la BDA varient avec le BIOS. Employer les appels BIOS quand
+ils existent et documenter toute lecture directe.
+
+
+==============================================================================
+17. BUS ISA 16 BITS
+==============================================================================
+
+Chaque logement possede le connecteur 62 contacts compatible PC/XT et une
+extension 36 contacts. Le nouveau connecteur ajoute notamment :
+
+- D8--D15 et signaux de transfert 16 bits;
+- A20--A23 pour 16 Mio;
+- IRQ10, IRQ11, IRQ12, IRQ14 et IRQ15;
+- DRQ5--DRQ7 et DACK5--DACK7;
+- MEMCS16 et IOCS16 pour annoncer une cible 16 bits;
+- MASTER pour une carte maitresse;
+- SBHE pour selection de l'octet haut;
+- MEMR/MEMW et autres signaux etendus.
+
+Une carte ISA 8 bits peut fonctionner dans la partie courte si ressources et
+temporisations conviennent. Une carte 16 bits peut effectuer des transferts de
+mots, mais le peripherique ou la memoire cible doit annoncer la largeur.
+
+"ISA" est un nom retrospectif; IBM parlait du canal d'E/S. Il n'existe pas de
+Plug and Play sur le 5170 original.
+
+
+==============================================================================
+18. SIGNAUX ET CYCLES ISA
+==============================================================================
+
+Le bus separe cycles memoire et E/S par MEMR/MEMW et IOR/IOW. BALE valide les
+adresses. AEN signale un cycle DMA. IO CH RDY peut prolonger un cycle. IO CH CK
+provoque une erreur de canal/NMI si autorisee.
+
+SBHE et A0 choisissent les voies : un mot aligne utilise les deux octets en un
+cycle 16 bits; un mot non aligne exige deux cycles. Les cartes 8 bits ne doivent
+pas affirmer IOCS16/MEMCS16.
+
+Le bus-mastering est possible mais exige arbitrage par DRQ/DACK et MASTER. Les
+24 bits limitent le DMA ISA AT a 16 Mio. Des cartes decodent imparfaitement les
+ports, causant des alias; l'emulateur doit pouvoir reproduire ce fait.
+
+
+==============================================================================
+19. CONTROLEURS D'INTERRUPTIONS 8259A
+==============================================================================
+
+PIC maitre : ports 20h/21h, vecteurs BIOS 08h--0Fh.
+PIC esclave : ports A0h/A1h, relie a IRQ2 du maitre, vecteurs 70h--77h.
+
+Une IRQ de l'esclave exige un EOI a l'esclave puis au maitre :
+
+        mov al,20h
+        out 0A0h,al
+        out 020h,al
+
+Les registres IMR sont aux ports 21h et A1h. OCW2 gere EOI et priorite; OCW3
+selectionne lecture IRR/ISR. Une interruption masquee reste eventuellement en
+attente selon etat de ligne et logique du peripherique.
+
+IRQ2 n'est plus directement libre : elle sert de cascade. Pour compatibilite,
+les cartes anciennement IRQ2 sont routees vers IRQ9 et le BIOS peut rediriger
+le traitement.
+
+
+==============================================================================
+20. CARTE DES IRQ
+==============================================================================
+
+IRQ  INT BIOS  Affectation AT courante
+---  --------  --------------------------------------------------------------
+0    08h       PIT, horloge systeme
+1    09h       clavier
+2    0Ah       cascade du PIC esclave
+3    0Bh       COM2/COM4
+4    0Ch       COM1/COM3
+5    0Dh       LPT2 ou libre
+6    0Eh       controleur de disquettes
+7    0Fh       LPT1 / interruption parasite
+8    70h       RTC
+9    71h       remplacement compatible d'IRQ2
+10   72h       libre/carte
+11   73h       libre/carte
+12   74h       libre; souris PS/2 sur machines ulterieures
+13   75h       erreur coprocesseur mathematique
+14   76h       controleur disque fixe primaire
+15   77h       controleur secondaire ou libre
+
+Ces affectations sont des conventions, non une enumeration fiable. Les cartes
+ISA partagent rarement une IRQ correctement. Une IRQ7/15 parasite doit etre
+traitee sans envoyer un EOI au PIC qui n'a aucun bit ISR correspondant.
+
+
+==============================================================================
+21. CONTROLEURS DMA 8237A
+==============================================================================
+
+Le premier 8237 gere quatre canaux 8 bits; le second gere trois canaux 16 bits
+et cascade le premier par son canal 4.
+
+Canal  Largeur  Usage AT courant
+-----  -------  -------------------------------------------------------------
+0      8 bits   disponible
+1      8 bits   libre, souvent carte son
+2      8 bits   disquette
+3      8 bits   libre
+4      --       cascade; indisponible aux cartes
+5      16 bits  libre
+6      16 bits  libre
+7      16 bits  libre
+
+DMA1 : ports 00h--0Fh. DMA2 : ports C0h--DEh sur adresses paires, avec espace-
+ment de deux. Les registres page sont dans 80h--8Fh. Le compte programme vaut
+nombre d'unites moins un; pour canaux 5--7, une unite est un mot de 16 bits.
+
+Contraintes : ne pas franchir une frontiere de 64 Kio sur DMA 8 bits. Sur DMA
+16 bits, l'adresse est une adresse de mots et la frontiere effective est 128 Kio;
+les transferts doivent etre alignes. Le DMA ISA n'atteint que les 16 premiers
+Mio. Toujours effacer la bascule LSB/MSB, masquer pendant programmation et
+respecter le terminal count.
+
+Contrairement au PC/XT, le canal DMA 0 n'est pas consomme par le rafraichissement
+sur l'AT : une logique dediee genere le refresh a partir du PIT.
+
+
+==============================================================================
+22. TEMPORISATEUR 8254
+==============================================================================
+
+Ports 40h, 41h, 42h, commande 43h :
+
+- canal 0 : IRQ0, normalement mode 3 et diviseur 65536;
+- canal 1 : generation liee au rafraichissement;
+- canal 2 : haut-parleur;
+- frequence d'entree : environ 1,193182 MHz.
+
+Le 8254 ajoute la commande read-back au 8253. Un programme visant aussi PC/XT
+ne doit pas supposer qu'elle existe. Lire un compte avec latch evite d'associer
+LSB et MSB provenant de deux instants differents.
+
+Reprogrammer le canal 0 exige de maintenir les ticks DOS/BIOS. Sinon heure,
+timeouts, moteurs de disquette et TSR peuvent dysfonctionner.
+
+
+==============================================================================
+23. CONTROLEUR CLAVIER 8042
+==============================================================================
+
+Ports : 60h donnees, 64h etat en lecture/commande en ecriture.
+
+Etat 64h, bits usuels :
+
+bit 0 OBF  donnees disponibles dans tampon sortie
+bit 1 IBF  controleur occupe avec commande/donnee d'entree
+bit 2 SYS  indicateur systeme
+bit 3 C/D  derniere ecriture commande ou donnees
+bit 4 inhib  signification dependante
+bit 5 AUX  fonction utilisee plus tard pour second port
+bit 6 timeout
+bit 7 erreur de parite
+
+Commandes 8042 AT utiles :
+
+20h lire l'octet de commande       60h ecrire l'octet de commande
+AAh autotest                       ABh tester interface clavier
+ADh desactiver clavier             AEh activer clavier
+D0h lire port de sortie            D1h ecrire port de sortie
+
+Avant d'ecrire 60h/64h, attendre IBF=0; avant de lire 60h, attendre OBF=1.
+Prevoir timeout : un clavier absent ne doit pas bloquer indefiniment.
+
+
+==============================================================================
+24. CLAVIER AT
+==============================================================================
+
+Le clavier AT 84 touches emploie un protocole serie bidirectionnel et le scan
+code set 2 au niveau du cable. Le 8042 traduit normalement en set 1 pour INT 09h.
+Un relachement est annonce par F0h dans le set 2; apres traduction, le BIOS voit
+generalement le bit 7 ajoute au scan set 1.
+
+Commandes clavier courantes : EDh LED, EEh echo, F0h choix set de scan, F2h ID,
+F3h typematic, F4h enable scanning, F5h default/disable, F6h defaults, FFh reset.
+Le clavier repond FAh ACK ou FEh RESEND. Ne pas confondre commandes au clavier
+(ecrites via 60h) et commandes du 8042 (ecrites via 64h).
+
+Le clavier Enhanced 101/102 touches est pris en charge sur les configurations
+tardives et ajoute codes E0/E1. INT 16h etendu (AH=10h/11h/12h) depend du BIOS.
+
+
+==============================================================================
+25. PORTE A20 ET REMISE A ZERO
+==============================================================================
+
+Le bit 1 du port de sortie 8042 commande A20 sur l'AT original; le bit 0 commande
+la remise a zero CPU. Sequence conceptuelle A20 : attendre IBF=0, commande D0h,
+lire le port de sortie, modifier bit 1, commande D1h, ecrire nouvelle valeur.
+Desactiver le clavier et les interruptions peut eviter de confondre une frappe
+avec la reponse, mais tout doit etre restaure.
+
+Les compatibles ulterieurs ajoutent le port 92h (Fast A20/reset). Il ne fait pas
+partie du 5170 IBM. Le BIOS INT 15h/AH=87h et les gestionnaires XMS arbitrent A20;
+une application DOS ne devrait pas modifier directement le 8042 sans coordination.
+
+Tester A20 en comparant deux emplacements separes de 1 Mio, apres sauvegarde des
+octets et avec interruptions controlees. Ne jamais detruire IVT ou donnees HMA.
+
+
+==============================================================================
+26. CMOS ET HORLOGE TEMPS REEL MC146818
+==============================================================================
+
+Port 70h : bit 7 masque NMI, bits 6--0 index CMOS. Port 71h : donnee. Toute
+operation sur 70h doit preserver le bit NMI souhaite; lire un port 70h n'est pas
+une methode portable pour retrouver sa derniere valeur.
+
+Index principaux :
+
+00h secondes       02h minutes         04h heures
+06h jour semaine   07h jour mois       08h mois       09h annee
+0Ah status A/UIP   0Bh status B        0Ch status C   0Dh status D
+0Eh diagnostic    0Fh shutdown status  10h types disquette
+12h types disque  14h equipement       15h/16h memoire de base
+17h/18h memoire etendue                2Eh/2Fh checksum
+
+Les valeurs temps sont BCD sauf si DM du registre B demande binaire; le format
+12/24 h depend aussi de B. Attendre UIP=0 puis verifier une seconde lecture
+coherente. Lire registre C acquitte les interruptions RTC. IRQ8 exige EOI aux
+deux PIC.
+
+La batterie conserve horloge et configuration. Une CMOS invalide produit une
+erreur POST et exige le programme Setup sur disquette IBM; le 5170 n'a pas le
+Setup interactif moderne integre que l'on imagine souvent.
+
+
+==============================================================================
+27. HAUT-PARLEUR ET PORT 61h
+==============================================================================
+
+Le canal 2 du PIT est relie au haut-parleur. Port 61h : bit 0 gate du timer,
+bit 1 activation haut-parleur; des bits hauts rapportent notamment parite/etat.
+
+        mov al,0B6h
+        out 43h,al
+        mov ax,2712             ; environ 440 Hz
+        out 42h,al
+        mov al,ah
+        out 42h,al
+        in  al,61h
+        or  al,03h
+        out 61h,al
+
+Pour couper : lire 61h, AND FCh, reecrire. Preserver les autres bits.
+
+
+==============================================================================
+28. CARTE DES PORTS D'E/S
+==============================================================================
+
+Plage          Fonction AT typique
+-------------  --------------------------------------------------------------
+000h--00Fh     DMA 8 bits, premier 8237A
+020h--021h     PIC maitre
+040h--043h     PIT 8254
+060h           donnees clavier/8042
+061h           controle systeme B, haut-parleur/parite
+064h           etat/commande 8042
+070h--071h     NMI/index CMOS et donnees RTC
+080h--08Fh     registres de page DMA/diagnostic
+0A0h--0A1h     PIC esclave
+0C0h--0DFh     DMA 16 bits, second 8237A sur ports pairs
+170h--177h     disque secondaire, convention ulterieure
+1F0h--1F7h     disque fixe primaire de classe AT
+200h--207h     adaptateur de jeu
+278h--27Fh     port parallele secondaire
+2F8h--2FFh     COM2
+320h--323h     ancien controleur XT eventuel, non controleur AT standard
+378h--37Fh     LPT1/LPT2
+3B0h--3BFh     MDA
+3D0h--3DFh     CGA
+3F0h--3F7h     controleur de disquettes
+3F8h--3FFh     COM1
+
+Les EGA et cartes tierces ajoutent des ports. Les plages sont conventionnelles;
+sonder un registre d'ecriture peut lancer une commande ou alterer des donnees.
+
+
+==============================================================================
+29. CARTE DES INTERRUPTIONS LOGICIELLES
+==============================================================================
+
+INT 00h--07h  exceptions processeur
+INT 08h--0Fh  IRQ du PIC maitre
+INT 10h       video
+INT 11h       mot d'equipement
+INT 12h       RAM conventionnelle
+INT 13h       disque
+INT 14h       serie
+INT 15h       services systeme AT
+INT 16h       clavier
+INT 17h       imprimante
+INT 18h       BASIC ROM
+INT 19h       bootstrap
+INT 1Ah       ticks/RTC
+INT 1Bh       Ctrl-Break
+INT 1Ch       crochet utilisateur du timer
+INT 20h/21h  DOS
+INT 2Fh       multiplex DOS et logiciels ulterieurs
+INT 70h--77h  IRQ du PIC esclave
+
+En mode protege, les numeros identiques indexent l'IDT. Les IRQ BIOS 08h--0Fh
+entrent alors en conflit avec les exceptions 08h--0Fh du 286; un systeme protege
+remappe normalement les PIC vers d'autres vecteurs.
+
+
+==============================================================================
+30. BIOS, POST ET SETUP
+==============================================================================
+
+Au reset, le BIOS teste CPU, ROM, DMA, PIC, timer, RAM, clavier, CMOS, video et
+stockage; initialise BDA et vecteurs; execute les ROM d'extension; puis INT 19h.
+Des codes sonores et nombres 16x/17x/6xx indiquent des familles de panne selon
+edition du manuel de maintenance.
+
+Le Setup IBM est fourni sur disquette de diagnostic. Il enregistre dans CMOS
+heure, disquettes, types de disque, memoire et affichage. Une batterie vide peut
+donc empecher un amorcage normal du disque jusqu'a reconfiguration.
+
+Le BIOS original connait un nombre fini de types de disque. Installer un disque
+non liste exige controleur/ROM, traduction ou BIOS tiers. Ne pas confondre type
+CMOS avec geometrie IDE autodetectee, inexistante sur le premier AT.
+
+
+==============================================================================
+31. INT 10h A INT 12h
+==============================================================================
+
+INT 10h fournit modes, curseur, defilement, caracteres, pixels et teletype. Les
+fonctions exactes dependent de la carte video et de sa ROM. L'EGA originale
+etend le BIOS; VGA est posterieure au 5170 mais installable.
+
+INT 11h retourne le mot d'equipement de 0040:0010 : disquettes, 80287, video,
+ports serie/parallele et autres indicateurs historiques. Les bits ne remplacent
+pas une enumeration de cartes ISA.
+
+INT 12h retourne AX en Kio de RAM conventionnelle. Il ne compte pas la memoire
+etendue. Un gestionnaire peut reduire la valeur pour reserver le haut de la RAM.
+
+
+==============================================================================
+32. INT 13h : DISQUETTES ET DISQUES FIXES
+==============================================================================
+
+DL=00h A:, 01h B:, 80h premier disque fixe. Fonctions CHS classiques : AH 00h
+reset, 02h lecture, 03h ecriture, 04h verification, 05h format piste, 08h
+parametres. CF=1 et AH=code en erreur.
+
+CH porte les huit bits bas du cylindre; CL bits 6--7 les bits hauts et bits
+0--5 le secteur (1..63); DH=tete; AL=nombre; ES:BX=tampon. Les anciens BIOS ne
+doivent pas recevoir un transfert franchissant piste ou frontiere DMA.
+
+Le BIOS AT prend en charge le lecteur 1,2 Mio. Les extensions EDD/LBA AH=41h+
+ne sont pas dans le BIOS IBM 5170 d'origine. Elles peuvent etre ajoutees par
+une ROM moderne.
+
+
+==============================================================================
+33. INT 14h A INT 17h
+==============================================================================
+
+INT 14h : serie. AH=00h initialise, 01h envoie, 02h recoit, 03h etat. Le BIOS
+fait souvent de l'attente active; un pilote IRQ avec tampon est plus performant.
+
+INT 15h : services systeme, detailles au chapitre suivant.
+
+INT 16h : AH=00h lire touche, 01h tester, 02h etat Shift. Les BIOS tardifs
+ajoutent 10h/11h/12h pour clavier etendu. Tester la disponibilite avant usage.
+
+INT 17h : imprimante. AH=00h imprime AL, 01h initialise, 02h etat; DX choisit
+LPT. Les polarites de busy/error sont historiques.
+
+
+==============================================================================
+34. INT 15h : SERVICES AT
+==============================================================================
+
+Fonctions importantes, dependantes de la revision BIOS :
+
+AH=86h  attente en microsecondes, surtout BIOS ulterieurs; CF indique support
+AH=87h  copie de blocs vers/depuis memoire etendue en mode protege temporaire
+AH=88h  retourne dans AX les Kio de memoire etendue contigue au-dessus de 1 Mio
+AH=89h  commute vers le mode protege avec tables/masques fournis par l'appelant
+AH=C0h  retourne table de configuration systeme sur BIOS compatibles ulterieurs
+
+INT 15h/AH=87h utilise une table de descripteurs et peut activer A20; sa taille
+est exprimee en mots selon le contrat IBM. Le buffer et les descripteurs doivent
+etre corrects, et certaines regions sont reservees par BIOS.
+
+AH=88h ne constitue pas une API d'allocation et peut etre limite a 15 Mio ou
+mentir en presence de gestionnaires. Sous DOS moderne, employer XMS. Une fonction
+non supportee retourne souvent CF=1, AH=86h, mais les vieux BIOS varient.
+
+
+==============================================================================
+35. INT 1Ah : HORLOGE ET RTC
+==============================================================================
+
+AH=00h lit CX:DX ticks depuis minuit et AL indicateur de passage; AH=01h fixe
+les ticks. Fonctions RTC AT :
+
+AH=02h lire heure RTC             AH=03h fixer heure
+AH=04h lire date RTC              AH=05h fixer date
+AH=06h fixer alarme               AH=07h annuler alarme
+
+Les valeurs sont habituellement BCD. CF signale RTC occupe ou erreur selon
+fonction. Pour le jour de semaine et les nuances de siecle, verifier le BIOS.
+L'index CMOS 32h "siecle" est une convention de BIOS ulterieur, pas une garantie
+universelle du 5170 initial.
+
+
+==============================================================================
+36. VIDEO
+==============================================================================
+
+IBM propose MDA, CGA et EGA selon configuration. L'EGA est contemporaine de
+l'AT : jusqu'a 640x350, palette 64 couleurs avec 16 simultanees, plans memoire
+et ROM BIOS a C0000h. La quantite de RAM EGA depend de la carte.
+
+Segments usuels : B000h MDA/mono, B800h CGA/couleur, A000h EGA graphique.
+Ports CRTC : 3B4/3B5 mono, 3D4/3D5 couleur. L'EGA ajoute sequencer, graphics
+controller, attribute controller et DAC logique via 3C0h--3CFh.
+
+Employer INT 10h pour portabilite. L'acces direct EGA exige gestion des latches,
+plans, map mask, read map et modes d'ecriture. Voir les documents dedies MDA,
+CGA, EGA et VGA de ce depot.
+
+
+==============================================================================
+37. CONTROLEUR DISQUETTE/DISQUE FIXE
+==============================================================================
+
+La carte IBM Fixed Disk and Diskette Drive Adapter combine :
+
+- controleur disquette compatible uPD765, 3F0h--3F7h, IRQ6, DMA2;
+- controleur disque de classe WD1003, 1F0h--1F7h et 3F6h, IRQ14.
+
+Registres disque usuels a base 1F0h : data 16 bits, error/features, sector count,
+sector number, cylinder low/high, drive/head et status/command. Commandes incluent
+restore, seek, read, write, verify, format et diagnostic selon controleur.
+
+Le disque emploie une interface ST-506/412 avec encodage MFM, pas IDE, meme si
+IDE reutilisera plus tard l'interface de registres AT. Respecter BSY, DRQ, ERR,
+IRQ14 et transferts de mots. Le format bas niveau est destructif et lie a la
+geometrie/type CMOS.
+
+Disquette AT typique : 1,2 Mio, 80 cylindres, 2 tetes, 15 secteurs de 512 octets
+a 500 kbit/s. Le controleur lit aussi des formats 360 Kio, avec limites physiques
+d'un lecteur 1,2 Mio concernant largeur de piste et ecriture.
+
+
+==============================================================================
+38. PORTS SERIE ET PARALLELE
+==============================================================================
+
+Serie : UART 8250/16450 selon carte, COM1 3F8h IRQ4, COM2 2F8h IRQ3. Registres
+RBR/THR/DLL, IER/DLM, IIR, LCR, MCR, LSR, MSR, scratch. Diviseur=115200/debit.
+Le 5170 original ne garantit pas les FIFO 16550A.
+
+Parallele : base 378h ou 3BCh, donnees base+0, etat +1, controle +2. Certains
+bits sont inverses. Le port IBM est de type imprimante classique, non ECP/EPP.
+Bases logiques COM/LPT sont dans la BDA.
+
+
+==============================================================================
+39. PC DOS ET APPLICATIONS
+==============================================================================
+
+Le PC/AT est livre avec PC DOS 3.0 dans ses premieres configurations. DOS reste
+en mode reel et profite surtout de la vitesse, du disque et de la RAM convention-
+nelle. OS/2 1.x, Xenix et autres systemes utilisent le mode protege 286.
+
+Sous DOS, INT 21h fournit fichiers, processus et memoire. Employer les handles :
+3Ch creer, 3Dh ouvrir, 3Eh fermer, 3Fh lire, 40h ecrire, 42h seek, 48h allouer,
+49h liberer, 4Ah redimensionner, 4Bh EXEC, 4Ch terminer. CF=1 signifie erreur.
+
+DOS n'est generalement pas reentrant. Une ISR materielle ne doit pas appeler
+INT 21h arbitrairement. Les TSR chainent les vecteurs et utilisent InDOS/INT 28h
+selon des regles strictes.
+
+
+==============================================================================
+40. MEMOIRE ETENDUE, XMS ET EMS
+==============================================================================
+
+La memoire etendue est physique et lineaire au-dessus de 1 Mio. DOS reel ne
+peut l'adresser directement sans bascule protegee, LOADALL non documente ou CPU
+ulterieur. HIMEM.SYS fournit XMS et gere A20/HMA.
+
+XMS se detecte par INT 2Fh/AX=4300h; AX=4310h retourne le point d'entree. XMS
+alloue des blocs, les deplace et arbitre A20. Ce protocole est posterieur au
+BIOS AT original mais approprie sous DOS equipe.
+
+EMS expose typiquement une fenetre de 64 Kio en quatre pages et INT 67h. Une
+carte EMS peut fonctionner sur AT, mais EMS n'est pas synonyme de RAM etendue.
+DPMI et VCPI sont encore d'autres interfaces, apparues plus tard.
+
+
+==============================================================================
+41. ASSEMBLEUR : DETECTION ET INVENTAIRE
+==============================================================================
+
+Une combinaison prudente lit la date BIOS, appelle INT 11h/12h, examine la
+table de configuration si disponible et teste le CPU sans instruction invalide.
+La presence d'un 286 ne prouve pas un IBM 5170.
+
+Lecture du Machine Status Word, valide sur 286+ :
+
+        smsw ax                 ; bit 0 = PE
+        test ax,1
+        jnz protected_now
+
+Cette instruction declenche invalid opcode sur 8086/186. Une detection portable
+doit d'abord distinguer le CPU par comportement FLAGS ou intercepter INT 6.
+
+Date BIOS : copier huit octets de FFFF:0005. Ne comparer la chaine qu'a titre
+informatif. Inventaire : INT 11h, INT 12h, BDA 0040:0000/0008 et CMOS apres
+validation de sa checksum/diagnostic.
+
+
+==============================================================================
+42. ASSEMBLEUR : CMOS, A20 ET CLAVIER
+==============================================================================
+
+Lecture stable des secondes CMOS, en conservant NMI active :
+
+wait_uip:
+        mov al,0Ah
+        out 70h,al
+        in  al,71h
+        test al,80h
+        jnz wait_uip
+        mov al,00h
+        out 70h,al
+        in  al,71h             ; BCD sauf configuration binaire
+
+Cette routine ne protege pas contre une IRQ concurrente changeant l'index 70h.
+Un pilote doit serialiser les acces, sauvegarder la politique NMI et verifier
+deux instantanes coherents.
+
+Attente 8042 avec timeout conceptuel :
+
+        mov cx,0FFFFh
+kbcwait:in  al,64h
+        test al,02h            ; IBF
+        jz  kbcready
+        loop kbcwait
+        stc
+        jmp short kbcdone
+kbcready:
+        clc
+kbcdone:
+
+Une routine A20 complete doit aussi gerer OBF, sauvegarder le port de sortie,
+eviter le reset bit 0, restaurer clavier et ne pas combattre un gestionnaire XMS.
+
+
+==============================================================================
+43. ASSEMBLEUR : MODE PROTEGE 286
+==============================================================================
+
+Schema pedagogique, incomplet volontairement :
+
+        cli
+        lgdt fword ptr cs:gdt_desc
+        lidt fword ptr cs:idt_desc
+        mov ax,1
+        lmsw ax                 ; PE=1, irreversible sans reset sur 286
+        jmp far ptr pm_entry    ; recharge CS et vide prelecture
+
+pm_entry:
+        mov ax,DATA_SEL
+        mov ds,ax
+        mov es,ax
+        mov ss,ax
+        mov sp,STACK_TOP
+        ; installer PIC remappes, IDT et gestionnaires avant STI
+
+Avant LMSW, il faut une GDT valide, une IDT capable de traiter chaque faute, une
+pile, A20 selon besoins, des portes pour IRQ, des PIC remappes et une strategie
+de retour. Un simple exemple executable sans ces elements serait dangereux et
+trompeur. Le service INT 15h/AH=89h ou un extender documente est preferable.
+
+
+==============================================================================
+44. ASSEMBLEUR : IRQ ET BIOS DISQUE
+==============================================================================
+
+Squelette ISR IRQ14 installee sur INT 76h :
+
+irq14:  push ax
+        push dx
+        mov dx,1F7h
+        in  al,dx               ; lit status et acquitte controleur typique
+        mov cs:last_status,al
+        mov al,20h
+        out 0A0h,al             ; EOI esclave
+        out 020h,al             ; EOI maitre
+        pop dx
+        pop ax
+        iret
+last_status db 0
+
+Un vrai pilote doit gerer commandes en cours, erreurs, timeout, concurrence et
+chainage. Lire le status peut modifier l'etat d'interruption.
+
+Lecture BIOS secteur 1 du premier disque :
+
+        push ds
+        pop  es
+        mov  bx,offset buffer
+        mov  ax,0201h
+        mov  cx,0001h
+        xor  dh,dh
+        mov  dl,80h
+        int  13h
+        jc   disk_error
+buffer  db 512 dup(?)
+
+Ne pas ecraser un secteur reel pour tester. ES:BX ne doit pas franchir la limite
+DMA/segment acceptee par le BIOS.
+
+
+==============================================================================
+45. TURBO PASCAL : BIOS ET CMOS
+==============================================================================
+
+Programme DOS inventoriant RAM et heure RTC par BIOS :
+
+Program InfoAT;
+Uses Dos;
+Var R:Registers;
+    BaseK,ExtK:Word;
+
+Function Hex2(B:Byte):String;
+Const H:String[16]='0123456789ABCDEF';
+Begin
+  Hex2:=H[(B Shr 4)+1]+H[(B And $0F)+1];
+End;
+
+Begin
+  Intr($12,R);
+  BaseK:=R.AX;
+  R.AH:=$88;
+  Intr($15,R);
+  If (R.Flags And FCarry)=0 Then ExtK:=R.AX Else ExtK:=0;
+  WriteLn('Memoire conventionnelle: ',BaseK,' Kio');
+  WriteLn('Memoire etendue BIOS   : ',ExtK,' Kio');
+  R.AH:=$02;
+  Intr($1A,R);
+  If (R.Flags And FCarry)=0 Then
+    WriteLn('Heure RTC BCD: ',Hex2(R.CH),':',Hex2(R.CL),':',Hex2(R.DH));
+End.
+
+
+==============================================================================
+46. TURBO PASCAL : PORTS, VIDEO ET TEMPS
+==============================================================================
+
+Lecture CMOS brute avec attente UIP :
+
+Function CMOS(Index:Byte):Byte;
+Begin
+  Port[$70]:=Index And $7F;
+  CMOS:=Port[$71];
+End;
+
+Repeat Until (CMOS($0A) And $80)=0;
+WriteLn('Secondes BCD: ',Hex2(CMOS(0)));
+
+Cette version courte suppose NMI non masquee et aucune concurrence; une
+bibliotheque robuste doit proteger l'index et confirmer la coherence.
+
+Ecriture texte couleur directe :
+
+Procedure PutCGA(X,Y:Byte; C:Char; Attr:Byte);
+Var O:Word;
+Begin
+  O:=(Word(Y)*80+X)*2;
+  Mem[$B800:O]:=Ord(C);
+  Mem[$B800:O+1]:=Attr;
+End;
+
+Elle suppose mode 80x25 couleur page 0. Employer INT 10h ou Crt pour une
+application portable MDA/EGA et des modes differents.
+
+
+==============================================================================
+47. EXTENSIONS ET COMPATIBILITE
+==============================================================================
+
+Extensions possibles : RAM etendue/EMS, EGA/VGA, reseau, SCSI, IDE avec ROM,
+cartes son, UART 16550A, souris, coprocesseur, accelerateur 386 et stockage
+moderne. Chacune consomme ports, IRQ, DMA, ROM ou fenetre memoire.
+
+Conventions apparues sur les clones mais absentes du 5170 original : port 92h
+Fast A20, BIOS Setup integre, detection automatique IDE, PCI, ACPI, APIC, PS/2
+mouse, DMA EISA 32 bits et Plug and Play ISA. Un profil d'emulateur "IBM AT"
+ne doit pas les exposer silencieusement.
+
+Le 80286 a 24 bits et pas de VM86. Windows/386 et gestionnaires 386 peuvent
+fonctionner seulement apres remplacement du CPU ou sur compatible 386.
+
+
+==============================================================================
+48. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU : reset 286, caches de descripteurs, GDT/LDT/IDT/TSS, niveaux de privilege,
+exceptions et codes d'erreur, task switch, LOADALL si vise, prefetch et timing.
+
+A20/reset : repliement du premier Mio, sortie 8042, reset rapide et CMOS shutdown.
+Ne pas offrir uniquement le port 92h.
+
+PIC : cascade exacte, EOI double, IRQ9/IRQ2, IRR/ISR/IMR, priorites et IRQ
+parasites. Remappage permis par les ICW.
+
+DMA : deux controleurs, cascade canal 4, largeur mot des canaux 5--7, pages,
+alignement, terminal count et frontieres 64/128 Kio.
+
+PIT/RTC : modes 8254, read-back, IRQ0, refresh, IRQ8, UIP, BCD/binaire, registre
+C qui acquitte et batterie/CMOS persistante.
+
+8042 : files entree/sortie, latences, commandes, traduction scan, ACK/RESEND,
+controle A20/reset et comportement sans clavier.
+
+ISA : voies 8/16 bits, wait states, IOCS16/MEMCS16, bus master, ports partiellement
+decodes, conflits et espace ROM. Limiter les adresses DMA a 24 bits.
+
+Stockage : uPD765 haute densite et controleur AT a registres 1F0h. Modeliser
+BSY/DRQ/IRQ, erreurs, geometrie et format; ne pas substituer seulement un disque
+LBA instantane.
+
+BIOS : executer une image legalement obtenue ou reproduire appels, BDA, CMOS,
+POST et erreurs. Les ROM IBM restent protegees par droit d'auteur.
+
+
+==============================================================================
+49. PLAN DE VALIDATION
+==============================================================================
+
+1. Reset 286, premier far jump et POST selon type de carte.
+2. RAM/parite, tailles conventionnelle et etendue, erreurs NMI.
+3. A20 ouverte/fermee et reset 8042 avec shutdown CMOS.
+4. 8042 et clavier : commandes, make/break, LED, typematic, timeout.
+5. PIC cascade, IRQ0--15, EOI, masques, priorites et IRQ7/15 parasites.
+6. DMA 8/16 bits, canal 4, terminal count et frontieres.
+7. PIT modes/latch/read-back et tick 18,2 Hz.
+8. RTC BCD/binaire, UIP, alarme, periodic IRQ et registre C.
+9. Disquettes 360 Kio et 1,2 Mio, changement, CRC, write protect.
+10. Disque AT : commandes, PIO 16 bits, IRQ14, erreurs et geometries CMOS.
+11. MDA/CGA/EGA, ROM extension, INT 10h et acces direct.
+12. Mode protege : chaque descripteur, privilege, exception et task switch.
+13. INT 15h 87h/88h/89h, INT 1Ah RTC et fonctions absentes.
+14. PC DOS, OS/2 1.x ou diagnostic protege representatif.
+15. Comparer traces bus/ports/IRQ avec un 5170 reel.
+
+
+==============================================================================
+50. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+- Identifier type de carte, BIOS, vitesse et numero de piece avant intervention.
+- Photographier cartes, cables et cavaliers.
+- Remplacer la batterie qui fuit sans endommager pistes; ne jamais la court-circuiter.
+- Refaire Setup avec la disquette IBM apres perte CMOS.
+- Verifier alimentation et POWER GOOD sous charge; prudence aux hautes tensions.
+- Diagnostiquer les DRAM par banque et bit de parite avec les codes IBM.
+- Ne pas brancher clavier XT sur AT sans compatibilite explicite.
+- Sauvegarder le disque MFM avant toute commande de format bas niveau.
+- Respecter cables data/control, terminaison et type CMOS du disque.
+- Nettoyer prudemment lecteur 1,2 Mio et verifier vitesse/alignement.
+- Tester les cartes ISA une par une et noter IRQ, DMA, ports et ROM.
+- Conserver les composants, ROM et etiquettes d'origine.
+
+
+==============================================================================
+51. REFERENCES
+==============================================================================
+
+Sources primaires IBM :
+
+- IBM Personal Computer AT Technical Reference, mars 1984, no 1502494.
+  https://bitsavers.org/pdf/ibm/pc/at/1502494_PC_AT_Technical_Reference_Mar84.pdf
+
+- IBM Personal Computer AT Technical Reference, septembre 1985, no 6139362.
+  https://bitsavers.org/pdf/ibm/pc/at/6139362_PC_AT_Technical_Reference_Sep85.pdf
+
+- IBM Personal Computer AT Technical Reference, mars 1986, no 6183355.
+  https://www.minuszerodegrees.net/manuals/IBM/IBM_5170_Technical_Reference_MAR86.pdf
+
+- IBM Personal Computer AT Guide to Operations, mars 1984, no 1502490/1502241.
+  https://www.minuszerodegrees.net/manuals/IBM/IBM_5170_Guide_to_Operations_1502241_MAR84.pdf
+
+- IBM Fixed Disk and Diskette Drive Adapter Technical Reference.
+- IBM Options and Adapters Technical Reference.
+- IBM Hardware Maintenance Reference/Service pour le 5170.
+
+Autres references :
+
+- Intel, iAPX 286 Programmer's Reference Manual.
+- Intel, 80287 Numeric Processor Extension documentation.
+- Intel, 8259A, 8237A, 8254 et 8042 documentation technique.
+- Motorola, MC146818 Real-Time Clock Plus RAM.
+- Western Digital, WD1003 Fixed Disk Controller documentation.
+- NEC, uPD765A Floppy Disk Controller.
+- IBM PC DOS Technical Reference, version cible.
+- Ralf Brown's Interrupt List, pour variantes et extensions posterieures.
+- minuszerodegrees.net/5170, documentation, cartes et maintenance.
+
+Pour toute programmation bas niveau, noter ensemble modele 5170, type de carte
+mere, date BIOS, cartes installees, version DOS et presence de gestionnaires de
+memoire. Le terme "AT compatible" seul ne definit pas un materiel precis.

@@ -1,0 +1,974 @@
+==============================================================================
+ NINTENDO 64 (N64) - MATERIEL ET PROGRAMMATION
+ Reference VR4300, RCP, RSP, RDP, interfaces et developpement
+==============================================================================
+
+Objet
+-----
+
+Ce document presente l'architecture de la Nintendo 64 et sa programmation :
+processeur NEC VR4300, Reality Co-Processor, memoire Rambus, video, audio,
+cartouches, controles, demarrage, assembleur MIPS et C. Il vise les auteurs de
+logiciels, outils, emulateurs, flashcarts et diagnostics. Les valeurs hexadecimales
+sont prefixees par `$` dans le texte et `0x` en C.
+
+Le materiel est complexe et certaines fonctions du RCP dependent du microcode.
+Il faut distinguer interface materielle, commandes du microcode Nintendo et
+comportements decouverts par mesure. Ce fichier ne contient ni ROM, ni cle CIC,
+ni code proprietaire du SDK.
+
+Les accents sont omis pour conserver un fichier ASCII facile a traiter avec les
+anciens outils.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+1. HISTOIRE ET MODELES
+==============================================================================
+
+Projet SGI/Nintendo connu sous Project Reality puis Ultra 64, la console sort au
+Japon en 1996, ensuite en Amerique du Nord et en Europe. Le support principal est
+la cartouche ROM. Le nom commercial met en avant le CPU et les chemins de donnees
+64 bits, mais plusieurs bus et registres restent 32 bits.
+
+Principales familles :
+
+- NUS-001 : console standard, revisions de carte mere multiples;
+- NUS-101 : modele japonais Pikachu, disposition differente;
+- N64 PAL : horloges et normes video differentes des unites NTSC;
+- iQue Player : implementation chinoise tardive sur SoC, non equivalente au bus
+  de cartouche d'une N64 classique;
+- Nintendo 64DD : lecteur magnetique, horloge temps reel et extensions;
+- cartes de developpement SGI/Partner-N64 : non presentes dans une console vente.
+
+Le Jumper Pak termine le bus RDRAM. L'Expansion Pak le remplace et porte la RAM
+totale de 4 Mio a 8 Mio. Ne jamais retirer l'un ou l'autre sous tension.
+
+
+==============================================================================
+2. ARCHITECTURE GENERALE
+==============================================================================
+
+                           +----------------+
+                           | cartouche / DD |
+                           +-------+--------+
+                                   | PI
+ +----------+    bus systeme   +---+----------------------+
+ | VR4300   |<---------------->| RCP : MI/RI/PI/SI/AI/VI |
+ | CPU/FPU  |                  |   RSP          RDP       |
+ +----------+                  +----+------------+--------+
+                                   |            |
+                         +---------+--+      video/audio
+                         | 4/8 Mio    |
+                         | RDRAM      |
+                         +------------+
+
+Le RCP est le controleur central. Le RSP execute du microcode vectoriel pour la
+geometrie, l'audio ou d'autres calculs. Le RDP rasterise des primitives dans un
+framebuffer en RDRAM. VI lit ce framebuffer; AI lit des echantillons; PI transfere
+la cartouche; SI communique avec le PIF et le Joybus.
+
+
+==============================================================================
+3. CARACTERISTIQUES RESUMEES
+==============================================================================
+
+- CPU : NEC VR4300, MIPS III 64 bits, environ 93,75 MHz;
+- RCP : ASIC SGI/Nintendo, environ 62,5 MHz;
+- RAM : 4 Mio RDRAM, 8 Mio avec Expansion Pak;
+- cache CPU : 16 Kio instructions, 8 Kio donnees, lignes de 32/16 octets;
+- RSP : coeur scalaire 32 bits plus unite vectorielle, 4 Kio IMEM + 4 Kio DMEM;
+- RDP : rasterisation, Z, texture, filtrage, melange et anticrenelage;
+- video : framebuffer en RDRAM, normes NTSC/PAL/MPAL;
+- audio : PCM stereo par DMA, synthese/mixage principalement logiciel/RSP;
+- quatre ports de controleurs; cartouche proprietaire; extension 64DD optionnelle.
+
+Les frequences exactes derivent du cristal et varient par region. Ne pas coder
+une simulation a partir de la seule valeur commerciale arrondie.
+
+
+==============================================================================
+4. VR4300 : REGISTRES ET MODES
+==============================================================================
+
+Le VR4300 implemente MIPS III, big-endian sur N64. Il possede :
+
+- 32 registres generaux 64 bits `$0..$31`; `$0` vaut toujours zero;
+- HI et LO pour multiplication/division;
+- PC 64 bits;
+- 32 registres FPU; leur interpretation depend du bit FR de Status;
+- coprocesseur CP0 pour exceptions, TLB, caches et compteurs.
+
+ABI usuelle : `$a0..$a3` arguments, `$v0/$v1` resultats, `$t0..$t9`
+temporaires, `$s0..$s7` preserves, `$sp`, `$fp`, `$gp`, `$ra`. Les jeux utilisent
+souvent l'ABI o32 meme si le CPU est 64 bits. Le noyau tourne en mode privilegie.
+
+
+==============================================================================
+5. INSTRUCTIONS MIPS III
+==============================================================================
+
+Familles principales :
+
+- calcul 32 bits : ADD/ADDU, SUB/SUBU, ADDI/ADDIU;
+- calcul 64 bits : DADD/DADDU, DSUB/DSUBU, DADDI/DADDIU;
+- logique : AND, OR, XOR, NOR et variantes immediates;
+- decalages : SLL/SRL/SRA, variables, DSLL/DSRL/DSRA et formes 32;
+- comparaisons : SLT/SLTU, SLTI/SLTIU;
+- multiplication/division : MULT/MULTU, DIV/DIVU, DMULT/DMULTU, DDIV/DDIVU,
+  MFHI/MFLO/MTHI/MTLO;
+- branchements : BEQ/BNE/BLEZ/BGTZ, REGIMM BLTZ/BGEZ et formes link/likely;
+- sauts : J, JAL, JR, JALR;
+- memoire : LB/LBU/LH/LHU/LW/LWU/LD, SB/SH/SW/SD;
+- non aligne : LWL/LWR, SWL/SWR, LDL/LDR, SDL/SDR;
+- atomiques : LL/SC et LLD/SCD;
+- CP0 : MFC0/MTC0, DMFC0/DMTC0, TLBP/TLBR/TLBWI/TLBWR, ERET;
+- FPU : ADD/SUB/MUL/DIV, SQRT, ABS, MOV, NEG, conversions, comparaisons et
+  branchements pour simple, double et formats entiers;
+- CACHE, SYNC, BREAK, SYSCALL.
+
+Les branchements et sauts ont une delay slot : l'instruction suivante s'execute
+normalement avant le transfert. Les load delays du R4300 et les hazards CP0/FPU
+doivent etre respectes. ADD/SUB signes peuvent lever Overflow; les formes U ne
+levent pas cette exception (U ne signifie pas que le calcul est zero-etendu).
+
+
+==============================================================================
+6. CP0, EXCEPTIONS ET INTERRUPTIONS
+==============================================================================
+
+Registres CP0 importants : Index, Random, EntryLo0/1, Context, PageMask, Wired,
+BadVAddr, Count, EntryHi, Compare, Status, Cause, EPC, PRId, Config, WatchLo/Hi,
+TagLo/Hi et ErrorEPC. Status controle IE, EXL, ERL, masques IP, mode et FPU.
+Cause fournit ExcCode, pending IP, branchement BD et interruption coprocesseur.
+
+Vecteurs typiques :
+
+- `$80000000` reset/NMI (selon etat BEV et demarrage);
+- `$80000180` exception generale avec BEV=0;
+- vecteur TLB refill separe;
+- vecteurs bootstrap en espace BFC quand BEV=1.
+
+MI agrege six sources RCP vers une interruption CPU : SP, SI, AI, VI, PI et DP.
+Le programme doit lire MI_INTR, servir chaque bloc, acquitter dans le registre du
+bloc, puis retourner par ERET. Count/Compare fournit une minuterie CPU.
+
+
+==============================================================================
+7. ESPACES D'ADRESSES ET TLB
+==============================================================================
+
+En adressage 32 bits :
+
+  `$00000000-$7FFFFFFF` KUSEG  traduit par TLB
+  `$80000000-$9FFFFFFF` KSEG0  physique bas, cache
+  `$A0000000-$BFFFFFFF` KSEG1  physique bas, non cache
+  `$C0000000-$FFFFFFFF` KSEG2/3 traduit par TLB
+
+Conversion courante pour une adresse physique inferieure a 512 Mio :
+
+  KSEG0 = physique | `$80000000`
+  KSEG1 = physique | `$A0000000`
+  physique = virtuel & `$1FFFFFFF`
+
+Les registres MMIO doivent etre accedes via KSEG1, avec pointeurs `volatile`.
+Les adresses remises aux DMA sont physiques, pas des pointeurs KSEG0/KSEG1.
+
+
+==============================================================================
+8. CARTE PHYSIQUE PRINCIPALE
+==============================================================================
+
+  `$00000000-$003FFFFF` RDRAM 4 Mio
+  `$00400000-$007FFFFF` RDRAM additionnelle Expansion Pak
+  `$03F00000...`        registres RDRAM
+  `$04000000-$04000FFF` RSP DMEM
+  `$04001000-$04001FFF` RSP IMEM
+  `$04040000...`        SP
+  `$04080000...`        SP PC/IBIST
+  `$04100000...`        DP command
+  `$04200000...`        DP span (interne, peu utilise)
+  `$04300000...`        MI
+  `$04400000...`        VI
+  `$04500000...`        AI
+  `$04600000...`        PI
+  `$04700000...`        RI
+  `$04800000...`        SI
+  `$05000000...`        domaine cartouche 2 / 64DD
+  `$06000000...`        domaine cartouche 1 adresse 1
+  `$08000000...`        sauvegarde SRAM/FlashRAM, selon cartouche
+  `$10000000...`        ROM cartouche
+  `$1FC00000-$1FC007BF` PIF ROM
+  `$1FC007C0-$1FC007FF` PIF RAM (64 octets)
+
+Les plages cartouche dependent du decodeur et du dispositif. Un emulateur doit
+modeliser les domaines PI et leurs timings, pas seulement copier la ROM.
+
+
+==============================================================================
+9. RDRAM, CACHES ET COHERENCE
+==============================================================================
+
+CPU, RSP, RDP et DMA partagent la RDRAM, mais le cache D du CPU n'est pas coherent
+avec les DMA. Avant qu'un peripherique lise un tampon ecrit par CPU, ecrire les
+lignes cache vers RAM. Avant que CPU lise un tampon rempli par DMA, invalider les
+lignes cache, en evitant de perdre des donnees sales voisines.
+
+Les tampons DMA doivent etre correctement alignes et leur taille arrondie aux
+lignes de cache. Deux strategies : KSEG1 non cache pour petits tampons de commande,
+ou KSEG0 avec operations CACHE explicites. Libultra fournit `osWritebackDCache`,
+`osInvalDCache` et variantes. libdragon fournit ses equivalents.
+
+Piege : le RDP emploie des bits de couverture associes a la RDRAM pour AA/Z. Une
+implementation fidele conserve ces metadonnees, pas seulement les octets visibles.
+
+
+==============================================================================
+10. RCP ET MEMORY INTERFACE (MI)
+==============================================================================
+
+Registres MI a partir de `$04300000` :
+
+  +$00 MI_MODE       initialisation et acquittement DP
+  +$04 MI_VERSION    version RCP
+  +$08 MI_INTR       bits SP, SI, AI, VI, PI, DP
+  +$0C MI_INTR_MASK  paires clear/set pour les six masques
+
+MI_INTR_MASK n'est pas un masque a remplacer directement : chaque paire de bits
+commande l'effacement ou l'activation d'une source. Cette semantique clear/set
+est une source frequente de bogues.
+
+
+==============================================================================
+11. RSP : ARCHITECTURE
+==============================================================================
+
+Le Reality Signal Processor comprend :
+
+- un coeur scalaire proche MIPS, 32 registres 32 bits;
+- 32 registres vectoriels de 128 bits, chacun vu comme huit elements 16 bits;
+- accumulateur vectoriel large, drapeaux VCO/VCC/VCE;
+- 4 Kio DMEM et 4 Kio IMEM;
+- DMA SP entre RDRAM et DMEM/IMEM;
+- interface de commandes vers le RDP.
+
+Le RSP n'est pas un VR4300 miniature : jeu d'instructions, multiplication
+vectorielle, selection d'elements, saturation et acces memoire ont des regles
+propres. Les microcodes graphiques transforment les display lists en commandes
+RDP; les microcodes audio melangent/resamplent des voix. Des microcodes libres ou
+specifiques sont possibles, mais exigent une documentation RSP exacte.
+
+
+==============================================================================
+12. REGISTRES SP ET DMA
+==============================================================================
+
+Base `$04040000` :
+
+  +$00 SP_MEM_ADDR   adresse DMEM/IMEM
+  +$04 SP_DRAM_ADDR  adresse RDRAM
+  +$08 SP_RD_LEN     DMA RDRAM -> SP
+  +$0C SP_WR_LEN     DMA SP -> RDRAM
+  +$10 SP_STATUS     halt, broke, DMA, signaux et interruption
+  +$14 SP_DMA_FULL
+  +$18 SP_DMA_BUSY
+  +$1C SP_SEMAPHORE
+
+Base `$04080000` : SP_PC et registre BIST. Les registres longueur encodent longueur,
+compte et saut; l'arrondi DMA et l'alignement doivent etre reproduits exactement.
+Le semaphore retourne/pose atomiquement un verrou puis s'efface par ecriture.
+
+Demarrage conceptuel d'une tache : arreter RSP, DMA microcode vers IMEM, DMA donnees
+vers DMEM, poser PC, configurer signaux, vider HALT/BROKE et attendre interruption.
+
+
+==============================================================================
+13. RDP : PIPELINE
+==============================================================================
+
+Le Reality Display Processor consomme une liste de mots 64 bits en RDRAM ou DMEM.
+Etapes conceptuelles : setup des triangles, rasterisation, chargement/filtrage de
+texture, combinaison des couleurs, Z, couverture, blender et ecriture framebuffer.
+
+Fonctions notables :
+
+- points/rectangles et triangles, avec variantes shade/texture/Z;
+- formats RGBA, YUV, color-index et intensity a plusieurs profondeurs;
+- TMEM interne de 4 Kio pour textures/palettes;
+- filtrage point/bilerp, perspective, mipmapping pilote par microcode;
+- combineur programmable a deux cycles;
+- alpha compare, Z compare/update, dithering, fog et anticrenelage.
+
+Le RDP n'est pas un GPU moderne : pas de shader, pas de VRAM separee, contraintes
+fortes de TMEM et formats. Le CPU/RSP construit explicitement son etat.
+
+
+==============================================================================
+14. REGISTRES DP ET SYNCHRONISATION
+==============================================================================
+
+Base `$04100000` :
+
+  +$00 DPC_START    debut de liste
+  +$04 DPC_END      fin et declenchement
+  +$08 DPC_CURRENT  pointeur courant
+  +$0C DPC_STATUS   XBUS, freeze, flush, busy
+  +$10 DPC_CLOCK
+  +$14 DPC_BUFBUSY
+  +$18 DPC_PIPEBUSY
+  +$1C DPC_TMEM
+
+Une ecriture END peut lancer le traitement. Les commandes de synchronisation RDP
+ont des portees distinctes : load, pipe, tile et full. Full sync est necessaire
+pour obtenir l'interruption de fin; l'omettre peut faire reutiliser un framebuffer
+ou une texture encore active.
+
+
+==============================================================================
+15. COMMANDES RDP ESSENTIELLES
+==============================================================================
+
+Le flux comprend notamment : NoOp, triangles, Texture Rectangle, Sync Load/Pipe/
+Tile/Full, Set Key, Set Convert, Set Scissor, Set Prim Depth, Set Other Modes,
+Load TLUT, Set Tile Size, Load Block/Tile, Set Tile, Fill Rectangle, Set Fill/
+Fog/Blend/Prim/Environment Color, Set Combine, Set Texture Image, Set Mask Image
+(Z) et Set Color Image (framebuffer).
+
+Chaque commande a un format binaire precis et plusieurs champs en point fixe.
+Utiliser des macros verifiees plutot que des bitfields C dependants du compilateur.
+Le mode copy/fill n'observe pas toutes les regles des modes un/deux cycles.
+
+
+==============================================================================
+16. VIDEO INTERFACE (VI)
+==============================================================================
+
+Base `$04400000` :
+
+  +$00 VI_STATUS/CONTROL  format pixel, gamma, AA, serrate
+  +$04 VI_ORIGIN          adresse physique framebuffer
+  +$08 VI_WIDTH           largeur logique
+  +$0C VI_INTR            ligne declenchant IRQ
+  +$10 VI_CURRENT         ligne courante; ecriture acquitte IRQ VI
+  +$14 VI_BURST
+  +$18 VI_V_SYNC
+  +$1C VI_H_SYNC
+  +$20 VI_LEAP
+  +$24 VI_H_START
+  +$28 VI_V_START
+  +$2C VI_V_BURST
+  +$30 VI_X_SCALE
+  +$34 VI_Y_SCALE
+
+VI ne dessine rien : il lit un tampon RDRAM RGBA 16 ou 32 bits et le convertit en
+signal video. Origin, width, fenetres et echelles peuvent produire recadrage,
+upscaling et entrelacement. Changer Origin au VBlank realise le page flipping.
+Les timings NTSC, PAL et MPAL ne sont pas interchangeables.
+
+
+==============================================================================
+17. FRAMEBUFFERS ET DOUBLE BUFFERING
+==============================================================================
+
+Un framebuffer 320x240 RGBA16 occupe 153600 octets; RGBA32, 307200 octets. Ajouter
+Z-buffer, commandes, textures, piles et audio explique la pression sur 4 Mio.
+
+Cycle robuste : dessiner dans buffer arriere, attendre fin RDP, attendre frontiere
+VI, changer VI_ORIGIN, puis recycler l'ancien buffer uniquement quand VI ne le lit
+plus. Triple buffering reduit les attentes mais consomme de la RAM.
+
+
+==============================================================================
+18. TEXTURES, TUILES ET TMEM
+==============================================================================
+
+TMEM ne contient que 4096 octets. `SetTextureImage` designe la source RDRAM;
+`SetTile` configure format/taille/ligne/adresse/palette/wrap/mirror/clamp/masques;
+`LoadBlock`, `LoadTile` ou `LoadTLUT` charge TMEM; `SetTileSize` fixe le rectangle.
+
+Formats : RGBA, YUV, CI, IA, I; tailles 4/8/16/32 bits selon format. CI requiert
+une TLUT. Les banques TMEM et l'organisation RGBA32 ont des particularites. La
+valeur `line`, les adresses en mots TMEM et les coordonnees S/T en point fixe sont
+des sources majeures d'artefacts.
+
+
+==============================================================================
+19. COMBINER, BLENDER, Z ET COUVERTURE
+==============================================================================
+
+Le color combiner calcule typiquement `(A-B)*C+D` pour couleur et alpha, sur un ou
+deux cycles, a partir de texels, shade, primitive, environment, noise, etc. Le
+blender combine pixel en cours et memoire suivant alpha/couverture.
+
+Le Z-buffer N64 utilise un encodage non lineaire et des metadonnees de pente. La
+couverture participe a l'anticrenelage. Une emulation reduite a un Z 16 bits et a
+un alpha classique echoue sur les bords, decals et modes de rendu particuliers.
+
+
+==============================================================================
+20. AUDIO INTERFACE (AI)
+==============================================================================
+
+Base `$04500000` :
+
+  +$00 AI_DRAM_ADDR  tampon PCM physique, aligne
+  +$04 AI_LEN        longueur et mise en file DMA
+  +$08 AI_CONTROL    DMA enable
+  +$0C AI_STATUS     busy/full; ecriture acquitte IRQ
+  +$10 AI_DACRATE    diviseur horloge echantillonnage
+  +$14 AI_BITRATE    largeur/temporisation du DAC
+
+AI ne synthetise pas les instruments. CPU/RSP produit un flux PCM stereo 16 bits
+big-endian dans RDRAM; AI le transmet au DAC. Une petite FIFO permet d'enchainer
+des tampons. Utiliser double/triple buffering et traiter IRQ avant underrun.
+
+Frequence approximative = horloge audio regionale / (`AI_DACRATE + 1`). Ne pas
+supposer 44100 Hz exact; la base varie avec la norme video.
+
+
+==============================================================================
+21. PERIPHERAL INTERFACE (PI)
+==============================================================================
+
+Base `$04600000` :
+
+  +$00 PI_DRAM_ADDR
+  +$04 PI_CART_ADDR
+  +$08 PI_RD_LEN       DMA RDRAM -> cartouche (lecture par le PI)
+  +$0C PI_WR_LEN       DMA cartouche -> RDRAM (ecriture par le PI)
+  +$10 PI_STATUS       DMA/IO busy, erreur, reset, acquittement IRQ
+  +$14..$30            latence, pulse width, page size, release des domaines 1/2
+
+Attention a la nomenclature historique RD/WR : verifier le sens dans le manuel et
+la bibliotheque utilisee. Les longueurs sont encodees `N-1`; alignement, transfert
+initial non aligne et dernier mot ont des comportements materiels particuliers.
+Attendre PI non busy avant de reprogrammer.
+
+
+==============================================================================
+22. SERIAL INTERFACE, PIF ET JOYBUS
+==============================================================================
+
+Base `$04800000` :
+
+  +$00 SI_DRAM_ADDR
+  +$04 SI_PIF_ADDR_RD64B   DMA PIF RAM -> RDRAM
+  +$10 SI_PIF_ADDR_WR64B   DMA RDRAM -> PIF RAM
+  +$18 SI_STATUS           busy/error/IRQ; ecriture acquitte
+
+SI transfere toujours un bloc de 64 octets avec la PIF RAM. Le programme compose
+des canaux Joybus (longueurs TX/RX, commande, donnees, terminateur), lance DMA vers
+PIF, attend, puis relit. Le PIF gere protocole bas niveau, controles et CIC.
+
+Ne pas interroger PIF RAM directement pendant une transaction SI. Une emulation
+doit reproduire canaux absents, drapeaux d'erreur, CRC et delais observables.
+
+
+==============================================================================
+23. CONTROLEUR STANDARD
+==============================================================================
+
+Le controleur offre stick analogique, croix, A/B, Start, L/R/Z et quatre boutons C.
+La lecture retourne bits boutons et deux valeurs signees X/Y. Le stick d'origine
+emploie un mecanisme optique; usure et plages reelles different de l'ideal.
+
+Commandes Joybus courantes : information/reset et lecture etat. Les accessoires se
+branchent au port d'extension. Prevoir zone morte, calibration et deconnexion.
+
+
+==============================================================================
+24. CONTROLLER PAK ET EEPROM
+==============================================================================
+
+Controller Pak : memoire serie dans le controleur, organisee en blocs et protegee
+par CRC. Le systeme de fichiers Nintendo comprend inode/table de notes; ne pas le
+traiter comme une simple SRAM lineaire si compatibilite avec les sauvegardes.
+
+Certaines cartouches utilisent EEPROM 4 Kbit ou 16 Kbit via Joybus/PIF. L'acces se
+fait par commandes serie avec statut, lecture/ecriture de blocs et temps d'ecriture.
+La presence et le type dependent du jeu et parfois de la cartouche.
+
+
+==============================================================================
+25. RUMBLE PAK, TRANSFER PAK ET AUTRES ACCESSOIRES
+==============================================================================
+
+- Rumble Pak : moteur active par ecriture dans une plage accessoire;
+- Transfer Pak : interface cartouche Game Boy avec registres de banque/alimentation;
+- Voice Recognition Unit : microphone et protocole specialise;
+- souris N64 et controles regionaux/arcade;
+- Bio Sensor japonais et dispositifs tiers.
+
+Le protocole accessoire emploie des blocs de 32 octets et un CRC Joybus. Detecter
+le type avant usage; un Rumble Pak et un Controller Pak repondent differemment.
+
+
+==============================================================================
+26. CARTOUCHE, ROM ET BYTE ORDER
+==============================================================================
+
+La ROM est mappee a partir de `$10000000` physique et normalement copiee par PI.
+Les dumps existent sous trois organisations :
+
+- `.z64` big-endian, premiers octets `80 37 12 40`;
+- `.v64` octets permutes par paires, `37 80 40 12`;
+- `.n64` mots 32 bits little-endian, `40 12 37 80`.
+
+Normaliser en big-endian avant analyse. Une cartouche reelle peut contenir ROM,
+CIC et sauvegarde EEPROM/SRAM/FlashRAM. La taille du fichier ne suffit pas a
+identifier le materiel de sauvegarde.
+
+
+==============================================================================
+27. EN-TETE ROM
+==============================================================================
+
+Champs usuels dans les premiers `$40` octets :
+
+  `$00` word initial / configuration PI
+  `$04` horloge
+  `$08` adresse d'entree
+  `$0C` release
+  `$10` CRC1
+  `$14` CRC2
+  `$18-$1F` reserves
+  `$20-$33` nom interne (20 octets)
+  `$34-$37` reserves
+  `$38-$3A` identifiants media/jeu
+  `$3B` region
+  `$3C` version
+
+Les interpretations varient selon outil. CRC1/CRC2 couvrent une plage du boot et
+dependent de la variante CIC. Ne pas recalculer avec une seule formule universelle.
+
+
+==============================================================================
+28. DEMARRAGE, PIF, CIC ET BOOTCODE
+==============================================================================
+
+Au reset, PIF initialise materiel et dialogue avec le CIC de cartouche. Le code
+IPL3 (bootcode cartouche, typiquement `$40-$FFF`) est copie en RSP DMEM puis
+execute par CPU. Il initialise notamment RDRAM et verifie la ROM avant de sauter a
+l'entree. L'etat exact des registres varie selon CIC, region et revision.
+
+Pour un homebrew legal, utiliser un bootcode redistribuable compatible ou une
+chaine d'outils qui le fournit legalement. Ne pas copier l'IPL3 Nintendo. Les CIC
+modernes de remplacement evitent l'emploi de secrets proprietaires.
+
+
+==============================================================================
+29. SAUVEGARDES CARTOUCHE
+==============================================================================
+
+- EEPROM 4/16 Kbit : via PIF/Joybus;
+- SRAM : mappee dans domaine PI, souvent 32 Kio;
+- FlashRAM : commandes etats/erase/write/read, typiquement 128 Kio;
+- Controller Pak : dans le controleur, non dans la cartouche.
+
+FlashRAM n'est pas de la SRAM : il faut respecter commandes, pages, latences et
+statut. Un emulateur choisit le type par base de donnees, metadata homebrew ou
+observation prudente, jamais en activant simultanement tous les dispositifs.
+
+
+==============================================================================
+30. REGION, VIDEO ET VERROUILLAGE
+==============================================================================
+
+NTSC-J et NTSC-U emploient des timings proches mais CIC/region et logiciels peuvent
+differer. PAL utilise une horloge et 50 Hz nominaux distincts. MPAL cible certains
+marches. Le logiciel peut consulter les informations transmises au demarrage et
+choisir tables VI/audio. Forcer des timings NTSC sur PAL altere vitesse et pitch.
+
+
+==============================================================================
+31. NINTENDO 64DD
+==============================================================================
+
+Le 64DD est une extension japonaise : disque magnetique reinscriptible, mecanisme,
+ASIC, ROM de demarrage et RTC. Il occupe le domaine cartouche 2 et ajoute registres,
+interruptions et commandes. Le Randnet modem est distinct. Une emulation correcte
+requiert format logique/physique, erreurs, timings mecaniques et RTC; monter une
+image comme ROM plate est insuffisant.
+
+
+==============================================================================
+32. PROGRAMMATION OFFICIELLE : LIBULTRA
+==============================================================================
+
+Le SDK historique utilisait IRIX, compilateurs MIPS, `makerom`, libultra et cartes
+de developpement. Libultra fournit threads, messages, timers, DMA, caches, video,
+audio, RCP, controles et sauvegardes. Les programmes incluent `ultra64.h` et lient
+une bibliotheque debug ou optimisee.
+
+Modele classique : creer un thread idle, un thread principal, un scheduler RSP,
+des files `OSMesgQueue`, recevoir retrace VI et fin SP/DP, soumettre `OSTask`, puis
+echanger les buffers. Ne jamais bloquer le thread qui doit vider les evenements.
+
+
+==============================================================================
+33. DEVELOPPEMENT LIBRE MODERNE
+==============================================================================
+
+libdragon fournit compilateur croise, bibliotheque libre, outils ROM, graphisme,
+audio et peripheriques. Modernes versions proposent acces bas niveau et rendu RDP.
+Autres projets documentent bare metal, microcodes libres et tests materiels.
+
+Flux generique :
+
+  1. installer toolchain MIPS/N64;
+  2. compiler big-endian pour VR4300 avec ABI attendue;
+  3. lier avec script N64 et runtime;
+  4. construire en-tete/bootcode legal et checksum;
+  5. tester sur emulateurs puis sur console via flashcart;
+  6. conserver symboles et carte de liaison pour debugger.
+
+
+==============================================================================
+34. EXEMPLE ASSEMBLEUR : MMIO ET MI
+==============================================================================
+
+Syntaxe GNU MIPS indicative :
+
+        .set noreorder
+        .set noat
+
+        .equ MI_INTR,      0xA4300008
+        .equ MI_INTR_MASK, 0xA430000C
+
+read_mi_interrupts:
+        lui     $t0,0xA430
+        lw      $v0,0x0008($t0)
+        nop                         # respecter hazard selon contexte
+        jr      $ra
+        nop
+
+enable_vi_interrupt:
+        lui     $t0,0xA430
+        ori     $t1,$zero,0x0080   # bit SET VI de MI_INTR_MASK
+        sw      $t1,0x000C($t0)
+        sync
+        jr      $ra
+        nop
+
+Les adresses A... sont alias KSEG1 non cache. Le masque MI utilise des commandes
+clear/set; `0x0080` active VI, ce n'est pas la valeur finale complete du masque.
+
+
+==============================================================================
+35. EXEMPLE C : REGISTRES VI
+==============================================================================
+
+#include <stdint.h>
+
+#define REG32(a) (*(volatile uint32_t *)(uintptr_t)(a))
+#define VI_ORIGIN  REG32(0xA4400004u)
+#define VI_INTR    REG32(0xA440000Cu)
+#define VI_CURRENT REG32(0xA4400010u)
+
+static void vi_set_origin(const void *kseg0_or_kseg1)
+{
+    uintptr_t p = (uintptr_t)kseg0_or_kseg1 & 0x1FFFFFFFu;
+    VI_ORIGIN = (uint32_t)p;
+}
+
+static void vi_ack_irq(void)
+{
+    VI_CURRENT = 0;           /* toute ecriture acquitte l'IRQ VI */
+}
+
+Configurer un mode VI exige tous les registres de timing, pas seulement Origin.
+Dans un vrai programme, utiliser la bibliotheque pour selection PAL/NTSC et gerer
+le moment de l'echange.
+
+
+==============================================================================
+36. EXEMPLE C : DMA PI ROM VERS RAM
+==============================================================================
+
+#define PI_DRAM_ADDR REG32(0xA4600000u)
+#define PI_CART_ADDR REG32(0xA4600004u)
+#define PI_WR_LEN    REG32(0xA460000Cu)
+#define PI_STATUS    REG32(0xA4600010u)
+#define PI_BUSY      3u
+
+static void pi_rom_read(void *dst, uint32_t rom_phys, uint32_t n)
+{
+    uint32_t ram = (uint32_t)(uintptr_t)dst & 0x1FFFFFFFu;
+    while (PI_STATUS & PI_BUSY) { }
+    PI_DRAM_ADDR = ram;
+    PI_CART_ADDR = rom_phys;       /* ex. 0x10001000 */
+    PI_WR_LEN = n - 1;             /* terminologie PI historique */
+    while (PI_STATUS & PI_BUSY) { }
+    /* Invalider le D-cache du tampon avant lecture CPU si dst etait cache. */
+}
+
+Cet exemple suppose alignement/taille valides et domaine PI deja configure. Pour
+du code produit, employer l'API OS et gerer IRQ, erreurs, cache et coins DMA.
+
+
+==============================================================================
+37. EXEMPLE ASSEMBLEUR : CACHE
+==============================================================================
+
+Ecriture d'une ligne D cache vers RAM (operation exacte a verifier pour VR4300) :
+
+        cache   0x19,0($a0)        # Hit Writeback D, suivant assembleur
+        sync
+        jr      $ra
+        nop
+
+Les codes CACHE et tailles de ligne ne doivent pas etre devines. Aligner `$a0`,
+boucler sur toute la plage, puis utiliser la sequence requise par le manuel VR4300.
+Une mauvaise invalidation peut supprimer des ecritures CPU non sauvegardees.
+
+
+==============================================================================
+38. EXEMPLE LIBDRAGON CONCEPTUEL
+==============================================================================
+
+#include <libdragon.h>
+
+int main(void)
+{
+    display_init(RESOLUTION_320x240, DEPTH_16_BPP, 2,
+                 GAMMA_NONE, ANTIALIAS_RESAMPLE);
+    controller_init();
+
+    for (;;) {
+        surface_t *fb = display_get();
+        graphics_fill_screen(fb, graphics_make_color(0, 0, 32, 255));
+        graphics_draw_text(fb, 24, 24, "Nintendo 64");
+        display_show(fb);
+    }
+}
+
+L'API evolue : compiler contre les exemples de la version installee. Les surfaces,
+le rendu RDP moderne et les fonctions controles peuvent avoir des noms differents.
+
+
+==============================================================================
+39. BOUCLE DE JEU ET ORDONNANCEMENT
+==============================================================================
+
+Une image typique : recevoir retrace VI, lire controles, simuler, produire display
+list, writeback cache, soumettre tache RSP, attendre SP/DP, presenter framebuffer,
+puis preparer l'image suivante. Audio doit rester prioritaire et alimente meme si
+le rendu depasse son budget.
+
+CPU, RSP, RDP et DMA travaillent en parallele. Les attendre sequentiellement annule
+l'avantage. Utiliser files d'evenements et plusieurs tampons, tout en evitant de
+modifier une liste, texture ou sortie encore consommee.
+
+
+==============================================================================
+40. PERFORMANCE
+==============================================================================
+
+- minimiser les changements d'etat RDP et chargements TMEM;
+- grouper primitives par texture/mode;
+- eviter fillrate, transparence et framebuffer 32 bits inutiles;
+- profiler CPU, RSP, RDP et bande passante separement;
+- aligner donnees DMA/cache;
+- preferer point fixe quand le FPU ou les conversions deviennent un goulot;
+- preparer display lists pendant le travail RCP precedent;
+- limiter divisions et acces aleatoires RDRAM;
+- ne jamais optimiser en se fiant uniquement a un emulateur.
+
+
+==============================================================================
+41. ALIGNEMENT, ENDIANNESS ET ABI
+==============================================================================
+
+Le CPU leve AdEL/AdES sur acces naturellement non alignes. Les instructions LWL/
+LWR et LDL/LDR permettent assemblage, mais leur emploi depend du byte order. Les
+structures echangees avec RSP/RDP/PIF doivent avoir tailles, alignements et ordre
+explicites. Eviter bitfields C et `long` de taille variable.
+
+Utiliser `uint32_t`, masques/decalages, assertions de taille et attributs d'alignement.
+Verifier que compilateur n'emet pas d'instructions MIPS IV ou d'hypotheses de FPU
+incompatibles. Les pointeurs CPU ne sont pas directement des adresses DMA.
+
+
+==============================================================================
+42. PROGRAMMATION RSP
+==============================================================================
+
+Un microprogramme RSP doit tenir en 4 Kio IMEM et ses donnees actives en 4 Kio DMEM.
+Il orchestre DMA double-buffer, calcul vectoriel et signaux CPU. Les instructions
+vectorielles couvrent multiply/accumulate, add/sub avec saturation, compare/merge,
+logique, reciprocal/rsqrt et transferts packed/quad/reverse.
+
+Les accumulateurs et selecteurs d'element ont des comportements subtils. Tester
+chaque instruction sur materiel et contre des suites connues. Le RSP peut emettre
+une liste RDP via XBUS ou RDRAM; synchroniser avant que CPU reutilise les buffers.
+
+
+==============================================================================
+43. EMULATION DU CPU
+==============================================================================
+
+Une emulation compatible doit couvrir MIPS III, exceptions precises, delay slots
+et bit BD, TLB, modes 32/64 bits, CP0 Count/Compare, LLbit, caches observables,
+FPU IEEE et NaN/rounding. Les acces MMIO ont effets de bord et tailles specifiques.
+
+Un dynarec doit conserver exceptions entre instruction de branchement et delay
+slot. Les opcodes non implementes doivent lever Reserved Instruction, pas devenir
+NOP. Reproduire sign-extension des resultats 32 bits vers registres 64 bits.
+
+
+==============================================================================
+44. EMULATION DU RDP ET RSP
+==============================================================================
+
+Deux approches RDP : rasteriseur logiciel fidele ou traduction vers GPU hote. La
+seconde exige emulation du combineur, coverage, dithering, Z, TMEM et synchronisation;
+les approximations causent coutures, halos et decalages. Les plugins HLE de display
+lists dependent du microcode et echouent sur microcodes inconnus; LLE execute RSP.
+
+RSP peut etre interprete, recompile ou HLE par tache. Pour compatibilite generale,
+garder un chemin LLE et detecter les microcodes HLE sans supposer leur identite.
+
+
+==============================================================================
+45. TIMING ET DMA DANS UN EMULATEUR
+==============================================================================
+
+Ne pas terminer tous les DMA instantanement : logiciels testent busy/full, chainent
+FIFO et attendent IRQ. Modeliser arbitrage RDRAM, files AI/PI/SP/SI, progression VI,
+DPC current/status et interruptions MI. Un modele evenementiel peut rester rapide
+sans cycle exact, mais doit conserver ordre et latences minimales observables.
+
+
+==============================================================================
+46. TEST ET DEBOGAGE
+==============================================================================
+
+- compiler avec avertissements, symboles et assertions;
+- journaliser exceptions CP0 Cause/EPC/BadVAddr et contexte complet;
+- remplir piles de motifs et poser gardes;
+- tester 4 Mio et 8 Mio, NTSC et PAL;
+- comparer plusieurs emulateurs mais arbitrer sur console;
+- utiliser tests unitaires de display lists, CRC Joybus et sauvegardes;
+- verifier caches en alternant KSEG0/KSEG1 de facon controlee;
+- surveiller underruns AI et depassements de budget VI.
+
+
+==============================================================================
+47. ERREURS CLASSIQUES
+==============================================================================
+
+- donner une adresse virtuelle a un DMA;
+- oublier writeback/invalidation de cache;
+- ecrire les MMIO via pointeur cache;
+- ignorer delay slot ou hazard CP0;
+- reutiliser framebuffer avant fin VI/RDP;
+- confondre PI_RD_LEN et PI_WR_LEN;
+- supposer que toute ROM est `.z64`;
+- confondre Controller Pak, SRAM, EEPROM et FlashRAM;
+- programmer video/audio avec horloge NTSC sur PAL;
+- traiter RSP comme MIPS standard ou RDP comme OpenGL;
+- distribuer bootcode/SDK proprietaire sans droit.
+
+
+==============================================================================
+48. DIAGNOSTIC MATERIEL
+==============================================================================
+
+Avant intervention : alimentation 3,3/5/12 V selon carte, oxydation du connecteur,
+Jumper/Expansion Pak bien insere, reset, horloge, cartouche propre et sortie A/V.
+Une console sans terminaison RDRAM ne demarre pas. Tester avec alimentation et jeu
+connus, puis oscilloscope/analyseur logique si necessaire.
+
+Les revisions modifient encodeur video, RAM et implantation. Employer le schema et
+le manuel de service correspondant au NUS-CPU exact. Ne pas court-circuiter une
+protection ni inserer une cartouche sous tension.
+
+
+==============================================================================
+49. SECURITE ELECTRIQUE ET PRESERVATION
+==============================================================================
+
+Decharger l'electricite statique, utiliser alimentation correcte, eviter solvants
+abrasifs et respecter couples/isolants. Les sauvegardes SRAM peuvent dependre d'une
+batterie; les dumper avant remplacement. Pour archiver une cartouche, conserver
+ROM, type de sauvegarde, region, revision PCB et hash, sans diffuser contenu soumis
+au droit d'auteur.
+
+
+==============================================================================
+50. TABLE RECAPITULATIVE MMIO
+==============================================================================
+
+  Bloc  Base physique  Fonction
+  RDRAM `$03F00000`    configuration puces Rambus
+  SP    `$04040000`    DMA/statut RSP
+  DPC   `$04100000`    liste et statut RDP
+  DPS   `$04200000`    span/test RDP
+  MI    `$04300000`    modes et interruptions RCP
+  VI    `$04400000`    sortie video
+  AI    `$04500000`    sortie PCM
+  PI    `$04600000`    cartouche/64DD
+  RI    `$04700000`    interface RDRAM
+  SI    `$04800000`    PIF/Joybus
+
+Pour CPU, ajouter `$A0000000` a l'adresse physique basse afin d'obtenir l'alias
+KSEG1 (par exemple VI = `$A4400000`).
+
+
+==============================================================================
+51. CHECKLIST D'UN PROGRAMME BARE METAL
+==============================================================================
+
+1. utiliser un demarrage legal et connaitre l'etat laisse par IPL3;
+2. installer pile, `.bss`, GP et vecteurs d'exception;
+3. configurer Status/MI et files d'interruptions;
+4. detecter RAM/region sans detruire l'etat necessaire;
+5. initialiser VI avec table regionale valide;
+6. initialiser AI et tampons audio;
+7. initialiser SI/PIF et controles;
+8. charger IMEM/DMEM et demarrer RSP si utilise;
+9. gerer caches autour de chaque DMA;
+10. synchroniser RDP/VI, puis entrer dans boucle evenementielle.
+
+
+==============================================================================
+52. LIMITES DOCUMENTAIRES
+==============================================================================
+
+Le manuel Nintendo decrit l'API et une grande partie du materiel, mais les details
+electriques, le PIF/CIC, certaines instructions RSP/RDP et les anomalies silicium
+ont ete completes par recherche communautaire et tests. Les noms de registres
+peuvent varier entre libultra, libdragon, angrylion, ares et documentation SGI.
+Toujours verifier l'offset et la semantique, pas seulement le symbole.
+
+
+==============================================================================
+53. REFERENCES
+==============================================================================
+
+Documents de base :
+
+- Nintendo 64 Programming Manual, Nintendo/SGI :
+  https://ultra64.ca/files/documentation/online-manuals/man/pro-man/start/index.html
+- copie PDF du manuel de programmation :
+  https://ultra64.ca/files/documentation/nintendo/Nintendo_64_Programming_Manual_NU6-06-0030-001G_HQ.pdf
+- NEC VR4300 MIPS RISC Microprocessor User's Manual :
+  https://bitsavers.trailing-edge.com/components/nec/mips/1995_NEC_VR4300_MIPS_RISC_Microprocessor_Users_Manual.pdf
+- Reality Coprocessor documentation :
+  https://shygoo.net/o64-backup/attachments/Reality%20Coprocessor.pdf
+
+Developpement et verification :
+
+- libdragon : https://github.com/DragonMinded/libdragon
+- documentation d'emulation N64 : https://n64.readthedocs.io/
+- carte memoire detaillee : https://en64.shoutwiki.com/wiki/Memory_map_detailed
+- archive de references CPU : https://bitsavers.trailing-edge.com/components/nec/mips/
+
+Les documents historiques peuvent contenir errata ou conventions anciennes.
+Confronter manuel VR4300, manuel Nintendo, tests sur materiel et implementation
+libre recente avant de figer une emulation ou un circuit compatible.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================

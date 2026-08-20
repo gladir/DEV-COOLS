@@ -1,0 +1,988 @@
+==============================================================================
+ SONY PLAYSTATION / PS1 / PSX - MATERIEL ET PROGRAMMATION
+ Reference technique pour developpeurs, restaurateurs et auteurs d'emulateurs
+==============================================================================
+
+Objet
+-----
+
+Ce document decrit la premiere console PlayStation de Sony, lancee au Japon en
+1994. Les noms PlayStation, PS1 et PSX designent ici le materiel 32 bits original
+et sa revision compacte PS one, pas la PlayStation 2 ni le DVR japonais PSX.
+
+Il couvre CPU MIPS, GTE, GPU, MDEC, SPU, DMA, interruptions, CD-ROM, manettes,
+cartes memoire, BIOS, format executable et programmation bas niveau. Les adresses
+sont hexadecimales; suffixe h et prefixe 0x sont employes selon le contexte.
+Les accents sont omis afin de conserver un fichier ASCII.
+
+Date de revision : aout 2026
+
+
+==============================================================================
+TABLE DES MATIERES
+==============================================================================
+
+  1. Historique
+  2. Noms, regions et revisions
+  3. Caracteristiques generales
+  4. Architecture fonctionnelle
+  5. CPU R3000A compatible
+  6. Registres et jeu d'instructions MIPS I
+  7. Pipeline, delay slots et exceptions
+  8. Coprocessor 0 et controle du systeme
+  9. Carte memoire virtuelle et physique
+ 10. RAM principale, scratchpad et caches
+ 11. BIOS et sequence de demarrage
+ 12. Appels du noyau BIOS
+ 13. Interruptions
+ 14. Controleur DMA
+ 15. Temporisateurs
+ 16. GTE : Geometry Transformation Engine
+ 17. Registres et instructions GTE
+ 18. GPU : principes
+ 19. VRAM, couleurs et textures
+ 20. Commandes GP0 et GP1
+ 21. Primitives, ordering tables et DMA
+ 22. Affichage PAL/NTSC et synchronisation
+ 23. MDEC et video compressee
+ 24. SPU : architecture sonore
+ 25. Voix, ADPCM, ADSR et pitch
+ 26. Reverb, bruit, CD audio et IRQ SPU
+ 27. Lecteur de CD-ROM
+ 28. Format des secteurs et systeme de fichiers
+ 29. Protection, licence et regions
+ 30. Manettes et port serie SIO0
+ 31. Manette numerique, analogique et DualShock
+ 32. Cartes memoire
+ 33. SIO1, port serie et port parallele
+ 34. Carte des registres d'E/S
+ 35. Format PS-X EXE
+ 36. Organisation d'un programme
+ 37. Initialisation du materiel
+ 38. Assembleur MIPS : BIOS et interruptions
+ 39. Assembleur MIPS : GPU
+ 40. C : affichage et double buffering
+ 41. C : manette et son
+ 42. Calcul 3D et precision numerique
+ 43. Optimisation
+ 44. Developpement, outils et debogage
+ 45. Compatibilite entre revisions
+ 46. Conseils pour un emulateur
+ 47. Plan de validation
+ 48. Maintenance et restauration
+ 49. Securite et preservation
+ 50. References
+
+
+==============================================================================
+1. HISTORIQUE
+==============================================================================
+
+Sony lance la PlayStation au Japon le 3 decembre 1994, puis en Amerique du Nord
+et en Europe en 1995. Issue d'un projet de lecteur CD pour Nintendo devenu une
+plateforme Sony autonome, elle privilegie polygones textures, audio numerique et
+stockage CD-ROM.
+
+La console concurrence Saturn et Nintendo 64. Son architecture, ses outils et
+le cout du CD facilitent une vaste bibliotheque. La PS one compacte apparait en
+2000. La famille originale reste produite jusqu'au debut des annees 2000.
+
+
+==============================================================================
+2. NOMS, REGIONS ET REVISIONS
+==============================================================================
+
+Numeros courants : SCPH-1000/100x, 3000, 5000/550x, 700x, 750x, 900x puis
+SCPH-10x PS one. Le dernier chiffre indique souvent la region : 0 Japon, 1
+Amerique du Nord, 2 Europe/PAL, 3 Asie, avec exceptions.
+
+Les revisions modifient carte mere, bloc optique, alimentation, encodeur video,
+DAC audio et connecteurs. Les premieres ont sorties RCA et port parallele;
+certaines revisions suppriment RCA, puis SCPH-900x supprime le port parallele.
+La PS one emploie alimentation externe et boitier compact.
+
+SCPH-5903 est une variante asiatique avec Video CD. Le BIOS, la region et le
+standard video ne doivent pas etre deduits uniquement du boitier.
+
+
+==============================================================================
+3. CARACTERISTIQUES GENERALES
+==============================================================================
+
+Element                     Caracteristique
+--------------------------  -------------------------------------------------
+CPU                         MIPS R3000A compatible, 32 bits
+Frequence CPU               33,8688 MHz
+Jeu d'instructions          MIPS I little-endian, sans FPU
+GTE                         coprocesseur geometrique fixe en COP2
+RAM principale              2 Mio
+Scratchpad                  1 Kio
+BIOS                        512 Kio
+GPU                         moteur 2D de polygones, sprites, lignes, transferts
+VRAM                        1 Mio, 1024 x 512 mots de 16 bits
+MDEC                        decodeur macroblocs/DCT pour video
+SPU                         24 voix ADPCM, 512 Kio de RAM sonore
+Sortie audio                stereo 16 bits, 44,1 kHz nominal
+CD-ROM                      vitesse 1x/2x, CD-DA et XA
+DMA                         sept canaux
+Peripheriques               deux ports manette, deux cartes memoire
+Video                       NTSC ou PAL, composite/RGB et autres selon revision
+
+Les chiffres de performance marketing ne remplacent pas les temps reels : RAM,
+GPU, GTE, DMA et CD se disputent les ressources et possedent des latences.
+
+
+==============================================================================
+4. ARCHITECTURE FONCTIONNELLE
+==============================================================================
+
+Le CPU execute jeu et pilote les coprocesseurs par registres memoire-mappes. Le
+GTE calcule transformation/eclairage; le GPU rasterise dans sa VRAM. Le MDEC
+decode images/video. Le SPU lit sa RAM sonore et melange voix/CD. Le DMA relie
+RAM a MDEC, GPU, CD, SPU et expansion.
+
+Chemin graphique typique : modele 3D -> GTE -> primitives en RAM -> ordering
+table -> DMA2 -> GPU -> VRAM -> encodeur video. Chemin sonore : ADPCM charge par
+DMA4 -> SPU -> melange 24 voix + CD/XA + reverb -> DAC.
+
+
+==============================================================================
+5. CPU R3000A COMPATIBLE
+==============================================================================
+
+Le coeur est compatible MIPS R3000A mais integre dans le chipset Sony. Il a 32
+registres generaux 32 bits, HI/LO, PC, COP0 et COP2. $zero vaut toujours zero;
+$31 est conventionnellement l'adresse de retour.
+
+Il n'existe pas de FPU. Les flottants logiciels sont lents; jeux et GTE emploient
+arithmetique entiere/fixe. Les acces doivent respecter alignement : LH/SH sur 2,
+LW/SW sur 4. LWL/LWR et SWL/SWR gerent des mots non alignes avec soin.
+
+
+==============================================================================
+6. REGISTRES ET JEU D'INSTRUCTIONS MIPS I
+==============================================================================
+
+Conventions ABI courantes :
+
+$v0-$v1 resultats; $a0-$a3 arguments; $t0-$t9 temporaires; $s0-$s7 preserves;
+$gp global pointer; $sp pile; $fp cadre; $ra retour. Le BIOS utilise aussi $t1
+comme numero de fonction pour ses vecteurs A0h/B0h/C0h.
+
+Familles : ADD/ADDU, SUB/SUBU, AND/OR/XOR/NOR, SLT, shifts, MULT/MULTU,
+DIV/DIVU, MFHI/MFLO, branches, J/JAL/JR/JALR, LB/LBU/LH/LHU/LW, SB/SH/SW,
+SYSCALL, BREAK et instructions COP0/COP2.
+
+ADD/SUB leves exception d'overflow; ADDU/SUBU non. MULT/DIV produisent HI/LO
+avec latence. Il n'y a pas d'instructions MIPS II, LL/SC ni cache de donnees
+general conventionnel.
+
+
+==============================================================================
+7. PIPELINE, DELAY SLOTS ET EXCEPTIONS
+==============================================================================
+
+L'instruction suivant un branchement ou saut s'execute avant le transfert : le
+branch delay slot. Le chargement a aussi un load delay sur le coeur original :
+l'instruction immediatement suivante ne doit pas consommer la valeur sans
+ordonnancement approprie. Les assembleurs peuvent inserer/reordonner selon mode.
+
+En exception, COP0 EPC et Cause indiquent contexte; le bit BD signale exception
+dans un delay slot. L'adresse de reprise doit tenir compte de BD. Une exception
+mal geree dans un slot est une source classique de divergence d'emulateur.
+
+
+==============================================================================
+8. COPROCESSOR 0 ET CONTROLE DU SYSTEME
+==============================================================================
+
+COP0 gere Status/SR, Cause, EPC, BadVAddr et registres associes. Le R3000 a un
+TLB architectural, mais la PlayStation utilise surtout segments a traduction
+directe; les logiciels normaux ne s'appuient pas sur une memoire virtuelle TLB.
+
+SR contient modes/interruptions imbriques, masques et bit IsC d'isolation cache.
+Le BIOS utilise l'isolation du cache pour initialiser/nettoyer. Une emulation
+qui traite IsC comme un simple bit ignore des routines de boot importantes.
+
+Le Cache Control se trouve dans une zone speciale vers FF... selon acces CPU.
+Il faut suivre la documentation du chipset, pas modeliser un R3000 generique.
+
+
+==============================================================================
+9. CARTE MEMOIRE VIRTUELLE ET PHYSIQUE
+==============================================================================
+
+Plage virtuelle       Usage
+--------------------  --------------------------------------------------------
+00000000h--7FFFFFFFh   KUSEG, adresses cachees/traduites
+80000000h--9FFFFFFFh   KSEG0, physique masque, cache d'instructions actif
+A0000000h--BFFFFFFFh   KSEG1, acces physique non cache
+C0000000h--FFFFFFFFh   KSEG2, controle/systeme
+
+Regions physiques majeures :
+
+00000000h              RAM principale, 2 Mio, miroirs selon decode
+1F000000h              Expansion Region 1
+1F800000h--1F8003FFh   scratchpad 1 Kio
+1F801000h--1F803FFFh   registres d'E/S et expansion
+1FC00000h--1FC7FFFFh   BIOS 512 Kio
+
+KSEG0 ajoute 80000000h, KSEG1 A0000000h. Les pointeurs DMA doivent employer une
+adresse physique RAM sur 24 bits, non un pointeur KSEG0 brut.
+
+
+==============================================================================
+10. RAM PRINCIPALE, SCRATCHPAD ET CACHES
+==============================================================================
+
+La RAM de 2 Mio contient programme, donnees, piles, commandes GPU et buffers CD.
+Les zones au-dela peuvent etre des miroirs selon Memory Control. Ne pas utiliser
+les miroirs comme RAM supplementaire.
+
+Le scratchpad de 1 Kio est rapide, reserve aux donnees temporaires; le DMA ne le
+voit pas comme RAM principale. Il n'est pas un cache transparent.
+
+Le CPU possede un cache d'instructions de 4 Kio. Le comportement cache/isolation,
+les ecritures de code genere et les alias KSEG0/KSEG1 exigent invalidation ou
+execution non cachee appropriee.
+
+
+==============================================================================
+11. BIOS ET SEQUENCE DE DEMARRAGE
+==============================================================================
+
+Au reset, le CPU execute le BIOS via KSEG1. Le BIOS initialise chipset, RAM,
+interruptions, GPU, CD, peripheriques, affiche le logo, verifie le disque/licence
+et charge SYSTEM.CNF puis l'executable demande, habituellement PSX.EXE.
+
+Le BIOS differe par region/version. Il fournit noyau, gestion d'evenements,
+threads legers, fichiers CD, carte memoire, manettes, GPU et bibliotheques de
+base. Plusieurs fonctions ont bogues ou contrats implicites; un jeu peut les
+contourner et programmer directement le materiel.
+
+Les images BIOS Sony sont protegees par droit d'auteur. Un emulateur doit demander
+une image legalement extraite ou fournir une reimplementation independante.
+
+
+==============================================================================
+12. APPELS DU NOYAU BIOS
+==============================================================================
+
+Trois tables principales sont invoquees aux adresses virtuelles 000000A0h,
+000000B0h et 000000C0h. Placer numero dans $t1, arguments dans $a0--$a3, puis
+JAL vers le vecteur; resultat dans $v0/$v1.
+
+Exemple : putchar, numero exact a verifier pour la table BIOS cible :
+
+        li      $a0,'A'
+        li      $t1,0x3C       # putchar dans table A sur BIOS courants
+        jal     0xA0
+        nop                    # delay slot
+
+Groupes : fichiers, heap, chaines/memoire, evenements, threads, timers, GPU,
+CD, cartes memoire et gestion d'exceptions. Les fonctions ne preservent que les
+registres definis par l'ABI. Ne pas appeler une fonction non documentee par son
+adresse interne ROM.
+
+
+==============================================================================
+13. INTERRUPTIONS
+==============================================================================
+
+I_STAT 1F801070h contient demandes; I_MASK 1F801074h autorisations. Sources :
+
+bit 0 VBlank       bit 1 GPU          bit 2 CD-ROM
+bit 3 DMA          bit 4 Timer 0      bit 5 Timer 1
+bit 6 Timer 2      bit 7 Controller/Memory Card
+bit 8 SIO          bit 9 SPU          bit 10 PIO
+
+COP0 Cause regroupe ensuite l'IRQ materielle. Pour acquitter, ecrire I_STAT selon
+la semantique AND/zero du materiel; ne pas faire un read-modify-write naif qui
+efface une source arrivee entre lecture et ecriture. Chaque peripherique a aussi
+ses drapeaux propres a acquitter.
+
+Une ISR sauvegarde contexte, traite toutes les sources actives masquees, evite
+les longues attentes et restaure COP0 avant RFE/retour approprie.
+
+
+==============================================================================
+14. CONTROLEUR DMA
+==============================================================================
+
+Canal  Peripherique
+-----  ---------------------------------------------------------
+0      MDEC input
+1      MDEC output
+2      GPU, bloc ou liste chainee
+3      CD-ROM vers RAM
+4      SPU
+5      PIO/Expansion
+6      OTC, creation inverse d'ordering table
+
+Registres par canal a 1F801080h+n*10h : MADR +0, BCR +4, CHCR +8. DPCR est
+1F8010F0h; DICR 1F8010F4h. MADR utilise adresse RAM sur 24 bits. BCR decrit
+taille/blocs; CHCR direction, pas, chopping, sync et start.
+
+DMA2 mode linked-list suit des entetes en RAM jusqu'au marqueur 00FFFFFFh.
+DMA6 remplit les pointeurs descendants d'une OT. DICR combine masques, drapeaux
+par canal et master IRQ; son acquittement doit respecter les bits write-one.
+
+
+==============================================================================
+15. TEMPORISATEURS
+==============================================================================
+
+Trois timers 16 bits commencent a 1F801100h et sont espaces de 10h par canal :
+COUNT a +0, MODE a +4 et TARGET a +8. Ils peuvent compter l'horloge systeme ou
+des sources liees au GPU.
+
+Timer 0 peut suivre dotclock/HBlank; timer 1 HBlank; timer 2 horloge systeme ou
+division. Modes : reset a target/max, IRQ target/max, one-shot/repetition,
+toggle/pulse et synchronisation. Certains bits/drapeaux ont effets a la lecture.
+
+Pour audio/video stable, ne pas convertir seulement en millisecondes hote : les
+relations exactes avec GPU PAL/NTSC et interruptions sont observables.
+
+
+==============================================================================
+16. GTE : GEOMETRY TRANSFORMATION ENGINE
+==============================================================================
+
+Le GTE est COP2, pas le GPU. Il effectue en virgule fixe : multiplication
+matrice-vecteur, translation, projection perspective, clipping partiel, moyenne
+de profondeur, eclairage, couleur, fog/depth cue et interpolation.
+
+Il possede registres data et control accessibles par MFC2/MTC2/CFC2/CTC2. Les
+instructions COP2 lancent RTPS, RTPT, NCLIP, AVSZ3/4, MVMVA, operations de
+couleur/lumiere et autres.
+
+Les resultats saturent dans des plages precises et positionnent FLAG. Reproduire
+les largeurs intermediaires, shifts, saturation et ordre exact est essentiel.
+
+
+==============================================================================
+17. REGISTRES ET INSTRUCTIONS GTE
+==============================================================================
+
+Registres data : vecteurs V0--V2, couleurs, OTZ, IR0--IR3, SXY FIFO, SZ FIFO,
+RGB FIFO, MAC0--MAC3, IRGB/ORGB, LZCS/LZCR. Control : matrices rotation/lumiere/
+couleur, translation, background/far color, projection H, DQA/DQB, ZSF3/4, FLAG.
+
+Pipeline type : charger matrice et vecteurs, RTPT, lire SXY/FLAG, NCLIP pour
+orientation, AVSZ3 pour OTZ, creer primitive GPU. Lire trop tot un resultat GTE
+sur materiel peut exposer latence; bibliotheques/ordonnancement inserent travail.
+
+Le GTE ne fait ni Z-buffer ni clipping complet. Le logiciel trie et decoupe les
+polygones; l'OT donne un ordre de peintre approximatif.
+
+
+==============================================================================
+18. GPU : PRINCIPES
+==============================================================================
+
+Deux ports 32 bits : GP0/GPUREAD a 1F801810h et GP1/GPUSTAT a 1F801814h. GP0
+recoit commandes de dessin et transferts VRAM; GP1 controle affichage/reset/DMA.
+
+Le GPU dessine points, lignes, triangles, quadrilateres, rectangles/sprites et
+transferts d'image. Il ne transforme pas la geometrie, ne possede pas de Z-buffer,
+perspective-correct texture mapping ni filtrage bilineaire.
+
+GPUSTAT indique readiness, mode d'affichage, profondeur, interlace, DMA et IRQ.
+Toujours attendre le bit approprie au type de donnee, pas seulement un delai fixe.
+
+
+==============================================================================
+19. VRAM, COULEURS ET TEXTURES
+==============================================================================
+
+VRAM = 1024x512 mots de 16 bits. Elle contient framebuffers, textures et CLUT.
+Couleur directe : 5 bits rouge, vert, bleu plus bit 15 masque/semi-transparence.
+La sortie 24 bits existe pour framebuffer, mais le rendu des primitives repose
+principalement sur mots 15 bits.
+
+Textures : 4 bits/index (CLUT 16), 8 bits/index (CLUT 256) ou 15 bits direct.
+Une texture page couvre une zone VRAM; texture window masque/decale coordonnees.
+Les UV sont 8 bits et s'enroulent. Le cache texture interne et ses invalidations
+peuvent rendre visible une mise a jour de VRAM mal synchronisee.
+
+Dithering reduit les bandes de couleur. Semi-transparence offre quatre modes de
+melange approximatifs; le bit mask permet proteger/marquer des pixels.
+
+
+==============================================================================
+20. COMMANDES GP0 ET GP1
+==============================================================================
+
+GP0 principales :
+
+00h NOP; 01h clear texture cache; 02h fill rectangle; 1Fh IRQ;
+20h--3Fh polygones; 40h--5Fh lignes; 60h--7Fh rectangles/sprites;
+80h copie VRAM->VRAM; A0h CPU->VRAM; C0h VRAM->CPU;
+E1h draw mode; E2h texture window; E3/E4 drawing area; E5 offset; E6 mask.
+
+GP1 : 00h reset GPU; 01h reset FIFO; 02h ack IRQ; 03h display enable;
+04h DMA direction; 05h display start; 06h horizontal range; 07h vertical range;
+08h display mode; 10h get info.
+
+Chaque commande a un nombre exact de mots. Perdre un mot desaligne tout le flux.
+Valider coordonnees, padding et etat GPU avant DMA.
+
+
+==============================================================================
+21. PRIMITIVES, ORDERING TABLES ET DMA
+==============================================================================
+
+Les bibliotheques Sony representent une primitive par paquet dont premier mot
+contient longueur et pointeur OT. Chaque bucket d'OT correspond a une profondeur;
+les primitives sont chainees, souvent en ordre inverse d'insertion.
+
+DMA6 initialise l'OT en chaine descendante. DMA2 linked-list lit chaque entete,
+envoie ses mots GP0, puis suit le pointeur 24 bits jusqu'a 00FFFFFFh.
+
+Double buffering : pendant que GPU affiche/dessine un buffer, CPU construit les
+primitives de l'image suivante. Attendre DrawSync avant reutiliser paquets et
+VSync avant basculer affichage. Une OT trie grossierement; polygones qui se
+croisent exigent subdivision/tri logiciel.
+
+
+==============================================================================
+22. AFFICHAGE PAL/NTSC ET SYNCHRONISATION
+==============================================================================
+
+Modes horizontaux : 256, 320, 368, 512 ou 640 pixels. Vertical courant 240/256
+non entrelace ou 480/512 entrelace selon NTSC/PAL et plages programmees. Les
+valeurs exactes de lignes/refresh different par region.
+
+GP1(08h) choisit resolution, PAL/NTSC, profondeur 15/24 et interlace. Employer
+les parametres de region du BIOS/disque; forcer un standard peut donner image
+decalee ou moniteur incompatible.
+
+VBlank declenche IRQ bit 0. Les jeux l'utilisent pour cadence, flip et lecture
+manette. Le GPU continue certaines operations pendant affichage; DrawSync et
+VSync repondent a des conditions differentes.
+
+
+==============================================================================
+23. MDEC ET VIDEO COMPRESSEE
+==============================================================================
+
+MDEC decode des macroblocs bases sur DCT, quantification et run-length en blocs
+Y/Cb/Cr, souvent appeles video de type Motion JPEG PlayStation. Ce n'est pas un
+decodeur MPEG complet.
+
+Ports 1F801820h commande/data et 1F801824h status/control. DMA0 alimente le flux;
+DMA1 recupere pixels 15 ou 24 bits. Le logiciel demultiplexe secteurs STR/XA,
+charge tables quantification/scale et synchronise CD, MDEC, GPU et SPU.
+
+Les sorties macrobloc doivent etre reordonnees/copied vers VRAM. Les signes,
+saturation, couleur et bits de padding sont des tests importants d'emulation.
+
+
+==============================================================================
+24. SPU : ARCHITECTURE SONORE
+==============================================================================
+
+Le SPU a 24 voix, une RAM dediee de 512 Kio, melange stereo, bruit, modulation
+de hauteur, reverb et entrees CD/externe. Registres principaux 1F801C00h--
+1F801DFFh, generalement 16 bits. DMA4 ou transfert manuel charge SPU RAM.
+
+Chaque voix possede volumes gauche/droit, pitch, adresse de depart, ADSR et
+volume courant/adresse de repetition. Registres globaux commandent Key On/Off,
+noise, pitch modulation, reverb, IRQ, volumes CD et master.
+
+
+==============================================================================
+25. VOIX, ADPCM, ADSR ET PITCH
+==============================================================================
+
+Le format Sony ADPCM utilise blocs de 16 octets produisant 28 echantillons :
+octet filtre/shift, octet flags puis 14 octets de nibbles. Les flags controlent
+fin, repetition et point de boucle. Le decodeur applique prediction et saturation.
+
+Pitch 1000h correspond approximativement a lecture 44,1 kHz; interpolation
+materielle traite les positions fractionnaires. Des valeurs extremes et le
+gaussian interpolation produisent une signature sonore precise.
+
+ADSR a phases attack, decay, sustain, release, modes lineaire/exponentiel et
+directions. Key On demarre les voix selectionnees; Key Off lance release, il ne
+coupe pas necessairement instantanement.
+
+
+==============================================================================
+26. REVERB, BRUIT, CD AUDIO ET IRQ SPU
+==============================================================================
+
+La reverb utilise une zone de travail circulaire dans SPU RAM et de nombreux
+coefficients/adresses. Une mauvaise base peut corrompre des echantillons. Le
+bruit partage une horloge programmable; la pitch modulation emploie sortie de
+la voix precedente.
+
+CD-DA et XA entrent dans le mixeur SPU avec volumes gauche/droit. Le SPU peut
+emettre IRQ lorsqu'une adresse de lecture/transfert atteint l'adresse IRQ; cela
+inclut des cas reverb et DMA subtils.
+
+Un emulateur doit mixer a la cadence interne et reproduire saturation, ADSR,
+interpolation, boucles et reverb, pas lancer un echantillon PCM par Key On.
+
+
+==============================================================================
+27. LECTEUR DE CD-ROM
+==============================================================================
+
+Le lecteur fonctionne a 1x ou 2x. Registres 1F801800h--1F801803h forment une
+interface indexee avec status, parametres, commandes, reponses, donnees, requete
+et drapeaux/masques IRQ.
+
+Le logiciel envoie commande puis attend une ou plusieurs interruptions/reponses.
+Commandes typiques : Getstat, Setloc, Play, ReadN/ReadS, Pause, Stop, Setmode,
+Getloc, GetID, ReadTOC. Les numeros et phases doivent suivre la reference.
+
+DMA3 transfere secteurs vers RAM. Le FIFO, latences de seek, double speed,
+corrections et changement de disque sont observables. Ne pas executer une commande
+instantanement dans un emulateur.
+
+
+==============================================================================
+28. FORMAT DES SECTEURS ET SYSTEME DE FICHIERS
+==============================================================================
+
+CD-ROM Mode 1 fournit 2048 octets utilisateur avec EDC/ECC. Mode 2 Form 1 fournit
+2048 octets; Form 2 environ 2324 octets pour flux XA avec protection reduite.
+Les secteurs bruts contiennent sync, adresse MSF BCD, mode et sous-en-tetes.
+
+Les disques utilisent ISO 9660 avec noms souvent en majuscules et suffixe ;1.
+SYSTEM.CNF indique BOOT et parametres. LBA 0 correspond conventionnellement a
+MSF 00:02:00, soit decalage 150 secteurs.
+
+CD-DA utilise pistes audio; XA entrelace fichiers audio/video. Un rip ISO 2048
+octets perd pistes audio et sous-canaux : BIN/CUE est preferable pour preservation.
+
+
+==============================================================================
+29. PROTECTION, LICENCE ET REGIONS
+==============================================================================
+
+Le wobble/subcode de la zone d'entree contient une chaine de licence regionale
+que le controleur authentifie. Une copie CD-R ordinaire ne reproduit pas ce
+signal physique. Le BIOS verifie aussi licence/region avant boot normal.
+
+Les consoles NTSC-J, NTSC-U/C et PAL ont BIOS, chaine et cadence video differents.
+Les puces de contournement, swaps et BIOS modifies sortent du comportement
+officiel et peuvent perturber certains jeux. Un emulateur doit appliquer une
+politique claire, sans pretendre qu'une image ISO contient le wobble absent.
+
+
+==============================================================================
+30. MANETTES ET PORT SERIE SIO0
+==============================================================================
+
+SIO0 se trouve vers 1F801040h : data, status, mode, control et baud. Il dessert
+manettes et cartes memoire par selection /ATT, horloge serie et ACK sur IRQ7.
+
+Transaction : abaisser ATT pour le port, envoyer octets, recevoir simultanement,
+attendre ACK entre octets, puis relever ATT. Les deux connecteurs sont multiplexes.
+Manette commence souvent par 01h, commande 42h, puis ID, 5Ah et donnees.
+
+Le bus est synchrone full-duplex de type serie proprietaire, pas UART RS-232.
+Les timeouts et peripheriques multitap changent longueur/protocole.
+
+
+==============================================================================
+31. MANETTE NUMERIQUE, ANALOGIQUE ET DUALSHOCK
+==============================================================================
+
+Pad numerique : 16 boutons actifs bas sur deux octets. ID courant 41h. Les bits
+representent Select, Start, directions, L1/L2/R1/R2 et quatre boutons formes.
+
+Analogique : IDs et modes indiquent presence de sticks, puis octets RightX,
+RightY, LeftX, LeftY centres vers 80h. DualShock ajoute deux moteurs : commande
+de configuration et mapping des octets d'actuation. Le petit moteur est on/off;
+le grand accepte une intensite.
+
+Ne pas supposer une reponse de cinq octets. Lire ID/longueur, gerer mode config,
+absence ACK, multitap, souris, NegCon et peripheriques tiers.
+
+
+==============================================================================
+32. CARTES MEMOIRE
+==============================================================================
+
+Une carte standard contient 128 Kio : 1024 secteurs de 128 octets, organises en
+16 blocs de 8 Kio. Le bloc 0 contient en-tete, repertoire et tables; 15 blocs
+sont utilisables par sauvegardes. Une sauvegarde peut chainer plusieurs blocs.
+
+Le protocole SIO0 commence par 81h. Commande 52h lit, 57h ecrit, avec adresse de
+secteur, ACK, donnees et checksum XOR. Les details exacts de trame et codes de
+fin doivent etre respectes.
+
+Ecriture sure : lire annuaire, choisir blocs libres, ecrire donnees et chaines,
+mettre a jour cadres avec checksum et gerer interruption d'alimentation. Pour
+preservation, conserver l'image brute 128 Kio et verifier les deux copies/tables.
+
+
+==============================================================================
+33. SIO1, PORT SERIE ET PORT PARALLELE
+==============================================================================
+
+SIO1 vers 1F801050h est une interface serie asynchrone/synchrone utilisee par le
+cable de liaison et outils. Elle a data/status/mode/control/baud et IRQ8.
+
+Les premieres consoles exposent un Serial I/O externe et un port Parallel I/O
+d'expansion. Les revisions tardives suppriment le parallele; PS one simplifie
+encore. Le port parallele donne acces a une region d'expansion mais n'est ni
+Centronics ni port PC.
+
+Un programme commercial ne doit pas exiger ces connecteurs sans detection du
+modele. Les accessoires non officiels peuvent modifier demarrage et memoire.
+
+
+==============================================================================
+34. CARTE DES REGISTRES D'E/S
+==============================================================================
+
+Adresse       Fonction
+------------  ---------------------------------------------------------------
+1F801000h+    Memory Control, Expansion, RAM size/cache selon registre
+1F801040h+    SIO0 manette/carte
+1F801050h+    SIO1
+1F801060h     RAM size/memory control
+1F801070h     I_STAT
+1F801074h     I_MASK
+1F801080h+    DMA0--DMA6
+1F8010F0h     DPCR
+1F8010F4h     DICR
+1F801100h+    timers 0--2
+1F801800h+    CD-ROM
+1F801810h     GP0/GPUREAD
+1F801814h     GP1/GPUSTAT
+1F801820h     MDEC command/data
+1F801824h     MDEC status/control
+1F801C00h+    SPU voix et controle
+1F802000h+    Expansion Region 2
+
+Largeur d'acces compte : SPU surtout 16 bits, GPU/MDEC/DMA 32 bits, CD 8 bits.
+Une largeur incorrecte peut etre ignoree, dupliquee ou produire un autre effet.
+
+
+==============================================================================
+35. FORMAT PS-X EXE
+==============================================================================
+
+Un executable commence par en-tete de 800h octets. Signature ASCII "PS-X EXE"
+a l'offset 0. Champs little-endian importants :
+
+10h initial PC                  14h initial GP
+18h destination de chargement  1Ch taille du texte/donnees
+20h adresse data (normalement 0) 24h taille data (normalement 0)
+28h adresse BSS (normalement 0)  2Ch taille BSS (normalement 0)
+30h base de pile                34h offset/taille ajoute a la pile
+4Ch-- afficheur marqueur region dans plusieurs outils
+
+Le corps a 800h est copie a destination puis registres initialises. Les champs
+et offsets reserves doivent etre zero/compatibles avec le chargeur vise.
+
+Sur CD, SYSTEM.CNF contient par exemple BOOT = cdrom:\\PSX.EXE;1. L'executable
+seul ne contient ni filesystem, licence ni donnees du jeu.
+
+
+==============================================================================
+36. ORGANISATION D'UN PROGRAMME
+==============================================================================
+
+Disposition typique : code/donnees a 80010000h, heap apres BSS, pile pres du haut
+de RAM, buffers DMA alignes en RAM principale. Les SDK varient cette convention.
+
+Etapes : initialiser GP/SP/BSS, callbacks/interruptions, GPU et buffers, charger
+textures/CLUT, initialiser pad/CD/SPU, boucle VBlank, construire OT, lancer DMA,
+mettre a jour simulation, synchroniser et basculer affichage.
+
+Les adresses de liaison KSEG0 doivent etre converties en physique pour DMA avec
+masque 00FFFFFFh. Nettoyer/invalider cache d'instructions si code auto-modifie.
+
+
+==============================================================================
+37. INITIALISATION DU MATERIEL
+==============================================================================
+
+Ordre bas niveau recommande :
+
+1. desactiver/masquer IRQ et DMA inutiles;
+2. initialiser pile, GP et BSS;
+3. installer gestionnaire d'exception;
+4. configurer I_MASK et peripheriques un a un;
+5. reset GPU, plages video et environnement de dessin;
+6. preparer deux framebuffers et OT;
+7. initialiser SIO0 puis lire type de pad;
+8. initialiser SPU, transfer mode et volumes;
+9. initialiser CD et attendre ses reponses;
+10. autoriser IRQ CPU en dernier.
+
+Avec bibliotheque BIOS/SDK, ne pas reinitialiser derriere elle les memes registres.
+
+
+==============================================================================
+38. ASSEMBLEUR MIPS : BIOS ET INTERRUPTIONS
+==============================================================================
+
+Appel BIOS getchar/putchar suit $t1 + vecteur A0/B0/C0. Exemple generique :
+
+        .set    noreorder
+        li      $a0,0x41
+        li      $t1,0x3C
+        jal     0xA0
+        nop
+
+Lecture des IRQ actives :
+
+        lui     $t0,0x1F80
+        lw      $t1,0x1070($t0)    # I_STAT
+        lw      $t2,0x1074($t0)    # I_MASK
+        and     $t1,$t1,$t2
+        andi    $t3,$t1,1          # VBlank
+        beq     $t3,$zero,no_vblank
+        nop
+        # acquitter source selon semantique I_STAT, puis handler BIOS/retour
+
+Une ISR complete sauvegarde les registres susceptibles d'etre utilises, COP0
+EPC/Status et traite BD. Reutiliser le gestionnaire SDK est plus sur.
+
+
+==============================================================================
+39. ASSEMBLEUR MIPS : GPU
+==============================================================================
+
+Envoyer un GP1 reset puis attendre readiness GP0 :
+
+        lui     $t0,0x1F80
+        li      $t1,0x00000000
+        sw      $t1,0x1814($t0)    # GP1(00h), reset
+waitgp: lw      $t2,0x1814($t0)    # GPUSTAT
+        srl     $t2,$t2,26
+        andi    $t2,$t2,1
+        beq     $t2,$zero,waitgp
+        nop
+        li      $t1,0x020000FF      # fill rectangle, couleur rouge (BGR)
+        sw      $t1,0x1810($t0)
+        li      $t1,0x00000000      # x,y
+        sw      $t1,0x1810($t0)
+        li      $t1,0x00100010      # largeur,hauteur 16x16
+        sw      $t1,0x1810($t0)
+
+Il faut auparavant programmer affichage/drawing area. La couleur GP0 est codee
+R dans bits 0--7, G 8--15, B 16--23; le commentaire BGR concerne l'ordre visuel
+des octets dans le mot.
+
+
+==============================================================================
+40. C : AFFICHAGE ET DOUBLE BUFFERING
+==============================================================================
+
+Pseudo-C independant du SDK :
+
+typedef volatile unsigned int vu32;
+#define GP0 (*(vu32 *)0xBF801810)
+#define GP1 (*(vu32 *)0xBF801814)
+
+static void gp0(unsigned int v) {
+    while (!(GP1 & (1u << 26))) { }
+    GP0 = v;
+}
+
+void fill16(int x, int y, unsigned rgb) {
+    gp0(0x02000000u | (rgb & 0x00FFFFFFu));
+    gp0((y << 16) | (x & 0xFFFF));
+    gp0((16 << 16) | 16);
+}
+
+Les pointeurs KSEG1 BF... evitent cache. Ajouter timeouts en outil/debug. Un jeu
+emploie normalement paquets en RAM et DMA2, pas polling mot par mot.
+
+
+==============================================================================
+41. C : MANETTE ET SON
+==============================================================================
+
+Pseudo-code de lecture pad via bibliotheque :
+
+pad_init(buffer_port1, sizeof buffer_port1);
+for (;;) {
+    wait_vblank();
+    if (pad_connected(buffer_port1)) {
+        unsigned buttons = pad_buttons_active_low(buffer_port1);
+        if (!(buttons & BUTTON_CROSS)) jump();
+    }
+}
+
+Pour SPU : allouer adresses en RAM sonore, transferer des blocs ADPCM par DMA4,
+programmer start/repeat, pitch, volumes et ADSR, puis ecrire Key On. Attendre la
+fin DMA avant reutiliser le buffer CPU. Ne jamais envoyer PCM brut comme si SPU
+RAM etait une sortie DAC lineaire.
+
+
+==============================================================================
+42. CALCUL 3D ET PRECISION NUMERIQUE
+==============================================================================
+
+Les matrices/vecteurs GTE utilisent formats fixes et plages limitees. Translation
+et profondeur demandent mise a l'echelle du monde; sinon MAC/IR saturent et FLAG
+signale overflow. H et SZ participent a division perspective.
+
+Le clipping pres/viewport reste logiciel. NCLIP donne orientation 2D, pas une
+garantie de visibilite 3D. L'absence de correction perspective fait onduler les
+textures; subdiviser les grandes surfaces reduit l'effet au cout de primitives.
+
+
+==============================================================================
+43. OPTIMISATION
+==============================================================================
+
+- remplir les load/branch delay slots avec travail utile et sur;
+- grouper donnees contigues, aligner mots et buffers DMA;
+- employer scratchpad pour petites structures chaudes;
+- utiliser GTE en pipeline et lire resultats apres latence;
+- construire OT pendant que GPU travaille;
+- eviter DrawSync apres chaque primitive;
+- charger textures/sons par lots et planifier CD par secteurs contigus;
+- employer fixed-point et tables plutot que flottant logiciel;
+- limiter overdraw, semi-transparence et grandes zones texturees;
+- profiler sur console, car emulateur moderne cache les contentions.
+
+
+==============================================================================
+44. DEVELOPPEMENT, OUTILS ET DEBOGAGE
+==============================================================================
+
+L'environnement officiel historique Sony/Psy-Q utilisait compilateur C, assembleur,
+linker, bibliotheques libgpu/libgte/libspu/libcd/libpad, cartes de developpement
+et outils de CD. Ces SDK sont proprietaires; verifier les droits avant usage.
+
+Les outils homebrew modernes libres comprennent GCC/binutils MIPS, PSn00bSDK et
+emulateurs/debogueurs. Ils ne garantissent pas les memes ABI/structures que Psy-Q.
+
+Debogage : sortie TTY BIOS sur environnement qui la capture, cable serie, carte
+de developpement, logs emulator, breakpoints CPU/GPU et traces DMA. Toujours
+valider sur materiel reel et plusieurs revisions.
+
+
+==============================================================================
+45. COMPATIBILITE ENTRE REVISIONS
+==============================================================================
+
+Varient : BIOS, GPU revision, timings, lecteur optique, DAC/filtrage audio,
+encodeur video, sorties RCA/RF/AV Multi Out, ports parallele/serie et alimentation.
+
+Regles : utiliser BIOS documente, detecter PAL/NTSC, ne pas dependre d'une valeur
+GPU non documentee, gerer seek lent/erreurs, ne pas exiger port parallele et
+tester SCPH ancien, 55xx/75xx, 90xx et PS one si la compatibilite est importante.
+
+
+==============================================================================
+46. CONSEILS POUR UN EMULATEUR
+==============================================================================
+
+CPU : MIPS I little-endian, load/branch delay, exceptions BD/EPC, overflow,
+acces non alignes, HI/LO latence, COP0 cache isolation et alias KSEG.
+
+GTE : chaque registre, largeur intermediaire, saturation, FLAG, FIFO et timing.
+Les tests GTE revelent les approximations rapidement.
+
+GPU : FIFO, GP0 packet state, rasterisation top-left/edges, texture cache, CLUT,
+dither, mask, semi-transparence, 24 bits, interlace et relations timer/retrace.
+
+DMA/IRQ : priorites DPCR, modes bloc/liste/chopping, OTC, DICR et acquittements
+concurrents. Les DMA doivent voler du temps et generer erreurs hors RAM.
+
+SPU : ADPCM exact, interpolation, ADSR, noise, modulation, reverb, CD mix et IRQ.
+
+CD : interface indexee, files param/reponse/data, phases IRQ, seek, 1x/2x, XA,
+CD-DA, subchannel et changement de disque. Supporter BIN/CUE correctement.
+
+SIO : echange full-duplex, ACK/IRQ, longueurs variables, cartes memoire et multitap.
+
+BIOS : demander dump legal ou HLE clairement annonce. Les jeux peuvent melanger
+BIOS et acces direct, et exploiter des bogues du BIOS original.
+
+
+==============================================================================
+47. PLAN DE VALIDATION
+==============================================================================
+
+1. Reset, BIOS regional et chargement PS-X EXE.
+2. Tests CPU MIPS I, delay slots, exceptions et cache isolation.
+3. GTE instruction par instruction, limites et FLAG.
+4. GPU primitives, edges, texture 4/8/15 bits, CLUT, dither et blending.
+5. DMA0--6, liste chainee, OTC, priorites et IRQ.
+6. Timers avec dotclock/HBlank, target/max et modes IRQ.
+7. VBlank PAL/NTSC, interlace et affichage 15/24 bits.
+8. MDEC avec flux connus et comparaison macroblocs.
+9. SPU 24 voix, boucles, ADSR, pitch, noise, reverb et IRQ.
+10. CD Mode1/Mode2/XA/CD-DA, seek, erreurs et changement.
+11. Pad numerique, analogique, DualShock, multitap et absence peripherique.
+12. Carte memoire lecture/ecriture, checksum, chaines et coupure simulee.
+13. Plusieurs BIOS/GPU/revisions SCPH.
+14. Logiciels homebrew de test et jeux utilisant acces non documentes.
+15. Comparer audio, video et traces avec une vraie console.
+
+
+==============================================================================
+48. MAINTENANCE ET RESTAURATION
+==============================================================================
+
+- Identifier SCPH et reference de carte mere avant commander des pieces.
+- Deconnecter secteur; les modeles a alimentation interne exposent le primaire.
+- Verifier fusibles CMS, rails, condensateurs et connecteurs avant remplacement.
+- Nettoyer lentille avec produit/methode adaptes, sans forcer suspension.
+- Les blocs KSM different; regler potentiometres au hasard peut detruire laser.
+- Examiner engrenages, plateau, fin de course et nappe du bloc optique.
+- Remplacer condensateurs seulement apres diagnostic, polarite et ESR verifies.
+- Nettoyer ports manette/carte et AV Multi Out sans abrasif agressif.
+- Sauvegarder cartes memoire et disques; utiliser BIN/CUE pour pistes audio.
+- Conserver blindages, vis de longueur correcte, pads thermiques et pieces.
+
+
+==============================================================================
+49. SECURITE ET PRESERVATION
+==============================================================================
+
+Les CD et BIOS commerciaux sont proteges par droit d'auteur. La preservation
+technique n'autorise pas automatiquement leur redistribution. Employer ses
+propres dumps et respecter la legislation locale.
+
+Ne jamais regarder directement une diode laser active. Eviter intervention sur
+alimentation secteur sans competence. Decharger et mesurer selon manuel de
+service. Les protections regionales/licence sont documentees ici pour comprendre
+le materiel et l'emulation, non pour distribuer des copies illicites.
+
+
+==============================================================================
+50. REFERENCES
+==============================================================================
+
+Documentation technique Sony preservee :
+
+- Sony Computer Entertainment, PlayStation Hardware / Developer Reference.
+  https://psx.arthus.net/sdk/Psy-Q/DOCS/Devrefs/Hardware.pdf
+
+- PlayStation Developer's Guide, concepts GPU/GTE/SPU et bibliotheques.
+  https://psx.arthus.net/sdk/Psy-Q/DOCS/TECHNOTE/scee_dev.pdf
+
+- Service manuals SCPH-100x, 550x, 700x, 750x, 900x et PS one.
+  https://psx.arthus.net/docs/service_manuals/
+
+Reference communautaire issue de documentation et retro-ingenierie :
+
+- PlayStation Specifications, psx-spx, No$PSX/consoledev.
+  https://psx-spx.consoledev.net/
+  Version PDF : https://psx-spx.consoledev.net/psx-spx.pdf
+
+Sections particulierement utiles : Memory Map, CPU, GTE, GPU, DMA, Timers,
+MDEC, SPU, CD-ROM, Controllers and Memory Cards, Kernel/BIOS et EXE format.
+
+Autres references :
+
+- MIPS R3000 Family Architecture/User manuals.
+- Documentation de PSn00bSDK pour une chaine homebrew moderne.
+- Images de test open source CPU/GTE/GPU/SPU, avec validation sur console.
+
+Les manuels Sony historiques peuvent avoir ete diffuses sous restrictions. Ils
+sont cites comme sources techniques; verifier licence et droit d'utilisation.
