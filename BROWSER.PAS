@@ -469,7 +469,10 @@ Const
  DOM_NODE_DOCUMENT_FRAGMENT = 11;{ Fragment de document }
 
  { Limites du DOM }
- MAX_DOM_QUERY_RESULTS = 100;    { Nombre maximum de resultats de requete }
+MAX_DOM_QUERY_RESULTS = 512;    { Une page reelle peut avoir plus de 100 LINK
+                                  avant sa feuille CSS principale (index.htm
+                                  en a plus de 150) : avec 100, le stylesheet
+                                  n'etait jamais trouve ni charge. }
  MAX_DOM_EVENT_LISTENERS = 32;   { Nombre maximum de gestionnaires d'evenements }
 
  { Types d'evenements DOM }
