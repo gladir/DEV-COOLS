@@ -8246,8 +8246,10 @@ Var
  OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
  WidthSpec, HeightSpec: String;
+ BgColorSpec: String;
  CellStyle: DOMStyle;
  CellBgColor, TryBgColor: Integer;
+ BgNode: HTMLNodePtr;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -8271,6 +8273,25 @@ Begin
    this.className) plutot que mise en cache, comme pour le fond de
    <body> dans RenderHTMLDocument. }
  CellBgColor := RENDER_BG_COLOR;
+
+ { L'attribut HTML historique BGCOLOR du tableau est visible a travers
+   ses cellules lorsqu'elles n'ont pas leur propre fond. Comme ce moteur
+   peint chaque TD avec un rectangle opaque, il faut reproduire cet effet
+   explicitement en recherchant d'abord la cellule, puis ses ancetres
+   (TR/TBODY/TABLE). C'est notamment le cas du menu de index.htm dont le
+   TABLE porte bgcolor="#c0c0c0" et les TD class="MenuItem" aucun fond. }
+ BgNode := Node;
+ While BgNode <> Nil Do Begin
+  BgColorSpec := GetNodeAttribute(BgNode, 'bgcolor');
+  If Length(BgColorSpec) > 0 Then Begin
+   TryBgColor := CSSColorToIndex(BgColorSpec);
+   If TryBgColor >= 0 Then CellBgColor := TryBgColor;
+   Break;
+  End;
+  If BgNode^.TagType = TAG_TABLE Then Break;
+  BgNode := BgNode^.Parent;
+ End;
+
  If CSSEnabled Then Begin
   CSSResolveCascade(Node, CellStyle);
   If Length(CellStyle.BackgroundColor) > 0 Then Begin
