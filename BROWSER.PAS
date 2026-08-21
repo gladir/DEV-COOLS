@@ -11436,8 +11436,11 @@ Const
 
  { Constantes pour DEFLATE }
  DEFLATE_MAX_BITS = 15;
- DEFLATE_MAX_LIT_CODES = 286;
- DEFLATE_MAX_DIST_CODES = 30;
+ { Les tables fixes contiennent 288 codes lit/length et 32 codes distance.
+   Les symboles 286/287 et 30/31 sont reserves, mais doivent disposer d'une
+   case pendant la construction avant d'etre rejetes au decodage. }
+ DEFLATE_MAX_LIT_CODES = 288;
+ DEFLATE_MAX_DIST_CODES = 32;
  DEFLATE_MAX_CODE_LENGTH = 19;
 
 Type
@@ -11659,41 +11662,53 @@ Procedure DeflateBuildHuffTable(Var Table: DeflateHuffTable;
                                  Var Lengths: Array Of Byte;
                                  NumCodes: Integer);
 Var
- I, Code, Len: Integer;
- NextCode: Array[0..DEFLATE_MAX_BITS] Of Integer;
+ I, Len, SymbolCount: Integer;
+ Offsets: Array[0..DEFLATE_MAX_BITS] Of Integer;
 Begin
  Table.Valid := False;
- Table.NumSymbols := NumCodes;
+ Table.NumSymbols := 0;
+ If (NumCodes < 0) Or (NumCodes > Length(Lengths)) Or
+    (NumCodes > DEFLATE_MAX_LIT_CODES) Then Exit;
 
  { Compter les codes par longueur }
  For I := 0 To DEFLATE_MAX_BITS Do Table.Counts[I] := 0;
- For I := 0 To NumCodes - 1 Do
-  If Lengths[I] > 0 Then
-   Inc(Table.Counts[Lengths[I]]);
-
- { Calculer les premiers codes par longueur }
- Code := 0;
- For I := 1 To DEFLATE_MAX_BITS Do Begin
-  Code := (Code + Table.Counts[I - 1]) Shl 1;
-  NextCode[I] := Code;
- End;
-
- { Assigner les symboles }
+ SymbolCount := 0;
  For I := 0 To NumCodes - 1 Do Begin
   Len := Lengths[I];
+  If Len > DEFLATE_MAX_BITS Then Exit;
   If Len > 0 Then Begin
-   Table.Symbols[NextCode[Len]] := I;
-   Inc(NextCode[Len]);
+   Inc(Table.Counts[Len]);
+   Inc(SymbolCount);
   End;
  End;
 
+ { RFC 1951 : Symbols est une liste compacte des symboles tries d'abord
+   par longueur, puis par valeur de symbole. L'ancien code utilisait le
+   code canonique (jusqu'a 32767) comme indice d'un tableau [0..287], ce
+   qui provoquait ERangeError avec -Cr et corrompait la RAM sans -Cr. }
+ Offsets[0] := 0;
+ Offsets[1] := 0;
+ For Len := 1 To DEFLATE_MAX_BITS - 1 Do
+  Offsets[Len + 1] := Offsets[Len] + Table.Counts[Len];
+
+ For I := 0 To NumCodes - 1 Do Begin
+  Len := Lengths[I];
+  If Len > 0 Then Begin
+   If Offsets[Len] >= DEFLATE_MAX_LIT_CODES Then Exit;
+   Table.Symbols[Offsets[Len]] := I;
+   Inc(Offsets[Len]);
+  End;
+ End;
+
+ Table.NumSymbols := SymbolCount;
  Table.Valid := True;
 End;
 
 { Decoder un symbole Huffman }
 Function DeflateDecodeSymbol(Var Table: DeflateHuffTable): Integer;
 Var
- Code, Len, First, Index, Count: Integer;
+ Code, First: LongInt;
+ Len, Index, Count, SymbolIndex: Integer;
 Begin
  DeflateDecodeSymbol := -1;
  If Not Table.Valid Then Exit;
@@ -11707,8 +11722,10 @@ Begin
   If Code < 0 Then Exit;
 
   Count := Table.Counts[Len];
-  If Code - First < Count Then Begin
-   DeflateDecodeSymbol := Table.Symbols[Index + Code - First];
+  If (Code >= First) And (Code - First < Count) Then Begin
+   SymbolIndex := Index + (Code - First);
+   If (SymbolIndex < 0) Or (SymbolIndex >= Table.NumSymbols) Then Exit;
+   DeflateDecodeSymbol := Table.Symbols[SymbolIndex];
    Exit;
   End;
   First := (First + Count) Shl 1;
@@ -11730,7 +11747,7 @@ Var
  LitLenTable, DistTable, CodeTable: DeflateHuffTable;
  HLit, HDist, HCLen: Integer;
  Symbol, Length, Distance: Integer;
- Extra: Integer;
+ Extra, PrevLength: Integer;
  CopyPos: LongInt;
 Begin
  DeflateDecompressBlock := False;
@@ -11798,6 +11815,7 @@ Begin
      End
      Else Begin
       { Longueur + distance }
+      If (Symbol < 257) Or (Symbol > 285) Then Exit;
       Length := DeflateLengthBase[Symbol];
       If DeflateLengthExtra[Symbol] > 0 Then Begin
        Extra := DeflateReadBits(DeflateLengthExtra[Symbol]);
@@ -11806,7 +11824,7 @@ Begin
       End;
 
       Symbol := DeflateDecodeSymbol(DistTable);
-      If Symbol < 0 Then Exit;
+      If (Symbol < 0) Or (Symbol > 29) Then Exit;
 
       Distance := DeflateDistBase[Symbol];
       If DeflateDistExtra[Symbol] > 0 Then Begin
@@ -11834,7 +11852,9 @@ Begin
     HDist := DeflateReadBits(5) + 1;
     HCLen := DeflateReadBits(4) + 4;
 
-    If (HLit < 0) Or (HDist < 0) Or (HCLen < 0) Then Exit;
+    If (HLit < 257) Or (HLit > 286) Or
+       (HDist < 1) Or (HDist > 32) Or
+       (HCLen < 4) Or (HCLen > 19) Then Exit;
 
     { Lire les longueurs de codes }
     For I := 0 To 18 Do CodeLengths[I] := 0;
@@ -11856,13 +11876,19 @@ Begin
       Inc(I);
      End
      Else If Symbol = 16 Then Begin
+      If I = 0 Then Exit; { aucun code precedent a repeter }
+      If I - 1 < HLit Then
+       PrevLength := LitLenLengths[I - 1]
+      Else
+       PrevLength := DistLengths[I - HLit - 1];
       Extra := DeflateReadBits(2) + 3;
       If Extra < 0 Then Exit;
       While Extra > 0 Do Begin
+       If I >= HLit + HDist Then Exit;
        If I < HLit Then
-        LitLenLengths[I] := LitLenLengths[I - 1]
+        LitLenLengths[I] := PrevLength
        Else
-        DistLengths[I - HLit] := DistLengths[I - HLit - 1];
+        DistLengths[I - HLit] := PrevLength;
        Inc(I);
        Dec(Extra);
       End;
@@ -11871,22 +11897,25 @@ Begin
       Extra := DeflateReadBits(3) + 3;
       If Extra < 0 Then Exit;
       While Extra > 0 Do Begin
+       If I >= HLit + HDist Then Exit;
        If I < HLit Then LitLenLengths[I] := 0
        Else DistLengths[I - HLit] := 0;
        Inc(I);
        Dec(Extra);
       End;
      End
-     Else Begin { Symbol = 18 }
+     Else If Symbol = 18 Then Begin
       Extra := DeflateReadBits(7) + 11;
       If Extra < 0 Then Exit;
       While Extra > 0 Do Begin
+       If I >= HLit + HDist Then Exit;
        If I < HLit Then LitLenLengths[I] := 0
        Else DistLengths[I - HLit] := 0;
        Inc(I);
        Dec(Extra);
       End;
-     End;
+     End
+     Else Exit;
     End;
 
     DeflateBuildHuffTable(LitLenTable, LitLenLengths, HLit);
@@ -11906,6 +11935,7 @@ Begin
       Break;
      End
      Else Begin
+      If (Symbol < 257) Or (Symbol > 285) Then Exit;
       Length := DeflateLengthBase[Symbol];
       If DeflateLengthExtra[Symbol] > 0 Then Begin
        Extra := DeflateReadBits(DeflateLengthExtra[Symbol]);
@@ -11914,7 +11944,7 @@ Begin
       End;
 
       Symbol := DeflateDecodeSymbol(DistTable);
-      If Symbol < 0 Then Exit;
+      If (Symbol < 0) Or (Symbol > 29) Then Exit;
 
       Distance := DeflateDistBase[Symbol];
       If DeflateDistExtra[Symbol] > 0 Then Begin
