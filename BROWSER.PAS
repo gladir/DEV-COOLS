@@ -2701,6 +2701,41 @@ Begin
  JSSkipComments := Pos;
 End;
 
+{ Decoder les sequences d'echappement d'une chaine JavaScript. Le lexer
+  savait sauter un guillemet precede de \ pour trouver la fin du token,
+  mais rendait ensuite la sous-chaine brute : src=\'IMAGES/...\' restait
+  donc litteralement antislash-apostrophe dans le HTML genere. }
+Function JSDecodeStringLiteral(Const S: String): String;
+Var
+ I: LongInt;
+ R: String;
+Begin
+ R := '';
+ I := 1;
+ While I <= Length(S) Do Begin
+  If (S[I] = '\') And (I < Length(S)) Then Begin
+   Inc(I);
+   Case S[I] Of
+    'n': R := R + #10;
+    'r': R := R + #13;
+    't': R := R + #9;
+    'b': R := R + #8;
+    'f': R := R + #12;
+    'v': R := R + #11;
+    #10: ; { continuation de ligne }
+    #13: Begin
+     If (I < Length(S)) And (S[I + 1] = #10) Then Inc(I);
+    End;
+    Else R := R + S[I]; { \', \", \\, etc. }
+   End;
+  End
+  Else
+   R := R + S[I];
+  Inc(I);
+ End;
+ JSDecodeStringLiteral := R;
+End;
+
 { Obtenir le prochain token du script }
 Function JSGetNextToken(Const Script: String; Var Pos: LongInt): JSToken;
 Var
@@ -2747,7 +2782,7 @@ Begin
    If (Script[Pos] = '\') And (Pos < Length(Script)) Then Inc(Pos);
    Inc(Pos);
   End;
-  Token.TokValue := Copy(Script, StartPos, Pos - StartPos);
+  Token.TokValue := JSDecodeStringLiteral(Copy(Script, StartPos, Pos - StartPos));
   If Pos <= Length(Script) Then Inc(Pos);
   JSGetNextToken := Token;
   Exit;
@@ -15551,9 +15586,9 @@ End;
 Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String);
 Var
  FragRoot, Child, NextChild: HTMLNodePtr;
+ FragmentHTML: String;
 Begin
  If Node = Nil Then Exit;
- If Length(HTML) = 0 Then Exit;
 
  { Detacher et liberer les anciens enfants }
  Child := Node^.FirstChild;
@@ -15566,12 +15601,31 @@ Begin
  Node^.LastChild := Nil;
  Node^.ChildCount := 0;
 
+ { Une valeur vide signifie bien supprimer tout le contenu. }
+ If Length(HTML) = 0 Then Exit;
+
+ FragmentHTML := HTML;
+ { Dans un gestionnaire inline, le source HTML emploie normalement
+   &lt; et &gt; pour ne pas introduire de balises dans la valeur de
+   l'attribut. Le parseur du document les decode deja. Certains anciens
+   documents ou chemins de chargement laissent toutefois cette couche
+   d'entites dans la chaine JavaScript. Dans ce cas seulement, la retirer
+   avant de parser innerHTML ; sinon "&lt;img ...&gt;" serait cree comme un
+   noeud texte et affiche litteralement. Ne pas decoder sans condition :
+   un vrai innerHTML contenant du texte volontairement echappe doit rester
+   du texte. }
+ If (Pos('<', FragmentHTML) = 0) And
+    ((Pos('&lt;', HTMLLowerCase(FragmentHTML)) > 0) Or
+     (Pos('&#60;', FragmentHTML) > 0) Or
+     (Pos('&#x3c;', HTMLLowerCase(FragmentHTML)) > 0)) Then
+  FragmentHTML := HTMLDecodeEntities(FragmentHTML);
+
  { Utiliser le parseur direct sur la chaine pour eviter les ~42
    allocations de blocs de 4 Ko que SetHTMLSourceFromString ferait
    pour une chaine de 169 Ko - ces allocations echouaient (OOM) a
    cause de la fragmentation du tas resultant de la construction de
    la chaine HTML par les nombreux += dans cmDraw/cmDrawSubMenu. }
- FragRoot := ParseHTMLFromString(HTML);
+ FragRoot := ParseHTMLFromString(FragmentHTML);
  If FragRoot = Nil Then Exit;
 
  { Rattacher chaque enfant du document temporaire au noeud cible }
