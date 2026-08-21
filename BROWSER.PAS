@@ -1100,6 +1100,7 @@ Var
    des milliers de noeuds. }
  AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
  AbsolutePositionedCount: Integer;
+ RenderingAbsoluteOverlay: Boolean;
 
  { Minuterie a emplacement unique pour setTimeout/clearTimeout cote JS
    (JSCookMenu.js n'utilise jamais qu'un seul minuteur a la fois, dans
@@ -14135,6 +14136,19 @@ Begin
   { Verifier si l'element doit etre cache }
   If CSSIsElementHidden(NodeStyle) Then Exit;
 
+  { Un element absolute est retire du flux normal. L'ancien moteur le
+    rendait ici comme un bloc ordinaire, puis une seconde fois en overlay :
+    sa hauteur creait alors d'immenses espaces verticaux. Pendant la passe
+    overlay, le drapeau autorise naturellement son rendu reel. }
+  If (HTMLLowerCase(NodeStyle.PositionProp) = 'absolute') And
+     (Not RenderingAbsoluteOverlay) Then Begin
+   If AbsolutePositionedCount < High(AbsolutePositionedNodes) Then Begin
+    Inc(AbsolutePositionedCount);
+    AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
+   End;
+   Exit;
+  End;
+
   { Appliquer les styles au contexte }
   CSSApplyStylesToContext(NodeStyle, Ctx);
 
@@ -14152,15 +14166,6 @@ Begin
   { Marges/padding/bordure/fond resolus en pixels pour cet element. }
   CurrentElementBox := ComputeElementBoxInfo(NodeStyle);
 
-  { Element position:absolute (ex: sous-menu de JSCookMenu.js) :
-    memorise pour la passe d'affichage en survol, voir
-    RenderAbsolutePositionedOverlays. }
-  If HTMLLowerCase(NodeStyle.PositionProp) = 'absolute' Then Begin
-   If AbsolutePositionedCount < High(AbsolutePositionedNodes) Then Begin
-    Inc(AbsolutePositionedCount);
-    AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
-   End;
-  End;
  End;
 
  Case Node^.NodeType Of
@@ -14322,16 +14327,42 @@ Var
  I: Integer;
  NodeStyle: DOMStyle;
  OverlayCtx: RenderContext;
+ OverlayWidth, OverlayHeight, RightPx, BottomPx: Integer;
 Begin
  For I := 1 To AbsolutePositionedCount Do Begin
   CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
-  If HTMLLowerCase(NodeStyle.Visibility) = 'visible' Then Begin
+  If Not CSSIsElementHidden(NodeStyle) Then Begin
    OverlayCtx := BaseCtx;
-   OverlayCtx.X := RenderOriginX + CSSParseDimension(NodeStyle.LeftProp, 0);
-   OverlayCtx.Y := RenderOriginY + CSSParseDimension(NodeStyle.TopProp, 0);
+   OverlayWidth := CSSParseDimension(NodeStyle.Width,
+                    GetTextWidth(DOMGetTextContent(AbsolutePositionedNodes[I])) + 16);
+   If OverlayWidth < 1 Then OverlayWidth := 1;
+   OverlayHeight := CSSParseDimension(NodeStyle.Height, OverlayCtx.LineHeight);
+   If OverlayHeight < 1 Then OverlayHeight := OverlayCtx.LineHeight;
+
+   If Length(NodeStyle.LeftProp) > 0 Then
+    OverlayCtx.X := RenderOriginX + CSSParseDimension(NodeStyle.LeftProp, 0)
+   Else If Length(NodeStyle.RightProp) > 0 Then Begin
+    RightPx := CSSParseDimension(NodeStyle.RightProp, 0);
+    OverlayCtx.X := RenderOriginX + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) -
+                    RightPx - OverlayWidth;
+   End
+   Else
+    OverlayCtx.X := RenderOriginX;
+
+   If Length(NodeStyle.TopProp) > 0 Then
+    OverlayCtx.Y := RenderOriginY + CSSParseDimension(NodeStyle.TopProp, 0)
+   Else If Length(NodeStyle.BottomProp) > 0 Then Begin
+    BottomPx := CSSParseDimension(NodeStyle.BottomProp, 0);
+    OverlayCtx.Y := RenderOriginY + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) -
+                    BottomPx - OverlayHeight;
+   End
+   Else
+    OverlayCtx.Y := RenderOriginY;
    OverlayCtx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
    OverlayCtx.BlockLevel := 0;
+   RenderingAbsoluteOverlay := True;
    RenderHTMLNode(AbsolutePositionedNodes[I], OverlayCtx);
+   RenderingAbsoluteOverlay := False;
   End;
  End;
 End;
@@ -14360,6 +14391,7 @@ Begin
  ClearInteractiveAreas;
  ClearJSNodeBoxes;
  AbsolutePositionedCount := 0;
+ RenderingAbsoluteOverlay := False;
 
  { Couleur de fond de la page = background-color CSS du <body>, la
    couleur la plus visible de toute la page et pourtant jusqu'ici
