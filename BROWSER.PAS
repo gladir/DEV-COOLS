@@ -8869,10 +8869,7 @@ Var
  OldInLink: Boolean;
  StartX, StartY: Integer;
  EndX, EndY: Integer;
- I: Integer;
- ChildNode: HTMLNodePtr;
- LinkText: String;
- TextW: Integer;
+ LinkCountBefore: Integer;
 Begin
  { Obtenir les attributs href et title }
  Href := GetNodeAttribute(Node, 'href');
@@ -8898,6 +8895,7 @@ Begin
  { Memoriser la position de debut }
  StartX := Ctx.X;
  StartY := Ctx.Y;
+ LinkCountBefore := LinkCount;
 
  { Appliquer la couleur du lien }
  SetColor(RENDER_LINK_COLOR);
@@ -8916,32 +8914,36 @@ Begin
   StartX := RenderOriginX + RENDER_MARGIN_LEFT;
  End;
 
- { Calculer la largeur du texte du lien pour la zone cliquable }
- LinkText := '';
- ChildNode := Node^.FirstChild;
- While ChildNode <> Nil Do Begin
-  If (ChildNode <> Nil) And (ChildNode^.NodeType = HTML_NODE_TEXT) Then Begin
-   LinkText := LinkText + ChildNode^.Content;
-  End;
-  ChildNode := ChildNode^.NextSibling;
- End;
+ { Employer l'etendue reellement occupee par le rendu, et non la seule
+   largeur des noeuds texte. Un lien tel que
+     <a><img ...>&nbsp;&nbsp;Logiciel</a>
+   commence avant l'icone : l'ancienne zone, large seulement comme le mot,
+   couvrait l'icone mais s'arretait avant le texte visible. }
+ { Dans un tableau, les coordonnees du texte sont produites pendant des
+   passes imbriquees de mesure puis de rendu. Une zone attachee au mot peut
+   donc conserver l'ancien Y lorsque la hauteur finale de la rangee est
+   appliquee. La cellule courante, elle, possede deja ici ses limites
+   definitives : rendre cette surface cliquable garantit aussi les liens
+   composes d'une icone, d'espaces et de texte sur plusieurs lignes. }
+ If Ctx.InTable And (Not TableMeasurePass) Then
+  AddLinkArea(Ctx.TableCellX, Ctx.TableRowY,
+              Ctx.TableCellX + Ctx.TableCellWidth,
+              Ctx.TableRowY + Ctx.TableRowHeight, Href, Title)
 
- { Si on a trouve du texte, ajouter la zone de lien }
- If LinkText <> '' Then Begin
-  TextW := TextWidth(LinkText);
+ { Hors tableau, en mode justify, FlushJustifiedLine enregistre directement
+   chaque mot lie avec ses coordonnees finales. Ne pas ajouter ensuite une
+   zone de secours calculee sur la derniere ligne vide d'un lien HTML
+   indente. }
+ Else If LinkCount = LinkCountBefore Then Begin
   If EndY = StartY Then Begin
-   { Lien sur une seule ligne }
-   AddLinkArea(StartX, StartY, StartX + TextW, StartY + Ctx.LineHeight, Href, Title);
+   If EndX > StartX Then
+    AddLinkArea(StartX, StartY, EndX, StartY + Ctx.LineHeight, Href, Title);
   End
   Else Begin
-   { Lien multiligne - enregistrer la zone de la derniere ligne }
-   AddLinkArea(StartX, EndY, EndX, EndY + Ctx.LineHeight, Href, Title);
+   { Lien multiligne sans zone produite par la justification. }
+   If EndX > StartX Then
+    AddLinkArea(StartX, EndY, EndX, EndY + Ctx.LineHeight, Href, Title);
   End;
- End
- Else Begin
-  { Utiliser la position courante comme estimation }
-  If EndX > StartX Then
-   AddLinkArea(StartX, StartY, EndX, StartY + Ctx.LineHeight, Href, Title);
  End;
 
  { Dessiner le soulignement si pas deja fait par RenderText }
