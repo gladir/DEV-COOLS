@@ -3048,6 +3048,12 @@ Begin
   JSSetStyleProp(Node, 'top', JSValueToString(Value))
  Else If LowerProp = 'visibility' Then
   JSSetStyleProp(Node, 'visibility', JSValueToString(Value))
+ Else If LowerProp = 'color' Then
+  JSSetStyleProp(Node, 'color', JSValueToString(Value))
+ Else If LowerProp = 'backgroundcolor' Then
+  JSSetStyleProp(Node, 'background-color', JSValueToString(Value))
+ Else If LowerProp = 'bgcolor' Then
+  DOMSetAttribute(Node, 'bgcolor', JSValueToString(Value))
  Else If LowerProp = 'innerhtml' Then
   JSSetInnerHTML(Node, JSValueToString(Value))
  Else Begin
@@ -3276,6 +3282,84 @@ Begin
   Pos := JSSkipComments(Script, Pos);
  End;
  JSEvalPostfixChain := Current;
+End;
+
+{ Traiter une affectation dont la cible commence par
+  document.getElementById(...).  "document" est un objet natif du
+  mini-interpreteur et non une variable JS ordinaire : le chemin generique
+  des l-values ne pouvait donc jamais atteindre innerHTML, bgColor ou
+  style.X.  Pos pointe juste apres le mot document. }
+Function JSTryDocumentElementAssignment(Const Script: String; Var Pos: LongInt): Boolean;
+Var
+ SavedPos: LongInt;
+ Token: JSToken;
+ Args: Array[0..9] Of JSValue;
+ ArgCount: Integer;
+ Container, Value: JSValue;
+ KeyName: String;
+ ValueStart: LongInt;
+ HasFinalStep: Boolean;
+Begin
+ JSTryDocumentElementAssignment := False;
+ SavedPos := Pos;
+ Pos := JSSkipComments(Script, Pos);
+ If (Pos > Length(Script)) Or (Script[Pos] <> '.') Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Inc(Pos);
+ Pos := JSSkipComments(Script, Pos);
+ Token := JSGetNextToken(Script, Pos);
+ If HTMLLowerCase(Token.TokValue) <> 'getelementbyid' Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Pos := JSSkipComments(Script, Pos);
+ If (Pos > Length(Script)) Or (Script[Pos] <> '(') Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Inc(Pos);
+ JSReadCallArgs(Script, Pos, Args, ArgCount);
+ If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+ If ArgCount = 0 Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Container := JSNodeValue(DOMGetElementById(JSValueToString(Args[0])));
+
+ Pos := JSSkipComments(Script, Pos);
+ HasFinalStep := False;
+ While (Pos <= Length(Script)) And (Script[Pos] = '.') Do Begin
+  Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  Token := JSGetNextToken(Script, Pos);
+  KeyName := Token.TokValue;
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = '.') Then
+   Container := JSGetMemberValue(Container, KeyName)
+  Else Begin
+   HasFinalStep := True;
+   Break;
+  End;
+ End;
+
+ If (Not HasFinalStep) Or (Pos > Length(Script)) Or
+    (Script[Pos] <> '=') Or
+    ((Pos < Length(Script)) And (Script[Pos + 1] = '=')) Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Inc(Pos);
+ ValueStart := Pos;
+ JSSkipToBalanced(Script, Pos, [';']);
+ Value := JSEvaluate(Copy(Script, ValueStart, Pos - ValueStart));
+ Case Container.ValType Of
+  JS_VAL_NODE: JSSetNodeProperty(Container.NodeVal, KeyName, Value);
+  JS_VAL_OBJECT, JS_VAL_ARRAY: JSObjectSetProp(Container.ObjVal, KeyName, Value);
+ End;
+ If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+ JSTryDocumentElementAssignment := True;
 End;
 
 Function JSEvalPrimary(Const Script: String; Var Pos: LongInt): JSValue;
@@ -4101,7 +4185,11 @@ Var
     L^.Pos := JSSkipComments(Script, L^.Pos);
 
     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] In ['.', '[']) Then Begin
-     If (Script[L^.Pos] = '.') And (L^.VarName = 'window') Then Begin
+     If (HTMLLowerCase(L^.VarName) = 'document') And
+        JSTryDocumentElementAssignment(Script, L^.Pos) Then Begin
+      { L'affectation native a ete entierement consommee. }
+     End
+     Else If (Script[L^.Pos] = '.') And (L^.VarName = 'window') Then Begin
       Inc(L^.Pos);
       L^.Pos := JSSkipComments(Script, L^.Pos);
       L^.PropToken := JSGetNextToken(Script, L^.Pos);
@@ -14210,6 +14298,7 @@ Var
  OldTextAlignMode: Byte;
  BoxIdAttr: String;
  BoxStartX, BoxStartY: Integer;
+ HasInlineHandler: Boolean;
 Begin
  If Node = Nil Then Exit;
  If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
@@ -14220,9 +14309,15 @@ Begin
    utilises par exemple par JSCookMenu.js pour positionner ses
    sous-menus). }
  BoxIdAttr := '';
+ HasInlineHandler := False;
  If Node^.NodeType = HTML_NODE_ELEMENT Then
+ Begin
   BoxIdAttr := GetNodeAttribute(Node, 'id');
- If Length(BoxIdAttr) > 0 Then Begin
+  HasInlineHandler := (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+                      (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+                      (Length(GetNodeAttribute(Node, 'onmouseout')) > 0);
+ End;
+ If (Length(BoxIdAttr) > 0) Or HasInlineHandler Then Begin
   BoxStartX := Ctx.X;
   BoxStartY := Ctx.Y;
  End;
@@ -14406,6 +14501,21 @@ Begin
 
  If Length(BoxIdAttr) > 0 Then
   SetJSNodeBox(Node, BoxStartX, BoxStartY, Ctx.MaxX - BoxStartX, (Ctx.Y - BoxStartY) + Ctx.LineHeight);
+
+ { Les gestionnaires inline peuvent appartenir a n'importe quel element,
+   pas seulement TD/TH/TR. Dans le menu de la page d'accueil, onmouseover
+   et onmouseout sont portes par DIV.displayImage. A l'interieur d'une
+   cellule, ses limites finales sont la boite la plus fiable apres les deux
+   passes de mesure du tableau. }
+ If HasInlineHandler Then Begin
+  If Ctx.InTable Then
+   AddInteractiveArea(Ctx.TableCellX, Ctx.TableRowY,
+                      Ctx.TableCellX + Ctx.TableCellWidth,
+                      Ctx.TableRowY + Ctx.TableRowHeight, Node)
+  Else
+   AddInteractiveArea(BoxStartX, BoxStartY, Ctx.MaxX,
+                      Ctx.Y + Ctx.LineHeight, Node);
+ End;
 
  { Restaurer le contexte apres le rendu de cet element }
  If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
