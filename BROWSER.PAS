@@ -469,10 +469,6 @@ Const
  DOM_NODE_DOCUMENT_FRAGMENT = 11;{ Fragment de document }
 
  { Limites du DOM }
-MAX_DOM_QUERY_RESULTS = 512;    { Une page reelle peut avoir plus de 100 LINK
-                                  avant sa feuille CSS principale (index.htm
-                                  en a plus de 150) : avec 100, le stylesheet
-                                  n'etait jamais trouve ni charge. }
  MAX_DOM_EVENT_LISTENERS = 32;   { Nombre maximum de gestionnaires d'evenements }
 
  { Types d'evenements DOM }
@@ -863,10 +859,19 @@ Type
  { Pointeur vers un element DOM (meme que HTMLNode pour l'instant) }
  DOMElementPtr = HTMLNodePtr;
 
- { Liste de noeuds DOM (resultat de requetes comme getElementsByTagName) }
+ { Maillon d'une liste de resultats DOM. Les noeuds HTML references restent la
+   propriete du document; seuls ces maillons sont alloues par la requete. }
+ DOMNodeListItemPtr = ^DOMNodeListItem;
+ DOMNodeListItem = Record
+  Node: HTMLNodePtr;
+  Next: DOMNodeListItemPtr;
+ End;
+
+ { Liste chainee sans plafond fixe (resultat de getElementsByTagName, etc.). }
  DOMNodeList = Record
-  Nodes: Array[1..MAX_DOM_QUERY_RESULTS] Of HTMLNodePtr;
-  Length: Integer;
+  First: DOMNodeListItemPtr;
+  Last: DOMNodeListItemPtr;
+  Length: LongInt;
  End;
 
  { Gestionnaire d'evenement DOM }
@@ -1902,6 +1907,61 @@ Begin
  End;
 End;
 
+{ Fermer implicitement le LI courant lorsqu'un nouveau <li> commence.
+  En HTML, </li> est facultatif. Sans cette recuperation, une liste dont
+  les fermetures sont absentes ou erronees devient une longue imbrication
+  de LI; le rendu et les zones de liens des elements suivants finissent
+  alors par appartenir au mauvais element. On ne traverse jamais la limite
+  de la liste UL/OL courante. }
+Procedure HTMLAutoCloseListItem(Var CurrentNode: HTMLNodePtr;
+                                Root: HTMLNodePtr;
+                                Var CurrentDepth: Integer);
+Var
+ SearchNode: HTMLNodePtr;
+ Tag: String;
+Begin
+ SearchNode := CurrentNode;
+ While SearchNode <> Root Do Begin
+  Tag := HTMLLowerCase(SearchNode^.TagName);
+  If Tag = 'li' Then Begin
+   While CurrentNode <> SearchNode^.Parent Do Begin
+    CurrentNode := CurrentNode^.Parent;
+    If CurrentDepth > 0 Then Dec(CurrentDepth);
+   End;
+   Exit;
+  End;
+  If (Tag = 'ul') Or (Tag = 'ol') Then Exit;
+  SearchNode := SearchNode^.Parent;
+ End;
+End;
+
+{ Chercher une fermeture sans franchir la limite d'une liste pour une
+  balise sans rapport avec celle-ci. Exemple reel: ...<li>C#</a></div>
+  dans CODER/index.htm. L'ancien parseur trouvait un DIV tres eloigne,
+  depilait UL, TABLE, ARTICLE, etc., puis rattachait toute la suite au
+  mauvais endroit. Un navigateur recupere localement cette erreur. }
+Function HTMLFindClosingNodeInScope(CurrentNode, Root: HTMLNodePtr;
+                                    Const CloseTagName: String): HTMLNodePtr;
+Var
+ SearchNode: HTMLNodePtr;
+ Tag, CloseTag: String;
+Begin
+ HTMLFindClosingNodeInScope := Nil;
+ CloseTag := HTMLLowerCase(CloseTagName);
+ SearchNode := CurrentNode;
+ While SearchNode <> Root Do Begin
+  Tag := HTMLLowerCase(SearchNode^.TagName);
+  If Tag = CloseTag Then Begin
+   HTMLFindClosingNodeInScope := SearchNode;
+   Exit;
+  End;
+  If ((Tag = 'ul') Or (Tag = 'ol')) And
+     (CloseTag <> 'ul') And (CloseTag <> 'ol') And (CloseTag <> 'li') Then
+   Exit;
+  SearchNode := SearchNode^.Parent;
+ End;
+End;
+
 { Fonction principale pour parser du HTML }
 Function ParseHTML(Const HTMLSource: HTMLSourceBuffer): HTMLNodePtr;
 Var
@@ -1988,11 +2048,8 @@ Begin
    Inc(Pos);
    { HTML reel est souvent imparfait: chercher l'ancetre correspondant au
      lieu de laisser chaque balise mal fermee augmenter la profondeur. }
-   SearchNode := CurrentNode;
-   While (SearchNode <> Root) And
-         (HTMLLowerCase(SearchNode^.TagName) <> HTMLLowerCase(CloseTagName)) Do
-    SearchNode := SearchNode^.Parent;
-   If SearchNode <> Root Then Begin
+   SearchNode := HTMLFindClosingNodeInScope(CurrentNode, Root, CloseTagName);
+   If SearchNode <> Nil Then Begin
     While CurrentNode <> SearchNode Do Begin
      CurrentNode := CurrentNode^.Parent;
      If CurrentDepth > 0 Then Dec(CurrentDepth);
@@ -2005,6 +2062,8 @@ Begin
    { Balise ouvrante <tag ...> }
    TagName := ExtractTagName(HTMLSource, Pos);
    If TagName <> '' Then Begin
+    If HTMLLowerCase(TagName) = 'li' Then
+     HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
     NewNode := CreateHTMLNode;
     NewNode^.NodeType := HTML_NODE_ELEMENT;
     NewNode^.TagName := TagName;
@@ -4554,6 +4613,52 @@ Begin
  DOMGetElementById := DOMGetElementByIdRecursive(HTMLDocument, Id);
 End;
 
+{ Initialiser une liste de resultats DOM vide. }
+Procedure DOMInitNodeList(Var List: DOMNodeList);
+Begin
+ List.First := Nil;
+ List.Last := Nil;
+ List.Length := 0;
+End;
+
+{ Ajouter un noeud en temps constant a la fin de la liste. }
+Procedure DOMAppendNode(Var List: DOMNodeList; Node: HTMLNodePtr);
+Var
+ Item: DOMNodeListItemPtr;
+Begin
+ New(Item);
+ Item^.Node := Node;
+ Item^.Next := Nil;
+ If List.Last = Nil Then
+  List.First := Item
+ Else
+  List.Last^.Next := Item;
+ List.Last := Item;
+ Inc(List.Length);
+End;
+
+{ Liberer les maillons d'une liste, mais jamais les noeuds du document. }
+Procedure DOMFreeNodeList(Var List: DOMNodeList);
+Var
+ Item, NextItem: DOMNodeListItemPtr;
+Begin
+ Item := List.First;
+ While Item <> Nil Do Begin
+  NextItem := Item^.Next;
+  Dispose(Item);
+  Item := NextItem;
+ End;
+ DOMInitNodeList(List);
+End;
+
+Function DOMFirstNode(Const List: DOMNodeList): HTMLNodePtr;
+Begin
+ If List.First <> Nil Then
+  DOMFirstNode := List.First^.Node
+ Else
+  DOMFirstNode := Nil;
+End;
+
 { Procedure recursive pour chercher des elements par nom de balise }
 Procedure DOMGetElementsByTagNameRecursive(Node: HTMLNodePtr; TagName: String; Var List: DOMNodeList);
 Var
@@ -4567,12 +4672,8 @@ Begin
  While Current <> Nil Do Begin
   If Current^.NodeType = HTML_NODE_ELEMENT Then Begin
    LowerNodeTag := HTMLLowerCase(Current^.TagName);
-   If (LowerTag = '*') Or (LowerNodeTag = LowerTag) Then Begin
-    If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
-     Inc(List.Length);
-     List.Nodes[List.Length] := Current;
-    End;
-   End;
+   If (LowerTag = '*') Or (LowerNodeTag = LowerTag) Then
+    DOMAppendNode(List, Current);
   End;
 
   If Current^.FirstChild <> Nil Then
@@ -4592,7 +4693,7 @@ Function DOMGetElementsByTagName(TagName: String): DOMNodeList;
 Var
  List: DOMNodeList;
 Begin
- List.Length := 0;
+ DOMInitNodeList(List);
  DOMGetElementsByTagNameRecursive(HTMLDocument, TagName, List);
  DOMGetElementsByTagName := List;
 End;
@@ -4635,10 +4736,7 @@ Begin
  Current := Node;
  While Current <> Nil Do Begin
   If DOMHasClass(Current, ClassName) Then Begin
-   If List.Length < MAX_DOM_QUERY_RESULTS Then Begin
-    Inc(List.Length);
-    List.Nodes[List.Length] := Current;
-   End;
+   DOMAppendNode(List, Current);
   End;
 
   If Current^.FirstChild <> Nil Then
@@ -4658,7 +4756,7 @@ Function DOMGetElementsByClassName(ClassName: String): DOMNodeList;
 Var
  List: DOMNodeList;
 Begin
- List.Length := 0;
+ DOMInitNodeList(List);
  DOMGetElementsByClassNameRecursive(HTMLDocument, ClassName, List);
  DOMGetElementsByClassName := List;
 End;
@@ -4980,10 +5078,8 @@ Var
  List: DOMNodeList;
 Begin
  List := DOMGetElementsByTagName('body');
- If List.Length > 0 Then
-  DOMGetBody := List.Nodes[1]
- Else
-  DOMGetBody := Nil;
+ DOMGetBody := DOMFirstNode(List);
+ DOMFreeNodeList(List);
 End;
 
 { Obtenir le head du document (document.head) }
@@ -4992,10 +5088,8 @@ Var
  List: DOMNodeList;
 Begin
  List := DOMGetElementsByTagName('head');
- If List.Length > 0 Then
-  DOMGetHead := List.Nodes[1]
- Else
-  DOMGetHead := Nil;
+ DOMGetHead := DOMFirstNode(List);
+ DOMFreeNodeList(List);
 End;
 
 { Obtenir le titre du document (document.title) }
@@ -5004,10 +5098,11 @@ Var
  List: DOMNodeList;
 Begin
  List := DOMGetElementsByTagName('title');
- If List.Length > 0 Then
-  DOMGetTitle := DOMGetTextContent(List.Nodes[1])
+ If List.First <> Nil Then
+  DOMGetTitle := DOMGetTextContent(List.First^.Node)
  Else
   DOMGetTitle := '';
+ DOMFreeNodeList(List);
 End;
 
 { Definir le titre du document (document.title) }
@@ -5016,8 +5111,9 @@ Var
  List: DOMNodeList;
 Begin
  List := DOMGetElementsByTagName('title');
- If List.Length > 0 Then
-  DOMSetTextContent(List.Nodes[1], Title);
+ If List.First <> Nil Then
+  DOMSetTextContent(List.First^.Node, Title);
+ DOMFreeNodeList(List);
 End;
 
 { Convertir un type d'evenement en nom }
@@ -5082,12 +5178,14 @@ Begin
  Else If Selector[1] = '.' Then Begin
   { Selecteur de classe }
   List := DOMGetElementsByClassName(Copy(Selector, 2, Length(Selector) - 1));
-  If List.Length > 0 Then DOMQuerySelector := List.Nodes[1];
+  DOMQuerySelector := DOMFirstNode(List);
+  DOMFreeNodeList(List);
  End
  Else Begin
   { Selecteur de balise }
   List := DOMGetElementsByTagName(Selector);
-  If List.Length > 0 Then DOMQuerySelector := List.Nodes[1];
+  DOMQuerySelector := DOMFirstNode(List);
+  DOMFreeNodeList(List);
  End;
 End;
 
@@ -5097,7 +5195,7 @@ Var
  List: DOMNodeList;
  Element: HTMLNodePtr;
 Begin
- List.Length := 0;
+ DOMInitNodeList(List);
 
  If Length(Selector) = 0 Then Begin
   DOMQuerySelectorAll := List;
@@ -5107,10 +5205,7 @@ Begin
  If Selector[1] = '#' Then Begin
   { Selecteur ID - retourne un seul element }
   Element := DOMGetElementById(Copy(Selector, 2, Length(Selector) - 1));
-  If Element <> Nil Then Begin
-   List.Length := 1;
-   List.Nodes[1] := Element;
-  End;
+  If Element <> Nil Then DOMAppendNode(List, Element);
  End
  Else If Selector[1] = '.' Then Begin
   { Selecteur de classe }
@@ -6290,33 +6385,39 @@ End;
 Procedure CSSExtractFromDocument;
 Var
  List: DOMNodeList;
- I: Integer;
+ Item: DOMNodeListItemPtr;
  StyleContent: AnsiString;
  RelAttr, HrefAttr, CSSPath: String;
  ExternalCSS: AnsiString;
 Begin
  { Feuilles de style en ligne : <style>...</style> }
  List := DOMGetElementsByTagName('style');
- For I := 1 To List.Length Do Begin
-  StyleContent := DOMGetTextContent(List.Nodes[I]);
+ Item := List.First;
+ While Item <> Nil Do Begin
+  StyleContent := DOMGetTextContent(Item^.Node);
   If Length(StyleContent) > 0 Then
    CSSParseStylesheet(StyleContent);
+  Item := Item^.Next;
  End;
+ DOMFreeNodeList(List);
 
  { Feuilles de style externes : <link rel="stylesheet" href="..."> }
  List := DOMGetElementsByTagName('link');
- For I := 1 To List.Length Do Begin
-  RelAttr := HTMLLowerCase(GetHTMLAttribute(List.Nodes[I], 'rel'));
+ Item := List.First;
+ While Item <> Nil Do Begin
+  RelAttr := HTMLLowerCase(GetHTMLAttribute(Item^.Node, 'rel'));
   If RelAttr = 'stylesheet' Then Begin
-   HrefAttr := GetHTMLAttribute(List.Nodes[I], 'href');
+   HrefAttr := GetHTMLAttribute(Item^.Node, 'href');
    If Length(HrefAttr) > 0 Then Begin
     CSSPath := CSSBuildStylesheetPath(HrefAttr);
     ExternalCSS := LoadTextFileAsString(CSSPath);
-    If Length(ExternalCSS) > 0 Then
+   If Length(ExternalCSS) > 0 Then
      CSSParseStylesheet(ExternalCSS);
    End;
   End;
+  Item := Item^.Next;
  End;
+ DOMFreeNodeList(List);
 End;
 
 { =====================================================
@@ -6862,14 +6963,27 @@ End;
 Function FindLinkAtPosition(X, Y: Integer): Integer;
 Var
  I: Integer;
+ AreaSize, BestAreaSize: LongInt;
 Begin
  FindLinkAtPosition := 0;
- For I := 1 To LinkCount Do Begin
+ BestAreaSize := High(LongInt);
+ { Plusieurs boites peuvent se chevaucher a cause des liens multilignes,
+   des contenus justifies et d'un HTML imparfaitement ferme. Choisir
+   simplement la premiere donnait le lien englobant vers CODER/index.htm;
+   choisir la derniere pouvait donner un lien ulterieur tel que CSHARP a
+   la place d'ABAP. La boite la plus petite est la zone la plus precise,
+   c'est-a-dire normalement celle du mot reellement clique. En cas
+   d'egalite, le parcours inverse conserve l'element peint en dernier. }
+ For I := LinkCount DownTo 1 Do Begin
   If LinkAreas[I].Active Then Begin
    If (X >= LinkAreas[I].X1) And (X <= LinkAreas[I].X2) And
       (Y >= LinkAreas[I].Y1) And (Y <= LinkAreas[I].Y2) Then Begin
-    FindLinkAtPosition := I;
-    Exit;
+    AreaSize := LongInt(LinkAreas[I].X2 - LinkAreas[I].X1 + 1) *
+                LongInt(LinkAreas[I].Y2 - LinkAreas[I].Y1 + 1);
+    If AreaSize < BestAreaSize Then Begin
+     BestAreaSize := AreaSize;
+     FindLinkAtPosition := I;
+    End;
    End;
   End;
  End;
@@ -8052,11 +8166,18 @@ Begin
    suivant qu'une nouvelle ligne avait deja commence, et tous les elements
    se superposaient avec seulement RENDER_LIST_SPACING pixels d'ecart.
 
-   Si une sous-liste/bloc enfant a deja termine la ligne et avance Y, X est
+ Si une sous-liste/bloc enfant a deja termine la ligne et avance Y, X est
    revenu a la marge et il ne faut pas ajouter une ligne vide. Un LI vide
    consomme tout de meme une hauteur de ligne minimale. }
  If WantsBlock Then Begin
-  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  { Une ligne justifiee est mise en tampon dans JustifyWords. Elle doit
+    absolument etre finalisee avant de quitter ce LI, meme lorsque X est
+    inferieur au seuil calcule avec BlockLevel. Sinon les mots et surtout
+    leurs LinkHref restent en attente pendant plusieurs LI : un vidage
+    ulterieur peut alors associer la zone d'ABAP au href de CSHARP. }
+  If JustifyWordCount > 0 Then
+   RenderNewLine(Ctx)
+  Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx)
   Else If Ctx.Y <= ItemStartY Then Begin
    Ctx.Y := ItemStartY + Ctx.LineHeight;
@@ -9015,6 +9136,44 @@ End;
   RENDU HTML - Liens hypertexte (balise <a href>)
   ===================================================== }
 
+{ Dire si le lien appartient a une cellule qui ne contient que cette seule
+  balise A. L'extension de la zone a toute la cellule est utile pour les
+  petites cellules-boutons, mais elle est catastrophique pour une cellule
+  contenant une liste entiere de liens. Le parcours s'arrete au deuxieme A. }
+Function LinkIsAloneInTableCell(LinkNode: HTMLNodePtr): Boolean;
+Var
+ Cell, Current: HTMLNodePtr;
+ LinkTotal: Integer;
+Begin
+ LinkIsAloneInTableCell := False;
+ Cell := LinkNode;
+ While (Cell <> Nil) And (Cell^.TagType <> TAG_TD) And
+       (Cell^.TagType <> TAG_TH) Do
+  Cell := Cell^.Parent;
+ If Cell = Nil Then Exit;
+
+ LinkTotal := 0;
+ Current := Cell^.FirstChild;
+ While Current <> Nil Do Begin
+  If (Current^.NodeType = HTML_NODE_ELEMENT) And
+     (Current^.TagType = TAG_A) Then Begin
+   Inc(LinkTotal);
+   If LinkTotal > 1 Then Exit;
+  End;
+
+  If Current^.FirstChild <> Nil Then
+   Current := Current^.FirstChild
+  Else Begin
+   While (Current <> Nil) And (Current <> Cell) And
+         (Current^.NextSibling = Nil) Do
+    Current := Current^.Parent;
+   If Current = Cell Then Current := Nil
+   Else If Current <> Nil Then Current := Current^.NextSibling;
+  End;
+ End;
+ LinkIsAloneInTableCell := LinkTotal = 1;
+End;
+
 { Procedure pour rendre la balise A (lien hypertexte) }
 Procedure RenderTagA(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
@@ -9058,6 +9217,18 @@ Begin
  { Rendre le contenu du lien }
  RenderChildren(Node, Ctx);
 
+ { En mode text-align:justify, RenderText differe normalement le dessin et
+   conserve chaque href dans JustifyWords jusqu'a la fin de la ligne. Une
+   page comportant des UL/LI imbriques ou imparfaitement fermes peut faire
+   traverser ce tampon d'un lien au suivant : le texte ABAP garde alors les
+   coordonnees de sa ligne, mais une petite zone C# ajoutee plus tard peut
+   se retrouver au meme endroit et gagner le hit-test. Vider ici garantit
+   qu'aucun href ne franchit la limite de sa balise A. Cela ne provoque pas
+   de saut de ligne : FlushJustifiedLine dessine seulement les mots deja
+   accumules et conserve X/Y pour la suite du contenu inline. }
+ If JustifyWordCount > 0 Then
+  FlushJustifiedLine(Ctx, False);
+
  { Calculer la position de fin }
  EndX := Ctx.X;
  EndY := Ctx.Y;
@@ -9080,7 +9251,15 @@ Begin
    appliquee. La cellule courante, elle, possede deja ici ses limites
    definitives : rendre cette surface cliquable garantit aussi les liens
    composes d'une icone, d'espaces et de texte sur plusieurs lignes. }
- If Ctx.InTable And (Not TableMeasurePass) Then
+ { N'etendre le lien a toute la cellule que si son contenu n'a produit
+   aucune zone precise. Une cellule peut contenir une liste complete avec
+   des centaines de liens (CODER/index.htm) : l'ancien test InTable seul
+   donnait alors le meme rectangle de TD a ABAP, Ada, ... puis X. Tous les
+   clics finissaient donc sur le dernier href, X/index.htm. En mode
+   justify, FlushJustifiedLine vient d'ajouter les rectangles exacts des
+   mots; il ne faut surtout pas les recouvrir par la cellule entiere. }
+ If Ctx.InTable And (Not TableMeasurePass) And
+    (LinkCount = LinkCountBefore) And LinkIsAloneInTableCell(Node) Then
   AddLinkArea(Ctx.TableCellX, Ctx.TableRowY,
               Ctx.TableCellX + Ctx.TableCellWidth,
               Ctx.TableRowY + Ctx.TableRowHeight, Href, Title)
@@ -15534,18 +15713,21 @@ Begin
    CloseTagName := TagName;
    While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
    If Pos <= Length(S) Then Inc(Pos);
-   SearchNode := CurrentNode;
-   While (SearchNode <> Root) Do Begin
-    If HTMLLowerCase(SearchNode^.TagName) = CloseTagName Then Begin
-     CurrentNode := SearchNode^.Parent;
-     If CurrentNode = Nil Then CurrentNode := Root;
-     Dec(CurrentDepth);
-     Break;
+   SearchNode := HTMLFindClosingNodeInScope(CurrentNode, Root, CloseTagName);
+   If SearchNode <> Nil Then Begin
+    While CurrentNode <> SearchNode Do Begin
+     CurrentNode := CurrentNode^.Parent;
+     If CurrentDepth > 0 Then Dec(CurrentDepth);
     End;
-    SearchNode := SearchNode^.Parent;
+    CurrentNode := SearchNode^.Parent;
+    If CurrentNode = Nil Then CurrentNode := Root;
+    If CurrentDepth > 0 Then Dec(CurrentDepth);
    End;
    Continue;
   End;
+
+  If TagName = 'li' Then
+   HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
 
   { Creer l'element }
   NewNode := CreateHTMLNode;
