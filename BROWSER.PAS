@@ -11364,11 +11364,16 @@ Begin
 
     { Allouer la memoire pour les pixels RGB }
     Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
+    {$IFNDEF FPC}
     If Img.DataSize > 65520 Then Begin
-     { Trop grand pour le mode reel }
+     { Turbo Pascal en mode reel ne peut pas allouer un bloc depassant
+       un segment. Sous Free Pascal/Win32, GetMem accepte naturellement
+       les images plus grandes : conserver cette ancienne limite faisait
+       echouer, entre autres, les JPEG 350x250 injectes par innerHTML. }
      Close(F);
      Exit;
     End;
+    {$ENDIF}
 
     GetMem(Img.Data, Img.DataSize);
     If Img.Data = Nil Then Begin
