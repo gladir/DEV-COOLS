@@ -7134,7 +7134,15 @@ Procedure RenderBlockSpacing(Var Ctx: RenderContext; Spacing: Integer);
 Begin
  FlushJustifiedLine(Ctx, False);
  Ctx.Y := Ctx.Y + Spacing;
- Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+ { Un bloc (DIV, P, TABLE, etc.) place dans une cellule doit rester dans
+   cette cellule. Revenir ici a la marge globale faisait notamment
+   dessiner l'IMG insere dans div#tdBackground par-dessus la premiere
+   colonne, alors que son noeud DOM appartenait correctement a la
+   troisieme cellule. Meme principe que RenderNewLine ci-dessus. }
+ If Ctx.InTable Then
+  Ctx.X := Ctx.TableCellContentX
+ Else
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
 End;
 
 { Fonction pour calculer la largeur d'un texte }
