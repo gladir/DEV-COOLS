@@ -8049,6 +8049,8 @@ Procedure RenderTagTable(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldInTable: Boolean;
  OldTableX: Integer;
+ OldTableCellX, OldTableCellWidth, OldTableColIndex: Integer;
+ OldTableRowY, OldTableRowHeight, OldTableCellContentX: Integer;
  NumCols, TableWidth: Integer;
 Begin
  { Nouvelle ligne avant le tableau si necessaire }
@@ -8059,6 +8061,12 @@ Begin
  { Sauvegarder l'etat }
  OldInTable := Ctx.InTable;
  OldTableX := Ctx.TableX;
+ OldTableCellX := Ctx.TableCellX;
+ OldTableCellWidth := Ctx.TableCellWidth;
+ OldTableColIndex := Ctx.TableColIndex;
+ OldTableRowY := Ctx.TableRowY;
+ OldTableRowHeight := Ctx.TableRowHeight;
+ OldTableCellContentX := Ctx.TableCellContentX;
 
  { Configurer le contexte pour le tableau }
  Ctx.InTable := True;
@@ -8094,10 +8102,22 @@ Begin
  { Restaurer l'etat }
  Ctx.InTable := OldInTable;
  Ctx.TableX := OldTableX;
+ Ctx.TableCellX := OldTableCellX;
+ Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.TableColIndex := OldTableColIndex;
+ Ctx.TableRowY := OldTableRowY;
+ Ctx.TableRowHeight := OldTableRowHeight;
+ Ctx.TableCellContentX := OldTableCellContentX;
 
- { Retour a la position X de depart et espacement apres }
- Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
- RenderBlockSpacing(Ctx, TABLE_MARGIN);
+ { Retour dans le bon repere. Un tableau imbrique dans TD/TH ne doit pas
+   renvoyer X a la marge de la page ni perdre le contexte de sa cellule. }
+ If OldInTable Then Begin
+  Ctx.X := OldTableCellContentX;
+  Inc(Ctx.Y, TABLE_MARGIN);
+ End Else Begin
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+  RenderBlockSpacing(Ctx, TABLE_MARGIN);
+ End;
 End;
 
 { Procedure pour rendre la balise THEAD (en-tete du tableau) }
@@ -8198,8 +8218,9 @@ End;
 Procedure RenderTagTD(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  CellStartX, CellStartY: Integer;
- OldMaxX, OldTableCellContentX: Integer;
- CellNaturalHeight: Integer;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
+ CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
+ WidthSpec, HeightSpec: String;
  CellStyle: DOMStyle;
  CellBgColor, TryBgColor: Integer;
 Begin
@@ -8226,6 +8247,26 @@ Begin
    TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
    If TryBgColor >= 0 Then CellBgColor := TryBgColor;
   End;
+ End;
+
+ { width/height CSS ou attributs HTML constituent la taille demandee de
+   la cellule. Ils etaient auparavant ignores au profit d'un partage egal
+   de toutes les colonnes, meme pour <td width="200">/.MenuItem. }
+ OldTableCellWidth := Ctx.TableCellWidth;
+ WidthSpec := CellStyle.Width;
+ If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
+ If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
+  RequestedWidth := CSSParseDimension(WidthSpec, Ctx.TableCellWidth);
+  If RequestedWidth > Ctx.TableCellWidth Then Ctx.TableCellWidth := RequestedWidth;
+ End;
+ If Ctx.TableCellWidth > Ctx.MaxX - CellStartX Then
+  Ctx.TableCellWidth := Ctx.MaxX - CellStartX;
+
+ HeightSpec := CellStyle.Height;
+ If Length(HeightSpec) = 0 Then HeightSpec := GetNodeAttribute(Node, 'height');
+ If Length(HeightSpec) > 0 Then Begin
+  RequestedHeight := CSSParseDimension(HeightSpec, Ctx.TableRowHeight);
+  If RequestedHeight > Ctx.TableRowHeight Then Ctx.TableRowHeight := RequestedHeight;
  End;
 
  { Dessiner le fond de la cellule (seulement si visible : sans cette
@@ -8283,15 +8324,17 @@ Begin
 
  { Remettre Y a la position de la ligne }
  Ctx.Y := CellStartY;
+ Ctx.TableCellWidth := OldTableCellWidth;
 End;
 
 { Procedure pour rendre la balise TH (cellule d'en-tete) }
 Procedure RenderTagTH(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  CellStartX, CellStartY: Integer;
- OldMaxX, OldTableCellContentX: Integer;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
  OldTextStyle: Byte;
- CellNaturalHeight: Integer;
+ CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
+ WidthSpec, HeightSpec: String;
  CellStyle: DOMStyle;
  CellBgColor, TryBgColor: Integer;
 Begin
@@ -8317,6 +8360,22 @@ Begin
    TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
    If TryBgColor >= 0 Then CellBgColor := TryBgColor;
   End;
+ End;
+
+ OldTableCellWidth := Ctx.TableCellWidth;
+ WidthSpec := CellStyle.Width;
+ If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
+ If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
+  RequestedWidth := CSSParseDimension(WidthSpec, Ctx.TableCellWidth);
+  If RequestedWidth > Ctx.TableCellWidth Then Ctx.TableCellWidth := RequestedWidth;
+ End;
+ If Ctx.TableCellWidth > Ctx.MaxX - CellStartX Then
+  Ctx.TableCellWidth := Ctx.MaxX - CellStartX;
+ HeightSpec := CellStyle.Height;
+ If Length(HeightSpec) = 0 Then HeightSpec := GetNodeAttribute(Node, 'height');
+ If Length(HeightSpec) > 0 Then Begin
+  RequestedHeight := CSSParseDimension(HeightSpec, Ctx.TableRowHeight);
+  If RequestedHeight > Ctx.TableRowHeight Then Ctx.TableRowHeight := RequestedHeight;
  End;
 
  { Dessiner le fond de la cellule d'en-tete, seulement si visible
@@ -8370,6 +8429,7 @@ Begin
 
  { Remettre Y a la position de la ligne }
  Ctx.Y := CellStartY;
+ Ctx.TableCellWidth := OldTableCellWidth;
 End;
 
 { =====================================================
