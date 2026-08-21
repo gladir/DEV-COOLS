@@ -59,30 +59,25 @@ Const
  { Constantes pour la barre d'URL }
  URL_BAR_X = 5;
  URL_BAR_Y = 5;
- URL_BAR_WIDTH = 500;
  URL_BAR_HEIGHT = 20;
  URL_MAX_LENGTH = 255;
 
  { Constantes pour le bouton Precedent }
- BACK_BTN_X = 515;
  BACK_BTN_Y = 5;
  BACK_BTN_WIDTH = 30;
  BACK_BTN_HEIGHT = 20;
 
  { Constantes pour le bouton Suivant }
- FORWARD_BTN_X = 550;
  FORWARD_BTN_Y = 5;
  FORWARD_BTN_WIDTH = 30;
  FORWARD_BTN_HEIGHT = 20;
 
  { Constantes pour le bouton Actualiser }
- REFRESH_BTN_X = 585;
  REFRESH_BTN_Y = 5;
  REFRESH_BTN_WIDTH = 30;
  REFRESH_BTN_HEIGHT = 20;
 
  { Constantes pour le bouton Favori }
- FAVORITE_BTN_X = 620;
  FAVORITE_BTN_Y = 5;
  FAVORITE_BTN_WIDTH = 30;
  FAVORITE_BTN_HEIGHT = 20;
@@ -999,6 +994,16 @@ Type
 Var
  { -maxscreen : forcer l'affichage maximal supporte (voir DEVENV.PAS) }
  MaxScreen: Boolean;
+ ScreenMaxMode: Boolean;       { True=mode maximal, False=VGA 640x480 }
+
+ { Geometrie horizontale de la barre de navigation. En 640x480 ces
+   valeurs retrouvent pratiquement les anciennes positions; en mode
+   -maxscreen elles sont recalculees selon GetMaxX. }
+ URL_BAR_WIDTH: Integer;
+ BACK_BTN_X: Integer;
+ FORWARD_BTN_X: Integer;
+ REFRESH_BTN_X: Integer;
+ FAVORITE_BTN_X: Integer;
 
  { Dimensions de la zone de rendu HTML, calculees selon la resolution
    graphique reelle (voir InitializeGraphics). Valeurs par defaut =
@@ -1962,6 +1967,45 @@ Begin
  End;
 End;
 
+{ Fermer implicitement la cellule ou la rangee precedente. En HTML, un
+  nouveau TD/TH ferme la cellule ouverte et un nouveau TR ferme la rangee
+  ouverte. CODER/index.htm compte precisement sur cette recuperation entre
+  son TD principal et son TD lateral de 200 pixels. }
+Procedure HTMLAutoCloseTableElement(Var CurrentNode: HTMLNodePtr;
+                                    Root: HTMLNodePtr;
+                                    Const NewTagName: String;
+                                    Var CurrentDepth: Integer);
+Var
+ SearchNode, TargetNode: HTMLNodePtr;
+ Tag, NewTag: String;
+Begin
+ NewTag := HTMLLowerCase(NewTagName);
+ TargetNode := Nil;
+ SearchNode := CurrentNode;
+ While SearchNode <> Root Do Begin
+  Tag := HTMLLowerCase(SearchNode^.TagName);
+  If ((NewTag = 'td') Or (NewTag = 'th')) And
+     ((Tag = 'td') Or (Tag = 'th')) Then Begin
+   TargetNode := SearchNode;
+   Break;
+  End;
+  If (NewTag = 'tr') And (Tag = 'tr') Then Begin
+   TargetNode := SearchNode;
+   Break;
+  End;
+  If Tag = 'table' Then Break;
+  { Une nouvelle cellule ne doit pas chercher au-dela de sa rangee. }
+  If ((NewTag = 'td') Or (NewTag = 'th')) And (Tag = 'tr') Then Break;
+  SearchNode := SearchNode^.Parent;
+ End;
+
+ If TargetNode <> Nil Then
+  While CurrentNode <> TargetNode^.Parent Do Begin
+   CurrentNode := CurrentNode^.Parent;
+   If CurrentDepth > 0 Then Dec(CurrentDepth);
+  End;
+End;
+
 { Fonction principale pour parser du HTML }
 Function ParseHTML(Const HTMLSource: HTMLSourceBuffer): HTMLNodePtr;
 Var
@@ -2064,6 +2108,10 @@ Begin
    If TagName <> '' Then Begin
     If HTMLLowerCase(TagName) = 'li' Then
      HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
+    If (HTMLLowerCase(TagName) = 'td') Or
+       (HTMLLowerCase(TagName) = 'th') Or
+       (HTMLLowerCase(TagName) = 'tr') Then
+     HTMLAutoCloseTableElement(CurrentNode, Root, TagName, CurrentDepth);
     NewNode := CreateHTMLNode;
     NewNode^.NodeType := HTML_NODE_ELEMENT;
     NewNode^.TagName := TagName;
@@ -14979,9 +15027,15 @@ Procedure GoForward; Forward;
 { Procedure pour dessiner la barre d'URL }
 Procedure DrawURLBar;
 Var
- TextX, TextY: Integer;
+ TextX, TextY, DisplayChars: Integer;
  DisplayURL: String;
 Begin
+ { Les pilotes BGI ne garantissent pas tous le meme etat texte initial.
+   D8bit en haute resolution peut conserver une justification ou une taille
+   differente de VGAHi, ce qui place l'adresse hors du champ. }
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+
  { Dessiner le fond de la barre d'URL }
  SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
  Bar(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
@@ -14997,8 +15051,10 @@ Begin
 
  { Tronquer l'URL si elle est trop longue pour l'affichage }
  DisplayURL := CurrentURL;
- If Length(DisplayURL) > 60 Then
-  DisplayURL := Copy(DisplayURL, 1, 60) + '...';
+ DisplayChars := (URL_BAR_WIDTH - 12) Div 8;
+ If DisplayChars < 4 Then DisplayChars := 4;
+ If Length(DisplayURL) > DisplayChars Then
+  DisplayURL := Copy(DisplayURL, 1, DisplayChars - 3) + '...';
 
  OutTextXY(TextX, TextY, DisplayURL);
 
@@ -15728,6 +15784,8 @@ Begin
 
   If TagName = 'li' Then
    HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
+  If (TagName = 'td') Or (TagName = 'th') Or (TagName = 'tr') Then
+   HTMLAutoCloseTableElement(CurrentNode, Root, TagName, CurrentDepth);
 
   { Creer l'element }
   NewNode := CreateHTMLNode;
@@ -16132,7 +16190,7 @@ Begin
   End;
  {$ELSE}
   Driver := Detect;
-  Mode := VGAHi;
+  Mode := 0;
  {$ENDIF}
 End;
 
@@ -16142,23 +16200,34 @@ Var
  ErrCode: Integer;
 Begin
  SelectScreenDriverMode(MaxScreen, Driver, Mode);
- InitGraph(Driver,Mode,'');
- ErrCode:=GraphResult;
- If ErrCode=grOk Then Begin
-  SetColor(White);
-  SetLineStyle(0,0,1);
-  { Zone de rendu = espace reellement disponible apres la barre d'URL,
-    et non plus une taille figee pour 640x480 : sans cela, le mode
-    -maxscreen ouvrait un grand ecran mais ne dessinait le contenu
-    HTML que dans son coin superieur gauche. }
-  RENDER_AREA_WIDTH := GetMaxX - RENDER_AREA_X - 5;
-  RENDER_AREA_HEIGHT := GetMaxY - RENDER_AREA_Y - 5;
- End
-  Else
- Begin
-  WriteLn('Erreur graphique : ',GraphErrorMsg(ErrCode));
-  Halt;
+ InitGraph(Driver, Mode, '');
+ ErrCode := GraphResult;
+ If ErrCode <> grOk Then Begin
+  WriteLn('BROWSER: Erreur graphique: ', GraphErrorMsg(ErrCode));
+  Halt(1);
  End;
+ SetColor(White);
+ SetBkColor(RENDER_BG_COLOR);
+ SetLineStyle(SolidLn, 0, NormWidth);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+ ScreenMaxMode := MaxScreen;
+
+ { Barre de navigation responsive : conserver les quatre boutons groupes
+   contre le bord droit et donner tout l'espace restant au champ URL. }
+ FAVORITE_BTN_X := GetMaxX - 5 - FAVORITE_BTN_WIDTH;
+ REFRESH_BTN_X := FAVORITE_BTN_X - 5 - REFRESH_BTN_WIDTH;
+ FORWARD_BTN_X := REFRESH_BTN_X - 5 - FORWARD_BTN_WIDTH;
+ BACK_BTN_X := FORWARD_BTN_X - 5 - BACK_BTN_WIDTH;
+ URL_BAR_WIDTH := BACK_BTN_X - URL_BAR_X - 5;
+ If URL_BAR_WIDTH < 80 Then URL_BAR_WIDTH := 80;
+
+ { Zone de rendu = espace reellement disponible apres la barre d'URL,
+   et non plus une taille figee pour 640x480 : sans cela, le mode
+   -maxscreen ouvrirait un grand ecran mais ne dessinerait le contenu
+   HTML que dans son coin superieur gauche. }
+ RENDER_AREA_WIDTH := GetMaxX - RENDER_AREA_X - 5;
+ RENDER_AREA_HEIGHT := GetMaxY - RENDER_AREA_Y - 5;
 End;
 
 {$IFNDEF FPC}
