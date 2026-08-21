@@ -1225,6 +1225,26 @@ Begin
  PtcGraph.Line(X1, Y1, X2, Y2);
 End;
 
+{ PutPixel est la primitive employee par tous les decodeurs d'images
+  (BMP, GIF, JPEG, PNG et SVG). Contrairement a Bar/Line, elle ne dispose
+  d'aucun decoupage dans PtcGraph : une image seulement partiellement
+  visible continuait donc a peindre ses lignes situees au-dessus de
+  RENDER_AREA_Y, par-dessus la barre de navigation. Centraliser le test ici
+  evite cinq implementations de decoupage legerement differentes. }
+Procedure PutPixel(X, Y: Integer; Color: Word);
+Var
+ VisibleRight, VisibleBottom: Integer;
+Begin
+ If TableMeasurePass Then Exit;
+ If InContentRenderPass Then Begin
+  VisibleRight := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE);
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (X < RENDER_AREA_X) Or (X > VisibleRight) Or
+     (Y < RENDER_AREA_Y) Or (Y > VisibleBottom) Then Exit;
+ End;
+ PtcGraph.PutPixel(X, Y, Color);
+End;
+
 { =====================================================
   PARSEUR HTML - Fonctions et procedures
   ===================================================== }
