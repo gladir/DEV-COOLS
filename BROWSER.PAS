@@ -8144,6 +8144,7 @@ End;
 Procedure RenderTagTR(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldMeasurePass: Boolean;
+ OldLineHeight: Integer;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -8156,6 +8157,8 @@ Begin
  Ctx.TableCellX := Ctx.TableX;
  Ctx.TableRowY := Ctx.Y;
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * TABLE_CELL_PADDING);
+ OldLineHeight := Ctx.LineHeight;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
 
  { Premiere passe (mesure uniquement, rien n'est dessine) : rejoue le
    rendu de toutes les cellules de la rangee pour decouvrir la
@@ -8173,6 +8176,7 @@ Begin
  Ctx.TableColIndex := 0;
  Ctx.TableCellX := Ctx.TableX;
  Ctx.Y := Ctx.TableRowY;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
  TableMeasurePass := OldMeasurePass;
 
  { Dessiner la bordure gauche de la ligne (no-op automatique si on
@@ -8212,13 +8216,14 @@ Begin
   Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
  End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+ Ctx.LineHeight := OldLineHeight;
 End;
 
 { Procedure pour rendre la balise TD (cellule de donnees) }
 Procedure RenderTagTD(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  CellStartX, CellStartY: Integer;
- OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
  WidthSpec, HeightSpec: String;
  CellStyle: DOMStyle;
@@ -8233,6 +8238,11 @@ Begin
  { Position de la cellule }
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
+ { La hauteur de ligne appartient au contenu de cette cellule. Une image
+   haute rendue dans une cellule voisine ne doit pas agrandir artificiellement
+   toutes les lignes des tableaux imbriques ou de la passe suivante. }
+ OldLineHeight := Ctx.LineHeight;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
 
  { Couleur de fond de la cellule = background-color CSS de cette
    cellule (ex: classe "onglet" / "ongletOver" changee dynamiquement
@@ -8325,13 +8335,14 @@ Begin
  { Remettre Y a la position de la ligne }
  Ctx.Y := CellStartY;
  Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.LineHeight := OldLineHeight;
 End;
 
 { Procedure pour rendre la balise TH (cellule d'en-tete) }
 Procedure RenderTagTH(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  CellStartX, CellStartY: Integer;
- OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
  OldTextStyle: Byte;
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
  WidthSpec, HeightSpec: String;
@@ -8350,6 +8361,8 @@ Begin
  { Position de la cellule }
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
+ OldLineHeight := Ctx.LineHeight;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
 
  { Couleur de fond = background-color CSS de cette cellule si presente
    (voir RenderTagTD), sinon le gris clair par defaut des en-tetes. }
@@ -8430,6 +8443,7 @@ Begin
  { Remettre Y a la position de la ligne }
  Ctx.Y := CellStartY;
  Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.LineHeight := OldLineHeight;
 End;
 
 { =====================================================
