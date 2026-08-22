@@ -2696,7 +2696,8 @@ Type
  End;
 
  { Type de shell du terminal }
- TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS, SK_NCOMMANDER);
+ TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS, SK_NCOMMANDER,
+  SK_OS2REXX);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -5666,6 +5667,28 @@ Var
  EmuPageBuf  : Pointer;
  EmuPageBufSz: LongInt;
  EmuStartCmdLine: String;       { ligne de commande a injecter dans le PSP du programme emule }
+ EmuBootFromDrive: Integer;     { -1 = chargement normal (fichier nomme, }
+                                 { Emu_LoadProgram) ; 0..3 = amorcage     }
+                                 { reel (commande Terminal BOOT) depuis   }
+                                 { ce lecteur virtuel, voir               }
+                                 { Emu_LoadBootSector/CreateEmulatorBootTab.}
+                                 { Arme juste avant ShowEmulatorPanel,     }
+                                 { consomme et remis a -1 immediatement.  }
+ EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
+                                 { s il a ete cree par Emu_LoadBootSector }
+                                 { (vs Emu_LoadProgram) - voir le garde-  }
+                                 { fou CS=0 de DOS_RunOneChunk, qui doit  }
+                                 { rester actif pour un .COM/.EXE charge  }
+                                 { normalement (CS=0 y est toujours un    }
+                                 { saut errant vers l IVT/BDA) mais serait}
+                                 { faux pour un vrai secteur de boot (qui }
+                                 { garde legitimement CS=0 pendant tout   }
+                                 { ou partie de son execution). Fixe une  }
+                                 { seule fois juste apres le chargement,  }
+                                 { PAS consomme/remis a False ensuite     }
+                                 { (contrairement a EmuBootFromDrive) -   }
+                                 { doit rester vrai pour toute la duree   }
+                                 { de vie de CET onglet emulateur.        }
  { --- Phase DOS+ : gestion fichiers reels (handles 5..31) --- }
  EmuFileH       : Array[5..31] Of File;
  EmuFileOpen    : Array[5..31] Of Boolean;
@@ -9763,6 +9786,7 @@ Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
 { directement - cree l onglet WK_EMU en plus de charger le binaire. }
 Procedure CreateEmulatorTab(BinaryPath, TargetCPU: String;
  Args: String); Forward;
+Procedure CreateEmulatorBootTab(DriveIdx: Byte; Const DispName: String); Forward;
 Procedure C64_SaveState(Var Snap: TC64Snapshot); Forward;
 Procedure C64_LoadState(Var Snap: TC64Snapshot); Forward;
 Procedure Nes_SaveState(Var Snap: TNesSnapshot); Forward;
@@ -33153,6 +33177,51 @@ Begin
  Fat_ExtractToTempFile := True;
 End;
 
+{ Cherche un executable DOS (.COM/.EXE) nomme CmdName dans le repertoire   }
+{ Dir (chemin FAT absolu, ex. '\', '\DOS') d une disquette/disque virtuel   }
+{ FAT monte - essaie CmdName tel quel (s il porte deja une extension       }
+{ COM/EXE), puis CmdName+.COM puis CmdName+.EXE (meme convention que       }
+{ TermFindDosExecutable cote hote, plus bas dans le fichier). Extrait vers }
+{ un fichier hote temporaire (Fat_ExtractToTempFile) des qu une            }
+{ correspondance non-repertoire est trouvee. Utilise par SK_NCOMMANDER     }
+{ (ligne de commande du panneau NC) quand une disquette virtuelle FAT      }
+{ "ordinaire" est active - meme rester que le chemin Entree+curseur deja   }
+{ corrige (NCActionOpenAssociated), mais ici le nom est tape a la main,    }
+{ sans extension garantie ni entree de repertoire deja resolue. }
+Function Fat_FindDosExecutable(Idx: Byte; Dir, CmdName: String;
+ Var OutPath: String): Boolean;
+Var
+ Candidates: Array[0..1] Of String;
+ NCand, I: Integer;
+ UpName, FullP: String;
+ Attr: Byte;
+ Cluster, Sz: LongInt;
+Begin
+ Fat_FindDosExecutable := False;
+ UpName := UpCaseStr(CmdName);
+ If (Length(UpName) > 4) And
+    ((Copy(UpName, Length(UpName) - 3, 4) = '.COM') Or
+     (Copy(UpName, Length(UpName) - 3, 4) = '.EXE')) Then Begin
+  Candidates[0] := CmdName; NCand := 1;
+ End Else Begin
+  Candidates[0] := CmdName + '.COM';
+  Candidates[1] := CmdName + '.EXE';
+  NCand := 2;
+ End;
+ For I := 0 To NCand - 1 Do Begin
+  If (Length(Dir) > 0) And (Dir[Length(Dir)] = '\') Then
+   FullP := Dir + Candidates[I]
+  Else
+   FullP := Dir + '\' + Candidates[I];
+  If Fat_FindPath(Idx, FullP, Attr, Cluster, Sz) And ((Attr And $10) = 0) Then Begin
+   If Fat_ExtractToTempFile(Idx, Cluster, Sz, Candidates[I], OutPath) Then Begin
+    Fat_FindDosExecutable := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
 { Iterer toutes les entrees d un repertoire (root ou cluster chain)
   et accumuler les noms via TermAddLine pour la commande DIR. }
 Procedure Fat_ListDir(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
@@ -34822,6 +34891,92 @@ Begin
  TermAddLine(TP, ' Volume Serial Number is 1234-5678');
 End;
 
+{ --- BOOT (commande Terminal, Invite de commandes/PowerShell/OS2&REXX) --- }
+{ Amorce reellement un lecteur virtuel (disquette ou disque dur monte) via  }
+{ Emu_LoadBootSector/CreateEmulatorBootTab - lit son secteur 0 (MBR pour un }
+{ disque dur, secteur de demarrage direct pour une disquette) et laisse le  }
+{ CPU 8086 emule l executer, exactement comme un vrai BIOS le ferait.       }
+{ PERIMETRE ASSUME (demande explicite de l utilisateur, clarifie via         }
+{ AskUserQuestion avant implementation) : /DOS (defaut) fonctionne          }
+{ REELLEMENT (reutilise le backend x86 -CD deja verifie ailleurs dans ce    }
+{ fichier). /OS2 n a AUCUN noyau OS/2 emule dans cet IDE (seule la LECTURE  }
+{ du systeme de fichiers HPFS existe, voir HPFS_* - pas d API/kernel OS/2)  }
+{ - message explicite plutot qu un faux succes. /LINUX ne fait PAS un vrai  }
+{ amorcage noyau (BIOS reel -> MBR -> GRUB/LILO -> decompression + init du  }
+{ noyau Linux serait un chantier separe et bien plus consequent) : reutilise}
+{ a la place le backend ELF64 x86-64 DEJA EXISTANT en cherchant un          }
+{ executable nomme LINUX.ELF a la racine du lecteur (convention propre a    }
+{ cet IDE, documentee ici - aucune convention Linux reelle equivalente     }
+{ n existe pour un disque "brut" sans vrai chargeur de demarrage).          }
+{ /LINUXARM necessiterait un emulateur de processeur ARM complet, absent    }
+{ de ce fichier - message explicite, aucune tentative de simulation.        }
+Procedure TermCmd_BOOT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ P, Up, DispName: String;
+ DL: Char;
+ Idx: Byte;
+ TempPath: String;
+ Attr: Byte;
+ Cluster, Sz: LongInt;
+Begin
+ P := TermExtractParam(ParamStr, 1);
+ If (Length(P) < 2) Or (P[2] <> ':') Then Begin
+  TermAddLine(TP, 'Syntaxe : BOOT d: [/DOS] [/OS2] [/LINUX] [/LINUXARM] [/GUI] [/CMD]');
+  Exit;
+ End;
+ DL := UpCase(P[1]);
+ If Not Term_DriveIdxFromLetter(DL, Idx) Then Begin
+  TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
+  Exit;
+ End;
+ Term_VirtEnsureMounted(Idx);
+ If Not EmuFloppyOpen[Idx] Then Begin
+  TermAddLine(TP, 'Le systeme ne peut pas trouver le lecteur specifie.');
+  Exit;
+ End;
+ Up := UpCaseStr(ParamStr);
+ DispName := DL + ':';
+ { /GUI et /CMD (memes drapeaux globaux que la commande DEBUG, voir         }
+ { EmuDbgArmPauseOnLoad/EmuCmdConsoleArmOnLoad ci-dessous, consommes dans   }
+ { ShowEmulatorPanel - CreateEmulatorBootTab l appelle directement donc en  }
+ { beneficie sans modification) : charge le secteur de boot SANS le        }
+ { lancer, fenetre Debogueur 8086 (et Console de commandes si /CMD) deja    }
+ { positionnee - utile pour inspecter/pas-a-pas un amorcage reel des la     }
+ { toute premiere instruction plutot que d interrompre a la volee.          }
+ { S applique uniquement a /DOS (seul style d amorcage avec un vrai CPU     }
+ { 8086 continu) - sans effet pour /LINUX (ELF64, backend distinct sans     }
+ { EmuDbg) ni /OS2/LINUXARM (stubs, jamais d onglet emulateur cree). }
+ If Pos('/CMD', Up) > 0 Then EmuCmdConsoleArmOnLoad := True;
+ If (Pos('/GUI', Up) > 0) Or (Pos('/CMD', Up) > 0) Then EmuDbgArmPauseOnLoad := True;
+ If Pos('/LINUXARM', Up) > 0 Then Begin
+  TermAddLine(TP,
+   'BOOT /LINUXARM : aucun emulateur de processeur ARM dans cet IDE - non supporte.');
+  Exit;
+ End;
+ If Pos('/LINUX', Up) > 0 Then Begin
+  If Not FatVol[Idx].Mounted Then Begin
+   TermAddLine(TP, 'BOOT /LINUX : aucun systeme de fichiers reconnu sur ' + DispName);
+   Exit;
+  End;
+  If Fat_FindPath(Idx, '\LINUX.ELF', Attr, Cluster, Sz) And ((Attr And $10) = 0) Then Begin
+   If Fat_ExtractToTempFile(Idx, Cluster, Sz, 'LINUX.ELF', TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CELF64', '');
+    Exit;
+   End;
+  End;
+  TermAddLine(TP, 'BOOT /LINUX : LINUX.ELF introuvable a la racine de ' + DispName);
+  Exit;
+ End;
+ If Pos('/OS2', Up) > 0 Then Begin
+  TermAddLine(TP,
+   'BOOT /OS2 : aucun noyau OS/2 emule dans cet IDE - non supporte.');
+  Exit;
+ End;
+ { /DOS (defaut) : amorcage reel INT19h-style, reutilise le CPU 8086 deja  }
+ { verifie (Emu_LoadBootSector). }
+ CreateEmulatorBootTab(Idx, DispName);
+End;
+
 { --- ELFBP (etape 8 : debogueur minimal pour l emulateur Linux ELF64) --- }
 { Regle (ou desactive) un point d arret par adresse : la prochaine fois   }
 { qu un binaire ELF64 est lance dans ce terminal, son execution s arrete  }
@@ -34965,6 +35120,7 @@ Begin
   SK_POWERSHELL: FName := 'terminal-ps.log';
   SK_BASH:       FName := 'terminal-bash.log';
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
+  SK_OS2REXX:    FName := 'terminal-os2.log';
  Else
   FName := 'terminal.log';
  End;
@@ -35147,6 +35303,8 @@ Begin
   '  VER              Version du terminal');
  TermAddLine(TP,
   '  VOL [X:]         Etiquette/serie du volume');
+ TermAddLine(TP,
+  '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
 End;
 
 { ============================================================
@@ -35283,6 +35441,7 @@ Var
  Err: Word;
  CurDir, DosExe, ElfExe: String;
  PrgTarget, PrgPath: String;
+ FatDosPath: String;
  ArgFile, ArgSwitch, DbgTarget, DbgPath, ResolveDir: String;
  ArgBP, BPSegStr, BPOfsStr, RestBP, BPNStr, BPLenStr: String;
  BPSeg, BPOfs, BPColonPos, BPColonPos2, BPColonPos3: Word;
@@ -35536,6 +35695,8 @@ Begin
     TermCmd_SET(TP, ParamStr)
    Else If CurrCmd = 'VOL' Then
     TermCmd_VOL(TP, ParamStr)
+   Else If CurrCmd = 'BOOT' Then
+    TermCmd_BOOT(TP, ParamStr)
    Else If CurrCmd = 'ELFBP' Then
     TermCmd_ELFBP(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
@@ -35627,6 +35788,8 @@ Begin
     TermCmd_SET(TP, ParamStr)
    Else If CurrCmd = 'VOL' Then
     TermCmd_VOL(TP, ParamStr)
+   Else If CurrCmd = 'BOOT' Then
+    TermCmd_BOOT(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or
     (CurrCmd = 'GET-HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
@@ -35783,10 +35946,22 @@ Begin
    { rapport avec la navigation virtuelle propre a NC). }
    DosExe := '';
    ElfExe := '';
+   FatDosPath := '';
    If TP.VirtDrive < 0 Then Begin
     DosExe := TermFindDosExecutable(TP.VirtCwd, CurrCmd);
     If DosExe = '' Then ElfExe := TermFindElfExecutable(TP.VirtCwd, CurrCmd);
-   End;
+   End
+   { Disquette/disque virtuel FAT "ordinaire" (ni D64 ni H8D ni HPFS -      }
+   { celles-ci restent couvertes par TermFindPrgExecutable/leurs propres    }
+   { mecanismes ci-dessous) : meme repli que la branche hote ci-dessus,     }
+   { mais via Fat_FindDosExecutable (nouveau - BOGUE REEL signale par       }
+   { l utilisateur juste apres la correction Entree+curseur : taper le nom  }
+   { a la main sur la ligne de commande NC ne trouvait jamais le fichier    }
+   { alors que le meme fichier se lance correctement via Entree+curseur). }
+   Else If (TP.VirtDrive >= 0) And (Not FatVol[TP.VirtDrive].IsD64) And
+    (Not FatVol[TP.VirtDrive].IsH8D) And (Not FatVol[TP.VirtDrive].IsHPFS) Then
+    If Fat_FindDosExecutable(Byte(TP.VirtDrive), TP.VirtCwd, CurrCmd, FatDosPath) Then
+     DosExe := FatDosPath;
    If DosExe <> '' Then
     CreateEmulatorTab(DosExe, '-CD', ParamStr)
    Else If ElfExe <> '' Then
@@ -35797,6 +35972,91 @@ Begin
     TermAddLine(TP,
      '''' + CurrCmd +
      ''' n''est pas reconnu comme commande interne.');
+  End;
+  SK_OS2REXX: Begin
+   { OS/2 CMD.EXE (l interprete de commandes PAR DEFAUT d OS/2) est,        }
+   { pour l ensemble des commandes internes de base (DIR/CD/COPY/DEL/etc), }
+   { compatible avec COMMAND.COM DOS - meme jeu de commandes que SK_CMD    }
+   { ci-dessus, reutilisant les MEMES handlers TermCmd_* (generiques,      }
+   { independants du shell). PERIMETRE ASSUME (demande explicite,          }
+   { clarifiee via AskUserQuestion avant implementation) : ce shell est un }
+   { CMD.EXE de base + BOOT - AUCUN interprete REXX (langage de script      }
+   { natif d OS/2) n est implante ici, ce serait un chantier separe et      }
+   { bien plus consequent (un interprete de langage complet) que l ajout   }
+   { d une invite de commandes supplementaire. }
+   If CurrCmd = 'EXIT' Then
+    TermVisible := False
+   Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
+    TermCmd_CD(TP, ParamStr)
+   Else If CurrCmd = 'CLS' Then
+    TermCmd_CLS(TP)
+   Else If (CurrCmd = 'DIR') Then
+    TermCmd_DIR_CMD(TP, ParamStr)
+   Else If CurrCmd = 'COPY' Then
+    TermCmd_COPY(TP, ParamStr)
+   Else If (CurrCmd = 'DEL') Or (CurrCmd = 'DELETE') Or
+    (CurrCmd = 'ERASE') Or (CurrCmd = 'ERA') Then
+    TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'ECHO' Then
+    TermCmd_ECHO(TP, ParamStr)
+   Else If (CurrCmd = 'MKDIR') Or (CurrCmd = 'MD') Then
+    TermCmd_MKDIR(TP, ParamStr)
+   Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
+    TermCmd_RMDIR(TP, ParamStr)
+   Else If (CurrCmd = 'REN') Or (CurrCmd = 'RENAME') Then
+    TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'MOVE' Then
+    TermCmd_MOVE(TP, ParamStr)
+   Else If CurrCmd = 'TYPE' Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then
+    TermCmd_DATE(TP)
+   Else If CurrCmd = 'TIME' Then
+    TermCmd_TIME(TP)
+   Else If CurrCmd = 'VER' Then
+    TermCmd_VER(TP)
+   Else If CurrCmd = 'PWD' Then
+    TermCmd_PWD(TP)
+   Else If CurrCmd = 'PUSHD' Then
+    TermCmd_PUSHD(TP, ParamStr)
+   Else If CurrCmd = 'POPD' Then
+    TermCmd_POPD(TP)
+   Else If CurrCmd = 'SET' Then
+    TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'VOL' Then
+    TermCmd_VOL(TP, ParamStr)
+   Else If CurrCmd = 'BOOT' Then
+    TermCmd_BOOT(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
+    TermCmd_HELP(TP)
+   Else Begin
+    { Meme repli "commande inconnue -> executable DOS/ELF/PRG" que les     }
+    { autres shells scriptables (SK_CMD/SK_POWERSHELL/SK_NCOMMANDER) -     }
+    { y compris le repli FAT-virtuel-disque (Fat_FindDosExecutable) deja   }
+    { corrige pour SK_NCOMMANDER cette meme session. }
+    DosExe := '';
+    ElfExe := '';
+    FatDosPath := '';
+    If TP.VirtDrive < 0 Then Begin
+     GetDir(0, CurDir);
+     DosExe := TermFindDosExecutable(CurDir, CurrCmd);
+     If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
+    End
+    Else If (TP.VirtDrive >= 0) And (Not FatVol[TP.VirtDrive].IsD64) And
+     (Not FatVol[TP.VirtDrive].IsH8D) And (Not FatVol[TP.VirtDrive].IsHPFS) Then
+     If Fat_FindDosExecutable(Byte(TP.VirtDrive), TP.VirtCwd, CurrCmd, FatDosPath) Then
+      DosExe := FatDosPath;
+    If DosExe <> '' Then
+     CreateEmulatorTab(DosExe, '-CD', ParamStr)
+    Else If ElfExe <> '' Then
+     CreateEmulatorTab(ElfExe, '-CELF64', ParamStr)
+    Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
+     CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
+    Else
+     TermAddLine(TP,
+      '''' + CurrCmd +
+      ''' n''est pas reconnu comme commande interne ou externe.');
+   End;
   End;
  End;
 End;
@@ -35810,6 +36070,7 @@ Begin
   SK_POWERSHELL: TermCmdHistFile := 'devenv-ps.hist';
   SK_BASH:       TermCmdHistFile := 'devenv-bash.hist';
   SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
+  SK_OS2REXX:    TermCmdHistFile := 'devenv-os2.hist';
  Else
   TermCmdHistFile := 'devenv-term.hist';
  End;
@@ -35921,11 +36182,18 @@ Begin
  TerminalHasFocus := False;
  ExplorerHasFocus := False;
  ActiveShell := SK_POWERSHELL;
+ { -1 = pas d amorcage BOOT en attente. CRITIQUE : 0 est un index de       }
+ { lecteur virtuel VALIDE (A:), donc laisser ce global a sa valeur par     }
+ { defaut Pascal (0) armerait a tort un amorcage sur A: au tout premier    }
+ { lancement d un emulateur -CD, avant meme qu aucune commande BOOT n ait  }
+ { jamais ete tapee - voir Emu_LoadBootSector/CreateEmulatorBootTab. }
+ EmuBootFromDrive := -1;
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
  InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
  InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
+ InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
  { Comme l original sur DOS reel (et comme les 4 autres shells de ce      }
  { panneau) : demarrer sur le repertoire courant de la machine hote,           }
  { lettre de lecteur incluse (ex: C:\SOURCE\GITHUB\DEV-COOLS), pas sur           }
@@ -38756,6 +39024,7 @@ Begin
   SK_BASH:       SelLabel := 'Bash';
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
+  SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
  End;
  SetColor(15);
  OutTextXY(SBX + 4, SBY + 3, SelLabel);
@@ -38963,11 +39232,23 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H + 3,
    'Norton Commander');
+  { Item 6 : OS/2 & REXX }
+  If TermSelectIdx = 5 Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H + 3,
+   'OS/2 & REXX');
   { Bordure de la liste }
   SetColor(CLR_BORDER);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H - 1);
  End;
  TP.NeedRepaint := False;
 End;
@@ -39097,6 +39378,25 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Item 6 : OS/2 & REXX }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 5 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 6 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_OS2REXX;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_OS2REXX].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_OS2REXX],
+       'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    { Clic ailleurs : fermer la liste }
    TermSelectOpen := False;
    FullRepaintNeeded := True;
@@ -39114,6 +39414,7 @@ Begin
      SK_BASH:       TermSelectIdx := 2;
      SK_AMIGADOS:   TermSelectIdx := 3;
      SK_NCOMMANDER: TermSelectIdx := 4;
+     SK_OS2REXX:    TermSelectIdx := 5;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -39243,7 +39544,7 @@ Begin
     Exit;
    End;
    If Ev.KeyCode = $50 Then Begin { Fleche bas }
-    If TermSelectIdx < 4 Then
+    If TermSelectIdx < 5 Then
      Inc(TermSelectIdx);
     FullRepaintNeeded := True;
     Exit;
@@ -39257,6 +39558,7 @@ Begin
      2: NewShell := SK_BASH;
      3: NewShell := SK_AMIGADOS;
      4: NewShell := SK_NCOMMANDER;
+     5: NewShell := SK_OS2REXX;
     End;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -39275,6 +39577,9 @@ Begin
        SK_AMIGADOS:
         TermAddLine(TermPanels[SK_AMIGADOS],
          'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
+       SK_OS2REXX:
+        TermAddLine(TermPanels[SK_OS2REXX],
+         'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
       End;
     End;
     TermPanels[ActiveShell].NeedRepaint := True;
@@ -50019,6 +50324,68 @@ Begin
   Emu_LoadProgram := Emu_LoadCom(C, FileName);
 End;
 
+{ Declaration anticipee : definie plus bas avec Emu_DiskIdxFromDL (dont      }
+{ c est l inverse exact), section INT13h. }
+Function Emu_DLFromDiskIdx(Idx: Byte): Byte; Forward;
+
+{ Amorcage reel de type INT 19h (commande Terminal BOOT) : lit le tout      }
+{ premier secteur physique (LBA 0) du lecteur virtuel DriveIdx (0..3, voir  }
+{ EmuFloppyOpen/Emu_ImageReadSector - MBR pour un disque dur, secteur de    }
+{ demarrage direct pour une disquette, EXACTEMENT ce qu un vrai BIOS lit    }
+{ sans distinction), le place a l adresse physique 0000:7C00 et positionne  }
+{ CS:IP/SS:SP/DL comme le ferait un vrai BIOS avant de rendre la main -     }
+{ contrairement a Emu_LoadProgram (PSP/EXE, fichier NOMME), AUCUNE          }
+{ construction de PSP ici : le secteur charge est cense etre lui-meme un    }
+{ chargeur de bas niveau (MBR puis DOS/OS2, ou noyau), pas un programme DOS }
+{ deja pret a tourner sous une PSP. Reutilise les memes resets de session   }
+{ DOS que Emu_LoadProgram par coherence (handles/DTA/EXEC), meme si un      }
+{ vrai secteur de boot ne les consulte generalement pas avant que DOS lui-  }
+{ meme ne soit charge. }
+Function Emu_LoadBootSector(Var C: TEmuCPU; DriveIdx: Byte): Boolean;
+Var
+ SectorBuf: Array[0..511] Of Byte;
+ I: Integer;
+Begin
+ Emu_LoadBootSector := False;
+ For I := 5 To 31 Do EmuFileOpen[I] := False;
+ EmuDtaSeg := $0060;
+ EmuDtaOfs := $0080;
+ EmuFindCount := 0;
+ EmuFindIndex := 0;
+ EmuExecDepth := 0;
+ EmuExitCode := 0;
+ EmuExitType := 0;
+ EmuExtErr := 0;
+ EmuExtErrCls := 0;
+ EmuExtErrAct := 0;
+ EmuExtErrLoc := 0;
+ EmuVerifyFlag := 0;
+ EmuBreakFlag := 0;
+ EmuAllocStrat := 0;
+ EmuSwitchChar := Ord('/');
+ If Not Emu_ImageReadSector(DriveIdx, 0, SectorBuf) Then Exit;
+ Emu_WriteBlock(C, 0, $7C00, SectorBuf, 512);
+ { CS:IP = 07C0:0000 plutot que 0000:7C00 - meme adresse physique          }
+ { ($7C00), mais DOS_RunOneChunk traite CS=0 comme un saut errant vers     }
+ { l IVT/BDA et termine immediatement l "execution" (voir son commentaire  }
+ { juste avant le test) : un vrai secteur de boot garde CS=0 pendant       }
+ { toute son execution (il ne recharge CS que via un JMP FAR eventuel), ce }
+ { qui declenchait ce garde-fou des la 1ere iteration (0 instruction       }
+ { executee). 07C0:0000 est la convention alternative standard (memes     }
+ { octets a la meme adresse physique) qui evite le probleme sans toucher   }
+ { au garde-fou, deja correct pour les .COM/.EXE charges normalement.      }
+ C.Segs.CS := $07C0;
+ C.IP      := $0000;
+ C.Segs.DS := 0;
+ C.Segs.ES := 0;
+ C.Segs.SS := 0;
+ C.Regs.SP := $7C00;  { convention BIOS courante : la pile descend juste   }
+                       { sous le secteur charge, le code du secteur est    }
+                       { cense reprogrammer sa propre pile immediatement.  }
+ C.Regs.DL := Emu_DLFromDiskIdx(DriveIdx);
+ Emu_LoadBootSector := True;
+End;
+
 { ============================================================
   EMULATEUR 8086 - PHASE 2 (1) : moteur d execution minimal
   ----------------------------------------------------------
@@ -57976,6 +58343,17 @@ Begin
  End;
 End;
 
+{ Inverse exact de Emu_DiskIdxFromDL ci-dessus : index 0..3 -> numero       }
+{ d unite BIOS (0/1 -> 00h/01h pour A:/B:, 2/3 -> 80h/81h pour C:/D:) -     }
+{ utilise par Emu_LoadBootSector pour positionner DL avant l amorcage,     }
+{ exactement comme un vrai BIOS le ferait avant de sauter au secteur       }
+{ charge a 0000:7C00. }
+Function Emu_DLFromDiskIdx(Idx: Byte): Byte;
+Begin
+ If Idx >= 2 Then Emu_DLFromDiskIdx := $80 + (Idx - 2)
+ Else Emu_DLFromDiskIdx := Idx;
+End;
+
 { Nombre de disques durs disponibles (unites 2/3, /DISK80//DISK81). }
 Function Emu_HardDiskCount: Byte;
 Var N: Byte;
@@ -58122,7 +58500,12 @@ Begin
   $08: Begin   { Get drive parameters }
    If Not EmuFloppyOpen[Idx] Then Begin
     Emu_Int13SetError(P, Idx, $07);  { 07 = no drive }
-    P.CPU.Regs.AX := 0;
+    { BOGUE REEL (trouve 2026-08-22 en investiguant le blocage BOOT/IO.SYS) }
+    { Emu_Int13SetError vient de placer AH=07 (+ CF) - un AX:=0 juste       }
+    { apres ecrasait cet AH avec 0, renvoyant a l appelant un etat          }
+    { contradictoire (CF=1 "erreur" mais AH=0 "succes"). Ne remettre a 0    }
+    { que AL (comme le fait deja le vrai BIOS), jamais AH ici. }
+    P.CPU.Regs.AL := 0;
     P.CPU.Regs.BX := 0;
     P.CPU.Regs.CX := 0;
     If IsHD Then P.CPU.Regs.DL := Emu_HardDiskCount
@@ -62462,10 +62845,29 @@ Begin
     If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15Tv(P);
    End
    Else Begin
-    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($15) * 4);
-    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($15) * 4 + 2);
-    If IvtSeg <> 0 Then Emu_FireHwInt(P, $15);
-    If IvtOfs = IvtOfs Then ;
+    { BOGUE REEL (trouve 2026-08-22 en investiguant le blocage BOOT/IO.SYS) }
+    { Cette branche utilisait auparavant une lecture BRUTE de l IVT          }
+    { (IvtSeg<>0) au lieu de Emu_IntIsHooked comme les AUTRES vecteurs de     }
+    { cette Case - or Emu_DefaultVectorsInit installe maintenant TOUJOURS    }
+    { un trampoline par defaut pour $15 (voir son en-tete, meme famille que  }
+    { le bogue $08 deja documente) : avec une lecture brute, IvtSeg est      }
+    { desormais TOUJOURS non nul (notre propre trampoline), donc TOUJOURS    }
+    { Emu_FireHwInt - qui saute dans ce meme trampoline "CD 15;CF", ce qui    }
+    { re-declenche Emu_DoInt($15) et boucle indefiniment (recursion          }
+    { infinie). Emu_IntIsHooked distingue correctement "pointe vers NOTRE    }
+    { propre trampoline par defaut" (non hooke, gerer ici) de "pointe        }
+    { ailleurs" (vraiment hooke par l invite, chainer pour de bon) - motif   }
+    { deja utilise par tous les autres vecteurs ci-dessus. }
+    If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15)
+    Else Begin
+     { Un vrai BIOS repond TOUJOURS a INT 15h - meme "non supporte" (CF=1,   }
+     { AH=86h) - pour toute sous-fonction hors de portee de cet emulateur :  }
+     { un appelant qui teste JC apres INT 15h/AH=C0h (config systeme, tres   }
+     { courant au demarrage MS-DOS) attend une reponse definitive, pas un    }
+     { CF perime d une instruction anterieure sans rapport. }
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.AH := $86;
+    End;
    End;
   End;
   $33: Begin
@@ -62623,11 +63025,24 @@ Const
  { l allocation) : un vrai DOS/DOSBox aurait simplement fourni un vecteur    }
  { $08 valide des le depart, contrairement a cet emulateur avant ce          }
  { correctif. }
- Always: Array[0..10] Of Byte = ($08,$10,$11,$12,$13,$16,$1A,$20,$21,$27,$2F);
+ { BOGUE REEL (2026-08-22, meme famille que le bogue $08 ci-dessus) : $15  }
+ { (INT 15h) etait EXCLU de cette liste et seulement rendu par defaut si   }
+ { Souris BIOS PS/2 ou TopView etait actif - hors un vrai DOS lit et       }
+ { SAUVEGARDE systematiquement ce vecteur au demarrage (pour le chainer    }
+ { plus tard, motif universel de tout hook BIOS), meme quand aucun des     }
+ { deux ne concerne l appel. Avec le placeholder ($0000:offset), ce        }
+ { chainage ulterieur saute dans le vide (confirme via BOOT/IO.SYS reel :  }
+ { MS-DOS 6.22 sauve le vecteur $15 tot au demarrage puis y chaine depuis  }
+ { son propre gestionnaire AH=C0h, atterrissant sur le placeholder).       }
+ { $15 rejoint donc la liste inconditionnelle ; la case Souris BIOS PS2/   }
+ { TopView continue de determiner CE QUE repond notre trampoline (voir     }
+ { Emu_DoInt, Case $15 - reponse "non supporte" CF=1/AH=86h en dehors de   }
+ { AH=C2h/10h-12h), pas SI un vecteur existe. }
+ Always: Array[0..11] Of Byte =
+  ($08,$10,$11,$12,$13,$15,$16,$1A,$20,$21,$27,$2F);
 Var I: Integer;
 Begin
- For I := 0 To 10 Do Emu_WriteDefaultVector(P, Always[I]);
- If EmuMousePS2Active Or OptionsDlg.Data.DosTopView Then Emu_WriteDefaultVector(P, $15);
+ For I := 0 To 11 Do Emu_WriteDefaultVector(P, Always[I]);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
  If EmuEms.Active     Then Emu_WriteDefaultVector(P, $67);
@@ -63004,6 +63419,10 @@ Begin
    $65: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
               ResetSegOvr := True; Inc(P.CPU.IP); End; { GS -> traite comme DS }
    $66, $67: Inc(P.CPU.IP); { prefixes operand/address-size 386+ ignores }
+   $F0: Inc(P.CPU.IP); { LOCK - monoprocesseur reel-mode, deja traite   }
+                        { comme un simple prefixe ignore par le coeur    }
+                        { 32 bits protege, voir Dpmi_Step ($67,$F0,$F2,  }
+                        { $F3 Inc(DpmiCPU.EIP)) - meme convention ici.  }
    $F2: Begin RepPrefix := $F2; Inc(P.CPU.IP); End;
    $F3: Begin RepPrefix := $F3; Inc(P.CPU.IP); End;
    Else
@@ -63232,6 +63651,12 @@ Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
     Inc(P.CPU.IP, 2);
     Emu_DoInt(P, Imm8);
+   End;
+  $CC: { INT 3 (1 octet, vecteur fixe 3) - deja gere par le coeur 32     }
+       { bits protege (Dpmi_Step), manquait ici pour le coeur reel-mode. }
+   Begin
+    Inc(P.CPU.IP, 1);
+    Emu_DoInt(P, 3);
    End;
   $C3: { RET near }
    P.CPU.IP := Emu_PopWord(P.CPU);
@@ -75374,8 +75799,14 @@ Begin
   { "chanceuse"), sinon plantait sur le premier octet non decode par ce      }
   { sous-ensemble d opcodes. Traiter CS=0 comme la fin du programme          }
   { (comportement deterministe et honnete, au lieu d executer des donnees    }
-  { par accident) corrige les deux cas a la fois. }
-  If P.CPU.Segs.CS = 0 Then Begin
+  { par accident) corrige les deux cas a la fois.                           }
+  { EXCEPTION (commande Terminal BOOT, voir EmuBootActive) : un vrai         }
+  { secteur de boot (charge par Emu_LoadBootSector) garde legitimement       }
+  { CS=0 pendant tout ou partie de son execution (convention BIOS reelle,    }
+  { il ne recharge CS que via un JMP FAR eventuel, souvent lui-meme vers     }
+  { 0:XXXX) - ce garde-fou ne s applique donc qu au chargement normal        }
+  { (Emu_LoadProgram) d un .COM/.EXE, jamais a un onglet issu de BOOT.       }
+  If (P.CPU.Segs.CS = 0) And Not EmuBootActive Then Begin
    P.CPU.Fault := sfEndProgram;
    Break;
   End;
@@ -76922,8 +77353,19 @@ Begin NesActive := False;
   P.StatusMsg := 'Memoire emulee indisponible';
   Exit;
  End;
- { Charger le programme }
- Loaded := Emu_LoadProgram(P.CPU, BinaryPath);
+ { Charger le programme - ou amorcer reellement depuis un lecteur virtuel  }
+ { (commande Terminal BOOT, voir CreateEmulatorBootTab/Emu_LoadBootSector) }
+ { si EmuBootFromDrive a ete arme juste avant cet appel. Consomme          }
+ { immediatement le drapeau (remis a -1) pour ne jamais rester arme au-    }
+ { dela de ce seul lancement. }
+ If EmuBootFromDrive >= 0 Then Begin
+  EmuBootActive := True;
+  Loaded := Emu_LoadBootSector(P.CPU, Byte(EmuBootFromDrive));
+  EmuBootFromDrive := -1;
+ End Else Begin
+  EmuBootActive := False;
+  Loaded := Emu_LoadProgram(P.CPU, BinaryPath);
+ End;
  If Not Loaded Then Begin
   P.CurFg := 12;
   EmuVScr_WriteStr(P,
@@ -77674,6 +78116,39 @@ Begin
  { defaut (vide) jusqu a ce que l utilisateur quitte REELLEMENT cet onglet   }
  { pour la premiere fois (SyncActiveWindowOut le peuplera alors             }
  { correctement, au bon moment). }
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+End;
+
+{ Variante de CreateEmulatorTab pour la commande Terminal BOOT : pas de     }
+{ fichier NOMME a charger, juste un amorcage reel depuis le lecteur         }
+{ virtuel DriveIdx (0..3) - voir Emu_LoadBootSector/EmuBootFromDrive. Seul   }
+{ le backend x86 (-CD) sait amorcer reellement aujourd hui (voir le          }
+{ commentaire de perimetre pres de TermCmd_BOOT pour /OS2/LINUX/LINUXARM). }
+Procedure CreateEmulatorBootTab(DriveIdx: Byte; Const DispName: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ SyncActiveWindowOut;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_EMU;
+ WinMgr.Windows[Idx].FileName := DispName;
+ WinMgr.Windows[Idx].Title := EmuPanelTitleFor('-CD') + ' - Amorcage ' + DispName;
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ EmuBootFromDrive := DriveIdx;
+ ShowEmulatorPanel(EmuPanel, DispName, '-CD', '');
+ EmuTabs[Idx] := EmuPanel;
+ { Pas de SaveState (-CD n en a jamais, voir le commentaire au-dessus de   }
+ { CreateEmulatorTab) - meme raisonnement, s applique identiquement ici. }
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
 End;
