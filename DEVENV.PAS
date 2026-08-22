@@ -32441,10 +32441,10 @@ End;
 { par HPFS_ResolveDirFNode pour la navigation, sans avoir a materialiser    }
 { un TNCPane complet juste pour un test d appartenance. }
 Function HPFS_FindInDirBlk(Idx: Byte; DirBlkLBA: LongInt; Const WantName: String;
- Var OutFNode: LongInt; Var OutIsDir: Boolean): Boolean; Forward;
+ Var OutFNode: LongInt; Var OutIsDir: Boolean; Var OutSize: LongInt): Boolean; Forward;
 
 Function HPFS_FindInDirBlk(Idx: Byte; DirBlkLBA: LongInt; Const WantName: String;
- Var OutFNode: LongInt; Var OutIsDir: Boolean): Boolean;
+ Var OutFNode: LongInt; Var OutIsDir: Boolean; Var OutSize: LongInt): Boolean;
 Var
  DBuf: Array[0..2047] Of Byte;
  Sec1: Array[0..511] Of Byte;
@@ -32452,7 +32452,7 @@ Var
  Off: Integer;
  RecLen: Word;
  Flags1, Attr: Byte;
- FNodeLBA, DownLBA: LongInt;
+ FNodeLBA, DownLBA, FSize: LongInt;
  NameLen: Byte;
  Name, SafeName: String;
  IsDir, IsSpecial, HasDown, IsLast: Boolean;
@@ -32478,6 +32478,7 @@ Begin
   Flags1 := DBuf[Off + 2];
   Attr := DBuf[Off + 3];
   FNodeLBA := Fat_LE32(DBuf, Off + 4);
+  FSize := Fat_LE32(DBuf, Off + 12);
   NameLen := DBuf[Off + 30];
   IsSpecial := (Flags1 And $01) <> 0;
   IsDir := (Attr And $10) <> 0;
@@ -32492,6 +32493,7 @@ Begin
       (FNodeLBA < FatVol[Idx].HPFSPartSize) Then Begin
     OutFNode := FNodeLBA;
     OutIsDir := IsDir;
+    OutSize := FSize;
     HPFS_FindInDirBlk := True;
     Dec(HPFSListDepth);
     Exit;
@@ -32501,7 +32503,7 @@ Begin
    DownLBA := Fat_LE32(DBuf, Off + RecLen - 4);
    If (DownLBA > 0) And (DownLBA <> DirBlkLBA) And
       (DownLBA < FatVol[Idx].HPFSPartSize) Then
-    If HPFS_FindInDirBlk(Idx, DownLBA, WantName, OutFNode, OutIsDir) Then Begin
+    If HPFS_FindInDirBlk(Idx, DownLBA, WantName, OutFNode, OutIsDir, OutSize) Then Begin
      HPFS_FindInDirBlk := True;
      Dec(HPFSListDepth);
      Exit;
@@ -32521,7 +32523,7 @@ Function HPFS_ResolveDirFNode(Idx: Byte; AbsPath: String; Var OutFNode: LongInt)
 Var
  NParts, I: Integer;
  Parts: Array[0..15] Of String;
- CurFNode, NextFNode, FirstBlk: LongInt;
+ CurFNode, NextFNode, FirstBlk, DummySize: LongInt;
  IsDirFound: Boolean;
 Begin
  HPFS_ResolveDirFNode := False;
@@ -32532,12 +32534,63 @@ Begin
   FirstBlk := HPFS_FirstDirBlkOfFNode(Idx, CurFNode);
   If FirstBlk = 0 Then Exit;
   HPFSListDepth := 0;
-  If Not HPFS_FindInDirBlk(Idx, FirstBlk, Parts[I], NextFNode, IsDirFound) Then Exit;
+  If Not HPFS_FindInDirBlk(Idx, FirstBlk, Parts[I], NextFNode, IsDirFound, DummySize) Then Exit;
   If Not IsDirFound Then Exit;
   CurFNode := NextFNode;
  End;
  OutFNode := CurFNode;
  HPFS_ResolveDirFNode := True;
+End;
+
+{ BOGUE REEL (2026-08-22, signale par l utilisateur sur \OS2\MDOS\APPEND.EXE }
+{ d un vrai VHD eComStation/OS-2) : ni NCActionOpenAssociated (curseur+       }
+{ Entree, corrige juste au-dessus) ni la ligne de commande tapee du          }
+{ Terminal (TermExecuteCommand, SK_NCOMMANDER) n avaient de chemin HPFS -    }
+{ ce dernier EXCLUAIT meme explicitement IsHPFS en supposant a tort que      }
+{ TermFindPrgExecutable la couvrait deja (celui-ci ne gere en realite que    }
+{ l hote et D64, jamais HPFS) - meme categorie de "2 chemins independants,   }
+{ correctif sur l un ne couvre jamais l autre" deja documentee cette session}
+{ pour le cas FAT "ordinaire". Resout CmdName (avec ou sans extension        }
+{ .COM/.EXE deja fournie) dans le repertoire courant Dir (chemin HPFS        }
+{ absolu, '\' pour la racine) - meme convention que Fat_FindDosExecutable    }
+{ ci-dessous (COM puis EXE si aucune extension donnee), mais via             }
+{ HPFS_ResolveDirFNode/HPFS_FirstDirBlkOfFNode/HPFS_FindInDirBlk plutot que  }
+{ Fat_FindPath. }
+Function HPFS_FindDosExecutable(Idx: Byte; Dir, CmdName: String;
+ Var OutPath: String): Boolean;
+Var
+ Candidates: Array[0..1] Of String;
+ NCand, I: Integer;
+ UpName: String;
+ DirFNode, FirstBlk, FoundFNode, FoundSize: LongInt;
+ IsDirFound: Boolean;
+Begin
+ HPFS_FindDosExecutable := False;
+ If (Dir = '') Or (Dir = '\') Then DirFNode := FatVol[Idx].HPFSRootFNode
+ Else If Not HPFS_ResolveDirFNode(Idx, Dir, DirFNode) Then Exit;
+ If DirFNode <= 0 Then Exit;
+ FirstBlk := HPFS_FirstDirBlkOfFNode(Idx, DirFNode);
+ If FirstBlk = 0 Then Exit;
+ UpName := UpCaseStr(CmdName);
+ If (Length(UpName) > 4) And
+    ((Copy(UpName, Length(UpName) - 3, 4) = '.COM') Or
+     (Copy(UpName, Length(UpName) - 3, 4) = '.EXE')) Then Begin
+  Candidates[0] := UpName; NCand := 1;
+ End Else Begin
+  Candidates[0] := UpName + '.COM';
+  Candidates[1] := UpName + '.EXE';
+  NCand := 2;
+ End;
+ For I := 0 To NCand - 1 Do Begin
+  HPFSListDepth := 0;
+  If HPFS_FindInDirBlk(Idx, FirstBlk, Candidates[I], FoundFNode, IsDirFound,
+     FoundSize) And (Not IsDirFound) Then Begin
+   If HPFS_ExtractToTempFile(Idx, FoundFNode, FoundSize, OutPath) Then Begin
+    HPFS_FindDosExecutable := True;
+    Exit;
+   End;
+  End;
+ End;
 End;
 
 { Enumere toutes les entrees d un DIRBLK HPFS (fichier ET sous-repertoire)  }
@@ -35983,9 +36036,19 @@ Begin
    { a la main sur la ligne de commande NC ne trouvait jamais le fichier    }
    { alors que le meme fichier se lance correctement via Entree+curseur). }
    Else If (TP.VirtDrive >= 0) And (Not FatVol[TP.VirtDrive].IsD64) And
-    (Not FatVol[TP.VirtDrive].IsH8D) And (Not FatVol[TP.VirtDrive].IsHPFS) Then
+    (Not FatVol[TP.VirtDrive].IsH8D) And (Not FatVol[TP.VirtDrive].IsHPFS) Then Begin
     If Fat_FindDosExecutable(Byte(TP.VirtDrive), TP.VirtCwd, CurrCmd, FatDosPath) Then
      DosExe := FatDosPath;
+   End
+   { BOGUE REEL (2026-08-22) : le commentaire ci-dessus supposait a tort    }
+   { que TermFindPrgExecutable couvrait deja HPFS (il ne gere en realite    }
+   { que l hote et D64) - taper un nom sur la ligne de commande NC sur un   }
+   { disque HPFS ne trouvait donc jamais l executable non plus, meme        }
+   { symptome que le cas FAT deja corrige, meme motif de correctif. }
+   Else If (TP.VirtDrive >= 0) And FatVol[TP.VirtDrive].IsHPFS Then Begin
+    If HPFS_FindDosExecutable(Byte(TP.VirtDrive), TP.VirtCwd, CurrCmd, FatDosPath) Then
+     DosExe := FatDosPath;
+   End;
    If DosExe <> '' Then
     CreateEmulatorTab(DosExe, '-CD', ParamStr)
    Else If ElfExe <> '' Then
@@ -38188,6 +38251,29 @@ Begin
    If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
     CreateEmulatorTab(TempPath, '-CPCODE', '');
     NCActionOpenAssociated := True;
+   End;
+  End;
+  Exit;
+ End;
+ If (NCState.Slot >= 0) And FatVol[NCState.Slot].IsHPFS Then Begin
+  { BOGUE REEL (2026-08-22, signale par l utilisateur sur un vrai VHD       }
+  { eComStation/OS-2 - \OS2\MDOS\APPEND.EXE) : cette branche n existait pas }
+  { du tout - une entree HPFS ne correspondait a AUCUN des cas ci-dessus    }
+  { (D64/H8D/"FAT ordinaire" explicitement exclu via Not IsHPFS/hote), donc }
+  { Entree sur un .EXE/.COM HPFS ne faisait RIEN, silencieusement - meme    }
+  { categorie de trou que le bogue FAT "ordinaire" deja corrige plus haut   }
+  { cette session (voir Fat_ExtractToTempFile), jamais couvert pour HPFS.   }
+  { HPFS_ExtractToTempFile (deja existant, session precedente) attend       }
+  { directement le FNode LBA - TNCEntry.Cluster le porte deja (meme motif   }
+  { de reutilisation que D64 piste/secteur), pas besoin d une resolution    }
+  { de chemin supplementaire comme Fat_FindPath pour le cas FAT. }
+  Ext := UpCaseStr(NCExtractExt(E.Name));
+  If (Ext = 'COM') Or (Ext = 'EXE') Then Begin
+   If HPFS_ExtractToTempFile(Byte(NCState.Slot), E.Cluster, E.Size, TempPath) Then Begin
+    If (Ext = 'COM') Or NCIsDos16Exe(TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CD', '');
+     NCActionOpenAssociated := True;
+    End;
    End;
   End;
   Exit;
