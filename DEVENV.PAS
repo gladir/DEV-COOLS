@@ -5708,7 +5708,14 @@ Var
  EmuFloppyHeads : Array[0..3] Of Byte;    { nb tetes (1 ou 2, 16 pour HDD) }
  EmuFloppySpt   : Array[0..3] Of Byte;    { secteurs par piste }
  EmuFloppyType  : Array[0..3] Of Byte;    { code BIOS drive type (floppy) }
- EmuFloppySize  : Array[0..3] Of LongInt; { taille virtuelle en octets }
+ EmuFloppySize  : Array[0..3] Of LongWord; { taille virtuelle en octets - }
+                                 { LongWord (non signe, jusqu a ~4,29 Go), }
+                                 { PAS LongInt : un disque virtuel de 2 Go }
+                                 { EXACTEMENT (0x80000000) deborde un      }
+                                 { LongInt signe (max ~2,147 milliards),   }
+                                 { voir le commentaire dans                }
+                                 { Emu_DiskDetectFormat (bogue reel         }
+                                 { 2026-08-22). }
  EmuFloppyRO    : Array[0..3] Of Boolean; { ouvert en lecture seule  }
  EmuFloppyMotor : Byte;                   { etat moteur drive ($40:$3F) }
  { Traduction de conteneur (VHD/VMDK) pour les unites 2/3 (disques durs).
@@ -57282,7 +57289,7 @@ Begin
    If (BlockSz > 0) And (BlockSz Mod 512 = 0) And (BAToff > 0) And
       (HdrOfs > 0) And ((DT = 1) Or (DT = 2)) Then Begin
     EmuFloppyKind[Idx]      := 4;
-    EmuFloppySize[Idx]      := CurSz;
+    EmuFloppySize[Idx]      := LongWord(CurSz);
     EmuFloppyBlockSec[Idx]  := BlockSz Div 512;
     EmuFloppyBATFileOfs[Idx]:= BAToff;
     EmuFloppyDataOfs[Idx]   := HdrOfs;
@@ -57312,7 +57319,7 @@ Begin
   GDOffset  := Emu_BufLE32(Raw, 56);
   If (GrainSize > 0) And (NumGTEs > 0) And (GDOffset > 0) Then Begin
    EmuFloppyKind[Idx]      := 3;
-   EmuFloppySize[Idx]      := Capacity * 512;
+   EmuFloppySize[Idx]      := LongWord(Capacity) * 512;
    EmuFloppyBlockSec[Idx]   := GrainSize;
    EmuFloppyGTEsPerGT[Idx]  := NumGTEs;
    EmuFloppyBATFileOfs[Idx] := GDOffset * 512;
@@ -57363,7 +57370,7 @@ Begin
      FileMode := 0;
      {$I+} If IOResult <> 0 Then ;
      EmuFloppyName[Idx] := ExtName;
-     EmuFloppySize[Idx] := FileSize(EmuFloppyFile[Idx]);
+     EmuFloppySize[Idx] := LongWord(FileSize(EmuFloppyFile[Idx]));
      Emu_DiskDetectFormat := Emu_DiskDetectFormat(Idx);
      Exit;
     End;
@@ -57403,10 +57410,24 @@ Begin
   If FtrRelOfs + K < WinR Then Raw[K] := WinBuf[FtrRelOfs + K];
  DT := Emu_BufBE32(Raw, 60);
  CurSz := Emu_BufBE32(Raw, 52);
- If CurSz <= 0 Then CurSz := Sz - 512;
+ { BOGUE REEL (2026-08-22, investigation BOOT sur un vrai VHD MS-DOS 6.22   }
+ { de taille virtuelle declaree = 2 Go PILE, 0x80000000) : CurSz est un     }
+ { LongInt SIGNE 32 bits (max ~2,147 milliards), donc 2 147 483 648 exact   }
+ { deborde en un nombre NEGATIF - l ancien test "<=0" traitait alors a tort }
+ { ce cas comme "champ absent" et retombait sur Sz-512 (taille du FICHIER   }
+ { sparse, ~10 Mo ici), pas la taille VIRTUELLE reelle du disque (2 Go).    }
+ { Resultat : EmuFloppyCyls calcule bien trop petit, rendant l ecrasante    }
+ { majorite du disque totalement inaccessible via CHS - exactement le       }
+ { genre de "lectures qui aboutissent a des donnees FAT/repertoire          }
+ { plausibles mais fausses, en boucle sans fin" observe au boot. Ne          }
+ { retomber sur Sz-512 QUE si le champ est reellement absent (= 0 exact) ;  }
+ { toute autre valeur, meme "negative" en LongInt signe, est un motif de    }
+ { bits legitime a reinterpreter comme non-signe (voir LongWord(CurSz) aux  }
+ { sites d affectation ci-dessous, et EmuFloppySize desormais LongWord). }
+ If CurSz = 0 Then CurSz := Sz - 512;
  If DT = 2 Then Begin
   EmuFloppyKind[Idx] := 1;
-  EmuFloppySize[Idx] := CurSz;
+  EmuFloppySize[Idx] := LongWord(CurSz);
   Exit;
  End;
  If (DT = 3) Or (DT = 4) Then Begin
@@ -57423,7 +57444,7 @@ Begin
   BlockSz := Emu_BufBE32(Raw, 32);
   If (BlockSz = 0) Or (BlockSz Mod 512 <> 0) Then Exit;
   EmuFloppyKind[Idx]       := 2;
-  EmuFloppySize[Idx]       := CurSz;
+  EmuFloppySize[Idx]       := LongWord(CurSz);
   EmuFloppyBlockSec[Idx]   := BlockSz Div 512;
   EmuFloppyBitmapSecs[Idx] := ((EmuFloppyBlockSec[Idx] Div 8) + 511) Div 512;
   If EmuFloppyBitmapSecs[Idx] < 1 Then EmuFloppyBitmapSecs[Idx] := 1;
@@ -57700,19 +57721,76 @@ Begin
  Emu_ReportDiskMount(1);
 End;
 
+{ BOGUE REEL (2026-08-22, investigation BOOT sur un vrai VHD MS-DOS 6.22) : }
+{ un vrai disque de 2009 booté jusqu au chargement d IO.SYS puis restait     }
+{ bloque dans une boucle de comparaison FAT/repertoire qui ne se terminait   }
+{ jamais - cause tracee a la table de partitions MBR du disque LUI-MEME :   }
+{ son entree de partition se termine a CHS cylindre 518/tete 127/secteur    }
+{ 63, ce qui implique AU MOINS 128 tetes (convention "grand disque" de      }
+{ vieux BIOS pour depasser la barriere des ~528 Mo), alors que              }
+{ Emu_HardDiskOpenOne codait en dur 16 tetes pour TOUT disque dur virtuel.  }
+{ Avec 16 tetes, seuls les ~528 premiers Mo du disque restent adressables   }
+{ via CHS (INT13h AH=02/03) - toute lecture plus profonde (FAT/repertoire   }
+{ d une partition de 2 Go) vise donc un secteur physique completement       }
+{ different de celui que le disque reel utilise, d ou des donnees           }
+{ incoherentes qui RESSEMBLENT a du contenu FAT/repertoire valide sans      }
+{ jamais atteindre de fin de chaine reelle. }
+{ Deduit la geometrie REELLE (tetes/secteurs-par-piste) d un disque a       }
+{ partir de sa PROPRE table de partitions MBR (secteur 0), au lieu de la    }
+{ constante fixe utilisee jusqu ici - motif standard (deja utilise a        }
+{ l epoque par la plupart des utilitaires de partitionnement compatibles    }
+{ DOS) : une partition FDISK se termine TOUJOURS au dernier secteur/piste    }
+{ d un cylindre, donc le champ "secteur" du triplet CHS de FIN egale les    }
+{ vrais secteurs/piste, et (tete de fin + 1) egale le vrai nombre de tetes. }
+{ Retombe sur le format brut (pas de MBR/signature 55AAh, ou table de       }
+{ partitions entierement vide - ex. une image FAT sans partitionnement) en  }
+{ renvoyant False, laissant Emu_HardDiskOpenOne utiliser son repli 16/63.   }
+Function Emu_DetectHardDiskGeometry(Idx: Byte;
+ Var HeadsOut, SptOut: Word): Boolean;
+Var
+ Mbr: Array[0..511] Of Byte;
+ POfs: Word;
+ PType, EndHead, EndSecCylHi: Byte;
+ Spt, Heads: Word;
+ I: Integer;
+Begin
+ Emu_DetectHardDiskGeometry := False;
+ If Not Emu_ImageReadSector(Idx, 0, Mbr) Then Exit;
+ If (Mbr[510] <> $55) Or (Mbr[511] <> $AA) Then Exit;
+ For I := 0 To 3 Do Begin
+  POfs := 446 + I * 16;
+  PType := Mbr[POfs + 4];
+  If PType <> 0 Then Begin
+   EndHead     := Mbr[POfs + 5];
+   EndSecCylHi := Mbr[POfs + 6];
+   Spt   := EndSecCylHi And $3F;
+   Heads := Word(EndHead) + 1;
+   If (Spt >= 1) And (Spt <= 63) And (Heads >= 1) And (Heads <= 256) Then Begin
+    HeadsOut := Heads;
+    SptOut   := Spt;
+    Emu_DetectHardDiskGeometry := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
 { Ouvrir une image de disque dur (/DISK80 -> Idx=2, /DISK81 -> Idx=3).
   Contrairement aux disquettes, les conteneurs VHD/VMDK sont acceptes
   (Emu_DiskDetectFormat) ; les disques peuvent aussi porter une table
-  de partitions (MBR), detectee plus loin par Fat_TryMount. La
-  geometrie CHS est synthetisee (16 tetes, 63 secteurs/piste, comme
-  la plupart des BIOS pour les disques non standards) a partir de la
+  de partitions (MBR), detectee plus loin par Fat_TryMount. La geometrie
+  CHS reelle est deduite de la table de partitions du disque lui-meme
+  (Emu_DetectHardDiskGeometry) quand c est possible, sinon synthetisee
+  (16 tetes, 63 secteurs/piste, comme la plupart des BIOS pour les
+  disques non standards depourvus de MBR exploitable) a partir de la
   taille virtuelle ; au-dela de 1024 cylindres, seule la zone couverte
-  par l adressage CHS classique (~528 Mo) reste accessible via
-  INT 13h AH=02/03 (pas d extensions LBA/EDD). }
+  par l adressage CHS classique reste accessible via INT 13h AH=02/03
+  (pas d extensions LBA/EDD). }
 Procedure Emu_HardDiskOpenOne(Idx: Byte; FName: String);
 Var
  Sz: LongInt;
  VirtSec: LongInt;
+ DetHeads, DetSpt: Word;
 Begin
  EmuFloppyOpen[Idx]  := False;
  EmuFloppyName[Idx]  := '';
@@ -57760,6 +57838,17 @@ Begin
  End;
  EmuFloppyHeads[Idx] := 16;
  EmuFloppySpt[Idx]   := 63;
+ { Emu_DetectHardDiskGeometry a besoin de EmuFloppyOpen=True pour que      }
+ { Emu_ImageReadSector accepte de lire (son tout premier garde-fou) - sans }
+ { consequence de l activer un peu plus tot ici puisque tous les champs    }
+ { Kind/BAT necessaires viennent d etre remplis par Emu_DiskDetectFormat   }
+ { ci-dessus, et Open est de toute facon mis a True inconditionnellement   }
+ { a la fin de cette procedure. }
+ EmuFloppyOpen[Idx] := True;
+ If Emu_DetectHardDiskGeometry(Idx, DetHeads, DetSpt) Then Begin
+  EmuFloppyHeads[Idx] := DetHeads;
+  EmuFloppySpt[Idx]   := DetSpt;
+ End;
  EmuFloppyCyls[Idx]  := Word(VirtSec Div
   (LongInt(EmuFloppyHeads[Idx]) * EmuFloppySpt[Idx]));
  If EmuFloppyCyls[Idx] < 1 Then EmuFloppyCyls[Idx] := 1;
