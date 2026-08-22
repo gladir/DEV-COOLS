@@ -1551,6 +1551,10 @@ Const
 
  { Norton Commander (5e shell du panneau Terminal) }
  MAX_NC_ENTRIES        = 512;     { entrees max par panneau (repertoire) }
+ { HPFS (OS/2, lecture seule, voir HPFS_AddAllocBplus) - UNDISKPC.PAS       }
+ { utilise 4096 ; reduit ici car les fichiers typiques de ce depot sont     }
+ { petits et peu fragmentes, meme esprit que sa propre limite documentee. }
+ HPFS_MAX_RUNS         = 512;
  NC_DEFAULT_IMAGE      = '_NC_A.IMG';  { image disquette virtuelle par defaut }
  NC_FLOPPY_SECTORS     = 2880;    { 1.44 Mo = 2880 secteurs de 512 octets }
  MAX_NC_TREE_NODES     = 400;     { noeuds max pour l arbre NCD (Commandes) }
@@ -2739,6 +2743,12 @@ Type
   D64Tracks      : Byte;           { nombre de pistes (35 ou 40)    }
   IsH8D          : Boolean;        { image Heath/Zenith .H8D (HDOS/CP-M-80/UCSD p-System) }
   H8DFsType      : Byte;           { 1=HDOS 2=CP/M-80 3=UCSD p-System (voir H8D_FS_*) }
+  IsHPFS         : Boolean;        { partition OS/2 HPFS (type MBR $07,     }
+                                    { signature SuperBlock verifiee - voir   }
+                                    { HPFS_CheckSuperBlock), lecture seule   }
+  HPFSRootFNode  : LongInt;        { FNode racine, partition-relatif        }
+  HPFSPartSize   : LongInt;        { taille de la partition en secteurs     }
+                                    { (bornes pour HPFS_ScanForDirBlk)       }
   FATType        : Byte;           { 12, 16 ou 32                   }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
@@ -2759,6 +2769,13 @@ Type
   VolLabel       : String[11];
   CachedFatLBA   : LongInt;
   CachedFatBuf   : Array[0..511] Of Byte;
+ End;
+
+ { Une plage contigue de secteurs allouee a un fichier HPFS (feuille de   }
+ { l arbre B+ d allocation) - voir HPFS_AddAllocBplus. }
+ THPFSRun = Record
+  DiskSec: LongInt;
+  RunLen : LongInt;
  End;
 
  { Volume CD-ROM ISO9660 monte en lecture seule depuis une image .iso     }
@@ -5682,7 +5699,17 @@ Var
  EmuFloppyBitmapSecs: Array[0..3] Of LongInt;
  EmuFloppyBATFileOfs: Array[0..3] Of LongInt;
  EmuFloppyGTEsPerGT : Array[0..3] Of LongInt;
+ EmuFloppyDataOfs   : Array[0..3] Of LongInt; { VDI (Kind=4) seulement :  }
+                       { offset_data de l en-tete - le block map VDI       }
+                       { stocke un INDEX de bloc (pas un offset), voir     }
+                       { Emu_DiskDetectFormat/Emu_ImageReadSector.         }
  FatVol         : Array[0..3] Of TFatVol; { volumes FAT12/16 montes  }
+ { --- Etat de travail temporaire pour HPFS_AddAllocBplus (voir ce nom) - }
+ { rempli au debut de chaque extraction de fichier, jamais persiste.     }
+ HPFSRuns        : Array[0..HPFS_MAX_RUNS - 1] Of THPFSRun;
+ HPFSRunCount    : Integer;
+ HPFSRunOverflow : Boolean;
+ HPFSListDepth   : Integer; { garde-fou anti-cycle, voir HPFS_ListDirBlk }
  { --- CD-ROM ISO9660 montes (option /CDROM0:/CDROM1:), voir            }
  { Emu_CdromOpenAll/Emu_IsoResolve - lettre de lecteur assignee          }
  { uniquement si Open=True (voir Emu_CdromOpenAll), au plus tot D:. }
@@ -32166,6 +32193,389 @@ Begin
  End;
 End;
 
+{ Declarations anticipees (definies plus bas avec le reste du support FAT -}
+{ generiques, pas specifiques a FAT, reutilisees ici telles quelles). }
+Function Fat_UpStr(S: String): String; Forward;
+Procedure Fat_SplitPath(P: String; Var N: Integer;
+ Var Parts: Array Of String); Forward;
+
+{ ============================================================
+  Support HPFS (OS/2, LECTURE SEULE) pour l explorateur NC (TNCPane) -
+  porte depuis UNDISKPC.PAS (projet Corail). Ne supporte ni l ecriture,
+  ni les EA, ni les ACL - meme limitation que la reference. De toute
+  facon, Copier/Renommer/Supprimer/CreerRepertoire sont deja des no-op
+  pour TOUT disque virtuel monte (Slot>=0), pas seulement HPFS, voir
+  HandleNCommanderEvent (ncPromptCopy/ncPromptRenMov/ncConfirmDelete/
+  ncPromptMkDir verifient tous NCState.Slot < 0 avant d agir).
+  ============================================================ }
+
+{ Signature SuperBlock HPFS ($F995E849 petit-boutiste) au secteur
+  PartLBA+16 - PartLBA est ICI une LBA ABSOLUE (appelee avant que
+  FatVol[Idx].PartitionStart ne soit positionne), d ou Emu_ImageReadSector
+  directement plutot que Fat_ReadSector (qui ajouterait un decalage pas
+  encore valide). }
+Function HPFS_CheckSuperBlock(Idx: Byte; PartLBA: LongInt): Boolean;
+Var SB: Array[0..511] Of Byte;
+Begin
+ HPFS_CheckSuperBlock := False;
+ If Not Emu_ImageReadSector(Idx, PartLBA + 16, SB) Then Exit;
+ HPFS_CheckSuperBlock := (SB[0] = $49) And (SB[1] = $E8) And
+                         (SB[2] = $95) And (SB[3] = $F9);
+End;
+
+Function HPFS_ReadRootFNode(Idx: Byte; PartLBA: LongInt): LongInt;
+Var SB: Array[0..511] Of Byte;
+Begin
+ HPFS_ReadRootFNode := 0;
+ If Not Emu_ImageReadSector(Idx, PartLBA + 16, SB) Then Exit;
+ HPFS_ReadRootFNode := Fat_LE32(SB, 12);
+End;
+
+Function HPFS_SanitizeName(Const N: String): String;
+Var
+ I: Integer;
+ R: String;
+ C: Char;
+ HasNonSpace: Boolean;
+Begin
+ R := '';
+ HasNonSpace := False;
+ For I := 1 To Length(N) Do Begin
+  C := N[I];
+  Case C Of
+   '\', '/', ':', '*', '?', '"', '<', '>', '|': C := '_';
+  End;
+  If Ord(C) < 32 Then C := '_';
+  If (C <> ' ') And (C <> '_') Then HasNonSpace := True;
+  If Length(R) < 200 Then R := R + C;
+ End;
+ While (Length(R) > 0) And (R[Length(R)] = ' ') Do Delete(R, Length(R), 1);
+ If Not HasNonSpace Then R := '';
+ HPFS_SanitizeName := R;
+End;
+
+{ Cherche dans Buf[StartOff..EndOff] un U32 LE qui, interprete comme LBA
+  partition-relatif, pointe vers un secteur portant la signature DIRBLK
+  (AE 0A E4 77) - scan octet par octet, comme UNDISKPC.PAS. }
+Function HPFS_ScanForDirBlk(Idx: Byte; Var Buf: Array Of Byte;
+ StartOff, EndOff: Integer): LongInt;
+Var
+ I: Integer;
+ Cand: LongInt;
+ SubSec: Array[0..511] Of Byte;
+Begin
+ HPFS_ScanForDirBlk := 0;
+ I := StartOff;
+ While I <= EndOff - 3 Do Begin
+  Cand := Fat_LE32(Buf, I);
+  If (Cand > 0) And (Cand < FatVol[Idx].HPFSPartSize) Then Begin
+   If Fat_ReadSector(Idx, Cand, SubSec) Then
+    If (SubSec[0] = $AE) And (SubSec[1] = $0A) And
+       (SubSec[2] = $E4) And (SubSec[3] = $77) Then Begin
+     HPFS_ScanForDirBlk := Cand;
+     Exit;
+    End;
+  End;
+  Inc(I);
+ End;
+End;
+
+{ Lit le FNode a FNodeLBA (verifie la signature FEA2 : AE 0A E4 F7) et       }
+{ localise son premier DIRBLK (champ alsec a l offset 55, voir              }
+{ HPFS_ScanForDirBlk) - factorise pour HPFS_ListDirFNode et                 }
+{ HPFS_ResolveDirFNode. }
+Function HPFS_FirstDirBlkOfFNode(Idx: Byte; FNodeLBA: LongInt): LongInt;
+Var FBuf: Array[0..511] Of Byte;
+Begin
+ HPFS_FirstDirBlkOfFNode := 0;
+ If FNodeLBA <= 0 Then Exit;
+ If Not Fat_ReadSector(Idx, FNodeLBA, FBuf) Then Exit;
+ If (FBuf[0] <> $AE) Or (FBuf[1] <> $0A) Or (FBuf[2] <> $E4) Or (FBuf[3] <> $F7) Then Exit;
+ HPFS_FirstDirBlkOfFNode := HPFS_ScanForDirBlk(Idx, FBuf, 55, 200);
+End;
+
+{ Parcourt un en-tete B+tree d allocation HPFS a HdrOff dans Buf (en-tete   }
+{ bplus 8 octets : flags/fill/n_free/n_used/first_free ; feuille alleaf 12  }
+{ octets : file_secno/length/disk_secno ; interne alnode 8 octets :         }
+{ file_secno/down vers un secteur ALSEC, magic $37E40AAE, bplus a l offset  }
+{ 12) et accumule les plages contigues dans HPFSRuns/HPFSRunCount - pose    }
+{ HPFSRunOverflow si HPFS_MAX_RUNS est depasse (troncature documentee,      }
+{ meme esprit que MaxHPFSRuns dans UNDISKPC.PAS). }
+Procedure HPFS_AddAllocBplus(Idx: Byte; Var Buf: Array Of Byte; HdrOff: Integer);
+Var
+ Flags: Byte;
+ NUsed: Integer;
+ EntryOff, I, EntLen: Integer;
+ IsLeaf: Boolean;
+ RunLen, RunDisk, DownLBA: LongInt;
+ SubSec: Array[0..511] Of Byte;
+Begin
+ Flags := Buf[HdrOff];
+ IsLeaf := (Flags And $80) = 0;
+ NUsed := Buf[HdrOff + 5];
+ If NUsed > 100 Then NUsed := 100;
+ If IsLeaf Then EntLen := 12 Else EntLen := 8;
+ EntryOff := HdrOff + 8;
+ For I := 0 To NUsed - 1 Do
+  If IsLeaf Then Begin
+   RunLen  := Fat_LE32(Buf, EntryOff + I * EntLen + 4);
+   RunDisk := Fat_LE32(Buf, EntryOff + I * EntLen + 8);
+   If RunLen > 0 Then Begin
+    If HPFSRunCount < HPFS_MAX_RUNS Then Begin
+     HPFSRuns[HPFSRunCount].DiskSec := RunDisk;
+     HPFSRuns[HPFSRunCount].RunLen  := RunLen;
+     Inc(HPFSRunCount);
+    End Else
+     HPFSRunOverflow := True;
+   End;
+  End Else Begin
+   DownLBA := Fat_LE32(Buf, EntryOff + I * EntLen + 4);
+   If DownLBA > 0 Then Begin
+    If Fat_ReadSector(Idx, DownLBA, SubSec) Then
+     If (SubSec[0] = $AE) And (SubSec[1] = $0A) And
+        (SubSec[2] = $E4) And (SubSec[3] = $37) Then
+      HPFS_AddAllocBplus(Idx, SubSec, 12);
+   End;
+  End;
+End;
+
+{ Extrait le fichier HPFS de FNode FNodeLBA (partition-relatif) et de       }
+{ taille Size vers un fichier hote temporaire fixe (meme convention que     }
+{ H8D_Extract*ByName ci-dessus) ; retourne son chemin dans OutPath. }
+Function HPFS_ExtractToTempFile(Idx: Byte; FNodeLBA, Size: LongInt;
+ Var OutPath: String): Boolean;
+Var
+ FNodeBuf: Array[0..511] Of Byte;
+ SecBuf: Array[0..511] Of Byte;
+ F: File;
+ RunI: Integer;
+ SecLeft, ChunkStart, BytesWritten: LongInt;
+ ToWrite: Word;
+ W: Word;
+Begin
+ HPFS_ExtractToTempFile := False;
+ If Not Fat_ReadSector(Idx, FNodeLBA, FNodeBuf) Then Exit;
+ If (FNodeBuf[0] <> $AE) Or (FNodeBuf[1] <> $0A) Or
+    (FNodeBuf[2] <> $E4) Or (FNodeBuf[3] <> $F7) Then Exit;
+ HPFSRunCount := 0;
+ HPFSRunOverflow := False;
+ HPFS_AddAllocBplus(Idx, FNodeBuf, 56);
+ OutPath := GetEnv('TEMP');
+ If OutPath = '' Then OutPath := '.';
+ If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+ OutPath := OutPath + 'DEVENV_NC_HPFS.TMP';
+ {$I-} Assign(F, OutPath); Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ BytesWritten := 0;
+ RunI := 0;
+ While (RunI < HPFSRunCount) And (BytesWritten < Size) Do Begin
+  ChunkStart := HPFSRuns[RunI].DiskSec;
+  SecLeft := HPFSRuns[RunI].RunLen;
+  While (SecLeft > 0) And (BytesWritten < Size) Do Begin
+   If Not Fat_ReadSector(Idx, ChunkStart, SecBuf) Then Break;
+   If Size - BytesWritten > 512 Then ToWrite := 512
+                                 Else ToWrite := Word(Size - BytesWritten);
+   BlockWrite(F, SecBuf, ToWrite, W);
+   Inc(BytesWritten, W);
+   Inc(ChunkStart);
+   Dec(SecLeft);
+  End;
+  Inc(RunI);
+ End;
+ Close(F);
+ HPFS_ExtractToTempFile := True;
+End;
+
+{ Cherche WantName (deja en majuscules) parmi les entrees d un repertoire   }
+{ HPFS a partir de son premier DIRBLK, en suivant la chaine "Down" du       }
+{ B+tree si necessaire (meme structure que HPFS_ListDirBlk ci-dessous,      }
+{ mais s arrete au 1er nom trouve plutot que de tout enumerer) - utilise    }
+{ par HPFS_ResolveDirFNode pour la navigation, sans avoir a materialiser    }
+{ un TNCPane complet juste pour un test d appartenance. }
+Function HPFS_FindInDirBlk(Idx: Byte; DirBlkLBA: LongInt; Const WantName: String;
+ Var OutFNode: LongInt; Var OutIsDir: Boolean): Boolean; Forward;
+
+Function HPFS_FindInDirBlk(Idx: Byte; DirBlkLBA: LongInt; Const WantName: String;
+ Var OutFNode: LongInt; Var OutIsDir: Boolean): Boolean;
+Var
+ DBuf: Array[0..2047] Of Byte;
+ Sec1: Array[0..511] Of Byte;
+ I, J: Integer;
+ Off: Integer;
+ RecLen: Word;
+ Flags1, Attr: Byte;
+ FNodeLBA, DownLBA: LongInt;
+ NameLen: Byte;
+ Name, SafeName: String;
+ IsDir, IsSpecial, HasDown, IsLast: Boolean;
+Begin
+ HPFS_FindInDirBlk := False;
+ If HPFSListDepth > 32 Then Exit;
+ Inc(HPFSListDepth);
+ For I := 0 To 3 Do Begin
+  If Not Fat_ReadSector(Idx, DirBlkLBA + I, Sec1) Then Begin
+   Dec(HPFSListDepth); Exit;
+  End;
+  Move(Sec1, DBuf[I * 512], 512);
+ End;
+ If (DBuf[0] <> $AE) Or (DBuf[1] <> $0A) Or (DBuf[2] <> $E4) Or (DBuf[3] <> $77) Then Begin
+  Dec(HPFSListDepth); Exit;
+ End;
+ Off := 20;
+ While Off < 2040 Do Begin
+  RecLen := Fat_LE16(DBuf, Off);
+  If (RecLen < 32) Or (Off + LongInt(RecLen) > 2048) Then Begin
+   Dec(HPFSListDepth); Exit;
+  End;
+  Flags1 := DBuf[Off + 2];
+  Attr := DBuf[Off + 3];
+  FNodeLBA := Fat_LE32(DBuf, Off + 4);
+  NameLen := DBuf[Off + 30];
+  IsSpecial := (Flags1 And $01) <> 0;
+  IsDir := (Attr And $10) <> 0;
+  HasDown := (Flags1 And $04) <> 0;
+  IsLast := (Flags1 And $08) <> 0;
+  If (Not IsSpecial) And (NameLen > 0) And (NameLen <= 200) Then Begin
+   Name := '';
+   For J := 0 To NameLen - 1 Do
+    If Off + 31 + J < 2048 Then Name := Name + Chr(DBuf[Off + 31 + J]);
+   SafeName := HPFS_SanitizeName(Name);
+   If (Fat_UpStr(SafeName) = WantName) And (FNodeLBA > 0) And
+      (FNodeLBA < FatVol[Idx].HPFSPartSize) Then Begin
+    OutFNode := FNodeLBA;
+    OutIsDir := IsDir;
+    HPFS_FindInDirBlk := True;
+    Dec(HPFSListDepth);
+    Exit;
+   End;
+  End;
+  If HasDown Then Begin
+   DownLBA := Fat_LE32(DBuf, Off + RecLen - 4);
+   If (DownLBA > 0) And (DownLBA <> DirBlkLBA) And
+      (DownLBA < FatVol[Idx].HPFSPartSize) Then
+    If HPFS_FindInDirBlk(Idx, DownLBA, WantName, OutFNode, OutIsDir) Then Begin
+     HPFS_FindInDirBlk := True;
+     Dec(HPFSListDepth);
+     Exit;
+    End;
+  End;
+  If IsLast Then Begin Dec(HPFSListDepth); Exit; End;
+  Inc(Off, RecLen);
+ End;
+ Dec(HPFSListDepth);
+End;
+
+{ Resout un chemin (deja absolu, ex. '\SUBDIR\FOO') en FNode de repertoire, }
+{ en partant de la racine (FatVol[Idx].HPFSRootFNode) et en descendant nom  }
+{ par nom - meme structure que Fat_ResolveDir/Fat_SplitPath (reutilise      }
+{ directement, generique). }
+Function HPFS_ResolveDirFNode(Idx: Byte; AbsPath: String; Var OutFNode: LongInt): Boolean;
+Var
+ NParts, I: Integer;
+ Parts: Array[0..15] Of String;
+ CurFNode, NextFNode, FirstBlk: LongInt;
+ IsDirFound: Boolean;
+Begin
+ HPFS_ResolveDirFNode := False;
+ CurFNode := FatVol[Idx].HPFSRootFNode;
+ If CurFNode <= 0 Then Exit;
+ Fat_SplitPath(AbsPath, NParts, Parts);
+ For I := 0 To NParts - 1 Do Begin
+  FirstBlk := HPFS_FirstDirBlkOfFNode(Idx, CurFNode);
+  If FirstBlk = 0 Then Exit;
+  HPFSListDepth := 0;
+  If Not HPFS_FindInDirBlk(Idx, FirstBlk, Parts[I], NextFNode, IsDirFound) Then Exit;
+  If Not IsDirFound Then Exit;
+  CurFNode := NextFNode;
+ End;
+ OutFNode := CurFNode;
+ HPFS_ResolveDirFNode := True;
+End;
+
+{ Enumere toutes les entrees d un DIRBLK HPFS (fichier ET sous-repertoire)  }
+{ dans Pane, en suivant la chaine "Down" du B+tree pour ne rien omettre -   }
+{ Cluster reutilise pour stocker le FNode (partition-relatif) de chaque     }
+{ entree, comme D64 y stocke piste/secteur (voir NCListDir/NCActionView    }
+{ pour la lecture correspondante). }
+Procedure HPFS_ListDirBlk(Idx: Byte; DirBlkLBA: LongInt; Var Pane: TNCPane); Forward;
+
+Procedure HPFS_ListDirBlk(Idx: Byte; DirBlkLBA: LongInt; Var Pane: TNCPane);
+Var
+ DBuf: Array[0..2047] Of Byte;
+ Sec1: Array[0..511] Of Byte;
+ I, J: Integer;
+ Off: Integer;
+ RecLen: Word;
+ Flags1, Attr: Byte;
+ FNodeLBA, DownLBA, FSize: LongInt;
+ NameLen: Byte;
+ Name, SafeName: String;
+ IsDir, IsSpecial, HasDown, IsLast: Boolean;
+Begin
+ If HPFSListDepth > 32 Then Exit;
+ Inc(HPFSListDepth);
+ For I := 0 To 3 Do Begin
+  If Not Fat_ReadSector(Idx, DirBlkLBA + I, Sec1) Then Begin
+   Dec(HPFSListDepth); Exit;
+  End;
+  Move(Sec1, DBuf[I * 512], 512);
+ End;
+ If (DBuf[0] <> $AE) Or (DBuf[1] <> $0A) Or (DBuf[2] <> $E4) Or (DBuf[3] <> $77) Then Begin
+  Dec(HPFSListDepth); Exit;
+ End;
+ Off := 20;
+ While Off < 2040 Do Begin
+  RecLen := Fat_LE16(DBuf, Off);
+  If (RecLen < 32) Or (Off + LongInt(RecLen) > 2048) Then Begin
+   Dec(HPFSListDepth); Exit;
+  End;
+  Flags1 := DBuf[Off + 2];
+  Attr := DBuf[Off + 3];
+  FNodeLBA := Fat_LE32(DBuf, Off + 4);
+  FSize := Fat_LE32(DBuf, Off + 12);
+  NameLen := DBuf[Off + 30];
+  IsSpecial := (Flags1 And $01) <> 0;
+  IsDir := (Attr And $10) <> 0;
+  HasDown := (Flags1 And $04) <> 0;
+  IsLast := (Flags1 And $08) <> 0;
+  If (Not IsSpecial) And (NameLen > 0) And (NameLen <= 200) Then Begin
+   Name := '';
+   For J := 0 To NameLen - 1 Do
+    If Off + 31 + J < 2048 Then Name := Name + Chr(DBuf[Off + 31 + J]);
+   SafeName := HPFS_SanitizeName(Name);
+   If (Name <> '') And (SafeName <> '') And (SafeName <> '.') And
+      (SafeName <> '..') And (FNodeLBA > 0) And
+      (FNodeLBA < FatVol[Idx].HPFSPartSize) And (Pane.Count < MAX_NC_ENTRIES) Then Begin
+    Pane.Entries[Pane.Count].Name := SafeName;
+    Pane.Entries[Pane.Count].Size := FSize;
+    Pane.Entries[Pane.Count].IsDir := IsDir;
+    Pane.Entries[Pane.Count].FTime := 0;
+    Pane.Entries[Pane.Count].FDate := 0;
+    Pane.Entries[Pane.Count].Cluster := FNodeLBA;
+    Inc(Pane.Count);
+   End;
+  End;
+  If HasDown Then Begin
+   DownLBA := Fat_LE32(DBuf, Off + RecLen - 4);
+   If (DownLBA > 0) And (DownLBA <> DirBlkLBA) And
+      (DownLBA < FatVol[Idx].HPFSPartSize) Then
+    HPFS_ListDirBlk(Idx, DownLBA, Pane);
+  End;
+  If IsLast Then Begin Dec(HPFSListDepth); Exit; End;
+  Inc(Off, RecLen);
+ End;
+ Dec(HPFSListDepth);
+End;
+
+Procedure HPFS_ListDirFNode(Idx: Byte; FNodeLBA: LongInt; Var Pane: TNCPane);
+Var FirstBlk: LongInt;
+Begin
+ FirstBlk := HPFS_FirstDirBlkOfFNode(Idx, FNodeLBA);
+ If FirstBlk = 0 Then Exit;
+ HPFSListDepth := 0;
+ HPFS_ListDirBlk(Idx, FirstBlk, Pane);
+End;
+
 { Types de partition MBR pouvant contenir un systeme de fichiers FAT
   (port de IsFATPartitionType, DISKPC.PAS / UNDISKPC.PAS). }
 Function Fat_IsFATPartitionType(T: Byte): Boolean;
@@ -32229,6 +32639,29 @@ Begin
     If Fat_IsFATPartitionType(PType) And (PLBA > 0) And (PSZ > 0) Then Begin
      PartStart := PLBA;
      Break;
+    End;
+   End;
+   { Aucune partition FAT primaire : essayer HPFS (type MBR $07, confirme  }
+   { par la vraie signature SuperBlock - $07 peut aussi etre NTFS/exFAT,   }
+   { non supportes ici, d ou la verification et pas une simple acceptation }
+   { du type seul). Court-circuite le reste (pas de BPB FAT a lire). }
+   If PartStart < 0 Then Begin
+    For PI := 0 To 3 Do Begin
+     PO := 446 + PI * 16;
+     PType := Buf[PO + 4];
+     PLBA  := Fat_LE32(Buf, PO + 8);
+     PSZ   := Fat_LE32(Buf, PO + 12);
+     If (PType = $07) And (PLBA > 0) And (PSZ > 0) And
+        HPFS_CheckSuperBlock(Idx, PLBA) Then Begin
+      V.Mounted        := True;
+      V.IsHPFS         := True;
+      V.PartitionStart := PLBA;
+      V.HPFSPartSize   := PSZ;
+      V.HPFSRootFNode  := HPFS_ReadRootFNode(Idx, PLBA);
+      V.VolLabel       := 'HPFS';
+      FatVol[Idx] := V;
+      Exit;
+     End;
     End;
    End;
   End;
@@ -35757,6 +36190,16 @@ Begin
   { H8D_ListDir (aiguille sur FatVol[Slot].H8DFsType, chacun des 3        }
   { formats remplit Pane.Entries directement). }
   H8D_ListDir(Byte(Slot), Pane);
+ End Else If FatVol[Slot].IsHPFS Then Begin
+  { Partition OS/2 HPFS (lecture seule) - resout Pane.Path en FNode de   }
+  { repertoire (racine si vide) puis enumere ce DIRBLK, voir              }
+  { HPFS_ResolveDirFNode/HPFS_ListDirFNode. }
+  If Pane.Path = '\' Then
+   HPFS_ListDirFNode(Byte(Slot), FatVol[Slot].HPFSRootFNode, Pane)
+  Else Begin
+   If HPFS_ResolveDirFNode(Byte(Slot), Pane.Path, StartCl) Then
+    HPFS_ListDirFNode(Byte(Slot), StartCl, Pane);
+  End;
  End Else Begin
   { Disquette virtuelle FAT montee. }
   If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
@@ -37137,6 +37580,11 @@ Begin
  NCState.ViewFileSize := TotalChars;
 End;
 
+{ Declaration anticipee : definie plus bas (avec le reste de la           }
+{ visionneuse F3), utilisee par NCActionView pour le message de           }
+{ fragmentation HPFS ci-dessous. }
+Procedure NCShowMessage(Const Msg: String; ReturnMode: TNCMode); Forward;
+
 { --- Actions F3/F4/F5/F6/F7/F8/F10, extraites de HandleNCommanderEvent  }
 { pour etre appelables a la fois par la touche directe ET par le menu    }
 { deroulant F9 (NCMenuExecute, menu "Fichiers") - meme comportement,           }
@@ -37167,6 +37615,22 @@ Begin
    NCCmd_ViewFile(TempPath);
    NCState.ViewFileName := E.Name;
    NCState.Mode := ncViewFile;
+  End;
+ End Else If FatVol[NCState.Slot].IsHPFS Then Begin
+  { Partition HPFS (lecture seule) : extrait vers un fichier hote           }
+  { temporaire (HPFS_ExtractToTempFile, E.Cluster porte le FNode - voir     }
+  { NCListDir) puis reutilise NCCmd_ViewFile tel quel, meme mecanisme que   }
+  { H8D ci-dessus. }
+  If HPFS_ExtractToTempFile(Byte(NCState.Slot), E.Cluster, E.Size, TempPath) Then Begin
+   NCCmd_ViewFile(TempPath);
+   NCState.ViewFileName := E.Name;
+   NCState.Mode := ncViewFile;
+   { HPFSRunOverflow (voir HPFS_AddAllocBplus/HPFS_MAX_RUNS) : un fichier   }
+   { extremement fragmente peut avoir ete tronque - avertir plutot que de   }
+   { laisser croire silencieusement a un contenu complet. }
+   If HPFSRunOverflow Then
+    NCShowMessage('Attention : fichier tres fragmente, contenu possiblement tronque.',
+     ncViewFile);
   End;
  End;
 End;
@@ -56260,11 +56724,15 @@ End;
 
 { ============================================================
   Traduction de conteneurs disque (VHD fixe/dynamique, VMDK
-  sparse ou descripteur texte) pour les disques durs montes via
-  /DISK80 et /DISK81. Porte depuis DISKPC.PAS / UNDISKPC.PAS
-  (projet Corail). Les disquettes (/DISK0, /DISK1) restent
-  brutes uniquement (Emu_FloppyIsRaw ci-dessus) : EmuFloppyKind
-  vaut toujours 0 pour les unites 0/1.
+  sparse ou descripteur texte, VDI VirtualBox) pour les disques
+  durs montes via /DISK80 et /DISK81. VHD/VMDK portes depuis
+  DISKPC.PAS / UNDISKPC.PAS (projet Corail) ; VDI ajoute
+  separement (absent de ces deux references - ni l un ni l autre
+  ne le supporte), d apres le format d en-tete VDI 1.1 documente
+  publiquement (implementation QEMU block/vdi.c notamment) - voir
+  Emu_DiskDetectFormat pour le detail des offsets. Les disquettes
+  (/DISK0, /DISK1) restent brutes uniquement (Emu_FloppyIsRaw
+  ci-dessus) : EmuFloppyKind vaut toujours 0 pour les unites 0/1.
   ============================================================ }
 
 Function Emu_BufLE32(Var Buf; Off: Integer): LongInt;
@@ -56284,20 +56752,25 @@ Begin
 End;
 
 { Detecter le format du fichier deja ouvert dans EmuFloppyFile[Idx]
-  (raw, VHD fixe/dynamique, VMDK sparse/descripteur) et remplir les
-  champs EmuFloppyKind/BlockSec/BitmapSecs/BATFileOfs/GTEsPerGT et
-  EmuFloppySize (taille VIRTUELLE en octets). L appelant doit avoir
-  prealablement mis EmuFloppySize[Idx] a la taille du fichier brut
-  (valeur conservee si aucun conteneur n est detecte). Retourne False
-  si le format est reconnu mais non supporte (message imprime). }
+  (raw, VHD fixe/dynamique, VMDK sparse/descripteur, VDI dynamique/fixe)
+  et remplir les champs EmuFloppyKind/BlockSec/BitmapSecs/BATFileOfs/
+  GTEsPerGT/DataOfs et EmuFloppySize (taille VIRTUELLE en octets).
+  L appelant doit avoir prealablement mis EmuFloppySize[Idx] a la taille
+  du fichier brut (valeur conservee si aucun conteneur n est detecte).
+  Retourne False si le format est reconnu mais non supporte (message
+  imprime). }
 Function Emu_DiskDetectFormat(Idx: Byte): Boolean;
 Var
  Raw: Array[0..511] Of Byte;
  R: Word;
- Sz, FtrOfs, DT, CurSz, HdrOfs, BAToff, BlockSz: LongInt;
+ Sz, DT, CurSz, HdrOfs, BAToff, BlockSz: LongInt;
  GDOffset, NumGTEs, Capacity, GrainSize: LongInt;
  S, ExtName, DescDir: String;
  I, K: Integer;
+ WinBuf: Array[0..575] Of Byte;
+ WinSz: Word;
+ WinR: Word;
+ FtrRelOfs: Integer;
 Begin
  Emu_DiskDetectFormat := True;
  EmuFloppyKind[Idx]      := 0;
@@ -56305,6 +56778,7 @@ Begin
  EmuFloppyBitmapSecs[Idx] := 0;
  EmuFloppyBATFileOfs[Idx] := 0;
  EmuFloppyGTEsPerGT[Idx]  := 0;
+ EmuFloppyDataOfs[Idx]    := 0;
  {$I-}
  Sz := FileSize(EmuFloppyFile[Idx]);
  {$I+} If IOResult <> 0 Then ;
@@ -56322,10 +56796,39 @@ Begin
   Emu_DiskDetectFormat := False;
   Exit;
  End;
- { VDI VirtualBox : signature texte '<<< ' }
+ { VDI VirtualBox : preambule texte '<<< ' (ex. "<<< Oracle VM VirtualBox
+   Disk Image >>>"), confirme par la vraie signature binaire 0xBEDA107F
+   (petit-boutiste) a l offset 0x40 du fichier - format d en-tete V1.1
+   (struct VdiHeader), le seul produit par toute version moderne de
+   VirtualBox. Tous les champs necessaires (image_type/offset_bmap/
+   offset_data/disk_size/block_size) tiennent dans les 512 premiers
+   octets deja lus, contrairement a VHD dynamique (2e lecture) ou au
+   descripteur VMDK (redirection vers un autre fichier). Le block map
+   VDI (a offset_bmap) stocke, par bloc, un INDEX (pas un offset ni un
+   numero de secteur) dans la zone de donnees (a offset_data) - voir
+   Emu_ImageReadSector/WriteSector pour la traduction. }
  If (Raw[0] = Ord('<')) And (Raw[1] = Ord('<')) And (Raw[2] = Ord('<')) Then Begin
-  WriteLn('DEVENV: format VDI non supporte pour ', EmuFloppyName[Idx]);
-  Emu_DiskDetectFormat := False;
+  If (Raw[$40] = $7F) And (Raw[$41] = $10) And (Raw[$42] = $DA) And (Raw[$43] = $BE) Then Begin
+   DT      := Emu_BufLE32(Raw, $4C);   { image_type : 1=dynamique 2=fixe }
+   BAToff  := Emu_BufLE32(Raw, $154);  { offset_bmap }
+   HdrOfs  := Emu_BufLE32(Raw, $158);  { offset_data (reutilise HdrOfs) }
+   CurSz   := Emu_BufLE32(Raw, $170);  { disk_size, 32 bits faibles }
+   BlockSz := Emu_BufLE32(Raw, $178);  { block_size en octets }
+   If (BlockSz > 0) And (BlockSz Mod 512 = 0) And (BAToff > 0) And
+      (HdrOfs > 0) And ((DT = 1) Or (DT = 2)) Then Begin
+    EmuFloppyKind[Idx]      := 4;
+    EmuFloppySize[Idx]      := CurSz;
+    EmuFloppyBlockSec[Idx]  := BlockSz Div 512;
+    EmuFloppyBATFileOfs[Idx]:= BAToff;
+    EmuFloppyDataOfs[Idx]   := HdrOfs;
+   End Else Begin
+    WriteLn('DEVENV: en-tete VDI non reconnu (version non standard) pour ', EmuFloppyName[Idx]);
+    Emu_DiskDetectFormat := False;
+   End;
+  End Else Begin
+   WriteLn('DEVENV: format VDI non reconnu (signature binaire absente) pour ', EmuFloppyName[Idx]);
+   Emu_DiskDetectFormat := False;
+  End;
   Exit;
  End;
  { QCOW (QEMU) }
@@ -56403,17 +56906,36 @@ Begin
    Exit;  { descripteur reconnu mais sans ligne FLAT : traiter en brut }
   End;
  End;
- { VHD : footer 'conectix' aux 512 derniers octets }
- If Sz < 1024 Then Exit;
- FtrOfs := Sz - 512;
+ { VHD : footer 'conectix', normalement aux 512 derniers octets - mais un   }
+ { VHD reel rencontre en pratique (fichier de 2009, lu sans probleme par    }
+ { VirtualBox) s est avere tronque d exactement 1 octet en fin de fichier   }
+ { (perte historique probable lors d un transfert), decalant le vrai debut }
+ { du footer a Sz-511 plutot que Sz-512 - la queue "Reserved" du footer     }
+ { (427 octets, jamais consultee ici) absorbe la perte sans consequence     }
+ { fonctionnelle. Cherche donc le cookie dans une fenetre de tolerance      }
+ { autour de Sz-512 (plutot que d exiger un alignement exact) et reconstruit}
+ { les 512 octets du footer, completes de zeros si le fichier n a pas       }
+ { assez d octets restants apres le cookie trouve. }
+ If Sz < 512 Then Exit;
+ WinSz := 576; If LongInt(WinSz) > Sz Then WinSz := Word(Sz);
+ FillChar(WinBuf, SizeOf(WinBuf), 0);
  {$I-}
- Seek(EmuFloppyFile[Idx], FtrOfs);
- R := 0;
- BlockRead(EmuFloppyFile[Idx], Raw, 512, R);
+ Seek(EmuFloppyFile[Idx], Sz - WinSz);
+ WinR := 0;
+ BlockRead(EmuFloppyFile[Idx], WinBuf, WinSz, WinR);
  {$I+} If IOResult <> 0 Then ;
- If R <> 512 Then Exit;
- If (Raw[0] <> $63) Or (Raw[1] <> $6F) Or (Raw[2] <> $6E) Or (Raw[3] <> $65) Or
-    (Raw[4] <> $63) Or (Raw[5] <> $74) Or (Raw[6] <> $69) Or (Raw[7] <> $78) Then Exit;
+ FtrRelOfs := -1;
+ If WinR >= 8 Then
+  For K := 0 To Integer(WinR) - 8 Do
+   If (WinBuf[K] = $63) And (WinBuf[K + 1] = $6F) And (WinBuf[K + 2] = $6E) And
+      (WinBuf[K + 3] = $65) And (WinBuf[K + 4] = $63) And (WinBuf[K + 5] = $74) And
+      (WinBuf[K + 6] = $69) And (WinBuf[K + 7] = $78) Then
+    FtrRelOfs := K;  { derniere occurrence : le vrai footer, pas une        }
+                      { coincidence eventuelle plus tot dans les donnees.    }
+ If FtrRelOfs < 0 Then Exit;
+ FillChar(Raw, SizeOf(Raw), 0);
+ For K := 0 To 511 Do
+  If FtrRelOfs + K < WinR Then Raw[K] := WinBuf[FtrRelOfs + K];
  DT := Emu_BufBE32(Raw, 60);
  CurSz := Emu_BufBE32(Raw, 52);
  If CurSz <= 0 Then CurSz := Sz - 512;
@@ -56522,6 +57044,31 @@ Begin
    End;
    Ofs := GrainSec * 512 + OfsInBlock * 512;
   End;
+  4: Begin { VDI VirtualBox : block map -> INDEX de bloc (pas un offset  }
+            { ni un numero de secteur), voir Emu_DiskDetectFormat.       }
+   BlockIdx   := LBA Div EmuFloppyBlockSec[Idx];
+   OfsInBlock := LBA Mod EmuFloppyBlockSec[Idx];
+   {$I-}
+   Seek(EmuFloppyFile[Idx], EmuFloppyBATFileOfs[Idx] + BlockIdx * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   BATEntry := LongInt(Buf4[0]) Or (LongInt(Buf4[1]) Shl 8) Or
+               (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
+   { $FFFFFFFF (jamais alloue) et $FFFFFFFE (alloue-mais-zero) se lisent
+     tous deux comme un secteur a zero. }
+   If (BATEntry = -1) Or (BATEntry = -2) Then Begin
+    FillChar(Buf, 512, 0);
+    Emu_ImageReadSector := True;
+    Exit;
+   End;
+   Ofs := EmuFloppyDataOfs[Idx] + BATEntry * (EmuFloppyBlockSec[Idx] * 512) +
+          OfsInBlock * 512;
+  End;
  Else
   Ofs := LBA * 512;     { 0=brut, 1=VHD fixe : disposition identique }
  End;
@@ -56587,6 +57134,20 @@ Begin
                (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
    If GrainSec = 0 Then Exit;
    Ofs := GrainSec * 512 + OfsInBlock * 512;
+  End;
+  4: Begin { VDI VirtualBox - voir Emu_ImageReadSector pour le detail. }
+   BlockIdx   := LBA Div EmuFloppyBlockSec[Idx];
+   OfsInBlock := LBA Mod EmuFloppyBlockSec[Idx];
+   {$I-}
+   Seek(EmuFloppyFile[Idx], EmuFloppyBATFileOfs[Idx] + BlockIdx * 4);
+   R := 0;
+   BlockRead(EmuFloppyFile[Idx], Buf4, 4, R);
+   {$I+} If (IOResult <> 0) Or (R <> 4) Then Exit;
+   BATEntry := LongInt(Buf4[0]) Or (LongInt(Buf4[1]) Shl 8) Or
+               (LongInt(Buf4[2]) Shl 16) Or (LongInt(Buf4[3]) Shl 24);
+   If (BATEntry = -1) Or (BATEntry = -2) Then Exit;
+   Ofs := EmuFloppyDataOfs[Idx] + BATEntry * (EmuFloppyBlockSec[Idx] * 512) +
+          OfsInBlock * 512;
   End;
  Else
   Ofs := LBA * 512;
