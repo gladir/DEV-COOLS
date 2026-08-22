@@ -975,6 +975,23 @@ Program DEVENV;
  {$MODE TP}
  {$H-}
  {$R-}
+ { BOGUE REEL (2026-08-22, signale par l utilisateur - "EIntOverflow:       }
+ { Arithmetic overflow" en executant un binaire compile depuis l IDE FP,   }
+ { alors que le meme fichier compile en ligne de commande fonctionnait     }
+ { sans probleme) : $R- (verification de plage) etait deja desactive ici   }
+ { globalement, mais PAS $Q (verification de debordement arithmetique) -   }
+ { celui-ci restait donc au gre du reglage EXTERNE du compilateur/projet   }
+ { (defaut desactive pour `fpc` en ligne de commande, mais visiblement     }
+ { active par defaut dans les reglages de PROJET de l IDE FP utilisee).    }
+ { Ce fichier (~92 000 lignes de style Turbo Pascal historique, arithmetique}
+ { sur octets/mots avec troncatures/enveloppements deliberes un peu        }
+ { partout) n a jamais ete concu ni teste avec la verification de          }
+ { debordement active - le rendre explicite ici, au meme endroit que $R-,  }
+ { garantit un comportement coherent QUEL QUE SOIT le reglage externe du    }
+ { projet/IDE, au lieu de deborder inopinement au premier calcul qui        }
+ { s enveloppe deliberement (deja le cas dans de nombreuses routines        }
+ { bas niveau : CRC, hachage, arithmetique CPU emule, etc.). }
+ {$Q-}
 {$ENDIF}
 
 Uses DOS,
@@ -57235,7 +57252,7 @@ Function Emu_DiskDetectFormat(Idx: Byte): Boolean;
 Var
  Raw: Array[0..511] Of Byte;
  R: Word;
- Sz, DT, CurSz, HdrOfs, BAToff, BlockSz: LongInt;
+ Sz, DT, CurSz, CurSzHi, HdrOfs, BAToff, BlockSz: LongInt;
  GDOffset, NumGTEs, Capacity, GrainSize: LongInt;
  S, ExtName, DescDir: String;
  I, K: Integer;
@@ -57409,22 +57426,31 @@ Begin
  For K := 0 To 511 Do
   If FtrRelOfs + K < WinR Then Raw[K] := WinBuf[FtrRelOfs + K];
  DT := Emu_BufBE32(Raw, 60);
+ { "Current Size" est un vrai champ 64 bits BIG-ENDIAN (poids fort a       }
+ { l offset 48, poids faible a l offset 52 - specification VHD). L ancien   }
+ { code ne lisait QUE le mot faible (offset 52), ignorant totalement le     }
+ { mot fort - correct par coincidence pour un disque < 4 Go dont le mot     }
+ { fort vaut 0, mais BOGUE REEL (2026-08-22, signale par l utilisateur -    }
+ { un vrai VHD eComStation 2.0/OS-2 dont la taille declaree est EXACTEMENT  }
+ { 4 Go = 0x100000000) : le mot faible seul y vaut 0 (le mot fort vaut 1),  }
+ { l ancien code y voyait donc "0", retombait sur Sz-512 (taille du         }
+ { FICHIER sparse, ~1,1 Go), et toute lecture au-dela de ce faux plafond     }
+ { (le vrai FNode racine HPFS vit a un secteur bien plus loin) echouait      }
+ { silencieusement - meme categorie de bogue que le debordement LongInt      }
+ { signe deja corrige pour un disque de 2 Go exactement, mais a la          }
+ { frontiere 32 bits SUIVANTE (4 Go). EmuFloppySize restant LongWord (32     }
+ { bits non signe, max ~4,29 Go) faute d un chantier plus large migrant      }
+ { tout le sous-systeme disque vers QWord, un mot fort <>0 est ecrete au     }
+ { maximum LongWord plutot que d etre silencieusement tronque/enveloppe -    }
+ { perd au plus le tout dernier secteur adressable, sans consequence        }
+ { pratique pour ce sous-systeme (deja borne par ailleurs a 1024 cylindres  }
+ { CHS classiques). }
+ CurSzHi := Emu_BufBE32(Raw, 48);
  CurSz := Emu_BufBE32(Raw, 52);
- { BOGUE REEL (2026-08-22, investigation BOOT sur un vrai VHD MS-DOS 6.22   }
- { de taille virtuelle declaree = 2 Go PILE, 0x80000000) : CurSz est un     }
- { LongInt SIGNE 32 bits (max ~2,147 milliards), donc 2 147 483 648 exact   }
- { deborde en un nombre NEGATIF - l ancien test "<=0" traitait alors a tort }
- { ce cas comme "champ absent" et retombait sur Sz-512 (taille du FICHIER   }
- { sparse, ~10 Mo ici), pas la taille VIRTUELLE reelle du disque (2 Go).    }
- { Resultat : EmuFloppyCyls calcule bien trop petit, rendant l ecrasante    }
- { majorite du disque totalement inaccessible via CHS - exactement le       }
- { genre de "lectures qui aboutissent a des donnees FAT/repertoire          }
- { plausibles mais fausses, en boucle sans fin" observe au boot. Ne          }
- { retomber sur Sz-512 QUE si le champ est reellement absent (= 0 exact) ;  }
- { toute autre valeur, meme "negative" en LongInt signe, est un motif de    }
- { bits legitime a reinterpreter comme non-signe (voir LongWord(CurSz) aux  }
- { sites d affectation ci-dessous, et EmuFloppySize desormais LongWord). }
- If CurSz = 0 Then CurSz := Sz - 512;
+ If (CurSzHi = 0) And (CurSz = 0) Then CurSz := Sz - 512
+ Else If CurSzHi <> 0 Then CurSz := -1;  { motif de bits FFFFFFFF, voir     }
+                                          { LongWord(CurSz) plus bas -      }
+                                          { max LongWord ~4,29 Go.          }
  If DT = 2 Then Begin
   EmuFloppyKind[Idx] := 1;
   EmuFloppySize[Idx] := LongWord(CurSz);
@@ -57696,6 +57722,16 @@ Begin
  Write('DEVENV: ', Term_DriveLetterFromIdx(Idx), ': ', EmuFloppyName[Idx]);
  If FatVol[Idx].IsD64 Then
   WriteLn(' -> Commodore 64 (.D64, ', FatVol[Idx].D64Tracks, ' pistes)')
+ Else If FatVol[Idx].IsHPFS Then
+  { BOGUE REEL (2026-08-22, signale par l utilisateur sur un vrai VHD      }
+  { eComStation/OS-2) : cette branche HPFS de Fat_TryMount ne renseigne     }
+  { jamais FATType/TotalSectors (champs propres au FAT, sans equivalent    }
+  { direct ici) - le Else ci-dessous imprimait donc a tort "FAT0 monte     }
+  { (0 secteurs...)" (les deux champs restant a leur valeur par defaut     }
+  { FillChar=0) alors que le montage HPFS avait REELLEMENT reussi,         }
+  { laissant croire a un echec. }
+  WriteLn(' -> HPFS monte (', FatVol[Idx].HPFSPartSize,
+   ' secteurs, partition LBA=', FatVol[Idx].PartitionStart, ')')
  Else If FatVol[Idx].Mounted Then
   WriteLn(' -> FAT', FatVol[Idx].FATType, ' monte (',
    FatVol[Idx].TotalSectors, ' secteurs, partition LBA=',
