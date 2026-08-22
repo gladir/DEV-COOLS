@@ -33097,6 +33097,62 @@ Begin
   Attr, Cluster, Size);
 End;
 
+{ Extrait un fichier d une disquette virtuelle FAT montee (StartCluster/  }
+{ Size deja resolus, ex. via Fat_FindPath) vers un fichier hote temporaire}
+{ fixe (%TEMP%\DEVENV_NC_FAT.<ext>, ecrase a chaque appel - meme          }
+{ convention que H8D_ExtractToTempFile/D64_ExtractToTempFile). Meme        }
+{ parcours de chaine de clusters que la branche "source virtuelle" deja   }
+{ existante de TermCopyFile (Fat_ClusterToLBA/Fat_NextCluster/Fat_IsEOC/  }
+{ Fat_ReadSector) - necessaire car ce chemin (panneau NC, F3/Entree) n a  }
+{ jusqu ici jamais eu d equivalent en dehors du Terminal (commande COPY). }
+Function Fat_ExtractToTempFile(Idx: Byte; StartCluster: LongInt; Size: LongInt;
+ Const OrigName: String; Var OutPath: String): Boolean;
+Var
+ TargetFile: File;
+ SBuf: Array[0..511] Of Byte;
+ Cur, Remain: LongInt;
+ LBA: LongInt;
+ SecInClu: Integer;
+ ToRead: Integer;
+ DotPos, J: Integer;
+ Ext: String;
+Begin
+ Fat_ExtractToTempFile := False;
+ OutPath := GetEnv('TEMP');
+ If OutPath = '' Then OutPath := '.';
+ If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+ DotPos := 0;
+ For J := Length(OrigName) DownTo 1 Do
+  If OrigName[J] = '.' Then Begin DotPos := J; Break; End;
+ If DotPos > 0 Then Ext := Copy(OrigName, DotPos + 1, Length(OrigName) - DotPos)
+                 Else Ext := 'TMP';
+ OutPath := OutPath + 'DEVENV_NC_FAT.' + UpCaseStr(Ext);
+ {$I-} Assign(TargetFile, OutPath); Rewrite(TargetFile, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ Cur := StartCluster;
+ Remain := Size;
+ While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) And (Remain > 0) Do Begin
+  For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+   If Remain <= 0 Then Break;
+   LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+   If Not Fat_ReadSector(Idx, LBA, SBuf) Then Begin
+    {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+    Exit;
+   End;
+   If Remain > 512 Then ToRead := 512 Else ToRead := Integer(Remain);
+   {$I-} BlockWrite(TargetFile, SBuf, ToRead); {$I+}
+   If IOResult <> 0 Then Begin
+    {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+    Exit;
+   End;
+   Dec(Remain, ToRead);
+  End;
+  Cur := Fat_NextCluster(Idx, Cur);
+ End;
+ {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+ Fat_ExtractToTempFile := True;
+End;
+
 { Iterer toutes les entrees d un repertoire (root ou cluster chain)
   et accumuler les noms via TermAddLine pour la commande DIR. }
 Procedure Fat_ListDir(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
@@ -37593,6 +37649,8 @@ Procedure NCActionView(Side: Integer);
 Var
  E: TNCEntry;
  TempPath: String;
+ Attr: Byte;
+ Cluster, Sz: LongInt;
 Begin
  If NCState.Panes[Side].Count = 0 Then Exit;
  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
@@ -37631,6 +37689,20 @@ Begin
    If HPFSRunOverflow Then
     NCShowMessage('Attention : fichier tres fragmente, contenu possiblement tronque.',
      ncViewFile);
+  End;
+ End Else Begin
+  { Disquette/disque virtuel FAT "ordinaire" (ex. un vrai .vhd MS-DOS       }
+  { monte) : extrait vers un fichier hote temporaire (Fat_ExtractToTempFile,}
+  { nouveau) puis reutilise NCCmd_ViewFile tel quel, meme mecanisme que     }
+  { H8D/HPFS ci-dessus. }
+  If Fat_FindPath(Byte(NCState.Slot),
+     NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+     ((Attr And $10) = 0) Then Begin
+   If Fat_ExtractToTempFile(Byte(NCState.Slot), Cluster, Sz, E.Name, TempPath) Then Begin
+    NCCmd_ViewFile(TempPath);
+    NCState.ViewFileName := E.Name;
+    NCState.Mode := ncViewFile;
+   End;
   End;
  End;
 End;
@@ -37795,6 +37867,8 @@ Function NCActionOpenAssociated(Side: Integer): Boolean;
 Var
  E: TNCEntry;
  Ext, FullPath, TempPath: String;
+ Attr: Byte;
+ Cluster, Sz: LongInt;
 Begin
  NCActionOpenAssociated := False;
  If NCState.Panes[Side].Count = 0 Then Exit;
@@ -37822,6 +37896,30 @@ Begin
    If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
     CreateEmulatorTab(TempPath, '-CPCODE', '');
     NCActionOpenAssociated := True;
+   End;
+  End;
+  Exit;
+ End;
+ If (NCState.Slot >= 0) And (Not FatVol[NCState.Slot].IsHPFS) Then Begin
+  { Disquette/disque virtuel FAT "ordinaire" (le cas general - /DISK0..     }
+  { /DISK81 sans format special D64/H8D/HPFS ci-dessus, ex. un vrai .vhd    }
+  { MS-DOS monte) : extrait vers un fichier hote temporaire                 }
+  { (Fat_ExtractToTempFile, nouveau - jusqu ici seul le Terminal, commande  }
+  { COPY, savait extraire un fichier FAT virtuel vers l hote) puis relance  }
+  { le meme aiguillage COM/EXE que le systeme de fichiers hote ci-dessous   }
+  { (NCIsDos16Exe verifie sur le fichier EXTRAIT, puisqu il n y a pas de    }
+  { chemin hote direct pour une entree sur disque virtuel). }
+  Ext := UpCaseStr(NCExtractExt(E.Name));
+  If (Ext = 'COM') Or (Ext = 'EXE') Then Begin
+   If Fat_FindPath(Byte(NCState.Slot),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.Slot), Cluster, Sz, E.Name, TempPath) Then Begin
+     If (Ext = 'COM') Or NCIsDos16Exe(TempPath) Then Begin
+      CreateEmulatorTab(TempPath, '-CD', '');
+      NCActionOpenAssociated := True;
+     End;
+    End;
    End;
   End;
   Exit;
