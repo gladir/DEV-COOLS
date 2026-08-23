@@ -2888,6 +2888,9 @@ Type
   ncPromptCopy,      { F5 : saisie du chemin destination              }
   ncPromptRenMov,    { F6 : saisie du nouveau nom/chemin              }
   ncConfirmDelete,   { F8 : confirmation Oui/Non                      }
+  ncConfirmOverwrite,{ F5 : "Le fichier X existe deja" - Ecraser/Tous/ }
+                     { Sauter, fidele au vrai NC 5.0 (capture DOSBox   }
+                     { fournie par l utilisateur) - voir NCCopyStepNext}
   ncViewFile,        { F3 : apercu texte en lecture seule             }
   ncMenuBar,         { F9 : menu deroulant Gauche/Fichiers/Disque/    }
                      { Commandes/Droite                               }
@@ -2983,6 +2986,30 @@ Type
   CdIsVirt    : Array[0..MAX_NC_CD_ENTRIES - 1] Of Boolean;
   CdSlotIdx   : Array[0..MAX_NC_CD_ENTRIES - 1] Of Integer;
   CdCursor    : Integer;
+  { Lot de copie F5 resumable (2026-08-23, 6e rapport - "il faut copier    }
+  { sans se poser de question... s il le fichier existe, il pose la        }
+  { question Ecraser/Tous/Sauter", capture DOSBox/NC5 fournie a l appui) : }
+  { HandleNCommanderEvent traite un evenement clavier par appel (jamais de }
+  { boucle bloquante ReadKey comme le DOS original) - impossible de mettre }
+  { le traitement du lot "en pause" au milieu d une boucle For classique   }
+  { pour attendre la reponse Ecraser/Tous/Sauter de l utilisateur. Ces      }
+  { champs portent donc l etat du lot de copie EN COURS a travers          }
+  { plusieurs evenements/images, voir NCCopyBatchStart/NCCopyStepNext.     }
+  CopySrcSide    : Integer;        { panneau source, fige au debut du lot }
+  CopyDstSide    : Integer;        { panneau destinataire, fige au debut  }
+  CopyDestBase   : String;         { "Vers" tape par l utilisateur, fige  }
+  CopyIdx        : Integer;        { indice courant dans                  }
+                                    { Panes[CopySrcSide].Entries           }
+  CopyOverwriteAll : Boolean;      { "Tous" active pour le reste du lot   }
+  CopyFailCount  : Integer;        { echecs REELS (extraction/creation) - }
+                                    { PAS les fichiers sautes via "Sauter",}
+                                    { qui sont un choix, pas un echec      }
+  CopyPendingName : String;        { nom affiche dans la confirmation      }
+                                    { Ecraser/Tous/Sauter                  }
+  CopyJumpName   : String;         { nom du fichier a mettre en evidence  }
+                                    { dans le panneau destinataire une      }
+                                    { fois le lot termine (copie simple,    }
+                                    { non marquee, uniquement)             }
  End;
 
  { Severite d une erreur }
@@ -8228,6 +8255,34 @@ Begin
  FindFirst(DirName, Directory, SR);
  DirectoryExists := (DosError = 0) And ((SR.Attr And Directory) <> 0);
  FindClose(SR);
+End;
+
+{ Calcule le chemin de destination FINAL d une copie NC (F5) a partir du   }
+{ champ "Vers" (DestSpec, potentiellement sans separateur final pour un    }
+{ sous-repertoire ordinaire - bogue reel 2026-08-23, 2e rapport de         }
+{ l utilisateur) et du nom de l entree source (EntryName). Fonction PURE   }
+{ (pas d E/S hormis DirectoryExists) partagee entre TermCopyFile (cas      }
+{ hote->hote), NCCopyVirtEntryToHost et NCCopyStepNext (verification       }
+{ d existence pour Ecraser/Tous/Sauter) - UN SEUL endroit calcule "ou le   }
+{ fichier va vraiment atterrir", pour ne jamais desynchroniser la          }
+{ verification d existence de la copie reelle. Placee ici (avant           }
+{ TermCopyFile) plutot que pres du reste du code NC (bien plus bas dans    }
+{ le fichier) car TermCopyFile en a besoin et le mode Turbo Pascal de ce   }
+{ fichier n autorise pas d appel en avant sans declaration Forward. --- }
+Function NCCopyComputeDest(Const DestSpec, EntryName: String): String;
+Var
+ LastCh: Char;
+Begin
+ If DestSpec = '' Then NCCopyComputeDest := EntryName
+ Else Begin
+  LastCh := DestSpec[Length(DestSpec)];
+  If (LastCh = ':') Or (LastCh = '\') Or (LastCh = '/') Then
+   NCCopyComputeDest := DestSpec + EntryName
+  Else If DirectoryExists(DestSpec) Then
+   NCCopyComputeDest := DestSpec + '\' + EntryName
+  Else
+   NCCopyComputeDest := DestSpec;
+ End;
 End;
 
 Function HexNibble(N: Byte): Char;
@@ -34402,7 +34457,6 @@ Var
  LBA, Remain: LongInt;
  ToRead: Integer;
  SBuf: Array[0..511] Of Byte;
- TLast: Char;
  ParentAbs, Leaf: String;
  ErrMsg: String;
  DstIsDir: Boolean;
@@ -34412,21 +34466,24 @@ Var
  SrcBase: String;
 Begin
  TermCopyFile := False;
- { Si la cible se termine par ':' ou '\\' ou '/', ajouter le nom de
-   base de la source pour conserver le nom du fichier. }
+ { Si la cible se termine par ':'/'\'/'/', OU si elle designe deja un       }
+ { repertoire HOTE existant sans separateur final (bogue reel 2026-08-23,   }
+ { meme classe que celui deja corrige pour NCCopyVirtEntryToHost - "Vers"   }
+ { prerempli par NCActionCopyStart avec le chemin BRUT de l autre panneau   }
+ { n a JAMAIS de separateur final pour un sous-repertoire ordinaire),        }
+ { ajouter le nom de base de la source pour conserver le nom du fichier -   }
+ { voir NCCopyComputeDest (seule et unique implementation de cette regle,   }
+ { partagee avec NCCopyVirtEntryToHost et NCCopyStepNext). }
  If Length(Target) > 0 Then Begin
-  TLast := Target[Length(Target)];
-  If (TLast = ':') Or (TLast = '\') Or (TLast = '/') Then Begin
-   BaseSlash := 0;
-   For I := Length(Source) DownTo 1 Do
-    If (Source[I] = '\') Or (Source[I] = '/') Or
-       (Source[I] = ':') Then Begin
-     BaseSlash := I;
-     Break;
-    End;
-   Target := Target + Copy(Source, BaseSlash + 1,
-    Length(Source) - BaseSlash);
-  End;
+  BaseSlash := 0;
+  For I := Length(Source) DownTo 1 Do
+   If (Source[I] = '\') Or (Source[I] = '/') Or
+      (Source[I] = ':') Then Begin
+    BaseSlash := I;
+    Break;
+   End;
+  Target := NCCopyComputeDest(Target, Copy(Source, BaseSlash + 1,
+   Length(Source) - BaseSlash));
  End;
  { Determiner si source/cible sont sur un disque virtuel }
  SrcIsVirt := Term_ResolveVirtTarget(TP, Source, SrcIdx, SrcAbs);
@@ -39521,6 +39578,20 @@ Begin
    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
     'Confirmer la suppression ? (O/N)');
   End;
+  ncConfirmOverwrite: Begin
+   { "Le fichier X existe deja" - fidele au vrai NC 5.0 (capture DOSBox     }
+   { fournie par l utilisateur : "The file ... already exists. Do you wish }
+   { to write over the old file? [Overwrite] All Skip"). --- }
+   NCDrawModalBox(PX, PY, PW, PH, 'Copier');
+   SetColor(15);
+   S := NCState.CopyPendingName + ' existe deja - le remplacer ?';
+   If Length(S) > (PW - PW Div 3) Div CW Then
+    S := Copy(S, 1, (PW - PW Div 3) Div CW);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6, S);
+   SetColor(11);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 2 * RH + 4,
+    '[ Ecraser ]   [ Tous ]   [ Sauter ]');
+  End;
   ncViewSearch: Begin
    NCDrawModalBox(PX, PY, PW, PH, 'Rechercher');
    SetColor(15);
@@ -40523,7 +40594,6 @@ Function NCCopyVirtEntryToHost(Var TP: TTerminalPanel; Slot: Byte;
 Var
  TempPath, FinalDest: String;
  Extracted: Boolean;
- LastCh: Char;
  SrcFile, DstFile: File;
  Buffer: Array[1..4096] Of Byte;
  RecordsRead: Word;
@@ -40540,27 +40610,9 @@ Begin
  End;
  { Le fichier temporaire extrait porte un nom GENERIQUE (DEVENV_NC_FAT.<ext>}
  { ou DEVENV_NC_HPFS.TMP, jamais le vrai nom d origine) - reconstruire ici  }
- { le nom de cible REEL. BOGUE REEL trouve en verifiant (2026-08-23,        }
- { 2e rapport du meme utilisateur) : la premiere version ne l ajoutait que  }
- { si DestSpec se terminait EXPLICITEMENT par ':'/'\'/'/' - or             }
- { NCActionCopyStart preremplit "Vers" avec le chemin BRUT de l autre        }
- { panneau (NCState.Panes[OtherSide].Path), qui n a JAMAIS de separateur     }
- { final pour un sous-repertoire ordinaire (seule la racine d un lecteur    }
- { hote type "C:\" en a un) - le cas le PLUS COURANT (F5 sans rien retaper)  }
- { tombait donc dans la branche "cible = chemin complet voulu", essayant     }
- { de Rewrite le REPERTOIRE lui-meme comme fichier. Utilise desormais        }
- { DirectoryExists (deja disponible, ligne ~8181) pour detecter ce cas       }
- { independamment de la presence d un separateur final. }
- If DestSpec = '' Then FinalDest := E.Name
- Else Begin
-  LastCh := DestSpec[Length(DestSpec)];
-  If (LastCh = ':') Or (LastCh = '\') Or (LastCh = '/') Then
-   FinalDest := DestSpec + E.Name
-  Else If DirectoryExists(DestSpec) Then
-   FinalDest := DestSpec + '\' + E.Name
-  Else
-   FinalDest := DestSpec;
- End;
+ { le nom de cible REEL via NCCopyComputeDest (voir son commentaire de     }
+ { tete). }
+ FinalDest := NCCopyComputeDest(DestSpec, E.Name);
  { BOGUE REEL trouve en verifiant (2026-08-23) : appeler TermCopyFile ici    }
  { serait tentant (TempPath et FinalDest sont tous deux DEFINITIVEMENT des   }
  { chemins HOTE), mais TermCopyFile fait passer FinalDest par              }
@@ -40760,6 +40812,109 @@ Begin
    NCFindEntryByName := I;
    Exit;
   End;
+End;
+
+{ Effectue la copie d UNE SEULE entree (EntryIdx dans Panes[SrcSide]) vers  }
+{ DestBase - aiguille vers TermCopyFile (source hote) ou                   }
+{ NCCopyVirtEntryToHost (source virtuelle), meme test que partout ailleurs }
+{ dans ce sous-systeme (NCState.PaneSlot[SrcSide] < 0). --- }
+Function NCCopyOneEntry(Var TP: TTerminalPanel; SrcSide, EntryIdx: Integer;
+ Const DestBase: String): Boolean;
+Begin
+ If NCState.PaneSlot[SrcSide] < 0 Then
+  NCCopyOneEntry := TermCopyFile(TP,
+   NCFullPath(NCState.Panes[SrcSide].Path,
+    NCState.Panes[SrcSide].Entries[EntryIdx].Name), DestBase)
+ Else
+  NCCopyOneEntry := NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[SrcSide]),
+   NCState.Panes[SrcSide].Entries[EntryIdx], DestBase);
+End;
+
+{ Fin du lot de copie F5 (tous les fichiers traites, ou lot annule via      }
+{ Echap sur la confirmation Ecraser/Tous/Sauter) : rafraichit les 2         }
+{ panneaux (BOGUE REEL corrige 2026-08-23 : NCState.Slot etait un drapeau   }
+{ global unique partage par les deux panneaux, voir le commentaire de       }
+{ tete de TNCState.PaneSlot - les deux cotes peuvent desormais etre         }
+{ rafraichis en toute securite via leur propre PaneSlot), met en            }
+{ evidence le fichier copie (copie simple non marquee uniquement - voir    }
+{ CopyJumpName), signale les echecs REELS via une boite rouge (jamais les   }
+{ "Sauter" de l utilisateur, qui sont un choix, pas un echec), puis         }
+{ revient a la navigation normale. --- }
+Procedure NCCopyBatchFinish(Var TP: TTerminalPanel);
+Var
+ FoundIdx: Integer;
+Begin
+ NCListDir(NCState.PaneSlot[0], NCState.Panes[0]);
+ NCListDir(NCState.PaneSlot[1], NCState.Panes[1]);
+ If NCState.CopyJumpName <> '' Then Begin
+  FoundIdx := NCFindEntryByName(NCState.Panes[NCState.CopyDstSide], NCState.CopyJumpName);
+  If FoundIdx >= 0 Then NCState.Panes[NCState.CopyDstSide].Cursor := FoundIdx;
+ End;
+ NCState.PromptBuf := '';
+ If NCState.CopyFailCount > 0 Then
+  NCShowError('Echec de la copie (' + IntToStr(NCState.CopyFailCount) +
+   ' element(s)) - voir le journal Terminal (F10) pour le detail.', ncBrowse)
+ Else
+  NCState.Mode := ncBrowse;
+End;
+
+{ Traite les entrees du lot de copie en cours (voir NCCopyBatchStart) a    }
+{ partir de NCState.CopyIdx, jusqu a : (a) une collision de nom necessitant }
+{ une confirmation Ecraser/Tous/Sauter (bascule Mode vers                  }
+{ ncConfirmOverwrite et s arrete la - impossible de faire mieux avec une    }
+{ boucle For classique dans ce sous-systeme evenementiel, UN evenement      }
+{ clavier a la fois, jamais de ReadKey bloquant comme le DOS original -     }
+{ voir le commentaire de tete de TNCState pour le detail), ou (b) la fin    }
+{ du lot (delegue a NCCopyBatchFinish). --- }
+Procedure NCCopyStepNext(Var TP: TTerminalPanel);
+Var
+ DestPath: String;
+Begin
+ While NCState.CopyIdx < NCState.Panes[NCState.CopySrcSide].Count Do Begin
+  If (NCState.Panes[NCState.CopySrcSide].MarkCount > 0) And
+     (Not NCState.Panes[NCState.CopySrcSide].Marked[NCState.CopyIdx]) Then Begin
+   Inc(NCState.CopyIdx);
+   Continue;
+  End;
+  If (NCState.Panes[NCState.CopySrcSide].MarkCount = 0) And
+     (NCState.CopyIdx <> NCState.Panes[NCState.CopySrcSide].Cursor) Then Begin
+   Inc(NCState.CopyIdx);
+   Continue;
+  End;
+  DestPath := NCCopyComputeDest(NCState.CopyDestBase,
+   NCState.Panes[NCState.CopySrcSide].Entries[NCState.CopyIdx].Name);
+  If (Not NCState.CopyOverwriteAll) And FileExists(DestPath) Then Begin
+   NCState.CopyPendingName := NCState.Panes[NCState.CopySrcSide].Entries[NCState.CopyIdx].Name;
+   NCState.Mode := ncConfirmOverwrite;
+   Exit;
+  End;
+  If Not NCCopyOneEntry(TP, NCState.CopySrcSide, NCState.CopyIdx, NCState.CopyDestBase) Then
+   Inc(NCState.CopyFailCount);
+  Inc(NCState.CopyIdx);
+ End;
+ NCCopyBatchFinish(TP);
+End;
+
+{ Lance un nouveau lot de copie F5 (apres validation du prompt "Vers") -   }
+{ fige SrcSide/DstSide/DestBase/le nom a mettre en evidence (copie simple  }
+{ non marquee uniquement), reinitialise Idx/OverwriteAll/FailCount, puis   }
+{ delegue immediatement a NCCopyStepNext (qui peut se mettre en pause des  }
+{ le premier fichier si une confirmation Ecraser/Tous/Sauter s impose).    }
+{ --- }
+Procedure NCCopyBatchStart(Var TP: TTerminalPanel; SrcSide, DstSide: Integer;
+ Const DestBase: String);
+Begin
+ NCState.CopySrcSide := SrcSide;
+ NCState.CopyDstSide := DstSide;
+ NCState.CopyDestBase := DestBase;
+ NCState.CopyIdx := 0;
+ NCState.CopyOverwriteAll := False;
+ NCState.CopyFailCount := 0;
+ If (NCState.Panes[SrcSide].MarkCount = 0) And (NCState.Panes[SrcSide].Count > 0) Then
+  NCState.CopyJumpName := NCState.Panes[SrcSide].Entries[NCState.Panes[SrcSide].Cursor].Name
+ Else
+  NCState.CopyJumpName := '';
+ NCCopyStepNext(TP);
 End;
 
 { "Compare les repertoires" (Commandes, item 6) : marque dans chaque      }
@@ -41026,8 +41181,7 @@ Procedure HandleNCommanderEvent(Var TP: TTerminalPanel; Var Ev: TEvent);
 Var
  Side, OtherSide, I: Integer;
  E: TNCEntry;
- CmdUp, CmdArg, FullSrc, FullDst, CopiedName: String;
- CopyFailCount, FoundIdx: Integer;
+ CmdUp, CmdArg, FullSrc, FullDst: String;
 Begin
  Side := NCState.Active;
  OtherSide := Side Xor 1;
@@ -41150,86 +41304,21 @@ Begin
          NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
         End;
        ncPromptCopy:
-        If NCState.PromptBuf <> '' Then Begin
-         CopyFailCount := 0;
-         { BOGUE REEL corrige (2026-08-23, 5e rapport) : capturer le NOM du }
-         { fichier copie AVANT le rafraichissement NCListDir ci-dessous -    }
-         { NCListDir remet Cursor a 0 pour les DEUX panneaux (source         }
-         { INCLUSE, meme si son contenu n a pas change), donc relire         }
-         { Panes[Side].Cursor APRES coup pointait a tort sur ".." (index 0)  }
-         { au lieu du fichier reellement copie. }
-         If (NCState.Panes[Side].MarkCount = 0) And (NCState.Panes[Side].Count > 0) Then
-          CopiedName := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name
-         Else
-          CopiedName := '';
-         If NCState.PaneSlot[Side] < 0 Then Begin
-          If NCState.Panes[Side].MarkCount > 0 Then Begin
-           For I := 0 To NCState.Panes[Side].Count - 1 Do
-            If NCState.Panes[Side].Marked[I] Then
-             If Not TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
-              NCState.Panes[Side].Entries[I].Name), NCState.PromptBuf) Then
-              Inc(CopyFailCount);
-          End Else If NCState.Panes[Side].Count > 0 Then
-           If Not TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
-            NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name),
-            NCState.PromptBuf) Then
-            Inc(CopyFailCount);
-         End Else Begin
-          { BOGUE REEL corrige (2026-08-23) : panneau source sur disque      }
-          { virtuel - voir le commentaire de tete de NCCopyVirtEntryToHost.  }
-          If NCState.Panes[Side].MarkCount > 0 Then Begin
-           For I := 0 To NCState.Panes[Side].Count - 1 Do
-            If NCState.Panes[Side].Marked[I] Then
-             If Not NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[Side]),
-              NCState.Panes[Side].Entries[I], NCState.PromptBuf) Then
-              Inc(CopyFailCount);
-          End Else If NCState.Panes[Side].Count > 0 Then
-           If Not NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[Side]),
-            NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor],
-            NCState.PromptBuf) Then
-            Inc(CopyFailCount);
-         End;
-         { BOGUE REEL corrige (2026-08-23) : NCState.Slot etait un drapeau   }
-         { global unique partage par les deux panneaux, ce qui faisait que    }
-         { rafraichir OtherSide avec ce drapeau pouvait le reinterpreter a    }
-         { tort comme virtuel (panneau hote qui se vide). NCState.PaneSlot   }
-         { porte desormais le contexte reel de CHAQUE panneau independamment,}
-         { donc les deux cotes peuvent etre rafraichis en toute securite. }
-         NCListDir(NCState.PaneSlot[0], NCState.Panes[0]);
-         NCListDir(NCState.PaneSlot[1], NCState.Panes[1]);
-         { BOGUE REEL corrige (2026-08-23, 5e rapport du meme utilisateur) : }
-         { la copie ecrivait bel et bien le fichier sur disque (confirme a   }
-         { plusieurs reprises par verification directe), mais rien dans      }
-         { l interface ne le rendait visible : le panneau destinataire       }
-         { revient toujours en haut de liste apres un rafraichissement       }
-         { (ScrollTop remis a 0 par NCListDir), donc un nouveau fichier       }
-         { trie alphabetiquement loin dans un repertoire de centaines        }
-         { d entrees (le depot en compte pres de 600) atterrit hors de la    }
-         { fenetre visible SANS le moindre indice qu il faille faire         }
-         { defiler - l utilisateur voyait litteralement "rien de nouveau"    }
-         { alors que le fichier etait la depuis le debut. Corrige en         }
-         { deplacant le curseur du panneau destinataire sur le fichier       }
-         { copie (copie simple, non marquee, uniquement) : le rendu des      }
-         { panneaux (ligne ~39402) ajuste deja ScrollTop pour garder le       }
-         { curseur visible a chaque image, donc ce seul deplacement suffit    }
-         { a amener le fichier dans le champ visible. }
-         If (CopyFailCount = 0) And (CopiedName <> '') Then Begin
-          FoundIdx := NCFindEntryByName(NCState.Panes[OtherSide], CopiedName);
-          If FoundIdx >= 0 Then NCState.Panes[OtherSide].Cursor := FoundIdx;
-         End;
-         { TOUT echec de copie (extraction, creation du fichier cible...)    }
-         { n etait signale que par TermAddLine, invisible tant que le mode   }
-         { NC est actif (son propre rendu de panneaux recouvre le journal    }
-         { texte du Terminal) - l utilisateur voyait donc juste "rien ne se  }
-         { passe", sans le moindre indice. Rendu visible via NCShowError    }
-         { (boite ROUGE, fidele a ErrorOk du projet de reference - voir     }
-         { NCDrawErrorBox), pas le NCShowMessage neutre utilise pour les    }
-         { stubs "non implemente". }
-         If CopyFailCount > 0 Then
-          NCShowError('Echec de la copie (' + IntToStr(CopyFailCount) +
-           ' element(s)) - voir le journal Terminal (F10) pour le detail.',
-           ncBrowse);
-        End;
+        { BOGUE REEL corrige (2026-08-23, 5e/6e rapports) : la boucle       }
+        { synchrone inline d origine (a) rafraichissait les panneaux ET     }
+        { lisait Panes[Side].Cursor APRES coup - or NCListDir remet Cursor  }
+        { a 0 pour les DEUX panneaux (source incluse), (b) ne verifiait     }
+        { jamais si le fichier cible existait deja (l utilisateur signale : }
+        { "il faut copier... si le fichier existe, il pose la question      }
+        { Ecraser/Tous/Sauter", capture DOSBox/NC5 fournie a l appui) - ce   }
+        { qui exige de mettre le lot "en pause" au milieu du traitement,    }
+        { impossible avec une boucle For classique dans ce sous-systeme     }
+        { evenementiel (un seul evenement clavier par appel, jamais de       }
+        { ReadKey bloquant). Delegue desormais entierement a                }
+        { NCCopyBatchStart/NCCopyStepNext - voir leurs commentaires de      }
+        { tete et celui de TNCState.PaneSlot pour le detail des 2 bogues.  }
+        If NCState.PromptBuf <> '' Then
+         NCCopyBatchStart(TP, Side, OtherSide, NCState.PromptBuf);
        ncPromptRenMov:
         If (NCState.PromptBuf <> '') And (NCState.PaneSlot[Side] < 0) And
            (NCState.Panes[Side].Count > 0) Then Begin
@@ -41243,11 +41332,12 @@ Begin
          NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
         End;
       End;
-      { NCShowMessage (echec de copie, voir ncPromptCopy ci-dessus) a deja  }
-      { bascule Mode vers ncMessage avec son propre texte dans PromptBuf -  }
-      { ne PAS l ecraser ici, sinon le message clignote une fraction de     }
-      { seconde puis disparait avant que l utilisateur ne puisse le lire.  }
-      If NCState.Mode <> ncMessage Then Begin
+      { NCShowMessage/NCShowError (echec de copie) et NCCopyStepNext        }
+      { (collision Ecraser/Tous/Sauter) ont deja bascule Mode respectivement}
+      { vers ncMessage et ncConfirmOverwrite - ne PAS l ecraser ici, sinon   }
+      { la boite/le prompt clignote une fraction de seconde puis disparait  }
+      { avant que l utilisateur ne puisse reagir. }
+      If (NCState.Mode <> ncMessage) And (NCState.Mode <> ncConfirmOverwrite) Then Begin
        NCState.Mode := ncBrowse;
        NCState.PromptBuf := '';
       End;
@@ -41277,6 +41367,37 @@ Begin
       NCState.Mode := ncBrowse;
      End;
      #27, 'N': NCState.Mode := ncBrowse;
+    End;
+    { "Le fichier X existe deja" (F5, capture DOSBox/NC5 fournie par        }
+    { l utilisateur a l appui) - Ecraser copie CE fichier puis reprend le    }
+    { lot au suivant (NCCopyStepNext) ; Tous fait pareil ET desarme la       }
+    { verification d existence pour tout le reste du lot (CopyOverwriteAll);}
+    { Sauter passe ce fichier SANS le copier (pas un echec, un choix -       }
+    { n incremente jamais CopyFailCount) ; Echap annule tout le reste du     }
+    { lot d un coup (saute CopyIdx a la fin, comme si tout avait ete         }
+    { saute). --- }
+    ncConfirmOverwrite: Case UpCase(Ev.KeyChar) Of
+     'O', #13: Begin
+      If Not NCCopyOneEntry(TP, NCState.CopySrcSide, NCState.CopyIdx,
+       NCState.CopyDestBase) Then Inc(NCState.CopyFailCount);
+      Inc(NCState.CopyIdx);
+      NCCopyStepNext(TP);
+     End;
+     'A': Begin
+      NCState.CopyOverwriteAll := True;
+      If Not NCCopyOneEntry(TP, NCState.CopySrcSide, NCState.CopyIdx,
+       NCState.CopyDestBase) Then Inc(NCState.CopyFailCount);
+      Inc(NCState.CopyIdx);
+      NCCopyStepNext(TP);
+     End;
+     'S': Begin
+      Inc(NCState.CopyIdx);
+      NCCopyStepNext(TP);
+     End;
+     #27: Begin
+      NCState.CopyIdx := NCState.Panes[NCState.CopySrcSide].Count;
+      NCCopyBatchFinish(TP);
+     End;
     End;
     ncViewFile: If Ev.KeyChar = #27 Then NCState.Mode := ncBrowse;
     ncViewSearch: Case Ev.KeyChar Of
