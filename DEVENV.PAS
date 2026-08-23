@@ -2870,8 +2870,16 @@ Type
    double-panneau sur la disquette virtuelle FAT deja utilisee par les 4
    autres shells (jamais le systeme de fichiers reel de la machine). }
  TNCEntry = Record
-  Name    : String[80];            { nom (8.3 sur disque virtuel, long }
-                                    { possible sur le systeme hote)  }
+  Name    : String[80];            { nom affiche : long VFAT reel si     }
+                                    { present et valide (voir Fat_LFNAcc* }
+                                    { / NCListDir, 2026-08-23), sinon 8.3 }
+                                    { (tronque a 80 caracteres si un nom  }
+                                    { long depasse - limite documentee,   }
+                                    { acceptee plutot que d elargir un    }
+                                    { type largement partage)             }
+  ShortName: String[12];           { alias 8.3 toujours present sur      }
+                                    { disque virtuel FAT (vide sur les    }
+                                    { autres backends - hote/D64/H8D/HPFS)}
   Size    : LongInt;                { taille en octets (0 si repert.)}
   IsDir   : Boolean;                { True = sous-repertoire         }
   FTime   : Word;                   { heure DOS empaquetee (FAT)     }
@@ -33250,6 +33258,150 @@ Begin
             Else Fat_EntryName := N;
 End;
 
+{ Noms longs VFAT (Windows 95, DOC/DOS_FOR_WINDOWS95_PROGRAMMING.txt) -    }
+{ accumulateur reutilisable par tout site d enumeration de repertoire FAT. }
+{ Une chaine d entrees $0F precede toujours l entree 8.3 reelle qu elle    }
+{ decrit, en ordre DECROISSANT de numero de sequence (bit $40 du 1er       }
+{ octet = derniere partie logique du nom = 1ere entree physique de la      }
+{ chaine). Chaque entree porte 13 caracteres UTF-16LE (5+6+2). Limitation  }
+{ documentee et acceptee (comme le reste de ce chantier) : seuls les       }
+{ caracteres Latin-1 (poids fort UTF-16 nul) sont reproduits fidelement -  }
+{ aucune infrastructure "wide string" n existe ailleurs dans ce fichier,   }
+{ un caractere hors Latin-1 devient '?'. }
+Const
+ FAT_LFN_MAXSEQ = 20;   { 20 * 13 = 260 caracteres, couvre le maximum VFAT }
+                        { reel de 255 caracteres. }
+
+Type
+ TFatLFNAcc = Record
+  Valid   : Boolean;                        { chaine en cours, coherente }
+  Checksum: Byte;
+  MaxSeq  : Byte;
+  Have    : Array[1..FAT_LFN_MAXSEQ] Of Boolean;
+  Frag    : Array[1..FAT_LFN_MAXSEQ] Of String[13];
+ End;
+
+Procedure Fat_LFNAccReset(Var Acc: TFatLFNAcc);
+Begin
+ Acc.Valid  := False;
+ Acc.MaxSeq := 0;
+ FillChar(Acc.Have, SizeOf(Acc.Have), 0);
+End;
+
+{ Somme de controle VFAT standard sur les 11 octets du nom 8.3 brut (tel   }
+{ que stocke sur disque, PAS la chaine "NOM.EXT" formatee). }
+Function Fat_LFNChecksum(Var Buf: Array Of Byte; Off: Integer): Byte;
+Var
+ Sum: Byte;
+ I: Integer;
+Begin
+ Sum := 0;
+ For I := 0 To 10 Do
+  Sum := Byte(((Sum Shr 1) Or ((Sum And 1) Shl 7)) + Buf[Off + I]);
+ Fat_LFNChecksum := Sum;
+End;
+
+{ Un seul caractere UTF-16LE (Lo, Hi) -> Char host (#0 = terminateur de    }
+{ nom rencontre). }
+Function Fat_LFNChar(Lo, Hi: Byte): Char;
+Begin
+ If (Lo = 0) And (Hi = 0) Then Fat_LFNChar := #0
+ Else If Hi = 0 Then Fat_LFNChar := Chr(Lo)
+ Else Fat_LFNChar := '?';
+End;
+
+{ Extraire les (jusqu a) 13 caracteres d une entree LFN brute, en          }
+{ s arretant au terminateur $0000 (fragment final, souvent plus court que  }
+{ 13 caracteres - le reste des emplacements est du remplissage $FFFF qui   }
+{ n est jamais atteint puisqu on sort des la rencontre du terminateur). }
+Function Fat_LFNExtractChars(Var Buf: Array Of Byte; Off: Integer): String;
+Var
+ S: String;
+ C: Char;
+ K: Integer;
+Begin
+ S := '';
+ For K := 0 To 4 Do Begin           { Name1 : Off+1..Off+10  }
+  C := Fat_LFNChar(Buf[Off + 1 + K * 2], Buf[Off + 2 + K * 2]);
+  If C = #0 Then Begin Fat_LFNExtractChars := S; Exit; End;
+  S := S + C;
+ End;
+ For K := 0 To 5 Do Begin           { Name2 : Off+14..Off+25 }
+  C := Fat_LFNChar(Buf[Off + 14 + K * 2], Buf[Off + 15 + K * 2]);
+  If C = #0 Then Begin Fat_LFNExtractChars := S; Exit; End;
+  S := S + C;
+ End;
+ For K := 0 To 1 Do Begin           { Name3 : Off+28..Off+31 }
+  C := Fat_LFNChar(Buf[Off + 28 + K * 2], Buf[Off + 29 + K * 2]);
+  If C = #0 Then Begin Fat_LFNExtractChars := S; Exit; End;
+  S := S + C;
+ End;
+ Fat_LFNExtractChars := S;
+End;
+
+{ Traiter une entree brute de 32 octets pendant une enumeration de          }
+{ repertoire. Renvoie True si Off etait un fragment LFN (deja accumule -   }
+{ l appelant doit passer a l entree suivante SANS la traiter comme entree  }
+{ reelle). Renvoie False si Off est une entree reelle, libre ($E5) ou la    }
+{ marque de fin ($00) - l appelant doit alors, si Off est une entree        }
+{ reelle utile, appeler Fat_LFNAccResolve(Acc, Buf, Off) PUIS reinitialiser }
+{ l accumulateur avec Fat_LFNAccReset avant de continuer (une entree non-   }
+{ LFN termine toujours la chaine en cours, qu elle ait ete utilisee ou non).}
+Function Fat_LFNAccFeed(Var Acc: TFatLFNAcc; Var Buf: Array Of Byte;
+ Off: Integer): Boolean;
+Var
+ SeqByte, Chk, SeqNum: Byte;
+Begin
+ Fat_LFNAccFeed := False;
+ If Buf[Off] = 0 Then Exit;                      { fin de repertoire }
+ If Buf[Off] = $E5 Then Exit;                     { effacee }
+ If (Buf[Off + 11] And $0F) <> $0F Then Exit;     { entree 8.3 reelle }
+ SeqByte := Buf[Off];
+ Chk     := Buf[Off + 13];
+ SeqNum  := SeqByte And $1F;
+ If (SeqNum < 1) Or (SeqNum > FAT_LFN_MAXSEQ) Then Begin
+  Acc.Valid := False;             { numero de sequence invalide/corrompu }
+  Fat_LFNAccFeed := True;
+  Exit;
+ End;
+ If (SeqByte And $40) <> 0 Then Begin
+  { 1ere entree physique (derniere partie logique) : demarre une nouvelle }
+  { chaine, ecrase toute chaine partielle non terminee precedente.        }
+  Fat_LFNAccReset(Acc);
+  Acc.Valid    := True;
+  Acc.Checksum := Chk;
+  Acc.MaxSeq   := SeqNum;
+ End;
+ If Acc.Valid And (Chk = Acc.Checksum) And (SeqNum <= Acc.MaxSeq) Then Begin
+  Acc.Frag[SeqNum] := Fat_LFNExtractChars(Buf, Off);
+  Acc.Have[SeqNum] := True;
+ End Else
+  Acc.Valid := False;             { somme de controle/sequence incoherente }
+ Fat_LFNAccFeed := True;
+End;
+
+{ Appelee sur l entree reelle Off qui suit (immediatement) la chaine        }
+{ accumulee. Renvoie le nom long reconstruit si la chaine est complete ET   }
+{ que sa somme de controle correspond au nom 8.3 de cette entree ; sinon    }
+{ renvoie '' - l appelant se rabat alors sur le nom 8.3 seul (Fat_EntryName,}
+{ deja correct et inchange). }
+Function Fat_LFNAccResolve(Var Acc: TFatLFNAcc; Var Buf: Array Of Byte;
+ Off: Integer): String;
+Var
+ S: String;
+ I: Integer;
+Begin
+ Fat_LFNAccResolve := '';
+ If (Not Acc.Valid) Or (Acc.MaxSeq = 0) Then Exit;
+ For I := 1 To Acc.MaxSeq Do
+  If Not Acc.Have[I] Then Exit;             { chaine incomplete }
+ If Fat_LFNChecksum(Buf, Off) <> Acc.Checksum Then Exit;
+ S := '';
+ For I := 1 To Acc.MaxSeq Do S := S + Acc.Frag[I];
+ If Length(S) > 80 Then S := Copy(S, 1, 80);  { TNCEntry.Name : String[80] }
+ Fat_LFNAccResolve := S;
+End;
+
 Function Fat_EntryAttr(Var Buf: Array Of Byte; Off: Integer): Byte;
 Begin
  Fat_EntryAttr := Buf[Off + 11];
@@ -38673,6 +38825,8 @@ Var
  AtRoot: Boolean;
  RootChk: String;
  NextT, NextS, Kind: Byte;
+ LFNAcc: TFatLFNAcc;
+ LongName: String;
 Begin
  Pane.Count := 0;
  Pane.Cursor := 0;
@@ -38772,6 +38926,7 @@ Begin
   { Disquette virtuelle FAT montee. }
   If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
   Done := False;
+  Fat_LFNAccReset(LFNAcc);
   If IsRoot Then Begin
    RootCnt := 0;
    For S2 := 0 To FatVol[Slot].RootDirSectors - 1 Do Begin
@@ -38783,13 +38938,21 @@ Begin
      Inc(RootCnt);
      EntOff := I * 32;
      If Buf[EntOff] = 0 Then Begin Done := True; Break; End;
+     If Fat_LFNAccFeed(LFNAcc, Buf, EntOff) Then Continue;  { fragment LFN }
      EntName := Fat_EntryName(Buf, EntOff);
-     If EntName = '' Then Continue;
+     If EntName = '' Then Begin Fat_LFNAccReset(LFNAcc); Continue; End;
      Attr := Fat_EntryAttr(Buf, EntOff);
-     If (Attr And $08) <> 0 Then Continue; { etiquette de volume }
+     If (Attr And $08) <> 0 Then Begin
+      Fat_LFNAccReset(LFNAcc);
+      Continue; { etiquette de volume }
+     End;
+     LongName := Fat_LFNAccResolve(LFNAcc, Buf, EntOff);
+     Fat_LFNAccReset(LFNAcc);
      If Pane.Count >= MAX_NC_ENTRIES Then Begin Done := True; Break; End;
      Sz := Fat_EntrySize(Buf, EntOff);
-     Pane.Entries[Pane.Count].Name := EntName;
+     Pane.Entries[Pane.Count].ShortName := EntName;
+     If LongName <> '' Then Pane.Entries[Pane.Count].Name := LongName
+                        Else Pane.Entries[Pane.Count].Name := EntName;
      Pane.Entries[Pane.Count].Size := Sz;
      Pane.Entries[Pane.Count].IsDir := (Attr And $10) <> 0;
      Pane.Entries[Pane.Count].FTime := Fat_LE16(Buf, EntOff + 22);
@@ -38808,14 +38971,22 @@ Begin
      For I := 0 To 15 Do Begin
       EntOff := I * 32;
       If Buf[EntOff] = 0 Then Begin Done := True; Break; End;
+      If Fat_LFNAccFeed(LFNAcc, Buf, EntOff) Then Continue;  { fragment LFN }
       EntName := Fat_EntryName(Buf, EntOff);
-      If EntName = '' Then Continue;
+      If EntName = '' Then Begin Fat_LFNAccReset(LFNAcc); Continue; End;
       Attr := Fat_EntryAttr(Buf, EntOff);
-      If (Attr And $08) <> 0 Then Continue;
-      If (EntName = '.') Or (EntName = '..') Then Continue;
+      If (Attr And $08) <> 0 Then Begin Fat_LFNAccReset(LFNAcc); Continue; End;
+      If (EntName = '.') Or (EntName = '..') Then Begin
+       Fat_LFNAccReset(LFNAcc);
+       Continue;
+      End;
+      LongName := Fat_LFNAccResolve(LFNAcc, Buf, EntOff);
+      Fat_LFNAccReset(LFNAcc);
       If Pane.Count >= MAX_NC_ENTRIES Then Begin Done := True; Break; End;
       Sz := Fat_EntrySize(Buf, EntOff);
-      Pane.Entries[Pane.Count].Name := EntName;
+      Pane.Entries[Pane.Count].ShortName := EntName;
+      If LongName <> '' Then Pane.Entries[Pane.Count].Name := LongName
+                         Else Pane.Entries[Pane.Count].Name := EntName;
       Pane.Entries[Pane.Count].Size := Sz;
       Pane.Entries[Pane.Count].IsDir := (Attr And $10) <> 0;
       Pane.Entries[Pane.Count].FTime := Fat_LE16(Buf, EntOff + 22);
