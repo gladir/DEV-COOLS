@@ -1567,7 +1567,20 @@ Const
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
 
  { Norton Commander (5e shell du panneau Terminal) }
- MAX_NC_ENTRIES        = 512;     { entrees max par panneau (repertoire) }
+ { BOGUE REEL (2026-08-23, 5e rapport du meme utilisateur) : 512 etait     }
+ { TROP PETIT pour un vrai repertoire hote de taille reelle - la racine du }
+ { depot DEV-COOLS lui-meme en compte 594. NCListDir (voir plus bas)       }
+ { arrete l enumeration FindFirst/FindNext des que Pane.Count atteint       }
+ { cette limite, dans l ORDRE BRUT du systeme de fichiers (PAS alphabetique- }
+ { le tri vient apres, sur le sous-ensemble deja tronque) - un fichier      }
+ { fraichement copie tombe presque toujours APRES la coupure (les nouvelles }
+ { entrees NTFS s enumerent generalement en fin de liste), donc il         }
+ { n apparaissait dans AUCUNE liste chargee, quel que soit le defilement    }
+ { ou la position du curseur : la vraie cause des 3 rapports precedents de  }
+ { "la copie ne marche pas", jamais identifiee jusqu ici car aucun des      }
+ { repertoires de test precedents (toujours de petits sous-dossiers d un    }
+ { VHD virtuel) ne depassait 512 entrees pour la reproduire. }
+ MAX_NC_ENTRIES        = 4096;    { entrees max par panneau (repertoire) }
  { HPFS (OS/2, lecture seule, voir HPFS_AddAllocBplus) - UNDISKPC.PAS       }
  { utilise 4096 ; reduit ici car les fichiers typiques de ce depot sont     }
  { petits et peu fragmentes, meme esprit que sa propre limite documentee. }
@@ -2901,7 +2914,19 @@ Type
  TNCState = Record
   Panes       : Array[0..1] Of TNCPane;
   Active      : Integer;           { 0 = gauche, 1 = droite          }
-  Slot        : ShortInt;          { -1 = systeme hote, >=0 = FatVol }
+  { BOGUE REEL (2026-08-23, 3e rapport du meme utilisateur) : Slot etait  }
+  { un DRAPEAU GLOBAL UNIQUE partage par les deux panneaux (limitation     }
+  { deja documentee au moins depuis le selecteur de lecteur, voir          }
+  { ncChangeDrive) - choisir un disque virtuel pour UN panneau changeait   }
+  { silencieusement l interpretation de L AUTRE, cassant sa navigation      }
+  { normale (Entree/".."/Copier) des qu on y touchait. Remplace par un      }
+  { slot PAR PANNEAU - Slot lui-meme est conserve pour l instant en tant    }
+  { qu alias du panneau ACTIF (Panes[Active]), pour tout code qui n a pas   }
+  { encore ete audite/migre vers PaneSlot[Side], mais toute la navigation   }
+  { par panneau (NCListDir, Copier/RenDep/MkDir/Supprimer/Voir/Ouvrir)      }
+  { utilise desormais PaneSlot[Side] directement. }
+  PaneSlot    : Array[0..1] Of ShortInt; { -1 = hote, >=0 = FatVol, PAR PANNEAU }
+  Slot        : ShortInt;          { -1 = systeme hote, >=0 = FatVol ; ALIAS du panneau actif, voir ci-dessus }
   Mode        : TNCMode;
   Initialized : Boolean;
   CharW       : Integer;           { largeur de caractere mesuree    }
@@ -2910,6 +2935,17 @@ Type
   MessageReturnMode : TNCMode;     { mode a restaurer apres fermeture de   }
                                     { ncMessage (pas toujours ncBrowse -    }
                                     { ex: message depuis la visionneuse F3) }
+  MessageIsError : Boolean;        { BOGUE REEL (2026-08-23, 5e rapport) :  }
+                                    { toutes les boites ncMessage (succes   }
+                                    { comme echec) partageaient le meme      }
+                                    { style bleu/cyan neutre - le vrai NC    }
+                                    { (ErrorOk dans le projet de reference   }
+                                    { NORTONCOMMANDER-0/NC.PAS) affiche les  }
+                                    { erreurs dans une boite ROUGE ($4F)      }
+                                    { nettement distincte, capture d ecran   }
+                                    { fournie par l utilisateur a l appui -  }
+                                    { True fait basculer le rendu ncMessage  }
+                                    { sur ce style rouge (voir NCShowError). }
   ViewLines   : Array[0..MAX_NC_VIEW_LINES - 1] Of String; { lignes texte  }
   ViewCount   : Integer;
   ViewTop     : Integer;           { defilement (ligne ou rangee hex)  }
@@ -2933,6 +2969,13 @@ Type
   TreeCount   : Integer;
   TreeCursor  : Integer;           { 0-based }
   TreeTop     : Integer;           { defilement de l arbre          }
+  TreeForCopy : Boolean;           { True : cet Arbre a ete ouvert via F10  }
+                                    { depuis le prompt Copier (comme le vrai }
+                                    { NC 5.0) - Entree renvoie alors le      }
+                                    { chemin choisi dans PromptBuf et         }
+                                    { revient a ncPromptCopy au lieu de       }
+                                    { naviguer un panneau et revenir a       }
+                                    { ncBrowse. }
   CdSide      : Integer;           { 0=gauche 1=droite - panneau ayant  }
                                     { declenche Alt+F1/Alt+F2            }
   CdCount     : Integer;
@@ -38310,6 +38353,9 @@ Begin
  GetDir(0, NCCwd);
  NCState.Active := 0;
  NCState.Slot := -1;
+ NCState.PaneSlot[0] := -1;
+ NCState.PaneSlot[1] := -1;
+ NCState.TreeForCopy := False;
  NCState.Mode := ncBrowse;
  NCState.Initialized := False;
  NCState.PromptBuf := '';
@@ -38498,9 +38544,9 @@ Begin
  { Positionner le curseur sur le lecteur actuellement affiche par ce         }
  { panneau, si on le retrouve dans la liste (sinon debut de liste). }
  NCState.CdCursor := 0;
- If NCState.Slot >= 0 Then Begin
+ If NCState.PaneSlot[Side] >= 0 Then Begin
   For I := 0 To NCState.CdCount - 1 Do
-   If NCState.CdIsVirt[I] And (NCState.CdSlotIdx[I] = NCState.Slot) Then Begin
+   If NCState.CdIsVirt[I] And (NCState.CdSlotIdx[I] = NCState.PaneSlot[Side]) Then Begin
     NCState.CdCursor := I;
     Break;
    End;
@@ -38762,9 +38808,12 @@ Begin
  { Slot < 0 = systeme hote (mode par defaut, PAS "pas encore monte") -   }
  { ne jamais sortir prematurement ici (BOGUE REEL 2026-08-09 : cette          }
  { garde, heritee de l etape 1 ou -1 signifiait "aucune disquette              }
- { montee", empechait tout listage en mode hote). }
- NCListDir(NCState.Slot, NCState.Panes[0]);
- NCListDir(NCState.Slot, NCState.Panes[1]);
+ { montee", empechait tout listage en mode hote). PaneSlot[X] (2026-08-23,  }
+ { pas le vieux Slot partage) - chaque panneau garde desormais son propre   }
+ { contexte hote/virtuel independant, voir le commentaire de tete de        }
+ { TNCState. }
+ NCListDir(NCState.PaneSlot[0], NCState.Panes[0]);
+ NCListDir(NCState.PaneSlot[1], NCState.Panes[1]);
 End;
 
 { Creer un repertoire DirName dans ParentPath du volume FatVol[Slot] -   }
@@ -38855,6 +38904,28 @@ Begin
  Bar(BX1 + 2, BY1 + 2, BX2 - 2, BY1 + TERM_LINE_HEIGHT);
  SetColor(15);
  OutTextXY(BX1 + 6, BY1 + 4, Title);
+End;
+
+{ Boite d ERREUR, fidele a ErrorOk du projet de reference               }
+{ NORTONCOMMANDER-0/NC.PAS (ligne 1382 : FrameFull(...,$4F) = fond ROUGE, }
+{ texte blanc vif - capture d ecran d une vraie session NC5/DOSBox         }
+{ fournie par l utilisateur a l appui) - a distinguer de NCDrawModalBox    }
+{ (bleu/cyan neutre, reserve aux dialogues normaux et aux messages         }
+{ "non implemente", eux-memes gris $70 dans DialogNotImplement, jamais    }
+{ rouges). Reserver aux VRAIS echecs d operation (copie/renommer/creer/   }
+{ supprimer), jamais a un simple stub de fonctionnalite. --- }
+Procedure NCDrawErrorBox(PX, PY, PW, PH: Integer);
+Var
+ BX1, BY1, BX2, BY2: Integer;
+Begin
+ BX1 := PX + PW Div 6;
+ BX2 := PX + PW - PW Div 6;
+ BY1 := PY + PH Div 3;
+ BY2 := PY + PH Div 3 + 3 * TERM_LINE_HEIGHT;
+ SetFillStyle(SolidFill, 4);
+ Bar(BX1, BY1, BX2, BY2);
+ SetColor(15);
+ Rectangle(BX1, BY1, BX2, BY2);
 End;
 
 { Menu deroulant F9 (NC.PAS:2824-2946, PullDnMenu) - libelles francais       }
@@ -39115,7 +39186,6 @@ Begin
   NCRefreshPanes;
   NCState.Initialized := True;
  End;
- IsHost := NCState.Slot < 0;
  InViewer := NCState.Mode In [ncViewFile, ncViewSearch, ncViewSelectViewer];
  If (NCState.Mode = ncMessage) And
     (NCState.MessageReturnMode In [ncViewFile, ncViewSearch, ncViewSelectViewer]) Then
@@ -39272,6 +39342,7 @@ Begin
   If NameCols < 8 Then NameCols := 8;
 
   For Side := 0 To 1 Do Begin
+  IsHost := NCState.PaneSlot[Side] < 0;
   X0 := PX + Side * PaneW;
   If Side = 0 Then PaneRight := X0 + PaneW - 2
   Else PaneRight := PX + PW - 2;
@@ -39297,7 +39368,7 @@ Begin
    { volume et statistiques du repertoire courant, a la place de la       }
    { liste de fichiers - a partir des entrees deja chargees (aucune           }
    { E/S supplementaire pour les stats de repertoire). }
-   If (NCState.Slot < 0) And (Length(NCState.Panes[Side].Path) >= 1) Then
+   If (NCState.PaneSlot[Side] < 0) And (Length(NCState.Panes[Side].Path) >= 1) Then
     DriveCh := UpCase(NCState.Panes[Side].Path[1])
    Else
     DriveCh := 'C';
@@ -39421,10 +39492,22 @@ Begin
     'Nom : ' + NCState.PromptBuf + '_');
   End;
   ncPromptCopy: Begin
+   { Fidelite au vrai NC 5.0 (2026-08-23, demande explicite de            }
+   { l utilisateur, reference https://ilyabirman.net/meanwhile/all/       }
+   { ui-museum-norton-commander-5-0/) : la vraie boite "Copier" affiche 3  }
+   { boutons [ Copie ] [ F10-Arbre ] [ Annuler ] sous le champ "Vers".     }
+   { Purement visuel ici (les raccourcis Entree/F10/Echap existaient      }
+   { deja et restent les seuls declencheurs reels, comme il n y a pas de  }
+   { souris/Tab-entre-boutons dans ce sous-systeme) - F10 ouvre desormais  }
+   { reellement un Arbre NCD pour choisir la destination (voir            }
+   { NCActionCopyTreeStart/NCState.TreeForCopy). }
    NCDrawModalBox(PX, PY, PW, PH, 'Copier');
    SetColor(15);
    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6,
     'Vers : ' + NCState.PromptBuf + '_');
+   SetColor(11);
+   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 2 * RH + 4,
+    '[ Copie ]   [ F10-Arbre ]   [ Annuler ]');
   End;
   ncPromptRenMov: Begin
    NCDrawModalBox(PX, PY, PW, PH, 'Renommer/Deplacer');
@@ -39535,11 +39618,18 @@ Begin
    End;
   End;
   ncMessage: Begin
-   NCDrawModalBox(PX, PY, PW, PH, 'Norton Commander');
-   SetColor(15);
-   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6, NCState.PromptBuf);
-   OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 2 * RH + 6,
-    '-- Appuyez sur une touche --');
+   If NCState.MessageIsError Then Begin
+    NCDrawErrorBox(PX, PY, PW, PH);
+    SetColor(15);
+    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 6, NCState.PromptBuf);
+    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 2 * RH + 4, '[ Ok ]');
+   End Else Begin
+    NCDrawModalBox(PX, PY, PW, PH, 'Norton Commander');
+    SetColor(15);
+    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + RH + 6, NCState.PromptBuf);
+    OutTextXY(PX + PW Div 6 + 6, PY + PH Div 3 + 2 * RH + 6,
+     '-- Appuyez sur une touche --');
+   End;
   End;
   ncHistory: Begin
    SetFillStyle(SolidFill, 1);
@@ -39657,7 +39747,7 @@ Begin
    NewPath := NewPath + '\' + Name;
  End;
  NCState.Panes[Side].Path := NewPath;
- NCListDir(NCState.Slot, NCState.Panes[Side]);
+ NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
 End;
 
 { Construire le chemin absolu Name a l interieur de DirPath, sans           }
@@ -40017,6 +40107,7 @@ End;
 { visionneuse F3), utilisee par NCActionView pour le message de           }
 { fragmentation HPFS ci-dessous. }
 Procedure NCShowMessage(Const Msg: String; ReturnMode: TNCMode); Forward;
+Procedure NCShowError(Const Msg: String; ReturnMode: TNCMode); Forward;
 
 { --- Actions F3/F4/F5/F6/F7/F8/F10, extraites de HandleNCommanderEvent  }
 { pour etre appelables a la fois par la touche directe ET par le menu    }
@@ -40032,31 +40123,31 @@ Begin
  If NCState.Panes[Side].Count = 0 Then Exit;
  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
  If E.IsDir Then Exit;
- If NCState.Slot < 0 Then Begin
+ If NCState.PaneSlot[Side] < 0 Then Begin
   NCCmd_ViewFile(NCFullPath(NCState.Panes[Side].Path, E.Name));
   NCState.Mode := ncViewFile;
- End Else If FatVol[NCState.Slot].IsD64 Then Begin
+ End Else If FatVol[NCState.PaneSlot[Side]].IsD64 Then Begin
   { La disquette virtuelle FAT (Slot >= 0 mais pas D64) reste hors de       }
   { portee ici, meme limitation preexistante que NCActionEdit/            }
   { NCActionOpenAssociated : pas de chemin hote direct pour ces fichiers. }
-  NCCmd_ViewD64File(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
+  NCCmd_ViewD64File(Byte(NCState.PaneSlot[Side]), Byte(E.Cluster Shr 8),
    Byte(E.Cluster And $FF), E.Name);
   NCState.Mode := ncViewFile;
- End Else If FatVol[NCState.Slot].IsH8D Then Begin
+ End Else If FatVol[NCState.PaneSlot[Side]].IsH8D Then Begin
   { Image .H8D : extrait vers un fichier hote temporaire (H8D_ExtractToTempFile, }
   { HDOS/UCSD uniquement - voir commentaire d en-tete du sous-systeme H8D    }
   { pour la limitation CP/M-80) puis reutilise NCCmd_ViewFile tel quel. }
-  If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
+  If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
    NCCmd_ViewFile(TempPath);
    NCState.ViewFileName := E.Name;
    NCState.Mode := ncViewFile;
   End;
- End Else If FatVol[NCState.Slot].IsHPFS Then Begin
+ End Else If FatVol[NCState.PaneSlot[Side]].IsHPFS Then Begin
   { Partition HPFS (lecture seule) : extrait vers un fichier hote           }
   { temporaire (HPFS_ExtractToTempFile, E.Cluster porte le FNode - voir     }
   { NCListDir) puis reutilise NCCmd_ViewFile tel quel, meme mecanisme que   }
   { H8D ci-dessus. }
-  If HPFS_ExtractToTempFile(Byte(NCState.Slot), E.Cluster, E.Size, TempPath) Then Begin
+  If HPFS_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Cluster, E.Size, TempPath) Then Begin
    NCCmd_ViewFile(TempPath);
    NCState.ViewFileName := E.Name;
    NCState.Mode := ncViewFile;
@@ -40072,10 +40163,10 @@ Begin
   { monte) : extrait vers un fichier hote temporaire (Fat_ExtractToTempFile,}
   { nouveau) puis reutilise NCCmd_ViewFile tel quel, meme mecanisme que     }
   { H8D/HPFS ci-dessus. }
-  If Fat_FindPath(Byte(NCState.Slot),
+  If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
      ((Attr And $10) = 0) Then Begin
-   If Fat_ExtractToTempFile(Byte(NCState.Slot), Cluster, Sz, E.Name, TempPath) Then Begin
+   If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
     NCCmd_ViewFile(TempPath);
     NCState.ViewFileName := E.Name;
     NCState.Mode := ncViewFile;
@@ -40088,7 +40179,7 @@ Procedure NCActionEdit(Side: Integer);
 Var
  E: TNCEntry;
 Begin
- If (NCState.Panes[Side].Count > 0) And (NCState.Slot < 0) Then Begin
+ If (NCState.Panes[Side].Count > 0) And (NCState.PaneSlot[Side] < 0) Then Begin
   E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
   If Not E.IsDir Then
    PasChatOpenGeneratedFile(NCFullPath(NCState.Panes[Side].Path, E.Name));
@@ -40277,12 +40368,12 @@ Begin
  If NCState.Panes[Side].Count = 0 Then Exit;
  E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
  If E.IsDir Then Exit;
- If (NCState.Slot >= 0) And FatVol[NCState.Slot].IsD64 Then Begin
+ If (NCState.PaneSlot[Side] >= 0) And FatVol[NCState.PaneSlot[Side]].IsD64 Then Begin
   { Disquette virtuelle .D64 : seul PRG est executable (SEQ/USR/REL/DEL   }
   { ne le sont pas) - extrait vers un fichier hote temporaire, puisque       }
   { CPU6502_LoadC64Prg lit toujours un chemin hote reel. }
   If UpCaseStr(NCExtractExt(E.Name)) = 'PRG' Then Begin
-   If D64_ExtractToTempFile(Byte(NCState.Slot), Byte(E.Cluster Shr 8),
+   If D64_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Byte(E.Cluster Shr 8),
     Byte(E.Cluster And $FF), TempPath) Then Begin
     CreateEmulatorTab(TempPath, '-CC64', '');
     NCActionOpenAssociated := True;
@@ -40290,20 +40381,20 @@ Begin
   End;
   Exit;
  End;
- If (NCState.Slot >= 0) And FatVol[NCState.Slot].IsH8D Then Begin
+ If (NCState.PaneSlot[Side] >= 0) And FatVol[NCState.PaneSlot[Side]].IsH8D Then Begin
   { Image .H8D : seuls les fichiers .CODE (p-code UCSD p-System) sont      }
   { executables - extraits vers un fichier hote temporaire (HDOS ou UCSD,  }
   { voir H8D_ExtractToTempFile) puis lances par l emulateur -CPCODE, meme  }
   { mecanisme que le .PRG D64 ci-dessus. }
   If UpCaseStr(NCExtractExt(E.Name)) = 'CODE' Then Begin
-   If H8D_ExtractToTempFile(Byte(NCState.Slot), E.Name, TempPath) Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
     CreateEmulatorTab(TempPath, '-CPCODE', '');
     NCActionOpenAssociated := True;
    End;
   End;
   Exit;
  End;
- If (NCState.Slot >= 0) And FatVol[NCState.Slot].IsHPFS Then Begin
+ If (NCState.PaneSlot[Side] >= 0) And FatVol[NCState.PaneSlot[Side]].IsHPFS Then Begin
   { BOGUE REEL (2026-08-22, signale par l utilisateur sur un vrai VHD       }
   { eComStation/OS-2 - \OS2\MDOS\APPEND.EXE) : cette branche n existait pas }
   { du tout - une entree HPFS ne correspondait a AUCUN des cas ci-dessus    }
@@ -40317,7 +40408,7 @@ Begin
   { de chemin supplementaire comme Fat_FindPath pour le cas FAT. }
   Ext := UpCaseStr(NCExtractExt(E.Name));
   If (Ext = 'COM') Or (Ext = 'EXE') Then Begin
-   If HPFS_ExtractToTempFile(Byte(NCState.Slot), E.Cluster, E.Size, TempPath) Then Begin
+   If HPFS_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Cluster, E.Size, TempPath) Then Begin
     If (Ext = 'COM') Or NCIsDos16Exe(TempPath) Then Begin
      CreateEmulatorTab(TempPath, '-CD', '');
      NCActionOpenAssociated := True;
@@ -40335,7 +40426,7 @@ Begin
   End;
   Exit;
  End;
- If (NCState.Slot >= 0) And (Not FatVol[NCState.Slot].IsHPFS) Then Begin
+ If (NCState.PaneSlot[Side] >= 0) And (Not FatVol[NCState.PaneSlot[Side]].IsHPFS) Then Begin
   { Disquette/disque virtuel FAT "ordinaire" (le cas general - /DISK0..     }
   { /DISK81 sans format special D64/H8D/HPFS ci-dessus, ex. un vrai .vhd    }
   { MS-DOS monte) : extrait vers un fichier hote temporaire                 }
@@ -40346,10 +40437,10 @@ Begin
   { chemin hote direct pour une entree sur disque virtuel). }
   Ext := UpCaseStr(NCExtractExt(E.Name));
   If (Ext = 'COM') Or (Ext = 'EXE') Then Begin
-   If Fat_FindPath(Byte(NCState.Slot),
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
       NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
       ((Attr And $10) = 0) Then Begin
-    If Fat_ExtractToTempFile(Byte(NCState.Slot), Cluster, Sz, E.Name, TempPath) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
      If (Ext = 'COM') Or NCIsDos16Exe(TempPath) Then Begin
       CreateEmulatorTab(TempPath, '-CD', '');
       NCActionOpenAssociated := True;
@@ -40363,7 +40454,7 @@ Begin
   End;
   Exit;
  End;
- If NCState.Slot < 0 Then Begin
+ If NCState.PaneSlot[Side] < 0 Then Begin
   Ext := UpCaseStr(NCExtractExt(E.Name));
   FullPath := NCFullPath(NCState.Panes[Side].Path, E.Name);
   If Ext = 'NES' Then Begin
@@ -40449,14 +40540,24 @@ Begin
  End;
  { Le fichier temporaire extrait porte un nom GENERIQUE (DEVENV_NC_FAT.<ext>}
  { ou DEVENV_NC_HPFS.TMP, jamais le vrai nom d origine) - reconstruire ici  }
- { le nom de cible REEL, meme convention que TermCopyFile lui-meme (ajoute  }
- { le nom de base seulement si la cible se termine explicitement par        }
- { ':'/'\'/'/' , sinon la cible est deja le chemin complet voulu). }
+ { le nom de cible REEL. BOGUE REEL trouve en verifiant (2026-08-23,        }
+ { 2e rapport du meme utilisateur) : la premiere version ne l ajoutait que  }
+ { si DestSpec se terminait EXPLICITEMENT par ':'/'\'/'/' - or             }
+ { NCActionCopyStart preremplit "Vers" avec le chemin BRUT de l autre        }
+ { panneau (NCState.Panes[OtherSide].Path), qui n a JAMAIS de separateur     }
+ { final pour un sous-repertoire ordinaire (seule la racine d un lecteur    }
+ { hote type "C:\" en a un) - le cas le PLUS COURANT (F5 sans rien retaper)  }
+ { tombait donc dans la branche "cible = chemin complet voulu", essayant     }
+ { de Rewrite le REPERTOIRE lui-meme comme fichier. Utilise desormais        }
+ { DirectoryExists (deja disponible, ligne ~8181) pour detecter ce cas       }
+ { independamment de la presence d un separateur final. }
  If DestSpec = '' Then FinalDest := E.Name
  Else Begin
   LastCh := DestSpec[Length(DestSpec)];
   If (LastCh = ':') Or (LastCh = '\') Or (LastCh = '/') Then
    FinalDest := DestSpec + E.Name
+  Else If DirectoryExists(DestSpec) Then
+   FinalDest := DestSpec + '\' + E.Name
   Else
    FinalDest := DestSpec;
  End;
@@ -40502,9 +40603,34 @@ Begin
 End;
 
 Procedure NCActionCopyStart(Side, OtherSide: Integer);
+Var
+ I: Integer;
+ HasDir: Boolean;
 Begin
  If (NCState.Panes[Side].Count > 0) And
     ((NCState.Panes[Side].MarkCount > 0) Or Not NCCursorOnDotDot(Side)) Then Begin
+  { BOGUE REEL (2026-08-23, 4e rapport du meme utilisateur) :             }
+  { NCCopyVirtEntryToHost ne copie jamais un repertoire (If E.IsDir Then   }
+  { Exit, silencieux par conception - copie non recursive, hors du        }
+  { perimetre actuel) - l utilisateur voyait le prompt "Vers" s ouvrir     }
+  { normalement puis, apres Entree, absolument rien ne se passait, sans   }
+  { le moindre message (curseur reellement pose sur un repertoire, pas    }
+  { sur le fichier voulu). Bloque desormais ICI, avant meme d ouvrir le    }
+  { prompt, avec un message explicite. }
+  If NCState.PaneSlot[Side] >= 0 Then Begin
+   HasDir := False;
+   If NCState.Panes[Side].MarkCount > 0 Then Begin
+    For I := 0 To NCState.Panes[Side].Count - 1 Do
+     If NCState.Panes[Side].Marked[I] And NCState.Panes[Side].Entries[I].IsDir Then
+      HasDir := True;
+   End Else
+    HasDir := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].IsDir;
+   If HasDir Then Begin
+    NCShowError('Copie de repertoire non prise en charge depuis un disque virtuel.',
+     ncBrowse);
+    Exit;
+   End;
+  End;
   NCState.PromptBuf := NCState.Panes[OtherSide].Path;
   NCState.Mode := ncPromptCopy;
  End;
@@ -40547,6 +40673,20 @@ Procedure NCShowMessage(Const Msg: String; ReturnMode: TNCMode);
 Begin
  NCState.MessageReturnMode := ReturnMode;
  NCState.PromptBuf := Msg;
+ NCState.MessageIsError := False;
+ NCState.Mode := ncMessage;
+End;
+
+{ Boite d erreur ROUGE (attribut $4F, fond rouge/texte blanc vif), fidele }
+{ a ErrorOk du projet de reference NORTONCOMMANDER-0/NC.PAS (ligne 1382)  }
+{ plutot que le style bleu/cyan neutre de NCShowMessage - utiliser pour   }
+{ tout VRAI echec d operation sur fichier (copie/renommer/creer/supprimer),}
+{ jamais pour de simples informations. --- }
+Procedure NCShowError(Const Msg: String; ReturnMode: TNCMode);
+Begin
+ NCState.MessageReturnMode := ReturnMode;
+ NCState.PromptBuf := Msg;
+ NCState.MessageIsError := True;
  NCState.Mode := ncMessage;
 End;
 
@@ -40590,7 +40730,7 @@ End;
 Procedure NCActionSort(Side, SortKind: Integer);
 Begin
  NCState.Panes[Side].SortMode := SortKind;
- NCListDir(NCState.Slot, NCState.Panes[Side]);
+ NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
 End;
 
 { "Permuter les panneaux" (menu Commandes, item 4) - echange entierement }
@@ -40660,7 +40800,7 @@ Procedure NCActionSyncDirs(Var TP: TTerminalPanel; Side: Integer);
 Var
  OtherSide, I, J: Integer;
 Begin
- If NCState.Slot >= 0 Then Begin
+ If (NCState.PaneSlot[0] >= 0) Or (NCState.PaneSlot[1] >= 0) Then Begin
   NCShowMessage('La synchronisation n''est pas encore implementee pour la disquette virtuelle.', ncBrowse);
   Exit;
  End;
@@ -40673,8 +40813,8 @@ Begin
     TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
      NCState.Panes[Side].Entries[I].Name), NCState.Panes[OtherSide].Path);
   End;
- NCListDir(NCState.Slot, NCState.Panes[0]);
- NCListDir(NCState.Slot, NCState.Panes[1]);
+ NCListDir(NCState.PaneSlot[0], NCState.Panes[0]);
+ NCListDir(NCState.PaneSlot[1], NCState.Panes[1]);
 End;
 
 { "Historique" (Commandes, item 2) : ouvre la liste des commandes deja   }
@@ -40719,7 +40859,7 @@ Procedure NCActionTreeStart(Side: Integer);
 Var
  Root: String;
 Begin
- If NCState.Slot >= 0 Then Begin
+ If NCState.PaneSlot[Side] >= 0 Then Begin
   NCShowMessage('L''arbre NCD n''est pas encore implemente pour la disquette virtuelle.', ncBrowse);
   Exit;
  End;
@@ -40731,6 +40871,33 @@ Begin
  NCTreeScan(Root, 0);
  NCState.TreeCursor := 0;
  NCState.TreeTop := 0;
+ NCState.Mode := ncTree;
+End;
+
+{ F10 depuis le prompt Copier (F5) - reproduit le bouton "F10-Tree" du    }
+{ vrai NC 5.0 (boite de dialogue Copier a 3 boutons [Copie][F10-Arbre]    }
+{ [Annuler]) : ouvre le meme Arbre NCD que Commandes/Arbre, mais enracine  }
+{ sur le lecteur du panneau OtherSide (la destination) et, a la place de  }
+{ naviguer un panneau, renvoie le chemin choisi dans PromptBuf et revient }
+{ au prompt Copier (voir NCState.TreeForCopy). --- }
+Procedure NCActionCopyTreeStart(OtherSide: Integer);
+Var
+ Root: String;
+Begin
+ If NCState.PaneSlot[OtherSide] >= 0 Then Begin
+  NCShowMessage('L''arbre NCD n''est pas encore implemente pour la disquette virtuelle.',
+   ncPromptCopy);
+  Exit;
+ End;
+ NCState.TreeCount := 0;
+ If Length(NCState.Panes[OtherSide].Path) >= 2 Then
+  Root := Copy(NCState.Panes[OtherSide].Path, 1, 2) + '\'
+ Else
+  Root := NCState.Panes[OtherSide].Path;
+ NCTreeScan(Root, 0);
+ NCState.TreeCursor := 0;
+ NCState.TreeTop := 0;
+ NCState.TreeForCopy := True;
  NCState.Mode := ncTree;
 End;
 
@@ -40758,7 +40925,7 @@ Begin
     10: NCActionSort(TargetSide, 2);  { Heure }
     11: NCActionSort(TargetSide, 3);  { Taille }
     12: NCActionSort(TargetSide, 4);  { Desordre }
-    13: NCListDir(NCState.Slot, NCState.Panes[TargetSide]); { Relire }
+    13: NCListDir(NCState.PaneSlot[TargetSide], NCState.Panes[TargetSide]); { Relire }
     14: NCShowMessage('Cette option n''est pas encore implementee.', ncBrowse); { Filtre }
     15: NCShowMessage('Le changement de lecteur n''est pas encore implemente.', ncBrowse);
    End;
@@ -40859,7 +41026,8 @@ Procedure HandleNCommanderEvent(Var TP: TTerminalPanel; Var Ev: TEvent);
 Var
  Side, OtherSide, I: Integer;
  E: TNCEntry;
- CmdUp, CmdArg, FullSrc, FullDst: String;
+ CmdUp, CmdArg, FullSrc, FullDst, CopiedName: String;
+ CopyFailCount, FoundIdx: Integer;
 Begin
  Side := NCState.Active;
  OtherSide := Side Xor 1;
@@ -40905,6 +41073,9 @@ Begin
      NCState.Mode := ncViewSelectViewer;
     End;
     $44: NCState.Mode := ncBrowse; { F10 : Quit - retour aux 2 panneaux }
+   End;
+   If NCState.Mode = ncPromptCopy Then Case Ev.KeyCode Of
+    $44: NCActionCopyTreeStart(OtherSide); { F10 : bouton "F10-Tree" du vrai NC }
    End;
    If NCState.Mode = ncViewSelectViewer Then Case Ev.KeyCode Of
     72: If NCState.ViewSelIdx = 0 Then NCState.ViewSelIdx := NC_VIEWER_COUNT - 1
@@ -40972,56 +41143,95 @@ Begin
       Case NCState.Mode Of
        ncPromptMkDir:
         If NCState.PromptBuf <> '' Then Begin
-         If NCState.Slot < 0 Then
+         If NCState.PaneSlot[Side] < 0 Then
           NCCmd_MkDirHost(NCState.Panes[Side].Path, NCState.PromptBuf)
          Else
-          NCCmd_MkDir(NCState.Slot, NCState.Panes[Side].Path, NCState.PromptBuf);
-         NCListDir(NCState.Slot, NCState.Panes[Side]);
+          NCCmd_MkDir(NCState.PaneSlot[Side], NCState.Panes[Side].Path, NCState.PromptBuf);
+         NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
         End;
        ncPromptCopy:
         If NCState.PromptBuf <> '' Then Begin
-         If NCState.Slot < 0 Then Begin
+         CopyFailCount := 0;
+         { BOGUE REEL corrige (2026-08-23, 5e rapport) : capturer le NOM du }
+         { fichier copie AVANT le rafraichissement NCListDir ci-dessous -    }
+         { NCListDir remet Cursor a 0 pour les DEUX panneaux (source         }
+         { INCLUSE, meme si son contenu n a pas change), donc relire         }
+         { Panes[Side].Cursor APRES coup pointait a tort sur ".." (index 0)  }
+         { au lieu du fichier reellement copie. }
+         If (NCState.Panes[Side].MarkCount = 0) And (NCState.Panes[Side].Count > 0) Then
+          CopiedName := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name
+         Else
+          CopiedName := '';
+         If NCState.PaneSlot[Side] < 0 Then Begin
           If NCState.Panes[Side].MarkCount > 0 Then Begin
            For I := 0 To NCState.Panes[Side].Count - 1 Do
             If NCState.Panes[Side].Marked[I] Then
-             TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
-              NCState.Panes[Side].Entries[I].Name), NCState.PromptBuf);
+             If Not TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+              NCState.Panes[Side].Entries[I].Name), NCState.PromptBuf) Then
+              Inc(CopyFailCount);
           End Else If NCState.Panes[Side].Count > 0 Then
-           TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+           If Not TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
             NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name),
-            NCState.PromptBuf);
+            NCState.PromptBuf) Then
+            Inc(CopyFailCount);
          End Else Begin
           { BOGUE REEL corrige (2026-08-23) : panneau source sur disque      }
           { virtuel - voir le commentaire de tete de NCCopyVirtEntryToHost.  }
           If NCState.Panes[Side].MarkCount > 0 Then Begin
            For I := 0 To NCState.Panes[Side].Count - 1 Do
             If NCState.Panes[Side].Marked[I] Then
-             NCCopyVirtEntryToHost(TP, Byte(NCState.Slot),
-              NCState.Panes[Side].Entries[I], NCState.PromptBuf);
+             If Not NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[Side]),
+              NCState.Panes[Side].Entries[I], NCState.PromptBuf) Then
+              Inc(CopyFailCount);
           End Else If NCState.Panes[Side].Count > 0 Then
-           NCCopyVirtEntryToHost(TP, Byte(NCState.Slot),
+           If Not NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[Side]),
             NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor],
-            NCState.PromptBuf);
+            NCState.PromptBuf) Then
+            Inc(CopyFailCount);
          End;
-         { NCListDir(Slot, Pane) decide hote/virtuel UNIQUEMENT d apres le  }
-         { parametre Slot passe, jamais d apres l etat propre du panneau    }
-         { (NCState.Slot est un DRAPEAU GLOBAL UNIQUE, pas par panneau -    }
-         { confirme en lisant NCListDir) : rafraichir OtherSide ici avec    }
-         { NCState.Slot (virtuel) le reinterpreterait a tort comme virtuel  }
-         { meme s il affiche en realite un repertoire hote (observe : le    }
-         { panneau se vide). Quand la source est virtuelle, se limiter au   }
-         { rafraichissement du panneau SOURCE (Side, dont le contexte est,  }
-         { lui, correct) - limitation pre-existante de l architecture NC    }
-         { (un seul NCState.Slot pour toute la session, pas par panneau),   }
-         { hors de portee de ce correctif. }
-         If NCState.Slot < 0 Then Begin
-          NCListDir(NCState.Slot, NCState.Panes[0]);
-          NCListDir(NCState.Slot, NCState.Panes[1]);
-         End Else
-          NCListDir(NCState.Slot, NCState.Panes[Side]);
+         { BOGUE REEL corrige (2026-08-23) : NCState.Slot etait un drapeau   }
+         { global unique partage par les deux panneaux, ce qui faisait que    }
+         { rafraichir OtherSide avec ce drapeau pouvait le reinterpreter a    }
+         { tort comme virtuel (panneau hote qui se vide). NCState.PaneSlot   }
+         { porte desormais le contexte reel de CHAQUE panneau independamment,}
+         { donc les deux cotes peuvent etre rafraichis en toute securite. }
+         NCListDir(NCState.PaneSlot[0], NCState.Panes[0]);
+         NCListDir(NCState.PaneSlot[1], NCState.Panes[1]);
+         { BOGUE REEL corrige (2026-08-23, 5e rapport du meme utilisateur) : }
+         { la copie ecrivait bel et bien le fichier sur disque (confirme a   }
+         { plusieurs reprises par verification directe), mais rien dans      }
+         { l interface ne le rendait visible : le panneau destinataire       }
+         { revient toujours en haut de liste apres un rafraichissement       }
+         { (ScrollTop remis a 0 par NCListDir), donc un nouveau fichier       }
+         { trie alphabetiquement loin dans un repertoire de centaines        }
+         { d entrees (le depot en compte pres de 600) atterrit hors de la    }
+         { fenetre visible SANS le moindre indice qu il faille faire         }
+         { defiler - l utilisateur voyait litteralement "rien de nouveau"    }
+         { alors que le fichier etait la depuis le debut. Corrige en         }
+         { deplacant le curseur du panneau destinataire sur le fichier       }
+         { copie (copie simple, non marquee, uniquement) : le rendu des      }
+         { panneaux (ligne ~39402) ajuste deja ScrollTop pour garder le       }
+         { curseur visible a chaque image, donc ce seul deplacement suffit    }
+         { a amener le fichier dans le champ visible. }
+         If (CopyFailCount = 0) And (CopiedName <> '') Then Begin
+          FoundIdx := NCFindEntryByName(NCState.Panes[OtherSide], CopiedName);
+          If FoundIdx >= 0 Then NCState.Panes[OtherSide].Cursor := FoundIdx;
+         End;
+         { TOUT echec de copie (extraction, creation du fichier cible...)    }
+         { n etait signale que par TermAddLine, invisible tant que le mode   }
+         { NC est actif (son propre rendu de panneaux recouvre le journal    }
+         { texte du Terminal) - l utilisateur voyait donc juste "rien ne se  }
+         { passe", sans le moindre indice. Rendu visible via NCShowError    }
+         { (boite ROUGE, fidele a ErrorOk du projet de reference - voir     }
+         { NCDrawErrorBox), pas le NCShowMessage neutre utilise pour les    }
+         { stubs "non implemente". }
+         If CopyFailCount > 0 Then
+          NCShowError('Echec de la copie (' + IntToStr(CopyFailCount) +
+           ' element(s)) - voir le journal Terminal (F10) pour le detail.',
+           ncBrowse);
         End;
        ncPromptRenMov:
-        If (NCState.PromptBuf <> '') And (NCState.Slot < 0) And
+        If (NCState.PromptBuf <> '') And (NCState.PaneSlot[Side] < 0) And
            (NCState.Panes[Side].Count > 0) Then Begin
          FullSrc := NCFullPath(NCState.Panes[Side].Path,
           NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name);
@@ -41030,11 +41240,17 @@ Begin
          Else
           FullDst := NCFullPath(NCState.Panes[Side].Path, NCState.PromptBuf);
          NCCmd_RenameHost(FullSrc, FullDst);
-         NCListDir(NCState.Slot, NCState.Panes[Side]);
+         NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
         End;
       End;
-      NCState.Mode := ncBrowse;
-      NCState.PromptBuf := '';
+      { NCShowMessage (echec de copie, voir ncPromptCopy ci-dessus) a deja  }
+      { bascule Mode vers ncMessage avec son propre texte dans PromptBuf -  }
+      { ne PAS l ecraser ici, sinon le message clignote une fraction de     }
+      { seconde puis disparait avant que l utilisateur ne puisse le lire.  }
+      If NCState.Mode <> ncMessage Then Begin
+       NCState.Mode := ncBrowse;
+       NCState.PromptBuf := '';
+      End;
      End;
      #8:
       If Length(NCState.PromptBuf) > 0 Then
@@ -41045,7 +41261,7 @@ Begin
     End;
     ncConfirmDelete: Case UpCase(Ev.KeyChar) Of
      'O': Begin
-      If NCState.Slot < 0 Then Begin
+      If NCState.PaneSlot[Side] < 0 Then Begin
        If NCState.Panes[Side].MarkCount > 0 Then Begin
         For I := 0 To NCState.Panes[Side].Count - 1 Do
          If NCState.Panes[Side].Marked[I] Then
@@ -41056,7 +41272,7 @@ Begin
         E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
         NCCmd_DeleteHost(NCFullPath(NCState.Panes[Side].Path, E.Name), E.IsDir);
        End;
-       NCListDir(NCState.Slot, NCState.Panes[Side]);
+       NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
       End;
       NCState.Mode := ncBrowse;
      End;
@@ -41114,31 +41330,50 @@ Begin
      End;
     End;
     ncTree: Case Ev.KeyChar Of
-     #27: NCState.Mode := ncBrowse;
+     #27: Begin
+      { Ouvert via F10 depuis le prompt Copier (voir NCActionCopyTreeStart) :  }
+      { Echap revient au prompt SANS toucher a la destination, comme le        }
+      { bouton "Annuler" du vrai NC 5.0 le ferait pour l Arbre lui-meme. }
+      If NCState.TreeForCopy Then Begin
+       NCState.TreeForCopy := False;
+       NCState.Mode := ncPromptCopy;
+      End Else
+       NCState.Mode := ncBrowse;
+     End;
      #13: Begin
-      If NCState.TreeCount > 0 Then Begin
-       NCState.Panes[Side].Path := NCState.TreeNodes[NCState.TreeCursor].Path;
-       NCListDir(NCState.Slot, NCState.Panes[Side]);
+      If NCState.TreeForCopy Then Begin
+       If NCState.TreeCount > 0 Then
+        NCState.PromptBuf := NCState.TreeNodes[NCState.TreeCursor].Path;
+       NCState.TreeForCopy := False;
+       NCState.Mode := ncPromptCopy;
+      End Else Begin
+       If NCState.TreeCount > 0 Then Begin
+        NCState.Panes[Side].Path := NCState.TreeNodes[NCState.TreeCursor].Path;
+        NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
+       End;
+       NCState.Mode := ncBrowse;
       End;
-      NCState.Mode := ncBrowse;
      End;
     End;
     ncChangeDrive: Case Ev.KeyChar Of
      #27: NCState.Mode := ncBrowse;
      #13: Begin
       If NCState.CdCount > 0 Then Begin
+       { BOGUE REEL corrige (2026-08-23) : n affecte plus que le slot du    }
+       { panneau CdSide (PaneSlot), plus le drapeau global Slot - voir le   }
+       { commentaire de tete de TNCState. NCState.Slot reste mis a jour ici }
+       { comme ALIAS du panneau actif (pour le code pas encore migre), mais }
+       { l AUTRE panneau garde desormais son propre contexte intact. }
        If NCState.CdIsVirt[NCState.CdCursor] Then Begin
-        { NCState.Slot est PARTAGE entre les deux panneaux (limitation      }
-        { architecturale preexistante) - choisir un lecteur virtuel ici    }
-        { change donc aussi l interpretation de l AUTRE panneau. }
-        NCState.Slot := NCState.CdSlotIdx[NCState.CdCursor];
+        NCState.PaneSlot[NCState.CdSide] := NCState.CdSlotIdx[NCState.CdCursor];
         NCState.Panes[NCState.CdSide].Path := '\';
        End Else Begin
-        NCState.Slot := -1;
+        NCState.PaneSlot[NCState.CdSide] := -1;
         NCState.Panes[NCState.CdSide].Path :=
          NCState.CdLetter[NCState.CdCursor] + ':\';
        End;
-       NCListDir(NCState.Slot, NCState.Panes[NCState.CdSide]);
+       NCState.Slot := NCState.PaneSlot[NCState.CdSide];
+       NCListDir(NCState.PaneSlot[NCState.CdSide], NCState.Panes[NCState.CdSide]);
       End;
       NCState.Mode := ncBrowse;
      End;
@@ -41234,19 +41469,19 @@ Begin
       { MKDIR/MD : chemin absolu explicite (hote ou disquette virtuelle) }
       { plutot que de dependre du repertoire courant reel du processus,      }
       { que TermExecuteCommand seul ne synchronise pas de facon fiable. }
-      If NCState.Slot < 0 Then
+      If NCState.PaneSlot[Side] < 0 Then
        NCCmd_MkDirHost(NCState.Panes[Side].Path, CmdArg)
       Else
-       NCCmd_MkDir(NCState.Slot, NCState.Panes[Side].Path, CmdArg);
-      NCListDir(NCState.Slot, NCState.Panes[Side]);
+       NCCmd_MkDir(NCState.PaneSlot[Side], NCState.Panes[Side].Path, CmdArg);
+      NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
      End Else Begin
       { Toute autre commande : moteur partage des 4 autres shells      }
       { (limitation connue pour le mode disque virtuel uniquement). }
-      TP.VirtDrive := NCState.Slot;
+      TP.VirtDrive := NCState.PaneSlot[Side];
       TP.VirtCwd := NCState.Panes[Side].Path;
       TermExecuteCommand(TP, TP.InputLine);
       NCState.Panes[Side].Path := TP.VirtCwd;
-      NCListDir(NCState.Slot, NCState.Panes[Side]);
+      NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
      End;
      TP.InputLine := '';
      TP.InputCol := 1;
