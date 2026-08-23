@@ -1349,10 +1349,13 @@ Const
  OPT_CHECK_SIZE       = 14;      { taille case a cocher             }
  OPT_SBAR_WIDTH       = 14;      { largeur scrollbar arbre categories}
  OPT_DROPDOWN_ITEM_H  = 20;      { hauteur d un item de liste deroulante}
- DOS_TYPE_COUNT       = 7;       { nombre de types de DOS emulables }
+ DOS_TYPE_COUNT       = 8;       { nombre de types de DOS emulables }
  DOS_TYPE_OS2         = 6;       { index "OS/2" dans DosTypeName - voir  }
                                   { Emu_DoInt21/Emu_DoInt2F, cablage reel }
                                   { du "DOS: OS" (2026-08-23)             }
+ DOS_TYPE_WIN95       = 7;       { index "Windows 95" dans DosTypeName - }
+                                  { voir Emu_DoInt21/Emu_DoInt2F, cablage }
+                                  { reel du "DOS: OS" (2026-08-23)        }
  { Version OS/2 rapportee quand DosType=OS/2 (AH=30h, AX=3306h, INT 2Fh/  }
  { AX=4010h) - fixee a Warp 4 (20.40), coherente avec la lignee           }
  { eComStation 2.0 deja utilisee comme disque de test cette session. Pas  }
@@ -1361,6 +1364,12 @@ Const
  { rapportees par generation d OS/2. }
  EMU_OS2_VER_MAJOR    = 20;
  EMU_OS2_VER_MINOR    = 40;
+ { Version DOS rapportee quand DosType=Windows 95 (AH=30h, AX=3306h) -    }
+ { fixee a 7.10 (lignee Windows 95 OSR2/98), coherente avec la version     }
+ { Windows 4.03 rapportee par INT 2Fh/AX=160Ah - voir DOC/                }
+ { DOS_FOR_WINDOWS95_PROGRAMMING.txt section 2 pour la table des versions.}
+ EMU_WIN95_VER_MAJOR  = 7;
+ EMU_WIN95_VER_MINOR  = 10;
  DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
  DOS_HARDWARE_COUNT   = 11;      { nombre de modeles de materiel    }
  DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
@@ -44963,6 +44972,7 @@ Begin
   4: DosTypeName := 'IBM DOS';
   5: DosTypeName := 'PTS-DOS';
   6: DosTypeName := 'OS/2';
+  7: DosTypeName := 'Windows 95';
  Else
   DosTypeName := '???';
  End;
@@ -57439,18 +57449,23 @@ Begin
    End;
   $30:
    { Renvoyer DOS 5.00 par defaut (compatible TP4..TP7, QP, etc), sauf si  }
-   { l utilisateur a choisi "OS/2" dans Options > Emulateur > DOS: OS      }
-   { (OptionsDlg.Data.DosType, meme patron de lecture directe que          }
-   { DosHardwareBiosId/OptionsDlg.Data.DosHardware) - alors rapporter la   }
-   { version DOS synthetique OS/2 (AL=majeur decimal, AH=mineur decimal,   }
-   { voir DOC/DOS_FOR_OS2_PROGRAMMING.txt section "AH=30h" et              }
-   { EMU_OS2_VER_MAJOR/MINOR). BH=0 (OEM IBM) quand AL d entree=0, sinon    }
-   { flags=0 (aucun rapporte) - CX (numero de serie) reste 0 dans les      }
-   { deux cas, comme avant. }
+   { l utilisateur a choisi "OS/2" ou "Windows 95" dans Options >          }
+   { Emulateur > DOS: OS (OptionsDlg.Data.DosType, meme patron de lecture  }
+   { directe que DosHardwareBiosId/OptionsDlg.Data.DosHardware) - alors    }
+   { rapporter la version DOS synthetique correspondante (AL=majeur        }
+   { decimal, AH=mineur decimal, voir DOC/DOS_FOR_OS2_PROGRAMMING.txt      }
+   { section "AH=30h" et DOC/DOS_FOR_WINDOWS95_PROGRAMMING.txt section 2,  }
+   { EMU_OS2_VER_MAJOR/MINOR et EMU_WIN95_VER_MAJOR/MINOR). BH=0 (OEM      }
+   { IBM/Microsoft) quand AL d entree=0, sinon flags=0 (aucun rapporte) -  }
+   { CX (numero de serie) reste 0 dans tous les cas, comme avant. }
    Begin
     If OptionsDlg.Data.DosType = DOS_TYPE_OS2 Then Begin
      P.CPU.Regs.AL := EMU_OS2_VER_MAJOR;
      P.CPU.Regs.AH := EMU_OS2_VER_MINOR;
+     P.CPU.Regs.BH := 0;
+    End Else If OptionsDlg.Data.DosType = DOS_TYPE_WIN95 Then Begin
+     P.CPU.Regs.AL := EMU_WIN95_VER_MAJOR;
+     P.CPU.Regs.AH := EMU_WIN95_VER_MINOR;
      P.CPU.Regs.BH := 0;
     End Else Begin
      P.CPU.Regs.AL := 5;
@@ -57480,14 +57495,20 @@ Begin
      6:
       { AX=3306h : version "vraie" de la personnalite DOS, pensee pour       }
       { contourner un eventuel SETVER (DOC/DOS_FOR_OS2_PROGRAMMING.txt       }
-      { section "AX=3306h") - generique, independant de DosType. Ce clone    }
-      { n emule pas de mecanisme SETVER separe, donc la version "vraie"      }
-      { coincide toujours avec la version "presentee" par AH=30h (voir le    }
-      { case $30 ci-dessus, meme branche OS/2 via OptionsDlg.Data.DosType).  }
+      { section "AX=3306h", et DOC/DOS_FOR_WINDOWS95_PROGRAMMING.txt          }
+      { section 2 - "AH=30h peut etre influence par SETVER, donc 3306h        }
+      { convient mieux au diagnostic") - generique, independant de DosType.   }
+      { Ce clone n emule pas de mecanisme SETVER separe, donc la version      }
+      { "vraie" coincide toujours avec la version "presentee" par AH=30h      }
+      { (voir le case $30 ci-dessus, memes branches OS/2/Windows 95 via       }
+      { OptionsDlg.Data.DosType). }
       Begin
        If OptionsDlg.Data.DosType = DOS_TYPE_OS2 Then Begin
         P.CPU.Regs.BL := EMU_OS2_VER_MAJOR;
         P.CPU.Regs.BH := EMU_OS2_VER_MINOR;
+       End Else If OptionsDlg.Data.DosType = DOS_TYPE_WIN95 Then Begin
+        P.CPU.Regs.BL := EMU_WIN95_VER_MAJOR;
+        P.CPU.Regs.BH := EMU_WIN95_VER_MINOR;
        End Else Begin
         P.CPU.Regs.BL := 5;
         P.CPU.Regs.BH := 0;
@@ -65614,6 +65635,49 @@ Begin
   P.CPU.Regs.BL := EMU_OS2_VER_MAJOR;
   P.CPU.Regs.BH := EMU_OS2_VER_MINOR;
   Exit;
+ End;
+ If (OptionsDlg.Data.DosType = DOS_TYPE_WIN95) Then Begin
+  { Detection Windows 95/98 (DOC/DOS_FOR_WINDOWS95_PROGRAMMING.txt          }
+  { section 2/15) - 4 sous-appels, tous gardes par DosType=Windows 95 ;     }
+  { sinon ce bloc entier n est pas atteint et le code tombe dans le         }
+  { chainage IVT generique plus bas, qui laisse AX INCHANGE - exactement    }
+  { le comportement "Windows absent" attendu pour tout autre DosType. }
+  If P.CPU.Regs.AX = $1600 Then Begin
+   { AX=1600h : presence du mode Windows 386 etendu - l appelant teste       }
+   { "test al,7Fh", donc n importe quel bit non nul dans les 7 bits bas      }
+   { suffit ; $03 est une valeur plausible couramment observee. }
+   P.CPU.Regs.AL := $03;
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $160A Then Begin
+   { AX=160Ah : identifier version et type Windows - AX=0000h si pris en    }
+   { charge, BX=BH.BL (ordre INVERSE de 4010h/3306h : le document le         }
+   { precise explicitement), CX=0002h (mode standard - ne pas laisser        }
+   { entendre un support VxD/enhanced-mode complet qui n existe pas dans     }
+   { ce chantier). BH.BL=04.03 (Windows 95B/OSR2), coherent avec la          }
+   { version DOS 7.10 rapportee par AH=30h/AX=3306h (EMU_WIN95_VER_MAJOR/    }
+   { MINOR). }
+   P.CPU.Regs.AX := 0;
+   P.CPU.Regs.BH := 4;
+   P.CPU.Regs.BL := 3;
+   P.CPU.Regs.CX := 2;
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1680 Then Begin
+   { AX=1680h : ceder le reste du quantum de la VM - simple point de         }
+   { cession dans une boucle d attente cooperative (document, section 15) ; }
+   { rien a emuler reellement, un retour immediat suffit. }
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1684 Then Begin
+   { AX=1684h : obtenir le point d entree API d un VxD (BX=identifiant) -    }
+   { aucun VxD reel n existe dans cet emulateur : repondre honnetement       }
+   { "absent" (ES:DI=0000:0000) plutot que fabriquer un point d entree,      }
+   { meme discipline que le reste de la session. }
+   P.CPU.Segs.ES := 0;
+   P.CPU.Regs.DI := 0;
+   Exit;
+  End;
  End;
  IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
  IvtSeg := Emu_ReadWord(P.CPU, 0, Word($2F) * 4 + 2);
