@@ -4669,6 +4669,152 @@ Type
   PAlign : QWord;
  End;
 
+ { Chantier OS/2 LX (2026-08-22), Stage 1 : en-tete "e32_exe" d un          }
+ { executable OS/2 32 bits natif (format Linear Executable). Layout         }
+ { verifie EMPIRIQUEMENT (pas seulement d apres une reference ecrite) en    }
+ { relisant un vrai ddnsicon.exe extrait du VHD eComStation de l utilisateur}
+ { via un petit programme Pascal autonome (lxprobe.pas) : e32_esp retombe   }
+ { exactement sur la taille de l objet e32_stackobj (coherence interne      }
+ { attendue pour un sommet de pile), et les modules importes decodes        }
+ { ("DOSCALLS","PMWP","NLS","MSG") sont des noms OS/2 reels et plausibles - }
+ { deux signaux independants qui confirment ce layout. 176 octets utiles,   }
+ { header reel total = 196 octets (20 de reserve, non repris ici, sans      }
+ { consequence puisque tous les offsets de table sont relatifs au DEBUT     }
+ { de cet en-tete, pas a sa fin). Ordre BFtable/pageshift a NE PAS re-      }
+ { derive sans nouvelle verification si jamais modifie. }
+ TLXHeader = Record
+  e32_magic0, e32_magic1: Byte;  { 'L','X'                              }
+  e32_border   : Byte;
+  e32_worder   : Byte;
+  e32_level    : LongInt;
+  e32_cpu      : Word;      { 1=286 2=386 3=486                         }
+  e32_os       : Word;      { 1=OS/2                                    }
+  e32_ver      : LongInt;
+  e32_mflags   : LongInt;   { bits 8-9 = compat. Presentation Manager   }
+  e32_mpages   : LongInt;
+  e32_startobj : LongInt;   { objet contenant EIP                       }
+  e32_eip      : LongInt;
+  e32_stackobj : LongInt;   { objet contenant ESP                       }
+  e32_esp      : LongInt;
+  e32_pagesize : LongInt;   { taille VM d une page (verifie = 4096)     }
+  e32_pageshift: LongInt;   { granularite de stockage fichier (verifie  }
+                             { = 9, donc unites de 512 octets)          }
+  e32_fixupsize: LongInt;
+  e32_fixupsum : LongInt;
+  e32_ldrsize  : LongInt;
+  e32_ldrsum   : LongInt;
+  e32_objtab   : LongInt;   { offset (relatif a cet en-tete) table objets}
+  e32_objcnt   : LongInt;
+  e32_objmap   : LongInt;   { offset table des pages objet (format des   }
+                             { entrees PAS ENCORE confirme - voir         }
+                             { commentaire de LXINFO plus bas)            }
+  e32_itermap  : LongInt;
+  e32_rsrctab  : LongInt;
+  e32_rsrccnt  : LongInt;
+  e32_restab   : LongInt;
+  e32_enttab   : LongInt;
+  e32_dirtab   : LongInt;
+  e32_dircnt   : LongInt;
+  e32_fpagetab : LongInt;   { offset table des pages de fixup            }
+  e32_frectab  : LongInt;   { offset table des enregistrements de fixup  }
+  e32_impmod   : LongInt;   { offset table noms modules importes (chaines}
+                             { Pascal a prefixe de longueur, verifie)     }
+  e32_impmodcnt: LongInt;
+  e32_impproc  : LongInt;   { offset table noms procedures importees     }
+  e32_pagesum  : LongInt;
+  e32_datapage : LongInt;   { offset ABSOLU (depuis le debut du fichier) }
+                             { des donnees de page                       }
+  e32_preload  : LongInt;
+  e32_nrestab  : LongInt;
+  e32_cbnrestab: LongInt;
+  e32_nressum  : LongInt;
+  e32_autodata : LongInt;
+  e32_debuginfo: LongInt;
+  e32_debuglen : LongInt;
+  e32_instpreload: LongInt;
+  e32_instdemand : LongInt;
+  e32_heapsize : LongInt;
+  e32_stacksize: LongInt;
+ End;
+
+ { Entree table des objets LX (24 octets, verifiee empiriquement -          }
+ { 3 objets reels lus sur ddnsicon.exe : #1 RX BIG32 (code), #2 R SHARED    }
+ { BIG32 (donnees partagees/ressources), #3 RW BIG32 (donnees+pile), la     }
+ { somme des mapsize = e32_mpages = 11, tout coherent). }
+ TLXObject = Record
+  o32_size    : LongInt;
+  o32_base    : LongInt;    { adresse lineaire de base souhaitee         }
+  o32_flags   : LongInt;    { voir constantes LXOBJ_*                    }
+  o32_pagemap : LongInt;    { index 1-based, 1ere entree table des pages }
+  o32_mapsize : LongInt;    { nombre de pages de cet objet                }
+  o32_reserved: LongInt;
+ End;
+
+Const
+ LXOBJ_READABLE   = $0001;
+ LXOBJ_WRITABLE   = $0002;
+ LXOBJ_EXECUTABLE = $0004;
+ LXOBJ_RESOURCE   = $0008;
+ LXOBJ_DISCARD    = $0010;
+ LXOBJ_SHARED     = $0020;
+ LXOBJ_PRELOAD    = $0040;
+ LXOBJ_INVALID    = $0080;
+ LXOBJ_BIG32      = $2000;  { adressage 32 bits ("Big"/"Default" bit)    }
+
+ { Chantier OS/2 LX, Stage 3 : zone reservee (jamais couverte par aucun    }
+ { objet reel - tres au-dela de LX_MEM_SIZE, verifie a l implementation    }
+ { par les bornes deja imposees a Emu_LoadLX) pour les thunks de trappe    }
+ { DOSCALLS. Choisie sous LX_MEM_SIZE lui-meme (contrairement au plan       }
+ { initial qui la placait a $01F00000, hors de la plage 32 Mo actuelle -    }
+ { corrige ici pour rester a l interieur du tampon LX_Mem reellement       }
+ { alloue) : les 2 derniers Mo de LX_Mem, largement au-dela de tout objet   }
+ { reel observe (le plus grand objet de ddnsicon.exe culmine a $36C90).    }
+ LX_TRAP_BASE      = $1E00000;   { $1E00000..$1FFFFFF = 2 Mo reserves     }
+ LX_TRAP_SLOT_SIZE = 16;
+ LX_MAX_TRAP_SLOTS = 512;        { 512*16 = 8 Ko, tres en-dessous des 2 Mo}
+ { Chantier OS/2 LX, Stage 5 (suite) : zone reservee pour un prefixe de     }
+ { segment FS (0x64) - trouve reellement necessaire en verifiant           }
+ { LOGDAEM.EXE (bytes reels "64 FF 35 00000000" = PUSH FS:[0], suivi de    }
+ { "64 89 25 00000000" = MOV FS:[0],ESP - prologue classique de chainage   }
+ { de gestionnaire d exception, meme idee que le TIB Win32 via FS). Le      }
+ { modele plat LX_Mem n a AUCUN registre de segment reel (contrairement a  }
+ { Dpmi_Step) - FS:[x] est donc simule comme adresse LINEAIRE PLATE        }
+ { LX_FS_BASE+x dans une petite zone dediee, zero-initialisee (valeur de   }
+ { depart correcte pour un chainage de gestionnaires : "aucun gestionnaire"}
+ { = 0). AUCUNE pretention de representer un vrai TIB/PIB OS/2 - juste un  }
+ { emplacement stable en lecture/ecriture pour laisser le programme avancer}
+ { au-dela de ce prologue. Placee juste sous LX_TRAP_BASE pour ne jamais   }
+ { chevaucher le tas (voir le nouveau plafond de Emu_LoadLX/DosAllocMem).  }
+ LX_FS_BASE = LX_TRAP_BASE - $1000; { 4 Ko reserves, sous la zone de trappe}
+
+Type
+ { Entree table des pages objet LX (e32_objmap), 8 octets - format        }
+ { verifie EMPIRIQUEMENT (pas d apres une reference ecrite, genuinement    }
+ { ambigue selon les sources) sur ddnsicon.exe : les 7 premieres pages de  }
+ { l objet #1 (code) ont un SectorOffset croissant PAR PAS DE EXACTEMENT   }
+ { 8 secteurs (=4096 octets=1 page) et SizeBytes=4096, la 8e (derniere,    }
+ { partielle) tombe a SizeBytes=2048 (arrondi secteur de la taille reelle  }
+ { restante 1684 octets) - preuve arithmetique propre, pas une simple      }
+ { supposition. SectorOffset est exprime en unites de 2^e32_pageshift      }
+ { octets (secteurs de 512 octets dans ce fichier), PAS en unites de       }
+ { e32_pagesize. Cas particulier note mais PAS ENCORE PLEINEMENT compris : }
+ { les pages de l objet #3 (donnees+pile) portent des SectorOffset (0, 8)  }
+ { qui retombent DANS la zone d en-tete/tables (avant e32_datapage), donc  }
+ { manifestement pas de vraies donnees de page - traite prudemment comme   }
+ { zero-fill (BSS) par Emu_LoadLX plutot que copie aveuglement, coherent   }
+ { avec e32_esp = taille exacte de cet objet (toute la zone se comporte    }
+ { comme une pile/donnees non-initialisee). }
+ TLXObjPageEntry = Record
+  SectorOffset: LongInt;
+  SizeBytes   : Word;
+  PageFlags   : Word;
+ End;
+
+ { Type nomme (plutot qu un tableau anonyme local a Emu_LoadLX) pour       }
+ { pouvoir le passer par reference a Lx_ApplyPageFixups (Stage 3). }
+ TLXObjBaseArr = Array[1..64] Of LongInt;
+
+Type
  { Categories des options de l IDE }
  TOptionCategory = (
   OC_ENV_GENERAL,        { Environnement > General            }
@@ -6141,6 +6287,50 @@ Var
  { d une boucle profonde plutot que seulement la toute premiere fois.    }
  ELF64_BreakHitTarget : QWord;
  ELF64_BreakHitCount  : QWord;
+ { Chantier OS/2 LX (2026-08-22), Stage 1 : etat du futur emulateur de     }
+ { programmes OS/2 natifs (executables "Linear Executable", 32 bits,       }
+ { mode console uniquement - Presentation Manager explicitement hors de   }
+ { portee, voir project_devenv_os2lx.md). Modele memoire calque sur ELF64 }
+ { (un seul tampon plat, adresse lineaire = index direct) plutot que sur   }
+ { le modele a 2 tampons + LDT de TDpmiCPU/Dpmi_Step, inadapte a l espace  }
+ { lineaire unique de LX - voir le plan approuve pour la justification.    }
+ LX_Mem        : Array[0..$1FFFFFF] Of Byte; { 32 Mo d espace lineaire emule}
+ LX_Reg        : TEmuRegs;     { meme type que Dpmi/8086 (EAX/ESP/etc 32 bits)}
+ LX_Flags      : TEmuFlags;    { meme type que Dpmi/8086 (EFG_CF/ZF/SF/OF/PF) }
+ LX_EIP        : LongInt;
+ LX_EntryPoint : LongInt;
+ LX_Loaded     : Boolean;
+ LX_Halted     : Boolean;
+ LX_HaltReason : String;
+ LX_LastBadEIP : LongInt;
+ LX_BinaryPath : String;
+ LX_Panel      : ^TEmulatorPanel; { meme motif que ELF64_Panel, pour        }
+                                   { EmuVScr_WriteStr depuis Lx_DoDosCall }
+ LX_HeapNext   : LongInt; { allocateur bump pour DosAllocMem (Stage 3),     }
+                           { initialise par Emu_LoadLX, plafonne a          }
+                           { LX_FS_BASE (pas LX_TRAP_BASE, voir Stage 5)    }
+ LX_FSPrefixActive: Boolean; { vrai pendant la duree d une seule instruction}
+                           { (remis a False en tete de chaque Lx_Step),     }
+                           { lu par Lx_DecodeModRM - voir LX_FS_BASE.       }
+ LX_InstrCount : LongInt;
+ { Historique circulaire (EIP/ESP au debut de chaque instruction), meme    }
+ { motif que ELF64_TraceRIP/RSP - plus modeste (256 vs 1024) car servant   }
+ { pour l instant seulement au diagnostic Stage 2, pas a un debogueur      }
+ { a part entiere. }
+ LX_TraceEIP   : Array[0..255] Of LongInt;
+ LX_TraceESP   : Array[0..255] Of LongInt;
+ LX_TraceCount : LongInt;
+ { Chantier OS/2 LX, Stage 3 : table des emplacements de trappe DOSCALLS -  }
+ { un emplacement par paire (module, ordinal-ou-nom) importee reellement   }
+ { referencee par un fixup, cree a la demande pendant le chargement (voir  }
+ { Lx_ResolveImportSlot). Chaque emplacement correspond a 16 octets ecrits }
+ { dans LX_Mem a LX_TRAP_BASE+slot*LX_TRAP_SLOT_SIZE (thunk UD2+index+RET),}
+ { voir le commentaire de tete pres de Lx_ResolveImportSlot pour le detail.}
+ LX_ImportModOrd  : Array[0..LX_MAX_TRAP_SLOTS - 1] Of Byte;
+ LX_ImportIsOrd   : Array[0..LX_MAX_TRAP_SLOTS - 1] Of Boolean;
+ LX_ImportOrdinal : Array[0..LX_MAX_TRAP_SLOTS - 1] Of LongInt;
+ LX_ImportNameOfs : Array[0..LX_MAX_TRAP_SLOTS - 1] Of LongInt;
+ LX_ImportSlotCount: Integer;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : T6502MemArr;
  CPU6502_A      : Byte;
@@ -7575,6 +7765,7 @@ Var
  PCodeAsync_KeyEsc : Boolean;
  Z80Async_KeyEsc   : Boolean;
  ELF64Async_KeyEsc : Boolean;
+ LX_AsyncKeyEsc    : Boolean; { chantier OS/2 LX, Stage 4 - meme motif }
  { DOS/8086 : contrairement aux 8 autres, cette boucle a DEJA son propre    }
  { pompage d evenements interne (EmuPumpEv, tous les ~500 pas) qui draine    }
  { le clavier/souris hote directement dans la machine emulee (BIOS/IRQ) -   }
@@ -35106,6 +35297,1823 @@ Begin
  End;
 End;
 
+{ --- LXINFO (chantier OS/2 LX, Stage 1) : outil de diagnostic pur - lit et }
+{ affiche l en-tete/table des objets/modules importes d un executable OS/2 }
+{ LX, SANS le charger en memoire ni tenter de l executer. Sert a verifier   }
+{ le format sur de vrais fichiers avant d ecrire le chargeur complet        }
+{ (Emu_LoadLX, etapes suivantes) - accepte un CHEMIN HOTE direct (typiquement}
+{ un fichier deja extrait via HPFS_ExtractToTempFile/Fat_ExtractToTempFile).}
+Function Lx_ReadHeader(Const Path: String; Var Hdr: TLXHeader;
+ Var HdrOfs, FSize: LongInt): Boolean;
+Var
+ F: File;
+ Sig: Array[0..1] Of Char;
+ LfanewBuf: Array[0..3] Of Byte;
+ HdrSig: Array[0..1] Of Char;
+ BytesRead: Word;
+Begin
+ Lx_ReadHeader := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FSize := FileSize(F);
+ If FSize < 64 Then Begin Close(F); Exit; End;
+ BlockRead(F, Sig, 2, BytesRead);
+ If (BytesRead <> 2) Or (Sig[0] <> 'M') Or (Sig[1] <> 'Z') Then Begin
+  Close(F); Exit;
+ End;
+ Seek(F, $3C);
+ BlockRead(F, LfanewBuf, 4, BytesRead);
+ If BytesRead <> 4 Then Begin Close(F); Exit; End;
+ HdrOfs := LongInt(LfanewBuf[0]) Or (LongInt(LfanewBuf[1]) Shl 8) Or
+  (LongInt(LfanewBuf[2]) Shl 16) Or (LongInt(LfanewBuf[3]) Shl 24);
+ If (HdrOfs <= 0) Or (HdrOfs + 2 > FSize) Then Begin Close(F); Exit; End;
+ Seek(F, HdrOfs);
+ BlockRead(F, HdrSig, 2, BytesRead);
+ If (BytesRead <> 2) Or (HdrSig[0] <> 'L') Or
+    ((HdrSig[1] <> 'X') And (HdrSig[1] <> 'E')) Then Begin
+  Close(F); Exit;
+ End;
+ Seek(F, HdrOfs);
+ FillChar(Hdr, SizeOf(Hdr), 0);
+ BlockRead(F, Hdr, SizeOf(Hdr), BytesRead);
+ Close(F);
+ Lx_ReadHeader := BytesRead = SizeOf(Hdr);
+End;
+
+Function Lx_ObjFlagsStr(F: LongInt): String;
+Var S: String;
+Begin
+ S := '';
+ If (F And LXOBJ_READABLE) <> 0 Then S := S + 'R';
+ If (F And LXOBJ_WRITABLE) <> 0 Then S := S + 'W';
+ If (F And LXOBJ_EXECUTABLE) <> 0 Then S := S + 'X';
+ If (F And LXOBJ_RESOURCE) <> 0 Then S := S + ' RESSOURCE';
+ If (F And LXOBJ_DISCARD) <> 0 Then S := S + ' DISCARDABLE';
+ If (F And LXOBJ_SHARED) <> 0 Then S := S + ' PARTAGE';
+ If (F And LXOBJ_PRELOAD) <> 0 Then S := S + ' PRELOAD';
+ If (F And LXOBJ_INVALID) <> 0 Then S := S + ' INVALIDE';
+ If (F And LXOBJ_BIG32) <> 0 Then S := S + ' 32BITS';
+ Lx_ObjFlagsStr := S;
+End;
+
+{ --- Chantier OS/2 LX, Stage 3 : resout (ou reutilise) un emplacement de  }
+{ trappe pour la paire (ModOrd, IsOrdinal, Value=ordinal-ou-offset-de-nom).}
+{ Ecrit un thunk reconnaissable de 7 octets a LX_TRAP_BASE+slot*16 :        }
+{ 0F 0B (UD2, opcode x86 REELLEMENT invalide, choisi expres pour qu un      }
+{ saut errant dans la zone de trappe qui NE PASSE PAS par l interception   }
+{ de Lx_Step - pas encore cablee a ce stade du chargeur, voir plus loin -   }
+{ echoue bruyamment plutot que d executer n importe quoi) suivi de l index }
+{ d emplacement (4 octets, lu par Lx_DoDosCall) puis C3 (RET, inerte, sert }
+{ juste de filet de securite si jamais atteint directement). }
+Function Lx_ResolveImportSlot(ModOrd: Byte; IsOrdinal: Boolean; Value: LongInt): Integer;
+Var
+ I, Slot: Integer;
+ ThunkAddr: LongInt;
+Begin
+ For I := 0 To LX_ImportSlotCount - 1 Do
+  If (LX_ImportModOrd[I] = ModOrd) And (LX_ImportIsOrd[I] = IsOrdinal) And
+     (((IsOrdinal) And (LX_ImportOrdinal[I] = Value)) Or
+      ((Not IsOrdinal) And (LX_ImportNameOfs[I] = Value))) Then Begin
+   Lx_ResolveImportSlot := I;
+   Exit;
+  End;
+ If LX_ImportSlotCount >= LX_MAX_TRAP_SLOTS Then Begin
+  Lx_ResolveImportSlot := -1; { plein - l appelant doit ignorer ce fixup }
+  Exit;
+ End;
+ Slot := LX_ImportSlotCount;
+ LX_ImportModOrd[Slot] := ModOrd;
+ LX_ImportIsOrd[Slot] := IsOrdinal;
+ If IsOrdinal Then LX_ImportOrdinal[Slot] := Value Else LX_ImportNameOfs[Slot] := Value;
+ Inc(LX_ImportSlotCount);
+ ThunkAddr := LX_TRAP_BASE + Slot * LX_TRAP_SLOT_SIZE;
+ If (ThunkAddr >= 0) And (ThunkAddr + 6 <= High(LX_Mem)) Then Begin
+  LX_Mem[ThunkAddr]     := $0F; LX_Mem[ThunkAddr + 1] := $0B;
+  LX_Mem[ThunkAddr + 2] := Byte(Slot And $FF);
+  LX_Mem[ThunkAddr + 3] := Byte((Slot Shr 8) And $FF);
+  LX_Mem[ThunkAddr + 4] := Byte((Slot Shr 16) And $FF);
+  LX_Mem[ThunkAddr + 5] := Byte((Slot Shr 24) And $FF);
+  LX_Mem[ThunkAddr + 6] := $C3;
+ End;
+ Lx_ResolveImportSlot := Slot;
+End;
+
+{ Applique les fixups d UNE page (bornee par e32_fpagetab[GlobalPageNo-1]  }
+{ .. e32_fpagetab[GlobalPageNo], independante des autres pages - voir       }
+{ commentaire de TLXObjPageEntry pour la genese). Format des enregistrements}
+{ verifie EMPIRIQUEMENT contre la vraie specification IBM (LX Module Format,}
+{ komh.github.io/os2books/os2tk45/lxref.htm) ET contre 5 enregistrements    }
+{ reels de ddnsicon.exe (tous type import-par-ordinal, module 1=DOSCALLS ou}
+{ 2=PMWP, ordinaux 224/234/250/251/281 - tous plausibles, aucune valeur     }
+{ aberrante). Perimetre volontairement borne : SRC type 7 (OFFSET32) ou 8   }
+{ (offset relatif 32 bits) SANS "source list" (SRC bit 0x20 - un 6e         }
+{ enregistrement reel de ce fichier utilise ce bit et ne s est PAS laisse   }
+{ decoder de facon coherente avec l hypothese la plus documentee ; plutot   }
+{ que de risquer d ecrire une adresse fausse, ce cas est detecte et fait    }
+{ ARRETER le traitement des fixups de CETTE PAGE uniquement - les autres    }
+{ pages, bornees independamment par fpagetab, ne sont pas affectees).       }
+{ Cibles INTERNAL/IMPORTORDINAL/IMPORTNAME (types 0/1/2) supportees ;        }
+{ INTERNAL_VIA_ENTRY_TABLE (type 3) et le bit ALIAS/CHAINING non supportes  }
+{ (meme traitement : arret propre pour cette page). }
+Procedure Lx_ApplyPageFixups(Var F: File; HdrOfs: LongInt; Const Hdr: TLXHeader;
+ GlobalPageNo, DestAddr: LongInt; Const ObjBase: TLXObjBaseArr);
+Var
+ FStartBuf, FEndBuf: LongInt;
+ FixStart, FixEnd: LongInt;
+ BytesRead: Word;
+ Src, Flg: Byte;
+ SrcType, TgtType: Byte;
+ SrcList, TgtOfs32, Add32, Obj16, Ord8, Additive: Boolean;
+ SrcOfs: Word;
+ B1: Byte; W1: Word; D1: LongInt;
+ ObjNum, TrgOfs, ModOrd, ImportVal, AddV, TargetVal, WriteAddr: LongInt;
+ SlotIdx: Integer;
+ Stop: Boolean;
+Begin
+ {$I-}
+ Seek(F, HdrOfs + Hdr.e32_fpagetab + LongInt(GlobalPageNo - 1) * 4);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ BlockRead(F, FStartBuf, 4, BytesRead);
+ If BytesRead <> 4 Then Exit;
+ BlockRead(F, FEndBuf, 4, BytesRead); { entree suivante = fin de CETTE page, deja adjacente }
+ If BytesRead <> 4 Then Exit;
+ FixStart := FStartBuf; FixEnd := FEndBuf;
+ If FixEnd <= FixStart Then Exit; { aucun fixup pour cette page }
+ {$I-}
+ Seek(F, HdrOfs + Hdr.e32_frectab + FixStart);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Stop := False;
+ While (Not Stop) And (HdrOfs + Hdr.e32_frectab + FixStart < HdrOfs + Hdr.e32_frectab + FixEnd) Do Begin
+  BlockRead(F, Src, 1, BytesRead); Inc(FixStart);
+  If BytesRead <> 1 Then Break;
+  BlockRead(F, Flg, 1, BytesRead); Inc(FixStart);
+  If BytesRead <> 1 Then Break;
+  SrcType := Src And $0F;
+  SrcList := (Src And $20) <> 0;
+  TgtType := Flg And $03;
+  Additive := (Flg And $04) <> 0;
+  TgtOfs32 := (Flg And $10) <> 0;
+  Add32 := (Flg And $20) <> 0;
+  Obj16 := (Flg And $40) <> 0;
+  Ord8 := (Flg And $80) <> 0;
+  { Perimetre : uniquement OFFSET32/REL32 simples, sans liste de sources,  }
+  { cibles INTERNAL/IMPORTORDINAL/IMPORTNAME - tout le reste arrete le      }
+  { traitement de CETTE PAGE (voir commentaire de tete). }
+  If SrcList Or ((SrcType <> 7) And (SrcType <> 8)) Or (TgtType = 3) Then Begin
+   Stop := True;
+   Break;
+  End;
+  BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); { SRCOFF }
+  If BytesRead <> 2 Then Break;
+  SrcOfs := W1;
+  TargetVal := 0;
+  Case TgtType Of
+   0: Begin { INTERNAL }
+    If Obj16 Then Begin BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); ObjNum := W1; End
+    Else Begin BlockRead(F, B1, 1, BytesRead); Inc(FixStart); ObjNum := B1; End;
+    If BytesRead = 0 Then Break;
+    If TgtOfs32 Then Begin BlockRead(F, D1, 4, BytesRead); Inc(FixStart, 4); TrgOfs := D1; End
+    Else Begin BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); TrgOfs := W1; End;
+    If BytesRead = 0 Then Break;
+    If (ObjNum < 1) Or (ObjNum > Hdr.e32_objcnt) Then Begin Stop := True; Break; End;
+    TargetVal := ObjBase[ObjNum] + TrgOfs;
+   End;
+   1, 2: Begin { IMPORT ORDINAL / IMPORT NAME }
+    If Obj16 Then Begin BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); ModOrd := W1; End
+    Else Begin BlockRead(F, B1, 1, BytesRead); Inc(FixStart); ModOrd := B1; End;
+    If BytesRead = 0 Then Break;
+    If TgtType = 1 Then Begin
+     If Ord8 Then Begin BlockRead(F, B1, 1, BytesRead); Inc(FixStart); ImportVal := B1; End
+     Else If TgtOfs32 Then Begin BlockRead(F, D1, 4, BytesRead); Inc(FixStart, 4); ImportVal := D1; End
+     Else Begin BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); ImportVal := W1; End;
+    End Else Begin
+     If TgtOfs32 Then Begin BlockRead(F, D1, 4, BytesRead); Inc(FixStart, 4); ImportVal := D1; End
+     Else Begin BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); ImportVal := W1; End;
+    End;
+    If BytesRead = 0 Then Break;
+    If (ModOrd < 1) Or (ModOrd > Hdr.e32_impmodcnt) Then Begin Stop := True; Break; End;
+    SlotIdx := Lx_ResolveImportSlot(Byte(ModOrd), TgtType = 1, ImportVal);
+    If SlotIdx < 0 Then Begin Stop := True; Break; End;
+    TargetVal := LX_TRAP_BASE + SlotIdx * LX_TRAP_SLOT_SIZE;
+   End;
+  End;
+  If Additive Then Begin
+   If Add32 Then Begin BlockRead(F, D1, 4, BytesRead); Inc(FixStart, 4); AddV := D1; End
+   Else Begin BlockRead(F, W1, 2, BytesRead); Inc(FixStart, 2); AddV := W1; End;
+   If BytesRead = 0 Then Break;
+   TargetVal := TargetVal + AddV;
+  End;
+  WriteAddr := DestAddr + SrcOfs;
+  If (WriteAddr >= 0) And (WriteAddr + 4 <= High(LX_Mem)) Then Begin
+   If SrcType = 8 Then TargetVal := TargetVal - (WriteAddr + 4); { relatif }
+   LX_Mem[WriteAddr]     := Byte(LongWord(TargetVal) And $FF);
+   LX_Mem[WriteAddr + 1] := Byte((LongWord(TargetVal) Shr 8) And $FF);
+   LX_Mem[WriteAddr + 2] := Byte((LongWord(TargetVal) Shr 16) And $FF);
+   LX_Mem[WriteAddr + 3] := Byte((LongWord(TargetVal) Shr 24) And $FF);
+  End;
+ End;
+End;
+
+{ --- Chantier OS/2 LX, Stage 1 (suite) + Stage 3 : chargeur reel - copie   }
+{ les pages de chaque objet dans LX_Mem a leur adresse lineaire de base,    }
+{ PUIS applique les fixups de cette meme page (Lx_ApplyPageFixups) - les    }
+{ references importees (DOSCALLS/PMWP/etc.) sont patchees vers des thunks   }
+{ de trappe reconnaissables (voir Lx_ResolveImportSlot) plutot que de       }
+{ pointer vers du contenu brut de fichier non resolu. }
+Function Emu_LoadLX(Const FileName: String): Boolean;
+Const
+ MAX_LX_OBJECTS = 64;
+Var
+ Hdr: TLXHeader;
+ HdrOfs, FSize: LongInt;
+ F: File;
+ BytesRead: Word;
+ I, PageIdx: Integer;
+ Obj: TLXObject;
+ ObjBase: TLXObjBaseArr;
+ Page: TLXObjPageEntry;
+ GlobalPageNo: LongInt;
+ FileOfs, DestAddr, CopyLen: LongInt;
+Begin
+ Emu_LoadLX := False;
+ LX_Loaded := False;
+ LX_Halted := False;
+ LX_HaltReason := '';
+ LX_LastBadEIP := 0;
+ LX_InstrCount := 0;
+ LX_TraceCount := 0;
+ LX_ImportSlotCount := 0;
+ FillChar(LX_Flags, SizeOf(LX_Flags), 0);
+ If Not Lx_ReadHeader(FileName, Hdr, HdrOfs, FSize) Then Exit;
+ If (Hdr.e32_objcnt <= 0) Or (Hdr.e32_objcnt > MAX_LX_OBJECTS) Then Exit;
+ If (Hdr.e32_startobj < 1) Or (Hdr.e32_startobj > Hdr.e32_objcnt) Then Exit;
+ If (Hdr.e32_stackobj < 1) Or (Hdr.e32_stackobj > Hdr.e32_objcnt) Then Exit;
+ If Hdr.e32_pageshift < 1 Then Exit;
+ FillChar(LX_Mem, SizeOf(LX_Mem), 0);
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ { 1ere passe : table des objets - juste memoriser base/taille, la copie   }
+ { des pages se fait objet par objet dans la 2e passe (elle a besoin de    }
+ { relire la table des pages a un offset different, donc de reculer le     }
+ { curseur du fichier - plus simple de faire 2 passes separees). }
+ Seek(F, HdrOfs + Hdr.e32_objtab);
+ For I := 1 To Hdr.e32_objcnt Do Begin
+  FillChar(Obj, SizeOf(Obj), 0);
+  BlockRead(F, Obj, SizeOf(Obj), BytesRead);
+  If BytesRead <> SizeOf(Obj) Then Begin Close(F); Exit; End;
+  If (Obj.o32_base < 0) Or (Obj.o32_size < 0) Or
+     (Obj.o32_base + Obj.o32_size > LongInt(SizeOf(LX_Mem))) Then Begin
+   Close(F); Exit; { objet hors de l espace lineaire emule (32 Mo) }
+  End;
+  ObjBase[I] := Obj.o32_base;
+  { 2e passe (imbriquee) : copier les pages de CET objet - relit la table  }
+  { des objets successivement depuis le debut a chaque objet serait plus   }
+  { simple a ecrire mais O(n^2) inutile ; on relit seulement la table des  }
+  { pages, dont la position ne depend que de o32_pagemap deja connu.       }
+  For PageIdx := 1 To Obj.o32_mapsize Do Begin
+   GlobalPageNo := Obj.o32_pagemap + PageIdx - 1;
+   {$I-}
+   Seek(F, HdrOfs + Hdr.e32_objmap + LongInt(GlobalPageNo - 1) * SizeOf(TLXObjPageEntry));
+   {$I+}
+   If IOResult <> 0 Then Begin Close(F); Exit; End;
+   FillChar(Page, SizeOf(Page), 0);
+   BlockRead(F, Page, SizeOf(Page), BytesRead);
+   If BytesRead <> SizeOf(Page) Then Begin Close(F); Exit; End;
+   DestAddr := Obj.o32_base + (PageIdx - 1) * Hdr.e32_pagesize;
+   CopyLen := Page.SizeBytes;
+   If CopyLen > Hdr.e32_pagesize Then CopyLen := Hdr.e32_pagesize;
+   If DestAddr + CopyLen > LongInt(SizeOf(LX_Mem)) Then Begin
+    Close(F); Exit; { page hors de l espace lineaire emule }
+   End;
+   FileOfs := Page.SectorOffset * (1 Shl Hdr.e32_pageshift);
+   { Page dont l offset calcule tombe AVANT le debut reel des donnees de   }
+   { page (e32_datapage) : ce n est manifestement pas une vraie page de    }
+   { fichier (observe sur l objet donnees+pile de ddnsicon.exe) - traitee  }
+   { comme zero-fill (BSS), deja acquis via le FillChar en tete. Prudence  }
+   { deliberee plutot que de copier des octets d en-tete dans la memoire   }
+   { du programme. }
+   If (CopyLen > 0) And (FileOfs >= Hdr.e32_datapage) Then Begin
+    {$I-}
+    Seek(F, FileOfs);
+    {$I+}
+    If IOResult <> 0 Then Begin Close(F); Exit; End;
+    BlockRead(F, LX_Mem[DestAddr], CopyLen, BytesRead);
+    If BytesRead <> Word(CopyLen) Then Begin Close(F); Exit; End;
+   End;
+   { Lx_ApplyPageFixups deplace le curseur du fichier (fpagetab puis        }
+   { frectab) - sans consequence, la 1ere instruction de la prochaine       }
+   { iteration PageIdx+1 (Seek sur la table des pages objet) repositionne   }
+   { deja le curseur inconditionnellement avant toute lecture. }
+   Lx_ApplyPageFixups(F, HdrOfs, Hdr, GlobalPageNo, DestAddr, ObjBase);
+  End;
+  { Repositionner sur la table des objets pour l iteration suivante (I+1) -}
+  { la copie des pages ci-dessus a deplace le curseur ailleurs.            }
+  Seek(F, HdrOfs + Hdr.e32_objtab + LongInt(I) * SizeOf(TLXObject));
+ End;
+ Close(F);
+ LX_EntryPoint := ObjBase[Hdr.e32_startobj] + Hdr.e32_eip;
+ LX_EIP := LX_EntryPoint;
+ FillChar(LX_Reg, SizeOf(LX_Reg), 0);
+ LX_Reg.ESP := ObjBase[Hdr.e32_stackobj] + Hdr.e32_esp;
+ LX_BinaryPath := FileName;
+ { Tas DosAllocMem (Stage 3) : demarre a une adresse fixe volontairement    }
+ { eloignee des objets d un petit programme reel observe (le plus haut,     }
+ { objet donnees+pile de ddnsicon.exe, culmine a $36C90) et plafonnee a      }
+ { LX_TRAP_BASE - pas une garantie generale pour un tres gros programme,     }
+ { mais suffisant pour le sous-ensemble console minimal vise par ce Stage.  }
+ LX_HeapNext := $800000;
+ LX_Loaded := True;
+ Emu_LoadLX := True;
+End;
+
+{ Forward - les aides registre generiques (Dpmi_Get/SetReg8/16/32, aucune  }
+{ dependance LDT/DPMI dans leur corps, juste un mappage numero->champ       }
+{ TEmuRegs) ne sont definies que plus loin dans le fichier (pres de         }
+{ Dpmi_Step, ~ligne 62920) - reutilisees telles quelles par Lx_Step plutot  }
+{ que dupliquees, d ou ce Forward pour permettre l ordre d ecriture actuel. }
+Function Dpmi_GetReg8(Var R: TEmuRegs; Num: Byte): Byte; Forward;
+Procedure Dpmi_SetReg8(Var R: TEmuRegs; Num: Byte; V: Byte); Forward;
+Function Dpmi_GetReg16(Var R: TEmuRegs; Num: Byte): Word; Forward;
+Procedure Dpmi_SetReg16(Var R: TEmuRegs; Num: Byte; V: Word); Forward;
+Function Dpmi_GetReg32(Var R: TEmuRegs; Num: Byte): LongInt; Forward;
+Procedure Dpmi_SetReg32(Var R: TEmuRegs; Num: Byte; V: LongInt); Forward;
+
+{ Forward - meme raison : NCExtractExt/NCFindExeKind (aides generiques du   }
+{ panneau NC, aucune dependance sur l etat LX) ne sont definies que plus     }
+{ loin dans le fichier, reutilisees telles quelles par Lx_ScanHPFSDir        }
+{ (Stage 5). NCEXE_OS2LX est une Const (non "Forward"-able) declaree juste   }
+{ avant NCFindExeKind - sa valeur (2) est reprise litteralement plus bas     }
+{ avec un commentaire plutot que dupliquee comme une 2e constante.           }
+Function NCExtractExt(Const Name: String): String; Forward;
+Function NCFindExeKind(Const Path: String): Byte; Forward;
+
+{ --- Chantier OS/2 LX, Stage 2 : decodeur 32 bits PLAT minimal. Fork de   }
+{ Dpmi_Step (~ligne 63001) et de ses aides (Dpmi_DecodeModRM/Alu/GetOp/    }
+{ PutOp/AluForm, ~62658-62942) - MEME algorithme ALU (repris quasi mot     }
+{ pour mot, deja verifie par le coeur DPMI existant), mais SANS la couche  }
+{ selecteur/LDT : Lx_DecodeModRM calcule l adresse EFFECTIVE = adresse     }
+{ LINEAIRE directement (LX est un espace lineaire plat unique, contrairement}
+{ au modele segmente 16:32 de DPMI/DOS-extenders), donc aucun Dpmi_LinAddr/}
+{ SelBase equivalent n existe ici. Prefixes de segment (26h/2Eh/36h/3Eh/   }
+{ 64h/65h) delibrement NON geres (sans objet en modele plat - LX n en      }
+{ emet normalement jamais) : rencontres, ils tombent dans le Else final    }
+{ (opcode non reconnu, arret propre). Ajouts par rapport a Dpmi_Step       }
+{ (absent de son perimetre volontairement etroit, mais confirmes           }
+{ necessaires par le precedent ELF64) : groupe decalages/rotations         }
+{ (C0/C1/D0-D3), MUL/IMUL/DIV/IDIV (groupe F6/F7 etendu), chaines de base   }
+{ (MOVS/STOS/LODS/CMPS/SCAS 8/32 bits) avec prefixes REP/REPE/REPNE,        }
+{ CLD/STD. Simplification reelle (pas juste une omission) par rapport a    }
+{ Dpmi_Step : aucune forme 16 bits d ADRESSE n est prevue (LX est           }
+{ exclusivement 32 bits plat), seul le prefixe 66h (taille d OPERANDE) a un}
+{ sens ici. }
+{ ELF64_Step n a pas de table de parite globale reutilisable telle quelle }
+{ (P.CPU.ParityTable est propre a une instance TEmuCPU, indisponible ici  }
+{ puisque les fonctions Lx_* n operent que sur des globales, meme motif   }
+{ que Emu_LoadELF64/Emu_LoadLX) - calcul direct par comptage de bits plutot}
+{ que de dupliquer une table globale supplementaire pour un seul usage.   }
+Function Lx_ParityEven(B: Byte): Boolean;
+Var I: Integer; Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To 7 Do If (B And (1 Shl I)) <> 0 Then Inc(Cnt);
+ Lx_ParityEven := (Cnt And 1) = 0;
+End;
+
+Function Lx_ReadByte(Addr: LongInt): Byte;
+Begin
+ If (Addr >= 0) And (Addr <= High(LX_Mem)) Then Lx_ReadByte := LX_Mem[Addr]
+ Else Lx_ReadByte := 0;
+End;
+
+Procedure Lx_WriteByte(Addr: LongInt; V: Byte);
+Begin
+ If (Addr >= 0) And (Addr <= High(LX_Mem)) Then LX_Mem[Addr] := V;
+End;
+
+Function Lx_ReadWord(Addr: LongInt): Word;
+Begin
+ Lx_ReadWord := Word(Lx_ReadByte(Addr)) Or (Word(Lx_ReadByte(Addr + 1)) Shl 8);
+End;
+
+Procedure Lx_WriteWord(Addr: LongInt; V: Word);
+Begin
+ Lx_WriteByte(Addr, Byte(V And $FF));
+ Lx_WriteByte(Addr + 1, Byte(V Shr 8));
+End;
+
+Function Lx_ReadDWord(Addr: LongInt): LongInt;
+Begin
+ Lx_ReadDWord := LongInt(LongWord(Lx_ReadWord(Addr)) Or
+  (LongWord(Lx_ReadWord(Addr + 2)) Shl 16));
+End;
+
+Procedure Lx_WriteDWord(Addr: LongInt; V: LongInt);
+Begin
+ Lx_WriteWord(Addr, Word(LongWord(V) And $FFFF));
+ Lx_WriteWord(Addr + 2, Word(LongWord(V) Shr 16));
+End;
+
+Function Lx_FetchByte(Step: Integer): Byte;
+Begin
+ Lx_FetchByte := Lx_ReadByte(LX_EIP + Step);
+End;
+
+Function Lx_FetchWord(Step: Integer): Word;
+Begin
+ Lx_FetchWord := Lx_ReadWord(LX_EIP + Step);
+End;
+
+Function Lx_FetchDWord(Step: Integer): LongInt;
+Begin
+ Lx_FetchDWord := Lx_ReadDWord(LX_EIP + Step);
+End;
+
+Procedure Lx_Halt(Const Reason: String);
+Begin
+ LX_Halted := True;
+ LX_LastBadEIP := LX_EIP;
+ LX_HaltReason := Reason;
+End;
+
+{ Decode un octet ModR/M (+ eventuel SIB + deplacement), adressage 32 bits }
+{ uniquement - Op.LinAddr EST l adresse lineaire finale directement (pas   }
+{ de base de selecteur a ajouter, contrairement a Dpmi_DecodeModRM). }
+Procedure Lx_DecodeModRM(ModRM: Byte; Var Op: TDpmiOperand);
+Var
+ Mode, RM, Sib, Scale, SIdx, SBase: Byte;
+ Disp, EA: LongInt;
+ ExtraLen: Integer;
+Begin
+ Op.IsReg := False; Op.RegNum := 0; Op.LinAddr := 0; Op.Len := 1;
+ Mode := (ModRM Shr 6) And 3;
+ RM := ModRM And 7;
+ If Mode = 3 Then Begin Op.IsReg := True; Op.RegNum := RM; Exit; End;
+ ExtraLen := 0;
+ EA := 0;
+ If RM = 4 Then Begin
+  Sib := Lx_FetchByte(1);
+  Inc(ExtraLen);
+  Scale := (Sib Shr 6) And 3;
+  SIdx := (Sib Shr 3) And 7;
+  SBase := Sib And 7;
+  If SIdx <> 4 Then
+   EA := Dpmi_GetReg32(LX_Reg, SIdx) Shl Scale;
+  If (SBase = 5) And (Mode = 0) Then Begin
+   Disp := Lx_FetchDWord(1 + ExtraLen);
+   Inc(ExtraLen, 4);
+   EA := EA + Disp;
+  End Else
+   EA := EA + Dpmi_GetReg32(LX_Reg, SBase);
+ End Else If (RM = 5) And (Mode = 0) Then Begin
+  Disp := Lx_FetchDWord(1);
+  Inc(ExtraLen, 4);
+  EA := Disp;
+ End Else
+  EA := Dpmi_GetReg32(LX_Reg, RM);
+ Case Mode Of
+  1: Begin
+   Disp := Lx_FetchByte(1 + ExtraLen);
+   If (Disp And $80) <> 0 Then Disp := Disp Or LongInt($FFFFFF00);
+   EA := EA + Disp;
+   Inc(ExtraLen);
+  End;
+  2: Begin
+   Disp := Lx_FetchDWord(1 + ExtraLen);
+   EA := EA + Disp;
+   Inc(ExtraLen, 4);
+  End;
+ End;
+ { Prefixe FS (Stage 5) : voir le commentaire de LX_FS_BASE - s applique   }
+ { seulement aux formes memoire, jamais aux formes registre-direct (mode=3,}
+ { deja sorties via le Exit plus haut), meme convention que le x86 reel.   }
+ If LX_FSPrefixActive Then EA := EA + LX_FS_BASE;
+ Op.LinAddr := EA;
+ Op.Len := 1 + ExtraLen;
+End;
+
+Function Lx_GetOp(Var Op: TDpmiOperand; Size: Byte): LongInt;
+Begin
+ Case Size Of
+  1: If Op.IsReg Then Lx_GetOp := Dpmi_GetReg8(LX_Reg, Op.RegNum)
+     Else Lx_GetOp := Lx_ReadByte(Op.LinAddr);
+  2: If Op.IsReg Then Lx_GetOp := Dpmi_GetReg16(LX_Reg, Op.RegNum)
+     Else Lx_GetOp := Lx_ReadWord(Op.LinAddr);
+ Else If Op.IsReg Then Lx_GetOp := Dpmi_GetReg32(LX_Reg, Op.RegNum)
+      Else Lx_GetOp := Lx_ReadDWord(Op.LinAddr);
+ End;
+End;
+
+Procedure Lx_PutOp(Var Op: TDpmiOperand; Size: Byte; V: LongInt);
+Begin
+ Case Size Of
+  1: If Op.IsReg Then Dpmi_SetReg8(LX_Reg, Op.RegNum, Byte(V))
+     Else Lx_WriteByte(Op.LinAddr, Byte(V));
+  2: If Op.IsReg Then Dpmi_SetReg16(LX_Reg, Op.RegNum, Word(V))
+     Else Lx_WriteWord(Op.LinAddr, Word(V));
+ Else If Op.IsReg Then Dpmi_SetReg32(LX_Reg, Op.RegNum, V)
+      Else Lx_WriteDWord(Op.LinAddr, V);
+ End;
+End;
+
+{ ALU generique 8/16/32 bits - copie fidele de l algorithme de Dpmi_Alu    }
+{ (CF/OF par test de plage/XOR de signe, SF/ZF/PF derives du resultat      }
+{ tronque), operant sur LX_Flags au lieu de DpmiCPU.Flags. }
+Function Lx_Alu(AluOp: Byte; A, B: LongInt; Size: Byte): LongInt;
+Var
+ UA, UB: LongWord;
+ R, MaxU: Int64;
+ Res: LongInt;
+ SignBit: LongWord;
+ OldCF: Integer;
+Begin
+ Case Size Of
+  1: Begin UA := Byte(A); UB := Byte(B); SignBit := $80; MaxU := $FF; End;
+  2: Begin UA := Word(A); UB := Word(B); SignBit := $8000; MaxU := $FFFF; End;
+ Else Begin
+   UA := LongWord(A); UB := LongWord(B);
+   SignBit := $80000000; MaxU := $FFFFFFFF;
+  End;
+ End;
+ OldCF := 0;
+ If EFG_CF In LX_Flags.s Then OldCF := 1;
+ Case AluOp Of
+  0: R := Int64(UA) + UB;
+  1: R := Int64(UA) Or UB;
+  2: R := Int64(UA) + UB + OldCF;
+  3: R := Int64(UA) - UB - OldCF;
+  4: R := Int64(UA) And UB;
+  5, 7: R := Int64(UA) - UB;
+  6: R := Int64(UA) Xor UB;
+ Else R := 0;
+ End;
+ Case Size Of
+  1: Res := LongInt(Byte(R And $FF));
+  2: Res := LongInt(Word(R And $FFFF));
+ Else Res := LongInt(LongWord(R And $FFFFFFFF));
+ End;
+ Case AluOp Of
+  0, 2: Begin
+   If R > MaxU Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+   If ((UA Xor LongWord(Res)) And (UB Xor LongWord(Res)) And SignBit) <> 0
+    Then Include(LX_Flags.s, EFG_OF) Else Exclude(LX_Flags.s, EFG_OF);
+  End;
+  3, 5, 7: Begin
+   If R < 0 Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+   If ((UA Xor UB) And (UA Xor LongWord(Res)) And SignBit) <> 0
+    Then Include(LX_Flags.s, EFG_OF) Else Exclude(LX_Flags.s, EFG_OF);
+  End;
+  1, 4, 6: Begin
+   Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF);
+  End;
+ End;
+ If (LongWord(Res) And SignBit) <> 0 Then Include(LX_Flags.s, EFG_SF)
+ Else Exclude(LX_Flags.s, EFG_SF);
+ If Res = 0 Then Include(LX_Flags.s, EFG_ZF) Else Exclude(LX_Flags.s, EFG_ZF);
+ { Table de parite deja peuplee par le coeur 8086 (initialisation globale,  }
+ { independante d une instance TEmuCPU particuliere) - reutilisee telle     }
+ { quelle, meme motif que Dpmi_Alu via P.CPU.ParityTable. }
+ If Lx_ParityEven(Byte(Res And $FF)) Then Include(LX_Flags.s, EFG_PF)
+ Else Exclude(LX_Flags.s, EFG_PF);
+ Lx_Alu := Res;
+End;
+
+Function Lx_TestCond(CC: Byte): Boolean;
+Var Res: Boolean;
+Begin
+ Res := False;
+ Case CC And $E Of
+  $0: Res := EFG_OF In LX_Flags.s;
+  $2: Res := EFG_CF In LX_Flags.s;
+  $4: Res := EFG_ZF In LX_Flags.s;
+  $6: Res := (EFG_CF In LX_Flags.s) Or (EFG_ZF In LX_Flags.s);
+  $8: Res := EFG_SF In LX_Flags.s;
+  $A: Res := EFG_PF In LX_Flags.s;
+  $C: Res := (EFG_SF In LX_Flags.s) <> (EFG_OF In LX_Flags.s);
+  $E: Res := ((EFG_SF In LX_Flags.s) <> (EFG_OF In LX_Flags.s))
+          Or (EFG_ZF In LX_Flags.s);
+ End;
+ If (CC And 1) <> 0 Then Res := Not Res;
+ Lx_TestCond := Res;
+End;
+
+Procedure Lx_Push32(V: LongInt);
+Begin
+ LX_Reg.ESP := LX_Reg.ESP - 4;
+ Lx_WriteDWord(LX_Reg.ESP, V);
+End;
+
+Function Lx_Pop32: LongInt;
+Begin
+ Lx_Pop32 := Lx_ReadDWord(LX_Reg.ESP);
+ LX_Reg.ESP := LX_Reg.ESP + 4;
+End;
+
+Procedure Lx_Push16(V: Word);
+Begin
+ LX_Reg.ESP := LX_Reg.ESP - 2;
+ Lx_WriteWord(LX_Reg.ESP, V);
+End;
+
+Function Lx_Pop16: Word;
+Begin
+ Lx_Pop16 := Lx_ReadWord(LX_Reg.ESP);
+ LX_Reg.ESP := LX_Reg.ESP + 2;
+End;
+
+{ Les 6 formes standard d un opcode ALU compact (00h-3Dh) - copie fidele de}
+{ Dpmi_AluForm, sans Seg/HasOvr (sans objet en modele plat). }
+Procedure Lx_AluForm(AluOp, Form, OpSize: Byte);
+Var
+ ModRM, Reg: Byte;
+ Op: TDpmiOperand;
+ A, B, Res, Imm: LongInt;
+Begin
+ Case Form Of
+  0, 1: Begin
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If Form = 0 Then Begin
+    A := Lx_GetOp(Op, 1); B := Dpmi_GetReg8(LX_Reg, Reg);
+    Res := Lx_Alu(AluOp, A, B, 1);
+    If AluOp <> 7 Then Lx_PutOp(Op, 1, Res);
+   End Else Begin
+    A := Lx_GetOp(Op, OpSize);
+    If OpSize = 2 Then B := Dpmi_GetReg16(LX_Reg, Reg) Else B := Dpmi_GetReg32(LX_Reg, Reg);
+    Res := Lx_Alu(AluOp, A, B, OpSize);
+    If AluOp <> 7 Then Lx_PutOp(Op, OpSize, Res);
+   End;
+  End;
+  2, 3: Begin
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If Form = 2 Then Begin
+    A := Dpmi_GetReg8(LX_Reg, Reg); B := Lx_GetOp(Op, 1);
+    Res := Lx_Alu(AluOp, A, B, 1);
+    If AluOp <> 7 Then Dpmi_SetReg8(LX_Reg, Reg, Byte(Res));
+   End Else Begin
+    If OpSize = 2 Then A := Dpmi_GetReg16(LX_Reg, Reg) Else A := Dpmi_GetReg32(LX_Reg, Reg);
+    B := Lx_GetOp(Op, OpSize);
+    Res := Lx_Alu(AluOp, A, B, OpSize);
+    If AluOp <> 7 Then Begin
+     If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, Reg, Word(Res))
+     Else Dpmi_SetReg32(LX_Reg, Reg, Res);
+    End;
+   End;
+  End;
+  4: Begin
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   Res := Lx_Alu(AluOp, LX_Reg.AL, Imm, 1);
+   If AluOp <> 7 Then LX_Reg.AL := Byte(Res);
+  End;
+  5: Begin
+   If OpSize = 2 Then Begin
+    Imm := Lx_FetchWord(0); Inc(LX_EIP, 2);
+    Res := Lx_Alu(AluOp, LX_Reg.AX, Imm, 2);
+    If AluOp <> 7 Then LX_Reg.AX := Word(Res);
+   End Else Begin
+    Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+    Res := Lx_Alu(AluOp, LX_Reg.EAX, Imm, 4);
+    If AluOp <> 7 Then LX_Reg.EAX := Res;
+   End;
+  End;
+ End;
+End;
+
+{ Groupe decalages/rotations (C0/C1/D0-D3) - absent de Dpmi_Step, confirme }
+{ necessaire par le precedent ELF64. CF = dernier bit sorti ; OF defini    }
+{ seulement pour un compte de 1 (convention x86 standard, indefini sinon - }
+{ laisse tel quel comme le reste du CPU emule, aucune instruction reelle   }
+{ ne doit en dependre pour un compte > 1). }
+Function Lx_Shift(SubOp: Byte; Val: LongInt; Count: Byte; Size: Byte): LongInt;
+Var
+ Bits: Byte;
+ UV: LongWord;
+ CF, OFBit, TopBit, NewCF: Boolean;
+ I: Integer;
+ SignBit: LongWord;
+Begin
+ Case Size Of 1: Bits := 8; 2: Bits := 16; Else Bits := 32; End;
+ Case Size Of
+  1: Begin UV := Byte(Val); SignBit := $80; End;
+  2: Begin UV := Word(Val); SignBit := $8000; End;
+ Else Begin UV := LongWord(Val); SignBit := $80000000; End;
+ End;
+ CF := EFG_CF In LX_Flags.s;
+ Count := Count Mod 32; { convention x86 reelle : masque a 5 bits }
+ For I := 1 To Count Do Begin
+  Case SubOp Of
+   0: Begin { ROL }
+    TopBit := (UV And SignBit) <> 0;
+    UV := ((UV Shl 1) Or Ord(TopBit)) And ((LongWord(1) Shl Bits) - 1);
+    CF := TopBit;
+   End;
+   1: Begin { ROR }
+    NewCF := (UV And 1) <> 0;
+    UV := (UV Shr 1) Or (LongWord(Ord(NewCF)) Shl (Bits - 1));
+    CF := NewCF;
+   End;
+   2: Begin { RCL }
+    TopBit := (UV And SignBit) <> 0;
+    UV := ((UV Shl 1) Or Ord(CF)) And ((LongWord(1) Shl Bits) - 1);
+    CF := TopBit;
+   End;
+   3: Begin { RCR }
+    NewCF := (UV And 1) <> 0;
+    UV := (UV Shr 1) Or (LongWord(Ord(CF)) Shl (Bits - 1));
+    CF := NewCF;
+   End;
+   4, 6: Begin { SHL/SAL }
+    CF := (UV And SignBit) <> 0;
+    UV := (UV Shl 1) And ((LongWord(1) Shl Bits) - 1);
+   End;
+   5: Begin { SHR }
+    CF := (UV And 1) <> 0;
+    UV := UV Shr 1;
+   End;
+   7: Begin { SAR (conserve le bit de signe) }
+    CF := (UV And 1) <> 0;
+    TopBit := (UV And SignBit) <> 0;
+    UV := UV Shr 1;
+    If TopBit Then UV := UV Or SignBit;
+   End;
+  End;
+ End;
+ If Count > 0 Then Begin
+  If CF Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+  If Count = 1 Then Begin
+   Case SubOp Of
+    4, 6: OFBit := ((UV And SignBit) <> 0) <> CF; { SHL : OF=MSB xor CF }
+    5:    OFBit := (LongWord(Val) And SignBit) <> 0; { SHR : OF=bit de signe original }
+    7:    OFBit := False; { SAR : OF toujours 0 pour un compte de 1 }
+   Else OFBit := False;
+   End;
+   If OFBit Then Include(LX_Flags.s, EFG_OF) Else Exclude(LX_Flags.s, EFG_OF);
+  End;
+  If SubOp In [4, 5, 6, 7] Then Begin { seuls SHL/SHR/SAR mettent a jour SF/ZF/PF }
+   If (UV And SignBit) <> 0 Then Include(LX_Flags.s, EFG_SF) Else Exclude(LX_Flags.s, EFG_SF);
+   If UV = 0 Then Include(LX_Flags.s, EFG_ZF) Else Exclude(LX_Flags.s, EFG_ZF);
+   If Lx_ParityEven(Byte(UV And $FF)) Then Include(LX_Flags.s, EFG_PF)
+   Else Exclude(LX_Flags.s, EFG_PF);
+  End;
+ End;
+ Case Size Of
+  1: Lx_Shift := LongInt(Byte(UV));
+  2: Lx_Shift := LongInt(Word(UV));
+ Else Lx_Shift := LongInt(UV);
+ End;
+End;
+
+{ Chaines de base (MOVS/STOS/LODS/CMPS/SCAS, 8 et 32 bits) avec REP/REPE/  }
+{ REPNE - absent de Dpmi_Step, confirme necessaire par le precedent ELF64  }
+{ (memcpy/memset generes par le runtime C via rep movsb/rep stosb). Une    }
+{ seule iteration par appel (le prefixe REP fait juste reculer EIP pour    }
+{ rejouer la meme instruction tant que ECX<>0, meme idiome que le coeur    }
+{ 8086 principal - voir Emu_StepOne pour le precedent direct). }
+Function Lx_GetOp2Mem(Addr: LongInt; Sz: Byte): LongInt;
+Begin
+ Case Sz Of
+  1: Lx_GetOp2Mem := Lx_ReadByte(Addr);
+  2: Lx_GetOp2Mem := Lx_ReadWord(Addr);
+ Else Lx_GetOp2Mem := Lx_ReadDWord(Addr);
+ End;
+End;
+
+Procedure Lx_PutOp2Mem(Addr: LongInt; Sz: Byte; V: LongInt);
+Begin
+ Case Sz Of
+  1: Lx_WriteByte(Addr, Byte(V));
+  2: Lx_WriteWord(Addr, Word(V));
+ Else Lx_WriteDWord(Addr, V);
+ End;
+End;
+
+Procedure Lx_StringOp(Op2: Byte; OpSize: Byte; RepMode: Byte);
+Var
+ Sz: Byte;
+ SrcV, DstV: LongInt;
+ Dir: Integer;
+ Cont: Boolean;
+Begin
+ If Op2 In [$A4, $A6, $AA, $AC, $AE] Then Sz := 1 Else Sz := OpSize;
+ If EFG_DF In LX_Flags.s Then Dir := -1 Else Dir := 1;
+ Case Op2 Of
+  $A4, $A5: Begin { MOVS }
+   SrcV := Lx_GetOp2Mem(LX_Reg.ESI, Sz);
+   Lx_PutOp2Mem(LX_Reg.EDI, Sz, SrcV);
+   LX_Reg.ESI := LX_Reg.ESI + Dir * Sz;
+   LX_Reg.EDI := LX_Reg.EDI + Dir * Sz;
+  End;
+  $AA, $AB: Begin { STOS }
+   Lx_PutOp2Mem(LX_Reg.EDI, Sz, LX_Reg.EAX);
+   LX_Reg.EDI := LX_Reg.EDI + Dir * Sz;
+  End;
+  $AC, $AD: Begin { LODS }
+   SrcV := Lx_GetOp2Mem(LX_Reg.ESI, Sz);
+   If Sz = 1 Then LX_Reg.AL := Byte(SrcV)
+   Else If Sz = 2 Then LX_Reg.AX := Word(SrcV)
+   Else LX_Reg.EAX := SrcV;
+   LX_Reg.ESI := LX_Reg.ESI + Dir * Sz;
+  End;
+  $A6, $A7: Begin { CMPS }
+   SrcV := Lx_GetOp2Mem(LX_Reg.ESI, Sz);
+   DstV := Lx_GetOp2Mem(LX_Reg.EDI, Sz);
+   Lx_Alu(7, SrcV, DstV, Sz);
+   LX_Reg.ESI := LX_Reg.ESI + Dir * Sz;
+   LX_Reg.EDI := LX_Reg.EDI + Dir * Sz;
+  End;
+  $AE, $AF: Begin { SCAS }
+   DstV := Lx_GetOp2Mem(LX_Reg.EDI, Sz);
+   If Sz = 1 Then SrcV := LX_Reg.AL Else If Sz = 2 Then SrcV := LX_Reg.AX Else SrcV := LX_Reg.EAX;
+   Lx_Alu(7, SrcV, DstV, Sz);
+   LX_Reg.EDI := LX_Reg.EDI + Dir * Sz;
+  End;
+ End;
+ If RepMode <> 0 Then Begin
+  LX_Reg.ECX := LX_Reg.ECX - 1;
+  Cont := LX_Reg.ECX <> 0;
+  If (Op2 In [$A6, $A7, $AE, $AF]) And Cont Then Begin
+   If RepMode = 1 Then Cont := EFG_ZF In LX_Flags.s   { REPE/REPZ }
+   Else Cont := Not (EFG_ZF In LX_Flags.s);            { REPNE/REPNZ }
+  End;
+  { RepMode <> 0 est garanti dans cette branche (If RepMode <> 0 ci-dessus)}
+  { donc le prefixe REP/REPE/REPNE (1 octet) + l opcode (1 octet) font       }
+  { toujours exactement 2 octets a reculer pour rejouer l instruction.       }
+  If Cont Then Dec(LX_EIP, 2);
+ End;
+End;
+
+{ Division/multiplication non signee et signee (groupe F6/F7 /4../7) -     }
+{ absentes de Dpmi_Step, confirmees necessaires par le precedent ELF64     }
+{ (Elf64_Step gere la meme famille avec le meme arret propre sur division  }
+{ par zero/depassement de quotient - voir son commentaire pres de la       }
+{ decompte 49972-50108 pour le precedent direct). }
+Procedure Lx_MulDiv(SubOp: Byte; Size: Byte; RVal: LongInt);
+Var
+ UR, ULo: LongWord;
+ P64: Int64;
+ SR, SLo: LongInt;
+ Q, Rm: Int64;
+Begin
+ Case SubOp Of
+  4: Begin { MUL : edx:eax (ou dx:ax, ou ax) := eax * r/m, non signe }
+   Case Size Of
+    1: Begin
+     UR := LongWord(Byte(LX_Reg.AL)) * LongWord(Byte(RVal));
+     LX_Reg.AX := Word(UR);
+     If Hi(Word(UR)) <> 0 Then Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+     Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+    End;
+    2: Begin
+     UR := LongWord(Word(LX_Reg.AX)) * LongWord(Word(RVal));
+     LX_Reg.AX := Word(UR); LX_Reg.DX := Word(UR Shr 16);
+     If Word(UR Shr 16) <> 0 Then Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+     Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+    End;
+   Else Begin
+     P64 := Int64(LongWord(LX_Reg.EAX)) * Int64(LongWord(RVal));
+     LX_Reg.EAX := LongInt(LongWord(P64 And $FFFFFFFF));
+     LX_Reg.EDX := LongInt(LongWord(P64 Shr 32));
+     If LongWord(P64 Shr 32) <> 0 Then Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+     Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+    End;
+   End;
+  End;
+  5: Begin { IMUL (1 operande) : meme registres cibles, signe }
+   Case Size Of
+    1: Begin
+     SR := ShortInt(LX_Reg.AL) * ShortInt(RVal);
+     LX_Reg.AX := Word(SR);
+     If (SR < -128) Or (SR > 127) Then Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+     Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+    End;
+    2: Begin
+     SR := SmallInt(LX_Reg.AX) * SmallInt(RVal);
+     LX_Reg.AX := Word(SR); LX_Reg.DX := Word(SR Shr 16);
+     If (SR < -32768) Or (SR > 32767) Then Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+     Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+    End;
+   Else Begin
+     P64 := Int64(LX_Reg.EAX) * Int64(RVal);
+     LX_Reg.EAX := LongInt(LongWord(P64 And $FFFFFFFF));
+     LX_Reg.EDX := LongInt(LongWord(P64 Shr 32));
+     If (P64 < -2147483648) Or (P64 > 2147483647) Then
+      Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+     Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+    End;
+   End;
+  End;
+  6: Begin { DIV : non signe, arret propre si diviseur nul ou quotient hors plage }
+   If RVal = 0 Then Begin Lx_Halt('Division par zero (DIV)'); Exit; End;
+   Case Size Of
+    1: Begin
+     UR := Word(LX_Reg.AX) Div LongWord(Byte(RVal));
+     If UR > 255 Then Begin Lx_Halt('Depassement de quotient (DIV 8 bits)'); Exit; End;
+     ULo := Word(LX_Reg.AX) Mod LongWord(Byte(RVal));
+     LX_Reg.AL := Byte(UR); LX_Reg.AH := Byte(ULo);
+    End;
+    2: Begin
+     UR := (LongWord(Word(LX_Reg.DX)) Shl 16) Or LongWord(Word(LX_Reg.AX));
+     If (UR Div LongWord(Word(RVal))) > 65535 Then Begin Lx_Halt('Depassement de quotient (DIV 16 bits)'); Exit; End;
+     ULo := UR Mod LongWord(Word(RVal));
+     UR := UR Div LongWord(Word(RVal));
+     LX_Reg.AX := Word(UR); LX_Reg.DX := Word(ULo);
+    End;
+   Else Begin
+     P64 := (Int64(LongWord(LX_Reg.EDX)) Shl 32) Or Int64(LongWord(LX_Reg.EAX));
+     Q := P64 Div Int64(LongWord(RVal));
+     If Q > 4294967295 Then Begin Lx_Halt('Depassement de quotient (DIV 32 bits)'); Exit; End;
+     Rm := P64 Mod Int64(LongWord(RVal));
+     LX_Reg.EAX := LongInt(LongWord(Q)); LX_Reg.EDX := LongInt(LongWord(Rm));
+    End;
+   End;
+  End;
+  7: Begin { IDIV : signe, meme arret propre }
+   If RVal = 0 Then Begin Lx_Halt('Division par zero (IDIV)'); Exit; End;
+   Case Size Of
+    1: Begin
+     SR := SmallInt(LX_Reg.AX) Div ShortInt(RVal);
+     If (SR < -128) Or (SR > 127) Then Begin Lx_Halt('Depassement de quotient (IDIV 8 bits)'); Exit; End;
+     SLo := SmallInt(LX_Reg.AX) Mod ShortInt(RVal);
+     LX_Reg.AL := Byte(SR); LX_Reg.AH := Byte(SLo);
+    End;
+    2: Begin
+     P64 := (Int64(SmallInt(LX_Reg.DX)) Shl 16) Or Int64(Word(LX_Reg.AX));
+     Q := P64 Div Int64(SmallInt(RVal));
+     If (Q < -32768) Or (Q > 32767) Then Begin Lx_Halt('Depassement de quotient (IDIV 16 bits)'); Exit; End;
+     Rm := P64 Mod Int64(SmallInt(RVal));
+     LX_Reg.AX := Word(Q); LX_Reg.DX := Word(Rm);
+    End;
+   Else Begin
+     P64 := (Int64(LX_Reg.EDX) Shl 32) Or Int64(LongWord(LX_Reg.EAX));
+     Q := P64 Div Int64(RVal);
+     If (Q < -2147483648) Or (Q > 2147483647) Then Begin Lx_Halt('Depassement de quotient (IDIV 32 bits)'); Exit; End;
+     Rm := P64 Mod Int64(RVal);
+     LX_Reg.EAX := LongInt(LongWord(Q)); LX_Reg.EDX := LongInt(LongWord(Rm));
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ --- Chantier OS/2 LX, Stage 3 (suite) : dispatcher DOSCALLS. Appele par   }
+{ Lx_Step DES QUE EIP entre dans la zone de trappe (avant tout decodage    }
+{ d instruction, voir plus bas) - a cet instant, l appel proche qui a       }
+{ amene ici a deja empile l adresse de retour (ESP pointe dessus), les     }
+{ arguments suivent juste au-dessus (convention OS/2 32 bits standard :     }
+{ empiles droite-a-gauche, l APPELE depile - meme role que RAX/syscall     }
+{ Linux pour Elf64_DoSyscall, mais ici selectionne par ADRESSE de trappe    }
+{ plutot que par un registre). Sous-ensemble VERIFIE contre 2 sources       }
+{ publiques independantes (recherche web, pas suppose de memoire) :         }
+{ DosExit=234, DosWrite=282, DosRead=281, DosAllocMem=299, DosFreeMem=304   }
+{ (module DOSCALLS confirme = module #1 dans ddnsicon.exe via LXINFO ;      }
+{ l ordinal 234 apparait d ailleurs reellement dans ses fixups reels -      }
+{ signal supplementaire que ce module EST bien DOSCALLS). Ordinal/module    }
+{ inconnu -> arret propre (Lx_Halt), jamais de comportement invente. }
+Procedure Lx_DoDosCall(SlotIndex: Integer);
+Var
+ ModOrd: Byte;
+ IsOrd: Boolean;
+ OrdVal: LongInt;
+ RetAddr: LongInt;
+ NArgsPopped: Integer;
+ HFile, PBuf, CbWrite, PcbActual: LongInt;
+ S: String;
+ I: Integer;
+ Action, ResultCode: LongInt;
+ CbAlloc, PPtrOut: LongInt;
+ Handled: Boolean;
+Begin
+ If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
+  Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
+  Exit;
+ End;
+ ModOrd := LX_ImportModOrd[SlotIndex];
+ IsOrd := LX_ImportIsOrd[SlotIndex];
+ OrdVal := LX_ImportOrdinal[SlotIndex];
+ NArgsPopped := 0;
+ Handled := False;
+ If (ModOrd = 1) And IsOrd Then Begin { module #1 = DOSCALLS (verifie via LXINFO) }
+  Case OrdVal Of
+   234: Begin { DosExit(ULONG action, ULONG result) - fin de processus, jamais de retour }
+    Action := Lx_ReadDWord(LX_Reg.ESP + 4);
+    ResultCode := Lx_ReadDWord(LX_Reg.ESP + 8);
+    LX_Halted := True;
+    LX_LastBadEIP := LX_EIP;
+    LX_HaltReason := 'DosExit(action=' + IntToStr(Action) + ', code=' + IntToStr(ResultCode) + ')';
+    Exit;
+   End;
+   282: Begin { DosWrite(HFILE hFile, PVOID pBuffer, ULONG cbWrite, PULONG pcbActual) }
+    HFile := Lx_ReadDWord(LX_Reg.ESP + 4);
+    PBuf := Lx_ReadDWord(LX_Reg.ESP + 8);
+    CbWrite := Lx_ReadDWord(LX_Reg.ESP + 12);
+    PcbActual := Lx_ReadDWord(LX_Reg.ESP + 16);
+    If (HFile = 1) Or (HFile = 2) Then Begin { stdout/stderr, meme convention que DOS/ELF64 }
+     S := '';
+     For I := 0 To CbWrite - 1 Do
+      If Length(S) < 255 Then S := S + Chr(Lx_ReadByte(PBuf + I));
+     If LX_Panel <> Nil Then EmuVScr_WriteStr(LX_Panel^, S);
+    End;
+    If (PcbActual >= 0) And (PcbActual + 4 <= High(LX_Mem)) Then Lx_WriteDWord(PcbActual, CbWrite);
+    LX_Reg.EAX := 0; { NO_ERROR }
+    NArgsPopped := 4;
+    Handled := True;
+   End;
+   281: Begin { DosRead - stub minimal, aucune entree interactive branchee }
+    PcbActual := Lx_ReadDWord(LX_Reg.ESP + 16);
+    If (PcbActual >= 0) And (PcbActual + 4 <= High(LX_Mem)) Then Lx_WriteDWord(PcbActual, 0);
+    LX_Reg.EAX := 0;
+    NArgsPopped := 4;
+    Handled := True;
+   End;
+   299: Begin { DosAllocMem(PPVOID ppb, ULONG cb, ULONG flags) - allocateur bump simple }
+    CbAlloc := Lx_ReadDWord(LX_Reg.ESP + 8);
+    PPtrOut := Lx_ReadDWord(LX_Reg.ESP + 4);
+    If CbAlloc < 0 Then CbAlloc := 0;
+    { arrondi a 16 pour rester aligne, meme esprit que ELF64_BrkCur/BrkStart }
+    CbAlloc := (CbAlloc + 15) And Not 15;
+    If LX_HeapNext + CbAlloc > LX_FS_BASE Then Begin { pas LX_TRAP_BASE, voir Stage 5 }
+     LX_Reg.EAX := 8; { ERROR_NOT_ENOUGH_MEMORY }
+    End Else Begin
+     If (PPtrOut >= 0) And (PPtrOut + 4 <= High(LX_Mem)) Then Lx_WriteDWord(PPtrOut, LX_HeapNext);
+     LX_HeapNext := LX_HeapNext + CbAlloc;
+     LX_Reg.EAX := 0;
+    End;
+    NArgsPopped := 3;
+    Handled := True;
+   End;
+   304: Begin { DosFreeMem(PVOID pb) - sans effet (bump allocator, jamais recycle) }
+    LX_Reg.EAX := 0;
+    NArgsPopped := 1;
+    Handled := True;
+   End;
+  End;
+ End;
+ If Not Handled Then Begin
+  Lx_Halt('DOSCALLS non supporte : module#' + IntToStr(ModOrd) +
+   ' ordinal ' + IntToStr(OrdVal) + ' (Stage 3, sous-ensemble minimal)');
+  Exit;
+ End;
+ { Retour synthetique stdcall : depile l adresse de retour + les N*4        }
+ { octets d arguments consommes par CETTE fonction precise, SANS repasser   }
+ { par le decodeur - meme principe que Elf64_DoSyscall qui ne redecode rien }
+ { non plus apres avoir servi l appel. }
+ RetAddr := Lx_ReadDWord(LX_Reg.ESP);
+ LX_Reg.ESP := LX_Reg.ESP + 4 + NArgsPopped * 4;
+ LX_EIP := RetAddr;
+End;
+
+{ Execute UNE instruction a LX_EIP (ou service un appel DOSCALLS si EIP     }
+{ vient d entrer dans la zone de trappe, voir Lx_DoDosCall). Fork du        }
+{ dispatcher Dpmi_Step (ligne ~63001, cas par cas repris a l identique pour }
+{ les opcodes deja couverts par ce noyau, juste retargetes vers Lx_*) + les }
+{ ajouts du Stage 2 (voir commentaire de tete pres de Lx_ReadByte). }
+Procedure Lx_Step;
+Var
+ B, ModRM, Reg, Sub: Byte;
+ OpSize: Byte;
+ RepMode: Byte;
+ Op: TDpmiOperand;
+ A, Imm, Res, Target, OldCF: LongInt;
+ Op2: Byte;
+ TraceIdx: LongInt;
+Begin
+ If LX_Halted Then Exit;
+ TraceIdx := LX_TraceCount Mod 256;
+ LX_TraceEIP[TraceIdx] := LX_EIP;
+ LX_TraceESP[TraceIdx] := LX_Reg.ESP;
+ Inc(LX_TraceCount);
+ Inc(LX_InstrCount);
+ { Trappe DOSCALLS (Stage 3) : une reference importee fixee (voir           }
+ { Lx_ResolveImportSlot/Lx_ApplyPageFixups) pointe TOUJOURS ici, jamais     }
+ { vers du code reel - intercepter AVANT tout decodage, le thunk UD2 ecrit  }
+ { a cette adresse n est qu un filet de securite si jamais atteint          }
+ { autrement (saut errant non lie a un fixup). }
+ If (LX_EIP >= LX_TRAP_BASE) And
+    (LX_EIP < LX_TRAP_BASE + LX_MAX_TRAP_SLOTS * LX_TRAP_SLOT_SIZE) Then Begin
+  Lx_DoDosCall((LX_EIP - LX_TRAP_BASE) Div LX_TRAP_SLOT_SIZE);
+  Exit;
+ End;
+ OpSize := 4;
+ RepMode := 0;
+ LX_FSPrefixActive := False;
+ Repeat
+  B := Lx_FetchByte(0);
+  Case B Of
+   $66: Begin If OpSize = 2 Then OpSize := 4 Else OpSize := 2; Inc(LX_EIP); End;
+   $F0: Inc(LX_EIP); { LOCK, sans effet (emulateur mono-fil) }
+   $F2: Begin RepMode := 2; Inc(LX_EIP); End; { REPNE/REPNZ }
+   $F3: Begin RepMode := 1; Inc(LX_EIP); End; { REP/REPE/REPZ }
+   $64: Begin LX_FSPrefixActive := True; Inc(LX_EIP); End; { FS, Stage 5 }
+  Else Break;
+  End;
+ Until False;
+ B := Lx_FetchByte(0);
+ Inc(LX_EIP);
+ If (B < $40) And ((B And 7) <= 5) And (B <> $0F) Then
+  Lx_AluForm(B Shr 3, B And 7, OpSize)
+ Else Case B Of
+  $0F: Begin
+   Op2 := Lx_FetchByte(0);
+   Inc(LX_EIP);
+   Case Op2 Of
+    $80..$8F: Begin
+     Target := Lx_FetchDWord(0);
+     Inc(LX_EIP, 4);
+     If Lx_TestCond(Op2 And $F) Then LX_EIP := LX_EIP + Target;
+    End;
+   Else Lx_Halt('Opcode 0F ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+   End;
+  End;
+  $40..$47: Begin { INC reg32/16 }
+   OldCF := 0; If EFG_CF In LX_Flags.s Then OldCF := 1;
+   If OpSize = 2 Then Res := Lx_Alu(0, Dpmi_GetReg16(LX_Reg, B And 7), 1, 2)
+   Else Res := Lx_Alu(0, Dpmi_GetReg32(LX_Reg, B And 7), 1, 4);
+   If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, B And 7, Word(Res))
+   Else Dpmi_SetReg32(LX_Reg, B And 7, Res);
+   If OldCF <> 0 Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+  End;
+  $48..$4F: Begin { DEC reg32/16 }
+   OldCF := 0; If EFG_CF In LX_Flags.s Then OldCF := 1;
+   If OpSize = 2 Then Res := Lx_Alu(5, Dpmi_GetReg16(LX_Reg, B And 7), 1, 2)
+   Else Res := Lx_Alu(5, Dpmi_GetReg32(LX_Reg, B And 7), 1, 4);
+   If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, B And 7, Word(Res))
+   Else Dpmi_SetReg32(LX_Reg, B And 7, Res);
+   If OldCF <> 0 Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+  End;
+  $50..$57: If OpSize = 2 Then Lx_Push16(Dpmi_GetReg16(LX_Reg, B And 7))
+            Else Lx_Push32(Dpmi_GetReg32(LX_Reg, B And 7)); { PUSH reg }
+  $58..$5F: If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, B And 7, Lx_Pop16)
+            Else Dpmi_SetReg32(LX_Reg, B And 7, Lx_Pop32); { POP reg }
+  $68: Begin { PUSH Iz }
+   If OpSize = 2 Then Begin Imm := Lx_FetchWord(0); Inc(LX_EIP, 2); Lx_Push16(Word(Imm)); End
+   Else Begin Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); Lx_Push32(Imm); End;
+  End;
+  $6A: Begin { PUSH Ib (signe) }
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If OpSize = 2 Then Lx_Push16(Word(Imm)) Else Lx_Push32(Imm);
+  End;
+  $70..$7F: Begin { Jcc rel8 }
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If Lx_TestCond(B And $F) Then LX_EIP := LX_EIP + Imm;
+  End;
+  $80, $81, $83: Begin { groupe ALU immediat : Eb,Ib / Ev,Iz / Ev,Ib(signe) }
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If B = $80 Then Begin
+    A := Lx_GetOp(Op, 1);
+    Imm := Lx_FetchByte(0); Inc(LX_EIP);
+    Res := Lx_Alu(Reg, A, Imm, 1);
+    If Reg <> 7 Then Lx_PutOp(Op, 1, Res);
+   End Else Begin
+    A := Lx_GetOp(Op, OpSize);
+    If B = $81 Then Begin
+     If OpSize = 2 Then Begin Imm := Lx_FetchWord(0); Inc(LX_EIP, 2); End
+     Else Begin Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); End;
+    End Else Begin
+     Imm := Lx_FetchByte(0); Inc(LX_EIP);
+     If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+    End;
+    Res := Lx_Alu(Reg, A, Imm, OpSize);
+    If Reg <> 7 Then Lx_PutOp(Op, OpSize, Res);
+   End;
+  End;
+  $84, $85: Begin { TEST Eb,Gb / Ev,Gv }
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If B = $84 Then Lx_Alu(4, Lx_GetOp(Op, 1), Dpmi_GetReg8(LX_Reg, Reg), 1)
+   Else If OpSize = 2 Then Lx_Alu(4, Lx_GetOp(Op, 2), Dpmi_GetReg16(LX_Reg, Reg), 2)
+   Else Lx_Alu(4, Lx_GetOp(Op, 4), Dpmi_GetReg32(LX_Reg, Reg), 4);
+  End;
+  $88, $89, $8A, $8B: Begin { MOV }
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   Case B Of
+    $88: Lx_PutOp(Op, 1, Dpmi_GetReg8(LX_Reg, Reg));
+    $89: If OpSize = 2 Then Lx_PutOp(Op, 2, Dpmi_GetReg16(LX_Reg, Reg))
+         Else Lx_PutOp(Op, 4, Dpmi_GetReg32(LX_Reg, Reg));
+    $8A: Dpmi_SetReg8(LX_Reg, Reg, Byte(Lx_GetOp(Op, 1)));
+    $8B: If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, Reg, Word(Lx_GetOp(Op, 2)))
+         Else Dpmi_SetReg32(LX_Reg, Reg, Lx_GetOp(Op, 4));
+   End;
+  End;
+  $8D: Begin { LEA Gv,M - en modele plat, Op.LinAddr EST deja le deplacement }
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, Reg, Word(Op.LinAddr))
+   Else Dpmi_SetReg32(LX_Reg, Reg, Op.LinAddr);
+  End;
+  $90: ; { NOP }
+  $91..$97: Begin { XCHG eAX,reg - trouve manquant en verifiant LOGDAEM.EXE }
+            { (Stage 5) ; 0x90 (XCHG EAX,EAX) est deja couvert par le NOP  }
+            { ci-dessus, meme resultat. }
+   If OpSize = 2 Then Begin
+    Res := Dpmi_GetReg16(LX_Reg, B And 7);
+    Dpmi_SetReg16(LX_Reg, B And 7, LX_Reg.AX);
+    LX_Reg.AX := Word(Res);
+   End Else Begin
+    Res := Dpmi_GetReg32(LX_Reg, B And 7);
+    Dpmi_SetReg32(LX_Reg, B And 7, LX_Reg.EAX);
+    LX_Reg.EAX := Res;
+   End;
+  End;
+  $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF: Begin
+   If B In [$A4, $A6, $AA, $AC, $AE] Then Lx_StringOp(B, 1, RepMode)
+   Else Lx_StringOp(B, OpSize, RepMode);
+  End;
+  $A8: Begin { TEST AL,Ib }
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   Lx_Alu(4, LX_Reg.AL, Imm, 1);
+  End;
+  $A9: Begin { TEST eAX,Iz }
+   If OpSize = 2 Then Begin
+    Imm := Lx_FetchWord(0); Inc(LX_EIP, 2); Lx_Alu(4, LX_Reg.AX, Imm, 2);
+   End Else Begin
+    Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); Lx_Alu(4, LX_Reg.EAX, Imm, 4);
+   End;
+  End;
+  $B0..$B7: Begin { MOV reg8,Ib }
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   Dpmi_SetReg8(LX_Reg, B And 7, Byte(Imm));
+  End;
+  $B8..$BF: Begin { MOV reg32/16,Iz/Iw }
+   If OpSize = 2 Then Begin
+    Imm := Lx_FetchWord(0); Inc(LX_EIP, 2); Dpmi_SetReg16(LX_Reg, B And 7, Word(Imm));
+   End Else Begin
+    Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); Dpmi_SetReg32(LX_Reg, B And 7, Imm);
+   End;
+  End;
+  $C0, $C1: Begin { groupe decalages/rotations, compte immediat }
+   ModRM := Lx_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If B = $C0 Then Begin
+    Imm := Lx_FetchByte(0); Inc(LX_EIP);
+    Lx_PutOp(Op, 1, Lx_Shift(Sub, Lx_GetOp(Op, 1), Byte(Imm), 1));
+   End Else Begin
+    Imm := Lx_FetchByte(0); Inc(LX_EIP);
+    Lx_PutOp(Op, OpSize, Lx_Shift(Sub, Lx_GetOp(Op, OpSize), Byte(Imm), OpSize));
+   End;
+  End;
+  $C2: Begin { RET Iw (proche) }
+   Imm := Lx_FetchWord(0); Inc(LX_EIP, 2);
+   If OpSize = 2 Then LX_EIP := Lx_Pop16 Else LX_EIP := Lx_Pop32;
+   LX_Reg.ESP := LX_Reg.ESP + Imm;
+  End;
+  $C3: If OpSize = 2 Then LX_EIP := Lx_Pop16 Else LX_EIP := Lx_Pop32; { RET }
+  $C6: Begin { MOV Eb,Ib }
+   ModRM := Lx_FetchByte(0);
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   Lx_PutOp(Op, 1, Imm);
+  End;
+  $C7: Begin { MOV Ev,Iz }
+   ModRM := Lx_FetchByte(0);
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If OpSize = 2 Then Begin Imm := Lx_FetchWord(0); Inc(LX_EIP, 2); Lx_PutOp(Op, 2, Imm); End
+   Else Begin Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); Lx_PutOp(Op, 4, Imm); End;
+  End;
+  $C9: Begin { LEAVE }
+   LX_Reg.ESP := LX_Reg.EBP;
+   LX_Reg.EBP := Lx_Pop32;
+  End;
+  $D0, $D1: Begin { decalages/rotations, compte=1 }
+   ModRM := Lx_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If B = $D0 Then Lx_PutOp(Op, 1, Lx_Shift(Sub, Lx_GetOp(Op, 1), 1, 1))
+   Else Lx_PutOp(Op, OpSize, Lx_Shift(Sub, Lx_GetOp(Op, OpSize), 1, OpSize));
+  End;
+  $D2, $D3: Begin { decalages/rotations, compte=CL }
+   ModRM := Lx_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If B = $D2 Then Lx_PutOp(Op, 1, Lx_Shift(Sub, Lx_GetOp(Op, 1), LX_Reg.CL, 1))
+   Else Lx_PutOp(Op, OpSize, Lx_Shift(Sub, Lx_GetOp(Op, OpSize), LX_Reg.CL, OpSize));
+  End;
+  $E8: Begin { CALL rel32/rel16 (proche) }
+   If OpSize = 2 Then Begin
+    Imm := Lx_FetchWord(0);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+    Inc(LX_EIP, 2); Lx_Push16(Word(LX_EIP));
+   End Else Begin
+    Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); Lx_Push32(LX_EIP);
+   End;
+   LX_EIP := LX_EIP + Imm;
+  End;
+  $E9: Begin { JMP rel32/rel16 (proche) }
+   If OpSize = 2 Then Begin
+    Imm := Lx_FetchWord(0);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+    Inc(LX_EIP, 2);
+   End Else Begin
+    Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+   End;
+   LX_EIP := LX_EIP + Imm;
+  End;
+  $EB: Begin { JMP rel8 }
+   Imm := Lx_FetchByte(0); Inc(LX_EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   LX_EIP := LX_EIP + Imm;
+  End;
+  $F6, $F7: Begin { groupe TEST/NOT/NEG/MUL/IMUL/DIV/IDIV }
+   ModRM := Lx_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   If B = $F6 Then Begin
+    Lx_DecodeModRM(ModRM, Op);
+    Inc(LX_EIP, Op.Len);
+    Case Sub Of
+     0, 1: Begin Imm := Lx_FetchByte(0); Inc(LX_EIP); Lx_Alu(4, Lx_GetOp(Op, 1), Imm, 1); End;
+     2: Lx_PutOp(Op, 1, Not Lx_GetOp(Op, 1));
+     3: Lx_PutOp(Op, 1, Lx_Alu(5, 0, Lx_GetOp(Op, 1), 1));
+     4, 5, 6, 7: Lx_MulDiv(Sub, 1, Lx_GetOp(Op, 1));
+    End;
+   End Else Begin
+    Lx_DecodeModRM(ModRM, Op);
+    Inc(LX_EIP, Op.Len);
+    Case Sub Of
+     0, 1: Begin
+      If OpSize = 2 Then Begin Imm := Lx_FetchWord(0); Inc(LX_EIP, 2); Lx_Alu(4, Lx_GetOp(Op, 2), Imm, 2); End
+      Else Begin Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4); Lx_Alu(4, Lx_GetOp(Op, 4), Imm, 4); End;
+     End;
+     2: Lx_PutOp(Op, OpSize, Not Lx_GetOp(Op, OpSize));
+     3: Lx_PutOp(Op, OpSize, Lx_Alu(5, 0, Lx_GetOp(Op, OpSize), OpSize));
+     4, 5, 6, 7: Lx_MulDiv(Sub, OpSize, Lx_GetOp(Op, OpSize));
+    End;
+   End;
+  End;
+  $F8: Exclude(LX_Flags.s, EFG_CF); { CLC - trouve manquant en verifiant   }
+                                     { LOGDAEM.EXE reel (Stage 5) }
+  $F9: Include(LX_Flags.s, EFG_CF); { STC, meme oubli, ajoute par prudence }
+  $FC: Exclude(LX_Flags.s, EFG_DF); { CLD }
+  $FD: Include(LX_Flags.s, EFG_DF); { STD }
+  $FE, $FF: Begin { groupe INC/DEC/CALL/JMP indirects/PUSH }
+   ModRM := Lx_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   If B = $FE Then Begin
+    OldCF := 0; If EFG_CF In LX_Flags.s Then OldCF := 1;
+    If Sub = 0 Then Lx_PutOp(Op, 1, Lx_Alu(0, Lx_GetOp(Op, 1), 1, 1))
+    Else If Sub = 1 Then Lx_PutOp(Op, 1, Lx_Alu(5, Lx_GetOp(Op, 1), 1, 1))
+    Else Lx_Halt('Groupe FE /' + IntToStr(Sub) + ' non reconnu');
+    If OldCF <> 0 Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+   End Else Case Sub Of
+    0: Begin
+     OldCF := 0; If EFG_CF In LX_Flags.s Then OldCF := 1;
+     Lx_PutOp(Op, OpSize, Lx_Alu(0, Lx_GetOp(Op, OpSize), 1, OpSize));
+     If OldCF <> 0 Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+    End;
+    1: Begin
+     OldCF := 0; If EFG_CF In LX_Flags.s Then OldCF := 1;
+     Lx_PutOp(Op, OpSize, Lx_Alu(5, Lx_GetOp(Op, OpSize), 1, OpSize));
+     If OldCF <> 0 Then Include(LX_Flags.s, EFG_CF) Else Exclude(LX_Flags.s, EFG_CF);
+    End;
+    2: Begin { CALL near indirect }
+     Target := Lx_GetOp(Op, OpSize);
+     If OpSize = 2 Then Lx_Push16(Word(LX_EIP)) Else Lx_Push32(LX_EIP);
+     LX_EIP := Target;
+    End;
+    4: LX_EIP := Lx_GetOp(Op, OpSize); { JMP near indirect }
+    6: If OpSize = 2 Then Lx_Push16(Word(Lx_GetOp(Op, 2))) Else Lx_Push32(Lx_GetOp(Op, 4)); { PUSH Ev }
+   Else Lx_Halt('Groupe FF /' + IntToStr(Sub) + ' non reconnu');
+   End;
+  End;
+ Else Lx_Halt('Opcode ' + HexByte(B) + ' non reconnu (Stage 2)');
+ End;
+End;
+
+Procedure TermCmd_LXInfo(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Path: String;
+ Hdr: TLXHeader;
+ HdrOfs, FSize: LongInt;
+ F: File;
+ Obj: TLXObject;
+ BytesRead: Word;
+ I: Integer;
+ PMCompat: LongInt;
+ ModName: String;
+ NameLen: Byte;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LXINFO <chemin hote vers un .exe>');
+  Exit;
+ End;
+ If Not Lx_ReadHeader(Path, Hdr, HdrOfs, FSize) Then Begin
+  TermAddLine(TP, 'LXINFO : "' + Path + '" introuvable ou pas un executable LX/LE valide.');
+  Exit;
+ End;
+ If (Hdr.e32_magic0 <> Ord('L')) Or
+    ((Hdr.e32_magic1 <> Ord('X')) And (Hdr.e32_magic1 <> Ord('E'))) Then Begin
+  TermAddLine(TP, 'LXINFO : signature inattendue apres relecture de l''en-tete.');
+  Exit;
+ End;
+ TermAddLine(TP, 'LXINFO ' + Path + ' (' + IntToStr(FSize) + ' octets)');
+ TermAddLine(TP, ' cpu=' + IntToStr(Hdr.e32_cpu) + ' (1=286 2=386 3=486)' +
+  '  os=' + IntToStr(Hdr.e32_os) + ' (1=OS/2)');
+ PMCompat := (Hdr.e32_mflags Shr 8) And 3;
+ TermAddLine(TP, ' mflags=$' + HexLong(Hdr.e32_mflags) +
+  '  PM=' + IntToStr(PMCompat) +
+  ' (0=console 1=compatible-PM 2=utilise-API-PM 3=?)');
+ TermAddLine(TP, ' entree : objet ' + IntToStr(Hdr.e32_startobj) +
+  ' + $' + HexLong(Hdr.e32_eip) +
+  '   pile : objet ' + IntToStr(Hdr.e32_stackobj) +
+  ' esp=$' + HexLong(Hdr.e32_esp));
+ TermAddLine(TP, ' pagesize=' + IntToStr(Hdr.e32_pagesize) +
+  '  pageshift=' + IntToStr(Hdr.e32_pageshift) +
+  '  mpages=' + IntToStr(Hdr.e32_mpages));
+ TermAddLine(TP, ' objtab=$' + HexLong(Hdr.e32_objtab) +
+  ' objcnt=' + IntToStr(Hdr.e32_objcnt) +
+  '  objmap=$' + HexLong(Hdr.e32_objmap));
+ TermAddLine(TP, ' fpagetab=$' + HexLong(Hdr.e32_fpagetab) +
+  '  frectab=$' + HexLong(Hdr.e32_frectab) +
+  '  datapage=$' + HexLong(Hdr.e32_datapage));
+ TermAddLine(TP, ' impmod=$' + HexLong(Hdr.e32_impmod) +
+  ' impmodcnt=' + IntToStr(Hdr.e32_impmodcnt) +
+  '  impproc=$' + HexLong(Hdr.e32_impproc));
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ If (Hdr.e32_objcnt > 0) And (Hdr.e32_objcnt < 64) Then Begin
+  TermAddLine(TP, ' -- table des objets --');
+  Seek(F, HdrOfs + Hdr.e32_objtab);
+  For I := 1 To Hdr.e32_objcnt Do Begin
+   FillChar(Obj, SizeOf(Obj), 0);
+   BlockRead(F, Obj, SizeOf(Obj), BytesRead);
+   If BytesRead <> SizeOf(Obj) Then Break;
+   TermAddLine(TP, '  #' + IntToStr(I) +
+    ' base=$' + HexLong(Obj.o32_base) +
+    ' taille=$' + HexLong(Obj.o32_size) +
+    ' [' + Lx_ObjFlagsStr(Obj.o32_flags) + ']' +
+    ' pages=' + IntToStr(Obj.o32_mapsize));
+  End;
+ End;
+ If (Hdr.e32_impmodcnt > 0) And (Hdr.e32_impmodcnt < 64) Then Begin
+  TermAddLine(TP, ' -- modules importes --');
+  Seek(F, HdrOfs + Hdr.e32_impmod);
+  For I := 1 To Hdr.e32_impmodcnt Do Begin
+   BlockRead(F, NameLen, 1, BytesRead);
+   If BytesRead <> 1 Then Break;
+   ModName := '';
+   If NameLen > 0 Then Begin
+    SetLength(ModName, NameLen);
+    BlockRead(F, ModName[1], NameLen, BytesRead);
+    If BytesRead <> NameLen Then Break;
+   End;
+   TermAddLine(TP, '  #' + IntToStr(I) + ' ' + ModName);
+  End;
+ End;
+ Close(F);
+End;
+
+{ LXLOAD <chemin> : appelle le vrai chargeur (Emu_LoadLX) et relit les     }
+{ premiers octets de l objet de depart directement depuis LX_Mem, pour     }
+{ verifier MECANIQUEMENT (sans avoir besoin d executer quoi que ce soit)   }
+{ que la copie correspond bit a bit au fichier source - AUCUN fixup n est  }
+{ encore applique a ce stade (voir commentaire d Emu_LoadLX), donc ces     }
+{ octets doivent rester IDENTIQUES au contenu brut du fichier. }
+Procedure TermCmd_LXLoad(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Path: String;
+ Hdr: TLXHeader;
+ HdrOfs, FSize: LongInt;
+ I: Integer;
+ Line: String;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LXLOAD <chemin hote vers un .exe>');
+  Exit;
+ End;
+ If Not Lx_ReadHeader(Path, Hdr, HdrOfs, FSize) Then Begin
+  TermAddLine(TP, 'LXLOAD : "' + Path + '" introuvable ou pas un executable LX/LE valide.');
+  Exit;
+ End;
+ If Not Emu_LoadLX(Path) Then Begin
+  TermAddLine(TP, 'LXLOAD : echec du chargement (voir Emu_LoadLX).');
+  Exit;
+ End;
+ TermAddLine(TP, 'LXLOAD ' + Path + ' : charge, point d''entree=$' +
+  HexLong(LX_EntryPoint) + '  esp initial=$' + HexLong(LX_Reg.ESP));
+ Line := '  16 premiers octets a l''entree (depuis LX_Mem) : ';
+ For I := 0 To 15 Do
+  Line := Line + HexByte(LX_Mem[LX_EntryPoint - Hdr.e32_eip + I]) + ' ';
+ TermAddLine(TP, Line);
+End;
+
+{ LXSTEP <chemin> [n] : charge (Emu_LoadLX) puis execute reellement n      }
+{ instructions (Lx_Step, defaut 20) a partir du point d entree, affiche    }
+{ l etat final des registres et, en cas d arret (Lx_Halt), la raison et    }
+{ les dernieres adresses de l historique circulaire - outil de diagnostic  }
+{ Stage 2, mecanisme d execution reel (pas seulement une relecture de      }
+{ memoire comme LXLOAD). }
+{ Vrai si S n est composee que de chiffres hexadecimaux (0-9/A-F), non    }
+{ vide - sert a distinguer un compte optionnel final d un chemin contenant }
+{ des espaces (ex: "C:\Users\Sylvain Maltais\...\x.exe"), puisque          }
+{ TermExtractParam seul casserait un tel chemin en le coupant au premier   }
+{ espace. }
+Function Lx_IsHexToken(Const S: String): Boolean;
+Var I: Integer; Ch: Char;
+Begin
+ Lx_IsHexToken := False;
+ If S = '' Then Exit;
+ For I := 1 To Length(S) Do Begin
+  Ch := UpCase(S[I]);
+  If Not (((Ch >= '0') And (Ch <= '9')) Or ((Ch >= 'A') And (Ch <= 'F'))) Then Exit;
+ End;
+ Lx_IsHexToken := True;
+End;
+
+Procedure TermCmd_LXStep(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Full, Path, NStr: String;
+ N, I: LongInt;
+ TIdx: LongInt;
+ SpacePos: Integer;
+Begin
+ Full := TermTrim(ParamStr);
+ Path := Full;
+ N := 20;
+ SpacePos := Length(Full);
+ While (SpacePos > 0) And (Full[SpacePos] <> ' ') Do Dec(SpacePos);
+ If SpacePos > 0 Then Begin
+  NStr := Copy(Full, SpacePos + 1, Length(Full) - SpacePos);
+  If Lx_IsHexToken(NStr) Then Begin
+   Path := TermTrim(Copy(Full, 1, SpacePos - 1));
+   { Elf64_ParseHexQWord interprete TOUJOURS en hexadecimal (meme          }
+   { convention deja etablie par ELFBP pour son propre parametre de       }
+   { compte) - "20" veut donc dire 32 instructions, pas 20. }
+   N := Elf64_ParseHexQWord(NStr);
+   If N <= 0 Then N := 20;
+  End;
+ End;
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LXSTEP <chemin hote vers un .exe> [nb instructions hexa, defaut 20]');
+  Exit;
+ End;
+ If Not Emu_LoadLX(Path) Then Begin
+  TermAddLine(TP, 'LXSTEP : echec du chargement (voir Emu_LoadLX).');
+  Exit;
+ End;
+ TermAddLine(TP, 'LXSTEP ' + Path + ' : depart a $' + HexLong(LX_EIP) +
+  ', jusqu''a ' + IntToStr(N) + ' instruction(s)...');
+ I := 0;
+ While (I < N) And (Not LX_Halted) Do Begin
+  Lx_Step;
+  Inc(I);
+ End;
+ TermAddLine(TP, '  ' + IntToStr(LX_InstrCount) + ' instruction(s) executee(s), EIP=$' +
+  HexLong(LX_EIP));
+ TermAddLine(TP, '  EAX=$' + HexLong(LX_Reg.EAX) + ' EBX=$' + HexLong(LX_Reg.EBX) +
+  ' ECX=$' + HexLong(LX_Reg.ECX) + ' EDX=$' + HexLong(LX_Reg.EDX));
+ TermAddLine(TP, '  ESP=$' + HexLong(LX_Reg.ESP) + ' EBP=$' + HexLong(LX_Reg.EBP) +
+  ' ESI=$' + HexLong(LX_Reg.ESI) + ' EDI=$' + HexLong(LX_Reg.EDI));
+ If LX_Halted Then
+  TermAddLine(TP, '  ARRET : ' + LX_HaltReason + ' (EIP=$' + HexLong(LX_LastBadEIP) + ')');
+ TermAddLine(TP, '  historique (EIP au DEBUT de chaque instruction), plus recent en dernier :');
+ For I := 0 To MinInt(LongInt(LX_TraceCount), 16) - 1 Do Begin
+  TIdx := ((LX_TraceCount - MinInt(LongInt(LX_TraceCount), 16)) + I) Mod 256;
+  TermAddLine(TP, '    EIP=$' + HexLong(LX_TraceEIP[TIdx]) +
+   ' ESP=$' + HexLong(LX_TraceESP[TIdx]));
+ End;
+End;
+
+{ LXDUMP <chemin> <adresse hexa> : charge (Emu_LoadLX) puis dumpe 16 octets}
+{ de LX_Mem a l adresse donnee - diagnostic Stage 3 (verifier qu un fixup  }
+{ a bien ecrit une adresse de trappe LX_TRAP_BASE et pas du contenu brut). }
+Procedure TermCmd_LXDump(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Full, Path, AddrStr: String;
+ Addr, I, SpacePos: LongInt;
+ Line: String;
+Begin
+ Full := TermTrim(ParamStr);
+ SpacePos := Length(Full);
+ While (SpacePos > 0) And (Full[SpacePos] <> ' ') Do Dec(SpacePos);
+ If (SpacePos = 0) Or (Not Lx_IsHexToken(Copy(Full, SpacePos + 1, Length(Full) - SpacePos))) Then Begin
+  TermAddLine(TP, 'Syntaxe : LXDUMP <chemin hote vers un .exe> <adresse hexa>');
+  Exit;
+ End;
+ Path := TermTrim(Copy(Full, 1, SpacePos - 1));
+ AddrStr := Copy(Full, SpacePos + 1, Length(Full) - SpacePos);
+ Addr := Elf64_ParseHexQWord(AddrStr);
+ If Not Emu_LoadLX(Path) Then Begin
+  TermAddLine(TP, 'LXDUMP : echec du chargement (voir Emu_LoadLX).');
+  Exit;
+ End;
+ Line := 'LXDUMP $' + HexLong(Addr) + ' : ';
+ For I := 0 To 15 Do
+  If (Addr + I >= 0) And (Addr + I <= High(LX_Mem)) Then
+   Line := Line + HexByte(LX_Mem[Addr + I]) + ' ';
+ TermAddLine(TP, Line);
+ TermAddLine(TP, '  (' + IntToStr(LX_ImportSlotCount) +
+  ' emplacement(s) de trappe resolus, LX_TRAP_BASE=$' + HexLong(LX_TRAP_BASE) + ')');
+End;
+
+{ LXCALL <chemin> : charge (Emu_LoadLX) puis exerce DIRECTEMENT le          }
+{ mecanisme de trappe DOSCALLS (Lx_DoDosCall) via un cadre d appel          }
+{ SYNTHETIQUE - DosWrite(1, "LXCALL!", 7, &cb) - sans dependre du flot      }
+{ d entree reel du binaire charge (ddnsicon.exe, seul fichier reel          }
+{ disponible cette session, entre par un chemin PM/DLL inhabituel qui ne    }
+{ traverse aucun appel DOSCALLS avant de partir en zone non chargee - voir  }
+{ project_devenv_os2lx.md). Verifie le mecanisme de trappe en isolation,    }
+{ independamment du flot reel d un binaire donne. }
+Procedure TermCmd_LXCall(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ SENTINEL_RET = $12345678;
+Var
+ Path, Msg: String;
+ Slot, I: Integer;
+ ScratchBuf, ScratchCb: LongInt;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LXCALL <chemin hote vers un .exe>');
+  Exit;
+ End;
+ If Not Emu_LoadLX(Path) Then Begin
+  TermAddLine(TP, 'LXCALL : echec du chargement (voir Emu_LoadLX).');
+  Exit;
+ End;
+ { module #1 = DOSCALLS (confirme via LXINFO), ordinal 282 = DosWrite       }
+ { (verifie par recherche web indep., voir commentaire de Lx_DoDosCall) -   }
+ { peut deja exister (reutilise) ou etre cree ici pour ce test. }
+ Slot := Lx_ResolveImportSlot(1, True, 282);
+ Msg := 'LXCALL!';
+ ScratchBuf := LX_HeapNext; ScratchCb := LX_HeapNext + 16;
+ For I := 1 To Length(Msg) Do LX_Mem[ScratchBuf + I - 1] := Byte(Ord(Msg[I]));
+ LX_WriteDWord(ScratchCb, LongInt($FFFFFFFF)); { valeur sentinelle avant l appel }
+ { Cadre d appel synthetique : ESP pointe sur l adresse de retour (comme    }
+ { juste apres un CALL proche reel), puis les 4 arguments de DosWrite       }
+ { empiles droite-a-gauche (convention OS/2 32 bits standard). }
+ LX_Reg.ESP := LX_HeapNext - 64; { zone de pile de secours, hors des objets }
+ Lx_WriteDWord(LX_Reg.ESP + 16, ScratchCb);       { pcbActual }
+ Lx_WriteDWord(LX_Reg.ESP + 12, Length(Msg));     { cbWrite }
+ Lx_WriteDWord(LX_Reg.ESP + 8, ScratchBuf);       { pBuffer }
+ Lx_WriteDWord(LX_Reg.ESP + 4, 1);                { hFile = stdout }
+ Lx_WriteDWord(LX_Reg.ESP, SENTINEL_RET);         { adresse de retour }
+ LX_EIP := LX_TRAP_BASE + Slot * LX_TRAP_SLOT_SIZE;
+ TermAddLine(TP, 'LXCALL : DosWrite(1, "' + Msg + '", ' + IntToStr(Length(Msg)) +
+  ', &cb) via l''emplacement ' + IntToStr(Slot) + '...');
+ Lx_Step;
+ If LX_EIP = SENTINEL_RET Then
+  TermAddLine(TP, '  OK : retour synthetique atteint (EIP=$' + HexLong(LX_EIP) +
+   '), EAX=' + IntToStr(LX_Reg.EAX) + ', cb ecrit=' + IntToStr(Lx_ReadDWord(ScratchCb)))
+ Else
+  TermAddLine(TP, '  ECHEC : EIP=$' + HexLong(LX_EIP) + ' (attendu $' + HexLong(SENTINEL_RET) + ')');
+ If LX_Halted Then TermAddLine(TP, '  (LX_Halted : ' + LX_HaltReason + ')');
+End;
+
+{ --- Chantier OS/2 LX, Stage 5 : recherche d une cible de verification.    }
+{ Parcourt un repertoire HPFS (recursif, profondeur bornee) a la recherche }
+{ de petits .EXE (< 50 Ko) confirmes LX (NCFindExeKind), et rapporte pour   }
+{ chacun la taille et le champ e32_mflags PM (0/1 = pas ou peu de PM, 2 =   }
+{ utilise l API PM comme ddnsicon.exe - a EVITER pour la verification      }
+{ console de ce chantier). Reutilise TELLES QUELLES les primitives HPFS_*  }
+{ deja prouvees (meme fonctions que le navigateur du panneau NC), aucune   }
+{ nouvelle logique de parcours d arborescence n a ete ecrite. }
+Procedure Lx_ScanHPFSDir(Idx: Byte; Const DirPath: String; Depth: Integer;
+ Var TP: TTerminalPanel; Var FoundCount: Integer);
+Var
+ DirFNode: LongInt;
+ Pane: TNCPane;
+ I: Integer;
+ Ext: String;
+ TempPath: String;
+ Hdr: TLXHeader;
+ HdrOfs, FSize: LongInt;
+ PMCompat: LongInt;
+ SubPath: String;
+Begin
+ If Depth > 3 Then Exit; { garde-fou profondeur, meme esprit que HPFSListDepth }
+ If Not HPFS_ResolveDirFNode(Idx, DirPath, DirFNode) Then Exit;
+ FillChar(Pane, SizeOf(Pane), 0);
+ HPFS_ListDirFNode(Idx, DirFNode, Pane);
+ For I := 0 To Pane.Count - 1 Do Begin
+  If Pane.Entries[I].IsDir Then Begin
+   If (Pane.Entries[I].Name <> '.') And (Pane.Entries[I].Name <> '..') Then Begin
+    If DirPath = '\' Then SubPath := '\' + Pane.Entries[I].Name
+    Else SubPath := DirPath + '\' + Pane.Entries[I].Name;
+    Lx_ScanHPFSDir(Idx, SubPath, Depth + 1, TP, FoundCount);
+   End;
+  End Else Begin
+   Ext := UpCaseStr(NCExtractExt(Pane.Entries[I].Name));
+   If (Ext = 'EXE') And (Pane.Entries[I].Size > 0) And (Pane.Entries[I].Size < 102400) Then Begin
+    If HPFS_ExtractToTempFile(Idx, Pane.Entries[I].Cluster, Pane.Entries[I].Size, TempPath) Then Begin
+     If NCFindExeKind(TempPath) = 2 Then Begin { NCEXE_OS2LX, voir le Forward plus haut }
+      If Lx_ReadHeader(TempPath, Hdr, HdrOfs, FSize) Then Begin
+       PMCompat := (Hdr.e32_mflags Shr 8) And 3;
+       { Filtre Stage 5 : PM<=1 ("pas de PM" ou "compatible mais pas       }
+       { requis") - elargi apres un 1er passage sur \OS2 qui n a trouve     }
+       { AUCUN PM=0 parmi 74 executables (meme des utilitaires clairement    }
+       { console comme NAMECOPY/NAMEDEL semblent tous porter PM=2 sur cette }
+       { installation - probablement une formalite de gabarit de lien, pas  }
+       { un vrai besoin PM). PM=2/3 rejetes (comptes quand meme dans         }
+       { FoundCount pour le bilan global). }
+       Inc(FoundCount);
+       If PMCompat <= 1 Then
+        TermAddLine(TP, '  ' + DirPath + '\' + Pane.Entries[I].Name +
+         ' (' + IntToStr(Pane.Entries[I].Size) + ' o, PM=' + IntToStr(PMCompat) + ', ' +
+         IntToStr(Hdr.e32_impmodcnt) + ' module(s) importe(s))');
+      End;
+     End;
+    End;
+   End;
+  End;
+ End;
+End;
+
+Procedure TermCmd_LXScan(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Found: Boolean;
+ StartDir: String;
+ FoundCount: Integer;
+Begin
+ Found := False;
+ Idx := 0;
+ For Idx := 0 To 3 Do
+  If FatVol[Idx].Mounted And FatVol[Idx].IsHPFS Then Begin Found := True; Break; End;
+ If Not Found Then Begin
+  TermAddLine(TP, 'LXSCAN : aucun volume HPFS monte (utilisez /DISK80:"..." au demarrage).');
+  Exit;
+ End;
+ StartDir := TermTrim(ParamStr);
+ If StartDir = '' Then StartDir := '\';
+ TermAddLine(TP, 'LXSCAN ' + StartDir + ' (lecteur ' + IntToStr(Idx) +
+  ') : .exe < 100 Ko, format LX confirme, PM<=1 affiches (PM=2/3 rejetes)...');
+ FoundCount := 0;
+ Lx_ScanHPFSDir(Idx, StartDir, 0, TP, FoundCount);
+ TermAddLine(TP, IntToStr(FoundCount) + ' executable(s) LX trouve(s).');
+End;
+
+{ LXGET <chemin HPFS complet> : extrait un fichier du volume HPFS monte vers}
+{ le fichier temporaire hote fixe (voir HPFS_ExtractToTempFile), pour        }
+{ pouvoir ensuite l inspecter avec LXINFO/LXLOAD/LXSTEP (qui prennent tous  }
+{ un chemin HOTE, pas un chemin HPFS) - reutilise HPFS_FindDosExecutable    }
+{ (deja existant, session precedente) qui separe deja repertoire+nom de     }
+{ fichier de la meme facon. }
+Procedure TermCmd_LXGet(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Found: Boolean;
+ FullPath, Dir, FName, OutPath: String;
+ SlashPos: Integer;
+Begin
+ Found := False;
+ Idx := 0;
+ For Idx := 0 To 3 Do
+  If FatVol[Idx].Mounted And FatVol[Idx].IsHPFS Then Begin Found := True; Break; End;
+ If Not Found Then Begin
+  TermAddLine(TP, 'LXGET : aucun volume HPFS monte.');
+  Exit;
+ End;
+ FullPath := TermTrim(ParamStr);
+ SlashPos := Length(FullPath);
+ While (SlashPos > 0) And (FullPath[SlashPos] <> '\') Do Dec(SlashPos);
+ If SlashPos = 0 Then Begin
+  TermAddLine(TP, 'Syntaxe : LXGET <chemin HPFS complet, ex. \OS2\INSTALL\RSPDDI.EXE>');
+  Exit;
+ End;
+ Dir := Copy(FullPath, 1, SlashPos - 1);
+ If Dir = '' Then Dir := '\';
+ FName := Copy(FullPath, SlashPos + 1, Length(FullPath) - SlashPos);
+ If HPFS_FindDosExecutable(Idx, Dir, FName, OutPath) Then
+  TermAddLine(TP, 'LXGET : extrait vers ' + OutPath)
+ Else
+  TermAddLine(TP, 'LXGET : "' + FullPath + '" introuvable sur le volume HPFS.');
+End;
+
 { --- DF (Bash) : afficher les disquettes montees via /DISK0 et /DISK1 --- }
 
 Procedure TermCmd_DF(Var TP: TTerminalPanel);
@@ -35776,6 +37784,20 @@ Begin
     TermCmd_BOOT(TP, ParamStr)
    Else If CurrCmd = 'ELFBP' Then
     TermCmd_ELFBP(TP, ParamStr)
+   Else If CurrCmd = 'LXINFO' Then
+    TermCmd_LXInfo(TP, ParamStr)
+   Else If CurrCmd = 'LXLOAD' Then
+    TermCmd_LXLoad(TP, ParamStr)
+   Else If CurrCmd = 'LXSTEP' Then
+    TermCmd_LXStep(TP, ParamStr)
+   Else If CurrCmd = 'LXDUMP' Then
+    TermCmd_LXDump(TP, ParamStr)
+   Else If CurrCmd = 'LXCALL' Then
+    TermCmd_LXCall(TP, ParamStr)
+   Else If CurrCmd = 'LXSCAN' Then
+    TermCmd_LXScan(TP, ParamStr)
+   Else If CurrCmd = 'LXGET' Then
+    TermCmd_LXGet(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else Begin
@@ -38097,7 +40119,20 @@ End;
 { PE/NE/LE (genere par le linker specifiquement comme code fixe, jamais  }
 { realloue) a TOUJOURS e_crlc = 0 - un signal beaucoup plus fiable que   }
 { de suivre un e_lfanew qui n a jamais ete ecrit intentionnellement.     }
-Function NCIsDos16Exe(Const Path: String): Boolean;
+Const
+ NCEXE_NONE   = 0;  { pas un executable MZ reconnaissable                }
+ NCEXE_DOS16  = 1;  { DOS 16 bits classique - lancable par -CD           }
+ NCEXE_OS2LX  = 2;  { OS/2 LX (32 bits, "Linear Executable")             }
+ NCEXE_OTHER  = 3;  { PE (Win32/64) ou NE (Win16) - non supporte         }
+
+{ Chantier OS/2 LX (2026-08-22, Stage 0) : NCIsDos16Exe se contentait de }
+{ rejeter silencieusement PE/NE/LE/LX (un seul Boolean, aucune           }
+{ distinction entre les formats rejetes) - NCFindExeKind reprend le meme }
+{ parcours MZ/e_crlc/e_lfanew mais retourne le format precis, pour       }
+{ pouvoir router LX vers l emulateur OS/2 (ou, avant Stage 4, au moins    }
+{ afficher un message clair) au lieu de ne rien faire. NCIsDos16Exe reste}
+{ un simple wrapper pour ne pas toucher aux sites d appel DOS existants. }
+Function NCFindExeKind(Const Path: String): Byte;
 Var
  F: File;
  Sig: Array[0..1] Of Char;
@@ -38108,7 +40143,7 @@ Var
  FSize: LongInt;
  BytesRead: Word;
 Begin
- NCIsDos16Exe := False;
+ NCFindExeKind := NCEXE_NONE;
  {$I-}
  Assign(F, Path);
  Reset(F, 1);
@@ -38131,36 +40166,49 @@ Begin
   { 16 bits authentique, voir le commentaire de tete. Inutile (et risque) }
   { de suivre e_lfanew dans ce cas. }
   Close(F);
-  NCIsDos16Exe := True;
+  NCFindExeKind := NCEXE_DOS16;
   Exit;
  End;
  Seek(F, $3C);
  BlockRead(F, LfanewBuf, 4, BytesRead);
  If BytesRead <> 4 Then Begin
   Close(F);
-  NCIsDos16Exe := True;
+  NCFindExeKind := NCEXE_DOS16;
   Exit;
  End;
  Lfanew := LongInt(LfanewBuf[0]) Or (LongInt(LfanewBuf[1]) Shl 8) Or
   (LongInt(LfanewBuf[2]) Shl 16) Or (LongInt(LfanewBuf[3]) Shl 24);
  If (Lfanew <= 0) Or (Lfanew + 4 > FSize) Then Begin
   Close(F);
-  NCIsDos16Exe := True;
+  NCFindExeKind := NCEXE_DOS16;
   Exit;
  End;
  Seek(F, Lfanew);
  BlockRead(F, HdrSig, 4, BytesRead);
  Close(F);
  If BytesRead <> 4 Then Begin
-  NCIsDos16Exe := True;
+  NCFindExeKind := NCEXE_DOS16;
   Exit;
  End;
  If (HdrSig[0] = 'P') And (HdrSig[1] = 'E') And (HdrSig[2] = #0) And
-    (HdrSig[3] = #0) Then Exit;
- If (HdrSig[0] = 'N') And (HdrSig[1] = 'E') Then Exit;
- If (HdrSig[0] = 'L') And ((HdrSig[1] = 'E') Or (HdrSig[1] = 'X')) Then
+    (HdrSig[3] = #0) Then Begin
+  NCFindExeKind := NCEXE_OTHER;
   Exit;
- NCIsDos16Exe := True;
+ End;
+ If (HdrSig[0] = 'N') And (HdrSig[1] = 'E') Then Begin
+  NCFindExeKind := NCEXE_OTHER;
+  Exit;
+ End;
+ If (HdrSig[0] = 'L') And ((HdrSig[1] = 'E') Or (HdrSig[1] = 'X')) Then Begin
+  NCFindExeKind := NCEXE_OS2LX;
+  Exit;
+ End;
+ NCFindExeKind := NCEXE_DOS16;
+End;
+
+Function NCIsDos16Exe(Const Path: String): Boolean;
+Begin
+ NCIsDos16Exe := NCFindExeKind(Path) = NCEXE_DOS16;
 End;
 
 { Binaire Linux ELF64 x86-64 (ex: BINLINUX\tp2js) - ces binaires n ont   }
@@ -38273,6 +40321,15 @@ Begin
     If (Ext = 'COM') Or NCIsDos16Exe(TempPath) Then Begin
      CreateEmulatorTab(TempPath, '-CD', '');
      NCActionOpenAssociated := True;
+    End
+    { Chantier OS/2 LX (2026-08-22/23, Stage 0->4) : un .EXE au format LX  }
+    { etait rejete silencieusement par NCIsDos16Exe (aucune branche Else)  }
+    { - Stage 0 a d abord ajoute un simple message, Stage 4 lance          }
+    { desormais reellement l emulateur (mode console uniquement - voir     }
+    { project_devenv_os2lx.md pour le perimetre). }
+    Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OS2LX) Then Begin
+     CreateEmulatorTab(TempPath, '-COS2LX', '');
+     NCActionOpenAssociated := True;
     End;
    End;
   End;
@@ -38295,6 +40352,10 @@ Begin
     If Fat_ExtractToTempFile(Byte(NCState.Slot), Cluster, Sz, E.Name, TempPath) Then Begin
      If (Ext = 'COM') Or NCIsDos16Exe(TempPath) Then Begin
       CreateEmulatorTab(TempPath, '-CD', '');
+      NCActionOpenAssociated := True;
+     End
+     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OS2LX) Then Begin
+      CreateEmulatorTab(TempPath, '-COS2LX', '');
       NCActionOpenAssociated := True;
      End;
     End;
@@ -38339,11 +40400,105 @@ Begin
    CreateEmulatorTab(FullPath, '-CD', '');
    NCActionOpenAssociated := True;
    End
+   Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_OS2LX) Then Begin
+    CreateEmulatorTab(FullPath, '-COS2LX', '');
+    NCActionOpenAssociated := True;
+   End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
     CreateEmulatorTab(FullPath, '-CELF64', '');
     NCActionOpenAssociated := True;
    End;
   End;
+End;
+
+{ BOGUE REEL (2026-08-23, signale par l utilisateur) : Copier (F5) sur une }
+{ entree d un panneau NC en train de parcourir un disque virtuel ne         }
+{ faisait RIEN, silencieusement - le gestionnaire de ncPromptCopy (plus     }
+{ bas) etait explicitement garde par "NCState.Slot < 0", sautant tout       }
+{ l appel a TermCopyFile des que le panneau SOURCE est virtuel. Simplement  }
+{ retirer cette garde n aurait pas suffi : TermCopyFile a bien deja une     }
+{ branche "source virtuelle" (voir Term_ResolveVirtTarget), mais elle ne    }
+{ reconnait un chemin comme virtuel QUE via un prefixe "X:" ou via          }
+{ TP.VirtDrive (etat du TERMINAL) - jamais via NCState.Slot (etat du        }
+{ PANNEAU NC, un objet totalement independant) - et NCFullPath ne produit   }
+{ de toute facon jamais de prefixe "X:". De plus, cette branche existante   }
+{ n aurait de toute facon gere que le FAT (Fat_FindPath), jamais HPFS.      }
+{ Reutilise donc le motif deja prouve cette session (extraction vers un     }
+{ fichier hote temporaire PUIS traitement comme hote-a-hote, meme principe  }
+{ que HPFS_FindDosExecutable/Fat_FindDosExecutable) plutot que d etendre    }
+{ Term_ResolveVirtTarget pour comprendre l etat du panneau NC. }
+Function NCCopyVirtEntryToHost(Var TP: TTerminalPanel; Slot: Byte;
+ Const E: TNCEntry; Const DestSpec: String): Boolean;
+Var
+ TempPath, FinalDest: String;
+ Extracted: Boolean;
+ LastCh: Char;
+ SrcFile, DstFile: File;
+ Buffer: Array[1..4096] Of Byte;
+ RecordsRead: Word;
+Begin
+ NCCopyVirtEntryToHost := False;
+ If E.IsDir Then Exit;
+ If FatVol[Slot].IsHPFS Then
+  Extracted := HPFS_ExtractToTempFile(Slot, E.Cluster, E.Size, TempPath)
+ Else
+  Extracted := Fat_ExtractToTempFile(Slot, E.Cluster, E.Size, E.Name, TempPath);
+ If Not Extracted Then Begin
+  TermAddLine(TP, 'Copie : extraction impossible pour ' + E.Name);
+  Exit;
+ End;
+ { Le fichier temporaire extrait porte un nom GENERIQUE (DEVENV_NC_FAT.<ext>}
+ { ou DEVENV_NC_HPFS.TMP, jamais le vrai nom d origine) - reconstruire ici  }
+ { le nom de cible REEL, meme convention que TermCopyFile lui-meme (ajoute  }
+ { le nom de base seulement si la cible se termine explicitement par        }
+ { ':'/'\'/'/' , sinon la cible est deja le chemin complet voulu). }
+ If DestSpec = '' Then FinalDest := E.Name
+ Else Begin
+  LastCh := DestSpec[Length(DestSpec)];
+  If (LastCh = ':') Or (LastCh = '\') Or (LastCh = '/') Then
+   FinalDest := DestSpec + E.Name
+  Else
+   FinalDest := DestSpec;
+ End;
+ { BOGUE REEL trouve en verifiant (2026-08-23) : appeler TermCopyFile ici    }
+ { serait tentant (TempPath et FinalDest sont tous deux DEFINITIVEMENT des   }
+ { chemins HOTE), mais TermCopyFile fait passer FinalDest par              }
+ { Term_ResolveVirtTarget, qui traite TOUT chemin commencant par "X:" comme  }
+ { potentiellement une lettre de LECTEUR VIRTUEL (Term_DriveIdxFromLetter)   }
+ { - or le disque virtuel courant peut lui-meme etre presente sous la        }
+ { lettre "C:" (confirme : le selecteur Alt+F1 liste bien 2 entrees "C:",    }
+ { une hote et une virtuelle) - EXACTEMENT la lettre par laquelle commencent }
+ { la plupart des chemins hote reels (dont celui de l utilisateur qui a      }
+ { signale ce bogue, "C:\SOURCE\GITHUB\DEV-COOLS"). Le fichier atterrissait   }
+ { donc silencieusement sur le disque VIRTUEL (no-op, l ecriture y est deja  }
+ { bloquee de toute facon) au lieu du vrai chemin hote voulu. Copie hote-a-  }
+ { hote DIRECTE ici (meme boucle simple que la branche "Cas hote -> hote"    }
+ { de TermCopyFile) pour ne jamais retraverser cette resolution ambigue.     }
+ {$I-}
+ Assign(SrcFile, TempPath);
+ Reset(SrcFile, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Copie : fichier temporaire introuvable : ' + TempPath);
+  Exit;
+ End;
+ {$I-}
+ Assign(DstFile, FinalDest);
+ Rewrite(DstFile, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Copie : impossible de creer : ' + FinalDest);
+  Close(SrcFile);
+  Exit;
+ End;
+ BlockRead(SrcFile, Buffer, SizeOf(Buffer), RecordsRead);
+ While RecordsRead > 0 Do Begin
+  BlockWrite(DstFile, Buffer, RecordsRead);
+  BlockRead(SrcFile, Buffer, SizeOf(Buffer), RecordsRead);
+ End;
+ Close(SrcFile);
+ Close(DstFile);
+ NCCopyVirtEntryToHost := True;
 End;
 
 Procedure NCActionCopyStart(Side, OtherSide: Integer);
@@ -38824,18 +40979,46 @@ Begin
          NCListDir(NCState.Slot, NCState.Panes[Side]);
         End;
        ncPromptCopy:
-        If (NCState.PromptBuf <> '') And (NCState.Slot < 0) Then Begin
-         If NCState.Panes[Side].MarkCount > 0 Then Begin
-          For I := 0 To NCState.Panes[Side].Count - 1 Do
-           If NCState.Panes[Side].Marked[I] Then
-            TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
-             NCState.Panes[Side].Entries[I].Name), NCState.PromptBuf);
-         End Else If NCState.Panes[Side].Count > 0 Then
-          TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
-           NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name),
-           NCState.PromptBuf);
-         NCListDir(NCState.Slot, NCState.Panes[0]);
-         NCListDir(NCState.Slot, NCState.Panes[1]);
+        If NCState.PromptBuf <> '' Then Begin
+         If NCState.Slot < 0 Then Begin
+          If NCState.Panes[Side].MarkCount > 0 Then Begin
+           For I := 0 To NCState.Panes[Side].Count - 1 Do
+            If NCState.Panes[Side].Marked[I] Then
+             TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+              NCState.Panes[Side].Entries[I].Name), NCState.PromptBuf);
+          End Else If NCState.Panes[Side].Count > 0 Then
+           TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
+            NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor].Name),
+            NCState.PromptBuf);
+         End Else Begin
+          { BOGUE REEL corrige (2026-08-23) : panneau source sur disque      }
+          { virtuel - voir le commentaire de tete de NCCopyVirtEntryToHost.  }
+          If NCState.Panes[Side].MarkCount > 0 Then Begin
+           For I := 0 To NCState.Panes[Side].Count - 1 Do
+            If NCState.Panes[Side].Marked[I] Then
+             NCCopyVirtEntryToHost(TP, Byte(NCState.Slot),
+              NCState.Panes[Side].Entries[I], NCState.PromptBuf);
+          End Else If NCState.Panes[Side].Count > 0 Then
+           NCCopyVirtEntryToHost(TP, Byte(NCState.Slot),
+            NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor],
+            NCState.PromptBuf);
+         End;
+         { NCListDir(Slot, Pane) decide hote/virtuel UNIQUEMENT d apres le  }
+         { parametre Slot passe, jamais d apres l etat propre du panneau    }
+         { (NCState.Slot est un DRAPEAU GLOBAL UNIQUE, pas par panneau -    }
+         { confirme en lisant NCListDir) : rafraichir OtherSide ici avec    }
+         { NCState.Slot (virtuel) le reinterpreterait a tort comme virtuel  }
+         { meme s il affiche en realite un repertoire hote (observe : le    }
+         { panneau se vide). Quand la source est virtuelle, se limiter au   }
+         { rafraichissement du panneau SOURCE (Side, dont le contexte est,  }
+         { lui, correct) - limitation pre-existante de l architecture NC    }
+         { (un seul NCState.Slot pour toute la session, pas par panneau),   }
+         { hors de portee de ce correctif. }
+         If NCState.Slot < 0 Then Begin
+          NCListDir(NCState.Slot, NCState.Panes[0]);
+          NCListDir(NCState.Slot, NCState.Panes[1]);
+         End Else
+          NCListDir(NCState.Slot, NCState.Panes[Side]);
         End;
        ncPromptRenMov:
         If (NCState.PromptBuf <> '') And (NCState.Slot < 0) And
@@ -75938,6 +78121,93 @@ Begin
 End;
 
 { ========================================================================== }
+{ Chantier OS/2 LX, Stage 4 - backend -COS2LX. MEME decision de portee       }
+{ qu ELF64 (voir le commentaire de tete d ELF64_RunOneChunk juste avant) :   }
+{ LX_Mem (32 Mo) est une globale unique, pas de tableau de sauvegarde par    }
+{ onglet - un SEUL onglet OS/2 LX a la fois est reellement independant,      }
+{ meme limitation assumee, non corrigee, cas rare non demande. }
+Procedure Lx_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then LX_AsyncKeyEsc := True;
+  End;
+  If LX_AsyncKeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If LX_Halted Then Break;
+  If P.TotalSteps >= 5000000 Then Break;
+  Lx_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+{ Message + diagnostics de fin d execution OS/2 LX - meme structure que      }
+{ ELF64_PrintEndMessage (registres 32 bits EAX/ESP/etc au lieu de RAX/RSP,   }
+{ historique EIP/ESP de LX_TraceEIP/LX_TraceESP au lieu de RIP/RSP). }
+Procedure Lx_PrintEndMessage(Var P: TEmulatorPanel);
+Var
+ TraceN, TraceI: LongInt;
+ TraceLine: String;
+Begin
+ If LX_Halted Then Begin
+  P.CurFg := 11;
+  EmuVScr_WriteStr(P, '[' + LX_HaltReason + ']');
+ End Else Begin
+  P.CurFg := 12;
+  EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(P.TotalSteps) + ' instructions atteinte]');
+ End;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, IntToStr(P.TotalSteps) + ' instruction(s) executee(s).');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'EIP : $' + HexLong(LX_EIP) +
+   '   EAX : $' + HexLong(LX_Reg.EAX));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'ESP : $' + HexLong(LX_Reg.ESP) +
+   '   EDI : $' + HexLong(LX_Reg.EDI));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'ECX : $' + HexLong(LX_Reg.ECX) +
+   '   EDX : $' + HexLong(LX_Reg.EDX));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'ESI : $' + HexLong(LX_Reg.ESI) +
+   '   EBX : $' + HexLong(LX_Reg.EBX));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'EBP : $' + HexLong(LX_Reg.EBP));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If LX_LastBadEIP <> 0 Then Begin
+   EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : $' + HexLong(LX_LastBadEIP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If (LX_LastBadEIP <> 0) Or (Not LX_Halted) Then Begin
+   EmuVScr_WriteStr(P, 'Historique EIP / ESP (plus ancien -> plus recent) :');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   If LX_TraceCount < 60 Then TraceN := LX_TraceCount Else TraceN := 60;
+   For TraceI := TraceN - 1 DownTo 0 Do Begin
+    TraceLine := 'EIP=$' +
+     HexLong(LX_TraceEIP[(LX_TraceCount - 1 - TraceI) And 255]) +
+     '  ESP=$' +
+     HexLong(LX_TraceESP[(LX_TraceCount - 1 - TraceI) And 255]);
+    EmuVScr_WriteStr(P, TraceLine);
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   End;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+ End;
+ P.CurFg := 7;
+ EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+ P.Running := False;
+ P.Fault := sfEndProgram;
+ P.StatusMsg := LX_HaltReason;
+End;
+
+{ ========================================================================== }
 { Stage 1 SEUL (2026-08-15, suite immediate) - backend DOS/8086 (-CD/-CP).   }
 { Meme decision de portee qu ELF64 (voir ELF64_RunOneChunk) : l etat          }
 { periferique DOS deborde largement le seul P.CPU (deja sauve par onglet     }
@@ -76548,6 +78818,7 @@ Var
  IsZ80: Boolean;
  Is6809: Boolean;
  IsELF64: Boolean;
+ IsOS2LX: Boolean;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -76680,9 +78951,20 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-COS2LX' Then
+ Begin
+  { Chantier OS/2 LX (2026-08-22/23), Stage 4 - console 80x25, meme         }
+  { convention que DOS/ELF64 (mode console uniquement, PM hors de portee). }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsELF64 := (TargetCPU = '-CELF64');
+ IsOS2LX := (TargetCPU = '-COS2LX');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
@@ -76704,6 +78986,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CD'      Then CPUName := 'Intel 8086 mode reel'
  Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
  Else If TargetCPU = '-CELF64'  Then CPUName := 'Linux x86-64 (ELF statique)'
+ Else If TargetCPU = '-COS2LX'  Then CPUName := 'OS/2 LX 32 bits (console)'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
  Else If TargetCPU = '-CAPPLEII'Then CPUName := 'Apple II (6502)'
@@ -77512,6 +79795,48 @@ Begin NesActive := False;
   P.Loaded := True;
   Exit;
  End;
+ If IsOS2LX Then Begin
+  { ----- Chantier OS/2 LX, Stage 4 : emulateur OS/2 LX 32 bits (console) -}
+  { meme motif Stage 1 qu ELF64 juste au-dessus (charge puis rend la main }
+  { immediatement, execution reelle pilotee par l idle-tick via            }
+  { Lx_RunOneChunk). }
+  LX_Panel := @P;
+  Loaded := Emu_LoadLX(BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : binaire OS/2 LX invalide ou illisible.');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P,
+    'Seuls les executables LX console (mode Presentation Manager');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    'explicitement hors de portee) sont vises pour le moment.');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement OS/2 LX';
+   Exit;
+  End;
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Binaire OS/2 LX charge : ' +
+    IntToStr(LX_ImportSlotCount) + ' import(s) resolu(s).');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P, 'Point d''entree   : $' + HexLong(LX_EntryPoint));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Pile initiale ESP: $' + HexLong(LX_Reg.ESP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  LX_AsyncKeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
+  Exit;
+ End;
  If Not IsX86 Then Begin
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 14;
@@ -78199,6 +80524,33 @@ Begin
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    ELF64_PrintEndMessage(P);
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-COS2LX') Then Begin
+  { Chantier OS/2 LX, Stage 4 - meme motif exact que le bloc -CELF64        }
+  { juste au-dessus. }
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  Lx_RunOneChunk(P);
+  Finished := LX_Halted Or (P.TotalSteps >= 5000000) Or LX_AsyncKeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   Lx_PrintEndMessage(P);
    DrawEmulatorPanel(P);
   End;
   Exit;
