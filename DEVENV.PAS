@@ -1350,6 +1350,17 @@ Const
  OPT_SBAR_WIDTH       = 14;      { largeur scrollbar arbre categories}
  OPT_DROPDOWN_ITEM_H  = 20;      { hauteur d un item de liste deroulante}
  DOS_TYPE_COUNT       = 7;       { nombre de types de DOS emulables }
+ DOS_TYPE_OS2         = 6;       { index "OS/2" dans DosTypeName - voir  }
+                                  { Emu_DoInt21/Emu_DoInt2F, cablage reel }
+                                  { du "DOS: OS" (2026-08-23)             }
+ { Version OS/2 rapportee quand DosType=OS/2 (AH=30h, AX=3306h, INT 2Fh/  }
+ { AX=4010h) - fixee a Warp 4 (20.40), coherente avec la lignee           }
+ { eComStation 2.0 deja utilisee comme disque de test cette session. Pas  }
+ { de sous-choix de version OS/2 dans l UI actuelle - voir DOC/           }
+ { DOS_FOR_OS2_PROGRAMMING.txt section 2 pour la table des versions       }
+ { rapportees par generation d OS/2. }
+ EMU_OS2_VER_MAJOR    = 20;
+ EMU_OS2_VER_MINOR    = 40;
  DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
  DOS_HARDWARE_COUNT   = 11;      { nombre de modeles de materiel    }
  DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
@@ -6079,6 +6090,18 @@ Var
  EmuBreakFlag   : Byte;     { AH=33h, 0=off 1=on }
  EmuAllocStrat  : Word;     { AH=58h, 0=first fit }
  EmuSwitchChar  : Byte;     { AH=37h, '/' par defaut }
+ { AH=64h/CX=636Ch (services VDM OS/2, actifs seulement si DosType=OS/2 -   }
+ { voir Emu_DoInt21, DOC/DOS_FOR_OS2_PROGRAMMING.txt section 7). Le vrai    }
+ { OS/2 ne rend PAS le titre reel de la session a la lecture (DX=0002h) -   }
+ { seulement ce que CE programme a lui-meme defini via DX=0001h depuis son  }
+ { lancement (chaine vide/premier octet nul tant que rien n a ete change),  }
+ { d ou EmuOS2SetTitle distinct du vrai WinMgr.Windows[].Title affiche. }
+ EmuOS2SetTitle    : String;    { ce qu un DX=0001h a defini, '' si jamais }
+ EmuOS2TitleSaved  : Boolean;   { WinMgr...Title d origine deja capture ?  }
+ EmuOS2TitleDefault: String;    { WinMgr...Title d origine, pour DX=0000h  }
+ EmuOS2LastDrive   : Char;      { DX=0003h - aucun analyseur LASTDRIVE=    }
+                                 { existant dans ce fichier (verifie),      }
+                                 { defaut 'E' comme une config DOS courante }
  { --- IRQ mat?rielles --- }
  EmuTickCounter : LongInt;       { compteur de ticks (~18.2 Hz) }
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
@@ -52957,6 +52980,9 @@ Begin
  EmuBreakFlag := 0;
  EmuAllocStrat := 0;
  EmuSwitchChar := Ord('/');
+ EmuOS2SetTitle := '';
+ EmuOS2TitleSaved := False;
+ EmuOS2LastDrive := 'E';
  Ext := '';
  For I := Length(FileName) DownTo 1 Do
   If FileName[I] = '.' Then Begin
@@ -53012,6 +53038,9 @@ Begin
  EmuBreakFlag := 0;
  EmuAllocStrat := 0;
  EmuSwitchChar := Ord('/');
+ EmuOS2SetTitle := '';
+ EmuOS2TitleSaved := False;
+ EmuOS2LastDrive := 'E';
  If Not Emu_ImageReadSector(DriveIdx, 0, SectorBuf) Then Exit;
  Emu_WriteBlock(C, 0, $7C00, SectorBuf, 512);
  { CS:IP = 07C0:0000 plutot que 0000:7C00 - meme adresse physique          }
@@ -57409,11 +57438,25 @@ Begin
     P.CPU.Regs.BX := EmuDtaOfs;
    End;
   $30:
-   { Renvoyer DOS 5.00 par defaut (compatible TP4..TP7, QP, etc). }
+   { Renvoyer DOS 5.00 par defaut (compatible TP4..TP7, QP, etc), sauf si  }
+   { l utilisateur a choisi "OS/2" dans Options > Emulateur > DOS: OS      }
+   { (OptionsDlg.Data.DosType, meme patron de lecture directe que          }
+   { DosHardwareBiosId/OptionsDlg.Data.DosHardware) - alors rapporter la   }
+   { version DOS synthetique OS/2 (AL=majeur decimal, AH=mineur decimal,   }
+   { voir DOC/DOS_FOR_OS2_PROGRAMMING.txt section "AH=30h" et              }
+   { EMU_OS2_VER_MAJOR/MINOR). BH=0 (OEM IBM) quand AL d entree=0, sinon    }
+   { flags=0 (aucun rapporte) - CX (numero de serie) reste 0 dans les      }
+   { deux cas, comme avant. }
    Begin
-    P.CPU.Regs.AL := 5;
-    P.CPU.Regs.AH := 0;
-    P.CPU.Regs.BH := $FF;
+    If OptionsDlg.Data.DosType = DOS_TYPE_OS2 Then Begin
+     P.CPU.Regs.AL := EMU_OS2_VER_MAJOR;
+     P.CPU.Regs.AH := EMU_OS2_VER_MINOR;
+     P.CPU.Regs.BH := 0;
+    End Else Begin
+     P.CPU.Regs.AL := 5;
+     P.CPU.Regs.AH := 0;
+     P.CPU.Regs.BH := $FF;
+    End;
     P.CPU.Regs.BL := 0;
     P.CPU.Regs.CX := 0;
    End;
@@ -57434,6 +57477,25 @@ Begin
          P.CPU.Regs.DL := B;
         End;
      5: P.CPU.Regs.DL := 3;
+     6:
+      { AX=3306h : version "vraie" de la personnalite DOS, pensee pour       }
+      { contourner un eventuel SETVER (DOC/DOS_FOR_OS2_PROGRAMMING.txt       }
+      { section "AX=3306h") - generique, independant de DosType. Ce clone    }
+      { n emule pas de mecanisme SETVER separe, donc la version "vraie"      }
+      { coincide toujours avec la version "presentee" par AH=30h (voir le    }
+      { case $30 ci-dessus, meme branche OS/2 via OptionsDlg.Data.DosType).  }
+      Begin
+       If OptionsDlg.Data.DosType = DOS_TYPE_OS2 Then Begin
+        P.CPU.Regs.BL := EMU_OS2_VER_MAJOR;
+        P.CPU.Regs.BH := EMU_OS2_VER_MINOR;
+       End Else Begin
+        P.CPU.Regs.BL := 5;
+        P.CPU.Regs.BH := 0;
+       End;
+       P.CPU.Regs.AL := 0;  { <> FFh : version vraie disponible (>= DOS 5.0) }
+       P.CPU.Regs.DL := 0;  { revision }
+       P.CPU.Regs.DH := 0;  { pas de DOS en ROM/HMA emule }
+      End;
     End;
    End;
   $34:
@@ -58198,6 +58260,73 @@ Begin
    End;
   $63, $67:
    Exclude(P.CPU.Flags.s, EFG_CF);
+  $64:
+   { AH=64h/CX=636Ch : services VDM non documentes exposes par une VDM      }
+   { OS/2 2.x+ a une session DOS reel-mode (DOC/DOS_FOR_OS2_PROGRAMMING.txt }
+   { section 7) - un vrai DOS n a jamais cette fonction, donc n y repondre  }
+   { QUE si l utilisateur a choisi "OS/2" dans Options > Emulateur > DOS:   }
+   { OS (OptionsDlg.Data.DosType) ET que CX porte bien la signature 636Ch    }
+   { ("cl") - sans elle, OS/2 route reellement l appel vers AH=6Ch a cause   }
+   { d un vieux bogue de la FAPI 1.x (deja documente dans le fichier         }
+   { source), donc CETTE fonction reste totalement invisible dans les deux  }
+   { cas (DosType normal, ou CX incorrect) - meme comportement "non gere"    }
+   { qu avant l ajout de ce case. }
+   If (OptionsDlg.Data.DosType = DOS_TYPE_OS2) And (P.CPU.Regs.CX = $636C) Then Begin
+    Case P.CPU.Regs.DX Of
+     0: Begin { reactiver le titre automatique }
+      If EmuOS2TitleSaved Then
+       WinMgr.Windows[WinMgr.ActiveIdx].Title := EmuOS2TitleDefault;
+      EmuOS2SetTitle := '';
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+     1: Begin { ES:DI -> nouveau titre ASCIZ, 12 caracteres max }
+      If Not EmuOS2TitleSaved Then Begin
+       EmuOS2TitleDefault := WinMgr.Windows[WinMgr.ActiveIdx].Title;
+       EmuOS2TitleSaved := True;
+      End;
+      FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+      If Length(FName) > 12 Then FName := Copy(FName, 1, 12);
+      EmuOS2SetTitle := FName;
+      WinMgr.Windows[WinMgr.ActiveIdx].Title := FName;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+     2: Begin { ES:DI -> tampon de 13 octets pour lire le titre }
+      { Fidele au vrai comportement documente : rend ce que CE programme a  }
+      { lui-meme defini via DX=0001h depuis son lancement (chaine vide,     }
+      { premier octet nul, si rien n a encore ete change) - PAS le vrai      }
+      { titre affiche de la fenetre/onglet, qu OS/2 ne divulgue pas ainsi.  }
+      For I := 1 To Length(EmuOS2SetTitle) Do
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + I - 1,
+        Byte(EmuOS2SetTitle[I]));
+      Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI + Length(EmuOS2SetTitle), 0);
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+     3: Begin { AL = LASTDRIVE (OS/2 2.1 seulement - absent sous Warp 3+,   }
+               { voir le document ; ce clone le rend disponible dans tous   }
+               { les cas plutot que de suivre cette incoherence historique. }
+      P.CPU.Regs.AL := Byte(EmuOS2LastDrive);
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+     4: Begin { AX = nombre d entrees de la JFT OS/2 de la VDM - constante  }
+               { plausible, aucun scenario de test reel ne verifie une      }
+               { valeur precise (voir le document, section 7). }
+      P.CPU.Regs.AX := 50;
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+     { 5..8 : second mot de flags SFT, symboles noyau de debogage, call     }
+     { gate WinOS2, message NLS de chargement - dependent de structures     }
+     { internes du noyau OS/2 ou d un OS2KRNL de debogage, qu aucun         }
+     { scenario de test accessible ici ne peut exploiter (voir le document, }
+     { section 7) - laisser CF pose plutot que fabriquer une reponse. }
+    Else
+     Include(P.CPU.Flags.s, EFG_CF);
+    End;
+   End Else
+    { DosType<>OS/2, ou CX sans la signature 636Ch : AH=64h reste NON GERE, }
+    { exactement le meme comportement qu avant l ajout de ce case (avant,   }
+    { $64 tombait dans le "Else Emu_SetDosErr(P, 1)" generique en fin de     }
+    { Case AH ci-dessous, faute de label reconnu). }
+    Emu_SetDosErr(P, 1);
   $65:
    { Informations pays etendues - decouvert manquant en comparant avec       }
    { dos.cpp de DOSBox (AH=65h), qui lui-meme ne l implante que              }
@@ -65469,6 +65598,23 @@ Begin
   P.CPU.Regs.DI := EMU_DPMI_STUB_OFS;
   Exit;
  End;
+ If (OptionsDlg.Data.DosType = DOS_TYPE_OS2) And (P.CPU.Regs.AX = $4010) Then Begin
+  { AX=4010h : detection de l hote OS/2 2.0+ (DOC/DOS_FOR_OS2_PROGRAMMING.  }
+  { txt section "INT 2Fh/AX=4010h") - seulement actif si DosType=OS/2 ;     }
+  { sinon ce bloc n est pas atteint et le code tombe dans le chainage IVT   }
+  { generique plus bas, qui laisse AX INCHANGE (=4010h) si rien n est       }
+  { accroche - EXACTEMENT le comportement documente pour "OS/2 absent",     }
+  { donc aucune garde supplementaire n est necessaire pour ce cas. Warp 3   }
+  { est connu pour rendre AX=0000h (pas une autre valeur non-4010h          }
+  { quelconque) - suivre cette convention plutot qu une autre. BX = version }
+  { packee BL=majeur/BH=mineur, meme ordre que AX=3306h (le document ne     }
+  { precise pas explicitement l ordre pour 4010h ; choix par coherence      }
+  { avec 3306h, voir le case $33/AL=6 de Emu_DoInt21). }
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := EMU_OS2_VER_MAJOR;
+  P.CPU.Regs.BH := EMU_OS2_VER_MINOR;
+  Exit;
+ End;
  IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
  IvtSeg := Emu_ReadWord(P.CPU, 0, Word($2F) * 4 + 2);
  If IvtSeg <> 0 Then Emu_FireHwInt(P, $2F);
@@ -67139,9 +67285,22 @@ Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
+    { BOGUE REEL (2026-08-23, trouve en verifiant SHR AL,4 pour le           }
+    { cablage OS/2) : Op.Len INCLUT DEJA l octet ModRM lui-meme (voir        }
+    { l initialisation Op.Len := 1 au debut de Emu_DecodeModRM) - l octet     }
+    { immediat (compte de decalage) se trouve donc a IP+1+Op.Len, meme        }
+    { formule que le groupe 3 voisin ($F6 TEST rm8,imm8, quelques lignes     }
+    { plus bas), PAS IP+2+Op.Len. Cette derniere lisait un octet TROP LOIN,   }
+    { dans l instruction SUIVANTE - confirme par SHR AL,4 sur AL=$28 rendant  }
+    { 0 au lieu de 2 (l octet lu comme compte etait en realite l opcode de   }
+    { l instruction suivante, masque a Cnt And $1F donnant un decalage >=8,   }
+    { donc un resultat nul). L avance d IP juste apres cette boucle, plus     }
+    { bas (Inc du compteur IP de 2+Op.Len), reste correcte : elle compte la   }
+    { longueur TOTALE de l instruction (opcode+ModRM+imm), ce qui est         }
+    { different de la position d un octet a l INTERIEUR de l instruction.    }
     If (OpCode = $C0) Or (OpCode = $C1) Then
      Cnt := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
-            P.CPU.IP + 2 + Op.Len)
+            P.CPU.IP + 1 + Op.Len)
     Else If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL
     Else Cnt := 1;
     Cnt := Cnt And $1F;
