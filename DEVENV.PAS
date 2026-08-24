@@ -62748,9 +62748,30 @@ Begin
    P.CPU.Regs.DH := EmuFloppyHeads[Idx] - 1;
    If IsHD Then P.CPU.Regs.DL := Emu_HardDiskCount
            Else P.CPU.Regs.DL := Emu_FloppyCount;
-   { ES:DI -> table de parametres : on laisse 0:0 (non utilisee) }
-   P.CPU.Segs.ES := 0;
-   P.CPU.Regs.DI := 0;
+   { BOGUE REEL (2026-08-24, trouve en investiguant le blocage BOOT/getclus/  }
+   { get_fat_sector - fbigfat correctement calcule par fat_big_small puis     }
+   { efface par une relecture ulterieure de bds_fatsiz a une AUTRE adresse) : }
+   { ES:DI -> table de parametres n est un vrai contrat BIOS QUE pour les      }
+   { lecteurs de DISQUETTE (table de parametres disquette 1Eh, format         }
+   { standard depuis le PC original) - pour un DISQUE DUR, ES:DI n est ni      }
+   { documente ni utilise par aucun BIOS reel, qui laisse donc ces registres   }
+   { tels quels plutot que de les ecraser explicitement. Le code source reel   }
+   { de MS-DOS 6.0 (sethard, msinit.asm) exploite precisement cette garantie : }
+   { il appelle INT 13h AH=08h AVEC ds:di deja positionne sur la structure     }
+   { BDS du disque en cours de construction (et le reutilise IMMEDIATEMENT     }
+   { apres pour fat_big_small et le calcul FAT12/FAT16), sans jamais le        }
+   { sauvegarder/restaurer autour de cet appel precis - un choix delibere,     }
+   { fidele au comportement documente reel. Mettre ES:DI a 0:0 "pour avoir     }
+   { une valeur definie" ecrasait donc silencieusement le pointeur BDS de      }
+   { l appelant pour TOUT disque dur, faisant calculer et ecrire fbigfat au    }
+   { mauvais endroit (jamais chaine dans la liste que setdrive parcourt        }
+   { ensuite) - boucle infinie dans get_fat_sector (mauvaise formule de        }
+   { desassemblage FAT12 au lieu de FAT16) des la premiere lecture de          }
+   { MSDOS.SYS. Corrige en ne touchant ES:DI que pour les VRAIES disquettes.  }
+   If Not IsHD Then Begin
+    P.CPU.Segs.ES := 0;
+    P.CPU.Regs.DI := 0;
+   End;
    Emu_Int13SetOK(P, Idx);
   End;
   $15: Begin   { Get disk type }
