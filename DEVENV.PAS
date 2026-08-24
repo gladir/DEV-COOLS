@@ -1907,6 +1907,30 @@ Const
  EMU_LOL_NULDEV_OFS = $F640; { en-tete du pilote NUL (18 octets), pointe par   }
                               { EMU_LOL_OFS+$22 }
 
+ { INT 15h AH=C0h ("Get System Configuration Parameters") - voir                }
+ { Emu_DoInt15AT case $C0 : BOGUE REEL (2026-08-24, trouve en poursuivant       }
+ { l enquete DOS=HIGH/XMS - un WATCH pose sur l ecriture du VRAI mecanisme      }
+ { d accrochage INT2Fh de DOS ("bios_i2f", documente dans le vrai source        }
+ { MS-DOS 6.0 divulgue, msbdata.inc, comme "how the BIOS hooks int2f" - un      }
+ { JMP FAR dont la cible est patchable) a montre que cette structure, bien      }
+ { correctement initialisee tres tot au boot (etape 533), etait ECRASEE par     }
+ { du remplissage sans rapport a l etape 19574 - BIEN AVANT que HIMEM.SYS ne    }
+ { s execute (~etape 247780) - via une ecriture provenant de ce handler ici.    }
+ { Le vrai BIOS ne recoit JAMAIS ES:BX du programme appelant pour cette         }
+ { fonction : il retourne ES:BX pointant vers SA PROPRE table interne (en ROM   }
+ { sur un vrai PC) - l appelant ne les initialise donc JAMAIS avant l appel,     }
+ { et ce handler ecrivait ses 10 octets de reponse directement A TRAVERS le     }
+ { contenu ARBITRAIRE (jamais destine a etre une adresse) que ES:BX contenait   }
+ { par hasard au moment de l appel - dans ce cas precis, ES:BX valait           }
+ { 0070:0005, exactement l adresse du mecanisme bios_i2f reel de DOS, detruit   }
+ { par cette ecriture non voulue. Corrige en ecrivant la table a un            }
+ { emplacement FIXE et reserve du segment $F000 (meme convention que les       }
+ { autres stubs de ce fichier), puis en ne renvoyant QUE ES:BX pointant vers    }
+ { CET emplacement - jamais d ecriture a l adresse fournie par l appelant. }
+ EMU_SYSCONF_SEG = $F000;
+ EMU_SYSCONF_OFS = $F660; { table de 10 octets (longueur+8), au-dela de       }
+                           { EMU_LOL_NULDEV_OFS+18=$F652, donc sans collision }
+
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
  MAX_CYCLES    = 100000;    { limite de surete 68k }
@@ -61191,8 +61215,13 @@ Begin
  Case P.CPU.Regs.AH Of
   $C0: Begin  { Get System Configuration Parameters : ES:BX -> table de 8    }
               { octets precedee de sa longueur (voir RBIL "System Model      }
-              { Byte"/"Feature Byte 1"). }
-   Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.BX;
+              { Byte"/"Feature Byte 1"). BOGUE REEL CORRIGE (2026-08-24,     }
+              { voir EMU_SYSCONF_SEG/OFS) : un vrai BIOS ne recoit jamais     }
+              { ES:BX de l appelant pour cette fonction, il renvoie un        }
+              { pointeur vers SA PROPRE table (en ROM) - ecrire a l ancienne  }
+              { adresse fournie par l appelant (jamais destinee a servir de   }
+              { cible d ecriture) ecrasait de la memoire arbitraire. }
+   Seg := EMU_SYSCONF_SEG; Ofs := EMU_SYSCONF_OFS;
    Emu_WriteWord(P.CPU, Seg, Ofs,     8);  { longueur : 8 octets suivent }
    Emu_WriteByte(P.CPU, Seg, Ofs + 2, DosHardwareBiosId(OptionsDlg.Data.DosHardware));
    Emu_WriteByte(P.CPU, Seg, Ofs + 3, 0);  { sous-modele }
@@ -61211,6 +61240,10 @@ Begin
    Emu_WriteByte(P.CPU, Seg, Ofs + 7, 0);
    Emu_WriteByte(P.CPU, Seg, Ofs + 8, 0);
    Emu_WriteByte(P.CPU, Seg, Ofs + 9, 0);
+   { Renvoyer a l appelant le pointeur vers NOTRE table (jamais l inverse -   }
+   { voir le commentaire ci-dessus) - c est le comportement reel attendu. }
+   P.CPU.Segs.ES := Seg;
+   P.CPU.Regs.BX := Ofs;
    P.CPU.Regs.AH := 0;
   End;
   $88: Begin  { Get Extended Memory Size (Ko au-dela de 1 Mo) : cet emulateur }
