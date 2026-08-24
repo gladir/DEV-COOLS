@@ -5584,6 +5584,17 @@ Type
   NeedRepaint  : Boolean;          { doit etre redessine            }
   FocusedBtn   : Integer;          { bouton clavier actif: 0=Nouveau, 1=Ouvrir }
  End;
+ { INT 21h/AX=714Eh-714Fh (Windows 95, Stage 5) - un resultat de recherche }
+ { de nom long capture d avance (contrairement au FindFirst/Next classique}
+ { $4E/$4F, qui ne recapture QUE le nom pour FindNext - voir Emu_DoInt21). }
+ TLfnFindEntry = Record
+  Name : String;
+  Attr : Byte;
+  Size : LongInt;
+  Time : LongInt;      { paquet DOS SearchRec.Time : bits 0-15 heure,      }
+                        { bits 16-31 date - meme convention que partout    }
+                        { ailleurs dans ce fichier. }
+ End;
 Var
  Opts       : TDevEnvOptions;
  EvQueue    : TEventQueue;
@@ -6095,6 +6106,16 @@ Var
  EmuFindResults : Array[0..63] Of String;
  EmuFindCount   : Integer;
  EmuFindIndex   : Integer;
+ { INT 21h/AX=714Eh-714Fh-71A1h (Windows 95, Stage 5) - meme discipline    }
+ { "un seul slot global" que le FindFirst/Next classique ci-dessus (aucune }
+ { fonction de ce fichier ne supporte de recherches concurrentes), mais    }
+ { EN PLUS pas sauvegardee/restauree par EmuExecStack (AH=4Bh EXEC) - une  }
+ { recherche LFN en cours ne survit pas a un EXEC enfant, limitation       }
+ { documentee et acceptee (scenario marginal, non requis par le plan). }
+ EmuLfnFindActive  : Boolean;
+ EmuLfnFindResults : Array[0..63] Of TLfnFindEntry;
+ EmuLfnFindCount   : Integer;
+ EmuLfnFindIndex   : Integer;
  EmuExecStack   : Array[0..MAX_EMU_EXEC_DEPTH - 1] Of TEmuExecFrame; { AH=4Bh }
  EmuExecDepth   : Integer;  { 0 = pas d EXEC en cours }
  EmuExitCode    : Word;     { dernier code retour AH=4Ch (AH=4Dh) }
@@ -33271,6 +33292,8 @@ End;
 Const
  FAT_LFN_MAXSEQ = 20;   { 20 * 13 = 260 caracteres, couvre le maximum VFAT }
                         { reel de 255 caracteres. }
+ FAT_MAX_SLOT_RUN = FAT_LFN_MAXSEQ + 1;  { Stage 4 (ecriture) : jusqu a 20 }
+                        { fragments LFN + l entree 8.3 reelle qui les suit.}
 
 Type
  TFatLFNAcc = Record
@@ -34423,6 +34446,393 @@ Begin
  Fat_WriteDirEntry := Fat_WriteSector(Idx, LBA, Buf);
 End;
 
+{ Ecriture de noms longs VFAT (Windows 95, Stage 4 - suite du Stage 3      }
+{ lecture, meme accumulateur TFatLFNAcc reutilise pour Fat_LongNameExists).}
+
+{ Reconstruit l affichage "BASE.EXT" (ou "BASE") d un nom 8.3 deja pret en }
+{ memoire (N11, 11 octets) - PAS depuis un tampon disque brut (a la        }
+{ difference de Fat_EntryName, qui lit aussi l octet d attribut a Off+11 - }
+{ inapplicable ici, N11 n a que 11 octets). }
+Function Fat_Name11ToDisplay(Var N11: Array Of Byte): String;
+Var
+ N, E: String;
+ I: Integer;
+Begin
+ N := '';
+ For I := 0 To 7 Do If N11[I] <> 32 Then N := N + Chr(N11[I]);
+ E := '';
+ For I := 8 To 10 Do If N11[I] <> 32 Then E := E + Chr(N11[I]);
+ If E <> '' Then Fat_Name11ToDisplay := N + '.' + E
+             Else Fat_Name11ToDisplay := N;
+End;
+
+{ Nettoyer une chaine pour l usage "base 8.3 generee a partir d un nom     }
+{ long" : majuscules, espaces et caracteres invalides retires (PAS         }
+{ rejetes - a la difference de Fat_MakeName11, reserve a la validation     }
+{ stricte d un nom deja court explicite). }
+Function Fat_CleanFor83(S: String): String;
+Var
+ I: Integer;
+ C: Char;
+ Out: String;
+Begin
+ S := Fat_UpStr(S);
+ Out := '';
+ For I := 1 To Length(S) Do Begin
+  C := S[I];
+  If Ord(C) < 32 Then Continue;
+  If (C = ' ') Or (C = '.') Or (C = '"') Or (C = '*') Or (C = '+') Or
+     (C = ',') Or (C = '/') Or (C = ':') Or (C = ';') Or (C = '<') Or
+     (C = '=') Or (C = '>') Or (C = '?') Or (C = '[') Or (C = '\') Or
+     (C = ']') Or (C = '|') Then Continue;
+  Out := Out + C;
+ End;
+ Fat_CleanFor83 := Out;
+End;
+
+{ Generer un alias 8.3 unique (troncature + suffixe ~N, algorithme         }
+{ standard Microsoft) pour LongName dans le repertoire donne - utilise a   }
+{ la fois pour l ecriture (Stage 4) et, plus tard, pour AX=71A8h (Stage 5).}
+Function Fat_GenerateUniqueAlias(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ LongName: String; Var N11: Array Of Byte): Boolean;
+Var
+ DotPos, I: Integer;
+ N: LongInt;
+ Base, Ext, CBase, CExt, Suffix, TryName: String;
+ TruncLen: Integer;
+ TryN11: Array[0..10] Of Byte;
+ A: Byte;
+ Cl, Sz: LongInt;
+Begin
+ Fat_GenerateUniqueAlias := False;
+ DotPos := 0;
+ For I := Length(LongName) DownTo 1 Do
+  If LongName[I] = '.' Then Begin DotPos := I; Break; End;
+ If DotPos = 0 Then Begin Base := LongName; Ext := ''; End
+ Else Begin
+  Base := Copy(LongName, 1, DotPos - 1);
+  Ext  := Copy(LongName, DotPos + 1, Length(LongName) - DotPos);
+ End;
+ CBase := Fat_CleanFor83(Base);
+ CExt  := Fat_CleanFor83(Ext);
+ If Length(CExt) > 3 Then CExt := Copy(CExt, 1, 3);
+ If CBase = '' Then CBase := 'FILE';  { nom fait uniquement de caracteres }
+                                       { retires - cas degenere }
+ For N := 1 To 999999 Do Begin
+  Suffix := '~' + IntToStr(N);
+  TruncLen := 8 - Length(Suffix);
+  If TruncLen < 1 Then Exit;    { extremement improbable (N a 6+ chiffres) }
+  If Length(CBase) > TruncLen Then TryName := Copy(CBase, 1, TruncLen) + Suffix
+                              Else TryName := CBase + Suffix;
+  For I := 0 To 10 Do TryN11[I] := Ord(' ');
+  For I := 1 To Length(TryName) Do TryN11[I - 1] := Ord(TryName[I]);
+  For I := 1 To Length(CExt) Do TryN11[8 + I - 1] := Ord(CExt[I]);
+  If Not Fat_FindInDir(Idx, IsRoot, StartCl, Fat_Name11ToDisplay(TryN11),
+   A, Cl, Sz) Then Begin
+   For I := 0 To 10 Do N11[I] := TryN11[I];
+   Fat_GenerateUniqueAlias := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Un nom (court OU long, tel qu affiche) existe-t-il deja dans ce           }
+{ repertoire ? Reutilise l accumulateur LFN du Stage 3 (Fat_LFNAcc*) pour   }
+{ comparer contre le nom EFFECTIF de chaque entree (long s il est present  }
+{ et valide, sinon 8.3) - evite de creer silencieusement un 2e fichier      }
+{ affichant le meme nom long avec un alias 8.3 different. }
+Function Fat_LongNameExists(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ LongNameUp: String): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ SecInClu, I: Integer;
+ Cur: LongInt;
+ S: LongInt;
+ RootCnt: Integer;
+ LBA: LongInt;
+ EntName, Resolved, Effective: String;
+ Attr: Byte;
+ Acc: TFatLFNAcc;
+Begin
+ Fat_LongNameExists := False;
+ Fat_LFNAccReset(Acc);
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   LBA := FatVol[Idx].RootStart + S;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+   For I := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Exit;
+    Inc(RootCnt);
+    If Buf[I * 32] = 0 Then Exit;
+    If Fat_LFNAccFeed(Acc, Buf, I * 32) Then Continue;
+    EntName := Fat_EntryName(Buf, I * 32);
+    If EntName = '' Then Begin Fat_LFNAccReset(Acc); Continue; End;
+    Attr := Fat_EntryAttr(Buf, I * 32);
+    If (Attr And $08) <> 0 Then Begin Fat_LFNAccReset(Acc); Continue; End;
+    Resolved := Fat_LFNAccResolve(Acc, Buf, I * 32);
+    Fat_LFNAccReset(Acc);
+    If Resolved <> '' Then Effective := Resolved Else Effective := EntName;
+    If Fat_UpStr(Effective) = LongNameUp Then Begin
+     Fat_LongNameExists := True;
+     Exit;
+    End;
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+    For I := 0 To 15 Do Begin
+     If Buf[I * 32] = 0 Then Exit;
+     If Fat_LFNAccFeed(Acc, Buf, I * 32) Then Continue;
+     EntName := Fat_EntryName(Buf, I * 32);
+     If EntName = '' Then Begin Fat_LFNAccReset(Acc); Continue; End;
+     Attr := Fat_EntryAttr(Buf, I * 32);
+     If (Attr And $08) <> 0 Then Begin Fat_LFNAccReset(Acc); Continue; End;
+     If (EntName = '.') Or (EntName = '..') Then Begin
+      Fat_LFNAccReset(Acc);
+      Continue;
+     End;
+     Resolved := Fat_LFNAccResolve(Acc, Buf, I * 32);
+     Fat_LFNAccReset(Acc);
+     If Resolved <> '' Then Effective := Resolved Else Effective := EntName;
+     If Fat_UpStr(Effective) = LongNameUp Then Begin
+      Fat_LongNameExists := True;
+      Exit;
+     End;
+    End;
+   End;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
+End;
+
+{ Trouver Need emplacements de repertoire LIBRES et LOGIQUEMENT             }
+{ CONSECUTIFS (fenetre glissante : reinitialisee des qu une entree occupee  }
+{ est rencontree) - necessaire pour loger une chaine LFN + son entree 8.3   }
+{ juste apres, qui doivent former un groupe ininterrompu. Une entree $00    }
+{ (jamais utilisee) et une entree $E5 (effacee) comptent toutes deux comme  }
+{ libres, memes conventions que Fat_FindFreeSlot. }
+Function Fat_FindFreeSlotRun(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ Need: Integer; Var RunLBA: Array Of LongInt;
+ Var RunIdx: Array Of Integer): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ SecInClu, I: Integer;
+ Cur: LongInt;
+ S: LongInt;
+ RootCnt: Integer;
+ LBA: LongInt;
+ B0: Byte;
+ RunLen: Integer;
+Begin
+ Fat_FindFreeSlotRun := False;
+ RunLen := 0;
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   LBA := FatVol[Idx].RootStart + S;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+   For I := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Exit;
+    Inc(RootCnt);
+    B0 := Buf[I * 32];
+    If (B0 = 0) Or (B0 = $E5) Then Begin
+     RunLBA[RunLen] := LBA;
+     RunIdx[RunLen] := I;
+     Inc(RunLen);
+     If RunLen >= Need Then Begin
+      Fat_FindFreeSlotRun := True;
+      Exit;
+     End;
+    End Else
+     RunLen := 0;
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+    For I := 0 To 15 Do Begin
+     B0 := Buf[I * 32];
+     If (B0 = 0) Or (B0 = $E5) Then Begin
+      RunLBA[RunLen] := LBA;
+      RunIdx[RunLen] := I;
+      Inc(RunLen);
+      If RunLen >= Need Then Begin
+       Fat_FindFreeSlotRun := True;
+       Exit;
+      End;
+     End Else
+      RunLen := 0;
+    End;
+   End;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
+End;
+
+{ Ecrire un tampon de 32 octets DEJA CONSTRUIT (fragment LFN) dans le slot }
+{ indique - contrairement a Fat_WriteDirEntry, qui construit lui-meme les  }
+{ 32 octets d une entree 8.3 typee a partir de champs separes. }
+Function Fat_WriteRawDirEntry32(Idx: Byte; LBA: LongInt; SlotIdx: Integer;
+ Var Raw: Array Of Byte): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ Off, I: Integer;
+Begin
+ Fat_WriteRawDirEntry32 := False;
+ If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+ Off := SlotIdx * 32;
+ For I := 0 To 31 Do Buf[Off + I] := Raw[I];
+ Fat_WriteRawDirEntry32 := Fat_WriteSector(Idx, LBA, Buf);
+End;
+
+{ Construire les 32 octets d un fragment LFN (FragIdx 0-based : 0 = les 13 }
+{ premiers caracteres de LongName, 1 = les 13 suivants, etc). TotalFrags   }
+{ sert a determiner si FragIdx est le DERNIER fragment (bit $40 = derniere }
+{ partie logique du nom, physiquement le 1er fragment ECRIT sur disque -   }
+{ voir Fat_CommitLFNWrite pour l ordre physique). Meme disposition d octets}
+{ que la lecture (Fat_LFNExtractChars, Stage 3) : Name1=Off+1..+10,        }
+{ Attr=Off+11=$0F, Type=Off+12=0, Checksum=Off+13, Name2=Off+14..+25,      }
+{ FstClusLO=Off+26..+27=0, Name3=Off+28..+31. }
+Procedure Fat_BuildLFNFragment(LongName: String; FragIdx, TotalFrags: Integer;
+ Checksum: Byte; Var Raw: Array Of Byte);
+Var
+ Seq: Byte;
+ CharBase, K, Pos, PosOff: Integer;
+Begin
+ Seq := FragIdx + 1;
+ If FragIdx = TotalFrags - 1 Then Seq := Seq Or $40;
+ FillChar(Raw[0], 32, 0);
+ Raw[0]  := Seq;
+ Raw[11] := $0F;
+ Raw[12] := 0;
+ Raw[13] := Checksum;
+ CharBase := FragIdx * 13;
+ For K := 0 To 12 Do Begin
+  If K < 5 Then PosOff := 1 + K * 2
+  Else If K < 11 Then PosOff := 14 + (K - 5) * 2
+  Else PosOff := 28 + (K - 11) * 2;
+  Pos := CharBase + K + 1;   { LongName indexe a partir de 1 }
+  If Pos <= Length(LongName) Then Begin
+   Raw[PosOff]     := Ord(LongName[Pos]);  { Latin-1 seulement (poids fort }
+   Raw[PosOff + 1] := 0;                   { toujours nul) - meme limite   }
+  End Else If Pos = Length(LongName) + 1 Then Begin
+   Raw[PosOff]     := 0; Raw[PosOff + 1] := 0;       { terminateur }
+  End Else Begin
+   Raw[PosOff]     := $FF; Raw[PosOff + 1] := $FF;   { remplissage }
+  End;
+ End;
+End;
+
+{ Phase 1 (sans effet de bord sur le disque) : valider/nettoyer LongName,  }
+{ generer un alias 8.3 unique si necessaire, verifier qu aucune entree du  }
+{ repertoire n affiche deja ce meme nom, et reserver Need emplacements     }
+{ consecutifs. A appeler AVANT toute allocation de cluster couteuse a       }
+{ annuler (NCCmd_MkDir : on ne veut pas d un cluster oublie/orphelin si    }
+{ le repertoire s avere plein). }
+Function Fat_PrepareLFNWrite(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ LongName: String; Var N11: Array Of Byte; Var NeedLFN: Boolean;
+ Var NFrag: Integer; Var RunLBA: Array Of LongInt;
+ Var RunIdx: Array Of Integer; Var ErrMsg: String): Boolean;
+Var
+ Canon: String;
+ Need: Integer;
+Begin
+ Fat_PrepareLFNWrite := False;
+ ErrMsg := '';
+ If Fat_LongNameExists(Idx, IsRoot, StartCl, Fat_UpStr(LongName)) Then Begin
+  ErrMsg := 'Le fichier existe deja : ' + LongName;
+  Exit;
+ End;
+ If Fat_MakeName11(LongName, N11) Then Begin
+  Canon := Fat_Name11ToDisplay(N11);
+  NeedLFN := (Canon <> LongName);
+ End Else
+  NeedLFN := True;
+ If NeedLFN Then Begin
+  If Not Fat_GenerateUniqueAlias(Idx, IsRoot, StartCl, LongName, N11) Then Begin
+   ErrMsg := 'Impossible de generer un alias 8.3 pour : ' + LongName;
+   Exit;
+  End;
+  NFrag := (Length(LongName) + 12) Div 13;
+  If NFrag > FAT_LFN_MAXSEQ Then Begin
+   ErrMsg := 'Nom trop long (max ' + IntToStr(FAT_LFN_MAXSEQ * 13) +
+    ' caracteres) : ' + LongName;
+   Exit;
+  End;
+  Need := NFrag + 1;
+ End Else Begin
+  NFrag := 0;
+  Need := 1;
+ End;
+ If Not Fat_FindFreeSlotRun(Idx, IsRoot, StartCl, Need, RunLBA, RunIdx) Then Begin
+  ErrMsg := 'Repertoire plein (pas assez d emplacements consecutifs)';
+  Exit;
+ End;
+ Fat_PrepareLFNWrite := True;
+End;
+
+{ Phase 2 : ecrit effectivement (fragments LFN puis entree 8.3 reelle) le   }
+{ resultat deja calcule par Fat_PrepareLFNWrite. Les fragments sont ecrits  }
+{ en ordre DECROISSANT de numero de sequence (RunIdx[0] = 1ere position    }
+{ libre = recoit le DERNIER fragment, bit $40 ; RunIdx[NFrag-1] = juste     }
+{ avant l entree reelle = recoit le 1er fragment, sequence 1) - meme        }
+{ convention physique que ce que le Stage 3 sait deja relire. }
+Function Fat_CommitLFNWrite(Idx: Byte; Var N11: Array Of Byte; NeedLFN: Boolean;
+ NFrag: Integer; Var RunLBA: Array Of LongInt; Var RunIdx: Array Of Integer;
+ LongName: String; Attr: Byte; FirstClu, Size: LongInt): Boolean;
+Var
+ Chk: Byte;
+ P, FragIdx, Need: Integer;
+ Raw: Array[0..31] Of Byte;
+Begin
+ Fat_CommitLFNWrite := False;
+ If NeedLFN Then Begin
+  Need := NFrag + 1;
+  Chk := Fat_LFNChecksum(N11, 0);
+  For P := 0 To NFrag - 1 Do Begin
+   FragIdx := NFrag - 1 - P;
+   Fat_BuildLFNFragment(LongName, FragIdx, NFrag, Chk, Raw);
+   If Not Fat_WriteRawDirEntry32(Idx, RunLBA[P], RunIdx[P], Raw) Then Exit;
+  End;
+ End Else
+  Need := 1;
+ Fat_CommitLFNWrite := Fat_WriteDirEntry(Idx, RunLBA[Need - 1], RunIdx[Need - 1],
+  N11, Attr, FirstClu, Size);
+End;
+
+{ Enveloppe pratique Prepare+Commit pour le cas simple ou aucune ressource }
+{ couteuse (cluster de donnees) n a besoin d etre annulee en cas d echec -  }
+{ Fat_WriteFileFromHost alloue deja ses clusters de DONNEES avant l entree  }
+{ de repertoire (ordre preexistant, inchange par ce chantier). }
+Function Fat_WriteDirEntryWithLFN(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ LongName: String; Attr: Byte; FirstClu, Size: LongInt;
+ Var ErrMsg: String): Boolean;
+Var
+ N11: Array[0..10] Of Byte;
+ NeedLFN: Boolean;
+ NFrag: Integer;
+ RunLBA: Array[0..FAT_MAX_SLOT_RUN - 1] Of LongInt;
+ RunIdx: Array[0..FAT_MAX_SLOT_RUN - 1] Of Integer;
+Begin
+ Fat_WriteDirEntryWithLFN := False;
+ If Not Fat_PrepareLFNWrite(Idx, IsRoot, StartCl, LongName, N11, NeedLFN,
+  NFrag, RunLBA, RunIdx, ErrMsg) Then Exit;
+ If Not Fat_CommitLFNWrite(Idx, N11, NeedLFN, NFrag, RunLBA, RunIdx, LongName,
+  Attr, FirstClu, Size) Then Begin
+  ErrMsg := 'Erreur d ecriture de l entree repertoire';
+  Exit;
+ End;
+ Fat_WriteDirEntryWithLFN := True;
+End;
+
 { Creer un fichier dans le repertoire AbsParent du disque virtuel Idx,
   avec le nom Leaf (8.3), en lisant les donnees depuis SrcPath (hote).
   Retourne False et remplit ErrMsg en cas d echec. }
@@ -34432,16 +34842,15 @@ Var
  IsRoot: Boolean;
  StartCl: LongInt;
  N11: Array[0..10] Of Byte;
- Attr: Byte;
- ExClu: LongInt;
- ExSize: LongInt;
+ NeedLFN: Boolean;
+ NFrag: Integer;
+ RunLBA: Array[0..FAT_MAX_SLOT_RUN - 1] Of LongInt;
+ RunIdx: Array[0..FAT_MAX_SLOT_RUN - 1] Of Integer;
  SrcF: File;
  BR: Word;
  ClusterSize: LongInt;
  ClBuf: Array[0..4095] Of Byte;
  FirstClu, PrevClu, NewClu: LongInt;
- SlotLBA: LongInt;
- SlotIdx: Integer;
  TotalSize: LongInt;
  SecInClu: Integer;
  LBA: LongInt;
@@ -34459,19 +34868,18 @@ Begin
   ErrMsg := 'Taille de cluster non supportee';
   Exit;
  End;
- If Not Fat_MakeName11(Leaf, N11) Then Begin
-  ErrMsg := 'Nom de fichier 8.3 invalide : ' + Leaf;
-  Exit;
- End;
  If Not Fat_ResolveDir(Idx, AbsParent, IsRoot, StartCl) Then Begin
   ErrMsg := 'Repertoire introuvable : ' + AbsParent;
   Exit;
  End;
- If Fat_FindInDir(Idx, IsRoot, StartCl, Fat_UpStr(Leaf), Attr,
-  ExClu, ExSize) Then Begin
-  ErrMsg := 'Le fichier existe deja : ' + Leaf;
-  Exit;
- End;
+ { Nom long (Windows 95, Stage 4) : Leaf peut deja etre un nom long reel   }
+ { (basename d un fichier hote, ou nom tape par l utilisateur en COPY) -   }
+ { valider/reserver AVANT d ouvrir la source et d allouer des clusters de  }
+ { donnees, pour ne rien gaspiller si le nom existe deja ou si le          }
+ { repertoire est plein (meme discipline "fail fast" que le code            }
+ { precedent, juste etendue a la reservation de slots LFN). }
+ If Not Fat_PrepareLFNWrite(Idx, IsRoot, StartCl, Leaf, N11, NeedLFN, NFrag,
+  RunLBA, RunIdx, ErrMsg) Then Exit;
  Assign(SrcF, SrcPath);
  {$I-} Reset(SrcF, 1); {$I+}
  If IOResult <> 0 Then Begin
@@ -34516,13 +34924,8 @@ Begin
   Inc(TotalSize, BR);
  Until BR < Word(ClusterSize);
  Close(SrcF);
- If Not Fat_FindFreeSlot(Idx, IsRoot, StartCl, SlotLBA, SlotIdx) Then
- Begin
-  ErrMsg := 'Repertoire plein';
-  Exit;
- End;
- If Not Fat_WriteDirEntry(Idx, SlotLBA, SlotIdx, N11, $20,
-  FirstClu, TotalSize) Then Begin
+ If Not Fat_CommitLFNWrite(Idx, N11, NeedLFN, NFrag, RunLBA, RunIdx, Leaf,
+  $20, FirstClu, TotalSize) Then Begin
   ErrMsg := 'Erreur d ecriture de l entree repertoire';
   Exit;
  End;
@@ -39087,16 +39490,24 @@ Function NCCmd_MkDir(Slot: Byte; ParentPath, DirName: String): Boolean;
 Var
  IsRoot: Boolean;
  StartCl, ParentClu, NewClu: LongInt;
- SlotLBA: LongInt;
- SlotIdx, I: Integer;
+ I: Integer;
  N11: Array[0..10] Of Byte;
+ NeedLFN: Boolean;
+ NFrag: Integer;
+ RunLBA: Array[0..FAT_MAX_SLOT_RUN - 1] Of LongInt;
+ RunIdx: Array[0..FAT_MAX_SLOT_RUN - 1] Of Integer;
+ ErrMsg: String;
  Buf: Array[0..511] Of Byte;
 Begin
  NCCmd_MkDir := False;
  If DirName = '' Then Exit;
  If Not Fat_ResolveDir(Slot, ParentPath, IsRoot, StartCl) Then Exit;
- If Not Fat_MakeName11(DirName, N11) Then Exit;
- If Not Fat_FindFreeSlot(Slot, IsRoot, StartCl, SlotLBA, SlotIdx) Then Exit;
+ { Nom long (Windows 95, Stage 4) : reserver AVANT Fat_AllocCluster, pour   }
+ { ne pas laisser un cluster alloue orphelin (jamais reference par aucune   }
+ { entree de repertoire) si le nom existe deja ou si le repertoire s avere }
+ { plein - meme discipline "fail fast" que le code precedent. }
+ If Not Fat_PrepareLFNWrite(Slot, IsRoot, StartCl, DirName, N11, NeedLFN,
+  NFrag, RunLBA, RunIdx, ErrMsg) Then Exit;
  NewClu := Fat_AllocCluster(Slot);
  If NewClu < 2 Then Exit;
  If IsRoot Then ParentClu := 0 Else ParentClu := StartCl;
@@ -39119,7 +39530,8 @@ Begin
  For I := 1 To FatVol[Slot].SectorsPerCluster - 1 Do
   Fat_WriteSector(Slot, Fat_ClusterToLBA(Slot, NewClu) + I, Buf);
 
- NCCmd_MkDir := Fat_WriteDirEntry(Slot, SlotLBA, SlotIdx, N11, $10, NewClu, 0);
+ NCCmd_MkDir := Fat_CommitLFNWrite(Slot, N11, NeedLFN, NFrag, RunLBA, RunIdx,
+  DirName, $10, NewClu, 0);
 End;
 
 { Dessiner le double panneau Norton Commander (remplace entierement le
@@ -53150,6 +53562,7 @@ Begin
  EmuDtaOfs := $0080;     { DTA par defaut = PSP+80h }
  EmuFindCount := 0;
  EmuFindIndex := 0;
+ EmuLfnFindActive := False;
  EmuExecDepth := 0;    { pas d EXEC (AH=4Bh) en cours pour un nouveau programme de premier niveau }
  EmuExitCode := 0;
  EmuExitType := 0;
@@ -53208,6 +53621,7 @@ Begin
  EmuDtaOfs := $0080;
  EmuFindCount := 0;
  EmuFindIndex := 0;
+ EmuLfnFindActive := False;
  EmuExecDepth := 0;
  EmuExitCode := 0;
  EmuExitType := 0;
@@ -56408,6 +56822,38 @@ Begin
   Emu_ReadAsciiz := S;
 End;
 
+{ Variante longue (jusqu a 254 caracteres, plafond du type String par      }
+{ defaut de ce fichier) - les fonctions LFN Windows 95 (INT 21h/AH=71h,    }
+{ Stage 5) annoncent des tampons de chemin jusqu a 260/261 octets, bien    }
+{ au-dela des 79 de Emu_ReadAsciiz (suffisants pour les fonctions DOS      }
+{ classiques 8.3, jamais pour un nom long reel). }
+Function Emu_ReadAsciizLong(Var C: TEmuCPU; Seg, Ofs: Word): String;
+Var
+  S: String;
+  I: Integer;
+  B: Byte;
+Begin
+  S := '';
+  For I := 0 To 254 Do Begin
+    B := Emu_ReadByte(C, Seg, Ofs + I);
+    If B = 0 Then Break;
+    S := S + Chr(B);
+  End;
+  Emu_ReadAsciizLong := S;
+End;
+
+{ Ecrire une chaine ASCIZ (terminee par un octet nul) en memoire emulee -  }
+{ inverse d Emu_ReadAsciiz/Emu_ReadAsciizLong, reutilise par toutes les    }
+{ fonctions LFN qui rendent un chemin/nom au programme appelant. }
+Procedure Emu_WriteAsciiz(Var C: TEmuCPU; Seg, Ofs: Word; Const S: String);
+Var
+  I: Integer;
+Begin
+  For I := 1 To Length(S) Do
+    Emu_WriteByte(C, Seg, Word(Ofs + I - 1), Byte(S[I]));
+  Emu_WriteByte(C, Seg, Word(Ofs + Length(S)), 0);
+End;
+
 { Convertir nom DOS en nom hote. Si chemin absolu avec drive (X:\...),
   le passer tel quel a FreePascal Windows (qui le supporte). Sinon
   conversion / -> \, drop des prefixes pour relatif. }
@@ -56465,7 +56911,12 @@ End;
 { un chemin relatif est donc toujours resolu depuis la racine du lecteur,   }
 { suffisant pour l usage typique (normaliser un chemin deja construit par   }
 { le programme, pas taper un chemin relatif au shell). }
-Function Emu_CanonicalizePath(Const DosPath: String): String;
+{ Version generalisee (Windows 95, Stage 5, AX=7160h) - UpperCase=True     }
+{ reproduit exactement l ancien comportement inconditionnel d             }
+{ Emu_CanonicalizePath (AH=60h classique, CL implicite "01h majuscules")   }
+{ ; UpperCase=False conserve la casse d origine (CL=00h/02h de 7160h, qui  }
+{ documentent explicitement la conservation de casse). }
+Function Emu_CanonicalizePathCase(Const DosPath: String; UpperCase: Boolean): String;
 Var
  S, Seg, Res: String;
  Parts: Array[0..31] Of String;
@@ -56474,8 +56925,9 @@ Begin
  S := DosPath;
  For CI := 1 To Length(S) Do
   If S[CI] = '/' Then S[CI] := '\';
- For CI := 1 To Length(S) Do
-  If S[CI] In ['a'..'z'] Then S[CI] := Chr(Ord(S[CI]) - 32);
+ If UpperCase Then
+  For CI := 1 To Length(S) Do
+   If S[CI] In ['a'..'z'] Then S[CI] := Chr(Ord(S[CI]) - 32);
  If Not ((Length(S) >= 2) And (S[2] = ':')) Then
   S := 'C:' + S;
  If (Length(S) < 3) Or (S[3] <> '\') Then
@@ -56502,7 +56954,174 @@ Begin
   Res := Res + Parts[CI];
   If CI < PartCount - 1 Then Res := Res + '\';
  End;
- Emu_CanonicalizePath := Res;
+ Emu_CanonicalizePathCase := Res;
+End;
+
+{ Canonicaliser un chemin DOS (AH=60h) : majuscules, '/' -> '\', ajoute la  }
+{ lettre de lecteur par defaut (C:) si absente, resout les composants '.'   }
+{ et '..'. Pas de suivi reel d un "repertoire courant par lecteur" dans cet }
+{ emulateur (aucune convention DOS CHDIR persistante ailleurs non plus) -   }
+{ un chemin relatif est donc toujours resolu depuis la racine du lecteur,   }
+{ suffisant pour l usage typique (normaliser un chemin deja construit par   }
+{ le programme, pas taper un chemin relatif au shell). }
+Function Emu_CanonicalizePath(Const DosPath: String): String;
+Begin
+ Emu_CanonicalizePath := Emu_CanonicalizePathCase(DosPath, True);
+End;
+
+{ Conversions calendaires FILETIME<->DOS (Windows 95, Stage 5, AX=71A7h et }
+{ FindData de 714Eh/714Fh) - algorithme "days_from_civil"/"civil_from_days"}
+{ de Howard Hinnant (calendrier gregorien proleptique, correct sur toute   }
+{ la plage utile ici). DaysSinceCivilEpoch est appelee UNIQUEMENT en       }
+{ difference (jamais comme date absolue en soi), ce qui evite d avoir a    }
+{ deriver a la main la constante de decalage entre son epoque interne      }
+{ (0000-03-01) et l epoque reelle de FILETIME (1601-01-01 UTC). }
+Function DaysSinceCivilEpoch(Y, M, D: LongInt): LongInt;
+Var
+ Y2, Era, Yoe, Doy, Doe: LongInt;
+Begin
+ If M <= 2 Then Y2 := Y - 1 Else Y2 := Y;
+ If Y2 >= 0 Then Era := Y2 Div 400 Else Era := (Y2 - 399) Div 400;
+ Yoe := Y2 - Era * 400;
+ If M > 2 Then Doy := (153 * (M - 3) + 2) Div 5 + D - 1
+           Else Doy := (153 * (M + 9) + 2) Div 5 + D - 1;
+ Doe := Yoe * 365 + Yoe Div 4 - Yoe Div 100 + Doy;
+ DaysSinceCivilEpoch := Era * 146097 + Doe;
+End;
+
+Function DaysSince1601(Y, M, D: Word): LongInt;
+Begin
+ DaysSince1601 := DaysSinceCivilEpoch(LongInt(Y), LongInt(M), LongInt(D))
+                - DaysSinceCivilEpoch(1601, 1, 1);
+End;
+
+Procedure DaysToCivil(Z: LongInt; Var Y, M, D: LongInt);
+Var
+ Era, Doe, Yoe, Doy, Mp: LongInt;
+Begin
+ If Z >= 0 Then Era := Z Div 146097 Else Era := (Z - 146096) Div 146097;
+ Doe := Z - Era * 146097;
+ Yoe := (Doe - Doe Div 1460 + Doe Div 36524 - Doe Div 146096) Div 365;
+ Y := Yoe + Era * 400;
+ Doy := Doe - (365 * Yoe + Yoe Div 4 - Yoe Div 100);
+ Mp := (5 * Doy + 2) Div 153;
+ D := Doy - (153 * Mp + 2) Div 5 + 1;
+ If Mp < 10 Then M := Mp + 3 Else M := Mp - 9;
+ If M <= 2 Then Y := Y + 1;
+End;
+
+{ PackDate/PackTime : meme paquet DOS que SearchRec.Time (haut=date,        }
+{ bas=heure) - convertit vers un QWORD FILETIME (100 ns depuis 1601-01-01   }
+{ UTC). Pas de fraction de seconde en dessous de la resolution DOS (2 s),   }
+{ les 100 ns restent a 0 - limitation documentee, coherente avec le fait    }
+{ que Dos.SearchRec ne rend de toute facon qu un seul horodatage a la       }
+{ resolution DOS standard. }
+Function DosDateTimeToFileTime(PackDate, PackTime: Word): QWord;
+Var
+ Y, M, D, Hr, Mn, Se: Word;
+ Days: LongInt;
+ Secs: QWord;
+Begin
+ Y := ((PackDate Shr 9) And $7F) + 1980;
+ M := (PackDate Shr 5) And $0F;
+ D := PackDate And $1F;
+ If M = 0 Then M := 1;
+ If D = 0 Then D := 1;
+ Hr := (PackTime Shr 11) And $1F;
+ Mn := (PackTime Shr 5) And $3F;
+ Se := (PackTime And $1F) * 2;
+ Days := DaysSince1601(Y, M, D);
+ Secs := QWord(Days) * 86400 + QWord(Hr) * 3600 + QWord(Mn) * 60 + QWord(Se);
+ DosDateTimeToFileTime := Secs * 10000000;
+End;
+
+{ Inverse : QWORD FILETIME -> paquet DOS date/heure + centiemes BH (0..199,}
+{ unites de 10 ms) - utilisee par AX=71A7h/BL=01h. Hors plage DOS valide    }
+{ (1980-2107), on plafonne plutot que de deborder silencieusement. }
+Procedure FileTimeToDosDateTime(FT: QWord; Var PackDate, PackTime: Word;
+ Var Centi: Byte);
+Var
+ TotalSecs, Rem, Frac100ns: QWord;
+ Days: LongInt;
+ Hr, Mn, Se: Word;
+ Y, M, D: LongInt;
+Begin
+ Frac100ns := FT Mod 10000000;
+ TotalSecs := FT Div 10000000;
+ Days := LongInt(TotalSecs Div 86400);
+ Rem := TotalSecs Mod 86400;
+ Hr := Word(Rem Div 3600); Rem := Rem Mod 3600;
+ Mn := Word(Rem Div 60); Se := Word(Rem Mod 60);
+ DaysToCivil(Days + DaysSinceCivilEpoch(1601, 1, 1), Y, M, D);
+ If Y < 1980 Then Begin Y := 1980; M := 1; D := 1; Hr := 0; Mn := 0; Se := 0; Frac100ns := 0; End;
+ If Y > 2107 Then Begin Y := 2107; M := 12; D := 31; Hr := 23; Mn := 59; Se := 58; End;
+ PackDate := Word(((LongInt(Y) - 1980) Shl 9) Or (M Shl 5) Or D);
+ PackTime := Word((LongInt(Hr) Shl 11) Or (LongInt(Mn) Shl 5) Or (Se Div 2));
+ Centi := Byte((Se Mod 2) * 100 + Frac100ns Div 100000);
+End;
+
+{ Ecrire une structure FindData de 318 octets (Windows 95, Stage 5,        }
+{ AX=714Eh/714Fh - format documente dans DOC/DOS_FOR_WINDOWS95_           }
+{ PROGRAMMING.txt section 8) a partir d un TLfnFindEntry deja capture.     }
+{ Le meme QWORD FILETIME est ecrit aux 3 emplacements creation/acces/      }
+{ ecriture, et le nom court est laisse vide - Dos.SearchRec ne rend qu UN   }
+{ seul horodatage et aucun alias 8.3 separe, la meme limitation deja        }
+{ documentee pour 7143h/71A6h ; un nom court vide est explicitement         }
+{ un etat valide selon la documentation ("le nom court peut etre vide"). }
+Procedure Emu_WriteLfnFindData(Var C: TEmuCPU; Seg, Ofs: Word;
+ Const E: TLfnFindEntry);
+Var
+ FT: QWord;
+ I: Integer;
+Begin
+ Emu_WriteWord(C, Seg, Word(Ofs), Word(E.Attr));
+ Emu_WriteWord(C, Seg, Word(Ofs + 2), 0);
+ FT := DosDateTimeToFileTime(Word((E.Time Shr 16) And $FFFF),
+                              Word(E.Time And $FFFF));
+ For I := 0 To 2 Do Begin
+  Emu_WriteWord(C, Seg, Word(Ofs + 4 + I * 8), Word(FT And $FFFF));
+  Emu_WriteWord(C, Seg, Word(Ofs + 4 + I * 8 + 2), Word((FT Shr 16) And $FFFF));
+  Emu_WriteWord(C, Seg, Word(Ofs + 4 + I * 8 + 4), Word((FT Shr 32) And $FFFF));
+  Emu_WriteWord(C, Seg, Word(Ofs + 4 + I * 8 + 6), Word((FT Shr 48) And $FFFF));
+ End;
+ Emu_WriteWord(C, Seg, Word(Ofs + $1C), 0);
+ Emu_WriteWord(C, Seg, Word(Ofs + $1E), 0);
+ Emu_WriteWord(C, Seg, Word(Ofs + $20), Word(E.Size And $FFFF));
+ Emu_WriteWord(C, Seg, Word(Ofs + $22), Word((E.Size Shr 16) And $FFFF));
+ For I := 0 To 7 Do Emu_WriteByte(C, Seg, Word(Ofs + $24 + I), 0);
+ Emu_WriteAsciiz(C, Seg, Word(Ofs + $2C), E.Name);
+ Emu_WriteByte(C, Seg, Word(Ofs + $130), 0);
+End;
+
+{ Generer un alias 8.3 SANS garantie d unicite (AX=71A8h) - a la difference}
+{ de Fat_GenerateUniqueAlias (Stage 4), qui doit garantir l unicite         }
+{ puisqu il ecrit reellement une nouvelle entree de repertoire, 71A8h est    }
+{ un algorithme purement informatif : le vrai Windows 95 lui-meme ne         }
+{ garantit pas l unicite a ce niveau et n ajoute pas de suffixe ~n (voir     }
+{ DOC/DOS_FOR_WINDOWS95_PROGRAMMING.txt section 13). Reutilise               }
+{ Fat_CleanFor83 (Stage 4) - pure manipulation de chaine, sans dependance    }
+{ FatVol malgre son prefixe. }
+Procedure Emu_MakeSimpleAlias11(LongName: String; Var N11: Array Of Byte);
+Var
+ DotPos, I: Integer;
+ Base, Ext, CBase, CExt: String;
+Begin
+ DotPos := 0;
+ For I := Length(LongName) DownTo 1 Do
+  If LongName[I] = '.' Then Begin DotPos := I; Break; End;
+ If DotPos = 0 Then Begin Base := LongName; Ext := ''; End
+ Else Begin
+  Base := Copy(LongName, 1, DotPos - 1);
+  Ext  := Copy(LongName, DotPos + 1, Length(LongName) - DotPos);
+ End;
+ CBase := Fat_CleanFor83(Base);
+ CExt  := Fat_CleanFor83(Ext);
+ If Length(CExt) > 3 Then CExt := Copy(CExt, 1, 3);
+ If Length(CBase) > 8 Then CBase := Copy(CBase, 1, 8);
+ If CBase = '' Then CBase := 'FILE';
+ For I := 0 To 10 Do N11[I] := Ord(' ');
+ For I := 1 To Length(CBase) Do N11[I - 1] := Ord(CBase[I]);
+ For I := 1 To Length(CExt) Do N11[8 + I - 1] := Ord(CExt[I]);
 End;
 
 (* ===== ANCIENNE IMPLEMENTATION INT 21h - DESACTIVEE =====
@@ -57243,6 +57862,67 @@ Begin
  End;
 End;
 
+{ Coeur partage de l ouverture/creation etendue AH=6Ch (DOS 4+) - extrait   }
+{ tel quel du corps original du case $6C pour etre reutilise par AX=716Ch   }
+{ (Windows 95, Stage 5) : les deux fonctions sont IDENTIQUES cote hote (le  }
+{ systeme de fichiers Windows reel gere deja nativement les noms longs,     }
+{ Emu_HostPath les laisse passer tels quels) - seule la maniere de LIRE le  }
+{ nom depuis la memoire emulee differe entre les deux appelants (79         }
+{ caracteres classique vs 254 pour un nom long, voir Emu_ReadAsciizLong).   }
+{ BL=mode de partage, DL=action si existe/n existe pas (bits bas/hauts),    }
+{ retourne AX=handle, CX=action realisee (1=ouvert existant, 2=tronque      }
+{ existant, 3=cree). }
+Procedure Emu_DoOpen6C(Var P: TEmulatorPanel; Const FName: String);
+Var
+ HPath: String;
+ H: Integer;
+ K: LongInt;
+ OpenMode: Byte;
+Begin
+ HPath := Emu_HostPath(FName);
+ OpenMode := P.CPU.Regs.BL And 3;
+ H := Emu_AllocHandle;
+ If H = 0 Then
+  Emu_SetDosErr(P, 4)
+ Else If FileExists(HPath) Then Begin
+  If (P.CPU.Regs.DL And $0F) = 0 Then
+   Emu_SetDosErr(P, 80)
+  Else Begin
+   Assign(EmuFileH[H], HPath);
+   If (P.CPU.Regs.DL And $0F) = 2 Then Begin
+    {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+    K := 2;
+   End Else Begin
+    {$I-} Reset(EmuFileH[H], 1); {$I+}
+    K := 1;
+   End;
+   If IOResult <> 0 Then
+    Emu_SetDosErr(P, 5)
+   Else Begin
+    EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
+    EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
+    P.CPU.Regs.AX := H; P.CPU.Regs.CX := Word(K);
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+ End Else Begin
+  If ((P.CPU.Regs.DL Shr 4) And $0F) = 0 Then
+   Emu_SetDosErr(P, 2)
+  Else Begin
+   Assign(EmuFileH[H], HPath);
+   {$I-} Rewrite(EmuFileH[H], 1); {$I+}
+   If IOResult <> 0 Then
+    Emu_SetDosErr(P, 5)
+   Else Begin
+    EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
+    EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
+    P.CPU.Regs.AX := H; P.CPU.Regs.CX := 3;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+ End;
+End;
+
 Procedure Emu_DoInt21(Var P: TEmulatorPanel);
 Var
  I: Integer;
@@ -57283,6 +57963,16 @@ Var
  FcbBytesIO: Word;
  FcbI: Integer;
  FcbHasWild: Boolean;
+ { --- AH=71h : API de noms longs Windows 95 (Stage 5), voir              }
+ { DOC/DOS_FOR_WINDOWS95_PROGRAMMING.txt section 4+ --- }
+ LName, LName2, LHost, LHost2: String;
+ LN11: Array[0..10] Of Byte;
+ LAttrW: Word;
+ LTimeVal: LongInt;
+ LPackDate, LPackTime: Word;
+ LCenti: Byte;
+ LFT: QWord;
+ LFindCnt: Integer;
 Begin
  Case P.CPU.Regs.AH Of
   $00:
@@ -58611,50 +59301,372 @@ Begin
    { de DOSBox (AH=6Ch), utilisee par des programmes DOS 4+ a la place de   }
    { AH=3Dh/3Ch quand le comportement exact (echouer/ouvrir/tronquer/creer)  }
    { doit etre choisi en un seul appel. Retourne CX=action realisee          }
-   { (1=ouvert existant, 2=tronque existant, 3=cree). }
-   Begin
-    FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
-    HPath := Emu_HostPath(FName);
-    OpenMode := P.CPU.Regs.BL And 3;
-    H := Emu_AllocHandle;
-    If H = 0 Then
-     Emu_SetDosErr(P, 4)
-    Else If FileExists(HPath) Then Begin
-     If (P.CPU.Regs.DL And $0F) = 0 Then
-      Emu_SetDosErr(P, 80)
-     Else Begin
-      Assign(EmuFileH[H], HPath);
-      If (P.CPU.Regs.DL And $0F) = 2 Then Begin
-       {$I-} Rewrite(EmuFileH[H], 1); {$I+}
-       K := 2;
+   { (1=ouvert existant, 2=tronque existant, 3=cree). Coeur partage avec     }
+   { AX=716Ch (Windows 95, Stage 5) via Emu_DoOpen6C - seule la lecture du   }
+   { nom differe (79 caracteres ici, jusqu a 254 pour 716Ch). }
+   Emu_DoOpen6C(P, Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI));
+  $71:
+   { API de noms longs Windows 95 (INT 21h/AH=71h, Stage 5) - branchee      }
+   { UNIQUEMENT si DosType=Windows 95, sinon ce case se comporte EXACTEMENT }
+   { comme si l aiguillage $71 n existait pas du tout (Emu_SetDosErr(P,1),  }
+   { meme discipline que le fallthrough generique Else ci-dessous et que le }
+   { case $64 OS/2) - AX=7100h+CF (la convention documentee pour "IFSMgr    }
+   { present mais cette sous-fonction precise non geree") ne s applique      }
+   { QU APRES avoir confirme DosType=Windows 95, jamais avant. }
+   If OptionsDlg.Data.DosType <> DOS_TYPE_WIN95 Then
+    Emu_SetDosErr(P, 1)
+   Else Case P.CPU.Regs.AL Of
+    $39:
+     { 7139h : creer un repertoire (nom long) - hote uniquement, comme       }
+     { toutes les fonctions de ce bloc (voir Emu_DoOpen6C : aucune fonction  }
+     { INT 21h classique de ce fichier n a jamais touche les disques         }
+     { virtuels FAT montes via /DISK0-1/80/81, seulement le systeme de       }
+     { fichiers hote via Emu_HostPath - introduire une branche disque        }
+     { virtuel ICI, seule parmi toutes les fonctions AH=71h, aurait ete une  }
+     { asymetrie architecturale surprenante ; le systeme de fichiers hote    }
+     { gere de toute facon deja nativement les noms longs sans travail       }
+     { supplementaire). }
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LHost := Emu_HostPath(LName);
+      {$I-} MkDir(LHost); {$I+}
+      If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+      Else Emu_SetDosErr(P, 3);
+     End;
+    $3A:
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LHost := Emu_HostPath(LName);
+      {$I-} RmDir(LHost); {$I+}
+      If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+      Else Emu_SetDosErr(P, 3);
+     End;
+    $3B:
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LHost := Emu_HostPath(LName);
+      {$I-} ChDir(LHost); {$I+}
+      If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+      Else Emu_SetDosErr(P, 3);
+     End;
+    $41:
+     { 7141h : supprimer (nom long). SI=1 autorise les jokers - CL/CH        }
+     { (attributs admis/obligatoires) simplifies a un simple masque passe a  }
+     { FindFirst, meme niveau de fidelite que le $43 classique existant. }
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LHost := Emu_HostPath(LName);
+      If P.CPU.Regs.SI = 0 Then Begin
+       {$I-} Assign(EmuFileH[5], LHost); Erase(EmuFileH[5]); {$I+}
+       If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+       Else Emu_SetDosErr(P, 2);
       End Else Begin
-       {$I-} Reset(EmuFileH[H], 1); {$I+}
-       K := 1;
+       { FindFirst/Next ne rendent QUE le nom trouve (SR.Name), sans le      }
+       { repertoire du motif - reconstituer le chemin complet a chaque       }
+       { correspondance avant Erase, sinon Assign viserait le repertoire     }
+       { courant du PROCESSUS HOTE au lieu du repertoire du motif. }
+       I := Length(LHost);
+       While (I > 0) And (LHost[I] <> '\') Do Dec(I);
+       LFindCnt := 0;
+       {$I-}
+       FindFirst(LHost, Byte(P.CPU.Regs.CL), SR);
+       While DosError = 0 Do Begin
+        LHost2 := Copy(LHost, 1, I) + SR.Name;
+        {$I-} Assign(EmuFileH[5], LHost2); Erase(EmuFileH[5]); {$I+}
+        If IOResult = 0 Then Inc(LFindCnt);
+        FindNext(SR);
+       End;
+       FindClose(SR);
+       {$I+} If IOResult <> 0 Then ;
+       If LFindCnt > 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+       Else Emu_SetDosErr(P, 2);
       End;
-      If IOResult <> 0 Then
-       Emu_SetDosErr(P, 5)
+     End;
+    $43:
+     { 7143h : attributs et horodatages - BL selectionne la sous-operation   }
+     { (voir DOC section 6). Une seule paire GetFTime/SetFTime existe cote   }
+     { hote (Unit Dos) : creation/acces/modification s y ramenent toutes     }
+     { les trois, limitation documentee (deja la meme pour 71A6h et pour le  }
+     { FindData de 714Eh/714Fh). }
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LHost := Emu_HostPath(LName);
+      Case P.CPU.Regs.BL Of
+       0: Begin
+           {$I-} Assign(EmuFileH[5], LHost); GetFAttr(EmuFileH[5], LAttrW); {$I+}
+           If IOResult = 0 Then Begin
+            P.CPU.Regs.CX := LAttrW;
+            Exclude(P.CPU.Flags.s, EFG_CF);
+           End Else Emu_SetDosErr(P, 2);
+          End;
+       1: Begin
+           {$I-} Assign(EmuFileH[5], LHost); SetFAttr(EmuFileH[5], P.CPU.Regs.CX); {$I+}
+           If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+           Else Emu_SetDosErr(P, 2);
+          End;
+       2: Begin
+           {$I-} FindFirst(LHost, AnyFile, SR); {$I+}
+           If (IOResult = 0) And (DosError = 0) Then Begin
+            P.CPU.Regs.AX := Word(SR.Size And $FFFF);
+            P.CPU.Regs.DX := Word((SR.Size Shr 16) And $FFFF);
+            Exclude(P.CPU.Flags.s, EFG_CF);
+           End Else Emu_SetDosErr(P, 2);
+           {$I-} FindClose(SR); {$I+} If IOResult <> 0 Then ;
+          End;
+       3, 5, 7:
+        Begin
+         { Ecrire (DI=date [,CX=heure pour BL=03/07]) - BL=05/07 n ont pas  }
+         { d emplacement de stockage distinct de la derniere modification    }
+         { dans ce modele (Unit Dos, GetFTime/SetFTime), donc DI/CX s y       }
+         { appliquent egalement plutot que d etre ignores en silence. }
+         {$I-} Assign(EmuFileH[5], LHost); GetFTime(EmuFileH[5], LTimeVal); {$I+}
+         If IOResult = 0 Then Begin
+          If P.CPU.Regs.BL = 5 Then
+           LTimeVal := (LongInt(P.CPU.Regs.DI) Shl 16) Or (LTimeVal And $FFFF)
+          Else
+           LTimeVal := (LongInt(P.CPU.Regs.DI) Shl 16) Or P.CPU.Regs.CX;
+          {$I-} SetFTime(EmuFileH[5], LTimeVal); {$I+}
+          If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+          Else Emu_SetDosErr(P, 2);
+         End Else Emu_SetDosErr(P, 2);
+        End;
+       4, 6, 8:
+        Begin
+         {$I-} Assign(EmuFileH[5], LHost); GetFTime(EmuFileH[5], LTimeVal); {$I+}
+         If IOResult = 0 Then Begin
+          P.CPU.Regs.DI := Word((LTimeVal Shr 16) And $FFFF);
+          P.CPU.Regs.CX := Word(LTimeVal And $FFFF);
+          P.CPU.Regs.SI := 0;   { centiemes : non modelises, voir ci-dessus }
+          Exclude(P.CPU.Flags.s, EFG_CF);
+         End Else Emu_SetDosErr(P, 2);
+        End;
+       Else Emu_SetDosErr(P, 1);
+      End;
+     End;
+    $47:
+     { 7147h : repertoire courant SANS lettre/':'/'\' initial - a la         }
+     { difference du $47 classique (stub qui renvoie toujours une chaine     }
+     { vide), le vrai repertoire courant du PROCESSUS HOTE est bien suivi    }
+     { (voir $3B/713Bh ci-dessus, qui appellent reellement ChDir), donc      }
+     { GetDir(0,...) le rend fidelement. DL (numero de lecteur) ignore -     }
+     { aucune notion de repertoire courant PAR LECTEUR dans cet emulateur,   }
+     { meme limitation documentee que Emu_CanonicalizePath. }
+     Begin
+      GetDir(0, LName);
+      If (Length(LName) >= 2) And (LName[2] = ':') Then
+       LName := Copy(LName, 3, Length(LName) - 2);
+      If (Length(LName) >= 1) And (LName[1] = '\') Then
+       LName := Copy(LName, 2, Length(LName) - 1);
+      Emu_WriteAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI, LName);
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    $4E:
+     { 714Eh : FindFirst LFN - un seul slot de recherche global (voir         }
+     { EmuLfnFind*), memes limites que le FindFirst/Next classique existant. }
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LHost := Emu_HostPath(LName);
+      EmuLfnFindCount := 0;
+      EmuLfnFindIndex := 0;
+      {$I-}
+      FindFirst(LHost, Byte(P.CPU.Regs.CL), SR);
+      While (DosError = 0) And (EmuLfnFindCount < 64) Do Begin
+       EmuLfnFindResults[EmuLfnFindCount].Name := SR.Name;
+       EmuLfnFindResults[EmuLfnFindCount].Attr := Byte(SR.Attr);
+       EmuLfnFindResults[EmuLfnFindCount].Size := SR.Size;
+       EmuLfnFindResults[EmuLfnFindCount].Time := SR.Time;
+       Inc(EmuLfnFindCount);
+       FindNext(SR);
+      End;
+      FindClose(SR);
+      {$I+} If IOResult <> 0 Then ;
+      If EmuLfnFindCount = 0 Then Emu_SetDosErr(P, 18)
       Else Begin
-       EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
-       EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
-       P.CPU.Regs.AX := H; P.CPU.Regs.CX := Word(K);
+       EmuLfnFindActive := True;
+       Emu_WriteLfnFindData(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+        EmuLfnFindResults[0]);
+       EmuLfnFindIndex := 1;
+       P.CPU.Regs.AX := 1;      { handle - un seul slot possible ici }
+       P.CPU.Regs.CX := 0;      { aucune substitution '_' (pas de conversion OEM) }
        Exclude(P.CPU.Flags.s, EFG_CF);
       End;
      End;
-    End Else Begin
-     If ((P.CPU.Regs.DL Shr 4) And $0F) = 0 Then
-      Emu_SetDosErr(P, 2)
-     Else Begin
-      Assign(EmuFileH[H], HPath);
-      {$I-} Rewrite(EmuFileH[H], 1); {$I+}
-      If IOResult <> 0 Then
-       Emu_SetDosErr(P, 5)
+    $4F:
+     Begin
+      If (Not EmuLfnFindActive) Or (P.CPU.Regs.BX <> 1) Then
+       Emu_SetDosErr(P, 6)
+      Else If EmuLfnFindIndex >= EmuLfnFindCount Then
+       Emu_SetDosErr(P, 18)
       Else Begin
-       EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
-       EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
-       P.CPU.Regs.AX := H; P.CPU.Regs.CX := 3;
+       Emu_WriteLfnFindData(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+        EmuLfnFindResults[EmuLfnFindIndex]);
+       Inc(EmuLfnFindIndex);
+       P.CPU.Regs.AX := 0;
        Exclude(P.CPU.Flags.s, EFG_CF);
       End;
      End;
+    $56:
+     Begin
+      LName  := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+      LName2 := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
+      LHost  := Emu_HostPath(LName);
+      LHost2 := Emu_HostPath(LName2);
+      {$I-} Assign(EmuFileH[5], LHost); Rename(EmuFileH[5], LHost2); {$I+}
+      If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+      Else Emu_SetDosErr(P, 2);
+     End;
+    $60:
+     { 7160h : canonisation/conversion 8.3<->long - CL=01h majuscules        }
+     { (documente explicitement), CL=00h/02h conservent la casse ; CH        }
+     { (SUBST) ignore, aucun SUBST modelise dans cet emulateur. }
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
+      Case P.CPU.Regs.CL Of
+       0, 2: LName2 := Emu_CanonicalizePathCase(LName, False);
+       1:    LName2 := Emu_CanonicalizePathCase(LName, True);
+       Else Begin
+        LName2 := '';
+        Emu_SetDosErr(P, 1);
+       End;
+      End;
+      If LName2 <> '' Then Begin
+       Emu_WriteAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI, LName2);
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    $6C:
+     { 716Ch : creer/ouvrir (nom long) - coeur partage avec le $6C classique,}
+     { voir Emu_DoOpen6C (seule la lecture du nom, ici jusqu a 254           }
+     { caracteres via DS:SI au lieu de DS:DX, differe). }
+     Emu_DoOpen6C(P, Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI));
+    $A0:
+     { 71A0h : informations de volume - BX bit14=1 (LFN pris en charge),     }
+     { CX=255 (longueur nom max), DX=260 (longueur chemin max, coherent      }
+     { avec le plafond de Emu_ReadAsciizLong/String), nom systeme de         }
+     { fichiers fixe a 'FAT' (coherent avec le cadrage general de ce         }
+     { chantier - pas de sonde reelle du systeme de fichiers hote). }
+     Begin
+      If P.CPU.Regs.CX < 4 Then
+       Emu_SetDosErr(P, 1)
+      Else Begin
+       Emu_WriteAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI, 'FAT');
+       P.CPU.Regs.BX := $4000;
+       P.CPU.Regs.CX := 255;
+       P.CPU.Regs.DX := 260;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    $A1:
+     Begin
+      If EmuLfnFindActive And (P.CPU.Regs.BX = 1) Then Begin
+       EmuLfnFindActive := False;
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End Else Emu_SetDosErr(P, 6);
+     End;
+    $A6:
+     { 71A6h : informations par handle - tampon de 52 octets, meme mise en   }
+     { page que BY_HANDLE_FILE_INFORMATION (attr[4]+3xFILETIME[24]+          }
+     { volserial[4]+taille64[8]+liens[4]+id64[8]=52, verifie par calcul).    }
+     { Numero de serie de volume et identifiant de fichier : valeurs         }
+     { plausibles fixes, aucune notion de volume/inode reelle a exposer      }
+     { cote hote ici - documente, meme esprit que les autres limites de ce   }
+     { chantier. }
+     Begin
+      H := P.CPU.Regs.BX;
+      If (H < 5) Or (H > 31) Or (Not EmuFileOpen[H]) Then
+       Emu_SetDosErr(P, 6)
+      Else Begin
+       {$I-} GetFAttr(EmuFileH[H], LAttrW); {$I+}
+       If IOResult <> 0 Then LAttrW := 0;
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX, LAttrW);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + 2), 0);
+       {$I-} GetFTime(EmuFileH[H], LTimeVal); {$I+}
+       If IOResult <> 0 Then LTimeVal := 0;
+       LFT := DosDateTimeToFileTime(Word((LTimeVal Shr 16) And $FFFF),
+                                     Word(LTimeVal And $FFFF));
+       For I := 0 To 2 Do Begin
+        Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + 4 + I * 8), Word(LFT And $FFFF));
+        Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + 4 + I * 8 + 2), Word((LFT Shr 16) And $FFFF));
+        Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + 4 + I * 8 + 4), Word((LFT Shr 32) And $FFFF));
+        Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + 4 + I * 8 + 6), Word((LFT Shr 48) And $FFFF));
+       End;
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $1C), $4C46); { volserial fictif "FL" }
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $1E), $4E00);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $20), Word(FileSize(EmuFileH[H]) And $FFFF));
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $22), Word((FileSize(EmuFileH[H]) Shr 16) And $FFFF));
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $24), 0);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $26), 0);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $28), 1); { nombre de liens }
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $2A), 0);
+       { Identifiant de fichier 64 bits : fabrique a partir du seul handle - }
+       { stable tant que le fichier reste ouvert (satisfait la garantie du   }
+       { document), sans pretendre a un vrai numero d inode/MFT hote. }
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $2C), Word(H));
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $2E), 0);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $30), 0);
+       Emu_WriteWord(P.CPU, P.CPU.Segs.DS, Word(P.CPU.Regs.DX + $32), 0);
+       Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     End;
+    $A7:
+     { 71A7h : conversion FILETIME <-> heure/date DOS locales (aucun         }
+     { decalage de fuseau applique - FILETIME traite comme s il etait deja   }
+     { local, limitation documentee). }
+     Begin
+      Case P.CPU.Regs.BL Of
+       0: Begin
+           LFT := 0;
+           For I := 0 To 3 Do
+            LFT := LFT Or (QWord(Emu_ReadByte(P.CPU, P.CPU.Segs.DS,
+             Word(P.CPU.Regs.SI + I))) Shl (I * 8));
+           For I := 4 To 7 Do
+            LFT := LFT Or (QWord(Emu_ReadByte(P.CPU, P.CPU.Segs.DS,
+             Word(P.CPU.Regs.SI + I))) Shl (I * 8));
+           FileTimeToDosDateTime(LFT, LPackDate, LPackTime, LCenti);
+           P.CPU.Regs.CX := LPackTime;
+           P.CPU.Regs.DX := LPackDate;
+           P.CPU.Regs.BH := LCenti;
+           Exclude(P.CPU.Flags.s, EFG_CF);
+          End;
+       1: Begin
+           LFT := DosDateTimeToFileTime(P.CPU.Regs.DX, P.CPU.Regs.CX);
+           For I := 0 To 7 Do
+            Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.DI + I),
+             Byte((LFT Shr (I * 8)) And $FF));
+           Exclude(P.CPU.Flags.s, EFG_CF);
+          End;
+       Else Emu_SetDosErr(P, 1);
+      End;
+     End;
+    $A8:
+     { 71A8h : generer un alias 8.3 SANS garantie d unicite (voir            }
+     { Emu_MakeSimpleAlias11) - DH=0 format FCB 11 octets bruts (non         }
+     { termine par un octet nul, format a taille fixe), DH=1 format "NOM.EXT}
+     { " ASCIZ. DL (jeu de caracteres) ignore, ce chantier est ASCII/Latin-1 }
+     { uniquement de bout en bout. }
+     Begin
+      LName := Emu_ReadAsciizLong(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
+      Emu_MakeSimpleAlias11(LName, LN11);
+      If P.CPU.Regs.DH = 0 Then Begin
+       For I := 0 To 10 Do
+        Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.DI + I), LN11[I]);
+      End Else
+       Emu_WriteAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI, Fat_Name11ToDisplay(LN11));
+      Exclude(P.CPU.Flags.s, EFG_CF);
+     End;
+    $AA:
+     { 71AAh : fonctions LFN SUBST - aucune notion de SUBST dans cet          }
+     { emulateur, repondre "non pris en charge" proprement plutot que de      }
+     { batir un sous-systeme SUBST complet hors de la portee de ce chantier. }
+     Emu_SetDosErr(P, 1);
+    Else Begin
+     { Sous-fonction 71xxh reconnue par le document mais volontairement      }
+     { hors de la portee de ce chantier (710Dh reset lecteur, 71A9h usage    }
+     { serveur interne, 71A2h-71A5h explicitement internes) - ou toute       }
+     { valeur AL inconnue : signal documente "IFSMgr present mais cette      }
+     { sous-fonction precise non geree". }
+     P.CPU.Regs.AX := $7100;
+     Include(P.CPU.Flags.s, EFG_CF);
     End;
    End;
   Else
