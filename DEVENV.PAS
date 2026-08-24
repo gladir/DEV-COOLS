@@ -1006,7 +1006,89 @@ Function GetAsyncKeyState(vKey: LongInt): SmallInt;
          StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
 Procedure WinSleep(MilliSec: LongInt);
          StdCall; External 'kernel32.dll' Name 'Sleep';
+{ Pont presse-papiers WINOLDAP (Windows 95, Stage 6, INT 2Fh/AX=17xxh) -   }
+{ premier acces de ce fichier a une ressource Win32 PARTAGEE avec le reste }
+{ du systeme hote (pas seulement lue, comme GetAsyncKeyState, mais aussi   }
+{ ECRITE) - voir Emu_DoInt2F pour la discipline "toujours refermer, meme   }
+{ apres une erreur intermediaire" exigee par le document. }
+Function Win_OpenClipboard(hWndOwner: LongInt): LongBool;
+         StdCall; External 'user32.dll' Name 'OpenClipboard';
+Function Win_CloseClipboard: LongBool;
+         StdCall; External 'user32.dll' Name 'CloseClipboard';
+Function Win_EmptyClipboard: LongBool;
+         StdCall; External 'user32.dll' Name 'EmptyClipboard';
+Function Win_SetClipboardData(uFormat: LongInt; hMem: LongInt): LongInt;
+         StdCall; External 'user32.dll' Name 'SetClipboardData';
+Function Win_GetClipboardData(uFormat: LongInt): LongInt;
+         StdCall; External 'user32.dll' Name 'GetClipboardData';
+Function Win_GlobalAlloc(uFlags: LongInt; dwBytes: LongInt): LongInt;
+         StdCall; External 'kernel32.dll' Name 'GlobalAlloc';
+Function Win_GlobalLock(hMem: LongInt): Pointer;
+         StdCall; External 'kernel32.dll' Name 'GlobalLock';
+Function Win_GlobalUnlock(hMem: LongInt): LongBool;
+         StdCall; External 'kernel32.dll' Name 'GlobalUnlock';
+Function Win_GlobalSize(hMem: LongInt): LongInt;
+         StdCall; External 'kernel32.dll' Name 'GlobalSize';
 {$ENDIF}
+
+Const
+ CF_TEXT_WINOLDAP = 1;        { format presse-papiers Win32 CF_TEXT       }
+ GMEM_MOVEABLE_WINOLDAP = $0002;
+ { Table CP437 (OEM, 80h-FFh) -> CP1252 (ANSI Windows) pour les lettres    }
+ { accentuees usuelles (80h-AFh) - correspondance standard, bien connue et }
+ { stable. Au-dela (B0h-FFh : traits de boite, blocs, symboles Grecs/math) }
+ { aucun equivalent CP1252 reel n existe pour la plupart, mappe a '?' -    }
+ { limitation deliberee et documentee (voir DOC/DOS_FOR_WINDOWS95_         }
+ { PROGRAMMING.txt : "les caracteres 80h..FFh ne representent pas les      }
+ { memes glyphes" - le document lui-meme met en garde contre l hypothese   }
+ { d une correspondance directe). Quelques symboles isoles au-dela de AFh  }
+ { ONT un equivalent CP1252 reel (ß µ ± ÷ ° ² etc) et sont mappes           }
+ { correctement plutot que d etre abandonnes par simplicite excessive. }
+ OemToAnsiTable: Array[$80..$FF] Of Byte = (
+  $C7,$FC,$E9,$E2,$E4,$E0,$E5,$E7,$EA,$EB,$E8,$EF,$EE,$EC,$C4,$C5, { 80-8F }
+  $C9,$E6,$C6,$F4,$F6,$F2,$FB,$F9,$FF,$D6,$DC,$A2,$A3,$A5,$3F,$83, { 90-9F }
+  $E1,$ED,$F3,$FA,$F1,$D1,$AA,$BA,$BF,$3F,$AC,$BD,$BC,$A1,$AB,$BB, { A0-AF }
+  $3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F, { B0-BF }
+  $3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F, { C0-CF }
+  $3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F, { D0-DF }
+  $3F,$DF,$3F,$3F,$3F,$3F,$B5,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F, { E0-EF }
+  $3F,$B1,$3F,$3F,$3F,$3F,$F7,$3F,$B0,$B7,$B7,$3F,$3F,$B2,$3F,$A0  { F0-FF }
+ );
+ { Inverse (CP1252 80h-FFh -> CP437) - construite directement a partir de }
+ { la table precedente (relation reciproque pour chaque entree non '?') ; }
+ { les codepoints CP1252 sans antecedent CP437 connu (0x80-0x9F propres a }
+ { Windows, ligatures, guillemets typographiques, etc) restent a '?'. }
+ AnsiToOemTable: Array[$80..$FF] Of Byte = (
+  $3F,$3F,$3F,$9F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F, { 80-8F }
+  $3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F,$3F, { 90-9F }
+  $FF,$AD,$9B,$9C,$3F,$9D,$3F,$3F,$3F,$3F,$A6,$AE,$AA,$3F,$3F,$3F, { A0-AF }
+  $F8,$F1,$FD,$3F,$3F,$E6,$3F,$F9,$3F,$3F,$A7,$AF,$AC,$AB,$3F,$A8, { B0-BF }
+  $3F,$3F,$3F,$3F,$8E,$8F,$92,$80,$3F,$90,$3F,$3F,$3F,$3F,$3F,$3F, { C0-CF }
+  $3F,$A5,$3F,$3F,$3F,$3F,$99,$3F,$3F,$3F,$3F,$3F,$9A,$3F,$3F,$E1, { D0-DF }
+  $85,$A0,$83,$3F,$84,$86,$91,$87,$8A,$82,$88,$89,$8D,$A1,$8C,$8B, { E0-EF }
+  $3F,$A4,$95,$A2,$93,$3F,$94,$F6,$3F,$97,$A3,$96,$81,$3F,$3F,$98  { F0-FF }
+ );
+
+{ Convertir un octet OEM (page de codes CP437, DOS) vers ANSI (CP1252,     }
+{ Windows) - identite pour l ASCII pur (0-7Fh, commun aux deux pages),     }
+{ table pour 80h-FFh. Utilise par AX=1703h (ecriture presse-papiers). }
+Function Emu_ClipOemToAnsi(B: Byte): Byte;
+Begin
+ If B < $80 Then Emu_ClipOemToAnsi := B
+ Else Emu_ClipOemToAnsi := OemToAnsiTable[B];
+End;
+
+{ Inverse : ANSI (CP1252) -> OEM (CP437). Utilise par AX=1705h (lecture     }
+{ presse-papiers). }
+Function Emu_ClipAnsiToOem(B: Byte): Byte;
+Begin
+ If B < $80 Then Emu_ClipAnsiToOem := B
+ Else Emu_ClipAnsiToOem := AnsiToOemTable[B];
+End;
+
+Type
+ PClipByteArr = ^TClipByteArr;
+ TClipByteArr = Array[0..65500] Of Byte;
 
 { ============================================================
   CONSTANTES GLOBALES
@@ -66769,6 +66851,12 @@ End;
 { gerees - voir Emu_DoInt. --- }
 Procedure Emu_DoInt2F(Var P: TEmulatorPanel);
 Var IvtOfs, IvtSeg: Word;
+ { --- Presse-papiers WINOLDAP (Windows 95, Stage 6, AX=17xxh) --- }
+ ClipHandled: Boolean;
+ ClipSize: LongInt;
+ ClipHMem: LongInt;
+ ClipPtr: PClipByteArr;
+ ClipI: LongInt;
 Begin
  If EmuIpx.Active And (P.CPU.Regs.AX = $7A00) Then Begin
   P.CPU.Regs.AL := $FF;
@@ -66859,6 +66947,133 @@ Begin
    { meme discipline que le reste de la session. }
    P.CPU.Segs.ES := 0;
    P.CPU.Regs.DI := 0;
+   Exit;
+  End;
+  { Pont presse-papiers WINOLDAP (Stage 6, AX=1700h-170Ah) - premiere        }
+  { ressource Win32 PARTAGEE ecrite (pas seulement lue) par ce fichier ;     }
+  { discipline stricte "toujours refermer, meme apres une erreur             }
+  { intermediaire" exigee par le document, respectee dans chaque bloc via    }
+  { une seule sortie par Exit APRES avoir pose AX, jamais de branche qui      }
+  { sauterait le 1708h en cas d echec partiel (voir 1703h/1705h : on ferme    }
+  { implicitement en laissant le programme DOS appeler 1708h lui-meme,        }
+  { exactement comme le montre l exemple Turbo Pascal du document - cette     }
+  { fonction ne fait qu UN SEUL appel Win32 par invocation, jamais de          }
+  { sequence Open+Empty+Set interne qui risquerait de laisser le              }
+  { presse-papiers ouvert si REELEMENT LFN71 s interrompait au milieu). }
+  If P.CPU.Regs.AX = $1700 Then Begin
+   { Version WINOLDAP plausible (la couche est anterieure a Windows 95,      }
+   { voir le document - lignee 3.1x). Convention volontairement DIFFERENTE   }
+   { du reste (pas de garde CX/DX, juste ecraser AX puisque le document       }
+   { precise explicitement que ce test ne suit PAS la convention AL=FFh       }
+   { habituelle des autres services multiplex). }
+   P.CPU.Regs.AL := 3;
+   P.CPU.Regs.AH := 11;
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1701 Then Begin
+   {$IFDEF WINDOWS}
+   If Win_OpenClipboard(0) Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   {$ELSE}
+   P.CPU.Regs.AX := 0;
+   {$ENDIF}
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1702 Then Begin
+   {$IFDEF WINDOWS}
+   If Win_EmptyClipboard Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   {$ELSE}
+   P.CPU.Regs.AX := 0;
+   {$ENDIF}
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1703 Then Begin
+   { DX=format (seul 07h, texte OEM, est pris en charge - "le format         }
+   { conseille a un programme DOS" selon le document), ES:BX->donnees,       }
+   { SI:CX=taille 32 bits (SI=mot haut). SI<>0 (taille >64Ko) refuse          }
+   { proprement plutot que de tronquer silencieusement. }
+   ClipHandled := False;
+   {$IFDEF WINDOWS}
+   If (P.CPU.Regs.DX = $0007) And (P.CPU.Regs.SI = 0) And (P.CPU.Regs.CX > 0) Then Begin
+    ClipSize := P.CPU.Regs.CX;
+    ClipHMem := Win_GlobalAlloc(GMEM_MOVEABLE_WINOLDAP, ClipSize);
+    If ClipHMem <> 0 Then Begin
+     ClipPtr := PClipByteArr(Win_GlobalLock(ClipHMem));
+     If ClipPtr <> Nil Then Begin
+      For ClipI := 0 To ClipSize - 1 Do
+       ClipPtr^[ClipI] := Emu_ClipOemToAnsi(Emu_ReadByte(P.CPU, P.CPU.Segs.ES,
+        Word(P.CPU.Regs.BX + ClipI)));
+      Win_GlobalUnlock(ClipHMem);
+      If Win_SetClipboardData(CF_TEXT_WINOLDAP, ClipHMem) <> 0 Then
+       ClipHandled := True;
+     End;
+    End;
+   End;
+   {$ENDIF}
+   If ClipHandled Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1704 Then Begin
+   { Taille dans DX:AX, arrondie a un multiple de 32 (comportement           }
+   { documente de WINOLDAP) - 0 si le format demande n est pas present ou    }
+   { n est pas 07h (seul format reellement gere par 1703h/1705h ici). }
+   ClipSize := 0;
+   {$IFDEF WINDOWS}
+   If P.CPU.Regs.DX = $0007 Then Begin
+    ClipHMem := Win_GetClipboardData(CF_TEXT_WINOLDAP);
+    If ClipHMem <> 0 Then Begin
+     ClipSize := Win_GlobalSize(ClipHMem);
+     ClipSize := ((ClipSize + 31) Div 32) * 32;
+    End;
+   End;
+   {$ENDIF}
+   P.CPU.Regs.AX := Word(ClipSize And $FFFF);
+   P.CPU.Regs.DX := Word((ClipSize Shr 16) And $FFFF);
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1705 Then Begin
+   ClipHandled := False;
+   {$IFDEF WINDOWS}
+   If P.CPU.Regs.DX = $0007 Then Begin
+    ClipHMem := Win_GetClipboardData(CF_TEXT_WINOLDAP);
+    If ClipHMem <> 0 Then Begin
+     ClipSize := Win_GlobalSize(ClipHMem);
+     If ClipSize > SizeOf(TClipByteArr) Then ClipSize := SizeOf(TClipByteArr);
+     ClipPtr := PClipByteArr(Win_GlobalLock(ClipHMem));
+     If (ClipPtr <> Nil) And (ClipSize > 0) Then Begin
+      For ClipI := 0 To ClipSize - 1 Do
+       Emu_WriteByte(P.CPU, P.CPU.Segs.ES, Word(P.CPU.Regs.BX + ClipI),
+        Emu_ClipAnsiToOem(ClipPtr^[ClipI]));
+      Win_GlobalUnlock(ClipHMem);
+      ClipHandled := True;
+     End;
+    End;
+   End;
+   {$ENDIF}
+   If ClipHandled Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1708 Then Begin
+   {$IFDEF WINDOWS}
+   If Win_CloseClipboard Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+   {$ELSE}
+   P.CPU.Regs.AX := 0;
+   {$ENDIF}
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $1709 Then Begin
+   { Compaction : gestion memoire historique WINOLDAP hors de portee (voir   }
+   { le document) - rendre SI:CX (taille demandee) tel quel en DX:AX,        }
+   { comme si l espace demande etait toujours disponible ; une application   }
+   { texte ordinaire se contente de toute facon de verifier 1704h. }
+   P.CPU.Regs.AX := P.CPU.Regs.CX;
+   P.CPU.Regs.DX := P.CPU.Regs.SI;
+   Exit;
+  End;
+  If P.CPU.Regs.AX = $170A Then Begin
+   { Capacites d affichage GDI - passerelle hors de portee de ce chantier    }
+   { presse-papiers (le document la classe lui-meme a part, section          }
+   { suivante) ; 0 = propriete inconnue plutot qu une valeur fabriquee. }
+   P.CPU.Regs.AX := 0;
    Exit;
   End;
  End;
