@@ -3558,6 +3558,17 @@ Type
   LastBadIP    : Word;
   HasSegOvr    : Boolean;
   SegOvr       : Word;
+  { Prefixe $66 (taille d operande 32 bits, 386+ en mode reel) - voir         }
+  { Emu_StepOne (ajoute 2026-08-24 en poursuivant l enquete DOS=HIGH/XMS :    }
+  { HIMEM.SYS utilise reellement des instructions 32 bits pour verifier la    }
+  { memoire etendue). Meme discipline que HasSegOvr : remis a False           }
+  { INCONDITIONNELLEMENT en tete de CHAQUE nouvelle instruction (jamais de    }
+  { fuite au-dela de l instruction que le prefixe precede immediatement).     }
+  { Le prefixe $67 (taille d ADRESSE 32 bits, decodage SIB) n est PAS         }
+  { implante - portee volontairement limitee a la taille d OPERANDE, qui      }
+  { couvre le cas reel rencontre (PUSH/POP/MOV/Jcc 32 bits sans adressage     }
+  { SIB). }
+  OperandSize32 : Boolean;
  End;
 
  { Operande decode a partir d un octet ModR/M }
@@ -50005,6 +50016,16 @@ Begin
  Emu_ReadWord := W;
 End;
 
+{ --- Lire/ecrire un double mot (32 bits) seg:ofs - operandes 32 bits en     }
+{ mode reel (prefixe $66, 386+) - voir OperandSize32/Emu_GetOpDWord. }
+Function Emu_ReadDWord(Var C: TEmuCPU; Seg, Ofs: Word): LongInt;
+Var
+ D: LongInt;
+Begin
+ Emu_ReadBlock(C, Seg, Ofs, D, 4);
+ Emu_ReadDWord := D;
+End;
+
 { --- Ecrire un bloc absolu --- }
 
 Procedure Emu_WriteAbsBlock(Var C: TEmuCPU; Addr: LongInt;
@@ -50214,6 +50235,11 @@ Begin
  Emu_WriteBlock(C, Seg, Ofs, X, 2);
 End;
 
+Procedure Emu_WriteDWord(Var C: TEmuCPU; Seg, Ofs: Word; X: LongInt);
+Begin
+ Emu_WriteBlock(C, Seg, Ofs, X, 4);
+End;
+
 { --- Construire les adresses statiques d interruptions --- }
 
 Procedure Emu_MakeIntrAddr(Var C: TEmuCPU);
@@ -50301,6 +50327,19 @@ Function Emu_PopWord(Var C: TEmuCPU): Word;
 Begin
  Emu_PopWord := Emu_ReadWord(C, C.Segs.SS, C.Regs.SP);
  C.Regs.SP := C.Regs.SP + 2;
+End;
+
+{ --- Pousser/depiler un double mot (32 bits, prefixe $66) --- }
+Procedure Emu_PushDWord(Var C: TEmuCPU; Value: LongInt);
+Begin
+ C.Regs.SP := C.Regs.SP - 4;
+ Emu_WriteDWord(C, C.Segs.SS, C.Regs.SP, Value);
+End;
+
+Function Emu_PopDWord(Var C: TEmuCPU): LongInt;
+Begin
+ Emu_PopDWord := Emu_ReadDWord(C, C.Segs.SS, C.Regs.SP);
+ C.Regs.SP := C.Regs.SP + 4;
 End;
 
 { --- Initialiser l ordinateur emule (memoire + table d interruption) --- }
@@ -53889,6 +53928,38 @@ Begin
  End;
 End;
 
+{ --- Acces aux registres 32 bits par numero (meme numerotation que les      }
+{ formes 16/8 bits ci-dessus - 386+ mode reel, prefixe $66) - la structure    }
+{ TEmuRegs a toujours eu EAX/ECX/.../EDI comme alias LongInt des memes        }
+{ octets (voir sa declaration), seuls ces accesseurs manquaient. --- }
+Function Emu_GetReg32(Var C: TEmuCPU; Num: Byte): LongInt;
+Begin
+ Case Num And 7 Of
+  0: Emu_GetReg32 := C.Regs.EAX;
+  1: Emu_GetReg32 := C.Regs.ECX;
+  2: Emu_GetReg32 := C.Regs.EDX;
+  3: Emu_GetReg32 := C.Regs.EBX;
+  4: Emu_GetReg32 := C.Regs.ESP;
+  5: Emu_GetReg32 := C.Regs.EBP;
+  6: Emu_GetReg32 := C.Regs.ESI;
+  7: Emu_GetReg32 := C.Regs.EDI;
+ End;
+End;
+
+Procedure Emu_SetReg32(Var C: TEmuCPU; Num: Byte; Value: LongInt);
+Begin
+ Case Num And 7 Of
+  0: C.Regs.EAX := Value;
+  1: C.Regs.ECX := Value;
+  2: C.Regs.EDX := Value;
+  3: C.Regs.EBX := Value;
+  4: C.Regs.ESP := Value;
+  5: C.Regs.EBP := Value;
+  6: C.Regs.ESI := Value;
+  7: C.Regs.EDI := Value;
+ End;
+End;
+
 { --- Acces aux registres de segment par numero (0=ES,1=CS,2=SS,3=DS) --- }
 
 Function Emu_GetSReg(Var C: TEmuCPU; Num: Byte): Word;
@@ -54019,6 +54090,26 @@ Begin
   Emu_SetReg16(C, Op.RegNum, V)
  Else
   Emu_WriteWord(C, Op.Seg, Op.Ofs, V);
+End;
+
+{ --- Operande 32 bits (prefixe $66) : meme motif Reg/Memoire que ci-dessus, }
+{ le decodage d ADRESSE (Op.Ofs) reste toujours 16 bits (aucun support SIB   }
+{ implante - voir OperandSize32) ; seule la LARGEUR de la valeur transferee  }
+{ change. --- }
+Function Emu_GetOpDWord(Var C: TEmuCPU; Var Op: TEmuOperand): LongInt;
+Begin
+ If Op.IsReg Then
+  Emu_GetOpDWord := Emu_GetReg32(C, Op.RegNum)
+ Else
+  Emu_GetOpDWord := Emu_ReadDWord(C, Op.Seg, Op.Ofs);
+End;
+
+Procedure Emu_PutOpDWord(Var C: TEmuCPU; Var Op: TEmuOperand; V: LongInt);
+Begin
+ If Op.IsReg Then
+  Emu_SetReg32(C, Op.RegNum, V)
+ Else
+  Emu_WriteDWord(C, Op.Seg, Op.Ofs, V);
 End;
 
 { --- ALU 8 bits : Op=0:ADD 1:OR 2:ADC 3:SBB 4:AND 5:SUB 6:XOR 7:CMP --- }
@@ -54161,6 +54252,81 @@ Begin
  Emu_SetZFW(C, R16);
  Emu_SetPF(C, Byte(R16));
  Emu_AluWord := R16;
+End;
+
+{ --- ALU 32 bits (prefixe $66, 386+) - meme motif que Emu_AluWord ci-dessus,}
+{ ajoute 2026-08-24 en poursuivant l enquete DOS=HIGH/XMS (HIMEM.SYS compare }
+{ reellement des motifs de test 32 bits pour verifier la memoire etendue).   }
+{ Utilise Int64 pour l intermediaire "R" (une LongInt 32 bits signee ne       }
+{ pourrait pas detecter une retenue au-dela du bit 31 sans deborder). --- }
+Function Emu_AluDWord(Var C: TEmuCPU; AluOp: Byte; A, B: LongInt): LongInt;
+Var
+ R: Int64;
+ R32: LongInt;
+ OldCF: LongInt;
+Begin
+ OldCF := 0;
+ If EFG_CF In C.Flags.s Then OldCF := 1;
+ Case AluOp Of
+  0: Begin { ADD }
+      R := Int64(LongWord(A)) + LongWord(B);
+      R32 := LongInt(LongWord(R));
+      If (R And $100000000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                                  Else Exclude(C.Flags.s, EFG_CF);
+      If ((LongWord(A) Xor LongWord(R32)) And (LongWord(B) Xor LongWord(R32)) And $80000000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  1: Begin { OR }
+      R32 := A Or B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  2: Begin { ADC }
+      R := Int64(LongWord(A)) + LongWord(B) + OldCF;
+      R32 := LongInt(LongWord(R));
+      If (R And $100000000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                                  Else Exclude(C.Flags.s, EFG_CF);
+      If ((LongWord(A) Xor LongWord(R32)) And (LongWord(B) Xor LongWord(R32)) And $80000000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  3: Begin { SBB }
+      R := Int64(LongWord(A)) - LongWord(B) - OldCF;
+      R32 := LongInt(LongWord(R));
+      If (R And $100000000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                                  Else Exclude(C.Flags.s, EFG_CF);
+      If ((LongWord(A) Xor LongWord(B)) And (LongWord(A) Xor LongWord(R32)) And $80000000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  4: Begin { AND }
+      R32 := A And B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  5, 7: Begin { SUB / CMP }
+      R := Int64(LongWord(A)) - LongWord(B);
+      R32 := LongInt(LongWord(R));
+      If (R And $100000000) <> 0 Then Include(C.Flags.s, EFG_CF)
+                                  Else Exclude(C.Flags.s, EFG_CF);
+      If ((LongWord(A) Xor LongWord(B)) And (LongWord(A) Xor LongWord(R32)) And $80000000) <> 0
+       Then Include(C.Flags.s, EFG_OF)
+       Else Exclude(C.Flags.s, EFG_OF);
+     End;
+  6: Begin { XOR }
+      R32 := A Xor B;
+      Exclude(C.Flags.s, EFG_CF);
+      Exclude(C.Flags.s, EFG_OF);
+     End;
+  Else
+   R32 := 0;
+ End;
+ If (LongWord(R32) And $80000000) <> 0 Then Include(C.Flags.s, EFG_SF)
+                                        Else Exclude(C.Flags.s, EFG_SF);
+ If R32 = 0 Then Include(C.Flags.s, EFG_ZF) Else Exclude(C.Flags.s, EFG_ZF);
+ Emu_SetPF(C, Byte(R32));
+ Emu_AluDWord := R32;
 End;
 
 { --- Tester une condition de saut conditionnel (cc = bits 3..0 de OpCode) --- }
@@ -61246,12 +61412,24 @@ Begin
    P.CPU.Regs.BX := Ofs;
    P.CPU.Regs.AH := 0;
   End;
-  $88: Begin  { Get Extended Memory Size (Ko au-dela de 1 Mo) : cet emulateur }
-              { alloue exactement 1 Mo de RAM emulee pour toute session DOS   }
-              { (voir Emu_Init, "Allouer 1 Mo en RAM emulee") - honnetement   }
-              { 0 Ko de memoire etendue, jamais plus, quelle que soit la      }
-              { classe materiel choisie. }
-   P.CPU.Regs.AX := 0;
+  $88: Begin  { Get Extended Memory Size (Ko au-dela de 1 Mo). BOGUE REEL     }
+              { CORRIGE (2026-08-24, trouve en poursuivant l enquete         }
+              { DOS=HIGH/XMS) : ce commentaire datait d avant l implantation  }
+              { de la HMA (2026-08-24, voir TEmuMemBuf/Emu_Addr) - retourner  }
+              { $0000 inconditionnellement etait honnete a l epoque (aucune   }
+              { memoire au-dela de 1 Mo n existait reellement) mais rendait   }
+              { la HMA fraichement implantee totalement INUTILISABLE : le     }
+              { vrai HIMEM.SYS verifie explicitement "cmp ax,64 / jb erreur"  }
+              { (voir sysinit1.asm AllocHMA, vrai source MS-DOS 6.0 divulgue) }
+              { avant meme d essayer d utiliser la HMA. Cet emulateur fournit }
+              { desormais reellement 65520 octets au-dela de 1 Mo (la HMA     }
+              { complete, $FFF0=65520, PAS 65536 - meme frontiere reelle      }
+              { qu un vrai systeme AT, ou le plus haut octet adressable via   }
+              { FFFF:FFFF s arrete 16 octets avant 64 Ko) - arrondi a la      }
+              { convention universelle "64 Ko" (65520 div 1024 tronque a 63   }
+              { ferait echouer a tort le test ">=64" reel alors que la HMA    }
+              { EST reellement backee au complet). }
+   P.CPU.Regs.AX := 64;
   End;
   $90, $91: ; { Device Busy / Interrupt Complete : notification de chainage   }
               { d ISR (reseau/souris) sans contrepartie multitache reelle ici }
@@ -67929,6 +68107,7 @@ Var
  Op: TEmuOperand;
  V8, R8, S8: Byte;
  V16, R16, S16: Word;
+ V32, R32, S32: LongInt;
  Disp8: ShortInt;
  Disp16: Integer;
  MulRes: LongInt;
@@ -67996,6 +68175,9 @@ Begin
  { qu ils couvrent) et ne sont pas retires pour limiter l etendue du          }
  { correctif. }
  P.CPU.HasSegOvr := False;
+ { Meme discipline que HasSegOvr ci-dessus, pour OperandSize32 (prefixe $66)  }
+ { - voir sa declaration dans TEmuCPU. }
+ P.CPU.OperandSize32 := False;
  { Diagnostic cibl? : dump instruction + DS:[offset teste] a 0EB7:01B7
    pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)) - voir     }
  { Options > Emulateur > DOS: Debug (DosLogDiag) pour activer/desactiver. }
@@ -68061,7 +68243,18 @@ Begin
               ResetSegOvr := True; Inc(P.CPU.IP); End; { FS -> traite comme DS }
    $65: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
               ResetSegOvr := True; Inc(P.CPU.IP); End; { GS -> traite comme DS }
-   $66, $67: Inc(P.CPU.IP); { prefixes operand/address-size 386+ ignores }
+   $66: Begin P.CPU.OperandSize32 := True; Inc(P.CPU.IP); End;
+        { BOGUE REEL CORRIGE (2026-08-24, HIMEM.SYS utilise reellement des    }
+        { instructions 32 bits en mode reel pour verifier la memoire         }
+        { etendue) : ce prefixe etait auparavant simplement CONSOMME ET      }
+        { IGNORE (voir OperandSize32 en tete de fonction et son utilisation   }
+        { dans les opcodes $50-$5F/$89/$8B/etc plus bas), faisant executer    }
+        { silencieusement une instruction 32 bits comme si elle etait 16      }
+        { bits (mauvaise largeur de registre/pile, resultats faux sans la     }
+        { moindre erreur signalee). }
+   $67: Inc(P.CPU.IP); { taille d ADRESSE 32 bits (decodage SIB) - PAS        }
+                        { implante, portee volontairement limitee a la        }
+                        { taille d OPERANDE (voir OperandSize32 ci-dessus) }
    $F0: Inc(P.CPU.IP); { LOCK - monoprocesseur reel-mode, deja traite   }
                         { comme un simple prefixe ignore par le coeur    }
                         { 32 bits protege, voir Dpmi_Step ($67,$F0,$F2,  }
@@ -68089,13 +68282,20 @@ Begin
        If AluOp <> 7 Then Emu_PutOpByte(P.CPU, Op, R8);
        Inc(P.CPU.IP, 1 + Op.Len);
       End;
-   1: Begin { ALU rm16, r16 }
+   1: Begin { ALU rm16, r16 (rm32, r32 si OperandSize32 - 2026-08-24, HIMEM.SYS) }
        ModRM := Emu_FetchByte(P.CPU, 1);
        Emu_DecodeModRM(P.CPU, ModRM, Op);
-       V16 := Emu_GetOpWord(P.CPU, Op);
-       S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
-       R16 := Emu_AluWord(P.CPU, AluOp, V16, S16);
-       If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
+       If P.CPU.OperandSize32 Then Begin
+        V32 := Emu_GetOpDWord(P.CPU, Op);
+        S32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
+        R32 := Emu_AluDWord(P.CPU, AluOp, V32, S32);
+        If AluOp <> 7 Then Emu_PutOpDWord(P.CPU, Op, R32);
+       End Else Begin
+        V16 := Emu_GetOpWord(P.CPU, Op);
+        S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+        R16 := Emu_AluWord(P.CPU, AluOp, V16, S16);
+        If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
+       End;
        Inc(P.CPU.IP, 1 + Op.Len);
       End;
    2: Begin { ALU r8, rm8 }
@@ -68108,14 +68308,22 @@ Begin
         Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7, R8);
        Inc(P.CPU.IP, 1 + Op.Len);
       End;
-   3: Begin { ALU r16, rm16 }
+   3: Begin { ALU r16, rm16 (r32, rm32 si OperandSize32) }
        ModRM := Emu_FetchByte(P.CPU, 1);
        Emu_DecodeModRM(P.CPU, ModRM, Op);
-       S16 := Emu_GetOpWord(P.CPU, Op);
-       V16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
-       R16 := Emu_AluWord(P.CPU, AluOp, V16, S16);
-       If AluOp <> 7 Then
-        Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
+       If P.CPU.OperandSize32 Then Begin
+        S32 := Emu_GetOpDWord(P.CPU, Op);
+        V32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
+        R32 := Emu_AluDWord(P.CPU, AluOp, V32, S32);
+        If AluOp <> 7 Then
+         Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, R32);
+       End Else Begin
+        S16 := Emu_GetOpWord(P.CPU, Op);
+        V16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+        R16 := Emu_AluWord(P.CPU, AluOp, V16, S16);
+        If AluOp <> 7 Then
+         Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
+       End;
        Inc(P.CPU.IP, 1 + Op.Len);
       End;
    4: Begin { ALU AL, imm8 }
@@ -68124,11 +68332,18 @@ Begin
        If AluOp <> 7 Then P.CPU.Regs.AL := R8;
        Inc(P.CPU.IP, 2);
       End;
-   5: Begin { ALU AX, imm16 }
-       Imm16 := Emu_FetchWord(P.CPU, 1);
-       R16 := Emu_AluWord(P.CPU, AluOp, P.CPU.Regs.AX, Imm16);
-       If AluOp <> 7 Then P.CPU.Regs.AX := R16;
-       Inc(P.CPU.IP, 3);
+   5: Begin { ALU AX, imm16 (EAX, imm32 si OperandSize32) }
+       If P.CPU.OperandSize32 Then Begin
+        V32 := Emu_FetchWord(P.CPU, 1) Or (LongInt(Emu_FetchWord(P.CPU, 3)) Shl 16);
+        R32 := Emu_AluDWord(P.CPU, AluOp, P.CPU.Regs.EAX, V32);
+        If AluOp <> 7 Then P.CPU.Regs.EAX := R32;
+        Inc(P.CPU.IP, 5);
+       End Else Begin
+        Imm16 := Emu_FetchWord(P.CPU, 1);
+        R16 := Emu_AluWord(P.CPU, AluOp, P.CPU.Regs.AX, Imm16);
+        If AluOp <> 7 Then P.CPU.Regs.AX := R16;
+        Inc(P.CPU.IP, 3);
+       End;
       End;
   End;
   If ResetSegOvr Then P.CPU.HasSegOvr := False;
@@ -68333,20 +68548,32 @@ Begin
     Emu_SetReg8(P.CPU, OpCode And 7, Imm8);
     Inc(P.CPU.IP, 2);
    End;
-  $B8..$BF: { MOV r16,imm16 }
+  $B8..$BF: { MOV r16,imm16 (r32,imm32 si OperandSize32) }
    Begin
-    Imm16 := Emu_FetchWord(P.CPU, 1);
-    Emu_SetReg16(P.CPU, OpCode And 7, Imm16);
-    Inc(P.CPU.IP, 3);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_FetchWord(P.CPU, 1) Or (LongInt(Emu_FetchWord(P.CPU, 3)) Shl 16);
+     Emu_SetReg32(P.CPU, OpCode And 7, V32);
+     Inc(P.CPU.IP, 5);
+    End Else Begin
+     Imm16 := Emu_FetchWord(P.CPU, 1);
+     Emu_SetReg16(P.CPU, OpCode And 7, Imm16);
+     Inc(P.CPU.IP, 3);
+    End;
    End;
-  $50..$57: { PUSH r16 }
+  $50..$57: { PUSH r16 (r32 si OperandSize32) }
    Begin
-    Emu_PushWord(P.CPU, Emu_GetReg16(P.CPU, OpCode And 7));
+    If P.CPU.OperandSize32 Then
+     Emu_PushDWord(P.CPU, Emu_GetReg32(P.CPU, OpCode And 7))
+    Else
+     Emu_PushWord(P.CPU, Emu_GetReg16(P.CPU, OpCode And 7));
     Inc(P.CPU.IP);
    End;
-  $58..$5F: { POP r16 }
+  $58..$5F: { POP r16 (r32 si OperandSize32) }
    Begin
-    Emu_SetReg16(P.CPU, OpCode And 7, Emu_PopWord(P.CPU));
+    If P.CPU.OperandSize32 Then
+     Emu_SetReg32(P.CPU, OpCode And 7, Emu_PopDWord(P.CPU))
+    Else
+     Emu_SetReg16(P.CPU, OpCode And 7, Emu_PopWord(P.CPU));
     Inc(P.CPU.IP);
    End;
   $60: { PUSHA (80186+) : push AX,CX,DX,BX,SP,BP,SI,DI }
@@ -68456,7 +68683,17 @@ Begin
    End;
   $6C, $6D, $6E, $6F: { INSB/INSW/OUTSB/OUTSW (80186+) - ignore (pas d'I/O port) }
    Inc(P.CPU.IP);
-  $0F: { Prefixe 286+ : LGDT/LIDT/LMSW/SMSW/etc. - ignore (mode reel) }
+  $0F: { Prefixe 286+ : LGDT/LIDT/LMSW/SMSW/etc. - ignore (mode reel), SAUF   }
+       { $80-$8F (Jcc near, voir ci-dessous) - BOGUE REEL CORRIGE (2026-08-24,}
+       { trouve en poursuivant l enquete DOS=HIGH/XMS : HIMEM.SYS utilise      }
+       { reellement Jcc near 386+ dans sa boucle de verification de memoire   }
+       { etendue) : ce cas traitait AUPARAVANT $80-$8F comme n importe quel    }
+       { autre opcode 0F inconnu - "saute 2 octets, ne saute JAMAIS" - alors   }
+       { que ce sont de VRAIS sauts conditionnels (portee 16 bits, meme        }
+       { condition que Jcc rel8 $70-$7F) qui doivent reellement etre pris ou   }
+       { non selon les fanions, avec un DEPLACEMENT DE 2 OCTETS (pas 1) a      }
+       { sauter meme quand la condition est fausse - une erreur silencieuse    }
+       { de largeur d instruction en plus de l absence totale du saut. }
    Begin
     { Lit le 2eme octet et un eventuel ModRM ; on saute l instruction. }
     Imm8 := Emu_FetchByte(P.CPU, 1);
@@ -68465,6 +68702,19 @@ Begin
                 ModRM := Emu_FetchByte(P.CPU, 2);
                 Emu_DecodeModRM(P.CPU, ModRM, Op);
                 Inc(P.CPU.IP, 2 + Op.Len);
+               End;
+     $80..$8F: Begin { Jcc near : rel16, ou rel32 si OperandSize32 }
+                If P.CPU.OperandSize32 Then Begin
+                 Imm16 := Emu_FetchWord(P.CPU, 2);   { partie basse du rel32 }
+                 Inc(P.CPU.IP, 6);
+                 If Emu_TestCond(P.CPU, Imm8 And $F) Then
+                  P.CPU.IP := Word(Integer(P.CPU.IP) + SmallInt(Imm16));
+                End Else Begin
+                 Imm16 := Emu_FetchWord(P.CPU, 2);
+                 Inc(P.CPU.IP, 4);
+                 If Emu_TestCond(P.CPU, Imm8 And $F) Then
+                  P.CPU.IP := Word(Integer(P.CPU.IP) + SmallInt(Imm16));
+                End;
                End;
      Else
       Inc(P.CPU.IP, 2);
@@ -68508,20 +68758,32 @@ Begin
     P.CPU.Regs.AH := Byte(P.CPU.Flags.Base);
     Inc(P.CPU.IP);
    End;
-  $40..$47: { INC r16 }
+  $40..$47: { INC r16 (r32 si OperandSize32) }
    Begin
     SubOp := OpCode And 7;
-    V16 := Emu_GetReg16(P.CPU, SubOp);
-    R16 := Emu_AluWord(P.CPU, 0, V16, 1);
-    Emu_SetReg16(P.CPU, SubOp, R16);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_GetReg32(P.CPU, SubOp);
+     R32 := Emu_AluDWord(P.CPU, 0, V32, 1);
+     Emu_SetReg32(P.CPU, SubOp, R32);
+    End Else Begin
+     V16 := Emu_GetReg16(P.CPU, SubOp);
+     R16 := Emu_AluWord(P.CPU, 0, V16, 1);
+     Emu_SetReg16(P.CPU, SubOp, R16);
+    End;
     Inc(P.CPU.IP);
    End;
-  $48..$4F: { DEC r16 }
+  $48..$4F: { DEC r16 (r32 si OperandSize32) }
    Begin
     SubOp := OpCode And 7;
-    V16 := Emu_GetReg16(P.CPU, SubOp);
-    R16 := Emu_AluWord(P.CPU, 5, V16, 1);
-    Emu_SetReg16(P.CPU, SubOp, R16);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_GetReg32(P.CPU, SubOp);
+     R32 := Emu_AluDWord(P.CPU, 5, V32, 1);
+     Emu_SetReg32(P.CPU, SubOp, R32);
+    End Else Begin
+     V16 := Emu_GetReg16(P.CPU, SubOp);
+     R16 := Emu_AluWord(P.CPU, 5, V16, 1);
+     Emu_SetReg16(P.CPU, SubOp, R16);
+    End;
     Inc(P.CPU.IP);
    End;
   $70..$7F: { Jcc rel8 }
@@ -68680,12 +68942,16 @@ Begin
      Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $89: { MOV rm16, r16 }
+  $89: { MOV rm16, r16 (rm32, r32 si OperandSize32) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Emu_PutOpWord(P.CPU, Op,
-     Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7));
+    If P.CPU.OperandSize32 Then
+     Emu_PutOpDWord(P.CPU, Op,
+      Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7))
+    Else
+     Emu_PutOpWord(P.CPU, Op,
+      Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $8A: { MOV r8, rm8 }
@@ -68696,12 +68962,16 @@ Begin
      Emu_GetOpByte(P.CPU, Op));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8B: { MOV r16, rm16 }
+  $8B: { MOV r16, rm16 (r32, rm32 si OperandSize32) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
-     Emu_GetOpWord(P.CPU, Op));
+    If P.CPU.OperandSize32 Then
+     Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7,
+      Emu_GetOpDWord(P.CPU, Op))
+    Else
+     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
+      Emu_GetOpWord(P.CPU, Op));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $8C: { MOV rm16, Sreg }
@@ -69144,6 +69414,85 @@ Begin
      End;
      Emu_SetSFB(P.CPU, R8); Emu_SetZFB(P.CPU, R8); Emu_SetPF(P.CPU, R8);
      Emu_PutOpByte(P.CPU, Op, R8);
+    End Else If P.CPU.OperandSize32 Then Begin
+     { BOGUE REEL CORRIGE (2026-08-24, HIMEM.SYS : "66 D1 6E FC" = decalage/  }
+     { rotation 32 bits sur un operande memoire) - meme algorithme que la     }
+     { forme 16 bits juste en dessous, transpose sur 32 bits (bit 31 au lieu  }
+     { de bit 15). }
+     V32 := Emu_GetOpDWord(P.CPU, Op);
+     R32 := V32;
+     While Cnt > 0 Do Begin
+      Case SubOp Of
+       0: Begin { ROL }
+           If (LongWord(R32) And $80000000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                                  Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R32 := LongInt((LongWord(R32) Shl 1) Or (LongWord(R32) Shr 31));
+          End;
+       1: Begin { ROR }
+           If (R32 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R32 := LongInt((LongWord(R32) Shr 1) Or (LongWord(R32 And 1) Shl 31));
+          End;
+       2: Begin { RCL 32 }
+           If EFG_CF In P.CPU.Flags.s Then S32 := 1 Else S32 := 0;
+           If (LongWord(R32) And $80000000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                                  Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R32 := LongInt((LongWord(R32) Shl 1) Or LongWord(S32));
+          End;
+       3: Begin { RCR 32 }
+           If EFG_CF In P.CPU.Flags.s Then S32 := 1 Else S32 := 0;
+           If (R32 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R32 := LongInt((LongWord(R32) Shr 1) Or (LongWord(S32) Shl 31));
+          End;
+       4, 6: Begin { SHL/SAL }
+              If (LongWord(R32) And $80000000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                                     Else Exclude(P.CPU.Flags.s, EFG_CF);
+              R32 := LongInt(LongWord(R32) Shl 1);
+             End;
+       5: Begin { SHR }
+           If (R32 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R32 := LongInt(LongWord(R32) Shr 1);
+          End;
+       7: Begin { SAR }
+           If (R32 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                Else Exclude(P.CPU.Flags.s, EFG_CF);
+           R32 := R32 Div 2; { division signee = decalage arithmetique }
+          End;
+      End;
+      Dec(Cnt);
+     End;
+     If Disp16 = 1 Then Begin
+      Case SubOp Of
+       0, 2, 4, 6:
+        Begin
+         If (((LongWord(R32) Shr 31) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       1, 3:
+        Begin
+         If (((LongWord(R32) Shr 31) And 1) Xor ((LongWord(R32) Shr 30) And 1)) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       5:
+        Begin
+         If (LongWord(V32) And $80000000) <> 0
+          Then Include(P.CPU.Flags.s, EFG_OF)
+          Else Exclude(P.CPU.Flags.s, EFG_OF);
+        End;
+       7:
+        Exclude(P.CPU.Flags.s, EFG_OF);
+      End;
+     End;
+     If (LongWord(R32) And $80000000) <> 0 Then Include(P.CPU.Flags.s, EFG_SF)
+                                            Else Exclude(P.CPU.Flags.s, EFG_SF);
+     If R32 = 0 Then Include(P.CPU.Flags.s, EFG_ZF)
+                 Else Exclude(P.CPU.Flags.s, EFG_ZF);
+     Emu_SetPF(P.CPU, Byte(R32));
+     Emu_PutOpDWord(P.CPU, Op, R32);
     End Else Begin
      V16 := Emu_GetOpWord(P.CPU, Op);
      R16 := V16;
