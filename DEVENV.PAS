@@ -3472,7 +3472,13 @@ Type
  End;
 
  { Etat complet du CPU emule }
- TEmuMemBuf = Array[0..$FFFFF] Of Byte;
+ { HMA (High Memory Area) : FFFF:0010-FFFF:FFFF = adresses physiques        }
+ { $100000-$10FFEF (65520 octets) - le plus haut octet reellement            }
+ { adressable par un couple segment:offset reel x86 (FFFF*16+FFFF=$10FFEF). }
+ { Voir Emu_Addr pour l emulation de la gate A20 (Emu8042.A20Enabled) qui    }
+ { decide si ce prolongement est reellement accessible (machine AT+, gate   }
+ { armee) ou si l adressage s enroule a 1 Mo comme sur un vrai 8086/PC-XT.  }
+ TEmuMemBuf = Array[0..$10FFEF] Of Byte;
  PEmuMemBuf = ^TEmuMemBuf;
  TEmuCPU = Record
   Memory       : PEmuMemBuf;          { 1 Mo de memoire RAM emulee  }
@@ -49810,11 +49816,40 @@ End;
     sfInvalidIntr=5, sfEndProgram=6, sfBreakPoint=7, sfDivision0=8
   ============================================================ }
 
-{ --- Convertir un seg:ofs en adresse lineaire 20 bits --- }
+{ --- Convertir un seg:ofs en adresse physique reelle, gate A20 comprise --- }
 
+{ BOGUE REEL (2026-08-24, HMA totalement absent - trouve en poursuivant      }
+{ l enquete BOOT/getclus une fois le bogue ES:DI d Emu_DoInt13/AH=08h        }
+{ corrige : DOSBox, sur le meme VHD, enchaine "Demarrage de MS-DOS..." puis  }
+{ "Verification de la memoire etendue par HIMEM..." - IO.SYS de MS-DOS 5+   }
+{ tente TOUJOURS de se reloger dans la HMA via son propre mini-XMS interne,  }
+{ meme sans DOS=HIGH explicite dans CONFIG.SYS pas encore lu a ce stade).    }
+{ Emu_Addr calculait l adresse lineaire SANS jamais tenir compte de la gate  }
+{ A20 (Emu8042.A20Enabled, deja fidelement lue/ecrite via le port 92h mais   }
+{ SANS AUCUN EFFET sur l adressage reel avant ce correctif) : un acces a     }
+{ FFFF:0010 et plus (HMA, adresses physiques $100000-$10FFEF) etait donc     }
+{ soit rejete en silence (Emu_ReadAbsBlock/WriteAbsBlock refusaient tout      }
+{ >=$100000), soit non-enveloppe comme sur un vrai PC/XT ou AT gate          }
+{ desarmee (qui doivent s enrouler a $100000 plutot que d acceder a une      }
+{ zone fantome). Corrige en enveloppant reellement l adresse a 20 bits SAUF   }
+{ sur materiel AT+ (Emu_IsATClassHw, verifie inline ici pour eviter une      }
+{ reference avant declaration - meme table que celle-ci : 2=AT/3=PS2/        }
+{ 6=Compaq Deskpro 386) avec la gate A20 armee - fidele a la fois a un vrai  }
+{ 8086/PC-XT (jamais plus de 20 bits d adressage, quelle que soit la gate,   }
+{ puisqu il n en a physiquement pas) et a un vrai AT+ gate desarmee (doit     }
+{ RE-ENVELOPPER a 1 Mo, pas juste refuser l acces - comportement materiel     }
+{ authentique exploite par certains vieux programmes reels). }
 Function Emu_Addr(Seg, Ofs: Word): LongInt;
+Var Raw: LongInt; IsATPlusHw: Boolean;
 Begin
- Emu_Addr := (LongInt(Seg) Shl 4) + Ofs;
+ Raw := (LongInt(Seg) Shl 4) + Ofs;
+ Case OptionsDlg.Data.DosHardware Of
+  2, 3, 6: IsATPlusHw := True;
+ Else
+  IsATPlusHw := False;
+ End;
+ If IsATPlusHw And Emu8042.A20Enabled Then Emu_Addr := Raw
+ Else Emu_Addr := Raw And $FFFFF;
 End;
 
 { --- Lire un bloc absolu depuis la memoire emulee --- }
@@ -49823,9 +49858,15 @@ Procedure Emu_ReadAbsBlock(Var C: TEmuCPU; Addr: LongInt;
  Var Buffer; SizeBytes: Word);
 Begin
  If Not C.MemReady Then Exit;
- If (Addr < 0) Or (Addr >= $100000) Then Exit;
- If Addr + LongInt(SizeBytes) > $100000 Then
-  SizeBytes := Word($100000 - Addr);
+ { Borne alignee sur SizeOf(TEmuMemBuf) plutot que $100000 en dur : couvre    }
+ { desormais la HMA (voir Emu_Addr) - un acces au-dela (gate A20 desarmee     }
+ { ou materiel PC/XT/AT deja enveloppe par Emu_Addr) n atteint jamais cette   }
+ { fonction avec une adresse hors bornes en temps normal, mais la garde       }
+ { reste utile pour tout appelant direct (Emu_ReadAbsBlock est aussi         }
+ { invoquee avec des adresses deja calculees ailleurs dans ce fichier). }
+ If (Addr < 0) Or (Addr >= SizeOf(TEmuMemBuf)) Then Exit;
+ If Addr + LongInt(SizeBytes) > SizeOf(TEmuMemBuf) Then
+  SizeBytes := Word(LongInt(SizeOf(TEmuMemBuf)) - Addr);
  Move(C.Memory^[Addr], Buffer, SizeBytes);
 End;
 
@@ -49919,9 +49960,10 @@ Procedure Emu_WriteAbsBlock(Var C: TEmuCPU; Addr: LongInt;
  Var Buffer; SizeBytes: Word);
 Begin
  If Not C.MemReady Then Exit;
- If (Addr < 0) Or (Addr >= $100000) Then Exit;
- If Addr + LongInt(SizeBytes) > $100000 Then
-  SizeBytes := Word($100000 - Addr);
+ { Voir le commentaire jumeau dans Emu_ReadAbsBlock (borne HMA). }
+ If (Addr < 0) Or (Addr >= SizeOf(TEmuMemBuf)) Then Exit;
+ If Addr + LongInt(SizeBytes) > SizeOf(TEmuMemBuf) Then
+  SizeBytes := Word(LongInt(SizeOf(TEmuMemBuf)) - Addr);
  Move(Buffer, C.Memory^[Addr], SizeBytes);
 End;
 
@@ -63975,12 +64017,23 @@ End;
 {    n est possible que s il s agit du DERNIER bloc alloue (le seul cas    }
 {    ou l allocateur bump peut l etendre en place sans deplacer de         }
 {    donnees) - sinon erreur A0h, comme si la memoire etait pleine.        }
-{  - HMA (fonctions 01h/02h) et le "verrouillage" (0Ch/0Dh) sont de la     }
-{    pure comptabilite : aucune adresse physique reelle n est fournie      }
-{    derriere le DX:BX retourne par Lock (les acces au-dela de 1 Mo sont   }
-{    de toute facon ignores sans risque par Emu_ReadAbsBlock/WriteAbsBlock,}
-{    donc aucun logiciel ne peut se fier a une vraie adresse physique      }
-{    utilisable ici). Les UMB (10h-12h) repondent honnetement "aucune      }
+{  - HMA (fonctions 01h/02h) : depuis le 2026-08-24 (voir Emu_Addr), la     }
+{    HMA (FFFF:0010-FFFF:FFFF, $100000-$10FFEF) est une VRAIE zone de       }
+{    memoire adressable en mode reel (TEmuMemBuf etendu, gate A20 reelle    }
+{    via Emu8042.A20Enabled - materiel AT+ uniquement, comme sur un vrai    }
+{    PC/XT qui n a physiquement pas de 21e ligne d adresse). Request/       }
+{    Release (01h/02h) restent de la pure comptabilite (un seul            }
+{    "proprietaire" a la fois, fidele a la spec XMS) mais les octets y      }
+{    sont desormais reellement lus/ecrits/executes une fois la gate armee   }
+{    (Enable Global/Local A20, fonctions 03h/05h, pilote reellement la      }
+{    gate materielle - voir Emu_Xms_GlobalEnableA20 et voisines). Le        }
+{    "verrouillage" (0Ch/0Dh) d un bloc XMS classique (AH=09h, PAS la HMA)  }
+{    reste de la pure comptabilite : aucune adresse physique reelle n est   }
+{    fournie derriere le DX:BX retourne par Lock (le stockage des blocs     }
+{    XMS "normaux" ne vit pas dans la memoire adressable du CPU emule -     }
+{    un vrai programme XMS ne s attend de toute facon qu a y acceder via    }
+{    Move Extended Memory Block, jamais par segment:offset direct). Les UMB}
+{    (10h-12h) repondent honnetement "aucune                               }
 {    UMB disponible" plutot que d en fabriquer qui risqueraient de         }
 {    chevaucher la VRAM ($A000-$BFFF) ou les stubs internes ($F000).       }
 { ========================================================================= }
@@ -64045,7 +64098,9 @@ Begin
 End;
 
 { --- AH=01h/02h : Request/Release High Memory Area --- }
-{ Comptabilite seule - voir la limite documentee plus haut. }
+{ Arbitrage d un seul "proprietaire" a la fois (pure comptabilite) - voir  }
+{ Emu_Addr pour l acces reel aux octets de la HMA une fois la gate A20     }
+{ armee (voir la limite documentee plus haut pour le detail). }
 Procedure Emu_Xms_RequestHMA(Var P: TEmulatorPanel);
 Begin
  If EmuXms.HmaOwned Then Begin
@@ -64069,36 +64124,55 @@ End;
 { --- AH=03h/04h : Global Enable/Disable A20 --- }
 { AH=05h/06h : Local Enable/Disable A20 --- }
 { AH=07h : Query A20 --- }
-{ Purement comptable (drapeau/compteur) : le modele memoire plat de cet    }
-{ emulateur ne depend d aucun etat reel de la ligne A20 - voir la limite   }
-{ documentee plus haut. }
+{ BOGUE REEL CORRIGE (2026-08-24, HMA totalement absente auparavant - voir  }
+{ Emu_Addr) : ces 4 fonctions se contentaient de comptabilite (drapeau/     }
+{ compteur EmuXms.A20Global/A20LocalCount) SANS jamais agir sur la vraie    }
+{ gate materielle Emu8042.A20Enabled - inoffensif tant que la HMA n etait   }
+{ pas adressable, mais desormais Emu_Addr consulte REELLEMENT cette gate    }
+{ pour decider si un acces a FFFF:0010+ atteint la HMA ou s enroule a 1 Mo. }
+{ Un vrai pilote HIMEM.SYS agit sur le MEME port materiel (92h/8042) que      }
+{ cet appel API XMS logique - les deux ne sont que deux facons d atteindre   }
+{ la meme gate physique. Chaque fonction recalcule donc l etat NET          }
+{ (active si LocalCount>0 OU Global, exactement la logique deja utilisee    }
+{ par Emu_Xms_QueryA20 plus bas) et le reporte sur Emu8042.A20Enabled -      }
+{ une ecriture materielle DIRECTE au port 92h (Emu_PortWrite) reste          }
+{ prioritaire/immediate si elle survient ensuite, fidele a un vrai systeme   }
+{ ou les deux chemins pilotent la meme gate sans coordination garantie. }
 Procedure Emu_Xms_GlobalEnableA20(Var P: TEmulatorPanel);
 Begin
  EmuXms.A20Global := True;
+ Emu8042.A20Enabled := True;
  P.CPU.Regs.AX := 1;
 End;
 
 Procedure Emu_Xms_GlobalDisableA20(Var P: TEmulatorPanel);
 Begin
  EmuXms.A20Global := False;
+ Emu8042.A20Enabled := (EmuXms.A20LocalCount > 0);
  P.CPU.Regs.AX := 1;
 End;
 
 Procedure Emu_Xms_LocalEnableA20(Var P: TEmulatorPanel);
 Begin
  Inc(EmuXms.A20LocalCount);
+ Emu8042.A20Enabled := True;
  P.CPU.Regs.AX := 1;
 End;
 
 Procedure Emu_Xms_LocalDisableA20(Var P: TEmulatorPanel);
 Begin
  If EmuXms.A20LocalCount > 0 Then Dec(EmuXms.A20LocalCount);
+ Emu8042.A20Enabled := (EmuXms.A20LocalCount > 0) Or EmuXms.A20Global;
  P.CPU.Regs.AX := 1;
 End;
 
 Procedure Emu_Xms_QueryA20(Var P: TEmulatorPanel);
 Begin
- If (EmuXms.A20LocalCount > 0) Or EmuXms.A20Global Then
+ { Interroge la vraie gate materielle (Emu8042.A20Enabled), pas seulement la }
+ { comptabilite XMS locale - une ecriture materielle directe au port 92h     }
+ { (hors de tout appel XMS) doit aussi se refleter ici, fidele a un vrai     }
+ { systeme ou XMS et le materiel partagent la meme gate physique. }
+ If Emu8042.A20Enabled Then
   P.CPU.Regs.AX := 1
  Else
   P.CPU.Regs.AX := 0;
