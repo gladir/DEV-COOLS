@@ -61068,6 +61068,69 @@ Begin
  End;
 End;
 
+{ INT 15h AH=C0h/88h/90h/91h : services materiel AT+ (voir Emu_IsATClassHw) -  }
+{ jusqu ici seuls AH=C2h (souris PS/2) et 10h/11h/12h (TopView) etaient geres, }
+{ toute autre sous-fonction (y compris C0h, pourtant la plus classique et la  }
+{ plus testee par MS-DOS SYSINIT au demarrage) tombait dans le "non          }
+{ supporte" generique - incoherence reelle signalee par l utilisateur en      }
+{ investiguant le blocage BOOT/IO.SYS : un materiel AT/PS2/Compaq Deskpro 386 }
+{ choisi dans "Materiel :" annonce pourtant sa classe via l octet ROM         }
+{ F000:FFFE (DosHardwareBiosId, voir Emu_InitBDA) sans jamais repondre a      }
+{ l appel INT 15h AH=C0h qu un vrai BIOS de cette classe implante toujours -  }
+{ corrige ici en repondant reellement pour la classe AT+ (Emu_IsATClassHw),   }
+{ tout en laissant PC/XT/PCjr/clones PC anterieurs repondre "non supporte"    }
+{ (fidele : ces BIOS n avaient pas cette fonction). AH=41h (Wait on External  }
+{ Event) reste volontairement hors de cette liste et continue de repondre    }
+{ "non supporte" : recherche faite (Ralf Brown's Interrupt List) confirme que }
+{ cette fonction est exclusive aux IBM PC Convertible - aucun des 11 profils  }
+{ materiel de "Materiel :" n en fait partie, donc CF=1/AH=86h y est la        }
+{ reponse correcte pour TOUTE classe materiel choisissable ici, pas une       }
+{ lacune. }
+Procedure Emu_DoInt15AT(Var P: TEmulatorPanel);
+Var Seg, Ofs: Word;
+Begin
+ Exclude(P.CPU.Flags.s, EFG_CF);
+ Case P.CPU.Regs.AH Of
+  $C0: Begin  { Get System Configuration Parameters : ES:BX -> table de 8    }
+              { octets precedee de sa longueur (voir RBIL "System Model      }
+              { Byte"/"Feature Byte 1"). }
+   Seg := P.CPU.Segs.ES; Ofs := P.CPU.Regs.BX;
+   Emu_WriteWord(P.CPU, Seg, Ofs,     8);  { longueur : 8 octets suivent }
+   Emu_WriteByte(P.CPU, Seg, Ofs + 2, DosHardwareBiosId(OptionsDlg.Data.DosHardware));
+   Emu_WriteByte(P.CPU, Seg, Ofs + 3, 0);  { sous-modele }
+   Emu_WriteByte(P.CPU, Seg, Ofs + 4, 0);  { revision BIOS }
+   { Octet fonctionnalites 1 : bit5=horloge CMOS reelle presente (voir        }
+   { Emu_CMOSPorts, deja implantee et testee) ; bit3=attente d evenement      }
+   { externe (INT 15h AH=41h/4xh, "Convertible" uniquement, jamais implante   }
+   { ici, voir le commentaire de tete) ; bit1=bus Micro Channel (aucun        }
+   { POS/AH=C4h implante, donc annonce ISA) ; bit7=canal DMA 3 reserve au     }
+   { BIOS disque dur (notre interface disque est PIO pure, jamais de DMA reel }
+   { - annoncer 0 plutot que le 1 "historique" reste honnete envers un        }
+   { pilote qui verifierait cette disponibilite avant d utiliser ce canal     }
+   { lui-meme). Seul bit5 est donc actif. }
+   Emu_WriteByte(P.CPU, Seg, Ofs + 5, $20);
+   Emu_WriteByte(P.CPU, Seg, Ofs + 6, 0);
+   Emu_WriteByte(P.CPU, Seg, Ofs + 7, 0);
+   Emu_WriteByte(P.CPU, Seg, Ofs + 8, 0);
+   Emu_WriteByte(P.CPU, Seg, Ofs + 9, 0);
+   P.CPU.Regs.AH := 0;
+  End;
+  $88: Begin  { Get Extended Memory Size (Ko au-dela de 1 Mo) : cet emulateur }
+              { alloue exactement 1 Mo de RAM emulee pour toute session DOS   }
+              { (voir Emu_Init, "Allouer 1 Mo en RAM emulee") - honnetement   }
+              { 0 Ko de memoire etendue, jamais plus, quelle que soit la      }
+              { classe materiel choisie. }
+   P.CPU.Regs.AX := 0;
+  End;
+  $90, $91: ; { Device Busy / Interrupt Complete : notification de chainage   }
+              { d ISR (reseau/souris) sans contrepartie multitache reelle ici }
+              { - acceptee sans effet (CF=0), comme un vrai BIOS le ferait    }
+              { pour un peripherique qu il ne reconnait pas specifiquement. }
+ Else
+  Begin Include(P.CPU.Flags.s, EFG_CF); P.CPU.Regs.AH := $86; End;
+ End;
+End;
+
 { Mettre a jour la position de la souris emulee a partir d un
   evenement hote (PollEvents). Convertit les coords ecran de DEVENV
   vers les coords logiques de l ecran emule (pixel pour graphique,
@@ -67189,8 +67252,10 @@ Begin
    { si la case "Souris BIOS PS/2" est cochee (EmuMousePS2Active) - toute   }
    { autre sous-fonction ou tout autre etat de la case suit le meme         }
    { comportement generique que les autres interruptions non gerees        }
-   { (branche Else) : les nombreux autres services INT 15h (A20, E820,      }
-   { clavier etendu, etc.) restent hors de portee de cet emulateur. }
+   { (branche Else), SAUF AH=C0h/88h/90h/91h pour la classe materiel AT+    }
+   { (voir Emu_DoInt15AT ci-dessous) : les nombreux autres services         }
+   { INT 15h (A20, E820, clavier etendu, etc.) restent hors de portee de    }
+   { cet emulateur. }
    If (P.CPU.Regs.AH = $C2) And EmuMousePS2Active Then Begin
     If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15C2(P);
    End
@@ -67201,6 +67266,16 @@ Begin
    Else If (OptionsDlg.Data.DosTopView) And
     ((P.CPU.Regs.AH = $10) Or (P.CPU.Regs.AH = $11) Or (P.CPU.Regs.AH = $12)) Then Begin
     If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15Tv(P);
+   End
+   { Services materiel AT+ (Get System Configuration/Get Extended Memory    }
+   { Size/Device Busy/Interrupt Complete) - gate sur Emu_IsATClassHw comme   }
+   { les 8259A/8042/FDC deja gates de la meme facon ailleurs : un PC/XT/     }
+   { PCjr/clone PC anterieur n a jamais eu ces fonctions, un vrai AT/PS2/    }
+   { Compaq Deskpro 386 les a toujours. Voir Emu_DoInt15AT pour le detail.  }
+   Else If Emu_IsATClassHw And
+    ((P.CPU.Regs.AH = $C0) Or (P.CPU.Regs.AH = $88) Or
+     (P.CPU.Regs.AH = $90) Or (P.CPU.Regs.AH = $91)) Then Begin
+    If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15AT(P);
    End
    Else Begin
     { BOGUE REEL (trouve 2026-08-22 en investiguant le blocage BOOT/IO.SYS) }
