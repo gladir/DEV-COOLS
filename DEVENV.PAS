@@ -1880,6 +1880,33 @@ Const
                                 { internes ($F000, voir IPX/Packet Driver/ }
                                 { XMS)                                    }
 
+ { INT 21h AH=52h ("list of lists"/SYSVARS) - voir Emu_DoInt21 case $52 :  }
+ { BOGUE REEL (2026-08-24, trouve en investiguant DOS=HIGH qui echoue      }
+ { toujours sur le vrai boot MS-DOS 6.22 une fois les 2 bogues precedents  }
+ { corriges - HIMEM.SYS appelle bien AH=52h puis parcourt la chaine des    }
+ { pilotes de peripherique residents [ES:BX+22h] pour verifier qu aucun    }
+ { gestionnaire XMS n est deja installe (recherche du nom "XMSXXXX0"),     }
+ { AVANT de s installer lui-meme - ce handler renvoyait juste ES:BX=       }
+ { 0040:0100 (une adresse arbitraire dans la zone de donnees BIOS, SANS     }
+ { aucune structure reelle derriere) donc HIMEM.SYS lisait des octets       }
+ { totalement non lies et abandonnait silencieusement son installation.    }
+ { Corrige en placant une VRAIE mini-structure : une "liste de listes"      }
+ { presque entierement a zero (champs non implementes = 0, inoffensif pour }
+ { un pilote qui ne s interesse qu a la chaine de peripheriques) SAUF le    }
+ { champ "pointeur vers l en-tete NUL" a l offset $22 (disposition standard}
+ { et stable DOS 3.x-6.x, tres documentee) qui pointe vers un VRAI en-tete }
+ { de pilote NUL minimal (chainage FFFF:FFFF = fin de chaine, nom NUL      }
+ { complete d espaces) - exactement ce qu un parcours de chaine reel       }
+ { trouve sur un vrai MS-DOS fraichement demarre (NUL est toujours le      }
+ { premier maillon), avant }
+ { l installation de tout pilote DEVICE= supplementaire. Emplacement       }
+ { choisi dans le segment $F000 ($F600/$F640) - au-dela de toute la fenetre}
+ { deja utilisee par TopView ($9000-$F4FF), donc sans collision. }
+ EMU_LOL_SEG        = $F000;
+ EMU_LOL_OFS        = $F600; { "liste de listes" (SYSVARS), 48 octets reserves }
+ EMU_LOL_NULDEV_OFS = $F640; { en-tete du pilote NUL (18 octets), pointe par   }
+                              { EMU_LOL_OFS+$22 }
+
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
  MAX_CYCLES    = 100000;    { limite de surete 68k }
@@ -59147,8 +59174,37 @@ Begin
    P.CPU.Regs.BX := EmuPspSeg;
   $52:
    Begin
-    P.CPU.Segs.ES := $40;
-    P.CPU.Regs.BX := $100;
+    { BOGUE REEL CORRIGE (2026-08-24) - voir le commentaire pres de           }
+    { EMU_LOL_SEG/EMU_LOL_OFS : renvoyer une VRAIE mini "liste de listes"     }
+    { avec un en-tete NUL valide a l offset $22, au lieu d une adresse        }
+    { arbitraire sans structure derriere. Ecrite a CHAQUE appel (statique,    }
+    { idempotent, cout negligeable) plutot que via une routine d init         }
+    { separee - plus simple et suffisant, cet appel n est jamais sur un       }
+    { chemin critique en performance. }
+    For I := 0 To 47 Do
+     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + I, 0);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $22, EMU_LOL_NULDEV_OFS);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $24, EMU_LOL_SEG);
+    { En-tete du pilote NUL : chainage FFFF:FFFF (fin de chaine), attribut   }
+    { $8004 (peripherique caractere + peripherique NUL, disposition reelle   }
+    { DOS), strategie/interruption factices (jamais reellement appelees      }
+    { par un simple parcours de nom), nom "NUL     " (8 octets, complete     }
+    { d espaces comme un vrai en-tete de pilote DOS). }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS, $FFFF);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 2, $FFFF);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 4, $8004);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 6, 0);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 8, 0);
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 10, Ord('N'));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 11, Ord('U'));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 12, Ord('L'));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 13, Ord(' '));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 14, Ord(' '));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 15, Ord(' '));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 16, Ord(' '));
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 17, Ord(' '));
+    P.CPU.Segs.ES := EMU_LOL_SEG;
+    P.CPU.Regs.BX := EMU_LOL_OFS;
    End;
   $54:
    P.CPU.Regs.AL := EmuVerifyFlag;
