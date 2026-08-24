@@ -67881,6 +67881,32 @@ Begin
   End;
  End;
  ResetSegOvr := False;
+ { BOGUE REEL (2026-08-24, trouve en investiguant le blocage BOOT/           }
+ { chardev_entry - un pointeur de table de dispatch legitime (SI apres      }
+ { mov si,18[bp]) se retrouvait dereference via le mauvais segment) :        }
+ { P.CPU.HasSegOvr n etait remis a False qu APRES l execution de certains    }
+ { opcodes precis (voir les 2 "If ResetSegOvr Then P.CPU.HasSegOvr :=        }
+ { False" plus bas, un dans le groupe ALU, un en fin de dispatch commun) -   }
+ { or plusieurs chemins (CALL near/CALL FAR/JMP near/JMP FAR du groupe 5     }
+ { $FF, et d autres instructions de controle de flux ailleurs) sortent via   }
+ { Exit AVANT d atteindre l un ou l autre de ces points, sautant donc ce      }
+ { nettoyage. Consequence reelle observee : "CS:JMP FAR [ptr]" (prefixe 2E,  }
+ { HasSegOvr:=True, SegOvr:=CS AVANT le saut) suivi d un JMP FAR reel         }
+ { laissait HasSegOvr actif pour l instruction SUIVANTE, meme apres un        }
+ { changement de CS - une instruction sans le moindre prefixe (ex: "MOV      }
+ { SI,[BP+12h]", adressage base sur BP donc segment par defaut SS) se         }
+ { retrouvait donc dereferencee via l ANCIEN segment CS (celui d avant le     }
+ { saut) au lieu de SS, lisant une donnee totalement non liee. Un vrai        }
+ { processeur 8086 n applique jamais un prefixe de segment au-dela de          }
+ { l instruction qu il precede immediatement - remettre HasSegOvr a False     }
+ { ICI, inconditionnellement, avant meme d absorber les prefixes de la        }
+ { PROCHAINE instruction, garantit cette regle quel que soit le chemin de     }
+ { sortie (Exit anticipe ou fin de dispatch commune) emprunte par              }
+ { l instruction PRECEDENTE - les 2 resets conditionnels existants plus bas   }
+ { restent inoffensifs (HasSegOvr est deja False a ce moment dans les cas     }
+ { qu ils couvrent) et ne sont pas retires pour limiter l etendue du          }
+ { correctif. }
+ P.CPU.HasSegOvr := False;
  { Diagnostic cibl? : dump instruction + DS:[offset teste] a 0EB7:01B7
    pour identifier la variable RTM TP4 testee a 0 (cause Halt(1)) - voir     }
  { Options > Emulateur > DOS: Debug (DosLogDiag) pour activer/desactiver. }
@@ -68373,6 +68399,26 @@ Begin
    Begin Emu_PushWord(P.CPU, P.CPU.Flags.Base); Inc(P.CPU.IP); End;
   $9D: { POPF }
    Begin P.CPU.Flags.Base := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+  { BOGUE REEL (2026-08-24, trouve en verifiant le correctif HasSegOvr sur   }
+  { le vrai boot MS-DOS 6.22 - une fois le blocage precedent leve, le boot   }
+  { progressait de 19893 a 25616 instructions avant de planter sur "opcode  }
+  { non supporte $9F", LAHF n etait simplement jamais implemente dans ce    }
+  { coeur 8086 (seuls PUSHF/POPF existaient) - SAHF ($9E) manquait aussi,   }
+  { jamais rencontre jusqu ici. TEmuFlags.Base (Word) est deja alias exact   }
+  { sur le bitset de fanions avec la MEME disposition de bits que le vrai   }
+  { registre FLAGS (CF=bit0 ... OF=bit11, voir TEmuFlag) - l octet bas de    }
+  { Flags.Base correspond donc deja EXACTEMENT a la disposition SF ZF x AF   }
+  { x PF x CF attendue par SAHF/LAHF, sans conversion necessaire. }
+  $9E: { SAHF : charge AH dans l octet bas des fanions (SF ZF x AF x PF x CF) }
+   Begin
+    P.CPU.Flags.Base := (P.CPU.Flags.Base And $FF00) Or P.CPU.Regs.AH;
+    Inc(P.CPU.IP);
+   End;
+  $9F: { LAHF : charge l octet bas des fanions dans AH }
+   Begin
+    P.CPU.Regs.AH := Byte(P.CPU.Flags.Base);
+    Inc(P.CPU.IP);
+   End;
   $40..$47: { INC r16 }
    Begin
     SubOp := OpCode And 7;
