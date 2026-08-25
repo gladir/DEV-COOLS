@@ -97804,7 +97804,26 @@ Begin
       gestionnaires standards plus bas. }
    End Else If EmuDbg.WinVisible And
               EmuDbg_HitWindow(Ev.MouseX, Ev.MouseY) Then Begin
-    { Clic sur la fenetre du debogueur : la PumpPause s en charge }
+    { BOGUE REEL corrige (2026-08-25, signale par l utilisateur : la        }
+    { fenetre du Debogueur 8086 ne pouvait pas etre deplacee/dragee, ni      }
+    { meme fermee via [X], des qu elle etait affichee via BOOT /GUI ou       }
+    { /CMD (ou "DEBUG ... /GUI" au Terminal) AVANT le tout premier F5 - le   }
+    { commentaire "la PumpPause s'en charge" ci-dessus est FAUX dans ce cas   }
+    { precis : EmuDbg.WinVisible est mis a True directement au chargement    }
+    { (voir ~82878) mais EmuDbg.Paused - et donc la boucle bloquante          }
+    { EmuDbg_PumpPause, seul endroit qui appelle reellement                  }
+    { EmuDbg_HandleMouse - n est mis a True que par EmuDbg_EnterPause, qui    }
+    { ne se declenche qu au premier pas reel APRES le F5 initial. Tant que   }
+    { ce F5 n a pas ete presse, DispatchEvent (ICI) est le SEUL code qui      }
+    { tourne pour cette fenetre - la ne rien faire revenait a avaler         }
+    { silencieusement tout clic (deplacer/redimensionner/fermer), sans       }
+    { AUCUN effet. Appeler EmuDbg_HandleMouse directement ici est sans        }
+    { risque de double traitement : quand EmuDbg_PumpPause tourne reellement }
+    { (apres un point d arret ou pas-a-pas), l execution reste bloquee dans   }
+    { sa propre boucle et DispatchEvent (donc ce code) n est alors jamais     }
+    { atteint pour ce meme evenement - les deux chemins sont mutuellement     }
+    { exclusifs en pratique (programme mono-thread). }
+    EmuDbg_HandleMouse(Ev);
    End Else If EmuPanel.Loaded And (Ev.Kind = EV_MOUSE_DOWN) And
               Not EmuPanel_HitTest(EmuPanel, Ev.MouseX, Ev.MouseY) Then Begin
     { Stage 1 : clic HORS du panneau -> relache le focus, l evenement
