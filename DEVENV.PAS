@@ -69149,6 +69149,40 @@ Begin
             P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
            Inc(P.CPU.IP, 3);
           End;
+     $B6: Begin { MOVZX r32(/r16), r/m8 - BOGUE REEL CORRIGE (2026-08-25,     }
+           { trouve en tracant a la main l'echec de HIMEM.SYS a lire sa       }
+           { propre memoire etendue : $B7 (variante 16 bits, voir juste en    }
+           { dessous) tombait auparavant dans l Else generique "saute 2       }
+           { octets" - qui ne saute PAS l octet ModRM en plus des 2 octets    }
+           { d opcode (0F+B6/B7), desynchronisant le flux d instructions      }
+           { pour TOUT ce qui suit (ici, le SHR EDI,0x10 immediatement        }
+           { apres lisait un octet totalement errone comme compte de          }
+           { decalage). Ajoute au passage par symetrie/precaution, meme si     }
+           { non rencontre directement dans ce cas precis. }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           V8 := Emu_GetOpByte(P.CPU, Op);
+           If P.CPU.OperandSize32 Then
+            Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, LongInt(V8))
+           Else
+            Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, V8);
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $B7: Begin { MOVZX r32(/r16), r/m16 - voir $B6 juste au-dessus pour le    }
+           { contexte complet du bogue corrige ; c est CETTE forme precise    }
+           { ("66 0F B7 /r") que le vrai HIMEM.SYS execute reellement dans sa  }
+           { routine "unreal mode" pour depaqueter un pointeur seg:ofs        }
+           { compacte en un mot 32 bits (voir Emu_LoadSregUnreal / le case    }
+           { $C1 du groupe 2 juste en dessous pour la suite de la sequence).  }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           V16 := Emu_GetOpWord(P.CPU, Op);
+           If P.CPU.OperandSize32 Then
+            Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, LongInt(V16))
+           Else
+            Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, V16);
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
      $80..$8F: Begin { Jcc near : rel16, ou rel32 si OperandSize32 }
                 If P.CPU.OperandSize32 Then Begin
                  Imm16 := Emu_FetchWord(P.CPU, 2);   { partie basse du rel32 }
