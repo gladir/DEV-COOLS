@@ -61724,6 +61724,8 @@ End;
 { lacune. }
 Procedure Emu_DoInt15AT(Var P: TEmulatorPanel);
 Var Seg, Ofs: Word;
+    Int87SrcBase, Int87DstBase, Int87I: LongInt;
+    Int87TmpByte: Byte;
 Begin
  Exclude(P.CPU.Flags.s, EFG_CF);
  Case P.CPU.Regs.AH Of
@@ -61778,6 +61780,41 @@ Begin
               { ferait echouer a tort le test ">=64" reel alors que la HMA    }
               { EST reellement backee au complet). }
    P.CPU.Regs.AX := 64;
+  End;
+  $87: Begin { Deplacement de bloc en memoire etendue (service BIOS           }
+             { classique). BOGUE REEL CORRIGE (2026-08-25, trouve en tracant  }
+             { HIMEM.SYS, qui utilise ce service comme repli de son           }
+             { verificateur de memoire etendue quand le "unreal mode" 32      }
+             { bits n est pas emprunte) : totalement absent (tombait dans     }
+             { l Else generique "fonction non geree" ci-dessous) - un         }
+             { CF=1/AH=86h en reponse dit a l appelant "ce BIOS ne sait pas    }
+             { deplacer de memoire etendue du tout", ce qui est FAUX et fait   }
+             { echouer silencieusement toute verification qui l utilise (le    }
+             { tampon destination n est alors jamais rempli). ES:SI pointe     }
+             { vers une table de 6 descripteurs de 8 octets (format RBIL       }
+             { classique) - seuls les descripteurs SOURCE (offset+16) et       }
+             { DESTINATION (offset+24) sont utilises ici. Par descripteur :    }
+             { octets 2-4 = base 24 bits (poids faible->fort), octet 7 = base  }
+             { bits 24-31 (extension 32 bits non-standard mais largement       }
+             { supportee - et c est exactement le format que le vrai           }
+             { HIMEM.SYS construit lui-meme, confirme par tracage direct de    }
+             { son code). CX = nombre de MOTS a deplacer. }
+   Int87SrcBase :=
+     LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 16 + 2)) Or
+     (LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 16 + 3)) Shl 8) Or
+     (LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 16 + 4)) Shl 16) Or
+     (LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 16 + 7)) Shl 24);
+   Int87DstBase :=
+     LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 24 + 2)) Or
+     (LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 24 + 3)) Shl 8) Or
+     (LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 24 + 4)) Shl 16) Or
+     (LongInt(Emu_ReadByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.SI + 24 + 7)) Shl 24);
+   For Int87I := 0 To (LongInt(P.CPU.Regs.CX) * 2) - 1 Do Begin
+    Int87TmpByte := 0;
+    Emu_ReadAbsBlock(P.CPU, Int87SrcBase + Int87I, Int87TmpByte, 1);
+    Emu_WriteAbsBlock(P.CPU, Int87DstBase + Int87I, Int87TmpByte, 1);
+   End;
+   P.CPU.Regs.AH := 0;
   End;
   $90, $91: ; { Device Busy / Interrupt Complete : notification de chainage   }
               { d ISR (reseau/souris) sans contrepartie multitache reelle ici }
