@@ -45774,6 +45774,38 @@ Begin
  End;
 End;
 
+{ Chaine d identification CPUID reelle de 12 caracteres (EBX:EDX:ECX pour  }
+{ EAX=0) correspondant a chaque fabricant de DosCPUVendorName - voir       }
+{ Emu_StepOne, opcode $0F $A2 (CPUID), qui l utilise pour que              }
+{ l "Identifiant CPU" choisi dans Options > Emulateur : DOS > Materiel     }
+{ soit reellement ce que CPUID rapporte a un programme DOS emule. }
+Function DosCPUVendorID12(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: DosCPUVendorID12 := 'GenuineIntel';
+  1: DosCPUVendorID12 := 'AuthenticAMD';
+  2: DosCPUVendorID12 := 'CyrixInstead';
+  3: DosCPUVendorID12 := 'CentaurHauls';
+  4: DosCPUVendorID12 := 'GenuineTMx86';
+  5: DosCPUVendorID12 := 'NexGenDriven';
+  6: DosCPUVendorID12 := 'UMC UMC UMC ';
+  7: DosCPUVendorID12 := 'IBM IBM IBM ';
+ Else
+  DosCPUVendorID12 := '            ';
+ End;
+End;
+
+{ Empaquete 4 caracteres ASCII consecutifs de S (a partir de StartPos, 1-   }
+{ indexe) en un LongInt petit-boutiste - ordre attendu par CPUID pour       }
+{ charger EBX/EDX/ECX depuis une chaine de 12 caracteres. }
+Function DosPack4Chars(Const S: String; StartPos: Integer): LongInt;
+Begin
+ DosPack4Chars := LongInt(Byte(S[StartPos])) Or
+  (LongInt(Byte(S[StartPos + 1])) Shl 8) Or
+  (LongInt(Byte(S[StartPos + 2])) Shl 16) Or
+  (LongInt(Byte(S[StartPos + 3])) Shl 24);
+End;
+
 Function DosHardwareName(Idx: Integer): String;
 Begin
  Case Idx Of
@@ -68509,6 +68541,7 @@ Var
  ShCnt: Byte;          { compte de decalage SHLD/SHRD }
  ScanI: Integer;       { index de bit BSF/BSR }
  MulRes64: Int64;      { produit signe 32x32 complet, pour CF/OF d IMUL 32 bits }
+ CpuVendStr: String;   { chaine d identification CPUID a 12 caracteres, voir $A2 }
  ResetSegOvr: Boolean;
  LogF_Dbg: Text;
  Imm8_Dbg: Byte;
@@ -69206,6 +69239,43 @@ Begin
      { ici : le Else generique leur donne deja la BONNE longueur (2 octets),  }
      { seule leur semantique reste absente - un manque documente et sans      }
      { risque de desynchronisation, contrairement a la categorie ci-dessus.  }
+     $A2: Begin { CPUID - sans ModRM, donc deja de la BONNE longueur (2      }
+           { octets) meme quand ce cas n existait pas, mais totalement       }
+           { muet jusqu ici (registres inchanges). Rendu reellement fonctif  }
+           { sur demande explicite de l utilisateur : ne renvoie des         }
+           { valeurs plausibles QUE si la case "CPUID detecte" (Options >    }
+           { Emulateur : DOS > Materiel) est cochee - sinon les registres    }
+           { restent inchanges, comme un vrai 486 pre-CPUID le ferait pour   }
+           { un programme qui n a pas verifie sa disponibilite au prealable  }
+           { (l exception #UD reelle qu un tel CPU declencherait n est pas   }
+           { modelisee ici, ce silence reste le choix le plus sur - voir le  }
+           { meme raisonnement documente plus haut pour LAR/LSL). Quand      }
+           { coche, EAX=0 renvoie la chaine d identifiant a 12 caracteres    }
+           { EXACTE (voir DosCPUVendorID12) correspondant au choix fait dans }
+           { le menu deroulant "Identifiant CPU :" de cette meme page. }
+           If OptionsDlg.Data.DosCPUIDDetect Then Begin
+            Case P.CPU.Regs.EAX Of
+             0: Begin
+                 P.CPU.Regs.EAX := 1; { plus haute fonction standard geree }
+                 CpuVendStr := DosCPUVendorID12(OptionsDlg.Data.DosCPUVendor);
+                 P.CPU.Regs.EBX := DosPack4Chars(CpuVendStr, 1);
+                 P.CPU.Regs.EDX := DosPack4Chars(CpuVendStr, 5);
+                 P.CPU.Regs.ECX := DosPack4Chars(CpuVendStr, 9);
+                End;
+             1: Begin
+                 P.CPU.Regs.EAX := $00000480; { famille 4 (486), modele 8 }
+                 P.CPU.Regs.EBX := 0;
+                 P.CPU.Regs.ECX := 0;
+                 P.CPU.Regs.EDX := $00000001; { bit 0 = FPU integree presente }
+                End;
+             Else Begin
+                  P.CPU.Regs.EAX := 0; P.CPU.Regs.EBX := 0;
+                  P.CPU.Regs.ECX := 0; P.CPU.Regs.EDX := 0;
+                 End;
+            End;
+           End;
+           Inc(P.CPU.IP, 2);
+          End;
      $02, $03: Begin { LAR/LSL r,r/m16 - mode reel : jamais valide, ZF efface }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Emu_DecodeModRM(P.CPU, ModRM, Op);
