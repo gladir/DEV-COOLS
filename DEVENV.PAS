@@ -3165,6 +3165,19 @@ Type
   CopyFailCount  : Integer;        { echecs REELS (extraction/creation) - }
                                     { PAS les fichiers sautes via "Sauter",}
                                     { qui sont un choix, pas un echec      }
+  CopyLastErr    : String;         { BOGUE REEL corrige (2026-08-25,       }
+                                    { signale par l utilisateur : le        }
+                                    { message "voir le journal Terminal    }
+                                    { (F10)" etait un mensonge - F10 en     }
+                                    { mode ncMessage ferme juste la boite   }
+                                    { comme n importe quelle touche, aucun  }
+                                    { "journal" n a jamais existe) - capture}
+                                    { desormais directement la derniere     }
+                                    { ligne ecrite par TermAddLine (raison   }
+                                    { reelle de l echec, ex. "Le fichier    }
+                                    { existe deja") pour l afficher DANS la }
+                                    { boite rouge elle-meme, voir            }
+                                    { NCCopyStepNext/NCCopyBatchFinish.      }
   CopyPendingName : String;        { nom affiche dans la confirmation      }
                                     { Ecraser/Tous/Sauter                  }
   CopyJumpName   : String;         { nom du fichier a mettre en evidence  }
@@ -34807,6 +34820,134 @@ Begin
  End;
 End;
 
+{ Supprimer l entree (courte OU longue, nom EFFECTIF - meme comparaison    }
+{ que Fat_LongNameExists) NameUp si elle existe dans ce repertoire :        }
+{ libere sa chaine de clusters de DONNEES (Fat_SetNextCluster a 0, le       }
+{ marqueur "libre" reconnu par Fat_AllocCluster) puis marque $E5 (marqueur  }
+{ standard "efface") l entree 8.3 ELLE-MEME ET tous les fragments LFN qui   }
+{ la precedaient immediatement (sinon ces fragments resteraient "occupes"   }
+{ pour toujours aux yeux de Fat_FindFreeSlotRun, qui ne reconnait que $00/  }
+{ $E5 comme libres - une vraie fuite d emplacements de repertoire).         }
+{ Renvoie False si le nom n existe pas (pas une erreur pour l appelant :    }
+{ voir Fat_WriteFileFromHost, qui l utilise pour transformer une creation   }
+{ en ecrasement silencieux quand le nom est deja pris). }
+Function Fat_DeleteEntry(Idx: Byte; IsRoot: Boolean; StartCl: LongInt;
+ NameUp: String): Boolean;
+Var
+ Buf: Array[0..511] Of Byte;
+ SecInClu, I: Integer;
+ Cur, FirstClu: LongInt;
+ S: LongInt;
+ RootCnt: Integer;
+ LBA: LongInt;
+ EntName, Resolved, Effective: String;
+ Attr: Byte;
+ Acc: TFatLFNAcc;
+ FragLBA: Array[0..FAT_LFN_MAXSEQ - 1] Of LongInt;
+ FragIdx: Array[0..FAT_LFN_MAXSEQ - 1] Of Integer;
+ FragCount: Integer;
+
+ { Marque $E5 les FragCount fragments accumules + l entree reelle a         }
+ { (MatchLBA, MatchIdx), puis libere la chaine de clusters FirstClu. }
+ Function DoDelete(MatchLBA: LongInt; MatchIdx: Integer): Boolean;
+ Var
+  DBuf: Array[0..511] Of Byte;
+  J: Integer;
+  C, NextCl: LongInt;
+ Begin
+  DoDelete := False;
+  For J := 0 To FragCount - 1 Do Begin
+   If Not Fat_ReadSector(Idx, FragLBA[J], DBuf) Then Exit;
+   DBuf[FragIdx[J] * 32] := $E5;
+   If Not Fat_WriteSector(Idx, FragLBA[J], DBuf) Then Exit;
+  End;
+  If Not Fat_ReadSector(Idx, MatchLBA, DBuf) Then Exit;
+  DBuf[MatchIdx * 32] := $E5;
+  If Not Fat_WriteSector(Idx, MatchLBA, DBuf) Then Exit;
+  C := FirstClu;
+  While (C >= 2) And (Not Fat_IsEOC(Idx, C)) Do Begin
+   NextCl := Fat_NextCluster(Idx, C);
+   If Not Fat_SetNextCluster(Idx, C, 0) Then Exit;
+   C := NextCl;
+  End;
+  DoDelete := True;
+ End;
+
+Begin
+ Fat_DeleteEntry := False;
+ Fat_LFNAccReset(Acc);
+ FragCount := 0;
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   LBA := FatVol[Idx].RootStart + S;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+   For I := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Exit;
+    Inc(RootCnt);
+    If Buf[I * 32] = 0 Then Exit;
+    If Fat_LFNAccFeed(Acc, Buf, I * 32) Then Begin
+     If FragCount < FAT_LFN_MAXSEQ Then Begin
+      FragLBA[FragCount] := LBA;
+      FragIdx[FragCount] := I;
+      Inc(FragCount);
+     End;
+     Continue;
+    End;
+    EntName := Fat_EntryName(Buf, I * 32);
+    If EntName = '' Then Begin Fat_LFNAccReset(Acc); FragCount := 0; Continue; End;
+    Attr := Fat_EntryAttr(Buf, I * 32);
+    If (Attr And $08) <> 0 Then Begin Fat_LFNAccReset(Acc); FragCount := 0; Continue; End;
+    Resolved := Fat_LFNAccResolve(Acc, Buf, I * 32);
+    Fat_LFNAccReset(Acc);
+    If Resolved <> '' Then Effective := Resolved Else Effective := EntName;
+    If Fat_UpStr(Effective) = NameUp Then Begin
+     FirstClu := Fat_EntryCluster(Idx, Buf, I * 32);
+     Fat_DeleteEntry := DoDelete(LBA, I);
+     Exit;
+    End;
+    FragCount := 0;
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+    For I := 0 To 15 Do Begin
+     If Buf[I * 32] = 0 Then Exit;
+     If Fat_LFNAccFeed(Acc, Buf, I * 32) Then Begin
+      If FragCount < FAT_LFN_MAXSEQ Then Begin
+       FragLBA[FragCount] := LBA;
+       FragIdx[FragCount] := I;
+       Inc(FragCount);
+      End;
+      Continue;
+     End;
+     EntName := Fat_EntryName(Buf, I * 32);
+     If EntName = '' Then Begin Fat_LFNAccReset(Acc); FragCount := 0; Continue; End;
+     Attr := Fat_EntryAttr(Buf, I * 32);
+     If (Attr And $08) <> 0 Then Begin Fat_LFNAccReset(Acc); FragCount := 0; Continue; End;
+     If (EntName = '.') Or (EntName = '..') Then Begin
+      Fat_LFNAccReset(Acc); FragCount := 0; Continue;
+     End;
+     Resolved := Fat_LFNAccResolve(Acc, Buf, I * 32);
+     Fat_LFNAccReset(Acc);
+     If Resolved <> '' Then Effective := Resolved Else Effective := EntName;
+     If Fat_UpStr(Effective) = NameUp Then Begin
+      FirstClu := Fat_EntryCluster(Idx, Buf, I * 32);
+      Fat_DeleteEntry := DoDelete(LBA, I);
+      Exit;
+     End;
+     FragCount := 0;
+    End;
+   End;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
+End;
+
 { Trouver Need emplacements de repertoire LIBRES et LOGIQUEMENT             }
 { CONSECUTIFS (fenetre glissante : reinitialisee des qu une entree occupee  }
 { est rencontree) - necessaire pour loger une chaine LFN + son entree 8.3   }
@@ -35046,7 +35187,7 @@ Var
  SrcF: File;
  BR: Word;
  ClusterSize: LongInt;
- ClBuf: Array[0..4095] Of Byte;
+ ClBuf: Array[0..32767] Of Byte;
  FirstClu, PrevClu, NewClu: LongInt;
  TotalSize: LongInt;
  SecInClu: Integer;
@@ -35060,8 +35201,16 @@ Begin
   ErrMsg := 'Disque virtuel non monte';
   Exit;
  End;
+ { BOGUE REEL corrige (2026-08-25, decouvert en poursuivant le signalement }
+ { utilisateur sur les copies F5 vers disque virtuel) : la limite de 4096   }
+ { octets/cluster (et le tampon ClBuf de meme taille) rendait cette          }
+ { fonction totalement inutilisable sur tout volume FAT12/16 utilisant des  }
+ { clusters plus grands (8/16/32 Ko - courant sur de petits disques durs    }
+ { DOS reels comme un vrai .vhd MS-DOS 6.22 de ~10 Mo) - CHAQUE copie F5     }
+ { vers un tel disque echouait, pas seulement les ecrasements. 32 Ko          }
+ { (64 secteurs/cluster) couvre le maximum FAT12/16 realiste. }
  ClusterSize := LongInt(FatVol[Idx].SectorsPerCluster) * 512;
- If (ClusterSize <= 0) Or (ClusterSize > 4096) Then Begin
+ If (ClusterSize <= 0) Or (ClusterSize > 32768) Then Begin
   ErrMsg := 'Taille de cluster non supportee';
   Exit;
  End;
@@ -35069,12 +35218,24 @@ Begin
   ErrMsg := 'Repertoire introuvable : ' + AbsParent;
   Exit;
  End;
+ { BOGUE REEL (2026-08-25, signale par l utilisateur - copie NC F5 vers un  }
+ { nom deja existant sur un disque virtuel) : cette fonction n a jamais su  }
+ { qu ECRASER une entree existante - Fat_PrepareLFNWrite juste en dessous   }
+ { refusait TOUJOURS un nom deja pris (protection legitime pour son AUTRE   }
+ { appelant, NCCmd_MkDir, qui ne doit jamais silencieusement remplacer un   }
+ { repertoire). Le niveau NC au-dessus (NCCopyStepNext/ncConfirmOverwrite)  }
+ { a deja pose la question Ecraser/Tous/Sauter AVANT d appeler cette        }
+ { fonction - une fois ici, un nom deja pris doit donc etre traite comme    }
+ { un ECRASEMENT (supprimer l ancienne entree + ses clusters, comme le      }
+ { ferait un vrai COPY DOS), jamais comme un echec. Fat_DeleteEntry renvoie }
+ { False si le nom n existait pas - ignore volontairement (rien a faire). }
+ Fat_DeleteEntry(Idx, IsRoot, StartCl, Fat_UpStr(Leaf));
  { Nom long (Windows 95, Stage 4) : Leaf peut deja etre un nom long reel   }
  { (basename d un fichier hote, ou nom tape par l utilisateur en COPY) -   }
  { valider/reserver AVANT d ouvrir la source et d allouer des clusters de  }
- { donnees, pour ne rien gaspiller si le nom existe deja ou si le          }
- { repertoire est plein (meme discipline "fail fast" que le code            }
- { precedent, juste etendue a la reservation de slots LFN). }
+ { donnees, pour ne rien gaspiller si le repertoire est plein (meme         }
+ { discipline "fail fast" que le code precedent, juste etendue a la         }
+ { reservation de slots LFN). }
  If Not Fat_PrepareLFNWrite(Idx, IsRoot, StartCl, Leaf, N11, NeedLFN, NFrag,
   RunLBA, RunIdx, ErrMsg) Then Exit;
  Assign(SrcF, SrcPath);
@@ -35225,7 +35386,7 @@ End;
 { --- Copie de fichier interne (supporte disques virtuels) --- }
 
 Function TermCopyFile(Var TP: TTerminalPanel;
- Source, Target: String): Boolean;
+ Source, Target: String; SrcIsHost: Boolean): Boolean;
 Var
  SourceFile, TargetFile: File;
  RecordsRead: Integer;
@@ -35269,8 +35430,28 @@ Begin
   Target := NCCopyComputeDest(Target, Copy(Source, BaseSlash + 1,
    Length(Source) - BaseSlash));
  End;
- { Determiner si source/cible sont sur un disque virtuel }
- SrcIsVirt := Term_ResolveVirtTarget(TP, Source, SrcIdx, SrcAbs);
+ { Determiner si source/cible sont sur un disque virtuel. BOGUE REEL       }
+ { corrige (2026-08-25, signale par l utilisateur - "Norton Commander a    }
+ { des bogues de copie de disque virtuel") : Term_ResolveVirtTarget se fie }
+ { UNIQUEMENT a la lettre de lecteur du chemin ("X:") - si un disque       }
+ { virtuel est monte sur, par exemple, C: (cas courant : /DISK80 pour un   }
+ { disque dur), ALORS TOUT chemin HOTE reel commencant par "C:" (le        }
+ { disque systeme de la machine hote, sur a peu pres toute machine         }
+ { Windows) etait a tort re-interprete comme visant ce disque virtuel -    }
+ { collision de lettre de lecteur entre l hote et l emulateur. Quand        }
+ { l appelant (NCCopyOneEntry/NCActionSyncDirs, tous deux dans le sous-     }
+ { systeme Norton Commander) sait deja avec CERTITUDE que Source vient du   }
+ { panneau HOTE (NCState.PaneSlot[Side] < 0), SrcIsHost=True court-circuite }
+ { cette re-detection ambigue par chaine - la source reste hote quelle que  }
+ { soit sa lettre de lecteur. Sans effet pour TermCmd_COPY (SrcIsHost=      }
+ { False), ou l ambiguite est un choix delibere/attendu pour un COPY tape   }
+ { a l invite (meme convention qu un vrai DOS : "C:" designe le disque      }
+ { actuellement "monte" du point de vue de ce shell). }
+ If SrcIsHost Then Begin
+  SrcIsVirt := False;
+  SrcAbs := Source;
+ End Else
+  SrcIsVirt := Term_ResolveVirtTarget(TP, Source, SrcIdx, SrcAbs);
  DstIsVirt := Term_ResolveVirtTarget(TP, Target, DstIdx, DstAbs);
  { ---- Cible sur disque virtuel : ecriture FAT ---- }
  If DstIsVirt Then Begin
@@ -35774,7 +35955,7 @@ Begin
    'Syntaxe : COPY source destination');
   Exit;
  End;
- If TermCopyFile(TP, Source, Target) Then
+ If TermCopyFile(TP, Source, Target, False) Then
   TermAddLine(TP, '1 fichier copie.')
  Else
   TermAddLine(TP, 'Echec de la copie.');
@@ -35902,7 +36083,7 @@ Begin
    'Syntaxe : MOVE source destination');
   Exit;
  End;
- If TermCopyFile(TP, Source, Target) Then Begin
+ If TermCopyFile(TP, Source, Target, False) Then Begin
   {$I-} Assign(F, Source);
   Erase(F); {$I+}
   If IOResult = 0 Then
@@ -41632,14 +41813,29 @@ End;
 { dans ce sous-systeme (NCState.PaneSlot[SrcSide] < 0). --- }
 Function NCCopyOneEntry(Var TP: TTerminalPanel; SrcSide, EntryIdx: Integer;
  Const DestBase: String): Boolean;
+Var
+ Ok: Boolean;
 Begin
  If NCState.PaneSlot[SrcSide] < 0 Then
-  NCCopyOneEntry := TermCopyFile(TP,
+  Ok := TermCopyFile(TP,
    NCFullPath(NCState.Panes[SrcSide].Path,
-    NCState.Panes[SrcSide].Entries[EntryIdx].Name), DestBase)
+    NCState.Panes[SrcSide].Entries[EntryIdx].Name), DestBase, True)
  Else
-  NCCopyOneEntry := NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[SrcSide]),
+  Ok := NCCopyVirtEntryToHost(TP, Byte(NCState.PaneSlot[SrcSide]),
    NCState.Panes[SrcSide].Entries[EntryIdx], DestBase);
+ { BOGUE REEL corrige (2026-08-25) : TermCopyFile/NCCopyVirtEntryToHost      }
+ { expliquent deja leur echec via TermAddLine(TP, ...) - mais ce texte        }
+ { atterrissait dans TP.Lines[], invisible en mode Norton Commander (qui      }
+ { dessine son propre affichage double-panneau PAR-DESSUS le defilement de   }
+ { texte normal du terminal). Le message d echec du lot promettait "voir le  }
+ { journal Terminal (F10)" pour le detail, mais F10 en mode ncMessage ferme   }
+ { simplement la boite (comme n importe quelle touche) - ce "journal" n a     }
+ { jamais existe. Capture directement la derniere ligne ecrite ici, la ou     }
+ { l appelant (NCCopyStepNext) a le contexte pour la reutiliser dans la       }
+ { boite d erreur elle-meme. }
+ If (Not Ok) And (TP.LineCount > 0) Then
+  NCState.CopyLastErr := TP.Lines[TP.LineCount - 1];
+ NCCopyOneEntry := Ok;
 End;
 
 { Fin du lot de copie F5 (tous les fichiers traites, ou lot annule via      }
@@ -41663,10 +41859,14 @@ Begin
   If FoundIdx >= 0 Then NCState.Panes[NCState.CopyDstSide].Cursor := FoundIdx;
  End;
  NCState.PromptBuf := '';
- If NCState.CopyFailCount > 0 Then
-  NCShowError('Echec de la copie (' + IntToStr(NCState.CopyFailCount) +
-   ' element(s)) - voir le journal Terminal (F10) pour le detail.', ncBrowse)
- Else
+ If NCState.CopyFailCount > 0 Then Begin
+  If NCState.CopyLastErr <> '' Then
+   NCShowError('Echec de la copie (' + IntToStr(NCState.CopyFailCount) +
+    ' element(s)) : ' + NCState.CopyLastErr, ncBrowse)
+  Else
+   NCShowError('Echec de la copie (' + IntToStr(NCState.CopyFailCount) +
+    ' element(s)).', ncBrowse);
+ End Else
   NCState.Mode := ncBrowse;
 End;
 
@@ -41678,6 +41878,37 @@ End;
 { clavier a la fois, jamais de ReadKey bloquant comme le DOS original -     }
 { voir le commentaire de tete de TNCState pour le detail), ou (b) la fin    }
 { du lot (delegue a NCCopyBatchFinish). --- }
+{ Existence de DestPath, sur disque virtuel OU hote selon DstSide -        }
+{ BOGUE REEL (2026-08-25, signale par l utilisateur : copie F5 vers un     }
+{ disque virtuel monte echouait toujours en silence sur un nom deja        }
+{ existant, JAMAIS le prompt Ecraser/Tous/Sauter attendu). Cause : l appel  }
+{ NCCopyStepNext ci-dessous testait l existence via FileExists() seul, qui }
+{ n interroge QUE le systeme de fichiers HOTE (Assign/Reset Pascal reel) - }
+{ pour un disque virtuel monte (/DISK0../DISK81, ex. un vrai .vhd DOS),    }
+{ "C:\CONFIG.SYS" ne correspond a rien sur le C: REEL de la machine hote,   }
+{ donc FileExists renvoyait toujours False : la collision n etait jamais   }
+{ detectee, le lot sautait directement a l ecriture, qui echouait ensuite   }
+{ profondement dans Fat_PrepareLFNWrite/Fat_LongNameExists (verification   }
+{ elle bien virtuelle-aware) avec un message generique "Echec de la        }
+{ copie", au lieu du choix Ecraser/Tous/Sauter normalement attendu. }
+Function NCDestFileExists(DstSide: Integer; Const DestPath: String): Boolean;
+Var
+ Idx: Byte;
+ AbsP: String;
+ Attr: Byte;
+ Cluster, Sz: LongInt;
+Begin
+ If NCState.PaneSlot[DstSide] >= 0 Then Begin
+  Idx := Byte(NCState.PaneSlot[DstSide]);
+  AbsP := DestPath;
+  If (Length(AbsP) >= 2) And (AbsP[2] = ':') Then
+   AbsP := Copy(AbsP, 3, Length(AbsP) - 2);
+  If AbsP = '' Then AbsP := '\';
+  NCDestFileExists := Fat_FindPath(Idx, AbsP, Attr, Cluster, Sz);
+ End Else
+  NCDestFileExists := FileExists(DestPath);
+End;
+
 Procedure NCCopyStepNext(Var TP: TTerminalPanel);
 Var
  DestPath: String;
@@ -41695,7 +41926,8 @@ Begin
   End;
   DestPath := NCCopyComputeDest(NCState.CopyDestBase,
    NCState.Panes[NCState.CopySrcSide].Entries[NCState.CopyIdx].Name);
-  If (Not NCState.CopyOverwriteAll) And FileExists(DestPath) Then Begin
+  If (Not NCState.CopyOverwriteAll) And
+     NCDestFileExists(NCState.CopyDstSide, DestPath) Then Begin
    NCState.CopyPendingName := NCState.Panes[NCState.CopySrcSide].Entries[NCState.CopyIdx].Name;
    NCState.Mode := ncConfirmOverwrite;
    Exit;
@@ -41722,6 +41954,7 @@ Begin
  NCState.CopyIdx := 0;
  NCState.CopyOverwriteAll := False;
  NCState.CopyFailCount := 0;
+ NCState.CopyLastErr := '';
  If (NCState.Panes[SrcSide].MarkCount = 0) And (NCState.Panes[SrcSide].Count > 0) Then
   NCState.CopyJumpName := NCState.Panes[SrcSide].Entries[NCState.Panes[SrcSide].Cursor].Name
  Else
@@ -41778,7 +42011,7 @@ Begin
    If (J < 0) Or
       (NCState.Panes[OtherSide].Entries[J].Size <> NCState.Panes[Side].Entries[I].Size) Then
     TermCopyFile(TP, NCFullPath(NCState.Panes[Side].Path,
-     NCState.Panes[Side].Entries[I].Name), NCState.Panes[OtherSide].Path);
+     NCState.Panes[Side].Entries[I].Name), NCState.Panes[OtherSide].Path, True);
   End;
  NCListDir(NCState.PaneSlot[0], NCState.Panes[0]);
  NCListDir(NCState.PaneSlot[1], NCState.Panes[1]);
