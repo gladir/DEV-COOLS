@@ -54418,6 +54418,26 @@ End;
 
 { --- ALU 8 bits : Op=0:ADD 1:OR 2:ADC 3:SBB 4:AND 5:SUB 6:XOR 7:CMP --- }
 
+{ BOGUE REEL CORRIGE (2026-08-25, trouve en tracant a la main l'affichage    }
+{ d'erreur HIMEM "XMS non fiable" jusqu'a decouvrir que la valeur imprimee   }
+{ ne correspondait a AUCUNE arithmetique plausible) : EFG_AF (retenue       }
+{ auxiliaire) n'etait JAMAIS calcule par ADD/ADC/SUB/SBB/CMP - seuls         }
+{ DAA/DAS/AAA/AAS le lisaient ET l'ecrivaient, donc il restait bloque a la   }
+{ valeur laissee par le tout dernier DAA/DAS/AAA/AAS execute PENDANT TOUT LE }
+{ RESTE DU BOOT, au lieu de refleter la VRAIE retenue bit3->bit4 de          }
+{ l'addition/soustraction qui precede immediatement. Consequence directe :   }
+{ toute conversion octet->2 chiffres hexa via l'idiome classique             }
+{ ADD+DAA+ADC+DAA (utilise par le vrai HIMEM.SYS pour son message d'erreur,  }
+{ et probablement par d'autres programmes DOS/BIOS reels) produisait un      }
+{ decalage constant errone (chiffre '0' affiche '6', '1' affiche '7', etc.)  }
+{ des que AF etait reste bloque a 1 par un DAA anterieur - la VALEUR REELLE  }
+{ que HIMEM tentait d'afficher (0x00100000, coherente avec le correctif      }
+{ AH=88h existant) etait donc totalement invisible derriere un message       }
+{ d'erreur illisible (0x66760666). Corrige ici, au point d'entree ALU 8      }
+{ bits partage par ADD/OR/ADC/SBB/AND/SUB/XOR/CMP (utilise par tout le       }
+{ dispatch $00-$3D et le groupe 1 $80/$82) - meme formule XOR standard que   }
+{ pour les autres emulateurs ALU deja presents dans ce fichier (Dpmi_Alu,    }
+{ Elf64_AluCompute, etc.), qui eux geraient deja AF correctement. }
 Function Emu_AluByte(Var C: TEmuCPU; AluOp, A, B: Byte): Byte;
 Var
  R: LongInt;
@@ -54435,6 +54455,8 @@ Begin
       If ((A Xor R8) And (B Xor R8) And $80) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R8) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   1: Begin { OR }
       R8 := A Or B;
@@ -54449,6 +54471,8 @@ Begin
       If ((A Xor R8) And (B Xor R8) And $80) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R8) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   3: Begin { SBB }
       R := LongInt(A) - B - OldCF;
@@ -54458,6 +54482,8 @@ Begin
       If ((A Xor B) And (A Xor R8) And $80) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R8) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   4: Begin { AND }
       R8 := A And B;
@@ -54472,6 +54498,8 @@ Begin
       If ((A Xor B) And (A Xor R8) And $80) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R8) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   6: Begin { XOR }
       R8 := A Xor B;
@@ -54506,6 +54534,8 @@ Begin
       If ((A Xor R16) And (B Xor R16) And $8000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R16) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   1: Begin
       R16 := A Or B;
@@ -54520,6 +54550,8 @@ Begin
       If ((A Xor R16) And (B Xor R16) And $8000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R16) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   3: Begin { SBB }
       R := LongInt(A) - B - OldCF;
@@ -54529,6 +54561,8 @@ Begin
       If ((A Xor B) And (A Xor R16) And $8000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R16) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   4: Begin
       R16 := A And B;
@@ -54543,6 +54577,8 @@ Begin
       If ((A Xor B) And (A Xor R16) And $8000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((A Xor B) Xor R16) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   6: Begin
       R16 := A Xor B;
@@ -54580,6 +54616,8 @@ Begin
       If ((LongWord(A) Xor LongWord(R32)) And (LongWord(B) Xor LongWord(R32)) And $80000000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((LongWord(A) Xor LongWord(B)) Xor LongWord(R32)) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   1: Begin { OR }
       R32 := A Or B;
@@ -54594,6 +54632,8 @@ Begin
       If ((LongWord(A) Xor LongWord(R32)) And (LongWord(B) Xor LongWord(R32)) And $80000000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((LongWord(A) Xor LongWord(B)) Xor LongWord(R32)) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   3: Begin { SBB }
       R := Int64(LongWord(A)) - LongWord(B) - OldCF;
@@ -54603,6 +54643,8 @@ Begin
       If ((LongWord(A) Xor LongWord(B)) And (LongWord(A) Xor LongWord(R32)) And $80000000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((LongWord(A) Xor LongWord(B)) Xor LongWord(R32)) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   4: Begin { AND }
       R32 := A And B;
@@ -54617,6 +54659,8 @@ Begin
       If ((LongWord(A) Xor LongWord(B)) And (LongWord(A) Xor LongWord(R32)) And $80000000) <> 0
        Then Include(C.Flags.s, EFG_OF)
        Else Exclude(C.Flags.s, EFG_OF);
+      If (((LongWord(A) Xor LongWord(B)) Xor LongWord(R32)) And $10) <> 0
+       Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
   6: Begin { XOR }
       R32 := A Xor B;
