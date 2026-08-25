@@ -49431,11 +49431,26 @@ Begin
  { Mapping vers la palette VGA 16 couleurs.
    ATTENTION : l index 0 est globalement remappe par SetBkColor
    sur le fond du bureau (gris). On le redirige vers 8 (gris fonce)
-   pour conserver un veritable noir lisible dans la console emulee. }
+   pour conserver un veritable noir lisible dans la console emulee.
+   Reserve aux appels qui passent reellement par SetBkColor (voir
+   EmuFillColor ci-dessous pour DrawFilledRect, qui n a PAS ce probleme). }
  If (C And $F) = 0 Then
   EmuColor := 8
  Else
   EmuColor := C And $F;
+End;
+
+{ BOGUE REEL CORRIGE (2026-08-24, demande explicite de l utilisateur : le    }
+{ fond par defaut de l ecran emule doit etre noir, pas gris fonce) :         }
+{ EmuColor(0)=8 etait applique EN AVEUGLE a TOUS les usages, y compris       }
+{ DrawFilledRect (SetFillStyle+Bar, standard BGI) qui n a JAMAIS souffert    }
+{ du probleme de remappage documente ci-dessus (celui-ci n affecte que       }
+{ SetBkColor - verifie : DrawFilledRect ne l appelle pas du tout). Cette     }
+{ fonction jumelle renvoie le VRAI noir (0) pour les remplissages de fond,   }
+{ et reste par ailleurs identique a EmuColor pour toute autre couleur. }
+Function EmuFillColor(C: Byte): LongInt;
+Begin
+ EmuFillColor := C And $F;
 End;
 
 { --- Mapper RGB 6 bits (0..63) vers la palette BGI 16 couleurs.
@@ -49830,7 +49845,7 @@ Begin
  DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
   '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
  { Fond de l ecran emule }
- DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuColor(P.CurBg));
+ DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuFillColor(P.CurBg));
  { Cellules : dessiner chaque caractere avec son attribut.
    On peint TOUJOURS le fond (meme noir) afin que les glyphes
    d OutTextXY (qui utilisent SetBkColor) n affichent pas le
@@ -49842,7 +49857,7 @@ Begin
    PixX := GridX + X * P.CharW;
    { Toujours dessiner le fond de la cellule }
    DrawFilledRect(PixX, PixY, PixX + P.CharW - 1,
-    PixY + P.CharH - 1, EmuColor(Cell.Bg));
+    PixY + P.CharH - 1, EmuFillColor(Cell.Bg));
    { Caractere }
    If Cell.Ch <> ' ' Then Begin
     SetBkColor(EmuColor(Cell.Bg));
@@ -94327,16 +94342,36 @@ Begin
        '  [N V - B D I Z C]';
   OutTextXY(X + 6, LineY, S); Inc(LineY, 14);
  End Else If EmuDbg.CPU = EDC_8086 Then Begin
-  S := 'AX=' + HexWord(EmuPanel.CPU.Regs.AX) +
-       '  BX=' + HexWord(EmuPanel.CPU.Regs.BX) +
-       '  CX=' + HexWord(EmuPanel.CPU.Regs.CX) +
-       '  DX=' + HexWord(EmuPanel.CPU.Regs.DX);
-  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
-  S := 'SI=' + HexWord(EmuPanel.CPU.Regs.SI) +
-       '  DI=' + HexWord(EmuPanel.CPU.Regs.DI) +
-       '  BP=' + HexWord(EmuPanel.CPU.Regs.BP) +
-       '  SP=' + HexWord(EmuPanel.CPU.Regs.SP);
-  OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  { Registres 32 bits (EAX=/EBX=/...) si "Emulation 80386" est cochee dans   }
+  { Options > Emulateur > DOS: Materiel - meme discipline et meme raison    }
+  { que EmuCmdConsole_ShowRegs (demande explicite de l utilisateur          }
+  { 2026-08-24) : un 386+ affiche reellement des registres 32 bits au        }
+  { deboguage, meme en mode reel 16 bits. }
+  If OptionsDlg.Data.DosEmu80386 Then Begin
+   S := 'EAX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 0)) +
+        '  EBX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 3));
+   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+   S := 'ECX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 1)) +
+        '  EDX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 2));
+   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+   S := 'ESI=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 6)) +
+        '  EDI=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 7));
+   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+   S := 'EBP=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 5)) +
+        '  ESP=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 4));
+   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  End Else Begin
+   S := 'AX=' + HexWord(EmuPanel.CPU.Regs.AX) +
+        '  BX=' + HexWord(EmuPanel.CPU.Regs.BX) +
+        '  CX=' + HexWord(EmuPanel.CPU.Regs.CX) +
+        '  DX=' + HexWord(EmuPanel.CPU.Regs.DX);
+   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+   S := 'SI=' + HexWord(EmuPanel.CPU.Regs.SI) +
+        '  DI=' + HexWord(EmuPanel.CPU.Regs.DI) +
+        '  BP=' + HexWord(EmuPanel.CPU.Regs.BP) +
+        '  SP=' + HexWord(EmuPanel.CPU.Regs.SP);
+   OutTextXY(X + 6, LineY, S); Inc(LineY, 12);
+  End;
   S := 'CS=' + HexWord(EmuPanel.CPU.Segs.CS) +
        '  DS=' + HexWord(EmuPanel.CPU.Segs.DS) +
        '  ES=' + HexWord(EmuPanel.CPU.Segs.ES) +
@@ -94909,14 +94944,32 @@ End;
 
 Procedure EmuCmdConsole_ShowRegs(Var C: TEmuCmdConsole);
 Begin
- EmuCmdConsole_AddLine(C, 'AX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 0)) +
-  ' BX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 3)) +
-  ' CX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 1)) +
-  ' DX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 2)));
- EmuCmdConsole_AddLine(C, 'SI=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 6)) +
-  ' DI=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 7)) +
-  ' BP=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 5)) +
-  ' SP=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 4)));
+ { Registres 32 bits (EAX=/EBX=/...) quand l utilisateur a coche            }
+ { "Emulation 80386" dans Options > Emulateur > DOS: Materiel               }
+ { (OptionsDlg.Data.DosEmu80386) - demande explicite de l utilisateur       }
+ { 2026-08-24 : sur un 386+, les registres visibles au deboguage sont       }
+ { reellement 32 bits (EAX/EBX/...), meme quand le code execute est en      }
+ { mode reel 16 bits. Emu_GetReg32 existe deja (support $66/OperandSize32   }
+ { ajoute plus tot cette session) - simple reutilisation pour l affichage.  }
+ If OptionsDlg.Data.DosEmu80386 Then Begin
+  EmuCmdConsole_AddLine(C, 'EAX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 0)) +
+   ' EBX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 3)) +
+   ' ECX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 1)) +
+   ' EDX=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 2)));
+  EmuCmdConsole_AddLine(C, 'ESI=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 6)) +
+   ' EDI=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 7)) +
+   ' EBP=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 5)) +
+   ' ESP=' + HexLong(Emu_GetReg32(EmuPanel.CPU, 4)));
+ End Else Begin
+  EmuCmdConsole_AddLine(C, 'AX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 0)) +
+   ' BX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 3)) +
+   ' CX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 1)) +
+   ' DX=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 2)));
+  EmuCmdConsole_AddLine(C, 'SI=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 6)) +
+   ' DI=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 7)) +
+   ' BP=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 5)) +
+   ' SP=' + HexWord(Emu_GetReg16(EmuPanel.CPU, 4)));
+ End;
  EmuCmdConsole_AddLine(C, 'DS=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 3)) +
   ' ES=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 0)) +
   ' SS=' + HexWord(Emu_GetSReg(EmuPanel.CPU, 2)) +
