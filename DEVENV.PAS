@@ -3531,6 +3531,27 @@ Type
  { armee) ou si l adressage s enroule a 1 Mo comme sur un vrai 8086/PC-XT.  }
  TEmuMemBuf = Array[0..$10FFEF] Of Byte;
  PEmuMemBuf = ^TEmuMemBuf;
+
+ { Cache "unreal mode" (2026-08-24, BOGUE REEL CORRIGE - voir CR0/GdtBase/     }
+ { UnrealSegs dans TEmuCPU ci-dessous pour le contexte complet) : un registre  }
+ { de segment reel garde une base cachee sur 32 bits (issue d un descripteur   }
+ { GDT charge PENDANT un bref basculement en mode protege) qui survit au       }
+ { retour en mode reel - c est la technique authentique "unreal mode" que le   }
+ { vrai HIMEM.SYS utilise pour adresser la memoire etendue au-dela de 1 Mo     }
+ { avec des registres 32 bits. Cette base n a AUCUN rapport avec la formule    }
+ { habituelle Seg*16 - jusqu a ce correctif, Emu_Addr/Emu_AddrL l ignoraient   }
+ { completement, ce qui faisait atterrir toute ecriture "unreal mode" a une    }
+ { adresse essentiellement arbitraire (explique le tampon de relecture rempli }
+ { de donnees sans rapport observe lors de l enquete HIMEM "memoire etendue    }
+ { non fiable"). Table associative simple valeur->base (4 entrees, largement   }
+ { suffisant : le code DOS reel de cette epoque reutilise la meme poignee de   }
+ { selecteurs "plats" en boucle, jamais des dizaines de valeurs distinctes). }
+ TEmuUnrealSeg = Record
+  Active: Boolean;
+  SegVal: Word;
+  Base  : LongInt;
+ End;
+
  TEmuCPU = Record
   Memory       : PEmuMemBuf;          { 1 Mo de memoire RAM emulee  }
   MemReady     : Boolean;             { buffer alloue ?             }
@@ -3580,6 +3601,17 @@ Type
   { identifie, portee delibarement limitee comme documente ailleurs dans ce   }
   { fichier pour $67. }
   AddrSize32 : Boolean;
+  { --- Support "unreal mode" (2026-08-24, BOGUE REEL CORRIGE) - voir         }
+  { TEmuUnrealSeg ci-dessus pour le contexte complet. }
+  CR0      : LongInt;   { seul le bit 0 (PE, Protection Enable) est suivi -    }
+                         { le reste de ce fichier ne modelise pas un vrai      }
+                         { mode protege, seulement le bref basculement que     }
+                         { "unreal mode" exploite pour charger un descripteur. }
+  GdtBase  : LongInt;    { charges par LGDT (0F 01 /2) }
+  GdtLimit : Word;
+  UnrealSegs: Array[0..3] Of TEmuUnrealSeg;  { cache valeur -> base 32 bits,  }
+                                              { rempli par un MOV Sreg,r/m16   }
+                                              { execute pendant que CR0.PE=1 }
  End;
 
  { Operande decode a partir d un octet ModR/M }
@@ -49429,28 +49461,18 @@ End;
 Function EmuColor(C: Byte): LongInt;
 Begin
  { Mapping vers la palette VGA 16 couleurs.
-   ATTENTION : l index 0 est globalement remappe par SetBkColor
-   sur le fond du bureau (gris). On le redirige vers 8 (gris fonce)
-   pour conserver un veritable noir lisible dans la console emulee.
-   Reserve aux appels qui passent reellement par SetBkColor (voir
-   EmuFillColor ci-dessous pour DrawFilledRect, qui n a PAS ce probleme). }
+   ATTENTION : l index 0 est globalement remappe (par SetBkColor ET,
+   verifie experimentalement le 2026-08-24, par ce backend graphique en
+   general - un essai de reserver un "vrai noir" via SetFillStyle+Bar
+   pour DrawFilledRect seul a produit un gris a peine distinct du texte,
+   pire que le gris fonce (8) actuel - donc PAS uniquement un probleme
+   de SetBkColor comme le laissait penser ce commentaire a l origine).
+   On redirige 0 vers 8 (gris fonce) partout, sans exception, pour
+   conserver un veritable contraste lisible dans la console emulee. }
  If (C And $F) = 0 Then
   EmuColor := 8
  Else
   EmuColor := C And $F;
-End;
-
-{ BOGUE REEL CORRIGE (2026-08-24, demande explicite de l utilisateur : le    }
-{ fond par defaut de l ecran emule doit etre noir, pas gris fonce) :         }
-{ EmuColor(0)=8 etait applique EN AVEUGLE a TOUS les usages, y compris       }
-{ DrawFilledRect (SetFillStyle+Bar, standard BGI) qui n a JAMAIS souffert    }
-{ du probleme de remappage documente ci-dessus (celui-ci n affecte que       }
-{ SetBkColor - verifie : DrawFilledRect ne l appelle pas du tout). Cette     }
-{ fonction jumelle renvoie le VRAI noir (0) pour les remplissages de fond,   }
-{ et reste par ailleurs identique a EmuColor pour toute autre couleur. }
-Function EmuFillColor(C: Byte): LongInt;
-Begin
- EmuFillColor := C And $F;
 End;
 
 { --- Mapper RGB 6 bits (0..63) vers la palette BGI 16 couleurs.
@@ -49845,7 +49867,7 @@ Begin
  DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
   '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
  { Fond de l ecran emule }
- DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuFillColor(P.CurBg));
+ DrawFilledRect(GridX, GridY, GridX + GridW, GridY + GridH, EmuColor(P.CurBg));
  { Cellules : dessiner chaque caractere avec son attribut.
    On peint TOUJOURS le fond (meme noir) afin que les glyphes
    d OutTextXY (qui utilisent SetBkColor) n affichent pas le
@@ -49857,7 +49879,7 @@ Begin
    PixX := GridX + X * P.CharW;
    { Toujours dessiner le fond de la cellule }
    DrawFilledRect(PixX, PixY, PixX + P.CharW - 1,
-    PixY + P.CharH - 1, EmuFillColor(Cell.Bg));
+    PixY + P.CharH - 1, EmuColor(Cell.Bg));
    { Caractere }
    If Cell.Ch <> ' ' Then Begin
     SetBkColor(EmuColor(Cell.Bg));
@@ -49931,9 +49953,40 @@ End;
 { puisqu il n en a physiquement pas) et a un vrai AT+ gate desarmee (doit     }
 { RE-ENVELOPPER a 1 Mo, pas juste refuser l acces - comportement materiel     }
 { authentique exploite par certains vieux programmes reels). }
-Function Emu_Addr(Seg, Ofs: Word): LongInt;
-Var Raw: LongInt; IsATPlusHw: Boolean;
+{ --- Chercher une base "unreal mode" cachee pour cette VALEUR de registre   }
+{ de segment (2026-08-24, BOGUE REEL CORRIGE - voir TEmuUnrealSeg). Le vrai  }
+{ mecanisme materiel attache la base cachee au REGISTRE (ES/DS/...), pas a   }
+{ sa valeur - cette table associative par VALEUR est une approximation       }
+{ deliberee : le code DOS reel de cette epoque charge une poignee fixe de    }
+{ selecteurs "plats" et les reutilise tels quels, donc une correspondance    }
+{ par valeur suffit en pratique et evite de refaire passer un contexte de    }
+{ "quel registre" a travers les ~15 sites d appel d Emu_Addr/Emu_AddrL. }
+Function Emu_UnrealBase(Var C: TEmuCPU; Seg: Word; Var Found: Boolean): LongInt;
+Var I: Integer;
 Begin
+ Found := False;
+ Emu_UnrealBase := 0;
+ For I := 0 To 3 Do
+  If C.UnrealSegs[I].Active And (C.UnrealSegs[I].SegVal = Seg) Then Begin
+   Found := True;
+   Emu_UnrealBase := C.UnrealSegs[I].Base;
+   Exit;
+  End;
+End;
+
+Function Emu_Addr(Var C: TEmuCPU; Seg, Ofs: Word): LongInt;
+Var Raw: LongInt; IsATPlusHw: Boolean; UBase: LongInt; UFound: Boolean;
+Begin
+ { BOGUE REEL CORRIGE (2026-08-24) : une adresse "unreal mode" (base 32     }
+ { bits issue d un descripteur GDT, voir TEmuUnrealSeg) est une adresse     }
+ { LINEAIRE PLATE reelle - elle ne suit NI la formule Seg*16 NI            }
+ { l enveloppement 20 bits/gate A20 (qui ne concernent que l adressage     }
+ { segmente reel classique). Verifiee AVANT toute autre logique. }
+ UBase := Emu_UnrealBase(C, Seg, UFound);
+ If UFound Then Begin
+  Emu_Addr := UBase + Ofs;
+  Exit;
+ End;
  Raw := (LongInt(Seg) Shl 4) + Ofs;
  Case OptionsDlg.Data.DosHardware Of
   2, 3, 6: IsATPlusHw := True;
@@ -49950,9 +50003,17 @@ End;
 { avec des registres ESI/EDI/EAX pleins 32 bits, largement au-dela de ce    }
 { qu un Ofs 16 bits peut representer. Meme logique d enveloppement A20 que  }
 { Emu_Addr. }
-Function Emu_AddrL(Seg: Word; Ofs: LongInt): LongInt;
-Var Raw: LongInt; IsATPlusHw: Boolean;
+Function Emu_AddrL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt): LongInt;
+Var Raw: LongInt; IsATPlusHw: Boolean; UBase: LongInt; UFound: Boolean;
 Begin
+ { Meme correctif "unreal mode" que Emu_Addr ci-dessus - voir ce commentaire  }
+ { jumeau pour le contexte complet. C est le chemin REELLEMENT emprunte par   }
+ { le REP MOVSD $67/$66 de HIMEM.SYS (Emu_Read/WriteDWordL). }
+ UBase := Emu_UnrealBase(C, Seg, UFound);
+ If UFound Then Begin
+  Emu_AddrL := UBase + Ofs;
+  Exit;
+ End;
  Raw := (LongInt(Seg) Shl 4) + Ofs;
  Case OptionsDlg.Data.DosHardware Of
   2, 3, 6: IsATPlusHw := True;
@@ -50042,7 +50103,7 @@ Begin
   End;
   Exit;
  End;
- Emu_ReadAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
+ Emu_ReadAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
 End;
 
 { --- Lire un octet seg:ofs --- }
@@ -50085,7 +50146,7 @@ Function Emu_ReadByteL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt): Byte;
 Var B: Byte;
 Begin
  B := 0;
- Emu_ReadAbsBlock(C, Emu_AddrL(Seg, Ofs), B, 1);
+ Emu_ReadAbsBlock(C, Emu_AddrL(C, Seg, Ofs), B, 1);
  Emu_ReadByteL := B;
 End;
 
@@ -50093,7 +50154,7 @@ Function Emu_ReadWordL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt): Word;
 Var W: Word;
 Begin
  W := 0;
- Emu_ReadAbsBlock(C, Emu_AddrL(Seg, Ofs), W, 2);
+ Emu_ReadAbsBlock(C, Emu_AddrL(C, Seg, Ofs), W, 2);
  Emu_ReadWordL := W;
 End;
 
@@ -50101,7 +50162,7 @@ Function Emu_ReadDWordL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt): LongInt;
 Var D: LongInt;
 Begin
  D := 0;
- Emu_ReadAbsBlock(C, Emu_AddrL(Seg, Ofs), D, 4);
+ Emu_ReadAbsBlock(C, Emu_AddrL(C, Seg, Ofs), D, 4);
  Emu_ReadDWordL := D;
 End;
 
@@ -50109,47 +50170,34 @@ End;
 
 Procedure Emu_WriteAbsBlock(Var C: TEmuCPU; Addr: LongInt;
  Var Buffer; SizeBytes: Word);
+Var
+ WLog: Text; WIO: Integer;
+ DBPtr: ^Byte; DumpJ: Word; DumpB: Byte; DumpS: String;
 Begin
  If Not C.MemReady Then Exit;
  { Voir le commentaire jumeau dans Emu_ReadAbsBlock (borne HMA). }
  If (Addr < 0) Or (Addr >= SizeOf(TEmuMemBuf)) Then Exit;
  If Addr + LongInt(SizeBytes) > SizeOf(TEmuMemBuf) Then
   SizeBytes := Word(LongInt(SizeOf(TEmuMemBuf)) - Addr);
- Move(Buffer, C.Memory^[Addr], SizeBytes);
-End;
-
-{ --- Ecrire un bloc seg:ofs --- }
-
-Procedure Emu_WriteBlock(Var C: TEmuCPU; Seg, Ofs: Word;
- Var Buffer; SizeBytes: Word);
-Var
- BPtr: ^Byte;
- I: Word;
- Row, Col: Integer;
- B: Byte;
- WLog: Text; WIO: Integer;
- DumpJ: Word; DumpB: Byte; DumpS: String; DBPtr: ^Byte;
-Begin
- { Activites observees (Deboguer > Activites observees) : comptage        }
- { INDEPENDANT du mode video actif (texte/ATI/CGA graphique) - au point    }
- { d entree commun, plutot que duplique dans chaque branche ci-dessous. }
- If (Seg And $F800) = $B800 Then Inc(EmuActVramB800)
- Else If (Seg And $F800) = $B000 Then Inc(EmuActVramB000)
- Else If (Seg And $F000) = $A000 Then Inc(EmuActVramA000);
- { Watch : log de toute ecriture dans la zone surveillee, AVEC la valeur    }
- { reellement ecrite (lue directement dans Buffer, PAS relue depuis la      }
- { memoire - a cet instant l ecriture reelle n a pas encore eu lieu). }
+ { Watch : point de passage UNIQUE pour toute ecriture physique (seg:ofs   }
+ { 16 bits via Emu_WriteBlock/Emu_WriteByte, OU adressage 32 bits via      }
+ { Emu_WriteByteL/Emu_WriteWordL/Emu_WriteDWordL/Emu_AddrL - ce dernier    }
+ { chemin, utilise par l adressage "unreal mode" 32 bits reel (prefixes    }
+ { 67h/66h), contournait  }
+ { totalement les verifications WATCH dupliquees dans Emu_WriteBlock et    }
+ { Emu_WriteByte : un WATCH arme ne detectait alors JAMAIS les ecritures   }
+ { d un mouvement memoire 32 bits, bogue reel trouve le 2026-08-25 en      }
+ { tracant HIMEM.SYS (qui utilise justement ce mode d adressage). Centre   }
+ { ici (sur l adresse physique deja resolue), ce test couvre desormais     }
+ { TOUS les chemins d ecriture sans duplication. }
  If EmuWatchEnabled And (SizeBytes > 0) And
-    (LongInt(Seg)*16 + Ofs <= EmuWatchPhysHi) And
-    (LongInt(Seg)*16 + Ofs + SizeBytes - 1 >= EmuWatchPhysLo) And
+    (Addr <= EmuWatchPhysHi) And (Addr + LongInt(SizeBytes) - 1 >= EmuWatchPhysLo) And
     (EmuWatchHits < 200) Then Begin
   Inc(EmuWatchHits);
   {$I-} Assign(WLog, 'EMUWATCH.LOG'); Append(WLog);
   WIO := IOResult;
   If WIO <> 0 Then Begin Assign(WLog,'EMUWATCH.LOG'); Rewrite(WLog); End;
-  WriteLn(WLog, '#', EmuWatchHits, ' WBLK ',
-    HexWord(Seg), ':', HexWord(Ofs),
-    ' (phys=', HexLong(LongInt(Seg)*16+Ofs), ')',
+  WriteLn(WLog, '#', EmuWatchHits, ' WABS phys=', HexLong(Addr),
     ' size=', SizeBytes,
     ' steps=', EmuPanel.TotalSteps,
     '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
@@ -50172,6 +50220,29 @@ Begin
   Close(WLog);
   {$I+} If IOResult <> 0 Then ;
  End;
+ Move(Buffer, C.Memory^[Addr], SizeBytes);
+End;
+
+{ --- Ecrire un bloc seg:ofs --- }
+
+Procedure Emu_WriteBlock(Var C: TEmuCPU; Seg, Ofs: Word;
+ Var Buffer; SizeBytes: Word);
+Var
+ BPtr: ^Byte;
+ I: Word;
+ Row, Col: Integer;
+ B: Byte;
+Begin
+ { Activites observees (Deboguer > Activites observees) : comptage        }
+ { INDEPENDANT du mode video actif (texte/ATI/CGA graphique) - au point    }
+ { d entree commun, plutot que duplique dans chaque branche ci-dessous. }
+ If (Seg And $F800) = $B800 Then Inc(EmuActVramB800)
+ Else If (Seg And $F800) = $B000 Then Inc(EmuActVramB000)
+ Else If (Seg And $F000) = $A000 Then Inc(EmuActVramA000);
+ { Watch : voir Emu_WriteAbsBlock, point de passage unique (centralise le   }
+ { 2026-08-25 - cette fonction delegue toujours a lui, seg:ofs resolu en    }
+ { adresse physique en amont, donc y dupliquer le test ici ne ferait que    }
+ { compter/logger chaque ecriture deux fois). }
  { Mode ATI Graphics Solution 640x200x16 couleurs : ecrire dans les plans  }
  { graphiques, pas dans la grille de texte generique - voir la meme        }
  { redirection dans Emu_ReadBlock ci-dessus et dans Emu_WriteByte. Sans    }
@@ -50190,7 +50261,7 @@ Begin
      ((LongInt(Seg) Shl 4) + Ofs + I - $B0000) And $7FFF, BPtr^);
    Inc(BPtr);
   End;
-  Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
+  Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
   Exit;
  End;
  { Redirection vers VRAM virtuelle pour memoire video texte $B800/$B000 }
@@ -50214,14 +50285,13 @@ Begin
   EmuPanel.NeedRepaint := True;
   Exit;
  End;
- Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), Buffer, SizeBytes);
+ Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
 End;
 
 { --- Ecrire un octet seg:ofs --- }
 
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte);
 Var Row, Col: Integer;
-    WLog: Text; WIO: Integer;
 Begin
  { Activites observees : voir le meme comptage en tete de Emu_WriteBlock - }
  { necessaire ICI AUSSI car les branches B800h/B000h/A000h ci-dessous       }
@@ -50230,30 +50300,8 @@ Begin
  If (Seg And $F800) = $B800 Then Inc(EmuActVramB800)
  Else If (Seg And $F800) = $B000 Then Inc(EmuActVramB000)
  Else If (Seg And $F000) = $A000 Then Inc(EmuActVramA000);
- { Watch : log de toute ecriture dans la zone surveillee. }
- If EmuWatchEnabled And
-    (LongInt(Seg) * 16 + Ofs >= EmuWatchPhysLo) And
-    (LongInt(Seg) * 16 + Ofs <= EmuWatchPhysHi) And
-    (EmuWatchHits < 200) Then Begin
-  Inc(EmuWatchHits);
-  {$I-} Assign(WLog, 'EMUWATCH.LOG'); Append(WLog);
-  WIO := IOResult;
-  If WIO <> 0 Then Begin Assign(WLog,'EMUWATCH.LOG'); Rewrite(WLog); End;
-  WriteLn(WLog, '#', EmuWatchHits, ' WB ',
-    HexWord(Seg), ':', HexWord(Ofs),
-    ' (phys=', HexLong(LongInt(Seg)*16+Ofs), ')',
-    ' <- ', HexByte(X),
-    ' steps=', EmuPanel.TotalSteps,
-    '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
-    HexWord(EmuPanel.CPU.IP),
-    ' AX=', HexWord(EmuPanel.CPU.Regs.AX),
-    ' DS=', HexWord(EmuPanel.CPU.Segs.DS),
-    ' ES=', HexWord(EmuPanel.CPU.Segs.ES),
-    ' DI=', HexWord(EmuPanel.CPU.Regs.DI),
-    ' SI=', HexWord(EmuPanel.CPU.Regs.SI));
-  Close(WLog);
-  {$I+} If IOResult <> 0 Then ;
- End;
+ { Watch : voir Emu_WriteAbsBlock (point de passage unique, centralise le }
+ { 2026-08-25). }
  { Redirection vers VRAM virtuelle si ecriture en memoire video texte $B800/$B000 }
  If ((Seg And $F800) = $B800) Or ((Seg And $F800) = $B000) Then Begin
   { Mode ATI Graphics Solution 640x200x16 couleurs : 2 plans separes,     }
@@ -50268,13 +50316,13 @@ Begin
    Else
     Emu_VidWriteByte($30000 +
      ((LongInt(Seg) Shl 4) + Ofs - $B0000) And $7FFF, X);
-   Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), X, 1);
+   Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Ofs), X, 1);
    Exit;
   End;
   { En mode graphique CGA (4/5/6), rediriger vers la VRAM unifiee. }
   If EmuVideo.IsGraphic And ((Seg And $F800) = $B800) Then Begin
    Emu_VidWriteByte($20000 + ((LongInt(Seg) Shl 4) + Ofs - $B8000) And $7FFF, X);
-   Emu_WriteAbsBlock(C, Emu_Addr(Seg, Ofs), X, 1);  { copie aussi en RAM }
+   Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Ofs), X, 1);  { copie aussi en RAM }
    Exit;
   End;
   { EmuPanel.Cols vaut normalement 80, mais 132 en mode texte ATI         }
@@ -50323,17 +50371,17 @@ End;
 { jumeau pres d Emu_ReadByteL. }
 Procedure Emu_WriteByteL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt; X: Byte);
 Begin
- Emu_WriteAbsBlock(C, Emu_AddrL(Seg, Ofs), X, 1);
+ Emu_WriteAbsBlock(C, Emu_AddrL(C, Seg, Ofs), X, 1);
 End;
 
 Procedure Emu_WriteWordL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt; X: Word);
 Begin
- Emu_WriteAbsBlock(C, Emu_AddrL(Seg, Ofs), X, 2);
+ Emu_WriteAbsBlock(C, Emu_AddrL(C, Seg, Ofs), X, 2);
 End;
 
 Procedure Emu_WriteDWordL(Var C: TEmuCPU; Seg: Word; Ofs: LongInt; X: LongInt);
 Begin
- Emu_WriteAbsBlock(C, Emu_AddrL(Seg, Ofs), X, 4);
+ Emu_WriteAbsBlock(C, Emu_AddrL(C, Seg, Ofs), X, 4);
 End;
 
 { --- Construire les adresses statiques d interruptions --- }
@@ -50446,6 +50494,16 @@ Var
  I: Integer;
 Begin
  C.CodeBrk := -1;
+ { Support "unreal mode" (2026-08-24) - voir TEmuUnrealSeg. CR0.PE=0 (mode  }
+ { reel), aucun GDT charge, aucun cache de base "unreal" actif au demarrage. }
+ C.CR0 := 0;
+ C.GdtBase := 0;
+ C.GdtLimit := 0;
+ For I := 0 To 3 Do Begin
+  C.UnrealSegs[I].Active := False;
+  C.UnrealSegs[I].SegVal := 0;
+  C.UnrealSegs[I].Base := 0;
+ End;
  FillChar(C.ParityTable, SizeOf(C.ParityTable), 0);
  { Pre-calcul de la table de parite : un octet a parite paire si
    son nombre de bits a 1 est pair. Implementation simple. }
@@ -50577,7 +50635,7 @@ Begin
  Emu_WriteBlock(C, C.Segs.CS, 0, PSP.Buffer, $100);
  { Charger le code apres le PSP, par blocs de 512 octets }
  Size := FileSize(Handle);
- Addr := Emu_Addr(C.Segs.CS, $100);
+ Addr := Emu_Addr(C, C.Segs.CS, $100);
  Seek(Handle, 0);
  While Size > 0 Do Begin
   If Size > SizeOf(Buffer) Then ToRead := SizeOf(Buffer)
@@ -54076,6 +54134,59 @@ Begin
   2: C.Segs.SS := Value;
   3: C.Segs.DS := Value;
  End;
+End;
+
+{ --- "unreal mode" (2026-08-24, BOGUE REEL CORRIGE) : appele juste APRES     }
+{ tout chargement d un registre de segment (MOV Sreg,rm16 / POP Sreg) pour    }
+{ imiter la vraie mecanique materielle - si CR0.PE=1 A CET INSTANT PRECIS,    }
+{ un vrai CPU interprete Value comme un SELECTEUR (indice dans le GDT/LDT,    }
+{ pas une adresse segmentee classique) et met en cache la base 32 bits du     }
+{ descripteur correspondant DANS le registre de segment - cette base cachee   }
+{ SURVIT au retour en mode reel (PE=0), ce qui est exactement la technique    }
+{ "unreal mode" que le vrai HIMEM.SYS utilise pour adresser >1 Mo avec des    }
+{ registres 32 bits. Seul le GDT (pas le LDT - bit TI du selecteur ignore)    }
+{ est resolu, et seule la BASE est memorisee (la LIMITE n est pas appliquee   }
+{ - aucune verification de depassement de segment n est modelisee, portee    }
+{ volontairement limitee au strict necessaire pour lever le bogue identifie). }
+{ Format standard d un descripteur GDT (8 octets, Intel) :                    }
+{  octets 0-1 : limite 0-15 ; 2-3 : base 0-15 ; 4 : base 16-23 ;              }
+{  5 : droits d acces ; 6 : limite 16-19 (bits bas) + indicateurs (G etc,     }
+{  bits hauts) ; 7 : base 24-31. }
+Procedure Emu_LoadSregUnreal(Var C: TEmuCPU; SegVal: Word);
+Var
+ Idx: Word;
+ B0, B1, B2, B3, B4, B7: Byte;
+ Base: LongInt;
+ Slot, I: Integer;
+Begin
+ If (C.CR0 And 1) = 0 Then Exit;   { PE=0 : chargement de segment classique }
+ Idx := SegVal And $FFF8;         { masque RPL (bits 0-1) et TI (bit 2) }
+ If (LongInt(Idx) + 7) > C.GdtLimit Then Exit;  { hors du GDT charge par LGDT }
+ { GdtBase est une adresse LINEAIRE 32 bits (chargee telle quelle par LGDT),  }
+ { PAS un segment:offset - lue directement via Emu_ReadAbsBlock (adresse     }
+ { physique), jamais via Emu_ReadByte (qui interpreterait a tort son 1er     }
+ { parametre comme un Seg a multiplier par 16). }
+ B0 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx,     B0, 1);
+ B1 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx + 1, B1, 1);
+ B2 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx + 2, B2, 1);
+ B3 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx + 3, B3, 1);
+ B4 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx + 4, B4, 1);
+ B7 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx + 7, B7, 1);
+ Base := LongInt(B2) Or (LongInt(B3) Shl 8) Or (LongInt(B4) Shl 16) Or
+  (LongInt(B7) Shl 24);
+ { Chercher un emplacement existant pour cette valeur, sinon le plus ancien   }
+ { (rotation simple - 4 emplacements suffisent largement en pratique, voir    }
+ { TEmuUnrealSeg). }
+ Slot := -1;
+ For I := 0 To 3 Do
+  If C.UnrealSegs[I].Active And (C.UnrealSegs[I].SegVal = SegVal) Then Slot := I;
+ If Slot = -1 Then
+  For I := 0 To 3 Do
+   If Not C.UnrealSegs[I].Active Then Begin Slot := I; Break; End;
+ If Slot = -1 Then Slot := 0;
+ C.UnrealSegs[Slot].Active := True;
+ C.UnrealSegs[Slot].SegVal := SegVal;
+ C.UnrealSegs[Slot].Base := Base;
 End;
 
 { Segment de donnees a utiliser pour les operations string (DS sauf override) }
@@ -65070,7 +65181,7 @@ Begin
  If H = 0 Then Exit;
  Pg := EmuEms.Slots[Slot].MappedPage;
  PoolOfs := (EmuEms.Handles[H].StorePageBase + Pg) * EMU_EMS_PAGE_SIZE;
- Move(P.CPU.Memory^[Emu_Addr(Emu_EmsSlotSeg(Slot), 0)],
+ Move(P.CPU.Memory^[Emu_Addr(P.CPU, Emu_EmsSlotSeg(Slot), 0)],
   EmuEmsMem^[PoolOfs], EMU_EMS_PAGE_SIZE);
 End;
 
@@ -65081,7 +65192,7 @@ Var PoolOfs: LongInt;
 Begin
  PoolOfs := (EmuEms.Handles[H].StorePageBase + Pg) * EMU_EMS_PAGE_SIZE;
  Move(EmuEmsMem^[PoolOfs],
-  P.CPU.Memory^[Emu_Addr(Emu_EmsSlotSeg(Slot), 0)], EMU_EMS_PAGE_SIZE);
+  P.CPU.Memory^[Emu_Addr(P.CPU, Emu_EmsSlotSeg(Slot), 0)], EMU_EMS_PAGE_SIZE);
  EmuEms.Slots[Slot].MappedHandle := H;
  EmuEms.Slots[Slot].MappedPage := Pg;
 End;
@@ -65363,7 +65474,7 @@ Begin
                  { la limite documentee en tete de section }
    If Logical <> $FFFF Then Begin
     PoolOfs := (EmuEms.Handles[H].StorePageBase + Logical) * EMU_EMS_PAGE_SIZE;
-    Move(EmuEmsMem^[PoolOfs], P.CPU.Memory^[Emu_Addr(PhysOrSeg, 0)],
+    Move(EmuEmsMem^[PoolOfs], P.CPU.Memory^[Emu_Addr(P.CPU, PhysOrSeg, 0)],
      EMU_EMS_PAGE_SIZE);
    End;
   End;
@@ -68910,20 +69021,52 @@ Begin
            { 2026-08-24, retro-ingenierie du vrai HIMEM.SYS : sa routine      }
            { "unreal mode" fait "SMSW AX / SHR AX,1 / JB ..." pour verifier   }
            { qu elle n est PAS deja en mode protege (bit PE de CR0) AVANT de  }
-           { faire son propre bascule temporaire - SMSW etait auparavant un   }
-           { pur no-op qui laissait AX intact (valeur perimee/aleatoire au    }
-           { lieu du vrai mot bas de CR0), pouvant faire prendre a tort la    }
-           { branche d erreur "deja en mode protege". Seul SMSW (reg=4) a un  }
-           { effet observable ici : ecrit 0 (PE=0, coherent avec un CPU       }
-           { emule qui ne bascule jamais reellement en mode protege) dans la  }
-           { destination. LGDT/LIDT/LMSW restent des no-op (aucun etat        }
-           { GDTR/IDTR/CR0 reellement suivi par cet emulateur) et SGDT/SIDT   }
-           { ne sont pas exercees par le cas reel identifie - meme limite de  }
+           { faire son propre bascule temporaire, PUIS charge un GDT (LGDT)   }
+           { et bascule reellement PE via MOV CR0 (voir le case $20/$22 plus  }
+           { bas) pour charger un descripteur "plat" dans ES/DS avant de      }
+           { revenir en mode reel - c est l authentique technique "unreal     }
+           { mode" (voir TEmuUnrealSeg). LGDT (reg=2) memorise desormais      }
+           { reellement GdtBase/GdtLimit (6 octets : limite 16 bits puis      }
+           { base 32 bits) au lieu d etre un pur no-op - indispensable pour   }
+           { que le chargement de segment sous PE=1 (case $8E plus bas)       }
+           { puisse resoudre un vrai descripteur. SMSW (reg=4) reflete        }
+           { desormais le vrai mot bas de CR0 (plus seulement 0 en dur) et    }
+           { LMSW (reg=6) met a jour son bit PE. SGDT/SIDT/LIDT restent des   }
+           { no-op (IDT jamais consultee par ce cas reel) - meme limite de    }
            { portee que documentee ailleurs pour ce groupe d opcodes. }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Emu_DecodeModRM(P.CPU, ModRM, Op);
-           If ((ModRM Shr 3) And 7) = 4 Then Emu_PutOpWord(P.CPU, Op, 0);
+           Case (ModRM Shr 3) And 7 Of
+            2: Begin { LGDT m16:32 }
+                P.CPU.GdtLimit := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
+                P.CPU.GdtBase := Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+               End;
+            4: Emu_PutOpWord(P.CPU, Op, Word(P.CPU.CR0));            { SMSW }
+            6: P.CPU.CR0 := (P.CPU.CR0 And Not 1) Or                 { LMSW }
+                (Emu_GetOpWord(P.CPU, Op) And 1);
+           End;
            Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $20: Begin { MOV r32, CR0 - BOGUE REEL CORRIGE 2026-08-24 : necessaire   }
+           { pour "unreal mode" (voir case $01/reg=2 ci-dessus) - le ModRM    }
+           { d une instruction MOV CRn est TOUJOURS registre-a-registre       }
+           { (mod force a 11 par le processeur reel, ignore ici volontairement}
+           { - seul le champ reg (quel CRn) et rm (quel registre 32 bits)     }
+           { comptent) ; seul CR0 (reg=0) est suivi, les autres CRn renvoient }
+           { 0 (aucun etat reellement modelise, portee volontairement limitee}
+           { au strict necessaire pour "unreal mode"). }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           If ((ModRM Shr 3) And 7) = 0 Then
+            Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR0)
+           Else
+            Emu_SetReg32(P.CPU, ModRM And 7, 0);
+           Inc(P.CPU.IP, 3);
+          End;
+     $22: Begin { MOV CR0, r32 - voir $20 ci-dessus pour le contexte complet. }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           If ((ModRM Shr 3) And 7) = 0 Then
+            P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
+           Inc(P.CPU.IP, 3);
           End;
      $80..$8F: Begin { Jcc near : rel16, ou rel32 si OperandSize32 }
                 If P.CPU.OperandSize32 Then Begin
@@ -68945,17 +69088,20 @@ Begin
   $06: { PUSH ES }
    Begin Emu_PushWord(P.CPU, P.CPU.Segs.ES); Inc(P.CPU.IP); End;
   $07: { POP  ES }
-   Begin P.CPU.Segs.ES := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+   Begin P.CPU.Segs.ES := Emu_PopWord(P.CPU);
+    Emu_LoadSregUnreal(P.CPU, P.CPU.Segs.ES); Inc(P.CPU.IP); End;
   $0E: { PUSH CS }
    Begin Emu_PushWord(P.CPU, P.CPU.Segs.CS); Inc(P.CPU.IP); End;
   $16: { PUSH SS }
    Begin Emu_PushWord(P.CPU, P.CPU.Segs.SS); Inc(P.CPU.IP); End;
   $17: { POP  SS }
-   Begin P.CPU.Segs.SS := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+   Begin P.CPU.Segs.SS := Emu_PopWord(P.CPU);
+    Emu_LoadSregUnreal(P.CPU, P.CPU.Segs.SS); Inc(P.CPU.IP); End;
   $1E: { PUSH DS }
    Begin Emu_PushWord(P.CPU, P.CPU.Segs.DS); Inc(P.CPU.IP); End;
   $1F: { POP  DS }
-   Begin P.CPU.Segs.DS := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+   Begin P.CPU.Segs.DS := Emu_PopWord(P.CPU);
+    Emu_LoadSregUnreal(P.CPU, P.CPU.Segs.DS); Inc(P.CPU.IP); End;
   $9C: { PUSHF }
    Begin Emu_PushWord(P.CPU, P.CPU.Flags.Base); Inc(P.CPU.IP); End;
   $9D: { POPF }
@@ -69204,12 +69350,16 @@ Begin
      Emu_GetSReg(P.CPU, (ModRM Shr 3) And 3));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8E: { MOV Sreg, rm16 }
+  $8E: { MOV Sreg, rm16 - BOGUE REEL CORRIGE 2026-08-24 : voir                }
+        { Emu_LoadSregUnreal, c est LE chargement reellement utilise par le   }
+        { vrai HIMEM.SYS pour activer "unreal mode" ("8E D9 MOV DS,CX" etc.,  }
+        { observe en direct). }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Emu_SetSReg(P.CPU, (ModRM Shr 3) And 3,
-     Emu_GetOpWord(P.CPU, Op));
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    Emu_SetSReg(P.CPU, (ModRM Shr 3) And 3, V16);
+    Emu_LoadSregUnreal(P.CPU, V16);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $8D: { LEA r16, m }
@@ -69226,7 +69376,18 @@ Begin
     Emu_PutOpWord(P.CPU, Op, Emu_PopWord(P.CPU));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $C5: { LDS r16, m32 }
+  $C5: { LDS r16, m32 - BOGUE REEL CORRIGE 2026-08-25 : LDS/LES chargeaient   }
+        { DS/ES DIRECTEMENT sans jamais passer par Emu_LoadSregUnreal,        }
+        { contrairement a $8E/POP - si le vrai code "unreal mode" recharge    }
+        { son selecteur "plat" via LES/LDS (chargement compact segment+       }
+        { offset en une instruction, tres courant pour un pointeur lointain)  }
+        { plutot que MOV Sreg,rm16 pour l un des deux sens (ecriture/relecture}
+        { vers la memoire etendue), ce cote NE beneficiait PAS de la base     }
+        { cachee et retombait sur Seg*16 - explique un scenario exactement    }
+        { comme celui suspecte par l utilisateur : l ecriture et la relecture }
+        { visent alors deux adresses physiques DIFFERENTES malgre un ES/DS    }
+        { visible identique, faisant echouer la comparaison meme quand        }
+        { l adressage "unreal mode" lui-meme fonctionne correctement. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
@@ -69234,9 +69395,10 @@ Begin
      Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs)));
     P.CPU.Segs.DS :=
      Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+    Emu_LoadSregUnreal(P.CPU, P.CPU.Segs.DS);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $C4: { LES r16, m32 }
+  $C4: { LES r16, m32 - voir $C5 ci-dessus pour le contexte complet. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
@@ -69244,6 +69406,7 @@ Begin
      Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs)));
     P.CPU.Segs.ES :=
      Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+    Emu_LoadSregUnreal(P.CPU, P.CPU.Segs.ES);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $86: { XCHG rm8, r8 }
