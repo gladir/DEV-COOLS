@@ -68949,6 +68949,29 @@ Begin
     Inc(P.CPU.IP, 1);
     Emu_DoInt(P, 3);
    End;
+  $CE: { INTO : declenche INT 4 (Overflow) SEULEMENT si OF=1, sinon      }
+       { simple NOP - reelement absent jusqu ici (retombait dans l Else  }
+       { generique de fin de dispatch, qui fixe P.CPU.Fault:=sfInvalidCode }
+       { et arrete l emulation a tort des qu un programme reel l utilise). }
+   Begin
+    Inc(P.CPU.IP, 1);
+    If EFG_OF In P.CPU.Flags.s Then Emu_DoInt(P, 4);
+   End;
+  $F1: { INT1/ICEBP (non documente, tous les 8086+ reels) : opcode a 1    }
+       { octet qui declenche INT 1 comme un point d arret materiel -      }
+       { meme famille d oubli que $CE ci-dessus. }
+   Begin
+    Inc(P.CPU.IP, 1);
+    Emu_DoInt(P, 1);
+   End;
+  $D6: { SETALC/SALC (non documente, tous les 8086+ reels - l utilisateur }
+       { a specifiquement demande cet opcode) : AL := $FF si CF=1, sinon  }
+       { AL := $00. Aucun ModRM, aucun fanion modifie. }
+   Begin
+    Inc(P.CPU.IP, 1);
+    If EFG_CF In P.CPU.Flags.s Then P.CPU.Regs.AL := $FF
+                                Else P.CPU.Regs.AL := $00;
+   End;
   $C3: { RET near }
    P.CPU.IP := Emu_PopWord(P.CPU);
   $CB: { RET far }
@@ -69273,6 +69296,114 @@ Begin
                   P.CPU.Regs.ECX := 0; P.CPU.Regs.EDX := 0;
                  End;
             End;
+           End;
+           Inc(P.CPU.IP, 2);
+          End;
+     { BOGUE REEL CORRIGE (2026-08-25, suite de l'audit demande par            }
+     { l'utilisateur : "ajouter toutes les instructions manquantes, meme      }
+     { rares") - derniers opcodes $0F 386+/486+ reellement documentes qui     }
+     { manquaient encore. Aucun de ceux-ci n'a jamais ete rencontre dans le    }
+     { code reel trace cette session (contrairement a $B6/$B7) - ajoutes ici  }
+     { par exhaustivite et pour eviter le meme risque de desynchronisation    }
+     { d'instructions pour ceux munis d'un ModRM. }
+     $06: Begin { CLTS : efface le bit TS (bit 3) de CR0 }
+           P.CPU.CR0 := P.CPU.CR0 And Not 8;
+           Inc(P.CPU.IP, 2);
+          End;
+     $08, $09: Inc(P.CPU.IP, 2); { INVD/WBINVD : aucun cache modelise, no-op }
+     $0B: Begin { UD2 : opcode INVALIDE PAR CONCEPTION - contrairement aux   }
+           { autres cas de cette liste, doit reellement faire echouer        }
+           { l emulation plutot que de continuer silencieusement. }
+           P.CPU.LastBadOp := $0B;
+           P.CPU.LastBadCS := P.CPU.Segs.CS;
+           P.CPU.LastBadIP := P.CPU.IP;
+           P.CPU.Fault := sfInvalidCode;
+          End;
+     $30: Inc(P.CPU.IP, 2); { WRMSR : aucun MSR modelise, ignore }
+     $31: Begin { RDTSC : aucun vrai compteur de cycles - EmuTickCounter    }
+           { (~18.2 Hz) sert de source monotone plausible, largement        }
+           { suffisant pour le seul usage realiste ici (code qui verifie    }
+           { juste "ca avance"), plutot que de laisser EDX:EAX inchange. }
+           P.CPU.Regs.EAX := EmuTickCounter;
+           P.CPU.Regs.EDX := 0;
+           Inc(P.CPU.IP, 2);
+          End;
+     $32: Begin { RDMSR : aucun MSR modelise, renvoie 0 }
+           P.CPU.Regs.EAX := 0; P.CPU.Regs.EDX := 0;
+           Inc(P.CPU.IP, 2);
+          End;
+     $A0: Begin Emu_PushWord(P.CPU, P.CPU.FS); Inc(P.CPU.IP, 2); End; { PUSH FS }
+     $A1: Begin P.CPU.FS := Emu_PopWord(P.CPU); Inc(P.CPU.IP, 2); End; { POP FS }
+     $A8: Begin Emu_PushWord(P.CPU, P.CPU.GS); Inc(P.CPU.IP, 2); End; { PUSH GS }
+     $A9: Begin P.CPU.GS := Emu_PopWord(P.CPU); Inc(P.CPU.IP, 2); End; { POP GS }
+     $B0: Begin { CMPXCHG r/m8, r8 }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           V8 := Emu_GetOpByte(P.CPU, Op);
+           R8 := Emu_AluByte(P.CPU, 5, P.CPU.Regs.AL, V8); { SUB pour les fanions }
+           If P.CPU.Regs.AL = V8 Then
+            Emu_PutOpByte(P.CPU, Op, Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7))
+           Else
+            P.CPU.Regs.AL := V8;
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $B1: Begin { CMPXCHG r/m, r }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           If P.CPU.OperandSize32 Then Begin
+            V32 := Emu_GetOpDWord(P.CPU, Op);
+            R32 := Emu_AluDWord(P.CPU, 5, P.CPU.Regs.EAX, V32);
+            If P.CPU.Regs.EAX = V32 Then
+             Emu_PutOpDWord(P.CPU, Op, Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7))
+            Else
+             P.CPU.Regs.EAX := V32;
+           End Else Begin
+            V16 := Emu_GetOpWord(P.CPU, Op);
+            R16 := Emu_AluWord(P.CPU, 5, P.CPU.Regs.AX, V16);
+            If P.CPU.Regs.AX = V16 Then
+             Emu_PutOpWord(P.CPU, Op, Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7))
+            Else
+             P.CPU.Regs.AX := V16;
+           End;
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $C0: Begin { XADD r/m8, r8 : echange puis addition }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           V8 := Emu_GetOpByte(P.CPU, Op);
+           R8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
+           Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7, V8);
+           Emu_PutOpByte(P.CPU, Op, Emu_AluByte(P.CPU, 0, V8, R8));
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $C1: Begin { XADD r/m, r }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           If P.CPU.OperandSize32 Then Begin
+            V32 := Emu_GetOpDWord(P.CPU, Op);
+            R32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
+            Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, V32);
+            Emu_PutOpDWord(P.CPU, Op, Emu_AluDWord(P.CPU, 0, V32, R32));
+           End Else Begin
+            V16 := Emu_GetOpWord(P.CPU, Op);
+            R16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+            Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, V16);
+            Emu_PutOpWord(P.CPU, Op, Emu_AluWord(P.CPU, 0, V16, R16));
+           End;
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $C8..$CF: Begin { BSWAP r32 : registre code dans les 3 bits de poids   }
+           { faible de l opcode, comme $B0-$B7/MOV - aucun ModRM. Sans      }
+           { prefixe $66 (donc en mode 16 bits), le resultat reel est        }
+           { indefini sur un vrai CPU ; laisse le registre inchange ici,      }
+           { plus sur qu une valeur inventee. }
+           If P.CPU.OperandSize32 Then Begin
+            V32 := Emu_GetReg32(P.CPU, Imm8 And 7);
+            S32 := LongInt(((LongWord(V32) And $FF) Shl 24) Or
+                            ((LongWord(V32) And $FF00) Shl 8) Or
+                            ((LongWord(V32) And $FF0000) Shr 8) Or
+                            ((LongWord(V32) Shr 24) And $FF));
+            Emu_SetReg32(P.CPU, Imm8 And 7, S32);
            End;
            Inc(P.CPU.IP, 2);
           End;
