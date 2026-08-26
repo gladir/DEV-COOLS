@@ -694,6 +694,8 @@ Type
   TableColIndex: Integer;    { Index de la colonne courante }
   TableRowY: Integer;        { Position Y de debut de la ligne }
   TableRowHeight: Integer;   { Hauteur de la ligne courante }
+  TableCellPadding: Integer; { cellpadding du tableau courant }
+  TableCellSpacing: Integer; { cellspacing du tableau courant }
   TableCellContentX: Integer; { X de depart du contenu de la cellule en cours (pour le retour a la ligne) }
   InForm: Boolean;           { Dans un formulaire }
   InSelect: Boolean;         { Dans un element select }
@@ -6969,6 +6971,8 @@ Begin
  Ctx.TableColIndex := 0;
  Ctx.TableRowY := 0;
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
+ Ctx.TableCellPadding := TABLE_CELL_PADDING;
+ Ctx.TableCellSpacing := TABLE_CELL_SPACING;
  Ctx.InForm := False;
  Ctx.InSelect := False;
  Ctx.SelectOptionIndex := 0;
@@ -8374,7 +8378,9 @@ Var
  OldTableX: Integer;
  OldTableCellX, OldTableCellWidth, OldTableColIndex: Integer;
  OldTableRowY, OldTableRowHeight, OldTableCellContentX: Integer;
+ OldTableCellPadding, OldTableCellSpacing: Integer;
  NumCols, TableWidth: Integer;
+ CellPaddingSpec, CellSpacingSpec: String;
 Begin
  { Nouvelle ligne avant le tableau si necessaire }
  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
@@ -8389,6 +8395,8 @@ Begin
  OldTableColIndex := Ctx.TableColIndex;
  OldTableRowY := Ctx.TableRowY;
  OldTableRowHeight := Ctx.TableRowHeight;
+ OldTableCellPadding := Ctx.TableCellPadding;
+ OldTableCellSpacing := Ctx.TableCellSpacing;
  OldTableCellContentX := Ctx.TableCellContentX;
 
  { Configurer le contexte pour le tableau }
@@ -8398,17 +8406,33 @@ Begin
  Ctx.TableRowY := Ctx.Y;
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
 
+ { Les attributs HTML historiques appartiennent au TABLE courant. Les
+   conserver dans le contexte permet aussi aux tableaux imbriques de ne
+   pas modifier le padding/spacing de leur parent. }
+ Ctx.TableCellPadding := TABLE_CELL_PADDING;
+ CellPaddingSpec := GetNodeAttribute(Node, 'cellpadding');
+ If Length(CellPaddingSpec) > 0 Then Begin
+  Ctx.TableCellPadding := CSSParseDimension(CellPaddingSpec, TABLE_CELL_PADDING);
+  If Ctx.TableCellPadding < 0 Then Ctx.TableCellPadding := 0;
+ End;
+ Ctx.TableCellSpacing := TABLE_CELL_SPACING;
+ CellSpacingSpec := GetNodeAttribute(Node, 'cellspacing');
+ If Length(CellSpacingSpec) > 0 Then Begin
+  Ctx.TableCellSpacing := CSSParseDimension(CellSpacingSpec, TABLE_CELL_SPACING);
+  If Ctx.TableCellSpacing < 0 Then Ctx.TableCellSpacing := 0;
+ End;
+
  { Calculer la largeur des cellules }
  NumCols := CountTableColumns(Node);
  TableWidth := Ctx.MaxX - Ctx.X - TABLE_MARGIN;
- Ctx.TableCellWidth := (TableWidth - (NumCols * TABLE_CELL_SPACING)) Div NumCols;
+ Ctx.TableCellWidth := (TableWidth - (NumCols * Ctx.TableCellSpacing)) Div NumCols;
  If Ctx.TableCellWidth < TABLE_CELL_MIN_WIDTH Then
   Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
 
  { Dessiner la bordure superieure du tableau }
  If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
-  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + Ctx.TableCellSpacing)), Ctx.Y);
  End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
@@ -8418,7 +8442,7 @@ Begin
  { Dessiner la bordure inferieure du tableau }
  If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
-  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + TABLE_CELL_SPACING)), Ctx.Y);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + Ctx.TableCellSpacing)), Ctx.Y);
  End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
@@ -8430,6 +8454,8 @@ Begin
  Ctx.TableColIndex := OldTableColIndex;
  Ctx.TableRowY := OldTableRowY;
  Ctx.TableRowHeight := OldTableRowHeight;
+ Ctx.TableCellPadding := OldTableCellPadding;
+ Ctx.TableCellSpacing := OldTableCellSpacing;
  Ctx.TableCellContentX := OldTableCellContentX;
 
  { Retour dans le bon repere. Un tableau imbrique dans TD/TH ne doit pas
@@ -8479,7 +8505,7 @@ Begin
  Ctx.TableColIndex := 0;
  Ctx.TableCellX := Ctx.TableX;
  Ctx.TableRowY := Ctx.Y;
- Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * TABLE_CELL_PADDING);
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * Ctx.TableCellPadding);
  OldLineHeight := Ctx.LineHeight;
  Ctx.LineHeight := RENDER_LINE_HEIGHT;
 
@@ -8634,10 +8660,10 @@ Begin
  End;
 
  { Configurer le contexte pour le contenu de la cellule }
- Ctx.X := CellStartX + TABLE_CELL_PADDING;
- Ctx.Y := CellStartY + TABLE_CELL_PADDING;
+ Ctx.X := CellStartX + Ctx.TableCellPadding;
+ Ctx.Y := CellStartY + Ctx.TableCellPadding;
  OldMaxX := Ctx.MaxX;
- Ctx.MaxX := CellStartX + Ctx.TableCellWidth - TABLE_CELL_PADDING;
+ Ctx.MaxX := CellStartX + Ctx.TableCellWidth - Ctx.TableCellPadding;
  OldTableCellContentX := Ctx.TableCellContentX;
  Ctx.TableCellContentX := Ctx.X;
 
@@ -8648,7 +8674,11 @@ Begin
    RenderNewLine), agrandir la hauteur de la rangee en consequence -
    sans cela, le texte trop grand pour une seule ligne debordait dans
    la rangee suivante au lieu de faire grandir sa propre cellule. }
- CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.LineHeight + TABLE_CELL_PADDING;
+ CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.TableCellPadding;
+ { X revient au debut du contenu apres un element bloc. Dans ce cas Y
+   inclut deja toute sa hauteur et il ne faut pas ajouter une ligne vide. }
+ If Ctx.X > Ctx.TableCellContentX Then
+  Inc(CellNaturalHeight, Ctx.LineHeight);
  If CellNaturalHeight > Ctx.TableRowHeight Then
   Ctx.TableRowHeight := CellNaturalHeight;
 
@@ -8667,13 +8697,13 @@ Begin
   AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight, Node);
 
  { Passer a la cellule suivante }
- Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
+ Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + Ctx.TableCellSpacing;
  Inc(Ctx.TableColIndex);
 
  { Dessiner la bordure droite de la cellule }
  If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
-  Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+  Line(Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY, Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY + Ctx.TableRowHeight);
  End;
 
  { Remettre Y a la position de la ligne }
@@ -8744,10 +8774,10 @@ Begin
  End;
 
  { Configurer le contexte pour le contenu de la cellule }
- Ctx.X := CellStartX + TABLE_CELL_PADDING;
- Ctx.Y := CellStartY + TABLE_CELL_PADDING;
+ Ctx.X := CellStartX + Ctx.TableCellPadding;
+ Ctx.Y := CellStartY + Ctx.TableCellPadding;
  OldMaxX := Ctx.MaxX;
- Ctx.MaxX := CellStartX + Ctx.TableCellWidth - TABLE_CELL_PADDING;
+ Ctx.MaxX := CellStartX + Ctx.TableCellWidth - Ctx.TableCellPadding;
  OldTableCellContentX := Ctx.TableCellContentX;
  Ctx.TableCellContentX := Ctx.X;
 
@@ -8759,7 +8789,9 @@ Begin
 
  { Agrandir la hauteur de la rangee si le contenu a deborde sur
    plusieurs lignes (voir RenderTagTD pour l'explication). }
- CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.LineHeight + TABLE_CELL_PADDING;
+ CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.TableCellPadding;
+ If Ctx.X > Ctx.TableCellContentX Then
+  Inc(CellNaturalHeight, Ctx.LineHeight);
  If CellNaturalHeight > Ctx.TableRowHeight Then
   Ctx.TableRowHeight := CellNaturalHeight;
 
@@ -8775,13 +8807,13 @@ Begin
   AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight, Node);
 
  { Passer a la cellule suivante }
- Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + TABLE_CELL_SPACING;
+ Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + Ctx.TableCellSpacing;
  Inc(Ctx.TableColIndex);
 
  { Dessiner la bordure droite de la cellule }
  If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
-  Line(Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY, Ctx.TableCellX - TABLE_CELL_SPACING, CellStartY + Ctx.TableRowHeight);
+  Line(Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY, Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY + Ctx.TableRowHeight);
  End;
 
  { Remettre Y a la position de la ligne }
