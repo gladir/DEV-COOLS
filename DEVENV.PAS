@@ -5058,6 +5058,72 @@ Type
   o32_reserved: LongInt;
  End;
 
+ { Chantier Windows 16 bits (2026-08-25), Stage 1 : en-tete "NE" (New       }
+ { Executable, format de TOUS les .EXE Windows 1.x/2.x/3.x et OS/2 1.x).    }
+ { Layout verifie EMPIRIQUEMENT (pas seulement d apres une reference        }
+ { ecrite) en relisant un vrai CLOCK.EXE Windows 2.03 (C:\BACKUP\WIN203,    }
+ { date reelle Nov 1987) via un script Perl autonome (ne_probe.pl,          }
+ { scratchpad) : les 3 modules importes decodes ("KERNEL","GDI","USER")     }
+ { sont EXACTEMENT les 3 modules systeme Windows attendus, et les flags de  }
+ { segment sont auto-coherents avec ne_autodata (le segment #2, marque      }
+ { DONNEES par son bit 0, est bien celui designe par ne_autodata=2) - deux  }
+ { signaux independants qui confirment ce layout, meme discipline que le    }
+ { chantier OS/2 LX. 64 octets exactement (0x40), aucune reserve non        }
+ { reprise ici contrairement a LX - tous les champs sont utiles. }
+ TNEHeader = Record
+  ne_magic0, ne_magic1: Byte;  { 'N','E'                                  }
+  ne_ver, ne_rev: Byte;        { version/revision du linker                }
+  ne_enttab   : Word;          { offset table des entrees (relatif ici)    }
+  ne_cbenttab : Word;          { longueur en octets de la table des entrees}
+  ne_crc      : LongInt;
+  ne_flags    : Word;
+  ne_autodata : Word;          { index 1-based du segment de donnees       }
+                                { automatique (DGROUP)                     }
+  ne_heap     : Word;
+  ne_stack    : Word;
+  ne_ip       : Word;          { point d'entree : IP...                   }
+  ne_cs       : Word;          { ...et CS - un INDEX 1-based dans la table }
+                                { des segments, PAS un vrai segment reel   }
+  ne_sp       : Word;          { pile initiale : SP...                    }
+  ne_ss       : Word;          { ...et SS, meme convention d'index         }
+  ne_cseg     : Word;          { nombre de segments                        }
+  ne_cmod     : Word;          { nombre de modules importes                }
+  ne_cbnrestab: Word;
+  ne_segtab   : Word;          { offset table des segments (relatif ici)   }
+  ne_rsrctab  : Word;
+  ne_restab   : Word;          { offset table des noms residents (relatif) }
+  ne_modtab   : Word;          { offset table des references de modules    }
+                                { (relatif ici, N entrees de 1 Word =       }
+                                { offset dans ne_imptab)                    }
+  ne_imptab   : Word;          { offset table des noms importes (relatif   }
+                                { ici, chaines Pascal longueur-prefixee)    }
+  ne_nrestab  : LongInt;       { offset ABSOLU (depuis le debut du fichier)}
+                                { de la table des noms NON residents        }
+  ne_cmovent  : Word;
+  ne_align    : Word;          { decalage log2 de la taille de secteur     }
+                                { logique (ex. 4 -> secteurs de 16 octets)  }
+  ne_cres     : Word;
+  ne_exetyp   : Byte;          { 2=Windows (souvent 0 sur du tres ancien   }
+                                { code 1987, non fiable a lui seul)         }
+  ne_flagsothers: Byte;
+  ne_reserved1, ne_reserved2, ne_reserved3, ne_expver: Word;
+ End;
+
+ { Entree table des segments NE (8 octets, verifiee empiriquement sur       }
+ { CLOCK.EXE : 2 segments, #1 flags=$0D10 (bit0=0 -> CODE), #2 flags=$0D11  }
+ { (bit0=1 -> DONNEES) - #2 est bien celui designe par ne_autodata=2.       }
+ TNESegment = Record
+  DataOffsetSectors: Word;   { position fichier, en unites de 2^ne_align   }
+                              { octets ; 0 = segment vide (BSS pur)         }
+  DataLength       : Word;   { longueur reelle en octets (0 = 64 Ko)       }
+  SegFlags         : Word;   { bit0=DONNEES(1)/CODE(0), bit2=ITERE,        }
+                              { bit4=DEPLACABLE, bit5=PARTAGEABLE,          }
+                              { bit6=PRECHARGE, bit7=LECTURE-SEULE/         }
+                              { EXECUTEONLY, bit8=A_DES_RELOGEMENTS,        }
+                              { bit12=DISCARDABLE                          }
+  MinAlloc         : Word;   { taille minimale d'allocation (0 = 64 Ko)    }
+ End;
+
 Const
  LXOBJ_READABLE   = $0001;
  LXOBJ_WRITABLE   = $0002;
@@ -36468,6 +36534,62 @@ Begin
  Lx_ReadHeader := BytesRead = SizeOf(Hdr);
 End;
 
+{ Chantier Windows 16 bits (2026-08-25), Stage 1 : meme discipline exacte  }
+{ que Lx_ReadHeader ci-dessus (MZ -> e_lfanew -> signature secondaire),    }
+{ juste une signature differente ('N','E' au lieu de 'L','X'/'L','E'). }
+Function Win16_ReadHeader(Const Path: String; Var Hdr: TNEHeader;
+ Var HdrOfs, FSize: LongInt): Boolean;
+Var
+ F: File;
+ Sig: Array[0..1] Of Char;
+ LfanewBuf: Array[0..3] Of Byte;
+ HdrSig: Array[0..1] Of Char;
+ BytesRead: Word;
+Begin
+ Win16_ReadHeader := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FSize := FileSize(F);
+ If FSize < 64 Then Begin Close(F); Exit; End;
+ BlockRead(F, Sig, 2, BytesRead);
+ If (BytesRead <> 2) Or (Sig[0] <> 'M') Or (Sig[1] <> 'Z') Then Begin
+  Close(F); Exit;
+ End;
+ Seek(F, $3C);
+ BlockRead(F, LfanewBuf, 4, BytesRead);
+ If BytesRead <> 4 Then Begin Close(F); Exit; End;
+ HdrOfs := LongInt(LfanewBuf[0]) Or (LongInt(LfanewBuf[1]) Shl 8) Or
+  (LongInt(LfanewBuf[2]) Shl 16) Or (LongInt(LfanewBuf[3]) Shl 24);
+ If (HdrOfs <= 0) Or (HdrOfs + 2 > FSize) Then Begin Close(F); Exit; End;
+ Seek(F, HdrOfs);
+ BlockRead(F, HdrSig, 2, BytesRead);
+ If (BytesRead <> 2) Or (HdrSig[0] <> 'N') Or (HdrSig[1] <> 'E') Then Begin
+  Close(F); Exit;
+ End;
+ Seek(F, HdrOfs);
+ FillChar(Hdr, SizeOf(Hdr), 0);
+ BlockRead(F, Hdr, SizeOf(Hdr), BytesRead);
+ Close(F);
+ Win16_ReadHeader := BytesRead = SizeOf(Hdr);
+End;
+
+Function Win16_SegFlagsStr(F: Word): String;
+Var S: String;
+Begin
+ If (F And 1) <> 0 Then S := 'DONNEES' Else S := 'CODE';
+ If (F And 4) <> 0 Then S := S + ' ITERE';
+ If (F And $10) <> 0 Then S := S + ' DEPLACABLE';
+ If (F And $20) <> 0 Then S := S + ' PARTAGEABLE';
+ If (F And $40) <> 0 Then S := S + ' PRECHARGE';
+ If (F And $80) <> 0 Then S := S + ' LECTURE-SEULE';
+ If (F And $100) <> 0 Then S := S + ' RELOGEMENTS';
+ If (F And $1000) <> 0 Then S := S + ' DISCARDABLE';
+ Win16_SegFlagsStr := S;
+End;
+
 Function Lx_ObjFlagsStr(F: LongInt): String;
 Var S: String;
 Begin
@@ -37921,6 +38043,104 @@ Begin
  Close(F);
 End;
 
+{ Chantier Windows 16 bits (2026-08-25), Stage 1 : WIN16INFO <chemin hote> }
+{ dumpe l'en-tete NE + table des segments + modules importes + table des   }
+{ noms residents (nom du module + points d'entree exportes) SANS charger   }
+{ en memoire ni executer - meme role exact que LXINFO pour OS/2 LX. }
+Procedure TermCmd_Win16Info(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Path: String;
+ Hdr: TNEHeader;
+ HdrOfs, FSize: LongInt;
+ F: File;
+ Seg: TNESegment;
+ BytesRead: Word;
+ I: Integer;
+ ModName: String;
+ NameLen: Byte;
+ ModOfsW: Word;
+ EntName: String;
+ Ordinal: Word;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : WIN16INFO <chemin hote vers un .exe>');
+  Exit;
+ End;
+ If Not Win16_ReadHeader(Path, Hdr, HdrOfs, FSize) Then Begin
+  TermAddLine(TP, 'WIN16INFO : "' + Path + '" introuvable ou pas un executable NE valide.');
+  Exit;
+ End;
+ If (Hdr.ne_magic0 <> Ord('N')) Or (Hdr.ne_magic1 <> Ord('E')) Then Begin
+  TermAddLine(TP, 'WIN16INFO : signature inattendue apres relecture de l''en-tete.');
+  Exit;
+ End;
+ TermAddLine(TP, 'WIN16INFO ' + Path + ' (' + IntToStr(FSize) + ' octets)');
+ TermAddLine(TP, ' linker=' + IntToStr(Hdr.ne_ver) + '.' + IntToStr(Hdr.ne_rev) +
+  '  exetyp=' + IntToStr(Hdr.ne_exetyp) + ' (2=Windows, souvent 0 sur du ' +
+  'tres ancien code)');
+ TermAddLine(TP, ' entree : segment ' + IntToStr(Hdr.ne_cs) + ' + $' +
+  HexWord(Hdr.ne_ip) + '   pile : segment ' + IntToStr(Hdr.ne_ss) +
+  ' + $' + HexWord(Hdr.ne_sp));
+ TermAddLine(TP, ' autodata=' + IntToStr(Hdr.ne_autodata) +
+  '  heap=' + IntToStr(Hdr.ne_heap) + '  stack=' + IntToStr(Hdr.ne_stack));
+ TermAddLine(TP, ' cseg=' + IntToStr(Hdr.ne_cseg) + '  cmod=' +
+  IntToStr(Hdr.ne_cmod) + '  align=2^' + IntToStr(Hdr.ne_align) + '=' +
+  IntToStr(LongInt(1) Shl Hdr.ne_align) + ' octets');
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ If (Hdr.ne_cseg > 0) And (Hdr.ne_cseg < 64) Then Begin
+  TermAddLine(TP, ' -- table des segments --');
+  Seek(F, HdrOfs + Hdr.ne_segtab);
+  For I := 1 To Hdr.ne_cseg Do Begin
+   FillChar(Seg, SizeOf(Seg), 0);
+   BlockRead(F, Seg, SizeOf(Seg), BytesRead);
+   If BytesRead <> SizeOf(Seg) Then Break;
+   TermAddLine(TP, '  #' + IntToStr(I) +
+    ' fichier=secteur ' + IntToStr(Seg.DataOffsetSectors) +
+    ' longueur=' + IntToStr(Seg.DataLength) +
+    ' [' + Win16_SegFlagsStr(Seg.SegFlags) + ']' +
+    ' minalloc=' + IntToStr(Seg.MinAlloc));
+  End;
+ End;
+ If (Hdr.ne_cmod > 0) And (Hdr.ne_cmod < 64) Then Begin
+  TermAddLine(TP, ' -- modules importes --');
+  For I := 1 To Hdr.ne_cmod Do Begin
+   { ne_modtab : N entrees de 1 Word = offset RELATIF AU DEBUT DE ne_imptab }
+   { (pas au debut du fichier) ; a cet offset, une chaine Pascal (1 octet   }
+   { de longueur + caracteres, sans terminateur nul). Seek absolu a chaque  }
+   { iteration pour ne jamais deriver sur une position implicite. }
+   Seek(F, HdrOfs + Hdr.ne_modtab + (I - 1) * 2);
+   BlockRead(F, ModOfsW, 2, BytesRead);
+   If BytesRead <> 2 Then Break;
+   Seek(F, HdrOfs + Hdr.ne_imptab + ModOfsW);
+   BlockRead(F, NameLen, 1, BytesRead);
+   ModName := '';
+   If (BytesRead = 1) And (NameLen > 0) Then Begin
+    SetLength(ModName, NameLen);
+    BlockRead(F, ModName[1], NameLen, BytesRead);
+   End;
+   TermAddLine(TP, '  #' + IntToStr(I) + ' ' + ModName);
+  End;
+ End;
+ TermAddLine(TP, ' -- table des noms residents (nom du module + points ' +
+  'd''entree exportes) --');
+ Seek(F, HdrOfs + Hdr.ne_restab);
+ Repeat
+  BlockRead(F, NameLen, 1, BytesRead);
+  If (BytesRead <> 1) Or (NameLen = 0) Then Break;
+  EntName := '';
+  SetLength(EntName, NameLen);
+  BlockRead(F, EntName[1], NameLen, BytesRead);
+  BlockRead(F, Ordinal, 2, BytesRead);
+  TermAddLine(TP, '  "' + EntName + '" ordinal=' + IntToStr(Ordinal));
+ Until False;
+ Close(F);
+End;
+
 { LXLOAD <chemin> : appelle le vrai chargeur (Emu_LoadLX) et relit les     }
 { premiers octets de l objet de depart directement depuis LX_Mem, pour     }
 { verifier MECANIQUEMENT (sans avoir besoin d executer quoi que ce soit)   }
@@ -38911,6 +39131,8 @@ Begin
     TermCmd_ELFBP(TP, ParamStr)
    Else If CurrCmd = 'LXINFO' Then
     TermCmd_LXInfo(TP, ParamStr)
+   Else If CurrCmd = 'WIN16INFO' Then
+    TermCmd_Win16Info(TP, ParamStr)
    Else If CurrCmd = 'LXLOAD' Then
     TermCmd_LXLoad(TP, ParamStr)
    Else If CurrCmd = 'LXSTEP' Then
@@ -41338,7 +41560,8 @@ Const
  NCEXE_NONE   = 0;  { pas un executable MZ reconnaissable                }
  NCEXE_DOS16  = 1;  { DOS 16 bits classique - lancable par -CD           }
  NCEXE_OS2LX  = 2;  { OS/2 LX (32 bits, "Linear Executable")             }
- NCEXE_OTHER  = 3;  { PE (Win32/64) ou NE (Win16) - non supporte         }
+ NCEXE_OTHER  = 3;  { PE (Win32/64) - non supporte                       }
+ NCEXE_WIN16  = 4;  { NE (Windows 1.x/2.x/3.x 16 bits) - chantier en cours }
 
 { Chantier OS/2 LX (2026-08-22, Stage 0) : NCIsDos16Exe se contentait de }
 { rejeter silencieusement PE/NE/LE/LX (un seul Boolean, aucune           }
@@ -41411,7 +41634,7 @@ Begin
   Exit;
  End;
  If (HdrSig[0] = 'N') And (HdrSig[1] = 'E') Then Begin
-  NCFindExeKind := NCEXE_OTHER;
+  NCFindExeKind := NCEXE_WIN16;
   Exit;
  End;
  If (HdrSig[0] = 'L') And ((HdrSig[1] = 'E') Or (HdrSig[1] = 'X')) Then Begin
@@ -41545,6 +41768,14 @@ Begin
     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OS2LX) Then Begin
      CreateEmulatorTab(TempPath, '-COS2LX', '');
      NCActionOpenAssociated := True;
+    End
+    { Chantier Windows 16 bits (2026-08-25, Stage 0) : un .EXE au format NE }
+    { (Windows 1.x/2.x/3.x - ex. un vrai CLOCK.EXE Windows 2.03) etait      }
+    { rejete silencieusement (NCEXE_OTHER, aucune branche Else) - meme      }
+    { symptome et meme premier correctif que le Stage 0 d OS/2 LX. }
+    Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_WIN16) Then Begin
+     NCShowMessage('Executable Windows 16 bits detecte - execution non ' +
+      'encore supportee.', ncBrowse);
     End;
    End;
   End;
@@ -41572,6 +41803,12 @@ Begin
      Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OS2LX) Then Begin
       CreateEmulatorTab(TempPath, '-COS2LX', '');
       NCActionOpenAssociated := True;
+     End
+     { Chantier Windows 16 bits (2026-08-25, Stage 0) - voir le commentaire  }
+     { jumeau au site HPFS ci-dessus pour le contexte complet. }
+     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_WIN16) Then Begin
+      NCShowMessage('Executable Windows 16 bits detecte - execution non ' +
+       'encore supportee.', ncBrowse);
      End;
     End;
    End;
@@ -41618,6 +41855,12 @@ Begin
    Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_OS2LX) Then Begin
     CreateEmulatorTab(FullPath, '-COS2LX', '');
     NCActionOpenAssociated := True;
+   End
+   { Chantier Windows 16 bits (2026-08-25, Stage 0) - voir le commentaire   }
+   { jumeau au site HPFS plus haut pour le contexte complet. }
+   Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_WIN16) Then Begin
+    NCShowMessage('Executable Windows 16 bits detecte - execution non ' +
+     'encore supportee.', ncBrowse);
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
     CreateEmulatorTab(FullPath, '-CELF64', '');
