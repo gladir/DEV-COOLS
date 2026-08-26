@@ -1942,11 +1942,15 @@ Begin
  End;
 End;
 
-{ Chercher une fermeture sans franchir la limite d'une liste pour une
-  balise sans rapport avec celle-ci. Exemple reel: ...<li>C#</a></div>
-  dans CODER/index.htm. L'ancien parseur trouvait un DIV tres eloigne,
-  depilait UL, TABLE, ARTICLE, etc., puis rattachait toute la suite au
-  mauvais endroit. Un navigateur recupere localement cette erreur. }
+{ Chercher une fermeture sans jamais franchir une limite UL/OL qui ne
+  correspond pas elle-meme a la balise demandee. Cette regle vaut aussi
+  pour </li> : une fermeture LI superflue situee apres une sous-liste ne
+  doit surtout pas traverser cette sous-liste et fermer un LI ancetre.
+  Cela depilerait ensuite la liste parente au prochain </ul> et toute la
+  suite du document serait rattachee au mauvais endroit.
+
+  Exemple tolere : <li>...</li></li></ul>. Le second </li> est simplement
+  ignore des que la recherche rencontre le UL courant. }
 Function HTMLFindClosingNodeInScope(CurrentNode, Root: HTMLNodePtr;
                                     Const CloseTagName: String): HTMLNodePtr;
 Var
@@ -1962,9 +1966,10 @@ Begin
    HTMLFindClosingNodeInScope := SearchNode;
    Exit;
   End;
-  If ((Tag = 'ul') Or (Tag = 'ol')) And
-     (CloseTag <> 'ul') And (CloseTag <> 'ol') And (CloseTag <> 'li') Then
-   Exit;
+  { Le test d'egalite ci-dessus autorise naturellement </ul> a fermer le
+    UL courant (idem pour OL). Toute autre fermeture est hors contexte a
+    cette frontiere et doit etre ignoree localement. }
+  If (Tag = 'ul') Or (Tag = 'ol') Then Exit;
   SearchNode := SearchNode^.Parent;
  End;
 End;
@@ -8494,6 +8499,7 @@ Procedure RenderTagTR(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldMeasurePass: Boolean;
  OldLineHeight: Integer;
+ MeasureCtx: RenderContext;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -8509,19 +8515,23 @@ Begin
  OldLineHeight := Ctx.LineHeight;
  Ctx.LineHeight := RENDER_LINE_HEIGHT;
 
- { Premiere passe (mesure uniquement, rien n'est dessine) : rejoue le
-   rendu de toutes les cellules de la rangee pour decouvrir la
-   hauteur reellement necessaire (RenderTagTD/TH agrandit
-   Ctx.TableRowHeight si son contenu deborde sur plusieurs lignes).
-   Sans cette passe, la hauteur de rangee restait figee a une seule
-   ligne et le texte trop grand pour une cellule debordait dans la
-   rangee suivante au lieu de faire grandir sa propre rangee. }
+ { Premiere passe (mesure uniquement, rien n'est dessine) : travailler
+   dans une COPIE du contexte. Une cellule complexe peut modifier X, Y,
+   ListLevel, BlockLevel, l'alignement, etc. L'ancienne passe utilisait
+   directement Ctx puis n'en restaurait que quelques champs; le rendu
+   reel commencait donc avec un etat partiellement issu de la mesure et
+   des elements de liste disparaissaient ou etaient places hors cellule. }
  OldMeasurePass := TableMeasurePass;
  TableMeasurePass := True;
- RenderChildren(Node, Ctx);
+ MeasureCtx := Ctx;
+ { La hauteur du viewport ne doit pas interrompre la mesure : une cellule
+   de tableau peut contenir une page entiere, comme CODER/index.htm. }
+ MeasureCtx.MaxY := High(Integer);
+ RenderChildren(Node, MeasureCtx);
+ Ctx.TableRowHeight := MeasureCtx.TableRowHeight;
 
- { Revenir au debut de la rangee pour la passe reelle, en conservant
-   la hauteur de rangee finale calculee ci-dessus. }
+ { La passe reelle repart du contexte original, en ne conservant de la
+   copie que la hauteur finale de la rangee. }
  Ctx.TableColIndex := 0;
  Ctx.TableCellX := Ctx.TableX;
  Ctx.Y := Ctx.TableRowY;
