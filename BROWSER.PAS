@@ -1103,6 +1103,21 @@ Var
  InteractiveAreaCount: Integer;
  HoveredInteractiveNode: HTMLNodePtr; { Noeud actuellement survole, pour declencher onmouseout au depart }
 
+ { Un deplacement entre deux cellules declenche normalement deux
+   gestionnaires (mouseout puis mouseover). Ils doivent former une seule
+   transaction visuelle : sinon chacun efface et redessine la page, ce qui
+   produit le scintillement tres visible des menus JavaScript. }
+ DeferEventRedraw: Boolean;
+ EventRedrawPending: Boolean;
+
+ { Etat du rendu incremental des menus positionnes en absolu. La page reste
+   en place pendant un survol ; seule l'ancienne empreinte du sous-menu est
+   effacee avant de repeindre le document sans ClearRenderArea global. }
+ SkipNextRenderAreaClear: Boolean;
+ LastBodyBgColor: Integer;
+ LastOverlayRectValid: Boolean;
+ LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2: Integer;
+
  { Boites de mise en page des elements ID'es (voir JSNodeBox) }
  JSNodeBoxes: Array[1..MAX_LINKS] Of JSNodeBox;
  JSNodeBoxCount: Integer;
@@ -1177,6 +1192,31 @@ Var
    DispatchInlineEventHandler. }
  JSEventTargetNode: HTMLNodePtr;
 
+{ Etendre l'empreinte du menu absolu avec les coordonnees REELLEMENT
+  envoyees au pilote graphique. Cela inclut les cellules transparentes :
+  meme si elles ne peignent aucun fond, le rectangle englobant leurs textes
+  et leurs lignes permettra de restaurer toute la surface qu'elles couvrent. }
+Procedure TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2: Integer);
+Var
+ T: Integer;
+Begin
+ If Not RenderingAbsoluteOverlay Then Exit;
+ If X2 < X1 Then Begin T := X1; X1 := X2; X2 := T; End;
+ If Y2 < Y1 Then Begin T := Y1; Y1 := Y2; Y2 := T; End;
+ If Not LastOverlayRectValid Then Begin
+  LastOverlayX1 := X1;
+  LastOverlayY1 := Y1;
+  LastOverlayX2 := X2;
+  LastOverlayY2 := Y2;
+  LastOverlayRectValid := True;
+ End Else Begin
+  If X1 < LastOverlayX1 Then LastOverlayX1 := X1;
+  If Y1 < LastOverlayY1 Then LastOverlayY1 := Y1;
+  If X2 > LastOverlayX2 Then LastOverlayX2 := X2;
+  If Y2 > LastOverlayY2 Then LastOverlayY2 := Y2;
+ End;
+End;
+
 { Enveloppes des primitives de dessin qui decoupent automatiquement a
   la bande verticale visible (entre la barre d'URL et la barre de
   defilement horizontale) pendant le rendu du contenu. Une rangee de
@@ -1194,6 +1234,9 @@ Begin
  If InContentRenderPass And
     ((Y < RENDER_AREA_Y) Or (Y > RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE))) Then
   Exit;
+ TrackAbsoluteOverlayPaint(X - 2, Y - 2,
+                           X + PtcGraph.TextWidth(Text) + 2,
+                           Y + PtcGraph.TextHeight(Text) + 2);
  PtcGraph.OutTextXY(X, Y, Text);
 End;
 
@@ -1208,6 +1251,7 @@ Begin
   If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
   If Y2 > VisibleBottom Then Y2 := VisibleBottom;
  End;
+ TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
  PtcGraph.Bar(X1, Y1, X2, Y2);
 End;
 
@@ -1222,6 +1266,7 @@ Begin
   If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
   If Y2 > VisibleBottom Then Y2 := VisibleBottom;
  End;
+ TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
  PtcGraph.Rectangle(X1, Y1, X2, Y2);
 End;
 
@@ -1239,6 +1284,7 @@ Begin
   If Y1 > VisibleBottom Then Y1 := VisibleBottom;
   If Y2 > VisibleBottom Then Y2 := VisibleBottom;
  End;
+ TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
  PtcGraph.Line(X1, Y1, X2, Y2);
 End;
 
@@ -1259,6 +1305,7 @@ Begin
   If (X < RENDER_AREA_X) Or (X > VisibleRight) Or
      (Y < RENDER_AREA_Y) Or (Y > VisibleBottom) Then Exit;
  End;
+ TrackAbsoluteOverlayPaint(X, Y, X, Y);
  PtcGraph.PutPixel(X, Y, Color);
 End;
 
@@ -7297,7 +7344,10 @@ Begin
  JSEventTargetNode := Node;
  JSExecuteScript(Handler);
  JSEventTargetNode := OldEventTargetNode;
- RescrollPage;
+ If DeferEventRedraw Then
+  EventRedrawPending := True
+ Else
+  RescrollPage;
 End;
 
 { Procedure pour effacer la zone de rendu }
@@ -15172,7 +15222,8 @@ Var
  NodeStyle: DOMStyle;
  OverlayCtx: RenderContext;
  OverlayWidth, OverlayHeight, RightPx, BottomPx: Integer;
- AnchorAreaIndex: Integer;
+ OverlayStartX, OverlayStartY, OverlayEndX, OverlayEndY: Integer;
+ AnchorAreaIndex, FirstOverlayArea, AreaIndex: Integer;
  OverlayId, HoverHandler: String;
 Begin
  For I := 1 To AbsolutePositionedCount Do Begin
@@ -15233,9 +15284,45 @@ Begin
    End;
    OverlayCtx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
    OverlayCtx.BlockLevel := 0;
+   OverlayStartX := OverlayCtx.X;
+   OverlayStartY := OverlayCtx.Y;
+   { Les zones ajoutees apres cet index appartiendront a cet overlay.
+     Elles donnent les boites completes des TD/TR, y compris les portions
+     transparentes qui ne passent par aucune primitive de dessin. }
+   FirstOverlayArea := InteractiveAreaCount + 1;
    RenderingAbsoluteOverlay := True;
    RenderHTMLNode(AbsolutePositionedNodes[I], OverlayCtx);
    RenderingAbsoluteOverlay := False;
+
+   For AreaIndex := FirstOverlayArea To InteractiveAreaCount Do
+    TrackAbsoluteOverlayPaint(InteractiveAreas[AreaIndex].X1 - 2,
+                              InteractiveAreas[AreaIndex].Y1 - 2,
+                              InteractiveAreas[AreaIndex].X2 + 2,
+                              InteractiveAreas[AreaIndex].Y2 + 2);
+
+   { Memoriser l'empreinte a restaurer lorsque ce menu disparait. Les
+     dimensions CSS sont preferees ; la position Y atteinte par le moteur
+     couvre aussi les tableaux dont la hauteur est automatique. }
+   OverlayEndX := OverlayStartX + OverlayWidth + 2;
+   OverlayEndY := OverlayStartY + OverlayHeight + 2;
+   If OverlayCtx.Y + OverlayCtx.LineHeight + 2 > OverlayEndY Then
+    OverlayEndY := OverlayCtx.Y + OverlayCtx.LineHeight + 2;
+   If OverlayEndX > RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE Then
+    OverlayEndX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+   If OverlayEndY > RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE Then
+    OverlayEndY := RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+   If Not LastOverlayRectValid Then Begin
+    LastOverlayX1 := OverlayStartX;
+    LastOverlayY1 := OverlayStartY;
+    LastOverlayX2 := OverlayEndX;
+    LastOverlayY2 := OverlayEndY;
+    LastOverlayRectValid := True;
+   End Else Begin
+    If OverlayStartX < LastOverlayX1 Then LastOverlayX1 := OverlayStartX;
+    If OverlayStartY < LastOverlayY1 Then LastOverlayY1 := OverlayStartY;
+    If OverlayEndX > LastOverlayX2 Then LastOverlayX2 := OverlayEndX;
+    If OverlayEndY > LastOverlayY2 Then LastOverlayY2 := OverlayEndY;
+   End;
   End;
  End;
 End;
@@ -15286,11 +15373,14 @@ Begin
  End;
 
  { Effacer la zone de rendu avec cette couleur }
- ClearRenderArea(BodyBgColor);
+ LastBodyBgColor := BodyBgColor;
+ If Not SkipNextRenderAreaClear Then
+  ClearRenderArea(BodyBgColor);
 
  { Rendre le document avec application des styles CSS }
  ContentOverflowX := RENDER_AREA_X;
  JustifyWordCount := 0;
+ LastOverlayRectValid := False;
  InContentRenderPass := True;
  RenderHTMLNode(Doc, Ctx);
  FlushJustifiedLine(Ctx, False);
@@ -15386,6 +15476,23 @@ Begin
  If HTMLDocument = Nil Then Exit;
  ExecuteDocumentScripts := False;
  RenderHTMLDocument(HTMLDocument);
+End;
+
+{ Rafraichissement utilise exclusivement par le survol des menus. Le DOM est
+  remis en page (les classes CSS ont pu changer), mais l'ecran visible n'est
+  plus efface en entier. On nettoie seulement l'ancien sous-menu afin que le
+  rendu normal puisse restaurer ce qui se trouvait dessous. }
+Procedure RescrollPageAfterHover;
+Begin
+ If HTMLDocument = Nil Then Exit;
+ If LastOverlayRectValid Then Begin
+  SetFillStyle(SolidFill, LastBodyBgColor);
+  Bar(LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2);
+ End;
+ SkipNextRenderAreaClear := True;
+ ExecuteDocumentScripts := False;
+ RenderHTMLDocument(HTMLDocument);
+ SkipNextRenderAreaClear := False;
 End;
 
 { =====================================================
@@ -17019,11 +17126,18 @@ Begin
   { Les gestionnaires peuvent provoquer immediatement RescrollPage. Le
     nouvel element doit donc etre publie avant onmouseover pour que le
     positionnement des overlays connaisse deja son ancre. }
-  HoveredInteractiveNode := CurrentNode;
+ HoveredInteractiveNode := CurrentNode;
+  DeferEventRedraw := True;
+  EventRedrawPending := False;
   If PreviousNode <> Nil Then
    DispatchInlineEventHandler(PreviousNode, 'onmouseout');
   If CurrentNode <> Nil Then
    DispatchInlineEventHandler(CurrentNode, 'onmouseover');
+  DeferEventRedraw := False;
+  If EventRedrawPending Then Begin
+   EventRedrawPending := False;
+   RescrollPageAfterHover;
+  End;
   ShowMouse;
  End;
 End;
