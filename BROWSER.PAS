@@ -7678,16 +7678,35 @@ End;
 Procedure RenderTagArticle(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
+ BoxStartX, BoxStartY, BoxEndY: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := 0;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := 0;
+ If Box.PaddingTopPx >= 0 Then PaddingTopPx := Box.PaddingTopPx Else PaddingTopPx := 0;
+ If Box.PaddingBottomPx >= 0 Then PaddingBottomPx := Box.PaddingBottomPx Else PaddingBottomPx := 0;
  If WantsBlock Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+  BoxStartX := Ctx.X;
+  BoxStartY := Ctx.Y;
+  If PaddingTopPx > 0 Then Inc(Ctx.Y, PaddingTopPx);
  End;
  RenderChildren(Node, Ctx);
- If WantsBlock Then
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ If WantsBlock Then Begin
+  If PaddingBottomPx > 0 Then Inc(Ctx.Y, PaddingBottomPx);
+  BoxEndY := Ctx.Y;
+  If Box.HasBorder And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetColor(Box.BorderColorIdx);
+   Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, BoxEndY);
+   SetColor(Ctx.TextColor);
+  End;
+  RenderBlockSpacing(Ctx, MarginBottomPx);
+ End;
 End;
 
 { Procedure pour rendre la balise NAV (HTML5 navigation) }
@@ -8638,7 +8657,9 @@ Begin
    chaque rendu (donc apres tout changement de classe via
    this.className) plutot que mise en cache, comme pour le fond de
    <body> dans RenderHTMLDocument. }
- CellBgColor := RENDER_BG_COLOR;
+ { TD est transparent par defaut : reprendre le fond courant permet de
+   laisser apparaitre le background-color du conteneur ARTICLE. }
+ CellBgColor := Ctx.BgColor;
 
  { L'attribut HTML historique BGCOLOR du tableau est visible a travers
    ses cellules lorsqu'elles n'ont pas leur propre fond. Comme ce moteur
