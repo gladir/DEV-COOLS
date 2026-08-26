@@ -698,6 +698,7 @@ Type
   TableCellPadding: Integer; { cellpadding du tableau courant }
   TableCellSpacing: Integer; { cellspacing du tableau courant }
   TableCellContentX: Integer; { X de depart du contenu de la cellule en cours (pour le retour a la ligne) }
+  TableDrawBorders: Boolean; { Grille demandee par border/CSS sur le TABLE courant }
   InForm: Boolean;           { Dans un formulaire }
   InSelect: Boolean;         { Dans un element select }
   SelectOptionIndex: Integer;{ Index de l'option courante dans select }
@@ -7007,6 +7008,7 @@ Begin
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
  Ctx.TableCellPadding := TABLE_CELL_PADDING;
  Ctx.TableCellSpacing := TABLE_CELL_SPACING;
+ Ctx.TableDrawBorders := False;
  Ctx.InForm := False;
  Ctx.InSelect := False;
  Ctx.SelectOptionIndex := 0;
@@ -8537,14 +8539,16 @@ End;
 Procedure RenderTagTable(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldInTable: Boolean;
+ OldTableDrawBorders: Boolean;
  OldTableX: Integer;
  OldTableCellX, OldTableCellWidth, OldTableColIndex: Integer;
  OldTableRowY, OldTableRowHeight, OldTableCellContentX: Integer;
  OldTableCellPadding, OldTableCellSpacing: Integer;
  OldTableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer;
  NumCols, TableWidth, AvailableWidth, I, PercentValue, Code: Integer;
- CellPaddingSpec, CellSpacingSpec, TableWidthSpec: String;
+ CellPaddingSpec, CellSpacingSpec, TableWidthSpec, TableBorderSpec: String;
  TableStyle: DOMStyle;
+ TableBox: TElementBoxInfo;
 Begin
  { Nouvelle ligne avant le tableau si necessaire }
  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
@@ -8562,6 +8566,7 @@ Begin
  OldTableCellPadding := Ctx.TableCellPadding;
  OldTableCellSpacing := Ctx.TableCellSpacing;
  OldTableCellContentX := Ctx.TableCellContentX;
+ OldTableDrawBorders := Ctx.TableDrawBorders;
  For I := 1 To MAX_TABLE_COLS Do
   OldTableColumnWidths[I] := Ctx.TableColumnWidths[I];
 
@@ -8594,6 +8599,15 @@ Begin
  AvailableWidth := Ctx.MaxX - Ctx.X - TABLE_MARGIN;
  For I := 1 To MAX_TABLE_COLS Do Ctx.TableColumnWidths[I] := 0;
  CSSResolveCascade(Node, TableStyle);
+ { Une table HTML n'a aucune bordure par defaut. Activer la grille
+   uniquement si border est positif ou si le CSS definit une vraie
+   bordure; border="0" et border:0 restent sans trait. }
+ Ctx.TableDrawBorders := False;
+ TableBorderSpec := GetNodeAttribute(Node, 'border');
+ If Length(TableBorderSpec) > 0 Then
+  Ctx.TableDrawBorders := CSSParseDimension(TableBorderSpec, 0) > 0;
+ TableBox := ComputeElementBoxInfo(TableStyle);
+ If TableBox.HasBorder Then Ctx.TableDrawBorders := True;
  TableWidthSpec := TableStyle.Width;
  If Length(TableWidthSpec) = 0 Then TableWidthSpec := GetNodeAttribute(Node, 'width');
  If Length(TableWidthSpec) = 0 Then Begin
@@ -8623,21 +8637,21 @@ Begin
  Ctx.TableCellWidth := Ctx.TableColumnWidths[1];
 
  { Dessiner la bordure superieure du tableau }
- If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+ If Ctx.TableDrawBorders And YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableX, Ctx.Y, Ctx.TableX + TableWidth, Ctx.Y);
  End;
- Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+ If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
  { Rendre les enfants }
  RenderChildren(Node, Ctx);
 
  { Dessiner la bordure inferieure du tableau }
- If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+ If Ctx.TableDrawBorders And YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableX, Ctx.Y, Ctx.TableX + TableWidth, Ctx.Y);
  End;
- Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+ If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
  { Restaurer l'etat }
  Ctx.InTable := OldInTable;
@@ -8650,6 +8664,7 @@ Begin
  Ctx.TableCellPadding := OldTableCellPadding;
  Ctx.TableCellSpacing := OldTableCellSpacing;
  Ctx.TableCellContentX := OldTableCellContentX;
+ Ctx.TableDrawBorders := OldTableDrawBorders;
  For I := 1 To MAX_TABLE_COLS Do
   Ctx.TableColumnWidths[I] := OldTableColumnWidths[I];
 
@@ -8731,7 +8746,8 @@ Begin
  { Dessiner la bordure gauche de la ligne (no-op automatique si on
    est nous-meme imbriques dans la passe de mesure d'une rangee
    englobante - TableMeasurePass vaut alors deja True). }
- If YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.TableRowHeight) Then Begin
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableX, Ctx.Y, Ctx.TableX, Ctx.Y + Ctx.TableRowHeight);
  End;
@@ -8750,7 +8766,8 @@ Begin
   AddInteractiveArea(Ctx.TableX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight, Node);
 
  { Dessiner la bordure droite de la ligne }
- If YInVisibleBand(Ctx.TableRowY, Ctx.TableRowY + Ctx.TableRowHeight) Then Begin
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(Ctx.TableRowY, Ctx.TableRowY + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableCellX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight);
  End;
@@ -8760,11 +8777,11 @@ Begin
  Ctx.X := Ctx.TableX;
 
  { Dessiner la bordure horizontale sous la ligne }
- If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+ If Ctx.TableDrawBorders And YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
  End;
- Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+ If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
  Ctx.LineHeight := OldLineHeight;
 End;
 
@@ -8777,7 +8794,7 @@ Var
  WidthSpec, HeightSpec: String;
  BgColorSpec: String;
  CellStyle, AncestorStyle: DOMStyle;
- CellBgColor, TryBgColor: Integer;
+ CellBgColor, TryBgColor, CellInset: Integer;
  BgNode: HTMLNodePtr;
  PaintCellBackground: Boolean;
 Begin
@@ -8891,9 +8908,11 @@ Begin
    d'adresse et ses boutons un peu plus a chaque defilement). }
  If PaintCellBackground And
     YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+  If Ctx.TableDrawBorders Then CellInset := TABLE_BORDER_WIDTH Else CellInset := 0;
   SetFillStyle(SolidFill, CellBgColor);
-  Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
-      CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+  Bar(CellStartX + CellInset, CellStartY + CellInset,
+      CellStartX + Ctx.TableCellWidth,
+      CellStartY + Ctx.TableRowHeight - CellInset);
  End;
 
  { Configurer le contexte pour le contenu de la cellule }
@@ -8938,7 +8957,8 @@ Begin
  Inc(Ctx.TableColIndex);
 
  { Dessiner la bordure droite de la cellule }
- If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY, Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY + Ctx.TableRowHeight);
  End;
@@ -8958,7 +8978,7 @@ Var
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
  WidthSpec, HeightSpec: String;
  CellStyle: DOMStyle;
- CellBgColor, TryBgColor: Integer;
+ CellBgColor, TryBgColor, CellInset: Integer;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc en gras }
@@ -9008,9 +9028,11 @@ Begin
  { Dessiner le fond de la cellule d'en-tete, seulement si visible
    (voir RenderTagTD pour l'explication). }
  If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+  If Ctx.TableDrawBorders Then CellInset := TABLE_BORDER_WIDTH Else CellInset := 0;
   SetFillStyle(SolidFill, CellBgColor);
-  Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
-      CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
+  Bar(CellStartX + CellInset, CellStartY + CellInset,
+      CellStartX + Ctx.TableCellWidth,
+      CellStartY + Ctx.TableRowHeight - CellInset);
  End;
 
  { Configurer le contexte pour le contenu de la cellule }
@@ -9051,7 +9073,8 @@ Begin
  Inc(Ctx.TableColIndex);
 
  { Dessiner la bordure droite de la cellule }
- If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
   SetColor(TABLE_BORDER_COLOR);
   Line(Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY, Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY + Ctx.TableRowHeight);
  End;
