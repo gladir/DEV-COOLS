@@ -340,7 +340,7 @@ Const
 
  { Couleurs de rendu }
  RENDER_BG_COLOR = 15;         { Blanc }
- RENDER_TEXT_COLOR = 0;        { Noir }
+ RENDER_TEXT_COLOR = 16;       { Noir fiable en mode PtcGraph D8bit }
  RENDER_LINK_COLOR = 1;        { Bleu }
  RENDER_LINK_VISITED_COLOR = 5;{ Violet/Magenta }
  RENDER_LINK_ACTIVE_COLOR = 4; { Rouge }
@@ -691,6 +691,7 @@ Type
   TableX: Integer;           { Position X de depart du tableau }
   TableCellX: Integer;       { Position X de la cellule courante }
   TableCellWidth: Integer;   { Largeur de la cellule courante }
+  TableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer; { Largeur propre a chaque colonne }
   TableColIndex: Integer;    { Index de la colonne courante }
   TableRowY: Integer;        { Position Y de debut de la ligne }
   TableRowHeight: Integer;   { Hauteur de la ligne courante }
@@ -6256,7 +6257,8 @@ Begin
    BestIdx := I;
   End;
  End;
- CSSRGBToIndex := BestIdx;
+ If BestIdx = 0 Then CSSRGBToIndex := 16
+ Else CSSRGBToIndex := BestIdx;
 End;
 
 { Convertir un chiffre hexadecimal en valeur 0..15, -1 si invalide }
@@ -6376,7 +6378,7 @@ Begin
  LowerColor := HTMLLowerCase(ColorStr);
 
  { Couleurs nommees }
- If LowerColor = 'black' Then CSSColorToIndex := 0
+ If LowerColor = 'black' Then CSSColorToIndex := 16
  Else If LowerColor = 'blue' Then CSSColorToIndex := 1
  Else If LowerColor = 'green' Then CSSColorToIndex := 2
  Else If LowerColor = 'cyan' Then CSSColorToIndex := 3
@@ -8132,6 +8134,73 @@ End;
   RENDU HTML - Listes (ul, ol, li, dl, dt, dd)
   ===================================================== }
 
+{ RenderTagImg est implemente plus bas, apres les decodeurs d'images. }
+Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
+
+{ Rendre le cas CSS de marqueur employe par le site : selecteur
+  ul.Mnu li::before avec content:url(...) et padding-right:5px.
+  Les pseudo-elements ne sont pas des noeuds DOM. On fait donc correspondre
+  le selecteur sans sa derniere partie ::before, puis on cree un IMG
+  temporaire qui reutilise exactement le chargeur/cache d'images normal. }
+Function RenderListBeforePseudo(Node: HTMLNodePtr;
+                                Var Ctx: RenderContext): Boolean;
+Var
+ I, J, P1, P2, PaddingRight: Integer;
+ Sel: CSSSelector;
+ ContentValue, URLValue, PropName: String;
+ ImgNode: HTMLNodePtr;
+Begin
+ RenderListBeforePseudo := False;
+ If (Node = Nil) Or (Not CSSEnabled) Then Exit;
+
+ For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
+  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
+   Sel := CSSGlobalStylesheet.Rules[I].Selectors[J];
+   If (Sel.PartCount < 2) Or
+      (Sel.Parts[Sel.PartCount].PartType <> CSS_SEL_PSEUDO_ELEMENT) Or
+      (HTMLLowerCase(Sel.Parts[Sel.PartCount].Value) <> 'before') Then
+    Continue;
+   Dec(Sel.PartCount);
+   If Not CSSMatchSelector(Sel, Node) Then Continue;
+
+   ContentValue := '';
+   PaddingRight := 0;
+   For P1 := 1 To CSSGlobalStylesheet.Rules[I].PropertyCount Do Begin
+    PropName := HTMLLowerCase(CSSGlobalStylesheet.Rules[I].Properties[P1].PropName);
+    If PropName = 'content' Then
+     ContentValue := CSSGlobalStylesheet.Rules[I].Properties[P1].Value
+    Else If PropName = 'padding-right' Then
+     PaddingRight := CSSParseDimension(
+       CSSGlobalStylesheet.Rules[I].Properties[P1].Value, 0);
+   End;
+
+   P1 := System.Pos('url(', HTMLLowerCase(ContentValue));
+   If P1 = 0 Then Continue;
+   Inc(P1, 4);
+   P2 := P1;
+   While (P2 <= Length(ContentValue)) And (ContentValue[P2] <> ')') Do Inc(P2);
+   If P2 > Length(ContentValue) Then Continue;
+   URLValue := Trim(Copy(ContentValue, P1, P2 - P1));
+   If (Length(URLValue) >= 2) And
+      (((URLValue[1] = '"') And (URLValue[Length(URLValue)] = '"')) Or
+       ((URLValue[1] = '''') And (URLValue[Length(URLValue)] = ''''))) Then
+    URLValue := Copy(URLValue, 2, Length(URLValue) - 2);
+   If Length(URLValue) = 0 Then Continue;
+
+   ImgNode := CreateHTMLNode;
+   ImgNode^.NodeType := HTML_NODE_ELEMENT;
+   ImgNode^.TagName := 'img';
+   ImgNode^.TagType := TAG_IMG;
+   HTMLAddAttribute(ImgNode, 'src', URLValue);
+   RenderTagImg(ImgNode, Ctx);
+   FreeHTMLNode(ImgNode);
+   If PaddingRight > 0 Then Inc(Ctx.X, PaddingRight);
+   RenderListBeforePseudo := True;
+   Exit;
+  End;
+ End;
+End;
+
 { Procedure pour rendre la balise UL (liste non ordonnee) }
 Procedure RenderTagUL(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
@@ -8236,7 +8305,10 @@ Begin
 
  { Afficher le marqueur de liste, sauf si list-style/list-style-type
    vaut none (menus horizontaux <ul><li> par exemple). }
- If Not NoBullet Then Begin
+ If RenderListBeforePseudo(Node, Ctx) Then Begin
+  { Le pseudo-element CSS remplace la puce native. }
+ End
+ Else If Not NoBullet Then Begin
   Case Ctx.ListType Of
    LIST_TYPE_UL: Begin
     { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
@@ -8422,6 +8494,45 @@ Begin
  CountTableColumns := MaxCols;
 End;
 
+{ Mesurer la largeur naturelle maximale de chaque colonne. }
+Procedure MeasureTableNaturalColumns(Node: HTMLNodePtr; CellPadding: Integer;
+                                     Var Widths: Array Of Integer);
+Var
+ Child, Cell: HTMLNodePtr;
+ Col, W, RequestedWidth: Integer;
+ WidthSpec: String;
+ CellStyle: DOMStyle;
+Begin
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  If Child^.TagType = TAG_TR Then Begin
+   Col := 0;
+   Cell := Child^.FirstChild;
+   While Cell <> Nil Do Begin
+    If (Cell^.TagType = TAG_TD) Or (Cell^.TagType = TAG_TH) Then Begin
+     If Col <= High(Widths) Then Begin
+      W := GetTextWidth(Trim(DOMGetTextContent(Cell))) + (2 * CellPadding) + 4;
+      CSSResolveCascade(Cell, CellStyle);
+      WidthSpec := CellStyle.Width;
+      If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Cell, 'width');
+      If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
+       RequestedWidth := CSSParseDimension(WidthSpec, W);
+       If RequestedWidth > W Then W := RequestedWidth;
+      End;
+      If W < TABLE_CELL_MIN_WIDTH Then W := TABLE_CELL_MIN_WIDTH;
+      If W > Widths[Col] Then Widths[Col] := W;
+     End;
+     Inc(Col);
+    End;
+    Cell := Cell^.NextSibling;
+   End;
+  End
+  Else If Child^.TagType <> TAG_TABLE Then
+   MeasureTableNaturalColumns(Child, CellPadding, Widths);
+  Child := Child^.NextSibling;
+ End;
+End;
+
 { Procedure pour rendre la balise TABLE }
 Procedure RenderTagTable(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
@@ -8430,8 +8541,10 @@ Var
  OldTableCellX, OldTableCellWidth, OldTableColIndex: Integer;
  OldTableRowY, OldTableRowHeight, OldTableCellContentX: Integer;
  OldTableCellPadding, OldTableCellSpacing: Integer;
- NumCols, TableWidth: Integer;
- CellPaddingSpec, CellSpacingSpec: String;
+ OldTableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer;
+ NumCols, TableWidth, AvailableWidth, I, PercentValue, Code: Integer;
+ CellPaddingSpec, CellSpacingSpec, TableWidthSpec: String;
+ TableStyle: DOMStyle;
 Begin
  { Nouvelle ligne avant le tableau si necessaire }
  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
@@ -8449,6 +8562,8 @@ Begin
  OldTableCellPadding := Ctx.TableCellPadding;
  OldTableCellSpacing := Ctx.TableCellSpacing;
  OldTableCellContentX := Ctx.TableCellContentX;
+ For I := 1 To MAX_TABLE_COLS Do
+  OldTableColumnWidths[I] := Ctx.TableColumnWidths[I];
 
  { Configurer le contexte pour le tableau }
  Ctx.InTable := True;
@@ -8473,17 +8588,44 @@ Begin
   If Ctx.TableCellSpacing < 0 Then Ctx.TableCellSpacing := 0;
  End;
 
- { Calculer la largeur des cellules }
+ { width:auto entoure le contenu; seules les largeurs HTML/CSS explicites
+   etirent le tableau sur une partie ou la totalite du conteneur. }
  NumCols := CountTableColumns(Node);
- TableWidth := Ctx.MaxX - Ctx.X - TABLE_MARGIN;
- Ctx.TableCellWidth := (TableWidth - (NumCols * Ctx.TableCellSpacing)) Div NumCols;
- If Ctx.TableCellWidth < TABLE_CELL_MIN_WIDTH Then
-  Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
+ AvailableWidth := Ctx.MaxX - Ctx.X - TABLE_MARGIN;
+ For I := 1 To MAX_TABLE_COLS Do Ctx.TableColumnWidths[I] := 0;
+ CSSResolveCascade(Node, TableStyle);
+ TableWidthSpec := TableStyle.Width;
+ If Length(TableWidthSpec) = 0 Then TableWidthSpec := GetNodeAttribute(Node, 'width');
+ If Length(TableWidthSpec) = 0 Then Begin
+  MeasureTableNaturalColumns(Node, Ctx.TableCellPadding, Ctx.TableColumnWidths);
+  TableWidth := 0;
+  For I := 1 To NumCols Do Inc(TableWidth, Ctx.TableColumnWidths[I]);
+  Inc(TableWidth, NumCols * Ctx.TableCellSpacing);
+  If TableWidth > AvailableWidth Then Begin
+   TableWidth := AvailableWidth;
+   For I := 1 To NumCols Do
+    Ctx.TableColumnWidths[I] :=
+     (TableWidth - NumCols * Ctx.TableCellSpacing) Div NumCols;
+  End;
+ End Else Begin
+  If System.Pos('%', TableWidthSpec) > 0 Then Begin
+   Val(Copy(TableWidthSpec, 1, System.Pos('%', TableWidthSpec) - 1),
+       PercentValue, Code);
+   If Code <> 0 Then PercentValue := 100;
+   TableWidth := (AvailableWidth * PercentValue) Div 100;
+  End Else
+   TableWidth := CSSParseDimension(TableWidthSpec, AvailableWidth);
+  If TableWidth > AvailableWidth Then TableWidth := AvailableWidth;
+  For I := 1 To NumCols Do
+   Ctx.TableColumnWidths[I] :=
+    (TableWidth - NumCols * Ctx.TableCellSpacing) Div NumCols;
+ End;
+ Ctx.TableCellWidth := Ctx.TableColumnWidths[1];
 
  { Dessiner la bordure superieure du tableau }
  If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
-  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + Ctx.TableCellSpacing)), Ctx.Y);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + TableWidth, Ctx.Y);
  End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
@@ -8493,7 +8635,7 @@ Begin
  { Dessiner la bordure inferieure du tableau }
  If YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
   SetColor(TABLE_BORDER_COLOR);
-  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + (NumCols * (Ctx.TableCellWidth + Ctx.TableCellSpacing)), Ctx.Y);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + TableWidth, Ctx.Y);
  End;
  Inc(Ctx.Y, TABLE_BORDER_WIDTH);
 
@@ -8508,6 +8650,8 @@ Begin
  Ctx.TableCellPadding := OldTableCellPadding;
  Ctx.TableCellSpacing := OldTableCellSpacing;
  Ctx.TableCellContentX := OldTableCellContentX;
+ For I := 1 To MAX_TABLE_COLS Do
+  Ctx.TableColumnWidths[I] := OldTableColumnWidths[I];
 
  { Retour dans le bon repere. Un tableau imbrique dans TD/TH ne doit pas
    renvoyer X a la marge de la page ni perdre le contexte de sa cellule. }
@@ -8632,9 +8776,10 @@ Var
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
  WidthSpec, HeightSpec: String;
  BgColorSpec: String;
- CellStyle: DOMStyle;
+ CellStyle, AncestorStyle: DOMStyle;
  CellBgColor, TryBgColor: Integer;
  BgNode: HTMLNodePtr;
+ PaintCellBackground: Boolean;
 Begin
  If Not Ctx.InTable Then Begin
   { Si pas dans un tableau, rendre comme un bloc }
@@ -8660,6 +8805,7 @@ Begin
  { TD est transparent par defaut : reprendre le fond courant permet de
    laisser apparaitre le background-color du conteneur ARTICLE. }
  CellBgColor := Ctx.BgColor;
+ PaintCellBackground := False;
 
  { L'attribut HTML historique BGCOLOR du tableau est visible a travers
    ses cellules lorsqu'elles n'ont pas leur propre fond. Comme ce moteur
@@ -8672,7 +8818,10 @@ Begin
   BgColorSpec := GetNodeAttribute(BgNode, 'bgcolor');
   If Length(BgColorSpec) > 0 Then Begin
    TryBgColor := CSSColorToIndex(BgColorSpec);
-   If TryBgColor >= 0 Then CellBgColor := TryBgColor;
+   If TryBgColor >= 0 Then Begin
+    CellBgColor := TryBgColor;
+    PaintCellBackground := True;
+   End;
    Break;
   End;
   If BgNode^.TagType = TAG_TABLE Then Break;
@@ -8683,7 +8832,33 @@ Begin
   CSSResolveCascade(Node, CellStyle);
   If Length(CellStyle.BackgroundColor) > 0 Then Begin
    TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
-   If TryBgColor >= 0 Then CellBgColor := TryBgColor;
+   If TryBgColor >= 0 Then Begin
+    CellBgColor := TryBgColor;
+    PaintCellBackground := True;
+   End;
+  End;
+
+  { Une cellule sans fond propre est transparente. Si un ancetre porte un
+    fond concret (TR/TABLE/DIV/ARTICLE/BODY), rendre ce fond a travers la
+    cellule; sinon ne dessiner aucun rectangle opaque. }
+  If Not PaintCellBackground Then Begin
+   BgNode := Node^.Parent;
+   While BgNode <> Nil Do Begin
+    If BgNode^.NodeType = HTML_NODE_ELEMENT Then Begin
+     CSSResolveCascade(BgNode, AncestorStyle);
+     BgColorSpec := HTMLLowerCase(Trim(AncestorStyle.BackgroundColor));
+     If (Length(BgColorSpec) > 0) And (BgColorSpec <> 'inherit') And
+        (BgColorSpec <> 'transparent') Then Begin
+      TryBgColor := CSSColorToIndex(AncestorStyle.BackgroundColor);
+      If TryBgColor >= 0 Then Begin
+       CellBgColor := TryBgColor;
+       PaintCellBackground := True;
+      End;
+      Break;
+     End;
+    End;
+    BgNode := BgNode^.Parent;
+   End;
   End;
  End;
 
@@ -8691,6 +8866,9 @@ Begin
    la cellule. Ils etaient auparavant ignores au profit d'un partage egal
    de toutes les colonnes, meme pour <td width="200">/.MenuItem. }
  OldTableCellWidth := Ctx.TableCellWidth;
+ If (Ctx.TableColIndex + 1 <= MAX_TABLE_COLS) And
+    (Ctx.TableColumnWidths[Ctx.TableColIndex + 1] > 0) Then
+  Ctx.TableCellWidth := Ctx.TableColumnWidths[Ctx.TableColIndex + 1];
  WidthSpec := CellStyle.Width;
  If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
  If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
@@ -8711,7 +8889,8 @@ Begin
    verification, les rangees deja defilees au-dessus de la zone de
    rendu continuent de peindre leur fond, recouvrant la barre
    d'adresse et ses boutons un peu plus a chaque defilement). }
- If YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
+ If PaintCellBackground And
+    YInVisibleBand(CellStartY, CellStartY + Ctx.TableRowHeight) Then Begin
   SetFillStyle(SolidFill, CellBgColor);
   Bar(CellStartX + TABLE_BORDER_WIDTH, CellStartY + TABLE_BORDER_WIDTH,
       CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight - TABLE_BORDER_WIDTH);
@@ -8808,6 +8987,9 @@ Begin
  End;
 
  OldTableCellWidth := Ctx.TableCellWidth;
+ If (Ctx.TableColIndex + 1 <= MAX_TABLE_COLS) And
+    (Ctx.TableColumnWidths[Ctx.TableColIndex + 1] > 0) Then
+  Ctx.TableCellWidth := Ctx.TableColumnWidths[Ctx.TableColIndex + 1];
  WidthSpec := CellStyle.Width;
  If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
  If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
@@ -9520,6 +9702,27 @@ Begin
  { La sortie de document.write() est traitee separement }
 End;
 
+{ Executer les scripts dans l'ordre du document avant la mise en page.
+  Un script peut modifier par innerHTML un element situe avant lui
+  (cmDraw remplit DIV#myMenuID). Pendant un rendu ordinaire, ce DIV aurait
+  deja ete traverse vide et le menu n'apparaitrait qu'au repaint suivant. }
+Procedure ExecuteDocumentScriptNodes(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Child, NextChild: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+ If (Node^.NodeType = HTML_NODE_ELEMENT) And (Node^.TagType = TAG_SCRIPT) Then Begin
+  RenderTagScript(Node, Ctx);
+  Exit;
+ End;
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  ExecuteDocumentScriptNodes(Child, Ctx);
+  Child := NextChild;
+ End;
+End;
+
 { =====================================================
   FIN RENDU SCRIPTS
   ===================================================== }
@@ -9665,7 +9868,8 @@ Begin
   End;
  End;
 
- BMPRGBToVGAColor := BestColor;
+ If BestColor = 0 Then BMPRGBToVGAColor := 16
+ Else BMPRGBToVGAColor := BestColor;
 End;
 
 { Liberer la memoire d'une image BMP }
@@ -9994,11 +10198,26 @@ End;
 Function BMPBuildImagePath(Const Src: String): String;
 Var
  BasePath: String;
- I: Integer;
+ LowerBase: String;
+ I, RootPos: Integer;
 Begin
- { Si c'est un chemin absolu, le retourner tel quel }
- If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
-     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+ { Un chemin /... est absolu du point de vue du site Web, pas du disque.
+   Pour une page locale servie depuis IIS, le rattacher a wwwroot. }
+ If (Length(Src) > 0) And (Src[1] In ['/', '\']) Then Begin
+  LowerBase := HTMLLowerCase(CurrentURL);
+  RootPos := System.Pos('\wwwroot\', LowerBase);
+  If RootPos = 0 Then RootPos := System.Pos('/wwwroot/', LowerBase);
+  If RootPos > 0 Then Begin
+   BasePath := Copy(CurrentURL, 1, RootPos + Length('\wwwroot\') - 2);
+   BMPBuildImagePath := BasePath + '\' + Copy(Src, 2, Length(Src) - 1);
+  End
+  Else
+   BMPBuildImagePath := Src;
+  Exit;
+ End;
+
+ { Un chemin avec lettre de lecteur est deja absolu. }
+ If (Length(Src) > 2) And (Src[2] = ':') Then Begin
   BMPBuildImagePath := Src;
   Exit;
  End;
@@ -10234,7 +10453,8 @@ Begin
   End;
  End;
 
- GIFRGBToVGAColor := BestColor;
+ If BestColor = 0 Then GIFRGBToVGAColor := 16
+ Else GIFRGBToVGAColor := BestColor;
 End;
 
 { Liberer la memoire d'une frame GIF }
@@ -11128,7 +11348,8 @@ Begin
   End;
  End;
 
- JPEGRGBToVGAColor := BestColor;
+ If BestColor = 0 Then JPEGRGBToVGAColor := 16
+ Else JPEGRGBToVGAColor := BestColor;
 End;
 
 { Liberer la memoire d'une image JPEG }
@@ -12139,7 +12360,8 @@ Begin
   End;
  End;
 
- PNGRGBToVGAColor := BestColor;
+ If BestColor = 0 Then PNGRGBToVGAColor := 16
+ Else PNGRGBToVGAColor := BestColor;
 End;
 
 { Liberer la memoire d'une image PNG }
@@ -13273,7 +13495,8 @@ Begin
   End;
  End;
 
- SVGColorToVGA := BestColor;
+ If BestColor = 0 Then SVGColorToVGA := 16
+ Else SVGColorToVGA := BestColor;
 End;
 
 { Parser une couleur SVG (hex, rgb, nommee) }
@@ -15040,6 +15263,7 @@ End;
 Procedure TestHTMLRender(Var HTMLSource: HTMLSourceBuffer);
 Var
  Doc: HTMLNodePtr;
+ ScriptCtx: RenderContext;
 Begin
  Doc := ParseHTML(HTMLSource);
 
@@ -15091,9 +15315,12 @@ Begin
   HTMLDocument := Doc;
   ScrollX := 0;
   ScrollY := 0;
+  { Construire le DOM dynamique avant de calculer ses boites. }
   ExecuteDocumentScripts := True;
-  RenderHTMLDocument(HTMLDocument);
+  InitRenderContext(ScriptCtx);
+  ExecuteDocumentScriptNodes(HTMLDocument, ScriptCtx);
   ExecuteDocumentScripts := False;
+  RenderHTMLDocument(HTMLDocument);
  End;
 End;
 
@@ -16304,7 +16531,16 @@ Var
  I: Integer;
 Begin
  For I := 0 To 15 Do
-  SetRGBPalette(I, RGB[I, 0] Shr 2, RGB[I, 1] Shr 2, RGB[I, 2] Shr 2);
+  { PtcGraph attend des composantes 0..255. Le Shr 2 adapte aux anciens
+    registres DAC VGA 0..63, mais rend ici le blanc (255) gris (63) et
+    fausse toutes les couleurs CSS fondees sur les indices BGI. }
+  SetRGBPalette(I, RGB[I, 0], RGB[I, 1], RGB[I, 2]);
+ { Dans le pilote D8bit de PtcGraph, l'entree logique 0 peut conserver le
+   role de couleur transparente/de fond malgre SetRGBPalette(0,...). La
+   mapper vers un registre distinct programme en noir rend enfin les
+   textes CSS color:black visibles, sans modifier les index utilises par
+   tout le moteur et les decodeurs d'images. }
+ SetRGBPalette(16, 0, 0, 0);
 End;
 
 Procedure InitializeGraphics;
