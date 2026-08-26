@@ -7191,51 +7191,51 @@ End;
 Function JSGetNodeBoxX(Node: HTMLNodePtr): Integer;
 Var I: Integer;
 Begin
- I := FindJSNodeBox(Node);
+ { Pour un element interactif de tableau, la zone est calculee apres la
+   passe de mesure et contient les limites finales exactes de la cellule. }
+ I := FindInteractiveAreaIndex(Node);
  If I > 0 Then Begin
-  JSGetNodeBoxX := JSNodeBoxes[I].X;
+  JSGetNodeBoxX := InteractiveAreas[I].X1;
   Exit;
  End;
- I := FindInteractiveAreaIndex(Node);
- If I > 0 Then JSGetNodeBoxX := InteractiveAreas[I].X1 Else JSGetNodeBoxX := 0;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxX := JSNodeBoxes[I].X Else JSGetNodeBoxX := 0;
 End;
 
 Function JSGetNodeBoxY(Node: HTMLNodePtr): Integer;
 Var I: Integer;
 Begin
- I := FindJSNodeBox(Node);
+ I := FindInteractiveAreaIndex(Node);
  If I > 0 Then Begin
-  JSGetNodeBoxY := JSNodeBoxes[I].Y;
+  JSGetNodeBoxY := InteractiveAreas[I].Y1;
   Exit;
  End;
- I := FindInteractiveAreaIndex(Node);
- If I > 0 Then JSGetNodeBoxY := InteractiveAreas[I].Y1 Else JSGetNodeBoxY := 0;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxY := JSNodeBoxes[I].Y Else JSGetNodeBoxY := 0;
 End;
 
 Function JSGetNodeBoxWidth(Node: HTMLNodePtr): Integer;
 Var I: Integer;
 Begin
- I := FindJSNodeBox(Node);
+ I := FindInteractiveAreaIndex(Node);
  If I > 0 Then Begin
-  JSGetNodeBoxWidth := JSNodeBoxes[I].Width;
+  JSGetNodeBoxWidth := InteractiveAreas[I].X2 - InteractiveAreas[I].X1;
   Exit;
  End;
- I := FindInteractiveAreaIndex(Node);
- If I > 0 Then JSGetNodeBoxWidth := InteractiveAreas[I].X2 - InteractiveAreas[I].X1
- Else JSGetNodeBoxWidth := 0;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxWidth := JSNodeBoxes[I].Width Else JSGetNodeBoxWidth := 0;
 End;
 
 Function JSGetNodeBoxHeight(Node: HTMLNodePtr): Integer;
 Var I: Integer;
 Begin
- I := FindJSNodeBox(Node);
+ I := FindInteractiveAreaIndex(Node);
  If I > 0 Then Begin
-  JSGetNodeBoxHeight := JSNodeBoxes[I].Height;
+  JSGetNodeBoxHeight := InteractiveAreas[I].Y2 - InteractiveAreas[I].Y1;
   Exit;
  End;
- I := FindInteractiveAreaIndex(Node);
- If I > 0 Then JSGetNodeBoxHeight := InteractiveAreas[I].Y2 - InteractiveAreas[I].Y1
- Else JSGetNodeBoxHeight := 0;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxHeight := JSNodeBoxes[I].Height Else JSGetNodeBoxHeight := 0;
 End;
 
 { setTimeout/clearTimeout a emplacement unique (voir la declaration de
@@ -7626,11 +7626,13 @@ Begin
  { DIV est un element de bloc par defaut - nouvelle ligne avant et
    apres - sauf si le CSS demande display:inline/inline-block. }
  If WantsBlock Then Begin
-  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  If (Not RenderingAbsoluteOverlay) And
+     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
    RenderNewLine(Ctx);
   Inc(Ctx.BlockLevel);
-  RenderBlockSpacing(Ctx, MarginTopPx);
-  BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
+  If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginTopPx);
+  If RenderingAbsoluteOverlay Then BoxStartX := Ctx.X
+  Else BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
   BoxStartY := Ctx.Y;
   If PaddingTopPx > 0 Then Ctx.Y := Ctx.Y + PaddingTopPx;
   ApplyTextAlignOffset(Ctx, Node);
@@ -7709,7 +7711,7 @@ Begin
    Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, BoxEndY);
    SetColor(Ctx.TextColor);
   End;
-  RenderBlockSpacing(Ctx, MarginBottomPx);
+  If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginBottomPx);
  End;
 End;
 
@@ -8551,9 +8553,10 @@ Var
  TableBox: TElementBoxInfo;
 Begin
  { Nouvelle ligne avant le tableau si necessaire }
- If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+ If (Not RenderingAbsoluteOverlay) And
+    (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
- RenderBlockSpacing(Ctx, TABLE_MARGIN);
+ If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, TABLE_MARGIN);
 
  { Sauvegarder l'etat }
  OldInTable := Ctx.InTable;
@@ -15169,6 +15172,8 @@ Var
  NodeStyle: DOMStyle;
  OverlayCtx: RenderContext;
  OverlayWidth, OverlayHeight, RightPx, BottomPx: Integer;
+ AnchorAreaIndex: Integer;
+ OverlayId, HoverHandler: String;
 Begin
  For I := 1 To AbsolutePositionedCount Do Begin
   CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
@@ -15199,6 +15204,33 @@ Begin
    End
    Else
     OverlayCtx.Y := RenderOriginY;
+
+   { Repli fiable pour les menus JSCookMenu. Le gestionnaire de l'element
+     survole contient l'id exact du sous-menu qu'il vient d'afficher. Les
+     zones interactives sont calculees apres la mise en page finale des
+     cellules, contrairement aux offsetLeft/offsetParent partiellement
+     supportes par l'interpreteur JS. }
+   If HoveredInteractiveNode <> Nil Then Begin
+    OverlayId := GetNodeAttribute(AbsolutePositionedNodes[I], 'id');
+    HoverHandler := GetNodeAttribute(HoveredInteractiveNode, 'onmouseover');
+    If (HoveredInteractiveNode^.TagType = TAG_TD) Or
+       ((Length(OverlayId) > 0) And
+        (System.Pos(HTMLLowerCase(OverlayId),
+                    HTMLLowerCase(HoverHandler)) > 0)) Then Begin
+     AnchorAreaIndex := FindInteractiveAreaIndex(HoveredInteractiveNode);
+     If AnchorAreaIndex > 0 Then Begin
+      If HoveredInteractiveNode^.TagType = TAG_TR Then Begin
+       { Sous-menu imbrique : a droite de la ligne courante. }
+       OverlayCtx.X := InteractiveAreas[AnchorAreaIndex].X2;
+       OverlayCtx.Y := InteractiveAreas[AnchorAreaIndex].Y1;
+      End Else Begin
+       { Menu horizontal principal : directement sous sa cellule. }
+       OverlayCtx.X := InteractiveAreas[AnchorAreaIndex].X1;
+       OverlayCtx.Y := InteractiveAreas[AnchorAreaIndex].Y2;
+      End;
+     End;
+    End;
+   End;
    OverlayCtx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
    OverlayCtx.BlockLevel := 0;
    RenderingAbsoluteOverlay := True;
@@ -16974,20 +17006,24 @@ End;
   la souris meme sans bouton presse. }
 Procedure ProcessMouseHover;
 Var
- CurrentNode: HTMLNodePtr;
+ CurrentNode, PreviousNode: HTMLNodePtr;
 Begin
  If IsInRenderArea(MouseX, MouseY) Then
   CurrentNode := FindInteractiveNodeAtPosition(MouseX, MouseY)
  Else
-  CurrentNode := Nil;
+ CurrentNode := Nil;
 
  If CurrentNode <> HoveredInteractiveNode Then Begin
   HideMouse;
-  If HoveredInteractiveNode <> Nil Then
-   DispatchInlineEventHandler(HoveredInteractiveNode, 'onmouseout');
+  PreviousNode := HoveredInteractiveNode;
+  { Les gestionnaires peuvent provoquer immediatement RescrollPage. Le
+    nouvel element doit donc etre publie avant onmouseover pour que le
+    positionnement des overlays connaisse deja son ancre. }
+  HoveredInteractiveNode := CurrentNode;
+  If PreviousNode <> Nil Then
+   DispatchInlineEventHandler(PreviousNode, 'onmouseout');
   If CurrentNode <> Nil Then
    DispatchInlineEventHandler(CurrentNode, 'onmouseover');
-  HoveredInteractiveNode := CurrentNode;
   ShowMouse;
  End;
 End;
