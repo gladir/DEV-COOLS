@@ -5125,6 +5125,14 @@ Type
  End;
 
 Const
+ { Chantier Windows 16 bits, Stage 2 : limites du chargeur NE - segments   }
+ { et emplacements de trappe d'import, mêmes constantes utilisees par      }
+ { Win16_LoadNE/Win16_ResolveImportSlot (voir plus loin dans ce fichier). }
+ WIN16_MAX_SEGS       = 64;
+ WIN16_MAX_TRAP_SLOTS = 128;
+ WIN16_TRAP_SLOT_SIZE = 5;  { CD F8 (INT prive) + index de slot (2 octets) + CB (RETF) }
+
+Const
  LXOBJ_READABLE   = $0001;
  LXOBJ_WRITABLE   = $0002;
  LXOBJ_EXECUTABLE = $0004;
@@ -6320,6 +6328,22 @@ Var
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
  EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
+ { Chantier Windows 16 bits (2026-08-25), Stage 2 : etat du chargeur NE -  }
+ { allocateur bump INDEPENDANT de EmuNextFreeSeg (jamais partage avec le   }
+ { chargeur DOS classique, memes principes d isolement que LX_Mem/ELF64    }
+ { pour les chantiers precedents, meme si Win16 reutilise LA MEME memoire  }
+ { emulee TEmuCPU.Memory - seul le POINTEUR d allocation est distinct). }
+ Win16_NextFreeSeg    : Word;
+ Win16_TrapSeg        : Word;   { segment reserve pour les thunks d import }
+ Win16_SegCount       : Integer;
+ Win16_SegBase        : Array[1..WIN16_MAX_SEGS] Of Word;  { NE seg # (1-based) -> segment reel alloue }
+ Win16_ImportSlotCount: Integer;
+ Win16_ImportModIdx   : Array[0..WIN16_MAX_TRAP_SLOTS - 1] Of Word;
+ Win16_ImportIsOrd    : Array[0..WIN16_MAX_TRAP_SLOTS - 1] Of Boolean;
+ Win16_ImportValue    : Array[0..WIN16_MAX_TRAP_SLOTS - 1] Of Word; { ordinal OU offset-nom selon IsOrd }
+ Win16_EntryPointSeg, Win16_EntryPointOfs: Word;
+ Win16_StackSeg, Win16_StackOfs: Word;
+ Win16_LastError      : String;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
  EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
@@ -36590,6 +36614,338 @@ Begin
  Win16_SegFlagsStr := S;
 End;
 
+{ Chantier Windows 16 bits, Stage 2 : Win16_LoadNE ecrit directement dans   }
+{ TEmuCPU.Memory (le MEME coeur 8086 que le backend DOS -CD, voir le        }
+{ contexte du plan) via les aides Emu_* deja existantes - mais celles-ci    }
+{ ne sont definies que beaucoup plus loin dans ce fichier (~ligne 50600+,   }
+{ section emulateur 8086). Forward necessaire, meme motif deja etabli pour  }
+{ Dpmi_GetReg8/16/32 reutilise par le chantier OS/2 LX. }
+Procedure Emu_InitComputer(Var C: TEmuCPU); Forward;
+Procedure Emu_Done(Var C: TEmuCPU); Forward;
+Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
+Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
+Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
+
+{ Resout (ou reutilise) un emplacement de trappe pour la paire             }
+{ (ModIdx, IsOrdinal, Value=ordinal-ou-offset-de-nom) - memes principes    }
+{ exacts que Lx_ResolveImportSlot pour OS/2 LX, transpose en mode reel :   }
+{ thunk de 5 octets CD F8 (INT F8h, prive/synthetique - AUCUN rapport avec }
+{ une convention DOS/Windows reelle) + index de slot (2 octets, lu par le  }
+{ futur Win16_DispatchCall du Stage 3) + CB (RETF, filet de securite si    }
+{ jamais atteint sans passer par l interception - pas encore cablee a ce   }
+{ stade du chargeur, voir Stage 3). }
+Function Win16_ResolveImportSlot(Var C: TEmuCPU; ModIdx: Word;
+ IsOrdinal: Boolean; Value: Word): Integer;
+Var
+ I, Slot: Integer;
+ ThunkOfs: Word;
+Begin
+ For I := 0 To Win16_ImportSlotCount - 1 Do
+  If (Win16_ImportModIdx[I] = ModIdx) And (Win16_ImportIsOrd[I] = IsOrdinal) And
+     (Win16_ImportValue[I] = Value) Then Begin
+   Win16_ResolveImportSlot := I;
+   Exit;
+  End;
+ If Win16_ImportSlotCount >= WIN16_MAX_TRAP_SLOTS Then Begin
+  Win16_ResolveImportSlot := -1; { plein - l appelant doit ignorer ce relogement }
+  Exit;
+ End;
+ Slot := Win16_ImportSlotCount;
+ Win16_ImportModIdx[Slot] := ModIdx;
+ Win16_ImportIsOrd[Slot] := IsOrdinal;
+ Win16_ImportValue[Slot] := Value;
+ Inc(Win16_ImportSlotCount);
+ ThunkOfs := Word(Slot * WIN16_TRAP_SLOT_SIZE);
+ Emu_WriteByte(C, Win16_TrapSeg, ThunkOfs,          $CD);
+ Emu_WriteByte(C, Win16_TrapSeg, Word(ThunkOfs + 1), $F8);
+ Emu_WriteByte(C, Win16_TrapSeg, Word(ThunkOfs + 2), Byte(Slot And $FF));
+ Emu_WriteByte(C, Win16_TrapSeg, Word(ThunkOfs + 3), Byte((Slot Shr 8) And $FF));
+ Emu_WriteByte(C, Win16_TrapSeg, Word(ThunkOfs + 4), $CB);
+ Win16_ResolveImportSlot := Slot;
+End;
+
+{ Resout l'ordinal N de la table d'entree NE (ne_enttab) vers un couple    }
+{ (numero de segment NE 1-based, offset) - format "bundles" verifie        }
+{ EMPIRIQUEMENT sur le vrai CLOCK.EXE (script Perl autonome,               }
+{ ne_enttab_probe.pl, scratchpad) : ordinal=1 ("ABOUT" d'apres la table    }
+{ des noms residents) -> segnum=1 offset=$0010, ordinal=2                  }
+{ ("CLOCKWNDPROC") -> segnum=1 offset=$0046 - tous deux dans le segment    }
+{ de CODE (#1), coherent avec des procedures. Format bundle : [Count:Byte] }
+{ [Type:Byte] puis Count entrees de 6 octets (Type=$FF, MOVEABLE :         }
+{ [Flags][$CD][$3F][SegNum][Offset:Word] - le "$CD $3F" est un vrai INT 3Fh}
+{ documente, jamais execute ici, juste un marqueur reconnu tel quel) ou 3  }
+{ octets (Type=1..$FE=FIXED, SegNum=Type : [Flags][Offset:Word]) ;         }
+{ Count=0 termine la table ; Type=0 = bundle "inutilise", saute Count      }
+{ ordinaux SANS aucune entree (verifie : 1 octet consomme pour tout un     }
+{ bundle Type=0, quel que soit Count). }
+Function Win16_ResolveEntryOrdinal(Const Hdr: TNEHeader; HdrOfs: LongInt;
+ Const Path: String; Ordinal: Word; Var SegNum: Word; Var Ofs: Word): Boolean;
+Var
+ F: File;
+ BytesRead: Word;
+ Pos, EndPos: LongInt;
+ Count, EType: Byte;
+ Cur: Word;
+ Flags, IntOp, IntArg, SN: Byte;
+ OF16: Word;
+ I: Integer;
+Begin
+ Win16_ResolveEntryOrdinal := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Pos := HdrOfs + Hdr.ne_enttab;
+ EndPos := Pos + Hdr.ne_cbenttab;
+ Cur := 1;
+ While Pos < EndPos Do Begin
+  Seek(F, Pos);
+  BlockRead(F, Count, 1, BytesRead); Inc(Pos);
+  BlockRead(F, EType, 1, BytesRead); Inc(Pos);
+  If (BytesRead <> 1) Or (Count = 0) Then Break;
+  Seek(F, Pos);
+  If EType = 0 Then Begin
+   Cur := Word(Cur + Count);
+  End Else If EType = $FF Then Begin
+   For I := 1 To Count Do Begin
+    BlockRead(F, Flags, 1, BytesRead);
+    BlockRead(F, IntOp, 1, BytesRead);
+    BlockRead(F, IntArg, 1, BytesRead);
+    BlockRead(F, SN, 1, BytesRead);
+    BlockRead(F, OF16, 2, BytesRead);
+    Pos := Pos + 6;
+    If Cur = Ordinal Then Begin
+     SegNum := SN; Ofs := OF16;
+     Close(F);
+     Win16_ResolveEntryOrdinal := True;
+     Exit;
+    End;
+    Cur := Word(Cur + 1);
+   End;
+  End Else Begin
+   For I := 1 To Count Do Begin
+    BlockRead(F, Flags, 1, BytesRead);
+    BlockRead(F, OF16, 2, BytesRead);
+    Pos := Pos + 3;
+    If Cur = Ordinal Then Begin
+     SegNum := EType; Ofs := OF16;
+     Close(F);
+     Win16_ResolveEntryOrdinal := True;
+     Exit;
+    End;
+    Cur := Word(Cur + 1);
+   End;
+  End;
+ End;
+ Close(F);
+End;
+
+{ Chargeur reel Stage 2 : ecrit chaque segment NE dans C.Memory^ (le meme  }
+{ buffer 8086 EXISTANT, PAS un nouveau tampon global type LX_Mem/ELF64 -   }
+{ voir le contexte du plan pour pourquoi Windows 16 bits, contrairement a  }
+{ OS/2 LX/ELF64, peut reutiliser tel quel le coeur reel-mode existant),    }
+{ applique les relogements intra-segment (INTERNALREF, y compris via      }
+{ ordinal de table d'entree pour les segments "moveable") et inter-module  }
+{ (IMPORTORDINAL/IMPORTNAME, vers un thunk Win16_ResolveImportSlot - la    }
+{ VRAIE interception CD F8 est cablee au Stage 3, absente ici). Portee     }
+{ assumee et documentee (voir le plan) : segments TOUS charges en FIXE     }
+{ (jamais deplaces), relogements ADDITIVE ou en LISTE DE SOURCES ignores   }
+{ proprement (meme discipline que Lx_ApplyPageFixups pour OS/2 LX - un     }
+{ format non gere saute CE relogement precis, jamais toute la routine).    }
+{ Format des enregistrements de relogement (non-additif, non-liste)        }
+{ VERIFIE EMPIRIQUEMENT sur CLOCK.EXE/CALENDAR.EXE reels (script Perl      }
+{ autonome, ne_reloc_probe.pl, scratchpad) : [SrcType:Byte][Flags:Byte]    }
+{ [OffsetCible:Word] puis selon (Flags and 3) : 0=INTERNALREF              }
+{ ([SegNum:Byte][Reserve:Byte][Offset-ou-OrdinalEntree:Word], SegNum=$FF   }
+{ -> ordinal de table d'entree) ; 1=IMPORTORDINAL ([ModIdx:Word]           }
+{ [Ordinal:Word]) ; 2=IMPORTNAME ([ModIdx:Word][OffsetNom:Word]) ;         }
+{ 3=OSFIXUP (hors de portee, ignore). SrcType determine la LARGEUR/nature  }
+{ de la valeur a ecrire a OffsetCible : 0=LOBYTE(1o) 2=SEGMENT(2o)         }
+{ 3=FARPTR(4o: offset puis segment) 5=OFFSET(2o) - 7/11 (32/48 bits, hors  }
+{ de portee pour du Windows 2.x reel-mode standard) ignores proprement. }
+Function Win16_LoadNE(Var C: TEmuCPU; Const Path: String): Boolean;
+Var
+ Hdr: TNEHeader;
+ HdrOfs, FSize: LongInt;
+ F: File;
+ Seg: TNESegment;
+ I, J: Integer;
+ BytesRead: Word;
+ RealSegBase: Word;
+ FileOfs: LongInt;
+ RealLen: Word;
+ RelocPos: LongInt;
+ RelocCount: Word;
+ Rec: Array[0..7] Of Byte;
+ SrcType, FlagByte, TargetType, SegNum: Byte;
+ Additive, IsList, Ok: Boolean;
+ TargetOfs, ModIdx, Ordinal, NameOfs: Word;
+ EntrySeg, EntryOfs: Word;
+ Slot: Integer;
+ ResolvedSeg, ResolvedOfs: Word;
+ SegBuf: Array[0..65535] Of Byte;
+ SegBufLen: Word;
+Begin
+ Win16_LoadNE := False;
+ Win16_LastError := '';
+ If Not Win16_ReadHeader(Path, Hdr, HdrOfs, FSize) Then Begin
+  Win16_LastError := 'en-tete NE illisible';
+  Exit;
+ End;
+ If (Hdr.ne_cseg <= 0) Or (Hdr.ne_cseg > WIN16_MAX_SEGS) Then Begin
+  Win16_LastError := 'nombre de segments hors limites';
+  Exit;
+ End;
+ { Un seul programme Win16 charge a la fois (etat global Win16_*) - meme   }
+ { limitation assumee et documentee que LX_Mem/ELF64 pour les chantiers    }
+ { precedents. }
+ Win16_SegCount := Hdr.ne_cseg;
+ Win16_ImportSlotCount := 0;
+ Win16_NextFreeSeg := $1000;
+ { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
+ { pour qu'aucun segment reel ne puisse jamais y empieter. }
+ Win16_TrapSeg := Win16_NextFreeSeg;
+ Win16_NextFreeSeg := Win16_NextFreeSeg +
+  Word(((WIN16_MAX_TRAP_SLOTS * WIN16_TRAP_SLOT_SIZE) + 15) Shr 4);
+
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  Win16_LastError := 'fichier illisible pour le chargement des segments';
+  Exit;
+ End;
+
+ { Passe 1 : allouer un segment reel pour chaque segment NE et copier ses  }
+ { octets bruts (une entree DataOffsetSectors=0 est du BSS pur - laissee   }
+ { telle quelle, deja $F6 partout grace a Emu_InitComputer). }
+ For I := 1 To Hdr.ne_cseg Do Begin
+  Seek(F, HdrOfs + Hdr.ne_segtab + (I - 1) * 8);
+  BlockRead(F, Seg, SizeOf(Seg), BytesRead);
+  If BytesRead <> SizeOf(Seg) Then Begin
+   Win16_LastError := 'table des segments tronquee';
+   Close(F);
+   Exit;
+  End;
+  RealSegBase := Win16_NextFreeSeg;
+  Win16_SegBase[I] := RealSegBase;
+  RealLen := Seg.MinAlloc;
+  If RealLen = 0 Then RealLen := $FFFF;
+  Win16_NextFreeSeg := Win16_NextFreeSeg + Word((LongInt(RealLen) + 15) Shr 4);
+  If Seg.DataOffsetSectors <> 0 Then Begin
+   FileOfs := LongInt(Seg.DataOffsetSectors) Shl Hdr.ne_align;
+   SegBufLen := Seg.DataLength;
+   If SegBufLen = 0 Then SegBufLen := $FFFF;
+   Seek(F, FileOfs);
+   BlockRead(F, SegBuf, SegBufLen, BytesRead);
+   If BytesRead <> SegBufLen Then Begin
+    Win16_LastError := 'donnees de segment #' + IntToStr(I) + ' tronquees';
+    Close(F);
+    Exit;
+   End;
+   For J := 0 To SegBufLen - 1 Do
+    Emu_WriteByte(C, RealSegBase, Word(J), SegBuf[J]);
+  End;
+ End;
+
+ { Passe 2 : appliquer les relogements de chaque segment qui en a         }
+ { (bit $0100), maintenant que TOUS les segments ont une adresse reelle.  }
+ For I := 1 To Hdr.ne_cseg Do Begin
+  Seek(F, HdrOfs + Hdr.ne_segtab + (I - 1) * 8);
+  BlockRead(F, Seg, SizeOf(Seg), BytesRead);
+  If (Seg.SegFlags And $0100) = 0 Then Continue;
+  If Seg.DataOffsetSectors = 0 Then Continue;
+  FileOfs := LongInt(Seg.DataOffsetSectors) Shl Hdr.ne_align;
+  RealLen := Seg.DataLength;
+  If RealLen = 0 Then RealLen := $FFFF;
+  RelocPos := FileOfs + RealLen;
+  Seek(F, RelocPos);
+  BlockRead(F, RelocCount, 2, BytesRead);
+  If BytesRead <> 2 Then Continue;
+  RealSegBase := Win16_SegBase[I];
+  For J := 1 To RelocCount Do Begin
+   Seek(F, RelocPos + 2 + (J - 1) * 8);
+   BlockRead(F, Rec, 8, BytesRead);
+   If BytesRead <> 8 Then Break;
+   SrcType := Rec[0];
+   FlagByte := Rec[1];
+   TargetType := FlagByte And 3;
+   Additive := (FlagByte And 4) <> 0;
+   IsList := (FlagByte And $20) <> 0;
+   TargetOfs := Word(Rec[2] Or (Rec[3] Shl 8));
+   If Additive Or IsList Then Continue; { hors de portee, voir commentaire de tete }
+   Ok := False;
+   ResolvedSeg := 0; ResolvedOfs := 0;
+   Case TargetType Of
+    0: Begin { INTERNALREF }
+     SegNum := Rec[4];
+     If SegNum = $FF Then Begin
+      Ordinal := Word(Rec[6] Or (Rec[7] Shl 8));
+      If Win16_ResolveEntryOrdinal(Hdr, HdrOfs, Path, Ordinal, EntrySeg, EntryOfs) And
+         (EntrySeg >= 1) And (EntrySeg <= LongInt(Win16_SegCount)) Then Begin
+       ResolvedSeg := Win16_SegBase[EntrySeg];
+       ResolvedOfs := EntryOfs;
+       Ok := True;
+      End;
+     End Else If (SegNum >= 1) And (SegNum <= Win16_SegCount) Then Begin
+      ResolvedSeg := Win16_SegBase[SegNum];
+      ResolvedOfs := Word(Rec[6] Or (Rec[7] Shl 8));
+      Ok := True;
+     End;
+    End;
+    1: Begin { IMPORTORDINAL }
+     ModIdx := Word(Rec[4] Or (Rec[5] Shl 8));
+     Ordinal := Word(Rec[6] Or (Rec[7] Shl 8));
+     Slot := Win16_ResolveImportSlot(C, ModIdx, True, Ordinal);
+     If Slot >= 0 Then Begin
+      ResolvedSeg := Win16_TrapSeg;
+      ResolvedOfs := Word(Slot * WIN16_TRAP_SLOT_SIZE);
+      Ok := True;
+     End;
+    End;
+    2: Begin { IMPORTNAME }
+     ModIdx := Word(Rec[4] Or (Rec[5] Shl 8));
+     NameOfs := Word(Rec[6] Or (Rec[7] Shl 8));
+     Slot := Win16_ResolveImportSlot(C, ModIdx, False, NameOfs);
+     If Slot >= 0 Then Begin
+      ResolvedSeg := Win16_TrapSeg;
+      ResolvedOfs := Word(Slot * WIN16_TRAP_SLOT_SIZE);
+      Ok := True;
+     End;
+    End;
+   End;
+   If Not Ok Then Continue;
+   Case SrcType Of
+    2: Emu_WriteWord(C, RealSegBase, TargetOfs, ResolvedSeg);
+    5: Emu_WriteWord(C, RealSegBase, TargetOfs, ResolvedOfs);
+    3: Begin
+     Emu_WriteWord(C, RealSegBase, TargetOfs, ResolvedOfs);
+     Emu_WriteWord(C, RealSegBase, Word(TargetOfs + 2), ResolvedSeg);
+    End;
+    0: Emu_WriteByte(C, RealSegBase, TargetOfs, Byte(ResolvedOfs And $FF));
+   End;
+  End;
+ End;
+ Close(F);
+
+ If (Hdr.ne_cs < 1) Or (Hdr.ne_cs > Win16_SegCount) Then Begin
+  Win16_LastError := 'segment de point d''entree invalide';
+  Exit;
+ End;
+ Win16_EntryPointSeg := Win16_SegBase[Hdr.ne_cs];
+ Win16_EntryPointOfs := Hdr.ne_ip;
+ If (Hdr.ne_ss < 1) Or (Hdr.ne_ss > Win16_SegCount) Then Begin
+  Win16_LastError := 'segment de pile invalide';
+  Exit;
+ End;
+ Win16_StackSeg := Win16_SegBase[Hdr.ne_ss];
+ Win16_StackOfs := Hdr.ne_sp;
+
+ Win16_LoadNE := True;
+End;
+
 Function Lx_ObjFlagsStr(F: LongInt): String;
 Var S: String;
 Begin
@@ -38141,6 +38497,65 @@ Begin
  Close(F);
 End;
 
+{ Chantier Windows 16 bits, Stage 2 : WIN16LOAD <chemin hote> - appelle le }
+{ vrai chargeur (Win16_LoadNE) sur une instance TEmuCPU JETABLE (creee et  }
+{ liberee ici, aucun onglet emulateur reel - le greffage UI reel est le    }
+{ Stage 4) et relit les octets charges DIRECTEMENT depuis la memoire       }
+{ emulee au point d'entree calcule, pour verifier MECANIQUEMENT (sans      }
+{ avoir besoin d executer quoi que ce soit) que le chargement/relogement a }
+{ fonctionne - meme motif exact que LXLOAD pour OS/2 LX. }
+Procedure TermCmd_Win16Load(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Path: String;
+ C: TEmuCPU;
+ I: Integer;
+ B: Byte;
+ S: String;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : WIN16LOAD <chemin hote vers un .exe>');
+  Exit;
+ End;
+ FillChar(C, SizeOf(C), 0);
+ Emu_InitComputer(C);
+ If Not C.MemReady Then Begin
+  TermAddLine(TP, 'WIN16LOAD : memoire emulee non disponible.');
+  Exit;
+ End;
+ If Not Win16_LoadNE(C, Path) Then Begin
+  TermAddLine(TP, 'WIN16LOAD : echec - ' + Win16_LastError);
+  Emu_Done(C);
+  Exit;
+ End;
+ TermAddLine(TP, 'WIN16LOAD ' + Path + ' : charge, ' +
+  IntToStr(Win16_SegCount) + ' segment(s).');
+ TermAddLine(TP, ' point d''entree = ' + HexWord(Win16_EntryPointSeg) + ':' +
+  HexWord(Win16_EntryPointOfs) + '   pile = ' + HexWord(Win16_StackSeg) +
+  ':' + HexWord(Win16_StackOfs));
+ TermAddLine(TP, ' segments reels :');
+ For I := 1 To Win16_SegCount Do
+  TermAddLine(TP, '  #' + IntToStr(I) + ' -> segment reel ' +
+   HexWord(Win16_SegBase[I]));
+ { Affiche par lignes de 8 octets (pas 16) : le panneau Terminal tronque   }
+ { visuellement les lignes trop longues (meme limitation cosmetique deja   }
+ { rencontree avec la console SoftICE lors de l enquete CONFIG.SYS). }
+ TermAddLine(TP, ' 16 premiers octets au point d''entree :');
+ S := '';
+ For I := 0 To 7 Do Begin
+  B := Emu_ReadByte(C, Win16_EntryPointSeg, Word(Win16_EntryPointOfs + I));
+  S := S + HexByte(B) + ' ';
+ End;
+ TermAddLine(TP, '  ' + S);
+ S := '';
+ For I := 8 To 15 Do Begin
+  B := Emu_ReadByte(C, Win16_EntryPointSeg, Word(Win16_EntryPointOfs + I));
+  S := S + HexByte(B) + ' ';
+ End;
+ TermAddLine(TP, '  ' + S);
+ Emu_Done(C);
+End;
+
 { LXLOAD <chemin> : appelle le vrai chargeur (Emu_LoadLX) et relit les     }
 { premiers octets de l objet de depart directement depuis LX_Mem, pour     }
 { verifier MECANIQUEMENT (sans avoir besoin d executer quoi que ce soit)   }
@@ -39133,6 +39548,8 @@ Begin
     TermCmd_LXInfo(TP, ParamStr)
    Else If CurrCmd = 'WIN16INFO' Then
     TermCmd_Win16Info(TP, ParamStr)
+   Else If CurrCmd = 'WIN16LOAD' Then
+    TermCmd_Win16Load(TP, ParamStr)
    Else If CurrCmd = 'LXLOAD' Then
     TermCmd_LXLoad(TP, ParamStr)
    Else If CurrCmd = 'LXSTEP' Then
