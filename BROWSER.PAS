@@ -1087,6 +1087,7 @@ Var
  MouseX, MouseY: LongInt;
  MouseButton: LongInt;
  LastMouseButton: LongInt;
+ MousePressedInteractiveNode: HTMLNodePtr;
 
  { Variables pour le parseur HTML }
  HTMLDocument: HTMLNodePtr;   { Racine du document HTML parse }
@@ -16955,6 +16956,7 @@ Begin
   MouseY := GetMaxY Div 2;
   MouseButton := 0;
   LastMouseButton := 0;
+  MousePressedInteractiveNode := Nil;
  End;
 End;
 
@@ -17101,8 +17103,13 @@ Begin
    { Verifier si le clic est sur une zone interactive (ex: cellule TD
      utilisee comme onglet avec onclick="..."). }
    InteractiveNode := FindInteractiveNodeAtPosition(X, Y);
-   If InteractiveNode <> Nil Then
+   If InteractiveNode <> Nil Then Begin
+    { JSCookMenu effectue la navigation dans onmouseup, pas onclick. }
+    MousePressedInteractiveNode := InteractiveNode;
+    DispatchInlineEventHandler(InteractiveNode, 'onmousedown');
     DispatchInlineEventHandler(InteractiveNode, 'onclick');
+   End Else
+    MousePressedInteractiveNode := Nil;
   End;
  End;
 End;
@@ -17161,8 +17168,21 @@ Begin
  If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
     ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
   HideMouse;
-  HandleMouseClick(MouseX, MouseY);
+ HandleMouseClick(MouseX, MouseY);
   ShowMouse;
+ End;
+
+ { Completer la sequence DOM mousedown/mouseup. Garder la cible pressee
+   permet a cmItemMouseUp() de retrouver l'entree meme si le rendu du
+   style actif a reconstruit les zones de hit-test entre les deux. }
+ If ((MouseButton And MOUSE_LEFT_BUTTON) = 0) And
+    ((LastMouseButton And MOUSE_LEFT_BUTTON) <> 0) Then Begin
+  If MousePressedInteractiveNode <> Nil Then Begin
+   HideMouse;
+   DispatchInlineEventHandler(MousePressedInteractiveNode, 'onmouseup');
+   MousePressedInteractiveNode := Nil;
+   ShowMouse;
+  End;
  End;
 
  { Sauvegarder l'etat du bouton pour la prochaine iteration }
