@@ -5372,7 +5372,11 @@ Type
   CmdHist      : Array[0..63] Of String[255];
   CmdHistCount : Integer;
   CmdHistPos   : Integer;              { -1 = pas en rappel d historique }
-  LastDumpSeg, LastDumpOfs : Word;     { position courante pour D sans argument }
+  LastDumpSeg  : Word;
+  LastDumpOfs  : LongInt;              { position courante pour D sans argument -
+                                          BOGUE REEL corrige (2026-08-25) : etait
+                                          Word, tronquait toute adresse lineaire
+                                          32 bits (mode "unreal") au-dela de 64 Ko }
   LastUnasmSeg, LastUnasmOfs : Word;   { position courante pour U sans argument }
   Dragging     : Boolean;
   DragOfsX     : Integer;
@@ -36243,6 +36247,27 @@ End;
 { n existe pour un disque "brut" sans vrai chargeur de demarrage).          }
 { /LINUXARM necessiterait un emulateur de processeur ARM complet, absent    }
 { de ce fichier - message explicite, aucune tentative de simulation.        }
+{ Extrait la valeur d un drapeau /DISKn:chemin depuis la chaine BRUTE (pas  }
+{ decoupee par espaces comme TermExtractParam - necessaire pour accepter un }
+{ chemin d image contenant des espaces, ex. "MS-DOS 6.22.vhd") - s arrete   }
+{ au prochain " /" (drapeau suivant) ou a la fin de la chaine si aucun.     }
+{ Recherche insensible a la casse (FlagUp doit deja etre en MAJUSCULES),    }
+{ la valeur renvoyee garde la casse ORIGINALE de ParamStr. }
+Function TermBoot_ExtractDiskFlag(Const ParamStr, FlagUp: String): String;
+Var
+ UpP, Val: String; P, Q: Integer;
+Begin
+ TermBoot_ExtractDiskFlag := '';
+ UpP := UpCaseStr(ParamStr);
+ P := Pos(FlagUp, UpP);
+ If P = 0 Then Exit;
+ P := P + Length(FlagUp);
+ Val := Copy(ParamStr, P, Length(ParamStr) - P + 1);
+ Q := Pos(' /', Val);
+ If Q > 0 Then Val := Copy(Val, 1, Q - 1);
+ TermBoot_ExtractDiskFlag := TrimStr(Val);
+End;
+
 Procedure TermCmd_BOOT(Var TP: TTerminalPanel; ParamStr: String);
 Var
  P, Up, DispName: String;
@@ -36251,16 +36276,51 @@ Var
  TempPath: String;
  Attr: Byte;
  Cluster, Sz: LongInt;
+ DiskFlagFile: String;
+ SlotIdx: Byte;
 Begin
  P := TermExtractParam(ParamStr, 1);
  If (Length(P) < 2) Or (P[2] <> ':') Then Begin
-  TermAddLine(TP, 'Syntaxe : BOOT d: [/DOS] [/OS2] [/LINUX] [/LINUXARM] [/GUI] [/CMD]');
+  TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
+   '[/DISK81:img] [/DOS] [/OS2] [/LINUX] [/LINUXARM] [/GUI] [/CMD]');
   Exit;
  End;
  DL := UpCase(P[1]);
  If Not Term_DriveIdxFromLetter(DL, Idx) Then Begin
   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
   Exit;
+ End;
+ { BOGUE REEL / demande explicite de l utilisateur (2026-08-25) : BOOT ne     }
+ { pouvait monter une image que si /DISK0../DISK81 avait deja ete passe EN   }
+ { LIGNE DE COMMANDE au lancement de DEVENV.exe - Term_VirtEnsureMounted ne  }
+ { fait que relancer Fat_TryMount sur un fichier DEJA ouvert, jamais en      }
+ { ouvrir un nouveau. Sur un lancement "propre" (sans ces flags), "BOOT C:"  }
+ { echouait donc toujours avec "le systeme ne peut pas trouver le lecteur    }
+ { specifie", sans aucun moyen de monter une image .vhd/.img depuis le       }
+ { terminal lui-meme (il fallait relancer tout l IDE avec le bon /DISK80:).  }
+ { On accepte donc desormais ces 4 memes drapeaux directement sur BOOT,      }
+ { reutilisant Emu_MountDiskSlot tel quel (deja le code du dialogue Outils > }
+ { Disque virtuel - aucun nouveau chemin de montage, juste une 2e facon d y  }
+ { acceder). }
+ For SlotIdx := 0 To 3 Do Begin
+  Case SlotIdx Of
+   0: DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/DISK0:');
+   1: DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/DISK1:');
+   2: DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/DISK80:');
+  Else
+   DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/DISK81:');
+  End;
+  If DiskFlagFile <> '' Then Begin
+   If Not FileExists(DiskFlagFile) Then Begin
+    TermAddLine(TP, 'Image disque introuvable: ' + DiskFlagFile);
+    Exit;
+   End;
+   If Not Emu_MountDiskSlot(SlotIdx, DiskFlagFile) Then Begin
+    TermAddLine(TP, 'Echec du montage de ' + DiskFlagFile + ' sur ' +
+     Term_DriveLetterFromIdx(SlotIdx) + ':');
+    Exit;
+   End;
+  End;
  End;
  Term_VirtEnsureMounted(Idx);
  If Not EmuFloppyOpen[Idx] Then Begin
@@ -94247,6 +94307,27 @@ Begin
   HexPart + ' ' + AscPart;
 End;
 
+{ Variante offset 32 bits (LongInt) d EmuDbg_FormatMemLine ci-dessus - utilise }
+{ Emu_ReadByteL (deja capable de resoudre une base "unreal mode" via          }
+{ Emu_AddrL/Emu_UnrealBase) au lieu d Emu_ReadByte, pour que D/E dans la      }
+{ console interactive puissent enfin viser une adresse lineaire au-dela de    }
+{ 64 Ko sans tronquer silencieusement (BOGUE REEL corrige 2026-08-25). }
+Function EmuDbg_FormatMemLineL(Var CPU: TEmuCPU; Seg: Word; Ofs: LongInt;
+ Len: Integer): String;
+Var I: Integer; B: Byte; HexPart, AscPart: String;
+Begin
+ If Len > 16 Then Len := 16;
+ HexPart := ''; AscPart := '';
+ For I := 0 To Len - 1 Do Begin
+  B := Emu_ReadByteL(CPU, Seg, Ofs + I);
+  HexPart := HexPart + HexByte(B) + ' ';
+  If (B >= 32) And (B <= 126) Then AscPart := AscPart + Chr(B)
+  Else AscPart := AscPart + '.';
+ End;
+ EmuDbg_FormatMemLineL := HexWord(Seg) + ':' + HexLong(Ofs) + '  ' +
+  HexPart + ' ' + AscPart;
+End;
+
 { --- Menu contextuel (clic droit) sur la fenetre du Debogueur : outils    }
 { d investigation PERMANENTS, demandes explicitement par l utilisateur     }
 { pour continuer l enquete NC3 (et toute future investigation similaire)   }
@@ -95906,6 +95987,41 @@ Begin
  End;
 End;
 
+{ BOGUE REEL corrige (2026-08-25, signale par l utilisateur en enquetant sur   }
+{ CONFIG.SYS/HIMEM) : EmuCmdConsole_ParseSegOfs ci-dessus tronque Ofs a un mot }
+{ de 16 bits (Word(V)) - toute commande D/E visant une adresse LINEAIRE 32    }
+{ bits (mode "unreal", ex. ESI/EDI du mover XMS de HIMEM.SYS, largement       }
+{ au-dela de 64 Ko) se retrouvait donc a lire une case memoire completement   }
+{ FAUSSE (repliee sur les 16 bits de poids faible) sans le moindre avertisse- }
+{ ment. Variante dediee qui garde Ofs en LongInt de bout en bout - utilisee   }
+{ par D/E (voir EmuCmdConsole_CmdD/CmdE et EmuDbg_FormatMemLineL/             }
+{ Emu_ReadByteL/Emu_WriteByteL, deja capables d adressage 32 bits pour        }
+{ l emulation elle-meme, juste jamais relies a la console interactive). }
+Function EmuCmdConsole_ParseSegOfsL(S: String; Var Seg: Word;
+ Var Ofs: LongInt): Boolean;
+Var ColonPos: Integer; SegStr, OfsStr: String; ErrPos: Word; V: LongInt;
+Begin
+ EmuCmdConsole_ParseSegOfsL := False;
+ ColonPos := Pos(':', S);
+ If ColonPos > 0 Then Begin
+  SegStr := Copy(S, 1, ColonPos - 1);
+  OfsStr := Copy(S, ColonPos + 1, Length(S) - ColonPos);
+  Val('$' + SegStr, V, ErrPos);
+  If ErrPos <> 0 Then Exit;
+  Seg := Word(V);
+  Val('$' + OfsStr, V, ErrPos);
+  If ErrPos <> 0 Then Exit;
+  Ofs := V;
+  EmuCmdConsole_ParseSegOfsL := True;
+ End Else Begin
+  Val('$' + S, V, ErrPos);
+  If ErrPos <> 0 Then Exit;
+  Seg := EmuPanel.CPU.Segs.CS;
+  Ofs := V;
+  EmuCmdConsole_ParseSegOfsL := True;
+ End;
+End;
+
 { --- Reponses-stub reutilisees par les 3 dialectes --- }
 
 Procedure EmuCmdConsole_NotApplicable(Var C: TEmuCmdConsole; Const CmdName: String);
@@ -96030,26 +96146,26 @@ Begin
 End;
 
 Procedure EmuCmdConsole_CmdD(Var C: TEmuCmdConsole; Const Args: String);
-Var Seg, Ofs: Word; I: Integer; A: String;
+Var Seg: Word; Ofs: LongInt; I: Integer; A: String;
 Begin
  A := TermExtractParam(Args, 1);
  If A = '' Then Begin
   Seg := C.LastDumpSeg; Ofs := C.LastDumpOfs;
- End Else If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
+ End Else If Not EmuCmdConsole_ParseSegOfsL(A, Seg, Ofs) Then Begin
   EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
   Exit;
  End;
  For I := 0 To 7 Do
   EmuCmdConsole_AddLine(C,
-   EmuDbg_FormatMemLine(EmuPanel.CPU, Seg, Word(Ofs + I * 16), 16));
- C.LastDumpSeg := Seg; C.LastDumpOfs := Word(Ofs + 128);
+   EmuDbg_FormatMemLineL(EmuPanel.CPU, Seg, Ofs + I * 16, 16));
+ C.LastDumpSeg := Seg; C.LastDumpOfs := Ofs + 128;
 End;
 
 Procedure EmuCmdConsole_CmdE(Var C: TEmuCmdConsole; Const Args: String);
-Var Seg, Ofs: Word; A, ValTok: String; I: Integer; V: LongInt; ErrPos: Word;
+Var Seg: Word; Ofs: LongInt; A, ValTok: String; I: Integer; V: LongInt; ErrPos: Word;
 Begin
  A := TermExtractParam(Args, 1);
- If (A = '') Or (Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs)) Then Begin
+ If (A = '') Or (Not EmuCmdConsole_ParseSegOfsL(A, Seg, Ofs)) Then Begin
   EmuCmdConsole_AddLine(C, 'Syntaxe : E SEG:OFS valeur [valeur...]');
   Exit;
  End;
@@ -96059,11 +96175,90 @@ Begin
   If ValTok <> '' Then Begin
    Val('$' + ValTok, V, ErrPos);
    If ErrPos = 0 Then
-    Emu_WriteByte(EmuPanel.CPU, Seg, Word(Ofs + I), Byte(V));
+    Emu_WriteByteL(EmuPanel.CPU, Seg, Ofs + I, Byte(V));
    Inc(I);
   End;
  Until ValTok = '';
- EmuCmdConsole_AddLine(C, EmuDbg_FormatMemLine(EmuPanel.CPU, Seg, Ofs, 16));
+ EmuCmdConsole_AddLine(C, EmuDbg_FormatMemLineL(EmuPanel.CPU, Seg, Ofs, 16));
+End;
+
+{ Renvoie la portion de S restant APRES avoir saute N mots separes par des    }
+{ espaces/tabulations - contrairement a TermExtractParam (qui isole UN seul  }
+{ mot), ceci garde tout le reste TEL QUEL (espaces internes preserves), utile }
+{ pour un motif de recherche ou un chemin pouvant contenir des espaces. }
+Function EmuCmdConsole_RestAfterTokens(Const S: String; N: Integer): String;
+Var
+ I, Count: Integer;
+Begin
+ I := 1; Count := 0;
+ While (Count < N) And (I <= Length(S)) Do Begin
+  While (I <= Length(S)) And (S[I] In [' ', #9]) Do Inc(I);
+  If I > Length(S) Then Break;
+  While (I <= Length(S)) And (Not (S[I] In [' ', #9])) Do Inc(I);
+  Inc(Count);
+ End;
+ While (I <= Length(S)) And (S[I] In [' ', #9]) Do Inc(I);
+ EmuCmdConsole_RestAfterTokens := Copy(S, I, Length(S) - I + 1);
+End;
+
+{ Commande S SEG:OFS LEN texte - recherche une chaine ASCII (insensible a la }
+{ casse) dans LEN octets de memoire EMULEE REELLE a partir de SEG:OFS.       }
+{ Ajoutee (2026-08-25) faute de mieux pour l enquete CONFIG.SYS/SYSINIT :    }
+{ aucune reference statique directe aux messages d erreur de IO.SYS n a pu   }
+{ etre trouvee (adressage indirect probable), et il n existait jusqu ici     }
+{ AUCUN moyen de localiser en direct, dans la memoire EMULEE, la ou les      }
+{ chaines/tables de mots-cles de CONFIG.SYS (DEVICE/DOS/COUNTRY/FILES/...)   }
+{ sont effectivement chargees au moment du boot reel - seule alternative     }
+{ avant cet ajout : deviner un point d arret puis tracer pas-a-pas a l aveugle. }
+{ Reutilise Emu_ReadByteL (deja unreal-aware) - fonctionne donc aussi bien   }
+{ en mode reel classique qu en mode "unreal" 32 bits. Plafonne a 50          }
+{ resultats pour ne jamais noyer la console sur un motif trop court/frequent. }
+Procedure EmuCmdConsole_CmdS(Var C: TEmuCmdConsole; Const Args: String);
+Var
+ Seg: Word; StartOfs, LenBytes, Ofs, I, MatchCount: LongInt;
+ A, LenStr, Pattern, UpPattern: String;
+ B: Byte; Matches: Boolean; ErrPos: Word;
+Begin
+ A := TermExtractParam(Args, 1);
+ LenStr := TermExtractParam(Args, 2);
+ Pattern := EmuCmdConsole_RestAfterTokens(Args, 2);
+ If (A = '') Or (LenStr = '') Or (Pattern = '') Then Begin
+  EmuCmdConsole_AddLine(C, 'Syntaxe : S SEG:OFS LEN texte');
+  Exit;
+ End;
+ If Not EmuCmdConsole_ParseSegOfsL(A, Seg, StartOfs) Then Begin
+  EmuCmdConsole_AddLine(C, 'Adresse invalide : ' + A);
+  Exit;
+ End;
+ Val('$' + LenStr, LenBytes, ErrPos);
+ If (ErrPos <> 0) Or (LenBytes <= 0) Then Begin
+  EmuCmdConsole_AddLine(C, 'Longueur invalide : ' + LenStr);
+  Exit;
+ End;
+ UpPattern := UpCaseStr(Pattern);
+ MatchCount := 0;
+ Ofs := StartOfs;
+ While Ofs <= StartOfs + LenBytes - LongInt(Length(UpPattern)) Do Begin
+  Matches := True;
+  For I := 0 To Length(UpPattern) - 1 Do Begin
+   B := Emu_ReadByteL(EmuPanel.CPU, Seg, Ofs + I);
+   If UpCase(Chr(B)) <> UpPattern[I + 1] Then Begin
+    Matches := False;
+    Break;
+   End;
+  End;
+  If Matches Then Begin
+   EmuCmdConsole_AddLine(C, 'Trouve : ' + HexWord(Seg) + ':' + HexLong(Ofs));
+   Inc(MatchCount);
+   If MatchCount >= 50 Then Begin
+    EmuCmdConsole_AddLine(C, '(arret apres 50 resultats)');
+    Break;
+   End;
+  End;
+  Inc(Ofs);
+ End;
+ If MatchCount = 0 Then
+  EmuCmdConsole_AddLine(C, 'Aucune occurrence de "' + Pattern + '" trouvee.');
 End;
 
 Procedure EmuCmdConsole_CmdU(Var C: TEmuCmdConsole; Const Args: String);
@@ -96097,17 +96292,50 @@ End;
 Procedure EmuCmdConsole_CmdBPX(Var C: TEmuCmdConsole; Const Args: String);
 Var
  Seg, Ofs: Word; A, NStr, LenStr: String; Addr: LongInt; Idx: Integer;
- N, Len: LongInt; ErrPos: Word;
+ N, Len: LongInt; ErrPos: Word; P1, P2: Integer;
 Begin
  A := TermExtractParam(Args, 1);
- If (A = '') Or (Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs)) Then Begin
+ If A = '' Then Begin
+  EmuCmdConsole_AddLine(C, 'Syntaxe : BPX SEG:OFS[:N[:LEN]]');
+  Exit;
+ End;
+ { BOGUE REEL corrige (2026-08-25, trouve en cherchant a isoler un passage    }
+ { precis du mover XMS pendant l enquete CONFIG.SYS) : EmuCmdConsole_ParseSegOfs }
+ { ne comprend que "SEG:OFS" - toute la portion apres le 1er ":" est collee   }
+ { telle quelle dans OfsStr et passee a Val(), qui echoue des qu il reste un  }
+ { 2e/3e ":" (le N et le LEN documentes ci-dessus). Consequence : la syntaxe  }
+ { documentee "BPX SEG:OFS:N:LEN" (et "SEG:OFS:N") echouait TOUJOURS avec     }
+ { "Syntaxe : BPX SEG:OFS[:N[:LEN]]", quelle que soit la validite des         }
+ { valeurs - seule la forme alternative espaces "BPX OFS N [LEN]" (jamais     }
+ { documentee dans ce message d aide) fonctionnait. On decoupe donc ici       }
+ { nous-memes les eventuels 2e/3e champs ":" AVANT d appeler ParseSegOfs sur   }
+ { la seule portion SEG:OFS restante - un seul ":" reste toujours "SEG:OFS"   }
+ { (comportement inchange pour D/E/U), 2 ou 3 ":" liberent N et LEN. }
+ NStr := ''; LenStr := '';
+ P1 := Pos(':', A);
+ If P1 > 0 Then Begin
+  P2 := Pos(':', Copy(A, P1 + 1, Length(A) - P1));
+  If P2 > 0 Then Begin
+   P2 := P1 + P2;
+   NStr := Copy(A, P2 + 1, Length(A) - P2);
+   A := Copy(A, 1, P2 - 1);
+   P1 := Pos(':', NStr);
+   If P1 > 0 Then Begin
+    LenStr := Copy(NStr, P1 + 1, Length(NStr) - P1);
+    NStr := Copy(NStr, 1, P1 - 1);
+   End;
+  End;
+ End;
+ If Not EmuCmdConsole_ParseSegOfs(A, Seg, Ofs) Then Begin
   EmuCmdConsole_AddLine(C, 'Syntaxe : BPX SEG:OFS[:N[:LEN]]');
   Exit;
  End;
  Addr := (LongInt(Seg) Shl 4) + Ofs;
  EmuDbg_AddBP(Addr, EDC_8086);
- NStr := TermExtractParam(Args, 2);
- LenStr := TermExtractParam(Args, 3);
+ { Forme alternative espaces (BPX OFS N [LEN]) - ne s'applique que si la      }
+ { forme ":" n'a rien fourni, pour ne pas casser cette syntaxe deja en usage. }
+ If NStr = '' Then NStr := TermExtractParam(Args, 2);
+ If LenStr = '' Then LenStr := TermExtractParam(Args, 3);
  If (NStr <> '') Or (LenStr <> '') Then Begin
   Idx := EmuDbg_FindBP(Addr, EDC_8086);
   If Idx >= 0 Then Begin
@@ -96371,6 +96599,7 @@ Begin
    EmuCmdConsole_AddLine(C, '  R [reg [val]]  Afficher/modifier les registres');
    EmuCmdConsole_AddLine(C, '  D [seg:ofs]    Vider la memoire (hexa+ASCII)');
    EmuCmdConsole_AddLine(C, '  E seg:ofs v..  Modifier des octets memoire');
+   EmuCmdConsole_AddLine(C, '  S seg:ofs len texte  Chercher une chaine ASCII');
    EmuCmdConsole_AddLine(C, '  U [seg:ofs]    Desassembler');
    EmuCmdConsole_AddLine(C, '  G [seg:ofs]    Executer (jusqu''a l''adresse si donnee)');
    EmuCmdConsole_AddLine(C, '  T / TRACE      Pas a pas detaille');
@@ -96414,6 +96643,7 @@ Begin
  Else If Cmd = 'R' Then EmuCmdConsole_CmdR(C, Args)
  Else If Cmd = 'D' Then EmuCmdConsole_CmdD(C, Args)
  Else If Cmd = 'E' Then EmuCmdConsole_CmdE(C, Args)
+ Else If Cmd = 'S' Then EmuCmdConsole_CmdS(C, Args)
  Else If (Cmd = 'U') Or (Cmd = 'UNASSEMBLE') Then EmuCmdConsole_CmdU(C, Args)
  Else If (Cmd = 'G') Or (Cmd = 'GO') Then EmuCmdConsole_CmdG(C, Args)
  Else If (Cmd = 'T') Or (Cmd = 'TRACE') Then Begin
