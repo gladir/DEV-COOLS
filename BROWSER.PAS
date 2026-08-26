@@ -1942,6 +1942,32 @@ Begin
  End;
 End;
 
+{ Reparer la forme frequente mais invalide <ul><li>...</li><ul>...</ul>.
+  Un navigateur rattache en pratique la sous-liste au LI precedent. Sans
+  cette normalisation elle reste soeur des LI; les fermetures facultatives
+  ou superflues qui suivent rendent alors la portee ambigue et le moteur de
+  rendu ne dispose plus d'une veritable structure recursive LI -> UL. }
+Procedure HTMLPrepareNestedList(Var CurrentNode: HTMLNodePtr;
+                                Root: HTMLNodePtr;
+                                Const NewTagName: String;
+                                Var CurrentDepth: Integer);
+Var
+ CurrentTag: String;
+ PreviousItem: HTMLNodePtr;
+Begin
+ If (CurrentNode = Nil) Or (CurrentNode = Root) Then Exit;
+ If (HTMLLowerCase(NewTagName) <> 'ul') And
+    (HTMLLowerCase(NewTagName) <> 'ol') Then Exit;
+ CurrentTag := HTMLLowerCase(CurrentNode^.TagName);
+ If (CurrentTag <> 'ul') And (CurrentTag <> 'ol') Then Exit;
+ PreviousItem := CurrentNode^.LastChild;
+ If (PreviousItem <> Nil) And (PreviousItem^.TagType = TAG_LI) And
+    (CurrentDepth < 32) Then Begin
+  CurrentNode := PreviousItem;
+  Inc(CurrentDepth);
+ End;
+End;
+
 { Chercher une fermeture sans jamais franchir une limite UL/OL qui ne
   correspond pas elle-meme a la balise demandee. Cette regle vaut aussi
   pour </li> : une fermeture LI superflue situee apres une sous-liste ne
@@ -2113,8 +2139,9 @@ Begin
    { Balise ouvrante <tag ...> }
    TagName := ExtractTagName(HTMLSource, Pos);
    If TagName <> '' Then Begin
-    If HTMLLowerCase(TagName) = 'li' Then
+   If HTMLLowerCase(TagName) = 'li' Then
      HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
+    HTMLPrepareNestedList(CurrentNode, Root, TagName, CurrentDepth);
     If (HTMLLowerCase(TagName) = 'td') Or
        (HTMLLowerCase(TagName) = 'th') Or
        (HTMLLowerCase(TagName) = 'tr') Then
@@ -15826,6 +15853,7 @@ Begin
 
   If TagName = 'li' Then
    HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
+  HTMLPrepareNestedList(CurrentNode, Root, TagName, CurrentDepth);
   If (TagName = 'td') Or (TagName = 'th') Or (TagName = 'tr') Then
    HTMLAutoCloseTableElement(CurrentNode, Root, TagName, CurrentDepth);
 
@@ -16236,6 +16264,28 @@ Begin
  {$ENDIF}
 End;
 
+{ Le pilote D8bit ne garantit pas que ses 16 premiers index contiennent
+  deja la palette EGA attendue par tout le moteur HTML. En particulier,
+  l'index 0 utilise pour color:black pouvait rester identique au fond et
+  rendre invisibles les liens .Mnu, alors que le lien bleu (index 1)
+  demeurait visible. Programmer explicitement ces entrees rend les
+  constantes de couleur stables dans tous les modes graphiques. }
+Procedure InitializeHTMLPalette;
+Const
+ RGB: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       (0, 0, 170),     (0, 170, 0),
+  (0, 170, 170),   (170, 0, 0),     (170, 0, 170),
+  (170, 85, 0),    (170, 170, 170), (85, 85, 85),
+  (85, 85, 255),   (85, 255, 85),   (85, 255, 255),
+  (255, 85, 85),   (255, 85, 255),  (255, 255, 85),
+  (255, 255, 255));
+Var
+ I: Integer;
+Begin
+ For I := 0 To 15 Do
+  SetRGBPalette(I, RGB[I, 0] Shr 2, RGB[I, 1] Shr 2, RGB[I, 2] Shr 2);
+End;
+
 Procedure InitializeGraphics;
 Var
  Driver, Mode: Integer;
@@ -16248,6 +16298,7 @@ Begin
   WriteLn('BROWSER: Erreur graphique: ', GraphErrorMsg(ErrCode));
   Halt(1);
  End;
+ InitializeHTMLPalette;
  SetColor(White);
  SetBkColor(RENDER_BG_COLOR);
  SetLineStyle(SolidLn, 0, NormWidth);
