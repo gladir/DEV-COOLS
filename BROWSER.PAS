@@ -2804,6 +2804,7 @@ Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer); Forward;
 Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean; Forward;
 Procedure RescrollPage; Forward;
 Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String); Forward;
+Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String); Forward;
 Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt); Forward;
 Procedure JSClearTimeout; Forward;
 Function JSGetNodeBoxX(Node: HTMLNodePtr): Integer; Forward;
@@ -7799,32 +7800,76 @@ Procedure RenderTagArticle(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
  Box: TElementBoxInfo;
- MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
- BoxStartX, BoxStartY, BoxEndY: Integer;
+ ArticleStyle: DOMStyle;
+ MarginTopPx, MarginBottomPx, MarginLeftPx, MarginRightPx: Integer;
+ PaddingTopPx, PaddingBottomPx, PaddingLeftPx, PaddingRightPx: Integer;
+ BoxStartX, BoxStartY, BoxEndX, BoxEndY, OldMaxX: Integer;
+ MeasureCtx: RenderContext;
+ OldMeasurePass: Boolean;
+ SavedAbsoluteCount: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  Box := CurrentElementBox;
+ CSSResolveCascade(Node, ArticleStyle);
  If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := 0;
  If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := 0;
  If Box.PaddingTopPx >= 0 Then PaddingTopPx := Box.PaddingTopPx Else PaddingTopPx := 0;
  If Box.PaddingBottomPx >= 0 Then PaddingBottomPx := Box.PaddingBottomPx Else PaddingBottomPx := 0;
+ If Length(ArticleStyle.MarginLeft) > 0 Then
+  MarginLeftPx := CSSParseDimension(ArticleStyle.MarginLeft, 0)
+ Else MarginLeftPx := CSSParseDimension(ArticleStyle.Margin, 0);
+ If Length(ArticleStyle.MarginRight) > 0 Then
+  MarginRightPx := CSSParseDimension(ArticleStyle.MarginRight, 0)
+ Else MarginRightPx := CSSParseDimension(ArticleStyle.Margin, 0);
+ If Length(ArticleStyle.PaddingLeft) > 0 Then
+  PaddingLeftPx := CSSParseDimension(ArticleStyle.PaddingLeft, 0)
+ Else PaddingLeftPx := CSSParseDimension(ArticleStyle.Padding, 0);
+ If Length(ArticleStyle.PaddingRight) > 0 Then
+  PaddingRightPx := CSSParseDimension(ArticleStyle.PaddingRight, 0)
+ Else PaddingRightPx := CSSParseDimension(ArticleStyle.Padding, 0);
  If WantsBlock Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   RenderBlockSpacing(Ctx, MarginTopPx);
-  BoxStartX := Ctx.X;
+  BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT + MarginLeftPx;
   BoxStartY := Ctx.Y;
+  BoxEndX := Ctx.MaxX - MarginRightPx;
+  If BoxEndX < BoxStartX Then BoxEndX := BoxStartX;
+  OldMaxX := Ctx.MaxX;
+  Ctx.X := BoxStartX + PaddingLeftPx;
+  Ctx.MaxX := BoxEndX - PaddingRightPx;
+  If Ctx.MaxX < Ctx.X Then Ctx.MaxX := Ctx.X;
   If PaddingTopPx > 0 Then Inc(Ctx.Y, PaddingTopPx);
+
+  { Mesurer la hauteur reelle avant de peindre le fond. Cette passe utilise
+    le meme mecanisme silencieux que les lignes de tableau. }
+  MeasureCtx := Ctx;
+  MeasureCtx.MaxY := High(Integer);
+  OldMeasurePass := TableMeasurePass;
+  SavedAbsoluteCount := AbsolutePositionedCount;
+  TableMeasurePass := True;
+  RenderChildren(Node, MeasureCtx);
+  TableMeasurePass := OldMeasurePass;
+  AbsolutePositionedCount := SavedAbsoluteCount;
+  BoxEndY := MeasureCtx.Y + MeasureCtx.LineHeight + PaddingBottomPx;
+  If BoxEndY < BoxStartY + Ctx.LineHeight Then
+   BoxEndY := BoxStartY + Ctx.LineHeight;
+  If Box.HasBgBox And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetFillStyle(SolidFill, Box.BgBoxColorIdx);
+   Bar(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
+  End;
  End;
  RenderChildren(Node, Ctx);
  If WantsBlock Then Begin
   If PaddingBottomPx > 0 Then Inc(Ctx.Y, PaddingBottomPx);
-  BoxEndY := Ctx.Y;
+  If Ctx.Y < BoxEndY Then Ctx.Y := BoxEndY;
   If Box.HasBorder And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
    SetColor(Box.BorderColorIdx);
-   Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, BoxEndY);
+   Rectangle(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
    SetColor(Ctx.TextColor);
   End;
+  Ctx.MaxX := OldMaxX;
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
   If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginBottomPx);
  End;
 End;
@@ -9925,10 +9970,19 @@ End;
 Procedure ExecuteDocumentScriptNodes(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  Child, NextChild: HTMLNodePtr;
+ WrittenHTML: String;
 Begin
  If Node = Nil Then Exit;
  If (Node^.NodeType = HTML_NODE_ELEMENT) And (Node^.TagType = TAG_SCRIPT) Then Begin
+  { document.write appartient au script courant et doit etre insere a sa
+    position dans le document, pas conserve dans un tampon global sans
+    jamais etre rendu. }
+  JSClearDocumentOutput;
   RenderTagScript(Node, Ctx);
+  WrittenHTML := JSGetDocumentOutput;
+  If Length(WrittenHTML) > 0 Then
+   JSInsertHTMLAfter(Node, WrittenHTML);
+  JSClearDocumentOutput;
   Exit;
  End;
  Child := Node^.FirstChild;
@@ -16636,6 +16690,31 @@ Begin
    ete deplaces ci-dessus) : Dispose direct plutot que FreeHTMLNode,
    qui libererait aussi les enfants qu'on vient juste de rattacher
    ailleurs. }
+ FragRoot^.FirstChild := Nil;
+ FragRoot^.LastChild := Nil;
+ FragRoot^.ChildCount := 0;
+ FreeHTMLNode(FragRoot);
+End;
+
+{ Inserer la sortie de document.write immediatement apres le SCRIPT qui l'a
+  produite, en conservant l'ordre des noeuds du fragment. }
+Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String);
+Var
+ FragRoot, Child, NextChild, InsertBeforeNode: HTMLNodePtr;
+Begin
+ If (Node = Nil) Or (Node^.Parent = Nil) Or (Length(HTML) = 0) Then Exit;
+ FragRoot := ParseHTMLFromString(HTML);
+ If FragRoot = Nil Then Exit;
+ InsertBeforeNode := Node^.NextSibling;
+ Child := FragRoot^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  Child^.PreviousSibling := Nil;
+  Child^.NextSibling := Nil;
+  Child^.Parent := Nil;
+  DOMInsertBefore(Node^.Parent, Child, InsertBeforeNode);
+  Child := NextChild;
+ End;
  FragRoot^.FirstChild := Nil;
  FragRoot^.LastChild := Nil;
  FragRoot^.ChildCount := 0;
