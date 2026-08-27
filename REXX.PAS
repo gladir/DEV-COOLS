@@ -286,6 +286,114 @@ Begin
  FunctionNotImplemented:=RVText(CommandList[FunctionByte]);
 End;
 
+Function BinaryToHex(BinaryText:String):String;
+Const HexDigits='0123456789ABCDEF';
+Var Bits,ResultText:String;J,DigitValue,BitCount:Integer;
+Begin
+ Bits:='';
+ For J:=1 To Length(BinaryText)Do Begin
+  If BinaryText[J]in['0','1']Then Bits:=Bits+BinaryText[J]
+  Else If Not(BinaryText[J]in[' ',#9])Then Begin
+   WriteLn('B2X: caractere binaire invalide: ',BinaryText[J]);BinaryToHex:='';Exit;
+  End;
+ End;
+ If Bits=''Then Begin BinaryToHex:='';Exit;End;
+ While(Length(Bits)mod 4)<>0Do Bits:='0'+Bits;
+ ResultText:='';J:=1;
+ While J<=Length(Bits)Do Begin
+  DigitValue:=0;
+  For BitCount:=0 To 3 Do Begin
+   DigitValue:=DigitValue*2;
+   If Bits[J+BitCount]='1'Then Inc(DigitValue);
+  End;
+  ResultText:=ResultText+HexDigits[DigitValue+1];Inc(J,4);
+ End;
+ BinaryToHex:=ResultText;
+End;
+
+Function BeepSound(Frequency,Duration:LongInt):RexxValue;
+Begin
+ If Frequency<37Then Frequency:=37;
+ If Frequency>32767Then Frequency:=32767;
+ If Duration<0Then Duration:=0;
+ If Duration>32767Then Duration:=32767;
+ If Duration>0Then Begin
+  Sound(Frequency);Delay(Duration);NoSound;
+ End;
+ BeepSound:=RVNum(0);
+End;
+
+Function BitAndText(LeftText,RightText,PadText:String;UsePad:Boolean):String;
+Var J,ResultLength:Integer;LeftByte,RightByte,PadByte:Byte;ResultText:String;
+Begin
+ If UsePad Then Begin
+  If PadText=''Then PadByte:=0 Else PadByte:=Ord(PadText[1]);
+  If Length(LeftText)>Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End Else Begin
+  PadByte:=0;
+  If Length(LeftText)<Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End;
+ ResultText:='';
+ For J:=1 To ResultLength Do Begin
+  If J<=Length(LeftText)Then LeftByte:=Ord(LeftText[J]) Else LeftByte:=PadByte;
+  If J<=Length(RightText)Then RightByte:=Ord(RightText[J]) Else RightByte:=PadByte;
+  ResultText:=ResultText+Chr(LeftByte and RightByte);
+ End;
+ BitAndText:=ResultText;
+End;
+
+Function BitOrText(LeftText,RightText,PadText:String;UsePad:Boolean):String;
+Var J,ResultLength:Integer;LeftByte,RightByte,PadByte:Byte;ResultText:String;
+Begin
+ If UsePad Then Begin
+  If PadText=''Then PadByte:=0 Else PadByte:=Ord(PadText[1]);
+  If Length(LeftText)>Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End Else Begin
+  PadByte:=0;
+  If Length(LeftText)<Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End;
+ ResultText:='';
+ For J:=1 To ResultLength Do Begin
+  If J<=Length(LeftText)Then LeftByte:=Ord(LeftText[J]) Else LeftByte:=PadByte;
+  If J<=Length(RightText)Then RightByte:=Ord(RightText[J]) Else RightByte:=PadByte;
+  ResultText:=ResultText+Chr(LeftByte or RightByte);
+ End;
+ BitOrText:=ResultText;
+End;
+
+Function BitXorText(LeftText,RightText,PadText:String;UsePad:Boolean):String;
+Var J,ResultLength:Integer;LeftByte,RightByte,PadByte:Byte;ResultText:String;
+Begin
+ If UsePad Then Begin
+  If PadText=''Then PadByte:=0 Else PadByte:=Ord(PadText[1]);
+  If Length(LeftText)>Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End Else Begin
+  PadByte:=0;
+  If Length(LeftText)<Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End;
+ ResultText:='';
+ For J:=1 To ResultLength Do Begin
+  If J<=Length(LeftText)Then LeftByte:=Ord(LeftText[J]) Else LeftByte:=PadByte;
+  If J<=Length(RightText)Then RightByte:=Ord(RightText[J]) Else RightByte:=PadByte;
+  ResultText:=ResultText+Chr(LeftByte xor RightByte);
+ End;
+ BitXorText:=ResultText;
+End;
+
+Function CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
+Var LeftCount,RightCount,StartPosition:Integer;PadChar:Char;
+Begin
+ If TargetLength<=0Then Begin CenterText:='';Exit;End;
+ If PadText=''Then PadChar:=' ' Else PadChar:=PadText[1];
+ If Length(SourceText)>TargetLength Then Begin
+  StartPosition:=((Length(SourceText)-TargetLength)div 2)+1;
+  CenterText:=Copy(SourceText,StartPosition,TargetLength);Exit;
+ End;
+ LeftCount:=(TargetLength-Length(SourceText))div 2;
+ RightCount:=TargetLength-Length(SourceText)-LeftCount;
+ CenterText:=StringOfChar(PadChar,LeftCount)+SourceText+StringOfChar(PadChar,RightCount);
+End;
+
 Function EPrimary:RexxValue;
 Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength:Integer;FunctionByte:Byte;A,B,D:RexxValue;
 Begin
@@ -334,13 +442,26 @@ Begin
      End;
     End;
    End;
-   4:EPrimary:=FunctionNotImplemented(FunctionByte); { B2X }
-   5:EPrimary:=FunctionNotImplemented(FunctionByte); { BEEP }
-   6:EPrimary:=FunctionNotImplemented(FunctionByte); { BITAND }
-   7:EPrimary:=FunctionNotImplemented(FunctionByte); { BITOR }
-   8:EPrimary:=FunctionNotImplemented(FunctionByte); { BITXOR }
-   9:EPrimary:=FunctionNotImplemented(FunctionByte); { CALL }
-   10:EPrimary:=FunctionNotImplemented(FunctionByte); { CENTER }
+   4:EPrimary:=RVText(BinaryToHex(A.Text)); { B2X }
+   5:Begin { BEEP }
+    If InvokeArgCount=0Then EPrimary:=BeepSound(800,200)
+    Else If InvokeArgCount=1Then EPrimary:=BeepSound(System.Trunc(A.Number),200)
+    Else EPrimary:=BeepSound(System.Trunc(A.Number),System.Trunc(B.Number));
+   End;
+   6:EPrimary:=RVText(BitAndText(A.Text,B.Text,D.Text,InvokeArgCount>2)); { BITAND }
+   7:EPrimary:=RVText(BitOrText(A.Text,B.Text,D.Text,InvokeArgCount>2)); { BITOR }
+   8:EPrimary:=RVText(BitXorText(A.Text,B.Text,D.Text,InvokeArgCount>2)); { BITXOR }
+   9:Begin { CALL }
+    { Forme fonctionnelle pratique: CALL('routine',arg1,...). Le premier
+      argument est le nom et les suivants deviennent les arguments REXX. }
+    S:=A.Text;
+    If InvokeArgCount>0Then Begin
+     For J:=1 To InvokeArgCount-1 Do InvokeArgs[J]:=InvokeArgs[J+1];
+     Dec(InvokeArgCount);
+    End;
+    EPrimary:=RVText(CallRoutine(S));
+   End;
+   10:EPrimary:=RVText(CenterText(A.Text,System.Trunc(B.Number),D.Text)); { CENTER }
    11:EPrimary:=FunctionNotImplemented(FunctionByte); { CHANGESTR }
    12:EPrimary:=FunctionNotImplemented(FunctionByte); { CHARIN }
    13:EPrimary:=FunctionNotImplemented(FunctionByte); { CHAROUT }
