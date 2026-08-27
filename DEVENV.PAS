@@ -36623,8 +36623,12 @@ End;
 Procedure Emu_InitComputer(Var C: TEmuCPU); Forward;
 Procedure Emu_Done(Var C: TEmuCPU); Forward;
 Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
+Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
+Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
+Function Emu_PopWord(Var C: TEmuCPU): Word; Forward;
+Procedure Emu_StepOne(Var P: TEmulatorPanel); Forward;
 
 { Resout (ou reutilise) un emplacement de trappe pour la paire             }
 { (ModIdx, IsOrdinal, Value=ordinal-ou-offset-de-nom) - memes principes    }
@@ -36944,6 +36948,109 @@ Begin
  Win16_StackOfs := Hdr.ne_sp;
 
  Win16_LoadNE := True;
+End;
+
+{ Chantier Windows 16 bits, Stage 3 : arret propre et honnete sur un       }
+{ appel KERNEL/USER/GDI pas encore implante - meme discipline exacte que   }
+{ Lx_Halt pour OS/2 LX ("DOSCALLS non supporte : ..."). Ne devine JAMAIS   }
+{ un comportement pour un ordinal non verifie - un programme reel qui      }
+{ atteint ce point s arrete la, proprement, plutot que de corrompre sa     }
+{ pile avec un nombre d octets a depiler invente. }
+Procedure Win16_Halt(Var P: TEmulatorPanel; Const ModName: String; Ordinal: Word);
+Begin
+ P.CPU.Fault := sfEndProgram;
+ Win16_LastError := 'Appel non supporte : ' + ModName + '.' + IntToStr(Ordinal);
+End;
+
+{ Dispatcher reel des appels KERNEL/USER/GDI, atteint via le Case $F8 de   }
+{ Emu_DoInt (voir plus loin dans ce fichier) - Slot identifie la paire     }
+{ (Module, Ordinal) resolue au chargement (Win16_ImportModIdx/Ordinal/    }
+{ IsOrd, deja remplis par Win16_ResolveImportSlot au Stage 2). Portee      }
+{ VOLONTAIREMENT minimale (voir le plan) : seul le sous-ensemble KERNEL    }
+{ necessaire au tout debut de l initialisation d une tache Windows est     }
+{ implante avec un VRAI comportement verifie ; tout le reste (y compris    }
+{ USER/GDI en entier) s arrete proprement via Win16_Halt en identifiant    }
+{ exactement quel appel manque - a completer iterativement (Stage 5),      }
+{ meme methode "executer -> arret honnete -> corriger -> re-executer" que  }
+{ LOGDAEM.EXE pour OS/2 LX. Indices de MODULE bases sur l ordre           }
+{ EMPIRIQUEMENT verifie (Stage 1) sur CLOCK.EXE ET CALENDAR.EXE, tous deux }
+{ KERNEL=1/GDI=2/USER=3 - simplification documentee, PAS une garantie      }
+{ universelle du format NE (a revoir si un 3e fichier reel rompt cet ordre)}
+Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
+Var
+ ModIdx, Ordinal: Word;
+ IsOrd: Boolean;
+ RetIP, RetCS: Word;
+ ArgWords: Word;
+Begin
+ If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
+  P.CPU.Fault := sfEndProgram;
+  Win16_LastError := 'Slot de trappe invalide : ' + IntToStr(Slot);
+  Exit;
+ End;
+ ModIdx := Win16_ImportModIdx[Slot];
+ IsOrd := Win16_ImportIsOrd[Slot];
+ Ordinal := Win16_ImportValue[Slot];
+ ArgWords := 0;
+ If (Not IsOrd) Then Begin
+  Win16_Halt(P, 'import par nom (module #' + IntToStr(ModIdx) + ')', 0);
+  Exit;
+ End;
+ If ModIdx = 1 Then Begin { KERNEL }
+  Case Ordinal Of
+   91: Begin
+    { InitTask - convention REGISTRES verifiee (Raymond Chen, "How do      }
+    { 16-bit programs start up?", devblogs.microsoft.com/oldnewthing) :    }
+    { AUCUN argument sur la pile, tout passe par les registres. En ENTREE, }
+    { les registres sont deja ceux que "le chargeur" (nous, au Stage 4)    }
+    { a poses avant de sauter au point d'entree - AX=0 BX=taille-pile      }
+    { CX=taille-tas DX=inutilise SI=instance precedente DI=cette instance  }
+    { BP=0 DS=SS=segment de donnees automatique ES=selecteur PSP SP=haut   }
+    { de pile. En SORTIE (ce que cette branche doit poser) : AX=selecteur  }
+    { PSP (0=echec) BX=offset ligne de commande CX=limite de pile          }
+    { DX=nCmdShow BP=haut de pile (pour deroulement) ES=selecteur ligne de }
+    { commande - SI/DI/DS/SS INCHANGES (passes tels quels dans les deux    }
+    { sens d'apres la meme source). }
+    P.CPU.Regs.AX := 1;                  { PSP/selecteur non nul = succes }
+    { Ligne de commande vide : chaine DOS classique longueur-prefixee,     }
+    { ecrite a l offset 0 du segment de donnees (jamais lu par un          }
+    { programme normal a cet endroit precis, avant toute autre init). }
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, 0, 0);
+    P.CPU.Regs.BX := 0;
+    P.CPU.Regs.CX := 0;
+    P.CPU.Regs.DX := 1;                  { nCmdShow = SW_SHOWNORMAL        }
+    P.CPU.Regs.BP := P.CPU.Regs.SP;
+    P.CPU.Segs.ES := P.CPU.Segs.DS;
+    ArgWords := 0;
+   End;
+   3: Begin
+    { GetVersion - AL=version majeure, AH=version mineure (convention      }
+    { confirmee par de tres nombreux exemples de code source Windows 2.x/  }
+    { 3.x publics qui decodent AX de cette facon des le retour). }
+    P.CPU.Regs.AX := $0002; { "Windows 2.0" : AL=2 AH=0 }
+    ArgWords := 0;
+   End;
+   Else Begin
+    Win16_Halt(P, 'KERNEL', Ordinal);
+    Exit;
+   End;
+  End;
+ End Else Begin
+  Case ModIdx Of
+   2: Win16_Halt(P, 'GDI', Ordinal);
+   3: Win16_Halt(P, 'USER', Ordinal);
+   Else Win16_Halt(P, 'module #' + IntToStr(ModIdx), Ordinal);
+  End;
+  Exit;
+ End;
+ { Retour stdcall/pascal synthetique : depile l'adresse de retour puis     }
+ { ArgWords mots supplementaires - meme principe exact que                 }
+ { Lx_DoDosCall/Elf64_DoSyscall (aucun repassage par le decodeur reel).     }
+ RetIP := Emu_PopWord(P.CPU);
+ RetCS := Emu_PopWord(P.CPU);
+ P.CPU.Regs.SP := Word(P.CPU.Regs.SP + ArgWords * 2);
+ P.CPU.Segs.CS := RetCS;
+ P.CPU.IP := RetIP;
 End;
 
 Function Lx_ObjFlagsStr(F: LongInt): String;
@@ -69080,6 +69187,21 @@ Begin
        { pilote XMS, atteint uniquement via le trampoline installe par     }
        { Emu_XmsInit (jamais un vrai numero d interruption DOS/BIOS,       }
        { contrairement a $60/$7A - pas de repli generique necessaire). }
+  $F8: Begin
+   { Chantier Windows 16 bits, Stage 3 : point d entree de trappe KERNEL/   }
+   { USER/GDI - jamais un vrai numero d interruption DOS/BIOS/Windows      }
+   { (comme $FC/$FD/$FE ci-dessus), atteint UNIQUEMENT via les thunks      }
+   { CD F8 <slot:Word> CB ecrits par Win16_ResolveImportSlot (Stage 2).    }
+   { L index de slot suit immediatement l opcode INT dans le flux           }
+   { d instructions (P.CPU.IP y pointe deja - Emu_StepOne a deja avance    }
+   { IP au-dela de "CD F8" avant d appeler Emu_DoInt, meme convention que   }
+   { tout autre INT). PAS besoin d avancer IP nous-memes au-dela du slot :  }
+   { Win16_DispatchCall termine TOUJOURS par un retour synthetique complet }
+   { (depile lui-meme l adresse de retour et ECRASE P.CPU.IP avec elle) -  }
+   { le CB final du thunk n est donc JAMAIS reellement execute, pur filet  }
+   { de securite si jamais atteint par erreur. }
+   Win16_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
+  End;
   $67: Begin
    { N intercepter reellement que si la case "EMS" est cochee (EmuEms.     }
    { Active) - sinon, comportement identique a toute autre interruption    }
