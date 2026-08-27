@@ -584,6 +584,8 @@ Const
  CSS_PROP_VERTICAL_ALIGN = 40;
  CSS_PROP_WHITE_SPACE = 41;
  CSS_PROP_BACKGROUND_POSITION = 42;
+ CSS_PROP_OPACITY = 43;
+ CSS_PROP_BACKGROUND_IMAGE = 44;
  CSS_PROP_UNKNOWN = 255;
 
 Type
@@ -901,6 +903,8 @@ Type
   Color: String[32];
  BackgroundColor: String[32];
   BackgroundPosition: String[32];
+  BackgroundImage: String[255];
+  Opacity: String[16];
   FontSize: String[16];
   FontWeight: String[16];
   FontStyle: String[16];
@@ -5676,6 +5680,8 @@ Begin
  Else If LowerName = 'background-color' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_COLOR
  Else If LowerName = 'background' Then CSSGetPropertyId := CSS_PROP_BACKGROUND
  Else If LowerName = 'background-position' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_POSITION
+ Else If LowerName = 'opacity' Then CSSGetPropertyId := CSS_PROP_OPACITY
+ Else If LowerName = 'background-image' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_IMAGE
  Else If LowerName = 'font-size' Then CSSGetPropertyId := CSS_PROP_FONT_SIZE
  Else If LowerName = 'font-weight' Then CSSGetPropertyId := CSS_PROP_FONT_WEIGHT
  Else If LowerName = 'font-style' Then CSSGetPropertyId := CSS_PROP_FONT_STYLE
@@ -6061,8 +6067,14 @@ Begin
  Case PropId Of
   CSS_PROP_COLOR: Style.Color := Value;
   CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Value;
-  CSS_PROP_BACKGROUND: Style.BackgroundColor := Value;
+  CSS_PROP_BACKGROUND: Begin
+   Style.BackgroundColor := Value;
+   If System.Pos('url(', HTMLLowerCase(Value)) > 0 Then
+    Style.BackgroundImage := Value;
+  End;
   CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := Value;
+  CSS_PROP_OPACITY: Style.Opacity := Value;
+  CSS_PROP_BACKGROUND_IMAGE: Style.BackgroundImage := Value;
   CSS_PROP_FONT_SIZE: Style.FontSize := Value;
   CSS_PROP_FONT_WEIGHT: Style.FontWeight := Value;
   CSS_PROP_FONT_STYLE: Style.FontStyle := Value;
@@ -6231,6 +6243,8 @@ Begin
  Style.Color := '';
  Style.BackgroundColor := '';
  Style.BackgroundPosition := '';
+ Style.BackgroundImage := '';
+ Style.Opacity := '';
  Style.FontSize := '';
  Style.FontWeight := '';
  Style.FontStyle := '';
@@ -6254,8 +6268,14 @@ Begin
      Case CSSGlobalStylesheet.Rules[I].Properties[K].PropId Of
       CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_BACKGROUND: Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_BACKGROUND: Begin
+       Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+       If System.Pos('url(', HTMLLowerCase(CSSGlobalStylesheet.Rules[I].Properties[K].Value)) > 0 Then
+        Style.BackgroundImage := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      End;
       CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_OPACITY: Style.Opacity := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_BACKGROUND_IMAGE: Style.BackgroundImage := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
@@ -6663,6 +6683,8 @@ Begin
  Style.Color := '';
  Style.BackgroundColor := '';
  Style.BackgroundPosition := '';
+ Style.BackgroundImage := '';
+ Style.Opacity := '';
  Style.FontSize := '';
  Style.FontWeight := '';
  Style.FontStyle := '';
@@ -7423,7 +7445,15 @@ End;
 { Fonction pour calculer la largeur d'un texte }
 Function GetTextWidth(Const Text: String): Integer;
 Begin
- GetTextWidth := Length(Text) * 8; { Police par defaut = 8 pixels par caractere }
+ { En mode TP, Integer est signe sur 16 bits. DOMGetTextContent applique a
+   un grand menu peut retourner des milliers de caracteres : Length * 8
+   depassait alors 32767 et levait ERangeError pendant un simple survol.
+   Une largeur superieure a l'ecran n'apporte aucune information utile ;
+   la borner conserve le comportement de wrap sans debordement arithmetique. }
+ If Length(Text) > 3750 Then
+  GetTextWidth := 30000
+ Else
+  GetTextWidth := Length(Text) * 8; { Police par defaut = 8 pixels par caractere }
 End;
 
 { Verifier si une plage verticale [Y1,Y2] recoupe la bande visible de
@@ -8410,6 +8440,7 @@ Var
  ItemStartY: Integer;
  WantsBlock: Boolean;
  NoBullet: Boolean;
+ LIStyle: DOMStyle;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  NoBullet := CurrentElementListStyleNone;
@@ -8427,6 +8458,11 @@ Begin
  Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
   { En ligne : un espace de separation avant l'element suivant }
   Ctx.X := Ctx.X + 8;
+
+ { Un LI peut lui aussi porter un background-image CSS (menus et barres
+   d'outils generiques), exactement comme un DIV. }
+ CSSResolveCascade(Node, LIStyle);
+ RenderCSSBackgroundSprite(LIStyle, Ctx.X, Ctx.Y);
 
  { Incrementer le numero d'element pour les listes ordonnees }
  If Ctx.ListType = LIST_TYPE_OL Then
@@ -9656,6 +9692,7 @@ Var
  EndX, EndY: Integer;
  LinkCountBefore: Integer;
  LinkStyle: DOMStyle;
+ InvisibleWidth, InvisibleHeight: Integer;
 Begin
  { Obtenir les attributs href et title }
  Href := GetNodeAttribute(Node, 'href');
@@ -9664,6 +9701,25 @@ Begin
  { Si pas de href, rendre comme du texte normal }
  If Href = '' Then Begin
   RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ CSSResolveCascade(Node, LinkStyle);
+ { Dans le HEADER, le texte des liens est opacity:0 et le LI parent porte
+   l'icone. Garder la dimension et la zone cliquable sans imprimer ce texte
+   par-dessus le sprite. }
+ InvisibleWidth := GetTextWidth(DOMGetTextContent(Node));
+ InvisibleHeight := Ctx.LineHeight;
+ If Trim(LinkStyle.Opacity) = '0' Then Begin
+  InvisibleWidth := CSSParseDimension(LinkStyle.Width,
+                    InvisibleWidth);
+  InvisibleHeight := CSSParseDimension(LinkStyle.Height, InvisibleHeight);
+  If InvisibleWidth < 1 Then InvisibleWidth := 1;
+  If InvisibleHeight < 1 Then InvisibleHeight := Ctx.LineHeight;
+  AddLinkArea(Ctx.X, Ctx.Y, Ctx.X + InvisibleWidth,
+              Ctx.Y + InvisibleHeight, Href, Title);
+  Inc(Ctx.X, InvisibleWidth);
+  If InvisibleHeight > Ctx.LineHeight Then Ctx.LineHeight := InvisibleHeight;
   Exit;
  End;
 
@@ -9679,7 +9735,6 @@ Begin
   Ctx.TextColor := RENDER_LINK_COLOR
  Else
   Ctx.TextColor := OldTextColor;
- CSSResolveCascade(Node, LinkStyle);
  If HTMLLowerCase(LinkStyle.TextDecoration) = 'none' Then
   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE)
  Else
@@ -15047,7 +15102,10 @@ Var
  Img: PNGImage;
  PixelColor, Alpha: Byte;
 Begin
- Bg := Style.BackgroundColor;
+ Bg := Style.BackgroundImage;
+ { Compatibilite avec les styles deja resolus par l'ancien champ : le
+   raccourci background peut contenir a la fois couleur et url(). }
+ If Length(Bg) = 0 Then Bg := Style.BackgroundColor;
  LowerBg := HTMLLowerCase(Bg);
  P1 := System.Pos('url(', LowerBg);
  If P1 = 0 Then Exit;
@@ -15393,6 +15451,9 @@ Var
  OverlayStartX, OverlayStartY, OverlayEndX, OverlayEndY: Integer;
  AnchorAreaIndex, FirstOverlayArea, AreaIndex: Integer;
  OverlayId, HoverHandler: String;
+ ChildNode: HTMLNodePtr;
+ ChildStyle: DOMStyle;
+ NaturalWidth, ChildWidth: Integer;
 Begin
  For I := 1 To AbsolutePositionedCount Do Begin
   CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
@@ -15400,6 +15461,23 @@ Begin
    OverlayCtx := BaseCtx;
    OverlayWidth := CSSParseDimension(NodeStyle.Width,
                     GetTextWidth(DOMGetTextContent(AbsolutePositionedNodes[I])) + 16);
+   { Une UL absolue du HEADER n'a pas de width propre : sa largeur est la
+     somme de ses LI inline-block (trois icones). Employer le texte cache
+     comme largeur de repli poussait #admin loin de son bord droit. }
+   If (AbsolutePositionedNodes[I]^.TagType = TAG_UL) And
+      (Length(NodeStyle.Width) = 0) Then Begin
+    NaturalWidth := 0;
+    ChildNode := AbsolutePositionedNodes[I]^.FirstChild;
+    While ChildNode <> Nil Do Begin
+     If ChildNode^.NodeType = HTML_NODE_ELEMENT Then Begin
+      CSSResolveCascade(ChildNode, ChildStyle);
+      ChildWidth := CSSParseDimension(ChildStyle.Width, 0);
+      If ChildWidth > 0 Then Inc(NaturalWidth, ChildWidth + 4);
+     End;
+     ChildNode := ChildNode^.NextSibling;
+    End;
+    If NaturalWidth > 0 Then OverlayWidth := NaturalWidth;
+   End;
    If OverlayWidth < 1 Then OverlayWidth := 1;
    OverlayHeight := CSSParseDimension(NodeStyle.Height, OverlayCtx.LineHeight);
    If OverlayHeight < 1 Then OverlayHeight := OverlayCtx.LineHeight;
