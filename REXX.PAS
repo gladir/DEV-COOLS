@@ -91,6 +91,8 @@ Var
  InvokeArgCount:Integer;
  CurrentArgs:Array[1..MaxRoutineArgs]of String;
  CurrentArgCount:Integer;
+ InitialArgs:Array[1..MaxRoutineArgs]of String;
+ InitialArgCount:Integer;
  RoutineReturning:Boolean;
  RoutineResult:String;
  NumericDigitsValue:Integer;
@@ -99,6 +101,7 @@ Var
  SignalTargetLine:Integer;
  SignalHalt,SignalNoValue,SignalError,SignalSyntax:Boolean;
  SignalHaltName,SignalNoValueName,SignalErrorName,SignalSyntaxName:String[64];
+ CurrentAddress,PreviousAddress:String[64];
 
 Function LTrim(S:String):String;
 Var
@@ -316,8 +319,21 @@ Begin
      Else EPrimary:=RVNum(0);
    End;
    1:EPrimary:=RVNum(Abs(A.Number)); { ABS }
-   2:EPrimary:=FunctionNotImplemented(FunctionByte); { ADDRESS }
-   3:EPrimary:=FunctionNotImplemented(FunctionByte); { ARG }
+   2:EPrimary:=RVText(CurrentAddress); { ADDRESS }
+   3:Begin { ARG }
+    If InvokeArgCount=0Then EPrimary:=RVNum(CurrentArgCount)
+    Else Begin
+     J:=System.Trunc(A.Number);
+     If InvokeArgCount=1Then Begin
+      If(J>=1)and(J<=CurrentArgCount)Then EPrimary:=RVText(CurrentArgs[J])Else EPrimary:=RVText('');
+     End Else Begin
+      S:=StrToUpper(B.Text);
+      If S='E'Then Begin If(J>=1)and(J<=CurrentArgCount)Then EPrimary:=RVNum(1)Else EPrimary:=RVNum(0);End
+      Else If S='O'Then Begin If(J<1)or(J>CurrentArgCount)Then EPrimary:=RVNum(1)Else EPrimary:=RVNum(0);End
+      Else EPrimary:=RVText('');
+     End;
+    End;
+   End;
    4:EPrimary:=FunctionNotImplemented(FunctionByte); { B2X }
    5:EPrimary:=FunctionNotImplemented(FunctionByte); { BEEP }
    6:EPrimary:=FunctionNotImplemented(FunctionByte); { BITAND }
@@ -688,14 +704,41 @@ Begin
  End;
 End;
 
+Procedure RunAddressCommand(EnvironmentName,CommandText:String);
+Var CommandProcessor:String;
+Begin
+ If CommandText=''Then Exit;
+ EnvironmentName:=StrToUpper(Clean(EnvironmentName));
+ If(EnvironmentName='SYSTEM')or(EnvironmentName='COMMAND')or(EnvironmentName='CMD')Then Begin
+  CommandProcessor:=GetEnv('COMSPEC');If CommandProcessor=''Then CommandProcessor:='CMD.EXE';
+  Exec(CommandProcessor,'/C '+CommandText);
+  If DosError<>0Then WriteLn('Erreur ADDRESS ',EnvironmentName,': ',DosError);
+ End Else WriteLn('Environnement ADDRESS non supporte: ',EnvironmentName);
+End;
+
 Procedure ExecOne(S:String);
-Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord:String;CommandByte:Byte;
+Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord,CommandText,OldAddress:String;CommandByte:Byte;
 Begin
  S:=Clean(S);If S=''Then Exit;
  P:=1;While(P<=Length(S))and(S[P]in['A'..'Z','a'..'z','_'])Do Inc(P);
  FirstWord:=Copy(S,1,P-1);J:=CommandIndex(FirstWord);
  If J<0Then CommandByte:=255 Else CommandByte:=Byte(J);
  Case CommandByte Of
+  2:Begin { ADDRESS }
+   Rest:=Clean(Copy(S,8,255));
+   If Rest=''Then Begin
+    OldAddress:=CurrentAddress;CurrentAddress:=PreviousAddress;PreviousAddress:=OldAddress;
+   End Else If WordStart(Rest,'VALUE')Then Begin
+    Name:=StrToUpper(Eval(Clean(Copy(Rest,6,255))).Text);
+    PreviousAddress:=CurrentAddress;CurrentAddress:=Name;
+   End Else Begin
+    P:=System.Pos(' ',Rest);
+    If P=0Then Begin Name:=Rest;CommandText:='';End
+     Else Begin Name:=Copy(Rest,1,P-1);CommandText:=Clean(Copy(Rest,P+1,255));End;
+    Name:=StrToUpper(Name);PreviousAddress:=CurrentAddress;CurrentAddress:=Name;
+    If CommandText<>''Then RunAddressCommand(CurrentAddress,Eval(CommandText).Text);
+   End;
+  End;
   65:Begin { SAY }
    V:=Eval(Copy(S,4,255));WriteLn(V.Text);
   End;
@@ -1028,10 +1071,13 @@ Procedure ExecuteCommand;Begin
  VariableCount:=0;
  Terminated:=False;
  LoopSignal:=0;
- CurrentArgCount:=0;InvokeArgCount:=0;RoutineReturning:=False;RoutineResult:='';
+ CurrentArgCount:=InitialArgCount;
+ For I:=1 To MaxRoutineArgs Do CurrentArgs[I]:=InitialArgs[I];
+ InvokeArgCount:=0;RoutineReturning:=False;RoutineResult:='';
  NumericDigitsValue:=9;NumericFuzzValue:=0;NumericFormValue:='SCIENTIFIC';
  SignalTargetLine:=0;SignalHalt:=False;SignalNoValue:=False;SignalError:=False;SignalSyntax:=False;
  SignalHaltName:='HALT';SignalNoValueName:='NOVALUE';SignalErrorName:='ERROR';SignalSyntaxName:='SYNTAX';
+ CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
  If NumberLine>0Then ExecRange(1,NumberLine);
 End;
 
@@ -1048,11 +1094,17 @@ BEGIN
  End
   Else
  Begin
-  FileName:='';
+ FileName:='';
+  InitialArgCount:=0;
   NumberLine:=0;CurrNumberLine:=0;
   If ParamCount>0 Then Begin
-   For I:=1 to ParamCount do Begin
-    FileName:=ParamStr(I);
+   FileName:=ParamStr(1);
+   If ParamCount>1Then Begin
+    InitialArgCount:=1;InitialArgs[1]:='';
+    For I:=2 to ParamCount do Begin
+     If InitialArgs[1]<>''Then InitialArgs[1]:=InitialArgs[1]+' ';
+     InitialArgs[1]:=InitialArgs[1]+ParamStr(I);
+    End;
    End;
    LoadCommand;
    ExecuteCommand;
