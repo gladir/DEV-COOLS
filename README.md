@@ -278,7 +278,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier BIN en code source Pascal Inline.</td>
 		</tr>
 		<tr>
-			<td><b>BROWSER.PAS</b></td>td
+			<td><b>BROWSER.PAS</b></td>
 			<td>Cette commande permet de lancer un navigateur Web.</td>
 		</td>
 		<tr>
