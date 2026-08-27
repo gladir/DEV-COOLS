@@ -588,6 +588,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Modula-3 pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>NES.PAS</b></td>
+			<td>Cette commande permet de lancer un émulateur NES.</td>
+		</tr>
+		<tr>
 			<td><b>NJS2CS.PAS</b></td>
 			<td>Cette commande permet de lancer le transpilateur Node.js (JavaScript) vers C#.</td>
 		</tr>
