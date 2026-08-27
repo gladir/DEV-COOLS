@@ -59,6 +59,26 @@ Var
  I:Integer;
  CurrPos:Byte;
 
+Const
+ MaxVariables=256;
+
+Type
+ RexxValue=Record
+  Text:String;
+  Number:Real;
+  IsNumber:Boolean;
+ End;
+ RexxVariable=Record
+  Name:String[64];
+  Value:String;
+ End;
+
+Var
+ Variables:Array[1..MaxVariables]of RexxVariable;
+ VariableCount:Integer;
+ ExprText:String;
+ ExprPos:Integer;
+
 Function LTrim(S:String):String;
 Var
  I:Integer;
@@ -176,7 +196,7 @@ Begin
   While Not EOF(FileLoad) do Begin
    ReadLn(FileLoad,S);
    If Not AddLine(LTrim(S))Then Begin
-    WriteLn('Manque de m‚moire');
+    WriteLn('Manque de mâ€šmoire');
     Break;
    End;
   End;
@@ -365,13 +385,13 @@ Begin
  End
   Else
  If(NoImplementation)Then Begin
-  WriteLn('Cette commande n''a pas ‚t‚ impl‚ment‚');
+  WriteLn('Cette commande n''a pas â€štâ€š implâ€šmentâ€š');
   Exit;
  End;
  RunLine:=True;
 End;
 
-Procedure ExecuteCommand;
+Procedure LegacyExecuteCommand;
 Var
  J:Integer;
  Err:Integer;
@@ -399,6 +419,372 @@ Begin
    Inc(CurrLinePtr);
   End;
  End;
+End;
+
+{ -----------------------------------------------------------------
+  Noyau REXX executable. L'ancien RunLine ci-dessus est conserve pour
+  documenter la table historique, mais ce moteur prend en charge les
+  expressions, variables et structures de controle reelles. }
+
+Function RTrim(S:String):String;
+Begin
+ While(Length(S)>0)and(S[Length(S)]in[' ',#9])do Delete(S,Length(S),1);
+ RTrim:=S;
+End;
+
+Function Clean(S:String):String;Begin Clean:=RTrim(LTrim(S));End;
+
+Function NumToText(N:Real):String;
+Var S:String;
+Begin
+ If Abs(N-Round(N))<0.000000001Then Str(Round(N),S)
+ Else Begin Str(N:0:8,S);While(System.Pos('.',S)>0)and(S[Length(S)]='0')do Delete(S,Length(S),1);End;
+ NumToText:=Clean(S);
+End;
+
+Function RVText(S:String):RexxValue;
+Var V:RexxValue;C:Integer;
+Begin V.Text:=S;Val(Clean(S),V.Number,C);V.IsNumber:=C=0;If Not V.IsNumber Then V.Number:=0;RVText:=V;End;
+Function RVNum(N:Real):RexxValue;
+Var V:RexxValue;Begin V.Number:=N;V.IsNumber:=True;V.Text:=NumToText(N);RVNum:=V;End;
+
+Function VarIndex(N:String):Integer;
+Var J:Integer;
+Begin N:=StrToUpper(N);VarIndex:=0;For J:=1 To VariableCount Do If Variables[J].Name=N Then Begin VarIndex:=J;Exit;End;End;
+Function VarGet(N:String):RexxValue;
+Var J:Integer;
+Begin J:=VarIndex(N);If J=0Then VarGet:=RVText(StrToUpper(N))Else VarGet:=RVText(Variables[J].Value);End;
+Procedure VarSet(N,S:String);
+Var J:Integer;
+Begin N:=StrToUpper(Clean(N));J:=VarIndex(N);If(J=0)and(VariableCount<MaxVariables)Then Begin Inc(VariableCount);J:=VariableCount;Variables[J].Name:=N;End;If J>0Then Variables[J].Value:=S;End;
+
+Procedure ESkip;Begin While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' ',#9])do Inc(ExprPos);End;
+Function ECompare:RexxValue;Forward;
+
+Function EPrimary:RexxValue;
+Var Q:Char;S,Nm:String;N:Real;C,J:Integer;A,B:RexxValue;
+Begin
+ ESkip;If ExprPos>Length(ExprText)Then Begin EPrimary:=RVText('');Exit;End;
+ If ExprText[ExprPos]in['''','"']Then Begin Q:=ExprText[ExprPos];Inc(ExprPos);S:='';While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>Q)do Begin S:=S+ExprText[ExprPos];Inc(ExprPos);End;If ExprPos<=Length(ExprText)Then Inc(ExprPos);EPrimary:=RVText(S)
+;Exit;End;
+ If ExprText[ExprPos]='('Then Begin Inc(ExprPos);EPrimary:=ECompare;ESkip;If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);Exit;End;
+ If ExprText[ExprPos]='-'Then Begin Inc(ExprPos);A:=EPrimary();EPrimary:=RVNum(-A.Number);Exit;End;
+ If ExprText[ExprPos]in['0'..'9','.']Then Begin S:='';While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0'..'9','.'])do Begin S:=S+ExprText[ExprPos];Inc(ExprPos);End;Val(S,N,C);If C<>0Then N:=0;EPrimary:=RVNum(N);Exit;End;
+ Nm:='';While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['A'..'Z','a'..'z','0'..'9','_','.'])do Begin Nm:=Nm+ExprText[ExprPos];Inc(ExprPos);End;
+ ESkip;
+ If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
+  Inc(ExprPos);A:=ECompare;ESkip;B:=RVText('');If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);B:=ECompare;End;ESkip;If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);Nm:=StrToUpper(Nm);
+  If Nm='ABS'Then EPrimary:=RVNum(Abs(A.Number))
+  Else If Nm='SIGN'Then Begin If A.Number<0 Then N:=-1 Else If A.Number>0 Then N:=1 Else N:=0;EPrimary:=RVNum(N);End
+  Else If Nm='MAX'Then Begin If A.Number>B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
+  Else If Nm='MIN'Then Begin If A.Number<B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
+  Else If Nm='TRUNC'Then EPrimary:=RVNum(System.Trunc(A.Number))
+  Else If Nm='LENGTH'Then EPrimary:=RVNum(Length(A.Text))
+  Else If Nm='LEFT'Then EPrimary:=RVText(Copy(A.Text,1,System.Trunc(B.Number)))
+  Else If Nm='RIGHT'Then Begin J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;EPrimary:=RVText(Copy(A.Text,J,255));End
+  Else EPrimary:=RVText(Nm);
+  Exit;
+ End;
+ EPrimary:=VarGet(Nm);
+End;
+
+Function EPower:RexxValue;
+Var A,B:RexxValue;J:Integer;N:Real;
+Begin A:=EPrimary;ESkip;While Copy(ExprText,ExprPos,2)='**'do Begin Inc(ExprPos,2);B:=EPrimary;N:=1;For J:=1To System.Trunc(B.Number)do N:=N*A.Number;A:=RVNum(N);ESkip;End;EPower:=A;End;
+
+Function EMul:RexxValue;
+Var A,B:RexxValue;Op:String[2];
+Begin
+ A:=EPower;
+ While True Do Begin ESkip;Op:='';If Copy(ExprText,ExprPos,2)='//'Then Begin Op:='//';Inc(ExprPos,2);End Else If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['*','/','%'])Then Begin Op:=ExprText[ExprPos];Inc(ExprPos);End;If Op=''Then Break;B:=EPower;
+  If Op='*'Then A:=RVNum(A.Number*B.Number)Else If(Op='/')and(B.Number<>0)Then A:=RVNum(A.Number/B.Number)Else If(Op='%')and(B.Number<>0)Then A:=RVNum(System.Trunc(A.Number/B.Number))Else If(Op='//')and(B.Number<>0)Then A:=RVNum(System.Trunc(A.Number)mod
+System.Trunc(B.Number))Else A:=RVNum(0);
+ End;EMul:=A;
+End;
+
+Function EAdd:RexxValue;
+Var A,B:RexxValue;O:Char;
+Begin A:=EMul;While True Do Begin ESkip;If(ExprPos>Length(ExprText))or Not(ExprText[ExprPos]in['+','-'])Then Break;O:=ExprText[ExprPos];Inc(ExprPos);B:=EMul;If O='+'Then A:=RVNum(A.Number+B.Number)Else A:=RVNum(A.Number-B.Number);End;EAdd:=A;End;
+
+Function ECompare:RexxValue;
+Var A,B:RexxValue;O:String[2];T:Boolean;
+Begin
+ A:=EAdd;ESkip;O:='';If Copy(ExprText,ExprPos,2)='>='Then O:='>=' Else
+ If Copy(ExprText,ExprPos,2)='<='Then O:='<='Else
+ If Copy(ExprText,ExprPos,2)='<>'Then O:='<>'Else
+ If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['=','>','<'])Then O:=ExprText[ExprPos];
+ If O<>''Then Begin
+  Inc(ExprPos,Length(O));B:=EAdd;
+  If A.IsNumber and B.IsNumber Then Begin
+   If O='='Then T:=A.Number=B.Number Else
+   If O='<>'Then T:=A.Number<>B.Number Else
+   If O='>'Then T:=A.Number>B.Number Else
+   If O='<'Then T:=A.Number<B.Number Else
+   If O='>='Then T:=A.Number>=B.Number
+            Else T:=A.Number<=B.Number;
+  End
+   Else
+  Begin
+   If O='='Then T:=StrToUpper(A.Text)=StrToUpper(B.Text) Else
+   If O='<>'Then T:=StrToUpper(A.Text)<>StrToUpper(B.Text) Else
+   If O='>'Then T:=StrToUpper(A.Text)>StrToUpper(B.Text)Else
+   If O='<'Then T:=StrToUpper(A.Text)<StrToUpper(B.Text)Else
+   If O='>='Then T:=StrToUpper(A.Text)>=StrToUpper(B.Text)
+            Else T:=StrToUpper(A.Text)<=StrToUpper(B.Text);
+  End;
+  If T Then A:=RVNum(1)Else
+            A:=RVNum(0);
+  End;
+  ECompare:=A;
+End;
+
+Function Eval(S:String):RexxValue;
+Var A,B:RexxValue;Tight:Boolean;
+Begin
+ ExprText:=S;ExprPos:=1;A:=ECompare;
+ While ExprPos<=Length(ExprText)do Begin ESkip;If ExprPos>Length(ExprText)Then Break;Tight:=Copy(ExprText,ExprPos,2)='||';If Tight Then Inc(ExprPos,2);B:=ECompare;If Tight Then A:=RVText(A.Text+B.Text)Else A:=RVText(A.Text+' '+B.Text);End;Eval:=A;
+End;
+
+Function Truth(V:RexxValue):Boolean;Begin If V.IsNumber Then Truth:=V.Number<>0 Else Truth:=(V.Text<>'')and(V.Text<>'0');End;
+Function WordStart(S,W:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=StrToUpper(Clean(S));
+ W:=StrToUpper(W);
+ WordStart:=(Copy(U,1,Length(W))=W)and((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
+End;
+
+Function FindWord(S,W:String):Integer;
+Var
+ J,D:Integer;
+ Q:Char;
+ U:String;
+Begin
+ U:=StrToUpper(S);
+ W:=StrToUpper(W);
+ J:=1;D:=0;Q:=#0;FindWord:=0;
+ While J<=Length(S)-Length(W)+1 Do Begin
+  If Q<>#0 Then Begin
+   If S[J]=Q Then Q:=#0;Inc(J);
+  End
+   Else
+  If S[J]in['''','"']Then Begin
+   Q:=S[J];Inc(J);
+  End
+   Else
+  Begin
+   If S[J]='('Then Inc(D)Else
+   If S[J]=')'Then Dec(D);
+   If(D=0)and(Copy(U,J,Length(W))=W)and((J=1)or(S[J-1]in[' ',#9]))and((J+Length(W)>Length(S))or(S[J+Length(W)]in[' ',#9]))Then Begin
+    FindWord:=J;
+    Exit;
+   End;
+   Inc(J);
+  End;
+ End;
+End;
+
+Function BlockEnd(A,Z:Integer):Integer;
+Var
+ J,D:Integer;U:String;
+Begin
+ D:=1;J:=A;
+ While J<=Z Do Begin
+  U:=StrToUpper(Clean(PA[J]^));
+  If WordStart(U,'DO')or WordStart(U,'SELECT')or(System.Pos(' THEN DO',U)>0)or WordStart(U,'ELSE DO')Then Inc(D);
+  If WordStart(U,'END')Then Begin
+   Dec(D);
+   If D=0Then Begin
+    BlockEnd:=J;
+    Exit;
+   End;
+  End;
+  Inc(J);
+ End;
+ BlockEnd:=Z;
+End;
+
+Var
+ LoopSignal:Byte;
+
+Procedure ExecRange(A,Z:Integer);Forward;
+
+Procedure ExecOne(S:String);
+Var P:Integer;V:RexxValue;
+Begin
+ S:=Clean(S);If S=''Then Exit;
+ If WordStart(S,'SAY')Then Begin V:=Eval(Copy(S,4,255));WriteLn(V.Text);End
+ Else If WordStart(S,'NOP')Then
+ Else If WordStart(S,'LEAVE')Then LoopSignal:=1
+ Else If WordStart(S,'ITERATE')Then LoopSignal:=2
+ Else If WordStart(S,'EXIT')Then Terminated:=True
+ Else Begin P:=System.Pos('=',S);If P>1Then Begin V:=Eval(Copy(S,P+1,255));VarSet(Copy(S,1,P-1),V.Text);End Else WriteLn('Commande non reconnue: ',S);End;
+End;
+
+Procedure ExecRange(A,Z:Integer);
+Var J,P,E,K,ToPos,ByPos,EqPos,RepeatCount:Integer;S,C,Act,LoopVar:String;V:RexxValue;Done:Boolean;LoopValue,LoopEnd,LoopStep:Real;
+Begin
+ J:=A;
+ While(J<=Z)and Not Terminated and(LoopSignal=0)do Begin
+  S:=Clean(PA[J]^);
+  If(S='')or(Copy(S,1,2)='/*')Then Inc(J) Else
+  If WordStart(S,'IF')Then Begin
+   P:=FindWord(S,'THEN');
+   If P=0Then Begin
+    WriteLn('THEN manquant ligne ',J);
+    Inc(J);
+   End
+    Else
+   Begin
+    C:=Copy(S,3,P-3);
+    Act:=Clean(Copy(S,P+4,255));
+    V:=Eval(C);
+    If StrToUpper(Act)='DO'Then Begin
+     E:=BlockEnd(J+1,Z);
+     If Truth(V)Then ExecRange(J+1,E-1);J:=E+1;If(J<=Z)and WordStart(PA[J]^,'ELSE')Then Begin
+      Act:=Clean(Copy(Clean(PA[J]^),5,255));If StrToUpper(Act)='DO'Then Begin
+      E:=BlockEnd(J+1,Z);
+      If Not Truth(V)Then ExecRange(J+1,E-1);
+      J:=E+1;
+     End
+      Else
+     Begin
+      If Not Truth(V)Then ExecOne(Act);
+      Inc(J);
+     End;
+    End;
+   End
+    Else
+   Begin
+    If Truth(V)Then ExecOne(Act);
+    Inc(J);
+    If(J<=Z)and WordStart(PA[J]^,'ELSE')Then Begin
+     If Not Truth(V)Then ExecOne(Copy(Clean(PA[J]^),5,255));
+     Inc(J);
+    End;
+   End;
+  End;
+ End
+  Else
+ If WordStart(S,'SELECT')Then Begin
+  E:=BlockEnd(J+1,Z);Done:=False;K:=J+1;
+  While K<E Do Begin
+   Act:=Clean(PA[K]^);
+   If WordStart(Act,'WHEN')Then Begin
+    P:=FindWord(Act,'THEN');
+    If(P>0)and Not Done Then Begin
+     V:=Eval(Copy(Act,5,P-5));
+     If Truth(V)Then Begin
+      ExecOne(Copy(Act,P+4,255));
+      Done:=True;
+     End;
+    End;
+   End
+    Else
+   If WordStart(Act,'OTHERWISE')and Not Done Then Begin
+    ExecOne(Copy(Act,10,255));
+    Done:=True;
+   End;
+   Inc(K);
+  End;
+  J:=E+1;
+ End
+  Else
+ If WordStart(S,'DO WHILE')or WordStart(S,'DO UNTIL')Then Begin
+  E:=BlockEnd(J+1,Z);
+  C:=Copy(S,9,255);
+  Repeat
+   V:=Eval(C);
+   If WordStart(S,'DO WHILE')Then Begin
+    If Not Truth(V)Then Break;
+   End
+    Else
+   If Truth(V)Then Break;
+   LoopSignal:=0;ExecRange(J+1,E-1);
+   If LoopSignal=1Then Begin
+    LoopSignal:=0;
+    Break;
+   End;
+   If LoopSignal=2Then LoopSignal:=0;
+  Until Terminated;J:=E+1;
+ End
+  Else
+ If WordStart(S,'DO FOREVER')Then Begin
+  E:=BlockEnd(J+1,Z);
+  Repeat
+   LoopSignal:=0;ExecRange(J+1,E-1);
+   If LoopSignal=1Then Begin
+    LoopSignal:=0;
+    Break;
+   End;
+   If LoopSignal=2Then LoopSignal:=0;
+   Until Terminated;
+   J:=E+1;
+  End
+   Else
+  If WordStart(S,'DO')and(System.Pos('=',S)>0)and(FindWord(S,'TO')>0)Then Begin
+   E:=BlockEnd(J+1,Z);
+   EqPos:=System.Pos('=',S);
+   ToPos:=FindWord(S,'TO');
+   ByPos:=FindWord(S,'BY');
+   LoopVar:=Clean(Copy(S,3,EqPos-3));
+   LoopValue:=Eval(Copy(S,EqPos+1,ToPos-EqPos-1)).Number;
+   If ByPos>0Then Begin
+    LoopEnd:=Eval(Copy(S,ToPos+2,ByPos-ToPos-2)).Number;
+    LoopStep:=Eval(Copy(S,ByPos+2,255)).Number;
+   End
+    Else
+   Begin
+    LoopEnd:=Eval(Copy(S,ToPos+2,255)).Number;
+    LoopStep:=1;
+   End;
+   If LoopStep=0Then LoopStep:=1;
+   While (((LoopStep>0)and(LoopValue<=LoopEnd))or((LoopStep<0)and(LoopValue>=LoopEnd)))and Not Terminated Do Begin
+    VarSet(LoopVar,NumToText(LoopValue));LoopSignal:=0;ExecRange(J+1,E-1);
+    If LoopSignal=1Then Begin LoopSignal:=0;Break;End;
+    If LoopSignal=2Then LoopSignal:=0;
+    LoopValue:=LoopValue+LoopStep;
+   End;
+   J:=E+1;
+  End
+   Else
+  If WordStart(S,'DO')and(Clean(Copy(S,3,255))<>'')Then Begin
+   E:=BlockEnd(J+1,Z);
+   RepeatCount:=System.Trunc(Eval(Copy(S,3,255)).Number);
+   For K:=1 To RepeatCount Do Begin
+    LoopSignal:=0;
+    ExecRange(J+1,E-1);
+    If LoopSignal=1Then Begin
+     LoopSignal:=0;
+     Break;
+    End;
+    If LoopSignal=2Then LoopSignal:=0;
+    If Terminated Then Break;
+   End;
+   J:=E+1;
+  End
+  Else
+  If WordStart(S,'DO')Then Begin
+   E:=BlockEnd(J+1,Z);
+   ExecRange(J+1,E-1);
+   J:=E+1;
+  End
+   Else
+  If WordStart(S,'END')or WordStart(S,'ELSE')Then Inc(J)
+   Else
+  Begin
+   ExecOne(S);
+   Inc(J);
+  End;
+ End;
+End;
+
+Procedure ExecuteCommand;Begin
+ VariableCount:=0;
+ Terminated:=False;
+ LoopSignal:=0;
+ If NumberLine>0Then ExecRange(1,NumberLine);
 End;
 
 BEGIN
