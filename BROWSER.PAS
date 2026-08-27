@@ -585,7 +585,11 @@ Const
  CSS_PROP_WHITE_SPACE = 41;
  CSS_PROP_BACKGROUND_POSITION = 42;
  CSS_PROP_OPACITY = 43;
- CSS_PROP_BACKGROUND_IMAGE = 44;
+  CSS_PROP_BACKGROUND_IMAGE = 44;
+ CSS_PROP_BORDER_TOP = 45;
+ CSS_PROP_BORDER_RIGHT = 46;
+ CSS_PROP_BORDER_BOTTOM = 47;
+ CSS_PROP_BORDER_LEFT = 48;
  CSS_PROP_UNKNOWN = 255;
 
 Type
@@ -943,6 +947,10 @@ Type
   BorderColor: String[32];
   BorderWidth: String[16];
   BorderStyle: String[16];
+  BorderTop: String[32];
+  BorderRight: String[32];
+  BorderBottom: String[32];
+  BorderLeft: String[32];
  End;
 
  { =====================================================
@@ -5708,6 +5716,10 @@ Begin
  Else If LowerName = 'border-color' Then CSSGetPropertyId := CSS_PROP_BORDER_COLOR
  Else If LowerName = 'border-width' Then CSSGetPropertyId := CSS_PROP_BORDER_WIDTH
  Else If LowerName = 'border-style' Then CSSGetPropertyId := CSS_PROP_BORDER_STYLE
+ Else If LowerName = 'border-top' Then CSSGetPropertyId := CSS_PROP_BORDER_TOP
+ Else If LowerName = 'border-right' Then CSSGetPropertyId := CSS_PROP_BORDER_RIGHT
+ Else If LowerName = 'border-bottom' Then CSSGetPropertyId := CSS_PROP_BORDER_BOTTOM
+ Else If LowerName = 'border-left' Then CSSGetPropertyId := CSS_PROP_BORDER_LEFT
  Else If LowerName = 'position' Then CSSGetPropertyId := CSS_PROP_POSITION
  Else If LowerName = 'top' Then CSSGetPropertyId := CSS_PROP_TOP
  Else If LowerName = 'right' Then CSSGetPropertyId := CSS_PROP_RIGHT
@@ -6100,6 +6112,10 @@ Begin
   CSS_PROP_BORDER_COLOR: Style.BorderColor := Value;
   CSS_PROP_BORDER_WIDTH: Style.BorderWidth := Value;
   CSS_PROP_BORDER_STYLE: Style.BorderStyle := Value;
+  CSS_PROP_BORDER_TOP: Style.BorderTop := Value;
+  CSS_PROP_BORDER_RIGHT: Style.BorderRight := Value;
+  CSS_PROP_BORDER_BOTTOM: Style.BorderBottom := Value;
+  CSS_PROP_BORDER_LEFT: Style.BorderLeft := Value;
   CSS_PROP_POSITION: Style.PositionProp := Value;
   CSS_PROP_TOP: Style.TopProp := Value;
   CSS_PROP_RIGHT: Style.RightProp := Value;
