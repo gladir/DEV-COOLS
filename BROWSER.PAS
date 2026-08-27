@@ -698,6 +698,7 @@ Type
   TableCellX: Integer;       { Position X de la cellule courante }
   TableCellWidth: Integer;   { Largeur de la cellule courante }
   TableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer; { Largeur propre a chaque colonne }
+  TableRowSpanRemaining: Array[1..MAX_TABLE_COLS] Of Integer; { Lignes encore occupees par rowspan }
   TableColIndex: Integer;    { Index de la colonne courante }
   TableRowY: Integer;        { Position Y de debut de la ligne }
   TableRowHeight: Integer;   { Hauteur de la ligne courante }
@@ -7088,6 +7089,8 @@ Begin
  Ctx.TableX := 0;
  Ctx.TableCellX := 0;
  Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
+ FillChar(Ctx.TableColumnWidths, SizeOf(Ctx.TableColumnWidths), 0);
+ FillChar(Ctx.TableRowSpanRemaining, SizeOf(Ctx.TableRowSpanRemaining), 0);
  Ctx.TableColIndex := 0;
  Ctx.TableRowY := 0;
  Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
@@ -7717,7 +7720,10 @@ Var
  DivStyle: DOMStyle;
  Box: TElementBoxInfo;
  MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
- BoxStartX, BoxStartY, BoxEndY: Integer;
+ BoxStartX, BoxStartY, BoxEndX, BoxEndY, RequestedWidth: Integer;
+ MeasureCtx: RenderContext;
+ OldMeasurePass: Boolean;
+ SavedAbsoluteCount: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  Box := CurrentElementBox;
@@ -7745,6 +7751,36 @@ Begin
    background CSS decoupe dans une feuille de sprites. Le peindre avant le
    contenu garantit qu'une seconde passe du tableau ne l'efface pas. }
  CSSResolveCascade(Node, DivStyle);
+
+ { Un DIV de type bloc occupe par defaut toute la largeur disponible.
+   Auparavant son background-color n'etait jamais peint: seuls ses mots
+   ou les cellules de son tableau enfant avaient un fond, ce qui
+   raccourcissait visuellement les barres de navigation. Mesurer d'abord
+   les enfants permet de peindre la boite complete avant leur contenu. }
+ If WantsBlock Then Begin
+  BoxEndX := Ctx.MaxX;
+  If Length(DivStyle.Width) > 0 Then Begin
+   RequestedWidth := CSSParseDimension(DivStyle.Width, Ctx.MaxX - BoxStartX);
+   If RequestedWidth >= 0 Then BoxEndX := BoxStartX + RequestedWidth;
+   If BoxEndX > Ctx.MaxX Then BoxEndX := Ctx.MaxX;
+  End;
+  MeasureCtx := Ctx;
+  MeasureCtx.MaxY := High(Integer);
+  OldMeasurePass := TableMeasurePass;
+  SavedAbsoluteCount := AbsolutePositionedCount;
+  TableMeasurePass := True;
+  RenderChildren(Node, MeasureCtx);
+  TableMeasurePass := OldMeasurePass;
+  AbsolutePositionedCount := SavedAbsoluteCount;
+  BoxEndY := MeasureCtx.Y + PaddingBottomPx;
+  If BoxEndY < BoxStartY + Ctx.LineHeight Then
+   BoxEndY := BoxStartY + Ctx.LineHeight;
+  If Box.HasBgBox And (Not TableMeasurePass) And
+     YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetFillStyle(SolidFill, Box.BgBoxColorIdx);
+   Bar(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
+  End;
+ End;
  RenderCSSBackgroundSprite(DivStyle, Ctx.X, Ctx.Y);
 
  RenderChildren(Node, Ctx);
@@ -7757,7 +7793,7 @@ Begin
 
  If WantsBlock Then Begin
   If PaddingBottomPx > 0 Then Ctx.Y := Ctx.Y + PaddingBottomPx;
-  BoxEndY := Ctx.Y;
+  If Ctx.Y > BoxEndY Then BoxEndY := Ctx.Y;
   { Bordure dessinee apres le contenu (simple contour, ne recouvre
     donc pas le texte deja trace - un fond plein devrait etre dessine
     AVANT le contenu, ce qui demanderait de connaitre la hauteur de la
@@ -8662,7 +8698,8 @@ End;
 { Fonction utilitaire pour compter les colonnes d'un tableau }
 Function CountTableColumns(Node: HTMLNodePtr): Integer;
 Var
- MaxCols, RowCols: Integer;
+ MaxCols, RowCols, SpanValue, Code: Integer;
+ SpanSpec: String;
  ChildNode, CellNode, RowNode: HTMLNodePtr;
 Begin
  MaxCols := 0;
@@ -8677,8 +8714,17 @@ Begin
     CellNode := ChildNode^.FirstChild;
     While CellNode <> Nil Do Begin
      If CellNode <> Nil Then Begin
-      If (CellNode^.TagType = TAG_TD) Or (CellNode^.TagType = TAG_TH) Then
-       Inc(RowCols);
+      If (CellNode^.TagType = TAG_TD) Or (CellNode^.TagType = TAG_TH) Then Begin
+       SpanValue := 1;
+       SpanSpec := GetNodeAttribute(CellNode, 'colspan');
+       If Length(SpanSpec) > 0 Then Begin
+        Val(SpanSpec, SpanValue, Code);
+        If (Code <> 0) Or (SpanValue < 1) Then SpanValue := 1;
+       End;
+       If RowCols + SpanValue > MAX_TABLE_COLS Then
+        SpanValue := MAX_TABLE_COLS - RowCols;
+       If SpanValue > 0 Then Inc(RowCols, SpanValue);
+      End;
      End;
      CellNode := CellNode^.NextSibling;
     End;
@@ -8709,8 +8755,8 @@ Procedure MeasureTableNaturalColumns(Node: HTMLNodePtr; CellPadding: Integer;
                                      Var Widths: Array Of Integer);
 Var
  Child, Cell: HTMLNodePtr;
- Col, W, RequestedWidth: Integer;
- WidthSpec: String;
+ Col, W, RequestedWidth, ColSpan, SpanCol, Code: Integer;
+ WidthSpec, SpanSpec: String;
  CellStyle: DOMStyle;
 Begin
  Child := Node^.FirstChild;
@@ -8720,6 +8766,13 @@ Begin
    Cell := Child^.FirstChild;
    While Cell <> Nil Do Begin
     If (Cell^.TagType = TAG_TD) Or (Cell^.TagType = TAG_TH) Then Begin
+     ColSpan := 1;
+     SpanSpec := GetNodeAttribute(Cell, 'colspan');
+     If Length(SpanSpec) > 0 Then Begin
+      Val(SpanSpec, ColSpan, Code);
+      If (Code <> 0) Or (ColSpan < 1) Then ColSpan := 1;
+     End;
+     If Col + ColSpan > Length(Widths) Then ColSpan := Length(Widths) - Col;
      If Col <= High(Widths) Then Begin
       W := GetTextWidth(Trim(DOMGetTextContent(Cell))) + (2 * CellPadding) + 4;
       CSSResolveCascade(Cell, CellStyle);
@@ -8730,9 +8783,14 @@ Begin
        If RequestedWidth > W Then W := RequestedWidth;
       End;
       If W < TABLE_CELL_MIN_WIDTH Then W := TABLE_CELL_MIN_WIDTH;
-      If W > Widths[Col] Then Widths[Col] := W;
+      { Une largeur naturelle portant sur plusieurs colonnes doit etre
+        repartie entre celles-ci. Elle ne doit pas gonfler uniquement la
+        premiere colonne du colspan. }
+      If ColSpan > 1 Then W := (W + ColSpan - 1) Div ColSpan;
+      For SpanCol := 0 To ColSpan - 1 Do
+       If W > Widths[Col + SpanCol] Then Widths[Col + SpanCol] := W;
      End;
-     Inc(Col);
+     Inc(Col, ColSpan);
     End;
     Cell := Cell^.NextSibling;
    End;
@@ -8753,16 +8811,26 @@ Var
  OldTableRowY, OldTableRowHeight, OldTableCellContentX: Integer;
  OldTableCellPadding, OldTableCellSpacing: Integer;
  OldTableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer;
+ OldTableRowSpanRemaining: Array[1..MAX_TABLE_COLS] Of Integer;
  NumCols, TableWidth, AvailableWidth, I, PercentValue, Code: Integer;
  CellPaddingSpec, CellSpacingSpec, TableWidthSpec, TableBorderSpec: String;
  TableStyle: DOMStyle;
  TableBox: TElementBoxInfo;
+ TableMarginTop, TableMarginBottom: Integer;
 Begin
+ CSSResolveCascade(Node, TableStyle);
+ TableBox := ComputeElementBoxInfo(TableStyle);
+ If TableBox.MarginTopPx >= 0 Then TableMarginTop := TableBox.MarginTopPx
+ Else TableMarginTop := 0;
+ If TableBox.MarginBottomPx >= 0 Then TableMarginBottom := TableBox.MarginBottomPx
+ Else TableMarginBottom := 0;
+
  { Nouvelle ligne avant le tableau si necessaire }
  If (Not RenderingAbsoluteOverlay) And
     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
- If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, TABLE_MARGIN);
+ If (Not RenderingAbsoluteOverlay) And (TableMarginTop > 0) Then
+  RenderBlockSpacing(Ctx, TableMarginTop);
 
  { Sauvegarder l'etat }
  OldInTable := Ctx.InTable;
@@ -8776,8 +8844,10 @@ Begin
  OldTableCellSpacing := Ctx.TableCellSpacing;
  OldTableCellContentX := Ctx.TableCellContentX;
  OldTableDrawBorders := Ctx.TableDrawBorders;
- For I := 1 To MAX_TABLE_COLS Do
+ For I := 1 To MAX_TABLE_COLS Do Begin
   OldTableColumnWidths[I] := Ctx.TableColumnWidths[I];
+  OldTableRowSpanRemaining[I] := Ctx.TableRowSpanRemaining[I];
+ End;
 
  { Configurer le contexte pour le tableau }
  Ctx.InTable := True;
@@ -8805,9 +8875,11 @@ Begin
  { width:auto entoure le contenu; seules les largeurs HTML/CSS explicites
    etirent le tableau sur une partie ou la totalite du conteneur. }
  NumCols := CountTableColumns(Node);
- AvailableWidth := Ctx.MaxX - Ctx.X - TABLE_MARGIN;
- For I := 1 To MAX_TABLE_COLS Do Ctx.TableColumnWidths[I] := 0;
- CSSResolveCascade(Node, TableStyle);
+ AvailableWidth := Ctx.MaxX - Ctx.X;
+ For I := 1 To MAX_TABLE_COLS Do Begin
+  Ctx.TableColumnWidths[I] := 0;
+  Ctx.TableRowSpanRemaining[I] := 0;
+ End;
  { Une table HTML n'a aucune bordure par defaut. Activer la grille
    uniquement si border est positif ou si le CSS definit une vraie
    bordure; border="0" et border:0 restent sans trait. }
@@ -8815,7 +8887,6 @@ Begin
  TableBorderSpec := GetNodeAttribute(Node, 'border');
  If Length(TableBorderSpec) > 0 Then
   Ctx.TableDrawBorders := CSSParseDimension(TableBorderSpec, 0) > 0;
- TableBox := ComputeElementBoxInfo(TableStyle);
  If TableBox.HasBorder Then Ctx.TableDrawBorders := True;
  TableWidthSpec := TableStyle.Width;
  If Length(TableWidthSpec) = 0 Then TableWidthSpec := GetNodeAttribute(Node, 'width');
@@ -8874,17 +8945,19 @@ Begin
  Ctx.TableCellSpacing := OldTableCellSpacing;
  Ctx.TableCellContentX := OldTableCellContentX;
  Ctx.TableDrawBorders := OldTableDrawBorders;
- For I := 1 To MAX_TABLE_COLS Do
+ For I := 1 To MAX_TABLE_COLS Do Begin
   Ctx.TableColumnWidths[I] := OldTableColumnWidths[I];
+  Ctx.TableRowSpanRemaining[I] := OldTableRowSpanRemaining[I];
+ End;
 
  { Retour dans le bon repere. Un tableau imbrique dans TD/TH ne doit pas
    renvoyer X a la marge de la page ni perdre le contexte de sa cellule. }
  If OldInTable Then Begin
   Ctx.X := OldTableCellContentX;
-  Inc(Ctx.Y, TABLE_MARGIN);
+  If TableMarginBottom > 0 Then Inc(Ctx.Y, TableMarginBottom);
  End Else Begin
   Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
-  RenderBlockSpacing(Ctx, TABLE_MARGIN);
+  If TableMarginBottom > 0 Then RenderBlockSpacing(Ctx, TableMarginBottom);
  End;
 End;
 
@@ -8908,9 +8981,51 @@ Begin
  RenderChildren(Node, Ctx);
 End;
 
+Function GetTableCellSpan(Node: HTMLNodePtr; Const AttrName: String): Integer;
+Var
+ Spec: String;
+ SpanValue, Code: Integer;
+Begin
+ SpanValue := 1;
+ Spec := GetNodeAttribute(Node, AttrName);
+ If Length(Spec) > 0 Then Begin
+  Val(Spec, SpanValue, Code);
+  If (Code <> 0) Or (SpanValue < 1) Then SpanValue := 1;
+ End;
+ If SpanValue > MAX_TABLE_COLS Then SpanValue := MAX_TABLE_COLS;
+ GetTableCellSpan := SpanValue;
+End;
+
+Procedure AdvancePastTableRowSpans(Var Ctx: RenderContext);
+Begin
+ While (Ctx.TableColIndex < MAX_TABLE_COLS) And
+       (Ctx.TableRowSpanRemaining[Ctx.TableColIndex + 1] > 0) Do Begin
+  Inc(Ctx.TableCellX, Ctx.TableColumnWidths[Ctx.TableColIndex + 1] +
+                         Ctx.TableCellSpacing);
+  Inc(Ctx.TableColIndex);
+ End;
+End;
+
+Function GetSpannedTableCellWidth(Var Ctx: RenderContext;
+                                  ColSpan: Integer): Integer;
+Var
+ I, LastCol, ResultWidth: Integer;
+Begin
+ ResultWidth := 0;
+ LastCol := Ctx.TableColIndex + ColSpan;
+ If LastCol > MAX_TABLE_COLS Then LastCol := MAX_TABLE_COLS;
+ For I := Ctx.TableColIndex + 1 To LastCol Do Begin
+  Inc(ResultWidth, Ctx.TableColumnWidths[I]);
+  If I < LastCol Then Inc(ResultWidth, Ctx.TableCellSpacing);
+ End;
+ If ResultWidth <= 0 Then ResultWidth := Ctx.TableCellWidth;
+ GetSpannedTableCellWidth := ResultWidth;
+End;
+
 { Procedure pour rendre la balise TR (ligne de tableau) }
 Procedure RenderTagTR(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
+ I: Integer;
  OldMeasurePass: Boolean;
  OldLineHeight: Integer;
  MeasureCtx: RenderContext;
@@ -8991,6 +9106,9 @@ Begin
   Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
  End;
  If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+ For I := 1 To MAX_TABLE_COLS Do
+  If Ctx.TableRowSpanRemaining[I] > 0 Then
+   Dec(Ctx.TableRowSpanRemaining[I]);
  Ctx.LineHeight := OldLineHeight;
 End;
 
@@ -9000,6 +9118,7 @@ Var
  CellStartX, CellStartY: Integer;
  OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
+ ColSpan, RowSpan, SpanCol, LastSpanCol: Integer;
  WidthSpec, HeightSpec: String;
  BgColorSpec: String;
  CellStyle, AncestorStyle: DOMStyle;
@@ -9013,7 +9132,14 @@ Begin
   Exit;
  End;
 
- { Position de la cellule }
+ { Position de la cellule: ignorer d'abord les colonnes encore occupees
+   par un rowspan d'une rangee precedente. }
+ AdvancePastTableRowSpans(Ctx);
+ ColSpan := GetTableCellSpan(Node, 'colspan');
+ RowSpan := GetTableCellSpan(Node, 'rowspan');
+ If Ctx.TableColIndex + ColSpan > MAX_TABLE_COLS Then
+  ColSpan := MAX_TABLE_COLS - Ctx.TableColIndex;
+ If ColSpan < 1 Then ColSpan := 1;
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
  { La hauteur de ligne appartient au contenu de cette cellule. Une image
@@ -9092,9 +9218,7 @@ Begin
    la cellule. Ils etaient auparavant ignores au profit d'un partage egal
    de toutes les colonnes, meme pour <td width="200">/.MenuItem. }
  OldTableCellWidth := Ctx.TableCellWidth;
- If (Ctx.TableColIndex + 1 <= MAX_TABLE_COLS) And
-    (Ctx.TableColumnWidths[Ctx.TableColIndex + 1] > 0) Then
-  Ctx.TableCellWidth := Ctx.TableColumnWidths[Ctx.TableColIndex + 1];
+ Ctx.TableCellWidth := GetSpannedTableCellWidth(Ctx, ColSpan);
  WidthSpec := CellStyle.Width;
  If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
  If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
@@ -9162,8 +9286,12 @@ Begin
   AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight, Node);
 
  { Passer a la cellule suivante }
+ LastSpanCol := Ctx.TableColIndex + ColSpan;
+ If RowSpan > 1 Then
+  For SpanCol := Ctx.TableColIndex + 1 To LastSpanCol Do
+   Ctx.TableRowSpanRemaining[SpanCol] := RowSpan;
  Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + Ctx.TableCellSpacing;
- Inc(Ctx.TableColIndex);
+ Inc(Ctx.TableColIndex, ColSpan);
 
  { Dessiner la bordure droite de la cellule }
  If Ctx.TableDrawBorders And
@@ -9185,6 +9313,7 @@ Var
  OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
  OldTextStyle: Byte;
  CellNaturalHeight, RequestedWidth, RequestedHeight: Integer;
+ ColSpan, RowSpan, SpanCol, LastSpanCol: Integer;
  WidthSpec, HeightSpec: String;
  CellStyle: DOMStyle;
  CellBgColor, TryBgColor, CellInset: Integer;
@@ -9198,7 +9327,12 @@ Begin
   Exit;
  End;
 
- { Position de la cellule }
+ AdvancePastTableRowSpans(Ctx);
+ ColSpan := GetTableCellSpan(Node, 'colspan');
+ RowSpan := GetTableCellSpan(Node, 'rowspan');
+ If Ctx.TableColIndex + ColSpan > MAX_TABLE_COLS Then
+  ColSpan := MAX_TABLE_COLS - Ctx.TableColIndex;
+ If ColSpan < 1 Then ColSpan := 1;
  CellStartX := Ctx.TableCellX;
  CellStartY := Ctx.TableRowY;
  OldLineHeight := Ctx.LineHeight;
@@ -9216,9 +9350,7 @@ Begin
  End;
 
  OldTableCellWidth := Ctx.TableCellWidth;
- If (Ctx.TableColIndex + 1 <= MAX_TABLE_COLS) And
-    (Ctx.TableColumnWidths[Ctx.TableColIndex + 1] > 0) Then
-  Ctx.TableCellWidth := Ctx.TableColumnWidths[Ctx.TableColIndex + 1];
+ Ctx.TableCellWidth := GetSpannedTableCellWidth(Ctx, ColSpan);
  WidthSpec := CellStyle.Width;
  If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
  If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
@@ -9278,8 +9410,12 @@ Begin
   AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + Ctx.TableRowHeight, Node);
 
  { Passer a la cellule suivante }
+ LastSpanCol := Ctx.TableColIndex + ColSpan;
+ If RowSpan > 1 Then
+  For SpanCol := Ctx.TableColIndex + 1 To LastSpanCol Do
+   Ctx.TableRowSpanRemaining[SpanCol] := RowSpan;
  Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + Ctx.TableCellSpacing;
- Inc(Ctx.TableColIndex);
+ Inc(Ctx.TableColIndex, ColSpan);
 
  { Dessiner la bordure droite de la cellule }
  If Ctx.TableDrawBorders And
