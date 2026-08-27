@@ -15779,7 +15779,11 @@ Var
  Ctx: RenderContext;
  BodyNode: HTMLNodePtr;
  BodyStyle: DOMStyle;
+ BodyBox: TElementBoxInfo;
  BodyBgColor, TryBgColor: Integer;
+ BodyMarginLeft, BodyMarginRight, BodyMarginTop, BodyMarginBottom: Integer;
+ BodyPaddingLeft, BodyPaddingRight, BodyPaddingTop, BodyPaddingBottom: Integer;
+ BodyBorderInset, BorderLine: Integer;
 Begin
  If Doc = Nil Then Exit;
 
@@ -15808,21 +15812,93 @@ Begin
    couvre exactement toute la zone de rendu, connue d'avance - aucun
    probleme d'ordre de dessin comme pour un fond de bloc generique. }
  BodyBgColor := RENDER_BG_COLOR;
+ BodyMarginLeft := RENDER_MARGIN_LEFT;
+ BodyMarginRight := RENDER_MARGIN_LEFT;
+ BodyMarginTop := RENDER_MARGIN_TOP;
+ BodyMarginBottom := RENDER_MARGIN_TOP;
+ BodyPaddingLeft := 0;
+ BodyPaddingRight := 0;
+ BodyPaddingTop := 0;
+ BodyPaddingBottom := 0;
+ BodyBorderInset := 0;
+ BodyBox.HasBorder := False;
  If CSSEnabled Then Begin
   BodyNode := DOMGetBody;
   If BodyNode <> Nil Then Begin
    CSSResolveCascade(BodyNode, BodyStyle);
+   BodyBox := ComputeElementBoxInfo(BodyStyle);
    If Length(BodyStyle.BackgroundColor) > 0 Then Begin
     TryBgColor := CSSColorToIndex(BodyStyle.BackgroundColor);
     If TryBgColor >= 0 Then BodyBgColor := TryBgColor;
    End;
+
+   { La boite du BODY definit le repere de toute la page. L'ancien moteur
+     conservait toujours RENDER_MARGIN_LEFT/TOP, meme lorsque margin et
+     padding valaient zero, formant une fausse bordure autour du contenu. }
+   If Length(BodyStyle.MarginLeft) > 0 Then
+    BodyMarginLeft := CSSParseDimension(BodyStyle.MarginLeft, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginLeft := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.MarginRight) > 0 Then
+    BodyMarginRight := CSSParseDimension(BodyStyle.MarginRight, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginRight := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.MarginTop) > 0 Then
+    BodyMarginTop := CSSParseDimension(BodyStyle.MarginTop, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginTop := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.MarginBottom) > 0 Then
+    BodyMarginBottom := CSSParseDimension(BodyStyle.MarginBottom, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginBottom := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.PaddingLeft) > 0 Then
+    BodyPaddingLeft := CSSParseDimension(BodyStyle.PaddingLeft, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingLeft := CSSParseDimension(BodyStyle.Padding, 0);
+   If Length(BodyStyle.PaddingRight) > 0 Then
+    BodyPaddingRight := CSSParseDimension(BodyStyle.PaddingRight, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingRight := CSSParseDimension(BodyStyle.Padding, 0);
+   If Length(BodyStyle.PaddingTop) > 0 Then
+    BodyPaddingTop := CSSParseDimension(BodyStyle.PaddingTop, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingTop := CSSParseDimension(BodyStyle.Padding, 0);
+   If Length(BodyStyle.PaddingBottom) > 0 Then
+    BodyPaddingBottom := CSSParseDimension(BodyStyle.PaddingBottom, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingBottom := CSSParseDimension(BodyStyle.Padding, 0);
+   If BodyBox.HasBorder Then BodyBorderInset := BodyBox.BorderWidthPx;
   End;
  End;
+
+ { Conserver la convention interne RenderOriginX + RENDER_MARGIN_LEFT,
+   mais faire correspondre cette expression au vrai bord gauche CSS. }
+ RenderOriginX := RENDER_AREA_X - ScrollX - RENDER_MARGIN_LEFT +
+                  BodyMarginLeft + BodyBorderInset + BodyPaddingLeft;
+ RenderOriginY := RENDER_AREA_Y - ScrollY - RENDER_MARGIN_TOP +
+                  BodyMarginTop + BodyBorderInset + BodyPaddingTop;
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+ Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
+ Ctx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE -
+             BodyMarginRight - BodyBorderInset - BodyPaddingRight;
 
  { Effacer la zone de rendu avec cette couleur }
  LastBodyBgColor := BodyBgColor;
  If Not SkipNextRenderAreaClear Then
   ClearRenderArea(BodyBgColor);
+
+ { Contrairement a margin et padding, une vraie bordure CSS du BODY est
+   visible. La dessiner avec son epaisseur demandee autour du viewport. }
+ If BodyBox.HasBorder And (Not SkipNextRenderAreaClear) Then Begin
+  SetColor(BodyBox.BorderColorIdx);
+  For BorderLine := 0 To BodyBox.BorderWidthPx - 1 Do
+   Rectangle(RENDER_AREA_X + BodyMarginLeft + BorderLine,
+             RENDER_AREA_Y + BodyMarginTop + BorderLine,
+             RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE -
+               BodyMarginRight - BorderLine,
+             RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE -
+               BodyMarginBottom - BorderLine);
+ End;
 
  { Rendre le document avec application des styles CSS }
  ContentOverflowX := RENDER_AREA_X;
