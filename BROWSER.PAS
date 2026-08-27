@@ -15725,6 +15725,11 @@ End;
   bas, avec les autres elements de l'interface comme les boutons). }
 Procedure DrawVScrollBar; Forward;
 Procedure DrawHScrollBar; Forward;
+Procedure DrawURLBar; Forward;
+Procedure DrawBackButton; Forward;
+Procedure DrawForwardButton; Forward;
+Procedure DrawRefreshButton; Forward;
+Procedure DrawFavoriteButton; Forward;
 
 { Procedure pour rendre un document HTML complet }
 { Afficher par-dessus tout le reste les elements CSS position:absolute
@@ -16036,6 +16041,16 @@ Begin
 
  DrawVScrollBar;
  DrawHScrollBar;
+
+ { Le chrome du navigateur est une couche fixe et doit toujours etre
+   peint apres le document. Certains rendus provoques par JavaScript,
+   le survol ou le defilement ne repassaient pas par NavigateTo et
+   pouvaient laisser la barre d'adresse et ses boutons recouverts. }
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
 End;
 
 { Procedure pour tester le rendu avec du HTML }
@@ -16154,11 +16169,15 @@ Begin
  Bar(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
 
  { Dessiner la bordure de la barre d'URL }
- SetColor(COLOR_URL_BAR_BORDER);
+ SetColor(HTMLBlackColorIndex);
  Rectangle(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
 
  { Afficher l'URL courante }
- SetColor(COLOR_URL_BAR_TEXT);
+ { En D8bit, le chargement des images remplace la palette. L'index VGA
+   fixe 0 peut alors devenir blanc et rendre l'adresse invisible sur le
+   fond blanc. HTMLBlackColorIndex designe le noir reserve de la palette
+   active dans les deux modes graphiques. }
+ SetColor(HTMLBlackColorIndex);
  TextX := URL_BAR_X + 5;
  TextY := URL_BAR_Y + 5;
 
@@ -16173,7 +16192,7 @@ Begin
 
  { Dessiner le curseur si la barre a le focus }
  If URLBarFocused Then Begin
-  SetColor(COLOR_URL_BAR_CURSOR);
+  SetColor(HTMLBlackColorIndex);
   Line(TextX + (URLCursorPos * 8), URL_BAR_Y + 3,
        TextX + (URLCursorPos * 8), URL_BAR_Y + URL_BAR_HEIGHT - 3);
  End;
