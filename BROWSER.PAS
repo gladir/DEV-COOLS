@@ -340,7 +340,7 @@ Const
 
  { Couleurs de rendu }
  RENDER_BG_COLOR = 15;         { Blanc }
- RENDER_TEXT_COLOR = 16;       { Noir fiable en mode PtcGraph D8bit }
+ RENDER_TEXT_COLOR = 0;        { Noir BGI; remappe dynamiquement en D8bit }
  RENDER_LINK_COLOR = 1;        { Bleu }
  RENDER_LINK_VISITED_COLOR = 5;{ Violet/Magenta }
  RENDER_LINK_ACTIVE_COLOR = 4; { Rouge }
@@ -533,7 +533,10 @@ Const
  CSS_COMB_SIBLING = 4;       { ~ (frere general) }
 
  { Limites du parseur CSS }
- MAX_CSS_RULES = 256;        { Nombre maximum de regles CSS }
+ { menu.css contient plusieurs centaines de classes sprite. Avec 256,
+   les definitions situees vers la fin de la feuille disparaissaient selon
+   l'ordre de chargement et leurs icones semblaient clignoter puis manquer. }
+ MAX_CSS_RULES = 1024;       { Nombre maximum de regles CSS }
  MAX_CSS_SELECTORS = 16;     { Selecteurs maximum par regle }
  MAX_CSS_PROPERTIES = 64;    { Proprietes maximum par regle }
  MAX_CSS_SELECTOR_PARTS = 8; { Parties maximum par selecteur compose }
@@ -580,6 +583,7 @@ Const
  CSS_PROP_LIST_STYLE_TYPE = 39;
  CSS_PROP_VERTICAL_ALIGN = 40;
  CSS_PROP_WHITE_SPACE = 41;
+ CSS_PROP_BACKGROUND_POSITION = 42;
  CSS_PROP_UNKNOWN = 255;
 
 Type
@@ -895,7 +899,8 @@ Type
  { Style CSS d'un element DOM }
  DOMStyle = Record
   Color: String[32];
-  BackgroundColor: String[32];
+ BackgroundColor: String[32];
+  BackgroundPosition: String[32];
   FontSize: String[16];
   FontWeight: String[16];
   FontStyle: String[16];
@@ -1088,6 +1093,7 @@ Var
  MouseButton: LongInt;
  LastMouseButton: LongInt;
  MousePressedInteractiveNode: HTMLNodePtr;
+ HTMLBlackColorIndex: Integer; { 0 en VGA 16 couleurs, 16 en D8bit }
 
  { Variables pour le parseur HTML }
  HTMLDocument: HTMLNodePtr;   { Racine du document HTML parse }
@@ -1103,6 +1109,8 @@ Var
  InteractiveAreas: Array[1..MAX_LINKS] Of InteractiveArea;
  InteractiveAreaCount: Integer;
  HoveredInteractiveNode: HTMLNodePtr; { Noeud actuellement survole, pour declencher onmouseout au depart }
+ HoverAnchorValid: Boolean;
+ HoverAnchorX1, HoverAnchorY1, HoverAnchorX2, HoverAnchorY2: Integer;
 
  { Un deplacement entre deux cellules declenche normalement deux
    gestionnaires (mouseout puis mouseover). Ils doivent former une seule
@@ -5667,6 +5675,7 @@ Begin
  If LowerName = 'color' Then CSSGetPropertyId := CSS_PROP_COLOR
  Else If LowerName = 'background-color' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_COLOR
  Else If LowerName = 'background' Then CSSGetPropertyId := CSS_PROP_BACKGROUND
+ Else If LowerName = 'background-position' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_POSITION
  Else If LowerName = 'font-size' Then CSSGetPropertyId := CSS_PROP_FONT_SIZE
  Else If LowerName = 'font-weight' Then CSSGetPropertyId := CSS_PROP_FONT_WEIGHT
  Else If LowerName = 'font-style' Then CSSGetPropertyId := CSS_PROP_FONT_STYLE
@@ -6053,6 +6062,7 @@ Begin
   CSS_PROP_COLOR: Style.Color := Value;
   CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Value;
   CSS_PROP_BACKGROUND: Style.BackgroundColor := Value;
+  CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := Value;
   CSS_PROP_FONT_SIZE: Style.FontSize := Value;
   CSS_PROP_FONT_WEIGHT: Style.FontWeight := Value;
   CSS_PROP_FONT_STYLE: Style.FontStyle := Value;
@@ -6220,6 +6230,7 @@ Begin
  { Initialiser avec valeurs par defaut }
  Style.Color := '';
  Style.BackgroundColor := '';
+ Style.BackgroundPosition := '';
  Style.FontSize := '';
  Style.FontWeight := '';
  Style.FontStyle := '';
@@ -6243,6 +6254,8 @@ Begin
      Case CSSGlobalStylesheet.Rules[I].Properties[K].PropId Of
       CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_BACKGROUND: Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
+      CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
       CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
@@ -6306,7 +6319,7 @@ Begin
    BestIdx := I;
   End;
  End;
- If BestIdx = 0 Then CSSRGBToIndex := 16
+ If BestIdx = 0 Then CSSRGBToIndex := HTMLBlackColorIndex
  Else CSSRGBToIndex := BestIdx;
 End;
 
@@ -6427,7 +6440,7 @@ Begin
  LowerColor := HTMLLowerCase(ColorStr);
 
  { Couleurs nommees }
- If LowerColor = 'black' Then CSSColorToIndex := 16
+ If LowerColor = 'black' Then CSSColorToIndex := HTMLBlackColorIndex
  Else If LowerColor = 'blue' Then CSSColorToIndex := 1
  Else If LowerColor = 'green' Then CSSColorToIndex := 2
  Else If LowerColor = 'cyan' Then CSSColorToIndex := 3
@@ -6649,6 +6662,7 @@ Begin
  { Initialiser avec valeurs par defaut }
  Style.Color := '';
  Style.BackgroundColor := '';
+ Style.BackgroundPosition := '';
  Style.FontSize := '';
  Style.FontWeight := '';
  Style.FontStyle := '';
@@ -7036,7 +7050,7 @@ Begin
    dans la plage de l'Integer 16 bits de Turbo Pascal. }
  Ctx.MaxY := RENDER_LAYOUT_MAX_Y;
  Ctx.LineHeight := RENDER_LINE_HEIGHT;
- Ctx.TextColor := RENDER_TEXT_COLOR;
+ Ctx.TextColor := HTMLBlackColorIndex;
  Ctx.BgColor := RENDER_BG_COLOR;
  Ctx.InHead := False;
  Ctx.InBody := False;
@@ -7154,18 +7168,21 @@ Begin
  End;
 End;
 
-{ Fonction pour trouver le noeud interactif a une position donnee
-  (0/Nil si aucun) - voir FindLinkAtPosition. }
-Function FindInteractiveNodeAtPosition(X, Y: Integer): HTMLNodePtr;
+{ Trouver la zone interactive peinte au premier plan. }
+Function FindInteractiveAreaAtPosition(X, Y: Integer): Integer;
 Var
  I: Integer;
 Begin
- FindInteractiveNodeAtPosition := Nil;
- For I := 1 To InteractiveAreaCount Do Begin
+ FindInteractiveAreaAtPosition := 0;
+ { Les overlays sont ajoutes apres le document normal et sont donc au
+   premier plan. Parcourir en sens inverse evite qu'une cellule de la page
+   situee sous un sous-menu intercepte aleatoirement son survol. La premiere
+   zone rencontree en sens inverse est celle peinte au-dessus des autres. }
+ For I := InteractiveAreaCount DownTo 1 Do Begin
   If InteractiveAreas[I].Active Then Begin
    If (X >= InteractiveAreas[I].X1) And (X <= InteractiveAreas[I].X2) And
       (Y >= InteractiveAreas[I].Y1) And (Y <= InteractiveAreas[I].Y2) Then Begin
-    FindInteractiveNodeAtPosition := InteractiveAreas[I].Node;
+    FindInteractiveAreaAtPosition := I;
     Exit;
    End;
   End;
@@ -7229,7 +7246,9 @@ Var
  I: Integer;
 Begin
  FindInteractiveAreaIndex := 0;
- For I := 1 To InteractiveAreaCount Do
+ { En cas de doublon, la derniere boite appartient a la passe/couche
+   effectivement peinte au-dessus. }
+ For I := InteractiveAreaCount DownTo 1 Do
   If InteractiveAreas[I].Node = Node Then Begin
    FindInteractiveAreaIndex := I;
    Exit;
@@ -7610,6 +7629,7 @@ End;
 
 { Declaration forward pour la recursion }
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
+Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer); Forward;
 
 { Procedure pour rendre les enfants d'un noeud }
 Procedure RenderChildren(Node: HTMLNodePtr; Var Ctx: RenderContext);
@@ -7663,6 +7683,7 @@ End;
 Procedure RenderTagDiv(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
+ DivStyle: DOMStyle;
  Box: TElementBoxInfo;
  MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
  BoxStartX, BoxStartY, BoxEndY: Integer;
@@ -7689,7 +7710,19 @@ Begin
   ApplyTextAlignOffset(Ctx, Node);
  End;
 
+ { Les icones de JSCookMenu sont des DIV vides dont l'image est un
+   background CSS decoupe dans une feuille de sprites. Le peindre avant le
+   contenu garantit qu'une seconde passe du tableau ne l'efface pas. }
+ CSSResolveCascade(Node, DivStyle);
+ RenderCSSBackgroundSprite(DivStyle, Ctx.X, Ctx.Y);
+
  RenderChildren(Node, Ctx);
+
+ { Un DIV sprite vide doit quand meme reserver sa hauteur CSS. }
+ If WantsBlock And (Node^.FirstChild = Nil) And
+    (CSSParseDimension(DivStyle.Height, 0) > 0) And
+    (Ctx.Y < BoxStartY + CSSParseDimension(DivStyle.Height, 0)) Then
+  Ctx.Y := BoxStartY + CSSParseDimension(DivStyle.Height, 0);
 
  If WantsBlock Then Begin
   If PaddingBottomPx > 0 Then Ctx.Y := Ctx.Y + PaddingBottomPx;
@@ -7766,14 +7799,35 @@ Begin
  End;
 End;
 
+Function FindInteractiveNodeAtPosition(X, Y: Integer): HTMLNodePtr;
+Var
+ I: Integer;
+Begin
+ I := FindInteractiveAreaAtPosition(X, Y);
+ If I > 0 Then
+  FindInteractiveNodeAtPosition := InteractiveAreas[I].Node
+ Else
+  FindInteractiveNodeAtPosition := Nil;
+End;
+
 { Procedure pour rendre la balise NAV (HTML5 navigation) }
 Procedure RenderTagNav(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
+ NavStyle: DOMStyle;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
+ CSSResolveCascade(Node, NavStyle);
+ { display:table + margin:auto est la technique CSS employee par
+   .breadcrumb pour obtenir une boite ajustee a son texte et centree. }
+ If (HTMLLowerCase(NavStyle.Display) = 'table') And
+    (System.Pos('auto', HTMLLowerCase(NavStyle.Margin)) > 0) Then Begin
+  Ctx.TextAlignMode := ALIGN_CENTER;
+  ApplyTextAlignOffset(Ctx, Node);
+ End Else If Ctx.TextAlignMode <> ALIGN_LEFT Then
+  ApplyTextAlignOffset(Ctx, Node);
  RenderChildren(Node, Ctx);
  If WantsBlock Then
   RenderNewLine(Ctx);
@@ -7801,13 +7855,33 @@ End;
 Procedure RenderTagHeader(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  WantsBlock: Boolean;
+ HeaderStyle: DOMStyle;
+ HeaderBox: TElementBoxInfo;
+ HeaderX1, HeaderY1, HeaderX2, HeaderHeight: Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
+ CSSResolveCascade(Node, HeaderStyle);
+ HeaderBox := ComputeElementBoxInfo(HeaderStyle);
+ HeaderX1 := RENDER_AREA_X;
+ HeaderX2 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+ HeaderY1 := Ctx.Y;
+ HeaderHeight := CSSParseDimension(HeaderStyle.Height, Ctx.LineHeight);
+ If HeaderHeight < Ctx.LineHeight Then HeaderHeight := Ctx.LineHeight;
+ { Un HEADER bloc occupe la largeur disponible, independamment de la
+   largeur de ses enfants. Peindre son background AVANT le fil d'Ariane. }
+ If HeaderBox.HasBgBox And YInVisibleBand(HeaderY1, HeaderY1 + HeaderHeight) Then Begin
+  SetFillStyle(SolidFill, HeaderBox.BgBoxColorIdx);
+  Bar(HeaderX1, HeaderY1, HeaderX2, HeaderY1 + HeaderHeight);
+ End;
  RenderChildren(Node, Ctx);
- If WantsBlock Then
-  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+ If WantsBlock Then Begin
+  { height et overflow:hidden fixent la hauteur de la barre : les H2
+    display:none et les listes absolues ne doivent pas l'agrandir. }
+  If Ctx.Y < HeaderY1 + HeaderHeight Then Ctx.Y := HeaderY1 + HeaderHeight;
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+ End;
 End;
 
 { Procedure pour rendre la balise FOOTER (HTML5 pied de page) }
@@ -9581,6 +9655,7 @@ Var
  StartX, StartY: Integer;
  EndX, EndY: Integer;
  LinkCountBefore: Integer;
+ LinkStyle: DOMStyle;
 Begin
  { Obtenir les attributs href et title }
  Href := GetNodeAttribute(Node, 'href');
@@ -9598,8 +9673,17 @@ Begin
  OldInLink := Ctx.InLink;
 
  { Configurer le style de lien }
- Ctx.TextColor := RENDER_LINK_COLOR;
- Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+ { Ne pas ecraser une couleur CSS/heritee explicite, notamment le blanc
+   du fil d'Ariane dans le HEADER. Le bleu reste le defaut sur fond noir. }
+ If OldTextColor = HTMLBlackColorIndex Then
+  Ctx.TextColor := RENDER_LINK_COLOR
+ Else
+  Ctx.TextColor := OldTextColor;
+ CSSResolveCascade(Node, LinkStyle);
+ If HTMLLowerCase(LinkStyle.TextDecoration) = 'none' Then
+  Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE)
+ Else
+  Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
  Ctx.InLink := True;
  Ctx.CurrentLinkHref := Href;
 
@@ -9945,7 +10029,7 @@ Begin
   End;
  End;
 
- If BestColor = 0 Then BMPRGBToVGAColor := 16
+ If BestColor = 0 Then BMPRGBToVGAColor := HTMLBlackColorIndex
  Else BMPRGBToVGAColor := BestColor;
 End;
 
@@ -10530,7 +10614,7 @@ Begin
   End;
  End;
 
- If BestColor = 0 Then GIFRGBToVGAColor := 16
+ If BestColor = 0 Then GIFRGBToVGAColor := HTMLBlackColorIndex
  Else GIFRGBToVGAColor := BestColor;
 End;
 
@@ -11425,7 +11509,7 @@ Begin
   End;
  End;
 
- If BestColor = 0 Then JPEGRGBToVGAColor := 16
+ If BestColor = 0 Then JPEGRGBToVGAColor := HTMLBlackColorIndex
  Else JPEGRGBToVGAColor := BestColor;
 End;
 
@@ -12437,7 +12521,7 @@ Begin
   End;
  End;
 
- If BestColor = 0 Then PNGRGBToVGAColor := 16
+ If BestColor = 0 Then PNGRGBToVGAColor := HTMLBlackColorIndex
  Else PNGRGBToVGAColor := BestColor;
 End;
 
@@ -13572,7 +13656,7 @@ Begin
   End;
  End;
 
- If BestColor = 0 Then SVGColorToVGA := 16
+ If BestColor = 0 Then SVGColorToVGA := HTMLBlackColorIndex
  Else SVGColorToVGA := BestColor;
 End;
 
@@ -14952,6 +15036,81 @@ Begin
  End;
 End;
 
+{ Rendre un background CSS decoupe dans une image PNG. C'est le mecanisme
+  employe par les classes sprite-* du menu : background-position contient
+  des coordonnees negatives dans ressources.png. }
+Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer);
+Var
+ Bg, LowerBg, Src, PosText, Token: String;
+ P1, P2, SpacePos, Code: Integer;
+ BgX, BgY, W, H, SrcX, SrcY, DX, DY, CacheIndex: Integer;
+ Img: PNGImage;
+ PixelColor, Alpha: Byte;
+Begin
+ Bg := Style.BackgroundColor;
+ LowerBg := HTMLLowerCase(Bg);
+ P1 := System.Pos('url(', LowerBg);
+ If P1 = 0 Then Exit;
+ Inc(P1, 4);
+ P2 := P1;
+ While (P2 <= Length(Bg)) And (Bg[P2] <> ')') Do Inc(P2);
+ If P2 > Length(Bg) Then Exit;
+ Src := Trim(Copy(Bg, P1, P2 - P1));
+ If (Length(Src) >= 2) And (Src[1] In ['''', '"']) And
+    (Src[Length(Src)] = Src[1]) Then
+  Src := Copy(Src, 2, Length(Src) - 2);
+ If HTMLLowerCase(ExtractFileExt(Src)) <> '.png' Then Exit;
+
+ BgX := 0;
+ BgY := 0;
+ PosText := Trim(Style.BackgroundPosition);
+ SpacePos := System.Pos(' ', PosText);
+ If SpacePos > 0 Then Begin
+  Token := Copy(PosText, 1, SpacePos - 1);
+  Delete(PosText, 1, SpacePos);
+  PosText := Trim(PosText);
+ End Else Begin
+  Token := PosText;
+  PosText := '0';
+ End;
+ If System.Pos('px', HTMLLowerCase(Token)) > 0 Then
+  Delete(Token, System.Pos('px', HTMLLowerCase(Token)), 2);
+ Val(Token, BgX, Code);
+ If Code <> 0 Then BgX := 0;
+ If System.Pos('px', HTMLLowerCase(PosText)) > 0 Then
+  Delete(PosText, System.Pos('px', HTMLLowerCase(PosText)), 2);
+ Val(PosText, BgY, Code);
+ If Code <> 0 Then BgY := 0;
+
+ W := CSSParseDimension(Style.Width, 0);
+ H := CSSParseDimension(Style.Height, 0);
+ If (W <= 0) Or (H <= 0) Then Exit;
+ Src := BMPBuildImagePath(Src);
+ CacheIndex := PNGFindInCache(Src);
+ If CacheIndex = 0 Then Begin
+  If Not PNGLoadFromFile(Src, Img) Then Exit;
+  CacheIndex := PNGAddToCache(Src, Img);
+  If CacheIndex = 0 Then Begin PNGFreeImage(Img); Exit; End;
+ End;
+ SrcX := -BgX;
+ SrcY := -BgY;
+ For DY := 0 To H - 1 Do
+  For DX := 0 To W - 1 Do
+   If (SrcX + DX >= 0) And
+      (SrcX + DX < PNGImageCache[CacheIndex].Image.Width) And
+      (SrcY + DY >= 0) And
+      (SrcY + DY < PNGImageCache[CacheIndex].Image.Height) Then Begin
+    If PNGImageCache[CacheIndex].Image.HasAlpha Then
+     Alpha := PNGGetAlpha(PNGImageCache[CacheIndex].Image, SrcX + DX, SrcY + DY)
+    Else
+     Alpha := 255;
+    If Alpha > 128 Then Begin
+     PixelColor := PNGGetPixel(PNGImageCache[CacheIndex].Image, SrcX + DX, SrcY + DY);
+     PutPixel(X + DX, Y + DY, PixelColor);
+    End;
+   End;
+End;
+
 { Variable globale pour activer/desactiver l'application CSS automatique }
 Var
  CSSAutoApply: Boolean;
@@ -15175,7 +15334,15 @@ Begin
    et onmouseout sont portes par DIV.displayImage. A l'interieur d'une
    cellule, ses limites finales sont la boite la plus fiable apres les deux
    passes de mesure du tableau. }
- If HasInlineHandler Then Begin
+ { TD/TH/TR enregistrent deja leur zone DANS leur routine specialisee,
+   avant de restaurer/avancer le contexte du tableau. Les enregistrer une
+   seconde fois ici produisait une boite decalee (cellule suivante ou ligne
+   suivante), laquelle gagnait ensuite le hit-test parce qu'elle etait
+   ajoutee en dernier. }
+ If HasInlineHandler And
+    (Node^.TagType <> TAG_TD) And
+    (Node^.TagType <> TAG_TH) And
+    (Node^.TagType <> TAG_TR) Then Begin
   If Ctx.InTable Then
    AddInteractiveArea(Ctx.TableCellX, Ctx.TableRowY,
                       Ctx.TableCellX + Ctx.TableCellWidth,
@@ -15279,6 +15446,17 @@ Begin
        { Menu horizontal principal : directement sous sa cellule. }
        OverlayCtx.X := InteractiveAreas[AnchorAreaIndex].X1;
        OverlayCtx.Y := InteractiveAreas[AnchorAreaIndex].Y2;
+      End;
+     End Else If HoverAnchorValid Then Begin
+      { Le gestionnaire peut cacher le menu qui contenait la zone avant la
+        nouvelle passe. Employer alors les coordonnees capturees AVANT
+        l'execution JavaScript, plutot que de retomber a (0,0). }
+      If HoveredInteractiveNode^.TagType = TAG_TR Then Begin
+       OverlayCtx.X := HoverAnchorX2;
+       OverlayCtx.Y := HoverAnchorY1;
+      End Else Begin
+       OverlayCtx.X := HoverAnchorX1;
+       OverlayCtx.Y := HoverAnchorY2;
       End;
      End;
     End;
@@ -16693,6 +16871,10 @@ Const
 Var
  I: Integer;
 Begin
+ If GetMaxColor >= 16 Then
+  HTMLBlackColorIndex := 16
+ Else
+  HTMLBlackColorIndex := Black;
  For I := 0 To 15 Do
   { PtcGraph attend des composantes 0..255. Le Shr 2 adapte aux anciens
     registres DAC VGA 0..63, mais rend ici le blanc (255) gris (63) et
@@ -16703,7 +16885,8 @@ Begin
    mapper vers un registre distinct programme en noir rend enfin les
    textes CSS color:black visibles, sans modifier les index utilises par
    tout le moteur et les decodeurs d'images. }
- SetRGBPalette(16, 0, 0, 0);
+ If GetMaxColor >= 16 Then
+  SetRGBPalette(16, 0, 0, 0);
 End;
 
 Procedure InitializeGraphics;
@@ -17121,19 +17304,37 @@ End;
 Procedure ProcessMouseHover;
 Var
  CurrentNode, PreviousNode: HTMLNodePtr;
+ CurrentAreaIndex: Integer;
 Begin
- If IsInRenderArea(MouseX, MouseY) Then
-  CurrentNode := FindInteractiveNodeAtPosition(MouseX, MouseY)
- Else
- CurrentNode := Nil;
+ If IsInRenderArea(MouseX, MouseY) Then Begin
+  CurrentAreaIndex := FindInteractiveAreaAtPosition(MouseX, MouseY);
+  If CurrentAreaIndex > 0 Then
+   CurrentNode := InteractiveAreas[CurrentAreaIndex].Node
+  Else
+   CurrentNode := Nil;
+ End Else Begin
+  CurrentAreaIndex := 0;
+  CurrentNode := Nil;
+ End;
 
  If CurrentNode <> HoveredInteractiveNode Then Begin
   HideMouse;
-  PreviousNode := HoveredInteractiveNode;
+ PreviousNode := HoveredInteractiveNode;
   { Les gestionnaires peuvent provoquer immediatement RescrollPage. Le
     nouvel element doit donc etre publie avant onmouseover pour que le
     positionnement des overlays connaisse deja son ancre. }
- HoveredInteractiveNode := CurrentNode;
+  HoveredInteractiveNode := CurrentNode;
+  HoverAnchorValid := False;
+  { Conserver exactement le rectangle ayant gagne le hit-test. Rechercher
+    ensuite seulement par Node pouvait selectionner une ancienne copie de
+    la boite, issue d'une autre passe de tableau et placee trop haut. }
+  If (CurrentNode <> Nil) And (CurrentAreaIndex > 0) Then Begin
+    HoverAnchorX1 := InteractiveAreas[CurrentAreaIndex].X1;
+    HoverAnchorY1 := InteractiveAreas[CurrentAreaIndex].Y1;
+    HoverAnchorX2 := InteractiveAreas[CurrentAreaIndex].X2;
+    HoverAnchorY2 := InteractiveAreas[CurrentAreaIndex].Y2;
+    HoverAnchorValid := True;
+  End;
   DeferEventRedraw := True;
   EventRedrawPending := False;
   If PreviousNode <> Nil Then
