@@ -64,7 +64,7 @@ Var
  CurrPos:Byte;
 
 Const
- MaxVariables=256;
+ MaxVariables={$IFDEF FPC}256{$ELSE}128{$ENDIF};
 
 Type
  RexxValue=Record
@@ -265,30 +265,57 @@ Function RVNum(N:Real):RexxValue;
 Var V:RexxValue;Begin V.Number:=N;V.IsNumber:=True;V.Text:=NumToText(N);RVNum:=V;End;
 
 Function VarIndex(N:String):Integer;
-Var J:Integer;
-Begin N:=StrToUpper(N);VarIndex:=0;For J:=1 To VariableCount Do If Variables[J].Name=N Then Begin VarIndex:=J;Exit;End;End;
-Function VarGet(N:String):RexxValue;
-Var J:Integer;
-Begin J:=VarIndex(N);If J=0Then VarGet:=RVText(StrToUpper(N))Else VarGet:=RVText(Variables[J].Value);End;
-Procedure VarSet(N,S:String);
-Var J:Integer;
-Begin N:=StrToUpper(Clean(N));J:=VarIndex(N);If(J=0)and(VariableCount<MaxVariables)Then Begin Inc(VariableCount);J:=VariableCount;Variables[J].Name:=N;End;If J>0Then Variables[J].Value:=S;End;
+Var
+ J:Integer;
+Begin
+ N:=StrToUpper(N);
+ VarIndex:=0;
+ For J:=1 To VariableCount Do If Variables[J].Name=N Then Begin
+  VarIndex:=J;
+  Exit;
+ End;
+End;
 
-Procedure ESkip;Begin While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' ',#9])do Inc(ExprPos);End;
+Function VarGet(N:String):RexxValue;
+Var
+ J:Integer;
+Begin
+ J:=VarIndex(N);
+ If J=0Then VarGet:=RVText(StrToUpper(N))
+       Else VarGet:=RVText(Variables[J].Value);
+End;
+
+Procedure VarSet(N,S:String);
+Var
+ J:Integer;
+Begin
+ N:=StrToUpper(Clean(N));
+ J:=VarIndex(N);If(J=0)and(VariableCount<MaxVariables)Then Begin
+  Inc(VariableCount);
+  J:=VariableCount;
+  Variables[J].Name:=N;
+ End;
+ If J>0Then Variables[J].Value:=S;
+End;
+
+Procedure ESkip;Begin
+ While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' ',#9])do Inc(ExprPos);
+End;
+
 Function ECompare:RexxValue;Forward;
 Function FindRoutineLabel(Name:String):Integer;Forward;
 Function CallRoutine(Name:String):String;Forward;
 Function CommandIndex(N:String):Integer;Forward;
 
-Function FunctionNotImplemented(FunctionByte:Byte):RexxValue;
-Begin
+Function FunctionNotImplemented(FunctionByte:Byte):RexxValue;Begin
  WriteLn('Fonction non implementee: ',CommandList[FunctionByte]);
  FunctionNotImplemented:=RVText(CommandList[FunctionByte]);
 End;
 
 Function BinaryToHex(BinaryText:String):String;
 Const HexDigits='0123456789ABCDEF';
-Var Bits,ResultText:String;J,DigitValue,BitCount:Integer;
+Var
+ Bits,ResultText:String;J,DigitValue,BitCount:Integer;
 Begin
  Bits:='';
  For J:=1 To Length(BinaryText)Do Begin
