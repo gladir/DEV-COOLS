@@ -20,6 +20,11 @@ Il possède également plusieurs environnements de développement intégrés, au
 	<li>Enfin, DEVENV prend en charge un mode d’affichage en plein écran pouvant être activé à l’aide du paramètre -maxscreen. Ce mode permet d’agrandir l’espace de travail disponible et d’utiliser la totalité de l’écran pour afficher l’éditeur, les outils de développement ou les systèmes émulés.</li>
 </ul>
 
+Il possède un navigateur Web nommé BROWSER :
+
+<img width="637" height="483" alt="image" src="https://github.com/user-attachments/assets/9988c6ee-5996-4ad2-971e-19fbf1d4f5af" />
+
+
 Il possède également des éditeurs de ressources, comme WORKSHOP :
 
 <img width="637" height="483" alt="image" src="https://github.com/user-attachments/assets/adb5e822-19f9-4aab-8604-0dfe0ff75615" />
@@ -271,6 +276,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>BINLINE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier BIN en code source Pascal Inline.</td>
 		</tr>
+		<tr>
+			<td><b>BROWSER.PAS</b></td>td
+			<td>Cette commande permet de lancer un navigateur Web.</td>
+		</td>
 		<tr>
 			<td><b>BUGFIND.PAS</b></td>
 			<td>Cette commande permet de rechercher des anomalies dans des fichiers.</td>
