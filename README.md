@@ -3,6 +3,20 @@ Suite de commandes pour les développeur écrit en Pascal (Turbo Pascal ou Free 
 
 Le projet DEV-COOLS se veut un peu comme une solution de remplacement de BINUTILS des distributions Linux en Pascal.
 
+<h3>Aperçu</h3>
+
+DEV-COOLS est une suite d’outils de développement regroupant un grand nombre de commandes consacrées à la programmation, à la compilation, à la conversion de code source et à l’analyse de fichiers. L’objectif de l’ensemble est de réunir dans un même environnement des outils couvrant aussi bien les technologies historiques que des langages plus modernes. La suite s’intéresse notamment aux architectures 8080, Z80, 6502, 6809, 8086/8088, 68000 et 80386, ainsi qu’aux formats DOS, Windows et Java. Elle constitue ainsi une véritable boîte à outils destinée au développement, à l’expérimentation et à l’étude de différentes générations de technologies informatiques.
+
+Une partie importante de DEV-COOLS est consacrée aux compilateurs, assembleurs et interpréteurs. La suite permet de travailler avec de nombreux langages tels que Pascal, C, C#, Ada, BASIC, BCPL, COBOL, Fortran, Algol, Modula-2, Modula-3, Oberon, Java, JavaScript, Python, PHP, Perl, Rust, Swift, Lua, LISP, SNOBOL, PL/I et plusieurs autres. Certains compilateurs ciblent volontairement d’anciennes architectures, notamment le 8086/8088, tandis que d’autres produisent du code 80386 et des exécutables Windows 32 bits. DEV-COOLS propose également plusieurs assembleurs, dont des outils pour les processeurs 6502, 8080, Z80, 8086 et Motorola 68000, ce qui lui donne une orientation particulièrement intéressante pour le développement rétro et l’étude des architectures de processeurs.
+
+La suite comporte également une importante collection de transpilateurs et de convertisseurs de code source. Elle peut, par exemple, transformer du Pascal en C, C#, Java, Ada, BCPL, Algol, Modula ou Oberon, convertir du C vers Pascal, Delphi ou Oberon, ou encore traduire de l’Ada vers plusieurs autres langages. Des outils permettent aussi de transformer des données ASCII ou binaires en représentations directement utilisables dans différents langages de programmation. DEV-COOLS ne se limite donc pas à compiler du code : il permet également d’étudier les correspondances entre langages, de réutiliser d’anciens programmes et d’expérimenter différentes façons de représenter un même algorithme.
+
+DEV-COOLS comprend en outre de nombreux outils d’analyse, de débogage et de manipulation des fichiers produits durant le développement. Des désassembleurs prennent en charge plusieurs architectures ainsi que des formats comme les exécutables DOS MZ, Windows PE, fichiers OBJ, ressources Windows, p-Code UCSD ou programmes Atari ST. Des commandes telles que DEBUG, SYMDEB, CV, OBJDUMP, READELF, CREF, BUGFIND ou CODEQL permettent respectivement d’examiner l’exécution d’un programme, ses symboles, ses fichiers objets ou exécutables et de rechercher différents problèmes dans le code. D’autres utilitaires prennent en charge les bibliothèques, l’édition de liens, les ressources, la documentation, les unités compilées Pascal et différents formats de données comme DBF, CSV, SQL, XML, HTML et ELF.
+
+Enfin, DEV-COOLS cherche à couvrir une grande partie du cycle de développement, plutôt qu’à être uniquement une collection de compilateurs. La suite propose des outils pour générer de la documentation, ajouter automatiquement des commentaires au code, produire des références croisées, effectuer des tests de charge, générer du code C aléatoire, convertir des ressources graphiques ou examiner des fichiers binaires. Elle comprend également PasChat, un agent conversationnel spécialisé dans la génération de code Turbo Pascal, pouvant compléter les outils de développement traditionnels par une approche conversationnelle. Par son mélange d’outils modernes, rétro, expérimentaux et pédagogiques, DEV-COOLS se présente donc comme une boîte à outils polyvalente permettant de créer, convertir, compiler, analyser, désassembler, déboguer et documenter des programmes provenant d’environnements informatiques très variés.
+
+<h3>Outils graphiques</h3>
+
 Il possède également plusieurs environnements de développement intégrés, aussi appelés IDE, comme DEVENV :
 
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
@@ -14,9 +28,10 @@ Il possède également plusieurs environnements de développement intégrés, au
 	<li>Il comprend un explorateur de solutions permettant d’organiser les projets, les fichiers sources, les ressources, les bibliothèques et les dépendances. Cet explorateur prend notamment en charge les fichiers de solution portant l’extension .sln et permet de regrouper plusieurs projets dans un même environnement de travail.</li>
 	<li>Il intègre plusieurs terminaux de commande, comme CMD, PowerShell, Bash et AmigaDOS, directement dans son interface. Ces terminaux intégrés peuvent également accéder aux images de disques et aux systèmes de fichiers montés qui sont utilisés par les différents émulateurs disponibles dans l’environnement.</li>
 	<li>DEVENV possède plusieurs émulateurs intégrés destinés aux plateformes et aux architectures qui ne fonctionnent pas directement sous Windows. Il peut notamment émuler les systèmes 8086, NES, Amiga, Cray-1, Apple II, Commodore 64, MSX et CoCo 3, ainsi que plusieurs autres ordinateurs, consoles et processeurs historiques.</li>
-	<li>Il comprend un débogueur intégré pour les processeurs 6502 et 8086. Celui-ci permet d’exécuter un programme instruction par instruction, d’ajouter des points d’arrêt, d’examiner les registres, de consulter la mémoire et de suivre l’évolution des variables pendant l’exécution du programme.</li>
+	<li>Il comprend un débogueur intégré pour les processeurs 6502 et 8086. Celui-ci permet d’exécuter un programme instruction par instruction, d’ajouter des points d’arrêt, d’examiner les registres, de consulter la mémoire et de suivre l’évolution des variables pendant l’exécution du programme. Il peux exécuter directement des exécutables console pour OS/2 et Linux sans avoir le système d'exploitation installé.</li>
 	<li>Il prend en charge l’utilisation de la souris et du clavier dans les éditeurs, les fenêtres, les formulaires, les terminaux et les émulateurs. Cette compatibilité facilite la navigation dans l’interface ainsi que l’utilisation des programmes exécutés dans les différents environnements émulés.</li>
 	<li>Il fournit une aide en ligne complète contenant plus de 1 Mo de documentation. Cette aide peut inclure des descriptions de commandes, des explications sur les langages supportés, des références techniques, des exemples de code et des informations sur les différentes fonctions de l’environnement.</li>
+	<li>Il intègre PasChat, un agent conversationnel spécialement conçu pour le langage Pascal. Directement intégré à l’IDE, celui-ci permet de générer du code source Pascal, mais également d’analyser et de modifier le contenu du code existant.</li>
 	<li>Enfin, DEVENV prend en charge un mode d’affichage en plein écran pouvant être activé à l’aide du paramètre -maxscreen. Ce mode permet d’agrandir l’espace de travail disponible et d’utiliser la totalité de l’écran pour afficher l’éditeur, les outils de développement ou les systèmes émulés.</li>
 </ul>
 
@@ -33,7 +48,7 @@ Il possède également des éditeurs de ressources, comme WORKSHOP :
 
 <h2>Liste des fichiers</h2>
 
-Voici la liste des différents fichiers proposés dans DEV-COOLS :
+Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS :
 
 <table>
 		<tr>
@@ -277,7 +292,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier BIN en code source Pascal Inline.</td>
 		</tr>
 		<tr>
-			<td><b>BROWSER.PAS</b></td>td
+			<td><b>BROWSER.PAS</b></td>
 			<td>Cette commande permet de lancer un navigateur Web.</td>
 		</td>
 		<tr>
