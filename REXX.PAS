@@ -79,6 +79,17 @@ Var
  ExprText:String;
  ExprPos:Integer;
 
+Const
+ MaxRoutineArgs=16;
+
+Var
+ InvokeArgs:Array[1..MaxRoutineArgs]of String;
+ InvokeArgCount:Integer;
+ CurrentArgs:Array[1..MaxRoutineArgs]of String;
+ CurrentArgCount:Integer;
+ RoutineReturning:Boolean;
+ RoutineResult:String;
+
 Function LTrim(S:String):String;
 Var
  I:Integer;
@@ -460,6 +471,8 @@ Begin N:=StrToUpper(Clean(N));J:=VarIndex(N);If(J=0)and(VariableCount<MaxVariabl
 
 Procedure ESkip;Begin While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' ',#9])do Inc(ExprPos);End;
 Function ECompare:RexxValue;Forward;
+Function FindRoutineLabel(Name:String):Integer;Forward;
+Function CallRoutine(Name:String):String;Forward;
 
 Function EPrimary:RexxValue;
 Var Q:Char;S,Nm:String;N:Real;C,J:Integer;A,B:RexxValue;
@@ -473,7 +486,15 @@ Begin
  Nm:='';While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['A'..'Z','a'..'z','0'..'9','_','.'])do Begin Nm:=Nm+ExprText[ExprPos];Inc(ExprPos);End;
  ESkip;
  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
-  Inc(ExprPos);A:=ECompare;ESkip;B:=RVText('');If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);B:=ECompare;End;ESkip;If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);Nm:=StrToUpper(Nm);
+  Inc(ExprPos);InvokeArgCount:=0;ESkip;
+  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>')')and(InvokeArgCount<MaxRoutineArgs)do Begin
+   A:=ECompare;Inc(InvokeArgCount);InvokeArgs[InvokeArgCount]:=A.Text;ESkip;
+   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);ESkip;End Else Break;
+  End;
+  If ExprPos<=Length(ExprText)Then If ExprText[ExprPos]=')'Then Inc(ExprPos);
+  If InvokeArgCount>0Then A:=RVText(InvokeArgs[1])Else A:=RVText('');
+  If InvokeArgCount>1Then B:=RVText(InvokeArgs[2])Else B:=RVText('');
+  Nm:=StrToUpper(Nm);
   If Nm='ABS'Then EPrimary:=RVNum(Abs(A.Number))
   Else If Nm='SIGN'Then Begin If A.Number<0 Then N:=-1 Else If A.Number>0 Then N:=1 Else N:=0;EPrimary:=RVNum(N);End
   Else If Nm='MAX'Then Begin If A.Number>B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
@@ -482,6 +503,7 @@ Begin
   Else If Nm='LENGTH'Then EPrimary:=RVNum(Length(A.Text))
   Else If Nm='LEFT'Then EPrimary:=RVText(Copy(A.Text,1,System.Trunc(B.Number)))
   Else If Nm='RIGHT'Then Begin J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;EPrimary:=RVText(Copy(A.Text,J,255));End
+  Else If FindRoutineLabel(Nm)>0Then EPrimary:=RVText(CallRoutine(Nm))
   Else EPrimary:=RVText(Nm);
   Exit;
  End;
@@ -611,14 +633,36 @@ Var
 Procedure ExecRange(A,Z:Integer);Forward;
 
 Procedure ExecOne(S:String);
-Var P:Integer;V:RexxValue;
+Var P,J:Integer;V:RexxValue;Name,Rest,ArgName:String;
 Begin
  S:=Clean(S);If S=''Then Exit;
  If WordStart(S,'SAY')Then Begin V:=Eval(Copy(S,4,255));WriteLn(V.Text);End
+ Else If WordStart(S,'CALL')Then Begin
+  Rest:=Clean(Copy(S,5,255));P:=System.Pos(' ',Rest);
+  If P>0Then Begin Name:=Copy(Rest,1,P-1);Rest:=Clean(Copy(Rest,P+1,255));End Else Begin Name:=Rest;Rest:='';End;
+  InvokeArgCount:=0;
+  While(Rest<>'')and(InvokeArgCount<MaxRoutineArgs)do Begin
+   P:=System.Pos(',',Rest);If P>0Then Begin V:=Eval(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End Else Begin V:=Eval(Rest);Rest:='';End;
+   Inc(InvokeArgCount);InvokeArgs[InvokeArgCount]:=V.Text;
+  End;
+  VarSet('RESULT',CallRoutine(Name));
+ End
+ Else If WordStart(S,'PARSE ARG')Then Begin
+  Rest:=Clean(Copy(S,10,255));J:=1;
+  While(Rest<>'')do Begin
+   P:=System.Pos(',',Rest);If P>0Then Begin ArgName:=Clean(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End Else Begin ArgName:=Clean(Rest);Rest:='';End;
+   If J<=CurrentArgCount Then VarSet(ArgName,CurrentArgs[J])Else VarSet(ArgName,'');Inc(J);
+  End;
+ End
+ Else If WordStart(S,'RETURN')Then Begin
+  Rest:=Clean(Copy(S,7,255));If Rest<>''Then RoutineResult:=Eval(Rest).Text Else RoutineResult:='';RoutineReturning:=True;
+ End
+ Else If WordStart(S,'PROCEDURE')Then
  Else If WordStart(S,'NOP')Then
  Else If WordStart(S,'LEAVE')Then LoopSignal:=1
  Else If WordStart(S,'ITERATE')Then LoopSignal:=2
  Else If WordStart(S,'EXIT')Then Terminated:=True
+ Else If S[Length(S)]=':'Then
  Else Begin P:=System.Pos('=',S);If P>1Then Begin V:=Eval(Copy(S,P+1,255));VarSet(Copy(S,1,P-1),V.Text);End Else WriteLn('Commande non reconnue: ',S);End;
 End;
 
@@ -626,7 +670,7 @@ Procedure ExecRange(A,Z:Integer);
 Var J,P,E,K,ToPos,ByPos,EqPos,RepeatCount:Integer;S,C,Act,LoopVar:String;V:RexxValue;Done:Boolean;LoopValue,LoopEnd,LoopStep:Real;
 Begin
  J:=A;
- While(J<=Z)and Not Terminated and(LoopSignal=0)do Begin
+ While(J<=Z)and Not Terminated and Not RoutineReturning and(LoopSignal=0)do Begin
   S:=Clean(PA[J]^);
   If(S='')or(Copy(S,1,2)='/*')Then Inc(J) Else
   If WordStart(S,'IF')Then Begin
@@ -780,10 +824,100 @@ Begin
  End;
 End;
 
+Function FindRoutineLabel(Name:String):Integer;
+Var J:Integer;S:String;
+Begin
+ FindRoutineLabel:=0;Name:=StrToUpper(Clean(Name));
+ For J:=1 To NumberLine Do Begin
+  S:=Clean(PA[J]^);
+  If(Length(S)>1)and(S[Length(S)]=':')Then
+   If StrToUpper(Clean(Copy(S,1,Length(S)-1)))=Name Then Begin FindRoutineLabel:=J;Exit;End;
+ End;
+End;
+
+Function CallRoutine(Name:String):String;
+Var
+ LabelLine,EndLine,J,K,SavedVariableCount,SavedArgCount,SavedExprPos,
+  SavedInvokeCount,ExposeCount:Integer;
+ S,ProcedureText,ExposeName:String;
+ SavedReturning,HasProcedure:Boolean;
+ SavedResult,SavedExprText:String;
+ SavedVariables:Array[1..MaxVariables]of RexxVariable;
+ SavedArgs,SavedInvokeArgs:Array[1..MaxRoutineArgs]of String;
+ ExposeNames,ExposeValues:Array[1..MaxRoutineArgs]of String;
+Begin
+ Name:=StrToUpper(Clean(Name));LabelLine:=FindRoutineLabel(Name);
+ If LabelLine=0Then Begin CallRoutine:=Name;Exit;End;
+
+ { Sauvegarder tout l'etat que l'evaluation recursive peut modifier. }
+ SavedExprText:=ExprText;SavedExprPos:=ExprPos;
+ SavedReturning:=RoutineReturning;SavedResult:=RoutineResult;
+ SavedArgCount:=CurrentArgCount;
+ For J:=1 To MaxRoutineArgs Do Begin
+  SavedArgs[J]:=CurrentArgs[J];
+  SavedInvokeArgs[J]:=InvokeArgs[J];
+  If J<=InvokeArgCount Then CurrentArgs[J]:=InvokeArgs[J]Else CurrentArgs[J]:='';
+ End;
+ CurrentArgCount:=InvokeArgCount;SavedInvokeCount:=InvokeArgCount;
+
+ EndLine:=NumberLine;
+ For J:=LabelLine+1 To NumberLine Do Begin
+  S:=Clean(PA[J]^);
+  If(Length(S)>1)and(S[Length(S)]=':')Then Begin EndLine:=J-1;Break;End;
+ End;
+
+ J:=LabelLine+1;
+ While(J<=EndLine)and(Clean(PA[J]^)='')Do Inc(J);
+ ProcedureText:='';HasProcedure:=False;ExposeCount:=0;
+ If(J<=EndLine)and WordStart(Clean(PA[J]^),'PROCEDURE')Then Begin
+  HasProcedure:=True;ProcedureText:=Clean(Copy(Clean(PA[J]^),10,255));
+  If WordStart(ProcedureText,'EXPOSE')Then Begin
+   ProcedureText:=Clean(Copy(ProcedureText,7,255));
+   While(ProcedureText<>'')and(ExposeCount<MaxRoutineArgs)Do Begin
+    K:=System.Pos(' ',ProcedureText);
+    If K=0Then Begin ExposeName:=ProcedureText;ProcedureText:='';End
+     Else Begin ExposeName:=Copy(ProcedureText,1,K-1);Delete(ProcedureText,1,K);ProcedureText:=Clean(ProcedureText);End;
+    Inc(ExposeCount);ExposeNames[ExposeCount]:=StrToUpper(Clean(ExposeName));
+   End;
+  End;
+ End;
+
+ If HasProcedure Then Begin
+  SavedVariableCount:=VariableCount;
+  For K:=1 To VariableCount Do SavedVariables[K]:=Variables[K];
+  VariableCount:=0;
+  For K:=1 To ExposeCount Do Begin
+   ExposeValues[K]:='';
+   For J:=1 To SavedVariableCount Do
+    If SavedVariables[J].Name=ExposeNames[K]Then ExposeValues[K]:=SavedVariables[J].Value;
+   VarSet(ExposeNames[K],ExposeValues[K]);
+  End;
+ End;
+
+ RoutineReturning:=False;RoutineResult:='';
+ ExecRange(LabelLine+1,EndLine);
+ CallRoutine:=RoutineResult;
+
+ If HasProcedure Then Begin
+  For K:=1 To ExposeCount Do Begin
+   J:=VarIndex(ExposeNames[K]);If J>0Then ExposeValues[K]:=Variables[J].Value Else ExposeValues[K]:='';
+  End;
+  VariableCount:=SavedVariableCount;
+  For K:=1 To SavedVariableCount Do Variables[K]:=SavedVariables[K];
+  For K:=1 To ExposeCount Do VarSet(ExposeNames[K],ExposeValues[K]);
+ End;
+
+ CurrentArgCount:=SavedArgCount;InvokeArgCount:=SavedInvokeCount;
+ For J:=1 To MaxRoutineArgs Do Begin CurrentArgs[J]:=SavedArgs[J];InvokeArgs[J]:=SavedInvokeArgs[J];End;
+ RoutineReturning:=SavedReturning;RoutineResult:=SavedResult;
+ ExprText:=SavedExprText;ExprPos:=SavedExprPos;
+End;
+
 Procedure ExecuteCommand;Begin
  VariableCount:=0;
  Terminated:=False;
  LoopSignal:=0;
+ CurrentArgCount:=0;InvokeArgCount:=0;RoutineReturning:=False;RoutineResult:='';
  If NumberLine>0Then ExecRange(1,NumberLine);
 End;
 
