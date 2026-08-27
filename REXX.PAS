@@ -9,7 +9,7 @@ Program REXX;
 Uses Crt,DOS;
 
 Const
- CommandList:Array[0..149]of String[20]=(
+ CommandList:Array[0..161]of String[20]=(
   'ABBREV','ABS','ADDRESS','ARG','B2X','BEEP','BITAND','BITOR',
   'BITXOR','CALL','CENTER','CHANGESTR','CHARIN','CHAROUT',
   'CHARS','COMPARE','CONDITION','COPIES','COUNTSTR','C2D',
@@ -41,7 +41,11 @@ Const
   'SYSWAITNAMEDPIPE','SYSWINVER','THEN','TIME','TRACE',
   'TRANSLATE','TRUNC','VALUE','VAR','VERIFY','WORD',
   'WORDINDEX','WORDLENGTH','WORDPOS','WORDS','XRANGE',
-  'X2B','X2C','X2D'
+  'X2B','X2C','X2D',
+  { Instructions de controle ajoutees apres la table historique afin de ne
+    pas modifier les numeros encore utilises par l'ancien moteur. }
+  'DO','ELSE','END','EXPOSE','ITERATE','LEAVE','NAME','NOP','NUMERIC',
+  'OTHERWISE','SIGNAL','WHEN'
  );
 
  MaxLine=1024;
@@ -230,214 +234,6 @@ Procedure SayCommand;Begin
  End;
 End;
 
-Function RunLine:Boolean;
-Var
- R1:Real;
- UnknownCommand:Boolean;
- NoImplementation:Boolean;
-Begin
- RunLine:=False;
- CurrPos:=1;
- NoImplementation:=False;
- UnknownCommand:=False;
- Case ExtractCommand of
-  0:NoImplementation:=True;{ABBREV}
-  1:NoImplementation:=True;{ABS}
-  2:NoImplementation:=True;{ADDRESS}
-  3:NoImplementation:=True;{ARG}
-  4:NoImplementation:=True;{B2X}
-  5:NoImplementation:=True;{BEEP}
-  6:NoImplementation:=True;{BITAND}
-  7:NoImplementation:=True;{BITOR}
-  8:NoImplementation:=True;{BITXOR}
-  9:NoImplementation:=True;{CALL}
-  10:NoImplementation:=True;{CENTER}
-  11:NoImplementation:=True;{CHANGESTR}
-  12:NoImplementation:=True;{CHARIN}
-  13:NoImplementation:=True;{CHAROUT}
-  14:NoImplementation:=True;{CHARS}
-  15:NoImplementation:=True;{COMPARE}
-  16:NoImplementation:=True;{CONDITION}
-  17:NoImplementation:=True;{COPIES}
-  18:NoImplementation:=True;{COUNTSTR}
-  19:NoImplementation:=True;{C2D}
-  20:NoImplementation:=True;{C2X}
-  21:NoImplementation:=True;{DATATYPE}
-  22:NoImplementation:=True;{DATE}
-  23:NoImplementation:=True;{DELSTR}
-  24:NoImplementation:=True;{DELWORD}
-  25:NoImplementation:=True;{DIGITS}
-  26:NoImplementation:=True;{DIRECTORY}
-  27:NoImplementation:=True;{D2C}
-  28:NoImplementation:=True;{D2X}
-  29:NoImplementation:=True;{ENDLOCAL}
-  30:NoImplementation:=True;{ERRORTEXT}
-  31:Begin {EXIT}
-   Terminated:=True;
-   Exit;
-  End;
-  32:NoImplementation:=True;{FILESPEC}
-  33:NoImplementation:=True;{FORM}
-  34:NoImplementation:=True;{FORMAT}
-  35:NoImplementation:=True;{FUZZ}
-  36:NoImplementation:=True;{IF}
-  37:NoImplementation:=True;{INSERT}
-  38:NoImplementation:=True;{LASTPOS}
-  39:NoImplementation:=True;{LEFT}
-  40:NoImplementation:=True;{LENGTH}
-  41:NoImplementation:=True;{LINEIN}
-  42:NoImplementation:=True;{LINEOUT}
-  43:NoImplementation:=True;{LINES}
-  44:NoImplementation:=True;{MAX}
-  45:NoImplementation:=True;{MIN}
-  46:NoImplementation:=True;{OPTIONS}
-  47:NoImplementation:=True;{OVERLAY}
-  48:NoImplementation:=True;{PARSE}
-  49:NoImplementation:=True;{PROCEDURE}
-  50:NoImplementation:=True;{POS}
-  51:NoImplementation:=True;{PULL}
-  52:NoImplementation:=True;{PUSH}
-  53:NoImplementation:=True;{QUEUE}
-  54:NoImplementation:=True;{QUEUED}
-  55:NoImplementation:=True;{RANDOM}
-  56:NoImplementation:=True;{RETURN}
-  57:NoImplementation:=True;{REVERSE}
-  58:NoImplementation:=True;{RIGHT}
-  59:NoImplementation:=True;{RXFUNCADD}
-  60:NoImplementation:=True;{RXFUNCDROP}
-  61:NoImplementation:=True;{RXFUNCQUERY}
-  62:NoImplementation:=True;{RXMESSAGEBOX}
-  63:NoImplementation:=True;{RXQUEUE}
-  64:NoImplementation:=True;{RXWINEXEC}
-  65:SayCommand;{SAY}
-  66:NoImplementation:=True;{SELECT}
-  67:NoImplementation:=True;{SETLOCAL}
-  68:NoImplementation:=True;{SIGN}
-  69:NoImplementation:=True;{SOURCELINE}
-  70:NoImplementation:=True;{SPACE}
-  71:NoImplementation:=True;{STREAM}
-  72:NoImplementation:=True;{STRIP}
-  73:NoImplementation:=True;{SUBSTR}
-  74:NoImplementation:=True;{SUBWORD}
-  75:NoImplementation:=True;{SYMBOL}
-  76:NoImplementation:=True;{SYSADDREXXMACRO}
-  77:NoImplementation:=True;{SYSBOOTDRIVE}
-  78:NoImplementation:=True;{SYSCLEARREXXMACROSPACE}
-  79:NoImplementation:=True;{SYSCLOSEEVENTSEM}
-  80:NoImplementation:=True;{SYSCLOSEMUTEXSEM}
-  81:NoImplementation:=True;{SYSCLS}
-  82:NoImplementation:=True;{SYSCREATEEVENTSEM}
-  83:NoImplementation:=True;{SYSCREATEMUTEXSEM}
-  84:NoImplementation:=True;{SYSCREATEOBJECT}
-  85:NoImplementation:=True;{SYSCURPOS}
-  86:NoImplementation:=True;{SYSCURSTATE}
-  87:NoImplementation:=True;{SYSDEREGISTEROBJECTCLASS}
-  88:NoImplementation:=True;{SYSDESTROYOBJECT}
-  89:NoImplementation:=True;{SYSDRIVEINFO}
-  90:NoImplementation:=True;{SYSDRIVEMAP}
-  91:NoImplementation:=True;{SYSDROPFUNCS}
-  92:NoImplementation:=True;{SYSDROPREXXMACRO}
-  93:NoImplementation:=True;{SYSFILEDELETE}
-  94:NoImplementation:=True;{SYSFILETREE}
-  95:NoImplementation:=True;{SYSFILESEARCH}
-  96:NoImplementation:=True;{SYSFILESYSTEMTYPE}
-  97:NoImplementation:=True;{SYSGETEA}
-  98:NoImplementation:=True;{SYSGETKEY}
-  99:NoImplementation:=True;{SYSGETMESSAGE}
-  100:NoImplementation:=True;{SYSINI}
-  101:NoImplementation:=True;{SYSLOADFUNCS}
-  102:NoImplementation:=True;{SYSLOADREXXMACROSPACE}
-  103:NoImplementation:=True;{SYSMKDIR}
-  104:NoImplementation:=True;{SYSOPENEVENTSEM}
-  105:NoImplementation:=True;{SYSOPENMUTEXSEM}
-  106:NoImplementation:=True;{SYSOS2VER}
-  107:NoImplementation:=True;{SYSPOSTEVENTSEM}
-  108:NoImplementation:=True;{SYSPULSEEVENTSEM}
-  109:NoImplementation:=True;{SYSPUTEA}
-  110:NoImplementation:=True;{SYSQUERYCLASSLIST}
-  111:NoImplementation:=True;{SYSQUERYREXXMACRO}
-  112:NoImplementation:=True;{SYSREGISTEROBJECTCLASS}
-  113:NoImplementation:=True;{SYSRELEASEMUTEXSEM}
-  114:NoImplementation:=True;{SYSREORDERREXXMACRO}
-  115:NoImplementation:=True;{SYSREQUESTMUTEXSEM}
-  116:NoImplementation:=True;{SYSRESETEVENTSEM}
-  117:NoImplementation:=True;{SYSRMDIR}
-  118:NoImplementation:=True;{SYSSAVEREXXMACROSPACE}
-  119:NoImplementation:=True;{SYSSEARCHPATH}
-  120:NoImplementation:=True;{SYSSETICON}
-  121:NoImplementation:=True;{SYSSETOBJECTDATA}
-  122:NoImplementation:=True;{SYSSETPRIORITY}
-  123:NoImplementation:=True;{SYSSLEEP}
-  124:NoImplementation:=True;{SYSSWITCHSESSION}
-  125:NoImplementation:=True;{SYSSYSTEMDIRECTORY}
-  126:NoImplementation:=True;{SYSTEMPFILENAME}
-  127:NoImplementation:=True;{SYSTEXTSCREENREAD}
-  128:NoImplementation:=True;{SYSTEXTSCREENSIZE}
-  129:NoImplementation:=True;{SYSVOLUMELABEL}
-  130:NoImplementation:=True;{SYSWAITEVENTSEM}
-  131:NoImplementation:=True;{SYSWAITNAMEDPIPE}
-  132:NoImplementation:=True;{SYSWINVER}
-  133:NoImplementation:=True;{THEN}
-  134:NoImplementation:=True;{TIME}
-  135:NoImplementation:=True;{TRACE}
-  136:NoImplementation:=True;{TRANSLATE}
-  137:NoImplementation:=True;{TRUNC}
-  138:NoImplementation:=True;{VALUE}
-  139:NoImplementation:=True;{VAR}
-  140:NoImplementation:=True;{VERIFY}
-  141:NoImplementation:=True;{WORD}
-  142:NoImplementation:=True;{WORDINDEX}
-  143:NoImplementation:=True;{WORDLENGTH}
-  144:NoImplementation:=True;{WORDPOS}
-  145:NoImplementation:=True;{WORDS}
-  146:NoImplementation:=True;{XRANGE}
-  147:NoImplementation:=True;{X2B}
-  148:NoImplementation:=True;{X2C}
-  149:NoImplementation:=True;{X2D}
-  Else UnknownCommand:=True;
- End;
- If(UnknownCommand)Then Begin
-  WriteLn('Commande non reconnu');
-  Exit;
- End
-  Else
- If(NoImplementation)Then Begin
-  WriteLn('Cette commande n''a pas '+#130+'t'+#130+' impl'+#130+'ment'+#130);
-  Exit;
- End;
- RunLine:=True;
-End;
-
-Procedure LegacyExecuteCommand;
-Var
- J:Integer;
- Err:Integer;
- S1:String;
-Begin
- If NumberLine>0Then Begin
-  CurrLinePtr:=1;
-  While(CurrLinePtr<=NumberLine) do Begin
-   CurrLine:=PA[CurrLinePtr]^;
-   CurrNumberLine:=0;
-   J:=1;
-   While(J<Length(CurrLine))do Begin
-    If Not(CurrLine[J]in['0'..'9'])Then Begin
-     Val(Copy(CurrLine,1,J-1),CurrNumberLine,Err);
-     Break;
-    End;
-    Inc(J);
-   End;
-   While J<=Length(CurrLine)do Begin
-    If CurrLine[J]in[' ',#9]Then Inc(J)
-                            Else Break;
-   End;
-   CurrPos:=J;
-   If Not(RunLine)Then Break;
-   Inc(CurrLinePtr);
-  End;
- End;
-End;
-
 { -----------------------------------------------------------------
   Noyau REXX executable. L'ancien RunLine ci-dessus est conserve pour
   documenter la table historique, mais ce moteur prend en charge les
@@ -479,9 +275,16 @@ Procedure ESkip;Begin While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' 
 Function ECompare:RexxValue;Forward;
 Function FindRoutineLabel(Name:String):Integer;Forward;
 Function CallRoutine(Name:String):String;Forward;
+Function CommandIndex(N:String):Integer;Forward;
+
+Function FunctionNotImplemented(FunctionByte:Byte):RexxValue;
+Begin
+ WriteLn('Fonction non implementee: ',CommandList[FunctionByte]);
+ FunctionNotImplemented:=RVText(CommandList[FunctionByte]);
+End;
 
 Function EPrimary:RexxValue;
-Var Q:Char;S,Nm:String;N:Real;C,J:Integer;A,B:RexxValue;
+Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength:Integer;FunctionByte:Byte;A,B,D:RexxValue;
 Begin
  ESkip;If ExprPos>Length(ExprText)Then Begin EPrimary:=RVText('');Exit;End;
  If ExprText[ExprPos]in['''','"']Then Begin Q:=ExprText[ExprPos];Inc(ExprPos);S:='';While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>Q)do Begin S:=S+ExprText[ExprPos];Inc(ExprPos);End;If ExprPos<=Length(ExprText)Then Inc(ExprPos);EPrimary:=RVText(S)
@@ -500,20 +303,190 @@ Begin
   If ExprPos<=Length(ExprText)Then If ExprText[ExprPos]=')'Then Inc(ExprPos);
   If InvokeArgCount>0Then A:=RVText(InvokeArgs[1])Else A:=RVText('');
   If InvokeArgCount>1Then B:=RVText(InvokeArgs[2])Else B:=RVText('');
+  If InvokeArgCount>2Then D:=RVText(InvokeArgs[3])Else D:=RVText('');
   Nm:=StrToUpper(Nm);
-  If Nm='ABS'Then EPrimary:=RVNum(Abs(A.Number))
-  Else If Nm='SIGN'Then Begin If A.Number<0 Then N:=-1 Else If A.Number>0 Then N:=1 Else N:=0;EPrimary:=RVNum(N);End
-  Else If Nm='MAX'Then Begin If A.Number>B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
-  Else If Nm='MIN'Then Begin If A.Number<B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
-  Else If Nm='TRUNC'Then EPrimary:=RVNum(System.Trunc(A.Number))
-  Else If Nm='DIGITS'Then EPrimary:=RVNum(NumericDigitsValue)
-  Else If Nm='FUZZ'Then EPrimary:=RVNum(NumericFuzzValue)
-  Else If Nm='FORM'Then EPrimary:=RVText(NumericFormValue)
-  Else If Nm='LENGTH'Then EPrimary:=RVNum(Length(A.Text))
-  Else If Nm='LEFT'Then EPrimary:=RVText(Copy(A.Text,1,System.Trunc(B.Number)))
-  Else If Nm='RIGHT'Then Begin J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;EPrimary:=RVText(Copy(A.Text,J,255));End
-  Else If FindRoutineLabel(Nm)>0Then EPrimary:=RVText(CallRoutine(Nm))
-  Else EPrimary:=RVText(Nm);
+  C:=CommandIndex(Nm);If C<0Then FunctionByte:=255 Else FunctionByte:=Byte(C);
+  Case FunctionByte Of
+   0:Begin { ABBREV }
+    If InvokeArgCount>2Then MinimumLength:=System.Trunc(D.Number)
+     Else MinimumLength:=Length(B.Text);
+    If MinimumLength<0Then MinimumLength:=0;
+    If(Length(B.Text)>=MinimumLength)and(Length(B.Text)<=Length(A.Text))and
+      (Copy(A.Text,1,Length(B.Text))=B.Text)Then EPrimary:=RVNum(1)
+     Else EPrimary:=RVNum(0);
+   End;
+   1:EPrimary:=RVNum(Abs(A.Number)); { ABS }
+   2:EPrimary:=FunctionNotImplemented(FunctionByte); { ADDRESS }
+   3:EPrimary:=FunctionNotImplemented(FunctionByte); { ARG }
+   4:EPrimary:=FunctionNotImplemented(FunctionByte); { B2X }
+   5:EPrimary:=FunctionNotImplemented(FunctionByte); { BEEP }
+   6:EPrimary:=FunctionNotImplemented(FunctionByte); { BITAND }
+   7:EPrimary:=FunctionNotImplemented(FunctionByte); { BITOR }
+   8:EPrimary:=FunctionNotImplemented(FunctionByte); { BITXOR }
+   9:EPrimary:=FunctionNotImplemented(FunctionByte); { CALL }
+   10:EPrimary:=FunctionNotImplemented(FunctionByte); { CENTER }
+   11:EPrimary:=FunctionNotImplemented(FunctionByte); { CHANGESTR }
+   12:EPrimary:=FunctionNotImplemented(FunctionByte); { CHARIN }
+   13:EPrimary:=FunctionNotImplemented(FunctionByte); { CHAROUT }
+   14:EPrimary:=FunctionNotImplemented(FunctionByte); { CHARS }
+   15:EPrimary:=FunctionNotImplemented(FunctionByte); { COMPARE }
+   16:EPrimary:=FunctionNotImplemented(FunctionByte); { CONDITION }
+   17:EPrimary:=FunctionNotImplemented(FunctionByte); { COPIES }
+   18:EPrimary:=FunctionNotImplemented(FunctionByte); { COUNTSTR }
+   19:EPrimary:=FunctionNotImplemented(FunctionByte); { C2D }
+   20:EPrimary:=FunctionNotImplemented(FunctionByte); { C2X }
+   21:EPrimary:=FunctionNotImplemented(FunctionByte); { DATATYPE }
+   22:EPrimary:=FunctionNotImplemented(FunctionByte); { DATE }
+   23:EPrimary:=FunctionNotImplemented(FunctionByte); { DELSTR }
+   24:EPrimary:=FunctionNotImplemented(FunctionByte); { DELWORD }
+   25:EPrimary:=RVNum(NumericDigitsValue); { DIGITS }
+   26:EPrimary:=FunctionNotImplemented(FunctionByte); { DIRECTORY }
+   27:EPrimary:=FunctionNotImplemented(FunctionByte); { D2C }
+   28:EPrimary:=FunctionNotImplemented(FunctionByte); { D2X }
+   29:EPrimary:=FunctionNotImplemented(FunctionByte); { ENDLOCAL }
+   30:EPrimary:=FunctionNotImplemented(FunctionByte); { ERRORTEXT }
+   31:EPrimary:=FunctionNotImplemented(FunctionByte); { EXIT }
+   32:EPrimary:=FunctionNotImplemented(FunctionByte); { FILESPEC }
+   33:EPrimary:=RVText(NumericFormValue); { FORM }
+   34:EPrimary:=FunctionNotImplemented(FunctionByte); { FORMAT }
+   35:EPrimary:=RVNum(NumericFuzzValue); { FUZZ }
+   36:EPrimary:=FunctionNotImplemented(FunctionByte); { IF }
+   37:EPrimary:=FunctionNotImplemented(FunctionByte); { INSERT }
+   38:EPrimary:=FunctionNotImplemented(FunctionByte); { LASTPOS }
+   39:EPrimary:=RVText(Copy(A.Text,1,System.Trunc(B.Number))); { LEFT }
+   40:EPrimary:=RVNum(Length(A.Text)); { LENGTH }
+   41:EPrimary:=FunctionNotImplemented(FunctionByte); { LINEIN }
+   42:EPrimary:=FunctionNotImplemented(FunctionByte); { LINEOUT }
+   43:EPrimary:=FunctionNotImplemented(FunctionByte); { LINES }
+   44:Begin { MAX }
+    If A.Number>B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);
+   End;
+   45:Begin { MIN }
+    If A.Number<B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);
+   End;
+   46:EPrimary:=FunctionNotImplemented(FunctionByte); { OPTIONS }
+   47:EPrimary:=FunctionNotImplemented(FunctionByte); { OVERLAY }
+   48:EPrimary:=FunctionNotImplemented(FunctionByte); { PARSE }
+   49:EPrimary:=FunctionNotImplemented(FunctionByte); { PROCEDURE }
+   50:EPrimary:=FunctionNotImplemented(FunctionByte); { POS }
+   51:EPrimary:=FunctionNotImplemented(FunctionByte); { PULL }
+   52:EPrimary:=FunctionNotImplemented(FunctionByte); { PUSH }
+   53:EPrimary:=FunctionNotImplemented(FunctionByte); { QUEUE }
+   54:EPrimary:=FunctionNotImplemented(FunctionByte); { QUEUED }
+   55:EPrimary:=FunctionNotImplemented(FunctionByte); { RANDOM }
+   56:EPrimary:=FunctionNotImplemented(FunctionByte); { RETURN }
+   57:EPrimary:=FunctionNotImplemented(FunctionByte); { REVERSE }
+   58:Begin { RIGHT }
+    J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;EPrimary:=RVText(Copy(A.Text,J,255));
+   End;
+   59:EPrimary:=FunctionNotImplemented(FunctionByte); { RXFUNCADD }
+   60:EPrimary:=FunctionNotImplemented(FunctionByte); { RXFUNCDROP }
+   61:EPrimary:=FunctionNotImplemented(FunctionByte); { RXFUNCQUERY }
+   62:EPrimary:=FunctionNotImplemented(FunctionByte); { RXMESSAGEBOX }
+   63:EPrimary:=FunctionNotImplemented(FunctionByte); { RXQUEUE }
+   64:EPrimary:=FunctionNotImplemented(FunctionByte); { RXWINEXEC }
+   65:EPrimary:=FunctionNotImplemented(FunctionByte); { SAY }
+   66:EPrimary:=FunctionNotImplemented(FunctionByte); { SELECT }
+   67:EPrimary:=FunctionNotImplemented(FunctionByte); { SETLOCAL }
+   68:Begin { SIGN }
+    If A.Number<0Then N:=-1 Else If A.Number>0Then N:=1 Else N:=0;EPrimary:=RVNum(N);
+   End;
+   69:EPrimary:=FunctionNotImplemented(FunctionByte); { SOURCELINE }
+   70:EPrimary:=FunctionNotImplemented(FunctionByte); { SPACE }
+   71:EPrimary:=FunctionNotImplemented(FunctionByte); { STREAM }
+   72:EPrimary:=FunctionNotImplemented(FunctionByte); { STRIP }
+   73:EPrimary:=FunctionNotImplemented(FunctionByte); { SUBSTR }
+   74:EPrimary:=FunctionNotImplemented(FunctionByte); { SUBWORD }
+   75:EPrimary:=FunctionNotImplemented(FunctionByte); { SYMBOL }
+   76:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSADDREXXMACRO }
+   77:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSBOOTDRIVE }
+   78:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCLEARREXXMACROSPACE }
+   79:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCLOSEEVENTSEM }
+   80:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCLOSEMUTEXSEM }
+   81:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCLS }
+   82:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCREATEEVENTSEM }
+   83:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCREATEMUTEXSEM }
+   84:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCREATEOBJECT }
+   85:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCURPOS }
+   86:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSCURSTATE }
+   87:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSDEREGISTEROBJECTCLASS }
+   88:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSDESTROYOBJECT }
+   89:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSDRIVEINFO }
+   90:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSDRIVEMAP }
+   91:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSDROPFUNCS }
+   92:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSDROPREXXMACRO }
+   93:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSFILEDELETE }
+   94:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSFILETREE }
+   95:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSFILESEARCH }
+   96:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSFILESYSTEMTYPE }
+   97:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSGETEA }
+   98:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSGETKEY }
+   99:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSGETMESSAGE }
+   100:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSINI }
+   101:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSLOADFUNCS }
+   102:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSLOADREXXMACROSPACE }
+   103:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSMKDIR }
+   104:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSOPENEVENTSEM }
+   105:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSOPENMUTEXSEM }
+   106:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSOS2VER }
+   107:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSPOSTEVENTSEM }
+   108:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSPULSEEVENTSEM }
+   109:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSPUTEA }
+   110:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSQUERYCLASSLIST }
+   111:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSQUERYREXXMACRO }
+   112:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSREGISTEROBJECTCLASS }
+   113:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSRELEASEMUTEXSEM }
+   114:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSREORDERREXXMACRO }
+   115:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSREQUESTMUTEXSEM }
+   116:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSRESETEVENTSEM }
+   117:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSRMDIR }
+   118:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSAVEREXXMACROSPACE }
+   119:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSEARCHPATH }
+   120:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSETICON }
+   121:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSETOBJECTDATA }
+   122:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSETPRIORITY }
+   123:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSLEEP }
+   124:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSWITCHSESSION }
+   125:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSSYSTEMDIRECTORY }
+   126:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSTEMPFILENAME }
+   127:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSTEXTSCREENREAD }
+   128:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSTEXTSCREENSIZE }
+   129:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSVOLUMELABEL }
+   130:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSWAITEVENTSEM }
+   131:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSWAITNAMEDPIPE }
+   132:EPrimary:=FunctionNotImplemented(FunctionByte); { SYSWINVER }
+   133:EPrimary:=FunctionNotImplemented(FunctionByte); { THEN }
+   134:EPrimary:=FunctionNotImplemented(FunctionByte); { TIME }
+   135:EPrimary:=FunctionNotImplemented(FunctionByte); { TRACE }
+   136:EPrimary:=FunctionNotImplemented(FunctionByte); { TRANSLATE }
+   137:EPrimary:=RVNum(System.Trunc(A.Number)); { TRUNC }
+   138:EPrimary:=FunctionNotImplemented(FunctionByte); { VALUE }
+   139:EPrimary:=FunctionNotImplemented(FunctionByte); { VAR }
+   140:EPrimary:=FunctionNotImplemented(FunctionByte); { VERIFY }
+   141:EPrimary:=FunctionNotImplemented(FunctionByte); { WORD }
+   142:EPrimary:=FunctionNotImplemented(FunctionByte); { WORDINDEX }
+   143:EPrimary:=FunctionNotImplemented(FunctionByte); { WORDLENGTH }
+   144:EPrimary:=FunctionNotImplemented(FunctionByte); { WORDPOS }
+   145:EPrimary:=FunctionNotImplemented(FunctionByte); { WORDS }
+   146:EPrimary:=FunctionNotImplemented(FunctionByte); { XRANGE }
+   147:EPrimary:=FunctionNotImplemented(FunctionByte); { X2B }
+   148:EPrimary:=FunctionNotImplemented(FunctionByte); { X2C }
+   149:EPrimary:=FunctionNotImplemented(FunctionByte); { X2D }
+   150:EPrimary:=FunctionNotImplemented(FunctionByte); { DO }
+   151:EPrimary:=FunctionNotImplemented(FunctionByte); { ELSE }
+   152:EPrimary:=FunctionNotImplemented(FunctionByte); { END }
+   153:EPrimary:=FunctionNotImplemented(FunctionByte); { EXPOSE }
+   154:EPrimary:=FunctionNotImplemented(FunctionByte); { ITERATE }
+   155:EPrimary:=FunctionNotImplemented(FunctionByte); { LEAVE }
+   156:EPrimary:=FunctionNotImplemented(FunctionByte); { NAME }
+   157:EPrimary:=FunctionNotImplemented(FunctionByte); { NOP }
+   158:EPrimary:=FunctionNotImplemented(FunctionByte); { NUMERIC }
+   159:EPrimary:=FunctionNotImplemented(FunctionByte); { OTHERWISE }
+   160:EPrimary:=FunctionNotImplemented(FunctionByte); { SIGNAL }
+   161:EPrimary:=FunctionNotImplemented(FunctionByte); { WHEN }
+   Else If FindRoutineLabel(Nm)>0Then EPrimary:=RVText(CallRoutine(Nm))
+    Else EPrimary:=RVText(Nm);
+  End;
   Exit;
  End;
  EPrimary:=VarGet(Nm);
@@ -577,13 +550,26 @@ Begin
 End;
 
 Function Truth(V:RexxValue):Boolean;Begin If V.IsNumber Then Truth:=V.Number<>0 Else Truth:=(V.Text<>'')and(V.Text<>'0');End;
+Function CommandIndex(N:String):Integer;
+Var J:Integer;
+Begin
+ CommandIndex:=-1;N:=StrToUpper(Clean(N));
+ For J:=Low(CommandList)To High(CommandList)Do
+  If N=CommandList[J]Then Begin CommandIndex:=J;Exit;End;
+End;
+
 Function WordStart(S,W:String):Boolean;
 Var
- U:String;
+ U,FirstWord:String;P:Integer;
 Begin
  U:=StrToUpper(Clean(S));
  W:=StrToUpper(W);
- WordStart:=(Copy(U,1,Length(W))=W)and((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
+ P:=System.Pos(' ',W);If P=0Then FirstWord:=W Else FirstWord:=Copy(W,1,P-1);
+ { Toute reconnaissance d'instruction passe par CommandList. Les mots qui
+   n'y figurent pas ne peuvent donc pas etre pris accidentellement pour une
+   commande REXX. }
+ WordStart:=(CommandIndex(FirstWord)>=0)and(Copy(U,1,Length(W))=W)and
+  ((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
 End;
 
 Function FindWord(S,W:String):Integer;
@@ -703,87 +689,88 @@ Begin
 End;
 
 Procedure ExecOne(S:String);
-Var P,J:Integer;V:RexxValue;Name,Rest,ArgName:String;
+Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord:String;CommandByte:Byte;
 Begin
  S:=Clean(S);If S=''Then Exit;
- If WordStart(S,'SAY')Then Begin V:=Eval(Copy(S,4,255));WriteLn(V.Text);End
- Else If WordStart(S,'CALL')Then Begin
-  Rest:=Clean(Copy(S,5,255));P:=System.Pos(' ',Rest);
-  If P>0Then Begin Name:=Copy(Rest,1,P-1);Rest:=Clean(Copy(Rest,P+1,255));End Else Begin Name:=Rest;Rest:='';End;
-  InvokeArgCount:=0;
-  While(Rest<>'')and(InvokeArgCount<MaxRoutineArgs)do Begin
-   P:=System.Pos(',',Rest);If P>0Then Begin V:=Eval(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End Else Begin V:=Eval(Rest);Rest:='';End;
-   Inc(InvokeArgCount);InvokeArgs[InvokeArgCount]:=V.Text;
+ P:=1;While(P<=Length(S))and(S[P]in['A'..'Z','a'..'z','_'])Do Inc(P);
+ FirstWord:=Copy(S,1,P-1);J:=CommandIndex(FirstWord);
+ If J<0Then CommandByte:=255 Else CommandByte:=Byte(J);
+ Case CommandByte Of
+  65:Begin { SAY }
+   V:=Eval(Copy(S,4,255));WriteLn(V.Text);
   End;
-  VarSet('RESULT',CallRoutine(Name));
- End
- Else If WordStart(S,'PARSE ARG')Then Begin
-  Rest:=Clean(Copy(S,10,255));J:=1;
-  While(Rest<>'')do Begin
-   P:=System.Pos(',',Rest);If P>0Then Begin ArgName:=Clean(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End Else Begin ArgName:=Clean(Rest);Rest:='';End;
-   If J<=CurrentArgCount Then VarSet(ArgName,CurrentArgs[J])Else VarSet(ArgName,'');Inc(J);
+  9:Begin { CALL }
+   Rest:=Clean(Copy(S,5,255));P:=System.Pos(' ',Rest);
+   If P>0Then Begin Name:=Copy(Rest,1,P-1);Rest:=Clean(Copy(Rest,P+1,255));End Else Begin Name:=Rest;Rest:='';End;
+   InvokeArgCount:=0;
+   While(Rest<>'')and(InvokeArgCount<MaxRoutineArgs)do Begin
+    P:=System.Pos(',',Rest);If P>0Then Begin V:=Eval(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End Else Begin V:=Eval(Rest);Rest:='';End;
+    Inc(InvokeArgCount);InvokeArgs[InvokeArgCount]:=V.Text;
+   End;
+   VarSet('RESULT',CallRoutine(Name));
   End;
- End
- Else If WordStart(S,'PARSE UPPER VAR')Then Begin
-  Rest:=Clean(Copy(S,16,255));P:=System.Pos(' ',Rest);
-  If P>0Then Begin Name:=Copy(Rest,1,P-1);ParseTemplate(VarGet(Name).Text,Clean(Copy(Rest,P+1,255)),True);End;
- End
- Else If WordStart(S,'PARSE VAR')Then Begin
-  Rest:=Clean(Copy(S,10,255));P:=System.Pos(' ',Rest);
-  If P>0Then Begin Name:=Copy(Rest,1,P-1);ParseTemplate(VarGet(Name).Text,Clean(Copy(Rest,P+1,255)),False);End;
- End
- Else If WordStart(S,'PARSE VERSION')Then
-  ParseTemplate('REXX-DEVCOOLS 1.0',Clean(Copy(S,14,255)),False)
- Else If WordStart(S,'PARSE SOURCE')Then
-  ParseTemplate('WINDOWS COMMAND '+FileName,Clean(Copy(S,13,255)),False)
- Else If WordStart(S,'RETURN')Then Begin
-  Rest:=Clean(Copy(S,7,255));If Rest<>''Then RoutineResult:=Eval(Rest).Text Else RoutineResult:='';RoutineReturning:=True;
- End
- Else If WordStart(S,'PROCEDURE')Then
- Else If WordStart(S,'NUMERIC DIGITS')Then Begin
-  Rest:=Clean(Copy(S,15,255));
-  If Rest=''Then NumericDigitsValue:=9
-   Else Begin J:=System.Trunc(Eval(Rest).Number);If J>0Then NumericDigitsValue:=J;End;
-  If NumericFuzzValue>=NumericDigitsValue Then NumericFuzzValue:=NumericDigitsValue-1;
- End
- Else If WordStart(S,'NUMERIC FUZZ')Then Begin
-  Rest:=Clean(Copy(S,13,255));
-  If Rest=''Then NumericFuzzValue:=0
-   Else Begin J:=System.Trunc(Eval(Rest).Number);If(J>=0)and(J<NumericDigitsValue)Then NumericFuzzValue:=J;End;
- End
- Else If WordStart(S,'NUMERIC FORM')Then Begin
-  Rest:=StrToUpper(Clean(Copy(S,13,255)));
-  If Rest=''Then NumericFormValue:='SCIENTIFIC'
-  Else If(Rest='SCIENTIFIC')or(Rest='ENGINEERING')Then NumericFormValue:=Rest;
- End
- Else If WordStart(S,'SIGNAL ON')Then Begin
-  Rest:=Clean(Copy(S,10,255));P:=FindWord(Rest,'NAME');
-  If P>0Then Begin Name:=StrToUpper(Clean(Copy(Rest,P+4,255)));Rest:=StrToUpper(Clean(Copy(Rest,1,P-1)));End
-   Else Begin Rest:=StrToUpper(Rest);Name:=Rest;End;
-  If Rest='HALT'Then Begin SignalHalt:=True;SignalHaltName:=Name;End
-  Else If Rest='NOVALUE'Then Begin SignalNoValue:=True;SignalNoValueName:=Name;End
-  Else If Rest='ERROR'Then Begin SignalError:=True;SignalErrorName:=Name;End
-  Else If Rest='SYNTAX'Then Begin SignalSyntax:=True;SignalSyntaxName:=Name;End;
- End
- Else If WordStart(S,'SIGNAL OFF')Then Begin
-  Rest:=StrToUpper(Clean(Copy(S,11,255)));
-  If Rest='HALT'Then SignalHalt:=False
-  Else If Rest='NOVALUE'Then SignalNoValue:=False
-  Else If Rest='ERROR'Then SignalError:=False
-  Else If Rest='SYNTAX'Then SignalSyntax:=False;
- End
- Else If WordStart(S,'SIGNAL VALUE')Then Begin
-  Name:=Eval(Clean(Copy(S,13,255))).Text;SignalTargetLine:=FindRoutineLabel(Name);
- End
- Else If WordStart(S,'SIGNAL')Then Begin
-  Name:=Clean(Copy(S,7,255));SignalTargetLine:=FindRoutineLabel(Name);
- End
- Else If WordStart(S,'NOP')Then
- Else If WordStart(S,'LEAVE')Then LoopSignal:=1
- Else If WordStart(S,'ITERATE')Then LoopSignal:=2
- Else If WordStart(S,'EXIT')Then Terminated:=True
- Else If S[Length(S)]=':'Then
- Else Begin P:=System.Pos('=',S);If P>1Then Begin V:=Eval(Copy(S,P+1,255));VarSet(Copy(S,1,P-1),V.Text);End Else WriteLn('Commande non reconnue: ',S);End;
+  48:Begin { PARSE }
+   If WordStart(S,'PARSE ARG')Then Begin
+    Rest:=Clean(Copy(S,10,255));J:=1;
+    While(Rest<>'')do Begin
+     P:=System.Pos(',',Rest);If P>0Then Begin ArgName:=Clean(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End Else Begin ArgName:=Clean(Rest);Rest:='';End;
+     If J<=CurrentArgCount Then VarSet(ArgName,CurrentArgs[J])Else VarSet(ArgName,'');Inc(J);
+    End;
+   End Else If WordStart(S,'PARSE UPPER VAR')Then Begin
+    Rest:=Clean(Copy(S,16,255));P:=System.Pos(' ',Rest);
+    If P>0Then Begin Name:=Copy(Rest,1,P-1);ParseTemplate(VarGet(Name).Text,Clean(Copy(Rest,P+1,255)),True);End;
+   End Else If WordStart(S,'PARSE VAR')Then Begin
+    Rest:=Clean(Copy(S,10,255));P:=System.Pos(' ',Rest);
+    If P>0Then Begin Name:=Copy(Rest,1,P-1);ParseTemplate(VarGet(Name).Text,Clean(Copy(Rest,P+1,255)),False);End;
+   End Else If WordStart(S,'PARSE VERSION')Then
+    ParseTemplate('REXX-DEVCOOLS 1.0',Clean(Copy(S,14,255)),False)
+   Else If WordStart(S,'PARSE SOURCE')Then
+    ParseTemplate('WINDOWS COMMAND '+FileName,Clean(Copy(S,13,255)),False);
+  End;
+  56:Begin { RETURN }
+   Rest:=Clean(Copy(S,7,255));If Rest<>''Then RoutineResult:=Eval(Rest).Text Else RoutineResult:='';RoutineReturning:=True;
+  End;
+  49:; { PROCEDURE est traite lors de l'entree dans CallRoutine }
+  158:Begin { NUMERIC }
+   If WordStart(S,'NUMERIC DIGITS')Then Begin
+    Rest:=Clean(Copy(S,15,255));If Rest=''Then NumericDigitsValue:=9
+     Else Begin J:=System.Trunc(Eval(Rest).Number);If J>0Then NumericDigitsValue:=J;End;
+    If NumericFuzzValue>=NumericDigitsValue Then NumericFuzzValue:=NumericDigitsValue-1;
+   End Else If WordStart(S,'NUMERIC FUZZ')Then Begin
+    Rest:=Clean(Copy(S,13,255));If Rest=''Then NumericFuzzValue:=0
+     Else Begin J:=System.Trunc(Eval(Rest).Number);If(J>=0)and(J<NumericDigitsValue)Then NumericFuzzValue:=J;End;
+   End Else If WordStart(S,'NUMERIC FORM')Then Begin
+    Rest:=StrToUpper(Clean(Copy(S,13,255)));If Rest=''Then NumericFormValue:='SCIENTIFIC'
+     Else If(Rest='SCIENTIFIC')or(Rest='ENGINEERING')Then NumericFormValue:=Rest;
+   End;
+  End;
+  160:Begin { SIGNAL }
+   If WordStart(S,'SIGNAL ON')Then Begin
+    Rest:=Clean(Copy(S,10,255));P:=FindWord(Rest,'NAME');
+    If P>0Then Begin Name:=StrToUpper(Clean(Copy(Rest,P+4,255)));Rest:=StrToUpper(Clean(Copy(Rest,1,P-1)));End
+     Else Begin Rest:=StrToUpper(Rest);Name:=Rest;End;
+    If Rest='HALT'Then Begin SignalHalt:=True;SignalHaltName:=Name;End
+    Else If Rest='NOVALUE'Then Begin SignalNoValue:=True;SignalNoValueName:=Name;End
+    Else If Rest='ERROR'Then Begin SignalError:=True;SignalErrorName:=Name;End
+    Else If Rest='SYNTAX'Then Begin SignalSyntax:=True;SignalSyntaxName:=Name;End;
+   End Else If WordStart(S,'SIGNAL OFF')Then Begin
+    Rest:=StrToUpper(Clean(Copy(S,11,255)));If Rest='HALT'Then SignalHalt:=False
+    Else If Rest='NOVALUE'Then SignalNoValue:=False Else If Rest='ERROR'Then SignalError:=False
+    Else If Rest='SYNTAX'Then SignalSyntax:=False;
+   End Else If WordStart(S,'SIGNAL VALUE')Then Begin
+    Name:=Eval(Clean(Copy(S,13,255))).Text;SignalTargetLine:=FindRoutineLabel(Name);
+   End Else Begin Name:=Clean(Copy(S,7,255));SignalTargetLine:=FindRoutineLabel(Name);End;
+  End;
+  157:; { NOP }
+  155:LoopSignal:=1; { LEAVE }
+  154:LoopSignal:=2; { ITERATE }
+  31:Terminated:=True; { EXIT }
+  Else Begin
+   If S[Length(S)]=':'Then Exit;
+   P:=System.Pos('=',S);If P>1Then Begin V:=Eval(Copy(S,P+1,255));VarSet(Copy(S,1,P-1),V.Text);End
+    Else WriteLn('Commande non reconnue: ',S);
+  End;
+ End;
 End;
 
 Procedure ExecRange(A,Z:Integer);
