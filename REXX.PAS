@@ -89,6 +89,12 @@ Var
  CurrentArgCount:Integer;
  RoutineReturning:Boolean;
  RoutineResult:String;
+ NumericDigitsValue:Integer;
+ NumericFuzzValue:Integer;
+ NumericFormValue:String[16];
+ SignalTargetLine:Integer;
+ SignalHalt,SignalNoValue,SignalError,SignalSyntax:Boolean;
+ SignalHaltName,SignalNoValueName,SignalErrorName,SignalSyntaxName:String[64];
 
 Function LTrim(S:String):String;
 Var
@@ -396,7 +402,7 @@ Begin
  End
   Else
  If(NoImplementation)Then Begin
-  WriteLn('Cette commande n''a pas ‚t‚ impl‚ment‚');
+  WriteLn('Cette commande n''a pas '+#130+'t'+#130+' impl'+#130+'ment'+#130);
   Exit;
  End;
  RunLine:=True;
@@ -500,6 +506,9 @@ Begin
   Else If Nm='MAX'Then Begin If A.Number>B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
   Else If Nm='MIN'Then Begin If A.Number<B.Number Then N:=A.Number Else N:=B.Number;EPrimary:=RVNum(N);End
   Else If Nm='TRUNC'Then EPrimary:=RVNum(System.Trunc(A.Number))
+  Else If Nm='DIGITS'Then EPrimary:=RVNum(NumericDigitsValue)
+  Else If Nm='FUZZ'Then EPrimary:=RVNum(NumericFuzzValue)
+  Else If Nm='FORM'Then EPrimary:=RVText(NumericFormValue)
   Else If Nm='LENGTH'Then EPrimary:=RVNum(Length(A.Text))
   Else If Nm='LEFT'Then EPrimary:=RVText(Copy(A.Text,1,System.Trunc(B.Number)))
   Else If Nm='RIGHT'Then Begin J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;EPrimary:=RVText(Copy(A.Text,J,255));End
@@ -632,6 +641,67 @@ Var
 
 Procedure ExecRange(A,Z:Integer);Forward;
 
+Procedure ParseTemplate(Value,Template:String;MakeUpper:Boolean);
+Const MaxParseTokens=64;
+Var
+ Tokens:Array[1..MaxParseTokens]of String;
+ LiteralToken:Array[1..MaxParseTokens]of Boolean;
+ TokenCount,J,K,P,CursorPos,EndPos,Code,AbsolutePos:Integer;
+ Q:Char;Token,Piece:String;IsNumber:Boolean;
+Begin
+ If MakeUpper Then Value:=StrToUpper(Value);
+ TokenCount:=0;J:=1;
+ While(J<=Length(Template))and(TokenCount<MaxParseTokens)Do Begin
+  While(J<=Length(Template))and(Template[J]in[' ',#9])Do Inc(J);
+  If J>Length(Template)Then Break;
+  Inc(TokenCount);LiteralToken[TokenCount]:=False;Token:='';
+  If Template[J]in['''','"']Then Begin
+   Q:=Template[J];Inc(J);LiteralToken[TokenCount]:=True;
+   While(J<=Length(Template))and(Template[J]<>Q)Do Begin Token:=Token+Template[J];Inc(J);End;
+   If(J<=Length(Template))and(Template[J]=Q)Then Inc(J);
+  End Else
+   While(J<=Length(Template))and Not(Template[J]in[' ',#9])Do Begin Token:=Token+Template[J];Inc(J);End;
+  Tokens[TokenCount]:=Token;
+ End;
+
+ CursorPos:=1;J:=1;
+ While J<=TokenCount Do Begin
+  Token:=Tokens[J];IsNumber:=Token<>'';
+  For K:=1 To Length(Token)Do If Not(Token[K]in['0'..'9'])Then IsNumber:=False;
+  If LiteralToken[J] Then Begin
+   P:=System.Pos(Token,Copy(Value,CursorPos,255));
+   If P>0Then CursorPos:=CursorPos+P-1+Length(Token)Else CursorPos:=Length(Value)+1;
+   Inc(J);Continue;
+  End;
+  If IsNumber Then Begin Val(Token,AbsolutePos,Code);CursorPos:=AbsolutePos;Inc(J);Continue;End;
+
+  { Une variable est delimitee par le prochain litteral ou la prochaine
+    position. Entre deux variables, elle recoit un mot; la derniere recoit
+    tout le reste, conformement aux modeles PARSE de REXX. }
+  If J=TokenCount Then Begin Piece:=Clean(Copy(Value,CursorPos,255));CursorPos:=Length(Value)+1;End
+  Else If LiteralToken[J+1]Then Begin
+   P:=System.Pos(Tokens[J+1],Copy(Value,CursorPos,255));
+   If P>0Then Begin Piece:=Clean(Copy(Value,CursorPos,P-1));CursorPos:=CursorPos+P-1+Length(Tokens[J+1]);End
+    Else Begin Piece:=Clean(Copy(Value,CursorPos,255));CursorPos:=Length(Value)+1;End;
+   Inc(J);
+  End Else Begin
+   IsNumber:=Tokens[J+1]<>'';
+   For K:=1 To Length(Tokens[J+1])Do If Not(Tokens[J+1][K]in['0'..'9'])Then IsNumber:=False;
+   If IsNumber Then Begin
+    Val(Tokens[J+1],AbsolutePos,Code);EndPos:=AbsolutePos-1;
+    If EndPos<CursorPos Then Piece:=''Else Piece:=Clean(Copy(Value,CursorPos,EndPos-CursorPos+1));
+    CursorPos:=AbsolutePos;Inc(J);
+   End Else Begin
+    While(CursorPos<=Length(Value))and(Value[CursorPos]in[' ',#9])Do Inc(CursorPos);
+    EndPos:=CursorPos;While(EndPos<=Length(Value))and Not(Value[EndPos]in[' ',#9])Do Inc(EndPos);
+    Piece:=Copy(Value,CursorPos,EndPos-CursorPos);CursorPos:=EndPos;
+   End;
+  End;
+  If Token<>'.'Then VarSet(Token,Piece);
+  Inc(J);
+ End;
+End;
+
 Procedure ExecOne(S:String);
 Var P,J:Integer;V:RexxValue;Name,Rest,ArgName:String;
 Begin
@@ -654,10 +724,60 @@ Begin
    If J<=CurrentArgCount Then VarSet(ArgName,CurrentArgs[J])Else VarSet(ArgName,'');Inc(J);
   End;
  End
+ Else If WordStart(S,'PARSE UPPER VAR')Then Begin
+  Rest:=Clean(Copy(S,16,255));P:=System.Pos(' ',Rest);
+  If P>0Then Begin Name:=Copy(Rest,1,P-1);ParseTemplate(VarGet(Name).Text,Clean(Copy(Rest,P+1,255)),True);End;
+ End
+ Else If WordStart(S,'PARSE VAR')Then Begin
+  Rest:=Clean(Copy(S,10,255));P:=System.Pos(' ',Rest);
+  If P>0Then Begin Name:=Copy(Rest,1,P-1);ParseTemplate(VarGet(Name).Text,Clean(Copy(Rest,P+1,255)),False);End;
+ End
+ Else If WordStart(S,'PARSE VERSION')Then
+  ParseTemplate('REXX-DEVCOOLS 1.0',Clean(Copy(S,14,255)),False)
+ Else If WordStart(S,'PARSE SOURCE')Then
+  ParseTemplate('WINDOWS COMMAND '+FileName,Clean(Copy(S,13,255)),False)
  Else If WordStart(S,'RETURN')Then Begin
   Rest:=Clean(Copy(S,7,255));If Rest<>''Then RoutineResult:=Eval(Rest).Text Else RoutineResult:='';RoutineReturning:=True;
  End
  Else If WordStart(S,'PROCEDURE')Then
+ Else If WordStart(S,'NUMERIC DIGITS')Then Begin
+  Rest:=Clean(Copy(S,15,255));
+  If Rest=''Then NumericDigitsValue:=9
+   Else Begin J:=System.Trunc(Eval(Rest).Number);If J>0Then NumericDigitsValue:=J;End;
+  If NumericFuzzValue>=NumericDigitsValue Then NumericFuzzValue:=NumericDigitsValue-1;
+ End
+ Else If WordStart(S,'NUMERIC FUZZ')Then Begin
+  Rest:=Clean(Copy(S,13,255));
+  If Rest=''Then NumericFuzzValue:=0
+   Else Begin J:=System.Trunc(Eval(Rest).Number);If(J>=0)and(J<NumericDigitsValue)Then NumericFuzzValue:=J;End;
+ End
+ Else If WordStart(S,'NUMERIC FORM')Then Begin
+  Rest:=StrToUpper(Clean(Copy(S,13,255)));
+  If Rest=''Then NumericFormValue:='SCIENTIFIC'
+  Else If(Rest='SCIENTIFIC')or(Rest='ENGINEERING')Then NumericFormValue:=Rest;
+ End
+ Else If WordStart(S,'SIGNAL ON')Then Begin
+  Rest:=Clean(Copy(S,10,255));P:=FindWord(Rest,'NAME');
+  If P>0Then Begin Name:=StrToUpper(Clean(Copy(Rest,P+4,255)));Rest:=StrToUpper(Clean(Copy(Rest,1,P-1)));End
+   Else Begin Rest:=StrToUpper(Rest);Name:=Rest;End;
+  If Rest='HALT'Then Begin SignalHalt:=True;SignalHaltName:=Name;End
+  Else If Rest='NOVALUE'Then Begin SignalNoValue:=True;SignalNoValueName:=Name;End
+  Else If Rest='ERROR'Then Begin SignalError:=True;SignalErrorName:=Name;End
+  Else If Rest='SYNTAX'Then Begin SignalSyntax:=True;SignalSyntaxName:=Name;End;
+ End
+ Else If WordStart(S,'SIGNAL OFF')Then Begin
+  Rest:=StrToUpper(Clean(Copy(S,11,255)));
+  If Rest='HALT'Then SignalHalt:=False
+  Else If Rest='NOVALUE'Then SignalNoValue:=False
+  Else If Rest='ERROR'Then SignalError:=False
+  Else If Rest='SYNTAX'Then SignalSyntax:=False;
+ End
+ Else If WordStart(S,'SIGNAL VALUE')Then Begin
+  Name:=Eval(Clean(Copy(S,13,255))).Text;SignalTargetLine:=FindRoutineLabel(Name);
+ End
+ Else If WordStart(S,'SIGNAL')Then Begin
+  Name:=Clean(Copy(S,7,255));SignalTargetLine:=FindRoutineLabel(Name);
+ End
  Else If WordStart(S,'NOP')Then
  Else If WordStart(S,'LEAVE')Then LoopSignal:=1
  Else If WordStart(S,'ITERATE')Then LoopSignal:=2
@@ -821,6 +941,10 @@ Begin
    ExecOne(S);
    Inc(J);
   End;
+  If SignalTargetLine>0Then Begin
+   If(SignalTargetLine>=A)and(SignalTargetLine<=Z)Then Begin J:=SignalTargetLine+1;SignalTargetLine:=0;End
+    Else Exit;
+  End;
  End;
 End;
 
@@ -918,6 +1042,9 @@ Procedure ExecuteCommand;Begin
  Terminated:=False;
  LoopSignal:=0;
  CurrentArgCount:=0;InvokeArgCount:=0;RoutineReturning:=False;RoutineResult:='';
+ NumericDigitsValue:=9;NumericFuzzValue:=0;NumericFormValue:='SCIENTIFIC';
+ SignalTargetLine:=0;SignalHalt:=False;SignalNoValue:=False;SignalError:=False;SignalSyntax:=False;
+ SignalHaltName:='HALT';SignalNoValueName:='NOVALUE';SignalErrorName:='ERROR';SignalSyntaxName:='SYNTAX';
  If NumberLine>0Then ExecRange(1,NumberLine);
 End;
 
