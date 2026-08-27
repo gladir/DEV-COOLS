@@ -48,7 +48,7 @@ Il possède également des éditeurs de ressources, comme WORKSHOP :
 
 <h2>Liste des fichiers</h2>
 
-Voici la liste des différents fichiers proposés dans DEV-COOLS :
+Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS :
 
 <table>
 		<tr>
