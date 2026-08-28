@@ -118,6 +118,7 @@ Var
  CurrentConditionStatus:String[8];
  CurrentAddress,PreviousAddress:String[64];
  CurrentOptions:String;
+ TimeElapsedStart:Real;
  CharInNames:Array[1..MaxRoutineArgs]of String;
  CharInPositions:Array[1..MaxRoutineArgs]of LongInt;
  CharInStreamCount:Integer;
@@ -242,7 +243,9 @@ Begin
   {NewCommand;}
   While Not EOF(FileLoad) do Begin
    ReadLn(FileLoad,S);
-   If Not AddLine(LTrim(S))Then Begin
+   { Conserver la ligne originale pour SOURCELINE(n). Les analyseurs
+     d'instructions appliquent eux-memes Clean/LTrim au moment voulu. }
+   If Not AddLine(S)Then Begin
     WriteLn('Manque de m‚moire');
     Break;
    End;
@@ -299,6 +302,18 @@ Begin V.Text:=S;Val(NormalizeRexxNumber(S),V.Number,C);V.IsNumber:=C=0;
  If Not V.IsNumber Then V.Number:=0;End;
 Procedure RVNum(N:Real;Var V:RexxValue);
 Begin V.Number:=N;V.IsNumber:=True;V.Text:=NumToText(N);End;
+
+Procedure SourceLineValue(LineNumber:LongInt;NumberSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Begin
+ If Not NumberSpecified Then Begin
+  RVNum(NumberLine,ResultValue);
+  Exit;
+ End;
+ If(LineNumber<1)or(LineNumber>NumberLine)Then
+  RVText('',ResultValue)
+ Else RVText(PA[LineNumber]^,ResultValue);
+End;
 
 Procedure RandomValue(MinimumValue,MaximumValue,SeedValue:RexxValue;
  ArgumentCount:Integer;Var ResultValue:RexxValue);
@@ -845,6 +860,94 @@ Begin
  End;
  GetDir(0,CurrentDirectory);
  RVText(CurrentDirectory,ResultValue);
+End;
+
+Procedure SysMakeDirectory(DirectoryName:String;Var ResultValue:RexxValue);
+Var ErrorCode:Integer;
+Begin
+ If DirectoryName=''Then Begin RVNum(3,ResultValue);Exit;End;
+ {$I-}MkDir(DirectoryName);{$I+}
+ ErrorCode:=IoResult;
+ RVNum(ErrorCode,ResultValue);
+End;
+
+Procedure SysRemoveDirectory(DirectoryName:String;Var ResultValue:RexxValue);
+Var ErrorCode:Integer;
+Begin
+ If DirectoryName=''Then Begin RVNum(3,ResultValue);Exit;End;
+ {$I-}RmDir(DirectoryName);{$I+}
+ ErrorCode:=IoResult;
+ RVNum(ErrorCode,ResultValue);
+End;
+
+Procedure SysSleepValue(Seconds:Real;ArgumentSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var RemainingMilliseconds:Real;FinalDelay:Word;
+Begin
+ If(Not ArgumentSpecified)or(Seconds<0)Then Begin
+  RVNum(87,ResultValue);
+  Exit;
+ End;
+ RemainingMilliseconds:=Seconds*1000.0;
+ { Crt.Delay recoit un Word sous Turbo Pascal. Fractionner l'attente
+   permet donc de supporter une duree superieure a 65,535 secondes. }
+ While RemainingMilliseconds>=60000.0Do Begin
+  Delay(60000);
+  RemainingMilliseconds:=RemainingMilliseconds-60000.0;
+ End;
+ FinalDelay:=System.Trunc(RemainingMilliseconds);
+ If FinalDelay>0Then Delay(FinalDelay);
+ RVNum(0,ResultValue);
+End;
+
+Function TwoDigits(Value:Word):String;
+Var S:String;
+Begin
+ Str(Value,S);
+ If Length(S)<2Then S:='0'+S;
+ TwoDigits:=S;
+End;
+
+Function CurrentTimeSeconds:Real;
+Var HourValue,MinuteValue,SecondValue,HundredthValue:Word;
+Begin
+ GetTime(HourValue,MinuteValue,SecondValue,HundredthValue);
+ CurrentTimeSeconds:=HourValue*3600.0+MinuteValue*60.0+SecondValue+
+  HundredthValue/100.0;
+End;
+
+Procedure TimeValue(OptionText:String;ArgumentCount:Integer;
+ Var ResultValue:RexxValue);
+Var HourValue,MinuteValue,SecondValue,HundredthValue,CivilHour:Word;
+ OptionCharacter:Char;CurrentSeconds,ElapsedSeconds:Real;S,Suffix:String;
+Begin
+ If ArgumentCount>1Then Begin RVText('',ResultValue);Exit;End;
+ OptionText:=StrToUpper(Clean(OptionText));
+ If OptionText=''Then OptionCharacter:='N'Else OptionCharacter:=OptionText[1];
+ GetTime(HourValue,MinuteValue,SecondValue,HundredthValue);
+ CurrentSeconds:=HourValue*3600.0+MinuteValue*60.0+SecondValue+
+  HundredthValue/100.0;
+ Case OptionCharacter Of
+  'C':Begin
+   CivilHour:=HourValue mod 12;If CivilHour=0Then CivilHour:=12;
+   If HourValue<12Then Suffix:='am'Else Suffix:='pm';
+   Str(CivilHour,S);RVText(S+':'+TwoDigits(MinuteValue)+Suffix,ResultValue);
+  End;
+  'E','R':Begin
+   ElapsedSeconds:=CurrentSeconds-TimeElapsedStart;
+   If ElapsedSeconds<0Then ElapsedSeconds:=ElapsedSeconds+86400.0;
+   Str(ElapsedSeconds:0:6,S);RVText(S,ResultValue);
+   If OptionCharacter='R'Then TimeElapsedStart:=CurrentSeconds;
+  End;
+  'H':RVNum(HourValue,ResultValue);
+  'L':RVText(TwoDigits(HourValue)+':'+TwoDigits(MinuteValue)+':'+
+   TwoDigits(SecondValue)+'.'+TwoDigits(HundredthValue)+'0000',ResultValue);
+  'M':RVNum(HourValue*60+MinuteValue,ResultValue);
+  'N':RVText(TwoDigits(HourValue)+':'+TwoDigits(MinuteValue)+':'+
+   TwoDigits(SecondValue),ResultValue);
+  'S':RVNum(System.Trunc(CurrentSeconds),ResultValue);
+ Else RVText('',ResultValue);
+ End;
 End;
 
 Function FileSpecPart(OptionText,FileSpecification:String):String;
@@ -1465,7 +1568,8 @@ Begin
    68:Begin { SIGN }
     If A.Number<0Then N:=-1 Else If A.Number>0Then N:=1 Else N:=0;RVNum(N,ResultValue);
    End;
-   69:FunctionNotImplemented(FunctionByte,ResultValue); { SOURCELINE }
+   69:SourceLineValue(System.Trunc(A.Number),InvokeArgCount>0,
+    ResultValue); { SOURCELINE }
    70:FunctionNotImplemented(FunctionByte,ResultValue); { SPACE }
    71:FunctionNotImplemented(FunctionByte,ResultValue); { STREAM }
    72:FunctionNotImplemented(FunctionByte,ResultValue); { STRIP }
@@ -1502,7 +1606,7 @@ Begin
    100:FunctionNotImplemented(FunctionByte,ResultValue); { SYSINI }
    101:FunctionNotImplemented(FunctionByte,ResultValue); { SYSLOADFUNCS }
    102:FunctionNotImplemented(FunctionByte,ResultValue); { SYSLOADREXXMACROSPACE }
-   103:FunctionNotImplemented(FunctionByte,ResultValue); { SYSMKDIR }
+   103:SysMakeDirectory(A.Text,ResultValue); { SYSMKDIR }
    104:FunctionNotImplemented(FunctionByte,ResultValue); { SYSOPENEVENTSEM }
    105:FunctionNotImplemented(FunctionByte,ResultValue); { SYSOPENMUTEXSEM }
    106:FunctionNotImplemented(FunctionByte,ResultValue); { SYSOS2VER }
@@ -1516,13 +1620,13 @@ Begin
    114:FunctionNotImplemented(FunctionByte,ResultValue); { SYSREORDERREXXMACRO }
    115:FunctionNotImplemented(FunctionByte,ResultValue); { SYSREQUESTMUTEXSEM }
    116:FunctionNotImplemented(FunctionByte,ResultValue); { SYSRESETEVENTSEM }
-   117:FunctionNotImplemented(FunctionByte,ResultValue); { SYSRMDIR }
+   117:SysRemoveDirectory(A.Text,ResultValue); { SYSRMDIR }
    118:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSAVEREXXMACROSPACE }
    119:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSEARCHPATH }
    120:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSETICON }
    121:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSETOBJECTDATA }
    122:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSETPRIORITY }
-   123:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSLEEP }
+   123:SysSleepValue(A.Number,InvokeArgCount>0,ResultValue); { SYSSLEEP }
    124:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSWITCHSESSION }
    125:FunctionNotImplemented(FunctionByte,ResultValue); { SYSSYSTEMDIRECTORY }
    126:FunctionNotImplemented(FunctionByte,ResultValue); { SYSTEMPFILENAME }
@@ -1533,7 +1637,7 @@ Begin
    131:FunctionNotImplemented(FunctionByte,ResultValue); { SYSWAITNAMEDPIPE }
    132:FunctionNotImplemented(FunctionByte,ResultValue); { SYSWINVER }
    133:FunctionNotImplemented(FunctionByte,ResultValue); { THEN }
-   134:FunctionNotImplemented(FunctionByte,ResultValue); { TIME }
+   134:TimeValue(A.Text,InvokeArgCount,ResultValue); { TIME }
    135:FunctionNotImplemented(FunctionByte,ResultValue); { TRACE }
    136:FunctionNotImplemented(FunctionByte,ResultValue); { TRANSLATE }
    137:RVNum(System.Trunc(A.Number),ResultValue); { TRUNC }
@@ -2289,6 +2393,7 @@ Procedure ExecuteCommand;Begin
  CurrentConditionInstruction:='';CurrentConditionStatus:='';
  CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
  CurrentOptions:='';
+ TimeElapsedStart:=CurrentTimeSeconds;
  CharInStreamCount:=0;
  CharOutStreamCount:=0;
  LocalEnvironments:=Nil;
