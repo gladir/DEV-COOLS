@@ -546,6 +546,61 @@ Begin
  RVNum(DecimalValue,ResultValue);
 End;
 
+Function DecimalToCharacter(NumberValue,CharacterCount:LongInt;
+ CountSpecified:Boolean):String;
+Var ResultText:String;ByteValue:Integer;
+Begin
+ ResultText:='';
+ If CountSpecified Then Begin
+  If CharacterCount<=0Then Begin DecimalToCharacter:='';Exit;End;
+  If CharacterCount>255Then CharacterCount:=255;
+  While CharacterCount>0Do Begin
+   ByteValue:=NumberValue mod 256;
+   If ByteValue<0Then Inc(ByteValue,256);
+   ResultText:=Chr(ByteValue)+ResultText;
+   NumberValue:=(NumberValue-ByteValue)div 256;
+   Dec(CharacterCount);
+  End;
+ End Else Begin
+  { Sans longueur, REXX choisit la representation non signee minimale. }
+  If NumberValue<=0Then Begin DecimalToCharacter:='';Exit;End;
+  While NumberValue>0Do Begin
+   ByteValue:=NumberValue mod 256;
+   ResultText:=Chr(ByteValue)+ResultText;
+   NumberValue:=NumberValue div 256;
+  End;
+ End;
+ DecimalToCharacter:=ResultText;
+End;
+
+Function DecimalToHex(NumberValue,HexLength:LongInt;
+ LengthSpecified:Boolean):String;
+Const HexDigits:Array[0..15]of Char='0123456789ABCDEF';
+Var ResultText:String;DigitValue:Integer;
+Begin
+ ResultText:='';
+ If LengthSpecified Then Begin
+  If HexLength<=0Then Begin DecimalToHex:='';Exit;End;
+  If HexLength>255Then HexLength:=255;
+  While HexLength>0Do Begin
+   DigitValue:=NumberValue mod 16;
+   If DigitValue<0Then Inc(DigitValue,16);
+   ResultText:=HexDigits[DigitValue]+ResultText;
+   NumberValue:=(NumberValue-DigitValue)div 16;
+   Dec(HexLength);
+  End;
+ End Else Begin
+  If NumberValue=0Then Begin DecimalToHex:='0';Exit;End;
+  If NumberValue<0Then Begin DecimalToHex:='';Exit;End;
+  While NumberValue>0Do Begin
+   DigitValue:=NumberValue mod 16;
+   ResultText:=HexDigits[DigitValue]+ResultText;
+   NumberValue:=NumberValue div 16;
+  End;
+ End;
+ DecimalToHex:=ResultText;
+End;
+
 Function IsRexxNumber(SourceText:String;Var NumberValue:Real):Boolean;
 Var ErrorPosition:Integer;
 Begin
@@ -610,6 +665,134 @@ Begin
  Else Matches:=False;
  End;
  If Matches Then RVNum(1,ResultValue)Else RVNum(0,ResultValue);
+End;
+
+Function IsLeapYear(Year:Word):Boolean;
+Begin
+ IsLeapYear:=((Year mod 4)=0)and(((Year mod 100)<>0)or((Year mod 400)=0));
+End;
+
+Function DaysBeforeYear(Year:Word):LongInt;
+Var PreviousYear:LongInt;
+Begin
+ PreviousYear:=Year-1;
+ DaysBeforeYear:=PreviousYear*365+PreviousYear div 4-
+  PreviousYear div 100+PreviousYear div 400;
+End;
+
+Function DayOfYearValue(Year,Month,Day:Word):Integer;
+Const DaysPerMonth:Array[1..12]of Byte=(31,28,31,30,31,30,31,31,30,31,30,31);
+Var J,ResultDay:Integer;
+Begin
+ ResultDay:=Day;
+ For J:=1 To Month-1Do Begin
+  Inc(ResultDay,DaysPerMonth[J]);
+  If(J=2)and IsLeapYear(Year)Then Inc(ResultDay);
+ End;
+ DayOfYearValue:=ResultDay;
+End;
+
+Function PaddedNumber(Value,Width:Integer):String;
+Var S:String;
+Begin
+ Str(Value,S);S:=Clean(S);
+ While Length(S)<Width Do S:='0'+S;
+ PaddedNumber:=S;
+End;
+
+Procedure DateValue(OptionText:String;Var ResultValue:RexxValue);
+Const
+ ShortMonth:Array[1..12]of String[3]=('Jan','Feb','Mar','Apr','May','Jun',
+  'Jul','Aug','Sep','Oct','Nov','Dec');
+ FullMonth:Array[1..12]of String[9]=('January','February','March','April',
+  'May','June','July','August','September','October','November','December');
+ WeekDayName:Array[1..7]of String[9]=('Monday','Tuesday','Wednesday',
+  'Thursday','Friday','Saturday','Sunday');
+Var Year,Month,Day,DosDayOfWeek:Word;OptionCode:Char;DayOfYear:Integer;
+ BaseDays,CenturyDays:LongInt;S:String;
+Begin
+ GetDate(Year,Month,Day,DosDayOfWeek);
+ OptionText:=StrToUpper(Clean(OptionText));
+ If OptionText=''Then OptionCode:='N'Else OptionCode:=OptionText[1];
+ DayOfYear:=DayOfYearValue(Year,Month,Day);
+ BaseDays:=DaysBeforeYear(Year)+DayOfYear-1;
+ Case OptionCode Of
+  'B':RVNum(BaseDays,ResultValue);
+  'C':Begin
+       CenturyDays:=BaseDays-DaysBeforeYear((Year div 100)*100)+1;
+       RVNum(CenturyDays,ResultValue);
+      End;
+  'D':RVNum(DayOfYear,ResultValue);
+  'E':RVText(PaddedNumber(Day,2)+'/'+PaddedNumber(Month,2)+'/'+
+       PaddedNumber(Year mod 100,2),ResultValue);
+  'J':RVText(PaddedNumber(Year mod 100,2)+PaddedNumber(DayOfYear,3),ResultValue);
+  'M':RVText(FullMonth[Month],ResultValue);
+  'N':Begin Str(Day,S);S:=Clean(S);RVText(S+' '+ShortMonth[Month]+' '+
+       PaddedNumber(Year,4),ResultValue);End;
+  'O':RVText(PaddedNumber(Year mod 100,2)+'/'+PaddedNumber(Month,2)+'/'+
+       PaddedNumber(Day,2),ResultValue);
+  'S':RVText(PaddedNumber(Year,4)+PaddedNumber(Month,2)+PaddedNumber(Day,2),ResultValue);
+  'U':RVText(PaddedNumber(Month,2)+'/'+PaddedNumber(Day,2)+'/'+
+       PaddedNumber(Year mod 100,2),ResultValue);
+  'W':RVText(WeekDayName[(BaseDays mod 7)+1],ResultValue);
+ Else RVText('',ResultValue);
+ End;
+End;
+
+Function DeleteStringPart(SourceText:String;StartPosition,DeleteLength:LongInt;
+ LengthSpecified:Boolean):String;
+Var DeleteCount:Integer;
+Begin
+ If(StartPosition<1)or(StartPosition>Length(SourceText))Then Begin
+  DeleteStringPart:=SourceText;Exit;
+ End;
+ If LengthSpecified Then Begin
+  If DeleteLength<=0Then Begin DeleteStringPart:=SourceText;Exit;End;
+  If DeleteLength>255Then DeleteCount:=255 Else DeleteCount:=DeleteLength;
+ End Else DeleteCount:=Length(SourceText)-StartPosition+1;
+ Delete(SourceText,StartPosition,DeleteCount);
+ DeleteStringPart:=SourceText;
+End;
+
+Function DeleteWords(SourceText:String;FirstWord,WordCount:LongInt;
+ CountSpecified:Boolean):String;
+Var Position,DeleteStart,WordsSeen:Integer;WordsToDelete:LongInt;
+Begin
+ If FirstWord<1Then Begin DeleteWords:=SourceText;Exit;End;
+ If CountSpecified and(WordCount<=0)Then Begin DeleteWords:=SourceText;Exit;End;
+ Position:=1;WordsSeen:=0;DeleteStart:=0;
+ While Position<=Length(SourceText)Do Begin
+  While(Position<=Length(SourceText))and(SourceText[Position]in[' ',#9])Do Inc(Position);
+  If Position>Length(SourceText)Then Break;
+  Inc(WordsSeen);
+  If WordsSeen=FirstWord Then Begin DeleteStart:=Position;Break;End;
+  While(Position<=Length(SourceText))and Not(SourceText[Position]in[' ',#9])Do Inc(Position);
+ End;
+ If DeleteStart=0Then Begin DeleteWords:=SourceText;Exit;End;
+ If CountSpecified Then WordsToDelete:=WordCount Else WordsToDelete:=32767;
+ Position:=DeleteStart;
+ While(Position<=Length(SourceText))and(WordsToDelete>0)Do Begin
+  While(Position<=Length(SourceText))and Not(SourceText[Position]in[' ',#9])Do Inc(Position);
+  Dec(WordsToDelete);
+  { Les blancs places apres le dernier mot supprime appartiennent eux aussi
+    a la sous-chaine DELWORD. }
+  While(Position<=Length(SourceText))and(SourceText[Position]in[' ',#9])Do Inc(Position);
+ End;
+ Delete(SourceText,DeleteStart,Position-DeleteStart);
+ DeleteWords:=SourceText;
+End;
+
+Procedure DirectoryValue(NewDirectory:String;DirectorySpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var CurrentDirectory:String;ErrorCode:Integer;
+Begin
+ If DirectorySpecified Then Begin
+  {$I-}ChDir(NewDirectory);{$I+}
+  ErrorCode:=IoResult;
+  If ErrorCode<>0Then Begin RVText('',ResultValue);Exit;End;
+ End;
+ GetDir(0,CurrentDirectory);
+ RVText(CurrentDirectory,ResultValue);
 End;
 
 Procedure CharInValue(StreamName:String;StartPosition,RequestedCount:LongInt;
@@ -822,13 +1005,17 @@ Begin
     ResultValue); { C2D }
    20:RVText(CharacterToHex(A.Text),ResultValue); { C2X }
    21:DataTypeValue(A.Text,B.Text,InvokeArgCount>1,ResultValue); { DATATYPE }
-   22:FunctionNotImplemented(FunctionByte,ResultValue); { DATE }
-   23:FunctionNotImplemented(FunctionByte,ResultValue); { DELSTR }
-   24:FunctionNotImplemented(FunctionByte,ResultValue); { DELWORD }
+   22:DateValue(A.Text,ResultValue); { DATE }
+   23:RVText(DeleteStringPart(A.Text,System.Trunc(B.Number),
+    System.Trunc(D.Number),InvokeArgCount>2),ResultValue); { DELSTR }
+   24:RVText(DeleteWords(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
+    InvokeArgCount>2),ResultValue); { DELWORD }
    25:RVNum(NumericDigitsValue,ResultValue); { DIGITS }
-   26:FunctionNotImplemented(FunctionByte,ResultValue); { DIRECTORY }
-   27:FunctionNotImplemented(FunctionByte,ResultValue); { D2C }
-   28:FunctionNotImplemented(FunctionByte,ResultValue); { D2X }
+   26:DirectoryValue(A.Text,InvokeArgCount>0,ResultValue); { DIRECTORY }
+   27:RVText(DecimalToCharacter(System.Trunc(A.Number),System.Trunc(B.Number),
+    InvokeArgCount>1),ResultValue); { D2C }
+   28:RVText(DecimalToHex(System.Trunc(A.Number),System.Trunc(B.Number),
+    InvokeArgCount>1),ResultValue); { D2X }
    29:FunctionNotImplemented(FunctionByte,ResultValue); { ENDLOCAL }
    30:FunctionNotImplemented(FunctionByte,ResultValue); { ERRORTEXT }
    31:FunctionNotImplemented(FunctionByte,ResultValue); { EXIT }
