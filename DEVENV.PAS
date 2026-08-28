@@ -55021,6 +55021,7 @@ Function Emu_DLFromDiskIdx(Idx: Byte): Byte; Forward;
 Function Emu_LoadBootSector(Var C: TEmuCPU; DriveIdx: Byte): Boolean;
 Var
  SectorBuf: Array[0..511] Of Byte;
+ DriveParam: Array[0..10] Of Byte;
  I: Integer;
 Begin
  Emu_LoadBootSector := False;
@@ -55046,17 +55047,31 @@ Begin
  EmuOS2LastDrive := 'E';
  If Not Emu_ImageReadSector(DriveIdx, 0, SectorBuf) Then Exit;
  Emu_WriteBlock(C, 0, $7C00, SectorBuf, 512);
- { CS:IP = 07C0:0000 plutot que 0000:7C00 - meme adresse physique          }
- { ($7C00), mais DOS_RunOneChunk traite CS=0 comme un saut errant vers     }
- { l IVT/BDA et termine immediatement l "execution" (voir son commentaire  }
- { juste avant le test) : un vrai secteur de boot garde CS=0 pendant       }
- { toute son execution (il ne recharge CS que via un JMP FAR eventuel), ce }
- { qui declenchait ce garde-fou des la 1ere iteration (0 instruction       }
- { executee). 07C0:0000 est la convention alternative standard (memes     }
- { octets a la meme adresse physique) qui evite le probleme sans toucher   }
- { au garde-fou, deja correct pour les .COM/.EXE charges normalement.      }
- C.Segs.CS := $07C0;
- C.IP      := $0000;
+ { INT 1Eh doit pointer vers une vraie table de parametres BIOS : le VBR
+   FAT16 la copie pendant son initialisation, meme pour un disque dur. La
+   placer dans la zone BIOS evite de reutiliser la zone basse du boot. }
+ DriveParam[0] := $F0;
+ DriveParam[1] := $DF;
+ DriveParam[2] := $02;
+ DriveParam[3] := $25;
+ DriveParam[4] := $02;
+ DriveParam[5] := $09;
+ DriveParam[6] := $2A;
+ DriveParam[7] := $FF;
+ DriveParam[8] := $50;
+ DriveParam[9] := $F6;
+ DriveParam[10] := $0F;
+ Emu_WriteBlock(C, $F000, $0600, DriveParam, SizeOf(DriveParam));
+ Emu_WriteWord(C, 0, $0078, $0600);
+ Emu_WriteWord(C, 0, $007A, $F000);
+ { Convention BIOS reelle : le secteur est charge a 0000:7C00.            }
+ { Les deux formes 07C0:0000 et 0000:7C00 designent la meme adresse        }
+ { physique, mais elles ne sont pas interchangeables pour un MBR qui       }
+ { utilise des references relatives a CS. DOS_RunOneChunk exempte deja    }
+ { EmuBootActive du garde-fou CS=0, ce qui permet de conserver cette        }
+ { convention materielle sans arreter le boot des la premiere instruction. }
+ C.Segs.CS := $0000;
+ C.IP      := $7C00;
  C.Segs.DS := 0;
  C.Segs.ES := 0;
  C.Segs.SS := 0;
@@ -56677,7 +56692,7 @@ End;
 Function Emu_DiskIfSupportsEDD: Boolean;
 Begin
  Case OptionsDlg.Data.DosDiskInterface Of
-  4, 6, 7, 8, 9, 10, 11, 12: Emu_DiskIfSupportsEDD := True; { SCSI,EIDE+,SAS,NVMe }
+  4, 5, 6, 7, 8, 9, 10, 11, 12: Emu_DiskIfSupportsEDD := True; { SCSI,IDE/EIDE+,SAS,NVMe }
  Else
   Emu_DiskIfSupportsEDD := False;
  End;
@@ -64216,14 +64231,25 @@ Var
  SBuf: Array[0..511] Of Byte;
  N: Byte;
  J: Integer;
+ PhysAddr: LongInt;
+ WriteSeg, WriteOfs: Word;
 Begin
  Emu_FloppyReadSectors := 0;
  If Not EmuFloppyOpen[Idx] Then Exit;
  N := 0;
  While N < NSect Do Begin
   If Not Emu_ImageReadSector(Idx, LBA + N, SBuf) Then Break;
-  For J := 0 To 511 Do
-   Emu_WriteByte(P.CPU, Seg, Word(Ofs + LongInt(N) * 512 + J), SBuf[J]);
+  { Le BIOS fait progresser l adresse physique du buffer ; un simple
+    enveloppement de l offset a 16 bits corrompt les chargements a cheval
+    sur 64 Ko (cas frequent pour IO.SYS/MSDOS.SYS). }
+  PhysAddr := (LongInt(Seg) Shl 4) + Ofs + LongInt(N) * 512;
+  WriteSeg := Word(PhysAddr Shr 4);
+  WriteOfs := Word(PhysAddr And $000F);
+  For J := 0 To 511 Do Begin
+   Emu_WriteByte(P.CPU, WriteSeg, WriteOfs, SBuf[J]);
+   Inc(WriteOfs);
+   If WriteOfs = 0 Then Inc(WriteSeg, $1000);
+  End;
   Inc(N);
  End;
  Emu_FloppyReadSectors := N;
@@ -69274,11 +69300,14 @@ End;
   Sinon on signale une faute pour arreter l emulation proprement.
   Le caller doit avoir DEJA avance IP au-dela du DIV. }
 Procedure Emu_Div0Trap(Var P: TEmulatorPanel);
-Var VecCS: Word;
 Begin
- VecCS := Emu_ReadWord(P.CPU, 0, 0 * 4 + 2); { IVT[0] segment }
- If VecCS <> 0 Then Emu_FireHwInt(P, 0)
- Else P.CPU.Fault := sfDivision0;
+ { Le vecteur par defaut pointe vers notre propre trampoline F000:0300 ;
+   il ne faut pas le traiter comme un handler invite, sinon INT 0 se
+   rappelle indefiniment via le trampoline. }
+ If Emu_IntIsHooked(P, 0) Then
+  Emu_FireHwInt(P, 0)
+ Else
+  P.CPU.Fault := sfDivision0;
 End;
 
 { Capture du tout premier DIV/0 pour diagnostic. NoOp si deja fait. }
@@ -70042,27 +70071,50 @@ Begin
    End;
   $60: { PUSHA (80186+) : push AX,CX,DX,BX,SP,BP,SI,DI }
    Begin
-    V16 := P.CPU.Regs.SP;
-    Emu_PushWord(P.CPU, P.CPU.Regs.AX);
-    Emu_PushWord(P.CPU, P.CPU.Regs.CX);
-    Emu_PushWord(P.CPU, P.CPU.Regs.DX);
-    Emu_PushWord(P.CPU, P.CPU.Regs.BX);
-    Emu_PushWord(P.CPU, V16);
-    Emu_PushWord(P.CPU, P.CPU.Regs.BP);
-    Emu_PushWord(P.CPU, P.CPU.Regs.SI);
-    Emu_PushWord(P.CPU, P.CPU.Regs.DI);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := P.CPU.Regs.ESP;
+     Emu_PushDWord(P.CPU, P.CPU.Regs.EAX);
+     Emu_PushDWord(P.CPU, P.CPU.Regs.ECX);
+     Emu_PushDWord(P.CPU, P.CPU.Regs.EDX);
+     Emu_PushDWord(P.CPU, P.CPU.Regs.EBX);
+     Emu_PushDWord(P.CPU, V32);
+     Emu_PushDWord(P.CPU, P.CPU.Regs.EBP);
+     Emu_PushDWord(P.CPU, P.CPU.Regs.ESI);
+     Emu_PushDWord(P.CPU, P.CPU.Regs.EDI);
+    End Else Begin
+     V16 := P.CPU.Regs.SP;
+     Emu_PushWord(P.CPU, P.CPU.Regs.AX);
+     Emu_PushWord(P.CPU, P.CPU.Regs.CX);
+     Emu_PushWord(P.CPU, P.CPU.Regs.DX);
+     Emu_PushWord(P.CPU, P.CPU.Regs.BX);
+     Emu_PushWord(P.CPU, V16);
+     Emu_PushWord(P.CPU, P.CPU.Regs.BP);
+     Emu_PushWord(P.CPU, P.CPU.Regs.SI);
+     Emu_PushWord(P.CPU, P.CPU.Regs.DI);
+    End;
     Inc(P.CPU.IP);
    End;
   $61: { POPA (80186+) : pop DI,SI,BP,(SP ignore),BX,DX,CX,AX }
    Begin
-    P.CPU.Regs.DI := Emu_PopWord(P.CPU);
-    P.CPU.Regs.SI := Emu_PopWord(P.CPU);
-    P.CPU.Regs.BP := Emu_PopWord(P.CPU);
-    V16 := Emu_PopWord(P.CPU); { SP ignore }
-    P.CPU.Regs.BX := Emu_PopWord(P.CPU);
-    P.CPU.Regs.DX := Emu_PopWord(P.CPU);
-    P.CPU.Regs.CX := Emu_PopWord(P.CPU);
-    P.CPU.Regs.AX := Emu_PopWord(P.CPU);
+    If P.CPU.OperandSize32 Then Begin
+     P.CPU.Regs.EDI := Emu_PopDWord(P.CPU);
+     P.CPU.Regs.ESI := Emu_PopDWord(P.CPU);
+     P.CPU.Regs.EBP := Emu_PopDWord(P.CPU);
+     V32 := Emu_PopDWord(P.CPU); { ESP ignore }
+     P.CPU.Regs.EBX := Emu_PopDWord(P.CPU);
+     P.CPU.Regs.EDX := Emu_PopDWord(P.CPU);
+     P.CPU.Regs.ECX := Emu_PopDWord(P.CPU);
+     P.CPU.Regs.EAX := Emu_PopDWord(P.CPU);
+    End Else Begin
+     P.CPU.Regs.DI := Emu_PopWord(P.CPU);
+     P.CPU.Regs.SI := Emu_PopWord(P.CPU);
+     P.CPU.Regs.BP := Emu_PopWord(P.CPU);
+     V16 := Emu_PopWord(P.CPU); { SP ignore }
+     P.CPU.Regs.BX := Emu_PopWord(P.CPU);
+     P.CPU.Regs.DX := Emu_PopWord(P.CPU);
+     P.CPU.Regs.CX := Emu_PopWord(P.CPU);
+     P.CPU.Regs.AX := Emu_PopWord(P.CPU);
+    End;
     Inc(P.CPU.IP);
    End;
   $68: { PUSH imm16 (80186+) }
@@ -71870,15 +71922,17 @@ Begin
           P.CPU.Fault := sfDivision0;
          End
          Else Begin
-          MulRes := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
-          If MulRes Div LongInt(V16) > $FFFF
+          { Le dividende DX:AX est non signe ; ne pas le construire dans
+            un LongInt signe, car DX >= $8000 le rendrait negatif. }
+          MulRes64 := (Int64(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+          If (MulRes64 Div Int64(V16)) > $FFFF
            Then Begin
             Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
             P.CPU.Fault := sfDivision0;
            End
           Else Begin
-           P.CPU.Regs.AX := Word(MulRes Div LongInt(V16));
-           P.CPU.Regs.DX := Word(MulRes Mod LongInt(V16));
+           P.CPU.Regs.AX := Word(MulRes64 Div Int64(V16));
+           P.CPU.Regs.DX := Word(MulRes64 Mod Int64(V16));
           End;
          End;
         End;
@@ -71888,9 +71942,17 @@ Begin
           P.CPU.Fault := sfDivision0;
          End
          Else Begin
-          MulRes := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
-          P.CPU.Regs.AX := Word(MulRes Div LongInt(SmallInt(V16)));
-          P.CPU.Regs.DX := Word(MulRes Mod LongInt(SmallInt(V16)));
+          { IDIV etend le signe de DX dans le dividende 32 bits. }
+          MulRes64 := Int64(SmallInt(P.CPU.Regs.DX)) * 65536 +
+           Int64(P.CPU.Regs.AX);
+          If (MulRes64 Div Int64(SmallInt(V16)) > 32767) Or
+             (MulRes64 Div Int64(SmallInt(V16)) < -32768) Then Begin
+           Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
+           P.CPU.Fault := sfDivision0;
+          End Else Begin
+           P.CPU.Regs.AX := Word(MulRes64 Div Int64(SmallInt(V16)));
+           P.CPU.Regs.DX := Word(MulRes64 Mod Int64(SmallInt(V16)));
+          End;
          End;
         End;
     End;
@@ -84803,7 +84865,7 @@ Begin NesActive := False;
  EmuWatchPhysLo := 0;
  EmuWatchPhysHi := 0;
  EmuWatchHits := 0;
- OptionsDlg.Data.DosLogDiag := False;
+ { Conserver l activation demandee par LOG ON /EMUDIAG. }
  EmuDiv0Caught := False;
  EmuFpuLogged := 0;
  EmuFpuTrap := False;

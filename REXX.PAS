@@ -1217,7 +1217,59 @@ Begin
    (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
  End;
  If EndPosition>=StartPosition Then
-  SubWordText:=Copy(SourceText,StartPosition,EndPosition-StartPosition+1);
+ SubWordText:=Copy(SourceText,StartPosition,EndPosition-StartPosition+1);
+End;
+
+Function SpaceText(SourceText:String;SeparatorCount:LongInt;
+ CountSpecified,PadSpecified:Boolean;PadText:String):String;
+Var CharacterPosition:Integer;AddedSeparators:LongInt;PadCharacter:Char;
+ ResultText:String;FirstWord:Boolean;
+Begin
+ If Not CountSpecified Then SeparatorCount:=1;
+ If SeparatorCount<0Then Begin SpaceText:='';Exit;End;
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]
+ Else PadCharacter:=' ';
+ CharacterPosition:=1;ResultText:='';FirstWord:=True;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Break;
+  If Not FirstWord Then Begin
+   AddedSeparators:=0;
+   While(AddedSeparators<SeparatorCount)and(Length(ResultText)<255)Do Begin
+    ResultText:=ResultText+PadCharacter;
+    Inc(AddedSeparators);
+   End;
+  End;
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Begin
+   If Length(ResultText)<255Then ResultText:=ResultText+SourceText[CharacterPosition];
+   Inc(CharacterPosition);
+  End;
+  FirstWord:=False;
+ End;
+ SpaceText:=ResultText;
+End;
+
+Function StripText(SourceText,OptionText,StripCharacterText:String;
+ OptionSpecified,CharacterSpecified:Boolean):String;
+Var OptionCharacter,StripCharacter:Char;
+Begin
+ If OptionSpecified and(OptionText<>'')Then
+  OptionCharacter:=UpCase(OptionText[1])
+ Else OptionCharacter:='B';
+ If CharacterSpecified and(StripCharacterText<>'')Then
+  StripCharacter:=StripCharacterText[1]
+ Else StripCharacter:=' ';
+ If Not(OptionCharacter in['B','L','T'])Then Begin StripText:='';Exit;End;
+ If OptionCharacter in['B','L']Then
+  While(Length(SourceText)>0)and(SourceText[1]=StripCharacter)Do
+   Delete(SourceText,1,1);
+ If OptionCharacter in['B','T']Then
+  While(Length(SourceText)>0)and
+   (SourceText[Length(SourceText)]=StripCharacter)Do
+   Delete(SourceText,Length(SourceText),1);
+ StripText:=SourceText;
 End;
 
 Procedure SetLocalValue(Var ResultValue:RexxValue);
@@ -1600,9 +1652,11 @@ Begin
    End;
    69:SourceLineValue(System.Trunc(A.Number),InvokeArgCount>0,
     ResultValue); { SOURCELINE }
-   70:FunctionNotImplemented(FunctionByte,ResultValue); { SPACE }
+   70:RVText(SpaceText(A.Text,System.Trunc(B.Number),InvokeArgCount>1,
+    InvokeArgCount>2,D.Text),ResultValue); { SPACE }
    71:FunctionNotImplemented(FunctionByte,ResultValue); { STREAM }
-   72:FunctionNotImplemented(FunctionByte,ResultValue); { STRIP }
+   72:RVText(StripText(A.Text,B.Text,D.Text,InvokeArgCount>1,
+    InvokeArgCount>2),ResultValue); { STRIP }
    73:RVText(SubStringText(A.Text,System.Trunc(B.Number),
     System.Trunc(D.Number),InvokeArgCount>2,InvokeArgCount>3,E.Text),
     ResultValue); { SUBSTR }
