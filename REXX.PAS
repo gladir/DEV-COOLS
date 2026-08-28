@@ -75,6 +75,11 @@ Type
   Value:String;
   Next:PRexxVariable;
  End;
+ PLocalEnvironment=^LocalEnvironment;
+ LocalEnvironment=Record
+  DirectoryName:String;
+  Next:PLocalEnvironment;
+ End;
 
 Var
  Variables:PRexxVariable;
@@ -110,6 +115,7 @@ Var
  CharOutNames:Array[1..MaxRoutineArgs]of String;
  CharOutPositions:Array[1..MaxRoutineArgs]of LongInt;
  CharOutStreamCount:Integer;
+ LocalEnvironments:PLocalEnvironment;
 
 Function LTrim(S:String):String;
 Var
@@ -795,6 +801,94 @@ Begin
  RVText(CurrentDirectory,ResultValue);
 End;
 
+Procedure SetLocalValue(Var ResultValue:RexxValue);
+Var SavedEnvironment:PLocalEnvironment;
+Begin
+ New(SavedEnvironment);
+ If SavedEnvironment=Nil Then Begin RVNum(0,ResultValue);Exit;End;
+ GetDir(0,SavedEnvironment^.DirectoryName);
+ SavedEnvironment^.Next:=LocalEnvironments;
+ LocalEnvironments:=SavedEnvironment;
+ RVNum(1,ResultValue);
+End;
+
+Procedure EndLocalValue(Var ResultValue:RexxValue);
+Var SavedEnvironment:PLocalEnvironment;ErrorCode:Integer;
+Begin
+ If LocalEnvironments=Nil Then Begin RVNum(0,ResultValue);Exit;End;
+ SavedEnvironment:=LocalEnvironments;
+ {$I-}ChDir(SavedEnvironment^.DirectoryName);{$I+}
+ ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin RVNum(0,ResultValue);Exit;End;
+ LocalEnvironments:=SavedEnvironment^.Next;Dispose(SavedEnvironment);
+ RVNum(1,ResultValue);
+End;
+
+Procedure RestoreLocalEnvironments;
+Var SavedEnvironment:PLocalEnvironment;ErrorCode:Integer;
+Begin
+ While LocalEnvironments<>Nil Do Begin
+  SavedEnvironment:=LocalEnvironments;
+  {$I-}ChDir(SavedEnvironment^.DirectoryName);{$I+}
+  ErrorCode:=IoResult;
+  LocalEnvironments:=SavedEnvironment^.Next;Dispose(SavedEnvironment);
+ End;
+End;
+
+Function RexxErrorText(ErrorNumber:Integer):String;
+Begin
+ Case ErrorNumber Of
+   3:RexxErrorText:='Program is unreadable';
+   4:RexxErrorText:='Program interrupted';
+   5:RexxErrorText:='Machine storage exhausted';
+   6:RexxErrorText:='Unmatched "/*" or quote';
+   7:RexxErrorText:='WHEN or OTHERWISE expected';
+   8:RexxErrorText:='Unexpected THEN or ELSE';
+   9:RexxErrorText:='Unexpected WHEN or OTHERWISE';
+  10:RexxErrorText:='Unexpected or unmatched END';
+  11:RexxErrorText:='Control stack full';
+  12:RexxErrorText:='Clause too long';
+  13:RexxErrorText:='Invalid character in program';
+  14:RexxErrorText:='Incomplete DO/SELECT/IF';
+  15:RexxErrorText:='Invalid hexadecimal or binary string';
+  16:RexxErrorText:='Label not found';
+  17:RexxErrorText:='Unexpected PROCEDURE';
+  18:RexxErrorText:='THEN expected';
+  19:RexxErrorText:='String or symbol expected';
+  20:RexxErrorText:='Symbol expected';
+  21:RexxErrorText:='Invalid data on end of clause';
+  22:RexxErrorText:='Invalid character string';
+  23:RexxErrorText:='Invalid data string';
+  24:RexxErrorText:='Invalid TRACE request';
+  25:RexxErrorText:='Invalid sub-keyword found';
+  26:RexxErrorText:='Invalid whole number';
+  27:RexxErrorText:='Invalid DO syntax';
+  28:RexxErrorText:='Invalid LEAVE or ITERATE';
+  29:RexxErrorText:='Environment name too long, or not found';
+  30:RexxErrorText:='Name or string too long';
+  31:RexxErrorText:='Name starts with number or "."';
+  32:RexxErrorText:='';
+  33:RexxErrorText:='Invalid expression result';
+  34:RexxErrorText:='Logical value not 0 or 1';
+  35:RexxErrorText:='Invalid expression';
+  36:RexxErrorText:='Unmatched "(" in expression';
+  37:RexxErrorText:='Unexpected "," or ")"';
+  38:RexxErrorText:='Invalid template or pattern';
+  39:RexxErrorText:='Evaluation stack overflow (too many arguments)';
+  40:RexxErrorText:='Incorrect call to routine';
+  41:RexxErrorText:='Bad arithmetic conversion';
+  42:RexxErrorText:='Arithmetic overflow/underflow';
+  43:RexxErrorText:='Routine not found';
+  44:RexxErrorText:='Function did not return data';
+  45:RexxErrorText:='No data specified on function RETURN';
+  46:RexxErrorText:='Invalid variable reference';
+  47:RexxErrorText:='';
+  48:RexxErrorText:='Failure in system service';
+  49:RexxErrorText:='Interpretation error';
+ Else RexxErrorText:='';
+ End;
+End;
+
 Procedure CharInValue(StreamName:String;StartPosition,RequestedCount:LongInt;
  UseStart,UseCount:Boolean;Var ResultValue:RexxValue);
 Var F:File;Buffer:Array[1..255]of Byte;J,StreamIndex,ReadCount,Count:Integer;
@@ -1016,8 +1110,8 @@ Begin
     InvokeArgCount>1),ResultValue); { D2C }
    28:RVText(DecimalToHex(System.Trunc(A.Number),System.Trunc(B.Number),
     InvokeArgCount>1),ResultValue); { D2X }
-   29:FunctionNotImplemented(FunctionByte,ResultValue); { ENDLOCAL }
-   30:FunctionNotImplemented(FunctionByte,ResultValue); { ERRORTEXT }
+   29:EndLocalValue(ResultValue); { ENDLOCAL }
+   30:RVText(RexxErrorText(System.Trunc(A.Number)),ResultValue); { ERRORTEXT }
    31:FunctionNotImplemented(FunctionByte,ResultValue); { EXIT }
    32:FunctionNotImplemented(FunctionByte,ResultValue); { FILESPEC }
    33:RVText(NumericFormValue,ResultValue); { FORM }
@@ -1060,7 +1154,7 @@ Begin
    64:FunctionNotImplemented(FunctionByte,ResultValue); { RXWINEXEC }
    65:FunctionNotImplemented(FunctionByte,ResultValue); { SAY }
    66:FunctionNotImplemented(FunctionByte,ResultValue); { SELECT }
-   67:FunctionNotImplemented(FunctionByte,ResultValue); { SETLOCAL }
+   67:SetLocalValue(ResultValue); { SETLOCAL }
    68:Begin { SIGN }
     If A.Number<0Then N:=-1 Else If A.Number>0Then N:=1 Else N:=0;RVNum(N,ResultValue);
    End;
@@ -1830,7 +1924,9 @@ Procedure ExecuteCommand;Begin
  CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
  CharInStreamCount:=0;
  CharOutStreamCount:=0;
+ LocalEnvironments:=Nil;
  If NumberLine>0Then ExecRange(1,NumberLine);
+ RestoreLocalEnvironments;
  FreeVariables(Variables);
 End;
 
