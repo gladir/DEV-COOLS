@@ -39127,6 +39127,10 @@ Begin
  TermAddLine(TP,
   '  MKDIR rep        Creer un repertoire');
  TermAddLine(TP,
+  '  LOG ON [/EMUDIAG] Activer les journaux de diagnostic');
+ TermAddLine(TP,
+  '  LOG OFF          Desactiver les journaux de diagnostic');
+ TermAddLine(TP,
   '  MOVE src dst     Deplacer un fichier');
  TermAddLine(TP,
   '  POPD             Depiler un repertoire');
@@ -39150,6 +39154,43 @@ Begin
   '  VOL [X:]         Etiquette/serie du volume');
  TermAddLine(TP,
   '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
+End;
+
+{ --- LOG : activer ou desactiver les journaux de diagnostic --- }
+
+Procedure TermCmd_LOG(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Action, Source, State: String;
+Begin
+ Action := UpCaseStr(TermExtractParam(ParamStr, 1));
+ Source := UpCaseStr(TermExtractParam(ParamStr, 2));
+ If (Action = '/?') Or (Action = 'HELP') Or (Action = '?') Then Begin
+  TermAddLine(TP, 'Syntaxe : LOG ON /EMUDIAG');
+  TermAddLine(TP, '         LOG ON');
+  TermAddLine(TP, '         LOG ON sourcefichier');
+  TermAddLine(TP, '         LOG OFF');
+  TermAddLine(TP, '  ON           Activer les journaux de diagnostic');
+  TermAddLine(TP, '  OFF          Desactiver les journaux de diagnostic');
+  TermAddLine(TP, '  /EMUDIAG     Ecrire les traces de l''emulateur dans EMUDIAG.LOG');
+  TermAddLine(TP, '  sourcefichier Nom de source associe au diagnostic (optionnel)');
+  Exit;
+ End;
+ If Action = 'ON' Then Begin
+  OptionsDlg.Data.DosLogDiag := True;
+  If (Source <> '') And (Source <> '/EMUDIAG') Then
+   TermAddLine(TP, 'Journal active pour : ' +
+    TermExtractParam(ParamStr, 2))
+  Else
+   TermAddLine(TP, 'Journal EMUDIAG active.');
+ End Else If Action = 'OFF' Then Begin
+  OptionsDlg.Data.DosLogDiag := False;
+  TermAddLine(TP, 'Journal EMUDIAG desactive.');
+ End Else Begin
+  If OptionsDlg.Data.DosLogDiag Then State := 'ON' Else State := 'OFF';
+  TermAddLine(TP, 'Etat du journal EMUDIAG : ' +
+   State);
+  TermAddLine(TP, 'Syntaxe : LOG /?');
+ End;
 End;
 
 { ============================================================
@@ -39542,6 +39583,8 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+  Else If CurrCmd = 'LOG' Then
+   TermCmd_LOG(TP, ParamStr)
    Else If CurrCmd = 'ELFBP' Then
     TermCmd_ELFBP(TP, ParamStr)
    Else If CurrCmd = 'LXINFO' Then
@@ -39653,6 +39696,8 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+  Else If CurrCmd = 'LOG' Then
+   TermCmd_LOG(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or
     (CurrCmd = 'GET-HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
@@ -39807,10 +39852,13 @@ Begin
    { actuellement parcouru, synchronise par l appelant juste avant cet   }
    { appel) plutot que GetDir(0,...) (repertoire reel du PROCESSUS, sans }
    { rapport avec la navigation virtuelle propre a NC). }
-   DosExe := '';
-   ElfExe := '';
-   FatDosPath := '';
-   If TP.VirtDrive < 0 Then Begin
+  If CurrCmd = 'LOG' Then
+   TermCmd_LOG(TP, ParamStr)
+  Else Begin
+  DosExe := '';
+  ElfExe := '';
+  FatDosPath := '';
+  If TP.VirtDrive < 0 Then Begin
     DosExe := TermFindDosExecutable(TP.VirtCwd, CurrCmd);
     If DosExe = '' Then ElfExe := TermFindElfExecutable(TP.VirtCwd, CurrCmd);
    End
@@ -39845,6 +39893,7 @@ Begin
     TermAddLine(TP,
      '''' + CurrCmd +
      ''' n''est pas reconnu comme commande interne.');
+  End;
   End;
   SK_OS2REXX: Begin
    { OS/2 CMD.EXE (l interprete de commandes PAR DEFAUT d OS/2) est,        }
@@ -39900,6 +39949,8 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+  Else If CurrCmd = 'LOG' Then
+   TermCmd_LOG(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else Begin

@@ -907,6 +907,29 @@ Begin
  RVNum(0,ResultValue);
 End;
 
+Procedure SysCursorPosition(RowValue,ColumnValue:RexxValue;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var OldRow,OldColumn,NewRow,NewColumn:LongInt;RowText,ColumnText:String;
+Begin
+ OldRow:=WhereY-1;OldColumn:=WhereX-1;
+ If OldRow<0Then OldRow:=0;
+ If OldColumn<0Then OldColumn:=0;
+ Str(OldRow,RowText);Str(OldColumn,ColumnText);
+ RowText:=Clean(RowText);ColumnText:=Clean(ColumnText);
+ If ArgumentCount=2Then Begin
+  NewRow:=System.Trunc(RowValue.Number);
+  NewColumn:=System.Trunc(ColumnValue.Number);
+  { GotoXY utilise des Byte et des coordonnees commencant a 1. }
+  If(NewRow<0)or(NewRow>254)or(NewColumn<0)or(NewColumn>254)Then Begin
+   RVText('',ResultValue);Exit;
+  End;
+  GotoXY(NewColumn+1,NewRow+1);
+ End Else If ArgumentCount<>0Then Begin
+  RVText('',ResultValue);Exit;
+ End;
+ RVText(RowText+' '+ColumnText,ResultValue);
+End;
+
 Function TwoDigits(Value:Word):String;
 Var S:String;
 Begin
@@ -1595,7 +1618,7 @@ Begin
    82:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEEVENTSEM }
    83:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEMUTEXSEM }
    84:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEOBJECT }
-   85:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCURPOS }
+   85:SysCursorPosition(A,B,InvokeArgCount,ResultValue); { SYSCURPOS }
    86:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCURSTATE }
    87:FunctionNotImplemented(FunctionByte,ResultValue); { SYSDEREGISTEROBJECTCLASS }
    88:FunctionNotImplemented(FunctionByte,ResultValue); { SYSDESTROYOBJECT }
