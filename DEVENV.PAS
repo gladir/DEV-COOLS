@@ -1972,6 +1972,7 @@ Type
   CdromImg0       : TString;   { /CDROM0:fichier.iso -> 1er lecteur CD}
   CdromImg1       : TString;   { /CDROM1:fichier.iso -> 2e lecteur CD }
   NCMode          : Boolean;   { /NC : ouvrir le Terminal en Norton Commander des le demarrage }
+  TerminalDosBatch: TString;   { /TERMINALDOS:fichier.bat }
  End;
 
  { Types d evenements }
@@ -5338,6 +5339,7 @@ Type
   DosLANVendor    : Integer;     { fabricant/produit du pilote LAN}
   DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
   DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
+  DosLogInt13     : Boolean;     { journal EMUINT13.LOG (appels BIOS disque) }
  End;
 
  { Dialogue des options de l IDE }
@@ -6365,6 +6367,8 @@ Var
  EmuActInt23    : LongInt;  { appels INT 23h (Ctrl-Break) }
  EmuActInt24    : LongInt;  { appels INT 24h (erreur critique) }
  EmuActInt25    : LongInt;  { appels INT 25h (lecture disque absolue) }
+ EmuInt13LogCount: LongInt; { appels INT 13h journalises }
+ EmuSITraceCount: LongInt;  { instructions chargeant SI/ESI journalisees }
  EmuActInt28    : LongInt;  { appels INT 28h (DOS idle) }
  EmuActMouseTest: Boolean;  { INT 33h AX=0000h (test presence souris) vu }
  EmuActInt33    : LongInt;  { appels INT 33h (pilote souris) }
@@ -8785,6 +8789,7 @@ Procedure ShowHelp;Begin
  WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
  WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
  WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
+  WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -8827,6 +8832,7 @@ Begin
  Opts.CdromImg0       := '';
  Opts.CdromImg1       := '';
  Opts.NCMode          := False;
+ Opts.TerminalDosBatch := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -8843,6 +8849,16 @@ Begin
   If(Arg='-v')Or(Arg='-V')Then Opts.Verbose := True Else
   If(Arg = '-d')Or(Arg='-D')Then Opts.DebugMode := True Else
   If(Arg='/NC')Or(Arg='/nc')Or(Arg='-NC')Or(Arg='-nc')Then Opts.NCMode := True Else
+    If (Length(Arg) >= 13) And
+      ((Copy(Arg, 1, 13) = '/TERMINALDOS:') Or
+      (Copy(Arg, 1, 13) = '/terminaldos:') Or
+      (Copy(Arg, 1, 13) = '-TERMINALDOS:') Or
+      (Copy(Arg, 1, 13) = '-terminaldos:')) Then Begin
+    Opts.TerminalDosBatch := Copy(Arg, 14, Length(Arg) - 13);
+   If (Opts.TerminalDosBatch = '') Or
+      (Not FileExists(Opts.TerminalDosBatch)) Then
+    FatalError('Fichier batch introuvable: ' + Opts.TerminalDosBatch);
+  End Else
   If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
            (Copy(Arg, 1, 5) = '-Emu:')) Then Begin
@@ -39127,9 +39143,11 @@ Begin
  TermAddLine(TP,
   '  MKDIR rep        Creer un repertoire');
  TermAddLine(TP,
-  '  LOG ON [/EMUDIAG] Activer les journaux de diagnostic');
+  '  LOG ON /EMUDIAG  Activer EMUDIAG.LOG');
  TermAddLine(TP,
-  '  LOG OFF          Desactiver les journaux de diagnostic');
+  '  LOG ON /EMUINT13 Activer EMUINT13.LOG');
+ TermAddLine(TP,
+  '  LOG OFF [/EMUDIAG|/EMUINT13] Desactiver un journal');
  TermAddLine(TP,
   '  MOVE src dst     Deplacer un fichier');
  TermAddLine(TP,
@@ -39166,6 +39184,7 @@ Begin
  Source := UpCaseStr(TermExtractParam(ParamStr, 2));
  If (Action = '/?') Or (Action = 'HELP') Or (Action = '?') Then Begin
   TermAddLine(TP, 'Syntaxe : LOG ON /EMUDIAG');
+  TermAddLine(TP, '         LOG ON /EMUINT13');
   TermAddLine(TP, '         LOG ON');
   TermAddLine(TP, '         LOG ON sourcefichier');
   TermAddLine(TP, '         LOG OFF');
@@ -39176,19 +39195,31 @@ Begin
   Exit;
  End;
  If Action = 'ON' Then Begin
-  OptionsDlg.Data.DosLogDiag := True;
-  If (Source <> '') And (Source <> '/EMUDIAG') Then
+  If Source = '/EMUINT13' Then Begin
+   OptionsDlg.Data.DosLogInt13 := True;
+   TermAddLine(TP, 'Journal EMUINT13 active.');
+  End Else Begin
+   OptionsDlg.Data.DosLogDiag := True;
+   If (Source <> '') And (Source <> '/EMUDIAG') Then
    TermAddLine(TP, 'Journal active pour : ' +
     TermExtractParam(ParamStr, 2))
-  Else
-   TermAddLine(TP, 'Journal EMUDIAG active.');
+   Else
+    TermAddLine(TP, 'Journal EMUDIAG active.');
+  End;
  End Else If Action = 'OFF' Then Begin
-  OptionsDlg.Data.DosLogDiag := False;
-  TermAddLine(TP, 'Journal EMUDIAG desactive.');
+  If Source = '/EMUINT13' Then Begin
+   OptionsDlg.Data.DosLogInt13 := False;
+   TermAddLine(TP, 'Journal EMUINT13 desactive.');
+  End Else Begin
+   OptionsDlg.Data.DosLogDiag := False;
+   TermAddLine(TP, 'Journal EMUDIAG desactive.');
+  End;
  End Else Begin
   If OptionsDlg.Data.DosLogDiag Then State := 'ON' Else State := 'OFF';
   TermAddLine(TP, 'Etat du journal EMUDIAG : ' +
    State);
+  If OptionsDlg.Data.DosLogInt13 Then State := 'ON' Else State := 'OFF';
+  TermAddLine(TP, 'Etat du journal EMUINT13 : ' + State);
   TermAddLine(TP, 'Syntaxe : LOG /?');
  End;
 End;
@@ -64248,7 +64279,7 @@ Begin
   For J := 0 To 511 Do Begin
    Emu_WriteByte(P.CPU, WriteSeg, WriteOfs, SBuf[J]);
    Inc(WriteOfs);
-   If WriteOfs = 0 Then Inc(WriteSeg, $1000);
+  If WriteOfs = 0 Then Inc(WriteSeg);
   End;
   Inc(N);
  End;
@@ -64366,6 +64397,24 @@ Begin
  Exclude(P.CPU.Flags.s, EFG_CF);
 End;
 
+Procedure Emu_LogInt13(Const Phase: String; AH, AL, CH, CL, DH, DL: Byte;
+ CX, DX, ES, BX: Word; LBA, Count: LongInt);
+Var LogF: Text;
+Begin
+ If Not OptionsDlg.Data.DosLogInt13 Then Exit;
+ {$I-}
+ Assign(LogF, 'EMUINT13.LOG'); Append(LogF);
+ If IOResult <> 0 Then Begin Assign(LogF, 'EMUINT13.LOG'); Rewrite(LogF); End;
+ WriteLn(LogF, Phase, ' #', EmuInt13LogCount,
+  ' AH=', AH, ' AL=', AL,
+  ' CH=', CH, ' CL=', CL, ' DH=', DH, ' DL=', DL,
+  ' CX=', CX, ' DX=', DX, ' ES=', ES, ' BX=', BX,
+  ' LBA=', LBA, ' COUNT=', Count);
+ Close(LogF);
+ {$I+} If IOResult <> 0 Then ;
+ Inc(EmuInt13LogCount);
+End;
+
 Procedure Emu_DoInt13(Var P: TEmulatorPanel);
 Var
  DL, AH, AL: Byte;
@@ -64380,6 +64429,9 @@ Begin
  AH := P.CPU.Regs.AH;
  AL := P.CPU.Regs.AL;
  DL := P.CPU.Regs.DL;
+ Emu_LogInt13('INT13', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
+  P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
+  P.CPU.Segs.ES, P.CPU.Regs.BX, -1, AL);
  If Not Emu_DiskIdxFromDL(DL, Idx) Then Begin
   { Unite hors plage (ni 00h/01h, ni 80h/81h) : pas de slot de statut
     a mettre a jour, juste signaler l erreur. }
@@ -64414,6 +64466,9 @@ Begin
    Sect  := P.CPU.Regs.CX And $003F;
    Head  := P.CPU.Regs.DH;
    LBA   := Emu_FloppyCHS2LBA(Idx, Cyl, Head, Sect);
+  Emu_LogInt13('CHS', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
+   P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
+   P.CPU.Segs.ES, P.CPU.Regs.BX, LBA, NSect);
    If LBA < 0 Then Begin
     Emu_Int13SetError(P, Idx, $04);  { 04 = sector not found }
     P.CPU.Regs.AL := 0;
@@ -64422,8 +64477,14 @@ Begin
    Done := Emu_FloppyReadSectors(P, Idx, LBA, NSect,
             P.CPU.Segs.ES, P.CPU.Regs.BX);
    P.CPU.Regs.AL := Done;
-   If Done = NSect Then Emu_Int13SetOK(P, Idx)
-   Else Emu_Int13SetError(P, Idx, $04);
+  If Done = NSect Then
+   Emu_Int13SetOK(P, Idx)
+  Else
+   Emu_Int13SetError(P, Idx, $04);
+  Emu_LogInt13('CHS_RESULT', P.CPU.Regs.AH, P.CPU.Regs.AL,
+   P.CPU.Regs.CH, P.CPU.Regs.CL, P.CPU.Regs.DH, DL,
+   P.CPU.Regs.CX, P.CPU.Regs.DX, P.CPU.Segs.ES,
+   P.CPU.Regs.BX, LBA, Done);
   End;
   $03: Begin   { Write sectors }
    If Not EmuFloppyOpen[Idx] Then Begin
@@ -64611,14 +64672,22 @@ Begin
    LBALo  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 8);
    LBAHi  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 10);
    LBA := LongInt(LBALo) Or (LongInt(LBAHi) Shl 16);
+  Emu_LogInt13('EDD', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
+   P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
+   BufSeg, BufOfs, LBA, NSectW);
    If AH = $42 Then
     Done := Emu_FloppyReadSectors(P, Idx, LBA, NSectW, BufSeg, BufOfs)
    Else Begin
     If EmuFloppyRO[Idx] Then Begin Emu_Int13SetError(P, Idx, $03); Exit; End;
     Done := Emu_FloppyWriteSectors(P, Idx, LBA, Byte(NSectW), BufSeg, BufOfs);
    End;
-   If Done = Byte(NSectW) Then Emu_Int13SetOK(P, Idx)
-   Else Emu_Int13SetError(P, Idx, $04);
+  If Done = NSectW Then
+   Emu_Int13SetOK(P, Idx)
+  Else
+   Emu_Int13SetError(P, Idx, $04);
+  Emu_LogInt13('EDD_RESULT', P.CPU.Regs.AH, P.CPU.Regs.AL,
+   P.CPU.Regs.CH, P.CPU.Regs.CL, P.CPU.Regs.DH, DL,
+   P.CPU.Regs.CX, P.CPU.Regs.DX, BufSeg, BufOfs, LBA, Done);
   End;
   $44: Begin { Extended Verify }
    If Not Emu_DiskIfSupportsEDD Then Begin Emu_Int13SetError(P, Idx, $01); Exit; End;
@@ -69603,6 +69672,20 @@ Var
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  InstructionIP := P.CPU.IP;
+ If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = $9000) And
+    (P.CPU.IP >= $0600) And (P.CPU.IP <= $0640) And
+    (EmuSITraceCount < 2000) Then Begin
+  {$I-} Assign(LogF_Dbg, 'EMUSI.LOG'); Append(LogF_Dbg);
+  If IOResult <> 0 Then Begin Assign(LogF_Dbg, 'EMUSI.LOG'); Rewrite(LogF_Dbg); End;
+  WriteLn(LogF_Dbg, 'CS:IP=', P.CPU.Segs.CS, ':', P.CPU.IP,
+   ' OP=', Emu_FetchByte(P.CPU, 0),
+   ' SI=', P.CPU.Regs.SI, ' ESI=', P.CPU.Regs.ESI,
+   ' BP=', P.CPU.Regs.BP, ' DS=', P.CPU.Segs.DS,
+   ' SS=', P.CPU.Segs.SS, ' AX=', P.CPU.Regs.AX,
+   ' DX=', P.CPU.Regs.DX);
+  Close(LogF_Dbg); {$I+} If IOResult <> 0 Then ;
+  Inc(EmuSITraceCount);
+ End;
  RepPrefix := 0;
  { Workaround : a l'entree de Crt_Read, reparer la TextRec d'Input si elle
    n'a pas ete initialisee par le RTL (BufPtr.seg=0). Cas BOWLING.EXE. }
@@ -84949,6 +85032,8 @@ Begin NesActive := False;
   Close(LogF_R);
  End;
  {$I+} If IOResult <> 0 Then ;
+ EmuInt13LogCount := 0;
+ EmuSITraceCount := 0;
  Emu_InitBDA(P);
  Emu_IpxInit(P);
  Emu_PktInit(P);
@@ -85855,6 +85940,7 @@ Begin
  D.DosVideo2 := EMU_VID_NONE;  { un PC reel n a qu une seule carte video }
  D.DosDiskInterface := 5;      { IDE/ATA : coherent avec DosHardware=2 (IBM PC AT) par defaut }
  D.DosEmu8087 := True;
+ D.DosLogInt13 := False;
  D.DosEmu80286 := True;
  D.DosEmu80386 := True;
  D.DosXMS := True;
@@ -88095,6 +88181,7 @@ Begin
  Str(Data.DosDiskInterface, S);
  WriteCfgLine(F, 'DosDiskInterface', S);
  WriteCfgLine(F, 'DosEmu8087', BoolToStr(Data.DosEmu8087));
+ WriteCfgLine(F, 'DosLogInt13', BoolToStr(Data.DosLogInt13));
  WriteCfgLine(F, 'DosEmu80286', BoolToStr(Data.DosEmu80286));
  WriteCfgLine(F, 'DosEmu80386', BoolToStr(Data.DosEmu80386));
  WriteCfgLine(F, 'DosXMS', BoolToStr(Data.DosXMS));
@@ -88319,6 +88406,8 @@ Begin
    Data.DosMSCDEX := StrToBool(Value)
   Else If Key = 'DosSouris' Then
    Data.DosSouris := StrToBool(Value)
+  Else If Key = 'DosLogInt13' Then
+   Data.DosLogInt13 := StrToBool(Value)
   Else If Key = 'DosMousePS2BIOS' Then
    Data.DosMousePS2BIOS := StrToBool(Value)
   Else If Key = 'DosMouseVendor' Then
@@ -99354,6 +99443,9 @@ End;
 { --- Demarrage de l IDE (procedure Run) --- }
 
 Procedure Run;
+Var
+ BatchFile: Text;
+ BatchLine: String;
 Begin
  InitStatusBar(StatusBar);
  InitMRUList(MRUList);
@@ -99365,6 +99457,28 @@ Begin
  QuitRequested := False;
  FullRepaintNeeded := False;
  EditorReady := False;
+ If Opts.TerminalDosBatch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_CMD;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.TerminalDosBatch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
  { Si un fichier solution .sln a ete passe en argument }
  If Opts.SolutionFile <> '' Then Begin
   StartPage.Visible := False;
