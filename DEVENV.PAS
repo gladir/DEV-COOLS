@@ -70119,15 +70119,27 @@ Begin
    End;
   $68: { PUSH imm16 (80186+) }
    Begin
-    Imm16 := Emu_FetchWord(P.CPU, 1);
-    Emu_PushWord(P.CPU, Imm16);
-    Inc(P.CPU.IP, 3);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_FetchWord(P.CPU, 1) Or
+      (LongInt(Emu_FetchWord(P.CPU, 3)) Shl 16);
+     Emu_PushDWord(P.CPU, V32);
+     Inc(P.CPU.IP, 5);
+    End Else Begin
+     Imm16 := Emu_FetchWord(P.CPU, 1);
+     Emu_PushWord(P.CPU, Imm16);
+     Inc(P.CPU.IP, 3);
+    End;
    End;
   $6A: { PUSH imm8 (sign-extended) (80186+) }
    Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
-    Disp16 := ShortInt(Imm8);
-    Emu_PushWord(P.CPU, Word(Disp16));
+    If P.CPU.OperandSize32 Then Begin
+     V32 := ShortInt(Imm8);
+     Emu_PushDWord(P.CPU, V32);
+    End Else Begin
+     Disp16 := ShortInt(Imm8);
+     Emu_PushWord(P.CPU, Word(Disp16));
+    End;
     Inc(P.CPU.IP, 2);
    End;
   $C8: { ENTER imm16, imm8 (80186+) - forme simple level=0 }
