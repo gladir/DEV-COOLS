@@ -71506,6 +71506,43 @@ Begin
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
     V16 := Emu_GetOpWord(P.CPU, Op);
+    { Groupe F7 en taille 32 bits : DIV/IDIV utilisent EDX:EAX et un
+      operande 32 bits. Le chemin 16 bits ci-dessous ne doit pas lire SI/DX. }
+    If P.CPU.OperandSize32 And ((SubOp = 6) Or (SubOp = 7)) Then Begin
+     V32 := Emu_GetOpDWord(P.CPU, Op);
+     If V32 = 0 Then Begin
+      Emu_Div0Snapshot(P, $F7, SubOp, V32, P.CPU.IP);
+      P.CPU.Fault := sfDivision0;
+     End Else If SubOp = 6 Then Begin
+      V32 := LongInt(LongWord(V32));
+      MulRes64 := (Int64(LongWord(P.CPU.Regs.EDX)) Shl 32) Or
+       QWord(LongWord(P.CPU.Regs.EAX));
+      If (QWord(MulRes64) Div QWord(LongWord(V32))) > $FFFFFFFF Then Begin
+       Emu_Div0Snapshot(P, $F7, 6, V32, P.CPU.IP);
+       P.CPU.Fault := sfDivision0;
+      End Else Begin
+       P.CPU.Regs.EAX := LongWord(QWord(MulRes64) Div QWord(LongWord(V32)));
+       P.CPU.Regs.EDX := LongWord(QWord(MulRes64) Mod QWord(LongWord(V32)));
+      End;
+     End Else Begin
+      MulRes64 := Int64(LongInt(P.CPU.Regs.EDX)) * 4294967296 +
+       Int64(LongWord(P.CPU.Regs.EAX));
+      If (MulRes64 Div Int64(LongInt(V32)) > 2147483647) Or
+         (MulRes64 Div Int64(LongInt(V32)) < -2147483648) Then Begin
+       Emu_Div0Snapshot(P, $F7, 7, V32, P.CPU.IP);
+       P.CPU.Fault := sfDivision0;
+      End Else Begin
+       P.CPU.Regs.EAX := LongWord(MulRes64 Div Int64(LongInt(V32)));
+       P.CPU.Regs.EDX := LongWord(MulRes64 Mod Int64(LongInt(V32)));
+      End;
+     End;
+     Inc(P.CPU.IP, 1 + Op.Len);
+     If P.CPU.Fault = sfDivision0 Then Begin
+      P.CPU.Fault := sfNone;
+      Emu_Div0Trap(P);
+     End;
+     Exit;
+    End;
     Case SubOp Of
      0: Emu_PutOpWord(P.CPU, Op,
          Emu_AluWord(P.CPU, 0, V16, 1));        { INC rm16 }
