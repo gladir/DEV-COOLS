@@ -900,6 +900,13 @@ Begin
  RVNum(0,ResultValue);
 End;
 
+Procedure SysClearScreen(ArgumentCount:Integer;Var ResultValue:RexxValue);
+Begin
+ If ArgumentCount<>0Then Begin RVNum(87,ResultValue);Exit;End;
+ ClrScr;
+ RVNum(0,ResultValue);
+End;
+
 Function TwoDigits(Value:Word):String;
 Var S:String;
 Begin
@@ -1584,7 +1591,7 @@ Begin
    78:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLEARREXXMACROSPACE }
    79:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLOSEEVENTSEM }
    80:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLOSEMUTEXSEM }
-   81:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLS }
+   81:SysClearScreen(InvokeArgCount,ResultValue); { SYSCLS }
    82:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEEVENTSEM }
    83:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEMUTEXSEM }
    84:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEOBJECT }

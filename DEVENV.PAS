@@ -42239,6 +42239,10 @@ Begin
    CreateEmulatorTab(FullPath, '-CNES', '');
    NCActionOpenAssociated := True;
   End
+    Else If Ext = 'A26' Then Begin
+     CreateEmulatorTab(FullPath, '-CATARI2600', '');
+     NCActionOpenAssociated := True;
+    End
   Else If Ext = 'XEX' Then Begin
    { Format binaire Atari 8-bit (segments [FF FF] start end data...),   }
    { charge par CPU6502_LoadAtariXex - un seul et meme chargeur pour        }
@@ -83572,6 +83576,10 @@ Var
  NesChrBlocks: Byte;
  NesPrgSize: LongInt;
  NesChrSize: LongInt;
+ A26Header: Array[0..15] Of Byte;
+ A26HeaderRead: Word;
+ A26PayloadSize: LongInt;
+ IsA26: Boolean;
  NesFrameLimit: LongInt;
  NesInstrPerFrame: LongInt;
  NesKeyEsc: Boolean;
@@ -84051,10 +84059,31 @@ Begin NesActive := False;
    {   32K -> F4 (8 banques, hotspots $FFF4..$FFFB)                      }
    FillChar(A2600_ROM, SizeOf(A2600_ROM), 0);
    A2600_BankCnt := 1; A2600_CurBank := 0; A2600_ROMSize := 0;
+  IsA26 := False;
    Assign(NesFH, BinaryPath);
    {$I-} Reset(NesFH, 1); {$I+}
    If IOResult = 0 Then Begin
-    A2600_ROMSize := FileSize(NesFH);
+   A2600_ROMSize := FileSize(NesFH);
+   If A2600_ROMSize >= 16 Then Begin
+    Seek(NesFH, 0);
+    BlockRead(NesFH, A26Header, 16, A26HeaderRead);
+    If (A26HeaderRead = 16) And (A26Header[0] = Ord('A')) And
+      (A26Header[1] = Ord('2')) And (A26Header[2] = Ord('6')) And
+      (A26Header[3] = $1A) Then Begin
+    A26PayloadSize := LongInt(A26Header[4]) Or
+     (LongInt(A26Header[5]) Shl 8) Or
+     (LongInt(A26Header[6]) Shl 16) Or
+     (LongInt(A26Header[7]) Shl 24);
+    If (A26PayloadSize > 0) And
+      (A26PayloadSize <= SizeOf(A2600_ROM)) And
+      (A26PayloadSize <= A2600_ROMSize - 16) Then Begin
+     A2600_ROMSize := A26PayloadSize;
+     Seek(NesFH, 16);
+     IsA26 := True;
+    End;
+    End;
+   End;
+   If Not IsA26 Then Seek(NesFH, 0);
     If A2600_ROMSize > SizeOf(A2600_ROM) Then
      A2600_ROMSize := SizeOf(A2600_ROM);
     BlockRead(NesFH, A2600_ROM, A2600_ROMSize, NesBR);
