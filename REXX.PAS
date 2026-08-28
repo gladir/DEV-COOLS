@@ -935,6 +935,51 @@ Begin
  FormatRexxNumber:=S;
 End;
 
+Function InsertText(NewText,TargetText:String;InsertPosition,InsertLength:LongInt;
+ PositionSpecified,LengthSpecified,PadSpecified:Boolean;PadText:String):String;
+Var PadCharacter:Char;Insertion,ResultText:String;RequiredPadding:LongInt;
+Begin
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]Else PadCharacter:=' ';
+ If Not PositionSpecified Then InsertPosition:=0;
+ If InsertPosition<0Then InsertPosition:=0;
+ If InsertPosition>255Then InsertPosition:=255;
+ RequiredPadding:=InsertPosition-Length(TargetText);
+ If RequiredPadding>0Then
+  TargetText:=TargetText+RepeatCharacter(PadCharacter,RequiredPadding);
+ If LengthSpecified Then Begin
+  If InsertLength<0Then InsertLength:=0;
+  If InsertLength>255Then InsertLength:=255;
+ End Else InsertLength:=Length(NewText);
+ If InsertLength<=Length(NewText)Then Insertion:=Copy(NewText,1,InsertLength)
+ Else Insertion:=NewText+RepeatCharacter(PadCharacter,InsertLength-Length(NewText));
+ ResultText:=Copy(TargetText,1,InsertPosition)+Insertion+
+  Copy(TargetText,InsertPosition+1,255);
+ InsertText:=Copy(ResultText,1,255);
+End;
+
+Function LastPosition(Needle,Haystack:String;StartPosition:LongInt;
+ StartSpecified:Boolean):Integer;
+Var Candidate,LastCandidate:Integer;
+Begin
+ LastPosition:=0;
+ If(Needle='')or(Haystack='')Then Exit;
+ If StartSpecified Then Begin
+  If StartPosition<1Then Exit;
+  If StartPosition>Length(Haystack)Then StartPosition:=Length(Haystack);
+ End Else StartPosition:=Length(Haystack);
+ LastCandidate:=Length(Haystack)-Length(Needle)+1;
+ If LastCandidate<1Then Exit;
+ If StartPosition<LastCandidate Then Candidate:=StartPosition
+ Else Candidate:=LastCandidate;
+ While Candidate>=1 Do Begin
+  If Copy(Haystack,Candidate,Length(Needle))=Needle Then Begin
+   LastPosition:=Candidate;
+   Exit;
+  End;
+  Dec(Candidate);
+ End;
+End;
+
 Procedure SetLocalValue(Var ResultValue:RexxValue);
 Var SavedEnvironment:PLocalEnvironment;
 Begin
@@ -1133,7 +1178,7 @@ Begin
 End;
 
 Procedure EPrimary(Var ResultValue:RexxValue);
-Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength:Integer;FunctionByte:Byte;A,B,D:RexxValue;
+Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength:Integer;FunctionByte:Byte;A,B,D,E:RexxValue;
 Begin
  ESkip;
  If ExprPos>Length(ExprText)Then Begin
@@ -1186,6 +1231,7 @@ Begin
   If InvokeArgCount>0Then RVText(InvokeArgs[1],A)Else RVText('',A);
   If InvokeArgCount>1Then RVText(InvokeArgs[2],B)Else RVText('',B);
   If InvokeArgCount>2Then RVText(InvokeArgs[3],D)Else RVText('',D);
+  If InvokeArgCount>3Then RVText(InvokeArgs[4],E)Else RVText('',E);
   Nm:=StrToUpper(Nm);
   C:=CommandIndex(Nm);If C<0Then FunctionByte:=255 Else FunctionByte:=Byte(C);
   Case FunctionByte Of
@@ -1268,8 +1314,11 @@ Begin
    36:Begin { IF, forme fonctionnelle du repartiteur interne }
     If Truth(A)Then RVNum(1,ResultValue)Else RVNum(0,ResultValue);
    End;
-   37:FunctionNotImplemented(FunctionByte,ResultValue); { INSERT }
-   38:FunctionNotImplemented(FunctionByte,ResultValue); { LASTPOS }
+   37:RVText(InsertText(A.Text,B.Text,System.Trunc(D.Number),
+    System.Trunc(E.Number),InvokeArgCount>2,
+    InvokeArgCount>3,InvokeArgCount>4,InvokeArgs[5]),ResultValue); { INSERT }
+   38:RVNum(LastPosition(A.Text,B.Text,System.Trunc(D.Number),
+    InvokeArgCount>2),ResultValue); { LASTPOS }
    39:RVText(Copy(A.Text,1,System.Trunc(B.Number)),ResultValue); { LEFT }
    40:RVNum(Length(A.Text),ResultValue); { LENGTH }
    41:FunctionNotImplemented(FunctionByte,ResultValue); { LINEIN }
