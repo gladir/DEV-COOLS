@@ -69669,6 +69669,7 @@ Var
  Imm16_Dbg, V16_Dbg, Ofs_Dbg: Word;
  I_Dbg: Integer;
  InstructionIP: Word;
+ DecPreserveCF: Boolean;
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  InstructionIP := P.CPU.IP;
@@ -70918,6 +70919,7 @@ Begin
   $40..$47: { INC r16 (r32 si OperandSize32) }
    Begin
     SubOp := OpCode And 7;
+    DecPreserveCF := EFG_CF In P.CPU.Flags.s;
     If P.CPU.OperandSize32 Then Begin
      V32 := Emu_GetReg32(P.CPU, SubOp);
      R32 := Emu_AluDWord(P.CPU, 0, V32, 1);
@@ -70927,11 +70929,14 @@ Begin
      R16 := Emu_AluWord(P.CPU, 0, V16, 1);
      Emu_SetReg16(P.CPU, SubOp, R16);
     End;
+    If DecPreserveCF Then Include(P.CPU.Flags.s, EFG_CF)
+             Else Exclude(P.CPU.Flags.s, EFG_CF);
     Inc(P.CPU.IP);
    End;
   $48..$4F: { DEC r16 (r32 si OperandSize32) }
    Begin
     SubOp := OpCode And 7;
+    DecPreserveCF := EFG_CF In P.CPU.Flags.s;
     If P.CPU.OperandSize32 Then Begin
      V32 := Emu_GetReg32(P.CPU, SubOp);
      R32 := Emu_AluDWord(P.CPU, 5, V32, 1);
@@ -70941,6 +70946,8 @@ Begin
      R16 := Emu_AluWord(P.CPU, 5, V16, 1);
      Emu_SetReg16(P.CPU, SubOp, R16);
     End;
+    If DecPreserveCF Then Include(P.CPU.Flags.s, EFG_CF)
+             Else Exclude(P.CPU.Flags.s, EFG_CF);
     Inc(P.CPU.IP);
    End;
   $70..$7F: { Jcc rel8 }
@@ -71591,6 +71598,7 @@ Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
+    DecPreserveCF := EFG_CF In P.CPU.Flags.s;
     V8 := Emu_GetOpByte(P.CPU, Op);
     Case SubOp Of
      0: R8 := Emu_AluByte(P.CPU, 0, V8, 1);   { INC }
@@ -71598,6 +71606,8 @@ Begin
      Else R8 := V8;
     End;
     Emu_PutOpByte(P.CPU, Op, R8);
+    If DecPreserveCF Then Include(P.CPU.Flags.s, EFG_CF)
+             Else Exclude(P.CPU.Flags.s, EFG_CF);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $FF: { Group 5 : INC/DEC/CALL/JMP/PUSH rm16 }
@@ -71645,10 +71655,18 @@ Begin
      Exit;
     End;
     Case SubOp Of
-     0: Emu_PutOpWord(P.CPU, Op,
-         Emu_AluWord(P.CPU, 0, V16, 1));        { INC rm16 }
-     1: Emu_PutOpWord(P.CPU, Op,
-         Emu_AluWord(P.CPU, 5, V16, 1));        { DEC rm16 }
+     0: Begin                                      { INC rm16 }
+       DecPreserveCF := EFG_CF In P.CPU.Flags.s;
+       Emu_PutOpWord(P.CPU, Op, Emu_AluWord(P.CPU, 0, V16, 1));
+       If DecPreserveCF Then Include(P.CPU.Flags.s, EFG_CF)
+                Else Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
+     1: Begin                                      { DEC rm16 }
+       DecPreserveCF := EFG_CF In P.CPU.Flags.s;
+       Emu_PutOpWord(P.CPU, Op, Emu_AluWord(P.CPU, 5, V16, 1));
+       If DecPreserveCF Then Include(P.CPU.Flags.s, EFG_CF)
+                Else Exclude(P.CPU.Flags.s, EFG_CF);
+      End;
      2: Begin                                   { CALL near rm16 }
          Inc(P.CPU.IP, 1 + Op.Len);
          Emu_PushWord(P.CPU, P.CPU.IP);
