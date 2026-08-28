@@ -64226,10 +64226,10 @@ End;
 { Lire NSect secteurs depuis l image Idx vers la memoire emulee
   ES:BX. Retourne le nombre de secteurs effectivement lus. }
 Function Emu_FloppyReadSectors(Var P: TEmulatorPanel; Idx: Byte;
- LBA: LongInt; NSect: Byte; Seg, Ofs: Word): Byte;
+ LBA: LongInt; NSect: Word; Seg, Ofs: Word): Word;
 Var
  SBuf: Array[0..511] Of Byte;
- N: Byte;
+ N: Word;
  J: Integer;
  PhysAddr: LongInt;
  WriteSeg, WriteOfs: Word;
@@ -64371,7 +64371,7 @@ Var
  DL, AH, AL: Byte;
  Cyl, Head, Sect: Word;
  LBA: LongInt;
- NSect, Done: Byte;
+ NSect, Done: Word;
  Idx: Byte;
  IsHD: Boolean;
  DapSeg, DapOfs, NSectW, BufOfs, BufSeg, LBALo, LBAHi: Word;
@@ -64408,6 +64408,7 @@ Begin
     Exit;
    End;
    NSect := AL;
+  If NSect = 0 Then NSect := 256;
    Cyl   := (P.CPU.Regs.CX Shr 8) Or
             ((P.CPU.Regs.CX And $00C0) Shl 2);
    Sect  := P.CPU.Regs.CX And $003F;
@@ -64436,6 +64437,11 @@ Begin
     Exit;
    End;
    NSect := AL;
+  If NSect = 0 Then Begin
+   Emu_Int13SetError(P, Idx, $01);
+   P.CPU.Regs.AL := 0;
+   Exit;
+  End;
    Cyl   := (P.CPU.Regs.CX Shr 8) Or
             ((P.CPU.Regs.CX And $00C0) Shl 2);
    Sect  := P.CPU.Regs.CX And $003F;
@@ -64459,6 +64465,11 @@ Begin
     Exit;
    End;
    NSect := AL;
+  If NSect = 0 Then Begin
+   Emu_Int13SetError(P, Idx, $01);
+   P.CPU.Regs.AL := 0;
+   Exit;
+  End;
    Cyl   := (P.CPU.Regs.CX Shr 8) Or
             ((P.CPU.Regs.CX And $00C0) Shl 2);
    Sect  := P.CPU.Regs.CX And $003F;
@@ -64590,14 +64601,18 @@ Begin
    End;
    DapSeg := P.CPU.Segs.DS; DapOfs := P.CPU.Regs.SI;
    NSectW := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 2);
-   If NSectW > 255 Then NSectW := 255; { voir Emu_FloppyReadSectors, NSect: Byte }
+  If NSectW = 0 Then Begin
+   Emu_Int13SetError(P, Idx, $01);
+   Exit;
+  End;
+  If NSectW > 256 Then NSectW := 256;
    BufOfs := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 4);
    BufSeg := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 6);
    LBALo  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 8);
    LBAHi  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 10);
    LBA := LongInt(LBALo) Or (LongInt(LBAHi) Shl 16);
    If AH = $42 Then
-    Done := Emu_FloppyReadSectors(P, Idx, LBA, Byte(NSectW), BufSeg, BufOfs)
+    Done := Emu_FloppyReadSectors(P, Idx, LBA, NSectW, BufSeg, BufOfs)
    Else Begin
     If EmuFloppyRO[Idx] Then Begin Emu_Int13SetError(P, Idx, $03); Exit; End;
     Done := Emu_FloppyWriteSectors(P, Idx, LBA, Byte(NSectW), BufSeg, BufOfs);
@@ -69584,8 +69599,10 @@ Var
  Imm8_Dbg: Byte;
  Imm16_Dbg, V16_Dbg, Ofs_Dbg: Word;
  I_Dbg: Integer;
+ InstructionIP: Word;
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
+ InstructionIP := P.CPU.IP;
  RepPrefix := 0;
  { Workaround : a l'entree de Crt_Read, reparer la TextRec d'Input si elle
    n'a pas ete initialisee par le RTL (BufPtr.seg=0). Cas BOWLING.EXE. }
@@ -71536,11 +71553,12 @@ Begin
        P.CPU.Regs.EDX := LongWord(MulRes64 Mod Int64(LongInt(V32)));
       End;
      End;
-     Inc(P.CPU.IP, 1 + Op.Len);
      If P.CPU.Fault = sfDivision0 Then Begin
+      P.CPU.IP := InstructionIP;
       P.CPU.Fault := sfNone;
       Emu_Div0Trap(P);
-     End;
+         End Else
+      Inc(P.CPU.IP, 1 + Op.Len);
      Exit;
     End;
     Case SubOp Of
@@ -71915,11 +71933,12 @@ Begin
          End;
         End;
     End;
-    Inc(P.CPU.IP, 1 + Op.Len);
     If P.CPU.Fault = sfDivision0 Then Begin
+      P.CPU.IP := InstructionIP;
      P.CPU.Fault := sfNone;
      Emu_Div0Trap(P);
-    End;
+        End Else
+      Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $F7: { Group 3 word }
    Begin
@@ -72005,11 +72024,12 @@ Begin
          End;
         End;
     End;
-    Inc(P.CPU.IP, 1 + Op.Len);
     If P.CPU.Fault = sfDivision0 Then Begin
+      P.CPU.IP := InstructionIP;
      P.CPU.Fault := sfNone;
      Emu_Div0Trap(P);
-    End;
+        End Else
+      Inc(P.CPU.IP, 1 + Op.Len);
    End;
   Else
    Begin
