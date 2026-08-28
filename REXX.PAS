@@ -117,6 +117,7 @@ Var
  CurrentConditionInstruction:String[8];
  CurrentConditionStatus:String[8];
  CurrentAddress,PreviousAddress:String[64];
+ CurrentOptions:String;
  CharInNames:Array[1..MaxRoutineArgs]of String;
  CharInPositions:Array[1..MaxRoutineArgs]of LongInt;
  CharInStreamCount:Integer;
@@ -298,6 +299,29 @@ Begin V.Text:=S;Val(NormalizeRexxNumber(S),V.Number,C);V.IsNumber:=C=0;
  If Not V.IsNumber Then V.Number:=0;End;
 Procedure RVNum(N:Real;Var V:RexxValue);
 Begin V.Number:=N;V.IsNumber:=True;V.Text:=NumToText(N);End;
+
+Procedure RandomValue(MinimumValue,MaximumValue,SeedValue:RexxValue;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var LowValue,HighValue,GeneratedValue:LongInt;IntervalSize:Real;
+Begin
+ Case ArgumentCount Of
+  0:Begin LowValue:=0;HighValue:=999;End;
+  1:Begin LowValue:=0;HighValue:=System.Trunc(MinimumValue.Number);End;
+ Else Begin
+  LowValue:=System.Trunc(MinimumValue.Number);
+  HighValue:=System.Trunc(MaximumValue.Number);
+ End;
+ End;
+ If ArgumentCount>2Then RandSeed:=System.Trunc(SeedValue.Number);
+ { Un intervalle inverse est invalide en REXX. Le moteur ne possede pas
+   encore de mecanisme d'exception pour les appels incorrects: retourner
+   zero evite ici un debordement ou une valeur hors intervalle. }
+ If HighValue<LowValue Then Begin RVNum(0,ResultValue);Exit;End;
+ IntervalSize:=HighValue-LowValue+1.0;
+ GeneratedValue:=LowValue+System.Trunc(System.Random*IntervalSize);
+ If GeneratedValue>HighValue Then GeneratedValue:=HighValue;
+ RVNum(GeneratedValue,ResultValue);
+End;
 
 Function VarFind(Head:PRexxVariable;N:String):PRexxVariable;
 Var P:PRexxVariable;
@@ -982,8 +1006,85 @@ Begin
    LastPosition:=Candidate;
    Exit;
   End;
-  Dec(Candidate);
+ Dec(Candidate);
  End;
+End;
+
+Function ForwardPosition(Needle,Haystack:String;StartPosition:LongInt;
+ StartSpecified:Boolean):Integer;
+Var RelativePosition:Integer;
+Begin
+ ForwardPosition:=0;
+ If(Needle='')or(Haystack='')Then Exit;
+ If Not StartSpecified Then StartPosition:=1;
+ If(StartPosition<1)or(StartPosition>Length(Haystack))Then Exit;
+ RelativePosition:=System.Pos(Needle,Copy(Haystack,StartPosition,255));
+ If RelativePosition>0Then
+  ForwardPosition:=RelativePosition+StartPosition-1;
+End;
+
+Function SubStringText(SourceText:String;StartPosition,RequestedLength:LongInt;
+ LengthSpecified,PadSpecified:Boolean;PadText:String):String;
+Var PadCharacter:Char;AvailableLength,PaddingLength:LongInt;ResultText:String;
+Begin
+ If StartPosition<1Then Begin SubStringText:='';Exit;End;
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]
+ Else PadCharacter:=' ';
+ If Not LengthSpecified Then Begin
+  If StartPosition>Length(SourceText)Then ResultText:=''
+  Else ResultText:=Copy(SourceText,StartPosition,255);
+  SubStringText:=ResultText;
+  Exit;
+ End;
+ If RequestedLength<=0Then Begin SubStringText:='';Exit;End;
+ If RequestedLength>255Then RequestedLength:=255;
+ If StartPosition>Length(SourceText)Then AvailableLength:=0
+ Else Begin
+  AvailableLength:=Length(SourceText)-StartPosition+1;
+  If AvailableLength>RequestedLength Then AvailableLength:=RequestedLength;
+ End;
+ If AvailableLength>0Then ResultText:=Copy(SourceText,StartPosition,AvailableLength)
+ Else ResultText:='';
+ PaddingLength:=RequestedLength-AvailableLength;
+ If PaddingLength>0Then ResultText:=ResultText+
+  RepeatCharacter(PadCharacter,PaddingLength);
+ SubStringText:=ResultText;
+End;
+
+Function SubWordText(SourceText:String;FirstWord,RequestedWords:LongInt;
+ WordCountSpecified:Boolean):String;
+Var CharacterPosition,CurrentWord,StartPosition,EndPosition:Integer;
+ WordsRemaining:LongInt;
+Begin
+ SubWordText:='';
+ If FirstWord<1Then Exit;
+ If WordCountSpecified and(RequestedWords<=0)Then Exit;
+ CharacterPosition:=1;CurrentWord:=0;StartPosition:=0;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Break;
+  Inc(CurrentWord);
+  If CurrentWord=FirstWord Then Begin StartPosition:=CharacterPosition;Break;End;
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+ If StartPosition=0Then Exit;
+ If WordCountSpecified Then WordsRemaining:=RequestedWords
+ Else WordsRemaining:=2147483647;
+ EndPosition:=StartPosition-1;
+ While(CharacterPosition<=Length(SourceText))and(WordsRemaining>0)Do Begin
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Begin
+   EndPosition:=CharacterPosition;Inc(CharacterPosition);
+  End;
+  Dec(WordsRemaining);
+  If WordsRemaining=0Then Break;
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+ If EndPosition>=StartPosition Then
+  SubWordText:=Copy(SourceText,StartPosition,EndPosition-StartPosition+1);
 End;
 
 Procedure SetLocalValue(Var ResultValue:RexxValue);
@@ -1340,12 +1441,13 @@ Begin
    47:FunctionNotImplemented(FunctionByte,ResultValue); { OVERLAY }
    48:FunctionNotImplemented(FunctionByte,ResultValue); { PARSE }
    49:FunctionNotImplemented(FunctionByte,ResultValue); { PROCEDURE }
-   50:FunctionNotImplemented(FunctionByte,ResultValue); { POS }
+   50:RVNum(ForwardPosition(A.Text,B.Text,System.Trunc(D.Number),
+    InvokeArgCount>2),ResultValue); { POS }
    51:FunctionNotImplemented(FunctionByte,ResultValue); { PULL }
    52:FunctionNotImplemented(FunctionByte,ResultValue); { PUSH }
    53:FunctionNotImplemented(FunctionByte,ResultValue); { QUEUE }
    54:FunctionNotImplemented(FunctionByte,ResultValue); { QUEUED }
-   55:FunctionNotImplemented(FunctionByte,ResultValue); { RANDOM }
+   55:RandomValue(A,B,D,InvokeArgCount,ResultValue); { RANDOM }
    56:FunctionNotImplemented(FunctionByte,ResultValue); { RETURN }
    57:FunctionNotImplemented(FunctionByte,ResultValue); { REVERSE }
    58:Begin { RIGHT }
@@ -1367,8 +1469,11 @@ Begin
    70:FunctionNotImplemented(FunctionByte,ResultValue); { SPACE }
    71:FunctionNotImplemented(FunctionByte,ResultValue); { STREAM }
    72:FunctionNotImplemented(FunctionByte,ResultValue); { STRIP }
-   73:FunctionNotImplemented(FunctionByte,ResultValue); { SUBSTR }
-   74:FunctionNotImplemented(FunctionByte,ResultValue); { SUBWORD }
+   73:RVText(SubStringText(A.Text,System.Trunc(B.Number),
+    System.Trunc(D.Number),InvokeArgCount>2,InvokeArgCount>3,E.Text),
+    ResultValue); { SUBSTR }
+   74:RVText(SubWordText(A.Text,System.Trunc(B.Number),
+    System.Trunc(D.Number),InvokeArgCount>2),ResultValue); { SUBWORD }
    75:FunctionNotImplemented(FunctionByte,ResultValue); { SYMBOL }
    76:FunctionNotImplemented(FunctionByte,ResultValue); { SYSADDREXXMACRO }
    77:FunctionNotImplemented(FunctionByte,ResultValue); { SYSBOOTDRIVE }
@@ -1766,6 +1871,14 @@ Begin
     Inc(InvokeArgCount);InvokeArgs[InvokeArgCount]:=V.Text;
    End;
    VarSet('RESULT',CallRoutine(Name));
+  End;
+  46:Begin { OPTIONS }
+   Rest:=Clean(Copy(S,8,255));
+   If Rest=''Then CurrentOptions:=''
+   Else Begin
+    Eval(Rest,V);
+    CurrentOptions:=V.Text;
+   End;
   End;
   48:Begin { PARSE }
    If WordStart(S,'PARSE ARG')Then Begin
@@ -2175,6 +2288,7 @@ Procedure ExecuteCommand;Begin
  CurrentConditionName:='';CurrentConditionDescription:='';
  CurrentConditionInstruction:='';CurrentConditionStatus:='';
  CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
+ CurrentOptions:='';
  CharInStreamCount:=0;
  CharOutStreamCount:=0;
  LocalEnvironments:=Nil;
@@ -2184,6 +2298,7 @@ Procedure ExecuteCommand;Begin
 End;
 
 BEGIN
+ Randomize;
  {$IFDEF FPC}
   {$IFDEF WINDOWS}
    SetUseACP(False);
