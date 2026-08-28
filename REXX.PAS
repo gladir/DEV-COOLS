@@ -55,6 +55,8 @@ Type
 
 Var
  Terminated:Boolean;
+ ProgramExitRequested:Boolean;
+ ProgramExitCode:Integer;
  CurrCommand:String;
  FileName,CurrLine:String;
  PA:Array[1..MaxLine] of StrPointer;
@@ -264,6 +266,18 @@ End;
 
 Function Clean(S:String):String;Begin Clean:=RTrim(LTrim(S));End;
 
+Function NormalizeRexxNumber(S:String):String;
+Var J:Integer;R:String;
+Begin
+ S:=Clean(S);R:='';
+ If(Length(S)>0)and(S[1]in['+','-'])Then Begin
+  R:=S[1];J:=2;
+  While(J<=Length(S))and(S[J]in[' ',#9])Do Inc(J);
+  R:=R+Copy(S,J,255);
+ End Else R:=S;
+ NormalizeRexxNumber:=R;
+End;
+
 Function NumToText(N:Real):String;
 Var S:String;
 Begin
@@ -274,7 +288,8 @@ End;
 
 Procedure RVText(S:String;Var V:RexxValue);
 Var C:Integer;
-Begin V.Text:=S;Val(Clean(S),V.Number,C);V.IsNumber:=C=0;If Not V.IsNumber Then V.Number:=0;End;
+Begin V.Text:=S;Val(NormalizeRexxNumber(S),V.Number,C);V.IsNumber:=C=0;
+ If Not V.IsNumber Then V.Number:=0;End;
 Procedure RVNum(N:Real;Var V:RexxValue);
 Begin V.Number:=N;V.IsNumber:=True;V.Text:=NumToText(N);End;
 
@@ -323,6 +338,7 @@ Procedure ECompare(Var ResultValue:RexxValue);Forward;
 Function FindRoutineLabel(Name:String):Integer;Forward;
 Function CallRoutine(Name:String):String;Forward;
 Function CommandIndex(N:String):Integer;Forward;
+Function Truth(V:RexxValue):Boolean;Forward;
 
 Procedure FunctionNotImplemented(FunctionByte:Byte;Var ResultValue:RexxValue);
 Begin
@@ -610,7 +626,7 @@ End;
 Function IsRexxNumber(SourceText:String;Var NumberValue:Real):Boolean;
 Var ErrorPosition:Integer;
 Begin
- SourceText:=Clean(SourceText);
+ SourceText:=NormalizeRexxNumber(SourceText);
  If SourceText=''Then Begin IsRexxNumber:=False;Exit;End;
  Val(SourceText,NumberValue,ErrorPosition);
  IsRexxNumber:=ErrorPosition=0;
@@ -801,6 +817,124 @@ Begin
  RVText(CurrentDirectory,ResultValue);
 End;
 
+Function FileSpecPart(OptionText,FileSpecification:String):String;
+Var J,LastSeparator,NameStart:Integer;OptionCode:Char;
+Begin
+ OptionText:=StrToUpper(Clean(OptionText));
+ If OptionText=''Then Begin FileSpecPart:='';Exit;End;
+ OptionCode:=OptionText[1];
+ If(Length(FileSpecification)>=2)and(FileSpecification[2]=':')Then NameStart:=3
+ Else NameStart:=1;
+ LastSeparator:=0;
+ For J:=NameStart To Length(FileSpecification)Do
+  If FileSpecification[J]in['\','/']Then LastSeparator:=J;
+ Case OptionCode Of
+  'D':Begin
+       If NameStart=3 Then FileSpecPart:=Copy(FileSpecification,1,2)
+       Else FileSpecPart:='';
+      End;
+  'P':Begin
+       If LastSeparator>=NameStart Then
+        FileSpecPart:=Copy(FileSpecification,NameStart,LastSeparator-NameStart+1)
+       Else FileSpecPart:='';
+      End;
+  'N':Begin
+       If LastSeparator>0 Then FileSpecPart:=Copy(FileSpecification,LastSeparator+1,255)
+       Else FileSpecPart:=Copy(FileSpecification,NameStart,255);
+      End;
+ Else FileSpecPart:='';
+ End;
+End;
+
+Function RexxSignificantDigits(NumberText:String):Integer;
+Var J,Count:Integer;SeenNonZero:Boolean;
+Begin
+ Count:=0;SeenNonZero:=False;NumberText:=StrToUpper(Clean(NumberText));
+ J:=1;
+ While(J<=Length(NumberText))and(NumberText[J]<>'E')Do Begin
+  If NumberText[J]in['0'..'9']Then Begin
+   If NumberText[J]<>'0'Then SeenNonZero:=True;
+   If SeenNonZero Then Inc(Count);
+  End;
+  Inc(J);
+ End;
+ If Count=0Then Count:=1;
+ RexxSignificantDigits:=Count;
+End;
+
+Function FormatRexxNumber(NumberValue:Real;OriginalText,BeforeText,AfterText,
+ ExponentPlacesText,ExponentTriggerText:String;ArgumentCount:Integer):String;
+Var BeforeSpecified,AfterSpecified,ExponentPlacesSpecified,
+ ExponentTriggerSpecified,UseExponent:Boolean;
+ BeforePlaces,AfterPlaces,ExponentPlaces,ExponentTrigger,ErrorPosition,
+ ExponentValue,IntegerLength,PointPosition,J,SignificantDigits:Integer;
+ Mantissa,AbsoluteValue:Real;S,ExponentText:String;
+Begin
+ If ArgumentCount<2Then Begin FormatRexxNumber:=NumToText(NumberValue);Exit;End;
+ BeforeSpecified:=(ArgumentCount>=2)and(BeforeText<>'');
+ AfterSpecified:=(ArgumentCount>=3)and(AfterText<>'');
+ ExponentPlacesSpecified:=(ArgumentCount>=4)and(ExponentPlacesText<>'');
+ ExponentTriggerSpecified:=(ArgumentCount>=5)and(ExponentTriggerText<>'');
+ BeforePlaces:=0;AfterPlaces:=0;ExponentPlaces:=0;ExponentTrigger:=NumericDigitsValue;
+ If BeforeSpecified Then Val(BeforeText,BeforePlaces,ErrorPosition);
+ If AfterSpecified Then Val(AfterText,AfterPlaces,ErrorPosition);
+ If ExponentPlacesSpecified Then Val(ExponentPlacesText,ExponentPlaces,ErrorPosition);
+ If ExponentTriggerSpecified Then Val(ExponentTriggerText,ExponentTrigger,ErrorPosition);
+ If(BeforePlaces<0)or(AfterPlaces<0)or(ExponentPlaces<0)or(ExponentTrigger<0)Then Begin
+  FormatRexxNumber:='';Exit;
+ End;
+ If BeforePlaces>255Then BeforePlaces:=255;
+ If AfterPlaces>100Then AfterPlaces:=100;
+ If ExponentPlaces>9Then Begin FormatRexxNumber:='';Exit;End;
+ AbsoluteValue:=Abs(NumberValue);ExponentValue:=0;Mantissa:=NumberValue;
+ If AbsoluteValue>0Then Begin
+  While AbsoluteValue>=10Do Begin AbsoluteValue:=AbsoluteValue/10;Inc(ExponentValue);End;
+  While AbsoluteValue<1Do Begin AbsoluteValue:=AbsoluteValue*10;Dec(ExponentValue);End;
+ End;
+ UseExponent:=False;
+ If ExponentTriggerSpecified Then Begin
+  If ExponentTrigger=0Then UseExponent:=ExponentValue<>0
+  Else UseExponent:=(ExponentValue+1>ExponentTrigger)or
+    (ExponentValue<-(2*ExponentTrigger));
+ End;
+ If ExponentPlacesSpecified and(ExponentPlaces=0)Then UseExponent:=False;
+ If UseExponent Then Begin
+  If NumericFormValue='ENGINEERING'Then Begin
+   While(ExponentValue mod 3)<>0Do Dec(ExponentValue);
+  End;
+  Mantissa:=NumberValue;
+  If ExponentValue>0Then For J:=1 To ExponentValue Do Mantissa:=Mantissa/10
+  Else For J:=1 To -ExponentValue Do Mantissa:=Mantissa*10;
+  If Not AfterSpecified Then Begin
+   SignificantDigits:=RexxSignificantDigits(OriginalText);
+   IntegerLength:=1;
+   If Abs(Mantissa)>=10Then IntegerLength:=2;
+   If Abs(Mantissa)>=100Then IntegerLength:=3;
+   AfterPlaces:=SignificantDigits-IntegerLength;If AfterPlaces<0Then AfterPlaces:=0;
+  End;
+  Str(Mantissa:0:AfterPlaces,S);S:=Clean(S);
+ End Else Begin
+  If AfterSpecified Then Begin Str(NumberValue:0:AfterPlaces,S);S:=Clean(S);End
+  Else S:=NumToText(NumberValue);
+ End;
+ PointPosition:=System.Pos('.',S);If PointPosition=0Then IntegerLength:=Length(S)
+  Else IntegerLength:=PointPosition-1;
+ If BeforeSpecified Then Begin
+  If IntegerLength>BeforePlaces Then Begin FormatRexxNumber:='';Exit;End;
+  While IntegerLength<BeforePlaces Do Begin S:=' '+S;Inc(IntegerLength);End;
+ End;
+ If UseExponent Then Begin
+  Str(Abs(ExponentValue),ExponentText);ExponentText:=Clean(ExponentText);
+  If ExponentPlacesSpecified Then Begin
+   If Length(ExponentText)>ExponentPlaces Then Begin FormatRexxNumber:='';Exit;End;
+   While Length(ExponentText)<ExponentPlaces Do ExponentText:='0'+ExponentText;
+  End;
+  If ExponentValue<0Then S:=S+'E-'+ExponentText Else S:=S+'E+'+ExponentText;
+ End Else If ExponentPlacesSpecified and(ExponentPlaces>0)Then
+  S:=S+RepeatCharacter(' ',ExponentPlaces+2);
+ FormatRexxNumber:=S;
+End;
+
 Procedure SetLocalValue(Var ResultValue:RexxValue);
 Var SavedEnvironment:PLocalEnvironment;
 Begin
@@ -887,6 +1021,19 @@ Begin
   49:RexxErrorText:='Interpretation error';
  Else RexxErrorText:='';
  End;
+End;
+
+Procedure RequestProgramExit(ExitValue:RexxValue;ValueSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var ExitNumber:LongInt;
+Begin
+ ExitNumber:=0;
+ If ValueSpecified and ExitValue.IsNumber Then ExitNumber:=System.Trunc(ExitValue.Number);
+ { Sous DOS et Windows, le code de sortie observable est limite a un octet. }
+ If ExitNumber<0Then ExitNumber:=0;
+ If ExitNumber>255Then ExitNumber:=255;
+ ProgramExitCode:=ExitNumber;ProgramExitRequested:=True;Terminated:=True;
+ RVNum(ProgramExitCode,ResultValue);
 End;
 
 Procedure CharInValue(StreamName:String;StartPosition,RequestedCount:LongInt;
@@ -1112,12 +1259,15 @@ Begin
     InvokeArgCount>1),ResultValue); { D2X }
    29:EndLocalValue(ResultValue); { ENDLOCAL }
    30:RVText(RexxErrorText(System.Trunc(A.Number)),ResultValue); { ERRORTEXT }
-   31:FunctionNotImplemented(FunctionByte,ResultValue); { EXIT }
-   32:FunctionNotImplemented(FunctionByte,ResultValue); { FILESPEC }
+   31:RequestProgramExit(A,InvokeArgCount>0,ResultValue); { EXIT }
+   32:RVText(FileSpecPart(A.Text,B.Text),ResultValue); { FILESPEC }
    33:RVText(NumericFormValue,ResultValue); { FORM }
-   34:FunctionNotImplemented(FunctionByte,ResultValue); { FORMAT }
+   34:RVText(FormatRexxNumber(A.Number,A.Text,InvokeArgs[2],InvokeArgs[3],
+    InvokeArgs[4],InvokeArgs[5],InvokeArgCount),ResultValue); { FORMAT }
    35:RVNum(NumericFuzzValue,ResultValue); { FUZZ }
-   36:FunctionNotImplemented(FunctionByte,ResultValue); { IF }
+   36:Begin { IF, forme fonctionnelle du repartiteur interne }
+    If Truth(A)Then RVNum(1,ResultValue)Else RVNum(0,ResultValue);
+   End;
    37:FunctionNotImplemented(FunctionByte,ResultValue); { INSERT }
    38:FunctionNotImplemented(FunctionByte,ResultValue); { LASTPOS }
    39:RVText(Copy(A.Text,1,System.Trunc(B.Number)),ResultValue); { LEFT }
@@ -1646,7 +1796,23 @@ Begin
   157:; { NOP }
   155:LoopSignal:=1; { LEAVE }
   154:LoopSignal:=2; { ITERATE }
-  31:Terminated:=True; { EXIT }
+ 31:Begin { EXIT }
+   Rest:=Clean(Copy(S,5,255));
+   If Rest<>''Then Begin Eval(Rest,V);RequestProgramExit(V,True,V);End
+   Else Begin RVNum(0,V);RequestProgramExit(V,False,V);End;
+  End;
+  36:Begin { IF imbrique ou transmis comme clause simple }
+   P:=FindWord(S,'THEN');
+   If P=0Then WriteLn('THEN manquant')
+   Else Begin
+    Eval(Copy(S,3,P-3),V);Rest:=Clean(Copy(S,P+4,255));
+    J:=FindWord(Rest,'ELSE');
+    If J>0Then Begin
+     If Truth(V)Then ExecOne(Clean(Copy(Rest,1,J-1)))
+     Else ExecOne(Clean(Copy(Rest,J+4,255)));
+    End Else If Truth(V)Then ExecOne(Rest);
+   End;
+  End;
   Else Begin
    If S[Length(S)]=':'Then Exit;
    P:=System.Pos('=',S);If P>1Then Begin Eval(Copy(S,P+1,255),V);VarSet(Copy(S,1,P-1),V.Text);End
@@ -1694,11 +1860,18 @@ Begin
    End
     Else
    Begin
-    If Truth(V)Then ExecOne(Act);
-    Inc(J);
-    If(J<=Z)and WordStart(PA[J]^,'ELSE')Then Begin
-     If Not Truth(V)Then ExecOne(Copy(Clean(PA[J]^),5,255));
+    K:=FindWord(Act,'ELSE');
+    If K>0Then Begin
+     If Truth(V)Then ExecOne(Clean(Copy(Act,1,K-1)))
+     Else ExecOne(Clean(Copy(Act,K+4,255)));
      Inc(J);
+    End Else Begin
+     If Truth(V)Then ExecOne(Act);
+     Inc(J);
+     If(J<=Z)and WordStart(PA[J]^,'ELSE')Then Begin
+      If Not Truth(V)Then ExecOne(Copy(Clean(PA[J]^),5,255));
+      Inc(J);
+     End;
     End;
    End;
   End;
@@ -1912,6 +2085,7 @@ End;
 Procedure ExecuteCommand;Begin
  Variables:=Nil;
  Terminated:=False;
+ ProgramExitRequested:=False;ProgramExitCode:=0;
  LoopSignal:=0;
  CurrentArgCount:=InitialArgCount;
  For I:=1 To MaxRoutineArgs Do CurrentArgs[I]:=InitialArgs[I];
@@ -1957,6 +2131,7 @@ BEGIN
    End;
    LoadCommand;
    ExecuteCommand;
+   If ProgramExitRequested Then Halt(ProgramExitCode);
   End
  End;
 END.
