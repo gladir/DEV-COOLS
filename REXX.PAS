@@ -63,23 +63,21 @@ Var
  I:Integer;
  CurrPos:Byte;
 
-Const
- MaxVariables={$IFDEF FPC}256{$ELSE}128{$ENDIF};
-
 Type
  RexxValue=Record
   Text:String;
   Number:Real;
   IsNumber:Boolean;
  End;
+ PRexxVariable=^RexxVariable;
  RexxVariable=Record
   Name:String[64];
   Value:String;
+  Next:PRexxVariable;
  End;
 
 Var
- Variables:Array[1..MaxVariables]of RexxVariable;
- VariableCount:Integer;
+ Variables:PRexxVariable;
  ExprText:String;
  ExprPos:Integer;
 
@@ -102,6 +100,9 @@ Var
  SignalHalt,SignalNoValue,SignalError,SignalSyntax:Boolean;
  SignalHaltName,SignalNoValueName,SignalErrorName,SignalSyntaxName:String[64];
  CurrentAddress,PreviousAddress:String[64];
+ CharInNames:Array[1..MaxRoutineArgs]of String;
+ CharInPositions:Array[1..MaxRoutineArgs]of LongInt;
+ CharInStreamCount:Integer;
 
 Function LTrim(S:String):String;
 Var
@@ -264,38 +265,41 @@ Begin V.Text:=S;Val(Clean(S),V.Number,C);V.IsNumber:=C=0;If Not V.IsNumber Then 
 Procedure RVNum(N:Real;Var V:RexxValue);
 Begin V.Number:=N;V.IsNumber:=True;V.Text:=NumToText(N);End;
 
-Function VarIndex(N:String):Integer;
-Var
- J:Integer;
+Function VarFind(Head:PRexxVariable;N:String):PRexxVariable;
+Var P:PRexxVariable;
 Begin
  N:=StrToUpper(N);
- VarIndex:=0;
- For J:=1 To VariableCount Do If Variables[J].Name=N Then Begin
-  VarIndex:=J;
-  Exit;
+ P:=Head;
+ While P<>Nil Do Begin
+  If P^.Name=N Then Begin VarFind:=P;Exit;End;
+  P:=P^.Next;
  End;
+ VarFind:=Nil;
 End;
 
 Procedure VarGet(N:String;Var ResultValue:RexxValue);
-Var
- J:Integer;
+Var P:PRexxVariable;
 Begin
- J:=VarIndex(N);
- If J=0Then RVText(StrToUpper(N),ResultValue)
-       Else RVText(Variables[J].Value,ResultValue);
+ P:=VarFind(Variables,N);
+ If P=Nil Then RVText(StrToUpper(N),ResultValue)
+        Else RVText(P^.Value,ResultValue);
 End;
 
 Procedure VarSet(N,S:String);
-Var
- J:Integer;
+Var P:PRexxVariable;
 Begin
  N:=StrToUpper(Clean(N));
- J:=VarIndex(N);If(J=0)and(VariableCount<MaxVariables)Then Begin
-  Inc(VariableCount);
-  J:=VariableCount;
-  Variables[J].Name:=N;
+ P:=VarFind(Variables,N);
+ If P=Nil Then Begin
+  New(P);P^.Name:=N;P^.Value:='';P^.Next:=Variables;Variables:=P;
  End;
- If J>0Then Variables[J].Value:=S;
+ P^.Value:=S;
+End;
+
+Procedure FreeVariables(Var Head:PRexxVariable);
+Var P:PRexxVariable;
+Begin
+ While Head<>Nil Do Begin P:=Head;Head:=Head^.Next;Dispose(P);End;
 End;
 
 Procedure ESkip;Begin
@@ -414,6 +418,53 @@ Begin
  S:='';For J:=1 To Count Do S:=S+C;RepeatCharacter:=S;
 End;
 
+Function ChangeString(Needle,SourceText,Replacement:String):String;
+Var P:Integer;ResultText,RemainingText:String;
+Begin
+ If Needle=''Then Begin ChangeString:=SourceText;Exit;End;
+ ResultText:='';RemainingText:=SourceText;
+ P:=System.Pos(Needle,RemainingText);
+ While P>0Do Begin
+  ResultText:=ResultText+Copy(RemainingText,1,P-1)+Replacement;
+  Delete(RemainingText,1,P+Length(Needle)-1);
+  P:=System.Pos(Needle,RemainingText);
+ End;
+ ChangeString:=ResultText+RemainingText;
+End;
+
+Procedure CharInValue(StreamName:String;StartPosition,RequestedCount:LongInt;
+ UseStart,UseCount:Boolean;Var ResultValue:RexxValue);
+Var F:File;Buffer:Array[1..255]of Byte;J,StreamIndex,ReadCount,Count:Integer;
+ Position:LongInt;ResultText:String;
+Begin
+ If Not UseCount Then RequestedCount:=1;
+ If RequestedCount<0Then RequestedCount:=0;
+ If RequestedCount>255Then RequestedCount:=255;
+ Count:=RequestedCount;ResultText:='';
+ If StreamName=''Then Begin
+  For J:=1 To Count Do ResultText:=ResultText+ReadKey;
+  RVText(ResultText,ResultValue);Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To CharInStreamCount Do If CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If CharInStreamCount<MaxRoutineArgs Then Begin
+   Inc(CharInStreamCount);StreamIndex:=CharInStreamCount;
+   CharInNames[StreamIndex]:=StreamName;CharInPositions[StreamIndex]:=1;
+  End Else StreamIndex:=1;
+ End;
+ If UseStart Then Position:=StartPosition Else Position:=CharInPositions[StreamIndex];
+ If Position<1Then Position:=1;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin RVText('',ResultValue);Exit;End;
+ If Position-1<FileSize(F)Then Begin
+  Seek(F,Position-1);BlockRead(F,Buffer,Count,ReadCount);
+  For J:=1 To ReadCount Do ResultText:=ResultText+Chr(Buffer[J]);
+ End Else ReadCount:=0;
+ Close(F);CharInPositions[StreamIndex]:=Position+ReadCount;
+ RVText(ResultText,ResultValue);
+End;
+
 Function CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
 Var LeftCount,RightCount,StartPosition:Integer;PadChar:Char;
 Begin
@@ -529,8 +580,9 @@ Begin
     RVText(CallRoutine(S),ResultValue);
    End;
    10:RVText(CenterText(A.Text,System.Trunc(B.Number),D.Text),ResultValue); { CENTER }
-   11:FunctionNotImplemented(FunctionByte,ResultValue); { CHANGESTR }
-   12:FunctionNotImplemented(FunctionByte,ResultValue); { CHARIN }
+   11:RVText(ChangeString(A.Text,B.Text,D.Text),ResultValue); { CHANGESTR }
+   12:CharInValue(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
+    InvokeArgCount>1,InvokeArgCount>2,ResultValue); { CHARIN }
    13:FunctionNotImplemented(FunctionByte,ResultValue); { CHAROUT }
    14:FunctionNotImplemented(FunctionByte,ResultValue); { CHARS }
    15:FunctionNotImplemented(FunctionByte,ResultValue); { COMPARE }
@@ -1271,12 +1323,13 @@ End;
 
 Function CallRoutine(Name:String):String;
 Var
- LabelLine,EndLine,J,K,SavedVariableCount,SavedArgCount,SavedExprPos,
+ LabelLine,EndLine,J,K,SavedArgCount,SavedExprPos,
   SavedInvokeCount,ExposeCount:Integer;
  S,ProcedureText,ExposeName:String;
  SavedReturning,HasProcedure:Boolean;
  SavedResult,SavedExprText:String;
- SavedVariables:Array[1..MaxVariables]of RexxVariable;
+ SavedVariables:PRexxVariable;
+ ExposedVariable:PRexxVariable;
  SavedArgs,SavedInvokeArgs:Array[1..MaxRoutineArgs]of String;
  ExposeNames,ExposeValues:Array[1..MaxRoutineArgs]of String;
 Begin
@@ -1317,13 +1370,11 @@ Begin
  End;
 
  If HasProcedure Then Begin
-  SavedVariableCount:=VariableCount;
-  For K:=1 To VariableCount Do SavedVariables[K]:=Variables[K];
-  VariableCount:=0;
+  SavedVariables:=Variables;Variables:=Nil;
   For K:=1 To ExposeCount Do Begin
    ExposeValues[K]:='';
-   For J:=1 To SavedVariableCount Do
-    If SavedVariables[J].Name=ExposeNames[K]Then ExposeValues[K]:=SavedVariables[J].Value;
+   ExposedVariable:=VarFind(SavedVariables,ExposeNames[K]);
+   If ExposedVariable<>Nil Then ExposeValues[K]:=ExposedVariable^.Value;
    VarSet(ExposeNames[K],ExposeValues[K]);
   End;
  End;
@@ -1334,10 +1385,10 @@ Begin
 
  If HasProcedure Then Begin
   For K:=1 To ExposeCount Do Begin
-   J:=VarIndex(ExposeNames[K]);If J>0Then ExposeValues[K]:=Variables[J].Value Else ExposeValues[K]:='';
+   ExposedVariable:=VarFind(Variables,ExposeNames[K]);
+   If ExposedVariable<>Nil Then ExposeValues[K]:=ExposedVariable^.Value Else ExposeValues[K]:='';
   End;
-  VariableCount:=SavedVariableCount;
-  For K:=1 To SavedVariableCount Do Variables[K]:=SavedVariables[K];
+  FreeVariables(Variables);Variables:=SavedVariables;
   For K:=1 To ExposeCount Do VarSet(ExposeNames[K],ExposeValues[K]);
  End;
 
@@ -1348,7 +1399,7 @@ Begin
 End;
 
 Procedure ExecuteCommand;Begin
- VariableCount:=0;
+ Variables:=Nil;
  Terminated:=False;
  LoopSignal:=0;
  CurrentArgCount:=InitialArgCount;
@@ -1358,7 +1409,9 @@ Procedure ExecuteCommand;Begin
  SignalTargetLine:=0;SignalHalt:=False;SignalNoValue:=False;SignalError:=False;SignalSyntax:=False;
  SignalHaltName:='HALT';SignalNoValueName:='NOVALUE';SignalErrorName:='ERROR';SignalSyntaxName:='SYNTAX';
  CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
+ CharInStreamCount:=0;
  If NumberLine>0Then ExecRange(1,NumberLine);
+ FreeVariables(Variables);
 End;
 
 BEGIN
