@@ -77,6 +77,12 @@ Type
   Value:String;
   Next:PRexxVariable;
  End;
+ PExposedVariable=^ExposedVariable;
+ ExposedVariable=Record
+  Name:String[64];
+  Value:String;
+  Next:PExposedVariable;
+ End;
  PLocalEnvironment=^LocalEnvironment;
  LocalEnvironment=Record
   DirectoryName:String;
@@ -2057,14 +2063,14 @@ End;
 Function CallRoutine(Name:String):String;
 Var
  LabelLine,EndLine,J,K,SavedArgCount,SavedExprPos,
-  SavedInvokeCount,ExposeCount:Integer;
+  SavedInvokeCount:Integer;
  S,ProcedureText,ExposeName:String;
  SavedReturning,HasProcedure:Boolean;
  SavedResult,SavedExprText:String;
  SavedVariables:PRexxVariable;
- ExposedVariable:PRexxVariable;
+ VariableEntry:PRexxVariable;
+ ExposedHead,ExposedEntry,NextExposed:PExposedVariable;
  SavedArgs,SavedInvokeArgs:Array[1..MaxRoutineArgs]of String;
- ExposeNames,ExposeValues:Array[1..MaxRoutineArgs]of String;
 Begin
  Name:=StrToUpper(Clean(Name));LabelLine:=FindRoutineLabel(Name);
  If LabelLine=0Then Begin CallRoutine:=Name;Exit;End;
@@ -2088,27 +2094,37 @@ Begin
 
  J:=LabelLine+1;
  While(J<=EndLine)and(Clean(PA[J]^)='')Do Inc(J);
- ProcedureText:='';HasProcedure:=False;ExposeCount:=0;
+ ProcedureText:='';HasProcedure:=False;ExposedHead:=Nil;
  If(J<=EndLine)and WordStart(Clean(PA[J]^),'PROCEDURE')Then Begin
   HasProcedure:=True;ProcedureText:=Clean(Copy(Clean(PA[J]^),10,255));
   If WordStart(ProcedureText,'EXPOSE')Then Begin
    ProcedureText:=Clean(Copy(ProcedureText,7,255));
-   While(ProcedureText<>'')and(ExposeCount<MaxRoutineArgs)Do Begin
-    K:=System.Pos(' ',ProcedureText);
-    If K=0Then Begin ExposeName:=ProcedureText;ProcedureText:='';End
-     Else Begin ExposeName:=Copy(ProcedureText,1,K-1);Delete(ProcedureText,1,K);ProcedureText:=Clean(ProcedureText);End;
-    Inc(ExposeCount);ExposeNames[ExposeCount]:=StrToUpper(Clean(ExposeName));
+   While ProcedureText<>''Do Begin
+    K:=1;
+    While(K<=Length(ProcedureText))and not(ProcedureText[K]in[' ',#9])Do Inc(K);
+    ExposeName:=Copy(ProcedureText,1,K-1);
+    Delete(ProcedureText,1,K-1);
+    While(Length(ProcedureText)>0)and(ProcedureText[1]in[' ',#9])Do
+     Delete(ProcedureText,1,1);
+    If ExposeName<>''Then Begin
+     New(ExposedEntry);
+     ExposedEntry^.Name:=StrToUpper(ExposeName);
+     ExposedEntry^.Value:='';
+     ExposedEntry^.Next:=ExposedHead;
+     ExposedHead:=ExposedEntry;
+    End;
    End;
   End;
  End;
 
  If HasProcedure Then Begin
   SavedVariables:=Variables;Variables:=Nil;
-  For K:=1 To ExposeCount Do Begin
-   ExposeValues[K]:='';
-   ExposedVariable:=VarFind(SavedVariables,ExposeNames[K]);
-   If ExposedVariable<>Nil Then ExposeValues[K]:=ExposedVariable^.Value;
-   VarSet(ExposeNames[K],ExposeValues[K]);
+  ExposedEntry:=ExposedHead;
+  While ExposedEntry<>Nil Do Begin
+   VariableEntry:=VarFind(SavedVariables,ExposedEntry^.Name);
+   If VariableEntry<>Nil Then ExposedEntry^.Value:=VariableEntry^.Value;
+   VarSet(ExposedEntry^.Name,ExposedEntry^.Value);
+   ExposedEntry:=ExposedEntry^.Next;
   End;
  End;
 
@@ -2117,12 +2133,26 @@ Begin
  CallRoutine:=RoutineResult;
 
  If HasProcedure Then Begin
-  For K:=1 To ExposeCount Do Begin
-   ExposedVariable:=VarFind(Variables,ExposeNames[K]);
-   If ExposedVariable<>Nil Then ExposeValues[K]:=ExposedVariable^.Value Else ExposeValues[K]:='';
+  ExposedEntry:=ExposedHead;
+  While ExposedEntry<>Nil Do Begin
+   VariableEntry:=VarFind(Variables,ExposedEntry^.Name);
+   If VariableEntry<>Nil Then ExposedEntry^.Value:=VariableEntry^.Value
+    Else ExposedEntry^.Value:='';
+   ExposedEntry:=ExposedEntry^.Next;
   End;
   FreeVariables(Variables);Variables:=SavedVariables;
-  For K:=1 To ExposeCount Do VarSet(ExposeNames[K],ExposeValues[K]);
+  ExposedEntry:=ExposedHead;
+  While ExposedEntry<>Nil Do Begin
+   VarSet(ExposedEntry^.Name,ExposedEntry^.Value);
+   ExposedEntry:=ExposedEntry^.Next;
+  End;
+ End;
+
+ ExposedEntry:=ExposedHead;
+ While ExposedEntry<>Nil Do Begin
+  NextExposed:=ExposedEntry^.Next;
+  Dispose(ExposedEntry);
+  ExposedEntry:=NextExposed;
  End;
 
  CurrentArgCount:=SavedArgCount;InvokeArgCount:=SavedInvokeCount;
