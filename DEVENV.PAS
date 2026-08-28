@@ -69673,17 +69673,19 @@ Var
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  InstructionIP := P.CPU.IP;
- If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = $9000) And
-    (P.CPU.IP >= $0600) And (P.CPU.IP <= $0640) And
+ If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = $14F1) And
+   (P.CPU.IP >= $007E) And (P.CPU.IP <= $0084) And
     (EmuSITraceCount < 2000) Then Begin
   {$I-} Assign(LogF_Dbg, 'EMUSI.LOG'); Append(LogF_Dbg);
   If IOResult <> 0 Then Begin Assign(LogF_Dbg, 'EMUSI.LOG'); Rewrite(LogF_Dbg); End;
   WriteLn(LogF_Dbg, 'CS:IP=', P.CPU.Segs.CS, ':', P.CPU.IP,
    ' OP=', Emu_FetchByte(P.CPU, 0),
+   ' DX=', P.CPU.Regs.DX, ' CX=', P.CPU.Regs.CX,
+   ' ZF=', Ord(EFG_ZF In P.CPU.Flags.s),
+   ' CF=', Ord(EFG_CF In P.CPU.Flags.s),
    ' SI=', P.CPU.Regs.SI, ' ESI=', P.CPU.Regs.ESI,
    ' BP=', P.CPU.Regs.BP, ' DS=', P.CPU.Segs.DS,
-   ' SS=', P.CPU.Segs.SS, ' AX=', P.CPU.Regs.AX,
-   ' DX=', P.CPU.Regs.DX);
+   ' SS=', P.CPU.Segs.SS, ' AX=', P.CPU.Regs.AX);
   Close(LogF_Dbg); {$I+} If IOResult <> 0 Then ;
   Inc(EmuSITraceCount);
  End;
