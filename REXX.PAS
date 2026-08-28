@@ -99,10 +99,17 @@ Var
  SignalTargetLine:Integer;
  SignalHalt,SignalNoValue,SignalError,SignalSyntax:Boolean;
  SignalHaltName,SignalNoValueName,SignalErrorName,SignalSyntaxName:String[64];
+ CurrentConditionName:String[16];
+ CurrentConditionDescription:String;
+ CurrentConditionInstruction:String[8];
+ CurrentConditionStatus:String[8];
  CurrentAddress,PreviousAddress:String[64];
  CharInNames:Array[1..MaxRoutineArgs]of String;
  CharInPositions:Array[1..MaxRoutineArgs]of LongInt;
  CharInStreamCount:Integer;
+ CharOutNames:Array[1..MaxRoutineArgs]of String;
+ CharOutPositions:Array[1..MaxRoutineArgs]of LongInt;
+ CharOutStreamCount:Integer;
 
 Function LTrim(S:String):String;
 Var
@@ -343,6 +350,22 @@ Begin
  BinaryToHex:=ResultText;
 End;
 
+Function CharacterToHex(SourceText:String):String;
+Const HexDigits:Array[0..15]of Char='0123456789ABCDEF';
+Var J,ByteValue:Integer;ResultText:String;
+Begin
+ ResultText:='';J:=1;
+ { Deux caracteres sont produits par octet. Une String Turbo Pascal ne peut
+   contenir que 255 caracteres, donc au plus 127 octets peuvent etre rendus
+   sans couper une paire hexadecimale. }
+ While(J<=Length(SourceText))and(Length(ResultText)<=253)Do Begin
+  ByteValue:=Ord(SourceText[J]);
+  ResultText:=ResultText+HexDigits[ByteValue div 16]+HexDigits[ByteValue mod 16];
+  Inc(J);
+ End;
+ CharacterToHex:=ResultText;
+End;
+
 Procedure BeepSound(Frequency,Duration:LongInt;Var ResultValue:RexxValue);
 Begin
  If Frequency<37Then Frequency:=37;
@@ -432,6 +455,163 @@ Begin
  ChangeString:=ResultText+RemainingText;
 End;
 
+Function CompareText(LeftText,RightText,PadText:String):Integer;
+Var J,CompareLength:Integer;LeftChar,RightChar,PadChar:Char;
+Begin
+ If PadText=''Then PadChar:=' ' Else PadChar:=PadText[1];
+ If Length(LeftText)>Length(RightText)Then CompareLength:=Length(LeftText)
+  Else CompareLength:=Length(RightText);
+ For J:=1 To CompareLength Do Begin
+  If J<=Length(LeftText)Then LeftChar:=LeftText[J] Else LeftChar:=PadChar;
+  If J<=Length(RightText)Then RightChar:=RightText[J] Else RightChar:=PadChar;
+  If LeftChar<>RightChar Then Begin CompareText:=J;Exit;End;
+ End;
+ CompareText:=0;
+End;
+
+Procedure ConditionValue(OptionText:String;Var ResultValue:RexxValue);
+Var OptionCode:Char;
+Begin
+ { CONDITION ne decrit que la condition qui a effectivement transfere le
+   controle au gestionnaire courant. Armer un piege avec SIGNAL ON ne suffit
+   donc pas a creer une condition. }
+ If CurrentConditionName=''Then Begin
+  RVText('',ResultValue);Exit;
+ End;
+ OptionText:=StrToUpper(Clean(OptionText));
+ If OptionText=''Then OptionCode:='I'Else OptionCode:=OptionText[1];
+ Case OptionCode Of
+  'C':RVText(CurrentConditionName,ResultValue);
+  'D':RVText(CurrentConditionDescription,ResultValue);
+  'I':RVText(CurrentConditionInstruction,ResultValue);
+  'S':RVText(CurrentConditionStatus,ResultValue);
+ Else
+  RVText('',ResultValue);
+ End;
+End;
+
+Function CopiesText(SourceText:String;Count:LongInt):String;
+Var ResultText:String;
+Begin
+ ResultText:='';
+ If(Count<=0)or(SourceText='')Then Begin CopiesText:=ResultText;Exit;End;
+ { Une String Turbo Pascal est limitee a 255 caracteres. On construit donc
+   autant de copies completes que le type de retour peut en contenir. }
+ While(Count>0)and(Length(ResultText)+Length(SourceText)<=255)Do Begin
+  ResultText:=ResultText+SourceText;Dec(Count);
+ End;
+ CopiesText:=ResultText;
+End;
+
+Function CountStringOccurrences(Needle,SourceText:String):LongInt;
+Var MatchPosition:Integer;OccurrenceCount:LongInt;
+Begin
+ OccurrenceCount:=0;
+ If Needle=''Then Begin CountStringOccurrences:=0;Exit;End;
+ MatchPosition:=System.Pos(Needle,SourceText);
+ While MatchPosition>0Do Begin
+  Inc(OccurrenceCount);
+  { La recherche reprend apres toute l'occurrence trouvee: les occurrences
+    qui se chevauchent ne sont pas comptees par COUNTSTR. }
+  Delete(SourceText,1,MatchPosition+Length(Needle)-1);
+  MatchPosition:=System.Pos(Needle,SourceText);
+ End;
+ CountStringOccurrences:=OccurrenceCount;
+End;
+
+Procedure CharacterToDecimal(SourceText:String;CharacterCount:LongInt;
+ CountSpecified:Boolean;Var ResultValue:RexxValue);
+Var J,FirstCharacter:Integer;DecimalValue,SignValue:Real;
+Begin
+ If SourceText=''Then Begin RVNum(0,ResultValue);Exit;End;
+ If CountSpecified Then Begin
+  If CharacterCount<=0Then Begin RVNum(0,ResultValue);Exit;End;
+  If CharacterCount<Length(SourceText)Then
+   FirstCharacter:=Length(SourceText)-CharacterCount+1
+  Else FirstCharacter:=1;
+ End Else FirstCharacter:=1;
+ DecimalValue:=0;
+ For J:=FirstCharacter To Length(SourceText)Do
+  DecimalValue:=DecimalValue*256+Ord(SourceText[J]);
+ If CountSpecified Then Begin
+  { Lorsque N depasse la longueur, le remplissage a gauche est fait avec
+    des octets nuls: la valeur reste donc positive. }
+  If CharacterCount<=Length(SourceText)Then
+   If Ord(SourceText[FirstCharacter])>=128Then Begin
+    SignValue:=1;
+    For J:=1 To CharacterCount Do SignValue:=SignValue*256;
+    DecimalValue:=DecimalValue-SignValue;
+   End;
+ End;
+ RVNum(DecimalValue,ResultValue);
+End;
+
+Function IsRexxNumber(SourceText:String;Var NumberValue:Real):Boolean;
+Var ErrorPosition:Integer;
+Begin
+ SourceText:=Clean(SourceText);
+ If SourceText=''Then Begin IsRexxNumber:=False;Exit;End;
+ Val(SourceText,NumberValue,ErrorPosition);
+ IsRexxNumber:=ErrorPosition=0;
+End;
+
+Procedure DataTypeValue(SourceText,TypeText:String;TypeSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var J,DigitsInGroup,WholeDigits:Integer;TypeCode:Char;Matches,SeenBlank:Boolean;
+ NumberValue,AbsoluteWhole:Real;
+Begin
+ If Not TypeSpecified Then Begin
+  If IsRexxNumber(SourceText,NumberValue)Then RVText('NUM',ResultValue)
+  Else RVText('CHAR',ResultValue);
+  Exit;
+ End;
+ TypeText:=StrToUpper(Clean(TypeText));
+ If TypeText=''Then Begin RVNum(0,ResultValue);Exit;End;
+ TypeCode:=TypeText[1];Matches:=SourceText<>'';
+ Case TypeCode Of
+  'A':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['a'..'z','A'..'Z','0'..'9'])Then Matches:=False;
+  'B':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['0','1'])Then Matches:=False;
+  'C','D':Matches:=False; { Les jeux DBCS ne sont pas geres par ce moteur. }
+  'L':For J:=1 To Length(SourceText)Do If Not(SourceText[J]in['a'..'z'])Then Matches:=False;
+  'M':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['a'..'z','A'..'Z'])Then Matches:=False;
+  'N':Matches:=IsRexxNumber(SourceText,NumberValue);
+  'S':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['a'..'z','A'..'Z','0'..'9','.','!','?',
+        '_','#','$','@'])Then Matches:=False;
+  'U':For J:=1 To Length(SourceText)Do If Not(SourceText[J]in['A'..'Z'])Then Matches:=False;
+  'W':Begin
+       Matches:=IsRexxNumber(SourceText,NumberValue);
+       If Matches Then Matches:=NumberValue=System.Trunc(NumberValue);
+       If Matches Then Begin
+        AbsoluteWhole:=Abs(NumberValue);WholeDigits:=1;
+        While AbsoluteWhole>=10Do Begin AbsoluteWhole:=AbsoluteWhole/10;Inc(WholeDigits);End;
+        Matches:=WholeDigits<=NumericDigitsValue;
+       End;
+      End;
+  'X':Begin
+       Matches:=True;DigitsInGroup:=0;SeenBlank:=False;
+       For J:=1 To Length(SourceText)Do Begin
+        If SourceText[J]=' 'Then Begin
+         If DigitsInGroup>0Then Begin
+          If SeenBlank and((DigitsInGroup mod 2)<>0)Then Matches:=False;
+          DigitsInGroup:=0;SeenBlank:=True;
+         End Else If Not SeenBlank Then Matches:=False;
+        End Else Begin
+         If Not(SourceText[J]in['0'..'9','a'..'f','A'..'F'])Then Matches:=False;
+         Inc(DigitsInGroup);
+        End;
+       End;
+       If(Length(SourceText)>0)and(DigitsInGroup=0)Then Matches:=False;
+       If SeenBlank and((DigitsInGroup mod 2)<>0)Then Matches:=False;
+      End;
+ Else Matches:=False;
+ End;
+ If Matches Then RVNum(1,ResultValue)Else RVNum(0,ResultValue);
+End;
+
 Procedure CharInValue(StreamName:String;StartPosition,RequestedCount:LongInt;
  UseStart,UseCount:Boolean;Var ResultValue:RexxValue);
 Var F:File;Buffer:Array[1..255]of Byte;J,StreamIndex,ReadCount,Count:Integer;
@@ -463,6 +643,55 @@ Begin
  End Else ReadCount:=0;
  Close(F);CharInPositions[StreamIndex]:=Position+ReadCount;
  RVText(ResultText,ResultValue);
+End;
+
+Procedure CharOutValue(StreamName,SourceText:String;StartPosition:LongInt;
+ UseStart:Boolean;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,WrittenCount:Integer;Position:LongInt;
+Begin
+ If StreamName=''Then Begin
+  Write(SourceText);RVNum(0,ResultValue);Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To CharOutStreamCount Do If CharOutNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If CharOutStreamCount<MaxRoutineArgs Then Begin
+   Inc(CharOutStreamCount);StreamIndex:=CharOutStreamCount;
+   CharOutNames[StreamIndex]:=StreamName;CharOutPositions[StreamIndex]:=0;
+  End Else StreamIndex:=1;
+ End;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin
+  {$I-}Rewrite(F,1);{$I+}
+  If IoResult<>0Then Begin RVNum(Length(SourceText),ResultValue);Exit;End;
+ End;
+ If UseStart Then Position:=StartPosition
+ Else Begin
+  Position:=CharOutPositions[StreamIndex];
+  If Position=0Then Position:=FileSize(F)+1;
+ End;
+ If Position<1Then Position:=1;
+ Seek(F,Position-1);WrittenCount:=0;
+ If SourceText<>''Then BlockWrite(F,SourceText[1],Length(SourceText),WrittenCount);
+ Close(F);CharOutPositions[StreamIndex]:=Position+WrittenCount;
+ RVNum(Length(SourceText)-WrittenCount,ResultValue);
+End;
+
+Procedure CharsValue(StreamName:String;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex:Integer;Position,Remaining:LongInt;
+Begin
+ If StreamName=''Then Begin
+  If KeyPressed Then RVNum(1,ResultValue)Else RVNum(0,ResultValue);
+  Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To CharInStreamCount Do If CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Position:=1 Else Position:=CharInPositions[StreamIndex];
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin RVNum(0,ResultValue);Exit;End;
+ Remaining:=FileSize(F)-(Position-1);Close(F);
+ If Remaining<0Then Remaining:=0;
+ RVNum(Remaining,ResultValue);
 End;
 
 Function CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
@@ -583,15 +812,16 @@ Begin
    11:RVText(ChangeString(A.Text,B.Text,D.Text),ResultValue); { CHANGESTR }
    12:CharInValue(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
     InvokeArgCount>1,InvokeArgCount>2,ResultValue); { CHARIN }
-   13:FunctionNotImplemented(FunctionByte,ResultValue); { CHAROUT }
-   14:FunctionNotImplemented(FunctionByte,ResultValue); { CHARS }
-   15:FunctionNotImplemented(FunctionByte,ResultValue); { COMPARE }
-   16:FunctionNotImplemented(FunctionByte,ResultValue); { CONDITION }
-   17:FunctionNotImplemented(FunctionByte,ResultValue); { COPIES }
-   18:FunctionNotImplemented(FunctionByte,ResultValue); { COUNTSTR }
-   19:FunctionNotImplemented(FunctionByte,ResultValue); { C2D }
-   20:FunctionNotImplemented(FunctionByte,ResultValue); { C2X }
-   21:FunctionNotImplemented(FunctionByte,ResultValue); { DATATYPE }
+   13:CharOutValue(A.Text,B.Text,System.Trunc(D.Number),InvokeArgCount>2,ResultValue); { CHAROUT }
+   14:CharsValue(A.Text,ResultValue); { CHARS }
+   15:RVNum(CompareText(A.Text,B.Text,D.Text),ResultValue); { COMPARE }
+   16:ConditionValue(A.Text,ResultValue); { CONDITION }
+   17:RVText(CopiesText(A.Text,System.Trunc(B.Number)),ResultValue); { COPIES }
+   18:RVNum(CountStringOccurrences(A.Text,B.Text),ResultValue); { COUNTSTR }
+   19:CharacterToDecimal(A.Text,System.Trunc(B.Number),InvokeArgCount>1,
+    ResultValue); { C2D }
+   20:RVText(CharacterToHex(A.Text),ResultValue); { C2X }
+   21:DataTypeValue(A.Text,B.Text,InvokeArgCount>1,ResultValue); { DATATYPE }
    22:FunctionNotImplemented(FunctionByte,ResultValue); { DATE }
    23:FunctionNotImplemented(FunctionByte,ResultValue); { DELSTR }
    24:FunctionNotImplemented(FunctionByte,ResultValue); { DELWORD }
@@ -1408,8 +1638,11 @@ Procedure ExecuteCommand;Begin
  NumericDigitsValue:=9;NumericFuzzValue:=0;NumericFormValue:='SCIENTIFIC';
  SignalTargetLine:=0;SignalHalt:=False;SignalNoValue:=False;SignalError:=False;SignalSyntax:=False;
  SignalHaltName:='HALT';SignalNoValueName:='NOVALUE';SignalErrorName:='ERROR';SignalSyntaxName:='SYNTAX';
+ CurrentConditionName:='';CurrentConditionDescription:='';
+ CurrentConditionInstruction:='';CurrentConditionStatus:='';
  CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
  CharInStreamCount:=0;
+ CharOutStreamCount:=0;
  If NumberLine>0Then ExecRange(1,NumberLine);
  FreeVariables(Variables);
 End;
