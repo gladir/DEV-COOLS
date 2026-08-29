@@ -5132,6 +5132,12 @@ Const
  WIN16_MAX_SEGS       = 64;
  WIN16_MAX_TRAP_SLOTS = 128;
  WIN16_TRAP_SLOT_SIZE = 5;  { CD F8 (INT prive) + index de slot (2 octets) + CB (RETF) }
+ { Chantier Windows 16 bits, Stage 6 : fenetre reellement visible -        }
+ { classes/fenetres/file de messages, un seul programme charge a la fois  }
+ { (meme limitation deja assumee que Win16_ImportModIdx[] etc.). }
+ WIN16_MAX_WNDCLASSES = 8;
+ WIN16_MAX_WINDOWS    = 8;
+ WIN16_MAX_MSGQUEUE   = 32;
 
 Const
  LXOBJ_READABLE   = $0001;
@@ -6356,7 +6362,36 @@ Var
  Win16_RsrcTabAbsOfs  : LongInt;         { 0 = pas de table de ressources}
  Win16_LastRsrcFileOfs, Win16_LastRsrcLen: LongInt; { staging FindResource }
  Win16_LastRsrcFound  : Boolean;         { (Stage 5, un seul "handle").   }
+ Win16_DebugMsg       : String;          { canal de diagnostic reutilisable}
+                                          { (Stage 6) - WIN16RUN l'affiche  }
+                                          { et le vide apres chaque pas.    }
  Win16_LastError      : String;
+ { Chantier Windows 16 bits, Stage 6 (2026-08-29) : classes de fenetre,    }
+ { fenetres et file de messages REELLES - tableaux paralleles de taille    }
+ { fixe, meme convention que Win16_ImportModIdx[]/etc. plus haut. }
+ Win16_WndClassCount   : Integer;
+ Win16_WndClassName    : Array[0..WIN16_MAX_WNDCLASSES - 1] Of String;
+ Win16_WndClassProcSeg : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
+ Win16_WndClassProcOfs : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
+ Win16_WndClassBg      : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
+ Win16_WindowCount     : Integer;
+ Win16_WindowHWnd      : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
+ Win16_WindowClassIdx  : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_WindowTitle     : Array[0..WIN16_MAX_WINDOWS - 1] Of String;
+ Win16_WindowX         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_WindowY         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_WindowW         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_WindowH         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_WindowNeedsPaint: Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
+ Win16_NextHWnd        : Word;
+ Win16_MsgQueueHWnd    : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
+ Win16_MsgQueueMsg     : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
+ Win16_MsgQueueWParam  : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
+ Win16_MsgQueueLParamLo: Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
+ Win16_MsgQueueLParamHi: Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
+ Win16_MsgQueueHead    : Integer;
+ Win16_MsgQueueTail    : Integer;
+ Win16_MsgQueueCount   : Integer;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
  EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
@@ -36840,6 +36875,14 @@ Begin
  { precedents. }
  Win16_SegCount := Hdr.ne_cseg;
  Win16_ImportSlotCount := 0;
+ { Chantier Stage 6 : classes/fenetres/file de messages remises a zero a   }
+ { chaque chargement (meme discipline que Win16_ImportSlotCount ci-dessus)}
+ Win16_WndClassCount := 0;
+ Win16_WindowCount := 0;
+ Win16_NextHWnd := 1;
+ Win16_MsgQueueHead := 0;
+ Win16_MsgQueueTail := 0;
+ Win16_MsgQueueCount := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -37312,6 +37355,96 @@ Begin
  Win16_LastError := 'Appel non supporte : ' + ModName + '.' + IntToStr(Ordinal);
 End;
 
+{ Chantier Windows 16 bits, Stage 6 (2026-08-29) : lit une chaine ANSI     }
+{ terminee par NUL depuis la memoire EMULEE (donnees RUNTIME du           }
+{ programme - a ne pas confondre avec Win16_FindResourceGeneric qui lit   }
+{ depuis le FICHIER). Utilisee par RegisterClass/CreateWindow pour lire   }
+{ les vrais noms de classe/titres passes par le programme. }
+Function Win16_ReadGuestString(Var C: TEmuCPU; Seg, Ofs: Word): String;
+Var
+ S: String;
+ I: Integer;
+ B: Byte;
+Begin
+ S := '';
+ For I := 0 To 254 Do Begin
+  B := Emu_ReadByte(C, Seg, Word(Ofs + I));
+  If B = 0 Then Break;
+  S := S + Chr(B);
+ End;
+ Win16_ReadGuestString := S;
+End;
+
+{ Ecrit un caractere a une position ARBITRAIRE (Row,Col) de la grille de   }
+{ texte du panneau - aucune primitive EmuVScr_* existante ne le permet     }
+{ (elles n'ecrivent qu'a la position courante du curseur, voir            }
+{ EmuVScr_PutChar) ; meme motif direct sur P.VRAM que le reste du fichier. }
+Procedure Win16_PutCharAt(Var P: TEmulatorPanel; Row, Col: Integer; Ch: Char; Fg, Bg: Byte);
+Begin
+ If (Row < 0) Or (Row >= P.Rows) Or (Col < 0) Or (Col >= P.Cols) Then Exit;
+ P.VRAM[Row, Col].Ch := Ch;
+ P.VRAM[Row, Col].Fg := Fg;
+ P.VRAM[Row, Col].Bg := Bg;
+ P.NeedRepaint := True;
+End;
+
+{ Dessine un cadre de fenetre ASCII simple (+/-/|) avec titre. Conversion  }
+{ pixels virtuels -> cellules texte : 8 pixels/colonne, 16 pixels/ligne    }
+{ (convention VGA texte mode classique - voir GetDeviceCaps, GDI ordinal   }
+{ 80, HORZRES=640/VERTRES=400 sur la grille 80x25 existante = rapport      }
+{ EXACT). AUCUNE pretention de ressembler a une vraie fenetre Windows -    }
+{ juste rendre visible qu'une fenetre existe et ou elle se trouve. }
+Procedure Win16_DrawWindowFrame(Var P: TEmulatorPanel; WIndex: Integer);
+Var
+ R1, C1, R2, C2: Integer;
+ R, C: Integer;
+ TitleStr: String;
+ I: Integer;
+Begin
+ If (WIndex < 0) Or (WIndex >= Win16_WindowCount) Then Exit;
+ C1 := Win16_WindowX[WIndex] Div 8;
+ R1 := Win16_WindowY[WIndex] Div 16;
+ C2 := (Win16_WindowX[WIndex] + Win16_WindowW[WIndex]) Div 8;
+ R2 := (Win16_WindowY[WIndex] + Win16_WindowH[WIndex]) Div 16;
+ If C2 <= C1 Then C2 := C1 + 1;
+ If R2 <= R1 Then R2 := R1 + 1;
+ Win16_PutCharAt(P, R1, C1, '+', 15, 0);
+ Win16_PutCharAt(P, R1, C2, '+', 15, 0);
+ Win16_PutCharAt(P, R2, C1, '+', 15, 0);
+ Win16_PutCharAt(P, R2, C2, '+', 15, 0);
+ For C := C1 + 1 To C2 - 1 Do Begin
+  Win16_PutCharAt(P, R1, C, '-', 15, 0);
+  Win16_PutCharAt(P, R2, C, '-', 15, 0);
+ End;
+ For R := R1 + 1 To R2 - 1 Do Begin
+  Win16_PutCharAt(P, R, C1, '|', 15, 0);
+  Win16_PutCharAt(P, R, C2, '|', 15, 0);
+ End;
+ TitleStr := ' ' + Win16_WindowTitle[WIndex] + ' ';
+ C := C1 + 2;
+ For I := 1 To Length(TitleStr) Do Begin
+  Win16_PutCharAt(P, R1, C, TitleStr[I], 15, 0);
+  Inc(C);
+  If C >= C2 Then Break;
+ End;
+End;
+
+{ Poste un message dans la file circulaire Win16_MsgQueue (Stage 6b/6d/6e  }
+{ - deja cablee ici puisque WM_CREATE, poste au Stage 6b, en a besoin).    }
+{ Simplification documentee : file PLEINE = message silencieusement       }
+{ perdu (jamais observe en pratique, taille 32, un seul programme). }
+Procedure Win16_PostMessage(HWnd, Msg, WParam, LParamLo, LParamHi: Word);
+Begin
+ If Win16_MsgQueueCount >= WIN16_MAX_MSGQUEUE Then Exit;
+ Win16_MsgQueueHWnd[Win16_MsgQueueTail] := HWnd;
+ Win16_MsgQueueMsg[Win16_MsgQueueTail] := Msg;
+ Win16_MsgQueueWParam[Win16_MsgQueueTail] := WParam;
+ Win16_MsgQueueLParamLo[Win16_MsgQueueTail] := LParamLo;
+ Win16_MsgQueueLParamHi[Win16_MsgQueueTail] := LParamHi;
+ Win16_MsgQueueTail := (Win16_MsgQueueTail + 1) Mod WIN16_MAX_MSGQUEUE;
+ Inc(Win16_MsgQueueCount);
+End;
+
 { Dispatcher reel des appels KERNEL/USER/GDI, atteint via le Case $F8 de   }
 { Emu_DoInt (voir plus loin dans ce fichier) - Slot identifie la paire     }
 { (Module, Ordinal) resolue au chargement (Win16_ImportModIdx/Ordinal/    }
@@ -37351,6 +37484,13 @@ Var
  LRBuf: Array[0..4095] Of Byte;
  LRI: Integer;
  GDIIdx: Word;
+ RCWndClassSeg, RCWndClassOfs: Word;
+ RCNameSeg, RCNameOfs: Word;
+ RCIdx: Integer;
+ CWClassSeg, CWClassOfs, CWTitleSeg, CWTitleOfs: Word;
+ CWX, CWY, CWW, CWH: Word;
+ CWClassStr, CWTitleStr: String;
+ CWClassIdx, CWI, CWIdx: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -37702,29 +37842,97 @@ Begin
    End;
    57: Begin
     { RegisterClass(lpWndClass):atom - ordinal VERIFIE via user.exe16.spec.}
-    { Prend un seul pointeur far vers une structure WNDCLASS (2 mots :     }
-    { segment puis offset, comme tout pointeur far pousse par valeur).     }
-    { Creation de fenetre/rendu GDI reel HORS DE PORTEE (stretch goal      }
-    { Stage 6) - simplification DOCUMENTEE : ne parse PAS la structure     }
-    { WNDCLASS, retourne juste un atome synthetique non-nul (succes). Le   }
-    { code appelant ne fait typiquement que verifier "non-nul" avant de    }
-    { continuer vers CreateWindow (qui re-passe le NOM de la classe, pas   }
-    { cet atome, pour la retrouver - la valeur exacte importe rarement). }
-    P.CPU.Regs.AX := 1;
+    { Chantier Stage 6 (2026-08-29) : lit REELLEMENT la structure WNDCLASS }
+    { (26 octets, layout NE reel - style:Word @0, lpfnWndProc:far @2       }
+    { (offset puis segment), cbClsExtra:Word @6, cbWndExtra:Word @8,       }
+    { hInstance:Word @10, hIcon:Word @12, hCursor:Word @14,                }
+    { hbrBackground:Word @16, lpszMenuName:far @18, lpszClassName:far      }
+    { @22) et l'ajoute a Win16_WndClasses[] - necessaire pour que          }
+    { CreateWindow puisse retrouver la VRAIE adresse de la WNDPROC du      }
+    { programme (Stage 6b l'appellera reellement pour WM_CREATE/WM_PAINT/  }
+    { etc., au lieu du stub actuel qui l'ignorait completement). }
+    RCWndClassSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    RCWndClassOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_WndClassCount < WIN16_MAX_WNDCLASSES Then Begin
+     RCIdx := Win16_WndClassCount;
+     Win16_WndClassProcOfs[RCIdx] := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 2));
+     Win16_WndClassProcSeg[RCIdx] := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 4));
+     Win16_WndClassBg[RCIdx] := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 16));
+     RCNameOfs := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 22));
+     RCNameSeg := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 24));
+     Win16_WndClassName[RCIdx] := Win16_ReadGuestString(P.CPU, RCNameSeg, RCNameOfs);
+     Win16_DebugMsg := 'RegisterClass name="' + Win16_WndClassName[RCIdx] +
+      '" proc=' + HexWord(Win16_WndClassProcSeg[RCIdx]) + ':' +
+      HexWord(Win16_WndClassProcOfs[RCIdx]) +
+      ' nameptr=' + HexWord(RCNameSeg) + ':' + HexWord(RCNameOfs);
+     Inc(Win16_WndClassCount);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0; { echec honnete : trop de classes (limite WIN16_MAX_WNDCLASSES) }
     ArgWords := 2;
    End;
    41: Begin
     { CreateWindow(lpClassName, lpWindowName, dwStyle, x, y, nWidth,        }
     { nHeight, hWndParent, hMenu, hInstance, lpParam):HWND - ordinal        }
     { VERIFIE via user.exe16.spec (str+str+long+4 mots signes+3 mots+       }
-    { segptr = 15 mots). Creation de fenetre/rendu GDI reel HORS DE         }
-    { PORTEE (stretch goal Stage 6, jamais commence) - simplification       }
-    { DOCUMENTEE : ne parse AUCUN argument, retourne juste un HWND          }
-    { synthetique non-nul (succes) pour laisser le programme continuer      }
-    { vers ShowWindow/UpdateWindow/GetMessage. AUCUNE fenetre reelle        }
-    { n'existe - tout code qui tenterait de la dessiner s'arretera          }
-    { honnetement a son tour. }
-    P.CPU.Regs.AX := 1;
+    { segptr = 15 mots). Chantier Stage 6 (2026-08-29) : lit REELLEMENT     }
+    { lpClassName/lpWindowName/x/y/nWidth/nHeight, retrouve la classe       }
+    { deja enregistree par nom (RegisterClass, ordinal 57 ci-dessus) et     }
+    { cree une VRAIE entree Win16_Windows[] avec un HWND reel. CW_USEDEFAULT}
+    { ($8000, mot signe -32768) est traite en choisissant une position/     }
+    { taille par defaut plutot que de le prendre litteralement. Rendu       }
+    { GDI reel HORS DE PORTEE (Stage 6c, pas encore fait) - seul le CADRE   }
+    { de fenetre (bordure+titre) est dessine ici via                       }
+    { Win16_DrawWindowFrame ; WM_CREATE synchrone sera ajoute au Stage 6b   }
+    { (necessite Win16_CallWndProc, pas encore ecrit). }
+    { Pousse gauche-a-droite, chaque pointeur far pousse segment PUIS       }
+    { offset (offset finit "au sommet"/adresse la plus basse, coherent     }
+    { avec le layout memoire reel d'un pointeur far - meme convention      }
+    { deja verifiee par LoadString/FindResource) : lpClassName pousse en   }
+    { 1er (le plus profond) -> segment=SP+32/offset=SP+30. }
+    CWClassSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 32));
+    CWClassOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 30));
+    CWTitleSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 28));
+    CWTitleOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 26));
+    CWX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20));
+    CWY := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18));
+    CWW := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    CWH := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    CWClassStr := Win16_ReadGuestString(P.CPU, CWClassSeg, CWClassOfs);
+    CWTitleStr := Win16_ReadGuestString(P.CPU, CWTitleSeg, CWTitleOfs);
+    CWClassIdx := -1;
+    For CWI := 0 To Win16_WndClassCount - 1 Do
+     If UpCaseStr(Win16_WndClassName[CWI]) = UpCaseStr(CWClassStr) Then CWClassIdx := CWI;
+    Win16_DebugMsg := 'CreateWindow class="' + CWClassStr + '" (ptr=' +
+     HexWord(CWClassSeg) + ':' + HexWord(CWClassOfs) + ') title="' +
+     CWTitleStr + '" x=' + IntToStr(SmallInt(CWX)) + ' y=' +
+     IntToStr(SmallInt(CWY)) + ' w=' + IntToStr(SmallInt(CWW)) + ' h=' +
+     IntToStr(SmallInt(CWH)) + ' foundIdx=' + IntToStr(CWClassIdx) +
+     ' knownClasses=' + IntToStr(Win16_WndClassCount);
+    If (CWClassIdx < 0) Or (Win16_WindowCount >= WIN16_MAX_WINDOWS) Then
+     P.CPU.Regs.AX := 0 { echec honnete : classe inconnue ou trop de fenetres }
+    Else Begin
+     CWIdx := Win16_WindowCount;
+     Win16_WindowHWnd[CWIdx] := Win16_NextHWnd;
+     Inc(Win16_NextHWnd);
+     Win16_WindowClassIdx[CWIdx] := CWClassIdx;
+     Win16_WindowTitle[CWIdx] := CWTitleStr;
+     { CW_USEDEFAULT = $8000 (mot signe -32768) : position/taille par      }
+     { defaut plausible plutot que la valeur litterale (qui placerait la   }
+     { fenetre hors de l'ecran virtuel 640x400). }
+     If CWX = $8000 Then CWX := 40;
+     If CWY = $8000 Then CWY := 40;
+     If (CWW = $8000) Or (CWW = 0) Then CWW := 320;
+     If (CWH = $8000) Or (CWH = 0) Then CWH := 240;
+     Win16_WindowX[CWIdx] := SmallInt(CWX);
+     Win16_WindowY[CWIdx] := SmallInt(CWY);
+     Win16_WindowW[CWIdx] := SmallInt(CWW);
+     Win16_WindowH[CWIdx] := SmallInt(CWH);
+     Win16_WindowNeedsPaint[CWIdx] := True;
+     Inc(Win16_WindowCount);
+     Win16_DrawWindowFrame(P, CWIdx);
+     P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
+    End;
     ArgWords := 15;
    End;
    66, 67: Begin
@@ -37755,7 +37963,7 @@ Begin
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
      0:  P.CPU.Regs.AX := 640;  { CXSCREEN }
-     1:  P.CPU.Regs.AX := 480;  { CYSCREEN }
+     1:  P.CPU.Regs.AX := 400;  { CYSCREEN - assorti a GetDeviceCaps VERTRES=400, Stage 6 }
      2, 21: P.CPU.Regs.AX := 16; { CXVSCROLL/CXHSCROLL }
      3, 20: P.CPU.Regs.AX := 16; { CYHSCROLL/CYVSCROLL }
      4:  P.CPU.Regs.AX := 18;   { CYCAPTION }
@@ -37769,7 +37977,7 @@ Begin
      12, 14: P.CPU.Regs.AX := 32; { CYICON/CYCURSOR }
      15: P.CPU.Regs.AX := 18;   { CYMENU }
      16: P.CPU.Regs.AX := 640;  { CXFULLSCREEN }
-     17: P.CPU.Regs.AX := 462;  { CYFULLSCREEN }
+     17: P.CPU.Regs.AX := 382;  { CYFULLSCREEN (400-18, assorti a CYSCREEN=400) }
      19: P.CPU.Regs.AX := 1;    { MOUSEPRESENT }
      28, 34: P.CPU.Regs.AX := 112; { CXMIN/CXMINTRACK }
      29, 35: P.CPU.Regs.AX := 27;  { CYMIN/CYMINTRACK }
@@ -37824,14 +38032,18 @@ Begin
     { WIN16RUN a montre CLOCK.EXE diviser par cette valeur dans son calcul  }
     { d'echelle, plantant sur une VRAIE division par zero cote 8086 des     }
     { que le 0 par defaut etait utilise comme denominateur) - valeurs       }
-    { plausibles d'un moniteur VGA standard 4:3 assorties a 640x480. }
+    { plausibles d'un moniteur VGA standard 4:3. VERTRES=400 (pas 480,      }
+    { ajuste au Stage 6) pour un rapport EXACT 8x16 pixels/cellule sur la   }
+    { grille de texte 80x25 existante (640/80=8, 400/25=16) - necessaire   }
+    { pour mapper les coordonnees GDI (TextOut/Rectangle/...) vers la      }
+    { grille sans arrondi, voir Win16_DrawWindowFrame. }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
      2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
      4:  P.CPU.Regs.AX := 210;  { HORZSIZE (mm) }
      6:  P.CPU.Regs.AX := 160;  { VERTSIZE (mm) }
      8:  P.CPU.Regs.AX := 640;  { HORZRES }
-     10: P.CPU.Regs.AX := 480;  { VERTRES }
+     10: P.CPU.Regs.AX := 400;  { VERTRES }
      12: P.CPU.Regs.AX := 1;    { BITSPIXEL (monochrome) }
      14: P.CPU.Regs.AX := 1;    { PLANES }
      24: P.CPU.Regs.AX := 2;    { NUMCOLORS }
@@ -39695,6 +39907,10 @@ Begin
    ' BP=', HexWord(P.CPU.Regs.BP), ' SP=', HexWord(P.CPU.Regs.SP),
    ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES),
    ' SS=', HexWord(P.CPU.Segs.SS), TrapAnnot);
+  If Win16_DebugMsg <> '' Then Begin
+   WriteLn(LogF, '    DEBUG: ', Win16_DebugMsg);
+   Win16_DebugMsg := '';
+  End;
  End;
  Case P.CPU.Fault Of
   sfNone:         FaultName := '(aucun - limite de ' + IntToStr(MaxSteps) + ' pas atteinte)';
