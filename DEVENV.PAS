@@ -6345,6 +6345,11 @@ Var
  Win16_ImportValue    : Array[0..WIN16_MAX_TRAP_SLOTS - 1] Of Word; { ordinal OU offset-nom selon IsOrd }
  Win16_EntryPointSeg, Win16_EntryPointOfs: Word;
  Win16_StackSeg, Win16_StackOfs: Word;
+ Win16_StackSize, Win16_HeapSize: Word;  { Hdr.ne_stack/ne_heap, pour le }
+                                          { demarrage reel (Stage 4).    }
+ Win16_HeapNext, Win16_HeapLimit: Word;  { bump allocator LocalAlloc,   }
+                                          { dans le segment autodata     }
+                                          { (Stage 5).                   }
  Win16_LastError      : String;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
@@ -36797,6 +36802,7 @@ Var
  RealLen: Word;
  RelocPos: LongInt;
  RelocCount: Word;
+ BssI: Word;
  Rec: Array[0..7] Of Byte;
  SrcType, FlagByte, TargetType, SegNum: Byte;
  Additive, IsList, Ok: Boolean;
@@ -36806,7 +36812,11 @@ Var
  ResolvedSeg, ResolvedOfs: Word;
  SegBuf: Array[0..65535] Of Byte;
  SegBufLen: Word;
+ AutoDataMinAlloc, AutoDataLimit: Word;
+ LongTmp: LongInt;
 Begin
+ AutoDataMinAlloc := 0;
+ AutoDataLimit := 0;
  Win16_LoadNE := False;
  Win16_LastError := '';
  If Not Win16_ReadHeader(Path, Hdr, HdrOfs, FSize) Then Begin
@@ -36839,8 +36849,17 @@ Begin
  End;
 
  { Passe 1 : allouer un segment reel pour chaque segment NE et copier ses  }
- { octets bruts (une entree DataOffsetSectors=0 est du BSS pur - laissee   }
- { telle quelle, deja $F6 partout grace a Emu_InitComputer). }
+ { octets bruts. BOGUE REEL trouve au Stage 5 (2026-08-29, via WIN16RUN    }
+ { sur un vrai CLOCK.EXE - voir project_devenv_win16.md) : la queue d'un   }
+ { segment au-dela de Seg.DataLength (BSS - variables statiques SANS       }
+ { valeur initiale dans le fichier, ex. DataOffsetSectors=0 = BSS pur) doit}
+ { TOUJOURS etre mise a zero par un vrai chargeur NE - laisser cette zone  }
+ { au filler $F6 d'Emu_InitComputer (comme le faisait ce code avant ce     }
+ { correctif) fait lire au programme une valeur ARBITRAIRE la ou il        }
+ { s'attend a un pointeur/compteur nul, ce qui a concretement fait sauter  }
+ { CLOCK.EXE dans de la memoire non initialisee ($F6F6:$F6F6, division par }
+ { zero) apres seulement 35 instructions - pas une limite du CPU emule,    }
+ { un vrai oubli de chargeur. }
  For I := 1 To Hdr.ne_cseg Do Begin
   Seek(F, HdrOfs + Hdr.ne_segtab + (I - 1) * 8);
   BlockRead(F, Seg, SizeOf(Seg), BytesRead);
@@ -36853,6 +36872,21 @@ Begin
   Win16_SegBase[I] := RealSegBase;
   RealLen := Seg.MinAlloc;
   If RealLen = 0 Then RealLen := $FFFF;
+  { BOGUE REEL trouve au Stage 5 (2026-08-29) : InitHeapSize (Hdr.ne_heap)  }
+  { est un tas AJOUTE PAR-DESSUS le segment de donnees automatique par un   }
+  { vrai chargeur NE (confirme - le champ documente "size in bytes of      }
+  { dynamic heap added to the data segment"), PAS deja inclus dans         }
+  { Seg.MinAlloc. Sans cette reserve, le segment suivant (alloue juste     }
+  { apres par ce meme allocateur bump) commencerait a l'INTERIEUR de       }
+  { l'espace theorique du tas local - un futur LocalAlloc (ou meme SP=0,   }
+  { voir plus bas) ecrirait alors dans la memoire d'un AUTRE segment. }
+  If I = Hdr.ne_autodata Then Begin
+   AutoDataMinAlloc := RealLen;
+   LongTmp := LongInt(RealLen) + Hdr.ne_heap;
+   If LongTmp > $FFFF Then LongTmp := $FFFF;
+   RealLen := Word(LongTmp);
+   AutoDataLimit := RealLen;
+  End;
   Win16_NextFreeSeg := Win16_NextFreeSeg + Word((LongInt(RealLen) + 15) Shr 4);
   If Seg.DataOffsetSectors <> 0 Then Begin
    FileOfs := LongInt(Seg.DataOffsetSectors) Shl Hdr.ne_align;
@@ -36867,6 +36901,12 @@ Begin
    End;
    For J := 0 To SegBufLen - 1 Do
     Emu_WriteByte(C, RealSegBase, Word(J), SegBuf[J]);
+   For BssI := SegBufLen To RealLen - 1 Do
+    Emu_WriteByte(C, RealSegBase, BssI, 0);
+  End Else Begin
+   { Segment BSS pur (aucune donnee en fichier) - zero-fill integral. }
+   For BssI := 0 To RealLen - 1 Do
+    Emu_WriteByte(C, RealSegBase, BssI, 0);
   End;
  End;
 
@@ -36961,9 +37001,54 @@ Begin
   Exit;
  End;
  Win16_StackSeg := Win16_SegBase[Hdr.ne_ss];
- Win16_StackOfs := Hdr.ne_sp;
+ { Convention documentee (Stage 5) : SP=0 dans l'en-tete, quand SS pointe  }
+ { sur le segment de donnees automatique, ne veut PAS dire "offset 0" -   }
+ { c'est un cas special signifiant "sommet du segment automatique complet }
+ { (donnees+BSS+tas)" - un vrai chargeur NE le detecte et pose SP au      }
+ { sommet REEL (AutoDataLimit ci-dessus), jamais a 0 litteral. }
+ If (Hdr.ne_sp = 0) And (Hdr.ne_ss = Hdr.ne_autodata) And (Hdr.ne_autodata >= 1) Then
+  Win16_StackOfs := AutoDataLimit
+ Else
+  Win16_StackOfs := Hdr.ne_sp;
+ Win16_StackSize := Hdr.ne_stack;
+ Win16_HeapSize := Hdr.ne_heap;
+ { Amorce du tas local (LocalAlloc, Stage 5) : demarre juste apres les     }
+ { donnees+BSS statiques du segment autodata, grandit vers le haut         }
+ { jusqu'a AutoDataLimit (deja reserve dans l'allocateur bump ci-dessus). }
+ If Hdr.ne_autodata >= 1 Then Begin
+  Win16_HeapNext := AutoDataMinAlloc;
+  Win16_HeapLimit := AutoDataLimit;
+ End Else Begin
+  Win16_HeapNext := 0;
+  Win16_HeapLimit := 0;
+ End;
 
  Win16_LoadNE := True;
+End;
+
+{ Chantier Windows 16 bits, Stage 4/5 : positionne les registres de         }
+{ demarrage REELS d'un programme Win16 (convention documentee - voir        }
+{ Raymond Chen, "How do 16-bit programs start up?" - deja utilisee/         }
+{ verifiee au Stage 3 via WIN16CALL) et saute au VRAI point d'entree du     }
+{ module (contrairement a WIN16CALL qui sautait directement au thunk        }
+{ InitTask). Factorisee ici pour que ShowEmulatorPanel (Stage 4) et le      }
+{ harnais de diagnostic WIN16RUN (Stage 5) partagent EXACTEMENT le meme     }
+{ code, plutot que 2 copies qui pourraient diverger silencieusement. }
+Procedure Win16_SetupEntryRegs(Var C: TEmuCPU);
+Begin
+ C.Regs.AX := 0;
+ C.Regs.BX := Win16_StackSize;
+ C.Regs.CX := Win16_HeapSize;
+ C.Regs.DX := 0;
+ C.Regs.SI := 0;
+ C.Regs.DI := 0;
+ C.Regs.BP := 0;
+ C.Segs.DS := Win16_StackSeg;
+ C.Segs.SS := Win16_StackSeg;
+ C.Regs.SP := Win16_StackOfs;
+ C.Segs.ES := 0;
+ C.Segs.CS := Win16_EntryPointSeg;
+ C.IP := Win16_EntryPointOfs;
 End;
 
 { Chantier Windows 16 bits, Stage 3 : arret propre et honnete sur un       }
@@ -36998,6 +37083,7 @@ Var
  IsOrd: Boolean;
  RetIP, RetCS: Word;
  ArgWords: Word;
+ LocalWBytes: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -37046,15 +37132,74 @@ Begin
     P.CPU.Regs.AX := $0002; { "Windows 2.0" : AL=2 AH=0 }
     ArgWords := 0;
    End;
+   5: Begin
+    { LocalAlloc(wFlags, wBytes):word - ordinal verifie via le fichier      }
+    { .spec public de Wine (krnl386.exe16.spec : "5 pascal -ret16           }
+    { LocalAlloc(word word) LocalAlloc16"). Convention pascal - arguments   }
+    { pousses gauche-a-droite, donc wBytes (2e param) est au sommet de la   }
+    { pile (SP+4, juste au-dessus de l'adresse de retour CS:IP) et wFlags   }
+    { (1er param) juste en-dessous (SP+6). Simplification DOCUMENTEE (meme  }
+    { esprit que les segments MOVEABLE/DISCARDABLE deja hors de portee) :   }
+    { le "handle" retourne est TOUJOURS directement l'offset reel du bloc   }
+    { (semantique LMEM_FIXED) - wFlags (MOVEABLE/ZEROINIT/...) est ignore.  }
+    { Bump allocator dans le tas local reserve par Win16_LoadNE - jamais    }
+    { libere (LocalFree non implante) : suffisant pour une premiere         }
+    { iteration reelle (Stage 5), a etendre si un vrai programme le exige.  }
+    LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0   { echec honnete : tas local epuise }
+    Else Begin
+     P.CPU.Regs.AX := Win16_HeapNext;
+     Win16_HeapNext := Win16_HeapNext + LocalWBytes;
+    End;
+    ArgWords := 2;
+   End;
+   30: Begin
+    { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
+    { + task.c, source publique) : bloque la tache appelante jusqu'a ce     }
+    { qu'une AUTRE tache appelle PostEvent pour elle (ordonnancement        }
+    { cooperatif Windows 2.x/3.x), sauf si un evenement est deja en         }
+    { attente (pTask->nEvents>0), auquel cas elle retourne FALSE            }
+    { IMMEDIATEMENT sans bloquer. VRAIE LIMITE DE CONCEPTION documentee :   }
+    { cet emulateur n'execute jamais qu'UNE seule tache Win16 a la fois     }
+    { (voir l'etat global Win16_* - meme limitation que LX_Mem/ELF64) -     }
+    { aucune autre tache ne peut donc JAMAIS appeler PostEvent, et un        }
+    { blocage reel bloquerait le programme pour toujours. Simplification    }
+    { choisie : toujours emprunter le chemin "evenement deja present"       }
+    { (retour FALSE immediat, sans jamais attendre) - n'affecte que le      }
+    { TIMING (equivalent a un vrai scheduler qui aurait poste l'evenement   }
+    { au tick suivant), jamais l'etat/les donnees du programme. }
+    P.CPU.Regs.AX := 0; { FALSE - evenement deja "present", pas d'attente }
+    ArgWords := 1;      { WaitEvent(hTask) : un seul parametre. }
+   End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
+    Exit;
+   End;
+  End;
+ End Else If ModIdx = 3 Then Begin { USER }
+  Case Ordinal Of
+   5: Begin
+    { InitApp(hInstance):bool - ordinal verifie via le fichier .spec public }
+    { de Wine (user.exe16.spec : "5 pascal -ret16 InitApp(word) InitApp16")}
+    { - deuxieme etape d'initialisation classique d'un programme Windows,  }
+    { explicitement anticipee dans le plan de ce chantier. D'apres la      }
+    { documentation SDK Windows historique (Petzold, "Programming          }
+    { Windows") : simple bookkeeping interne cote USER (traceurs de tache/ }
+    { d'instance), appelee UNE fois avant toute creation de fenetre -      }
+    { reussit TOUJOURS en pratique (echec seulement en cas de memoire      }
+    { epuisee, non modelise ici). Retourne juste TRUE. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   Else Begin
+    Win16_Halt(P, 'USER', Ordinal);
     Exit;
    End;
   End;
  End Else Begin
   Case ModIdx Of
    2: Win16_Halt(P, 'GDI', Ordinal);
-   3: Win16_Halt(P, 'USER', Ordinal);
    Else Win16_Halt(P, 'module #' + IntToStr(ModIdx), Ordinal);
   End;
   Exit;
@@ -38755,6 +38900,104 @@ Begin
  Emu_Done(P.CPU);
 End;
 
+{ Chantier Windows 16 bits, Stage 5 (2026-08-29) : WIN16RUN <chemin>        }
+{ [,maxpas] - contrairement a WIN16CALL (Stage 3, sautait directement au    }
+{ thunk InitTask), celui-ci saute au VRAI point d'entree (via                }
+{ Win16_SetupEntryRegs, la MEME routine que ShowEmulatorPanel/Stage 4) et    }
+{ trace pas a pas (WIN16RUN.LOG) chaque instruction executee - meme          }
+{ discipline "iteration sur cible reelle" que LOGDAEM.EXE pour OS/2 LX.      }
+{ Trace vers un FICHIER plutot que le Terminal : un arret honnete peut       }
+{ survenir apres seulement quelques dizaines de pas (observe : 35 pour       }
+{ CLOCK.EXE), mais l objectif est de pouvoir diagnostiquer un arret PLUS     }
+{ tardif sans etre limite par le defilement du panneau Terminal. }
+Procedure TermCmd_Win16Run(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ DEFAULT_MAX_STEPS = 200;
+Var
+ Path, MaxStr: String;
+ CommaPos, ErrCode: Integer;
+ MaxSteps, StepN: LongInt;
+ P: TEmulatorPanel;
+ LogF: Text;
+ PrevCS, PrevIP: Word;
+ Op: Byte;
+ FaultName: String;
+Begin
+ Path := TermTrim(ParamStr);
+ MaxSteps := DEFAULT_MAX_STEPS;
+ CommaPos := Pos(',', Path);
+ If CommaPos > 0 Then Begin
+  MaxStr := TermTrim(Copy(Path, CommaPos + 1, Length(Path) - CommaPos));
+  Path := TermTrim(Copy(Path, 1, CommaPos - 1));
+  Val(MaxStr, MaxSteps, ErrCode);
+  If (ErrCode <> 0) Or (MaxSteps <= 0) Then MaxSteps := DEFAULT_MAX_STEPS;
+ End;
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : WIN16RUN <chemin hote vers un .exe>[,maxpas]');
+  Exit;
+ End;
+ FillChar(P, SizeOf(P), 0);
+ Emu_InitComputer(P.CPU);
+ If Not P.CPU.MemReady Then Begin
+  TermAddLine(TP, 'WIN16RUN : memoire emulee non disponible.');
+  Exit;
+ End;
+ If Not Win16_LoadNE(P.CPU, Path) Then Begin
+  TermAddLine(TP, 'WIN16RUN : echec du chargement - ' + Win16_LastError);
+  Exit;
+ End;
+ Win16_SetupEntryRegs(P.CPU);
+ P.CPU.Fault := sfNone;
+ {$I-} Assign(LogF, 'WIN16RUN.LOG'); Rewrite(LogF); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'WIN16RUN : impossible de creer WIN16RUN.LOG.');
+  Emu_Done(P.CPU);
+  Exit;
+ End;
+ WriteLn(LogF, 'WIN16RUN ', Path, ' - point d''entree ',
+  HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP),
+  ' - max ', MaxSteps, ' pas');
+ WriteLn(LogF);
+ StepN := 0;
+ While (StepN < MaxSteps) And (P.CPU.Fault = sfNone) Do Begin
+  Inc(StepN);
+  PrevCS := P.CPU.Segs.CS;
+  PrevIP := P.CPU.IP;
+  Op := Emu_ReadByte(P.CPU, PrevCS, PrevIP);
+  Emu_StepOne(P);
+  WriteLn(LogF, StepN, ': ', HexWord(PrevCS), ':', HexWord(PrevIP),
+   ' op=', HexByte(Op),
+   ' AX=', HexWord(P.CPU.Regs.AX), ' BX=', HexWord(P.CPU.Regs.BX),
+   ' CX=', HexWord(P.CPU.Regs.CX), ' DX=', HexWord(P.CPU.Regs.DX),
+   ' SI=', HexWord(P.CPU.Regs.SI), ' DI=', HexWord(P.CPU.Regs.DI),
+   ' BP=', HexWord(P.CPU.Regs.BP), ' SP=', HexWord(P.CPU.Regs.SP),
+   ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES),
+   ' SS=', HexWord(P.CPU.Segs.SS));
+ End;
+ Case P.CPU.Fault Of
+  sfNone:         FaultName := '(aucun - limite de ' + IntToStr(MaxSteps) + ' pas atteinte)';
+  sfInvalidCode:  FaultName := 'opcode invalide/non decode';
+  sfEndProgram:   FaultName := 'fin de programme';
+  sfInvalidIntr:  FaultName := 'interruption invalide';
+  sfBreakPoint:   FaultName := 'point d''arret';
+  sfDivision0:    FaultName := 'division par zero';
+  Else            FaultName := 'code ' + IntToStr(P.CPU.Fault);
+ End;
+ WriteLn(LogF);
+ WriteLn(LogF, 'Arret apres ', StepN, ' pas : ', FaultName,
+  ' - CS:IP final=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+ { Win16_LastError porte le detail "Module.Ordinal" quand l arret vient de }
+ { Win16_Halt (appel KERNEL/USER/GDI pas encore implante) - vide sinon. }
+ If Win16_LastError <> '' Then
+  WriteLn(LogF, 'Detail : ', Win16_LastError);
+ Close(LogF);
+ TermAddLine(TP, 'WIN16RUN : ' + IntToStr(StepN) + ' pas executes, arret : ' + FaultName);
+ If Win16_LastError <> '' Then
+  TermAddLine(TP, '  ' + Win16_LastError);
+ TermAddLine(TP, '  Trace complete dans WIN16RUN.LOG');
+ Emu_Done(P.CPU);
+End;
+
 { LXLOAD <chemin> : appelle le vrai chargeur (Emu_LoadLX) et relit les     }
 { premiers octets de l objet de depart directement depuis LX_Mem, pour     }
 { verifier MECANIQUEMENT (sans avoir besoin d executer quoi que ce soit)   }
@@ -39809,6 +40052,8 @@ Begin
     TermCmd_Win16Load(TP, ParamStr)
    Else If CurrCmd = 'WIN16CALL' Then
     TermCmd_Win16Call(TP, ParamStr)
+   Else If CurrCmd = 'WIN16RUN' Then
+    TermCmd_Win16Run(TP, ParamStr)
    Else If CurrCmd = 'LXLOAD' Then
     TermCmd_LXLoad(TP, ParamStr)
    Else If CurrCmd = 'LXSTEP' Then
@@ -42453,13 +42698,14 @@ Begin
      CreateEmulatorTab(TempPath, '-COS2LX', '');
      NCActionOpenAssociated := True;
     End
-    { Chantier Windows 16 bits (2026-08-25, Stage 0) : un .EXE au format NE }
-    { (Windows 1.x/2.x/3.x - ex. un vrai CLOCK.EXE Windows 2.03) etait      }
-    { rejete silencieusement (NCEXE_OTHER, aucune branche Else) - meme      }
-    { symptome et meme premier correctif que le Stage 0 d OS/2 LX. }
+    { Chantier Windows 16 bits (2026-08-25/28, Stage 0->4) : un .EXE au    }
+    { format NE etait rejete silencieusement (NCEXE_OTHER, aucune branche  }
+    { Else) - Stage 0 a d abord ajoute un simple message, Stage 4 lance    }
+    { desormais reellement l emulateur (mode console texte uniquement -    }
+    { voir project_devenv_win16.md pour le perimetre). }
     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_WIN16) Then Begin
-     NCShowMessage('Executable Windows 16 bits detecte - execution non ' +
-      'encore supportee.', ncBrowse);
+     CreateEmulatorTab(TempPath, '-CWIN16', '');
+     NCActionOpenAssociated := True;
     End;
    End;
   End;
@@ -42488,11 +42734,11 @@ Begin
       CreateEmulatorTab(TempPath, '-COS2LX', '');
       NCActionOpenAssociated := True;
      End
-     { Chantier Windows 16 bits (2026-08-25, Stage 0) - voir le commentaire  }
-     { jumeau au site HPFS ci-dessus pour le contexte complet. }
+     { Chantier Windows 16 bits (2026-08-25/28, Stage 0->4) - voir le      }
+     { commentaire jumeau au site HPFS ci-dessus pour le contexte complet. }
      Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_WIN16) Then Begin
-      NCShowMessage('Executable Windows 16 bits detecte - execution non ' +
-       'encore supportee.', ncBrowse);
+      CreateEmulatorTab(TempPath, '-CWIN16', '');
+      NCActionOpenAssociated := True;
      End;
     End;
    End;
@@ -42544,11 +42790,11 @@ Begin
     CreateEmulatorTab(FullPath, '-COS2LX', '');
     NCActionOpenAssociated := True;
    End
-   { Chantier Windows 16 bits (2026-08-25, Stage 0) - voir le commentaire   }
-   { jumeau au site HPFS plus haut pour le contexte complet. }
+   { Chantier Windows 16 bits (2026-08-25/28, Stage 0->4) - voir le        }
+   { commentaire jumeau au site HPFS plus haut pour le contexte complet. }
    Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_WIN16) Then Begin
-    NCShowMessage('Executable Windows 16 bits detecte - execution non ' +
-     'encore supportee.', ncBrowse);
+    CreateEmulatorTab(FullPath, '-CWIN16', '');
+    NCActionOpenAssociated := True;
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
     CreateEmulatorTab(FullPath, '-CELF64', '');
@@ -50833,6 +51079,8 @@ Begin
   EmuPanelTitleFor := 'Emulateur Thomson TO8 (6809)'
  Else If TargetCPU = '-CMO5' Then
   EmuPanelTitleFor := 'Emulateur Thomson MO5 (6809)'
+ Else If TargetCPU = '-CWIN16' Then
+  EmuPanelTitleFor := 'Emulateur Windows 16 bits (NE)'
  Else
   EmuPanelTitleFor := 'Emulateur';
 End;
@@ -83849,8 +84097,8 @@ Begin
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   EmuVScr_WriteStr(P, '  opcode = ' +
    Emu_HexByte(P.CPU.LastBadOp) + ' a ' +
-   Emu_HexWord(P.CPU.LastBadCS) + ':' +
-   Emu_HexWord(P.CPU.LastBadIP));
+   HexWord(P.CPU.LastBadCS) + ':' +
+   HexWord(P.CPU.LastBadIP));
  End;
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
@@ -84175,6 +84423,7 @@ Var
  Is6809: Boolean;
  IsELF64: Boolean;
  IsOS2LX: Boolean;
+ IsWin16: Boolean;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -84321,10 +84570,23 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CWIN16' Then
+ Begin
+  { Chantier Windows 16 bits (2026-08-28), Stage 4 - console texte 80x25,   }
+  { meme convention que DOS/ELF64/OS2LX (rendu GDI reel hors de portee ici, }
+  { voir Stage 6 stretch goal - ce panneau n affiche que les messages de    }
+  { diagnostic tant que Stage 6 n est pas fait). }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsELF64 := (TargetCPU = '-CELF64');
  IsOS2LX := (TargetCPU = '-COS2LX');
+ IsWin16 := (TargetCPU = '-CWIN16');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
@@ -84347,6 +84609,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CP'      Then CPUName := 'Intel 8086 mode protege'
  Else If TargetCPU = '-CELF64'  Then CPUName := 'Linux x86-64 (ELF statique)'
  Else If TargetCPU = '-COS2LX'  Then CPUName := 'OS/2 LX 32 bits (console)'
+ Else If TargetCPU = '-CWIN16'  Then CPUName := 'Windows 2.x/3.x 16 bits (NE, console texte)'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
  Else If TargetCPU = '-CAPPLEII'Then CPUName := 'Apple II (6502)'
@@ -85218,6 +85481,83 @@ Begin NesActive := False;
   P.Loaded := True;
   Exit;
  End;
+ If IsWin16 Then Begin
+  { Chantier Windows 16 bits, Stage 4 (2026-08-28) : greffage UI reel.      }
+  { Contrairement a ELF64/OS2LX (memoire lineaire dediee LX_Mem/etc.),      }
+  { Win16 reutilise LE MEME buffer 8086 P.CPU.Memory que le backend DOS     }
+  { -CD - donc Emu_InitComputer/DOS_RunOneChunk/EmuDbg (mode EDC_8086)      }
+  { s appliquent TELS QUELS, seul le chargeur (Win16_LoadNE au lieu de      }
+  { Emu_LoadProgram) et les registres de demarrage different (convention   }
+  { Win16 documentee - voir Win16_DispatchCall/InitTask - au lieu de la     }
+  { convention PSP DOS). }
+  Emu_InitComputer(P.CPU);
+  If Not P.CPU.MemReady Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : impossible de creer le swap memoire.');
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.StatusMsg := 'Memoire emulee indisponible';
+   Exit;
+  End;
+  Loaded := Win16_LoadNE(P.CPU, BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : ' + Win16_LastError);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P,
+    'Seuls certains executables NE Windows 2.x/3.x (mode reel/standard,');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    'segments fixes) sont vises pour le moment.');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement NE';
+   Emu_Done(P.CPU);
+   Exit;
+  End;
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Binaire NE charge : ' +
+    IntToStr(Win16_SegCount) + ' segment(s), ' +
+    IntToStr(Win16_ImportSlotCount) + ' import(s) resolu(s).');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P, 'Point d''entree   : ' +
+    HexWord(Win16_EntryPointSeg) + ':' + HexWord(Win16_EntryPointOfs));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Pile initiale    : ' +
+    HexWord(Win16_StackSeg) + ':' + HexWord(Win16_StackOfs));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  { Convention reelle de demarrage d un programme Win16 (voir Raymond Chen, }
+  { "How do 16-bit programs start up?" - deja utilise/verifie au Stage 3),  }
+  { factorisee dans Win16_SetupEntryRegs (partagee avec WIN16RUN, Stage 5). }
+  Win16_SetupEntryRegs(P.CPU);
+  P.CPU.Fault := sfNone;
+  { Meme init peripherique 8086 que le backend DOS -CD juste plus bas       }
+  { (DOS_RunOneChunk, partage sans changement par les deux backends,        }
+  { s attend a un BDA/IVT/etc. valides - voir le commentaire de tete de     }
+  { DOS_RunOneChunk pour le detail de chaque sous-systeme). }
+  Emu_InitBDA(P);
+  Emu_IpxInit(P);
+  Emu_PktInit(P);
+  Emu_XmsInit(P);
+  Emu_EmsInit(P);
+  Emu_MouseInit(P);
+  Emu_MscdexInit(P);
+  Emu_DpmiInit(P);
+  Emu_DefaultVectorsInit(P);
+  DrawEmulatorPanel(P);
+  EmuDbg.Active := True;
+  EmuDbg.CPU    := EDC_8086;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  P.Loaded := True;
+  Exit;
+ End;
  If Not IsX86 Then Begin
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 14;
@@ -85305,12 +85645,12 @@ Begin NesActive := False;
  { Dumper les bytes bruts du segment de code AVANT execution }
  {$I-} Assign(EmuDumpF, 'EMUCODE.LOG'); Rewrite(EmuDumpF); {$I+}
  If IOResult = 0 Then Begin
-  WriteLn(EmuDumpF, 'Bytes bruts initiaux CS=', Emu_HexWord(P.CPU.Segs.CS),
+  WriteLn(EmuDumpF, 'Bytes bruts initiaux CS=', HexWord(P.CPU.Segs.CS),
    ' offsets 0x0000..0x07FF :');
   For EmuDumpI := $0000 To $07FF Do Begin
    If (EmuDumpI And 15) = 0 Then Begin
     WriteLn(EmuDumpF);
-    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+    Write(EmuDumpF, HexWord(EmuDumpI), ': ');
    End;
    Write(EmuDumpF, Emu_HexByte(
     Emu_ReadByte(P.CPU, P.CPU.Segs.CS, EmuDumpI)), ' ');
@@ -85321,7 +85661,7 @@ Begin NesActive := False;
   For EmuDumpI := $0760 To $07AF Do Begin
    If (EmuDumpI And 15) = 0 Then Begin
     WriteLn(EmuDumpF);
-    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+    Write(EmuDumpF, HexWord(EmuDumpI), ': ');
    End;
    Write(EmuDumpF, Emu_HexByte(
     Emu_ReadByte(P.CPU, $0EB7, EmuDumpI)), ' ');
@@ -85332,7 +85672,7 @@ Begin NesActive := False;
   For EmuDumpI := $0620 To $06CF Do Begin
    If (EmuDumpI And 15) = 0 Then Begin
     WriteLn(EmuDumpF);
-    Write(EmuDumpF, Emu_HexWord(EmuDumpI), ': ');
+    Write(EmuDumpF, HexWord(EmuDumpI), ': ');
    End;
    Write(EmuDumpF, Emu_HexByte(
     Emu_ReadByte(P.CPU, $0EB5, EmuDumpI)), ' ');
@@ -85938,7 +86278,8 @@ Begin
   End;
   Exit;
  End;
- If P.Loaded And ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) Then Begin
+ If P.Loaded And ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP') Or
+    (P.TargetCPU = '-CWIN16')) Then Begin
   If Not P.Running Then Exit;
   { Meme motif que les autres backends Stage 1. Contrairement a eux, ce   }
   { backend a DEJA son propre pompage d evenements interne (voir           }

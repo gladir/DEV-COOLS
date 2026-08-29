@@ -118,6 +118,7 @@ Var
  CurrentConditionStatus:String[8];
  CurrentAddress,PreviousAddress:String[64];
  CurrentOptions:String;
+ CurrentTraceSetting:String[2];
  TimeElapsedStart:Real;
  CharInNames:Array[1..MaxRoutineArgs]of String;
  CharInPositions:Array[1..MaxRoutineArgs]of LongInt;
@@ -367,6 +368,23 @@ Begin
   New(P);P^.Name:=N;P^.Value:='';P^.Next:=Variables;Variables:=P;
  End;
  P^.Value:=S;
+End;
+
+Procedure ValueFunction(VariableName,NewValue,Selector:String;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var SelectorName:String;
+Begin
+ If ArgumentCount<1Then Begin RVText('',ResultValue);Exit;End;
+ SelectorName:=StrToUpper(Clean(Selector));
+ If(ArgumentCount>2)and(SelectorName<>'')Then Begin
+  If(SelectorName='ENVIRONMENT')or(SelectorName='OS2ENVIRONMENT')or
+    (SelectorName='DOSENVIRONMENT')or(SelectorName='SYSTEM')Then
+   RVText(GetEnv(StrToUpper(Clean(VariableName))),ResultValue)
+  Else RVText('',ResultValue);
+  Exit;
+ End;
+ VarGet(VariableName,ResultValue);
+ If ArgumentCount>1Then VarSet(VariableName,NewValue);
 End;
 
 Procedure FreeVariables(Var Head:PRexxVariable);
@@ -1295,6 +1313,28 @@ Begin
  TranslateText:=SourceText;
 End;
 
+Function NormalizeTraceSetting(SettingText:String):String;
+Var SettingCharacter:Char;
+Begin
+ SettingText:=StrToUpper(Clean(SettingText));
+ While(Length(SettingText)>0)and(SettingText[1]in['?','!'])Do
+  Delete(SettingText,1,1);
+ If SettingText=''Then Begin NormalizeTraceSetting:='N';Exit;End;
+ SettingCharacter:=SettingText[1];
+ If SettingCharacter in['A','C','E','F','I','L','N','O','R','S']Then
+  NormalizeTraceSetting:=SettingCharacter
+ Else NormalizeTraceSetting:=CurrentTraceSetting;
+End;
+
+Procedure TraceValue(SettingText:String;ArgumentCount:Integer;
+ Var ResultValue:RexxValue);
+Var PreviousSetting:String;
+Begin
+ PreviousSetting:=CurrentTraceSetting;
+ If ArgumentCount>0Then CurrentTraceSetting:=NormalizeTraceSetting(SettingText);
+ RVText(PreviousSetting,ResultValue);
+End;
+
 Procedure SetLocalValue(Var ResultValue:RexxValue);
 Var SavedEnvironment:PLocalEnvironment;
 Begin
@@ -1745,14 +1785,15 @@ Begin
    132:FunctionNotImplemented(FunctionByte,ResultValue); { SYSWINVER }
    133:FunctionNotImplemented(FunctionByte,ResultValue); { THEN }
    134:TimeValue(A.Text,InvokeArgCount,ResultValue); { TIME }
-   135:FunctionNotImplemented(FunctionByte,ResultValue); { TRACE }
+   135:TraceValue(A.Text,InvokeArgCount,ResultValue); { TRACE }
    136:RVText(TranslateText(A.Text,B.Text,D.Text,E.Text,InvokeArgCount),
     ResultValue); { TRANSLATE }
    137:RVNum(System.Trunc(A.Number),ResultValue); { TRUNC }
-   138:FunctionNotImplemented(FunctionByte,ResultValue); { VALUE }
+   138:ValueFunction(A.Text,B.Text,D.Text,InvokeArgCount,ResultValue); { VALUE }
    139:FunctionNotImplemented(FunctionByte,ResultValue); { VAR }
    140:FunctionNotImplemented(FunctionByte,ResultValue); { VERIFY }
-   141:FunctionNotImplemented(FunctionByte,ResultValue); { WORD }
+   141:RVText(SubWordText(A.Text,System.Trunc(B.Number),1,True),
+    ResultValue); { WORD }
    142:FunctionNotImplemented(FunctionByte,ResultValue); { WORDINDEX }
    143:FunctionNotImplemented(FunctionByte,ResultValue); { WORDLENGTH }
    144:FunctionNotImplemented(FunctionByte,ResultValue); { WORDPOS }
@@ -2031,6 +2072,7 @@ Procedure RunAddressCommand(EnvironmentName,CommandText:String);
 Var CommandProcessor:String;
 Begin
  If CommandText=''Then Exit;
+ If CurrentTraceSetting='C'Then WriteLn('+++ ',CommandText);
  EnvironmentName:=StrToUpper(Clean(EnvironmentName));
  If(EnvironmentName='SYSTEM')or(EnvironmentName='COMMAND')or(EnvironmentName='CMD')Then Begin
   CommandProcessor:=GetEnv('COMSPEC');If CommandProcessor=''Then CommandProcessor:='CMD.EXE';
@@ -2143,6 +2185,13 @@ Begin
    RoutineResult:='';RoutineReturning:=True;
   End;
   49:; { PROCEDURE est traite lors de l'entree dans CallRoutine }
+  135:Begin { TRACE }
+   Rest:=Clean(Copy(S,6,255));
+   If WordStart(Rest,'VALUE')Then Begin
+    Eval(Clean(Copy(Rest,6,255)),V);
+    CurrentTraceSetting:=NormalizeTraceSetting(V.Text);
+   End Else CurrentTraceSetting:=NormalizeTraceSetting(Rest);
+  End;
   158:Begin { NUMERIC }
    If WordStart(S,'NUMERIC DIGITS')Then Begin
     Rest:=Clean(Copy(S,15,255));If Rest=''Then NumericDigitsValue:=9
@@ -2210,7 +2259,12 @@ Var
 Begin
  J:=A;
  While(J<=Z)and Not Terminated and Not RoutineReturning and(LoopSignal=0)do Begin
-  S:=Clean(PA[J]^);
+ S:=Clean(PA[J]^);
+  If(S<>'')and(Copy(S,1,2)<>'/*')Then Begin
+   If CurrentTraceSetting[1]in['A','I','R']Then WriteLn('+++ ',S)
+   Else If(CurrentTraceSetting='L')and(Length(S)>0)and
+    (S[Length(S)]=':')Then WriteLn('+++ ',S);
+  End;
   If(S='')or(Copy(S,1,2)='/*')Then Inc(J) Else
   If WordStart(S,'IF')Then Begin
    P:=FindWord(S,'THEN');
@@ -2501,6 +2555,7 @@ Procedure ExecuteCommand;Begin
  CurrentConditionInstruction:='';CurrentConditionStatus:='';
  CurrentAddress:='SYSTEM';PreviousAddress:='SYSTEM';
  CurrentOptions:='';
+ CurrentTraceSetting:='N';
  TimeElapsedStart:=CurrentTimeSeconds;
  CharInStreamCount:=0;
  CharOutStreamCount:=0;
