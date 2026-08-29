@@ -52245,6 +52245,182 @@ End;
 { Forward : convertir une couleur 2600 (7 bits) en index EGA. }
 Function A2600_ColorToEga(C: Byte): Byte; Forward;
 
+{ BOGUE REEL (2026-08-29) signale par l utilisateur : dans l ecran texte  }
+{ de l emulateur DOS, les caracteres de dessin de boite CP437 (simple/    }
+{ double trait, coins, jonctions - codes 179-218) sont rendus via le      }
+{ MEME appel `DrawText`/`OutTextXY` que le texte normal - or la petite     }
+{ police par defaut de PtcGraph (aucun `SetTextStyle` n est jamais         }
+{ appele nulle part dans ce fichier) ne remplit PAS la hauteur/largeur      }
+{ complete d une cellule pour ces glyphes, contrairement a une vraie       }
+{ police VGA 8x16 ou ces caracteres sont concus pour SE TOUCHER            }
+{ parfaitement d une cellule a l autre - d ou l aspect "pointille" signale }
+{ (confirme par capture d ecran zoomee x8 : chaque "double trait vertical" }
+{ n occupe qu une petite partie centrale de la cellule, laissant un vide   }
+{ au-dessus ET en dessous, empechant toute ligne verticale continue de se  }
+{ former sur plusieurs lignes de texte). Corrige en dessinant ces          }
+{ caracteres avec de VRAIS segments de ligne (`Line`) etendus jusqu aux    }
+{ BORDS EXACTS de la cellule (jamais la police), garantissant une          }
+{ continuite pixel-parfaite d une cellule a l autre quelle que soit la     }
+{ police active. Portee : le jeu standard IBM CP437 de dessin de boite      }
+{ (179-218) - les variantes "mixtes" simple/double rares (ex. 181/182,     }
+{ jamais utilisees par Norton Commander ni la plupart des programmes DOS   }
+{ courants) sont approximees par leur style dominant plutot que rendues     }
+{ au pixel pres - toujours mieux qu un pointille, jamais pire. }
+Function Emu_IsBoxChar(C: Char): Boolean;
+Var
+ Code: Byte;
+Begin
+ Code := Ord(C);
+ Emu_IsBoxChar := (Code >= 179) And (Code <= 218);
+End;
+
+Procedure Emu_DrawBoxChar(PixX, PixY, CW, CH: Integer; C: Char; Fg: LongInt);
+Var
+ Code: Byte;
+ Up, Down, Left, Right, DblV, DblH: Boolean;
+ CX, CY, OffV, OffH, HubX, HubY: Integer;
+Begin
+ Code := Ord(C);
+ Up := False; Down := False; Left := False; Right := False;
+ DblV := False; DblH := False;
+ Case Code Of
+  179: Begin Up := True; Down := True; End;                            { │ }
+  180: Begin Up := True; Down := True; Left := True; End;               { ┤ }
+  181: Begin Up := True; Down := True; Left := True; End;               { ╡ approx }
+  182: Begin Up := True; Down := True; Left := True; DblV := True; End; { ╢ approx }
+  183: Begin Down := True; Left := True; End;                           { ╖ approx }
+  184: Begin Down := True; Left := True; End;                           { ╕ approx }
+  185: Begin Up := True; Down := True; Left := True; DblV := True; End; { ╣ approx }
+  186: Begin Up := True; Down := True; DblV := True; End;               { ║ }
+  187: Begin Down := True; Left := True; DblH := True; DblV := True; End; { ╗ }
+  188: Begin Up := True; Left := True; DblH := True; DblV := True; End;   { ╝ }
+  189: Begin Up := True; Left := True; End;                             { ╜ approx }
+  190: Begin Up := True; Left := True; End;                             { ╛ approx }
+  191: Begin Down := True; Left := True; End;                           { ┐ }
+  192: Begin Up := True; Right := True; End;                            { └ }
+  193: Begin Up := True; Left := True; Right := True; End;              { ┴ }
+  194: Begin Down := True; Left := True; Right := True; End;            { ┬ }
+  195: Begin Up := True; Down := True; Right := True; End;              { ├ }
+  196: Begin Left := True; Right := True; End;                          { ─ }
+  197: Begin Up := True; Down := True; Left := True; Right := True; End;{ ┼ }
+  198: Begin Up := True; Down := True; Right := True; End;              { ╞ approx }
+  199: Begin Up := True; Down := True; Right := True; DblV := True; End;{ ╟ approx }
+  200: Begin Up := True; Right := True; DblH := True; DblV := True; End; { ╚ }
+  201: Begin Down := True; Right := True; DblH := True; DblV := True; End; { ╔ }
+  202: Begin Up := True; Left := True; Right := True; DblH := True; End; { ╩ }
+  203: Begin Down := True; Left := True; Right := True; DblH := True; End; { ╦ }
+  204: Begin Up := True; Down := True; Right := True; DblV := True; End; { ╠ }
+  205: Begin Left := True; Right := True; DblH := True; End;            { ═ }
+  206: Begin Up := True; Down := True; Left := True; Right := True;
+        DblH := True; DblV := True; End;                               { ╬ }
+  207: Begin Up := True; Left := True; Right := True; DblH := True; End; { ╧ approx }
+  208: Begin Down := True; Left := True; Right := True; DblH := True; End; { ╤ approx }
+  209: Begin Up := True; Left := True; Right := True; End;              { ╨ approx }
+  210: Begin Down := True; Left := True; Right := True; End;            { ╥ approx }
+  211: Begin Up := True; Right := True; DblV := True; End;              { ╙ approx }
+  212: Begin Up := True; Right := True; End;                            { ╘ approx }
+  213: Begin Down := True; Right := True; End;                         { ╒ approx }
+  214: Begin Down := True; Right := True; DblV := True; End;            { ╓ approx }
+  215: Begin Up := True; Down := True; Left := True; Right := True; End; { ╫ approx }
+  216: Begin Up := True; Down := True; Left := True; Right := True; End; { ╪ approx }
+  217: Begin Up := True; Left := True; End;                             { ┘ }
+  218: Begin Down := True; Right := True; End;                          { ┌ }
+ End;
+ SetColor(Fg);
+ CX := PixX + CW Div 2;
+ CY := PixY + CH Div 2;
+ OffH := CH Div 4; If OffH < 1 Then OffH := 1;
+ OffV := CW Div 4; If OffV < 1 Then OffV := 1;
+ { BOGUE REEL (2026-08-29, 2e rapport) signale par l utilisateur : les    }
+ { CORNERS a double trait pur (200/201/187/188 : exactement 2 bras       }
+ { PERPENDICULAIRES, aucun des deux "traversant") rendaient un affreux    }
+ { "+" casse au lieu d un coin propre - la logique generique ci-dessous    }
+ { (branchee plus bas pour tous les AUTRES cas, deja verifiee correcte     }
+ { par capture d ecran zoomee x8 pour les traits droits/simples/tes/       }
+ { croix - ceux-la ont toujours au moins UN axe "traversant" continu       }
+ { bord-a-bord, donc aucune ambiguite de point de depart) demarrait les    }
+ { 2 traits verticaux ET les 2 traits horizontaux INDEPENDAMMENT depuis     }
+ { le centre brut (CX,CY) - sans point de jonction commun, les 4            }
+ { segments ne formaient jamais un coin ferme. Cas special ici : calcule   }
+ { un point de jonction EXTERIEUR et un point INTERIEUR (chacun combinant  }
+ { les 2 decalages a la fois) pour former un vrai coin imbrique (effet     }
+ { "cadre"), seule facon de fermer proprement un coin ou aucun axe n est   }
+ { traversant. }
+ If DblV And DblH And (Up <> Down) And (Left <> Right) Then Begin
+  If Down And Right Then Begin { ╔ }
+   Line(CX - OffV, CY - OffH, PixX + CW - 1, CY - OffH);
+   Line(CX - OffV, CY - OffH, CX - OffV, PixY + CH - 1);
+   Line(CX + OffV, CY + OffH, PixX + CW - 1, CY + OffH);
+   Line(CX + OffV, CY + OffH, CX + OffV, PixY + CH - 1);
+  End Else If Down And Left Then Begin { ╗ }
+   Line(CX + OffV, CY - OffH, PixX, CY - OffH);
+   Line(CX + OffV, CY - OffH, CX + OffV, PixY + CH - 1);
+   Line(CX - OffV, CY + OffH, PixX, CY + OffH);
+   Line(CX - OffV, CY + OffH, CX - OffV, PixY + CH - 1);
+  End Else If Up And Right Then Begin { ╚ }
+   Line(CX - OffV, CY + OffH, PixX + CW - 1, CY + OffH);
+   Line(CX - OffV, CY + OffH, CX - OffV, PixY);
+   Line(CX + OffV, CY - OffH, PixX + CW - 1, CY - OffH);
+   Line(CX + OffV, CY - OffH, CX + OffV, PixY);
+  End Else Begin { ╝ : Up And Left }
+   Line(CX + OffV, CY + OffH, PixX, CY + OffH);
+   Line(CX + OffV, CY + OffH, CX + OffV, PixY);
+   Line(CX - OffV, CY - OffH, PixX, CY - OffH);
+   Line(CX - OffV, CY - OffH, CX - OffV, PixY);
+  End;
+  Exit;
+ End;
+ { BOGUE REEL (2026-08-29, 3e rapport, meme signalement "coins et            }
+ { intersections") : une jonction en T dont l axe TRAVERSANT (through -      }
+ { les 2 arms opposes, ex. Haut+Bas) est a double trait, avec une seule       }
+ { branche SIMPLE perpendiculaire (ex. Bas pour ╦ = Bas+Gauche+Droite,       }
+ { DblH) partait du centre BRUT (CX/CY) au lieu du trait le plus PROCHE      }
+ { du double-trait traversant - laissant un petit vide flottant entre la     }
+ { branche et le trait EXTERIEUR du double-trait (confirme par capture       }
+ { d ecran zoomee x10 sur un ╦ reel de NC.EXE). HubX/HubY decalent le       }
+ { point de depart de la branche SIMPLE vers le trait le plus proche         }
+ { (cote vers lequel elle se dirige) quand l axe traversant perpendiculaire  }
+ { est double - n affecte JAMAIS les traits eux-memes du double traversant   }
+ { (deja corrects, toujours definis via CX/CY exactement au centre). }
+ HubX := CX; HubY := CY;
+ If (Up And Down) And DblV And Not (Left And Right) Then Begin
+  If Right Then HubX := CX + OffV;
+  If Left Then HubX := CX - OffV;
+ End;
+ If (Left And Right) And DblH And Not (Up And Down) Then Begin
+  If Down Then HubY := CY + OffH;
+  If Up Then HubY := CY - OffH;
+ End;
+ If Left Then Begin
+  If DblH Then Begin
+   Line(PixX, CY - OffH, CX, CY - OffH);
+   Line(PixX, CY + OffH, CX, CY + OffH);
+  End Else
+   Line(PixX, HubY, HubX, HubY);
+ End;
+ If Right Then Begin
+  If DblH Then Begin
+   Line(CX, CY - OffH, PixX + CW - 1, CY - OffH);
+   Line(CX, CY + OffH, PixX + CW - 1, CY + OffH);
+  End Else
+   Line(HubX, HubY, PixX + CW - 1, HubY);
+ End;
+ If Up Then Begin
+  If DblV Then Begin
+   Line(CX - OffV, PixY, CX - OffV, CY);
+   Line(CX + OffV, PixY, CX + OffV, CY);
+  End Else
+   Line(HubX, PixY, HubX, HubY);
+ End;
+ If Down Then Begin
+  If DblV Then Begin
+   Line(CX - OffV, CY, CX - OffV, PixY + CH - 1);
+   Line(CX + OffV, CY, CX + OffV, PixY + CH - 1);
+  End Else
+   Line(HubX, HubY, HubX, PixY + CH - 1);
+ End;
+End;
+
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
 Var
  GridX, GridY: Integer;
@@ -52544,8 +52720,12 @@ Begin
    { Caractere }
    If Cell.Ch <> ' ' Then Begin
     SetBkColor(EmuColor(Cell.Bg));
-    S := Cell.Ch;
-    DrawText(PixX, PixY + 2, S, EmuColor(Cell.Fg));
+    If Emu_IsBoxChar(Cell.Ch) Then
+     Emu_DrawBoxChar(PixX, PixY, P.CharW, P.CharH, Cell.Ch, EmuColor(Cell.Fg))
+    Else Begin
+     S := Cell.Ch;
+     DrawText(PixX, PixY + 2, S, EmuColor(Cell.Fg));
+    End;
    End;
   End;
  End;
