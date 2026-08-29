@@ -88,6 +88,11 @@ Type
   DirectoryName:String;
   Next:PLocalEnvironment;
  End;
+ PRexxQueueEntry=^RexxQueueEntry;
+ RexxQueueEntry=Record
+  Value:String;
+  Next:PRexxQueueEntry;
+ End;
 
 Var
  Variables:PRexxVariable;
@@ -106,6 +111,7 @@ Var
  InitialArgCount:Integer;
  RoutineReturning:Boolean;
  RoutineResult:String;
+ RoutineDepth:Integer;
  NumericDigitsValue:Integer;
  NumericFuzzValue:Integer;
  NumericFormValue:String[16];
@@ -127,6 +133,26 @@ Var
  CharOutPositions:Array[1..MaxRoutineArgs]of LongInt;
  CharOutStreamCount:Integer;
  LocalEnvironments:PLocalEnvironment;
+ RexxQueueHead,RexxQueueTail:PRexxQueueEntry;
+ RexxQueueCount:LongInt;
+
+Procedure PushQueue(Value:String);
+Var Entry:PRexxQueueEntry;
+Begin
+ New(Entry);Entry^.Value:=Value;Entry^.Next:=RexxQueueHead;
+ RexxQueueHead:=Entry;
+ If RexxQueueTail=Nil Then RexxQueueTail:=Entry;
+ Inc(RexxQueueCount);
+End;
+
+Procedure FreeQueue;
+Var Entry:PRexxQueueEntry;
+Begin
+ While RexxQueueHead<>Nil Do Begin
+  Entry:=RexxQueueHead;RexxQueueHead:=RexxQueueHead^.Next;Dispose(Entry);
+ End;
+ RexxQueueTail:=Nil;RexxQueueCount:=0;
+End;
 
 Function LTrim(S:String):String;
 Var
@@ -2447,6 +2473,11 @@ Begin
     CurrentOptions:=V.Text;
    End;
   End;
+  52:Begin { PUSH }
+   Rest:=Clean(Copy(S,5,255));
+   If Rest<>''Then Eval(Rest,V)Else RVText('',V);
+   PushQueue(V.Text);
+  End;
   48:Begin { PARSE }
    If WordStart(S,'PARSE ARG')Then Begin
     Rest:=Clean(Copy(S,10,255));J:=1;
@@ -2490,12 +2521,14 @@ Begin
     ParseTemplate('WINDOWS COMMAND '+FileName,Clean(Copy(S,13,255)),False);
   End;
   56:Begin { RETURN }
-   Rest:=Clean(Copy(S,7,255));If Rest<>''Then Begin
-    Eval(Rest,V);
+   Rest:=Clean(Copy(S,7,255));
+   If Rest<>''Then Eval(Rest,V)Else RVText('',V);
+   If RoutineDepth>0Then Begin
     RoutineResult:=V.Text;
+    RoutineReturning:=True;
    End
     Else
-   RoutineResult:='';RoutineReturning:=True;
+   RequestProgramExit(V,Rest<>'',V);
   End;
   49:; { PROCEDURE est traite lors de l'entree dans CallRoutine }
   135:Begin { TRACE }
@@ -2844,8 +2877,9 @@ Begin
   End;
  End;
 
- RoutineReturning:=False;RoutineResult:='';
+ RoutineReturning:=False;RoutineResult:='';Inc(RoutineDepth);
  ExecRange(LabelLine+1,EndLine);
+ Dec(RoutineDepth);
  CallRoutine:=RoutineResult;
 
  If HasProcedure Then Begin
@@ -2879,12 +2913,13 @@ End;
 
 Procedure ExecuteCommand;Begin
  Variables:=Nil;
+ RexxQueueHead:=Nil;RexxQueueTail:=Nil;RexxQueueCount:=0;
  Terminated:=False;
  ProgramExitRequested:=False;ProgramExitCode:=0;
  LoopSignal:=0;
  CurrentArgCount:=InitialArgCount;
  For I:=1 To MaxRoutineArgs Do CurrentArgs[I]:=InitialArgs[I];
- InvokeArgCount:=0;RoutineReturning:=False;RoutineResult:='';
+ InvokeArgCount:=0;RoutineReturning:=False;RoutineResult:='';RoutineDepth:=0;
  NumericDigitsValue:=9;NumericFuzzValue:=0;NumericFormValue:='SCIENTIFIC';
  SignalTargetLine:=0;SignalHalt:=False;SignalNoValue:=False;SignalError:=False;SignalSyntax:=False;
  SignalHaltName:='HALT';SignalNoValueName:='NOVALUE';SignalErrorName:='ERROR';SignalSyntaxName:='SYNTAX';
@@ -2899,6 +2934,7 @@ Procedure ExecuteCommand;Begin
  LocalEnvironments:=Nil;
  If NumberLine>0Then ExecRange(1,NumberLine);
  RestoreLocalEnvironments;
+ FreeQueue;
  FreeVariables(Variables);
 End;
 

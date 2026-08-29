@@ -6354,6 +6354,8 @@ Var
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
  Win16_RsrcTabAbsOfs  : LongInt;         { 0 = pas de table de ressources}
+ Win16_LastRsrcFileOfs, Win16_LastRsrcLen: LongInt; { staging FindResource }
+ Win16_LastRsrcFound  : Boolean;         { (Stage 5, un seul "handle").   }
  Win16_LastError      : String;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
@@ -37156,6 +37158,109 @@ Begin
  Close(F);
 End;
 
+{ Chantier Stage 5 (suite, 2026-08-29) : un champ Type/ID de la table de   }
+{ ressources dont le bit $8000 est ABSENT n'est pas un entier - c'est un   }
+{ OFFSET, relatif au DEBUT de la table de ressources, vers une chaine      }
+{ Pascal-style nommant le type/la ressource (format confirme via l'OSDev   }
+{ wiki, section "Resource Type IDs and Resource IDs"). Necessaire pour     }
+{ KERNEL.FindResource (ordinal 60) quand le programme appelant passe un    }
+{ vrai pointeur chaine plutot qu'un MAKEINTRESOURCE entier - observe       }
+{ REELLEMENT dans CLOCK.EXE (ressource personnalisee nommee, ni RT_STRING  }
+{ ni aucun type systeme standard). }
+Function Win16_ResourceIdMatches(Var F: File; RawField: Word;
+ QueryIsInt: Boolean; QueryInt: Word; Const QueryStr: String): Boolean;
+Var
+ Len: Byte;
+ Buf: Array[0..255] Of Char;
+ BytesRead: Word;
+ S: String;
+ I: Integer;
+Begin
+ Win16_ResourceIdMatches := False;
+ If (RawField And $8000) <> 0 Then Begin
+  If QueryIsInt Then Win16_ResourceIdMatches := (RawField = QueryInt);
+  Exit;
+ End;
+ If QueryIsInt Then Exit; { un ID entier ne correspond jamais a une ressource nommee }
+ Seek(F, Win16_RsrcTabAbsOfs + LongInt(RawField));
+ BlockRead(F, Len, 1, BytesRead);
+ If BytesRead <> 1 Then Exit;
+ S := '';
+ If Len > 0 Then Begin
+  BlockRead(F, Buf, Len, BytesRead);
+  If BytesRead <> Len Then Exit;
+  For I := 0 To Len - 1 Do S := S + Buf[I];
+ End;
+ Win16_ResourceIdMatches := (UpCaseStr(S) = UpCaseStr(QueryStr));
+End;
+
+{ Variante GENERIQUE de Win16_FindResource : Type ET Nom peuvent CHACUN     }
+{ etre soit un entier MAKEINTRESOURCE, soit une chaine reelle (voir        }
+{ Win16_ResourceIdMatches ci-dessus). Utilisee par KERNEL.FindResource     }
+{ (ordinal 60) - Win16_FindResource (entiers uniquement) reste utilisee    }
+{ telle quelle par LoadString (USER.176), plus simple/rapide pour son cas. }
+Function Win16_FindResourceGeneric(TypeIsInt: Boolean; TypeInt: Word;
+ Const TypeStr: String; NameIsInt: Boolean; NameInt: Word;
+ Const NameStr: String; Var ResFileOfs, ResLen: LongInt): Boolean;
+Type
+ TNEResTypeHdr = Record
+  TypeID: Word;
+  ResourceCount: Word;
+  Reserved: LongInt;
+ End;
+ TNEResEntry = Record
+  FileOfsField: Word;
+  LenField: Word;
+  FlagsField: Word;
+  IDField: Word;
+  Reserved: LongInt;
+ End;
+Var
+ F: File;
+ BytesRead: Word;
+ AlignShift: Word;
+ TH: TNEResTypeHdr;
+ RE: TNEResEntry;
+ Pos: LongInt;
+ I: Integer;
+Begin
+ Win16_FindResourceGeneric := False;
+ If Win16_RsrcTabAbsOfs = 0 Then Exit;
+ {$I-}
+ Assign(F, Win16_LoadedPath);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Pos := Win16_RsrcTabAbsOfs;
+ Seek(F, Pos);
+ BlockRead(F, AlignShift, 2, BytesRead);
+ If BytesRead <> 2 Then Begin Close(F); Exit; End;
+ Pos := Pos + 2;
+ While True Do Begin
+  Seek(F, Pos);
+  BlockRead(F, TH, SizeOf(TH), BytesRead);
+  If BytesRead <> SizeOf(TH) Then Break;
+  Pos := Pos + SizeOf(TH);
+  If TH.TypeID = 0 Then Break;
+  If Win16_ResourceIdMatches(F, TH.TypeID, TypeIsInt, TypeInt, TypeStr) Then Begin
+   For I := 1 To TH.ResourceCount Do Begin
+    Seek(F, Pos + (I - 1) * SizeOf(RE));
+    BlockRead(F, RE, SizeOf(RE), BytesRead);
+    If BytesRead <> SizeOf(RE) Then Begin Close(F); Exit; End;
+    If Win16_ResourceIdMatches(F, RE.IDField, NameIsInt, NameInt, NameStr) Then Begin
+     ResFileOfs := LongInt(RE.FileOfsField) Shl AlignShift;
+     ResLen := LongInt(RE.LenField) Shl AlignShift;
+     Close(F);
+     Win16_FindResourceGeneric := True;
+     Exit;
+    End;
+   End;
+  End;
+  Pos := Pos + LongInt(TH.ResourceCount) * SizeOf(RE);
+ End;
+ Close(F);
+End;
+
 { Chantier Windows 16 bits, Stage 4/5 : positionne les registres de         }
 { demarrage REELS d'un programme Win16 (convention documentee - voir        }
 { Raymond Chen, "How do 16-bit programs start up?" - deja utilisee/         }
@@ -37235,6 +37340,17 @@ Var
  LSBytesRead: Word;
  LSBuf: Array[0..4095] Of Byte;
  LSStrLen: Byte;
+ FRNameSeg, FRNameOfs, FRTypeSeg, FRTypeOfs: Word;
+ FRNameIsInt, FRTypeIsInt: Boolean;
+ FRNameStr, FRTypeStr: String;
+ FRI: Integer;
+ FRByte: Byte;
+ LRLen: LongInt;
+ LRFile: File;
+ LRBytesRead: Word;
+ LRBuf: Array[0..4095] Of Byte;
+ LRI: Integer;
+ GDIIdx: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -37316,6 +37432,114 @@ Begin
     { ne re-epuise pas completement le tas, deja documente comme limite). }
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
+   End;
+   60: Begin
+    { FindResource(hInstance, lpName, lpType):HRSRC - ordinal VERIFIE via   }
+    { krnl386.exe16.spec. hInstance ignore (une seule instance). lpName et  }
+    { lpType sont CHACUN soit un entier MAKEINTRESOURCE (segment=0, mot bas}
+    { = l'identifiant), soit un VRAI pointeur far vers une chaine ANSI      }
+    { terminee par NUL DANS LA MEMOIRE DU PROGRAMME (segment<>0) - lu ICI   }
+    { depuis la memoire emulee (donnees runtime, PAS le fichier). La table }
+    { de ressources elle-meme peut AUSSI nommer ses types/ID par chaine     }
+    { (voir Win16_ResourceIdMatches) - observe REELLEMENT dans CLOCK.EXE    }
+    { (ressource personnalisee nommee, ni RT_STRING ni aucun type          }
+    { systeme). Simplification DOCUMENTEE : un seul "emplacement de        }
+    { stockage" pour la derniere ressource trouvee (pas de vraie table de  }
+    { handles) - suffisant tant qu'un programme n'entrelace pas plusieurs  }
+    { FindResource avant leur LoadResource respectif. }
+    FRNameOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRNameSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    FRTypeOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRTypeSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRNameIsInt := (FRNameSeg = 0);
+    FRTypeIsInt := (FRTypeSeg = 0);
+    FRNameStr := '';
+    If Not FRNameIsInt Then Begin
+     FRI := 0;
+     While FRI < 255 Do Begin
+      FRByte := Emu_ReadByte(P.CPU, FRNameSeg, Word(FRNameOfs + FRI));
+      If FRByte = 0 Then Break;
+      FRNameStr := FRNameStr + Chr(FRByte);
+      Inc(FRI);
+     End;
+    End;
+    FRTypeStr := '';
+    If Not FRTypeIsInt Then Begin
+     FRI := 0;
+     While FRI < 255 Do Begin
+      FRByte := Emu_ReadByte(P.CPU, FRTypeSeg, Word(FRTypeOfs + FRI));
+      If FRByte = 0 Then Break;
+      FRTypeStr := FRTypeStr + Chr(FRByte);
+      Inc(FRI);
+     End;
+    End;
+    Win16_LastRsrcFound := Win16_FindResourceGeneric(
+     FRTypeIsInt, Word($8000 Or FRTypeOfs), FRTypeStr,
+     FRNameIsInt, Word($8000 Or FRNameOfs), FRNameStr,
+     Win16_LastRsrcFileOfs, Win16_LastRsrcLen);
+    If Win16_LastRsrcFound Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   61: Begin
+    { LoadResource(hInstance, hResInfo):HGLOBAL - ignore les 2 arguments    }
+    { (simplification a un seul "emplacement de stockage", voir ordinal    }
+    { 60) - alloue Win16_LastRsrcLen octets dans le tas local (MEME bump    }
+    { allocator que LocalAlloc) et y copie les VRAIS octets du fichier a    }
+    { l'emplacement trouve par le FindResource precedent. Handle retourne  }
+    { = offset reel direct (meme simplification LMEM_FIXED que LocalAlloc).}
+    If Not Win16_LastRsrcFound Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     LRLen := Win16_LastRsrcLen;
+     If LRLen > SizeOf(LRBuf) Then LRLen := SizeOf(LRBuf);
+     If (LongInt(Win16_HeapNext) + LRLen) > LongInt(Win16_HeapLimit) Then
+      P.CPU.Regs.AX := 0
+     Else Begin
+      {$I-} Assign(LRFile, Win16_LoadedPath); Reset(LRFile, 1); {$I+}
+      If IOResult <> 0 Then
+       P.CPU.Regs.AX := 0
+      Else Begin
+       Seek(LRFile, Win16_LastRsrcFileOfs);
+       BlockRead(LRFile, LRBuf, Word(LRLen), LRBytesRead);
+       Close(LRFile);
+       For LRI := 0 To LRLen - 1 Do
+        Emu_WriteByte(P.CPU, Win16_StackSeg, Word(Win16_HeapNext + LRI), LRBuf[LRI]);
+       P.CPU.Regs.AX := Win16_HeapNext;
+       Win16_HeapNext := Win16_HeapNext + Word(LRLen);
+      End;
+     End;
+    End;
+    ArgWords := 2;
+   End;
+   62: Begin
+    { LockResource(hResData):far ptr - PAS de "-ret16" dans le .spec =      }
+    { retour COMPLET en DX:AX (segment:offset), pas juste AX. Handle deja   }
+    { simplifie en offset direct (LMEM_FIXED, voir ordinal 61) : identite - }
+    { retourne ce meme offset avec le segment du tas local (Win16_StackSeg).}
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   63: Begin
+    { FreeResource(hResData):bool - meme simplification que LocalFree       }
+    { (ordinal 7) : le tas local est un bump allocator qui ne recupere      }
+    { JAMAIS la memoire - rapporte toujours un succes (NULL) sans rien      }
+    { liberer reellement. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   65: Begin
+    { SizeofResource(hInstance, hResInfo):DWORD - PAS de "-ret16" = retour  }
+    { COMPLET DX:AX (taille en octets). Ignore les 2 arguments             }
+    { (simplification a un seul emplacement de stockage, voir ordinal 60). }
+    If Win16_LastRsrcFound Then Begin
+     P.CPU.Regs.AX := Word(Win16_LastRsrcLen And $FFFF);
+     P.CPU.Regs.DX := Word((Win16_LastRsrcLen Shr 16) And $FFFF);
+    End Else Begin
+     P.CPU.Regs.AX := 0;
+     P.CPU.Regs.DX := 0;
+    End;
+    ArgWords := 2;
    End;
    30: Begin
     { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
@@ -37439,16 +37663,61 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
+   66, 67: Begin
+    { GetDC(hWnd)/GetWindowDC(hWnd):HDC - 2 ordinaux VERIFIES via           }
+    { user.exe16.spec, meme signature ("word"). Rendu GDI reel HORS DE      }
+    { PORTEE (stretch goal Stage 6) - simplification DOCUMENTEE : retourne  }
+    { un handle de contexte-peripherique SYNTHETIQUE non-nul, jamais un     }
+    { vrai DC dessinable. Suffisant pour que le code appelant continue vers}
+    { ses appels GDI (TextOut/Rectangle/...) qui s'arreteront honnetement   }
+    { a leur tour si/quand rencontres. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   68: Begin
+    { ReleaseDC(hWnd, hDC):bool - ordinal VERIFIE via user.exe16.spec.       }
+    { Meme simplification que GetDC/GetWindowDC ci-dessus : rapporte        }
+    { toujours un succes, aucun VRAI DC a liberer. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
     Exit;
    End;
   End;
- End Else Begin
-  Case ModIdx Of
-   2: Win16_Halt(P, 'GDI', Ordinal);
-   Else Win16_Halt(P, 'module #' + IntToStr(ModIdx), Ordinal);
+ End Else If ModIdx = 2 Then Begin { GDI }
+  Case Ordinal Of
+   80: Begin
+    { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
+    { gdi.exe16.spec ; les constantes nIndex (HORZRES=8, VERTRES=10,        }
+    { BITSPIXEL=12, PLANES=14, NUMCOLORS=24, LOGPIXELSX=88,                 }
+    { LOGPIXELSY=90, TECHNOLOGY=2) verifiees via wingdi.h (Wine, source     }
+    { publique). Rendu GDI reel HORS DE PORTEE (stretch goal Stage 6) -     }
+    { simplification DOCUMENTEE : valeurs plausibles d'un ecran VGA         }
+    { standard de l'epoque (640x480 monochrome), jamais un VRAI peripherique}
+    { d'affichage. Index non couvert -> 0 (honnete, non modelise). }
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Case GDIIdx Of
+     2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
+     8:  P.CPU.Regs.AX := 640;  { HORZRES }
+     10: P.CPU.Regs.AX := 480;  { VERTRES }
+     12: P.CPU.Regs.AX := 1;    { BITSPIXEL (monochrome) }
+     14: P.CPU.Regs.AX := 1;    { PLANES }
+     24: P.CPU.Regs.AX := 2;    { NUMCOLORS }
+     88: P.CPU.Regs.AX := 96;   { LOGPIXELSX }
+     90: P.CPU.Regs.AX := 96;   { LOGPIXELSY }
+     Else P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 2;
+   End;
+   Else Begin
+    Win16_Halt(P, 'GDI', Ordinal);
+    Exit;
+   End;
   End;
+ End Else Begin
+  Win16_Halt(P, 'module #' + IntToStr(ModIdx), Ordinal);
   Exit;
  End;
  { Retour stdcall/pascal synthetique : depile l'adresse de retour puis     }
