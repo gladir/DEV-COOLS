@@ -10591,6 +10591,10 @@ Procedure Z80_SaveState(Var Snap: TZ80Snapshot); Forward;
 Procedure Z80_LoadState(Var Snap: TZ80Snapshot); Forward;
 Procedure DOS_SaveState(Var Snap: TDOSSnapshot); Forward;
 Procedure DOS_LoadState(Var Snap: TDOSSnapshot); Forward;
+{ Commande NES (2026-08-29) : TermCmd_NES (pres de TermCmd_BOOT) est       }
+{ definie AVANT TermFindNesRom (pres de TermFindDosExecutable, ~40800)     }
+{ dans ce fichier - Forward requis. }
+Function TermFindNesRom(Const Dir, CmdName: String): String; Forward;
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : sauvegarde/restauration }
 { de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
 Procedure Win16_SaveVideoState; Forward;
@@ -36583,6 +36587,44 @@ Begin
  CreateEmulatorBootTab(Idx, DispName);
 End;
 
+{ --- NES : lance directement l emulateur Nintendo NES integre sur une     }
+{ ROM tapee par son nom, depuis le Terminal (2026-08-29, demande           }
+{ explicite de l utilisateur : "taper NES fichier dans Invite de           }
+{ commandes/Norton Commander devrait lancer l emulateur NES") - meme        }
+{ principe que le double-clic/Entree sur un .NES dans le panneau NC         }
+{ (voir ~43902, CreateEmulatorTab(FullPath, '-CNES', '')), mais accessible  }
+{ directement en tapant une commande, dans les 2 shells demandes. Le        }
+{ chemin se resout relativement au repertoire COURANT DE CE PANNEAU -        }
+{ CurDir reel du processus pour "Invite de commandes", ou TP.VirtCwd (la    }
+{ navigation virtuelle propre au panneau NC actif, PAS le repertoire reel   }
+{ du processus - meme distinction deja etablie pour le repli "commande     }
+{ inconnue -> executable", voir TermExecuteCommand) pour Norton Commander. }
+Procedure TermCmd_NES(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : NES fichier.nes');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  { Aucune ROM NES jamais rencontree DANS un disque FAT/D64/HPFS monte     }
+  { dans ce projet - portee initiale volontairement limitee au systeme     }
+  { hote, message honnete plutot que pretendre chercher. }
+  TermAddLine(TP, 'NES : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ RomPath := TermFindNesRom(Dir, CurrParam);
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CNES', '');
+End;
+
 { --- ELFBP (etape 8 : debogueur minimal pour l emulateur Linux ELF64) --- }
 { Regle (ou desactive) un point d arret par adresse : la prochaine fois   }
 { qu un binaire ELF64 est lance dans ce terminal, son execution s arrete  }
@@ -40765,6 +40807,30 @@ Begin
   TermFindElfExecutable := Candidate;
 End;
 
+{ Cherche une ROM NES (.nes) pour CmdName tape dans un shell terminal -   }
+{ meme principe exact que TermFindDosExecutable ci-dessus (essaie tel      }
+{ quel si l extension .NES est deja fournie, sinon l ajoute) - utilise    }
+{ par la nouvelle commande NES (2026-08-29, demande explicite de           }
+{ l utilisateur : "taper NES fichier devrait lancer l emulateur NES"). }
+Function TermFindNesRom(Const Dir, CmdName: String): String;
+Var
+ Base, UpName, Candidate: String;
+Begin
+ TermFindNesRom := '';
+ Base := Dir;
+ { Chemin deja absolu (lettre de lecteur) : ne pas le prefixer par Dir. }
+ If (Length(CmdName) >= 2) And (CmdName[2] = ':') Then Base := '';
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ UpName := UpCaseStr(CmdName);
+ If (Length(UpName) > 4) And (Copy(UpName, Length(UpName) - 3, 4) = '.NES') Then Begin
+  Candidate := Base + CmdName;
+  If FileExists(Candidate) Then TermFindNesRom := Candidate;
+  Exit;
+ End;
+ Candidate := Base + CmdName + '.NES';
+ If FileExists(Candidate) Then TermFindNesRom := Candidate;
+End;
+
 { Cherche un .PRG executable pour CmdName tape dans un shell terminal -   }
 { soit sur le disque HOTE (TP.VirtDrive<0, dans Dir, tranche entre               }
 { Commodore 64 et Atari ST par signature GEMDOS, voir NCIsAtariSTPrg),      }
@@ -41071,6 +41137,8 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+   Else If CurrCmd = 'NES' Then
+    TermCmd_NES(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
    Else If CurrCmd = 'ELFBP' Then
@@ -41397,6 +41465,8 @@ Begin
    TermCmd_VOL(TP, ParamStr)
   Else If CurrCmd = 'BOOT' Then
    TermCmd_BOOT(TP, ParamStr)
+  Else If CurrCmd = 'NES' Then
+   TermCmd_NES(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
   Else If CurrCmd = 'ELFBP' Then
