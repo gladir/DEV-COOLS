@@ -430,9 +430,133 @@ Begin
    DigitValue:=DigitValue*2;
    If Bits[J+BitCount]='1'Then Inc(DigitValue);
   End;
-  ResultText:=ResultText+HexDigits[DigitValue+1];Inc(J,4);
+  ResultText:=ResultText+HexDigits[DigitValue];Inc(J,4);
  End;
  BinaryToHex:=ResultText;
+End;
+
+Function HexToBinary(HexText:String):String;
+Var J,DigitValue,BitValue:Integer;HexCharacter:Char;ResultText:String;
+Begin
+ ResultText:='';
+ For J:=1 To Length(HexText)Do Begin
+  HexCharacter:=UpCase(HexText[J]);
+  If HexCharacter in['0'..'9']Then DigitValue:=Ord(HexCharacter)-Ord('0')
+  Else If HexCharacter in['A'..'F']Then
+   DigitValue:=Ord(HexCharacter)-Ord('A')+10
+  Else If HexCharacter in[' ',#9]Then Continue
+  Else Begin
+   WriteLn('X2B: caractere hexadecimal invalide: ',HexText[J]);
+   HexToBinary:='';
+   Exit;
+  End;
+  { Chaque chiffre exige quatre caracteres. Ne jamais produire un groupe
+    partiel lorsque la limite des String Turbo Pascal est atteinte. }
+  If Length(ResultText)>251Then Break;
+  BitValue:=8;
+  While BitValue>0Do Begin
+   If(DigitValue and BitValue)<>0Then ResultText:=ResultText+'1'
+   Else ResultText:=ResultText+'0';
+   BitValue:=BitValue div 2;
+  End;
+ End;
+ HexToBinary:=ResultText;
+End;
+
+Function HexNibbleValue(HexCharacter:Char):Integer;
+Begin
+ HexCharacter:=UpCase(HexCharacter);
+ If HexCharacter in['0'..'9']Then
+  HexNibbleValue:=Ord(HexCharacter)-Ord('0')
+ Else If HexCharacter in['A'..'F']Then
+  HexNibbleValue:=Ord(HexCharacter)-Ord('A')+10
+ Else HexNibbleValue:=-1;
+End;
+
+Function HexToCharacter(HexText:String):String;
+Var J,DigitsInGroup,HighNibble,LowNibble:Integer;
+ HexDigitsText,ResultText:String;LastWasBlank:Boolean;
+Begin
+ HexDigitsText:='';DigitsInGroup:=0;LastWasBlank:=False;
+ For J:=1 To Length(HexText)Do Begin
+  If HexNibbleValue(HexText[J])>=0Then Begin
+   HexDigitsText:=HexDigitsText+HexText[J];
+   Inc(DigitsInGroup);LastWasBlank:=False;
+  End Else If HexText[J]in[' ',#9]Then Begin
+   If(DigitsInGroup=0)and(Length(HexDigitsText)=0)Then Begin
+    WriteLn('X2C: espace hexadecimal mal place');HexToCharacter:='';Exit;
+   End;
+   If(DigitsInGroup mod 2)<>0Then Begin
+    WriteLn('X2C: espace hors d''une frontiere d''octet');HexToCharacter:='';Exit;
+   End;
+   DigitsInGroup:=0;LastWasBlank:=True;
+  End Else Begin
+   WriteLn('X2C: caractere hexadecimal invalide: ',HexText[J]);
+   HexToCharacter:='';Exit;
+  End;
+ End;
+ If LastWasBlank Then Begin
+  WriteLn('X2C: espace hexadecimal final');HexToCharacter:='';Exit;
+ End;
+ If HexDigitsText=''Then Begin HexToCharacter:='';Exit;End;
+ If(Length(HexDigitsText)mod 2)<>0Then HexDigitsText:='0'+HexDigitsText;
+ ResultText:='';J:=1;
+ While J<=Length(HexDigitsText)Do Begin
+  HighNibble:=HexNibbleValue(HexDigitsText[J]);
+  LowNibble:=HexNibbleValue(HexDigitsText[J+1]);
+  ResultText:=ResultText+Chr(HighNibble*16+LowNibble);
+  Inc(J,2);
+ End;
+ HexToCharacter:=ResultText;
+End;
+
+Procedure HexToDecimal(HexText:String;RequestedDigits:LongInt;
+ DigitsSpecified:Boolean;Var ResultValue:RexxValue);
+Var J,DigitsInGroup,OriginalLength,FirstDigit,UsedDigits:Integer;
+ DigitValue:Integer;DecimalValue,SignValue:Real;
+ HexDigitsText:String;LastWasBlank:Boolean;
+Begin
+ HexDigitsText:='';DigitsInGroup:=0;LastWasBlank:=False;
+ For J:=1 To Length(HexText)Do Begin
+  If HexNibbleValue(HexText[J])>=0Then Begin
+   HexDigitsText:=HexDigitsText+HexText[J];
+   Inc(DigitsInGroup);LastWasBlank:=False;
+  End Else If HexText[J]in[' ',#9]Then Begin
+   If(DigitsInGroup=0)and(Length(HexDigitsText)=0)Then Begin
+    RVNum(0,ResultValue);Exit;
+   End;
+   If(DigitsInGroup mod 2)<>0Then Begin RVNum(0,ResultValue);Exit;End;
+   DigitsInGroup:=0;LastWasBlank:=True;
+  End Else Begin RVNum(0,ResultValue);Exit;End;
+ End;
+ If LastWasBlank Then Begin RVNum(0,ResultValue);Exit;End;
+ OriginalLength:=Length(HexDigitsText);
+ If OriginalLength=0Then Begin RVNum(0,ResultValue);Exit;End;
+ If DigitsSpecified Then Begin
+  If RequestedDigits<=0Then Begin RVNum(0,ResultValue);Exit;End;
+  If RequestedDigits<OriginalLength Then
+   FirstDigit:=OriginalLength-RequestedDigits+1
+  Else FirstDigit:=1;
+ End Else FirstDigit:=1;
+ UsedDigits:=OriginalLength-FirstDigit+1;
+ { Le type Real de Turbo Pascal deborde au-dela d'environ 31 chiffres
+   hexadecimaux. Ne pas laisser une conversion invalide lever l'erreur 205. }
+ If UsedDigits>31Then Begin
+  WriteLn('X2D: valeur trop grande pour le type Real de Turbo Pascal');
+  RVNum(0,ResultValue);Exit;
+ End;
+ DecimalValue:=0;
+ For J:=FirstDigit To OriginalLength Do Begin
+  DigitValue:=HexNibbleValue(HexDigitsText[J]);
+  DecimalValue:=DecimalValue*16.0+DigitValue;
+ End;
+ If DigitsSpecified and(RequestedDigits<=OriginalLength)and
+   (HexNibbleValue(HexDigitsText[FirstDigit])>=8)Then Begin
+  SignValue:=1;
+  For J:=1 To RequestedDigits Do SignValue:=SignValue*16.0;
+  DecimalValue:=DecimalValue-SignValue;
+ End;
+ RVNum(DecimalValue,ResultValue);
 End;
 
 Function CharacterToHex(SourceText:String):String;
@@ -1886,9 +2010,10 @@ Begin
     InvokeArgCount>2),ResultValue); { WORDPOS }
    145:RVNum(CountWords(A.Text),ResultValue); { WORDS }
    146:RVText(XRangeText(A.Text,B.Text,InvokeArgCount),ResultValue); { XRANGE }
-   147:FunctionNotImplemented(FunctionByte,ResultValue); { X2B }
-   148:FunctionNotImplemented(FunctionByte,ResultValue); { X2C }
-   149:FunctionNotImplemented(FunctionByte,ResultValue); { X2D }
+   147:RVText(HexToBinary(A.Text),ResultValue); { X2B }
+   148:RVText(HexToCharacter(A.Text),ResultValue); { X2C }
+   149:HexToDecimal(A.Text,System.Trunc(B.Number),InvokeArgCount>1,
+    ResultValue); { X2D }
    150:FunctionNotImplemented(FunctionByte,ResultValue); { DO }
    151:FunctionNotImplemented(FunctionByte,ResultValue); { ELSE }
    152:FunctionNotImplemented(FunctionByte,ResultValue); { END }
