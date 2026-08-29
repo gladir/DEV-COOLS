@@ -37415,57 +37415,38 @@ Begin
  Win16_ReadGuestString := S;
 End;
 
-{ Ecrit un caractere a une position ARBITRAIRE (Row,Col) de la grille de   }
-{ texte du panneau - aucune primitive EmuVScr_* existante ne le permet     }
-{ (elles n'ecrivent qu'a la position courante du curseur, voir            }
-{ EmuVScr_PutChar) ; meme motif direct sur P.VRAM que le reste du fichier. }
-Procedure Win16_PutCharAt(Var P: TEmulatorPanel; Row, Col: Integer; Ch: Char; Fg, Bg: Byte);
-Begin
- If (Row < 0) Or (Row >= P.Rows) Or (Col < 0) Or (Col >= P.Cols) Then Exit;
- P.VRAM[Row, Col].Ch := Ch;
- P.VRAM[Row, Col].Fg := Fg;
- P.VRAM[Row, Col].Bg := Bg;
- P.NeedRepaint := True;
-End;
-
-{ Dessine un cadre de fenetre ASCII simple (+/-/|) avec titre. Conversion  }
-{ pixels virtuels -> cellules texte : 8 pixels/colonne, 16 pixels/ligne    }
-{ (convention VGA texte mode classique - voir GetDeviceCaps, GDI ordinal   }
-{ 80, HORZRES=640/VERTRES=400 sur la grille 80x25 existante = rapport      }
-{ EXACT). AUCUNE pretention de ressembler a une vraie fenetre Windows -    }
-{ juste rendre visible qu'une fenetre existe et ou elle se trouve. }
+{ Chantier Stage 6 (2026-08-29, REECRIT sur demande explicite de           }
+{ l'utilisateur - "mode graphique par defaut, pas mode texte") : dessine   }
+{ un cadre de fenetre en VRAIS PIXELS via Emu_VidSetPixel (framebuffer     }
+{ EmuVideo reel, mode $13 320x200x256 - voir ShowEmulatorPanel), plus      }
+{ aucun rapport avec la grille de texte P.VRAM (l'ancienne version ASCII   }
+{ de cette fonction, et son helper Win16_PutCharAt, sont retires - plus    }
+{ utilises par personne). Coordonnees deja en pixels REELS 1:1 (le         }
+{ programme les calcule lui-meme via GetDeviceCaps/GetSystemMetrics, deja  }
+{ ajustes a 320x200 - aucune mise a l'echelle necessaire ici). Couleur 15  }
+{ = blanc (palette EGA standard des 16 premieres entrees de la DAC par     }
+{ defaut - voir Emu_VidInitDefaultDAC). Le TITRE n'est PAS dessine en      }
+{ pixels ici (aucune police bitmap disponible pour le moment - voir Stage  }
+{ 6c) - le bandeau de titre du PANNEAU lui-meme (dessine par              }
+{ DrawEmulatorPanel, hors framebuffer) affiche deja le chemin du fichier,  }
+{ suffisant pour identifier l'onglet. }
 Procedure Win16_DrawWindowFrame(Var P: TEmulatorPanel; WIndex: Integer);
 Var
- R1, C1, R2, C2: Integer;
- R, C: Integer;
- TitleStr: String;
- I: Integer;
+ X1, Y1, X2, Y2: Integer;
+ X, Y: Integer;
 Begin
  If (WIndex < 0) Or (WIndex >= Win16_WindowCount) Then Exit;
- C1 := Win16_WindowX[WIndex] Div 8;
- R1 := Win16_WindowY[WIndex] Div 16;
- C2 := (Win16_WindowX[WIndex] + Win16_WindowW[WIndex]) Div 8;
- R2 := (Win16_WindowY[WIndex] + Win16_WindowH[WIndex]) Div 16;
- If C2 <= C1 Then C2 := C1 + 1;
- If R2 <= R1 Then R2 := R1 + 1;
- Win16_PutCharAt(P, R1, C1, '+', 15, 0);
- Win16_PutCharAt(P, R1, C2, '+', 15, 0);
- Win16_PutCharAt(P, R2, C1, '+', 15, 0);
- Win16_PutCharAt(P, R2, C2, '+', 15, 0);
- For C := C1 + 1 To C2 - 1 Do Begin
-  Win16_PutCharAt(P, R1, C, '-', 15, 0);
-  Win16_PutCharAt(P, R2, C, '-', 15, 0);
+ X1 := Win16_WindowX[WIndex];
+ Y1 := Win16_WindowY[WIndex];
+ X2 := X1 + Win16_WindowW[WIndex] - 1;
+ Y2 := Y1 + Win16_WindowH[WIndex] - 1;
+ For X := X1 To X2 Do Begin
+  Emu_VidSetPixel(X, Y1, 15);
+  Emu_VidSetPixel(X, Y2, 15);
  End;
- For R := R1 + 1 To R2 - 1 Do Begin
-  Win16_PutCharAt(P, R, C1, '|', 15, 0);
-  Win16_PutCharAt(P, R, C2, '|', 15, 0);
- End;
- TitleStr := ' ' + Win16_WindowTitle[WIndex] + ' ';
- C := C1 + 2;
- For I := 1 To Length(TitleStr) Do Begin
-  Win16_PutCharAt(P, R1, C, TitleStr[I], 15, 0);
-  Inc(C);
-  If C >= C2 Then Break;
+ For Y := Y1 To Y2 Do Begin
+  Emu_VidSetPixel(X1, Y, 15);
+  Emu_VidSetPixel(X2, Y, 15);
  End;
 End;
 
@@ -37959,11 +37940,12 @@ Begin
      Win16_WindowTitle[CWIdx] := CWTitleStr;
      { CW_USEDEFAULT = $8000 (mot signe -32768) : position/taille par      }
      { defaut plausible plutot que la valeur litterale (qui placerait la   }
-     { fenetre hors de l'ecran virtuel 640x400). }
-     If CWX = $8000 Then CWX := 40;
-     If CWY = $8000 Then CWY := 40;
-     If (CWW = $8000) Or (CWW = 0) Then CWW := 320;
-     If (CWH = $8000) Or (CWH = 0) Then CWH := 240;
+     { fenetre hors de l'ecran virtuel reel 320x200 - mode $13, voir       }
+     { ShowEmulatorPanel). }
+     If CWX = $8000 Then CWX := 10;
+     If CWY = $8000 Then CWY := 10;
+     If (CWW = $8000) Or (CWW = 0) Then CWW := 280;
+     If (CWH = $8000) Or (CWH = 0) Then CWH := 160;
      Win16_WindowX[CWIdx] := SmallInt(CWX);
      Win16_WindowY[CWIdx] := SmallInt(CWY);
      Win16_WindowW[CWIdx] := SmallInt(CWW);

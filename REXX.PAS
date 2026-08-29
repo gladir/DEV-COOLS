@@ -1460,6 +1460,28 @@ Begin
  InsertText:=Copy(ResultText,1,255);
 End;
 
+Function OverlayText(NewText,TargetText:String;OverlayPosition,OverlayLength:LongInt;
+ PositionSpecified,LengthSpecified,PadSpecified:Boolean;PadText:String):String;
+Var PadCharacter:Char;Replacement,ResultText:String;RequiredPadding:LongInt;
+Begin
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]Else PadCharacter:=' ';
+ If Not PositionSpecified Then OverlayPosition:=1;
+ If OverlayPosition<1Then OverlayPosition:=1;
+ If OverlayPosition>255Then OverlayPosition:=255;
+ If LengthSpecified Then Begin
+  If OverlayLength<0Then OverlayLength:=0;
+  If OverlayLength>255Then OverlayLength:=255;
+ End Else OverlayLength:=Length(NewText);
+ RequiredPadding:=OverlayPosition-1-Length(TargetText);
+ If RequiredPadding>0Then
+  TargetText:=TargetText+RepeatCharacter(PadCharacter,RequiredPadding);
+ If OverlayLength<=Length(NewText)Then Replacement:=Copy(NewText,1,OverlayLength)
+ Else Replacement:=NewText+RepeatCharacter(PadCharacter,OverlayLength-Length(NewText));
+ ResultText:=Copy(TargetText,1,OverlayPosition-1)+Replacement+
+  Copy(TargetText,OverlayPosition+OverlayLength,255);
+ OverlayText:=Copy(ResultText,1,255);
+End;
+
 Function LastPosition(Needle,Haystack:String;StartPosition:LongInt;
  StartSpecified:Boolean):Integer;
 Var Candidate,LastCandidate:Integer;
@@ -2114,7 +2136,9 @@ Begin
     If A.Number<B.Number Then N:=A.Number Else N:=B.Number;RVNum(N,ResultValue);
    End;
    46:FunctionNotImplemented(FunctionByte,ResultValue); { OPTIONS }
-   47:FunctionNotImplemented(FunctionByte,ResultValue); { OVERLAY }
+   47:RVText(OverlayText(A.Text,B.Text,System.Trunc(D.Number),
+    System.Trunc(E.Number),InvokeArgCount>2,InvokeArgCount>3,
+    InvokeArgCount>4,InvokeArgs[5]),ResultValue); { OVERLAY }
    48:FunctionNotImplemented(FunctionByte,ResultValue); { PARSE }
    49:FunctionNotImplemented(FunctionByte,ResultValue); { PROCEDURE }
    50:RVNum(ForwardPosition(A.Text,B.Text,System.Trunc(D.Number),
