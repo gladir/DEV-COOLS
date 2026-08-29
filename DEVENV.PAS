@@ -10608,6 +10608,9 @@ Procedure DOS_LoadState(Var Snap: TDOSSnapshot); Forward;
 { definie AVANT TermFindNesRom (pres de TermFindDosExecutable, ~40800)     }
 { dans ce fichier - Forward requis. }
 Function TermFindNesRom(Const Dir, CmdName: String): String; Forward;
+{ Meme raison (2026-08-29) : commandes ATARI2600/C64/COCO3/WIN16. }
+Function TermFindRomByExt(Const Dir, CmdName, Ext: String): String; Forward;
+Function TermFindCoco3Rom(Const Dir, CmdName: String): String; Forward;
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : sauvegarde/restauration }
 { de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
 Procedure Win16_SaveVideoState; Forward;
@@ -36638,6 +36641,111 @@ Begin
  CreateEmulatorTab(RomPath, '-CNES', '');
 End;
 
+{ --- ATARI2600 / ATARI2600VCS, C64 / COMMODORE64, COCO3, WIN / WIN16 --- }
+{ (2026-08-29, demande explicite de l utilisateur, meme principe et meme  }
+{ portee que NES ci-dessus - hote uniquement, resolution du repertoire     }
+{ courant identique : GetDir(0,...) pour "Invite de commandes", TP.VirtCwd }
+{ pour "Norton Commander"). }
+Procedure TermCmd_Atari2600(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ATARI2600 fichier.a26');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'ATARI2600 : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'A26');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CATARI2600', '');
+End;
+
+{ C64 est le SEUL des 5 (avec NES/ATARI2600/COCO3/WIN16) a accepter un      }
+{ nom de fichier VIDE - demande explicite de l utilisateur : "Si le        }
+{ fichier n est pas specifie, il tombe dans le BASIC en ROM du C64" -      }
+{ EXACTEMENT ce que fait un vrai C64 sans disquette inseree. Necessitait   }
+{ un vrai correctif dans `C64_Boot` (voir plus haut dans ce fichier) qui   }
+{ jusqu ici sortait en echec (Exit) AVANT de lire le vecteur RESET du       }
+{ KERNAL des qu aucun fichier valide ne s ouvrait - `CreateEmulatorTab`    }
+{ avec un chemin vide fonctionne donc desormais correctement pour '-CC64'. }
+Procedure TermCmd_C64(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  CreateEmulatorTab('', '-CC64', '');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'C64 : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'PRG');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CC64', '');
+End;
+
+Procedure TermCmd_Coco3(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : COCO3 fichier');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'COCO3 : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ RomPath := TermFindCoco3Rom(Dir, CurrParam);
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CCOCO3', '');
+End;
+
+Procedure TermCmd_Win16Launch(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, ExePath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : WIN16 fichier.exe');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'WIN16 : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ ExePath := TermFindRomByExt(Dir, CurrParam, 'EXE');
+ If ExePath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(ExePath, '-CWIN16', '');
+End;
+
 { --- ELFBP (etape 8 : debogueur minimal pour l emulateur Linux ELF64) --- }
 { Regle (ou desactive) un point d arret par adresse : la prochaine fois   }
 { qu un binaire ELF64 est lance dans ce terminal, son execution s arrete  }
@@ -40844,6 +40952,59 @@ Begin
  If FileExists(Candidate) Then TermFindNesRom := Candidate;
 End;
 
+{ Version GENERIQUE de TermFindNesRom ci-dessus (meme principe exact,     }
+{ parametree par l extension) - reutilisee par les commandes ATARI2600     }
+{ (.A26), C64 (.PRG) et WIN16 (.EXE), 2026-08-29. }
+Function TermFindRomByExt(Const Dir, CmdName, Ext: String): String;
+Var
+ Base, UpName, UpExt, Candidate: String;
+Begin
+ TermFindRomByExt := '';
+ Base := Dir;
+ If (Length(CmdName) >= 2) And (CmdName[2] = ':') Then Base := '';
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ UpName := UpCaseStr(CmdName);
+ UpExt := UpCaseStr(Ext);
+ If (Length(UpName) > Length(UpExt)) And
+    (Copy(UpName, Length(UpName) - Length(UpExt), Length(UpExt) + 1)
+     = '.' + UpExt) Then Begin
+  Candidate := Base + CmdName;
+  If FileExists(Candidate) Then TermFindRomByExt := Candidate;
+  Exit;
+ End;
+ Candidate := Base + CmdName + '.' + Ext;
+ If FileExists(Candidate) Then TermFindRomByExt := Candidate;
+End;
+
+{ CoCo3 n a pas UNE seule extension canonique (cartouches .PAK/.ROM,       }
+{ binaires DECB souvent .BIN ou sans convention stricte) - essaie les 3    }
+{ plus courantes dans l ordre, sinon le nom tel quel s il a deja une        }
+{ extension explicite (meme esprit que les autres TermFind*, mais avec     }
+{ plusieurs candidats plutot qu un seul). }
+Function TermFindCoco3Rom(Const Dir, CmdName: String): String;
+Var
+ Base: String;
+Begin
+ Base := Dir;
+ If (Length(CmdName) >= 2) And (CmdName[2] = ':') Then Base := '';
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ If Pos('.', CmdName) > 0 Then Begin
+  TermFindCoco3Rom := '';
+  If FileExists(Base + CmdName) Then TermFindCoco3Rom := Base + CmdName;
+  Exit;
+ End;
+ If FileExists(Base + CmdName + '.ROM') Then Begin
+  TermFindCoco3Rom := Base + CmdName + '.ROM'; Exit;
+ End;
+ If FileExists(Base + CmdName + '.PAK') Then Begin
+  TermFindCoco3Rom := Base + CmdName + '.PAK'; Exit;
+ End;
+ If FileExists(Base + CmdName + '.BIN') Then Begin
+  TermFindCoco3Rom := Base + CmdName + '.BIN'; Exit;
+ End;
+ TermFindCoco3Rom := '';
+End;
+
 { Cherche un .PRG executable pour CmdName tape dans un shell terminal -   }
 { soit sur le disque HOTE (TP.VirtDrive<0, dans Dir, tranche entre               }
 { Commodore 64 et Atari ST par signature GEMDOS, voir NCIsAtariSTPrg),      }
@@ -41152,6 +41313,14 @@ Begin
     TermCmd_BOOT(TP, ParamStr)
    Else If CurrCmd = 'NES' Then
     TermCmd_NES(TP, ParamStr)
+   Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
+    TermCmd_Atari2600(TP, ParamStr)
+   Else If (CurrCmd = 'C64') Or (CurrCmd = 'COMMODORE64') Then
+    TermCmd_C64(TP, ParamStr)
+   Else If CurrCmd = 'COCO3' Then
+    TermCmd_Coco3(TP, ParamStr)
+   Else If (CurrCmd = 'WIN') Or (CurrCmd = 'WIN16') Then
+    TermCmd_Win16Launch(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
    Else If CurrCmd = 'ELFBP' Then
@@ -41480,6 +41649,14 @@ Begin
    TermCmd_BOOT(TP, ParamStr)
   Else If CurrCmd = 'NES' Then
    TermCmd_NES(TP, ParamStr)
+  Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
+   TermCmd_Atari2600(TP, ParamStr)
+  Else If (CurrCmd = 'C64') Or (CurrCmd = 'COMMODORE64') Then
+   TermCmd_C64(TP, ParamStr)
+  Else If CurrCmd = 'COCO3' Then
+   TermCmd_Coco3(TP, ParamStr)
+  Else If (CurrCmd = 'WIN') Or (CurrCmd = 'WIN16') Then
+   TermCmd_Win16Launch(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
   Else If CurrCmd = 'ELFBP' Then
@@ -79043,68 +79220,85 @@ Begin
  C64_Port00 := $2F;
  C64_Port01 := $37;
  C64_SyncBanks;
- Assign(F, BinaryPath);
- {$I-} Reset(F, 1); {$I+}
- If IOResult <> 0 Then Exit;
- BlockRead(F, Hdr, 2, BR);
- If BR <> 2 Then Begin Close(F); Exit; End;
- LoadAddr := Hdr[0] Or (Word(Hdr[1]) Shl 8);
- Addr := LoadAddr;
- C64_PendingPrgLoadAddr := LoadAddr;
- While Not Eof(F) Do Begin
-  BlockRead(F, B, 1, BR);
-  If BR = 1 Then Begin
-   CPU6502_Write(Addr, B);
-   { Garder aussi une copie brute pour C64_ReplayPendingPrg (voir plus bas  }
-   { et le commentaire pres de C64_PendingPrgData) - le rejeu se fait juste }
-   { avant l execution reelle, pour survivre a un eventuel nettoyage de     }
-   { cette meme zone memoire par le demarrage KERNAL lui-meme. }
-   If C64_PendingPrgLen <= High(C64_PendingPrgData) Then Begin
-    C64_PendingPrgData[C64_PendingPrgLen] := B;
-    Inc(C64_PendingPrgLen);
+ { BOGUE REEL (2026-08-29) signale par l utilisateur : la commande        }
+ { Terminal "C64" SANS nom de fichier ("tombe dans le BASIC en ROM")      }
+ { echouait completement - `Assign(F,'')` + `Reset` sur un chemin vide     }
+ { retourne toujours IOResult<>0, ce qui faisait `Exit` ICI, AVANT la      }
+ { lecture du VRAI vecteur RESET du KERNAL ($FFFC/$FFFD, tout en bas de   }
+ { cette fonction) - la machine ne demarrait donc jamais du tout (PC      }
+ { reste a 0, jamais mis a jour) au lieu d afficher la banniere BASIC       }
+ { authentique et REALDY. comme le ferait un vrai C64 sans disquette       }
+ { inseree. Isole desormais tout le chargement de fichier (et l injection }
+ { RUN/SYS qui n a de sens que s il y a reellement un programme) dans ce   }
+ { `If BinaryPath <> '' Then Begin...End` - la lecture du vecteur RESET     }
+ { reste, elle, INCONDITIONNELLE (toujours executee, fichier ou non). }
+ If BinaryPath <> '' Then Begin
+  Assign(F, BinaryPath);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  BlockRead(F, Hdr, 2, BR);
+  If BR <> 2 Then Begin Close(F); Exit; End;
+  LoadAddr := Hdr[0] Or (Word(Hdr[1]) Shl 8);
+  Addr := LoadAddr;
+  C64_PendingPrgLoadAddr := LoadAddr;
+  While Not Eof(F) Do Begin
+   BlockRead(F, B, 1, BR);
+   If BR = 1 Then Begin
+    CPU6502_Write(Addr, B);
+    { Garder aussi une copie brute pour C64_ReplayPendingPrg (voir plus bas  }
+    { et le commentaire pres de C64_PendingPrgData) - le rejeu se fait juste }
+    { avant l execution reelle, pour survivre a un eventuel nettoyage de     }
+    { cette meme zone memoire par le demarrage KERNAL lui-meme. }
+    If C64_PendingPrgLen <= High(C64_PendingPrgData) Then Begin
+     C64_PendingPrgData[C64_PendingPrgLen] := B;
+     Inc(C64_PendingPrgLen);
+    End;
+    If Addr < $FFFF Then Inc(Addr) Else Break;
    End;
-   If Addr < $FFFF Then Inc(Addr) Else Break;
+  End;
+  Close(F);
+  { Point d entree apres le demarrage : PRIORITE au saut direct (fiable,   }
+  { deterministe) quand le fichier suit la convention standard "10 SYS     }
+  { xxxx" (stub BASIC de 12 octets a $0801, ligne+numero+token SYS $9E,    }
+  { toujours suivi du code machine a $080D - vrai pour la quasi-totalite   }
+  { des .PRG langage machine reels) ou charge directement en langage        }
+  { machine pur (adresse <> $0801). Reserve a "taper RUN au clavier"        }
+  { (moins fiable - voir C64_ApplyAutoType, BOGUE REEL 2026-08-14 :          }
+  { CHRIN/l editeur ecran du KERNAL ne lit PAS simplement le tampon           }
+  { clavier bas niveau, la simulation de frappe ne s est pas averee            }
+  { fiable a 100% pendant la mise au point) le seul cas ou aucune adresse    }
+  { d entree fiable n existe : un vrai programme BASIC tokenise SANS           }
+  { stub SYS, ou un fichier $0801 avec un stub non standard. }
+  { Repli "frappe simulee" (2026-08-15) : voir C64_RunOneFrame et le           }
+  { commentaire pres de C64_PendingJumpTimeout - arme un texte de repli        }
+  { PRET A DEMARRER si le saut direct n a jamais atteint $E5CD apres 600       }
+  { trames (~12s a 50 Hz, largement superieur au demarrage KERNAL le plus       }
+  { lent observe - marge volontairement genereuse). Sans effet pour le          }
+  { KERNAL Commodore ORIGINAL (le saut se declenche bien avant), necessaire     }
+  { pour toute ROM tierce dont la mise en page interne ne passe jamais par      }
+  { $E5CD (ex. Pascual's BASIC). }
+  If LoadAddr <> $0801 Then Begin
+   C64_PendingJumpPC := LoadAddr;
+   C64_PendingVartab := 0;
+   C64_PendingJumpTimeout := 600;
+   C64_PendingInjectFallback := 'SYS' + IntToStr(LoadAddr) + Chr(13);
+  End Else If CPU6502_Mem[$0805] = $9E Then Begin
+   C64_PendingJumpPC := $080D; { convention standard "10 SYS 2061" }
+   C64_PendingVartab := Addr;
+   C64_PendingJumpTimeout := 600;
+   C64_PendingInjectFallback := 'RUN' + Chr(13);
+  End Else Begin
+   C64_PendingJumpPC := 0;
+   C64_PendingJumpTimeout := 0;
+   C64_PendingVartab := Addr;
+   InjectStr := 'RUN' + Chr(13);
+   If Length(InjectStr) > 10 Then InjectStr := Copy(InjectStr, 1, 10);
+   C64_PendingInject := InjectStr;
   End;
  End;
- Close(F);
- { Point d entree apres le demarrage : PRIORITE au saut direct (fiable,   }
- { deterministe) quand le fichier suit la convention standard "10 SYS     }
- { xxxx" (stub BASIC de 12 octets a $0801, ligne+numero+token SYS $9E,    }
- { toujours suivi du code machine a $080D - vrai pour la quasi-totalite   }
- { des .PRG langage machine reels) ou charge directement en langage        }
- { machine pur (adresse <> $0801). Reserve a "taper RUN au clavier"        }
- { (moins fiable - voir C64_ApplyAutoType, BOGUE REEL 2026-08-14 :          }
- { CHRIN/l editeur ecran du KERNAL ne lit PAS simplement le tampon           }
- { clavier bas niveau, la simulation de frappe ne s est pas averee            }
- { fiable a 100% pendant la mise au point) le seul cas ou aucune adresse    }
- { d entree fiable n existe : un vrai programme BASIC tokenise SANS           }
- { stub SYS, ou un fichier $0801 avec un stub non standard. }
- { Repli "frappe simulee" (2026-08-15) : voir C64_RunOneFrame et le           }
- { commentaire pres de C64_PendingJumpTimeout - arme un texte de repli        }
- { PRET A DEMARRER si le saut direct n a jamais atteint $E5CD apres 600       }
- { trames (~12s a 50 Hz, largement superieur au demarrage KERNAL le plus       }
- { lent observe - marge volontairement genereuse). Sans effet pour le          }
- { KERNAL Commodore ORIGINAL (le saut se declenche bien avant), necessaire     }
- { pour toute ROM tierce dont la mise en page interne ne passe jamais par      }
- { $E5CD (ex. Pascual's BASIC). }
- If LoadAddr <> $0801 Then Begin
-  C64_PendingJumpPC := LoadAddr;
-  C64_PendingVartab := 0;
-  C64_PendingJumpTimeout := 600;
-  C64_PendingInjectFallback := 'SYS' + IntToStr(LoadAddr) + Chr(13);
- End Else If CPU6502_Mem[$0805] = $9E Then Begin
-  C64_PendingJumpPC := $080D; { convention standard "10 SYS 2061" }
-  C64_PendingVartab := Addr;
-  C64_PendingJumpTimeout := 600;
-  C64_PendingInjectFallback := 'RUN' + Chr(13);
- End Else Begin
-  C64_PendingJumpPC := 0;
-  C64_PendingJumpTimeout := 0;
-  C64_PendingVartab := Addr;
-  InjectStr := 'RUN' + Chr(13);
-  If Length(InjectStr) > 10 Then InjectStr := Copy(InjectStr, 1, 10);
-  C64_PendingInject := InjectStr;
- End;
+ { Vecteur RESET du KERNAL - INCONDITIONNEL (voir commentaire ci-dessus) : }
+ { avec ou sans programme, c est ce qui fait reellement demarrer la        }
+ { machine (banniere BASIC authentique + READY. si BinaryPath est vide). }
  EntryAddr := CPU6502_Mem[$FFFC] Or (Word(CPU6502_Mem[$FFFD]) Shl 8);
  C64_Boot := True;
 End;
