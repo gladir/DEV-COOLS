@@ -131,6 +131,17 @@ End;
 
 Procedure ParsePerlOr(Var V:TPerlValue);Forward;
 
+Function PerlArcTan2(Y,X:Real):Real;
+Const PerlPi=3.14159265358979323846;
+Begin
+ If X>0Then PerlArcTan2:=ArcTan(Y/X)
+ Else If(X<0)and(Y>=0)Then PerlArcTan2:=ArcTan(Y/X)+PerlPi
+ Else If(X<0)and(Y<0)Then PerlArcTan2:=ArcTan(Y/X)-PerlPi
+ Else If(X=0)and(Y>0)Then PerlArcTan2:=PerlPi/2
+ Else If(X=0)and(Y<0)Then PerlArcTan2:=-PerlPi/2
+ Else PerlArcTan2:=0;
+End;
+
 Procedure ParsePerlPrimary(Var V:TPerlValue);
 Var Q:Char;S,Name:String;N:Real;Code:Integer;A,B,C:TPerlValue;
 Begin
@@ -175,6 +186,8 @@ Begin
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=')')Then Inc(ExprPosition);
    Name:=StrToUpper(Name);
    If Name='ABS'Then PerlNumber(Abs(A.Number),V)
+   Else If Name='ATAN2'Then PerlNumber(PerlArcTan2(A.Number,B.Number),V)
+   Else If Name='COS'Then PerlNumber(Cos(A.Number),V)
    Else If Name='INT'Then PerlNumber(Trunc(A.Number),V) Else
    If Name='SQRT'Then PerlNumber(Sqrt(A.Number),V) Else
    If Name='LENGTH'Then PerlNumber(Length(A.Text),V) Else
