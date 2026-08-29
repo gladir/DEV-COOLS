@@ -1238,6 +1238,26 @@ Begin
  SubWordText:=Copy(SourceText,StartPosition,EndPosition-StartPosition+1);
 End;
 
+Function WordStartIndex(SourceText:String;RequestedWord:LongInt):Integer;
+Var CharacterPosition:Integer;CurrentWord:LongInt;
+Begin
+ WordStartIndex:=0;
+ If RequestedWord<1Then Exit;
+ CharacterPosition:=1;CurrentWord:=0;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Exit;
+  Inc(CurrentWord);
+  If CurrentWord=RequestedWord Then Begin
+   WordStartIndex:=CharacterPosition;
+   Exit;
+  End;
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+End;
+
 Function SpaceText(SourceText:String;SeparatorCount:LongInt;
  CountSpecified,PadSpecified:Boolean;PadText:String):String;
 Var CharacterPosition:Integer;AddedSeparators:LongInt;PadCharacter:Char;
@@ -1267,6 +1287,49 @@ Begin
   FirstWord:=False;
  End;
  SpaceText:=ResultText;
+End;
+
+Function CountWords(SourceText:String):Integer;
+Var CharacterPosition,WordCount:Integer;
+Begin
+ WordCount:=0;CharacterPosition:=1;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Begin
+   CountWords:=WordCount;
+   Exit;
+  End;
+  Inc(WordCount);
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+ CountWords:=WordCount;
+End;
+
+Function WordPhrasePosition(PhraseText,SourceText:String;StartWord:LongInt;
+ StartSpecified:Boolean):Integer;
+Var PhraseWords,SourceWords,Candidate,LastCandidate:Integer;
+ NormalizedPhrase,NormalizedCandidate:String;
+Begin
+ WordPhrasePosition:=0;
+ NormalizedPhrase:=SpaceText(PhraseText,1,True,False,'');
+ PhraseWords:=CountWords(NormalizedPhrase);
+ If PhraseWords=0Then Exit;
+ If Not StartSpecified Then StartWord:=1;
+ If StartWord<1Then Exit;
+ SourceWords:=CountWords(SourceText);
+ LastCandidate:=SourceWords-PhraseWords+1;
+ Candidate:=StartWord;
+ While Candidate<=LastCandidate Do Begin
+  NormalizedCandidate:=SpaceText(SubWordText(SourceText,Candidate,
+   PhraseWords,True),1,True,False,'');
+  If NormalizedCandidate=NormalizedPhrase Then Begin
+   WordPhrasePosition:=Candidate;
+   Exit;
+  End;
+  Inc(Candidate);
+ End;
 End;
 
 Function StripText(SourceText,OptionText,StripCharacterText:String;
@@ -1311,6 +1374,23 @@ Begin
   End;
  End;
  TranslateText:=SourceText;
+End;
+
+Function XRangeText(StartText,EndText:String;ArgumentCount:Integer):String;
+Var CurrentValue,FinalValue:Byte;GeneratedCount:Integer;ResultText:String;
+Begin
+ If(ArgumentCount>0)and(StartText<>'')Then CurrentValue:=Ord(StartText[1])
+ Else CurrentValue:=0;
+ If(ArgumentCount>1)and(EndText<>'')Then FinalValue:=Ord(EndText[1])
+ Else FinalValue:=255;
+ ResultText:='';GeneratedCount:=0;
+ Repeat
+  ResultText:=ResultText+Chr(CurrentValue);
+  Inc(GeneratedCount);
+  If(CurrentValue=FinalValue)or(GeneratedCount>=255)Then Break;
+  If CurrentValue=255Then CurrentValue:=0 Else Inc(CurrentValue);
+ Until False;
+ XRangeText:=ResultText;
 End;
 
 Function NormalizeTraceSetting(SettingText:String):String;
@@ -1533,7 +1613,9 @@ Begin
 End;
 
 Procedure EPrimary(Var ResultValue:RexxValue);
-Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength:Integer;FunctionByte:Byte;A,B,D,E:RexxValue;
+Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength,LocalInvokeCount:Integer;
+ FunctionByte:Byte;A,B,D,E:RexxValue;
+ LocalInvokeArgs:Array[1..MaxRoutineArgs]of String;
 Begin
  ESkip;
  If ExprPos>Length(ExprText)Then Begin
@@ -1577,12 +1659,14 @@ Begin
  End;
  ESkip;
  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
-  Inc(ExprPos);InvokeArgCount:=0;ESkip;
-  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>')')and(InvokeArgCount<MaxRoutineArgs)do Begin
-   ECompare(A);Inc(InvokeArgCount);InvokeArgs[InvokeArgCount]:=A.Text;ESkip;
+  Inc(ExprPos);LocalInvokeCount:=0;ESkip;
+  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>')')and(LocalInvokeCount<MaxRoutineArgs)do Begin
+   ECompare(A);Inc(LocalInvokeCount);LocalInvokeArgs[LocalInvokeCount]:=A.Text;ESkip;
    If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);ESkip;End Else Break;
   End;
   If ExprPos<=Length(ExprText)Then If ExprText[ExprPos]=')'Then Inc(ExprPos);
+  InvokeArgCount:=LocalInvokeCount;
+  For J:=1 To InvokeArgCount Do InvokeArgs[J]:=LocalInvokeArgs[J];
   If InvokeArgCount>0Then RVText(InvokeArgs[1],A)Else RVText('',A);
   If InvokeArgCount>1Then RVText(InvokeArgs[2],B)Else RVText('',B);
   If InvokeArgCount>2Then RVText(InvokeArgs[3],D)Else RVText('',D);
@@ -1794,11 +1878,14 @@ Begin
    140:FunctionNotImplemented(FunctionByte,ResultValue); { VERIFY }
    141:RVText(SubWordText(A.Text,System.Trunc(B.Number),1,True),
     ResultValue); { WORD }
-   142:FunctionNotImplemented(FunctionByte,ResultValue); { WORDINDEX }
-   143:FunctionNotImplemented(FunctionByte,ResultValue); { WORDLENGTH }
-   144:FunctionNotImplemented(FunctionByte,ResultValue); { WORDPOS }
-   145:FunctionNotImplemented(FunctionByte,ResultValue); { WORDS }
-   146:FunctionNotImplemented(FunctionByte,ResultValue); { XRANGE }
+   142:RVNum(WordStartIndex(A.Text,System.Trunc(B.Number)),
+    ResultValue); { WORDINDEX }
+   143:RVNum(Length(SubWordText(A.Text,System.Trunc(B.Number),1,True)),
+    ResultValue); { WORDLENGTH }
+   144:RVNum(WordPhrasePosition(A.Text,B.Text,System.Trunc(D.Number),
+    InvokeArgCount>2),ResultValue); { WORDPOS }
+   145:RVNum(CountWords(A.Text),ResultValue); { WORDS }
+   146:RVText(XRangeText(A.Text,B.Text,InvokeArgCount),ResultValue); { XRANGE }
    147:FunctionNotImplemented(FunctionByte,ResultValue); { X2B }
    148:FunctionNotImplemented(FunctionByte,ResultValue); { X2C }
    149:FunctionNotImplemented(FunctionByte,ResultValue); { X2D }
