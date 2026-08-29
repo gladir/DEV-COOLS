@@ -36990,13 +36990,15 @@ Begin
    { contenu BRUT (avant patch) de CHAQUE maillon encode l'offset du       }
    { maillon SUIVANT (terminateur $FFFF), dans la MEME zone qui sera       }
    { ensuite reellement patchee. Format CONFIRME via le code source reel  }
-   { de Win3mu (Topten Software, `ApplyRelocations` dans Module16.cs,      }
-   { recupere via recherche web - jamais devine) : "while (offset !=      }
-   { 0xFFFF) { next := ReadWord(offset); Write(offset, value); offset :=  }
-   { next; }". Symptome exact observe AVANT ce correctif : un relogement   }
-   { KERNEL.LocalAlloc bien present et correctement resolu (verifie par   }
-   { WIN16CALL/WIN16RUN sur un AUTRE site d'appel du MEME import) ne       }
-   { patchait QUE le 1er site d'une chaine de 5 sites reels dans CLOCK.EXE }
+   { de Win3mu (Topten Software, fonction ApplyRelocations dans            }
+   { Module16.cs, recupere via recherche web - jamais devine) : tant que   }
+   { l'offset n'est pas $FFFF, lire le mot present (= offset du maillon    }
+   { suivant), ecrire la valeur resolue a cet emplacement, puis avancer    }
+   { vers ce maillon suivant. Symptome exact observe AVANT ce correctif :  }
+   { un relogement KERNEL.LocalAlloc bien present et correctement resolu  }
+   { (verifie via WIN16CALL/WIN16RUN sur un AUTRE site d'appel du MEME     }
+   { import) ne patchait QUE le 1er site d'une chaine de 5 sites reels     }
+   { dans CLOCK.EXE                                                       }
    { (0x0F6B->0x0F97->0x1047->0x0CB7->0x0D99), laissant les 4 autres avec  }
    { leurs octets de chainage originaux intacts - dont un terminateur      }
    { $FFFF:$0000 litteral qui ressemblait a un "CALL FAR" vers une adresse }
@@ -37303,6 +37305,18 @@ Begin
     End;
     ArgWords := 2;
    End;
+   7: Begin
+    { LocalFree(hMem):word - ordinal verifie via krnl386.exe16.spec.        }
+    { Retourne NULL(0) en cas de succes, le handle lui-meme en cas          }
+    { d'echec (convention reelle). Simplification DOCUMENTEE, coherente     }
+    { avec LocalAlloc (ordinal 5) ci-dessus : le tas local est un bump      }
+    { allocator qui ne recupere JAMAIS la memoire liberee - LocalFree       }
+    { rapporte donc toujours un succes SANS rien liberer reellement (aucun }
+    { programme normal ne peut distinguer ce cas d'un vrai free tant qu'il }
+    { ne re-epuise pas completement le tas, deja documente comme limite). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
    30: Begin
     { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
     { + task.c, source publique) : bloque la tache appelante jusqu'a ce     }
@@ -37340,6 +37354,23 @@ Begin
     { epuisee, non modelise ici). Retourne juste TRUE. }
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   173, 174, 175: Begin
+    { LoadCursor(173)/LoadIcon(174)/LoadBitmap(175)(hInstance, lpName):     }
+    { handle - 3 ordinaux VERIFIES via user.exe16.spec, MEME signature      }
+    { exacte tous les trois ("word str"). Rendu GDI reel HORS DE PORTEE     }
+    { (stretch goal Stage 6, jamais commence) - simplification DOCUMENTEE :}
+    { retourne un handle SYNTHETIQUE non-nul (le mot bas du pointeur/       }
+    { MAKEINTRESOURCE passe, quasi-toujours non-nul en pratique - un        }
+    { ressource systeme comme IDC_ARROW=$7F00 ou un vrai nom de ressource   }
+    { ont tous deux un offset non-nul) plutot que d'echouer honnetement -   }
+    { echouer (retourner 0) casserait immediatement RegisterClass qui       }
+    { accepte normalement ces handles sans jamais les deferencer avant un   }
+    { vrai rendu (hors de portee ici de toute facon). AUCUNE donnee         }
+    { d'image/curseur reelle n'est chargee. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If P.CPU.Regs.AX = 0 Then P.CPU.Regs.AX := 1;
+    ArgWords := 3;
    End;
    176: Begin
     { LoadString(hInstance, resource_id, lpBuffer, buflen):int - ordinal    }
@@ -37394,6 +37425,19 @@ Begin
     End;
     P.CPU.Regs.AX := Word(LSRetVal);
     ArgWords := 5;
+   End;
+   57: Begin
+    { RegisterClass(lpWndClass):atom - ordinal VERIFIE via user.exe16.spec.}
+    { Prend un seul pointeur far vers une structure WNDCLASS (2 mots :     }
+    { segment puis offset, comme tout pointeur far pousse par valeur).     }
+    { Creation de fenetre/rendu GDI reel HORS DE PORTEE (stretch goal      }
+    { Stage 6) - simplification DOCUMENTEE : ne parse PAS la structure     }
+    { WNDCLASS, retourne juste un atome synthetique non-nul (succes). Le   }
+    { code appelant ne fait typiquement que verifier "non-nul" avant de    }
+    { continuer vers CreateWindow (qui re-passe le NOM de la classe, pas   }
+    { cet atome, pour la retrouver - la valeur exacte importe rarement). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);

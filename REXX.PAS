@@ -1134,7 +1134,33 @@ Var HourValue,MinuteValue,SecondValue,HundredthValue:Word;
 Begin
  GetTime(HourValue,MinuteValue,SecondValue,HundredthValue);
  CurrentTimeSeconds:=HourValue*3600.0+MinuteValue*60.0+SecondValue+
-  HundredthValue/100.0;
+ HundredthValue/100.0;
+End;
+
+Procedure SysGetKeyValue(EchoOption:String;TimeoutSeconds:Real;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var EchoKey,HasTimeout:Boolean;KeyCharacter:Char;
+ StartTime,CurrentTime,ElapsedTime:Real;UpperOption:String;
+Begin
+ If ArgumentCount>2Then Begin RVText('',ResultValue);Exit;End;
+ If TimeoutSeconds<0Then Begin RVText('',ResultValue);Exit;End;
+ UpperOption:=StrToUpper(Clean(EchoOption));
+ EchoKey:=Not((UpperOption='N')or(UpperOption='NO')or
+  (UpperOption='NOECHO'));
+ HasTimeout:=(ArgumentCount>1)and(TimeoutSeconds>0);
+ StartTime:=CurrentTimeSeconds;
+ While Not KeyPressed Do Begin
+  If HasTimeout Then Begin
+   CurrentTime:=CurrentTimeSeconds;
+   ElapsedTime:=CurrentTime-StartTime;
+   If ElapsedTime<0Then ElapsedTime:=ElapsedTime+86400.0;
+   If ElapsedTime>=TimeoutSeconds Then Begin RVText('',ResultValue);Exit;End;
+  End;
+  Delay(1);
+ End;
+ KeyCharacter:=ReadKey;
+ If EchoKey Then Write(KeyCharacter);
+ RVText(KeyCharacter,ResultValue);
 End;
 
 Procedure TimeValue(OptionText:String;ArgumentCount:Integer;
@@ -1547,6 +1573,28 @@ Begin
   End;
  End;
  TranslateText:=SourceText;
+End;
+
+Function VerifyText(SourceText,ReferenceText,OptionText:String;
+ StartPosition:LongInt;OptionSpecified,StartSpecified:Boolean):Integer;
+Var CharacterPosition:Integer;OptionCharacter:Char;CharacterMatches:Boolean;
+Begin
+ VerifyText:=0;
+ If OptionSpecified and(OptionText<>'')Then OptionCharacter:=UpCase(OptionText[1])
+ Else OptionCharacter:='N';
+ If Not(OptionCharacter in['M','N'])Then Exit;
+ If Not StartSpecified Then StartPosition:=1;
+ If(StartPosition<1)or(StartPosition>Length(SourceText))Then Exit;
+ CharacterPosition:=StartPosition;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  CharacterMatches:=System.Pos(SourceText[CharacterPosition],ReferenceText)>0;
+  If((OptionCharacter='M')and CharacterMatches)or
+    ((OptionCharacter='N')and Not CharacterMatches)Then Begin
+   VerifyText:=CharacterPosition;
+   Exit;
+  End;
+  Inc(CharacterPosition);
+ End;
 End;
 
 Function XRangeText(StartText,EndText:String;ArgumentCount:Integer):String;
@@ -2006,7 +2054,7 @@ Begin
     ResultValue); { SYSFILESEARCH }
    96:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILESYSTEMTYPE }
    97:FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETEA }
-   98:FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETKEY }
+   98:SysGetKeyValue(A.Text,B.Number,InvokeArgCount,ResultValue); { SYSGETKEY }
    99:FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETMESSAGE }
    100:FunctionNotImplemented(FunctionByte,ResultValue); { SYSINI }
    101:FunctionNotImplemented(FunctionByte,ResultValue); { SYSLOADFUNCS }
@@ -2049,7 +2097,8 @@ Begin
    137:RVNum(System.Trunc(A.Number),ResultValue); { TRUNC }
    138:ValueFunction(A.Text,B.Text,D.Text,InvokeArgCount,ResultValue); { VALUE }
    139:FunctionNotImplemented(FunctionByte,ResultValue); { VAR }
-   140:FunctionNotImplemented(FunctionByte,ResultValue); { VERIFY }
+   140:RVNum(VerifyText(A.Text,B.Text,D.Text,System.Trunc(E.Number),
+    InvokeArgCount>2,InvokeArgCount>3),ResultValue); { VERIFY }
    141:RVText(SubWordText(A.Text,System.Trunc(B.Number),1,True),
     ResultValue); { WORD }
    142:RVNum(WordStartIndex(A.Text,System.Trunc(B.Number)),
@@ -2251,7 +2300,9 @@ Begin
  D:=1;J:=A;
  While J<=Z Do Begin
   U:=StrToUpper(Clean(PA[J]^));
-  If WordStart(U,'DO')or WordStart(U,'SELECT')or(System.Pos(' THEN DO',U)>0)or WordStart(U,'ELSE DO')Then Inc(D);
+  If WordStart(U,'DO')or WordStart(U,'SELECT')or
+    (System.Pos(' THEN DO',U)>0)or WordStart(U,'ELSE DO')or
+    WordStart(U,'OTHERWISE DO')Then Inc(D);
   If WordStart(U,'END')Then Begin
    Dec(D);
    If D=0Then Begin
@@ -2579,21 +2630,45 @@ Begin
    Act:=Clean(PA[K]^);
    If WordStart(Act,'WHEN')Then Begin
     P:=FindWord(Act,'THEN');
-    If(P>0)and Not Done Then Begin
-     Eval(Copy(Act,5,P-5),V);
-     If Truth(V)Then Begin
-      ExecOne(Copy(Act,P+4,255));
-      Done:=True;
+    If P=0Then Begin
+     WriteLn('THEN manquant ligne ',K);
+     Inc(K);
+    End Else Begin
+     C:=Clean(Copy(Act,P+4,255));
+     If StrToUpper(C)='DO'Then Begin
+      ToPos:=BlockEnd(K+1,E-1);
+      If Not Done Then Begin
+       Eval(Copy(Act,5,P-5),V);
+       If Truth(V)Then Begin
+        ExecRange(K+1,ToPos-1);
+        Done:=True;
+       End;
+      End;
+      K:=ToPos+1;
+     End Else Begin
+      If Not Done Then Begin
+       Eval(Copy(Act,5,P-5),V);
+       If Truth(V)Then Begin
+        ExecOne(C);
+        Done:=True;
+       End;
+      End;
+      Inc(K);
      End;
     End;
-   End
-    Else
-   If WordStart(Act,'OTHERWISE')and Not Done Then Begin
-    ExecOne(Copy(Act,10,255));
-    Done:=True;
-   End;
-   Inc(K);
+   End Else If WordStart(Act,'OTHERWISE')Then Begin
+    C:=Clean(Copy(Act,10,255));
+    If StrToUpper(C)='DO'Then Begin
+     ToPos:=BlockEnd(K+1,E-1);
+     If Not Done Then Begin ExecRange(K+1,ToPos-1);Done:=True;End;
+     K:=ToPos+1;
+    End Else Begin
+     If Not Done Then Begin ExecOne(C);Done:=True;End;
+     Inc(K);
+    End;
+   End Else Inc(K);
   End;
+  If Not Done Then WriteLn('WHEN ou OTHERWISE attendu ligne ',J);
   J:=E+1;
  End
   Else
