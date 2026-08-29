@@ -100963,10 +100963,36 @@ Begin
    { Alt+lettre : laisser HandleMenuEvent ouvrir le menu correspondant.
      Les scan codes Alt+lettre commencent par $11..$32 plage typique. }
    { Aussi les F-keys de debogage (F5/F9/F10/F11/Shift+F11/Shift+F5/Ctrl+F5)
-     et la touche F1 (aide) doivent atteindre les handlers globaux. }
+     et la touche F1 (aide) doivent atteindre les handlers globaux - mais
+     SEULEMENT quand l emulateur n a pas le focus ou que le debogueur est
+     en pause (meme condition que le cas Else generique juste plus bas).
+     BOGUE REEL (2026-08-29) signale par l utilisateur : ces codes
+     laissaient TOUJOURS passer inconditionnellement, meme quand
+     EmuHasFocus=True et EmuDbg.Paused=False - un vrai programme DOS TUI
+     comme Norton Commander (F1 Aide/F5 Copier/F10 Quitter, etc, exactement
+     les memes touches que les raccourcis de debogage de l IDE) ne recevait
+     donc JAMAIS ses propres F-keys tant que l emulateur avait le focus,
+     "vole" par les raccourcis globaux a la place. Alt+F4 ($6B) reste a
+     part : convention universelle "quitter l application hote" meme
+     quand un invite a le focus (aucun programme DOS legitime n en a
+     besoin), conservee dans la liste toujours-prioritaire ci-dessous. }
    Case Ev.KeyCode Of
-    $3B, $3F, $40, $43, $44, $58, $62, $6B, $85, $87:
-     ; { Laisser passer aux raccourcis globaux }
+    $6B:
+     ; { Alt+F4 : toujours prioritaire (quitter l IDE), voir commentaire }
+    $3B, $3F, $40, $43, $44, $58, $62, $85, $87:
+     Begin
+      If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus) Then
+       { Debogueur en pause, ou pas le focus emulateur : laisser passer
+         aux raccourcis globaux de debogage. }
+      Else Begin
+       HandleEmulatorPanelEvent(EmuPanel, Ev);
+       If Not EmuPanel.Base.Visible Then
+        FullRepaintNeeded := True
+       Else
+        DrawEmulatorPanel(EmuPanel);
+       Exit;
+      End;
+     End;
     $21, $12, $1E, $19, $22, $20, $18, $31, $17:
      { Si Alt est tenu, c est un Alt+lettre ; sinon clavier emulateur.
        Comme on ne sait pas l etat d Alt, on laisse passer en priorite
