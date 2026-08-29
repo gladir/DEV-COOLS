@@ -36641,6 +36641,10 @@ Procedure Emu_Done(Var C: TEmuCPU); Forward;
 Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
+Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
+Function Emu_PopWord(Var C: TEmuCPU): Word; Forward;
+{ Emu_ReadWord et Emu_StepOne ont deja un Forward plus haut (~ligne 10539/ }
+{ 10557) - pas la peine de le repeter ici (FPC refuse un Forward en double)}
 
 { Resout (ou reutilise) un emplacement de trappe pour la paire             }
 { (ModIdx, IsOrdinal, Value=ordinal-ou-offset-de-nom) - memes principes    }
@@ -36960,6 +36964,109 @@ Begin
  Win16_StackOfs := Hdr.ne_sp;
 
  Win16_LoadNE := True;
+End;
+
+{ Chantier Windows 16 bits, Stage 3 : arret propre et honnete sur un       }
+{ appel KERNEL/USER/GDI pas encore implante - meme discipline exacte que   }
+{ Lx_Halt pour OS/2 LX ("DOSCALLS non supporte : ..."). Ne devine JAMAIS   }
+{ un comportement pour un ordinal non verifie - un programme reel qui      }
+{ atteint ce point s arrete la, proprement, plutot que de corrompre sa     }
+{ pile avec un nombre d octets a depiler invente. }
+Procedure Win16_Halt(Var P: TEmulatorPanel; Const ModName: String; Ordinal: Word);
+Begin
+ P.CPU.Fault := sfEndProgram;
+ Win16_LastError := 'Appel non supporte : ' + ModName + '.' + IntToStr(Ordinal);
+End;
+
+{ Dispatcher reel des appels KERNEL/USER/GDI, atteint via le Case $F8 de   }
+{ Emu_DoInt (voir plus loin dans ce fichier) - Slot identifie la paire     }
+{ (Module, Ordinal) resolue au chargement (Win16_ImportModIdx/Ordinal/    }
+{ IsOrd, deja remplis par Win16_ResolveImportSlot au Stage 2). Portee      }
+{ VOLONTAIREMENT minimale (voir le plan) : seul le sous-ensemble KERNEL    }
+{ necessaire au tout debut de l initialisation d une tache Windows est     }
+{ implante avec un VRAI comportement verifie ; tout le reste (y compris    }
+{ USER/GDI en entier) s arrete proprement via Win16_Halt en identifiant    }
+{ exactement quel appel manque - a completer iterativement (Stage 5),      }
+{ meme methode "executer -> arret honnete -> corriger -> re-executer" que  }
+{ LOGDAEM.EXE pour OS/2 LX. Indices de MODULE bases sur l ordre           }
+{ EMPIRIQUEMENT verifie (Stage 1) sur CLOCK.EXE ET CALENDAR.EXE, tous deux }
+{ KERNEL=1/GDI=2/USER=3 - simplification documentee, PAS une garantie      }
+{ universelle du format NE (a revoir si un 3e fichier reel rompt cet ordre)}
+Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
+Var
+ ModIdx, Ordinal: Word;
+ IsOrd: Boolean;
+ RetIP, RetCS: Word;
+ ArgWords: Word;
+Begin
+ If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
+  P.CPU.Fault := sfEndProgram;
+  Win16_LastError := 'Slot de trappe invalide : ' + IntToStr(Slot);
+  Exit;
+ End;
+ ModIdx := Win16_ImportModIdx[Slot];
+ IsOrd := Win16_ImportIsOrd[Slot];
+ Ordinal := Win16_ImportValue[Slot];
+ ArgWords := 0;
+ If (Not IsOrd) Then Begin
+  Win16_Halt(P, 'import par nom (module #' + IntToStr(ModIdx) + ')', 0);
+  Exit;
+ End;
+ If ModIdx = 1 Then Begin { KERNEL }
+  Case Ordinal Of
+   91: Begin
+    { InitTask - convention REGISTRES verifiee (Raymond Chen, "How do      }
+    { 16-bit programs start up?", devblogs.microsoft.com/oldnewthing) :    }
+    { AUCUN argument sur la pile, tout passe par les registres. En ENTREE, }
+    { les registres sont deja ceux que "le chargeur" (nous, au Stage 4)    }
+    { a poses avant de sauter au point d'entree - AX=0 BX=taille-pile      }
+    { CX=taille-tas DX=inutilise SI=instance precedente DI=cette instance  }
+    { BP=0 DS=SS=segment de donnees automatique ES=selecteur PSP SP=haut   }
+    { de pile. En SORTIE (ce que cette branche doit poser) : AX=selecteur  }
+    { PSP (0=echec) BX=offset ligne de commande CX=limite de pile          }
+    { DX=nCmdShow BP=haut de pile (pour deroulement) ES=selecteur ligne de }
+    { commande - SI/DI/DS/SS INCHANGES (passes tels quels dans les deux    }
+    { sens d'apres la meme source). }
+    P.CPU.Regs.AX := 1;                  { PSP/selecteur non nul = succes }
+    { Ligne de commande vide : chaine DOS classique longueur-prefixee,     }
+    { ecrite a l offset 0 du segment de donnees (jamais lu par un          }
+    { programme normal a cet endroit precis, avant toute autre init). }
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, 0, 0);
+    P.CPU.Regs.BX := 0;
+    P.CPU.Regs.CX := 0;
+    P.CPU.Regs.DX := 1;                  { nCmdShow = SW_SHOWNORMAL        }
+    P.CPU.Regs.BP := P.CPU.Regs.SP;
+    P.CPU.Segs.ES := P.CPU.Segs.DS;
+    ArgWords := 0;
+   End;
+   3: Begin
+    { GetVersion - AL=version majeure, AH=version mineure (convention      }
+    { confirmee par de tres nombreux exemples de code source Windows 2.x/  }
+    { 3.x publics qui decodent AX de cette facon des le retour). }
+    P.CPU.Regs.AX := $0002; { "Windows 2.0" : AL=2 AH=0 }
+    ArgWords := 0;
+   End;
+   Else Begin
+    Win16_Halt(P, 'KERNEL', Ordinal);
+    Exit;
+   End;
+  End;
+ End Else Begin
+  Case ModIdx Of
+   2: Win16_Halt(P, 'GDI', Ordinal);
+   3: Win16_Halt(P, 'USER', Ordinal);
+   Else Win16_Halt(P, 'module #' + IntToStr(ModIdx), Ordinal);
+  End;
+  Exit;
+ End;
+ { Retour stdcall/pascal synthetique : depile l'adresse de retour puis     }
+ { ArgWords mots supplementaires - meme principe exact que                 }
+ { Lx_DoDosCall/Elf64_DoSyscall (aucun repassage par le decodeur reel).     }
+ RetIP := Emu_PopWord(P.CPU);
+ RetCS := Emu_PopWord(P.CPU);
+ P.CPU.Regs.SP := Word(P.CPU.Regs.SP + ArgWords * 2);
+ P.CPU.Segs.CS := RetCS;
+ P.CPU.IP := RetIP;
 End;
 
 Function Lx_ObjFlagsStr(F: LongInt): String;
@@ -38572,6 +38679,82 @@ Begin
  Emu_Done(C);
 End;
 
+{ Chantier Windows 16 bits, Stage 3 : WIN16CALL <chemin hote> - cadre      }
+{ d'appel SYNTHETIQUE (meme esprit exact que LXCALL pour OS/2 LX) qui       }
+{ confirme que le mecanisme de trappe INT $F8 atteint reellement le        }
+{ dispatcher et retourne correctement, SANS dependre du flux d'entree reel }
+{ du programme (Stage 4, pas encore cable). Cible KERNEL.InitTask          }
+{ (ordinal 91, deja implante avec un vrai comportement verifie au Stage 3) }
+{ puisque c'est le tout premier appel qu'un vrai programme Windows 16      }
+{ bits effectue. }
+Procedure TermCmd_Win16Call(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ SENTINEL_RET_CS = $5678;
+ SENTINEL_RET_IP = $1234;
+Var
+ Path: String;
+ P: TEmulatorPanel;
+ Slot: Integer;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : WIN16CALL <chemin hote vers un .exe>');
+  Exit;
+ End;
+ FillChar(P, SizeOf(P), 0);
+ Emu_InitComputer(P.CPU);
+ If Not P.CPU.MemReady Then Begin
+  TermAddLine(TP, 'WIN16CALL : memoire emulee non disponible.');
+  Exit;
+ End;
+ If Not Win16_LoadNE(P.CPU, Path) Then Begin
+  TermAddLine(TP, 'WIN16CALL : echec du chargement - ' + Win16_LastError);
+  Exit;
+ End;
+ { module #1 = KERNEL (verifie empiriquement, Stage 1/2), ordinal 91 =    }
+ { InitTask - reutilise le slot deja cree pendant le chargement s'il      }
+ { existe (CLOCK.EXE/CALENDAR.EXE importent tous deux InitTask), sinon en }
+ { cree un nouveau ici. }
+ Slot := Win16_ResolveImportSlot(P.CPU, 1, True, 91);
+ { Cadre d'appel synthetique : registres "loader" tels que documentes      }
+ { (Raymond Chen, "How do 16-bit programs start up?") juste avant          }
+ { InitTask, puis une adresse de retour sentinelle poussee a la main -     }
+ { imite un vrai CALL FAR sans executer le point d'entree reel (Stage 4). }
+ P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BX := 4096;              { taille de pile de test }
+ P.CPU.Regs.CX := 8192;              { taille de tas de test }
+ P.CPU.Regs.DX := 0;
+ P.CPU.Regs.SI := 0;
+ P.CPU.Regs.DI := 0;
+ P.CPU.Regs.BP := 0;
+ P.CPU.Segs.DS := Win16_StackSeg;
+ P.CPU.Segs.SS := Win16_StackSeg;
+ P.CPU.Regs.SP := Win16_StackOfs;
+ P.CPU.Segs.ES := 0;
+ { CALL FAR pousse CS puis IP (IP au sommet) - RETF depile IP puis CS,     }
+ { meme ordre exact que Win16_DispatchCall. }
+ Emu_PushWord(P.CPU, SENTINEL_RET_CS);
+ Emu_PushWord(P.CPU, SENTINEL_RET_IP);
+ P.CPU.Segs.CS := Win16_TrapSeg;
+ P.CPU.IP := Word(Slot * WIN16_TRAP_SLOT_SIZE);
+ TermAddLine(TP, 'WIN16CALL : KERNEL.InitTask (slot ' + IntToStr(Slot) +
+  ') via ' + HexWord(P.CPU.Segs.CS) + ':' + HexWord(P.CPU.IP) + '...');
+ Emu_StepOne(P);
+ If (P.CPU.Segs.CS = SENTINEL_RET_CS) And (P.CPU.IP = SENTINEL_RET_IP) Then Begin
+  TermAddLine(TP, '  OK : retour synthetique atteint (CS:IP=' +
+   HexWord(P.CPU.Segs.CS) + ':' + HexWord(P.CPU.IP) + ')');
+  TermAddLine(TP, '  AX=' + HexWord(P.CPU.Regs.AX) + ' BX=' + HexWord(P.CPU.Regs.BX) +
+   ' CX=' + HexWord(P.CPU.Regs.CX) + ' DX=' + HexWord(P.CPU.Regs.DX));
+  TermAddLine(TP, '  ES=' + HexWord(P.CPU.Segs.ES) + ' BP=' + HexWord(P.CPU.Regs.BP));
+ End Else
+  TermAddLine(TP, '  ECHEC : CS:IP=' + HexWord(P.CPU.Segs.CS) + ':' +
+   HexWord(P.CPU.IP) + ' (attendu ' + HexWord(SENTINEL_RET_CS) + ':' +
+   HexWord(SENTINEL_RET_IP) + ')');
+ If P.CPU.Fault <> 0 Then
+  TermAddLine(TP, '  (Fault=' + IntToStr(P.CPU.Fault) + ' : ' + Win16_LastError + ')');
+ Emu_Done(P.CPU);
+End;
+
 { LXLOAD <chemin> : appelle le vrai chargeur (Emu_LoadLX) et relit les     }
 { premiers octets de l objet de depart directement depuis LX_Mem, pour     }
 { verifier MECANIQUEMENT (sans avoir besoin d executer quoi que ce soit)   }
@@ -39624,6 +39807,8 @@ Begin
     TermCmd_Win16Info(TP, ParamStr)
    Else If CurrCmd = 'WIN16LOAD' Then
     TermCmd_Win16Load(TP, ParamStr)
+   Else If CurrCmd = 'WIN16CALL' Then
+    TermCmd_Win16Call(TP, ParamStr)
    Else If CurrCmd = 'LXLOAD' Then
     TermCmd_LXLoad(TP, ParamStr)
    Else If CurrCmd = 'LXSTEP' Then
@@ -63473,7 +63658,20 @@ Begin
  R := 0;
  BlockRead(EmuFloppyFile[Idx], Buf, 512, R);
  {$I+} If IOResult <> 0 Then Exit;
- Emu_ImageReadSector := (R = 512);
+ If R = 512 Then Begin
+  If (Buf[510] = $55) And (Buf[511] = $AA) And
+     ((Buf[0] = $EB) Or (Buf[0] = $E9)) Then Begin
+   If (Buf[24] = 0) And (Buf[25] = 0) And (EmuFloppySpt[Idx] > 0) Then Begin
+    Buf[24] := Byte(EmuFloppySpt[Idx] And $FF);
+    Buf[25] := Byte((EmuFloppySpt[Idx] Shr 8) And $FF);
+   End;
+   If (Buf[26] = 0) And (Buf[27] = 0) And (EmuFloppyHeads[Idx] > 0) Then Begin
+    Buf[26] := Byte(EmuFloppyHeads[Idx] And $FF);
+    Buf[27] := Byte((EmuFloppyHeads[Idx] Shr 8) And $FF);
+   End;
+  End;
+  Emu_ImageReadSector := True;
+ End;
 End;
 
 { Ecrire un secteur logique (LBA, disque entier) de l unite Idx.
@@ -63668,9 +63866,11 @@ Function Emu_DetectHardDiskGeometry(Idx: Byte;
  Var HeadsOut, SptOut: Word): Boolean;
 Var
  Mbr: Array[0..511] Of Byte;
+ Vbr: Array[0..511] Of Byte;
  POfs: Word;
  PType, EndHead, EndSecCylHi: Byte;
  Spt, Heads: Word;
+ PLBA: LongInt;
  I: Integer;
 Begin
  Emu_DetectHardDiskGeometry := False;
@@ -63679,12 +63879,26 @@ Begin
  For I := 0 To 3 Do Begin
   POfs := 446 + I * 16;
   PType := Mbr[POfs + 4];
-  If PType <> 0 Then Begin
+  PLBA  := LongInt(Mbr[POfs + 8]) Or (LongInt(Mbr[POfs + 9]) Shl 8) Or
+           (LongInt(Mbr[POfs + 10]) Shl 16) Or (LongInt(Mbr[POfs + 11]) Shl 24);
+  If (PType <> 0) And (PLBA > 0) Then Begin
+   { 1. Tenter de lire la geometrie BPB depuis le secteur de boot VBR (LBA PLBA) }
+   If Emu_ImageReadSector(Idx, PLBA, Vbr) Then Begin
+    Spt   := Word(Vbr[24]) Or (Word(Vbr[25]) Shl 8);
+    Heads := Word(Vbr[26]) Or (Word(Vbr[27]) Shl 8);
+    If (Spt >= 1) And (Spt <= 63) And (Heads >= 1) And (Heads <= 255) Then Begin
+     HeadsOut := Heads;
+     SptOut   := Spt;
+     Emu_DetectHardDiskGeometry := True;
+     Exit;
+    End;
+   End;
+   { 2. Repli : fin de partition CHS dans la table MBR }
    EndHead     := Mbr[POfs + 5];
    EndSecCylHi := Mbr[POfs + 6];
    Spt   := EndSecCylHi And $3F;
    Heads := Word(EndHead) + 1;
-   If (Spt >= 1) And (Spt <= 63) And (Heads >= 1) And (Heads <= 256) Then Begin
+   If (Spt >= 1) And (Spt <= 63) And (Heads >= 1) And (Heads <= 255) Then Begin
     HeadsOut := Heads;
     SptOut   := Spt;
     Emu_DetectHardDiskGeometry := True;
@@ -63755,7 +63969,7 @@ Begin
   EmuFloppySize[Idx] := 0;
   Exit;
  End;
- EmuFloppyHeads[Idx] := 16;
+ EmuFloppyHeads[Idx] := 255;
  EmuFloppySpt[Idx]   := 63;
  { Emu_DetectHardDiskGeometry a besoin de EmuFloppyOpen=True pour que      }
  { Emu_ImageReadSector accepte de lire (son tout premier garde-fou) - sans }
@@ -63765,9 +63979,15 @@ Begin
  { a la fin de cette procedure. }
  EmuFloppyOpen[Idx] := True;
  If Emu_DetectHardDiskGeometry(Idx, DetHeads, DetSpt) Then Begin
-  EmuFloppyHeads[Idx] := DetHeads;
-  EmuFloppySpt[Idx]   := DetSpt;
+  If (DetHeads >= 1) And (DetHeads <= 255) Then EmuFloppyHeads[Idx] := DetHeads;
+  If (DetSpt >= 1) And (DetSpt <= 63) Then EmuFloppySpt[Idx] := DetSpt;
  End;
+ If EmuFloppySize[Idx] > 500 * 1024 * 1024 Then Begin
+  EmuFloppyHeads[Idx] := 255;
+  EmuFloppySpt[Idx]   := 63;
+ End;
+ If EmuFloppySpt[Idx] < 1 Then EmuFloppySpt[Idx] := 63;
+ If EmuFloppyHeads[Idx] < 1 Then EmuFloppyHeads[Idx] := 16;
  EmuFloppyCyls[Idx]  := Word(VirtSec Div
   (LongInt(EmuFloppyHeads[Idx]) * EmuFloppySpt[Idx]));
  If EmuFloppyCyls[Idx] < 1 Then EmuFloppyCyls[Idx] := 1;
@@ -64242,16 +64462,22 @@ End;
 
 { Convertir un triplet CHS en LBA (offset secteur) selon la geometrie
   de l unite Idx. Retourne -1 si CHS hors limites. }
-Function Emu_FloppyCHS2LBA(Idx: Byte; Cyl, Head, Sect: Word): LongInt;
+ Function Emu_FloppyCHS2LBA(Idx: Byte; Cyl, Head, Sect: Word): LongInt;
+Var
+ LBA: LongInt;
+ TotalSec: LongInt;
+ H, S: Word;
 Begin
  Emu_FloppyCHS2LBA := -1;
  If Not EmuFloppyOpen[Idx] Then Exit;
- If (Sect < 1) Or (Sect > EmuFloppySpt[Idx]) Then Exit;
- If Head >= EmuFloppyHeads[Idx] Then Exit;
- If Cyl  >= EmuFloppyCyls[Idx]  Then Exit;
- Emu_FloppyCHS2LBA :=
-  ((LongInt(Cyl) * EmuFloppyHeads[Idx]) + Head) * EmuFloppySpt[Idx]
-  + (Sect - 1);
+ H := EmuFloppyHeads[Idx]; If H < 1 Then H := 255;
+ S := EmuFloppySpt[Idx];   If S < 1 Then S := 63;
+ If (Sect < 1) Or (Sect > S) Then Exit;
+ If Head >= H Then Exit;
+ LBA := ((LongInt(Cyl) * H) + Head) * S + (Sect - 1);
+ TotalSec := EmuFloppySize[Idx] Div 512;
+ If (LBA < 0) Or (LBA >= TotalSec) Then Exit;
+ Emu_FloppyCHS2LBA := LBA;
 End;
 
 { Lire NSect secteurs depuis l image Idx vers la memoire emulee
@@ -64460,7 +64686,11 @@ Begin
     Exit;
    End;
    NSect := AL;
-  If NSect = 0 Then NSect := 256;
+   If NSect = 0 Then Begin
+    Emu_Int13SetOK(P, Idx);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
    Cyl   := (P.CPU.Regs.CX Shr 8) Or
             ((P.CPU.Regs.CX And $00C0) Shl 2);
    Sect  := P.CPU.Regs.CX And $003F;
@@ -64498,11 +64728,11 @@ Begin
     Exit;
    End;
    NSect := AL;
-  If NSect = 0 Then Begin
-   Emu_Int13SetError(P, Idx, $01);
-   P.CPU.Regs.AL := 0;
-   Exit;
-  End;
+   If NSect = 0 Then Begin
+    Emu_Int13SetOK(P, Idx);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
    Cyl   := (P.CPU.Regs.CX Shr 8) Or
             ((P.CPU.Regs.CX And $00C0) Shl 2);
    Sect  := P.CPU.Regs.CX And $003F;
@@ -64526,11 +64756,11 @@ Begin
     Exit;
    End;
    NSect := AL;
-  If NSect = 0 Then Begin
-   Emu_Int13SetError(P, Idx, $01);
-   P.CPU.Regs.AL := 0;
-   Exit;
-  End;
+   If NSect = 0 Then Begin
+    Emu_Int13SetOK(P, Idx);
+    P.CPU.Regs.AL := 0;
+    Exit;
+   End;
    Cyl   := (P.CPU.Regs.CX Shr 8) Or
             ((P.CPU.Regs.CX And $00C0) Shl 2);
    Sect  := P.CPU.Regs.CX And $003F;
@@ -64573,6 +64803,8 @@ Begin
     P.CPU.Regs.DH := 0;
     Exit;
    End;
+   If IsHD And (EmuFloppySpt[Idx] < 1) Then EmuFloppySpt[Idx] := 63;
+   If IsHD And (EmuFloppyHeads[Idx] < 1) Then EmuFloppyHeads[Idx] := 16;
    P.CPU.Regs.BL := EmuFloppyType[Idx];
    P.CPU.Regs.CH := Byte((EmuFloppyCyls[Idx] - 1) And $FF);
    P.CPU.Regs.CL := Byte(((EmuFloppyCyls[Idx] - 1) Shr 2) And $C0)
@@ -69245,6 +69477,21 @@ Begin
        { pilote XMS, atteint uniquement via le trampoline installe par     }
        { Emu_XmsInit (jamais un vrai numero d interruption DOS/BIOS,       }
        { contrairement a $60/$7A - pas de repli generique necessaire). }
+  $F8: Begin
+   { Chantier Windows 16 bits, Stage 3 : point d entree de trappe KERNEL/   }
+   { USER/GDI - jamais un vrai numero d interruption DOS/BIOS/Windows      }
+   { (comme $FC/$FD/$FE ci-dessus), atteint UNIQUEMENT via les thunks      }
+   { CD F8 <slot:Word> CB ecrits par Win16_ResolveImportSlot (Stage 2).    }
+   { L index de slot suit immediatement l opcode INT dans le flux           }
+   { d instructions (P.CPU.IP y pointe deja - Emu_StepOne a deja avance    }
+   { IP au-dela de "CD F8" avant d appeler Emu_DoInt, meme convention que   }
+   { tout autre INT). PAS besoin d avancer IP nous-memes au-dela du slot :  }
+   { Win16_DispatchCall termine TOUJOURS par un retour synthetique complet }
+   { (depile lui-meme l adresse de retour et ECRASE P.CPU.IP avec elle) -  }
+   { le CB final du thunk n est donc JAMAIS reellement execute, pur filet  }
+   { de securite si jamais atteint par erreur. }
+   Win16_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
+  End;
   $67: Begin
    { N intercepter reellement que si la case "EMS" est cochee (EmuEms.     }
    { Active) - sinon, comportement identique a toute autre interruption    }
@@ -69673,19 +69920,35 @@ Var
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  InstructionIP := P.CPU.IP;
- If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = $14F1) And
-   (P.CPU.IP >= $007E) And (P.CPU.IP <= $0084) And
+ If (OptionsDlg.Data.DosLogDiag Or OptionsDlg.Data.DosLogInt13) And
+   (((P.CPU.Segs.CS = $14F1) And (P.CPU.IP >= $007E) And
+    (P.CPU.IP <= $0084)) Or
+    ((P.CPU.Segs.CS = $9000) And (P.CPU.IP <= $0700))) And
     (EmuSITraceCount < 2000) Then Begin
   {$I-} Assign(LogF_Dbg, 'EMUSI.LOG'); Append(LogF_Dbg);
   If IOResult <> 0 Then Begin Assign(LogF_Dbg, 'EMUSI.LOG'); Rewrite(LogF_Dbg); End;
-  WriteLn(LogF_Dbg, 'CS:IP=', P.CPU.Segs.CS, ':', P.CPU.IP,
-   ' OP=', Emu_FetchByte(P.CPU, 0),
-   ' DX=', P.CPU.Regs.DX, ' CX=', P.CPU.Regs.CX,
+  WriteLn(LogF_Dbg, HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP),
+   ' Bytes=', HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP)), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+1))), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+2))), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+3))), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+4))), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+5))), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+6))), ' ',
+              HexByte(Emu_ReadByte(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP+7))),
+   ' AX=', HexWord(P.CPU.Regs.AX),
+   ' BX=', HexWord(P.CPU.Regs.BX),
+   ' CX=', HexWord(P.CPU.Regs.CX),
+   ' DX=', HexWord(P.CPU.Regs.DX),
+   ' SI=', HexWord(P.CPU.Regs.SI),
+   ' DI=', HexWord(P.CPU.Regs.DI),
+   ' BP=', HexWord(P.CPU.Regs.BP),
+   ' SP=', HexWord(P.CPU.Regs.SP),
+   ' DS=', HexWord(P.CPU.Segs.DS),
+   ' ES=', HexWord(P.CPU.Segs.ES),
+   ' SS=', HexWord(P.CPU.Segs.SS),
    ' ZF=', Ord(EFG_ZF In P.CPU.Flags.s),
-   ' CF=', Ord(EFG_CF In P.CPU.Flags.s),
-   ' SI=', P.CPU.Regs.SI, ' ESI=', P.CPU.Regs.ESI,
-   ' BP=', P.CPU.Regs.BP, ' DS=', P.CPU.Segs.DS,
-   ' SS=', P.CPU.Segs.SS, ' AX=', P.CPU.Regs.AX);
+   ' CF=', Ord(EFG_CF In P.CPU.Flags.s));
   Close(LogF_Dbg); {$I+} If IOResult <> 0 Then ;
   Inc(EmuSITraceCount);
  End;
@@ -71460,8 +71723,8 @@ Begin
       P.CPU.Regs.ESI := SIL;
       P.CPU.Regs.EDI := DIL;
      End Else Begin
-      P.CPU.Regs.SI := Word(SIL);
-      P.CPU.Regs.DI := Word(DIL);
+      P.CPU.Regs.ESI := (P.CPU.Regs.ESI And $FFFF0000) Or Word(SIL);
+      P.CPU.Regs.EDI := (P.CPU.Regs.EDI And $FFFF0000) Or Word(DIL);
      End;
      Dec(Cnt);
      If RepPrefix <> 0 Then Begin
@@ -71961,7 +72224,8 @@ Begin
   $F6: { Group 3 byte : TEST/NOT/NEG/MUL/IMUL/DIV/IDIV rm8 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
     V8 := Emu_GetOpByte(P.CPU, Op);
     Case SubOp Of
@@ -72037,102 +72301,164 @@ Begin
         End;
     End;
     If P.CPU.Fault = sfDivision0 Then Begin
-      P.CPU.IP := InstructionIP;
-     P.CPU.Fault := sfNone;
      Emu_Div0Trap(P);
-        End Else
-      Inc(P.CPU.IP, 1 + Op.Len);
+    End Else
+     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $F7: { Group 3 word }
+  $F7: { Group 3 word/dword }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
-    V16 := Emu_GetOpWord(P.CPU, Op);
-    Case SubOp Of
-     0, 1: Begin { TEST rm16, imm16 }
-            Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
-             P.CPU.IP + 1 + Op.Len);
-            R16 := Emu_AluWord(P.CPU, 4, V16, Imm16);
-            Inc(P.CPU.IP, 3 + Op.Len);
-            Exit;
-           End;
-     2: Emu_PutOpWord(P.CPU, Op, Not V16);
-     3: Begin
-         R16 := Emu_AluWord(P.CPU, 5, 0, V16);
-         Emu_PutOpWord(P.CPU, Op, R16);
-        End;
-     4: Begin { MUL : DX:AX = AX * rm16 }
-         MulRes := LongInt(P.CPU.Regs.AX) * LongInt(V16);
-         P.CPU.Regs.AX := Word(MulRes);
-         P.CPU.Regs.DX := Word(MulRes Shr 16);
-         If P.CPU.Regs.DX <> 0 Then Begin
-          Include(P.CPU.Flags.s, EFG_CF);
-          Include(P.CPU.Flags.s, EFG_OF);
-         End Else Begin
-          Exclude(P.CPU.Flags.s, EFG_CF);
-          Exclude(P.CPU.Flags.s, EFG_OF);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_GetOpDWord(P.CPU, Op);
+     Case SubOp Of
+      0, 1: Begin { TEST rm32, imm32 }
+             S32 := Emu_ReadDWord(P.CPU, P.CPU.Segs.CS, Word(P.CPU.IP + 1 + Op.Len));
+             R32 := Emu_AluDWord(P.CPU, 4, V32, S32);
+             Inc(P.CPU.IP, 5 + Op.Len);
+             Exit;
+            End;
+      2: Emu_PutOpDWord(P.CPU, Op, Not V32);
+      3: Begin { NEG rm32 }
+          R32 := Emu_AluDWord(P.CPU, 5, 0, V32);
+          Emu_PutOpDWord(P.CPU, Op, R32);
          End;
-        End;
-     5: Begin { IMUL }
-         MulRes := LongInt(SmallInt(P.CPU.Regs.AX))
-                 * LongInt(SmallInt(V16));
-         P.CPU.Regs.AX := Word(MulRes);
-         P.CPU.Regs.DX := Word(MulRes Shr 16);
-         If (P.CPU.Regs.DX = 0) Or (P.CPU.Regs.DX = $FFFF) Then Begin
-          Exclude(P.CPU.Flags.s, EFG_CF);
-          Exclude(P.CPU.Flags.s, EFG_OF);
-         End Else Begin
-          Include(P.CPU.Flags.s, EFG_CF);
-          Include(P.CPU.Flags.s, EFG_OF);
-         End;
-        End;
-     6: Begin { DIV : DX:AX / rm16 }
-         If V16 = 0 Then Begin
-          Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
-          P.CPU.Fault := sfDivision0;
-         End
-         Else Begin
-          { Le dividende DX:AX est non signe ; ne pas le construire dans
-            un LongInt signe, car DX >= $8000 le rendrait negatif. }
-          MulRes64 := (Int64(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
-          If (MulRes64 Div Int64(V16)) > $FFFF
-           Then Begin
-            Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
-            P.CPU.Fault := sfDivision0;
-           End
-          Else Begin
-           P.CPU.Regs.AX := Word(MulRes64 Div Int64(V16));
-           P.CPU.Regs.DX := Word(MulRes64 Mod Int64(V16));
+      4: Begin { MUL : EDX:EAX = EAX * rm32 }
+          MulRes64 := Int64(LongWord(P.CPU.Regs.EAX)) * Int64(LongWord(V32));
+          P.CPU.Regs.EAX := LongInt(LongWord(MulRes64 And $FFFFFFFF));
+          P.CPU.Regs.EDX := LongInt(LongWord(MulRes64 Shr 32));
+          If P.CPU.Regs.EDX <> 0 Then Begin
+           Include(P.CPU.Flags.s, EFG_CF); Include(P.CPU.Flags.s, EFG_OF);
+          End Else Begin
+           Exclude(P.CPU.Flags.s, EFG_CF); Exclude(P.CPU.Flags.s, EFG_OF);
           End;
          End;
-        End;
-     7: Begin { IDIV }
-         If V16 = 0 Then Begin
-          Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
-          P.CPU.Fault := sfDivision0;
-         End
-         Else Begin
-          { IDIV etend le signe de DX dans le dividende 32 bits. }
-          MulRes64 := Int64(SmallInt(P.CPU.Regs.DX)) * 65536 +
-           Int64(P.CPU.Regs.AX);
-          If (MulRes64 Div Int64(SmallInt(V16)) > 32767) Or
-             (MulRes64 Div Int64(SmallInt(V16)) < -32768) Then Begin
-           Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
+      5: Begin { IMUL }
+          MulRes64 := Int64(P.CPU.Regs.EAX) * Int64(V32);
+          P.CPU.Regs.EAX := LongInt(LongWord(MulRes64 And $FFFFFFFF));
+          P.CPU.Regs.EDX := LongInt(LongWord(MulRes64 Shr 32));
+          If (P.CPU.Regs.EDX = 0) Or (P.CPU.Regs.EDX = -1) Then Begin
+           Exclude(P.CPU.Flags.s, EFG_CF); Exclude(P.CPU.Flags.s, EFG_OF);
+          End Else Begin
+           Include(P.CPU.Flags.s, EFG_CF); Include(P.CPU.Flags.s, EFG_OF);
+          End;
+         End;
+      6: Begin { DIV : EDX:EAX / rm32 }
+          If V32 = 0 Then Begin
+           Emu_Div0Snapshot(P, $F7, 6, V32, P.CPU.IP);
            P.CPU.Fault := sfDivision0;
           End Else Begin
-           P.CPU.Regs.AX := Word(MulRes64 Div Int64(SmallInt(V16)));
-           P.CPU.Regs.DX := Word(MulRes64 Mod Int64(SmallInt(V16)));
+           MulRes64 := (Int64(LongWord(P.CPU.Regs.EDX)) Shl 32) Or LongWord(P.CPU.Regs.EAX);
+           If (MulRes64 Div Int64(LongWord(V32))) > $FFFFFFFF Then Begin
+            Emu_Div0Snapshot(P, $F7, 6, V32, P.CPU.IP);
+            P.CPU.Fault := sfDivision0;
+           End Else Begin
+            P.CPU.Regs.EAX := LongInt(LongWord(MulRes64 Div Int64(LongWord(V32))));
+            P.CPU.Regs.EDX := LongInt(LongWord(MulRes64 Mod Int64(LongWord(V32))));
+           End;
           End;
          End;
-        End;
+      7: Begin { IDIV }
+          If V32 = 0 Then Begin
+           Emu_Div0Snapshot(P, $F7, 7, V32, P.CPU.IP);
+           P.CPU.Fault := sfDivision0;
+          End Else Begin
+           MulRes64 := (Int64(P.CPU.Regs.EDX) Shl 32) Or LongWord(P.CPU.Regs.EAX);
+           If (MulRes64 Div Int64(V32) > 2147483647) Or
+              (MulRes64 Div Int64(V32) < -2147483648) Then Begin
+            Emu_Div0Snapshot(P, $F7, 7, V32, P.CPU.IP);
+            P.CPU.Fault := sfDivision0;
+           End Else Begin
+            P.CPU.Regs.EAX := LongInt(LongWord(MulRes64 Div Int64(V32)));
+            P.CPU.Regs.EDX := LongInt(LongWord(MulRes64 Mod Int64(V32)));
+           End;
+          End;
+         End;
+     End;
+    End Else Begin
+     V16 := Emu_GetOpWord(P.CPU, Op);
+     Case SubOp Of
+      0, 1: Begin { TEST rm16, imm16 }
+             Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
+              P.CPU.IP + 1 + Op.Len);
+             R16 := Emu_AluWord(P.CPU, 4, V16, Imm16);
+             Inc(P.CPU.IP, 3 + Op.Len);
+             Exit;
+            End;
+      2: Emu_PutOpWord(P.CPU, Op, Not V16);
+      3: Begin
+          R16 := Emu_AluWord(P.CPU, 5, 0, V16);
+          Emu_PutOpWord(P.CPU, Op, R16);
+         End;
+      4: Begin { MUL : DX:AX = AX * rm16 }
+          MulRes := LongInt(P.CPU.Regs.AX) * LongInt(V16);
+          P.CPU.Regs.AX := Word(MulRes);
+          P.CPU.Regs.DX := Word(MulRes Shr 16);
+          If P.CPU.Regs.DX <> 0 Then Begin
+           Include(P.CPU.Flags.s, EFG_CF);
+           Include(P.CPU.Flags.s, EFG_OF);
+          End Else Begin
+           Exclude(P.CPU.Flags.s, EFG_CF);
+           Exclude(P.CPU.Flags.s, EFG_OF);
+          End;
+         End;
+      5: Begin { IMUL }
+          MulRes := LongInt(SmallInt(P.CPU.Regs.AX))
+                  * LongInt(SmallInt(V16));
+          P.CPU.Regs.AX := Word(MulRes);
+          P.CPU.Regs.DX := Word(MulRes Shr 16);
+          If (P.CPU.Regs.DX = 0) Or (P.CPU.Regs.DX = $FFFF) Then Begin
+           Exclude(P.CPU.Flags.s, EFG_CF);
+           Exclude(P.CPU.Flags.s, EFG_OF);
+          End Else Begin
+           Include(P.CPU.Flags.s, EFG_CF);
+           Include(P.CPU.Flags.s, EFG_OF);
+          End;
+         End;
+      6: Begin { DIV : DX:AX / rm16 }
+          If V16 = 0 Then Begin
+           Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
+           P.CPU.Fault := sfDivision0;
+          End
+          Else Begin
+           MulRes64 := (Int64(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+           If (MulRes64 Div Int64(V16)) > $FFFF
+            Then Begin
+             Emu_Div0Snapshot(P, $F7, 6, V16, P.CPU.IP);
+             P.CPU.Fault := sfDivision0;
+            End
+           Else Begin
+            P.CPU.Regs.AX := Word(MulRes64 Div Int64(V16));
+            P.CPU.Regs.DX := Word(MulRes64 Mod Int64(V16));
+           End;
+          End;
+         End;
+      7: Begin { IDIV }
+          If V16 = 0 Then Begin
+           Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
+           P.CPU.Fault := sfDivision0;
+          End
+          Else Begin
+           MulRes64 := Int64(SmallInt(P.CPU.Regs.DX)) * 65536 +
+            Int64(P.CPU.Regs.AX);
+           If (MulRes64 Div Int64(SmallInt(V16)) > 32767) Or
+              (MulRes64 Div Int64(SmallInt(V16)) < -32768) Then Begin
+            Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
+            P.CPU.Fault := sfDivision0;
+           End Else Begin
+            P.CPU.Regs.AX := Word(MulRes64 Div Int64(SmallInt(V16)));
+            P.CPU.Regs.DX := Word(MulRes64 Mod Int64(SmallInt(V16)));
+           End;
+          End;
+         End;
+     End;
     End;
     If P.CPU.Fault = sfDivision0 Then Begin
-      P.CPU.IP := InstructionIP;
-     P.CPU.Fault := sfNone;
      Emu_Div0Trap(P);
-        End Else
-      Inc(P.CPU.IP, 1 + Op.Len);
+    End Else
+     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   Else
    Begin

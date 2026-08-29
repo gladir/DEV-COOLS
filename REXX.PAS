@@ -1272,6 +1272,29 @@ Begin
  StripText:=SourceText;
 End;
 
+Function TranslateText(SourceText,OutputTable,InputTable,PadText:String;
+ ArgumentCount:Integer):String;
+Var CharacterPosition,TablePosition:Integer;PadCharacter:Char;
+Begin
+ If ArgumentCount<=1Then Begin
+  TranslateText:=StrToUpper(SourceText);
+  Exit;
+ End;
+ If(ArgumentCount>3)and(PadText<>'')Then PadCharacter:=PadText[1]
+ Else PadCharacter:=' ';
+ For CharacterPosition:=1 To Length(SourceText)Do Begin
+  If ArgumentCount>2Then
+   TablePosition:=System.Pos(SourceText[CharacterPosition],InputTable)
+  Else TablePosition:=Ord(SourceText[CharacterPosition])+1;
+  If TablePosition>0Then Begin
+   If TablePosition<=Length(OutputTable)Then
+    SourceText[CharacterPosition]:=OutputTable[TablePosition]
+   Else SourceText[CharacterPosition]:=PadCharacter;
+  End;
+ End;
+ TranslateText:=SourceText;
+End;
+
 Procedure SetLocalValue(Var ResultValue:RexxValue);
 Var SavedEnvironment:PLocalEnvironment;
 Begin
@@ -1723,7 +1746,8 @@ Begin
    133:FunctionNotImplemented(FunctionByte,ResultValue); { THEN }
    134:TimeValue(A.Text,InvokeArgCount,ResultValue); { TIME }
    135:FunctionNotImplemented(FunctionByte,ResultValue); { TRACE }
-   136:FunctionNotImplemented(FunctionByte,ResultValue); { TRANSLATE }
+   136:RVText(TranslateText(A.Text,B.Text,D.Text,E.Text,InvokeArgCount),
+    ResultValue); { TRANSLATE }
    137:RVNum(System.Trunc(A.Number),ResultValue); { TRUNC }
    138:FunctionNotImplemented(FunctionByte,ResultValue); { VALUE }
    139:FunctionNotImplemented(FunctionByte,ResultValue); { VAR }
