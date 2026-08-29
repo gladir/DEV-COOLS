@@ -1004,6 +1004,16 @@ Begin
  RVText(CurrentDirectory,ResultValue);
 End;
 
+Procedure SysDeleteFile(FilePath:String;Var ResultValue:RexxValue);
+Var TargetFile:File;ErrorCode:Integer;
+Begin
+ If FilePath=''Then Begin RVNum(2,ResultValue);Exit;End;
+ Assign(TargetFile,FilePath);
+ {$I-}Erase(TargetFile);{$I+}
+ ErrorCode:=IoResult;
+ RVNum(ErrorCode,ResultValue);
+End;
+
 Procedure SysMakeDirectory(DirectoryName:String;Var ResultValue:RexxValue);
 Var ErrorCode:Integer;
 Begin
@@ -1951,7 +1961,7 @@ Begin
    90:FunctionNotImplemented(FunctionByte,ResultValue); { SYSDRIVEMAP }
    91:FunctionNotImplemented(FunctionByte,ResultValue); { SYSDROPFUNCS }
    92:FunctionNotImplemented(FunctionByte,ResultValue); { SYSDROPREXXMACRO }
-   93:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILEDELETE }
+   93:SysDeleteFile(A.Text,ResultValue); { SYSFILEDELETE }
    94:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILETREE }
    95:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILESEARCH }
    96:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILESYSTEMTYPE }

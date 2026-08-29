@@ -6350,6 +6350,10 @@ Var
  Win16_HeapNext, Win16_HeapLimit: Word;  { bump allocator LocalAlloc,   }
                                           { dans le segment autodata     }
                                           { (Stage 5).                   }
+ Win16_LoadedPath     : String;          { pour relire la table de       }
+                                          { ressources a la demande       }
+                                          { (LoadString etc., Stage 5).   }
+ Win16_RsrcTabAbsOfs  : LongInt;         { 0 = pas de table de ressources}
  Win16_LastError      : String;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
@@ -37022,8 +37026,87 @@ Begin
   Win16_HeapNext := 0;
   Win16_HeapLimit := 0;
  End;
+ { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
+ { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
+ { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
+ { jamais toute la table pre-chargee en memoire). }
+ Win16_LoadedPath := Path;
+ If Hdr.ne_rsrctab <> 0 Then
+  Win16_RsrcTabAbsOfs := HdrOfs + Hdr.ne_rsrctab
+ Else
+  Win16_RsrcTabAbsOfs := 0;
 
  Win16_LoadNE := True;
+End;
+
+{ Chantier Windows 16 bits, Stage 5 (2026-08-29) : recherche une ressource  }
+{ NE par (TypeID, ResID) - format VERIFIE via l'OSDev wiki NE ("Resource    }
+{ Table" - AlignmentShiftCount puis une suite de blocs [TypeID:Word]        }
+{ [ResourceCount:Word][Reserved:LongInt] suivis de ResourceCount entrees    }
+{ [FileOffset:Word][Length:Word][Flags:Word][ID:Word][Reserved:LongInt],    }
+{ TypeID=0 termine la table). TypeID/ResID doivent deja porter le bit       }
+{ $8000 (identifiant entier, ex. $8006 = RT_STRING) - cette fonction ne     }
+{ gere PAS les identifiants sous forme de chaine (bit $8000 absent), hors   }
+{ de portee tant qu'aucun appel reel ne le demande. Relit le FICHIER a la   }
+{ demande (meme discipline que Win16_ResolveEntryOrdinal) plutot que de     }
+{ pre-charger toute la table. }
+Function Win16_FindResource(TypeID, ResID: Word; Var ResFileOfs: LongInt;
+ Var ResLen: LongInt): Boolean;
+Type
+ TNEResTypeHdr = Record
+  TypeID: Word;
+  ResourceCount: Word;
+  Reserved: LongInt;
+ End;
+ TNEResEntry = Record
+  FileOfsField: Word;
+  LenField: Word;
+  FlagsField: Word;
+  IDField: Word;
+  Reserved: LongInt;
+ End;
+Var
+ F: File;
+ BytesRead: Word;
+ AlignShift: Word;
+ TH: TNEResTypeHdr;
+ RE: TNEResEntry;
+ Pos: LongInt;
+ I: Integer;
+Begin
+ Win16_FindResource := False;
+ If Win16_RsrcTabAbsOfs = 0 Then Exit;
+ {$I-}
+ Assign(F, Win16_LoadedPath);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Pos := Win16_RsrcTabAbsOfs;
+ Seek(F, Pos);
+ BlockRead(F, AlignShift, 2, BytesRead);
+ If BytesRead <> 2 Then Begin Close(F); Exit; End;
+ Pos := Pos + 2;
+ While True Do Begin
+  Seek(F, Pos);
+  BlockRead(F, TH, SizeOf(TH), BytesRead);
+  If BytesRead <> SizeOf(TH) Then Break;
+  Pos := Pos + SizeOf(TH);
+  If TH.TypeID = 0 Then Break; { fin de la table }
+  For I := 1 To TH.ResourceCount Do Begin
+   Seek(F, Pos);
+   BlockRead(F, RE, SizeOf(RE), BytesRead);
+   If BytesRead <> SizeOf(RE) Then Begin Close(F); Exit; End;
+   Pos := Pos + SizeOf(RE);
+   If (TH.TypeID = TypeID) And (RE.IDField = ResID) Then Begin
+    ResFileOfs := LongInt(RE.FileOfsField) Shl AlignShift;
+    ResLen := LongInt(RE.LenField) Shl AlignShift;
+    Close(F);
+    Win16_FindResource := True;
+    Exit;
+   End;
+  End;
+ End;
+ Close(F);
 End;
 
 { Chantier Windows 16 bits, Stage 4/5 : positionne les registres de         }
@@ -37040,8 +37123,22 @@ Begin
  C.Regs.BX := Win16_StackSize;
  C.Regs.CX := Win16_HeapSize;
  C.Regs.DX := 0;
- C.Regs.SI := 0;
- C.Regs.DI := 0;
+ C.Regs.SI := 0;             { hPrevInstance : aucune instance precedente }
+ { BOGUE REEL trouve au Stage 5 (2026-08-29) : DI (hInstance, "cette       }
+ { instance") avait ete laisse a 0 - or hInstance EST litteralement le     }
+ { selecteur du segment de donnees automatique en Win16 (confirme de       }
+ { facon AUTHORITATIVE via l'article de Raymond Chen "What is the          }
+ { difference between HINSTANCE and HMODULE?" - "the 'instance' handles    }
+ { ... are the data segments"), JAMAIS 0 pour une instance reellement       }
+ { chargee. CLOCK.EXE ET CALENDAR.EXE (2 binaires independants) plantaient }
+ { tous deux au MEME point exact (code d'amorcage partage du compilateur)  }
+ { en testant [BP+xx]=0 - tres probablement une verification "est-ce la    }
+ { premiere instance / hInstance valide" qui ne peut jamais reussir avec   }
+ { hInstance=0, faisant croire a une condition qui n'arrive jamais en      }
+ { pratique et menant vers du code jamais reellement teste par un vrai     }
+ { Windows (relogement absent - PAS un oubli de chargeur, juste du code    }
+ { que Windows n'atteint jamais). }
+ C.Regs.DI := Win16_StackSeg;
  C.Regs.BP := 0;
  C.Segs.DS := Win16_StackSeg;
  C.Segs.SS := Win16_StackSeg;
@@ -37084,6 +37181,13 @@ Var
  RetIP, RetCS: Word;
  ArgWords: Word;
  LocalWBytes: Word;
+ LSResId, LSBufOfs, LSBufSeg, LSBufLen: Word;
+ LSRetVal, LSCopyLen, LSStringNum, LSPos, LSI: Integer;
+ LSResFileOfs, LSResLen: LongInt;
+ LSFile: File;
+ LSBytesRead: Word;
+ LSBuf: Array[0..4095] Of Byte;
+ LSStrLen: Byte;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -37191,6 +37295,60 @@ Begin
     { epuisee, non modelise ici). Retourne juste TRUE. }
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   176: Begin
+    { LoadString(hInstance, resource_id, lpBuffer, buflen):int - ordinal    }
+    { verifie via user.exe16.spec ; comportement REPRODUIT depuis le vrai   }
+    { code source de Wine (dlls/user.exe16/user.c, LoadString16 - recupere  }
+    { via recherche web, PAS devine) : le bloc de ressource RT_STRING       }
+    { (=6, confirme via winuser.h) porte l'ID (resource_id shr 4)+1 et      }
+    { contient 16 chaines Pascal-style consecutives (1 octet de longueur +  }
+    { N octets ANSI, PAS Unicode - convention Win16 propre, differente du   }
+    { format Win32/PE plus recent) ; resource_id and $F choisit laquelle    }
+    { des 16. Convention pascal - hInstance pousse en 1er (le plus loin de  }
+    { l'adresse de retour), puis resource_id, puis lpBuffer (segment PUIS   }
+    { offset, comme tout pointeur far pousse par valeur), puis buflen en    }
+    { dernier (le plus proche). }
+    LSResId  := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LSBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LSBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LSBufLen := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LSRetVal := 0;
+    If Win16_FindResource($8006, Word($8000 Or ((LSResId Shr 4) + 1)),
+       LSResFileOfs, LSResLen) Then Begin
+     {$I-}
+     Assign(LSFile, Win16_LoadedPath);
+     Reset(LSFile, 1);
+     {$I+}
+     If IOResult = 0 Then Begin
+      If LSResLen > SizeOf(LSBuf) Then LSResLen := SizeOf(LSBuf);
+      Seek(LSFile, LSResFileOfs);
+      BlockRead(LSFile, LSBuf, Word(LSResLen), LSBytesRead);
+      Close(LSFile);
+      LSPos := 0;
+      LSStringNum := LSResId And $F;
+      While (LSStringNum > 0) And (LSPos < LSResLen) Do Begin
+       LSPos := LSPos + LSBuf[LSPos] + 1;
+       Dec(LSStringNum);
+      End;
+      If LSPos < LSResLen Then Begin
+       LSStrLen := LSBuf[LSPos];
+       If LSBufSeg = 0 Then
+        LSRetVal := LSStrLen { pointeur nul : juste renvoyer la longueur }
+       Else Begin
+        LSCopyLen := LSStrLen;
+        If LSCopyLen > Integer(LSBufLen) - 1 Then LSCopyLen := Integer(LSBufLen) - 1;
+        If LSCopyLen < 0 Then LSCopyLen := 0;
+        For LSI := 0 To LSCopyLen - 1 Do
+         Emu_WriteByte(P.CPU, LSBufSeg, Word(LSBufOfs + LSI), LSBuf[LSPos + 1 + LSI]);
+        Emu_WriteByte(P.CPU, LSBufSeg, Word(LSBufOfs + LSCopyLen), 0);
+        LSRetVal := LSCopyLen;
+       End;
+      End;
+     End;
+    End;
+    P.CPU.Regs.AX := Word(LSRetVal);
+    ArgWords := 5;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
@@ -38922,6 +39080,9 @@ Var
  PrevCS, PrevIP: Word;
  Op: Byte;
  FaultName: String;
+ TrapSlot: Integer;
+ TrapAnnot: String;
+ TrapModName: String;
 Begin
  Path := TermTrim(ParamStr);
  MaxSteps := DEFAULT_MAX_STEPS;
@@ -38963,7 +39124,41 @@ Begin
   Inc(StepN);
   PrevCS := P.CPU.Segs.CS;
   PrevIP := P.CPU.IP;
+  { Meme garde-fou que DOS_RunOneChunk (CS=0 = IVT/BDA, jamais du vrai      }
+  { code programme) - manquait ici (boucle de pas-a-pas independante,       }
+  { pas DOS_RunOneChunk) : un saut vers un relogement manquant/oublie       }
+  { atterrit typiquement sur un operande jamais patche (souvent litteral    }
+  { $0000:$FFFF dans le fichier NE brut) et continuait sinon a "executer"   }
+  { des centaines d'octets d'IVT/BDA comme du code avant un crash sans      }
+  { rapport (ex. DIV par zero) bien plus loin - masquant le VRAI point de   }
+  { defaillance. Arret NET et immediat des ce saut, message explicite. }
+  If PrevCS = 0 Then Begin
+   P.CPU.Fault := sfEndProgram;
+   Win16_LastError := 'Saut vers CS=0 (IVT/BDA) - relogement manquant ' +
+    'ou oubli reel non encore identifie, PAS du code programme valide';
+   Break;
+  End;
   Op := Emu_ReadByte(P.CPU, PrevCS, PrevIP);
+  { Chantier Stage 5 : annote la ligne quand CS:IP entre dans un thunk de   }
+  { trappe (segment Win16_TrapSeg) - identifie immediatement le VRAI       }
+  { (Module,Ordinal) resolu pour ce site d'appel, sans avoir a le deduire  }
+  { a la main depuis les effets de bord sur les registres (piege reel      }
+  { rencontre cette session : 2 sites d'appel differents avaient ete       }
+  { confondus par erreur avant l'ajout de cette annotation). }
+  TrapAnnot := '';
+  If PrevCS = Win16_TrapSeg Then Begin
+   TrapSlot := PrevIP Div WIN16_TRAP_SLOT_SIZE;
+   If (TrapSlot >= 0) And (TrapSlot < Win16_ImportSlotCount) Then Begin
+    If Win16_ImportModIdx[TrapSlot] = 1 Then TrapModName := 'KERNEL'
+    Else If Win16_ImportModIdx[TrapSlot] = 2 Then TrapModName := 'GDI'
+    Else If Win16_ImportModIdx[TrapSlot] = 3 Then TrapModName := 'USER'
+    Else TrapModName := 'module#' + IntToStr(Win16_ImportModIdx[TrapSlot]);
+    If Win16_ImportIsOrd[TrapSlot] Then
+     TrapAnnot := ' CALL ' + TrapModName + '.' + IntToStr(Win16_ImportValue[TrapSlot])
+    Else
+     TrapAnnot := ' CALL ' + TrapModName + '.(nom)';
+   End;
+  End;
   Emu_StepOne(P);
   WriteLn(LogF, StepN, ': ', HexWord(PrevCS), ':', HexWord(PrevIP),
    ' op=', HexByte(Op),
@@ -38972,7 +39167,7 @@ Begin
    ' SI=', HexWord(P.CPU.Regs.SI), ' DI=', HexWord(P.CPU.Regs.DI),
    ' BP=', HexWord(P.CPU.Regs.BP), ' SP=', HexWord(P.CPU.Regs.SP),
    ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES),
-   ' SS=', HexWord(P.CPU.Segs.SS));
+   ' SS=', HexWord(P.CPU.Segs.SS), TrapAnnot);
  End;
  Case P.CPU.Fault Of
   sfNone:         FaultName := '(aucun - limite de ' + IntToStr(MaxSteps) + ' pas atteinte)';
