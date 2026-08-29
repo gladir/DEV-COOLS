@@ -52188,7 +52188,7 @@ Begin
    On rend pixel par pixel via PutPixel BGI. Le scale est calcule
    pour fitter dans la zone editeur disponible.
    ============================================================ }
- If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) And
+ If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP') Or (P.TargetCPU = '-CWIN16')) And
     EmuVideo.IsGraphic Then Begin
   Inc(EmuDiag_DrawCnt);
   GfxW := EmuVideo.Width;
@@ -86488,6 +86488,21 @@ Begin NesActive := False;
   Emu_MscdexInit(P);
   Emu_DpmiInit(P);
   Emu_DefaultVectorsInit(P);
+  { Chantier Stage 6 (2026-08-29, sur demande explicite de l'utilisateur   }
+  { - "par defaut... mode graphique, pas mode texte") : bascule REELLEMENT}
+  { en mode video graphique VGA des le demarrage, via LE MEME mecanisme    }
+  { qu'un vrai programme DOS (Emu_VidSetMode, normalement atteint via INT  }
+  { 10h AH=00h - voir Emu_DoInt10) - un vrai Windows 2.x/3.x bascule       }
+  { aussi en graphique des son demarrage sur une carte VGA. Mode $13       }
+  { (320x200x256 couleurs) choisi : format le PLUS simple (8 bits/pixel    }
+  { lineaire "chain-four", PAS de plans comme les modes EGA/VGA 16         }
+  { couleurs) et deja le mieux exerce dans ce fichier                      }
+  { (Emu_VidSetPixel/Emu_VidPixelToBGI ont un cas dedie pour ce mode       }
+  { precis). GetDeviceCaps/GetSystemMetrics (Stage 5/6a) rapportent deja   }
+  { des dimensions assorties (a ajuster a 320x200 - voir plus loin dans ce }
+  { fichier) pour que les coordonnees GDI du programme correspondent       }
+  { DIRECTEMENT aux pixels reels, sans mise a l'echelle. }
+  Emu_VidSetMode($13, P);
   DrawEmulatorPanel(P);
   EmuDbg.Active := True;
   EmuDbg.CPU    := EDC_8086;

@@ -416,6 +416,20 @@ Begin
  P^.Value:=S;
 End;
 
+Procedure SymbolValue(SymbolName:String;Var ResultValue:RexxValue);
+Var J:Integer;ValidSymbol,VariableSymbol:Boolean;
+Begin
+ SymbolName:=Clean(SymbolName);ValidSymbol:=SymbolName<>'';
+ For J:=1 To Length(SymbolName)Do
+  If Not(SymbolName[J]in['a'..'z','A'..'Z','0'..'9','.','!','?',
+   '_','#','$','@'])Then ValidSymbol:=False;
+ If Not ValidSymbol Then Begin RVText('BAD',ResultValue);Exit;End;
+ VariableSymbol:=Not(SymbolName[1]in['0'..'9','.']);
+ If VariableSymbol and(VarFind(Variables,SymbolName)<>Nil)Then
+  RVText('VAR',ResultValue)
+ Else RVText('LIT',ResultValue);
+End;
+
 Procedure ValueFunction(VariableName,NewValue,Selector:String;
  ArgumentCount:Integer;Var ResultValue:RexxValue);
 Var SelectorName:String;
@@ -2089,7 +2103,7 @@ Begin
     ResultValue); { SUBSTR }
    74:RVText(SubWordText(A.Text,System.Trunc(B.Number),
     System.Trunc(D.Number),InvokeArgCount>2),ResultValue); { SUBWORD }
-   75:FunctionNotImplemented(FunctionByte,ResultValue); { SYMBOL }
+   75:SymbolValue(A.Text,ResultValue); { SYMBOL }
    76:FunctionNotImplemented(FunctionByte,ResultValue); { SYSADDREXXMACRO }
    77:FunctionNotImplemented(FunctionByte,ResultValue); { SYSBOOTDRIVE }
    78:FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLEARREXXMACROSPACE }
