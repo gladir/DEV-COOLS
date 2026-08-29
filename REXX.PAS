@@ -1964,6 +1964,43 @@ Begin
  RVNum(Remaining,ResultValue);
 End;
 
+Procedure LinesValue(StreamName:String;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,ReadCount:Integer;Position,LineCount:LongInt;
+ CharacterByte:Byte;PreviousWasCR,LastWasTerminator,HaveData:Boolean;
+Begin
+ If StreamName=''Then Begin
+  If KeyPressed Then RVNum(1,ResultValue)Else RVNum(0,ResultValue);
+  Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To CharInStreamCount Do
+  If CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Position:=1 Else Position:=CharInPositions[StreamIndex];
+ If Position<1Then Position:=1;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin RVNum(0,ResultValue);Exit;End;
+ If Position-1>=FileSize(F)Then Begin Close(F);RVNum(0,ResultValue);Exit;End;
+ Seek(F,Position-1);LineCount:=0;PreviousWasCR:=False;
+ LastWasTerminator:=False;HaveData:=False;
+ Repeat
+  BlockRead(F,CharacterByte,1,ReadCount);
+  If ReadCount>0Then Begin
+   HaveData:=True;
+   If CharacterByte=13Then Begin
+    Inc(LineCount);PreviousWasCR:=True;LastWasTerminator:=True;
+   End Else If CharacterByte=10Then Begin
+    If Not PreviousWasCR Then Inc(LineCount);
+    PreviousWasCR:=False;LastWasTerminator:=True;
+   End Else Begin
+    PreviousWasCR:=False;LastWasTerminator:=False;
+   End;
+  End;
+ Until ReadCount=0;
+ Close(F);
+ If HaveData and Not LastWasTerminator Then Inc(LineCount);
+ RVNum(LineCount,ResultValue);
+End;
+
 Function CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
 Var LeftCount,RightCount,StartPosition:Integer;PadChar:Char;
 Begin
@@ -2128,7 +2165,7 @@ Begin
    40:RVNum(Length(A.Text),ResultValue); { LENGTH }
    41:FunctionNotImplemented(FunctionByte,ResultValue); { LINEIN }
    42:FunctionNotImplemented(FunctionByte,ResultValue); { LINEOUT }
-   43:FunctionNotImplemented(FunctionByte,ResultValue); { LINES }
+   43:LinesValue(A.Text,ResultValue); { LINES }
    44:Begin { MAX }
     If A.Number>B.Number Then N:=A.Number Else N:=B.Number;RVNum(N,ResultValue);
    End;

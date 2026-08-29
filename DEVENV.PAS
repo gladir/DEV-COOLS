@@ -3185,6 +3185,11 @@ Type
                                     { dans le panneau destinataire une      }
                                     { fois le lot termine (copie simple,    }
                                     { non marquee, uniquement)             }
+  PanelsHidden : Boolean;          { Ctrl+O (2026-08-29) : bascule vrai NC  }
+                                    { (NC.PAS: Ctrl-O) qui masque les deux  }
+                                    { panneaux pour ne garder que la ligne  }
+                                    { de commande/barre F-touches - voir    }
+                                    { DrawNCommanderPanel/HandleNCommanderEvent }
  End;
 
  { Severite d une erreur }
@@ -10559,6 +10564,15 @@ Procedure DOS_LoadState(Var Snap: TDOSSnapshot); Forward;
 { de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
 Procedure Win16_SaveVideoState; Forward;
 Procedure Win16_LoadVideoState; Forward;
+{ Chantier Windows 16 bits, Stage 6 (2026-08-29) : WIN16RUN reproduit      }
+{ desormais la cadence IRQ/minuterie materielle de DOS_RunOneChunk - ces   }
+{ 4 procedures sont definies bien plus loin dans ce fichier (bloc          }
+{ peripheriques BIOS/IRQ, ~70821-71062), Forward requis pour les appeler   }
+{ depuis TermCmd_Win16Run (~39835), qui les precede textuellement. }
+Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_InitBDA(Var P: TEmulatorPanel); Forward;
+Procedure Emu_TimerTick(Var P: TEmulatorPanel); Forward;
+Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel); Forward;
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -39873,6 +39887,13 @@ Begin
  End;
  Win16_SetupEntryRegs(P.CPU);
  P.CPU.Fault := sfNone;
+ { Chantier Stage 6 (2026-08-29) : requis pour que Emu_TimerTick/           }
+ { Emu_ServiceIrqs (nouvellement appeles par la boucle ci-dessous, voir     }
+ { plus bas) trouvent une BDA/table de vecteurs valides - meme init         }
+ { minimale que ShowEmulatorPanel (IsWin16), sans les peripheriques non     }
+ { necessaires a la seule cadence IRQ (Ipx/Pkt/Xms/Ems/Mouse/Mscdex/Dpmi). }
+ Emu_InitBDA(P);
+ Emu_DefaultVectorsInit(P);
  {$I-} Assign(LogF, 'WIN16RUN.LOG'); Rewrite(LogF); {$I+}
  If IOResult <> 0 Then Begin
   TermAddLine(TP, 'WIN16RUN : impossible de creer WIN16RUN.LOG.');
@@ -39884,6 +39905,7 @@ Begin
   ' - max ', MaxSteps, ' pas');
  WriteLn(LogF);
  StepN := 0;
+ EmuStepsToTick := EmuStepsPerTick; { fraiche/deterministe, voir la cadence IRQ ci-dessous }
  While (StepN < MaxSteps) And (P.CPU.Fault = sfNone) Do Begin
   Inc(StepN);
   PrevCS := P.CPU.Segs.CS;
@@ -39924,6 +39946,21 @@ Begin
    End;
   End;
   Emu_StepOne(P);
+  { Chantier Stage 6 (2026-08-29) : reproduit la MEME cadence d'IRQ         }
+  { materielles (minuterie 18.2 Hz) que DOS_RunOneChunk - decouvert         }
+  { necessaire quand une execution GUI reelle s'arretait a un point que     }
+  { cette boucle (jusque-la de purs Emu_StepOne, sans IRQ) ne reproduisait  }
+  { jamais meme a 2 000 000 de pas : du code ne devient atteignable         }
+  { qu'APRES qu'un vrai tick d'horloge (INT 8h) se soit produit. Meme        }
+  { globales EmuStepsToTick/EmuStepsPerTick que DOS_RunOneChunk (aucun       }
+  { autre onglet actif pendant un WIN16RUN, sans risque de conflit). Le      }
+  { drainage clavier hote est omis (headless, aucune touche a drainer). }
+  Dec(EmuStepsToTick);
+  If EmuStepsToTick <= 0 Then Begin
+   EmuStepsToTick := EmuStepsPerTick;
+   Emu_TimerTick(P);
+  End;
+  Emu_ServiceIrqs(P);
   WriteLn(LogF, StepN, ': ', HexWord(PrevCS), ':', HexWord(PrevIP),
    ' op=', HexByte(Op),
    ' AX=', HexWord(P.CPU.Regs.AX), ' BX=', HexWord(P.CPU.Regs.BX),
@@ -41276,8 +41313,87 @@ Begin
    { actuellement parcouru, synchronise par l appelant juste avant cet   }
    { appel) plutot que GetDir(0,...) (repertoire reel du PROCESSUS, sans }
    { rapport avec la navigation virtuelle propre a NC). }
-  If CurrCmd = 'LOG' Then
+   { BOGUE REEL (2026-08-29) signale par l utilisateur : cette branche   }
+   { ne reconnaissait litteralement AUCUNE des commandes internes/de     }
+   { diagnostic pourtant deja disponibles dans SK_CMD (CD/DIR/COPY/...   }
+   { et surtout les commandes de diagnostic WIN16*/LX*/ELFBP de ce       }
+   { chantier) - taper "WIN16RUN ..." ici ne faisait donc rien du tout,  }
+   { silencieusement (repli direct sur "executable introuvable"). Ajoute }
+   { ici le MEME jeu de commandes que SK_CMD (handlers TermCmd_*         }
+   { generiques et deja compatibles TP.VirtDrive/TP.VirtCwd, voir        }
+   { TermCmd_CD - aucun changement de comportement pour les autres       }
+   { shells). }
+  If CurrCmd = 'EXIT' Then
+   TermVisible := False
+  Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
+   TermCmd_CD(TP, ParamStr)
+  Else If CurrCmd = 'CLS' Then
+   TermCmd_CLS(TP)
+  Else If (CurrCmd = 'DIR') Then
+   TermCmd_DIR_CMD(TP, ParamStr)
+  Else If CurrCmd = 'COPY' Then
+   TermCmd_COPY(TP, ParamStr)
+  Else If (CurrCmd = 'DEL') Or (CurrCmd = 'DELETE') Or
+   (CurrCmd = 'ERASE') Or (CurrCmd = 'ERA') Then
+   TermCmd_DEL(TP, ParamStr)
+  Else If CurrCmd = 'ECHO' Then
+   TermCmd_ECHO(TP, ParamStr)
+  Else If (CurrCmd = 'MKDIR') Or (CurrCmd = 'MD') Then
+   TermCmd_MKDIR(TP, ParamStr)
+  Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
+   TermCmd_RMDIR(TP, ParamStr)
+  Else If (CurrCmd = 'REN') Or (CurrCmd = 'RENAME') Then
+   TermCmd_REN(TP, ParamStr)
+  Else If CurrCmd = 'MOVE' Then
+   TermCmd_MOVE(TP, ParamStr)
+  Else If CurrCmd = 'TYPE' Then
+   TermCmd_TYPE(TP, ParamStr)
+  Else If CurrCmd = 'DATE' Then
+   TermCmd_DATE(TP)
+  Else If CurrCmd = 'TIME' Then
+   TermCmd_TIME(TP)
+  Else If CurrCmd = 'VER' Then
+   TermCmd_VER(TP)
+  Else If CurrCmd = 'PWD' Then
+   TermCmd_PWD(TP)
+  Else If CurrCmd = 'PUSHD' Then
+   TermCmd_PUSHD(TP, ParamStr)
+  Else If CurrCmd = 'POPD' Then
+   TermCmd_POPD(TP)
+  Else If CurrCmd = 'SET' Then
+   TermCmd_SET(TP, ParamStr)
+  Else If CurrCmd = 'VOL' Then
+   TermCmd_VOL(TP, ParamStr)
+  Else If CurrCmd = 'BOOT' Then
+   TermCmd_BOOT(TP, ParamStr)
+  Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
+  Else If CurrCmd = 'ELFBP' Then
+   TermCmd_ELFBP(TP, ParamStr)
+  Else If CurrCmd = 'LXINFO' Then
+   TermCmd_LXInfo(TP, ParamStr)
+  Else If CurrCmd = 'WIN16INFO' Then
+   TermCmd_Win16Info(TP, ParamStr)
+  Else If CurrCmd = 'WIN16LOAD' Then
+   TermCmd_Win16Load(TP, ParamStr)
+  Else If CurrCmd = 'WIN16CALL' Then
+   TermCmd_Win16Call(TP, ParamStr)
+  Else If CurrCmd = 'WIN16RUN' Then
+   TermCmd_Win16Run(TP, ParamStr)
+  Else If CurrCmd = 'LXLOAD' Then
+   TermCmd_LXLoad(TP, ParamStr)
+  Else If CurrCmd = 'LXSTEP' Then
+   TermCmd_LXStep(TP, ParamStr)
+  Else If CurrCmd = 'LXDUMP' Then
+   TermCmd_LXDump(TP, ParamStr)
+  Else If CurrCmd = 'LXCALL' Then
+   TermCmd_LXCall(TP, ParamStr)
+  Else If CurrCmd = 'LXSCAN' Then
+   TermCmd_LXScan(TP, ParamStr)
+  Else If CurrCmd = 'LXGET' Then
+   TermCmd_LXGet(TP, ParamStr)
+  Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
+   TermCmd_HELP(TP)
   Else Begin
   DosExe := '';
   ElfExe := '';
@@ -42553,6 +42669,12 @@ Begin
    Line(CurX, PromptY, CurX, PromptY + RH - 1);
   End;
 
+  { Ctrl+O (2026-08-29, BOGUE REEL signale par l utilisateur) : vrai NC     }
+  { masque les deux panneaux (pour reveler l ecran/la sortie en dessous)   }
+  { en ne gardant que la ligne de commande et la barre F-touches, deja      }
+  { dessinees ci-dessus - NCState.PanelsHidden saute simplement le reste   }
+  { du rendu (en-tetes, listes, barre d info) des deux panneaux. }
+  If Not NCState.PanelsHidden Then Begin
   PaneW := (PW - 2) Div 2;
   HeaderY := PY + TERM_TAB_HEIGHT + 4;
   ColHeadY := HeaderY + RH;
@@ -42703,6 +42825,7 @@ Begin
    S := Copy(S, 1, (PaneRight - X0 - 4) Div CW);
   OutTextXY(X0 + 3, InfoY + 1, S);
   End;
+ End;
  End;
 
  { Dialogues modaux (F5/F6/F7 saisie, F8 confirmation, menu deroulant,   }
@@ -44821,6 +44944,12 @@ Begin
    #12: { Ctrl+L : basculer Fichiers/Info sur l AUTRE panneau (pas          }
         { celui actif) - menu Gauche/Droite, item "Info", NC.PAS. }
     NCState.Panes[OtherSide].InfoMode := Not NCState.Panes[OtherSide].InfoMode;
+   #15: { Ctrl+O (2026-08-29, BOGUE REEL) : vrai raccourci NC.PAS pour       }
+        { masquer/afficher les deux panneaux (reveler la sortie en           }
+        { dessous) - n atteignait jamais ce Case avant la correction du      }
+        { court-circuit global "Ctrl+O : ouvrir fichier", voir plus bas      }
+        { dans HandleGlobalEvent/le bloc EV_KEY_CHAR. }
+    NCState.PanelsHidden := Not NCState.PanelsHidden;
    #13: { Entree : executer la ligne de commande si non vide, sinon    }
          { ouvrir le repertoire sous le curseur. }
     If TrimStr(TP.InputLine) <> '' Then Begin
@@ -100503,7 +100632,16 @@ Begin
    ShowNewFileDialog(NewFileDlg);
    Exit;
   End;
-  If Ev.KeyChar = #15 Then Begin { Ctrl+O : ouvrir fichier }
+  { BOGUE REEL (2026-08-29) signale par l utilisateur : Ctrl+O est aussi   }
+  { le raccourci du VRAI Norton Commander (NC.PAS) pour masquer/afficher   }
+  { les deux panneaux - ce court-circuit global l absorbait toujours en    }
+  { premier (Exit immediat) avant que HandleNCommanderEvent ne le voie      }
+  { jamais, meme court-circuit deja corrige pour F1..F10 juste au-dessus    }
+  { (voir Not (TermVisible And TerminalHasFocus And ActiveShell=            }
+  { SK_NCOMMANDER)) - meme garde reprise ici, seulement pour Ctrl+O. }
+  If (Ev.KeyChar = #15) And
+     Not (TermVisible And TerminalHasFocus And (ActiveShell = SK_NCOMMANDER))
+     Then Begin { Ctrl+O : ouvrir fichier }
    InitFileDialog(FileDlg, False);
    LoadDirectoryFiles(FileDlg);
    FileDlg.Base.Visible := True;
