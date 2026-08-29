@@ -145,6 +145,17 @@ Begin
  Inc(RexxQueueCount);
 End;
 
+Procedure PullQueue(Var Value:String;Var Found:Boolean);
+Var Entry:PRexxQueueEntry;
+Begin
+ Found:=RexxQueueHead<>Nil;
+ If Not Found Then Begin Value:='';Exit;End;
+ Entry:=RexxQueueHead;Value:=Entry^.Value;
+ RexxQueueHead:=Entry^.Next;
+ If RexxQueueHead=Nil Then RexxQueueTail:=Nil;
+ Dispose(Entry);Dec(RexxQueueCount);
+End;
+
 Procedure FreeQueue;
 Var Entry:PRexxQueueEntry;
 Begin
@@ -2421,7 +2432,8 @@ Begin
 End;
 
 Procedure ExecOne(S:String);
-Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord,CommandText,OldAddress:String;CommandByte:Byte;
+Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord,CommandText,OldAddress:String;
+ Found:Boolean;CommandByte:Byte;
 Begin
  S:=Clean(S);If S=''Then Exit;
  P:=1;While(P<=Length(S))and(S[P]in['A'..'Z','a'..'z','_'])Do Inc(P);
@@ -2472,6 +2484,12 @@ Begin
     Eval(Rest,V);
     CurrentOptions:=V.Text;
    End;
+  End;
+  51:Begin { PULL }
+   PullQueue(Rest,Found);
+   If Not Found Then ReadLn(Rest);
+   ArgName:=Clean(Copy(S,5,255));
+   If ArgName<>''Then ParseTemplate(Rest,ArgName,True);
   End;
   52:Begin { PUSH }
    Rest:=Clean(Copy(S,5,255));

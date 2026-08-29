@@ -37681,6 +37681,28 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
+   180: Begin
+    { GetSysColor(nIndex):COLORREF - ordinal VERIFIE via user.exe16.spec ;  }
+    { PAS de "-ret16" = retour COMPLET DX:AX (0 dans DX, une COLORREF tient }
+    { toujours sur 24 bits). Constantes COLOR_* verifiees via winuser.h     }
+    { (Wine, source publique). Rendu GDI reel HORS DE PORTEE (Stage 6) -    }
+    { simplification DOCUMENTEE : palette Windows 2.x/3.x par defaut        }
+    { plausible (fond blanc, texte noir, boutons/menus gris clair), jamais  }
+    { un VRAI theme. COLORREF = $00BBGGRR. Index non couvert -> noir(0),    }
+    { convention "pas de couleur speciale" raisonnable par defaut. }
+    { COLORREF = $00BBGGRR (rouge=octet0, vert=octet1, bleu=octet2, 0=octet3)}
+    { -> AX (mot bas) = (vert Shl 8) Or rouge ; DX (mot haut) = bleu.        }
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Case GDIIdx Of
+     5:          Begin P.CPU.Regs.AX := $FFFF; P.CPU.Regs.DX := $00FF; End; { WINDOW : blanc }
+     15, 4, 0:   Begin P.CPU.Regs.AX := $C0C0; P.CPU.Regs.DX := $00C0; End; { BTNFACE/MENU/SCROLLBAR : gris clair }
+     8, 7, 9, 18: Begin P.CPU.Regs.AX := $0000; P.CPU.Regs.DX := $0000; End; { WINDOWTEXT/MENUTEXT/CAPTIONTEXT/BTNTEXT : noir }
+     2:          Begin P.CPU.Regs.AX := $0000; P.CPU.Regs.DX := $0080; End; { ACTIVECAPTION : bleu fonce }
+     16, 17:     Begin P.CPU.Regs.AX := $8080; P.CPU.Regs.DX := $0080; End; { BTNSHADOW/GRAYTEXT : gris fonce }
+     Else         Begin P.CPU.Regs.AX := $0000; P.CPU.Regs.DX := $0000; End;
+    End;
+    ArgWords := 1;
+   End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
     Exit;
@@ -37696,10 +37718,18 @@ Begin
     { publique). Rendu GDI reel HORS DE PORTEE (stretch goal Stage 6) -     }
     { simplification DOCUMENTEE : valeurs plausibles d'un ecran VGA         }
     { standard de l'epoque (640x480 monochrome), jamais un VRAI peripherique}
-    { d'affichage. Index non couvert -> 0 (honnete, non modelise). }
+    { d'affichage. Index non couvert -> 0 (honnete, non modelise) - SAUF    }
+    { HORZSIZE/VERTSIZE (dimensions PHYSIQUES en mm) : un VRAI pilote ne    }
+    { retourne JAMAIS 0 pour ces 2 index (bogue reel trouve au Stage 5 -    }
+    { WIN16RUN a montre CLOCK.EXE diviser par cette valeur dans son calcul  }
+    { d'echelle, plantant sur une VRAIE division par zero cote 8086 des     }
+    { que le 0 par defaut etait utilise comme denominateur) - valeurs       }
+    { plausibles d'un moniteur VGA standard 4:3 assorties a 640x480. }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
      2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
+     4:  P.CPU.Regs.AX := 210;  { HORZSIZE (mm) }
+     6:  P.CPU.Regs.AX := 160;  { VERTSIZE (mm) }
      8:  P.CPU.Regs.AX := 640;  { HORZRES }
      10: P.CPU.Regs.AX := 480;  { VERTRES }
      12: P.CPU.Regs.AX := 1;    { BITSPIXEL (monochrome) }
