@@ -8,6 +8,16 @@ Program REXX;
 
 Uses Crt,DOS;
 
+{$IFDEF FPC}
+ {$IFDEF WINDOWS}
+Function GetVolumeInformationA(RootPathName,VolumeNameBuffer:PChar;
+ VolumeNameSize:LongWord;VolumeSerialNumber,MaximumComponentLength,
+ FileSystemFlags:Pointer;FileSystemNameBuffer:PChar;
+ FileSystemNameSize:LongWord):LongBool;StdCall;
+ External 'kernel32.dll' Name 'GetVolumeInformationA';
+ {$ENDIF}
+{$ENDIF}
+
 Const
  CommandList:Array[0..161]of String[20]=(
   'ABBREV','ABS','ADDRESS','ARG','B2X','BEEP','BITAND','BITOR',
@@ -1194,6 +1204,46 @@ Begin
  RVText(RowText+' '+ColumnText,ResultValue);
 End;
 
+Procedure SysVolumeLabelValue(DriveText:String;Var ResultValue:RexxValue);
+Var DriveName,RootPath,CurrentDirectory,VolumeLabel:String;
+ J:Integer;SearchData:SearchRec;
+ {$IFDEF FPC}
+  {$IFDEF WINDOWS}
+  RootBuffer,VolumeBuffer:Array[0..255]of Char;
+  {$ENDIF}
+ {$ENDIF}
+Begin
+ DriveText:=Clean(DriveText);
+ If DriveText=''Then Begin
+  GetDir(0,CurrentDirectory);
+  If(Length(CurrentDirectory)>=2)and(CurrentDirectory[2]=':')Then
+   DriveName:=Copy(CurrentDirectory,1,2)Else Begin RVText('',ResultValue);Exit;End;
+ End Else Begin
+  If Not(DriveText[1]in['a'..'z','A'..'Z'])Then Begin RVText('',ResultValue);Exit;End;
+  DriveName:=UpCase(DriveText[1])+':';
+ End;
+ RootPath:=DriveName+'\';
+ {$IFDEF FPC}
+  {$IFDEF WINDOWS}
+  FillChar(RootBuffer,SizeOf(RootBuffer),0);
+  FillChar(VolumeBuffer,SizeOf(VolumeBuffer),0);
+  For J:=1 To Length(RootPath)Do RootBuffer[J-1]:=RootPath[J];
+  If GetVolumeInformationA(RootBuffer,VolumeBuffer,SizeOf(VolumeBuffer),
+    Nil,Nil,Nil,Nil,0)Then Begin
+   VolumeLabel:='';J:=0;
+   While(J<SizeOf(VolumeBuffer))and(VolumeBuffer[J]<>#0)Do Begin
+    VolumeLabel:=VolumeLabel+VolumeBuffer[J];Inc(J);
+   End;
+   RVText(VolumeLabel,ResultValue);
+  End Else RVText('',ResultValue);
+  Exit;
+  {$ENDIF}
+ {$ENDIF}
+ FindFirst(RootPath+'*.*',VolumeID,SearchData);
+ If DosError=0Then RVText(SearchData.Name,ResultValue)
+  Else RVText('',ResultValue);
+End;
+
 Function TwoDigits(Value:Word):String;
 Var S:String;
 Begin
@@ -2158,7 +2208,7 @@ Begin
    126:FunctionNotImplemented(FunctionByte,ResultValue); { SYSTEMPFILENAME }
    127:FunctionNotImplemented(FunctionByte,ResultValue); { SYSTEXTSCREENREAD }
    128:FunctionNotImplemented(FunctionByte,ResultValue); { SYSTEXTSCREENSIZE }
-   129:FunctionNotImplemented(FunctionByte,ResultValue); { SYSVOLUMELABEL }
+   129:SysVolumeLabelValue(A.Text,ResultValue); { SYSVOLUMELABEL }
    130:FunctionNotImplemented(FunctionByte,ResultValue); { SYSWAITEVENTSEM }
    131:FunctionNotImplemented(FunctionByte,ResultValue); { SYSWAITNAMEDPIPE }
    132:FunctionNotImplemented(FunctionByte,ResultValue); { SYSWINVER }

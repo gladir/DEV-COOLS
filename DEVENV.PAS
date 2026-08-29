@@ -6365,6 +6365,14 @@ Var
  Win16_DebugMsg       : String;          { canal de diagnostic reutilisable}
                                           { (Stage 6) - WIN16RUN l'affiche  }
                                           { et le vide apres chaque pas.    }
+ Win16_SavedVideo     : TEmuVideoState;  { sauvegarde/restauration de la   }
+                                          { globale EmuVideo (partagee avec}
+                                          { -CD/-CP) au changement d'onglet}
+                                          { - Win16 ne gere qu'un SEUL      }
+                                          { programme a la fois (deja       }
+                                          { documente), un seul emplacement }
+                                          { de sauvegarde suffit (pas un     }
+                                          { tableau par onglet comme DOS).   }
  Win16_LastError      : String;
  { Chantier Windows 16 bits, Stage 6 (2026-08-29) : classes de fenetre,    }
  { fenetres et file de messages REELLES - tableaux paralleles de taille    }
@@ -10547,6 +10555,10 @@ Procedure Z80_SaveState(Var Snap: TZ80Snapshot); Forward;
 Procedure Z80_LoadState(Var Snap: TZ80Snapshot); Forward;
 Procedure DOS_SaveState(Var Snap: TDOSSnapshot); Forward;
 Procedure DOS_LoadState(Var Snap: TDOSSnapshot); Forward;
+{ Chantier Windows 16 bits, Stage 6 (2026-08-29) : sauvegarde/restauration }
+{ de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
+Procedure Win16_SaveVideoState; Forward;
+Procedure Win16_LoadVideoState; Forward;
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -13977,7 +13989,9 @@ Begin
           (EmuPanel.TargetCPU = '-CADAM') Then
    Z80_SaveState(Z80Snaps[WinMgr.ActiveIdx])
   Else If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then
-   DOS_SaveState(DOSSnaps[WinMgr.ActiveIdx]);
+   DOS_SaveState(DOSSnaps[WinMgr.ActiveIdx])
+  Else If EmuPanel.TargetCPU = '-CWIN16' Then
+   Win16_SaveVideoState;
  End Else Begin
   If Editors[WinMgr.ActiveIdx] <> Nil Then
    Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
@@ -14026,7 +14040,9 @@ Begin
           (EmuPanel.TargetCPU = '-CADAM') Then
    Z80_LoadState(Z80Snaps[Idx])
   Else If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then
-   DOS_LoadState(DOSSnaps[Idx]);
+   DOS_LoadState(DOSSnaps[Idx])
+  Else If EmuPanel.TargetCPU = '-CWIN16' Then
+   Win16_LoadVideoState;
   { Naviguer VERS un onglet emulateur vaut "focus" - reprend l affichage   }
   { "En cours d execution..." (pas "En pause") des le prochain idle-tick,  }
   { coherent avec le fait que StepEmulator ne fait avancer QUE l onglet     }
@@ -37343,6 +37359,30 @@ Begin
  C.IP := Win16_EntryPointOfs;
 End;
 
+{ Chantier Windows 16 bits, Stage 6 (2026-08-29) : la globale EmuVideo     }
+{ (mode/plan memoire graphique VGA) est PARTAGEE avec le backend DOS       }
+{ (-CD/-CP) - sans ce couple sauvegarde/restauration, quitter un onglet    }
+{ Win16 en mode graphique puis revenir sur un onglet DOS (ou l'inverse)    }
+{ corromprait/perdrait l'etat video de l'un ou l'autre (confirme par       }
+{ exploration du code : DOS_SaveState/LoadState font exactement ce         }
+{ même echange de pointeur pour leurs propres onglets - Win16 n'avait      }
+{ jusqu'ici aucune branche equivalente car il ne touchait jamais           }
+{ EmuVideo). Un SEUL emplacement de sauvegarde (pas un tableau par onglet) }
+{ car Win16_LoadNE ne gere de toute facon qu'un seul programme a la fois   }
+{ (etat global Win16_*, deja documente ailleurs). }
+Procedure Win16_SaveVideoState;
+Begin
+ Win16_SavedVideo := EmuVideo;
+ Win16_SavedVideo.Mem := EmuVideo.Mem;
+ EmuVideo.Mem := Nil;
+ EmuVideo.MemReady := False;
+End;
+
+Procedure Win16_LoadVideoState;
+Begin
+ EmuVideo := Win16_SavedVideo;
+End;
+
 { Chantier Windows 16 bits, Stage 3 : arret propre et honnete sur un       }
 { appel KERNEL/USER/GDI pas encore implante - meme discipline exacte que   }
 { Lx_Halt pour OS/2 LX ("DOSCALLS non supporte : ..."). Ne devine JAMAIS   }
@@ -37956,14 +37996,17 @@ Begin
    179: Begin
     { GetSystemMetrics(nIndex):int - ordinal VERIFIE via user.exe16.spec ;  }
     { constantes SM_* verifiees via winuser.h (Wine, source publique).      }
-    { Rendu GDI reel HORS DE PORTEE (Stage 6) - simplification DOCUMENTEE : }
-    { valeurs plausibles d'un ecran VGA 640x480 avec une decoration de      }
-    { fenetre Windows 2.x/3.x classique, jamais un VRAI environnement       }
-    { graphique. Index non couvert -> 0 (honnete, non modelise). }
+    { Chantier Stage 6 (2026-08-29) : CXSCREEN/CYSCREEN/CXFULLSCREEN/        }
+    { CYFULLSCREEN assortis au VRAI mode video 320x200 reellement actif     }
+    { (voir GetDeviceCaps, ordinal 80 ci-dessus, meme rationale). Le reste  }
+    { (icones/curseurs/decoration de fenetre) garde des valeurs standard    }
+    { plausibles - non modelise en pixels reels du framebuffer, juste des   }
+    { grandeurs que le programme utilise pour SES propres calculs de mise  }
+    { en page. Index non couvert -> 0 (honnete, non modelise). }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
-     0:  P.CPU.Regs.AX := 640;  { CXSCREEN }
-     1:  P.CPU.Regs.AX := 400;  { CYSCREEN - assorti a GetDeviceCaps VERTRES=400, Stage 6 }
+     0:  P.CPU.Regs.AX := 320;  { CXSCREEN - mode $13 reel }
+     1:  P.CPU.Regs.AX := 200;  { CYSCREEN - mode $13 reel }
      2, 21: P.CPU.Regs.AX := 16; { CXVSCROLL/CXHSCROLL }
      3, 20: P.CPU.Regs.AX := 16; { CYHSCROLL/CYVSCROLL }
      4:  P.CPU.Regs.AX := 18;   { CYCAPTION }
@@ -37976,8 +38019,8 @@ Begin
      11, 13: P.CPU.Regs.AX := 32; { CXICON/CXCURSOR }
      12, 14: P.CPU.Regs.AX := 32; { CYICON/CYCURSOR }
      15: P.CPU.Regs.AX := 18;   { CYMENU }
-     16: P.CPU.Regs.AX := 640;  { CXFULLSCREEN }
-     17: P.CPU.Regs.AX := 382;  { CYFULLSCREEN (400-18, assorti a CYSCREEN=400) }
+     16: P.CPU.Regs.AX := 320;  { CXFULLSCREEN - mode $13 reel }
+     17: P.CPU.Regs.AX := 182;  { CYFULLSCREEN (200-18, assorti a CYSCREEN=200) }
      19: P.CPU.Regs.AX := 1;    { MOUSEPRESENT }
      28, 34: P.CPU.Regs.AX := 112; { CXMIN/CXMINTRACK }
      29, 35: P.CPU.Regs.AX := 27;  { CYMIN/CYMINTRACK }
@@ -38023,30 +38066,30 @@ Begin
     { gdi.exe16.spec ; les constantes nIndex (HORZRES=8, VERTRES=10,        }
     { BITSPIXEL=12, PLANES=14, NUMCOLORS=24, LOGPIXELSX=88,                 }
     { LOGPIXELSY=90, TECHNOLOGY=2) verifiees via wingdi.h (Wine, source     }
-    { publique). Rendu GDI reel HORS DE PORTEE (stretch goal Stage 6) -     }
-    { simplification DOCUMENTEE : valeurs plausibles d'un ecran VGA         }
-    { standard de l'epoque (640x480 monochrome), jamais un VRAI peripherique}
-    { d'affichage. Index non couvert -> 0 (honnete, non modelise) - SAUF    }
-    { HORZSIZE/VERTSIZE (dimensions PHYSIQUES en mm) : un VRAI pilote ne    }
-    { retourne JAMAIS 0 pour ces 2 index (bogue reel trouve au Stage 5 -    }
-    { WIN16RUN a montre CLOCK.EXE diviser par cette valeur dans son calcul  }
-    { d'echelle, plantant sur une VRAIE division par zero cote 8086 des     }
-    { que le 0 par defaut etait utilise comme denominateur) - valeurs       }
-    { plausibles d'un moniteur VGA standard 4:3. VERTRES=400 (pas 480,      }
-    { ajuste au Stage 6) pour un rapport EXACT 8x16 pixels/cellule sur la   }
-    { grille de texte 80x25 existante (640/80=8, 400/25=16) - necessaire   }
-    { pour mapper les coordonnees GDI (TextOut/Rectangle/...) vers la      }
-    { grille sans arrondi, voir Win16_DrawWindowFrame. }
+    { publique). Chantier Stage 6 (2026-08-29, sur demande explicite de     }
+    { l'utilisateur - "mode graphique par defaut") : ces valeurs           }
+    { correspondent maintenant au VRAI mode video reellement active         }
+    { (Emu_VidSetMode($13,P) au demarrage - 320x200x256 couleurs, voir      }
+    { ShowEmulatorPanel) plutot qu'a une resolution choisie pour la grille  }
+    { de texte - les coordonnees GDI (TextOut/Rectangle/LineTo/...) que le  }
+    { programme calcule a partir de ces valeurs correspondent ainsi         }
+    { DIRECTEMENT aux pixels reels du framebuffer, sans mise a l'echelle.   }
+    { Index non couvert -> 0 (honnete, non modelise) - SAUF HORZSIZE/       }
+    { VERTSIZE (dimensions PHYSIQUES en mm) : un VRAI pilote ne retourne    }
+    { JAMAIS 0 pour ces 2 index (bogue reel trouve au Stage 5 - WIN16RUN a  }
+    { montre CLOCK.EXE diviser par cette valeur dans son calcul d'echelle,  }
+    { plantant sur une VRAIE division par zero cote 8086 des que le 0 par   }
+    { defaut etait utilise comme denominateur). }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
      2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
      4:  P.CPU.Regs.AX := 210;  { HORZSIZE (mm) }
      6:  P.CPU.Regs.AX := 160;  { VERTSIZE (mm) }
-     8:  P.CPU.Regs.AX := 640;  { HORZRES }
-     10: P.CPU.Regs.AX := 400;  { VERTRES }
-     12: P.CPU.Regs.AX := 1;    { BITSPIXEL (monochrome) }
+     8:  P.CPU.Regs.AX := 320;  { HORZRES - mode $13 reel }
+     10: P.CPU.Regs.AX := 200;  { VERTRES - mode $13 reel }
+     12: P.CPU.Regs.AX := 8;    { BITSPIXEL - mode $13 = 8 bits/pixel }
      14: P.CPU.Regs.AX := 1;    { PLANES }
-     24: P.CPU.Regs.AX := 2;    { NUMCOLORS }
+     24: P.CPU.Regs.AX := 256;  { NUMCOLORS - mode $13 = 256 couleurs }
      88: P.CPU.Regs.AX := 96;   { LOGPIXELSX }
      90: P.CPU.Regs.AX := 96;   { LOGPIXELSY }
      Else P.CPU.Regs.AX := 0;
