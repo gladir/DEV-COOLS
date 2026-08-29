@@ -774,6 +774,19 @@ Begin
  CountStringOccurrences:=OccurrenceCount;
 End;
 
+Function ReverseText(SourceText:String):String;
+Var LeftIndex,RightIndex:Integer;TemporaryCharacter:Char;
+Begin
+ LeftIndex:=1;RightIndex:=Length(SourceText);
+ While LeftIndex<RightIndex Do Begin
+  TemporaryCharacter:=SourceText[LeftIndex];
+  SourceText[LeftIndex]:=SourceText[RightIndex];
+  SourceText[RightIndex]:=TemporaryCharacter;
+  Inc(LeftIndex);Dec(RightIndex);
+ End;
+ ReverseText:=SourceText;
+End;
+
 Procedure CharacterToDecimal(SourceText:String;CharacterCount:LongInt;
  CountSpecified:Boolean;Var ResultValue:RexxValue);
 Var J,FirstCharacter:Integer;DecimalValue,SignValue:Real;
@@ -2045,10 +2058,10 @@ Begin
    51:FunctionNotImplemented(FunctionByte,ResultValue); { PULL }
    52:FunctionNotImplemented(FunctionByte,ResultValue); { PUSH }
    53:FunctionNotImplemented(FunctionByte,ResultValue); { QUEUE }
-   54:FunctionNotImplemented(FunctionByte,ResultValue); { QUEUED }
+   54:RVNum(RexxQueueCount,ResultValue); { QUEUED }
    55:RandomValue(A,B,D,InvokeArgCount,ResultValue); { RANDOM }
    56:FunctionNotImplemented(FunctionByte,ResultValue); { RETURN }
-   57:FunctionNotImplemented(FunctionByte,ResultValue); { REVERSE }
+   57:RVText(ReverseText(A.Text),ResultValue); { REVERSE }
    58:Begin { RIGHT }
     J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;RVText(Copy(A.Text,J,255),ResultValue);
    End;
