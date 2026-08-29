@@ -37541,6 +37541,56 @@ Begin
     End;
     ArgWords := 2;
    End;
+   15: Begin
+    { GlobalAlloc(wFlags, dwBytes):word - ordinal VERIFIE via                }
+    { krnl386.exe16.spec (dwBytes est un LONG = 2 mots, mot bas lu ici -    }
+    { notre tas local etant minuscule, une VRAIE allocation >64Ko            }
+    { echouerait honnetement de toute facon). Le tas "global" et le tas     }
+    { "local" sont TRAITES DE FACON IDENTIQUE dans cette simplification     }
+    { (meme bump allocator Win16_HeapNext/Win16_HeapLimit que LocalAlloc,   }
+    { ordinal 5 ci-dessus) - simplification DOCUMENTEE, coherente avec le   }
+    { modele "handle = offset direct" deja utilise partout dans ce          }
+    { chantier. }
+    LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     P.CPU.Regs.AX := Win16_HeapNext;
+     Win16_HeapNext := Win16_HeapNext + LocalWBytes;
+    End;
+    ArgWords := 3;
+   End;
+   17: Begin
+    { GlobalFree(hMem):word - ordinal VERIFIE. Meme simplification que      }
+    { LocalFree (ordinal 7) : le tas est un bump allocator qui ne recupere  }
+    { JAMAIS la memoire - rapporte toujours un succes. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   18: Begin
+    { GlobalLock(hMem):far ptr - ordinal VERIFIE. PAS de "-ret16" = retour  }
+    { COMPLET DX:AX. Handle deja simplifie en offset direct (LMEM_FIXED,    }
+    { voir LocalAlloc/ordinal 5) : identite - retourne ce meme offset avec  }
+    { le segment du tas (Win16_StackSeg). }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   19: Begin
+    { GlobalUnlock(hMem):bool - ordinal VERIFIE. Rapporte toujours un       }
+    { succes (aucun VRAI verrou a lever, handle=offset direct). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   21: Begin
+    { GlobalHandle(wMem):DWORD (HIWORD=hInstance module, LOWORD=hMem) -     }
+    { ordinal VERIFIE. PAS de "-ret16" = retour COMPLET DX:AX. Simplifie :  }
+    { hInstance synthetique = Win16_StackSeg (notre seul "module" charge),  }
+    { hMem inchange (identite, meme modele que GlobalLock). }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
    30: Begin
     { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
     { + task.c, source publique) : bloque la tache appelante jusqu'a ce     }
@@ -37681,6 +37731,42 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
+   179: Begin
+    { GetSystemMetrics(nIndex):int - ordinal VERIFIE via user.exe16.spec ;  }
+    { constantes SM_* verifiees via winuser.h (Wine, source publique).      }
+    { Rendu GDI reel HORS DE PORTEE (Stage 6) - simplification DOCUMENTEE : }
+    { valeurs plausibles d'un ecran VGA 640x480 avec une decoration de      }
+    { fenetre Windows 2.x/3.x classique, jamais un VRAI environnement       }
+    { graphique. Index non couvert -> 0 (honnete, non modelise). }
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Case GDIIdx Of
+     0:  P.CPU.Regs.AX := 640;  { CXSCREEN }
+     1:  P.CPU.Regs.AX := 480;  { CYSCREEN }
+     2, 21: P.CPU.Regs.AX := 16; { CXVSCROLL/CXHSCROLL }
+     3, 20: P.CPU.Regs.AX := 16; { CYHSCROLL/CYVSCROLL }
+     4:  P.CPU.Regs.AX := 18;   { CYCAPTION }
+     5:  P.CPU.Regs.AX := 1;    { CXBORDER }
+     6:  P.CPU.Regs.AX := 1;    { CYBORDER }
+     7, 32: P.CPU.Regs.AX := 3; { CXDLGFRAME/CXFRAME }
+     8, 33: P.CPU.Regs.AX := 3; { CYDLGFRAME/CYFRAME }
+     9:  P.CPU.Regs.AX := 16;   { CYVTHUMB }
+     10: P.CPU.Regs.AX := 16;   { CXHTHUMB }
+     11, 13: P.CPU.Regs.AX := 32; { CXICON/CXCURSOR }
+     12, 14: P.CPU.Regs.AX := 32; { CYICON/CYCURSOR }
+     15: P.CPU.Regs.AX := 18;   { CYMENU }
+     16: P.CPU.Regs.AX := 640;  { CXFULLSCREEN }
+     17: P.CPU.Regs.AX := 462;  { CYFULLSCREEN }
+     19: P.CPU.Regs.AX := 1;    { MOUSEPRESENT }
+     28, 34: P.CPU.Regs.AX := 112; { CXMIN/CXMINTRACK }
+     29, 35: P.CPU.Regs.AX := 27;  { CYMIN/CYMINTRACK }
+     30: P.CPU.Regs.AX := 18;   { CXSIZE }
+     31: P.CPU.Regs.AX := 18;   { CYSIZE }
+     36, 37: P.CPU.Regs.AX := 4;   { CXDOUBLECLK/CYDOUBLECLK }
+     38, 39: P.CPU.Regs.AX := 64;  { CXICONSPACING/CYICONSPACING }
+     Else P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 1;
+   End;
    180: Begin
     { GetSysColor(nIndex):COLORREF - ordinal VERIFIE via user.exe16.spec ;  }
     { PAS de "-ret16" = retour COMPLET DX:AX (0 dans DX, une COLORREF tient }
@@ -37740,6 +37826,45 @@ Begin
      Else P.CPU.Regs.AX := 0;
     End;
     ArgWords := 2;
+   End;
+   45: Begin
+    { SelectObject(hdc, hObj):hObj - ordinal VERIFIE via gdi.exe16.spec.    }
+    { Rendu GDI reel HORS DE PORTEE (Stage 6) - simplification DOCUMENTEE :}
+    { retourne juste un handle synthetique non-nul (l'objet "precedemment  }
+    { selectionne" reel importe rarement au code appelant, qui l'utilise   }
+    { seulement pour le re-selectionner plus tard en fin de dessin). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   61: Begin
+    { CreatePen(nStyle, nWidth, crColor):HPEN - ordinal VERIFIE via         }
+    { gdi.exe16.spec (2 mots signes + 1 LONG = 4 mots). Meme               }
+    { simplification que CreateSolidBrush ci-dessous : handle synthetique  }
+    { non-nul, aucun VRAI stylo dessinable. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   66: Begin
+    { CreateSolidBrush(crColor):HBRUSH - ordinal VERIFIE via                }
+    { gdi.exe16.spec (prend un LONG = 2 mots). Rendu GDI reel HORS DE       }
+    { PORTEE (Stage 6) - simplification DOCUMENTEE : handle synthetique     }
+    { non-nul, aucun VRAI pinceau dessinable. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   69: Begin
+    { DeleteObject(hObj):bool - ordinal VERIFIE via gdi.exe16.spec. Meme    }
+    { simplification que les autres "objets GDI synthetiques" ci-dessus :  }
+    { rapporte toujours un succes, aucun VRAI objet a liberer. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   87: Begin
+    { GetStockObject(nIndex):handle - ordinal VERIFIE via gdi.exe16.spec.  }
+    { Meme simplification : handle synthetique non-nul quel que soit       }
+    { l'objet standard demande (pinceau/stylo/police systeme). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);

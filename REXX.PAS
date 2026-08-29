@@ -2299,6 +2299,14 @@ Begin
   ((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
 End;
 
+Function ClauseStart(S,W:String):Boolean;
+Var U:String;
+Begin
+ U:=StrToUpper(Clean(S));W:=StrToUpper(W);
+ ClauseStart:=(Copy(U,1,Length(W))=W)and
+  ((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
+End;
+
 Function FindWord(S,W:String):Integer;
 Var
  J,D:Integer;
@@ -2432,8 +2440,8 @@ Begin
 End;
 
 Procedure ExecOne(S:String);
-Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord,CommandText,OldAddress:String;
- Found:Boolean;CommandByte:Byte;
+Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord,CommandText,OldAddress,
+ SourceText,Template:String;Found,MakeUpper:Boolean;CommandByte:Byte;
 Begin
  S:=Clean(S);If S=''Then Exit;
  P:=1;While(P<=Length(S))and(S[P]in['A'..'Z','a'..'z','_'])Do Inc(P);
@@ -2444,7 +2452,7 @@ Begin
    Rest:=Clean(Copy(S,8,255));
    If Rest=''Then Begin
     OldAddress:=CurrentAddress;CurrentAddress:=PreviousAddress;PreviousAddress:=OldAddress;
-   End Else If WordStart(Rest,'VALUE')Then Begin
+   End Else If ClauseStart(Rest,'VALUE')Then Begin
     Eval(Clean(Copy(Rest,6,255)),V);Name:=StrToUpper(V.Text);
     PreviousAddress:=CurrentAddress;CurrentAddress:=Name;
    End Else Begin
@@ -2497,46 +2505,42 @@ Begin
    PushQueue(V.Text);
   End;
   48:Begin { PARSE }
-   If WordStart(S,'PARSE ARG')Then Begin
-    Rest:=Clean(Copy(S,10,255));J:=1;
-    While(Rest<>'')do Begin
-     P:=System.Pos(',',Rest);If P>0Then Begin
-      ArgName:=Clean(Copy(Rest,1,P-1));
-      Delete(Rest,1,P);
-      Rest:=Clean(Rest);
-     End
-      Else
-     Begin
-      ArgName:=Clean(Rest);
-      Rest:='';
-     End;
-     If J<=CurrentArgCount Then VarSet(ArgName,CurrentArgs[J])
-                           Else VarSet(ArgName,'');
-     Inc(J);
+   Rest:=Clean(Copy(S,6,255));MakeUpper:=False;
+   If ClauseStart(Rest,'UPPER')Then Begin
+    MakeUpper:=True;Rest:=Clean(Copy(Rest,6,255));
+   End;
+   If ClauseStart(Rest,'ARG')Then Begin
+    Rest:=Clean(Copy(Rest,4,255));J:=1;
+    While Rest<>''Do Begin
+     P:=System.Pos(',',Rest);
+     If P>0Then Begin Template:=Clean(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Clean(Rest);End
+      Else Begin Template:=Rest;Rest:='';End;
+     If J<=CurrentArgCount Then SourceText:=CurrentArgs[J]Else SourceText:='';
+     ParseTemplate(SourceText,Template,MakeUpper);Inc(J);
     End;
-   End
-    Else
-   If WordStart(S,'PARSE UPPER VAR')Then Begin
-    Rest:=Clean(Copy(S,16,255));P:=System.Pos(' ',Rest);
+   End Else If ClauseStart(Rest,'VAR')Then Begin
+    Rest:=Clean(Copy(Rest,4,255));P:=System.Pos(' ',Rest);
     If P>0Then Begin
-     Name:=Copy(Rest,1,P-1);
-     VarGet(Name,V);ParseTemplate(V.Text,Clean(Copy(Rest,P+1,255)),True);
+     Name:=Copy(Rest,1,P-1);Template:=Clean(Copy(Rest,P+1,255));
+     VarGet(Name,V);ParseTemplate(V.Text,Template,MakeUpper);
     End;
-   End
-    Else
-   If WordStart(S,'PARSE VAR')Then Begin
-    Rest:=Clean(Copy(S,10,255));P:=System.Pos(' ',Rest);
+   End Else If ClauseStart(Rest,'VALUE')Then Begin
+    Rest:=Clean(Copy(Rest,6,255));P:=FindWord(Rest,'WITH');
     If P>0Then Begin
-     Name:=Copy(Rest,1,P-1);VarGet(Name,V);
-     ParseTemplate(V.Text,Clean(Copy(Rest,P+1,255)),False);
+     Eval(Clean(Copy(Rest,1,P-1)),V);Template:=Clean(Copy(Rest,P+4,255));
+     ParseTemplate(V.Text,Template,MakeUpper);
     End;
-   End
-    Else
-   If WordStart(S,'PARSE VERSION')Then
-    ParseTemplate('REXX-DEVCOOLS 1.0',Clean(Copy(S,14,255)),False)
-    Else
-   If WordStart(S,'PARSE SOURCE')Then
-    ParseTemplate('WINDOWS COMMAND '+FileName,Clean(Copy(S,13,255)),False);
+   End Else If ClauseStart(Rest,'PULL')Then Begin
+    Template:=Clean(Copy(Rest,5,255));PullQueue(SourceText,Found);
+    If Not Found Then ReadLn(SourceText);
+    ParseTemplate(SourceText,Template,MakeUpper);
+   End Else If ClauseStart(Rest,'LINEIN')Then Begin
+    Template:=Clean(Copy(Rest,7,255));ReadLn(SourceText);
+    ParseTemplate(SourceText,Template,MakeUpper);
+   End Else If ClauseStart(Rest,'VERSION')Then
+    ParseTemplate('REXX-DEVCOOLS 1.0',Clean(Copy(Rest,8,255)),MakeUpper)
+   Else If ClauseStart(Rest,'SOURCE')Then
+    ParseTemplate('WINDOWS COMMAND '+FileName,Clean(Copy(Rest,7,255)),MakeUpper);
   End;
   56:Begin { RETURN }
    Rest:=Clean(Copy(S,7,255));
@@ -2551,7 +2555,7 @@ Begin
   49:; { PROCEDURE est traite lors de l'entree dans CallRoutine }
   135:Begin { TRACE }
    Rest:=Clean(Copy(S,6,255));
-   If WordStart(Rest,'VALUE')Then Begin
+   If ClauseStart(Rest,'VALUE')Then Begin
     Eval(Clean(Copy(Rest,6,255)),V);
     CurrentTraceSetting:=NormalizeTraceSetting(V.Text);
    End Else CurrentTraceSetting:=NormalizeTraceSetting(Rest);
