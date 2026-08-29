@@ -2139,6 +2139,172 @@ Begin
  End;
 End;
 
+Function StreamLineAtPosition(StreamName:String;Position:LongInt):LongInt;
+Var F:File;CharacterByte:Byte;ReadCount,ErrorCode:Integer;
+ BytesRead,LineNumber:LongInt;PreviousWasCR:Boolean;
+Begin
+ LineNumber:=1;BytesRead:=0;PreviousWasCR:=False;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin StreamLineAtPosition:=0;Exit;End;
+ While(BytesRead<Position-1)and(BytesRead<FileSize(F))Do Begin
+  BlockRead(F,CharacterByte,1,ReadCount);
+  If ReadCount=0Then Break;
+  Inc(BytesRead);
+  If CharacterByte=13Then Begin Inc(LineNumber);PreviousWasCR:=True;End
+  Else If CharacterByte=10Then Begin
+   If Not PreviousWasCR Then Inc(LineNumber);PreviousWasCR:=False;
+  End Else PreviousWasCR:=False;
+ End;
+ Close(F);StreamLineAtPosition:=LineNumber;
+End;
+
+Procedure StreamValue(StreamName,OptionText,CommandText:String;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var F:File;J,K,ErrorCode,ReadIndex,WriteIndex:Integer;
+ FileLength,NewPosition,OffsetValue:LongInt;OptionCode:Char;
+ UpperCommand,PositionText,ExpandedName:String;PositionCode:Char;
+Begin
+ StreamName:=Clean(StreamName);OptionText:=StrToUpper(Clean(OptionText));
+ CommandText:=Clean(CommandText);UpperCommand:=StrToUpper(CommandText);
+ If OptionText=''Then OptionCode:='S'Else OptionCode:=OptionText[1];
+ ReadIndex:=0;WriteIndex:=0;
+ For J:=1 To CharInStreamCount Do If CharInNames[J]=StreamName Then ReadIndex:=J;
+ For J:=1 To CharOutStreamCount Do If CharOutNames[J]=StreamName Then WriteIndex:=J;
+ If OptionCode='S'Then Begin
+  If StreamName=''Then RVText('READY',ResultValue)
+  Else Begin
+   {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+   If ErrorCode=0Then Begin Close(F);RVText('READY',ResultValue);End
+    Else RVText('NOTREADY',ResultValue);
+  End;
+  Exit;
+ End;
+ If OptionCode='D'Then Begin
+  If StreamName=''Then RVText('READY',ResultValue)
+  Else Begin
+   {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+   If ErrorCode=0Then Begin Close(F);RVText('READY',ResultValue);End
+    Else RVText('NOTREADY: FILE NOT FOUND',ResultValue);
+  End;
+  Exit;
+ End;
+ If OptionCode<>'C'Then Begin RVText('',ResultValue);Exit;End;
+
+ If UpperCommand='QUERY EXISTS'Then Begin
+  {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+  If ErrorCode=0Then Begin Close(F);ExpandedName:=FExpand(StreamName);RVText(ExpandedName,ResultValue);End
+   Else RVText('',ResultValue);
+  Exit;
+ End;
+ If UpperCommand='QUERY SIZE'Then Begin
+  {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+  If ErrorCode=0Then Begin FileLength:=FileSize(F);Close(F);RVNum(FileLength,ResultValue);End
+   Else RVNum(0,ResultValue);
+  Exit;
+ End;
+ If UpperCommand='QUERY LINEPOS READ'Then Begin
+  If ReadIndex=0Then RVNum(1,ResultValue)
+   Else RVNum(StreamLineAtPosition(StreamName,CharInPositions[ReadIndex]),ResultValue);
+  Exit;
+ End;
+ If UpperCommand='QUERY LINEPOS WRITE'Then Begin
+  If WriteIndex=0Then RVNum(0,ResultValue)
+   Else RVNum(StreamLineAtPosition(StreamName,CharOutPositions[WriteIndex]),ResultValue);
+  Exit;
+ End;
+ If UpperCommand='CLOSE'Then Begin
+  If ReadIndex>0Then Begin
+   For J:=ReadIndex To CharInStreamCount-1 Do Begin
+    CharInNames[J]:=CharInNames[J+1];CharInPositions[J]:=CharInPositions[J+1];
+   End;
+   Dec(CharInStreamCount);
+  End;
+  If WriteIndex>0Then Begin
+   For J:=WriteIndex To CharOutStreamCount-1 Do Begin
+    CharOutNames[J]:=CharOutNames[J+1];CharOutPositions[J]:=CharOutPositions[J+1];
+   End;
+   Dec(CharOutStreamCount);
+  End;
+  RVText('READY:',ResultValue);Exit;
+ End;
+ If(UpperCommand='RESET')or(UpperCommand='FLUSH')Then Begin
+  If(UpperCommand='RESET')Then Begin
+   If ReadIndex>0Then CharInPositions[ReadIndex]:=1;
+   If WriteIndex>0Then CharOutPositions[WriteIndex]:=0;
+  End;
+  RVText('READY:',ResultValue);Exit;
+ End;
+ If Copy(UpperCommand,1,4)='OPEN'Then Begin
+  {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+  If ErrorCode<>0Then Begin
+   If(System.Pos('WRITE',UpperCommand)>0)or(System.Pos('APPEND',UpperCommand)>0)or
+     (System.Pos('REPLACE',UpperCommand)>0)or(UpperCommand='OPEN')Then Begin
+    {$I-}Rewrite(F,1);{$I+}ErrorCode:=IoResult;
+   End;
+  End Else If System.Pos('REPLACE',UpperCommand)>0Then Begin
+   Close(F);{$I-}Rewrite(F,1);{$I+}ErrorCode:=IoResult;
+  End;
+  If ErrorCode<>0Then Begin RVText('ERROR',ResultValue);Exit;End;
+  FileLength:=FileSize(F);Close(F);
+  If ReadIndex=0Then Begin
+   If CharInStreamCount<MaxRoutineArgs Then Begin
+    Inc(CharInStreamCount);ReadIndex:=CharInStreamCount;
+    CharInNames[ReadIndex]:=StreamName;
+   End;
+  End;
+  If ReadIndex>0Then CharInPositions[ReadIndex]:=1;
+  If WriteIndex=0Then Begin
+   If CharOutStreamCount<MaxRoutineArgs Then Begin
+    Inc(CharOutStreamCount);WriteIndex:=CharOutStreamCount;
+    CharOutNames[WriteIndex]:=StreamName;
+   End;
+  End;
+  If WriteIndex>0Then Begin
+   If System.Pos('APPEND',UpperCommand)>0Then CharOutPositions[WriteIndex]:=FileLength+1
+    Else CharOutPositions[WriteIndex]:=1;
+  End;
+  RVText('READY:',ResultValue);Exit;
+ End;
+
+ If Copy(UpperCommand,1,7)='READPOS'Then Begin
+  PositionText:=Clean(Copy(CommandText,8,255));K:=ReadIndex;
+ End Else If Copy(UpperCommand,1,8)='WRITEPOS'Then Begin
+  PositionText:=Clean(Copy(CommandText,9,255));K:=WriteIndex;
+ End Else Begin RVText('ERROR',ResultValue);Exit;End;
+ If K=0Then Begin
+  If Copy(UpperCommand,1,7)='READPOS'Then Begin
+   If CharInStreamCount>=MaxRoutineArgs Then Begin RVText('ERROR',ResultValue);Exit;End;
+   Inc(CharInStreamCount);K:=CharInStreamCount;CharInNames[K]:=StreamName;
+   CharInPositions[K]:=1;
+  End Else Begin
+   If CharOutStreamCount>=MaxRoutineArgs Then Begin RVText('ERROR',ResultValue);Exit;End;
+   Inc(CharOutStreamCount);K:=CharOutStreamCount;CharOutNames[K]:=StreamName;
+   CharOutPositions[K]:=1;
+  End;
+ End;
+ If Copy(UpperCommand,1,7)='READPOS'Then NewPosition:=CharInPositions[K]
+  Else NewPosition:=CharOutPositions[K];
+ If PositionText<>''Then Begin
+  PositionCode:='=';
+  If PositionText[1]in['=','+','-','<']Then Begin
+   PositionCode:=PositionText[1];Delete(PositionText,1,1);PositionText:=Clean(PositionText);
+  End;
+  Val(PositionText,OffsetValue,ErrorCode);
+  If ErrorCode<>0Then Begin RVText('ERROR',ResultValue);Exit;End;
+  If PositionCode='='Then NewPosition:=OffsetValue
+  Else If PositionCode='+'Then NewPosition:=NewPosition+OffsetValue
+  Else If PositionCode='-'Then NewPosition:=NewPosition-OffsetValue
+  Else Begin
+   {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+   If ErrorCode=0Then Begin FileLength:=FileSize(F);Close(F);NewPosition:=FileLength-OffsetValue+1;End;
+  End;
+  If NewPosition<1Then NewPosition:=1;
+  If Copy(UpperCommand,1,7)='READPOS'Then CharInPositions[K]:=NewPosition
+   Else CharOutPositions[K]:=NewPosition;
+ End;
+ RVNum(NewPosition,ResultValue);
+End;
+
 Function CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
 Var LeftCount,RightCount,StartPosition:Integer;PadChar:Char;
 Begin
@@ -2346,7 +2512,7 @@ Begin
     ResultValue); { SOURCELINE }
    70:RVText(SpaceText(A.Text,System.Trunc(B.Number),InvokeArgCount>1,
     InvokeArgCount>2,D.Text),ResultValue); { SPACE }
-   71:FunctionNotImplemented(FunctionByte,ResultValue); { STREAM }
+   71:StreamValue(A.Text,B.Text,D.Text,InvokeArgCount,ResultValue); { STREAM }
    72:RVText(StripText(A.Text,B.Text,D.Text,InvokeArgCount>1,
     InvokeArgCount>2),ResultValue); { STRIP }
    73:RVText(SubStringText(A.Text,System.Trunc(B.Number),

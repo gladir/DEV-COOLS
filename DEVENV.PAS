@@ -3467,6 +3467,12 @@ Type
   Fg  : Byte;             { couleur de premier plan (0..15)       }
   Bg  : Byte;             { couleur de fond (0..15)               }
  End;
+ { Type NOMME (pas anonyme) - necessaire pour que PrevDrawVRAM (voir       }
+ { TEmulatorPanel) puisse recevoir une simple affectation de tableau       }
+ { entier depuis VRAM ; deux tableaux anonymes de meme forme sont des      }
+ { types DIFFERENTS pour FPC, incompatibles pour `:=` (meme piege deja     }
+ { rencontre et documente pour T6502MemArr/TC64Snapshot). }
+ TEmuVRAMArr = Array[0..24, 0..131] Of TEmuCell;
 
  { Structure d entete d un fichier .EXE (MZ) }
  TEmuHeaderEXE = Record
@@ -4348,7 +4354,7 @@ Type
   { Ecran virtuel 80 colonnes x 25 lignes }
   { Borne a 131 (132 colonnes) pour supporter le mode texte couleur       }
   { 132x25 de la carte ATI Graphics Solution (Options > Emulateur > DOS). }
-  VRAM       : Array[0..24, 0..131] Of TEmuCell;
+  VRAM       : TEmuVRAMArr;
   CursorX    : Byte;             { colonne curseur (0..79)         }
   CursorY    : Byte;             { ligne curseur (0..24)           }
   CurFg      : Byte;             { couleur courante FG             }
@@ -4385,6 +4391,31 @@ Type
   { variable locale "Steps" qui ne peut plus survivre entre les appels.    }
   Loaded     : Boolean;
   TotalSteps : LongInt;
+  { BOGUE REEL (2026-08-29) signale par l utilisateur : le pompage         }
+  { periodique (DOS_RunOneChunk, toutes les 80 ms) rappelait               }
+  { INCONDITIONNELLEMENT DrawEmulatorPanel meme quand P.VRAM/le curseur/   }
+  { la barre d etat etaient IDENTIQUES au dernier rendu - un ecran DOS      }
+  { texte tres statique (ex. Norton Commander en attente d une touche)      }
+  { redessinait donc ~12 fois/seconde POUR RIEN (copie plein ecran +       }
+  { ~3300 cellules + flip de page a chaque fois), percu comme un           }
+  { scintillement genant. Ces champs memorisent le DERNIER etat REELLEMENT }
+  { dessine pour permettre de sauter entierement l appel (aucun dessin,    }
+  { aucun flip de page) quand rien n a change - contrairement a la          }
+  { tentative de rendu differentiel CELLULE PAR CELLULE deja essayee et    }
+  { REVERTEE pour le C64 (voir [[project_devenv]]), ceci ne saute JAMAIS    }
+  { un dessin partiel : soit la trame COMPLETE est identique et on ne      }
+  { touche a rien (la page visible deja correcte le reste), soit elle       }
+  { differe et DrawEmulatorPanel s execute exactement comme avant,          }
+  { integralement, code de dessin inchange. }
+  PrevDrawValid    : Boolean;
+  PrevDrawVRAM     : TEmuVRAMArr;
+  PrevDrawCursorX  : Byte;
+  PrevDrawCursorY  : Byte;
+  PrevDrawCursorOn : Boolean;
+  PrevDrawBlink    : Boolean;
+  PrevDrawStatusMsg: String[127];
+  PrevDrawRunning  : Boolean;
+  PrevDrawFault    : Integer;
  End;
 
  { Stage 2 "multi-onglets emulateur" (2026-08-15) : instantane complet de }
@@ -84960,6 +84991,8 @@ Var
  LogF_R: Text;
  EntryAddr16: Word;
  K: Byte;
+ CurBlink, FrameChanged: Boolean;
+ YChk, XChk: Integer;
 Begin
  For ChunkI := 0 To 4999 Do Begin
   If P.CPU.Fault <> sfNone Then Break;
@@ -85121,8 +85154,56 @@ Begin
      un flash si appele trop souvent). }
    EmuPumpNow := GetTimestamp;
    If (EmuPumpNow - DOSAsync_LastDraw) >= 80 Then Begin
-     DrawEmulatorPanel(P);
      DOSAsync_LastDraw := EmuPumpNow;
+     { BOGUE REEL (2026-08-29) signale par l utilisateur : jusqu ici, ce    }
+     { pompage rappelait DrawEmulatorPanel INCONDITIONNELLEMENT toutes les  }
+     { 80 ms, meme quand P.VRAM/le curseur/la barre d etat etaient           }
+     { IDENTIQUES au dernier rendu - un ecran DOS texte statique (Norton    }
+     { Commander en attente d une touche) redessinait donc pour rien ~12    }
+     { fois/seconde (copie plein ecran + ~3300 cellules + flip de page a    }
+     { chaque fois), percu comme un scintillement genant. On saute          }
+     { desormais l appel ENTIER (donc aussi le flip de page) quand rien n a }
+     { reellement change - JAMAIS un dessin partiel comme la tentative      }
+     { differentielle cellule-par-cellule deja essayee/revertee pour le     }
+     { C64 (voir [[project_devenv]]) : soit la trame est identique et la    }
+     { page deja visible reste, telle quelle, parfaitement correcte, soit   }
+     { elle differe et DrawEmulatorPanel s execute exactement comme avant,  }
+     { integralement, code de dessin inchange. }
+     CurBlink := ((EmuPumpNow Div 500) Mod 2) = 0;
+     FrameChanged := (Not P.PrevDrawValid) Or
+      (P.CursorX <> P.PrevDrawCursorX) Or
+      (P.CursorY <> P.PrevDrawCursorY) Or
+      (P.CursorOn <> P.PrevDrawCursorOn) Or
+      (CurBlink <> P.PrevDrawBlink) Or
+      (P.StatusMsg <> P.PrevDrawStatusMsg) Or
+      (P.Running <> P.PrevDrawRunning) Or
+      (P.Fault <> P.PrevDrawFault);
+     If Not FrameChanged Then Begin
+      YChk := 0;
+      While (Not FrameChanged) And (YChk <= 24) Do Begin
+       XChk := 0;
+       While (Not FrameChanged) And (XChk <= 131) Do Begin
+        If (P.VRAM[YChk, XChk].Ch <> P.PrevDrawVRAM[YChk, XChk].Ch) Or
+           (P.VRAM[YChk, XChk].Fg <> P.PrevDrawVRAM[YChk, XChk].Fg) Or
+           (P.VRAM[YChk, XChk].Bg <> P.PrevDrawVRAM[YChk, XChk].Bg) Then
+         FrameChanged := True;
+        Inc(XChk);
+       End;
+       Inc(YChk);
+      End;
+     End;
+     If FrameChanged Then Begin
+      DrawEmulatorPanel(P);
+      P.PrevDrawVRAM := P.VRAM;
+      P.PrevDrawCursorX := P.CursorX;
+      P.PrevDrawCursorY := P.CursorY;
+      P.PrevDrawCursorOn := P.CursorOn;
+      P.PrevDrawBlink := CurBlink;
+      P.PrevDrawStatusMsg := P.StatusMsg;
+      P.PrevDrawRunning := P.Running;
+      P.PrevDrawFault := P.Fault;
+      P.PrevDrawValid := True;
+     End;
      P.NeedRepaint := False;
    End;
   End;
