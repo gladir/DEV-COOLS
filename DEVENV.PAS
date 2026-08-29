@@ -42521,6 +42521,9 @@ Var
  FileCnt: Integer;
  TotalSz: LongInt;
  VolLabel: String;
+ RevealNode: PTermLine;
+ RevealY, RevealVisLines, RevealMaxCols, RevealSkip: Integer;
+ RevealS: String;
 Begin
  If Not NCState.Initialized Then Begin
   NCRefreshPanes;
@@ -42824,6 +42827,37 @@ Begin
   If Length(S) > (PaneRight - X0 - 4) Div CW Then
    S := Copy(S, 1, (PaneRight - X0 - 4) Div CW);
   OutTextXY(X0 + 3, InfoY + 1, S);
+  End;
+ End Else Begin
+  { BOGUE REEL (2026-08-29) signale par l utilisateur : le vrai Ctrl+O    }
+  { de NC.PAS revele l ecran/la sortie EN DESSOUS des panneaux (celle du   }
+  { shell qui tournait avant NC) - la premiere version se contentait de    }
+  { laisser le fond bleu uni deja peint plus haut, ce qui ne "revelait"    }
+  { rien du tout. Affiche ici l historique de sortie de CE panneau         }
+  { terminal (TP.HistHead/HistTail, alimente par TermAddLine - LOG, F5     }
+  { copier, WIN16RUN, etc.), meme source que DrawTerminalPanel pour les    }
+  { 4 autres shells, mais sans sa barre de defilement (pas necessaire ici, }
+  { la ligne de commande reste seule visible sous le texte revele). }
+  RevealMaxCols := (PW - 8) Div CW;
+  If RevealMaxCols < 10 Then RevealMaxCols := 10;
+  RevealVisLines := (PromptY - (PY + TERM_TAB_HEIGHT + 2)) Div RH;
+  If RevealVisLines < 1 Then RevealVisLines := 1;
+  RevealNode := TP.HistTail;
+  RevealSkip := RevealVisLines - 1;
+  While (RevealSkip > 0) And (RevealNode <> Nil) And (RevealNode^.Prev <> Nil) Do Begin
+   RevealNode := RevealNode^.Prev;
+   Dec(RevealSkip);
+  End;
+  SetColor(7);
+  RevealY := PY + TERM_TAB_HEIGHT + 2;
+  For I := 0 To RevealVisLines - 1 Do Begin
+   If RevealNode <> Nil Then Begin
+    RevealS := RevealNode^.S;
+    If Length(RevealS) > RevealMaxCols Then RevealS := Copy(RevealS, 1, RevealMaxCols);
+    OutTextXY(PX + 4, RevealY, RevealS);
+    RevealNode := RevealNode^.Next;
+   End;
+   RevealY := RevealY + RH;
   End;
  End;
  End;

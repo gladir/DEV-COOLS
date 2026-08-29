@@ -2067,6 +2067,78 @@ Begin
  RVText(LineText,ResultValue);
 End;
 
+Procedure LineOutValue(StreamName,SourceText:String;RequestedLine:LongInt;
+ TextSpecified,LineSpecified:Boolean;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,ReadCount,WrittenCount:Integer;
+ Position,CurrentLine,FileLength:LongInt;CharacterByte,FollowingByte:Byte;
+ EndOfLine:Array[1..2]of Byte;
+Begin
+ If StreamName=''Then Begin
+  If TextSpecified and(SourceText<>'')Then WriteLn(SourceText);
+  RVNum(0,ResultValue);Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To CharOutStreamCount Do
+  If CharOutNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If CharOutStreamCount<MaxRoutineArgs Then Begin
+   Inc(CharOutStreamCount);StreamIndex:=CharOutStreamCount;
+   CharOutNames[StreamIndex]:=StreamName;CharOutPositions[StreamIndex]:=0;
+  End Else StreamIndex:=1;
+ End;
+ If Not LineSpecified and((Not TextSpecified)or(SourceText=''))Then Begin
+  CharOutPositions[StreamIndex]:=0;RVNum(0,ResultValue);Exit;
+ End;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin
+  {$I-}Rewrite(F,1);{$I+}
+  If IoResult<>0Then Begin RVNum(1,ResultValue);Exit;End;
+ End;
+ FileLength:=FileSize(F);
+ If LineSpecified and(RequestedLine>0)Then Begin
+  Position:=1;CurrentLine:=1;Seek(F,0);
+  While(CurrentLine<RequestedLine)and(Position<=FileLength)Do Begin
+   BlockRead(F,CharacterByte,1,ReadCount);
+   If ReadCount=0Then Break;
+   Inc(Position);
+   If CharacterByte=13Then Begin
+    If Position<=FileLength Then Begin
+     BlockRead(F,FollowingByte,1,ReadCount);
+     If(ReadCount>0)and(FollowingByte=10)Then Inc(Position)
+      Else If ReadCount>0Then Seek(F,Position-1);
+    End;
+    Inc(CurrentLine);
+   End Else If CharacterByte=10Then Inc(CurrentLine);
+  End;
+  EndOfLine[1]:=13;EndOfLine[2]:=10;
+  While CurrentLine<RequestedLine Do Begin
+   Seek(F,FileSize(F));BlockWrite(F,EndOfLine,2,WrittenCount);
+   Inc(CurrentLine);Position:=FileSize(F)+1;
+  End;
+ End Else Begin
+  Position:=CharOutPositions[StreamIndex];
+  If Position=0Then Position:=FileLength+1;
+ End;
+ If Position<1Then Position:=1;
+ If SourceText=''Then Begin
+  Close(F);CharOutPositions[StreamIndex]:=Position;
+  RVNum(0,ResultValue);Exit;
+ End;
+ Seek(F,Position-1);WrittenCount:=0;
+ If SourceText<>''Then BlockWrite(F,SourceText[1],Length(SourceText),WrittenCount);
+ If WrittenCount<>Length(SourceText)Then Begin
+  Close(F);RVNum(1,ResultValue);Exit;
+ End;
+ EndOfLine[1]:=13;EndOfLine[2]:=10;
+ BlockWrite(F,EndOfLine,2,WrittenCount);
+ Close(F);
+ If WrittenCount<>2Then RVNum(1,ResultValue)
+ Else Begin
+  CharOutPositions[StreamIndex]:=Position+Length(SourceText)+2;
+  RVNum(0,ResultValue);
+ End;
+End;
+
 Function CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
 Var LeftCount,RightCount,StartPosition:Integer;PadChar:Char;
 Begin
@@ -2231,7 +2303,8 @@ Begin
    40:RVNum(Length(A.Text),ResultValue); { LENGTH }
    41:LineInValue(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
     InvokeArgCount>1,InvokeArgCount>2,ResultValue); { LINEIN }
-   42:FunctionNotImplemented(FunctionByte,ResultValue); { LINEOUT }
+   42:LineOutValue(A.Text,B.Text,System.Trunc(D.Number),InvokeArgCount>1,
+    InvokeArgCount>2,ResultValue); { LINEOUT }
    43:LinesValue(A.Text,ResultValue); { LINES }
    44:Begin { MAX }
     If A.Number>B.Number Then N:=A.Number Else N:=B.Number;RVNum(N,ResultValue);
