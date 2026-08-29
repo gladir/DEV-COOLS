@@ -145,6 +145,15 @@ Begin
  Inc(RexxQueueCount);
 End;
 
+Procedure AppendQueue(Value:String);
+Var Entry:PRexxQueueEntry;
+Begin
+ New(Entry);Entry^.Value:=Value;Entry^.Next:=Nil;
+ If RexxQueueTail=Nil Then RexxQueueHead:=Entry
+  Else RexxQueueTail^.Next:=Entry;
+ RexxQueueTail:=Entry;Inc(RexxQueueCount);
+End;
+
 Procedure PullQueue(Var Value:String;Var Found:Boolean);
 Var Entry:PRexxQueueEntry;
 Begin
@@ -2503,6 +2512,11 @@ Begin
    Rest:=Clean(Copy(S,5,255));
    If Rest<>''Then Eval(Rest,V)Else RVText('',V);
    PushQueue(V.Text);
+  End;
+  53:Begin { QUEUE }
+   Rest:=Clean(Copy(S,6,255));
+   If Rest<>''Then Eval(Rest,V)Else RVText('',V);
+   AppendQueue(V.Text);
   End;
   48:Begin { PARSE }
    Rest:=Clean(Copy(S,6,255));MakeUpper:=False;

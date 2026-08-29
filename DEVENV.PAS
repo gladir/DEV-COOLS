@@ -37713,6 +37713,20 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
+   41: Begin
+    { CreateWindow(lpClassName, lpWindowName, dwStyle, x, y, nWidth,        }
+    { nHeight, hWndParent, hMenu, hInstance, lpParam):HWND - ordinal        }
+    { VERIFIE via user.exe16.spec (str+str+long+4 mots signes+3 mots+       }
+    { segptr = 15 mots). Creation de fenetre/rendu GDI reel HORS DE         }
+    { PORTEE (stretch goal Stage 6, jamais commence) - simplification       }
+    { DOCUMENTEE : ne parse AUCUN argument, retourne juste un HWND          }
+    { synthetique non-nul (succes) pour laisser le programme continuer      }
+    { vers ShowWindow/UpdateWindow/GetMessage. AUCUNE fenetre reelle        }
+    { n'existe - tout code qui tenterait de la dessiner s'arretera          }
+    { honnetement a son tour. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 15;
+   End;
    66, 67: Begin
     { GetDC(hWnd)/GetWindowDC(hWnd):HDC - 2 ordinaux VERIFIES via           }
     { user.exe16.spec, meme signature ("word"). Rendu GDI reel HORS DE      }
