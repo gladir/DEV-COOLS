@@ -1014,6 +1014,45 @@ Begin
  RVNum(ErrorCode,ResultValue);
 End;
 
+Procedure SysSearchFile(TargetText,FilePath,StemName,OptionsText:String;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var SourceFile:Text;LineText,ComparedLine,ComparedTarget,VariableName:String;
+ LineNumberText:String;LineNumber,MatchCount,ErrorCode:LongInt;
+ CaseSensitive,IncludeLineNumber,Matches:Boolean;
+Begin
+ If ArgumentCount<3Then Begin RVNum(87,ResultValue);Exit;End;
+ StemName:=StrToUpper(Clean(StemName));
+ If StemName=''Then Begin RVNum(87,ResultValue);Exit;End;
+ If StemName[Length(StemName)]<>'.'Then StemName:=StemName+'.';
+ OptionsText:=StrToUpper(OptionsText);
+ CaseSensitive:=System.Pos('C',OptionsText)>0;
+ IncludeLineNumber:=System.Pos('N',OptionsText)>0;
+ VarSet(StemName+'0','0');
+ {$I-}Assign(SourceFile,FilePath);Reset(SourceFile);{$I+}
+ ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin RVNum(3,ResultValue);Exit;End;
+ If CaseSensitive Then ComparedTarget:=TargetText
+ Else ComparedTarget:=StrToUpper(TargetText);
+ LineNumber:=0;MatchCount:=0;
+ While Not Eof(SourceFile)Do Begin
+  ReadLn(SourceFile,LineText);Inc(LineNumber);
+  If CaseSensitive Then ComparedLine:=LineText
+  Else ComparedLine:=StrToUpper(LineText);
+  Matches:=(ComparedTarget='')or(System.Pos(ComparedTarget,ComparedLine)>0);
+  If Matches Then Begin
+   Inc(MatchCount);Str(MatchCount,VariableName);
+   VariableName:=StemName+Clean(VariableName);
+   If IncludeLineNumber Then Begin
+    Str(LineNumber,LineNumberText);
+    VarSet(VariableName,Clean(LineNumberText)+' '+LineText);
+   End Else VarSet(VariableName,LineText);
+  End;
+ End;
+ Close(SourceFile);Str(MatchCount,LineNumberText);
+ VarSet(StemName+'0',Clean(LineNumberText));
+ RVNum(0,ResultValue);
+End;
+
 Procedure SysMakeDirectory(DirectoryName:String;Var ResultValue:RexxValue);
 Var ErrorCode:Integer;
 Begin
@@ -1963,7 +2002,8 @@ Begin
    92:FunctionNotImplemented(FunctionByte,ResultValue); { SYSDROPREXXMACRO }
    93:SysDeleteFile(A.Text,ResultValue); { SYSFILEDELETE }
    94:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILETREE }
-   95:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILESEARCH }
+   95:SysSearchFile(A.Text,B.Text,D.Text,E.Text,InvokeArgCount,
+    ResultValue); { SYSFILESEARCH }
    96:FunctionNotImplemented(FunctionByte,ResultValue); { SYSFILESYSTEMTYPE }
    97:FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETEA }
    98:FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETKEY }

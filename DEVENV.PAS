@@ -36818,6 +36818,8 @@ Var
  SegBufLen: Word;
  AutoDataMinAlloc, AutoDataLimit: Word;
  LongTmp: LongInt;
+ ChainOfs, ChainNext: Word;
+ ChainGuard: Integer;
 Begin
  AutoDataMinAlloc := 0;
  AutoDataLimit := 0;
@@ -36939,7 +36941,7 @@ Begin
    Additive := (FlagByte And 4) <> 0;
    IsList := (FlagByte And $20) <> 0;
    TargetOfs := Word(Rec[2] Or (Rec[3] Shl 8));
-   If Additive Or IsList Then Continue; { hors de portee, voir commentaire de tete }
+   If IsList Then Continue; { hors de portee, voir commentaire de tete }
    Ok := False;
    ResolvedSeg := 0; ResolvedOfs := 0;
    Case TargetType Of
@@ -36981,14 +36983,57 @@ Begin
     End;
    End;
    If Not Ok Then Continue;
-   Case SrcType Of
-    2: Emu_WriteWord(C, RealSegBase, TargetOfs, ResolvedSeg);
-    5: Emu_WriteWord(C, RealSegBase, TargetOfs, ResolvedOfs);
-    3: Begin
-     Emu_WriteWord(C, RealSegBase, TargetOfs, ResolvedOfs);
-     Emu_WriteWord(C, RealSegBase, Word(TargetOfs + 2), ResolvedSeg);
+   { BOGUE REEL trouve au Stage 5 (2026-08-29, via WIN16RUN sur CLOCK.EXE  }
+   { ET CALENDAR.EXE - voir project_devenv_win16.md) : la PLUPART des     }
+   { relogements NE non-additifs ne visent PAS une seule adresse mais une }
+   { CHAINE - TargetOfs est l'adresse du PREMIER maillon seulement ; le    }
+   { contenu BRUT (avant patch) de CHAQUE maillon encode l'offset du       }
+   { maillon SUIVANT (terminateur $FFFF), dans la MEME zone qui sera       }
+   { ensuite reellement patchee. Format CONFIRME via le code source reel  }
+   { de Win3mu (Topten Software, `ApplyRelocations` dans Module16.cs,      }
+   { recupere via recherche web - jamais devine) : "while (offset !=      }
+   { 0xFFFF) { next := ReadWord(offset); Write(offset, value); offset :=  }
+   { next; }". Symptome exact observe AVANT ce correctif : un relogement   }
+   { KERNEL.LocalAlloc bien present et correctement resolu (verifie par   }
+   { WIN16CALL/WIN16RUN sur un AUTRE site d'appel du MEME import) ne       }
+   { patchait QUE le 1er site d'une chaine de 5 sites reels dans CLOCK.EXE }
+   { (0x0F6B->0x0F97->0x1047->0x0CB7->0x0D99), laissant les 4 autres avec  }
+   { leurs octets de chainage originaux intacts - dont un terminateur      }
+   { $FFFF:$0000 litteral qui ressemblait a un "CALL FAR" vers une adresse }
+   { invalide (saut a CS=0) une fois atteint par l'execution reelle. }
+   If Additive Then Begin
+    { Additive : UNE SEULE adresse, la valeur resolue s'AJOUTE au contenu  }
+    { existant au lieu de l'ecraser - AUCUN chainage dans ce cas (confirme}
+    { par Win3mu : la boucle de chainage est dans la branche non-additive }
+    { uniquement). Rare (2 cas sur 62 releves empiriquement sur CLOCK.EXE)}
+    { mais desormais gere plutot qu'ignore, le mecanisme etant clarifie. }
+    Case SrcType Of
+     2: Emu_WriteWord(C, RealSegBase, TargetOfs,
+         Word(Emu_ReadWord(C, RealSegBase, TargetOfs) + ResolvedSeg));
+     5: Emu_WriteWord(C, RealSegBase, TargetOfs,
+         Word(Emu_ReadWord(C, RealSegBase, TargetOfs) + ResolvedOfs));
+     3: Emu_WriteWord(C, RealSegBase, TargetOfs,
+         Word(Emu_ReadWord(C, RealSegBase, TargetOfs) + ResolvedOfs));
+     0: Emu_WriteByte(C, RealSegBase, TargetOfs,
+         Byte(Emu_ReadByte(C, RealSegBase, TargetOfs) + Byte(ResolvedOfs And $FF)));
     End;
-    0: Emu_WriteByte(C, RealSegBase, TargetOfs, Byte(ResolvedOfs And $FF));
+   End Else Begin
+    ChainOfs := TargetOfs;
+    ChainGuard := 0;
+    While (ChainOfs <> $FFFF) And (ChainGuard < 64) Do Begin
+     ChainNext := Emu_ReadWord(C, RealSegBase, ChainOfs);
+     Case SrcType Of
+      2: Emu_WriteWord(C, RealSegBase, ChainOfs, ResolvedSeg);
+      5: Emu_WriteWord(C, RealSegBase, ChainOfs, ResolvedOfs);
+      3: Begin
+       Emu_WriteWord(C, RealSegBase, ChainOfs, ResolvedOfs);
+       Emu_WriteWord(C, RealSegBase, Word(ChainOfs + 2), ResolvedSeg);
+      End;
+      0: Emu_WriteByte(C, RealSegBase, ChainOfs, Byte(ResolvedOfs And $FF));
+     End;
+     ChainOfs := ChainNext;
+     Inc(ChainGuard);
+    End;
    End;
   End;
  End;
