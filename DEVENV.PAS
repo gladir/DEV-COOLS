@@ -2918,6 +2918,19 @@ Type
   NumberDirStack: Integer;         { taille de la pile repertoires  }
   VirtDrive : ShortInt;            { -1=hote, 0=A:, 1=B:            }
   VirtCwd   : String;              { chemin courant sur disque virt }
+  { Completion de nom de fichier par <TAB> (2026-08-29, demande explicite  }
+  { de l utilisateur : "comme le fait CMD.EXE") - voir TermTab_Complete.   }
+  { Cycle entre les correspondances tant que <TAB> est presse a nouveau    }
+  { SANS autre frappe entre-temps (TabActive bascule a False des qu une    }
+  { autre touche modifie InputLine - voir HandleTerminalEvent). }
+  TabActive    : Boolean;
+  TabTokenStart: Integer;          { position dans InputLine ou le "mot" }
+                                    { en cours de completion commence     }
+  TabDirPart   : String;           { prefixe repertoire du mot (conserve }
+                                    { tel quel a chaque cycle)            }
+  TabMatchCount: Integer;
+  TabMatchIdx  : Integer;
+  TabMatches   : Array[0..31] Of String[80];
  End;
 
  { Etat d un disque virtuel FAT12/16/32 monte via /DISK0, /DISK1,
@@ -45411,6 +45424,85 @@ Begin
  TP.NeedRepaint := False;
 End;
 
+{ Completion de nom de fichier par <TAB> (2026-08-29, demande explicite    }
+{ de l utilisateur : "comme le fait CMD.EXE") - portee au systeme HOTE     }
+{ uniquement (TP.VirtDrive < 0) ; sur un lecteur virtuel monte, <TAB> ne   }
+{ fait rien pour l instant (limitation assumee, pas de FindFirst/Next      }
+{ generique pour FAT/HPFS dans ce fichier - la navigation NC couvre deja   }
+{ ce cas via ses propres panneaux et n appelle pas cette fonction, voir     }
+{ HandleTerminalEvent qui delegue Norton Commander a HandleNCommanderEvent }
+{ AVANT d atteindre ce code). Isole le DERNIER "mot" de la ligne de         }
+{ commande (separe par des espaces - meme convention que TermExtractParam  }
+{ ailleurs dans ce fichier), le scinde en repertoire+prefixe partiel,       }
+{ recherche via FindFirst/FindNext (meme motif que TermCmd_DIR_CMD) toutes }
+{ les entrees dont le nom commence par ce prefixe (insensible a la casse), }
+{ et remplace ce dernier mot par la premiere correspondance triee - un        }
+{ ajoute un '\' final si l entree est un repertoire (permet d enchainer une }
+{ 2e completion immediatement, comme CMD.EXE). Appels <TAB> CONSECUTIFS     }
+{ (sans autre frappe entre-temps - TP.TabActive) font cycler parmi TOUTES   }
+{ les correspondances trouvees au premier appel, plutot que de refaire une  }
+{ recherche a chaque fois. }
+Procedure TermTab_Complete(Var TP: TTerminalPanel);
+Var
+ TokStart, DirEnd, Cnt: Integer;
+ Tok, DirPart, NamePart, UpNamePart, Base, FullDir, NewName: String;
+ Info: SearchRec;
+Begin
+ If TP.VirtDrive >= 0 Then Exit;
+ If Not TP.TabActive Then Begin
+  TokStart := Length(TP.InputLine);
+  While (TokStart > 0) And (TP.InputLine[TokStart] <> ' ') Do Dec(TokStart);
+  Inc(TokStart);
+  Tok := Copy(TP.InputLine, TokStart, Length(TP.InputLine) - TokStart + 1);
+  If Tok = '' Then Exit;
+  DirEnd := Length(Tok);
+  While (DirEnd > 0) And (Tok[DirEnd] <> '\') And (Tok[DirEnd] <> '/') Do
+   Dec(DirEnd);
+  DirPart := Copy(Tok, 1, DirEnd);
+  NamePart := Copy(Tok, DirEnd + 1, Length(Tok) - DirEnd);
+  UpNamePart := UpCaseStr(NamePart);
+  If (Length(DirPart) >= 1) And ((DirPart[1] = '\') Or (DirPart[1] = '/') Or
+     ((Length(DirPart) >= 2) And (DirPart[2] = ':'))) Then
+   FullDir := DirPart
+  Else Begin
+   GetDir(0, Base);
+   If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+   FullDir := Base + DirPart;
+  End;
+  TP.TabMatchCount := 0;
+  FindFirst(FullDir + '*.*', AnyFile, Info);
+  While DosError = 0 Do Begin
+   If (Info.Name <> '.') And (Info.Name <> '..') And
+      (Copy(UpCaseStr(Info.Name), 1, Length(UpNamePart)) = UpNamePart) And
+      (TP.TabMatchCount < 32) Then Begin
+    NewName := Info.Name;
+    If (Info.Attr And Directory) = Directory Then NewName := NewName + '\';
+    { Insertion triee (ordre stable et previsible au fil du cycle). }
+    Cnt := TP.TabMatchCount;
+    While (Cnt > 0) And
+     (UpCaseStr(TP.TabMatches[Cnt - 1]) > UpCaseStr(NewName)) Do Begin
+     TP.TabMatches[Cnt] := TP.TabMatches[Cnt - 1];
+     Dec(Cnt);
+    End;
+    TP.TabMatches[Cnt] := NewName;
+    Inc(TP.TabMatchCount);
+   End;
+   FindNext(Info);
+  End;
+  FindClose(Info);
+  If TP.TabMatchCount = 0 Then Exit;
+  TP.TabTokenStart := TokStart;
+  TP.TabDirPart := DirPart;
+  TP.TabMatchIdx := 0;
+  TP.TabActive := True;
+ End Else
+  TP.TabMatchIdx := (TP.TabMatchIdx + 1) Mod TP.TabMatchCount;
+ TP.InputLine := Copy(TP.InputLine, 1, TP.TabTokenStart - 1) +
+  TP.TabDirPart + TP.TabMatches[TP.TabMatchIdx];
+ TP.InputCol := Length(TP.InputLine) + 1;
+ TP.NeedRepaint := True;
+End;
+
 Procedure HandleTerminalEvent(Var TP: TTerminalPanel;
  Var Ev: TEvent);
 Var
@@ -45764,13 +45856,16 @@ Begin
   Ch := Ev.KeyChar;
   Case Ch Of
    #8: Begin { Backspace }
+    TP.TabActive := False;
     If Length(TP.InputLine) > 0 Then Begin
      TP.InputLine := Copy(TP.InputLine, 1,
       Length(TP.InputLine) - 1);
      TP.NeedRepaint := True;
     End;
    End;
+   #9: TermTab_Complete(TP); { Tab : completion de nom de fichier, comme CMD.EXE }
    #13: Begin { Enter }
+    TP.TabActive := False;
     GetDir(0, Dir);
     { Toute saisie ramene la fenetre au bas de l historique }
     TP.ScrollOffset := 0;
@@ -45794,6 +45889,7 @@ Begin
   Else
    If (Ord(Ch) >= 32) And
     (Length(TP.InputLine) < 240) Then Begin
+    TP.TabActive := False;
     TP.InputLine := TP.InputLine + Ch;
     Inc(TP.InputCol);
     TP.NeedRepaint := True;
