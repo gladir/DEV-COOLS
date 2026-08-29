@@ -87628,7 +87628,18 @@ Begin
       CloseEditorWindow(WinMgr.ActiveIdx);
      Exit;
     End;
-    EmuVScr_PushKey(P, K);
+    { BOGUE REEL (2026-08-29) signale par l utilisateur : les fleches       }
+    { s affichaient comme des lettres litterales (ex. Bas -> "P") dans      }
+    { l emulateur DOS - EV_KEY_DOWN transmet un CODE DE BALAYAGE BIOS       }
+    { (K, ex. $50 = Bas), jamais un caractere ASCII, mais etait pousse tel  }
+    { quel dans le mot de la file clavier. Le drainage vers le vrai buffer  }
+    { BIOS (~85069, Emu_PushBiosKey) documente et attend l encodage         }
+    { (scancode Shl 8) Or ascii - K etait donc lu comme ASCII=$50='P' au    }
+    { lieu de scancode=$50/ASCII=0, d ou l echo litteral de la lettre P     }
+    { (ou toute autre lettre correspondant par coincidence au code de       }
+    { balayage de la touche speciale pressee) par NC au lieu d un           }
+    { deplacement de curseur. }
+    EmuVScr_PushKey(P, Word(K) Shl 8);
    End;
   EV_MOUSE_MOVE:
    If IsDOSTarget Then
