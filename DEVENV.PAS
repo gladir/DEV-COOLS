@@ -6022,6 +6022,7 @@ Type
   EntryCount   : Integer;
   RoamingPath  : String[255]; { chemin calcule vers le fichier itinerant }
   RoamingMsg   : String[127]; { resultat du dernier export/import       }
+  ActionMsg    : String[127]; { resultat de la derniere compilation      }
  End;
  { INT 21h/AX=714Eh-714Fh (Windows 95, Stage 5) - un resultat de recherche }
  { de nom long capture d avance (contrairement au FindFirst/Next classique}
@@ -13221,6 +13222,7 @@ Begin
  EM.EntryCount := 0;
  EM.RoamingPath := GetEnv('APPDATA') + '\DEVENV\roaming.cfg';
  EM.RoamingMsg := '';
+ EM.ActionMsg := '';
 End;
 
 { --- Date d un fichier (paquet DOS FindFirst/SearchRec.Time, meme         }
@@ -17452,6 +17454,15 @@ End;
 { telles quelles pour exporter/importer les reglages. }
 Procedure SaveOptions(Var Data: TOptionsDialogData; FileName: String); Forward;
 Procedure LoadOptions(Var Data: TOptionsDialogData; FileName: String); Forward;
+{ Declarations anticipees : idem pour le bouton Installer/Mettre a jour -  }
+{ ExecuteCompiler/ReadOutputFile ne sont definis completement que bien     }
+{ plus bas (pres des compilateurs C#/VB integres), mais sont des          }
+{ primitives generiques (executer une commande, rediriger vers un fichier }
+{ temp, relire ce fichier dans le panneau de sortie) directement           }
+{ reutilisables ici pour appeler "fpc" sur le .PAS source d une extension. }
+Function ExecuteCompiler(CmdLine, TempOutputFile: String): Integer; Forward;
+Procedure ReadOutputFile(TempFile: String; Var OP: TOutputPanel;
+ Tab: Integer); Forward;
 
 Const
  ExtMgrTabLabels: Array[0..3] Of String[16] =
@@ -17470,6 +17481,10 @@ Const
                               { assez de place aux 3 colonnes suivantes  }
  EXTMGR_SB_W = 14;            { largeur de la barre de defilement verticale,}
                               { meme epaisseur que FRM_SB_SIZE (formulaires)}
+ EXTMGR_FOOTER_H = 28;        { bande du bas : bouton Installer/Mettre a  }
+                              { jour/Recompiler contextuel a la selection }
+ EXTMGR_BTN_W = 150;
+ EXTMGR_BTN_H = 20;
 
 { --- Formater une date DOS empaquetee (FileAge) - meme convention que
   NCFormatDateTime : jj/mm/aa. -1 (fichier absent) donne '-'. --- }
@@ -17517,6 +17532,74 @@ Begin
  For I := 0 To EM.EntryCount - 1 Do
   If ExtMgrEntryVisible(EM, I) Then Inc(Cnt);
  ExtMgrCountVisible := Cnt;
+End;
+
+{ --- Libelle du bouton d action pour une entree (Installer / Mettre a   }
+{ jour / Recompiler), ou '' si aucune action n est possible (backend      }
+{ integre au binaire, ExeFile='') - fonction partagee par le rendu du     }
+{ bouton et son gestionnaire de clic. --- }
+
+Function ExtMgrActionLabel(Var E: TExtEntry): String;
+Begin
+ If E.ExeFile = '' Then Begin
+  ExtMgrActionLabel := '';
+  Exit;
+ End;
+ If Not E.Installed Then ExtMgrActionLabel := 'Installer'
+ Else If E.NeedsUpdate Then ExtMgrActionLabel := 'Mettre a jour'
+ Else ExtMgrActionLabel := 'Recompiler';
+End;
+
+{ --- Deduit le nom du fichier source .PAS a partir de l executable       }
+{ compagnon - convention de nommage verifiee pour chacune des entrees du  }
+{ catalogue (PopulateExtEntries) : NOM.PAS compile en nom.exe, cote a     }
+{ cote a la racine du projet. --- }
+
+Function ExtMgrSourceFile(Const ExeFile: String): String;
+Var
+ Base: String;
+Begin
+ Base := ExeFile;
+ If (Length(Base) > 4) And
+    (UpCaseStr(Copy(Base, Length(Base) - 3, 4)) = '.EXE') Then
+  Base := Copy(Base, 1, Length(Base) - 4);
+ ExtMgrSourceFile := Base + '.PAS';
+End;
+
+{ --- Compiler (ou recompiler) l executable compagnon de l entree           }
+{ actuellement selectionnee, via "fpc -Mtp source.pas" - reutilise          }
+{ ExecuteCompiler/ReadOutputFile (deja utilisees par les compilateurs C#/   }
+{ VB integres a DEVENV.PAS) pour rediriger la sortie REELLE du compilateur  }
+{ vers l onglet "Sortie de build" existant, exactement comme une            }
+{ compilation normale - jamais de resultat invente. --- }
+
+Procedure ExtMgrInstallSelected(Var EM: TExtManager);
+Var
+ SrcFile, TempFile: String;
+ ExitCode: Integer;
+Begin
+ If (EM.SelectedItem < 0) Or (EM.SelectedItem >= EM.EntryCount) Then Exit;
+ If EM.Entries[EM.SelectedItem].ExeFile = '' Then Exit;
+ SrcFile := ExtMgrSourceFile(EM.Entries[EM.SelectedItem].ExeFile);
+ If Not FileExists(SrcFile) Then Begin
+  EM.ActionMsg := 'Source introuvable : ' + SrcFile;
+  Exit;
+ End;
+ TempFile := GetEnv('TEMP') + '\EXTMGR_BUILD.TXT';
+ AppendOutput(OutputPanel,
+  '--- Gestionnaire d''extensions : compilation de ' + SrcFile + ' ---',
+  Ord(OTK_BUILD));
+ ExitCode := ExecuteCompiler('fpc -Mtp ' + SrcFile, TempFile);
+ ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
+ If ExitCode = 0 Then
+  EM.ActionMsg := 'Compilation reussie : ' +
+   EM.Entries[EM.SelectedItem].ExeFile
+ Else
+  EM.ActionMsg := 'Echec de la compilation (voir Sortie de build).';
+ { Rafraichir Installed/BuildDate/NeedsUpdate de TOUTES les entrees -    }
+ { conserve ScrollTop/SelectedItem/ActionMsg (non touches par            }
+ { PopulateExtEntries), seul le contenu de Entries[] est reconstruit. }
+ PopulateExtEntries(EM);
 End;
 
 Procedure DrawExtManager(Var EM: TExtManager);
@@ -17587,7 +17670,7 @@ Begin
  { du curseur de la barre, meme discipline que la barre de defilement    }
  { verticale du terminal (corrigee plus tot cette session : deux formules}
  { de maximum differentes avaient fini par diverger). }
- VisLines := (EM.Y + EM.Height - ListY) Div EXTMGR_ROW_H;
+ VisLines := (EM.Y + EM.Height - EXTMGR_FOOTER_H - ListY) Div EXTMGR_ROW_H;
  If VisLines < 1 Then VisLines := 1;
  TotalVis := ExtMgrCountVisible(EM);
  MaxScroll := TotalVis - VisLines;
@@ -17653,14 +17736,18 @@ Begin
  Line(SBX1 + 3, ListY + 9, MidX, ListY + 4);
  Line(MidX, ListY + 4, SBX2 - 3, ListY + 9);
  SetFillStyle(SolidFill, CLR_BACKGROUND);
- Bar(SBX1, EM.Y + EM.Height - EXTMGR_SB_W, SBX2, EM.Y + EM.Height - 1);
+ Bar(SBX1, EM.Y + EM.Height - EXTMGR_FOOTER_H - EXTMGR_SB_W, SBX2,
+  EM.Y + EM.Height - EXTMGR_FOOTER_H - 1);
  SetColor(CLR_BORDER);
- Rectangle(SBX1, EM.Y + EM.Height - EXTMGR_SB_W, SBX2, EM.Y + EM.Height - 1);
+ Rectangle(SBX1, EM.Y + EM.Height - EXTMGR_FOOTER_H - EXTMGR_SB_W, SBX2,
+  EM.Y + EM.Height - EXTMGR_FOOTER_H - 1);
  SetColor(CLR_EDITOR_TEXT);
- Line(SBX1 + 3, EM.Y + EM.Height - 9, MidX, EM.Y + EM.Height - 4);
- Line(MidX, EM.Y + EM.Height - 4, SBX2 - 3, EM.Y + EM.Height - 9);
+ Line(SBX1 + 3, EM.Y + EM.Height - EXTMGR_FOOTER_H - 9, MidX,
+  EM.Y + EM.Height - EXTMGR_FOOTER_H - 4);
+ Line(MidX, EM.Y + EM.Height - EXTMGR_FOOTER_H - 4, SBX2 - 3,
+  EM.Y + EM.Height - EXTMGR_FOOTER_H - 9);
  TrackTop := ListY + EXTMGR_SB_W;
- TrackBot := EM.Y + EM.Height - EXTMGR_SB_W;
+ TrackBot := EM.Y + EM.Height - EXTMGR_FOOTER_H - EXTMGR_SB_W;
  SetFillStyle(SolidFill, CLR_SCROLLBAR);
  Bar(SBX1, TrackTop, SBX2, TrackBot);
  If MaxScroll > 0 Then Begin
@@ -17672,6 +17759,38 @@ Begin
   If TrackH - 2 - ThumbH > 0 Then
    ThumbTop := ThumbTop + (EM.ScrollTop * (TrackH - 2 - ThumbH)) Div MaxScroll;
   Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
+ { --- Bande d action (bas) : bouton Installer/Mettre a jour/Recompiler   }
+ { contextuel a EM.SelectedItem, ou un indice honnete si rien n est        }
+ { selectionne ou si l entree est un backend integre (rien a compiler).    }
+ { Le resultat de la derniere compilation (EM.ActionMsg), s il existe,     }
+ { prend la place du texte d indice (jamais les deux a la fois - la        }
+ { bande ne fait qu une ligne, pas de risque de chevauchement). --- }
+ SetColor(CLR_BORDER);
+ Line(EM.X, EM.Y + EM.Height - EXTMGR_FOOTER_H, EM.X + EM.Width - 1,
+  EM.Y + EM.Height - EXTMGR_FOOTER_H);
+ If (EM.SelectedItem >= 0) And (EM.SelectedItem < EM.EntryCount) Then Begin
+  EtatStr := ExtMgrActionLabel(EM.Entries[EM.SelectedItem]);
+  If EtatStr <> '' Then Begin
+   SetColor(CLR_BORDER);
+   Rectangle(EM.X + 8, EM.Y + EM.Height - EXTMGR_FOOTER_H + 4,
+    EM.X + 8 + EXTMGR_BTN_W, EM.Y + EM.Height - EXTMGR_FOOTER_H + 4 + EXTMGR_BTN_H);
+   SetColor(CLR_EDITOR_TEXT);
+   OutTextXY(EM.X + 16, EM.Y + EM.Height - EXTMGR_FOOTER_H + 9, EtatStr);
+   If EM.ActionMsg <> '' Then Begin
+    SetColor(CLR_MENU_TEXT);
+    OutTextXY(EM.X + 16 + EXTMGR_BTN_W,
+     EM.Y + EM.Height - EXTMGR_FOOTER_H + 9, EM.ActionMsg);
+   End;
+  End Else Begin
+   SetColor(CLR_MENU_TEXT);
+   OutTextXY(EM.X + 8, EM.Y + EM.Height - EXTMGR_FOOTER_H + 9,
+    'Backend integre au binaire DEVENV.EXE - rien a compiler separement.');
+  End;
+ End Else Begin
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(EM.X + 8, EM.Y + EM.Height - EXTMGR_FOOTER_H + 9,
+   'Selectionnez une extension dans la liste ci-dessus.');
  End;
 End;
 
@@ -17730,11 +17849,25 @@ Begin
   End;
   Exit;
  End;
+ { Bande d action (bas) - meme geometrie que le bouton dessine par        }
+ { DrawExtManager ; ExtMgrActionLabel revalidee ici pour ne jamais agir   }
+ { sur un backend integre (ExeFile=''), meme si l affichage etait perime. }
+ If Ev.MouseY >= EM.Y + EM.Height - EXTMGR_FOOTER_H Then Begin
+  If (EM.SelectedItem >= 0) And (EM.SelectedItem < EM.EntryCount) And
+     (Ev.MouseX >= EM.X + 8) And (Ev.MouseX < EM.X + 8 + EXTMGR_BTN_W) And
+     (Ev.MouseY >= EM.Y + EM.Height - EXTMGR_FOOTER_H + 4) And
+     (Ev.MouseY < EM.Y + EM.Height - EXTMGR_FOOTER_H + 4 + EXTMGR_BTN_H) And
+     (ExtMgrActionLabel(EM.Entries[EM.SelectedItem]) <> '') Then Begin
+   ExtMgrInstallSelected(EM);
+   EM.NeedRepaint := True;
+  End;
+  Exit;
+ End;
  { Liste : sauter l en-tete de colonnes }
  RowY := ListY + EXTMGR_ROW_H;
  If Ev.MouseY < RowY Then Exit;
  ListW := EM.Width - EXTMGR_SB_W;
- VisLines := (EM.Y + EM.Height - RowY) Div EXTMGR_ROW_H;
+ VisLines := (EM.Y + EM.Height - EXTMGR_FOOTER_H - RowY) Div EXTMGR_ROW_H;
  If VisLines < 1 Then VisLines := 1;
  TotalVis := ExtMgrCountVisible(EM);
  MaxScroll := TotalVis - VisLines;
@@ -17744,7 +17877,7 @@ Begin
  { zone que celle dessinee par DrawExtManager. }
  If Ev.MouseX >= EM.X + ListW Then Begin
   TrackTop := RowY + EXTMGR_SB_W;
-  TrackBot := EM.Y + EM.Height - EXTMGR_SB_W;
+  TrackBot := EM.Y + EM.Height - EXTMGR_FOOTER_H - EXTMGR_SB_W;
   If Ev.MouseY < RowY + EXTMGR_SB_W Then
    Dec(EM.ScrollTop)
   Else If Ev.MouseY >= TrackBot Then
