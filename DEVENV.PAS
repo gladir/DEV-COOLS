@@ -1006,6 +1006,22 @@ Function GetAsyncKeyState(vKey: LongInt): SmallInt;
          StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
 Procedure WinSleep(MilliSec: LongInt);
          StdCall; External 'kernel32.dll' Name 'Sleep';
+{ Fibres Win32 (2026-08-30, integration de l interprete REXX.PAS dans le    }
+{ terminal "OS/2 & REXX" - demande explicite de l utilisateur) - meme       }
+{ motif External 'kernel32.dll' que GetAsyncKeyState/WinSleep ci-dessus.    }
+{ Permettent de vraiment suspendre l execution recursive du moteur REXX     }
+{ (pile d appel complete preservee, y compris DO/SELECT imbriques) en       }
+{ attente d une ligne ou d une touche tapee dans le terminal, puis de la    }
+{ reprendre exactement au meme point - voir le grand bloc Rexx_* pres de    }
+{ TermCmd_IMGMOUNT (Rexx_ReadLine/Rexx_ReadKey/Rexx_SwitchAndCheck). }
+Function ConvertThreadToFiber(Param: Pointer): Pointer;
+         StdCall; External 'kernel32.dll' Name 'ConvertThreadToFiber';
+Function CreateFiber(StackSize: LongWord; StartAddr, Param: Pointer): Pointer;
+         StdCall; External 'kernel32.dll' Name 'CreateFiber';
+Procedure SwitchToFiber(Fiber: Pointer);
+         StdCall; External 'kernel32.dll' Name 'SwitchToFiber';
+Procedure DeleteFiber(Fiber: Pointer);
+         StdCall; External 'kernel32.dll' Name 'DeleteFiber';
 { Pont presse-papiers WINOLDAP (Windows 95, Stage 6, INT 2Fh/AX=17xxh) -   }
 { premier acces de ce fichier a une ressource Win32 PARTAGEE avec le reste }
 { du systeme hote (pas seulement lue, comme GetAsyncKeyState, mais aussi   }
@@ -2931,6 +2947,15 @@ Type
   TabMatchCount: Integer;
   TabMatchIdx  : Integer;
   TabMatches   : Array[0..31] Of String[80];
+  { Interprete REXX integre (2026-08-30, demande explicite de l utilisateur }
+  { - integration complete de REXX.PAS, voir le grand bloc Rexx_* pres de   }
+  { TermCmd_IMGMOUNT) : etat de la fibre Win32 en cours d execution dans ce }
+  { panneau, si un script REXX y tourne (SK_OS2REXX uniquement). }
+  RexxFiber      : Pointer;
+  RexxActive     : Boolean;
+  RexxWaiting    : (rwNone, rwLine, rwKey);
+  RexxPendingLine: String;
+  RexxPendingKey : Char;
  End;
 
  { Etat d un disque virtuel FAT12/16/32 monte via /DISK0, /DISK1,
@@ -10630,6 +10655,14 @@ Function TermFindCoco3Rom(Const Dir, CmdName: String): String; Forward;
 { normalement definie beaucoup plus loin (~41085, deja utilisee par le      }
 { repli generique "commande inconnue -> executable" de TermExecuteCommand). }
 Function TermFindElfExecutable(Const Dir, CmdName: String): String; Forward;
+{ Meme raison (2026-08-30) : Rexx_RxWinExecValue (pres de TermCmd_IMGMOUNT, }
+{ chantier REXX) appelle TermFindDosExecutable, normalement definie encore }
+{ plus loin (~45198). }
+Function TermFindDosExecutable(Const Dir, CmdName: String): String; Forward;
+{ Meme raison (2026-08-30) : Rexx_SysEnvVersionText (pres de TermCmd_      }
+{ IMGMOUNT, chantier REXX) appelle GetIDEVersion, normalement definie      }
+{ tout a la fin du fichier (~106647). }
+Function GetIDEVersion: String; Forward;
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : sauvegarde/restauration }
 { de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
 Procedure Win16_SaveVideoState; Forward;
@@ -36954,6 +36987,3922 @@ Begin
    ': pour amorcer directement.');
 End;
 
+{ ==========================================================================}
+{ Interprete REXX (voir TermCmd_REXX plus loin) - portage integral de        }
+{ REXX.PAS, demande explicite de l'utilisateur (2026-08-30).                }
+{ ==========================================================================}
+
+{ ------------------------------------------------------------------------
+  Interprete REXX complet, porte depuis REXX.PAS (programme autonome
+  d'origine, auteur Sylvain Maltais) et integre ici pour le terminal
+  "OS/2 & REXX" (SK_OS2REXX) - voir TermCmd_REXX plus loin. Tous les
+  identificateurs de portee globale sont prefixes Rexx_ (ou portent deja
+  ce prefixe dans leur nom) afin d'eviter toute collision avec le reste de
+  ce fichier - convention identique a Emu_*/Lx_*/Win16_*/Fat_*/Term_*
+  utilisee partout ailleurs dans DEVENV.PAS. L'entree/sortie console
+  d'origine (Write/WriteLn/ReadLn/ReadKey/KeyPressed/GotoXY/ClrScr) est
+  remplacee par un pont vers le panneau terminal graphique - voir
+  Rexx_EmitLn/Rexx_EmitPartial/Rexx_ReadLine/Rexx_ReadKey/Rexx_KeyPressed/
+  Rexx_ClrScr/Rexx_GotoXY/Rexx_WhereX/Rexx_WhereY ci-dessous. }
+
+Var
+ { Pont E/S clavier/ecran vers le panneau terminal graphique (voir le
+   commentaire d'en-tete ci-dessus) - un seul script REXX actif a la fois
+   dans tout DEVENV.PAS (SK_OS2REXX est une instance unique, jamais
+   plusieurs onglets simultanes du meme shell - verifie par lecture directe
+   de TermPanels/HandleTerminalEvent), donc un pointeur global suffit sans
+   avoir a enfiler TP en parametre dans ~150 procedures. }
+ Rexx_ActiveTP: ^TTerminalPanel;
+ Rexx_MainFiber: Pointer;
+ Rexx_MainFiberReady: Boolean;
+ Rexx_PendingPath, Rexx_PendingArgs: String;
+
+Procedure Rexx_EmitLn(Const S: String);
+Begin
+ TermAddLine(Rexx_ActiveTP^, Rexx_ActiveTP^.PartialLine + S);
+ Rexx_ActiveTP^.PartialLine := '';
+End;
+
+Procedure Rexx_EmitPartial(Const S: String);
+Begin
+ Rexx_ActiveTP^.PartialLine := Rexx_ActiveTP^.PartialLine + S;
+End;
+
+{ PULL/PARSE PULL/PARSE LINEIN sans donnee en file d'attente : suspend
+  reellement la fibre du script (pile d'appel complete preservee, y compris
+  DO/SELECT imbriques) jusqu'a ce que l'utilisateur tape une ligne complete
+  et appuie sur Entree dans ce meme terminal - voir l'interception dans
+  HandleTerminalEvent (TP.RexxWaiting=rwLine) et Rexx_SwitchAndCheck. }
+Function Rexx_ReadLine: String;
+Begin
+ Rexx_ActiveTP^.RexxWaiting := rwLine;
+ SwitchToFiber(Rexx_MainFiber);
+ Rexx_ReadLine := Rexx_ActiveTP^.RexxPendingLine;
+End;
+
+{ SYSGETKEY/CHARIN interactif (une seule touche) : meme mecanisme de
+  suspension que Rexx_ReadLine, mais reprend des la PREMIERE touche tapee
+  (pas d'attente d'Entree - voir TP.RexxWaiting=rwKey dans
+  HandleTerminalEvent). }
+Function Rexx_ReadKey: Char;
+Begin
+ Rexx_ActiveTP^.RexxWaiting := rwKey;
+ SwitchToFiber(Rexx_MainFiber);
+ Rexx_ReadKey := Rexx_ActiveTP^.RexxPendingKey;
+End;
+
+Function Rexx_KeyPressed: Boolean;
+Begin
+ { Limitation assumee et documentee (pas simulee) : ce terminal n'a pas de
+   file de frappes brutes consultable sans les consommer (le clavier
+   alimente directement TP.InputLine) - CHARS()/LINES() sur le flux console
+   rapportent donc toujours "aucune donnee immediatement disponible". }
+ Rexx_KeyPressed := False;
+End;
+
+Procedure Rexx_ClrScr;
+Begin
+ TermCmd_CLS(Rexx_ActiveTP^);
+End;
+
+Procedure Rexx_GotoXY(NewX, NewY: Integer);
+Begin
+ { Le terminal est un journal defilant, pas une grille adressable point par
+   point comme un vrai ecran texte DOS - limitation assumee, sans effet
+   (SYSCURPOS continue de fonctionner en LECTURE via Rexx_WhereX/WhereY). }
+End;
+
+Function Rexx_WhereX: Integer;
+Begin
+ Rexx_WhereX := Rexx_ActiveTP^.InputCol;
+End;
+
+Function Rexx_WhereY: Integer;
+Begin
+ Rexx_WhereY := Rexx_ActiveTP^.HistCount;
+End;
+
+{ Reprend la fibre du script suspendu (Rexx_ReadLine/Rexx_ReadKey) et,
+  si le script vient de se terminer pendant cette reprise, libere la
+  fibre - reutilisee par TermCmd_REXX (premier lancement) et par
+  l'interception clavier de HandleTerminalEvent (reprises suivantes). }
+Procedure Rexx_SwitchAndCheck(Var TP: TTerminalPanel);
+Begin
+ SwitchToFiber(TP.RexxFiber);
+ If Not TP.RexxActive Then Begin
+  DeleteFiber(TP.RexxFiber);
+  TP.RexxFiber := Nil;
+ End;
+End;
+
+{$IFDEF FPC}
+ {$IFDEF WINDOWS}
+Function Rexx_GetVolumeInformationA(RootPathName,VolumeNameBuffer:PChar;
+ VolumeNameSize:LongWord;VolumeSerialNumber,MaximumComponentLength,
+ FileSystemFlags:Pointer;FileSystemNameBuffer:PChar;
+ FileSystemNameSize:LongWord):LongBool;StdCall;
+ External 'kernel32.dll' Name 'GetVolumeInformationA';
+ {$ENDIF}
+{$ENDIF}
+
+Const
+ { BOGUE REEL trouve en compilant (2026-08-30) : String[20] tronquait       }
+ { silencieusement les noms de plus de 20 caracteres (ex.                  }
+ { SYSDEREGISTEROBJECTCLASS = 24) des la constante, faussant a la fois      }
+ { CommandIndex (comparaison contre un nom deja tronque) et le message      }
+ { d erreur de Rexx_FunctionNotImplemented. Deja present ainsi dans          }
+ { REXX.PAS d origine (verifie), pas introduit par ce portage - corrige ici }
+ { puisque decouvert en compilant ce fichier. }
+ Rexx_CommandList:Array[0..161]of String[24]=(
+  'ABBREV','ABS','ADDRESS','ARG','B2X','BEEP','BITAND','BITOR',
+  'BITXOR','CALL','CENTER','CHANGESTR','CHARIN','CHAROUT',
+  'CHARS','COMPARE','CONDITION','COPIES','COUNTSTR','C2D',
+  'C2X','DATATYPE','DATE','DELSTR','DELWORD','DIGITS',
+  'DIRECTORY','D2C','D2X','ENDLOCAL','ERRORTEXT','EXIT','FILESPEC',
+  'FORM','FORMAT','FUZZ','IF','INSERT','LASTPOS','LEFT',
+  'LENGTH','LINEIN','LINEOUT','LINES','MAX','MIN',
+  'OPTIONS','OVERLAY','PARSE','PROCEDURE','POS','PULL',
+  'PUSH','QUEUE','QUEUED','RANDOM','RETURN','REVERSE',
+  'RIGHT','RXFUNCADD','RXFUNCDROP','RXFUNCQUERY','RXMESSAGEBOX',
+  'RXQUEUE','RXWINEXEC','SAY','SELECT','SETLOCAL','SIGN',
+  'SOURCELINE','SPACE','STREAM','STRIP','SUBSTR','SUBWORD',
+  'SYMBOL','SYSADDREXXMACRO','SYSBOOTDRIVE','SYSCLEARREXXMACROSPACE',
+  'SYSCLOSEEVENTSEM','SYSCLOSEMUTEXSEM','SYSCLS','SYSCREATEEVENTSEM',
+  'SYSCREATEMUTEXSEM','SYSCREATEOBJECT','SYSCURPOS','SYSCURSTATE',
+  'SYSDEREGISTEROBJECTCLASS','SYSDESTROYOBJECT','SYSDRIVEINFO',
+  'SYSDRIVEMAP','SYSDROPFUNCS','SYSDROPREXXMACRO','SYSFILEDELETE',
+  'SYSFILETREE','SYSFILESEARCH','SYSFILESYSTEMTYPE',
+  'SYSGETEA','SYSGETKEY','SYSGETMESSAGE','SYSINI','SYSLOADFUNCS',
+  'SYSLOADREXXMACROSPACE','SYSMKDIR','SYSOPENEVENTSEM',
+  'SYSOPENMUTEXSEM','SYSOS2VER','SYSPOSTEVENTSEM','SYSPULSEEVENTSEM',
+  'SYSPUTEA','SYSQUERYCLASSLIST','SYSQUERYREXXMACRO',
+  'SYSREGISTEROBJECTCLASS','SYSRELEASEMUTEXSEM',
+  'SYSREORDERREXXMACRO','SYSREQUESTMUTEXSEM','SYSRESETEVENTSEM',
+  'SYSRMDIR','SYSSAVEREXXMACROSPACE','SYSSEARCHPATH','SYSSETICON',
+  'SYSSETOBJECTDATA','SYSSETPRIORITY','SYSSLEEP','SYSSWITCHSESSION',
+  'SYSSYSTEMDIRECTORY','SYSTEMPFILENAME','SYSTEXTSCREENREAD',
+  'SYSTEXTSCREENSIZE','SYSVOLUMELABEL','SYSWAITEVENTSEM',
+  'SYSWAITNAMEDPIPE','SYSWINVER','THEN','TIME','TRACE',
+  'TRANSLATE','TRUNC','VALUE','VAR','VERIFY','WORD',
+  'WORDINDEX','WORDLENGTH','WORDPOS','WORDS','XRANGE',
+  'X2B','X2C','X2D',
+  { Instructions de controle ajoutees apres la table historique afin de ne
+    pas modifier les numeros encore utilises par l'ancien moteur. }
+  'DO','ELSE','END','EXPOSE','ITERATE','LEAVE','NAME','NOP','NUMERIC',
+  'OTHERWISE','SIGNAL','WHEN'
+ );
+
+ Rexx_MaxLine=1024;
+
+Type
+ Rexx_StrPointer=^String;
+
+Var
+ Rexx_Terminated:Boolean;
+ Rexx_ProgramExitRequested:Boolean;
+ Rexx_ProgramExitCode:Integer;
+ Rexx_CurrCommand:String;
+ Rexx_FileName,Rexx_CurrLine:String;
+ Rexx_PA:Array[1..Rexx_MaxLine] of Rexx_StrPointer;
+ Rexx_CurrLinePtr,Rexx_NumberLine:Integer;
+ Rexx_CurrNumberLine:Integer;
+ I:Integer;
+ Rexx_CurrPos:Byte;
+
+Type
+ RexxValue=Record
+  Text:String;
+  Number:Real;
+  IsNumber:Boolean;
+ End;
+ PRexxVariable=^RexxVariable;
+ RexxVariable=Record
+  Name:String[64];
+  Value:String;
+  Next:PRexxVariable;
+ End;
+ PRexx_ExposedVariable=^Rexx_ExposedVariable;
+ Rexx_ExposedVariable=Record
+  Name:String[64];
+  Value:String;
+  Next:PRexx_ExposedVariable;
+ End;
+ PRexx_LocalEnvironment=^Rexx_LocalEnvironment;
+ Rexx_LocalEnvironment=Record
+  DirectoryName:String;
+  Next:PRexx_LocalEnvironment;
+ End;
+ PRexxQueueEntry=^RexxQueueEntry;
+ RexxQueueEntry=Record
+  Value:String;
+  Next:PRexxQueueEntry;
+ End;
+
+Var
+ Rexx_Variables:PRexxVariable;
+ Rexx_ExprText:String;
+ Rexx_ExprPos:Integer;
+
+Const
+ Rexx_MaxRoutineArgs=16;
+
+Var
+ Rexx_InvokeArgs:Array[1..Rexx_MaxRoutineArgs]of String;
+ Rexx_InvokeArgCount:Integer;
+ Rexx_CurrentArgs:Array[1..Rexx_MaxRoutineArgs]of String;
+ Rexx_CurrentArgCount:Integer;
+ Rexx_InitialArgs:Array[1..Rexx_MaxRoutineArgs]of String;
+ Rexx_InitialArgCount:Integer;
+ Rexx_RoutineReturning:Boolean;
+ Rexx_RoutineResult:String;
+ Rexx_RoutineDepth:Integer;
+ Rexx_NumericDigitsValue:Integer;
+ Rexx_NumericFuzzValue:Integer;
+ Rexx_NumericFormValue:String[16];
+ Rexx_SignalTargetLine:Integer;
+ Rexx_SignalHalt,Rexx_SignalNoValue,Rexx_SignalError,Rexx_SignalSyntax:Boolean;
+ Rexx_SignalHaltName,Rexx_SignalNoValueName,Rexx_SignalErrorName,Rexx_SignalSyntaxName:String[64];
+ Rexx_CurrentConditionName:String[16];
+ Rexx_CurrentConditionDescription:String;
+ Rexx_CurrentConditionInstruction:String[8];
+ Rexx_CurrentConditionStatus:String[8];
+ Rexx_CurrentAddress,Rexx_PreviousAddress:String[64];
+ Rexx_CurrentOptions:String;
+ Rexx_CurrentTraceSetting:String[2];
+ Rexx_TimeElapsedStart:Real;
+ Rexx_CharInNames:Array[1..Rexx_MaxRoutineArgs]of String;
+ Rexx_CharInPositions:Array[1..Rexx_MaxRoutineArgs]of LongInt;
+ Rexx_CharInStreamCount:Integer;
+ Rexx_CharOutNames:Array[1..Rexx_MaxRoutineArgs]of String;
+ Rexx_CharOutPositions:Array[1..Rexx_MaxRoutineArgs]of LongInt;
+ Rexx_CharOutStreamCount:Integer;
+ Rexx_LocalEnvironments:PRexx_LocalEnvironment;
+ RexxQueueHead,RexxQueueTail:PRexxQueueEntry;
+ RexxQueueCount:LongInt;
+
+Procedure Rexx_PushQueue(Value:String);
+Var Entry:PRexxQueueEntry;
+Begin
+ New(Entry);Entry^.Value:=Value;Entry^.Next:=RexxQueueHead;
+ RexxQueueHead:=Entry;
+ If RexxQueueTail=Nil Then RexxQueueTail:=Entry;
+ Inc(RexxQueueCount);
+End;
+
+Procedure Rexx_AppendQueue(Value:String);
+Var Entry:PRexxQueueEntry;
+Begin
+ New(Entry);Entry^.Value:=Value;Entry^.Next:=Nil;
+ If RexxQueueTail=Nil Then RexxQueueHead:=Entry
+  Else RexxQueueTail^.Next:=Entry;
+ RexxQueueTail:=Entry;Inc(RexxQueueCount);
+End;
+
+Procedure Rexx_PullQueue(Var Value:String;Var Found:Boolean);
+Var Entry:PRexxQueueEntry;
+Begin
+ Found:=RexxQueueHead<>Nil;
+ If Not Found Then Begin Value:='';Exit;End;
+ Entry:=RexxQueueHead;Value:=Entry^.Value;
+ RexxQueueHead:=Entry^.Next;
+ If RexxQueueHead=Nil Then RexxQueueTail:=Nil;
+ Dispose(Entry);Dec(RexxQueueCount);
+End;
+
+Procedure Rexx_FreeQueue;
+Var Entry:PRexxQueueEntry;
+Begin
+ While RexxQueueHead<>Nil Do Begin
+  Entry:=RexxQueueHead;RexxQueueHead:=RexxQueueHead^.Next;Dispose(Entry);
+ End;
+ RexxQueueTail:=Nil;RexxQueueCount:=0;
+End;
+
+Function Rexx_LTrim(S:String):String;
+Var
+ I:Integer;
+Begin
+ I:=1;
+ While(I<=Length(s)) and (S[I] in [#9,' ']) do Inc(I);
+ Delete(S,1,I-1);
+ Rexx_LTrim:=S;
+End;
+
+Function Rexx_StrToUpper(S:String):String;
+Var
+ I:Byte;
+Begin
+ For I:=1 to Length(S)do Begin
+  If S[I] in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);
+ End;
+ Rexx_StrToUpper:=S;
+End;
+
+ { Traitement de la liste }
+Function Rexx_AddLine(S:String):Boolean;
+Var
+ P:Rexx_StrPointer;
+Begin
+ If Rexx_NumberLine>=Rexx_MaxLine Then Begin
+  Rexx_AddLine:=False;
+  Exit;
+ End;
+ Inc(Rexx_NumberLine);
+ GetMem(P,Length(S)+1);
+ P^:=S;
+ Rexx_PA[Rexx_NumberLine]:=P;
+ Rexx_AddLine:=True;
+End;
+
+Function Rexx_IsStringValue:Boolean;Begin
+ Rexx_IsStringValue:=False;
+ If Rexx_CurrLine[Rexx_CurrPos]in['''','"']Then Begin
+  Rexx_IsStringValue:=True;
+ End;
+End;
+
+Function Rexx_ExtractCommand:Byte;
+Var
+ I:Byte;
+Begin
+ Rexx_ExtractCommand:=255;
+ Rexx_CurrCommand:='';
+ For I:=Rexx_CurrPos to Length(Rexx_CurrLine)do Begin
+  If Not(Rexx_CurrLine[I]in['A'..'Z','a'..'z','_'])Then Begin
+   Rexx_CurrCommand:=Rexx_StrToUpper(Copy(Rexx_CurrLine,Rexx_CurrPos,I-Rexx_CurrPos));
+   Rexx_CurrPos:=I;
+   Break;
+  End;
+ End;
+ If Rexx_CurrCommand=''Then Begin
+  Rexx_CurrCommand:=Rexx_StrToUpper(Copy(Rexx_CurrLine,Rexx_CurrPos,255));
+  Rexx_CurrPos:=Length(Rexx_CurrLine)+1;
+ End;
+ For I:=Low(Rexx_CommandList)to High(Rexx_CommandList)do Begin
+  If Rexx_CurrCommand=Rexx_CommandList[I]Then Begin
+   Rexx_ExtractCommand:=I;
+   Exit;
+  End;
+ End;
+End;
+
+Function Rexx_GetStringValue:String;
+Var
+ J:Integer;
+ _Result:Real;
+ FunctionFound:Boolean;
+ S,VarName:String;
+Begin
+ Rexx_GetStringValue:='';
+ S:='';
+ If Rexx_CurrLine[Rexx_CurrPos]=''''Then Begin
+  Inc(Rexx_CurrPos);
+  While(Rexx_CurrLine[Rexx_CurrPos]<>'''')and(Rexx_CurrPos<=Length(Rexx_CurrLine))do Begin
+   S:=S+Rexx_CurrLine[Rexx_CurrPos];
+   Inc(Rexx_CurrPos);
+  End;
+  If Rexx_CurrLine[Rexx_CurrPos]=''''Then Inc(Rexx_CurrPos);
+ End
+  Else
+ If Rexx_CurrLine[Rexx_CurrPos]='"'Then Begin
+  Inc(Rexx_CurrPos);
+  While(Rexx_CurrLine[Rexx_CurrPos]<>'"')and(Rexx_CurrPos<=Length(Rexx_CurrLine))do Begin
+   S:=S+Rexx_CurrLine[Rexx_CurrPos];
+   Inc(Rexx_CurrPos);
+  End;
+  If Rexx_CurrLine[Rexx_CurrPos]='"'Then Inc(Rexx_CurrPos);
+ End;
+ Rexx_GetStringValue:=S;
+End;
+
+Procedure Rexx_SkipSpace;Begin
+ While(Rexx_CurrLine[Rexx_CurrPos]in[' '])and(Rexx_CurrPos<Length(Rexx_CurrLine))do Inc(Rexx_CurrPos);
+End;
+
+Procedure Rexx_LoadCommand;
+Var
+ FileLoad:Text;
+ S:String;
+Begin
+ If Rexx_FileName<>''Then Begin
+  {$I-}Assign(FileLoad,Rexx_FileName);
+  Reset(FileLoad);{$I+}
+  If IoResult<>0Then Begin
+   Rexx_EmitLn('Fichier introuvable');
+   Exit;
+  End;
+  {NewCommand;}
+  While Not EOF(FileLoad) do Begin
+   ReadLn(FileLoad,S);
+   { Conserver la ligne originale pour SOURCELINE(n). Les analyseurs
+     d'instructions appliquent eux-memes Rexx_Clean/Rexx_LTrim au moment voulu. }
+   If Not Rexx_AddLine(S)Then Begin
+    Rexx_EmitLn('Manque de m‚moire');
+    Break;
+   End;
+  End;
+  Close(FileLoad);
+ End
+  Else
+ Rexx_EmitLn('Nom du fichier absent');
+End;
+
+Procedure Rexx_SayCommand;Begin
+ Rexx_SkipSpace;
+ If Rexx_IsStringValue Then Begin
+  Rexx_EmitLn(Rexx_GetStringValue);
+ End;
+End;
+
+{ -----------------------------------------------------------------
+  Noyau REXX executable. L'ancien RunLine ci-dessus est conserve pour
+  documenter la table historique, mais ce moteur prend en charge les
+  expressions, Rexx_Variables et structures de controle reelles. }
+
+Function Rexx_RTrim(S:String):String;
+Begin
+ While(Length(S)>0)and(S[Length(S)]in[' ',#9])do Delete(S,Length(S),1);
+ Rexx_RTrim:=S;
+End;
+
+Function Rexx_Clean(S:String):String;Begin Rexx_Clean:=Rexx_RTrim(Rexx_LTrim(S));End;
+
+Function Rexx_NormalizeRexxNumber(S:String):String;
+Var J:Integer;R:String;
+Begin
+ S:=Rexx_Clean(S);R:='';
+ If(Length(S)>0)and(S[1]in['+','-'])Then Begin
+  R:=S[1];J:=2;
+  While(J<=Length(S))and(S[J]in[' ',#9])Do Inc(J);
+  R:=R+Copy(S,J,255);
+ End Else R:=S;
+ Rexx_NormalizeRexxNumber:=R;
+End;
+
+Function Rexx_NumToText(N:Real):String;
+Var S:String;
+Begin
+ If Abs(N-Round(N))<0.000000001Then Str(Round(N),S)
+ Else Begin Str(N:0:8,S);While(System.Pos('.',S)>0)and(S[Length(S)]='0')do Delete(S,Length(S),1);End;
+ Rexx_NumToText:=Rexx_Clean(S);
+End;
+
+Procedure Rexx_RVText(S:String;Var V:RexxValue);
+Var C:Integer;
+Begin V.Text:=S;Val(Rexx_NormalizeRexxNumber(S),V.Number,C);V.IsNumber:=C=0;
+ If Not V.IsNumber Then V.Number:=0;End;
+Procedure Rexx_RVNum(N:Real;Var V:RexxValue);
+Begin V.Number:=N;V.IsNumber:=True;V.Text:=Rexx_NumToText(N);End;
+
+Procedure Rexx_SourceLineValue(LineNumber:LongInt;NumberSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Begin
+ If Not NumberSpecified Then Begin
+  Rexx_RVNum(Rexx_NumberLine,ResultValue);
+  Exit;
+ End;
+ If(LineNumber<1)or(LineNumber>Rexx_NumberLine)Then
+  Rexx_RVText('',ResultValue)
+ Else Rexx_RVText(Rexx_PA[LineNumber]^,ResultValue);
+End;
+
+Procedure Rexx_RandomValue(MinimumValue,MaximumValue,SeedValue:RexxValue;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var LowValue,HighValue,GeneratedValue:LongInt;IntervalSize:Real;
+Begin
+ Case ArgumentCount Of
+  0:Begin LowValue:=0;HighValue:=999;End;
+  1:Begin LowValue:=0;HighValue:=System.Trunc(MinimumValue.Number);End;
+ Else Begin
+  LowValue:=System.Trunc(MinimumValue.Number);
+  HighValue:=System.Trunc(MaximumValue.Number);
+ End;
+ End;
+ If ArgumentCount>2Then RandSeed:=System.Trunc(SeedValue.Number);
+ { Un intervalle inverse est invalide en REXX. Le moteur ne possede pas
+   encore de mecanisme d'exception pour les appels incorrects: retourner
+   zero evite ici un debordement ou une valeur hors intervalle. }
+ If HighValue<LowValue Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ IntervalSize:=HighValue-LowValue+1.0;
+ GeneratedValue:=LowValue+System.Trunc(System.Random*IntervalSize);
+ If GeneratedValue>HighValue Then GeneratedValue:=HighValue;
+ Rexx_RVNum(GeneratedValue,ResultValue);
+End;
+
+Function Rexx_VarFind(Head:PRexxVariable;N:String):PRexxVariable;
+Var P:PRexxVariable;
+Begin
+ N:=Rexx_StrToUpper(N);
+ P:=Head;
+ While P<>Nil Do Begin
+  If P^.Name=N Then Begin Rexx_VarFind:=P;Exit;End;
+  P:=P^.Next;
+ End;
+ Rexx_VarFind:=Nil;
+End;
+
+Procedure Rexx_VarGet(N:String;Var ResultValue:RexxValue);
+Var P:PRexxVariable;
+Begin
+ P:=Rexx_VarFind(Rexx_Variables,N);
+ If P=Nil Then Rexx_RVText(Rexx_StrToUpper(N),ResultValue)
+        Else Rexx_RVText(P^.Value,ResultValue);
+End;
+
+Procedure Rexx_VarSet(N,S:String);
+Var P:PRexxVariable;
+Begin
+ N:=Rexx_StrToUpper(Rexx_Clean(N));
+ P:=Rexx_VarFind(Rexx_Variables,N);
+ If P=Nil Then Begin
+  New(P);P^.Name:=N;P^.Value:='';P^.Next:=Rexx_Variables;Rexx_Variables:=P;
+ End;
+ P^.Value:=S;
+End;
+
+Procedure Rexx_SymbolValue(SymbolName:String;Var ResultValue:RexxValue);
+Var J:Integer;ValidSymbol,VariableSymbol:Boolean;
+Begin
+ SymbolName:=Rexx_Clean(SymbolName);ValidSymbol:=SymbolName<>'';
+ For J:=1 To Length(SymbolName)Do
+  If Not(SymbolName[J]in['a'..'z','A'..'Z','0'..'9','.','!','?',
+   '_','#','$','@'])Then ValidSymbol:=False;
+ If Not ValidSymbol Then Begin Rexx_RVText('BAD',ResultValue);Exit;End;
+ VariableSymbol:=Not(SymbolName[1]in['0'..'9','.']);
+ If VariableSymbol and(Rexx_VarFind(Rexx_Variables,SymbolName)<>Nil)Then
+  Rexx_RVText('VAR',ResultValue)
+ Else Rexx_RVText('LIT',ResultValue);
+End;
+
+Procedure Rexx_ValueFunction(VariableName,NewValue,Selector:String;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var SelectorName:String;
+Begin
+ If ArgumentCount<1Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ SelectorName:=Rexx_StrToUpper(Rexx_Clean(Selector));
+ If(ArgumentCount>2)and(SelectorName<>'')Then Begin
+  If(SelectorName='ENVIRONMENT')or(SelectorName='OS2ENVIRONMENT')or
+    (SelectorName='DOSENVIRONMENT')or(SelectorName='SYSTEM')Then
+   Rexx_RVText(GetEnv(Rexx_StrToUpper(Rexx_Clean(VariableName))),ResultValue)
+  Else Rexx_RVText('',ResultValue);
+  Exit;
+ End;
+ Rexx_VarGet(VariableName,ResultValue);
+ If ArgumentCount>1Then Rexx_VarSet(VariableName,NewValue);
+End;
+
+Procedure Rexx_FreeVariables(Var Head:PRexxVariable);
+Var P:PRexxVariable;
+Begin
+ While Head<>Nil Do Begin P:=Head;Head:=Head^.Next;Dispose(P);End;
+End;
+
+Procedure Rexx_ESkip;Begin
+ While(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]in[' ',#9])do Inc(Rexx_ExprPos);
+End;
+
+Procedure Rexx_ECompare(Var ResultValue:RexxValue);Forward;
+Function Rexx_FindRoutineLabel(Name:String):Integer;Forward;
+Function Rexx_CallRoutine(Name:String):String;Forward;
+Function Rexx_CommandIndex(N:String):Integer;Forward;
+Function Rexx_Truth(V:RexxValue):Boolean;Forward;
+
+Procedure Rexx_FunctionNotImplemented(FunctionByte:Byte;Var ResultValue:RexxValue);
+Begin
+ Rexx_EmitLn('Fonction non implementee: '+Rexx_CommandList[FunctionByte]);
+ Rexx_RVText(Rexx_CommandList[FunctionByte],ResultValue);
+End;
+
+Function Rexx_BinaryToHex(BinaryText:String):String;
+Const HexDigits:Array[0..15]of Char='0123456789ABCDEF';
+Var
+ Bits,ResultText:String;J,DigitValue,BitCount:Integer;
+Begin
+ Bits:='';
+ For J:=1 To Length(BinaryText)Do Begin
+  If BinaryText[J]in['0','1']Then Bits:=Bits+BinaryText[J]
+  Else If Not(BinaryText[J]in[' ',#9])Then Begin
+   Rexx_EmitLn('B2X: caractere binaire invalide: '+BinaryText[J]);Rexx_BinaryToHex:='';Exit;
+  End;
+ End;
+ If Bits=''Then Begin Rexx_BinaryToHex:='';Exit;End;
+ While(Length(Bits)mod 4)<>0Do Bits:='0'+Bits;
+ ResultText:='';J:=1;
+ While J<=Length(Bits)Do Begin
+  DigitValue:=0;
+  For BitCount:=0 To 3 Do Begin
+   DigitValue:=DigitValue*2;
+   If Bits[J+BitCount]='1'Then Inc(DigitValue);
+  End;
+  ResultText:=ResultText+HexDigits[DigitValue];Inc(J,4);
+ End;
+ Rexx_BinaryToHex:=ResultText;
+End;
+
+Function Rexx_HexToBinary(HexText:String):String;
+Var J,DigitValue,BitValue:Integer;HexCharacter:Char;ResultText:String;
+Begin
+ ResultText:='';
+ For J:=1 To Length(HexText)Do Begin
+  HexCharacter:=UpCase(HexText[J]);
+  If HexCharacter in['0'..'9']Then DigitValue:=Ord(HexCharacter)-Ord('0')
+  Else If HexCharacter in['A'..'F']Then
+   DigitValue:=Ord(HexCharacter)-Ord('A')+10
+  Else If HexCharacter in[' ',#9]Then Continue
+  Else Begin
+   Rexx_EmitLn('X2B: caractere hexadecimal invalide: '+HexText[J]);
+   Rexx_HexToBinary:='';
+   Exit;
+  End;
+  { Chaque chiffre exige quatre caracteres. Ne jamais produire un groupe
+    partiel lorsque la limite des String Turbo Pascal est atteinte. }
+  If Length(ResultText)>251Then Break;
+  BitValue:=8;
+  While BitValue>0Do Begin
+   If(DigitValue and BitValue)<>0Then ResultText:=ResultText+'1'
+   Else ResultText:=ResultText+'0';
+   BitValue:=BitValue div 2;
+  End;
+ End;
+ Rexx_HexToBinary:=ResultText;
+End;
+
+Function Rexx_HexNibbleValue(HexCharacter:Char):Integer;
+Begin
+ HexCharacter:=UpCase(HexCharacter);
+ If HexCharacter in['0'..'9']Then
+  Rexx_HexNibbleValue:=Ord(HexCharacter)-Ord('0')
+ Else If HexCharacter in['A'..'F']Then
+  Rexx_HexNibbleValue:=Ord(HexCharacter)-Ord('A')+10
+ Else Rexx_HexNibbleValue:=-1;
+End;
+
+Function Rexx_HexToCharacter(HexText:String):String;
+Var J,DigitsInGroup,HighNibble,LowNibble:Integer;
+ HexDigitsText,ResultText:String;LastWasBlank:Boolean;
+Begin
+ HexDigitsText:='';DigitsInGroup:=0;LastWasBlank:=False;
+ For J:=1 To Length(HexText)Do Begin
+  If Rexx_HexNibbleValue(HexText[J])>=0Then Begin
+   HexDigitsText:=HexDigitsText+HexText[J];
+   Inc(DigitsInGroup);LastWasBlank:=False;
+  End Else If HexText[J]in[' ',#9]Then Begin
+   If(DigitsInGroup=0)and(Length(HexDigitsText)=0)Then Begin
+    Rexx_EmitLn('X2C: espace hexadecimal mal place');Rexx_HexToCharacter:='';Exit;
+   End;
+   If(DigitsInGroup mod 2)<>0Then Begin
+    Rexx_EmitLn('X2C: espace hors d''une frontiere d''octet');Rexx_HexToCharacter:='';Exit;
+   End;
+   DigitsInGroup:=0;LastWasBlank:=True;
+  End Else Begin
+   Rexx_EmitLn('X2C: caractere hexadecimal invalide: '+HexText[J]);
+   Rexx_HexToCharacter:='';Exit;
+  End;
+ End;
+ If LastWasBlank Then Begin
+  Rexx_EmitLn('X2C: espace hexadecimal final');Rexx_HexToCharacter:='';Exit;
+ End;
+ If HexDigitsText=''Then Begin Rexx_HexToCharacter:='';Exit;End;
+ If(Length(HexDigitsText)mod 2)<>0Then HexDigitsText:='0'+HexDigitsText;
+ ResultText:='';J:=1;
+ While J<=Length(HexDigitsText)Do Begin
+  HighNibble:=Rexx_HexNibbleValue(HexDigitsText[J]);
+  LowNibble:=Rexx_HexNibbleValue(HexDigitsText[J+1]);
+  ResultText:=ResultText+Chr(HighNibble*16+LowNibble);
+  Inc(J,2);
+ End;
+ Rexx_HexToCharacter:=ResultText;
+End;
+
+Procedure Rexx_HexToDecimal(HexText:String;RequestedDigits:LongInt;
+ DigitsSpecified:Boolean;Var ResultValue:RexxValue);
+Var J,DigitsInGroup,OriginalLength,FirstDigit,UsedDigits:Integer;
+ DigitValue:Integer;DecimalValue,SignValue:Real;
+ HexDigitsText:String;LastWasBlank:Boolean;
+Begin
+ HexDigitsText:='';DigitsInGroup:=0;LastWasBlank:=False;
+ For J:=1 To Length(HexText)Do Begin
+  If Rexx_HexNibbleValue(HexText[J])>=0Then Begin
+   HexDigitsText:=HexDigitsText+HexText[J];
+   Inc(DigitsInGroup);LastWasBlank:=False;
+  End Else If HexText[J]in[' ',#9]Then Begin
+   If(DigitsInGroup=0)and(Length(HexDigitsText)=0)Then Begin
+    Rexx_RVNum(0,ResultValue);Exit;
+   End;
+   If(DigitsInGroup mod 2)<>0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+   DigitsInGroup:=0;LastWasBlank:=True;
+  End Else Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ End;
+ If LastWasBlank Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ OriginalLength:=Length(HexDigitsText);
+ If OriginalLength=0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ If DigitsSpecified Then Begin
+  If RequestedDigits<=0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+  If RequestedDigits<OriginalLength Then
+   FirstDigit:=OriginalLength-RequestedDigits+1
+  Else FirstDigit:=1;
+ End Else FirstDigit:=1;
+ UsedDigits:=OriginalLength-FirstDigit+1;
+ { Le type Real de Turbo Pascal deborde au-dela d'environ 31 chiffres
+   hexadecimaux. Ne pas laisser une conversion invalide lever l'erreur 205. }
+ If UsedDigits>31Then Begin
+  Rexx_EmitLn('X2D: valeur trop grande pour le type Real de Turbo Pascal');
+  Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ DecimalValue:=0;
+ For J:=FirstDigit To OriginalLength Do Begin
+  DigitValue:=Rexx_HexNibbleValue(HexDigitsText[J]);
+  DecimalValue:=DecimalValue*16.0+DigitValue;
+ End;
+ If DigitsSpecified and(RequestedDigits<=OriginalLength)and
+   (Rexx_HexNibbleValue(HexDigitsText[FirstDigit])>=8)Then Begin
+  SignValue:=1;
+  For J:=1 To RequestedDigits Do SignValue:=SignValue*16.0;
+  DecimalValue:=DecimalValue-SignValue;
+ End;
+ Rexx_RVNum(DecimalValue,ResultValue);
+End;
+
+Function Rexx_CharacterToHex(SourceText:String):String;
+Const HexDigits:Array[0..15]of Char='0123456789ABCDEF';
+Var J,ByteValue:Integer;ResultText:String;
+Begin
+ ResultText:='';J:=1;
+ { Deux caracteres sont produits par octet. Une String Turbo Pascal ne peut
+   contenir que 255 caracteres, donc au plus 127 octets peuvent etre rendus
+   sans couper une paire hexadecimale. }
+ While(J<=Length(SourceText))and(Length(ResultText)<=253)Do Begin
+  ByteValue:=Ord(SourceText[J]);
+  ResultText:=ResultText+HexDigits[ByteValue div 16]+HexDigits[ByteValue mod 16];
+  Inc(J);
+ End;
+ Rexx_CharacterToHex:=ResultText;
+End;
+
+Procedure Rexx_BeepSound(Frequency,Duration:LongInt;Var ResultValue:RexxValue);
+Begin
+ If Frequency<37Then Frequency:=37;
+ If Frequency>32767Then Frequency:=32767;
+ If Duration<0Then Duration:=0;
+ If Duration>32767Then Duration:=32767;
+ { Pas de haut-parleur PC sous un hote graphique Win32 - seule la duree
+   d'attente est honoree, le son lui-meme n'est pas reproduit. }
+ If Duration>0Then WinSleep(Duration);
+ Rexx_RVNum(0,ResultValue);
+End;
+
+Function Rexx_BitAndText(LeftText,RightText,PadText:String;UsePad:Boolean):String;
+Var J,ResultLength:Integer;LeftByte,RightByte,PadByte:Byte;ResultText:String;
+Begin
+ If UsePad Then Begin
+  If PadText=''Then PadByte:=0 Else PadByte:=Ord(PadText[1]);
+  If Length(LeftText)>Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End Else Begin
+  PadByte:=0;
+  If Length(LeftText)<Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End;
+ ResultText:='';
+ For J:=1 To ResultLength Do Begin
+  If J<=Length(LeftText)Then LeftByte:=Ord(LeftText[J]) Else LeftByte:=PadByte;
+  If J<=Length(RightText)Then RightByte:=Ord(RightText[J]) Else RightByte:=PadByte;
+  ResultText:=ResultText+Chr(LeftByte and RightByte);
+ End;
+ Rexx_BitAndText:=ResultText;
+End;
+
+Function Rexx_BitOrText(LeftText,RightText,PadText:String;UsePad:Boolean):String;
+Var J,ResultLength:Integer;LeftByte,RightByte,PadByte:Byte;ResultText:String;
+Begin
+ If UsePad Then Begin
+  If PadText=''Then PadByte:=0 Else PadByte:=Ord(PadText[1]);
+  If Length(LeftText)>Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End Else Begin
+  PadByte:=0;
+  If Length(LeftText)<Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End;
+ ResultText:='';
+ For J:=1 To ResultLength Do Begin
+  If J<=Length(LeftText)Then LeftByte:=Ord(LeftText[J]) Else LeftByte:=PadByte;
+  If J<=Length(RightText)Then RightByte:=Ord(RightText[J]) Else RightByte:=PadByte;
+  ResultText:=ResultText+Chr(LeftByte or RightByte);
+ End;
+ Rexx_BitOrText:=ResultText;
+End;
+
+Function Rexx_BitXorText(LeftText,RightText,PadText:String;UsePad:Boolean):String;
+Var J,ResultLength:Integer;LeftByte,RightByte,PadByte:Byte;ResultText:String;
+Begin
+ If UsePad Then Begin
+  If PadText=''Then PadByte:=0 Else PadByte:=Ord(PadText[1]);
+  If Length(LeftText)>Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End Else Begin
+  PadByte:=0;
+  If Length(LeftText)<Length(RightText)Then ResultLength:=Length(LeftText) Else ResultLength:=Length(RightText);
+ End;
+ ResultText:='';
+ For J:=1 To ResultLength Do Begin
+  If J<=Length(LeftText)Then LeftByte:=Ord(LeftText[J]) Else LeftByte:=PadByte;
+  If J<=Length(RightText)Then RightByte:=Ord(RightText[J]) Else RightByte:=PadByte;
+  ResultText:=ResultText+Chr(LeftByte xor RightByte);
+ End;
+ Rexx_BitXorText:=ResultText;
+End;
+
+Function Rexx_RepeatCharacter(C:Char;Count:Integer):String;
+Var J:Integer;S:String;
+Begin
+ S:='';For J:=1 To Count Do S:=S+C;Rexx_RepeatCharacter:=S;
+End;
+
+Function Rexx_ChangeString(Needle,SourceText,Replacement:String):String;
+Var P:Integer;ResultText,RemainingText:String;
+Begin
+ If Needle=''Then Begin Rexx_ChangeString:=SourceText;Exit;End;
+ ResultText:='';RemainingText:=SourceText;
+ P:=System.Pos(Needle,RemainingText);
+ While P>0Do Begin
+  ResultText:=ResultText+Copy(RemainingText,1,P-1)+Replacement;
+  Delete(RemainingText,1,P+Length(Needle)-1);
+  P:=System.Pos(Needle,RemainingText);
+ End;
+ Rexx_ChangeString:=ResultText+RemainingText;
+End;
+
+Function Rexx_CompareText(LeftText,RightText,PadText:String):Integer;
+Var J,CompareLength:Integer;LeftChar,RightChar,PadChar:Char;
+Begin
+ If PadText=''Then PadChar:=' ' Else PadChar:=PadText[1];
+ If Length(LeftText)>Length(RightText)Then CompareLength:=Length(LeftText)
+  Else CompareLength:=Length(RightText);
+ For J:=1 To CompareLength Do Begin
+  If J<=Length(LeftText)Then LeftChar:=LeftText[J] Else LeftChar:=PadChar;
+  If J<=Length(RightText)Then RightChar:=RightText[J] Else RightChar:=PadChar;
+  If LeftChar<>RightChar Then Begin Rexx_CompareText:=J;Exit;End;
+ End;
+ Rexx_CompareText:=0;
+End;
+
+Procedure Rexx_ConditionValue(OptionText:String;Var ResultValue:RexxValue);
+Var OptionCode:Char;
+Begin
+ { CONDITION ne decrit que la condition qui a effectivement transfere le
+   controle au gestionnaire courant. Armer un piege avec SIGNAL ON ne suffit
+   donc pas a creer une condition. }
+ If Rexx_CurrentConditionName=''Then Begin
+  Rexx_RVText('',ResultValue);Exit;
+ End;
+ OptionText:=Rexx_StrToUpper(Rexx_Clean(OptionText));
+ If OptionText=''Then OptionCode:='I'Else OptionCode:=OptionText[1];
+ Case OptionCode Of
+  'C':Rexx_RVText(Rexx_CurrentConditionName,ResultValue);
+  'D':Rexx_RVText(Rexx_CurrentConditionDescription,ResultValue);
+  'I':Rexx_RVText(Rexx_CurrentConditionInstruction,ResultValue);
+  'S':Rexx_RVText(Rexx_CurrentConditionStatus,ResultValue);
+ Else
+  Rexx_RVText('',ResultValue);
+ End;
+End;
+
+Function Rexx_CopiesText(SourceText:String;Count:LongInt):String;
+Var ResultText:String;
+Begin
+ ResultText:='';
+ If(Count<=0)or(SourceText='')Then Begin Rexx_CopiesText:=ResultText;Exit;End;
+ { Une String Turbo Pascal est limitee a 255 caracteres. On construit donc
+   autant de copies completes que le type de retour peut en contenir. }
+ While(Count>0)and(Length(ResultText)+Length(SourceText)<=255)Do Begin
+  ResultText:=ResultText+SourceText;Dec(Count);
+ End;
+ Rexx_CopiesText:=ResultText;
+End;
+
+Function Rexx_CountStringOccurrences(Needle,SourceText:String):LongInt;
+Var MatchPosition:Integer;OccurrenceCount:LongInt;
+Begin
+ OccurrenceCount:=0;
+ If Needle=''Then Begin Rexx_CountStringOccurrences:=0;Exit;End;
+ MatchPosition:=System.Pos(Needle,SourceText);
+ While MatchPosition>0Do Begin
+  Inc(OccurrenceCount);
+  { La recherche reprend apres toute l'occurrence trouvee: les occurrences
+    qui se chevauchent ne sont pas comptees par COUNTSTR. }
+  Delete(SourceText,1,MatchPosition+Length(Needle)-1);
+  MatchPosition:=System.Pos(Needle,SourceText);
+ End;
+ Rexx_CountStringOccurrences:=OccurrenceCount;
+End;
+
+Function Rexx_ReverseText(SourceText:String):String;
+Var LeftIndex,RightIndex:Integer;TemporaryCharacter:Char;
+Begin
+ LeftIndex:=1;RightIndex:=Length(SourceText);
+ While LeftIndex<RightIndex Do Begin
+  TemporaryCharacter:=SourceText[LeftIndex];
+  SourceText[LeftIndex]:=SourceText[RightIndex];
+  SourceText[RightIndex]:=TemporaryCharacter;
+  Inc(LeftIndex);Dec(RightIndex);
+ End;
+ Rexx_ReverseText:=SourceText;
+End;
+
+Procedure Rexx_CharacterToDecimal(SourceText:String;CharacterCount:LongInt;
+ CountSpecified:Boolean;Var ResultValue:RexxValue);
+Var J,FirstCharacter:Integer;DecimalValue,SignValue:Real;
+Begin
+ If SourceText=''Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ If CountSpecified Then Begin
+  If CharacterCount<=0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+  If CharacterCount<Length(SourceText)Then
+   FirstCharacter:=Length(SourceText)-CharacterCount+1
+  Else FirstCharacter:=1;
+ End Else FirstCharacter:=1;
+ DecimalValue:=0;
+ For J:=FirstCharacter To Length(SourceText)Do
+  DecimalValue:=DecimalValue*256+Ord(SourceText[J]);
+ If CountSpecified Then Begin
+  { Lorsque N depasse la longueur, le remplissage a gauche est fait avec
+    des octets nuls: la valeur reste donc positive. }
+  If CharacterCount<=Length(SourceText)Then
+   If Ord(SourceText[FirstCharacter])>=128Then Begin
+    SignValue:=1;
+    For J:=1 To CharacterCount Do SignValue:=SignValue*256;
+    DecimalValue:=DecimalValue-SignValue;
+   End;
+ End;
+ Rexx_RVNum(DecimalValue,ResultValue);
+End;
+
+Function Rexx_DecimalToCharacter(NumberValue,CharacterCount:LongInt;
+ CountSpecified:Boolean):String;
+Var ResultText:String;ByteValue:Integer;
+Begin
+ ResultText:='';
+ If CountSpecified Then Begin
+  If CharacterCount<=0Then Begin Rexx_DecimalToCharacter:='';Exit;End;
+  If CharacterCount>255Then CharacterCount:=255;
+  While CharacterCount>0Do Begin
+   ByteValue:=NumberValue mod 256;
+   If ByteValue<0Then Inc(ByteValue,256);
+   ResultText:=Chr(ByteValue)+ResultText;
+   NumberValue:=(NumberValue-ByteValue)div 256;
+   Dec(CharacterCount);
+  End;
+ End Else Begin
+  { Sans longueur, REXX choisit la representation non signee minimale. }
+  If NumberValue<=0Then Begin Rexx_DecimalToCharacter:='';Exit;End;
+  While NumberValue>0Do Begin
+   ByteValue:=NumberValue mod 256;
+   ResultText:=Chr(ByteValue)+ResultText;
+   NumberValue:=NumberValue div 256;
+  End;
+ End;
+ Rexx_DecimalToCharacter:=ResultText;
+End;
+
+Function Rexx_DecimalToHex(NumberValue,HexLength:LongInt;
+ LengthSpecified:Boolean):String;
+Const HexDigits:Array[0..15]of Char='0123456789ABCDEF';
+Var ResultText:String;DigitValue:Integer;
+Begin
+ ResultText:='';
+ If LengthSpecified Then Begin
+  If HexLength<=0Then Begin Rexx_DecimalToHex:='';Exit;End;
+  If HexLength>255Then HexLength:=255;
+  While HexLength>0Do Begin
+   DigitValue:=NumberValue mod 16;
+   If DigitValue<0Then Inc(DigitValue,16);
+   ResultText:=HexDigits[DigitValue]+ResultText;
+   NumberValue:=(NumberValue-DigitValue)div 16;
+   Dec(HexLength);
+  End;
+ End Else Begin
+  If NumberValue=0Then Begin Rexx_DecimalToHex:='0';Exit;End;
+  If NumberValue<0Then Begin Rexx_DecimalToHex:='';Exit;End;
+  While NumberValue>0Do Begin
+   DigitValue:=NumberValue mod 16;
+   ResultText:=HexDigits[DigitValue]+ResultText;
+   NumberValue:=NumberValue div 16;
+  End;
+ End;
+ Rexx_DecimalToHex:=ResultText;
+End;
+
+Function Rexx_IsRexxNumber(SourceText:String;Var NumberValue:Real):Boolean;
+Var ErrorPosition:Integer;
+Begin
+ SourceText:=Rexx_NormalizeRexxNumber(SourceText);
+ If SourceText=''Then Begin Rexx_IsRexxNumber:=False;Exit;End;
+ Val(SourceText,NumberValue,ErrorPosition);
+ Rexx_IsRexxNumber:=ErrorPosition=0;
+End;
+
+Procedure Rexx_DataTypeValue(SourceText,TypeText:String;TypeSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var J,DigitsInGroup,WholeDigits:Integer;TypeCode:Char;Matches,SeenBlank:Boolean;
+ NumberValue,AbsoluteWhole:Real;
+Begin
+ If Not TypeSpecified Then Begin
+  If Rexx_IsRexxNumber(SourceText,NumberValue)Then Rexx_RVText('NUM',ResultValue)
+  Else Rexx_RVText('CHAR',ResultValue);
+  Exit;
+ End;
+ TypeText:=Rexx_StrToUpper(Rexx_Clean(TypeText));
+ If TypeText=''Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ TypeCode:=TypeText[1];Matches:=SourceText<>'';
+ Case TypeCode Of
+  'A':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['a'..'z','A'..'Z','0'..'9'])Then Matches:=False;
+  'B':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['0','1'])Then Matches:=False;
+  'C','D':Matches:=False; { Les jeux DBCS ne sont pas geres par ce moteur. }
+  'L':For J:=1 To Length(SourceText)Do If Not(SourceText[J]in['a'..'z'])Then Matches:=False;
+  'M':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['a'..'z','A'..'Z'])Then Matches:=False;
+  'N':Matches:=Rexx_IsRexxNumber(SourceText,NumberValue);
+  'S':For J:=1 To Length(SourceText)Do
+       If Not(SourceText[J]in['a'..'z','A'..'Z','0'..'9','.','!','?',
+        '_','#','$','@'])Then Matches:=False;
+  'U':For J:=1 To Length(SourceText)Do If Not(SourceText[J]in['A'..'Z'])Then Matches:=False;
+  'W':Begin
+       Matches:=Rexx_IsRexxNumber(SourceText,NumberValue);
+       If Matches Then Matches:=NumberValue=System.Trunc(NumberValue);
+       If Matches Then Begin
+        AbsoluteWhole:=Abs(NumberValue);WholeDigits:=1;
+        While AbsoluteWhole>=10Do Begin AbsoluteWhole:=AbsoluteWhole/10;Inc(WholeDigits);End;
+        Matches:=WholeDigits<=Rexx_NumericDigitsValue;
+       End;
+      End;
+  'X':Begin
+       Matches:=True;DigitsInGroup:=0;SeenBlank:=False;
+       For J:=1 To Length(SourceText)Do Begin
+        If SourceText[J]=' 'Then Begin
+         If DigitsInGroup>0Then Begin
+          If SeenBlank and((DigitsInGroup mod 2)<>0)Then Matches:=False;
+          DigitsInGroup:=0;SeenBlank:=True;
+         End Else If Not SeenBlank Then Matches:=False;
+        End Else Begin
+         If Not(SourceText[J]in['0'..'9','a'..'f','A'..'F'])Then Matches:=False;
+         Inc(DigitsInGroup);
+        End;
+       End;
+       If(Length(SourceText)>0)and(DigitsInGroup=0)Then Matches:=False;
+       If SeenBlank and((DigitsInGroup mod 2)<>0)Then Matches:=False;
+      End;
+ Else Matches:=False;
+ End;
+ If Matches Then Rexx_RVNum(1,ResultValue)Else Rexx_RVNum(0,ResultValue);
+End;
+
+Function Rexx_IsLeapYear(Year:Word):Boolean;
+Begin
+ Rexx_IsLeapYear:=((Year mod 4)=0)and(((Year mod 100)<>0)or((Year mod 400)=0));
+End;
+
+Function Rexx_DaysBeforeYear(Year:Word):LongInt;
+Var PreviousYear:LongInt;
+Begin
+ PreviousYear:=Year-1;
+ Rexx_DaysBeforeYear:=PreviousYear*365+PreviousYear div 4-
+  PreviousYear div 100+PreviousYear div 400;
+End;
+
+Function Rexx_DayOfYearValue(Year,Month,Day:Word):Integer;
+Const DaysPerMonth:Array[1..12]of Byte=(31,28,31,30,31,30,31,31,30,31,30,31);
+Var J,ResultDay:Integer;
+Begin
+ ResultDay:=Day;
+ For J:=1 To Month-1Do Begin
+  Inc(ResultDay,DaysPerMonth[J]);
+  If(J=2)and Rexx_IsLeapYear(Year)Then Inc(ResultDay);
+ End;
+ Rexx_DayOfYearValue:=ResultDay;
+End;
+
+Function Rexx_PaddedNumber(Value,Width:Integer):String;
+Var S:String;
+Begin
+ Str(Value,S);S:=Rexx_Clean(S);
+ While Length(S)<Width Do S:='0'+S;
+ Rexx_PaddedNumber:=S;
+End;
+
+Procedure Rexx_DateValue(OptionText:String;Var ResultValue:RexxValue);
+Const
+ ShortMonth:Array[1..12]of String[3]=('Jan','Feb','Mar','Apr','May','Jun',
+  'Jul','Aug','Sep','Oct','Nov','Dec');
+ FullMonth:Array[1..12]of String[9]=('January','February','March','April',
+  'May','June','July','August','September','October','November','December');
+ WeekDayName:Array[1..7]of String[9]=('Monday','Tuesday','Wednesday',
+  'Thursday','Friday','Saturday','Sunday');
+Var Year,Month,Day,DosDayOfWeek:Word;OptionCode:Char;DayOfYear:Integer;
+ BaseDays,CenturyDays:LongInt;S:String;
+Begin
+ GetDate(Year,Month,Day,DosDayOfWeek);
+ OptionText:=Rexx_StrToUpper(Rexx_Clean(OptionText));
+ If OptionText=''Then OptionCode:='N'Else OptionCode:=OptionText[1];
+ DayOfYear:=Rexx_DayOfYearValue(Year,Month,Day);
+ BaseDays:=Rexx_DaysBeforeYear(Year)+DayOfYear-1;
+ Case OptionCode Of
+  'B':Rexx_RVNum(BaseDays,ResultValue);
+  'C':Begin
+       CenturyDays:=BaseDays-Rexx_DaysBeforeYear((Year div 100)*100)+1;
+       Rexx_RVNum(CenturyDays,ResultValue);
+      End;
+  'D':Rexx_RVNum(DayOfYear,ResultValue);
+  'E':Rexx_RVText(Rexx_PaddedNumber(Day,2)+'/'+Rexx_PaddedNumber(Month,2)+'/'+
+       Rexx_PaddedNumber(Year mod 100,2),ResultValue);
+  'J':Rexx_RVText(Rexx_PaddedNumber(Year mod 100,2)+Rexx_PaddedNumber(DayOfYear,3),ResultValue);
+  'M':Rexx_RVText(FullMonth[Month],ResultValue);
+  'N':Begin Str(Day,S);S:=Rexx_Clean(S);Rexx_RVText(S+' '+ShortMonth[Month]+' '+
+       Rexx_PaddedNumber(Year,4),ResultValue);End;
+  'O':Rexx_RVText(Rexx_PaddedNumber(Year mod 100,2)+'/'+Rexx_PaddedNumber(Month,2)+'/'+
+       Rexx_PaddedNumber(Day,2),ResultValue);
+  'S':Rexx_RVText(Rexx_PaddedNumber(Year,4)+Rexx_PaddedNumber(Month,2)+Rexx_PaddedNumber(Day,2),ResultValue);
+  'U':Rexx_RVText(Rexx_PaddedNumber(Month,2)+'/'+Rexx_PaddedNumber(Day,2)+'/'+
+       Rexx_PaddedNumber(Year mod 100,2),ResultValue);
+  'W':Rexx_RVText(WeekDayName[(BaseDays mod 7)+1],ResultValue);
+ Else Rexx_RVText('',ResultValue);
+ End;
+End;
+
+Function Rexx_DeleteStringPart(SourceText:String;StartPosition,DeleteLength:LongInt;
+ LengthSpecified:Boolean):String;
+Var DeleteCount:Integer;
+Begin
+ If(StartPosition<1)or(StartPosition>Length(SourceText))Then Begin
+  Rexx_DeleteStringPart:=SourceText;Exit;
+ End;
+ If LengthSpecified Then Begin
+  If DeleteLength<=0Then Begin Rexx_DeleteStringPart:=SourceText;Exit;End;
+  If DeleteLength>255Then DeleteCount:=255 Else DeleteCount:=DeleteLength;
+ End Else DeleteCount:=Length(SourceText)-StartPosition+1;
+ Delete(SourceText,StartPosition,DeleteCount);
+ Rexx_DeleteStringPart:=SourceText;
+End;
+
+Function Rexx_DeleteWords(SourceText:String;FirstWord,WordCount:LongInt;
+ CountSpecified:Boolean):String;
+Var Position,DeleteStart,WordsSeen:Integer;WordsToDelete:LongInt;
+Begin
+ If FirstWord<1Then Begin Rexx_DeleteWords:=SourceText;Exit;End;
+ If CountSpecified and(WordCount<=0)Then Begin Rexx_DeleteWords:=SourceText;Exit;End;
+ Position:=1;WordsSeen:=0;DeleteStart:=0;
+ While Position<=Length(SourceText)Do Begin
+  While(Position<=Length(SourceText))and(SourceText[Position]in[' ',#9])Do Inc(Position);
+  If Position>Length(SourceText)Then Break;
+  Inc(WordsSeen);
+  If WordsSeen=FirstWord Then Begin DeleteStart:=Position;Break;End;
+  While(Position<=Length(SourceText))and Not(SourceText[Position]in[' ',#9])Do Inc(Position);
+ End;
+ If DeleteStart=0Then Begin Rexx_DeleteWords:=SourceText;Exit;End;
+ If CountSpecified Then WordsToDelete:=WordCount Else WordsToDelete:=32767;
+ Position:=DeleteStart;
+ While(Position<=Length(SourceText))and(WordsToDelete>0)Do Begin
+  While(Position<=Length(SourceText))and Not(SourceText[Position]in[' ',#9])Do Inc(Position);
+  Dec(WordsToDelete);
+  { Les blancs places apres le dernier mot supprime appartiennent eux aussi
+    a la sous-chaine DELWORD. }
+  While(Position<=Length(SourceText))and(SourceText[Position]in[' ',#9])Do Inc(Position);
+ End;
+ Delete(SourceText,DeleteStart,Position-DeleteStart);
+ Rexx_DeleteWords:=SourceText;
+End;
+
+Procedure Rexx_DirectoryValue(NewDirectory:String;DirectorySpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var CurrentDirectory:String;ErrorCode:Integer;
+Begin
+ If DirectorySpecified Then Begin
+  {$I-}ChDir(NewDirectory);{$I+}
+  ErrorCode:=IoResult;
+  If ErrorCode<>0Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ End;
+ GetDir(0,CurrentDirectory);
+ Rexx_RVText(CurrentDirectory,ResultValue);
+End;
+
+Procedure Rexx_SysDeleteFile(FilePath:String;Var ResultValue:RexxValue);
+Var TargetFile:File;ErrorCode:Integer;
+Begin
+ If FilePath=''Then Begin Rexx_RVNum(2,ResultValue);Exit;End;
+ Assign(TargetFile,FilePath);
+ {$I-}Erase(TargetFile);{$I+}
+ ErrorCode:=IoResult;
+ Rexx_RVNum(ErrorCode,ResultValue);
+End;
+
+Procedure Rexx_SysSearchFile(TargetText,FilePath,StemName,OptionsText:String;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var SourceFile:Text;LineText,ComparedLine,ComparedTarget,VariableName:String;
+ LineNumberText:String;LineNumber,MatchCount,ErrorCode:LongInt;
+ CaseSensitive,IncludeLineNumber,Matches:Boolean;
+Begin
+ If ArgumentCount<3Then Begin Rexx_RVNum(87,ResultValue);Exit;End;
+ StemName:=Rexx_StrToUpper(Rexx_Clean(StemName));
+ If StemName=''Then Begin Rexx_RVNum(87,ResultValue);Exit;End;
+ If StemName[Length(StemName)]<>'.'Then StemName:=StemName+'.';
+ OptionsText:=Rexx_StrToUpper(OptionsText);
+ CaseSensitive:=System.Pos('C',OptionsText)>0;
+ IncludeLineNumber:=System.Pos('N',OptionsText)>0;
+ Rexx_VarSet(StemName+'0','0');
+ {$I-}Assign(SourceFile,FilePath);Reset(SourceFile);{$I+}
+ ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin Rexx_RVNum(3,ResultValue);Exit;End;
+ If CaseSensitive Then ComparedTarget:=TargetText
+ Else ComparedTarget:=Rexx_StrToUpper(TargetText);
+ LineNumber:=0;MatchCount:=0;
+ While Not Eof(SourceFile)Do Begin
+  ReadLn(SourceFile,LineText);Inc(LineNumber);
+  If CaseSensitive Then ComparedLine:=LineText
+  Else ComparedLine:=Rexx_StrToUpper(LineText);
+  Matches:=(ComparedTarget='')or(System.Pos(ComparedTarget,ComparedLine)>0);
+  If Matches Then Begin
+   Inc(MatchCount);Str(MatchCount,VariableName);
+   VariableName:=StemName+Rexx_Clean(VariableName);
+   If IncludeLineNumber Then Begin
+    Str(LineNumber,LineNumberText);
+    Rexx_VarSet(VariableName,Rexx_Clean(LineNumberText)+' '+LineText);
+   End Else Rexx_VarSet(VariableName,LineText);
+  End;
+ End;
+ Close(SourceFile);Str(MatchCount,LineNumberText);
+ Rexx_VarSet(StemName+'0',Rexx_Clean(LineNumberText));
+ Rexx_RVNum(0,ResultValue);
+End;
+
+Procedure Rexx_SysMakeDirectory(DirectoryName:String;Var ResultValue:RexxValue);
+Var ErrorCode:Integer;
+Begin
+ If DirectoryName=''Then Begin Rexx_RVNum(3,ResultValue);Exit;End;
+ {$I-}MkDir(DirectoryName);{$I+}
+ ErrorCode:=IoResult;
+ Rexx_RVNum(ErrorCode,ResultValue);
+End;
+
+Procedure Rexx_SysRemoveDirectory(DirectoryName:String;Var ResultValue:RexxValue);
+Var ErrorCode:Integer;
+Begin
+ If DirectoryName=''Then Begin Rexx_RVNum(3,ResultValue);Exit;End;
+ {$I-}RmDir(DirectoryName);{$I+}
+ ErrorCode:=IoResult;
+ Rexx_RVNum(ErrorCode,ResultValue);
+End;
+
+Procedure Rexx_SysSleepValue(Seconds:Real;ArgumentSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var RemainingMilliseconds:Real;FinalDelay:Word;
+Begin
+ If(Not ArgumentSpecified)or(Seconds<0)Then Begin
+  Rexx_RVNum(87,ResultValue);
+  Exit;
+ End;
+ RemainingMilliseconds:=Seconds*1000.0;
+ { Crt.Delay recoit un Word sous Turbo Pascal. Fractionner l'attente
+   permet donc de supporter une duree superieure a 65,535 secondes. }
+ While RemainingMilliseconds>=60000.0Do Begin
+  WinSleep(60000);
+  RemainingMilliseconds:=RemainingMilliseconds-60000.0;
+ End;
+ FinalDelay:=System.Trunc(RemainingMilliseconds);
+ If FinalDelay>0Then WinSleep(FinalDelay);
+ Rexx_RVNum(0,ResultValue);
+End;
+
+Procedure Rexx_SysClearScreen(ArgumentCount:Integer;Var ResultValue:RexxValue);
+Begin
+ If ArgumentCount<>0Then Begin Rexx_RVNum(87,ResultValue);Exit;End;
+ Rexx_ClrScr;
+ Rexx_RVNum(0,ResultValue);
+End;
+
+Procedure Rexx_SysCursorPosition(RowValue,ColumnValue:RexxValue;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var OldRow,OldColumn,NewRow,NewColumn:LongInt;RowText,ColumnText:String;
+Begin
+ OldRow:=Rexx_WhereY-1;OldColumn:=Rexx_WhereX-1;
+ If OldRow<0Then OldRow:=0;
+ If OldColumn<0Then OldColumn:=0;
+ Str(OldRow,RowText);Str(OldColumn,ColumnText);
+ RowText:=Rexx_Clean(RowText);ColumnText:=Rexx_Clean(ColumnText);
+ If ArgumentCount=2Then Begin
+  NewRow:=System.Trunc(RowValue.Number);
+  NewColumn:=System.Trunc(ColumnValue.Number);
+  { GotoXY utilise des Byte et des coordonnees commencant a 1. }
+  If(NewRow<0)or(NewRow>254)or(NewColumn<0)or(NewColumn>254)Then Begin
+   Rexx_RVText('',ResultValue);Exit;
+  End;
+  Rexx_GotoXY(NewColumn+1,NewRow+1);
+ End Else If ArgumentCount<>0Then Begin
+  Rexx_RVText('',ResultValue);Exit;
+ End;
+ Rexx_RVText(RowText+' '+ColumnText,ResultValue);
+End;
+
+Procedure Rexx_SysVolumeLabelValue(DriveText:String;Var ResultValue:RexxValue);
+Var DriveName,RootPath,CurrentDirectory,VolumeLabel:String;
+ J:Integer;SearchData:SearchRec;
+ {$IFDEF FPC}
+  {$IFDEF WINDOWS}
+  RootBuffer,VolumeBuffer:Array[0..255]of Char;
+  {$ENDIF}
+ {$ENDIF}
+Begin
+ DriveText:=Rexx_Clean(DriveText);
+ If DriveText=''Then Begin
+  GetDir(0,CurrentDirectory);
+  If(Length(CurrentDirectory)>=2)and(CurrentDirectory[2]=':')Then
+   DriveName:=Copy(CurrentDirectory,1,2)Else Begin Rexx_RVText('',ResultValue);Exit;End;
+ End Else Begin
+  If Not(DriveText[1]in['a'..'z','A'..'Z'])Then Begin Rexx_RVText('',ResultValue);Exit;End;
+  DriveName:=UpCase(DriveText[1])+':';
+ End;
+ RootPath:=DriveName+'\';
+ {$IFDEF FPC}
+  {$IFDEF WINDOWS}
+  FillChar(RootBuffer,SizeOf(RootBuffer),0);
+  FillChar(VolumeBuffer,SizeOf(VolumeBuffer),0);
+  For J:=1 To Length(RootPath)Do RootBuffer[J-1]:=RootPath[J];
+  If Rexx_GetVolumeInformationA(RootBuffer,VolumeBuffer,SizeOf(VolumeBuffer),
+    Nil,Nil,Nil,Nil,0)Then Begin
+   VolumeLabel:='';J:=0;
+   While(J<SizeOf(VolumeBuffer))and(VolumeBuffer[J]<>#0)Do Begin
+    VolumeLabel:=VolumeLabel+VolumeBuffer[J];Inc(J);
+   End;
+   Rexx_RVText(VolumeLabel,ResultValue);
+  End Else Rexx_RVText('',ResultValue);
+  Exit;
+  {$ENDIF}
+ {$ENDIF}
+ FindFirst(RootPath+'*.*',VolumeID,SearchData);
+ If DosError=0Then Rexx_RVText(SearchData.Name,ResultValue)
+  Else Rexx_RVText('',ResultValue);
+End;
+
+Function Rexx_TwoDigits(Value:Word):String;
+Var S:String;
+Begin
+ Str(Value,S);
+ If Length(S)<2Then S:='0'+S;
+ Rexx_TwoDigits:=S;
+End;
+
+Function Rexx_CurrentTimeSeconds:Real;
+Var HourValue,MinuteValue,SecondValue,HundredthValue:Word;
+Begin
+ GetTime(HourValue,MinuteValue,SecondValue,HundredthValue);
+ Rexx_CurrentTimeSeconds:=HourValue*3600.0+MinuteValue*60.0+SecondValue+
+ HundredthValue/100.0;
+End;
+
+Procedure Rexx_SysGetKeyValue(EchoOption:String;TimeoutSeconds:Real;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var EchoKey:Boolean;KeyCharacter:Char;UpperOption:String;
+Begin
+ { Le delai (2e argument de SYSGETKEY) n'est pas applicable ici : le pont
+   clavier (Rexx_ReadKey) suspend la fibre du script jusqu'a la prochaine
+   touche reellement tapee dans le terminal, sans mecanisme de minuterie
+   preemptive - limitation assumee, documentee plutot que simulee. }
+ If ArgumentCount>2Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ If TimeoutSeconds<0Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ UpperOption:=Rexx_StrToUpper(Rexx_Clean(EchoOption));
+ EchoKey:=Not((UpperOption='N')or(UpperOption='NO')or
+  (UpperOption='NOECHO'));
+ KeyCharacter:=Rexx_ReadKey;
+ If EchoKey Then Rexx_EmitPartial(KeyCharacter);
+ Rexx_RVText(KeyCharacter,ResultValue);
+End;
+
+Procedure Rexx_TimeValue(OptionText:String;ArgumentCount:Integer;
+ Var ResultValue:RexxValue);
+Var HourValue,MinuteValue,SecondValue,HundredthValue,CivilHour:Word;
+ OptionCharacter:Char;CurrentSeconds,ElapsedSeconds:Real;S,Suffix:String;
+Begin
+ If ArgumentCount>1Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ OptionText:=Rexx_StrToUpper(Rexx_Clean(OptionText));
+ If OptionText=''Then OptionCharacter:='N'Else OptionCharacter:=OptionText[1];
+ GetTime(HourValue,MinuteValue,SecondValue,HundredthValue);
+ CurrentSeconds:=HourValue*3600.0+MinuteValue*60.0+SecondValue+
+  HundredthValue/100.0;
+ Case OptionCharacter Of
+  'C':Begin
+   CivilHour:=HourValue mod 12;If CivilHour=0Then CivilHour:=12;
+   If HourValue<12Then Suffix:='am'Else Suffix:='pm';
+   Str(CivilHour,S);Rexx_RVText(S+':'+Rexx_TwoDigits(MinuteValue)+Suffix,ResultValue);
+  End;
+  'E','R':Begin
+   ElapsedSeconds:=CurrentSeconds-Rexx_TimeElapsedStart;
+   If ElapsedSeconds<0Then ElapsedSeconds:=ElapsedSeconds+86400.0;
+   Str(ElapsedSeconds:0:6,S);Rexx_RVText(S,ResultValue);
+   If OptionCharacter='R'Then Rexx_TimeElapsedStart:=CurrentSeconds;
+  End;
+  'H':Rexx_RVNum(HourValue,ResultValue);
+  'L':Rexx_RVText(Rexx_TwoDigits(HourValue)+':'+Rexx_TwoDigits(MinuteValue)+':'+
+   Rexx_TwoDigits(SecondValue)+'.'+Rexx_TwoDigits(HundredthValue)+'0000',ResultValue);
+  'M':Rexx_RVNum(HourValue*60+MinuteValue,ResultValue);
+  'N':Rexx_RVText(Rexx_TwoDigits(HourValue)+':'+Rexx_TwoDigits(MinuteValue)+':'+
+   Rexx_TwoDigits(SecondValue),ResultValue);
+  'S':Rexx_RVNum(System.Trunc(CurrentSeconds),ResultValue);
+ Else Rexx_RVText('',ResultValue);
+ End;
+End;
+
+Function Rexx_FileSpecPart(OptionText,FileSpecification:String):String;
+Var J,LastSeparator,NameStart:Integer;OptionCode:Char;
+Begin
+ OptionText:=Rexx_StrToUpper(Rexx_Clean(OptionText));
+ If OptionText=''Then Begin Rexx_FileSpecPart:='';Exit;End;
+ OptionCode:=OptionText[1];
+ If(Length(FileSpecification)>=2)and(FileSpecification[2]=':')Then NameStart:=3
+ Else NameStart:=1;
+ LastSeparator:=0;
+ For J:=NameStart To Length(FileSpecification)Do
+  If FileSpecification[J]in['\','/']Then LastSeparator:=J;
+ Case OptionCode Of
+  'D':Begin
+       If NameStart=3 Then Rexx_FileSpecPart:=Copy(FileSpecification,1,2)
+       Else Rexx_FileSpecPart:='';
+      End;
+  'P':Begin
+       If LastSeparator>=NameStart Then
+        Rexx_FileSpecPart:=Copy(FileSpecification,NameStart,LastSeparator-NameStart+1)
+       Else Rexx_FileSpecPart:='';
+      End;
+  'N':Begin
+       If LastSeparator>0 Then Rexx_FileSpecPart:=Copy(FileSpecification,LastSeparator+1,255)
+       Else Rexx_FileSpecPart:=Copy(FileSpecification,NameStart,255);
+      End;
+ Else Rexx_FileSpecPart:='';
+ End;
+End;
+
+Function RexxSignificantDigits(NumberText:String):Integer;
+Var J,Count:Integer;SeenNonZero:Boolean;
+Begin
+ Count:=0;SeenNonZero:=False;NumberText:=Rexx_StrToUpper(Rexx_Clean(NumberText));
+ J:=1;
+ While(J<=Length(NumberText))and(NumberText[J]<>'E')Do Begin
+  If NumberText[J]in['0'..'9']Then Begin
+   If NumberText[J]<>'0'Then SeenNonZero:=True;
+   If SeenNonZero Then Inc(Count);
+  End;
+  Inc(J);
+ End;
+ If Count=0Then Count:=1;
+ RexxSignificantDigits:=Count;
+End;
+
+Function Rexx_FormatRexxNumber(NumberValue:Real;OriginalText,BeforeText,AfterText,
+ ExponentPlacesText,ExponentTriggerText:String;ArgumentCount:Integer):String;
+Var BeforeSpecified,AfterSpecified,ExponentPlacesSpecified,
+ ExponentTriggerSpecified,UseExponent:Boolean;
+ BeforePlaces,AfterPlaces,ExponentPlaces,ExponentTrigger,ErrorPosition,
+ ExponentValue,IntegerLength,PointPosition,J,SignificantDigits:Integer;
+ Mantissa,AbsoluteValue:Real;S,ExponentText:String;
+Begin
+ If ArgumentCount<2Then Begin Rexx_FormatRexxNumber:=Rexx_NumToText(NumberValue);Exit;End;
+ BeforeSpecified:=(ArgumentCount>=2)and(BeforeText<>'');
+ AfterSpecified:=(ArgumentCount>=3)and(AfterText<>'');
+ ExponentPlacesSpecified:=(ArgumentCount>=4)and(ExponentPlacesText<>'');
+ ExponentTriggerSpecified:=(ArgumentCount>=5)and(ExponentTriggerText<>'');
+ BeforePlaces:=0;AfterPlaces:=0;ExponentPlaces:=0;ExponentTrigger:=Rexx_NumericDigitsValue;
+ If BeforeSpecified Then Val(BeforeText,BeforePlaces,ErrorPosition);
+ If AfterSpecified Then Val(AfterText,AfterPlaces,ErrorPosition);
+ If ExponentPlacesSpecified Then Val(ExponentPlacesText,ExponentPlaces,ErrorPosition);
+ If ExponentTriggerSpecified Then Val(ExponentTriggerText,ExponentTrigger,ErrorPosition);
+ If(BeforePlaces<0)or(AfterPlaces<0)or(ExponentPlaces<0)or(ExponentTrigger<0)Then Begin
+  Rexx_FormatRexxNumber:='';Exit;
+ End;
+ If BeforePlaces>255Then BeforePlaces:=255;
+ If AfterPlaces>100Then AfterPlaces:=100;
+ If ExponentPlaces>9Then Begin Rexx_FormatRexxNumber:='';Exit;End;
+ AbsoluteValue:=Abs(NumberValue);ExponentValue:=0;Mantissa:=NumberValue;
+ If AbsoluteValue>0Then Begin
+  While AbsoluteValue>=10Do Begin AbsoluteValue:=AbsoluteValue/10;Inc(ExponentValue);End;
+  While AbsoluteValue<1Do Begin AbsoluteValue:=AbsoluteValue*10;Dec(ExponentValue);End;
+ End;
+ UseExponent:=False;
+ If ExponentTriggerSpecified Then Begin
+  If ExponentTrigger=0Then UseExponent:=ExponentValue<>0
+  Else UseExponent:=(ExponentValue+1>ExponentTrigger)or
+    (ExponentValue<-(2*ExponentTrigger));
+ End;
+ If ExponentPlacesSpecified and(ExponentPlaces=0)Then UseExponent:=False;
+ If UseExponent Then Begin
+  If Rexx_NumericFormValue='ENGINEERING'Then Begin
+   While(ExponentValue mod 3)<>0Do Dec(ExponentValue);
+  End;
+  Mantissa:=NumberValue;
+  If ExponentValue>0Then For J:=1 To ExponentValue Do Mantissa:=Mantissa/10
+  Else For J:=1 To -ExponentValue Do Mantissa:=Mantissa*10;
+  If Not AfterSpecified Then Begin
+   SignificantDigits:=RexxSignificantDigits(OriginalText);
+   IntegerLength:=1;
+   If Abs(Mantissa)>=10Then IntegerLength:=2;
+   If Abs(Mantissa)>=100Then IntegerLength:=3;
+   AfterPlaces:=SignificantDigits-IntegerLength;If AfterPlaces<0Then AfterPlaces:=0;
+  End;
+  Str(Mantissa:0:AfterPlaces,S);S:=Rexx_Clean(S);
+ End Else Begin
+  If AfterSpecified Then Begin Str(NumberValue:0:AfterPlaces,S);S:=Rexx_Clean(S);End
+  Else S:=Rexx_NumToText(NumberValue);
+ End;
+ PointPosition:=System.Pos('.',S);If PointPosition=0Then IntegerLength:=Length(S)
+  Else IntegerLength:=PointPosition-1;
+ If BeforeSpecified Then Begin
+  If IntegerLength>BeforePlaces Then Begin Rexx_FormatRexxNumber:='';Exit;End;
+  While IntegerLength<BeforePlaces Do Begin S:=' '+S;Inc(IntegerLength);End;
+ End;
+ If UseExponent Then Begin
+  Str(Abs(ExponentValue),ExponentText);ExponentText:=Rexx_Clean(ExponentText);
+  If ExponentPlacesSpecified Then Begin
+   If Length(ExponentText)>ExponentPlaces Then Begin Rexx_FormatRexxNumber:='';Exit;End;
+   While Length(ExponentText)<ExponentPlaces Do ExponentText:='0'+ExponentText;
+  End;
+  If ExponentValue<0Then S:=S+'E-'+ExponentText Else S:=S+'E+'+ExponentText;
+ End Else If ExponentPlacesSpecified and(ExponentPlaces>0)Then
+  S:=S+Rexx_RepeatCharacter(' ',ExponentPlaces+2);
+ Rexx_FormatRexxNumber:=S;
+End;
+
+Function Rexx_InsertText(NewText,TargetText:String;InsertPosition,InsertLength:LongInt;
+ PositionSpecified,LengthSpecified,PadSpecified:Boolean;PadText:String):String;
+Var PadCharacter:Char;Insertion,ResultText:String;RequiredPadding:LongInt;
+Begin
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]Else PadCharacter:=' ';
+ If Not PositionSpecified Then InsertPosition:=0;
+ If InsertPosition<0Then InsertPosition:=0;
+ If InsertPosition>255Then InsertPosition:=255;
+ RequiredPadding:=InsertPosition-Length(TargetText);
+ If RequiredPadding>0Then
+  TargetText:=TargetText+Rexx_RepeatCharacter(PadCharacter,RequiredPadding);
+ If LengthSpecified Then Begin
+  If InsertLength<0Then InsertLength:=0;
+  If InsertLength>255Then InsertLength:=255;
+ End Else InsertLength:=Length(NewText);
+ If InsertLength<=Length(NewText)Then Insertion:=Copy(NewText,1,InsertLength)
+ Else Insertion:=NewText+Rexx_RepeatCharacter(PadCharacter,InsertLength-Length(NewText));
+ ResultText:=Copy(TargetText,1,InsertPosition)+Insertion+
+  Copy(TargetText,InsertPosition+1,255);
+ Rexx_InsertText:=Copy(ResultText,1,255);
+End;
+
+Function Rexx_OverlayText(NewText,TargetText:String;OverlayPosition,OverlayLength:LongInt;
+ PositionSpecified,LengthSpecified,PadSpecified:Boolean;PadText:String):String;
+Var PadCharacter:Char;Replacement,ResultText:String;RequiredPadding:LongInt;
+Begin
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]Else PadCharacter:=' ';
+ If Not PositionSpecified Then OverlayPosition:=1;
+ If OverlayPosition<1Then OverlayPosition:=1;
+ If OverlayPosition>255Then OverlayPosition:=255;
+ If LengthSpecified Then Begin
+  If OverlayLength<0Then OverlayLength:=0;
+  If OverlayLength>255Then OverlayLength:=255;
+ End Else OverlayLength:=Length(NewText);
+ RequiredPadding:=OverlayPosition-1-Length(TargetText);
+ If RequiredPadding>0Then
+  TargetText:=TargetText+Rexx_RepeatCharacter(PadCharacter,RequiredPadding);
+ If OverlayLength<=Length(NewText)Then Replacement:=Copy(NewText,1,OverlayLength)
+ Else Replacement:=NewText+Rexx_RepeatCharacter(PadCharacter,OverlayLength-Length(NewText));
+ ResultText:=Copy(TargetText,1,OverlayPosition-1)+Replacement+
+  Copy(TargetText,OverlayPosition+OverlayLength,255);
+ Rexx_OverlayText:=Copy(ResultText,1,255);
+End;
+
+Function Rexx_LastPosition(Needle,Haystack:String;StartPosition:LongInt;
+ StartSpecified:Boolean):Integer;
+Var Candidate,LastCandidate:Integer;
+Begin
+ Rexx_LastPosition:=0;
+ If(Needle='')or(Haystack='')Then Exit;
+ If StartSpecified Then Begin
+  If StartPosition<1Then Exit;
+  If StartPosition>Length(Haystack)Then StartPosition:=Length(Haystack);
+ End Else StartPosition:=Length(Haystack);
+ LastCandidate:=Length(Haystack)-Length(Needle)+1;
+ If LastCandidate<1Then Exit;
+ If StartPosition<LastCandidate Then Candidate:=StartPosition
+ Else Candidate:=LastCandidate;
+ While Candidate>=1 Do Begin
+  If Copy(Haystack,Candidate,Length(Needle))=Needle Then Begin
+   Rexx_LastPosition:=Candidate;
+   Exit;
+  End;
+ Dec(Candidate);
+ End;
+End;
+
+Function Rexx_ForwardPosition(Needle,Haystack:String;StartPosition:LongInt;
+ StartSpecified:Boolean):Integer;
+Var RelativePosition:Integer;
+Begin
+ Rexx_ForwardPosition:=0;
+ If(Needle='')or(Haystack='')Then Exit;
+ If Not StartSpecified Then StartPosition:=1;
+ If(StartPosition<1)or(StartPosition>Length(Haystack))Then Exit;
+ RelativePosition:=System.Pos(Needle,Copy(Haystack,StartPosition,255));
+ If RelativePosition>0Then
+  Rexx_ForwardPosition:=RelativePosition+StartPosition-1;
+End;
+
+Function Rexx_SubStringText(SourceText:String;StartPosition,RequestedLength:LongInt;
+ LengthSpecified,PadSpecified:Boolean;PadText:String):String;
+Var PadCharacter:Char;AvailableLength,PaddingLength:LongInt;ResultText:String;
+Begin
+ If StartPosition<1Then Begin Rexx_SubStringText:='';Exit;End;
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]
+ Else PadCharacter:=' ';
+ If Not LengthSpecified Then Begin
+  If StartPosition>Length(SourceText)Then ResultText:=''
+  Else ResultText:=Copy(SourceText,StartPosition,255);
+  Rexx_SubStringText:=ResultText;
+  Exit;
+ End;
+ If RequestedLength<=0Then Begin Rexx_SubStringText:='';Exit;End;
+ If RequestedLength>255Then RequestedLength:=255;
+ If StartPosition>Length(SourceText)Then AvailableLength:=0
+ Else Begin
+  AvailableLength:=Length(SourceText)-StartPosition+1;
+  If AvailableLength>RequestedLength Then AvailableLength:=RequestedLength;
+ End;
+ If AvailableLength>0Then ResultText:=Copy(SourceText,StartPosition,AvailableLength)
+ Else ResultText:='';
+ PaddingLength:=RequestedLength-AvailableLength;
+ If PaddingLength>0Then ResultText:=ResultText+
+  Rexx_RepeatCharacter(PadCharacter,PaddingLength);
+ Rexx_SubStringText:=ResultText;
+End;
+
+Function Rexx_SubWordText(SourceText:String;FirstWord,RequestedWords:LongInt;
+ WordCountSpecified:Boolean):String;
+Var CharacterPosition,CurrentWord,StartPosition,EndPosition:Integer;
+ WordsRemaining:LongInt;
+Begin
+ Rexx_SubWordText:='';
+ If FirstWord<1Then Exit;
+ If WordCountSpecified and(RequestedWords<=0)Then Exit;
+ CharacterPosition:=1;CurrentWord:=0;StartPosition:=0;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Break;
+  Inc(CurrentWord);
+  If CurrentWord=FirstWord Then Begin StartPosition:=CharacterPosition;Break;End;
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+ If StartPosition=0Then Exit;
+ If WordCountSpecified Then WordsRemaining:=RequestedWords
+ Else WordsRemaining:=2147483647;
+ EndPosition:=StartPosition-1;
+ While(CharacterPosition<=Length(SourceText))and(WordsRemaining>0)Do Begin
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Begin
+   EndPosition:=CharacterPosition;Inc(CharacterPosition);
+  End;
+  Dec(WordsRemaining);
+  If WordsRemaining=0Then Break;
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+ If EndPosition>=StartPosition Then
+ Rexx_SubWordText:=Copy(SourceText,StartPosition,EndPosition-StartPosition+1);
+End;
+
+Function Rexx_WordStartIndex(SourceText:String;RequestedWord:LongInt):Integer;
+Var CharacterPosition:Integer;CurrentWord:LongInt;
+Begin
+ Rexx_WordStartIndex:=0;
+ If RequestedWord<1Then Exit;
+ CharacterPosition:=1;CurrentWord:=0;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Exit;
+  Inc(CurrentWord);
+  If CurrentWord=RequestedWord Then Begin
+   Rexx_WordStartIndex:=CharacterPosition;
+   Exit;
+  End;
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+End;
+
+Function Rexx_SpaceText(SourceText:String;SeparatorCount:LongInt;
+ CountSpecified,PadSpecified:Boolean;PadText:String):String;
+Var CharacterPosition:Integer;AddedSeparators:LongInt;PadCharacter:Char;
+ ResultText:String;FirstWord:Boolean;
+Begin
+ If Not CountSpecified Then SeparatorCount:=1;
+ If SeparatorCount<0Then Begin Rexx_SpaceText:='';Exit;End;
+ If PadSpecified and(PadText<>'')Then PadCharacter:=PadText[1]
+ Else PadCharacter:=' ';
+ CharacterPosition:=1;ResultText:='';FirstWord:=True;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Break;
+  If Not FirstWord Then Begin
+   AddedSeparators:=0;
+   While(AddedSeparators<SeparatorCount)and(Length(ResultText)<255)Do Begin
+    ResultText:=ResultText+PadCharacter;
+    Inc(AddedSeparators);
+   End;
+  End;
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Begin
+   If Length(ResultText)<255Then ResultText:=ResultText+SourceText[CharacterPosition];
+   Inc(CharacterPosition);
+  End;
+  FirstWord:=False;
+ End;
+ Rexx_SpaceText:=ResultText;
+End;
+
+Function Rexx_CountWords(SourceText:String):Integer;
+Var CharacterPosition,WordCount:Integer;
+Begin
+ WordCount:=0;CharacterPosition:=1;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  While(CharacterPosition<=Length(SourceText))and
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+  If CharacterPosition>Length(SourceText)Then Begin
+   Rexx_CountWords:=WordCount;
+   Exit;
+  End;
+  Inc(WordCount);
+  While(CharacterPosition<=Length(SourceText))and not
+   (SourceText[CharacterPosition]in[' ',#9])Do Inc(CharacterPosition);
+ End;
+ Rexx_CountWords:=WordCount;
+End;
+
+Function Rexx_WordPhrasePosition(PhraseText,SourceText:String;StartWord:LongInt;
+ StartSpecified:Boolean):Integer;
+Var PhraseWords,SourceWords,Candidate,LastCandidate:Integer;
+ NormalizedPhrase,NormalizedCandidate:String;
+Begin
+ Rexx_WordPhrasePosition:=0;
+ NormalizedPhrase:=Rexx_SpaceText(PhraseText,1,True,False,'');
+ PhraseWords:=Rexx_CountWords(NormalizedPhrase);
+ If PhraseWords=0Then Exit;
+ If Not StartSpecified Then StartWord:=1;
+ If StartWord<1Then Exit;
+ SourceWords:=Rexx_CountWords(SourceText);
+ LastCandidate:=SourceWords-PhraseWords+1;
+ Candidate:=StartWord;
+ While Candidate<=LastCandidate Do Begin
+  NormalizedCandidate:=Rexx_SpaceText(Rexx_SubWordText(SourceText,Candidate,
+   PhraseWords,True),1,True,False,'');
+  If NormalizedCandidate=NormalizedPhrase Then Begin
+   Rexx_WordPhrasePosition:=Candidate;
+   Exit;
+  End;
+  Inc(Candidate);
+ End;
+End;
+
+Function Rexx_StripText(SourceText,OptionText,StripCharacterText:String;
+ OptionSpecified,CharacterSpecified:Boolean):String;
+Var OptionCharacter,StripCharacter:Char;
+Begin
+ If OptionSpecified and(OptionText<>'')Then
+  OptionCharacter:=UpCase(OptionText[1])
+ Else OptionCharacter:='B';
+ If CharacterSpecified and(StripCharacterText<>'')Then
+  StripCharacter:=StripCharacterText[1]
+ Else StripCharacter:=' ';
+ If Not(OptionCharacter in['B','L','T'])Then Begin Rexx_StripText:='';Exit;End;
+ If OptionCharacter in['B','L']Then
+  While(Length(SourceText)>0)and(SourceText[1]=StripCharacter)Do
+   Delete(SourceText,1,1);
+ If OptionCharacter in['B','T']Then
+  While(Length(SourceText)>0)and
+   (SourceText[Length(SourceText)]=StripCharacter)Do
+   Delete(SourceText,Length(SourceText),1);
+ Rexx_StripText:=SourceText;
+End;
+
+Function Rexx_TranslateText(SourceText,OutputTable,InputTable,PadText:String;
+ ArgumentCount:Integer):String;
+Var CharacterPosition,TablePosition:Integer;PadCharacter:Char;
+Begin
+ If ArgumentCount<=1Then Begin
+  Rexx_TranslateText:=Rexx_StrToUpper(SourceText);
+  Exit;
+ End;
+ If(ArgumentCount>3)and(PadText<>'')Then PadCharacter:=PadText[1]
+ Else PadCharacter:=' ';
+ For CharacterPosition:=1 To Length(SourceText)Do Begin
+  If ArgumentCount>2Then
+   TablePosition:=System.Pos(SourceText[CharacterPosition],InputTable)
+  Else TablePosition:=Ord(SourceText[CharacterPosition])+1;
+  If TablePosition>0Then Begin
+   If TablePosition<=Length(OutputTable)Then
+    SourceText[CharacterPosition]:=OutputTable[TablePosition]
+   Else SourceText[CharacterPosition]:=PadCharacter;
+  End;
+ End;
+ Rexx_TranslateText:=SourceText;
+End;
+
+Function Rexx_VerifyText(SourceText,ReferenceText,OptionText:String;
+ StartPosition:LongInt;OptionSpecified,StartSpecified:Boolean):Integer;
+Var CharacterPosition:Integer;OptionCharacter:Char;CharacterMatches:Boolean;
+Begin
+ Rexx_VerifyText:=0;
+ If OptionSpecified and(OptionText<>'')Then OptionCharacter:=UpCase(OptionText[1])
+ Else OptionCharacter:='N';
+ If Not(OptionCharacter in['M','N'])Then Exit;
+ If Not StartSpecified Then StartPosition:=1;
+ If(StartPosition<1)or(StartPosition>Length(SourceText))Then Exit;
+ CharacterPosition:=StartPosition;
+ While CharacterPosition<=Length(SourceText)Do Begin
+  CharacterMatches:=System.Pos(SourceText[CharacterPosition],ReferenceText)>0;
+  If((OptionCharacter='M')and CharacterMatches)or
+    ((OptionCharacter='N')and Not CharacterMatches)Then Begin
+   Rexx_VerifyText:=CharacterPosition;
+   Exit;
+  End;
+  Inc(CharacterPosition);
+ End;
+End;
+
+Function Rexx_XRangeText(StartText,EndText:String;ArgumentCount:Integer):String;
+Var CurrentValue,FinalValue:Byte;GeneratedCount:Integer;ResultText:String;
+Begin
+ If(ArgumentCount>0)and(StartText<>'')Then CurrentValue:=Ord(StartText[1])
+ Else CurrentValue:=0;
+ If(ArgumentCount>1)and(EndText<>'')Then FinalValue:=Ord(EndText[1])
+ Else FinalValue:=255;
+ ResultText:='';GeneratedCount:=0;
+ Repeat
+  ResultText:=ResultText+Chr(CurrentValue);
+  Inc(GeneratedCount);
+  If(CurrentValue=FinalValue)or(GeneratedCount>=255)Then Break;
+  If CurrentValue=255Then CurrentValue:=0 Else Inc(CurrentValue);
+ Until False;
+ Rexx_XRangeText:=ResultText;
+End;
+
+Function Rexx_NormalizeTraceSetting(SettingText:String):String;
+Var SettingCharacter:Char;
+Begin
+ SettingText:=Rexx_StrToUpper(Rexx_Clean(SettingText));
+ While(Length(SettingText)>0)and(SettingText[1]in['?','!'])Do
+  Delete(SettingText,1,1);
+ If SettingText=''Then Begin Rexx_NormalizeTraceSetting:='N';Exit;End;
+ SettingCharacter:=SettingText[1];
+ If SettingCharacter in['A','C','E','F','I','L','N','O','R','S']Then
+  Rexx_NormalizeTraceSetting:=SettingCharacter
+ Else Rexx_NormalizeTraceSetting:=Rexx_CurrentTraceSetting;
+End;
+
+Procedure Rexx_TraceValue(SettingText:String;ArgumentCount:Integer;
+ Var ResultValue:RexxValue);
+Var PreviousSetting:String;
+Begin
+ PreviousSetting:=Rexx_CurrentTraceSetting;
+ If ArgumentCount>0Then Rexx_CurrentTraceSetting:=Rexx_NormalizeTraceSetting(SettingText);
+ Rexx_RVText(PreviousSetting,ResultValue);
+End;
+
+Procedure Rexx_SetLocalValue(Var ResultValue:RexxValue);
+Var SavedEnvironment:PRexx_LocalEnvironment;
+Begin
+ New(SavedEnvironment);
+ If SavedEnvironment=Nil Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ GetDir(0,SavedEnvironment^.DirectoryName);
+ SavedEnvironment^.Next:=Rexx_LocalEnvironments;
+ Rexx_LocalEnvironments:=SavedEnvironment;
+ Rexx_RVNum(1,ResultValue);
+End;
+
+Procedure Rexx_EndLocalValue(Var ResultValue:RexxValue);
+Var SavedEnvironment:PRexx_LocalEnvironment;ErrorCode:Integer;
+Begin
+ If Rexx_LocalEnvironments=Nil Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ SavedEnvironment:=Rexx_LocalEnvironments;
+ {$I-}ChDir(SavedEnvironment^.DirectoryName);{$I+}
+ ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ Rexx_LocalEnvironments:=SavedEnvironment^.Next;Dispose(SavedEnvironment);
+ Rexx_RVNum(1,ResultValue);
+End;
+
+Procedure Rexx_RestoreLocalEnvironments;
+Var SavedEnvironment:PRexx_LocalEnvironment;ErrorCode:Integer;
+Begin
+ While Rexx_LocalEnvironments<>Nil Do Begin
+  SavedEnvironment:=Rexx_LocalEnvironments;
+  {$I-}ChDir(SavedEnvironment^.DirectoryName);{$I+}
+  ErrorCode:=IoResult;
+  Rexx_LocalEnvironments:=SavedEnvironment^.Next;Dispose(SavedEnvironment);
+ End;
+End;
+
+Function RexxErrorText(ErrorNumber:Integer):String;
+Begin
+ Case ErrorNumber Of
+   3:RexxErrorText:='Program is unreadable';
+   4:RexxErrorText:='Program interrupted';
+   5:RexxErrorText:='Machine storage exhausted';
+   6:RexxErrorText:='Unmatched "/*" or quote';
+   7:RexxErrorText:='WHEN or OTHERWISE expected';
+   8:RexxErrorText:='Unexpected THEN or ELSE';
+   9:RexxErrorText:='Unexpected WHEN or OTHERWISE';
+  10:RexxErrorText:='Unexpected or unmatched END';
+  11:RexxErrorText:='Control stack full';
+  12:RexxErrorText:='Clause too long';
+  13:RexxErrorText:='Invalid character in program';
+  14:RexxErrorText:='Incomplete DO/SELECT/IF';
+  15:RexxErrorText:='Invalid hexadecimal or binary string';
+  16:RexxErrorText:='Label not found';
+  17:RexxErrorText:='Unexpected PROCEDURE';
+  18:RexxErrorText:='THEN expected';
+  19:RexxErrorText:='String or symbol expected';
+  20:RexxErrorText:='Symbol expected';
+  21:RexxErrorText:='Invalid data on end of clause';
+  22:RexxErrorText:='Invalid character string';
+  23:RexxErrorText:='Invalid data string';
+  24:RexxErrorText:='Invalid TRACE request';
+  25:RexxErrorText:='Invalid sub-keyword found';
+  26:RexxErrorText:='Invalid whole number';
+  27:RexxErrorText:='Invalid DO syntax';
+  28:RexxErrorText:='Invalid LEAVE or ITERATE';
+  29:RexxErrorText:='Environment name too long, or not found';
+  30:RexxErrorText:='Name or string too long';
+  31:RexxErrorText:='Name starts with number or "."';
+  32:RexxErrorText:='';
+  33:RexxErrorText:='Invalid expression result';
+  34:RexxErrorText:='Logical value not 0 or 1';
+  35:RexxErrorText:='Invalid expression';
+  36:RexxErrorText:='Unmatched "(" in expression';
+  37:RexxErrorText:='Unexpected "," or ")"';
+  38:RexxErrorText:='Invalid template or pattern';
+  39:RexxErrorText:='Evaluation stack overflow (too many arguments)';
+  40:RexxErrorText:='Incorrect call to routine';
+  41:RexxErrorText:='Bad arithmetic conversion';
+  42:RexxErrorText:='Arithmetic overflow/underflow';
+  43:RexxErrorText:='Routine not found';
+  44:RexxErrorText:='Function did not return data';
+  45:RexxErrorText:='No data specified on function RETURN';
+  46:RexxErrorText:='Invalid variable reference';
+  47:RexxErrorText:='';
+  48:RexxErrorText:='Failure in system service';
+  49:RexxErrorText:='Interpretation error';
+ Else RexxErrorText:='';
+ End;
+End;
+
+Procedure Rexx_RequestProgramExit(ExitValue:RexxValue;ValueSpecified:Boolean;
+ Var ResultValue:RexxValue);
+Var ExitNumber:LongInt;
+Begin
+ ExitNumber:=0;
+ If ValueSpecified and ExitValue.IsNumber Then ExitNumber:=System.Trunc(ExitValue.Number);
+ { Sous DOS et Windows, le code de sortie observable est limite a un octet. }
+ If ExitNumber<0Then ExitNumber:=0;
+ If ExitNumber>255Then ExitNumber:=255;
+ Rexx_ProgramExitCode:=ExitNumber;Rexx_ProgramExitRequested:=True;Rexx_Terminated:=True;
+ Rexx_RVNum(Rexx_ProgramExitCode,ResultValue);
+End;
+
+Procedure Rexx_CharInValue(StreamName:String;StartPosition,RequestedCount:LongInt;
+ UseStart,UseCount:Boolean;Var ResultValue:RexxValue);
+Var F:File;Buffer:Array[1..255]of Byte;J,StreamIndex,ReadCount,Count:Integer;
+ Position:LongInt;ResultText:String;
+Begin
+ If Not UseCount Then RequestedCount:=1;
+ If RequestedCount<0Then RequestedCount:=0;
+ If RequestedCount>255Then RequestedCount:=255;
+ Count:=RequestedCount;ResultText:='';
+ If StreamName=''Then Begin
+  For J:=1 To Count Do ResultText:=ResultText+Rexx_ReadKey;
+  Rexx_RVText(ResultText,ResultValue);Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To Rexx_CharInStreamCount Do If Rexx_CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If Rexx_CharInStreamCount<Rexx_MaxRoutineArgs Then Begin
+   Inc(Rexx_CharInStreamCount);StreamIndex:=Rexx_CharInStreamCount;
+   Rexx_CharInNames[StreamIndex]:=StreamName;Rexx_CharInPositions[StreamIndex]:=1;
+  End Else StreamIndex:=1;
+ End;
+ If UseStart Then Position:=StartPosition Else Position:=Rexx_CharInPositions[StreamIndex];
+ If Position<1Then Position:=1;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ If Position-1<FileSize(F)Then Begin
+  Seek(F,Position-1);BlockRead(F,Buffer,Count,ReadCount);
+  For J:=1 To ReadCount Do ResultText:=ResultText+Chr(Buffer[J]);
+ End Else ReadCount:=0;
+ Close(F);Rexx_CharInPositions[StreamIndex]:=Position+ReadCount;
+ Rexx_RVText(ResultText,ResultValue);
+End;
+
+Procedure Rexx_CharOutValue(StreamName,SourceText:String;StartPosition:LongInt;
+ UseStart:Boolean;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,WrittenCount:Integer;Position:LongInt;
+Begin
+ If StreamName=''Then Begin
+  Rexx_EmitPartial(SourceText);Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To Rexx_CharOutStreamCount Do If Rexx_CharOutNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If Rexx_CharOutStreamCount<Rexx_MaxRoutineArgs Then Begin
+   Inc(Rexx_CharOutStreamCount);StreamIndex:=Rexx_CharOutStreamCount;
+   Rexx_CharOutNames[StreamIndex]:=StreamName;Rexx_CharOutPositions[StreamIndex]:=0;
+  End Else StreamIndex:=1;
+ End;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin
+  {$I-}Rewrite(F,1);{$I+}
+  If IoResult<>0Then Begin Rexx_RVNum(Length(SourceText),ResultValue);Exit;End;
+ End;
+ If UseStart Then Position:=StartPosition
+ Else Begin
+  Position:=Rexx_CharOutPositions[StreamIndex];
+  If Position=0Then Position:=FileSize(F)+1;
+ End;
+ If Position<1Then Position:=1;
+ Seek(F,Position-1);WrittenCount:=0;
+ If SourceText<>''Then BlockWrite(F,SourceText[1],Length(SourceText),WrittenCount);
+ Close(F);Rexx_CharOutPositions[StreamIndex]:=Position+WrittenCount;
+ Rexx_RVNum(Length(SourceText)-WrittenCount,ResultValue);
+End;
+
+Procedure Rexx_CharsValue(StreamName:String;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex:Integer;Position,Remaining:LongInt;
+Begin
+ If StreamName=''Then Begin
+  If Rexx_KeyPressed Then Rexx_RVNum(1,ResultValue)Else Rexx_RVNum(0,ResultValue);
+  Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To Rexx_CharInStreamCount Do If Rexx_CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Position:=1 Else Position:=Rexx_CharInPositions[StreamIndex];
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ Remaining:=FileSize(F)-(Position-1);Close(F);
+ If Remaining<0Then Remaining:=0;
+ Rexx_RVNum(Remaining,ResultValue);
+End;
+
+Procedure Rexx_LinesValue(StreamName:String;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,ReadCount:Integer;Position,LineCount:LongInt;
+ CharacterByte:Byte;PreviousWasCR,LastWasTerminator,HaveData:Boolean;
+Begin
+ If StreamName=''Then Begin
+  If Rexx_KeyPressed Then Rexx_RVNum(1,ResultValue)Else Rexx_RVNum(0,ResultValue);
+  Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To Rexx_CharInStreamCount Do
+  If Rexx_CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Position:=1 Else Position:=Rexx_CharInPositions[StreamIndex];
+ If Position<1Then Position:=1;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin Rexx_RVNum(0,ResultValue);Exit;End;
+ If Position-1>=FileSize(F)Then Begin Close(F);Rexx_RVNum(0,ResultValue);Exit;End;
+ Seek(F,Position-1);LineCount:=0;PreviousWasCR:=False;
+ LastWasTerminator:=False;HaveData:=False;
+ Repeat
+  BlockRead(F,CharacterByte,1,ReadCount);
+  If ReadCount>0Then Begin
+   HaveData:=True;
+   If CharacterByte=13Then Begin
+    Inc(LineCount);PreviousWasCR:=True;LastWasTerminator:=True;
+   End Else If CharacterByte=10Then Begin
+    If Not PreviousWasCR Then Inc(LineCount);
+    PreviousWasCR:=False;LastWasTerminator:=True;
+   End Else Begin
+    PreviousWasCR:=False;LastWasTerminator:=False;
+   End;
+  End;
+ Until ReadCount=0;
+ Close(F);
+ If HaveData and Not LastWasTerminator Then Inc(LineCount);
+ Rexx_RVNum(LineCount,ResultValue);
+End;
+
+Procedure Rexx_LineInValue(StreamName:String;RequestedLine,RequestedCount:LongInt;
+ UseLine,UseCount:Boolean;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,ReadCount:Integer;Position,CurrentLine,FileLength:LongInt;
+ CharacterByte,FollowingByte:Byte;LineText:String;LineFinished:Boolean;
+Begin
+ If Not UseCount Then RequestedCount:=1;
+ If StreamName=''Then Begin
+  If RequestedCount<=0Then Rexx_RVText('',ResultValue)
+   Else Begin LineText:=Rexx_ReadLine;Rexx_RVText(LineText,ResultValue);End;
+  Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To Rexx_CharInStreamCount Do
+  If Rexx_CharInNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If Rexx_CharInStreamCount<Rexx_MaxRoutineArgs Then Begin
+   Inc(Rexx_CharInStreamCount);StreamIndex:=Rexx_CharInStreamCount;
+   Rexx_CharInNames[StreamIndex]:=StreamName;Rexx_CharInPositions[StreamIndex]:=1;
+  End Else StreamIndex:=1;
+ End;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ FileLength:=FileSize(F);
+ If UseLine and(RequestedLine>0)Then Begin
+  Position:=1;CurrentLine:=1;Seek(F,0);
+  While(CurrentLine<RequestedLine)and(Position<=FileLength)Do Begin
+   BlockRead(F,CharacterByte,1,ReadCount);
+   If ReadCount=0Then Break;
+   Inc(Position);
+   If CharacterByte=13Then Begin
+    If Position<=FileLength Then Begin
+     BlockRead(F,FollowingByte,1,ReadCount);
+     If(ReadCount>0)and(FollowingByte=10)Then Inc(Position)
+      Else If ReadCount>0Then Seek(F,Position-1);
+    End;
+    Inc(CurrentLine);
+   End Else If CharacterByte=10Then Inc(CurrentLine);
+  End;
+ End Else Begin
+  Position:=Rexx_CharInPositions[StreamIndex];If Position<1Then Position:=1;
+ End;
+ If Position-1>FileLength Then Position:=FileLength+1;
+ Seek(F,Position-1);LineText:='';
+ If RequestedCount>0Then Begin
+  LineFinished:=False;
+  While Not LineFinished Do Begin
+   BlockRead(F,CharacterByte,1,ReadCount);
+   If ReadCount=0Then LineFinished:=True
+   Else Begin
+    Inc(Position);
+    If CharacterByte=13Then Begin
+     If Position<=FileLength Then Begin
+      BlockRead(F,FollowingByte,1,ReadCount);
+      If(ReadCount>0)and(FollowingByte=10)Then Inc(Position)
+       Else If ReadCount>0Then Seek(F,Position-1);
+     End;
+     LineFinished:=True;
+    End Else If CharacterByte=10Then LineFinished:=True
+    Else If Length(LineText)<255Then LineText:=LineText+Chr(CharacterByte);
+   End;
+  End;
+ End;
+ Close(F);Rexx_CharInPositions[StreamIndex]:=Position;
+ Rexx_RVText(LineText,ResultValue);
+End;
+
+Procedure Rexx_LineOutValue(StreamName,SourceText:String;RequestedLine:LongInt;
+ TextSpecified,LineSpecified:Boolean;Var ResultValue:RexxValue);
+Var F:File;J,StreamIndex,ReadCount,WrittenCount:Integer;
+ Position,CurrentLine,FileLength:LongInt;CharacterByte,FollowingByte:Byte;
+ EndOfLine:Array[1..2]of Byte;
+Begin
+ If StreamName=''Then Begin
+  If TextSpecified and(SourceText<>'')Then Rexx_EmitLn(SourceText);
+  Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ StreamIndex:=0;
+ For J:=1 To Rexx_CharOutStreamCount Do
+  If Rexx_CharOutNames[J]=StreamName Then StreamIndex:=J;
+ If StreamIndex=0Then Begin
+  If Rexx_CharOutStreamCount<Rexx_MaxRoutineArgs Then Begin
+   Inc(Rexx_CharOutStreamCount);StreamIndex:=Rexx_CharOutStreamCount;
+   Rexx_CharOutNames[StreamIndex]:=StreamName;Rexx_CharOutPositions[StreamIndex]:=0;
+  End Else StreamIndex:=1;
+ End;
+ If Not LineSpecified and((Not TextSpecified)or(SourceText=''))Then Begin
+  Rexx_CharOutPositions[StreamIndex]:=0;Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}
+ If IoResult<>0Then Begin
+  {$I-}Rewrite(F,1);{$I+}
+  If IoResult<>0Then Begin Rexx_RVNum(1,ResultValue);Exit;End;
+ End;
+ FileLength:=FileSize(F);
+ If LineSpecified and(RequestedLine>0)Then Begin
+  Position:=1;CurrentLine:=1;Seek(F,0);
+  While(CurrentLine<RequestedLine)and(Position<=FileLength)Do Begin
+   BlockRead(F,CharacterByte,1,ReadCount);
+   If ReadCount=0Then Break;
+   Inc(Position);
+   If CharacterByte=13Then Begin
+    If Position<=FileLength Then Begin
+     BlockRead(F,FollowingByte,1,ReadCount);
+     If(ReadCount>0)and(FollowingByte=10)Then Inc(Position)
+      Else If ReadCount>0Then Seek(F,Position-1);
+    End;
+    Inc(CurrentLine);
+   End Else If CharacterByte=10Then Inc(CurrentLine);
+  End;
+  EndOfLine[1]:=13;EndOfLine[2]:=10;
+  While CurrentLine<RequestedLine Do Begin
+   Seek(F,FileSize(F));BlockWrite(F,EndOfLine,2,WrittenCount);
+   Inc(CurrentLine);Position:=FileSize(F)+1;
+  End;
+ End Else Begin
+  Position:=Rexx_CharOutPositions[StreamIndex];
+  If Position=0Then Position:=FileLength+1;
+ End;
+ If Position<1Then Position:=1;
+ If SourceText=''Then Begin
+  Close(F);Rexx_CharOutPositions[StreamIndex]:=Position;
+  Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ Seek(F,Position-1);WrittenCount:=0;
+ If SourceText<>''Then BlockWrite(F,SourceText[1],Length(SourceText),WrittenCount);
+ If WrittenCount<>Length(SourceText)Then Begin
+  Close(F);Rexx_RVNum(1,ResultValue);Exit;
+ End;
+ EndOfLine[1]:=13;EndOfLine[2]:=10;
+ BlockWrite(F,EndOfLine,2,WrittenCount);
+ Close(F);
+ If WrittenCount<>2Then Rexx_RVNum(1,ResultValue)
+ Else Begin
+  Rexx_CharOutPositions[StreamIndex]:=Position+Length(SourceText)+2;
+  Rexx_RVNum(0,ResultValue);
+ End;
+End;
+
+Function Rexx_StreamLineAtPosition(StreamName:String;Position:LongInt):LongInt;
+Var F:File;CharacterByte:Byte;ReadCount,ErrorCode:Integer;
+ BytesRead,LineNumber:LongInt;PreviousWasCR:Boolean;
+Begin
+ LineNumber:=1;BytesRead:=0;PreviousWasCR:=False;
+ {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin Rexx_StreamLineAtPosition:=0;Exit;End;
+ While(BytesRead<Position-1)and(BytesRead<FileSize(F))Do Begin
+  BlockRead(F,CharacterByte,1,ReadCount);
+  If ReadCount=0Then Break;
+  Inc(BytesRead);
+  If CharacterByte=13Then Begin Inc(LineNumber);PreviousWasCR:=True;End
+  Else If CharacterByte=10Then Begin
+   If Not PreviousWasCR Then Inc(LineNumber);PreviousWasCR:=False;
+  End Else PreviousWasCR:=False;
+ End;
+ Close(F);Rexx_StreamLineAtPosition:=LineNumber;
+End;
+
+Procedure Rexx_StreamValue(StreamName,OptionText,CommandText:String;
+ ArgumentCount:Integer;Var ResultValue:RexxValue);
+Var F:File;J,K,ErrorCode,ReadIndex,WriteIndex:Integer;
+ FileLength,NewPosition,OffsetValue:LongInt;OptionCode:Char;
+ UpperCommand,PositionText,ExpandedName:String;PositionCode:Char;
+Begin
+ StreamName:=Rexx_Clean(StreamName);OptionText:=Rexx_StrToUpper(Rexx_Clean(OptionText));
+ CommandText:=Rexx_Clean(CommandText);UpperCommand:=Rexx_StrToUpper(CommandText);
+ If OptionText=''Then OptionCode:='S'Else OptionCode:=OptionText[1];
+ ReadIndex:=0;WriteIndex:=0;
+ For J:=1 To Rexx_CharInStreamCount Do If Rexx_CharInNames[J]=StreamName Then ReadIndex:=J;
+ For J:=1 To Rexx_CharOutStreamCount Do If Rexx_CharOutNames[J]=StreamName Then WriteIndex:=J;
+ If OptionCode='S'Then Begin
+  If StreamName=''Then Rexx_RVText('READY',ResultValue)
+  Else Begin
+   {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+   If ErrorCode=0Then Begin Close(F);Rexx_RVText('READY',ResultValue);End
+    Else Rexx_RVText('NOTREADY',ResultValue);
+  End;
+  Exit;
+ End;
+ If OptionCode='D'Then Begin
+  If StreamName=''Then Rexx_RVText('READY',ResultValue)
+  Else Begin
+   {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+   If ErrorCode=0Then Begin Close(F);Rexx_RVText('READY',ResultValue);End
+    Else Rexx_RVText('NOTREADY: FILE NOT FOUND',ResultValue);
+  End;
+  Exit;
+ End;
+ If OptionCode<>'C'Then Begin Rexx_RVText('',ResultValue);Exit;End;
+
+ If UpperCommand='QUERY EXISTS'Then Begin
+  {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+  If ErrorCode=0Then Begin Close(F);ExpandedName:=FExpand(StreamName);Rexx_RVText(ExpandedName,ResultValue);End
+   Else Rexx_RVText('',ResultValue);
+  Exit;
+ End;
+ If UpperCommand='QUERY SIZE'Then Begin
+  {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+  If ErrorCode=0Then Begin FileLength:=FileSize(F);Close(F);Rexx_RVNum(FileLength,ResultValue);End
+   Else Rexx_RVNum(0,ResultValue);
+  Exit;
+ End;
+ If UpperCommand='QUERY LINEPOS READ'Then Begin
+  If ReadIndex=0Then Rexx_RVNum(1,ResultValue)
+   Else Rexx_RVNum(Rexx_StreamLineAtPosition(StreamName,Rexx_CharInPositions[ReadIndex]),ResultValue);
+  Exit;
+ End;
+ If UpperCommand='QUERY LINEPOS WRITE'Then Begin
+  If WriteIndex=0Then Rexx_RVNum(0,ResultValue)
+   Else Rexx_RVNum(Rexx_StreamLineAtPosition(StreamName,Rexx_CharOutPositions[WriteIndex]),ResultValue);
+  Exit;
+ End;
+ If UpperCommand='CLOSE'Then Begin
+  If ReadIndex>0Then Begin
+   For J:=ReadIndex To Rexx_CharInStreamCount-1 Do Begin
+    Rexx_CharInNames[J]:=Rexx_CharInNames[J+1];Rexx_CharInPositions[J]:=Rexx_CharInPositions[J+1];
+   End;
+   Dec(Rexx_CharInStreamCount);
+  End;
+  If WriteIndex>0Then Begin
+   For J:=WriteIndex To Rexx_CharOutStreamCount-1 Do Begin
+    Rexx_CharOutNames[J]:=Rexx_CharOutNames[J+1];Rexx_CharOutPositions[J]:=Rexx_CharOutPositions[J+1];
+   End;
+   Dec(Rexx_CharOutStreamCount);
+  End;
+  Rexx_RVText('READY:',ResultValue);Exit;
+ End;
+ If(UpperCommand='RESET')or(UpperCommand='FLUSH')Then Begin
+  If(UpperCommand='RESET')Then Begin
+   If ReadIndex>0Then Rexx_CharInPositions[ReadIndex]:=1;
+   If WriteIndex>0Then Rexx_CharOutPositions[WriteIndex]:=0;
+  End;
+  Rexx_RVText('READY:',ResultValue);Exit;
+ End;
+ If Copy(UpperCommand,1,4)='OPEN'Then Begin
+  {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+  If ErrorCode<>0Then Begin
+   If(System.Pos('WRITE',UpperCommand)>0)or(System.Pos('APPEND',UpperCommand)>0)or
+     (System.Pos('REPLACE',UpperCommand)>0)or(UpperCommand='OPEN')Then Begin
+    {$I-}Rewrite(F,1);{$I+}ErrorCode:=IoResult;
+   End;
+  End Else If System.Pos('REPLACE',UpperCommand)>0Then Begin
+   Close(F);{$I-}Rewrite(F,1);{$I+}ErrorCode:=IoResult;
+  End;
+  If ErrorCode<>0Then Begin Rexx_RVText('ERROR',ResultValue);Exit;End;
+  FileLength:=FileSize(F);Close(F);
+  If ReadIndex=0Then Begin
+   If Rexx_CharInStreamCount<Rexx_MaxRoutineArgs Then Begin
+    Inc(Rexx_CharInStreamCount);ReadIndex:=Rexx_CharInStreamCount;
+    Rexx_CharInNames[ReadIndex]:=StreamName;
+   End;
+  End;
+  If ReadIndex>0Then Rexx_CharInPositions[ReadIndex]:=1;
+  If WriteIndex=0Then Begin
+   If Rexx_CharOutStreamCount<Rexx_MaxRoutineArgs Then Begin
+    Inc(Rexx_CharOutStreamCount);WriteIndex:=Rexx_CharOutStreamCount;
+    Rexx_CharOutNames[WriteIndex]:=StreamName;
+   End;
+  End;
+  If WriteIndex>0Then Begin
+   If System.Pos('APPEND',UpperCommand)>0Then Rexx_CharOutPositions[WriteIndex]:=FileLength+1
+    Else Rexx_CharOutPositions[WriteIndex]:=1;
+  End;
+  Rexx_RVText('READY:',ResultValue);Exit;
+ End;
+
+ If Copy(UpperCommand,1,7)='READPOS'Then Begin
+  PositionText:=Rexx_Clean(Copy(CommandText,8,255));K:=ReadIndex;
+ End Else If Copy(UpperCommand,1,8)='WRITEPOS'Then Begin
+  PositionText:=Rexx_Clean(Copy(CommandText,9,255));K:=WriteIndex;
+ End Else Begin Rexx_RVText('ERROR',ResultValue);Exit;End;
+ If K=0Then Begin
+  If Copy(UpperCommand,1,7)='READPOS'Then Begin
+   If Rexx_CharInStreamCount>=Rexx_MaxRoutineArgs Then Begin Rexx_RVText('ERROR',ResultValue);Exit;End;
+   Inc(Rexx_CharInStreamCount);K:=Rexx_CharInStreamCount;Rexx_CharInNames[K]:=StreamName;
+   Rexx_CharInPositions[K]:=1;
+  End Else Begin
+   If Rexx_CharOutStreamCount>=Rexx_MaxRoutineArgs Then Begin Rexx_RVText('ERROR',ResultValue);Exit;End;
+   Inc(Rexx_CharOutStreamCount);K:=Rexx_CharOutStreamCount;Rexx_CharOutNames[K]:=StreamName;
+   Rexx_CharOutPositions[K]:=1;
+  End;
+ End;
+ If Copy(UpperCommand,1,7)='READPOS'Then NewPosition:=Rexx_CharInPositions[K]
+  Else NewPosition:=Rexx_CharOutPositions[K];
+ If PositionText<>''Then Begin
+  PositionCode:='=';
+  If PositionText[1]in['=','+','-','<']Then Begin
+   PositionCode:=PositionText[1];Delete(PositionText,1,1);PositionText:=Rexx_Clean(PositionText);
+  End;
+  Val(PositionText,OffsetValue,ErrorCode);
+  If ErrorCode<>0Then Begin Rexx_RVText('ERROR',ResultValue);Exit;End;
+  If PositionCode='='Then NewPosition:=OffsetValue
+  Else If PositionCode='+'Then NewPosition:=NewPosition+OffsetValue
+  Else If PositionCode='-'Then NewPosition:=NewPosition-OffsetValue
+  Else Begin
+   {$I-}Assign(F,StreamName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+   If ErrorCode=0Then Begin FileLength:=FileSize(F);Close(F);NewPosition:=FileLength-OffsetValue+1;End;
+  End;
+  If NewPosition<1Then NewPosition:=1;
+  If Copy(UpperCommand,1,7)='READPOS'Then Rexx_CharInPositions[K]:=NewPosition
+   Else Rexx_CharOutPositions[K]:=NewPosition;
+ End;
+ Rexx_RVNum(NewPosition,ResultValue);
+End;
+
+Function Rexx_CenterText(SourceText:String;TargetLength:Integer;PadText:String):String;
+Var LeftCount,RightCount,StartPosition:Integer;PadChar:Char;
+Begin
+ If TargetLength<=0Then Begin Rexx_CenterText:='';Exit;End;
+ If PadText=''Then PadChar:=' ' Else PadChar:=PadText[1];
+ If Length(SourceText)>TargetLength Then Begin
+  StartPosition:=((Length(SourceText)-TargetLength)div 2)+1;
+  Rexx_CenterText:=Copy(SourceText,StartPosition,TargetLength);Exit;
+ End;
+ LeftCount:=(TargetLength-Length(SourceText))div 2;
+ RightCount:=TargetLength-Length(SourceText)-LeftCount;
+ Rexx_CenterText:=Rexx_RepeatCharacter(PadChar,LeftCount)+SourceText+Rexx_RepeatCharacter(PadChar,RightCount);
+End;
+
+{ ==========================================================================}
+{ Fonctions SYS*/RX* reellement implantables sous DEVENV.PAS (2026-08-30,   }
+{ demande explicite de l'utilisateur : "certaines fonctions sont non        }
+{ implementer car elle ne sont pas applicable sous DOS, ce qui n'est pas    }
+{ le cas sous DEVENV.PAS"). Chacune s'appuie sur un etat REEL deja existant }
+{ dans ce fichier (FatVol/EmuFloppyOpen/TermMountActive du chantier MOUNT/  }
+{ IMGMOUNT, TermPanels/ActiveShell, GetIDEVersion) - jamais une valeur      }
+{ inventee. Les fonctions SYS*/RX* qui restent hors de portee (semaphores,  }
+{ objets Workplace Shell, macrospace REXX, attributs etendus, tubes         }
+{ nommes) le demeurent avec Rexx_FunctionNotImplemented : voir le           }
+{ commentaire au site de chaque cas dans Rexx_EPrimary pour la raison       }
+{ precise de chacune. }
+
+Function Rexx_MB_MessageBoxA(hWndOwner:LongInt;MsgText,Caption:PChar;
+ UType:LongWord):LongInt;StdCall;External 'user32.dll' Name 'MessageBoxA';
+
+{ RXMESSAGEBOX : non applicable sous DOS nu (aucune boite de dialogue       }
+{ graphique), naturellement possible ici via une vraie boite de dialogue    }
+{ Win32 modale (bloque reellement jusqu'a la reponse, comme le vrai RXMESSAGEBOX). }
+Procedure Rexx_RxMessageBoxValue(MsgText,TitleText,StyleText:String;
+ Var ResultValue:RexxValue);
+Var UType:LongWord;RetCode:LongInt;UpperStyle:String;J:Integer;
+ MsgBuf,TitleBuf:Array[0..255]of Char;
+Begin
+ UpperStyle:=Rexx_StrToUpper(Rexx_Clean(StyleText));
+ UType:=0; { MB_OK }
+ If UpperStyle='YESNO'Then UType:=4
+ Else If UpperStyle='YESNOCANCEL'Then UType:=3
+ Else If UpperStyle='OKCANCEL'Then UType:=1
+ Else If UpperStyle='RETRYCANCEL'Then UType:=5;
+ If TitleText=''Then TitleText:='REXX';
+ { ShortString -> PChar : meme motif de copie manuelle deja utilise par
+   Rexx_SysVolumeLabelValue plus haut (GetVolumeInformationA). }
+ For J:=1 To Length(MsgText) Do MsgBuf[J-1]:=MsgText[J];
+ MsgBuf[Length(MsgText)]:=#0;
+ For J:=1 To Length(TitleText) Do TitleBuf[J-1]:=TitleText[J];
+ TitleBuf[Length(TitleText)]:=#0;
+ RetCode:=Rexx_MB_MessageBoxA(0,MsgBuf,TitleBuf,UType);
+ Case RetCode Of
+  1:Rexx_RVText('OK',ResultValue);
+  2:Rexx_RVText('CANCEL',ResultValue);
+  4:Rexx_RVText('RETRY',ResultValue);
+  6:Rexx_RVText('YES',ResultValue);
+  7:Rexx_RVText('NO',ResultValue);
+ Else Rexx_RVText('',ResultValue);
+ End;
+End;
+
+{ RXWINEXEC : non applicable sous DOS nu (pas de multitache), naturellement }
+{ possible ici via le meme chemin de resolution/lancement deja utilise par }
+{ les commandes LINUX/OS2/etc. du terminal (TermFindDosExecutable/         }
+{ TermFindElfExecutable/CreateEmulatorTab). }
+Procedure Rexx_RxWinExecValue(CommandLine:String;Var ResultValue:RexxValue);
+Var DosExe,ElfPath,CurDir,CurrParam,RestParam:String;P:Integer;
+Begin
+ CommandLine:=Rexx_Clean(CommandLine);
+ P:=System.Pos(' ',CommandLine);
+ If P>0Then Begin
+  CurrParam:=Copy(CommandLine,1,P-1);
+  RestParam:=Rexx_Clean(Copy(CommandLine,P+1,255));
+ End Else Begin CurrParam:=CommandLine;RestParam:='';End;
+ GetDir(0,CurDir);
+ DosExe:=TermFindDosExecutable(CurDir,CurrParam);
+ If DosExe<>''Then Begin
+  CreateEmulatorTab(DosExe,'-CD',RestParam);Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ ElfPath:=TermFindElfExecutable(CurDir,CurrParam);
+ If ElfPath<>''Then Begin
+  CreateEmulatorTab(ElfPath,'-CELF64',RestParam);Rexx_RVNum(0,ResultValue);Exit;
+ End;
+ Rexx_RVNum(2,ResultValue); { ERROR_FILE_NOT_FOUND, comme le vrai WinExec }
+End;
+
+{ SYSBOOTDRIVE : non applicable sous DOS nu (un DOS reel ne demarre que     }
+{ d'un seul disque, la question ne se pose pas), naturellement possible    }
+{ ici car DEVENV.PAS emule plusieurs unites INT13h simultanees (voir BOOT/ }
+{ MOUNT/IMGMOUNT) - retourne la premiere unite montee et reconnue. }
+Function Rexx_SysBootDriveText:String;
+Var Idx:Byte;
+Begin
+ Rexx_SysBootDriveText:='';
+ For Idx:=0 To 3 Do
+  If EmuFloppyOpen[Idx] And FatVol[Idx].Mounted Then Begin
+   Rexx_SysBootDriveText:=Term_DriveLetterFromIdx(Idx)+':';
+   Exit;
+  End;
+End;
+
+{ SYSCURSTATE : limitation assumee et documentee (pas simulee) - ce         }
+{ terminal n'a pas de curseur de console independant du curseur de saisie   }
+{ (toujours visible pendant l'edition) - la commande est acceptee sans      }
+{ effet visuel distinct, comme le ferait un vrai OS/2 sur un peripherique   }
+{ sans support materiel de ce mode. }
+Procedure Rexx_SysCurStateValue(StateText:String;Var ResultValue:RexxValue);
+Begin
+ Rexx_RVText('READY:',ResultValue);
+End;
+
+{ SYSDRIVEINFO : non applicable sous DOS nu (pas de notion d'espace libre   }
+{ interrogeable independamment d'un disque physique reel), naturellement   }
+{ possible ici via DiskSize/DiskFree (RTL) sur le disque hote reel. }
+Procedure Rexx_SysDriveInfoValue(DriveText:String;Var ResultValue:RexxValue);
+Var DriveChar:Char;DriveNum:Byte;Total,Free:Int64;VolLabelText,CurDir:String;
+ SearchData:SearchRec;TotalText,FreeText:String;
+Begin
+ DriveText:=Rexx_Clean(DriveText);
+ If DriveText=''Then Begin
+  GetDir(0,CurDir);
+  If Length(CurDir)>=1Then DriveChar:=UpCase(CurDir[1])Else DriveChar:='C';
+ End Else DriveChar:=UpCase(DriveText[1]);
+ DriveNum:=Ord(DriveChar)-Ord('A')+1;
+ Total:=DiskSize(DriveNum);
+ Free:=DiskFree(DriveNum);
+ If Total<0Then Begin Rexx_RVText('',ResultValue);Exit;End;
+ {$I-}
+ FindFirst(DriveChar+':\*.*',VolumeID,SearchData);
+ {$I+}
+ If (IoResult=0) And (DosError=0)Then VolLabelText:=SearchData.Name
+ Else VolLabelText:='';
+ FindClose(SearchData);
+ Str(Total,TotalText);Str(Free,FreeText);
+ Rexx_RVText(Rexx_Clean(TotalText)+' '+Rexx_Clean(FreeText)+' '+VolLabelText,
+  ResultValue);
+End;
+
+{ SYSDRIVEMAP : non applicable sous DOS nu (une seule unite a la fois, pas  }
+{ de notion de "carte des lecteurs"), naturellement possible ici puisque    }
+{ DEVENV.PAS gere reellement plusieurs unites simultanees (disques hote,    }
+{ 4 unites INT13h virtuelles, lettres montees via MOUNT). }
+Procedure Rexx_SysDriveMapValue(Var ResultValue:RexxValue);
+Var DriveChar:Char;Idx:Byte;ResultText:String;
+Begin
+ ResultText:='';
+ For DriveChar:='A' To 'Z' Do Begin
+  If TermMountActive[DriveChar]Then
+   ResultText:=ResultText+DriveChar+': '
+  Else If DiskSize(Ord(DriveChar)-Ord('A')+1)>=0Then
+   ResultText:=ResultText+DriveChar+': ';
+ End;
+ For Idx:=0 To 3 Do
+  If EmuFloppyOpen[Idx]Then
+   ResultText:=ResultText+Term_DriveLetterFromIdx(Idx)+': ';
+ Rexx_RVText(Rexx_Clean(ResultText),ResultValue);
+End;
+
+{ SYSFILETREE : non applicable sous DOS nu (implantation d'origine tres     }
+{ complexe, jamais faite dans ce moteur meme sous DOS), implantee ici sous  }
+{ une forme simplifiee et honnetement documentee (un seul niveau de         }
+{ repertoire, pas de recursion malgre l'option 'S' du vrai SYSFILETREE) via }
+{ FindFirst/FindNext - meme primitive que Rexx_SysSearchFile deja portee. }
+Procedure Rexx_SysFileTreeValue(FileSpec,StemName:String;
+ Var ResultValue:RexxValue);
+Var SearchData:SearchRec;Count:LongInt;VariableName,CountText:String;
+Begin
+ StemName:=Rexx_StrToUpper(Rexx_Clean(StemName));
+ If StemName=''Then Begin Rexx_RVNum(87,ResultValue);Exit;End;
+ If StemName[Length(StemName)]<>'.'Then StemName:=StemName+'.';
+ Count:=0;
+ {$I-}
+ FindFirst(FileSpec,AnyFile-VolumeID,SearchData);
+ {$I+}
+ If IoResult=0Then
+ While DosError=0 Do Begin
+  If (SearchData.Name<>'.') And (SearchData.Name<>'..')Then Begin
+   Inc(Count);Str(Count,CountText);
+   VariableName:=StemName+Rexx_Clean(CountText);
+   Rexx_VarSet(VariableName,SearchData.Name);
+  End;
+  FindNext(SearchData);
+ End;
+ FindClose(SearchData);
+ Str(Count,CountText);
+ Rexx_VarSet(StemName+'0',Rexx_Clean(CountText));
+ Rexx_RVNum(0,ResultValue);
+End;
+
+{ SYSFILESYSTEMTYPE : non applicable sous DOS nu (un seul systeme de        }
+{ fichiers possible, FAT), naturellement possible ici en reutilisant        }
+{ directement les indicateurs de format REELS deja etablis par le chantier  }
+{ IMGMOUNT (IsD64/IsHPFS/IsH8D/FATType) - meme logique que le message de    }
+{ succes d'IMGMOUNT. }
+Function Rexx_SysFileSystemTypeText(DriveText:String):String;
+Var Idx:Byte;
+Begin
+ Rexx_SysFileSystemTypeText:='';
+ DriveText:=Rexx_Clean(DriveText);
+ If (Length(DriveText)<1) Or Not Term_DriveIdxFromLetter(DriveText[1],Idx)Then
+  Exit;
+ If Not EmuFloppyOpen[Idx]Then Exit;
+ If FatVol[Idx].IsD64 Then Rexx_SysFileSystemTypeText:='D64'
+ Else If FatVol[Idx].IsHPFS Then Rexx_SysFileSystemTypeText:='HPFS'
+ Else If FatVol[Idx].IsH8D Then Rexx_SysFileSystemTypeText:='H8D'
+ Else If FatVol[Idx].Mounted Then
+  Rexx_SysFileSystemTypeText:='FAT'+IntToStr(FatVol[Idx].FATType);
+End;
+
+{ SYSOS2VER/SYSWINVER : non applicable sous DOS nu sous leur vraie forme    }
+{ (interroger la version d'un OS hote different de DOS n'a pas de sens),    }
+{ implantees ici comme la version de l'ENVIRONNEMENT EMULE reel             }
+{ (DEVENV.PAS lui-meme) - jamais une fausse vraie version OS/2 ou Windows,  }
+{ toujours clairement etiquetee. }
+Function Rexx_SysEnvVersionText:String;
+Begin
+ Rexx_SysEnvVersionText:='DEVENV.PAS terminal OS/2 & REXX ('+GetIDEVersion+')';
+End;
+
+{ SYSSEARCHPATH : non applicable sous DOS nu (recherche generique dans une  }
+{ variable d'environnement de type chemin), naturellement possible ici via  }
+{ le PATH hote reel. }
+Function Rexx_SysSearchPathText(PathEnvName,FileNameToFind:String):String;
+Var PathValue,OnePath,Candidate:String;P:Integer;
+Begin
+ Rexx_SysSearchPathText:='';
+ PathValue:=GetEnv(Rexx_StrToUpper(Rexx_Clean(PathEnvName)));
+ While PathValue<>''Do Begin
+  P:=System.Pos(';',PathValue);
+  If P>0Then Begin
+   OnePath:=Copy(PathValue,1,P-1);Delete(PathValue,1,P);
+  End Else Begin OnePath:=PathValue;PathValue:='';End;
+  If OnePath<>''Then Begin
+   If OnePath[Length(OnePath)]<>'\'Then OnePath:=OnePath+'\';
+   Candidate:=OnePath+FileNameToFind;
+   If FileExists(Candidate)Then Begin
+    Rexx_SysSearchPathText:=Candidate;Exit;
+   End;
+  End;
+ End;
+End;
+
+{ SYSSWITCHSESSION : non applicable sous DOS nu (une seule session a la     }
+{ fois), naturellement possible ici puisque DEVENV.PAS a reellement         }
+{ plusieurs panneaux/shells de terminal simultanes (analogue reel a         }
+{ Alt+Esc sous OS/2). }
+Procedure Rexx_SysSwitchSessionValue(SessionName:String;
+ Var ResultValue:RexxValue);
+Var UpperName:String;
+Begin
+ UpperName:=Rexx_StrToUpper(Rexx_Clean(SessionName));
+ If (UpperName='CMD') Or (UpperName='INVITE DE COMMANDE')Then
+  ActiveShell:=SK_CMD
+ Else If UpperName='POWERSHELL'Then ActiveShell:=SK_POWERSHELL
+ Else If UpperName='BASH'Then ActiveShell:=SK_BASH
+ Else If UpperName='AMIGADOS'Then ActiveShell:=SK_AMIGADOS
+ Else If (UpperName='NORTON COMMANDER') Or (UpperName='NC')Then
+  ActiveShell:=SK_NCOMMANDER
+ Else If (UpperName='OS/2 & REXX') Or (UpperName='REXX')Then
+  ActiveShell:=SK_OS2REXX
+ Else Begin Rexx_RVText('ERROR',ResultValue);Exit;End;
+ TermPanels[ActiveShell].NeedRepaint:=True;
+ Rexx_RVText('READY',ResultValue);
+End;
+
+{ SYSSYSTEMDIRECTORY : non applicable sous DOS nu (pas de repertoire        }
+{ systeme distinct), naturellement possible ici via le repertoire Windows   }
+{ hote reel. }
+Function Rexx_SysSystemDirectoryText:String;
+Begin
+ Rexx_SysSystemDirectoryText:=GetEnv('WINDIR');
+End;
+
+{ SYSTEMPFILENAME : non applicable sous DOS nu (pas de repertoire temp      }
+{ standard), naturellement possible ici via le repertoire TEMP hote reel. }
+Function Rexx_SysTempFileNameText:String;
+Var TempDir:String;
+Begin
+ TempDir:=GetEnv('TEMP');
+ If TempDir=''Then TempDir:=GetEnv('TMP');
+ If TempDir=''Then TempDir:='.';
+ If TempDir[Length(TempDir)]<>'\'Then TempDir:=TempDir+'\';
+ Rexx_SysTempFileNameText:=TempDir+'REX'+IntToStr(System.Random(999999))+'.TMP';
+End;
+
+{ SYSTEXTSCREENREAD : non applicable sous DOS nu sous sa vraie forme        }
+{ (lecture directe de la memoire video), implantee ici en relisant le       }
+{ tampon de lignes REELLEMENT stocke par ce terminal (TP.Lines, deja        }
+{ maintenu par TermAddLine) - meme donnee que ce que l'utilisateur voit     }
+{ reellement a l'ecran, pas une simulation. }
+Function Rexx_SysTextScreenReadText(Row:Integer):String;
+Begin
+ If (Row>=0) And (Row<Rexx_ActiveTP^.LineCount)Then
+  Rexx_SysTextScreenReadText:=Rexx_ActiveTP^.Lines[Row]
+ Else Rexx_SysTextScreenReadText:='';
+End;
+
+{ SYSTEXTSCREENSIZE : le panneau terminal est une grille de taille          }
+{ variable (redimensionnable avec la fenetre), pas un ecran texte DOS fixe  }
+{ - retourne la taille nominale DOS classique (25 80), la plus utile pour   }
+{ un script qui s'attend a cette convention. }
+Procedure Rexx_SysTextScreenSizeValue(Var ResultValue:RexxValue);
+Begin
+ Rexx_RVText('25 80',ResultValue);
+End;
+
+Procedure Rexx_EPrimary(Var ResultValue:RexxValue);
+Var Q:Char;S,Nm:String;N:Real;C,J,MinimumLength,LocalInvokeCount:Integer;
+ FunctionByte:Byte;A,B,D,E:RexxValue;
+ LocalInvokeArgs:Array[1..Rexx_MaxRoutineArgs]of String;
+Begin
+ Rexx_ESkip;
+ If Rexx_ExprPos>Length(Rexx_ExprText)Then Begin
+  Rexx_RVText('',ResultValue);
+  Exit;
+ End;
+ If Rexx_ExprText[Rexx_ExprPos]in['''','"']Then Begin
+  Q:=Rexx_ExprText[Rexx_ExprPos];
+  Inc(Rexx_ExprPos);S:='';
+  While(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]<>Q)do Begin
+   S:=S+Rexx_ExprText[Rexx_ExprPos];
+   Inc(Rexx_ExprPos);
+  End;
+  If Rexx_ExprPos<=Length(Rexx_ExprText)Then Inc(Rexx_ExprPos);
+  Rexx_RVText(S,ResultValue);
+  Exit;
+ End;
+ If Rexx_ExprText[Rexx_ExprPos]='('Then Begin
+  Inc(Rexx_ExprPos);
+  Rexx_ECompare(ResultValue);
+  Rexx_ESkip;
+  If(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]=')')Then Inc(Rexx_ExprPos);
+  Exit;
+ End;
+ If Rexx_ExprText[Rexx_ExprPos]='-'Then Begin Inc(Rexx_ExprPos);Rexx_EPrimary(A);Rexx_RVNum(-A.Number,ResultValue);Exit;End;
+ If Rexx_ExprText[Rexx_ExprPos]in['0'..'9','.']Then Begin
+  S:='';
+  While(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]in['0'..'9','.'])do Begin
+   S:=S+Rexx_ExprText[Rexx_ExprPos];
+   Inc(Rexx_ExprPos);
+  End;
+  Val(S,N,C);
+  If C<>0Then N:=0;
+  Rexx_RVNum(N,ResultValue);
+  Exit;
+ End;
+ Nm:='';
+ While(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]in['A'..'Z','a'..'z','0'..'9','_','.'])do Begin
+  Nm:=Nm+Rexx_ExprText[Rexx_ExprPos];
+  Inc(Rexx_ExprPos);
+ End;
+ Rexx_ESkip;
+ If(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]='(')Then Begin
+  Inc(Rexx_ExprPos);LocalInvokeCount:=0;Rexx_ESkip;
+  While(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]<>')')and(LocalInvokeCount<Rexx_MaxRoutineArgs)do Begin
+   Rexx_ECompare(A);Inc(LocalInvokeCount);LocalInvokeArgs[LocalInvokeCount]:=A.Text;Rexx_ESkip;
+   If(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]=',')Then Begin Inc(Rexx_ExprPos);Rexx_ESkip;End Else Break;
+  End;
+  If Rexx_ExprPos<=Length(Rexx_ExprText)Then If Rexx_ExprText[Rexx_ExprPos]=')'Then Inc(Rexx_ExprPos);
+  Rexx_InvokeArgCount:=LocalInvokeCount;
+  For J:=1 To Rexx_InvokeArgCount Do Rexx_InvokeArgs[J]:=LocalInvokeArgs[J];
+  If Rexx_InvokeArgCount>0Then Rexx_RVText(Rexx_InvokeArgs[1],A)Else Rexx_RVText('',A);
+  If Rexx_InvokeArgCount>1Then Rexx_RVText(Rexx_InvokeArgs[2],B)Else Rexx_RVText('',B);
+  If Rexx_InvokeArgCount>2Then Rexx_RVText(Rexx_InvokeArgs[3],D)Else Rexx_RVText('',D);
+  If Rexx_InvokeArgCount>3Then Rexx_RVText(Rexx_InvokeArgs[4],E)Else Rexx_RVText('',E);
+  Nm:=Rexx_StrToUpper(Nm);
+  C:=Rexx_CommandIndex(Nm);If C<0Then FunctionByte:=255 Else FunctionByte:=Byte(C);
+  Case FunctionByte Of
+   0:Begin { ABBREV }
+    If Rexx_InvokeArgCount>2Then MinimumLength:=System.Trunc(D.Number)
+     Else MinimumLength:=Length(B.Text);
+    If MinimumLength<0Then MinimumLength:=0;
+    If(Length(B.Text)>=MinimumLength)and(Length(B.Text)<=Length(A.Text))and
+      (Copy(A.Text,1,Length(B.Text))=B.Text)Then Rexx_RVNum(1,ResultValue)
+     Else Rexx_RVNum(0,ResultValue);
+   End;
+   1:Rexx_RVNum(Abs(A.Number),ResultValue); { ABS }
+   2:Rexx_RVText(Rexx_CurrentAddress,ResultValue); { ADDRESS }
+   3:Begin { ARG }
+    If Rexx_InvokeArgCount=0Then Rexx_RVNum(Rexx_CurrentArgCount,ResultValue)
+    Else Begin
+     J:=System.Trunc(A.Number);
+     If Rexx_InvokeArgCount=1Then Begin
+      If(J>=1)and(J<=Rexx_CurrentArgCount)Then Rexx_RVText(Rexx_CurrentArgs[J],ResultValue)Else Rexx_RVText('',ResultValue);
+     End Else Begin
+      S:=Rexx_StrToUpper(B.Text);
+      If S='E'Then Begin If(J>=1)and(J<=Rexx_CurrentArgCount)Then Rexx_RVNum(1,ResultValue)Else Rexx_RVNum(0,ResultValue);End
+      Else If S='O'Then Begin If(J<1)or(J>Rexx_CurrentArgCount)Then Rexx_RVNum(1,ResultValue)Else Rexx_RVNum(0,ResultValue);End
+      Else Rexx_RVText('',ResultValue);
+     End;
+    End;
+   End;
+   4:Rexx_RVText(Rexx_BinaryToHex(A.Text),ResultValue); { B2X }
+   5:Begin { BEEP }
+    If Rexx_InvokeArgCount=0Then Rexx_BeepSound(800,200,ResultValue)
+    Else If Rexx_InvokeArgCount=1Then Rexx_BeepSound(System.Trunc(A.Number),200,ResultValue)
+    Else Rexx_BeepSound(System.Trunc(A.Number),System.Trunc(B.Number),ResultValue);
+   End;
+   6:Rexx_RVText(Rexx_BitAndText(A.Text,B.Text,D.Text,Rexx_InvokeArgCount>2),ResultValue); { BITAND }
+   7:Rexx_RVText(Rexx_BitOrText(A.Text,B.Text,D.Text,Rexx_InvokeArgCount>2),ResultValue); { BITOR }
+   8:Rexx_RVText(Rexx_BitXorText(A.Text,B.Text,D.Text,Rexx_InvokeArgCount>2),ResultValue); { BITXOR }
+   9:Begin { CALL }
+    { Forme fonctionnelle pratique: CALL('routine',arg1,...). Le premier
+      argument est le nom et les suivants deviennent les arguments REXX. }
+    S:=A.Text;
+    If Rexx_InvokeArgCount>0Then Begin
+     For J:=1 To Rexx_InvokeArgCount-1 Do Rexx_InvokeArgs[J]:=Rexx_InvokeArgs[J+1];
+     Dec(Rexx_InvokeArgCount);
+    End;
+    Rexx_RVText(Rexx_CallRoutine(S),ResultValue);
+   End;
+   10:Rexx_RVText(Rexx_CenterText(A.Text,System.Trunc(B.Number),D.Text),ResultValue); { CENTER }
+   11:Rexx_RVText(Rexx_ChangeString(A.Text,B.Text,D.Text),ResultValue); { CHANGESTR }
+   12:Rexx_CharInValue(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
+    Rexx_InvokeArgCount>1,Rexx_InvokeArgCount>2,ResultValue); { CHARIN }
+   13:Rexx_CharOutValue(A.Text,B.Text,System.Trunc(D.Number),Rexx_InvokeArgCount>2,ResultValue); { CHAROUT }
+   14:Rexx_CharsValue(A.Text,ResultValue); { CHARS }
+   15:Rexx_RVNum(Rexx_CompareText(A.Text,B.Text,D.Text),ResultValue); { COMPARE }
+   16:Rexx_ConditionValue(A.Text,ResultValue); { CONDITION }
+   17:Rexx_RVText(Rexx_CopiesText(A.Text,System.Trunc(B.Number)),ResultValue); { COPIES }
+   18:Rexx_RVNum(Rexx_CountStringOccurrences(A.Text,B.Text),ResultValue); { COUNTSTR }
+   19:Rexx_CharacterToDecimal(A.Text,System.Trunc(B.Number),Rexx_InvokeArgCount>1,
+    ResultValue); { C2D }
+   20:Rexx_RVText(Rexx_CharacterToHex(A.Text),ResultValue); { C2X }
+   21:Rexx_DataTypeValue(A.Text,B.Text,Rexx_InvokeArgCount>1,ResultValue); { DATATYPE }
+   22:Rexx_DateValue(A.Text,ResultValue); { DATE }
+   23:Rexx_RVText(Rexx_DeleteStringPart(A.Text,System.Trunc(B.Number),
+    System.Trunc(D.Number),Rexx_InvokeArgCount>2),ResultValue); { DELSTR }
+   24:Rexx_RVText(Rexx_DeleteWords(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
+    Rexx_InvokeArgCount>2),ResultValue); { DELWORD }
+   25:Rexx_RVNum(Rexx_NumericDigitsValue,ResultValue); { DIGITS }
+   26:Rexx_DirectoryValue(A.Text,Rexx_InvokeArgCount>0,ResultValue); { DIRECTORY }
+   27:Rexx_RVText(Rexx_DecimalToCharacter(System.Trunc(A.Number),System.Trunc(B.Number),
+    Rexx_InvokeArgCount>1),ResultValue); { D2C }
+   28:Rexx_RVText(Rexx_DecimalToHex(System.Trunc(A.Number),System.Trunc(B.Number),
+    Rexx_InvokeArgCount>1),ResultValue); { D2X }
+   29:Rexx_EndLocalValue(ResultValue); { ENDLOCAL }
+   30:Rexx_RVText(RexxErrorText(System.Trunc(A.Number)),ResultValue); { ERRORTEXT }
+   31:Rexx_RequestProgramExit(A,Rexx_InvokeArgCount>0,ResultValue); { EXIT }
+   32:Rexx_RVText(Rexx_FileSpecPart(A.Text,B.Text),ResultValue); { FILESPEC }
+   33:Rexx_RVText(Rexx_NumericFormValue,ResultValue); { FORM }
+   34:Rexx_RVText(Rexx_FormatRexxNumber(A.Number,A.Text,Rexx_InvokeArgs[2],Rexx_InvokeArgs[3],
+    Rexx_InvokeArgs[4],Rexx_InvokeArgs[5],Rexx_InvokeArgCount),ResultValue); { FORMAT }
+   35:Rexx_RVNum(Rexx_NumericFuzzValue,ResultValue); { FUZZ }
+   36:Begin { IF, forme fonctionnelle du repartiteur interne }
+    If Rexx_Truth(A)Then Rexx_RVNum(1,ResultValue)Else Rexx_RVNum(0,ResultValue);
+   End;
+   37:Rexx_RVText(Rexx_InsertText(A.Text,B.Text,System.Trunc(D.Number),
+    System.Trunc(E.Number),Rexx_InvokeArgCount>2,
+    Rexx_InvokeArgCount>3,Rexx_InvokeArgCount>4,Rexx_InvokeArgs[5]),ResultValue); { INSERT }
+   38:Rexx_RVNum(Rexx_LastPosition(A.Text,B.Text,System.Trunc(D.Number),
+    Rexx_InvokeArgCount>2),ResultValue); { LASTPOS }
+   39:Rexx_RVText(Copy(A.Text,1,System.Trunc(B.Number)),ResultValue); { LEFT }
+   40:Rexx_RVNum(Length(A.Text),ResultValue); { LENGTH }
+   41:Rexx_LineInValue(A.Text,System.Trunc(B.Number),System.Trunc(D.Number),
+    Rexx_InvokeArgCount>1,Rexx_InvokeArgCount>2,ResultValue); { LINEIN }
+   42:Rexx_LineOutValue(A.Text,B.Text,System.Trunc(D.Number),Rexx_InvokeArgCount>1,
+    Rexx_InvokeArgCount>2,ResultValue); { LINEOUT }
+   43:Rexx_LinesValue(A.Text,ResultValue); { LINES }
+   44:Begin { MAX }
+    If A.Number>B.Number Then N:=A.Number Else N:=B.Number;Rexx_RVNum(N,ResultValue);
+   End;
+   45:Begin { MIN }
+    If A.Number<B.Number Then N:=A.Number Else N:=B.Number;Rexx_RVNum(N,ResultValue);
+   End;
+   46:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { OPTIONS }
+   47:Rexx_RVText(Rexx_OverlayText(A.Text,B.Text,System.Trunc(D.Number),
+    System.Trunc(E.Number),Rexx_InvokeArgCount>2,Rexx_InvokeArgCount>3,
+    Rexx_InvokeArgCount>4,Rexx_InvokeArgs[5]),ResultValue); { OVERLAY }
+   48:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { PARSE }
+   49:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { PROCEDURE }
+   50:Rexx_RVNum(Rexx_ForwardPosition(A.Text,B.Text,System.Trunc(D.Number),
+    Rexx_InvokeArgCount>2),ResultValue); { POS }
+   51:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { PULL }
+   52:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { PUSH }
+   53:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { QUEUE }
+   54:Rexx_RVNum(RexxQueueCount,ResultValue); { QUEUED }
+   55:Rexx_RandomValue(A,B,D,Rexx_InvokeArgCount,ResultValue); { RANDOM }
+   56:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { RETURN }
+   57:Rexx_RVText(Rexx_ReverseText(A.Text),ResultValue); { REVERSE }
+   58:Begin { RIGHT }
+    J:=Length(A.Text)-System.Trunc(B.Number)+1;If J<1Then J:=1;Rexx_RVText(Copy(A.Text,J,255),ResultValue);
+   End;
+   59:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { RXFUNCADD }
+   60:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { RXFUNCDROP }
+   61:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { RXFUNCQUERY }
+   62:Rexx_RxMessageBoxValue(A.Text,B.Text,D.Text,ResultValue); { RXMESSAGEBOX }
+   63:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { RXQUEUE }
+   64:Rexx_RxWinExecValue(A.Text,ResultValue); { RXWINEXEC }
+   65:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SAY }
+   66:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SELECT }
+   67:Rexx_SetLocalValue(ResultValue); { SETLOCAL }
+   68:Begin { SIGN }
+    If A.Number<0Then N:=-1 Else If A.Number>0Then N:=1 Else N:=0;Rexx_RVNum(N,ResultValue);
+   End;
+   69:Rexx_SourceLineValue(System.Trunc(A.Number),Rexx_InvokeArgCount>0,
+    ResultValue); { SOURCELINE }
+   70:Rexx_RVText(Rexx_SpaceText(A.Text,System.Trunc(B.Number),Rexx_InvokeArgCount>1,
+    Rexx_InvokeArgCount>2,D.Text),ResultValue); { SPACE }
+   71:Rexx_StreamValue(A.Text,B.Text,D.Text,Rexx_InvokeArgCount,ResultValue); { STREAM }
+   72:Rexx_RVText(Rexx_StripText(A.Text,B.Text,D.Text,Rexx_InvokeArgCount>1,
+    Rexx_InvokeArgCount>2),ResultValue); { STRIP }
+   73:Rexx_RVText(Rexx_SubStringText(A.Text,System.Trunc(B.Number),
+    System.Trunc(D.Number),Rexx_InvokeArgCount>2,Rexx_InvokeArgCount>3,E.Text),
+    ResultValue); { SUBSTR }
+   74:Rexx_RVText(Rexx_SubWordText(A.Text,System.Trunc(B.Number),
+    System.Trunc(D.Number),Rexx_InvokeArgCount>2),ResultValue); { SUBWORD }
+   75:Rexx_SymbolValue(A.Text,ResultValue); { SYMBOL }
+   { A partir d'ici, chaque Rexx_FunctionNotImplemented restant (semaphores  }
+   { SysXxxSem/SysRequestMutexSem, objets Workplace Shell SysXxxObject/     }
+   { SysSetIcon/SysQueryClassList, macrospace REXX SysXxxRexxMacro*,        }
+   { attributs etendus SysGetEA/SysPutEA, SysWaitNamedPipe, SysGetMessage,  }
+   { SysSetPriority, RxFuncAdd/Drop/Query, RxQueue) reste HORS DE PORTEE    }
+   { meme sous DEVENV.PAS, honnetement, pas par oubli - voir la section     }
+   { "Explicitement hors de portee" du plan d'implantation (2026-08-30) :   }
+   { aucune fibre concurrente a synchroniser (une seule a la fois par       }
+   { panneau), aucun bureau Workplace Shell, aucun cache de macros compile, }
+   { aucun stockage d'attributs etendus ni de tube nomme virtuel, aucune    }
+   { notion d'ordonnancement exposee, aucun systeme de plugins/fonctions    }
+   { externes. }
+   76:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSADDREXXMACRO }
+   77:Rexx_RVText(Rexx_SysBootDriveText,ResultValue); { SYSBOOTDRIVE }
+   78:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLEARREXXMACROSPACE }
+   79:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLOSEEVENTSEM }
+   80:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSCLOSEMUTEXSEM }
+   81:Rexx_SysClearScreen(Rexx_InvokeArgCount,ResultValue); { SYSCLS }
+   82:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEEVENTSEM }
+   83:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEMUTEXSEM }
+   84:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSCREATEOBJECT }
+   85:Rexx_SysCursorPosition(A,B,Rexx_InvokeArgCount,ResultValue); { SYSCURPOS }
+   86:Rexx_SysCurStateValue(A.Text,ResultValue); { SYSCURSTATE }
+   87:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSDEREGISTEROBJECTCLASS }
+   88:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSDESTROYOBJECT }
+   89:Rexx_SysDriveInfoValue(A.Text,ResultValue); { SYSDRIVEINFO }
+   90:Rexx_SysDriveMapValue(ResultValue); { SYSDRIVEMAP }
+   91:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSDROPFUNCS }
+   92:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSDROPREXXMACRO }
+   93:Rexx_SysDeleteFile(A.Text,ResultValue); { SYSFILEDELETE }
+   94:Rexx_SysFileTreeValue(A.Text,B.Text,ResultValue); { SYSFILETREE }
+   95:Rexx_SysSearchFile(A.Text,B.Text,D.Text,E.Text,Rexx_InvokeArgCount,
+    ResultValue); { SYSFILESEARCH }
+   96:Rexx_RVText(Rexx_SysFileSystemTypeText(A.Text),ResultValue); { SYSFILESYSTEMTYPE }
+   97:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETEA }
+   98:Rexx_SysGetKeyValue(A.Text,B.Number,Rexx_InvokeArgCount,ResultValue); { SYSGETKEY }
+   99:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSGETMESSAGE }
+   100:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSINI }
+   101:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSLOADFUNCS }
+   102:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSLOADREXXMACROSPACE }
+   103:Rexx_SysMakeDirectory(A.Text,ResultValue); { SYSMKDIR }
+   104:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSOPENEVENTSEM }
+   105:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSOPENMUTEXSEM }
+   106:Rexx_RVText(Rexx_SysEnvVersionText,ResultValue); { SYSOS2VER }
+   107:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSPOSTEVENTSEM }
+   108:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSPULSEEVENTSEM }
+   109:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSPUTEA }
+   110:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSQUERYCLASSLIST }
+   111:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSQUERYREXXMACRO }
+   112:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSREGISTEROBJECTCLASS }
+   113:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSRELEASEMUTEXSEM }
+   114:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSREORDERREXXMACRO }
+   115:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSREQUESTMUTEXSEM }
+   116:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSRESETEVENTSEM }
+   117:Rexx_SysRemoveDirectory(A.Text,ResultValue); { SYSRMDIR }
+   118:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSSAVEREXXMACROSPACE }
+   119:Rexx_RVText(Rexx_SysSearchPathText(A.Text,B.Text),ResultValue); { SYSSEARCHPATH }
+   120:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSSETICON }
+   121:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSSETOBJECTDATA }
+   122:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSSETPRIORITY }
+   123:Rexx_SysSleepValue(A.Number,Rexx_InvokeArgCount>0,ResultValue); { SYSSLEEP }
+   124:Rexx_SysSwitchSessionValue(A.Text,ResultValue); { SYSSWITCHSESSION }
+   125:Rexx_RVText(Rexx_SysSystemDirectoryText,ResultValue); { SYSSYSTEMDIRECTORY }
+   126:Rexx_RVText(Rexx_SysTempFileNameText,ResultValue); { SYSTEMPFILENAME }
+   127:Rexx_RVText(Rexx_SysTextScreenReadText(System.Trunc(A.Number)),ResultValue); { SYSTEXTSCREENREAD }
+   128:Rexx_SysTextScreenSizeValue(ResultValue); { SYSTEXTSCREENSIZE }
+   129:Rexx_SysVolumeLabelValue(A.Text,ResultValue); { SYSVOLUMELABEL }
+   130:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSWAITEVENTSEM }
+   131:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SYSWAITNAMEDPIPE }
+   132:Rexx_RVText(Rexx_SysEnvVersionText,ResultValue); { SYSWINVER }
+   133:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { THEN }
+   134:Rexx_TimeValue(A.Text,Rexx_InvokeArgCount,ResultValue); { TIME }
+   135:Rexx_TraceValue(A.Text,Rexx_InvokeArgCount,ResultValue); { TRACE }
+   136:Rexx_RVText(Rexx_TranslateText(A.Text,B.Text,D.Text,E.Text,Rexx_InvokeArgCount),
+    ResultValue); { TRANSLATE }
+   137:Rexx_RVNum(System.Trunc(A.Number),ResultValue); { TRUNC }
+   138:Rexx_ValueFunction(A.Text,B.Text,D.Text,Rexx_InvokeArgCount,ResultValue); { VALUE }
+   139:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { VAR }
+   140:Rexx_RVNum(Rexx_VerifyText(A.Text,B.Text,D.Text,System.Trunc(E.Number),
+    Rexx_InvokeArgCount>2,Rexx_InvokeArgCount>3),ResultValue); { VERIFY }
+   141:Rexx_RVText(Rexx_SubWordText(A.Text,System.Trunc(B.Number),1,True),
+    ResultValue); { WORD }
+   142:Rexx_RVNum(Rexx_WordStartIndex(A.Text,System.Trunc(B.Number)),
+    ResultValue); { WORDINDEX }
+   143:Rexx_RVNum(Length(Rexx_SubWordText(A.Text,System.Trunc(B.Number),1,True)),
+    ResultValue); { WORDLENGTH }
+   144:Rexx_RVNum(Rexx_WordPhrasePosition(A.Text,B.Text,System.Trunc(D.Number),
+    Rexx_InvokeArgCount>2),ResultValue); { WORDPOS }
+   145:Rexx_RVNum(Rexx_CountWords(A.Text),ResultValue); { WORDS }
+   146:Rexx_RVText(Rexx_XRangeText(A.Text,B.Text,Rexx_InvokeArgCount),ResultValue); { XRANGE }
+   147:Rexx_RVText(Rexx_HexToBinary(A.Text),ResultValue); { X2B }
+   148:Rexx_RVText(Rexx_HexToCharacter(A.Text),ResultValue); { X2C }
+   149:Rexx_HexToDecimal(A.Text,System.Trunc(B.Number),Rexx_InvokeArgCount>1,
+    ResultValue); { X2D }
+   150:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { DO }
+   151:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { ELSE }
+   152:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { END }
+   153:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { EXPOSE }
+   154:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { ITERATE }
+   155:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { LEAVE }
+   156:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { NAME }
+   157:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { NOP }
+   158:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { NUMERIC }
+   159:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { OTHERWISE }
+   160:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { SIGNAL }
+   161:Rexx_FunctionNotImplemented(FunctionByte,ResultValue); { WHEN }
+   Else If Rexx_FindRoutineLabel(Nm)>0Then Rexx_RVText(Rexx_CallRoutine(Nm),ResultValue)
+    Else Rexx_RVText(Nm,ResultValue);
+  End;
+  Exit;
+ End;
+ Rexx_VarGet(Nm,ResultValue);
+End;
+
+Procedure Rexx_EPower(Var ResultValue:RexxValue);
+Var
+ A,B:RexxValue;
+ J:Integer;
+ N:Real;
+Begin
+ Rexx_EPrimary(A);
+ Rexx_ESkip;
+ While Copy(Rexx_ExprText,Rexx_ExprPos,2)='**'do Begin
+  Inc(Rexx_ExprPos,2);
+  Rexx_EPrimary(B);N:=1;
+  For J:=1To System.Trunc(B.Number)do N:=N*A.Number;Rexx_RVNum(N,A);
+  Rexx_ESkip;
+ End;
+ ResultValue:=A;
+End;
+
+Procedure Rexx_EMul(Var ResultValue:RexxValue);
+Var A,B:RexxValue;Op:String[2];
+Begin
+ Rexx_EPower(A);
+ While True Do Begin
+  Rexx_ESkip;Op:='';
+  If Copy(Rexx_ExprText,Rexx_ExprPos,2)='//'Then Begin
+   Op:='//';
+   Inc(Rexx_ExprPos,2);
+  End
+   Else
+  If(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]in['*','/','%'])Then Begin
+   Op:=Rexx_ExprText[Rexx_ExprPos];
+   Inc(Rexx_ExprPos);
+  End;
+  If Op=''Then Break;
+  Rexx_EPower(B);
+  If Op='*'Then Rexx_RVNum(A.Number*B.Number,A)Else
+  If(Op='/')and(B.Number<>0)Then Rexx_RVNum(A.Number/B.Number,A)Else
+  If(Op='%')and(B.Number<>0)Then Rexx_RVNum(System.Trunc(A.Number/B.Number),A)Else
+  If(Op='//')and(B.Number<>0)Then Rexx_RVNum(System.Trunc(A.Number)mod
+System.Trunc(B.Number),A)Else Rexx_RVNum(0,A);
+ End;
+ ResultValue:=A;
+End;
+
+Procedure Rexx_EAdd(Var ResultValue:RexxValue);
+Var A,B:RexxValue;O:Char;
+Begin
+ Rexx_EMul(A);
+ While True Do Begin
+  Rexx_ESkip;
+  If(Rexx_ExprPos>Length(Rexx_ExprText))or Not(Rexx_ExprText[Rexx_ExprPos]in['+','-'])Then Break;
+  O:=Rexx_ExprText[Rexx_ExprPos];Inc(Rexx_ExprPos);
+  Rexx_EMul(B);
+  If O='+'Then Rexx_RVNum(A.Number+B.Number,A)
+          Else Rexx_RVNum(A.Number-B.Number,A);
+ End;
+ ResultValue:=A;
+End;
+
+Procedure Rexx_ECompare(Var ResultValue:RexxValue);
+Var A,B:RexxValue;O:String[2];T:Boolean;
+Begin
+ Rexx_EAdd(A);Rexx_ESkip;O:='';If Copy(Rexx_ExprText,Rexx_ExprPos,2)='>='Then O:='>=' Else
+ If Copy(Rexx_ExprText,Rexx_ExprPos,2)='<='Then O:='<='Else
+ If Copy(Rexx_ExprText,Rexx_ExprPos,2)='<>'Then O:='<>'Else
+ If(Rexx_ExprPos<=Length(Rexx_ExprText))and(Rexx_ExprText[Rexx_ExprPos]in['=','>','<'])Then O:=Rexx_ExprText[Rexx_ExprPos];
+ If O<>''Then Begin
+  Inc(Rexx_ExprPos,Length(O));Rexx_EAdd(B);
+  If A.IsNumber and B.IsNumber Then Begin
+   If O='='Then T:=A.Number=B.Number Else
+   If O='<>'Then T:=A.Number<>B.Number Else
+   If O='>'Then T:=A.Number>B.Number Else
+   If O='<'Then T:=A.Number<B.Number Else
+   If O='>='Then T:=A.Number>=B.Number
+            Else T:=A.Number<=B.Number;
+  End
+   Else
+  Begin
+   If O='='Then T:=Rexx_StrToUpper(A.Text)=Rexx_StrToUpper(B.Text) Else
+   If O='<>'Then T:=Rexx_StrToUpper(A.Text)<>Rexx_StrToUpper(B.Text) Else
+   If O='>'Then T:=Rexx_StrToUpper(A.Text)>Rexx_StrToUpper(B.Text)Else
+   If O='<'Then T:=Rexx_StrToUpper(A.Text)<Rexx_StrToUpper(B.Text)Else
+   If O='>='Then T:=Rexx_StrToUpper(A.Text)>=Rexx_StrToUpper(B.Text)
+            Else T:=Rexx_StrToUpper(A.Text)<=Rexx_StrToUpper(B.Text);
+  End;
+  If T Then Rexx_RVNum(1,A)Else
+            Rexx_RVNum(0,A);
+  End;
+  ResultValue:=A;
+End;
+
+Procedure Rexx_Eval(S:String;Var ResultValue:RexxValue);
+Var A,B:RexxValue;Tight:Boolean;
+Begin
+ Rexx_ExprText:=S;Rexx_ExprPos:=1;Rexx_ECompare(A);
+ While Rexx_ExprPos<=Length(Rexx_ExprText)do Begin
+  Rexx_ESkip;
+  If Rexx_ExprPos>Length(Rexx_ExprText)Then Break;
+  Tight:=Copy(Rexx_ExprText,Rexx_ExprPos,2)='||';
+  If Tight Then Inc(Rexx_ExprPos,2);
+  Rexx_ECompare(B);
+  If Tight Then Rexx_RVText(A.Text+B.Text,A)
+           Else Rexx_RVText(A.Text+' '+B.Text,A);
+ End;
+ ResultValue:=A;
+End;
+
+Function Rexx_Truth(V:RexxValue):Boolean;Begin If V.IsNumber Then Rexx_Truth:=V.Number<>0 Else Rexx_Truth:=(V.Text<>'')and(V.Text<>'0');End;
+Function Rexx_CommandIndex(N:String):Integer;
+Var J:Integer;
+Begin
+ Rexx_CommandIndex:=-1;N:=Rexx_StrToUpper(Rexx_Clean(N));
+ For J:=Low(Rexx_CommandList)To High(Rexx_CommandList)Do
+  If N=Rexx_CommandList[J]Then Begin Rexx_CommandIndex:=J;Exit;End;
+End;
+
+Function Rexx_WordStart(S,W:String):Boolean;
+Var
+ U,FirstWord:String;P:Integer;
+Begin
+ U:=Rexx_StrToUpper(Rexx_Clean(S));
+ W:=Rexx_StrToUpper(W);
+ P:=System.Pos(' ',W);If P=0Then FirstWord:=W Else FirstWord:=Copy(W,1,P-1);
+ { Toute reconnaissance d'instruction passe par Rexx_CommandList. Les mots qui
+   n'y figurent pas ne peuvent donc pas etre pris accidentellement pour une
+   commande REXX. }
+ Rexx_WordStart:=(Rexx_CommandIndex(FirstWord)>=0)and(Copy(U,1,Length(W))=W)and
+  ((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
+End;
+
+Function Rexx_ClauseStart(S,W:String):Boolean;
+Var U:String;
+Begin
+ U:=Rexx_StrToUpper(Rexx_Clean(S));W:=Rexx_StrToUpper(W);
+ Rexx_ClauseStart:=(Copy(U,1,Length(W))=W)and
+  ((Length(U)=Length(W))or(U[Length(W)+1]in[' ',#9]));
+End;
+
+Function Rexx_FindWord(S,W:String):Integer;
+Var
+ J,D:Integer;
+ Q:Char;
+ U:String;
+Begin
+ U:=Rexx_StrToUpper(S);
+ W:=Rexx_StrToUpper(W);
+ J:=1;D:=0;Q:=#0;Rexx_FindWord:=0;
+ While J<=Length(S)-Length(W)+1 Do Begin
+  If Q<>#0 Then Begin
+   If S[J]=Q Then Q:=#0;Inc(J);
+  End
+   Else
+  If S[J]in['''','"']Then Begin
+   Q:=S[J];Inc(J);
+  End
+   Else
+  Begin
+   If S[J]='('Then Inc(D)Else
+   If S[J]=')'Then Dec(D);
+   If(D=0)and(Copy(U,J,Length(W))=W)and((J=1)or(S[J-1]in[' ',#9]))and
+     ((J+Length(W)>Length(S))or(S[J+Length(W)]in[' ',#9]))Then Begin
+    Rexx_FindWord:=J;
+    Exit;
+   End;
+   Inc(J);
+  End;
+ End;
+End;
+
+Function Rexx_BlockEnd(A,Z:Integer):Integer;
+Var
+ J,D:Integer;U:String;
+Begin
+ D:=1;J:=A;
+ While J<=Z Do Begin
+  U:=Rexx_StrToUpper(Rexx_Clean(Rexx_PA[J]^));
+  If Rexx_WordStart(U,'DO')or Rexx_WordStart(U,'SELECT')or
+    (System.Pos(' THEN DO',U)>0)or Rexx_WordStart(U,'ELSE DO')or
+    Rexx_WordStart(U,'OTHERWISE DO')Then Inc(D);
+  If Rexx_WordStart(U,'END')Then Begin
+   Dec(D);
+   If D=0Then Begin
+    Rexx_BlockEnd:=J;
+    Exit;
+   End;
+  End;
+  Inc(J);
+ End;
+ Rexx_BlockEnd:=Z;
+End;
+
+Var
+ Rexx_LoopSignal:Byte;
+
+Procedure Rexx_ExecRange(A,Z:Integer);Forward;
+
+Procedure Rexx_ParseTemplate(Value,Template:String;MakeUpper:Boolean);
+Const MaxParseTokens=64;
+Var
+ Tokens:Array[1..MaxParseTokens]of String;
+ LiteralToken:Array[1..MaxParseTokens]of Boolean;
+ TokenCount,J,K,P,CursorPos,EndPos,Code,AbsolutePos:Integer;
+ Q:Char;Token,Piece:String;IsNumber:Boolean;
+Begin
+ If MakeUpper Then Value:=Rexx_StrToUpper(Value);
+ TokenCount:=0;J:=1;
+ While(J<=Length(Template))and(TokenCount<MaxParseTokens)Do Begin
+  While(J<=Length(Template))and(Template[J]in[' ',#9])Do Inc(J);
+  If J>Length(Template)Then Break;
+  Inc(TokenCount);LiteralToken[TokenCount]:=False;Token:='';
+  If Template[J]in['''','"']Then Begin
+   Q:=Template[J];Inc(J);LiteralToken[TokenCount]:=True;
+   While(J<=Length(Template))and(Template[J]<>Q)Do Begin Token:=Token+Template[J];Inc(J);End;
+   If(J<=Length(Template))and(Template[J]=Q)Then Inc(J);
+  End Else
+   While(J<=Length(Template))and Not(Template[J]in[' ',#9])Do Begin Token:=Token+Template[J];Inc(J);End;
+  Tokens[TokenCount]:=Token;
+ End;
+
+ CursorPos:=1;J:=1;
+ While J<=TokenCount Do Begin
+  Token:=Tokens[J];IsNumber:=Token<>'';
+  For K:=1 To Length(Token)Do If Not(Token[K]in['0'..'9'])Then IsNumber:=False;
+  If LiteralToken[J] Then Begin
+   P:=System.Pos(Token,Copy(Value,CursorPos,255));
+   If P>0Then CursorPos:=CursorPos+P-1+Length(Token)Else CursorPos:=Length(Value)+1;
+   Inc(J);Continue;
+  End;
+  If IsNumber Then Begin Val(Token,AbsolutePos,Code);CursorPos:=AbsolutePos;Inc(J);Continue;End;
+
+  { Une variable est delimitee par le prochain litteral ou la prochaine
+    position. Entre deux Rexx_Variables, elle recoit un mot; la derniere recoit
+    tout le reste, conformement aux modeles PARSE de REXX. }
+  If J=TokenCount Then Begin Piece:=Rexx_Clean(Copy(Value,CursorPos,255));CursorPos:=Length(Value)+1;End
+  Else If LiteralToken[J+1]Then Begin
+   P:=System.Pos(Tokens[J+1],Copy(Value,CursorPos,255));
+   If P>0Then Begin Piece:=Rexx_Clean(Copy(Value,CursorPos,P-1));CursorPos:=CursorPos+P-1+Length(Tokens[J+1]);End
+    Else Begin Piece:=Rexx_Clean(Copy(Value,CursorPos,255));CursorPos:=Length(Value)+1;End;
+   Inc(J);
+  End Else Begin
+   IsNumber:=Tokens[J+1]<>'';
+   For K:=1 To Length(Tokens[J+1])Do If Not(Tokens[J+1][K]in['0'..'9'])Then IsNumber:=False;
+   If IsNumber Then Begin
+    Val(Tokens[J+1],AbsolutePos,Code);EndPos:=AbsolutePos-1;
+    If EndPos<CursorPos Then Piece:=''Else Piece:=Rexx_Clean(Copy(Value,CursorPos,EndPos-CursorPos+1));
+    CursorPos:=AbsolutePos;Inc(J);
+   End Else Begin
+    While(CursorPos<=Length(Value))and(Value[CursorPos]in[' ',#9])Do Inc(CursorPos);
+    EndPos:=CursorPos;While(EndPos<=Length(Value))and Not(Value[EndPos]in[' ',#9])Do Inc(EndPos);
+    Piece:=Copy(Value,CursorPos,EndPos-CursorPos);CursorPos:=EndPos;
+   End;
+  End;
+  If Token<>'.'Then Rexx_VarSet(Token,Piece);
+  Inc(J);
+ End;
+End;
+
+Procedure Rexx_RunAddressCommand(EnvironmentName,CommandText:String);
+Var CommandProcessor:String;
+Begin
+ If CommandText=''Then Exit;
+ If Rexx_CurrentTraceSetting='C'Then Rexx_EmitLn('+++ '+CommandText);
+ EnvironmentName:=Rexx_StrToUpper(Rexx_Clean(EnvironmentName));
+ If(EnvironmentName='SYSTEM')or(EnvironmentName='COMMAND')or(EnvironmentName='CMD')Then Begin
+  CommandProcessor:=GetEnv('COMSPEC');If CommandProcessor=''Then CommandProcessor:='CMD.EXE';
+  Exec(CommandProcessor,'/C '+CommandText);
+  If DosError<>0Then Rexx_EmitLn('Erreur ADDRESS '+EnvironmentName+': '+IntToStr(DosError));
+ End Else Rexx_EmitLn('Environnement ADDRESS non supporte: '+EnvironmentName);
+End;
+
+Procedure Rexx_ExecOne(S:String);
+Var P,J:Integer;V:RexxValue;Name,Rest,ArgName,FirstWord,CommandText,OldAddress,
+ SourceText,Template:String;Found,MakeUpper:Boolean;CommandByte:Byte;
+Begin
+ S:=Rexx_Clean(S);If S=''Then Exit;
+ P:=1;While(P<=Length(S))and(S[P]in['A'..'Z','a'..'z','_'])Do Inc(P);
+ FirstWord:=Copy(S,1,P-1);J:=Rexx_CommandIndex(FirstWord);
+ If J<0Then CommandByte:=255 Else CommandByte:=Byte(J);
+ Case CommandByte Of
+  2:Begin { ADDRESS }
+   Rest:=Rexx_Clean(Copy(S,8,255));
+   If Rest=''Then Begin
+    OldAddress:=Rexx_CurrentAddress;Rexx_CurrentAddress:=Rexx_PreviousAddress;Rexx_PreviousAddress:=OldAddress;
+   End Else If Rexx_ClauseStart(Rest,'VALUE')Then Begin
+    Rexx_Eval(Rexx_Clean(Copy(Rest,6,255)),V);Name:=Rexx_StrToUpper(V.Text);
+    Rexx_PreviousAddress:=Rexx_CurrentAddress;Rexx_CurrentAddress:=Name;
+   End Else Begin
+    P:=System.Pos(' ',Rest);
+    If P=0Then Begin Name:=Rest;CommandText:='';End
+     Else Begin Name:=Copy(Rest,1,P-1);CommandText:=Rexx_Clean(Copy(Rest,P+1,255));End;
+    Name:=Rexx_StrToUpper(Name);Rexx_PreviousAddress:=Rexx_CurrentAddress;Rexx_CurrentAddress:=Name;
+    If CommandText<>''Then Begin Rexx_Eval(CommandText,V);Rexx_RunAddressCommand(Rexx_CurrentAddress,V.Text);End;
+   End;
+  End;
+  65:Begin { SAY }
+   Rexx_Eval(Copy(S,4,255),V);Rexx_EmitLn(V.Text);
+  End;
+  9:Begin { CALL }
+   Rest:=Rexx_Clean(Copy(S,5,255));P:=System.Pos(' ',Rest);
+   If P>0Then Begin Name:=Copy(Rest,1,P-1);Rest:=Rexx_Clean(Copy(Rest,P+1,255));End Else Begin Name:=Rest;Rest:='';End;
+   Rexx_InvokeArgCount:=0;
+   While(Rest<>'')and(Rexx_InvokeArgCount<Rexx_MaxRoutineArgs)do Begin
+    P:=System.Pos(',',Rest);If P>0Then Begin
+     Rexx_Eval(Copy(Rest,1,P-1),V);
+     Delete(Rest,1,P);
+     Rest:=Rexx_Clean(Rest);
+    End
+     Else
+    Begin
+     Rexx_Eval(Rest,V);
+     Rest:='';
+    End;
+    Inc(Rexx_InvokeArgCount);Rexx_InvokeArgs[Rexx_InvokeArgCount]:=V.Text;
+   End;
+   Rexx_VarSet('RESULT',Rexx_CallRoutine(Name));
+  End;
+  46:Begin { OPTIONS }
+   Rest:=Rexx_Clean(Copy(S,8,255));
+   If Rest=''Then Rexx_CurrentOptions:=''
+   Else Begin
+    Rexx_Eval(Rest,V);
+    Rexx_CurrentOptions:=V.Text;
+   End;
+  End;
+  51:Begin { PULL }
+   Rexx_PullQueue(Rest,Found);
+   If Not Found Then Rest:=Rexx_ReadLine;
+   ArgName:=Rexx_Clean(Copy(S,5,255));
+   If ArgName<>''Then Rexx_ParseTemplate(Rest,ArgName,True);
+  End;
+  52:Begin { PUSH }
+   Rest:=Rexx_Clean(Copy(S,5,255));
+   If Rest<>''Then Rexx_Eval(Rest,V)Else Rexx_RVText('',V);
+   Rexx_PushQueue(V.Text);
+  End;
+  53:Begin { QUEUE }
+   Rest:=Rexx_Clean(Copy(S,6,255));
+   If Rest<>''Then Rexx_Eval(Rest,V)Else Rexx_RVText('',V);
+   Rexx_AppendQueue(V.Text);
+  End;
+  48:Begin { PARSE }
+   Rest:=Rexx_Clean(Copy(S,6,255));MakeUpper:=False;
+   If Rexx_ClauseStart(Rest,'UPPER')Then Begin
+    MakeUpper:=True;Rest:=Rexx_Clean(Copy(Rest,6,255));
+   End;
+   If Rexx_ClauseStart(Rest,'ARG')Then Begin
+    Rest:=Rexx_Clean(Copy(Rest,4,255));J:=1;
+    While Rest<>''Do Begin
+     P:=System.Pos(',',Rest);
+     If P>0Then Begin Template:=Rexx_Clean(Copy(Rest,1,P-1));Delete(Rest,1,P);Rest:=Rexx_Clean(Rest);End
+      Else Begin Template:=Rest;Rest:='';End;
+     If J<=Rexx_CurrentArgCount Then SourceText:=Rexx_CurrentArgs[J]Else SourceText:='';
+     Rexx_ParseTemplate(SourceText,Template,MakeUpper);Inc(J);
+    End;
+   End Else If Rexx_ClauseStart(Rest,'VAR')Then Begin
+    Rest:=Rexx_Clean(Copy(Rest,4,255));P:=System.Pos(' ',Rest);
+    If P>0Then Begin
+     Name:=Copy(Rest,1,P-1);Template:=Rexx_Clean(Copy(Rest,P+1,255));
+     Rexx_VarGet(Name,V);Rexx_ParseTemplate(V.Text,Template,MakeUpper);
+    End;
+   End Else If Rexx_ClauseStart(Rest,'VALUE')Then Begin
+    Rest:=Rexx_Clean(Copy(Rest,6,255));P:=Rexx_FindWord(Rest,'WITH');
+    If P>0Then Begin
+     Rexx_Eval(Rexx_Clean(Copy(Rest,1,P-1)),V);Template:=Rexx_Clean(Copy(Rest,P+4,255));
+     Rexx_ParseTemplate(V.Text,Template,MakeUpper);
+    End;
+   End Else If Rexx_ClauseStart(Rest,'PULL')Then Begin
+    Template:=Rexx_Clean(Copy(Rest,5,255));Rexx_PullQueue(SourceText,Found);
+    If Not Found Then SourceText:=Rexx_ReadLine;
+    Rexx_ParseTemplate(SourceText,Template,MakeUpper);
+   End Else If Rexx_ClauseStart(Rest,'LINEIN')Then Begin
+    Template:=Rexx_Clean(Copy(Rest,7,255));SourceText:=Rexx_ReadLine;
+    Rexx_ParseTemplate(SourceText,Template,MakeUpper);
+   End Else If Rexx_ClauseStart(Rest,'VERSION')Then
+    Rexx_ParseTemplate('REXX-DEVCOOLS 1.0',Rexx_Clean(Copy(Rest,8,255)),MakeUpper)
+   Else If Rexx_ClauseStart(Rest,'SOURCE')Then
+    Rexx_ParseTemplate('WINDOWS COMMAND '+Rexx_FileName,Rexx_Clean(Copy(Rest,7,255)),MakeUpper);
+  End;
+  56:Begin { RETURN }
+   Rest:=Rexx_Clean(Copy(S,7,255));
+   If Rest<>''Then Rexx_Eval(Rest,V)Else Rexx_RVText('',V);
+   If Rexx_RoutineDepth>0Then Begin
+    Rexx_RoutineResult:=V.Text;
+    Rexx_RoutineReturning:=True;
+   End
+    Else
+   Rexx_RequestProgramExit(V,Rest<>'',V);
+  End;
+  49:; { PROCEDURE est traite lors de l'entree dans Rexx_CallRoutine }
+  135:Begin { TRACE }
+   Rest:=Rexx_Clean(Copy(S,6,255));
+   If Rexx_ClauseStart(Rest,'VALUE')Then Begin
+    Rexx_Eval(Rexx_Clean(Copy(Rest,6,255)),V);
+    Rexx_CurrentTraceSetting:=Rexx_NormalizeTraceSetting(V.Text);
+   End Else Rexx_CurrentTraceSetting:=Rexx_NormalizeTraceSetting(Rest);
+  End;
+  158:Begin { NUMERIC }
+   If Rexx_WordStart(S,'NUMERIC DIGITS')Then Begin
+    Rest:=Rexx_Clean(Copy(S,15,255));If Rest=''Then Rexx_NumericDigitsValue:=9
+     Else Begin Rexx_Eval(Rest,V);J:=System.Trunc(V.Number);If J>0Then Rexx_NumericDigitsValue:=J;End;
+    If Rexx_NumericFuzzValue>=Rexx_NumericDigitsValue Then Rexx_NumericFuzzValue:=Rexx_NumericDigitsValue-1;
+   End Else If Rexx_WordStart(S,'NUMERIC FUZZ')Then Begin
+    Rest:=Rexx_Clean(Copy(S,13,255));If Rest=''Then Rexx_NumericFuzzValue:=0
+     Else Begin Rexx_Eval(Rest,V);J:=System.Trunc(V.Number);If(J>=0)and(J<Rexx_NumericDigitsValue)Then Rexx_NumericFuzzValue:=J;End;
+   End Else If Rexx_WordStart(S,'NUMERIC FORM')Then Begin
+    Rest:=Rexx_StrToUpper(Rexx_Clean(Copy(S,13,255)));If Rest=''Then Rexx_NumericFormValue:='SCIENTIFIC'
+     Else If(Rest='SCIENTIFIC')or(Rest='ENGINEERING')Then Rexx_NumericFormValue:=Rest;
+   End;
+  End;
+  160:Begin { SIGNAL }
+   If Rexx_WordStart(S,'SIGNAL ON')Then Begin
+    Rest:=Rexx_Clean(Copy(S,10,255));P:=Rexx_FindWord(Rest,'NAME');
+    If P>0Then Begin Name:=Rexx_StrToUpper(Rexx_Clean(Copy(Rest,P+4,255)));Rest:=Rexx_StrToUpper(Rexx_Clean(Copy(Rest,1,P-1)));End
+     Else Begin Rest:=Rexx_StrToUpper(Rest);Name:=Rest;End;
+    If Rest='HALT'Then Begin Rexx_SignalHalt:=True;Rexx_SignalHaltName:=Name;End
+    Else If Rest='NOVALUE'Then Begin Rexx_SignalNoValue:=True;Rexx_SignalNoValueName:=Name;End
+    Else If Rest='ERROR'Then Begin Rexx_SignalError:=True;Rexx_SignalErrorName:=Name;End
+    Else If Rest='SYNTAX'Then Begin Rexx_SignalSyntax:=True;Rexx_SignalSyntaxName:=Name;End;
+   End Else If Rexx_WordStart(S,'SIGNAL OFF')Then Begin
+    Rest:=Rexx_StrToUpper(Rexx_Clean(Copy(S,11,255)));If Rest='HALT'Then Rexx_SignalHalt:=False
+    Else If Rest='NOVALUE'Then Rexx_SignalNoValue:=False Else If Rest='ERROR'Then Rexx_SignalError:=False
+    Else If Rest='SYNTAX'Then Rexx_SignalSyntax:=False;
+   End Else If Rexx_WordStart(S,'SIGNAL VALUE')Then Begin
+    Rexx_Eval(Rexx_Clean(Copy(S,13,255)),V);Name:=V.Text;Rexx_SignalTargetLine:=Rexx_FindRoutineLabel(Name);
+   End Else Begin Name:=Rexx_Clean(Copy(S,7,255));Rexx_SignalTargetLine:=Rexx_FindRoutineLabel(Name);End;
+  End;
+  157:; { NOP }
+  155:Rexx_LoopSignal:=1; { LEAVE }
+  154:Rexx_LoopSignal:=2; { ITERATE }
+ 31:Begin { EXIT }
+   Rest:=Rexx_Clean(Copy(S,5,255));
+   If Rest<>''Then Begin Rexx_Eval(Rest,V);Rexx_RequestProgramExit(V,True,V);End
+   Else Begin Rexx_RVNum(0,V);Rexx_RequestProgramExit(V,False,V);End;
+  End;
+  36:Begin { IF imbrique ou transmis comme clause simple }
+   P:=Rexx_FindWord(S,'THEN');
+   If P=0Then Rexx_EmitLn('THEN manquant')
+   Else Begin
+    Rexx_Eval(Copy(S,3,P-3),V);Rest:=Rexx_Clean(Copy(S,P+4,255));
+    J:=Rexx_FindWord(Rest,'ELSE');
+    If J>0Then Begin
+     If Rexx_Truth(V)Then Rexx_ExecOne(Rexx_Clean(Copy(Rest,1,J-1)))
+     Else Rexx_ExecOne(Rexx_Clean(Copy(Rest,J+4,255)));
+    End Else If Rexx_Truth(V)Then Rexx_ExecOne(Rest);
+   End;
+  End;
+  Else Begin
+   If S[Length(S)]=':'Then Exit;
+   P:=System.Pos('=',S);If P>1Then Begin Rexx_Eval(Copy(S,P+1,255),V);Rexx_VarSet(Copy(S,1,P-1),V.Text);End
+    Else Rexx_EmitLn('Commande non reconnue: '+S);
+  End;
+ End;
+End;
+
+Procedure Rexx_ExecRange(A,Z:Integer);
+Var
+ J,P,E,K,ToPos,ByPos,EqPos,RepeatCount:Integer;
+ S,C,Act,LoopVar:String;
+ V:RexxValue;Done:Boolean;
+ LoopValue,LoopEnd,LoopStep:Real;
+Begin
+ J:=A;
+ While(J<=Z)and Not Rexx_Terminated and Not Rexx_RoutineReturning and(Rexx_LoopSignal=0)do Begin
+ S:=Rexx_Clean(Rexx_PA[J]^);
+  If(S<>'')and(Copy(S,1,2)<>'/*')Then Begin
+   If Rexx_CurrentTraceSetting[1]in['A','I','R']Then Rexx_EmitLn('+++ '+S)
+   Else If(Rexx_CurrentTraceSetting='L')and(Length(S)>0)and
+    (S[Length(S)]=':')Then Rexx_EmitLn('+++ '+S);
+  End;
+  If(S='')or(Copy(S,1,2)='/*')Then Inc(J) Else
+  If Rexx_WordStart(S,'IF')Then Begin
+   P:=Rexx_FindWord(S,'THEN');
+   If P=0Then Begin
+    Rexx_EmitLn('THEN manquant ligne '+IntToStr(J));
+    Inc(J);
+   End
+    Else
+   Begin
+    C:=Copy(S,3,P-3);
+    Act:=Rexx_Clean(Copy(S,P+4,255));
+    Rexx_Eval(C,V);
+    If Rexx_StrToUpper(Act)='DO'Then Begin
+     E:=Rexx_BlockEnd(J+1,Z);
+     If Rexx_Truth(V)Then Rexx_ExecRange(J+1,E-1);J:=E+1;If(J<=Z)and Rexx_WordStart(Rexx_PA[J]^,'ELSE')Then Begin
+      Act:=Rexx_Clean(Copy(Rexx_Clean(Rexx_PA[J]^),5,255));If Rexx_StrToUpper(Act)='DO'Then Begin
+      E:=Rexx_BlockEnd(J+1,Z);
+      If Not Rexx_Truth(V)Then Rexx_ExecRange(J+1,E-1);
+      J:=E+1;
+     End
+      Else
+     Begin
+      If Not Rexx_Truth(V)Then Rexx_ExecOne(Act);
+      Inc(J);
+     End;
+    End;
+   End
+    Else
+   Begin
+    K:=Rexx_FindWord(Act,'ELSE');
+    If K>0Then Begin
+     If Rexx_Truth(V)Then Rexx_ExecOne(Rexx_Clean(Copy(Act,1,K-1)))
+     Else Rexx_ExecOne(Rexx_Clean(Copy(Act,K+4,255)));
+     Inc(J);
+    End Else Begin
+     If Rexx_Truth(V)Then Rexx_ExecOne(Act);
+     Inc(J);
+     If(J<=Z)and Rexx_WordStart(Rexx_PA[J]^,'ELSE')Then Begin
+      If Not Rexx_Truth(V)Then Rexx_ExecOne(Copy(Rexx_Clean(Rexx_PA[J]^),5,255));
+      Inc(J);
+     End;
+    End;
+   End;
+  End;
+ End
+  Else
+ If Rexx_WordStart(S,'SELECT')Then Begin
+  E:=Rexx_BlockEnd(J+1,Z);Done:=False;K:=J+1;
+  While K<E Do Begin
+   Act:=Rexx_Clean(Rexx_PA[K]^);
+   If Rexx_WordStart(Act,'WHEN')Then Begin
+    P:=Rexx_FindWord(Act,'THEN');
+    If P=0Then Begin
+     Rexx_EmitLn('THEN manquant ligne '+IntToStr(K));
+     Inc(K);
+    End Else Begin
+     C:=Rexx_Clean(Copy(Act,P+4,255));
+     If Rexx_StrToUpper(C)='DO'Then Begin
+      ToPos:=Rexx_BlockEnd(K+1,E-1);
+      If Not Done Then Begin
+       Rexx_Eval(Copy(Act,5,P-5),V);
+       If Rexx_Truth(V)Then Begin
+        Rexx_ExecRange(K+1,ToPos-1);
+        Done:=True;
+       End;
+      End;
+      K:=ToPos+1;
+     End Else Begin
+      If Not Done Then Begin
+       Rexx_Eval(Copy(Act,5,P-5),V);
+       If Rexx_Truth(V)Then Begin
+        Rexx_ExecOne(C);
+        Done:=True;
+       End;
+      End;
+      Inc(K);
+     End;
+    End;
+   End Else If Rexx_WordStart(Act,'OTHERWISE')Then Begin
+    C:=Rexx_Clean(Copy(Act,10,255));
+    If Rexx_StrToUpper(C)='DO'Then Begin
+     ToPos:=Rexx_BlockEnd(K+1,E-1);
+     If Not Done Then Begin Rexx_ExecRange(K+1,ToPos-1);Done:=True;End;
+     K:=ToPos+1;
+    End Else Begin
+     If Not Done Then Begin Rexx_ExecOne(C);Done:=True;End;
+     Inc(K);
+    End;
+   End Else Inc(K);
+  End;
+  If Not Done Then Rexx_EmitLn('WHEN ou OTHERWISE attendu ligne '+IntToStr(J));
+  J:=E+1;
+ End
+  Else
+ If Rexx_WordStart(S,'DO WHILE')or Rexx_WordStart(S,'DO UNTIL')Then Begin
+  E:=Rexx_BlockEnd(J+1,Z);
+  C:=Copy(S,9,255);
+  Repeat
+   Rexx_Eval(C,V);
+   If Rexx_WordStart(S,'DO WHILE')Then Begin
+    If Not Rexx_Truth(V)Then Break;
+   End
+    Else
+   If Rexx_Truth(V)Then Break;
+   Rexx_LoopSignal:=0;Rexx_ExecRange(J+1,E-1);
+   If Rexx_LoopSignal=1Then Begin
+    Rexx_LoopSignal:=0;
+    Break;
+   End;
+   If Rexx_LoopSignal=2Then Rexx_LoopSignal:=0;
+  Until Rexx_Terminated;J:=E+1;
+ End
+  Else
+ If Rexx_WordStart(S,'DO FOREVER')Then Begin
+  E:=Rexx_BlockEnd(J+1,Z);
+  Repeat
+   Rexx_LoopSignal:=0;Rexx_ExecRange(J+1,E-1);
+   If Rexx_LoopSignal=1Then Begin
+    Rexx_LoopSignal:=0;
+    Break;
+   End;
+   If Rexx_LoopSignal=2Then Rexx_LoopSignal:=0;
+   Until Rexx_Terminated;
+   J:=E+1;
+  End
+   Else
+  If Rexx_WordStart(S,'DO')and(System.Pos('=',S)>0)and(Rexx_FindWord(S,'TO')>0)Then Begin
+   E:=Rexx_BlockEnd(J+1,Z);
+   EqPos:=System.Pos('=',S);
+   ToPos:=Rexx_FindWord(S,'TO');
+   ByPos:=Rexx_FindWord(S,'BY');
+   LoopVar:=Rexx_Clean(Copy(S,3,EqPos-3));
+   Rexx_Eval(Copy(S,EqPos+1,ToPos-EqPos-1),V);LoopValue:=V.Number;
+   If ByPos>0Then Begin
+    Rexx_Eval(Copy(S,ToPos+2,ByPos-ToPos-2),V);LoopEnd:=V.Number;
+    Rexx_Eval(Copy(S,ByPos+2,255),V);LoopStep:=V.Number;
+   End
+    Else
+   Begin
+    Rexx_Eval(Copy(S,ToPos+2,255),V);LoopEnd:=V.Number;
+    LoopStep:=1;
+   End;
+   If LoopStep=0Then LoopStep:=1;
+   While (((LoopStep>0)and(LoopValue<=LoopEnd))or((LoopStep<0)and(LoopValue>=LoopEnd)))and Not Rexx_Terminated Do Begin
+    Rexx_VarSet(LoopVar,Rexx_NumToText(LoopValue));Rexx_LoopSignal:=0;Rexx_ExecRange(J+1,E-1);
+    If Rexx_LoopSignal=1Then Begin Rexx_LoopSignal:=0;Break;End;
+    If Rexx_LoopSignal=2Then Rexx_LoopSignal:=0;
+    LoopValue:=LoopValue+LoopStep;
+   End;
+   J:=E+1;
+  End
+   Else
+  If Rexx_WordStart(S,'DO')and(Rexx_Clean(Copy(S,3,255))<>'')Then Begin
+   E:=Rexx_BlockEnd(J+1,Z);
+   Rexx_Eval(Copy(S,3,255),V);RepeatCount:=System.Trunc(V.Number);
+   For K:=1 To RepeatCount Do Begin
+    Rexx_LoopSignal:=0;
+    Rexx_ExecRange(J+1,E-1);
+    If Rexx_LoopSignal=1Then Begin
+     Rexx_LoopSignal:=0;
+     Break;
+    End;
+    If Rexx_LoopSignal=2Then Rexx_LoopSignal:=0;
+    If Rexx_Terminated Then Break;
+   End;
+   J:=E+1;
+  End
+  Else
+  If Rexx_WordStart(S,'DO')Then Begin
+   E:=Rexx_BlockEnd(J+1,Z);
+   Rexx_ExecRange(J+1,E-1);
+   J:=E+1;
+  End
+   Else
+  If Rexx_WordStart(S,'END')or Rexx_WordStart(S,'ELSE')Then Inc(J)
+   Else
+  Begin
+   Rexx_ExecOne(S);
+   Inc(J);
+  End;
+  If Rexx_SignalTargetLine>0Then Begin
+   If(Rexx_SignalTargetLine>=A)and(Rexx_SignalTargetLine<=Z)Then Begin J:=Rexx_SignalTargetLine+1;Rexx_SignalTargetLine:=0;End
+    Else Exit;
+  End;
+ End;
+End;
+
+Function Rexx_FindRoutineLabel(Name:String):Integer;
+Var J:Integer;S:String;
+Begin
+ Rexx_FindRoutineLabel:=0;Name:=Rexx_StrToUpper(Rexx_Clean(Name));
+ For J:=1 To Rexx_NumberLine Do Begin
+  S:=Rexx_Clean(Rexx_PA[J]^);
+  If(Length(S)>1)and(S[Length(S)]=':')Then
+   If Rexx_StrToUpper(Rexx_Clean(Copy(S,1,Length(S)-1)))=Name Then Begin Rexx_FindRoutineLabel:=J;Exit;End;
+ End;
+End;
+
+Function Rexx_CallRoutine(Name:String):String;
+Var
+ LabelLine,EndLine,J,K,SavedArgCount,SavedExprPos,
+  SavedInvokeCount:Integer;
+ S,ProcedureText,ExposeName:String;
+ SavedReturning,HasProcedure:Boolean;
+ SavedResult,SavedExprText:String;
+ SavedVariables:PRexxVariable;
+ VariableEntry:PRexxVariable;
+ ExposedHead,ExposedEntry,NextExposed:PRexx_ExposedVariable;
+ SavedArgs,SavedInvokeArgs:Array[1..Rexx_MaxRoutineArgs]of String;
+Begin
+ Name:=Rexx_StrToUpper(Rexx_Clean(Name));LabelLine:=Rexx_FindRoutineLabel(Name);
+ If LabelLine=0Then Begin Rexx_CallRoutine:=Name;Exit;End;
+
+ { Sauvegarder tout l'etat que l'evaluation recursive peut modifier. }
+ SavedExprText:=Rexx_ExprText;SavedExprPos:=Rexx_ExprPos;
+ SavedReturning:=Rexx_RoutineReturning;SavedResult:=Rexx_RoutineResult;
+ SavedArgCount:=Rexx_CurrentArgCount;
+ For J:=1 To Rexx_MaxRoutineArgs Do Begin
+  SavedArgs[J]:=Rexx_CurrentArgs[J];
+  SavedInvokeArgs[J]:=Rexx_InvokeArgs[J];
+  If J<=Rexx_InvokeArgCount Then Rexx_CurrentArgs[J]:=Rexx_InvokeArgs[J]Else Rexx_CurrentArgs[J]:='';
+ End;
+ Rexx_CurrentArgCount:=Rexx_InvokeArgCount;SavedInvokeCount:=Rexx_InvokeArgCount;
+
+ EndLine:=Rexx_NumberLine;
+ For J:=LabelLine+1 To Rexx_NumberLine Do Begin
+  S:=Rexx_Clean(Rexx_PA[J]^);
+  If(Length(S)>1)and(S[Length(S)]=':')Then Begin EndLine:=J-1;Break;End;
+ End;
+
+ J:=LabelLine+1;
+ While(J<=EndLine)and(Rexx_Clean(Rexx_PA[J]^)='')Do Inc(J);
+ ProcedureText:='';HasProcedure:=False;ExposedHead:=Nil;
+ If(J<=EndLine)and Rexx_WordStart(Rexx_Clean(Rexx_PA[J]^),'PROCEDURE')Then Begin
+  HasProcedure:=True;ProcedureText:=Rexx_Clean(Copy(Rexx_Clean(Rexx_PA[J]^),10,255));
+  If Rexx_WordStart(ProcedureText,'EXPOSE')Then Begin
+   ProcedureText:=Rexx_Clean(Copy(ProcedureText,7,255));
+   While ProcedureText<>''Do Begin
+    K:=1;
+    While(K<=Length(ProcedureText))and not(ProcedureText[K]in[' ',#9])Do Inc(K);
+    ExposeName:=Copy(ProcedureText,1,K-1);
+    Delete(ProcedureText,1,K-1);
+    While(Length(ProcedureText)>0)and(ProcedureText[1]in[' ',#9])Do
+     Delete(ProcedureText,1,1);
+    If ExposeName<>''Then Begin
+     New(ExposedEntry);
+     ExposedEntry^.Name:=Rexx_StrToUpper(ExposeName);
+     ExposedEntry^.Value:='';
+     ExposedEntry^.Next:=ExposedHead;
+     ExposedHead:=ExposedEntry;
+    End;
+   End;
+  End;
+ End;
+
+ If HasProcedure Then Begin
+  SavedVariables:=Rexx_Variables;Rexx_Variables:=Nil;
+  ExposedEntry:=ExposedHead;
+  While ExposedEntry<>Nil Do Begin
+   VariableEntry:=Rexx_VarFind(SavedVariables,ExposedEntry^.Name);
+   If VariableEntry<>Nil Then ExposedEntry^.Value:=VariableEntry^.Value;
+   Rexx_VarSet(ExposedEntry^.Name,ExposedEntry^.Value);
+   ExposedEntry:=ExposedEntry^.Next;
+  End;
+ End;
+
+ Rexx_RoutineReturning:=False;Rexx_RoutineResult:='';Inc(Rexx_RoutineDepth);
+ Rexx_ExecRange(LabelLine+1,EndLine);
+ Dec(Rexx_RoutineDepth);
+ Rexx_CallRoutine:=Rexx_RoutineResult;
+
+ If HasProcedure Then Begin
+  ExposedEntry:=ExposedHead;
+  While ExposedEntry<>Nil Do Begin
+   VariableEntry:=Rexx_VarFind(Rexx_Variables,ExposedEntry^.Name);
+   If VariableEntry<>Nil Then ExposedEntry^.Value:=VariableEntry^.Value
+    Else ExposedEntry^.Value:='';
+   ExposedEntry:=ExposedEntry^.Next;
+  End;
+  Rexx_FreeVariables(Rexx_Variables);Rexx_Variables:=SavedVariables;
+  ExposedEntry:=ExposedHead;
+  While ExposedEntry<>Nil Do Begin
+   Rexx_VarSet(ExposedEntry^.Name,ExposedEntry^.Value);
+   ExposedEntry:=ExposedEntry^.Next;
+  End;
+ End;
+
+ ExposedEntry:=ExposedHead;
+ While ExposedEntry<>Nil Do Begin
+  NextExposed:=ExposedEntry^.Next;
+  Dispose(ExposedEntry);
+  ExposedEntry:=NextExposed;
+ End;
+
+ Rexx_CurrentArgCount:=SavedArgCount;Rexx_InvokeArgCount:=SavedInvokeCount;
+ For J:=1 To Rexx_MaxRoutineArgs Do Begin Rexx_CurrentArgs[J]:=SavedArgs[J];Rexx_InvokeArgs[J]:=SavedInvokeArgs[J];End;
+ Rexx_RoutineReturning:=SavedReturning;Rexx_RoutineResult:=SavedResult;
+ Rexx_ExprText:=SavedExprText;Rexx_ExprPos:=SavedExprPos;
+End;
+
+Procedure Rexx_ExecuteCommand;Begin
+ Rexx_Variables:=Nil;
+ RexxQueueHead:=Nil;RexxQueueTail:=Nil;RexxQueueCount:=0;
+ Rexx_Terminated:=False;
+ Rexx_ProgramExitRequested:=False;Rexx_ProgramExitCode:=0;
+ Rexx_LoopSignal:=0;
+ Rexx_CurrentArgCount:=Rexx_InitialArgCount;
+ For I:=1 To Rexx_MaxRoutineArgs Do Rexx_CurrentArgs[I]:=Rexx_InitialArgs[I];
+ Rexx_InvokeArgCount:=0;Rexx_RoutineReturning:=False;Rexx_RoutineResult:='';Rexx_RoutineDepth:=0;
+ Rexx_NumericDigitsValue:=9;Rexx_NumericFuzzValue:=0;Rexx_NumericFormValue:='SCIENTIFIC';
+ Rexx_SignalTargetLine:=0;Rexx_SignalHalt:=False;Rexx_SignalNoValue:=False;Rexx_SignalError:=False;Rexx_SignalSyntax:=False;
+ Rexx_SignalHaltName:='HALT';Rexx_SignalNoValueName:='NOVALUE';Rexx_SignalErrorName:='ERROR';Rexx_SignalSyntaxName:='SYNTAX';
+ Rexx_CurrentConditionName:='';Rexx_CurrentConditionDescription:='';
+ Rexx_CurrentConditionInstruction:='';Rexx_CurrentConditionStatus:='';
+ Rexx_CurrentAddress:='SYSTEM';Rexx_PreviousAddress:='SYSTEM';
+ Rexx_CurrentOptions:='';
+ Rexx_CurrentTraceSetting:='N';
+ Rexx_TimeElapsedStart:=Rexx_CurrentTimeSeconds;
+ Rexx_CharInStreamCount:=0;
+ Rexx_CharOutStreamCount:=0;
+ Rexx_LocalEnvironments:=Nil;
+ If Rexx_NumberLine>0Then Rexx_ExecRange(1,Rexx_NumberLine);
+ Rexx_RestoreLocalEnvironments;
+ Rexx_FreeQueue;
+ Rexx_FreeVariables(Rexx_Variables);
+End;
+
+{ Point d'entree appelable (remplace le corps BEGIN...END du programme
+  autonome d'origine) - execute le script REXX du debut a la fin. Ne fait
+  JAMAIS Halt() : ce code tourne DANS le processus de DEVENV.PAS, un
+  Halt() reel terminerait l'IDE entier, pas seulement le script. Le code
+  de sortie (Rexx_ProgramExitRequested/Rexx_ProgramExitCode, positionne par
+  EXIT/RETURN hors routine) reste disponible mais n'est pas propage plus
+  loin qu'un simple arret normal de Rexx_ExecuteCommand. }
+Procedure Rexx_RunFile(Const Path, Args: String);
+Begin
+ Rexx_FileName := Path;
+ Rexx_InitialArgCount := 0;
+ Rexx_InitialArgs[1] := '';
+ If Args <> '' Then Begin
+  Rexx_InitialArgCount := 1;
+  Rexx_InitialArgs[1] := Args;
+ End;
+ Rexx_NumberLine := 0; Rexx_CurrNumberLine := 0;
+ Rexx_LoadCommand;
+ Rexx_ExecuteCommand;
+End;
+
+{ Fonction de depart de la fibre Win32 dediee a l'execution d'un script -
+  voir Rexx_SwitchAndCheck/TermCmd_REXX. NE DOIT JAMAIS "tomber" en fin de
+  fonction (une fibre qui retourne termine tout le thread hote sous
+  Win32) : boucle indefiniment sur SwitchToFiber apres la fin reelle du
+  script, la fibre etant de toute facon supprimee (DeleteFiber) depuis le
+  cote appelant avant qu'elle ne soit jamais resollicitee. }
+Procedure Rexx_FiberEntry(Param: Pointer); StdCall;
+Begin
+ Rexx_RunFile(Rexx_PendingPath, Rexx_PendingArgs);
+ If Rexx_ActiveTP^.PartialLine <> '' Then Begin
+  TermAddLine(Rexx_ActiveTP^, Rexx_ActiveTP^.PartialLine);
+  Rexx_ActiveTP^.PartialLine := '';
+ End;
+ TermAddLine(Rexx_ActiveTP^, '[REXX termine]');
+ Rexx_ActiveTP^.RexxActive := False;
+ Rexx_ActiveTP^.RexxWaiting := rwNone;
+ While True Do SwitchToFiber(Rexx_MainFiber);
+End;
+
+{ REXX fichier.rex [arguments] - lance l'interprete REXX complet ci-dessus }
+{ dans ce terminal. Demande explicite de l'utilisateur : integration       }
+{ integrale de REXX.PAS (voir le commentaire d'en-tete du bloc Rexx_*),    }
+{ pas un stub. Disque virtuel non supporte (meme limitation que LINUX/OS2  }
+{ ci-dessous) : Rexx_LoadCommand n'a jamais ete adapte au modele FAT       }
+{ virtuel de ce terminal - limitation assumee, pas devinee. }
+Procedure TermCmd_REXX(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RexPath, Args: String;
+ P: Integer;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'REXX : lance un script REXX complet (variables, ' +
+   'DO/SELECT/IF, fonctions BIF et SYS*/RX*).');
+  TermAddLine(TP, 'Syntaxe : REXX fichier.rex [arguments]');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'REXX : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.RexxActive Then Begin
+  TermAddLine(TP, 'REXX : un script est deja en cours d''execution ' +
+   'dans ce terminal.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ RexPath := TermFindRomByExt(Dir, CurrParam, 'REX');
+ If RexPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ Args := TrimStr(ParamStr);
+ P := System.Pos(' ', Args);
+ If P > 0 Then Args := TrimStr(Copy(Args, P + 1, Length(Args)))
+ Else Args := '';
+ If Not Rexx_MainFiberReady Then Begin
+  Rexx_MainFiber := ConvertThreadToFiber(Nil);
+  Rexx_MainFiberReady := True;
+ End;
+ Rexx_ActiveTP := @TP;
+ Rexx_PendingPath := RexPath;
+ Rexx_PendingArgs := Args;
+ TP.RexxActive := True;
+ TP.RexxWaiting := rwNone;
+ TP.PartialLine := '';
+ TP.RexxFiber := CreateFiber(0, @Rexx_FiberEntry, Nil);
+ Rexx_SwitchAndCheck(TP);
+End;
+
+
+
 { --- LINUX fichier / OS2 fichier (2026-08-29, demande explicite de        }
 { l utilisateur) - memes 2 shells (SK_CMD/SK_NCOMMANDER), meme convention   }
 { de resolution de repertoire courant que NES/ATARI2600/C64/COCO3/WIN16.   }
@@ -41161,6 +45110,15 @@ Begin
   TermAddLine(TP,
    '  WIN16RUN fichier [n] Executer n pas d''un .EXE NE, trace vers WIN16RUN.LOG');
  End;
+ { REXX : SK_OS2REXX uniquement (2026-08-30, demande explicite de           }
+ { l utilisateur - integration complete de REXX.PAS, voir le bloc Rexx_*    }
+ { pres de TermCmd_IMGMOUNT). }
+ If TP.Shell = SK_OS2REXX Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Langage de script REXX ---');
+  TermAddLine(TP,
+   '  REXX fichier.rex [arguments]  Lance un script REXX complet');
+ End;
 End;
 
 { --- LOG : activer ou desactiver les journaux de diagnostic --- }
@@ -42131,12 +46089,11 @@ Begin
    { pour l ensemble des commandes internes de base (DIR/CD/COPY/DEL/etc), }
    { compatible avec COMMAND.COM DOS - meme jeu de commandes que SK_CMD    }
    { ci-dessus, reutilisant les MEMES handlers TermCmd_* (generiques,      }
-   { independants du shell). PERIMETRE ASSUME (demande explicite,          }
-   { clarifiee via AskUserQuestion avant implementation) : ce shell est un }
-   { CMD.EXE de base + BOOT - AUCUN interprete REXX (langage de script      }
-   { natif d OS/2) n est implante ici, ce serait un chantier separe et      }
-   { bien plus consequent (un interprete de langage complet) que l ajout   }
-   { d une invite de commandes supplementaire. }
+   { independants du shell). Le perimetre initial de ce shell (CMD.EXE de }
+   { base + BOOT, PAS d interprete REXX) a ete explicitement etendu le     }
+   { 2026-08-30 a la demande de l utilisateur : REXX ci-dessous integre    }
+   { desormais integralement l interprete REXX.PAS (voir le grand bloc     }
+   { Rexx_* pres de TermCmd_IMGMOUNT). }
    If CurrCmd = 'EXIT' Then
     TermVisible := False
    Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
@@ -42182,6 +46139,8 @@ Begin
     TermCmd_BOOT(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
+   Else If CurrCmd = 'REXX' Then
+    TermCmd_REXX(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else Begin
@@ -46431,6 +50390,15 @@ Begin
  { Clavier }
  If Ev.Kind = EV_KEY_CHAR Then Begin
   Ch := Ev.KeyChar;
+  { Script REXX suspendu en attente d'une touche UNIQUE (SYSGETKEY/CHARIN  }
+  { interactif - voir Rexx_ReadKey pres de TermCmd_IMGMOUNT) : toute       }
+  { touche le relance IMMEDIATEMENT, sans attendre Entree (contrairement   }
+  { au cas rwLine gere plus bas, dans la branche #13 normale). }
+  If TP.RexxActive And (TP.RexxWaiting = rwKey) Then Begin
+   TP.RexxPendingKey := Ch;
+   Rexx_SwitchAndCheck(TP);
+   TP.NeedRepaint := True;
+  End Else
   Case Ch Of
    #8: Begin { Backspace }
     TP.TabActive := False;
@@ -46443,23 +50411,36 @@ Begin
    #9: TermTab_Complete(TP); { Tab : completion de nom de fichier, comme CMD.EXE }
    #13: Begin { Enter }
     TP.TabActive := False;
-    GetDir(0, Dir);
-    { Toute saisie ramene la fenetre au bas de l historique }
-    TP.ScrollOffset := 0;
-    Case TP.Shell Of
-     SK_POWERSHELL:
-      TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
-     SK_BASH:
-      TermAddLine(TP, 'user$ ' + TP.InputLine);
-     SK_AMIGADOS:
-      TermAddLine(TP, '1.SYS:> ' + TP.InputLine);
-    Else
-     TermAddLine(TP, Dir + '> ' + TP.InputLine);
+    { Script REXX suspendu en attente d'une LIGNE complete (PULL/PARSE     }
+    { PULL/PARSE LINEIN sans donnee en file d'attente - voir               }
+    { Rexx_ReadLine) : la ligne tapee normalement jusqu'ici (Backspace/    }
+    { caracteres imprimables geres comme d'habitude ci-dessous) devient la }
+    { valeur lue par le script au lieu d'etre soumise a                    }
+    { TermExecuteCommand. }
+    If TP.RexxActive And (TP.RexxWaiting = rwLine) Then Begin
+     TP.RexxPendingLine := TP.InputLine;
+     TP.InputLine := '';
+     TP.InputCol := 1;
+     Rexx_SwitchAndCheck(TP);
+    End Else Begin
+     GetDir(0, Dir);
+     { Toute saisie ramene la fenetre au bas de l historique }
+     TP.ScrollOffset := 0;
+     Case TP.Shell Of
+      SK_POWERSHELL:
+       TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
+      SK_BASH:
+       TermAddLine(TP, 'user$ ' + TP.InputLine);
+      SK_AMIGADOS:
+       TermAddLine(TP, '1.SYS:> ' + TP.InputLine);
+     Else
+      TermAddLine(TP, Dir + '> ' + TP.InputLine);
+     End;
+     TermExecuteCommand(TP, TP.InputLine);
+     TP.InputLine := '';
+     TP.InputCol := 1;
+     TP.ScrollOffset := 0;
     End;
-    TermExecuteCommand(TP, TP.InputLine);
-    TP.InputLine := '';
-    TP.InputCol := 1;
-    TP.ScrollOffset := 0;
     TP.NeedRepaint := True;
    End;
    #27: ; { Echap : ne rien faire }

@@ -55,6 +55,39 @@ Type
   Value:String;
   Next:PPerlVariable;
  End;
+ PPerlHandle=^TPerlHandle;
+ TPerlHandle=Record
+  Name:String[63];
+  BinaryMode:Boolean;
+  IsOpen:Boolean;
+  Next:PPerlHandle;
+ End;
+ PPerlCallFrame=^TPerlCallFrame;
+ TPerlCallFrame=Record
+  RoutineName:String[63];
+  PackageName:String[63];
+  SourceFile:String;
+  SourceLine:Integer;
+  HasArguments:Boolean;
+  Next:PPerlCallFrame;
+ End;
+ PPerlDirectoryHandle=^TPerlDirectoryHandle;
+ TPerlDirectoryHandle=Record
+  Name:String[63];
+  IsOpen:Boolean;
+  Next:PPerlDirectoryHandle;
+ End;
+ PPerlHashEntry=^TPerlHashEntry;
+ TPerlHashEntry=Record
+  HashName,Key,Value:String;
+  Next:PPerlHashEntry;
+ End;
+ PPerlHashCursor=^TPerlHashCursor;
+ TPerlHashCursor=Record
+  HashName:String[63];
+  Current:PPerlHashEntry;
+  Next:PPerlHashCursor;
+ End;
 
 Var
  FileC:Text;
@@ -67,10 +100,18 @@ Var
  CurrNumberLine:Integer;
  I:Integer;
  PerlVariables:PPerlVariable;
+ PerlHandles:PPerlHandle;
+ PerlCallStack:PPerlCallFrame;
+ PerlDirectoryHandles:PPerlDirectoryHandle;
+ PerlHashEntries:PPerlHashEntry;
+ PerlHashCursors:PPerlHashCursor;
  ExprSource:String;
  ExprPosition:Integer;
 
 Function StrToUpper(S:String):String;Forward;
+Procedure SetPerlVariable(Name,Value:String);Forward;
+Function ExecutePerlCoreLine(S:String):Boolean;Forward;
+Procedure EvalPerlExpression(S:String;Var V:TPerlValue);Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
 Var J:Integer;
@@ -104,6 +145,193 @@ End;
 Procedure PerlNumber(N:Real;Var V:TPerlValue);
 Begin V.Number:=N;V.IsNumber:=True;V.Text:=PerlNumberText(N);End;
 
+Function FindPerlHandle(Name:String):PPerlHandle;
+Var Handle:PPerlHandle;
+Begin
+ Name:=StrToUpper(CleanText(Name));Handle:=PerlHandles;
+ While Handle<>Nil Do Begin
+  If Handle^.Name=Name Then Begin FindPerlHandle:=Handle;Exit;End;
+  Handle:=Handle^.Next;
+ End;
+ FindPerlHandle:=Nil;
+End;
+
+Procedure RegisterPerlHandle(Name:String;OpenState:Boolean);
+Var Handle:PPerlHandle;
+Begin
+ Name:=StrToUpper(CleanText(Name));If Name=''Then Exit;
+ Handle:=FindPerlHandle(Name);
+ If Handle=Nil Then Begin
+  New(Handle);Handle^.Name:=Name;Handle^.BinaryMode:=False;
+  Handle^.Next:=PerlHandles;PerlHandles:=Handle;
+ End;
+ Handle^.IsOpen:=OpenState;
+End;
+
+Procedure PerlBinMode(HandleName,LayerName:String;Var V:TPerlValue);
+Var Handle:PPerlHandle;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));
+ If(HandleName='STDIN')or(HandleName='STDOUT')or(HandleName='STDERR')Then
+  RegisterPerlHandle(HandleName,True);
+ Handle:=FindPerlHandle(HandleName);
+ If(Handle=Nil)or Not Handle^.IsOpen Then Begin PerlText('',V);Exit;End;
+ LayerName:=StrToUpper(CleanText(LayerName));
+ If(LayerName=':CRLF')or(LayerName='CRLF')Then Handle^.BinaryMode:=False
+ Else Handle^.BinaryMode:=True;
+ PerlNumber(1,V);
+End;
+
+Procedure PushPerlCallFrame(RoutineName,PackageName,SourceName:String;
+ SourceLine:Integer;HasArguments:Boolean);
+Var Frame:PPerlCallFrame;
+Begin
+ New(Frame);Frame^.RoutineName:=RoutineName;Frame^.PackageName:=PackageName;
+ Frame^.SourceFile:=SourceName;Frame^.SourceLine:=SourceLine;
+ Frame^.HasArguments:=HasArguments;Frame^.Next:=PerlCallStack;
+ PerlCallStack:=Frame;
+End;
+
+Procedure PopPerlCallFrame;
+Var Frame:PPerlCallFrame;
+Begin
+ If PerlCallStack=Nil Then Exit;
+ Frame:=PerlCallStack;PerlCallStack:=Frame^.Next;Dispose(Frame);
+End;
+
+Procedure PerlCaller(RequestedLevel:LongInt;Var V:TPerlValue);
+Var Frame:PPerlCallFrame;
+Begin
+ If RequestedLevel<0Then Begin PerlText('',V);Exit;End;
+ Frame:=PerlCallStack;
+ While(Frame<>Nil)and(RequestedLevel>0)Do Begin Frame:=Frame^.Next;Dec(RequestedLevel);End;
+ If Frame=Nil Then PerlText('',V)Else PerlText(Frame^.PackageName,V);
+End;
+
+Function PerlFileExists(PathName:String):Boolean;
+Var F:File;ErrorCode:Integer;
+Begin
+ {$I-}Assign(F,PathName);Reset(F,1);{$I+}ErrorCode:=IoResult;
+ PerlFileExists:=ErrorCode=0;If ErrorCode=0Then Close(F);
+End;
+
+Procedure PerlChMod(ModeValue:LongInt;FirstFile,SecondFile:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var F:File;Attributes,ErrorCode,ChangedCount:Word;
+ Procedure ChangeOne(PathName:String);
+ Begin
+  If PathName=''Then Exit;
+  Assign(F,PathName);GetFAttr(F,Attributes);ErrorCode:=DosError;
+  If ErrorCode<>0Then Exit;
+  If(ModeValue and 128)<>0Then Attributes:=Attributes and Not ReadOnly
+   Else Attributes:=Attributes or ReadOnly;
+  SetFAttr(F,Attributes);If DosError=0Then Inc(ChangedCount);
+ End;
+Begin
+ ChangedCount:=0;If ArgumentCount>1Then ChangeOne(FirstFile);
+ If ArgumentCount>2Then ChangeOne(SecondFile);
+ PerlNumber(ChangedCount,V);
+End;
+
+Procedure PerlChomp(VariableName:String;Var A:TPerlValue;Var V:TPerlValue);
+Var Removed:Integer;
+Begin
+ Removed:=0;
+ If Copy(A.Text,Length(A.Text)-1,2)=#13#10Then Begin Delete(A.Text,Length(A.Text)-1,2);Removed:=2;End
+ Else If(Length(A.Text)>0)and(A.Text[Length(A.Text)]in[#10,#13])Then Begin Delete(A.Text,Length(A.Text),1);Removed:=1;End;
+ If VariableName<>''Then SetPerlVariable(VariableName,A.Text);
+ PerlNumber(Removed,V);
+End;
+
+Procedure PerlChop(VariableName:String;Var A:TPerlValue;Var V:TPerlValue);
+Var RemovedCharacter:String;
+Begin
+ RemovedCharacter:='';
+ If Length(A.Text)>0Then Begin
+  RemovedCharacter:=A.Text[Length(A.Text)];Delete(A.Text,Length(A.Text),1);
+ End;
+ If VariableName<>''Then SetPerlVariable(VariableName,A.Text);
+ PerlText(RemovedCharacter,V);
+End;
+
+Procedure PerlChOwn(UserId,GroupId:LongInt;FirstFile:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Begin
+ { DOS et Windows ne fournissent pas chown par l'unite DOS. Ne pas annoncer
+   un faux succes: Perl retourne zero fichier modifie sur cette plateforme. }
+ PerlNumber(0,V);
+End;
+
+Procedure PerlChr(CharacterCode:LongInt;Var V:TPerlValue);
+Begin
+ CharacterCode:=CharacterCode mod 256;
+ If CharacterCode<0Then Inc(CharacterCode,256);
+ PerlText(Chr(CharacterCode),V);
+End;
+
+Function FindPerlDirectoryHandle(Name:String):PPerlDirectoryHandle;
+Var Handle:PPerlDirectoryHandle;
+Begin
+ Name:=StrToUpper(CleanText(Name));Handle:=PerlDirectoryHandles;
+ While Handle<>Nil Do Begin
+  If Handle^.Name=Name Then Begin FindPerlDirectoryHandle:=Handle;Exit;End;
+  Handle:=Handle^.Next;
+ End;
+ FindPerlDirectoryHandle:=Nil;
+End;
+
+Procedure RegisterPerlDirectoryHandle(Name:String);
+Var Handle:PPerlDirectoryHandle;
+Begin
+ Name:=StrToUpper(CleanText(Name));If Name=''Then Exit;
+ Handle:=FindPerlDirectoryHandle(Name);
+ If Handle=Nil Then Begin
+  New(Handle);Handle^.Name:=Name;Handle^.Next:=PerlDirectoryHandles;
+  PerlDirectoryHandles:=Handle;
+ End;
+ Handle^.IsOpen:=True;
+End;
+
+Procedure PerlCloseDir(HandleName:String;Var V:TPerlValue);
+Var Handle:PPerlDirectoryHandle;
+Begin
+ Handle:=FindPerlDirectoryHandle(HandleName);
+ If(Handle<>Nil)and Handle^.IsOpen Then Begin
+  Handle^.IsOpen:=False;PerlNumber(1,V);
+ End Else PerlText('',V);
+End;
+
+Procedure PerlCrypt(PlainText,Salt:String;Var V:TPerlValue);
+Const CryptAlphabet='./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+Var I,J:Integer;H1,H2:LongInt;ResultText,Alphabet:String;
+Begin
+ { Solution autonome pour DOS: l'interface et le comportement sale/reproductible
+   de crypt sont conserves sans dependre d'une bibliotheque Unix externe. }
+ Alphabet:=CryptAlphabet;
+ If Length(Salt)<1Then Salt:='..'
+ Else If Length(Salt)<2Then Salt:=Salt+'.';
+ Salt:=Copy(Salt,1,2);
+ For I:=1To 2Do If Pos(Salt[I],Alphabet)=0Then Salt[I]:='.';
+ H1:=5381;H2:=52711;
+ For I:=1To Length(PlainText)Do Begin
+  H1:=(H1*33+Ord(PlainText[I]))mod 65521;
+  H2:=(H2*37+Ord(PlainText[I])+H1)mod 65521;
+ End;
+ For I:=1To 2Do Begin
+  H1:=(H1*33+Ord(Salt[I]))mod 65521;
+  H2:=(H2*37+Ord(Salt[I])+H1)mod 65521;
+ End;
+ ResultText:=Salt;
+ For I:=1To 11Do Begin
+  J:=(H1+H2+I*17)mod 64;
+  { Turbo Pascal 7 ne permet pas d'indexer directement une constante chaine. }
+  ResultText:=ResultText+Alphabet[J+1];
+  H1:=(H1*41+H2+I)mod 65521;
+  H2:=(H2*43+H1+J)mod 65521;
+ End;
+ PerlText(ResultText,V);
+End;
+
 Function FindPerlVariable(Name:String):PPerlVariable;
 Var P:PPerlVariable;
 Begin
@@ -123,6 +351,88 @@ End;
 Procedure GetPerlVariable(Name:String;Var V:TPerlValue);
 Var P:PPerlVariable;
 Begin P:=FindPerlVariable(Name);If P=Nil Then PerlText('',V)Else PerlText(P^.Value,V);End;
+
+Procedure PerlDefined(VariableName:String;ExpressionValue:TPerlValue;
+ Var V:TPerlValue);
+Begin
+ If VariableName<>''Then Begin
+  If FindPerlVariable(VariableName)<>Nil Then PerlNumber(1,V)
+  Else PerlText('',V);
+ End Else Begin
+  { Une constante ou le resultat d'une expression est toujours defini, meme
+    lorsqu'il contient la chaine vide. }
+  PerlNumber(1,V);
+ End;
+End;
+
+Function FindPerlHashEntry(HashName,Key:String):PPerlHashEntry;
+Var Entry:PPerlHashEntry;
+Begin
+ Entry:=PerlHashEntries;
+ While Entry<>Nil Do Begin
+  If(Entry^.HashName=HashName)and(Entry^.Key=Key)Then Begin
+   FindPerlHashEntry:=Entry;Exit;
+  End;
+  Entry:=Entry^.Next;
+ End;
+ FindPerlHashEntry:=Nil;
+End;
+
+Procedure SetPerlHashEntry(HashName,Key,Value:String);
+Var Entry:PPerlHashEntry;
+Begin
+ Entry:=FindPerlHashEntry(HashName,Key);
+ If Entry=Nil Then Begin
+  New(Entry);Entry^.HashName:=HashName;Entry^.Key:=Key;
+  Entry^.Next:=PerlHashEntries;PerlHashEntries:=Entry;
+ End;
+ Entry^.Value:=Value;
+End;
+
+Procedure GetPerlHashEntry(HashName,Key:String;Var V:TPerlValue);
+Var Entry:PPerlHashEntry;
+Begin
+ Entry:=FindPerlHashEntry(HashName,Key);
+ If Entry=Nil Then PerlText('',V)Else PerlText(Entry^.Value,V);
+End;
+
+Function FindPerlHashCursor(HashName:String):PPerlHashCursor;
+Var Cursor:PPerlHashCursor;
+Begin
+ Cursor:=PerlHashCursors;
+ While Cursor<>Nil Do Begin
+  If Cursor^.HashName=HashName Then Begin FindPerlHashCursor:=Cursor;Exit;End;
+  Cursor:=Cursor^.Next;
+ End;
+ New(Cursor);Cursor^.HashName:=HashName;Cursor^.Current:=PerlHashEntries;
+ Cursor^.Next:=PerlHashCursors;PerlHashCursors:=Cursor;FindPerlHashCursor:=Cursor;
+End;
+
+Procedure PerlEach(HashName:String;Var V:TPerlValue);
+Var Cursor:PPerlHashCursor;Entry:PPerlHashEntry;
+Begin
+ If(Length(HashName)>0)and(HashName[1]='%')Then Delete(HashName,1,1);
+ Cursor:=FindPerlHashCursor(HashName);Entry:=Cursor^.Current;
+ While(Entry<>Nil)and(Entry^.HashName<>HashName)Do Entry:=Entry^.Next;
+ If Entry=Nil Then Begin Cursor^.Current:=PerlHashEntries;PerlText('',V);Exit;End;
+ Cursor^.Current:=Entry^.Next;PerlText(Entry^.Key,V);
+End;
+
+Procedure PerlExists(ReferenceText:String;Var V:TPerlValue);
+Var P,Q:Integer;HashName,Key:String;
+Begin
+ ReferenceText:=CleanText(ReferenceText);P:=Pos('{',ReferenceText);
+ Q:=Pos('}',ReferenceText);
+ If(P>1)and(Q>P)Then Begin
+  HashName:=Copy(ReferenceText,2,P-2);Key:=CleanText(Copy(ReferenceText,P+1,Q-P-1));
+  If(Length(Key)>1)and(Key[1]in['''','"'])and(Key[Length(Key)]=Key[1])Then
+   Key:=Copy(Key,2,Length(Key)-2);
+  If FindPerlHashEntry(HashName,Key)<>Nil Then PerlNumber(1,V)Else PerlText('',V);
+ End Else Begin
+  If(Length(ReferenceText)>0)and(ReferenceText[1]='$')Then Delete(ReferenceText,1,1);
+  If FindPerlVariable(ReferenceText)<>Nil Then PerlNumber(1,V)Else PerlText('',V);
+ End;
+End;
 
 Function DeletePerlVariable(Name:String):Boolean;
 Var P,Previous:PPerlVariable;
@@ -145,19 +455,42 @@ Begin
 End;
 
 Procedure PerlClose(HandleName:String;Var V:TPerlValue);
+Var Handle:PPerlHandle;
 Begin
  HandleName:=StrToUpper(CleanText(HandleName));
- { Les flux standards appartiennent au processus et ne doivent pas etre
-   physiquement fermes par l'interpreteur. Les handles fichiers seront
-   retires de la table des flux lors de l'implementation de OPEN. }
  If(HandleName='STDIN')or(HandleName='STDOUT')or(HandleName='STDERR')Then
-  PerlNumber(1,V)
- Else PerlText('',V);
+  RegisterPerlHandle(HandleName,True);
+ Handle:=FindPerlHandle(HandleName);
+ If(Handle<>Nil)and Handle^.IsOpen Then Begin
+  Handle^.IsOpen:=False;PerlNumber(1,V);
+ End Else PerlText('',V);
 End;
 
 Procedure PerlDelete(Name:String;Var V:TPerlValue);
 Begin
  If DeletePerlVariable(Name)Then PerlNumber(1,V)Else PerlText('',V);
+End;
+
+Procedure PerlEof(HandleName:String;ArgumentCount:Integer;Var V:TPerlValue);
+Var Handle:PPerlHandle;AtEnd:Boolean;
+Begin
+ AtEnd:=False;HandleName:=StrToUpper(CleanText(HandleName));
+ If ArgumentCount=0Then AtEnd:=Eof(FileC)
+ Else If HandleName='STDIN'Then AtEnd:=Eof(Input)
+ Else Begin
+  Handle:=FindPerlHandle(HandleName);
+  AtEnd:=(Handle=Nil)or Not Handle^.IsOpen;
+ End;
+ If AtEnd Then PerlNumber(1,V)Else PerlText('',V);
+End;
+
+Procedure PerlEval(CodeText:String;Var V:TPerlValue);
+Var SavedSource:String;SavedPosition:Integer;
+Begin
+ SavedSource:=ExprSource;SavedPosition:=ExprPosition;
+ If Not ExecutePerlCoreLine(CodeText)Then EvalPerlExpression(CodeText,V)
+ Else PerlNumber(1,V);
+ ExprSource:=SavedSource;ExprPosition:=SavedPosition;
 End;
 
 Procedure ExprSkip;
@@ -187,7 +520,8 @@ Begin
 End;
 
 Procedure ParsePerlPrimary(Var V:TPerlValue);
-Var Q:Char;S,Name:String;N:Real;Code,FunctionByte:Integer;A,B,C:TPerlValue;
+Var Q:Char;S,Name,ArgumentVariable,ArgumentText,HashKey:String;N:Real;
+ Code,FunctionByte,FunctionArgumentCount,ArgumentStart,ArgumentSourceStart:Integer;A,B,C:TPerlValue;
 Begin
  ExprSkip;If ExprPosition>Length(ExprSource)Then Begin PerlText('',V);Exit;End;
  If ExprSource[ExprPosition]in['''','"']Then Begin
@@ -195,7 +529,7 @@ Begin
   While(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]<>Q)Do Begin
    If(Q='"')and(ExprSource[ExprPosition]='\')and(ExprPosition<Length(ExprSource))Then Begin
     Inc(ExprPosition);Case ExprSource[ExprPosition]of
-     'n':S:=S+#13+#10;'r':S:=S+#13;'t':S:=S+#9;'\':S:=S+'\';'"':S:=S+'"';Else S:=S+ExprSource[ExprPosition];End;
+     'n':S:=S+#10;'r':S:=S+#13;'t':S:=S+#9;'\':S:=S+'\';'"':S:=S+'"';Else S:=S+ExprSource[ExprPosition];End;
    End Else S:=S+ExprSource[ExprPosition];Inc(ExprPosition);
   End;
   If ExprPosition<=Length(ExprSource)Then Inc(ExprPosition);PerlText(S,V);Exit;
@@ -203,26 +537,54 @@ Begin
  If ExprSource[ExprPosition]='('Then Begin Inc(ExprPosition);ParsePerlOr(V);ExprSkip;
  If ExprSource[ExprPosition]=')'Then Inc(ExprPosition);Exit;End;
  If ExprSource[ExprPosition]='$'Then Begin
-  Inc(ExprPosition);Name:=ExprWord;GetPerlVariable(Name,V);Exit;
+  Inc(ExprPosition);Name:=ExprWord;ExprSkip;
+  If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='{')Then Begin
+   Inc(ExprPosition);ParsePerlOr(A);HashKey:=A.Text;ExprSkip;
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='}')Then Inc(ExprPosition);
+   GetPerlHashEntry(Name,HashKey,V);
+  End Else GetPerlVariable(Name,V);
+  Exit;
+ End;
+ If ExprSource[ExprPosition]='%'Then Begin
+  Inc(ExprPosition);Name:=ExprWord;PerlText('%'+Name,V);Exit;
  End;
  If ExprSource[ExprPosition]in['0'..'9']Then Begin
   S:='';While(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]in['0'..'9','.'])Do Begin
    S:=S+ExprSource[ExprPosition];Inc(ExprPosition);
   End;
-  Val(S,N,Code);If Code=0Then PerlNumber(N,V)Else PerlText(S,V);Exit;
+  If(Length(S)>1)and(S[1]='0')and(System.Pos('.',S)=0)Then Begin
+   N:=0;Code:=0;
+   For FunctionByte:=2 To Length(S)Do Begin
+    If Not(S[FunctionByte]in['0'..'7'])Then Code:=1
+    Else N:=N*8+Ord(S[FunctionByte])-Ord('0');
+   End;
+  End Else Val(S,N,Code);
+  If Code=0Then PerlNumber(N,V)Else PerlText(S,V);Exit;
  End;
  Name:=ExprWord;
  If Name<>''Then Begin
   ExprSkip;
   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='(')Then Begin
-   Inc(ExprPosition);ParsePerlOr(A);ExprSkip;
+   Inc(ExprPosition);ExprSkip;ArgumentSourceStart:=ExprPosition;
+   ArgumentStart:=ExprPosition;ArgumentVariable:='';ArgumentText:='';
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='$')Then Begin
+    Inc(ArgumentStart);
+    While(ArgumentStart<=Length(ExprSource))and(ExprSource[ArgumentStart]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
+     ArgumentVariable:=ArgumentVariable+ExprSource[ArgumentStart];Inc(ArgumentStart);
+    End;
+   End;
+   FunctionArgumentCount:=0;
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]<>')')Then FunctionArgumentCount:=1;
+   ParsePerlOr(A);ExprSkip;
+   ArgumentText:=CleanText(Copy(ExprSource,ArgumentSourceStart,
+    ExprPosition-ArgumentSourceStart));
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=',')Then Begin
-    Inc(ExprPosition);ParsePerlOr(B);
+    Inc(FunctionArgumentCount);Inc(ExprPosition);ParsePerlOr(B);
    End
     Else
    PerlText('',B);
    ExprSkip;If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=',')Then Begin
-    Inc(ExprPosition);ParsePerlOr(C);
+    Inc(FunctionArgumentCount);Inc(ExprPosition);ParsePerlOr(C);
    End
     Else
    PerlText('',C);
@@ -232,10 +594,27 @@ Begin
    Case FunctionByte Of
     0:PerlNumber(Abs(A.Number),V);                         { abs }
     2:PerlNumber(PerlArcTan2(A.Number,B.Number),V);       { atan2 }
+    3:PerlBinMode(A.Text,B.Text,V);                        { binmode }
+    4:Begin                                                { caller }
+       If A.Text=''Then PerlCaller(0,V)Else PerlCaller(Trunc(A.Number),V);
+      End;
+    6:PerlChMod(Trunc(A.Number),B.Text,C.Text,FunctionArgumentCount,V); { chmod }
+    7:PerlChomp(ArgumentVariable,A,V);                      { chomp }
+    8:PerlChop(ArgumentVariable,A,V);                       { chop }
+    9:PerlChOwn(Trunc(A.Number),Trunc(B.Number),C.Text,
+       FunctionArgumentCount,V);                           { chown }
+    10:PerlChr(Trunc(A.Number),V);                          { chr }
     11:PerlChRoot(A.Text,V);                               { chroot }
     12:PerlClose(A.Text,V);                                { close }
+    13:PerlCloseDir(A.Text,V);                              { closedir }
     14:PerlNumber(Cos(A.Number),V);                        { cos }
+    15:PerlCrypt(A.Text,B.Text,V);                          { crypt }
+    16:PerlDefined(ArgumentVariable,A,V);                  { defined }
     17:PerlDelete(A.Text,V);                               { delete }
+    19:PerlEach(A.Text,V);                                 { each }
+    26:PerlEof(A.Text,FunctionArgumentCount,V);             { eof }
+    27:PerlEval(A.Text,V);                                 { eval }
+    29:PerlExists(ArgumentText,V);                         { exists }
     67:PerlNumber(Trunc(A.Number),V);                      { int }
     71:Begin                                               { lc }
         S:=A.Text;
@@ -737,6 +1116,46 @@ Begin
  If Drive<>GetCurrentDisk Then ChDir(CurrPath);
 End;
 
+Procedure BinModeCommand;
+Var Name,LayerName:String;V,HandleValue:TPerlValue;P:Integer;
+Begin
+ SkipSpace;Name:=CleanText(Copy(CurrLine,CurrPos,255));LayerName:='';
+ P:=System.Pos(',',Name);
+ If P>0Then Begin LayerName:=CleanText(Copy(Name,P+1,255));Name:=CleanText(Copy(Name,1,P-1));End;
+ If(Length(Name)>0)and(Name[1]='$')Then Begin
+  Delete(Name,1,1);GetPerlVariable(Name,HandleValue);Name:=HandleValue.Text;
+ End;
+ If(Length(LayerName)>=2)and(LayerName[1]in['''','"'])Then
+  LayerName:=Copy(LayerName,2,Length(LayerName)-2);
+ PerlBinMode(Name,LayerName,V);CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure ChompCommand;
+Var Name:String;A,V:TPerlValue;J:Integer;
+Begin
+ SkipSpace;If CurrLine[CurrPos]='$'Then Inc(CurrPos);J:=CurrPos;
+ While(J<=Length(CurrLine))and(CurrLine[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+ Name:=Copy(CurrLine,CurrPos,J-CurrPos);GetPerlVariable(Name,A);PerlChomp(Name,A,V);
+ CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure ChopCommand;
+Var Name:String;A,V:TPerlValue;J:Integer;
+Begin
+ SkipSpace;If CurrLine[CurrPos]='$'Then Inc(CurrPos);J:=CurrPos;
+ While(J<=Length(CurrLine))and(CurrLine[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+ Name:=Copy(CurrLine,CurrPos,J-CurrPos);GetPerlVariable(Name,A);PerlChop(Name,A,V);
+ CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure BareFunctionCommand(FunctionName:String);
+Var Arguments:String;V:TPerlValue;
+Begin
+ Arguments:=CleanText(Copy(CurrLine,CurrPos,255));
+ EvalPerlExpression(FunctionName+'('+Arguments+')',V);
+ CurrPos:=Length(CurrLine)+1;
+End;
+
 Procedure CloseCommand;
 Var Name:String;V,HandleValue:TPerlValue;
 Begin
@@ -908,7 +1327,8 @@ Begin
 End;
 
 Function ExecutePerlCoreLine(S:String):Boolean;
-Var P,J:Integer;Name,RightSide,OperatorText:String;V,OldValue:TPerlValue;
+Var P,J,K:Integer;Name,RightSide,OperatorText,HashKeyText:String;
+ V,OldValue,HashKeyValue:TPerlValue;
 Begin
  ExecutePerlCoreLine:=True;S:=CleanText(S);
  If(S='')or(S[1]='#')or(Copy(S,1,2)='#!')Then Exit;
@@ -929,7 +1349,12 @@ Begin
     Else If OperatorText='*='Then PerlNumber(OldValue.Number*V.Number,V)
     Else If(OperatorText='/=')and(V.Number<>0)Then PerlNumber(OldValue.Number/V.Number,V);
    End;
-   SetPerlVariable(Name,V.Text);Exit;
+   If(J<=Length(S))and(S[J]='{')Then Begin
+    K:=J+1;While(K<=Length(S))and(S[K]<>'}')Do Inc(K);
+    HashKeyText:=Copy(S,J+1,K-J-1);EvalPerlExpression(HashKeyText,HashKeyValue);
+    SetPerlHashEntry(Name,HashKeyValue.Text,V.Text);
+   End Else SetPerlVariable(Name,V.Text);
+   Exit;
   End;
  End;
  ExecutePerlCoreLine:=False;
@@ -956,36 +1381,36 @@ Begin
    0:NoImplementation:=True;{abs}
    1:NoImplementation:=True;{alarm}
    2:NoImplementation:=True;{atan2}
-   3:NoImplementation:=True;{binmode}
+   3:BinModeCommand;{binmode}
    4:NoImplementation:=True;{caller}
    5:ChDirCommand;{chdir}
-   6:NoImplementation:=True;{chmod}
-   7:NoImplementation:=True;{chomp}
-   8:NoImplementation:=True;{chop}
-   9:NoImplementation:=True;{chown}
-   10:NoImplementation:=True;{chr}
-   11:NoImplementation:=True;{chroot}
+   6:BareFunctionCommand('chmod');{chmod}
+   7:ChompCommand;{chomp}
+   8:ChopCommand;{chop}
+   9:BareFunctionCommand('chown');{chown}
+   10:BareFunctionCommand('chr');{chr}
+   11:BareFunctionCommand('chroot');{chroot}
    12:CloseCommand;{close}
-   13:NoImplementation:=True;{closedir}
-   14:NoImplementation:=True;{cos}
-   15:NoImplementation:=True;{crypt}
-   16:NoImplementation:=True;{defined}
+   13:BareFunctionCommand('closedir');{closedir}
+   14:BareFunctionCommand('cos');{cos}
+   15:BareFunctionCommand('crypt');{crypt}
+   16:BareFunctionCommand('defined');{defined}
    17:DeleteCommand;{delete}
    18:Begin {die}
     Terminated:=True;
     Exit;
    End;
-   19:NoImplementation:=True;{each}
+   19:BareFunctionCommand('each');{each}
    20:NoImplementation:=True;{endgrent}
    21:NoImplementation:=True;{endhostent}
    22:NoImplementation:=True;{endnetent}
    23:NoImplementation:=True;{endprotoent}
    24:NoImplementation:=True;{endpwent}
    25:NoImplementation:=True;{endservent}
-   26:NoImplementation:=True;{eof}
-   27:NoImplementation:=True;{eval}
+   26:BareFunctionCommand('eof');{eof}
+   27:BareFunctionCommand('eval');{eval}
    28:ExecCommand;{exec}
-   29:NoImplementation:=True;{exists}
+   29:BareFunctionCommand('exists');{exists}
    30:Begin {exit}
     Terminated:=True;
     Exit;
