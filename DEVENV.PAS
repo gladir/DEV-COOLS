@@ -40738,10 +40738,20 @@ End;
 
 { --- HELP --- }
 
+{ BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
+{ plus ete mise a jour depuis tres longtemps - AUCUNE des commandes de      }
+{ lancement d emulateur (NES/ATARI2600/C64/COCO3/WIN16/BOOT) ni des         }
+{ commandes de diagnostic des chantiers OS/2 LX et Windows 16 bits          }
+{ (ELFBP/LX*/WIN16*) n y apparaissait, alors qu elles sont toutes reellement}
+{ reconnues par le dispatcher (voir TermExecuteCommand, Case TP.Shell Of    }
+{ SK_CMD) - HELP mentait donc sur ce qui est vraiment tape-able. Regroupee  }
+{ par categorie pour rester lisible malgre le nombre desormais important    }
+{ de commandes. }
 Procedure TermCmd_HELP(Var TP: TTerminalPanel);
 Begin
  TermAddLine(TP, 'Commandes disponibles :');
  TermAddLine(TP, '');
+ TermAddLine(TP, '--- Fichiers et repertoires ---');
  TermAddLine(TP,
   '  CD chemin        Changer de repertoire');
  TermAddLine(TP,
@@ -40762,12 +40772,6 @@ Begin
   '  HELP             Cette aide');
  TermAddLine(TP,
   '  MKDIR rep        Creer un repertoire');
- TermAddLine(TP,
-  '  LOG ON /EMUDIAG  Activer EMUDIAG.LOG');
- TermAddLine(TP,
-  '  LOG ON /EMUINT13 Activer EMUINT13.LOG');
- TermAddLine(TP,
-  '  LOG OFF [/EMUDIAG|/EMUINT13] Desactiver un journal');
  TermAddLine(TP,
   '  MOVE src dst     Deplacer un fichier');
  TermAddLine(TP,
@@ -40790,8 +40794,76 @@ Begin
   '  VER              Version du terminal');
  TermAddLine(TP,
   '  VOL [X:]         Etiquette/serie du volume');
- TermAddLine(TP,
-  '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
+ { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
+ { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
+ { TermExecuteCommand, jamais suppose) - HELP etant PARTAGEE par les 6       }
+ { shells (meme Procedure appelee partout), ne PAS les lister pour ceux qui }
+ { ne les comprennent pas serait aussi trompeur que l ancienne liste          }
+ { incomplete signalee par l utilisateur. }
+ If TP.Shell <> SK_BASH Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Journaux de diagnostic ---');
+  TermAddLine(TP,
+   '  LOG ON /EMUDIAG  Activer EMUDIAG.LOG');
+  TermAddLine(TP,
+   '  LOG ON /EMUINT13 Activer EMUINT13.LOG');
+  TermAddLine(TP,
+   '  LOG OFF [/EMUDIAG|/EMUINT13] Desactiver un journal');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Amorcer un disque virtuel ---');
+  TermAddLine(TP,
+   '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
+ End;
+ { NES/ATARI2600/C64/COCO3/WIN16 et tous les diagnostics OS/2 LX/Windows 16  }
+ { bits : SK_CMD et SK_NCOMMANDER uniquement (verifie de la meme facon). }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Lancer un emulateur ---');
+  TermAddLine(TP,
+   '  NES fichier[.nes]            Emulateur Nintendo NES');
+  TermAddLine(TP,
+   '  ATARI2600 fichier[.a26]      Emulateur Atari 2600 (VCS)');
+  TermAddLine(TP,
+   '  ATARI2600VCS fichier[.a26]   Alias de ATARI2600');
+  TermAddLine(TP,
+   '  C64 [fichier[.prg]]          Emulateur Commodore 64 (BASIC si vide)');
+  TermAddLine(TP,
+   '  COMMODORE64 [fichier[.prg]]  Alias de C64');
+  TermAddLine(TP,
+   '  COCO3 fichier[.rom|.pak|.bin] Emulateur Tandy Color Computer 3');
+  TermAddLine(TP,
+   '  WIN fichier[.exe]            Emulateur Windows 16 bits (NE)');
+  TermAddLine(TP,
+   '  WIN16 fichier[.exe]          Alias de WIN');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Diagnostic OS/2 LX (chantier -COS2LX) ---');
+  TermAddLine(TP,
+   '  ELFBP [adresse [n]]  Point d''arret ELF64 par adresse (OFF pour retirer)');
+  TermAddLine(TP,
+   '  LXINFO fichier       Dumper l''en-tete/objets/imports d''un .EXE OS/2 LX');
+  TermAddLine(TP,
+   '  LXLOAD fichier       Charger un .EXE OS/2 LX (diagnostic, sans executer)');
+  TermAddLine(TP,
+   '  LXSTEP fichier [n]   Executer n pas d''un .EXE OS/2 LX (trace)');
+  TermAddLine(TP,
+   '  LXDUMP fichier       Vidage memoire apres chargement OS/2 LX');
+  TermAddLine(TP,
+   '  LXCALL fichier ord   Appeler un ordinal DOSCALLS resolu (diagnostic)');
+  TermAddLine(TP,
+   '  LXSCAN fichier       Balayer les imports/exports d''un .EXE OS/2 LX');
+  TermAddLine(TP,
+   '  LXGET fichier ordre  Extraire un module importe vers un fichier hote');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Diagnostic Windows 16 bits (chantier -CWIN16) ---');
+  TermAddLine(TP,
+   '  WIN16INFO fichier    Dumper l''en-tete/segments/imports d''un .EXE NE');
+  TermAddLine(TP,
+   '  WIN16LOAD fichier    Charger un .EXE NE (diagnostic, sans executer)');
+  TermAddLine(TP,
+   '  WIN16CALL fichier    Appeler KERNEL.InitTask resolu (diagnostic)');
+  TermAddLine(TP,
+   '  WIN16RUN fichier [n] Executer n pas d''un .EXE NE, trace vers WIN16RUN.LOG');
+ End;
 End;
 
 { --- LOG : activer ou desactiver les journaux de diagnostic --- }

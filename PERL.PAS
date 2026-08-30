@@ -72,6 +72,14 @@ Var
 
 Function StrToUpper(S:String):String;Forward;
 
+Function PerlCommandIndex(Name:String):Integer;
+Var J:Integer;
+Begin
+ Name:=StrToUpper(Name);PerlCommandIndex:=-1;
+ For J:=Low(CommandList)To High(CommandList)Do
+  If StrToUpper(CommandList[J])=Name Then Begin PerlCommandIndex:=J;Exit;End;
+End;
+
 Function CleanText(S:String):String;
 Begin
  While(Length(S)>0)and(S[1]in[' ',#9])Do Delete(S,1,1);
@@ -116,6 +124,42 @@ Procedure GetPerlVariable(Name:String;Var V:TPerlValue);
 Var P:PPerlVariable;
 Begin P:=FindPerlVariable(Name);If P=Nil Then PerlText('',V)Else PerlText(P^.Value,V);End;
 
+Function DeletePerlVariable(Name:String):Boolean;
+Var P,Previous:PPerlVariable;
+Begin
+ DeletePerlVariable:=False;P:=PerlVariables;Previous:=Nil;
+ While P<>Nil Do Begin
+  If P^.Name=Name Then Begin
+   If Previous=Nil Then PerlVariables:=P^.Next Else Previous^.Next:=P^.Next;
+   Dispose(P);DeletePerlVariable:=True;Exit;
+  End;
+  Previous:=P;P:=P^.Next;
+ End;
+End;
+
+Procedure PerlChRoot(PathName:String;Var V:TPerlValue);
+Var ErrorCode:Integer;
+Begin
+ {$I-}ChDir(PathName);{$I+}ErrorCode:=IoResult;
+ If ErrorCode=0Then PerlNumber(1,V)Else PerlText('',V);
+End;
+
+Procedure PerlClose(HandleName:String;Var V:TPerlValue);
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));
+ { Les flux standards appartiennent au processus et ne doivent pas etre
+   physiquement fermes par l'interpreteur. Les handles fichiers seront
+   retires de la table des flux lors de l'implementation de OPEN. }
+ If(HandleName='STDIN')or(HandleName='STDOUT')or(HandleName='STDERR')Then
+  PerlNumber(1,V)
+ Else PerlText('',V);
+End;
+
+Procedure PerlDelete(Name:String;Var V:TPerlValue);
+Begin
+ If DeletePerlVariable(Name)Then PerlNumber(1,V)Else PerlText('',V);
+End;
+
 Procedure ExprSkip;
 Begin While(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]in[' ',#9])Do Inc(ExprPosition);End;
 
@@ -143,7 +187,7 @@ Begin
 End;
 
 Procedure ParsePerlPrimary(Var V:TPerlValue);
-Var Q:Char;S,Name:String;N:Real;Code:Integer;A,B,C:TPerlValue;
+Var Q:Char;S,Name:String;N:Real;Code,FunctionByte:Integer;A,B,C:TPerlValue;
 Begin
  ExprSkip;If ExprPosition>Length(ExprSource)Then Begin PerlText('',V);Exit;End;
  If ExprSource[ExprPosition]in['''','"']Then Begin
@@ -184,18 +228,26 @@ Begin
    PerlText('',C);
    ExprSkip;
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=')')Then Inc(ExprPosition);
-   Name:=StrToUpper(Name);
-   If Name='ABS'Then PerlNumber(Abs(A.Number),V)
-   Else If Name='ATAN2'Then PerlNumber(PerlArcTan2(A.Number,B.Number),V)
-   Else If Name='COS'Then PerlNumber(Cos(A.Number),V)
-   Else If Name='INT'Then PerlNumber(Trunc(A.Number),V) Else
-   If Name='SQRT'Then PerlNumber(Sqrt(A.Number),V) Else
-   If Name='LENGTH'Then PerlNumber(Length(A.Text),V) Else
-   If Name='LC'Then Begin
-    S:=A.Text;For Code:=1To Length(S)Do If S[Code]in['A'..'Z']Then S[Code]:=Chr(Ord(S[Code])+32);PerlText(S,V);
-   End
-   Else If Name='UC'Then PerlText(StrToUpper(A.Text),V)
+   FunctionByte:=PerlCommandIndex(Name);
+   Case FunctionByte Of
+    0:PerlNumber(Abs(A.Number),V);                         { abs }
+    2:PerlNumber(PerlArcTan2(A.Number,B.Number),V);       { atan2 }
+    11:PerlChRoot(A.Text,V);                               { chroot }
+    12:PerlClose(A.Text,V);                                { close }
+    14:PerlNumber(Cos(A.Number),V);                        { cos }
+    17:PerlDelete(A.Text,V);                               { delete }
+    67:PerlNumber(Trunc(A.Number),V);                      { int }
+    71:Begin                                               { lc }
+        S:=A.Text;
+        For Code:=1 To Length(S)Do
+         If S[Code]in['A'..'Z']Then S[Code]:=Chr(Ord(S[Code])+32);
+        PerlText(S,V);
+       End;
+    73:PerlNumber(Length(A.Text),V);                       { length }
+    125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
+    140:PerlText(StrToUpper(A.Text),V);                    { uc }
    Else PerlText('',V);
+   End;
   End Else PerlText(Name,V);
   Exit;
  End;
@@ -685,6 +737,27 @@ Begin
  If Drive<>GetCurrentDisk Then ChDir(CurrPath);
 End;
 
+Procedure CloseCommand;
+Var Name:String;V,HandleValue:TPerlValue;
+Begin
+ SkipSpace;Name:=CleanText(Copy(CurrLine,CurrPos,255));
+ If(Length(Name)>0)and(Name[1]='$')Then Begin
+  Delete(Name,1,1);GetPerlVariable(Name,HandleValue);Name:=HandleValue.Text;
+ End;
+ PerlClose(Name,V);CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure DeleteCommand;
+Var Name:String;V:TPerlValue;J:Integer;
+Begin
+ SkipSpace;Name:='';
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='$')Then Inc(CurrPos);
+ J:=CurrPos;
+ While(J<=Length(CurrLine))and(CurrLine[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+ Name:=Copy(CurrLine,CurrPos,J-CurrPos);PerlDelete(Name,V);
+ CurrPos:=Length(CurrLine)+1;
+End;
+
 Procedure ExecCommand;
 Var
  Err:Word;
@@ -892,12 +965,12 @@ Begin
    9:NoImplementation:=True;{chown}
    10:NoImplementation:=True;{chr}
    11:NoImplementation:=True;{chroot}
-   12:NoImplementation:=True;{close}
+   12:CloseCommand;{close}
    13:NoImplementation:=True;{closedir}
    14:NoImplementation:=True;{cos}
    15:NoImplementation:=True;{crypt}
    16:NoImplementation:=True;{defined}
-   17:NoImplementation:=True;{delete}
+   17:DeleteCommand;{delete}
    18:Begin {die}
     Terminated:=True;
     Exit;
