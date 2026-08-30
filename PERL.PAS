@@ -197,15 +197,25 @@ Procedure PerlInvokeSubroutine(Name:String;Var A,B,C:TPerlValue;
 Procedure RegisterPerlSubroutines;Forward;
 Procedure GetPerlArrayElement(ArrayName:String;ElementIndex:Integer;
  Var V:TPerlValue);Forward;
+Procedure SetPerlArrayElement(ArrayName:String;ElementIndex:Integer;
+ Value:String);Forward;
 Function GetPerlArrayCount(ArrayName:String):Integer;Forward;
 Function PerlArrayElementName(ArrayName:String;ElementIndex:Integer):String;Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
-Var J:Integer;
+Var J,K:Integer;Matches:Boolean;LeftCharacter,RightCharacter:Char;
 Begin
- Name:=StrToUpper(Name);PerlCommandIndex:=-1;
- For J:=Low(CommandList)To High(CommandList)Do
-  If StrToUpper(CommandList[J])=Name Then Begin PerlCommandIndex:=J;Exit;End;
+ PerlCommandIndex:=-1;
+ For J:=Low(CommandList)To High(CommandList)Do Begin
+  Matches:=Length(CommandList[J])=Length(Name);K:=1;
+  While Matches and(K<=Length(Name))Do Begin
+   LeftCharacter:=CommandList[J][K];RightCharacter:=Name[K];
+   If LeftCharacter in['a'..'z']Then LeftCharacter:=Chr(Ord(LeftCharacter)-32);
+   If RightCharacter in['a'..'z']Then RightCharacter:=Chr(Ord(RightCharacter)-32);
+   Matches:=LeftCharacter=RightCharacter;Inc(K);
+  End;
+  If Matches Then Begin PerlCommandIndex:=J;Exit;End;
+ End;
 End;
 
 Function CleanText(S:String):String;
@@ -690,6 +700,64 @@ Begin
  Handle^.PathName:=PathName;Handle^.Started:=False;PerlNumber(1,V);
 End;
 
+Procedure PerlRead(HandleName,VariableName:String;RequestedLength:Integer;
+ Var V:TPerlValue);
+Var Handle:PPerlHandle;Buffer:Array[1..255]of Char;BytesRead:Word;
+ I,Available:Integer;ResultText:String;Ch:Char;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));ResultText:='';
+ If RequestedLength<0Then Begin PerlText('',V);Exit;End;
+ If RequestedLength>255Then RequestedLength:=255;
+ If HandleName='STDIN'Then Begin
+  RegisterPerlHandle('STDIN',True);BytesRead:=0;
+  For I:=1To RequestedLength Do Begin
+   Ch:=ReadKey;
+   If Ch=#0Then Ch:=ReadKey
+   Else Begin ResultText:=ResultText+Ch;Inc(BytesRead);End;
+  End;
+  If VariableName<>''Then SetPerlVariable(VariableName,ResultText);
+  PerlNumber(BytesRead,V);Exit;
+ End;
+ Handle:=FindPerlHandle(HandleName);
+ If(Handle=Nil)or Not Handle^.IsOpen Then Begin PerlText('',V);Exit;End;
+ BytesRead:=0;
+ If(Handle^.Pipe<>Nil)and Handle^.PipeReadEnd Then Begin
+  Available:=Length(Handle^.Pipe^.Buffer)-Handle^.Pipe^.ReadPosition+1;
+  If Available<0Then Available:=0;
+  If RequestedLength>Available Then RequestedLength:=Available;
+  ResultText:=Copy(Handle^.Pipe^.Buffer,Handle^.Pipe^.ReadPosition,RequestedLength);
+  Inc(Handle^.Pipe^.ReadPosition,Length(ResultText));BytesRead:=Length(ResultText);
+ End Else If Handle^.HasFile Then Begin
+  {$I-}BlockRead(Handle^.DataFile,Buffer,RequestedLength,BytesRead);{$I+}
+  If IoResult<>0Then Begin PerlText('',V);Exit;End;
+  For I:=1To BytesRead Do ResultText:=ResultText+Buffer[I];
+ End Else Begin PerlText('',V);Exit;End;
+ If VariableName<>''Then SetPerlVariable(VariableName,ResultText);
+ PerlNumber(BytesRead,V);
+End;
+
+Procedure PerlReadDir(HandleName:String;Var V:TPerlValue);
+Var Handle:PPerlDirectoryHandle;ErrorCode:Integer;SearchPath:String;
+Begin
+ Handle:=FindPerlDirectoryHandle(HandleName);
+ If(Handle=Nil)or Not Handle^.IsOpen Then Begin PerlText('',V);Exit;End;
+ If Not Handle^.Started Then Begin
+  SearchPath:=Handle^.PathName;
+  If(Length(SearchPath)>0)and Not(SearchPath[Length(SearchPath)]in['\','/'])Then
+   SearchPath:=SearchPath+'\';
+  FindFirst(SearchPath+'*.*',AnyFile,Handle^.Search);ErrorCode:=DosError;
+  Handle^.Started:=True;
+ End Else Begin FindNext(Handle^.Search);ErrorCode:=DosError;End;
+ If ErrorCode=0Then PerlText(Handle^.Search.Name,V)Else PerlText('',V);
+End;
+
+Procedure PerlReadLink(PathName:String;Var V:TPerlValue);
+Begin
+ { DOS et Turbo Pascal ne fournissent aucune primitive de lien symbolique.
+   Comme Perl sur un systeme sans symlink, readlink retourne undef. }
+ PerlText('',V);
+End;
+
 Procedure PerlOct(NumberText:String;Var V:TPerlValue);
 Var I,NumberBase,Digit:Integer;N:LongInt;
 Begin
@@ -803,6 +871,48 @@ Begin
   PositionState:=PositionState^.Next;
  End;
  PerlText('',V);
+End;
+
+Procedure PerlPush(ArrayReference,FirstValue,SecondValue:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var ArrayName:String;Count:Integer;
+Begin
+ ArrayName:=ArrayReference;If(Length(ArrayName)>0)and(ArrayName[1]='@')Then Delete(ArrayName,1,1);
+ Count:=GetPerlArrayCount(ArrayName);
+ If ArgumentCount>1Then Begin SetPerlArrayElement(ArrayName,Count,FirstValue);Inc(Count);End;
+ If ArgumentCount>2Then Begin SetPerlArrayElement(ArrayName,Count,SecondValue);Inc(Count);End;
+ PerlNumber(Count,V);
+End;
+
+Procedure PerlQuoteMeta(SourceText:String;Var V:TPerlValue);
+Var J:Integer;ResultText:String;
+Begin
+ ResultText:='';For J:=1To Length(SourceText)Do Begin
+  If Not(SourceText[J]in['A'..'Z','a'..'z','0'..'9','_'])Then ResultText:=ResultText+'\';
+  ResultText:=ResultText+SourceText[J];
+ End;
+ PerlText(ResultText,V);
+End;
+
+Procedure PerlQx(CommandText:String;Var V:TPerlValue);
+Var CommandShell,TemporaryName,LineText,ResultText,NumberText:String;
+ OutputFile:Text;ErrorCode:Integer;
+begin
+ Str(Random(30000),NumberText);TemporaryName:='PERLQX'+CleanText(NumberText)+'.$$$';
+ CommandShell:=GetEnv('COMSPEC');If CommandShell=''Then CommandShell:='COMMAND.COM';
+ SwapVectors;Exec(CommandShell,'/C '+CommandText+' > '+TemporaryName);SwapVectors;
+ ErrorCode:=DosError;ResultText:='';
+ If ErrorCode=0Then Begin {$I-}Assign(OutputFile,TemporaryName);Reset(OutputFile);{$I+}
+  If IoResult=0Then Begin While Not Eof(OutputFile)Do Begin ReadLn(OutputFile,LineText);
+   ResultText:=ResultText+LineText+#10;End;Close(OutputFile);End;
+ End;
+ {$I-}Assign(OutputFile,TemporaryName);Erase(OutputFile);{$I+}ErrorCode:=IoResult;
+ PerlText(ResultText,V);
+End;
+
+Procedure PerlRand(LimitValue:Real;ArgumentCount:Integer;Var V:TPerlValue);
+Begin If(ArgumentCount=0)or(LimitValue<=0)Then LimitValue:=1;
+ PerlNumber(Random*LimitValue,V);
 End;
 
 Procedure PerlCrypt(PlainText,Salt:String;Var V:TPerlValue);
@@ -1107,7 +1217,8 @@ Begin
 End;
 
 Procedure ParsePerlPrimary(Var V:TPerlValue);
-Var Q:Char;S,Name,ArgumentVariable,ArgumentText,HashKey:String;N:Real;
+Var Q:Char;S,Name,FunctionName,ArgumentVariable,SecondArgumentVariable,
+ ArgumentText,HashKey:String;N:Real;
  Code,FunctionByte,FunctionArgumentCount,ArgumentStart,ArgumentSourceStart:Integer;A,B,C:TPerlValue;
 Begin
  ExprSkip;If ExprPosition>Length(ExprSource)Then Begin PerlText('',V);Exit;End;
@@ -1120,6 +1231,12 @@ Begin
    End Else S:=S+ExprSource[ExprPosition];Inc(ExprPosition);
   End;
   If ExprPosition<=Length(ExprSource)Then Inc(ExprPosition);PerlText(S,V);Exit;
+ End;
+ If ExprSource[ExprPosition]='`'Then Begin
+  Inc(ExprPosition);S:='';
+  While(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]<>'`')Do Begin
+   S:=S+ExprSource[ExprPosition];Inc(ExprPosition);End;
+  If ExprPosition<=Length(ExprSource)Then Inc(ExprPosition);PerlQx(S,V);Exit;
  End;
  If ExprSource[ExprPosition]='('Then Begin Inc(ExprPosition);ParsePerlOr(V);ExprSkip;
  If ExprSource[ExprPosition]=')'Then Inc(ExprPosition);Exit;End;
@@ -1157,10 +1274,17 @@ Begin
  End;
  Name:=ExprWord;
  If Name<>''Then Begin
+  FunctionName:=Name;
   ExprSkip;
+  If((Name='quotameta')or(Name='QUOTAMETA'))and(ExprPosition<=Length(ExprSource))and
+    (ExprSource[ExprPosition]='(')Then Begin
+   Inc(ExprPosition);ParsePerlOr(A);ExprSkip;
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=')')Then Inc(ExprPosition);
+   PerlQuoteMeta(A.Text,V);Exit;
+  End;
   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='(')Then Begin
    Inc(ExprPosition);ExprSkip;ArgumentSourceStart:=ExprPosition;
-   ArgumentStart:=ExprPosition;ArgumentVariable:='';ArgumentText:='';
+   ArgumentStart:=ExprPosition;ArgumentVariable:='';SecondArgumentVariable:='';ArgumentText:='';
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='$')Then Begin
     Inc(ArgumentStart);
     While(ArgumentStart<=Length(ExprSource))and(ExprSource[ArgumentStart]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
@@ -1173,7 +1297,15 @@ Begin
    ArgumentText:=CleanText(Copy(ExprSource,ArgumentSourceStart,
     ExprPosition-ArgumentSourceStart));
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=',')Then Begin
-    Inc(FunctionArgumentCount);Inc(ExprPosition);ParsePerlOr(B);
+    Inc(FunctionArgumentCount);Inc(ExprPosition);ExprSkip;
+    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='$')Then Begin
+     ArgumentStart:=ExprPosition+1;
+     While(ArgumentStart<=Length(ExprSource))and
+       (ExprSource[ArgumentStart]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
+      SecondArgumentVariable:=SecondArgumentVariable+ExprSource[ArgumentStart];Inc(ArgumentStart);
+     End;
+    End;
+    ParsePerlOr(B);
    End
     Else
    PerlText('',B);
@@ -1184,7 +1316,7 @@ Begin
    PerlText('',C);
    ExprSkip;
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=')')Then Inc(ExprPosition);
-   FunctionByte:=PerlCommandIndex(Name);
+   FunctionByte:=PerlCommandIndex(FunctionName);
    Case FunctionByte Of
     0:PerlNumber(Abs(A.Number),V);                         { abs }
     2:PerlNumber(PerlArcTan2(A.Number,B.Number),V);       { atan2 }
@@ -1238,9 +1370,22 @@ Begin
     88:PerlPipe(A.Text,B.Text,V);                           { pipe }
     89:PerlPop(A.Text,V);                                  { pop }
     90:PerlPos(ArgumentVariable,V);                        { pos }
+    93:PerlPush(A.Text,B.Text,C.Text,FunctionArgumentCount,V); { push }
+    94:Begin                                               { quotemeta }
+        S:=A.Text;
+        If(S='')and(ArgumentText<>'')Then Begin S:=CleanText(ArgumentText);
+         If(Length(S)>1)and(S[1]in['''','"'])and(S[Length(S)]=S[1])Then
+          S:=Copy(S,2,Length(S)-2);End;
+        PerlQuoteMeta(S,V);
+       End;
+    95:PerlQx(A.Text,V);                                   { qx }
+    96:PerlRand(A.Number,FunctionArgumentCount,V);          { rand }
+    97:PerlRead(A.Text,SecondArgumentVariable,Trunc(C.Number),V); { read }
+    98:PerlReadDir(A.Text,V);                               { readdir }
+    99:PerlReadLink(A.Text,V);                              { readlink }
     125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
-   Else If FunctionByte=-1Then PerlInvokeSubroutine(Name,A,B,C,
+   Else If FunctionByte=-1Then PerlInvokeSubroutine(FunctionName,A,B,C,
     FunctionArgumentCount,V)
    Else PerlText('',V);
    End;
@@ -2046,6 +2191,16 @@ Begin
  LocalizePerlVariable(Name,V.Text);CurrPos:=Length(CurrLine)+1;
 End;
 
+Procedure QxCommand;
+Var Arguments:String;V,CommandValue:TPerlValue;
+Begin
+ Arguments:=CleanText(Copy(CurrLine,CurrPos,255));
+ If(Length(Arguments)>1)and(Arguments[1]in['''','"'])Then
+  Begin EvalPerlExpression(Arguments,CommandValue);PerlQx(CommandValue.Text,V);End
+ Else PerlQx(Arguments,V);
+ CurrPos:=Length(CurrLine)+1;
+End;
+
 Function ExecutePerlCoreLine(S:String):Boolean;
 Var P,J,K:Integer;Name,RightSide,OperatorText,HashKeyText:String;
  V,OldValue,HashKeyValue:TPerlValue;
@@ -2673,13 +2828,13 @@ Begin
    90:BareFunctionCommand('pos');{pos}
    91:PrintCommand;{print}
    92:PrintfCommand;{printf}
-   93:NoImplementation:=True;{push}
-   94:NoImplementation:=True;{quotameta}
-   95:NoImplementation:=True;{qx}
-   96:NoImplementation:=True;{rand}
-   97:NoImplementation:=True;{read}
-   98:NoImplementation:=True;{readdir}
-   99:NoImplementation:=True;{readlink}
+   93:BareFunctionCommand('push');{push}
+   94:BareFunctionCommand('quotameta');{quotameta}
+   95:QxCommand;{qx}
+   96:BareFunctionCommand('rand');{rand}
+   97:BareFunctionCommand('read');{read}
+   98:BareFunctionCommand('readdir');{readdir}
+   99:BareFunctionCommand('readlink');{readlink}
    100:RenameCommand;{rename}
    101:NoImplementation:=True;{require}
    102:NoImplementation:=True;{rewinddir}
@@ -2793,6 +2948,7 @@ Begin
 End;
 
 BEGIN
+ Randomize;CurrentPerlPackage:='main';
  {$IFDEF FPC}
   {$IFDEF WINDOWS}
    SetUseACP(False);
