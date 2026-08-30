@@ -1989,6 +1989,8 @@ Type
   CdromImg1       : TString;   { /CDROM1:fichier.iso -> 2e lecteur CD }
   NCMode          : Boolean;   { /NC : ouvrir le Terminal en Norton Commander des le demarrage }
   TerminalDosBatch: TString;   { /TERMINALDOS:fichier.bat }
+  TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
+  RexxFile        : TString;   { /REXX:fichier.rex }
  End;
 
  { Types d evenements }
@@ -8933,6 +8935,8 @@ Procedure ShowHelp;Begin
  WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
  WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
   WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
+  WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
+  WriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -8976,6 +8980,8 @@ Begin
  Opts.CdromImg1       := '';
  Opts.NCMode          := False;
  Opts.TerminalDosBatch := '';
+ Opts.TerminalOS2Batch := '';
+ Opts.RexxFile         := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -9001,6 +9007,23 @@ Begin
    If (Opts.TerminalDosBatch = '') Or
       (Not FileExists(Opts.TerminalDosBatch)) Then
     FatalError('Fichier batch introuvable: ' + Opts.TerminalDosBatch);
+  End Else
+    If (Length(Arg) >= 13) And
+      ((Copy(Arg, 1, 13) = '/TERMINALOS2:') Or
+      (Copy(Arg, 1, 13) = '/terminalos2:') Or
+      (Copy(Arg, 1, 13) = '-TERMINALOS2:') Or
+      (Copy(Arg, 1, 13) = '-terminalos2:')) Then Begin
+    Opts.TerminalOS2Batch := Copy(Arg, 14, Length(Arg) - 13);
+   If (Opts.TerminalOS2Batch = '') Or
+      (Not FileExists(Opts.TerminalOS2Batch)) Then
+    FatalError('Fichier batch introuvable: ' + Opts.TerminalOS2Batch);
+  End Else
+    If (Length(Arg) >= 6) And
+      ((Copy(Arg, 1, 6) = '/REXX:') Or (Copy(Arg, 1, 6) = '/rexx:') Or
+      (Copy(Arg, 1, 6) = '-REXX:') Or (Copy(Arg, 1, 6) = '-rexx:')) Then Begin
+    Opts.RexxFile := Copy(Arg, 7, Length(Arg) - 6);
+   If (Opts.RexxFile = '') Or (Not FileExists(Opts.RexxFile)) Then
+    FatalError('Fichier REXX introuvable: ' + Opts.RexxFile);
   End Else
   If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
@@ -106354,6 +106377,52 @@ Begin
    End;
    Close(BatchFile);
   End;
+ End;
+ { /TERMINALOS2:fichier.bat - meme principe que /TERMINALDOS: ci-dessus,   }
+ { mais ouvre le shell "OS/2 & REXX" (SK_OS2REXX) au lieu de SK_CMD        }
+ { (demande explicite de l'utilisateur, 2026-08-30, chantier REXX - voir   }
+ { [[project_devenv_rexx]]). }
+ If Opts.TerminalOS2Batch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_OS2REXX;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.TerminalOS2Batch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /REXX:fichier.rex - ouvre le shell "OS/2 & REXX" et lance directement   }
+ { le script REXX specifie, comme si l'utilisateur avait tape             }
+ { "REXX fichier.rex" dans ce terminal (TermCmd_REXX, voir                }
+ { [[project_devenv_rexx]]) - y compris le pont E/S par fibre Win32 pour   }
+ { PULL/SYSGETKEY interactifs, qui fonctionne ici exactement comme dans le }
+ { terminal tape a la main. }
+ If Opts.RexxFile <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_OS2REXX;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  TermCmd_REXX(TermPanels[ActiveShell], Opts.RexxFile);
  End;
  { Si un fichier solution .sln a ete passe en argument }
  If Opts.SolutionFile <> '' Then Begin
