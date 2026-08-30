@@ -2022,6 +2022,7 @@ Type
   TerminalDosBatch: TString;   { /TERMINALDOS:fichier.bat }
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
   RexxFile        : TString;   { /REXX:fichier.rex }
+  PSFile          : TString;   { /PS:fichier.ps1 }
  End;
 
  { Types d evenements }
@@ -5250,6 +5251,17 @@ Const
  WIN16_MAX_WNDCLASSES = 8;
  WIN16_MAX_WINDOWS    = 8;
  WIN16_MAX_MSGQUEUE   = 32;
+ { Stage 6b (2026-08-30) : minuteurs SetTimer/KillTimer, meme limitation      }
+ { mono-programme. }
+ WIN16_MAX_TIMERS     = 8;
+ { Constantes ABI Windows publiques et fixes (winuser.h) - meme categorie de }
+ { certitude que les constantes SM_* deja utilisees sans verification         }
+ { supplementaire dans ce chantier. }
+ WIN16_WM_CREATE  = $0001;
+ WIN16_WM_DESTROY = $0002;
+ WIN16_WM_PAINT   = $000F;
+ WIN16_WM_TIMER   = $0113;
+ WIN16_WM_QUIT    = $0012;
 
 Const
  LXOBJ_READABLE   = $0001;
@@ -6560,6 +6572,42 @@ Var
  Win16_MsgQueueHead    : Integer;
  Win16_MsgQueueTail    : Integer;
  Win16_MsgQueueCount   : Integer;
+ { Stage 6b (2026-08-30) : minuteurs SetTimer/KillTimer - meme convention   }
+ { "tableaux paralleles de taille fixe" que ci-dessus. NextDueTick est      }
+ { compare a EmuTickCounter (compteur de tics BIOS reel, deja existant,     }
+ { ~18.2/s - voir Emu_TimerTick) ; ElapseTicks = uElapse (ms) converti en   }
+ { tics BIOS (~55 ms/tic), minimum 1 pour eviter une division par zero ou   }
+ { un minuteur qui se redeclenche en boucle infinie au meme tic. }
+ Win16_TimerCount      : Integer;
+ Win16_TimerHWnd       : Array[0..WIN16_MAX_TIMERS - 1] Of Word;
+ Win16_TimerID         : Array[0..WIN16_MAX_TIMERS - 1] Of Word;
+ Win16_TimerElapseTicks: Array[0..WIN16_MAX_TIMERS - 1] Of LongInt;
+ Win16_TimerNextDueTick: Array[0..WIN16_MAX_TIMERS - 1] Of LongInt;
+ { Fenetre "active" pour les appels GDI qui ne recoivent qu'un hDC          }
+ { synthetique (jamais une vraie structure DC) - GetDC/GetWindowDC/         }
+ { BeginPaint recoivent tous hWnd directement et la renseignent ; comme ce  }
+ { chantier reste mono-fenetre/mono-DC (meme limitation deja assumee        }
+ { partout ailleurs), MoveTo/LineTo/Ellipse/Rectangle peuvent l'utiliser    }
+ { sans avoir a resoudre hDC->fenetre a chaque appel. -1 = aucune. }
+ Win16_ActiveDCWindow  : Integer;
+ { Position courante du "stylo" GDI (MoveTo la pose, LineTo trace jusqu'a   }
+ { la nouvelle position puis l'avance) - une seule, meme simplification     }
+ { mono-DC que ci-dessus. }
+ Win16_PenX, Win16_PenY: Integer;
+ { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
+ { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
+ { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
+ { seule fois pour tout un appel de WNDPROC imbrique (execute entierement    }
+ { a l interieur d un seul Emu_StepOne de la boucle EXTERNE). }
+ Dpmi_LastRunRealProcIter: LongInt;
+ { Diagnostic temporaire (2026-08-30) : combien de fois DefWindowProc a    }
+ { reellement ete atteint avec message=WM_PAINT - repond directement a la  }
+ { question "la WNDPROC de CLOCK.EXE retombe-t-elle bien sur DefWindowProc }
+ { pour WM_PAINT, ou fait-elle autre chose ?" sans avoir a tracer a         }
+ { l interieur de l appel imbrique (invisible a WIN16RUN.LOG, voir          }
+ { Dpmi_LastRunRealProcIter ci-dessus). }
+ Win16_DefWindowProcPaintCount: LongInt;
+ Win16_BeginPaintCount: LongInt;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
  EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
@@ -9028,6 +9076,7 @@ Procedure ShowHelp;Begin
   WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
   WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
   WriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
+  WriteLn('  /PS:fichier.ps1         Ouvrir PowerShell dev et executer ce script');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -9073,6 +9122,7 @@ Begin
  Opts.TerminalDosBatch := '';
  Opts.TerminalOS2Batch := '';
  Opts.RexxFile         := '';
+ Opts.PSFile           := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -9115,6 +9165,13 @@ Begin
     Opts.RexxFile := Copy(Arg, 7, Length(Arg) - 6);
    If (Opts.RexxFile = '') Or (Not FileExists(Opts.RexxFile)) Then
     FatalError('Fichier REXX introuvable: ' + Opts.RexxFile);
+  End Else
+    If (Length(Arg) >= 4) And
+      ((Copy(Arg, 1, 4) = '/PS:') Or (Copy(Arg, 1, 4) = '/ps:') Or
+      (Copy(Arg, 1, 4) = '-PS:') Or (Copy(Arg, 1, 4) = '-ps:')) Then Begin
+    Opts.PSFile := Copy(Arg, 5, Length(Arg) - 4);
+   If (Opts.PSFile = '') Or (Not FileExists(Opts.PSFile)) Then
+    FatalError('Fichier PowerShell introuvable: ' + Opts.PSFile);
   End Else
   If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
@@ -42278,6 +42335,12 @@ Begin
  Win16_MsgQueueHead := 0;
  Win16_MsgQueueTail := 0;
  Win16_MsgQueueCount := 0;
+ Win16_TimerCount := 0;
+ Win16_ActiveDCWindow := -1;
+ Win16_PenX := 0;
+ Win16_PenY := 0;
+ Win16_DefWindowProcPaintCount := 0;
+ Win16_BeginPaintCount := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -42819,6 +42882,20 @@ Begin
  Y1 := Win16_WindowY[WIndex];
  X2 := X1 + Win16_WindowW[WIndex] - 1;
  Y2 := Y1 + Win16_WindowH[WIndex] - 1;
+ { Fond de la zone client (2026-08-30, signale par l'utilisateur : "le    }
+ { fond devrait etre blanc par defaut" - un vrai Windows 2.x/3.x remplit   }
+ { l'interieur de la fenetre en blanc (COLOR_WINDOW/WHITE_BRUSH, le pinceau}
+ { de fond par defaut de la quasi-totalite des WNDCLASS reelles) AVANT que }
+ { l'appli ne dessine quoi que ce soit dessus - jusqu'ici seul le cadre    }
+ { 1px etait trace, laissant l'interieur au contenu precedent (souvent     }
+ { noir) du framebuffer EmuVideo. Win16_WndClassBg (hbrBackground) est     }
+ { deja capture par RegisterClass mais reste un handle GDI synthetique     }
+ { (aucune resolution reelle de couleur de pinceau, Stage 6c) - blanc      }
+ { simple assume ici, plausible pour la quasi-totalite des vraies apps     }
+ { Win16 de cette epoque. }
+ For Y := Y1 + 1 To Y2 - 1 Do
+  For X := X1 + 1 To X2 - 1 Do
+   Emu_VidSetPixel(X, Y, 15);
  For X := X1 To X2 Do Begin
   Emu_VidSetPixel(X, Y1, 15);
   Emu_VidSetPixel(X, Y2, 15);
@@ -42843,6 +42920,188 @@ Begin
  Win16_MsgQueueLParamHi[Win16_MsgQueueTail] := LParamHi;
  Win16_MsgQueueTail := (Win16_MsgQueueTail + 1) Mod WIN16_MAX_MSGQUEUE;
  Inc(Win16_MsgQueueCount);
+End;
+
+{ Stage 6b (2026-08-30) : Dpmi_RunRealProc (~75511) est le mecanisme deja   }
+{ identifie/reutilise pour Win16_CallWndProc ci-dessous (execute Emu_StepOne}
+{ en boucle bornee jusqu'a un sentinel de retour synthetique) mais n'est    }
+{ defini que bien plus loin dans ce fichier - Forward requis, meme motif    }
+{ que les 5 deja ajoutes pour Win16_LoadNE au Stage 2. }
+Procedure Dpmi_RunRealProc(Var P: TEmulatorPanel; TargetCS, TargetIP: Word;
+ ViaIret: Boolean); Forward;
+
+{ Trace un segment de droite en VRAIS pixels (Bresenham standard, entiers   }
+{ uniquement) - utilise par LineTo (GDI ordinal 19). Coordonnees deja en    }
+{ pixels ABSOLUS du framebuffer (voir Win16_LineTo ci-apres pour la          }
+{ conversion depuis les coordonnees CLIENT que le programme fournit). }
+Procedure Win16_DrawLine(X1, Y1, X2, Y2: Integer; Color: Byte);
+Var
+ DX, DY, SX, SY, Err, E2: Integer;
+Begin
+ DX := Abs(X2 - X1); If X1 < X2 Then SX := 1 Else SX := -1;
+ DY := -Abs(Y2 - Y1); If Y1 < Y2 Then SY := 1 Else SY := -1;
+ Err := DX + DY;
+ While True Do Begin
+  Emu_VidSetPixel(X1, Y1, Color);
+  If (X1 = X2) And (Y1 = Y2) Then Break;
+  E2 := 2 * Err;
+  If E2 >= DY Then Begin Err := Err + DY; X1 := X1 + SX; End;
+  If E2 <= DX Then Begin Err := Err + DX; Y1 := Y1 + SY; End;
+ End;
+End;
+
+{ Trace le contour d'une ellipse inscrite dans le rectangle (X1,Y1)-(X2,Y2) }
+{ - algorithme du point milieu standard (4 symetries), coordonnees deja en  }
+{ pixels ABSOLUS. Utilise par Ellipse (GDI ordinal 24) - suffisant pour un  }
+{ cadran d'horloge circulaire, aucun remplissage (l'interieur reste le      }
+{ fond blanc deja pose par Win16_DrawWindowFrame). }
+Procedure Win16_DrawEllipseBox(X1, Y1, X2, Y2: Integer; Color: Byte);
+Var
+ CX, CY, RX, RY: Integer;
+ X, Y: Integer;
+ RX2, RY2, TwoRX2, TwoRY2: LongInt;
+ Ex, Ey: LongInt;
+ P1, P2: LongInt;
+Begin
+ CX := (X1 + X2) Div 2;
+ CY := (Y1 + Y2) Div 2;
+ RX := Abs(X2 - X1) Div 2;
+ RY := Abs(Y2 - Y1) Div 2;
+ If (RX <= 0) Or (RY <= 0) Then Exit;
+ RX2 := LongInt(RX) * RX;
+ RY2 := LongInt(RY) * RY;
+ TwoRX2 := 2 * RX2;
+ TwoRY2 := 2 * RY2;
+ X := 0; Y := RY;
+ Ex := 0; Ey := TwoRX2 * Y;
+ Emu_VidSetPixel(CX, CY + Y, Color); Emu_VidSetPixel(CX, CY - Y, Color);
+ Emu_VidSetPixel(CX + X, CY + Y, Color); { degenere si X=0, harmless }
+ P1 := RY2 - (RX2 * RY) + (RX2 Div 4);
+ While Ex < Ey Do Begin
+  Inc(X);
+  Ex := Ex + TwoRY2;
+  If P1 < 0 Then
+   P1 := P1 + RY2 + Ex
+  Else Begin
+   Dec(Y);
+   Ey := Ey - TwoRX2;
+   P1 := P1 + RY2 + Ex - Ey;
+  End;
+  Emu_VidSetPixel(CX + X, CY + Y, Color); Emu_VidSetPixel(CX - X, CY + Y, Color);
+  Emu_VidSetPixel(CX + X, CY - Y, Color); Emu_VidSetPixel(CX - X, CY - Y, Color);
+ End;
+ P2 := (RY2 * (X + 1) * (X + 1)) + (RX2 * (Y - 1) * (Y - 1)) - RX2 * RY2;
+ While Y > 0 Do Begin
+  Dec(Y);
+  Ey := Ey - TwoRX2;
+  If P2 > 0 Then
+   P2 := P2 + RX2 - Ey
+  Else Begin
+   Inc(X);
+   Ex := Ex + TwoRY2;
+   P2 := P2 + RX2 - Ey + Ex;
+  End;
+  Emu_VidSetPixel(CX + X, CY + Y, Color); Emu_VidSetPixel(CX - X, CY + Y, Color);
+  Emu_VidSetPixel(CX + X, CY - Y, Color); Emu_VidSetPixel(CX - X, CY - Y, Color);
+ End;
+End;
+
+{ Appelle SYNCHRONE la VRAIE WNDPROC 16 bits du programme (dispatchee par   }
+{ DispatchMessage) - reutilise Dpmi_RunRealProc TEL QUEL (meme motif exact  }
+{ que les rappels DPMI mode reel : empiler les arguments convention Pascal, }
+{ sauter au point d'entree, executer Emu_StepOne en boucle bornee jusqu'au  }
+{ sentinel EMU_DPMI_RMCALL_SEG:OFS). WNDPROC(hWnd, msg, wParam, lParam) est  }
+{ une signature FIXE et UNIVERSELLE Windows (4 arguments, 2+2+2+4=10        }
+{ octets, RETF 000Ah) - jamais variable d'un programme a l'autre, donc      }
+{ jamais besoin de la (re)vérifier au cas par cas comme pour les ordinaux    }
+{ KERNEL/USER/GDI eux-memes. }
+Function Win16_CallWndProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
+ HWnd, Msg, WParam, LParamLo, LParamHi: Word): LongInt;
+Begin
+ Emu_PushWord(P.CPU, LParamHi);
+ Emu_PushWord(P.CPU, LParamLo);
+ Emu_PushWord(P.CPU, WParam);
+ Emu_PushWord(P.CPU, Msg);
+ Emu_PushWord(P.CPU, HWnd);
+ Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ Win16_CallWndProc := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+End;
+
+{ Coeur de GetMessage/PeekMessage (ordinaux USER 108/109) - priorite REELLE }
+{ Windows (entree file > repaint > minuteur), meme ordre de priorite que    }
+{ documente pour les messages "generes"/bas niveau. Retourne False           }
+{ uniquement pour WM_QUIT (contrat reel de GetMessage : fin de boucle). }
+Function Win16_GetMessage(Var P: TEmulatorPanel; Var OutHWnd, OutMsg,
+ OutWParam, OutLParamLo, OutLParamHi: Word): Boolean;
+Var
+ WIdx, TIdx, DueIdx: Integer;
+ Guard: LongInt;
+Begin
+ If Win16_MsgQueueCount > 0 Then Begin
+  OutHWnd := Win16_MsgQueueHWnd[Win16_MsgQueueHead];
+  OutMsg := Win16_MsgQueueMsg[Win16_MsgQueueHead];
+  OutWParam := Win16_MsgQueueWParam[Win16_MsgQueueHead];
+  OutLParamLo := Win16_MsgQueueLParamLo[Win16_MsgQueueHead];
+  OutLParamHi := Win16_MsgQueueLParamHi[Win16_MsgQueueHead];
+  Win16_MsgQueueHead := (Win16_MsgQueueHead + 1) Mod WIN16_MAX_MSGQUEUE;
+  Dec(Win16_MsgQueueCount);
+  Win16_GetMessage := (OutMsg <> WIN16_WM_QUIT);
+  Exit;
+ End;
+ For WIdx := 0 To Win16_WindowCount - 1 Do
+  If Win16_WindowNeedsPaint[WIdx] Then Begin
+   OutHWnd := Win16_WindowHWnd[WIdx];
+   OutMsg := WIN16_WM_PAINT;
+   OutWParam := 0; OutLParamLo := 0; OutLParamHi := 0;
+   Win16_GetMessage := True;
+   Exit;
+  End;
+ { Rien d'immediatement disponible : un vrai GetMessage BLOQUE ici jusqu'a  }
+ { la prochaine entree/minuteur/repaint. Aucune autre tache ne peut         }
+ { s'executer pendant ce temps dans ce modele mono-programme, et le         }
+ { clavier/souris ne sont pas routes (Stage 6e) - la SEULE chose qui peut   }
+ { arriver a echeance est donc un minuteur deja enregistre. On avance       }
+ { reellement l'horloge simulee (meme compteur EmuTickCounter/Emu_TimerTick }
+ { que le tic BIOS reel, AUCUNE execution CPU pendant cette attente         }
+ { puisqu'il n'y a litteralement rien d'autre a executer) jusqu'a ce qu'un  }
+ { minuteur arrive a echeance. Boucle bornee (meme discipline que            }
+ { Dpmi_RunRealProc) : si aucun minuteur n'est meme enregistre, ce blocage  }
+ { ne pourrait jamais se terminer - arret honnete plutot qu'une boucle       }
+ { infinie simulee. }
+ If Win16_TimerCount = 0 Then Begin
+  Win16_LastError := 'GetMessage : file vide et aucun minuteur actif ' +
+   '- blocage reel non simule (clavier/souris non routes, Stage 6e).';
+  Win16_Halt(P, 'USER', 108);
+  Win16_GetMessage := False;
+  Exit;
+ End;
+ DueIdx := -1;
+ Guard := 0;
+ Repeat
+  For TIdx := 0 To Win16_TimerCount - 1 Do
+   If EmuTickCounter >= Win16_TimerNextDueTick[TIdx] Then Begin
+    DueIdx := TIdx;
+    Break;
+   End;
+  If DueIdx < 0 Then Begin
+   Emu_TimerTick(P);
+   Inc(Guard);
+  End;
+ Until (DueIdx >= 0) Or (Guard >= 5000000);
+ If DueIdx < 0 Then Begin
+  Win16_LastError := 'GetMessage : aucun minuteur jamais arrive a ' +
+   'echeance (garde-fou de ' + IntToStr(Guard) + ' tics atteint).';
+  Win16_Halt(P, 'USER', 108);
+  Win16_GetMessage := False;
+  Exit;
+ End;
+ Win16_TimerNextDueTick[DueIdx] := Win16_TimerNextDueTick[DueIdx] +
+  Win16_TimerElapseTicks[DueIdx];
+ OutHWnd := Win16_TimerHWnd[DueIdx];
+ OutMsg := WIN16_WM_TIMER;
+ OutWParam := Win16_TimerID[DueIdx];
+ OutLParamLo := 0; OutLParamHi := 0;
+ Win16_GetMessage := True;
 End;
 
 { Dispatcher reel des appels KERNEL/USER/GDI, atteint via le Case $F8 de   }
@@ -42891,6 +43150,21 @@ Var
  CWX, CWY, CWW, CWH: Word;
  CWClassStr, CWTitleStr: String;
  CWClassIdx, CWI, CWIdx: Integer;
+ { Stage 6b (2026-08-30) : minuteurs, boucle de messages, WNDPROC, GDI. }
+ TmrHWndArg, TmrIDArg, TmrElapseArg: Word;
+ TmrIdx, TmrFoundIdx: Integer;
+ GMHWnd, GMMsg, GMWParam, GMLParamLo, GMLParamHi: Word;
+ GMLpSeg, GMLpOfs: Word;
+ DMLpSeg, DMLpOfs: Word;
+ DMHWnd, DMMsg, DMWParam, DMLParamLo, DMLParamHi: Word;
+ DMWIdx, DMClassIdx: Integer;
+ DMResult: LongInt;
+ BPWIdx: Integer;
+ BPHWndArg, BPLpSeg, BPLpOfs: Word;
+ GCRLpSeg, GCRLpOfs: Word;
+ IRHWndArg: Word;
+ IRWIdx: Integer;
+ GdiX1, GdiY1, GdiX2, GdiY2: SmallInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -43148,6 +43422,20 @@ Begin
     { au tick suivant), jamais l'etat/les donnees du programme. }
     P.CPU.Regs.AX := 0; { FALSE - evenement deja "present", pas d'attente }
     ArgWords := 1;      { WaitEvent(hTask) : un seul parametre. }
+   End;
+   51: Begin
+    { MakeProcInstance(lpProc,hInstance):FARPROC - ordinal VERIFIE via       }
+    { krnl386.exe16.spec (segptr + 1 mot = 3 mots). Stage 6b (2026-08-30) :  }
+    { un VRAI MakeProcInstance fabrique un thunk qui fixe DS a hInstance     }
+    { avant de sauter au vrai code - necessaire seulement quand PLUSIEURS    }
+    { instances du meme programme (donc plusieurs DS possibles) coexistent. }
+    { Ce chantier reste mono-programme/mono-instance (meme limitation deja  }
+    { assumee partout ailleurs - Win16_ImportModIdx[] etc.), donc il ne peut }
+    { jamais y avoir qu'un seul DS possible : retourne lpProc INCHANGE,      }
+    { aucun VRAI thunk d'instance necessaire. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    P.CPU.Regs.DX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
@@ -43415,6 +43703,321 @@ Begin
     End;
     ArgWords := 1;
    End;
+   6: Begin
+    { PostQuitMessage(nExitCode) - ordinal VERIFIE via user.exe16.spec.     }
+    { Stage 6b (2026-08-30) : poste reellement WM_QUIT - GetMessage la       }
+    { retournera FALSE des qu'elle l'atteindra (contrat reel de fin de       }
+    { boucle de messages), aucun argument a lire (nExitCode ignore, jamais   }
+    { consulte par le code appelant dans la pratique). }
+    Win16_PostMessage(0, WIN16_WM_QUIT, 0, 0, 0);
+    ArgWords := 1;
+   End;
+   10: Begin
+    { SetTimer(hWnd,nIDEvent,uElapse,lpTimerFunc):UINT - ordinal VERIFIE     }
+    { via user.exe16.spec (3 mots + 1 segptr = 5 mots). Stage 6b            }
+    { (2026-08-30) : REELLEMENT implante - table fixe (meme esprit que       }
+    { Win16_Windows[]), echeance suivie via EmuTickCounter (meme compteur    }
+    { de tics BIOS reel que Emu_TimerTick, ~18.2/s), uElapse (ms) converti   }
+    { en tics (~55 ms/tic, minimum 1). lpTimerFunc (callback optionnel)      }
+    { ignore - jamais utilise par CLOCK.EXE (NULL, la fenetre recoit          }
+    { WM_TIMER via sa WNDPROC normale, cas de loin le plus courant). Si      }
+    { nIDEvent=0, un identifiant synthetique est genere (rarement utilise    }
+    { par de vraies apps, mais couvert honnetement). }
+    TmrHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    TmrIDArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    TmrElapseArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If TmrIDArg = 0 Then TmrIDArg := Word(1000 + Win16_TimerCount);
+    TmrFoundIdx := -1;
+    For TmrIdx := 0 To Win16_TimerCount - 1 Do
+     If (Win16_TimerHWnd[TmrIdx] = TmrHWndArg) And
+        (Win16_TimerID[TmrIdx] = TmrIDArg) Then TmrFoundIdx := TmrIdx;
+    If TmrFoundIdx < 0 Then Begin
+     If Win16_TimerCount < WIN16_MAX_TIMERS Then Begin
+      TmrFoundIdx := Win16_TimerCount;
+      Inc(Win16_TimerCount);
+     End;
+    End;
+    If TmrFoundIdx >= 0 Then Begin
+     Win16_TimerHWnd[TmrFoundIdx] := TmrHWndArg;
+     Win16_TimerID[TmrFoundIdx] := TmrIDArg;
+     Win16_TimerElapseTicks[TmrFoundIdx] := TmrElapseArg Div 55;
+     If Win16_TimerElapseTicks[TmrFoundIdx] < 1 Then
+      Win16_TimerElapseTicks[TmrFoundIdx] := 1;
+     Win16_TimerNextDueTick[TmrFoundIdx] := EmuTickCounter +
+      Win16_TimerElapseTicks[TmrFoundIdx];
+     P.CPU.Regs.AX := TmrIDArg;
+     Win16_DebugMsg := 'SetTimer hWnd=' + HexWord(TmrHWndArg) + ' id=' +
+      IntToStr(TmrIDArg) + ' elapse=' + IntToStr(TmrElapseArg) + 'ms (' +
+      IntToStr(Win16_TimerElapseTicks[TmrFoundIdx]) + ' tics)';
+    End Else
+     P.CPU.Regs.AX := 0; { echec honnete : trop de minuteurs (WIN16_MAX_TIMERS) }
+    ArgWords := 5;
+   End;
+   12: Begin
+    { KillTimer(hWnd,nIDEvent):bool - ordinal VERIFIE via user.exe16.spec.  }
+    { Stage 6b : retire reellement l'entree de la table si trouvee. }
+    TmrHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    TmrIDArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    TmrFoundIdx := -1;
+    For TmrIdx := 0 To Win16_TimerCount - 1 Do
+     If (Win16_TimerHWnd[TmrIdx] = TmrHWndArg) And
+        (Win16_TimerID[TmrIdx] = TmrIDArg) Then TmrFoundIdx := TmrIdx;
+    If TmrFoundIdx >= 0 Then Begin
+     For TmrIdx := TmrFoundIdx To Win16_TimerCount - 2 Do Begin
+      Win16_TimerHWnd[TmrIdx] := Win16_TimerHWnd[TmrIdx + 1];
+      Win16_TimerID[TmrIdx] := Win16_TimerID[TmrIdx + 1];
+      Win16_TimerElapseTicks[TmrIdx] := Win16_TimerElapseTicks[TmrIdx + 1];
+      Win16_TimerNextDueTick[TmrIdx] := Win16_TimerNextDueTick[TmrIdx + 1];
+     End;
+     Dec(Win16_TimerCount);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   33: Begin
+    { GetClientRect(hWnd,lpRect):bool - ordinal VERIFIE via user.exe16.spec.}
+    { Stage 6b : ecrit un VRAI RECT (0,0,largeur,hauteur) depuis             }
+    { Win16_WindowW/H deja connus (CreateWindow, Stage 6) - la zone client    }
+    { EST toute la fenetre dans ce modele (aucune barre de titre/bordure      }
+    { modelisee separement du cadre deja dessine). }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    DMWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+        Word(P.CPU.Regs.SP + 8)) Then DMWIdx := CWI;
+    Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, 0);       { left }
+    Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2), 0); { top }
+    If DMWIdx >= 0 Then Begin
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4), Word(Win16_WindowW[DMWIdx]));
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6), Word(Win16_WindowH[DMWIdx]));
+    End Else Begin
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4), 0);
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6), 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   39: Begin
+    { BeginPaint(hWnd,lpPaint):HDC - ordinal VERIFIE via user.exe16.spec.   }
+    { Stage 6b : efface WindowNeedsPaint (contrat reel - une repeinture      }
+    { "consommee"), renseigne PAINTSTRUCT.hdc/fErase/rcPaint (les seuls      }
+    { champs reellement utiles pour un dessin simple - fRestore/fIncUpdate/  }
+    { reserve laisses tels quels, jamais consultes par un code normal),      }
+    { retient la fenetre pour les appels GDI suivants (Win16_ActiveDCWindow -}
+    { mono-fenetre/mono-DC, meme simplification que GetDC/GetWindowDC). }
+    BPHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    BPLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    BPLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Inc(Win16_BeginPaintCount);
+    BPWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = BPHWndArg Then BPWIdx := CWI;
+    If BPWIdx >= 0 Then Win16_WindowNeedsPaint[BPWIdx] := False;
+    Win16_ActiveDCWindow := BPWIdx;
+    Emu_WriteWord(P.CPU, BPLpSeg, BPLpOfs, 1);           { hdc synthetique }
+    Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 2), 1); { fErase }
+    Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 4), 0); { rcPaint.left }
+    Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 6), 0); { rcPaint.top }
+    If BPWIdx >= 0 Then Begin
+     Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 8), Word(Win16_WindowW[BPWIdx]));
+     Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 10), Word(Win16_WindowH[BPWIdx]));
+    End Else Begin
+     Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 8), 0);
+     Emu_WriteWord(P.CPU, BPLpSeg, Word(BPLpOfs + 10), 0);
+    End;
+    { position "stylo" par defaut au centre client, pratique pour un cadran }
+    If BPWIdx >= 0 Then Begin
+     Win16_PenX := Win16_WindowX[BPWIdx] + Win16_WindowW[BPWIdx] Div 2;
+     Win16_PenY := Win16_WindowY[BPWIdx] + Win16_WindowH[BPWIdx] Div 2;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   40: Begin
+    { EndPaint(hWnd,lpPaint):bool - ordinal VERIFIE via user.exe16.spec.    }
+    { Stage 6b : libere juste Win16_ActiveDCWindow, aucun VRAI DC a liberer.}
+    Win16_ActiveDCWindow := -1;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   42: Begin
+    { ShowWindow(hWnd,nCmdShow):bool - ordinal VERIFIE via user.exe16.spec. }
+    { Stage 6b : la fenetre est toujours visible des sa creation dans ce     }
+    { modele (un seul "ecran" 320x200, une seule fenetre) - succes honnete   }
+    { sans etat cache/visible reellement modelise. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   107: Begin
+    { DefWindowProc(hWnd,msg,wParam,lParam):LRESULT - ordinal VERIFIE via   }
+    { user.exe16.spec. Stage 6b : traitement par defaut MINIMAL honnete -   }
+    { 0 pour tout, SAUF WM_PAINT qui a un comportement par defaut REEL et    }
+    { OBLIGATOIRE documente (MSDN/Petzold "Programming Windows") : un vrai   }
+    { DefWindowProc appelle BeginPaint/EndPaint pour valider (effacer) la    }
+    { region de mise a jour meme quand l'application ne dessine rien de     }
+    { plus - SANS cela, GetMessage synthetiserait WM_PAINT indefiniment      }
+    { (la region reste "sale" pour toujours), starvant tout autre message    }
+    { (WM_TIMER en particulier) de la file - BOGUE REEL trouve+corrige       }
+    { (2026-08-30, WIN16RUN a montre 10303 WM_PAINT consecutifs et ZERO      }
+    { WM_TIMER malgre un minuteur enregistre : Dpmi_LastRunRealProcIter a     }
+    { revele que la WNDPROC de CLOCK.EXE ne consommait que 33 pas reels par  }
+    { appel - trop peu pour un VRAI dessin, signe qu'elle ne gere pas         }
+    { WM_PAINT elle-meme et retombe ici). Pas de WM_ERASEBKGND reel non      }
+    { plus (le fond blanc est deja pose une fois par                        }
+    { Win16_DrawWindowFrame a la creation, hors de portee documentee pour    }
+    { un vrai recalcul par pinceau de classe ici). }
+    DMHWnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    DMMsg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    If DMMsg = WIN16_WM_PAINT Then Begin
+     Inc(Win16_DefWindowProcPaintCount);
+     DMWIdx := -1;
+     For CWI := 0 To Win16_WindowCount - 1 Do
+      If Win16_WindowHWnd[CWI] = DMHWnd Then DMWIdx := CWI;
+     If DMWIdx >= 0 Then Win16_WindowNeedsPaint[DMWIdx] := False;
+    End;
+    P.CPU.Regs.DX := 0;
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   108, 109: Begin
+    { GetMessage(lpMsg,hWnd,min,max):bool / PeekMessage(lpMsg,hWnd,min,max, }
+    { wRemoveMsg):bool - ordinaux VERIFIES via user.exe16.spec. Stage 6b :  }
+    { PeekMessage simplifie en GetMessage TOUJOURS "bloquant" (wRemoveMsg/  }
+    { PM_NOREMOVE non distingue - un vrai PeekMessage non-bloquant sans      }
+    { message disponible reviendrait FALSE immediatement, mais CLOCK.EXE     }
+    { et la quasi-totalite des apps de cette epoque utilisent GetMessage,     }
+    { pas PeekMessage, dans leur boucle principale - simplification          }
+    { documentee plutot qu'un vrai sondage non-bloquant). Ecrit le VRAI      }
+    { MSG standard (hwnd@0/message@2/wParam@4/lParam@6, time/pt non          }
+    { modelises=0, jamais lus par du code de dessin simple). }
+    If Ordinal = 108 Then Begin
+     GMLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+     GMLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    End Else Begin
+     GMLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+     GMLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    End;
+    If Win16_GetMessage(P, GMHWnd, GMMsg, GMWParam, GMLParamLo, GMLParamHi) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    Emu_WriteWord(P.CPU, GMLpSeg, GMLpOfs, GMHWnd);
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 2), GMMsg);
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 4), GMWParam);
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 6), GMLParamLo);
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 8), GMLParamHi);
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 10), 0); { time }
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 12), 0);
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 14), 0); { pt.x }
+    Emu_WriteWord(P.CPU, GMLpSeg, Word(GMLpOfs + 16), 0); { pt.y }
+    Win16_DebugMsg := 'GetMessage hwnd=' + HexWord(GMHWnd) + ' msg=' +
+     HexWord(GMMsg) + ' wParam=' + HexWord(GMWParam);
+    If Ordinal = 108 Then ArgWords := 5 Else ArgWords := 6;
+   End;
+   113: Begin
+    { TranslateMessage(lpMsg):bool - ordinal VERIFIE via user.exe16.spec.   }
+    { Stage 6b : aucun clavier route (Stage 6e) - ne genere jamais de        }
+    { WM_CHAR, retourne honnetement FALSE (aucune traduction effectuee). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   114: Begin
+    { DispatchMessage(lpMsg):LRESULT - ordinal VERIFIE via user.exe16.spec. }
+    { Stage 6b : LE coeur du mecanisme - relit le VRAI MSG (deja rempli par  }
+    { GetMessage/PeekMessage ci-dessus, ou construit par le programme lui-   }
+    { meme pour un message synthetique), retrouve la classe de la fenetre    }
+    { cible et appelle REELLEMENT sa WNDPROC via Win16_CallWndProc. }
+    DMLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    DMLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    DMHWnd := Emu_ReadWord(P.CPU, DMLpSeg, DMLpOfs);
+    DMMsg := Emu_ReadWord(P.CPU, DMLpSeg, Word(DMLpOfs + 2));
+    DMWParam := Emu_ReadWord(P.CPU, DMLpSeg, Word(DMLpOfs + 4));
+    DMLParamLo := Emu_ReadWord(P.CPU, DMLpSeg, Word(DMLpOfs + 6));
+    DMLParamHi := Emu_ReadWord(P.CPU, DMLpSeg, Word(DMLpOfs + 8));
+    DMWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = DMHWnd Then DMWIdx := CWI;
+    If DMWIdx >= 0 Then Begin
+     DMClassIdx := Win16_WindowClassIdx[DMWIdx];
+     DMResult := Win16_CallWndProc(P, Win16_WndClassProcSeg[DMClassIdx],
+      Win16_WndClassProcOfs[DMClassIdx], DMHWnd, DMMsg, DMWParam,
+      DMLParamLo, DMLParamHi);
+     { Dpmi_LastRunRealProcIter (diagnostic, 2026-08-30) : nombre REEL de   }
+     { pas CPU executes A L INTERIEUR de la WNDPROC - invisible autrement    }
+     { dans WIN16RUN.LOG (voir le commentaire pres de sa declaration).      }
+     Win16_DebugMsg := 'DispatchMessage hwnd=' + HexWord(DMHWnd) + ' msg=' +
+      HexWord(DMMsg) + ' -> WNDPROC ' +
+      HexWord(Win16_WndClassProcSeg[DMClassIdx]) + ':' +
+      HexWord(Win16_WndClassProcOfs[DMClassIdx]) + ' (' +
+      IntToStr(Dpmi_LastRunRealProcIter) + ' pas reels)';
+     P.CPU.Regs.DX := Word((DMResult Shr 16) And $FFFF);
+     P.CPU.Regs.AX := Word(DMResult And $FFFF);
+    End Else Begin
+     Win16_DebugMsg := 'DispatchMessage : fenetre inconnue hwnd=' +
+      HexWord(DMHWnd);
+     P.CPU.Regs.DX := 0;
+     P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 2;
+   End;
+   124: Begin
+    { UpdateWindow(hWnd):bool - ordinal VERIFIE via user.exe16.spec. Stage   }
+    { 6b : si une repeinture est en attente, appelle DIRECTEMENT et            }
+    { SYNCHRONE la WNDPROC avec WM_PAINT (contrat reel - UpdateWindow          }
+    { contourne la file de messages), sinon ne fait rien. }
+    DMHWnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    DMWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = DMHWnd Then DMWIdx := CWI;
+    If (DMWIdx >= 0) And Win16_WindowNeedsPaint[DMWIdx] Then Begin
+     DMClassIdx := Win16_WindowClassIdx[DMWIdx];
+     DMResult := Win16_CallWndProc(P, Win16_WndClassProcSeg[DMClassIdx],
+      Win16_WndClassProcOfs[DMClassIdx], DMHWnd, WIN16_WM_PAINT, 0, 0, 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   125: Begin
+    { InvalidateRect(hWnd,lpRect,bErase):bool - ordinal VERIFIE via          }
+    { user.exe16.spec. Stage 6b : marque juste la fenetre "a repeindre"       }
+    { (lpRect/bErase ignores - toute la fenetre est repeinte, meme            }
+    { simplification que GetClientRect ci-dessus qui ne modelise qu'une       }
+    { seule zone client). }
+    IRHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    IRWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = IRHWndArg Then IRWIdx := CWI;
+    If IRWIdx >= 0 Then Win16_WindowNeedsPaint[IRWIdx] := True;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   156: Begin
+    { GetSystemMenu(hWnd,bRevert):HMENU - ordinal VERIFIE via                }
+    { user.exe16.spec. Aucun VRAI systeme de menu modelise (Stage 6c+ hors  }
+    { de portee) - meme simplification que les autres handles GDI/USER      }
+    { "objets" synthetiques (SelectObject/CreateSolidBrush/GetStockObject   }
+    { etc.) : handle non-nul, jamais un VRAI menu manipulable. Suffisant    }
+    { pour qu'un code d'init qui personnalise son menu systeme (About...)   }
+    { continue vers ses appels AppendMenu/ModifyMenu suivants, qui           }
+    { s'arreteront honnetement a leur tour si/quand rencontres. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   153: Begin
+    { ChangeMenu(hMenu,cmdID,lpszNewItem,cmdIDInsert,flags):bool - ordinal   }
+    { VERIFIE via user.exe16.spec (2 mots + 1 segstr + 2 mots = 6 mots).     }
+    { API "universelle" pre-Windows 3.1 (regroupe ce qui deviendra           }
+    { AppendMenu/InsertMenu/ModifyMenu/DeleteMenu/RemoveMenu) - typiquement  }
+    { utilisee juste apres GetSystemMenu (ordinal 156 ci-dessus) pour         }
+    { personnaliser le menu systeme (ex. ajouter "A propos de Clock...").    }
+    { Aucun VRAI systeme de menu modelise (meme simplification documentee    }
+    { que GetSystemMenu) - rapporte toujours un succes honnete, aucune       }
+    { structure de menu reellement modifiee. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
     Exit;
@@ -43495,6 +44098,75 @@ Begin
     { l'objet standard demande (pinceau/stylo/police systeme). }
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   20: Begin
+    { MoveTo(hdc,X,Y):DWORD - ordinal VERIFIE via gdi.exe16.spec (2 mots     }
+    { SIGNES). Stage 6c (2026-08-30) : pose la position "stylo" courante     }
+    { (Win16_PenX/Y, mono-DC - voir BeginPaint) - coordonnees CLIENT          }
+    { converties en pixels ABSOLUS du framebuffer via Win16_ActiveDCWindow    }
+    { (+1 pour sauter le cadre 1px deja dessine par Win16_DrawWindowFrame).   }
+    { Retour (position precedente packee) non modelise = 0, jamais verifie   }
+    { par un code de dessin normal. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     Win16_PenX := Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1;
+     Win16_PenY := Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1;
+    End;
+    P.CPU.Regs.DX := 0;
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   19: Begin
+    { LineTo(hdc,X,Y):bool - ordinal VERIFIE via gdi.exe16.spec (2 mots      }
+    { SIGNES). Stage 6c : trace un VRAI segment de droite (Win16_DrawLine,   }
+    { Bresenham) depuis la position "stylo" courante jusqu'a (X,Y), puis      }
+    { avance le stylo - contrat reel de LineTo. Couleur fixe noire (0) :     }
+    { le PEN selectionne (SelectObject/CreatePen, Stage 5) reste un handle    }
+    { synthetique sans VRAIE couleur resolue (simplification deja             }
+    { documentee), noir est le choix le plus plausible sur un fond blanc     }
+    { pour un cadran d'horloge. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     Win16_DrawLine(Win16_PenX, Win16_PenY, GdiX2, GdiY2, 0);
+     Win16_PenX := GdiX2;
+     Win16_PenY := GdiY2;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   24, 27: Begin
+    { Ellipse(hdc,X1,Y1,X2,Y2):bool / Rectangle(hdc,X1,Y1,X2,Y2):bool -      }
+    { ordinaux VERIFIES via gdi.exe16.spec (4 mots SIGNES chacun, meme        }
+    { signature). Stage 6c : trace un VRAI contour (Win16_DrawEllipseBox     }
+    { ou 4 Win16_DrawLine pour Rectangle), coordonnees CLIENT converties en   }
+    { pixels ABSOLUS comme MoveTo/LineTo ci-dessus. Couleur fixe noire (0),   }
+    { meme rationale que LineTo. Aucun remplissage (le BRUSH reste            }
+    { synthetique, Stage 5) - un contour suffit a distinguer un cadran        }
+    { d'horloge circulaire. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2);
+     If Ordinal = 24 Then
+      Win16_DrawEllipseBox(GdiX1, GdiY1, GdiX2, GdiY2, 0)
+     Else Begin
+      Win16_DrawLine(GdiX1, GdiY1, GdiX2, GdiY1, 0);
+      Win16_DrawLine(GdiX2, GdiY1, GdiX2, GdiY2, 0);
+      Win16_DrawLine(GdiX2, GdiY2, GdiX1, GdiY2, 0);
+      Win16_DrawLine(GdiX1, GdiY2, GdiX1, GdiY1, 0);
+     End;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
@@ -45349,6 +46021,9 @@ Begin
   Else            FaultName := 'code ' + IntToStr(P.CPU.Fault);
  End;
  WriteLn(LogF);
+ WriteLn(LogF, 'Diagnostic (2026-08-30) : DefWindowProc atteint avec ' +
+  'WM_PAINT ', Win16_DefWindowProcPaintCount, ' fois ; BeginPaint atteint ',
+  Win16_BeginPaintCount, ' fois.');
  WriteLn(LogF, 'Arret apres ', StepN, ' pas : ', FaultName,
   ' - CS:IP final=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
  { Win16_LastError porte le detail "Module.Ordinal" quand l arret vient de }
@@ -45975,6 +46650,25 @@ Begin
   TermAddLine(TP, '--- Editeur de texte ---');
   TermAddLine(TP,
    '  EDIT fichier     Ouvrir un fichier dans l''editeur de texte');
+ End;
+ { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande         }
+ { explicite de l'utilisateur - PowerShell dev est le shell qu'il oublie le }
+ { plus souvent de changer avant de lancer un programme Windows 16 bits).   }
+ { SK_POWERSHELL uniquement : WIN/WIN16 eux-memes restent SK_CMD/            }
+ { SK_NCOMMANDER (deja documentes plus bas, section "Lancer un emulateur"). }
+ If TP.Shell = SK_POWERSHELL Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Lancer un programme Windows 16 bits ---');
+  TermAddLine(TP,
+   '  Start-Win16 fichier[.exe]              Emulateur Windows 16 bits (NE)');
+  TermAddLine(TP,
+   '  Start-Win16Program fichier[.exe]        Alias de Start-Win16');
+  TermAddLine(TP,
+   '  Start-Win16Application fichier[.exe]    Alias de Start-Win16');
+  TermAddLine(TP,
+   '  Invoke-Win16 fichier[.exe]              Alias de Start-Win16');
+  TermAddLine(TP,
+   '  Invoke-Win16Program fichier[.exe]        Alias de Start-Win16');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -46789,6 +47483,18 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+   { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande        }
+   { explicite de l'utilisateur : "quand j'oublie de changer de mode" -     }
+   { PowerShell dev est le shell par defaut/le plus utilise, donc celui ou  }
+   { l'habitude CMD.EXE de taper WIN16 directement echoue le plus souvent). }
+   { Meme handler TermCmd_Win16Launch que WIN/WIN16 dans SK_CMD/            }
+   { SK_NCOMMANDER ci-dessus - aucune duplication de logique. }
+   Else If (CurrCmd = 'START-WIN16PROGRAM') Or
+    (CurrCmd = 'INVOKE-WIN16PROGRAM') Or
+    (CurrCmd = 'START-WIN16APPLICATION') Or
+    (CurrCmd = 'INVOKE-WIN16') Or
+    (CurrCmd = 'START-WIN16') Then
+    TermCmd_Win16Launch(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or
@@ -75528,6 +76234,7 @@ Begin
   Emu_StepOne(P);
   Inc(Iter);
  End;
+ Dpmi_LastRunRealProcIter := Iter;
 End;
 
 { --- INT 31h : services DPMI eux-memes, dispatches par Dpmi_Step (plus    }
@@ -107649,6 +108356,39 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   TermCmd_REXX(TermPanels[ActiveShell], Opts.RexxFile);
+ End;
+ { /PS:fichier.ps1 - meme principe exact que /TERMINALDOS:/                }
+ { /TERMINALOS2: ci-dessus, mais ouvre "PowerShell dev" (SK_POWERSHELL) -   }
+ { demande explicite de l'utilisateur (2026-08-30) : PowerShell dev est le  }
+ { shell qu'il utilise/oublie de changer le plus souvent, ce nouveau         }
+ { indicateur de ligne de commande lui evite d'avoir a naviguer manuellement}
+ { jusqu'a ce shell puis a taper chaque ligne d'un script a la main. Chaque }
+ { ligne du fichier est executee telle quelle via TermExecuteCommand,       }
+ { exactement comme si elle avait ete tapee dans ce terminal - CE N'EST PAS }
+ { un vrai interprete PowerShell (aucun script .ps1 reel, avec sa syntaxe   }
+ { complete, n'est execute) mais le meme jeu de commandes internes/alias    }
+ { verbe-nom deja disponibles dans ce shell (voir HELP). }
+ If Opts.PSFile <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_POWERSHELL;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.PSFile); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
  End;
  { Si un fichier solution .sln a ete passe en argument }
  If Opts.SolutionFile <> '' Then Begin

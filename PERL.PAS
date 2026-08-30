@@ -201,6 +201,8 @@ Procedure SetPerlArrayElement(ArrayName:String;ElementIndex:Integer;
  Value:String);Forward;
 Function GetPerlArrayCount(ArrayName:String):Integer;Forward;
 Function PerlArrayElementName(ArrayName:String;ElementIndex:Integer):String;Forward;
+Procedure ClearPerlArray(ArrayName:String);Forward;
+Function PerlIntegerBase(Value:LongInt;NumberBase:Integer;UpperCase:Boolean):String;Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
 Var J,K:Integer;Matches:Boolean;LeftCharacter,RightCharacter:Char;
@@ -915,6 +917,98 @@ Begin If(ArgumentCount=0)or(LimitValue<=0)Then LimitValue:=1;
  PerlNumber(Random*LimitValue,V);
 End;
 
+Procedure PerlSrand(SeedValue:LongInt;ArgumentCount:Integer;Var V:TPerlValue);
+Begin
+ If ArgumentCount=0Then Begin Randomize;PerlNumber(1,V);End
+ Else Begin RandSeed:=SeedValue;PerlNumber(SeedValue,V);End;
+End;
+
+Procedure PerlSplit(Separator,SourceText:String;Limit:Integer;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var StartPosition,FoundPosition,ElementIndex,I:Integer;Part:String;
+begin
+ ClearPerlArray('PERLSPLIT');ElementIndex:=0;
+ If ArgumentCount<3Then Limit:=0;
+ If Separator=' 'Then Begin
+  I:=1;
+  While I<=Length(SourceText)Do Begin
+   While(I<=Length(SourceText))and(SourceText[I]in[' ',#9,#13,#10])Do Inc(I);
+   StartPosition:=I;
+   While(I<=Length(SourceText))and Not(SourceText[I]in[' ',#9,#13,#10])Do Inc(I);
+   If I>StartPosition Then Begin
+    SetPerlArrayElement('PERLSPLIT',ElementIndex,Copy(SourceText,StartPosition,I-StartPosition));
+    Inc(ElementIndex);
+   End;
+  End;
+ End Else If Separator=''Then Begin
+  For I:=1To Length(SourceText)Do Begin
+   If(Limit>0)and(ElementIndex=Limit-1)Then Begin
+    SetPerlArrayElement('PERLSPLIT',ElementIndex,Copy(SourceText,I,255));Inc(ElementIndex);Break;
+   End;
+   SetPerlArrayElement('PERLSPLIT',ElementIndex,SourceText[I]);Inc(ElementIndex);
+  End;
+ End Else Begin
+  StartPosition:=1;
+  Repeat
+   If(Limit>0)and(ElementIndex=Limit-1)Then FoundPosition:=0
+   Else FoundPosition:=Pos(Separator,Copy(SourceText,StartPosition,255));
+   If FoundPosition=0Then Part:=Copy(SourceText,StartPosition,255)
+   Else Part:=Copy(SourceText,StartPosition,FoundPosition-1);
+   SetPerlArrayElement('PERLSPLIT',ElementIndex,Part);Inc(ElementIndex);
+   If FoundPosition>0Then Inc(StartPosition,FoundPosition-1+Length(Separator));
+  Until FoundPosition=0;
+  If Limit=0Then While(ElementIndex>0)Do Begin
+   GetPerlArrayElement('PERLSPLIT',ElementIndex-1,V);
+   If V.Text<>''Then Break;Dec(ElementIndex);
+   DeletePerlVariable(PerlArrayElementName('PERLSPLIT',ElementIndex));
+   SetPerlVariable('@PERLSPLIT.COUNT',PerlNumberText(ElementIndex));
+  End;
+ End;
+ PerlText('@PERLSPLIT',V);
+End;
+
+Procedure PerlSprintf(FormatText:String;FirstValue,SecondValue:TPerlValue;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var I,ValueIndex,Width,J:Integer;Conversion:Char;Piece,ResultText:String;
+ CurrentValue:TPerlValue;N:LongInt;
+Begin
+ I:=1;ValueIndex:=1;ResultText:='';
+ While I<=Length(FormatText)Do Begin
+  If FormatText[I]<>'%'Then Begin ResultText:=ResultText+FormatText[I];Inc(I);End
+  Else Begin
+   Inc(I);
+   If(I<=Length(FormatText))and(FormatText[I]='%')Then Begin
+    ResultText:=ResultText+'%';Inc(I);
+   End Else Begin
+    Width:=0;
+    While(I<=Length(FormatText))and(FormatText[I]in['0'..'9'])Do Begin
+     Width:=Width*10+Ord(FormatText[I])-Ord('0');Inc(I);
+    End;
+    If I<=Length(FormatText)Then Begin Conversion:=FormatText[I];Inc(I);
+     If ValueIndex=1Then CurrentValue:=FirstValue Else CurrentValue:=SecondValue;
+     Inc(ValueIndex);Piece:='';N:=Trunc(CurrentValue.Number);
+     Case Conversion of
+      's':Piece:=CurrentValue.Text;
+      'd','i':Str(N,Piece);
+      'u':If N<0Then Piece:=PerlNumberText(4294967296.0+N)Else Str(N,Piece);
+      'x':Piece:=PerlIntegerBase(N,16,False);
+      'X':Piece:=PerlIntegerBase(N,16,True);
+      'o':Piece:=PerlIntegerBase(N,8,False);
+      'c':Piece:=Chr(N mod 256);
+      'f':Str(CurrentValue.Number:0:6,Piece);
+      'e','E','g','G':Piece:=PerlNumberText(CurrentValue.Number);
+      Else Piece:='%'+Conversion;
+     End;
+     Piece:=CleanText(Piece);J:=Width-Length(Piece);
+     While J>0Do Begin Piece:=' '+Piece;Dec(J);End;
+     ResultText:=ResultText+Piece;
+    End;
+   End;
+  End;
+ End;
+ PerlText(ResultText,V);
+End;
+
 Procedure PerlCrypt(PlainText,Salt:String;Var V:TPerlValue);
 Const CryptAlphabet='./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 Var I,J:Integer;H1,H2:LongInt;ResultText,Alphabet:String;
@@ -1383,7 +1477,10 @@ Begin
     97:PerlRead(A.Text,SecondArgumentVariable,Trunc(C.Number),V); { read }
     98:PerlReadDir(A.Text,V);                               { readdir }
     99:PerlReadLink(A.Text,V);                              { readlink }
-    125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
+    123:PerlSplit(A.Text,B.Text,Trunc(C.Number),FunctionArgumentCount,V); { split }
+    124:PerlSprintf(A.Text,B,C,FunctionArgumentCount,V);    { sprintf }
+    125:If A.Number<0Then PerlText('',V)Else PerlNumber(Sqrt(A.Number),V); { sqrt }
+    126:PerlSrand(Trunc(A.Number),FunctionArgumentCount,V); { srand }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
    Else If FunctionByte=-1Then PerlInvokeSubroutine(FunctionName,A,B,C,
     FunctionArgumentCount,V)
@@ -2141,8 +2238,8 @@ Begin
 End;
 
 Procedure MyCommand;
-Var Arguments,LeftText,RightText,Name,TempArray:String;
- P,J,K,ValueIndex,ValueCount:Integer;Sigil:Char;V:TPerlValue;
+Var Arguments,LeftText,RightText,Name,TempArray,SourceArray:String;
+ P,J,K,ValueIndex,ValueCount,ArrayIndex:Integer;Sigil:Char;V,ArrayValue:TPerlValue;
 Begin
  Arguments:=CleanText(Copy(CurrLine,CurrPos,255));P:=FindAssignment(Arguments);
  If P>0Then Begin LeftText:=CleanText(Copy(Arguments,1,P-1));
@@ -2171,8 +2268,19 @@ Begin
     Name:=Name+LeftText[J];Inc(J);End;
    If Sigil='$'Then Begin If RightText<>''Then EvalPerlExpression(RightText,V)Else PerlText('',V);
     SetPerlVariable(Name,V.Text);End
-   Else If Sigil='@'Then Begin If RightText<>''Then SetPerlArrayFromList(Name,RightText)
-    Else ClearPerlArray(Name);End
+   Else If Sigil='@'Then Begin
+    If RightText<>''Then Begin
+     If Copy(StrToUpper(RightText),1,6)='SPLIT('Then Begin
+      EvalPerlExpression(RightText,V);
+      SourceArray:=Copy(V.Text,2,255);ClearPerlArray(Name);
+      ValueCount:=GetPerlArrayCount(SourceArray);
+      For ArrayIndex:=0To ValueCount-1Do Begin
+       GetPerlArrayElement(SourceArray,ArrayIndex,ArrayValue);
+       SetPerlArrayElement(Name,ArrayIndex,ArrayValue.Text);
+      End;
+     End Else SetPerlArrayFromList(Name,RightText);
+    End Else ClearPerlArray(Name);
+   End
    Else Begin If RightText<>''Then SetPerlHashFromList(Name,RightText)Else ClearPerlHash(Name);End;
   End;
  End;
@@ -2858,10 +2966,10 @@ Begin
    120:SleepCommand;{sleep}
    121:NoImplementation:=True;{sort}
    122:NoImplementation:=True;{splice}
-   123:NoImplementation:=True;{split}
-   124:NoImplementation:=True;{sprintf}
-   125:NoImplementation:=True;{sqrt}
-   126:NoImplementation:=True;{srand}
+   123:BareFunctionCommand('split');{split}
+   124:BareFunctionCommand('sprintf');{sprintf}
+   125:BareFunctionCommand('sqrt');{sqrt}
+   126:BareFunctionCommand('srand');{srand}
    127:NoImplementation:=True;{stat}
    128:SubCommand;{sub}
    129:NoImplementation:=True;{substr}
