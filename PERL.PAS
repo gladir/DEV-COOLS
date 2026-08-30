@@ -120,6 +120,14 @@ Type
   FirstLine,LastLine:Integer;
   Next:PPerlModule;
  End;
+ PPerlLocalBinding=^TPerlLocalBinding;
+ TPerlLocalBinding=Record
+  Name:String[63];
+  OldValue:String;
+  Existed:Boolean;
+  ScopeDepth:Integer;
+  Next:PPerlLocalBinding;
+ End;
 
 Var
  FileC:Text;
@@ -146,11 +154,14 @@ Var
  PerlIncludePath:String;
  PerlStrictEnabled,PerlWarningsEnabled:Boolean;
  PerlModuleExecutionDepth:Integer;
+ PerlLocalBindings:PPerlLocalBinding;
+ PerlScopeDepth:Integer;
  ExprSource:String;
  ExprPosition:Integer;
 
 Function StrToUpper(S:String):String;Forward;
 Procedure SetPerlVariable(Name,Value:String);Forward;
+Function FindPerlVariable(Name:String):PPerlVariable;Forward;
 Function DeletePerlVariable(Name:String):Boolean;Forward;
 Function ExecutePerlCoreLine(S:String):Boolean;Forward;
 Procedure EvalPerlExpression(S:String;Var V:TPerlValue);Forward;
@@ -158,6 +169,9 @@ Procedure ExecuteStoredLine(LineIndex:Integer);Forward;
 Procedure PerlInvokeSubroutine(Name:String;Var A,B,C:TPerlValue;
  ArgumentCount:Integer;Var V:TPerlValue);Forward;
 Procedure RegisterPerlSubroutines;Forward;
+Procedure GetPerlArrayElement(ArrayName:String;ElementIndex:Integer;
+ Var V:TPerlValue);Forward;
+Function GetPerlArrayCount(ArrayName:String):Integer;Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
 Var J:Integer;
@@ -358,6 +372,112 @@ Begin
  SlashPosition:=0;
  For J:=1To Length(Pattern)Do If Pattern[J]in['\','/']Then SlashPosition:=J;
  Prefix:=Copy(Pattern,1,SlashPosition);PerlText(Prefix+State^.Search.Name,V);
+End;
+
+Procedure PerlIndex(SourceText,SearchText:String;StartPosition:Integer;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var FoundPosition:Integer;
+Begin
+ If ArgumentCount<3Then StartPosition:=0;
+ If StartPosition<0Then StartPosition:=0;
+ If StartPosition>Length(SourceText)Then Begin PerlNumber(-1,V);Exit;End;
+ FoundPosition:=Pos(SearchText,Copy(SourceText,StartPosition+1,255));
+ If FoundPosition=0Then PerlNumber(-1,V)
+ Else PerlNumber(StartPosition+FoundPosition-1,V);
+End;
+
+Procedure PerlJoin(Separator,FirstValue,SecondValue:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var ArrayName,ResultText:String;I,Count:Integer;Item:TPerlValue;
+Begin
+ ResultText:='';
+ If(Length(FirstValue)>0)and(FirstValue[1]='@')Then Begin
+  ArrayName:=Copy(FirstValue,2,255);Count:=GetPerlArrayCount(ArrayName);
+  For I:=0To Count-1Do Begin GetPerlArrayElement(ArrayName,I,Item);
+   If I>0Then ResultText:=ResultText+Separator;ResultText:=ResultText+Item.Text;End;
+ End Else Begin
+  If ArgumentCount>1Then ResultText:=FirstValue;
+  If ArgumentCount>2Then ResultText:=ResultText+Separator+SecondValue;
+ End;
+ PerlText(ResultText,V);
+End;
+
+Procedure PerlKeys(HashReference:String;Var V:TPerlValue);
+Var Entry:PPerlHashEntry;HashName:String;Count:Integer;
+Begin
+ HashName:=HashReference;
+ If(Length(HashName)>0)and(HashName[1]='%')Then Delete(HashName,1,1);
+ Count:=0;Entry:=PerlHashEntries;
+ While Entry<>Nil Do Begin If Entry^.HashName=HashName Then Inc(Count);Entry:=Entry^.Next;End;
+ PerlNumber(Count,V);
+End;
+
+Procedure PerlLowerCase(SourceText:String;Var V:TPerlValue);
+Var J:Integer;
+Begin
+ For J:=1To Length(SourceText)Do If SourceText[J]in['A'..'Z']Then
+  SourceText[J]:=Chr(Ord(SourceText[J])+32);
+ PerlText(SourceText,V);
+End;
+
+Procedure PerlLowerCaseFirst(SourceText:String;Var V:TPerlValue);
+Begin
+ If(Length(SourceText)>0)and(SourceText[1]in['A'..'Z'])Then
+  SourceText[1]:=Chr(Ord(SourceText[1])+32);
+ PerlText(SourceText,V);
+End;
+
+Procedure PerlKill(SignalNumber:Integer;FirstProcess,SecondProcess:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Begin
+ { DOS n'expose aucune primitive pour envoyer un signal a un processus.
+   Retourner zero respecte le nombre de processus effectivement signales. }
+ PerlNumber(0,V);
+End;
+
+Procedure PerlLink(ExistingPath,NewPath:String;Var V:TPerlValue);
+Begin
+ { FAT et l'API DOS de Turbo Pascal ne prennent pas en charge les liens
+   physiques. Une copie serait semantiquement incorrecte: signaler l'echec. }
+ PerlText('',V);
+End;
+
+Procedure PerlLocalTime(TimeValue:LongInt;ArgumentCount:Integer;Var V:TPerlValue);
+Begin
+ { L'horloge DOS est locale. Sans argument, PerlGmTime lit donc deja l'heure
+   locale; pour un epoch explicite, aucune base de fuseaux n'existe sous DOS. }
+ PerlGmTime(TimeValue,ArgumentCount,V);
+End;
+
+Procedure PerlLog(NumberValue:Real;Var V:TPerlValue);
+Begin If NumberValue>0Then PerlNumber(Ln(NumberValue),V)Else PerlText('',V);End;
+
+Procedure PerlLStat(PathName:String;Var V:TPerlValue);
+Var Search:SearchRec;ErrorCode:Integer;
+Begin
+ FindFirst(PathName,AnyFile,Search);ErrorCode:=DosError;
+ If ErrorCode=0Then PerlNumber(1,V)Else PerlText('',V);
+End;
+
+Procedure PerlMap(ExpressionText,FirstValue,SecondValue:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var SavedSource,ArrayName:String;SavedPosition,I,Count:Integer;
+ OldVariable:PPerlVariable;OldExisted:Boolean;OldValue:String;Item,Mapped:TPerlValue;
+ Procedure MapOne(ValueText:String);
+ Begin SetPerlVariable('_',ValueText);EvalPerlExpression(ExpressionText,Mapped);Inc(Count);End;
+Begin
+ SavedSource:=ExprSource;SavedPosition:=ExprPosition;OldVariable:=FindPerlVariable('_');
+ OldExisted:=OldVariable<>Nil;If OldExisted Then OldValue:=OldVariable^.Value Else OldValue:='';
+ Count:=0;
+ If(Length(FirstValue)>0)and(FirstValue[1]='@')Then Begin
+  ArrayName:=Copy(FirstValue,2,255);
+  For I:=0To GetPerlArrayCount(ArrayName)-1Do Begin
+   GetPerlArrayElement(ArrayName,I,Item);MapOne(Item.Text);End;
+ End Else Begin
+  If ArgumentCount>1Then MapOne(FirstValue);If ArgumentCount>2Then MapOne(SecondValue);
+ End;
+ If OldExisted Then SetPerlVariable('_',OldValue)Else DeletePerlVariable('_');
+ ExprSource:=SavedSource;ExprPosition:=SavedPosition;PerlNumber(Count,V);
 End;
 
 Procedure PerlBinMode(HandleName,LayerName:String;Var V:TPerlValue);
@@ -687,6 +807,34 @@ Begin
  End;
 End;
 
+Procedure LocalizePerlVariable(Name,NewValue:String);
+Var Binding:PPerlLocalBinding;Variable:PPerlVariable;
+Begin
+ Binding:=PerlLocalBindings;
+ While Binding<>Nil Do Begin
+  If(Binding^.ScopeDepth=PerlScopeDepth)and(Binding^.Name=Name)Then Begin
+   SetPerlVariable(Name,NewValue);Exit;
+  End;
+  Binding:=Binding^.Next;
+ End;
+ New(Binding);Binding^.Name:=Name;Binding^.ScopeDepth:=PerlScopeDepth;
+ Variable:=FindPerlVariable(Name);Binding^.Existed:=Variable<>Nil;
+ If Variable<>Nil Then Binding^.OldValue:=Variable^.Value Else Binding^.OldValue:='';
+ Binding^.Next:=PerlLocalBindings;PerlLocalBindings:=Binding;
+ SetPerlVariable(Name,NewValue);
+End;
+
+Procedure RestorePerlScope(ScopeDepth:Integer);
+Var Binding:PPerlLocalBinding;
+Begin
+ While(PerlLocalBindings<>Nil)and(PerlLocalBindings^.ScopeDepth=ScopeDepth)Do Begin
+  Binding:=PerlLocalBindings;PerlLocalBindings:=Binding^.Next;
+  If Binding^.Existed Then SetPerlVariable(Binding^.Name,Binding^.OldValue)
+  Else DeletePerlVariable(Binding^.Name);
+  Dispose(Binding);
+ End;
+End;
+
 Procedure PerlChRoot(PathName:String;Var V:TPerlValue);
 Var ErrorCode:Integer;
 Begin
@@ -792,6 +940,9 @@ Begin
  If ExprSource[ExprPosition]='%'Then Begin
   Inc(ExprPosition);Name:=ExprWord;PerlText('%'+Name,V);Exit;
  End;
+ If ExprSource[ExprPosition]='@'Then Begin
+  Inc(ExprPosition);Name:=ExprWord;PerlText('@'+Name,V);Exit;
+ End;
  If ExprSource[ExprPosition]in['0'..'9']Then Begin
   S:='';While(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]in['0'..'9','.'])Do Begin
    S:=S+ExprSource[ExprPosition];Inc(ExprPosition);
@@ -867,14 +1018,19 @@ Begin
     62:PerlGrep(A.Text,B.Text,C.Text,FunctionArgumentCount,V); { grep }
     63:PerlGlob(A.Text,V);                                  { glob }
     64:PerlHex(A.Text,V);                                   { hex }
+    66:PerlIndex(A.Text,B.Text,Trunc(C.Number),FunctionArgumentCount,V); { index }
     67:PerlNumber(Trunc(A.Number),V);                      { int }
-    71:Begin                                               { lc }
-        S:=A.Text;
-        For Code:=1 To Length(S)Do
-         If S[Code]in['A'..'Z']Then S[Code]:=Chr(Ord(S[Code])+32);
-        PerlText(S,V);
-       End;
+    68:PerlJoin(A.Text,B.Text,C.Text,FunctionArgumentCount,V); { join }
+    69:PerlKeys(A.Text,V);                                 { keys }
+    70:PerlKill(Trunc(A.Number),B.Text,C.Text,FunctionArgumentCount,V); { kill }
+    71:PerlLowerCase(A.Text,V);                            { lc }
+    72:PerlLowerCaseFirst(A.Text,V);                       { lcfirst }
     73:PerlNumber(Length(A.Text),V);                       { length }
+    74:PerlLink(A.Text,B.Text,V);                           { link }
+    76:PerlLocalTime(Trunc(A.Number),FunctionArgumentCount,V); { localtime }
+    77:PerlLog(A.Number,V);                                { log }
+    78:PerlLStat(A.Text,V);                                { lstat }
+    79:PerlMap(ArgumentText,B.Text,C.Text,FunctionArgumentCount,V); { map }
     125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
    Else If FunctionByte=-1Then PerlInvokeSubroutine(Name,A,B,C,
@@ -1671,6 +1827,18 @@ Begin
  CurrPos:=Length(CurrLine)+1;
 End;
 
+Procedure LocalCommand;
+Var Arguments,Name,RightText:String;P,J:Integer;V:TPerlValue;
+Begin
+ Arguments:=CleanText(Copy(CurrLine,CurrPos,255));
+ If(Arguments='')or(Arguments[1]<>'$')Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ J:=2;While(J<=Length(Arguments))and(Arguments[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+ Name:=Copy(Arguments,2,J-2);P:=FindAssignment(Arguments);
+ If P>0Then Begin RightText:=Copy(Arguments,P+1,255);EvalPerlExpression(RightText,V);End
+ Else PerlText('',V);
+ LocalizePerlVariable(Name,V.Text);CurrPos:=Length(CurrLine)+1;
+End;
+
 Function ExecutePerlCoreLine(S:String):Boolean;
 Var P,J,K:Integer;Name,RightSide,OperatorText,HashKeyText:String;
  V,OldValue,HashKeyValue:TPerlValue;
@@ -1844,10 +2012,12 @@ End;
 Procedure ExecutePerlBlock(FirstLine,LastLine:Integer);
 Var LineIndex:Integer;
 Begin
+ Inc(PerlScopeDepth);
  LineIndex:=FirstLine;
  While(LineIndex<=LastLine)and Not Terminated and Not PerlReturning Do Begin
   ExecuteStoredLine(LineIndex);LineIndex:=CurrLinePtr+1;
  End;
+ RestorePerlScope(PerlScopeDepth);Dec(PerlScopeDepth);
 End;
 
 Function FindPerlSubroutine(Name:String):PPerlSubroutine;
@@ -2266,20 +2436,20 @@ Begin
    63:BareFunctionCommand('glob');{glob}
    64:BareFunctionCommand('hex');{hex}
    65:IfCommand;{if}
-   66:NoImplementation:=True;{index}
-   67:NoImplementation:=True;{int}
-   68:NoImplementation:=True;{join}
-   69:NoImplementation:=True;{keys}
-   70:NoImplementation:=True;{kill}
-   71:NoImplementation:=True;{lc}
-   72:NoImplementation:=True;{lcfirst}
-   73:NoImplementation:=True;{length}
-   74:NoImplementation:=True;{link}
-   75:NoImplementation:=True;{local}
-   76:NoImplementation:=True;{localtime}
-   77:NoImplementation:=True;{log}
-   78:NoImplementation:=True;{lstat}
-   79:NoImplementation:=True;{map}
+   66:BareFunctionCommand('index');{index}
+   67:BareFunctionCommand('int');{int}
+   68:BareFunctionCommand('join');{join}
+   69:BareFunctionCommand('keys');{keys}
+   70:BareFunctionCommand('kill');{kill}
+   71:BareFunctionCommand('lc');{lc}
+   72:BareFunctionCommand('lcfirst');{lcfirst}
+   73:BareFunctionCommand('length');{length}
+   74:BareFunctionCommand('link');{link}
+   75:LocalCommand;{local}
+   76:BareFunctionCommand('localtime');{localtime}
+   77:BareFunctionCommand('log');{log}
+   78:BareFunctionCommand('lstat');{lstat}
+   79:BareFunctionCommand('map');{map}
    80:MkDirCommand;{mkdir}
    81:MyCommand;{my}
    82:NoImplementation:=True;{oct}

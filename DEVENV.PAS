@@ -1128,6 +1128,8 @@ Const
  MAX_WINDOWS           = 32;
  MAX_TABS              = 64;
  MAX_FRM_VIS_CONTROLS  = 256;    { controles max dans l apercu .FRM }
+ MAX_EXT_ENTRIES       = 64;     { backends/compagnons catalogues par }
+                                 { le Gestionnaire d extensions        }
 
  { Editeur de formulaire : mise en page (boite a outils, grille,   }
  { barres de defilement) }
@@ -2208,7 +2210,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -5992,6 +5994,35 @@ Type
   NeedRepaint  : Boolean;          { doit etre redessine            }
   FocusedBtn   : Integer;          { bouton clavier actif: 0=Nouveau, 1=Ouvrir }
  End;
+
+ { Gestionnaire d extensions (menu Outils) : une "extension" designe ici  }
+ { soit un compilateur/transpileur compagnon (executable separe a cote de }
+ { DEVENV.EXE), soit un backend integre directement au binaire (un        }
+ { emulateur ou un shell terminal) - il n existe aucun marketplace en     }
+ { ligne pour ce clone, donc chaque champ ci-dessous est verifiable       }
+ { directement (FileExists/FileAge reels), jamais invente. }
+ TExtEntry = Record
+  Name        : String[63];   { nom affiche                          }
+  ExeFile     : String[31];   { executable compagnon, '' si integre  }
+  Category    : String[31];   { 'Compilateur','Transpileur','Emulateur' }
+  Installed   : Boolean;      { FileExists reel, ou True si integre  }
+  BuildDate   : LongInt;      { FileAge reel du compagnon, 0 si absent }
+  NeedsUpdate : Boolean;      { BuildDate plus ancien que DEVENV.EXE }
+ End;
+
+ TExtManager = Record
+  Visible      : Boolean;
+  ActiveSubTab : Integer;     { 0=Parcourir 1=Installe 2=MAJ 3=Itinerance }
+  SelectedItem : Integer;
+  ScrollTop    : Integer;
+  NeedRepaint  : Boolean;
+  X, Y         : Integer;
+  Width, Height: Integer;
+  Entries      : Array[0..MAX_EXT_ENTRIES - 1] Of TExtEntry;
+  EntryCount   : Integer;
+  RoamingPath  : String[255]; { chemin calcule vers le fichier itinerant }
+  RoamingMsg   : String[127]; { resultat du dernier export/import       }
+ End;
  { INT 21h/AX=714Eh-714Fh (Windows 95, Stage 5) - un resultat de recherche }
  { de nom long capture d avance (contrairement au FindFirst/Next classique}
  { $4E/$4F, qui ne recapture QUE le nom pour FindNext - voir Emu_DoInt21). }
@@ -6290,6 +6321,7 @@ Var
  MRUPopupCount  : Integer;
  { Page de demarrage }
  StartPage      : TStartPage;
+ ExtMgr         : TExtManager;   { Gestionnaire d extensions (singleton) }
  { Dialogue nouveau projet / nouvelle solution }
  NewProjDlg     : TNewProjectDialog;
  { Dialogue nouveau fichier }
@@ -10822,6 +10854,7 @@ Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
 Procedure HandleRunCommentTool; Forward;
+Procedure CreateExtManagerWindow; Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
@@ -11413,6 +11446,10 @@ Begin
        End;
   705: Begin { Disque virtuel... }
         ShowVirtualDiskDialog(VirtualDiskDlg);
+        FullRepaintNeeded := True;
+       End;
+  710: Begin { Gestionnaire d extensions... }
+        CreateExtManagerWindow;
         FullRepaintNeeded := True;
        End;
   701: Begin { Personnaliser... }
@@ -13153,10 +13190,199 @@ Begin
  ActiveFormEditor := FormEditors[Idx]^;
 End;
 
+{ Declaration anticipee : ActivateWindow n est definie completement que }
+{ plus bas dans ce fichier, mais CreateExtManagerWindow (ci-dessous) doit }
+{ pouvoir l appeler pour reactiver un onglet Gestionnaire d extensions   }
+{ deja ouvert plutot que d en recreer un second. }
+Procedure ActivateWindow(Index: Integer); Forward;
+
+{ --- Chercher l onglet Gestionnaire d extensions deja ouvert (singleton,
+  aucun fichier associe donc aucune comparaison de nom necessaire) --- }
+
+Function FindExtMgrWindow: Integer;
+Var
+ I: Integer;
+Begin
+ FindExtMgrWindow := -1;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].Kind = WK_EXTMGR Then Begin
+   FindExtMgrWindow := I;
+   Exit;
+  End;
+End;
+
+Procedure InitExtManager(Var EM: TExtManager);
+Begin
+ EM.Visible := True;
+ EM.ActiveSubTab := 1;      { Installe : plus utile qu un Parcourir vide de sens ici }
+ EM.SelectedItem := -1;
+ EM.ScrollTop := 0;
+ EM.NeedRepaint := True;
+ EM.EntryCount := 0;
+ EM.RoamingPath := GetEnv('APPDATA') + '\DEVENV\roaming.cfg';
+ EM.RoamingMsg := '';
+End;
+
+{ --- Date d un fichier (paquet DOS FindFirst/SearchRec.Time, meme         }
+{ convention que NCFormatDateTime et tout le reste de ce fichier - la      }
+{ fonction FileAge du Turbo Pascal classique n est pas disponible dans     }
+{ cette configuration FPC/DOS-Win32). -1 si le fichier est introuvable. --- }
+
+Function ExtMgrFileDate(Const FN: String): LongInt;
+Var
+ SR: SearchRec;
+Begin
+ FindFirst(FN, AnyFile, SR);
+ If DosError = 0 Then
+  ExtMgrFileDate := SR.Time
+ Else
+  ExtMgrFileDate := -1;
+ FindClose(SR);
+End;
+
+{ --- Remplir le catalogue du Gestionnaire d extensions. Chaque entree   }
+{ est soit un executable compagnon reel (verifie par ExtMgrFileDate      }
+{ contre le repertoire courant), soit un backend integre directement au  }
+{ binaire DEVENV.EXE (ExeFile = '', toujours present, date = celle de    }
+{ DEVENV.EXE lui-meme) - aucune donnee inventee, aucun acces reseau. }
+
+Procedure ExtMgrAddEntry(Var EM: TExtManager; Const AName, AExe, ACat: String);
+Var
+ I: Integer;
+ SelfDate: LongInt;
+Begin
+ If EM.EntryCount >= MAX_EXT_ENTRIES Then Exit;
+ I := EM.EntryCount;
+ EM.Entries[I].Name := AName;
+ EM.Entries[I].ExeFile := AExe;
+ EM.Entries[I].Category := ACat;
+ SelfDate := ExtMgrFileDate(ParamStr(0));
+ If AExe = '' Then Begin
+  { Backend integre au binaire : toujours present, sa "date" est celle  }
+  { de DEVENV.EXE lui-meme - il ne peut jamais etre plus vieux qu il ne  }
+  { l est deja. }
+  EM.Entries[I].Installed := True;
+  EM.Entries[I].BuildDate := SelfDate;
+  EM.Entries[I].NeedsUpdate := False;
+ End Else Begin
+  EM.Entries[I].BuildDate := ExtMgrFileDate(AExe);
+  If EM.Entries[I].BuildDate >= 0 Then Begin
+   EM.Entries[I].Installed := True;
+   EM.Entries[I].NeedsUpdate := (SelfDate >= 0) And
+    (EM.Entries[I].BuildDate < SelfDate);
+  End Else Begin
+   EM.Entries[I].Installed := False;
+   EM.Entries[I].BuildDate := -1;   { -1 = absent, voir ExtMgrFormatDate }
+   EM.Entries[I].NeedsUpdate := False;
+  End;
+ End;
+ Inc(EM.EntryCount);
+End;
+
+Procedure PopulateExtEntries(Var EM: TExtManager);
+Begin
+ EM.EntryCount := 0;
+ { --- Compilateurs (source -> 80386/Win32), executables compagnons --- }
+ ExtMgrAddEntry(EM, 'Delphi',          'delphi.exe',   'Compilateur');
+ ExtMgrAddEntry(EM, 'Go',              'gocw32.exe',   'Compilateur');
+ ExtMgrAddEntry(EM, 'Swift',           'swiftw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'MS J++',          'jppcw32.exe',  'Compilateur');
+ ExtMgrAddEntry(EM, 'JSP',             'jspcw32.exe',  'Compilateur');
+ ExtMgrAddEntry(EM, 'Modula-3',        'mod3cw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Modula-2',        'mod2cw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Perl',            'perlcw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Power FX',        'powfxc32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Ada',             'adacw32.exe',  'Compilateur');
+ ExtMgrAddEntry(EM, 'COBOL',           'cobolw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Fortran 77',      'f77cw32.exe',  'Compilateur');
+ ExtMgrAddEntry(EM, 'Java',            'javacw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'PHP',             'phpcw32.exe',  'Compilateur');
+ ExtMgrAddEntry(EM, 'Python',          'pythcw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Rust',            'rustcw32.exe', 'Compilateur');
+ ExtMgrAddEntry(EM, 'Visual Basic',    'vbcw32.exe',   'Compilateur');
+ ExtMgrAddEntry(EM, 'REXX (interprete)', 'rexx.exe',   'Compilateur');
+ { --- Assembleur/outils compagnons --- }
+ ExtMgrAddEntry(EM, 'ML (assembleur 80386/Win32)', 'ml.exe',     'Outil');
+ ExtMgrAddEntry(EM, 'DISDCU (desassembleur DCU)',  'disdcu.exe', 'Outil');
+ ExtMgrAddEntry(EM, 'DISEXE (desassembleur .EXE)', 'disexe.exe', 'Outil');
+ ExtMgrAddEntry(EM, 'OBJDUMP',                     'objdump.exe','Outil');
+ ExtMgrAddEntry(EM, 'DUMPBIN',                     'dumpbin.exe','Outil');
+ ExtMgrAddEntry(EM, 'COMMENT (documentation auto)','comment.exe','Outil');
+ ExtMgrAddEntry(EM, 'LINK (editeur de liens)',     'link.exe',   'Outil');
+ ExtMgrAddEntry(EM, 'CV (CodeView)',               'cv.exe',     'Outil');
+ ExtMgrAddEntry(EM, 'NES (utilitaire)',            'nes.exe',    'Outil');
+ ExtMgrAddEntry(EM, 'PasChat',                     'paschat.exe','Outil');
+ ExtMgrAddEntry(EM, 'Workshop',                    'workshop.exe','Outil');
+ { --- Transpileurs Pascal -> autre langage (echantillon) --- }
+ ExtMgrAddEntry(EM, 'Pascal -> Fortran 77',   'pas2f77.exe', 'Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> Java',         'pas2java.exe','Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> C',            'pas2c.exe',   'Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> C#',           'pas2cs.exe',  'Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> Perl',         'pas2perl.exe','Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> Python',       'pas2py.exe',  'Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> Rust',         'pas2rust.exe','Transpileur');
+ ExtMgrAddEntry(EM, 'Pascal -> Visual Basic', 'pas2vb.exe',  'Transpileur');
+ { --- Backends integres directement au binaire DEVENV.EXE --- }
+ ExtMgrAddEntry(EM, 'Emulateur DOS 8086 (integre)',        '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Emulateur Commodore 64 (integre)',    '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Emulateur Nintendo NES (integre)',    '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Emulateur Atari 2600 (integre)',      '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Emulateur OS/2 LX (integre)',         '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Emulateur Linux ELF64 (integre)',     '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Emulateur Windows 16 bits/NE (integre)', '', 'Emulateur');
+ ExtMgrAddEntry(EM, 'Terminal OS/2 & REXX (integre)',      '', 'Terminal');
+ ExtMgrAddEntry(EM, 'Terminal AmigaDOS (integre)',         '', 'Terminal');
+ ExtMgrAddEntry(EM, 'Terminal Norton Commander (integre)', '', 'Terminal');
+End;
+
+{ --- Ouvrir (ou activer si deja ouvert) l onglet Gestionnaire
+  d extensions --- }
+
+Procedure CreateExtManagerWindow;
+Var
+ Idx: Integer;
+Begin
+ Idx := FindExtMgrWindow;
+ If Idx >= 0 Then Begin
+  ActivateWindow(Idx);
+  Exit;
+ End;
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ { Meme correctif que CreateEditorWindow/CreateHexWindow/CreateFormWindow  }
+ { ci-dessus : synchroniser la fenetre PRECEDEMMENT active (et masquer un  }
+ { panneau emulateur eventuellement laisse actif) avant de basculer         }
+ { WinMgr.ActiveIdx. }
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_EXTMGR;
+ WinMgr.Windows[Idx].FileName := '';
+ WinMgr.Windows[Idx].Title := 'Gestionnaire d''extensions';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ InitExtManager(ExtMgr);
+ ExtMgr.X := WinMgr.Windows[Idx].X;
+ ExtMgr.Y := WinMgr.Windows[Idx].Y;
+ ExtMgr.Width := WinMgr.Windows[Idx].Width;
+ ExtMgr.Height := WinMgr.Windows[Idx].Height;
+ PopulateExtEntries(ExtMgr);
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ EditorReady := True;
+End;
+
 { --- Ouvrir un fichier d aide dans un nouvel editeur --- }
 
-{ Declarations anticipees : ces routines sont definies plus bas. }
-Procedure ActivateWindow(Index: Integer); Forward;
+{ Declarations anticipees : ces routines sont definies plus bas.
+  (ActivateWindow est deja Forward-declaree plus haut, avant
+  CreateExtManagerWindow.) }
 Procedure LoadFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure SyncActiveWindowIn(Idx: Integer); Forward;
 
@@ -14156,6 +14382,9 @@ Begin
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
   If FormEditors[WinMgr.ActiveIdx] <> Nil Then
    FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
+ End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
+  { Rien a synchroniser : ExtMgr est un singleton global, pas un etat  }
+  { par-index comme HexEditors[]/FormEditors[]. }
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU Then Begin
   { Stage 2 : met en securite le panneau ET (pour C64) tout l etat qui vit  }
   { hors de TEmulatorPanel, dans des globales partagees CPU6502_*/C64_*.   }
@@ -14215,6 +14444,8 @@ Begin
  End Else If WinMgr.Windows[Idx].Kind = WK_FORM Then Begin
   If FormEditors[Idx] <> Nil Then
    ActiveFormEditor := FormEditors[Idx]^;
+ End Else If WinMgr.Windows[Idx].Kind = WK_EXTMGR Then Begin
+  { Rien a restaurer : ExtMgr est un singleton global. }
  End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
   EmuPanel := EmuTabs[Idx];
   If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
@@ -17204,6 +17435,338 @@ Begin
     Inc(HE.CursorOfs);
    EnsureHexCursorVisible(HE);
   End;
+ End;
+End;
+
+{ ============================================================
+  GESTIONNAIRE D EXTENSIONS (menu Outils) : rendu et evenements
+  ============================================================
+  Meme style de rendu que DrawHexEditor/DrawTabControl (primitives
+  SetColor/Bar/OutTextXY directes, aucun tampon texte) - la fenetre
+  n a pas de contenu editable, uniquement une bande de 4 sous-onglets
+  et une liste/panneau selon celui actif. }
+
+{ Declarations anticipees : SaveOptions/LoadOptions ne sont definies      }
+{ completement que plus bas (pres de la boite de dialogue Options), mais  }
+{ les boutons Itinerance du Gestionnaire d extensions les reutilisent     }
+{ telles quelles pour exporter/importer les reglages. }
+Procedure SaveOptions(Var Data: TOptionsDialogData; FileName: String); Forward;
+Procedure LoadOptions(Var Data: TOptionsDialogData; FileName: String); Forward;
+
+Const
+ ExtMgrTabLabels: Array[0..3] Of String[16] =
+  ('Parcourir', 'Installe', 'Mise a jour', 'Itinerance');
+ EXTMGR_TAB_H = 22;
+ EXTMGR_ROW_H = 16;
+ EXTMGR_COL_NAME = 8;
+ { Les 3 autres colonnes sont exprimees en fraction de EM.Width (et non   }
+ { en pixels absolus) : la resolution virtuelle de ce canevas n est pas   }
+ { celle de l ecran reel (voir ComputeFormEditorLayout, meme principe),   }
+ { un decalage fixe deborderait selon la resolution/le DPI reels. }
+ EXTMGR_COL_CAT_PCT  = 32;
+ EXTMGR_COL_ETAT_PCT = 58;
+ EXTMGR_COL_DATE_PCT = 80;
+ EXTMGR_NAME_MAXCHARS = 13;   { tronque (avec ...) au-dela, pour laisser  }
+                              { assez de place aux 3 colonnes suivantes  }
+ EXTMGR_SB_W = 14;            { largeur de la barre de defilement verticale,}
+                              { meme epaisseur que FRM_SB_SIZE (formulaires)}
+
+{ --- Formater une date DOS empaquetee (FileAge) - meme convention que
+  NCFormatDateTime : jj/mm/aa. -1 (fichier absent) donne '-'. --- }
+
+Function ExtMgrFormatDate(D: LongInt): String;
+Var
+ DT: DateTime;
+Begin
+ If D < 0 Then Begin
+  ExtMgrFormatDate := '-';
+  Exit;
+ End;
+ UnpackTime(D, DT);
+ ExtMgrFormatDate := PadLeft(IntToStr(DT.Month), 2, '0') + '/' +
+  PadLeft(IntToStr(DT.Day), 2, '0') + '/' +
+  PadLeft(IntToStr(DT.Year Mod 100), 2, '0');
+End;
+
+{ --- Determiner si l entree EM.Entries[I] doit apparaitre dans le
+  sous-onglet actif (Parcourir=tout, Installe=Installed, Mise a
+  jour=NeedsUpdate) - fonction partagee par le rendu et le clic pour
+  que les deux restent d accord sur les memes lignes visibles. --- }
+
+Function ExtMgrEntryVisible(Var EM: TExtManager; I: Integer): Boolean;
+Begin
+ Case EM.ActiveSubTab Of
+  1: ExtMgrEntryVisible := EM.Entries[I].Installed;
+  2: ExtMgrEntryVisible := EM.Entries[I].NeedsUpdate;
+ Else
+  ExtMgrEntryVisible := True;
+ End;
+End;
+
+{ --- Nombre total d entrees qui passent le filtre du sous-onglet actif -  }
+{ utilise par le rendu ET le clic pour calculer le meme MaxScroll (meme   }
+{ discipline de "clamp unique" que la barre de defilement du terminal,    }
+{ corrigee plus tot cette session : un seul calcul de maximum partage     }
+{ entre le clamp et la position visuelle du curseur). --- }
+
+Function ExtMgrCountVisible(Var EM: TExtManager): Integer;
+Var
+ I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To EM.EntryCount - 1 Do
+  If ExtMgrEntryVisible(EM, I) Then Inc(Cnt);
+ ExtMgrCountVisible := Cnt;
+End;
+
+Procedure DrawExtManager(Var EM: TExtManager);
+Var
+ I, TX, TabW, ListY, RowY, VisCount, ShownRows: Integer;
+ ColCat, ColEtat, ColDate, ListW, VisLines, TotalVis, MaxScroll: Integer;
+ SBX1, SBX2, MidX, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop: Integer;
+ BtnSplit: Integer;
+ EtatStr, DispName: String;
+Begin
+ ListW   := EM.Width - EXTMGR_SB_W;
+ ColCat  := ListW * EXTMGR_COL_CAT_PCT  Div 100;
+ ColEtat := ListW * EXTMGR_COL_ETAT_PCT Div 100;
+ ColDate := ListW * EXTMGR_COL_DATE_PCT Div 100;
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(EM.X, EM.Y, EM.X + EM.Width - 1, EM.Y + EM.Height - 1);
+ { Bande de sous-onglets }
+ TX := EM.X;
+ For I := 0 To 3 Do Begin
+  TabW := Length(ExtMgrTabLabels[I]) * 8 + 16;
+  If I = EM.ActiveSubTab Then Begin
+   SetColor(CLR_SELECTION);
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(TX, EM.Y, TX + TabW, EM.Y + EXTMGR_TAB_H);
+   SetColor(CLR_HIGHLIGHTTEXT);
+  End Else Begin
+   SetColor(CLR_BORDER);
+   Rectangle(TX, EM.Y, TX + TabW, EM.Y + EXTMGR_TAB_H);
+   SetColor(CLR_MENU_TEXT);
+  End;
+  OutTextXY(TX + 8, EM.Y + 6, ExtMgrTabLabels[I]);
+  TX := TX + TabW + 2;
+ End;
+ SetColor(CLR_BORDER);
+ Line(EM.X, EM.Y + EXTMGR_TAB_H + 1, EM.X + EM.Width - 1,
+  EM.Y + EXTMGR_TAB_H + 1);
+ ListY := EM.Y + EXTMGR_TAB_H + 8;
+ If EM.ActiveSubTab = 3 Then Begin
+  { --- Itinerance : chemin, dernier resultat, 2 boutons reels --- }
+  BtnSplit := EM.Width * EXTMGR_COL_ETAT_PCT Div 100;
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(EM.X + 8, ListY, 'Fichier de reglages itinerant :');
+  OutTextXY(EM.X + 8, ListY + 16, EM.RoamingPath);
+  SetColor(CLR_BORDER);
+  Rectangle(EM.X + 8, ListY + 40, EM.X + BtnSplit, ListY + 64);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(EM.X + 16, ListY + 47, 'Exporter vers itinerance');
+  SetColor(CLR_BORDER);
+  Rectangle(EM.X + BtnSplit + 10, ListY + 40, EM.X + EM.Width - 8, ListY + 64);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(EM.X + BtnSplit + 18, ListY + 47, 'Importer depuis itinerance');
+  If EM.RoamingMsg <> '' Then Begin
+   SetColor(CLR_MENU_TEXT);
+   OutTextXY(EM.X + 8, ListY + 80, EM.RoamingMsg);
+  End;
+  Exit;
+ End;
+ { --- Parcourir/Installe/Mise a jour : liste filtree --- }
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(EM.X + EXTMGR_COL_NAME, ListY, 'Nom');
+ OutTextXY(EM.X + ColCat, ListY, 'Categorie');
+ OutTextXY(EM.X + ColEtat, ListY, 'Etat');
+ OutTextXY(EM.X + ColDate, ListY, 'Date');
+ ListY := ListY + EXTMGR_ROW_H;
+ { Nombre de rangees visibles dans l espace restant, et clamp de         }
+ { EM.ScrollTop a [0, MaxScroll] - calcul UNIQUE partage avec le dessin   }
+ { du curseur de la barre, meme discipline que la barre de defilement    }
+ { verticale du terminal (corrigee plus tot cette session : deux formules}
+ { de maximum differentes avaient fini par diverger). }
+ VisLines := (EM.Y + EM.Height - ListY) Div EXTMGR_ROW_H;
+ If VisLines < 1 Then VisLines := 1;
+ TotalVis := ExtMgrCountVisible(EM);
+ MaxScroll := TotalVis - VisLines;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If EM.ScrollTop > MaxScroll Then EM.ScrollTop := MaxScroll;
+ If EM.ScrollTop < 0 Then EM.ScrollTop := 0;
+ RowY := ListY;
+ VisCount := 0;
+ ShownRows := 0;
+ For I := 0 To EM.EntryCount - 1 Do Begin
+  If Not ExtMgrEntryVisible(EM, I) Then Continue;
+  If VisCount < EM.ScrollTop Then Begin
+   Inc(VisCount);
+   Continue;
+  End;
+  If ShownRows >= VisLines Then Begin
+   Inc(VisCount);
+   Continue;
+  End;
+  If I = EM.SelectedItem Then Begin
+   SetColor(CLR_SELECTION);
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(EM.X + 4, RowY - 1, EM.X + ListW - 4, RowY + EXTMGR_ROW_H - 2);
+   SetColor(CLR_HIGHLIGHTTEXT);
+  End Else
+   SetColor(CLR_EDITOR_TEXT);
+  DispName := EM.Entries[I].Name;
+  If Length(DispName) > EXTMGR_NAME_MAXCHARS Then
+   DispName := Copy(DispName, 1, EXTMGR_NAME_MAXCHARS - 3) + '...';
+  OutTextXY(EM.X + EXTMGR_COL_NAME, RowY, DispName);
+  OutTextXY(EM.X + ColCat, RowY, EM.Entries[I].Category);
+  If EM.Entries[I].Installed Then Begin
+   If EM.Entries[I].NeedsUpdate Then EtatStr := 'Recompiler'
+   Else EtatStr := 'Installe';
+  End Else
+   EtatStr := 'Absent';
+  OutTextXY(EM.X + ColEtat, RowY, EtatStr);
+  OutTextXY(EM.X + ColDate, RowY,
+   ExtMgrFormatDate(EM.Entries[I].BuildDate));
+  RowY := RowY + EXTMGR_ROW_H;
+  Inc(VisCount);
+  Inc(ShownRows);
+ End;
+ If TotalVis = 0 Then Begin
+  SetColor(CLR_MENU_TEXT);
+  If EM.ActiveSubTab = 2 Then
+   OutTextXY(EM.X + EXTMGR_COL_NAME, RowY, 'Tous les composants sont a jour.')
+  Else
+   OutTextXY(EM.X + EXTMGR_COL_NAME, RowY, 'Aucune entree.');
+ End;
+ { --- Barre de defilement verticale (fleches haut/bas + curseur), meme  }
+ { style que DrawFormVScrollbar (formulaires .FRM) - boutons dessines    }
+ { via 2 segments Line() formant un triangle, piste CLR_SCROLLBAR,       }
+ { curseur CLR_BORDER proportionnel a VisLines/TotalVis. --- }
+ SBX1 := EM.X + ListW;
+ SBX2 := EM.X + EM.Width - 1;
+ MidX := (SBX1 + SBX2) Div 2;
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(SBX1, ListY, SBX2, ListY + EXTMGR_SB_W - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, ListY, SBX2, ListY + EXTMGR_SB_W - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, ListY + 9, MidX, ListY + 4);
+ Line(MidX, ListY + 4, SBX2 - 3, ListY + 9);
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(SBX1, EM.Y + EM.Height - EXTMGR_SB_W, SBX2, EM.Y + EM.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, EM.Y + EM.Height - EXTMGR_SB_W, SBX2, EM.Y + EM.Height - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, EM.Y + EM.Height - 9, MidX, EM.Y + EM.Height - 4);
+ Line(MidX, EM.Y + EM.Height - 4, SBX2 - 3, EM.Y + EM.Height - 9);
+ TrackTop := ListY + EXTMGR_SB_W;
+ TrackBot := EM.Y + EM.Height - EXTMGR_SB_W;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(SBX1, TrackTop, SBX2, TrackBot);
+ If MaxScroll > 0 Then Begin
+  TrackH := TrackBot - TrackTop;
+  ThumbH := (TrackH * VisLines) Div TotalVis;
+  If ThumbH < 12 Then ThumbH := 12;
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbTop := TrackTop + 1;
+  If TrackH - 2 - ThumbH > 0 Then
+   ThumbTop := ThumbTop + (EM.ScrollTop * (TrackH - 2 - ThumbH)) Div MaxScroll;
+  Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
+End;
+
+{ --- Souris : clic sur un sous-onglet, sur une ligne de la liste, ou
+  sur un bouton Itinerance. --- }
+
+Procedure HandleExtManagerMouse(Var EM: TExtManager; Ev: TEvent);
+Var
+ I, TX, TabW, ListY, RowY, HitIdx, ColEtat: Integer;
+ ListW, VisLines, TotalVis, MaxScroll, TrackTop, TrackBot: Integer;
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ If (Ev.MouseX < EM.X) Or (Ev.MouseX >= EM.X + EM.Width) Or
+    (Ev.MouseY < EM.Y) Or (Ev.MouseY >= EM.Y + EM.Height) Then Exit;
+ { Bande de sous-onglets }
+ If Ev.MouseY < EM.Y + EXTMGR_TAB_H Then Begin
+  TX := EM.X;
+  For I := 0 To 3 Do Begin
+   TabW := Length(ExtMgrTabLabels[I]) * 8 + 16;
+   If (Ev.MouseX >= TX) And (Ev.MouseX < TX + TabW) Then Begin
+    EM.ActiveSubTab := I;
+    EM.SelectedItem := -1;
+    EM.NeedRepaint := True;
+    Exit;
+   End;
+   TX := TX + TabW + 2;
+  End;
+  Exit;
+ End;
+ ListY := EM.Y + EXTMGR_TAB_H + 8;
+ If EM.ActiveSubTab = 3 Then Begin
+  { Boutons Itinerance - meme calcul proportionnel que DrawExtManager }
+  ColEtat := EM.Width * EXTMGR_COL_ETAT_PCT Div 100;
+  If (Ev.MouseY >= ListY + 40) And (Ev.MouseY < ListY + 64) Then Begin
+   If (Ev.MouseX >= EM.X + 8) And (Ev.MouseX < EM.X + ColEtat) Then Begin
+    { Le repertoire itinerant (APPDATA\DEVENV) n existe pas forcement    }
+    { encore sur une machine fraiche - le creer avant l export, sinon    }
+    { ce bouton echouerait systematiquement au tout premier usage. }
+    {$I-} MkDir(ExtractFilePath(EM.RoamingPath)); {$I+}
+    IOResult; { ignorer l erreur si le repertoire existe deja }
+    SaveOptions(OptionsDlg.Data, EM.RoamingPath);
+    If FileExists(EM.RoamingPath) Then
+     EM.RoamingMsg := 'Reglages exportes avec succes vers ' + EM.RoamingPath
+    Else
+     EM.RoamingMsg := 'Echec de l''export (repertoire itinerant inaccessible).';
+    EM.NeedRepaint := True;
+   End Else If (Ev.MouseX >= EM.X + ColEtat + 10) And
+    (Ev.MouseX < EM.X + EM.Width - 8) Then Begin
+    If FileExists(EM.RoamingPath) Then Begin
+     LoadOptions(OptionsDlg.Data, EM.RoamingPath);
+     EM.RoamingMsg := 'Reglages importes depuis ' + EM.RoamingPath;
+    End Else
+     EM.RoamingMsg := 'Aucune sauvegarde itinerante trouvee.';
+    EM.NeedRepaint := True;
+   End;
+  End;
+  Exit;
+ End;
+ { Liste : sauter l en-tete de colonnes }
+ RowY := ListY + EXTMGR_ROW_H;
+ If Ev.MouseY < RowY Then Exit;
+ ListW := EM.Width - EXTMGR_SB_W;
+ VisLines := (EM.Y + EM.Height - RowY) Div EXTMGR_ROW_H;
+ If VisLines < 1 Then VisLines := 1;
+ TotalVis := ExtMgrCountVisible(EM);
+ MaxScroll := TotalVis - VisLines;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ { Barre de defilement verticale : fleches haut/bas + clic sur la piste  }
+ { (au-dessus/en-dessous du milieu = page precedente/suivante), meme     }
+ { zone que celle dessinee par DrawExtManager. }
+ If Ev.MouseX >= EM.X + ListW Then Begin
+  TrackTop := RowY + EXTMGR_SB_W;
+  TrackBot := EM.Y + EM.Height - EXTMGR_SB_W;
+  If Ev.MouseY < RowY + EXTMGR_SB_W Then
+   Dec(EM.ScrollTop)
+  Else If Ev.MouseY >= TrackBot Then
+   Inc(EM.ScrollTop)
+  Else If Ev.MouseY < (TrackTop + TrackBot) Div 2 Then
+   Dec(EM.ScrollTop, VisLines)
+  Else
+   Inc(EM.ScrollTop, VisLines);
+  If EM.ScrollTop < 0 Then EM.ScrollTop := 0;
+  If EM.ScrollTop > MaxScroll Then EM.ScrollTop := MaxScroll;
+  EM.NeedRepaint := True;
+  Exit;
+ End;
+ HitIdx := EM.ScrollTop + (Ev.MouseY - RowY) Div EXTMGR_ROW_H;
+ For I := 0 To EM.EntryCount - 1 Do Begin
+  If Not ExtMgrEntryVisible(EM, I) Then Continue;
+  If HitIdx = 0 Then Begin
+   EM.SelectedItem := I;
+   EM.NeedRepaint := True;
+   Exit;
+  End;
+  Dec(HitIdx);
  End;
 End;
 
@@ -100045,7 +100608,9 @@ Begin
   SB.CursorLine := WM.Windows[Idx].CursorY + 1;
   SB.CursorCol := WM.Windows[Idx].CursorX + 1;
   SB.FileName := WM.Windows[Idx].FileName;
-  If WM.Windows[Idx].Kind = WK_FORM Then
+  If WM.Windows[Idx].Kind = WK_EXTMGR Then
+   SB.Language := 'Extensions'
+  Else If WM.Windows[Idx].Kind = WK_FORM Then
    SB.Language := 'Formulaire'
   Else
    SB.Language := 'Text';
@@ -102208,6 +102773,8 @@ Begin
    DrawHexEditor(ActiveHexEditor)
   Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then
    DrawFormEditor(ActiveFormEditor)
+  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then
+   DrawExtManager(ExtMgr)
   Else
    DrawEditor(ActiveEditor);
  End;
@@ -106603,6 +107170,8 @@ Begin
      ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
     { Apercu de formulaire : lecture seule, aucune frappe traitee }
+   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
+    { Gestionnaire d extensions : pilote a la souris, aucune frappe traitee }
    End Else Begin
     HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
      EditorUndo, EditorRedo, Ev);
@@ -106645,6 +107214,8 @@ Begin
       FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
      If ActiveFormEditor.Modified Then
       MarkWindowModified(WinMgr.ActiveIdx);
+    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
+     HandleExtManagerMouse(ExtMgr, Ev);
     End Else Begin
      HandleEditorMouse(ActiveEditor, Ev);
      If Editors[WinMgr.ActiveIdx] <> Nil Then
