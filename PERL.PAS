@@ -112,6 +112,7 @@ Var
 
 Function StrToUpper(S:String):String;Forward;
 Procedure SetPerlVariable(Name,Value:String);Forward;
+Function DeletePerlVariable(Name:String):Boolean;Forward;
 Function ExecutePerlCoreLine(S:String):Boolean;Forward;
 Procedure EvalPerlExpression(S:String;Var V:TPerlValue);Forward;
 Procedure ExecuteStoredLine(LineIndex:Integer);Forward;
@@ -389,6 +390,37 @@ Procedure GetPerlVariable(Name:String;Var V:TPerlValue);
 Var P:PPerlVariable;
 Begin P:=FindPerlVariable(Name);If P=Nil Then PerlText('',V)Else PerlText(P^.Value,V);End;
 
+Function PerlArrayElementName(ArrayName:String;ElementIndex:Integer):String;
+Var IndexText:String;
+Begin
+ Str(ElementIndex,IndexText);
+ PerlArrayElementName:='@'+ArrayName+'.'+CleanText(IndexText);
+End;
+
+Procedure SetPerlArrayElement(ArrayName:String;ElementIndex:Integer;Value:String);
+Var CountValue:TPerlValue;Count:Integer;
+Begin
+ SetPerlVariable(PerlArrayElementName(ArrayName,ElementIndex),Value);
+ GetPerlVariable('@'+ArrayName+'.COUNT',CountValue);Count:=Trunc(CountValue.Number);
+ If ElementIndex>=Count Then SetPerlVariable('@'+ArrayName+'.COUNT',
+  PerlNumberText(ElementIndex+1));
+End;
+
+Procedure GetPerlArrayElement(ArrayName:String;ElementIndex:Integer;Var V:TPerlValue);
+Begin GetPerlVariable(PerlArrayElementName(ArrayName,ElementIndex),V);End;
+
+Function GetPerlArrayCount(ArrayName:String):Integer;
+Var V:TPerlValue;
+Begin GetPerlVariable('@'+ArrayName+'.COUNT',V);GetPerlArrayCount:=Trunc(V.Number);End;
+
+Procedure ClearPerlArray(ArrayName:String);
+Var I,Count:Integer;
+Begin
+ Count:=GetPerlArrayCount(ArrayName);
+ For I:=0To Count-1Do DeletePerlVariable(PerlArrayElementName(ArrayName,I));
+ SetPerlVariable('@'+ArrayName+'.COUNT','0');
+End;
+
 Procedure PerlDefined(VariableName:String;ExpressionValue:TPerlValue;
  Var V:TPerlValue);
 Begin
@@ -579,6 +611,10 @@ Begin
    Inc(ExprPosition);ParsePerlOr(A);HashKey:=A.Text;ExprSkip;
    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='}')Then Inc(ExprPosition);
    GetPerlHashEntry(Name,HashKey,V);
+  End Else If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='[')Then Begin
+   Inc(ExprPosition);ParsePerlOr(A);ExprSkip;
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=']')Then Inc(ExprPosition);
+   GetPerlArrayElement(Name,Trunc(A.Number),V);
   End Else GetPerlVariable(Name,V);
   Exit;
  End;
@@ -1366,6 +1402,30 @@ Begin
  End;
 End;
 
+Procedure SetPerlArrayFromList(ArrayName,ListText:String);
+Var J,StartPosition,Depth,ElementIndex:Integer;Quote:Char;Part:String;V:TPerlValue;
+Begin
+ ListText:=CleanText(ListText);
+ If(Length(ListText)>1)and(ListText[1]='(')and
+   (ListText[Length(ListText)]=')')Then
+  ListText:=Copy(ListText,2,Length(ListText)-2);
+ ClearPerlArray(ArrayName);StartPosition:=1;Depth:=0;Quote:=#0;ElementIndex:=0;
+ For J:=1To Length(ListText)+1Do Begin
+  If J<=Length(ListText)Then Begin
+   If Quote<>#0Then Begin If ListText[J]=Quote Then Quote:=#0;End
+   Else If ListText[J]in['''','"']Then Quote:=ListText[J]
+   Else If ListText[J]in['(','[','{']Then Inc(Depth)
+   Else If ListText[J]in[')',']','}']Then Dec(Depth);
+  End;
+  If(J>Length(ListText))or((Quote=#0)and(Depth=0)and(ListText[J]=','))Then Begin
+   Part:=CleanText(Copy(ListText,StartPosition,J-StartPosition));
+   If Part<>''Then Begin EvalPerlExpression(Part,V);
+    SetPerlArrayElement(ArrayName,ElementIndex,V.Text);Inc(ElementIndex);End;
+   StartPosition:=J+1;
+  End;
+ End;
+End;
+
 Function ExecutePerlCoreLine(S:String):Boolean;
 Var P,J,K:Integer;Name,RightSide,OperatorText,HashKeyText:String;
  V,OldValue,HashKeyValue:TPerlValue;
@@ -1375,6 +1435,11 @@ Begin
  If(Copy(StrToUpper(S),1,4)='USE ')Then Exit;
  If Copy(StrToUpper(S),1,6)='PRINT 'Then Begin PrintPerlExpressions(Copy(S,7,255));Exit;End;
  If Copy(StrToUpper(S),1,3)='MY 'Then S:=CleanText(Copy(S,4,255));
+ If(Length(S)>1)and(S[1]='@')Then Begin
+  J:=2;While(J<=Length(S))and(S[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+  Name:=Copy(S,2,J-2);P:=FindAssignment(S);
+  If P>0Then Begin SetPerlArrayFromList(Name,Copy(S,P+1,255));Exit;End;
+ End;
  If(Length(S)>1)and(S[1]='$')Then Begin
   J:=2;While(J<=Length(S))and(S[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
   Name:=Copy(S,2,J-2);P:=FindAssignment(S);
@@ -1393,6 +1458,10 @@ Begin
     K:=J+1;While(K<=Length(S))and(S[K]<>'}')Do Inc(K);
     HashKeyText:=Copy(S,J+1,K-J-1);EvalPerlExpression(HashKeyText,HashKeyValue);
     SetPerlHashEntry(Name,HashKeyValue.Text,V.Text);
+   End Else If(J<=Length(S))and(S[J]='[')Then Begin
+    K:=J+1;While(K<=Length(S))and(S[K]<>']')Do Inc(K);
+    HashKeyText:=Copy(S,J+1,K-J-1);EvalPerlExpression(HashKeyText,HashKeyValue);
+    SetPerlArrayElement(Name,Trunc(HashKeyValue.Number),V.Text);
    End Else SetPerlVariable(Name,V.Text);
    Exit;
   End;
@@ -1460,6 +1529,42 @@ Begin
  CurrLinePtr:=EndLine;CurrPos:=Length(CurrLine)+1;
 End;
 
+Procedure ForeachCommand;
+Var Header,VariableName,ListText,ArrayName,IndexText:String;
+ J,P,Depth,ForeachLine,EndLine,BodyLine,ElementIndex,ElementCount:Integer;
+ ElementValue:TPerlValue;
+Begin
+ ForeachLine:=CurrLinePtr;Header:=CleanText(Copy(CurrLine,CurrPos,255));
+ If Copy(StrToUpper(Header),1,3)='MY 'Then Header:=CleanText(Copy(Header,4,255));
+ If(Length(Header)=0)or(Header[1]<>'$')Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ J:=2;While(J<=Length(Header))and(Header[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+ VariableName:=Copy(Header,2,J-2);P:=Pos('(',Header);
+ If P=0Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ J:=Length(Header);While(J>P)and(Header[J]<>')')Do Dec(J);
+ If J<=P Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ ListText:=CleanText(Copy(Header,P+1,J-P-1));
+ If(Length(ListText)>0)and(ListText[1]='@')Then ArrayName:=Copy(ListText,2,255)
+ Else Begin
+  Str(ForeachLine,IndexText);ArrayName:='FOREACH'+CleanText(IndexText);
+  SetPerlArrayFromList(ArrayName,ListText);
+ End;
+ Depth:=CountCharacter(CurrLine,'{')-CountCharacter(CurrLine,'}');
+ EndLine:=ForeachLine;
+ While(Depth>0)and(EndLine<NumberLine)Do Begin
+  Inc(EndLine);Depth:=Depth+CountCharacter(PA[EndLine]^,'{')-
+   CountCharacter(PA[EndLine]^,'}');
+ End;
+ ElementCount:=GetPerlArrayCount(ArrayName);
+ For ElementIndex:=0To ElementCount-1Do Begin
+  GetPerlArrayElement(ArrayName,ElementIndex,ElementValue);
+  SetPerlVariable(VariableName,ElementValue.Text);BodyLine:=ForeachLine+1;
+  While(BodyLine<EndLine)and Not Terminated Do Begin
+   ExecuteStoredLine(BodyLine);BodyLine:=CurrLinePtr+1;
+  End;
+ End;
+ CurrLinePtr:=EndLine;CurrLine:=PA[EndLine]^;CurrPos:=Length(CurrLine)+1;
+End;
+
 Function RunLine:Boolean;
 Var
  UnknownCommand:Boolean;
@@ -1519,7 +1624,7 @@ Begin
    32:BareFunctionCommand('fileno');{fileno}
    33:BareFunctionCommand('flock');{flock}
    34:ForCommand;{for}
-   35:NoImplementation:=True;{foreach}
+   35:ForeachCommand;{foreach}
    36:NoImplementation:=True;{fork}
    37:NoImplementation:=True;{format}
    38:NoImplementation:=True;{getc}

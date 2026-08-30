@@ -36891,6 +36891,65 @@ Begin
  CreateEmulatorTab(DosExe, '-CD', RestParam);
 End;
 
+{ LH/LOADHIGH (2026-08-30, demande explicite de l utilisateur, 2 shells :  }
+{ "Invite de commande" ET "OS/2 & REXX") : reproduit LH/LOADHIGH.COM de     }
+{ MS-DOS - charge un programme dans la memoire HAUTE (UMB, $A000-$FFFF),   }
+{ contrairement a LOADFIX ci-dessus qui reste en memoire CONVENTIONNELLE   }
+{ (juste plus haut dans les 640 premiers Ko). RECHERCHE PREALABLE (agent    }
+{ Explore, avant d ecrire une seule ligne ici) : cet emulateur n a PAS de   }
+{ vraie UMB fabriquable - le pilote XMS existant (Emu_Xms_RequestUMB/      }
+{ ReleaseUMB/ResizeUMB, AH=10h/11h/12h) refuse deja HONNETEMENT toute       }
+{ demande d UMB (BL=$B1 "aucune UMB disponible") avec la raison documentee }
+{ explicitement en tete de cette section XMS : TOUTE la plage $A000-$FFFF  }
+{ est deja reellement occupee par autre chose dans cet emulateur (VRAM     }
+{ texte/graphique redirigee $A000-$BFFF, cadre de pages EMS $E000-$EFFF si }
+{ actif, et $F000 entier deja sature - trampolines de vecteurs, pilote de  }
+{ paquets, souris, MSCDEX, allocateur bas DPMI, tampons/tas/pile/poignees  }
+{ TopView, liste des listes DOS, octet d identification BIOS). Fabriquer un}
+{ segment "UMB" ici ecraserait donc reellement l un de ces sous-systemes   }
+{ ou serait redirige dans la VRAM au lieu d etre execute - CONTRAIREMENT A }
+{ LOADFIX (dont le segment cible $1000 est genuinement libre), il n existe }
+{ ici AUCUN equivalent sur qui appliquer la meme astuce sans corruption.   }
+{ DECISION (coherente avec le refus deja honnete du pilote XMS existant,   }
+{ ET avec le vrai comportement historique de MS-DOS lui-meme quand aucun   }
+{ gestionnaire de memoire haute - EMM386/QEMM, DOS=UMB - n est charge :     }
+{ LOADHIGH ne bloque PAS le programme, il le charge simplement en memoire   }
+{ conventionnelle normale avec un avertissement) : LH/LOADHIGH affichent    }
+{ ici le meme constat honnete que le pilote XMS, puis chargent le           }
+{ programme NORMALEMENT (aucun drapeau special arme, contrairement a        }
+{ LOADFIX) - le programme s execute reellement, juste pas "en haut". }
+Procedure TermCmd_LOADHIGH(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, DosExe, TrimmedParams, RestParam: String;
+ P: Integer;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'LOADHIGH (LH) : charge un programme DOS en memoire haute (UMB).');
+  TermAddLine(TP, 'Syntaxe : LOADHIGH programme [arguments]  (ou LH ...)');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'LOADHIGH : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ DosExe := TermFindDosExecutable(Dir, CurrParam);
+ If DosExe = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ TrimmedParams := TrimStr(ParamStr);
+ P := System.Pos(' ', TrimmedParams);
+ If P > 0 Then RestParam := TrimStr(Copy(TrimmedParams, P + 1, Length(TrimmedParams)))
+ Else RestParam := '';
+ TermAddLine(TP, 'LOADHIGH : aucune memoire haute (UMB) disponible dans ' +
+  'cet emulateur (aucun gestionnaire EMM386/QEMM - meme constat honnete ' +
+  'que XMS AH=10h) - programme charge en memoire conventionnelle.');
+ CreateEmulatorTab(DosExe, '-CD', RestParam);
+End;
+
 { --- MOUNT (2026-08-29, demande explicite de l utilisateur, "dans le      }
 { meme genre que DOSBox") : associe une lettre a un repertoire HOTE reel   }
 { (voir TermMountDir/TermMountActive ci-dessus pour la conception          }
@@ -45211,6 +45270,18 @@ Begin
   TermAddLine(TP,
    '  LOADFIX programme [arguments]  Charge au-dessus des 64 premiers Ko');
  End;
+ { LH/LOADHIGH : SK_CMD et SK_OS2REXX (2026-08-30, demande explicite de     }
+ { l utilisateur pour ces 2 shells precisement - voir TermCmd_LOADHIGH      }
+ { pres de TermCmd_LOADFIX pour la limitation honnete documentee : aucune   }
+ { UMB fabriquable dans cet emulateur, meme constat que le pilote XMS. }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_OS2REXX) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Charger un programme en memoire haute (comme MS-DOS) ---');
+  TermAddLine(TP,
+   '  LOADHIGH programme [arguments]  Memoire haute (UMB) non disponible ici -');
+  TermAddLine(TP,
+   '  LH programme [arguments]        charge en memoire conventionnelle');
+ End;
  { REXX : SK_OS2REXX uniquement (2026-08-30, demande explicite de           }
  { l utilisateur - integration complete de REXX.PAS, voir le bloc Rexx_*    }
  { pres de TermCmd_IMGMOUNT). }
@@ -45760,6 +45831,8 @@ Begin
     TermCmd_IMGMOUNT(TP, ParamStr)
    Else If CurrCmd = 'LOADFIX' Then
     TermCmd_LOADFIX(TP, ParamStr)
+   Else If (CurrCmd = 'LH') Or (CurrCmd = 'LOADHIGH') Then
+    TermCmd_LOADHIGH(TP, ParamStr)
    Else If CurrCmd = 'LINUX' Then
     TermCmd_Linux(TP, ParamStr)
    Else If CurrCmd = 'OS2' Then
@@ -46240,6 +46313,8 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+   Else If (CurrCmd = 'LH') Or (CurrCmd = 'LOADHIGH') Then
+    TermCmd_LOADHIGH(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
    Else If CurrCmd = 'REXX' Then
