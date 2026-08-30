@@ -6335,6 +6335,21 @@ Var
                                  { 2026-08-22). }
  EmuFloppyRO    : Array[0..3] Of Boolean; { ouvert en lecture seule  }
  EmuFloppyMotor : Byte;                   { etat moteur drive ($40:$3F) }
+ { Commande Terminal MOUNT (2026-08-29, demande explicite de l utilisateur, }
+ { "dans le meme genre que DOSBox") : associe une lettre a un VRAI          }
+ { repertoire du systeme hote - contrairement a /DISK0../DISK81 (image      }
+ { FAT/HPFS/D64 EMULEE bit-a-bit, secteur par secteur), un lecteur MOUNT    }
+ { reste en mode HOTE (TP.VirtDrive=-1) : taper "X:" change simplement le   }
+ { repertoire reel du PROCESSUS vers TermMountDir[X] (ChDir absolu) -       }
+ { reutilise donc TEL QUEL tout le code hote existant (DIR/TYPE/COPY/       }
+ { NES/etc) sans le moindre changement ailleurs. LIMITATION ASSUMEE (pas    }
+ { celle d un vrai DOSBox) : aucun bac a sable - rien n empeche "CD .." de  }
+ { remonter AU-DESSUS du repertoire monte, documente ici plutot que         }
+ { simule a moitie. Globales (pas par panneau/onglet) : un montage est      }
+ { visible depuis N IMPORTE LEQUEL des 6 shells du Terminal, exactement     }
+ { comme DOSBox n a qu un seul environnement, pas un par fenetre. }
+ TermMountActive: Array['A'..'Z'] Of Boolean;
+ TermMountDir   : Array['A'..'Z'] Of String;
  { Traduction de conteneur (VHD/VMDK) pour les unites 2/3 (disques durs).
    Kind: 0=brut, 1=VHD fixe, 2=VHD dynamique, 3=VMDK sparse.
    BlockSec=secteurs par bloc/grain, BitmapSecs=secteurs de bitmap avant
@@ -10611,6 +10626,10 @@ Function TermFindNesRom(Const Dir, CmdName: String): String; Forward;
 { Meme raison (2026-08-29) : commandes ATARI2600/C64/COCO3/WIN16. }
 Function TermFindRomByExt(Const Dir, CmdName, Ext: String): String; Forward;
 Function TermFindCoco3Rom(Const Dir, CmdName: String): String; Forward;
+{ Meme raison (2026-08-29) : commande LINUX, TermFindElfExecutable est      }
+{ normalement definie beaucoup plus loin (~41085, deja utilisee par le      }
+{ repli generique "commande inconnue -> executable" de TermExecuteCommand). }
+Function TermFindElfExecutable(Const Dir, CmdName: String): String; Forward;
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : sauvegarde/restauration }
 { de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
 Procedure Win16_SaveVideoState; Forward;
@@ -36746,6 +36765,265 @@ Begin
  CreateEmulatorTab(ExePath, '-CWIN16', '');
 End;
 
+{ --- MOUNT (2026-08-29, demande explicite de l utilisateur, "dans le      }
+{ meme genre que DOSBox") : associe une lettre a un repertoire HOTE reel   }
+{ (voir TermMountDir/TermMountActive ci-dessus pour la conception          }
+{ retenue et sa limitation assumee - pas de bac a sable). Syntaxe :        }
+{   MOUNT                    liste les montages actifs                    }
+{   MOUNT lettre dossier     monte dossier sur lettre:                    }
+{   MOUNT -u lettre          demonte lettre:                              }
+{ Le montage lui-meme ne fait QUE memoriser l association - c est le       }
+{ gestionnaire generique de changement de lecteur dans TermExecuteCommand  }
+{ (le meme bloc partage qui traite deja A:/B:/C:/D:) qui consulte cette    }
+{ table et fait le vrai `ChDir` absolu vers le dossier monte des que        }
+{ l utilisateur tape "lettre:". }
+Procedure TermCmd_MOUNT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ P1, P2, AbsDir, CurDir: String;
+ DL: Char;
+ I: Char;
+ Any: Boolean;
+Begin
+ P1 := TermExtractParam(ParamStr, 1);
+ If P1 = '' Then Begin
+  Any := False;
+  For I := 'A' To 'Z' Do
+   If TermMountActive[I] Then Begin
+    TermAddLine(TP, I + ': -> ' + TermMountDir[I]);
+    Any := True;
+   End;
+  If Not Any Then TermAddLine(TP, 'Aucun lecteur monte.');
+  Exit;
+ End;
+ If UpCaseStr(P1) = '-U' Then Begin
+  P2 := TermExtractParam(ParamStr, 2);
+  If Length(P2) < 1 Then Begin
+   TermAddLine(TP, 'Syntaxe : MOUNT -u lettre');
+   Exit;
+  End;
+  DL := UpCase(P2[1]);
+  If Not (DL In ['A'..'Z']) Then Begin
+   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P2);
+   Exit;
+  End;
+  If Not TermMountActive[DL] Then Begin
+   TermAddLine(TP, DL + ': n''est pas monte.');
+   Exit;
+  End;
+  TermMountActive[DL] := False;
+  TermMountDir[DL] := '';
+  TermAddLine(TP, DL + ': demonte.');
+  Exit;
+ End;
+ If (Length(P1) <> 1) Or Not (UpCase(P1[1]) In ['A'..'Z']) Then Begin
+  TermAddLine(TP, 'Syntaxe : MOUNT lettre dossier');
+  TermAddLine(TP, '         MOUNT -u lettre');
+  Exit;
+ End;
+ DL := UpCase(P1[1]);
+ P2 := TermExtractParam(ParamStr, 2);
+ If P2 = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : MOUNT lettre dossier');
+  Exit;
+ End;
+ { Chemin deja absolu (lettre de lecteur ou \ initial) : utiliser tel quel, }
+ { sinon le resoudre par rapport au repertoire courant REEL du processus   }
+ { (meme convention que TermFindDosExecutable et consorts). }
+ If (Length(P2) >= 2) And (P2[2] = ':') Then
+  AbsDir := P2
+ Else If (Length(P2) >= 1) And ((P2[1] = '\') Or (P2[1] = '/')) Then
+  AbsDir := P2
+ Else Begin
+  GetDir(0, CurDir);
+  If (Length(CurDir) > 0) And (CurDir[Length(CurDir)] <> '\') Then
+   CurDir := CurDir + '\';
+  AbsDir := CurDir + P2;
+ End;
+ If Not DirectoryExists(AbsDir) Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie : ' + AbsDir);
+  Exit;
+ End;
+ TermMountActive[DL] := True;
+ TermMountDir[DL] := AbsDir;
+ TermAddLine(TP, 'Lecteur ' + DL + ': monte sur ' + AbsDir + '.');
+End;
+
+{ --- IMGMOUNT (2026-08-29, demande explicite de l utilisateur, "dans le   }
+{ meme genre que DOSBox") : monte un VRAI fichier IMAGE de disque (FAT/     }
+{ HPFS/D64/H8D...) sur une lettre - contrairement a MOUNT ci-dessus (un      }
+{ simple repertoire hote), IMGMOUNT reutilise TEL QUEL le pipeline de       }
+{ montage d image DEJA MATURE de ce fichier (le meme que BOOT d:            }
+{ /DISK0:.../DISK81:..., voir Emu_MountDiskSlot/Emu_UnmountDiskSlot,        }
+{ ~66644) - AUCUN nouveau code de montage, juste une 2e facon d y           }
+{ acceder avec une syntaxe DOSBox plutot que des drapeaux `/DISKn:`.        }
+{ LIMITATION REELLE ASSUMEE (structurelle, pas une simplification           }
+{ paresseuse) : contrairement a un vrai DOSBox (26 lettres possibles),      }
+{ ce pipeline ne modelise que 4 UNITES INT13h materielles reelles           }
+{ (0=A:/1=B: disquettes, 2=C:/3=D: disques durs, voir EmuFloppyOpen[0..3]/  }
+{ Term_DriveIdxFromLetter) - impossible de monter sur E:..Z: sans un         }
+{ chantier bien plus consequent (5e+ unite INT13h emulee, jamais demande).  }
+{ Les options DOSBox `-t`/`-fs`/`-size` sont ACCEPTEES SYNTAXIQUEMENT       }
+{ (une ligne de commande DOSBox authentique n est donc jamais rejetee)      }
+{ mais SANS EFFET : `Emu_MountDiskSlot` (via `Fat_TryMount`/                }
+{ `Emu_DiskDetectFormat`) detecte DEJA automatiquement le vrai format/la    }
+{ vraie geometrie a partir du CONTENU du fichier - les simuler a moitie     }
+{ aurait ete plus risque que de les ignorer ouvertement (le resultat        }
+{ affiche apres montage indique le VRAI format detecte, jamais un           }
+{ format suppose a partir de `-fs`). }
+Procedure TermCmd_IMGMOUNT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ P1, P2, Dir, ImgPath: String;
+ Idx: Byte;
+Begin
+ P1 := TermExtractParam(ParamStr, 1);
+ If UpCaseStr(P1) = '-U' Then Begin
+  P2 := TermExtractParam(ParamStr, 2);
+  If (Length(P2) < 1) Or Not Term_DriveIdxFromLetter(P2[1], Idx) Then Begin
+   TermAddLine(TP, 'Syntaxe : IMGMOUNT -u lettre (A, B, C ou D)');
+   Exit;
+  End;
+  If Not EmuFloppyOpen[Idx] Then Begin
+   TermAddLine(TP, Term_DriveLetterFromIdx(Idx) + ': n''est pas monte.');
+   Exit;
+  End;
+  Emu_UnmountDiskSlot(Idx);
+  TermAddLine(TP, Term_DriveLetterFromIdx(Idx) + ': demonte.');
+  Exit;
+ End;
+ If (Length(P1) < 1) Or Not Term_DriveIdxFromLetter(P1[1], Idx) Then Begin
+  TermAddLine(TP, 'Syntaxe : IMGMOUNT lettre fichier-image [-t floppy|hdd|iso] ' +
+   '[-fs fat|iso|none] [-size c,h,s,cyl]');
+  TermAddLine(TP, '          IMGMOUNT -u lettre');
+  TermAddLine(TP, 'Lettres supportees : A, B (disquette), C, D (disque dur) - ' +
+   '4 unites INT13h emulees, comme /DISK0../DISK81.');
+  Exit;
+ End;
+ P2 := TermExtractParam(ParamStr, 2);
+ If P2 = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : IMGMOUNT lettre fichier-image [-t ...] [-fs ...] [-size ...]');
+  Exit;
+ End;
+ { Chemin relatif : resoudre par rapport au repertoire courant REEL du     }
+ { shell (meme convention que MOUNT/NES/etc ci-dessus). }
+ If ((Length(P2) >= 2) And (P2[2] = ':')) Or
+    ((Length(P2) >= 1) And ((P2[1] = '\') Or (P2[1] = '/'))) Then
+  ImgPath := P2
+ Else Begin
+  If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+  If (Length(Dir) > 0) And (Dir[Length(Dir)] <> '\') Then Dir := Dir + '\';
+  ImgPath := Dir + P2;
+ End;
+ If Not FileExists(ImgPath) Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie : ' + ImgPath);
+  Exit;
+ End;
+ If Not Emu_MountDiskSlot(Idx, ImgPath) Then Begin
+  TermAddLine(TP, 'Echec du montage de ' + ImgPath + ' sur ' +
+   Term_DriveLetterFromIdx(Idx) + ': .');
+  Exit;
+ End;
+ TermAddLine(TP, Term_DriveLetterFromIdx(Idx) + ': monte sur ' + ImgPath + '.');
+ { BOGUE REEL trouve en testant avec un vrai .D64 (2026-08-30) : le          }
+ { message ci-dessous supposait a tort que "Mounted=True" signifie          }
+ { toujours FAT12/16/32 - or Fat_TryMount reconnait AUSSI D64 (Commodore    }
+ { 64)/HPFS (OS/2)/H8D (Heath/Zenith), qui n ont RIEN a voir avec FATType/  }
+ { BytesPerSector (jamais renseignes pour ces formats) - affichait          }
+ { l absurdite "FAT0 (0 octets/secteur)" pour un .D64 reel. Verifie          }
+ { chaque format REEL explicitement, meme discipline que TermCmd_VOL/       }
+ { TermCmd_DIR_CMD ailleurs dans ce fichier. }
+ If FatVol[Idx].IsD64 Then
+  TermAddLine(TP, '  Format detecte : disquette Commodore 64 (D64, ' +
+   IntToStr(FatVol[Idx].D64Tracks) + ' pistes).')
+ Else If FatVol[Idx].IsHPFS Then
+  TermAddLine(TP, '  Format detecte : partition OS/2 HPFS (lecture seule).')
+ Else If FatVol[Idx].IsH8D Then Begin
+  Case FatVol[Idx].H8DFsType Of
+   1: TermAddLine(TP, '  Format detecte : disquette Heath/Zenith H8D (HDOS).');
+   2: TermAddLine(TP, '  Format detecte : disquette Heath/Zenith H8D (CP/M-80).');
+   3: TermAddLine(TP, '  Format detecte : disquette Heath/Zenith H8D (UCSD p-System).');
+  Else
+   TermAddLine(TP, '  Format detecte : disquette Heath/Zenith H8D.');
+  End;
+ End Else If FatVol[Idx].Mounted Then
+  TermAddLine(TP, '  Systeme de fichiers detecte : FAT' +
+   IntToStr(FatVol[Idx].FATType) + ' (' +
+   IntToStr(FatVol[Idx].BytesPerSector) + ' octets/secteur).')
+ Else
+  TermAddLine(TP, '  Aucun systeme de fichiers reconnu (comme -fs none de ' +
+   'DOSBox) - utiliser BOOT ' + Term_DriveLetterFromIdx(Idx) +
+   ': pour amorcer directement.');
+End;
+
+{ --- LINUX fichier / OS2 fichier (2026-08-29, demande explicite de        }
+{ l utilisateur) - memes 2 shells (SK_CMD/SK_NCOMMANDER), meme convention   }
+{ de resolution de repertoire courant que NES/ATARI2600/C64/COCO3/WIN16.   }
+{ LINUX cible le backend ELF64 x86-64 deja mature (chantier "Terminal-     }
+{ panel Linux x86-64 emulator", voir [[project_elf64_emulator]]) - PAS     }
+{ d extension canonique pour un binaire Linux (souvent AUCUNE, ex.         }
+{ BINLINUX\tp2js) : reutilise TermFindElfExecutable (deja utilisee par le  }
+{ repli generique "commande inconnue -> executable" plus bas dans ce       }
+{ fichier), qui identifie un ELF64 par SIGNATURE (7F 45 4C 46), jamais par }
+{ extension - le nom doit donc correspondre EXACTEMENT a un fichier         }
+{ existant (aucune extension n est ajoutee/devinee). }
+Procedure TermCmd_Linux(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, ElfPath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LINUX fichier');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'LINUX : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ ElfPath := TermFindElfExecutable(Dir, CurrParam);
+ If ElfPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(ElfPath, '-CELF64', '');
+End;
+
+{ OS2 cible le backend OS/2 LX deja reel (chantier console-only, voir       }
+{ [[project_devenv_os2lx]] - PAS le stub "BOOT /OS2" qui, lui, concerne     }
+{ l amorcage d un VRAI noyau OS/2 depuis un secteur de boot, jamais        }
+{ implante et honnetement signale "non supporte" - deux choses totalement  }
+{ distinctes malgre le nom similaire). Un executable OS/2 LX est, comme     }
+{ Win16, un .EXE reconnu par sa signature interne 'LX' plutot que son       }
+{ extension (voir NCFindExeKind/NCEXE_OS2LX) - meme convention simple que   }
+{ WIN16 : cherche <nom>.EXE, fait CONFIANCE au chargeur de l emulateur       }
+{ pour signaler honnetement un fichier qui n est pas reellement au format   }
+{ LX plutot que de revalider la signature ici (meme discipline que les      }
+{ autres commandes de lancement de ce chantier). AUCUN "boot sans fichier"  }
+{ pour OS2 (contrairement a C64) : OS/2 LX n a pas d equivalent "ROM BASIC" }
+{ - un .EXE reel est toujours requis. }
+Procedure TermCmd_OS2(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, ExePath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : OS2 fichier.exe');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'OS2 : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ ExePath := TermFindRomByExt(Dir, CurrParam, 'EXE');
+ If ExePath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(ExePath, '-COS2LX', '');
+End;
+
 { --- ELFBP (etape 8 : debogueur minimal pour l emulateur Linux ELF64) --- }
 { Regle (ou desactive) un point d arret par adresse : la prochaine fois   }
 { qu un binaire ELF64 est lance dans ce terminal, son execution s arrete  }
@@ -40814,9 +41092,24 @@ Begin
   TermAddLine(TP,
    '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
  End;
- { NES/ATARI2600/C64/COCO3/WIN16 et tous les diagnostics OS/2 LX/Windows 16  }
- { bits : SK_CMD et SK_NCOMMANDER uniquement (verifie de la meme facon). }
+ { NES/ATARI2600/C64/COCO3/WIN16, MOUNT et tous les diagnostics OS/2 LX/     }
+ { Windows 16 bits : SK_CMD et SK_NCOMMANDER uniquement (verifie de la      }
+ { meme facon). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Monter un repertoire hote (comme DOSBox) ---');
+  TermAddLine(TP,
+   '  MOUNT                  Lister les lecteurs montes');
+  TermAddLine(TP,
+   '  MOUNT lettre dossier   Monter dossier sur lettre: (ex. MOUNT E C:\ROMS)');
+  TermAddLine(TP,
+   '  MOUNT -u lettre        Demonter lettre:');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Monter une image disque (comme DOSBox, A/B/C/D seulement) ---');
+  TermAddLine(TP,
+   '  IMGMOUNT lettre image [-t ...] [-fs ...] [-size ...]  Monter une image');
+  TermAddLine(TP,
+   '  IMGMOUNT -u lettre     Demonter lettre: (A, B, C ou D)');
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Lancer un emulateur ---');
   TermAddLine(TP,
@@ -40835,6 +41128,10 @@ Begin
    '  WIN fichier[.exe]            Emulateur Windows 16 bits (NE)');
   TermAddLine(TP,
    '  WIN16 fichier[.exe]          Alias de WIN');
+  TermAddLine(TP,
+   '  LINUX fichier                Emulateur Linux x86-64 (ELF64)');
+  TermAddLine(TP,
+   '  OS2 fichier[.exe]            Emulateur OS/2 LX');
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Diagnostic OS/2 LX (chantier -COS2LX) ---');
   TermAddLine(TP,
@@ -41142,6 +41439,21 @@ Begin
  { Changement de lecteur : A:, B:, C:, D:, ... }
  If (Length(CmdStr) = 2) And (CmdStr[2] = ':') And
   (CmdStr[1] In ['A'..'Z', 'a'..'z']) Then Begin
+  { MOUNT (2026-08-29) : une lettre montee via MOUNT est PRIORITAIRE sur    }
+  { le comportement A:/B:/C:/D: ci-dessous (meme convention que DOSBox, ou  }
+  { MOUNT est toujours autoritaire) - simple `ChDir` absolu vers le          }
+  { repertoire monte, TP.VirtDrive reste a -1 (mode hote standard) donc     }
+  { TOUT le reste (DIR/TYPE/COPY/NES/etc) continue de fonctionner sans le    }
+  { moindre changement ailleurs. }
+  If TermMountActive[UpCase(CmdStr[1])] Then Begin
+   {$I-} ChDir(TermMountDir[UpCase(CmdStr[1])]); {$I+}
+   Err := IOResult;
+   If Err <> 0 Then
+    TermAddLine(TP, TermGetErrorMessage(Err))
+   Else
+    TermAddLine(TP, TermMountDir[UpCase(CmdStr[1])]);
+   Exit;
+  End;
   { Lecteurs virtuels A:/B: (disquettes) et C:/D: (disques durs) :
     sur image montee, on bascule le terminal en mode disque virtuel. }
   If UpCase(CmdStr[1]) = 'A' Then Begin
@@ -41383,6 +41695,14 @@ Begin
     TermCmd_VOL(TP, ParamStr)
    Else If CurrCmd = 'BOOT' Then
     TermCmd_BOOT(TP, ParamStr)
+   Else If CurrCmd = 'MOUNT' Then
+    TermCmd_MOUNT(TP, ParamStr)
+   Else If CurrCmd = 'IMGMOUNT' Then
+    TermCmd_IMGMOUNT(TP, ParamStr)
+   Else If CurrCmd = 'LINUX' Then
+    TermCmd_Linux(TP, ParamStr)
+   Else If CurrCmd = 'OS2' Then
+    TermCmd_OS2(TP, ParamStr)
    Else If CurrCmd = 'NES' Then
     TermCmd_NES(TP, ParamStr)
    Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
@@ -41719,6 +42039,14 @@ Begin
    TermCmd_VOL(TP, ParamStr)
   Else If CurrCmd = 'BOOT' Then
    TermCmd_BOOT(TP, ParamStr)
+  Else If CurrCmd = 'MOUNT' Then
+   TermCmd_MOUNT(TP, ParamStr)
+  Else If CurrCmd = 'IMGMOUNT' Then
+   TermCmd_IMGMOUNT(TP, ParamStr)
+  Else If CurrCmd = 'LINUX' Then
+   TermCmd_Linux(TP, ParamStr)
+  Else If CurrCmd = 'OS2' Then
+   TermCmd_OS2(TP, ParamStr)
   Else If CurrCmd = 'NES' Then
    TermCmd_NES(TP, ParamStr)
   Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
