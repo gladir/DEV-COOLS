@@ -1905,6 +1905,26 @@ Const
                                 { internes ($F000, voir IPX/Packet Driver/ }
                                 { XMS)                                    }
 
+ { UMB (Options > Emulateur > DOS: OS > "UMB", 2026-08-30, demande          }
+ { explicite de l utilisateur) - RECHERCHE PREALABLE (agent Explore) :      }
+ { contrairement a une hypothese initiale, les segments $C000 et $D000 ne   }
+ { sont PAS de simples offsets a l interieur du segment $F000 (comme les    }
+ { tampons TopView) mais de VRAIS segments autonomes, entierement libres et }
+ { non interceptes nulle part dans Emu_ReadByte/Emu_WriteByte (a la         }
+ { difference de $A000/$B000/$B800 rediriges vers la VRAM et $E000 = cadre  }
+ { EMS) - de la vraie RAM emulee ordinaire, executable, sans aucun risque   }
+ { de collision. $D000 sert ici a l allocateur UMB EXECUTE PAR LE           }
+ { PROGRAMME (INT 2Fh/AH=10h-12h ci-dessous) ; $C000 est reserve            }
+ { SEPAREMENT a LOADHIGH/LH (TermCmd_LOADHIGH, pres de TermCmd_LOADFIX) -   }
+ { deux segments DISTINCTS et jamais partages, pour eviter tout probleme    }
+ { d ordonnancement entre le chargement du programme (avant Emu_XmsInit)    }
+ { et la reinitialisation de l etat XMS (Emu_XmsInit s execute APRES le     }
+ { chargement et remet EmuXms.UmbInUse a zero - si LOADHIGH utilisait le    }
+ { meme segment que l allocateur XMS, cette reinitialisation effacerait a   }
+ { tort la reservation de LOADHIGH). }
+ EMU_UMB_SEG          = $D000; { unique bloc UMB gere par AH=10h/11h/12h   }
+ EMU_UMB_SIZE_PARAS   = $1000; { 64 Ko en paragraphes (4096 = 65536/16)    }
+
  { INT 21h AH=52h ("list of lists"/SYSVARS) - voir Emu_DoInt21 case $52 :  }
  { BOGUE REEL (2026-08-24, trouve en investiguant DOS=HIGH qui echoue      }
  { toujours sur le vrai boot MS-DOS 6.22 une fois les 2 bogues precedents  }
@@ -4218,6 +4238,8 @@ Type
   HmaOwned  : Boolean;         { HMA attribuee (fonctions 01h/02h)        }
   A20LocalCount : Integer;     { compteur local (fonctions 05h/06h)       }
   A20Global : Boolean;         { drapeau global (fonctions 03h/04h)       }
+  UmbInUse  : Boolean;         { bloc UMB unique (EMU_UMB_SEG) deja       }
+                                { accorde (fonctions 10h/11h/12h)          }
  End;
 
  { --- Pilote EMS (Options > Emulateur > DOS: OS > "EMS") - LIM/Microsoft  }
@@ -5423,6 +5445,8 @@ Type
   DosDPMI         : Boolean;     { support DPMI active (INT 31h)  }
   DosDPMISize     : Integer;     { taille memoire etendue DPMI en Ko }
   DosAnsiSys      : Boolean;     { pilote ANSI.SYS (sequences ESC[) }
+  DosUMB          : Boolean;     { memoire haute (UMB, $D000 - voir }
+                                  { EMU_UMB_SEG) activee, defaut True}
   DosMSCDEX       : Boolean;     { pilote MSCDEX (CD-ROM)         }
   DosSouris       : Boolean;     { pilote souris                  }
   DosMousePS2BIOS : Boolean;     { BIOS souris PS/2 (INT 15h AH=C2h) }
@@ -6552,6 +6576,16 @@ Var
  { FIXE ($0051/$0060) pour tout premier chargement, LOADFIX se contente de  }
  { substituer ce fixe par $1000 pour cette seule fois). }
  EmuLoadFixArmOnLoad : Boolean;
+ { LH/LOADHIGH (2026-08-30, suite de la demande UMB) : meme motif "arme     }
+ { avant CreateEmulatorTab" que EmuLoadFixArmOnLoad ci-dessus, mais charge  }
+ { a $C000 (memoire HAUTE reelle - voir EMU_UMB_SEG=$D000 juste au-dessus, }
+ { volontairement un segment DIFFERENT et jamais partage avec l allocateur }
+ { UMB execute par le programme lui-meme via INT 2Fh/AH=10h, pour eviter    }
+ { tout probleme d ordonnancement avec Emu_XmsInit qui remet a zero l etat  }
+ { UMB APRES le chargement). Seulement arme si OptionsDlg.Data.DosUMB est   }
+ { active au moment de TermCmd_LOADHIGH - sinon LOADHIGH garde son          }
+ { ancien comportement honnete (avertissement puis chargement normal). }
+ EmuLoadHighArmOnLoad : Boolean;
  EmuDiv0Caught  : Boolean;  { capture du 1er DIV/0 (diag) }
  EmuDiv0CS      : Word;
  EmuDiv0IP      : Word;
@@ -36893,31 +36927,22 @@ End;
 
 { LH/LOADHIGH (2026-08-30, demande explicite de l utilisateur, 2 shells :  }
 { "Invite de commande" ET "OS/2 & REXX") : reproduit LH/LOADHIGH.COM de     }
-{ MS-DOS - charge un programme dans la memoire HAUTE (UMB, $A000-$FFFF),   }
-{ contrairement a LOADFIX ci-dessus qui reste en memoire CONVENTIONNELLE   }
-{ (juste plus haut dans les 640 premiers Ko). RECHERCHE PREALABLE (agent    }
-{ Explore, avant d ecrire une seule ligne ici) : cet emulateur n a PAS de   }
-{ vraie UMB fabriquable - le pilote XMS existant (Emu_Xms_RequestUMB/      }
-{ ReleaseUMB/ResizeUMB, AH=10h/11h/12h) refuse deja HONNETEMENT toute       }
-{ demande d UMB (BL=$B1 "aucune UMB disponible") avec la raison documentee }
-{ explicitement en tete de cette section XMS : TOUTE la plage $A000-$FFFF  }
-{ est deja reellement occupee par autre chose dans cet emulateur (VRAM     }
-{ texte/graphique redirigee $A000-$BFFF, cadre de pages EMS $E000-$EFFF si }
-{ actif, et $F000 entier deja sature - trampolines de vecteurs, pilote de  }
-{ paquets, souris, MSCDEX, allocateur bas DPMI, tampons/tas/pile/poignees  }
-{ TopView, liste des listes DOS, octet d identification BIOS). Fabriquer un}
-{ segment "UMB" ici ecraserait donc reellement l un de ces sous-systemes   }
-{ ou serait redirige dans la VRAM au lieu d etre execute - CONTRAIREMENT A }
-{ LOADFIX (dont le segment cible $1000 est genuinement libre), il n existe }
-{ ici AUCUN equivalent sur qui appliquer la meme astuce sans corruption.   }
-{ DECISION (coherente avec le refus deja honnete du pilote XMS existant,   }
-{ ET avec le vrai comportement historique de MS-DOS lui-meme quand aucun   }
-{ gestionnaire de memoire haute - EMM386/QEMM, DOS=UMB - n est charge :     }
-{ LOADHIGH ne bloque PAS le programme, il le charge simplement en memoire   }
-{ conventionnelle normale avec un avertissement) : LH/LOADHIGH affichent    }
-{ ici le meme constat honnete que le pilote XMS, puis chargent le           }
-{ programme NORMALEMENT (aucun drapeau special arme, contrairement a        }
-{ LOADFIX) - le programme s execute reellement, juste pas "en haut". }
+{ MS-DOS - charge un programme dans la memoire HAUTE (UMB), contrairement  }
+{ a LOADFIX ci-dessus qui reste en memoire CONVENTIONNELLE (juste plus     }
+{ haut dans les 640 premiers Ko). MIS A JOUR (meme jour, suite de la        }
+{ demande utilisateur d'ajouter une case a cocher "UMB" dans Options >      }
+{ Emulateur > DOS: OS) : cet emulateur dispose DESORMAIS d'une vraie UMB    }
+{ (segment $C000, 64 Ko de RAM emulee reelle, genuinement libre - voir      }
+{ EMU_UMB_SEG et le commentaire de recherche associe pres de               }
+{ EMU_EMS_FRAME_SEG) quand la case "UMB" est cochee (OptionsDlg.Data.       }
+{ DosUMB, coche par defaut). $C000 est reserve EXCLUSIVEMENT a LOADHIGH -   }
+{ different de $D000 utilise par l allocateur UMB accessible AU PROGRAMME  }
+{ via INT 2Fh/AH=10h (Emu_Xms_RequestUMB) - jamais partage, pour eviter    }
+{ tout probleme d ordonnancement avec Emu_XmsInit (qui s execute APRES le   }
+{ chargement et remettrait a tort a zero une reservation partagee). Si la   }
+{ case est DEcochee, comportement honnete inchange : avertissement puis    }
+{ chargement en memoire conventionnelle normale (comme un vrai MS-DOS sans }
+{ EMM386/QEMM charge). }
 Procedure TermCmd_LOADHIGH(Var TP: TTerminalPanel; ParamStr: String);
 Var
  CurrParam, Dir, DosExe, TrimmedParams, RestParam: String;
@@ -36944,9 +36969,12 @@ Begin
  P := System.Pos(' ', TrimmedParams);
  If P > 0 Then RestParam := TrimStr(Copy(TrimmedParams, P + 1, Length(TrimmedParams)))
  Else RestParam := '';
- TermAddLine(TP, 'LOADHIGH : aucune memoire haute (UMB) disponible dans ' +
-  'cet emulateur (aucun gestionnaire EMM386/QEMM - meme constat honnete ' +
-  'que XMS AH=10h) - programme charge en memoire conventionnelle.');
+ If OptionsDlg.Data.DosUMB Then Begin
+  TermAddLine(TP, 'LOADHIGH : programme charge en memoire haute (segment $C000).');
+  EmuLoadHighArmOnLoad := True;
+ End Else
+  TermAddLine(TP, 'LOADHIGH : memoire haute (UMB) desactivee (Options > ' +
+   'Emulateur > DOS: OS) - programme charge en memoire conventionnelle.');
  CreateEmulatorTab(DosExe, '-CD', RestParam);
 End;
 
@@ -45272,15 +45300,16 @@ Begin
  End;
  { LH/LOADHIGH : SK_CMD et SK_OS2REXX (2026-08-30, demande explicite de     }
  { l utilisateur pour ces 2 shells precisement - voir TermCmd_LOADHIGH      }
- { pres de TermCmd_LOADFIX pour la limitation honnete documentee : aucune   }
- { UMB fabriquable dans cet emulateur, meme constat que le pilote XMS. }
+ { pres de TermCmd_LOADFIX). Case a cocher "UMB" (Options > Emulateur >     }
+ { DOS: OS, cochee par defaut) : decochee, meme limitation honnete que le   }
+ { pilote XMS (aucune UMB disponible, charge en memoire conventionnelle). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_OS2REXX) Then Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Charger un programme en memoire haute (comme MS-DOS) ---');
   TermAddLine(TP,
-   '  LOADHIGH programme [arguments]  Memoire haute (UMB) non disponible ici -');
+   '  LOADHIGH programme [arguments]  Charge en memoire haute (UMB, $C000) si');
   TermAddLine(TP,
-   '  LH programme [arguments]        charge en memoire conventionnelle');
+   '  LH programme [arguments]        activee (Options > Emulateur > DOS: OS)');
  End;
  { REXX : SK_OS2REXX uniquement (2026-08-30, demande explicite de           }
  { l utilisateur - integration complete de REXX.PAS, voir le bloc Rexx_*    }
@@ -58576,6 +58605,9 @@ Begin
  If EmuLoadFixArmOnLoad Then Begin
   EmuLoadFixArmOnLoad := False;
   Emu_LoadCom := Emu_LoadComAt(C, FileName, $1000, EmuStartCmdLine);
+ End Else If EmuLoadHighArmOnLoad Then Begin
+  EmuLoadHighArmOnLoad := False;
+  Emu_LoadCom := Emu_LoadComAt(C, FileName, $C000, EmuStartCmdLine);
  End Else
   Emu_LoadCom := Emu_LoadComAt(C, FileName, $0060, EmuStartCmdLine);
 End;
@@ -58747,6 +58779,9 @@ Begin
  If EmuLoadFixArmOnLoad Then Begin
   EmuLoadFixArmOnLoad := False;
   Emu_LoadExe := Emu_LoadExeAt(C, FileName, $1000, EmuStartCmdLine);
+ End Else If EmuLoadHighArmOnLoad Then Begin
+  EmuLoadHighArmOnLoad := False;
+  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $C000, EmuStartCmdLine);
  End Else
   Emu_LoadExe := Emu_LoadExeAt(C, FileName, $0051, EmuStartCmdLine);
 End;
@@ -73077,26 +73112,70 @@ Begin
  P.CPU.Regs.AX := 1;
 End;
 
-{ --- AH=10h/11h/12h : UMB - voir la limite documentee en tete de section, }
-{ aucune UMB n est fabriquee. --- }
+{ --- AH=10h/11h/12h : UMB - 2026-08-30, demande explicite de l utilisateur}
+{ ("case a cocher UMB... il est possible qu il faille implementer le UMB").}
+{ Gere UN SEUL bloc reel (EMU_UMB_SEG=$D000, 64 Ko) - voir le commentaire   }
+{ pres de EMU_UMB_SEG pour la recherche qui a confirme ce segment          }
+{ genuinement libre (pas une simulation/un placeholder). Gate par la       }
+{ case a cocher "UMB" (Options > Emulateur > DOS: OS, OptionsDlg.Data.      }
+{ DosUMB) - a decocher, le comportement redevient l ancien refus honnete   }
+{ "aucune UMB disponible", exactement comme un vrai DOS sans EMM386/QEMM   }
+{ charge (DOS=UMB absent de CONFIG.SYS). }
 Procedure Emu_Xms_RequestUMB(Var P: TEmulatorPanel);
+Var RequestedParas: Word;
 Begin
- P.CPU.Regs.AX := 0;
- P.CPU.Regs.BL := $B1; { aucune UMB disponible }
- P.CPU.Regs.DX := 0;   { plus grande taille disponible = aucune }
+ RequestedParas := P.CPU.Regs.DX;
+ If (Not OptionsDlg.Data.DosUMB) Or EmuXms.UmbInUse Then Begin
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := $B1; { aucune UMB disponible }
+  P.CPU.Regs.DX := 0;   { plus grande taille disponible = aucune }
+  Exit;
+ End;
+ If RequestedParas > EMU_UMB_SIZE_PARAS Then Begin
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := $B0; { taille demandee superieure au plus grand bloc }
+  P.CPU.Regs.DX := EMU_UMB_SIZE_PARAS; { taille du plus grand bloc disponible }
+  Exit;
+ End;
+ EmuXms.UmbInUse := True;
+ P.CPU.Regs.AX := 1;
+ P.CPU.Regs.BX := EMU_UMB_SEG;
+ P.CPU.Regs.DX := EMU_UMB_SIZE_PARAS; { taille reelle accordee (bloc entier) }
 End;
 
 Procedure Emu_Xms_ReleaseUMB(Var P: TEmulatorPanel);
 Begin
- P.CPU.Regs.AX := 0;
- P.CPU.Regs.BL := $B2; { segment invalide : aucune UMB n a jamais ete accordee }
+ If (Not OptionsDlg.Data.DosUMB) Or (Not EmuXms.UmbInUse) Or
+    (P.CPU.Regs.DX <> EMU_UMB_SEG) Then Begin
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := $B2; { segment invalide : aucune UMB n a jamais ete accordee }
+  Exit;
+ End;
+ EmuXms.UmbInUse := False;
+ P.CPU.Regs.AX := 1;
 End;
 
 Procedure Emu_Xms_ResizeUMB(Var P: TEmulatorPanel);
 Begin
- P.CPU.Regs.AX := 0;
- P.CPU.Regs.BL := $B2;
- P.CPU.Regs.DX := 0;
+ If (Not OptionsDlg.Data.DosUMB) Or (Not EmuXms.UmbInUse) Or
+    (P.CPU.Regs.DX <> EMU_UMB_SEG) Then Begin
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := $B2;
+  P.CPU.Regs.DX := 0;
+  Exit;
+ End;
+ { Bloc physique de taille FIXE (pas de sous-allocation reelle) : toute      }
+ { demande qui tient dans le bloc reussit trivialement en rapportant sa      }
+ { taille reelle ; au-dela, echec honnete avec la taille reellement          }
+ { disponible - jamais une taille inventee. }
+ If P.CPU.Regs.BX <= EMU_UMB_SIZE_PARAS Then Begin
+  P.CPU.Regs.AX := 1;
+  P.CPU.Regs.BX := EMU_UMB_SIZE_PARAS;
+ End Else Begin
+  P.CPU.Regs.AX := 0;
+  P.CPU.Regs.BL := $B0;
+  P.CPU.Regs.DX := EMU_UMB_SIZE_PARAS;
+ End;
 End;
 
 { --- AH=88h : Query Any Free Extended Memory (32 bits) --- }
@@ -93146,6 +93225,7 @@ Begin
  D.DosDPMI := False;
  D.DosDPMISize := 8192;
  D.DosAnsiSys := True; { coche par defaut - imite CONFIG.SYS DEVICE=ANSI.SYS }
+ D.DosUMB := True; { coche par defaut (demande explicite de l utilisateur) }
  D.DosMSCDEX := False;
  D.DosSouris := True;
  D.DosMousePS2BIOS := False;
@@ -94237,6 +94317,7 @@ Begin
  CheckSimple(Dlg.Data.DosTopView, 'TopView');                   { Row 4 }
  CheckWithSize(Dlg.Data.DosDPMI, 'DPMI', Dlg.Data.DosDPMISize, 3); { Row 5 }
  CheckSimple(Dlg.Data.DosAnsiSys, 'Pilote ANSI.SYS');           { Row 6 }
+ CheckSimple(Dlg.Data.DosUMB, 'UMB (memoire haute)');           { Row 7 }
 
  If Dlg.DosDropdownOpen = 1 Then
   OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType, OPT_LABEL_WIDTH)
@@ -95159,6 +95240,10 @@ Begin
         Dlg.Data.DosAnsiSys := Not Dlg.Data.DosAnsiSys;
         Dlg.Modified := True;
        End;
+       7: Begin
+        Dlg.Data.DosUMB := Not Dlg.Data.DosUMB;
+        Dlg.Modified := True;
+       End;
       End;
      OC_EMU_DOS_SW:
       Case FieldIdx Of
@@ -95391,6 +95476,7 @@ Begin
  Str(Data.DosDPMISize, S);
  WriteCfgLine(F, 'DosDPMISize', S);
  WriteCfgLine(F, 'DosAnsiSys', BoolToStr(Data.DosAnsiSys));
+ WriteCfgLine(F, 'DosUMB', BoolToStr(Data.DosUMB));
  WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
  WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
  WriteCfgLine(F, 'DosMousePS2BIOS', BoolToStr(Data.DosMousePS2BIOS));
@@ -95596,6 +95682,8 @@ Begin
   End
   Else If Key = 'DosAnsiSys' Then
    Data.DosAnsiSys := StrToBool(Value)
+  Else If Key = 'DosUMB' Then
+   Data.DosUMB := StrToBool(Value)
   Else If Key = 'DosMSCDEX' Then
    Data.DosMSCDEX := StrToBool(Value)
   Else If Key = 'DosSouris' Then

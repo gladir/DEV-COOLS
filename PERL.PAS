@@ -90,6 +90,36 @@ Type
   Current:PPerlHashEntry;
   Next:PPerlHashCursor;
  End;
+ PPerlFormatLine=^TPerlFormatLine;
+ TPerlFormatLine=Record
+  Text:String;
+  Next:PPerlFormatLine;
+ End;
+ PPerlFormat=^TPerlFormat;
+ TPerlFormat=Record
+  Name:String[63];
+  FirstLine,LastLine:PPerlFormatLine;
+  Next:PPerlFormat;
+ End;
+ PPerlGlobState=^TPerlGlobState;
+ TPerlGlobState=Record
+  Pattern:String;
+  Search:SearchRec;
+  Active:Boolean;
+  Next:PPerlGlobState;
+ End;
+ PPerlSubroutine=^TPerlSubroutine;
+ TPerlSubroutine=Record
+  Name:String[63];
+  HeaderLine,EndLine:Integer;
+  Next:PPerlSubroutine;
+ End;
+ PPerlModule=^TPerlModule;
+ TPerlModule=Record
+  Name,PathName:String;
+  FirstLine,LastLine:Integer;
+  Next:PPerlModule;
+ End;
 
 Var
  FileC:Text;
@@ -107,6 +137,15 @@ Var
  PerlDirectoryHandles:PPerlDirectoryHandle;
  PerlHashEntries:PPerlHashEntry;
  PerlHashCursors:PPerlHashCursor;
+ PerlFormats:PPerlFormat;
+ PerlGlobStates:PPerlGlobState;
+ PerlSubroutines:PPerlSubroutine;
+ PerlReturning:Boolean;
+ PerlReturnValue:TPerlValue;
+ PerlModules:PPerlModule;
+ PerlIncludePath:String;
+ PerlStrictEnabled,PerlWarningsEnabled:Boolean;
+ PerlModuleExecutionDepth:Integer;
  ExprSource:String;
  ExprPosition:Integer;
 
@@ -116,6 +155,9 @@ Function DeletePerlVariable(Name:String):Boolean;Forward;
 Function ExecutePerlCoreLine(S:String):Boolean;Forward;
 Procedure EvalPerlExpression(S:String;Var V:TPerlValue);Forward;
 Procedure ExecuteStoredLine(LineIndex:Integer);Forward;
+Procedure PerlInvokeSubroutine(Name:String;Var A,B,C:TPerlValue;
+ ArgumentCount:Integer;Var V:TPerlValue);Forward;
+Procedure RegisterPerlSubroutines;Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
 Var J:Integer;
@@ -204,6 +246,118 @@ Begin
  Else If(RequestedMode=1)or(RequestedMode=2)Then Handle^.LockMode:=RequestedMode
  Else Begin PerlText('',V);Exit;End;
  PerlNumber(1,V);
+End;
+
+Procedure PerlGetC(HandleName:String;ArgumentCount:Integer;Var V:TPerlValue);
+Var Ch:Char;Handle:PPerlHandle;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));
+ If ArgumentCount=0Then HandleName:='STDIN';
+ If HandleName='STDIN'Then Begin
+  RegisterPerlHandle('STDIN',True);
+  Ch:=ReadKey;PerlText(Ch,V);
+ End Else Begin
+  Handle:=FindPerlHandle(HandleName);
+  If(Handle=Nil)or Not Handle^.IsOpen Then PerlText('',V)
+  Else PerlText('',V);
+ End;
+End;
+
+Function PerlLeapYear(Year:Integer):Boolean;
+Begin PerlLeapYear:=(Year mod 4=0)and((Year mod 100<>0)or(Year mod 400=0));End;
+
+Procedure PerlGmTime(TimeValue:LongInt;ArgumentCount:Integer;Var V:TPerlValue);
+Const SecondsPerDay:LongInt=86400;
+ MonthNames:Array[1..12]of String[3]=('Jan','Feb','Mar','Apr','May','Jun',
+ 'Jul','Aug','Sep','Oct','Nov','Dec');
+ DayNames:Array[0..6]of String[3]=('Sun','Mon','Tue','Wed','Thu','Fri','Sat');
+ MonthDays:Array[1..12]of Byte=(31,28,31,30,31,30,31,31,30,31,30,31);
+Var Year,Month,Day,Hour,Minute,Second,WeekDay,Days,DaysInYear,DaysInMonth:Integer;
+ WYear,WMonth,WDay,WWeekDay,WHour,WMinute,WSecond,Hundredths:Word;
+ SYear,SDay,SHour,SMinute,SSecond:String;
+begin
+ If ArgumentCount=0Then Begin
+  GetDate(WYear,WMonth,WDay,WWeekDay);GetTime(WHour,WMinute,WSecond,Hundredths);
+  Year:=WYear;Month:=WMonth;Day:=WDay;WeekDay:=WWeekDay;
+  Hour:=WHour;Minute:=WMinute;Second:=WSecond;
+ End Else Begin
+  Days:=TimeValue div SecondsPerDay;Second:=TimeValue mod SecondsPerDay;
+  If Second<0Then Begin Inc(Second,SecondsPerDay);Dec(Days);End;
+  WeekDay:=(Days+4)mod 7;If WeekDay<0Then Inc(WeekDay,7);
+  Hour:=Second div 3600;Second:=Second mod 3600;
+  Minute:=Second div 60;Second:=Second mod 60;Year:=1970;
+  While Days<0Do Begin Dec(Year);If PerlLeapYear(Year)Then Inc(Days,366)Else Inc(Days,365);End;
+  Repeat
+   If PerlLeapYear(Year)Then DaysInYear:=366 Else DaysInYear:=365;
+   If Days<DaysInYear Then Break;Dec(Days,DaysInYear);Inc(Year);
+  Until False;
+  Month:=1;
+  Repeat
+   DaysInMonth:=MonthDays[Month];If(Month=2)and PerlLeapYear(Year)Then Inc(DaysInMonth);
+   If Days<DaysInMonth Then Break;Dec(Days,DaysInMonth);Inc(Month);
+  Until Month=12;
+  Day:=Days+1;
+ End;
+ Str(Year,SYear);Str(Day:2,SDay);Str(Hour:2,SHour);Str(Minute:2,SMinute);Str(Second:2,SSecond);
+ If SHour[1]=' 'Then SHour[1]:='0';If SMinute[1]=' 'Then SMinute[1]:='0';
+ If SSecond[1]=' 'Then SSecond[1]:='0';
+ PerlText(DayNames[WeekDay]+' '+MonthNames[Month]+' '+SDay+' '+SHour+':' +
+  SMinute+':'+SSecond+' '+CleanText(SYear),V);
+End;
+
+Procedure PerlHex(HexText:String;Var V:TPerlValue);
+Var I,Code:Integer;N:LongInt;CleanHex:String;
+Begin
+ CleanHex:='';HexText:=CleanText(HexText);
+ If Copy(StrToUpper(HexText),1,2)='0X'Then Delete(HexText,1,2);
+ For I:=1To Length(HexText)Do If HexText[I]<>'_'Then CleanHex:=CleanHex+HexText[I];
+ If CleanHex=''Then Begin PerlNumber(0,V);Exit;End;
+ Val('$'+CleanHex,N,Code);
+ If Code=0Then PerlNumber(N,V)Else PerlNumber(0,V);
+End;
+
+Procedure PerlGrep(PatternText,FirstText,SecondText:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var MatchCount:Integer;
+ Procedure TestValue(ValueText:String);
+ Begin
+  If Pos(PatternText,ValueText)>0Then Inc(MatchCount);
+ End;
+Begin
+ MatchCount:=0;
+ If ArgumentCount>1Then TestValue(FirstText);
+ If ArgumentCount>2Then TestValue(SecondText);
+ PerlNumber(MatchCount,V);
+End;
+
+Function FindPerlGlobState(Pattern:String):PPerlGlobState;
+Var State:PPerlGlobState;
+Begin
+ State:=PerlGlobStates;
+ While State<>Nil Do Begin
+  If State^.Pattern=Pattern Then Begin FindPerlGlobState:=State;Exit;End;
+  State:=State^.Next;
+ End;
+ New(State);State^.Pattern:=Pattern;State^.Active:=False;
+ State^.Next:=PerlGlobStates;PerlGlobStates:=State;FindPerlGlobState:=State;
+End;
+
+Procedure PerlGlob(Pattern:String;Var V:TPerlValue);
+Var State:PPerlGlobState;ErrorCode,J,SlashPosition:Integer;Prefix:String;
+Begin
+ Pattern:=CleanText(Pattern);If Pattern=''Then Begin PerlText('',V);Exit;End;
+ State:=FindPerlGlobState(Pattern);
+ If Not State^.Active Then Begin
+  FindFirst(Pattern,AnyFile,State^.Search);ErrorCode:=DosError;
+  State^.Active:=ErrorCode=0;
+ End Else Begin FindNext(State^.Search);ErrorCode:=DosError;End;
+ While(ErrorCode=0)and((State^.Search.Name='.')or(State^.Search.Name='..'))Do Begin
+  FindNext(State^.Search);ErrorCode:=DosError;
+ End;
+ If ErrorCode<>0Then Begin State^.Active:=False;PerlText('',V);Exit;End;
+ SlashPosition:=0;
+ For J:=1To Length(Pattern)Do If Pattern[J]in['\','/']Then SlashPosition:=J;
+ Prefix:=Copy(Pattern,1,SlashPosition);PerlText(Prefix+State^.Search.Name,V);
 End;
 
 Procedure PerlBinMode(HandleName,LayerName:String;Var V:TPerlValue);
@@ -458,6 +612,23 @@ Begin
  Entry^.Value:=Value;
 End;
 
+Procedure ClearPerlHash(HashName:String);
+Var Entry,Previous,NextEntry:PPerlHashEntry;Cursor:PPerlHashCursor;
+Begin
+ Entry:=PerlHashEntries;Previous:=Nil;
+ While Entry<>Nil Do Begin
+  NextEntry:=Entry^.Next;
+  If Entry^.HashName=HashName Then Begin
+   If Previous=Nil Then PerlHashEntries:=NextEntry Else Previous^.Next:=NextEntry;
+   Dispose(Entry);
+  End Else Previous:=Entry;
+  Entry:=NextEntry;
+ End;
+ Cursor:=PerlHashCursors;
+ While Cursor<>Nil Do Begin If Cursor^.HashName=HashName Then Cursor^.Current:=PerlHashEntries;
+  Cursor:=Cursor^.Next;End;
+End;
+
 Procedure GetPerlHashEntry(HashName,Key:String;Var V:TPerlValue);
 Var Entry:PPerlHashEntry;
 Begin
@@ -691,6 +862,11 @@ Begin
     31:PerlNumber(Exp(A.Number),V);                        { exp }
     32:PerlFileNo(A.Text,V);                               { fileno }
     33:PerlFlock(A.Text,Trunc(B.Number),V);                { flock }
+    38:PerlGetC(A.Text,FunctionArgumentCount,V);            { getc }
+    61:PerlGmTime(Trunc(A.Number),FunctionArgumentCount,V); { gmtime }
+    62:PerlGrep(A.Text,B.Text,C.Text,FunctionArgumentCount,V); { grep }
+    63:PerlGlob(A.Text,V);                                  { glob }
+    64:PerlHex(A.Text,V);                                   { hex }
     67:PerlNumber(Trunc(A.Number),V);                      { int }
     71:Begin                                               { lc }
         S:=A.Text;
@@ -701,6 +877,8 @@ Begin
     73:PerlNumber(Length(A.Text),V);                       { length }
     125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
+   Else If FunctionByte=-1Then PerlInvokeSubroutine(Name,A,B,C,
+    FunctionArgumentCount,V)
    Else PerlText('',V);
    End;
   End Else PerlText(Name,V);
@@ -1426,13 +1604,81 @@ Begin
  End;
 End;
 
+Procedure SetPerlHashFromList(HashName,ListText:String);
+Var J,StartPosition,Depth,ArrowPosition:Integer;Quote:Char;PairText:String;
+ KeyValue,ValueValue:TPerlValue;
+Begin
+ ListText:=CleanText(ListText);
+ If(Length(ListText)>1)and(ListText[1]='(')and(ListText[Length(ListText)]=')')Then
+  ListText:=Copy(ListText,2,Length(ListText)-2);
+ ClearPerlHash(HashName);StartPosition:=1;Depth:=0;Quote:=#0;
+ For J:=1To Length(ListText)+1Do Begin
+  If J<=Length(ListText)Then Begin
+   If Quote<>#0Then Begin If ListText[J]=Quote Then Quote:=#0;End
+   Else If ListText[J]in['''','"']Then Quote:=ListText[J]
+   Else If ListText[J]in['(','[','{']Then Inc(Depth)
+   Else If ListText[J]in[')',']','}']Then Dec(Depth);
+  End;
+  If(J>Length(ListText))or((Quote=#0)and(Depth=0)and(ListText[J]=','))Then Begin
+   PairText:=CleanText(Copy(ListText,StartPosition,J-StartPosition));
+   ArrowPosition:=Pos('=>',PairText);
+   If ArrowPosition>0Then Begin
+    EvalPerlExpression(Copy(PairText,1,ArrowPosition-1),KeyValue);
+    EvalPerlExpression(Copy(PairText,ArrowPosition+2,255),ValueValue);
+    SetPerlHashEntry(HashName,KeyValue.Text,ValueValue.Text);
+   End;
+   StartPosition:=J+1;
+  End;
+ End;
+End;
+
+Procedure MyCommand;
+Var Arguments,LeftText,RightText,Name,TempArray:String;
+ P,J,K,ValueIndex,ValueCount:Integer;Sigil:Char;V:TPerlValue;
+Begin
+ Arguments:=CleanText(Copy(CurrLine,CurrPos,255));P:=FindAssignment(Arguments);
+ If P>0Then Begin LeftText:=CleanText(Copy(Arguments,1,P-1));
+  RightText:=CleanText(Copy(Arguments,P+1,255));End
+ Else Begin LeftText:=Arguments;RightText:='';End;
+ If(Length(LeftText)>1)and(LeftText[1]='(')Then Begin
+  K:=Pos(')',LeftText);If K>0Then LeftText:=Copy(LeftText,2,K-2);
+  TempArray:='MYVALUES';SetPerlArrayFromList(TempArray,RightText);
+  ValueCount:=GetPerlArrayCount(TempArray);ValueIndex:=0;J:=1;
+  While J<=Length(LeftText)Do Begin
+   While(J<=Length(LeftText))and Not(LeftText[J]in['$','@','%'])Do Inc(J);
+   If J>Length(LeftText)Then Break;Sigil:=LeftText[J];Inc(J);Name:='';
+   While(J<=Length(LeftText))and(LeftText[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
+    Name:=Name+LeftText[J];Inc(J);End;
+   If Sigil='$'Then Begin If ValueIndex<ValueCount Then GetPerlArrayElement(TempArray,ValueIndex,V)
+    Else PerlText('',V);SetPerlVariable(Name,V.Text);End
+   Else If Sigil='@'Then ClearPerlArray(Name)Else ClearPerlHash(Name);
+   Inc(ValueIndex);
+  End;
+ End Else Begin
+  J:=1;
+  While J<=Length(LeftText)Do Begin
+   While(J<=Length(LeftText))and Not(LeftText[J]in['$','@','%'])Do Inc(J);
+   If J>Length(LeftText)Then Break;Sigil:=LeftText[J];Inc(J);Name:='';
+   While(J<=Length(LeftText))and(LeftText[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
+    Name:=Name+LeftText[J];Inc(J);End;
+   If Sigil='$'Then Begin If RightText<>''Then EvalPerlExpression(RightText,V)Else PerlText('',V);
+    SetPerlVariable(Name,V.Text);End
+   Else If Sigil='@'Then Begin If RightText<>''Then SetPerlArrayFromList(Name,RightText)
+    Else ClearPerlArray(Name);End
+   Else Begin If RightText<>''Then SetPerlHashFromList(Name,RightText)Else ClearPerlHash(Name);End;
+  End;
+ End;
+ CurrPos:=Length(CurrLine)+1;
+End;
+
 Function ExecutePerlCoreLine(S:String):Boolean;
 Var P,J,K:Integer;Name,RightSide,OperatorText,HashKeyText:String;
  V,OldValue,HashKeyValue:TPerlValue;
 Begin
  ExecutePerlCoreLine:=True;S:=CleanText(S);
  If(S='')or(S[1]='#')or(Copy(S,1,2)='#!')Then Exit;
- If(Copy(StrToUpper(S),1,4)='USE ')Then Exit;
+ If Copy(StrToUpper(S),1,8)='PACKAGE 'Then Exit;
+ If(S[1]in['0'..'9'])and(Pos('=',S)=0)Then Exit;
  If Copy(StrToUpper(S),1,6)='PRINT 'Then Begin PrintPerlExpressions(Copy(S,7,255));Exit;End;
  If Copy(StrToUpper(S),1,3)='MY 'Then S:=CleanText(Copy(S,4,255));
  If(Length(S)>1)and(S[1]='@')Then Begin
@@ -1524,6 +1770,7 @@ Begin
   While(BodyLine<EndLine)and Not Terminated Do Begin
    ExecuteStoredLine(BodyLine);BodyLine:=CurrLinePtr+1;
   End;
+  If PerlReturning Then Break;
   ExecuteForIncrement(IncrementText);Inc(Guard);
  Until Guard=32767;
  CurrLinePtr:=EndLine;CurrPos:=Length(CurrLine)+1;
@@ -1561,8 +1808,372 @@ Begin
   While(BodyLine<EndLine)and Not Terminated Do Begin
    ExecuteStoredLine(BodyLine);BodyLine:=CurrLinePtr+1;
   End;
+  If PerlReturning Then Break;
  End;
  CurrLinePtr:=EndLine;CurrLine:=PA[EndLine]^;CurrPos:=Length(CurrLine)+1;
+End;
+
+Function PerlConditionFromLine(S:String;Var Condition:TPerlValue):Boolean;
+Var P1,P2,J:Integer;ExpressionText:String;
+Begin
+ P1:=Pos('(',S);P2:=0;
+ If P1>0Then For J:=Length(S)DownTo P1+1Do If S[J]=')'Then Begin P2:=J;Break;End;
+ If(P1=0)or(P2<=P1)Then Begin PerlConditionFromLine:=False;Exit;End;
+ ExpressionText:=Copy(S,P1+1,P2-P1-1);EvalPerlExpression(ExpressionText,Condition);
+ PerlConditionFromLine:=True;
+End;
+
+Function PerlBlockEnd(HeaderLine:Integer;HeaderClosesPrevious:Boolean):Integer;
+Var Depth,J,K:Integer;Quote:Char;S:String;
+Begin
+ If HeaderClosesPrevious Then Begin Depth:=1;J:=HeaderLine+1;End
+ Else Begin Depth:=0;J:=HeaderLine;End;
+ While J<=NumberLine Do Begin
+  S:=PA[J]^;Quote:=#0;
+  For K:=1To Length(S)Do Begin
+   If Quote<>#0Then Begin If S[K]=Quote Then Quote:=#0;End
+   Else If S[K]in['''','"']Then Quote:=S[K]
+   Else If S[K]='{'Then Inc(Depth)
+   Else If S[K]='}'Then Begin Dec(Depth);If Depth=0Then Begin PerlBlockEnd:=J;Exit;End;End;
+  End;
+  Inc(J);
+ End;
+ PerlBlockEnd:=NumberLine;
+End;
+
+Procedure ExecutePerlBlock(FirstLine,LastLine:Integer);
+Var LineIndex:Integer;
+Begin
+ LineIndex:=FirstLine;
+ While(LineIndex<=LastLine)and Not Terminated and Not PerlReturning Do Begin
+  ExecuteStoredLine(LineIndex);LineIndex:=CurrLinePtr+1;
+ End;
+End;
+
+Function FindPerlSubroutine(Name:String):PPerlSubroutine;
+Var Subroutine:PPerlSubroutine;
+Begin
+ Name:=StrToUpper(Name);Subroutine:=PerlSubroutines;
+ While Subroutine<>Nil Do Begin
+  If Subroutine^.Name=Name Then Begin FindPerlSubroutine:=Subroutine;Exit;End;
+  Subroutine:=Subroutine^.Next;
+ End;
+ FindPerlSubroutine:=Nil;
+End;
+
+Procedure RegisterPerlSubroutines;
+Var LineIndex,J:Integer;S,Name:String;Subroutine:PPerlSubroutine;
+Begin
+ For LineIndex:=1To NumberLine Do Begin
+  S:=CleanText(PA[LineIndex]^);
+  If Copy(StrToUpper(S),1,4)='SUB 'Then Begin
+   J:=5;While(J<=Length(S))and(S[J]in[' ',#9])Do Inc(J);Name:='';
+   While(J<=Length(S))and(S[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
+    Name:=Name+S[J];Inc(J);
+   End;
+   If(Name<>'')and(FindPerlSubroutine(Name)=Nil)Then Begin
+    New(Subroutine);Subroutine^.Name:=StrToUpper(Name);Subroutine^.HeaderLine:=LineIndex;
+    Subroutine^.EndLine:=PerlBlockEnd(LineIndex,False);
+    Subroutine^.Next:=PerlSubroutines;PerlSubroutines:=Subroutine;
+   End;
+  End;
+ End;
+End;
+
+Procedure PerlInvokeSubroutine(Name:String;Var A,B,C:TPerlValue;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var Subroutine:PPerlSubroutine;SavedLinePtr,SavedPosition,I,SavedCount,Depth:Integer;
+ SavedLine,SavedSource,SaveArrayName:String;SavedExprPosition:Integer;
+ SavedReturning:Boolean;SavedReturnValue,Item:TPerlValue;Frame:PPerlCallFrame;
+Begin
+ Subroutine:=FindPerlSubroutine(Name);If Subroutine=Nil Then Begin PerlText('',V);Exit;End;
+ Depth:=0;Frame:=PerlCallStack;While Frame<>Nil Do Begin Inc(Depth);Frame:=Frame^.Next;End;
+ Str(Depth,SaveArrayName);SaveArrayName:='CALLSAVE'+CleanText(SaveArrayName);
+ SavedCount:=GetPerlArrayCount('_');ClearPerlArray(SaveArrayName);
+ For I:=0To SavedCount-1Do Begin GetPerlArrayElement('_',I,Item);
+  SetPerlArrayElement(SaveArrayName,I,Item.Text);End;
+ ClearPerlArray('_');If ArgumentCount>0Then SetPerlArrayElement('_',0,A.Text);
+ If ArgumentCount>1Then SetPerlArrayElement('_',1,B.Text);
+ If ArgumentCount>2Then SetPerlArrayElement('_',2,C.Text);
+ SavedLinePtr:=CurrLinePtr;SavedLine:=CurrLine;SavedPosition:=CurrPos;
+ SavedSource:=ExprSource;SavedExprPosition:=ExprPosition;
+ SavedReturning:=PerlReturning;SavedReturnValue:=PerlReturnValue;
+ PerlReturning:=False;PerlText('',PerlReturnValue);
+ PushPerlCallFrame(Name,'main',FileName,CurrNumberLine,ArgumentCount>0);
+ ExecutePerlBlock(Subroutine^.HeaderLine+1,Subroutine^.EndLine-1);
+ V:=PerlReturnValue;PopPerlCallFrame;
+ ClearPerlArray('_');For I:=0To SavedCount-1Do Begin
+  GetPerlArrayElement(SaveArrayName,I,Item);SetPerlArrayElement('_',I,Item.Text);End;
+ PerlReturning:=SavedReturning;PerlReturnValue:=SavedReturnValue;
+ CurrLinePtr:=SavedLinePtr;CurrLine:=SavedLine;CurrPos:=SavedPosition;
+ ExprSource:=SavedSource;ExprPosition:=SavedExprPosition;
+End;
+
+Procedure ReturnCommand;
+Var ExpressionText:String;
+Begin
+ ExpressionText:=CleanText(Copy(CurrLine,CurrPos,255));
+ If ExpressionText=''Then PerlText('',PerlReturnValue)
+ Else EvalPerlExpression(ExpressionText,PerlReturnValue);
+ PerlReturning:=True;CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure SubCommand;
+Var Subroutine:PPerlSubroutine;
+Begin
+ Subroutine:=PerlSubroutines;
+ While(Subroutine<>Nil)and(Subroutine^.HeaderLine<>CurrLinePtr)Do Subroutine:=Subroutine^.Next;
+ If Subroutine<>Nil Then CurrLinePtr:=Subroutine^.EndLine;
+ CurrLine:=PA[CurrLinePtr]^;CurrPos:=Length(CurrLine)+1;
+End;
+
+Function FindPerlModule(Name:String):PPerlModule;
+Var Module:PPerlModule;
+Begin
+ Module:=PerlModules;Name:=StrToUpper(Name);
+ While Module<>Nil Do Begin
+  If Module^.Name=Name Then Begin FindPerlModule:=Module;Exit;End;
+  Module:=Module^.Next;
+ End;
+ FindPerlModule:=Nil;
+End;
+
+Function PerlModuleLine(LineIndex:Integer):Boolean;
+Var Module:PPerlModule;
+Begin
+ Module:=PerlModules;
+ While Module<>Nil Do Begin
+  If(LineIndex>=Module^.FirstLine)and(LineIndex<=Module^.LastLine)Then Begin
+   PerlModuleLine:=True;Exit;
+  End;
+  Module:=Module^.Next;
+ End;
+ PerlModuleLine:=False;
+End;
+
+Procedure UseCommand;
+Var Arguments,UpperArguments,ModuleName,SavedLine:String;
+ ModuleFile,ResolvedPath:PathStr;ScriptDirectory:DirStr;
+ DummyName:NameStr;DummyExtension:ExtStr;
+ P,J,SavedLinePtr,SavedPosition,FirstModuleLine:Integer;
+ Module:PPerlModule;ModuleSource:Text;V:TPerlValue;
+Begin
+ Arguments:=CleanText(Copy(CurrLine,CurrPos,255));UpperArguments:=StrToUpper(Arguments);
+ If(UpperArguments='STRICT')or(Copy(UpperArguments,1,7)='STRICT ')Then Begin
+  PerlStrictEnabled:=True;CurrPos:=Length(CurrLine)+1;Exit;End;
+ If(UpperArguments='WARNINGS')or(Copy(UpperArguments,1,9)='WARNINGS ')Then Begin
+  PerlWarningsEnabled:=True;CurrPos:=Length(CurrLine)+1;Exit;End;
+ If Copy(UpperArguments,1,4)='LIB 'Then Begin
+  EvalPerlExpression(Copy(Arguments,5,255),V);
+  If V.Text<>''Then Begin If PerlIncludePath<>''Then PerlIncludePath:=PerlIncludePath+';';
+   PerlIncludePath:=PerlIncludePath+V.Text;End;
+  CurrPos:=Length(CurrLine)+1;Exit;
+ End;
+ If(Arguments='')or(Arguments[1]in['0'..'9'])Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ J:=1;While(J<=Length(Arguments))and(Arguments[J]in['A'..'Z','a'..'z','0'..'9','_',':'])Do Inc(J);
+ ModuleName:='';P:=1;
+ While P<J Do Begin ModuleName:=ModuleName+Arguments[P];Inc(P);End;
+ If FindPerlModule(ModuleName)<>Nil Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ ModuleFile:='';J:=1;
+ While J<=Length(ModuleName)Do Begin
+  If(J<Length(ModuleName))and(Copy(ModuleName,J,2)='::')Then Begin ModuleFile:=ModuleFile+'\';Inc(J,2);End
+  Else Begin ModuleFile:=ModuleFile+ModuleName[J];Inc(J);End;
+ End;
+ ModuleFile:=ModuleFile+'.pm';FSplit(FileName,ScriptDirectory,DummyName,DummyExtension);
+ ResolvedPath:='';If PerlFileExists(ScriptDirectory+ModuleFile)Then ResolvedPath:=ScriptDirectory+ModuleFile
+ Else If PerlFileExists(ModuleFile)Then ResolvedPath:=ModuleFile
+ Else ResolvedPath:=FSearch(ModuleFile,PerlIncludePath);
+ If ResolvedPath=''Then Begin WriteLn('Module Perl introuvable: ',ModuleName);Terminated:=True;
+  CurrPos:=Length(CurrLine)+1;Exit;End;
+ Assign(ModuleSource,ResolvedPath);{$I-}Reset(ModuleSource);{$I+}
+ If IoResult<>0Then Begin WriteLn('Impossible d''ouvrir le module: ',ResolvedPath);Terminated:=True;Exit;End;
+ New(Module);Module^.Name:=StrToUpper(ModuleName);Module^.PathName:=ResolvedPath;
+ FirstModuleLine:=NumberLine+1;Module^.FirstLine:=FirstModuleLine;
+ While Not Eof(ModuleSource)Do Begin ReadLn(ModuleSource,SavedLine);AddLine(SavedLine);End;
+ Close(ModuleSource);Module^.LastLine:=NumberLine;Module^.Next:=PerlModules;PerlModules:=Module;
+ RegisterPerlSubroutines;SavedLinePtr:=CurrLinePtr;SavedLine:=CurrLine;SavedPosition:=CurrPos;
+ Inc(PerlModuleExecutionDepth);P:=Module^.FirstLine;
+ While(P<=Module^.LastLine)and Not Terminated Do Begin ExecuteStoredLine(P);P:=CurrLinePtr+1;End;
+ Dec(PerlModuleExecutionDepth);CurrLinePtr:=SavedLinePtr;CurrLine:=SavedLine;
+ CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure IfCommand;
+Var HeaderLine,CloseLine,MarkerLine,NextClose:Integer;
+ HeaderUpper:String;Condition:TPerlValue;ConditionTrue,BranchChosen,HasBranch:Boolean;
+Begin
+ HeaderLine:=CurrLinePtr;
+ If PerlConditionFromLine(CurrLine,Condition)Then
+  ConditionTrue:=(Condition.Text<>'')and(Condition.Text<>'0')
+ Else ConditionTrue:=False;
+ CloseLine:=PerlBlockEnd(HeaderLine,False);BranchChosen:=ConditionTrue;
+ If ConditionTrue Then ExecutePerlBlock(HeaderLine+1,CloseLine-1);
+ Repeat
+  MarkerLine:=CloseLine;HeaderUpper:=StrToUpper(CleanText(PA[MarkerLine]^));
+  HasBranch:=(Pos('ELSIF',HeaderUpper)>0)or(Pos('ELSE',HeaderUpper)>0);
+  If Not HasBranch Then Begin
+   MarkerLine:=CloseLine+1;
+   If MarkerLine<=NumberLine Then HeaderUpper:=StrToUpper(CleanText(PA[MarkerLine]^))
+   Else HeaderUpper:='';
+   HasBranch:=(Copy(HeaderUpper,1,5)='ELSIF')or(Copy(HeaderUpper,1,4)='ELSE');
+  End;
+  If Not HasBranch Then Break;
+  NextClose:=PerlBlockEnd(MarkerLine,Pos('}',PA[MarkerLine]^) > 0);
+  If Not BranchChosen Then Begin
+   If Pos('ELSIF',HeaderUpper)>0 Then Begin
+    If PerlConditionFromLine(PA[MarkerLine]^,Condition)Then
+     ConditionTrue:=(Condition.Text<>'')and(Condition.Text<>'0')
+    Else ConditionTrue:=False;
+   End Else ConditionTrue:=True;
+   If ConditionTrue Then Begin
+    ExecutePerlBlock(MarkerLine+1,NextClose-1);BranchChosen:=True;
+   End;
+  End;
+  CloseLine:=NextClose;
+ Until False;
+ CurrLinePtr:=CloseLine;CurrLine:=PA[CloseLine]^;CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure WhileCommand;
+Var HeaderText:String;HeaderLine,CloseLine:Integer;
+ Condition:TPerlValue;ConditionTrue:Boolean;
+Begin
+ HeaderLine:=CurrLinePtr;HeaderText:=CurrLine;
+ CloseLine:=PerlBlockEnd(HeaderLine,False);
+ Repeat
+  If PerlConditionFromLine(HeaderText,Condition)Then
+   ConditionTrue:=(Condition.Text<>'')and(Condition.Text<>'0')
+  Else ConditionTrue:=False;
+  If Not ConditionTrue Then Break;
+  ExecutePerlBlock(HeaderLine+1,CloseLine-1);
+ Until Terminated or PerlReturning;
+ CurrLinePtr:=CloseLine;CurrLine:=PA[CloseLine]^;CurrPos:=Length(CurrLine)+1;
+End;
+
+Function PerlIntegerBase(Value:LongInt;NumberBase:Integer;UpperCase:Boolean):String;
+Const LowerDigits='0123456789abcdef';UpperDigits='0123456789ABCDEF';
+Var Digits,ResultText:String;Digit:Integer;Negative:Boolean;
+Begin
+ If UpperCase Then Digits:=UpperDigits Else Digits:=LowerDigits;
+ Negative:=Value<0;If Negative Then Value:=-Value;ResultText:='';
+ Repeat
+  Digit:=Value mod NumberBase;ResultText:=Digits[Digit+1]+ResultText;
+  Value:=Value div NumberBase;
+ Until Value=0;
+ If Negative Then ResultText:='-'+ResultText;PerlIntegerBase:=ResultText;
+End;
+
+Procedure PrintfCommand;
+Var Arguments,ArrayName,FormatText,OutputText,Piece:String;
+ I,J,ArgumentIndex,ArgumentCount,Width,Precision:Integer;
+ LeftAlign,ZeroFill,ShowSign:Boolean;Conversion:Char;V:TPerlValue;N:LongInt;
+Begin
+ Arguments:=CleanText(Copy(CurrLine,CurrPos,255));ArrayName:='PRINTFARGS';
+ SetPerlArrayFromList(ArrayName,Arguments);ArgumentCount:=GetPerlArrayCount(ArrayName);
+ If ArgumentCount=0Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ GetPerlArrayElement(ArrayName,0,V);FormatText:=V.Text;OutputText:='';
+ I:=1;ArgumentIndex:=1;
+ While I<=Length(FormatText)Do Begin
+  If FormatText[I]<>'%'Then Begin OutputText:=OutputText+FormatText[I];Inc(I);Continue;End;
+  Inc(I);If(I<=Length(FormatText))and(FormatText[I]='%')Then Begin
+   OutputText:=OutputText+'%';Inc(I);Continue;
+  End;
+  LeftAlign:=False;ZeroFill:=False;ShowSign:=False;
+  While(I<=Length(FormatText))and(FormatText[I]in['-','0','+',' '])Do Begin
+   If FormatText[I]='-'Then LeftAlign:=True Else If FormatText[I]='0'Then ZeroFill:=True
+   Else If FormatText[I]='+'Then ShowSign:=True;Inc(I);
+  End;
+  Width:=0;While(I<=Length(FormatText))and(FormatText[I]in['0'..'9'])Do Begin
+   Width:=Width*10+Ord(FormatText[I])-Ord('0');Inc(I);End;
+  Precision:=-1;
+  If(I<=Length(FormatText))and(FormatText[I]='.')Then Begin Inc(I);Precision:=0;
+   While(I<=Length(FormatText))and(FormatText[I]in['0'..'9'])Do Begin
+    Precision:=Precision*10+Ord(FormatText[I])-Ord('0');Inc(I);End;
+  End;
+  If I>Length(FormatText)Then Break;Conversion:=FormatText[I];Inc(I);
+  If ArgumentIndex<ArgumentCount Then GetPerlArrayElement(ArrayName,ArgumentIndex,V)
+  Else PerlText('',V);Inc(ArgumentIndex);Piece:='';N:=Trunc(V.Number);
+  Case Conversion of
+   's':Begin Piece:=V.Text;If(Precision>=0)and(Length(Piece)>Precision)Then
+        Piece:=Copy(Piece,1,Precision);End;
+   'd','i':Str(N,Piece);
+   'u':If N<0Then Piece:=PerlNumberText(4294967296.0+N) Else Str(N,Piece);
+   'x':Piece:=PerlIntegerBase(N,16,False);
+   'X':Piece:=PerlIntegerBase(N,16,True);
+   'o':Piece:=PerlIntegerBase(N,8,False);
+   'c':Piece:=Chr(N mod 256);
+   'f':Begin If Precision<0Then Precision:=6;Str(V.Number:0:Precision,Piece);End;
+   'e','E':Begin Str(V.Number,Piece);If Conversion='E'Then Piece:=StrToUpper(Piece);End;
+   'g','G':Piece:=PerlNumberText(V.Number);
+   Else Piece:='%'+Conversion;
+  End;
+  Piece:=CleanText(Piece);If ShowSign and(V.Number>=0)and(Conversion in['d','i','f','e','E','g','G'])Then Piece:='+'+Piece;
+  If Width>Length(Piece)Then Begin
+   J:=Width-Length(Piece);
+   If LeftAlign Then While J>0Do Begin Piece:=Piece+' ';Dec(J);End
+   Else If ZeroFill Then Begin
+    If(Length(Piece)>0)and(Piece[1]in['+','-'])Then Begin
+     OutputText:=OutputText+Piece[1];Delete(Piece,1,1);End;
+    While J>0Do Begin Piece:='0'+Piece;Dec(J);End;
+   End Else While J>0Do Begin Piece:=' '+Piece;Dec(J);End;
+  End;
+  OutputText:=OutputText+Piece;
+ End;
+ Write(OutputText);CurrPos:=Length(CurrLine)+1;
+End;
+
+Function FindPerlFormat(Name:String):PPerlFormat;
+Var F:PPerlFormat;
+Begin
+ Name:=StrToUpper(CleanText(Name));F:=PerlFormats;
+ While F<>Nil Do Begin If F^.Name=Name Then Begin FindPerlFormat:=F;Exit;End;F:=F^.Next;End;
+ FindPerlFormat:=Nil;
+End;
+
+Procedure ClearPerlFormatLines(F:PPerlFormat);
+Var L:PPerlFormatLine;
+Begin
+ While F^.FirstLine<>Nil Do Begin L:=F^.FirstLine;F^.FirstLine:=L^.Next;Dispose(L);End;
+ F^.LastLine:=Nil;
+End;
+
+Procedure FormatCommand;
+Var Name:String;P,J:Integer;F:PPerlFormat;L:PPerlFormatLine;
+Begin
+ Name:=CleanText(Copy(CurrLine,CurrPos,255));P:=Pos('=',Name);
+ If P>0Then Name:=CleanText(Copy(Name,1,P-1));If Name=''Then Name:='STDOUT';
+ Name:=StrToUpper(Name);F:=FindPerlFormat(Name);
+ If F=Nil Then Begin New(F);F^.Name:=Name;F^.FirstLine:=Nil;F^.LastLine:=Nil;
+  F^.Next:=PerlFormats;PerlFormats:=F;End Else ClearPerlFormatLines(F);
+ J:=CurrLinePtr+1;
+ While(J<=NumberLine)and(CleanText(PA[J]^)<>'.')Do Begin
+  New(L);L^.Text:=PA[J]^;L^.Next:=Nil;
+  If F^.FirstLine=Nil Then F^.FirstLine:=L Else F^.LastLine^.Next:=L;
+  F^.LastLine:=L;Inc(J);
+ End;
+ CurrLinePtr:=J;If J<=NumberLine Then CurrLine:=PA[J]^;
+ CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure WriteFormatCommand;
+Var Name,OutputText:String;F:PPerlFormat;L:PPerlFormatLine;V:TPerlValue;
+ Width:Integer;
+Begin
+ Name:=StrToUpper(CleanText(Copy(CurrLine,CurrPos,255)));
+ If Name=''Then Name:='STDOUT';F:=FindPerlFormat(Name);
+ If(F=Nil)and(PerlFormats<>Nil)Then F:=PerlFormats;
+ If F<>Nil Then Begin
+  L:=F^.FirstLine;
+  While L<>Nil Do Begin
+   If Pos('@',L^.Text)>0Then Begin
+    Width:=Length(L^.Text);L:=L^.Next;
+    If L<>Nil Then Begin EvalPerlExpression(CleanText(L^.Text),V);OutputText:=V.Text;
+     While Length(OutputText)<Width Do OutputText:=OutputText+' ';WriteLn(OutputText);End;
+   End Else WriteLn(L^.Text);
+   If L<>Nil Then L:=L^.Next;
+  End;
+ End;
+ CurrPos:=Length(CurrLine)+1;
 End;
 
 Function RunLine:Boolean;
@@ -1626,8 +2237,8 @@ Begin
    34:ForCommand;{for}
    35:ForeachCommand;{foreach}
    36:NoImplementation:=True;{fork}
-   37:NoImplementation:=True;{format}
-   38:NoImplementation:=True;{getc}
+   37:FormatCommand;{format}
+   38:BareFunctionCommand('getc');{getc}
    39:NoImplementation:=True;{getgrent}
    40:NoImplementation:=True;{getgrgid}
    41:NoImplementation:=True;{getgrnam}
@@ -1650,11 +2261,11 @@ Begin
    58:NoImplementation:=True;{getservbyname}
    59:NoImplementation:=True;{getservbyport}
    60:NoImplementation:=True;{getserent}
-   61:NoImplementation:=True;{gmtime}
-   62:NoImplementation:=True;{grep}
-   63:NoImplementation:=True;{glob}
-   64:NoImplementation:=True;{hex}
-   65:NoImplementation:=True;{if}
+   61:BareFunctionCommand('gmtime');{gmtime}
+   62:BareFunctionCommand('grep');{grep}
+   63:BareFunctionCommand('glob');{glob}
+   64:BareFunctionCommand('hex');{hex}
+   65:IfCommand;{if}
    66:NoImplementation:=True;{index}
    67:NoImplementation:=True;{int}
    68:NoImplementation:=True;{join}
@@ -1670,7 +2281,7 @@ Begin
    78:NoImplementation:=True;{lstat}
    79:NoImplementation:=True;{map}
    80:MkDirCommand;{mkdir}
-   81:NoImplementation:=True;{my}
+   81:MyCommand;{my}
    82:NoImplementation:=True;{oct}
    83:NoImplementation:=True;{open}
    84:NoImplementation:=True;{opendir}
@@ -1681,7 +2292,7 @@ Begin
    89:NoImplementation:=True;{pop}
    90:NoImplementation:=True;{pos}
    91:PrintCommand;{print}
-   92:NoImplementation:=True;{printf}
+   92:PrintfCommand;{printf}
    93:NoImplementation:=True;{push}
    94:NoImplementation:=True;{quotameta}
    95:NoImplementation:=True;{qx}
@@ -1692,7 +2303,7 @@ Begin
    100:RenameCommand;{rename}
    101:NoImplementation:=True;{require}
    102:NoImplementation:=True;{rewinddir}
-   103:NoImplementation:=True;{return}
+   103:ReturnCommand;{return}
    104:NoImplementation:=True;{reverse}
    105:RmDirCommand;{rmdir}
    106:NoImplementation:=True;{scalar}
@@ -1717,7 +2328,7 @@ Begin
    125:NoImplementation:=True;{sqrt}
    126:NoImplementation:=True;{srand}
    127:NoImplementation:=True;{stat}
-   128:NoImplementation:=True;{sub}
+   128:SubCommand;{sub}
    129:NoImplementation:=True;{substr}
    130:NoImplementation:=True;{symlink}
    131:NoImplementation:=True;{sysopen}
@@ -1737,15 +2348,15 @@ Begin
    145:NoImplementation:=True;{unless}
    146:NoImplementation:=True;{unpack}
    147:NoImplementation:=True;{unshift}
-   148:NoImplementation:=True;{use}
+   148:UseCommand;{use}
    149:NoImplementation:=True;{utime}
    150:NoImplementation:=True;{values}
    151:NoImplementation:=True;{wait}
    152:NoImplementation:=True;{waitpid}
    153:NoImplementation:=True;{wantarray}
    154:NoImplementation:=True;{warn}
-   155:NoImplementation:=True;{while}
-   156:NoImplementation:=True;{write}
+   155:WhileCommand;{while}
+   156:WriteFormatCommand;{write}
    Else UnknownCommand:=True;
   End;
   If(UnknownCommand)Then Begin
@@ -1771,6 +2382,10 @@ End;
 Procedure ExecuteStoredLine(LineIndex:Integer);
 Var J,Err:Integer;
 Begin
+ If(PerlModuleExecutionDepth=0)and(PerlCallStack=Nil)and
+   PerlModuleLine(LineIndex)Then Begin
+  CurrLinePtr:=LineIndex;Exit;
+ End;
  CurrLinePtr:=LineIndex;CurrLine:=PA[CurrLinePtr]^;CurrNumberLine:=0;J:=1;
  While J<Length(CurrLine)Do Begin
   If Not(CurrLine[J]in['0'..'9'])Then Begin
@@ -1787,6 +2402,7 @@ End;
 Procedure RunProgram;
 Begin
  If NumberLine>0Then Begin
+  RegisterPerlSubroutines;
   CurrLinePtr:=1;
   While(CurrLinePtr<=NumberLine) do Begin
    ExecuteStoredLine(CurrLinePtr);
