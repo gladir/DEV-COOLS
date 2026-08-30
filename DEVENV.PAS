@@ -1683,6 +1683,15 @@ Const
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
  TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
+ { Barre de defilement HORIZONTALE (2026-08-30, demande explicite de       }
+ { l utilisateur) : quand le panneau terminal est plus etroit que 80        }
+ { colonnes (frequent sous 640 pixels de large), les messages plus longs    }
+ { que la largeur visible sont tronques a droite sans aucun moyen de voir   }
+ { la suite - cette barre (fleches gauche/droite cliquables + curseur       }
+ { proportionnel) permet de defiler horizontalement, meme principe et       }
+ { meme style que TERM_SCROLLBAR_WIDTH/TERM_SCROLL_BTN_H ci-dessus. }
+ TERM_HSCROLL_HEIGHT   = 14;      { hauteur barre defilement horiz }
+ TERM_HSCROLL_BTN_W    = 14;      { largeur boutons fleche horiz   }
 
  { Norton Commander (5e shell du panneau Terminal) }
  { BOGUE REEL (2026-08-23, 5e rapport du meme utilisateur) : 512 etait     }
@@ -2918,6 +2927,9 @@ Type
   HistTail  : PTermLine;           { queue de liste (plus recent)   }
   HistCount : LongInt;             { nombre de noeuds en liste      }
   ScrollOffset: LongInt;           { 0=bas, N=remonte de N lignes   }
+  { Defilement horizontal, en colonnes (2026-08-30, demande explicite de   }
+  { l utilisateur - voir TERM_HSCROLL_HEIGHT plus haut). }
+  HScrollOffset: LongInt;
   InputLine : String;              { ligne de saisie en cours       }
   InputCol  : Integer;             { position du curseur de saisie  }
   PartialLine: String;             { fragment de ligne incomplete   }
@@ -35957,6 +35969,7 @@ Begin
  TP.HistTail := Nil;
  TP.HistCount := 0;
  TP.ScrollOffset := 0;
+ TP.HScrollOffset := 0;
  TP.NeedRepaint := True;
 End;
 
@@ -46272,6 +46285,7 @@ Begin
  TP.HistTail := Nil;
  TP.HistCount := 0;
  TP.ScrollOffset := 0;
+ TP.HScrollOffset := 0;
  TP.InputLine := '';
  TP.InputCol := 1;
  TP.PartialLine := '';
@@ -49719,10 +49733,16 @@ Var
  SBarX, TextRight: Integer;
  TrackTop, TrackBottom, TrackH: Integer;
  ThumbY, ThumbH: Integer;
- Node: PTermLine;
+ Node, MeasureNode: PTermLine;
  SkipBack: LongInt;
  TextLines: LongInt;
  MaxScrollOffset: LongInt;
+ NeedHScroll: Boolean;
+ MaxLineLen: Integer;
+ MaxHScrollOffset: Integer;
+ HTrackLeft, HTrackRight, HTrackW: Integer;
+ ThumbX, ThumbW: Integer;
+ HBarY, SBarBottom: Integer;
 Begin
  If Not TermVisible Then Exit;
  PX := TermX;
@@ -49781,11 +49801,21 @@ Begin
   SetBkColor(CLR_BACKGROUND);
   { Zone de texte (reserver TERM_SCROLLBAR_WIDTH a droite) }
   TextRight := SBarX - 1;
-  VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
-   Div TERM_LINE_HEIGHT;
-  If VisLines < 1 Then VisLines := 1;
   MaxCols := (TextRight - (PX + 4)) Div TERM_CHAR_WIDTH;
   If MaxCols < 10 Then MaxCols := 10;
+  { Barre de defilement HORIZONTALE (2026-08-30, demande explicite de       }
+  { l utilisateur) : reservee des que le panneau est plus etroit que 80      }
+  { colonnes - un ecran hote de moins de 640 pixels de large en pratique -   }
+  { AVANT de calculer VisLines (une ligne de hauteur en moins est reservee   }
+  { pour cette barre, exactement comme la ligne de saisie l est deja). }
+  NeedHScroll := MaxCols < 80;
+  If NeedHScroll Then
+   VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4 - TERM_HSCROLL_HEIGHT)
+    Div TERM_LINE_HEIGHT
+  Else
+   VisLines := (PH - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+    Div TERM_LINE_HEIGHT;
+  If VisLines < 1 Then VisLines := 1;
   { Borner le decalage de defilement. BOGUE REEL trouve (2026-08-30,          }
   { signale par l utilisateur : "la barre defonce" en cliquant sur la        }
   { fleche du haut) : la borne max utilisait HistCount-1 (index du plus      }
@@ -49813,6 +49843,26 @@ Begin
    Node := Node^.Prev;
    Dec(SkipBack);
   End;
+  { Defilement horizontal : mesurer la ligne la plus longue PARMI CELLES    }
+  { REELLEMENT VISIBLES cette image (pas tout l historique - inutile et     }
+  { couteux) pour borner TP.HScrollOffset a une valeur qui a un sens reel   }
+  { (meme discipline "un seul clamp autoritaire au moment du dessin" que le }
+  { correctif du defilement vertical juste au-dessus - jamais recalculer un }
+  { maximum different ailleurs). }
+  MaxLineLen := 0;
+  MeasureNode := Node;
+  For I := 0 To VisLines - 1 Do Begin
+   If MeasureNode <> Nil Then Begin
+    If Length(MeasureNode^.S) > MaxLineLen Then
+     MaxLineLen := Length(MeasureNode^.S);
+    MeasureNode := MeasureNode^.Next;
+   End;
+  End;
+  MaxHScrollOffset := MaxLineLen - MaxCols;
+  If MaxHScrollOffset < 0 Then MaxHScrollOffset := 0;
+  If TP.HScrollOffset < 0 Then TP.HScrollOffset := 0;
+  If TP.HScrollOffset > MaxHScrollOffset Then
+   TP.HScrollOffset := MaxHScrollOffset;
   { Afficher VisLines lignes en avant }
   SetColor(15);
   YPos := PY + TERM_TAB_HEIGHT + 2;
@@ -49820,6 +49870,11 @@ Begin
   For I := 0 To VisLines - 1 Do Begin
    If Node <> Nil Then Begin
     S := Node^.S;
+    If TP.HScrollOffset > 0 Then
+     If TP.HScrollOffset < Length(S) Then
+      S := Copy(S, TP.HScrollOffset + 1, Length(S))
+     Else
+      S := '';
     If Length(S) > MaxCols Then
      S := Copy(S, 1, MaxCols);
     OutTextXY(PX + 4, YPos, S);
@@ -49857,14 +49912,19 @@ Begin
    PromptStr := Copy(PromptStr, 1, MaxCols);
   OutTextXY(PX + 4, YPos, PromptStr);
   { ===== Barre de defilement a droite ===== }
+  { Bas reel de la barre VERTICALE : raccourci d une ligne quand la barre    }
+  { HORIZONTALE est presente, pour lui laisser sa place sans chevauchement   }
+  { (meme "coin" vide classique qu entre 2 barres de defilement Windows). }
+  SBarBottom := PY + PH - 2;
+  If NeedHScroll Then SBarBottom := SBarBottom - TERM_HSCROLL_HEIGHT;
   { Fond de la barre }
   SetFillStyle(SolidFill, 7);
   Bar(SBarX, PY + TERM_TAB_HEIGHT,
-   SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
+   SBarX + TERM_SCROLLBAR_WIDTH - 1, SBarBottom);
   { Bordure }
   SetColor(CLR_BORDER);
   Rectangle(SBarX, PY + TERM_TAB_HEIGHT,
-   SBarX + TERM_SCROLLBAR_WIDTH - 1, PY + PH - 2);
+   SBarX + TERM_SCROLLBAR_WIDTH - 1, SBarBottom);
   { Bouton fleche haut }
   SetFillStyle(SolidFill, 8);
   Bar(SBarX + 1, PY + TERM_TAB_HEIGHT + 1,
@@ -49878,16 +49938,16 @@ Begin
   OutTextXY(SBarX + 3, PY + TERM_TAB_HEIGHT + 3, #30);
   { Bouton fleche bas }
   SetFillStyle(SolidFill, 8);
-  Bar(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
-   SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
+  Bar(SBarX + 1, SBarBottom - TERM_SCROLL_BTN_H,
+   SBarX + TERM_SCROLLBAR_WIDTH - 2, SBarBottom - 1);
   SetColor(CLR_BORDER);
-  Rectangle(SBarX + 1, PY + PH - 2 - TERM_SCROLL_BTN_H,
-   SBarX + TERM_SCROLLBAR_WIDTH - 2, PY + PH - 3);
+  Rectangle(SBarX + 1, SBarBottom - TERM_SCROLL_BTN_H,
+   SBarX + TERM_SCROLLBAR_WIDTH - 2, SBarBottom - 1);
   SetColor(15);
-  OutTextXY(SBarX + 3, PY + PH - 1 - TERM_SCROLL_BTN_H + 2, #31);
+  OutTextXY(SBarX + 3, SBarBottom - TERM_SCROLL_BTN_H + 3, #31);
   { Zone du curseur (entre les deux fleches) }
   TrackTop := PY + TERM_TAB_HEIGHT + TERM_SCROLL_BTN_H + 1;
-  TrackBottom := PY + PH - 3 - TERM_SCROLL_BTN_H;
+  TrackBottom := SBarBottom - 1 - TERM_SCROLL_BTN_H;
   TrackH := TrackBottom - TrackTop + 1;
   If TrackH < 4 Then TrackH := 4;
   { Curseur proportionnel : taille = VisLines / HistCount }
@@ -49913,6 +49973,52 @@ Begin
   SetColor(CLR_BORDER);
   Rectangle(SBarX + 2, ThumbY,
    SBarX + TERM_SCROLLBAR_WIDTH - 3, ThumbY + ThumbH - 1);
+  { ===== Barre de defilement HORIZONTALE (2026-08-30) ===== }
+  If NeedHScroll Then Begin
+   HBarY := SBarBottom + 1;
+   HTrackLeft := PX + 1 + TERM_HSCROLL_BTN_W;
+   HTrackRight := TextRight - TERM_HSCROLL_BTN_W;
+   { Fond de la barre }
+   SetFillStyle(SolidFill, 7);
+   Bar(PX + 1, HBarY, TextRight, PY + PH - 2);
+   SetColor(CLR_BORDER);
+   Rectangle(PX + 1, HBarY, TextRight, PY + PH - 2);
+   { Bouton fleche gauche }
+   SetFillStyle(SolidFill, 8);
+   Bar(PX + 1, HBarY + 1,
+    PX + TERM_HSCROLL_BTN_W - 1, PY + PH - 3);
+   SetColor(CLR_BORDER);
+   Rectangle(PX + 1, HBarY + 1,
+    PX + TERM_HSCROLL_BTN_W - 1, PY + PH - 3);
+   SetColor(15);
+   OutTextXY(PX + 4, HBarY + 3, #17);
+   { Bouton fleche droite }
+   SetFillStyle(SolidFill, 8);
+   Bar(TextRight - TERM_HSCROLL_BTN_W + 1, HBarY + 1,
+    TextRight - 1, PY + PH - 3);
+   SetColor(CLR_BORDER);
+   Rectangle(TextRight - TERM_HSCROLL_BTN_W + 1, HBarY + 1,
+    TextRight - 1, PY + PH - 3);
+   SetColor(15);
+   OutTextXY(TextRight - TERM_HSCROLL_BTN_W + 4, HBarY + 3, #16);
+   { Curseur proportionnel : taille = MaxCols / MaxLineLen }
+   HTrackW := HTrackRight - HTrackLeft;
+   If HTrackW < 4 Then HTrackW := 4;
+   If MaxLineLen > MaxCols Then Begin
+    ThumbW := (LongInt(MaxCols) * HTrackW) Div MaxLineLen;
+    If ThumbW < 8 Then ThumbW := 8;
+    If ThumbW > HTrackW Then ThumbW := HTrackW;
+    ThumbX := HTrackLeft
+     + (LongInt(TP.HScrollOffset) * (HTrackW - ThumbW)) Div MaxHScrollOffset;
+   End Else Begin
+    ThumbW := HTrackW;
+    ThumbX := HTrackLeft;
+   End;
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+   Bar(ThumbX, HBarY + 1, ThumbX + ThumbW - 1, PY + PH - 3);
+   SetColor(CLR_BORDER);
+   Rectangle(ThumbX, HBarY + 1, ThumbX + ThumbW - 1, PY + PH - 3);
+  End;
  End;
  { Dessiner la liste deroulante PAR-DESSUS le texte }
  If TermSelectOpen Then Begin
@@ -50363,6 +50469,47 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Defilement HORIZONTAL (2026-08-30, demande explicite de l utilisateur }
+   { - panneau plus etroit que 80 colonnes) : meme rangee que dessinee par  }
+   { DrawTerminalPanel quand NeedHScroll (TP.Shell<>SK_NCOMMANDER, qui a sa }
+   { propre grille sans cette notion de colonnes tronquees). Design         }
+   { DELIBEREMENT plus simple que le defilement vertical ci-dessus : on     }
+   { ajuste HScrollOffset librement ici (borne seulement a 0 en bas), SANS  }
+   { tenter de recalculer ici le maximum reel (qui exigerait de re-parcourir}
+   { les noeuds d historique visibles) - le clamp AUTORITAIRE unique de     }
+   { DrawTerminalPanel (base sur MaxLineLen reellement mesure) corrige tout }
+   { depassement des la prochaine image. Repartir ce meme calcul ici        }
+   { reproduirait exactement la classe de bogue "2 maximums qui divergent"  }
+   { qui vient d etre corrigee pour la barre verticale. }
+   If (TP.Shell <> SK_NCOMMANDER) And
+      (Ev.MouseX >= TermX + 1) And (Ev.MouseX < TermX + TermWidth - TERM_SCROLLBAR_WIDTH - 1) And
+      (Ev.MouseY >= TermY + TermHeight - 2 - TERM_HSCROLL_HEIGHT) And
+      (Ev.MouseY < TermY + TermHeight - 1) Then Begin
+    { Bouton fleche gauche }
+    If Ev.MouseX < TermX + 1 + TERM_HSCROLL_BTN_W Then Begin
+     If TP.HScrollOffset > 0 Then Dec(TP.HScrollOffset);
+     TP.NeedRepaint := True;
+     FullRepaintNeeded := True;
+     Exit;
+    End;
+    { Bouton fleche droite }
+    If Ev.MouseX >= TermX + TermWidth - TERM_SCROLLBAR_WIDTH - 1 - TERM_HSCROLL_BTN_W Then Begin
+     Inc(TP.HScrollOffset);
+     TP.NeedRepaint := True;
+     FullRepaintNeeded := True;
+     Exit;
+    End;
+    { Clic dans le track : page gauche/droite selon la position relative
+      au milieu de la barre (meme heuristique que le track vertical). }
+    If Ev.MouseX < TermX + (TermWidth - TERM_SCROLLBAR_WIDTH) Div 2 Then Begin
+     TP.HScrollOffset := TP.HScrollOffset - 20;
+     If TP.HScrollOffset < 0 Then TP.HScrollOffset := 0;
+    End Else
+     TP.HScrollOffset := TP.HScrollOffset + 20;
+    TP.NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    Exit;
   End;
  End;
@@ -50470,8 +50617,12 @@ Begin
      Rexx_SwitchAndCheck(TP);
     End Else Begin
      GetDir(0, Dir);
-     { Toute saisie ramene la fenetre au bas de l historique }
+     { Toute saisie ramene la fenetre au bas de l historique et a gauche  }
+     { (HScrollOffset, 2026-08-30) - une nouvelle commande ne devrait pas  }
+     { rester decalee horizontalement a cause d une ligne precedente plus  }
+     { longue que l ecran. }
      TP.ScrollOffset := 0;
+     TP.HScrollOffset := 0;
      Case TP.Shell Of
       SK_POWERSHELL:
        TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
@@ -50486,6 +50637,7 @@ Begin
      TP.InputLine := '';
      TP.InputCol := 1;
      TP.ScrollOffset := 0;
+     TP.HScrollOffset := 0;
     End;
     TP.NeedRepaint := True;
    End;
