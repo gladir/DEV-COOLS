@@ -60,6 +60,8 @@ Type
   Name:String[63];
   BinaryMode:Boolean;
   IsOpen:Boolean;
+  Descriptor:Integer;
+  LockMode:Integer;
   Next:PPerlHandle;
  End;
  PPerlCallFrame=^TPerlCallFrame;
@@ -112,6 +114,7 @@ Function StrToUpper(S:String):String;Forward;
 Procedure SetPerlVariable(Name,Value:String);Forward;
 Function ExecutePerlCoreLine(S:String):Boolean;Forward;
 Procedure EvalPerlExpression(S:String;Var V:TPerlValue);Forward;
+Procedure ExecuteStoredLine(LineIndex:Integer);Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
 Var J:Integer;
@@ -157,15 +160,49 @@ Begin
 End;
 
 Procedure RegisterPerlHandle(Name:String;OpenState:Boolean);
-Var Handle:PPerlHandle;
+Var Handle,Scan:PPerlHandle;NextDescriptor:Integer;
 Begin
  Name:=StrToUpper(CleanText(Name));If Name=''Then Exit;
  Handle:=FindPerlHandle(Name);
  If Handle=Nil Then Begin
-  New(Handle);Handle^.Name:=Name;Handle^.BinaryMode:=False;
+  New(Handle);Handle^.Name:=Name;Handle^.BinaryMode:=False;Handle^.LockMode:=0;
+  If Name='STDIN'Then Handle^.Descriptor:=0
+  Else If Name='STDOUT'Then Handle^.Descriptor:=1
+  Else If Name='STDERR'Then Handle^.Descriptor:=2
+  Else Begin
+   NextDescriptor:=3;Scan:=PerlHandles;
+   While Scan<>Nil Do Begin
+    If Scan^.Descriptor>=NextDescriptor Then NextDescriptor:=Scan^.Descriptor+1;
+    Scan:=Scan^.Next;
+   End;
+   Handle^.Descriptor:=NextDescriptor;
+  End;
   Handle^.Next:=PerlHandles;PerlHandles:=Handle;
  End;
  Handle^.IsOpen:=OpenState;
+End;
+
+Procedure PerlFileNo(HandleName:String;Var V:TPerlValue);
+Var Handle:PPerlHandle;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));
+ If(HandleName='STDIN')or(HandleName='STDOUT')or(HandleName='STDERR')Then
+  RegisterPerlHandle(HandleName,True);
+ Handle:=FindPerlHandle(HandleName);
+ If(Handle<>Nil)and Handle^.IsOpen Then PerlNumber(Handle^.Descriptor,V)
+ Else PerlText('',V);
+End;
+
+Procedure PerlFlock(HandleName:String;Operation:Integer;Var V:TPerlValue);
+Var Handle:PPerlHandle;RequestedMode:Integer;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));Handle:=FindPerlHandle(HandleName);
+ If(Handle=Nil)or Not Handle^.IsOpen Then Begin PerlText('',V);Exit;End;
+ RequestedMode:=Operation and 3;
+ If(Operation and 8)<>0Then Handle^.LockMode:=0
+ Else If(RequestedMode=1)or(RequestedMode=2)Then Handle^.LockMode:=RequestedMode
+ Else Begin PerlText('',V);Exit;End;
+ PerlNumber(1,V);
 End;
 
 Procedure PerlBinMode(HandleName,LayerName:String;Var V:TPerlValue);
@@ -615,6 +652,9 @@ Begin
     26:PerlEof(A.Text,FunctionArgumentCount,V);             { eof }
     27:PerlEval(A.Text,V);                                 { eval }
     29:PerlExists(ArgumentText,V);                         { exists }
+    31:PerlNumber(Exp(A.Number),V);                        { exp }
+    32:PerlFileNo(A.Text,V);                               { fileno }
+    33:PerlFlock(A.Text,Trunc(B.Number),V);                { flock }
     67:PerlNumber(Trunc(A.Number),V);                      { int }
     71:Begin                                               { lc }
         S:=A.Text;
@@ -1360,6 +1400,66 @@ Begin
  ExecutePerlCoreLine:=False;
 End;
 
+Function CountCharacter(S:String;Wanted:Char):Integer;
+Var J,Count:Integer;Quote:Char;
+Begin
+ Count:=0;Quote:=#0;
+ For J:=1To Length(S)Do Begin
+  If Quote<>#0Then Begin If S[J]=Quote Then Quote:=#0;End
+  Else If S[J]in['''','"']Then Quote:=S[J]
+  Else If S[J]=Wanted Then Inc(Count);
+ End;
+ CountCharacter:=Count;
+End;
+
+Procedure ExecuteForIncrement(S:String);
+Var Name:String;J:Integer;OldValue,NewValue:TPerlValue;
+Begin
+ S:=CleanText(S);
+ If(Length(S)>=3)and(S[1]='$')and
+   ((Copy(S,Length(S)-1,2)='++')or(Copy(S,Length(S)-1,2)='--'))Then Begin
+  J:=2;While(J<=Length(S))and(S[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Inc(J);
+  Name:=Copy(S,2,J-2);GetPerlVariable(Name,OldValue);
+  If Copy(S,Length(S)-1,2)='++'Then PerlNumber(OldValue.Number+1,NewValue)
+  Else PerlNumber(OldValue.Number-1,NewValue);
+  SetPerlVariable(Name,NewValue.Text);
+ End Else ExecutePerlCoreLine(S);
+End;
+
+Procedure ForCommand;
+Var Header,InitText,ConditionText,IncrementText:String;
+ P1,P2,J,Depth,ForLine,EndLine,BodyLine,Guard:Integer;Condition:TPerlValue;
+Begin
+ ForLine:=CurrLinePtr;
+ Header:=CleanText(Copy(CurrLine,CurrPos,255));
+ If(Length(Header)>0)and(Header[1]='(')Then Delete(Header,1,1);
+ J:=Pos(')',Header);If J>0Then Delete(Header,J,255);
+ P1:=Pos(';',Header);P2:=0;
+ If P1>0Then Begin J:=P1+1;While(J<=Length(Header))and(Header[J]<>';')Do Inc(J);P2:=J;End;
+ If(P1=0)or(P2=0)Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ InitText:=CleanText(Copy(Header,1,P1-1));
+ ConditionText:=CleanText(Copy(Header,P1+1,P2-P1-1));
+ IncrementText:=CleanText(Copy(Header,P2+1,255));
+ Depth:=CountCharacter(CurrLine,'{')-CountCharacter(CurrLine,'}');
+ EndLine:=CurrLinePtr;
+ While(Depth>0)and(EndLine<NumberLine)Do Begin
+  Inc(EndLine);Depth:=Depth+CountCharacter(PA[EndLine]^,'{')-
+   CountCharacter(PA[EndLine]^,'}');
+ End;
+ If EndLine=CurrLinePtr Then Begin CurrPos:=Length(CurrLine)+1;Exit;End;
+ ExecutePerlCoreLine(InitText);Guard:=0;
+ Repeat
+  EvalPerlExpression(ConditionText,Condition);
+  If(Condition.Text='')or(Condition.Text='0')Then Break;
+  BodyLine:=ForLine+1;
+  While(BodyLine<EndLine)and Not Terminated Do Begin
+   ExecuteStoredLine(BodyLine);BodyLine:=CurrLinePtr+1;
+  End;
+  ExecuteForIncrement(IncrementText);Inc(Guard);
+ Until Guard=32767;
+ CurrLinePtr:=EndLine;CurrPos:=Length(CurrLine)+1;
+End;
+
 Function RunLine:Boolean;
 Var
  UnknownCommand:Boolean;
@@ -1415,10 +1515,10 @@ Begin
     Terminated:=True;
     Exit;
    End;
-   31:NoImplementation:=True;{exp}
-   32:NoImplementation:=True;{fileno}
-   33:NoImplementation:=True;{flock}
-   34:NoImplementation:=True;{for}
+   31:BareFunctionCommand('exp');{exp}
+   32:BareFunctionCommand('fileno');{fileno}
+   33:BareFunctionCommand('flock');{flock}
+   34:ForCommand;{for}
    35:NoImplementation:=True;{foreach}
    36:NoImplementation:=True;{fork}
    37:NoImplementation:=True;{format}
@@ -1563,30 +1663,29 @@ Begin
  RunLine:=True;
 End;
 
+Procedure ExecuteStoredLine(LineIndex:Integer);
+Var J,Err:Integer;
+Begin
+ CurrLinePtr:=LineIndex;CurrLine:=PA[CurrLinePtr]^;CurrNumberLine:=0;J:=1;
+ While J<Length(CurrLine)Do Begin
+  If Not(CurrLine[J]in['0'..'9'])Then Begin
+   Val(Copy(CurrLine,1,J-1),CurrNumberLine,Err);Break;
+  End;
+  Inc(J);
+ End;
+ While J<=Length(CurrLine)Do Begin
+  If CurrLine[J]in[' ',#9]Then Inc(J)Else Break;
+ End;
+ CurrPos:=J;RunLine;
+End;
+
 Procedure RunProgram;
-Var
- J:Integer;
- Err:Integer;
 Begin
  If NumberLine>0Then Begin
   CurrLinePtr:=1;
   While(CurrLinePtr<=NumberLine) do Begin
-   CurrLine:=PA[CurrLinePtr]^;
-   CurrNumberLine:=0;
-    J:=1;
-   While(J<Length(CurrLine))do Begin
-    If Not(CurrLine[J]in['0'..'9'])Then Begin
-     Val(Copy(CurrLine,1,J-1),CurrNumberLine,Err);
-     Break;
-    End;
-    Inc(J);
-   End;
-   While J<=Length(CurrLine)do Begin
-    If CurrLine[J]in[' ',#9]Then Inc(J)
-                            Else Break;
-   End;
-   CurrPos:=J;
-   If Not RunLine Then Break;
+   ExecuteStoredLine(CurrLinePtr);
+   If Terminated Then Break;
    Inc(CurrLinePtr);
   End;
  End;

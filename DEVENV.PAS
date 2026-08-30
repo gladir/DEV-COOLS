@@ -6540,6 +6540,18 @@ Var
  { toutes les extensions (.exe/.com/.prg/.xex). Consomme (remis a False)    }
  { par ShowEmulatorPanel des utilisation. }
  EmuDbgArmPauseOnLoad : Boolean;
+ { LOADFIX (2026-08-30, demande explicite de l utilisateur) : charge le      }
+ { prochain programme .COM/.EXE au-dessus des 64 premiers Ko de memoire     }
+ { emulee (segment $1000, physique $10000), comme le vrai LOADFIX.COM de    }
+ { MS-DOS - contourne les vieux programmes qui plantaient ("Packed file     }
+ { corrupt" et autres) quand DOS les chargeait par erreur sous ce seuil.    }
+ { Meme motif "arme avant CreateEmulatorTab, consomme et desarme au         }
+ { chargement" que EmuDbgArmPauseOnLoad/EmuCmdConsoleArmOnLoad ci-dessus -  }
+ { consomme et remis a False dans Emu_LoadCom/Emu_LoadExe (PAS un vrai      }
+ { allocateur MCB a contourner ici : ce chargeur utilise deja un segment    }
+ { FIXE ($0051/$0060) pour tout premier chargement, LOADFIX se contente de  }
+ { substituer ce fixe par $1000 pour cette seule fois). }
+ EmuLoadFixArmOnLoad : Boolean;
  EmuDiv0Caught  : Boolean;  { capture du 1er DIV/0 (diag) }
  EmuDiv0CS      : Word;
  EmuDiv0IP      : Word;
@@ -36834,6 +36846,51 @@ Begin
  CreateEmulatorTab(ExePath, '-CWIN16', '');
 End;
 
+{ LOADFIX (2026-08-30, demande explicite de l utilisateur) : reproduit le  }
+{ vrai LOADFIX.COM de MS-DOS - charge le programme cible au-dessus des 64  }
+{ premiers Ko de memoire (segment $1000), pour contourner les vieux         }
+{ programmes qui plantaient (typiquement "Packed file corrupt") quand un   }
+{ DOS reel les chargeait par erreur sous ce seuil (frequent une fois        }
+{ beaucoup de memoire haute/TSR liberee). CE chargeur n a pas de vrai        }
+{ allocateur MCB a contourner (Emu_LoadExe/Emu_LoadCom utilisent deja un    }
+{ segment FIXE pour tout premier chargement, voir EmuLoadFixArmOnLoad       }
+{ ci-dessus) - LOADFIX se contente d armer le remplacement de ce fixe par   }
+{ $1000 pour ce seul lancement, meme motif "armer avant CreateEmulatorTab"  }
+{ que BOOT /GUI//CMD (EmuDbgArmPauseOnLoad/EmuCmdConsoleArmOnLoad). Disque  }
+{ virtuel NON supporte (meme limitation assumee et documentee que LINUX/    }
+{ OS2 plus loin dans ce fichier) : signale explicitement plutot que de      }
+{ silencieusement ne rien faire. }
+Procedure TermCmd_LOADFIX(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, DosExe, TrimmedParams, RestParam: String;
+ P: Integer;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'LOADFIX : charge un programme DOS au-dessus des 64 ' +
+   'premiers Ko de memoire.');
+  TermAddLine(TP, 'Syntaxe : LOADFIX programme [arguments]');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'LOADFIX : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ DosExe := TermFindDosExecutable(Dir, CurrParam);
+ If DosExe = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ TrimmedParams := TrimStr(ParamStr);
+ P := System.Pos(' ', TrimmedParams);
+ If P > 0 Then RestParam := TrimStr(Copy(TrimmedParams, P + 1, Length(TrimmedParams)))
+ Else RestParam := '';
+ EmuLoadFixArmOnLoad := True;
+ CreateEmulatorTab(DosExe, '-CD', RestParam);
+End;
+
 { --- MOUNT (2026-08-29, demande explicite de l utilisateur, "dans le      }
 { meme genre que DOSBox") : associe une lettre a un repertoire HOTE reel   }
 { (voir TermMountDir/TermMountActive ci-dessus pour la conception          }
@@ -45146,6 +45203,14 @@ Begin
   TermAddLine(TP,
    '  WIN16RUN fichier [n] Executer n pas d''un .EXE NE, trace vers WIN16RUN.LOG');
  End;
+ { LOADFIX : SK_CMD uniquement (2026-08-30, demande explicite de            }
+ { l utilisateur - voir TermCmd_LOADFIX pres de TermCmd_BOOT). }
+ If TP.Shell = SK_CMD Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Charger un programme au-dessus de 64 Ko (comme MS-DOS) ---');
+  TermAddLine(TP,
+   '  LOADFIX programme [arguments]  Charge au-dessus des 64 premiers Ko');
+ End;
  { REXX : SK_OS2REXX uniquement (2026-08-30, demande explicite de           }
  { l utilisateur - integration complete de REXX.PAS, voir le bloc Rexx_*    }
  { pres de TermCmd_IMGMOUNT). }
@@ -45693,6 +45758,8 @@ Begin
     TermCmd_MOUNT(TP, ParamStr)
    Else If CurrCmd = 'IMGMOUNT' Then
     TermCmd_IMGMOUNT(TP, ParamStr)
+   Else If CurrCmd = 'LOADFIX' Then
+    TermCmd_LOADFIX(TP, ParamStr)
    Else If CurrCmd = 'LINUX' Then
     TermCmd_Linux(TP, ParamStr)
    Else If CurrCmd = 'OS2' Then
@@ -58431,7 +58498,11 @@ End;
 
 Function Emu_LoadCom(Var C: TEmuCPU; Const FileName: String): Boolean;
 Begin
- Emu_LoadCom := Emu_LoadComAt(C, FileName, $0060, EmuStartCmdLine);
+ If EmuLoadFixArmOnLoad Then Begin
+  EmuLoadFixArmOnLoad := False;
+  Emu_LoadCom := Emu_LoadComAt(C, FileName, $1000, EmuStartCmdLine);
+ End Else
+  Emu_LoadCom := Emu_LoadComAt(C, FileName, $0060, EmuStartCmdLine);
 End;
 
 { --- Charger un fichier .EXE dans la memoire emulee --- }
@@ -58598,7 +58669,11 @@ End;
 
 Function Emu_LoadExe(Var C: TEmuCPU; Const FileName: String): Boolean;
 Begin
- Emu_LoadExe := Emu_LoadExeAt(C, FileName, $0051, EmuStartCmdLine);
+ If EmuLoadFixArmOnLoad Then Begin
+  EmuLoadFixArmOnLoad := False;
+  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $1000, EmuStartCmdLine);
+ End Else
+  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $0051, EmuStartCmdLine);
 End;
 
 { --- Acces a la memoire virtuelle emulee de l ELF64 (petit-boutiste) --- }
