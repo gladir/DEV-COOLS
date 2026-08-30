@@ -10777,6 +10777,13 @@ Function TermFindDosExecutable(Const Dir, CmdName: String): String; Forward;
 { IMGMOUNT, chantier REXX) appelle GetIDEVersion, normalement definie      }
 { tout a la fin du fichier (~106647). }
 Function GetIDEVersion: String; Forward;
+{ Meme raison (2026-08-30) : commande EDIT (pres de TermCmd_TYPE), a       }
+{ besoin de combiner Dir+nom de fichier comme TermFindRomByExt ci-dessus   }
+{ mais sans exiger que le fichier existe deja (EDIT doit pouvoir ouvrir    }
+{ un nom de fichier qui n existe pas encore, comme un editeur reel) -      }
+{ TermCombinePath est normalement definie pres des autres TermFind*        }
+{ ci-dessus (~46200). }
+Function TermCombinePath(Const Dir, FileName: String): String; Forward;
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : sauvegarde/restauration }
 { de la globale EmuVideo (partagee avec -CD/-CP) - voir Win16_SavedVideo. }
 Procedure Win16_SaveVideoState; Forward;
@@ -37207,6 +37214,67 @@ Begin
  Close(Handle);
 End;
 
+{ --- EDIT : ouvrir un fichier du systeme hote dans un onglet editeur de   }
+{ texte, comme le ferait "Fichier > Ouvrir" ou un double-clic dans          }
+{ l Explorateur de solutions - meme sequence exacte que                    }
+{ OpenExplorerFileNode (ci-dessus, ~30395), moins la resolution de chemin   }
+{ propre a un noeud de solution (RelPath+ProjDir) puisqu ici on part deja   }
+{ d un chemin complet. Reutilisee telle quelle par TermCmd_EDIT plus bas. }
+
+Procedure TermOpenFileInEditor(FullPath: String);
+Var
+ WIdx: Integer;
+Begin
+ If EditorReady Then SyncActiveWindowOut;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ WIdx := FindEditorByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ CreateEditorWindow(FullPath);
+ WIdx := WinMgr.ActiveIdx;
+ LoadFile(Editors[WIdx]^.Buffer, FullPath);
+ ActiveEditor := Editors[WIdx]^;
+ Opts.SourceFile := FullPath;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
+{ EDIT fichier - demande explicite de l utilisateur (2026-08-30) pour les  }
+{ shells "Invite de commande", "Norton Commander", "PowerShell dev" et     }
+{ "OS/2 & REXX". Meme portee hote-uniquement que NES/ATARI2600/etc. ci-    }
+{ dessous (disques virtuels non supportes - l editeur de texte de          }
+{ DEVENV.PAS travaille sur de vrais fichiers du systeme hote, pas sur une  }
+{ image FAT montee) ; meme resolution de repertoire courant (TP.VirtCwd    }
+{ pour Norton Commander, GetDir(0,...) pour les 3 autres). Un fichier      }
+{ inexistant est ouvert comme un nouveau tampon vide (voir LoadFile) -     }
+{ comportement d un editeur reel, pas une erreur. }
+
+Procedure TermCmd_EDIT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, FullPath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : EDIT fichier');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'EDIT : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ FullPath := TermCombinePath(Dir, CurrParam);
+ TermOpenFileInEditor(FullPath);
+ TermAddLine(TP, 'Fichier ouvert dans l''editeur : ' + FullPath);
+End;
+
 { --- DATE --- }
 
 Procedure TermCmd_DATE(Var TP: TTerminalPanel);
@@ -45897,6 +45965,17 @@ Begin
   '  VER              Version du terminal');
  TermAddLine(TP,
   '  VOL [X:]         Etiquette/serie du volume');
+ { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
+ { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
+ { SK_BASH/SK_AMIGADOS, verifie par lecture directe de TermExecuteCommand,   }
+ { jamais suppose (meme discipline que l avertissement juste en dessous). }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Editeur de texte ---');
+  TermAddLine(TP,
+   '  EDIT fichier     Ouvrir un fichier dans l''editeur de texte');
+ End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
  { TermExecuteCommand, jamais suppose) - HELP etant PARTAGEE par les 6       }
@@ -46198,6 +46277,23 @@ Begin
  End;
  Candidate := Base + CmdName + '.' + Ext;
  If FileExists(Candidate) Then TermFindRomByExt := Candidate;
+End;
+
+{ Combine Dir et FileName en un chemin complet - meme detection de chemin }
+{ deja absolu (lettre de lecteur, ou racine "\") que TermFindNesRom/        }
+{ TermFindRomByExt ci-dessus, mais SANS jamais exiger que le fichier       }
+{ existe deja : utilisee par la commande EDIT, qui doit pouvoir ouvrir un  }
+{ nom de fichier qui n existe pas encore (comme un editeur reel, voir       }
+{ LoadFile - un fichier absent y devient simplement un tampon vide). }
+Function TermCombinePath(Const Dir, FileName: String): String;
+Var
+ Base: String;
+Begin
+ Base := Dir;
+ If (Length(FileName) >= 2) And (FileName[2] = ':') Then Base := ''
+ Else If (Length(FileName) >= 1) And (FileName[1] = '\') Then Base := '';
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ TermCombinePath := Base + FileName;
 End;
 
 { CoCo3 n a pas UNE seule extension canonique (cartouches .PAK/.ROM,       }
@@ -46532,6 +46628,8 @@ Begin
     TermCmd_MOVE(TP, ParamStr)
    Else If CurrCmd = 'TYPE' Then
     TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'EDIT' Then
+    TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -46669,6 +46767,8 @@ Begin
    Else If (CurrCmd = 'TYPE') Or (CurrCmd = 'CAT') Or
     (CurrCmd = 'GET-CONTENT') Then
     TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'EDIT' Then
+    TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -46880,6 +46980,8 @@ Begin
    TermCmd_MOVE(TP, ParamStr)
   Else If CurrCmd = 'TYPE' Then
    TermCmd_TYPE(TP, ParamStr)
+  Else If CurrCmd = 'EDIT' Then
+   TermCmd_EDIT(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -47020,6 +47122,8 @@ Begin
     TermCmd_MOVE(TP, ParamStr)
    Else If CurrCmd = 'TYPE' Then
     TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'EDIT' Then
+    TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then

@@ -62,6 +62,9 @@ Type
   IsOpen:Boolean;
   Descriptor:Integer;
   LockMode:Integer;
+  PathName:String;
+  DataFile:File;
+  HasFile:Boolean;
   Next:PPerlHandle;
  End;
  PPerlCallFrame=^TPerlCallFrame;
@@ -76,7 +79,10 @@ Type
  PPerlDirectoryHandle=^TPerlDirectoryHandle;
  TPerlDirectoryHandle=Record
   Name:String[63];
+  PathName:String;
   IsOpen:Boolean;
+  Started:Boolean;
+  Search:SearchRec;
   Next:PPerlDirectoryHandle;
  End;
  PPerlHashEntry=^TPerlHashEntry;
@@ -223,6 +229,7 @@ Begin
  Handle:=FindPerlHandle(Name);
  If Handle=Nil Then Begin
   New(Handle);Handle^.Name:=Name;Handle^.BinaryMode:=False;Handle^.LockMode:=0;
+  Handle^.PathName:='';Handle^.HasFile:=False;
   If Name='STDIN'Then Handle^.Descriptor:=0
   Else If Name='STDOUT'Then Handle^.Descriptor:=1
   Else If Name='STDERR'Then Handle^.Descriptor:=2
@@ -263,7 +270,7 @@ Begin
 End;
 
 Procedure PerlGetC(HandleName:String;ArgumentCount:Integer;Var V:TPerlValue);
-Var Ch:Char;Handle:PPerlHandle;
+Var Ch:Char;Handle:PPerlHandle;ByteValue:Byte;BytesRead:Word;
 Begin
  HandleName:=StrToUpper(CleanText(HandleName));
  If ArgumentCount=0Then HandleName:='STDIN';
@@ -272,8 +279,10 @@ Begin
   Ch:=ReadKey;PerlText(Ch,V);
  End Else Begin
   Handle:=FindPerlHandle(HandleName);
-  If(Handle=Nil)or Not Handle^.IsOpen Then PerlText('',V)
-  Else PerlText('',V);
+  If(Handle=Nil)or Not Handle^.IsOpen or Not Handle^.HasFile Then PerlText('',V)
+  Else Begin {$I-}BlockRead(Handle^.DataFile,ByteValue,1,BytesRead);{$I+}
+   If(IoResult=0)and(BytesRead=1)Then Begin Ch:=Chr(ByteValue);PerlText(Ch,V);End
+   Else PerlText('',V);End;
  End;
 End;
 
@@ -598,7 +607,8 @@ Begin
  Name:=StrToUpper(CleanText(Name));If Name=''Then Exit;
  Handle:=FindPerlDirectoryHandle(Name);
  If Handle=Nil Then Begin
-  New(Handle);Handle^.Name:=Name;Handle^.Next:=PerlDirectoryHandles;
+  New(Handle);Handle^.Name:=Name;Handle^.PathName:='';Handle^.Started:=False;
+  Handle^.Next:=PerlDirectoryHandles;
   PerlDirectoryHandles:=Handle;
  End;
  Handle^.IsOpen:=True;
@@ -612,6 +622,67 @@ Begin
   Handle^.IsOpen:=False;PerlNumber(1,V);
  End Else PerlText('',V);
 End;
+
+Procedure PerlOpen(HandleName,ModeText,PathName:String;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var Handle:PPerlHandle;ErrorCode:Integer;SavedFileMode:Byte;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));ModeText:=CleanText(ModeText);
+ PathName:=CleanText(PathName);
+ If ArgumentCount=2Then Begin
+  PathName:=ModeText;ModeText:='<';
+  If Copy(PathName,1,2)='>>'Then Begin ModeText:='>>';Delete(PathName,1,2);End
+  Else If(Length(PathName)>0)and(PathName[1]in['<','>'])Then Begin
+   ModeText:=PathName[1];Delete(PathName,1,1);End;
+ End;
+ If ModeText=''Then ModeText:='<';RegisterPerlHandle(HandleName,False);
+ Handle:=FindPerlHandle(HandleName);
+ If Handle^.HasFile Then Begin {$I-}Close(Handle^.DataFile);{$I+}ErrorCode:=IoResult;
+  Handle^.HasFile:=False;End;
+ Assign(Handle^.DataFile,PathName);SavedFileMode:=FileMode;{$I-}
+ If ModeText='>'Then Rewrite(Handle^.DataFile,1)
+ Else If ModeText='>>'Then Begin
+  FileMode:=2;Reset(Handle^.DataFile,1);
+  If IoResult<>0Then Rewrite(Handle^.DataFile,1)Else Seek(Handle^.DataFile,FileSize(Handle^.DataFile));
+ End Else Begin
+  If Pos('+',ModeText)>0Then FileMode:=2 Else FileMode:=0;
+  If Pos('>',ModeText)>0Then Rewrite(Handle^.DataFile,1)Else Reset(Handle^.DataFile,1);
+ End;
+ {$I+}ErrorCode:=IoResult;FileMode:=SavedFileMode;
+ If ErrorCode=0Then Begin Handle^.PathName:=PathName;Handle^.HasFile:=True;
+  Handle^.IsOpen:=True;PerlNumber(1,V);End
+ Else Begin Handle^.IsOpen:=False;PerlText('',V);End;
+End;
+
+Procedure PerlOpenDir(HandleName,PathName:String;Var V:TPerlValue);
+Var Handle:PPerlDirectoryHandle;Search:SearchRec;ErrorCode:Integer;
+Begin
+ HandleName:=StrToUpper(CleanText(HandleName));PathName:=CleanText(PathName);
+ FindFirst(PathName,Directory,Search);ErrorCode:=DosError;
+ If(ErrorCode<>0)or((Search.Attr and Directory)=0)Then Begin PerlText('',V);Exit;End;
+ RegisterPerlDirectoryHandle(HandleName);Handle:=FindPerlDirectoryHandle(HandleName);
+ Handle^.PathName:=PathName;Handle^.Started:=False;PerlNumber(1,V);
+End;
+
+Procedure PerlOct(NumberText:String;Var V:TPerlValue);
+Var I,NumberBase,Digit:Integer;N:LongInt;
+Begin
+ NumberText:=StrToUpper(CleanText(NumberText));I:=1;NumberBase:=8;N:=0;
+ If Copy(NumberText,1,2)='0X'Then Begin NumberBase:=16;I:=3;End
+ Else If Copy(NumberText,1,2)='0B'Then Begin NumberBase:=2;I:=3;End
+ Else If(Length(NumberText)>0)and(NumberText[1]='0')Then I:=2;
+ While I<=Length(NumberText)Do Begin
+  If NumberText[I]='_'Then Begin Inc(I);Continue;End;
+  If NumberText[I]in['0'..'9']Then Digit:=Ord(NumberText[I])-Ord('0')
+  Else If NumberText[I]in['A'..'F']Then Digit:=Ord(NumberText[I])-Ord('A')+10
+  Else Break;
+  If Digit>=NumberBase Then Break;N:=N*NumberBase+Digit;Inc(I);
+ End;
+ PerlNumber(N,V);
+End;
+
+Procedure PerlOrd(SourceText:String;Var V:TPerlValue);
+Begin If SourceText=''Then PerlNumber(0,V)Else PerlNumber(Ord(SourceText[1]),V);End;
 
 Procedure PerlCrypt(PlainText,Salt:String;Var V:TPerlValue);
 Const CryptAlphabet='./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
@@ -850,6 +921,8 @@ Begin
   RegisterPerlHandle(HandleName,True);
  Handle:=FindPerlHandle(HandleName);
  If(Handle<>Nil)and Handle^.IsOpen Then Begin
+  If Handle^.HasFile Then Begin {$I-}Close(Handle^.DataFile);{$I+}
+   Handle^.HasFile:=False;End;
   Handle^.IsOpen:=False;PerlNumber(1,V);
  End Else PerlText('',V);
 End;
@@ -863,11 +936,13 @@ Procedure PerlEof(HandleName:String;ArgumentCount:Integer;Var V:TPerlValue);
 Var Handle:PPerlHandle;AtEnd:Boolean;
 Begin
  AtEnd:=False;HandleName:=StrToUpper(CleanText(HandleName));
- If ArgumentCount=0Then AtEnd:=Eof(FileC)
+ If ArgumentCount=0Then AtEnd:=True
  Else If HandleName='STDIN'Then AtEnd:=Eof(Input)
  Else Begin
   Handle:=FindPerlHandle(HandleName);
-  AtEnd:=(Handle=Nil)or Not Handle^.IsOpen;
+  If(Handle=Nil)or Not Handle^.IsOpen Then AtEnd:=True
+  Else If Handle^.HasFile Then AtEnd:=FilePos(Handle^.DataFile)>=FileSize(Handle^.DataFile)
+  Else AtEnd:=True;
  End;
  If AtEnd Then PerlNumber(1,V)Else PerlText('',V);
 End;
@@ -1031,6 +1106,10 @@ Begin
     77:PerlLog(A.Number,V);                                { log }
     78:PerlLStat(A.Text,V);                                { lstat }
     79:PerlMap(ArgumentText,B.Text,C.Text,FunctionArgumentCount,V); { map }
+    82:PerlOct(A.Text,V);                                  { oct }
+    83:PerlOpen(A.Text,B.Text,C.Text,FunctionArgumentCount,V); { open }
+    84:PerlOpenDir(A.Text,B.Text,V);                       { opendir }
+    85:PerlOrd(A.Text,V);                                  { ord }
     125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
    Else If FunctionByte=-1Then PerlInvokeSubroutine(Name,A,B,C,
@@ -2452,10 +2531,10 @@ Begin
    79:BareFunctionCommand('map');{map}
    80:MkDirCommand;{mkdir}
    81:MyCommand;{my}
-   82:NoImplementation:=True;{oct}
-   83:NoImplementation:=True;{open}
-   84:NoImplementation:=True;{opendir}
-   85:NoImplementation:=True;{ord}
+   82:BareFunctionCommand('oct');{oct}
+   83:BareFunctionCommand('open');{open}
+   84:BareFunctionCommand('opendir');{opendir}
+   85:BareFunctionCommand('ord');{ord}
    86:NoImplementation:=True;{pack}
    87:NoImplementation:=True;{package}
    88:NoImplementation:=True;{pipe}
