@@ -44,6 +44,7 @@ Const
 
 Type
  StrPointer=^String;
+ PPerlPipe=^TPerlPipe;
  TPerlValue=Record
   Text:String;
   Number:Real;
@@ -65,6 +66,8 @@ Type
   PathName:String;
   DataFile:File;
   HasFile:Boolean;
+  Pipe:PPerlPipe;
+  PipeReadEnd:Boolean;
   Next:PPerlHandle;
  End;
  PPerlCallFrame=^TPerlCallFrame;
@@ -117,6 +120,7 @@ Type
  PPerlSubroutine=^TPerlSubroutine;
  TPerlSubroutine=Record
   Name:String[63];
+  PackageName:String[63];
   HeaderLine,EndLine:Integer;
   Next:PPerlSubroutine;
  End;
@@ -133,6 +137,19 @@ Type
   Existed:Boolean;
   ScopeDepth:Integer;
   Next:PPerlLocalBinding;
+ End;
+ TPerlPipe=Record
+  Buffer:String;
+  ReadPosition:Integer;
+  ReadOpen,WriteOpen:Boolean;
+  Next:PPerlPipe;
+ End;
+ PPerlPosition=^TPerlPosition;
+ TPerlPosition=Record
+  VariableName:String[63];
+  Position:Integer;
+  IsDefined:Boolean;
+  Next:PPerlPosition;
  End;
 
 Var
@@ -162,6 +179,9 @@ Var
  PerlModuleExecutionDepth:Integer;
  PerlLocalBindings:PPerlLocalBinding;
  PerlScopeDepth:Integer;
+ PerlPipes:PPerlPipe;
+ PerlPositions:PPerlPosition;
+ CurrentPerlPackage:String[63];
  ExprSource:String;
  ExprPosition:Integer;
 
@@ -178,6 +198,7 @@ Procedure RegisterPerlSubroutines;Forward;
 Procedure GetPerlArrayElement(ArrayName:String;ElementIndex:Integer;
  Var V:TPerlValue);Forward;
 Function GetPerlArrayCount(ArrayName:String):Integer;Forward;
+Function PerlArrayElementName(ArrayName:String;ElementIndex:Integer):String;Forward;
 
 Function PerlCommandIndex(Name:String):Integer;
 Var J:Integer;
@@ -229,7 +250,8 @@ Begin
  Handle:=FindPerlHandle(Name);
  If Handle=Nil Then Begin
   New(Handle);Handle^.Name:=Name;Handle^.BinaryMode:=False;Handle^.LockMode:=0;
-  Handle^.PathName:='';Handle^.HasFile:=False;
+  Handle^.PathName:='';Handle^.HasFile:=False;Handle^.Pipe:=Nil;
+  Handle^.PipeReadEnd:=False;
   If Name='STDIN'Then Handle^.Descriptor:=0
   Else If Name='STDOUT'Then Handle^.Descriptor:=1
   Else If Name='STDERR'Then Handle^.Descriptor:=2
@@ -279,7 +301,11 @@ Begin
   Ch:=ReadKey;PerlText(Ch,V);
  End Else Begin
   Handle:=FindPerlHandle(HandleName);
-  If(Handle=Nil)or Not Handle^.IsOpen or Not Handle^.HasFile Then PerlText('',V)
+  If(Handle<>Nil)and Handle^.IsOpen and(Handle^.Pipe<>Nil)and Handle^.PipeReadEnd Then Begin
+   If Handle^.Pipe^.ReadPosition<=Length(Handle^.Pipe^.Buffer)Then Begin
+    Ch:=Handle^.Pipe^.Buffer[Handle^.Pipe^.ReadPosition];Inc(Handle^.Pipe^.ReadPosition);
+    PerlText(Ch,V);End Else PerlText('',V);
+  End Else If(Handle=Nil)or Not Handle^.IsOpen or Not Handle^.HasFile Then PerlText('',V)
   Else Begin {$I-}BlockRead(Handle^.DataFile,ByteValue,1,BytesRead);{$I+}
    If(IoResult=0)and(BytesRead=1)Then Begin Ch:=Chr(ByteValue);PerlText(Ch,V);End
    Else PerlText('',V);End;
@@ -684,6 +710,101 @@ End;
 Procedure PerlOrd(SourceText:String;Var V:TPerlValue);
 Begin If SourceText=''Then PerlNumber(0,V)Else PerlNumber(Ord(SourceText[1]),V);End;
 
+Procedure PerlPack(TemplateText:String;Var FirstValue,SecondValue:TPerlValue;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var I,J,RepeatCount,ValueIndex,Digit:Integer;Directive:Char;N:LongInt;
+ ResultText,SourceText:String;
+ Procedure AddByte(ByteValue:LongInt);
+ Begin ResultText:=ResultText+Chr(ByteValue mod 256);End;
+ Procedure SelectValue(Index:Integer;Var Selected:TPerlValue);
+ Begin If Index=0Then Selected:=FirstValue Else Selected:=SecondValue;End;
+Var Selected:TPerlValue;
+Begin
+ ResultText:='';I:=1;ValueIndex:=0;
+ While I<=Length(TemplateText)Do Begin
+  Directive:=TemplateText[I];Inc(I);RepeatCount:=0;
+  If(I<=Length(TemplateText))and(TemplateText[I]='*')Then Begin RepeatCount:=-1;Inc(I);End
+  Else Begin While(I<=Length(TemplateText))and(TemplateText[I]in['0'..'9'])Do Begin
+   RepeatCount:=RepeatCount*10+Ord(TemplateText[I])-Ord('0');Inc(I);End;
+   If RepeatCount=0Then RepeatCount:=1;
+  End;
+  SelectValue(ValueIndex,Selected);If ValueIndex<1 Then Inc(ValueIndex);
+  If Directive in['a','A','Z']Then Begin
+   SourceText:=Selected.Text;If RepeatCount<0Then RepeatCount:=Length(SourceText);
+   If(Directive='Z')and(RepeatCount>0)Then Begin
+    SourceText:=Copy(SourceText,1,RepeatCount-1)+#0;End;
+   If Length(SourceText)>RepeatCount Then SourceText:=Copy(SourceText,1,RepeatCount);
+   While Length(SourceText)<RepeatCount Do If Directive='A'Then SourceText:=SourceText+' '
+    Else SourceText:=SourceText+#0;ResultText:=ResultText+SourceText;
+  End Else If Directive in['H','h']Then Begin
+   SourceText:=StrToUpper(Selected.Text);If RepeatCount<0Then RepeatCount:=Length(SourceText);
+   J:=1;While J<=RepeatCount Do Begin
+    If J<=Length(SourceText)Then Begin If SourceText[J]in['0'..'9']Then
+     N:=Ord(SourceText[J])-Ord('0')Else N:=Ord(SourceText[J])-Ord('A')+10;End Else N:=0;
+    Digit:=N;Inc(J);
+    If J<=Length(SourceText)Then Begin If SourceText[J]in['0'..'9']Then
+     N:=Ord(SourceText[J])-Ord('0')Else N:=Ord(SourceText[J])-Ord('A')+10;End Else N:=0;
+    If Directive='H'Then AddByte(Digit*16+N)Else AddByte(N*16+Digit);Inc(J);
+   End;
+  End Else For J:=1To RepeatCount Do Begin
+   N:=Trunc(Selected.Number);
+   Case Directive of
+    'c','C':AddByte(N);
+    's','S','v':Begin AddByte(N);AddByte(N div 256);End;
+    'n':Begin AddByte(N div 256);AddByte(N);End;
+    'l','L','V':Begin AddByte(N);AddByte(N div 256);AddByte(N div 65536);AddByte(N div 16777216);End;
+    'N':Begin AddByte(N div 16777216);AddByte(N div 65536);AddByte(N div 256);AddByte(N);End;
+   End;
+   If(J<RepeatCount)and(ValueIndex<2)Then Begin
+    SelectValue(ValueIndex,Selected);Inc(ValueIndex);
+   End;
+  End;
+ End;
+ PerlText(ResultText,V);
+End;
+
+Procedure PackageCommand;
+Var Name:String;
+Begin
+ Name:=CleanText(Copy(CurrLine,CurrPos,255));If Name=''Then Name:='main';
+ CurrentPerlPackage:=Name;CurrPos:=Length(CurrLine)+1;
+End;
+
+Procedure PerlPipe(ReadHandleName,WriteHandleName:String;Var V:TPerlValue);
+Var PipeState:PPerlPipe;ReadHandle,WriteHandle:PPerlHandle;
+Begin
+ ReadHandleName:=StrToUpper(CleanText(ReadHandleName));
+ WriteHandleName:=StrToUpper(CleanText(WriteHandleName));
+ New(PipeState);PipeState^.Buffer:='';PipeState^.ReadPosition:=1;
+ PipeState^.ReadOpen:=True;PipeState^.WriteOpen:=True;
+ PipeState^.Next:=PerlPipes;PerlPipes:=PipeState;
+ RegisterPerlHandle(ReadHandleName,True);RegisterPerlHandle(WriteHandleName,True);
+ ReadHandle:=FindPerlHandle(ReadHandleName);WriteHandle:=FindPerlHandle(WriteHandleName);
+ ReadHandle^.Pipe:=PipeState;ReadHandle^.PipeReadEnd:=True;
+ WriteHandle^.Pipe:=PipeState;WriteHandle^.PipeReadEnd:=False;PerlNumber(1,V);
+End;
+
+Procedure PerlPop(ArrayReference:String;Var V:TPerlValue);
+Var ArrayName,ElementName:String;Count:Integer;
+Begin
+ ArrayName:=ArrayReference;If(Length(ArrayName)>0)and(ArrayName[1]='@')Then Delete(ArrayName,1,1);
+ Count:=GetPerlArrayCount(ArrayName);If Count=0Then Begin PerlText('',V);Exit;End;
+ GetPerlArrayElement(ArrayName,Count-1,V);ElementName:=PerlArrayElementName(ArrayName,Count-1);
+ DeletePerlVariable(ElementName);SetPerlVariable('@'+ArrayName+'.COUNT',PerlNumberText(Count-1));
+End;
+
+Procedure PerlPos(VariableName:String;Var V:TPerlValue);
+Var PositionState:PPerlPosition;
+Begin
+ PositionState:=PerlPositions;
+ While PositionState<>Nil Do Begin
+  If PositionState^.VariableName=VariableName Then Begin
+   If PositionState^.IsDefined Then PerlNumber(PositionState^.Position,V)Else PerlText('',V);Exit;End;
+  PositionState:=PositionState^.Next;
+ End;
+ PerlText('',V);
+End;
+
 Procedure PerlCrypt(PlainText,Salt:String;Var V:TPerlValue);
 Const CryptAlphabet='./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 Var I,J:Integer;H1,H2:LongInt;ResultText,Alphabet:String;
@@ -923,6 +1044,8 @@ Begin
  If(Handle<>Nil)and Handle^.IsOpen Then Begin
   If Handle^.HasFile Then Begin {$I-}Close(Handle^.DataFile);{$I+}
    Handle^.HasFile:=False;End;
+  If Handle^.Pipe<>Nil Then Begin If Handle^.PipeReadEnd Then Handle^.Pipe^.ReadOpen:=False
+   Else Handle^.Pipe^.WriteOpen:=False;End;
   Handle^.IsOpen:=False;PerlNumber(1,V);
  End Else PerlText('',V);
 End;
@@ -941,6 +1064,7 @@ Begin
  Else Begin
   Handle:=FindPerlHandle(HandleName);
   If(Handle=Nil)or Not Handle^.IsOpen Then AtEnd:=True
+  Else If Handle^.Pipe<>Nil Then AtEnd:=Handle^.Pipe^.ReadPosition>Length(Handle^.Pipe^.Buffer)
   Else If Handle^.HasFile Then AtEnd:=FilePos(Handle^.DataFile)>=FileSize(Handle^.DataFile)
   Else AtEnd:=True;
  End;
@@ -1110,6 +1234,10 @@ Begin
     83:PerlOpen(A.Text,B.Text,C.Text,FunctionArgumentCount,V); { open }
     84:PerlOpenDir(A.Text,B.Text,V);                       { opendir }
     85:PerlOrd(A.Text,V);                                  { ord }
+    86:PerlPack(A.Text,B,C,FunctionArgumentCount,V);        { pack }
+    88:PerlPipe(A.Text,B.Text,V);                           { pipe }
+    89:PerlPop(A.Text,V);                                  { pop }
+    90:PerlPos(ArgumentVariable,V);                        { pos }
     125:PerlNumber(Sqrt(A.Number),V);                      { sqrt }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
    Else If FunctionByte=-1Then PerlInvokeSubroutine(Name,A,B,C,
@@ -1924,7 +2052,6 @@ Var P,J,K:Integer;Name,RightSide,OperatorText,HashKeyText:String;
 Begin
  ExecutePerlCoreLine:=True;S:=CleanText(S);
  If(S='')or(S[1]='#')or(Copy(S,1,2)='#!')Then Exit;
- If Copy(StrToUpper(S),1,8)='PACKAGE 'Then Exit;
  If(S[1]in['0'..'9'])and(Pos('=',S)=0)Then Exit;
  If Copy(StrToUpper(S),1,6)='PRINT 'Then Begin PrintPerlExpressions(Copy(S,7,255));Exit;End;
  If Copy(StrToUpper(S),1,3)='MY 'Then S:=CleanText(Copy(S,4,255));
@@ -2111,17 +2238,21 @@ Begin
 End;
 
 Procedure RegisterPerlSubroutines;
-Var LineIndex,J:Integer;S,Name:String;Subroutine:PPerlSubroutine;
+Var LineIndex,J:Integer;S,Name,PackageName:String;Subroutine:PPerlSubroutine;
 Begin
+ PackageName:='main';
  For LineIndex:=1To NumberLine Do Begin
   S:=CleanText(PA[LineIndex]^);
-  If Copy(StrToUpper(S),1,4)='SUB 'Then Begin
+  If Copy(StrToUpper(S),1,8)='PACKAGE 'Then Begin
+   PackageName:=CleanText(Copy(S,9,255));If PackageName=''Then PackageName:='main';
+  End Else If Copy(StrToUpper(S),1,4)='SUB 'Then Begin
    J:=5;While(J<=Length(S))and(S[J]in[' ',#9])Do Inc(J);Name:='';
    While(J<=Length(S))and(S[J]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
     Name:=Name+S[J];Inc(J);
    End;
    If(Name<>'')and(FindPerlSubroutine(Name)=Nil)Then Begin
-    New(Subroutine);Subroutine^.Name:=StrToUpper(Name);Subroutine^.HeaderLine:=LineIndex;
+    New(Subroutine);Subroutine^.Name:=StrToUpper(Name);Subroutine^.PackageName:=PackageName;
+    Subroutine^.HeaderLine:=LineIndex;
     Subroutine^.EndLine:=PerlBlockEnd(LineIndex,False);
     Subroutine^.Next:=PerlSubroutines;PerlSubroutines:=Subroutine;
    End;
@@ -2148,7 +2279,7 @@ Begin
  SavedSource:=ExprSource;SavedExprPosition:=ExprPosition;
  SavedReturning:=PerlReturning;SavedReturnValue:=PerlReturnValue;
  PerlReturning:=False;PerlText('',PerlReturnValue);
- PushPerlCallFrame(Name,'main',FileName,CurrNumberLine,ArgumentCount>0);
+ PushPerlCallFrame(Name,Subroutine^.PackageName,FileName,CurrNumberLine,ArgumentCount>0);
  ExecutePerlBlock(Subroutine^.HeaderLine+1,Subroutine^.EndLine-1);
  V:=PerlReturnValue;PopPerlCallFrame;
  ClearPerlArray('_');For I:=0To SavedCount-1Do Begin
@@ -2535,11 +2666,11 @@ Begin
    83:BareFunctionCommand('open');{open}
    84:BareFunctionCommand('opendir');{opendir}
    85:BareFunctionCommand('ord');{ord}
-   86:NoImplementation:=True;{pack}
-   87:NoImplementation:=True;{package}
-   88:NoImplementation:=True;{pipe}
-   89:NoImplementation:=True;{pop}
-   90:NoImplementation:=True;{pos}
+   86:BareFunctionCommand('pack');{pack}
+   87:PackageCommand;{package}
+   88:BareFunctionCommand('pipe');{pipe}
+   89:BareFunctionCommand('pop');{pop}
+   90:BareFunctionCommand('pos');{pos}
    91:PrintCommand;{print}
    92:PrintfCommand;{printf}
    93:NoImplementation:=True;{push}
