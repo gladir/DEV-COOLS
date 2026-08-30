@@ -49722,6 +49722,7 @@ Var
  Node: PTermLine;
  SkipBack: LongInt;
  TextLines: LongInt;
+ MaxScrollOffset: LongInt;
 Begin
  If Not TermVisible Then Exit;
  PX := TermX;
@@ -49785,12 +49786,24 @@ Begin
   If VisLines < 1 Then VisLines := 1;
   MaxCols := (TextRight - (PX + 4)) Div TERM_CHAR_WIDTH;
   If MaxCols < 10 Then MaxCols := 10;
-  { Borner le decalage de defilement }
+  { Borner le decalage de defilement. BOGUE REEL trouve (2026-08-30,          }
+  { signale par l utilisateur : "la barre defonce" en cliquant sur la        }
+  { fleche du haut) : la borne max utilisait HistCount-1 (index du plus      }
+  { ancien noeud), mais la formule de position du curseur juste plus bas     }
+  { (ThumbY) divise par (HistCount-VisLines) - le VRAI maximum utile une      }
+  { fois que les VisLines lignes les plus anciennes sont deja affichees.     }
+  { Laisser ScrollOffset depasser HistCount-VisLines rendait le terme         }
+  { soustrait de ThumbY plus grand que (TrackH-ThumbH), faisant sortir le     }
+  { curseur du haut de la piste (voire par-dessus le bouton fleche) - d ou    }
+  { l aspect "casse". Corrige en bornant ici a la MEME valeur que le          }
+  { denominateur du calcul de ThumbY. }
   If TP.HistCount = 0 Then TP.ScrollOffset := 0
   Else Begin
+   MaxScrollOffset := TP.HistCount - VisLines;
+   If MaxScrollOffset < 0 Then MaxScrollOffset := 0;
    If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
-   If TP.ScrollOffset > TP.HistCount - 1 Then
-    TP.ScrollOffset := TP.HistCount - 1;
+   If TP.ScrollOffset > MaxScrollOffset Then
+    TP.ScrollOffset := MaxScrollOffset;
   End;
   { Trouver le noeud le plus en haut de la fenetre visible.
     Depuis le tail, reculer de (ScrollOffset + VisLines - 1) noeuds. }
@@ -50072,6 +50085,7 @@ Var
  FKBarCW, FKBarY, FKBarColW, FKBarSlot: Integer;
  FakeEv: TEvent;
  DDLeft, DDRight, DDTop, DDBottom, TopHit, ItemHit: Integer;
+ EvVisLines, EvMaxScroll: Integer;
 Begin
  If Not TermVisible Then Exit;
  { Position du SelectBox }
@@ -50300,10 +50314,19 @@ Begin
    If (Ev.MouseX >= TermX + TermWidth - TERM_SCROLLBAR_WIDTH - 1)
     And (Ev.MouseX < TermX + TermWidth - 1)
     And (Ev.MouseY >= TermY + TERM_TAB_HEIGHT) Then Begin
+    { Maximum REEL de defilement : meme formule que le clamp de           }
+    { DrawTerminalPanel (HistCount-VisLines, pas HistCount-1 - voir le     }
+    { commentaire "BOGUE REEL" la-bas pour le detail du bogue de curseur   }
+    { de barre de defilement que cet ecart de bornes causait). }
+    EvVisLines := (TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+     Div TERM_LINE_HEIGHT;
+    If EvVisLines < 1 Then EvVisLines := 1;
+    EvMaxScroll := TP.HistCount - EvVisLines;
+    If EvMaxScroll < 0 Then EvMaxScroll := 0;
     { Bouton fleche haut : remonter d une ligne }
     If Ev.MouseY < TermY + TERM_TAB_HEIGHT
      + TERM_SCROLL_BTN_H Then Begin
-     If TP.ScrollOffset < TP.HistCount - 1 Then Begin
+     If TP.ScrollOffset < EvMaxScroll Then Begin
       Inc(TP.ScrollOffset);
       TP.NeedRepaint := True;
       FullRepaintNeeded := True;
@@ -50328,8 +50351,8 @@ Begin
      TP.ScrollOffset := TP.ScrollOffset +
       ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
        Div TERM_LINE_HEIGHT);
-     If TP.ScrollOffset > TP.HistCount - 1 Then
-      TP.ScrollOffset := TP.HistCount - 1;
+     If TP.ScrollOffset > EvMaxScroll Then
+      TP.ScrollOffset := EvMaxScroll;
     End Else Begin
      TP.ScrollOffset := TP.ScrollOffset -
       ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
@@ -50501,11 +50524,16 @@ Begin
   End;
   { PageUp / PageDown : defilement de la fenetre d historique }
   If Ev.KeyCode = $49 Then Begin { PgUp }
+   EvVisLines := (TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
+    Div TERM_LINE_HEIGHT;
+   If EvVisLines < 1 Then EvVisLines := 1;
+   EvMaxScroll := TP.HistCount - EvVisLines;
+   If EvMaxScroll < 0 Then EvMaxScroll := 0;
    TP.ScrollOffset := TP.ScrollOffset +
     ((TermHeight - TERM_TAB_HEIGHT - TERM_LINE_HEIGHT - 4)
      Div TERM_LINE_HEIGHT);
-   If TP.ScrollOffset > TP.HistCount - 1 Then
-    TP.ScrollOffset := TP.HistCount - 1;
+   If TP.ScrollOffset > EvMaxScroll Then
+    TP.ScrollOffset := EvMaxScroll;
    If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
    TP.NeedRepaint := True;
    FullRepaintNeeded := True;
