@@ -1,8 +1,10 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2026
+  @website(https://www.gladir.com/dev-cools)
   @abstract(Interpreteur autonome PascalScript console)
   @target(Free Pascal 3.2 et Turbo Pascal 7)
 }
+
 Program PSCRIPT;
 
 {$M 16384,0,655360}
@@ -553,7 +555,9 @@ Begin
   GetV(H^.Name,V);
   If H^.ByRef and(H^.Actual<>'')Then SetV(H^.Actual,V);
   If H^.Had Then SetV(H^.Name,H^.Old)
-            Else DelV(H^.Name);Dispose(H);H:=P;
+            Else DelV(H^.Name);
+  Dispose(H);
+  H:=P;
  End;
 End;
 
@@ -939,7 +943,24 @@ Var
  I:Integer;
 
 BEGIN
- FirstLine:=Nil;LastLine:=Nil;Vars:=Nil;LineCount:=0;ArgCount:=0;StopRoutine:=False;RuntimeError:=False;ExitCode:=0;
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('PSCRIPT : Cette commande permet de lancer l''interpreteur ',
+                     'de PascalScript.');
+  WriteLn;
+  WriteLn('Syntaxe : PSCRIPT script.psc [arguments]');
+  WriteLn;
+  WriteLn(' script.psc  Ce paramätre permet d''indiquer le fichier PascalScript');
+  Halt;
+ End;
+ FirstLine:=Nil;
+ LastLine:=Nil;
+ Vars:=Nil;
+ LineCount:=0;
+ ArgCount:=0;
+ StopRoutine:=False;
+ RuntimeError:=False;
+ ExitCode:=0;
  If ParamCount<1Then Begin
   Usage;
   Halt(1);
