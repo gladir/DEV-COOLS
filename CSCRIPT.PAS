@@ -68,7 +68,7 @@ Var
  StartHour,StartMinute,StartSecond,StartHundredth:Word;
  ExprText:String;
  ExprPos:Integer;
- Terminated:Boolean;
+ Terminated,ExitDoRequested,ExitForRequested,ExitSubRequested:Boolean;
  ExitCode:Integer;
  ArrayCounter:LongInt;
 
@@ -466,6 +466,36 @@ Begin
  End;
 End;
 
+Procedure RemoveVariablesWithPrefix(Prefix:String);
+Var P,Previous,NextVariable:PVariable;
+Begin
+ Prefix:=Upper(Prefix);P:=Variables;Previous:=Nil;
+ While P<>Nil Do Begin
+  NextVariable:=P^.Next;
+  If Copy(P^.Name,1,Length(Prefix))=Prefix Then Begin
+   If Previous=Nil Then Variables:=NextVariable Else Previous^.Next:=NextVariable;
+   Dispose(P);
+  End Else Previous:=P;
+  P:=NextVariable;
+ End;
+End;
+
+Procedure EraseVariable(Name:String);
+Var VariableEntry:PVariable;Reference,CountText,DynamicText:String;Stored:TValue;
+Begin
+ Name:=Trim(Name);VariableEntry:=FindVariable(Name);
+ If VariableEntry=Nil Then Exit;
+ If VariableEntry^.ValueKind=ValueArray Then Begin
+  Reference:=VariableEntry^.Value;GetVariable(Reference+'.COUNT',Stored);CountText:=Stored.Text;
+  GetVariable(Reference+'.DYNAMIC',Stored);DynamicText:=Stored.Text;
+  RemoveVariablesWithPrefix(Reference+'.');
+  If DynamicText<>'1'Then Begin
+   SetVariable(Reference+'.COUNT',CountText);SetVariable(Reference+'.DYNAMIC','0');Exit;
+  End;
+ End;
+ RemoveVariable(Name);
+End;
+
 Procedure UBoundValue(A,B:TValue;ArgumentCount:Integer;Var V:TValue);
 Var CountValue:TValue;
 Begin
@@ -858,21 +888,40 @@ Begin
  End;FindBlock:=LineCount;
 End;
 
+Function FindElseLine(StartLine,EndLine:LongInt):LongInt;
+Var I:LongInt;Depth:Integer;S:String;
+Begin
+ Depth:=0;FindElseLine:=0;
+ For I:=StartLine+1To EndLine-1Do Begin
+  S:=Upper(Trim(ScriptLineText(I)));
+  If StartsWith(S,'IF ')and(Pos(' THEN',S)>0)and
+    (Trim(Copy(S,Pos(' THEN',S)+5,255))='')Then Inc(Depth)
+  Else If S='END IF'Then Begin If Depth>0Then Dec(Depth);End
+  Else If(Depth=0)and((S='ELSE')or StartsWith(S,'ELSEIF '))Then Begin
+   FindElseLine:=I;Exit;
+  End;
+ End;
+End;
+
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);Forward;
 Procedure CallSub(CallText:String);Forward;
 Function ListItem(Var Source:String):String;Forward;
 
 Procedure DeclareVariable(Declaration:String);
 Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound:TValue;ArrayValue:TValue;
+ IsDynamic:Boolean;
 Begin
  Declaration:=Trim(Declaration);P:=Pos('(',Declaration);
  If P=0Then Begin SetVariable(Declaration,'');Exit;End;
  Name:=Trim(Copy(Declaration,1,P-1));Bounds:=Copy(Declaration,P+1,255);
  If(Length(Bounds)>0)and(Bounds[Length(Bounds)]=')')Then Delete(Bounds,Length(Bounds),1);
  Inc(ArrayCounter);Str(ArrayCounter,NumberText);Reference:='@VBARRAY'+Trim(NumberText);
- If Trim(Bounds)=''Then MakeNumber(0,UpperBound)Else Evaluate(Bounds,UpperBound);
+ IsDynamic:=Trim(Bounds)='';
+ If IsDynamic Then MakeNumber(0,UpperBound)Else Evaluate(Bounds,UpperBound);
  If UpperBound.Number<0Then MakeNumber(0,UpperBound);
- Str(Trunc(UpperBound.Number)+1,NumberText);SetVariable(Reference+'.COUNT',Trim(NumberText));
+ If IsDynamic Then NumberText:='0'Else Str(Trunc(UpperBound.Number)+1,NumberText);
+ SetVariable(Reference+'.COUNT',Trim(NumberText));
+ If IsDynamic Then SetVariable(Reference+'.DYNAMIC','1')Else SetVariable(Reference+'.DYNAMIC','0');
  MakeText(Reference,ArrayValue);ArrayValue.ValueKind:=ValueArray;SetVariableValue(Name,ArrayValue);
 End;
 
@@ -883,6 +932,11 @@ Begin
  S:=Trim(S);If(S='')or(S[1]='''')or StartsWith(S,'REM ')Then Exit;U:=Upper(S);
  If StartsWith(S,'DIM ')Then Begin
   Delete(S,1,4);Repeat Name:=ListItem(S);DeclareVariable(Name);Until S='';Exit;End;
+ If StartsWith(S,'ERASE ')Then Begin
+  Delete(S,1,6);Repeat Name:=ListItem(S);EraseVariable(Name);Until S='';Exit;End;
+ If U='EXIT DO'Then Begin ExitDoRequested:=True;Exit;End;
+ If U='EXIT FOR'Then Begin ExitForRequested:=True;Exit;End;
+ If U='EXIT SUB'Then Begin ExitSubRequested:=True;Exit;End;
  If StartsWith(S,'CALL ')Then Begin CallSub(Trim(Copy(S,6,255)));Exit;End;
  If StartsWith(S,'WScript.Echo')Then Delete(S,1,Length('WScript.Echo'))
  Else If StartsWith(S,'Echo ')Then Delete(S,1,5)
@@ -934,13 +988,15 @@ End;
 
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);
 Var S,U,Condition,Name,Rest:String;P,ThenPos,ElsePos:Integer;
- EndLine,BodyStart,I,ScanLine,ElseLine,ElementIndex,ElementCount:LongInt;
+ EndLine,BodyStart,I,ElseLine,ElementIndex,ElementCount:LongInt;
  V,StartValue,EndValue,StepValue,Counter,Collection,CountValue:TValue;
  LoopAgain,UntilMode:Boolean;IndexText:String;
 Begin
  I:=FirstLine;
- While(I<=LastLine)and Not Terminated Do Begin
+ While(I<=LastLine)and Not Terminated and Not ExitDoRequested and
+   Not ExitForRequested and Not ExitSubRequested Do Begin
   CheckTimeout;If Terminated Then Exit;CurrentLine:=I;S:=Trim(ScriptLineText(I));U:=Upper(S);
+  If StartsWith(S,'ELSEIF ')Then Begin S:='IF '+Trim(Copy(S,8,255));U:=Upper(S);End;
   If StartsWith(S,'SUB ')or StartsWith(S,'PUBLIC SUB ')or
     StartsWith(S,'PRIVATE SUB ')Then Begin
    While(I<=LastLine)and(Upper(Trim(ScriptLineText(I)))<>'END SUB')Do Inc(I);
@@ -952,10 +1008,13 @@ Begin
     If Rest<>''Then Begin ElsePos:=Pos(' ELSE ',Upper(Rest));
      If Truth(V)Then Begin If ElsePos>0Then ExecuteStatement(Copy(Rest,1,ElsePos-1))Else ExecuteStatement(Rest);End
      Else If ElsePos>0Then ExecuteStatement(Copy(Rest,ElsePos+6,255));
-    End Else Begin EndLine:=FindBlock(I,'IF ','END IF');BodyStart:=I+1;ElseLine:=0;
-     For ScanLine:=I+1To EndLine-1Do If Upper(Trim(ScriptLineText(ScanLine)))='ELSE'Then Begin ElseLine:=ScanLine;Break;End;
+    End Else Begin EndLine:=FindBlock(I,'IF ','END IF');BodyStart:=I+1;
+     ElseLine:=FindElseLine(I,EndLine);
      If Truth(V)Then Begin If ElseLine=0Then ExecuteRange(BodyStart,EndLine-1)Else ExecuteRange(BodyStart,ElseLine-1);End
-     Else If ElseLine>0Then ExecuteRange(ElseLine+1,EndLine-1);I:=EndLine;
+     Else If ElseLine>0Then Begin
+      If StartsWith(Trim(ScriptLineText(ElseLine)),'ELSEIF ')Then ExecuteRange(ElseLine,EndLine-1)
+      Else ExecuteRange(ElseLine+1,EndLine-1);
+     End;I:=EndLine;
     End;
    End;
   End Else If StartsWith(S,'FOR EACH ')Then Begin
@@ -969,7 +1028,8 @@ Begin
    For ElementIndex:=0To ElementCount-1Do Begin
     Str(ElementIndex,IndexText);GetVariable(Collection.Text+'.'+Trim(IndexText),V);
     SetVariableValue(Name,V);ExecuteRange(I+1,EndLine-1);
-    If Terminated Then Break;
+    If ExitForRequested Then Begin ExitForRequested:=False;Break;End;
+    If Terminated or ExitSubRequested or ExitDoRequested Then Break;
    End;
    I:=EndLine;
   End Else If StartsWith(S,'FOR ')Then Begin
@@ -987,9 +1047,12 @@ Begin
    EndLine:=FindBlock(I,'FOR ','NEXT');
    Counter:=StartValue;
    While(((StepValue.Number>=0)and(Counter.Number<=EndValue.Number))or((StepValue.Number<0)and
-        (Counter.Number>=EndValue.Number)))and Not Terminated Do Begin
+        (Counter.Number>=EndValue.Number)))and Not Terminated and Not ExitSubRequested and
+        Not ExitDoRequested Do Begin
     SetVariableValue(Name,Counter);
-    ExecuteRange(I+1,EndLine-1);MakeNumber(Counter.Number+StepValue.Number,Counter);
+    ExecuteRange(I+1,EndLine-1);
+    If ExitForRequested Then Begin ExitForRequested:=False;Break;End;
+    MakeNumber(Counter.Number+StepValue.Number,Counter);
    End;
    I:=EndLine;
   End
@@ -1003,19 +1066,21 @@ Begin
     If Condition<>''Then Begin Evaluate(Condition,V);
      If UntilMode Then LoopAgain:=Not Truth(V)Else LoopAgain:=Truth(V);End;
     If LoopAgain Then ExecuteRange(I+1,EndLine-1);
+    If ExitDoRequested Then Begin ExitDoRequested:=False;LoopAgain:=False;End;
     If LoopAgain and Not Terminated and(Condition='')Then Begin
      Rest:=Trim(ScriptLineText(EndLine));
      If StartsWith(Rest,'LOOP WHILE ')Then Begin Evaluate(Trim(Copy(Rest,12,255)),V);LoopAgain:=Truth(V);End
      Else If StartsWith(Rest,'LOOP UNTIL ')Then Begin Evaluate(Trim(Copy(Rest,12,255)),V);LoopAgain:=Not Truth(V);End;
     End;
     CheckTimeout;
-   Until(Not LoopAgain)or Terminated;
+   Until(Not LoopAgain)or Terminated or ExitSubRequested or ExitForRequested;
    I:=EndLine;
   End Else
   If StartsWith(S,'WHILE ')Then Begin
    EndLine:=FindBlock(I,'WHILE ','WEND');
    Condition:=Copy(S,7,255);Evaluate(Condition,V);
-   While Truth(V)and Not Terminated Do Begin
+   While Truth(V)and Not Terminated and Not ExitSubRequested and
+     Not ExitForRequested and Not ExitDoRequested Do Begin
     ExecuteRange(I+1,EndLine-1);
     Evaluate(Condition,V);CheckTimeout;
    End;
@@ -1114,7 +1179,7 @@ Begin
   Else Begin NextBinding^.OldValue:='';NextBinding^.OldKind:=ValueEmpty;End;
   NextBinding^.Next:=Binding;Binding:=NextBinding;SetVariableValue(ParameterName,ArgumentValue);
  End;
- ExecuteRange(StartLine+1,EndLine-1);
+ ExecuteRange(StartLine+1,EndLine-1);ExitSubRequested:=False;
  NextBinding:=Binding;
  While NextBinding<>Nil Do Begin
   If NextBinding^.CopyBack Then Begin GetVariable(NextBinding^.Name,CopyValue);
@@ -1187,7 +1252,8 @@ End;
 
 BEGIN
  Randomize;Variables:=Nil;FirstScriptLine:=Nil;LastScriptLine:=Nil;
- LineCount:=0;ArrayCounter:=0;ScriptArgumentCount:=0;Terminated:=False;ExitCode:=0;
+ LineCount:=0;ArrayCounter:=0;ScriptArgumentCount:=0;Terminated:=False;
+ ExitDoRequested:=False;ExitForRequested:=False;ExitSubRequested:=False;ExitCode:=0;
  ParseOptions;
  If Not Terminated Then Begin
   If Upper(EngineName)<>'VBSCRIPT'Then Begin WriteLn('Moteur de script inconnu: ',EngineName);ExitCode:=1;End
