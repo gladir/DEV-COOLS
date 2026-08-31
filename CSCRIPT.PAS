@@ -10,6 +10,9 @@ Uses Crt,Dos;
 Const
  MaxArguments=128;
  VersionText='5.812';
+ FunctionList:Array[0..14]of String[24]=(
+  'ABS','ASC','CHR','CINT','CLNG','CSTR','INT','LCASE','LEFT','LEN',
+  'RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
 
 Type
  PScriptLine=^TScriptLine;
@@ -48,6 +51,19 @@ Var
 Function Upper(S:String):String;
 Var I:Integer;
 Begin For I:=1To Length(S)Do If S[I]in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);Upper:=S;End;
+
+Function FunctionIndex(Name:String):Byte;
+Var FirstIndex,LastIndex,MiddleIndex:Integer;
+Begin
+ Name:=Upper(Name);FunctionIndex:=255;
+ FirstIndex:=Low(FunctionList);LastIndex:=High(FunctionList);
+ While FirstIndex<=LastIndex Do Begin
+  MiddleIndex:=(FirstIndex+LastIndex)div 2;
+  If Name=FunctionList[MiddleIndex]Then Begin FunctionIndex:=MiddleIndex;Exit;End;
+  If Name<FunctionList[MiddleIndex]Then LastIndex:=MiddleIndex-1
+  Else FirstIndex:=MiddleIndex+1;
+ End;
+End;
 
 Function Trim(S:String):String;
 Begin
@@ -133,7 +149,7 @@ End;
 Procedure ParseExpression(Var V:TValue);Forward;
 
 Procedure ParsePrimary(Var V:TValue);
-Var Q:Char;S,Name,U:String;N:Real;Code,I:Integer;A,B:TValue;
+Var Q:Char;S,Name,U:String;N:Real;Code,I:Integer;FunctionByte:Byte;A,B:TValue;
 Begin
  SkipSpace;If ExprPos>Length(ExprText)Then Begin MakeText('',V);Exit;End;
  If ExprText[ExprPos]in['"','''']Then Begin
@@ -161,26 +177,32 @@ Begin
   Inc(ExprPos);ParseExpression(A);SkipSpace;MakeText('',B);
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);ParseExpression(B);SkipSpace;End;
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);
-  If U='ABS'Then MakeNumber(Abs(A.Number),V)
-  Else If U='ASC'Then Begin If A.Text=''Then MakeNumber(0,V)Else MakeNumber(Ord(A.Text[1]),V);End
-  Else If U='CHR'Then MakeText(Chr(Trunc(A.Number)and 255),V)
-  Else If U='CINT'Then MakeNumber(Round(A.Number),V)
-  Else If(U='CLNG')or(U='INT')Then MakeNumber(Trunc(A.Number),V)
-  Else If U='CSTR'Then MakeText(A.Text,V)
-  Else If U='LCASE'Then Begin
-   S:=A.Text;
-   For I:=1To Length(S)Do If S[I]in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
-   MakeText(S,V);
-  End
-  Else If U='UCASE'Then MakeText(Upper(A.Text),V)
-  Else If U='LEN'Then MakeNumber(Length(A.Text),V)
-  Else If U='LEFT'Then MakeText(Copy(A.Text,1,Trunc(B.Number)),V)
-  Else If U='RIGHT'Then MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V)
-  Else If U='TRIM'Then MakeText(Trim(A.Text),V)
-  Else If U='RND'Then MakeNumber(Random,V)
-  Else If(U='WSCRIPT.ARGUMENTS')and(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
-   MakeText(ScriptArguments[Trunc(A.Number)],V)
-  Else MakeText('',V);
+  FunctionByte:=FunctionIndex(U);
+  Case FunctionByte of
+   0:MakeNumber(Abs(A.Number),V);                         { ABS }
+   1:Begin If A.Text=''Then MakeNumber(0,V)
+      Else MakeNumber(Ord(A.Text[1]),V);End;              { ASC }
+   2:MakeText(Chr(Trunc(A.Number)and 255),V);             { CHR }
+   3:MakeNumber(Round(A.Number),V);                       { CINT }
+   4:MakeNumber(Trunc(A.Number),V);                       { CLNG }
+   5:MakeText(A.Text,V);                                  { CSTR }
+   6:MakeNumber(Trunc(A.Number),V);                       { INT }
+   7:Begin                                                { LCASE }
+      S:=A.Text;
+      For I:=1To Length(S)Do If S[I]in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
+      MakeText(S,V);
+     End;
+   8:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);          { LEFT }
+   9:MakeNumber(Length(A.Text),V);                        { LEN }
+   10:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
+   11:MakeNumber(Random,V);                               { RND }
+   12:MakeText(Trim(A.Text),V);                           { TRIM }
+   13:MakeText(Upper(A.Text),V);                          { UCASE }
+   14:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+       MakeText(ScriptArguments[Trunc(A.Number)],V)
+      Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
+   Else MakeText('',V);
+  End;
   Exit;
  End;
  If U='WSCRIPT.ARGUMENTS.COUNT'Then MakeNumber(ScriptArgumentCount,V)
