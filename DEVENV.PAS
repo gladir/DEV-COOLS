@@ -50777,6 +50777,4644 @@ Begin
  If ArjOutLine <> '' Then ArjFlushLine;
 End;
 
+{ ============================================================ }
+{ === Commande UNZIP (extraction complete d'archives .ZIP) === }
+{ ============================================================ }
+{ Port complet et integral du programme autonome                }
+{ C:\SOURCE\GITHUB\CORAIL\UNZIP.PAS (meme auteur), integre en    }
+{ code natif directement dans DEVENV.PAS - AUCUN executable      }
+{ externe (meme discipline que la commande ARJ ci-dessus,        }
+{ demande explicite de l'utilisateur, 2026-08-31). Tous les       }
+{ identificateurs de portee globale de l'original sont prefixes  }
+{ "Unz" pour eviter toute collision avec les ~113000 autres       }
+{ lignes de ce fichier (verifie : 0 occurrence de "Unz" avant ce  }
+{ chantier). Couvre les methodes ZIP store/shrink/reduce/        }
+{ implode/deflate/deflate64/DCL-implode/BZIP2/LZMA/IBM-TERSE/     }
+{ Zstandard, plus ZipCrypto classique. Disponible dans 4 shells : }
+{ Invite de commande (SK_CMD), PowerShell dev (SK_POWERSHELL),    }
+{ Norton Commander (SK_NCOMMANDER), OS/2 & REXX (SK_OS2REXX).     }
+{                                                                 }
+{ Note sur la gestion d'erreur : l'original utilise Halt(1) pour  }
+{ arreter tout le PROCESSUS sur une archive corrompue/invalide -  }
+{ impossible ici (tuerait tout l'IDE). Remplace par un drapeau    }
+{ global sticky `UnzErr`/`UnzErrMsg` (meme esprit que ArjD_Error  }
+{ dans le port ARJ) : `UnzFail(msg)` pose le drapeau et rapporte  }
+{ le message immediatement ; toutes les boucles de decodage       }
+{ principales testent `Not UnzErr` en plus de leur condition       }
+{ d'origine ; toutes les primitives de lecture d'octet/bit         }
+{ (UnzReadZipByte/UnzReadCompByte et tout ce qui en depend)        }
+{ renvoient 0 sans lire davantage des que le drapeau est pose,     }
+{ ce qui borne mecaniquement toute boucle de decodage restante.    }
+{ Limitation documentee : sur un chemin d'erreur profondement      }
+{ imbrique (BZIP2/Zstandard notamment), les buffers GetMem/New     }
+{ deja alloues pour CETTE tentative peuvent ne pas etre liberes    }
+{ avant le prochain `unzip` (fuite bornee, seulement sur archive   }
+{ corrompue - jamais sur une extraction reussie), car Pascal en    }
+{ mode -Mtp ne fournit ni exceptions ni goto non local entre       }
+{ procedures (verifie empiriquement avant de choisir cette         }
+{ strategie : Raise/Try/Except et Goto inter-procedures echouent   }
+{ tous deux a la compilation sous -Mtp, meme avec SysUtils).       }
+
+Type
+ TUnzHuffman=Record
+  NumSymbols:Integer;
+  Len:Array[0..319]of Byte;
+  Code:Array[0..319]of LongInt;
+ End;
+ PUnzWindowHalf=^TUnzWindowHalf;
+ TUnzWindowHalf=Array[0..32767]of Byte;
+ PUnzShrinkIntArray=^TUnzShrinkIntArray;
+ TUnzShrinkIntArray=Array[0..8191]of Integer;
+ PUnzShrinkByteArray=^TUnzShrinkByteArray;
+ TUnzShrinkByteArray=Array[0..8191]of Byte;
+ PUnzShrinkBoolArray=^TUnzShrinkBoolArray;
+ TUnzShrinkBoolArray=Array[0..8191]of Boolean;
+ PUnzFollowerSizeArray=^TUnzFollowerSizeArray;
+ TUnzFollowerSizeArray=Array[0..255]of Byte;
+ PUnzFollowerArray=^TUnzFollowerArray;
+ TUnzFollowerArray=Array[0..255,0..31]of Byte;
+ PUnzBZTTChunk=^TUnzBZTTChunk;
+ TUnzBZTTChunk=Array[0..15999]of LongInt;
+ PUnzBZByteChunk=^TUnzBZByteChunk;
+ TUnzBZByteChunk=Array[0..15999]of Byte;
+ PUnzLZByteChunk=^TUnzLZByteChunk;
+ TUnzLZByteChunk=Array[0..16383]of Byte;
+ PUnzLZLitContext=^TUnzLZLitContext;
+ TUnzLZLitContext=Array[0..767]of Word;
+ PUnzWordArray=^TUnzWordArray;
+ TUnzWordArray=Array[0..32759]of Word;
+ PUnzTerseIntArray=^TUnzTerseIntArray;
+ TUnzTerseIntArray=Array[0..4096]of Integer;
+ TUnzTerseTreeRecord=Record
+  Left,Right,Back,NextCount:Integer;
+ End;
+ PUnzTerseTreeArray=^TUnzTerseTreeArray;
+ TUnzTerseTreeArray=Array[0..4096]of TUnzTerseTreeRecord;
+ PUnzTerseStackArray=^TUnzTerseStackArray;
+ TUnzTerseStackArray=Array[0..2047]of Integer;
+ PUnzDCLWindow=^TUnzDCLWindow;
+ TUnzDCLWindow=Array[0..4095]of Byte;
+ TUnzDCLHuffman=Record
+  Count:Array[0..13]of Integer;
+  Symbol:Array[0..255]of Integer;
+ End;
+ TUnzFSEEntry=Record
+  Symbol:Byte;
+  Bits:Byte;
+  NewState:Integer;
+ End;
+ TUnzFSETable=Record
+  TableLog:Integer;
+  TableSize:Integer;
+  FastMode:Boolean;
+  Entry:Array[0..4095]of TUnzFSEEntry;
+ End;
+ TUnzHuffEntry=Record
+  Symbol:Byte;
+  Bits:Byte;
+ End;
+ TUnzHuffTable=Record
+  TableLog:Integer;
+  TableSize:Integer;
+  MaxSymbol:Integer;
+  Entry:Array[0..4095]of TUnzHuffEntry;
+  Weight:Array[0..255]of Byte;
+ End;
+ PUnzSeqChunk=^TUnzSeqChunk;
+ TUnzSeqChunk=Array[0..16383]of Byte;
+ PUnzSeqBuffer=^TUnzSeqBuffer;
+ TUnzSeqBuffer=Record
+  Chunks:Array[0..7]of PUnzSeqChunk;
+ End;
+ TUnzRevBitStream=Record
+  Buf:PUnzSeqBuffer;
+  Base,Size,Pos:LongInt;
+  Bits:LongInt;
+  BitCount:Integer;
+ End;
+ TUnzSeqTables=Record
+  LL,OFs,ML:TUnzFSETable;
+  LLMode,OFMode,MLMode:Integer;
+  LLRLE,OFRLE,MLRLE:Byte;
+  LLValid,OFValid,MLValid:Boolean;
+ End;
+ TUnzBZHuffman=Record
+  MinLen,MaxLen:Integer;
+  Len:Array[0..257]of Byte;
+  Code:Array[0..257]of LongInt;
+ End;
+
+Const
+ UNZ_MAXEXCLUDE=20;
+ UNZ_DLEBYTE=144;
+
+Var
+ UnzZipFile:File;
+ UnzOutFile:File;
+ UnzArchiveName:String;
+ UnzDestDir,UnzPassword:String;
+ UnzExcludeList:Array[1..UNZ_MAXEXCLUDE]of String;
+ UnzExcludeCount:Integer;
+ UnzCompLeft,UnzUncompSize,UnzExpectedCRC,UnzOutCRC,UnzOutSize:LongInt;
+ UnzBitBuf,UnzBitCount:Integer;
+ UnzWindowLo,UnzWindowHi:PUnzWindowHalf;
+ UnzWinPos,UnzWindowMask:LongInt;
+ UnzCRC32Table:Array[0..255]of LongInt;
+ UnzListMode,UnzVerboseMode,UnzTestMode,UnzOverwriteMode,UnzNeverOverwrite:Boolean;
+ UnzJunkPaths,UnzQuietMode,UnzVeryQuietMode,UnzAutoText,UnzCaseInsensitive:Boolean;
+ UnzLowerNames,UnzKeepUnicode,UnzFreshenMode,UnzUpdateMode,UnzPipeMode,UnzCatMode:Boolean;
+ UnzShowCommentMode,UnzMoreMode,UnzRestoreAttr,UnzKeepFullPath:Boolean;
+ UnzOutputMode,UnzMoreLines,UnzPrevOutByte:Integer;
+ UnzShrinkPrefix:PUnzShrinkIntArray;
+ UnzShrinkSuffix:PUnzShrinkByteArray;
+ UnzShrinkActive:PUnzShrinkBoolArray;
+ UnzShrinkStack:PUnzShrinkByteArray;
+ UnzReduceSize:PUnzFollowerSizeArray;
+ UnzReduceBits:PUnzFollowerSizeArray;
+ UnzReduceFollowers:PUnzFollowerArray;
+ UnzBZTT:Array[0..56]of PUnzBZTTChunk;
+ UnzBZByte:Array[0..56]of PUnzBZByteChunk;
+ UnzBZBitBuf,UnzBZBitCount:Integer;
+ UnzBZBlockLimit:LongInt;
+ UnzLZDict:Array[0..255]of PUnzLZByteChunk;
+ UnzLZLit:Array[0..15]of PUnzLZLitContext;
+ UnzLZDictSize,UnzLZDictPos,UnzLZRange,UnzLZCode:LongInt;
+ UnzLZIsMatch:Array[0..191]of Word;
+ UnzLZIsRep,UnzLZIsRepG0,UnzLZIsRepG1,UnzLZIsRepG2:Array[0..11]of Word;
+ UnzLZIsRep0Long:Array[0..191]of Word;
+ UnzLZPosSlot:Array[0..255]of Word;
+ UnzLZPosDecoders:Array[0..113]of Word;
+ UnzLZPosAlign:Array[0..15]of Word;
+ UnzLZLenChoice,UnzLZRepLenChoice:Array[0..1]of Word;
+ UnzLZLenLow,UnzLZLenMid,UnzLZRepLenLow,UnzLZRepLenMid:Array[0..127]of Word;
+ UnzLZLenHigh,UnzLZRepLenHigh:Array[0..255]of Word;
+ UnzTerseBitsAvailable,UnzTerseSavedBits:Integer;
+ UnzDCLBitBuf,UnzDCLBitCount,UnzDCLNext:Integer;
+ UnzDCLWin:PUnzDCLWindow;
+ UnzZipCryptActive:Boolean;
+ UnzZipKey0,UnzZipKey1,UnzZipKey2:LongInt;
+ UnzZstdRep1,UnzZstdRep2,UnzZstdRep3:LongInt;
+ UnzErr:Boolean;
+ UnzErrMsg:String;
+ UnzTermTP:^TTerminalPanel;
+ UnzOutLine:String;
+
+Procedure UnzFlushLine;
+Begin
+ If UnzTermTP <> Nil Then TermAddLine(UnzTermTP^, UnzOutLine);
+ UnzOutLine := '';
+End;
+
+Procedure UnzW(S: String);
+Begin
+ UnzOutLine := UnzOutLine + S;
+End;
+
+Procedure UnzWL(S: String);
+Begin
+ UnzOutLine := UnzOutLine + S;
+ UnzFlushLine;
+End;
+
+Procedure UnzWLBlank;
+Begin
+ UnzFlushLine;
+End;
+
+Procedure UnzFail(Msg:String);
+Begin
+ If Not UnzErr Then Begin
+  UnzErr:=True;
+  UnzErrMsg:=Msg;
+  UnzWL('Erreur : '+Msg);
+ End;
+End;
+
+Function UnzPath2Ext(S:String):String;
+Var
+ D:DirStr;
+ N:NameStr;
+ E:ExtStr;
+Begin
+ FSplit(S,D,N,E);
+ UnzPath2Ext:=E;
+End;
+
+Function UnzUShiftRight(L:LongInt;N:Byte):LongInt;
+Var
+ I:Byte;
+Begin
+ For I:=1 to N do L:=(L shr 1)and $7FFFFFFF;
+ UnzUShiftRight:=L;
+End;
+
+Function UnzLowByte(L:LongInt):Byte;
+Begin
+ UnzLowByte:=Byte(L and $FF);
+End;
+
+Function UnzCRC32Value(C:LongInt;B:Byte):LongInt; forward;
+Function UnzZipDecryptByte(C:Byte):Byte; forward;
+
+Procedure UnzInitCRC32;
+Var
+ I,J:Integer;
+ C:LongInt;
+Begin
+ For I:=0 to 255 do Begin
+  C:=I;
+  For J:=0 to 7 do Begin
+   If(C and 1)<>0Then C:=UnzUShiftRight(C,1)xor LongInt($EDB88320)
+                 Else C:=UnzUShiftRight(C,1);
+  End;
+  UnzCRC32Table[I]:=C;
+ End;
+End;
+
+Procedure UnzUpdateCRC32(B:Byte);
+Begin
+ UnzOutCRC:=UnzCRC32Value(UnzOutCRC,B);
+ Inc(UnzOutSize);
+End;
+
+Function UnzUpStr(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S)do If S[I] in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);
+ UnzUpStr:=S;
+End;
+
+Function UnzLowStr(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S)do If S[I] in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
+ UnzLowStr:=S;
+End;
+
+Function UnzFileExists(S:String):Boolean;
+Var
+ F:File;
+ R:Integer;
+Begin
+ Assign(F,S);
+ {$I-}Reset(F,1);{$I+}
+ R:=IoResult;
+ If R=0Then Close(F);
+ UnzFileExists:=R=0;
+End;
+
+Function UnzDateTimeStamp(ZTime,ZDate:Integer):LongInt;
+Begin
+ UnzDateTimeStamp:=(LongInt(ZDate)shl 16)or LongInt(ZTime);
+End;
+
+Function UnzGetFileDateTimeStamp(S:String;Var Stamp:LongInt):Boolean;
+Var
+ F:File;
+ R:Integer;
+Begin
+ Assign(F,S);
+ {$I-}Reset(F,1);{$I+}
+ R:=IoResult;
+ If R<>0Then Begin
+  UnzGetFileDateTimeStamp:=False;
+  Exit;
+ End;
+ GetFTime(F,Stamp);
+ Close(F);
+ UnzGetFileDateTimeStamp:=True;
+End;
+
+Procedure UnzSetFileDateTimeStamp(S:String;Stamp:LongInt);
+Var
+ F:File;
+ R:Integer;
+Begin
+ Assign(F,S);
+ {$I-}Reset(F,1);{$I+}
+ R:=IoResult;
+ If R<>0Then Exit;
+ SetFTime(F,Stamp);
+ Close(F);
+End;
+
+Function UnzLong2Str(L:LongInt):String;
+Var
+ S:String;
+Begin
+ Str(L,S);
+ UnzLong2Str:=S;
+End;
+
+Function UnzHexDigit(N:Integer):Char;
+Begin
+ If N<10Then UnzHexDigit:=Chr(Ord('0')+N)
+        Else UnzHexDigit:=Chr(Ord('A')+N-10);
+End;
+
+Function UnzHex8(L:LongInt):String;
+Var
+ I:Integer;
+ S:String;
+Begin
+ S:='';
+ For I:=7 downto 0 do S:=S+UnzHexDigit(Integer(UnzUShiftRight(L,I*4)and 15));
+ UnzHex8:=S;
+End;
+
+Function UnzSameDWord(A,B:LongInt):Boolean;
+Begin
+ UnzSameDWord:=UnzHex8(A)=UnzHex8(B);
+End;
+
+Function UnzCRC32Value(C:LongInt;B:Byte):LongInt;
+Begin
+ UnzCRC32Value:=UnzUShiftRight(C,8)xor UnzCRC32Table[UnzLowByte(C xor B)];
+End;
+
+Function UnzBaseName(S:String):String;
+Var
+ I,P:Integer;
+Begin
+ P:=0;
+ For I:=1 to Length(S)do If(S[I]='\')or(S[I]='/')Then P:=I;
+ If P=0Then UnzBaseName:=S
+       Else UnzBaseName:=Copy(S,P+1,255);
+End;
+
+Function UnzJoinPath(A,B:String):String;
+Begin
+ If A=''Then UnzJoinPath:=B
+  Else If(A[Length(A)]='\')or(A[Length(A)]='/')Then UnzJoinPath:=A+B
+  Else UnzJoinPath:=A+'\'+B;
+End;
+
+Procedure UnzMoreWriteLn(S:String);
+Begin
+ If UnzVeryQuietMode Then Exit;
+ UnzWL(S);
+ { Mode -M (pagination "--More--") : sans clavier interactif dans ce      }
+ { terminal, on desactive silencieusement la pause plutot que de bloquer. }
+End;
+
+Function UnzReverseBits(Code:LongInt;Bits:Integer):LongInt;
+Var
+ I:Integer;
+ R:LongInt;
+Begin
+ R:=0;
+ For I:=1 to Bits do Begin
+  R:=(R shl 1)or(Code and 1);
+  Code:=Code shr 1;
+ End;
+ UnzReverseBits:=R;
+End;
+
+Procedure UnzInitWindow(Use64K:Boolean);
+Begin
+ If UnzWindowLo=NIL Then GetMem(UnzWindowLo,SizeOf(TUnzWindowHalf));
+ If Use64K and(UnzWindowHi=NIL)Then GetMem(UnzWindowHi,SizeOf(TUnzWindowHalf));
+ If UnzWindowLo=NIL Then Begin
+  UnzFail('Memoire insuffisante pour la fenetre ZIP.');
+  Exit;
+ End;
+ If Use64K and(UnzWindowHi=NIL)Then Begin
+  UnzFail('Memoire insuffisante pour la fenetre Deflate64.');
+  Exit;
+ End;
+ FillChar(UnzWindowLo^,SizeOf(TUnzWindowHalf),0);
+ If UnzWindowHi<>NIL Then FillChar(UnzWindowHi^,SizeOf(TUnzWindowHalf),0);
+ UnzWinPos:=0;
+ UnzWindowMask:=$7FFF;
+ If Use64K Then UnzWindowMask:=$FFFF;
+End;
+
+Function UnzGetWindowByte(Pos:LongInt):Byte;
+Begin
+ Pos:=Pos and UnzWindowMask;
+ If Pos<32768 Then UnzGetWindowByte:=UnzWindowLo^[Pos]
+  Else
+ Begin
+  If UnzWindowHi=NIL Then UnzGetWindowByte:=0
+                 Else UnzGetWindowByte:=UnzWindowHi^[Pos-32768];
+ End;
+End;
+
+Procedure UnzSetWindowByte(Pos:LongInt;B:Byte);
+Begin
+ Pos:=Pos and UnzWindowMask;
+ If Pos<32768 Then UnzWindowLo^[Pos]:=B
+  Else If UnzWindowHi<>NIL Then UnzWindowHi^[Pos-32768]:=B;
+End;
+
+Procedure UnzPutOutByte(B:Byte);
+Var
+ C:Char;
+ Count:Word;
+Begin
+ UnzUpdateCRC32(B);
+ If UnzOutputMode=0 Then Begin
+  If UnzAutoText and(B=10)and(UnzPrevOutByte<>13)Then Begin
+   C:=#13;
+   BlockWrite(UnzOutFile,C,1,Count);
+  End;
+  BlockWrite(UnzOutFile,B,1,Count);
+ End
+  Else If UnzOutputMode=1 Then Begin
+  If UnzAutoText and(B=10)and(UnzPrevOutByte<>13)Then UnzW(#13);
+  UnzW(Chr(B));
+ End;
+ UnzPrevOutByte:=B;
+ UnzSetWindowByte(UnzWinPos,B);
+ UnzWinPos:=(UnzWinPos+1)and UnzWindowMask;
+End;
+
+Function UnzReadZipByte:Byte;
+Var
+ B:Byte;
+ Count:Word;
+Begin
+ If UnzErr Then Begin UnzReadZipByte:=0; Exit; End;
+ B:=0;
+ BlockRead(UnzZipFile,B,1,Count);
+ If Count<>1 Then Begin
+  UnzFail('Erreur de lecture du fichier ZIP.');
+  UnzReadZipByte:=0;
+  Exit;
+ End;
+ UnzReadZipByte:=B;
+End;
+
+Function UnzReadCompByte:Byte;
+Var
+ B:Byte;
+Begin
+ If UnzErr Then Begin UnzReadCompByte:=0; Exit; End;
+ If UnzCompLeft<=0 Then Begin
+  UnzFail('Flux compresse trop court.');
+  UnzReadCompByte:=0;
+  Exit;
+ End;
+ Dec(UnzCompLeft);
+ B:=UnzReadZipByte;
+ If UnzZipCryptActive Then B:=UnzZipDecryptByte(B);
+ UnzReadCompByte:=B;
+End;
+
+Function UnzReadWordLE:Integer;
+Var
+ B1,B2:Byte;
+Begin
+ B1:=UnzReadZipByte;
+ B2:=UnzReadZipByte;
+ UnzReadWordLE:=B1+256*B2;
+End;
+
+Function UnzReadDWordLE:LongInt;
+Var
+ B1,B2,B3,B4:LongInt;
+Begin
+ B1:=UnzReadZipByte;
+ B2:=UnzReadZipByte;
+ B3:=UnzReadZipByte;
+ B4:=UnzReadZipByte;
+ UnzReadDWordLE:=B1+256*B2+65536*B3+16777216*B4;
+End;
+
+Procedure UnzZipCryptUpdate(B:Byte);
+Begin
+ UnzZipKey0:=UnzCRC32Value(UnzZipKey0,B);
+ UnzZipKey1:=UnzZipKey1+UnzLowByte(UnzZipKey0);
+ UnzZipKey1:=UnzZipKey1*LongInt(134775813)+1;
+ UnzZipKey2:=UnzCRC32Value(UnzZipKey2,Byte(UnzUShiftRight(UnzZipKey1,24)and $FF));
+End;
+
+Function UnzZipCryptByte:Byte;
+Var
+ T:LongInt;
+Begin
+ T:=(UnzZipKey2 or 2)and $FFFF;
+ UnzZipCryptByte:=Byte(UnzUShiftRight(T*(T xor 1),8)and $FF);
+End;
+
+Function UnzZipDecryptByte(C:Byte):Byte;
+Var
+ P:Byte;
+Begin
+ P:=C xor UnzZipCryptByte;
+ UnzZipCryptUpdate(P);
+ UnzZipDecryptByte:=P;
+End;
+
+Procedure UnzZipCryptInit(Pwd:String);
+Var
+ I:Integer;
+Begin
+ UnzZipKey0:=LongInt(305419896);
+ UnzZipKey1:=LongInt(591751049);
+ UnzZipKey2:=LongInt(878082192);
+ For I:=1 to Length(Pwd)do UnzZipCryptUpdate(Byte(Ord(Pwd[I])));
+End;
+
+Function UnzReadBit:Integer;
+Begin
+ If UnzErr Then Begin UnzReadBit:=0; Exit; End;
+ If UnzBitCount=0 Then Begin
+  UnzBitBuf:=UnzReadCompByte;
+  UnzBitCount:=8;
+ End;
+ UnzReadBit:=UnzBitBuf and 1;
+ UnzBitBuf:=UnzBitBuf shr 1;
+ Dec(UnzBitCount);
+End;
+
+Function UnzReadBits(N:Integer):Integer;
+Var
+ I,V:Integer;
+Begin
+ V:=0;
+ For I:=0 to N-1 do V:=V or(UnzReadBit shl I);
+ UnzReadBits:=V;
+End;
+
+Function UnzReadBitsLong(N:Integer):LongInt;
+Var
+ I:Integer;
+ V:LongInt;
+Begin
+ V:=0;
+ For I:=0 to N-1 do If UnzReadBit<>0 Then V:=V or(LongInt(1)shl I);
+ UnzReadBitsLong:=V;
+End;
+
+Procedure UnzAlignByte;
+Begin
+ UnzBitBuf:=0;
+ UnzBitCount:=0;
+End;
+
+Procedure UnzBuildHuffman(Var H:TUnzHuffman;Var Lengths;N:Integer);
+Type
+ TLengths=Array[0..319]of Byte;
+Var
+ L:^TLengths;
+ Count:Array[0..16] of Integer;
+ NextCode:Array[0..16] of LongInt;
+ I,Bits:Integer;
+ Code:LongInt;
+Begin
+ L:=@Lengths;
+ H.NumSymbols:=N;
+ For I:=0 to 319 do Begin
+  H.Len[I]:=0;
+  H.Code[I]:=0;
+ End;
+ For I:=0 to 16 do Count[I]:=0;
+ For I:=0 to N-1 do Begin
+  H.Len[I]:=L^[I];
+  If H.Len[I]>0Then Inc(Count[H.Len[I]]);
+ End;
+ Code:=0;
+ Count[0]:=0;
+ For Bits:=1 to 16 do Begin
+  Code:=(Code+Count[Bits-1])shl 1;
+  NextCode[Bits]:=Code;
+ End;
+ For I:=0 to N-1 do Begin
+  Bits:=H.Len[I];
+  If Bits<>0Then Begin
+   H.Code[I]:=UnzReverseBits(NextCode[Bits],Bits);
+   Inc(NextCode[Bits]);
+  End;
+ End;
+End;
+
+Procedure UnzBuildHuffmanInvert(Var H:TUnzHuffman;Var Lengths;N:Integer);
+Type
+ TLengths=Array[0..319]of Byte;
+Var
+ L:^TLengths;
+ Count:Array[0..16] of Integer;
+ NextCode:Array[0..16] of LongInt;
+ I,Bits:Integer;
+ Code,Mask:LongInt;
+Begin
+ L:=@Lengths;
+ H.NumSymbols:=N;
+ For I:=0 to 319 do Begin
+  H.Len[I]:=0;
+  H.Code[I]:=0;
+ End;
+ For I:=0 to 16 do Count[I]:=0;
+ For I:=0 to N-1 do Begin
+  H.Len[I]:=L^[I];
+  If H.Len[I]>0Then Inc(Count[H.Len[I]]);
+ End;
+ Code:=0;
+ Count[0]:=0;
+ For Bits:=1 to 16 do Begin
+  Code:=(Code+Count[Bits-1])shl 1;
+  NextCode[Bits]:=Code;
+ End;
+ For I:=0 to N-1 do Begin
+  Bits:=H.Len[I];
+  If Bits<>0Then Begin
+   If Bits=16 Then Mask:=$FFFF
+              Else Mask:=(LongInt(1)shl Bits)-1;
+   H.Code[I]:=UnzReverseBits((Not NextCode[Bits])and Mask,Bits);
+   Inc(NextCode[Bits]);
+  End;
+ End;
+End;
+
+Function UnzDecodeSymbol(Var H:TUnzHuffman):Integer;
+Var
+ Len,Sym:Integer;
+ Code:LongInt;
+Begin
+ Code:=0;
+ For Len:=1 to 16 do Begin
+  If UnzErr Then Begin UnzDecodeSymbol:=0; Exit; End;
+  If UnzReadBit<>0 Then Code:=Code or(LongInt(1)shl(Len-1));
+  For Sym:=0 to H.NumSymbols-1 do Begin
+   If(H.Len[Sym]=Len)and(H.Code[Sym]=Code)Then Begin
+    UnzDecodeSymbol:=Sym;
+    Exit;
+   End
+  End;
+ End;
+ UnzFail('Code Huffman invalide.');
+ UnzDecodeSymbol:=0;
+End;
+
+Procedure UnzBuildFixedTrees(Var LitLen,Dist:TUnzHuffman);
+Var
+ L1,L2:Array[0..319] of Byte;
+ I:Integer;
+Begin
+ For I:=0 to 319 do Begin
+  L1[I]:=0;
+  L2[I]:=0;
+ End;
+ For I:=0 to 143 do L1[I]:=8;
+ For I:=144 to 255 do L1[I]:=9;
+ For I:=256 to 279 do L1[I]:=7;
+ For I:=280 to 287 do L1[I]:=8;
+ For I:=0 to 31 do L2[I]:=5;
+ UnzBuildHuffman(LitLen,L1,288);
+ UnzBuildHuffman(Dist,L2,32);
+End;
+
+Procedure UnzBuildDynamicTrees(Var LitLen,Dist:TUnzHuffman);
+Const
+ Order:Array[0..18]of Byte=(16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15);
+Var
+ HLIT,HDIST,HCLEN:Integer;
+ CodeLenLengths:Array[0..319] of Byte;
+ Lengths:Array[0..319] of Byte;
+ CodeLenTree:TUnzHuffman;
+ I,Sym,Rep,Prev,Total:Integer;
+Begin
+ For I:=0 to 319 do Begin
+  CodeLenLengths[I]:=0;
+  Lengths[I]:=0;
+ End;
+ HLIT:=UnzReadBits(5)+257;
+ HDIST:=UnzReadBits(5)+1;
+ HCLEN:=UnzReadBits(4)+4;
+ For I:=0 to HCLEN-1 do CodeLenLengths[Order[I]]:=UnzReadBits(3);
+ UnzBuildHuffman(CodeLenTree,CodeLenLengths,19);
+ Total:=HLIT+HDIST;
+ I:=0;
+ Prev:=0;
+ While(I<Total)And(Not UnzErr) do Begin
+  Sym:=UnzDecodeSymbol(CodeLenTree);
+  If Sym<=15 Then Begin
+   Lengths[I]:=Sym;
+   Prev:=Sym;
+   Inc(I);
+  End
+   Else If Sym=16 Then Begin
+   Rep:=UnzReadBits(2)+3;
+   While(Rep>0)and(I<Total)do Begin
+    Lengths[I]:=Prev;
+    Inc(I);
+    Dec(Rep);
+   End;
+  End
+   Else If Sym=17 Then Begin
+   Rep:=UnzReadBits(3)+3;
+   Prev:=0;
+   While(Rep>0)and(I<Total)do Begin
+    Lengths[I]:=0;
+    Inc(I);
+    Dec(Rep);
+   End;
+  End
+   Else If Sym=18 Then Begin
+   Rep:=UnzReadBits(7)+11;
+   Prev:=0;
+   While(Rep>0)and(I<Total)do Begin
+    Lengths[I]:=0;
+    Inc(I);
+    Dec(Rep);
+   End;
+  End
+   Else
+  Begin
+   UnzFail('Longueur Huffman dynamique invalide.');
+   Exit;
+  End;
+ End;
+ If UnzErr Then Exit;
+ UnzBuildHuffman(LitLen,Lengths,HLIT);
+ For I:=0 to HDIST-1 do Lengths[I]:=Lengths[HLIT+I];
+ UnzBuildHuffman(Dist,Lengths,HDIST);
+End;
+
+Procedure UnzInflateCodes(Var LitLen,Dist:TUnzHuffman);
+Const
+ LenBase:Array[0..28]of Integer=(
+  3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
+  35,43,51,59,67,83,99,115,131,163,195,227,258);
+ LenExtra:Array[0..28]of Integer=(
+  0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,
+  3,3,3,3,4,4,4,4,5,5,5,5,0);
+ DistBase:Array[0..29]of Integer=(
+  1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,
+  193,257,385,513,769,1025,1537,2049,3073,4097,
+  6145,8193,12289,16385,24577);
+ DistExtra:Array[0..29]of Integer=(
+  0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,
+  6,7,7,8,8,9,9,10,10,11,11,12,12,13,13);
+Var
+ Sym,Len,Distance,I,WinRead:Integer;
+ B:Byte;
+Begin
+ Repeat
+  Sym:=UnzDecodeSymbol(LitLen);
+  If UnzErr Then Exit;
+  If Sym<256Then UnzPutOutByte(Sym)
+   Else If Sym=256Then Exit
+   Else
+  Begin
+   If(Sym<257)or(Sym>285)Then Begin
+    UnzFail('Longueur Deflate invalide.');
+    Exit;
+   End;
+   Sym:=Sym-257;
+   Len:=LenBase[Sym];
+   If LenExtra[Sym]>0Then Inc(Len,UnzReadBits(LenExtra[Sym]));
+   Sym:=UnzDecodeSymbol(Dist);
+   If UnzErr Then Exit;
+   If(Sym<0)or(Sym>29)Then Begin
+    UnzFail('Distance Deflate invalide.');
+    Exit;
+   End;
+   Distance:=DistBase[Sym];
+   If DistExtra[Sym]>0Then Inc(Distance,UnzReadBits(DistExtra[Sym]));
+   For I:=1 to Len do Begin
+    WinRead:=(UnzWinPos-Distance)and $7FFF;
+    B:=UnzGetWindowByte(WinRead);
+    UnzPutOutByte(B);
+   End;
+  End;
+ Until UnzErr;
+End;
+
+Procedure UnzInflate64Codes(Var LitLen,Dist:TUnzHuffman);
+Const
+ LenBase:Array[0..28]of LongInt=(
+  3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
+  35,43,51,59,67,83,99,115,131,163,195,227,3);
+ LenExtra:Array[0..28]of Integer=(
+  0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,
+  3,3,3,3,4,4,4,4,5,5,5,5,16);
+ DistBase:Array[0..31]of LongInt=(
+  1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,
+  193,257,385,513,769,1025,1537,2049,3073,4097,
+  6145,8193,12289,16385,24577,32769,49153);
+ DistExtra:Array[0..31]of Integer=(
+  0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,
+  6,7,7,8,8,9,9,10,10,11,11,12,12,13,13,14,14);
+Var
+ Sym:Integer;
+ Len,Distance,I,WinRead:LongInt;
+ B:Byte;
+Begin
+ Repeat
+  Sym:=UnzDecodeSymbol(LitLen);
+  If UnzErr Then Exit;
+  If Sym<256Then UnzPutOutByte(Sym)
+   Else If Sym=256Then Exit
+   Else
+  Begin
+   If(Sym<257)or(Sym>285)Then Begin
+    UnzFail('Longueur Deflate64 invalide.');
+    Exit;
+   End;
+   Sym:=Sym-257;
+   Len:=LenBase[Sym];
+   If LenExtra[Sym]>0Then Inc(Len,UnzReadBitsLong(LenExtra[Sym]));
+   Sym:=UnzDecodeSymbol(Dist);
+   If UnzErr Then Exit;
+   If(Sym<0)or(Sym>31)Then Begin
+    UnzFail('Distance Deflate64 invalide.');
+    Exit;
+   End;
+   Distance:=DistBase[Sym];
+   If DistExtra[Sym]>0Then Inc(Distance,UnzReadBitsLong(DistExtra[Sym]));
+   If Distance>UnzOutSize Then Begin
+    UnzFail('Reference Deflate64 invalide.');
+    Exit;
+   End;
+   I:=1;
+   While I<=Len do Begin
+    WinRead:=(UnzWinPos-Distance)and $FFFF;
+    B:=UnzGetWindowByte(WinRead);
+    UnzPutOutByte(B);
+    Inc(I);
+   End;
+  End;
+ Until UnzErr;
+End;
+
+Procedure UnzInflateStored;
+Var
+ Len,NLen,I:Integer;
+Begin
+ UnzAlignByte;
+ Len:=UnzReadBits(16);
+ NLen:=UnzReadBits(16);
+ If ((Len xor NLen)and $FFFF)<>$FFFFThen Begin
+  UnzFail('Bloc Deflate stocke invalide.');
+  Exit;
+ End;
+ For I:=1 to Len do Begin
+  If UnzErr Then Exit;
+  UnzPutOutByte(UnzReadCompByte);
+ End;
+End;
+
+Procedure UnzInflateDeflate;
+Var
+ FinalBlock,BType:Integer;
+ LitLen,Dist:TUnzHuffman;
+Begin
+ UnzBitBuf:=0;
+ UnzBitCount:=0;
+ UnzInitWindow(False);
+ Repeat
+  FinalBlock:=UnzReadBit;
+  BType:=UnzReadBits(2);
+  Case BType of
+   0:UnzInflateStored;
+   1:Begin
+      UnzBuildFixedTrees(LitLen,Dist);
+      UnzInflateCodes(LitLen,Dist);
+     End;
+   2:Begin
+      UnzBuildDynamicTrees(LitLen,Dist);
+      If Not UnzErr Then UnzInflateCodes(LitLen,Dist);
+     End;
+  Else
+   UnzFail('Type de bloc Deflate invalide.');
+  End;
+ Until(FinalBlock<>0)or UnzErr;
+ UnzAlignByte;
+End;
+
+Procedure UnzInflateDeflate64;
+Var
+ FinalBlock,BType:Integer;
+ LitLen,Dist:TUnzHuffman;
+Begin
+ UnzBitBuf:=0;
+ UnzBitCount:=0;
+ UnzInitWindow(True);
+ Repeat
+  FinalBlock:=UnzReadBit;
+  BType:=UnzReadBits(2);
+  Case BType of
+   0:UnzInflateStored;
+   1:Begin
+      UnzBuildFixedTrees(LitLen,Dist);
+      UnzInflate64Codes(LitLen,Dist);
+     End;
+   2:Begin
+      UnzBuildDynamicTrees(LitLen,Dist);
+      If Not UnzErr Then UnzInflate64Codes(LitLen,Dist);
+     End;
+  Else
+   UnzFail('Type de bloc Deflate64 invalide.');
+  End;
+ Until(FinalBlock<>0)or UnzErr;
+ UnzAlignByte;
+End;
+
+Function UnzULess(A,B:LongInt):Boolean;
+Begin
+ UnzULess:=(A xor LongInt($80000000))<(B xor LongInt($80000000));
+End;
+
+Function UnzLZReadByte:Byte;
+Begin
+ UnzLZReadByte:=UnzReadCompByte;
+End;
+
+Function UnzLZReadWordLE:Integer;
+Var
+ B1,B2:Integer;
+Begin
+ B1:=UnzLZReadByte;
+ B2:=UnzLZReadByte;
+ UnzLZReadWordLE:=B1+256*B2;
+End;
+
+Procedure UnzLZFree;
+Var
+ I:Integer;
+Begin
+ For I:=0 to 255 do If UnzLZDict[I]<>NIL Then Begin
+  FreeMem(UnzLZDict[I],SizeOf(TUnzLZByteChunk));
+  UnzLZDict[I]:=NIL;
+ End;
+ For I:=0 to 15 do If UnzLZLit[I]<>NIL Then Begin
+  FreeMem(UnzLZLit[I],SizeOf(TUnzLZLitContext));
+  UnzLZLit[I]:=NIL;
+ End;
+End;
+
+Procedure UnzLZAllocDict(Size:LongInt);
+Var
+ I,Need:Integer;
+Begin
+ If Size<1 Then Size:=1;
+ If Size>UnzUncompSize Then Size:=UnzUncompSize;
+ If Size<1 Then Size:=1;
+ UnzLZDictSize:=Size;
+ Need:=(Size+16383)div 16384;
+ If Need>256 Then Begin
+  UnzFail('Dictionnaire LZMA trop grand pour ce modele memoire.');
+  Exit;
+ End;
+ For I:=0 to 255 do UnzLZDict[I]:=NIL;
+ For I:=0 to Need-1 do Begin
+  GetMem(UnzLZDict[I],SizeOf(TUnzLZByteChunk));
+  If UnzLZDict[I]=NIL Then Begin
+   UnzFail('Memoire insuffisante pour LZMA.');
+   Exit;
+  End;
+  FillChar(UnzLZDict[I]^,SizeOf(TUnzLZByteChunk),0);
+ End;
+ UnzLZDictPos:=0;
+End;
+
+Procedure UnzLZAllocLiterals(NumContexts:Integer);
+Var
+ I,J:Integer;
+Begin
+ If NumContexts>16 Then Begin
+  UnzLZFree;
+  UnzFail('Contexte litteral LZMA trop grand pour Turbo Pascal.');
+  Exit;
+ End;
+ For I:=0 to 15 do UnzLZLit[I]:=NIL;
+ For I:=0 to NumContexts-1 do Begin
+  GetMem(UnzLZLit[I],SizeOf(TUnzLZLitContext));
+  If UnzLZLit[I]=NIL Then Begin
+   UnzLZFree;
+   UnzFail('Memoire insuffisante pour les litteraux LZMA.');
+   Exit;
+  End;
+  For J:=0 to 767 do UnzLZLit[I]^[J]:=1024;
+ End;
+End;
+
+Procedure UnzLZSetDictByte(Pos:LongInt;B:Byte);
+Var
+ C,O:Integer;
+Begin
+ Pos:=Pos mod UnzLZDictSize;
+ C:=Pos div 16384;
+ O:=Pos mod 16384;
+ UnzLZDict[C]^[O]:=B;
+End;
+
+Function UnzLZGetDictByte(Pos:LongInt):Byte;
+Var
+ C,O:Integer;
+Begin
+ Pos:=Pos mod UnzLZDictSize;
+ If Pos<0 Then Inc(Pos,UnzLZDictSize);
+ C:=Pos div 16384;
+ O:=Pos mod 16384;
+ UnzLZGetDictByte:=UnzLZDict[C]^[O];
+End;
+
+Procedure UnzLZPutByte(B:Byte);
+Begin
+ UnzPutOutByte(B);
+ UnzLZSetDictByte(UnzLZDictPos,B);
+ Inc(UnzLZDictPos);
+ If UnzLZDictPos>=UnzLZDictSize Then UnzLZDictPos:=0;
+End;
+
+Procedure UnzLZInitProbs;
+Var
+ I:Integer;
+Begin
+ For I:=0 to High(UnzLZIsMatch)do UnzLZIsMatch[I]:=1024;
+ For I:=0 to High(UnzLZIsRep)do Begin
+  UnzLZIsRep[I]:=1024;
+  UnzLZIsRepG0[I]:=1024;
+  UnzLZIsRepG1[I]:=1024;
+  UnzLZIsRepG2[I]:=1024;
+ End;
+ For I:=0 to High(UnzLZIsRep0Long)do UnzLZIsRep0Long[I]:=1024;
+ For I:=0 to High(UnzLZPosSlot)do UnzLZPosSlot[I]:=1024;
+ For I:=0 to High(UnzLZPosDecoders)do UnzLZPosDecoders[I]:=1024;
+ For I:=0 to High(UnzLZPosAlign)do UnzLZPosAlign[I]:=1024;
+ For I:=0 to 1 do Begin
+  UnzLZLenChoice[I]:=1024;
+  UnzLZRepLenChoice[I]:=1024;
+ End;
+ For I:=0 to High(UnzLZLenLow)do Begin
+  UnzLZLenLow[I]:=1024;
+  UnzLZLenMid[I]:=1024;
+  UnzLZRepLenLow[I]:=1024;
+  UnzLZRepLenMid[I]:=1024;
+ End;
+ For I:=0 to High(UnzLZLenHigh)do Begin
+  UnzLZLenHigh[I]:=1024;
+  UnzLZRepLenHigh[I]:=1024;
+ End;
+End;
+
+Procedure UnzLZRangeInit;
+Var
+ I:Integer;
+Begin
+ UnzLZCode:=0;
+ UnzLZRange:=LongInt($FFFFFFFF);
+ For I:=1 to 5 do UnzLZCode:=(UnzLZCode shl 8)or UnzLZReadByte;
+End;
+
+Procedure UnzLZNormalize;
+Begin
+ While UnzULess(UnzLZRange,LongInt($01000000))do Begin
+  UnzLZRange:=UnzLZRange shl 8;
+  UnzLZCode:=(UnzLZCode shl 8)or UnzLZReadByte;
+ End;
+End;
+
+Function UnzLZDecodeBit(Var Prob:Word):Integer;
+Var
+ Bound:LongInt;
+Begin
+ Bound:=UnzUShiftRight(UnzLZRange,11)*Prob;
+ If UnzULess(UnzLZCode,Bound)Then Begin
+  UnzLZRange:=Bound;
+  Prob:=Prob+((2048-Prob)shr 5);
+  UnzLZNormalize;
+  UnzLZDecodeBit:=0;
+ End
+  Else
+ Begin
+  UnzLZCode:=UnzLZCode-Bound;
+  UnzLZRange:=UnzLZRange-Bound;
+  Prob:=Prob-(Prob shr 5);
+  UnzLZNormalize;
+  UnzLZDecodeBit:=1;
+ End;
+End;
+
+Function UnzLZDecodeDirectBits(NumBits:Integer):LongInt;
+Var
+ I:Integer;
+ Res:LongInt;
+Begin
+ Res:=0;
+ For I:=1 to NumBits do Begin
+  UnzLZRange:=UnzUShiftRight(UnzLZRange,1);
+  Res:=Res shl 1;
+  If Not UnzULess(UnzLZCode,UnzLZRange)Then Begin
+   UnzLZCode:=UnzLZCode-UnzLZRange;
+   Res:=Res or 1;
+  End;
+  UnzLZNormalize;
+ End;
+ UnzLZDecodeDirectBits:=Res;
+End;
+
+Function UnzLZBitTreeDecode(P:Pointer;Offset,NumBits:Integer):Integer;
+Var
+ A:PUnzWordArray;
+ M,I:Integer;
+Begin
+ A:=P;
+ M:=1;
+ For I:=1 to NumBits do M:=(M shl 1)or UnzLZDecodeBit(A^[Offset+M]);
+ UnzLZBitTreeDecode:=M-(1 shl NumBits);
+End;
+
+Function UnzLZReverseBitTreeDecode(P:Pointer;Offset,NumBits:Integer):LongInt;
+Var
+ A:PUnzWordArray;
+ M,I,Bit:Integer;
+ Res:LongInt;
+Begin
+ A:=P;
+ M:=1;
+ Res:=0;
+ For I:=0 to NumBits-1 do Begin
+  Bit:=UnzLZDecodeBit(A^[Offset+M]);
+  M:=(M shl 1)or Bit;
+  Res:=Res or(LongInt(Bit)shl I);
+ End;
+ UnzLZReverseBitTreeDecode:=Res;
+End;
+
+Function UnzLZDecodeLen(PChoice,PLow,PMid,PHigh:Pointer;PosState:Integer):Integer;
+Var
+ Choice,Low,Mid,High:PUnzWordArray;
+Begin
+ Choice:=PChoice;
+ Low:=PLow;
+ Mid:=PMid;
+ High:=PHigh;
+ If UnzLZDecodeBit(Choice^[0])=0 Then
+  UnzLZDecodeLen:=UnzLZBitTreeDecode(Low,PosState*8,3)
+ Else If UnzLZDecodeBit(Choice^[1])=0 Then
+  UnzLZDecodeLen:=8+
+   UnzLZBitTreeDecode(Mid,PosState*8,3)
+ Else
+  UnzLZDecodeLen:=8+8+
+   UnzLZBitTreeDecode(High,0,8);
+End;
+
+Function UnzLZStateIsChar(State:Integer):Boolean;
+Begin
+ UnzLZStateIsChar:=State<7;
+End;
+
+Function UnzLZLenToPosState(Len:Integer):Integer;
+Begin
+ Len:=Len-2;
+ If Len<0 Then Len:=0;
+ If Len<4 Then UnzLZLenToPosState:=Len
+          Else UnzLZLenToPosState:=3;
+End;
+
+Function UnzLZDecodeLiteral(Lc,Lp,State:Integer;Rep0:LongInt;Prev:Byte):Byte;
+Var
+ Ctx,Symbol,Bit,MatchBit:Integer;
+ MatchByte:Byte;
+ Lit:PUnzLZLitContext;
+Begin
+ Ctx:=((UnzOutSize and((1 shl Lp)-1))shl Lc)+(Prev shr(8-Lc));
+ Lit:=UnzLZLit[Ctx];
+ Symbol:=1;
+ If Not UnzLZStateIsChar(State)Then Begin
+  MatchByte:=UnzLZGetDictByte(UnzLZDictPos-Rep0-1);
+  Repeat
+   MatchBit:=(MatchByte shr 7)and 1;
+   MatchByte:=Byte((MatchByte shl 1)and $FF);
+   Bit:=UnzLZDecodeBit(Lit^[((1+MatchBit)shl 8)+Symbol]);
+   Symbol:=(Symbol shl 1)or Bit;
+   If MatchBit<>Bit Then Break;
+  Until Symbol>=256;
+ End;
+ While Symbol<256 do Symbol:=(Symbol shl 1)or UnzLZDecodeBit(Lit^[Symbol]);
+ UnzLZDecodeLiteral:=Byte(Symbol-256);
+End;
+
+Procedure UnzInflateLZMA;
+Var
+ Version,PropSize:Integer;
+ Props:Array[0..4]of Byte;
+ Prop,DictProp:LongInt;
+ Lc,Lp,Pb,NumLitContexts,PosStateMask,PosState:Integer;
+ State,Len,LenState,PosSlot,NumDirectBits:Integer;
+ Rep0,Rep1,Rep2,Rep3,Dist,I:LongInt;
+ Prev,B:Byte;
+ Sym:Integer;
+Begin
+ UnzInitWindow(False);
+ Version:=UnzLZReadWordLE;
+ If Version=0 Then Begin End;
+ PropSize:=UnzLZReadWordLE;
+ If PropSize<>5 Then Begin
+  UnzFail('Proprietes LZMA ZIP non supportees.');
+  Exit;
+ End;
+ For Sym:=0 to 4 do Props[Sym]:=UnzLZReadByte;
+ Prop:=Props[0];
+ Lc:=Prop mod 9;
+ Prop:=Prop div 9;
+ Lp:=Prop mod 5;
+ Pb:=Prop div 5;
+ If(Lc>8)or(Lp>4)or(Pb>4)or(Lc+Lp>4)Then Begin
+  UnzFail('Parametres LZMA trop grands pour ce modele memoire.');
+  Exit;
+ End;
+ DictProp:=Props[1]+256*LongInt(Props[2])+65536*LongInt(Props[3])+
+  16777216*LongInt(Props[4]);
+ UnzLZAllocDict(DictProp);
+ If UnzErr Then Exit;
+ NumLitContexts:=1 shl(Lc+Lp);
+ UnzLZAllocLiterals(NumLitContexts);
+ If UnzErr Then Exit;
+ UnzLZInitProbs;
+ UnzLZRangeInit;
+ PosStateMask:=(1 shl Pb)-1;
+ State:=0;
+ Rep0:=0; Rep1:=0; Rep2:=0; Rep3:=0;
+ Prev:=0;
+ While (UnzOutSize<UnzUncompSize) And (Not UnzErr) Do Begin
+  PosState:=UnzOutSize and PosStateMask;
+  If UnzLZDecodeBit(UnzLZIsMatch[State*16+PosState])=0 Then Begin
+   B:=UnzLZDecodeLiteral(Lc,Lp,State,Rep0,Prev);
+   UnzLZPutByte(B);
+   Prev:=B;
+   If State<4 Then State:=0
+    Else If State<10 Then Dec(State,3)
+    Else Dec(State,6);
+  End
+   Else
+  Begin
+   If UnzLZDecodeBit(UnzLZIsRep[State])<>0 Then Begin
+    If UnzLZDecodeBit(UnzLZIsRepG0[State])=0 Then Begin
+     If UnzLZDecodeBit(UnzLZIsRep0Long[State*16+PosState])=0 Then Begin
+      If State<7 Then State:=9 Else State:=11;
+      Len:=1;
+     End
+      Else Len:=UnzLZDecodeLen(@UnzLZRepLenChoice,@UnzLZRepLenLow,
+       @UnzLZRepLenMid,@UnzLZRepLenHigh,PosState)+2;
+    End
+     Else
+    Begin
+     If UnzLZDecodeBit(UnzLZIsRepG1[State])=0 Then Dist:=Rep1
+      Else Begin
+       If UnzLZDecodeBit(UnzLZIsRepG2[State])=0 Then Dist:=Rep2
+        Else Begin
+         Dist:=Rep3;
+         Rep3:=Rep2;
+        End;
+       Rep2:=Rep1;
+      End;
+     Rep1:=Rep0;
+     Rep0:=Dist;
+     Len:=UnzLZDecodeLen(@UnzLZRepLenChoice,@UnzLZRepLenLow,
+      @UnzLZRepLenMid,@UnzLZRepLenHigh,PosState)+2;
+    End;
+    If Len<>1 Then If State<7 Then State:=8 Else State:=11;
+   End
+    Else
+   Begin
+    Rep3:=Rep2;
+    Rep2:=Rep1;
+    Rep1:=Rep0;
+    Len:=UnzLZDecodeLen(@UnzLZLenChoice,@UnzLZLenLow,@UnzLZLenMid,@UnzLZLenHigh,PosState)+2;
+    LenState:=UnzLZLenToPosState(Len);
+    PosSlot:=UnzLZBitTreeDecode(@UnzLZPosSlot,LenState*64,6);
+    If PosSlot>=4 Then Begin
+     NumDirectBits:=(PosSlot shr 1)-1;
+     Rep0:=(LongInt(2)or(PosSlot and 1))shl NumDirectBits;
+     If PosSlot<14 Then
+      Inc(Rep0,UnzLZReverseBitTreeDecode(@UnzLZPosDecoders,
+       Rep0-PosSlot-1,NumDirectBits))
+     Else Begin
+      Inc(Rep0,UnzLZDecodeDirectBits(NumDirectBits-4)
+       shl 4);
+      Inc(Rep0,UnzLZReverseBitTreeDecode(@UnzLZPosAlign,0,4));
+     End;
+    End
+     Else Rep0:=PosSlot;
+    If State<7 Then State:=7 Else State:=10;
+   End;
+   If(Rep0<0)or(Rep0>=UnzOutSize)Then Begin
+    UnzLZFree;
+    UnzFail('Reference LZMA invalide.');
+    Exit;
+   End;
+   For I:=1 to Len do Begin
+    B:=UnzLZGetDictByte(UnzLZDictPos-Rep0-1);
+    UnzLZPutByte(B);
+    Prev:=B;
+   End;
+  End;
+ End;
+ UnzLZFree;
+End;
+
+Function UnzDCLBits(Need:Integer):Integer;
+Var
+ Val:Integer;
+Begin
+ If UnzErr Then Begin UnzDCLBits:=0; Exit; End;
+ Val:=UnzDCLBitBuf;
+ While UnzDCLBitCount<Need do Begin
+  Val:=Val or(Integer(UnzReadCompByte)shl UnzDCLBitCount);
+  Inc(UnzDCLBitCount,8);
+ End;
+ UnzDCLBitBuf:=Val shr Need;
+ Dec(UnzDCLBitCount,Need);
+ If Need=0 Then UnzDCLBits:=0
+           Else UnzDCLBits:=Val and((1 shl Need)-1);
+End;
+
+Function UnzDCLDecode(Var H:TUnzDCLHuffman):Integer;
+Var
+ Len,Code,First,Cnt,Index:Integer;
+Begin
+ Code:=0;
+ First:=0;
+ Index:=0;
+ For Len:=1 to 13 do Begin
+  If UnzErr Then Begin UnzDCLDecode:=0; Exit; End;
+  Code:=Code or(UnzDCLBits(1)xor 1);
+  Cnt:=H.Count[Len];
+  If Code<First+Cnt Then Begin
+   UnzDCLDecode:=H.Symbol[Index+(Code-First)];
+   Exit;
+  End;
+  Inc(Index,Cnt);
+  Inc(First,Cnt);
+  First:=First shl 1;
+  Code:=Code shl 1;
+ End;
+ UnzFail('Code DCL Implode invalide.');
+ UnzDCLDecode:=0;
+End;
+
+Procedure UnzDCLConstruct(Var H:TUnzDCLHuffman;Var Rep;RepCount:Integer);
+Type
+ TRep=Array[0..255]of Byte;
+Var
+ R:^TRep;
+ Length:Array[0..255]of Integer;
+ Offs:Array[0..13]of Integer;
+ I,Len,Left,Symbol,N:Integer;
+Begin
+ R:=@Rep;
+ Symbol:=0;
+ For I:=0 to RepCount-1 do Begin
+  Len:=R^[I];
+  Left:=(Len shr 4)+1;
+  Len:=Len and 15;
+  While Left>0 do Begin
+   Length[Symbol]:=Len;
+   Inc(Symbol);
+   Dec(Left);
+  End;
+ End;
+ N:=Symbol;
+ For Len:=0 to 13 do H.Count[Len]:=0;
+ For Symbol:=0 to N-1 do Inc(H.Count[Length[Symbol]]);
+ Left:=1;
+ For Len:=1 to 13 do Begin
+  Left:=Left shl 1;
+  Dec(Left,H.Count[Len]);
+  If Left<0 Then Begin
+   UnzFail('Table DCL Implode invalide.');
+   Exit;
+  End;
+ End;
+ Offs[1]:=0;
+ For Len:=1 to 12 do Offs[Len+1]:=Offs[Len]+H.Count[Len];
+ For Symbol:=0 to N-1 do If Length[Symbol]<>0 Then Begin
+  H.Symbol[Offs[Length[Symbol]]]:=Symbol;
+  Inc(Offs[Length[Symbol]]);
+ End;
+End;
+
+Procedure UnzDCLPutByte(B:Byte);
+Begin
+ UnzPutOutByte(B);
+ UnzDCLWin^[UnzDCLNext]:=B;
+ UnzDCLNext:=(UnzDCLNext+1)and $0FFF;
+End;
+
+Procedure UnzInflateDCLImplode;
+Const
+ LitLen:Array[0..97]of Byte=(
+  11,124,8,7,28,7,188,13,76,4,10,8,12,10,12,10,8,23,8,
+  9,7,6,7,8,7,6,55,8,23,24,12,11,7,9,11,12,6,7,22,5,
+  7,24,6,11,9,6,7,22,7,11,38,7,9,8,25,11,8,11,9,12,
+  8,12,5,38,5,38,5,11,7,5,6,21,6,10,53,8,7,24,10,27,
+  44,253,253,253,252,252,252,13,12,45,12,45,12,61,12,45,
+  44,173);
+ LenLen:Array[0..5]of Byte=(2,35,36,53,38,23);
+ DistLen:Array[0..6]of Byte=(2,20,53,230,247,151,248);
+ Base:Array[0..15]of Integer=(
+  3,2,4,5,6,7,8,9,10,12,16,24,40,72,136,264);
+ Extra:Array[0..15]of Integer=(
+  0,0,0,0,0,0,0,0,1,2,3,4,5,6,7,8);
+Var
+ LitCode,LenCode,DistCode:TUnzDCLHuffman;
+ Lit,Dict,Symbol,Len,Dist,CopyBits,I,FromPos:Integer;
+ B:Byte;
+Begin
+ UnzInitWindow(False);
+ If UnzDCLWin=NIL Then GetMem(UnzDCLWin,SizeOf(TUnzDCLWindow));
+ If UnzDCLWin=NIL Then Begin
+  UnzFail('Memoire insuffisante pour DCL Implode.');
+  Exit;
+ End;
+ FillChar(UnzDCLWin^,SizeOf(TUnzDCLWindow),0);
+ UnzDCLBitBuf:=0;
+ UnzDCLBitCount:=0;
+ UnzDCLNext:=0;
+ UnzDCLConstruct(LitCode,LitLen,SizeOf(LitLen));
+ UnzDCLConstruct(LenCode,LenLen,SizeOf(LenLen));
+ UnzDCLConstruct(DistCode,DistLen,SizeOf(DistLen));
+ If UnzErr Then Exit;
+ Lit:=UnzDCLBits(8);
+ If Lit>1 Then Begin
+  UnzFail('En-tete DCL Implode invalide.');
+  Exit;
+ End;
+ Dict:=UnzDCLBits(8);
+ If(Dict<4)or(Dict>6)Then Begin
+  UnzFail('Dictionnaire DCL Implode invalide.');
+  Exit;
+ End;
+ While (Not UnzErr) Do Begin
+  If UnzDCLBits(1)<>0 Then Begin
+   Symbol:=UnzDCLDecode(LenCode);
+   Len:=Base[Symbol]+UnzDCLBits(Extra[Symbol]);
+   If Len=519 Then Break;
+   If Len=2 Then CopyBits:=2 Else CopyBits:=Dict;
+   Dist:=(UnzDCLDecode(DistCode)shl CopyBits)+UnzDCLBits(CopyBits)+1;
+   If Dist>UnzOutSize Then Begin
+    UnzFail('Reference DCL Implode invalide.');
+    Exit;
+   End;
+   For I:=1 to Len do Begin
+    FromPos:=(UnzDCLNext-Dist)and $0FFF;
+    B:=UnzDCLWin^[FromPos];
+    UnzDCLPutByte(B);
+   End;
+  End
+   Else
+  Begin
+   If Lit<>0 Then Symbol:=UnzDCLDecode(LitCode)
+             Else Symbol:=UnzDCLBits(8);
+   UnzDCLPutByte(Byte(Symbol));
+  End;
+ End;
+ FreeMem(UnzDCLWin,SizeOf(TUnzDCLWindow));
+ UnzDCLWin:=NIL;
+End;
+
+Function UnzTerseReadByte:Byte;
+Begin
+ UnzTerseReadByte:=UnzReadCompByte;
+End;
+
+Function UnzTerseReadWordBE:Integer;
+Var
+ B1,B2:Integer;
+Begin
+ B1:=UnzTerseReadByte;
+ B2:=UnzTerseReadByte;
+ UnzTerseReadWordBE:=B1*256+B2;
+End;
+
+Function UnzTerseReadDWordBE:LongInt;
+Var
+ B1,B2,B3,B4:LongInt;
+Begin
+ B1:=UnzTerseReadByte;
+ B2:=UnzTerseReadByte;
+ B3:=UnzTerseReadByte;
+ B4:=UnzTerseReadByte;
+ UnzTerseReadDWordBE:=(((B1*256)+B2)*256+B3)*256+B4;
+End;
+
+Function UnzTerseGetBlok:Integer;
+Var
+ B1,B2:Integer;
+Begin
+ If UnzErr Then Begin UnzTerseGetBlok:=0; Exit; End;
+ If UnzTerseBitsAvailable=0 Then Begin
+  If UnzCompLeft<=0 Then Begin
+   UnzTerseGetBlok:=0;
+   Exit;
+  End;
+  B1:=UnzTerseReadByte;
+  If UnzCompLeft<=0 Then Begin
+   UnzFail('Flux TERSE tronque.');
+   UnzTerseGetBlok:=0;
+   Exit;
+  End;
+  B2:=UnzTerseReadByte;
+  UnzTerseSavedBits:=B2 and $0F;
+  UnzTerseBitsAvailable:=4;
+  UnzTerseGetBlok:=(B1 shl 4)or(B2 shr 4);
+ End
+  Else
+ Begin
+  If UnzCompLeft<=0 Then Begin
+   UnzTerseGetBlok:=0;
+   Exit;
+  End;
+  B2:=UnzTerseReadByte;
+  UnzTerseBitsAvailable:=0;
+  UnzTerseGetBlok:=(UnzTerseSavedBits shl 8)or B2;
+ End;
+End;
+
+Procedure UnzTersePutChar(X:Integer);
+Begin
+ If(X=0)or(X=257)Then Exit;
+ If(X<0)or(X>256)Then Begin
+  UnzFail('Caractere TERSE invalide.');
+  Exit;
+ End;
+ UnzPutOutByte(Byte(X-1));
+End;
+
+Procedure UnzInflateTersePack;
+Var
+ Father,CharExt,Backward,Forward:PUnzTerseIntArray;
+ H1,H2,X,D,Y,Q,R,E,P,H:Integer;
+Begin
+ GetMem(Father,SizeOf(TUnzTerseIntArray));
+ GetMem(CharExt,SizeOf(TUnzTerseIntArray));
+ GetMem(Backward,SizeOf(TUnzTerseIntArray));
+ GetMem(Forward,SizeOf(TUnzTerseIntArray));
+ If(Father=NIL)or(CharExt=NIL)or(Backward=NIL)or(Forward=NIL)Then Begin
+  UnzFail('Memoire insuffisante pour TERSE PACK.');
+  Exit;
+ End;
+ H2:=1+Ord(' ');
+ For H1:=258 to 4095 do Begin
+  Father^[H1]:=H2;
+  CharExt^[H1]:=1+Ord(' ');
+  H2:=H1;
+ End;
+ For H1:=258 to 4094 do Begin
+  Backward^[H1+1]:=H1;
+  Forward^[H1]:=H1+1;
+ End;
+ Backward^[0]:=4095;
+ Forward^[0]:=258;
+ Backward^[258]:=0;
+ Forward^[4095]:=0;
+ X:=0;
+ D:=UnzTerseGetBlok;
+ While (D<>0) And (Not UnzErr) do Begin
+  H:=0;
+  Y:=Backward^[0];
+  Q:=Backward^[Y];
+  Backward^[0]:=Q;
+  Forward^[Q]:=0;
+  H:=Y;
+  P:=0;
+  While D>257 do Begin
+   Q:=Forward^[D];
+   R:=Backward^[D];
+   Forward^[R]:=Q;
+   Backward^[Q]:=R;
+   Forward^[D]:=H;
+   Backward^[H]:=D;
+   H:=D;
+   E:=Father^[D];
+   Father^[D]:=P;
+   P:=D;
+   D:=E;
+  End;
+  Q:=Forward^[0];
+  Forward^[Y]:=Q;
+  Backward^[Q]:=Y;
+  Forward^[0]:=H;
+  Backward^[H]:=0;
+  CharExt^[X]:=D;
+  UnzTersePutChar(D);
+  X:=Y;
+  While P<>0 do Begin
+   E:=Father^[P];
+   UnzTersePutChar(CharExt^[P]);
+   Father^[P]:=D;
+   D:=P;
+   P:=E;
+  End;
+  Father^[Y]:=D;
+  D:=UnzTerseGetBlok;
+ End;
+ FreeMem(Father,SizeOf(TUnzTerseIntArray));
+ FreeMem(CharExt,SizeOf(TUnzTerseIntArray));
+ FreeMem(Backward,SizeOf(TUnzTerseIntArray));
+ FreeMem(Forward,SizeOf(TUnzTerseIntArray));
+End;
+
+Procedure UnzInflateTerseSpack;
+Var
+ Tree:PUnzTerseTreeArray;
+ Stack:PUnzTerseStackArray;
+ TreeAvail,Node:Integer;
+
+ Procedure TreeInit;
+ Var
+  I:Integer;
+ Begin
+  For I:=0 to 4096 do Begin
+   Tree^[I].Left:=-1;
+   Tree^[I].Right:=-1;
+   Tree^[I].Back:=0;
+   Tree^[I].NextCount:=-1;
+  End;
+  I:=0;
+  While I<=257 do Begin
+   Tree^[I].Left:=-1;
+   Tree^[I].Right:=I;
+   Inc(I);
+  End;
+  For I:=258 to 4095 do Begin
+   Tree^[I].NextCount:=I+1;
+   Tree^[I].Left:=-1;
+   Tree^[I].Right:=-1;
+  End;
+  Tree^[4096].NextCount:=-1;
+  Tree^[0].NextCount:=0;
+  Tree^[0].Back:=0;
+  For I:=1 to 257 do Tree^[I].NextCount:=-1;
+  TreeAvail:=258;
+ End;
+
+ Function GetTreeNode:Integer;
+ Begin
+  Node:=TreeAvail;
+  TreeAvail:=Tree^[Node].NextCount;
+  GetTreeNode:=Node;
+ End;
+
+ Procedure LruAdd(N:Integer);
+ Var
+  B:Integer;
+ Begin
+  B:=Tree^[0].Back;
+  Tree^[N].NextCount:=0;
+  Tree^[0].Back:=N;
+  Tree^[N].Back:=B;
+  Tree^[B].NextCount:=N;
+ End;
+
+ Procedure DeleteRef(DRef:Integer); forward;
+
+ Procedure LruKill;
+ Var
+  P,Q,R:Integer;
+ Begin
+  P:=Tree^[0].NextCount;
+  Q:=Tree^[P].NextCount;
+  R:=Tree^[P].Back;
+  Tree^[Q].Back:=R;
+  Tree^[R].NextCount:=Q;
+  DeleteRef(Tree^[P].Left);
+  DeleteRef(Tree^[P].Right);
+  Tree^[P].NextCount:=TreeAvail;
+  TreeAvail:=P;
+ End;
+
+ Procedure DeleteRef(DRef:Integer);
+ Begin
+  If Tree^[DRef].NextCount=-1 Then LruAdd(DRef)
+   Else Inc(Tree^[DRef].NextCount);
+ End;
+
+ Procedure BumpRef(BRef:Integer);
+ Var
+  F,P:Integer;
+ Begin
+  If Tree^[BRef].NextCount<0 Then Dec(Tree^[BRef].NextCount)
+   Else Begin
+   F:=Tree^[BRef].NextCount;
+   P:=Tree^[BRef].Back;
+   Tree^[P].NextCount:=F;
+   Tree^[F].Back:=P;
+   Tree^[BRef].NextCount:=-1;
+  End;
+ End;
+
+ Procedure PutChars(X:Integer);
+ Begin
+  Stack^[0]:=0;
+  While True do Begin
+   If UnzErr Then Exit;
+   While X>257 do Begin
+    Inc(Stack^[0]);
+    If Stack^[0]>2047 Then Begin
+     UnzFail('Pile TERSE pleine.');
+     Exit;
+    End;
+    Stack^[Stack^[0]]:=Tree^[X].Right;
+    X:=Tree^[X].Left;
+   End;
+   If X<0 Then Begin
+    UnzFail('Sequence TERSE invalide.');
+    Exit;
+   End;
+   UnzTersePutChar(X);
+   If Stack^[0]>0 Then Begin
+    X:=Stack^[Stack^[0]];
+    Dec(Stack^[0]);
+   End
+    Else Break;
+  End;
+ End;
+
+Var
+ N,G,H:Integer;
+Begin
+ GetMem(Tree,SizeOf(TUnzTerseTreeArray));
+ GetMem(Stack,SizeOf(TUnzTerseStackArray));
+ If(Tree=NIL)or(Stack=NIL)Then Begin
+  UnzFail('Memoire insuffisante pour TERSE SPACK.');
+  Exit;
+ End;
+ TreeInit;
+ Tree^[4095].NextCount:=-1;
+ H:=UnzTerseGetBlok;
+ If (H<>0) And (Not UnzErr) Then Begin
+  PutChars(H);
+  G:=UnzTerseGetBlok;
+  While (G<>0) And (Not UnzErr) do Begin
+   If TreeAvail=-1 Then LruKill;
+   PutChars(G);
+   If UnzErr Then Break;
+   N:=GetTreeNode;
+   Tree^[N].Left:=H;
+   Tree^[N].Right:=G;
+   BumpRef(H);
+   BumpRef(G);
+   LruAdd(N);
+   H:=G;
+   G:=UnzTerseGetBlok;
+  End;
+ End;
+ FreeMem(Tree,SizeOf(TUnzTerseTreeArray));
+ FreeMem(Stack,SizeOf(TUnzTerseStackArray));
+End;
+
+Procedure UnzInflateTerse;
+Var
+ Version,Byte2,Byte3,Byte4,VariableFlag,Flags,Ratio:Integer;
+ RecordLen1,BlockSize:Integer;
+ RecordLen2:LongInt;
+ Spack:Boolean;
+Begin
+ UnzInitWindow(False);
+ UnzTerseBitsAvailable:=0;
+ UnzTerseSavedBits:=0;
+ Version:=UnzTerseReadByte;
+ Spack:=True;
+ Case Version of
+  $01,$07:Begin
+    Byte2:=UnzTerseReadByte;
+    Byte3:=UnzTerseReadByte;
+    Byte4:=UnzTerseReadByte;
+    RecordLen1:=UnzTerseReadWordBE;
+    If(RecordLen1=0)Then Begin End;
+    If(Byte2<>$89)or(Byte3<>$69)or(Byte4<>$A5)Then Begin
+     UnzFail('En-tete TERSE invalide.');
+     Exit;
+    End;
+    Spack:=False;
+   End;
+  $02,$05:Begin
+    VariableFlag:=UnzTerseReadByte;
+    RecordLen1:=UnzTerseReadWordBE;
+    Flags:=UnzTerseReadByte;
+    Ratio:=UnzTerseReadByte;
+    BlockSize:=UnzTerseReadWordBE;
+    RecordLen2:=UnzTerseReadDWordBE;
+    If(VariableFlag<>0)and(VariableFlag<>1)Then Begin
+     UnzFail('Format enregistrement TERSE invalide.');
+     Exit;
+    End;
+    If(RecordLen1=0)and(RecordLen2=0)Then Begin
+     UnzFail('Longueur enregistrement TERSE invalide.');
+     Exit;
+    End;
+    If(Flags=0)and((Ratio<>0)or(BlockSize<>0))Then Begin
+     UnzFail('En-tete TERSE invalide.');
+     Exit;
+    End;
+    Spack:=Version=$05;
+   End;
+ Else
+  UnzFail('Version TERSE non reconnue.');
+  Exit;
+ End;
+ If Spack Then UnzInflateTerseSpack
+          Else UnzInflateTersePack;
+End;
+
+Function UnzZstdReadByte:Byte;
+Begin
+ UnzZstdReadByte:=UnzReadCompByte;
+End;
+
+Function UnzZstdReadDWordLE:LongInt;
+Var
+ B1,B2,B3,B4:LongInt;
+Begin
+ B1:=UnzZstdReadByte;
+ B2:=UnzZstdReadByte;
+ B3:=UnzZstdReadByte;
+ B4:=UnzZstdReadByte;
+ UnzZstdReadDWordLE:=B1+256*B2+65536*B3+16777216*B4;
+End;
+
+Procedure UnzZstdSkip(N:LongInt);
+Begin
+ While (N>0) And (Not UnzErr) do Begin
+  UnzZstdReadByte;
+  Dec(N);
+ End;
+End;
+
+Function UnzZstdReadSize(SizeBytes:Integer;Add256:Boolean):LongInt;
+Var
+ I:Integer;
+ V,Mult:LongInt;
+Begin
+ V:=0;
+ Mult:=1;
+ For I:=1 to SizeBytes do Begin
+  V:=V+Mult*UnzZstdReadByte;
+  Mult:=Mult*256;
+ End;
+ If Add256 Then Inc(V,256);
+ UnzZstdReadSize:=V;
+End;
+
+Function UnzZstdBitsMask(N:Integer):LongInt;
+Begin
+ If N<=0 Then UnzZstdBitsMask:=0
+  Else If N>=31 Then UnzZstdBitsMask:=$7FFFFFFF
+  Else UnzZstdBitsMask:=(LongInt(1)shl N)-1;
+End;
+
+Function UnzZstdHighBit(V:Integer):Integer;
+Var
+ R:Integer;
+Begin
+ R:=0;
+ While V>1 do Begin
+  V:=V shr 1;
+  Inc(R);
+ End;
+ UnzZstdHighBit:=R;
+End;
+
+Function UnzZstdBufGet(Buf:PUnzSeqBuffer;Index:LongInt):Byte;Forward;
+Procedure UnzZstdBufSet(Buf:PUnzSeqBuffer;Index:LongInt;Value:Byte);Forward;
+Procedure UnzZstdBufAlloc(Var Buf:PUnzSeqBuffer);Forward;
+Procedure UnzZstdBufFree(Var Buf:PUnzSeqBuffer);Forward;
+
+Function UnzZstdFSEReadNCount(Var NCount;MaxSymbol,MaxTableLog:Integer;
+ Var TableLog:Integer;Var HeaderSize:Integer):Integer;
+Type
+ TNCount=Array[0..256]of Integer;
+Var
+ Count:^TNCount;
+ BitStream:LongInt;
+ BitCount,ByteCount,CharNum,Remaining,Threshold,NBBits,MaxV,Value:Integer;
+ Previous0:Boolean;
+ B:Byte;
+
+ Procedure NeedBits(N:Integer);
+ Begin
+  While BitCount<N do Begin
+   B:=UnzZstdReadByte;
+   BitStream:=BitStream or(LongInt(B)shl BitCount);
+   Inc(BitCount,8);
+   Inc(ByteCount);
+  End;
+ End;
+
+Begin
+ Count:=@NCount;
+ For CharNum:=0 to 256 do Count^[CharNum]:=0;
+ B:=UnzZstdReadByte;
+ BitStream:=B;
+ BitCount:=8;
+ ByteCount:=1;
+ TableLog:=(B and 15)+5;
+ If(TableLog<5)or(TableLog>MaxTableLog)Then Begin
+  UnzFail('TableLog FSE Zstandard invalide.');
+  UnzZstdFSEReadNCount:=0;
+  Exit;
+ End;
+ BitStream:=BitStream shr 4;
+ Dec(BitCount,4);
+ Remaining:=(1 shl TableLog)+1;
+ Threshold:=1 shl TableLog;
+ NBBits:=TableLog+1;
+ CharNum:=0;
+ Previous0:=False;
+ While(CharNum<=MaxSymbol)and(Remaining>1)and(Not UnzErr) do Begin
+  If Previous0 Then Begin
+   NeedBits(2);
+   While(BitStream and 3)=3 do Begin
+    Inc(CharNum,3);
+    BitStream:=BitStream shr 2;
+    Dec(BitCount,2);
+    NeedBits(2);
+   End;
+   Inc(CharNum,Integer(BitStream and 3));
+   BitStream:=BitStream shr 2;
+   Dec(BitCount,2);
+   If CharNum>MaxSymbol Then Begin
+    UnzFail('RLE FSE Zstandard invalide.');
+    UnzZstdFSEReadNCount:=0;
+    Exit;
+   End;
+   Previous0:=False;
+  End;
+  MaxV:=(Threshold shl 1)-1-Remaining;
+  NeedBits(NBBits);
+  Value:=Integer(BitStream and(Threshold-1));
+  If Value<MaxV Then Begin
+   BitStream:=BitStream shr(NBBits-1);
+   Dec(BitCount,NBBits-1);
+  End
+   Else
+  Begin
+   Value:=Integer(BitStream and((Threshold shl 1)-1));
+   If Value>=Threshold Then Dec(Value,MaxV);
+   BitStream:=BitStream shr NBBits;
+   Dec(BitCount,NBBits);
+  End;
+  Dec(Value);
+  Count^[CharNum]:=Value;
+  If Value<0 Then Dec(Remaining)
+             Else Dec(Remaining,Value);
+  Previous0:=Value=0;
+  Inc(CharNum);
+  While(Threshold>Remaining)do Begin
+   Dec(NBBits);
+   Threshold:=Threshold shr 1;
+  End;
+ End;
+ If UnzErr Then Begin UnzZstdFSEReadNCount:=0; Exit; End;
+ If Remaining<>1 Then Begin
+  UnzFail('Distribution FSE Zstandard invalide.');
+  UnzZstdFSEReadNCount:=0;
+  Exit;
+ End;
+ HeaderSize:=ByteCount;
+ UnzZstdFSEReadNCount:=CharNum-1;
+End;
+
+Function UnzZstdFSEReadNCountBuf(Buf:PUnzSeqBuffer;Size:LongInt;
+ Var NCount;MaxSymbol,MaxTableLog:Integer;
+ Var TableLog:Integer;Var HeaderSize:Integer):Integer;
+Type
+ TNCount=Array[0..256]of Integer;
+Var
+ Count:^TNCount;
+ BitStream:LongInt;
+ BitCount,ByteCount,CharNum,Remaining,Threshold,NBBits,MaxV,Value:Integer;
+ Previous0:Boolean;
+ B:Byte;
+ ReadErr:Boolean;
+
+ Function ReadB:Byte;
+ Begin
+  If ByteCount>=Size Then Begin
+   UnzFail('En-tete FSE Zstandard tronque.');
+   ReadErr:=True;
+   ReadB:=0;
+   Exit;
+  End;
+  ReadB:=UnzZstdBufGet(Buf,ByteCount);
+  Inc(ByteCount);
+ End;
+
+ Procedure NeedBits(N:Integer);
+ Begin
+  While (BitCount<N) And (Not ReadErr) do Begin
+   B:=ReadB;
+   BitStream:=BitStream or(LongInt(B)shl BitCount);
+   Inc(BitCount,8);
+  End;
+ End;
+
+Begin
+ ReadErr:=False;
+ Count:=@NCount;
+ For CharNum:=0 to 256 do Count^[CharNum]:=0;
+ ByteCount:=0;
+ B:=ReadB;
+ BitStream:=B;
+ BitCount:=8;
+ TableLog:=(B and 15)+5;
+ If(TableLog<5)or(TableLog>MaxTableLog)Then Begin
+  UnzFail('TableLog FSE Zstandard invalide.');
+  UnzZstdFSEReadNCountBuf:=0;
+  Exit;
+ End;
+ BitStream:=BitStream shr 4;
+ Dec(BitCount,4);
+ Remaining:=(1 shl TableLog)+1;
+ Threshold:=1 shl TableLog;
+ NBBits:=TableLog+1;
+ CharNum:=0;
+ Previous0:=False;
+ While(CharNum<=MaxSymbol)and(Remaining>1)and(Not ReadErr)and(Not UnzErr) do Begin
+  If Previous0 Then Begin
+   NeedBits(2);
+   While(BitStream and 3)=3 do Begin
+    Inc(CharNum,3);
+    BitStream:=BitStream shr 2;
+    Dec(BitCount,2);
+    NeedBits(2);
+   End;
+   Inc(CharNum,Integer(BitStream and 3));
+   BitStream:=BitStream shr 2;
+   Dec(BitCount,2);
+   If CharNum>MaxSymbol Then Begin
+    UnzFail('RLE FSE Zstandard invalide.');
+    UnzZstdFSEReadNCountBuf:=0;
+    Exit;
+   End;
+   Previous0:=False;
+  End;
+  MaxV:=(Threshold shl 1)-1-Remaining;
+  NeedBits(NBBits);
+  Value:=Integer(BitStream and(Threshold-1));
+  If Value<MaxV Then Begin
+   BitStream:=BitStream shr(NBBits-1);
+   Dec(BitCount,NBBits-1);
+  End
+   Else
+  Begin
+   Value:=Integer(BitStream and((Threshold shl 1)-1));
+   If Value>=Threshold Then Dec(Value,MaxV);
+   BitStream:=BitStream shr NBBits;
+   Dec(BitCount,NBBits);
+  End;
+  Dec(Value);
+  Count^[CharNum]:=Value;
+  If Value<0 Then Dec(Remaining)
+             Else Dec(Remaining,Value);
+  Previous0:=Value=0;
+  Inc(CharNum);
+  While(Threshold>Remaining)do Begin
+   Dec(NBBits);
+   Threshold:=Threshold shr 1;
+  End;
+ End;
+ If ReadErr Or UnzErr Then Begin UnzZstdFSEReadNCountBuf:=0; Exit; End;
+ If Remaining<>1 Then Begin
+  UnzFail('Distribution FSE Zstandard invalide.');
+  UnzZstdFSEReadNCountBuf:=0;
+  Exit;
+ End;
+ HeaderSize:=ByteCount;
+ UnzZstdFSEReadNCountBuf:=CharNum-1;
+End;
+
+Procedure UnzZstdFSEBuildTable(Var T:TUnzFSETable;Var NCount;MaxSymbol,TableLog:Integer);
+Type
+ TNCount=Array[0..256]of Integer;
+ TSymbols=Array[0..4095]of Integer;
+ TNext=Array[0..256]of Integer;
+Var
+ Count:^TNCount;
+ TableSymbol:^TSymbols;
+ SymbolNext:^TNext;
+ TableSize,HighThreshold,TableMask,Step,Pos:Integer;
+ Sym,I,N,NextState,NB:Integer;
+Begin
+ Count:=@NCount;
+ GetMem(TableSymbol,SizeOf(TSymbols));
+ GetMem(SymbolNext,SizeOf(TNext));
+ If(TableSymbol=NIL)or(SymbolNext=NIL)Then Begin
+  UnzFail('Memoire insuffisante pour table FSE Zstandard.');
+  Exit;
+ End;
+ TableSize:=1 shl TableLog;
+ T.TableLog:=TableLog;
+ T.TableSize:=TableSize;
+ T.FastMode:=True;
+ HighThreshold:=TableSize-1;
+ For Sym:=0 to MaxSymbol do Begin
+  If Count^[Sym]=-1 Then Begin
+   TableSymbol^[HighThreshold]:=Sym;
+   Dec(HighThreshold);
+   SymbolNext^[Sym]:=1;
+  End
+   Else Begin
+   If Count^[Sym]>=TableSize div 2 Then T.FastMode:=False;
+   SymbolNext^[Sym]:=Count^[Sym];
+  End;
+ End;
+ TableMask:=TableSize-1;
+ Step:=(TableSize shr 1)+(TableSize shr 3)+3;
+ Pos:=0;
+ For Sym:=0 to MaxSymbol do Begin
+  N:=Count^[Sym];
+  If N>0 Then For I:=1 to N do Begin
+   TableSymbol^[Pos]:=Sym;
+   Pos:=(Pos+Step)and TableMask;
+   While Pos>HighThreshold do Pos:=(Pos+Step)and TableMask;
+  End;
+ End;
+ If Pos<>0 Then Begin
+  FreeMem(TableSymbol,SizeOf(TSymbols));
+  FreeMem(SymbolNext,SizeOf(TNext));
+  UnzFail('Construction FSE Zstandard invalide.');
+  Exit;
+ End;
+ For I:=0 to TableSize-1 do Begin
+  Sym:=TableSymbol^[I];
+  NextState:=SymbolNext^[Sym];
+  Inc(SymbolNext^[Sym]);
+  NB:=TableLog-UnzZstdHighBit(NextState);
+  T.Entry[I].Symbol:=Byte(Sym);
+  T.Entry[I].Bits:=NB;
+  T.Entry[I].NewState:=(NextState shl NB)-TableSize;
+ End;
+ FreeMem(TableSymbol,SizeOf(TSymbols));
+ FreeMem(SymbolNext,SizeOf(TNext));
+End;
+
+Procedure UnzZstdHuffBuildTable(Var H:TUnzHuffTable;MaxSymbol:Integer);
+Var
+ Count:Array[0..12]of Integer;
+ Start:Array[0..12]of Integer;
+ Bits,Sym,Idx,TableLog,Sum,W,Next,Len,J:Integer;
+Begin
+ For Bits:=0 to 12 do Count[Bits]:=0;
+ Sum:=0;
+ For Sym:=0 to MaxSymbol do Begin
+  If H.Weight[Sym]>12 Then Begin
+   UnzFail('Poids Huffman Zstandard invalide.');
+   Exit;
+  End;
+  If H.Weight[Sym]>0 Then Inc(Sum,1 shl(H.Weight[Sym]-1));
+ End;
+ If Sum=0 Then Begin
+  UnzFail('Table Huffman Zstandard vide.');
+  Exit;
+ End;
+ TableLog:=UnzZstdHighBit(Sum);
+ If(1 shl TableLog)<>Sum Then Begin
+  UnzFail('Somme des poids Huffman Zstandard invalide.');
+  Exit;
+ End;
+ If TableLog>11 Then Begin
+  UnzFail('Table Huffman Zstandard trop grande.');
+  Exit;
+ End;
+ H.TableLog:=TableLog;
+ H.TableSize:=1 shl TableLog;
+ H.MaxSymbol:=MaxSymbol;
+ For Idx:=0 to 4095 do Begin
+  H.Entry[Idx].Symbol:=0;
+  H.Entry[Idx].Bits:=0;
+ End;
+ For Sym:=0 to MaxSymbol do Begin
+  W:=H.Weight[Sym];
+  If W<>0 Then Inc(Count[W]);
+ End;
+ If(Count[1]<2)or((Count[1]and 1)<>0)Then Begin
+  UnzFail('Poids Huffman Zstandard invalides.');
+  Exit;
+ End;
+ Next:=0;
+ For W:=1 to TableLog do Begin
+  Start[W]:=Next;
+  Inc(Next,Count[W]shl(W-1));
+ End;
+ For Sym:=0 to MaxSymbol do Begin
+  W:=H.Weight[Sym];
+  If W<>0 Then Begin
+   Bits:=TableLog+1-W;
+   If(Bits<1)or(Bits>12)Then Begin
+    UnzFail('Longueur Huffman Zstandard invalide.');
+    Exit;
+   End;
+   Len:=1 shl(W-1);
+   Idx:=Start[W];
+   For J:=0 to Len-1 do Begin
+    H.Entry[Idx].Symbol:=Byte(Sym);
+    H.Entry[Idx].Bits:=Bits;
+    Inc(Idx);
+   End;
+   Inc(Start[W],Len);
+  End;
+ End;
+End;
+
+Procedure UnzZstdHuffFinishWeights(Var H:TUnzHuffTable;NumWeights:Integer);
+Var
+ I,Sum,Full,Left,LastWeight,MaxSymbol:Integer;
+Begin
+ If(NumWeights<1)or(NumWeights>=255)Then Begin
+  UnzFail('Nombre de poids Huffman Zstandard invalide.');
+  Exit;
+ End;
+ Sum:=0;
+ For I:=0 to NumWeights-1 do Begin
+  If H.Weight[I]>12 Then Begin
+   UnzFail('Poids Huffman Zstandard invalide.');
+   Exit;
+  End;
+  If H.Weight[I]<>0 Then Inc(Sum,1 shl(H.Weight[I]-1));
+ End;
+ If Sum=0 Then Begin
+  UnzFail('Poids Huffman Zstandard vides.');
+  Exit;
+ End;
+ Full:=1;
+ While Full<Sum do Full:=Full shl 1;
+ Left:=Full-Sum;
+ If Left=0 Then Begin
+  UnzFail('Poids final Huffman Zstandard invalide.');
+  Exit;
+ End;
+ LastWeight:=0;
+ While Left>1 do Begin
+  If(Left and 1)<>0 Then Begin
+   UnzFail('Poids final Huffman Zstandard invalide.');
+   Exit;
+  End;
+  Left:=Left shr 1;
+  Inc(LastWeight);
+ End;
+ Inc(LastWeight);
+ H.Weight[NumWeights]:=LastWeight;
+ MaxSymbol:=NumWeights;
+ UnzZstdHuffBuildTable(H,MaxSymbol);
+End;
+
+Procedure UnzZstdHuffReadDirect(Var H:TUnzHuffTable;HeaderByte:Integer;
+ Var HeaderSize:Integer);
+Var
+ NumWeights,I,B:Integer;
+Begin
+ NumWeights:=HeaderByte-127;
+ If(NumWeights<1)or(NumWeights>254)Then Begin
+  UnzFail('En-tete Huffman Zstandard invalide.');
+  Exit;
+ End;
+ For I:=0 to 255 do H.Weight[I]:=0;
+ HeaderSize:=1+(NumWeights+1)div 2;
+ For I:=0 to NumWeights-1 do Begin
+  If(I and 1)=0 Then Begin
+   B:=UnzZstdReadByte;
+   H.Weight[I]:=(B shr 4)and 15;
+   If I+1<NumWeights Then H.Weight[I+1]:=B and 15;
+  End;
+ End;
+ UnzZstdHuffFinishWeights(H,NumWeights);
+End;
+
+Procedure UnzZstdHuffReadFSE(Var H:TUnzHuffTable;HeaderByte:Integer;
+ Var HeaderSize:Integer);
+Type
+ TCount=Array[0..256]of Integer;
+Var
+ Buf:PUnzSeqBuffer;
+ Count:TCount;
+ T:TUnzFSETable;
+ TableLog,FSEHeaderSize,LastSym:Integer;
+ I,State1,State2,NumWeights:Integer;
+ Off,Start,Cnt:Integer;
+ Bits:LongInt;
+
+ Function RFetch(N:Integer):Boolean;
+ Begin
+  While Cnt<N do Begin
+   If Off<=Start Then Begin
+    RFetch:=False;
+    Exit;
+   End;
+   Dec(Off);
+   Bits:=(Bits shl 8)or UnzZstdBufGet(Buf,Off);
+   Inc(Cnt,8);
+  End;
+  RFetch:=True;
+ End;
+
+ Function RVal(N:Integer):LongInt;
+ Begin
+  If N=0 Then Begin
+   RVal:=0;
+   Exit;
+  End;
+  If Not RFetch(N)Then Begin
+   UnzFail('En-tete Huffman FSE Zstandard tronque.');
+   RVal:=0;
+   Exit;
+  End;
+  Dec(Cnt,N);
+  RVal:=UnzUShiftRight(Bits,Cnt)and UnzZstdBitsMask(N);
+ End;
+
+ Procedure NextState(Var State:Integer);
+ Var
+  E:TUnzFSEEntry;
+ Begin
+  E:=T.Entry[State];
+  State:=E.NewState+RVal(E.Bits);
+ End;
+
+Begin
+ If(HeaderByte<=0)or(HeaderByte>127)Then Begin
+  UnzFail('Taille en-tete Huffman FSE Zstandard invalide.');
+  Exit;
+ End;
+ UnzZstdBufAlloc(Buf);
+ If Buf=NIL Then Begin
+  UnzFail('Memoire insuffisante pour en-tete Huffman Zstandard.');
+  Exit;
+ End;
+ For I:=0 to HeaderByte-1 do UnzZstdBufSet(Buf,I,UnzZstdReadByte);
+ LastSym:=UnzZstdFSEReadNCountBuf(Buf,HeaderByte,Count,255,6,
+  TableLog,FSEHeaderSize);
+ If UnzErr Then Begin UnzZstdBufFree(Buf); Exit; End;
+ If LastSym>255 Then Begin
+  UnzZstdBufFree(Buf);
+  UnzFail('Table FSE Huffman Zstandard invalide.');
+  Exit;
+ End;
+ UnzZstdFSEBuildTable(T,Count,LastSym,TableLog);
+ If UnzErr Then Begin UnzZstdBufFree(Buf); Exit; End;
+ If FSEHeaderSize>=HeaderByte Then Begin
+  UnzZstdBufFree(Buf);
+  UnzFail('Bitstream Huffman FSE Zstandard absent.');
+  Exit;
+ End;
+ Start:=FSEHeaderSize;
+ Off:=HeaderByte-1;
+ Bits:=UnzZstdBufGet(Buf,Off);
+ If Bits=0 Then Begin
+  UnzZstdBufFree(Buf);
+  UnzFail('Fin bitstream Huffman FSE Zstandard invalide.');
+  Exit;
+ End;
+ Cnt:=UnzZstdHighBit(Integer(Bits));
+ State1:=Integer(RVal(TableLog));
+ State2:=Integer(RVal(TableLog));
+ For I:=0 to 255 do H.Weight[I]:=0;
+ NumWeights:=0;
+ While (Not UnzErr) do Begin
+  If Not RFetch(T.Entry[State1].Bits)Then Begin
+   If NumWeights>=254 Then Begin
+    UnzZstdBufFree(Buf);
+    UnzFail('Trop de poids Huffman Zstandard.');
+    Exit;
+   End;
+   H.Weight[NumWeights]:=T.Entry[State1].Symbol;
+   H.Weight[NumWeights+1]:=T.Entry[State2].Symbol;
+   Inc(NumWeights,2);
+   Break;
+  End;
+  If NumWeights>=255 Then Begin
+   UnzZstdBufFree(Buf);
+   UnzFail('Trop de poids Huffman Zstandard.');
+   Exit;
+  End;
+  H.Weight[NumWeights]:=T.Entry[State1].Symbol;
+  Inc(NumWeights);
+  NextState(State1);
+  If Not RFetch(T.Entry[State2].Bits)Then Begin
+   If NumWeights>=254 Then Begin
+    UnzZstdBufFree(Buf);
+    UnzFail('Trop de poids Huffman Zstandard.');
+    Exit;
+   End;
+   H.Weight[NumWeights]:=T.Entry[State2].Symbol;
+   H.Weight[NumWeights+1]:=T.Entry[State1].Symbol;
+   Inc(NumWeights,2);
+   Break;
+  End;
+  If NumWeights>=255 Then Begin
+   UnzZstdBufFree(Buf);
+   UnzFail('Trop de poids Huffman Zstandard.');
+   Exit;
+  End;
+  H.Weight[NumWeights]:=T.Entry[State2].Symbol;
+  Inc(NumWeights);
+  NextState(State2);
+ End;
+ UnzZstdBufFree(Buf);
+ If UnzErr Then Exit;
+ HeaderSize:=1+HeaderByte;
+ UnzZstdHuffFinishWeights(H,NumWeights);
+End;
+
+Procedure UnzZstdHuffReadTable(Var H:TUnzHuffTable;Var HeaderSize:Integer);
+Var
+ HeaderByte:Integer;
+Begin
+ HeaderByte:=UnzZstdReadByte;
+ If HeaderByte>=128 Then UnzZstdHuffReadDirect(H,HeaderByte,HeaderSize)
+  Else UnzZstdHuffReadFSE(H,HeaderByte,HeaderSize);
+End;
+
+Procedure UnzZstdBuildDefaultSeqTables(Var S:TUnzSeqTables);
+Const
+ LLDef:Array[0..35]of Integer=(
+  4,3,2,2,2,2,2,2,2,2,2,2,2,1,1,1,
+  2,2,2,2,2,2,2,2,2,3,2,1,1,1,1,1,
+  -1,-1,-1,-1);
+ MLDef:Array[0..52]of Integer=(
+  1,4,3,2,2,2,2,2,2,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,1,1,1,1,1,1,-1,-1,
+  -1,-1,-1,-1,-1);
+ OFDef:Array[0..28]of Integer=(
+  1,1,1,1,1,1,2,2,2,1,1,1,1,1,1,1,
+  1,1,1,1,1,1,1,1,-1,-1,-1,-1,-1);
+Begin
+ UnzZstdFSEBuildTable(S.LL,LLDef,35,6);
+ UnzZstdFSEBuildTable(S.ML,MLDef,52,6);
+ UnzZstdFSEBuildTable(S.OFs,OFDef,28,5);
+ S.LLValid:=True;
+ S.MLValid:=True;
+ S.OFValid:=True;
+ S.LLMode:=0;
+ S.MLMode:=0;
+ S.OFMode:=0;
+End;
+
+Function UnzZstdSeqReadNumber:LongInt;
+Var
+ B0,B1,B2:Integer;
+Begin
+ B0:=UnzZstdReadByte;
+ If B0=0 Then UnzZstdSeqReadNumber:=0
+  Else If B0<128 Then UnzZstdSeqReadNumber:=B0
+  Else If B0<255 Then Begin
+   B1:=UnzZstdReadByte;
+   UnzZstdSeqReadNumber:=((B0-128)shl 8)+B1;
+  End
+  Else Begin
+   B1:=UnzZstdReadByte;
+   B2:=UnzZstdReadByte;
+   UnzZstdSeqReadNumber:=B1+(B2 shl 8)+$7F00;
+  End;
+End;
+
+Procedure UnzZstdSeqReadOneTable(Var Tab:TUnzFSETable;Var Mode:Integer;
+ Var RLE:Byte;Var Valid:Boolean;MaxSymbol,MaxLog:Integer;Name:String);
+Var
+ Count:Array[0..256]of Integer;
+ TableLog,HeaderSize,LastSym:Integer;
+Begin
+ Case Mode of
+  0:Begin
+     Valid:=True;
+    End;
+  1:Begin
+     RLE:=UnzZstdReadByte;
+     Valid:=True;
+    End;
+  2:Begin
+     LastSym:=UnzZstdFSEReadNCount(Count,MaxSymbol,MaxLog,TableLog,HeaderSize);
+     If UnzErr Then Exit;
+     If LastSym>MaxSymbol Then Begin
+      UnzFail('Table FSE '+Name+' Zstandard invalide.');
+      Exit;
+     End;
+     UnzZstdFSEBuildTable(Tab,Count,LastSym,TableLog);
+     Valid:=True;
+    End;
+  3:Begin
+     If Not Valid Then Begin
+      UnzFail('Repeat_Mode FSE '+Name+' Zstandard sans table precedente.');
+      Exit;
+     End;
+    End;
+ Else
+  UnzFail('Mode FSE '+Name+' Zstandard invalide.');
+ End;
+End;
+
+Function UnzZstdBufGet(Buf:PUnzSeqBuffer;Index:LongInt):Byte;
+Begin
+ UnzZstdBufGet:=Buf^.Chunks[Index shr 14]^[Index and 16383];
+End;
+
+Procedure UnzZstdBufSet(Buf:PUnzSeqBuffer;Index:LongInt;Value:Byte);
+Begin
+ Buf^.Chunks[Index shr 14]^[Index and 16383]:=Value;
+End;
+
+Procedure UnzZstdBufAlloc(Var Buf:PUnzSeqBuffer);
+Var
+ I,J:Integer;
+Begin
+ New(Buf);
+ If Buf=NIL Then Exit;
+ For I:=0 to 7 do Buf^.Chunks[I]:=NIL;
+ For I:=0 to 7 do Begin
+  New(Buf^.Chunks[I]);
+  If Buf^.Chunks[I]=NIL Then Begin
+   For J:=0 to I-1 do Dispose(Buf^.Chunks[J]);
+   Dispose(Buf);
+   Buf:=NIL;
+   Exit;
+  End;
+ End;
+End;
+
+Procedure UnzZstdBufFree(Var Buf:PUnzSeqBuffer);
+Var
+ I:Integer;
+Begin
+ If Buf=NIL Then Exit;
+ For I:=0 to 7 do
+  If Buf^.Chunks[I]<>NIL Then Dispose(Buf^.Chunks[I]);
+ Dispose(Buf);
+ Buf:=NIL;
+End;
+
+Function UnzZstdByteHighBit(V:Byte):Integer;
+Var
+ I:Integer;
+Begin
+ For I:=7 downto 0 do
+  If(V and(1 shl I))<>0 Then Begin
+   UnzZstdByteHighBit:=I;
+   Exit;
+  End;
+ UnzZstdByteHighBit:=-1;
+End;
+
+Procedure UnzZstdRevReload(Var B:TUnzRevBitStream);
+Var
+ NB,I,Shift:LongInt;
+Begin
+ If B.BitCount>32 Then Begin
+  UnzFail('Bitstream sequences Zstandard trop court.');
+  Exit;
+ End;
+ If B.Pos>=B.Base+4 Then Begin
+  B.Pos:=B.Pos-(B.BitCount div 8);
+  B.BitCount:=B.BitCount and 7;
+ End
+  Else If B.Pos<>B.Base Then Begin
+  NB:=B.BitCount div 8;
+  If B.Pos-NB<B.Base Then NB:=B.Pos-B.Base;
+  B.Pos:=B.Pos-NB;
+  B.BitCount:=B.BitCount-(NB*8);
+ End;
+ B.Bits:=0;
+ Shift:=0;
+ For I:=B.Pos to B.Pos+3 do Begin
+  If I<B.Base+B.Size Then B.Bits:=B.Bits or(LongInt(UnzZstdBufGet(B.Buf,I))shl Shift);
+  Inc(Shift,8);
+ End;
+End;
+
+Procedure UnzZstdRevInit(Var B:TUnzRevBitStream;Buf:PUnzSeqBuffer;Base,Size:LongInt);
+Var
+ Last:Byte;
+ I,Shift:LongInt;
+Begin
+ If Size<=0 Then Begin
+  UnzFail('Bitstream sequences Zstandard vide.');
+  Exit;
+ End;
+ B.Buf:=Buf;
+ B.Base:=Base;
+ B.Size:=Size;
+ Last:=UnzZstdBufGet(Buf,Base+Size-1);
+ If Last=0 Then Begin
+  UnzFail('Fin de bitstream Zstandard invalide.');
+  Exit;
+ End;
+ If Size>=4 Then B.Pos:=Base+Size-4
+            Else B.Pos:=Base;
+ B.Bits:=0;
+ Shift:=0;
+ For I:=B.Pos to B.Pos+3 do Begin
+  If I<Base+Size Then B.Bits:=B.Bits or(LongInt(UnzZstdBufGet(Buf,I))shl Shift);
+  Inc(Shift,8);
+ End;
+ B.BitCount:=8-UnzZstdByteHighBit(Last);
+ If Size<4 Then B.BitCount:=B.BitCount+(4-Size)*8;
+End;
+
+Function UnzZstdRevReadBits(Var B:TUnzRevBitStream;N:Integer):LongInt;
+Var
+ R,T:LongInt;
+Begin
+ If N=0 Then Begin
+  UnzZstdRevReadBits:=0;
+  Exit;
+ End;
+ If B.BitCount+N>32 Then Begin
+  UnzZstdRevReload(B);
+  If UnzErr Then Begin UnzZstdRevReadBits:=0; Exit; End;
+  If B.BitCount+N>32 Then Begin
+   UnzFail('Bitstream sequences Zstandard trop court.');
+   UnzZstdRevReadBits:=0;
+   Exit;
+  End;
+ End;
+ T:=B.Bits shl B.BitCount;
+ R:=UnzUShiftRight(T,32-N)and UnzZstdBitsMask(N);
+ Inc(B.BitCount,N);
+ If B.BitCount>=25 Then UnzZstdRevReload(B);
+ UnzZstdRevReadBits:=R;
+End;
+
+Procedure UnzZstdHuffDecodeStream(Var H:TUnzHuffTable;StreamBuf:PUnzSeqBuffer;
+ StreamBase,StreamSize:LongInt;LitBuf:PUnzSeqBuffer;Var LitPos:LongInt;
+ NumLits:LongInt);
+Var
+ Off,Start,Cnt:LongInt;
+ Bits,Idx:LongInt;
+ I:LongInt;
+
+ Function HFetch(N:Integer):Boolean;
+ Begin
+  While Cnt<N do Begin
+   If Off<=Start Then Begin
+    HFetch:=False;
+    Exit;
+   End;
+   Dec(Off);
+   Bits:=(Bits shl 8)or UnzZstdBufGet(StreamBuf,Off);
+   Inc(Cnt,8);
+  End;
+  HFetch:=True;
+ End;
+Begin
+ If NumLits<=0 Then Exit;
+ If StreamSize<=0 Then Begin
+  UnzFail('Bitstream Huffman Zstandard vide.');
+  Exit;
+ End;
+ Off:=StreamBase+StreamSize-1;
+ If StreamBase>0 Then Start:=StreamBase-1
+                 Else Start:=StreamBase;
+ Bits:=UnzZstdBufGet(StreamBuf,Off);
+ If Bits=0 Then Begin
+  UnzFail('Fin bitstream Huffman Zstandard invalide.');
+  Exit;
+ End;
+ Cnt:=UnzZstdHighBit(Integer(Bits));
+ For I:=1 to NumLits do Begin
+  If UnzErr Then Exit;
+  If Not HFetch(H.TableLog)Then Begin
+   UnzFail('Bitstream Huffman Zstandard trop court.');
+   Exit;
+  End;
+  Idx:=UnzUShiftRight(Bits,Cnt-H.TableLog)and UnzZstdBitsMask(H.TableLog);
+  UnzZstdBufSet(LitBuf,LitPos,H.Entry[Idx].Symbol);
+  Inc(LitPos);
+  Dec(Cnt,H.Entry[Idx].Bits);
+ End;
+End;
+
+Function UnzZstdFSESymbol(Var T:TUnzFSETable;State:Integer):Byte;
+Begin
+ If(State<0)or(State>=T.TableSize)Then Begin
+  UnzFail('Etat FSE Zstandard invalide.');
+  UnzZstdFSESymbol:=0;
+  Exit;
+ End;
+ UnzZstdFSESymbol:=T.Entry[State].Symbol;
+End;
+
+Procedure UnzZstdFSENextState(Var BS:TUnzRevBitStream;Var T:TUnzFSETable;
+ Var State:Integer);
+Var
+ E:TUnzFSEEntry;
+Begin
+ E:=T.Entry[State];
+ State:=E.NewState+UnzZstdRevReadBits(BS,E.Bits);
+End;
+
+Procedure UnzZstdLLCode(Code:Byte;Var Base:LongInt;Var Bits:Integer);
+Const
+ BaseTab:Array[16..35]of LongInt=(
+  16,18,20,22,24,28,32,40,48,64,128,256,512,1024,
+  2048,4096,8192,16384,32768,65536);
+ BitsTab:Array[16..35]of Byte=(
+  1,1,1,1,2,2,3,3,4,6,7,8,9,10,11,12,13,14,15,16);
+Begin
+ If Code<=15 Then Begin
+  Base:=Code;
+  Bits:=0;
+ End
+  Else If Code<=35 Then Begin
+  Base:=BaseTab[Code];
+  Bits:=BitsTab[Code];
+ End
+  Else
+ Begin
+  UnzFail('Code LL Zstandard invalide.');
+ End;
+End;
+
+Procedure UnzZstdMLCode(Code:Byte;Var Base:LongInt;Var Bits:Integer);
+Const
+ BaseTab:Array[32..52]of LongInt=(
+  35,37,39,41,43,47,51,59,67,83,99,131,259,515,
+  1027,2051,4099,8195,16387,32771,65539);
+ BitsTab:Array[32..52]of Byte=(
+  1,1,1,1,2,2,3,3,4,4,5,7,8,9,10,11,12,13,14,15,16);
+Begin
+ If Code<=31 Then Begin
+  Base:=Code+3;
+  Bits:=0;
+ End
+  Else If Code<=52 Then Begin
+  Base:=BaseTab[Code];
+  Bits:=BitsTab[Code];
+ End
+  Else
+ Begin
+  UnzFail('Code ML Zstandard invalide.');
+ End;
+End;
+
+Function UnzZstdResolveOffset(OffsetValue,LL:LongInt):LongInt;
+Var
+ Offset:LongInt;
+Begin
+ Offset:=0;
+ If OffsetValue>3 Then Begin
+  Offset:=OffsetValue-3;
+  UnzZstdRep3:=UnzZstdRep2;
+  UnzZstdRep2:=UnzZstdRep1;
+  UnzZstdRep1:=Offset;
+ End
+  Else If OffsetValue=1 Then Begin
+  If LL=0 Then Begin
+   Offset:=UnzZstdRep2;
+   UnzZstdRep2:=UnzZstdRep1;
+   UnzZstdRep1:=Offset;
+  End
+   Else Offset:=UnzZstdRep1;
+ End
+  Else If OffsetValue=2 Then Begin
+  Offset:=UnzZstdRep2;
+  UnzZstdRep2:=UnzZstdRep1;
+  UnzZstdRep1:=Offset;
+ End
+  Else If OffsetValue=3 Then Begin
+  If LL=0 Then Begin
+   Offset:=UnzZstdRep1-1;
+   UnzZstdRep3:=UnzZstdRep2;
+   UnzZstdRep2:=UnzZstdRep1;
+   UnzZstdRep1:=Offset;
+  End
+   Else Begin
+   Offset:=UnzZstdRep3;
+   UnzZstdRep3:=UnzZstdRep2;
+   UnzZstdRep2:=UnzZstdRep1;
+   UnzZstdRep1:=Offset;
+  End;
+ End
+  Else
+ Begin
+  UnzFail('Offset Zstandard invalide.');
+  UnzZstdResolveOffset:=0;
+  Exit;
+ End;
+ If Offset<=0 Then Begin
+  UnzFail('Repeat offset Zstandard invalide.');
+  UnzZstdResolveOffset:=0;
+  Exit;
+ End;
+ UnzZstdResolveOffset:=Offset;
+End;
+
+Procedure UnzZstdCopyMatch(Offset,ML:LongInt);
+Var
+ I:LongInt;
+ B:Byte;
+Begin
+ If Offset>UnzOutSize Then Begin
+  UnzFail('Reference LZ77 Zstandard invalide.');
+  Exit;
+ End;
+ For I:=1 to ML do Begin
+  B:=UnzGetWindowByte(UnzWinPos-Offset);
+  UnzPutOutByte(B);
+ End;
+End;
+
+Procedure UnzZstdExecuteSequence(LL,OffsetValue,ML:LongInt;
+ LitBuf:PUnzSeqBuffer;Var LitPos:LongInt;LitSize:LongInt);
+Var
+ I,Offset:LongInt;
+Begin
+ If LitBuf=NIL Then Exit;
+ If LitPos+LL>LitSize Then Begin
+  UnzFail('Litteraux Zstandard insuffisants.');
+  Exit;
+ End;
+ For I:=1 to LL do Begin
+  UnzPutOutByte(UnzZstdBufGet(LitBuf,LitPos));
+  Inc(LitPos);
+ End;
+ Offset:=UnzZstdResolveOffset(OffsetValue,LL);
+ If UnzErr Then Exit;
+ UnzZstdCopyMatch(Offset,ML);
+End;
+
+Procedure UnzZstdSeqDecodeCodes(Var S:TUnzSeqTables;Buf:PUnzSeqBuffer;
+ Size,NumSeq:LongInt;LitBuf:PUnzSeqBuffer;LitSize:LongInt;DoExecute:Boolean);
+Var
+ BS:TUnzRevBitStream;
+ LLState,OFState,MLState:Integer;
+ I,LL,ML,OffsetValue,LitPos:LongInt;
+ Base:LongInt;
+ ExtraBits:Integer;
+ LLC,OMC,MLC:Byte;
+Begin
+ If NumSeq=0 Then Exit;
+ UnzZstdRevInit(BS,Buf,0,Size);
+ If UnzErr Then Exit;
+ If S.LLMode=1 Then LLState:=0 Else LLState:=UnzZstdRevReadBits(BS,S.LL.TableLog);
+ If S.OFMode=1 Then OFState:=0 Else OFState:=UnzZstdRevReadBits(BS,S.OFs.TableLog);
+ If S.MLMode=1 Then MLState:=0 Else MLState:=UnzZstdRevReadBits(BS,S.ML.TableLog);
+ LitPos:=0;
+ For I:=1 to NumSeq do Begin
+  If UnzErr Then Exit;
+  If S.LLMode=1 Then LLC:=S.LLRLE Else LLC:=UnzZstdFSESymbol(S.LL,LLState);
+  If S.OFMode=1 Then OMC:=S.OFRLE Else OMC:=UnzZstdFSESymbol(S.OFs,OFState);
+  If S.MLMode=1 Then MLC:=S.MLRLE Else MLC:=UnzZstdFSESymbol(S.ML,MLState);
+  If OMC>30 Then Begin
+   UnzFail('Code offset Zstandard trop grand.');
+   Exit;
+  End;
+  OffsetValue:=(LongInt(1)shl OMC)+UnzZstdRevReadBits(BS,OMC);
+  UnzZstdMLCode(MLC,Base,ExtraBits);
+  ML:=Base+UnzZstdRevReadBits(BS,ExtraBits);
+  UnzZstdLLCode(LLC,Base,ExtraBits);
+  LL:=Base+UnzZstdRevReadBits(BS,ExtraBits);
+  If UnzErr Then Exit;
+  If DoExecute Then UnzZstdExecuteSequence(LL,OffsetValue,ML,LitBuf,LitPos,LitSize)
+               Else UnzZstdResolveOffset(OffsetValue,LL);
+  If UnzErr Then Exit;
+  If I<NumSeq Then Begin
+   If S.LLMode<>1 Then UnzZstdFSENextState(BS,S.LL,LLState);
+   If S.MLMode<>1 Then UnzZstdFSENextState(BS,S.ML,MLState);
+   If S.OFMode<>1 Then UnzZstdFSENextState(BS,S.OFs,OFState);
+  End;
+ End;
+ If DoExecute and(LitBuf<>NIL)Then Begin
+  While LitPos<LitSize do Begin
+   UnzPutOutByte(UnzZstdBufGet(LitBuf,LitPos));
+   Inc(LitPos);
+  End;
+ End;
+End;
+
+Procedure UnzZstdReadLiteralsSection(LitBuf:PUnzSeqBuffer;Var LitSize:LongInt;
+ Var H:TUnzHuffTable;Var HValid:Boolean;Var BytesRead:LongInt);
+Var
+ H0,H1,H2,H3,H4:Integer;
+ LitType,SizeFormat,NumStreams,HeaderSize:Integer;
+ RegenSize,CompSize,Bytes,StartCount:LongInt;
+ LitPos,I:LongInt;
+ RleByte:Byte;
+ StreamBuf:PUnzSeqBuffer;
+ J1,J2,J3:Integer;
+ Sz1,Sz2,Sz3,Sz4:LongInt;
+ Off1,Off2,Off3,Off4:LongInt;
+ Seg:LongInt;
+Begin
+ NumStreams:=1;
+ StartCount:=UnzCompLeft;
+ H0:=UnzZstdReadByte;
+ LitType:=H0 and 3;
+ SizeFormat:=(H0 shr 2)and 3;
+ If(LitType=0)or(LitType=1)Then Begin
+  Case SizeFormat of
+   0,2:RegenSize:=H0 shr 3;
+   1:Begin
+      H1:=UnzZstdReadByte;
+      RegenSize:=LongInt(H0 shr 4)or(LongInt(H1)shl 4);
+     End;
+   3:Begin
+      H1:=UnzZstdReadByte;
+      H2:=UnzZstdReadByte;
+      RegenSize:=LongInt(H0 shr 4)or(LongInt(H1)shl 4)or(LongInt(H2)shl 12);
+     End;
+  End;
+  If RegenSize>131072 Then Begin
+   UnzFail('Litteraux Zstandard trop volumineux.');
+   Exit;
+  End;
+  LitSize:=RegenSize;
+  If LitType=0 Then Begin
+   For I:=0 to RegenSize-1 do UnzZstdBufSet(LitBuf,I,UnzZstdReadByte);
+  End
+   Else
+  Begin
+   RleByte:=UnzZstdReadByte;
+   For I:=0 to RegenSize-1 do UnzZstdBufSet(LitBuf,I,RleByte);
+  End;
+  BytesRead:=StartCount-UnzCompLeft;
+  Exit;
+ End;
+ { LitType in [2,3]: compressed/treeless Huffman }
+ RegenSize:=0; CompSize:=0;
+ Case SizeFormat of
+  0:Begin
+     NumStreams:=1;
+     H1:=UnzZstdReadByte;
+     H2:=UnzZstdReadByte;
+     RegenSize:=LongInt(H0 shr 4)or(LongInt(H1 and $3F)shl 4);
+     CompSize:=LongInt(H1 shr 6)or(LongInt(H2)shl 2);
+    End;
+  1:Begin
+     NumStreams:=4;
+     H1:=UnzZstdReadByte;
+     H2:=UnzZstdReadByte;
+     RegenSize:=LongInt(H0 shr 4)or(LongInt(H1 and $3F)shl 4);
+     CompSize:=LongInt(H1 shr 6)or(LongInt(H2)shl 2);
+    End;
+  2:Begin
+     NumStreams:=4;
+     H1:=UnzZstdReadByte;
+     H2:=UnzZstdReadByte;
+     H3:=UnzZstdReadByte;
+     RegenSize:=LongInt(H0 shr 4)or(LongInt(H1)shl 4)or(LongInt(H2 and $3)shl 12);
+     CompSize:=LongInt(H2 shr 2)or(LongInt(H3)shl 6);
+    End;
+  3:Begin
+     NumStreams:=4;
+     H1:=UnzZstdReadByte;
+     H2:=UnzZstdReadByte;
+     H3:=UnzZstdReadByte;
+     H4:=UnzZstdReadByte;
+     RegenSize:=LongInt(H0 shr 4)or(LongInt(H1)shl 4)or(LongInt(H2 and $3F)shl 12);
+     CompSize:=LongInt(H2 shr 6)or(LongInt(H3)shl 2)or(LongInt(H4)shl 10);
+    End;
+ End;
+ If RegenSize>131072 Then Begin
+  UnzFail('Litteraux Zstandard trop volumineux.');
+  Exit;
+ End;
+ If CompSize>131072 Then Begin
+  UnzFail('Flux litteraux Zstandard trop volumineux.');
+  Exit;
+ End;
+ LitSize:=RegenSize;
+ HeaderSize:=0;
+ If LitType=2 Then Begin
+  UnzZstdHuffReadTable(H,HeaderSize);
+  If UnzErr Then Exit;
+  HValid:=True;
+  Bytes:=CompSize-HeaderSize;
+ End
+  Else
+ Begin
+  If Not HValid Then Begin
+   UnzFail('Litteraux treeless Zstandard sans table Huffman.');
+   Exit;
+  End;
+  Bytes:=CompSize;
+ End;
+ If Bytes<=0 Then Begin
+  UnzFail('Taille flux Huffman Zstandard invalide.');
+  Exit;
+ End;
+ UnzZstdBufAlloc(StreamBuf);
+ If StreamBuf=NIL Then Begin
+  UnzFail('Memoire insuffisante pour litteraux Zstandard.');
+  Exit;
+ End;
+ LitPos:=0;
+ If NumStreams=1 Then Begin
+  For I:=0 to Bytes-1 do UnzZstdBufSet(StreamBuf,I,UnzZstdReadByte);
+  UnzZstdHuffDecodeStream(H,StreamBuf,0,Bytes,LitBuf,LitPos,RegenSize);
+ End
+  Else
+ Begin
+  If Bytes<6 Then Begin
+   UnzFail('Table de saut Huffman Zstandard invalide.');
+   UnzZstdBufFree(StreamBuf);
+   Exit;
+  End;
+  J1:=UnzZstdReadByte;J1:=J1 or(Integer(UnzZstdReadByte)shl 8);
+  J2:=UnzZstdReadByte;J2:=J2 or(Integer(UnzZstdReadByte)shl 8);
+  J3:=UnzZstdReadByte;J3:=J3 or(Integer(UnzZstdReadByte)shl 8);
+  Sz1:=J1;Sz2:=J2;Sz3:=J3;
+  Sz4:=Bytes-6-Sz1-Sz2-Sz3;
+  If Sz4<=0 Then Begin
+   UnzFail('Taille flux 4 Huffman Zstandard invalide.');
+   UnzZstdBufFree(StreamBuf);
+   Exit;
+  End;
+  UnzZstdBufSet(StreamBuf,0,Byte(J1 and $FF));
+  UnzZstdBufSet(StreamBuf,1,Byte((J1 shr 8)and $FF));
+  UnzZstdBufSet(StreamBuf,2,Byte(J2 and $FF));
+  UnzZstdBufSet(StreamBuf,3,Byte((J2 shr 8)and $FF));
+  UnzZstdBufSet(StreamBuf,4,Byte(J3 and $FF));
+  UnzZstdBufSet(StreamBuf,5,Byte((J3 shr 8)and $FF));
+  Off1:=6;Off2:=Off1+Sz1;Off3:=Off2+Sz2;Off4:=Off3+Sz3;
+  For I:=6 to Bytes-1 do UnzZstdBufSet(StreamBuf,I,UnzZstdReadByte);
+  Seg:=(RegenSize+3)div 4;
+  UnzZstdHuffDecodeStream(H,StreamBuf,Off1,Sz1,LitBuf,LitPos,Seg);
+  UnzZstdHuffDecodeStream(H,StreamBuf,Off2,Sz2,LitBuf,LitPos,Seg);
+  UnzZstdHuffDecodeStream(H,StreamBuf,Off3,Sz3,LitBuf,LitPos,Seg);
+  UnzZstdHuffDecodeStream(H,StreamBuf,Off4,Sz4,LitBuf,LitPos,RegenSize-3*Seg);
+ End;
+ UnzZstdBufFree(StreamBuf);
+ If UnzErr Then Exit;
+ If LitPos<>RegenSize Then Begin
+  UnzFail('Decodage litteraux Zstandard incomplet.');
+  Exit;
+ End;
+ BytesRead:=StartCount-UnzCompLeft;
+End;
+
+Procedure UnzZstdReadSequencesAndExecute(BlockSize,LitConsumed:LongInt;
+ Var S:TUnzSeqTables;LitBuf:PUnzSeqBuffer;LitSize:LongInt);
+Var
+ NumSeq,BitstreamSize,I,LitPos:LongInt;
+ StartCount,HdrConsumed:LongInt;
+ Modes:Integer;
+ Buf:PUnzSeqBuffer;
+Begin
+ StartCount:=UnzCompLeft;
+ NumSeq:=UnzZstdSeqReadNumber;
+ If NumSeq=0 Then Begin
+  LitPos:=0;
+  While LitPos<LitSize do Begin
+   UnzPutOutByte(UnzZstdBufGet(LitBuf,LitPos));
+   Inc(LitPos);
+  End;
+  HdrConsumed:=StartCount-UnzCompLeft;
+  If LitConsumed+HdrConsumed<>BlockSize Then Begin
+   UnzFail('Taille bloc Zstandard incoherente.');
+   Exit;
+  End;
+  Exit;
+ End;
+ Modes:=UnzZstdReadByte;
+ If(Modes and 3)<>0 Then Begin
+  UnzFail('Modes sequences Zstandard invalides.');
+  Exit;
+ End;
+ S.LLMode:=(Modes shr 6)and 3;
+ S.OFMode:=(Modes shr 4)and 3;
+ S.MLMode:=(Modes shr 2)and 3;
+ UnzZstdSeqReadOneTable(S.LL,S.LLMode,S.LLRLE,S.LLValid,35,9,'LL');
+ If UnzErr Then Exit;
+ UnzZstdSeqReadOneTable(S.OFs,S.OFMode,S.OFRLE,S.OFValid,31,8,'OF');
+ If UnzErr Then Exit;
+ UnzZstdSeqReadOneTable(S.ML,S.MLMode,S.MLRLE,S.MLValid,52,9,'ML');
+ If UnzErr Then Exit;
+ HdrConsumed:=StartCount-UnzCompLeft;
+ BitstreamSize:=BlockSize-LitConsumed-HdrConsumed;
+ If(BitstreamSize<=0)or(BitstreamSize>131072)Then Begin
+  UnzFail('Taille bitstream sequences Zstandard invalide.');
+  Exit;
+ End;
+ UnzZstdBufAlloc(Buf);
+ If Buf=NIL Then Begin
+  UnzFail('Memoire insuffisante pour sequences Zstandard.');
+  Exit;
+ End;
+ For I:=0 to BitstreamSize-1 do UnzZstdBufSet(Buf,I,UnzZstdReadByte);
+ UnzZstdSeqDecodeCodes(S,Buf,BitstreamSize,NumSeq,LitBuf,LitSize,True);
+ UnzZstdBufFree(Buf);
+End;
+
+Procedure UnzInflateZstdFrame;
+Var
+ Desc,DictFlag,FCSFlag,BlockType:Integer;
+ Header:LongInt;
+ SingleSegment,ChecksumFlag,LastBlock:Boolean;
+ DictSize,FCSSize:Integer;
+ BlockSize,I,LitSize,LitConsumed:LongInt;
+ B:Byte;
+ LitBuf:PUnzSeqBuffer;
+ Huff:TUnzHuffTable;
+ HuffValid:Boolean;
+ Seq:TUnzSeqTables;
+Begin
+ UnzZstdRep1:=1;
+ UnzZstdRep2:=4;
+ UnzZstdRep3:=8;
+ HuffValid:=False;
+ UnzZstdBuildDefaultSeqTables(Seq);
+ UnzZstdBufAlloc(LitBuf);
+ If LitBuf=NIL Then Begin
+  UnzFail('Memoire insuffisante pour bloc Zstandard.');
+  Exit;
+ End;
+ Desc:=UnzZstdReadByte;
+ DictFlag:=Desc and 3;
+ ChecksumFlag:=(Desc and 4)<>0;
+ If(Desc and 8)<>0 Then Begin
+  UnzZstdBufFree(LitBuf);
+  UnzFail('En-tete Zstandard reserve invalide.');
+  Exit;
+ End;
+ SingleSegment:=(Desc and 32)<>0;
+ FCSFlag:=(Desc shr 6)and 3;
+ If Not SingleSegment Then UnzZstdReadByte;
+ Case DictFlag of
+  0:DictSize:=0;
+  1:DictSize:=1;
+  2:DictSize:=2;
+  3:DictSize:=4;
+ Else
+  DictSize:=0;
+ End;
+ UnzZstdSkip(DictSize);
+ If FCSFlag=0 Then Begin
+  If SingleSegment Then FCSSize:=1 Else FCSSize:=0;
+ End
+  Else If FCSFlag=1 Then FCSSize:=2
+  Else If FCSFlag=2 Then FCSSize:=4
+  Else FCSSize:=8;
+ If FCSSize=2 Then UnzZstdReadSize(FCSSize,True)
+              Else UnzZstdReadSize(FCSSize,False);
+ Repeat
+  Header:=UnzZstdReadByte;
+  Header:=Header or(Integer(UnzZstdReadByte)shl 8);
+  Header:=Header or(Integer(UnzZstdReadByte)shl 16);
+  LastBlock:=(Header and 1)<>0;
+  BlockType:=(Header shr 1)and 3;
+  BlockSize:=Header shr 3;
+  Case BlockType of
+   0:Begin
+      For I:=1 to BlockSize do UnzPutOutByte(UnzZstdReadByte);
+     End;
+   1:Begin
+      B:=UnzZstdReadByte;
+      For I:=1 to BlockSize do UnzPutOutByte(B);
+     End;
+   2:Begin
+      LitSize:=0;
+      LitConsumed:=0;
+      UnzZstdReadLiteralsSection(LitBuf,LitSize,Huff,HuffValid,LitConsumed);
+      If Not UnzErr Then
+       UnzZstdReadSequencesAndExecute(BlockSize,LitConsumed,Seq,LitBuf,LitSize);
+     End;
+  Else
+   UnzFail('Bloc Zstandard reserve invalide.');
+  End;
+ Until LastBlock or UnzErr;
+ If ChecksumFlag and(Not UnzErr) Then UnzZstdSkip(4);
+ UnzZstdBufFree(LitBuf);
+End;
+
+Procedure UnzInflateZstd;
+Var
+ Magic:LongInt;
+ Size:LongInt;
+Begin
+ UnzInitWindow(False);
+ Repeat
+  Magic:=UnzZstdReadDWordLE;
+  If(Magic and $FFFFFFF0)=LongInt($184D2A50)Then Begin
+   Size:=UnzZstdReadDWordLE;
+   UnzZstdSkip(Size);
+  End
+   Else If Magic=LongInt($FD2FB528)Then Begin
+   UnzInflateZstdFrame;
+  End
+   Else
+  Begin
+   UnzFail('Signature Zstandard invalide.');
+  End;
+ Until(UnzOutSize>=UnzUncompSize)or(UnzCompLeft<=0)or UnzErr;
+End;
+
+Procedure UnzBZAllocTT(Limit:LongInt);
+Var
+ I,Need:Integer;
+Begin
+ UnzBZBlockLimit:=Limit;
+ Need:=(Limit+15999)div 16000;
+ If Need>57 Then Begin
+  UnzFail('Bloc BZIP2 trop grand.');
+  Exit;
+ End;
+ For I:=0 to 56 do UnzBZTT[I]:=NIL;
+ For I:=0 to 56 do UnzBZByte[I]:=NIL;
+ For I:=0 to Need-1 do Begin
+  GetMem(UnzBZTT[I],SizeOf(TUnzBZTTChunk));
+  GetMem(UnzBZByte[I],SizeOf(TUnzBZByteChunk));
+  If(UnzBZTT[I]=NIL)or(UnzBZByte[I]=NIL)Then Begin
+   UnzFail('Memoire insuffisante pour BZIP2.');
+   Exit;
+  End;
+ End;
+End;
+
+Procedure UnzBZFreeTT;
+Var
+ I:Integer;
+Begin
+ For I:=0 to 56 do If UnzBZTT[I]<>NIL Then Begin
+  FreeMem(UnzBZTT[I],SizeOf(TUnzBZTTChunk));
+  UnzBZTT[I]:=NIL;
+ End;
+ For I:=0 to 56 do If UnzBZByte[I]<>NIL Then Begin
+  FreeMem(UnzBZByte[I],SizeOf(TUnzBZByteChunk));
+  UnzBZByte[I]:=NIL;
+ End;
+End;
+
+Procedure UnzBZSetTT(Pos,Value:LongInt);
+Var
+ C,O:Integer;
+Begin
+ If(Pos<0)or(Pos>=UnzBZBlockLimit)Then Begin
+  UnzFail('Index BZIP2 invalide.');
+  Exit;
+ End;
+ C:=Pos div 16000;
+ O:=Pos mod 16000;
+ UnzBZTT[C]^[O]:=Value;
+End;
+
+Function UnzBZGetTT(Pos:LongInt):LongInt;
+Var
+ C,O:Integer;
+Begin
+ If(Pos<0)or(Pos>=UnzBZBlockLimit)Then Begin
+  UnzFail('Index BZIP2 invalide.');
+  UnzBZGetTT:=0;
+  Exit;
+ End;
+ C:=Pos div 16000;
+ O:=Pos mod 16000;
+ UnzBZGetTT:=UnzBZTT[C]^[O];
+End;
+
+Procedure UnzBZSetByte(Pos:LongInt;B:Byte);
+Var
+ C,O:Integer;
+Begin
+ If(Pos<0)or(Pos>=UnzBZBlockLimit)Then Begin
+  UnzFail('Index BZIP2 invalide.');
+  Exit;
+ End;
+ C:=Pos div 16000;
+ O:=Pos mod 16000;
+ UnzBZByte[C]^[O]:=B;
+End;
+
+Function UnzBZGetByte(Pos:LongInt):Byte;
+Var
+ C,O:Integer;
+Begin
+ If(Pos<0)or(Pos>=UnzBZBlockLimit)Then Begin
+  UnzFail('Index BZIP2 invalide.');
+  UnzBZGetByte:=0;
+  Exit;
+ End;
+ C:=Pos div 16000;
+ O:=Pos mod 16000;
+ UnzBZGetByte:=UnzBZByte[C]^[O];
+End;
+
+Function UnzBZReadBit:Integer;
+Begin
+ If UnzErr Then Begin UnzBZReadBit:=0; Exit; End;
+ If UnzBZBitCount=0 Then Begin
+  UnzBZBitBuf:=UnzReadCompByte;
+  UnzBZBitCount:=8;
+ End;
+ Dec(UnzBZBitCount);
+ UnzBZReadBit:=(UnzBZBitBuf shr UnzBZBitCount)and 1;
+End;
+
+Function UnzBZReadBits(N:Integer):LongInt;
+Var
+ I:Integer;
+ V:LongInt;
+Begin
+ V:=0;
+ For I:=1 to N do V:=(V shl 1)or UnzBZReadBit;
+ UnzBZReadBits:=V;
+End;
+
+Function UnzBZReadByte:Byte;
+Begin
+ UnzBZReadByte:=Byte(UnzBZReadBits(8));
+End;
+
+Function UnzBZReadMagic:String;
+Var
+ I:Integer;
+ S:String;
+Begin
+ S:='';
+ For I:=1 to 6 do S:=S+Chr(UnzBZReadByte);
+ UnzBZReadMagic:=S;
+End;
+
+Procedure UnzBZBuildHuffman(Var H:TUnzBZHuffman;Var Lengths;N:Integer);
+Type
+ TLengths=Array[0..257]of Byte;
+Var
+ L:^TLengths;
+ Count:Array[0..258]of Integer;
+ NextCode:Array[0..258]of LongInt;
+ I,Bits:Integer;
+ Code:LongInt;
+Begin
+ L:=@Lengths;
+ H.MinLen:=99;
+ H.MaxLen:=0;
+ For I:=0 to 257 do Begin
+  H.Len[I]:=0;
+  H.Code[I]:=0;
+ End;
+ For I:=0 to 258 do Count[I]:=0;
+ For I:=0 to N-1 do Begin
+  H.Len[I]:=L^[I];
+  If H.Len[I]>0 Then Begin
+   Inc(Count[H.Len[I]]);
+   If H.Len[I]<H.MinLen Then H.MinLen:=H.Len[I];
+   If H.Len[I]>H.MaxLen Then H.MaxLen:=H.Len[I];
+  End;
+ End;
+ Code:=0;
+ Count[0]:=0;
+ For Bits:=1 to 258 do Begin
+  Code:=(Code+Count[Bits-1])shl 1;
+  NextCode[Bits]:=Code;
+ End;
+ For I:=0 to N-1 do Begin
+  Bits:=H.Len[I];
+  If Bits<>0 Then Begin
+   H.Code[I]:=NextCode[Bits];
+   Inc(NextCode[Bits]);
+  End;
+ End;
+End;
+
+Function UnzBZDecodeSymbol(Var H:TUnzBZHuffman;AlphaSize:Integer):Integer;
+Var
+ Len,Sym:Integer;
+ Code:LongInt;
+Begin
+ Code:=0;
+ For Len:=1 to H.MaxLen do Begin
+  If UnzErr Then Begin UnzBZDecodeSymbol:=0; Exit; End;
+  Code:=(Code shl 1)or UnzBZReadBit;
+  If Len>=H.MinLen Then Begin
+   For Sym:=0 to AlphaSize-1 do
+    If(H.Len[Sym]=Len)and(H.Code[Sym]=Code)Then Begin
+     UnzBZDecodeSymbol:=Sym;
+     Exit;
+    End;
+  End;
+ End;
+ UnzFail('Code Huffman BZIP2 invalide.');
+ UnzBZDecodeSymbol:=0;
+End;
+
+Procedure UnzBZMoveToFront(Var A;Pos:Integer);
+Type
+ TByteList=Array[0..255]of Byte;
+Var
+ L:^TByteList;
+ V:Byte;
+ I:Integer;
+Begin
+ L:=@A;
+ V:=L^[Pos];
+ For I:=Pos downto 1 do L^[I]:=L^[I-1];
+ L^[0]:=V;
+End;
+
+Procedure UnzBZPutBlockByte(B:Byte;Var NBlock:LongInt;Var Count);
+Type
+ TCounts=Array[0..255]of LongInt;
+Var
+ C:^TCounts;
+Begin
+ C:=@Count;
+ If NBlock>=UnzBZBlockLimit Then Begin
+  UnzFail('Bloc BZIP2 trop long.');
+  Exit;
+ End;
+ UnzBZSetByte(NBlock,B);
+ Inc(C^[B]);
+ Inc(NBlock);
+End;
+
+Procedure UnzBZDecodeBlock(BlockSize:Integer);
+Type
+ TBool16=Array[0..15]of Boolean;
+ TInUse=Array[0..255]of Boolean;
+ TByteList=Array[0..255]of Byte;
+ TSelectors=Array[0..18001]of Byte;
+ TGroups=Array[0..5]of TUnzBZHuffman;
+ TLengths=Array[0..257]of Byte;
+ TCounts=Array[0..255]of LongInt;
+Var
+ Magic:String;
+ InUse16:TBool16;
+ InUse:TInUse;
+ SeqToUnseq,MTF:TByteList;
+ Selectors:TSelectors;
+ Groups:TGroups;
+ Lengths:TLengths;
+ Counts,Cftab:TCounts;
+ BlockCRC,NBlock,OrigPtr,TPos,V:LongInt;
+ Randomized:Boolean;
+ { BOGUE REEL trouve par test en direct (2026-08-31) contre un vrai flux    }
+ { BZIP2 (7-Zip, bloc niveau 9, 112893 octets) : sous FPC -Mtp, Integer     }
+ { fait seulement 16 bits (High(Integer)=32767, verifie empiriquement) -    }
+ { I et K sont utilises comme compteurs de boucle jusqu'a NBlock/RepCount   }
+ { qui peuvent legitimement depasser 32767 pour un vrai bloc BZIP2 (jusqu'a }
+ { 900000 pour le niveau 9) : la troncature 16 bits faisait boucler 0 fois, }
+ { produisant un flux de sortie totalement vide sans le moindre message     }
+ { d'erreur. L'original (CORAIL/UNZIP.PAS) a le meme defaut latent - passe  }
+ { inapercu car jamais teste sur un vrai fichier >32 Ko compresse en BZIP2. }
+ I,K,RepCount,RunPower:LongInt;
+ J,AlphaSize,NInUse,NGroups,NSelectors,Sel,Sym:Integer;
+ CurrLen,GroupNo,GroupPos,EOB:Integer;
+ Ch,LastCh:Integer;
+ SameCount:Integer;
+ NeedRepeat:Boolean;
+
+ Procedure EmitByte(B:Byte);
+ Var
+  R:Integer;
+Begin
+  If NeedRepeat Then Begin
+   For R:=1 to B do UnzPutOutByte(Byte(LastCh));
+   NeedRepeat:=False;
+   SameCount:=0;
+   LastCh:=-1;
+   Exit;
+  End;
+  UnzPutOutByte(B);
+  If LastCh=B Then Inc(SameCount)
+  Else Begin
+   LastCh:=B;
+   SameCount:=1;
+  End;
+  If SameCount=4 Then NeedRepeat:=True;
+ End;
+
+Begin
+ Magic:=UnzBZReadMagic;
+ If UnzErr Then Exit;
+ If Magic=#$17#$72#$45#$38#$50#$90 Then Begin
+  UnzBZReadBits(32);
+  Exit;
+ End;
+ If Magic<>#$31#$41#$59#$26#$53#$59 Then Begin
+  UnzFail('Bloc BZIP2 invalide.');
+  Exit;
+ End;
+ BlockCRC:=UnzBZReadBits(32);
+ If BlockCRC=0 Then Begin End;
+ Randomized:=UnzBZReadBit<>0;
+ If Randomized Then Begin
+  UnzFail('BZIP2 randomise non supporte.');
+  Exit;
+ End;
+ OrigPtr:=UnzBZReadBits(24);
+ For I:=0 to 15 do InUse16[I]:=UnzBZReadBit<>0;
+ For I:=0 to 255 do InUse[I]:=False;
+ For I:=0 to 15 do If InUse16[I] Then
+  For J:=0 to 15 do InUse[I*16+J]:=UnzBZReadBit<>0;
+ NInUse:=0;
+ For I:=0 to 255 do If InUse[I] Then Begin
+  SeqToUnseq[NInUse]:=I;
+  Inc(NInUse);
+ End;
+ AlphaSize:=NInUse+2;
+ EOB:=NInUse+1;
+ NGroups:=UnzBZReadBits(3);
+ NSelectors:=UnzBZReadBits(15);
+ If(NGroups<2)or(NGroups>6)or
+   (NSelectors<1)or(NSelectors>18002)Then Begin
+  UnzFail('Selecteurs BZIP2 invalides.');
+  Exit;
+ End;
+ For I:=0 to NGroups-1 do MTF[I]:=I;
+ For I:=0 to NSelectors-1 do Begin
+  J:=0;
+  While UnzBZReadBit<>0 do Inc(J);
+  If J>=NGroups Then Begin
+   UnzFail('Selecteur BZIP2 invalide.');
+   Exit;
+  End;
+  Selectors[I]:=MTF[J];
+  UnzBZMoveToFront(MTF,J);
+ End;
+ If UnzErr Then Exit;
+ For I:=0 to NGroups-1 do Begin
+  CurrLen:=UnzBZReadBits(5);
+  For J:=0 to AlphaSize-1 do Begin
+   While UnzBZReadBit<>0 do Begin
+    If UnzBZReadBit=0 Then Inc(CurrLen)
+                   Else Dec(CurrLen);
+    If(CurrLen<1)or(CurrLen>23)Then Begin
+     UnzFail('Longueur Huffman BZIP2 invalide.');
+     Exit;
+    End;
+   End;
+   Lengths[J]:=CurrLen;
+  End;
+  UnzBZBuildHuffman(Groups[I],Lengths,AlphaSize);
+ End;
+ If UnzErr Then Exit;
+ For I:=0 to 255 do Begin
+  MTF[I]:=I;
+  Counts[I]:=0;
+  Cftab[I]:=0;
+ End;
+ NBlock:=0;
+ GroupNo:=-1;
+ GroupPos:=0;
+ Sel:=0;
+ RepCount:=0;
+ RunPower:=1;
+ Repeat
+  If GroupPos=0 Then Begin
+   Inc(GroupNo);
+   If GroupNo>=NSelectors Then Begin
+    UnzFail('Flux BZIP2 trop long.');
+    Exit;
+   End;
+   Sel:=Selectors[GroupNo];
+   GroupPos:=50;
+  End;
+  Dec(GroupPos);
+  Sym:=UnzBZDecodeSymbol(Groups[Sel],AlphaSize);
+  If UnzErr Then Exit;
+  If(Sym=0)or(Sym=1)Then Begin
+   RepCount:=0;
+   RunPower:=1;
+   Repeat
+    If Sym=0 Then Inc(RepCount,RunPower)
+             Else Inc(RepCount,RunPower*2);
+    RunPower:=RunPower*2;
+    If GroupPos=0 Then Begin
+     Inc(GroupNo);
+     If GroupNo>=NSelectors Then Begin
+      UnzFail('Flux BZIP2 trop long.');
+      Exit;
+     End;
+     Sel:=Selectors[GroupNo];
+     GroupPos:=50;
+    End;
+    Dec(GroupPos);
+    Sym:=UnzBZDecodeSymbol(Groups[Sel],AlphaSize);
+    If UnzErr Then Exit;
+   Until(Sym<>0)and(Sym<>1);
+   Ch:=SeqToUnseq[MTF[0]];
+   For K:=1 to RepCount do Begin
+    UnzBZPutBlockByte(Ch,NBlock,Counts);
+    If UnzErr Then Exit;
+   End;
+  End;
+  If(Sym<>EOB)Then Begin
+   J:=Sym-1;
+   If(J<0)or(J>=NInUse)Then Begin
+    UnzFail('Symbole BZIP2 invalide.');
+    Exit;
+   End;
+   Ch:=SeqToUnseq[MTF[J]];
+   UnzBZPutBlockByte(Ch,NBlock,Counts);
+   If UnzErr Then Exit;
+   UnzBZMoveToFront(MTF,J);
+  End;
+ Until (Sym=EOB) Or UnzErr;
+ If UnzErr Then Exit;
+ If(OrigPtr<0)or(OrigPtr>=NBlock)Then Begin
+  UnzFail('OrigPtr BZIP2 invalide.');
+  Exit;
+ End;
+ Cftab[0]:=0;
+ For I:=1 to 255 do Cftab[I]:=Cftab[I-1]+Counts[I-1];
+ For I:=0 to NBlock-1 do Begin
+  Ch:=UnzBZGetByte(I);
+  V:=Cftab[Ch];
+  UnzBZSetTT(V,I);
+  Inc(Cftab[Ch]);
+ End;
+ If UnzErr Then Exit;
+ TPos:=OrigPtr;
+ LastCh:=-1;
+ SameCount:=0;
+ NeedRepeat:=False;
+ For I:=1 to NBlock do Begin
+  TPos:=UnzBZGetTT(TPos);
+  Ch:=UnzBZGetByte(TPos);
+  If UnzErr Then Exit;
+  EmitByte(Byte(Ch));
+ End;
+ If NeedRepeat Then Begin
+  UnzFail('Fin de bloc BZIP2 invalide.');
+  Exit;
+ End;
+ UnzBZDecodeBlock(BlockSize);
+End;
+
+Procedure UnzInflateBZip2;
+Var
+ B1,B2,B3,Level:Byte;
+Begin
+ UnzInitWindow(False);
+ UnzBZBitBuf:=0;
+ UnzBZBitCount:=0;
+ B1:=UnzBZReadByte;
+ B2:=UnzBZReadByte;
+ B3:=UnzBZReadByte;
+ If(B1<>Ord('B'))or(B2<>Ord('Z'))or(B3<>Ord('h'))Then Begin
+  UnzFail('En-tete BZIP2 invalide.');
+  Exit;
+ End;
+ Level:=UnzBZReadByte;
+ If(Level<Ord('1'))or(Level>Ord('9'))Then Begin
+  UnzFail('Taille de bloc BZIP2 invalide.');
+  Exit;
+ End;
+ UnzBZAllocTT((Level-Ord('0'))*100000);
+ If UnzErr Then Exit;
+ UnzBZDecodeBlock(Level-Ord('0'));
+ UnzBZFreeTT;
+End;
+
+Procedure UnzReadImplodeTree(Var H:TUnzHuffman;Symbols:Integer);
+Var
+ Lengths:Array[0..319]of Byte;
+ I,J,N,B,L,R,Posi:Integer;
+Begin
+ For I:=0 to 319 do Lengths[I]:=0;
+ N:=UnzReadCompByte+1;
+ Posi:=0;
+ For I:=1 to N do Begin
+  If UnzErr Then Exit;
+  B:=UnzReadCompByte;
+  L:=(B and 15)+1;
+  R:=((B shr 4)and 15)+1;
+  For J:=1 to R do Begin
+   If Posi>=Symbols Then Begin
+    UnzFail('Arbre Implode invalide.');
+    Exit;
+   End;
+   Lengths[Posi]:=L;
+   Inc(Posi);
+  End;
+ End;
+ If Posi<>Symbols Then Begin
+  UnzFail('Arbre Implode incomplet.');
+  Exit;
+ End;
+ UnzBuildHuffmanInvert(H,Lengths,Symbols);
+End;
+
+Procedure UnzExplode(Flags:Integer);
+Var
+ Lit,LenTree,DistTree:TUnzHuffman;
+ HasLit,LargeWin:Boolean;
+ DistBits,MinLen,Token,Sym,Len,Dist,Low,I,WinRead:Integer;
+ B:Byte;
+Begin
+ UnzBitBuf:=0;
+ UnzBitCount:=0;
+ UnzInitWindow(False);
+ LargeWin:=(Flags and 2)<>0;
+ HasLit:=(Flags and 4)<>0;
+ DistBits:=6;
+ If LargeWin Then DistBits:=7;
+ MinLen:=2;
+ If HasLit Then MinLen:=3;
+ If HasLit Then UnzReadImplodeTree(Lit,256);
+ UnzReadImplodeTree(LenTree,64);
+ UnzReadImplodeTree(DistTree,64);
+ If UnzErr Then Exit;
+ While (UnzOutSize<UnzUncompSize) And (Not UnzErr) do Begin
+  Token:=UnzReadBit;
+  If Token<>0 Then Begin
+   If HasLit Then B:=Byte(UnzDecodeSymbol(Lit))
+             Else B:=Byte(UnzReadBits(8));
+   If UnzErr Then Exit;
+   UnzPutOutByte(B);
+  End
+   Else
+  Begin
+   Low:=UnzReadBits(DistBits);
+   Sym:=UnzDecodeSymbol(DistTree);
+   If UnzErr Then Exit;
+   Dist:=(Sym shl DistBits)+Low+1;
+   Sym:=UnzDecodeSymbol(LenTree);
+   If UnzErr Then Exit;
+   Len:=Sym+MinLen;
+   If Sym=63 Then Inc(Len,UnzReadBits(8));
+   If(UnzOutSize+Len>UnzUncompSize)or(Dist>UnzOutSize)Then Begin
+    UnzFail('Reference Implode invalide.');
+    Exit;
+   End;
+   For I:=1 to Len do Begin
+    WinRead:=(UnzWinPos-Dist)and $7FFF;
+    B:=UnzGetWindowByte(WinRead);
+    UnzPutOutByte(B);
+   End;
+  End;
+ End;
+ UnzAlignByte;
+End;
+
+Procedure UnzShrinkInit;
+Var
+ I:Integer;
+Begin
+ If UnzShrinkPrefix=NIL Then GetMem(UnzShrinkPrefix,SizeOf(TUnzShrinkIntArray));
+ If UnzShrinkSuffix=NIL Then GetMem(UnzShrinkSuffix,SizeOf(TUnzShrinkByteArray));
+ If UnzShrinkActive=NIL Then GetMem(UnzShrinkActive,SizeOf(TUnzShrinkBoolArray));
+ If UnzShrinkStack=NIL Then GetMem(UnzShrinkStack,SizeOf(TUnzShrinkByteArray));
+ If(UnzShrinkPrefix=NIL)or(UnzShrinkSuffix=NIL)or
+   (UnzShrinkActive=NIL)or(UnzShrinkStack=NIL)Then Begin
+  UnzFail('Memoire insuffisante pour Shrink.');
+  Exit;
+ End;
+ For I:=0 to 8191 do Begin
+  UnzShrinkPrefix^[I]:=-1;
+  UnzShrinkSuffix^[I]:=0;
+  UnzShrinkActive^[I]:=False;
+ End;
+ For I:=0 to 255 do Begin
+  UnzShrinkSuffix^[I]:=I;
+  UnzShrinkActive^[I]:=True;
+ End;
+ UnzShrinkActive^[256]:=False;
+End;
+
+Procedure UnzShrinkDone;
+Begin
+ If UnzShrinkPrefix<>NIL Then Begin
+  FreeMem(UnzShrinkPrefix,SizeOf(TUnzShrinkIntArray));
+  UnzShrinkPrefix:=NIL;
+ End;
+ If UnzShrinkSuffix<>NIL Then Begin
+  FreeMem(UnzShrinkSuffix,SizeOf(TUnzShrinkByteArray));
+  UnzShrinkSuffix:=NIL;
+ End;
+ If UnzShrinkActive<>NIL Then Begin
+  FreeMem(UnzShrinkActive,SizeOf(TUnzShrinkBoolArray));
+  UnzShrinkActive:=NIL;
+ End;
+ If UnzShrinkStack<>NIL Then Begin
+  FreeMem(UnzShrinkStack,SizeOf(TUnzShrinkByteArray));
+  UnzShrinkStack:=NIL;
+ End;
+End;
+
+Function UnzShrinkFindFree:Integer;
+Var
+ I:Integer;
+Begin
+ For I:=257 to 8191 do Begin
+  If Not UnzShrinkActive^[I]Then Begin
+   UnzShrinkFindFree:=I;
+   Exit;
+  End;
+ End;
+ UnzShrinkFindFree:=-1;
+End;
+
+Procedure UnzShrinkAdd(Prefix:Integer;Suffix:Byte);
+Var
+ N:Integer;
+Begin
+ N:=UnzShrinkFindFree;
+ If N<0Then Exit;
+ UnzShrinkPrefix^[N]:=Prefix;
+ UnzShrinkSuffix^[N]:=Suffix;
+ UnzShrinkActive^[N]:=True;
+End;
+
+Procedure UnzShrinkPartialClear;
+Var
+ I:Integer;
+ Used:PUnzShrinkBoolArray;
+Begin
+ GetMem(Used,SizeOf(TUnzShrinkBoolArray));
+ If Used=NIL Then Begin
+  UnzFail('Memoire insuffisante pour Shrink.');
+  Exit;
+ End;
+ For I:=0 to 8191 do Used^[I]:=False;
+ For I:=257 to 8191 do Begin
+  If UnzShrinkActive^[I]and(UnzShrinkPrefix^[I]>=257)Then
+   Used^[UnzShrinkPrefix^[I]]:=True;
+ End;
+ For I:=257 to 8191 do Begin
+  If UnzShrinkActive^[I]and(Not Used^[I])Then Begin
+   UnzShrinkActive^[I]:=False;
+   UnzShrinkPrefix^[I]:=-1;
+   UnzShrinkSuffix^[I]:=0;
+  End;
+ End;
+ FreeMem(Used,SizeOf(TUnzShrinkBoolArray));
+End;
+
+Function UnzShrinkDecodeToStack(Code:Integer;Var FirstChar:Byte):Integer;
+Var
+ Top,Guard:Integer;
+Begin
+ Top:=0;
+ Guard:=0;
+ While Code>=0 do Begin
+  If(Code>8191)or(Not UnzShrinkActive^[Code])Then Begin
+   UnzFail('Code Shrink invalide.');
+   UnzShrinkDecodeToStack:=0;
+   Exit;
+  End;
+  UnzShrinkStack^[Top]:=UnzShrinkSuffix^[Code];
+  Inc(Top);
+  If Code<256Then Break;
+  Code:=UnzShrinkPrefix^[Code];
+  Inc(Guard);
+  If Guard>8191 Then Begin
+   UnzFail('Boucle Shrink invalide.');
+   UnzShrinkDecodeToStack:=0;
+   Exit;
+  End;
+ End;
+ FirstChar:=UnzShrinkStack^[Top-1];
+ UnzShrinkDecodeToStack:=Top;
+End;
+
+Procedure UnzShrinkOutputStack(Top:Integer);
+Var
+ I:Integer;
+Begin
+ For I:=Top-1 downto 0 do UnzPutOutByte(UnzShrinkStack^[I]);
+End;
+
+Function UnzShrinkReadCode(CodeSize:Integer):Integer;
+Begin
+ UnzShrinkReadCode:=UnzReadBits(CodeSize);
+End;
+
+Procedure UnzUnShrink;
+Var
+ CodeSize,Code,OldCode,SubCode,Top:Integer;
+ FirstChar,OldFirstChar:Byte;
+Begin
+ UnzBitBuf:=0;
+ UnzBitCount:=0;
+ UnzInitWindow(False);
+ UnzShrinkInit;
+ If UnzErr Then Exit;
+ CodeSize:=9;
+ OldCode:=-1;
+ OldFirstChar:=0;
+ While (UnzOutSize<UnzUncompSize) And (Not UnzErr) do Begin
+  Code:=UnzShrinkReadCode(CodeSize);
+  If Code=256Then Begin
+   SubCode:=UnzShrinkReadCode(CodeSize);
+   If SubCode=1Then Begin
+    If CodeSize<13Then Inc(CodeSize);
+   End
+    Else If SubCode=2Then UnzShrinkPartialClear
+    Else Begin
+     UnzShrinkDone;
+     UnzFail('Commande Shrink inconnue.');
+     Exit;
+    End;
+  End
+   Else
+  Begin
+   If OldCode<0Then Begin
+    Top:=UnzShrinkDecodeToStack(Code,FirstChar);
+    If UnzErr Then Exit;
+    UnzShrinkOutputStack(Top);
+    OldCode:=Code;
+    OldFirstChar:=FirstChar;
+   End
+    Else
+   Begin
+    If(Code<=8191)and(UnzShrinkActive^[Code])Then Begin
+     Top:=UnzShrinkDecodeToStack(Code,FirstChar);
+     If UnzErr Then Exit;
+     UnzShrinkOutputStack(Top);
+    End
+     Else
+    Begin
+     Top:=UnzShrinkDecodeToStack(OldCode,FirstChar);
+     If UnzErr Then Exit;
+     UnzShrinkOutputStack(Top);
+     UnzPutOutByte(OldFirstChar);
+     FirstChar:=OldFirstChar;
+    End;
+    UnzShrinkAdd(OldCode,FirstChar);
+    OldCode:=Code;
+    OldFirstChar:=FirstChar;
+   End;
+  End;
+ End;
+ UnzShrinkDone;
+ UnzAlignByte;
+End;
+
+Function UnzFollowerBits(N:Integer):Integer;
+Begin
+ If N>16Then UnzFollowerBits:=5
+  Else If N>8Then UnzFollowerBits:=4
+  Else If N>4Then UnzFollowerBits:=3
+  Else If N>2Then UnzFollowerBits:=2
+  Else If N>0Then UnzFollowerBits:=1
+  Else UnzFollowerBits:=0;
+End;
+
+Procedure UnzReduceInit;
+Var
+ I,J,N:Integer;
+Begin
+ If UnzReduceSize=NIL Then GetMem(UnzReduceSize,SizeOf(TUnzFollowerSizeArray));
+ If UnzReduceBits=NIL Then GetMem(UnzReduceBits,SizeOf(TUnzFollowerSizeArray));
+ If UnzReduceFollowers=NIL Then GetMem(UnzReduceFollowers,SizeOf(TUnzFollowerArray));
+ If(UnzReduceSize=NIL)or(UnzReduceBits=NIL)or(UnzReduceFollowers=NIL)Then Begin
+  UnzFail('Memoire insuffisante pour Reduce.');
+  Exit;
+ End;
+ For I:=0 to 255 do Begin
+  UnzReduceSize^[I]:=0;
+  UnzReduceBits^[I]:=0;
+  For J:=0 to 31 do UnzReduceFollowers^[I,J]:=0;
+ End;
+ For I:=255 downto 0 do Begin
+  If UnzErr Then Exit;
+  N:=UnzReadBits(6);
+  If N>32Then Begin
+   UnzFail('Follower set Reduce invalide.');
+   Exit;
+  End;
+  UnzReduceSize^[I]:=N;
+  UnzReduceBits^[I]:=UnzFollowerBits(N);
+  For J:=0 to N-1 do UnzReduceFollowers^[I,J]:=UnzReadBits(8);
+ End;
+End;
+
+Procedure UnzReduceDone;
+Begin
+ If UnzReduceSize<>NIL Then Begin
+  FreeMem(UnzReduceSize,SizeOf(TUnzFollowerSizeArray));
+  UnzReduceSize:=NIL;
+ End;
+ If UnzReduceBits<>NIL Then Begin
+  FreeMem(UnzReduceBits,SizeOf(TUnzFollowerSizeArray));
+  UnzReduceBits:=NIL;
+ End;
+ If UnzReduceFollowers<>NIL Then Begin
+  FreeMem(UnzReduceFollowers,SizeOf(TUnzFollowerArray));
+  UnzReduceFollowers:=NIL;
+ End;
+End;
+
+Function UnzReduceReadByte(Prev:Byte):Byte;
+Var
+ Idx:Integer;
+Begin
+ If UnzReduceSize^[Prev]=0 Then Begin
+  UnzReduceReadByte:=UnzReadBits(8);
+ End
+  Else If UnzReadBit=1 Then Begin
+  UnzReduceReadByte:=UnzReadBits(8);
+ End
+  Else
+ Begin
+  Idx:=UnzReadBits(UnzReduceBits^[Prev]);
+  If Idx>=UnzReduceSize^[Prev]Then Begin
+   UnzFail('Index follower Reduce invalide.');
+   UnzReduceReadByte:=0;
+   Exit;
+  End;
+  UnzReduceReadByte:=UnzReduceFollowers^[Prev,Idx];
+ End;
+End;
+
+Procedure UnzUnReduce(Factor:Integer);
+Var
+ Prev,V,W,B:Byte;
+ LenBits,LenMask,Len,Dist,I,WinRead:Integer;
+Begin
+ UnzBitBuf:=0;
+ UnzBitCount:=0;
+ UnzInitWindow(False);
+ UnzReduceInit;
+ If UnzErr Then Exit;
+ Prev:=0;
+ LenBits:=8-Factor;
+ LenMask:=(1 shl LenBits)-1;
+ While (UnzOutSize<UnzUncompSize) And (Not UnzErr) do Begin
+  B:=UnzReduceReadByte(Prev);
+  Prev:=B;
+ If B<>UNZ_DLEBYTE Then Begin
+   UnzPutOutByte(B);
+  End
+   Else
+  Begin
+   V:=UnzReduceReadByte(Prev);
+   Prev:=V;
+   If V=0 Then UnzPutOutByte(UNZ_DLEBYTE)
+    Else
+   Begin
+    Len:=V and LenMask;
+    If Len=LenMask Then Begin
+     B:=UnzReduceReadByte(Prev);
+     Prev:=B;
+     Inc(Len,B);
+    End;
+    Inc(Len,3);
+    W:=UnzReduceReadByte(Prev);
+    Prev:=W;
+    Dist:=((V shr LenBits)*256)+W+1;
+    If UnzOutSize+Len>UnzUncompSize Then Begin
+     UnzFail('Reference Reduce trop longue.');
+     Exit;
+    End;
+    For I:=1 to Len do Begin
+     If Dist>UnzOutSize Then UnzPutOutByte(0)
+      Else
+     Begin
+      WinRead:=(UnzWinPos-Dist)and $7FFF;
+      UnzPutOutByte(UnzGetWindowByte(WinRead));
+     End;
+    End;
+   End;
+  End;
+ End;
+ UnzReduceDone;
+ UnzAlignByte;
+End;
+
+Function UnzCleanName(S:String):String;
+Var
+ I:Integer;
+ R:String;
+Begin
+ R:='';
+ For I:=1 to Length(S)do Begin
+  If S[I]='/'Then R:=R+'\'
+             Else R:=R+S[I];
+ End;
+ If Not UnzKeepFullPath Then Begin
+  While(Pos('..',R)>0)do Delete(R,Pos('..',R),2);
+  If(Pos(':',R)>0)Then Delete(R,1,Pos(':',R));
+  While(Length(R)>0)and((R[1]='\')or(R[1]='/'))do Delete(R,1,1);
+ End;
+ If UnzJunkPaths Then R:=UnzBaseName(R);
+ If UnzLowerNames Then R:=UnzLowStr(R);
+ If UnzDestDir<>''Then R:=UnzJoinPath(UnzDestDir,R);
+ UnzCleanName:=R;
+End;
+
+Function UnzMatchPattern(Pat,Name:String):Boolean;
+Var
+ P,N,Star,Mark:Integer;
+Begin
+ If UnzCaseInsensitive Then Begin
+  Pat:=UnzUpStr(Pat);
+  Name:=UnzUpStr(Name);
+ End;
+ P:=1; N:=1; Star:=0; Mark:=0;
+ While N<=Length(Name)do Begin
+  If(P<=Length(Pat))and((Pat[P]='?')or(Pat[P]=Name[N]))Then Begin
+   Inc(P); Inc(N);
+  End
+   Else If(P<=Length(Pat))and(Pat[P]='*')Then Begin
+   Star:=P; Inc(P); Mark:=N;
+  End
+   Else If Star<>0 Then Begin
+   P:=Star+1; Inc(Mark); N:=Mark;
+  End
+   Else
+  Begin
+   UnzMatchPattern:=False;
+   Exit;
+  End;
+ End;
+ While(P<=Length(Pat))and(Pat[P]='*')do Inc(P);
+ UnzMatchPattern:=P>Length(Pat);
+End;
+
+Function UnzIsExcluded(Name:String):Boolean;
+Var
+ I:Integer;
+ ShortName:String;
+Begin
+ ShortName:=UnzBaseName(Name);
+ For I:=1 to UnzExcludeCount do Begin
+  If UnzMatchPattern(UnzExcludeList[I],Name)or UnzMatchPattern(UnzExcludeList[I],ShortName)Then Begin
+   UnzIsExcluded:=True;
+   Exit;
+  End;
+ End;
+ UnzIsExcluded:=False;
+End;
+
+Function UnzMethodName(Method:Integer):String;
+Var
+ S:String;
+Begin
+ Case Method of
+  0:UnzMethodName:='store';
+  1:UnzMethodName:='shrink';
+  2,3,4,5:Begin
+     Str(Method,S);
+     UnzMethodName:='reduce-'+S;
+    End;
+  6:UnzMethodName:='implode';
+  7:UnzMethodName:='tokenize';
+  8:UnzMethodName:='deflate';
+  9:UnzMethodName:='deflate64';
+  10:UnzMethodName:='dcl-implode';
+  12:UnzMethodName:='bzip2';
+  14:UnzMethodName:='lzma';
+  18:UnzMethodName:='ibm-terse';
+  19:UnzMethodName:='ibm-lz77';
+  93:UnzMethodName:='zstandard';
+ Else
+  Str(Method,S);
+  UnzMethodName:=S;
+ End;
+End;
+
+Procedure UnzMakePath(S:String);
+Var
+ I:Integer;
+ P:String;
+Begin
+ P:='';
+ For I:=1 to Length(S)do Begin
+  If S[I]='\'Then Begin
+   If P<>''Then Begin
+    {$I-}MkDir(P);{$I+}
+    If(IoResult<>0)Then;
+   End;
+  End;
+  P:=P+S[I];
+ End;
+End;
+
+Procedure UnzSkipBytes(N:LongInt);
+Begin
+ While (N>0) And (Not UnzErr) do Begin
+  UnzReadZipByte;
+  Dec(N);
+ End;
+End;
+
+Procedure UnzPrepareZipCrypto(Flags:Integer;CRC:LongInt;Name:String);
+Var
+ I:Integer;
+ B,CheckByte:Byte;
+Begin
+ UnzZipCryptActive:=False;
+ If(Flags and 1)=0 Then Exit;
+ If UnzPassword=''Then Begin
+  UnzFail('Mot de passe requis pour '+Name);
+  Exit;
+ End;
+ If(Flags and $40)<>0 Then Begin
+  UnzFail('Chiffrement fort ZIP non supporte: '+Name);
+  Exit;
+ End;
+ If UnzCompLeft<12 Then Begin
+  UnzFail('En-tete de chiffrement ZIP invalide: '+Name);
+  Exit;
+ End;
+ UnzZipCryptInit(UnzPassword);
+ UnzZipCryptActive:=True;
+ CheckByte:=0;
+ For I:=1 to 12 do Begin
+  B:=UnzReadCompByte;
+  If I=12 Then CheckByte:=B;
+ End;
+ If CheckByte<>Byte(UnzUShiftRight(CRC,24)and $FF)Then Begin
+  UnzFail('Mot de passe incorrect ou en-tete ZIP chiffre invalide: '+Name);
+  Exit;
+ End;
+End;
+
+Procedure UnzExtractArchive;
+Var
+ Sig:LongInt;
+ Flags,Method,NameLen,ExtraLen,ZipTime,ZipDate:Integer;
+ CRC,CompSize,ZipStamp,DiskStamp:LongInt;
+ Name,OutName:String;
+ I:Integer;
+ B:Byte;
+ IsDir:Boolean;
+ DoSkip,Existing:Boolean;
+Begin
+ Repeat
+  If UnzErr Then Exit;
+  If FilePos(UnzZipFile)>=FileSize(UnzZipFile)Then Break;
+  Sig:=UnzReadDWordLE;
+  If Sig=$02014B50 Then Break;
+  If Sig<>$04034B50 Then Begin
+   UnzFail('Signature ZIP locale invalide.');
+   Exit;
+  End;
+  UnzReadWordLE;
+  Flags:=UnzReadWordLE;
+  Method:=UnzReadWordLE;
+  ZipTime:=UnzReadWordLE;
+  ZipDate:=UnzReadWordLE;
+  ZipStamp:=UnzDateTimeStamp(ZipTime,ZipDate);
+  CRC:=UnzReadDWordLE;
+  CompSize:=UnzReadDWordLE;
+  UnzUncompSize:=UnzReadDWordLE;
+  NameLen:=UnzReadWordLE;
+  ExtraLen:=UnzReadWordLE;
+  Name:='';
+  For I:=1 to NameLen do Name:=Name+Chr(UnzReadZipByte);
+  UnzSkipBytes(ExtraLen);
+  If UnzErr Then Exit;
+  OutName:=UnzCleanName(Name);
+  IsDir:=(OutName='')or(OutName[Length(OutName)]='\');
+  DoSkip:=UnzIsExcluded(Name);
+  If(Flags and 8)<>0 Then Begin
+   UnzFail('Archive avec descripteur de donnees non supportee: '+Name);
+   Exit;
+  End;
+  If UnzListMode or UnzVerboseMode Then Begin
+   If Not DoSkip Then Begin
+    If UnzVerboseMode Then Begin
+     UnzMoreWriteLn(Name+'  size='+UnzLong2Str(UnzUncompSize)+
+      '  comp='+UnzLong2Str(CompSize)+'  method='+UnzMethodName(Method)+
+      '  crc='+UnzHex8(CRC));
+    End
+     Else
+    UnzMoreWriteLn(Name);
+     End;
+     UnzSkipBytes(CompSize);
+  End
+   Else
+  Begin
+   If DoSkip Then Begin
+    If Not UnzQuietMode and Not UnzVeryQuietMode Then UnzMoreWriteLn('Exclusion '+Name);
+    UnzSkipBytes(CompSize);
+   End
+    Else If IsDir Then Begin
+    If Not(UnzTestMode or UnzPipeMode or UnzCatMode) Then Begin
+     If OutName<>'' Then Begin
+      {$I-}MkDir(OutName);{$I+}
+      If(IoResult<>0)Then;
+     End;
+    End;
+    UnzSkipBytes(CompSize);
+   End
+    Else
+   Begin
+    Existing:=UnzFileExists(OutName);
+    If UnzNeverOverwrite and Existing Then Begin
+     If Not UnzQuietMode and Not UnzVeryQuietMode Then UnzMoreWriteLn('Ignore '+OutName);
+     UnzSkipBytes(CompSize);
+    End
+     Else If UnzFreshenMode and Not Existing Then Begin
+     UnzSkipBytes(CompSize);
+    End
+     Else If UnzFreshenMode and Existing and UnzGetFileDateTimeStamp(OutName,DiskStamp)
+       and(DiskStamp>=ZipStamp)Then Begin
+     If Not UnzQuietMode and Not UnzVeryQuietMode Then UnzMoreWriteLn('A jour '+OutName);
+     UnzSkipBytes(CompSize);
+    End
+     Else If UnzUpdateMode and Existing and UnzGetFileDateTimeStamp(OutName,DiskStamp)
+       and(DiskStamp>=ZipStamp)Then Begin
+     If Not UnzQuietMode and Not UnzVeryQuietMode Then UnzMoreWriteLn('A jour '+OutName);
+     UnzSkipBytes(CompSize);
+    End
+     Else
+    Begin
+     If UnzTestMode Then UnzOutputMode:=2
+      Else If UnzPipeMode or UnzCatMode Then UnzOutputMode:=1
+      Else UnzOutputMode:=0;
+     UnzCompLeft:=CompSize;
+     UnzZipCryptActive:=False;
+     UnzExpectedCRC:=CRC;
+     UnzOutCRC:=LongInt($FFFFFFFF);
+     UnzOutSize:=0;
+     UnzPrevOutByte:=-1;
+     UnzPrepareZipCrypto(Flags,CRC,Name);
+     If UnzErr Then Exit;
+     If(UnzOutputMode=0)Then Begin
+      UnzMakePath(OutName);
+      If Not UnzQuietMode and Not UnzVeryQuietMode Then UnzMoreWriteLn('Extraction '+OutName);
+      Assign(UnzOutFile,OutName);
+      {$I-}Rewrite(UnzOutFile,1);{$I+}
+      If IoResult<>0 Then Begin
+       UnzFail('Impossible de creer '+OutName);
+       Exit;
+      End;
+     End
+      Else If UnzTestMode and Not UnzQuietMode and Not UnzVeryQuietMode Then
+     UnzMoreWriteLn('Test '+Name);
+     Case Method of
+      0:Begin
+         UnzInitWindow(False);
+         While (UnzCompLeft>0) And (Not UnzErr) do Begin
+          B:=UnzReadCompByte;
+          UnzPutOutByte(B);
+         End;
+        End;
+      1:UnzUnShrink;
+      2:UnzUnReduce(1);
+      3:UnzUnReduce(2);
+      4:UnzUnReduce(3);
+      5:UnzUnReduce(4);
+      6:UnzExplode(Flags);
+      7:Begin
+         If UnzOutputMode=0 Then Close(UnzOutFile);
+         UnzFail('Methode ZIP 7 tokenizing reservee/non documentee: '+Name);
+         Exit;
+        End;
+      8:UnzInflateDeflate;
+      9:UnzInflateDeflate64;
+      10:UnzInflateDCLImplode;
+      12:UnzInflateBZip2;
+      14:UnzInflateLZMA;
+      18:UnzInflateTerse;
+      19:Begin
+          If UnzOutputMode=0 Then Close(UnzOutFile);
+          UnzFail('Methode ZIP 19 IBM LZ77 z/Architecture non portable: '+Name);
+          Exit;
+         End;
+      93:UnzInflateZstd;
+     Else
+      If UnzOutputMode=0 Then Close(UnzOutFile);
+      UnzFail('Methode ZIP non supportee ('+UnzLong2Str(Method)+') pour '+Name);
+      Exit;
+     End;
+     If UnzErr Then Begin
+      If UnzOutputMode=0 Then Close(UnzOutFile);
+      Exit;
+     End;
+     UnzOutCRC:=UnzOutCRC xor LongInt($FFFFFFFF);
+     If UnzCompLeft>0 Then UnzSkipBytes(UnzCompLeft);
+     If(UnzOutSize<>UnzUncompSize)or Not UnzSameDWord(UnzOutCRC,UnzExpectedCRC)Then Begin
+      If UnzOutputMode=0 Then Close(UnzOutFile);
+      UnzWL('Erreur CRC/taille pour '+Name);
+      If Not UnzVeryQuietMode Then
+       UnzWL('  taille='+UnzLong2Str(UnzOutSize)+'/'+UnzLong2Str(UnzUncompSize)+
+        ' crc='+UnzHex8(UnzOutCRC)+'/'+UnzHex8(UnzExpectedCRC));
+      UnzFail('CRC/taille invalide pour '+Name);
+      Exit;
+     End;
+     If UnzOutputMode=0 Then Begin
+      Close(UnzOutFile);
+      UnzSetFileDateTimeStamp(OutName,ZipStamp);
+     End;
+    End;
+   End;
+  End;
+ Until UnzErr;
+End;
+
+Procedure UnzShowHelp;
+Begin
+ UnzWL('UNZIP : Cette commande permet d''extraire une archive ZIP.');
+ UnzWLBlank;
+ UnzWL('Syntaxe : UNZIP [options] archive.ZIP');
+ UnzWLBlank;
+ UnzWL('Options :');
+ UnzWL(' -l        Liste les fichiers');
+ UnzWL(' -v        Liste detaillee');
+ UnzWL(' -t        Teste les fichiers');
+ UnzWL(' -x motif  Exclut un fichier');
+ UnzWL(' -d rep    Repertoire de destination');
+ UnzWL(' -o        Ecrase les fichiers existants');
+ UnzWL(' -n        N''ecrase jamais');
+ UnzWL(' -j        Ignore les chemins');
+ UnzWL(' -q -qq    Mode silencieux');
+ UnzWL(' -a        Conversion texte des fins de ligne');
+ UnzWL(' -C        Recherche insensible a la casse');
+ UnzWL(' -L        Noms en minuscules');
+ UnzWL(' -f        Actualise seulement les fichiers existants');
+ UnzWL(' -u        Met a jour/extrait les nouveaux');
+ UnzWL(' -p        Envoie les fichiers vers la sortie du terminal');
+ UnzWL(' -c        Affiche les fichiers dans le terminal');
+ UnzWL(' -z        Affiche le commentaire ZIP');
+ UnzWL(' -M        Affichage page par page (non bloquant dans ce terminal)');
+ UnzWL(' -P mot    Mot de passe ZipCrypto classique');
+ UnzWL(' -X -U -:  Options reconnues pour compatibilite');
+ UnzWLBlank;
+ UnzWL('Supporte les methodes ZIP store (0), shrink (1), '+
+       'reduce (2-5), implode (6), deflate (8), Deflate64 (9),');
+ UnzWL('DCL Implode (10), BZIP2 (12), LZMA (14), IBM TERSE (18), '+
+       'Zstandard/ZSTD (93).');
+ UnzWL('Methode 7 tokenizing reconnue, mais reservee/non documentee.');
+ UnzWL('IBM TERSE (18) supporte les flux PACK/SPACK avec en-tete TERSE.');
+ UnzWL('Methode 19 IBM LZ77 z/Architecture/PFS reconnue, non portable.');
+ UnzWL('Methode 93 Zstandard : blocs Raw/RLE et compresses Huffman/FSE/LZ77.');
+ UnzWL('Note : -P supporte ZipCrypto classique, pas AES/WinZip ni chiffrement fort.');
+ UnzWL('-X restaure peu d''attributs; -f/-u comparent les dates ZIP/DOS.');
+End;
+
+Procedure UnzShowZipComment;
+Var
+ Pos,StartPos,Size:LongInt;
+ Sig:LongInt;
+ CommentLen,I:Integer;
+ CS:String;
+Begin
+ Size:=FileSize(UnzZipFile);
+ StartPos:=Size-66000;
+ If StartPos<0 Then StartPos:=0;
+ Pos:=Size-22;
+ While Pos>=StartPos do Begin
+  Seek(UnzZipFile,Pos);
+  Sig:=UnzReadDWordLE;
+  If Sig=$06054B50 Then Begin
+   Seek(UnzZipFile,Pos+20);
+   CommentLen:=UnzReadWordLE;
+   If CommentLen>0 Then Begin
+    UnzMoreWriteLn('Commentaire ZIP:');
+    CS:='';
+    For I:=1 to CommentLen do CS:=CS+Chr(UnzReadZipByte);
+    UnzWL(CS);
+   End
+    Else
+   UnzMoreWriteLn('Aucun commentaire ZIP.');
+   Seek(UnzZipFile,0);
+   Exit;
+  End;
+  Dec(Pos);
+ End;
+ UnzMoreWriteLn('Commentaire ZIP introuvable.');
+ Seek(UnzZipFile,0);
+End;
+
+Procedure UnzInitOptions;
+Var
+ I:Integer;
+Begin
+ UnzDestDir:='';
+ UnzPassword:='';
+ UnzWindowLo:=NIL;
+ UnzWindowHi:=NIL;
+ UnzWindowMask:=$7FFF;
+ UnzZipCryptActive:=False;
+ UnzShrinkPrefix:=NIL;
+ UnzShrinkSuffix:=NIL;
+ UnzShrinkActive:=NIL;
+ UnzShrinkStack:=NIL;
+ UnzReduceSize:=NIL;
+ UnzReduceBits:=NIL;
+ UnzReduceFollowers:=NIL;
+ UnzDCLWin:=NIL;
+ UnzExcludeCount:=0;
+ For I:=1 to UNZ_MAXEXCLUDE do UnzExcludeList[I]:='';
+ UnzListMode:=False;
+ UnzVerboseMode:=False;
+ UnzTestMode:=False;
+ UnzOverwriteMode:=False;
+ UnzNeverOverwrite:=False;
+ UnzJunkPaths:=False;
+ UnzQuietMode:=False;
+ UnzVeryQuietMode:=False;
+ UnzAutoText:=False;
+ UnzCaseInsensitive:=False;
+ UnzLowerNames:=False;
+ UnzKeepUnicode:=False;
+ UnzFreshenMode:=False;
+ UnzUpdateMode:=False;
+ UnzPipeMode:=False;
+ UnzCatMode:=False;
+ UnzShowCommentMode:=False;
+ UnzMoreMode:=False;
+ UnzRestoreAttr:=False;
+ UnzKeepFullPath:=False;
+ UnzMoreLines:=0;
+ UnzErr:=False;
+ UnzErrMsg:='';
+End;
+
+Var
+ UnzArgs:Array[1..80]Of String;
+ UnzArgCount:Integer;
+ UnzHelpRequested:Boolean;
+
+Procedure UnzParseOptions;
+Var
+ I,J:Integer;
+ P:String;
+Begin
+ UnzArchiveName:='';
+ UnzHelpRequested:=False;
+ I:=1;
+ While (I<=UnzArgCount) And (Not UnzHelpRequested) do Begin
+  P:=UnzArgs[I];
+  If(P='/?')or(P='--help')or(P='/h')or(P='/H')Then Begin
+   UnzHelpRequested:=True;
+  End
+   Else
+  If(Length(P)>0)and(P[1]='-')Then Begin
+   If P='-qq'Then UnzVeryQuietMode:=True
+    Else If P='-d'Then Begin
+    Inc(I);
+    If I<=UnzArgCount Then UnzDestDir:=UnzArgs[I];
+   End
+    Else If P='-P'Then Begin
+    Inc(I);
+    If I<=UnzArgCount Then UnzPassword:=UnzArgs[I];
+   End
+    Else If P='-x'Then Begin
+    Inc(I);
+    If(I<=UnzArgCount)and(UnzExcludeCount<UNZ_MAXEXCLUDE)Then Begin
+     Inc(UnzExcludeCount);
+     UnzExcludeList[UnzExcludeCount]:=UnzArgs[I];
+    End;
+   End
+    Else
+   Begin
+    For J:=2 to Length(P)do Begin
+     Case P[J] of
+      'l':UnzListMode:=True;
+      'v':UnzVerboseMode:=True;
+      't':UnzTestMode:=True;
+      'o':UnzOverwriteMode:=True;
+      'n':UnzNeverOverwrite:=True;
+      'j':UnzJunkPaths:=True;
+      'q':UnzQuietMode:=True;
+      'a':UnzAutoText:=True;
+      'C':UnzCaseInsensitive:=True;
+      'L':UnzLowerNames:=True;
+      'U':UnzKeepUnicode:=True;
+      'f':UnzFreshenMode:=True;
+      'u':UnzUpdateMode:=True;
+      'p':UnzPipeMode:=True;
+      'c':UnzCatMode:=True;
+      'z':UnzShowCommentMode:=True;
+      'M':UnzMoreMode:=True;
+      'X':UnzRestoreAttr:=True;
+      ':':UnzKeepFullPath:=True;
+     End;
+    End;
+   End;
+  End
+   Else If UnzArchiveName=''Then UnzArchiveName:=P
+   Else If UnzExcludeCount<UNZ_MAXEXCLUDE Then Begin
+    Inc(UnzExcludeCount);
+    UnzExcludeList[UnzExcludeCount]:=P;
+   End;
+  Inc(I);
+ End;
+ If UnzVerboseMode Then UnzListMode:=False;
+End;
+
+{ --- UNZIP --- (point d'entree commun aux 4 shells) }
+
+Procedure TermCmd_UNZIP(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I: Integer;
+Begin
+ UnzTermTP := @TP;
+ UnzOutLine := '';
+ UnzInitOptions;
+ UnzArgCount := 0;
+ While (TermExtractParam(ParamStr, UnzArgCount+1) <> '') And
+       (UnzArgCount < 80) Do Inc(UnzArgCount);
+ For I := 1 To UnzArgCount Do UnzArgs[I] := TermExtractParam(ParamStr, I);
+
+ UnzParseOptions;
+ If UnzHelpRequested Then Begin
+  UnzShowHelp;
+  Exit;
+ End;
+ If UnzArchiveName='' Then Begin
+  UnzWL('Parametre requis !');
+  Exit;
+ End;
+ UnzArchiveName:=FExpand(UnzArchiveName);
+ If UnzPath2Ext(UnzArchiveName)=''Then UnzArchiveName:=UnzArchiveName+'.ZIP';
+ UnzInitCRC32;
+ Assign(UnzZipFile,UnzArchiveName);
+ {$I-}Reset(UnzZipFile,1);{$I+}
+ If IoResult<>0 Then Begin
+  UnzWL('Archive ZIP introuvable !');
+  Exit;
+ End;
+ If UnzShowCommentMode Then UnzShowZipComment;
+ If (Not UnzShowCommentMode) or UnzListMode or UnzVerboseMode or UnzTestMode or
+    UnzPipeMode or UnzCatMode Then UnzExtractArchive;
+ Close(UnzZipFile);
+ If UnzOutLine <> '' Then UnzFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -50940,6 +55578,30 @@ Begin
    '  ARJ u/f/m ...                    Update/Freshen/Move (=Add+options)');
   TermAddLine(TP,
    '  ARJ /?                           Aide complete (commandes, switches)');
+ End;
+ { UNZIP (2026-08-31, demande explicite de l'utilisateur, port complet et   }
+ { integral de C:\SOURCE\GITHUB\CORAIL\UNZIP.PAS - AUCUN executable         }
+ { externe, code natif directement dans DEVENV.PAS) - memes 4 shells que    }
+ { ARJ/EDIT. }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Archives ZIP (integre, sans executable externe) ---');
+  TermAddLine(TP,
+   '  UNZIP -l archive.zip           Lister le contenu');
+  TermAddLine(TP,
+   '  UNZIP -v archive.zip           Lister avec details (methode/CRC)');
+  TermAddLine(TP,
+   '  UNZIP archive.zip [-d rep]     Extraire (avec les chemins)');
+  TermAddLine(TP,
+   '  UNZIP -t archive.zip           Tester l''integrite (CRC)');
+  TermAddLine(TP,
+   '  UNZIP -x motif archive.zip     Exclure des fichiers');
+  TermAddLine(TP,
+   '  UNZIP -P mdp archive.zip       Mot de passe ZipCrypto classique');
+  TermAddLine(TP,
+   '  UNZIP /?                       Aide complete (store/shrink/reduce/' +
+   'implode/deflate/deflate64/DCL/BZIP2/LZMA/TERSE/Zstandard)');
  End;
  { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande         }
  { explicite de l'utilisateur - PowerShell dev est le shell qu'il oublie le }
@@ -51620,6 +56282,8 @@ Begin
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
+   Else If CurrCmd = 'UNZIP' Then
+    TermCmd_UNZIP(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -51825,6 +56489,8 @@ Begin
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
+   Else If CurrCmd = 'UNZIP' Then
+    TermCmd_UNZIP(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -52056,6 +56722,8 @@ Begin
    TermCmd_EDIT(TP, ParamStr)
   Else If CurrCmd = 'ARJ' Then
    TermCmd_ARJ(TP, ParamStr)
+  Else If CurrCmd = 'UNZIP' Then
+   TermCmd_UNZIP(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -52200,6 +56868,8 @@ Begin
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
+   Else If CurrCmd = 'UNZIP' Then
+    TermCmd_UNZIP(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then

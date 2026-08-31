@@ -15,12 +15,13 @@ Const
  VersionText='5.812';
  ValueEmpty=0;ValueString=1;ValueNumber=2;ValueDate=3;
  ValueArray=4;ValueError=5;ValueNull=6;ValueObject=7;
- FunctionList:Array[0..41]of String[24]=(
+ FunctionList:Array[0..49]of String[24]=(
   'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
   'CLNG','COS','CSNG','CSTR','CVERR','DATE','DATESERIAL','DATEVALUE','DAY',
   'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','ISARRAY','ISDATE',
   'ISEMPTY','ISERROR','ISNULL','ISNUMERIC','ISOBJECT','LBOUND','LCASE',
-  'LEFT','LEN','RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
+  'LEFT','LEN','LOG','LTRIM','MID','MINUTE','MONTH','MSGBOX','NOW','OCT',
+  'RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
 
 Type
  PScriptLine=^TScriptLine;
@@ -204,6 +205,42 @@ Begin
  Else MakeText('',V);
 End;
 
+Procedure DateMinuteValue(SourceText:String;Var V:TValue);
+Var P,P2,MinuteValue,Code:Integer;TimeText:String;
+Begin
+ SourceText:=Trim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then TimeText:=Trim(Copy(SourceText,P+1,255))Else TimeText:=SourceText;
+ P:=Pos(':',TimeText);If P=0Then Begin MakeNumber(0,V);Exit;End;
+ Delete(TimeText,1,P);P2:=Pos(':',TimeText);
+ If P2>0Then TimeText:=Copy(TimeText,1,P2-1);
+ Val(Trim(TimeText),MinuteValue,Code);
+ If(Code=0)and(MinuteValue>=0)and(MinuteValue<=59)Then MakeNumber(MinuteValue,V)
+ Else MakeText('',V);
+End;
+
+Procedure DateMonthValue(SourceText:String;Var V:TValue);
+Var DateValue:TValue;MonthValue,Code:Integer;
+Begin
+ ParseDateValue(SourceText,DateValue);
+ If DateValue.Text=''Then Begin MakeText('',V);Exit;End;
+ Val(Copy(DateValue.Text,4,2),MonthValue,Code);
+ If Code=0Then MakeNumber(MonthValue,V)Else MakeText('',V);
+End;
+
+Procedure NowValue(Var V:TValue);
+Var Year,Month,Day,DayOfWeek,HourValue,MinuteValue,Second,Hundredth:Word;
+ DatePart,HourText,MinuteText,SecondText:String;DateValue:TValue;
+Begin
+ GetDate(Year,Month,Day,DayOfWeek);GetTime(HourValue,MinuteValue,Second,Hundredth);
+ MakeDateValue(Year,Month,Day,DateValue);Str(HourValue,HourText);
+ Str(MinuteValue,MinuteText);Str(Second,SecondText);
+ If Length(HourText)<2Then HourText:='0'+HourText;
+ If Length(MinuteText)<2Then MinuteText:='0'+MinuteText;
+ If Length(SecondText)<2Then SecondText:='0'+SecondText;
+ DatePart:=DateValue.Text+' '+HourText+':'+MinuteText+':'+SecondText;
+ MakeText(DatePart,V);V.ValueKind:=ValueDate;
+End;
+
 Procedure HexValue(NumberValue:LongInt;Var V:TValue);
 Const Digits:Array[0..15] of Char='0123456789ABCDEF';
 Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
@@ -214,6 +251,39 @@ Begin
   NumberValue:=NumberValue shr 4;Inc(Count);
  Until((Not Negative)and(NumberValue=0))or(Negative and(Count=8));
  MakeText(ResultText,V);
+End;
+
+Procedure OctValue(NumberValue:LongInt;Var V:TValue);
+Const Digits:Array[0..7]of Char='01234567';
+Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
+Begin
+ ResultText:='';Negative:=NumberValue<0;Count:=0;
+ Repeat
+  Digit:=NumberValue and 7;ResultText:=Digits[Digit+1]+ResultText;
+  NumberValue:=NumberValue shr 3;Inc(Count);
+ Until((Not Negative)and(NumberValue=0))or(Negative and(Count=11));
+ MakeText(ResultText,V);
+End;
+
+Procedure MsgBoxValue(MessageText:String;StyleValue:Integer;TitleText:String;Var V:TValue);
+Var Choice:Char;ButtonStyle,ResultCode:Integer;
+Begin
+ If TitleText<>''Then WriteLn('[',TitleText,']');WriteLn(MessageText);
+ ButtonStyle:=StyleValue and 15;ResultCode:=1;
+ If BatchMode Then Begin MakeNumber(ResultCode,V);Exit;End;
+ Case ButtonStyle of
+  1:Begin Write('[O]K/[A]nnuler ? ');Choice:=ReadKey;WriteLn;
+     If UpCase(Choice)='A'Then ResultCode:=2;End;
+  2:Begin Write('[A]bandonner/[R]eessayer/[I]gnorer ? ');Choice:=ReadKey;WriteLn;
+     Case UpCase(Choice)of'A':ResultCode:=3;'R':ResultCode:=4;Else ResultCode:=5;End;End;
+  3:Begin Write('[O]ui/[N]on/[A]nnuler ? ');Choice:=ReadKey;WriteLn;
+     If UpCase(Choice)='O'Then ResultCode:=6 Else If UpCase(Choice)='N'Then ResultCode:=7 Else ResultCode:=2;End;
+  4:Begin Write('[O]ui/[N]on ? ');Choice:=ReadKey;WriteLn;
+     If UpCase(Choice)='O'Then ResultCode:=6 Else ResultCode:=7;End;
+  5:Begin Write('[R]eessayer/[A]nnuler ? ');Choice:=ReadKey;WriteLn;
+     If UpCase(Choice)='R'Then ResultCode:=4 Else ResultCode:=2;End;
+ End;
+ MakeNumber(ResultCode,V);
 End;
 
 Procedure InputBoxValue(PromptText,TitleText,DefaultText:String;Var V:TValue);
@@ -334,9 +404,10 @@ Begin
  If U='NOTHING'Then Begin MakeText('',V);V.ValueKind:=ValueObject;Exit;End;
  SkipSpace;
  FunctionByte:=FunctionIndex(U);
- If(FunctionByte=15)and((ExprPos>Length(ExprText))or(ExprText[ExprPos]<>'('))Then Begin
-  GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
-  MakeDateValue(DateYear,DateMonth,DateDay,V);Exit;
+ If((FunctionByte=15)or(FunctionByte=43))and
+   ((ExprPos>Length(ExprText))or(ExprText[ExprPos]<>'('))Then Begin
+  If FunctionByte=15Then Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
+   MakeDateValue(DateYear,DateMonth,DateDay,V);End Else NowValue(V);Exit;
  End;
  VariableEntry:=FindVariable(Name);
  If(VariableEntry<>Nil)and(Copy(VariableEntry^.Value,1,8)='@VBARRAY')and
@@ -431,11 +502,25 @@ Begin
      End;
    35:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);         { LEFT }
    36:MakeNumber(Length(A.Text),V);                       { LEN }
-   37:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
-   38:MakeNumber(Random,V);                               { RND }
-   39:MakeText(Trim(A.Text),V);                           { TRIM }
-   40:MakeText(Upper(A.Text),V);                          { UCASE }
-   41:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+   37:If A.Number>0Then MakeNumber(Ln(A.Number),V)Else MakeText('',V); { LOG }
+   38:Begin S:=A.Text;While(Length(S)>0)and(S[1]=' ')Do Delete(S,1,1);
+      MakeText(S,V);End;                                  { LTRIM }
+   39:Begin                                               { MID }
+      I:=Trunc(B.Number);If I<1Then MakeText('',V)
+      Else If ArgumentCount<3Then MakeText(Copy(A.Text,I,255),V)
+      Else If C.Number<0Then MakeText('',V)
+      Else MakeText(Copy(A.Text,I,Trunc(C.Number)),V);
+     End;
+   40:DateMinuteValue(A.Text,V);                          { MINUTE }
+   41:DateMonthValue(A.Text,V);                           { MONTH }
+   42:MsgBoxValue(A.Text,Trunc(B.Number),C.Text,V);       { MSGBOX }
+   43:NowValue(V);                                        { NOW }
+   44:OctValue(Trunc(A.Number),V);                        { OCT }
+   45:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
+   46:MakeNumber(Random,V);                               { RND }
+   47:MakeText(Trim(A.Text),V);                           { TRIM }
+   48:MakeText(Upper(A.Text),V);                          { UCASE }
+   49:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
        MakeText(ScriptArguments[Trunc(A.Number)],V)
       Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
    Else MakeText('',V);
@@ -561,6 +646,12 @@ Begin
   Delete(S,1,Length('WScript.Quit'));
   Evaluate(S,V);ExitCode:=Trunc(V.Number);
   Terminated:=True;
+  Exit;
+ End
+  Else
+ If StartsWith(S,'MSGBOX')Then Begin
+  If(Length(S)>6)and(S[7]='(')Then Evaluate(S,V)
+  Else Evaluate('MsgBox('+Trim(Copy(S,7,255))+')',V);
   Exit;
  End
   Else
