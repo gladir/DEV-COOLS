@@ -5259,6 +5259,7 @@ Const
  { supplementaire dans ce chantier. }
  WIN16_WM_CREATE  = $0001;
  WIN16_WM_DESTROY = $0002;
+ WIN16_WM_SIZE    = $0005;
  WIN16_WM_PAINT   = $000F;
  WIN16_WM_TIMER   = $0113;
  WIN16_WM_QUIT    = $0012;
@@ -6563,6 +6564,7 @@ Var
  Win16_WindowW         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
  Win16_WindowH         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
  Win16_WindowNeedsPaint: Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
+ Win16_WindowSizeSent  : Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
  Win16_NextHWnd        : Word;
  Win16_MsgQueueHWnd    : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
  Win16_MsgQueueMsg     : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
@@ -6594,6 +6596,18 @@ Var
  { la nouvelle position puis l'avance) - une seule, meme simplification     }
  { mono-DC que ci-dessus. }
  Win16_PenX, Win16_PenY: Integer;
+ { Mode de trace GDI courant (SetROP2, GDI ordinal 4) - mono-DC comme tout }
+ { le reste de ce chantier. R2_COPYPEN=13 (defaut reel d'un DC neuf). BOGUE}
+ { REEL trouve+corrige (2026-08-30, "l aiguille ne s efface pas avant     }
+ { d en dessiner une nouvelle") : SetROP2 stockait ce mode nulle part -    }
+ { Win16_DrawLine/DrawEllipseBox dessinaient donc TOUJOURS en ecrasement    }
+ { plein (COPYPEN), meme quand le programme demandait explicitement        }
+ { R2_NOT/R2_XORPEN - le "truc" classique de dessin d aiguille d horloge   }
+ { sans scintillement (retracer EXACTEMENT le meme trait inverse le pixel  }
+ { pour l effacer, NOT(NOT(x))=x, peu importe la couleur de fond) ne        }
+ { fonctionnait donc jamais, laissant une trainee de chaque position        }
+ { passee. }
+ Win16_CurrentROP2: Word;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -6618,6 +6632,18 @@ Var
  Win16_WndProcTraceOn  : Boolean;
  Win16_WndProcTraceDone: Boolean;
  Win16_WndProcTraceFile: Text;
+ { Diagnostic temporaire (2026-08-30, suite) : journal DEDIE des appels    }
+ { GDI de dessin reel (MoveTo/LineTo/Ellipse/Rectangle/FillRect) - invisible}
+ { autrement pour la MEME raison que ci-dessus (appels imbriques dans      }
+ { Win16_CallWndProc). Contrairement au tracer pas-a-pas ci-dessus (limite }
+ { au tout premier WM_PAINT), celui-ci reste actif pendant TOUTE la duree  }
+ { de WIN16RUN (borne a Win16_GdiTraceMax lignes pour rester lisible) afin }
+ { de voir si de VRAIES coordonnees non degenerees sont dessinees au fil   }
+ { de plusieurs cycles WM_PAINT/WM_TIMER, pas juste le premier. }
+ Win16_GdiTraceOn   : Boolean;
+ Win16_GdiTraceCount: LongInt;
+ Win16_GdiTraceMax  : LongInt;
+ Win16_GdiTraceFile : Text;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
  EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
@@ -42386,6 +42412,10 @@ Begin
  Win16_BeginPaintCount := 0;
  Win16_WndProcTraceOn := False;
  Win16_WndProcTraceDone := False;
+ Win16_GdiTraceOn := False;
+ Win16_GdiTraceCount := 0;
+ Win16_GdiTraceMax := 80;
+ Win16_CurrentROP2 := 13; { R2_COPYPEN, defaut reel d'un DC neuf }
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -42975,6 +43005,43 @@ End;
 Procedure Dpmi_RunRealProc(Var P: TEmulatorPanel; TargetCS, TargetIP: Word;
  ViaIret: Boolean); Forward;
 
+{ Journal DEDIE (2026-08-30, diagnostic "aiguilles toujours invisibles" -   }
+{ voir Win16_GdiTraceOn/Count/Max) des VRAIS appels GDI de dessin, avec     }
+{ leurs coordonnees CLIENT brutes ET converties en pixels ABSOLUS - le seul}
+{ moyen de savoir si le programme dessine reellement des coordonnees non   }
+{ degenerees (ex. toujours le meme point = aiguille de longueur nulle,     }
+{ invisible) sans se limiter au tout premier WM_PAINT comme le tracer      }
+{ pas-a-pas Win16_WndProcTraceOn ci-dessus. }
+Procedure Win16_GdiTraceLog(Const S: String);
+Begin
+ If Win16_GdiTraceCount >= Win16_GdiTraceMax Then Exit;
+ If Not Win16_GdiTraceOn Then Begin
+  {$I-} Assign(Win16_GdiTraceFile, 'GDI_DRAW_TRACE.LOG');
+  Rewrite(Win16_GdiTraceFile); {$I+}
+  If IOResult <> 0 Then Exit;
+  Win16_GdiTraceOn := True;
+ End;
+ WriteLn(Win16_GdiTraceFile, S);
+ Inc(Win16_GdiTraceCount);
+End;
+
+{ Applique REELLEMENT Win16_CurrentROP2 (SetROP2, voir sa declaration) au   }
+{ lieu d'ecraser inconditionnellement le pixel - R2_NOT(6) inverse le       }
+{ pixel EXISTANT (ignore Color, "NOT(NOT(x))=x" : retracer EXACTEMENT le    }
+{ meme trait l'efface, peu importe la couleur de fond - le mecanisme reel   }
+{ utilise par les aiguilles d'horloge sans scintillement), R2_XORPEN(7)     }
+{ fait un OU-EXCLUSIF avec Color, tout le reste (dont le defaut R2_COPYPEN) }
+{ ecrase simplement avec Color comme avant. Utilise par Win16_DrawLine/     }
+{ Win16_DrawEllipseBox ci-dessous - jamais appele directement ailleurs. }
+Procedure Win16_PlotPixel(X, Y: Integer; Color: Byte);
+Begin
+ Case Win16_CurrentROP2 Of
+  6:  Emu_VidSetPixel(X, Y, Emu_VidGetPixel(X, Y) Xor $FF);
+  7:  Emu_VidSetPixel(X, Y, Emu_VidGetPixel(X, Y) Xor Color);
+  Else Emu_VidSetPixel(X, Y, Color);
+ End;
+End;
+
 { Trace un segment de droite en VRAIS pixels (Bresenham standard, entiers   }
 { uniquement) - utilise par LineTo (GDI ordinal 19). Coordonnees deja en    }
 { pixels ABSOLUS du framebuffer (voir Win16_LineTo ci-apres pour la          }
@@ -42987,7 +43054,7 @@ Begin
  DY := -Abs(Y2 - Y1); If Y1 < Y2 Then SY := 1 Else SY := -1;
  Err := DX + DY;
  While True Do Begin
-  Emu_VidSetPixel(X1, Y1, Color);
+  Win16_PlotPixel(X1, Y1, Color);
   If (X1 = X2) And (Y1 = Y2) Then Break;
   E2 := 2 * Err;
   If E2 >= DY Then Begin Err := Err + DY; X1 := X1 + SX; End;
@@ -43019,8 +43086,8 @@ Begin
  TwoRY2 := 2 * RY2;
  X := 0; Y := RY;
  Ex := 0; Ey := TwoRX2 * Y;
- Emu_VidSetPixel(CX, CY + Y, Color); Emu_VidSetPixel(CX, CY - Y, Color);
- Emu_VidSetPixel(CX + X, CY + Y, Color); { degenere si X=0, harmless }
+ Win16_PlotPixel(CX, CY + Y, Color); Win16_PlotPixel(CX, CY - Y, Color);
+ Win16_PlotPixel(CX + X, CY + Y, Color); { degenere si X=0, harmless }
  P1 := RY2 - (RX2 * RY) + (RX2 Div 4);
  While Ex < Ey Do Begin
   Inc(X);
@@ -43032,8 +43099,8 @@ Begin
    Ey := Ey - TwoRX2;
    P1 := P1 + RY2 + Ex - Ey;
   End;
-  Emu_VidSetPixel(CX + X, CY + Y, Color); Emu_VidSetPixel(CX - X, CY + Y, Color);
-  Emu_VidSetPixel(CX + X, CY - Y, Color); Emu_VidSetPixel(CX - X, CY - Y, Color);
+  Win16_PlotPixel(CX + X, CY + Y, Color); Win16_PlotPixel(CX - X, CY + Y, Color);
+  Win16_PlotPixel(CX + X, CY - Y, Color); Win16_PlotPixel(CX - X, CY - Y, Color);
  End;
  P2 := (RY2 * (X + 1) * (X + 1)) + (RX2 * (Y - 1) * (Y - 1)) - RX2 * RY2;
  While Y > 0 Do Begin
@@ -43046,8 +43113,8 @@ Begin
    Ex := Ex + TwoRY2;
    P2 := P2 + RX2 - Ey + Ex;
   End;
-  Emu_VidSetPixel(CX + X, CY + Y, Color); Emu_VidSetPixel(CX - X, CY + Y, Color);
-  Emu_VidSetPixel(CX + X, CY - Y, Color); Emu_VidSetPixel(CX - X, CY - Y, Color);
+  Win16_PlotPixel(CX + X, CY + Y, Color); Win16_PlotPixel(CX - X, CY + Y, Color);
+  Win16_PlotPixel(CX + X, CY - Y, Color); Win16_PlotPixel(CX - X, CY - Y, Color);
  End;
 End;
 
@@ -43256,6 +43323,8 @@ Var
  FRLeft, FRTop, FRRight, FRBottom: SmallInt;
  FRX, FRY: Integer;
  IFDx, IFDy: SmallInt;
+ SWHWndArg: Word;
+ SWWIdx: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -43709,6 +43778,7 @@ Begin
      Win16_WindowW[CWIdx] := SmallInt(CWW);
      Win16_WindowH[CWIdx] := SmallInt(CWH);
      Win16_WindowNeedsPaint[CWIdx] := True;
+     Win16_WindowSizeSent[CWIdx] := False;
      Inc(Win16_WindowCount);
      Win16_DrawWindowFrame(P, CWIdx);
      P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
@@ -43717,19 +43787,30 @@ Begin
    End;
    66, 67: Begin
     { GetDC(hWnd)/GetWindowDC(hWnd):HDC - 2 ordinaux VERIFIES via           }
-    { user.exe16.spec, meme signature ("word"). Rendu GDI reel HORS DE      }
-    { PORTEE (stretch goal Stage 6) - simplification DOCUMENTEE : retourne  }
-    { un handle de contexte-peripherique SYNTHETIQUE non-nul, jamais un     }
-    { vrai DC dessinable. Suffisant pour que le code appelant continue vers}
-    { ses appels GDI (TextOut/Rectangle/...) qui s'arreteront honnetement   }
-    { a leur tour si/quand rencontres. }
+    { user.exe16.spec, meme signature ("word"). Handle de DC synthetique    }
+    { non-nul (aucun vrai contexte multi-DC modelise), MAIS renseigne       }
+    { REELLEMENT Win16_ActiveDCWindow (mono-DC global, meme mecanisme que    }
+    { BeginPaint) - BOGUE REEL trouve+corrige (2026-08-30, "aiguilles       }
+    { toujours invisibles") : jusqu'ici seul BeginPaint l'activait, donc     }
+    { tout dessin fait via GetDC (chemin tres courant pour une horloge qui   }
+    { redessine ses aiguilles depuis WM_TIMER SANS passer par WM_PAINT/      }
+    { BeginPaint, pour eviter un effacement complet a chaque tic) tombait     }
+    { sur ActiveDCWindow=-1 et etait silencieusement ignore par MoveTo/       }
+    { LineTo/Ellipse (confirme via Win16_GdiTraceLog/GDI_DRAW_TRACE.LOG). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    Win16_ActiveDCWindow := SWWIdx;
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
    End;
    68: Begin
     { ReleaseDC(hWnd, hDC):bool - ordinal VERIFIE via user.exe16.spec.       }
-    { Meme simplification que GetDC/GetWindowDC ci-dessus : rapporte        }
-    { toujours un succes, aucun VRAI DC a liberer. }
+    { Symetrique du correctif GetDC ci-dessus : libere REELLEMENT           }
+    { Win16_ActiveDCWindow (meme mecanisme que EndPaint), rapporte toujours  }
+    { un succes (aucun vrai DC a liberer). }
+    Win16_ActiveDCWindow := -1;
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
@@ -43905,6 +43986,9 @@ Begin
     FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
     FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
     FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    Win16_GdiTraceLog('FillRect client=(' + IntToStr(FRLeft) + ',' +
+     IntToStr(FRTop) + ')-(' + IntToStr(FRRight) + ',' + IntToStr(FRBottom) +
+     ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
     If Win16_ActiveDCWindow >= 0 Then Begin
      FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
      FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
@@ -43956,6 +44040,24 @@ Begin
     Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Word(SmallInt(FRBottom + IFDy)));
     ArgWords := 3;
    End;
+   72: Begin
+    { SetRect(lpRect,left,top,right,bottom):void - ordinal VERIFIE via      }
+    { user.exe16.spec (ptr,s_word,s_word,s_word,s_word). Ecrit REELLEMENT   }
+    { les 4 mots du RECT - typiquement utilise pour initialiser un RECT     }
+    { local depuis les dimensions recues (ex. dans un gestionnaire WM_SIZE  }
+    { qui stocke le rectangle client pour son calcul de centre/rayon). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(FRLeft));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), Word(FRTop));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), Word(FRRight));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Word(FRBottom));
+    ArgWords := 6;
+   End;
    39: Begin
     { BeginPaint(hWnd,lpPaint):HDC - ordinal VERIFIE via user.exe16.spec.   }
     { Stage 6b : efface WindowNeedsPaint (contrat reel - une repeinture      }
@@ -44001,9 +44103,34 @@ Begin
    End;
    42: Begin
     { ShowWindow(hWnd,nCmdShow):bool - ordinal VERIFIE via user.exe16.spec. }
-    { Stage 6b : la fenetre est toujours visible des sa creation dans ce     }
-    { modele (un seul "ecran" 320x200, une seule fenetre) - succes honnete   }
-    { sans etat cache/visible reellement modelise. }
+    { La fenetre est toujours visible des sa creation dans ce modele (un     }
+    { seul "ecran" 320x200, une seule fenetre) - succes honnete sans etat    }
+    { cache/visible reellement modelise. }
+    { BOGUE REEL trouve+corrige (2026-08-30, "les aiguilles restent          }
+    { invisibles") : un VRAI Windows envoie WM_SIZE (avec la largeur/hauteur }
+    { CLIENT reelles en lParam, LOWORD=largeur/HIWORD=hauteur) au moment ou   }
+    { la fenetre devient visible pour la premiere fois - AVANT le tout       }
+    { premier WM_PAINT - c'est typiquement LA ou une vraie application       }
+    { cache le centre/rayon de son dessin (calcul qui depend de la taille    }
+    { de la fenetre, donc ne peut pas se faire dans WM_CREATE). Sans WM_SIZE }
+    { jamais delivre, ces variables globales restaient a leur valeur BSS      }
+    { zero par defaut - exactement le symptome observe (MoveTo/LineTo        }
+    { systematiquement a (0,0), confirme via le nouveau journal              }
+    { Win16_GdiTraceLog/GDI_DRAW_TRACE.LOG). Synthetise desormais REELLEMENT }
+    { WM_SIZE, une seule fois par fenetre (Win16_WindowSizeSent), avec       }
+    { wParam=SIZE_RESTORED(0) et lParam=MAKELONG(largeur,hauteur) - la VRAIE }
+    { convention documentee de WM_SIZE (winuser.h). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If (SWWIdx >= 0) And (Not Win16_WindowSizeSent[SWWIdx]) Then Begin
+     Win16_WindowSizeSent[SWWIdx] := True;
+     DMClassIdx := Win16_WindowClassIdx[SWWIdx];
+     DMResult := Win16_CallWndProc(P, Win16_WndClassProcSeg[DMClassIdx],
+      Win16_WndClassProcOfs[DMClassIdx], SWHWndArg, WIN16_WM_SIZE, 0,
+      Word(Win16_WindowW[SWWIdx]), Word(Win16_WindowH[SWWIdx]));
+    End;
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
@@ -44231,11 +44358,15 @@ Begin
    End;
    4: Begin
     { SetROP2(hdc, nDrawMode):int (mode precedent) - ordinal VERIFIE via    }
-    { gdi.exe16.spec (2 mots). Meme simplification que SetBkMode ci-dessus  }
-    { (mode de trace non modelise, toutes les primitives Win16_Draw* ci-    }
-    { dessous dessinent toujours en couleur pleine, pas de vrai XOR/NOT) -  }
-    { rapporte R2_COPYPEN (13, mode par defaut) comme mode precedent. }
-    P.CPU.Regs.AX := 13;
+    { gdi.exe16.spec (2 mots). BOGUE REEL corrige (2026-08-30, voir          }
+    { Win16_CurrentROP2 ci-dessus) : stocke desormais REELLEMENT le mode     }
+    { demande (mono-DC) - Win16_DrawLine/DrawEllipseBox l'appliquent         }
+    { reellement (R2_NOT/R2_XORPEN inversent le pixel au lieu de l'ecraser, }
+    { permettant a une appli de retracer le MEME trait pour l'effacer sans  }
+    { connaitre la couleur de fond - le mecanisme reel utilise par les       }
+    { aiguilles d'horloge sans scintillement). }
+    P.CPU.Regs.AX := Win16_CurrentROP2;
+    Win16_CurrentROP2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     ArgWords := 2;
    End;
    45: Begin
@@ -44291,6 +44422,9 @@ Begin
      Win16_PenX := Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1;
      Win16_PenY := Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1;
     End;
+    Win16_GdiTraceLog('MoveTo client=(' + IntToStr(GdiX1) + ',' +
+     IntToStr(GdiY1) + ') -> pen=(' + IntToStr(Win16_PenX) + ',' +
+     IntToStr(Win16_PenY) + ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
     P.CPU.Regs.DX := 0;
     P.CPU.Regs.AX := 0;
     ArgWords := 3;
@@ -44309,10 +44443,16 @@ Begin
     If Win16_ActiveDCWindow >= 0 Then Begin
      GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
      GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     Win16_GdiTraceLog('LineTo client=(' + IntToStr(GdiX1) + ',' +
+      IntToStr(GdiY1) + ') from pen=(' + IntToStr(Win16_PenX) + ',' +
+      IntToStr(Win16_PenY) + ') to abs=(' + IntToStr(GdiX2) + ',' +
+      IntToStr(GdiY2) + ')');
      Win16_DrawLine(Win16_PenX, Win16_PenY, GdiX2, GdiY2, 0);
      Win16_PenX := GdiX2;
      Win16_PenY := GdiY2;
-    End;
+    End Else
+     Win16_GdiTraceLog('LineTo IGNORE (ActiveDCWindow<0) client=(' +
+      IntToStr(GdiX1) + ',' + IntToStr(GdiY1) + ')');
     P.CPU.Regs.AX := 1;
     ArgWords := 3;
    End;
@@ -44329,6 +44469,9 @@ Begin
     GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
     GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
     GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    Win16_GdiTraceLog('Ellipse/Rect ord=' + IntToStr(Ordinal) + ' client=(' +
+     IntToStr(GdiX1) + ',' + IntToStr(GdiY1) + ')-(' + IntToStr(GdiX2) + ',' +
+     IntToStr(GdiY2) + ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
     If Win16_ActiveDCWindow >= 0 Then Begin
      GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
      GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
@@ -46209,6 +46352,10 @@ Begin
  If Win16_LastError <> '' Then
   WriteLn(LogF, 'Detail : ', Win16_LastError);
  Close(LogF);
+ If Win16_GdiTraceOn Then Begin
+  Win16_GdiTraceOn := False;
+  Close(Win16_GdiTraceFile);
+ End;
  TermAddLine(TP, 'WIN16RUN : ' + IntToStr(StepN) + ' pas executes, arret : ' + FaultName);
  If Win16_LastError <> '' Then
   TermAddLine(TP, '  ' + Win16_LastError);
