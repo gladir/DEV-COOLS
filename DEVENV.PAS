@@ -1045,6 +1045,18 @@ Function Win_GlobalUnlock(hMem: LongInt): LongBool;
          StdCall; External 'kernel32.dll' Name 'GlobalUnlock';
 Function Win_GlobalSize(hMem: LongInt): LongInt;
          StdCall; External 'kernel32.dll' Name 'GlobalSize';
+{ Clear-RecycleBin (2026-08-31, demande explicite de l'utilisateur,        }
+{ confirmee via AskUserQuestion : "implementation reelle AVEC              }
+{ confirmation") - VRAIE API Windows (pas un stub) : vide REELLEMENT la    }
+{ Corbeille du systeme hote. SHERB_NOCONFIRMATION/NOPROGRESSUI/NOSOUND     }
+{ passes cote appel (voir TermCmd_ClearRecycleBin) pour eviter une 2e      }
+{ boite de dialogue Windows NATIVE en plus de la confirmation deja exigee  }
+{ par -Force cote terminal - meme discipline que la vraie cmdlet           }
+{ PowerShell (qui supprime aussi l'UI native et gere sa propre             }
+{ confirmation). }
+Function SHEmptyRecycleBinA(hWnd: LongInt; pszRootPath: PChar;
+         dwFlags: LongWord): LongInt;
+         StdCall; External 'shell32.dll' Name 'SHEmptyRecycleBinA';
 {$ENDIF}
 
 Const
@@ -6509,6 +6521,12 @@ Var
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
  EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
+ { Clear-Variable/Set-Variable (2026-08-31, PowerShell dev, demande         }
+ { explicite de l'utilisateur) : segment REEL et DEDIE de l'environnement   }
+ { DOS du programme courant - carve a meme EmuNextFreeSeg (16 paragraphes,  }
+ { 256 octets) au chargement, JAMAIS le placeholder $51/AtSeg d'origine     }
+ { (qui n'etait jamais reellement peuple) - voir Emu_DosEnvBuildDefault. }
+ EmuDosEnvSeg   : Word;
  { Chantier Windows 16 bits (2026-08-25), Stage 2 : etat du chargeur NE -  }
  { allocateur bump INDEPENDANT de EmuNextFreeSeg (jamais partage avec le   }
  { chargeur DOS classique, memes principes d isolement que LX_Mem/ELF64    }
@@ -10824,6 +10842,10 @@ Procedure Emu_CdromOpenOne(Idx: Byte; FName: String); Forward;
 Procedure Emu_CdromAssignDriveLetters; Forward;
 Procedure Emu_PktInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_WriteDefaultVector(Var P: TEmulatorPanel; Num: Byte); Forward;
+Function Emu_DosEnvRead(Var C: TEmuCPU; EnvSeg: Word;
+ Var Vars: Array Of String; Var Count: Integer): Boolean; Forward;
+Function Emu_DosEnvWrite(Var C: TEmuCPU; EnvSeg: Word;
+ Var Vars: Array Of String; Count: Integer): Boolean; Forward;
 
 { Declarations anticipees pour l emulateur 8086 integre }
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
@@ -35042,6 +35064,13 @@ Begin
  Fat_ResolveDir := True;
 End;
 
+{ Forward necessaire : Fat_WriteSector n'est definie completement que      }
+{ ~500 lignes plus loin (pres de Fat_ReadSector), mais Fat_SetAttr         }
+{ ci-dessous (juste apres Fat_FindPath) en a besoin des maintenant - meme  }
+{ motif Forward deja etabli partout ailleurs dans ce fichier. }
+Function Fat_WriteSector(Idx: Byte; LBA: LongInt;
+ Var Buf: Array Of Byte): Boolean; Forward;
+
 { Resoudre un chemin de fichier : separe parent + nom feuille, puis
   cherche le nom dans le parent. }
 Function Fat_FindPath(Idx: Byte; AbsPath: String;
@@ -35073,6 +35102,84 @@ Begin
  If Not Fat_ResolveDir(Idx, ParentPath, IsRoot, StartCl) Then Exit;
  Fat_FindPath := Fat_FindInDir(Idx, IsRoot, StartCl, Leaf,
   Attr, Cluster, Size);
+End;
+
+{ Ecrit REELLEMENT le VRAI octet d'attributs FAT (offset 11 de              }
+{ l'entree de repertoire 32 octets - RO=$01/Hidden=$02/System=$04/          }
+{ VolLabel=$08/Dir=$10/Archive=$20) d'un fichier/repertoire designe par un  }
+{ chemin absolu, sur un volume FAT MONTE (unite /DISK80:/DISK81: ou         }
+{ MOUNT/IMGMOUNT/BOOT - EmuFloppyOpen[Idx]) - 2026-08-31, demande           }
+{ explicite de l'utilisateur pour Clear-ItemProperty ci-dessous ("pas juste }
+{ une coquille vide"). Reutilise EXACTEMENT la meme traversee de repertoire }
+{ que Fat_FindInDir ci-dessus (racine OU sous-repertoire par chaine de      }
+{ clusters), mais RELIT le secteur contenant l'entree trouvee et y          }
+{ REECRIT l'octet d'attributs via Fat_WriteSector - AUCUNE nouvelle logique }
+{ de parcours FAT inventee, juste la meme MAIS en ECRITURE plutot qu'en     }
+{ LECTURE seule. }
+Function Fat_SetAttr(Idx: Byte; AbsPath: String; NewAttr: Byte): Boolean;
+Var
+ NParts: Integer;
+ Parts: Array[0..15] Of String;
+ I, J, SecInClu: Integer;
+ ParentPath, Leaf, NameUp, EntName: String;
+ IsRoot: Boolean;
+ StartCl, Cur, LBA: LongInt;
+ Buf: Array[0..511] Of Byte;
+ RootCnt: Integer;
+ S: LongInt;
+Begin
+ Fat_SetAttr := False;
+ If Not FatVol[Idx].Mounted Then Exit;
+ Fat_SplitPath(AbsPath, NParts, Parts);
+ If NParts = 0 Then Exit; { racine elle-meme : aucune vraie entree a modifier }
+ ParentPath := '\';
+ For I := 0 To NParts - 2 Do Begin
+  If Length(ParentPath) > 1 Then ParentPath := ParentPath + '\';
+  ParentPath := ParentPath + Parts[I];
+ End;
+ Leaf := Parts[NParts - 1];
+ If Not Fat_ResolveDir(Idx, ParentPath, IsRoot, StartCl) Then Exit;
+ NameUp := Fat_UpStr(Leaf);
+ If IsRoot Then Begin
+  RootCnt := 0;
+  For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
+   LBA := FatVol[Idx].RootStart + S;
+   If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+   For J := 0 To 15 Do Begin
+    If RootCnt >= FatVol[Idx].RootEntries Then Exit;
+    Inc(RootCnt);
+    If Buf[J * 32] = 0 Then Exit;
+    EntName := Fat_EntryName(Buf, J * 32);
+    If EntName = '' Then Continue;
+    If (Fat_EntryAttr(Buf, J * 32) And $08) <> 0 Then Continue;
+    If Fat_UpStr(EntName) = NameUp Then Begin
+     Buf[J * 32 + 11] := NewAttr;
+     Fat_SetAttr := Fat_WriteSector(Idx, LBA, Buf);
+     Exit;
+    End;
+   End;
+  End;
+ End Else Begin
+  Cur := StartCl;
+  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) Do Begin
+   For SecInClu := 0 To FatVol[Idx].SectorsPerCluster - 1 Do Begin
+    LBA := Fat_ClusterToLBA(Idx, Cur) + SecInClu;
+    If Not Fat_ReadSector(Idx, LBA, Buf) Then Exit;
+    For J := 0 To 15 Do Begin
+     If Buf[J * 32] = 0 Then Exit;
+     EntName := Fat_EntryName(Buf, J * 32);
+     If EntName = '' Then Continue;
+     If (Fat_EntryAttr(Buf, J * 32) And $08) <> 0 Then Continue;
+     If Fat_UpStr(EntName) = NameUp Then Begin
+      Buf[J * 32 + 11] := NewAttr;
+      Fat_SetAttr := Fat_WriteSector(Idx, LBA, Buf);
+      Exit;
+     End;
+    End;
+   End;
+   Cur := Fat_NextCluster(Idx, Cur);
+  End;
+ End;
 End;
 
 { Extrait un fichier d une disquette virtuelle FAT montee (StartCluster/  }
@@ -37442,6 +37549,395 @@ Procedure TermCmd_ClearHistory(Var TP: TTerminalPanel; ParamStr: String);
 Begin
  TP.NumberHistory := 0;
  TP.HistoryPos := 1;
+End;
+
+{ --- CLEAR-ITEMPROPERTY (2026-08-31, REVISEE suite a une demande          }
+{ explicite et justifiee de l'utilisateur - "devrait s'appliquer sur un    }
+{ disque virtuel monte avec /DISK80:/DISK81:, pas juste une coquille       }
+{ vide") : la 1ere version avait conclu trop vite a une absence totale de  }
+{ "propriete nommee" possible - EN REALITE, un vrai octet d'ATTRIBUTS FAT  }
+{ existe DEJA a l'offset 11 de chaque entree de repertoire 32 octets       }
+{ (RO=$01/Hidden=$02/System=$04/Archive=$20 - voir Fat_EntryAttr, deja lu  }
+{ par DIR/TYPE) sur tout volume FAT MONTE via /DISK80:/DISK81:/MOUNT/       }
+{ IMGMOUNT/BOOT - EXACTEMENT la "propriete Attributes" que la vraie        }
+{ cmdlet Clear-ItemProperty efface le plus souvent en pratique             }
+{ (Clear-ItemProperty fichier -Name Attributes). Nouvelle `Fat_SetAttr`    }
+{ (~35090, juste apres Fat_FindPath) REECRIT reellement cet octet sur le    }
+{ disque (meme traversee de repertoire que Fat_FindInDir, mais en          }
+{ ECRITURE). Cible resolue via `Term_ResolveVirtTarget` (meme mecanisme    }
+{ que TYPE/GET-CONTENT ci-dessus) - accepte un chemin prefixe C:\/D:\ OU    }
+{ un chemin relatif si le terminal est deja `cd`e dans le lecteur virtuel. }
+{ Efface REELLEMENT RO/Hidden/System/Archive (remise a 0), en PRESERVANT   }
+{ les bits structurels Repertoire($10)/Etiquette-volume($08) - jamais      }
+{ touches par un vrai Clear-ItemProperty sur les Attributs. Limitation      }
+{ honnete CONSERVEE : les fichiers du systeme HOTE (pas un volume FAT       }
+{ emule) restent hors de portee (aucune API SetFileAttributes appelee ici -}
+{ pas demande, `SHEmptyRecycleBinA` reste le seul appel systeme hote de ce }
+{ chantier, voir Clear-RecycleBin) ; -Name n'accepte reellement que        }
+{ "Attributes" (seule propriete FAT modelisee) - toute autre valeur est     }
+{ refusee explicitement plutot que silencieusement ignoree. }
+Procedure TermCmd_ClearItemProperty(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, PathArg, NameArg: String;
+ PathFlagPos, NameFlagPos: Integer;
+ VDIdx: Byte;
+ AbsP: String;
+ Attr: Byte;
+ Cluster, Size: LongInt;
+ NewAttr: Byte;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ NameFlagPos := System.Pos('-NAME', UpParams);
+ If PathFlagPos > 0 Then
+  PathArg := TrimStr(TermExtractParam(Copy(ParamStr, PathFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else
+  PathArg := TermExtractParam(ParamStr, 1);
+ If NameFlagPos > 0 Then
+  NameArg := TrimStr(TermExtractParam(Copy(ParamStr, NameFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else
+  NameArg := '';
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Clear-ItemProperty fichier [-Name Attributes]');
+  TermAddLine(TP, '(fichier sur un volume FAT monte via /DISK80:/DISK81:/' +
+   'MOUNT/IMGMOUNT/BOOT)');
+  Exit;
+ End;
+ If (NameArg <> '') And (TermStrToUpper(NameArg) <> 'ATTRIBUTES') Then Begin
+  TermAddLine(TP, 'Clear-ItemProperty : seule la propriete "Attributes" ' +
+   'est modelisee ici (attributs de fichier FAT reels) - "' + NameArg +
+   '" n''existe pas.');
+  Exit;
+ End;
+ If Not Term_ResolveVirtTarget(TP, PathArg, VDIdx, AbsP) Then Begin
+  TermAddLine(TP, 'Clear-ItemProperty : "' + PathArg + '" n''est pas sur ' +
+   'un volume FAT monte (voir /DISK80:/DISK81:/MOUNT/IMGMOUNT/BOOT) - ' +
+   'seuls les attributs FAT reels sont modelises ici, pas de registre ni ' +
+   'de proprietes hote.');
+  Exit;
+ End;
+ If Not Fat_FindPath(VDIdx, AbsP, Attr, Cluster, Size) Then Begin
+  TermAddLine(TP, 'Clear-ItemProperty : le systeme ne trouve pas le ' +
+   'fichier specifie : ' + PathArg);
+  Exit;
+ End;
+ NewAttr := Attr And ($10 Or $08); { garde Repertoire/Etiquette-volume }
+ If NewAttr = Attr Then Begin
+  TermAddLine(TP, 'Clear-ItemProperty : Attributes de ' + PathArg +
+   ' deja vides (aucun RO/Hidden/System/Archive).');
+  Exit;
+ End;
+ If Fat_SetAttr(VDIdx, AbsP, NewAttr) Then
+  TermAddLine(TP, 'Clear-ItemProperty : Attributes de ' + PathArg +
+   ' efface(s) (RO/Hidden/System/Archive remis a 0).')
+ Else
+  TermAddLine(TP, 'Clear-ItemProperty : echec de l''ecriture sur le ' +
+   'volume monte.');
+End;
+
+{ --- CLEAR-VARIABLE / SET-VARIABLE (2026-08-31, REVISEES suite a une      }
+{ demande explicite de l'utilisateur : "devrait etre possible de changer   }
+{ les variables d'environnement [...] de l'executable de l'emulateur DOS   }
+{ ou Linux" - PORTEE CONFIRMEE via AskUserQuestion apres investigation :    }
+{ "DOS seulement, avec limitation honnete documentee". Cible                }
+{ specifiquement le VRAI environnement DOS de l'emulateur ACTIF             }
+{ (`EmuDosEnvSeg`/`Emu_DosEnvRead`/`Write`, voir leurs declarations pres     }
+{ d'Emu_LoadComAt/ExeAt) - PAS "$variable" PowerShell (toujours inexistant  }
+{ ici, voir Add-Member/SET). Linux/ELF64 delibarement HORS DE PORTEE        }
+{ (limitation d'ARCHITECTURE reelle expliquee et confirmee AVANT            }
+{ implantation, pas une simplification arbitraire) : un processus Linux     }
+{ copie envp[] dans sa memoire PRIVEE des __libc_start_main - modifier la   }
+{ pile d'origine APRES le demarrage n'a alors plus AUCUN effet observable   }
+{ sur les getenv() suivants. Limitation honnete RAPPELEE a chaque succes    }
+{ (jamais cachee) : la memoire EST reellement modifiee, mais seul un        }
+{ programme qui RELIT son environnement APRES son demarrage (rare) verra    }
+{ le changement. }
+Procedure TermCmd_ClearVariable(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ NameArg, NameUp: String;
+ Vars: Array[0..7] Of String;
+ Count, I, Found, EqPos: Integer;
+Begin
+ If Not EmuPanel.Running Then Begin
+  TermAddLine(TP, 'Clear-Variable : aucun emulateur EN COURS D''EXECUTION ' +
+   '(voir BOOT/DEBUG) - rien a modifier.');
+  Exit;
+ End;
+ If EmuPanel.TargetCPU <> '-CD' Then Begin
+  TermAddLine(TP, 'Clear-Variable : seul le backend DOS (-CD) a un vrai ' +
+   'environnement modelise ici - pas Win16/OS2/ELF64/NES/C64/... (voir ' +
+   'Set-Variable pour le detail de la limitation Linux).');
+  Exit;
+ End;
+ NameArg := TermExtractParam(ParamStr, 1);
+ If NameArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Clear-Variable NOM');
+  Exit;
+ End;
+ NameUp := TermStrToUpper(NameArg);
+ If Not Emu_DosEnvRead(EmuPanel.CPU, EmuDosEnvSeg, Vars, Count) Then Begin
+  TermAddLine(TP, 'Clear-Variable : aucun environnement DOS accessible ' +
+   'pour cet emulateur.');
+  Exit;
+ End;
+ Found := -1;
+ For I := 0 To Count - 1 Do Begin
+  EqPos := System.Pos('=', Vars[I]);
+  If EqPos > 0 Then
+   If TermStrToUpper(Copy(Vars[I], 1, EqPos - 1)) = NameUp Then Begin
+    Found := I;
+    Break;
+   End;
+ End;
+ If Found < 0 Then Begin
+  TermAddLine(TP, 'Clear-Variable : "' + NameArg + '" n''existe pas dans ' +
+   'l''environnement DOS de cet emulateur.');
+  Exit;
+ End;
+ EqPos := System.Pos('=', Vars[Found]);
+ Vars[Found] := Copy(Vars[Found], 1, EqPos); { garde "NOM=" avec valeur vide }
+ If Emu_DosEnvWrite(EmuPanel.CPU, EmuDosEnvSeg, Vars, Count) Then Begin
+  TermAddLine(TP, 'Clear-Variable : "' + NameArg + '" videe dans ' +
+   'l''environnement DOS (memoire reellement modifiee).');
+  TermAddLine(TP, 'Limitation honnete : seul un programme qui RELIT son ' +
+   'environnement APRES son demarrage verra ce changement (rare en ' +
+   'pratique).');
+ End Else
+  TermAddLine(TP, 'Clear-Variable : echec de l''ecriture (environnement ' +
+   'plein ?).');
+End;
+
+Procedure TermCmd_SetVariable(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, NameArg, ValueArg, NameUp, TrimmedParams: String;
+ NameFlagPos, ValueFlagPos, SpacePos, EqPos: Integer;
+ Vars: Array[0..7] Of String;
+ Count, I, Found: Integer;
+Begin
+ If Not EmuPanel.Running Then Begin
+  TermAddLine(TP, 'Set-Variable : aucun emulateur EN COURS D''EXECUTION ' +
+   '(voir BOOT/DEBUG) - rien a modifier.');
+  Exit;
+ End;
+ If EmuPanel.TargetCPU <> '-CD' Then Begin
+  TermAddLine(TP, 'Set-Variable : seul le backend DOS (-CD) a un vrai ' +
+   'environnement modelise ici - pas Win16/OS2/ELF64/NES/C64/...');
+  TermAddLine(TP, 'Pour Linux/ELF64 : un processus copie envp[] dans sa ' +
+   'memoire PRIVEE des le demarrage (__libc_start_main) - modifier la ' +
+   'pile d''origine APRES coup n''a plus aucun effet observable sur les ' +
+   'getenv() suivants, une limitation d''architecture reelle, pas une ' +
+   'simplification.');
+  Exit;
+ End;
+ UpParams := TermStrToUpper(ParamStr);
+ NameFlagPos := System.Pos('-NAME', UpParams);
+ ValueFlagPos := System.Pos('-VALUE', UpParams);
+ If NameFlagPos > 0 Then Begin
+  NameArg := TrimStr(TermExtractParam(Copy(ParamStr, NameFlagPos + 5,
+   Length(ParamStr)), 1));
+  If ValueFlagPos > 0 Then
+   ValueArg := TrimStr(Copy(ParamStr, ValueFlagPos + 6, Length(ParamStr)))
+  Else
+   ValueArg := '';
+ End Else Begin
+  NameArg := TermExtractParam(ParamStr, 1);
+  TrimmedParams := TrimStr(ParamStr);
+  SpacePos := System.Pos(' ', TrimmedParams);
+  If SpacePos > 0 Then
+   ValueArg := TrimStr(Copy(TrimmedParams, SpacePos + 1, Length(TrimmedParams)))
+  Else
+   ValueArg := '';
+ End;
+ If NameArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-Variable NOM VALEUR');
+  TermAddLine(TP, '     ou : Set-Variable -Name NOM -Value VALEUR');
+  Exit;
+ End;
+ NameUp := TermStrToUpper(NameArg);
+ If Not Emu_DosEnvRead(EmuPanel.CPU, EmuDosEnvSeg, Vars, Count) Then Begin
+  TermAddLine(TP, 'Set-Variable : aucun environnement DOS accessible ' +
+   'pour cet emulateur.');
+  Exit;
+ End;
+ Found := -1;
+ For I := 0 To Count - 1 Do Begin
+  EqPos := System.Pos('=', Vars[I]);
+  If EqPos > 0 Then
+   If TermStrToUpper(Copy(Vars[I], 1, EqPos - 1)) = NameUp Then Begin
+    Found := I;
+    Break;
+   End;
+ End;
+ If Found >= 0 Then
+  Vars[Found] := NameArg + '=' + ValueArg
+ Else Begin
+  If Count > High(Vars) Then Begin
+   TermAddLine(TP, 'Set-Variable : environnement DOS plein (8 variables ' +
+    'max modelisees ici) - impossible d''en ajouter une nouvelle.');
+   Exit;
+  End;
+  Vars[Count] := NameArg + '=' + ValueArg;
+  Inc(Count);
+ End;
+ If Emu_DosEnvWrite(EmuPanel.CPU, EmuDosEnvSeg, Vars, Count) Then Begin
+  TermAddLine(TP, 'Set-Variable : "' + NameArg + '=' + ValueArg + '" ' +
+   'ecrite dans l''environnement DOS (memoire reellement modifiee).');
+  TermAddLine(TP, 'Limitation honnete : seul un programme qui RELIT son ' +
+   'environnement APRES son demarrage verra ce changement (rare en ' +
+   'pratique).');
+ End Else
+  TermAddLine(TP, 'Set-Variable : echec de l''ecriture (256 octets max ' +
+   'reserves pour l''environnement).');
+End;
+
+{ --- CLEAR-RECYCLEBIN (2026-08-31, demande explicite de l'utilisateur,   }
+{ portee CONFIRMEE via question posee : "implementation reelle AVEC        }
+{ confirmation") : DIFFERENTE de toutes les autres cmdlets Add-VM*/        }
+{ Checkpoint-VM de ce chantier - celles-ci restent dans le bac a sable de   }
+{ l'emulateur/des fichiers explicitement cibles, alors que Clear-RecycleBin}
+{ agit sur une VRAIE ressource SYSTEME PARTAGEE du systeme hote (la         }
+{ Corbeille Windows REELLE, potentiellement remplie de fichiers SANS       }
+{ rapport avec ce terminal) - action IRREVERSIBLE et a fort rayon           }
+{ d'impact, jamais implantee silencieusement sans confirmation explicite   }
+{ de l'utilisateur au prealable. VRAIE API Windows (SHEmptyRecycleBinA,    }
+{ shell32.dll, voir sa declaration pres de GetAsyncKeyState) - PAS un       }
+{ stub - mais EXIGE `-Force` (sinon avertit et refuse), meme discipline    }
+{ que la vraie cmdlet PowerShell (qui demande aussi confirmation par        }
+{ defaut). }
+Const
+ SHERB_NOCONFIRMATION = $00000001;
+ SHERB_NOPROGRESSUI   = $00000002;
+ SHERB_NOSOUND        = $00000004;
+
+Procedure TermCmd_ClearRecycleBin(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams: String;
+ Res: LongInt;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ If System.Pos('-FORCE', UpParams) = 0 Then Begin
+  TermAddLine(TP, 'Clear-RecycleBin : action REELLE et IRREVERSIBLE - vide ' +
+   'la VRAIE Corbeille Windows du systeme hote (pas une simulation, pas ' +
+   'limite a ce terminal).');
+  TermAddLine(TP, 'Ajoutez -Force pour confirmer : Clear-RecycleBin -Force');
+  Exit;
+ End;
+ {$IFDEF WINDOWS}
+ Res := SHEmptyRecycleBinA(0, Nil, SHERB_NOCONFIRMATION Or
+  SHERB_NOPROGRESSUI Or SHERB_NOSOUND);
+ If Res = 0 Then
+  TermAddLine(TP, 'Clear-RecycleBin : Corbeille videe.')
+ Else
+  TermAddLine(TP, 'Clear-RecycleBin : echec (code ' + IntToStr(Res) + ').');
+ {$ELSE}
+ TermAddLine(TP, 'Clear-RecycleBin : disponible uniquement sous Windows.');
+ {$ENDIF}
+End;
+
+{ --- COMPARE-OBJECT (2026-08-31, demande explicite de l'utilisateur) :   }
+{ implantation REELLE - compare le contenu ligne-par-ligne de 2 fichiers    }
+{ (pas d'objets/pipeline PowerShell dans ce terminal, voir Add-Member,     }
+{ donc -ReferenceObject/-DifferenceObject sont ici des CHEMINS de fichier  }
+{ plutot que des tableaux) et rapporte les VRAIES differences par           }
+{ ENSEMBLE (pas position-par-position, exactement le contrat REEL par       }
+{ defaut de la vraie cmdlet - une ligne dupliquee N fois d'un cote doit      }
+{ trouver N correspondances distinctes de l'autre cote, geree ici via       }
+{ DiffConsumed[] pour ne consommer chaque ligne qu'une seule fois).          }
+{ Convention d'affichage identique a la vraie cmdlet (colonne              }
+{ SideIndicator) : "<=" = present seulement dans le fichier de reference,  }
+{ "=>" = present seulement dans le fichier de difference. Limitation        }
+{ honnete assumee : borne a 1000 lignes par fichier (tableaux fixes,        }
+{ meme discipline que TString/ShortString ailleurs dans ce fichier) -       }
+{ suffisant pour comparer des fichiers de configuration/texte normaux,      }
+{ pas concu pour des journaux de plusieurs Mo. }
+Procedure TermCmd_CompareObject(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ MAX_CMP_LINES = 1000;
+Var
+ UpParams, RefPath, DiffPath, Line: String;
+ RefFlagPos, DiffFlagPos, I, J: Integer;
+ RefLines, DiffLines: Array[1..MAX_CMP_LINES] Of String;
+ DiffConsumed: Array[1..MAX_CMP_LINES] Of Boolean;
+ RefCount, DiffCount: Integer;
+ F: Text;
+ Found, AnyDiff: Boolean;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ RefFlagPos := System.Pos('-REFERENCEOBJECT', UpParams);
+ DiffFlagPos := System.Pos('-DIFFERENCEOBJECT', UpParams);
+ If RefFlagPos > 0 Then
+  RefPath := TrimStr(TermExtractParam(Copy(ParamStr, RefFlagPos + 17,
+   Length(ParamStr)), 1))
+ Else
+  RefPath := TermExtractParam(ParamStr, 1);
+ If DiffFlagPos > 0 Then
+  DiffPath := TrimStr(TermExtractParam(Copy(ParamStr, DiffFlagPos + 18,
+   Length(ParamStr)), 1))
+ Else
+  DiffPath := TermExtractParam(ParamStr, 2);
+ If (RefPath = '') Or (DiffPath = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Compare-Object fichier1 fichier2');
+  TermAddLine(TP, '     ou : Compare-Object -ReferenceObject f1 ' +
+   '-DifferenceObject f2');
+  Exit;
+ End;
+ If Not FileExists(RefPath) Then Begin
+  TermAddLine(TP, 'Compare-Object : le systeme ne trouve pas le fichier ' +
+   'specifie : ' + RefPath);
+  Exit;
+ End;
+ If Not FileExists(DiffPath) Then Begin
+  TermAddLine(TP, 'Compare-Object : le systeme ne trouve pas le fichier ' +
+   'specifie : ' + DiffPath);
+  Exit;
+ End;
+ RefCount := 0;
+ Assign(F, RefPath);
+ {$I-} Reset(F); {$I+}
+ If IOResult = 0 Then Begin
+  While (Not EOF(F)) And (RefCount < MAX_CMP_LINES) Do Begin
+   ReadLn(F, Line);
+   Inc(RefCount);
+   RefLines[RefCount] := Line;
+  End;
+  Close(F);
+ End;
+ DiffCount := 0;
+ Assign(F, DiffPath);
+ {$I-} Reset(F); {$I+}
+ If IOResult = 0 Then Begin
+  While (Not EOF(F)) And (DiffCount < MAX_CMP_LINES) Do Begin
+   ReadLn(F, Line);
+   Inc(DiffCount);
+   DiffLines[DiffCount] := Line;
+   DiffConsumed[DiffCount] := False;
+  End;
+  Close(F);
+ End;
+ AnyDiff := False;
+ For I := 1 To RefCount Do Begin
+  Found := False;
+  For J := 1 To DiffCount Do
+   If (Not DiffConsumed[J]) And (DiffLines[J] = RefLines[I]) Then Begin
+    DiffConsumed[J] := True;
+    Found := True;
+    Break;
+   End;
+  If Not Found Then Begin
+   TermAddLine(TP, '<=  ' + RefLines[I]);
+   AnyDiff := True;
+  End;
+ End;
+ For J := 1 To DiffCount Do
+  If Not DiffConsumed[J] Then Begin
+   TermAddLine(TP, '=>  ' + DiffLines[J]);
+   AnyDiff := True;
+  End;
+ If Not AnyDiff Then
+  TermAddLine(TP, 'Compare-Object : aucune difference (meme lignes, ' +
+   'ordre ignore).');
 End;
 
 { --- ADD-HISTORY (2026-08-30, demande explicite de l'utilisateur, "support}
@@ -47970,6 +48466,19 @@ Begin
   TermAddLine(TP,
    '  Clear-History                        Vide le rappel Haut/Bas');
   TermAddLine(TP,
+   '  Clear-ItemProperty f [-Name Attributes]  Efface RO/Hidden/Sys/' +
+   'Archive (volume FAT monte)');
+  TermAddLine(TP,
+   '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
+   '(emulateur actif)');
+  TermAddLine(TP,
+   '  Set-Variable NOM VALEUR              Definit une variable d''env. ' +
+   'DOS (idem)');
+  TermAddLine(TP,
+   '  Clear-RecycleBin -Force              Vide la VRAIE Corbeille (reel)');
+  TermAddLine(TP,
+   '  Compare-Object f1 f2                 Differences ligne-par-ligne');
+  TermAddLine(TP,
    '  Add-History commande                Ajoute au rappel Haut/Bas');
   TermAddLine(TP,
    '  Add-Member ...                       Reconnue, sans objet a completer');
@@ -48836,6 +49345,16 @@ Begin
     TermCmd_ClearItem(TP, ParamStr)
    Else If CurrCmd = 'CLEAR-HISTORY' Then
     TermCmd_ClearHistory(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR-ITEMPROPERTY' Then
+    TermCmd_ClearItemProperty(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR-VARIABLE' Then
+    TermCmd_ClearVariable(TP, ParamStr)
+   Else If CurrCmd = 'SET-VARIABLE' Then
+    TermCmd_SetVariable(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR-RECYCLEBIN' Then
+    TermCmd_ClearRecycleBin(TP, ParamStr)
+   Else If CurrCmd = 'COMPARE-OBJECT' Then
+    TermCmd_CompareObject(TP, ParamStr)
    Else If CurrCmd = 'ADD-HISTORY' Then
     TermCmd_AddHistory(TP, ParamStr)
    Else If CurrCmd = 'ADD-MEMBER' Then
@@ -61436,6 +61955,95 @@ Begin
  End;
 End;
 
+{ Clear-Variable/Set-Variable (2026-08-31, PowerShell dev, demande         }
+{ explicite de l'utilisateur - PORTEE CONFIRMEE via AskUserQuestion :       }
+{ "DOS seulement, avec limitation honnete documentee" apres avoir           }
+{ explique que Linux/ELF64 copie envp[] dans la memoire privee du          }
+{ processus des __libc_start_main - modifier les octets de PILE            }
+{ d'origine APRES le demarrage n'a alors plus AUCUN effet observable sur    }
+{ les getenv() suivants, une limitation d'architecture reelle, pas un       }
+{ manque d'effort). Cote DOS, ni Emu_LoadComAt ni Emu_LoadExeAt ne           }
+{ construisaient jusqu'ici de VRAI bloc d'environnement (PSP.EnvSeg         }
+{ pointait sur $51/AtSeg, jamais peuple) - EmuDosEnvSeg est desormais un    }
+{ VRAI segment DEDIE, carve depuis EmuNextFreeSeg (16 paragraphes/256       }
+{ octets, memes principes de bump-allocation deja etablis pour l'image      }
+{ chargee elle-meme) au chargement, contenant un environnement DOS          }
+{ synthetique PLAUSIBLE par defaut (PATH/COMSPEC/PROMPT - pas une copie     }
+{ de l'environnement HOTE Windows, qui n'aurait aucun sens pour un          }
+{ programme DOS). Format = suite de chaines "NOM=VALEUR" terminees par un   }
+{ NUL, la suite entiere terminee par un NUL supplementaire (convention DOS  }
+{ standard). Limitation honnete a RAPPELER a chaque appel de Clear/Set-     }
+{ Variable (jamais cachee) : la memoire EST reellement modifiee, mais SEUL }
+{ un programme qui RELIT son environnement APRES son demarrage (rare en    }
+{ pratique - la plupart des .COM/.EXE simples ne le font qu'une fois, au    }
+{ lancement) verra le changement. }
+Function Emu_DosEnvRead(Var C: TEmuCPU; EnvSeg: Word;
+ Var Vars: Array Of String; Var Count: Integer): Boolean;
+Const
+ ENV_WINDOW_SIZE = 256;
+Var
+ Buf: Array[0..255] Of Byte;
+ Pos, MaxN: Integer;
+ S: String;
+Begin
+ Emu_DosEnvRead := False;
+ Count := 0;
+ If EnvSeg = 0 Then Exit;
+ Emu_ReadBlock(C, EnvSeg, 0, Buf, ENV_WINDOW_SIZE);
+ Pos := 0;
+ MaxN := High(Vars) + 1;
+ While (Pos < ENV_WINDOW_SIZE) And (Buf[Pos] <> 0) And (Count < MaxN) Do Begin
+  S := '';
+  While (Pos < ENV_WINDOW_SIZE) And (Buf[Pos] <> 0) Do Begin
+   S := S + Chr(Buf[Pos]);
+   Inc(Pos);
+  End;
+  Vars[Count] := S;
+  Inc(Count);
+  Inc(Pos); { saute le NUL de fin de cette chaine }
+ End;
+ Emu_DosEnvRead := True;
+End;
+
+Function Emu_DosEnvWrite(Var C: TEmuCPU; EnvSeg: Word;
+ Var Vars: Array Of String; Count: Integer): Boolean;
+Const
+ ENV_WINDOW_SIZE = 256;
+Var
+ Buf: Array[0..255] Of Byte;
+ Pos, I, J: Integer;
+Begin
+ Emu_DosEnvWrite := False;
+ If EnvSeg = 0 Then Exit;
+ FillChar(Buf, SizeOf(Buf), 0);
+ Pos := 0;
+ For I := 0 To Count - 1 Do Begin
+  If Pos + Length(Vars[I]) + 2 > ENV_WINDOW_SIZE Then Exit; { plein, honnete }
+  For J := 1 To Length(Vars[I]) Do Begin
+   Buf[Pos] := Byte(Vars[I][J]);
+   Inc(Pos);
+  End;
+  Buf[Pos] := 0;
+  Inc(Pos);
+ End;
+ { l'octet suivant (deja 0 via FillChar) sert de NUL final du bloc entier }
+ Emu_WriteBlock(C, EnvSeg, 0, Buf, ENV_WINDOW_SIZE);
+ Emu_DosEnvWrite := True;
+End;
+
+{ Environnement DOS synthetique par defaut - appele UNE FOIS au              }
+{ chargement (Emu_LoadComAt/Emu_LoadExeAt ci-dessous), avant tout            }
+{ Clear/Set-Variable eventuel. }
+Procedure Emu_DosEnvBuildDefault(Var C: TEmuCPU; EnvSeg: Word);
+Var
+ Vars: Array[0..7] Of String;
+Begin
+ Vars[0] := 'COMSPEC=C:\COMMAND.COM';
+ Vars[1] := 'PATH=C:\';
+ Vars[2] := 'PROMPT=$P$G';
+ Emu_DosEnvWrite(C, EnvSeg, Vars, 3);
+End;
+
 { --- Charger un fichier .COM dans la memoire emulee --- }
 
 Function Emu_LoadComAt(Var C: TEmuCPU; Const FileName: String; AtSeg: Word;
@@ -61524,6 +62132,18 @@ Begin
  Else
   EmuNextFreeSeg := Word((Addr + 15) Shr 4);
  If EmuNextFreeSeg < $2000 Then EmuNextFreeSeg := $2000;
+ { Environnement DOS reel (2026-08-31, Clear/Set-Variable) : contrairement }
+ { a Emu_LoadExeAt, aucune zone n'etait deja reservee pour un .COM (PSP.    }
+ { EnvSeg=$51 ci-dessus n'etait qu'un placeholder jamais peuple, sans       }
+ { rapport avec la memoire reellement libre a ce point) - carve 16          }
+ { paragraphes (256 octets) depuis EmuNextFreeSeg, maintenant connu, puis   }
+ { corrige le PSP DEJA ECRIT en memoire (le WriteBlock ci-dessus a eu lieu  }
+ { avant que EmuNextFreeSeg ne soit calculable) via un patch cible de son   }
+ { seul champ EnvSeg (offset $2C, convention PSP standard). }
+ EmuDosEnvSeg := EmuNextFreeSeg;
+ Emu_DosEnvBuildDefault(C, EmuDosEnvSeg);
+ Inc(EmuNextFreeSeg, 16);
+ Emu_WriteWord(C, C.Segs.CS, $2C, EmuDosEnvSeg);
  Emu_LoadComAt := True;
 End;
 
@@ -61623,6 +62243,12 @@ Begin
   PSP.Buffer[$81] := $0D;
  End;
  Emu_WriteBlock(C, PSPSeg, 0, PSP.Buffer, $100);
+ { Environnement DOS reel (2026-08-31, Clear/Set-Variable) : AtSeg est      }
+ { DEJA une vraie zone reservee de 15 paragraphes entre l'environnement et  }
+ { le PSP (voir le commentaire sur PSPSeg ci-dessus) - jamais peuplee       }
+ { jusqu'ici. Aucun carve/patch necessaire ici, juste la remplir. }
+ EmuDosEnvSeg := AtSeg;
+ Emu_DosEnvBuildDefault(C, EmuDosEnvSeg);
  { Installer un MCB (Memory Control Block) DOS a PSPSeg-1
    pour que le runtime TP/DOS voie la memoire disponible. Format MCB :
    offset 0 : byte 'M' (continue) ou 'Z' (dernier)
