@@ -13,11 +13,14 @@ Uses Crt,Dos;
 Const
  MaxArguments=128;
  VersionText='5.812';
- FunctionList:Array[0..33]of String[24]=(
+ ValueEmpty=0;ValueString=1;ValueNumber=2;ValueDate=3;
+ ValueArray=4;ValueError=5;ValueNull=6;ValueObject=7;
+ FunctionList:Array[0..41]of String[24]=(
   'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
   'CLNG','COS','CSNG','CSTR','CVERR','DATE','DATESERIAL','DATEVALUE','DAY',
-  'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','LCASE','LEFT','LEN',
-  'RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
+  'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','ISARRAY','ISDATE',
+  'ISEMPTY','ISERROR','ISNULL','ISNUMERIC','ISOBJECT','LBOUND','LCASE',
+  'LEFT','LEN','RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
 
 Type
  PScriptLine=^TScriptLine;
@@ -30,12 +33,14 @@ Type
  TVariable=Record
   Name:String[63];
   Value:String;
+  ValueKind:Byte;
   Next:PVariable;
  End;
  TValue=Record
   Text:String;
   Number:Real;
   IsNumber:Boolean;
+  ValueKind:Byte;
  End;
 
 Var
@@ -105,13 +110,17 @@ End;
 
 Procedure MakeText(S:String;Var V:TValue);
 Var Code:Integer;N:Real;
-Begin V.Text:=S;Val(S,N,Code);V.IsNumber:=Code=0;If V.IsNumber Then V.Number:=N Else V.Number:=0;End;
+Begin
+ V.Text:=S;Val(S,N,Code);V.IsNumber:=Code=0;
+ If V.IsNumber Then Begin V.Number:=N;V.ValueKind:=ValueNumber;End
+ Else Begin V.Number:=0;If S=''Then V.ValueKind:=ValueEmpty Else V.ValueKind:=ValueString;End;
+End;
 
 Procedure MakeNumber(N:Real;Var V:TValue);
 Var S:String;
 Begin
  If Frac(N)=0Then Str(Trunc(N),S)Else Str(N:0:8,S);
- V.Text:=Trim(S);V.Number:=N;V.IsNumber:=True;
+ V.Text:=Trim(S);V.Number:=N;V.IsNumber:=True;V.ValueKind:=ValueNumber;
 End;
 
 Procedure MakeSingleNumber(N:Real;Var V:TValue);
@@ -148,7 +157,7 @@ Begin
   If Month>12Then Begin Month:=1;Inc(Year);End;End;
  Str(Year,SYear);Str(Month,SMonth);Str(Day,SDay);
  If Length(SMonth)<2Then SMonth:='0'+SMonth;If Length(SDay)<2Then SDay:='0'+SDay;
- MakeText(SDay+'/'+SMonth+'/'+Trim(SYear),V);
+ MakeText(SDay+'/'+SMonth+'/'+Trim(SYear),V);V.ValueKind:=ValueDate;
 End;
 
 Procedure ParseDateValue(SourceText:String;Var V:TValue);
@@ -230,6 +239,19 @@ Begin
  MakeNumber(FoundPosition,V);
 End;
 
+Procedure BooleanValue(State:Boolean;Var V:TValue);
+Begin
+ If State Then Begin MakeText('True',V);V.Number:=-1;End
+ Else Begin MakeText('False',V);V.Number:=0;End;
+End;
+
+Procedure IsDateValue(A:TValue;Var V:TValue);
+Var Converted:TValue;
+Begin
+ If A.ValueKind=ValueDate Then BooleanValue(True,V)
+ Else Begin ParseDateValue(A.Text,Converted);BooleanValue(Converted.Text<>'',V);End;
+End;
+
 Function Truth(V:TValue):Boolean;
 Begin Truth:=Not((V.Text='')or(V.Text='0')or(Upper(V.Text)='FALSE'));End;
 
@@ -242,17 +264,29 @@ Begin
 End;
 
 Procedure SetVariable(Name,Value:String);
+Var P:PVariable;V:TValue;
+Begin
+ Name:=Upper(Trim(Name));If Name=''Then Exit;P:=FindVariable(Name);
+ If P=Nil Then Begin New(P);P^.Name:=Name;P^.Next:=Variables;Variables:=P;End;
+ MakeText(Value,V);P^.Value:=Value;P^.ValueKind:=V.ValueKind;
+ If Copy(Value,1,8)='@VBARRAY'Then P^.ValueKind:=ValueArray;
+ If Copy(Value,1,6)='Error 'Then P^.ValueKind:=ValueError;
+End;
+
+Procedure SetVariableValue(Name:String;V:TValue);
 Var P:PVariable;
 Begin
  Name:=Upper(Trim(Name));If Name=''Then Exit;P:=FindVariable(Name);
  If P=Nil Then Begin New(P);P^.Name:=Name;P^.Next:=Variables;Variables:=P;End;
- P^.Value:=Value;
+ P^.Value:=V.Text;P^.ValueKind:=V.ValueKind;
 End;
 
 Procedure GetVariable(Name:String;Var V:TValue);
 Var P:PVariable;
 Begin
- P:=FindVariable(Name);If P=Nil Then MakeText('',V)Else MakeText(P^.Value,V);
+ P:=FindVariable(Name);If P=Nil Then MakeText('',V)Else Begin
+  MakeText(P^.Value,V);V.ValueKind:=P^.ValueKind;
+ End;
 End;
 
 Procedure SkipSpace;
@@ -284,7 +318,7 @@ Begin
     Else Begin Inc(ExprPos);Break;End;
    End Else Begin S:=S+ExprText[ExprPos];Inc(ExprPos);End;
   End;
-  MakeText(S,V);Exit;
+  MakeText(S,V);V.ValueKind:=ValueString;Exit;
  End;
  If ExprText[ExprPos]='('Then Begin Inc(ExprPos);ParseExpression(V);SkipSpace;
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);Exit;End;
@@ -294,8 +328,10 @@ Begin
  End;
  Name:=ReadWord;U:=Upper(Name);
  If U='TRUE'Then Begin MakeNumber(-1,V);Exit;End;
- If(U='FALSE')or(U='EMPTY')Then Begin MakeNumber(0,V);Exit;End;
- If U='NOTHING'Then Begin MakeText('',V);Exit;End;
+ If U='FALSE'Then Begin MakeNumber(0,V);Exit;End;
+ If U='EMPTY'Then Begin MakeText('',V);Exit;End;
+ If U='NULL'Then Begin MakeText('',V);V.ValueKind:=ValueNull;Exit;End;
+ If U='NOTHING'Then Begin MakeText('',V);V.ValueKind:=ValueObject;Exit;End;
  SkipSpace;
  FunctionByte:=FunctionIndex(U);
  If(FunctionByte=15)and((ExprPos>Length(ExprText))or(ExprText[ExprPos]<>'('))Then Begin
@@ -321,7 +357,7 @@ Begin
   End;
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);
   Str(ElementIndex,IndexText);SetVariable(ArrayReference+'.COUNT',Trim(IndexText));
-  MakeText(ArrayReference,V);Exit;
+  MakeText(ArrayReference,V);V.ValueKind:=ValueArray;Exit;
  End;
  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
   Inc(ExprPos);SkipSpace;ArgumentCount:=0;
@@ -364,8 +400,8 @@ Begin
    10:MakeNumber(Trunc(A.Number),V);                      { CLNG }
    11:MakeNumber(Cos(A.Number),V);                        { COS }
    12:MakeSingleNumber(A.Number,V);                       { CSNG }
-   13:MakeText(A.Text,V);                                 { CSTR }
-   14:Begin MakeText('Error '+A.Text,V);V.Number:=A.Number;End; { CVERR }
+   13:Begin MakeText(A.Text,V);V.ValueKind:=ValueString;End; { CSTR }
+   14:Begin MakeText('Error '+A.Text,V);V.Number:=A.Number;V.ValueKind:=ValueError;End; { CVERR }
    15:Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
       MakeDateValue(DateYear,DateMonth,DateDay,V);End;    { DATE }
    16:MakeDateValue(Trunc(A.Number),Trunc(B.Number),Trunc(C.Number),V); { DATESERIAL }
@@ -378,18 +414,28 @@ Begin
    23:InputBoxValue(A.Text,B.Text,C.Text,V);              { INPUTBOX }
    24:InStrValue(A,B,C,D,ArgumentCount,V);                { INSTR }
    25:MakeNumber(Trunc(A.Number),V);                      { INT }
-   26:Begin                                               { LCASE }
+   26:BooleanValue((A.ValueKind=ValueArray)or(Copy(A.Text,1,8)='@VBARRAY'),V); { ISARRAY }
+   27:IsDateValue(A,V);                                   { ISDATE }
+   28:BooleanValue(A.ValueKind=ValueEmpty,V);              { ISEMPTY }
+   29:BooleanValue(A.ValueKind=ValueError,V);              { ISERROR }
+   30:BooleanValue(A.ValueKind=ValueNull,V);               { ISNULL }
+   31:BooleanValue(A.IsNumber,V);                          { ISNUMERIC }
+   32:BooleanValue(A.ValueKind=ValueObject,V);             { ISOBJECT }
+   33:If((A.ValueKind=ValueArray)or(Copy(A.Text,1,8)='@VBARRAY'))and
+        ((ArgumentCount<2)or(Trunc(B.Number)=1))Then
+       MakeNumber(0,V)Else MakeText('',V);                { LBOUND }
+   34:Begin                                               { LCASE }
       S:=A.Text;
       For I:=1To Length(S)Do If S[I]in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
       MakeText(S,V);
      End;
-   27:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);         { LEFT }
-   28:MakeNumber(Length(A.Text),V);                       { LEN }
-   29:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
-   30:MakeNumber(Random,V);                               { RND }
-   31:MakeText(Trim(A.Text),V);                           { TRIM }
-   32:MakeText(Upper(A.Text),V);                          { UCASE }
-   33:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+   35:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);         { LEFT }
+   36:MakeNumber(Length(A.Text),V);                       { LEN }
+   37:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
+   38:MakeNumber(Random,V);                               { RND }
+   39:MakeText(Trim(A.Text),V);                           { TRIM }
+   40:MakeText(Upper(A.Text),V);                          { UCASE }
+   41:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
        MakeText(ScriptArguments[Trunc(A.Number)],V)
       Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
    Else MakeText('',V);
@@ -530,7 +576,7 @@ Begin
    Name:=Trim(Copy(S,1,P-1));
    RightSide:=Copy(S,P+1,255);
    Evaluate(RightSide,V);
-   SetVariable(Name,V.Text);
+   SetVariableValue(Name,V);
    Exit;
   End;
   If Not BatchMode Then WriteLn('Erreur VBScript: instruction non reconnue: ',S);
@@ -580,7 +626,7 @@ Begin
    Counter:=StartValue;
    While(((StepValue.Number>=0)and(Counter.Number<=EndValue.Number))or((StepValue.Number<0)and
         (Counter.Number>=EndValue.Number)))and Not Terminated Do Begin
-    SetVariable(Name,Counter.Text);
+    SetVariableValue(Name,Counter);
     ExecuteRange(I+1,EndLine-1);MakeNumber(Counter.Number+StepValue.Number,Counter);
    End;
    I:=EndLine;

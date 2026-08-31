@@ -38408,6 +38408,37 @@ Begin
   '8086/16 bits/8 bits : materiel jamais modelise ici, meme en principe.');
 End;
 
+{ --- COMPLETE-VMFAILOVER (2026-08-31, demande explicite de l'utilisateur, }
+{ "support complet") : RECHERCHE FAITE avant de conclure (meme discipline  }
+{ que Checkpoint-VM/Clear-ItemProperty/Clear-Variable qui ont chacun       }
+{ REVELE un mecanisme reel apres une recherche plus poussee - voir          }
+{ [[feedback_scope_batch]]) : grep de "Replica"/"Failover"/"replication"   }
+{ dans tout ce fichier -> AUCUN resultat. La VRAIE cmdlet n'a de sens que    }
+{ pour Hyper-V Replica : reprise/reconciliation d'une VM apres un           }
+{ basculement (planifie ou non) DEPUIS un serveur primaire VERS un serveur  }
+{ replica DISTANT, avec une synchronisation CONTINUE prealable de l'etat    }
+{ disque entre 2 VRAIS hotes physiques separes par un reseau, et un         }
+{ historique de points de recuperation - ceci reste different, dans sa      }
+{ NATURE MEME, de Checkpoint-VM/Restore-VMCheckpoint (un instantane          }
+{ PONCTUEL, sur DEMANDE, d'un seul processus local, sans aucune             }
+{ synchronisation continue ni notion de 2e hote). Contrairement a           }
+{ Compare-VM (reinterpretation EXPLICITEMENT suggeree par l'utilisateur     }
+{ lui-meme, "comparer des onglets"), aucune reinterpretation locale         }
+{ raisonnable n'a ete trouvee ici qui ne serait pas une pure invention -    }
+{ ce terminal est un seul processus sur une seule machine, sans aucun       }
+{ concept de replication/2e hote/points de recuperation multiples a         }
+{ "achever". Arret honnete, pas un manque de recherche. }
+Procedure TermCmd_CompleteVMFailover(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Complete-VMFailover',
+  'N''a de sens que pour Hyper-V Replica (synchronisation CONTINUE de ' +
+  'l''etat disque entre 2 VRAIS hotes physiques distants, avec un ' +
+  'historique de points de recuperation) - rien a voir dans sa nature ' +
+  'meme avec Checkpoint-VM/Restore-VMCheckpoint (un instantane ' +
+  'ponctuel local, sans 2e hote ni synchronisation continue). Ce ' +
+  'terminal est un seul processus sur une seule machine.');
+End;
+
 Procedure TermCmd_AddVMGroupMember(Var TP: TTerminalPanel; ParamStr: String);
 Begin
  TermCmd_HyperVUnsupported(TP, 'Add-VMGroupMember',
@@ -48531,6 +48562,2221 @@ Begin
    'Utilisez l''environnement systeme.');
 End;
 
+{ ============================================================ }
+{ === Commande ARJ (gestion complete d'archives .ARJ)      === }
+{ ============================================================ }
+{ Port complet et integral du programme autonome                }
+{ C:\SOURCE\GITHUB\CORAIL\ARJ.PAS (meme auteur), integre en code }
+{ natif directement dans DEVENV.PAS - AUCUN executable externe   }
+{ n'est invoque (demande explicite de l'utilisateur, 2026-08-31, }
+{ apres rejet de l'approche initiale qui compilait ARJ.PAS en    }
+{ ARJ.exe et l'invoquait via Exec()). Toutes les fonctions/       }
+{ procedures/types/constantes/variables globales de l'original   }
+{ sont prefixees "Arj"/"ArjD_"/"ArjE_" pour eviter toute          }
+{ collision avec les ~111000 autres lignes de ce fichier          }
+{ (verifie : aucune occurrence de "Arj" n'existait avant ce       }
+{ chantier). Disponible dans 4 shells du terminal : Invite de     }
+{ commande (SK_CMD), PowerShell dev (SK_POWERSHELL), Norton       }
+{ Commander (SK_NCOMMANDER) et OS/2 & REXX (SK_OS2REXX). }
+
+Type
+ TArjHeader = Record
+  HeadId: Word;
+  BHdrSz: Word;
+  FHdrSz: Byte;
+  AVNo: Byte;
+  MAVX: Byte;
+  HostOS: Byte;
+  Flags: Byte;
+  SVer: Byte;
+  FType: Byte;
+  Res1: Byte;
+  DosDT: LongInt;
+  CSize: LongInt;
+  OSize: LongInt;
+  SEFP: LongInt;
+  FSFPos: Word;
+  SEDLgn: Word;
+  Res2: Word;
+  NameDat: Array[1..120] Of Char;
+  Res3: Array[1..10] Of Char;
+ End;
+
+Function ArjPadRight(S: String; Space: Byte): String;
+Var I: Byte;
+Begin
+ If Length(S) < Space Then For I := Length(S)+1 To Space Do S := S + ' ';
+ ArjPadRight := S;
+End;
+
+Function ArjPadZeroLeft(Value: Integer; Space: Byte): String;
+Var S: String;
+Begin
+ Str(Value, S);
+ While Length(S) < Space Do S := '0' + S;
+ ArjPadZeroLeft := S;
+End;
+
+Function ArjStrToUpper(S: String): String;
+Var I: Byte;
+Begin
+ For I := 1 To Length(S) Do Begin
+  If S[I] In ['a'..'z'] Then S[I] := Chr(Ord(S[I]) - 32);
+ End;
+ ArjStrToUpper := S;
+End;
+
+Function ArjByteHex2Str(Value: Byte): String;
+Const Matrix: Array[0..15] Of Char =
+ ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F');
+Begin
+ ArjByteHex2Str := Matrix[(Value Shr 4) And $0F] + Matrix[Value And $F];
+End;
+
+Function ArjHexWord2Str(Value: Word): String;
+Begin
+ ArjHexWord2Str := ArjByteHex2Str(Hi(Value)) + ArjByteHex2Str(Lo(Value));
+End;
+
+Function ArjLongHex2Str(Value: LongInt): String;
+Begin
+ ArjLongHex2Str := ArjByteHex2Str((Value Shr 24) And $FF) +
+                   ArjByteHex2Str((Value Shr 16) And $FF) +
+                   ArjByteHex2Str((Value Shr 8) And $FF) +
+                   ArjByteHex2Str(Value And $FF);
+End;
+
+{ --- Tampon de sortie ARJ vers le terminal (remplace Write/WriteLn) --- }
+
+Var
+ ArjTermTP: ^TTerminalPanel;
+ ArjOutLine: String;
+
+Procedure ArjFlushLine;
+Begin
+ If ArjTermTP <> Nil Then TermAddLine(ArjTermTP^, ArjOutLine);
+ ArjOutLine := '';
+End;
+
+Procedure ArjW(S: String);
+Begin
+ ArjOutLine := ArjOutLine + S;
+End;
+
+Procedure ArjWL(S: String);
+Begin
+ ArjOutLine := ArjOutLine + S;
+ ArjFlushLine;
+End;
+
+Procedure ArjWLBlank;
+Begin
+ ArjFlushLine;
+End;
+
+{ ============================================================ }
+{ === Decompresseur ARJ methodes 1-3 (port de unarj decode.c) = }
+{ ============================================================ }
+
+Const
+ ArjD_DICSIZ    = 26624;
+ ArjD_THRESHOLD = 3;
+ ArjD_NC        = 510;
+ ArjD_NP        = 17;
+ ArjD_NT        = 19;
+ ArjD_CBIT      = 9;
+ ArjD_PBIT      = 5;
+ ArjD_TBIT      = 5;
+ ArjD_CTBITS    = 12;
+ ArjD_PTBITS    = 8;
+ ArjD_CRCPoly: LongInt = LongInt($EDB88320);
+
+Type
+ TArjByteBuf = Array[0..16383] Of Byte;          PArjByteBuf = ^TArjByteBuf;
+ TArjWordBuf = Array[0..16383] Of Word;          PArjWordBuf = ^TArjWordBuf;
+ TArjInBuf4K = Array[0..4095] Of Byte;           PArjInBuf4K = ^TArjInBuf4K;
+ TArjCTab4K  = Array[0..4095] Of Word;           PArjCTab4K  = ^TArjCTab4K;
+ TArjBranch  = Array[0..1019] Of Word;           PArjBranch  = ^TArjBranch;
+ TArjDictBuf = Array[0..ArjD_DICSIZ-1] Of Byte;  PArjDictBuf = ^TArjDictBuf;
+ TArjCRCTab  = Array[0..255] Of LongInt;         PArjCRCTab  = ^TArjCRCTab;
+
+Var
+ ArjSourceARJ, ArjDestFile: File;
+
+ ArjD_BitBuf: Word;
+ ArjD_BitCount: Byte;
+ ArjD_SubBitBuf: Byte;
+ ArjD_InBuf: PArjInBuf4K;
+ ArjD_InPos, ArjD_InEnd: Word;
+ ArjD_CompLeft: LongInt;
+ ArjD_CLen: Array[0..509] Of Byte;
+ ArjD_PtLen: Array[0..18] Of Byte;
+ ArjD_CTable: PArjCTab4K;
+ ArjD_PtTable: Array[0..255] Of Word;
+ ArjD_LeftT, ArjD_RightT: PArjBranch;
+ ArjD_BlockSize: Word;
+ ArjD_Dict: PArjDictBuf;
+ ArjD_DictPos: Word;
+ ArjD_CRCTab: PArjCRCTab;
+ ArjD_CRCInited: Boolean;
+ ArjD_Error: Boolean;
+
+Procedure ArjD_InitCRC;
+Var I, J: Integer; C: LongInt;
+Begin
+ If ArjD_CRCInited Then Exit;
+ For I := 0 To 255 Do Begin
+  C := I;
+  For J := 0 To 7 Do
+   If (C And 1) <> 0 Then C := (C Shr 1) Xor ArjD_CRCPoly
+                     Else C := C Shr 1;
+  ArjD_CRCTab^[I] := C;
+ End;
+ ArjD_CRCInited := True;
+End;
+
+Function ArjD_UpdateCRC(CRC: LongInt; B: Byte): LongInt;
+Begin
+ ArjD_UpdateCRC := (CRC Shr 8) Xor ArjD_CRCTab^[(CRC Xor B) And $FF];
+End;
+
+Procedure ArjD_FillIn;
+Var Need: LongInt; Got: Word;
+Begin
+ If ArjD_CompLeft <= 0 Then Begin
+  ArjD_InPos := 0; ArjD_InEnd := 0; Exit;
+ End;
+ Need := 4096;
+ If ArjD_CompLeft < Need Then Need := ArjD_CompLeft;
+ BlockRead(ArjSourceARJ, ArjD_InBuf^, Need, Got);
+ ArjD_InPos := 0;
+ ArjD_InEnd := Got;
+ Dec(ArjD_CompLeft, Got);
+End;
+
+Function ArjD_GetByte: Byte;
+Begin
+ If ArjD_InPos >= ArjD_InEnd Then ArjD_FillIn;
+ If ArjD_InPos >= ArjD_InEnd Then Begin
+  ArjD_GetByte := 0;
+  Exit;
+ End;
+ ArjD_GetByte := ArjD_InBuf^[ArjD_InPos];
+ Inc(ArjD_InPos);
+End;
+
+Procedure ArjD_FillBuf(N: Byte);
+Begin
+ If N >= 16 Then ArjD_BitBuf := 0
+            Else ArjD_BitBuf := (LongInt(ArjD_BitBuf) Shl N) And $FFFF;
+ While N > ArjD_BitCount Do Begin
+  Dec(N, ArjD_BitCount);
+  If N < 16 Then
+   ArjD_BitBuf := ArjD_BitBuf Or Word((LongInt(ArjD_SubBitBuf) Shl N) And $FFFF);
+  ArjD_SubBitBuf := ArjD_GetByte;
+  ArjD_BitCount := 8;
+ End;
+ Dec(ArjD_BitCount, N);
+ ArjD_BitBuf := ArjD_BitBuf Or (Word(ArjD_SubBitBuf) Shr ArjD_BitCount);
+End;
+
+Function ArjD_GetBits(N: Byte): Word;
+Var X: Word;
+Begin
+ If N = 0 Then Begin ArjD_GetBits := 0; Exit; End;
+ X := ArjD_BitBuf Shr (16 - N);
+ ArjD_FillBuf(N);
+ ArjD_GetBits := X;
+End;
+
+Procedure ArjD_InitGetBits;
+Begin
+ ArjD_BitBuf := 0;
+ ArjD_SubBitBuf := 0;
+ ArjD_BitCount := 0;
+ ArjD_FillBuf(16);
+End;
+
+Procedure ArjD_MakeTable(NChar, TableBits: Word; BL: PArjByteBuf; Tbl: PArjWordBuf);
+Var
+ Count: Array[0..16] Of LongInt;
+ Start: Array[0..17] Of LongInt;
+ Weight: Array[0..16] Of LongInt;
+ I, K, NextCode, Mask: LongInt;
+ Len, Ch: Word;
+ JutBits, Avail: Word;
+ PMode: Byte;
+ PIdx, Tmp: Word;
+Begin
+ For I := 1 To 16 Do Count[I] := 0;
+ For I := 0 To LongInt(NChar)-1 Do Inc(Count[BL^[I]]);
+ Start[1] := 0;
+ For I := 1 To 16 Do Start[I+1] := Start[I] + (Count[I] Shl (16-I));
+ If Start[17] <> $10000 Then Begin ArjD_Error := True; Exit; End;
+
+ JutBits := 16 - TableBits;
+ For I := 1 To TableBits Do Begin
+  Start[I] := Start[I] Shr JutBits;
+  Weight[I] := LongInt(1) Shl (TableBits-I);
+ End;
+ For I := TableBits+1 To 16 Do
+  Weight[I] := LongInt(1) Shl (16-I);
+
+ I := Start[TableBits+1] Shr JutBits;
+ If I <> $10000 Then Begin
+  K := LongInt(1) Shl TableBits;
+  While I < K Do Begin
+   Tbl^[I] := 0;
+   Inc(I);
+  End;
+ End;
+
+ Avail := NChar;
+ Mask := LongInt(1) Shl (15 - TableBits);
+ For Ch := 0 To NChar-1 Do Begin
+  Len := BL^[Ch];
+  If Len = 0 Then Continue;
+  NextCode := Start[Len] + Weight[Len];
+  If Len <= TableBits Then Begin
+   I := Start[Len];
+   While I < NextCode Do Begin
+    Tbl^[I] := Ch;
+    Inc(I);
+   End;
+  End Else Begin
+   K := Start[Len];
+   PMode := 0;
+   PIdx := K Shr JutBits;
+   I := Len - TableBits;
+   While I <> 0 Do Begin
+    Case PMode Of
+     0: Tmp := Tbl^[PIdx];
+     1: Tmp := ArjD_LeftT^[PIdx];
+    Else Tmp := ArjD_RightT^[PIdx];
+    End;
+    If Tmp = 0 Then Begin
+     ArjD_RightT^[Avail] := 0;
+     ArjD_LeftT^[Avail] := 0;
+     Tmp := Avail;
+     Case PMode Of
+      0: Tbl^[PIdx] := Avail;
+      1: ArjD_LeftT^[PIdx] := Avail;
+     Else ArjD_RightT^[PIdx] := Avail;
+     End;
+     Inc(Avail);
+    End;
+    If (K And Mask) <> 0 Then PMode := 2 Else PMode := 1;
+    PIdx := Tmp;
+    K := K Shl 1;
+    Dec(I);
+   End;
+   Case PMode Of
+    0: Tbl^[PIdx] := Ch;
+    1: ArjD_LeftT^[PIdx] := Ch;
+   Else ArjD_RightT^[PIdx] := Ch;
+   End;
+  End;
+  Start[Len] := NextCode;
+ End;
+End;
+
+Procedure ArjD_ReadPtLen(NN: Word; NBit: Byte; ISpecial: Integer);
+Var
+ I: Integer;
+ C, N: Word;
+ Mask: Word;
+Begin
+ N := ArjD_GetBits(NBit);
+ If N = 0 Then Begin
+  C := ArjD_GetBits(NBit);
+  For I := 0 To NN-1 Do ArjD_PtLen[I] := 0;
+  For I := 0 To 255 Do ArjD_PtTable[I] := C;
+ End Else Begin
+  I := 0;
+  While I < N Do Begin
+   C := ArjD_BitBuf Shr 13;
+   If C = 7 Then Begin
+    Mask := $1000;
+    While (Mask And ArjD_BitBuf) <> 0 Do Begin
+     Mask := Mask Shr 1;
+     Inc(C);
+    End;
+   End;
+   If C < 7 Then ArjD_FillBuf(3) Else ArjD_FillBuf(C-3);
+   ArjD_PtLen[I] := C;
+   Inc(I);
+   If I = ISpecial Then Begin
+    C := ArjD_GetBits(2);
+    While C > 0 Do Begin
+     ArjD_PtLen[I] := 0;
+     Inc(I);
+     Dec(C);
+    End;
+   End;
+  End;
+  While I < NN Do Begin
+   ArjD_PtLen[I] := 0;
+   Inc(I);
+  End;
+  ArjD_MakeTable(NN, 8, PArjByteBuf(@ArjD_PtLen), PArjWordBuf(@ArjD_PtTable));
+ End;
+End;
+
+Procedure ArjD_ReadCLen;
+Var
+ I: Integer;
+ C, N: Word;
+ Mask: Word;
+Begin
+ N := ArjD_GetBits(ArjD_CBIT);
+ If N = 0 Then Begin
+  C := ArjD_GetBits(ArjD_CBIT);
+  For I := 0 To ArjD_NC-1 Do ArjD_CLen[I] := 0;
+  For I := 0 To 4095 Do ArjD_CTable^[I] := C;
+ End Else Begin
+  I := 0;
+  While I < N Do Begin
+   C := ArjD_PtTable[ArjD_BitBuf Shr 8];
+   If C >= ArjD_NT Then Begin
+    Mask := $80;
+    Repeat
+     If (ArjD_BitBuf And Mask) <> 0 Then C := ArjD_RightT^[C]
+                                    Else C := ArjD_LeftT^[C];
+     Mask := Mask Shr 1;
+    Until C < ArjD_NT;
+   End;
+   ArjD_FillBuf(ArjD_PtLen[C]);
+   If C <= 2 Then Begin
+    If C = 0 Then C := 1
+    Else If C = 1 Then C := ArjD_GetBits(4) + 3
+    Else C := ArjD_GetBits(ArjD_CBIT) + 20;
+    While C > 0 Do Begin
+     ArjD_CLen[I] := 0;
+     Inc(I);
+     Dec(C);
+    End;
+   End Else Begin
+    ArjD_CLen[I] := C - 2;
+    Inc(I);
+   End;
+  End;
+  While I < ArjD_NC Do Begin
+   ArjD_CLen[I] := 0;
+   Inc(I);
+  End;
+  ArjD_MakeTable(ArjD_NC, 12, PArjByteBuf(@ArjD_CLen), PArjWordBuf(ArjD_CTable));
+ End;
+End;
+
+Function ArjD_DecodeC: Word;
+Var J: Word; Mask: Word;
+Begin
+ If ArjD_BlockSize = 0 Then Begin
+  ArjD_BlockSize := ArjD_GetBits(16);
+  ArjD_ReadPtLen(ArjD_NT, ArjD_TBIT, 3);
+  If ArjD_Error Then Begin ArjD_DecodeC := 0; Exit; End;
+  ArjD_ReadCLen;
+  If ArjD_Error Then Begin ArjD_DecodeC := 0; Exit; End;
+  ArjD_ReadPtLen(ArjD_NP, ArjD_PBIT, -1);
+  If ArjD_Error Then Begin ArjD_DecodeC := 0; Exit; End;
+ End;
+ Dec(ArjD_BlockSize);
+ J := ArjD_CTable^[ArjD_BitBuf Shr 4];
+ If J >= ArjD_NC Then Begin
+  Mask := $08;
+  Repeat
+   If (ArjD_BitBuf And Mask) <> 0 Then J := ArjD_RightT^[J]
+                                  Else J := ArjD_LeftT^[J];
+   Mask := Mask Shr 1;
+  Until J < ArjD_NC;
+ End;
+ ArjD_FillBuf(ArjD_CLen[J]);
+ ArjD_DecodeC := J;
+End;
+
+Function ArjD_DecodeP: Word;
+Var J: Word; Mask: Word;
+Begin
+ J := ArjD_PtTable[ArjD_BitBuf Shr 8];
+ If J >= ArjD_NP Then Begin
+  Mask := $80;
+  Repeat
+   If (ArjD_BitBuf And Mask) <> 0 Then J := ArjD_RightT^[J]
+                                  Else J := ArjD_LeftT^[J];
+   Mask := Mask Shr 1;
+  Until J < ArjD_NP;
+ End;
+ ArjD_FillBuf(ArjD_PtLen[J]);
+ If J <> 0 Then
+  J := (Word(1) Shl (J-1)) + ArjD_GetBits(J-1);
+ ArjD_DecodeP := J;
+End;
+
+Function ArjD_Decompress(CSize, OSize, ExpectedCRC: LongInt;
+                         Var ResCRC: LongInt): Boolean;
+Var
+ Count, J, I, P: LongInt;
+ C: Word;
+Begin
+ ArjD_InitCRC;
+ ResCRC := LongInt($FFFFFFFF);
+ ArjD_BlockSize := 0;
+ ArjD_DictPos := 0;
+ ArjD_Error := False;
+ ArjD_CompLeft := CSize;
+ ArjD_InPos := 0;
+ ArjD_InEnd := 0;
+ ArjD_InitGetBits;
+ Count := 0;
+ While (Count < OSize) And (Not ArjD_Error) Do Begin
+  C := ArjD_DecodeC;
+  If ArjD_Error Then Break;
+  If C <= 255 Then Begin
+   ArjD_Dict^[ArjD_DictPos] := C;
+   ResCRC := ArjD_UpdateCRC(ResCRC, C);
+   Inc(ArjD_DictPos);
+   If ArjD_DictPos >= ArjD_DICSIZ Then Begin
+    BlockWrite(ArjDestFile, ArjD_Dict^, ArjD_DICSIZ);
+    ArjD_DictPos := 0;
+   End;
+   Inc(Count);
+  End Else Begin
+   J := LongInt(C) - 253;
+   Inc(Count, J);
+   I := LongInt(ArjD_DictPos) - LongInt(ArjD_DecodeP) - 1;
+   If I < 0 Then Inc(I, ArjD_DICSIZ);
+   P := I;
+   While J > 0 Do Begin
+    ArjD_Dict^[ArjD_DictPos] := ArjD_Dict^[P];
+    ResCRC := ArjD_UpdateCRC(ResCRC, ArjD_Dict^[P]);
+    Inc(P);
+    If P >= ArjD_DICSIZ Then P := 0;
+    Inc(ArjD_DictPos);
+    If ArjD_DictPos >= ArjD_DICSIZ Then Begin
+     BlockWrite(ArjDestFile, ArjD_Dict^, ArjD_DICSIZ);
+     ArjD_DictPos := 0;
+    End;
+    Dec(J);
+   End;
+  End;
+ End;
+ If (ArjD_DictPos > 0) And (Not ArjD_Error) Then
+  BlockWrite(ArjDestFile, ArjD_Dict^, ArjD_DictPos);
+ ResCRC := ResCRC Xor LongInt($FFFFFFFF);
+ ArjD_Decompress := (Not ArjD_Error) And (Count >= OSize);
+End;
+
+{ ============================================================ }
+{ === Decompresseur ARJ methode 4 (LZ77 + codes unaires)   === }
+{ ============================================================ }
+
+Const
+ ArjD4_STRTP = 9;   ArjD4_STOPP = 13;
+ ArjD4_STRTL = 0;   ArjD4_STOPL = 7;
+
+Function ArjD4_DecodeLen: Word;
+Var Plus, Pwr: LongInt; Width: Byte; C: Word;
+Begin
+ Plus := 0;
+ Pwr := LongInt(1) Shl ArjD4_STRTL;
+ Width := ArjD4_STRTL;
+ While Width < ArjD4_STOPL Do Begin
+  C := ArjD_GetBits(1);
+  If C = 0 Then Break;
+  Plus := Plus + Pwr;
+  Pwr := Pwr Shl 1;
+  Inc(Width);
+ End;
+ If Width > 0 Then C := ArjD_GetBits(Width) Else C := 0;
+ ArjD4_DecodeLen := Word(LongInt(C) + Plus);
+End;
+
+Function ArjD4_DecodePtr: Word;
+Var Plus, Pwr: LongInt; Width: Byte; C: Word;
+Begin
+ Plus := 0;
+ Pwr := LongInt(1) Shl ArjD4_STRTP;
+ Width := ArjD4_STRTP;
+ While Width < ArjD4_STOPP Do Begin
+  C := ArjD_GetBits(1);
+  If C = 0 Then Break;
+  Plus := Plus + Pwr;
+  Pwr := Pwr Shl 1;
+  Inc(Width);
+ End;
+ If Width > 0 Then C := ArjD_GetBits(Width) Else C := 0;
+ ArjD4_DecodePtr := Word(LongInt(C) + Plus);
+End;
+
+Function ArjD_DecompressF(CSize, OSize, ExpectedCRC: LongInt;
+                          Var ResCRC: LongInt): Boolean;
+Var
+ Count, J, I, P: LongInt;
+ C, Pos: Word;
+ Lit: Byte;
+Begin
+ ArjD_InitCRC;
+ ResCRC := LongInt($FFFFFFFF);
+ ArjD_DictPos := 0;
+ ArjD_Error := False;
+ ArjD_CompLeft := CSize;
+ ArjD_InPos := 0; ArjD_InEnd := 0;
+ ArjD_InitGetBits;
+ Count := 0;
+ While (Count < OSize) And (Not ArjD_Error) Do Begin
+  C := ArjD4_DecodeLen;
+  If C = 0 Then Begin
+   Lit := Byte(ArjD_GetBits(8));
+   ArjD_Dict^[ArjD_DictPos] := Lit;
+   ResCRC := ArjD_UpdateCRC(ResCRC, Lit);
+   Inc(ArjD_DictPos);
+   If ArjD_DictPos >= ArjD_DICSIZ Then Begin
+    BlockWrite(ArjDestFile, ArjD_Dict^, ArjD_DICSIZ);
+    ArjD_DictPos := 0;
+   End;
+   Inc(Count);
+  End Else Begin
+   J := LongInt(C) + 2;
+   Inc(Count, J);
+   Pos := ArjD4_DecodePtr;
+   I := LongInt(ArjD_DictPos) - LongInt(Pos) - 1;
+   If I < 0 Then Inc(I, ArjD_DICSIZ);
+   P := I;
+   While J > 0 Do Begin
+    ArjD_Dict^[ArjD_DictPos] := ArjD_Dict^[P];
+    ResCRC := ArjD_UpdateCRC(ResCRC, ArjD_Dict^[P]);
+    Inc(P);
+    If P >= ArjD_DICSIZ Then P := 0;
+    Inc(ArjD_DictPos);
+    If ArjD_DictPos >= ArjD_DICSIZ Then Begin
+     BlockWrite(ArjDestFile, ArjD_Dict^, ArjD_DICSIZ);
+     ArjD_DictPos := 0;
+    End;
+    Dec(J);
+   End;
+  End;
+ End;
+ If (ArjD_DictPos > 0) And (Not ArjD_Error) Then
+  BlockWrite(ArjDestFile, ArjD_Dict^, ArjD_DictPos);
+ ResCRC := ResCRC Xor LongInt($FFFFFFFF);
+ ArjD_DecompressF := (Not ArjD_Error) And (Count >= OSize);
+End;
+
+{ ============================================================ }
+{ === Ecrivain d'archive ARJ - fonctions de base           === }
+{ ============================================================ }
+
+Function ArjCRC32OfFile(Var F: File; Size: LongInt): LongInt;
+Var
+ Buf: Array[0..4095] Of Byte;
+ ToRead: LongInt;
+ Got, I: Integer;
+ CRC: LongInt;
+Begin
+ ArjD_InitCRC;
+ CRC := LongInt($FFFFFFFF);
+ While Size > 0 Do Begin
+  If Size > 4096 Then ToRead := 4096 Else ToRead := Size;
+  BlockRead(F, Buf, ToRead, Got);
+  If Got <= 0 Then Break;
+  For I := 0 To Got - 1 Do
+   CRC := ArjD_UpdateCRC(CRC, Buf[I]);
+  Dec(Size, Got);
+ End;
+ ArjCRC32OfFile := CRC Xor LongInt($FFFFFFFF);
+End;
+
+Function ArjCRC32OfBuf(Var Buf; Len: Word): LongInt;
+Var
+ P: ^Byte;
+ I: Word;
+ CRC: LongInt;
+Begin
+ ArjD_InitCRC;
+ CRC := LongInt($FFFFFFFF);
+ P := @Buf;
+ For I := 1 To Len Do Begin
+  CRC := ArjD_UpdateCRC(CRC, P^);
+  Inc(P);
+ End;
+ ArjCRC32OfBuf := CRC Xor LongInt($FFFFFFFF);
+End;
+
+Function ArjStripPath(S: String): String;
+Var I: Integer;
+Begin
+ For I := Length(S) DownTo 1 Do
+  If (S[I]='\') Or (S[I]='/') Or (S[I]=':') Then Begin
+   ArjStripPath := Copy(S, I+1, 255);
+   Exit;
+  End;
+ ArjStripPath := S;
+End;
+
+Procedure ArjPutW(Var Buf: Array Of Byte; Var P: Word; V: Word);
+Begin
+ Buf[P] := V And $FF; Inc(P);
+ Buf[P] := (V Shr 8) And $FF; Inc(P);
+End;
+
+Procedure ArjPutB(Var Buf: Array Of Byte; Var P: Word; V: Byte);
+Begin
+ Buf[P] := V; Inc(P);
+End;
+
+Procedure ArjPutL(Var Buf: Array Of Byte; Var P: Word; V: LongInt);
+Begin
+ Buf[P] := V And $FF; Inc(P);
+ Buf[P] := (V Shr 8) And $FF; Inc(P);
+ Buf[P] := (V Shr 16) And $FF; Inc(P);
+ Buf[P] := (V Shr 24) And $FF; Inc(P);
+End;
+
+Procedure ArjPutStrZ(Var Buf: Array Of Byte; Var P: Word; S: String);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do Begin
+  Buf[P] := Ord(S[I]); Inc(P);
+ End;
+ Buf[P] := 0; Inc(P);
+End;
+
+Function ArjBuildBasicHeader(Var Buf: Array Of Byte; FType: Byte; SVer: Byte;
+                             DosDT: LongInt; CSize, OSize, FileCRC: LongInt;
+                             Name, Comment: String): Word;
+Var P: Word;
+Begin
+ P := 0;
+ ArjPutB(Buf, P, 30);
+ ArjPutB(Buf, P, 11);
+ ArjPutB(Buf, P, 1);
+ ArjPutB(Buf, P, 0);
+ ArjPutB(Buf, P, 0);
+ ArjPutB(Buf, P, SVer);
+ ArjPutB(Buf, P, FType);
+ ArjPutB(Buf, P, 0);
+ ArjPutL(Buf, P, DosDT);
+ ArjPutL(Buf, P, CSize);
+ ArjPutL(Buf, P, OSize);
+ ArjPutL(Buf, P, FileCRC);
+ ArjPutW(Buf, P, 0);
+ ArjPutW(Buf, P, 0);
+ ArjPutW(Buf, P, 0);
+ ArjPutStrZ(Buf, P, Name);
+ ArjPutStrZ(Buf, P, Comment);
+ ArjBuildBasicHeader := P;
+End;
+
+Procedure ArjWriteArjHeader(Var F: File; FType, SVer: Byte; DosDT: LongInt;
+                            CSize, OSize, FileCRC: LongInt;
+                            Name, Comment: String);
+Var
+ BHBuf: Array[0..511] Of Byte;
+ Prefix: Array[0..3] Of Byte;
+ Trailer: Array[0..5] Of Byte;
+ Len: Word;
+ HCRC: LongInt;
+ P: Word;
+Begin
+ Len := ArjBuildBasicHeader(BHBuf, FType, SVer, DosDT, CSize, OSize, FileCRC,
+                            Name, Comment);
+ P := 0;
+ ArjPutW(Prefix, P, $EA60);
+ ArjPutW(Prefix, P, Len);
+ BlockWrite(F, Prefix, 4);
+ BlockWrite(F, BHBuf, Len);
+ HCRC := ArjCRC32OfBuf(BHBuf, Len);
+ P := 0;
+ ArjPutL(Trailer, P, HCRC);
+ ArjPutW(Trailer, P, 0);
+ BlockWrite(F, Trailer, 6);
+End;
+
+Procedure ArjWriteEndMarker(Var F: File);
+Var EOA: Array[0..3] Of Byte; P: Word;
+Begin
+ P := 0;
+ ArjPutW(EOA, P, $EA60);
+ ArjPutW(EOA, P, 0);
+ BlockWrite(F, EOA, 4);
+End;
+
+Function ArjFindEndOfArchive(Var F: File): LongInt;
+Var
+ Pos, Sz: LongInt;
+ ByRd: Integer;
+ Hdr: Array[0..3] Of Byte;
+ BHdrSz: Word;
+ BHData: Array[0..511] Of Byte;
+ ExtSz: Word;
+ BasicCSize: LongInt;
+ RawCSize: Array[0..3] Of Byte;
+ BasicFType: Byte;
+Begin
+ Pos := 0;
+ Sz := FileSize(F);
+ While Pos < Sz Do Begin
+  Seek(F, Pos);
+  BlockRead(F, Hdr, 4, ByRd);
+  If ByRd < 4 Then Begin ArjFindEndOfArchive := -1; Exit; End;
+  If (Hdr[0]<>$60) Or (Hdr[1]<>$EA) Then Begin
+   ArjFindEndOfArchive := -1; Exit;
+  End;
+  BHdrSz := Hdr[2] Or (Word(Hdr[3]) Shl 8);
+  If BHdrSz = 0 Then Begin
+   ArjFindEndOfArchive := Pos;
+   Exit;
+  End;
+  If BHdrSz > 512 Then Begin ArjFindEndOfArchive := -1; Exit; End;
+  BlockRead(F, BHData, BHdrSz, ByRd);
+  If ByRd < BHdrSz Then Begin ArjFindEndOfArchive := -1; Exit; End;
+  BasicFType := BHData[6];
+  RawCSize[0] := BHData[12]; RawCSize[1] := BHData[13];
+  RawCSize[2] := BHData[14]; RawCSize[3] := BHData[15];
+  BasicCSize := LongInt(RawCSize[0]) Or
+               (LongInt(RawCSize[1]) Shl 8) Or
+               (LongInt(RawCSize[2]) Shl 16) Or
+               (LongInt(RawCSize[3]) Shl 24);
+  Seek(F, Pos + 4 + LongInt(BHdrSz) + 4);
+  BlockRead(F, Hdr, 2, ByRd);
+  If ByRd < 2 Then Begin ArjFindEndOfArchive := -1; Exit; End;
+  ExtSz := Hdr[0] Or (Word(Hdr[1]) Shl 8);
+  Pos := Pos + 4 + LongInt(BHdrSz) + 4 + 2;
+  If ExtSz > 0 Then Inc(Pos, LongInt(ExtSz) + 4);
+  If BasicFType <> 2 Then Inc(Pos, BasicCSize);
+ End;
+ ArjFindEndOfArchive := -1;
+End;
+
+{ ============================================================ }
+{ === Compresseur ARJ methodes 1/2/3 (LZ77 + Huffman dyn.) === }
+{ ============================================================ }
+
+Const
+ ArjE_WINSZ      = ArjD_DICSIZ;
+ ArjE_MIN_MATCH  = 3;
+ ArjE_MAX_MATCH  = 256;
+ ArjE_HASH_BITS  = 13;
+ ArjE_HASH_SIZE  = 8192;
+ ArjE_HASH_MASK  = 8191;
+ ArjE_BUF_SIZE   = 32000;
+ ArjE_MAX_BLK_SY = 8000;
+ ArjE_HASH_EMPTY = $FFFF;
+
+Type
+ TArjOutBuf4K = Array[0..4095] Of Byte;              PArjOutBuf4K = ^TArjOutBuf4K;
+ TArjHuffPar  = Array[0..1023] Of Integer;           PArjHuffPar  = ^TArjHuffPar;
+ TArjHuffNF   = Array[0..1023] Of LongInt;           PArjHuffNF   = ^TArjHuffNF;
+ TArjInBufE   = Array[0..ArjE_BUF_SIZE-1] Of Byte;   PArjInBufE   = ^TArjInBufE;
+ TArjHashH    = Array[0..ArjE_HASH_SIZE-1] Of Word;  PArjHashH    = ^TArjHashH;
+ TArjHashP    = Array[0..ArjE_BUF_SIZE-1] Of Word;   PArjHashP    = ^TArjHashP;
+ TArjBlkSym   = Array[0..ArjE_MAX_BLK_SY-1] Of Word; PArjBlkSym   = ^TArjBlkSym;
+ TArjBlkDst   = Array[0..ArjE_MAX_BLK_SY-1] Of Word; PArjBlkDst   = ^TArjBlkDst;
+
+Var
+ ArjE_BitBuf: Word;
+ ArjE_BitCount: Byte;
+ ArjE_OutBuf: PArjOutBuf4K;
+ ArjE_OutPos: Word;
+ ArjE_BytesWritten: LongInt;
+ ArjE_BlkSym: PArjBlkSym;
+ ArjE_BlkDst: PArjBlkDst;
+ ArjE_BlockN: Word;
+ ArjE_FreqC: Array[0..ArjD_NC-1] Of LongInt;
+ ArjE_FreqT: Array[0..ArjD_NT-1] Of LongInt;
+ ArjE_FreqP: Array[0..ArjD_NP-1] Of LongInt;
+ ArjE_LensC: Array[0..ArjD_NC-1] Of Byte;
+ ArjE_LensT: Array[0..ArjD_NT-1] Of Byte;
+ ArjE_LensP: Array[0..ArjD_NP-1] Of Byte;
+ ArjE_CodesC: Array[0..ArjD_NC-1] Of Word;
+ ArjE_CodesT: Array[0..ArjD_NT-1] Of Word;
+ ArjE_CodesP: Array[0..ArjD_NP-1] Of Word;
+ ArjE_HuffParent: PArjHuffPar;
+ ArjE_HuffNF: PArjHuffNF;
+ ArjE_InBuf: PArjInBufE;
+ ArjE_InLen: Word;
+ ArjE_WPos: Word;
+ ArjE_HashH: PArjHashH;
+ ArjE_HashP: PArjHashP;
+ ArjE_MaxChain: Word;
+ ArjE_GoodMatch: Word;
+ ArjE_DistMax: Word;
+ ArjE_M4: Boolean;
+
+Const
+ ArjE4_STRTP = 9;   ArjE4_STOPP = 13;
+ ArjE4_STRTL = 0;   ArjE4_STOPL = 7;
+ ArjE4_MAX_DIST  = 15872;
+ ArjE4_MAX_MATCH = 256;
+
+Procedure ArjE_FlushOut;
+Begin
+ If ArjE_OutPos > 0 Then Begin
+  BlockWrite(ArjSourceARJ, ArjE_OutBuf^, ArjE_OutPos);
+  Inc(ArjE_BytesWritten, ArjE_OutPos);
+  ArjE_OutPos := 0;
+ End;
+End;
+
+Procedure ArjE_PutByte(B: Byte);
+Begin
+ ArjE_OutBuf^[ArjE_OutPos] := B;
+ Inc(ArjE_OutPos);
+ If ArjE_OutPos >= 4096 Then ArjE_FlushOut;
+End;
+
+Procedure ArjE_PutBits(N: Byte; V: Word);
+Begin
+ While N > 0 Do Begin
+  Dec(N);
+  If ((V Shr N) And 1) = 1 Then
+   ArjE_BitBuf := ArjE_BitBuf Or (Word(1) Shl (15 - ArjE_BitCount));
+  Inc(ArjE_BitCount);
+  If ArjE_BitCount = 16 Then Begin
+   ArjE_PutByte(Hi(ArjE_BitBuf));
+   ArjE_PutByte(Lo(ArjE_BitBuf));
+   ArjE_BitBuf := 0;
+   ArjE_BitCount := 0;
+  End;
+ End;
+End;
+
+Procedure ArjE_FinishBits;
+Begin
+ If ArjE_BitCount > 0 Then Begin
+  ArjE_PutByte(Hi(ArjE_BitBuf));
+  If ArjE_BitCount > 8 Then ArjE_PutByte(Lo(ArjE_BitBuf));
+  ArjE_BitBuf := 0;
+  ArjE_BitCount := 0;
+ End;
+ ArjE_FlushOut;
+End;
+
+Procedure ArjE_BuildHuffman(Var Freq: Array Of LongInt; NSym: Word;
+                            Var Lens: Array Of Byte);
+Var I, J, A, B, M, Active, D: Integer;
+Begin
+ For I := 0 To NSym-1 Do Begin
+  ArjE_HuffNF^[I] := Freq[I];
+  ArjE_HuffParent^[I] := -1;
+  Lens[I] := 0;
+ End;
+ Active := 0;
+ For I := 0 To NSym-1 Do If Freq[I] > 0 Then Inc(Active);
+ If Active = 0 Then Exit;
+ If Active = 1 Then Begin
+  For I := 0 To NSym-1 Do If Freq[I] > 0 Then Lens[I] := 1;
+  Exit;
+ End;
+ M := NSym;
+ While True Do Begin
+  A := -1; B := -1;
+  For I := 0 To M-1 Do
+   If (ArjE_HuffNF^[I] > 0) And (ArjE_HuffParent^[I] = -1) Then Begin
+    If (A = -1) Or (ArjE_HuffNF^[I] < ArjE_HuffNF^[A]) Then Begin
+     B := A; A := I;
+    End Else If (B = -1) Or (ArjE_HuffNF^[I] < ArjE_HuffNF^[B]) Then
+     B := I;
+   End;
+  If B = -1 Then Break;
+  ArjE_HuffNF^[M] := ArjE_HuffNF^[A] + ArjE_HuffNF^[B];
+  ArjE_HuffParent^[M] := -1;
+  ArjE_HuffParent^[A] := M;
+  ArjE_HuffParent^[B] := M;
+  Inc(M);
+ End;
+ For I := 0 To NSym-1 Do Begin
+  If Freq[I] = 0 Then Continue;
+  D := 0;
+  J := I;
+  While ArjE_HuffParent^[J] <> -1 Do Begin
+   Inc(D);
+   J := ArjE_HuffParent^[J];
+  End;
+  Lens[I] := D;
+ End;
+End;
+
+Procedure ArjE_CanonicalCodes(Var Lens: Array Of Byte; NSym: Word;
+                              Var Codes: Array Of Word);
+Var
+ BLCount: Array[0..17] Of Word;
+ NextCode: Array[0..17] Of Word;
+ I: Integer;
+ Code: LongInt;
+ L: Byte;
+Begin
+ For I := 0 To 17 Do BLCount[I] := 0;
+ For I := 0 To NSym-1 Do Inc(BLCount[Lens[I]]);
+ BLCount[0] := 0;
+ Code := 0;
+ NextCode[0] := 0;
+ For I := 1 To 16 Do Begin
+  Code := (Code + BLCount[I-1]) Shl 1;
+  NextCode[I] := Code;
+ End;
+ For I := 0 To NSym-1 Do Begin
+  L := Lens[I];
+  If L > 0 Then Begin
+   Codes[I] := NextCode[L];
+   Inc(NextCode[L]);
+  End Else
+   Codes[I] := 0;
+ End;
+End;
+
+Procedure ArjE_EmitLen3(L: Byte);
+Var K: Integer;
+Begin
+ If L < 7 Then ArjE_PutBits(3, L)
+ Else Begin
+  ArjE_PutBits(3, 7);
+  For K := 1 To L - 7 Do ArjE_PutBits(1, 1);
+  ArjE_PutBits(1, 0);
+ End;
+End;
+
+Procedure ArjE_WritePtLen(Var Lens: Array Of Byte; NN: Word; NBit: Byte;
+                          ISpecial: Integer);
+Var
+ I, ZCount, ActiveLast: Integer;
+ N: Word;
+Begin
+ ActiveLast := -1;
+ For I := 0 To NN-1 Do If Lens[I] <> 0 Then ActiveLast := I;
+ N := ActiveLast + 1;
+ If N = 0 Then Begin
+  ArjE_PutBits(NBit, 0);
+  ArjE_PutBits(NBit, 0);
+  Exit;
+ End;
+ ArjE_PutBits(NBit, N);
+ I := 0;
+ While I < N Do Begin
+  ArjE_EmitLen3(Lens[I]);
+  Inc(I);
+  If I = ISpecial Then Begin
+   ZCount := 0;
+   While (I < N) And (Lens[I] = 0) And (ZCount < 3) Do Begin
+    Inc(I);
+    Inc(ZCount);
+   End;
+   ArjE_PutBits(2, ZCount);
+  End;
+ End;
+End;
+
+Procedure ArjE_ProcessCLen(Var Lens: Array Of Byte; NN: Word;
+                           CountOnly: Boolean);
+Var
+ I, J, RunLen, Chunk: Integer;
+Begin
+ I := 0;
+ While I < NN Do Begin
+  If Lens[I] = 0 Then Begin
+   J := I;
+   While (J < NN) And (Lens[J] = 0) Do Inc(J);
+   RunLen := J - I;
+   While RunLen > 0 Do Begin
+    If RunLen >= 20 Then Begin
+     Chunk := RunLen;
+     If Chunk > 531 Then Chunk := 531;
+     If CountOnly Then Inc(ArjE_FreqT[2])
+     Else Begin
+      ArjE_PutBits(ArjE_LensT[2], ArjE_CodesT[2]);
+      ArjE_PutBits(ArjD_CBIT, Chunk - 20);
+     End;
+     Dec(RunLen, Chunk);
+    End Else If RunLen >= 3 Then Begin
+     Chunk := RunLen;
+     If Chunk > 18 Then Chunk := 18;
+     If CountOnly Then Inc(ArjE_FreqT[1])
+     Else Begin
+      ArjE_PutBits(ArjE_LensT[1], ArjE_CodesT[1]);
+      ArjE_PutBits(4, Chunk - 3);
+     End;
+     Dec(RunLen, Chunk);
+    End Else Begin
+     If CountOnly Then Inc(ArjE_FreqT[0])
+     Else ArjE_PutBits(ArjE_LensT[0], ArjE_CodesT[0]);
+     Dec(RunLen);
+    End;
+   End;
+   I := J;
+  End Else Begin
+   If CountOnly Then Inc(ArjE_FreqT[Lens[I] + 2])
+   Else ArjE_PutBits(ArjE_LensT[Lens[I] + 2], ArjE_CodesT[Lens[I] + 2]);
+   Inc(I);
+  End;
+ End;
+End;
+
+Procedure ArjE_WriteCLenHeader(Var Lens: Array Of Byte; NN: Word);
+Var
+ I, ActiveLast: Integer;
+ N: Word;
+Begin
+ ActiveLast := -1;
+ For I := 0 To NN-1 Do If Lens[I] <> 0 Then ActiveLast := I;
+ N := ActiveLast + 1;
+ If N = 0 Then Begin
+  ArjE_PutBits(ArjD_CBIT, 0);
+  ArjE_PutBits(ArjD_CBIT, 0);
+  Exit;
+ End;
+ ArjE_PutBits(ArjD_CBIT, N);
+ ArjE_ProcessCLen(Lens, N, False);
+End;
+
+Procedure ArjE_FlushBlock;
+Var
+ I, ActiveLast: Integer;
+ N: Word;
+ NCActive, NPActive: Integer;
+ NCOnlySym, NPOnlySym: Integer;
+ Sym, Dist, ExtraB, M: Word;
+ J, ExtraN: Byte;
+Begin
+ If ArjE_BlockN = 0 Then Exit;
+ For I := 0 To ArjD_NC-1 Do ArjE_FreqC[I] := 0;
+ For I := 0 To ArjD_NP-1 Do ArjE_FreqP[I] := 0;
+ For I := 0 To ArjE_BlockN-1 Do Begin
+  Sym := ArjE_BlkSym^[I];
+  Inc(ArjE_FreqC[Sym]);
+  If Sym >= 256 Then Begin
+   Dist := ArjE_BlkDst^[I];
+   If Dist = 0 Then J := 0
+   Else Begin
+    J := 0; M := Dist;
+    While M > 0 Do Begin Inc(J); M := M Shr 1; End;
+   End;
+   Inc(ArjE_FreqP[J]);
+  End;
+ End;
+ NCActive := 0; NCOnlySym := -1;
+ For I := 0 To ArjD_NC-1 Do If ArjE_FreqC[I] > 0 Then Begin
+  Inc(NCActive); NCOnlySym := I;
+ End;
+ NPActive := 0; NPOnlySym := -1;
+ For I := 0 To ArjD_NP-1 Do If ArjE_FreqP[I] > 0 Then Begin
+  Inc(NPActive); NPOnlySym := I;
+ End;
+ ArjE_BuildHuffman(ArjE_FreqC, ArjD_NC, ArjE_LensC);
+ ArjE_CanonicalCodes(ArjE_LensC, ArjD_NC, ArjE_CodesC);
+ ArjE_BuildHuffman(ArjE_FreqP, ArjD_NP, ArjE_LensP);
+ ArjE_CanonicalCodes(ArjE_LensP, ArjD_NP, ArjE_CodesP);
+ ArjE_PutBits(16, ArjE_BlockN);
+ If NCActive = 1 Then Begin
+  ArjE_PutBits(ArjD_TBIT, 0);
+  ArjE_PutBits(ArjD_TBIT, 0);
+  ArjE_PutBits(ArjD_CBIT, 0);
+  ArjE_PutBits(ArjD_CBIT, NCOnlySym);
+  ArjE_LensC[NCOnlySym] := 0;
+ End Else Begin
+  ActiveLast := -1;
+  For I := 0 To ArjD_NC-1 Do If ArjE_LensC[I] <> 0 Then ActiveLast := I;
+  N := ActiveLast + 1;
+  For I := 0 To ArjD_NT-1 Do ArjE_FreqT[I] := 0;
+  ArjE_ProcessCLen(ArjE_LensC, N, True);
+  ArjE_BuildHuffman(ArjE_FreqT, ArjD_NT, ArjE_LensT);
+  ArjE_CanonicalCodes(ArjE_LensT, ArjD_NT, ArjE_CodesT);
+  ArjE_WritePtLen(ArjE_LensT, ArjD_NT, ArjD_TBIT, 3);
+  ArjE_WriteCLenHeader(ArjE_LensC, ArjD_NC);
+ End;
+ If NPActive = 0 Then Begin
+  ArjE_PutBits(ArjD_PBIT, 0);
+  ArjE_PutBits(ArjD_PBIT, 0);
+ End Else If NPActive = 1 Then Begin
+  ArjE_PutBits(ArjD_PBIT, 0);
+  ArjE_PutBits(ArjD_PBIT, NPOnlySym);
+  ArjE_LensP[NPOnlySym] := 0;
+ End Else Begin
+  ArjE_WritePtLen(ArjE_LensP, ArjD_NP, ArjD_PBIT, -1);
+ End;
+ For I := 0 To ArjE_BlockN-1 Do Begin
+  Sym := ArjE_BlkSym^[I];
+  If ArjE_LensC[Sym] > 0 Then
+   ArjE_PutBits(ArjE_LensC[Sym], ArjE_CodesC[Sym]);
+  If Sym >= 256 Then Begin
+   Dist := ArjE_BlkDst^[I];
+   If Dist = 0 Then Begin
+    J := 0; ExtraN := 0; ExtraB := 0;
+   End Else Begin
+    J := 0; M := Dist;
+    While M > 0 Do Begin Inc(J); M := M Shr 1; End;
+    ExtraN := J - 1;
+    ExtraB := Dist - (Word(1) Shl ExtraN);
+   End;
+   If ArjE_LensP[J] > 0 Then
+    ArjE_PutBits(ArjE_LensP[J], ArjE_CodesP[J]);
+   If ExtraN > 0 Then ArjE_PutBits(ExtraN, ExtraB);
+  End;
+ End;
+ ArjE_BlockN := 0;
+End;
+
+Procedure ArjE_HashReset;
+Var I: Integer;
+Begin
+ For I := 0 To ArjE_HASH_SIZE-1 Do ArjE_HashH^[I] := ArjE_HASH_EMPTY;
+End;
+
+Function ArjE_Hash3(P: Word): Word;
+Begin
+ ArjE_Hash3 := ((Word(ArjE_InBuf^[P]) Shl 7) Xor
+                (Word(ArjE_InBuf^[P+1]) Shl 3) Xor
+                 Word(ArjE_InBuf^[P+2])) And ArjE_HASH_MASK;
+End;
+
+Procedure ArjE_HashInsert(P: Word);
+Var H: Word;
+Begin
+ H := ArjE_Hash3(P);
+ ArjE_HashP^[P] := ArjE_HashH^[H];
+ ArjE_HashH^[H] := P;
+End;
+
+Procedure ArjE_FindMatch(Var BestLen, BestDist: Word);
+Var
+ H, Cand, Limit, K, MaxLen: Word;
+ ChainAttempts: Word;
+Begin
+ BestLen := 0;
+ BestDist := 0;
+ MaxLen := ArjE_MAX_MATCH;
+ If ArjE_InLen - ArjE_WPos < MaxLen Then MaxLen := ArjE_InLen - ArjE_WPos;
+ If MaxLen < ArjE_MIN_MATCH Then Exit;
+ If ArjE_WPos > ArjE_DistMax Then Limit := ArjE_WPos - ArjE_DistMax
+                             Else Limit := 0;
+ H := ArjE_Hash3(ArjE_WPos);
+ Cand := ArjE_HashH^[H];
+ ChainAttempts := 0;
+ While (Cand <> ArjE_HASH_EMPTY) And (Cand < ArjE_WPos) And
+       (ChainAttempts < ArjE_MaxChain) Do Begin
+  If Cand >= Limit Then Begin
+   K := 0;
+   While (K < MaxLen) And (ArjE_InBuf^[Cand+K] = ArjE_InBuf^[ArjE_WPos+K]) Do
+    Inc(K);
+   If (K >= ArjE_MIN_MATCH) And (K > BestLen) Then Begin
+    BestLen := K;
+    BestDist := ArjE_WPos - Cand - 1;
+    If K >= ArjE_GoodMatch Then Break;
+    If K >= ArjE_MAX_MATCH Then Break;
+   End;
+  End;
+  Cand := ArjE_HashP^[Cand];
+  Inc(ChainAttempts);
+ End;
+End;
+
+Procedure ArjE_BeginEncode;
+Begin
+ ArjE_BitBuf := 0;
+ ArjE_BitCount := 0;
+ ArjE_OutPos := 0;
+ ArjE_BytesWritten := 0;
+ ArjE_BlockN := 0;
+ ArjE_WPos := 0;
+ ArjE_InLen := 0;
+ ArjE_HashReset;
+End;
+
+Const
+ ArjE4_PlusByW: Array[0..7] Of Word = (0, 1, 3, 7, 15, 31, 63, 127);
+
+Procedure ArjE4_EmitLenCode(C: Word);
+Var W: Byte;
+Begin
+ If C = 0 Then W := 0
+ Else If C <=   2 Then W := 1
+ Else If C <=   6 Then W := 2
+ Else If C <=  14 Then W := 3
+ Else If C <=  30 Then W := 4
+ Else If C <=  62 Then W := 5
+ Else If C <= 126 Then W := 6
+ Else                  W := 7;
+ If W < ArjE4_STOPL Then Begin
+  If W > 0 Then ArjE_PutBits(W, (Word(1) Shl W) - 1);
+  ArjE_PutBits(1, 0);
+ End Else
+  ArjE_PutBits(W, (Word(1) Shl W) - 1);
+ If W > 0 Then ArjE_PutBits(W, C - ArjE4_PlusByW[W]);
+End;
+
+Procedure ArjE4_EmitPtrCode(D: Word);
+Var W: Byte; Plus: Word;
+Begin
+ If      D <  512 Then Begin W :=  9; Plus :=    0; End
+ Else If D < 1536 Then Begin W := 10; Plus :=  512; End
+ Else If D < 3584 Then Begin W := 11; Plus := 1536; End
+ Else If D < 7680 Then Begin W := 12; Plus := 3584; End
+ Else                  Begin W := 13; Plus := 7680; End;
+ If W < ArjE4_STOPP Then Begin
+  If W > ArjE4_STRTP Then
+   ArjE_PutBits(W - ArjE4_STRTP, (Word(1) Shl (W - ArjE4_STRTP)) - 1);
+  ArjE_PutBits(1, 0);
+ End Else
+  ArjE_PutBits(W - ArjE4_STRTP, (Word(1) Shl (W - ArjE4_STRTP)) - 1);
+ ArjE_PutBits(W, D - Plus);
+End;
+
+Procedure ArjE_AddLiteral(B: Byte);
+Begin
+ If ArjE_M4 Then Begin
+  ArjE4_EmitLenCode(0);
+  ArjE_PutBits(8, B);
+ End Else Begin
+  ArjE_BlkSym^[ArjE_BlockN] := B;
+  ArjE_BlkDst^[ArjE_BlockN] := 0;
+  Inc(ArjE_BlockN);
+  If ArjE_BlockN >= ArjE_MAX_BLK_SY Then ArjE_FlushBlock;
+ End;
+End;
+
+Procedure ArjE_AddMatch(MLen, MDist: Word);
+Begin
+ If ArjE_M4 Then Begin
+  ArjE4_EmitLenCode(MLen - 2);
+  ArjE4_EmitPtrCode(MDist);
+ End Else Begin
+  ArjE_BlkSym^[ArjE_BlockN] := MLen + 253;
+  ArjE_BlkDst^[ArjE_BlockN] := MDist;
+  Inc(ArjE_BlockN);
+  If ArjE_BlockN >= ArjE_MAX_BLK_SY Then ArjE_FlushBlock;
+ End;
+End;
+
+Procedure ArjE_EndEncode;
+Begin
+ If (Not ArjE_M4) And (ArjE_BlockN > 0) Then ArjE_FlushBlock;
+ ArjE_FinishBits;
+End;
+
+Procedure ArjE_SetMethod(M: Byte);
+Begin
+ ArjE_M4 := (M = 4);
+ If ArjE_M4 Then ArjE_DistMax := ArjE4_MAX_DIST
+            Else ArjE_DistMax := ArjE_WINSZ;
+ Case M Of
+  1: Begin ArjE_MaxChain := 256; ArjE_GoodMatch := 64; End;
+  2: Begin ArjE_MaxChain :=  32; ArjE_GoodMatch := 32; End;
+  3: Begin ArjE_MaxChain :=   8; ArjE_GoodMatch := 16; End;
+  4: Begin ArjE_MaxChain :=  16; ArjE_GoodMatch := 32; End;
+ Else
+   Begin ArjE_MaxChain := 16; ArjE_GoodMatch := 24; End;
+ End;
+End;
+
+Function ArjE_CompressFile(Var Src: File; OSize: LongInt;
+                           Var FileCRC: LongInt): LongInt;
+Var
+ CRC, Remaining: LongInt;
+ ReadAmt: LongInt;
+ Got, K: Integer;
+ KeepFrom: Word;
+ EOF_Reached: Boolean;
+ MatchLen, MatchDist: Word;
+ I: Word;
+Begin
+ ArjD_InitCRC;
+ CRC := LongInt($FFFFFFFF);
+ ArjE_BeginEncode;
+ EOF_Reached := False;
+ Remaining := OSize;
+ While True Do Begin
+  If (Not EOF_Reached) And
+    (LongInt(ArjE_InLen) - LongInt(ArjE_WPos) < ArjE_MAX_MATCH + ArjE_MIN_MATCH) Then
+  Begin
+   If LongInt(ArjE_InLen) + 4096 > ArjE_BUF_SIZE Then Begin
+    If ArjE_WPos > ArjE_WINSZ Then KeepFrom := ArjE_WPos - ArjE_WINSZ
+                              Else KeepFrom := 0;
+    If KeepFrom > 0 Then Begin
+     Move(ArjE_InBuf^[KeepFrom], ArjE_InBuf^[0], ArjE_InLen - KeepFrom);
+     ArjE_WPos := ArjE_WPos - KeepFrom;
+     ArjE_InLen := ArjE_InLen - KeepFrom;
+     ArjE_HashReset;
+     If ArjE_WPos >= ArjE_MIN_MATCH Then
+      For I := 0 To ArjE_WPos - ArjE_MIN_MATCH Do ArjE_HashInsert(I);
+    End;
+   End;
+   ReadAmt := LongInt(ArjE_BUF_SIZE) - LongInt(ArjE_InLen);
+   If ReadAmt > Remaining Then ReadAmt := Remaining;
+   If ReadAmt > 0 Then Begin
+    BlockRead(Src, ArjE_InBuf^[ArjE_InLen], ReadAmt, Got);
+    If Got <= 0 Then EOF_Reached := True
+    Else Begin
+     For K := 0 To Got - 1 Do
+      CRC := ArjD_UpdateCRC(CRC, ArjE_InBuf^[ArjE_InLen + K]);
+     ArjE_InLen := ArjE_InLen + Got;
+     Remaining := Remaining - Got;
+    End;
+   End;
+   If Remaining <= 0 Then EOF_Reached := True;
+  End;
+  If ArjE_WPos >= ArjE_InLen Then Break;
+  If LongInt(ArjE_InLen) - LongInt(ArjE_WPos) >= ArjE_MIN_MATCH Then
+   ArjE_FindMatch(MatchLen, MatchDist)
+  Else Begin
+   MatchLen := 0; MatchDist := 0;
+  End;
+  If MatchLen >= ArjE_MIN_MATCH Then Begin
+   ArjE_AddMatch(MatchLen, MatchDist);
+   For I := 1 To MatchLen Do Begin
+    If LongInt(ArjE_WPos) + ArjE_MIN_MATCH <= LongInt(ArjE_InLen) Then
+     ArjE_HashInsert(ArjE_WPos);
+    Inc(ArjE_WPos);
+   End;
+  End Else Begin
+   ArjE_AddLiteral(ArjE_InBuf^[ArjE_WPos]);
+   If LongInt(ArjE_WPos) + ArjE_MIN_MATCH <= LongInt(ArjE_InLen) Then
+    ArjE_HashInsert(ArjE_WPos);
+   Inc(ArjE_WPos);
+  End;
+ End;
+ ArjE_EndEncode;
+ FileCRC := CRC Xor LongInt($FFFFFFFF);
+ ArjE_CompressFile := ArjE_BytesWritten;
+End;
+
+{ ============================================================ }
+{ === Commandes ARJ de haut niveau (list/extract/add/delete) = }
+{ ============================================================ }
+
+Const
+ ARJ_MAX_PATTERNS = 16;
+ ARJ_MAX_ENTRIES  = 1000;
+
+Type
+ TArjPatStr       = String[127];
+ TArjPatternArray = Array[1..ARJ_MAX_PATTERNS] Of TArjPatStr;
+ TArjEntName      = String[63];
+ TArjEntNamesT    = Array[1..ARJ_MAX_ENTRIES] Of TArjEntName;
+ TArjEntDTsT      = Array[1..ARJ_MAX_ENTRIES] Of LongInt;
+ PArjEntNames     = ^TArjEntNamesT;
+ PArjEntDTs       = ^TArjEntDTsT;
+
+Var
+ ArjLanguage: (ArjLang_French, ArjLang_English, ArjLang_Germany,
+               ArjLang_Italian, ArjLang_Spain);
+ ArjTmpLanguage: String;
+ ArjFirstEntry: Boolean;
+ ArjHeaderBuffer: TArjHeader;
+ ArjByteReaded, ArjGot: Integer;
+ ArjFilePosFindFiles, ArjPackSize, ArjNumFiles, ArjDataPos, ArjRemaining,
+  ArjToRead: LongInt;
+ ArjDT: DateTime;
+ ArjTargetName: String;
+ ArjExtractBuf: Array[0..4095] Of Byte;
+ ArjResCRC, ArjExpCRC: LongInt;
+ ArjOkExtract: Boolean;
+ ArjSrcFile: File;
+ ArjStoredName: String;
+ ArjSrcSize, ArjEOAOff: LongInt;
+ ArjSrcCRC: LongInt;
+ ArjSrcDosDT: LongInt;
+ ArjArchiveExists: Boolean;
+ ArjDowDummy: Word;
+ ArjHeaderStart, ArjDataEnd, ArjCompressedSize: LongInt;
+
+ ArjSw_Cmd       : Char;
+ ArjSw_ArcName   : String;
+ ArjSw_Method    : Byte;
+ ArjSw_SkipTime  : Boolean;
+ ArjSw_DelAfter  : Boolean;
+ ArjSw_ExclPath  : Boolean;
+ ArjSw_Freshen   : Boolean;
+ ArjSw_Password  : String;
+ ArjSw_NoProg    : Boolean;
+ ArjSw_OnlyNew   : Boolean;
+ ArjSw_Recurse   : Boolean;
+ ArjSw_Update    : Boolean;
+ ArjSw_Volumes   : Boolean;
+ ArjSw_WorkDir   : String;
+ ArjSw_AssumeYes : Boolean;
+ ArjSw_ExclCount : Integer;
+ ArjSw_ExclPat   : TArjPatternArray;
+ ArjSw_InclCount : Integer;
+ ArjSw_InclPat   : TArjPatternArray;
+
+ ArjArcEnt_Count : Integer;
+ ArjArcEnt_Names : PArjEntNames;
+ ArjArcEnt_DTs   : PArjEntDTs;
+
+ ArjArgs: Array[1..80] Of String;
+ ArjArgCount: Integer;
+ ArjInited: Boolean;
+
+Function ArjWildMatch(Pat, S: String): Boolean;
+Var I, J, StarI, StarJ: Integer; UP, US: String;
+Begin
+ UP := ArjStrToUpper(Pat);
+ US := ArjStrToUpper(S);
+ I := 1; J := 1; StarI := 0; StarJ := 0;
+ While J <= Length(US) Do Begin
+  If (I <= Length(UP)) And ((UP[I] = US[J]) Or (UP[I] = '?')) Then Begin
+   Inc(I); Inc(J);
+  End Else
+  If (I <= Length(UP)) And (UP[I] = '*') Then Begin
+   StarI := I; StarJ := J; Inc(I);
+  End Else
+  If StarI > 0 Then Begin
+   I := StarI + 1; Inc(StarJ); J := StarJ;
+  End Else Begin
+   ArjWildMatch := False; Exit;
+  End;
+ End;
+ While (I <= Length(UP)) And (UP[I] = '*') Do Inc(I);
+ ArjWildMatch := I > Length(UP);
+End;
+
+Function ArjMatchAnyPat(N: String; Var PL: TArjPatternArray; PC: Integer): Boolean;
+Var K: Integer;
+Begin
+ If PC = 0 Then Begin ArjMatchAnyPat := True; Exit; End;
+ For K := 1 To PC Do
+  If ArjWildMatch(PL[K], N) Or ArjWildMatch(PL[K], ArjStripPath(N)) Then Begin
+   ArjMatchAnyPat := True; Exit;
+  End;
+ ArjMatchAnyPat := False;
+End;
+
+Function ArjNameAllowed(N: String): Boolean;
+Var K: Integer;
+Begin
+ ArjNameAllowed := False;
+ If (ArjSw_InclCount > 0) And (Not ArjMatchAnyPat(N, ArjSw_InclPat, ArjSw_InclCount))
+  Then Exit;
+ For K := 1 To ArjSw_ExclCount Do
+  If ArjWildMatch(ArjSw_ExclPat[K], N) Or
+     ArjWildMatch(ArjSw_ExclPat[K], ArjStripPath(N))
+   Then Exit;
+ ArjNameAllowed := True;
+End;
+
+Procedure ArjInitSwitches;
+Begin
+ ArjSw_Cmd := ' '; ArjSw_ArcName := ''; ArjSw_Method := 1;
+ ArjSw_SkipTime := False; ArjSw_DelAfter := False; ArjSw_ExclPath := True;
+ ArjSw_Freshen := False; ArjSw_Password := ''; ArjSw_NoProg := False;
+ ArjSw_OnlyNew := False; ArjSw_Recurse := False; ArjSw_Update := False;
+ ArjSw_Volumes := False; ArjSw_WorkDir := ''; ArjSw_AssumeYes := False;
+ ArjSw_ExclCount := 0; ArjSw_InclCount := 0;
+End;
+
+Function ArjParseArgs: Boolean;
+Var I: Integer; A: String; Sw: Char; Val: String;
+Begin
+ ArjParseArgs := True;
+ ArjInitSwitches;
+ If ArjArgCount < 1 Then Exit;
+ A := ArjArgs[1];
+ If Length(A) >= 1 Then ArjSw_Cmd := A[1];
+ If (ArjSw_Cmd >= 'A') And (ArjSw_Cmd <= 'Z') Then
+  ArjSw_Cmd := Chr(Ord(ArjSw_Cmd) + 32);
+ For I := 2 To ArjArgCount Do Begin
+  A := ArjArgs[I];
+  If A = '' Then Continue;
+  If (A[1]='-') Or (A[1]='/') Then Begin
+   If Length(A) < 2 Then Continue;
+   Sw := A[2];
+   If (Sw >= 'A') And (Sw <= 'Z') Then Sw := Chr(Ord(Sw)+32);
+   Val := Copy(A, 3, 255);
+   Case Sw Of
+    'c': ArjSw_SkipTime := True;
+    'd': ArjSw_DelAfter := True;
+    'e': ArjSw_ExclPath := True;
+    'f': ArjSw_Freshen := True;
+    'g': ArjSw_Password := Val;
+    'i': ArjSw_NoProg := True;
+    'm': Begin
+     If (Length(Val) = 1) And (Val[1] In ['0'..'4']) Then
+      ArjSw_Method := Ord(Val[1]) - Ord('0')
+     Else Begin
+      ArjWL('Valeur invalide pour le switch -m : ' + A);
+      ArjParseArgs := False; Exit;
+     End;
+    End;
+    'n': ArjSw_OnlyNew := True;
+    'r': ArjSw_Recurse := True;
+    'u': ArjSw_Update := True;
+    'v': ArjSw_Volumes := True;
+    'w': ArjSw_WorkDir := Val;
+    'x': If Val <> '' Then Begin
+          If ArjSw_ExclCount < ARJ_MAX_PATTERNS Then Begin
+           Inc(ArjSw_ExclCount); ArjSw_ExclPat[ArjSw_ExclCount] := Val;
+          End;
+         End;
+    'y': ArjSw_AssumeYes := True;
+   Else
+    ArjWL('Switch non reconnu : ' + A);
+    ArjParseArgs := False; Exit;
+   End;
+  End Else Begin
+   If ArjSw_ArcName = '' Then ArjSw_ArcName := A
+   Else If ArjSw_InclCount < ARJ_MAX_PATTERNS Then Begin
+    Inc(ArjSw_InclCount); ArjSw_InclPat[ArjSw_InclCount] := A;
+   End;
+  End;
+ End;
+End;
+
+Function ArjReadEntryName(Var H: TArjHeader): String;
+Var BB: Integer; S: String;
+Begin
+ S := ''; BB := 1;
+ While (BB <= 120) And (H.NameDat[BB] <> #0) Do Begin
+  S := S + H.NameDat[BB]; Inc(BB);
+ End;
+ ArjReadEntryName := S;
+End;
+
+Function ArjLastComp(S: String): String;
+Var I: Integer;
+Begin
+ For I := Length(S) DownTo 1 Do
+  If (S[I]='/') Or (S[I]='\') Or (S[I]=':') Then Begin
+   ArjLastComp := Copy(S, I+1, 255); Exit;
+  End;
+ ArjLastComp := S;
+End;
+
+Function ArjNormSep(S: String): String;
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do If S[I] = '/' Then S[I] := '\';
+ ArjNormSep := S;
+End;
+
+Procedure ArjMakeDirs(Path: String);
+Var I: Integer; D: String;
+Begin
+ For I := 1 To Length(Path) Do
+  If (Path[I] = '\') Or (Path[I] = '/') Then Begin
+   D := Copy(Path, 1, I-1);
+   If (D <> '') And (D[Length(D)] <> ':') Then Begin
+    {$I-}MkDir(D);{$I+}
+    If IOResult <> 0 Then ;
+   End;
+  End;
+End;
+
+Function ArjOpenArchiveRead: Boolean;
+Begin
+ ArjOpenArchiveRead := False;
+ If ArjSw_ArcName = '' Then Begin
+  ArjWL('Nom d''archive ARJ attendu'); Exit;
+ End;
+ {$I-}Assign(ArjSourceARJ, ArjSw_ArcName); Reset(ArjSourceARJ, 1);{$I+}
+ If IOResult <> 0 Then Begin
+  ArjWL('Fichier ARJ introuvable : ' + ArjSw_ArcName); Exit;
+ End;
+ ArjOpenArchiveRead := True;
+End;
+
+Procedure ArjCmdList(Verbose: Boolean);
+Var Disp, Tmp: String;
+Begin
+ If Not ArjOpenArchiveRead Then Exit;
+ ArjNumFiles := 0; ArjFilePosFindFiles := 0; ArjFirstEntry := True;
+ Repeat
+  Seek(ArjSourceARJ, ArjFilePosFindFiles);
+  FillChar(ArjHeaderBuffer, SizeOf(ArjHeaderBuffer), 0);
+  BlockRead(ArjSourceARJ, ArjHeaderBuffer, SizeOf(ArjHeaderBuffer), ArjByteReaded);
+  If ArjHeaderBuffer.BHdrSz > 0 Then Begin
+   ArjTargetName := ArjReadEntryName(ArjHeaderBuffer);
+   Disp := ArjLastComp(ArjTargetName);
+   ArjPackSize := LongInt(ArjHeaderBuffer.BHdrSz) + ArjHeaderBuffer.CSize;
+   If ArjHeaderBuffer.FType = 2 Then ArjPackSize := ArjHeaderBuffer.BHdrSz;
+   If ArjHeaderBuffer.BHdrSz = 0 Then ArjPackSize := 0;
+   Inc(ArjFilePosFindFiles, ArjPackSize + 10);
+   If ArjFirstEntry Then Begin
+    ArjFirstEntry := False;
+    Case ArjLanguage Of
+     ArjLang_English: Begin
+      ArjWL('Processing archive: ' + ArjTargetName);
+      ArjW('Archive date:       ');
+     End;
+     Else Begin
+      ArjWL('Traitement d''archive : ' + ArjTargetName);
+      ArjW('Archive date : ');
+     End;
+    End;
+    UnpackTime(ArjHeaderBuffer.DosDT, ArjDT);
+    ArjW(IntToStr(ArjDT.Year) + '-' + ArjPadZeroLeft(ArjDT.Month,2) + '-' +
+         ArjPadZeroLeft(ArjDT.Day,2) + ' ');
+    Str(ArjDT.Hour:2, Tmp);
+    ArjW(Tmp + ':' + ArjPadZeroLeft(ArjDT.Min,2) + ':' + ArjPadZeroLeft(ArjDT.Sec,2));
+    ArjWLBlank;
+    Case ArjLanguage Of
+     ArjLang_English: ArjW(ArjPadRight('Filename',12) + ' ' + ArjPadRight('Original',10) + ' ' +
+                     ArjPadRight('Compressed',10) + ' ' + ArjPadRight('Ratio',5) + ' ' +
+                     ArjPadRight('DateTime',8) + ' ' + ArjPadRight('modified',8) + ' ' +
+                     ArjPadRight('CRC-32',8));
+     Else      ArjW(ArjPadRight('Nom fichier',12) + ' ' + ArjPadRight('Original',10) + ' ' +
+                     ArjPadRight('Compress',9) + Chr(233) + ' ' + ArjPadRight('Ratio',5) + ' ' +
+                     ArjPadRight('DateHeur',8) + ' ' + ArjPadRight('modifi',7) + Chr(233) + ' ' +
+                     ArjPadRight('CRC-32',8));
+    End;
+    If Verbose Then ArjW(' Met') Else ArjW(' AttrBTPMGVX');
+    ArjWLBlank;
+    ArjWL('------------ ---------- ---------- ----- ' +
+          '----------------- -------- --- -');
+   End
+    Else
+   If (ArjHeaderBuffer.FType <= 1) And (Disp <> '') And ArjNameAllowed(Disp) Then Begin
+    ArjW(ArjPadRight(Disp,12) + ' ');
+    Str(ArjHeaderBuffer.OSize:10, Tmp); ArjW(Tmp + ' ');
+    Str(ArjPackSize:10, Tmp); ArjW(Tmp + ' ');
+    If ArjHeaderBuffer.OSize > 0 Then Begin
+     Str(ArjHeaderBuffer.CSize / ArjHeaderBuffer.OSize:5:3, Tmp);
+     ArjW(Tmp + ' ');
+    End
+    Else ArjW('0.000 ');
+    UnpackTime(ArjHeaderBuffer.DosDT, ArjDT);
+    ArjW(ArjPadZeroLeft(ArjDT.Year Mod 100,2) + '-' + ArjPadZeroLeft(ArjDT.Month,2) +
+         '-' + ArjPadZeroLeft(ArjDT.Day,2) + ' ');
+    Str(ArjDT.Hour:2, Tmp);
+    ArjW(Tmp + ':' + ArjPadZeroLeft(ArjDT.Min,2) + ':' + ArjPadZeroLeft(ArjDT.Sec,2));
+    ArjW(' ' + ArjLongHex2Str(ArjHeaderBuffer.SEFP));
+    If Verbose Then ArjW('  M' + IntToStr(ArjHeaderBuffer.SVer));
+    ArjWLBlank;
+    Inc(ArjNumFiles);
+   End;
+  End;
+ Until ArjHeaderBuffer.BHdrSz = 0;
+ If ArjNumFiles > 0 Then Begin
+  ArjWL('------------ ---------- ---------- -----');
+  Str(ArjNumFiles:3, Tmp);
+  Case ArjLanguage Of
+   ArjLang_English: ArjWL(Tmp + ' file(s)');
+   Else      ArjWL(Tmp + ' fichier(s)');
+  End;
+ End;
+ Close(ArjSourceARJ);
+End;
+
+Function ArjDecompressOne(Var H: TArjHeader; Var RCRC: LongInt): Boolean;
+Var GotL, B2: Integer;
+Begin
+ ArjExpCRC := H.SEFP;
+ If H.SVer = 0 Then Begin
+  ArjD_InitCRC;
+  RCRC := LongInt($FFFFFFFF);
+  ArjRemaining := H.OSize;
+  ArjDecompressOne := True;
+  While ArjRemaining > 0 Do Begin
+   If ArjRemaining > 4096 Then ArjToRead := 4096 Else ArjToRead := ArjRemaining;
+   BlockRead(ArjSourceARJ, ArjExtractBuf, ArjToRead, GotL);
+   If GotL <= 0 Then Begin ArjDecompressOne := False; Break; End;
+   BlockWrite(ArjDestFile, ArjExtractBuf, GotL);
+   For B2 := 0 To GotL - 1 Do
+    RCRC := ArjD_UpdateCRC(RCRC, ArjExtractBuf[B2]);
+   Dec(ArjRemaining, GotL);
+  End;
+  RCRC := RCRC Xor LongInt($FFFFFFFF);
+ End
+  Else
+ If H.SVer = 4 Then
+  ArjDecompressOne := ArjD_DecompressF(H.CSize, H.OSize, ArjExpCRC, RCRC)
+ Else
+  ArjDecompressOne := ArjD_Decompress(H.CSize, H.OSize, ArjExpCRC, RCRC);
+End;
+
+Procedure ArjCmdExtract(KeepPath, TestOnly: Boolean);
+Var Disp, OutName, Tmp: String; AlreadyExist: Boolean;
+Begin
+ If Not ArjOpenArchiveRead Then Exit;
+ ArjNumFiles := 0; ArjFilePosFindFiles := 0; ArjFirstEntry := True;
+ Repeat
+  Seek(ArjSourceARJ, ArjFilePosFindFiles);
+  FillChar(ArjHeaderBuffer, SizeOf(ArjHeaderBuffer), 0);
+  BlockRead(ArjSourceARJ, ArjHeaderBuffer, SizeOf(ArjHeaderBuffer), ArjByteReaded);
+  If ArjHeaderBuffer.BHdrSz > 0 Then Begin
+   ArjTargetName := ArjReadEntryName(ArjHeaderBuffer);
+   Disp := ArjLastComp(ArjTargetName);
+   ArjPackSize := LongInt(ArjHeaderBuffer.BHdrSz) + ArjHeaderBuffer.CSize;
+   If ArjHeaderBuffer.FType = 2 Then ArjPackSize := ArjHeaderBuffer.BHdrSz;
+   If ArjHeaderBuffer.BHdrSz = 0 Then ArjPackSize := 0;
+   If ArjFirstEntry Then Begin
+    ArjFirstEntry := False;
+   End
+    Else
+   If (ArjHeaderBuffer.FType <= 1) And (Disp <> '') And ArjNameAllowed(Disp) Then Begin
+    ArjDataPos := ArjFilePosFindFiles + LongInt(ArjHeaderBuffer.BHdrSz) + 10;
+    If ArjHeaderBuffer.SVer > 4 Then Begin
+     Str(ArjHeaderBuffer.SVer, Tmp);
+     Case ArjLanguage Of
+      ArjLang_English: ArjWL('Skipping ' + Disp + ' : compression method ' +
+                        Tmp + ' not supported');
+      Else      ArjWL('Ignor' + Chr(233) + ' ' + Disp + ' : m' +
+               Chr(233) + 'thode de compression ' + Tmp +
+               ' non support' + Chr(233) + 'e');
+     End;
+    End
+     Else
+    Begin
+     If TestOnly Then OutName := 'NUL'
+     Else If KeepPath Then OutName := ArjNormSep(ArjTargetName)
+     Else OutName := Disp;
+     AlreadyExist := False;
+     If (Not TestOnly) And ArjSw_OnlyNew Then Begin
+      Assign(ArjDestFile, OutName);
+      {$I-}Reset(ArjDestFile, 1);{$I+}
+      If IOResult = 0 Then Begin AlreadyExist := True; Close(ArjDestFile); End;
+     End;
+     If AlreadyExist Then Begin
+      Case ArjLanguage Of
+       ArjLang_English: ArjWL('Skipping existing: ' + OutName);
+       Else      ArjWL('Existe d' + Chr(233) + 'j' + Chr(224) + ' : ' + OutName);
+      End;
+     End
+      Else
+     Begin
+      Seek(ArjSourceARJ, ArjDataPos);
+      If (Not TestOnly) And KeepPath Then ArjMakeDirs(OutName);
+      {$I-}Assign(ArjDestFile, OutName);
+      Rewrite(ArjDestFile, 1);{$I+}
+      If IOResult <> 0 Then Begin
+       ArjWL('Impossible de cr' + Chr(233) + 'er : ' + OutName);
+      End
+       Else
+      Begin
+       ArjOkExtract := ArjDecompressOne(ArjHeaderBuffer, ArjResCRC);
+       Close(ArjDestFile);
+       If Not ArjOkExtract Then Begin
+        Case ArjLanguage Of
+         ArjLang_English: ArjWL('Error extracting: ' + Disp);
+         Else      ArjWL('Erreur d''extraction : ' + Disp);
+        End;
+       End
+        Else
+       If ArjResCRC <> ArjExpCRC Then Begin
+        Case ArjLanguage Of
+         ArjLang_English: ArjWL('CRC mismatch on: ' + Disp + ' (expected ' +
+                           ArjLongHex2Str(ArjExpCRC) + ', got ' + ArjLongHex2Str(ArjResCRC) + ')');
+         Else      ArjWL('CRC incorrect : ' + Disp + ' (attendu ' +
+                           ArjLongHex2Str(ArjExpCRC) + ', obtenu ' + ArjLongHex2Str(ArjResCRC) + ')');
+        End;
+        Inc(ArjNumFiles);
+       End
+        Else
+       Begin
+        If TestOnly Then Begin
+         Case ArjLanguage Of
+          ArjLang_English: ArjWL('Tested: ' + Disp + ' (' + IntToStr(ArjHeaderBuffer.OSize) + ' bytes)');
+          Else      ArjWL('Test' + Chr(233) + ' : ' + Disp + ' (' + IntToStr(ArjHeaderBuffer.OSize) + ' octets)');
+         End;
+        End Else Begin
+         Case ArjLanguage Of
+          ArjLang_English: ArjWL('Extracted: ' + OutName + ' (' + IntToStr(ArjHeaderBuffer.OSize) + ' bytes)');
+          Else      ArjWL('Extrait : ' + OutName + ' (' + IntToStr(ArjHeaderBuffer.OSize) + ' octets)');
+         End;
+        End;
+        Inc(ArjNumFiles);
+       End;
+      End;
+     End;
+    End;
+   End;
+   Inc(ArjFilePosFindFiles, ArjPackSize + 10);
+  End;
+ Until ArjHeaderBuffer.BHdrSz = 0;
+ Str(ArjNumFiles, Tmp);
+ Case ArjLanguage Of
+  ArjLang_English: If TestOnly Then ArjWL(Tmp + ' file(s) tested')
+                    Else ArjWL(Tmp + ' file(s) extracted');
+  Else      If TestOnly Then ArjWL(Tmp + ' fichier(s) test' +
+                  Chr(233) + '(s)') Else ArjWL(Tmp + ' fichier(s) extrait(s)');
+ End;
+ Close(ArjSourceARJ);
+End;
+
+Procedure ArjLoadArchiveEntries(Var F: File);
+Var FPos, PSz, Sz: LongInt; HBuf: TArjHeader; ByR: Integer;
+    HDisp: String; BB: Integer; FirstSeen: Boolean;
+Begin
+ ArjArcEnt_Count := 0;
+ FPos := 0; FirstSeen := False;
+ Sz := FileSize(F);
+ While FPos < Sz Do Begin
+  Seek(F, FPos);
+  FillChar(HBuf, SizeOf(HBuf), 0);
+  BlockRead(F, HBuf, SizeOf(HBuf), ByR);
+  If HBuf.BHdrSz = 0 Then Break;
+  PSz := LongInt(HBuf.BHdrSz) + HBuf.CSize;
+  If HBuf.FType = 2 Then PSz := HBuf.BHdrSz;
+  HDisp := ''; BB := 1;
+  While (BB <= 120) And (HBuf.NameDat[BB] <> #0) Do Begin
+   If (HBuf.NameDat[BB]='/') Or (HBuf.NameDat[BB]='\') Then HDisp := ''
+   Else HDisp := HDisp + HBuf.NameDat[BB];
+   Inc(BB);
+  End;
+  If FirstSeen And (HBuf.FType <= 1) And (HDisp <> '') And
+     (ArjArcEnt_Count < ARJ_MAX_ENTRIES) Then Begin
+   Inc(ArjArcEnt_Count);
+   ArjArcEnt_Names^[ArjArcEnt_Count] := HDisp;
+   ArjArcEnt_DTs^[ArjArcEnt_Count] := HBuf.DosDT;
+  End;
+  FirstSeen := True;
+  Inc(FPos, PSz + 10);
+ End;
+ Seek(F, 0);
+End;
+
+Function ArjArchiveHas(Disp: String; Var EntryDT: LongInt): Boolean;
+Var K: Integer; U: String;
+Begin
+ ArjArchiveHas := False; EntryDT := 0;
+ U := ArjStrToUpper(Disp);
+ For K := 1 To ArjArcEnt_Count Do
+  If ArjStrToUpper(ArjArcEnt_Names^[K]) = U Then Begin
+   ArjArchiveHas := True;
+   EntryDT := ArjArcEnt_DTs^[K];
+   Exit;
+  End;
+End;
+
+Procedure ArjAddOneFile(Path: String);
+Var EntryDT: LongInt; Existing, ShouldSkip: Boolean; M: Byte; Disp: String;
+Begin
+ {$I-}Assign(ArjSrcFile, Path); Reset(ArjSrcFile, 1);{$I+}
+ If IOResult <> 0 Then Begin
+  ArjWL('Fichier introuvable : ' + Path); Exit;
+ End;
+ ArjSrcSize := FileSize(ArjSrcFile);
+ GetFTime(ArjSrcFile, ArjSrcDosDT);
+
+ If ArjSw_ExclPath Then Disp := ArjStripPath(Path) Else Disp := Path;
+ If Not ArjNameAllowed(ArjStripPath(Path)) Then Begin Close(ArjSrcFile); Exit; End;
+
+ Existing := ArjArchiveHas(ArjStripPath(Path), EntryDT);
+
+ ShouldSkip := False;
+ If ArjSw_Freshen Then Begin
+  If Not Existing Then ShouldSkip := True
+  Else If (Not ArjSw_SkipTime) And (ArjSrcDosDT <= EntryDT) Then ShouldSkip := True;
+ End Else If ArjSw_Update Then Begin
+  If Existing And (Not ArjSw_SkipTime) And (ArjSrcDosDT <= EntryDT) Then ShouldSkip := True;
+ End Else If ArjSw_OnlyNew Then Begin
+  If Existing Then ShouldSkip := True;
+ End Else If Existing Then Begin
+  Case ArjLanguage Of
+   ArjLang_English: ArjWL('Already in archive (skipped): ' + Disp);
+   Else      ArjWL('D' + Chr(233) + 'j' + Chr(224) + ' dans l''archive (ignor' + Chr(233) + ') : ' + Disp);
+  End;
+  ShouldSkip := True;
+ End;
+ If ShouldSkip Then Begin Close(ArjSrcFile); Exit; End;
+
+ ArjStoredName := Disp;
+ M := ArjSw_Method;
+ If M = 0 Then Begin
+  ArjSrcCRC := ArjCRC32OfFile(ArjSrcFile, ArjSrcSize);
+  Seek(ArjSrcFile, 0);
+  ArjWriteArjHeader(ArjSourceARJ, 0, 0, ArjSrcDosDT, ArjSrcSize, ArjSrcSize, ArjSrcCRC, ArjStoredName, '');
+  ArjRemaining := ArjSrcSize;
+  While ArjRemaining > 0 Do Begin
+   If ArjRemaining > 4096 Then ArjToRead := 4096 Else ArjToRead := ArjRemaining;
+   BlockRead(ArjSrcFile, ArjExtractBuf, ArjToRead, ArjGot);
+   If ArjGot <= 0 Then Break;
+   BlockWrite(ArjSourceARJ, ArjExtractBuf, ArjGot);
+   Dec(ArjRemaining, ArjGot);
+  End;
+  Case ArjLanguage Of
+   ArjLang_English: ArjWL('Adding: ' + ArjStoredName + ' (' + IntToStr(ArjSrcSize) + ' bytes, stored)');
+   Else      ArjWL('Ajout : ' + ArjStoredName + ' (' + IntToStr(ArjSrcSize) + ' octets, stock' + Chr(233) + ')');
+  End;
+ End
+  Else
+ Begin
+  ArjE_SetMethod(M);
+  ArjHeaderStart := FilePos(ArjSourceARJ);
+  ArjWriteArjHeader(ArjSourceARJ, 0, M, ArjSrcDosDT, 0, ArjSrcSize, 0, ArjStoredName, '');
+  ArjDataEnd := FilePos(ArjSourceARJ);
+  ArjCompressedSize := ArjE_CompressFile(ArjSrcFile, ArjSrcSize, ArjSrcCRC);
+  ArjDataEnd := FilePos(ArjSourceARJ);
+  Seek(ArjSourceARJ, ArjHeaderStart);
+  ArjWriteArjHeader(ArjSourceARJ, 0, M, ArjSrcDosDT, ArjCompressedSize, ArjSrcSize, ArjSrcCRC, ArjStoredName, '');
+  Seek(ArjSourceARJ, ArjDataEnd);
+  Case ArjLanguage Of
+   ArjLang_English: ArjWL('Adding: ' + ArjStoredName + ' (' + IntToStr(ArjSrcSize) + ' -> ' +
+                     IntToStr(ArjCompressedSize) + ' bytes, method ' + IntToStr(M) + ')');
+   Else      ArjWL('Ajout : ' + ArjStoredName + ' (' + IntToStr(ArjSrcSize) + ' -> ' +
+                     IntToStr(ArjCompressedSize) + ' octets, m' + Chr(233) + 'thode ' + IntToStr(M) + ')');
+  End;
+ End;
+ Close(ArjSrcFile);
+ If ArjSw_DelAfter Then Begin
+  Assign(ArjSrcFile, Path);
+  {$I-}Erase(ArjSrcFile);{$I+}
+  If IOResult <> 0 Then ;
+ End;
+ Inc(ArjNumFiles);
+End;
+
+Procedure ArjAddPattern(Base, Dir: String);
+Var SR2: SearchRec; FullPath: String;
+Begin
+ FindFirst(Dir + Base, AnyFile, SR2);
+ While DosError = 0 Do Begin
+  If (SR2.Attr And Directory) = 0 Then Begin
+   FullPath := Dir + SR2.Name;
+   ArjAddOneFile(FullPath);
+  End;
+  FindNext(SR2);
+ End;
+ {$IFDEF FPC}
+ FindClose(SR2);
+ {$ENDIF}
+End;
+
+Procedure ArjRecurseAdd(Dir, Base: String);
+Var SR2: SearchRec; Sub: String;
+Begin
+ If (Dir <> '') And (Dir[Length(Dir)] <> '\') And (Dir[Length(Dir)] <> '/')
+  And (Dir[Length(Dir)] <> ':')
+  Then Dir := Dir + '\';
+ FindFirst(Dir + '*.*', Directory, SR2);
+ While DosError = 0 Do Begin
+  If (SR2.Name <> '.') And (SR2.Name <> '..')
+     And ((SR2.Attr And Directory) <> 0) Then Begin
+   Sub := Dir + SR2.Name + '\';
+   ArjAddPattern(Base, Sub);
+   ArjRecurseAdd(Sub, Base);
+  End;
+  FindNext(SR2);
+ End;
+ {$IFDEF FPC}
+  FindClose(SR2);
+ {$ENDIF}
+End;
+
+Procedure ArjCmdAdd;
+Var I, J: Integer; Pat, Dir, Base: String;
+Begin
+ If ArjSw_ArcName = '' Then Begin
+  ArjWL('Nom d''archive ARJ attendu'); Exit;
+ End;
+ If ArjSw_InclCount = 0 Then Begin
+  ArjWL('Au moins un fichier source est requis'); Exit;
+ End;
+ ArjArcEnt_Count := 0;
+ Assign(ArjSourceARJ, ArjSw_ArcName);
+ {$I-}Reset(ArjSourceARJ, 1);{$I+}
+ ArjArchiveExists := IOResult = 0;
+ If ArjArchiveExists Then Begin
+  ArjEOAOff := ArjFindEndOfArchive(ArjSourceARJ);
+  If ArjEOAOff < 0 Then Begin
+   Close(ArjSourceARJ);
+   ArjWL('Archive ARJ corrompue ou non valide : ' + ArjSw_ArcName); Exit;
+  End;
+  ArjLoadArchiveEntries(ArjSourceARJ);
+  Seek(ArjSourceARJ, ArjEOAOff); Truncate(ArjSourceARJ);
+ End
+  Else
+ Begin
+  {$I-}Rewrite(ArjSourceARJ, 1);{$I+}
+  If IOResult <> 0 Then Begin
+   ArjWL('Impossible de cr' + Chr(233) + 'er l''archive : ' + ArjSw_ArcName); Exit;
+  End;
+  GetFTime(ArjSourceARJ, ArjSrcDosDT);
+  If ArjSrcDosDT = 0 Then Begin
+   GetDate(ArjDT.Year, ArjDT.Month, ArjDT.Day, ArjDowDummy);
+   GetTime(ArjDT.Hour, ArjDT.Min, ArjDT.Sec, ArjDowDummy);
+   PackTime(ArjDT, ArjSrcDosDT);
+  End;
+  ArjWriteArjHeader(ArjSourceARJ, 2, 0, ArjSrcDosDT, 0, 0, 0,
+                    ArjStripPath(ArjSw_ArcName), '');
+ End;
+ ArjNumFiles := 0;
+ For I := 1 To ArjSw_InclCount Do Begin
+  Pat := ArjSw_InclPat[I];
+  J := Length(Pat); Dir := ''; Base := Pat;
+  While (J >= 1) And (Pat[J] <> '\') And (Pat[J] <> '/') And (Pat[J] <> ':')
+   Do Dec(J);
+  If J >= 1 Then Begin
+   Dir := Copy(Pat, 1, J); Base := Copy(Pat, J+1, 255);
+  End;
+  ArjAddPattern(Base, Dir);
+  If ArjSw_Recurse Then ArjRecurseAdd(Dir, Base);
+ End;
+ ArjWriteEndMarker(ArjSourceARJ);
+ Close(ArjSourceARJ);
+ Case ArjLanguage Of
+  ArjLang_English: ArjWL(IntToStr(ArjNumFiles) + ' file(s) added');
+  Else      ArjWL(IntToStr(ArjNumFiles) + ' fichier(s) ajout' + Chr(233) + '(s)');
+ End;
+End;
+
+Procedure ArjCmdDelete;
+Var TmpName, Disp: String; TmpF: File; FPos, BlkSz, Sz, Avail: LongInt;
+    HBuf: TArjHeader; ByR, GotL: Integer; CopyBuf: Array[0..4095] Of Byte;
+    BB: Integer; Deleted: LongInt; ToRd: LongInt;
+Begin
+ If ArjSw_ArcName = '' Then Begin ArjWL('Nom d''archive ARJ attendu'); Exit; End;
+ If ArjSw_InclCount = 0 Then Begin
+  ArjWL('Au moins un patron de fichier requis'); Exit;
+ End;
+ If Not ArjOpenArchiveRead Then Exit;
+ TmpName := ArjSw_ArcName + '.$$$';
+ Assign(TmpF, TmpName);
+ {$I-}Rewrite(TmpF, 1);{$I+}
+ If IOResult <> 0 Then Begin
+  Close(ArjSourceARJ); ArjWL('Impossible de cr' + Chr(233) + 'er le fichier temporaire'); Exit;
+ End;
+ FPos := 0; Deleted := 0; ArjFirstEntry := True;
+ Sz := FileSize(ArjSourceARJ);
+ Repeat
+  Seek(ArjSourceARJ, FPos);
+  FillChar(HBuf, SizeOf(HBuf), 0);
+  BlockRead(ArjSourceARJ, HBuf, SizeOf(HBuf), ByR);
+  If HBuf.BHdrSz = 0 Then Break;
+  BlkSz := LongInt(HBuf.BHdrSz) + HBuf.CSize;
+  If HBuf.FType = 2 Then BlkSz := HBuf.BHdrSz;
+  BlkSz := BlkSz + 10;
+  Disp := ''; BB := 1;
+  While (BB <= 120) And (HBuf.NameDat[BB] <> #0) Do Begin
+   If (HBuf.NameDat[BB]='/') Or (HBuf.NameDat[BB]='\') Then Disp := ''
+   Else Disp := Disp + HBuf.NameDat[BB];
+   Inc(BB);
+  End;
+  If ArjFirstEntry Or (HBuf.FType = 2) Or (Not ArjNameAllowed(Disp)) Then Begin
+   Seek(ArjSourceARJ, FPos); Avail := BlkSz;
+   While Avail > 0 Do Begin
+    If Avail > 4096 Then ToRd := 4096 Else ToRd := Avail;
+    BlockRead(ArjSourceARJ, CopyBuf, ToRd, GotL);
+    If GotL <= 0 Then Break;
+    BlockWrite(TmpF, CopyBuf, GotL);
+    Dec(Avail, GotL);
+   End;
+   ArjFirstEntry := False;
+  End Else Begin
+   Case ArjLanguage Of
+    ArjLang_English: ArjWL('Deleting: ' + Disp);
+    Else      ArjWL('Suppression : ' + Disp);
+   End;
+   Inc(Deleted);
+  End;
+  Inc(FPos, BlkSz);
+ Until FPos >= Sz;
+ ArjWriteEndMarker(TmpF);
+ Close(TmpF);
+ Close(ArjSourceARJ);
+ Assign(ArjSourceARJ, ArjSw_ArcName);
+ {$I-}Erase(ArjSourceARJ);{$I+}
+ If IOResult <> 0 Then ;
+ Assign(TmpF, TmpName);
+ {$I-}Rename(TmpF, ArjSw_ArcName);{$I+}
+ If IOResult <> 0 Then
+  ArjWL('Erreur lors du renommage du fichier temporaire');
+ Case ArjLanguage Of
+  ArjLang_English: ArjWL(IntToStr(Deleted) + ' file(s) deleted');
+  Else      ArjWL(IntToStr(Deleted) + ' fichier(s) supprim' + Chr(233) + '(s)');
+ End;
+End;
+
+Procedure ArjInitOnce;
+Begin
+ If ArjInited Then Exit;
+ New(ArjD_InBuf); New(ArjD_CTable); New(ArjD_LeftT); New(ArjD_RightT);
+ New(ArjD_Dict); New(ArjD_CRCTab); New(ArjE_OutBuf); New(ArjE_BlkSym);
+ New(ArjE_BlkDst); New(ArjE_HuffParent); New(ArjE_HuffNF); New(ArjE_InBuf);
+ New(ArjE_HashH); New(ArjE_HashP);
+ New(ArjArcEnt_Names); New(ArjArcEnt_DTs);
+ ArjInited := True;
+End;
+
+{ --- ARJ --- (point d'entree commun aux 4 shells) }
+
+Procedure TermCmd_ARJ(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I: Integer;
+Begin
+ ArjInitOnce;
+ ArjTermTP := @TP;
+ ArjOutLine := '';
+ ArjArgCount := 0;
+ While (TermExtractParam(ParamStr, ArjArgCount+1) <> '') And
+       (ArjArgCount < 80) Do Inc(ArjArgCount);
+ For I := 1 To ArjArgCount Do ArjArgs[I] := TermExtractParam(ParamStr, I);
+
+ ArjLanguage := ArjLang_French;
+ ArjTmpLanguage := GetEnv('LANGUAGE');
+ If ArjTmpLanguage <> '' Then Begin
+  If ArjTmpLanguage[1] = '"' Then ArjTmpLanguage := Copy(ArjTmpLanguage, 2, 255);
+  If ArjStrToUpper(Copy(ArjTmpLanguage,1,2)) = 'EN' Then ArjLanguage := ArjLang_English Else
+  If ArjStrToUpper(Copy(ArjTmpLanguage,1,2)) = 'GR' Then ArjLanguage := ArjLang_Germany Else
+  If ArjStrToUpper(Copy(ArjTmpLanguage,1,2)) = 'IT' Then ArjLanguage := ArjLang_Italian Else
+  If ArjStrToUpper(Copy(ArjTmpLanguage,1,2)) = 'SP' Then ArjLanguage := ArjLang_Spain;
+ End;
+
+ If (ArjArgCount = 0) Or (ArjArgs[1]='/?') Or (ArjArgs[1]='--help') Or (ArjArgs[1]='-h') Then Begin
+  ArjWL('ARJ : outil de gestion d''archives ARJ (integre, port de ARJ.PAS).');
+  ArjWLBlank;
+  ArjWL('Syntaxe : ARJ <cmd> [-<switches>] archive.arj [fichier(s)/patron(s)]');
+  ArjWLBlank;
+  ArjWL('Commandes :');
+  ArjWL('  a : Add     Ajouter des fichiers ' + Chr(224) + ' l''archive');
+  ArjWL('  d : Delete  Supprimer des fichiers de l''archive');
+  ArjWL('  e : Extract Extraire les fichiers (sans le chemin)');
+  ArjWL('  f : Freshen Rafra' + Chr(238) + 'chir les fichiers existants');
+  ArjWL('  l : List    Lister le contenu de l''archive');
+  ArjWL('  m : Move    Ajouter puis supprimer les sources');
+  ArjWL('  t : Test    Tester l''int' + Chr(233) + 'grit' + Chr(233) + ' de l''archive');
+  ArjWL('  u : Update  Mettre ' + Chr(224) + ' jour (nouveaux + plus r' + Chr(233) + 'cents)');
+  ArjWL('  v : Verbose Lister avec d' + Chr(233) + 'tails suppl' + Chr(233) + 'mentaires');
+  ArjWL('  x : eXtract Extraire avec le chemin stock' + Chr(233));
+  ArjWLBlank;
+  ArjWL('Switches :');
+  ArjWL('  -c           Ignorer la v' + Chr(233) + 'rification d''horodatage');
+  ArjWL('  -d           Supprimer les sources apr' + Chr(232) + 's ajout');
+  ArjWL('  -e           Exclure les chemins des noms');
+  ArjWL('  -f           Ne rafra' + Chr(238) + 'chir que les fichiers existants');
+  ArjWL('  -g<mdp>      Chiffrement par mot de passe (non support' + Chr(233) + ')');
+  ArjWL('  -i           Pas d''indicateur de progression');
+  ArjWL('  -m<N>        M' + Chr(233) + 'thode de compression (0..4)');
+  ArjWL('  -n           Seulement les nouveaux fichiers');
+  ArjWL('  -r           R' + Chr(233) + 'cursion dans les sous-r' + Chr(233) + 'pertoires');
+  ArjWL('  -u           Seulement nouveaux et plus r' + Chr(233) + 'cents');
+  ArjWL('  -v           Volumes multiples (non support' + Chr(233) + ')');
+  ArjWL('  -w<dir>      R' + Chr(233) + 'pertoire de travail');
+  ArjWL('  -x<patron>   Exclure les fichiers correspondant au patron');
+  ArjWL('  -y           R' + Chr(233) + 'pondre Oui ' + Chr(224) + ' toutes les questions');
+  Exit;
+ End;
+
+ If Not ArjParseArgs Then Exit;
+
+ If ArjSw_WorkDir <> '' Then Begin
+  {$I-}ChDir(ArjSw_WorkDir);{$I+}
+  If IOResult <> 0 Then ;
+ End;
+ If ArjSw_Volumes Then
+  ArjWL('Avertissement : volumes multiples (-v) non support' + Chr(233));
+ If ArjSw_Password <> '' Then
+  ArjWL('Avertissement : chiffrement (-g) non support' + Chr(233));
+
+ Case ArjSw_Cmd Of
+  'l': ArjCmdList(False);
+  'v': ArjCmdList(True);
+  'e': ArjCmdExtract(False, False);
+  'x': ArjCmdExtract(True, False);
+  't': ArjCmdExtract(False, True);
+  'a': ArjCmdAdd;
+  'u': Begin ArjSw_Update := True; ArjCmdAdd; End;
+  'f': Begin ArjSw_Freshen := True; ArjCmdAdd; End;
+  'm': Begin ArjSw_DelAfter := True; ArjCmdAdd; End;
+  'd': ArjCmdDelete;
+ Else
+  Case ArjLanguage Of
+   ArjLang_English: ArjWL('Unknown command: ' + ArjSw_Cmd);
+   Else      ArjWL('Commande inconnue : ' + ArjSw_Cmd);
+  End;
+ End;
+
+ If ArjOutLine <> '' Then ArjFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -48622,6 +50868,9 @@ Begin
    '  Compare-VM [n1 n2]                   Compare 2 onglets emulateur ' +
    'ouverts');
   TermAddLine(TP,
+   '  Complete-VMFailover                  Reconnue, sans equivalent ' +
+   '(Hyper-V Replica)');
+  TermAddLine(TP,
    '  Add-History commande                Ajoute au rappel Haut/Bas');
   TermAddLine(TP,
    '  Add-Member ...                       Reconnue, sans objet a completer');
@@ -48665,6 +50914,32 @@ Begin
   TermAddLine(TP, '--- Editeur de texte ---');
   TermAddLine(TP,
    '  EDIT fichier     Ouvrir un fichier dans l''editeur de texte');
+ End;
+ { ARJ (2026-08-31, demande explicite de l'utilisateur, port complet et      }
+ { integral de C:\SOURCE\GITHUB\CORAIL\ARJ.PAS - AUCUN executable externe,   }
+ { code natif directement dans DEVENV.PAS) - memes 4 shells que EDIT.        }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Archives ARJ (integre, sans executable externe) ---');
+  TermAddLine(TP,
+   '  ARJ l archive.arj              Lister le contenu');
+  TermAddLine(TP,
+   '  ARJ v archive.arj               Lister avec details');
+  TermAddLine(TP,
+   '  ARJ e archive.arj [patron]      Extraire (sans le chemin)');
+  TermAddLine(TP,
+   '  ARJ x archive.arj [patron]      Extraire (avec le chemin)');
+  TermAddLine(TP,
+   '  ARJ t archive.arj               Tester l''integrite');
+  TermAddLine(TP,
+   '  ARJ a -m<0..4> archive.arj f... Ajouter/compresser des fichiers');
+  TermAddLine(TP,
+   '  ARJ d archive.arj patron        Supprimer des fichiers de l''archive');
+  TermAddLine(TP,
+   '  ARJ u/f/m ...                    Update/Freshen/Move (=Add+options)');
+  TermAddLine(TP,
+   '  ARJ /?                           Aide complete (commandes, switches)');
  End;
  { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande         }
  { explicite de l'utilisateur - PowerShell dev est le shell qu'il oublie le }
@@ -49343,6 +51618,8 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'ARJ' Then
+    TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -49510,6 +51787,8 @@ Begin
     TermCmd_AddVMDvdDrive(TP, ParamStr)
    Else If CurrCmd = 'ADD-VMFIBRECHANNELHBA' Then
     TermCmd_AddVMFibreChannelHba(TP, ParamStr)
+   Else If CurrCmd = 'COMPLETE-VMFAILOVER' Then
+    TermCmd_CompleteVMFailover(TP, ParamStr)
    Else If CurrCmd = 'ADD-VMGROUPMEMBER' Then
     TermCmd_AddVMGroupMember(TP, ParamStr)
    Else If CurrCmd = 'ADD-VMHARDDISKDRIVE' Then
@@ -49544,6 +51823,8 @@ Begin
     TermCmd_RestoreVMCheckpoint(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'ARJ' Then
+    TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -49773,6 +52054,8 @@ Begin
    TermCmd_TYPE(TP, ParamStr)
   Else If CurrCmd = 'EDIT' Then
    TermCmd_EDIT(TP, ParamStr)
+  Else If CurrCmd = 'ARJ' Then
+   TermCmd_ARJ(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -49915,6 +52198,8 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'ARJ' Then
+    TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
