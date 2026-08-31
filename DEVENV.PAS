@@ -37307,6 +37307,72 @@ Begin
  Close(Handle);
 End;
 
+{ --- ADD-CONTENT (2026-08-30, demande explicite de l'utilisateur, "support}
+{ complet" dans PowerShell dev) : contrepartie en ECRITURE de TYPE/        }
+{ GET-CONTENT ci-dessus - AJOUTE une ligne de texte a la fin d'un fichier   }
+{ (le cree s'il n'existe pas encore), sans jamais toucher au contenu deja  }
+{ present (contrairement a un > qui tronquerait). Supporte les 2 syntaxes  }
+{ REELLES les plus courantes de la vraie cmdlet PowerShell : }
+{   Add-Content -Path fichier -Value texte...                             }
+{   Add-Content fichier texte...                        (forme positionnelle)}
+{ Recherche des drapeaux -Path/-Value par SOUS-CHAINE (insensible a la     }
+{ casse) plutot qu'un vrai analyseur PowerShell (aucun n'existe dans ce     }
+{ terminal, meme limitation honnete que TOUTES les autres commandes         }
+{ "verbe-nom" deja implantees) - ordre attendu -Path PUIS -Value (le seul   }
+{ reellement utilise en pratique) ; le texte de -Value ou de la forme       }
+{ positionnelle va jusqu'a la fin de la ligne SANS analyse de guillemets    }
+{ (encore une fois la meme limitation qu'ECHO/TermCmd_ECHO, jamais de       }
+{ retrait de guillemets nulle part dans ce terminal). Hors de portee        }
+{ documente (jamais invente) : -Value multiple (tableau de lignes),         }
+{ -NoNewline, -Encoding, -Force, entree par pipeline - aucun n'existe dans  }
+{ la vraie cmdlet sans un vrai pipeline PowerShell, absent de ce terminal.  }
+Procedure TermCmd_AddContent(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, TrimmedParams, FilePath, ValueStr: String;
+ PathFlagPos, ValueFlagPos, SpacePos: Integer;
+ Handle: Text;
+ Err: Word;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ ValueFlagPos := System.Pos('-VALUE', UpParams);
+ If PathFlagPos > 0 Then Begin
+  FilePath := TrimStr(TermExtractParam(Copy(ParamStr, PathFlagPos + 5,
+   Length(ParamStr)), 1));
+  If ValueFlagPos > 0 Then
+   ValueStr := TrimStr(Copy(ParamStr, ValueFlagPos + 6, Length(ParamStr)))
+  Else
+   ValueStr := '';
+ End Else Begin
+  FilePath := TermExtractParam(ParamStr, 1);
+  TrimmedParams := TrimStr(ParamStr);
+  SpacePos := System.Pos(' ', TrimmedParams);
+  If SpacePos > 0 Then
+   ValueStr := TrimStr(Copy(TrimmedParams, SpacePos + 1, Length(TrimmedParams)))
+  Else
+   ValueStr := '';
+ End;
+ If FilePath = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-Content fichier texte');
+  TermAddLine(TP, '     ou : Add-Content -Path fichier -Value texte');
+  Exit;
+ End;
+ If FileExists(FilePath) Then Begin
+  Assign(Handle, FilePath);
+  {$I-} Append(Handle); {$I+}
+ End Else Begin
+  Assign(Handle, FilePath);
+  {$I-} Rewrite(Handle); {$I+}
+ End;
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ WriteLn(Handle, ValueStr);
+ Close(Handle);
+End;
+
 { --- EDIT : ouvrir un fichier du systeme hote dans un onglet editeur de   }
 { texte, comme le ferait "Fichier > Ouvrir" ou un double-clic dans          }
 { l Explorateur de solutions - meme sequence exacte que                    }
@@ -46965,6 +47031,17 @@ Begin
   '  VER              Version du terminal');
  TermAddLine(TP,
   '  VOL [X:]         Etiquette/serie du volume');
+ { Add-Content (2026-08-30, demande explicite de l'utilisateur, "support   }
+ { complet" - PowerShell dev uniquement, TYPE/GET-CONTENT ci-dessus reste   }
+ { la seule commande de LECTURE partagee par tous les shells). }
+ If TP.Shell = SK_POWERSHELL Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Ajouter du contenu a un fichier ---');
+  TermAddLine(TP,
+   '  Add-Content fichier texte           Ajoute une ligne en fin de fichier');
+  TermAddLine(TP,
+   '  Add-Content -Path f -Value texte     Meme chose (syntaxe nommee)');
+ End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
  { SK_BASH/SK_AMIGADOS, verifie par lecture directe de TermExecuteCommand,   }
@@ -47790,6 +47867,8 @@ Begin
    Else If (CurrCmd = 'TYPE') Or (CurrCmd = 'CAT') Or
     (CurrCmd = 'GET-CONTENT') Then
     TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'ADD-CONTENT' Then
+    TermCmd_AddContent(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
