@@ -13,10 +13,11 @@ Uses Crt,Dos;
 Const
  MaxArguments=128;
  VersionText='5.812';
- FunctionList:Array[0..20]of String[24]=(
+ FunctionList:Array[0..33]of String[24]=(
   'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
-  'CLNG','CSTR','INT','LCASE','LEFT','LEN','RIGHT','RND','TRIM','UCASE',
-  'WSCRIPT.ARGUMENTS');
+  'CLNG','COS','CSNG','CSTR','CVERR','DATE','DATESERIAL','DATEVALUE','DAY',
+  'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','LCASE','LEFT','LEN',
+  'RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
 
 Type
  PScriptLine=^TScriptLine;
@@ -113,6 +114,122 @@ Begin
  V.Text:=Trim(S);V.Number:=N;V.IsNumber:=True;
 End;
 
+Procedure MakeSingleNumber(N:Real;Var V:TValue);
+Var Scale,ScaledValue:Real;
+Begin
+ If N=0Then Begin MakeNumber(0,V);Exit;End;
+ Scale:=1;ScaledValue:=Abs(N);
+ While ScaledValue>=10Do Begin ScaledValue:=ScaledValue/10;Scale:=Scale*10;End;
+ While ScaledValue<1Do Begin ScaledValue:=ScaledValue*10;Scale:=Scale/10;End;
+ ScaledValue:=Round(ScaledValue*1000000)/1000000;
+ If N<0Then ScaledValue:=-ScaledValue;
+ MakeNumber(ScaledValue*Scale,V);
+End;
+
+Function LeapYear(Year:Integer):Boolean;
+Begin LeapYear:=(Year mod 4=0)and((Year mod 100<>0)or(Year mod 400=0));End;
+
+Function MonthDays(Year,Month:Integer):Integer;
+Const Days:Array[1..12]of Byte=(31,28,31,30,31,30,31,31,30,31,30,31);
+Begin
+ If(Month=2)and LeapYear(Year)Then MonthDays:=29 Else MonthDays:=Days[Month];
+End;
+
+Procedure MakeDateValue(Year,Month,Day:Integer;Var V:TValue);
+Var SYear,SMonth,SDay:String;
+Begin
+ If(Year>=0)and(Year<=29)Then Inc(Year,2000)
+ Else If(Year>=30)and(Year<=99)Then Inc(Year,1900);
+ While Month<1 Do Begin Dec(Year);Inc(Month,12);End;
+ While Month>12 Do Begin Inc(Year);Dec(Month,12);End;
+ While Day<1 Do Begin Dec(Month);If Month<1Then Begin Month:=12;Dec(Year);End;
+  Inc(Day,MonthDays(Year,Month));End;
+ While Day>MonthDays(Year,Month)Do Begin Dec(Day,MonthDays(Year,Month));Inc(Month);
+  If Month>12Then Begin Month:=1;Inc(Year);End;End;
+ Str(Year,SYear);Str(Month,SMonth);Str(Day,SDay);
+ If Length(SMonth)<2Then SMonth:='0'+SMonth;If Length(SDay)<2Then SDay:='0'+SDay;
+ MakeText(SDay+'/'+SMonth+'/'+Trim(SYear),V);
+End;
+
+Procedure ParseDateValue(SourceText:String;Var V:TValue);
+Var FirstPart,SecondPart,ThirdPart:String;P,Code,Year,Month,Day:Integer;
+Begin
+ SourceText:=Trim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then SourceText:=Copy(SourceText,1,P-1);
+ FirstPart:='';SecondPart:='';ThirdPart:='';
+ P:=Pos('/',SourceText);If P=0Then P:=Pos('-',SourceText);
+ If P=0Then Begin MakeText('',V);Exit;End;
+ FirstPart:=Copy(SourceText,1,P-1);Delete(SourceText,1,P);
+ P:=Pos('/',SourceText);If P=0Then P:=Pos('-',SourceText);
+ If P=0Then Begin MakeText('',V);Exit;End;
+ SecondPart:=Copy(SourceText,1,P-1);ThirdPart:=Copy(SourceText,P+1,255);
+ If Length(Trim(FirstPart))=4Then Begin
+  Val(FirstPart,Year,Code);If Code<>0Then Begin MakeText('',V);Exit;End;
+  Val(SecondPart,Month,Code);If Code<>0Then Begin MakeText('',V);Exit;End;
+  Val(ThirdPart,Day,Code);
+ End Else Begin
+  Val(FirstPart,Day,Code);If Code<>0Then Begin MakeText('',V);Exit;End;
+  Val(SecondPart,Month,Code);If Code<>0Then Begin MakeText('',V);Exit;End;
+  Val(ThirdPart,Year,Code);
+ End;
+ If Code<>0Then MakeText('',V)Else MakeDateValue(Year,Month,Day,V);
+End;
+
+Procedure DateDayValue(SourceText:String;Var V:TValue);
+Var DateValue:TValue;Day,Code:Integer;
+Begin
+ ParseDateValue(SourceText,DateValue);
+ If DateValue.Text=''Then Begin MakeText('',V);Exit;End;
+ Val(Copy(DateValue.Text,1,2),Day,Code);
+ If Code=0Then MakeNumber(Day,V)Else MakeText('',V);
+End;
+
+Procedure DateHourValue(SourceText:String;Var V:TValue);
+Var P,HourValue,Code:Integer;TimeText:String;
+Begin
+ SourceText:=Trim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then TimeText:=Trim(Copy(SourceText,P+1,255))Else TimeText:=SourceText;
+ P:=Pos(':',TimeText);If P=0Then Begin MakeNumber(0,V);Exit;End;
+ Val(Copy(TimeText,1,P-1),HourValue,Code);
+ If(Code=0)and(HourValue>=0)and(HourValue<=23)Then MakeNumber(HourValue,V)
+ Else MakeText('',V);
+End;
+
+Procedure HexValue(NumberValue:LongInt;Var V:TValue);
+Const Digits:Array[0..15] of Char='0123456789ABCDEF';
+Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
+Begin
+ ResultText:='';Negative:=NumberValue<0;Count:=0;
+ Repeat
+  Digit:=NumberValue and 15;ResultText:=Digits[Digit+1]+ResultText;
+  NumberValue:=NumberValue shr 4;Inc(Count);
+ Until((Not Negative)and(NumberValue=0))or(Negative and(Count=8));
+ MakeText(ResultText,V);
+End;
+
+Procedure InputBoxValue(PromptText,TitleText,DefaultText:String;Var V:TValue);
+Var Answer:String;
+Begin
+ If TitleText<>''Then WriteLn('[',TitleText,']');Write(PromptText);
+ If PromptText<>''Then Write(' ');ReadLn(Answer);
+ If Answer=''Then Answer:=DefaultText;MakeText(Answer,V);
+End;
+
+Procedure InStrValue(A,B,C,D:TValue;ArgumentCount:Integer;Var V:TValue);
+Var StartPosition,FoundPosition:Integer;SourceText,SearchText:String;
+Begin
+ If ArgumentCount<3Then Begin StartPosition:=1;SourceText:=A.Text;SearchText:=B.Text;End
+ Else Begin StartPosition:=Trunc(A.Number);SourceText:=B.Text;SearchText:=C.Text;End;
+ If StartPosition<1Then StartPosition:=1;
+ If(ArgumentCount>=4)and(Trunc(D.Number)=1)Then Begin
+  SourceText:=Upper(SourceText);SearchText:=Upper(SearchText);
+ End;
+ If SearchText=''Then FoundPosition:=StartPosition
+ Else FoundPosition:=Pos(SearchText,Copy(SourceText,StartPosition,255));
+ If FoundPosition>0Then Inc(FoundPosition,StartPosition-1);
+ MakeNumber(FoundPosition,V);
+End;
+
 Function Truth(V:TValue):Boolean;
 Begin Truth:=Not((V.Text='')or(V.Text='0')or(Upper(V.Text)='FALSE'));End;
 
@@ -155,7 +272,8 @@ Procedure ParseExpression(Var V:TValue);Forward;
 
 Procedure ParsePrimary(Var V:TValue);
 Var Q:Char;S,Name,U,ArrayReference,IndexText:String;N:Real;
- Code,I,ElementIndex:Integer;FunctionByte:Byte;A,B:TValue;VariableEntry:PVariable;
+ Code,I,ElementIndex,ArgumentCount:Integer;FunctionByte:Byte;A,B,C,D:TValue;VariableEntry:PVariable;
+ DateYear,DateMonth,DateDay,DateDayOfWeek:Word;
 Begin
  SkipSpace;If ExprPos>Length(ExprText)Then Begin MakeText('',V);Exit;End;
  If ExprText[ExprPos]in['"','''']Then Begin
@@ -179,6 +297,11 @@ Begin
  If(U='FALSE')or(U='EMPTY')Then Begin MakeNumber(0,V);Exit;End;
  If U='NOTHING'Then Begin MakeText('',V);Exit;End;
  SkipSpace;
+ FunctionByte:=FunctionIndex(U);
+ If(FunctionByte=15)and((ExprPos>Length(ExprText))or(ExprText[ExprPos]<>'('))Then Begin
+  GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
+  MakeDateValue(DateYear,DateMonth,DateDay,V);Exit;
+ End;
  VariableEntry:=FindVariable(Name);
  If(VariableEntry<>Nil)and(Copy(VariableEntry^.Value,1,8)='@VBARRAY')and
    (ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
@@ -201,10 +324,28 @@ Begin
   MakeText(ArrayReference,V);Exit;
  End;
  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
-  Inc(ExprPos);ParseExpression(A);SkipSpace;MakeText('',B);
-  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);ParseExpression(B);SkipSpace;End;
+  Inc(ExprPos);SkipSpace;ArgumentCount:=0;
+  MakeText('',A);MakeText('',B);MakeText('',C);MakeText('',D);
+  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>')')Then Begin
+   ParseExpression(A);Inc(ArgumentCount);SkipSpace;
+  End;
+  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin
+   Inc(ExprPos);
+   ParseExpression(B);Inc(ArgumentCount);
+   SkipSpace;
+  End;
+  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin
+   Inc(ExprPos);ParseExpression(C);
+   Inc(ArgumentCount);
+   SkipSpace;
+  End;
+  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin
+   Inc(ExprPos);
+   ParseExpression(D);
+   Inc(ArgumentCount);
+   SkipSpace;
+  End;
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);
-  FunctionByte:=FunctionIndex(U);
   Case FunctionByte of
    0:MakeNumber(Abs(A.Number),V);                         { ABS }
    1:MakeText('',V);                                      { ARRAY: analyse variadique ci-dessus }
@@ -216,25 +357,39 @@ Begin
       N:=Round(A.Number);
       If(N<0)or(N>255)Then MakeText('',V)Else MakeNumber(N,V);
      End;
-   6:MakeText(Trim(A.Text),V);                            { CDATE }
+   6:If A.IsNumber Then MakeText(A.Text,V)Else ParseDateValue(A.Text,V); { CDATE }
    7:MakeNumber(A.Number,V);                              { CDBL }
    8:MakeText(Chr(Trunc(A.Number)and 255),V);             { CHR }
    9:MakeNumber(Round(A.Number),V);                       { CINT }
    10:MakeNumber(Trunc(A.Number),V);                      { CLNG }
-   11:MakeText(A.Text,V);                                 { CSTR }
-   12:MakeNumber(Trunc(A.Number),V);                      { INT }
-   13:Begin                                               { LCASE }
+   11:MakeNumber(Cos(A.Number),V);                        { COS }
+   12:MakeSingleNumber(A.Number,V);                       { CSNG }
+   13:MakeText(A.Text,V);                                 { CSTR }
+   14:Begin MakeText('Error '+A.Text,V);V.Number:=A.Number;End; { CVERR }
+   15:Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
+      MakeDateValue(DateYear,DateMonth,DateDay,V);End;    { DATE }
+   16:MakeDateValue(Trunc(A.Number),Trunc(B.Number),Trunc(C.Number),V); { DATESERIAL }
+   17:ParseDateValue(A.Text,V);                           { DATEVALUE }
+   18:DateDayValue(A.Text,V);                             { DAY }
+   19:MakeNumber(Exp(A.Number),V);                        { EXP }
+   20:MakeNumber(Trunc(A.Number),V);                      { FIX }
+   21:HexValue(Trunc(A.Number),V);                        { HEX }
+   22:DateHourValue(A.Text,V);                            { HOUR }
+   23:InputBoxValue(A.Text,B.Text,C.Text,V);              { INPUTBOX }
+   24:InStrValue(A,B,C,D,ArgumentCount,V);                { INSTR }
+   25:MakeNumber(Trunc(A.Number),V);                      { INT }
+   26:Begin                                               { LCASE }
       S:=A.Text;
       For I:=1To Length(S)Do If S[I]in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
       MakeText(S,V);
      End;
-   14:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);         { LEFT }
-   15:MakeNumber(Length(A.Text),V);                       { LEN }
-   16:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
-   17:MakeNumber(Random,V);                               { RND }
-   18:MakeText(Trim(A.Text),V);                           { TRIM }
-   19:MakeText(Upper(A.Text),V);                          { UCASE }
-   20:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+   27:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);         { LEFT }
+   28:MakeNumber(Length(A.Text),V);                       { LEN }
+   29:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
+   30:MakeNumber(Random,V);                               { RND }
+   31:MakeText(Trim(A.Text),V);                           { TRIM }
+   32:MakeText(Upper(A.Text),V);                          { UCASE }
+   33:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
        MakeText(ScriptArguments[Trunc(A.Number)],V)
       Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
    Else MakeText('',V);
