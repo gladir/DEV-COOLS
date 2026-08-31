@@ -10820,6 +10820,8 @@ Procedure HandleVirtAddDiskDialogEvent(Var Dlg: TVirtAddDiskDialog;
  Var Ev: TEvent); Forward;
 Function Emu_MountDiskSlot(Idx: Byte; FName: String): Boolean; Forward;
 Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
+Procedure Emu_CdromOpenOne(Idx: Byte; FName: String); Forward;
+Procedure Emu_CdromAssignDriveLetters; Forward;
 
 { Declarations anticipees pour l emulateur 8086 integre }
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
@@ -37525,6 +37527,190 @@ Begin
    IntToStr(ExitCode) + ').');
 End;
 
+{ --- ADD-VMDVDDRIVE / ADD-VMHARDDISKDRIVE / ADD-VMFIBRECHANNELHBA /       }
+{ ADD-VMGROUPMEMBER (2026-08-30, demande explicite de l'utilisateur,       }
+{ REVISEE suite a un DESACCORD JUSTIFIE de l'utilisateur sur la 1ere        }
+{ implantation : "si BOOT/DEBUG ont lance un emulateur, il devrait etre    }
+{ possible d'utiliser Add-VMDvdDrive/Add-VMHardDiskDrive" - l'utilisateur   }
+{ avait raison, la 1ere version (arret honnete uniforme pour les 4)         }
+{ ignorait a tort une VRAIE ressource DEJA montable a chaud dans ce         }
+{ terminal : les 4 emplacements INT13h materiels (0=A:/1=B: disquettes,     }
+{ 2=C:/3=D: disques durs, voir EmuFloppyOpen[]/Emu_MountDiskSlot, deja      }
+{ exploites par IMGMOUNT ci-dessus) et les 2 lecteurs CD-ROM ISO9660        }
+{ (EmuCdrom[0..1]/Emu_CdromOpenOne, jusqu'ici seulement montables via les   }
+{ drapeaux CLI /CDROM0:/CDROM1: AU DEMARRAGE - jamais a chaud depuis le      }
+{ terminal). Ces 2 commandes appellent donc REELLEMENT ces memes            }
+{ mecanismes (aucune nouvelle logique de montage, juste un 2e point         }
+{ d'entree avec la syntaxe/les noms Hyper-V au lieu de MOUNT/IMGMOUNT),      }
+{ des qu'AU MOINS UN onglet emulateur (WK_EMU) est ouvert - condition        }
+{ explicitement posee par l'utilisateur ("au moins un ou plusieurs          }
+{ emulateurs actifs"), verifiee via TermAnyEmulatorOpen ci-dessous.         }
+{ -VMName est accepte SYNTAXIQUEMENT (une vraie ligne de commande Hyper-V   }
+{ n'est donc jamais rejetee) mais reste PUREMENT DECORATIF dans le message  }
+{ de confirmation : ce terminal ne modelise qu'UN SEUL controleur de        }
+{ disque/CD-ROM partage par toute la session (comme MOUNT/IMGMOUNT/BOOT     }
+{ deja), jamais plusieurs machines nommees independantes - limitation        }
+{ honnete DOCUMENTEE, pas une simplification silencieuse.                   }
+{ Add-VMFibreChannelHba et Add-VMGroupMember RESTENT un arret honnete        }
+{ (voir TermCmd_HyperVUnsupported) : aucun equivalent possible (materiel     }
+{ SAN d'entreprise jamais modelisable dans un emulateur 8/16 bits) ou        }
+{ aucun sens structurel (pas de VM nommee a regrouper) - la revision de      }
+{ l'utilisateur portait specifiquement sur les 2 commandes de STOCKAGE,      }
+{ pas sur ces 2-la. }
+Function TermAnyEmulatorOpen: Boolean;
+Var
+ I: Integer;
+Begin
+ TermAnyEmulatorOpen := False;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].Kind = WK_EMU Then Begin
+   TermAnyEmulatorOpen := True;
+   Exit;
+  End;
+End;
+
+{ Extrait -Path/-VMName d'une ligne de commande Add-VM* (meme technique de  }
+{ recherche par SOUS-CHAINE que Add-Content/Add-Type ci-dessus - toujours   }
+{ aucun vrai analyseur PowerShell dans ce terminal). }
+Procedure TermParseAddVMArgs(ParamStr: String; Var PathArg, VMNameArg: String);
+Var
+ UpParams: String;
+ PathFlagPos, VMNameFlagPos: Integer;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ VMNameFlagPos := System.Pos('-VMNAME', UpParams);
+ If PathFlagPos > 0 Then
+  PathArg := TrimStr(TermExtractParam(Copy(ParamStr, PathFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else
+  PathArg := '';
+ If VMNameFlagPos > 0 Then
+  VMNameArg := TrimStr(TermExtractParam(Copy(ParamStr, VMNameFlagPos + 7,
+   Length(ParamStr)), 1))
+ Else
+  VMNameArg := '';
+End;
+
+Procedure TermCmd_HyperVUnsupported(Var TP: TTerminalPanel; CmdletName,
+ Detail: String);
+Begin
+ TermAddLine(TP, CmdletName + ' : commande reconnue, mais ce terminal ' +
+  'n''emule pas un hyperviseur Hyper-V.');
+ TermAddLine(TP, 'Aucune machine virtuelle NOMMEE et PERSISTANTE ' +
+  '(-VMName) n''existe ici : chaque emulateur (DOS/Win16/OS2/ELF64/NES/' +
+  'C64/...) est un onglet ephemere lance directement depuis un fichier.');
+ If Detail <> '' Then TermAddLine(TP, Detail);
+End;
+
+Procedure TermCmd_AddVMDvdDrive(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, VMNameArg, VMLabel: String;
+ Idx: Integer;
+Begin
+ If Not TermAnyEmulatorOpen Then Begin
+  TermAddLine(TP, 'Add-VMDvdDrive : aucun emulateur actif (voir BOOT/DEBUG) ' +
+   '- rien a quoi attacher un lecteur DVD.');
+  Exit;
+ End;
+ TermParseAddVMArgs(ParamStr, PathArg, VMNameArg);
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")' Else VMLabel := '';
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Add-VMDvdDrive : -Path est requis dans ce terminal - ' +
+   'un lecteur DVD "vide" (media attache plus tard via Set-VMDvdDrive, non ' +
+   'supportee) n''est pas modelise separement.');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'Add-VMDvdDrive : le systeme ne trouve pas le fichier ' +
+   'specifie : ' + PathArg);
+  Exit;
+ End;
+ Idx := -1;
+ If Not EmuCdrom[0].Open Then Idx := 0
+ Else If Not EmuCdrom[1].Open Then Idx := 1;
+ If Idx < 0 Then Begin
+  TermAddLine(TP, 'Add-VMDvdDrive : les 2 lecteurs CD-ROM emules sont deja ' +
+   'monter (limite materielle reelle de ce terminal, comme IMGMOUNT).');
+  Exit;
+ End;
+ Emu_CdromOpenOne(Idx, PathArg);
+ If Not EmuCdrom[Idx].Open Then Begin
+  TermAddLine(TP, 'Add-VMDvdDrive : echec du montage de ' + PathArg +
+   ' (pas un volume ISO9660 valide ?).');
+  Exit;
+ End;
+ Emu_CdromAssignDriveLetters;
+ TermAddLine(TP, 'Add-VMDvdDrive' + VMLabel + ' : ' +
+  Chr(65 + EmuCdrom[Idx].DriveLetter) + ': monte sur ' + PathArg + ' ("' +
+  EmuCdrom[Idx].VolLabel + '").');
+ If Not EmuMscdexActive Then
+  TermAddLine(TP, 'Attention : la case "MSCDEX" (Options > Emulateur > ' +
+   'DOS: OS) est decochee - le lecteur est monte mais restera invisible ' +
+   'pour DOS tant qu''elle ne sera pas activee.');
+End;
+
+Procedure TermCmd_AddVMHardDiskDrive(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, VMNameArg, VMLabel: String;
+ Idx: Byte;
+ Found: Boolean;
+Begin
+ If Not TermAnyEmulatorOpen Then Begin
+  TermAddLine(TP, 'Add-VMHardDiskDrive : aucun emulateur actif (voir ' +
+   'BOOT/DEBUG) - rien a quoi attacher un disque dur.');
+  Exit;
+ End;
+ TermParseAddVMArgs(ParamStr, PathArg, VMNameArg);
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")' Else VMLabel := '';
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-VMHardDiskDrive -Path fichier-image ' +
+   '[-VMName nom]');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'Add-VMHardDiskDrive : le systeme ne trouve pas le ' +
+   'fichier specifie : ' + PathArg);
+  Exit;
+ End;
+ { Emplacements 2=C:/3=D: reserves aux disques durs (INT13h), comme         }
+ { IMGMOUNT - 0=A:/1=B: restent les disquettes, jamais utilisees ici. }
+ Found := False;
+ For Idx := 2 To 3 Do
+  If Not EmuFloppyOpen[Idx] Then Begin
+   Found := True;
+   Break;
+  End;
+ If Not Found Then Begin
+  TermAddLine(TP, 'Add-VMHardDiskDrive : les 2 disques durs emules (C:/D:) ' +
+   'sont deja monter (limite materielle reelle de ce terminal, comme ' +
+   'IMGMOUNT).');
+  Exit;
+ End;
+ If Not Emu_MountDiskSlot(Idx, PathArg) Then Begin
+  TermAddLine(TP, 'Add-VMHardDiskDrive : echec du montage de ' + PathArg +
+   ' sur ' + Term_DriveLetterFromIdx(Idx) + ': .');
+  Exit;
+ End;
+ TermAddLine(TP, 'Add-VMHardDiskDrive' + VMLabel + ' : ' +
+  Term_DriveLetterFromIdx(Idx) + ': monte sur ' + PathArg + '.');
+End;
+
+Procedure TermCmd_AddVMFibreChannelHba(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMFibreChannelHba',
+  'Un adaptateur Fibre Channel (reseau de stockage SAN d''entreprise) ' +
+  'n''a de toute facon aucun equivalent possible dans un emulateur ' +
+  '8086/16 bits/8 bits : materiel jamais modelise ici, meme en principe.');
+End;
+
+Procedure TermCmd_AddVMGroupMember(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMGroupMember',
+  'Aucun "groupe de VM" n''existe non plus : sans machine virtuelle ' +
+  'nommee persistante, il n''y a structurellement rien a regrouper.');
+End;
+
 { --- EDIT : ouvrir un fichier du systeme hote dans un onglet editeur de   }
 { texte, comme le ferait "Fichier > Ouvrir" ou un double-clic dans          }
 { l Explorateur de solutions - meme sequence exacte que                    }
@@ -47201,6 +47387,13 @@ Begin
    '  Add-Type -Path fichier.cs            Compile via CSCW32.EXE');
   TermAddLine(TP,
    '  Add-Type -TypeDefinition "code"      Idem, code C# sur une ligne');
+  TermAddLine(TP,
+   '  Add-VMHardDiskDrive -Path f [-VMName n]  Monte f sur C:/D: (si un ' +
+   'emulateur est actif)');
+  TermAddLine(TP,
+   '  Add-VMDvdDrive -Path f.iso [-VMName n]   Idem pour un lecteur CD-ROM');
+  TermAddLine(TP,
+   '  Add-VMFibreChannelHba / Add-VMGroupMember   Reconnues, sans equivalent');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -48035,6 +48228,14 @@ Begin
     TermCmd_AddMember(TP, ParamStr)
    Else If CurrCmd = 'ADD-TYPE' Then
     TermCmd_AddType(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMDVDDRIVE' Then
+    TermCmd_AddVMDvdDrive(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMFIBRECHANNELHBA' Then
+    TermCmd_AddVMFibreChannelHba(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMGROUPMEMBER' Then
+    TermCmd_AddVMGroupMember(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMHARDDISKDRIVE' Then
+    TermCmd_AddVMHardDiskDrive(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
@@ -72998,6 +73199,19 @@ Begin
  EmuCdrom[Idx].FileName := FName;
 End;
 
+{ Recalcule les lettres de lecteur CD-ROM (D: puis E:, uniquement pour les }
+{ unites REELLEMENT montees) - extrait de Emu_CdromOpenAll ci-dessous       }
+{ (2026-08-30) pour etre REUTILISE tel quel par Add-VMDvdDrive (terminal,   }
+{ montage a chaud en cours de session) sans dupliquer cette logique. }
+Procedure Emu_CdromAssignDriveLetters;
+Begin
+ If EmuCdrom[0].Open Then EmuCdrom[0].DriveLetter := 3;  { D: }
+ If EmuCdrom[1].Open Then Begin
+  If EmuCdrom[0].Open Then EmuCdrom[1].DriveLetter := 4  { E: }
+  Else EmuCdrom[1].DriveLetter := 3;                     { D: }
+ End;
+End;
+
 { Monter les 2 lecteurs CD-ROM depuis Opts.CdromImg0/1 (appelee une seule
   fois au demarrage de l IDE, comme Emu_FloppyOpenAll/Emu_HardDiskOpenAll -
   un CD-ROM monte reste insere pour toute la session, independamment des
@@ -73008,11 +73222,7 @@ Procedure Emu_CdromOpenAll;
 Begin
  Emu_CdromOpenOne(0, Opts.CdromImg0);
  Emu_CdromOpenOne(1, Opts.CdromImg1);
- If EmuCdrom[0].Open Then EmuCdrom[0].DriveLetter := 3;  { D: }
- If EmuCdrom[1].Open Then Begin
-  If EmuCdrom[0].Open Then EmuCdrom[1].DriveLetter := 4  { E: }
-  Else EmuCdrom[1].DriveLetter := 3;                     { D: }
- End;
+ Emu_CdromAssignDriveLetters;
  If EmuCdrom[0].Open Then
   WriteLn('DEVENV: ', Chr(65 + EmuCdrom[0].DriveLetter), ': ', Opts.CdromImg0,
    ' -> CD-ROM ISO9660 "', EmuCdrom[0].VolLabel, '"');
