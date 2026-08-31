@@ -2036,6 +2036,7 @@ Type
   RexxFile        : TString;   { /REXX:fichier.rex }
   PSFile          : TString;   { /PS:fichier.ps1 }
   VBScriptFile    : TString;   { /VBSCRIPT:fichier.vbs }
+  PascalScriptFile: TString;   { /PASCALSCRIPT:fichier.psc }
  End;
 
  { Types d evenements }
@@ -9145,6 +9146,7 @@ Procedure ShowHelp;Begin
   WriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
   WriteLn('  /PS:fichier.ps1         Ouvrir PowerShell dev et executer ce script');
   WriteLn('  /VBSCRIPT:fichier.vbs   Ouvrir CMD (Invite de commandes) et executer ce script VBScript');
+  WriteLn('  /PASCALSCRIPT:fichier.psc  Ouvrir CMD (Invite de commandes) et executer ce script PascalScript');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -9192,6 +9194,7 @@ Begin
  Opts.RexxFile         := '';
  Opts.PSFile           := '';
  Opts.VBScriptFile     := '';
+ Opts.PascalScriptFile := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -9248,6 +9251,13 @@ Begin
     Opts.VBScriptFile := Copy(Arg, 11, Length(Arg) - 10);
    If (Opts.VBScriptFile = '') Or (Not FileExists(Opts.VBScriptFile)) Then
     FatalError('Fichier VBScript introuvable: ' + Opts.VBScriptFile);
+  End Else
+    If (Length(Arg) >= 14) And
+      ((Copy(Arg, 1, 14) = '/PASCALSCRIPT:') Or (Copy(Arg, 1, 14) = '/pascalscript:') Or
+      (Copy(Arg, 1, 14) = '-PASCALSCRIPT:') Or (Copy(Arg, 1, 14) = '-pascalscript:')) Then Begin
+    Opts.PascalScriptFile := Copy(Arg, 15, Length(Arg) - 14);
+   If (Opts.PascalScriptFile = '') Or (Not FileExists(Opts.PascalScriptFile)) Then
+    FatalError('Fichier PascalScript introuvable: ' + Opts.PascalScriptFile);
   End Else
   If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
@@ -58680,6 +58690,21 @@ End;
 Procedure CsCheckTimeout;
 Var H,M,S,HS:Word;Elapsed:LongInt;
 Begin
+ { Ctrl+C : demande explicite de l'utilisateur (2026-08-31) - reutilise le }
+ { pump clavier non bloquant EmuDbg_PollCrtBreak (KeyPressed/ReadKey, deja }
+ { pret pour "les boucles qui n'utilisent pas le pump d'evenements         }
+ { DEVENV" - jusqu'ici jamais appele nulle part) plutot que d'inventer un  }
+ { nouveau mecanisme. Verifie AVANT le "If CsTimeLimit<=0Then Exit;"        }
+ { ci-dessous car ce controle doit fonctionner meme sans //T:, alors que    }
+ { CsCheckTimeout elle-meme sort immediatement dans ce cas (voir tous ses   }
+ { points d'appel deja existants dans CsExecuteRange - boucle principale,   }
+ { DO/LOOP, WHILE/WEND). }
+ If EmuDbg_PollCrtBreak Then Begin
+  CsWL('CSCRIPT: execution interrompue par l''utilisateur (Ctrl+C).');
+  CsTerminated:=True;
+  CsExitCode:=1;
+  Exit;
+ End;
  If CsTimeLimit<=0Then Exit;GetTime(H,M,S,HS);
  Elapsed:=(LongInt(H)*3600+LongInt(M)*60+S)-(LongInt(CsStartHour)*3600+LongInt(CsStartMinute)*60+CsStartSecond);
  If Elapsed<0Then Inc(Elapsed,86400);
@@ -59049,6 +59074,7 @@ Begin
    For ElementIndex:=0To ElementCount-1Do Begin
     Str(ElementIndex,IndexText);CsGetVariable(Collection.Text+'.'+CsTrim(IndexText),V);
     CsSetVariableValue(Name,V);CsExecuteRange(I+1,EndLine-1);
+    CsCheckTimeout;
     If CsExitForRequested Then Begin CsExitForRequested:=False;Break;End;
     If CsTerminated or CsExitSubRequested or CsExitFunctionRequested or CsExitDoRequested Then Break;
    End;
@@ -59087,6 +59113,7 @@ Begin
         Not CsExitDoRequested and Not CsExitFunctionRequested Do Begin
     CsSetVariableValue(Name,Counter);
     CsExecuteRange(I+1,EndLine-1);
+    CsCheckTimeout;
     If CsExitForRequested Then Begin CsExitForRequested:=False;Break;End;
     CsMakeNumber(Counter.Number+StepValue.Number,Counter);
    End;
@@ -59496,6 +59523,1095 @@ Begin
  If CsOutLine <> '' Then CsFlushLine;
 End;
 
+{ ========================================================================= }
+{ PSCRIPT (2026-08-31, demande explicite de l'utilisateur, "support        }
+{ complet") - port integral de PSCRIPT.PAS (interprete autonome            }
+{ "PascalScript" - un langage de script utilisant une syntaxe Pascal reelle}
+{ (IF/THEN/ELSE, FOR/WHILE/REPEAT, CASE, TRY/EXCEPT, Procedure/Function    }
+{ avec parametres VAR/CONST, WScript.Echo/Arguments) plutot que VBScript,  }
+{ distinct de CSCRIPT ci-dessus). Meme methodologie de port que ARJ/UNZIP/ }
+{ LHICE/CSCRIPT : lecture integrale AVANT toute ecriture, prefixage        }
+{ systematique `Psc` de tous les identificateurs globaux (prefixe `Ps`     }
+{ deja pris par la table de dispatch PowerShell - PSCmdNames/PSCmdIDs -    }
+{ voir plus haut dans le fichier, d'ou le choix de `Psc`), tampon de ligne }
+{ + TermAddLine a la place de Write/WriteLn, `TermExtractParam` a la place }
+{ de ParamCount/ParamStr. Disponible dans les memes 3 shells que CSCRIPT   }
+{ (Invite de commandes/PowerShell dev/Norton Commander - PAS OS/2 & REXX). }
+{ BOGUE DE NOMMAGE EVITE : l'original declare `Function Word:String;` -    }
+{ `Word` est aussi le type entier non signe 16 bits standard de Pascal,    }
+{ utilise massivement ailleurs dans DEVENV.PAS - renomme en `PscWord` par  }
+{ le prefixage systematique, qui evite cette collision par construction.   }
+{ Meme drapeaux cooperatifs `PscStopRoutine`/`PscRuntimeError` que          }
+{ l'original (deja cooperatifs avant meme le portage - aucun Halt() dans   }
+{ le corps de l'interprete lui-meme, seulement dans le bloc CLI de tete,   }
+{ remplace ici par `PscTerminated`/`PscExitCode`, meme motif que CSCRIPT). }
+{ ========================================================================= }
+
+Type
+ PPscLine=^TPscLine;
+ TPscLine=Record
+  N:LongInt;
+  S:String;
+  Next,Prev:PPscLine;
+ End;
+ PPscVar=^TPscVar;
+ TPscVar=Record
+  Name:String[80];
+  Text:String;
+  Num:Real;
+  Numeric:Boolean;
+  Next:PPscVar;
+ End;
+ TPscValue=Record
+  Text:String;
+  Num:Real;
+  Numeric:Boolean;
+ End;
+ PPscBind=^TPscBind;
+ TPscBind=Record
+  Name,Actual:String[80];
+  Had,ByRef:Boolean;
+  Old:TPscValue;
+  Next:PPscBind;
+ End;
+
+Var
+ PscFirstLine,PscLastLine:PPscLine;
+ PscLineCount:LongInt;
+ PscVars:PPscVar;
+ PscSourceName:String;
+ PscArgs:Array[0..127]Of String;
+ PscArgCount:Integer;
+ PscExpr:String;
+ PscEP:Integer;
+ PscStopRoutine,PscRuntimeError:Boolean;
+ PscExitCode:Integer;
+ PscTerminated:Boolean;
+ PscAbortRequested:Boolean;
+ PscTermTP:^TTerminalPanel;
+ PscOutLine:String;
+ PscRawArgs:Array[1..128]Of String;
+ PscRawArgCount:Integer;
+
+Procedure PscFlushLine;
+Begin
+ If PscTermTP<>Nil Then TermAddLine(PscTermTP^,PscOutLine);
+ PscOutLine:='';
+End;
+
+Procedure PscW(S:String);
+Begin
+ PscOutLine:=PscOutLine+S;
+End;
+
+Procedure PscWL(S:String);
+Begin
+ PscOutLine:=PscOutLine+S;
+ PscFlushLine;
+End;
+
+Procedure PscWLBlank;
+Begin
+ PscFlushLine;
+End;
+
+{ Ctrl+C : demande explicite de l'utilisateur (2026-08-31, meme demande    }
+{ que pour CSCRIPT - voir CsCheckTimeout) - reutilise le meme pump clavier }
+{ non bloquant EmuDbg_PollCrtBreak. Contrairement a CSCRIPT (qui avait     }
+{ deja un point d'appel periodique CsCheckTimeout cable dans ses 3         }
+{ boucles), PSCRIPT n'en avait aucun avant ce chantier - PscAbortRequested }
+{ est un DRAPEAU SEPARE de PscRuntimeError expres : PscRuntimeError peut   }
+{ etre intercepte par TRY/EXCEPT (voir PscExecRange, bloc TRY), ce qui      }
+{ annulerait silencieusement une demande d'arret Ctrl+C si le meme          }
+{ drapeau etait reutilise - PscAbortRequested n'est verifie/efface nulle    }
+{ part d'autre que par TermCmd_PSCRIPT lui-meme au prochain lancement. }
+Procedure PscCheckAbort;
+Begin
+ If PscAbortRequested Then Exit;
+ If EmuDbg_PollCrtBreak Then Begin
+  PscWL('PSCRIPT: execution interrompue par l''utilisateur (Ctrl+C).');
+  PscAbortRequested:=True;
+  PscExitCode:=1;
+ End;
+End;
+
+Function PscUp(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1To Length(S)Do If S[I]in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);PscUp:=S;
+End;
+
+Function PscTrimS(S:String):String;Begin
+ While(Length(S)>0)and(S[1]in[' ',#9])Do Delete(S,1,1);
+ While(Length(S)>0)and(S[Length(S)]in[' ',#9,#13,#10])Do Delete(S,Length(S),1);
+ PscTrimS:=S;
+End;
+
+Function PscStarts(S,P:String):Boolean;Begin
+ PscStarts:=Copy(PscUp(PscTrimS(S)),1,Length(P))=PscUp(P);
+End;
+
+Function PscClean(S:String):String;Begin
+ S:=PscTrimS(S);
+ If(Length(S)>0)and(S[Length(S)]=';')Then Delete(S,Length(S),1);
+ PscClean:=PscTrimS(S);
+End;
+
+Procedure PscAddLine(S:String);
+Var
+ P:PPscLine;
+Begin
+ New(P);
+ Inc(PscLineCount);
+ P^.N:=PscLineCount;
+ P^.S:=S;P^.Next:=Nil;
+ P^.Prev:=PscLastLine;
+ If PscLastLine=Nil Then PscFirstLine:=P
+                    Else PscLastLine^.Next:=P;
+ PscLastLine:=P;
+End;
+
+Function PscLS(N:LongInt):String;
+Var
+ P:PPscLine;
+Begin
+ If N<1Then Begin
+  PscLS:='';
+  Exit;
+ End;
+ If N<=PscLineCount div 2Then Begin
+  P:=PscFirstLine;
+  While(P<>Nil)and(P^.N<N)Do P:=P^.Next;
+ End
+  Else
+ Begin
+  P:=PscLastLine;
+  While(P<>Nil)and(P^.N>N)Do P:=P^.Prev;
+ End;
+ If P=Nil Then PscLS:=''Else PscLS:=P^.S;
+End;
+
+Procedure PscVText(S:String;Var V:TPscValue);
+Var
+ C:Integer;N:Real;
+Begin
+ V.Text:=S;Val(S,N,C);
+ V.Numeric:=(C=0)and(S<>'');
+ If V.Numeric Then V.Num:=N
+              Else V.Num:=0;
+End;
+
+Procedure PscVNum(N:Real;Var V:TPscValue);
+Var
+ S:String;
+Begin
+ Str(N:0:8,S);
+ While(Length(S)>0)and(S[Length(S)]='0')Do Delete(S,Length(S),1);
+ If(Length(S)>0)and(S[Length(S)]='.')Then Delete(S,Length(S),1);
+ If S='-0'Then S:='0';
+ V.Text:=S;
+ V.Num:=N;
+ V.Numeric:=True;
+End;
+
+Function PscFindVar(N:String):PPscVar;
+Var
+ P:PPscVar;
+Begin
+ N:=PscUp(PscTrimS(N));P:=PscVars;
+ While P<>Nil Do Begin
+  If P^.Name=N Then Begin
+   PscFindVar:=P;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+ PscFindVar:=Nil;
+End;
+
+Procedure PscGetV(N:String;Var V:TPscValue);
+Var
+ P:PPscVar;
+Begin
+ P:=PscFindVar(N);
+ If P=Nil Then PscVText(PscUp(N),V)
+  Else
+ Begin
+  V.Text:=P^.Text;
+  V.Num:=P^.Num;
+  V.Numeric:=P^.Numeric;
+ End;
+End;
+
+Procedure PscSetV(N:String;V:TPscValue);
+Var
+ P:PPscVar;
+Begin
+ N:=PscUp(PscTrimS(N));
+ P:=PscFindVar(N);
+ If P=Nil Then Begin
+  New(P);P^.Name:=N;
+  P^.Next:=PscVars;
+  PscVars:=P;
+ End;
+ P^.Text:=V.Text;
+ P^.Num:=V.Num;
+ P^.Numeric:=V.Numeric;
+End;
+
+Procedure PscDelV(N:String);
+Var
+ P,Q:PPscVar;
+Begin
+ N:=PscUp(N);
+ P:=PscVars;
+ Q:=Nil;
+ While P<>Nil Do Begin
+  If P^.Name=N Then Begin
+   If Q=Nil Then PscVars:=P^.Next
+            Else Q^.Next:=P^.Next;
+   Dispose(P);
+   Exit;
+  End;
+  Q:=P;
+  P:=P^.Next;
+ End;
+End;
+
+Function PscTruth(V:TPscValue):Boolean;Begin
+ PscTruth:=Not((V.Text='')or(V.Text='0')or(PscUp(V.Text)='FALSE'));
+End;
+
+Procedure PscSkip;Begin
+ While(PscEP<=Length(PscExpr))and(PscExpr[PscEP]in[' ',#9])Do Inc(PscEP);
+End;
+
+Function PscWord:String;
+Var
+ S:String;
+Begin
+ PscSkip;
+ S:='';
+ While(PscEP<=Length(PscExpr))and(PscExpr[PscEP]in['A'..'Z','a'..'z','0'..'9','_','.'])Do Begin
+  S:=S+PscExpr[PscEP];
+  Inc(PscEP);
+ End;
+ PscWord:=S;
+End;
+
+Procedure PscEvalE(Var V:TPscValue);Forward;
+Procedure PscEvalText(S:String;Var V:TPscValue);Forward;
+Procedure PscCallRoutine(Name,ArgText:String;WantResult:Boolean;Var V:TPscValue);Forward;
+
+Procedure PscPrimary(Var V:TPscValue);
+Var
+ Q:Char;
+ S,Nm,U,Idx:String;
+ N:Real;
+ C,I,Start:Integer;
+ A,B,D:TPscValue;
+Begin
+ PscSkip;
+ If PscEP>Length(PscExpr)Then Begin
+  PscVText('',V);
+  Exit;
+ End;
+ If PscExpr[PscEP]=''''Then Begin
+  Q:='''';
+  Inc(PscEP);
+  S:='';
+  While PscEP<=Length(PscExpr)Do Begin
+   If PscExpr[PscEP]=Q Then Begin
+    If(PscEP<Length(PscExpr))and(PscExpr[PscEP+1]=Q)Then Begin
+     S:=S+Q;Inc(PscEP,2);
+    End
+     Else
+    Begin
+     Inc(PscEP);
+     Break;
+    End;
+   End
+    Else
+   Begin
+    S:=S+PscExpr[PscEP];
+    Inc(PscEP);
+   End;
+  End;
+  PscVText(S,V);
+  Exit;
+ End;
+ If PscExpr[PscEP]='('Then Begin
+  Inc(PscEP);
+  PscEvalE(V);PscSkip;
+  If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]=')')Then Inc(PscEP);
+  Exit;
+ End;
+ If PscExpr[PscEP]in['0'..'9']Then Begin
+  S:='';
+  While(PscEP<=Length(PscExpr))and(PscExpr[PscEP]in['0'..'9','.'])Do Begin
+   S:=S+PscExpr[PscEP];Inc(PscEP);
+  End;
+  Val(S,N,C);
+  If C=0 Then PscVNum(N,V)
+         Else PscVText(S,V);
+  Exit;
+ End;
+ Nm:=PscWord;
+ U:=PscUp(Nm);
+ If U='TRUE'Then Begin
+  PscVText('True',V);
+  V.Num:=-1;
+  Exit;
+ End;
+ If U='FALSE'Then Begin
+  PscVText('False',V);
+  V.Num:=0;
+  Exit;
+ End;
+ PscSkip;
+ If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]='[')Then Begin
+  Inc(PscEP);
+  Start:=PscEP;
+  PscEvalE(A);
+  PscSkip;
+  If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]=']')Then Inc(PscEP);
+  Str(Trunc(A.Num),Idx);PscGetV(Nm+'['+PscTrimS(Idx)+']',V);
+  Exit;
+ End;
+ If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]='(')Then Begin
+  Inc(PscEP);Start:=PscEP;I:=0;Q:=#0;
+  While PscEP<=Length(PscExpr)Do Begin
+   If Q<>#0Then Begin
+    If PscExpr[PscEP]=Q Then Q:=#0;
+   End
+    Else
+   If PscExpr[PscEP]=''''Then Q:='''' Else
+   If PscExpr[PscEP]='('Then Inc(I)Else
+   If PscExpr[PscEP]=')'Then Begin
+    If I=0 Then Break
+           Else Dec(I);
+   End;
+   Inc(PscEP);
+  End;
+  S:=Copy(PscExpr,Start,PscEP-Start);
+  If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]=')')Then Inc(PscEP);
+  If U='INTTOSTR'Then Begin
+   PscEvalText(S,A);
+   PscVText(A.Text,V);
+   Exit;
+  End;
+  If U='FLOATTOSTR'Then Begin
+   PscEvalText(S,A);
+   PscVText(A.Text,V);
+   Exit;
+  End;
+  If U='VARTOSTR'Then Begin
+   PscEvalText(S,A);
+   PscVText(A.Text,V);
+   Exit;
+  End;
+  If U='LENGTH'Then Begin
+   PscEvalText(S,A);
+   PscGetV(A.Text+'$HIGH',B);
+   If B.Numeric Then PscVNum(B.Num+1,V)
+                Else PscVNum(Length(A.Text),V);
+   Exit;
+  End;
+  If U='LOW'Then Begin
+   PscEvalText(S,A);
+   PscGetV(A.Text+'$LOW',V);
+   If Not V.Numeric Then PscVNum(0,V);
+   Exit;
+  End;
+  If U='HIGH'Then Begin
+   PscEvalText(S,A);
+   PscGetV(A.Text+'$HIGH',V);
+   Exit;
+  End;
+  If U='UPPERCASE'Then Begin
+   PscEvalText(S,A);
+   PscVText(PscUp(A.Text),V);
+   Exit;
+  End;
+  If U='LOWERCASE'Then Begin
+   PscEvalText(S,A);
+   For I:=1To Length(A.Text)Do If A.Text[I]in['A'..'Z']Then A.Text[I]:=Chr(Ord(A.Text[I])+32);
+   PscVText(A.Text,V);
+   Exit;
+  End;
+  If U='COPY'Then Begin
+   I:=Pos(',',S);
+   PscEvalText(Copy(S,1,I-1),A);
+   Delete(S,1,I);
+   I:=Pos(',',S);
+   PscEvalText(Copy(S,1,I-1),B);
+   PscEvalText(Copy(S,I+1,255),D);
+   PscVText(Copy(A.Text,Trunc(B.Num),Trunc(D.Num)),V);
+   Exit;
+  End;
+  If U='POS'Then Begin
+   I:=Pos(',',S);
+   PscEvalText(Copy(S,1,I-1),A);
+   PscEvalText(Copy(S,I+1,255),B);
+   PscVNum(Pos(A.Text,B.Text),V);
+   Exit;
+  End;
+  If U='WSCRIPT.ARGUMENTS.ITEM'Then Begin
+   PscEvalText(S,A);
+   I:=Trunc(A.Num);
+   If(I>=0)and(I<PscArgCount)Then PscVText(PscArgs[I],V)
+                          Else PscVText('',V);
+   Exit;
+  End;
+  PscCallRoutine(Nm,S,True,V);
+  Exit;
+ End;
+ If U='WSCRIPT.SCRIPTNAME'Then PscVText(PscSourceName,V) Else
+ If U='WSCRIPT.FULLNAME'Then PscVText(PscSourceName,V) Else
+ If U='WSCRIPT.ARGUMENTS.COUNT'Then PscVNum(PscArgCount,V)
+                               Else PscGetV(Nm,V);
+End;
+
+Procedure PscUnary(Var V:TPscValue);Begin
+ PscSkip;
+ If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]='-')Then Begin
+  Inc(PscEP);
+  PscUnary(V);
+  PscVNum(-V.Num,V);
+ End
+  Else
+ PscPrimary(V);
+End;
+
+Procedure PscMul(Var V:TPscValue);
+Var
+ R:TPscValue;O:String;
+Begin
+ PscUnary(V);
+ While True Do Begin
+  PscSkip;O:='';
+  If Copy(PscUp(PscExpr),PscEP,3)='DIV'Then Begin
+   O:='D';
+   Inc(PscEP,3);
+  End
+   Else
+  If Copy(PscUp(PscExpr),PscEP,3)='MOD'Then Begin
+   O:='M';
+   Inc(PscEP,3);
+  End
+   Else
+  If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]in['*','/'])Then Begin
+   O:=PscExpr[PscEP];
+   Inc(PscEP);
+  End;
+  If O=''Then Exit;
+  PscUnary(R);
+  If(O='/')or(O='D')or(O='M')Then If R.Num=0Then Begin
+   PscRuntimeError:=True;PscVNum(0,V);
+   Exit;
+  End;
+  If O='*'Then PscVNum(V.Num*R.Num,V)Else
+  If O='/'Then PscVNum(V.Num/R.Num,V)Else
+  If O='D'Then PscVNum(Trunc(V.Num)div Trunc(R.Num),V)
+          Else PscVNum(Trunc(V.Num)mod Trunc(R.Num),V);
+ End;
+End;
+
+Procedure PscAdd(Var V:TPscValue);
+Var
+ R:TPscValue;
+ O:Char;
+Begin
+ PscMul(V);
+ While True Do Begin
+  PscSkip;
+  If(PscEP>Length(PscExpr))or Not(PscExpr[PscEP]in['+','-'])Then Exit;O:=PscExpr[PscEP];Inc(PscEP);PscMul(R);
+  If O='-'Then PscVNum(V.Num-R.Num,V)Else
+  If V.Numeric and R.Numeric Then PscVNum(V.Num+R.Num,V)
+                    Else PscVText(V.Text+R.Text,V);
+ End;
+End;
+
+Procedure PscEvalE(Var V:TPscValue);
+Var
+ R:TPscValue;
+ O,T:String;
+ B:Boolean;
+Begin
+ PscAdd(V);
+ PscSkip;
+ O:='';
+ T:=Copy(PscExpr,PscEP,2);
+ If(T='>=')or(T='<=')or(T='<>')Then Begin
+  O:=T;
+  Inc(PscEP,2);
+ End
+  Else
+ If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]in['=','<','>'])Then Begin
+  O:=PscExpr[PscEP];
+  Inc(PscEP);
+ End;
+ If O<>''Then Begin
+  PscAdd(R);
+  If V.Numeric and R.Numeric Then Begin
+   If O='='Then B:=V.Num=R.Num Else
+   If O='<>'Then B:=V.Num<>R.Num Else
+   If O='<'Then B:=V.Num<R.Num Else
+   If O='>'Then B:=V.Num>R.Num Else
+   If O='<='Then B:=V.Num<=R.Num Else B:=V.Num>=R.Num;
+  End
+   Else
+  Begin
+   If O='='Then B:=PscUp(V.Text)=PscUp(R.Text)Else
+   If O='<>'Then B:=PscUp(V.Text)<>PscUp(R.Text)Else
+   If O='<'Then B:=V.Text<R.Text Else
+   If O='>'Then B:=V.Text>R.Text Else
+   If O='<='Then B:=V.Text<=R.Text
+            Else B:=V.Text>=R.Text;
+  End;
+  If B Then PscVText('True',V)
+       Else PscVText('False',V);
+ End;
+End;
+
+Procedure PscEvalText(S:String;Var V:TPscValue);
+Var
+ SaveE:String;
+ SaveP:Integer;
+Begin
+ SaveE:=PscExpr;
+ SaveP:=PscEP;
+ PscExpr:=PscTrimS(S);
+ PscEP:=1;PscEvalE(V);
+ PscExpr:=SaveE;
+ PscEP:=SaveP;
+End;
+
+Function PscMatchEnd(B:LongInt):LongInt;
+Var
+ I:LongInt;
+ D:Integer;
+ S:String;
+Begin
+ D:=1;
+ For I:=B+1 To PscLineCount Do Begin
+  S:=PscUp(PscClean(PscLS(I)));
+  If S='BEGIN'Then Inc(D)Else
+  If PscStarts(S,'CASE ')or(S='TRY')Then Inc(D)Else
+  If(S='END')or(S='END.')Then Dec(D);
+  If D=0 Then Begin
+   PscMatchEnd:=I;
+   Exit;
+  End;
+ End;
+ PscMatchEnd:=PscLineCount;
+End;
+
+Procedure PscExecRange(A,B:LongInt);Forward;
+
+Function PscBodyEnd(Control:LongInt;Var BS,BE:LongInt):LongInt;
+Var
+ N:LongInt;
+Begin
+ N:=Control+1;
+ While(N<=PscLineCount)and(PscClean(PscLS(N))='')Do Inc(N);If PscUp(PscClean(PscLS(N)))='BEGIN'Then Begin
+  BS:=N+1;
+  BE:=PscMatchEnd(N)-1;
+  PscBodyEnd:=BE+1;
+ End
+  Else
+ Begin
+  BS:=N;BE:=N;PscBodyEnd:=N;
+ End;
+End;
+
+Procedure PscSaveBind(N,Actual:String;ByR:Boolean;V:TPscValue;Var H:PPscBind);
+Var
+ P:PPscBind;
+ X:PPscVar;
+Begin
+ New(P);P^.Name:=PscUp(N);P^.Actual:=PscUp(Actual);P^.ByRef:=ByR;X:=PscFindVar(N);P^.Had:=X<>Nil;
+ If X<>Nil Then Begin
+  P^.Old.Text:=X^.Text;P^.Old.Num:=X^.Num;P^.Old.Numeric:=X^.Numeric;
+ End;
+ P^.Next:=H;H:=P;PscSetV(N,V);
+End;
+
+Procedure PscRestore(Var H:PPscBind);
+Var
+ P:PPscBind;V:TPscValue;
+Begin
+ While H<>Nil Do Begin
+  P:=H^.Next;
+  PscGetV(H^.Name,V);
+  If H^.ByRef and(H^.Actual<>'')Then PscSetV(H^.Actual,V);
+  If H^.Had Then PscSetV(H^.Name,H^.Old)
+            Else PscDelV(H^.Name);
+  Dispose(H);
+  H:=P;
+ End;
+End;
+
+Function PscNextItem(Var S:String;Sep:Char):String;
+Var
+ I,D:Integer;
+ Q:Char;
+Begin
+ I:=1;D:=0;Q:=#0;
+ While I<=Length(S)Do Begin
+  If Q<>#0Then Begin
+   If S[I]=Q Then Q:=#0;
+  End
+   Else
+  If S[I]=''''Then Q:='''' Else
+  If S[I]='('Then Inc(D)Else
+  If S[I]=')'Then Dec(D)Else
+  If(S[I]=Sep)and(D=0)Then Begin
+   PscNextItem:=PscTrimS(Copy(S,1,I-1));
+   Delete(S,1,I);Exit;
+  End;
+  Inc(I);
+ End;
+ PscNextItem:=PscTrimS(S);
+ S:='';
+End;
+
+Procedure PscCallRoutine(Name,ArgText:String;WantResult:Boolean;Var V:TPscValue);
+Var
+ I,P,BS,BE:LongInt;
+ S,U,DN,Params,One,PN,AE:String;
+ IsFunc,ByR:Boolean;
+ H:PPscBind;
+ AV,Empty:TPscValue;
+ Found:Boolean;
+Begin
+ Found:=False;IsFunc:=False;BS:=0;
+ For I:=1 To PscLineCount Do Begin
+  S:=PscClean(PscLS(I));U:=PscUp(S);
+  If PscStarts(U,'PROCEDURE ')or PscStarts(U,'FUNCTION ')Then Begin
+   IsFunc:=PscStarts(U,'FUNCTION ');
+   If IsFunc Then Delete(S,1,9)
+             Else Delete(S,1,10);
+   P:=Pos('(',S);
+   If P=0 Then DN:=PscTrimS(S)
+          Else DN:=PscTrimS(Copy(S,1,P-1));
+   If PscUp(DN)=PscUp(Name)Then Begin
+    Found:=True;
+    If P>0Then Begin
+     Params:=Copy(S,P+1,255);
+     P:=Pos(')',Params);
+     If P>0Then Params:=Copy(Params,1,P-1);
+    End
+     Else
+    Params:='';BS:=I+1;
+    While PscUp(PscClean(PscLS(BS)))<>'BEGIN'Do Inc(BS);
+    BE:=PscMatchEnd(BS);
+    Break;
+    End;
+  End;
+ End;
+ If Not Found Then Begin
+  PscVText('',V);
+  PscRuntimeError:=True;
+  Exit;
+ End;
+ H:=Nil;
+ PscVText('',Empty);
+ If IsFunc Then PscSaveBind('RESULT','',False,Empty,H);
+ While Params<>''Do Begin
+  One:=PscNextItem(Params,';');
+  ByR:=PscStarts(One,'VAR ');
+  If ByR Then Delete(One,1,4)Else
+  If PscStarts(One,'CONST ')Then Delete(One,1,6);
+  P:=Pos(':',One);
+  If P>0Then One:=Copy(One,1,P-1);While One<>''Do Begin
+   PN:=PscNextItem(One,',');
+   AE:=PscNextItem(ArgText,',');
+   PscEvalText(AE,AV);
+   PscSaveBind(PN,AE,ByR,AV,H);
+  End;
+ End;
+ PscStopRoutine:=False;
+ PscExecRange(BS+1,BE-1);
+ PscStopRoutine:=False;
+ If WantResult Then PscGetV('RESULT',V);PscRestore(H);
+End;
+
+Procedure PscAssignStmt(S:String);
+Var
+ P,I:Integer;
+ N,E,Idx:String;
+ V,X:TPscValue;
+Begin
+ P:=Pos(':=',S);
+ If P=0Then Exit;
+ N:=PscTrimS(Copy(S,1,P-1));
+ E:=Copy(S,P+2,255);
+ PscEvalText(E,V);
+ I:=Pos('[',N);
+ If(I>0)and(N[Length(N)]=']')Then Begin
+  PscEvalText(Copy(N,I+1,Length(N)-I-1),X);
+  Str(Trunc(X.Num),Idx);N:=Copy(N,1,I-1)+'['+PscTrimS(Idx)+']';
+ End;
+ PscSetV(N,V);
+End;
+
+Procedure PscExecSimple(S:String);
+Var
+ P,I:Integer;
+ N,A:String;
+ V,X:TPscValue;
+Begin
+ S:=PscClean(S);
+ If S=''Then Exit;
+ If PscUp(S)='EXIT'Then Begin
+  PscStopRoutine:=True;
+  Exit;
+ End;
+ If PscStarts(S,'WSCRIPT.ECHO(')Then Begin
+  A:=Copy(S,14,Length(S)-14);
+  If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
+  PscEvalText(A,V);PscWL(V.Text);
+  Exit;
+ End;
+ If PscStarts(S,'SETLENGTH(')Then Begin
+  A:=Copy(S,11,Length(S)-11);
+  If A[Length(A)]=')'Then Delete(A,Length(A),1);
+  P:=Pos(',',A);
+  N:=PscTrimS(Copy(A,1,P-1));
+  PscEvalText(Copy(A,P+1,255),V);
+  PscVNum(0,X);
+  PscSetV(N+'$LOW',X);
+  PscVNum(Trunc(V.Num)-1,X);
+  PscSetV(N+'$HIGH',X);
+  Exit;
+ End;
+ If Pos(':=',S)>0Then Begin
+  PscAssignStmt(S);
+  Exit;
+ End;
+ P:=Pos('(',S);If P>0Then Begin
+  N:=PscTrimS(Copy(S,1,P-1));
+  A:=Copy(S,P+1,255);
+  If A[Length(A)]=')'Then Delete(A,Length(A),1);
+  PscCallRoutine(N,A,False,V);
+  Exit;
+ End;
+ PscCallRoutine(S,'',False,V);
+End;
+
+Procedure PscExecIf(L,Limit:LongInt;Var Used:LongInt);
+Var
+ S,C:String;
+ P:Integer;
+ V:TPscValue;
+ BS,BE,N,Cur,Last:LongInt;
+ Taken:Boolean;
+Begin
+ Cur:=L;Taken:=False;Last:=L;
+ While Cur<=Limit Do Begin
+  S:=PscClean(PscLS(Cur));If PscStarts(S,'ELSE IF ')Then Delete(S,1,5);Delete(S,1,3);
+  P:=Pos(' THEN',PscUp(S));C:=Copy(S,1,P-1);PscEvalText(C,V);
+  Last:=PscBodyEnd(Cur,BS,BE);If(Not Taken)and PscTruth(V)Then Begin PscExecRange(BS,BE);Taken:=True;End;
+  N:=Last+1;While(N<=Limit)and(PscClean(PscLS(N))='')Do Inc(N);
+  If PscStarts(PscClean(PscLS(N)),'ELSE IF ')Then Cur:=N
+  Else Begin
+   If PscUp(PscClean(PscLS(N)))='ELSE'Then Begin Last:=PscBodyEnd(N,BS,BE);If Not Taken Then PscExecRange(BS,BE);End;
+   Used:=Last;Exit;
+  End;
+ End;
+ Used:=Last;
+End;
+
+Procedure PscExecRange(A,B:LongInt);
+Var
+ I,J,BS,BE,After,P,K:LongInt;
+ S,U,C,Nm,Rest,Item:String;
+ V,SV,EV,Step:TPscValue;Down,Chosen:Boolean;
+Begin
+ I:=A;
+ While(I<=B)and Not PscStopRoutine and Not PscRuntimeError and Not PscAbortRequested Do Begin
+  PscCheckAbort;
+  If PscAbortRequested Then Exit;
+  S:=PscClean(PscLS(I));
+  U:=PscUp(S);
+  If(S='')or(S[1]='{')or(U='BEGIN')or(U='END')Then Begin
+   Inc(I);
+   Continue;
+  End;
+  If PscStarts(U,'PROCEDURE ')or PscStarts(U,'FUNCTION ')Then Begin
+   J:=I+1;
+   While PscUp(PscClean(PscLS(J)))<>'BEGIN'Do Inc(J);
+   I:=PscMatchEnd(J)+1;
+   Continue;
+  End;
+ If PscStarts(U,'IF ')Then Begin PscExecIf(I,B,J);I:=J+1;Continue;End;
+ If PscStarts(U,'FOR ')Then Begin
+  Rest:=Copy(S,5,255);
+  P:=Pos(':=',Rest);
+  Nm:=PscTrimS(Copy(Rest,1,P-1));
+  Delete(Rest,1,P+1);
+  Down:=Pos(' DOWNTO ',PscUp(Rest))>0;
+  If Down Then P:=Pos(' DOWNTO ',PscUp(Rest))
+          Else P:=Pos(' TO ',PscUp(Rest));
+  PscEvalText(Copy(Rest,1,P-1),SV);
+  If Down Then Delete(Rest,1,P+7)
+          Else Delete(Rest,1,P+3);
+  P:=Pos(' DO',PscUp(Rest));
+  PscEvalText(Copy(Rest,1,P-1),EV);
+  After:=PscBodyEnd(I,BS,BE);
+  If Down Then PscVNum(-1,Step)
+          Else PscVNum(1,Step);
+  V:=SV;
+  While(((Not Down)and(V.Num<=EV.Num))or(Down and(V.Num>=EV.Num)))
+    And Not PscAbortRequested Do Begin
+   PscSetV(Nm,V);
+   PscExecRange(BS,BE);
+   PscCheckAbort;
+   PscVNum(V.Num+Step.Num,V);
+  End;
+  I:=After+1;
+  Continue;
+ End;
+ If PscStarts(U,'WHILE ')Then Begin
+  P:=Pos(' DO',U);
+  C:=Copy(S,7,P-7);
+  After:=PscBodyEnd(I,BS,BE);
+  PscEvalText(C,V);
+  While PscTruth(V) And Not PscAbortRequested Do Begin
+   PscExecRange(BS,BE);
+   PscCheckAbort;
+   PscEvalText(C,V);
+  End;
+  I:=After+1;
+  Continue;
+ End;
+ If U='REPEAT'Then Begin
+  J:=I+1;
+  While Not PscStarts(PscClean(PscLS(J)),'UNTIL ')Do Inc(J);
+  C:=Copy(PscClean(PscLS(J)),7,255);
+  Repeat
+   PscExecRange(I+1,J-1);
+   PscCheckAbort;
+   PscEvalText(C,V);
+  Until PscTruth(V)Or PscAbortRequested;I:=J+1;
+  Continue;
+ End;
+ If PscStarts(U,'CASE ')Then Begin
+  P:=Pos(' OF',U);
+  PscEvalText(Copy(S,6,P-6),V);
+  J:=I+1;
+  Chosen:=False;
+  While(J<=B)and(PscUp(PscClean(PscLS(J)))<>'END')Do Begin
+   Rest:=PscClean(PscLS(J));
+   If PscUp(Rest)='ELSE'Then Begin
+    If Not Chosen Then Begin
+     Inc(J);
+     PscExecSimple(PscLS(J));
+     Chosen:=True;
+    End;
+   End
+    Else
+   Begin
+    P:=Pos(':',Rest);
+    If(P>0)and Not Chosen Then Begin
+     C:=Copy(Rest,1,P-1);
+     While C<>''Do Begin
+      Item:=PscNextItem(C,',');
+      PscEvalText(Item,SV);
+      If(V.Numeric and SV.Numeric and(SV.Num=V.Num))or
+        ((Not V.Numeric or Not SV.Numeric)and
+        (PscUp(SV.Text)=PscUp(V.Text)))Then Chosen:=True;
+     End;
+     If Chosen Then PscExecSimple(Copy(Rest,P+1,255));
+    End;
+   End;
+   Inc(J);
+   End;
+   I:=J+1;
+   Continue;
+  End;
+  If U='TRY'Then Begin
+   J:=I+1;
+   While PscUp(PscClean(PscLS(J)))<>'EXCEPT'Do Inc(J);
+   K:=J+1;
+   While PscUp(PscClean(PscLS(K)))<>'END'Do Inc(K);
+   PscRuntimeError:=False;
+   PscExecRange(I+1,J-1);
+   If PscRuntimeError Then Begin
+    PscRuntimeError:=False;
+    PscExecRange(J+1,K-1);
+   End;
+   I:=K+1;
+   Continue;
+  End;
+  If(U='VAR')or(U='TYPE')or PscStarts(U,'ARRAY')or((Pos(':',S)>0)and
+    (Pos(':=',S)=0)and(Pos('(',S)=0))Then Begin
+   Inc(I);
+   Continue;
+  End;
+  PscExecSimple(S);Inc(I);
+ End;
+End;
+
+Function PscMainBegin:LongInt;
+Var
+ I,J:LongInt;
+ S:String;
+Begin
+ I:=1;
+ While I<=PscLineCount Do Begin
+  S:=PscUp(PscClean(PscLS(I)));
+  If PscStarts(S,'PROCEDURE ')or PscStarts(S,'FUNCTION ')Then Begin
+   J:=I+1;
+   While PscUp(PscClean(PscLS(J)))<>'BEGIN'Do Inc(J);
+   I:=PscMatchEnd(J)+1;
+  End
+   Else
+  If S='BEGIN'Then Begin
+   PscMainBegin:=I;
+   Exit;
+  End
+   Else
+  Inc(I);
+ End;
+ PscMainBegin:=0;
+End;
+
+Procedure PscLoad;
+Var
+ F:Text;
+ S:String;
+ C:Integer;
+Begin
+ {$I-}Assign(F,PscSourceName);
+ Reset(F);{$I+}
+ C:=IoResult;
+ If C<>0Then Begin
+  PscWL('PSCRIPT: fichier introuvable: '+PscSourceName);
+  PscTerminated:=True;
+  PscExitCode:=1;
+  Exit;
+ End;
+ While Not Eof(F)Do Begin
+  ReadLn(F,S);
+  PscAddLine(S);
+ End;
+ Close(F);
+End;
+
+Procedure PscInitDeclarations;
+Var
+ I,P,Q,R,C:Integer;
+ S,N,L,H:String;
+ X:Real;
+ V:TPscValue;
+Begin
+ For I:=1 To PscLineCount Do Begin
+  S:=PscClean(PscLS(I));
+  P:=Pos(':',S);
+  Q:=Pos('ARRAY[',PscUp(S));
+  If(P>0)and(Q>P)Then Begin
+   N:=PscTrimS(Copy(S,1,P-1));
+   R:=Pos('..',S);
+   If R>Q Then Begin
+    L:=PscTrimS(Copy(S,Q+6,R-Q-6));Q:=Pos(']',S);
+    H:=PscTrimS(Copy(S,R+2,Q-R-2));Val(L,X,C);
+    If C=0Then Begin
+     PscVNum(X,V);
+     PscSetV(N+'$LOW',V);
+    End;
+    Val(H,X,C);
+    If C=0Then Begin
+     PscVNum(X,V);
+     PscSetV(N+'$HIGH',V);
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ --- PSCRIPT --- (point d'entree commun aux 3 shells) }
+
+Procedure TermCmd_PSCRIPT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I: Integer;
+ M: LongInt;
+ NextPscLine: PPscLine;
+ NextPscVar: PPscVar;
+Begin
+ PscTermTP := @TP;
+ PscOutLine := '';
+ PscFirstLine:=Nil;PscLastLine:=Nil;PscVars:=Nil;PscLineCount:=0;
+ PscArgCount:=0;PscStopRoutine:=False;PscRuntimeError:=False;PscExitCode:=0;
+ PscTerminated:=False;
+ PscAbortRequested:=False;
+
+ PscRawArgCount := 0;
+ While (TermExtractParam(ParamStr, PscRawArgCount+1) <> '') And
+       (PscRawArgCount < 128) Do Inc(PscRawArgCount);
+ For I := 1 To PscRawArgCount Do PscRawArgs[I] := TermExtractParam(ParamStr, I);
+
+ If (PscRawArgCount >= 1) And
+    ((PscRawArgs[1] = '/?') Or (PscRawArgs[1] = '--help') Or
+     (PscRawArgs[1] = '-h') Or (PscRawArgs[1] = '/h') Or
+     (PscRawArgs[1] = '/H')) Then Begin
+  PscWL('PSCRIPT : Cette commande permet de lancer l''interpreteur ' +
+   'de PascalScript.');
+  PscWLBlank;
+  PscWL('Syntaxe : PSCRIPT script.psc [arguments]');
+  PscWLBlank;
+  PscWL(' script.psc  Ce parametre permet d''indiquer le fichier PascalScript');
+  PscTerminated := True;
+ End;
+
+ If (Not PscTerminated) And (PscRawArgCount < 1) Then Begin
+  PscWL('PSCRIPT - Interpreteur PascalScript console');
+  PscWL('Syntaxe: PSCRIPT script.psc [arguments]');
+  PscTerminated := True;
+  PscExitCode := 1;
+ End;
+
+ If Not PscTerminated Then Begin
+  PscSourceName := PscRawArgs[1];
+  For I := 2 To PscRawArgCount Do If PscArgCount < 128 Then Begin
+   PscArgs[PscArgCount] := PscRawArgs[I];
+   Inc(PscArgCount);
+  End;
+  PscLoad;
+  If Not PscTerminated Then Begin
+   PscInitDeclarations;
+   M := PscMainBegin;
+   If M = 0 Then Begin
+    PscWL('PSCRIPT: bloc principal BEGIN introuvable.');
+    PscExitCode := 1;
+   End Else Begin
+    PscExecRange(M + 1, PscMatchEnd(M) - 1);
+    If PscRuntimeError Then Begin
+     PscWL('PSCRIPT: erreur d''execution.');
+     PscExitCode := 1;
+    End;
+   End;
+  End;
+ End;
+
+ { Nettoyage identique a CSCRIPT/LHICE : evite une fuite memoire d une     }
+ { invocation a l autre dans ce processus IDE de longue duree. }
+ While PscFirstLine <> Nil Do Begin
+  NextPscLine := PscFirstLine^.Next;
+  Dispose(PscFirstLine);
+  PscFirstLine := NextPscLine;
+ End;
+ While PscVars <> Nil Do Begin
+  NextPscVar := PscVars^.Next;
+  Dispose(PscVars);
+  PscVars := NextPscVar;
+ End;
+
+ If PscOutLine <> '' Then PscFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -59730,6 +60846,17 @@ Begin
    '  CSCRIPT //T:secondes script.vbs    Delai d''execution maximal');
   TermAddLine(TP,
    '  CSCRIPT /? ou //?                  Aide complete');
+ End;
+ { PSCRIPT (2026-08-31, demande explicite de l'utilisateur, "support        }
+ { complet") - meme 3 shells que CSCRIPT ci-dessus, voir TermCmd_PSCRIPT. }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- PSCRIPT (interprete PascalScript console) ---');
+  TermAddLine(TP,
+   '  PSCRIPT script.psc [arguments]     Executer un script PascalScript');
+  TermAddLine(TP,
+   '  PSCRIPT /? ou -h                   Aide complete');
  End;
  { Compress-Archive (2026-08-31, demande explicite - VRAIE compression      }
  { Deflate LZ77+Huffman fixe, reutilise la table CRC-32 et les arbres de    }
@@ -60180,7 +61307,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 86;
+ PS_CMD_ALIASES = 87;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -60232,6 +61359,7 @@ Const
   'UNZIP',
   'LHICE',
   'CSCRIPT',
+  'PSCRIPT',
   'DATE',
   'TIME',
   'VER',
@@ -60298,6 +61426,7 @@ Const
   48,
   62,
   63,
+  64,
   49,
   50,
   51,
@@ -60595,6 +61724,8 @@ Begin
     TermCmd_LHICE(TP, ParamStr)
    Else If CurrCmd = 'CSCRIPT' Then
     TermCmd_CSCRIPT(TP, ParamStr)
+   Else If CurrCmd = 'PSCRIPT' Then
+    TermCmd_PSCRIPT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -60749,6 +61880,7 @@ Begin
     48: TermCmd_UNZIP(TP, ParamStr);
     62: TermCmd_LHICE(TP, ParamStr);
     63: TermCmd_CSCRIPT(TP, ParamStr);
+    64: TermCmd_PSCRIPT(TP, ParamStr);
     49: TermCmd_DATE(TP);
     50: TermCmd_TIME(TP);
     51: TermCmd_VER(TP);
@@ -60964,6 +62096,8 @@ Begin
    TermCmd_LHICE(TP, ParamStr)
   Else If CurrCmd = 'CSCRIPT' Then
    TermCmd_CSCRIPT(TP, ParamStr)
+  Else If CurrCmd = 'PSCRIPT' Then
+   TermCmd_PSCRIPT(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -122256,6 +123390,22 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   TermCmd_CSCRIPT(TermPanels[ActiveShell], Opts.VBScriptFile);
+ End;
+ { /PASCALSCRIPT:fichier.psc - meme principe exact que /VBSCRIPT: ci-dessus}
+ { mais lance PSCRIPT (TermCmd_PSCRIPT, voir [[project_devenv_pscript]]).  }
+ If Opts.PascalScriptFile <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_CMD;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  TermCmd_PSCRIPT(TermPanels[ActiveShell], Opts.PascalScriptFile);
  End;
  { /PS:fichier.ps1 - meme principe exact que /TERMINALDOS:/                }
  { /TERMINALOS2: ci-dessus, mais ouvre "PowerShell dev" (SK_POWERSHELL) -   }
