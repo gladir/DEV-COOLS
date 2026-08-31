@@ -69,6 +69,7 @@ Var
  ExprText:String;
  ExprPos:Integer;
  Terminated,ExitDoRequested,ExitForRequested,ExitSubRequested,ExitFunctionRequested:Boolean;
+ OnErrorResumeNext:Boolean;
  ExitCode:Integer;
  ArrayCounter:LongInt;
 
@@ -931,10 +932,48 @@ Begin
  End;
 End;
 
+Function FindLoopEnd(StartLine:LongInt):LongInt;
+Var I:LongInt;Depth:Integer;S:String;
+Begin
+ Depth:=1;
+ For I:=StartLine+1To LineCount Do Begin
+  S:=Upper(Trim(ScriptLineText(I)));
+  If(S='DO')or StartsWith(S,'DO WHILE ')or StartsWith(S,'DO UNTIL ')Then Inc(Depth)
+  Else If StartsWith(S,'LOOP')Then Dec(Depth);
+  If Depth=0Then Begin FindLoopEnd:=I;Exit;End;
+ End;
+ FindLoopEnd:=LineCount;
+End;
+
+Function KeywordOutsideQuotes(Source,Keyword:String):Integer;
+Var I:Integer;Quote:Char;
+Begin
+ KeywordOutsideQuotes:=0;Quote:=#0;I:=1;
+ While I<=Length(Source)-Length(Keyword)+1Do Begin
+  If Quote<>#0Then Begin
+   If Source[I]=Quote Then Begin
+    If(I<Length(Source))and(Source[I+1]=Quote)Then Inc(I)Else Quote:=#0;
+   End;
+  End Else If Source[I]in['''','"']Then Quote:=Source[I]
+  Else If Upper(Copy(Source,I,Length(Keyword)))=Upper(Keyword)Then Begin
+   KeywordOutsideQuotes:=I;Exit;
+  End;
+  Inc(I);
+ End;
+End;
+
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);Forward;
 Procedure CallSub(CallText:String);Forward;
 Function ListItem(Var Source:String):String;Forward;
 Function SimpleIdentifier(Source:String):Boolean;Forward;
+Procedure ExecuteStatementList(Source:String);Forward;
+
+Procedure ScriptError(MessageText:String;StopScript:Boolean);
+Begin
+ If OnErrorResumeNext Then Exit;
+ If Not BatchMode Then WriteLn('Erreur VBScript: ',MessageText);
+ ExitCode:=1;If StopScript Then Terminated:=True;
+End;
 
 Procedure DeclareVariable(Declaration:String);
 Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound:TValue;ArrayValue:TValue;
@@ -954,15 +993,127 @@ Begin
  MakeText(Reference,ArrayValue);ArrayValue.ValueKind:=ValueArray;SetVariableValue(Name,ArrayValue);
 End;
 
+Procedure RemoveArrayElementsFrom(Reference:String;FirstRemoved:LongInt);
+Var P,Previous,NextVariable:PVariable;Suffix:String;ElementNumber:LongInt;Code:Integer;
+ Removed:Boolean;
+Begin
+ Reference:=Upper(Reference)+'.';P:=Variables;Previous:=Nil;
+ While P<>Nil Do Begin
+  NextVariable:=P^.Next;Removed:=False;
+  If Copy(P^.Name,1,Length(Reference))=Reference Then Begin
+   Suffix:=Copy(P^.Name,Length(Reference)+1,255);Val(Suffix,ElementNumber,Code);
+   If(Code=0)and(ElementNumber>=FirstRemoved)Then Begin
+    If Previous=Nil Then Variables:=NextVariable Else Previous^.Next:=NextVariable;
+    Dispose(P);Removed:=True;
+   End;
+  End;
+  If Not Removed Then Previous:=P;P:=NextVariable;
+ End;
+End;
+
+Procedure ResizeArray(Declaration:String;PreserveValues:Boolean);
+Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound,Stored,ArrayValue:TValue;
+ VariableEntry:PVariable;NewCount:LongInt;
+Begin
+ Declaration:=Trim(Declaration);P:=Pos('(',Declaration);
+ If(P=0)or(Declaration[Length(Declaration)]<>')')Then Begin
+  ScriptError('REDIM exige une borne de tableau.',True);Exit;
+ End;
+ Name:=Trim(Copy(Declaration,1,P-1));Bounds:=Copy(Declaration,P+1,Length(Declaration)-P-1);
+ If Pos(',',Bounds)>0Then Begin ScriptError('REDIM multidimensionnel non supporte.',True);Exit;End;
+ Evaluate(Bounds,UpperBound);
+ If(Not UpperBound.IsNumber)or(UpperBound.Number<0)Then Begin
+  ScriptError('borne REDIM invalide.',True);Exit;
+ End;
+ NewCount:=Trunc(UpperBound.Number)+1;VariableEntry:=FindVariable(Name);
+ If(VariableEntry<>Nil)and(VariableEntry^.ValueKind=ValueArray)Then Begin
+  Reference:=VariableEntry^.Value;GetVariable(Reference+'.DYNAMIC',Stored);
+  If Stored.Text<>'1'Then Begin ScriptError('REDIM exige un tableau dynamique.',True);Exit;End;
+ End Else Begin
+  If PreserveValues Then Begin ScriptError('REDIM PRESERVE exige un tableau existant.',True);Exit;End;
+  Inc(ArrayCounter);Str(ArrayCounter,NumberText);Reference:='@VBARRAY'+Trim(NumberText);
+ End;
+ If PreserveValues Then RemoveArrayElementsFrom(Reference,NewCount)
+ Else RemoveVariablesWithPrefix(Reference+'.');
+ Str(NewCount,NumberText);SetVariable(Reference+'.COUNT',Trim(NumberText));
+ SetVariable(Reference+'.DYNAMIC','1');MakeText(Reference,ArrayValue);
+ ArrayValue.ValueKind:=ValueArray;SetVariableValue(Name,ArrayValue);
+End;
+
+Procedure DeclareStaticVariable(Declaration:String);
+Var Name:String;P:Integer;
+Begin
+ Declaration:=Trim(Declaration);P:=Pos('(',Declaration);
+ If P=0Then Name:=Declaration Else Name:=Trim(Copy(Declaration,1,P-1));
+ If FindVariable(Name)=Nil Then DeclareVariable(Declaration);
+End;
+
+Function UserSubExists(CallText:String):Boolean;
+Var I,P:Integer;CallName,Declaration,DeclarationName:String;
+Begin
+ CallText:=Trim(CallText);P:=Pos('(',CallText);If P=0Then P:=Pos(' ',CallText);
+ If P=0Then CallName:=CallText Else CallName:=Copy(CallText,1,P-1);
+ UserSubExists:=False;
+ For I:=1To LineCount Do Begin
+  Declaration:=Trim(ScriptLineText(I));
+  If StartsWith(Declaration,'PUBLIC SUB ')Then Delete(Declaration,1,7)
+  Else If StartsWith(Declaration,'PRIVATE SUB ')Then Delete(Declaration,1,8);
+  If StartsWith(Declaration,'SUB ')Then Begin
+   Delete(Declaration,1,4);P:=Pos('(',Declaration);If P=0Then P:=Pos(' ',Declaration);
+   If P=0Then DeclarationName:=Trim(Declaration)
+   Else DeclarationName:=Trim(Copy(Declaration,1,P-1));
+   If Upper(DeclarationName)=Upper(CallName)Then Begin UserSubExists:=True;Exit;End;
+  End;
+ End;
+End;
+
+Procedure AlignStringAssignment(StatementText:String;AlignRight:Boolean);
+Var Name,SourceText,ResultText:String;P,TargetLength:Integer;Value,OldValue:TValue;
+Begin
+ P:=FindAssignment(StatementText);
+ If P=0Then Begin
+  If AlignRight Then ScriptError('RSET exige une affectation.',True)
+  Else ScriptError('LSET exige une affectation.',True);Exit;
+ End;
+ Name:=Trim(Copy(StatementText,1,P-1));SourceText:=Copy(StatementText,P+1,255);
+ Evaluate(SourceText,Value);GetVariable(Name,OldValue);TargetLength:=Length(OldValue.Text);
+ If TargetLength=0Then TargetLength:=Length(Value.Text);
+ If Length(Value.Text)>TargetLength Then ResultText:=Copy(Value.Text,1,TargetLength)
+ Else Begin ResultText:=Value.Text;
+  If AlignRight Then While Length(ResultText)<TargetLength Do ResultText:=' '+ResultText
+  Else While Length(ResultText)<TargetLength Do ResultText:=ResultText+' ';
+ End;
+ MakeText(ResultText,Value);Value.ValueKind:=ValueString;SetVariableValue(Name,Value);
+End;
+
 Procedure ExecuteStatement(S:String);
 Var U,Name,RightSide,BaseName,IndexText:String;P,I:Integer;
- V,IndexValue:TValue;ArrayVariable:PVariable;
+ V,IndexValue:TValue;ArrayVariable:PVariable;WasLet,WasSet:Boolean;
 Begin
- S:=Trim(S);If(S='')or(S[1]='''')or StartsWith(S,'REM ')Then Exit;U:=Upper(S);
+ S:=Trim(S);If(S='')or(S[1]='''')or(Upper(S)='REM')or StartsWith(S,'REM ')Then Exit;
+ U:=Upper(S);WasLet:=False;WasSet:=False;
  If StartsWith(S,'DIM ')Then Begin
   Delete(S,1,4);Repeat Name:=ListItem(S);DeclareVariable(Name);Until S='';Exit;End;
+ If StartsWith(S,'PRIVATE ')Then Begin
+  Delete(S,1,8);Repeat Name:=ListItem(S);DeclareVariable(Name);Until S='';Exit;End;
+ If StartsWith(S,'PUBLIC ')Then Begin
+  Delete(S,1,7);Repeat Name:=ListItem(S);DeclareVariable(Name);Until S='';Exit;End;
+ If StartsWith(S,'STATIC ')Then Begin
+  Delete(S,1,7);Repeat Name:=ListItem(S);DeclareStaticVariable(Name);Until S='';Exit;End;
  If StartsWith(S,'ERASE ')Then Begin
   Delete(S,1,6);Repeat Name:=ListItem(S);EraseVariable(Name);Until S='';Exit;End;
+ If StartsWith(S,'REDIM ')Then Begin
+  Delete(S,1,6);WasLet:=False;
+  If StartsWith(S,'PRESERVE ')Then Begin Delete(S,1,9);WasLet:=True;End;
+  Repeat Name:=ListItem(S);ResizeArray(Name,WasLet);Until(S='')or Terminated;Exit;
+ End;
+ If U='ON ERROR RESUME NEXT'Then Begin OnErrorResumeNext:=True;Exit;End;
+ If(U='ON ERROR GOTO 0')or(U='ON ERROR GO TO 0')Then Begin OnErrorResumeNext:=False;Exit;End;
+ If StartsWith(U,'ON ERROR ')Then Begin ScriptError('forme ON ERROR non supportee: '+S,False);Exit;End;
+ If StartsWith(S,'LSET ')Then Begin
+  Delete(S,1,5);AlignStringAssignment(S,False);Exit;
+ End;
+ If StartsWith(S,'RSET ')Then Begin Delete(S,1,5);AlignStringAssignment(S,True);Exit;End;
  If U='EXIT DO'Then Begin ExitDoRequested:=True;Exit;End;
  If U='EXIT FOR'Then Begin ExitForRequested:=True;Exit;End;
  If U='EXIT SUB'Then Begin ExitSubRequested:=True;Exit;End;
@@ -984,13 +1135,14 @@ Begin
  End
   Else
  If StartsWith(S,'Randomize')Then Begin
-  Randomize;
+  RightSide:=Trim(Copy(S,10,255));
+  If RightSide=''Then Randomize Else Begin Evaluate(RightSide,V);RandSeed:=Trunc(V.Number);End;
   Exit;
  End
-  Else
+ Else
  Begin
-  If StartsWith(S,'SET ')Then Delete(S,1,4);
-  If StartsWith(S,'LET ')Then Delete(S,1,4);
+  If StartsWith(S,'SET ')Then Begin Delete(S,1,4);WasSet:=True;End;
+  If StartsWith(S,'LET ')Then Begin Delete(S,1,4);WasLet:=True;End;
   P:=FindAssignment(S);If P>0Then Begin
    Name:=Trim(Copy(S,1,P-1));
    RightSide:=Copy(S,P+1,255);
@@ -1005,8 +1157,12 @@ Begin
    End Else SetVariableValue(Name,V);
    Exit;
   End;
-  If Not BatchMode Then WriteLn('Erreur VBScript: instruction non reconnue: ',S);
-  ExitCode:=1;
+  If WasLet Then Begin
+   ScriptError('LET exige une affectation.',True);Exit;
+  End;
+  If WasSet Then Begin ScriptError('SET exige une affectation.',True);Exit;End;
+  If UserSubExists(S)Then Begin CallSub(S);Exit;End;
+  ScriptError('instruction non reconnue: '+S,False);
   Exit;
  End;
  { La branche Echo arrive ici. }
@@ -1014,6 +1170,28 @@ Begin
   If P=0Then Begin Evaluate(Copy(S,I,255),V);Write(V.Text);I:=Length(S)+1;End
   Else Begin Evaluate(Copy(S,I,P-1),V);Write(V.Text,' ');Inc(I,P);End;
  End;WriteLn;
+End;
+
+Procedure ExecuteStatementList(Source:String);
+Var I,StartPosition:Integer;Quote:Char;StatementText:String;
+Begin
+ I:=1;StartPosition:=1;Quote:=#0;
+ While I<=Length(Source)Do Begin
+  If Quote<>#0Then Begin
+   If Source[I]=Quote Then Begin
+    If(I<Length(Source))and(Source[I+1]=Quote)Then Inc(I)Else Quote:=#0;
+   End;
+  End Else If Source[I]in['''','"']Then Quote:=Source[I]
+  Else If Source[I]=':'Then Begin
+   StatementText:=Trim(Copy(Source,StartPosition,I-StartPosition));
+   If StatementText<>''Then ExecuteStatement(StatementText);StartPosition:=I+1;
+   If Terminated or ExitDoRequested or ExitForRequested or ExitSubRequested or
+     ExitFunctionRequested Then Exit;
+  End;
+  Inc(I);
+ End;
+ StatementText:=Trim(Copy(Source,StartPosition,255));
+ If StatementText<>''Then ExecuteStatement(StatementText);
 End;
 
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);
@@ -1040,9 +1218,10 @@ Begin
   Else If StartsWith(S,'IF ')Then Begin
    ThenPos:=Pos(' THEN',U);If ThenPos>0Then Begin Condition:=Copy(S,4,ThenPos-4);Evaluate(Condition,V);
     Rest:=Trim(Copy(S,ThenPos+5,255));
-    If Rest<>''Then Begin ElsePos:=Pos(' ELSE ',Upper(Rest));
-     If Truth(V)Then Begin If ElsePos>0Then ExecuteStatement(Copy(Rest,1,ElsePos-1))Else ExecuteStatement(Rest);End
-     Else If ElsePos>0Then ExecuteStatement(Copy(Rest,ElsePos+6,255));
+    If Rest<>''Then Begin ElsePos:=KeywordOutsideQuotes(Rest,' ELSE ');
+     If Truth(V)Then Begin
+      If ElsePos>0Then ExecuteStatementList(Copy(Rest,1,ElsePos-1))Else ExecuteStatementList(Rest);End
+     Else If ElsePos>0Then ExecuteStatementList(Copy(Rest,ElsePos+6,255));
     End Else Begin EndLine:=FindBlock(I,'IF ','END IF');BodyStart:=I+1;
      ElseLine:=FindElseLine(I,EndLine);
      If Truth(V)Then Begin If ElseLine=0Then ExecuteRange(BodyStart,EndLine-1)Else ExecuteRange(BodyStart,ElseLine-1);End
@@ -1108,7 +1287,7 @@ Begin
   End
    Else
   If(U='DO')or StartsWith(U,'DO WHILE ')or StartsWith(U,'DO UNTIL ')Then Begin
-   EndLine:=FindBlock(I,'DO','LOOP');Condition:='';UntilMode:=False;
+   EndLine:=FindLoopEnd(I);Condition:='';UntilMode:=False;
    If StartsWith(U,'DO WHILE ')Then Condition:=Trim(Copy(S,10,255))
    Else If StartsWith(U,'DO UNTIL ')Then Begin Condition:=Trim(Copy(S,10,255));UntilMode:=True;End;
    Repeat
@@ -1137,8 +1316,9 @@ Begin
    I:=EndLine;
   End
    Else
-  If(U='ELSE')or(U='END IF')or StartsWith(U,'NEXT')or(U='WEND')or StartsWith(U,'LOOP')Then Exit
-                                                               Else ExecuteStatement(S);
+  If StartsWith(U,'NEXT')Then Begin ScriptError('NEXT sans FOR correspondant.',False);Exit;End
+  Else If(U='ELSE')or(U='END IF')or(U='WEND')or StartsWith(U,'LOOP')Then Exit
+  Else ExecuteStatementList(S);
   Inc(I);
  End;
 End;
@@ -1382,7 +1562,7 @@ BEGIN
  Randomize;Variables:=Nil;FirstScriptLine:=Nil;LastScriptLine:=Nil;
  LineCount:=0;ArrayCounter:=0;ScriptArgumentCount:=0;Terminated:=False;
  ExitDoRequested:=False;ExitForRequested:=False;ExitSubRequested:=False;
- ExitFunctionRequested:=False;ExitCode:=0;
+ ExitFunctionRequested:=False;OnErrorResumeNext:=False;ExitCode:=0;
  ParseOptions;
  If Not Terminated Then Begin
   If Upper(EngineName)<>'VBSCRIPT'Then Begin WriteLn('Moteur de script inconnu: ',EngineName);ExitCode:=1;End

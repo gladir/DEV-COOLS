@@ -55415,6 +55415,794 @@ Begin
  If UnzOutLine <> '' Then UnzFlushLine;
 End;
 
+{ ============================================================ }
+{ === Compress-Archive (creation reelle d'archives .ZIP)   === }
+{ ============================================================ }
+{ Nouvelle commande PowerShell dev (SK_POWERSHELL uniquement,   }
+{ meme convention que Compare-Object/Compare-VM) demandee        }
+{ explicitement par l'utilisateur (2026-08-31), APRES le port    }
+{ complet de la commande `unzip` (extraction ZIP) - aucun outil   }
+{ existant ne pouvait CREER d'archive .ZIP. L'utilisateur a       }
+{ choisi explicitement (AskUserQuestion) une VRAIE compression    }
+{ Deflate (LZ77 + Huffman), pas juste le stockage sans            }
+{ compression.                                                    }
+{                                                                  }
+{ Reutilise directement l'infrastructure deja construite et        }
+{ verifiee du port `unzip` : la table CRC-32 (UnzCRC32Table/       }
+{ UnzInitCRC32/UnzCRC32Value), et surtout `UnzBuildFixedTrees`     }
+{ (construit les tables de Huffman FIXE standard RFC1951 - les     }
+{ MEMES structures Len[]/Code[] deja utilisees et prouvees par le  }
+{ decodeur `unzip` lui-meme) : les codes Huffman FIXES (bloc       }
+{ Deflate de type 1) sont utilises plutot que des codes            }
+{ DYNAMIQUES calcules par fichier - un choix delibere qui reste    }
+{ une VRAIE compression Deflate (le gain vient surtout de la       }
+{ recherche LZ77, la meme mecanique que le compresseur ARJ deja    }
+{ construit ce chantier) tout en evitant la complexite             }
+{ significative du calcul+encodage d'un arbre de Huffman optimal   }
+{ borne a 15 bits par fichier - un flux Deflate a codes fixes est  }
+{ 100% valide et standard (RFC1951 section 3.2.6), decodable par   }
+{ n'importe quel outil ZIP reel.                                   }
+{                                                                  }
+{ Format d'ecriture des en-tetes : meme strategie que              }
+{ ArjWriteArjHeader dans le port ARJ - en-tete LOCAL "placeholder" }
+{ (CRC/CSize a 0) ecrit AVANT la compression, donnees compressees  }
+{ ecrites juste apres, puis Seek en arriere pour reecrire l'en-tete}
+{ avec les vraies valeurs une fois connues - AUCUN "descripteur de }
+{ donnees" (bit 3 des indicateurs) n'est utilise, ce qui garantit  }
+{ que l'archive produite reste lisible par notre propre `unzip`    }
+{ (qui refuse explicitement ce bit, comme l'original CORAIL). }
+
+Const
+ ZW_MAX_MATCH   = 258;
+ ZW_MIN_MATCH   = 3;
+ ZW_WINSIZE     = 32768;
+ ZW_HASH_SIZE   = 32768;
+ ZW_HASH_MASK   = 32767;
+ ZW_BUF_SIZE    = 65536;
+ ZW_HASH_EMPTY  = 65535;
+ ZW_MAX_CHAIN   = 128;
+ ZW_GOOD_MATCH  = 40;
+ ZW_OUTBUF_SZ   = 4096;
+ ZW_MAX_ENTRIES = 4000;
+ ZW_MAX_EXCLUDE = 20;
+
+ ZwLenBase:Array[0..28]of Integer=(
+  3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
+  35,43,51,59,67,83,99,115,131,163,195,227,258);
+ ZwLenExtra:Array[0..28]of Byte=(
+  0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,
+  3,3,3,3,4,4,4,4,5,5,5,5,0);
+ ZwDistBase:Array[0..29]of Integer=(
+  1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,
+  193,257,385,513,769,1025,1537,2049,3073,4097,
+  6145,8193,12289,16385,24577);
+ ZwDistExtra:Array[0..29]of Byte=(
+  0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,
+  6,7,7,8,8,9,9,10,10,11,11,12,12,13,13);
+
+Type
+ TZwInBuf  = Array[0..ZW_BUF_SIZE-1] Of Byte;   PZwInBuf  = ^TZwInBuf;
+ TZwHashH  = Array[0..ZW_HASH_SIZE-1] Of Word;  PZwHashH  = ^TZwHashH;
+ TZwHashP  = Array[0..ZW_BUF_SIZE-1] Of Word;   PZwHashP  = ^TZwHashP;
+ TZwOutBuf = Array[0..ZW_OUTBUF_SZ-1] Of Byte;  PZwOutBuf = ^TZwOutBuf;
+ TZwEntry = Record
+  Name: String;
+  CRC, CSize, OSize, HdrOffset: LongInt;
+  DosTime, DosDate: Word;
+  Method: Word;
+ End;
+ TZwEntryArray = Array[1..ZW_MAX_ENTRIES] Of TZwEntry;
+ PZwEntryArray = ^TZwEntryArray;
+
+Var
+ ZwZipFile: File;
+ ZwInBuf: PZwInBuf;
+ ZwHashH: PZwHashH;
+ ZwHashP: PZwHashP;
+ ZwOutBuf: PZwOutBuf;
+ ZwOutPos: Word;
+ ZwInLen, ZwWPos: LongInt;
+ ZwBitBuf: Byte;
+ ZwBitCount: Byte;
+ ZwBytesWritten: LongInt;
+ ZwLitTable, ZwDistTable: TUnzHuffman;
+ ZwEntries: PZwEntryArray;
+ ZwEntryCount: Integer;
+ ZwErr: Boolean;
+ ZwTermTP: ^TTerminalPanel;
+ ZwOutLine: String;
+ ZwInited: Boolean;
+
+Procedure ZwInitOnce;
+Begin
+ If ZwInited Then Exit;
+ New(ZwInBuf);
+ New(ZwHashH);
+ New(ZwHashP);
+ New(ZwOutBuf);
+ New(ZwEntries);
+ UnzBuildFixedTrees(ZwLitTable, ZwDistTable);
+ ZwInited := True;
+End;
+
+Procedure ZwFlushLine;
+Begin
+ If ZwTermTP <> Nil Then TermAddLine(ZwTermTP^, ZwOutLine);
+ ZwOutLine := '';
+End;
+
+Procedure ZwW(S: String);
+Begin
+ ZwOutLine := ZwOutLine + S;
+End;
+
+Procedure ZwWL(S: String);
+Begin
+ ZwOutLine := ZwOutLine + S;
+ ZwFlushLine;
+End;
+
+Procedure ZwFail(Msg: String);
+Begin
+ If Not ZwErr Then Begin
+  ZwErr := True;
+  ZwWL('Erreur : ' + Msg);
+ End;
+End;
+
+{ --- Ecriture LE brute d'entiers directement dans le fichier ZIP --- }
+
+Procedure ZwWB(B: Byte);
+Var Count: Word;
+Begin
+ BlockWrite(ZwZipFile, B, 1, Count);
+End;
+
+Procedure ZwWW(W: Word);
+Begin
+ ZwWB(Byte(W And $FF));
+ ZwWB(Byte((W Shr 8) And $FF));
+End;
+
+Procedure ZwWLo(L: LongInt);
+Begin
+ ZwWB(Byte(L And $FF));
+ ZwWB(Byte((L Shr 8) And $FF));
+ ZwWB(Byte((L Shr 16) And $FF));
+ ZwWB(Byte((L Shr 24) And $FF));
+End;
+
+Procedure ZwWStr(S: String);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do ZwWB(Ord(S[I]));
+End;
+
+{ --- Tampon de sortie compresse + ecriture bit-a-bit LSB-first (RFC1951) === }
+
+Procedure ZwFlushOut;
+Begin
+ If ZwOutPos > 0 Then Begin
+  BlockWrite(ZwZipFile, ZwOutBuf^, ZwOutPos);
+  Inc(ZwBytesWritten, ZwOutPos);
+  ZwOutPos := 0;
+ End;
+End;
+
+Procedure ZwPutByte(B: Byte);
+Begin
+ ZwOutBuf^[ZwOutPos] := B;
+ Inc(ZwOutPos);
+ If ZwOutPos >= ZW_OUTBUF_SZ Then ZwFlushOut;
+End;
+
+Procedure ZwPutBit(Bit: Byte);
+Begin
+ If Bit <> 0 Then ZwBitBuf := ZwBitBuf Or (1 Shl ZwBitCount);
+ Inc(ZwBitCount);
+ If ZwBitCount = 8 Then Begin
+  ZwPutByte(ZwBitBuf);
+  ZwBitBuf := 0;
+  ZwBitCount := 0;
+ End;
+End;
+
+Procedure ZwPutBitsN(V: LongInt; N: Byte);
+Var K: Byte;
+Begin
+ For K := 0 To N-1 Do ZwPutBit(Byte((V Shr K) And 1));
+End;
+
+Procedure ZwFinishBits;
+Begin
+ If ZwBitCount > 0 Then Begin
+  ZwPutByte(ZwBitBuf);
+  ZwBitBuf := 0;
+  ZwBitCount := 0;
+ End;
+ ZwFlushOut;
+End;
+
+Procedure ZwEmitSymbol(Var H: TUnzHuffman; Sym: Integer);
+Begin
+ ZwPutBitsN(H.Code[Sym], H.Len[Sym]);
+End;
+
+Procedure ZwEmitLiteral(B: Byte);
+Begin
+ ZwEmitSymbol(ZwLitTable, B);
+End;
+
+Procedure ZwFindLenCode(L: Integer; Var Sym: Integer; Var Extra: Integer; Var ExtraBits: Byte);
+Var S: Integer;
+Begin
+ S := 28;
+ While (S > 0) And (ZwLenBase[S] > L) Do Dec(S);
+ Sym := S + 257;
+ ExtraBits := ZwLenExtra[S];
+ Extra := L - ZwLenBase[S];
+End;
+
+Procedure ZwFindDistCode(D: LongInt; Var Sym: Integer; Var Extra: LongInt; Var ExtraBits: Byte);
+Var S: Integer;
+Begin
+ S := 29;
+ While (S > 0) And (LongInt(ZwDistBase[S]) > D) Do Dec(S);
+ Sym := S;
+ ExtraBits := ZwDistExtra[S];
+ Extra := D - LongInt(ZwDistBase[S]);
+End;
+
+Procedure ZwEmitMatch(L: Integer; D: LongInt);
+Var Sym: Integer; Extra: Integer; DExtra: LongInt; ExtraBits: Byte;
+Begin
+ ZwFindLenCode(L, Sym, Extra, ExtraBits);
+ ZwEmitSymbol(ZwLitTable, Sym);
+ If ExtraBits > 0 Then ZwPutBitsN(Extra, ExtraBits);
+ ZwFindDistCode(D, Sym, DExtra, ExtraBits);
+ ZwEmitSymbol(ZwDistTable, Sym);
+ If ExtraBits > 0 Then ZwPutBitsN(DExtra, ExtraBits);
+End;
+
+{ --- Recherche de correspondances LZ77 (meme structure que l'encodeur ARJ,}
+{ adaptee a la fenetre/aux longueurs de Deflate) === }
+
+Procedure ZwHashReset;
+Var I: LongInt;
+Begin
+ For I := 0 To ZW_HASH_SIZE-1 Do ZwHashH^[I] := ZW_HASH_EMPTY;
+End;
+
+Function ZwHash3(P: LongInt): Word;
+Begin
+ ZwHash3 := ((Word(ZwInBuf^[P]) Shl 10) Xor (Word(ZwInBuf^[P+1]) Shl 5) Xor
+             Word(ZwInBuf^[P+2])) And ZW_HASH_MASK;
+End;
+
+Procedure ZwHashInsert(P: LongInt);
+Var H: Word;
+Begin
+ H := ZwHash3(P);
+ ZwHashP^[P] := ZwHashH^[H];
+ ZwHashH^[H] := Word(P);
+End;
+
+Procedure ZwFindMatch(Var BestLen: Integer; Var BestDist: LongInt);
+Var
+ H, ChainAttempts: Word;
+ Cand: LongInt;
+ Limit, K, MaxLen: LongInt;
+Begin
+ BestLen := 0;
+ BestDist := 0;
+ MaxLen := ZW_MAX_MATCH;
+ If ZwInLen - ZwWPos < MaxLen Then MaxLen := ZwInLen - ZwWPos;
+ If MaxLen < ZW_MIN_MATCH Then Exit;
+ If ZwWPos > ZW_WINSIZE Then Limit := ZwWPos - ZW_WINSIZE Else Limit := 0;
+ H := ZwHash3(ZwWPos);
+ Cand := ZwHashH^[H];
+ ChainAttempts := 0;
+ While (Cand <> ZW_HASH_EMPTY) And (Cand < ZwWPos) And
+       (ChainAttempts < ZW_MAX_CHAIN) Do Begin
+  If Cand >= Limit Then Begin
+   K := 0;
+   While (K < MaxLen) And (ZwInBuf^[Cand+K] = ZwInBuf^[ZwWPos+K]) Do Inc(K);
+   If (K >= ZW_MIN_MATCH) And (K > BestLen) Then Begin
+    BestLen := K;
+    BestDist := ZwWPos - Cand;
+    If K >= ZW_GOOD_MATCH Then Break;
+    If K >= ZW_MAX_MATCH Then Break;
+   End;
+  End;
+  Cand := ZwHashP^[Cand];
+  Inc(ChainAttempts);
+ End;
+End;
+
+Function ZwCompressFileDeflate(Var Src: File; OSize: LongInt; Var FileCRC: LongInt): LongInt;
+Var
+ CRC, Remaining: LongInt;
+ ReadAmt: LongInt;
+ Got, KI: Integer;
+ KeepFrom: LongInt;
+ EOF_Reached: Boolean;
+ MatchLen: Integer;
+ MatchDist: LongInt;
+ I: LongInt;
+Begin
+ UnzInitCRC32;
+ CRC := LongInt($FFFFFFFF);
+ ZwBitBuf := 0; ZwBitCount := 0; ZwOutPos := 0; ZwBytesWritten := 0;
+ ZwWPos := 0; ZwInLen := 0;
+ ZwHashReset;
+ { En-tete de bloc Deflate (RFC1951 3.2.3) - OUBLIE dans la premiere passe, }
+ { trouve par test en direct (le decodeur `unzip` echouait immediatement   }
+ { avec "Bloc Deflate stocke invalide" car il lisait des bits Huffman a la }
+ { place de BFINAL/BTYPE) : BFINAL=1 (dernier et seul bloc), BTYPE=01      }
+ { (Huffman fixe) - un seul bloc Deflate couvre tout le fichier. }
+ ZwPutBitsN(1, 1);
+ ZwPutBitsN(1, 2);
+ EOF_Reached := False;
+ Remaining := OSize;
+ While True Do Begin
+  If (Not EOF_Reached) And
+    (ZwInLen - ZwWPos < ZW_MAX_MATCH + ZW_MIN_MATCH) Then
+  Begin
+   If ZwInLen + 16384 > ZW_BUF_SIZE Then Begin
+    If ZwWPos > ZW_WINSIZE Then KeepFrom := ZwWPos - ZW_WINSIZE Else KeepFrom := 0;
+    If KeepFrom > 0 Then Begin
+     Move(ZwInBuf^[KeepFrom], ZwInBuf^[0], ZwInLen - KeepFrom);
+     ZwWPos := ZwWPos - KeepFrom;
+     ZwInLen := ZwInLen - KeepFrom;
+     ZwHashReset;
+     If ZwWPos >= ZW_MIN_MATCH Then
+      For I := 0 To ZwWPos - ZW_MIN_MATCH Do ZwHashInsert(I);
+    End;
+   End;
+   ReadAmt := ZW_BUF_SIZE - ZwInLen;
+   If ReadAmt > Remaining Then ReadAmt := Remaining;
+   If ReadAmt > 16384 Then ReadAmt := 16384;
+   If ReadAmt > 0 Then Begin
+    BlockRead(Src, ZwInBuf^[ZwInLen], ReadAmt, Got);
+    If Got <= 0 Then EOF_Reached := True
+    Else Begin
+     For KI := 0 To Got - 1 Do CRC := UnzCRC32Value(CRC, ZwInBuf^[ZwInLen + KI]);
+     ZwInLen := ZwInLen + Got;
+     Remaining := Remaining - Got;
+    End;
+   End;
+   If Remaining <= 0 Then EOF_Reached := True;
+  End;
+  If ZwWPos >= ZwInLen Then Break;
+  If ZwInLen - ZwWPos >= ZW_MIN_MATCH Then ZwFindMatch(MatchLen, MatchDist)
+  Else Begin
+   MatchLen := 0; MatchDist := 0;
+  End;
+  If MatchLen >= ZW_MIN_MATCH Then Begin
+   ZwEmitMatch(MatchLen, MatchDist);
+   For I := 1 To MatchLen Do Begin
+    If ZwWPos + ZW_MIN_MATCH <= ZwInLen Then ZwHashInsert(ZwWPos);
+    Inc(ZwWPos);
+   End;
+  End Else Begin
+   ZwEmitLiteral(ZwInBuf^[ZwWPos]);
+   If ZwWPos + ZW_MIN_MATCH <= ZwInLen Then ZwHashInsert(ZwWPos);
+   Inc(ZwWPos);
+  End;
+ End;
+ ZwEmitSymbol(ZwLitTable, 256);
+ ZwFinishBits;
+ FileCRC := CRC Xor LongInt($FFFFFFFF);
+ ZwCompressFileDeflate := ZwBytesWritten;
+End;
+
+Function ZwStoreFile(Var Src: File; OSize: LongInt; Var FileCRC: LongInt): LongInt;
+Var
+ Buf: Array[0..4095] Of Byte;
+ ToRead, Remaining: LongInt;
+ Got, KI: Integer;
+ CRC: LongInt;
+ Count: Word;
+Begin
+ UnzInitCRC32;
+ CRC := LongInt($FFFFFFFF);
+ Remaining := OSize;
+ While Remaining > 0 Do Begin
+  If Remaining > 4096 Then ToRead := 4096 Else ToRead := Remaining;
+  BlockRead(Src, Buf, ToRead, Got);
+  If Got <= 0 Then Break;
+  For KI := 0 To Got - 1 Do CRC := UnzCRC32Value(CRC, Buf[KI]);
+  BlockWrite(ZwZipFile, Buf, Got, Count);
+  Dec(Remaining, Got);
+ End;
+ FileCRC := CRC Xor LongInt($FFFFFFFF);
+ ZwStoreFile := OSize;
+End;
+
+Procedure ZwWriteLocalHeader(Method, DosTime, DosDate: Word;
+ CRC, CSize, OSize: LongInt; Name: String);
+Begin
+ ZwWLo($04034B50);
+ ZwWW(20);
+ ZwWW(0);
+ ZwWW(Method);
+ ZwWW(DosTime);
+ ZwWW(DosDate);
+ ZwWLo(CRC);
+ ZwWLo(CSize);
+ ZwWLo(OSize);
+ ZwWW(Length(Name));
+ ZwWW(0);
+ ZwWStr(Name);
+End;
+
+Procedure ZwWriteCentralEntry(Var E: TZwEntry);
+Begin
+ ZwWLo($02014B50);
+ ZwWW(20);
+ ZwWW(20);
+ ZwWW(0);
+ ZwWW(E.Method);
+ ZwWW(E.DosTime);
+ ZwWW(E.DosDate);
+ ZwWLo(E.CRC);
+ ZwWLo(E.CSize);
+ ZwWLo(E.OSize);
+ ZwWW(Length(E.Name));
+ ZwWW(0);
+ ZwWW(0);
+ ZwWW(0);
+ ZwWW(0);
+ ZwWLo(0);
+ ZwWLo(E.HdrOffset);
+ ZwWStr(E.Name);
+End;
+
+Procedure ZwWriteEOCD(CDOffset, CDSize: LongInt; WrittenCount: Integer);
+Begin
+ ZwWLo($06054B50);
+ ZwWW(0);
+ ZwWW(0);
+ ZwWW(Word(WrittenCount));
+ ZwWW(Word(WrittenCount));
+ ZwWLo(CDSize);
+ ZwWLo(CDOffset);
+ ZwWW(0);
+End;
+
+Var
+ ZwCompressionMethod: Word;
+ { ZwStale[K]=True signifie "ne pas ecrire cette entree dans le repertoire   }
+ { central final" - utilise uniquement par -Update pour exclure une         }
+ { ancienne entree remplacee par un nouvel ajout de meme nom. Toutes les    }
+ { entrees (anciennes conservees ET nouvelles) restent False par defaut. }
+ ZwStale: Array[1..ZW_MAX_ENTRIES] Of Boolean;
+
+Procedure ZwAddOneFile(FullPath, ArcName: String);
+Var
+ SrcFile: File;
+ OSize, CRC, CSize, DT: LongInt;
+ DosTime, DosDate: Word;
+ HeaderStart, DataEnd: LongInt;
+ Method: Word;
+ K: Integer;
+Begin
+ If ZwErr Then Exit;
+ {$I-}Assign(SrcFile, FullPath); Reset(SrcFile, 1);{$I+}
+ If IOResult <> 0 Then Begin
+  ZwWL('Fichier introuvable : ' + FullPath);
+  Exit;
+ End;
+ OSize := FileSize(SrcFile);
+ GetFTime(SrcFile, DT);
+ DosTime := Word(DT And $FFFF);
+ DosDate := Word((DT Shr 16) And $FFFF);
+ If ZwEntryCount >= ZW_MAX_ENTRIES Then Begin
+  Close(SrcFile);
+  ZwFail('Trop de fichiers pour cette archive (limite ' + IntToStr(ZW_MAX_ENTRIES) + ').');
+  Exit;
+ End;
+ { -Update : le fichier remplace une entree deja cataloguee du meme nom -   }
+ { l'ancienne entree est simplement exclue du nouveau repertoire central    }
+ { ecrit a la fin (ses octets restent physiquement dans le fichier, mais    }
+ { ne sont plus references par aucune entree - meme compromis assume que    }
+ { le "-u" d'ARJ, pas de compactage). }
+ For K := 1 To ZwEntryCount Do
+  If (Not ZwStale[K]) And (ZwEntries^[K].Name = ArcName) Then
+   ZwStale[K] := True;
+ If ZwCompressionMethod = 0 Then Method := 0 Else Method := 8;
+ HeaderStart := FilePos(ZwZipFile);
+ ZwWriteLocalHeader(Method, DosTime, DosDate, 0, 0, OSize, ArcName);
+ If Method = 0 Then CSize := ZwStoreFile(SrcFile, OSize, CRC)
+ Else CSize := ZwCompressFileDeflate(SrcFile, OSize, CRC);
+ DataEnd := FilePos(ZwZipFile);
+ Seek(ZwZipFile, HeaderStart);
+ ZwWriteLocalHeader(Method, DosTime, DosDate, CRC, CSize, OSize, ArcName);
+ Seek(ZwZipFile, DataEnd);
+ Close(SrcFile);
+ Inc(ZwEntryCount);
+ ZwEntries^[ZwEntryCount].Name := ArcName;
+ ZwEntries^[ZwEntryCount].CRC := CRC;
+ ZwEntries^[ZwEntryCount].CSize := CSize;
+ ZwEntries^[ZwEntryCount].OSize := OSize;
+ ZwEntries^[ZwEntryCount].HdrOffset := HeaderStart;
+ ZwEntries^[ZwEntryCount].DosTime := DosTime;
+ ZwEntries^[ZwEntryCount].DosDate := DosDate;
+ ZwEntries^[ZwEntryCount].Method := Method;
+ ZwStale[ZwEntryCount] := False;
+ ZwWL('Ajout : ' + ArcName + ' (' + IntToStr(OSize) + ' -> ' + IntToStr(CSize) + ' octets)');
+End;
+
+Procedure ZwAddDirRecursive(RealDir, ArcPrefix: String);
+Var SR: SearchRec;
+Begin
+ If ZwErr Then Exit;
+ If (RealDir <> '') And (RealDir[Length(RealDir)] <> '\') And
+    (RealDir[Length(RealDir)] <> '/') Then RealDir := RealDir + '\';
+ FindFirst(RealDir + '*.*', AnyFile, SR);
+ While (DosError = 0) And (Not ZwErr) Do Begin
+  If (SR.Name <> '.') And (SR.Name <> '..') Then Begin
+   If (SR.Attr And Directory) <> 0 Then
+    ZwAddDirRecursive(RealDir + SR.Name, ArcPrefix + SR.Name + '/')
+   Else
+    ZwAddOneFile(RealDir + SR.Name, ArcPrefix + SR.Name);
+  End;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC} FindClose(SR); {$ENDIF}
+End;
+
+Procedure ZwAddPathSpec(Spec: String);
+Var
+ Dir, Base, FullPath: String;
+ J: Integer;
+ SR: SearchRec;
+Begin
+ If ZwErr Then Exit;
+ J := Length(Spec); Dir := ''; Base := Spec;
+ While (J >= 1) And (Spec[J] <> '\') And (Spec[J] <> '/') And (Spec[J] <> ':') Do Dec(J);
+ If J >= 1 Then Begin
+  Dir := Copy(Spec, 1, J);
+  Base := Copy(Spec, J+1, 255);
+ End;
+ If (Pos('*', Base) > 0) Or (Pos('?', Base) > 0) Then Begin
+  FindFirst(Dir + Base, AnyFile, SR);
+  While (DosError = 0) And (Not ZwErr) Do Begin
+   If (SR.Name <> '.') And (SR.Name <> '..') Then Begin
+    FullPath := Dir + SR.Name;
+    If (SR.Attr And Directory) <> 0 Then
+     ZwAddDirRecursive(FullPath, SR.Name + '/')
+    Else
+     ZwAddOneFile(FullPath, SR.Name);
+   End;
+   FindNext(SR);
+  End;
+  {$IFDEF FPC} FindClose(SR); {$ENDIF}
+ End Else Begin
+  {$I-}FindFirst(Spec, AnyFile, SR);{$I+}
+  If DosError = 0 Then Begin
+   If (SR.Attr And Directory) <> 0 Then
+    ZwAddDirRecursive(Spec, UnzBaseName(Spec) + '/')
+   Else
+    ZwAddOneFile(Spec, UnzBaseName(Spec));
+   {$IFDEF FPC} FindClose(SR); {$ENDIF}
+  End Else Begin
+   ZwWL('Chemin introuvable : ' + Spec);
+  End;
+ End;
+End;
+
+{ Relit les en-tetes LOCAUX d'une archive .zip existante (memes idees que la }
+{ boucle de listage de UnzExtractArchive, mais qui alimente ZwEntries au     }
+{ lieu d'afficher) - utilise par -Update pour connaitre les entrees deja     }
+{ presentes avant de tronquer au debut de l'ancien repertoire central et de  }
+{ continuer a ajouter/reecrire par-dessus (meme strategie que ArjCmdAdd/     }
+{ ArjLoadArchiveEntries dans le port ARJ). Renvoie l'offset ou tronquer.     }
+{ Lecteurs LE bruts sur F directement - NE PAS reutiliser UnzReadZipByte/    }
+{ UnzReadWordLE/UnzReadDWordLE/UnzSkipBytes ici : BOGUE REEL trouve par     }
+{ test en direct (crash immediat de DEVENV.exe) - ces fonctions Unz lisent  }
+{ TOUJOURS depuis la globale `UnzZipFile`, jamais depuis le parametre `F`   }
+{ qu'on leur passerait ; ZwZipFile et UnzZipFile sont 2 variables File      }
+{ INDEPENDANTES, donc les appeler ici lisait un descripteur de fichier      }
+{ ferme/sans rapport - d'ou le plantage. }
+Function ZwRB(Var F: File): Byte;
+Var Count: Word; B: Byte;
+Begin
+ B := 0;
+ BlockRead(F, B, 1, Count);
+ ZwRB := B;
+End;
+
+Function ZwRW(Var F: File): Integer;
+Var B1, B2: Byte;
+Begin
+ B1 := ZwRB(F);
+ B2 := ZwRB(F);
+ ZwRW := B1 + 256*B2;
+End;
+
+Function ZwRL(Var F: File): LongInt;
+Var B1, B2, B3, B4: LongInt;
+Begin
+ B1 := ZwRB(F);
+ B2 := ZwRB(F);
+ B3 := ZwRB(F);
+ B4 := ZwRB(F);
+ ZwRL := B1 + 256*B2 + 65536*B3 + 16777216*B4;
+End;
+
+Function ZwLoadExistingEntries(Var F: File): LongInt;
+Var
+ Sig: LongInt;
+ Flags, Method, NameLen, ExtraLen, ZTime, ZDate: Integer;
+ CRC, CompSize, OSize: LongInt;
+ Name: String;
+ I: Integer;
+ StopAt: LongInt;
+Begin
+ ZwEntryCount := 0;
+ StopAt := 0;
+ Repeat
+  StopAt := FilePos(F);
+  If StopAt >= FileSize(F) Then Break;
+  Seek(F, StopAt);
+  Sig := ZwRL(F);
+  If Sig = $02014B50 Then Break;
+  If Sig <> $04034B50 Then Break;
+  ZwRW(F);
+  Flags := ZwRW(F);
+  Method := ZwRW(F);
+  ZTime := ZwRW(F);
+  ZDate := ZwRW(F);
+  CRC := ZwRL(F);
+  CompSize := ZwRL(F);
+  OSize := ZwRL(F);
+  NameLen := ZwRW(F);
+  ExtraLen := ZwRW(F);
+  Name := '';
+  For I := 1 To NameLen Do Name := Name + Chr(ZwRB(F));
+  For I := 1 To ExtraLen Do ZwRB(F);
+  If (Flags And 8) <> 0 Then Break;
+  If ZwEntryCount < ZW_MAX_ENTRIES Then Begin
+   Inc(ZwEntryCount);
+   ZwEntries^[ZwEntryCount].Name := Name;
+   ZwEntries^[ZwEntryCount].CRC := CRC;
+   ZwEntries^[ZwEntryCount].CSize := CompSize;
+   ZwEntries^[ZwEntryCount].OSize := OSize;
+   ZwEntries^[ZwEntryCount].HdrOffset := StopAt;
+   ZwEntries^[ZwEntryCount].DosTime := Word(ZTime);
+   ZwEntries^[ZwEntryCount].DosDate := Word(ZDate);
+   ZwEntries^[ZwEntryCount].Method := Word(Method);
+   ZwStale[ZwEntryCount] := False;
+  End;
+  Seek(F, StopAt + 30 + NameLen + ExtraLen + CompSize);
+  StopAt := FilePos(F);
+ Until False;
+ ZwLoadExistingEntries := StopAt;
+End;
+
+Var
+ ZwArgs: Array[1..80] Of String;
+ ZwArgCount: Integer;
+
+{ --- Compress-Archive --- (PowerShell dev uniquement) }
+
+Procedure TermCmd_CompressArchive(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I, CommaPos, K, WrittenCount: Integer;
+ PathArg, DestArg, LevelArg, UpLevel: String;
+ UpdateFlag, ForceFlag, DestExists: Boolean;
+ Spec, Remain: String;
+ CDOffset, CDSize, TruncAt: LongInt;
+Begin
+ ZwInitOnce;
+ ZwTermTP := @TP;
+ ZwOutLine := '';
+ ZwErr := False;
+ ZwArgCount := 0;
+ While (TermExtractParam(ParamStr, ZwArgCount+1) <> '') And
+       (ZwArgCount < 80) Do Inc(ZwArgCount);
+ For I := 1 To ZwArgCount Do ZwArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := ''; DestArg := ''; LevelArg := 'Optimal';
+ UpdateFlag := False; ForceFlag := False;
+ I := 1;
+ While I <= ZwArgCount Do Begin
+  UpLevel := UnzUpStr(ZwArgs[I]);
+  If (UpLevel = '-PATH') Or (UpLevel = '-LITERALPATH') Then Begin
+   Inc(I);
+   If I <= ZwArgCount Then PathArg := ZwArgs[I];
+  End Else If UpLevel = '-DESTINATIONPATH' Then Begin
+   Inc(I);
+   If I <= ZwArgCount Then DestArg := ZwArgs[I];
+  End Else If UpLevel = '-COMPRESSIONLEVEL' Then Begin
+   Inc(I);
+   If I <= ZwArgCount Then LevelArg := ZwArgs[I];
+  End Else If UpLevel = '-UPDATE' Then UpdateFlag := True
+  Else If UpLevel = '-FORCE' Then ForceFlag := True
+  Else If (PathArg = '') And (Copy(ZwArgs[I],1,1) <> '-') Then PathArg := ZwArgs[I]
+  Else If (DestArg = '') And (Copy(ZwArgs[I],1,1) <> '-') Then DestArg := ZwArgs[I];
+  Inc(I);
+ End;
+
+ If (PathArg = '') Or (DestArg = '') Then Begin
+  ZwWL('Syntaxe : Compress-Archive -Path <fichiers/dossiers/patrons> ' +
+   '-DestinationPath archive.zip [-CompressionLevel Optimal|Fastest|' +
+   'NoCompression] [-Update] [-Force]');
+  Exit;
+ End;
+
+ If UnzPath2Ext(DestArg) = '' Then DestArg := DestArg + '.zip';
+ UpLevel := UnzUpStr(LevelArg);
+ If UpLevel = 'NOCOMPRESSION' Then ZwCompressionMethod := 0
+ Else ZwCompressionMethod := 8;
+
+ DestExists := UnzFileExists(DestArg);
+ ZwEntryCount := 0;
+ For K := 1 To ZW_MAX_ENTRIES Do ZwStale[K] := False;
+
+ If DestExists And UpdateFlag Then Begin
+  Assign(ZwZipFile, DestArg);
+  { BOGUE REEL trouve par test en direct (2026-08-31) : ce fichier utilise  }
+  { ailleurs une globale FPC `FileMode` (0=lecture seule) autour de divers  }
+  { Reset ponctuels (voir p.ex. UnzFileExists/HlpvXxx) - si une execution   }
+  { anterieure l'a laissee a 0, ce Reset heritait du mode lecture seule et  }
+  { le Truncate qui suit plantait DEVENV.exe. Fixe explicitement en         }
+  { lecture/ecriture (2) avant d'ouvrir, independamment de tout etat        }
+  { global laisse par un autre code. }
+  FileMode := 2;
+  {$I-}Reset(ZwZipFile, 1);{$I+}
+  If IOResult <> 0 Then Begin
+   ZwFail('Impossible d''ouvrir l''archive existante : ' + DestArg);
+   Exit;
+  End;
+  TruncAt := ZwLoadExistingEntries(ZwZipFile);
+  Seek(ZwZipFile, TruncAt);
+  Truncate(ZwZipFile);
+ End Else Begin
+  If DestExists And (Not ForceFlag) Then Begin
+   ZwWL('Le fichier de destination existe deja (utilisez -Force ou -Update) : ' +
+    DestArg);
+   Exit;
+  End;
+  Assign(ZwZipFile, DestArg);
+  {$I-}Rewrite(ZwZipFile, 1);{$I+}
+  If IOResult <> 0 Then Begin
+   ZwFail('Impossible de creer l''archive : ' + DestArg);
+   Exit;
+  End;
+ End;
+
+ Remain := PathArg;
+ Repeat
+  CommaPos := Pos(',', Remain);
+  If CommaPos > 0 Then Begin
+   Spec := Copy(Remain, 1, CommaPos-1);
+   Remain := Copy(Remain, CommaPos+1, Length(Remain));
+  End Else Begin
+   Spec := Remain;
+   Remain := '';
+  End;
+  If Spec <> '' Then ZwAddPathSpec(Spec);
+ Until (Remain = '') Or ZwErr;
+
+ If Not ZwErr Then Begin
+  CDOffset := FilePos(ZwZipFile);
+  WrittenCount := 0;
+  For K := 1 To ZwEntryCount Do
+   If Not ZwStale[K] Then Begin
+    ZwWriteCentralEntry(ZwEntries^[K]);
+    Inc(WrittenCount);
+   End;
+  CDSize := FilePos(ZwZipFile) - CDOffset;
+  ZwWriteEOCD(CDOffset, CDSize, WrittenCount);
+ End;
+ Close(ZwZipFile);
+ If Not ZwErr Then
+  ZwWL(IntToStr(WrittenCount) + ' fichier(s) dans ' + DestArg);
+ If ZwOutLine <> '' Then ZwFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -55602,6 +56390,24 @@ Begin
   TermAddLine(TP,
    '  UNZIP /?                       Aide complete (store/shrink/reduce/' +
    'implode/deflate/deflate64/DCL/BZIP2/LZMA/TERSE/Zstandard)');
+ End;
+ { Compress-Archive (2026-08-31, demande explicite - VRAIE compression      }
+ { Deflate LZ77+Huffman fixe, reutilise la table CRC-32 et les arbres de    }
+ { Huffman fixes deja construits/verifies pour `unzip`) - PowerShell dev    }
+ { uniquement, meme convention que Compare-Object/Compare-VM. }
+ If TP.Shell = SK_POWERSHELL Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Creer une archive ZIP (Deflate reel) ---');
+  TermAddLine(TP,
+   '  Compress-Archive -Path f,g -DestinationPath archive.zip   Cree');
+  TermAddLine(TP,
+   '  Compress-Archive -Path dossier -DestinationPath a.zip     Recursif');
+  TermAddLine(TP,
+   '  ... -CompressionLevel NoCompression                       Stockage (0)');
+  TermAddLine(TP,
+   '  ... -Update                                                Ajoute/remplace');
+  TermAddLine(TP,
+   '  ... -Force                                                 Ecrase la cible');
  End;
  { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande         }
  { explicite de l'utilisateur - PowerShell dev est le shell qu'il oublie le }
@@ -56439,6 +57245,8 @@ Begin
     TermCmd_ClearRecycleBin(TP, ParamStr)
    Else If CurrCmd = 'COMPARE-OBJECT' Then
     TermCmd_CompareObject(TP, ParamStr)
+   Else If CurrCmd = 'COMPRESS-ARCHIVE' Then
+    TermCmd_CompressArchive(TP, ParamStr)
    Else If CurrCmd = 'COMPARE-VM' Then
     TermCmd_CompareVM(TP, ParamStr)
    Else If CurrCmd = 'ADD-HISTORY' Then
