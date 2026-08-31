@@ -39,6 +39,16 @@ Type
   ValueKind:Byte;
   Next:PVariable;
  End;
+ PCallBinding=^TCallBinding;
+ TCallBinding=Record
+  Name:String[63];
+  ActualName:String[63];
+  Existed:Boolean;
+  CopyBack:Boolean;
+  OldValue:String;
+  OldKind:Byte;
+  Next:PCallBinding;
+ End;
  TValue=Record
   Text:String;
   Number:Real;
@@ -443,6 +453,19 @@ Begin
  End;
 End;
 
+Procedure RemoveVariable(Name:String);
+Var P,Previous:PVariable;
+Begin
+ Name:=Upper(Trim(Name));P:=Variables;Previous:=Nil;
+ While P<>Nil Do Begin
+  If P^.Name=Name Then Begin
+   If Previous=Nil Then Variables:=P^.Next Else Previous^.Next:=P^.Next;
+   Dispose(P);Exit;
+  End;
+  Previous:=P;P:=P^.Next;
+ End;
+End;
+
 Procedure UBoundValue(A,B:TValue;ArgumentCount:Integer;Var V:TValue);
 Var CountValue:TValue;
 Begin
@@ -836,6 +859,7 @@ Begin
 End;
 
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);Forward;
+Procedure CallSub(CallText:String);Forward;
 
 Procedure ExecuteStatement(S:String);
 Var U,Name,RightSide:String;P,I:Integer;V:TValue;
@@ -844,6 +868,7 @@ Begin
  If StartsWith(S,'DIM ')Then Begin
   Delete(S,1,4);Repeat P:=Pos(',',S);If P=0Then Begin Name:=Trim(S);S:='';End
    Else Begin Name:=Trim(Copy(S,1,P-1));Delete(S,1,P);End;SetVariable(Name,'');Until S='';Exit;End;
+ If StartsWith(S,'CALL ')Then Begin CallSub(Trim(Copy(S,6,255)));Exit;End;
  If StartsWith(S,'WScript.Echo')Then Delete(S,1,Length('WScript.Echo'))
  Else If StartsWith(S,'Echo ')Then Delete(S,1,5)
  Else If StartsWith(S,'WScript.Quit')Then Begin
@@ -893,7 +918,12 @@ Begin
  I:=FirstLine;
  While(I<=LastLine)and Not Terminated Do Begin
   CheckTimeout;If Terminated Then Exit;CurrentLine:=I;S:=Trim(ScriptLineText(I));U:=Upper(S);
-  If StartsWith(S,'IF ')Then Begin
+  If StartsWith(S,'SUB ')or StartsWith(S,'PUBLIC SUB ')or
+    StartsWith(S,'PRIVATE SUB ')Then Begin
+   While(I<=LastLine)and(Upper(Trim(ScriptLineText(I)))<>'END SUB')Do Inc(I);
+  End
+  Else If U='END SUB'Then Exit
+  Else If StartsWith(S,'IF ')Then Begin
    ThenPos:=Pos(' THEN',U);If ThenPos>0Then Begin Condition:=Copy(S,4,ThenPos-4);Evaluate(Condition,V);
     Rest:=Trim(Copy(S,ThenPos+5,255));
     If Rest<>''Then Begin ElsePos:=Pos(' ELSE ',Upper(Rest));
@@ -940,6 +970,108 @@ Begin
   If(U='ELSE')or(U='END IF')or StartsWith(U,'NEXT')or(U='WEND')Then Exit
                                                                Else ExecuteStatement(S);
   Inc(I);
+ End;
+End;
+
+Function ListItem(Var Source:String):String;
+Var I,Depth:Integer;Quote:Char;InQuote:Boolean;
+Begin
+ I:=1;Depth:=0;Quote:=#0;InQuote:=False;
+ While I<=Length(Source)Do Begin
+  If InQuote Then Begin
+   If Source[I]=Quote Then Begin
+    If(I<Length(Source))and(Source[I+1]=Quote)Then Inc(I)Else InQuote:=False;
+   End;
+  End Else If Source[I]in['''','"']Then Begin InQuote:=True;Quote:=Source[I];End
+  Else If Source[I]='('Then Inc(Depth)
+  Else If Source[I]=')'Then Begin If Depth>0Then Dec(Depth);End
+  Else If(Source[I]=',')and(Depth=0)Then Begin
+   ListItem:=Trim(Copy(Source,1,I-1));Delete(Source,1,I);Exit;
+  End;
+  Inc(I);
+ End;
+ ListItem:=Trim(Source);Source:='';
+End;
+
+Function SimpleIdentifier(Source:String):Boolean;
+Var I:Integer;
+Begin
+ Source:=Trim(Source);SimpleIdentifier:=False;If Source=''Then Exit;
+ If Not(Source[1]in['A'..'Z','a'..'z','_'])Then Exit;
+ For I:=2To Length(Source)Do If Not(Source[I]in['A'..'Z','a'..'z','0'..'9','_'])Then Exit;
+ SimpleIdentifier:=True;
+End;
+
+Procedure CallSub(CallText:String);
+Var CallName,ArgumentText,Declaration,DeclarationName,ParameterText:String;
+ ParameterName,ArgumentExpression,UpperDeclaration:String;
+ I,P,NameEnd:Integer;StartLine,EndLine:LongInt;Binding,NextBinding:PCallBinding;
+ Existing:PVariable;ArgumentValue,CopyValue:TValue;ByReference:Boolean;
+Begin
+ CallText:=Trim(CallText);P:=Pos('(',CallText);
+ If P>0Then Begin
+  CallName:=Trim(Copy(CallText,1,P-1));ArgumentText:=Copy(CallText,P+1,255);
+  If(Length(ArgumentText)>0)and(ArgumentText[Length(ArgumentText)]=')')Then
+   Delete(ArgumentText,Length(ArgumentText),1);
+ End Else Begin
+  P:=Pos(' ',CallText);
+  If P>0Then Begin CallName:=Copy(CallText,1,P-1);ArgumentText:=Trim(Copy(CallText,P+1,255));End
+  Else Begin CallName:=CallText;ArgumentText:='';End;
+ End;
+ StartLine:=0;EndLine:=0;ParameterText:='';
+ For I:=1To LineCount Do Begin
+  Declaration:=Trim(ScriptLineText(I));UpperDeclaration:=Upper(Declaration);
+  If StartsWith(Declaration,'PUBLIC SUB ')Then Delete(Declaration,1,7)
+  Else If StartsWith(Declaration,'PRIVATE SUB ')Then Delete(Declaration,1,8);
+  If StartsWith(Declaration,'SUB ')Then Begin
+   Delete(Declaration,1,4);P:=Pos('(',Declaration);NameEnd:=Pos(' ',Declaration);
+   If(P=0)or((NameEnd>0)and(NameEnd<P))Then P:=NameEnd;
+   If P=0Then DeclarationName:=Trim(Declaration)
+   Else DeclarationName:=Trim(Copy(Declaration,1,P-1));
+   If Upper(DeclarationName)=Upper(CallName)Then Begin
+    StartLine:=I;P:=Pos('(',Declaration);
+    If P>0Then Begin ParameterText:=Copy(Declaration,P+1,255);
+     If(Length(ParameterText)>0)and(ParameterText[Length(ParameterText)]=')')Then
+      Delete(ParameterText,Length(ParameterText),1);End;
+    Break;
+   End;
+  End;
+ End;
+ If StartLine=0Then Begin
+  If Not BatchMode Then WriteLn('Erreur VBScript: procedure introuvable: ',CallName);
+  ExitCode:=1;Exit;
+ End;
+ EndLine:=StartLine+1;
+ While(EndLine<=LineCount)and(Upper(Trim(ScriptLineText(EndLine)))<>'END SUB')Do Inc(EndLine);
+ Binding:=Nil;
+ While ParameterText<>''Do Begin
+  ParameterName:=ListItem(ParameterText);ByReference:=True;
+  If StartsWith(ParameterName,'BYVAL ')Then Begin Delete(ParameterName,1,6);ByReference:=False;End
+  Else If StartsWith(ParameterName,'BYREF ')Then Delete(ParameterName,1,6);
+  P:=Pos(' ',ParameterName);If P>0Then ParameterName:=Copy(ParameterName,1,P-1);
+  ArgumentExpression:=ListItem(ArgumentText);Evaluate(ArgumentExpression,ArgumentValue);
+  New(NextBinding);NextBinding^.Name:=Upper(ParameterName);
+  NextBinding^.ActualName:=Upper(Trim(ArgumentExpression));
+  NextBinding^.CopyBack:=ByReference and SimpleIdentifier(ArgumentExpression);
+  Existing:=FindVariable(ParameterName);NextBinding^.Existed:=Existing<>Nil;
+  If Existing<>Nil Then Begin NextBinding^.OldValue:=Existing^.Value;
+   NextBinding^.OldKind:=Existing^.ValueKind;End
+  Else Begin NextBinding^.OldValue:='';NextBinding^.OldKind:=ValueEmpty;End;
+  NextBinding^.Next:=Binding;Binding:=NextBinding;SetVariableValue(ParameterName,ArgumentValue);
+ End;
+ ExecuteRange(StartLine+1,EndLine-1);
+ NextBinding:=Binding;
+ While NextBinding<>Nil Do Begin
+  If NextBinding^.CopyBack Then Begin GetVariable(NextBinding^.Name,CopyValue);
+   SetVariableValue(NextBinding^.ActualName,CopyValue);End;
+  NextBinding:=NextBinding^.Next;
+ End;
+ While Binding<>Nil Do Begin
+  NextBinding:=Binding^.Next;
+  If Binding^.Existed Then Begin MakeText(Binding^.OldValue,CopyValue);
+   CopyValue.ValueKind:=Binding^.OldKind;SetVariableValue(Binding^.Name,CopyValue);End
+  Else RemoveVariable(Binding^.Name);
+  Dispose(Binding);Binding:=NextBinding;
  End;
 End;
 
