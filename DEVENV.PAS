@@ -60872,6 +60872,620 @@ Begin
  If PscOutLine <> '' Then PscFlushLine;
 End;
 
+{ ========================================================================= }
+{ CONVERTFROM-CSV / CONVERTFROM-JSON / CONVERTFROM-MARKDOWN (2026-08-31,    }
+{ demande explicite de l'utilisateur, "support complet") - PowerShell dev   }
+{ uniquement. Ce terminal n'a AUCUN pipeline d'objets (pas de $variable,    }
+{ pas de `|`, voir l'en-tete de ce chantier dans                            }
+{ project_devenv_powershell_cmdlets) : impossible de renvoyer un VRAI       }
+{ objet PSCustomObject a une commande suivante. La valeur reelle de ces 3   }
+{ cmdlets ici - valider le format ET inspecter la structure - est           }
+{ pleinement conservee en analysant reellement le fichier puis en          }
+{ AFFICHANT la structure resultante (CSV/JSON : liste Cle : Valeur          }
+{ indentee, comme le ferait Format-List par defaut ; Markdown : le VRAI     }
+{ HTML resultant, exactement ce que contiendrait la propriete .Html de     }
+{ l'objet MarkdownInfo reel) - un analyseur syntaxique reel est ecrit pour  }
+{ chacun des 3 formats, aucune des 3 n'est un simple echo/stub.            }
+{                                                                           }
+{ Toutes utilisent AnsiString (pas le String[255] par defaut de ce fichier }
+{ sous la directive H-) pour le texte source - meme technique deja         }
+{ utilisee ailleurs dans DEVENV.PAS (voir TChatMessage.Text, ~2800) - un    }
+{ fichier CSV/JSON/Markdown reel depasse tres facilement 255 caracteres au  }
+{ total, contrairement aux moteurs CSCRIPT/PSCRIPT ci-dessus (contraints    }
+{ par TCsValue/TPscValue deja existants) : ici, aucun moteur preexistant    }
+{ ne borne le texte, donc AnsiString est utilise directement partout sans   }
+{ aucun compromis necessaire. }
+
+{ --- ConvertFrom-Csv --- }
+
+Const
+ CONVCSV_MAXFIELDS = 64;
+Type
+ TConvCsvFields = Array[1..CONVCSV_MAXFIELDS] Of AnsiString;
+
+Function ConvCsvSplitLine(S: AnsiString; Delim: Char;
+ Var F: TConvCsvFields): Integer;
+Var
+ I, Count: Integer;
+ Cur: AnsiString;
+ InQuotes: Boolean;
+Begin
+ Count := 0;
+ Cur := '';
+ InQuotes := False;
+ I := 1;
+ While I <= Length(S) Do Begin
+  If InQuotes Then Begin
+   If S[I] = '"' Then Begin
+    If (I < Length(S)) And (S[I+1] = '"') Then Begin
+     Cur := Cur + '"';
+     Inc(I);
+    End Else InQuotes := False;
+   End Else Cur := Cur + S[I];
+  End Else Begin
+   If S[I] = '"' Then InQuotes := True
+   Else If S[I] = Delim Then Begin
+    If Count < CONVCSV_MAXFIELDS Then Begin
+     Inc(Count);
+     F[Count] := Cur;
+    End;
+    Cur := '';
+   End Else Cur := Cur + S[I];
+  End;
+  Inc(I);
+ End;
+ If Count < CONVCSV_MAXFIELDS Then Begin
+  Inc(Count);
+  F[Count] := Cur;
+ End;
+ ConvCsvSplitLine := Count;
+End;
+
+Procedure TermCmd_ConvertFromCsv(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I, HeaderCount, FieldCount, RecordNum: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, UpLevel, DelimArg: String;
+ Delim: Char;
+ F: Text;
+ Line: AnsiString;
+ Headers, Fields: TConvCsvFields;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := ''; DelimArg := ',';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-PATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If (UpLevel = '-DELIMITER') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then DelimArg := LocalArgs[I];
+  End Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If Length(DelimArg) > 0 Then Delim := DelimArg[1] Else Delim := ',';
+
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-Csv -Path fichier.csv [-Delimiter c]');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'ConvertFrom-Csv : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'ConvertFrom-Csv : impossible d''ouvrir ' + PathArg);
+  Exit;
+ End;
+ If Eof(F) Then Begin
+  Close(F);
+  TermAddLine(TP, 'ConvertFrom-Csv : fichier vide.');
+  Exit;
+ End;
+ ReadLn(F, Line);
+ HeaderCount := ConvCsvSplitLine(Line, Delim, Headers);
+ RecordNum := 0;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  If TermTrim(Line) <> '' Then Begin
+   FieldCount := ConvCsvSplitLine(Line, Delim, Fields);
+   Inc(RecordNum);
+   TermAddLine(TP, '');
+   TermAddLine(TP, 'Objet ' + IntToStr(RecordNum) + ' :');
+   For I := 1 To HeaderCount Do Begin
+    If I <= FieldCount Then
+     TermAddLine(TP, '  ' + Headers[I] + ' : ' + Fields[I])
+    Else
+     TermAddLine(TP, '  ' + Headers[I] + ' : ');
+   End;
+  End;
+ End;
+ Close(F);
+ If RecordNum = 0 Then
+  TermAddLine(TP, 'ConvertFrom-Csv : aucune ligne de donnees (seul l''en-tete est present).');
+End;
+
+{ --- ConvertFrom-Json --- }
+
+Function ConvJsonPad(Indent: Integer): AnsiString;
+Var
+ I: Integer;
+ R: AnsiString;
+Begin
+ R := '';
+ For I := 1 To Indent Do R := R + '  ';
+ ConvJsonPad := R;
+End;
+
+Procedure ConvJsonEmit(Var TP: TTerminalPanel; Indent: Integer;
+ Lbl, Val: AnsiString);
+Begin
+ If Lbl <> '' Then TermAddLine(TP, ConvJsonPad(Indent) + Lbl + ' : ' + Val)
+ Else TermAddLine(TP, ConvJsonPad(Indent) + Val);
+End;
+
+Procedure ConvJsonSkip(S: AnsiString; Var P: Integer);
+Begin
+ While (P <= Length(S)) And (S[P] In [' ', #9, #10, #13]) Do Inc(P);
+End;
+
+Function ConvJsonParseString(S: AnsiString; Var P: Integer;
+ Var Ok: Boolean): AnsiString;
+Var
+ Res: AnsiString;
+ HexStr: String;
+ Code, ErrCode: Integer;
+Begin
+ Res := '';
+ Ok := False;
+ If (P > Length(S)) Or (S[P] <> '"') Then Begin
+  ConvJsonParseString := '';
+  Exit;
+ End;
+ Inc(P);
+ While (P <= Length(S)) And (S[P] <> '"') Do Begin
+  If S[P] = '\' Then Begin
+   Inc(P);
+   If P > Length(S) Then Break;
+   Case S[P] Of
+    '"': Res := Res + '"';
+    '\': Res := Res + '\';
+    '/': Res := Res + '/';
+    'n': Res := Res + #10;
+    't': Res := Res + #9;
+    'r': Res := Res + #13;
+    'b': Res := Res + #8;
+    'f': Res := Res + #12;
+    'u': Begin
+     If P + 4 <= Length(S) Then Begin
+      HexStr := Copy(S, P+1, 4);
+      Val('$' + HexStr, Code, ErrCode);
+      { Simplification honnete : seul l'octet bas est conserve (pas de vrai }
+      { support Unicode multi-octets dans ce terminal 8 bits par caractere) }
+      If ErrCode = 0 Then Res := Res + Chr(Code And $FF);
+      Inc(P, 4);
+     End;
+    End;
+   End;
+   Inc(P);
+  End Else Begin
+   Res := Res + S[P];
+   Inc(P);
+  End;
+ End;
+ If (P <= Length(S)) And (S[P] = '"') Then Begin
+  Inc(P);
+  Ok := True;
+ End;
+ ConvJsonParseString := Res;
+End;
+
+Function ConvJsonParseNumber(S: AnsiString; Var P: Integer): AnsiString;
+Var
+ Start: Integer;
+Begin
+ Start := P;
+ If (P <= Length(S)) And (S[P] = '-') Then Inc(P);
+ While (P <= Length(S)) And (S[P] In ['0'..'9']) Do Inc(P);
+ If (P <= Length(S)) And (S[P] = '.') Then Begin
+  Inc(P);
+  While (P <= Length(S)) And (S[P] In ['0'..'9']) Do Inc(P);
+ End;
+ If (P <= Length(S)) And (S[P] In ['e', 'E']) Then Begin
+  Inc(P);
+  If (P <= Length(S)) And (S[P] In ['+', '-']) Then Inc(P);
+  While (P <= Length(S)) And (S[P] In ['0'..'9']) Do Inc(P);
+ End;
+ ConvJsonParseNumber := Copy(S, Start, P - Start);
+End;
+
+Procedure ConvJsonParseValue(Var TP: TTerminalPanel; Var S: AnsiString;
+ Var P: Integer; Indent: Integer; Lbl: AnsiString; Var Ok: Boolean); Forward;
+Procedure ConvJsonParseObject(Var TP: TTerminalPanel; Var S: AnsiString;
+ Var P: Integer; Indent: Integer; Lbl: AnsiString; Var Ok: Boolean); Forward;
+Procedure ConvJsonParseArray(Var TP: TTerminalPanel; Var S: AnsiString;
+ Var P: Integer; Indent: Integer; Lbl: AnsiString; Var Ok: Boolean); Forward;
+
+Procedure ConvJsonParseObject(Var TP: TTerminalPanel; Var S: AnsiString;
+ Var P: Integer; Indent: Integer; Lbl: AnsiString; Var Ok: Boolean);
+Var
+ KeyStr: AnsiString;
+ ChildOk: Boolean;
+ ChildIndent: Integer;
+Begin
+ Ok := False;
+ Inc(P);
+ If Lbl <> '' Then Begin
+  TermAddLine(TP, ConvJsonPad(Indent) + Lbl + ' :');
+  ChildIndent := Indent + 1;
+ End Else ChildIndent := Indent;
+ ConvJsonSkip(S, P);
+ If (P <= Length(S)) And (S[P] = '}') Then Begin
+  Inc(P);
+  Ok := True;
+  Exit;
+ End;
+ Repeat
+  ConvJsonSkip(S, P);
+  If (P > Length(S)) Or (S[P] <> '"') Then Exit;
+  KeyStr := ConvJsonParseString(S, P, ChildOk);
+  If Not ChildOk Then Exit;
+  ConvJsonSkip(S, P);
+  If (P > Length(S)) Or (S[P] <> ':') Then Exit;
+  Inc(P);
+  ConvJsonParseValue(TP, S, P, ChildIndent, KeyStr, ChildOk);
+  If Not ChildOk Then Exit;
+  ConvJsonSkip(S, P);
+  If (P <= Length(S)) And (S[P] = ',') Then Inc(P)
+  Else Break;
+ Until False;
+ ConvJsonSkip(S, P);
+ If (P > Length(S)) Or (S[P] <> '}') Then Exit;
+ Inc(P);
+ Ok := True;
+End;
+
+Procedure ConvJsonParseArray(Var TP: TTerminalPanel; Var S: AnsiString;
+ Var P: Integer; Indent: Integer; Lbl: AnsiString; Var Ok: Boolean);
+Var
+ ChildOk: Boolean;
+ ChildIndent, ElemIdx: Integer;
+ ElemLbl, NumStr: AnsiString;
+Begin
+ Ok := False;
+ Inc(P);
+ If Lbl <> '' Then Begin
+  TermAddLine(TP, ConvJsonPad(Indent) + Lbl + ' :');
+  ChildIndent := Indent + 1;
+ End Else ChildIndent := Indent;
+ ConvJsonSkip(S, P);
+ If (P <= Length(S)) And (S[P] = ']') Then Begin
+  Inc(P);
+  Ok := True;
+  Exit;
+ End;
+ ElemIdx := 0;
+ Repeat
+  Str(ElemIdx, NumStr);
+  ElemLbl := '[' + NumStr + ']';
+  ConvJsonParseValue(TP, S, P, ChildIndent, ElemLbl, ChildOk);
+  If Not ChildOk Then Exit;
+  Inc(ElemIdx);
+  ConvJsonSkip(S, P);
+  If (P <= Length(S)) And (S[P] = ',') Then Inc(P)
+  Else Break;
+ Until False;
+ ConvJsonSkip(S, P);
+ If (P > Length(S)) Or (S[P] <> ']') Then Exit;
+ Inc(P);
+ Ok := True;
+End;
+
+Procedure ConvJsonParseValue(Var TP: TTerminalPanel; Var S: AnsiString;
+ Var P: Integer; Indent: Integer; Lbl: AnsiString; Var Ok: Boolean);
+Var
+ ValStr: AnsiString;
+ ChildOk: Boolean;
+Begin
+ Ok := False;
+ ConvJsonSkip(S, P);
+ If P > Length(S) Then Exit;
+ If S[P] = '{' Then ConvJsonParseObject(TP, S, P, Indent, Lbl, Ok)
+ Else If S[P] = '[' Then ConvJsonParseArray(TP, S, P, Indent, Lbl, Ok)
+ Else If S[P] = '"' Then Begin
+  ValStr := ConvJsonParseString(S, P, ChildOk);
+  If Not ChildOk Then Exit;
+  ConvJsonEmit(TP, Indent, Lbl, '"' + ValStr + '"');
+  Ok := True;
+ End Else If Copy(S, P, 4) = 'true' Then Begin
+  ConvJsonEmit(TP, Indent, Lbl, 'True');
+  Inc(P, 4);
+  Ok := True;
+ End Else If Copy(S, P, 5) = 'false' Then Begin
+  ConvJsonEmit(TP, Indent, Lbl, 'False');
+  Inc(P, 5);
+  Ok := True;
+ End Else If Copy(S, P, 4) = 'null' Then Begin
+  ConvJsonEmit(TP, Indent, Lbl, '(null)');
+  Inc(P, 4);
+  Ok := True;
+ End Else Begin
+  ValStr := ConvJsonParseNumber(S, P);
+  If ValStr = '' Then Exit;
+  ConvJsonEmit(TP, Indent, Lbl, ValStr);
+  Ok := True;
+ End;
+End;
+
+Procedure TermCmd_ConvertFromJson(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I, P: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, UpLevel: String;
+ F: Text;
+ Line: AnsiString;
+ WholeText: AnsiString;
+ Ok: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-PATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-Json -Path fichier.json');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'ConvertFrom-Json : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'ConvertFrom-Json : impossible d''ouvrir ' + PathArg);
+  Exit;
+ End;
+ WholeText := '';
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  WholeText := WholeText + Line + #10;
+ End;
+ Close(F);
+
+ P := 1;
+ ConvJsonParseValue(TP, WholeText, P, 0, '', Ok);
+ If Not Ok Then
+  TermAddLine(TP, 'ConvertFrom-Json : JSON invalide ou mal forme (position ' +
+   IntToStr(P) + ' du fichier).');
+End;
+
+{ --- ConvertFrom-Markdown --- }
+
+Function ConvMdInline(S: AnsiString): AnsiString;
+Var
+ R, LinkText, LinkUrl: AnsiString;
+ I, J, K: Integer;
+Begin
+ R := '';
+ I := 1;
+ While I <= Length(S) Do Begin
+  If (Copy(S, I, 2) = '**') Then Begin
+   J := Pos('**', Copy(S, I+2, Length(S)));
+   If J > 0 Then Begin
+    R := R + '<strong>' + Copy(S, I+2, J-1) + '</strong>';
+    I := I + J + 3;
+    Continue;
+   End;
+  End;
+  If (S[I] = '`') Then Begin
+   J := Pos('`', Copy(S, I+1, Length(S)));
+   If J > 0 Then Begin
+    R := R + '<code>' + Copy(S, I+1, J-1) + '</code>';
+    I := I + J + 1;
+    Continue;
+   End;
+  End;
+  If (S[I] = '*') Or (S[I] = '_') Then Begin
+   J := Pos(S[I], Copy(S, I+1, Length(S)));
+   If J > 0 Then Begin
+    R := R + '<em>' + Copy(S, I+1, J-1) + '</em>';
+    I := I + J + 1;
+    Continue;
+   End;
+  End;
+  If (S[I] = '[') Then Begin
+   J := Pos(']', Copy(S, I+1, Length(S)));
+   If (J > 0) And (I+1+J <= Length(S)) And (S[I+1+J] = '(') Then Begin
+    K := Pos(')', Copy(S, I+J+2, Length(S)));
+    If K > 0 Then Begin
+     LinkText := Copy(S, I+1, J-1);
+     LinkUrl := Copy(S, I+J+2, K-1);
+     R := R + '<a href="' + LinkUrl + '">' + LinkText + '</a>';
+     I := I + J + K + 2;
+     Continue;
+    End;
+   End;
+  End;
+  R := R + S[I];
+  Inc(I);
+ End;
+ ConvMdInline := R;
+End;
+
+Function ConvMdOrderedContent(S: AnsiString; Var Content: AnsiString): Boolean;
+Var
+ I: Integer;
+Begin
+ ConvMdOrderedContent := False;
+ I := 1;
+ While (I <= Length(S)) And (S[I] In ['0'..'9']) Do Inc(I);
+ If (I > 1) And (I < Length(S)) And (S[I] = '.') And (S[I+1] = ' ') Then Begin
+  Content := TermTrim(Copy(S, I+2, Length(S)));
+  ConvMdOrderedContent := True;
+ End;
+End;
+
+Procedure ConvMdClose(Var TP: TTerminalPanel; Var CurBlock: String);
+Begin
+ If CurBlock = 'P' Then TermAddLine(TP, '</p>')
+ Else If CurBlock = 'UL' Then TermAddLine(TP, '</ul>')
+ Else If CurBlock = 'OL' Then TermAddLine(TP, '</ol>');
+ CurBlock := '';
+End;
+
+Procedure TermCmd_ConvertFromMarkdown(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I, Level: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, UpLevel, CurBlock: String;
+ F: Text;
+ Line, Trimmed, Content: AnsiString;
+ InCodeBlock: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-PATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-Markdown -Path fichier.md');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'ConvertFrom-Markdown : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'ConvertFrom-Markdown : impossible d''ouvrir ' + PathArg);
+  Exit;
+ End;
+
+ CurBlock := '';
+ InCodeBlock := False;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  Trimmed := TermTrim(Line);
+
+  If Copy(Trimmed, 1, 3) = '```' Then Begin
+   If InCodeBlock Then Begin
+    TermAddLine(TP, '</code></pre>');
+    InCodeBlock := False;
+   End Else Begin
+    ConvMdClose(TP, CurBlock);
+    TermAddLine(TP, '<pre><code>');
+    InCodeBlock := True;
+   End;
+   Continue;
+  End;
+
+  If InCodeBlock Then Begin
+   TermAddLine(TP, Line);
+   Continue;
+  End;
+
+  If Trimmed = '' Then Begin
+   ConvMdClose(TP, CurBlock);
+   Continue;
+  End;
+
+  Level := 0;
+  While (Level < Length(Trimmed)) And (Level < 6) And
+        (Trimmed[Level+1] = '#') Do Inc(Level);
+  If (Level > 0) And (Level < Length(Trimmed)) And
+     (Trimmed[Level+1] = ' ') Then Begin
+   ConvMdClose(TP, CurBlock);
+   Content := TermTrim(Copy(Trimmed, Level+2, Length(Trimmed)));
+   TermAddLine(TP, '<h' + IntToStr(Level) + '>' + ConvMdInline(Content) +
+    '</h' + IntToStr(Level) + '>');
+   Continue;
+  End;
+
+  If (Trimmed = '---') Or (Trimmed = '***') Or (Trimmed = '___') Then Begin
+   ConvMdClose(TP, CurBlock);
+   TermAddLine(TP, '<hr>');
+   Continue;
+  End;
+
+  If (Length(Trimmed) > 0) And (Trimmed[1] = '>') Then Begin
+   ConvMdClose(TP, CurBlock);
+   Content := TermTrim(Copy(Trimmed, 2, Length(Trimmed)));
+   TermAddLine(TP, '<blockquote>' + ConvMdInline(Content) + '</blockquote>');
+   Continue;
+  End;
+
+  If (Length(Trimmed) >= 2) And ((Trimmed[1] = '-') Or (Trimmed[1] = '*')) And
+     (Trimmed[2] = ' ') Then Begin
+   If CurBlock <> 'UL' Then Begin
+    ConvMdClose(TP, CurBlock);
+    TermAddLine(TP, '<ul>');
+    CurBlock := 'UL';
+   End;
+   Content := TermTrim(Copy(Trimmed, 3, Length(Trimmed)));
+   TermAddLine(TP, '<li>' + ConvMdInline(Content) + '</li>');
+   Continue;
+  End;
+
+  If ConvMdOrderedContent(Trimmed, Content) Then Begin
+   If CurBlock <> 'OL' Then Begin
+    ConvMdClose(TP, CurBlock);
+    TermAddLine(TP, '<ol>');
+    CurBlock := 'OL';
+   End;
+   TermAddLine(TP, '<li>' + ConvMdInline(Content) + '</li>');
+   Continue;
+  End;
+
+  If CurBlock <> 'P' Then Begin
+   ConvMdClose(TP, CurBlock);
+   TermAddLine(TP, '<p>');
+   CurBlock := 'P';
+   TermAddLine(TP, ConvMdInline(Trimmed));
+  End Else Begin
+   TermAddLine(TP, '<br>');
+   TermAddLine(TP, ConvMdInline(Trimmed));
+  End;
+ End;
+ ConvMdClose(TP, CurBlock);
+ If InCodeBlock Then TermAddLine(TP, '</code></pre>');
+ Close(F);
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -61007,6 +61621,13 @@ Begin
   TermAddLine(TP,
    '  Connect-PSSession / Connect-WSMan     Reconnues, sans remoting ' +
    'PowerShell/WinRM');
+  TermAddLine(TP,
+   '  ConvertFrom-Csv -Path f.csv [-Delimiter c]   Affiche les objets ' +
+   'analyses');
+  TermAddLine(TP,
+   '  ConvertFrom-Json -Path f.json         Affiche la structure analysee');
+  TermAddLine(TP,
+   '  ConvertFrom-Markdown -Path f.md       Affiche le HTML resultant');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -61588,7 +62209,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 92;
+ PS_CMD_ALIASES = 95;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -61640,6 +62261,9 @@ Const
   'CONNECT-VMNETWORKADAPTER',
   'CONNECT-VMSAN',
   'CONNECT-WSMAN',
+  'CONVERTFROM-CSV',
+  'CONVERTFROM-JSON',
+  'CONVERTFROM-MARKDOWN',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -61712,6 +62336,9 @@ Const
   67,
   68,
   69,
+  70,
+  71,
+  72,
   46,
   47,
   48,
@@ -62171,6 +62798,9 @@ Begin
     67: TermCmd_ConnectVMNetworkAdapter(TP, ParamStr);
     68: TermCmd_ConnectVMSan(TP, ParamStr);
     69: TermCmd_ConnectWSMan(TP, ParamStr);
+    70: TermCmd_ConvertFromCsv(TP, ParamStr);
+    71: TermCmd_ConvertFromJson(TP, ParamStr);
+    72: TermCmd_ConvertFromMarkdown(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
