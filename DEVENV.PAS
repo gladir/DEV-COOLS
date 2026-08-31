@@ -2035,6 +2035,7 @@ Type
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
   RexxFile        : TString;   { /REXX:fichier.rex }
   PSFile          : TString;   { /PS:fichier.ps1 }
+  VBScriptFile    : TString;   { /VBSCRIPT:fichier.vbs }
  End;
 
  { Types d evenements }
@@ -9131,6 +9132,7 @@ Procedure ShowHelp;Begin
   WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
   WriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
   WriteLn('  /PS:fichier.ps1         Ouvrir PowerShell dev et executer ce script');
+  WriteLn('  /VBSCRIPT:fichier.vbs   Ouvrir CMD (Invite de commandes) et executer ce script VBScript');
  WriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
  WriteLn('  -h             Afficher cette aide');
  WriteLn('  --help         Afficher cette aide');
@@ -9177,6 +9179,7 @@ Begin
  Opts.TerminalOS2Batch := '';
  Opts.RexxFile         := '';
  Opts.PSFile           := '';
+ Opts.VBScriptFile     := '';
 End;
 
 { --- Analyse de la ligne de commande --- }
@@ -9226,6 +9229,13 @@ Begin
     Opts.PSFile := Copy(Arg, 5, Length(Arg) - 4);
    If (Opts.PSFile = '') Or (Not FileExists(Opts.PSFile)) Then
     FatalError('Fichier PowerShell introuvable: ' + Opts.PSFile);
+  End Else
+    If (Length(Arg) >= 10) And
+      ((Copy(Arg, 1, 10) = '/VBSCRIPT:') Or (Copy(Arg, 1, 10) = '/vbscript:') Or
+      (Copy(Arg, 1, 10) = '-VBSCRIPT:') Or (Copy(Arg, 1, 10) = '-vbscript:')) Then Begin
+    Opts.VBScriptFile := Copy(Arg, 11, Length(Arg) - 10);
+   If (Opts.VBScriptFile = '') Or (Not FileExists(Opts.VBScriptFile)) Then
+    FatalError('Fichier VBScript introuvable: ' + Opts.VBScriptFile);
   End Else
   If (Length(Arg) >= 5) And
           ((Copy(Arg, 1, 5) = '-emu:') Or (Copy(Arg, 1, 5) = '-EMU:') Or
@@ -57681,6 +57691,1713 @@ Begin
  If LhOutLine <> '' Then LhFlushLine;
 End;
 
+{ ============================================================ }
+{ === Commande CSCRIPT (interprete VBScript console)       === }
+{ ============================================================ }
+{ Port complet et integral du programme autonome                }
+{ c:\SOURCE\GITHUB\DEV-COOLS\CSCRIPT.PAS (meme auteur), integre  }
+{ en code natif directement dans DEVENV.PAS - AUCUN executable   }
+{ externe (meme discipline que ARJ/UNZIP/LHICE ci-dessus, demande}
+{ explicite de l'utilisateur, 2026-08-31). Clone autonome de      }
+{ Microsoft Console Based Script Host (cscript.exe) : interprete  }
+{ VBScript complet (expressions, If/For/Do/While, Sub/Function     }
+{ avec parametres ByRef/ByVal, tableaux fixes et dynamiques         }
+{ Dim/ReDim/Erase, 67 fonctions integrees, WScript.Echo/Quit/       }
+{ Arguments, gestion d'erreur On Error Resume Next). Tous les       }
+{ identificateurs de portee globale sont prefixes "Cs"/"CS_"        }
+{ (verifie : 0 collision avant ce chantier). Disponible dans 3      }
+{ shells (demande explicite, PAS OS/2 & REXX cette fois - deja      }
+{ son propre interprete REXX) : Invite de commande (SK_CMD),        }
+{ PowerShell dev (SK_POWERSHELL), Norton Commander (SK_NCOMMANDER). }
+{                                                                   }
+{ Gestion d'erreur/arret : contrairement a ARJ/UNZIP/LHICE,          }
+{ AUCUN drapeau sticky n'a du etre invente - l'original utilise      }
+{ DEJA nativement un drapeau cooperatif `Terminated`/`ExitCode`      }
+{ verifie dans TOUTES ses boucles d'execution (`While ... Not        }
+{ Terminated ... Do`) - la SEULE vraie sortie de processus etait     }
+{ le `Halt(ExitCode)` final du bloc BEGIN principal, simplement      }
+{ omis ici (la procedure retourne normalement a la place).           }
+{                                                                    }
+{ Adaptation des 2 SEULS points reellement interactifs (aucun        }
+{ autre Halt/ReadKey/ReadLn interactif dans tout le fichier) :        }
+{ - MsgBox : l'original utilisait un prompt console ([O]K/[A]nnuler  }
+{   + ReadKey), impossible ici (aucune console reelle attachee au    }
+{   panneau de terminal). Remplace par une VRAIE boite de dialogue   }
+{   Win32 modale (MessageBoxA), en reutilisant l'API deja declaree   }
+{   pour RXMESSAGEBOX dans le portage REXX (Rexx_MB_MessageBoxA) -   }
+{   simple appel direct (MessageBoxA gere sa propre boucle de        }
+{   messages, bloque le thread appelant sans geler le reste de       }
+{   l'IDE, exactement comme RXMESSAGEBOX deja verifie en direct).    }
+{   Les constantes de style VBScript (0..5) et les codes de retour   }
+{   (1..7) correspondent EXACTEMENT aux constantes Win32 MB_*/ID*    }
+{   (VBScript.MsgBox est un fin habillage de MessageBoxA) - aucune   }
+{   table de traduction necessaire, contrairement a l'original.      }
+{   PLUS FIDELE au vrai comportement de cscript.exe que l'original   }
+{   lui-meme (un vrai MsgBox VBScript affiche toujours une vraie     }
+{   boite Win32, meme sous CScript en ligne de commande).            }
+{ - InputBox : necessiterait une vraie saisie de texte bidirection-  }
+{   nelle pendant l'execution du script - aucun mecanisme de ce      }
+{   type n'existe pour ce shell (le mecanisme a fibres de PULL/      }
+{   SYSGETKEY est specifique au shell OS/2 & REXX, non reutilise     }
+{   ici). Limitation honnete assumee : renvoie directement la        }
+{   valeur par defaut (3e argument), un repli defensif deja courant  }
+{   dans du vrai code VBScript (`If Answer = "" Then Answer =        }
+{   Default`). }
+
+Type
+ PCsScriptLine=^TCsScriptLine;
+ TCsScriptLine=Record
+  Number:LongInt;
+  Text:String;
+  Previous,Next:PCsScriptLine;
+ End;
+ PCsVariable=^TCsVariable;
+ TCsVariable=Record
+  Name:String[63];
+  Value:String;
+  ValueKind:Byte;
+  Next:PCsVariable;
+ End;
+ PCsCallBinding=^TCsCallBinding;
+ TCsCallBinding=Record
+  Name:String[63];
+  ActualName:String[63];
+  Existed:Boolean;
+  CopyBack:Boolean;
+  OldValue:String;
+  OldKind:Byte;
+  Next:PCsCallBinding;
+ End;
+ TCsValue=Record
+  Text:String;
+  Number:Real;
+  IsNumber:Boolean;
+  ValueKind:Byte;
+ End;
+
+Const
+ CS_MAX_ARGUMENTS=128;
+ CS_VERSION_TEXT='5.812';
+ CS_VALUE_EMPTY=0;CS_VALUE_STRING=1;CS_VALUE_NUMBER=2;CS_VALUE_DATE=3;
+ CS_VALUE_ARRAY=4;CS_VALUE_ERROR=5;CS_VALUE_NULL=6;CS_VALUE_OBJECT=7;
+ CsFunctionList:Array[0..66]of String[24]=(
+  'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
+  'CLNG','COS','CSNG','CSTR','CVERR','DATE','DATESERIAL','DATEVALUE','DAY',
+  'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','ISARRAY','ISDATE',
+  'ISEMPTY','ISERROR','ISNULL','ISNUMERIC','ISOBJECT','LBOUND','LCASE',
+  'LEFT','LEN','LOG','LTRIM','MID','MINUTE','MONTH','MSGBOX','NOW','OCT',
+  'RIGHT','RND','RTRIM','SECOND','SGN','SIN','SQR','STR','STRCOMP','STRING',
+  'TAN','TIME','TIMESERIAL','TIMEVALUE','TRIM','UBOUND','UCASE','VAL','VARTYPE',
+  'WEEKDAY','WSCRIPT.ARGUMENTS','YEAR');
+
+Var
+ CsFirstScriptLine,CsLastScriptLine:PCsScriptLine;
+ CsLineCount,CsCurrentLine:LongInt;
+ CsVariables:PCsVariable;
+ CsScriptArguments:Array[0..CS_MAX_ARGUMENTS-1]of String;
+ CsScriptArgumentCount:Integer;
+ CsScriptName,CsEngineName,CsJobName:String;
+ CsBatchMode,CsDebugMode,CsInteractiveMode,CsShowLogo,CsUnicodeMode:Boolean;
+ CsTimeLimit:LongInt;
+ CsStartHour,CsStartMinute,CsStartSecond,CsStartHundredth:Word;
+ CsExprText:String;
+ CsExprPos:Integer;
+ CsTerminated,CsExitDoRequested,CsExitForRequested,CsExitSubRequested,CsExitFunctionRequested:Boolean;
+ CsOnErrorResumeNext:Boolean;
+ CsExitCode:Integer;
+ CsArrayCounter:LongInt;
+ CsTermTP: ^TTerminalPanel;
+ CsOutLine: String;
+ CsRawArgs: Array[1..128] Of String;
+ CsRawArgCount: Integer;
+
+Procedure CsFlushLine;
+Begin
+ If CsTermTP <> Nil Then TermAddLine(CsTermTP^, CsOutLine);
+ CsOutLine := '';
+End;
+
+Procedure CsW(S: String);
+Begin
+ CsOutLine := CsOutLine + S;
+End;
+
+Procedure CsWL(S: String);
+Begin
+ CsOutLine := CsOutLine + S;
+ CsFlushLine;
+End;
+
+Procedure CsWLBlank;
+Begin
+ CsFlushLine;
+End;
+
+Function CsUpper(S:String):String;
+Var I:Integer;
+Begin For I:=1To Length(S)Do If S[I]in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);CsUpper:=S;End;
+
+Function CsFunctionIndex(Name:String):Byte;
+Var FirstIndex,LastIndex,MiddleIndex:Integer;
+Begin
+ Name:=CsUpper(Name);CsFunctionIndex:=255;
+ FirstIndex:=Low(CsFunctionList);LastIndex:=High(CsFunctionList);
+ While FirstIndex<=LastIndex Do Begin
+  MiddleIndex:=(FirstIndex+LastIndex)div 2;
+  If Name=CsFunctionList[MiddleIndex]Then Begin CsFunctionIndex:=MiddleIndex;Exit;End;
+  If Name<CsFunctionList[MiddleIndex]Then LastIndex:=MiddleIndex-1
+  Else FirstIndex:=MiddleIndex+1;
+ End;
+End;
+
+Function CsTrim(S:String):String;
+Begin
+ While(Length(S)>0)and(S[1]in[' ',#9])Do Delete(S,1,1);
+ While(Length(S)>0)and(S[Length(S)]in[' ',#9,#13,#10])Do Delete(S,Length(S),1);
+ CsTrim:=S;
+End;
+
+Function CsStartsWith(S,Prefix:String):Boolean;
+Begin CsStartsWith:=Copy(CsUpper(CsTrim(S)),1,Length(Prefix))=CsUpper(Prefix);End;
+
+Procedure CsAddScriptLine(S:String);
+Var Line:PCsScriptLine;
+Begin
+ New(Line);Inc(CsLineCount);Line^.Number:=CsLineCount;Line^.Text:=S;
+ Line^.Previous:=CsLastScriptLine;Line^.Next:=Nil;
+ If CsLastScriptLine<>Nil Then CsLastScriptLine^.Next:=Line
+ Else CsFirstScriptLine:=Line;
+ CsLastScriptLine:=Line;
+End;
+
+Function CsScriptLineText(LineNumber:LongInt):String;
+Var Line:PCsScriptLine;
+Begin
+ If(LineNumber<1)or(LineNumber>CsLineCount)Then Begin CsScriptLineText:='';Exit;End;
+ If LineNumber<=(CsLineCount div 2)Then Begin
+  Line:=CsFirstScriptLine;While(Line<>Nil)and(Line^.Number<LineNumber)Do Line:=Line^.Next;
+ End Else Begin
+  Line:=CsLastScriptLine;While(Line<>Nil)and(Line^.Number>LineNumber)Do Line:=Line^.Previous;
+ End;
+ If Line=Nil Then CsScriptLineText:=''Else CsScriptLineText:=Line^.Text;
+End;
+
+Procedure CsMakeText(S:String;Var V:TCsValue);
+Var Code:Integer;N:Real;
+Begin
+ V.Text:=S;Val(S,N,Code);V.IsNumber:=Code=0;
+ If V.IsNumber Then Begin V.Number:=N;V.ValueKind:=CS_VALUE_NUMBER;End
+ Else Begin V.Number:=0;If S=''Then V.ValueKind:=CS_VALUE_EMPTY Else V.ValueKind:=CS_VALUE_STRING;End;
+End;
+
+Procedure CsMakeNumber(N:Real;Var V:TCsValue);
+Var S:String;
+Begin
+ If Frac(N)=0Then Str(Trunc(N),S)Else Str(N:0:8,S);
+ V.Text:=CsTrim(S);V.Number:=N;V.IsNumber:=True;V.ValueKind:=CS_VALUE_NUMBER;
+End;
+
+Procedure CsMakeSingleNumber(N:Real;Var V:TCsValue);
+Var Scale,ScaledValue:Real;
+Begin
+ If N=0Then Begin CsMakeNumber(0,V);Exit;End;
+ Scale:=1;ScaledValue:=Abs(N);
+ While ScaledValue>=10Do Begin ScaledValue:=ScaledValue/10;Scale:=Scale*10;End;
+ While ScaledValue<1Do Begin ScaledValue:=ScaledValue*10;Scale:=Scale/10;End;
+ ScaledValue:=Round(ScaledValue*1000000)/1000000;
+ If N<0Then ScaledValue:=-ScaledValue;
+ CsMakeNumber(ScaledValue*Scale,V);
+End;
+
+Function CsLeapYear(Year:Integer):Boolean;
+Begin CsLeapYear:=(Year mod 4=0)and((Year mod 100<>0)or(Year mod 400=0));End;
+
+Function CsMonthDays(Year,Month:Integer):Integer;
+Const Days:Array[1..12]of Byte=(31,28,31,30,31,30,31,31,30,31,30,31);
+Begin
+ If(Month=2)and CsLeapYear(Year)Then CsMonthDays:=29 Else CsMonthDays:=Days[Month];
+End;
+
+Procedure CsMakeDateValue(Year,Month,Day:Integer;Var V:TCsValue);
+Var SYear,SMonth,SDay:String;
+Begin
+ If(Year>=0)and(Year<=29)Then Inc(Year,2000)
+ Else If(Year>=30)and(Year<=99)Then Inc(Year,1900);
+ While Month<1 Do Begin Dec(Year);Inc(Month,12);End;
+ While Month>12 Do Begin Inc(Year);Dec(Month,12);End;
+ While Day<1 Do Begin Dec(Month);If Month<1Then Begin Month:=12;Dec(Year);End;
+  Inc(Day,CsMonthDays(Year,Month));End;
+ While Day>CsMonthDays(Year,Month)Do Begin Dec(Day,CsMonthDays(Year,Month));Inc(Month);
+  If Month>12Then Begin Month:=1;Inc(Year);End;End;
+ Str(Year,SYear);Str(Month,SMonth);Str(Day,SDay);
+ If Length(SMonth)<2Then SMonth:='0'+SMonth;If Length(SDay)<2Then SDay:='0'+SDay;
+ CsMakeText(SDay+'/'+SMonth+'/'+CsTrim(SYear),V);V.ValueKind:=CS_VALUE_DATE;
+End;
+
+Procedure CsParseDateValue(SourceText:String;Var V:TCsValue);
+Var FirstPart,SecondPart,ThirdPart:String;P,Code,Year,Month,Day:Integer;
+Begin
+ SourceText:=CsTrim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then SourceText:=Copy(SourceText,1,P-1);
+ FirstPart:='';SecondPart:='';ThirdPart:='';
+ P:=Pos('/',SourceText);If P=0Then P:=Pos('-',SourceText);
+ If P=0Then Begin CsMakeText('',V);Exit;End;
+ FirstPart:=Copy(SourceText,1,P-1);Delete(SourceText,1,P);
+ P:=Pos('/',SourceText);If P=0Then P:=Pos('-',SourceText);
+ If P=0Then Begin CsMakeText('',V);Exit;End;
+ SecondPart:=Copy(SourceText,1,P-1);ThirdPart:=Copy(SourceText,P+1,255);
+ If Length(CsTrim(FirstPart))=4Then Begin
+  Val(FirstPart,Year,Code);If Code<>0Then Begin CsMakeText('',V);Exit;End;
+  Val(SecondPart,Month,Code);If Code<>0Then Begin CsMakeText('',V);Exit;End;
+  Val(ThirdPart,Day,Code);
+ End Else Begin
+  Val(FirstPart,Day,Code);If Code<>0Then Begin CsMakeText('',V);Exit;End;
+  Val(SecondPart,Month,Code);If Code<>0Then Begin CsMakeText('',V);Exit;End;
+  Val(ThirdPart,Year,Code);
+ End;
+ If Code<>0Then CsMakeText('',V)Else CsMakeDateValue(Year,Month,Day,V);
+End;
+
+Procedure CsDateDayValue(SourceText:String;Var V:TCsValue);
+Var DateValue:TCsValue;Day,Code:Integer;
+Begin
+ CsParseDateValue(SourceText,DateValue);
+ If DateValue.Text=''Then Begin CsMakeText('',V);Exit;End;
+ Val(Copy(DateValue.Text,1,2),Day,Code);
+ If Code=0Then CsMakeNumber(Day,V)Else CsMakeText('',V);
+End;
+
+Procedure CsDateHourValue(SourceText:String;Var V:TCsValue);
+Var P,HourValue,Code:Integer;TimeText:String;
+Begin
+ SourceText:=CsTrim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then TimeText:=CsTrim(Copy(SourceText,P+1,255))Else TimeText:=SourceText;
+ P:=Pos(':',TimeText);If P=0Then Begin CsMakeNumber(0,V);Exit;End;
+ Val(Copy(TimeText,1,P-1),HourValue,Code);
+ If(Code=0)and(HourValue>=0)and(HourValue<=23)Then CsMakeNumber(HourValue,V)
+ Else CsMakeText('',V);
+End;
+
+Procedure CsDateMinuteValue(SourceText:String;Var V:TCsValue);
+Var P,P2,MinuteValue,Code:Integer;TimeText:String;
+Begin
+ SourceText:=CsTrim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then TimeText:=CsTrim(Copy(SourceText,P+1,255))Else TimeText:=SourceText;
+ P:=Pos(':',TimeText);If P=0Then Begin CsMakeNumber(0,V);Exit;End;
+ Delete(TimeText,1,P);P2:=Pos(':',TimeText);
+ If P2>0Then TimeText:=Copy(TimeText,1,P2-1);
+ Val(CsTrim(TimeText),MinuteValue,Code);
+ If(Code=0)and(MinuteValue>=0)and(MinuteValue<=59)Then CsMakeNumber(MinuteValue,V)
+ Else CsMakeText('',V);
+End;
+
+Procedure CsDateSecondValue(SourceText:String;Var V:TCsValue);
+Var P,SecondValue,Code:Integer;TimeText:String;
+Begin
+ SourceText:=CsTrim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then TimeText:=CsTrim(Copy(SourceText,P+1,255))Else TimeText:=SourceText;
+ P:=Pos(':',TimeText);If P=0Then Begin CsMakeNumber(0,V);Exit;End;
+ Delete(TimeText,1,P);P:=Pos(':',TimeText);
+ If P=0Then Begin CsMakeNumber(0,V);Exit;End;Delete(TimeText,1,P);
+ P:=1;While(P<=Length(TimeText))and(TimeText[P]in['0'..'9'])Do Inc(P);
+ Val(Copy(TimeText,1,P-1),SecondValue,Code);
+ If(Code=0)and(SecondValue>=0)and(SecondValue<=59)Then CsMakeNumber(SecondValue,V)
+ Else CsMakeText('',V);
+End;
+
+Procedure CsDateMonthValue(SourceText:String;Var V:TCsValue);
+Var DateValue:TCsValue;MonthValue,Code:Integer;
+Begin
+ CsParseDateValue(SourceText,DateValue);
+ If DateValue.Text=''Then Begin CsMakeText('',V);Exit;End;
+ Val(Copy(DateValue.Text,4,2),MonthValue,Code);
+ If Code=0Then CsMakeNumber(MonthValue,V)Else CsMakeText('',V);
+End;
+
+Procedure CsNowValue(Var V:TCsValue);
+Var Year,Month,Day,DayOfWeek,HourValue,MinuteValue,Second,Hundredth:Word;
+ DatePart,HourText,MinuteText,SecondText:String;DateValue:TCsValue;
+Begin
+ GetDate(Year,Month,Day,DayOfWeek);GetTime(HourValue,MinuteValue,Second,Hundredth);
+ CsMakeDateValue(Year,Month,Day,DateValue);Str(HourValue,HourText);
+ Str(MinuteValue,MinuteText);Str(Second,SecondText);
+ If Length(HourText)<2Then HourText:='0'+HourText;
+ If Length(MinuteText)<2Then MinuteText:='0'+MinuteText;
+ If Length(SecondText)<2Then SecondText:='0'+SecondText;
+ DatePart:=DateValue.Text+' '+HourText+':'+MinuteText+':'+SecondText;
+ CsMakeText(DatePart,V);V.ValueKind:=CS_VALUE_DATE;
+End;
+
+Procedure CsHexValue(NumberValue:LongInt;Var V:TCsValue);
+Const Digits:Array[0..15] of Char='0123456789ABCDEF';
+Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
+Begin
+ ResultText:='';Negative:=NumberValue<0;Count:=0;
+ Repeat
+  Digit:=NumberValue and 15;ResultText:=Digits[Digit]+ResultText;
+  NumberValue:=NumberValue shr 4;Inc(Count);
+ Until((Not Negative)and(NumberValue=0))or(Negative and(Count=8));
+ CsMakeText(ResultText,V);
+End;
+
+Procedure CsOctValue(NumberValue:LongInt;Var V:TCsValue);
+Const Digits:Array[0..7]of Char='01234567';
+Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
+Begin
+ ResultText:='';Negative:=NumberValue<0;Count:=0;
+ Repeat
+  Digit:=NumberValue and 7;ResultText:=Digits[Digit]+ResultText;
+  NumberValue:=NumberValue shr 3;Inc(Count);
+ Until((Not Negative)and(NumberValue=0))or(Negative and(Count=11));
+ CsMakeText(ResultText,V);
+End;
+
+Procedure CsStrValue(NumberValue:Real;Var V:TCsValue);
+Var Number:TCsValue;
+Begin
+ CsMakeNumber(NumberValue,Number);
+ If NumberValue>=0Then CsMakeText(' '+Number.Text,V)Else CsMakeText(Number.Text,V);
+End;
+
+Procedure CsMakeTimeValue(HourValue,MinuteValue,SecondValue:LongInt;Var V:TCsValue);
+Var TotalSeconds:LongInt;HourText,MinuteText,SecondText:String;
+Begin
+ TotalSeconds:=HourValue*3600+MinuteValue*60+SecondValue;
+ TotalSeconds:=TotalSeconds mod 86400;If TotalSeconds<0Then Inc(TotalSeconds,86400);
+ HourValue:=TotalSeconds div 3600;MinuteValue:=(TotalSeconds mod 3600)div 60;
+ SecondValue:=TotalSeconds mod 60;Str(HourValue,HourText);Str(MinuteValue,MinuteText);
+ Str(SecondValue,SecondText);If Length(HourText)<2Then HourText:='0'+HourText;
+ If Length(MinuteText)<2Then MinuteText:='0'+MinuteText;
+ If Length(SecondText)<2Then SecondText:='0'+SecondText;
+ CsMakeText(HourText+':'+MinuteText+':'+SecondText,V);V.ValueKind:=CS_VALUE_DATE;
+End;
+
+Procedure CsCurrentTimeValue(Var V:TCsValue);
+Var HourValue,MinuteValue,SecondValue,Hundredth:Word;
+Begin GetTime(HourValue,MinuteValue,SecondValue,Hundredth);
+ CsMakeTimeValue(HourValue,MinuteValue,SecondValue,V);End;
+
+Procedure CsParseTimeValue(SourceText:String;Var V:TCsValue);
+Var P,Code,HourValue,MinuteValue,SecondValue:Integer;UpperText,Part:String;
+ IsPM,IsAM:Boolean;
+Begin
+ SourceText:=CsTrim(SourceText);P:=Pos(' ',SourceText);
+ If(P>0)and(Pos(':',Copy(SourceText,P+1,255))>0)Then SourceText:=CsTrim(Copy(SourceText,P+1,255));
+ UpperText:=CsUpper(SourceText);IsPM:=Pos('PM',UpperText)>0;IsAM:=Pos('AM',UpperText)>0;
+ P:=Pos(':',SourceText);If P=0Then Begin CsMakeText('',V);Exit;End;
+ Part:=Copy(SourceText,1,P-1);Val(CsTrim(Part),HourValue,Code);
+ If Code<>0Then Begin CsMakeText('',V);Exit;End;Delete(SourceText,1,P);
+ P:=Pos(':',SourceText);
+ If P>0Then Begin Part:=Copy(SourceText,1,P-1);Delete(SourceText,1,P);End
+ Else Begin Part:=SourceText;SourceText:='0';End;
+ Val(CsTrim(Part),MinuteValue,Code);If Code<>0Then Begin CsMakeText('',V);Exit;End;
+ P:=1;While(P<=Length(SourceText))and(SourceText[P]in['0'..'9'])Do Inc(P);
+ If P=1Then SecondValue:=0 Else Begin Val(Copy(SourceText,1,P-1),SecondValue,Code);
+  If Code<>0Then Begin CsMakeText('',V);Exit;End;End;
+ If IsPM and(HourValue<12)Then Inc(HourValue,12);
+ If IsAM and(HourValue=12)Then HourValue:=0;
+ If(HourValue<0)or(HourValue>23)or(MinuteValue<0)or(MinuteValue>59)or
+   (SecondValue<0)or(SecondValue>59)Then CsMakeText('',V)
+ Else CsMakeTimeValue(HourValue,MinuteValue,SecondValue,V);
+End;
+
+Procedure CsStrCompValue(A,B,C:TCsValue;ArgumentCount:Integer;Var V:TCsValue);
+Var LeftText,RightText:String;
+Begin
+ If(A.ValueKind=CS_VALUE_NULL)or(B.ValueKind=CS_VALUE_NULL)Then Begin CsMakeText('',V);V.ValueKind:=CS_VALUE_NULL;Exit;End;
+ LeftText:=A.Text;RightText:=B.Text;
+ If(ArgumentCount>=3)and(Trunc(C.Number)=1)Then Begin LeftText:=CsUpper(LeftText);RightText:=CsUpper(RightText);End;
+ If LeftText<RightText Then CsMakeNumber(-1,V)Else If LeftText>RightText Then CsMakeNumber(1,V)Else CsMakeNumber(0,V);
+End;
+
+Procedure CsStringValue(Count:Integer;CharacterValue:TCsValue;Var V:TCsValue);
+Var ResultText:String;Character:Char;
+Begin
+ If Count<0Then Begin CsMakeText('',V);Exit;End;If Count>255Then Count:=255;
+ If CharacterValue.IsNumber Then Character:=Chr(Trunc(CharacterValue.Number)and 255)
+ Else If CharacterValue.Text=''Then Character:=#0Else Character:=CharacterValue.Text[1];
+ ResultText:='';While Length(ResultText)<Count Do ResultText:=ResultText+Character;
+ CsMakeText(ResultText,V);V.ValueKind:=CS_VALUE_STRING;
+End;
+
+{ MSGBOX : reutilise directement l'API Win32 deja declaree pour RXMESSAGEBOX }
+{ dans le portage REXX (Rexx_MB_MessageBoxA, External 'user32.dll' Name      }
+{ 'MessageBoxA') - les constantes de style VBScript (0..5, bas nibble)       }
+{ et les codes de retour (1=OK,2=Cancel,3=Abort,4=Retry,5=Ignore,6=Yes,      }
+{ 7=No) sont EXACTEMENT les constantes Win32 MB_*/ID* (VBScript.MsgBox est   }
+{ un habillage direct de MessageBoxA) - aucune table de traduction requise. }
+Procedure CsMsgBoxValue(MessageText:String;StyleValue:Integer;TitleText:String;Var V:TCsValue);
+Var ButtonStyle,ResultCode:Integer;
+ MsgBuf,TitleBuf:Array[0..255]of Char;J:Integer;
+Begin
+ ButtonStyle:=StyleValue and 15;
+ If CsBatchMode Then Begin CsMakeNumber(1,V);Exit;End;
+ If TitleText=''Then TitleText:='VBScript';
+ For J:=1 To Length(MessageText) Do MsgBuf[J-1]:=MessageText[J];
+ MsgBuf[Length(MessageText)]:=#0;
+ For J:=1 To Length(TitleText) Do TitleBuf[J-1]:=TitleText[J];
+ TitleBuf[Length(TitleText)]:=#0;
+ ResultCode:=Rexx_MB_MessageBoxA(0,MsgBuf,TitleBuf,LongWord(ButtonStyle));
+ If ResultCode=0Then ResultCode:=1; { echec API : replier sur OK, jamais bloquer le script }
+ CsMakeNumber(ResultCode,V);
+End;
+
+{ INPUTBOX : aucune saisie de texte bidirectionnelle possible pendant        }
+{ l'execution synchrone d'une commande de ce terminal (voir note en tete de  }
+{ chantier) - limitation honnete assumee, renvoie la valeur par defaut. }
+Procedure CsInputBoxValue(PromptText,TitleText,DefaultText:String;Var V:TCsValue);
+Begin
+ CsMakeText(DefaultText,V);
+End;
+
+Procedure CsInStrValue(A,B,C,D:TCsValue;ArgumentCount:Integer;Var V:TCsValue);
+Var StartPosition,FoundPosition:Integer;SourceText,SearchText:String;
+Begin
+ If ArgumentCount<3Then Begin StartPosition:=1;SourceText:=A.Text;SearchText:=B.Text;End
+ Else Begin StartPosition:=Trunc(A.Number);SourceText:=B.Text;SearchText:=C.Text;End;
+ If StartPosition<1Then StartPosition:=1;
+ If(ArgumentCount>=4)and(Trunc(D.Number)=1)Then Begin
+  SourceText:=CsUpper(SourceText);SearchText:=CsUpper(SearchText);
+ End;
+ If SearchText=''Then FoundPosition:=StartPosition
+ Else FoundPosition:=Pos(SearchText,Copy(SourceText,StartPosition,255));
+ If FoundPosition>0Then Inc(FoundPosition,StartPosition-1);
+ CsMakeNumber(FoundPosition,V);
+End;
+
+Procedure CsBooleanValue(State:Boolean;Var V:TCsValue);
+Begin
+ If State Then Begin CsMakeText('True',V);V.Number:=-1;End
+ Else Begin CsMakeText('False',V);V.Number:=0;End;
+End;
+
+Procedure CsIsDateValue(A:TCsValue;Var V:TCsValue);
+Var Converted:TCsValue;
+Begin
+ If A.ValueKind=CS_VALUE_DATE Then CsBooleanValue(True,V)
+ Else Begin CsParseDateValue(A.Text,Converted);CsBooleanValue(Converted.Text<>'',V);End;
+End;
+
+Function CsTruth(V:TCsValue):Boolean;
+Begin CsTruth:=Not((V.Text='')or(V.Text='0')or(CsUpper(V.Text)='FALSE'));End;
+
+Function CsFindVariable(Name:String):PCsVariable;
+Var P:PCsVariable;
+Begin
+ Name:=CsUpper(CsTrim(Name));P:=CsVariables;
+ While P<>Nil Do Begin If P^.Name=Name Then Begin CsFindVariable:=P;Exit;End;P:=P^.Next;End;
+ CsFindVariable:=Nil;
+End;
+
+Procedure CsSetVariable(Name,Value:String);
+Var P:PCsVariable;V:TCsValue;
+Begin
+ Name:=CsUpper(CsTrim(Name));If Name=''Then Exit;P:=CsFindVariable(Name);
+ If P=Nil Then Begin New(P);P^.Name:=Name;P^.Next:=CsVariables;CsVariables:=P;End;
+ CsMakeText(Value,V);P^.Value:=Value;P^.ValueKind:=V.ValueKind;
+ If Copy(Value,1,8)='@VBARRAY'Then P^.ValueKind:=CS_VALUE_ARRAY;
+ If Copy(Value,1,6)='Error 'Then P^.ValueKind:=CS_VALUE_ERROR;
+End;
+
+Procedure CsSetVariableValue(Name:String;V:TCsValue);
+Var P:PCsVariable;
+Begin
+ Name:=CsUpper(CsTrim(Name));If Name=''Then Exit;P:=CsFindVariable(Name);
+ If P=Nil Then Begin New(P);P^.Name:=Name;P^.Next:=CsVariables;CsVariables:=P;End;
+ P^.Value:=V.Text;P^.ValueKind:=V.ValueKind;
+End;
+
+Procedure CsGetVariable(Name:String;Var V:TCsValue);
+Var P:PCsVariable;
+Begin
+ P:=CsFindVariable(Name);If P=Nil Then CsMakeText('',V)Else Begin
+ CsMakeText(P^.Value,V);V.ValueKind:=P^.ValueKind;
+ End;
+End;
+
+Procedure CsRemoveVariable(Name:String);
+Var P,Previous:PCsVariable;
+Begin
+ Name:=CsUpper(CsTrim(Name));P:=CsVariables;Previous:=Nil;
+ While P<>Nil Do Begin
+  If P^.Name=Name Then Begin
+   If Previous=Nil Then CsVariables:=P^.Next Else Previous^.Next:=P^.Next;
+   Dispose(P);Exit;
+  End;
+  Previous:=P;P:=P^.Next;
+ End;
+End;
+
+Procedure CsRemoveVariablesWithPrefix(Prefix:String);
+Var P,Previous,NextVariable:PCsVariable;
+Begin
+ Prefix:=CsUpper(Prefix);P:=CsVariables;Previous:=Nil;
+ While P<>Nil Do Begin
+  NextVariable:=P^.Next;
+  If Copy(P^.Name,1,Length(Prefix))=Prefix Then Begin
+   If Previous=Nil Then CsVariables:=NextVariable Else Previous^.Next:=NextVariable;
+   Dispose(P);
+  End Else Previous:=P;
+  P:=NextVariable;
+ End;
+End;
+
+Procedure CsEraseVariable(Name:String);
+Var VariableEntry:PCsVariable;Reference,CountText,DynamicText:String;Stored:TCsValue;
+Begin
+ Name:=CsTrim(Name);VariableEntry:=CsFindVariable(Name);
+ If VariableEntry=Nil Then Exit;
+ If VariableEntry^.ValueKind=CS_VALUE_ARRAY Then Begin
+  Reference:=VariableEntry^.Value;CsGetVariable(Reference+'.COUNT',Stored);CountText:=Stored.Text;
+  CsGetVariable(Reference+'.DYNAMIC',Stored);DynamicText:=Stored.Text;
+  CsRemoveVariablesWithPrefix(Reference+'.');
+  If DynamicText<>'1'Then Begin
+   CsSetVariable(Reference+'.COUNT',CountText);CsSetVariable(Reference+'.DYNAMIC','0');Exit;
+  End;
+ End;
+ CsRemoveVariable(Name);
+End;
+
+Procedure CsUBoundValue(A,B:TCsValue;ArgumentCount:Integer;Var V:TCsValue);
+Var CountValue:TCsValue;
+Begin
+ If(A.ValueKind<>CS_VALUE_ARRAY)and(Copy(A.Text,1,8)<>'@VBARRAY')Then Begin CsMakeText('',V);Exit;End;
+ If(ArgumentCount>1)and(Trunc(B.Number)<>1)Then Begin CsMakeText('',V);Exit;End;
+ CsGetVariable(A.Text+'.COUNT',CountValue);CsMakeNumber(Trunc(CountValue.Number)-1,V);
+End;
+
+Procedure CsValValue(SourceText:String;Var V:TCsValue);
+Var NumberText,UpperText:String;Position,Code,Base,Digit:Integer;
+ NumberValue:Real;IntegerValue:LongInt;HasDigit:Boolean;
+Begin
+ SourceText:=CsTrim(SourceText);UpperText:=CsUpper(SourceText);
+ If(Copy(UpperText,1,2)='&H')or(Copy(UpperText,1,2)='&O')Then Begin
+  If UpperText[2]='H'Then Base:=16 Else Base:=8;
+  Position:=3;IntegerValue:=0;HasDigit:=False;
+  While Position<=Length(UpperText)Do Begin
+   If UpperText[Position]in['0'..'9']Then Digit:=Ord(UpperText[Position])-Ord('0')
+   Else If UpperText[Position]in['A'..'F']Then Digit:=Ord(UpperText[Position])-Ord('A')+10
+   Else Break;
+   If Digit>=Base Then Break;
+   IntegerValue:=IntegerValue*Base+Digit;HasDigit:=True;Inc(Position);
+  End;
+  If HasDigit Then CsMakeNumber(IntegerValue,V)Else CsMakeNumber(0,V);Exit;
+ End;
+ NumberText:='';Position:=1;HasDigit:=False;
+ If(Position<=Length(SourceText))and(SourceText[Position]in['+','-'])Then Begin
+  NumberText:=SourceText[Position];Inc(Position);End;
+ While(Position<=Length(SourceText))and(SourceText[Position]in['0'..'9'])Do Begin
+  NumberText:=NumberText+SourceText[Position];Inc(Position);HasDigit:=True;End;
+ If(Position<=Length(SourceText))and(SourceText[Position]='.')Then Begin
+  NumberText:=NumberText+'.';Inc(Position);
+  While(Position<=Length(SourceText))and(SourceText[Position]in['0'..'9'])Do Begin
+   NumberText:=NumberText+SourceText[Position];Inc(Position);HasDigit:=True;End;
+ End;
+ If HasDigit and(Position<=Length(SourceText))and(SourceText[Position]in['E','e'])Then Begin
+  NumberText:=NumberText+'E';Inc(Position);
+  If(Position<=Length(SourceText))and(SourceText[Position]in['+','-'])Then Begin
+   NumberText:=NumberText+SourceText[Position];Inc(Position);End;
+  While(Position<=Length(SourceText))and(SourceText[Position]in['0'..'9'])Do Begin
+   NumberText:=NumberText+SourceText[Position];Inc(Position);End;
+ End;
+ If Not HasDigit Then CsMakeNumber(0,V)Else Begin
+  Val(NumberText,NumberValue,Code);If Code=0Then CsMakeNumber(NumberValue,V)Else CsMakeNumber(0,V);
+ End;
+End;
+
+Procedure CsVarTypeValue(A:TCsValue;Var V:TCsValue);
+Var TypeNumber:Integer;
+Begin
+ Case A.ValueKind of
+  CS_VALUE_EMPTY:TypeNumber:=0;
+  CS_VALUE_STRING:TypeNumber:=8;
+  CS_VALUE_NUMBER:TypeNumber:=5;
+  CS_VALUE_DATE:TypeNumber:=7;
+  CS_VALUE_ARRAY:TypeNumber:=8204;
+  CS_VALUE_ERROR:TypeNumber:=10;
+  CS_VALUE_NULL:TypeNumber:=1;
+  CS_VALUE_OBJECT:TypeNumber:=9;
+ Else TypeNumber:=12;
+ End;
+ CsMakeNumber(TypeNumber,V);
+End;
+
+Procedure CsDateParts(SourceText:String;Var YearValue,MonthValue,DayValue:Integer;
+ Var Valid:Boolean);
+Var Converted:TCsValue;Code:Integer;
+Begin
+ CsParseDateValue(SourceText,Converted);Valid:=Converted.Text<>'';
+ If Not Valid Then Exit;
+ Val(Copy(Converted.Text,1,2),DayValue,Code);If Code<>0Then Valid:=False;
+ Val(Copy(Converted.Text,4,2),MonthValue,Code);If Code<>0Then Valid:=False;
+ Val(Copy(Converted.Text,7,4),YearValue,Code);If Code<>0Then Valid:=False;
+End;
+
+Procedure CsWeekdayValue(A,B:TCsValue;ArgumentCount:Integer;Var V:TCsValue);
+Var YearValue,MonthValue,DayValue,FirstDay,H,ResultDay:Integer;Valid:Boolean;
+Begin
+ CsDateParts(A.Text,YearValue,MonthValue,DayValue,Valid);
+ If Not Valid Then Begin CsMakeText('',V);Exit;End;
+ If ArgumentCount>1Then FirstDay:=Trunc(B.Number)Else FirstDay:=1;
+ If FirstDay=0Then FirstDay:=1;
+ If(FirstDay<1)or(FirstDay>7)Then Begin CsMakeText('',V);Exit;End;
+ If MonthValue<3Then Begin Inc(MonthValue,12);Dec(YearValue);End;
+ H:=(DayValue+(13*(MonthValue+1))div 5+YearValue+(YearValue div 4)-
+     (YearValue div 100)+(YearValue div 400))mod 7;
+ ResultDay:=((H+6)mod 7)+1;
+ ResultDay:=((ResultDay-FirstDay+7)mod 7)+1;CsMakeNumber(ResultDay,V);
+End;
+
+Procedure CsYearValue(SourceText:String;Var V:TCsValue);
+Var YearNumber,MonthNumber,DayNumber:Integer;Valid:Boolean;
+Begin
+ CsDateParts(SourceText,YearNumber,MonthNumber,DayNumber,Valid);
+ If Valid Then CsMakeNumber(YearNumber,V)Else CsMakeText('',V);
+End;
+
+Procedure CsSkipSpace;
+Begin While(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]in[' ',#9])Do Inc(CsExprPos);End;
+
+Function CsReadWord:String;
+Var S:String;
+Begin
+ CsSkipSpace;S:='';
+ While(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]in['A'..'Z','a'..'z','0'..'9','_','.'])Do Begin
+  S:=S+CsExprText[CsExprPos];Inc(CsExprPos);
+ End;
+ CsReadWord:=S;
+End;
+
+Procedure CsParseExpression(Var V:TCsValue);Forward;
+Procedure CsCallUserFunction(FunctionName:String;A,B,C,D:TCsValue;
+ ArgumentCount:Integer;Var V:TCsValue);Forward;
+
+Function CsUserFunctionExists(FunctionName:String):Boolean;
+Var I,P:Integer;Declaration,DeclarationName:String;
+Begin
+ CsUserFunctionExists:=False;
+ For I:=1To CsLineCount Do Begin
+  Declaration:=CsTrim(CsScriptLineText(I));
+  If CsStartsWith(Declaration,'PUBLIC FUNCTION ')Then Delete(Declaration,1,7)
+  Else If CsStartsWith(Declaration,'PRIVATE FUNCTION ')Then Delete(Declaration,1,8);
+  If CsStartsWith(Declaration,'FUNCTION ')Then Begin
+   Delete(Declaration,1,9);P:=Pos('(',Declaration);
+   If P=0Then P:=Pos(' ',Declaration);
+   If P=0Then DeclarationName:=CsTrim(Declaration)
+   Else DeclarationName:=CsTrim(Copy(Declaration,1,P-1));
+   If CsUpper(DeclarationName)=CsUpper(FunctionName)Then Begin CsUserFunctionExists:=True;Exit;End;
+  End;
+ End;
+End;
+
+Procedure CsParsePrimary(Var V:TCsValue);
+Var Q:Char;S,Name,U,ArrayReference,IndexText:String;N:Real;
+ Code,I,ElementIndex,ArgumentCount:Integer;FunctionByte:Byte;A,B,C,D:TCsValue;VariableEntry:PCsVariable;
+ DateYear,DateMonth,DateDay,DateDayOfWeek:Word;
+Begin
+ CsSkipSpace;If CsExprPos>Length(CsExprText)Then Begin CsMakeText('',V);Exit;End;
+ If CsExprText[CsExprPos]in['"','''']Then Begin
+  Q:=CsExprText[CsExprPos];Inc(CsExprPos);S:='';
+  While CsExprPos<=Length(CsExprText)Do Begin
+   If CsExprText[CsExprPos]=Q Then Begin
+    If(CsExprPos<Length(CsExprText))and(CsExprText[CsExprPos+1]=Q)Then Begin S:=S+Q;Inc(CsExprPos,2);End
+    Else Begin Inc(CsExprPos);Break;End;
+   End Else Begin S:=S+CsExprText[CsExprPos];Inc(CsExprPos);End;
+  End;
+  CsMakeText(S,V);V.ValueKind:=CS_VALUE_STRING;Exit;
+ End;
+ If CsExprText[CsExprPos]='('Then Begin Inc(CsExprPos);CsParseExpression(V);CsSkipSpace;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=')')Then Inc(CsExprPos);Exit;End;
+ If CsExprText[CsExprPos]in['0'..'9']Then Begin
+  S:='';While(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]in['0'..'9','.'])Do Begin S:=S+CsExprText[CsExprPos];Inc(CsExprPos);End;
+  Val(S,N,Code);If Code=0Then CsMakeNumber(N,V)Else CsMakeText(S,V);Exit;
+ End;
+ Name:=CsReadWord;U:=CsUpper(Name);
+ If U='TRUE'Then Begin CsMakeNumber(-1,V);Exit;End;
+ If U='FALSE'Then Begin CsMakeNumber(0,V);Exit;End;
+ If U='EMPTY'Then Begin CsMakeText('',V);Exit;End;
+ If U='NULL'Then Begin CsMakeText('',V);V.ValueKind:=CS_VALUE_NULL;Exit;End;
+ If U='NOTHING'Then Begin CsMakeText('',V);V.ValueKind:=CS_VALUE_OBJECT;Exit;End;
+ CsSkipSpace;
+ FunctionByte:=CsFunctionIndex(U);
+ If((FunctionByte=15)or(FunctionByte=43)or(FunctionByte=56))and
+   ((CsExprPos>Length(CsExprText))or(CsExprText[CsExprPos]<>'('))Then Begin
+  If FunctionByte=15Then Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
+   CsMakeDateValue(DateYear,DateMonth,DateDay,V);End
+  Else If FunctionByte=43Then CsNowValue(V)Else CsCurrentTimeValue(V);Exit;
+ End;
+ If(FunctionByte=255)and CsUserFunctionExists(Name)and
+   ((CsExprPos>Length(CsExprText))or(CsExprText[CsExprPos]<>'('))Then Begin
+  CsMakeText('',A);CsMakeText('',B);CsMakeText('',C);CsMakeText('',D);
+  CsCallUserFunction(Name,A,B,C,D,0,V);Exit;
+ End;
+ VariableEntry:=CsFindVariable(Name);
+ If(VariableEntry<>Nil)and(Copy(VariableEntry^.Value,1,8)='@VBARRAY')and
+   (CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]='(')Then Begin
+  Inc(CsExprPos);CsParseExpression(A);CsSkipSpace;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=')')Then Inc(CsExprPos);
+  Str(Trunc(A.Number),IndexText);
+  CsGetVariable(VariableEntry^.Value+'.'+CsTrim(IndexText),V);Exit;
+ End;
+ If(U='ARRAY')and(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]='(')Then Begin
+  Inc(CsArrayCounter);Str(CsArrayCounter,IndexText);
+  ArrayReference:='@VBARRAY'+CsTrim(IndexText);ElementIndex:=0;Inc(CsExprPos);CsSkipSpace;
+  While(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]<>')')Do Begin
+   CsParseExpression(A);Str(ElementIndex,IndexText);
+   CsSetVariable(ArrayReference+'.'+CsTrim(IndexText),A.Text);Inc(ElementIndex);CsSkipSpace;
+   If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=',')Then Begin Inc(CsExprPos);CsSkipSpace;End
+   Else Break;
+  End;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=')')Then Inc(CsExprPos);
+  Str(ElementIndex,IndexText);CsSetVariable(ArrayReference+'.COUNT',CsTrim(IndexText));
+  CsMakeText(ArrayReference,V);V.ValueKind:=CS_VALUE_ARRAY;Exit;
+ End;
+ If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]='(')Then Begin
+  Inc(CsExprPos);CsSkipSpace;ArgumentCount:=0;
+  CsMakeText('',A);CsMakeText('',B);CsMakeText('',C);CsMakeText('',D);
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]<>')')Then Begin
+   CsParseExpression(A);Inc(ArgumentCount);CsSkipSpace;
+  End;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=',')Then Begin
+   Inc(CsExprPos);
+   CsParseExpression(B);Inc(ArgumentCount);
+   CsSkipSpace;
+  End;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=',')Then Begin
+   Inc(CsExprPos);CsParseExpression(C);
+   Inc(ArgumentCount);
+   CsSkipSpace;
+  End;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=',')Then Begin
+   Inc(CsExprPos);
+   CsParseExpression(D);
+   Inc(ArgumentCount);
+   CsSkipSpace;
+  End;
+  If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]=')')Then Inc(CsExprPos);
+  If(FunctionByte=255)and CsUserFunctionExists(Name)Then Begin
+   CsCallUserFunction(Name,A,B,C,D,ArgumentCount,V);Exit;
+  End;
+  Case FunctionByte of
+   0:CsMakeNumber(Abs(A.Number),V);
+   1:CsMakeText('',V);
+   2:Begin If A.Text=''Then CsMakeNumber(0,V)
+      Else CsMakeNumber(Ord(A.Text[1]),V);End;
+   3:CsMakeNumber(ArcTan(A.Number),V);
+   4:If CsTruth(A)Then CsMakeText('True',V)Else CsMakeText('False',V);
+   5:Begin
+      N:=Round(A.Number);
+      If(N<0)or(N>255)Then CsMakeText('',V)Else CsMakeNumber(N,V);
+     End;
+   6:If A.IsNumber Then CsMakeText(A.Text,V)Else CsParseDateValue(A.Text,V);
+   7:CsMakeNumber(A.Number,V);
+   8:CsMakeText(Chr(Trunc(A.Number)and 255),V);
+   9:CsMakeNumber(Round(A.Number),V);
+   10:CsMakeNumber(Trunc(A.Number),V);
+   11:CsMakeNumber(Cos(A.Number),V);
+   12:CsMakeSingleNumber(A.Number,V);
+   13:Begin CsMakeText(A.Text,V);V.ValueKind:=CS_VALUE_STRING;End;
+   14:Begin CsMakeText('Error '+A.Text,V);V.Number:=A.Number;V.ValueKind:=CS_VALUE_ERROR;End;
+   15:Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
+      CsMakeDateValue(DateYear,DateMonth,DateDay,V);End;
+   16:CsMakeDateValue(Trunc(A.Number),Trunc(B.Number),Trunc(C.Number),V);
+   17:CsParseDateValue(A.Text,V);
+   18:CsDateDayValue(A.Text,V);
+   19:CsMakeNumber(Exp(A.Number),V);
+   20:CsMakeNumber(Trunc(A.Number),V);
+   21:CsHexValue(Trunc(A.Number),V);
+   22:CsDateHourValue(A.Text,V);
+   23:CsInputBoxValue(A.Text,B.Text,C.Text,V);
+   24:CsInStrValue(A,B,C,D,ArgumentCount,V);
+   25:CsMakeNumber(Trunc(A.Number),V);
+   26:CsBooleanValue((A.ValueKind=CS_VALUE_ARRAY)or(Copy(A.Text,1,8)='@VBARRAY'),V);
+   27:CsIsDateValue(A,V);
+   28:CsBooleanValue(A.ValueKind=CS_VALUE_EMPTY,V);
+   29:CsBooleanValue(A.ValueKind=CS_VALUE_ERROR,V);
+   30:CsBooleanValue(A.ValueKind=CS_VALUE_NULL,V);
+   31:CsBooleanValue(A.IsNumber,V);
+   32:CsBooleanValue(A.ValueKind=CS_VALUE_OBJECT,V);
+   33:If((A.ValueKind=CS_VALUE_ARRAY)or(Copy(A.Text,1,8)='@VBARRAY'))and
+        ((ArgumentCount<2)or(Trunc(B.Number)=1))Then
+       CsMakeNumber(0,V)Else CsMakeText('',V);
+   34:Begin
+      S:=A.Text;
+      For I:=1To Length(S)Do If S[I]in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
+      CsMakeText(S,V);
+     End;
+   35:CsMakeText(Copy(A.Text,1,Trunc(B.Number)),V);
+   36:CsMakeNumber(Length(A.Text),V);
+   37:If A.Number>0Then CsMakeNumber(Ln(A.Number),V)Else CsMakeText('',V);
+   38:Begin S:=A.Text;While(Length(S)>0)and(S[1]=' ')Do Delete(S,1,1);
+      CsMakeText(S,V);End;
+   39:Begin
+      I:=Trunc(B.Number);If I<1Then CsMakeText('',V)
+      Else If ArgumentCount<3Then CsMakeText(Copy(A.Text,I,255),V)
+      Else If C.Number<0Then CsMakeText('',V)
+      Else CsMakeText(Copy(A.Text,I,Trunc(C.Number)),V);
+     End;
+   40:CsDateMinuteValue(A.Text,V);
+   41:CsDateMonthValue(A.Text,V);
+   42:CsMsgBoxValue(A.Text,Trunc(B.Number),C.Text,V);
+   43:CsNowValue(V);
+   44:CsOctValue(Trunc(A.Number),V);
+   45:CsMakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V);
+   46:CsMakeNumber(Random,V);
+   47:Begin
+      If A.ValueKind=CS_VALUE_NULL Then V:=A Else Begin S:=A.Text;
+       While(Length(S)>0)and(S[Length(S)]=' ')Do Delete(S,Length(S),1);
+       CsMakeText(S,V);End;
+     End;
+   48:CsDateSecondValue(A.Text,V);
+   49:If A.Number<0Then CsMakeNumber(-1,V)
+      Else If A.Number>0Then CsMakeNumber(1,V)Else CsMakeNumber(0,V);
+   50:CsMakeNumber(Sin(A.Number),V);
+   51:If A.Number<0Then CsMakeText('',V)Else CsMakeNumber(Sqrt(A.Number),V);
+   52:CsStrValue(A.Number,V);
+   53:CsStrCompValue(A,B,C,ArgumentCount,V);
+   54:CsStringValue(Trunc(A.Number),B,V);
+   55:If Cos(A.Number)=0Then CsMakeText('',V)Else CsMakeNumber(Sin(A.Number)/Cos(A.Number),V);
+   56:CsCurrentTimeValue(V);
+   57:CsMakeTimeValue(Trunc(A.Number),Trunc(B.Number),Trunc(C.Number),V);
+   58:CsParseTimeValue(A.Text,V);
+   59:CsMakeText(CsTrim(A.Text),V);
+   60:CsUBoundValue(A,B,ArgumentCount,V);
+   61:CsMakeText(CsUpper(A.Text),V);
+   62:CsValValue(A.Text,V);
+   63:CsVarTypeValue(A,V);
+   64:CsWeekdayValue(A,B,ArgumentCount,V);
+   65:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<CsScriptArgumentCount)Then
+       CsMakeText(CsScriptArguments[Trunc(A.Number)],V)
+      Else CsMakeText('',V);
+   66:CsYearValue(A.Text,V);
+   Else CsMakeText('',V);
+  End;
+  Exit;
+ End;
+ If U='WSCRIPT.ARGUMENTS.COUNT'Then CsMakeNumber(CsScriptArgumentCount,V)
+ Else If U='WSCRIPT.SCRIPTNAME'Then CsMakeText(CsScriptName,V)
+ Else If U='WSCRIPT.FULLNAME'Then CsMakeText(CsScriptName,V)
+ Else CsGetVariable(Name,V);
+End;
+
+Procedure CsParseUnary(Var V:TCsValue);
+Begin
+ CsSkipSpace;
+ If Copy(CsUpper(Copy(CsExprText,CsExprPos,4)),1,4)='NOT 'Then Begin
+  Inc(CsExprPos,4);CsParseUnary(V);
+  If CsTruth(V)Then CsMakeNumber(0,V)
+             Else CsMakeNumber(-1,V);
+ End
+  Else
+ If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]='-')Then Begin
+  Inc(CsExprPos);
+  CsParseUnary(V);
+  CsMakeNumber(-V.Number,V);
+ End
+  Else
+ CsParsePrimary(V);
+End;
+
+Procedure CsParseMul(Var V:TCsValue);
+Var R:TCsValue;Op:String;
+Begin
+ CsParseUnary(V);
+ While True Do Begin CsSkipSpace;Op:='';
+  If Copy(CsUpper(Copy(CsExprText,CsExprPos,4)),1,4)=' MOD'Then Begin Op:='MOD';Inc(CsExprPos,4);End
+  Else If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]in['*','/','\'])Then Begin Op:=CsExprText[CsExprPos];Inc(CsExprPos);End;
+  If Op=''Then Exit;CsParseUnary(R);
+  If Op='*'Then CsMakeNumber(V.Number*R.Number,V)
+  Else If Op='/'Then Begin If R.Number=0Then CsMakeText('',V)Else CsMakeNumber(V.Number/R.Number,V);End
+  Else If Op='\'Then Begin If Trunc(R.Number)=0Then CsMakeText('',V)Else CsMakeNumber(Trunc(V.Number)div Trunc(R.Number),V);End
+  Else If Trunc(R.Number)=0Then CsMakeText('',V)Else CsMakeNumber(Trunc(V.Number)mod Trunc(R.Number),V);
+ End;
+End;
+
+Procedure CsParseAdd(Var V:TCsValue);
+Var R:TCsValue;Op:Char;
+Begin
+ CsParseMul(V);
+ While True Do Begin CsSkipSpace;
+  If(CsExprPos>Length(CsExprText))or Not(CsExprText[CsExprPos]in['+','-','&'])Then Exit;
+  Op:=CsExprText[CsExprPos];Inc(CsExprPos);CsParseMul(R);
+  If Op='&'Then CsMakeText(V.Text+R.Text,V)
+  Else If Op='+'Then Begin If V.IsNumber and R.IsNumber Then CsMakeNumber(V.Number+R.Number,V)Else CsMakeText(V.Text+R.Text,V);End
+  Else CsMakeNumber(V.Number-R.Number,V);
+ End;
+End;
+
+Procedure CsParseExpression(Var V:TCsValue);
+Var R:TCsValue;Op:String;Result:Boolean;
+Begin
+ CsParseAdd(V);CsSkipSpace;Op:='';
+ If Copy(CsExprText,CsExprPos,2)='<>'Then Begin Op:='<>';Inc(CsExprPos,2);End
+ Else If Copy(CsExprText,CsExprPos,2)='<='Then Begin Op:='<=';Inc(CsExprPos,2);End
+ Else If Copy(CsExprText,CsExprPos,2)='>='Then Begin Op:='>=';Inc(CsExprPos,2);End
+ Else If(CsExprPos<=Length(CsExprText))and(CsExprText[CsExprPos]in['=','<','>'])Then Begin Op:=CsExprText[CsExprPos];Inc(CsExprPos);End;
+ If Op<>''Then Begin CsParseAdd(R);
+  If V.IsNumber and R.IsNumber Then Begin
+   If Op='='Then Result:=V.Number=R.Number Else If Op='<>'Then Result:=V.Number<>R.Number
+   Else If Op='<'Then Result:=V.Number<R.Number Else If Op='>'Then Result:=V.Number>R.Number
+   Else If Op='<='Then Result:=V.Number<=R.Number Else Result:=V.Number>=R.Number;
+  End Else Begin
+   If Op='='Then Result:=CsUpper(V.Text)=CsUpper(R.Text)Else If Op='<>'Then Result:=CsUpper(V.Text)<>CsUpper(R.Text)
+   Else If Op='<'Then Result:=CsUpper(V.Text)<CsUpper(R.Text)Else If Op='>'Then Result:=CsUpper(V.Text)>CsUpper(R.Text)
+   Else If Op='<='Then Result:=CsUpper(V.Text)<=CsUpper(R.Text)Else Result:=CsUpper(V.Text)>=CsUpper(R.Text);
+  End;
+  If Result Then CsMakeNumber(-1,V)Else CsMakeNumber(0,V);
+ End;
+End;
+
+Procedure CsEvaluate(S:String;Var V:TCsValue);
+Begin CsExprText:=CsTrim(S);CsExprPos:=1;CsParseExpression(V);End;
+
+Function CsFindAssignment(S:String):Integer;
+Var I:Integer;Q:Char;
+Begin
+ Q:=#0;For I:=1To Length(S)Do Begin
+  If Q<>#0Then Begin If S[I]=Q Then Q:=#0;End Else If S[I]in['"','''']Then Q:=S[I]
+  Else If(S[I]='=')and((I=1)or Not(S[I-1]in['<','>']))Then Begin CsFindAssignment:=I;Exit;End;
+ End;CsFindAssignment:=0;
+End;
+
+Procedure CsCheckTimeout;
+Var H,M,S,HS:Word;Elapsed:LongInt;
+Begin
+ If CsTimeLimit<=0Then Exit;GetTime(H,M,S,HS);
+ Elapsed:=(LongInt(H)*3600+LongInt(M)*60+S)-(LongInt(CsStartHour)*3600+LongInt(CsStartMinute)*60+CsStartSecond);
+ If Elapsed<0Then Inc(Elapsed,86400);
+ If Elapsed>=CsTimeLimit Then Begin CsWL('CSCRIPT: Delai d''execution depasse.');CsTerminated:=True;CsExitCode:=1;End;
+End;
+
+Function CsFindBlock(StartLine:LongInt;OpenWord,CloseWord:String):LongInt;
+Var I:LongInt;Depth:Integer;S:String;
+Begin
+ Depth:=1;For I:=StartLine+1To CsLineCount Do Begin S:=CsUpper(CsTrim(CsScriptLineText(I)));
+  If CsStartsWith(S,OpenWord)Then Inc(Depth);If CsStartsWith(S,CloseWord)Then Dec(Depth);
+  If Depth=0Then Begin CsFindBlock:=I;Exit;End;
+ End;CsFindBlock:=CsLineCount;
+End;
+
+Function CsFindElseLine(StartLine,EndLine:LongInt):LongInt;
+Var I:LongInt;Depth:Integer;S:String;
+Begin
+ Depth:=0;CsFindElseLine:=0;
+ For I:=StartLine+1To EndLine-1Do Begin
+  S:=CsUpper(CsTrim(CsScriptLineText(I)));
+  If CsStartsWith(S,'IF ')and(Pos(' THEN',S)>0)and
+    (CsTrim(Copy(S,Pos(' THEN',S)+5,255))='')Then Inc(Depth)
+  Else If S='END IF'Then Begin If Depth>0Then Dec(Depth);End
+  Else If(Depth=0)and((S='ELSE')or CsStartsWith(S,'ELSEIF '))Then Begin
+   CsFindElseLine:=I;Exit;
+  End;
+ End;
+End;
+
+Function CsFindLoopEnd(StartLine:LongInt):LongInt;
+Var I:LongInt;Depth:Integer;S:String;
+Begin
+ Depth:=1;
+ For I:=StartLine+1To CsLineCount Do Begin
+  S:=CsUpper(CsTrim(CsScriptLineText(I)));
+  If(S='DO')or CsStartsWith(S,'DO WHILE ')or CsStartsWith(S,'DO UNTIL ')Then Inc(Depth)
+  Else If CsStartsWith(S,'LOOP')Then Dec(Depth);
+  If Depth=0Then Begin CsFindLoopEnd:=I;Exit;End;
+ End;
+ CsFindLoopEnd:=CsLineCount;
+End;
+
+Function CsKeywordOutsideQuotes(Source,Keyword:String):Integer;
+Var I:Integer;Quote:Char;
+Begin
+ CsKeywordOutsideQuotes:=0;Quote:=#0;I:=1;
+ While I<=Length(Source)-Length(Keyword)+1Do Begin
+  If Quote<>#0Then Begin
+   If Source[I]=Quote Then Begin
+    If(I<Length(Source))and(Source[I+1]=Quote)Then Inc(I)Else Quote:=#0;
+   End;
+  End Else If Source[I]in['''','"']Then Quote:=Source[I]
+  Else If CsUpper(Copy(Source,I,Length(Keyword)))=CsUpper(Keyword)Then Begin
+   CsKeywordOutsideQuotes:=I;Exit;
+  End;
+  Inc(I);
+ End;
+End;
+
+Procedure CsExecuteRange(FirstLine,LastLine:LongInt);Forward;
+Procedure CsCallSub(CallText:String);Forward;
+Function CsListItem(Var Source:String):String;Forward;
+Function CsSimpleIdentifier(Source:String):Boolean;Forward;
+Procedure CsExecuteStatementList(Source:String);Forward;
+
+Procedure CsScriptError(MessageText:String;StopScript:Boolean);
+Begin
+ If CsOnErrorResumeNext Then Exit;
+ If Not CsBatchMode Then CsWL('Erreur VBScript: '+MessageText);
+ CsExitCode:=1;If StopScript Then CsTerminated:=True;
+End;
+
+Procedure CsDeclareVariable(Declaration:String);
+Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound:TCsValue;ArrayValue:TCsValue;
+ IsDynamic:Boolean;
+Begin
+ Declaration:=CsTrim(Declaration);P:=Pos('(',Declaration);
+ If P=0Then Begin CsSetVariable(Declaration,'');Exit;End;
+ Name:=CsTrim(Copy(Declaration,1,P-1));Bounds:=Copy(Declaration,P+1,255);
+ If(Length(Bounds)>0)and(Bounds[Length(Bounds)]=')')Then Delete(Bounds,Length(Bounds),1);
+ Inc(CsArrayCounter);Str(CsArrayCounter,NumberText);Reference:='@VBARRAY'+CsTrim(NumberText);
+ IsDynamic:=CsTrim(Bounds)='';
+ If IsDynamic Then CsMakeNumber(0,UpperBound)Else CsEvaluate(Bounds,UpperBound);
+ If UpperBound.Number<0Then CsMakeNumber(0,UpperBound);
+ If IsDynamic Then NumberText:='0'Else Str(Trunc(UpperBound.Number)+1,NumberText);
+ CsSetVariable(Reference+'.COUNT',CsTrim(NumberText));
+ If IsDynamic Then CsSetVariable(Reference+'.DYNAMIC','1')Else CsSetVariable(Reference+'.DYNAMIC','0');
+ CsMakeText(Reference,ArrayValue);ArrayValue.ValueKind:=CS_VALUE_ARRAY;CsSetVariableValue(Name,ArrayValue);
+End;
+
+Procedure CsRemoveArrayElementsFrom(Reference:String;FirstRemoved:LongInt);
+Var P,Previous,NextVariable:PCsVariable;Suffix:String;ElementNumber:LongInt;Code:Integer;
+ Removed:Boolean;
+Begin
+ Reference:=CsUpper(Reference)+'.';P:=CsVariables;Previous:=Nil;
+ While P<>Nil Do Begin
+  NextVariable:=P^.Next;Removed:=False;
+  If Copy(P^.Name,1,Length(Reference))=Reference Then Begin
+   Suffix:=Copy(P^.Name,Length(Reference)+1,255);Val(Suffix,ElementNumber,Code);
+   If(Code=0)and(ElementNumber>=FirstRemoved)Then Begin
+    If Previous=Nil Then CsVariables:=NextVariable Else Previous^.Next:=NextVariable;
+    Dispose(P);Removed:=True;
+   End;
+  End;
+  If Not Removed Then Previous:=P;P:=NextVariable;
+ End;
+End;
+
+Procedure CsResizeArray(Declaration:String;PreserveValues:Boolean);
+Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound,Stored,ArrayValue:TCsValue;
+ VariableEntry:PCsVariable;NewCount:LongInt;
+Begin
+ Declaration:=CsTrim(Declaration);P:=Pos('(',Declaration);
+ If(P=0)or(Declaration[Length(Declaration)]<>')')Then Begin
+  CsScriptError('REDIM exige une borne de tableau.',True);Exit;
+ End;
+ Name:=CsTrim(Copy(Declaration,1,P-1));Bounds:=Copy(Declaration,P+1,Length(Declaration)-P-1);
+ If Pos(',',Bounds)>0Then Begin CsScriptError('REDIM multidimensionnel non supporte.',True);Exit;End;
+ CsEvaluate(Bounds,UpperBound);
+ If(Not UpperBound.IsNumber)or(UpperBound.Number<0)Then Begin
+  CsScriptError('borne REDIM invalide.',True);Exit;
+ End;
+ NewCount:=Trunc(UpperBound.Number)+1;VariableEntry:=CsFindVariable(Name);
+ If(VariableEntry<>Nil)and(VariableEntry^.ValueKind=CS_VALUE_ARRAY)Then Begin
+  Reference:=VariableEntry^.Value;CsGetVariable(Reference+'.DYNAMIC',Stored);
+  If Stored.Text<>'1'Then Begin CsScriptError('REDIM exige un tableau dynamique.',True);Exit;End;
+ End Else Begin
+  If PreserveValues Then Begin CsScriptError('REDIM PRESERVE exige un tableau existant.',True);Exit;End;
+  Inc(CsArrayCounter);Str(CsArrayCounter,NumberText);Reference:='@VBARRAY'+CsTrim(NumberText);
+ End;
+ If PreserveValues Then CsRemoveArrayElementsFrom(Reference,NewCount)
+ Else CsRemoveVariablesWithPrefix(Reference+'.');
+ Str(NewCount,NumberText);CsSetVariable(Reference+'.COUNT',CsTrim(NumberText));
+ CsSetVariable(Reference+'.DYNAMIC','1');CsMakeText(Reference,ArrayValue);
+ ArrayValue.ValueKind:=CS_VALUE_ARRAY;CsSetVariableValue(Name,ArrayValue);
+End;
+
+Procedure CsDeclareStaticVariable(Declaration:String);
+Var Name:String;P:Integer;
+Begin
+ Declaration:=CsTrim(Declaration);P:=Pos('(',Declaration);
+ If P=0Then Name:=Declaration Else Name:=CsTrim(Copy(Declaration,1,P-1));
+ If CsFindVariable(Name)=Nil Then CsDeclareVariable(Declaration);
+End;
+
+Function CsUserSubExists(CallText:String):Boolean;
+Var I,P:Integer;CallName,Declaration,DeclarationName:String;
+Begin
+ CallText:=CsTrim(CallText);P:=Pos('(',CallText);If P=0Then P:=Pos(' ',CallText);
+ If P=0Then CallName:=CallText Else CallName:=Copy(CallText,1,P-1);
+ CsUserSubExists:=False;
+ For I:=1To CsLineCount Do Begin
+  Declaration:=CsTrim(CsScriptLineText(I));
+  If CsStartsWith(Declaration,'PUBLIC SUB ')Then Delete(Declaration,1,7)
+  Else If CsStartsWith(Declaration,'PRIVATE SUB ')Then Delete(Declaration,1,8);
+  If CsStartsWith(Declaration,'SUB ')Then Begin
+   Delete(Declaration,1,4);P:=Pos('(',Declaration);If P=0Then P:=Pos(' ',Declaration);
+   If P=0Then DeclarationName:=CsTrim(Declaration)
+   Else DeclarationName:=CsTrim(Copy(Declaration,1,P-1));
+   If CsUpper(DeclarationName)=CsUpper(CallName)Then Begin CsUserSubExists:=True;Exit;End;
+  End;
+ End;
+End;
+
+Procedure CsAlignStringAssignment(StatementText:String;AlignRight:Boolean);
+Var Name,SourceText,ResultText:String;P,TargetLength:Integer;Value,OldValue:TCsValue;
+Begin
+ P:=CsFindAssignment(StatementText);
+ If P=0Then Begin
+  If AlignRight Then CsScriptError('RSET exige une affectation.',True)
+  Else CsScriptError('LSET exige une affectation.',True);Exit;
+ End;
+ Name:=CsTrim(Copy(StatementText,1,P-1));SourceText:=Copy(StatementText,P+1,255);
+ CsEvaluate(SourceText,Value);CsGetVariable(Name,OldValue);TargetLength:=Length(OldValue.Text);
+ If TargetLength=0Then TargetLength:=Length(Value.Text);
+ If Length(Value.Text)>TargetLength Then ResultText:=Copy(Value.Text,1,TargetLength)
+ Else Begin ResultText:=Value.Text;
+  If AlignRight Then While Length(ResultText)<TargetLength Do ResultText:=' '+ResultText
+  Else While Length(ResultText)<TargetLength Do ResultText:=ResultText+' ';
+ End;
+ CsMakeText(ResultText,Value);Value.ValueKind:=CS_VALUE_STRING;CsSetVariableValue(Name,Value);
+End;
+
+{ BOGUE REEL trouve par test en direct (2026-08-31) - deja present dans le  }
+{ fichier ORIGINAL (pas une regression du portage, confirme par relecture   }
+{ de CSCRIPT.PAS : meme logique `Pos(',',...)` naive) : la branche Echo de  }
+{ `CsExecuteStatement` coupait sur CHAQUE virgule, meme a l'interieur d'une }
+{ chaine litterale ou des parametres d'un appel de fonction imbrique (ex.   }
+{ `Echo "x=" & Left("abc",3)` coupait au milieu de `Left(...)`, cassant un  }
+{ usage tres courant). Corrige avec l'accord explicite de l'utilisateur     }
+{ (AskUserQuestion, "corriger" choisi) en reutilisant la MEME logique deja  }
+{ prouvee de `CsListItem` (respecte guillemets/parentheses) plutot que      }
+{ d'inventer un nouveau mecanisme. }
+Function CsFindTopLevelComma(S:String;StartPos:Integer):Integer;
+Var I,Depth:Integer;Quote:Char;InQuote:Boolean;
+Begin
+ CsFindTopLevelComma:=0;
+ Depth:=0;Quote:=#0;InQuote:=False;
+ I:=StartPos;
+ While I<=Length(S)Do Begin
+  If InQuote Then Begin
+   If S[I]=Quote Then Begin
+    If(I<Length(S))and(S[I+1]=Quote)Then Inc(I)Else InQuote:=False;
+   End;
+  End Else If S[I]in['''','"']Then Begin InQuote:=True;Quote:=S[I];End
+  Else If S[I]='('Then Inc(Depth)
+  Else If S[I]=')'Then Begin If Depth>0Then Dec(Depth);End
+  Else If(S[I]=',')and(Depth=0)Then Begin CsFindTopLevelComma:=I;Exit;End;
+  Inc(I);
+ End;
+End;
+
+Procedure CsExecuteStatement(S:String);
+Var U,Name,RightSide,BaseName,IndexText:String;P,I:Integer;
+ V,IndexValue:TCsValue;ArrayVariable:PCsVariable;WasLet,WasSet:Boolean;
+Begin
+ S:=CsTrim(S);If(S='')or(S[1]='''')or(CsUpper(S)='REM')or CsStartsWith(S,'REM ')Then Exit;
+ U:=CsUpper(S);WasLet:=False;WasSet:=False;
+ If CsStartsWith(S,'DIM ')Then Begin
+  Delete(S,1,4);Repeat Name:=CsListItem(S);CsDeclareVariable(Name);Until S='';Exit;End;
+ If CsStartsWith(S,'PRIVATE ')Then Begin
+  Delete(S,1,8);Repeat Name:=CsListItem(S);CsDeclareVariable(Name);Until S='';Exit;End;
+ If CsStartsWith(S,'PUBLIC ')Then Begin
+  Delete(S,1,7);Repeat Name:=CsListItem(S);CsDeclareVariable(Name);Until S='';Exit;End;
+ If CsStartsWith(S,'STATIC ')Then Begin
+  Delete(S,1,7);Repeat Name:=CsListItem(S);CsDeclareStaticVariable(Name);Until S='';Exit;End;
+ If CsStartsWith(S,'ERASE ')Then Begin
+  Delete(S,1,6);Repeat Name:=CsListItem(S);CsEraseVariable(Name);Until S='';Exit;End;
+ If CsStartsWith(S,'REDIM ')Then Begin
+  Delete(S,1,6);WasLet:=False;
+  If CsStartsWith(S,'PRESERVE ')Then Begin Delete(S,1,9);WasLet:=True;End;
+  Repeat Name:=CsListItem(S);CsResizeArray(Name,WasLet);Until(S='')or CsTerminated;Exit;
+ End;
+ If U='ON ERROR RESUME NEXT'Then Begin CsOnErrorResumeNext:=True;Exit;End;
+ If(U='ON ERROR GOTO 0')or(U='ON ERROR GO TO 0')Then Begin CsOnErrorResumeNext:=False;Exit;End;
+ If CsStartsWith(U,'ON ERROR ')Then Begin CsScriptError('forme ON ERROR non supportee: '+S,False);Exit;End;
+ If CsStartsWith(S,'LSET ')Then Begin
+  Delete(S,1,5);CsAlignStringAssignment(S,False);Exit;
+ End;
+ If CsStartsWith(S,'RSET ')Then Begin Delete(S,1,5);CsAlignStringAssignment(S,True);Exit;End;
+ If U='EXIT DO'Then Begin CsExitDoRequested:=True;Exit;End;
+ If U='EXIT FOR'Then Begin CsExitForRequested:=True;Exit;End;
+ If U='EXIT SUB'Then Begin CsExitSubRequested:=True;Exit;End;
+ If U='EXIT FUNCTION'Then Begin CsExitFunctionRequested:=True;Exit;End;
+ If CsStartsWith(S,'CALL ')Then Begin CsCallSub(CsTrim(Copy(S,6,255)));Exit;End;
+ If CsStartsWith(S,'WScript.Echo')Then Delete(S,1,Length('WScript.Echo'))
+ Else If CsStartsWith(S,'Echo ')Then Delete(S,1,5)
+ Else If CsStartsWith(S,'WScript.Quit')Then Begin
+  Delete(S,1,Length('WScript.Quit'));
+  CsEvaluate(S,V);CsExitCode:=Trunc(V.Number);
+  CsTerminated:=True;
+  Exit;
+ End
+  Else
+ If CsStartsWith(S,'MSGBOX')Then Begin
+  If(Length(S)>6)and(S[7]='(')Then CsEvaluate(S,V)
+  Else CsEvaluate('MsgBox('+CsTrim(Copy(S,7,255))+')',V);
+  Exit;
+ End
+  Else
+ If CsStartsWith(S,'Randomize')Then Begin
+  RightSide:=CsTrim(Copy(S,10,255));
+  If RightSide=''Then Randomize Else Begin CsEvaluate(RightSide,V);RandSeed:=Trunc(V.Number);End;
+  Exit;
+ End
+ Else
+ Begin
+  If CsStartsWith(S,'SET ')Then Begin Delete(S,1,4);WasSet:=True;End;
+  If CsStartsWith(S,'LET ')Then Begin Delete(S,1,4);WasLet:=True;End;
+  P:=CsFindAssignment(S);If P>0Then Begin
+   Name:=CsTrim(Copy(S,1,P-1));
+   RightSide:=Copy(S,P+1,255);
+   CsEvaluate(RightSide,V);
+   I:=Pos('(',Name);
+   If(I>0)and(Name[Length(Name)]=')')Then Begin
+    BaseName:=CsTrim(Copy(Name,1,I-1));ArrayVariable:=CsFindVariable(BaseName);
+    If(ArrayVariable<>Nil)and(ArrayVariable^.ValueKind=CS_VALUE_ARRAY)Then Begin
+     CsEvaluate(Copy(Name,I+1,Length(Name)-I-1),IndexValue);Str(Trunc(IndexValue.Number),IndexText);
+     CsSetVariableValue(ArrayVariable^.Value+'.'+CsTrim(IndexText),V);
+    End Else CsSetVariableValue(Name,V);
+   End Else CsSetVariableValue(Name,V);
+   Exit;
+  End;
+  If WasLet Then Begin
+   CsScriptError('LET exige une affectation.',True);Exit;
+  End;
+  If WasSet Then Begin CsScriptError('SET exige une affectation.',True);Exit;End;
+  If CsUserSubExists(S)Then Begin CsCallSub(S);Exit;End;
+  CsScriptError('instruction non reconnue: '+S,False);
+  Exit;
+ End;
+ { La branche Echo arrive ici. }
+ I:=1;While I<=Length(S)Do Begin P:=CsFindTopLevelComma(S,I);
+  If P=0Then Begin CsEvaluate(Copy(S,I,255),V);CsW(V.Text);I:=Length(S)+1;End
+  Else Begin CsEvaluate(Copy(S,I,P-I),V);CsW(V.Text+' ');I:=P+1;End;
+ End;CsWLBlank;
+End;
+
+Procedure CsExecuteStatementList(Source:String);
+Var I,StartPosition:Integer;Quote:Char;StatementText:String;
+Begin
+ I:=1;StartPosition:=1;Quote:=#0;
+ While I<=Length(Source)Do Begin
+  If Quote<>#0Then Begin
+   If Source[I]=Quote Then Begin
+    If(I<Length(Source))and(Source[I+1]=Quote)Then Inc(I)Else Quote:=#0;
+   End;
+  End Else If Source[I]in['''','"']Then Quote:=Source[I]
+  Else If Source[I]=':'Then Begin
+   StatementText:=CsTrim(Copy(Source,StartPosition,I-StartPosition));
+   If StatementText<>''Then CsExecuteStatement(StatementText);StartPosition:=I+1;
+   If CsTerminated or CsExitDoRequested or CsExitForRequested or CsExitSubRequested or
+     CsExitFunctionRequested Then Exit;
+  End;
+  Inc(I);
+ End;
+ StatementText:=CsTrim(Copy(Source,StartPosition,255));
+ If StatementText<>''Then CsExecuteStatement(StatementText);
+End;
+
+Procedure CsExecuteRange(FirstLine,LastLine:LongInt);
+Var S,U,Condition,Name,Rest:String;P,ThenPos,ElsePos:Integer;
+ EndLine,BodyStart,I,ElseLine,ElementIndex,ElementCount:LongInt;
+ V,StartValue,EndValue,StepValue,Counter,Collection,CountValue:TCsValue;
+ LoopAgain,UntilMode:Boolean;IndexText,NextName:String;
+Begin
+ I:=FirstLine;
+ While(I<=LastLine)and Not CsTerminated and Not CsExitDoRequested and
+   Not CsExitForRequested and Not CsExitSubRequested and Not CsExitFunctionRequested Do Begin
+  CsCheckTimeout;If CsTerminated Then Exit;CsCurrentLine:=I;S:=CsTrim(CsScriptLineText(I));U:=CsUpper(S);
+  If CsStartsWith(S,'ELSEIF ')Then Begin S:='IF '+CsTrim(Copy(S,8,255));U:=CsUpper(S);End;
+  If CsStartsWith(S,'SUB ')or CsStartsWith(S,'PUBLIC SUB ')or
+    CsStartsWith(S,'PRIVATE SUB ')Then Begin
+   While(I<=LastLine)and(CsUpper(CsTrim(CsScriptLineText(I)))<>'END SUB')Do Inc(I);
+  End
+  Else If CsStartsWith(S,'FUNCTION ')or CsStartsWith(S,'PUBLIC FUNCTION ')or
+    CsStartsWith(S,'PRIVATE FUNCTION ')Then Begin
+   While(I<=LastLine)and(CsUpper(CsTrim(CsScriptLineText(I)))<>'END FUNCTION')Do Inc(I);
+  End
+  Else If U='END SUB'Then Exit
+  Else If U='END FUNCTION'Then Exit
+  Else If CsStartsWith(S,'IF ')Then Begin
+   ThenPos:=Pos(' THEN',U);If ThenPos>0Then Begin Condition:=Copy(S,4,ThenPos-4);CsEvaluate(Condition,V);
+    Rest:=CsTrim(Copy(S,ThenPos+5,255));
+    If Rest<>''Then Begin ElsePos:=CsKeywordOutsideQuotes(Rest,' ELSE ');
+     If CsTruth(V)Then Begin
+      If ElsePos>0Then CsExecuteStatementList(Copy(Rest,1,ElsePos-1))Else CsExecuteStatementList(Rest);End
+     Else If ElsePos>0Then CsExecuteStatementList(Copy(Rest,ElsePos+6,255));
+    End Else Begin EndLine:=CsFindBlock(I,'IF ','END IF');BodyStart:=I+1;
+     ElseLine:=CsFindElseLine(I,EndLine);
+     If CsTruth(V)Then Begin If ElseLine=0Then CsExecuteRange(BodyStart,EndLine-1)Else CsExecuteRange(BodyStart,ElseLine-1);End
+     Else If ElseLine>0Then Begin
+      If CsStartsWith(CsTrim(CsScriptLineText(ElseLine)),'ELSEIF ')Then CsExecuteRange(ElseLine,EndLine-1)
+      Else CsExecuteRange(ElseLine+1,EndLine-1);
+     End;I:=EndLine;
+    End;
+   End;
+  End Else If CsStartsWith(S,'FOR EACH ')Then Begin
+   Rest:=CsTrim(Copy(S,10,255));P:=Pos(' IN ',CsUpper(Rest));
+   If P=0Then Begin If Not CsBatchMode Then CsWL('Erreur VBScript: FOR EACH sans IN.');CsExitCode:=1;Exit;End;
+   Name:=CsTrim(Copy(Rest,1,P-1));CsEvaluate(Copy(Rest,P+4,255),Collection);
+   EndLine:=CsFindBlock(I,'FOR ','NEXT');ElementCount:=0;
+   If(Collection.ValueKind=CS_VALUE_ARRAY)or(Copy(Collection.Text,1,8)='@VBARRAY')Then Begin
+    CsGetVariable(Collection.Text+'.COUNT',CountValue);ElementCount:=Trunc(CountValue.Number);
+   End;
+   For ElementIndex:=0To ElementCount-1Do Begin
+    Str(ElementIndex,IndexText);CsGetVariable(Collection.Text+'.'+CsTrim(IndexText),V);
+    CsSetVariableValue(Name,V);CsExecuteRange(I+1,EndLine-1);
+    If CsExitForRequested Then Begin CsExitForRequested:=False;Break;End;
+    If CsTerminated or CsExitSubRequested or CsExitFunctionRequested or CsExitDoRequested Then Break;
+   End;
+   I:=EndLine;
+  End Else If CsStartsWith(S,'FOR ')Then Begin
+   Rest:=CsTrim(Copy(S,5,255));P:=CsFindAssignment(Rest);
+   If P=0Then Begin CsWL('Erreur VBScript: FOR sans signe =.');CsExitCode:=1;CsTerminated:=True;Exit;End;
+   Name:=CsTrim(Copy(Rest,1,P-1));Delete(Rest,1,P);
+   If Not CsSimpleIdentifier(Name)Then Begin CsWL('Erreur VBScript: compteur FOR invalide.');
+    CsExitCode:=1;CsTerminated:=True;Exit;End;
+   ThenPos:=Pos(' TO ',CsUpper(Rest));
+   If ThenPos=0Then Begin CsWL('Erreur VBScript: FOR sans TO.');CsExitCode:=1;CsTerminated:=True;Exit;End;
+   CsEvaluate(Copy(Rest,1,ThenPos-1),StartValue);Delete(Rest,1,ThenPos+3);
+   ElsePos:=Pos(' STEP ',CsUpper(Rest));If ElsePos>0Then Begin
+    CsEvaluate(Copy(Rest,1,ElsePos-1),EndValue);
+    CsEvaluate(Copy(Rest,ElsePos+6,255),StepValue);
+   End
+    Else
+   Begin
+    CsEvaluate(Rest,EndValue);
+    CsMakeNumber(1,StepValue);
+   End;
+   If Not StartValue.IsNumber or Not EndValue.IsNumber or Not StepValue.IsNumber Then Begin
+    CsWL('Erreur VBScript: bornes FOR non numeriques.');CsExitCode:=1;CsTerminated:=True;Exit;End;
+   If StepValue.Number=0Then Begin CsWL('Erreur VBScript: STEP ne peut pas etre nul.');
+    CsExitCode:=1;CsTerminated:=True;Exit;End;
+   EndLine:=CsFindBlock(I,'FOR ','NEXT');
+   NextName:=CsTrim(Copy(CsTrim(CsScriptLineText(EndLine)),5,255));
+   If(NextName<>'')and(CsUpper(NextName)<>CsUpper(Name))Then Begin
+    CsWL('Erreur VBScript: NEXT '+NextName+' ne correspond pas a FOR '+Name+'.');
+    CsExitCode:=1;CsTerminated:=True;Exit;
+   End;
+   Counter:=StartValue;
+   While(((StepValue.Number>=0)and(Counter.Number<=EndValue.Number))or((StepValue.Number<0)and
+        (Counter.Number>=EndValue.Number)))and Not CsTerminated and Not CsExitSubRequested and
+        Not CsExitDoRequested and Not CsExitFunctionRequested Do Begin
+    CsSetVariableValue(Name,Counter);
+    CsExecuteRange(I+1,EndLine-1);
+    If CsExitForRequested Then Begin CsExitForRequested:=False;Break;End;
+    CsMakeNumber(Counter.Number+StepValue.Number,Counter);
+   End;
+   I:=EndLine;
+  End
+   Else
+  If(U='DO')or CsStartsWith(U,'DO WHILE ')or CsStartsWith(U,'DO UNTIL ')Then Begin
+   EndLine:=CsFindLoopEnd(I);Condition:='';UntilMode:=False;
+   If CsStartsWith(U,'DO WHILE ')Then Condition:=CsTrim(Copy(S,10,255))
+   Else If CsStartsWith(U,'DO UNTIL ')Then Begin Condition:=CsTrim(Copy(S,10,255));UntilMode:=True;End;
+   Repeat
+    LoopAgain:=True;
+    If Condition<>''Then Begin CsEvaluate(Condition,V);
+     If UntilMode Then LoopAgain:=Not CsTruth(V)Else LoopAgain:=CsTruth(V);End;
+    If LoopAgain Then CsExecuteRange(I+1,EndLine-1);
+    If CsExitDoRequested Then Begin CsExitDoRequested:=False;LoopAgain:=False;End;
+    If LoopAgain and Not CsTerminated and(Condition='')Then Begin
+     Rest:=CsTrim(CsScriptLineText(EndLine));
+     If CsStartsWith(Rest,'LOOP WHILE ')Then Begin CsEvaluate(CsTrim(Copy(Rest,12,255)),V);LoopAgain:=CsTruth(V);End
+     Else If CsStartsWith(Rest,'LOOP UNTIL ')Then Begin CsEvaluate(CsTrim(Copy(Rest,12,255)),V);LoopAgain:=Not CsTruth(V);End;
+    End;
+    CsCheckTimeout;
+   Until(Not LoopAgain)or CsTerminated or CsExitSubRequested or CsExitFunctionRequested or CsExitForRequested;
+   I:=EndLine;
+  End Else
+  If CsStartsWith(S,'WHILE ')Then Begin
+   EndLine:=CsFindBlock(I,'WHILE ','WEND');
+   Condition:=Copy(S,7,255);CsEvaluate(Condition,V);
+   While CsTruth(V)and Not CsTerminated and Not CsExitSubRequested and
+     Not CsExitForRequested and Not CsExitDoRequested and Not CsExitFunctionRequested Do Begin
+    CsExecuteRange(I+1,EndLine-1);
+    CsEvaluate(Condition,V);CsCheckTimeout;
+   End;
+   I:=EndLine;
+  End
+   Else
+  If CsStartsWith(U,'NEXT')Then Begin CsScriptError('NEXT sans FOR correspondant.',False);Exit;End
+  Else If(U='ELSE')or(U='END IF')or(U='WEND')or CsStartsWith(U,'LOOP')Then Exit
+  Else If(U='REM')or CsStartsWith(U,'REM ')or((Length(S)>0)and(S[1]=''''))Then CsExecuteStatement(S)
+  Else CsExecuteStatementList(S);
+  Inc(I);
+ End;
+End;
+
+Function CsListItem(Var Source:String):String;
+Var I,Depth:Integer;Quote:Char;InQuote:Boolean;
+Begin
+ I:=1;Depth:=0;Quote:=#0;InQuote:=False;
+ While I<=Length(Source)Do Begin
+  If InQuote Then Begin
+   If Source[I]=Quote Then Begin
+    If(I<Length(Source))and(Source[I+1]=Quote)Then Inc(I)Else InQuote:=False;
+   End;
+  End Else If Source[I]in['''','"']Then Begin InQuote:=True;Quote:=Source[I];End
+  Else If Source[I]='('Then Inc(Depth)
+  Else If Source[I]=')'Then Begin If Depth>0Then Dec(Depth);End
+  Else If(Source[I]=',')and(Depth=0)Then Begin
+   CsListItem:=CsTrim(Copy(Source,1,I-1));Delete(Source,1,I);Exit;
+  End;
+  Inc(I);
+ End;
+ CsListItem:=CsTrim(Source);Source:='';
+End;
+
+Function CsSimpleIdentifier(Source:String):Boolean;
+Var I:Integer;
+Begin
+ Source:=CsTrim(Source);CsSimpleIdentifier:=False;If Source=''Then Exit;
+ If Not(Source[1]in['A'..'Z','a'..'z','_'])Then Exit;
+ For I:=2To Length(Source)Do If Not(Source[I]in['A'..'Z','a'..'z','0'..'9','_'])Then Exit;
+ CsSimpleIdentifier:=True;
+End;
+
+Procedure CsCallSub(CallText:String);
+Var CallName,ArgumentText,Declaration,DeclarationName,ParameterText:String;
+ ParameterName,ArgumentExpression,UpperDeclaration:String;
+ I,P,NameEnd:Integer;StartLine,EndLine:LongInt;Binding,NextBinding:PCsCallBinding;
+ Existing:PCsVariable;ArgumentValue,CopyValue:TCsValue;ByReference:Boolean;
+Begin
+ CallText:=CsTrim(CallText);P:=Pos('(',CallText);
+ If P>0Then Begin
+  CallName:=CsTrim(Copy(CallText,1,P-1));ArgumentText:=Copy(CallText,P+1,255);
+  If(Length(ArgumentText)>0)and(ArgumentText[Length(ArgumentText)]=')')Then
+   Delete(ArgumentText,Length(ArgumentText),1);
+ End Else Begin
+  P:=Pos(' ',CallText);
+  If P>0Then Begin CallName:=Copy(CallText,1,P-1);ArgumentText:=CsTrim(Copy(CallText,P+1,255));End
+  Else Begin CallName:=CallText;ArgumentText:='';End;
+ End;
+ StartLine:=0;EndLine:=0;ParameterText:='';
+ For I:=1To CsLineCount Do Begin
+  Declaration:=CsTrim(CsScriptLineText(I));UpperDeclaration:=CsUpper(Declaration);
+  If CsStartsWith(Declaration,'PUBLIC SUB ')Then Delete(Declaration,1,7)
+  Else If CsStartsWith(Declaration,'PRIVATE SUB ')Then Delete(Declaration,1,8);
+  If CsStartsWith(Declaration,'SUB ')Then Begin
+   Delete(Declaration,1,4);P:=Pos('(',Declaration);NameEnd:=Pos(' ',Declaration);
+   If(P=0)or((NameEnd>0)and(NameEnd<P))Then P:=NameEnd;
+   If P=0Then DeclarationName:=CsTrim(Declaration)
+   Else DeclarationName:=CsTrim(Copy(Declaration,1,P-1));
+   If CsUpper(DeclarationName)=CsUpper(CallName)Then Begin
+    StartLine:=I;P:=Pos('(',Declaration);
+    If P>0Then Begin ParameterText:=Copy(Declaration,P+1,255);
+     If(Length(ParameterText)>0)and(ParameterText[Length(ParameterText)]=')')Then
+      Delete(ParameterText,Length(ParameterText),1);End;
+    Break;
+   End;
+  End;
+ End;
+ If StartLine=0Then Begin
+  If Not CsBatchMode Then CsWL('Erreur VBScript: procedure introuvable: '+CallName);
+  CsExitCode:=1;Exit;
+ End;
+ EndLine:=StartLine+1;
+ While(EndLine<=CsLineCount)and(CsUpper(CsTrim(CsScriptLineText(EndLine)))<>'END SUB')Do Inc(EndLine);
+ Binding:=Nil;
+ While ParameterText<>''Do Begin
+  ParameterName:=CsListItem(ParameterText);ByReference:=True;
+  If CsStartsWith(ParameterName,'BYVAL ')Then Begin Delete(ParameterName,1,6);ByReference:=False;End
+  Else If CsStartsWith(ParameterName,'BYREF ')Then Delete(ParameterName,1,6);
+  P:=Pos(' ',ParameterName);If P>0Then ParameterName:=Copy(ParameterName,1,P-1);
+  ArgumentExpression:=CsListItem(ArgumentText);CsEvaluate(ArgumentExpression,ArgumentValue);
+  New(NextBinding);NextBinding^.Name:=CsUpper(ParameterName);
+  NextBinding^.ActualName:=CsUpper(CsTrim(ArgumentExpression));
+  NextBinding^.CopyBack:=ByReference and CsSimpleIdentifier(ArgumentExpression);
+  Existing:=CsFindVariable(ParameterName);NextBinding^.Existed:=Existing<>Nil;
+  If Existing<>Nil Then Begin NextBinding^.OldValue:=Existing^.Value;
+   NextBinding^.OldKind:=Existing^.ValueKind;End
+  Else Begin NextBinding^.OldValue:='';NextBinding^.OldKind:=CS_VALUE_EMPTY;End;
+  NextBinding^.Next:=Binding;Binding:=NextBinding;CsSetVariableValue(ParameterName,ArgumentValue);
+ End;
+ CsExecuteRange(StartLine+1,EndLine-1);CsExitSubRequested:=False;
+ NextBinding:=Binding;
+ While NextBinding<>Nil Do Begin
+  If NextBinding^.CopyBack Then Begin CsGetVariable(NextBinding^.Name,CopyValue);
+   CsSetVariableValue(NextBinding^.ActualName,CopyValue);End;
+  NextBinding:=NextBinding^.Next;
+ End;
+ While Binding<>Nil Do Begin
+  NextBinding:=Binding^.Next;
+  If Binding^.Existed Then Begin CsMakeText(Binding^.OldValue,CopyValue);
+   CopyValue.ValueKind:=Binding^.OldKind;CsSetVariableValue(Binding^.Name,CopyValue);End
+  Else CsRemoveVariable(Binding^.Name);
+  Dispose(Binding);Binding:=NextBinding;
+ End;
+End;
+
+Procedure CsFunctionArgument(Index:Integer;A,B,C,D:TCsValue;Var V:TCsValue);
+Begin
+ Case Index of
+  0:V:=A;
+  1:V:=B;
+  2:V:=C;
+  3:V:=D;
+ Else CsMakeText('',V);
+ End;
+End;
+
+Procedure CsSaveFunctionBinding(Name:String;Value:TCsValue;Var Bindings:PCsCallBinding);
+Var Binding:PCsCallBinding;Existing:PCsVariable;
+Begin
+ New(Binding);Binding^.Name:=CsUpper(CsTrim(Name));Binding^.ActualName:='';
+ Binding^.CopyBack:=False;Existing:=CsFindVariable(Name);Binding^.Existed:=Existing<>Nil;
+ If Existing<>Nil Then Begin Binding^.OldValue:=Existing^.Value;
+  Binding^.OldKind:=Existing^.ValueKind;End
+ Else Begin Binding^.OldValue:='';Binding^.OldKind:=CS_VALUE_EMPTY;End;
+ Binding^.Next:=Bindings;Bindings:=Binding;CsSetVariableValue(Name,Value);
+End;
+
+Procedure CsRestoreFunctionBindings(Var Bindings:PCsCallBinding);
+Var Binding:PCsCallBinding;OldValue:TCsValue;
+Begin
+ While Bindings<>Nil Do Begin Binding:=Bindings^.Next;
+  If Bindings^.Existed Then Begin CsMakeText(Bindings^.OldValue,OldValue);
+   OldValue.ValueKind:=Bindings^.OldKind;CsSetVariableValue(Bindings^.Name,OldValue);End
+  Else CsRemoveVariable(Bindings^.Name);
+  Dispose(Bindings);Bindings:=Binding;
+ End;
+End;
+
+Procedure CsCallUserFunction(FunctionName:String;A,B,C,D:TCsValue;
+ ArgumentCount:Integer;Var V:TCsValue);
+Var I,P,ParameterIndex:Integer;StartLine,EndLine:LongInt;
+ Declaration,DeclarationName,ParameterText,ParameterName:String;
+ SavedExpression:String;SavedPosition:Integer;
+ Bindings:PCsCallBinding;ArgumentValue,EmptyValue:TCsValue;
+Begin
+ SavedExpression:=CsExprText;SavedPosition:=CsExprPos;
+ StartLine:=0;EndLine:=0;ParameterText:='';
+ For I:=1To CsLineCount Do Begin
+  Declaration:=CsTrim(CsScriptLineText(I));
+  If CsStartsWith(Declaration,'PUBLIC FUNCTION ')Then Delete(Declaration,1,7)
+  Else If CsStartsWith(Declaration,'PRIVATE FUNCTION ')Then Delete(Declaration,1,8);
+  If CsStartsWith(Declaration,'FUNCTION ')Then Begin
+   Delete(Declaration,1,9);P:=Pos('(',Declaration);
+   If P=0Then DeclarationName:=CsTrim(Declaration)
+   Else DeclarationName:=CsTrim(Copy(Declaration,1,P-1));
+   If CsUpper(DeclarationName)=CsUpper(FunctionName)Then Begin
+    StartLine:=I;
+    If P>0Then Begin ParameterText:=Copy(Declaration,P+1,255);
+     If(Length(ParameterText)>0)and(ParameterText[Length(ParameterText)]=')')Then
+      Delete(ParameterText,Length(ParameterText),1);End;
+    Break;
+   End;
+  End;
+ End;
+ If StartLine=0Then Begin CsMakeText('',V);CsExprText:=SavedExpression;CsExprPos:=SavedPosition;Exit;End;
+ EndLine:=StartLine+1;
+ While(EndLine<=CsLineCount)and(CsUpper(CsTrim(CsScriptLineText(EndLine)))<>'END FUNCTION')Do Inc(EndLine);
+ Bindings:=Nil;CsMakeText('',EmptyValue);CsSaveFunctionBinding(FunctionName,EmptyValue,Bindings);
+ ParameterIndex:=0;
+ While ParameterText<>''Do Begin
+  ParameterName:=CsListItem(ParameterText);
+  If CsStartsWith(ParameterName,'BYVAL ')Then Delete(ParameterName,1,6)
+  Else If CsStartsWith(ParameterName,'BYREF ')Then Delete(ParameterName,1,6);
+  P:=Pos(' ',ParameterName);If P>0Then ParameterName:=Copy(ParameterName,1,P-1);
+  If ParameterIndex<ArgumentCount Then CsFunctionArgument(ParameterIndex,A,B,C,D,ArgumentValue)
+  Else CsMakeText('',ArgumentValue);
+  CsSaveFunctionBinding(ParameterName,ArgumentValue,Bindings);Inc(ParameterIndex);
+ End;
+ CsExecuteRange(StartLine+1,EndLine-1);CsExitFunctionRequested:=False;
+ CsGetVariable(FunctionName,V);CsRestoreFunctionBindings(Bindings);
+ CsExprText:=SavedExpression;CsExprPos:=SavedPosition;
+End;
+
+Procedure CsShowHelp;
+Begin
+ CsWL('CSCRIPT - Cette commande permet de lancer l''interpreteur de VBScript console.');
+ CsWL('Windows Script Host Version '+CS_VERSION_TEXT+' - clone Pascal');
+ CsWL('Syntaxe : CSCRIPT [options] script.vbs [arguments]');CsWLBlank;
+ CsWL('//B  Mode batch                 //I  Mode interactif');
+ CsWL('//D  Debogage actif             //X  Demarrer dans le debogueur');
+ CsWL('//E:moteur  Moteur de script    //Job:id  Travail WSF');
+ CsWL('//H:CScript|WScript  Hote par defaut');
+ CsWL('//Logo | //Nologo               //S  Sauver les options');
+ CsWL('//T:secondes  Delai maximal     //U  Sortie Unicode');
+ CsWL('//? ou /?  Cette aide');
+End;
+
+Procedure CsParseOptions;
+Var I,P:Integer;A,U:String;Code:Integer;SeenScript:Boolean;
+Begin
+ CsEngineName:='VBScript';CsBatchMode:=False;CsDebugMode:=False;CsInteractiveMode:=True;
+ CsShowLogo:=True;CsUnicodeMode:=False;CsTimeLimit:=0;CsScriptName:='';CsJobName:='';SeenScript:=False;
+ For I:=1To CsRawArgCount Do Begin A:=CsRawArgs[I];U:=CsUpper(A);
+  If Not SeenScript and((Copy(A,1,2)='//')or(A='/?')or(A='-?'))Then Begin
+   If(U='//?')or(U='/?')or(U='-?')Then Begin CsShowHelp;CsTerminated:=True;Exit;End
+   Else If U='//B'Then Begin CsBatchMode:=True;CsInteractiveMode:=False;End
+   Else If U='//D'Then CsDebugMode:=True Else If U='//I'Then CsInteractiveMode:=True
+   Else If U='//LOGO'Then CsShowLogo:=True Else If U='//NOLOGO'Then CsShowLogo:=False
+   Else If U='//U'Then CsUnicodeMode:=True Else If U='//X'Then CsDebugMode:=True
+   Else If Copy(U,1,4)='//E:'Then CsEngineName:=Copy(A,5,255)
+   Else If Copy(U,1,6)='//JOB:'Then CsJobName:=Copy(A,7,255)
+   Else If Copy(U,1,4)='//T:'Then Begin Val(Copy(A,5,255),CsTimeLimit,Code);If Code<>0Then CsTimeLimit:=0;End
+   Else If Copy(U,1,4)='//H:'Then Begin End
+   Else If U='//S'Then Begin End
+   Else Begin CsWL('Option CSCRIPT non reconnue: '+A);CsExitCode:=1;CsTerminated:=True;Exit;End;
+  End Else If Not SeenScript Then Begin CsScriptName:=A;SeenScript:=True;End
+  Else If CsScriptArgumentCount<CS_MAX_ARGUMENTS Then Begin CsScriptArguments[CsScriptArgumentCount]:=A;Inc(CsScriptArgumentCount);End;
+ End;
+ If CsScriptName=''Then Begin CsShowHelp;CsTerminated:=True;End;
+End;
+
+Procedure CsLoadScript;
+Var F:Text;S:String;ErrorCode:Integer;
+Begin
+ {$I-}Assign(F,CsScriptName);Reset(F);{$I+}ErrorCode:=IoResult;
+ If ErrorCode<>0Then Begin
+  CsWL('Erreur d''entree: fichier introuvable "'+CsScriptName+'".');
+  CsExitCode:=1;
+  CsTerminated:=True;
+  Exit;
+ End;
+ While Not Eof(F)Do Begin
+  ReadLn(F,S);
+  CsAddScriptLine(S);
+ End;
+ Close(F);
+End;
+
+{ --- CSCRIPT --- (point d'entree commun aux 3 shells) }
+
+Procedure TermCmd_CSCRIPT(Var TP: TTerminalPanel; ParamStr: String);
+Var I: Integer; NextVar: PCsVariable;
+Begin
+ CsTermTP := @TP;
+ CsOutLine := '';
+ Randomize;CsVariables:=Nil;CsFirstScriptLine:=Nil;CsLastScriptLine:=Nil;
+ CsLineCount:=0;CsArrayCounter:=0;CsScriptArgumentCount:=0;CsTerminated:=False;
+ CsExitDoRequested:=False;CsExitForRequested:=False;CsExitSubRequested:=False;
+ CsExitFunctionRequested:=False;CsOnErrorResumeNext:=False;CsExitCode:=0;
+
+ CsRawArgCount := 0;
+ While (TermExtractParam(ParamStr, CsRawArgCount+1) <> '') And
+       (CsRawArgCount < 128) Do Inc(CsRawArgCount);
+ For I := 1 To CsRawArgCount Do CsRawArgs[I] := TermExtractParam(ParamStr, I);
+
+ CsParseOptions;
+ If Not CsTerminated Then Begin
+  If CsUpper(CsEngineName)<>'VBSCRIPT'Then Begin CsWL('Moteur de script inconnu: '+CsEngineName);CsExitCode:=1;End
+   Else
+  Begin
+   If CsShowLogo Then CsWL('Windows Script Host Version '+CS_VERSION_TEXT+' - clone Pascal');
+   CsLoadScript;
+   If Not CsTerminated Then Begin
+    GetTime(CsStartHour,CsStartMinute,CsStartSecond,CsStartHundredth);
+    CsExecuteRange(1,CsLineCount);
+   End;
+  End;
+ End;
+
+ { Liberer la liste chainee des lignes de script et des variables - evite   }
+ { une fuite memoire d'une invocation `cscript` a l'autre dans ce processus }
+ { IDE de longue duree (l'original, un processus autonome, laissait l'OS    }
+ { reclamer la memoire a la sortie via Halt). }
+ While CsFirstScriptLine <> Nil Do Begin
+  CsLastScriptLine := CsFirstScriptLine^.Next;
+  Dispose(CsFirstScriptLine);
+  CsFirstScriptLine := CsLastScriptLine;
+ End;
+ While CsVariables <> Nil Do Begin
+  NextVar := CsVariables^.Next;
+  Dispose(CsVariables);
+  CsVariables := NextVar;
+ End;
+
+ If CsOutLine <> '' Then CsFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -57895,6 +59612,26 @@ Begin
    '  LHICE d archive.ice f...        Supprimer des fichiers de l''archive');
   TermAddLine(TP,
    '  LHICE /s ...                    Force le stockage (-lh0-, sans -lh1-)');
+ End;
+ { CSCRIPT (2026-08-31, demande explicite de l'utilisateur, port complet et }
+ { integral de CSCRIPT.PAS - AUCUN executable externe, code natif           }
+ { directement dans DEVENV.PAS) - Invite de commande/PowerShell dev/Norton  }
+ { Commander SEULEMENT (demande explicite - PAS OS/2 & REXX, qui a deja son }
+ { propre interprete REXX). }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- CSCRIPT (interprete VBScript console) ---');
+  TermAddLine(TP,
+   '  CSCRIPT script.vbs [arguments]     Executer un script VBScript');
+  TermAddLine(TP,
+   '  CSCRIPT //B script.vbs             Mode batch (MsgBox repond OK)');
+  TermAddLine(TP,
+   '  CSCRIPT //NoLogo script.vbs        Sans la banniere de version');
+  TermAddLine(TP,
+   '  CSCRIPT //T:secondes script.vbs    Delai d''execution maximal');
+  TermAddLine(TP,
+   '  CSCRIPT /? ou //?                  Aide complete');
  End;
  { Compress-Archive (2026-08-31, demande explicite - VRAIE compression      }
  { Deflate LZ77+Huffman fixe, reutilise la table CRC-32 et les arbres de    }
@@ -58345,7 +60082,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 85;
+ PS_CMD_ALIASES = 86;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -58396,6 +60133,7 @@ Const
   'ARJ',
   'UNZIP',
   'LHICE',
+  'CSCRIPT',
   'DATE',
   'TIME',
   'VER',
@@ -58461,6 +60199,7 @@ Const
   47,
   48,
   62,
+  63,
   49,
   50,
   51,
@@ -58756,6 +60495,8 @@ Begin
     TermCmd_UNZIP(TP, ParamStr)
    Else If CurrCmd = 'LHICE' Then
     TermCmd_LHICE(TP, ParamStr)
+   Else If CurrCmd = 'CSCRIPT' Then
+    TermCmd_CSCRIPT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -58909,6 +60650,7 @@ Begin
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
     62: TermCmd_LHICE(TP, ParamStr);
+    63: TermCmd_CSCRIPT(TP, ParamStr);
     49: TermCmd_DATE(TP);
     50: TermCmd_TIME(TP);
     51: TermCmd_VER(TP);
@@ -59122,6 +60864,8 @@ Begin
    TermCmd_UNZIP(TP, ParamStr)
   Else If CurrCmd = 'LHICE' Then
    TermCmd_LHICE(TP, ParamStr)
+  Else If CurrCmd = 'CSCRIPT' Then
+   TermCmd_CSCRIPT(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -119951,6 +121695,24 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   TermCmd_REXX(TermPanels[ActiveShell], Opts.RexxFile);
+ End;
+ { /VBSCRIPT:fichier.vbs - ouvre le shell "Invite de commandes" (SK_CMD)   }
+ { et lance directement le script VBScript specifie, comme si             }
+ { l'utilisateur avait tape "CSCRIPT fichier.vbs" dans ce terminal         }
+ { (TermCmd_CSCRIPT, voir [[project_devenv_cscript]]). }
+ If Opts.VBScriptFile <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_CMD;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  TermCmd_CSCRIPT(TermPanels[ActiveShell], Opts.VBScriptFile);
  End;
  { /PS:fichier.ps1 - meme principe exact que /TERMINALDOS:/                }
  { /TERMINALOS2: ci-dessus, mais ouvre "PowerShell dev" (SK_POWERSHELL) -   }
