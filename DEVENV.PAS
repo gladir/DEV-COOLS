@@ -61486,6 +61486,633 @@ Begin
  Close(F);
 End;
 
+{ ========================================================================= }
+{ VARIABLES POWERSHELL DEV + CONVERTFROM-YAML (2026-08-31, demande          }
+{ explicite de l'utilisateur - a la fois "ConvertFrom-Yaml" ET "que          }
+{ PowerShell dev supporte des variables" pour permettre                     }
+{ `$obj = ConvertFrom-Yaml $yaml` puis `$obj.propriete`). Ceci REVISE la     }
+{ limitation documentee partout ailleurs dans ce chantier ("aucun pipeline  }
+{ d'objets, pas de $variable" - voir project_devenv_powershell_cmdlets) :   }
+{ un VRAI mecanisme minimal de variables est ajoute, borne au strict        }
+{ necessaire pour l'exemple demande (pas un vrai moteur d'expressions       }
+{ PowerShell - pas d'operateurs arithmetiques/comparaison, pas de tableaux  }
+{ $x[i], pas de pipeline `|`) :                                             }
+{  - `$nom = "texte"` / `$nom = 'texte'` / `$nom = valeur-brute` (scalaire) }
+{  - `$nom = @" ... "@` (here-string MULTI-LIGNE - le terminal accumule les }
+{    lignes tapees jusqu'a une ligne `"@` seule, voir PsHereStringActive)   }
+{  - `$nom = $autre` (copie scalaire ou objet)                              }
+{  - `$cible = ConvertFrom-Yaml $source` (motif RECONNU explicitement :     }
+{    execute reellement l'analyseur YAML sur le texte de $source et         }
+{    STOCKE le resultat structure dans $cible comme objet - PAS un simple   }
+{    affichage comme l'invocation directe `ConvertFrom-Yaml -Path f.yaml`)  }
+{  - `$nom` seul ou `$nom.propriete` (y compris imbriquee, `$nom.a.b`) :    }
+{    affiche la valeur (scalaire, ou propriete d'un objet)                  }
+{  - substitution generique de `$nom` scalaire dans N'IMPORTE QUELLE autre  }
+{    ligne de commande avant execution normale (une valeur MULTI-LIGNE      }
+{    comme un here-string n'est jamais substituee ainsi - seul le motif     }
+{    d'assignation ci-dessus la gere, une insertion brute casserait le      }
+{    modele a espaces de TermExtractParam).                                 }
+{ Objets representes en INTERNE comme une liste chainee de proprietes a     }
+{ CLES APLATIES par point ("nested.x", "tags[0]") - memes idee et code que  }
+{ l'aplatissement deja utilise par PSCRIPT pour ses tableaux (Nom[Indice])  }
+{ - permet un acces imbrique ($obj.nested.x) SANS arbre reel a parcourir :  }
+{ une simple recherche par cle textuelle exacte suffit. }
+
+Type
+ PPsProp = ^TPsProp;
+ TPsProp = Record
+  Name  : String;
+  Value : AnsiString;
+  Next  : PPsProp;
+ End;
+ PPsVar = ^TPsVar;
+ TPsVar = Record
+  Name        : String;
+  IsObject    : Boolean;
+  ScalarValue : AnsiString;
+  Props       : PPsProp;
+  Next        : PPsVar;
+ End;
+
+Var
+ PsVarsHead: PPsVar;
+ PsHereStringActive: Boolean;
+ PsHereStringVarName: String;
+ PsHereStringBuf: AnsiString;
+
+Procedure PsDisposeProps(Var P: PPsProp);
+Var
+ Nxt: PPsProp;
+Begin
+ While P <> Nil Do Begin
+  Nxt := P^.Next;
+  Dispose(P);
+  P := Nxt;
+ End;
+End;
+
+Procedure PsAddProp(Var Head, Tail: PPsProp; Name: String; Value: AnsiString);
+Var
+ P: PPsProp;
+Begin
+ New(P);
+ P^.Name := Name;
+ P^.Value := Value;
+ P^.Next := Nil;
+ If Tail = Nil Then Head := P Else Tail^.Next := P;
+ Tail := P;
+End;
+
+Function PsCloneProps(Src: PPsProp): PPsProp;
+Var
+ Head, Tail, P, NewP: PPsProp;
+Begin
+ Head := Nil; Tail := Nil; P := Src;
+ While P <> Nil Do Begin
+  New(NewP);
+  NewP^.Name := P^.Name;
+  NewP^.Value := P^.Value;
+  NewP^.Next := Nil;
+  If Tail = Nil Then Head := NewP Else Tail^.Next := NewP;
+  Tail := NewP;
+  P := P^.Next;
+ End;
+ PsCloneProps := Head;
+End;
+
+Function PsFindVar(Name: String): PPsVar;
+Var
+ P: PPsVar;
+ U: String;
+Begin
+ U := TermStrToUpper(Name);
+ P := PsVarsHead;
+ While P <> Nil Do Begin
+  If TermStrToUpper(P^.Name) = U Then Begin
+   PsFindVar := P;
+   Exit;
+  End;
+  P := P^.Next;
+ End;
+ PsFindVar := Nil;
+End;
+
+Procedure PsSetScalar(Name: String; Value: AnsiString);
+Var
+ P: PPsVar;
+Begin
+ P := PsFindVar(Name);
+ If P = Nil Then Begin
+  New(P);
+  P^.Name := Name;
+  P^.Props := Nil;
+  P^.Next := PsVarsHead;
+  PsVarsHead := P;
+ End Else If P^.IsObject Then Begin
+  PsDisposeProps(P^.Props);
+  P^.Props := Nil;
+ End;
+ P^.IsObject := False;
+ P^.ScalarValue := Value;
+End;
+
+Procedure PsSetObject(Name: String; Props: PPsProp);
+Var
+ P: PPsVar;
+Begin
+ P := PsFindVar(Name);
+ If P = Nil Then Begin
+  New(P);
+  P^.Name := Name;
+  P^.Props := Nil;
+  P^.Next := PsVarsHead;
+  PsVarsHead := P;
+ End;
+ If P^.IsObject Then PsDisposeProps(P^.Props);
+ P^.IsObject := True;
+ P^.Props := Props;
+ P^.ScalarValue := '';
+End;
+
+Function PsGetPropValue(V: PPsVar; PropPath: String): AnsiString;
+Var
+ P: PPsProp;
+ U: String;
+Begin
+ PsGetPropValue := '';
+ If V = Nil Then Exit;
+ U := TermStrToUpper(PropPath);
+ P := V^.Props;
+ While P <> Nil Do Begin
+  If TermStrToUpper(P^.Name) = U Then Begin
+   PsGetPropValue := P^.Value;
+   Exit;
+  End;
+  P := P^.Next;
+ End;
+End;
+
+Function PsIsValidVarName(Name: String): Boolean;
+Var
+ I: Integer;
+Begin
+ PsIsValidVarName := False;
+ If Name = '' Then Exit;
+ If Not (Name[1] In ['A'..'Z', 'a'..'z', '_']) Then Exit;
+ For I := 2 To Length(Name) Do
+  If Not (Name[I] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Then Exit;
+ PsIsValidVarName := True;
+End;
+
+{ --- Analyseur YAML (sous-ensemble bloc courant, documente et borne,      }
+{ meme discipline que ConvertFrom-Markdown ci-dessus) : mappings "cle:     }
+{ valeur" imbriques par INDENTATION, sequences "- item" (scalaires ou      }
+{ mappings a une seule ligne "- cle: valeur"), listes style flux           }
+{ [a, b, c], chaines entre guillemets, commentaires #. HORS DE PORTEE      }
+{ assumee (documente, pas invente) : scalaires multi-lignes |/>, ancres/   }
+{ alias &/*, tags !!, mappings imbriques dans une sequence sur plusieurs   }
+{ lignes ("- cle:\n   sous-cle: ..."), documents multiples reels (--- est  }
+{ simplement ignore comme separateur, pas de vrai support multi-documents).}
+
+Const
+ YAML_MAXLINES = 500;
+Type
+ TYamlLines = Array[1..YAML_MAXLINES] Of AnsiString;
+
+Function YamlSplitLines(Text: AnsiString; Var L: TYamlLines): Integer;
+Var
+ I, Start, Count: Integer;
+Begin
+ Count := 0;
+ Start := 1;
+ For I := 1 To Length(Text) Do Begin
+  If Text[I] = #10 Then Begin
+   If Count < YAML_MAXLINES Then Begin
+    Inc(Count);
+    L[Count] := Copy(Text, Start, I - Start);
+    If (Length(L[Count]) > 0) And (L[Count][Length(L[Count])] = #13) Then
+     Delete(L[Count], Length(L[Count]), 1);
+   End;
+   Start := I + 1;
+  End;
+ End;
+ If Start <= Length(Text) Then Begin
+  If Count < YAML_MAXLINES Then Begin
+   Inc(Count);
+   L[Count] := Copy(Text, Start, Length(Text) - Start + 1);
+  End;
+ End;
+ YamlSplitLines := Count;
+End;
+
+Function YamlIndentOf(S: AnsiString): Integer;
+Var
+ I: Integer;
+Begin
+ I := 1;
+ While (I <= Length(S)) And (S[I] = ' ') Do Inc(I);
+ YamlIndentOf := I - 1;
+End;
+
+Function YamlStripComment(S: AnsiString): AnsiString;
+Var
+ I: Integer;
+ InS, InD: Boolean;
+Begin
+ InS := False; InD := False;
+ For I := 1 To Length(S) Do Begin
+  If (Not InD) And (S[I] = '''') Then InS := Not InS
+  Else If (Not InS) And (S[I] = '"') Then InD := Not InD
+  Else If (Not InS) And (Not InD) And (S[I] = '#') Then Begin
+   YamlStripComment := Copy(S, 1, I - 1);
+   Exit;
+  End;
+ End;
+ YamlStripComment := S;
+End;
+
+Function YamlUnquote(S: AnsiString): AnsiString;
+Var
+ T: AnsiString;
+Begin
+ T := TermTrim(S);
+ If (Length(T) >= 2) And (T[1] = '"') And (T[Length(T)] = '"') Then
+  YamlUnquote := Copy(T, 2, Length(T) - 2)
+ Else If (Length(T) >= 2) And (T[1] = '''') And (T[Length(T)] = '''') Then
+  YamlUnquote := Copy(T, 2, Length(T) - 2)
+ Else
+  YamlUnquote := T;
+End;
+
+Function YamlPrefixed(Prefix, Key: String): String;
+Begin
+ If Prefix = '' Then YamlPrefixed := Key
+ Else YamlPrefixed := Prefix + '.' + Key;
+End;
+
+{ Meme convention que les listes style flux [a,b,c] ("tags[0]", jamais      }
+{ "tags.[0]") - PAS YamlPrefixed (qui inserait toujours un point). }
+Function YamlIndexLabel(Prefix: String; Index: Integer): String;
+Var
+ NumStr: String;
+Begin
+ Str(Index, NumStr);
+ YamlIndexLabel := Prefix + '[' + NumStr + ']';
+End;
+
+Procedure YamlParseBlock(Var L: TYamlLines; LineCount: Integer; Var Idx: Integer;
+ BlockIndent: Integer; Prefix: String; Var Head, Tail: PPsProp);
+Var
+ RawLine, Content, ValuePart, Key, ArrItem: AnsiString;
+ ThisIndent, ColonPos, ChildIdx, ElemIdx, ArrPos: Integer;
+ IsSeq: Boolean;
+ ElemLbl, NumStr: String;
+ ChildHead, ChildTail: PPsProp;
+ ArrList: AnsiString;
+Begin
+ While Idx <= LineCount Do Begin
+  RawLine := YamlStripComment(L[Idx]);
+  Content := TermTrim(RawLine);
+  If (Content = '') Or (Content = '---') Or (Content = '...') Then Begin
+   Inc(Idx);
+   Continue;
+  End;
+  ThisIndent := YamlIndentOf(RawLine);
+  If ThisIndent < BlockIndent Then Exit;
+  If ThisIndent > BlockIndent Then Begin
+   Inc(Idx);
+   Continue;
+  End;
+
+  IsSeq := (Length(Content) >= 1) And (Content[1] = '-') And
+           ((Length(Content) = 1) Or (Content[2] = ' '));
+
+  If IsSeq Then Begin
+   ElemIdx := 0;
+   While Idx <= LineCount Do Begin
+    RawLine := YamlStripComment(L[Idx]);
+    Content := TermTrim(RawLine);
+    If Content = '' Then Begin
+     Inc(Idx);
+     Continue;
+    End;
+    ThisIndent := YamlIndentOf(RawLine);
+    If ThisIndent < BlockIndent Then Break;
+    If ThisIndent > BlockIndent Then Begin
+     { Suite d'un element mapping sur plusieurs lignes, ex. :               }
+     {  - name: third                                                      }
+     {    value: 99          <- cette ligne, rattachee au DERNIER element   }
+     { Un seul niveau de continuation est gere ici (pas de nouvelle         }
+     { imbrication a l'interieur de cette continuation) - limitation        }
+     { deliberee et documentee, cas courant (listes d'objets a plat)        }
+     { largement couvert malgre tout. }
+     If ElemIdx > 0 Then Begin
+      ElemLbl := YamlIndexLabel(Prefix, ElemIdx - 1);
+      ColonPos := Pos(':', Content);
+      If ColonPos > 0 Then Begin
+       Key := TermTrim(Copy(Content, 1, ColonPos - 1));
+       ValuePart := TermTrim(Copy(Content, ColonPos + 1, Length(Content)));
+       PsAddProp(Head, Tail, YamlPrefixed(ElemLbl, Key), YamlUnquote(ValuePart));
+      End;
+     End;
+     Inc(Idx);
+     Continue;
+    End;
+    If Not ((Length(Content) >= 1) And (Content[1] = '-') And
+       ((Length(Content) = 1) Or (Content[2] = ' '))) Then Break;
+    ValuePart := TermTrim(Copy(Content, 2, Length(Content)));
+    ElemLbl := YamlIndexLabel(Prefix, ElemIdx);
+    Inc(Idx);
+    If ValuePart = '' Then
+     PsAddProp(Head, Tail, ElemLbl, '')
+    Else Begin
+     ColonPos := Pos(':', ValuePart);
+     If (ColonPos > 0) And ((ColonPos = Length(ValuePart)) Or
+        (ValuePart[ColonPos+1] = ' ')) Then Begin
+      Key := TermTrim(Copy(ValuePart, 1, ColonPos - 1));
+      ValuePart := TermTrim(Copy(ValuePart, ColonPos + 1, Length(ValuePart)));
+      PsAddProp(Head, Tail, YamlPrefixed(ElemLbl, Key), YamlUnquote(ValuePart));
+     End Else
+      PsAddProp(Head, Tail, ElemLbl, YamlUnquote(ValuePart));
+    End;
+    Inc(ElemIdx);
+   End;
+  End Else Begin
+   ColonPos := Pos(':', Content);
+   If ColonPos = 0 Then Begin
+    Inc(Idx);
+    Continue;
+   End;
+   Key := TermTrim(Copy(Content, 1, ColonPos - 1));
+   ValuePart := TermTrim(Copy(Content, ColonPos + 1, Length(Content)));
+   Inc(Idx);
+   If ValuePart = '' Then Begin
+    ChildIdx := Idx;
+    While (ChildIdx <= LineCount) And (TermTrim(L[ChildIdx]) = '') Do Inc(ChildIdx);
+    If (ChildIdx <= LineCount) And (YamlIndentOf(L[ChildIdx]) > BlockIndent) Then Begin
+     ChildHead := Nil; ChildTail := Nil;
+     YamlParseBlock(L, LineCount, Idx, YamlIndentOf(L[ChildIdx]),
+      YamlPrefixed(Prefix, Key), ChildHead, ChildTail);
+     If ChildHead <> Nil Then Begin
+      If Tail = Nil Then Head := ChildHead Else Tail^.Next := ChildHead;
+      Tail := ChildTail;
+     End;
+    End Else
+     PsAddProp(Head, Tail, YamlPrefixed(Prefix, Key), '');
+   End Else If (Length(ValuePart) >= 2) And (ValuePart[1] = '[') And
+       (ValuePart[Length(ValuePart)] = ']') Then Begin
+    ArrList := Copy(ValuePart, 2, Length(ValuePart) - 2);
+    ElemIdx := 0;
+    While ArrList <> '' Do Begin
+     ArrPos := Pos(',', ArrList);
+     If ArrPos > 0 Then Begin
+      ArrItem := TermTrim(Copy(ArrList, 1, ArrPos - 1));
+      Delete(ArrList, 1, ArrPos);
+     End Else Begin
+      ArrItem := TermTrim(ArrList);
+      ArrList := '';
+     End;
+     Str(ElemIdx, NumStr);
+     PsAddProp(Head, Tail, YamlPrefixed(Prefix, Key + '[' + NumStr + ']'),
+      YamlUnquote(ArrItem));
+     Inc(ElemIdx);
+    End;
+   End Else
+    PsAddProp(Head, Tail, YamlPrefixed(Prefix, Key), YamlUnquote(ValuePart));
+  End;
+ End;
+End;
+
+Function YamlParseToProps(Text: AnsiString): PPsProp;
+Var
+ L: TYamlLines;
+ LineCount, Idx, StartIndent: Integer;
+ Head, Tail: PPsProp;
+Begin
+ LineCount := YamlSplitLines(Text, L);
+ Idx := 1;
+ While (Idx <= LineCount) And
+   ((TermTrim(YamlStripComment(L[Idx])) = '') Or
+    (TermTrim(YamlStripComment(L[Idx])) = '---')) Do Inc(Idx);
+ If Idx > LineCount Then Begin
+  YamlParseToProps := Nil;
+  Exit;
+ End;
+ StartIndent := YamlIndentOf(L[Idx]);
+ Head := Nil; Tail := Nil;
+ YamlParseBlock(L, LineCount, Idx, StartIndent, '', Head, Tail);
+ YamlParseToProps := Head;
+End;
+
+Procedure TermCmd_ConvertFromYaml(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, UpLevel: String;
+ F: Text;
+ Line: AnsiString;
+ WholeText: AnsiString;
+ Props, P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-PATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-Yaml -Path fichier.yaml');
+  TermAddLine(TP, '          $var = ConvertFrom-Yaml $texte   (capture le ' +
+   'resultat dans une variable objet)');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'ConvertFrom-Yaml : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'ConvertFrom-Yaml : impossible d''ouvrir ' + PathArg);
+  Exit;
+ End;
+ WholeText := '';
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  WholeText := WholeText + Line + #10;
+ End;
+ Close(F);
+
+ Props := YamlParseToProps(WholeText);
+ If Props = Nil Then
+  TermAddLine(TP, 'ConvertFrom-Yaml : document vide ou sans contenu reconnu.')
+ Else Begin
+  P := Props;
+  While P <> Nil Do Begin
+   TermAddLine(TP, P^.Name + ' : ' + P^.Value);
+   P := P^.Next;
+  End;
+  PsDisposeProps(Props);
+ End;
+End;
+
+{ --- Traitement des lignes tapees dans "PowerShell dev" (Entree) : here-  }
+{ strings/assignations/lecture de propriete/substitution generique -       }
+{ appelee depuis HandleTerminalEvent (touche Entree, SK_POWERSHELL         }
+{ uniquement) a la place de l'echo+TermExecuteCommand generique. --- }
+
+Function TermPSSubstituteVars(Line: String): String;
+Var
+ Res, Name: String;
+ I, Start: Integer;
+ V: PPsVar;
+Begin
+ Res := '';
+ I := 1;
+ While I <= Length(Line) Do Begin
+  If Line[I] = '$' Then Begin
+   Start := I + 1;
+   I := Start;
+   While (I <= Length(Line)) And
+     (Line[I] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Do Inc(I);
+   Name := Copy(Line, Start, I - Start);
+   If Name = '' Then
+    Res := Res + '$'
+   Else Begin
+    V := PsFindVar(Name);
+    If (V <> Nil) And (Not V^.IsObject) And
+       (Pos(#10, V^.ScalarValue) = 0) Then
+     Res := Res + V^.ScalarValue
+    Else
+     Res := Res + '$' + Name;
+   End;
+  End Else Begin
+   Res := Res + Line[I];
+   Inc(I);
+  End;
+ End;
+ TermPSSubstituteVars := Res;
+End;
+
+Procedure TermPSEvaluateAssignment(VarName, RHS: String);
+Var
+ CmdName, ArgPart, SrcVarName: String;
+ SpacePos: Integer;
+ SrcVar: PPsVar;
+Begin
+ If RHS = '' Then Begin
+  PsSetScalar(VarName, '');
+  Exit;
+ End;
+ If (Length(RHS) >= 2) And (RHS[1] = '"') And (RHS[Length(RHS)] = '"') Then Begin
+  PsSetScalar(VarName, Copy(RHS, 2, Length(RHS) - 2));
+  Exit;
+ End;
+ If (Length(RHS) >= 2) And (RHS[1] = '''') And (RHS[Length(RHS)] = '''') Then Begin
+  PsSetScalar(VarName, Copy(RHS, 2, Length(RHS) - 2));
+  Exit;
+ End;
+ If (RHS[1] = '$') And (Pos(' ', RHS) = 0) Then Begin
+  SrcVar := PsFindVar(Copy(RHS, 2, Length(RHS) - 1));
+  If SrcVar = Nil Then PsSetScalar(VarName, '')
+  Else If SrcVar^.IsObject Then PsSetObject(VarName, PsCloneProps(SrcVar^.Props))
+  Else PsSetScalar(VarName, SrcVar^.ScalarValue);
+  Exit;
+ End;
+ SpacePos := Pos(' ', RHS);
+ If SpacePos > 0 Then Begin
+  CmdName := TermStrToUpper(TermTrim(Copy(RHS, 1, SpacePos - 1)));
+  ArgPart := TermTrim(Copy(RHS, SpacePos + 1, Length(RHS)));
+  If (CmdName = 'CONVERTFROM-YAML') And (Length(ArgPart) > 1) And
+     (ArgPart[1] = '$') Then Begin
+   SrcVarName := Copy(ArgPart, 2, Length(ArgPart) - 1);
+   SrcVar := PsFindVar(SrcVarName);
+   If (SrcVar <> Nil) And (Not SrcVar^.IsObject) Then
+    PsSetObject(VarName, YamlParseToProps(SrcVar^.ScalarValue))
+   Else
+    PsSetScalar(VarName, '');
+   Exit;
+  End;
+ End;
+ PsSetScalar(VarName, RHS);
+End;
+
+Procedure TermPSHandleInputLine(Var TP: TTerminalPanel);
+Var
+ Dir, Line, Trimmed, VarName, RHS, PropPath: String;
+ EqPos, DotPos: Integer;
+ SrcVar: PPsVar;
+Begin
+ GetDir(0, Dir);
+ Line := TP.InputLine;
+ Trimmed := TermTrim(Line);
+
+ If PsHereStringActive Then Begin
+  TermAddLine(TP, '>> ' + Line);
+  If Trimmed = '"@' Then Begin
+   PsSetScalar(PsHereStringVarName, PsHereStringBuf);
+   PsHereStringActive := False;
+   PsHereStringBuf := '';
+   PsHereStringVarName := '';
+  End Else Begin
+   If PsHereStringBuf <> '' Then PsHereStringBuf := PsHereStringBuf + #10;
+   PsHereStringBuf := PsHereStringBuf + Line;
+  End;
+  Exit;
+ End;
+
+ TermAddLine(TP, 'PS ' + Dir + '> ' + Line);
+
+ If (Length(Trimmed) > 1) And (Trimmed[1] = '$') Then Begin
+  EqPos := Pos('=', Trimmed);
+  If EqPos > 0 Then Begin
+   VarName := TermTrim(Copy(Trimmed, 2, EqPos - 2));
+   RHS := TermTrim(Copy(Trimmed, EqPos + 1, Length(Trimmed)));
+   If (VarName <> '') And PsIsValidVarName(VarName) Then Begin
+    If RHS = '@"' Then Begin
+     PsHereStringActive := True;
+     PsHereStringVarName := VarName;
+     PsHereStringBuf := '';
+    End Else
+     TermPSEvaluateAssignment(VarName, RHS);
+    Exit;
+   End;
+  End;
+ End;
+
+ If (Length(Trimmed) > 1) And (Trimmed[1] = '$') Then Begin
+  VarName := Copy(Trimmed, 2, Length(Trimmed) - 1);
+  DotPos := Pos('.', VarName);
+  If DotPos > 0 Then Begin
+   PropPath := Copy(VarName, DotPos + 1, Length(VarName));
+   VarName := Copy(VarName, 1, DotPos - 1);
+   SrcVar := PsFindVar(VarName);
+   If SrcVar = Nil Then TermAddLine(TP, '')
+   Else If Not SrcVar^.IsObject Then TermAddLine(TP, SrcVar^.ScalarValue)
+   Else TermAddLine(TP, PsGetPropValue(SrcVar, PropPath));
+  End Else Begin
+   SrcVar := PsFindVar(VarName);
+   If SrcVar = Nil Then TermAddLine(TP, '')
+   Else If Not SrcVar^.IsObject Then TermAddLine(TP, SrcVar^.ScalarValue)
+   Else TermAddLine(TP, '@{...} (objet - utilisez $' + VarName + '.propriete)');
+  End;
+  Exit;
+ End;
+
+ TermExecuteCommand(TP, TermPSSubstituteVars(Line));
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -61628,6 +62255,14 @@ Begin
    '  ConvertFrom-Json -Path f.json         Affiche la structure analysee');
   TermAddLine(TP,
    '  ConvertFrom-Markdown -Path f.md       Affiche le HTML resultant');
+  TermAddLine(TP,
+   '  ConvertFrom-Yaml -Path f.yaml         Affiche la structure analysee');
+  TermAddLine(TP,
+   '  $obj = ConvertFrom-Yaml $texte        Capture dans une variable objet');
+  TermAddLine(TP,
+   '  $nom = "texte" / $nom = @"..."@       Variable scalaire / here-string');
+  TermAddLine(TP,
+   '  $nom  /  $nom.propriete               Affiche une variable/propriete');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -62209,7 +62844,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 95;
+ PS_CMD_ALIASES = 96;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -62264,6 +62899,7 @@ Const
   'CONVERTFROM-CSV',
   'CONVERTFROM-JSON',
   'CONVERTFROM-MARKDOWN',
+  'CONVERTFROM-YAML',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -62339,6 +62975,7 @@ Const
   70,
   71,
   72,
+  73,
   46,
   47,
   48,
@@ -62801,6 +63438,7 @@ Begin
     70: TermCmd_ConvertFromCsv(TP, ParamStr);
     71: TermCmd_ConvertFromJson(TP, ParamStr);
     72: TermCmd_ConvertFromMarkdown(TP, ParamStr);
+    73: TermCmd_ConvertFromYaml(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
@@ -67642,17 +68280,24 @@ Begin
      { longue que l ecran. }
      TP.ScrollOffset := 0;
      TP.HScrollOffset := 0;
-     Case TP.Shell Of
-      SK_POWERSHELL:
-       TermAddLine(TP, 'PS ' + Dir + '> ' + TP.InputLine);
-      SK_BASH:
-       TermAddLine(TP, 'user$ ' + TP.InputLine);
-      SK_AMIGADOS:
-       TermAddLine(TP, '1.SYS:> ' + TP.InputLine);
-     Else
-      TermAddLine(TP, Dir + '> ' + TP.InputLine);
+     { PowerShell dev : variables ($nom = ...), here-strings (@"..."@) et  }
+     { lecture de propriete ($obj.cle) - 2026-08-31, demande explicite de  }
+     { l'utilisateur. Gere entierement par TermPSHandleInputLine (echo,    }
+     { assignation/lecture, ou execution normale apres substitution des    }
+     { $variables scalaires) - voir ce bloc juste avant TermCmd_HELP. }
+     If TP.Shell = SK_POWERSHELL Then
+      TermPSHandleInputLine(TP)
+     Else Begin
+      Case TP.Shell Of
+       SK_BASH:
+        TermAddLine(TP, 'user$ ' + TP.InputLine);
+       SK_AMIGADOS:
+        TermAddLine(TP, '1.SYS:> ' + TP.InputLine);
+      Else
+       TermAddLine(TP, Dir + '> ' + TP.InputLine);
+      End;
+      TermExecuteCommand(TP, TP.InputLine);
      End;
-     TermExecuteCommand(TP, TP.InputLine);
      TP.InputLine := '';
      TP.InputCol := 1;
      TP.ScrollOffset := 0;
@@ -124384,8 +125029,15 @@ Begin
   If IOResult = 0 Then Begin
    While Not Eof(BatchFile) Do Begin
     ReadLn(BatchFile, BatchLine);
-    If TermTrim(BatchLine) <> '' Then
-     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+    { Route par TermPSHandleInputLine (2026-08-31, demande explicite :      }
+    { variables/here-strings) plutot que TermExecuteCommand directement -   }
+    { meme chemin que la touche Entree interactive, indispensable pour      }
+    { qu'un here-string @"..."@ multi-lignes dans un script /PS: fonctionne }
+    { (une ligne VIDE a l'interieur d'un here-string fait partie du texte,  }
+    { d'ou l'abandon du filtre TermTrim<>'' ci-dessus qui l'aurait          }
+    { silencieusement supprimee). }
+    TermPanels[ActiveShell].InputLine := BatchLine;
+    TermPSHandleInputLine(TermPanels[ActiveShell]);
    End;
    Close(BatchFile);
   End;
