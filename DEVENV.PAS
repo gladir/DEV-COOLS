@@ -37890,36 +37890,120 @@ Begin
   'associer un chemin de stockage par defaut.');
 End;
 
-{ Checkpoint-VM (2026-08-31, REVISEE suite a une question justifiee de     }
-{ l'utilisateur, "il devrait etre possible de prendre un instantane...      }
-{ lorsqu'un onglet emulateur est en execution") : la 1ere version           }
-{ (arret honnete) avait raisonne UNIQUEMENT a partir de DOS_SaveState/       }
-{ TDOSSnapshot (peripheriques, destructeur seul) sans remarquer que le      }
-{ VRAI etat qui definit "l'execution" d'une VM - les registres CPU et la    }
-{ RAM emulee - est DEJA accessible DIRECTEMENT et SANS AUCUN RISQUE via     }
-{ `EmuPanel.CPU` (le contexte GLOBAL de l'onglet emulateur ACTIF, deja      }
-{ utilise ailleurs dans ce chantier - voir Emu_WriteDefaultVector          }
-{ ci-dessus) : contrairement a `TDOSSnapshot`, LIRE `EmuPanel.CPU.Regs/     }
-{ Segs/Flags/IP/Memory^` ne bouge ni ne vide AUCUN pointeur - une VRAIE     }
-{ COPIE en lecture seule, zero risque pour la session active. `TEmuCPU.    }
-{ Memory: PEmuMemBuf` (~3656) est un pointeur vers exactement 1 105 904     }
-{ octets (`TEmuMemBuf = Array[0..$10FFEF] Of Byte`, tout l'espace           }
-{ d'adressage reel 8086 + HMA) - la RAM COMPLETE du programme en cours.     }
-{ Ecrit un VRAI fichier binaire (`.VMCKPT`) : registres+segments+drapeaux+  }
-{ IP puis les 1 105 904 octets de RAM tels quels. Limitation honnete        }
-{ DOCUMENTEE (pas cachee) : n'inclut PAS l'etat des peripheriques (mode     }
-{ video/pilote reseau/souris - voir TDOSSnapshot ci-dessus pour cette       }
-{ partie, hors de portee ici pour rester dans une action simple et SANS     }
-{ AUCUN risque de toucher les globaux partages) et aucune commande          }
-{ `Restore-VMCheckpoint` n'existe pour le relire (non demandee) - un        }
-{ instantane REEL et restaurable en principe (registres+RAM exacts), pas    }
-{ un rapport de diagnostic. }
+{ Checkpoint-VM / Restore-VMCheckpoint (2026-08-31, REVISEE une 2e fois -  }
+{ demande explicite de l'utilisateur : utiliser les VRAIES extensions de   }
+{ fichier Hyper-V au lieu d'un `.VMCKPT` invente) : un VRAI point de        }
+{ controle Hyper-V n'est jamais un seul fichier - c'est un ENSEMBLE :       }
+{ `.vmcx` (configuration), `.vmrs` (etat d'execution/memoire) et un        }
+{ `.avhdx` par disque virtuel attache (disque DIFFERENTIEL, chaine au       }
+{ disque parent `.vhdx` - PAS le checkpoint lui-meme, juste le disque de    }
+{ base). Reproduit ici avec la MEME repartition logique, `-Path` designant  }
+{ desormais un NOM DE BASE (extension retiree si presente) :               }
+{   <base>.vmcx  : configuration (BinaryPath/TargetCPU/horodatage)         }
+{   <base>.vmrs  : etat d'execution REEL (registres CPU + RAM + video -    }
+{                  exactement le contenu du `.VMCKPT` de la version         }
+{                  precedente, juste renomme/scinde)                       }
+{   <base>.avhdx : SIMPLIFICATION HONNETE ASSUMEE - copie COMPLETE (pas    }
+{                  une vraie chaine differentielle/copy-on-write) du        }
+{                  disque actuellement monte sur C:/D: (`Opts.DiskImg80/    }
+{                  81`, meme mecanisme qu'Add-VMHardDiskDrive/IMGMOUNT) au  }
+{                  moment du checkpoint - un vrai suivi delta necessiterait }
+{                  d'intercepter CHAQUE ecriture disque depuis le           }
+{                  checkpoint, hors de portee ici ; ecrit UNIQUEMENT si un  }
+{                  disque est reellement monte (rien s'il n'y en a pas).   }
+{ AJOUT REEL (pas juste un habillage) fait au tour precedent, conserve ici :}
+{ l'etat VIDEO (`EmuVideo`, mode+registres DAC/Sequencer/GC/AC/CRTC + les   }
+{ 262 144 octets du framebuffer `TEmuVideoMem`) - les segments video        }
+{ ($A000/$B000/$B800) sont INTERCEPTES par Emu_ReadByte/WriteByte et        }
+{ redirigent vers `EmuVideo.Mem`, jamais vers `EmuPanel.CPU.Memory^` - sans }
+{ cette section, l'ecran restaurait vide/faux meme avec les bons registres.}
+{ Toujours HORS DE PORTEE, honnetement documente : reseau IPX/pilote de     }
+{ paquets, souris, XMS/EMS/DPMI (`TDOSSnapshot` couvre ces champs mais       }
+{ reste destructeur utilise seul, voir la recherche du tour precedent).    }
+Const
+ VMCX_MAGIC  = 'VMCX0001';
+ VMRS_MAGIC  = 'VMRS0001';
+
+Procedure VMCkptWriteStr(Var F: File; Const S: String);
+Var L: Word;
+Begin
+ L := Length(S);
+ BlockWrite(F, L, SizeOf(L));
+ If L > 0 Then BlockWrite(F, S[1], L);
+End;
+
+Procedure VMCkptReadStr(Var F: File; Var S: String);
+Var L: Word;
+Begin
+ S := '';
+ BlockRead(F, L, SizeOf(L));
+ If L > 255 Then L := 255;
+ If L > 0 Then Begin
+  SetLength(S, L);
+  BlockRead(F, S[1], L);
+ End;
+End;
+
+{ Copie a partir d'un handle DEJA OUVERT (pas d'un nom de fichier) - BOGUE }
+{ REEL trouve+corrige (2026-08-31, "pourquoi .avhdx n'est jamais cree") :  }
+{ le disque monte sur C:/D: reste OUVERT en permanence par l'emulateur     }
+{ (EmuFloppyFile[Idx], voir Emu_HardDiskOpenOne) tant qu'il est monte - un }
+{ 2e Assign/Reset sur le MEME chemin depuis un handle SEPARE echoue en      }
+{ violation de partage Windows (confirme via un diagnostic temporaire :    }
+{ EmuFloppyOpen[2]=True et Opts.DiskImg80 corrects, mais 0 disque copie).  }
+{ Corrige : reutilise DIRECTEMENT `EmuFloppyFile[Idx]` (deja ouvert par     }
+{ l'emulateur, aucune 2e ouverture) - Seek(0) avant, la position est de     }
+{ toute facon reseekee explicitement par CHAQUE operation INT13h suivante,  }
+{ jamais supposee stable entre 2 appels. }
+Function VMCkptCopyOpenFile(Var SourceF: File; Const Target: String): Boolean;
+Var
+ TF: File;
+ Buf: Array[1..8192] Of Byte;
+ NRead: Word;
+Begin
+ VMCkptCopyOpenFile := False;
+ {$I-} Seek(SourceF, 0); {$I+}
+ If IOResult <> 0 Then Exit;
+ Assign(TF, Target);
+ {$I-} Rewrite(TF, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ Repeat
+  BlockRead(SourceF, Buf, SizeOf(Buf), NRead);
+  If NRead > 0 Then BlockWrite(TF, Buf, NRead);
+ Until NRead < SizeOf(Buf);
+ Close(TF);
+ VMCkptCopyOpenFile := True;
+End;
+
+{ Retire une extension .vmcx/.vmrs/.avhdx si l'utilisateur en a tape une   }
+{ (les 3 partagent le meme nom de base, comme un vrai point de controle    }
+{ Hyper-V identifie par son GUID/dossier plutot que par un seul fichier).  }
+Function VMCkptBaseName(Const RawPath: String): String;
+Var UpP: String;
+Begin
+ VMCkptBaseName := RawPath;
+ UpP := TermStrToUpper(RawPath);
+ If Length(RawPath) > 5 Then
+  If (Copy(UpP, Length(UpP) - 4, 5) = '.VMCX') Or
+     (Copy(UpP, Length(UpP) - 4, 5) = '.VMRS') Then Begin
+   VMCkptBaseName := Copy(RawPath, 1, Length(RawPath) - 5);
+   Exit;
+  End;
+ If Length(RawPath) > 6 Then
+  If Copy(UpP, Length(UpP) - 5, 6) = '.AVHDX' Then
+   VMCkptBaseName := Copy(RawPath, 1, Length(RawPath) - 6);
+End;
+
 Procedure TermCmd_CheckpointVM(Var TP: TTerminalPanel; ParamStr: String);
 Var
- PathArg, VMNameArg, VMLabel: String;
+ PathArg, VMNameArg, VMLabel, BaseName, MagicOut: String;
  F: File;
  Year, Month, Day, DOW, Hour, Min, Sec, Sec100: Word;
  Err: Word;
+ HasMem, HasVideo, HasVideoMem: Byte;
+ DiskIdx: Byte;
+ DiskCount: Integer;
+ DiskSuffix, AvhdxPath: String;
 Begin
  If Not EmuPanel.Running Then Begin
   TermAddLine(TP, 'Checkpoint-VM : aucun emulateur EN COURS D''EXECUTION ' +
@@ -37931,32 +38015,218 @@ Begin
  If PathArg = '' Then Begin
   GetDate(Year, Month, Day, DOW);
   GetTime(Hour, Min, Sec, Sec100);
-  PathArg := 'CHECKPOINT_' + TermPadZeroLeft(Year, 4) +
+  BaseName := 'CHECKPOINT_' + TermPadZeroLeft(Year, 4) +
    TermPadZeroLeft(Month, 2) + TermPadZeroLeft(Day, 2) + '_' +
    TermPadZeroLeft(Hour, 2) + TermPadZeroLeft(Min, 2) +
-   TermPadZeroLeft(Sec, 2) + '.VMCKPT';
- End;
- Assign(F, PathArg);
+   TermPadZeroLeft(Sec, 2);
+ End Else
+  BaseName := VMCkptBaseName(PathArg);
+ { --- <base>.vmcx : configuration --- }
+ Assign(F, BaseName + '.vmcx');
  {$I-} Rewrite(F, 1); {$I+}
  Err := IOResult;
  If Err <> 0 Then Begin
-  TermAddLine(TP, 'Checkpoint-VM : impossible de creer ' + PathArg + ' (' +
-   TermGetErrorMessage(Err) + ').');
+  TermAddLine(TP, 'Checkpoint-VM : impossible de creer ' + BaseName +
+   '.vmcx (' + TermGetErrorMessage(Err) + ').');
   Exit;
  End;
+ MagicOut := VMCX_MAGIC;
+ BlockWrite(F, MagicOut[1], Length(MagicOut));
+ VMCkptWriteStr(F, EmuPanel.BinaryPath);
+ VMCkptWriteStr(F, EmuPanel.TargetCPU);
+ VMCkptWriteStr(F, VMNameArg);
+ GetDate(Year, Month, Day, DOW);
+ GetTime(Hour, Min, Sec, Sec100);
+ BlockWrite(F, Year, SizeOf(Year));
+ BlockWrite(F, Month, SizeOf(Month));
+ BlockWrite(F, Day, SizeOf(Day));
+ BlockWrite(F, Hour, SizeOf(Hour));
+ BlockWrite(F, Min, SizeOf(Min));
+ BlockWrite(F, Sec, SizeOf(Sec));
+ Close(F);
+ { --- <base>.vmrs : etat d'execution (registres CPU + RAM + video) --- }
+ Assign(F, BaseName + '.vmrs');
+ {$I-} Rewrite(F, 1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Checkpoint-VM : impossible de creer ' + BaseName +
+   '.vmrs (' + TermGetErrorMessage(Err) + ').');
+  Exit;
+ End;
+ MagicOut := VMRS_MAGIC;
+ BlockWrite(F, MagicOut[1], Length(MagicOut));
  BlockWrite(F, EmuPanel.CPU.Regs, SizeOf(EmuPanel.CPU.Regs));
  BlockWrite(F, EmuPanel.CPU.Segs, SizeOf(EmuPanel.CPU.Segs));
  BlockWrite(F, EmuPanel.CPU.Flags, SizeOf(EmuPanel.CPU.Flags));
  BlockWrite(F, EmuPanel.CPU.IP, SizeOf(EmuPanel.CPU.IP));
- If EmuPanel.CPU.MemReady Then
-  BlockWrite(F, EmuPanel.CPU.Memory^, SizeOf(TEmuMemBuf));
+ If EmuPanel.CPU.MemReady Then HasMem := 1 Else HasMem := 0;
+ BlockWrite(F, HasMem, SizeOf(HasMem));
+ If HasMem = 1 Then BlockWrite(F, EmuPanel.CPU.Memory^, SizeOf(TEmuMemBuf));
+ HasVideo := 1;
+ BlockWrite(F, HasVideo, SizeOf(HasVideo));
+ BlockWrite(F, EmuVideo, SizeOf(EmuVideo));
+ If EmuVideo.MemReady Then HasVideoMem := 1 Else HasVideoMem := 0;
+ BlockWrite(F, HasVideoMem, SizeOf(HasVideoMem));
+ If HasVideoMem = 1 Then BlockWrite(F, EmuVideo.Mem^, SizeOf(TEmuVideoMem));
  Close(F);
- TermAddLine(TP, 'Checkpoint-VM' + VMLabel + ' : instantane ecrit dans ' +
-  PathArg + ' (registres CPU + ' + IntToStr(SizeOf(TEmuMemBuf)) +
-  ' octets de RAM emulee, programme "' + EmuPanel.BinaryPath + '").');
- TermAddLine(TP, 'Limitation honnete : l''etat des peripheriques (mode ' +
-  'video/pilote reseau/souris) n''est pas inclus, et aucune commande ' +
-  'Restore-VMCheckpoint n''existe pour le relire.');
+ { --- <base>.avhdx (+ <base>_D.avhdx) : copie du/des disque(s) monte(s)   }
+ { sur C:/D: au moment du checkpoint - SIMPLIFICATION documentee ci-dessus }
+ { (copie complete, pas une vraie chaine differentielle). Rien n'est ecrit }
+ { si aucun disque n'est monte. }
+ DiskCount := 0;
+ For DiskIdx := 2 To 3 Do
+  If EmuFloppyOpen[DiskIdx] Then Begin
+   If DiskIdx = 2 Then DiskSuffix := '' Else DiskSuffix := '_D';
+   AvhdxPath := BaseName + DiskSuffix + '.avhdx';
+   If VMCkptCopyOpenFile(EmuFloppyFile[DiskIdx], AvhdxPath) Then
+    Inc(DiskCount);
+  End;
+ TermAddLine(TP, 'Checkpoint-VM' + VMLabel + ' : ' + BaseName +
+  '.vmcx + ' + BaseName + '.vmrs ecrits (registres CPU + ' +
+  IntToStr(SizeOf(TEmuMemBuf)) + ' octets de RAM + etat video/ecran, ' +
+  'programme "' + EmuPanel.BinaryPath + '").');
+ If DiskCount > 0 Then
+  TermAddLine(TP, IntToStr(DiskCount) + ' disque(s) copie(s) en .avhdx ' +
+   '(copie complete au moment du checkpoint, pas une vraie chaine ' +
+   'differentielle).');
+ TermAddLine(TP, 'Limitation honnete : l''etat reseau/souris/XMS/EMS/DPMI ' +
+  'n''est pas inclus. Voir Restore-VMCheckpoint pour relire cet ensemble.');
+End;
+
+{ Restore-VMCheckpoint (2026-08-31) : contrepartie EN LECTURE - relit REEL-}
+{ LEMENT `<base>.vmcx`+`<base>.vmrs` (les 2 sont requis) et REECRIT les    }
+{ registres CPU/la RAM/l'etat video DANS le contexte emulateur ACTIF        }
+{ (`EmuPanel`/`EmuVideo`). Si `<base>.avhdx`/`<base>_D.avhdx` existe(nt),   }
+{ REMONTE reellement ce(s) disque(s) sur C:/D: (`Emu_MountDiskSlot`, meme   }
+{ mecanisme qu'Add-VMHardDiskDrive) - restaure donc AUSSI le contenu disque}
+{ associe au checkpoint, pas seulement CPU/RAM/ecran. Contrairement a       }
+{ Checkpoint-VM (lecture seule, zero risque), ceci est DELIBEREMENT         }
+{ destructeur pour l'emulateur actif - le vrai contrat de Restore, pas un  }
+{ bogue. Valide les 2 signatures AVANT de toucher quoi que ce soit - un     }
+{ ensemble etranger/tronque/incomplet est refuse proprement plutot que de  }
+{ corrompre l'emulateur actif avec des octets mal interpretes. Le           }
+{ pointeur/drapeau `Mem`/`MemReady` de `EmuVideo` est explicitement         }
+{ PRESERVE (jamais ecrase par la valeur figee dans le fichier) - seul le    }
+{ CONTENU qu'il designe est remplace. Force un redessin complet             }
+{ (`FullRepaintNeeded`) pour que l'ecran restaure s'affiche immediatement.  }
+Procedure TermCmd_RestoreVMCheckpoint(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, VMNameArg, VMLabel, BaseName, MagicIn, SavedBinaryPath,
+  SavedTargetCPU, SavedVMName, AvhdxPath: String;
+ F: File;
+ Err: Word;
+ HasMem, HasVideo, HasVideoMem: Byte;
+ SavedVideoMem: PEmuVideoMem;
+ SavedVideoMemReady: Boolean;
+ Year, Month, Day, Hour, Min, Sec: Word;
+ DiskCount: Integer;
+Begin
+ If Not TermAnyEmulatorOpen Then Begin
+  TermAddLine(TP, 'Restore-VMCheckpoint : aucun emulateur actif (voir ' +
+   'BOOT/DEBUG) - rien dans quoi restaurer un instantane.');
+  Exit;
+ End;
+ TermParseAddVMArgs(ParamStr, PathArg, VMNameArg);
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")' Else VMLabel := '';
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Restore-VMCheckpoint -Path nom-de-base ' +
+   '[-VMName nom]  (relit nom-de-base.vmcx + .vmrs [+ .avhdx])');
+  Exit;
+ End;
+ BaseName := VMCkptBaseName(PathArg);
+ If Not FileExists(BaseName + '.vmcx') Or Not FileExists(BaseName + '.vmrs') Then Begin
+  TermAddLine(TP, 'Restore-VMCheckpoint : ' + BaseName +
+   '.vmcx et/ou ' + BaseName + '.vmrs introuvable(s) - les 2 sont ' +
+   'requis (voir Checkpoint-VM).');
+  Exit;
+ End;
+ { --- <base>.vmcx --- }
+ Assign(F, BaseName + '.vmcx');
+ {$I-} Reset(F, 1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Restore-VMCheckpoint : impossible d''ouvrir ' + BaseName +
+   '.vmcx (' + TermGetErrorMessage(Err) + ').');
+  Exit;
+ End;
+ SetLength(MagicIn, Length(VMCX_MAGIC));
+ BlockRead(F, MagicIn[1], Length(VMCX_MAGIC));
+ If MagicIn <> VMCX_MAGIC Then Begin
+  TermAddLine(TP, 'Restore-VMCheckpoint : ' + BaseName + '.vmcx n''est ' +
+   'pas une configuration valide (signature "' + MagicIn + '").');
+  Close(F);
+  Exit;
+ End;
+ VMCkptReadStr(F, SavedBinaryPath);
+ VMCkptReadStr(F, SavedTargetCPU);
+ VMCkptReadStr(F, SavedVMName);
+ BlockRead(F, Year, SizeOf(Year));
+ BlockRead(F, Month, SizeOf(Month));
+ BlockRead(F, Day, SizeOf(Day));
+ BlockRead(F, Hour, SizeOf(Hour));
+ BlockRead(F, Min, SizeOf(Min));
+ BlockRead(F, Sec, SizeOf(Sec));
+ Close(F);
+ If (SavedBinaryPath <> '') And (SavedBinaryPath <> EmuPanel.BinaryPath) Then
+  TermAddLine(TP, 'Attention : l''instantane a ete pris pour "' +
+   SavedBinaryPath + '", l''emulateur actif execute "' +
+   EmuPanel.BinaryPath + '" - restauration quand meme.');
+ { --- <base>.vmrs --- }
+ Assign(F, BaseName + '.vmrs');
+ {$I-} Reset(F, 1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Restore-VMCheckpoint : impossible d''ouvrir ' + BaseName +
+   '.vmrs (' + TermGetErrorMessage(Err) + ').');
+  Exit;
+ End;
+ SetLength(MagicIn, Length(VMRS_MAGIC));
+ BlockRead(F, MagicIn[1], Length(VMRS_MAGIC));
+ If MagicIn <> VMRS_MAGIC Then Begin
+  TermAddLine(TP, 'Restore-VMCheckpoint : ' + BaseName + '.vmrs n''est ' +
+   'pas un etat d''execution valide (signature "' + MagicIn + '").');
+  Close(F);
+  Exit;
+ End;
+ BlockRead(F, EmuPanel.CPU.Regs, SizeOf(EmuPanel.CPU.Regs));
+ BlockRead(F, EmuPanel.CPU.Segs, SizeOf(EmuPanel.CPU.Segs));
+ BlockRead(F, EmuPanel.CPU.Flags, SizeOf(EmuPanel.CPU.Flags));
+ BlockRead(F, EmuPanel.CPU.IP, SizeOf(EmuPanel.CPU.IP));
+ BlockRead(F, HasMem, SizeOf(HasMem));
+ If (HasMem = 1) And EmuPanel.CPU.MemReady Then
+  BlockRead(F, EmuPanel.CPU.Memory^, SizeOf(TEmuMemBuf))
+ Else If HasMem = 1 Then
+  Seek(F, FilePos(F) + SizeOf(TEmuMemBuf));
+ BlockRead(F, HasVideo, SizeOf(HasVideo));
+ If HasVideo = 1 Then Begin
+  SavedVideoMem := EmuVideo.Mem;
+  SavedVideoMemReady := EmuVideo.MemReady;
+  BlockRead(F, EmuVideo, SizeOf(EmuVideo));
+  EmuVideo.Mem := SavedVideoMem;
+  EmuVideo.MemReady := SavedVideoMemReady;
+  BlockRead(F, HasVideoMem, SizeOf(HasVideoMem));
+  If (HasVideoMem = 1) And EmuVideo.MemReady Then
+   BlockRead(F, EmuVideo.Mem^, SizeOf(TEmuVideoMem))
+  Else If HasVideoMem = 1 Then
+   Seek(F, FilePos(F) + SizeOf(TEmuVideoMem));
+ End;
+ Close(F);
+ { --- <base>.avhdx / <base>_D.avhdx : remonte le(s) disque(s) associe(s), }
+ { s'il(s) existe(nt) - meme mecanisme qu'Add-VMHardDiskDrive/IMGMOUNT. }
+ DiskCount := 0;
+ AvhdxPath := BaseName + '.avhdx';
+ If FileExists(AvhdxPath) Then
+  If Emu_MountDiskSlot(2, AvhdxPath) Then Inc(DiskCount);
+ AvhdxPath := BaseName + '_D.avhdx';
+ If FileExists(AvhdxPath) Then
+  If Emu_MountDiskSlot(3, AvhdxPath) Then Inc(DiskCount);
+ FullRepaintNeeded := True;
+ TermAddLine(TP, 'Restore-VMCheckpoint' + VMLabel + ' : etat restaure ' +
+  'depuis ' + BaseName + '.vmcx/.vmrs (registres CPU + RAM + etat ' +
+  'video/ecran).');
+ If DiskCount > 0 Then
+  TermAddLine(TP, IntToStr(DiskCount) + ' disque(s) .avhdx remonte(s) ' +
+   'sur C:/D:.');
 End;
 
 { --- EDIT : ouvrir un fichier du systeme hote dans un onglet editeur de   }
@@ -47655,8 +47925,11 @@ Begin
   TermAddLine(TP,
    '  Add-VMScsiController/StoragePath     Idem (redondantes/sans registre)');
   TermAddLine(TP,
-   '  Checkpoint-VM [-Path f.vmckpt]        Ecrit registres CPU + RAM ' +
-   '(si actif)');
+   '  Checkpoint-VM [-Path base]             Ecrit base.vmcx+.vmrs' +
+   '[+.avhdx] (si actif)');
+  TermAddLine(TP,
+   '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
+   '[+.avhdx]');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -48525,6 +48798,8 @@ Begin
     TermCmd_AddVMStoragePath(TP, ParamStr)
    Else If CurrCmd = 'CHECKPOINT-VM' Then
     TermCmd_CheckpointVM(TP, ParamStr)
+   Else If CurrCmd = 'RESTORE-VMCHECKPOINT' Then
+    TermCmd_RestoreVMCheckpoint(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
