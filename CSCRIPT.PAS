@@ -860,14 +860,29 @@ End;
 
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);Forward;
 Procedure CallSub(CallText:String);Forward;
+Function ListItem(Var Source:String):String;Forward;
+
+Procedure DeclareVariable(Declaration:String);
+Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound:TValue;ArrayValue:TValue;
+Begin
+ Declaration:=Trim(Declaration);P:=Pos('(',Declaration);
+ If P=0Then Begin SetVariable(Declaration,'');Exit;End;
+ Name:=Trim(Copy(Declaration,1,P-1));Bounds:=Copy(Declaration,P+1,255);
+ If(Length(Bounds)>0)and(Bounds[Length(Bounds)]=')')Then Delete(Bounds,Length(Bounds),1);
+ Inc(ArrayCounter);Str(ArrayCounter,NumberText);Reference:='@VBARRAY'+Trim(NumberText);
+ If Trim(Bounds)=''Then MakeNumber(0,UpperBound)Else Evaluate(Bounds,UpperBound);
+ If UpperBound.Number<0Then MakeNumber(0,UpperBound);
+ Str(Trunc(UpperBound.Number)+1,NumberText);SetVariable(Reference+'.COUNT',Trim(NumberText));
+ MakeText(Reference,ArrayValue);ArrayValue.ValueKind:=ValueArray;SetVariableValue(Name,ArrayValue);
+End;
 
 Procedure ExecuteStatement(S:String);
-Var U,Name,RightSide:String;P,I:Integer;V:TValue;
+Var U,Name,RightSide,BaseName,IndexText:String;P,I:Integer;
+ V,IndexValue:TValue;ArrayVariable:PVariable;
 Begin
  S:=Trim(S);If(S='')or(S[1]='''')or StartsWith(S,'REM ')Then Exit;U:=Upper(S);
  If StartsWith(S,'DIM ')Then Begin
-  Delete(S,1,4);Repeat P:=Pos(',',S);If P=0Then Begin Name:=Trim(S);S:='';End
-   Else Begin Name:=Trim(Copy(S,1,P-1));Delete(S,1,P);End;SetVariable(Name,'');Until S='';Exit;End;
+  Delete(S,1,4);Repeat Name:=ListItem(S);DeclareVariable(Name);Until S='';Exit;End;
  If StartsWith(S,'CALL ')Then Begin CallSub(Trim(Copy(S,6,255)));Exit;End;
  If StartsWith(S,'WScript.Echo')Then Delete(S,1,Length('WScript.Echo'))
  Else If StartsWith(S,'Echo ')Then Delete(S,1,5)
@@ -896,7 +911,14 @@ Begin
    Name:=Trim(Copy(S,1,P-1));
    RightSide:=Copy(S,P+1,255);
    Evaluate(RightSide,V);
-   SetVariableValue(Name,V);
+   I:=Pos('(',Name);
+   If(I>0)and(Name[Length(Name)]=')')Then Begin
+    BaseName:=Trim(Copy(Name,1,I-1));ArrayVariable:=FindVariable(BaseName);
+    If(ArrayVariable<>Nil)and(ArrayVariable^.ValueKind=ValueArray)Then Begin
+     Evaluate(Copy(Name,I+1,Length(Name)-I-1),IndexValue);Str(Trunc(IndexValue.Number),IndexText);
+     SetVariableValue(ArrayVariable^.Value+'.'+Trim(IndexText),V);
+    End Else SetVariableValue(Name,V);
+   End Else SetVariableValue(Name,V);
    Exit;
   End;
   If Not BatchMode Then WriteLn('Erreur VBScript: instruction non reconnue: ',S);
@@ -912,8 +934,9 @@ End;
 
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);
 Var S,U,Condition,Name,Rest:String;P,ThenPos,ElsePos:Integer;
- EndLine,BodyStart,I,ScanLine,ElseLine:LongInt;
- V,StartValue,EndValue,StepValue,Counter:TValue;
+ EndLine,BodyStart,I,ScanLine,ElseLine,ElementIndex,ElementCount:LongInt;
+ V,StartValue,EndValue,StepValue,Counter,Collection,CountValue:TValue;
+ LoopAgain,UntilMode:Boolean;IndexText:String;
 Begin
  I:=FirstLine;
  While(I<=LastLine)and Not Terminated Do Begin
@@ -935,6 +958,20 @@ Begin
      Else If ElseLine>0Then ExecuteRange(ElseLine+1,EndLine-1);I:=EndLine;
     End;
    End;
+  End Else If StartsWith(S,'FOR EACH ')Then Begin
+   Rest:=Trim(Copy(S,10,255));P:=Pos(' IN ',Upper(Rest));
+   If P=0Then Begin If Not BatchMode Then WriteLn('Erreur VBScript: FOR EACH sans IN.');ExitCode:=1;Exit;End;
+   Name:=Trim(Copy(Rest,1,P-1));Evaluate(Copy(Rest,P+4,255),Collection);
+   EndLine:=FindBlock(I,'FOR ','NEXT');ElementCount:=0;
+   If(Collection.ValueKind=ValueArray)or(Copy(Collection.Text,1,8)='@VBARRAY')Then Begin
+    GetVariable(Collection.Text+'.COUNT',CountValue);ElementCount:=Trunc(CountValue.Number);
+   End;
+   For ElementIndex:=0To ElementCount-1Do Begin
+    Str(ElementIndex,IndexText);GetVariable(Collection.Text+'.'+Trim(IndexText),V);
+    SetVariableValue(Name,V);ExecuteRange(I+1,EndLine-1);
+    If Terminated Then Break;
+   End;
+   I:=EndLine;
   End Else If StartsWith(S,'FOR ')Then Begin
    Rest:=Trim(Copy(S,5,255));P:=FindAssignment(Rest);Name:=Trim(Copy(Rest,1,P-1));Delete(Rest,1,P);
    ThenPos:=Pos(' TO ',Upper(Rest));Evaluate(Copy(Rest,1,ThenPos-1),StartValue);Delete(Rest,1,ThenPos+3);
@@ -957,6 +994,24 @@ Begin
    I:=EndLine;
   End
    Else
+  If(U='DO')or StartsWith(U,'DO WHILE ')or StartsWith(U,'DO UNTIL ')Then Begin
+   EndLine:=FindBlock(I,'DO','LOOP');Condition:='';UntilMode:=False;
+   If StartsWith(U,'DO WHILE ')Then Condition:=Trim(Copy(S,10,255))
+   Else If StartsWith(U,'DO UNTIL ')Then Begin Condition:=Trim(Copy(S,10,255));UntilMode:=True;End;
+   Repeat
+    LoopAgain:=True;
+    If Condition<>''Then Begin Evaluate(Condition,V);
+     If UntilMode Then LoopAgain:=Not Truth(V)Else LoopAgain:=Truth(V);End;
+    If LoopAgain Then ExecuteRange(I+1,EndLine-1);
+    If LoopAgain and Not Terminated and(Condition='')Then Begin
+     Rest:=Trim(ScriptLineText(EndLine));
+     If StartsWith(Rest,'LOOP WHILE ')Then Begin Evaluate(Trim(Copy(Rest,12,255)),V);LoopAgain:=Truth(V);End
+     Else If StartsWith(Rest,'LOOP UNTIL ')Then Begin Evaluate(Trim(Copy(Rest,12,255)),V);LoopAgain:=Not Truth(V);End;
+    End;
+    CheckTimeout;
+   Until(Not LoopAgain)or Terminated;
+   I:=EndLine;
+  End Else
   If StartsWith(S,'WHILE ')Then Begin
    EndLine:=FindBlock(I,'WHILE ','WEND');
    Condition:=Copy(S,7,255);Evaluate(Condition,V);
@@ -967,7 +1022,7 @@ Begin
    I:=EndLine;
   End
    Else
-  If(U='ELSE')or(U='END IF')or StartsWith(U,'NEXT')or(U='WEND')Then Exit
+  If(U='ELSE')or(U='END IF')or StartsWith(U,'NEXT')or(U='WEND')or StartsWith(U,'LOOP')Then Exit
                                                                Else ExecuteStatement(S);
   Inc(I);
  End;
