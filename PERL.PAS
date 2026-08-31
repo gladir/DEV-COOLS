@@ -1009,6 +1009,25 @@ Begin
  PerlText(ResultText,V);
 End;
 
+Procedure PerlSubstr(SourceText:String;OffsetValue,LengthValue:Integer;
+ ArgumentCount:Integer;Var V:TPerlValue);
+Var StartPosition,ResultLength,SourceLength,EndPosition:Integer;
+Begin
+ SourceLength:=Length(SourceText);StartPosition:=OffsetValue;
+ If StartPosition<0Then StartPosition:=SourceLength+StartPosition;
+ If StartPosition<0Then StartPosition:=0;
+ If StartPosition>SourceLength Then Begin PerlText('',V);Exit;End;
+ If ArgumentCount<3Then ResultLength:=SourceLength-StartPosition
+ Else If LengthValue>=0Then ResultLength:=LengthValue
+ Else Begin
+  EndPosition:=SourceLength+LengthValue;
+  ResultLength:=EndPosition-StartPosition;
+ End;
+ If ResultLength<0Then ResultLength:=0;
+ If ResultLength>SourceLength-StartPosition Then ResultLength:=SourceLength-StartPosition;
+ PerlText(Copy(SourceText,StartPosition+1,ResultLength),V);
+End;
+
 Procedure PerlCrypt(PlainText,Salt:String;Var V:TPerlValue);
 Const CryptAlphabet='./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 Var I,J:Integer;H1,H2:LongInt;ResultText,Alphabet:String;
@@ -1481,6 +1500,7 @@ Begin
     124:PerlSprintf(A.Text,B,C,FunctionArgumentCount,V);    { sprintf }
     125:If A.Number<0Then PerlText('',V)Else PerlNumber(Sqrt(A.Number),V); { sqrt }
     126:PerlSrand(Trunc(A.Number),FunctionArgumentCount,V); { srand }
+    129:PerlSubstr(A.Text,Trunc(B.Number),Trunc(C.Number),FunctionArgumentCount,V); { substr }
     140:PerlText(StrToUpper(A.Text),V);                    { uc }
    Else If FunctionByte=-1Then PerlInvokeSubroutine(FunctionName,A,B,C,
     FunctionArgumentCount,V)
@@ -2972,7 +2992,7 @@ Begin
    126:BareFunctionCommand('srand');{srand}
    127:NoImplementation:=True;{stat}
    128:SubCommand;{sub}
-   129:NoImplementation:=True;{substr}
+   129:BareFunctionCommand('substr');{substr}
    130:NoImplementation:=True;{symlink}
    131:NoImplementation:=True;{sysopen}
    132:NoImplementation:=True;{sysread}

@@ -6608,6 +6608,16 @@ Var
  { Dpmi_LastRunRealProcIter ci-dessus). }
  Win16_DefWindowProcPaintCount: LongInt;
  Win16_BeginPaintCount: LongInt;
+ { Diagnostic temporaire (2026-08-30) : trace pas-a-pas des instructions   }
+ { REELLES executees a l'interieur d'un appel Win16_CallWndProc - invisible}
+ { autrement (voir Dpmi_LastRunRealProcIter) puisque WIN16RUN.LOG n'avance }
+ { son propre compteur qu'une fois pour tout l'appel imbrique. Active       }
+ { seulement pour le tout PREMIER appel de WNDPROC pour rester lisible     }
+ { (un cadran d'horloge dessine des dizaines d'appels GDI, tracer TOUS les }
+ { appels produirait un fichier enorme et inutile pour le diagnostic). }
+ Win16_WndProcTraceOn  : Boolean;
+ Win16_WndProcTraceDone: Boolean;
+ Win16_WndProcTraceFile: Text;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
  EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
@@ -37701,6 +37711,39 @@ Begin
  CreateEmulatorTab(ExePath, '-CWIN16', '');
 End;
 
+{ Start-DosProgram (2026-08-30, demande explicite de l utilisateur, alias  }
+{ PowerShell dev) : lance l emulateur DOS (8086, cible -CD) sur un         }
+{ executable/.com hote, meme motif exact que LOADFIX/LOADHIGH ci-dessous   }
+{ mais SANS armer de comportement special (chargement normal, memoire      }
+{ conventionnelle a l'adresse par defaut). }
+Procedure TermCmd_DosLaunch(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, DosExe, TrimmedParams, RestParam: String;
+ P: Integer;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-DosProgram fichier.exe [arguments]');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-DosProgram : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ DosExe := TermFindDosExecutable(Dir, CurrParam);
+ If DosExe = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ TrimmedParams := TrimStr(ParamStr);
+ P := System.Pos(' ', TrimmedParams);
+ If P > 0 Then RestParam := TrimStr(Copy(TrimmedParams, P + 1, Length(TrimmedParams)))
+ Else RestParam := '';
+ CreateEmulatorTab(DosExe, '-CD', RestParam);
+End;
+
 { LOADFIX (2026-08-30, demande explicite de l utilisateur) : reproduit le  }
 { vrai LOADFIX.COM de MS-DOS - charge le programme cible au-dessus des 64  }
 { premiers Ko de memoire (segment $1000), pour contourner les vieux         }
@@ -42341,6 +42384,8 @@ Begin
  Win16_PenY := 0;
  Win16_DefWindowProcPaintCount := 0;
  Win16_BeginPaintCount := 0;
+ Win16_WndProcTraceOn := False;
+ Win16_WndProcTraceDone := False;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -43017,13 +43062,55 @@ End;
 { KERNEL/USER/GDI eux-memes. }
 Function Win16_CallWndProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
  HWnd, Msg, WParam, LParamLo, LParamHi: Word): LongInt;
+Var
+ WPDumpI: Integer;
 Begin
- Emu_PushWord(P.CPU, LParamHi);
- Emu_PushWord(P.CPU, LParamLo);
- Emu_PushWord(P.CPU, WParam);
- Emu_PushWord(P.CPU, Msg);
+ { Bogue reel trouve+corrige (2026-08-30) : convention Pascal/WINAPI reelle  }
+ { confirmee via desassemblage direct de CLOCK.EXE (WNDPROC_TRACE.LOG) -    }
+ { le parametre le plus a GAUCHE (HWnd) est empile en PREMIER (le plus      }
+ { profond), celui le plus a DROITE (LParam, poids fort en dernier) en      }
+ { DERNIER (le plus proche du sommet) - PAS l'inverse comme suppose         }
+ { initialement. Toutes les autres branches d'ordinaux (BeginPaint,         }
+ { DefWindowProc, etc.) utilisaient deja la bonne convention ; seule cette  }
+ { fonction avait l'ordre inverse, ce qui faisait que ClockWndProc lisait    }
+ { son propre message (WM_PAINT) a la mauvaise position (LParamLo au lieu   }
+ { de Msg) et retombait toujours sur DefWindowProc(0,0,0,0) au lieu de       }
+ { dessiner. }
  Emu_PushWord(P.CPU, HWnd);
+ Emu_PushWord(P.CPU, Msg);
+ Emu_PushWord(P.CPU, WParam);
+ Emu_PushWord(P.CPU, LParamLo);
+ Emu_PushWord(P.CPU, LParamHi);
+ { Diagnostic temporaire (2026-08-30) : trace le tout PREMIER appel de     }
+ { WNDPROC pour ce message precis (WM_PAINT=$000F) instruction par         }
+ { instruction dans WNDPROC_TRACE.LOG - repond directement a la question    }
+ { "que fait reellement ClockWndProc en seulement 33 pas pour WM_PAINT ?"   }
+ { (invisible a WIN16RUN.LOG, voir Dpmi_LastRunRealProcIter). }
+ If (Msg = WIN16_WM_PAINT) And (Not Win16_WndProcTraceDone) Then Begin
+  Win16_WndProcTraceDone := True;
+  {$I-} Assign(Win16_WndProcTraceFile, 'WNDPROC_TRACE.LOG');
+  Rewrite(Win16_WndProcTraceFile); {$I+}
+  If IOResult = 0 Then Begin
+   Win16_WndProcTraceOn := True;
+   WriteLn(Win16_WndProcTraceFile, 'CallWndProc args: HWnd=', HexWord(HWnd),
+    ' Msg=', HexWord(Msg), ' WParam=', HexWord(WParam), ' LParamHi=',
+    HexWord(LParamHi), ' LParamLo=', HexWord(LParamLo));
+   WriteLn(Win16_WndProcTraceFile, 'Raw bytes @ ', HexWord(ProcSeg), ':',
+    HexWord(ProcOfs), ' (400 octets, pour desassemblage manuel complet) :');
+   For WPDumpI := 0 To 399 Do Begin
+    Write(Win16_WndProcTraceFile, HexByte(Emu_ReadByte(P.CPU, ProcSeg,
+     Word(ProcOfs + WPDumpI))), ' ');
+    If (WPDumpI Mod 16) = 15 Then WriteLn(Win16_WndProcTraceFile);
+   End;
+   WriteLn(Win16_WndProcTraceFile);
+   WriteLn(Win16_WndProcTraceFile);
+  End;
+ End;
  Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ If Win16_WndProcTraceOn Then Begin
+  Win16_WndProcTraceOn := False;
+  Close(Win16_WndProcTraceFile);
+ End;
  Win16_CallWndProc := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
 End;
 
@@ -43165,6 +43252,10 @@ Var
  IRHWndArg: Word;
  IRWIdx: Integer;
  GdiX1, GdiY1, GdiX2, GdiY2: SmallInt;
+ FRLpSeg, FRLpOfs: Word;
+ FRLeft, FRTop, FRRight, FRBottom: SmallInt;
+ FRX, FRY: Integer;
+ IFDx, IFDy: SmallInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -43799,6 +43890,72 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 3;
    End;
+   81: Begin
+    { FillRect(hdc,lpRect,hBrush):bool - ordinal VERIFIE via                }
+    { user.exe16.spec (word,ptr,word). hdc/hBrush ignores (memes            }
+    { simplifications documentees que GetDC/SelectObject : aucun VRAI        }
+    { contexte ni pinceau resolu) - remplit reellement le RECT en blanc     }
+    { (15), coordonnees CLIENT converties en pixels ABSOLUS comme            }
+    { MoveTo/LineTo/Ellipse ci-dessus. Utilise typiquement par une WNDPROC   }
+    { pour effacer le cadran avant de retracer les aiguilles (evite la       }
+    { trainee des anciennes positions). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
+     FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
+     FRRight := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRRight);
+     FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
+     For FRY := FRTop To FRBottom - 1 Do
+      For FRX := FRLeft To FRRight - 1 Do
+       Emu_VidSetPixel(FRX, FRY, 15);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   78: Begin
+    { InflateRect(lpRect,dx,dy):void - ordinal VERIFIE via                  }
+    { user.exe16.spec (ptr,s_word,s_word). Modifie reellement le RECT en    }
+    { place (left-=dx,top-=dy,right+=dx,bottom+=dy) - contrat reel, typique }
+    { pour calculer un rectangle interieur/exterieur (ex: cadran d'horloge  }
+    { retreci avant de retracer). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    IFDx := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    IFDy := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(SmallInt(FRLeft - IFDx)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), Word(SmallInt(FRTop - IFDy)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), Word(SmallInt(FRRight + IFDx)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Word(SmallInt(FRBottom + IFDy)));
+    ArgWords := 3;
+   End;
+   77: Begin
+    { OffsetRect(lpRect,dx,dy):void - ordinal VERIFIE via                   }
+    { user.exe16.spec (ptr,s_word,s_word), meme forme exacte qu'           }
+    { InflateRect ci-dessus mais translate au lieu d'agrandir/retrecir      }
+    { (les 4 coins decales du meme dx/dy, sans changer la largeur/hauteur). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    IFDx := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    IFDy := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(SmallInt(FRLeft + IFDx)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), Word(SmallInt(FRTop + IFDy)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), Word(SmallInt(FRRight + IFDx)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Word(SmallInt(FRBottom + IFDy)));
+    ArgWords := 3;
+   End;
    39: Begin
     { BeginPaint(hWnd,lpPaint):HDC - ordinal VERIFIE via user.exe16.spec.   }
     { Stage 6b : efface WindowNeedsPaint (contrat reel - une repeinture      }
@@ -43870,6 +44027,8 @@ Begin
     { un vrai recalcul par pinceau de classe ici). }
     DMHWnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
     DMMsg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    Win16_DebugMsg := 'DefWindowProc hwnd=' + HexWord(DMHWnd) + ' msg=' +
+     HexWord(DMMsg);
     If DMMsg = WIN16_WM_PAINT Then Begin
      Inc(Win16_DefWindowProcPaintCount);
      DMWIdx := -1;
@@ -44058,6 +44217,25 @@ Begin
      90: P.CPU.Regs.AX := 96;   { LOGPIXELSY }
      Else P.CPU.Regs.AX := 0;
     End;
+    ArgWords := 2;
+   End;
+   2: Begin
+    { SetBkMode(hdc, nBkMode):int (mode precedent) - ordinal VERIFIE via    }
+    { gdi.exe16.spec (2 mots). Rendu GDI reel HORS DE PORTEE (mode de       }
+    { fond non modelise, le fond blanc est deja pose une fois par           }
+    { Win16_DrawWindowFrame a la creation) - simplification DOCUMENTEE :    }
+    { rapporte toujours OPAQUE (2) comme mode precedent, jamais verifie par }
+    { un code de dessin normal (valeur de retour rarement exploitee). }
+    P.CPU.Regs.AX := 2;
+    ArgWords := 2;
+   End;
+   4: Begin
+    { SetROP2(hdc, nDrawMode):int (mode precedent) - ordinal VERIFIE via    }
+    { gdi.exe16.spec (2 mots). Meme simplification que SetBkMode ci-dessus  }
+    { (mode de trace non modelise, toutes les primitives Win16_Draw* ci-    }
+    { dessous dessinent toujours en couleur pleine, pas de vrai XOR/NOT) -  }
+    { rapporte R2_COPYPEN (13, mode par defaut) comme mode precedent. }
+    P.CPU.Regs.AX := 13;
     ArgWords := 2;
    End;
    45: Begin
@@ -46669,6 +46847,10 @@ Begin
    '  Invoke-Win16 fichier[.exe]              Alias de Start-Win16');
   TermAddLine(TP,
    '  Invoke-Win16Program fichier[.exe]        Alias de Start-Win16');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Lancer un programme DOS ---');
+  TermAddLine(TP,
+   '  Start-DosProgram fichier[.exe/.com]     Emulateur DOS (8086)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -47495,6 +47677,10 @@ Begin
     (CurrCmd = 'INVOKE-WIN16') Or
     (CurrCmd = 'START-WIN16') Then
     TermCmd_Win16Launch(TP, ParamStr)
+   { Start-DosProgram (2026-08-30, demande explicite de l'utilisateur) :    }
+   { meme alias verbe-nom PowerShell, pour l'emulateur DOS 8086 (-CD). }
+   Else If CurrCmd = 'START-DOSPROGRAM' Then
+    TermCmd_DosLaunch(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or
@@ -76216,7 +76402,12 @@ End;
 { (boucle infinie ou bogue du programme teste). }
 Procedure Dpmi_RunRealProc(Var P: TEmulatorPanel; TargetCS, TargetIP: Word;
  ViaIret: Boolean);
-Var Iter: LongInt;
+Var
+ Iter: LongInt;
+ TrPrevCS, TrPrevIP: Word;
+ TrOp: Byte;
+ TrSlot: Integer;
+ TrAnnot, TrModName: String;
 Begin
  If ViaIret Then Begin
   Emu_PushWord(P.CPU, 0);                    { FLAGS factice, ecrase par IRET}
@@ -76231,6 +76422,40 @@ Begin
  Iter := 0;
  While ((P.CPU.Segs.CS <> EMU_DPMI_RMCALL_SEG) Or (P.CPU.IP <> EMU_DPMI_RMCALL_OFS))
     And (P.CPU.Fault = sfNone) And (Iter < 2000000) Do Begin
+  { Diagnostic temporaire (2026-08-30, voir Win16_WndProcTraceOn) : meme    }
+  { format exact que le journal pas-a-pas de WIN16RUN, pour rester lisible }
+  { avec les memes outils/habitudes deja etablis pour ce chantier. }
+  If Win16_WndProcTraceOn Then Begin
+   TrPrevCS := P.CPU.Segs.CS;
+   TrPrevIP := P.CPU.IP;
+   TrOp := Emu_ReadByte(P.CPU, TrPrevCS, TrPrevIP);
+   TrAnnot := '';
+   If TrPrevCS = Win16_TrapSeg Then Begin
+    TrSlot := TrPrevIP Div WIN16_TRAP_SLOT_SIZE;
+    If (TrSlot >= 0) And (TrSlot < Win16_ImportSlotCount) Then Begin
+     If Win16_ImportModIdx[TrSlot] = 1 Then TrModName := 'KERNEL'
+     Else If Win16_ImportModIdx[TrSlot] = 2 Then TrModName := 'GDI'
+     Else If Win16_ImportModIdx[TrSlot] = 3 Then TrModName := 'USER'
+     Else TrModName := 'module#' + IntToStr(Win16_ImportModIdx[TrSlot]);
+     If Win16_ImportIsOrd[TrSlot] Then
+      TrAnnot := ' CALL ' + TrModName + '.' + IntToStr(Win16_ImportValue[TrSlot])
+     Else
+      TrAnnot := ' CALL ' + TrModName + '.(nom)';
+    End;
+   End;
+   WriteLn(Win16_WndProcTraceFile, Iter, ': ', HexWord(TrPrevCS), ':',
+    HexWord(TrPrevIP), ' op=', HexByte(TrOp),
+    ' AX=', HexWord(P.CPU.Regs.AX), ' BX=', HexWord(P.CPU.Regs.BX),
+    ' CX=', HexWord(P.CPU.Regs.CX), ' DX=', HexWord(P.CPU.Regs.DX),
+    ' SI=', HexWord(P.CPU.Regs.SI), ' DI=', HexWord(P.CPU.Regs.DI),
+    ' BP=', HexWord(P.CPU.Regs.BP), ' SP=', HexWord(P.CPU.Regs.SP),
+    ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES),
+    ' SS=', HexWord(P.CPU.Segs.SS), TrAnnot);
+   If Win16_DebugMsg <> '' Then Begin
+    WriteLn(Win16_WndProcTraceFile, '    DEBUG: ', Win16_DebugMsg);
+    Win16_DebugMsg := '';
+   End;
+  End;
   Emu_StepOne(P);
   Inc(Iter);
  End;
