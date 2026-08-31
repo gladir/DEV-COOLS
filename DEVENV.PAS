@@ -56238,6 +56238,90 @@ Begin
  If ZwOutLine <> '' Then ZwFlushLine;
 End;
 
+{ --- Expand-Archive --- (PowerShell dev uniquement, 2026-08-31, demande   }
+{ explicite de l'utilisateur) - reutilise TEL QUEL le moteur d'extraction   }
+{ reel deja existant de la commande UNZIP (voir project_devenv_unzip :     }
+{ store/deflate/bzip2/lzma/shrink/reduce/implode/terse/zstd deja decodes)  }
+{ - aucune nouvelle logique de decompression n'est necessaire ici, juste   }
+{ une traduction des arguments PowerShell (-Path/-DestinationPath/-Force)  }
+{ vers les variables globales Unz* deja consommees par UnzExtractArchive,  }
+{ exactement comme un utilisateur taperait `UNZIP archive.zip -d dossier`. }
+
+Procedure TermCmd_ExpandArchive(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I, LocalArgCount: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, DestArg, UpLevel, CurDir, BaseName: String;
+ ForceFlag: Boolean;
+Begin
+ UnzTermTP := @TP;
+ UnzOutLine := '';
+ UnzInitOptions;
+
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := ''; DestArg := ''; ForceFlag := False;
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := UnzUpStr(LocalArgs[I]);
+  If (UpLevel = '-PATH') Or (UpLevel = '-LITERALPATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If UpLevel = '-DESTINATIONPATH' Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then DestArg := LocalArgs[I];
+  End Else If UpLevel = '-FORCE' Then ForceFlag := True
+  Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then PathArg := LocalArgs[I]
+  Else If (DestArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then DestArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If PathArg = '' Then Begin
+  UnzWL('Syntaxe : Expand-Archive -Path archive.zip [-DestinationPath dossier] [-Force]');
+  Exit;
+ End;
+ PathArg := FExpand(PathArg);
+ If UnzPath2Ext(PathArg) = '' Then PathArg := PathArg + '.zip';
+ If Not UnzFileExists(PathArg) Then Begin
+  UnzWL('Archive introuvable : ' + PathArg);
+  Exit;
+ End;
+
+ If DestArg = '' Then Begin
+  { Comportement reel de PowerShell : sans -DestinationPath, extraction    }
+  { dans le repertoire courant, dans un sous-dossier nomme d'apres          }
+  { l'archive (sans son extension). }
+  GetDir(0, CurDir);
+  If (Length(CurDir) > 0) And (CurDir[Length(CurDir)] <> '\') Then
+   CurDir := CurDir + '\';
+  BaseName := ExtractFileName(ChangeFileExt(PathArg, ''));
+  DestArg := CurDir + BaseName;
+ End;
+
+ If DirectoryExists(DestArg) And (Not ForceFlag) Then Begin
+  UnzWL('Le dossier de destination existe deja (utilisez -Force) : ' + DestArg);
+  Exit;
+ End;
+
+ UnzArchiveName := PathArg;
+ UnzDestDir := DestArg;
+ UnzInitCRC32;
+ Assign(UnzZipFile, UnzArchiveName);
+ {$I-} Reset(UnzZipFile, 1); {$I+}
+ If IoResult <> 0 Then Begin
+  UnzWL('Archive ZIP introuvable !');
+  Exit;
+ End;
+ UnzExtractArchive;
+ Close(UnzZipFile);
+ If Not UnzErr Then
+  UnzWL('Archive extraite dans ' + DestArg);
+ If UnzOutLine <> '' Then UnzFlushLine;
+End;
+
 { ============================================================ }
 { === Commande LHICE (archives .ICE - clone LHarc/LZH 1.14) === }
 { ============================================================ }
@@ -60958,6 +61042,18 @@ Begin
   TermAddLine(TP,
    '  ... -Force                                                 Ecrase la cible');
  End;
+ { Expand-Archive (2026-08-31, demande explicite) - reutilise le moteur     }
+ { d'extraction reel deja existant d'UNZIP - PowerShell dev uniquement. }
+ If TP.Shell = SK_POWERSHELL Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Extraire une archive ZIP ---');
+  TermAddLine(TP,
+   '  Expand-Archive -Path archive.zip -DestinationPath dossier   Extrait');
+  TermAddLine(TP,
+   '  Expand-Archive -Path archive.zip                            Dossier auto');
+  TermAddLine(TP,
+   '  ... -Force                                                  Dossier existant');
+ End;
  { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande         }
  { explicite de l'utilisateur - PowerShell dev est le shell qu'il oublie le }
  { plus souvent de changer avant de lancer un programme Windows 16 bits).   }
@@ -61389,7 +61485,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 87;
+ PS_CMD_ALIASES = 88;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -61413,6 +61509,7 @@ Const
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
   'COMPRESS-ARCHIVE',
+  'EXPAND-ARCHIVE',
   'COMPARE-VM',
   'ADD-HISTORY',
   'ADD-MEMBER',
@@ -61480,6 +61577,7 @@ Const
   20,
   21,
   22,
+  65,
   23,
   24,
   25,
@@ -61934,6 +62032,7 @@ Begin
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
     22: TermCmd_CompressArchive(TP, ParamStr);
+    65: TermCmd_ExpandArchive(TP, ParamStr);
     23: TermCmd_CompareVM(TP, ParamStr);
     24: TermCmd_AddHistory(TP, ParamStr);
     25: TermCmd_AddMember(TP, ParamStr);
