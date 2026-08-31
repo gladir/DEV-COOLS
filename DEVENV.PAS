@@ -6372,6 +6372,9 @@ Var
  { menu contextuel de l editeur - redirige la confirmation de FileDlg vers  }
  { RunVBScriptMacroOnEditor au lieu du chemin normal HandleOpenFileConfirmed}
  FileDlgForVBScriptMacro: Boolean;
+ { Idem pour "Executer le PascalScript..." (2026-08-31) - voir              }
+ { RunPascalScriptMacroOnEditor. }
+ FileDlgForPascalScriptMacro: Boolean;
  { Dialogue gestionnaire de disques virtuels et sa sous-boite ajout/modif }
  VirtualDiskDlg : TVirtualDiskDialog;
  VirtAddDiskDlg : TVirtAddDiskDialog;
@@ -60612,6 +60615,85 @@ Begin
  If PscOutLine <> '' Then PscFlushLine;
 End;
 
+{ --- Executer un script PascalScript comme macro "ligne par ligne" sur le }
+{ contenu de l editeur de texte source actif (menu contextuel "Executer    }
+{ le PascalScript...", 2026-08-31, demande explicite de l utilisateur,     }
+{ juste apres "Executer le VBScript...") - MEME modele que                 }
+{ RunVBScriptMacroOnEditor (voir ce commentaire pour le detail de la       }
+{ limite String a 255 caracteres, confirmee par l utilisateur via          }
+{ AskUserQuestion pour VBScript et reappliquee ici a l identique) : le      }
+{ script est charge UNE fois (PscLoad+PscMainBegin localise le bloc         }
+{ principal une seule fois), puis son bloc Begin...End. principal est       }
+{ reexecute une fois PAR LIGNE du document, avec deux variables            }
+{ predefinies Line (texte de la ligne courante) et LineNumber (1-based) -   }
+{ toute modification de Line par le script est reappliquee a cette ligne   }
+{ apres l execution. PscStopRoutine/PscRuntimeError sont reinitialises a   }
+{ chaque iteration (contrairement a TermCmd_PSCRIPT qui ne les initialise   }
+{ qu une fois) pour qu un Exit ou une erreur d execution sur une ligne ne   }
+{ bloque pas le traitement des lignes suivantes - coherent avec le modele   }
+{ "filtre applique ligne par ligne" deja retenu, pas une execution unique. }
+Procedure RunPascalScriptMacroOnEditor(ScriptPath: String);
+Var
+ I: Integer;
+ M: LongInt;
+ NextPscLine: PPscLine;
+ NextPscVar: PPscVar;
+ OrigLine: String;
+ V: TPscValue;
+Begin
+ If Not EditorReady Then Exit;
+ If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
+ PscTermTP := Nil;
+ PscOutLine := '';
+ PscFirstLine:=Nil;PscLastLine:=Nil;PscVars:=Nil;PscLineCount:=0;
+ PscArgCount:=0;PscStopRoutine:=False;PscRuntimeError:=False;PscExitCode:=0;
+ PscTerminated:=False;
+ PscAbortRequested:=False;
+ PscSourceName := ScriptPath;
+ PscLoad;
+ If Not PscTerminated Then Begin
+  PscInitDeclarations;
+  M := PscMainBegin;
+  If M = 0 Then
+   AppendOutput(OutputPanel,
+    'Executer le PascalScript... : bloc principal BEGIN introuvable.', 0)
+  Else Begin
+   I := 0;
+   While (I < ActiveEditor.Buffer.LineCount) And (Not PscAbortRequested) Do Begin
+    OrigLine := ActiveEditor.Buffer.Lines[I];
+    PscVText(OrigLine, V);
+    PscSetV('LINE', V);
+    PscVNum(I + 1, V);
+    PscSetV('LINENUMBER', V);
+    PscStopRoutine := False;
+    PscRuntimeError := False;
+    PscExecRange(M + 1, PscMatchEnd(M) - 1);
+    PscGetV('LINE', V);
+    ActiveEditor.Buffer.Lines[I] := V.Text;
+    Inc(I);
+   End;
+   ActiveEditor.Buffer.Modified := True;
+   Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+   MarkWindowModified(WinMgr.ActiveIdx);
+   FullRepaintNeeded := True;
+   AppendOutput(OutputPanel, 'Executer le PascalScript... : termine sur "' +
+    ExtractFileName(ScriptPath) + '".', 0);
+  End;
+ End;
+ { Nettoyage identique a TermCmd_PSCRIPT. }
+ While PscFirstLine <> Nil Do Begin
+  NextPscLine := PscFirstLine^.Next;
+  Dispose(PscFirstLine);
+  PscFirstLine := NextPscLine;
+ End;
+ While PscVars <> Nil Do Begin
+  NextPscVar := PscVars^.Next;
+  Dispose(PscVars);
+  PscVars := NextPscVar;
+ End;
+ If PscOutLine <> '' Then PscFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -70844,6 +70926,7 @@ Begin
  AddContextSeparator(CM);
  AddContextItem(CM, 'Ouvrir le fichier au curseur', 807);
  AddContextItem(CM, 'Executer le VBScript...', 808);
+ AddContextItem(CM, 'Executer le PascalScript...', 809);
  CM.Visible := True;
  DrawContextMenu(CM);
 End;
@@ -71130,6 +71213,24 @@ Begin
  FileDlg.FilterIndex := 0;
  LoadDirectoryFiles(FileDlg);
  FileDlgForVBScriptMacro := True;
+ FileDlg.Base.Visible := True;
+ DrawFileDialog(FileDlg);
+End;
+
+{ --- Executer le PascalScript... : meme principe exact que Executer le    }
+{ VBScript... ci-dessus, boite Ouvrir filtree .psc, la confirmation est    }
+{ redirigee vers RunPascalScriptMacroOnEditor via                          }
+{ FileDlgForPascalScriptMacro (voir DispatchEvent, bloc                    }
+{ FileDlg.Base.Visible). --- }
+
+Procedure ShowPascalScriptMacroOpenDialog;
+Begin
+ If Not EditorReady Then Exit;
+ InitFileDialog(FileDlg, False);
+ AddFileFilter(FileDlg, 'Fichiers PascalScript (*.psc)', '*.psc');
+ FileDlg.FilterIndex := 0;
+ LoadDirectoryFiles(FileDlg);
+ FileDlgForPascalScriptMacro := True;
  FileDlg.Base.Visible := True;
  DrawFileDialog(FileDlg);
 End;
@@ -122384,6 +122485,7 @@ Begin
      End;
      807: OpenFileAtCursor; { Ouvrir le fichier au curseur }
      808: ShowVBScriptMacroOpenDialog; { Executer le VBScript... }
+     809: ShowPascalScriptMacroOpenDialog; { Executer le PascalScript... }
      500: Begin { Ouvrir }
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then Begin
@@ -122686,12 +122788,16 @@ Begin
     { fichier .vbs comme un fichier source normal. }
     If FileDlgForVBScriptMacro Then
      RunVBScriptMacroOnEditor(FileDlg.SelectedFile)
+    { "Executer le PascalScript..." (2026-08-31) : meme principe. }
+    Else If FileDlgForPascalScriptMacro Then
+     RunPascalScriptMacroOnEditor(FileDlg.SelectedFile)
     Else If FileDlg.FolderMode Then
      HandleOpenFolderConfirmed
     Else
      HandleOpenFileConfirmed;
    End;
    FileDlgForVBScriptMacro := False;
+   FileDlgForPascalScriptMacro := False;
    FileDlg.FolderMode := False;
    FullRepaintNeeded := True;
   End;
