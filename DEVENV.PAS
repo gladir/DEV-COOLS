@@ -56203,6 +56203,1484 @@ Begin
  If ZwOutLine <> '' Then ZwFlushLine;
 End;
 
+{ ============================================================ }
+{ === Commande LHICE (archives .ICE - clone LHarc/LZH 1.14) === }
+{ ============================================================ }
+{ Port complet et integral du programme autonome                }
+{ C:\SOURCE\GITHUB\CORAIL\LHICE.PAS (meme auteur), integre en    }
+{ code natif directement dans DEVENV.PAS - AUCUN executable      }
+{ externe (meme discipline que ARJ/UNZIP ci-dessus, demande       }
+{ explicite de l'utilisateur, 2026-08-31). Clone du format LZH   }
+{ Level-0 (methodes -lh0- stocke et -lh1- LZSS+Huffman adaptatif  }
+{ "LZHUF" a la Okumura/Yoshizaki, 1988-89) - list/view/extract/   }
+{ print/test/add/update/move/freshen/delete, compression ET       }
+{ decompression reelles. Tous les identificateurs de portee       }
+{ globale sont prefixes "Lh"/"LH_" (verifie : 0 collision avant   }
+{ ce chantier). Disponible dans les 4 memes shells que ARJ/UNZIP :}
+{ Invite de commande (SK_CMD), PowerShell dev (SK_POWERSHELL),    }
+{ Norton Commander (SK_NCOMMANDER), OS/2 & REXX (SK_OS2REXX).     }
+{                                                                 }
+{ Gestion d'erreur : meme strategie que ARJ/UNZIP (drapeau        }
+{ sticky `LhErr`, `LhFail(msg)` la pose et rapporte le message)   }
+{ mais BEAUCOUP plus simple ici - contrairement a UNZIP, la       }
+{ quasi-totalite des erreurs de l'original passent deja par       }
+{ `Warn` (non fatal, se contente d'un message) plutot que par     }
+{ `Halt` ; seuls 2 points d'arret reels existent (`Die`, appele   }
+{ depuis `OpenWriteArc` et `RunCommand`) et tous deux sont a       }
+{ faible profondeur d'appel depuis le point d'entree. Les tailles }
+{ de fenetre/tampons LZSS+Huffman de ce format (4096 et moins)     }
+{ restent bien en-deca de 32767 partout - aucun risque de la       }
+{ meme troncature 16 bits que celle trouvee et corrigee dans le    }
+{ decodeur BZIP2 du port `unzip`. }
+
+Type
+ PLhArgNode = ^TLhArgNode;
+ TLhArgNode = Record
+  Name  : String;
+  InArc : Boolean;
+  Next  : PLhArgNode;
+ End;
+ TLhIOBuf = Array[0..8191] Of Byte;
+ PLhIOBuf = ^TLhIOBuf;
+ TLhHdr = Record
+  Method     : Array[1..5] Of Char;
+  CompSize   : LongInt;
+  OrigSize   : LongInt;
+  TimeStamp  : LongInt;
+  Attr       : Byte;
+  Level      : Byte;
+  Name       : String;
+  CRC        : Word;
+ End;
+
+Const
+ LH_VERSION       = '1.14';
+ LH_ARC_EXT       = '.ICE';
+ LH_IOBUFSZ       = 8192;
+ LH_MAX_NAMES     = 256;
+ LH_MAX_FN        = 80;
+ LH_LZ_N          = 4096;
+ LH_LZ_F          = 60;
+ LH_LZ_THRESHOLD  = 2;
+ LH_LZ_NIL        = LH_LZ_N;
+ LH_N_CHAR        = (256 - LH_LZ_THRESHOLD) + LH_LZ_F;
+ LH_T_TBL         = (LH_N_CHAR * 2) - 1;
+ LH_R_ROOT        = LH_T_TBL - 1;
+ LH_MAX_FREQ      = $8000;
+
+ LhP_LEN : Array[0..63] Of Byte = (
+  $03, $04, $04, $04, $05, $05, $05, $05,
+  $05, $05, $05, $05, $06, $06, $06, $06,
+  $06, $06, $06, $06, $06, $06, $06, $06,
+  $07, $07, $07, $07, $07, $07, $07, $07,
+  $07, $07, $07, $07, $07, $07, $07, $07,
+  $07, $07, $07, $07, $07, $07, $07, $07,
+  $08, $08, $08, $08, $08, $08, $08, $08,
+  $08, $08, $08, $08, $08, $08, $08, $08);
+
+ LhP_CODE : Array[0..63] Of Byte = (
+  $00, $20, $30, $40, $50, $58, $60, $68,
+  $70, $78, $80, $88, $90, $94, $98, $9C,
+  $A0, $A4, $A8, $AC, $B0, $B4, $B8, $BC,
+  $C0, $C2, $C4, $C6, $C8, $CA, $CC, $CE,
+  $D0, $D2, $D4, $D6, $D8, $DA, $DC, $DE,
+  $E0, $E2, $E4, $E6, $E8, $EA, $EC, $EE,
+  $F0, $F1, $F2, $F3, $F4, $F5, $F6, $F7,
+  $F8, $F9, $FA, $FB, $FC, $FD, $FE, $FF);
+
+ LhD_CODE : Array[0..255] Of Byte = (
+   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+   1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+   2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,
+   3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+   4,  4,  4,  4,  4,  4,  4,  4,  5,  5,  5,  5,  5,  5,  5,  5,
+   6,  6,  6,  6,  6,  6,  6,  6,  7,  7,  7,  7,  7,  7,  7,  7,
+   8,  8,  8,  8,  8,  8,  8,  8,  9,  9,  9,  9,  9,  9,  9,  9,
+  10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11,
+  12, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 14, 15, 15, 15, 15,
+  16, 16, 16, 16, 17, 17, 17, 17, 18, 18, 18, 18, 19, 19, 19, 19,
+  20, 20, 20, 20, 21, 21, 21, 21, 22, 22, 22, 22, 23, 23, 23, 23,
+  24, 24, 25, 25, 26, 26, 27, 27, 28, 28, 29, 29, 30, 30, 31, 31,
+  32, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37, 38, 38, 39, 39,
+  40, 40, 41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46, 47, 47,
+  48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63);
+
+ LhD_LEN : Array[0..255] Of Byte = (
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+  8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8);
+
+Var
+ LhCmd         : Char;
+ LhArchiveName : String;
+ LhArgCount    : Word;
+ LhArgHead     : PLhArgNode;
+ LhArgTail     : PLhArgNode;
+
+ LhSw_Compare  : Boolean;
+ LhSw_NoMsg    : Boolean;
+ LhSw_NoInd    : Boolean;
+ LhSw_AnyAttr  : Boolean;
+ LhSw_ExtName  : Boolean;
+ LhSw_NoLh1    : Boolean;
+ LhLanguage    : Byte;
+
+ LhArcF        : File;
+ LhArcOpened   : Boolean;
+ LhInBuf       : PLhIOBuf;
+ LhInPos, LhInCnt: Word;
+ LhInEnd       : Boolean;
+ LhInByteCount : LongInt;
+
+ LhOutF        : File;
+ LhOutFileOpen : Boolean;
+ LhOutToStdout : Boolean;
+ LhOutBuf      : PLhIOBuf;
+ LhOutPos      : Word;
+ LhOutSize     : LongInt;
+
+ LhSrcF        : File;
+ LhSrcBuf      : PLhIOBuf;
+ LhSrcPos, LhSrcCnt: Word;
+ LhSrcEnd      : Boolean;
+ LhSrcByteRead : LongInt;
+
+ LhWrF         : File;
+ LhWrBuf       : PLhIOBuf;
+ LhWrPos       : Word;
+ LhWrByteCount : LongInt;
+
+ LhLZ_Text     : Array[0..LH_LZ_N + LH_LZ_F - 1] Of Byte;
+
+ LhD_R         : Word;
+
+ LhE_Dad       : Array[0..LH_LZ_N] Of Word;
+ LhE_LSon      : Array[0..LH_LZ_N] Of Word;
+ LhE_RSon      : Array[0..LH_LZ_N + 256] Of Word;
+ LhE_MatchPos  : Word;
+ LhE_MatchLen  : Word;
+
+ LhH_Freq      : Array[0..LH_T_TBL] Of Word;
+ LhH_Prnt      : Array[0..LH_T_TBL + LH_N_CHAR - 1] Of Word;
+ LhH_Son       : Array[0..LH_T_TBL] Of Word;
+
+ LhBitBuf      : Word;
+ LhBitCnt      : Byte;
+
+ LhCRC         : Word;
+
+ LhN_Added     : Word;
+ LhN_Updated   : Word;
+ LhN_Extracted : Word;
+ LhN_Tested    : Word;
+ LhN_Deleted   : Word;
+ LhN_Listed    : Word;
+ LhExitCode    : Byte;
+
+ LhTmpArcName  : String;
+
+ LhErr: Boolean;
+ LhTermTP: ^TTerminalPanel;
+ LhOutLine: String;
+
+Procedure LhFlushLine;
+Begin
+ If LhTermTP <> Nil Then TermAddLine(LhTermTP^, LhOutLine);
+ LhOutLine := '';
+End;
+
+Procedure LhW(S: String);
+Begin
+ LhOutLine := LhOutLine + S;
+End;
+
+Procedure LhWL(S: String);
+Begin
+ LhOutLine := LhOutLine + S;
+ LhFlushLine;
+End;
+
+Procedure LhWLBlank;
+Begin
+ LhFlushLine;
+End;
+
+Procedure LhFail(Msg: String);
+Begin
+ If Not LhErr Then Begin
+  LhErr := True;
+  LhWL('ICE: ' + Msg);
+ End;
+End;
+
+Procedure LhWarn(Msg: String);
+Begin
+ LhWL('ICE: ' + Msg);
+End;
+
+{ ===== CRC-16 (poly $A001, comme ARC/LHA) ============================= }
+
+Procedure LhResetCRC;
+Begin
+ LhCRC := 0;
+End;
+
+Procedure LhUpdCRC(B: Byte);
+Var I: Byte;
+Begin
+ LhCRC := LhCRC Xor B;
+ For I := 1 To 8 Do
+  If (LhCRC And 1) <> 0 Then LhCRC := (LhCRC Shr 1) Xor $A001
+  Else LhCRC := LhCRC Shr 1;
+End;
+
+{ ===== Utilitaires chaines =========================================== }
+
+Function LhUpStr(S: String): String;
+Var I: Word;
+Begin
+ For I := 1 To Length(S) Do S[I] := UpCase(S[I]);
+ LhUpStr := S;
+End;
+
+Function LhLongStr(L: LongInt): String;
+Var S: String;
+Begin
+ Str(L, S);
+ LhLongStr := S;
+End;
+
+Function LhPadLeft(S: String; W: Byte): String;
+Begin
+ While Length(S) < W Do S := ' ' + S;
+ LhPadLeft := S;
+End;
+
+Function LhPadRight(S: String; W: Byte): String;
+Begin
+ While Length(S) < W Do S := S + ' ';
+ LhPadRight := S;
+End;
+
+Function LhHasExt(N: String): Boolean;
+Var I: Word;
+Begin
+ LhHasExt := False;
+ For I := Length(N) DownTo 1 Do Begin
+  If (N[I] = '\') Or (N[I] = '/') Or (N[I] = ':') Then Exit;
+  If N[I] = '.' Then Begin LhHasExt := True; Exit; End;
+ End;
+End;
+
+Function LhStripPath(S: String): String;
+Var I: Word;
+Begin
+ For I := Length(S) DownTo 1 Do
+  If (S[I]='\') Or (S[I]='/') Or (S[I]=':') Then Begin
+   LhStripPath := Copy(S, I+1, 255); Exit;
+  End;
+ LhStripPath := S;
+End;
+
+{ ===== I/O bufferise sur archive ===================================== }
+
+Procedure LhInResetCounters;
+Begin
+ LhInPos := 0; LhInCnt := 0; LhInEnd := False; LhInByteCount := 0;
+End;
+
+Procedure LhInRefill;
+Var R: Word;
+Begin
+ BlockRead(LhArcF, LhInBuf^, LH_IOBUFSZ, R);
+ LhInCnt := R; LhInPos := 0;
+ If R = 0 Then LhInEnd := True;
+End;
+
+Function LhInGetByte: Byte;
+Var B: Byte;
+Begin
+ If LhInEnd Then Begin LhInGetByte := 0; Exit; End;
+ If LhInPos >= LhInCnt Then LhInRefill;
+ If LhInEnd Then Begin LhInGetByte := 0; Exit; End;
+ B := LhInBuf^[LhInPos]; Inc(LhInPos); Inc(LhInByteCount);
+ LhInGetByte := B;
+End;
+
+Procedure LhWrFlush;
+Begin
+ If LhWrPos > 0 Then Begin BlockWrite(LhWrF, LhWrBuf^, LhWrPos); LhWrPos := 0; End;
+End;
+
+Procedure LhWrByte(B: Byte);
+Begin
+ If LhWrPos >= LH_IOBUFSZ Then LhWrFlush;
+ LhWrBuf^[LhWrPos] := B; Inc(LhWrPos); Inc(LhWrByteCount);
+End;
+
+{ ===== Sortie (decompression) ======================================== }
+
+Procedure LhOutFlush;
+Var I: Word;
+Begin
+ If LhOutPos = 0 Then Exit;
+ If LhOutToStdout Then Begin
+  LhW('');
+  For I := 0 To LhOutPos - 1 Do LhOutLine := LhOutLine + Char(LhOutBuf^[I]);
+  LhFlushLine;
+ End
+  Else
+  BlockWrite(LhOutF, LhOutBuf^, LhOutPos);
+ LhOutPos := 0;
+End;
+
+Procedure LhOutPutByte(B: Byte);
+Begin
+ If LhOutPos >= LH_IOBUFSZ Then LhOutFlush;
+ LhOutBuf^[LhOutPos] := B; Inc(LhOutPos); Inc(LhOutSize);
+ LhUpdCRC(B);
+End;
+
+{ ===== Source (compression) ========================================== }
+
+Procedure LhSrcReset;
+Begin
+ LhSrcPos := 0; LhSrcCnt := 0; LhSrcEnd := False; LhSrcByteRead := 0;
+End;
+
+Procedure LhSrcRefill;
+Var R: Word;
+Begin
+ BlockRead(LhSrcF, LhSrcBuf^, LH_IOBUFSZ, R);
+ LhSrcCnt := R; LhSrcPos := 0; If R = 0 Then LhSrcEnd := True;
+End;
+
+Function LhSrcGetByte(Var B: Byte): Boolean;
+Begin
+ If LhSrcPos >= LhSrcCnt Then LhSrcRefill;
+ If LhSrcEnd Then Begin LhSrcGetByte := False; Exit; End;
+ B := LhSrcBuf^[LhSrcPos]; Inc(LhSrcPos); Inc(LhSrcByteRead);
+ LhSrcGetByte := True;
+End;
+
+{ ===== Bit I/O ======================================================= }
+
+Procedure LhBitInit;
+Begin LhBitBuf := 0; LhBitCnt := 0; End;
+
+Procedure LhPutBits(N: Byte; X: Word);
+Var Mask: Word;
+Begin
+ Mask := Word(1) Shl (N - 1);
+ While Mask <> 0 Do Begin
+  If (X And Mask) <> 0 Then LhBitBuf := LhBitBuf Or (Word(1) Shl (15 - LhBitCnt));
+  Inc(LhBitCnt);
+  If LhBitCnt = 16 Then Begin
+   LhWrByte(Byte((LhBitBuf Shr 8) And $FF));
+   LhWrByte(Byte(LhBitBuf And $FF));
+   LhBitBuf := 0; LhBitCnt := 0;
+  End;
+  Mask := Mask Shr 1;
+ End;
+End;
+
+Procedure LhFlushPutBits;
+Begin
+ If LhBitCnt > 0 Then Begin
+  LhWrByte(Byte((LhBitBuf Shr 8) And $FF));
+  LhWrByte(Byte(LhBitBuf And $FF));
+  LhBitBuf := 0; LhBitCnt := 0;
+ End;
+End;
+
+Procedure LhGetInit;
+Begin
+ LhBitBuf := 0;
+ LhBitCnt := 0;
+End;
+
+Function LhGetBit: Byte;
+Begin
+ If LhBitCnt = 0 Then Begin
+  LhBitBuf := Word(LhInGetByte) Shl 8;
+  LhBitBuf := LhBitBuf Or LhInGetByte;
+  LhBitCnt := 16;
+ End;
+ If (LhBitBuf And $8000) <> 0 Then LhGetBit := 1 Else LhGetBit := 0;
+ LhBitBuf := LhBitBuf Shl 1;
+ Dec(LhBitCnt);
+End;
+
+Function LhGetBits(N: Byte): Word;
+Var R: Word;
+Begin
+ R := 0;
+ While N > 0 Do Begin R := (R Shl 1) Or LhGetBit; Dec(N); End;
+ LhGetBits := R;
+End;
+
+{ ===== Huffman adaptatif ============================================= }
+
+Procedure LhHuffStartTree;
+Var I, J: Word;
+Begin
+ For I := 0 To LH_N_CHAR - 1 Do Begin
+  LhH_Freq[I] := 1;
+  LhH_Son[I] := I + LH_T_TBL;
+  LhH_Prnt[I + LH_T_TBL] := I;
+ End;
+ I := 0; J := LH_N_CHAR;
+ While J <= LH_R_ROOT Do Begin
+  LhH_Freq[J] := LhH_Freq[I] + LhH_Freq[I + 1];
+  LhH_Son[J] := I;
+  LhH_Prnt[I] := J;
+  LhH_Prnt[I + 1] := J;
+  Inc(I, 2); Inc(J);
+ End;
+ LhH_Freq[LH_T_TBL] := $FFFF;
+ LhH_Prnt[LH_R_ROOT] := 0;
+End;
+
+Procedure LhHuffReconstruct;
+Var I, J, K, F, L: Word;
+Begin
+ J := 0;
+ For I := 0 To LH_T_TBL - 1 Do Begin
+  If LhH_Son[I] >= LH_T_TBL Then Begin
+   LhH_Freq[J] := (LhH_Freq[I] + 1) Shr 1;
+   LhH_Son[J] := LhH_Son[I];
+   Inc(J);
+  End;
+ End;
+ I := 0; J := LH_N_CHAR;
+ While J < LH_T_TBL Do Begin
+  K := I + 1; F := LhH_Freq[I] + LhH_Freq[K];
+  LhH_Freq[J] := F;
+  K := J - 1;
+  While F < LhH_Freq[K] Do Dec(K);
+  Inc(K);
+  L := (J - K) Shl 1;
+  Move(LhH_Freq[K], LhH_Freq[K + 1], L);
+  LhH_Freq[K] := F;
+  Move(LhH_Son[K], LhH_Son[K + 1], L);
+  LhH_Son[K] := I;
+  Inc(I, 2); Inc(J);
+ End;
+ For I := 0 To LH_T_TBL - 1 Do Begin
+  K := LhH_Son[I];
+  If K >= LH_T_TBL Then LhH_Prnt[K] := I
+  Else Begin LhH_Prnt[K] := I; LhH_Prnt[K + 1] := I; End;
+ End;
+End;
+
+Procedure LhHuffUpdate(C: Word);
+Var I, J, K, L: Word;
+Begin
+ If LhH_Freq[LH_R_ROOT] = LH_MAX_FREQ Then LhHuffReconstruct;
+ C := LhH_Prnt[C + LH_T_TBL];
+ Repeat
+  Inc(LhH_Freq[C]);
+  K := LhH_Freq[C];
+  L := C + 1;
+  If L < LH_T_TBL Then Begin
+   If K > LhH_Freq[L] Then Begin
+    While (L < LH_T_TBL) And (K > LhH_Freq[L]) Do Inc(L);
+    Dec(L);
+    LhH_Freq[C] := LhH_Freq[L];
+    LhH_Freq[L] := K;
+    I := LhH_Son[C];
+    LhH_Prnt[I] := L;
+    If I < LH_T_TBL Then LhH_Prnt[I + 1] := L;
+    J := LhH_Son[L];
+    LhH_Son[L] := I;
+    LhH_Prnt[J] := C;
+    If J < LH_T_TBL Then LhH_Prnt[J + 1] := C;
+    LhH_Son[C] := J;
+    C := L;
+   End;
+  End;
+  C := LhH_Prnt[C];
+ Until C = 0;
+End;
+
+{ ===== Decodeur Huffman + position =================================== }
+
+Function LhDecodeChar: Word;
+Var C: Word;
+Begin
+ C := LhH_Son[LH_R_ROOT];
+ While C < LH_T_TBL Do
+  If LhGetBit = 1 Then C := LhH_Son[C + 1]
+  Else C := LhH_Son[C];
+ C := C - LH_T_TBL;
+ LhHuffUpdate(C);
+ LhDecodeChar := C;
+End;
+
+Function LhDecodePosition: Word;
+Var I, J, C: Word;
+Begin
+ I := LhGetBits(8);
+ C := Word(LhD_CODE[I]) Shl 6;
+ J := LhD_LEN[I];
+ If J > 2 Then I := (I Shl (J - 2)) Or LhGetBits(J - 2);
+ LhDecodePosition := C Or (I And $3F);
+End;
+
+{ ===== Encodeur Huffman + position =================================== }
+
+Procedure LhEncodeChar(C: Word);
+Var K: Word;
+ Code, Len: Word;
+Begin
+ Code := 0; Len := 0;
+ K := LhH_Prnt[C + LH_T_TBL];
+ Repeat
+  Code := Code Shr 1;
+  If (K And 1) <> 0 Then Code := Code Or $8000;
+  Inc(Len);
+  K := LhH_Prnt[K];
+ Until K = LH_R_ROOT;
+ LhPutBits(Len, Code Shr (16 - Len));
+ LhHuffUpdate(C);
+End;
+
+Procedure LhEncodePosition(C: Word);
+Var I: Word;
+Begin
+ I := C Shr 6;
+ LhPutBits(LhP_LEN[I], LhP_CODE[I] Shr (8 - LhP_LEN[I]));
+ LhPutBits(6, C And $3F);
+End;
+
+{ ===== LZSS encodeur : init/insert/delete/match ====================== }
+
+Procedure LhLZE_InitTree;
+Var I: Word;
+Begin
+ For I := LH_LZ_N + 1 To LH_LZ_N + 256 Do LhE_RSon[I] := LH_LZ_NIL;
+ For I := 0 To LH_LZ_N - 1 Do LhE_Dad[I] := LH_LZ_NIL;
+End;
+
+Procedure LhLZE_InsertNode(R: Word);
+Var I, P: Word; Geq: Boolean;
+Begin
+ P := LH_LZ_N + 1 + LhLZ_Text[R];
+ LhE_RSon[R] := LH_LZ_NIL; LhE_LSon[R] := LH_LZ_NIL;
+ LhE_MatchLen := 0;
+ Geq := True;
+ While True Do Begin
+  If Geq Then Begin
+   If LhE_RSon[P] = LH_LZ_NIL Then Begin LhE_RSon[P] := R; LhE_Dad[R] := P; Exit; End;
+   P := LhE_RSon[P];
+  End Else Begin
+   If LhE_LSon[P] = LH_LZ_NIL Then Begin LhE_LSon[P] := R; LhE_Dad[R] := P; Exit; End;
+   P := LhE_LSon[P];
+  End;
+  I := 1;
+  While I < LH_LZ_F Do Begin
+   If LhLZ_Text[R + I] <> LhLZ_Text[P + I] Then Begin
+    If LhLZ_Text[R + I] > LhLZ_Text[P + I] Then Geq := True Else Geq := False;
+    Break;
+   End;
+   Inc(I);
+  End;
+  If I = LH_LZ_F Then Begin
+   LhE_Dad[R] := LhE_Dad[P];
+   LhE_LSon[R] := LhE_LSon[P];
+   LhE_RSon[R] := LhE_RSon[P];
+   LhE_Dad[LhE_LSon[P]] := R;
+   LhE_Dad[LhE_RSon[P]] := R;
+   If LhE_RSon[LhE_Dad[P]] = P Then LhE_RSon[LhE_Dad[P]] := R
+   Else LhE_LSon[LhE_Dad[P]] := R;
+   LhE_Dad[P] := LH_LZ_NIL;
+   LhE_MatchLen := LH_LZ_F;
+   LhE_MatchPos := P;
+   Exit;
+  End;
+  If I > LhE_MatchLen Then Begin
+   LhE_MatchPos := P;
+   LhE_MatchLen := I;
+   If I >= LH_LZ_F Then Break;
+  End;
+ End;
+End;
+
+Procedure LhLZE_DeleteNode(P: Word);
+Var Q: Word;
+Begin
+ If LhE_Dad[P] = LH_LZ_NIL Then Exit;
+ If LhE_RSon[P] = LH_LZ_NIL Then Q := LhE_LSon[P]
+ Else If LhE_LSon[P] = LH_LZ_NIL Then Q := LhE_RSon[P]
+ Else Begin
+  Q := LhE_LSon[P];
+  If LhE_RSon[Q] <> LH_LZ_NIL Then Begin
+   Repeat Q := LhE_RSon[Q]; Until LhE_RSon[Q] = LH_LZ_NIL;
+   LhE_RSon[LhE_Dad[Q]] := LhE_LSon[Q];
+   LhE_Dad[LhE_LSon[Q]] := LhE_Dad[Q];
+   LhE_LSon[Q] := LhE_LSon[P];
+   LhE_Dad[LhE_LSon[P]] := Q;
+  End;
+  LhE_RSon[Q] := LhE_RSon[P];
+  LhE_Dad[LhE_RSon[P]] := Q;
+ End;
+ LhE_Dad[Q] := LhE_Dad[P];
+ If LhE_RSon[LhE_Dad[P]] = P Then LhE_RSon[LhE_Dad[P]] := Q
+ Else LhE_LSon[LhE_Dad[P]] := Q;
+ LhE_Dad[P] := LH_LZ_NIL;
+End;
+
+{ ===== Encodeur LH1 complet ========================================== }
+
+Procedure LhE_LH1(Var Hdr: TLhHdr);
+Var
+ I, R, S, Len, LastLen: Word;
+ C: Byte;
+ OK: Boolean;
+Begin
+ LhBitInit;
+ LhHuffStartTree;
+ LhLZE_InitTree;
+
+ For I := 0 To LH_LZ_N - LH_LZ_F - 1 Do LhLZ_Text[I] := $20;
+
+ R := LH_LZ_N - LH_LZ_F; S := 0; Len := 0;
+ While (Len < LH_LZ_F) Do Begin
+  OK := LhSrcGetByte(C);
+  If Not OK Then Break;
+  LhLZ_Text[R + Len] := C;
+  LhUpdCRC(C);
+  Inc(Len);
+ End;
+ If Len = 0 Then Exit;
+
+ For I := 1 To LH_LZ_F Do LhLZE_InsertNode(R - I);
+ LhLZE_InsertNode(R);
+
+ Repeat
+  If LhE_MatchLen > Len Then LhE_MatchLen := Len;
+  If LhE_MatchLen <= LH_LZ_THRESHOLD Then Begin
+   LhE_MatchLen := 1;
+   LhEncodeChar(LhLZ_Text[R]);
+  End Else Begin
+   LhEncodeChar(Word(255 - LH_LZ_THRESHOLD) + LhE_MatchLen);
+   LhEncodePosition((R - LhE_MatchPos - 1) And (LH_LZ_N - 1));
+  End;
+  LastLen := LhE_MatchLen;
+  I := 0;
+  While I < LastLen Do Begin
+   OK := LhSrcGetByte(C);
+   If Not OK Then Break;
+   LhUpdCRC(C);
+   LhLZE_DeleteNode(S);
+   LhLZ_Text[S] := C;
+   If S < LH_LZ_F - 1 Then LhLZ_Text[S + LH_LZ_N] := C;
+   S := (S + 1) And (LH_LZ_N - 1);
+   R := (R + 1) And (LH_LZ_N - 1);
+   LhLZE_InsertNode(R);
+   Inc(I);
+  End;
+  While I < LastLen Do Begin
+   Inc(I);
+   LhLZE_DeleteNode(S);
+   S := (S + 1) And (LH_LZ_N - 1);
+   R := (R + 1) And (LH_LZ_N - 1);
+   If Len > 0 Then Dec(Len);
+   If Len > 0 Then LhLZE_InsertNode(R);
+  End;
+  If I < LastLen Then Begin
+   While I < LastLen Do Begin
+    LhLZE_DeleteNode(S);
+    S := (S + 1) And (LH_LZ_N - 1);
+    R := (R + 1) And (LH_LZ_N - 1);
+    Dec(Len);
+    If Len > 0 Then LhLZE_InsertNode(R);
+    Inc(I);
+   End;
+  End;
+ Until Len <= 0;
+
+ LhFlushPutBits;
+End;
+
+{ ===== Decodeur LH1 complet ========================================== }
+
+Procedure LhD_LH1(CompSize, OrigSize: LongInt);
+Var
+ I, J, K, R: Word;
+ C: Word;
+ Count: LongInt;
+ InStart: LongInt;
+Begin
+ LhGetInit;
+ LhHuffStartTree;
+ For I := 0 To LH_LZ_N - LH_LZ_F - 1 Do LhLZ_Text[I] := $20;
+ R := LH_LZ_N - LH_LZ_F;
+ Count := 0;
+ InStart := LhInByteCount;
+
+ While Count < OrigSize Do Begin
+  If (LhInByteCount - InStart) > CompSize + 4 Then Break;
+  C := LhDecodeChar;
+  If C < 256 Then Begin
+   LhOutPutByte(Byte(C));
+   LhLZ_Text[R] := Byte(C);
+   R := (R + 1) And (LH_LZ_N - 1);
+   Inc(Count);
+  End Else Begin
+   I := (R - LhDecodePosition - 1) And (LH_LZ_N - 1);
+   J := C - 255 + LH_LZ_THRESHOLD - 1;
+   For K := 0 To J Do Begin
+    C := LhLZ_Text[(I + K) And (LH_LZ_N - 1)];
+    LhOutPutByte(Byte(C));
+    LhLZ_Text[R] := Byte(C);
+    R := (R + 1) And (LH_LZ_N - 1);
+    Inc(Count);
+    If Count >= OrigSize Then Break;
+   End;
+  End;
+ End;
+End;
+
+{ ===== Lecture / ecriture en-tete LZH Level-0 ======================== }
+
+Function LhReadHeader(Var H: TLhHdr): Boolean;
+Var
+ HdrLen, Sum, ChkSum: Word;
+ I: Word;
+ FnLen: Byte;
+ Bytes: Array[0..255] Of Byte;
+ NB: Word;
+ ArcSize: LongInt;
+Begin
+ LhReadHeader := False;
+ If LhInEnd Then Exit;
+ HdrLen := LhInGetByte;
+ If HdrLen = 0 Then Exit;
+ If LhInEnd Then Exit;
+ If (HdrLen < 22) Or (HdrLen > 22 + LH_MAX_FN) Then Begin
+  LhWarn('en-tete invalide (taille ' + LhLongStr(HdrLen) + ')');
+  LhWarn('format non reconnu (pas une archive ICE/LZH ?)');
+  Exit;
+ End;
+ ChkSum := LhInGetByte;
+ NB := HdrLen;
+ For I := 0 To NB - 1 Do Bytes[I] := LhInGetByte;
+ If LhInEnd Then Begin LhWarn('en-tete tronque'); Exit; End;
+ Sum := 0;
+ For I := 0 To NB - 1 Do Sum := (Sum + Bytes[I]) And $FF;
+ If (Sum And $FF) <> ChkSum Then Begin
+  LhWarn('checksum entete invalide (pas une archive ICE/LZH ?)');
+  Exit;
+ End;
+ For I := 1 To 5 Do H.Method[I] := Char(Bytes[I - 1]);
+ If (H.Method[1] <> '-') Or (H.Method[5] <> '-') Then Begin
+  LhWarn('methode invalide : ' + H.Method[1]+H.Method[2]+H.Method[3]+H.Method[4]+H.Method[5]);
+  Exit;
+ End;
+ H.CompSize := LongInt(Bytes[5]) Or (LongInt(Bytes[6]) Shl 8)
+            Or (LongInt(Bytes[7]) Shl 16) Or (LongInt(Bytes[8]) Shl 24);
+ H.OrigSize := LongInt(Bytes[9]) Or (LongInt(Bytes[10]) Shl 8)
+            Or (LongInt(Bytes[11]) Shl 16) Or (LongInt(Bytes[12]) Shl 24);
+ H.TimeStamp := LongInt(Bytes[13]) Or (LongInt(Bytes[14]) Shl 8)
+             Or (LongInt(Bytes[15]) Shl 16) Or (LongInt(Bytes[16]) Shl 24);
+ H.Attr := Bytes[17];
+ H.Level := Bytes[18];
+ FnLen := Bytes[19];
+ If (Word(FnLen) + 22) > HdrLen Then Begin
+  LhWarn('nom de fichier invalide');
+  Exit;
+ End;
+ H.Name := '';
+ For I := 0 To FnLen - 1 Do H.Name := H.Name + Char(Bytes[20 + I]);
+ H.CRC := Word(Bytes[20 + FnLen]) Or (Word(Bytes[21 + FnLen]) Shl 8);
+ If LhArcOpened Then Begin
+  ArcSize := FileSize(LhArcF);
+  If (H.CompSize < 0) Or (H.CompSize > ArcSize) Then Begin
+   LhWarn('taille compressee invalide');
+   Exit;
+  End;
+ End;
+ LhReadHeader := True;
+End;
+
+Procedure LhWriteHeader(Var H: TLhHdr);
+Var
+ Buf: Array[0..255] Of Byte;
+ FnLen: Byte;
+ HdrLen, Sum: Word;
+ I: Word;
+Begin
+ FnLen := Length(H.Name);
+ If FnLen > LH_MAX_FN Then FnLen := LH_MAX_FN;
+ HdrLen := 22 + FnLen;
+ For I := 1 To 5 Do Buf[I - 1] := Byte(H.Method[I]);
+ Buf[5]  := Byte(H.CompSize And $FF);
+ Buf[6]  := Byte((H.CompSize Shr 8) And $FF);
+ Buf[7]  := Byte((H.CompSize Shr 16) And $FF);
+ Buf[8]  := Byte((H.CompSize Shr 24) And $FF);
+ Buf[9]  := Byte(H.OrigSize And $FF);
+ Buf[10] := Byte((H.OrigSize Shr 8) And $FF);
+ Buf[11] := Byte((H.OrigSize Shr 16) And $FF);
+ Buf[12] := Byte((H.OrigSize Shr 24) And $FF);
+ Buf[13] := Byte(H.TimeStamp And $FF);
+ Buf[14] := Byte((H.TimeStamp Shr 8) And $FF);
+ Buf[15] := Byte((H.TimeStamp Shr 16) And $FF);
+ Buf[16] := Byte((H.TimeStamp Shr 24) And $FF);
+ Buf[17] := H.Attr;
+ Buf[18] := H.Level;
+ Buf[19] := FnLen;
+ For I := 1 To FnLen Do Buf[19 + I] := Byte(H.Name[I]);
+ Buf[20 + FnLen] := Byte(H.CRC And $FF);
+ Buf[21 + FnLen] := Byte((H.CRC Shr 8) And $FF);
+ Sum := 0;
+ For I := 0 To HdrLen - 1 Do Sum := (Sum + Buf[I]) And $FF;
+ LhWrByte(Byte(HdrLen And $FF));
+ LhWrByte(Byte(Sum And $FF));
+ For I := 0 To HdrLen - 1 Do LhWrByte(Buf[I]);
+End;
+
+Procedure LhWriteEOA;
+Begin LhWrByte(0); End;
+
+{ ===== Skip et copy d'entrees ======================================== }
+
+Procedure LhSkipEntryData(Var H: TLhHdr);
+Var Pos: LongInt;
+Begin
+ Pos := FilePos(LhArcF) - LongInt(LhInCnt) + LongInt(LhInPos);
+ Seek(LhArcF, Pos + H.CompSize);
+ LhInPos := 0; LhInCnt := 0;
+End;
+
+Procedure LhCopyEntryData(Var H: TLhHdr);
+Var I: LongInt; B: Byte;
+Begin
+ For I := 1 To H.CompSize Do Begin B := LhInGetByte; LhWrByte(B); End;
+End;
+
+Procedure LhCopyOneEntry(Var H: TLhHdr);
+Begin
+ LhWriteHeader(H);
+ LhCopyEntryData(H);
+End;
+
+{ ===== Selection nom ================================================= }
+
+Function LhNameSelected(N: String): Boolean;
+Var P: PLhArgNode; Up, UpStripN, Cand: String;
+Begin
+ If LhArgCount = 0 Then Begin LhNameSelected := True; Exit; End;
+ Up := LhUpStr(N);
+ UpStripN := LhUpStr(LhStripPath(N));
+ P := LhArgHead;
+ While P <> Nil Do Begin
+  Cand := LhUpStr(P^.Name);
+  If (Up = Cand) Or (UpStripN = LhUpStr(LhStripPath(P^.Name)))
+  Then Begin LhNameSelected := True; Exit; End;
+  P := P^.Next;
+ End;
+ LhNameSelected := False;
+End;
+
+{ ===== Decompression dispatcher ====================================== }
+
+Function LhMethodIs(Var H: TLhHdr; S: String): Boolean;
+Var I: Byte; OK: Boolean;
+Begin
+ OK := True;
+ For I := 1 To 5 Do If H.Method[I] <> S[I] Then OK := False;
+ LhMethodIs := OK;
+End;
+
+Procedure LhD_Stored(CompSize: LongInt);
+Var I: LongInt; B: Byte;
+Begin
+ For I := 1 To CompSize Do Begin B := LhInGetByte; LhOutPutByte(B); End;
+End;
+
+Function LhDecompress(Var H: TLhHdr): Boolean;
+Var StartBytes, Consumed: LongInt; Skip: LongInt; B: Byte;
+Begin
+ LhResetCRC; LhOutPos := 0; LhOutSize := 0;
+ StartBytes := LhInByteCount;
+ If LhMethodIs(H, '-lh0-') Or LhMethodIs(H, '-lz4-') Then Begin
+  LhD_Stored(H.CompSize); LhDecompress := True;
+ End Else If LhMethodIs(H, '-lh1-') Or LhMethodIs(H, '-lz5-') Then Begin
+  LhD_LH1(H.CompSize, H.OrigSize); LhDecompress := True;
+ End Else Begin
+  LhWarn('methode non supportee : ' + H.Method[1]+H.Method[2]+H.Method[3]+H.Method[4]+H.Method[5]);
+  LhSkipEntryData(H);
+  LhDecompress := False;
+  Exit;
+ End;
+ LhOutFlush;
+ Consumed := LhInByteCount - StartBytes;
+ If Consumed < H.CompSize Then Begin
+  Skip := H.CompSize - Consumed;
+  While Skip > 0 Do Begin B := LhInGetByte; Dec(Skip); If LhInEnd Then Break; End;
+ End;
+End;
+
+{ ===== Format date/heure ============================================= }
+
+Procedure LhFormatDateTime(FT: LongInt; Var DStr, TStr: String);
+Var DT: DateTime; S: String;
+Begin
+ UnpackTime(FT, DT);
+ If DT.Year < 1980 Then DT.Year := 1980;
+ Str(DT.Year:4, S); DStr := S + '-';
+ Str(DT.Month:2, S); If S[1] = ' ' Then S[1] := '0'; DStr := DStr + S + '-';
+ Str(DT.Day:2, S);   If S[1] = ' ' Then S[1] := '0'; DStr := DStr + S;
+ Str(DT.Hour:2, S);  If S[1] = ' ' Then S[1] := '0'; TStr := S + ':';
+ Str(DT.Min:2, S);   If S[1] = ' ' Then S[1] := '0'; TStr := TStr + S + ':';
+ Str(DT.Sec:2, S);   If S[1] = ' ' Then S[1] := '0'; TStr := TStr + S;
+End;
+
+{ ===== Commande LIST / VIEW ========================================== }
+
+Procedure LhCmdList(Verbose: Boolean);
+Var
+ H: TLhHdr;
+ DStr, TStr: String;
+ Ratio: Word;
+ TotO, TotC: LongInt;
+ N: Word;
+ MStr: String;
+Begin
+ LhWL(' Name           Original   Packed Ratio  Method   Date     Time     CRC');
+ LhWL(' ----------- ---------- ---------- -----  ------ ---------- -------- ----');
+ TotO := 0; TotC := 0; N := 0;
+ While True Do Begin
+  If Not LhReadHeader(H) Then Break;
+  If LhNameSelected(H.Name) Then Begin
+   LhFormatDateTime(H.TimeStamp, DStr, TStr);
+   If H.OrigSize > 0 Then
+    Ratio := Word((LongInt(H.CompSize) * 1000) Div H.OrigSize)
+   Else Ratio := 0;
+   MStr := H.Method[1]+H.Method[2]+H.Method[3]+H.Method[4]+H.Method[5];
+   If Verbose Then
+    LhWL(' ' + LhPadRight(H.Name, 12) + ' ' +
+           LhPadLeft(LhLongStr(H.OrigSize), 10) + ' ' +
+           LhPadLeft(LhLongStr(H.CompSize), 10) + ' ' +
+           LhPadLeft(LhLongStr(Ratio Div 10) + '.' + Chr(Ord('0') + (Ratio Mod 10)), 5) +
+           '  ' + MStr + ' ' + DStr + ' ' + TStr + ' ' +
+           LhPadLeft(LhLongStr(H.CRC), 5))
+   Else
+    LhWL(' ' + LhPadRight(H.Name, 12) + ' ' +
+           LhPadLeft(LhLongStr(H.OrigSize), 10) + ' ' +
+           LhPadLeft(LhLongStr(H.CompSize), 10) + ' ' +
+           LhPadLeft(LhLongStr(Ratio Div 10) + '.' + Chr(Ord('0') + (Ratio Mod 10)), 5) +
+           '  ' + MStr + ' ' + DStr);
+   Inc(TotO, H.OrigSize); Inc(TotC, H.CompSize); Inc(N);
+   Inc(LhN_Listed);
+  End;
+  LhSkipEntryData(H);
+ End;
+ LhWL(' ----------- ---------- ---------- -----  ------ ---------- -------- ----');
+ If TotO > 0 Then Ratio := Word((LongInt(TotC) * 1000) Div TotO) Else Ratio := 0;
+ LhWL(' ' + LhPadLeft(LhLongStr(N), 12) + ' ' +
+        LhPadLeft(LhLongStr(TotO), 10) + ' ' +
+        LhPadLeft(LhLongStr(TotC), 10) + ' ' +
+        LhPadLeft(LhLongStr(Ratio Div 10) + '.' + Chr(Ord('0') + (Ratio Mod 10)), 5));
+End;
+
+{ ===== Commande TEST ================================================= }
+
+Procedure LhCmdTest;
+Var H: TLhHdr; StoredCRC: Word; OK: Boolean;
+Begin
+ LhOutToStdout := False;
+ While True Do Begin
+  If Not LhReadHeader(H) Then Break;
+  If LhNameSelected(H.Name) Then Begin
+   StoredCRC := H.CRC;
+   Assign(LhOutF, 'ICE$$$.TMP'); {$I-} Rewrite(LhOutF, 1); {$I+}
+   If IOResult <> 0 Then Begin
+    LhWarn('impossible de creer fichier temp');
+    LhSkipEntryData(H); Continue;
+   End;
+   LhOutFileOpen := True;
+   OK := LhDecompress(H);
+   LhOutFlush;
+   Close(LhOutF);
+   Assign(LhOutF, 'ICE$$$.TMP'); {$I-} Erase(LhOutF); {$I+} If IOResult <> 0 Then ;
+   If OK Then Begin
+    If LhCRC = StoredCRC Then LhWL('Test : ' + H.Name + ' OK')
+    Else Begin
+     LhWL('Test : ' + H.Name + ' ECHEC (CRC ' + LhLongStr(LhCRC) + ' vs ' + LhLongStr(StoredCRC) + ')');
+     LhExitCode := 1;
+    End;
+    Inc(LhN_Tested);
+   End;
+  End Else
+   LhSkipEntryData(H);
+ End;
+End;
+
+{ ===== Commande EXTRACT / PRINT ====================================== }
+
+Procedure LhCmdExtract(ToStdout: Boolean);
+Var H: TLhHdr; OK: Boolean; OutName: String;
+    StoredCRC: Word; FT: LongInt;
+Begin
+ While True Do Begin
+  If Not LhReadHeader(H) Then Break;
+  If LhNameSelected(H.Name) Then Begin
+   StoredCRC := H.CRC;
+   OutName := LhStripPath(H.Name);
+   If ToStdout Then Begin
+    LhOutToStdout := True; LhOutFileOpen := False;
+   End Else Begin
+    LhOutToStdout := False;
+    Assign(LhOutF, OutName);
+    {$I-} Rewrite(LhOutF, 1); {$I+}
+    If IOResult <> 0 Then Begin
+     LhWarn('impossible de creer ' + OutName);
+     LhSkipEntryData(H); Continue;
+    End;
+    LhOutFileOpen := True;
+   End;
+   OK := LhDecompress(H);
+   If (Not ToStdout) And LhOutFileOpen Then Begin
+    FT := H.TimeStamp;
+    SetFTime(LhOutF, FT);
+    Close(LhOutF); LhOutFileOpen := False;
+    If OK And (LhCRC <> StoredCRC) Then Begin
+     LhWarn(H.Name + ': CRC erreur (' + LhLongStr(LhCRC) + ' vs ' + LhLongStr(StoredCRC) + ')');
+     LhExitCode := 1;
+    End;
+    If OK Then Begin
+     If Not LhSw_NoInd Then LhWL('Extracted : ' + H.Name + ' (' + LhLongStr(H.OrigSize) + ' octets)');
+     Inc(LhN_Extracted);
+    End;
+   End;
+  End Else
+   LhSkipEntryData(H);
+ End;
+End;
+
+{ ===== Compression ==================================================== }
+
+Procedure LhE_Stored(Var H: TLhHdr);
+Var C: Byte;
+Begin
+ LhResetCRC;
+ While LhSrcGetByte(C) Do Begin LhUpdCRC(C); LhWrByte(C); End;
+ H.CRC := LhCRC;
+End;
+
+Procedure LhCompressFile(Var H: TLhHdr; SrcName: String);
+Var
+ BasePos, TryPos: LongInt;
+ FT: LongInt;
+ SaveByteCount: LongInt;
+Begin
+ H.Name := LhUpStr(LhStripPath(SrcName));
+ Assign(LhSrcF, SrcName);
+ {$I-} Reset(LhSrcF, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  LhWarn('impossible de lire ' + SrcName);
+  H.Method := '-lh0-'; H.CompSize := 0; H.OrigSize := 0; Exit;
+ End;
+ GetFTime(LhSrcF, FT);
+ H.TimeStamp := FT;
+ H.Attr := $20;
+ H.Level := 0;
+
+ LhWrFlush;
+ BasePos := FilePos(LhWrF);
+ H.Method := '-lh1-'; H.CompSize := 0; H.OrigSize := 0; H.CRC := 0;
+ LhWriteHeader(H);
+ LhWrFlush;
+ TryPos := FilePos(LhWrF);
+ SaveByteCount := LhWrByteCount;
+
+ LhSrcReset;
+ LhResetCRC;
+ If LhSw_NoLh1 Then Begin
+  H.Method := '-lh0-';
+  LhE_Stored(H);
+ End Else
+  LhE_LH1(H);
+
+ H.OrigSize := LhSrcByteRead;
+ H.CompSize := LhWrByteCount - SaveByteCount;
+ H.CRC := LhCRC;
+ Close(LhSrcF);
+ LhWrFlush;
+
+ If (Not LhSw_NoLh1) And (H.CompSize >= H.OrigSize) Then Begin
+  LhWrFlush;
+  Seek(LhWrF, TryPos);
+  LhWrByteCount := SaveByteCount; LhWrPos := 0;
+  Assign(LhSrcF, SrcName); Reset(LhSrcF, 1); LhSrcReset;
+  H.Method := '-lh0-';
+  LhE_Stored(H);
+  H.OrigSize := LhSrcByteRead;
+  H.CompSize := LhWrByteCount - SaveByteCount;
+  Close(LhSrcF);
+  LhWrFlush;
+  Truncate(LhWrF);
+ End;
+
+ Seek(LhWrF, BasePos);
+ LhWriteHeader(H);
+ LhWrFlush;
+ Seek(LhWrF, TryPos + H.CompSize);
+End;
+
+{ ===== Commande ADD / UPDATE / FRESHEN / MOVE ======================== }
+
+Procedure LhCmdAddLike(Mode: Char);
+Var
+ H, NewH: TLhHdr;
+ P: PLhArgNode;
+ SrcFT, ArcFT: LongInt;
+ SrcName: String;
+ AddIt: Boolean;
+ F: File;
+ OldMode: Byte;
+ MatchNode: PLhArgNode;
+Begin
+ P := LhArgHead;
+ While P <> Nil Do Begin P^.InArc := False; P := P^.Next; End;
+
+ While True Do Begin
+  If Not LhReadHeader(H) Then Break;
+  AddIt := False; SrcName := ''; MatchNode := Nil;
+  P := LhArgHead;
+  While P <> Nil Do Begin
+   If LhUpStr(LhStripPath(P^.Name)) = LhUpStr(H.Name) Then Begin
+    P^.InArc := True;
+    MatchNode := P;
+    SrcName := P^.Name;
+    Assign(F, SrcName); OldMode := FileMode; FileMode := 0;
+    {$I-} Reset(F, 1); {$I+} FileMode := OldMode;
+    If IOResult <> 0 Then SrcFT := -1
+    Else Begin GetFTime(F, SrcFT); Close(F); End;
+    ArcFT := H.TimeStamp;
+    Case Mode Of
+     'a','m' : AddIt := SrcFT >= 0;
+     'u'     : AddIt := (SrcFT >= 0) And ((SrcFT > ArcFT) Or LhSw_Compare);
+     'f'     : AddIt := (SrcFT >= 0) And ((SrcFT > ArcFT) Or LhSw_Compare);
+    End;
+    Break;
+   End;
+   P := P^.Next;
+  End;
+  If AddIt Then Begin
+   LhSkipEntryData(H);
+   FillChar(NewH, SizeOf(NewH), 0);
+   LhCompressFile(NewH, SrcName);
+   LhWL('Remplace : ' + NewH.Name);
+   Inc(LhN_Updated);
+  End Else
+   LhCopyOneEntry(H);
+ End;
+
+ If (Mode = 'a') Or (Mode = 'm') Or (Mode = 'u') Then Begin
+  P := LhArgHead;
+  While P <> Nil Do Begin
+   If Not P^.InArc Then Begin
+    Assign(F, P^.Name); OldMode := FileMode; FileMode := 0;
+    {$I-} Reset(F, 1); {$I+} FileMode := OldMode;
+    If IOResult <> 0 Then Begin
+     LhWarn('aucun fichier ne correspond a : ' + P^.Name);
+     LhExitCode := 1;
+    End Else Begin
+     Close(F);
+     FillChar(NewH, SizeOf(NewH), 0);
+     LhCompressFile(NewH, P^.Name);
+     LhWL('Frozen : ' + NewH.Name);
+     P^.InArc := True;
+     Inc(LhN_Added);
+    End;
+   End;
+   P := P^.Next;
+  End;
+ End;
+ LhWriteEOA;
+
+ If Mode = 'm' Then Begin
+  P := LhArgHead;
+  While P <> Nil Do Begin
+   If P^.InArc Then Begin
+    Assign(F, P^.Name); {$I-} Erase(F); {$I+} If IOResult = 0 Then ;
+   End;
+   P := P^.Next;
+  End;
+ End;
+End;
+
+Procedure LhCmdDelete;
+Var H: TLhHdr;
+Begin
+ While True Do Begin
+  If Not LhReadHeader(H) Then Break;
+  If LhNameSelected(H.Name) Then Begin
+   LhWL('Suppression : ' + H.Name);
+   LhSkipEntryData(H);
+   Inc(LhN_Deleted);
+  End Else
+   LhCopyOneEntry(H);
+ End;
+ LhWriteEOA;
+End;
+
+{ ===== Aide =========================================================== }
+
+Procedure LhUsage;
+Begin
+ If LhLanguage = 1 Then Begin
+  LhWL('ICE ' + LH_VERSION + ' - High-performance file-compression program from');
+  LhWL('Haruyasu Yoshizaki 1988-89.');
+  LhWLBlank;
+  LhWL('Usage : LHICE <cmd> [/<sw>...] <archive>[.ICE] [files...]');
+  LhWLBlank;
+  LhWL('Commands :');
+  LhWL('  a   Add files to archive');
+  LhWL('  u   Update files (newer only)');
+  LhWL('  m   Move files into archive (Add + delete source)');
+  LhWL('  f   Freshen files (replace existing newer)');
+  LhWL('  d   Delete files from archive');
+  LhWL('  e/x Extract files from archive');
+  LhWL('  p   disPlay files to standard output');
+  LhWL('  l   List files (short)');
+  LhWL('  v   View list (verbose)');
+  LhWL('  t   Test integrity (CRC check)');
+  LhWLBlank;
+  LhWL('Switches :');
+  LhWL('  /c  skip time-stamp Comparison');
+  LhWL('  /m  no Message for query (yes-to-all)');
+  LhWL('  /n  No Indicator (silent)');
+  LhWL('  /a  Any attribute (include hidden/system)');
+  LhWL('  /x  eXtended file names with directory');
+  LhWL('  /s  Store only (no -lh1- compression)');
+ End Else Begin
+  LhWL('ICE ' + LH_VERSION + ' - Cette commande permet de lancer l''outil ' +
+           'de compression de fichiers haute performance de Haruyasu ' +
+           'Yoshizaki 1988-89.');
+  LhWLBlank;
+  LhWL('Syntaxe : LHICE <cmd> [/<sw>...] <archive>[.ICE] [fichiers...]');
+  LhWLBlank;
+  LhWL('Commandes :');
+  LhWL('  a   Ajouter des fichiers a l''archive');
+  LhWL('  u   Mettre a jour (seulement les plus recents)');
+  LhWL('  m   Deplacer des fichiers (ajout + suppression source)');
+  LhWL('  f   Rafraichir (remplace seulement si plus recent)');
+  LhWL('  d   Supprimer des fichiers de l''archive');
+  LhWL('  e/x Extraire des fichiers de l''archive');
+  LhWL('  p   Afficher (Print) sur la sortie standard');
+  LhWL('  l   Lister les fichiers (court)');
+  LhWL('  v   Visualiser la liste (detaille)');
+  LhWL('  t   Tester l''integrite (controle CRC)');
+  LhWLBlank;
+  LhWL('Options :');
+  LhWL('  /c  Ignorer la Comparaison de date');
+  LhWL('  /m  Pas de Message de confirmation (oui a tout)');
+  LhWL('  /n  Pas d''indicateur (silencieux)');
+  LhWL('  /a  N''importe quel Attribut (inclure caches/systeme)');
+  LhWL('  /x  Noms de fichiers eXtensifs avec repertoire');
+  LhWL('  /s  Stocker uniquement (pas de compression -lh1-)');
+ End;
+End;
+
+{ ===== Analyse ligne de commande ===================================== }
+
+Procedure LhAddArg(S: String);
+Var P: PLhArgNode;
+Begin
+ New(P);
+ P^.Name := S; P^.InArc := False; P^.Next := Nil;
+ If LhArgHead = Nil Then LhArgHead := P Else LhArgTail^.Next := P;
+ LhArgTail := P;
+ Inc(LhArgCount);
+End;
+
+Procedure LhFreeArgList;
+Var P, Q: PLhArgNode;
+Begin
+ P := LhArgHead;
+ While P <> Nil Do Begin Q := P^.Next; Dispose(P); P := Q; End;
+ LhArgHead := Nil; LhArgTail := Nil; LhArgCount := 0;
+End;
+
+Var
+ LhRawArgs: Array[1..80] Of String;
+ LhRawArgCount: Integer;
+
+Procedure LhParseCmdLine;
+Var I: Integer; S: String; J: Byte;
+Begin
+ LhArgCount := 0; LhArgHead := Nil; LhArgTail := Nil;
+ LhCmd := #0;
+ LhSw_Compare := False; LhSw_NoMsg := False; LhSw_NoInd := False;
+ LhSw_AnyAttr := False; LhSw_ExtName := False; LhSw_NoLh1 := False;
+ LhArchiveName := '';
+ If LhRawArgCount < 1 Then Begin LhUsage; LhErr := True; Exit; End;
+ For I := 1 To LhRawArgCount Do Begin
+  S := LhRawArgs[I];
+  If (Length(S) > 0) And ((S[1] = '/') Or (S[1] = '-')) Then Begin
+   For J := 2 To Length(S) Do
+    Case UpCase(S[J]) Of
+     'C' : LhSw_Compare := True;
+     'M' : LhSw_NoMsg   := True;
+     'N' : LhSw_NoInd   := True;
+     'A' : LhSw_AnyAttr := True;
+     'X' : LhSw_ExtName := True;
+     'S' : LhSw_NoLh1   := True;
+    End;
+   Continue;
+  End;
+  If LhCmd = #0 Then Begin
+   If Length(S) >= 1 Then LhCmd := UpCase(S[1]);
+   Continue;
+  End;
+  If LhArchiveName = '' Then Begin
+   LhArchiveName := S;
+   If Not LhHasExt(LhArchiveName) Then LhArchiveName := LhArchiveName + LH_ARC_EXT;
+   Continue;
+  End;
+  If LhArgCount < LH_MAX_NAMES Then LhAddArg(S);
+ End;
+ If LhArchiveName = '' Then Begin LhUsage; LhErr := True; Exit; End;
+End;
+
+{ ===== Init / cleanup ================================================ }
+
+Procedure LhInitBuffers;
+Begin New(LhInBuf); New(LhOutBuf); New(LhSrcBuf); New(LhWrBuf); End;
+
+Procedure LhDoneBuffers;
+Begin Dispose(LhInBuf); Dispose(LhOutBuf); Dispose(LhSrcBuf); Dispose(LhWrBuf); End;
+
+Procedure LhOpenArc;
+Begin
+ Assign(LhArcF, LhArchiveName);
+ {$I-} Reset(LhArcF, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  LhArcOpened := False; LhInResetCounters; LhInEnd := True; Exit;
+ End;
+ LhArcOpened := True; LhInResetCounters;
+End;
+
+Procedure LhCloseArc;
+Begin If LhArcOpened Then Begin Close(LhArcF); LhArcOpened := False; End; End;
+
+Procedure LhOpenWriteArc(N: String);
+Begin
+ Assign(LhWrF, N);
+ { Meme lecon retenue que Compress-Archive (-Update) : forcer explicitement }
+ { le mode lecture/ecriture avant Rewrite, la globale FPC FileMode etant     }
+ { partagee et deja mise a 0 (lecture seule) ponctuellement ailleurs dans    }
+ { ce fichier. }
+ FileMode := 2;
+ {$I-} Rewrite(LhWrF, 1); {$I+}
+ If IOResult <> 0 Then Begin LhFail('impossible de creer ' + N); Exit; End;
+ LhWrPos := 0; LhWrByteCount := 0;
+End;
+
+Procedure LhCloseWriteArc;
+Begin LhWrFlush; Close(LhWrF); End;
+
+{ ===== Main =========================================================== }
+
+Procedure LhRunCommand;
+Var I: Integer;
+Begin
+ LhOpenArc;
+ If (Not LhArcOpened) And
+    (LhCmd <> 'A') And (LhCmd <> 'M') And (LhCmd <> 'U') Then Begin
+  LhFail('impossible d''ouvrir ' + LhArchiveName);
+  Exit;
+ End;
+ Case LhCmd Of
+  'L' : LhCmdList(False);
+  'V' : LhCmdList(True);
+  'X','E' : LhCmdExtract(False);
+  'P' : Begin LhSw_NoInd := True; LhCmdExtract(True); End;
+  'T' : LhCmdTest;
+  'A','M','U','F','D' :
+   Begin
+    LhTmpArcName := LhArchiveName + '.$$$';
+    LhOpenWriteArc(LhTmpArcName);
+    If LhErr Then Exit;
+    Case LhCmd Of
+     'D' : LhCmdDelete;
+    Else LhCmdAddLike(Char(Ord(LhCmd) + 32));
+    End;
+    LhCloseWriteArc;
+    LhCloseArc;
+    Assign(LhArcF, LhArchiveName); {$I-} Erase(LhArcF); {$I+} I := IOResult;
+    Assign(LhWrF, LhTmpArcName); Rename(LhWrF, LhArchiveName);
+    LhOpenArc;
+   End;
+ Else
+  Begin
+   If LhCmd = #0 Then LhCmdList(False)
+   Else LhFail('commande inconnue : ' + LhCmd);
+  End;
+ End;
+ LhCloseArc;
+End;
+
+{ --- LHICE --- (point d'entree commun aux 4 shells) }
+
+Procedure TermCmd_LHICE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I: Integer;
+ EnvL: String;
+Begin
+ LhTermTP := @TP;
+ LhOutLine := '';
+ LhErr := False;
+ LhExitCode := 0;
+ LhN_Added := 0; LhN_Updated := 0; LhN_Extracted := 0;
+ LhN_Tested := 0; LhN_Deleted := 0; LhN_Listed := 0;
+
+ LhLanguage := 0;
+ EnvL := GetEnv('LANGUAGE');
+ If Length(EnvL) >= 2 Then
+  If (UpCase(EnvL[1]) = 'E') And (UpCase(EnvL[2]) = 'N') Then LhLanguage := 1;
+
+ LhRawArgCount := 0;
+ While (TermExtractParam(ParamStr, LhRawArgCount+1) <> '') And
+       (LhRawArgCount < 80) Do Inc(LhRawArgCount);
+ For I := 1 To LhRawArgCount Do LhRawArgs[I] := TermExtractParam(ParamStr, I);
+
+ LhParseCmdLine;
+ If Not LhErr Then Begin
+  LhInitBuffers;
+  LhRunCommand;
+
+  If (Not LhSw_NoInd) And (Not LhErr) Then Begin
+   If LhN_Added > 0 Then LhWL(IntToStr(LhN_Added) + ' fichier(s) ajoute(s)');
+   If LhN_Updated > 0 Then LhWL(IntToStr(LhN_Updated) + ' fichier(s) mis a jour');
+   If LhN_Deleted > 0 Then LhWL(IntToStr(LhN_Deleted) + ' fichier(s) supprime(s)');
+   If LhN_Extracted > 0 Then LhWL(IntToStr(LhN_Extracted) + ' fichier(s) extrait(s)');
+   If LhN_Tested > 0 Then LhWL(IntToStr(LhN_Tested) + ' fichier(s) testes');
+  End;
+  LhDoneBuffers;
+ End;
+ LhFreeArgList;
+ If LhOutLine <> '' Then LhFlushLine;
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -56390,6 +57868,33 @@ Begin
   TermAddLine(TP,
    '  UNZIP /?                       Aide complete (store/shrink/reduce/' +
    'implode/deflate/deflate64/DCL/BZIP2/LZMA/TERSE/Zstandard)');
+ End;
+ { LHICE (2026-08-31, demande explicite de l'utilisateur, port complet et   }
+ { integral de C:\SOURCE\GITHUB\CORAIL\LHICE.PAS - AUCUN executable         }
+ { externe, code natif directement dans DEVENV.PAS) - memes 4 shells que    }
+ { ARJ/UNZIP/EDIT. }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Archives ICE/LZH (integre, sans executable externe) ---');
+  TermAddLine(TP,
+   '  LHICE l archive.ice             Lister le contenu');
+  TermAddLine(TP,
+   '  LHICE v archive.ice             Lister avec details');
+  TermAddLine(TP,
+   '  LHICE e/x archive.ice [f...]    Extraire (e=sans chemin, x=avec)');
+  TermAddLine(TP,
+   '  LHICE p archive.ice [f...]      Afficher sur la sortie du terminal');
+  TermAddLine(TP,
+   '  LHICE t archive.ice             Tester l''integrite (CRC)');
+  TermAddLine(TP,
+   '  LHICE a archive.ice f...        Ajouter (compression -lh1- reelle)');
+  TermAddLine(TP,
+   '  LHICE u/f/m archive.ice f...    Update/Freshen/Move (=Add+options)');
+  TermAddLine(TP,
+   '  LHICE d archive.ice f...        Supprimer des fichiers de l''archive');
+  TermAddLine(TP,
+   '  LHICE /s ...                    Force le stockage (-lh0-, sans -lh1-)');
  End;
  { Compress-Archive (2026-08-31, demande explicite - VRAIE compression      }
  { Deflate LZ77+Huffman fixe, reutilise la table CRC-32 et les arbres de    }
@@ -56840,7 +58345,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 84;
+ PS_CMD_ALIASES = 85;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -56890,6 +58395,7 @@ Const
   'EDIT',
   'ARJ',
   'UNZIP',
+  'LHICE',
   'DATE',
   'TIME',
   'VER',
@@ -56954,6 +58460,7 @@ Const
   46,
   47,
   48,
+  62,
   49,
   50,
   51,
@@ -57247,6 +58754,8 @@ Begin
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
     TermCmd_UNZIP(TP, ParamStr)
+   Else If CurrCmd = 'LHICE' Then
+    TermCmd_LHICE(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -57399,6 +58908,7 @@ Begin
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
+    62: TermCmd_LHICE(TP, ParamStr);
     49: TermCmd_DATE(TP);
     50: TermCmd_TIME(TP);
     51: TermCmd_VER(TP);
@@ -57610,6 +59120,8 @@ Begin
    TermCmd_ARJ(TP, ParamStr)
   Else If CurrCmd = 'UNZIP' Then
    TermCmd_UNZIP(TP, ParamStr)
+  Else If CurrCmd = 'LHICE' Then
+   TermCmd_LHICE(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -57756,6 +59268,8 @@ Begin
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
     TermCmd_UNZIP(TP, ParamStr)
+   Else If CurrCmd = 'LHICE' Then
+    TermCmd_LHICE(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
