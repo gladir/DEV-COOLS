@@ -37940,6 +37940,146 @@ Begin
    'ordre ignore).');
 End;
 
+{ --- COMPARE-VM (2026-08-31, demande explicite de l'utilisateur : "compare}
+{ les emulateurs d'onglets d'emulateurs plutot que des VM") : la VRAIE      }
+{ cmdlet Hyper-V verifie la COMPATIBILITE d'une VM avec un HOTE cible       }
+{ (CPU/memoire/etc., pour une migration) - reinterpretee ici, comme         }
+{ demande explicitement, en comparaison de 2 VRAIS onglets emulateur        }
+{ OUVERTS (`WK_EMU`) entre eux, plutot qu'un objet VM Hyper-V inexistant.    }
+{ Chaque onglet a son PROPRE `TEmulatorPanel` COMPLET stocke dans           }
+{ `EmuTabs[]` (indexe comme `WinMgr.Windows[]`, deja le mecanisme reel de   }
+{ sauvegarde/restauration au changement d'onglet, voir ~14519/14578) - PAS  }
+{ juste le seul `EmuPanel` actif global, donc une VRAIE comparaison entre    }
+{ 2 onglets DIFFERENTS et INDEPENDANTS est possible ici (contrairement a    }
+{ Checkpoint-VM qui ne travaille que sur l'onglet ACTIF). L'onglet          }
+{ actuellement actif (`WinMgr.ActiveIdx`) n'est PAS encore synchronise dans }
+{ `EmuTabs[]` (seulement au moment de changer d'onglet) - lu depuis          }
+{ `EmuPanel` en direct dans ce cas precis pour ne jamais comparer un         }
+{ etat perime. Pas de -VMName (aucune VM nommee, voir le lot 1) : les 2      }
+{ onglets sont designes par INDEX 1-based parmi les onglets emulateur       }
+{ actuellement ouverts (`Compare-VM 1 2`), la commande sans argument         }
+{ liste les onglets disponibles avec leur numero pour aider a les            }
+{ designer. Compare Titre/TargetCPU (backend)/BinaryPath/Etat d'execution/  }
+{ code de fin - meme convention d'affichage `<=`/`=>` que Compare-Object,    }
+{ uniquement les champs qui DIFFERENT (comportement reel de la vraie         }
+{ cmdlet : rapporte les incompatibilites, pas un dump complet). }
+Function TermEmuTabTargetCPU(WI: Integer): String;
+Begin
+ If WI = WinMgr.ActiveIdx Then TermEmuTabTargetCPU := EmuPanel.TargetCPU
+ Else TermEmuTabTargetCPU := EmuTabs[WI].TargetCPU;
+End;
+
+Function TermEmuTabBinaryPath(WI: Integer): String;
+Begin
+ If WI = WinMgr.ActiveIdx Then TermEmuTabBinaryPath := EmuPanel.BinaryPath
+ Else TermEmuTabBinaryPath := EmuTabs[WI].BinaryPath;
+End;
+
+Function TermEmuTabRunning(WI: Integer): Boolean;
+Begin
+ If WI = WinMgr.ActiveIdx Then TermEmuTabRunning := EmuPanel.Running
+ Else TermEmuTabRunning := EmuTabs[WI].Running;
+End;
+
+Function TermEmuTabFault(WI: Integer): Integer;
+Begin
+ If WI = WinMgr.ActiveIdx Then TermEmuTabFault := EmuPanel.Fault
+ Else TermEmuTabFault := EmuTabs[WI].Fault;
+End;
+
+Function TermBoolFR(B: Boolean): String;
+Begin
+ If B Then TermBoolFR := 'oui' Else TermBoolFR := 'non';
+End;
+
+Procedure TermCmd_CompareVM(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, P1, P2: String;
+ RefFlagPos, DiffFlagPos: Integer;
+ EmuIdxList: Array[0..255] Of Integer;
+ EmuCount, I, N1, N2, WI1, WI2, ErrCode: Integer;
+ AnyDiff: Boolean;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ RefFlagPos := System.Pos('-REFERENCEVM', UpParams);
+ DiffFlagPos := System.Pos('-DIFFERENCEVM', UpParams);
+ If RefFlagPos > 0 Then
+  P1 := TrimStr(TermExtractParam(Copy(ParamStr, RefFlagPos + 12,
+   Length(ParamStr)), 1))
+ Else
+  P1 := TermExtractParam(ParamStr, 1);
+ If DiffFlagPos > 0 Then
+  P2 := TrimStr(TermExtractParam(Copy(ParamStr, DiffFlagPos + 13,
+   Length(ParamStr)), 1))
+ Else
+  P2 := TermExtractParam(ParamStr, 2);
+ EmuCount := 0;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].Kind = WK_EMU Then Begin
+   If EmuCount <= High(EmuIdxList) Then Begin
+    EmuIdxList[EmuCount] := I;
+    Inc(EmuCount);
+   End;
+  End;
+ If EmuCount < 2 Then Begin
+  TermAddLine(TP, 'Compare-VM : au moins 2 onglets emulateur doivent ' +
+   'etre ouverts (' + IntToStr(EmuCount) + ' actuellement) - voir BOOT/' +
+   'DEBUG/Start-DosProgram/Start-Win16/etc.');
+  Exit;
+ End;
+ If (P1 = '') Or (P2 = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Compare-VM n1 n2  (index 1-based parmi les ' +
+   IntToStr(EmuCount) + ' onglets emulateur ouverts ci-dessous)');
+  For I := 0 To EmuCount - 1 Do
+   TermAddLine(TP, '  ' + IntToStr(I + 1) + ': ' +
+    WinMgr.Windows[EmuIdxList[I]].Title + ' [' +
+    TermEmuTabTargetCPU(EmuIdxList[I]) + '] ' +
+    TermEmuTabBinaryPath(EmuIdxList[I]));
+  Exit;
+ End;
+ Val(P1, N1, ErrCode);
+ If (ErrCode <> 0) Or (N1 < 1) Or (N1 > EmuCount) Then Begin
+  TermAddLine(TP, 'Compare-VM : index invalide : ' + P1 + ' (1 a ' +
+   IntToStr(EmuCount) + ' attendu).');
+  Exit;
+ End;
+ Val(P2, N2, ErrCode);
+ If (ErrCode <> 0) Or (N2 < 1) Or (N2 > EmuCount) Then Begin
+  TermAddLine(TP, 'Compare-VM : index invalide : ' + P2 + ' (1 a ' +
+   IntToStr(EmuCount) + ' attendu).');
+  Exit;
+ End;
+ WI1 := EmuIdxList[N1 - 1];
+ WI2 := EmuIdxList[N2 - 1];
+ TermAddLine(TP, 'Compare-VM : "' + WinMgr.Windows[WI1].Title + '" (' +
+  IntToStr(N1) + ') vs "' + WinMgr.Windows[WI2].Title + '" (' +
+  IntToStr(N2) + ')');
+ AnyDiff := False;
+ If TermEmuTabTargetCPU(WI1) <> TermEmuTabTargetCPU(WI2) Then Begin
+  TermAddLine(TP, '<=  TargetCPU: ' + TermEmuTabTargetCPU(WI1));
+  TermAddLine(TP, '=>  TargetCPU: ' + TermEmuTabTargetCPU(WI2));
+  AnyDiff := True;
+ End;
+ If TermEmuTabBinaryPath(WI1) <> TermEmuTabBinaryPath(WI2) Then Begin
+  TermAddLine(TP, '<=  BinaryPath: ' + TermEmuTabBinaryPath(WI1));
+  TermAddLine(TP, '=>  BinaryPath: ' + TermEmuTabBinaryPath(WI2));
+  AnyDiff := True;
+ End;
+ If TermEmuTabRunning(WI1) <> TermEmuTabRunning(WI2) Then Begin
+  TermAddLine(TP, '<=  Running: ' + TermBoolFR(TermEmuTabRunning(WI1)));
+  TermAddLine(TP, '=>  Running: ' + TermBoolFR(TermEmuTabRunning(WI2)));
+  AnyDiff := True;
+ End;
+ If TermEmuTabFault(WI1) <> TermEmuTabFault(WI2) Then Begin
+  TermAddLine(TP, '<=  Fault: ' + IntToStr(TermEmuTabFault(WI1)));
+  TermAddLine(TP, '=>  Fault: ' + IntToStr(TermEmuTabFault(WI2)));
+  AnyDiff := True;
+ End;
+ If Not AnyDiff Then
+  TermAddLine(TP, 'Compare-VM : compatibles (TargetCPU/BinaryPath/' +
+   'Running/Fault identiques).');
+End;
+
 { --- ADD-HISTORY (2026-08-30, demande explicite de l'utilisateur, "support}
 { complet" dans PowerShell dev) : la VRAIE cmdlet ajoute des entrees a      }
 { l'historique de SESSION (le meme que Get-History/l'objet HistoryInfo).   }
@@ -48479,6 +48619,9 @@ Begin
   TermAddLine(TP,
    '  Compare-Object f1 f2                 Differences ligne-par-ligne');
   TermAddLine(TP,
+   '  Compare-VM [n1 n2]                   Compare 2 onglets emulateur ' +
+   'ouverts');
+  TermAddLine(TP,
    '  Add-History commande                Ajoute au rappel Haut/Bas');
   TermAddLine(TP,
    '  Add-Member ...                       Reconnue, sans objet a completer');
@@ -49355,6 +49498,8 @@ Begin
     TermCmd_ClearRecycleBin(TP, ParamStr)
    Else If CurrCmd = 'COMPARE-OBJECT' Then
     TermCmd_CompareObject(TP, ParamStr)
+   Else If CurrCmd = 'COMPARE-VM' Then
+    TermCmd_CompareVM(TP, ParamStr)
    Else If CurrCmd = 'ADD-HISTORY' Then
     TermCmd_AddHistory(TP, ParamStr)
    Else If CurrCmd = 'ADD-MEMBER' Then

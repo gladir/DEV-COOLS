@@ -1,4 +1,7 @@
-{ @abstract(Clone autonome de Microsoft Console Based Script Host)
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Clone autonome de Microsoft Console Based Script Host)
   @target(Free Pascal 3.2 et Turbo Pascal 7)
 }
 Program CSCRIPT;
@@ -10,9 +13,10 @@ Uses Crt,Dos;
 Const
  MaxArguments=128;
  VersionText='5.812';
- FunctionList:Array[0..14]of String[24]=(
-  'ABS','ASC','CHR','CINT','CLNG','CSTR','INT','LCASE','LEFT','LEN',
-  'RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
+ FunctionList:Array[0..20]of String[24]=(
+  'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
+  'CLNG','CSTR','INT','LCASE','LEFT','LEN','RIGHT','RND','TRIM','UCASE',
+  'WSCRIPT.ARGUMENTS');
 
 Type
  PScriptLine=^TScriptLine;
@@ -47,6 +51,7 @@ Var
  ExprPos:Integer;
  Terminated:Boolean;
  ExitCode:Integer;
+ ArrayCounter:LongInt;
 
 Function Upper(S:String):String;
 Var I:Integer;
@@ -149,7 +154,8 @@ End;
 Procedure ParseExpression(Var V:TValue);Forward;
 
 Procedure ParsePrimary(Var V:TValue);
-Var Q:Char;S,Name,U:String;N:Real;Code,I:Integer;FunctionByte:Byte;A,B:TValue;
+Var Q:Char;S,Name,U,ArrayReference,IndexText:String;N:Real;
+ Code,I,ElementIndex:Integer;FunctionByte:Byte;A,B:TValue;VariableEntry:PVariable;
 Begin
  SkipSpace;If ExprPos>Length(ExprText)Then Begin MakeText('',V);Exit;End;
  If ExprText[ExprPos]in['"','''']Then Begin
@@ -173,6 +179,27 @@ Begin
  If(U='FALSE')or(U='EMPTY')Then Begin MakeNumber(0,V);Exit;End;
  If U='NOTHING'Then Begin MakeText('',V);Exit;End;
  SkipSpace;
+ VariableEntry:=FindVariable(Name);
+ If(VariableEntry<>Nil)and(Copy(VariableEntry^.Value,1,8)='@VBARRAY')and
+   (ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
+  Inc(ExprPos);ParseExpression(A);SkipSpace;
+  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);
+  Str(Trunc(A.Number),IndexText);
+  GetVariable(VariableEntry^.Value+'.'+Trim(IndexText),V);Exit;
+ End;
+ If(U='ARRAY')and(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
+  Inc(ArrayCounter);Str(ArrayCounter,IndexText);
+  ArrayReference:='@VBARRAY'+Trim(IndexText);ElementIndex:=0;Inc(ExprPos);SkipSpace;
+  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]<>')')Do Begin
+   ParseExpression(A);Str(ElementIndex,IndexText);
+   SetVariable(ArrayReference+'.'+Trim(IndexText),A.Text);Inc(ElementIndex);SkipSpace;
+   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);SkipSpace;End
+   Else Break;
+  End;
+  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);
+  Str(ElementIndex,IndexText);SetVariable(ArrayReference+'.COUNT',Trim(IndexText));
+  MakeText(ArrayReference,V);Exit;
+ End;
  If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='(')Then Begin
   Inc(ExprPos);ParseExpression(A);SkipSpace;MakeText('',B);
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=',')Then Begin Inc(ExprPos);ParseExpression(B);SkipSpace;End;
@@ -180,25 +207,34 @@ Begin
   FunctionByte:=FunctionIndex(U);
   Case FunctionByte of
    0:MakeNumber(Abs(A.Number),V);                         { ABS }
-   1:Begin If A.Text=''Then MakeNumber(0,V)
+   1:MakeText('',V);                                      { ARRAY: analyse variadique ci-dessus }
+   2:Begin If A.Text=''Then MakeNumber(0,V)
       Else MakeNumber(Ord(A.Text[1]),V);End;              { ASC }
-   2:MakeText(Chr(Trunc(A.Number)and 255),V);             { CHR }
-   3:MakeNumber(Round(A.Number),V);                       { CINT }
-   4:MakeNumber(Trunc(A.Number),V);                       { CLNG }
-   5:MakeText(A.Text,V);                                  { CSTR }
-   6:MakeNumber(Trunc(A.Number),V);                       { INT }
-   7:Begin                                                { LCASE }
+   3:MakeNumber(ArcTan(A.Number),V);                      { ATN }
+   4:If Truth(A)Then MakeText('True',V)Else MakeText('False',V); { CBOOL }
+   5:Begin                                                { CBYTE }
+      N:=Round(A.Number);
+      If(N<0)or(N>255)Then MakeText('',V)Else MakeNumber(N,V);
+     End;
+   6:MakeText(Trim(A.Text),V);                            { CDATE }
+   7:MakeNumber(A.Number,V);                              { CDBL }
+   8:MakeText(Chr(Trunc(A.Number)and 255),V);             { CHR }
+   9:MakeNumber(Round(A.Number),V);                       { CINT }
+   10:MakeNumber(Trunc(A.Number),V);                      { CLNG }
+   11:MakeText(A.Text,V);                                 { CSTR }
+   12:MakeNumber(Trunc(A.Number),V);                      { INT }
+   13:Begin                                               { LCASE }
       S:=A.Text;
       For I:=1To Length(S)Do If S[I]in['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
       MakeText(S,V);
      End;
-   8:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);          { LEFT }
-   9:MakeNumber(Length(A.Text),V);                        { LEN }
-   10:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
-   11:MakeNumber(Random,V);                               { RND }
-   12:MakeText(Trim(A.Text),V);                           { TRIM }
-   13:MakeText(Upper(A.Text),V);                          { UCASE }
-   14:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+   14:MakeText(Copy(A.Text,1,Trunc(B.Number)),V);         { LEFT }
+   15:MakeNumber(Length(A.Text),V);                       { LEN }
+   16:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
+   17:MakeNumber(Random,V);                               { RND }
+   18:MakeText(Trim(A.Text),V);                           { TRIM }
+   19:MakeText(Upper(A.Text),V);                          { UCASE }
+   20:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
        MakeText(ScriptArguments[Trunc(A.Number)],V)
       Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
    Else MakeText('',V);
@@ -468,7 +504,7 @@ End;
 
 BEGIN
  Randomize;Variables:=Nil;FirstScriptLine:=Nil;LastScriptLine:=Nil;
- LineCount:=0;ScriptArgumentCount:=0;Terminated:=False;ExitCode:=0;
+ LineCount:=0;ArrayCounter:=0;ScriptArgumentCount:=0;Terminated:=False;ExitCode:=0;
  ParseOptions;
  If Not Terminated Then Begin
   If Upper(EngineName)<>'VBSCRIPT'Then Begin WriteLn('Moteur de script inconnu: ',EngineName);ExitCode:=1;End
