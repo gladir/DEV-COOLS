@@ -15,13 +15,14 @@ Const
  VersionText='5.812';
  ValueEmpty=0;ValueString=1;ValueNumber=2;ValueDate=3;
  ValueArray=4;ValueError=5;ValueNull=6;ValueObject=7;
- FunctionList:Array[0..49]of String[24]=(
+ FunctionList:Array[0..61]of String[24]=(
   'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
   'CLNG','COS','CSNG','CSTR','CVERR','DATE','DATESERIAL','DATEVALUE','DAY',
   'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','ISARRAY','ISDATE',
   'ISEMPTY','ISERROR','ISNULL','ISNUMERIC','ISOBJECT','LBOUND','LCASE',
   'LEFT','LEN','LOG','LTRIM','MID','MINUTE','MONTH','MSGBOX','NOW','OCT',
-  'RIGHT','RND','TRIM','UCASE','WSCRIPT.ARGUMENTS');
+  'RIGHT','RND','RTRIM','SECOND','SGN','SIN','SQR','STR','STRCOMP','STRING',
+  'TAN','TIME','TIMESERIAL','TIMEVALUE','TRIM','UCASE','WSCRIPT.ARGUMENTS');
 
 Type
  PScriptLine=^TScriptLine;
@@ -218,6 +219,20 @@ Begin
  Else MakeText('',V);
 End;
 
+Procedure DateSecondValue(SourceText:String;Var V:TValue);
+Var P,SecondValue,Code:Integer;TimeText:String;
+Begin
+ SourceText:=Trim(SourceText);P:=Pos(' ',SourceText);
+ If P>0Then TimeText:=Trim(Copy(SourceText,P+1,255))Else TimeText:=SourceText;
+ P:=Pos(':',TimeText);If P=0Then Begin MakeNumber(0,V);Exit;End;
+ Delete(TimeText,1,P);P:=Pos(':',TimeText);
+ If P=0Then Begin MakeNumber(0,V);Exit;End;Delete(TimeText,1,P);
+ P:=1;While(P<=Length(TimeText))and(TimeText[P]in['0'..'9'])Do Inc(P);
+ Val(Copy(TimeText,1,P-1),SecondValue,Code);
+ If(Code=0)and(SecondValue>=0)and(SecondValue<=59)Then MakeNumber(SecondValue,V)
+ Else MakeText('',V);
+End;
+
 Procedure DateMonthValue(SourceText:String;Var V:TValue);
 Var DateValue:TValue;MonthValue,Code:Integer;
 Begin
@@ -263,6 +278,74 @@ Begin
   NumberValue:=NumberValue shr 3;Inc(Count);
  Until((Not Negative)and(NumberValue=0))or(Negative and(Count=11));
  MakeText(ResultText,V);
+End;
+
+Procedure StrValue(NumberValue:Real;Var V:TValue);
+Var Number:TValue;
+Begin
+ MakeNumber(NumberValue,Number);
+ If NumberValue>=0Then MakeText(' '+Number.Text,V)Else MakeText(Number.Text,V);
+End;
+
+Procedure MakeTimeValue(HourValue,MinuteValue,SecondValue:LongInt;Var V:TValue);
+Var TotalSeconds:LongInt;HourText,MinuteText,SecondText:String;
+Begin
+ TotalSeconds:=HourValue*3600+MinuteValue*60+SecondValue;
+ TotalSeconds:=TotalSeconds mod 86400;If TotalSeconds<0Then Inc(TotalSeconds,86400);
+ HourValue:=TotalSeconds div 3600;MinuteValue:=(TotalSeconds mod 3600)div 60;
+ SecondValue:=TotalSeconds mod 60;Str(HourValue,HourText);Str(MinuteValue,MinuteText);
+ Str(SecondValue,SecondText);If Length(HourText)<2Then HourText:='0'+HourText;
+ If Length(MinuteText)<2Then MinuteText:='0'+MinuteText;
+ If Length(SecondText)<2Then SecondText:='0'+SecondText;
+ MakeText(HourText+':'+MinuteText+':'+SecondText,V);V.ValueKind:=ValueDate;
+End;
+
+Procedure CurrentTimeValue(Var V:TValue);
+Var HourValue,MinuteValue,SecondValue,Hundredth:Word;
+Begin GetTime(HourValue,MinuteValue,SecondValue,Hundredth);
+ MakeTimeValue(HourValue,MinuteValue,SecondValue,V);End;
+
+Procedure ParseTimeValue(SourceText:String;Var V:TValue);
+Var P,Code,HourValue,MinuteValue,SecondValue:Integer;UpperText,Part:String;
+ IsPM,IsAM:Boolean;
+Begin
+ SourceText:=Trim(SourceText);P:=Pos(' ',SourceText);
+ If(P>0)and(Pos(':',Copy(SourceText,P+1,255))>0)Then SourceText:=Trim(Copy(SourceText,P+1,255));
+ UpperText:=Upper(SourceText);IsPM:=Pos('PM',UpperText)>0;IsAM:=Pos('AM',UpperText)>0;
+ P:=Pos(':',SourceText);If P=0Then Begin MakeText('',V);Exit;End;
+ Part:=Copy(SourceText,1,P-1);Val(Trim(Part),HourValue,Code);
+ If Code<>0Then Begin MakeText('',V);Exit;End;Delete(SourceText,1,P);
+ P:=Pos(':',SourceText);
+ If P>0Then Begin Part:=Copy(SourceText,1,P-1);Delete(SourceText,1,P);End
+ Else Begin Part:=SourceText;SourceText:='0';End;
+ Val(Trim(Part),MinuteValue,Code);If Code<>0Then Begin MakeText('',V);Exit;End;
+ P:=1;While(P<=Length(SourceText))and(SourceText[P]in['0'..'9'])Do Inc(P);
+ If P=1Then SecondValue:=0 Else Begin Val(Copy(SourceText,1,P-1),SecondValue,Code);
+  If Code<>0Then Begin MakeText('',V);Exit;End;End;
+ If IsPM and(HourValue<12)Then Inc(HourValue,12);
+ If IsAM and(HourValue=12)Then HourValue:=0;
+ If(HourValue<0)or(HourValue>23)or(MinuteValue<0)or(MinuteValue>59)or
+   (SecondValue<0)or(SecondValue>59)Then MakeText('',V)
+ Else MakeTimeValue(HourValue,MinuteValue,SecondValue,V);
+End;
+
+Procedure StrCompValue(A,B,C:TValue;ArgumentCount:Integer;Var V:TValue);
+Var LeftText,RightText:String;
+Begin
+ If(A.ValueKind=ValueNull)or(B.ValueKind=ValueNull)Then Begin MakeText('',V);V.ValueKind:=ValueNull;Exit;End;
+ LeftText:=A.Text;RightText:=B.Text;
+ If(ArgumentCount>=3)and(Trunc(C.Number)=1)Then Begin LeftText:=Upper(LeftText);RightText:=Upper(RightText);End;
+ If LeftText<RightText Then MakeNumber(-1,V)Else If LeftText>RightText Then MakeNumber(1,V)Else MakeNumber(0,V);
+End;
+
+Procedure StringValue(Count:Integer;CharacterValue:TValue;Var V:TValue);
+Var ResultText:String;Character:Char;
+Begin
+ If Count<0Then Begin MakeText('',V);Exit;End;If Count>255Then Count:=255;
+ If CharacterValue.IsNumber Then Character:=Chr(Trunc(CharacterValue.Number)and 255)
+ Else If CharacterValue.Text=''Then Character:=#0Else Character:=CharacterValue.Text[1];
+ ResultText:='';While Length(ResultText)<Count Do ResultText:=ResultText+Character;
+ MakeText(ResultText,V);V.ValueKind:=ValueString;
 End;
 
 Procedure MsgBoxValue(MessageText:String;StyleValue:Integer;TitleText:String;Var V:TValue);
@@ -404,10 +487,11 @@ Begin
  If U='NOTHING'Then Begin MakeText('',V);V.ValueKind:=ValueObject;Exit;End;
  SkipSpace;
  FunctionByte:=FunctionIndex(U);
- If((FunctionByte=15)or(FunctionByte=43))and
+ If((FunctionByte=15)or(FunctionByte=43)or(FunctionByte=56))and
    ((ExprPos>Length(ExprText))or(ExprText[ExprPos]<>'('))Then Begin
   If FunctionByte=15Then Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
-   MakeDateValue(DateYear,DateMonth,DateDay,V);End Else NowValue(V);Exit;
+   MakeDateValue(DateYear,DateMonth,DateDay,V);End
+  Else If FunctionByte=43Then NowValue(V)Else CurrentTimeValue(V);Exit;
  End;
  VariableEntry:=FindVariable(Name);
  If(VariableEntry<>Nil)and(Copy(VariableEntry^.Value,1,8)='@VBARRAY')and
@@ -518,9 +602,26 @@ Begin
    44:OctValue(Trunc(A.Number),V);                        { OCT }
    45:MakeText(Copy(A.Text,Length(A.Text)-Trunc(B.Number)+1,255),V); { RIGHT }
    46:MakeNumber(Random,V);                               { RND }
-   47:MakeText(Trim(A.Text),V);                           { TRIM }
-   48:MakeText(Upper(A.Text),V);                          { UCASE }
-   49:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+   47:Begin                                               { RTRIM }
+      If A.ValueKind=ValueNull Then V:=A Else Begin S:=A.Text;
+       While(Length(S)>0)and(S[Length(S)]=' ')Do Delete(S,Length(S),1);
+       MakeText(S,V);End;
+     End;
+   48:DateSecondValue(A.Text,V);                          { SECOND }
+   49:If A.Number<0Then MakeNumber(-1,V)
+      Else If A.Number>0Then MakeNumber(1,V)Else MakeNumber(0,V); { SGN }
+   50:MakeNumber(Sin(A.Number),V);                        { SIN }
+   51:If A.Number<0Then MakeText('',V)Else MakeNumber(Sqrt(A.Number),V); { SQR }
+   52:StrValue(A.Number,V);                               { STR }
+   53:StrCompValue(A,B,C,ArgumentCount,V);                { STRCOMP }
+   54:StringValue(Trunc(A.Number),B,V);                   { STRING }
+   55:If Cos(A.Number)=0Then MakeText('',V)Else MakeNumber(Sin(A.Number)/Cos(A.Number),V); { TAN }
+   56:CurrentTimeValue(V);                                { TIME }
+   57:MakeTimeValue(Trunc(A.Number),Trunc(B.Number),Trunc(C.Number),V); { TIMESERIAL }
+   58:ParseTimeValue(A.Text,V);                           { TIMEVALUE }
+   59:MakeText(Trim(A.Text),V);                           { TRIM }
+   60:MakeText(Upper(A.Text),V);                          { UCASE }
+   61:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
        MakeText(ScriptArguments[Trunc(A.Number)],V)
       Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
    Else MakeText('',V);
