@@ -906,6 +906,7 @@ End;
 Procedure ExecuteRange(FirstLine,LastLine:LongInt);Forward;
 Procedure CallSub(CallText:String);Forward;
 Function ListItem(Var Source:String):String;Forward;
+Function SimpleIdentifier(Source:String):Boolean;Forward;
 
 Procedure DeclareVariable(Declaration:String);
 Var Name,Bounds,Reference,NumberText:String;P:Integer;UpperBound:TValue;ArrayValue:TValue;
@@ -990,7 +991,7 @@ Procedure ExecuteRange(FirstLine,LastLine:LongInt);
 Var S,U,Condition,Name,Rest:String;P,ThenPos,ElsePos:Integer;
  EndLine,BodyStart,I,ElseLine,ElementIndex,ElementCount:LongInt;
  V,StartValue,EndValue,StepValue,Counter,Collection,CountValue:TValue;
- LoopAgain,UntilMode:Boolean;IndexText:String;
+ LoopAgain,UntilMode:Boolean;IndexText,NextName:String;
 Begin
  I:=FirstLine;
  While(I<=LastLine)and Not Terminated and Not ExitDoRequested and
@@ -1033,8 +1034,14 @@ Begin
    End;
    I:=EndLine;
   End Else If StartsWith(S,'FOR ')Then Begin
-   Rest:=Trim(Copy(S,5,255));P:=FindAssignment(Rest);Name:=Trim(Copy(Rest,1,P-1));Delete(Rest,1,P);
-   ThenPos:=Pos(' TO ',Upper(Rest));Evaluate(Copy(Rest,1,ThenPos-1),StartValue);Delete(Rest,1,ThenPos+3);
+   Rest:=Trim(Copy(S,5,255));P:=FindAssignment(Rest);
+   If P=0Then Begin WriteLn('Erreur VBScript: FOR sans signe =.');ExitCode:=1;Terminated:=True;Exit;End;
+   Name:=Trim(Copy(Rest,1,P-1));Delete(Rest,1,P);
+   If Not SimpleIdentifier(Name)Then Begin WriteLn('Erreur VBScript: compteur FOR invalide.');
+    ExitCode:=1;Terminated:=True;Exit;End;
+   ThenPos:=Pos(' TO ',Upper(Rest));
+   If ThenPos=0Then Begin WriteLn('Erreur VBScript: FOR sans TO.');ExitCode:=1;Terminated:=True;Exit;End;
+   Evaluate(Copy(Rest,1,ThenPos-1),StartValue);Delete(Rest,1,ThenPos+3);
    ElsePos:=Pos(' STEP ',Upper(Rest));If ElsePos>0Then Begin
     Evaluate(Copy(Rest,1,ElsePos-1),EndValue);
     Evaluate(Copy(Rest,ElsePos+6,255),StepValue);
@@ -1044,7 +1051,16 @@ Begin
     Evaluate(Rest,EndValue);
     MakeNumber(1,StepValue);
    End;
+   If Not StartValue.IsNumber or Not EndValue.IsNumber or Not StepValue.IsNumber Then Begin
+    WriteLn('Erreur VBScript: bornes FOR non numeriques.');ExitCode:=1;Terminated:=True;Exit;End;
+   If StepValue.Number=0Then Begin WriteLn('Erreur VBScript: STEP ne peut pas etre nul.');
+    ExitCode:=1;Terminated:=True;Exit;End;
    EndLine:=FindBlock(I,'FOR ','NEXT');
+   NextName:=Trim(Copy(Trim(ScriptLineText(EndLine)),5,255));
+   If(NextName<>'')and(Upper(NextName)<>Upper(Name))Then Begin
+    WriteLn('Erreur VBScript: NEXT ',NextName,' ne correspond pas a FOR ',Name,'.');
+    ExitCode:=1;Terminated:=True;Exit;
+   End;
    Counter:=StartValue;
    While(((StepValue.Number>=0)and(Counter.Number<=EndValue.Number))or((StepValue.Number<0)and
         (Counter.Number>=EndValue.Number)))and Not Terminated and Not ExitSubRequested and
