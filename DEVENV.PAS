@@ -37378,6 +37378,72 @@ Begin
  Close(Handle);
 End;
 
+{ --- CLEAR-CONTENT / CLEAR-ITEM (2026-08-31, demande explicite de         }
+{ l'utilisateur, "support complet") : contrepartie REELLE d'Add-Content    }
+{ ci-dessus - la VRAIE cmdlet VIDE un fichier (le tronque a 0 octet) SANS  }
+{ le supprimer, contrairement a DEL/Remove-Item. Implantation directe :    }
+{ `Rewrite` sur un fichier EXISTANT le tronque immediatement, exactement   }
+{ le contrat reel de Clear-Content. Clear-Item est IDENTIQUE ici :         }
+{ la vraie cmdlet est generique par fournisseur PowerShell (efface une     }
+{ valeur de registre, une variable, etc. selon le "provider" cible) - ce   }
+{ terminal n'a QUE le systeme de fichiers comme "provider" (pas de         }
+{ registre, pas de $variable, voir Add-Member), donc Clear-Item sur un     }
+{ fichier a EXACTEMENT le meme contrat reel que Clear-Content sur ce meme  }
+{ fournisseur - pas un alias arbitraire, le comportement authentique de la }
+{ vraie cmdlet dans ce cas precis. }
+Procedure TermCmd_ClearContent(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, FilePath: String;
+ PathFlagPos: Integer;
+ Handle: File;
+ Err: Word;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ If PathFlagPos > 0 Then
+  FilePath := TrimStr(TermExtractParam(Copy(ParamStr, PathFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else
+  FilePath := TermExtractParam(ParamStr, 1);
+ If FilePath = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Clear-Content fichier');
+  TermAddLine(TP, '     ou : Clear-Content -Path fichier');
+  Exit;
+ End;
+ If Not FileExists(FilePath) Then Begin
+  TermAddLine(TP, 'Clear-Content : le systeme ne trouve pas le fichier ' +
+   'specifie : ' + FilePath);
+  Exit;
+ End;
+ Assign(Handle, FilePath);
+ {$I-} Rewrite(Handle, 1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Close(Handle);
+End;
+
+Procedure TermCmd_ClearItem(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_ClearContent(TP, ParamStr);
+End;
+
+{ --- CLEAR-HISTORY (2026-08-31, demande explicite de l'utilisateur) :    }
+{ contrepartie REELLE d'Add-History ci-dessus - vide REELLEMENT le VRAI    }
+{ historique de rappel Haut/Bas de ce terminal (TP.TermHistory[]/          }
+{ NumberHistory), pas juste son affichage. HistoryPos remis a 1 (meme      }
+{ invariant que TermAddHistory : "une position au-dela de la derniere      }
+{ entree", ici 0 entree donc position 1) pour rester coherent avec le      }
+{ reste du mecanisme de rappel plutot que de le laisser pointer sur une    }
+{ position perimee. }
+Procedure TermCmd_ClearHistory(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TP.NumberHistory := 0;
+ TP.HistoryPos := 1;
+End;
+
 { --- ADD-HISTORY (2026-08-30, demande explicite de l'utilisateur, "support}
 { complet" dans PowerShell dev) : la VRAIE cmdlet ajoute des entrees a      }
 { l'historique de SESSION (le meme que Get-History/l'objet HistoryInfo).   }
@@ -47898,6 +47964,12 @@ Begin
   TermAddLine(TP,
    '  Add-Content -Path f -Value texte     Meme chose (syntaxe nommee)');
   TermAddLine(TP,
+   '  Clear-Content fichier                Vide un fichier (0 octet)');
+  TermAddLine(TP,
+   '  Clear-Item fichier                   Idem (meme fournisseur ici)');
+  TermAddLine(TP,
+   '  Clear-History                        Vide le rappel Haut/Bas');
+  TermAddLine(TP,
    '  Add-History commande                Ajoute au rappel Haut/Bas');
   TermAddLine(TP,
    '  Add-Member ...                       Reconnue, sans objet a completer');
@@ -48758,6 +48830,12 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'ADD-CONTENT' Then
     TermCmd_AddContent(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR-CONTENT' Then
+    TermCmd_ClearContent(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR-ITEM' Then
+    TermCmd_ClearItem(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR-HISTORY' Then
+    TermCmd_ClearHistory(TP, ParamStr)
    Else If CurrCmd = 'ADD-HISTORY' Then
     TermCmd_AddHistory(TP, ParamStr)
    Else If CurrCmd = 'ADD-MEMBER' Then
