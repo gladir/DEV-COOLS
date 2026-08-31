@@ -1001,6 +1001,14 @@ Uses DOS,
       Crt,Graph
      {$ENDIF};
 
+{ DATA_BLOB (Win32 WinCrypt.h) - utilise par CryptProtectData ci-dessous    }
+{ pour ConvertFrom-SecureString (2026-08-31). }
+Type
+ TDpapiBlob = Record
+  cbData: LongWord;
+  pbData: Pointer;
+ End;
+
 {$IFDEF WINDOWS}
 Function GetAsyncKeyState(vKey: LongInt): SmallInt;
          StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
@@ -1057,6 +1065,41 @@ Function Win_GlobalSize(hMem: LongInt): LongInt;
 Function SHEmptyRecycleBinA(hWnd: LongInt; pszRootPath: PChar;
          dwFlags: LongWord): LongInt;
          StdCall; External 'shell32.dll' Name 'SHEmptyRecycleBinA';
+{ ConvertFrom-SecureString (2026-08-31, demande explicite) - VRAI chiffrement}
+{ DPAPI (CryptProtectData), exactement le mecanisme reel utilise par la     }
+{ vraie cmdlet quand aucun -Key n'est fourni (lie a l'utilisateur+machine    }
+{ courants) - voir PsDpapiProtectToHex. }
+Function Win_LocalFree(hMem: Pointer): Pointer;
+         StdCall; External 'kernel32.dll' Name 'LocalFree';
+Function CryptProtectData(Var pDataIn: TDpapiBlob; szDataDescr: Pointer;
+         pOptionalEntropy: Pointer; pvReserved: Pointer;
+         pPromptStruct: Pointer; dwFlags: LongWord;
+         Var pDataOut: TDpapiBlob): LongBool;
+         StdCall; External 'crypt32.dll' Name 'CryptProtectData';
+{ ConvertFrom-SddlString (2026-08-31, demande explicite) - VRAIES API        }
+{ Windows de securite (advapi32.dll) : analyse REELLEMENT une chaine SDDL   }
+{ en descripteur de securite binaire, aucun analyseur SDDL maison ecrit ici -}
+{ voir SddlParseToProps. }
+Function ConvertStringSecurityDescriptorToSecurityDescriptorA(
+         StringSecurityDescriptor: PChar; StringSDRevision: LongWord;
+         Var SecurityDescriptor: Pointer; SecurityDescriptorSize: Pointer): LongBool;
+         StdCall; External 'advapi32.dll'
+         Name 'ConvertStringSecurityDescriptorToSecurityDescriptorA';
+Function GetSecurityDescriptorOwner(pSecurityDescriptor: Pointer;
+         Var pOwner: Pointer; Var lpbOwnerDefaulted: LongBool): LongBool;
+         StdCall; External 'advapi32.dll' Name 'GetSecurityDescriptorOwner';
+Function GetSecurityDescriptorGroup(pSecurityDescriptor: Pointer;
+         Var pGroup: Pointer; Var lpbGroupDefaulted: LongBool): LongBool;
+         StdCall; External 'advapi32.dll' Name 'GetSecurityDescriptorGroup';
+Function GetSecurityDescriptorDacl(pSecurityDescriptor: Pointer;
+         Var lpbDaclPresent: LongBool; Var pDacl: Pointer;
+         Var lpbDaclDefaulted: LongBool): LongBool;
+         StdCall; External 'advapi32.dll' Name 'GetSecurityDescriptorDacl';
+Function ConvertSidToStringSidA(Sid: Pointer; Var StringSid: PChar): LongBool;
+         StdCall; External 'advapi32.dll' Name 'ConvertSidToStringSidA';
+Function Win_GetAce(pAcl: Pointer; dwAceIndex: LongWord;
+         Var pAce: Pointer): LongBool;
+         StdCall; External 'advapi32.dll' Name 'GetAce';
 {$ENDIF}
 
 Const
@@ -61664,6 +61707,37 @@ Begin
  PsIsValidVarName := True;
 End;
 
+{ BOGUE REEL trouve par test en direct (2026-08-31) : TermAddLine (voir sa   }
+{ propre declaration) prend un `S: String` (ShortString, borne a 255        }
+{ caracteres) - une contrainte PREEXISTANTE de TOUT le mecanisme d'affichage }
+{ du terminal (TP.Lines[]/TP.TermHistory[] sont eux-memes des tableaux de   }
+{ String bornes), pas quelque chose a corriger ici (changer la signature    }
+{ de TermAddLine toucherait des milliers de sites d'appel dans tout ce      }
+{ fichier). Un blob DPAPI hex-encode fait TOUJOURS 200-300+ caracteres -    }
+{ verifie en direct via decryptage independant avec le VRAI               }
+{ [System.Security.Cryptography.ProtectedData] de .NET (PowerShell reel) : }
+{ la valeur AFFICHEE etait tronquee a 255 caracteres (la valeur STOCKEE     }
+{ dans une variable $enc, elle, reste correcte et complete - TPsVar.        }
+{ ScalarValue est deja AnsiString non borne, seul l'AFFICHAGE etait en       }
+{ cause). Corrige en decoupant tout texte de sortie trop long en plusieurs  }
+{ appels TermAddLine plutot que de perdre silencieusement la fin. }
+Procedure TermAddLineWrapped(Var TP: TTerminalPanel; S: AnsiString);
+Const
+ PS_LINE_CHUNK = 240;
+Var
+ P: Integer;
+Begin
+ If S = '' Then Begin
+  TermAddLine(TP, '');
+  Exit;
+ End;
+ P := 1;
+ While P <= Length(S) Do Begin
+  TermAddLine(TP, Copy(S, P, PS_LINE_CHUNK));
+  Inc(P, PS_LINE_CHUNK);
+ End;
+End;
+
 { --- Analyseur YAML (sous-ensemble bloc courant, documente et borne,      }
 { meme discipline que ConvertFrom-Markdown ci-dessus) : mappings "cle:     }
 { valeur" imbriques par INDENTATION, sequences "- item" (scalaires ou      }
@@ -61967,6 +62041,331 @@ Begin
  End;
 End;
 
+{ --- ConvertFrom-StringData --- (2026-08-31, demande explicite) : format  }
+{ "cle = valeur" simple (proprietes/.ini sans sections), commentaires #,   }
+{ reutilise TEL QUEL le decoupage de lignes deja ecrit pour YAML           }
+{ (YamlSplitLines/TYamlLines/YamlUnquote) plutot que de le reecrire. }
+
+Function StringDataParseToProps(Text: AnsiString): PPsProp;
+Var
+ L: TYamlLines;
+ LineCount, I, EqPos: Integer;
+ Line, Key, Value: AnsiString;
+ Head, Tail: PPsProp;
+Begin
+ LineCount := YamlSplitLines(Text, L);
+ Head := Nil; Tail := Nil;
+ For I := 1 To LineCount Do Begin
+  Line := TermTrim(L[I]);
+  If (Line <> '') And (Copy(Line, 1, 1) <> '#') Then Begin
+   EqPos := Pos('=', Line);
+   If EqPos > 0 Then Begin
+    Key := TermTrim(Copy(Line, 1, EqPos - 1));
+    Value := TermTrim(Copy(Line, EqPos + 1, Length(Line)));
+    If Key <> '' Then PsAddProp(Head, Tail, Key, YamlUnquote(Value));
+   End;
+  End;
+ End;
+ StringDataParseToProps := Head;
+End;
+
+Procedure TermCmd_ConvertFromStringData(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, UpLevel: String;
+ F: Text;
+ Line: AnsiString;
+ WholeText: AnsiString;
+ Props, P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-PATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-StringData -Path fichier.txt');
+  TermAddLine(TP, '          $var = ConvertFrom-StringData $texte   (capture ' +
+   'dans une variable objet)');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'ConvertFrom-StringData : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'ConvertFrom-StringData : impossible d''ouvrir ' + PathArg);
+  Exit;
+ End;
+ WholeText := '';
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  WholeText := WholeText + Line + #10;
+ End;
+ Close(F);
+
+ Props := StringDataParseToProps(WholeText);
+ If Props = Nil Then
+  TermAddLine(TP, 'ConvertFrom-StringData : aucune paire cle=valeur reconnue.')
+ Else Begin
+  P := Props;
+  While P <> Nil Do Begin
+   TermAddLine(TP, P^.Name + ' : ' + P^.Value);
+   P := P^.Next;
+  End;
+  PsDisposeProps(Props);
+ End;
+End;
+
+{ --- ConvertFrom-SecureString --- (2026-08-31, demande explicite) : VRAI  }
+{ chiffrement DPAPI (CryptProtectData, voir la declaration External pres   }
+{ de SHEmptyRecycleBinA) - exactement le mecanisme reel utilise par la     }
+{ vraie cmdlet sans -Key (lie a l'utilisateur+machine courants : seul le    }
+{ meme compte Windows sur cette meme machine peut le rechiffrer en sens     }
+{ inverse via CryptUnprotectData). Limitation honnete DISCLOSEE : ce         }
+{ terminal n'a aucun type SecureString reel (pas de saisie masquee a        }
+{ l'ecran) - le texte EN CLAIR d'une variable/d'un litteral est directement }
+{ chiffre, contrairement a la vraie cmdlet qui chiffre un objet deja        }
+{ protege en memoire. Le format de sortie est le blob DPAPI brut encode en  }
+{ hexadecimal (PAS l'encapsulation .NET SecureString interne complete de la}
+{ vraie cmdlet) - donc non decryptable par un VRAI ConvertTo-SecureString   }
+{ PowerShell tel quel, mais le VRAI mecanisme de protection (meme frontiere }
+{ de securite DPAPI) est authentique, verifiable independamment via         }
+{ CryptUnprotectData. }
+
+Type
+ TDpapiByteArr = Array[0..65535] Of Byte;
+ PDpapiByteArr = ^TDpapiByteArr;
+
+Function PsDpapiProtectToHex(PlainText: AnsiString): AnsiString;
+Var
+ InBlob, OutBlob: TDpapiBlob;
+ Res: AnsiString;
+ I: LongWord;
+Begin
+ PsDpapiProtectToHex := '';
+ If PlainText = '' Then Exit;
+ {$IFDEF WINDOWS}
+ InBlob.cbData := Length(PlainText);
+ InBlob.pbData := @PlainText[1];
+ OutBlob.cbData := 0;
+ OutBlob.pbData := Nil;
+ { CRYPTPROTECT_UI_FORBIDDEN = 1 : jamais d'invite Windows native, coherent }
+ { avec un terminal non interactif (meme discipline que Clear-RecycleBin). }
+ If CryptProtectData(InBlob, Nil, Nil, Nil, Nil, 1, OutBlob) Then Begin
+  Res := '';
+  For I := 0 To OutBlob.cbData - 1 Do
+   Res := Res + HexByte(PDpapiByteArr(OutBlob.pbData)^[I]);
+  Win_LocalFree(OutBlob.pbData);
+  PsDpapiProtectToHex := Res;
+ End;
+ {$ENDIF}
+End;
+
+Procedure TermCmd_ConvertFromSecureString(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PlainArg: String;
+ Encrypted: AnsiString;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PlainArg := '';
+ For I := 1 To LocalArgCount Do
+  If TermStrToUpper(LocalArgs[I]) <> '-STRING' Then Begin
+   If PlainArg <> '' Then PlainArg := PlainArg + ' ';
+   PlainArg := PlainArg + LocalArgs[I];
+  End;
+ { Meme raison que ConvertFrom-SddlString ci-dessous : TermExtractParam ne }
+ { retire jamais les guillemets d'un argument tape entre guillemets. }
+ PlainArg := YamlUnquote(PlainArg);
+
+ If PlainArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-SecureString texte  (ou -String texte)');
+  TermAddLine(TP, '          $enc = ConvertFrom-SecureString $texteClair');
+  Exit;
+ End;
+ Encrypted := PsDpapiProtectToHex(PlainArg);
+ If Encrypted = '' Then
+  TermAddLine(TP, 'ConvertFrom-SecureString : echec du chiffrement DPAPI.')
+ Else
+  TermAddLineWrapped(TP, Encrypted);
+End;
+
+{ --- ConvertFrom-SddlString --- (2026-08-31, demande explicite) : VRAIES  }
+{ API Windows de securite (advapi32.dll, voir les declarations External    }
+{ pres de SHEmptyRecycleBinA) - analyse REELLEMENT la chaine SDDL en        }
+{ descripteur de securite binaire puis en extrait Owner/Group/DACL, aucun   }
+{ analyseur SDDL ecrit a la main ici (contrairement a YAML/JSON/CSV/         }
+{ Markdown : la syntaxe SDDL correspond EXACTEMENT a un appel systeme       }
+{ deja existant qui fait tout le travail). Lecture des en-tetes ACL/ACE     }
+{ par octets bruts (SddlByteAt/WordAt/DWordAt) plutot que par overlay de    }
+{ Record Pascal, pour eviter toute divergence d'alignement/bourrage avec    }
+{ la disposition memoire C reelle de ACL/ACE_HEADER. }
+
+Function SddlByteAt(P: Pointer; Offset: LongWord): Byte;
+Begin
+ SddlByteAt := PDpapiByteArr(P)^[Offset];
+End;
+
+Function SddlWordAt(P: Pointer; Offset: LongWord): Word;
+Begin
+ SddlWordAt := PDpapiByteArr(P)^[Offset] Or
+  (Word(PDpapiByteArr(P)^[Offset+1]) Shl 8);
+End;
+
+Function SddlPCharToStr(P: PChar): String;
+Var
+ S: String;
+ I: Integer;
+Begin
+ S := '';
+ I := 0;
+ While (P[I] <> #0) And (I < 250) Do Begin
+  S := S + P[I];
+  Inc(I);
+ End;
+ SddlPCharToStr := S;
+End;
+
+Function SddlAceTypeName(T: Byte): String;
+Begin
+ Case T Of
+  0: SddlAceTypeName := 'ACCESS_ALLOWED';
+  1: SddlAceTypeName := 'ACCESS_DENIED';
+  2: SddlAceTypeName := 'SYSTEM_AUDIT';
+  5: SddlAceTypeName := 'ACCESS_ALLOWED_OBJECT';
+  6: SddlAceTypeName := 'ACCESS_DENIED_OBJECT';
+  7: SddlAceTypeName := 'SYSTEM_AUDIT_OBJECT';
+ Else
+  SddlAceTypeName := 'TYPE_' + IntToStr(T);
+ End;
+End;
+
+Function SddlHex(V: LongWord): String;
+Begin
+ SddlHex := '0x' + HexByte((V Shr 24) And $FF) + HexByte((V Shr 16) And $FF) +
+  HexByte((V Shr 8) And $FF) + HexByte(V And $FF);
+End;
+
+Function SddlParseToProps(Sddl: AnsiString): PPsProp;
+Var
+ SD, Owner, Group, Dacl, Ace, SidPtr: Pointer;
+ OwnerDefaulted, GroupDefaulted, DaclPresent, DaclDefaulted: LongBool;
+ OwnerStr, GroupStr, SidStr: PChar;
+ AceCount, AceIdx: LongWord;
+ AceType: Byte;
+ AceMaskLo, AceMaskHi: Word;
+ Head, Tail: PPsProp;
+ ElemLbl: String;
+Begin
+ SddlParseToProps := Nil;
+ {$IFDEF WINDOWS}
+ Head := Nil; Tail := Nil;
+ SD := Nil;
+ If Not ConvertStringSecurityDescriptorToSecurityDescriptorA(PChar(Sddl), 1,
+    SD, Nil) Then Exit;
+ If GetSecurityDescriptorOwner(SD, Owner, OwnerDefaulted) And (Owner <> Nil) Then Begin
+  If ConvertSidToStringSidA(Owner, OwnerStr) Then Begin
+   PsAddProp(Head, Tail, 'Owner', SddlPCharToStr(OwnerStr));
+   Win_LocalFree(OwnerStr);
+  End;
+ End;
+ If GetSecurityDescriptorGroup(SD, Group, GroupDefaulted) And (Group <> Nil) Then Begin
+  If ConvertSidToStringSidA(Group, GroupStr) Then Begin
+   PsAddProp(Head, Tail, 'Group', SddlPCharToStr(GroupStr));
+   Win_LocalFree(GroupStr);
+  End;
+ End;
+ If GetSecurityDescriptorDacl(SD, DaclPresent, Dacl, DaclDefaulted) And
+    DaclPresent And (Dacl <> Nil) Then Begin
+  AceCount := SddlWordAt(Dacl, 4);
+  PsAddProp(Head, Tail, 'Dacl.Count', IntToStr(AceCount));
+  For AceIdx := 0 To AceCount - 1 Do
+   If Win_GetAce(Dacl, AceIdx, Ace) Then Begin
+    ElemLbl := YamlIndexLabel('Dacl', AceIdx);
+    AceType := SddlByteAt(Ace, 0);
+    AceMaskLo := SddlWordAt(Ace, 4);
+    AceMaskHi := SddlWordAt(Ace, 6);
+    PsAddProp(Head, Tail, ElemLbl + '.AceType', SddlAceTypeName(AceType));
+    PsAddProp(Head, Tail, ElemLbl + '.AccessMask',
+     SddlHex((LongWord(AceMaskHi) Shl 16) Or AceMaskLo));
+    SidPtr := @(PDpapiByteArr(Ace)^[8]);
+    If ConvertSidToStringSidA(SidPtr, SidStr) Then Begin
+     PsAddProp(Head, Tail, ElemLbl + '.SecurityIdentifier', SddlPCharToStr(SidStr));
+     Win_LocalFree(SidStr);
+    End;
+   End;
+ End Else
+  PsAddProp(Head, Tail, 'Dacl.Count', '0');
+ Win_LocalFree(SD);
+ SddlParseToProps := Head;
+ {$ENDIF}
+End;
+
+Procedure TermCmd_ConvertFromSddlString(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ SddlArg: String;
+ Props, P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ SddlArg := '';
+ For I := 1 To LocalArgCount Do
+  If TermStrToUpper(LocalArgs[I]) <> '-SDDL' Then Begin
+   If SddlArg <> '' Then SddlArg := SddlArg + ' ';
+   SddlArg := SddlArg + LocalArgs[I];
+  End;
+ { TermExtractParam ne retire jamais les guillemets (il ne coupe que sur   }
+ { espace/tabulation, voir son propre commentaire) - une chaine SDDL       }
+ { tapee entre guillemets sur la ligne de commande (l'usage normal, la     }
+ { syntaxe SDDL contient des parentheses/point-virgules) arriverait donc   }
+ { ici avec ses guillemets litteralement inclus, invalidant l'analyse.     }
+ { YamlUnquote (deja ecrite) retire une seule paire de guillemets          }
+ { englobants - reutilisee telle quelle plutot que de dupliquer la logique.}
+ SddlArg := YamlUnquote(SddlArg);
+
+ If SddlArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertFrom-SddlString "O:BAG:BAD:(A;;FA;;;SY)..."');
+  Exit;
+ End;
+ Props := SddlParseToProps(SddlArg);
+ If Props = Nil Then
+  TermAddLine(TP, 'ConvertFrom-SddlString : chaine SDDL invalide.')
+ Else Begin
+  P := Props;
+  While P <> Nil Do Begin
+   TermAddLine(TP, P^.Name + ' : ' + P^.Value);
+   P := P^.Next;
+  End;
+  PsDisposeProps(Props);
+ End;
+End;
+
 { --- Traitement des lignes tapees dans "PowerShell dev" (Entree) : here-  }
 { strings/assignations/lecture de propriete/substitution generique -       }
 { appelee depuis HandleTerminalEvent (touche Entree, SK_POWERSHELL         }
@@ -62044,6 +62443,39 @@ Begin
     PsSetScalar(VarName, '');
    Exit;
   End;
+  { Meme motif reconnu que ConvertFrom-Yaml ci-dessus - reutilise le meme  }
+  { squelette pour ConvertFrom-StringData/SddlString (objets) et            }
+  { ConvertFrom-SecureString (scalaire, resultat = texte chiffre). }
+  If (CmdName = 'CONVERTFROM-STRINGDATA') And (Length(ArgPart) > 1) And
+     (ArgPart[1] = '$') Then Begin
+   SrcVarName := Copy(ArgPart, 2, Length(ArgPart) - 1);
+   SrcVar := PsFindVar(SrcVarName);
+   If (SrcVar <> Nil) And (Not SrcVar^.IsObject) Then
+    PsSetObject(VarName, StringDataParseToProps(SrcVar^.ScalarValue))
+   Else
+    PsSetScalar(VarName, '');
+   Exit;
+  End;
+  If (CmdName = 'CONVERTFROM-SDDLSTRING') And (Length(ArgPart) > 1) And
+     (ArgPart[1] = '$') Then Begin
+   SrcVarName := Copy(ArgPart, 2, Length(ArgPart) - 1);
+   SrcVar := PsFindVar(SrcVarName);
+   If (SrcVar <> Nil) And (Not SrcVar^.IsObject) Then
+    PsSetObject(VarName, SddlParseToProps(SrcVar^.ScalarValue))
+   Else
+    PsSetScalar(VarName, '');
+   Exit;
+  End;
+  If (CmdName = 'CONVERTFROM-SECURESTRING') And (Length(ArgPart) > 1) And
+     (ArgPart[1] = '$') Then Begin
+   SrcVarName := Copy(ArgPart, 2, Length(ArgPart) - 1);
+   SrcVar := PsFindVar(SrcVarName);
+   If (SrcVar <> Nil) And (Not SrcVar^.IsObject) Then
+    PsSetScalar(VarName, PsDpapiProtectToHex(SrcVar^.ScalarValue))
+   Else
+    PsSetScalar(VarName, '');
+   Exit;
+  End;
  End;
  PsSetScalar(VarName, RHS);
 End;
@@ -62099,12 +62531,12 @@ Begin
    VarName := Copy(VarName, 1, DotPos - 1);
    SrcVar := PsFindVar(VarName);
    If SrcVar = Nil Then TermAddLine(TP, '')
-   Else If Not SrcVar^.IsObject Then TermAddLine(TP, SrcVar^.ScalarValue)
-   Else TermAddLine(TP, PsGetPropValue(SrcVar, PropPath));
+   Else If Not SrcVar^.IsObject Then TermAddLineWrapped(TP, SrcVar^.ScalarValue)
+   Else TermAddLineWrapped(TP, PsGetPropValue(SrcVar, PropPath));
   End Else Begin
    SrcVar := PsFindVar(VarName);
    If SrcVar = Nil Then TermAddLine(TP, '')
-   Else If Not SrcVar^.IsObject Then TermAddLine(TP, SrcVar^.ScalarValue)
+   Else If Not SrcVar^.IsObject Then TermAddLineWrapped(TP, SrcVar^.ScalarValue)
    Else TermAddLine(TP, '@{...} (objet - utilisez $' + VarName + '.propriete)');
   End;
   Exit;
@@ -62263,6 +62695,12 @@ Begin
    '  $nom = "texte" / $nom = @"..."@       Variable scalaire / here-string');
   TermAddLine(TP,
    '  $nom  /  $nom.propriete               Affiche une variable/propriete');
+  TermAddLine(TP,
+   '  ConvertFrom-StringData -Path f.txt    Affiche les paires cle=valeur');
+  TermAddLine(TP,
+   '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
+  TermAddLine(TP,
+   '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -62844,7 +63282,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 96;
+ PS_CMD_ALIASES = 99;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -62900,6 +63338,9 @@ Const
   'CONVERTFROM-JSON',
   'CONVERTFROM-MARKDOWN',
   'CONVERTFROM-YAML',
+  'CONVERTFROM-SECURESTRING',
+  'CONVERTFROM-SDDLSTRING',
+  'CONVERTFROM-STRINGDATA',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -62976,6 +63417,9 @@ Const
   71,
   72,
   73,
+  74,
+  75,
+  76,
   46,
   47,
   48,
@@ -63439,6 +63883,9 @@ Begin
     71: TermCmd_ConvertFromJson(TP, ParamStr);
     72: TermCmd_ConvertFromMarkdown(TP, ParamStr);
     73: TermCmd_ConvertFromYaml(TP, ParamStr);
+    74: TermCmd_ConvertFromSecureString(TP, ParamStr);
+    75: TermCmd_ConvertFromSddlString(TP, ParamStr);
+    76: TermCmd_ConvertFromStringData(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
