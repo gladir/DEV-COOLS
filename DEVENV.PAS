@@ -10822,6 +10822,8 @@ Function Emu_MountDiskSlot(Idx: Byte; FName: String): Boolean; Forward;
 Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
 Procedure Emu_CdromOpenOne(Idx: Byte; FName: String); Forward;
 Procedure Emu_CdromAssignDriveLetters; Forward;
+Procedure Emu_PktInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_WriteDefaultVector(Var P: TEmulatorPanel; Num: Byte); Forward;
 
 { Declarations anticipees pour l emulateur 8086 integre }
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
@@ -37711,6 +37713,252 @@ Begin
   'nommee persistante, il n''y a structurellement rien a regrouper.');
 End;
 
+{ --- 13 AUTRES CMDLETS HYPER-V (2026-08-30, meme session, meme demande     }
+{ explicite "support complet") : meme discipline que ci-dessus - APRES      }
+{ le desaccord justifie de l'utilisateur sur le lot precedent (voir          }
+{ [[feedback_scope_batch]]), chaque commande est evaluee INDIVIDUELLEMENT    }
+{ contre les mecanismes reels de ce terminal AVANT de conclure a un arret    }
+{ honnete, jamais par analogie de nom de famille.                            }
+{                                                                            }
+{ 1 SEULE a un mecanisme reel hot-attachable : Add-VMNetworkAdapter, via     }
+{ le pilote de paquets DOS deja emule (EmuPkt/Emu_PktInit, INT 60h,          }
+{ Options > Emulateur > Reseau LAN) - EXACTEMENT le meme genre de gate       }
+{ "case a cocher + vecteur IVT ecrit une fois au demarrage" que              }
+{ MSCDEX/IPX/EMS (voir Emu_DefaultVectorsInit) : `Emu_WriteDefaultVector`    }
+{ est un simple ecrivain de 3 octets, deja verifie REAPPELABLE a tout        }
+{ moment (c'est exactement ce que fait Add-VMDvdDrive/HardDiskDrive pour     }
+{ les slots disque) - donc ACTIVER a chaud le pilote de paquets ET           }
+{ reecrire son vecteur INT 60h EST un vrai hot-attach fonctionnel, pas une   }
+{ simulation.                                                                }
+{                                                                            }
+{ Toutes les autres restent un arret honnete, mais chacune pour une RAISON   }
+{ SPECIFIQUE verifiee (jamais "pas de VM nommee" copie-colle) :              }
+{ - Add-VMSwitch : le ROLE MEME d'un switch (relier PLUSIEURS VM/adaptateurs }
+{   simultanes) est structurellement impossible ici - cet IDE n'execute      }
+{   jamais 2 contextes emulateur VIVANTS en meme temps (onglets suspendus/   }
+{   restaures un a la fois, voir SyncActiveWindowOut/In) - il n'y a jamais   }
+{   de 2e pair reseau EN DIRECT avec qui communiquer via un tel switch.      }
+{ - Add-VMSwitchExtensionPortFeature/SwitchFeature/TeamMember : dependent    }
+{   toutes d'un objet VMSwitch qui n'existe pas pour la raison ci-dessus     }
+{   (TeamMember en plus necessiterait de VRAIES cartes reseau HOTE a         }
+{   regrouper, jamais modelisees).                                          }
+{ - Add-VMNetworkAdapterAcl/ExtendedAcl/RoutingDomainMapping : le pilote de  }
+{   paquets emule (EmuPkt) n'a AUCUN moteur de filtrage/regles (juste un      }
+{   Actif/Inactif global + une table de poignees) - pas de VLAN/domaine de   }
+{   routage SR-IOV possible sans un tel moteur, jamais demande separement.   }
+{ - Add-VMMigrationNetwork : migration EN DIRECT entre HOTES PHYSIQUES -     }
+{   cette IDE est un seul processus sur une seule machine, aucun transfert   }
+{   d'etat entre machines n'est possible meme en principe.                   }
+{ - Add-VMRemoteFx3dVideoAdapter : virtualisation d'un VRAI GPU 3D - aucun   }
+{   sens pour un CPU 8/16 bits emule (EmuVideo est un framebuffer VGA        }
+{   $13 chunky, zero notion 3D).                                            }
+{ - Add-VMScsiController : ce terminal n'a JAMAIS modelise de distinction    }
+{   de type de controleur (IDE vs SCSI) - Add-VMHardDiskDrive fonctionne     }
+{   deja directement sur les 4 emplacements INT13h materiels plats           }
+{   (EmuFloppyOpen[]), sans etape "ajouter un controleur" prealable :        }
+{   cette commande serait donc purement redondante, pas manquante.           }
+{ - Add-VMStoragePath : aucun registre de "definitions de VM" nommees        }
+{   n'existe (voir le lot precedent) pour y associer un chemin de stockage   }
+{   par defaut.                                                             }
+{ - Checkpoint-VM : RECHERCHE FAITE (pas un simple copie-colle) - un VRAI    }
+{   mecanisme de sauvegarde d'etat existe (`DOS_SaveState`/`TDOSSnapshot`,   }
+{   ~93018) mais (a) ne capture QUE les peripheriques (video/reseau/XMS/     }
+{   EMS/DPMI/souris), JAMAIS les registres CPU ni la RAM - donc pas un       }
+{   "etat de VM" complet meme en principe -, et (b) est DESTRUCTEUR quand    }
+{   appele seul : il met a Nil EmuVideo.Mem/EmuXmsMem/EmuEmsMem/             }
+{   EmuDpmiExtMem dans le GLOBAL live (les transferant dans Snap), concu     }
+{   UNIQUEMENT pour etre immediatement suivi d'un LoadState d'un AUTRE       }
+{   onglet (SyncActiveWindowOut/In) - l'appeler seul depuis Checkpoint-VM     }
+{   romprait l'emulateur actif (memoire video/XMS/EMS nilee sans jamais      }
+{   etre restauree). Reutiliser ce mecanisme pour un "instantane" en         }
+{   lecture seule serait donc dangereux, pas juste incomplet - arret         }
+{   honnete PLUS PRUDENT qu'une fausse fonctionnalite qui casserait la       }
+{   session active de l'utilisateur.                                        }
+
+Procedure TermCmd_AddVMNetworkAdapter(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, VMNameArg, VMLabel, MacStr: String;
+ I: Integer;
+Begin
+ If Not TermAnyEmulatorOpen Then Begin
+  TermAddLine(TP, 'Add-VMNetworkAdapter : aucun emulateur actif (voir ' +
+   'BOOT/DEBUG) - rien a quoi attacher une carte reseau.');
+  Exit;
+ End;
+ TermParseAddVMArgs(ParamStr, PathArg, VMNameArg);
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")' Else VMLabel := '';
+ If EmuPkt.Active Then Begin
+  TermAddLine(TP, 'Add-VMNetworkAdapter' + VMLabel + ' : deja active ' +
+   '(pilote de paquets emule, INT 60h).');
+  Exit;
+ End;
+ OptionsDlg.Data.DosLAN := True;
+ Emu_PktInit(EmuPanel);
+ Emu_WriteDefaultVector(EmuPanel, $60);
+ MacStr := '';
+ For I := 0 To 5 Do Begin
+  If I > 0 Then MacStr := MacStr + '-';
+  MacStr := MacStr + HexByte(EmuPkt.LocalMAC[I]);
+ End;
+ TermAddLine(TP, 'Add-VMNetworkAdapter' + VMLabel + ' : pilote de paquets ' +
+  '(INT 60h) active a chaud, adresse MAC synthetique ' + MacStr + '.');
+End;
+
+Procedure TermCmd_AddVMSwitch(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMSwitch',
+  'Le role meme d''un switch (relier PLUSIEURS machines/adaptateurs en ' +
+  'meme temps) est structurellement impossible ici : cet IDE n''execute ' +
+  'jamais 2 emulateurs vivants simultanement (onglets suspendus/restaures ' +
+  'un a la fois) - voir Add-VMNetworkAdapter pour activer le pilote de ' +
+  'paquets emule lui-meme.');
+End;
+
+Procedure TermCmd_AddVMSwitchExtensionPortFeature(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMSwitchExtensionPortFeature',
+  'Depend d''un objet VMSwitch qui n''existe pas ici (voir Add-VMSwitch).');
+End;
+
+Procedure TermCmd_AddVMSwitchExtensionSwitchFeature(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMSwitchExtensionSwitchFeature',
+  'Depend d''un objet VMSwitch qui n''existe pas ici (voir Add-VMSwitch).');
+End;
+
+Procedure TermCmd_AddVMSwitchTeamMember(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMSwitchTeamMember',
+  'Necessiterait de VRAIES cartes reseau HOTE a regrouper (teaming) - ' +
+  'jamais modelisees ici, en plus de l''absence de VMSwitch lui-meme.');
+End;
+
+Procedure TermCmd_AddVMNetworkAdapterAcl(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMNetworkAdapterAcl',
+  'Le pilote de paquets emule (EmuPkt) n''a aucun moteur de filtrage ' +
+  'IP/MAC - juste un Actif/Inactif global et une table de poignees.');
+End;
+
+Procedure TermCmd_AddVMNetworkAdapterExtendedAcl(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMNetworkAdapterExtendedAcl',
+  'Meme absence de moteur de filtrage que Add-VMNetworkAdapterAcl - ' +
+  'aucune regle de priorite/direction/action possible a construire dessus.');
+End;
+
+Procedure TermCmd_AddVMNetworkAdapterRoutingDomainMapping(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMNetworkAdapterRoutingDomainMapping',
+  'Aucune notion de domaine de routage SR-IOV/NVGRE n''existe sur un ' +
+  'pilote de paquets DOS emule aussi simple.');
+End;
+
+Procedure TermCmd_AddVMMigrationNetwork(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMMigrationNetwork',
+  'La migration EN DIRECT entre HOTES PHYSIQUES n''a aucun sens pour un ' +
+  'IDE mono-processus sur une seule machine - aucun transfert d''etat ' +
+  'entre machines n''est possible, meme en principe.');
+End;
+
+Procedure TermCmd_AddVMRemoteFx3dVideoAdapter(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMRemoteFx3dVideoAdapter',
+  'Virtualisation d''un VRAI GPU 3D - aucun sens pour un CPU 8/16 bits ' +
+  'emule (EmuVideo est un framebuffer VGA $13 chunky, zero notion 3D).');
+End;
+
+Procedure TermCmd_AddVMScsiController(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMScsiController',
+  'Purement redondante ici : ce terminal n''a jamais modelise de ' +
+  'distinction de type de controleur (IDE/SCSI) - Add-VMHardDiskDrive ' +
+  'fonctionne deja directement sur les 4 emplacements INT13h materiels ' +
+  'plats, sans etape "ajouter un controleur" prealable.');
+End;
+
+Procedure TermCmd_AddVMStoragePath(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Add-VMStoragePath',
+  'Aucun registre de "definitions de VM" nommees n''existe pour y ' +
+  'associer un chemin de stockage par defaut.');
+End;
+
+{ Checkpoint-VM (2026-08-31, REVISEE suite a une question justifiee de     }
+{ l'utilisateur, "il devrait etre possible de prendre un instantane...      }
+{ lorsqu'un onglet emulateur est en execution") : la 1ere version           }
+{ (arret honnete) avait raisonne UNIQUEMENT a partir de DOS_SaveState/       }
+{ TDOSSnapshot (peripheriques, destructeur seul) sans remarquer que le      }
+{ VRAI etat qui definit "l'execution" d'une VM - les registres CPU et la    }
+{ RAM emulee - est DEJA accessible DIRECTEMENT et SANS AUCUN RISQUE via     }
+{ `EmuPanel.CPU` (le contexte GLOBAL de l'onglet emulateur ACTIF, deja      }
+{ utilise ailleurs dans ce chantier - voir Emu_WriteDefaultVector          }
+{ ci-dessus) : contrairement a `TDOSSnapshot`, LIRE `EmuPanel.CPU.Regs/     }
+{ Segs/Flags/IP/Memory^` ne bouge ni ne vide AUCUN pointeur - une VRAIE     }
+{ COPIE en lecture seule, zero risque pour la session active. `TEmuCPU.    }
+{ Memory: PEmuMemBuf` (~3656) est un pointeur vers exactement 1 105 904     }
+{ octets (`TEmuMemBuf = Array[0..$10FFEF] Of Byte`, tout l'espace           }
+{ d'adressage reel 8086 + HMA) - la RAM COMPLETE du programme en cours.     }
+{ Ecrit un VRAI fichier binaire (`.VMCKPT`) : registres+segments+drapeaux+  }
+{ IP puis les 1 105 904 octets de RAM tels quels. Limitation honnete        }
+{ DOCUMENTEE (pas cachee) : n'inclut PAS l'etat des peripheriques (mode     }
+{ video/pilote reseau/souris - voir TDOSSnapshot ci-dessus pour cette       }
+{ partie, hors de portee ici pour rester dans une action simple et SANS     }
+{ AUCUN risque de toucher les globaux partages) et aucune commande          }
+{ `Restore-VMCheckpoint` n'existe pour le relire (non demandee) - un        }
+{ instantane REEL et restaurable en principe (registres+RAM exacts), pas    }
+{ un rapport de diagnostic. }
+Procedure TermCmd_CheckpointVM(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, VMNameArg, VMLabel: String;
+ F: File;
+ Year, Month, Day, DOW, Hour, Min, Sec, Sec100: Word;
+ Err: Word;
+Begin
+ If Not EmuPanel.Running Then Begin
+  TermAddLine(TP, 'Checkpoint-VM : aucun emulateur EN COURS D''EXECUTION ' +
+   '(voir BOOT/DEBUG) - rien a photographier.');
+  Exit;
+ End;
+ TermParseAddVMArgs(ParamStr, PathArg, VMNameArg);
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")' Else VMLabel := '';
+ If PathArg = '' Then Begin
+  GetDate(Year, Month, Day, DOW);
+  GetTime(Hour, Min, Sec, Sec100);
+  PathArg := 'CHECKPOINT_' + TermPadZeroLeft(Year, 4) +
+   TermPadZeroLeft(Month, 2) + TermPadZeroLeft(Day, 2) + '_' +
+   TermPadZeroLeft(Hour, 2) + TermPadZeroLeft(Min, 2) +
+   TermPadZeroLeft(Sec, 2) + '.VMCKPT';
+ End;
+ Assign(F, PathArg);
+ {$I-} Rewrite(F, 1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Checkpoint-VM : impossible de creer ' + PathArg + ' (' +
+   TermGetErrorMessage(Err) + ').');
+  Exit;
+ End;
+ BlockWrite(F, EmuPanel.CPU.Regs, SizeOf(EmuPanel.CPU.Regs));
+ BlockWrite(F, EmuPanel.CPU.Segs, SizeOf(EmuPanel.CPU.Segs));
+ BlockWrite(F, EmuPanel.CPU.Flags, SizeOf(EmuPanel.CPU.Flags));
+ BlockWrite(F, EmuPanel.CPU.IP, SizeOf(EmuPanel.CPU.IP));
+ If EmuPanel.CPU.MemReady Then
+  BlockWrite(F, EmuPanel.CPU.Memory^, SizeOf(TEmuMemBuf));
+ Close(F);
+ TermAddLine(TP, 'Checkpoint-VM' + VMLabel + ' : instantane ecrit dans ' +
+  PathArg + ' (registres CPU + ' + IntToStr(SizeOf(TEmuMemBuf)) +
+  ' octets de RAM emulee, programme "' + EmuPanel.BinaryPath + '").');
+ TermAddLine(TP, 'Limitation honnete : l''etat des peripheriques (mode ' +
+  'video/pilote reseau/souris) n''est pas inclus, et aucune commande ' +
+  'Restore-VMCheckpoint n''existe pour le relire.');
+End;
+
 { --- EDIT : ouvrir un fichier du systeme hote dans un onglet editeur de   }
 { texte, comme le ferait "Fichier > Ouvrir" ou un double-clic dans          }
 { l Explorateur de solutions - meme sequence exacte que                    }
@@ -47394,6 +47642,21 @@ Begin
    '  Add-VMDvdDrive -Path f.iso [-VMName n]   Idem pour un lecteur CD-ROM');
   TermAddLine(TP,
    '  Add-VMFibreChannelHba / Add-VMGroupMember   Reconnues, sans equivalent');
+  TermAddLine(TP,
+   '  Add-VMNetworkAdapter [-VMName n]     Active le pilote de paquets ' +
+   '(INT 60h)');
+  TermAddLine(TP,
+   '  Add-VMSwitch/SwitchExtension*/SwitchTeamMember  Reconnues, sans ' +
+   'equivalent');
+  TermAddLine(TP,
+   '  Add-VMNetworkAdapterAcl/ExtendedAcl/RoutingDomainMapping  Idem');
+  TermAddLine(TP,
+   '  Add-VMMigrationNetwork/RemoteFx3dVideoAdapter  Idem');
+  TermAddLine(TP,
+   '  Add-VMScsiController/StoragePath     Idem (redondantes/sans registre)');
+  TermAddLine(TP,
+   '  Checkpoint-VM [-Path f.vmckpt]        Ecrit registres CPU + RAM ' +
+   '(si actif)');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -48236,6 +48499,32 @@ Begin
     TermCmd_AddVMGroupMember(TP, ParamStr)
    Else If CurrCmd = 'ADD-VMHARDDISKDRIVE' Then
     TermCmd_AddVMHardDiskDrive(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMNETWORKADAPTER' Then
+    TermCmd_AddVMNetworkAdapter(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMSWITCH' Then
+    TermCmd_AddVMSwitch(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMSWITCHEXTENSIONPORTFEATURE' Then
+    TermCmd_AddVMSwitchExtensionPortFeature(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMSWITCHEXTENSIONSWITCHFEATURE' Then
+    TermCmd_AddVMSwitchExtensionSwitchFeature(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMSWITCHTEAMMEMBER' Then
+    TermCmd_AddVMSwitchTeamMember(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMNETWORKADAPTERACL' Then
+    TermCmd_AddVMNetworkAdapterAcl(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMNETWORKADAPTEREXTENDEDACL' Then
+    TermCmd_AddVMNetworkAdapterExtendedAcl(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMNETWORKADAPTERROUTINGDOMAINMAPPING' Then
+    TermCmd_AddVMNetworkAdapterRoutingDomainMapping(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMMIGRATIONNETWORK' Then
+    TermCmd_AddVMMigrationNetwork(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMREMOTEFX3DVIDEOADAPTER' Then
+    TermCmd_AddVMRemoteFx3dVideoAdapter(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMSCSICONTROLLER' Then
+    TermCmd_AddVMScsiController(TP, ParamStr)
+   Else If CurrCmd = 'ADD-VMSTORAGEPATH' Then
+    TermCmd_AddVMStoragePath(TP, ParamStr)
+   Else If CurrCmd = 'CHECKPOINT-VM' Then
+    TermCmd_CheckpointVM(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
