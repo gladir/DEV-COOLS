@@ -68,7 +68,7 @@ Var
  StartHour,StartMinute,StartSecond,StartHundredth:Word;
  ExprText:String;
  ExprPos:Integer;
- Terminated,ExitDoRequested,ExitForRequested,ExitSubRequested:Boolean;
+ Terminated,ExitDoRequested,ExitForRequested,ExitSubRequested,ExitFunctionRequested:Boolean;
  ExitCode:Integer;
  ArrayCounter:LongInt;
 
@@ -607,6 +607,26 @@ Begin
 End;
 
 Procedure ParseExpression(Var V:TValue);Forward;
+Procedure CallUserFunction(FunctionName:String;A,B,C,D:TValue;
+ ArgumentCount:Integer;Var V:TValue);Forward;
+
+Function UserFunctionExists(FunctionName:String):Boolean;
+Var I,P:Integer;Declaration,DeclarationName:String;
+Begin
+ UserFunctionExists:=False;
+ For I:=1To LineCount Do Begin
+  Declaration:=Trim(ScriptLineText(I));
+  If StartsWith(Declaration,'PUBLIC FUNCTION ')Then Delete(Declaration,1,7)
+  Else If StartsWith(Declaration,'PRIVATE FUNCTION ')Then Delete(Declaration,1,8);
+  If StartsWith(Declaration,'FUNCTION ')Then Begin
+   Delete(Declaration,1,9);P:=Pos('(',Declaration);
+   If P=0Then P:=Pos(' ',Declaration);
+   If P=0Then DeclarationName:=Trim(Declaration)
+   Else DeclarationName:=Trim(Copy(Declaration,1,P-1));
+   If Upper(DeclarationName)=Upper(FunctionName)Then Begin UserFunctionExists:=True;Exit;End;
+  End;
+ End;
+End;
 
 Procedure ParsePrimary(Var V:TValue);
 Var Q:Char;S,Name,U,ArrayReference,IndexText:String;N:Real;
@@ -643,6 +663,11 @@ Begin
   If FunctionByte=15Then Begin GetDate(DateYear,DateMonth,DateDay,DateDayOfWeek);
    MakeDateValue(DateYear,DateMonth,DateDay,V);End
   Else If FunctionByte=43Then NowValue(V)Else CurrentTimeValue(V);Exit;
+ End;
+ If(FunctionByte=255)and UserFunctionExists(Name)and
+   ((ExprPos>Length(ExprText))or(ExprText[ExprPos]<>'('))Then Begin
+  MakeText('',A);MakeText('',B);MakeText('',C);MakeText('',D);
+  CallUserFunction(Name,A,B,C,D,0,V);Exit;
  End;
  VariableEntry:=FindVariable(Name);
  If(VariableEntry<>Nil)and(Copy(VariableEntry^.Value,1,8)='@VBARRAY')and
@@ -688,6 +713,9 @@ Begin
    SkipSpace;
   End;
   If(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos);
+  If(FunctionByte=255)and UserFunctionExists(Name)Then Begin
+   CallUserFunction(Name,A,B,C,D,ArgumentCount,V);Exit;
+  End;
   Case FunctionByte of
    0:MakeNumber(Abs(A.Number),V);                         { ABS }
    1:MakeText('',V);                                      { ARRAY: analyse variadique ci-dessus }
@@ -938,6 +966,7 @@ Begin
  If U='EXIT DO'Then Begin ExitDoRequested:=True;Exit;End;
  If U='EXIT FOR'Then Begin ExitForRequested:=True;Exit;End;
  If U='EXIT SUB'Then Begin ExitSubRequested:=True;Exit;End;
+ If U='EXIT FUNCTION'Then Begin ExitFunctionRequested:=True;Exit;End;
  If StartsWith(S,'CALL ')Then Begin CallSub(Trim(Copy(S,6,255)));Exit;End;
  If StartsWith(S,'WScript.Echo')Then Delete(S,1,Length('WScript.Echo'))
  Else If StartsWith(S,'Echo ')Then Delete(S,1,5)
@@ -995,14 +1024,19 @@ Var S,U,Condition,Name,Rest:String;P,ThenPos,ElsePos:Integer;
 Begin
  I:=FirstLine;
  While(I<=LastLine)and Not Terminated and Not ExitDoRequested and
-   Not ExitForRequested and Not ExitSubRequested Do Begin
+   Not ExitForRequested and Not ExitSubRequested and Not ExitFunctionRequested Do Begin
   CheckTimeout;If Terminated Then Exit;CurrentLine:=I;S:=Trim(ScriptLineText(I));U:=Upper(S);
   If StartsWith(S,'ELSEIF ')Then Begin S:='IF '+Trim(Copy(S,8,255));U:=Upper(S);End;
   If StartsWith(S,'SUB ')or StartsWith(S,'PUBLIC SUB ')or
     StartsWith(S,'PRIVATE SUB ')Then Begin
    While(I<=LastLine)and(Upper(Trim(ScriptLineText(I)))<>'END SUB')Do Inc(I);
   End
+  Else If StartsWith(S,'FUNCTION ')or StartsWith(S,'PUBLIC FUNCTION ')or
+    StartsWith(S,'PRIVATE FUNCTION ')Then Begin
+   While(I<=LastLine)and(Upper(Trim(ScriptLineText(I)))<>'END FUNCTION')Do Inc(I);
+  End
   Else If U='END SUB'Then Exit
+  Else If U='END FUNCTION'Then Exit
   Else If StartsWith(S,'IF ')Then Begin
    ThenPos:=Pos(' THEN',U);If ThenPos>0Then Begin Condition:=Copy(S,4,ThenPos-4);Evaluate(Condition,V);
     Rest:=Trim(Copy(S,ThenPos+5,255));
@@ -1030,7 +1064,7 @@ Begin
     Str(ElementIndex,IndexText);GetVariable(Collection.Text+'.'+Trim(IndexText),V);
     SetVariableValue(Name,V);ExecuteRange(I+1,EndLine-1);
     If ExitForRequested Then Begin ExitForRequested:=False;Break;End;
-    If Terminated or ExitSubRequested or ExitDoRequested Then Break;
+    If Terminated or ExitSubRequested or ExitFunctionRequested or ExitDoRequested Then Break;
    End;
    I:=EndLine;
   End Else If StartsWith(S,'FOR ')Then Begin
@@ -1064,7 +1098,7 @@ Begin
    Counter:=StartValue;
    While(((StepValue.Number>=0)and(Counter.Number<=EndValue.Number))or((StepValue.Number<0)and
         (Counter.Number>=EndValue.Number)))and Not Terminated and Not ExitSubRequested and
-        Not ExitDoRequested Do Begin
+        Not ExitDoRequested and Not ExitFunctionRequested Do Begin
     SetVariableValue(Name,Counter);
     ExecuteRange(I+1,EndLine-1);
     If ExitForRequested Then Begin ExitForRequested:=False;Break;End;
@@ -1089,14 +1123,14 @@ Begin
      Else If StartsWith(Rest,'LOOP UNTIL ')Then Begin Evaluate(Trim(Copy(Rest,12,255)),V);LoopAgain:=Not Truth(V);End;
     End;
     CheckTimeout;
-   Until(Not LoopAgain)or Terminated or ExitSubRequested or ExitForRequested;
+   Until(Not LoopAgain)or Terminated or ExitSubRequested or ExitFunctionRequested or ExitForRequested;
    I:=EndLine;
   End Else
   If StartsWith(S,'WHILE ')Then Begin
    EndLine:=FindBlock(I,'WHILE ','WEND');
    Condition:=Copy(S,7,255);Evaluate(Condition,V);
    While Truth(V)and Not Terminated and Not ExitSubRequested and
-     Not ExitForRequested and Not ExitDoRequested Do Begin
+     Not ExitForRequested and Not ExitDoRequested and Not ExitFunctionRequested Do Begin
     ExecuteRange(I+1,EndLine-1);
     Evaluate(Condition,V);CheckTimeout;
    End;
@@ -1211,6 +1245,84 @@ Begin
  End;
 End;
 
+Procedure FunctionArgument(Index:Integer;A,B,C,D:TValue;Var V:TValue);
+Begin
+ Case Index of
+  0:V:=A;
+  1:V:=B;
+  2:V:=C;
+  3:V:=D;
+ Else MakeText('',V);
+ End;
+End;
+
+Procedure SaveFunctionBinding(Name:String;Value:TValue;Var Bindings:PCallBinding);
+Var Binding:PCallBinding;Existing:PVariable;
+Begin
+ New(Binding);Binding^.Name:=Upper(Trim(Name));Binding^.ActualName:='';
+ Binding^.CopyBack:=False;Existing:=FindVariable(Name);Binding^.Existed:=Existing<>Nil;
+ If Existing<>Nil Then Begin Binding^.OldValue:=Existing^.Value;
+  Binding^.OldKind:=Existing^.ValueKind;End
+ Else Begin Binding^.OldValue:='';Binding^.OldKind:=ValueEmpty;End;
+ Binding^.Next:=Bindings;Bindings:=Binding;SetVariableValue(Name,Value);
+End;
+
+Procedure RestoreFunctionBindings(Var Bindings:PCallBinding);
+Var Binding:PCallBinding;OldValue:TValue;
+Begin
+ While Bindings<>Nil Do Begin Binding:=Bindings^.Next;
+  If Bindings^.Existed Then Begin MakeText(Bindings^.OldValue,OldValue);
+   OldValue.ValueKind:=Bindings^.OldKind;SetVariableValue(Bindings^.Name,OldValue);End
+  Else RemoveVariable(Bindings^.Name);
+  Dispose(Bindings);Bindings:=Binding;
+ End;
+End;
+
+Procedure CallUserFunction(FunctionName:String;A,B,C,D:TValue;
+ ArgumentCount:Integer;Var V:TValue);
+Var I,P,ParameterIndex:Integer;StartLine,EndLine:LongInt;
+ Declaration,DeclarationName,ParameterText,ParameterName:String;
+ SavedExpression:String;SavedPosition:Integer;
+ Bindings:PCallBinding;ArgumentValue,EmptyValue:TValue;
+Begin
+ SavedExpression:=ExprText;SavedPosition:=ExprPos;
+ StartLine:=0;EndLine:=0;ParameterText:='';
+ For I:=1To LineCount Do Begin
+  Declaration:=Trim(ScriptLineText(I));
+  If StartsWith(Declaration,'PUBLIC FUNCTION ')Then Delete(Declaration,1,7)
+  Else If StartsWith(Declaration,'PRIVATE FUNCTION ')Then Delete(Declaration,1,8);
+  If StartsWith(Declaration,'FUNCTION ')Then Begin
+   Delete(Declaration,1,9);P:=Pos('(',Declaration);
+   If P=0Then DeclarationName:=Trim(Declaration)
+   Else DeclarationName:=Trim(Copy(Declaration,1,P-1));
+   If Upper(DeclarationName)=Upper(FunctionName)Then Begin
+    StartLine:=I;
+    If P>0Then Begin ParameterText:=Copy(Declaration,P+1,255);
+     If(Length(ParameterText)>0)and(ParameterText[Length(ParameterText)]=')')Then
+      Delete(ParameterText,Length(ParameterText),1);End;
+    Break;
+   End;
+  End;
+ End;
+ If StartLine=0Then Begin MakeText('',V);ExprText:=SavedExpression;ExprPos:=SavedPosition;Exit;End;
+ EndLine:=StartLine+1;
+ While(EndLine<=LineCount)and(Upper(Trim(ScriptLineText(EndLine)))<>'END FUNCTION')Do Inc(EndLine);
+ Bindings:=Nil;MakeText('',EmptyValue);SaveFunctionBinding(FunctionName,EmptyValue,Bindings);
+ ParameterIndex:=0;
+ While ParameterText<>''Do Begin
+  ParameterName:=ListItem(ParameterText);
+  If StartsWith(ParameterName,'BYVAL ')Then Delete(ParameterName,1,6)
+  Else If StartsWith(ParameterName,'BYREF ')Then Delete(ParameterName,1,6);
+  P:=Pos(' ',ParameterName);If P>0Then ParameterName:=Copy(ParameterName,1,P-1);
+  If ParameterIndex<ArgumentCount Then FunctionArgument(ParameterIndex,A,B,C,D,ArgumentValue)
+  Else MakeText('',ArgumentValue);
+  SaveFunctionBinding(ParameterName,ArgumentValue,Bindings);Inc(ParameterIndex);
+ End;
+ ExecuteRange(StartLine+1,EndLine-1);ExitFunctionRequested:=False;
+ GetVariable(FunctionName,V);RestoreFunctionBindings(Bindings);
+ ExprText:=SavedExpression;ExprPos:=SavedPosition;
+End;
+
 Procedure ShowHelp;Begin
  WriteLn('CSCRIPT - Cette commande permet de lancer l''interpr'+#130,
          'teur de VBScript console.');
@@ -1269,7 +1381,8 @@ End;
 BEGIN
  Randomize;Variables:=Nil;FirstScriptLine:=Nil;LastScriptLine:=Nil;
  LineCount:=0;ArrayCounter:=0;ScriptArgumentCount:=0;Terminated:=False;
- ExitDoRequested:=False;ExitForRequested:=False;ExitSubRequested:=False;ExitCode:=0;
+ ExitDoRequested:=False;ExitForRequested:=False;ExitSubRequested:=False;
+ ExitFunctionRequested:=False;ExitCode:=0;
  ParseOptions;
  If Not Terminated Then Begin
   If Upper(EngineName)<>'VBSCRIPT'Then Begin WriteLn('Moteur de script inconnu: ',EngineName);ExitCode:=1;End
