@@ -6359,6 +6359,18 @@ Var
  ProjPropDlg    : TProjectPropertiesDialog;
  { Dialogue ajouter une reference }
  AddRefDlg      : TAddReferenceDialog;
+ { Dialogue "Renommer" du menu contextuel (clic droit) de l editeur de     }
+ { texte source (2026-08-31, demande explicite de l utilisateur) -         }
+ { reutilise le type TInputBox deja existant (jusqu ici jamais instancie   }
+ { reellement dans l IDE - seule une fonction bloquante ShowInputBox        }
+ { jamais completee l utilisait) selon le meme motif image-par-image        }
+ { (Visible/Draw/HandleXxxEvent verifies chaque frame dans DispatchEvent)   }
+ { que ProjPropDlg/AddRefDlg ci-dessus. }
+ RenameFileDlg  : TInputBox;
+ { True pendant que FileDlg est ouvert pour "Executer le VBScript..." du   }
+ { menu contextuel de l editeur - redirige la confirmation de FileDlg vers  }
+ { RunVBScriptMacroOnEditor au lieu du chemin normal HandleOpenFileConfirmed}
+ FileDlgForVBScriptMacro: Boolean;
  { Dialogue gestionnaire de disques virtuels et sa sous-boite ajout/modif }
  VirtualDiskDlg : TVirtualDiskDialog;
  VirtAddDiskDlg : TVirtAddDiskDialog;
@@ -57813,7 +57825,12 @@ Var
 
 Procedure CsFlushLine;
 Begin
- If CsTermTP <> Nil Then TermAddLine(CsTermTP^, CsOutLine);
+ { CsTermTP = Nil signifie qu aucun panneau de terminal n est la cible -   }
+ { cas de RunVBScriptMacroOnEditor (menu contextuel "Executer le           }
+ { VBScript..." de l editeur, 2026-08-31) : rediriger vers le panneau de    }
+ { sortie de l IDE plutot que de perdre silencieusement le message. }
+ If CsTermTP <> Nil Then TermAddLine(CsTermTP^, CsOutLine)
+ Else AppendOutput(OutputPanel, CsOutLine, 0);
  CsOutLine := '';
 End;
 
@@ -59395,6 +59412,87 @@ Begin
   CsVariables := NextVar;
  End;
 
+ If CsOutLine <> '' Then CsFlushLine;
+End;
+
+{ --- Executer un script VBScript comme macro "ligne par ligne" sur le     }
+{ contenu de l editeur de texte source actif (menu contextuel "Executer    }
+{ le VBScript...", 2026-08-31, demande explicite de l utilisateur :        }
+{ "comme si c'est du VBA"). Le moteur CSCRIPT herite de TOUT le fichier     }
+{ DEVENV.PAS la directive de compilation qui borne tout String a 255       }
+{ caracteres : chaque TCsValue.Text (donc chaque variable VBScript) est    }
+{ limite d autant - impossible de porter un fichier source ENTIER dans     }
+{ une seule variable sans troncature silencieuse. Modele retenu (confirme  }
+{ explicitement par l utilisateur via AskUserQuestion, options "ligne par  }
+{ ligne" vs "document entier") : le script est charge UNE fois             }
+{ (CsLoadScript) puis reexecute une fois PAR LIGNE du document             }
+{ (CsExecuteRange sur la totalite du script a chaque iteration) avec deux  }
+{ variables predefinies Line (texte de la ligne courante) et LineNumber    }
+{ (1-based) - toute modification de Line par le script est reappliquee a   }
+{ cette ligne apres l execution, comme un filtre awk/sed. Consequence      }
+{ honnete de ce modele "tout le script rejoue a chaque ligne" : un Dim au  }
+{ niveau module est reinitialise a chaque iteration (pas d etat BEGIN/END  }
+{ distinct, non demande). Ed.Buffer.Lines[] etant deja lui-meme un String  }
+{ borne a 255 caracteres dans tout l editeur, aucune troncature            }
+{ supplementaire n est possible en copiant une ligne dans Line. }
+Procedure RunVBScriptMacroOnEditor(ScriptPath: String);
+Var
+ I: Integer;
+ NextVar: PCsVariable;
+ OrigLine: String;
+ V: TCsValue;
+Begin
+ If Not EditorReady Then Exit;
+ If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
+ CsTermTP := Nil;
+ CsOutLine := '';
+ Randomize;CsVariables:=Nil;CsFirstScriptLine:=Nil;CsLastScriptLine:=Nil;
+ CsLineCount:=0;CsArrayCounter:=0;CsScriptArgumentCount:=0;CsTerminated:=False;
+ CsExitDoRequested:=False;CsExitForRequested:=False;CsExitSubRequested:=False;
+ CsExitFunctionRequested:=False;CsOnErrorResumeNext:=False;CsExitCode:=0;
+ CsEngineName := 'VBScript';
+ CsScriptName := ScriptPath;
+ CsBatchMode := False;
+ CsShowLogo := False;
+ CsLoadScript;
+
+ { Note : Ed.Buffer.Lines[] est deja lui-meme un String (ShortString,      }
+ { borne a 255 caracteres) dans TOUT l editeur de DEVENV.PAS - une ligne   }
+ { source ne peut structurellement jamais depasser cette taille ici, donc  }
+ { aucune troncature supplementaire n est possible en la copiant dans      }
+ { Line (contrairement au risque reel qui existerait pour un document      }
+ { entier, voir le commentaire au-dessus de cette procedure). }
+ If Not CsTerminated Then Begin
+  GetTime(CsStartHour,CsStartMinute,CsStartSecond,CsStartHundredth);
+  I := 0;
+  While (I < ActiveEditor.Buffer.LineCount) And (Not CsTerminated) Do Begin
+   OrigLine := ActiveEditor.Buffer.Lines[I];
+   CsSetVariable('LINE', OrigLine);
+   CsSetVariable('LINENUMBER', IntToStr(I + 1));
+   CsExecuteRange(1, CsLineCount);
+   CsGetVariable('LINE', V);
+   ActiveEditor.Buffer.Lines[I] := V.Text;
+   Inc(I);
+  End;
+  ActiveEditor.Buffer.Modified := True;
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  MarkWindowModified(WinMgr.ActiveIdx);
+  FullRepaintNeeded := True;
+  AppendOutput(OutputPanel, 'Executer le VBScript... : termine sur "' +
+   ExtractFileName(ScriptPath) + '".', 0);
+ End;
+ { Nettoyage identique a TermCmd_CSCRIPT : evite une fuite memoire d une   }
+ { invocation a l autre dans ce processus IDE de longue duree. }
+ While CsFirstScriptLine <> Nil Do Begin
+  CsLastScriptLine := CsFirstScriptLine^.Next;
+  Dispose(CsFirstScriptLine);
+  CsFirstScriptLine := CsLastScriptLine;
+ End;
+ While CsVariables <> Nil Do Begin
+  NextVar := CsVariables^.Next;
+  Dispose(CsVariables);
+  CsVariables := NextVar;
+ End;
  If CsOutLine <> '' Then CsFlushLine;
 End;
 
@@ -69519,6 +69617,387 @@ Begin
  PopulateAddReferenceDialog(Dlg);
  Dlg.Base.Visible := True;
  DrawAddReferenceDialog(Dlg);
+End;
+
+{ ========================================================================= }
+{ Menu contextuel (clic droit) de l editeur de texte source (2026-08-31,    }
+{ demande explicite de l utilisateur) : Renommer / Copier le nom du         }
+{ fichier / Copier le chemin / Copier le chemin et le nom / Couper /        }
+{ Copier / Coller / Ouvrir le fichier au curseur / Executer le VBScript...  }
+{ Tags 800-808, voir Case CtxTag Of dans DispatchEvent. }
+{ ========================================================================= }
+
+{ --- Presse-papiers Windows REEL (texte simple) pour Copier le nom/chemin }
+{ - reutilise TEL QUEL les externals Win_OpenClipboard/Win_EmptyClipboard/ }
+{ Win_GlobalAlloc/Win_GlobalLock/Win_GlobalUnlock/Win_SetClipboardData/     }
+{ Win_CloseClipboard deja declares pour le pont presse-papiers WINOLDAP     }
+{ (voir Emu_DoInt2F, AX=17xxh) - memes constantes CF_TEXT_WINOLDAP/         }
+{ GMEM_MOVEABLE_WINOLDAP. Different du presse-papiers INTERNE EditorClip    }
+{ (Couper/Copier/Coller de code, voir ClipboardCopy/Cut/Paste) : celui-ci   }
+{ est le VRAI presse-papiers du systeme hote, pour coller un nom de         }
+{ fichier dans une autre application. }
+Procedure SetRealClipboardText(S: String);
+Var
+ HMem: LongInt;
+ P: PChar;
+ I: Integer;
+Begin
+ {$IFDEF WINDOWS}
+ If Win_OpenClipboard(0) Then Begin
+  Win_EmptyClipboard;
+  HMem := Win_GlobalAlloc(GMEM_MOVEABLE_WINOLDAP, Length(S) + 1);
+  If HMem <> 0 Then Begin
+   P := PChar(Win_GlobalLock(HMem));
+   If P <> Nil Then Begin
+    For I := 1 To Length(S) Do
+     P[I - 1] := S[I];
+    P[Length(S)] := #0;
+    Win_GlobalUnlock(HMem);
+    Win_SetClipboardData(CF_TEXT_WINOLDAP, HMem);
+   End;
+  End;
+  Win_CloseClipboard;
+ End;
+ {$ENDIF}
+End;
+
+{ --- Positionner le curseur texte au point du clic droit avant d ouvrir   }
+{ le menu contextuel, pour que "Renommer"/"Ouvrir le fichier au curseur"   }
+{ visent bien l endroit clique (BOGUE REEL trouve par test en direct,      }
+{ 2026-08-31 : HandleEditorMouse n est jamais appelee pour un clic droit,  }
+{ donc le curseur restait a sa derniere position de clic GAUCHE). Ne fait  }
+{ RIEN si une selection est deja active : preserve le texte selectionne    }
+{ pour que Couper/Copier du menu continuent d agir dessus (sinon un clic   }
+{ droit sur du texte selectionne detruirait la selection avant meme que    }
+{ Couper/Copier ne puisse s en servir). --- }
+
+Procedure PositionCursorForContextMenu(Var Ed: TEditor; MX, MY: Integer);
+Var
+ NewLine, NewCol: LongInt;
+ LineLen: Integer;
+Begin
+ If EditorSel.Active Then Exit;
+ If (MX < Ed.X + Ed.GutterWidth) Or (MX >= Ed.X + Ed.Width) Or
+    (MY < Ed.Y) Or (MY >= Ed.Y + Ed.Height) Then Exit;
+ NewLine := Ed.ScrollLine + (MY - Ed.Y) Div Ed.CharHeight;
+ NewCol := Ed.ScrollCol + (MX - Ed.X - Ed.GutterWidth) Div Ed.CharWidth;
+ If NewLine < 0 Then NewLine := 0;
+ If NewLine >= Ed.Buffer.LineCount Then NewLine := Ed.Buffer.LineCount - 1;
+ If NewLine < 0 Then NewLine := 0;
+ If NewCol < 1 Then NewCol := 1;
+ LineLen := Length(Ed.Buffer.Lines[NewLine]);
+ If NewCol > LineLen + 1 Then NewCol := LineLen + 1;
+ Ed.CursorLine := NewLine;
+ Ed.CursorCol := NewCol;
+End;
+
+{ --- Construire et afficher le menu contextuel de l editeur --- }
+
+Procedure ShowEditorContextMenu(Var CM: TContextMenu; MX, MY: Integer);
+Begin
+ InitContextMenu(CM);
+ CM.X := MX;
+ CM.Y := MY;
+ CM.Width := 220;
+ AddContextItem(CM, 'Renommer', 800);
+ AddContextItem(CM, 'Copier le nom du fichier', 801);
+ AddContextItem(CM, 'Copier le chemin', 802);
+ AddContextItem(CM, 'Copier le chemin et le nom', 803);
+ AddContextSeparator(CM);
+ AddContextItem(CM, 'Couper', 804);
+ AddContextItem(CM, 'Copier', 805);
+ AddContextItem(CM, 'Coller', 806);
+ AddContextSeparator(CM);
+ AddContextItem(CM, 'Ouvrir le fichier au curseur', 807);
+ AddContextItem(CM, 'Executer le VBScript...', 808);
+ CM.Visible := True;
+ DrawContextMenu(CM);
+End;
+
+{ --- Renommer : ouvre la boite de saisie (TInputBox) pre-remplie avec le  }
+{ nom de fichier courant --- }
+
+Procedure StartEditorFileRename;
+Var
+ CurName: String;
+Begin
+ If Not EditorReady Then Exit;
+ If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
+ CurName := ExtractFileName(WinMgr.Windows[WinMgr.ActiveIdx].FileName);
+ InitInputBox(RenameFileDlg, 'Renommer', 'Nouveau nom de fichier :', CurName);
+ RenameFileDlg.Base.Visible := True;
+ DrawInputBox(RenameFileDlg);
+End;
+
+{ --- Renommer : applique le renommage reel sur disque + fenetre ouverte + }
+{ etiquette de l Explorateur si presente (mise a jour COSMETIQUE du         }
+{ libelle seulement - ne reecrit PAS les references XML .csproj/.vbproj,   }
+{ hors de portee de cette fonctionnalite). Appele une fois RenameFileDlg    }
+{ refermee (voir DispatchEvent). --- }
+
+Procedure ApplyEditorFileRename;
+Var
+ Idx, I: Integer;
+ OldPath, NewPath, NewName, Dir: String;
+ F: File;
+Begin
+ If RenameFileDlg.Cancelled Then Exit;
+ NewName := TermTrim(GetInputBoxText(RenameFileDlg));
+ If NewName = '' Then Exit;
+ Idx := WinMgr.ActiveIdx;
+ If (Idx < 0) Or (Idx >= WinMgr.WinCount) Then Exit;
+ OldPath := WinMgr.Windows[Idx].FileName;
+ If OldPath = '' Then Exit;
+ Dir := ExtractFilePath(OldPath);
+ NewPath := Dir + NewName;
+ If UpCaseStr(NewPath) = UpCaseStr(OldPath) Then Exit;
+ If FileExists(OldPath) Then Begin
+  Assign(F, OldPath);
+  {$I-} Rename(F, NewPath); {$I+}
+  If IOResult <> 0 Then Begin
+   AppendOutput(OutputPanel, 'Renommer : echec, impossible de renommer "' +
+    OldPath + '" en "' + NewPath + '".', 0);
+   Exit;
+  End;
+ End;
+ WinMgr.Windows[Idx].FileName := NewPath;
+ WinMgr.Windows[Idx].Title := GetTabLabel(NewPath);
+ If Editors[Idx] <> Nil Then
+  Editors[Idx]^.Buffer.FileName := NewPath;
+ If WinMgr.ActiveIdx = Idx Then
+  ActiveEditor.Buffer.FileName := NewPath;
+ For I := 0 To SolExplorer.NodeCount - 1 Do
+  If SolExplorer.Nodes[I].Kind In
+   [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_OTHER] Then
+   If UpCaseStr(SolExplorer.Nodes[I].Caption) =
+      UpCaseStr(ExtractFileName(OldPath)) Then
+    SolExplorer.Nodes[I].Caption := NewName;
+ AppendOutput(OutputPanel, 'Renommer : "' + ExtractFileName(OldPath) +
+  '" renomme en "' + NewName + '".', 0);
+End;
+
+{ --- Ouvrir le fichier au curseur : detection du mot/directive sous le    }
+{ curseur, par langage (extension du fichier ouvert) --- }
+
+Function ExtractWordAtCursor(Var Ed: TEditor): String;
+Var
+ LineText: String;
+ StartP, EndP: Integer;
+Begin
+ ExtractWordAtCursor := '';
+ If (Ed.CursorLine < 0) Or (Ed.CursorLine >= Ed.Buffer.LineCount) Then Exit;
+ LineText := Ed.Buffer.Lines[Ed.CursorLine];
+ StartP := Ed.CursorCol;
+ If StartP > Length(LineText) Then StartP := Length(LineText);
+ If StartP < 1 Then Exit;
+ If (Not (LineText[StartP] In ['A'..'Z', 'a'..'z', '0'..'9', '_'])) And
+    (StartP > 1) And
+    (LineText[StartP - 1] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Then
+  Dec(StartP);
+ If Not (LineText[StartP] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Then Exit;
+ EndP := StartP;
+ While (StartP > 1) And
+       (LineText[StartP - 1] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Do
+  Dec(StartP);
+ While (EndP < Length(LineText)) And
+       (LineText[EndP + 1] In ['A'..'Z', 'a'..'z', '0'..'9', '_']) Do
+  Inc(EndP);
+ ExtractWordAtCursor := Copy(LineText, StartP, EndP - StartP + 1);
+End;
+
+Function PascalIncludeTargetOnLine(LineText: String): String;
+Var
+ U, CloseTok, Inner: String;
+ OpenPos, KwLen, ClosePos: Integer;
+Begin
+ PascalIncludeTargetOnLine := '';
+ U := UpCaseStr(LineText);
+ OpenPos := Pos('{$I', U);
+ CloseTok := '}';
+ If OpenPos = 0 Then Begin
+  OpenPos := Pos('(*$I', U);
+  CloseTok := '*)';
+ End;
+ If OpenPos = 0 Then Exit;
+ If Copy(U, OpenPos, 9) = '{$INCLUDE' Then KwLen := 9
+ Else If Copy(U, OpenPos, 10) = '(*$INCLUDE' Then KwLen := 10
+ Else If CloseTok = '}' Then KwLen := 3
+ Else KwLen := 4;
+ ClosePos := Pos(CloseTok, Copy(LineText, OpenPos + KwLen, 255));
+ If ClosePos = 0 Then Exit;
+ Inner := TermTrim(Copy(LineText, OpenPos + KwLen, ClosePos - 1));
+ { $I+ et $I- sont des directives d E/S (pas des includes) - exclues. }
+ If (Inner = '+') Or (Inner = '-') Then Exit;
+ PascalIncludeTargetOnLine := Inner;
+End;
+
+Function CursorInPascalUsesClause(Var Ed: TEditor): Boolean;
+Var
+ I, Guard, CheckLen: Integer;
+ LT, UT: String;
+Begin
+ CursorInPascalUsesClause := False;
+ Guard := 0;
+ I := Ed.CursorLine;
+ While I >= 0 Do Begin
+  LT := Ed.Buffer.Lines[I];
+  If I = Ed.CursorLine Then CheckLen := Ed.CursorCol - 1
+  Else CheckLen := Length(LT);
+  If CheckLen > Length(LT) Then CheckLen := Length(LT);
+  If CheckLen < 0 Then CheckLen := 0;
+  UT := UpCaseStr(Copy(LT, 1, CheckLen));
+  If Pos(';', UT) > 0 Then Exit;
+  If Pos('USES', UT) > 0 Then Begin
+   CursorInPascalUsesClause := True;
+   Exit;
+  End;
+  Inc(Guard);
+  If Guard > 40 Then Exit;
+  Dec(I);
+ End;
+End;
+
+Function CIncludeTargetOnLine(LineText: String): String;
+Var
+ T: String;
+ P2: Integer;
+ CloseCh: Char;
+Begin
+ CIncludeTargetOnLine := '';
+ T := TermTrim(LineText);
+ If Copy(T, 1, 8) <> '#include' Then Exit;
+ T := TermTrim(Copy(T, 9, 255));
+ If T = '' Then Exit;
+ If T[1] = '"' Then CloseCh := '"'
+ Else If T[1] = '<' Then CloseCh := '>'
+ Else Exit;
+ P2 := Pos(CloseCh, Copy(T, 2, 255));
+ If P2 = 0 Then Exit;
+ CIncludeTargetOnLine := Copy(T, 2, P2 - 1);
+End;
+
+Function CSharpUsingTargetOnLine(LineText: String): String;
+Var
+ T, U: String;
+ EqPos, SemiPos: Integer;
+Begin
+ CSharpUsingTargetOnLine := '';
+ T := TermTrim(LineText);
+ U := UpCaseStr(T);
+ If Copy(U, 1, 6) <> 'USING ' Then Exit;
+ SemiPos := Pos(';', T);
+ If SemiPos = 0 Then Exit;
+ T := TermTrim(Copy(T, 7, SemiPos - 7));
+ If Copy(UpCaseStr(T), 1, 7) = 'STATIC ' Then
+  T := TermTrim(Copy(T, 8, 255));
+ EqPos := Pos('=', T);
+ If EqPos > 0 Then
+  T := TermTrim(Copy(T, EqPos + 1, 255));
+ CSharpUsingTargetOnLine := T;
+End;
+
+Function TryOpenCandidateFile(Cand: String): Boolean;
+Begin
+ TryOpenCandidateFile := False;
+ If (Cand <> '') And FileExists(Cand) Then Begin
+  FileDlg.SelectedFile := Cand;
+  HandleOpenFileConfirmed;
+  TryOpenCandidateFile := True;
+ End;
+End;
+
+Procedure OpenFileAtCursor;
+Var
+ Ed: TEditor;
+ CurFile, Ext, LineText, WordAtCursor, Target, BaseDir, SolDir, ProjDir: String;
+ FileNames: Array[1..3] Of String;
+ NNames, I, J: Integer;
+ Found: Boolean;
+Begin
+ If Not EditorReady Then Exit;
+ Ed := ActiveEditor;
+ If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
+ CurFile := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ Ext := UpCaseStr(ExtractFileExt(CurFile));
+ BaseDir := ExtractFilePath(CurFile);
+ LineText := '';
+ If (Ed.CursorLine >= 0) And (Ed.CursorLine < Ed.Buffer.LineCount) Then
+  LineText := Ed.Buffer.Lines[Ed.CursorLine];
+ Target := '';
+ If (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Then Begin
+  Target := PascalIncludeTargetOnLine(LineText);
+  If Target = '' Then Begin
+   WordAtCursor := ExtractWordAtCursor(Ed);
+   If (WordAtCursor <> '') And CursorInPascalUsesClause(Ed) Then
+    Target := WordAtCursor;
+  End;
+ End Else If (Ext = '.C') Or (Ext = '.CPP') Or (Ext = '.H') Or (Ext = '.HPP') Then
+  Target := CIncludeTargetOnLine(LineText)
+ Else If Ext = '.CS' Then
+  Target := CSharpUsingTargetOnLine(LineText);
+ If Target = '' Then Begin
+  AppendOutput(OutputPanel,
+   'Ouvrir le fichier au curseur : rien a ouvrir a cet emplacement.', 0);
+  Exit;
+ End;
+ NNames := 0;
+ If (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Then Begin
+  If Pos('.', Target) > 0 Then Begin
+   Inc(NNames); FileNames[NNames] := Target;
+  End Else Begin
+   Inc(NNames); FileNames[NNames] := Target + '.pas';
+   Inc(NNames); FileNames[NNames] := Target + '.pp';
+   Inc(NNames); FileNames[NNames] := Target + '.inc';
+  End;
+ End Else If Ext = '.CS' Then Begin
+  Inc(NNames); FileNames[NNames] := Target + '.cs';
+  J := Length(Target);
+  While (J > 0) And (Target[J] <> '.') Do Dec(J);
+  If J > 0 Then Begin
+   Inc(NNames); FileNames[NNames] := Copy(Target, J + 1, 255) + '.cs';
+  End;
+ End Else Begin
+  Inc(NNames); FileNames[NNames] := Target;
+ End;
+ Found := False;
+ For I := 1 To NNames Do
+  If TryOpenCandidateFile(BaseDir + FileNames[I]) Then Begin
+   Found := True;
+   Break;
+  End;
+ If (Not Found) And SolutionLoaded Then Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If (Length(SolDir) > 0) And (SolDir[Length(SolDir)] <> '\') And
+     (SolDir[Length(SolDir)] <> '/') Then SolDir := SolDir + '\';
+  For J := 0 To CurrentSolution.ProjectCount - 1 Do Begin
+   ProjDir := SolDir + ExtractFilePath(CurrentSolution.Projects[J].ProjectPath);
+   For I := 1 To NNames Do
+    If TryOpenCandidateFile(ProjDir + FileNames[I]) Then Begin
+     Found := True;
+     Break;
+    End;
+   If Found Then Break;
+  End;
+ End;
+ If Not Found Then
+  AppendOutput(OutputPanel,
+   'Ouvrir le fichier au curseur : fichier introuvable pour "' + Target + '".', 0);
+End;
+
+{ --- Executer le VBScript... : boite Ouvrir filtree .vbs, la confirmation }
+{ est redirigee vers RunVBScriptMacroOnEditor via FileDlgForVBScriptMacro   }
+{ (voir DispatchEvent, bloc FileDlg.Base.Visible). --- }
+
+Procedure ShowVBScriptMacroOpenDialog;
+Begin
+ If Not EditorReady Then Exit;
+ InitFileDialog(FileDlg, False);
+ AddFileFilter(FileDlg, 'Fichiers VBScript (*.vbs)', '*.vbs');
+ FileDlg.FilterIndex := 0;
+ LoadDirectoryFiles(FileDlg);
+ FileDlgForVBScriptMacro := True;
+ FileDlg.Base.Visible := True;
+ DrawFileDialog(FileDlg);
 End;
 
 { --- Initialiser le dialogue Proprietes du projet --- }
@@ -120734,6 +121213,43 @@ Begin
       StartExplorerRename(SolExplorer, CtxMenu.NodeIdx);
       DrawExplorer(SolExplorer);
      End;
+     { Menu contextuel (clic droit) de l editeur de texte source - voir     }
+     { ShowEditorContextMenu ci-dessus dans le fichier. }
+     800: StartEditorFileRename; { Renommer }
+     801: Begin { Copier le nom du fichier }
+      If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
+       SetRealClipboardText(
+        ExtractFileName(WinMgr.Windows[WinMgr.ActiveIdx].FileName));
+     End;
+     802: Begin { Copier le chemin }
+      If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
+       SetRealClipboardText(
+        ExtractFilePath(WinMgr.Windows[WinMgr.ActiveIdx].FileName));
+     End;
+     803: Begin { Copier le chemin et le nom }
+      If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
+       SetRealClipboardText(WinMgr.Windows[WinMgr.ActiveIdx].FileName);
+     End;
+     804: Begin { Couper }
+      If EditorReady Then Begin
+       ClipboardCut(ActiveEditor, EditorSel, EditorClip);
+       EnsureCursorVisible(ActiveEditor);
+      End;
+     End;
+     805: Begin { Copier }
+      If EditorReady Then
+       ClipboardCopy(ActiveEditor, EditorSel, EditorClip);
+     End;
+     806: Begin { Coller }
+      If EditorReady Then Begin
+       If EditorSel.Active Then
+        DeleteSelectedText(ActiveEditor, EditorSel);
+       ClipboardPaste(ActiveEditor, EditorSel, EditorClip);
+       EnsureCursorVisible(ActiveEditor);
+      End;
+     End;
+     807: OpenFileAtCursor; { Ouvrir le fichier au curseur }
+     808: ShowVBScriptMacroOpenDialog; { Executer le VBScript... }
      500: Begin { Ouvrir }
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then Begin
@@ -121030,11 +121546,18 @@ Begin
   HandleFileDialogEvent(FileDlg, Ev);
   If Not FileDlg.Base.Visible Then Begin
    If FileDlg.Base.Result = DR_OK Then Begin
-    If FileDlg.FolderMode Then
+    { "Executer le VBScript..." du menu contextuel de l editeur            }
+    { (2026-08-31) : reutilise la meme boite Ouvrir, mais redirige la      }
+    { confirmation vers la macro ligne-par-ligne au lieu d ouvrir le       }
+    { fichier .vbs comme un fichier source normal. }
+    If FileDlgForVBScriptMacro Then
+     RunVBScriptMacroOnEditor(FileDlg.SelectedFile)
+    Else If FileDlg.FolderMode Then
      HandleOpenFolderConfirmed
     Else
      HandleOpenFileConfirmed;
    End;
+   FileDlgForVBScriptMacro := False;
    FileDlg.FolderMode := False;
    FullRepaintNeeded := True;
   End;
@@ -121081,6 +121604,17 @@ Begin
    FullRepaintNeeded := True;
   End Else
    DrawAddReferenceDialog(AddRefDlg);
+  Exit;
+ End;
+ { "Renommer" du menu contextuel de l editeur (2026-08-31) - meme motif    }
+ { image-par-image que AddRefDlg ci-dessus. }
+ If RenameFileDlg.Base.Visible Then Begin
+  HandleInputBoxEvent(RenameFileDlg, Ev);
+  If Not RenameFileDlg.Base.Visible Then Begin
+   ApplyEditorFileRename;
+   FullRepaintNeeded := True;
+  End Else
+   DrawInputBox(RenameFileDlg);
   Exit;
  End;
  { Sous-boite Ajouter/Modifier en premier : elle doit recevoir les
@@ -121499,6 +122033,15 @@ Begin
       MarkWindowModified(WinMgr.ActiveIdx);
     End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
      HandleExtManagerMouse(ExtMgr, Ev);
+    End Else If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_RIGHT) Then Begin
+     { Menu contextuel de l editeur de texte source (2026-08-31) - voir     }
+     { ShowEditorContextMenu / Case CtxTag Of (tags 800-808). }
+     PositionCursorForContextMenu(ActiveEditor, Ev.MouseX, Ev.MouseY);
+     If Editors[WinMgr.ActiveIdx] <> Nil Then
+      Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+     ShowEditorContextMenu(CtxMenu, Ev.MouseX, Ev.MouseY);
     End Else Begin
      HandleEditorMouse(ActiveEditor, Ev);
      If Editors[WinMgr.ActiveIdx] <> Nil Then
