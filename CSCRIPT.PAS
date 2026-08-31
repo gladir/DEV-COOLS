@@ -274,7 +274,7 @@ Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
 Begin
  ResultText:='';Negative:=NumberValue<0;Count:=0;
  Repeat
-  Digit:=NumberValue and 15;ResultText:=Digits[Digit+1]+ResultText;
+  Digit:=NumberValue and 15;ResultText:=Digits[Digit]+ResultText;
   NumberValue:=NumberValue shr 4;Inc(Count);
  Until((Not Negative)and(NumberValue=0))or(Negative and(Count=8));
  MakeText(ResultText,V);
@@ -286,7 +286,7 @@ Var ResultText:String;Digit,Count:Integer;Negative:Boolean;
 Begin
  ResultText:='';Negative:=NumberValue<0;Count:=0;
  Repeat
-  Digit:=NumberValue and 7;ResultText:=Digits[Digit+1]+ResultText;
+  Digit:=NumberValue and 7;ResultText:=Digits[Digit]+ResultText;
   NumberValue:=NumberValue shr 3;Inc(Count);
  Until((Not Negative)and(NumberValue=0))or(Negative and(Count=11));
  MakeText(ResultText,V);
@@ -1318,6 +1318,7 @@ Begin
    Else
   If StartsWith(U,'NEXT')Then Begin ScriptError('NEXT sans FOR correspondant.',False);Exit;End
   Else If(U='ELSE')or(U='END IF')or(U='WEND')or StartsWith(U,'LOOP')Then Exit
+  Else If(U='REM')or StartsWith(U,'REM ')or((Length(S)>0)and(S[1]=''''))Then ExecuteStatement(S)
   Else ExecuteStatementList(S);
   Inc(I);
  End;
@@ -1559,6 +1560,11 @@ Begin
 End;
 
 BEGIN
+ {$IFDEF FPC}
+  {$IFDEF WINDOWS}
+   SetUseACP(False);
+  {$ENDIF}
+ {$ENDIF}
  Randomize;Variables:=Nil;FirstScriptLine:=Nil;LastScriptLine:=Nil;
  LineCount:=0;ArrayCounter:=0;ScriptArgumentCount:=0;Terminated:=False;
  ExitDoRequested:=False;ExitForRequested:=False;ExitSubRequested:=False;
