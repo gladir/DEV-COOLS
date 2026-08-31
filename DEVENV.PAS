@@ -56824,6 +56824,162 @@ Begin
  End;
 End;
 
+{ ============================================================ }
+{ === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
+{ ============================================================ }
+{ Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
+{ chaine "If CurrCmd = 'X' Then ... Else If CurrCmd = 'Y' Or CurrCmd = 'Z'   }
+{ Then ..." du shell PowerShell dev par une table nom->ID + un Case          }
+{ numerique. Pascal (verifie empiriquement sous -Mtp : `Case S Of 'ABC':`    }
+{ echoue a la compilation, "Ordinal or string expression expected") ne       }
+{ supporte pas Case sur des chaines - la table ci-dessous fait donc          }
+{ correspondre CHAQUE alias PowerShell/CMD a un ID canonique (Byte), et      }
+{ TermLookupPSCmd fait la recherche lineaire ; TermExecuteCommand n'a plus   }
+{ ensuite qu'un simple Case sur cet ID. Portee limitee au shell PowerShell   }
+{ dev seulement (demande explicite) - les 5 autres shells du terminal        }
+{ gardent leur chaine Else-If existante, inchangee. }
+
+Const
+ PS_CMD_ALIASES = 84;
+ PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
+  'EXIT',
+  'CD','CHDIR','SET-LOCATION',
+  'CLS','CLEAR-HOST','CLEAR',
+  'DIR','LS','GET-CHILDITEM',
+  'COPY','COPY-ITEM',
+  'DEL','REMOVE-ITEM',
+  'ECHO','WRITE-OUTPUT',
+  'MKDIR','NEW-ITEM',
+  'RMDIR','RD',
+  'REN','RENAME-ITEM',
+  'MOVE','MOVE-ITEM',
+  'TYPE','CAT','GET-CONTENT',
+  'ADD-CONTENT',
+  'CLEAR-CONTENT',
+  'CLEAR-ITEM',
+  'CLEAR-HISTORY',
+  'CLEAR-ITEMPROPERTY',
+  'CLEAR-VARIABLE',
+  'SET-VARIABLE',
+  'CLEAR-RECYCLEBIN',
+  'COMPARE-OBJECT',
+  'COMPRESS-ARCHIVE',
+  'COMPARE-VM',
+  'ADD-HISTORY',
+  'ADD-MEMBER',
+  'ADD-TYPE',
+  'ADD-VMDVDDRIVE',
+  'ADD-VMFIBRECHANNELHBA',
+  'COMPLETE-VMFAILOVER',
+  'ADD-VMGROUPMEMBER',
+  'ADD-VMHARDDISKDRIVE',
+  'ADD-VMNETWORKADAPTER',
+  'ADD-VMSWITCH',
+  'ADD-VMSWITCHEXTENSIONPORTFEATURE',
+  'ADD-VMSWITCHEXTENSIONSWITCHFEATURE',
+  'ADD-VMSWITCHTEAMMEMBER',
+  'ADD-VMNETWORKADAPTERACL',
+  'ADD-VMNETWORKADAPTEREXTENDEDACL',
+  'ADD-VMNETWORKADAPTERROUTINGDOMAINMAPPING',
+  'ADD-VMMIGRATIONNETWORK',
+  'ADD-VMREMOTEFX3DVIDEOADAPTER',
+  'ADD-VMSCSICONTROLLER',
+  'ADD-VMSTORAGEPATH',
+  'CHECKPOINT-VM',
+  'RESTORE-VMCHECKPOINT',
+  'EDIT',
+  'ARJ',
+  'UNZIP',
+  'DATE',
+  'TIME',
+  'VER',
+  'PWD',
+  'PUSHD','PUSH-LOCATION',
+  'POPD','POP-LOCATION',
+  'SET',
+  'VOL',
+  'BOOT',
+  'START-WIN16PROGRAM','INVOKE-WIN16PROGRAM','START-WIN16APPLICATION',
+   'INVOKE-WIN16','START-WIN16',
+  'START-DOSPROGRAM',
+  'LOG',
+  'HELP','GET-HELP','?'
+ );
+ PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
+  1,
+  2,2,2,
+  3,3,3,
+  4,4,4,
+  5,5,
+  6,6,
+  7,7,
+  8,8,
+  9,9,
+  10,10,
+  11,11,
+  12,12,12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22,
+  23,
+  24,
+  25,
+  26,
+  27,
+  28,
+  29,
+  30,
+  31,
+  32,
+  33,
+  34,
+  35,
+  36,
+  37,
+  38,
+  39,
+  40,
+  41,
+  42,
+  43,
+  44,
+  45,
+  46,
+  47,
+  48,
+  49,
+  50,
+  51,
+  52,
+  53,53,
+  54,54,
+  55,
+  56,
+  57,
+  58,58,58,58,58,
+  59,
+  60,
+  61,61,61
+ );
+
+Function TermLookupPSCmd(S: String): Byte;
+Var I: Integer;
+Begin
+ TermLookupPSCmd := 0;
+ For I := 1 To PS_CMD_ALIASES Do
+  If PSCmdNames[I] = S Then Begin
+   TermLookupPSCmd := PSCmdIDs[I];
+   Exit;
+  End;
+End;
+
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
 Var
@@ -56839,6 +56995,7 @@ Var
  BPN, BPLen: LongInt;
  BPIdx: Integer;
  ArgCmd3, ArgCmd4: String;
+ PSCmdID: Byte;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -57192,154 +57349,74 @@ Begin
    End;
   End;
   SK_POWERSHELL: Begin
-   If CurrCmd = 'EXIT' Then
-    TermVisible := False
-   Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Or
-    (CurrCmd = 'SET-LOCATION') Then
-    TermCmd_CD(TP, ParamStr)
-   Else If (CurrCmd = 'CLS') Or
-    (CurrCmd = 'CLEAR-HOST') Or
-    (CurrCmd = 'CLEAR') Then
-    TermCmd_CLS(TP)
-   Else If (CurrCmd = 'DIR') Or (CurrCmd = 'LS') Or
-    (CurrCmd = 'GET-CHILDITEM') Then
-    TermCmd_DIR_PS(TP, ParamStr)
-   Else If (CurrCmd = 'COPY') Or
-    (CurrCmd = 'COPY-ITEM') Then
-    TermCmd_COPY(TP, ParamStr)
-   Else If (CurrCmd = 'DEL') Or
-    (CurrCmd = 'REMOVE-ITEM') Then
-    TermCmd_DEL(TP, ParamStr)
-   Else If (CurrCmd = 'ECHO') Or
-    (CurrCmd = 'WRITE-OUTPUT') Then
-    TermCmd_ECHO(TP, ParamStr)
-   Else If (CurrCmd = 'MKDIR') Or
-    (CurrCmd = 'NEW-ITEM') Then
-    TermCmd_MKDIR(TP, ParamStr)
-   Else If (CurrCmd = 'RMDIR') Or (CurrCmd = 'RD') Then
-    TermCmd_RMDIR(TP, ParamStr)
-   Else If (CurrCmd = 'REN') Or
-    (CurrCmd = 'RENAME-ITEM') Then
-    TermCmd_REN(TP, ParamStr)
-   Else If (CurrCmd = 'MOVE') Or
-    (CurrCmd = 'MOVE-ITEM') Then
-    TermCmd_MOVE(TP, ParamStr)
-   Else If (CurrCmd = 'TYPE') Or (CurrCmd = 'CAT') Or
-    (CurrCmd = 'GET-CONTENT') Then
-    TermCmd_TYPE(TP, ParamStr)
-   Else If CurrCmd = 'ADD-CONTENT' Then
-    TermCmd_AddContent(TP, ParamStr)
-   Else If CurrCmd = 'CLEAR-CONTENT' Then
-    TermCmd_ClearContent(TP, ParamStr)
-   Else If CurrCmd = 'CLEAR-ITEM' Then
-    TermCmd_ClearItem(TP, ParamStr)
-   Else If CurrCmd = 'CLEAR-HISTORY' Then
-    TermCmd_ClearHistory(TP, ParamStr)
-   Else If CurrCmd = 'CLEAR-ITEMPROPERTY' Then
-    TermCmd_ClearItemProperty(TP, ParamStr)
-   Else If CurrCmd = 'CLEAR-VARIABLE' Then
-    TermCmd_ClearVariable(TP, ParamStr)
-   Else If CurrCmd = 'SET-VARIABLE' Then
-    TermCmd_SetVariable(TP, ParamStr)
-   Else If CurrCmd = 'CLEAR-RECYCLEBIN' Then
-    TermCmd_ClearRecycleBin(TP, ParamStr)
-   Else If CurrCmd = 'COMPARE-OBJECT' Then
-    TermCmd_CompareObject(TP, ParamStr)
-   Else If CurrCmd = 'COMPRESS-ARCHIVE' Then
-    TermCmd_CompressArchive(TP, ParamStr)
-   Else If CurrCmd = 'COMPARE-VM' Then
-    TermCmd_CompareVM(TP, ParamStr)
-   Else If CurrCmd = 'ADD-HISTORY' Then
-    TermCmd_AddHistory(TP, ParamStr)
-   Else If CurrCmd = 'ADD-MEMBER' Then
-    TermCmd_AddMember(TP, ParamStr)
-   Else If CurrCmd = 'ADD-TYPE' Then
-    TermCmd_AddType(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMDVDDRIVE' Then
-    TermCmd_AddVMDvdDrive(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMFIBRECHANNELHBA' Then
-    TermCmd_AddVMFibreChannelHba(TP, ParamStr)
-   Else If CurrCmd = 'COMPLETE-VMFAILOVER' Then
-    TermCmd_CompleteVMFailover(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMGROUPMEMBER' Then
-    TermCmd_AddVMGroupMember(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMHARDDISKDRIVE' Then
-    TermCmd_AddVMHardDiskDrive(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMNETWORKADAPTER' Then
-    TermCmd_AddVMNetworkAdapter(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMSWITCH' Then
-    TermCmd_AddVMSwitch(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMSWITCHEXTENSIONPORTFEATURE' Then
-    TermCmd_AddVMSwitchExtensionPortFeature(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMSWITCHEXTENSIONSWITCHFEATURE' Then
-    TermCmd_AddVMSwitchExtensionSwitchFeature(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMSWITCHTEAMMEMBER' Then
-    TermCmd_AddVMSwitchTeamMember(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMNETWORKADAPTERACL' Then
-    TermCmd_AddVMNetworkAdapterAcl(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMNETWORKADAPTEREXTENDEDACL' Then
-    TermCmd_AddVMNetworkAdapterExtendedAcl(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMNETWORKADAPTERROUTINGDOMAINMAPPING' Then
-    TermCmd_AddVMNetworkAdapterRoutingDomainMapping(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMMIGRATIONNETWORK' Then
-    TermCmd_AddVMMigrationNetwork(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMREMOTEFX3DVIDEOADAPTER' Then
-    TermCmd_AddVMRemoteFx3dVideoAdapter(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMSCSICONTROLLER' Then
-    TermCmd_AddVMScsiController(TP, ParamStr)
-   Else If CurrCmd = 'ADD-VMSTORAGEPATH' Then
-    TermCmd_AddVMStoragePath(TP, ParamStr)
-   Else If CurrCmd = 'CHECKPOINT-VM' Then
-    TermCmd_CheckpointVM(TP, ParamStr)
-   Else If CurrCmd = 'RESTORE-VMCHECKPOINT' Then
-    TermCmd_RestoreVMCheckpoint(TP, ParamStr)
-   Else If CurrCmd = 'EDIT' Then
-    TermCmd_EDIT(TP, ParamStr)
-   Else If CurrCmd = 'ARJ' Then
-    TermCmd_ARJ(TP, ParamStr)
-   Else If CurrCmd = 'UNZIP' Then
-    TermCmd_UNZIP(TP, ParamStr)
-   Else If CurrCmd = 'DATE' Then
-    TermCmd_DATE(TP)
-   Else If CurrCmd = 'TIME' Then
-    TermCmd_TIME(TP)
-   Else If CurrCmd = 'VER' Then
-    TermCmd_VER(TP)
-   Else If CurrCmd = 'PWD' Then
-    TermCmd_PWD(TP)
-   Else If (CurrCmd = 'PUSHD') Or
-    (CurrCmd = 'PUSH-LOCATION') Then
-    TermCmd_PUSHD(TP, ParamStr)
-   Else If (CurrCmd = 'POPD') Or
-    (CurrCmd = 'POP-LOCATION') Then
-    TermCmd_POPD(TP)
-   Else If CurrCmd = 'SET' Then
-    TermCmd_SET(TP, ParamStr)
-   Else If CurrCmd = 'VOL' Then
-    TermCmd_VOL(TP, ParamStr)
-   Else If CurrCmd = 'BOOT' Then
-    TermCmd_BOOT(TP, ParamStr)
-   { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande        }
-   { explicite de l'utilisateur : "quand j'oublie de changer de mode" -     }
-   { PowerShell dev est le shell par defaut/le plus utilise, donc celui ou  }
-   { l'habitude CMD.EXE de taper WIN16 directement echoue le plus souvent). }
-   { Meme handler TermCmd_Win16Launch que WIN/WIN16 dans SK_CMD/            }
-   { SK_NCOMMANDER ci-dessus - aucune duplication de logique. }
-   Else If (CurrCmd = 'START-WIN16PROGRAM') Or
-    (CurrCmd = 'INVOKE-WIN16PROGRAM') Or
-    (CurrCmd = 'START-WIN16APPLICATION') Or
-    (CurrCmd = 'INVOKE-WIN16') Or
-    (CurrCmd = 'START-WIN16') Then
-    TermCmd_Win16Launch(TP, ParamStr)
-   { Start-DosProgram (2026-08-30, demande explicite de l'utilisateur) :    }
-   { meme alias verbe-nom PowerShell, pour l'emulateur DOS 8086 (-CD). }
-   Else If CurrCmd = 'START-DOSPROGRAM' Then
-    TermCmd_DosLaunch(TP, ParamStr)
-  Else If CurrCmd = 'LOG' Then
-   TermCmd_LOG(TP, ParamStr)
-   Else If (CurrCmd = 'HELP') Or
-    (CurrCmd = 'GET-HELP') Or (CurrCmd = '?') Then
-    TermCmd_HELP(TP)
+   PSCmdID := TermLookupPSCmd(CurrCmd);
+   Case PSCmdID Of
+    1: TermVisible := False;                                       { EXIT }
+    2: TermCmd_CD(TP, ParamStr);                { CD/CHDIR/SET-LOCATION }
+    3: TermCmd_CLS(TP);                          { CLS/CLEAR-HOST/CLEAR }
+    4: TermCmd_DIR_PS(TP, ParamStr);             { DIR/LS/GET-CHILDITEM }
+    5: TermCmd_COPY(TP, ParamStr);               { COPY/COPY-ITEM }
+    6: TermCmd_DEL(TP, ParamStr);                { DEL/REMOVE-ITEM }
+    7: TermCmd_ECHO(TP, ParamStr);               { ECHO/WRITE-OUTPUT }
+    8: TermCmd_MKDIR(TP, ParamStr);              { MKDIR/NEW-ITEM }
+    9: TermCmd_RMDIR(TP, ParamStr);              { RMDIR/RD }
+    10: TermCmd_REN(TP, ParamStr);               { REN/RENAME-ITEM }
+    11: TermCmd_MOVE(TP, ParamStr);              { MOVE/MOVE-ITEM }
+    12: TermCmd_TYPE(TP, ParamStr);              { TYPE/CAT/GET-CONTENT }
+    13: TermCmd_AddContent(TP, ParamStr);
+    14: TermCmd_ClearContent(TP, ParamStr);
+    15: TermCmd_ClearItem(TP, ParamStr);
+    16: TermCmd_ClearHistory(TP, ParamStr);
+    17: TermCmd_ClearItemProperty(TP, ParamStr);
+    18: TermCmd_ClearVariable(TP, ParamStr);
+    19: TermCmd_SetVariable(TP, ParamStr);
+    20: TermCmd_ClearRecycleBin(TP, ParamStr);
+    21: TermCmd_CompareObject(TP, ParamStr);
+    22: TermCmd_CompressArchive(TP, ParamStr);
+    23: TermCmd_CompareVM(TP, ParamStr);
+    24: TermCmd_AddHistory(TP, ParamStr);
+    25: TermCmd_AddMember(TP, ParamStr);
+    26: TermCmd_AddType(TP, ParamStr);
+    27: TermCmd_AddVMDvdDrive(TP, ParamStr);
+    28: TermCmd_AddVMFibreChannelHba(TP, ParamStr);
+    29: TermCmd_CompleteVMFailover(TP, ParamStr);
+    30: TermCmd_AddVMGroupMember(TP, ParamStr);
+    31: TermCmd_AddVMHardDiskDrive(TP, ParamStr);
+    32: TermCmd_AddVMNetworkAdapter(TP, ParamStr);
+    33: TermCmd_AddVMSwitch(TP, ParamStr);
+    34: TermCmd_AddVMSwitchExtensionPortFeature(TP, ParamStr);
+    35: TermCmd_AddVMSwitchExtensionSwitchFeature(TP, ParamStr);
+    36: TermCmd_AddVMSwitchTeamMember(TP, ParamStr);
+    37: TermCmd_AddVMNetworkAdapterAcl(TP, ParamStr);
+    38: TermCmd_AddVMNetworkAdapterExtendedAcl(TP, ParamStr);
+    39: TermCmd_AddVMNetworkAdapterRoutingDomainMapping(TP, ParamStr);
+    40: TermCmd_AddVMMigrationNetwork(TP, ParamStr);
+    41: TermCmd_AddVMRemoteFx3dVideoAdapter(TP, ParamStr);
+    42: TermCmd_AddVMScsiController(TP, ParamStr);
+    43: TermCmd_AddVMStoragePath(TP, ParamStr);
+    44: TermCmd_CheckpointVM(TP, ParamStr);
+    45: TermCmd_RestoreVMCheckpoint(TP, ParamStr);
+    46: TermCmd_EDIT(TP, ParamStr);
+    47: TermCmd_ARJ(TP, ParamStr);
+    48: TermCmd_UNZIP(TP, ParamStr);
+    49: TermCmd_DATE(TP);
+    50: TermCmd_TIME(TP);
+    51: TermCmd_VER(TP);
+    52: TermCmd_PWD(TP);
+    53: TermCmd_PUSHD(TP, ParamStr);             { PUSHD/PUSH-LOCATION }
+    54: TermCmd_POPD(TP);                        { POPD/POP-LOCATION }
+    55: TermCmd_SET(TP, ParamStr);
+    56: TermCmd_VOL(TP, ParamStr);
+    57: TermCmd_BOOT(TP, ParamStr);
+    { Alias verbe-nom PowerShell pour WIN/WIN16 (2026-08-30, demande         }
+    { explicite : "quand j'oublie de changer de mode" - PowerShell dev est   }
+    { le shell le plus utilise, celui ou l'habitude CMD.EXE echoue le plus). }
+    { Meme handler TermCmd_Win16Launch que WIN/WIN16 dans SK_CMD/            }
+    { SK_NCOMMANDER - aucune duplication de logique. }
+    58: TermCmd_Win16Launch(TP, ParamStr);  { START-WIN16*/INVOKE-WIN16* }
+    59: TermCmd_DosLaunch(TP, ParamStr);          { START-DOSPROGRAM }
+    60: TermCmd_LOG(TP, ParamStr);
+    61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
    Else Begin
     { Meme repli que le shell CMD (voir plus haut) : un vrai PowerShell }
     { execute egalement un binaire DOS/Linux tape par son nom.          }
@@ -57359,6 +57436,7 @@ Begin
     Else
      TermAddLine(TP, CurrCmd +
       ' : le terme n''est pas reconnu comme nom de cmdlet.');
+   End;
    End;
   End;
   SK_BASH: Begin
