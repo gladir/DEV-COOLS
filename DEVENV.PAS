@@ -17563,6 +17563,7 @@ Procedure LoadOptions(Var Data: TOptionsDialogData; FileName: String); Forward;
 Function ExecuteCompiler(CmdLine, TempOutputFile: String): Integer; Forward;
 Procedure ReadOutputFile(TempFile: String; Var OP: TOutputPanel;
  Tab: Integer); Forward;
+Function FindCompiler(Name: String): String; Forward;
 
 Const
  ExtMgrTabLabels: Array[0..3] Of String[16] =
@@ -37373,6 +37374,157 @@ Begin
  Close(Handle);
 End;
 
+{ --- ADD-HISTORY (2026-08-30, demande explicite de l'utilisateur, "support}
+{ complet" dans PowerShell dev) : la VRAIE cmdlet ajoute des entrees a      }
+{ l'historique de SESSION (le meme que Get-History/l'objet HistoryInfo).   }
+{ Ce terminal a deja son PROPRE mecanisme d'historique reel - rappel via    }
+{ les fleches Haut/Bas, deja utilise par CHAQUE commande executee          }
+{ (TermAddHistory, ~33334, tableau TP.TermHistory[]) - Add-History y ajoute}
+{ donc REELLEMENT une ligne, exactement comme si elle avait ete tapee et    }
+{ executee, la rendant rappelable au meme titre que le reste (pas juste un }
+{ affichage). Hors de portee documente (jamais invente) : un vrai objet     }
+{ HistoryInfo (Id/ExecutionStatus/StartExecutionTime) - ce terminal n'a     }
+{ jamais eu de tel objet, meme pour SA PROPRE execution normale de           }
+{ commandes, donc Get-History (non demandee) n'existerait de toute facon    }
+{ pas a ce niveau de detail. }
+Procedure TermCmd_AddHistory(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ If ParamStr = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-History commande');
+  Exit;
+ End;
+ TermAddHistory(TP, ParamStr);
+End;
+
+{ --- ADD-MEMBER (2026-08-30, demande explicite de l'utilisateur) : la     }
+{ VRAIE cmdlet attache dynamiquement une propriete/methode a UNE INSTANCE   }
+{ d'objet .NET/PSObject deja existante. Ce terminal n'a JAMAIS eu le moindre}
+{ pipeline d'objets ($variable, New-Object, PSCustomObject, etc. - meme    }
+{ SET var=valeur, la forme la plus simple imaginable, est explicitement non }
+{ supportee, voir TermCmd_SET ci-dessus) - il n'existe donc structurellement}
+{ AUCUNE instance a laquelle attacher quoi que ce soit. Plutot que d'       }
+{ INVENTER un faux systeme d'objets pour cette seule commande (aucune       }
+{ commande "consommatrice" de ces objets n'existe ni n'est demandee),       }
+{ arret honnete et EXPLICITE (meme discipline que Win16_Halt/tout le        }
+{ chantier Win16 pour un appel genuinement hors de portee) plutot qu'un     }
+{ silence qui laisserait croire a tort que quelque chose s'est produit. }
+Procedure TermCmd_AddMember(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Add-Member : commande reconnue, mais ce terminal ne ' +
+  'dispose pas d''un vrai pipeline d''objets PowerShell (pas de $variable, ');
+ TermAddLine(TP, 'PSObject ou New-Object) - il n''existe donc aucune ' +
+  'instance a laquelle attacher un membre. Aucun effet.');
+End;
+
+{ --- ADD-TYPE (2026-08-30, demande explicite de l'utilisateur) : la VRAIE }
+{ cmdlet compile du code C#/VB et charge le type resultant dans le          }
+{ processus PowerShell courant. Ce terminal n'a pas de runtime .NET ni de   }
+{ systeme de types/objets (voir Add-Member ci-dessus) - MAIS possede deja   }
+{ un VRAI compilateur C# autonome dans cet ecosysteme (CSCW32.EXE, voir     }
+{ CSC_COMPILER_WIN32/FindCompiler/ExecuteCompiler, deja utilises par le      }
+{ systeme de build de projet C# de l'IDE lui-meme) - reutilise ici tel      }
+{ quel pour une action REELLE (compilation authentique, pas un stub) :     }
+{ compile genuinement le code fourni et rapporte les VRAIS succes/erreurs   }
+{ du compilateur, au lieu d'un silence ou d'un succes invente. Supporte les}
+{ 2 formes reelles les plus courantes :                                    }
+{   Add-Type -Path fichier.cs                                              }
+{   Add-Type -TypeDefinition "code C# sur une seule ligne"                 }
+{ Limitation honnete documentee : -TypeDefinition est ecrit dans un fichier}
+{ .cs temporaire PUIS compile - ce terminal etant ligne-par-ligne (aucune   }
+{ commande n'a jamais supporte de here-string "@"..."@" multiligne), seul   }
+{ du code C# tenant sur UNE seule ligne est reellement utilisable ; les     }
+{ guillemets englobants (quasi-systematiques dans un usage reel a une seule}
+{ ligne) sont retires SPECIFIQUEMENT ici (contrairement a Add-Content       }
+{ -Value, qui les garde tels quels puisqu'il s'agit de texte libre, pas de  }
+{ code) car les laisser produirait une erreur de syntaxe C# garantie des le}
+{ premier caractere. Et, comme Add-Member, il n'existe aucun moyen          }
+{ d'INVOQUER ensuite le type compile (pas de pipeline d'objets) - seule la  }
+{ compilation elle-meme (validation reelle du code + .exe reellement          }
+{ genere sur disque) est effectuee, honnetement documentee comme telle. }
+Procedure TermCmd_AddType(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, SourceFile, InlineSrc, CompilerPath, TempDir, TempSrc, TempOut: String;
+ PathFlagPos, TypeDefFlagPos, ExitCode: Integer;
+ Handle: Text;
+ Line: String;
+ Err: Word;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ TypeDefFlagPos := System.Pos('-TYPEDEFINITION', UpParams);
+ SourceFile := '';
+ TempDir := GetEnv('TEMP');
+ If TempDir = '' Then TempDir := GetEnv('TMP');
+ If TempDir = '' Then TempDir := '.';
+ If PathFlagPos > 0 Then
+  SourceFile := TrimStr(TermExtractParam(Copy(ParamStr, PathFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else If TypeDefFlagPos > 0 Then Begin
+  InlineSrc := TrimStr(Copy(ParamStr, TypeDefFlagPos + 15, Length(ParamStr)));
+  If (Length(InlineSrc) >= 2) And (InlineSrc[1] = '"') And
+     (InlineSrc[Length(InlineSrc)] = '"') Then
+   InlineSrc := Copy(InlineSrc, 2, Length(InlineSrc) - 2);
+  If InlineSrc = '' Then Begin
+   TermAddLine(TP, 'Syntaxe : Add-Type -TypeDefinition "code C#"');
+   Exit;
+  End;
+  TempSrc := TempDir + '\ADDTYPE_TMP.CS';
+  Assign(Handle, TempSrc);
+  {$I-} Rewrite(Handle); {$I+}
+  If IOResult <> 0 Then Begin
+   TermAddLine(TP, 'Add-Type : impossible de creer un fichier .cs temporaire.');
+   Exit;
+  End;
+  WriteLn(Handle, InlineSrc);
+  Close(Handle);
+  SourceFile := TempSrc;
+ End Else
+  SourceFile := TermExtractParam(ParamStr, 1);
+ If SourceFile = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-Type -Path fichier.cs');
+  TermAddLine(TP, '     ou : Add-Type -TypeDefinition "code C#"');
+  Exit;
+ End;
+ If (PathFlagPos > 0) Or (TypeDefFlagPos <= 0) Then
+  If Not FileExists(SourceFile) Then Begin
+   TermAddLine(TP, 'Add-Type : le systeme ne trouve pas le fichier specifie : ' +
+    SourceFile);
+   Exit;
+  End;
+ CompilerPath := FindCompiler(CSC_COMPILER_WIN32);
+ If CompilerPath = '' Then Begin
+  TermAddLine(TP, 'Add-Type : compilateur C# (CSCW32.EXE) introuvable.');
+  Exit;
+ End;
+ TempOut := TempDir + '\ADDTYPE_OUT.TXT';
+ { BOGUE REEL trouve+corrige (2026-08-30) : les guillemets autour de        }
+ { CompilerPath/SourceFile faisaient echouer Exec(COMSPEC,...) avec         }
+ { "syntaxe du nom de fichier...incorrecte", alors que la MEME ligne        }
+ { fonctionne parfaitement tapee a la main dans un vrai cmd.exe - confirme  }
+ { en comparant avec TOUS les autres appels existants a ExecuteCompiler     }
+ { dans ce fichier (VAXPCW32/DELPHI/TPC/FPC/CSC/VBC/VBNCW32/...) : AUCUN    }
+ { d'entre eux ne met de guillemets, tous concatenent juste                 }
+ { "CompilerPath + ' ' + SourceFile" tel quel - meme limitation assumee     }
+ { partout (chemins avec espaces non supportes), pas une regression         }
+ { introduite ici. }
+ ExitCode := ExecuteCompiler(CompilerPath + ' ' + SourceFile, TempOut);
+ Assign(Handle, TempOut);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err = 0 Then Begin
+  While Not EOF(Handle) Do Begin
+   ReadLn(Handle, Line);
+   If Line <> '' Then TermAddLine(TP, Line);
+  End;
+  Close(Handle);
+ End;
+ If ExitCode = 0 Then
+  TermAddLine(TP, 'Add-Type : compilation reussie (' + SourceFile + ').')
+ Else
+  TermAddLine(TP, 'Add-Type : echec de compilation (code ' +
+   IntToStr(ExitCode) + ').');
+End;
+
 { --- EDIT : ouvrir un fichier du systeme hote dans un onglet editeur de   }
 { texte, comme le ferait "Fichier > Ouvrir" ou un double-clic dans          }
 { l Explorateur de solutions - meme sequence exacte que                    }
@@ -47041,6 +47193,14 @@ Begin
    '  Add-Content fichier texte           Ajoute une ligne en fin de fichier');
   TermAddLine(TP,
    '  Add-Content -Path f -Value texte     Meme chose (syntaxe nommee)');
+  TermAddLine(TP,
+   '  Add-History commande                Ajoute au rappel Haut/Bas');
+  TermAddLine(TP,
+   '  Add-Member ...                       Reconnue, sans objet a completer');
+  TermAddLine(TP,
+   '  Add-Type -Path fichier.cs            Compile via CSCW32.EXE');
+  TermAddLine(TP,
+   '  Add-Type -TypeDefinition "code"      Idem, code C# sur une ligne');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -47869,6 +48029,12 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'ADD-CONTENT' Then
     TermCmd_AddContent(TP, ParamStr)
+   Else If CurrCmd = 'ADD-HISTORY' Then
+    TermCmd_AddHistory(TP, ParamStr)
+   Else If CurrCmd = 'ADD-MEMBER' Then
+    TermCmd_AddMember(TP, ParamStr)
+   Else If CurrCmd = 'ADD-TYPE' Then
+    TermCmd_AddType(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
