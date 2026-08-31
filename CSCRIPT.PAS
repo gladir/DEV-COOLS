@@ -15,14 +15,15 @@ Const
  VersionText='5.812';
  ValueEmpty=0;ValueString=1;ValueNumber=2;ValueDate=3;
  ValueArray=4;ValueError=5;ValueNull=6;ValueObject=7;
- FunctionList:Array[0..61]of String[24]=(
+ FunctionList:Array[0..66]of String[24]=(
   'ABS','ARRAY','ASC','ATN','CBOOL','CBYTE','CDATE','CDBL','CHR','CINT',
   'CLNG','COS','CSNG','CSTR','CVERR','DATE','DATESERIAL','DATEVALUE','DAY',
   'EXP','FIX','HEX','HOUR','INPUTBOX','INSTR','INT','ISARRAY','ISDATE',
   'ISEMPTY','ISERROR','ISNULL','ISNUMERIC','ISOBJECT','LBOUND','LCASE',
   'LEFT','LEN','LOG','LTRIM','MID','MINUTE','MONTH','MSGBOX','NOW','OCT',
   'RIGHT','RND','RTRIM','SECOND','SGN','SIN','SQR','STR','STRCOMP','STRING',
-  'TAN','TIME','TIMESERIAL','TIMEVALUE','TRIM','UCASE','WSCRIPT.ARGUMENTS');
+  'TAN','TIME','TIMESERIAL','TIMEVALUE','TRIM','UBOUND','UCASE','VAL','VARTYPE',
+  'WEEKDAY','WSCRIPT.ARGUMENTS','YEAR');
 
 Type
  PScriptLine=^TScriptLine;
@@ -438,8 +439,105 @@ Procedure GetVariable(Name:String;Var V:TValue);
 Var P:PVariable;
 Begin
  P:=FindVariable(Name);If P=Nil Then MakeText('',V)Else Begin
-  MakeText(P^.Value,V);V.ValueKind:=P^.ValueKind;
+ MakeText(P^.Value,V);V.ValueKind:=P^.ValueKind;
  End;
+End;
+
+Procedure UBoundValue(A,B:TValue;ArgumentCount:Integer;Var V:TValue);
+Var CountValue:TValue;
+Begin
+ If(A.ValueKind<>ValueArray)and(Copy(A.Text,1,8)<>'@VBARRAY')Then Begin MakeText('',V);Exit;End;
+ If(ArgumentCount>1)and(Trunc(B.Number)<>1)Then Begin MakeText('',V);Exit;End;
+ GetVariable(A.Text+'.COUNT',CountValue);MakeNumber(Trunc(CountValue.Number)-1,V);
+End;
+
+Procedure ValValue(SourceText:String;Var V:TValue);
+Var NumberText,UpperText:String;Position,Code,Base,Digit:Integer;
+ NumberValue:Real;IntegerValue:LongInt;HasDigit:Boolean;
+Begin
+ SourceText:=Trim(SourceText);UpperText:=Upper(SourceText);
+ If(Copy(UpperText,1,2)='&H')or(Copy(UpperText,1,2)='&O')Then Begin
+  If UpperText[2]='H'Then Base:=16 Else Base:=8;
+  Position:=3;IntegerValue:=0;HasDigit:=False;
+  While Position<=Length(UpperText)Do Begin
+   If UpperText[Position]in['0'..'9']Then Digit:=Ord(UpperText[Position])-Ord('0')
+   Else If UpperText[Position]in['A'..'F']Then Digit:=Ord(UpperText[Position])-Ord('A')+10
+   Else Break;
+   If Digit>=Base Then Break;
+   IntegerValue:=IntegerValue*Base+Digit;HasDigit:=True;Inc(Position);
+  End;
+  If HasDigit Then MakeNumber(IntegerValue,V)Else MakeNumber(0,V);Exit;
+ End;
+ NumberText:='';Position:=1;HasDigit:=False;
+ If(Position<=Length(SourceText))and(SourceText[Position]in['+','-'])Then Begin
+  NumberText:=SourceText[Position];Inc(Position);End;
+ While(Position<=Length(SourceText))and(SourceText[Position]in['0'..'9'])Do Begin
+  NumberText:=NumberText+SourceText[Position];Inc(Position);HasDigit:=True;End;
+ If(Position<=Length(SourceText))and(SourceText[Position]='.')Then Begin
+  NumberText:=NumberText+'.';Inc(Position);
+  While(Position<=Length(SourceText))and(SourceText[Position]in['0'..'9'])Do Begin
+   NumberText:=NumberText+SourceText[Position];Inc(Position);HasDigit:=True;End;
+ End;
+ If HasDigit and(Position<=Length(SourceText))and(SourceText[Position]in['E','e'])Then Begin
+  NumberText:=NumberText+'E';Inc(Position);
+  If(Position<=Length(SourceText))and(SourceText[Position]in['+','-'])Then Begin
+   NumberText:=NumberText+SourceText[Position];Inc(Position);End;
+  While(Position<=Length(SourceText))and(SourceText[Position]in['0'..'9'])Do Begin
+   NumberText:=NumberText+SourceText[Position];Inc(Position);End;
+ End;
+ If Not HasDigit Then MakeNumber(0,V)Else Begin
+  Val(NumberText,NumberValue,Code);If Code=0Then MakeNumber(NumberValue,V)Else MakeNumber(0,V);
+ End;
+End;
+
+Procedure VarTypeValue(A:TValue;Var V:TValue);
+Var TypeNumber:Integer;
+Begin
+ Case A.ValueKind of
+  ValueEmpty:TypeNumber:=0;
+  ValueString:TypeNumber:=8;
+  ValueNumber:TypeNumber:=5;
+  ValueDate:TypeNumber:=7;
+  ValueArray:TypeNumber:=8204; { vbArray + vbVariant }
+  ValueError:TypeNumber:=10;
+  ValueNull:TypeNumber:=1;
+  ValueObject:TypeNumber:=9;
+ Else TypeNumber:=12;
+ End;
+ MakeNumber(TypeNumber,V);
+End;
+
+Procedure DateParts(SourceText:String;Var YearValue,MonthValue,DayValue:Integer;
+ Var Valid:Boolean);
+Var Converted:TValue;Code:Integer;
+Begin
+ ParseDateValue(SourceText,Converted);Valid:=Converted.Text<>'';
+ If Not Valid Then Exit;
+ Val(Copy(Converted.Text,1,2),DayValue,Code);If Code<>0Then Valid:=False;
+ Val(Copy(Converted.Text,4,2),MonthValue,Code);If Code<>0Then Valid:=False;
+ Val(Copy(Converted.Text,7,4),YearValue,Code);If Code<>0Then Valid:=False;
+End;
+
+Procedure WeekdayValue(A,B:TValue;ArgumentCount:Integer;Var V:TValue);
+Var YearValue,MonthValue,DayValue,FirstDay,H,ResultDay:Integer;Valid:Boolean;
+Begin
+ DateParts(A.Text,YearValue,MonthValue,DayValue,Valid);
+ If Not Valid Then Begin MakeText('',V);Exit;End;
+ If ArgumentCount>1Then FirstDay:=Trunc(B.Number)Else FirstDay:=1;
+ If FirstDay=0Then FirstDay:=1;
+ If(FirstDay<1)or(FirstDay>7)Then Begin MakeText('',V);Exit;End;
+ If MonthValue<3Then Begin Inc(MonthValue,12);Dec(YearValue);End;
+ H:=(DayValue+(13*(MonthValue+1))div 5+YearValue+(YearValue div 4)-
+     (YearValue div 100)+(YearValue div 400))mod 7;
+ ResultDay:=((H+6)mod 7)+1;
+ ResultDay:=((ResultDay-FirstDay+7)mod 7)+1;MakeNumber(ResultDay,V);
+End;
+
+Procedure YearValue(SourceText:String;Var V:TValue);
+Var YearNumber,MonthNumber,DayNumber:Integer;Valid:Boolean;
+Begin
+ DateParts(SourceText,YearNumber,MonthNumber,DayNumber,Valid);
+ If Valid Then MakeNumber(YearNumber,V)Else MakeText('',V);
 End;
 
 Procedure SkipSpace;
@@ -620,10 +718,15 @@ Begin
    57:MakeTimeValue(Trunc(A.Number),Trunc(B.Number),Trunc(C.Number),V); { TIMESERIAL }
    58:ParseTimeValue(A.Text,V);                           { TIMEVALUE }
    59:MakeText(Trim(A.Text),V);                           { TRIM }
-   60:MakeText(Upper(A.Text),V);                          { UCASE }
-   61:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
+   60:UBoundValue(A,B,ArgumentCount,V);                   { UBOUND }
+   61:MakeText(Upper(A.Text),V);                          { UCASE }
+   62:ValValue(A.Text,V);                                 { VAL }
+   63:VarTypeValue(A,V);                                 { VARTYPE }
+   64:WeekdayValue(A,B,ArgumentCount,V);                  { WEEKDAY }
+   65:If(Trunc(A.Number)>=0)and(Trunc(A.Number)<ScriptArgumentCount)Then
        MakeText(ScriptArguments[Trunc(A.Number)],V)
       Else MakeText('',V);                               { WSCRIPT.ARGUMENTS }
+   66:YearValue(A.Text,V);                               { YEAR }
    Else MakeText('',V);
   End;
   Exit;
