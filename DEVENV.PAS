@@ -38572,6 +38572,100 @@ Begin
   '(INT 60h) active a chaud, adresse MAC synthetique ' + MacStr + '.');
 End;
 
+{ --- CONNECT-PSSESSION / CONNECT-VMNETWORKADAPTER / CONNECT-VMSAN /       }
+{ CONNECT-WSMAN (2026-08-31, demande explicite de l'utilisateur, "support  }
+{ complet" - avec la consigne explicite de considerer que les emulateurs   }
+{ de ce terminal SONT les VM). Meme discipline de verdict INDIVIDUEL que    }
+{ tout ce chantier :                                                       }
+{ - Connect-VMNetworkAdapter : reutilise EmuPkt/Emu_WriteDefaultVector      }
+{   (meme mecanisme reel qu'Add-VMNetworkAdapter ci-dessus), mais avec une  }
+{   semantique DIFFERENTE et NON redondante : Add- CREE la carte (refuse    }
+{   si deja active), Connect- (RE)CONNECTE une carte EXISTANTE - echoue si   }
+{   aucune carte n'a jamais ete ajoutee (rien a connecter), mais REUSSIT    }
+{   silencieusement si elle est deja active (une vraie Connect-* sur un     }
+{   adaptateur deja connecte est un succes idempotent, pas une erreur,      }
+{   contrairement a Add- sur le meme cas). Reecrit quand meme le vecteur    }
+{   INT 60h a chaque appel (utile si l'IVT a ete ecrasee entre-temps par    }
+{   le programme invite lui-meme).                                         }
+{ - Connect-VMSan : DEPEND de l'infrastructure Fibre Channel virtuelle      }
+{   (adaptateurs HBA) - Add-VMFibreChannelHba est deja un arret honnete     }
+{   CONFIRME plus haut (materiel SAN d'entreprise, aucun equivalent meme    }
+{   en principe dans un emulateur 8/16 bits) : Connect-VMSan herite         }
+{   necessairement de la meme impossibilite, aucune nouvelle recherche      }
+{   n'etait necessaire (la dependance est directe et documentee dans la     }
+{   vraie documentation Hyper-V elle-meme : Connect-VMSan ne s'utilise      }
+{   qu'avec de vrais adaptateurs Fibre Channel virtuels).                   }
+{ - Connect-PSSession / Connect-WSMan : contrairement aux 2 precedentes,    }
+{   CE NE SONT PAS des cmdlets Hyper-V/VM du tout - ce sont des cmdlets de  }
+{   PowerShell REMOTING (reconnexion a une session distante deconnectee/    }
+{   connexion au service WS-Management sur un ORDINATEUR distant), verifie  }
+{   par grep ("PSSession"/"WSMan"/"Remoting" : aucun resultat ailleurs dans }
+{   ce fichier avant ce chantier). La consigne "les emulateurs sont les     }
+{   VM" ne s'applique pas ici : aucune des deux ne concerne une VM, mais un }
+{   AUTRE ORDINATEUR/service reseau distant - ce terminal reste un seul     }
+{   processus sur une seule machine locale (meme limitation deja           }
+{   documentee pour Add-VMMigrationNetwork/Complete-VMFailover), donc       }
+{   arret honnete SPECIFIQUE (pas la meme raison que le manque de VM        }
+{   nommee - une raison de remoting reseau, d'ou l'absence de reutilisation }
+{   de TermCmd_HyperVUnsupported, dont le message parle explicitement       }
+{   d'Hyper-V/VM, categorie inexacte pour ces 2-la). }
+
+Procedure TermCmd_ConnectVMNetworkAdapter(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, VMNameArg, VMLabel, MacStr: String;
+ I: Integer;
+Begin
+ If Not TermAnyEmulatorOpen Then Begin
+  TermAddLine(TP, 'Connect-VMNetworkAdapter : aucun emulateur actif (voir ' +
+   'BOOT/DEBUG) - rien a connecter.');
+  Exit;
+ End;
+ TermParseAddVMArgs(ParamStr, PathArg, VMNameArg);
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")' Else VMLabel := '';
+ If Not EmuPkt.Active Then Begin
+  TermAddLine(TP, 'Connect-VMNetworkAdapter' + VMLabel + ' : aucune carte ' +
+   'reseau n''existe encore sur cette VM - utilisez d''abord ' +
+   'Add-VMNetworkAdapter.');
+  Exit;
+ End;
+ Emu_WriteDefaultVector(EmuPanel, $60);
+ MacStr := '';
+ For I := 0 To 5 Do Begin
+  If I > 0 Then MacStr := MacStr + '-';
+  MacStr := MacStr + HexByte(EmuPkt.LocalMAC[I]);
+ End;
+ TermAddLine(TP, 'Connect-VMNetworkAdapter' + VMLabel + ' : carte reseau ' +
+  'reconnectee (pilote de paquets INT 60h, MAC ' + MacStr + ').');
+End;
+
+Procedure TermCmd_ConnectVMSan(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_HyperVUnsupported(TP, 'Connect-VMSan',
+  'Ne s''utilise qu''avec de vrais adaptateurs Fibre Channel virtuels ' +
+  '(reseau de stockage SAN d''entreprise) - meme impossibilite deja ' +
+  'documentee pour Add-VMFibreChannelHba : materiel jamais modelisable ' +
+  'dans un emulateur 8086/16 bits/8 bits.');
+End;
+
+Procedure TermCmd_ConnectPSSession(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Connect-PSSession : commande reconnue, mais ce terminal ' +
+  'n''implemente aucun mecanisme de remoting PowerShell (WinRM/WS-Man).');
+ TermAddLine(TP, 'Il n''existe aucune session PowerShell DISTANTE ' +
+  '(deconnectee ou non) a laquelle se reconnecter : ce terminal est un ' +
+  'seul processus local, jamais un hote de sessions distantes.');
+End;
+
+Procedure TermCmd_ConnectWSMan(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Connect-WSMan : commande reconnue, mais ce terminal ' +
+  'n''implemente aucun service WS-Management (WinRM) - ni serveur, ni ' +
+  'client.');
+ TermAddLine(TP, 'Aucun -ComputerName distant n''a de sens ici : ce ' +
+  'terminal est un seul processus sur une seule machine locale, jamais ' +
+  'un service reseau accessible depuis un autre ordinateur.');
+End;
+
 Procedure TermCmd_AddVMSwitch(Var TP: TTerminalPanel; ParamStr: String);
 Begin
  TermCmd_HyperVUnsupported(TP, 'Add-VMSwitch',
@@ -60904,6 +60998,15 @@ Begin
   TermAddLine(TP,
    '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
    '[+.avhdx]');
+  TermAddLine(TP,
+   '  Connect-VMNetworkAdapter [-VMName n]  Reconnecte la carte reseau ' +
+   '(deja ajoutee)');
+  TermAddLine(TP,
+   '  Connect-VMSan                          Reconnue, sans equivalent ' +
+   '(Fibre Channel)');
+  TermAddLine(TP,
+   '  Connect-PSSession / Connect-WSMan     Reconnues, sans remoting ' +
+   'PowerShell/WinRM');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -61485,7 +61588,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 88;
+ PS_CMD_ALIASES = 92;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -61533,6 +61636,10 @@ Const
   'ADD-VMSTORAGEPATH',
   'CHECKPOINT-VM',
   'RESTORE-VMCHECKPOINT',
+  'CONNECT-PSSESSION',
+  'CONNECT-VMNETWORKADAPTER',
+  'CONNECT-VMSAN',
+  'CONNECT-WSMAN',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -61601,6 +61708,10 @@ Const
   43,
   44,
   45,
+  66,
+  67,
+  68,
+  69,
   46,
   47,
   48,
@@ -62056,6 +62167,10 @@ Begin
     43: TermCmd_AddVMStoragePath(TP, ParamStr);
     44: TermCmd_CheckpointVM(TP, ParamStr);
     45: TermCmd_RestoreVMCheckpoint(TP, ParamStr);
+    66: TermCmd_ConnectPSSession(TP, ParamStr);
+    67: TermCmd_ConnectVMNetworkAdapter(TP, ParamStr);
+    68: TermCmd_ConnectVMSan(TP, ParamStr);
+    69: TermCmd_ConnectWSMan(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
