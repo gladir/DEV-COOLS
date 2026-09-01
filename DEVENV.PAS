@@ -7184,6 +7184,62 @@ Var
  CPU6502_PageCrossed: Boolean;{ AmABX/AmABY/AmIZY a traverse une page   }
  CPU6502_Panel  : ^TEmulatorPanel;
  CPU6502_Variant: Integer;    { 0=AppleII 1=C64 2=Atari 3=NES 4=A2600 }
+ { Chantier ARM64 (AArch64), Etape 1 (2026-09-01) : squelette du coeur CPU    }
+ { seul - aucun peripherique, aucune MMU, aucune gestion d exception pour    }
+ { l instant (voir project_devenv_arm64_emulator.md pour la feuille de route }
+ { complete en etapes). Modele memoire plat calque sur ELF64_Mem/LX_Mem      }
+ { (un seul tampon, adresse physique = index direct).                        }
+ ARM64_Mem        : Array[0..$FFFFFFF] Of Byte; { 256 Mo de RAM physique emulee }
+ ARM64_Reg        : Array[0..30] Of QWord;      { X0..X30 (X30=LR par convention}
+                                    { ABI, RET/BLR utilisent le registre       }
+                                    { explicitement decode, pas un registre    }
+                                    { materiel special)                        }
+ ARM64_SP         : QWord;         { SP_EL1 uniquement (demarrage direct EL1,  }
+                                    { pas de SP_EL0/EL2/EL3 pour l instant)     }
+ ARM64_PC         : QWord;
+ ARM64_FlagN      : Boolean;       { PSTATE.N (negatif) }
+ ARM64_FlagZ      : Boolean;       { PSTATE.Z (zero) }
+ ARM64_FlagC      : Boolean;       { PSTATE.C (retenue) }
+ ARM64_FlagV      : Boolean;       { PSTATE.V (debordement) }
+ ARM64_Halted     : Boolean;
+ ARM64_HaltReason : String;
+ ARM64_LastBadPC  : QWord;
+ ARM64_InstrCount : LongInt;
+ ARM64_Loaded     : Boolean;
+ ARM64_Panel      : ^TEmulatorPanel;
+ { Historique circulaire (PC/SP au debut de chaque instruction), meme motif  }
+ { que ELF64_TraceRIP/RSP et LX_TraceEIP/ESP.                                }
+ ARM64_TracePC    : Array[0..255] Of QWord;
+ ARM64_TraceSP    : Array[0..255] Of QWord;
+ ARM64_TraceCount : LongInt;
+ { Chantier ARM64, Etape 3 (2026-09-01) : modele d exceptions (demarrage    }
+ { direct EL1, EL2/EL3 hors de portee), minuteur generique ARM et GICv2     }
+ { minimal (une seule source : PPI 30, minuteur EL1 non securise).          }
+ ARM64_VBAR_EL1   : QWord;
+ ARM64_ELR_EL1    : QWord;
+ ARM64_SPSR_EL1   : QWord;
+ ARM64_DaifI      : Boolean; { PSTATE.I - D/A/F non modelises (pas d EL2/3) }
+ ARM64_Sctlr      : QWord;   { stockage passif - l Etape 4 (MMU) l utilisera}
+ ARM64_Ttbr0      : QWord;
+ ARM64_Tcr        : QWord;
+ ARM64_Mair       : QWord;
+ ARM64_CntFreq    : QWord;
+ ARM64_CntPct     : QWord;
+ ARM64_CntpCval   : QWord;
+ ARM64_CntpEnable : Boolean;
+ ARM64_CntpImask  : Boolean;
+ ARM64_GicDistEnable : Boolean;
+ ARM64_GicCpuEnable  : Boolean;
+ ARM64_GicPmr        : Byte;
+ ARM64_GicEnableMask : LongWord; { bit N = IRQ N active (GICD_ISENABLER0) }
+ ARM64_GicPending    : Boolean;  { IRQ 30 (minuteur) : signal actuellement leve }
+ ARM64_GicActive     : Boolean;  { accusee via IAR, pas encore EOI - visible }
+                                  { cote invite, ne conditionne rien en interne }
+                                  { (PSTATE.I suffit a empecher la reentrance).}
+ { Chantier ARM64, Etape 4 : moniteur d acces exclusif (LDXR/STXR) - modele }
+ { mono-coeur, toujours valide tant qu aucune exception/CLREX ne l efface.  }
+ ARM64_ExValid       : Boolean;
+ ARM64_ExAddr        : QWord;
 
 Const
  { ROM Commodore 64 (BASIC V2, KERNAL, generateur de caracteres) - clone   }
@@ -8603,6 +8659,7 @@ Var
  Z80Async_KeyEsc   : Boolean;
  ELF64Async_KeyEsc : Boolean;
  LX_AsyncKeyEsc    : Boolean; { chantier OS/2 LX, Stage 4 - meme motif }
+ ARM64Async_KeyEsc : Boolean; { chantier ARM64, Etape 2 - meme motif }
  { DOS/8086 : contrairement aux 8 autres, cette boucle a DEJA son propre    }
  { pompage d evenements interne (EmuPumpEv, tous les ~500 pas) qui draine    }
  { le clavier/souris hote directement dans la machine emulee (BIOS/IRQ) -   }
@@ -9182,6 +9239,9 @@ Procedure ShowHelp;Begin
  WriteLn('                 Le terminal CMD/PowerShell integre peut');
  WriteLn('                 utiliser A:/B:/C:/D: et les commandes DIR,');
  WriteLn('                 TYPE, CD, VOL pour explorer l image (FAT12/16).');
+ WriteLn('  /CDROM:img     Image ISO9660 (.iso) montee comme 1er lecteur');
+ WriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
+ WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
  WriteLn('  /CDROM0:img    Image ISO9660 (.iso) montee comme 1er lecteur');
  WriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
  WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
@@ -9407,6 +9467,17 @@ Begin
    If Not FileExists(EmuFn) Then
     FatalError('Image disque introuvable: ' + EmuFn);
    Opts.DiskImg81 := EmuFn;
+  End
+  Else If (Length(Arg) >= 7) And
+          ((Copy(Arg, 1, 7) = '/CDROM:') Or (Copy(Arg, 1, 7) = '/cdrom:') Or
+           (Copy(Arg, 1, 7) = '-CDROM:') Or (Copy(Arg, 1, 7) = '-cdrom:') Or
+           (Copy(Arg, 1, 7) = '/Cdrom:') Or (Copy(Arg, 1, 7) = '-Cdrom:')) Then Begin
+   EmuFn := Copy(Arg, 8, Length(Arg) - 7);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /CDROM attendue : /CDROM:fichier.iso');
+   If Not FileExists(EmuFn) Then
+    FatalError('Image CD-ROM introuvable: ' + EmuFn);
+   Opts.CdromImg0 := EmuFn;
   End
   Else If (Length(Arg) >= 8) And
           ((Copy(Arg, 1, 8) = '/CDROM0:') Or (Copy(Arg, 1, 8) = '/cdrom0:') Or
@@ -39343,7 +39414,8 @@ Begin
  P := TermExtractParam(ParamStr, 1);
  If (Length(P) < 2) Or (P[2] <> ':') Then Begin
   TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
-   '[/DISK81:img] [/DOS] [/OS2] [/LINUX] [/LINUXARM] [/GUI] [/CMD]');
+   '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
+   '[/LINUX] [/LINUXARM] [/LINUXARM64] [/GUI] [/CMD]');
   Exit;
  End;
  DL := UpCase(P[1]);
@@ -39383,6 +39455,34 @@ Begin
    End;
   End;
  End;
+ { Support direct des images CD-ROM ISO9660 depuis BOOT, avec les formes     }
+ { generique /CDROM: et explicites /CDROM0:/CDROM1: - l image est montee      }
+ { dans le lecteur virtuel CD-ROM associe et les lettres D:/E: recalculent    }
+ { automatiquement (voir Emu_CdromAssignDriveLetters). }
+ For SlotIdx := 0 To 1 Do Begin
+  Case SlotIdx Of
+   0: Begin
+      DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/CDROM:');
+      If DiskFlagFile = '' Then
+       DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/CDROM0:');
+     End;
+   Else
+      DiskFlagFile := TermBoot_ExtractDiskFlag(ParamStr, '/CDROM1:');
+  End;
+  If DiskFlagFile <> '' Then Begin
+   If Not FileExists(DiskFlagFile) Then Begin
+    TermAddLine(TP, 'Image CD-ROM introuvable: ' + DiskFlagFile);
+    Exit;
+   End;
+   Emu_CdromOpenOne(SlotIdx, DiskFlagFile);
+   Emu_CdromAssignDriveLetters;
+   If Not EmuCdrom[SlotIdx].Open Then Begin
+    TermAddLine(TP, 'Echec du montage de ' + DiskFlagFile + ' sur le lecteur CD-ROM ' +
+     IntToStr(SlotIdx) + '.');
+    Exit;
+   End;
+  End;
+ End;
  Term_VirtEnsureMounted(Idx);
  If Not EmuFloppyOpen[Idx] Then Begin
   TermAddLine(TP, 'Le systeme ne peut pas trouver le lecteur specifie.');
@@ -39399,9 +39499,14 @@ Begin
  { toute premiere instruction plutot que d interrompre a la volee.          }
  { S applique uniquement a /DOS (seul style d amorcage avec un vrai CPU     }
  { 8086 continu) - sans effet pour /LINUX (ELF64, backend distinct sans     }
- { EmuDbg) ni /OS2/LINUXARM (stubs, jamais d onglet emulateur cree). }
+ { EmuDbg) ni /OS2/LINUXARM/LINUXARM64 (stubs, jamais d onglet emulateur cree). }
  If Pos('/CMD', Up) > 0 Then EmuCmdConsoleArmOnLoad := True;
  If (Pos('/GUI', Up) > 0) Or (Pos('/CMD', Up) > 0) Then EmuDbgArmPauseOnLoad := True;
+ If Pos('/LINUXARM64', Up) > 0 Then Begin
+  TermAddLine(TP,
+   'BOOT /LINUXARM64 : aucun emulateur de processeur ARM64 dans cet IDE - non supporte.');
+  Exit;
+ End;
  If Pos('/LINUXARM', Up) > 0 Then Begin
   TermAddLine(TP,
    'BOOT /LINUXARM : aucun emulateur de processeur ARM dans cet IDE - non supporte.');
@@ -62663,6 +62768,1344 @@ Begin
  TermExecuteCommand(TP, TermPSSubstituteVars(Line));
 End;
 
+{ Chantier ARM64 (AArch64), Etape 1 (2026-09-01) : coeur du processeur seul  }
+{ (registres generaux + PSTATE.NZCV + memoire physique plate), sans MMU,    }
+{ sans peripherique, sans gestion d exception - voir                        }
+{ project_devenv_arm64_emulator.md pour la feuille de route complete en     }
+{ etapes. Prefixe ARM64_ pour l etat global (meme convention que ELF64_/    }
+{ LX_), Arm64_ pour les fonctions/procedures.                               }
+{ Decodage verifie de facon INDEPENDANTE avant le portage : chaque forme    }
+{ d instruction ci-dessous a d abord ete simulee en Python et comparee a la }
+{ vraie desassemblee produite par capstone/keystone (assembleur/            }
+{ desassembleur ARM64 reels bases sur LLVM) sur un programme de test        }
+{ couvrant chaque classe d instruction geree ici - aucune constante         }
+{ d encodage devinee a la main.                                             }
+{ Etape 2 (2026-09-01) : ARM64_Mem represente desormais la RAM physique a   }
+{ partir de ARM64_RAM_BASE (et non plus l adresse 0) - meme plan memoire    }
+{ que la machine "virt" de QEMU (RAM a partir de $40000000, peripheriques   }
+{ MMIO en dessous), choisi des maintenant pour eviter une refonte a         }
+{ l Etape 5 quand un vrai Device Tree/noyau Linux devra correspondre a ce   }
+{ plan memoire. ARM64_UART_BASE/ARM64_GICD_BASE/ARM64_GICC_BASE suivent la  }
+{ meme convention (GICD/GICC reserves ici, cables seulement a l Etape 3).   }
+Const
+ ARM64_RAM_BASE  = QWord($40000000);
+ ARM64_UART_BASE = QWord($09000000);
+ ARM64_UART_SIZE = QWord($1000);
+ ARM64_GICD_BASE = QWord($08000000);
+ ARM64_GICC_BASE = QWord($08010000);
+ { Etape 3 : dechet d exception IRQ - meme niveau (EL1), pile SP_ELx (jamais }
+ { SP_EL0 dans ce modele) - offset $280 dans la table de vecteurs pointee   }
+ { par VBAR_EL1 (convention AArch64 fixe, independante de l implementation).}
+ ARM64_VEC_IRQ_OFFSET = QWord($280);
+ { Cles composees (op1,CRn,CRm,op2) des registres systeme geres par MRS/MSR }
+ { - verifiees par assemblage keystone + inspection bit-a-bit reelle (voir  }
+ { project_devenv_arm64_emulator.md), aucune constante devinee a la main.   }
+ ARM64_SYSREG_NZCV          = 6672;
+ ARM64_SYSREG_DAIF          = 6673;
+ ARM64_SYSREG_CNTPCT_EL0    = 7937;
+ ARM64_SYSREG_CNTFRQ_EL0    = 7936;
+ ARM64_SYSREG_CNTP_CVAL_EL0 = 7954;
+ ARM64_SYSREG_CNTP_TVAL_EL0 = 7952;
+ ARM64_SYSREG_CNTP_CTL_EL0  = 7953;
+ ARM64_SYSREG_VBAR_EL1      = 1536;
+ ARM64_SYSREG_ELR_EL1       = 513;
+ ARM64_SYSREG_SPSR_EL1      = 512;
+ ARM64_SYSREG_SCTLR_EL1     = 128;
+ ARM64_SYSREG_TTBR0_EL1     = 256;
+ ARM64_SYSREG_TCR_EL1       = 258;
+ ARM64_SYSREG_MAIR_EL1      = 1296;
+ ARM64_SYSREG_CURRENTEL     = 530;
+
+Function Arm64_RegZR(Idx: Byte): QWord;
+Begin
+ If Idx = 31 Then Arm64_RegZR := 0
+ Else Arm64_RegZR := ARM64_Reg[Idx];
+End;
+
+Procedure Arm64_SetRegZR(Idx: Byte; V: QWord);
+Begin
+ If Idx <> 31 Then ARM64_Reg[Idx] := V;
+End;
+
+Function Arm64_RegSP(Idx: Byte): QWord;
+Begin
+ If Idx = 31 Then Arm64_RegSP := ARM64_SP
+ Else Arm64_RegSP := ARM64_Reg[Idx];
+End;
+
+Procedure Arm64_SetRegSP(Idx: Byte; V: QWord);
+Begin
+ If Idx = 31 Then ARM64_SP := V
+ Else ARM64_Reg[Idx] := V;
+End;
+
+Function Arm64_BoolChar(B: Boolean): Char;
+Begin
+ If B Then Arm64_BoolChar := '1' Else Arm64_BoolChar := '0';
+End;
+
+Function Arm64_Bit(B: Boolean): LongWord;
+Begin
+ If B Then Arm64_Bit := 1 Else Arm64_Bit := 0;
+End;
+
+{ PL011 (UART0 du plan "virt") - Etape 2 : seule la transmission brute est  }
+{ geree (ecrire dans DR affiche le caractere via la console texte deja      }
+{ existante EmuVScr_PutChar, reutilisee telle quelle - meme motif que       }
+{ Elf64_ConsoleWrite). FR (offset $18) repond toujours "TX vide/non plein,  }
+{ RX vide" pour qu un noyau qui l interroge en boucle ne bloque jamais.     }
+{ Les autres registres (IBRD/FBRD/LCR_H/CR/IMSC/ICR...) sont ignores tant   }
+{ qu aucune interruption UART n est necessaire (voir Etape 3).              }
+Function Arm64_UartRead(Offset: QWord): Byte;
+Begin
+ If Offset = $18 Then Arm64_UartRead := $90
+ Else Arm64_UartRead := 0;
+End;
+
+Procedure Arm64_UartWrite(Offset: QWord; V: Byte);
+Begin
+ If Offset = 0 Then Begin
+  If ARM64_Panel <> Nil Then EmuVScr_PutChar(ARM64_Panel^, Chr(V));
+ End;
+End;
+
+Function Arm64_GetByte(Addr: QWord): Byte;
+Begin
+ If (Addr >= ARM64_UART_BASE) And (Addr < ARM64_UART_BASE + ARM64_UART_SIZE) Then
+  Arm64_GetByte := Arm64_UartRead(Addr - ARM64_UART_BASE)
+ Else If (Addr >= ARM64_RAM_BASE) And ((Addr - ARM64_RAM_BASE) <= QWord(High(ARM64_Mem))) Then
+  Arm64_GetByte := ARM64_Mem[LongInt(Addr - ARM64_RAM_BASE)]
+ Else
+  Arm64_GetByte := 0;
+End;
+
+Procedure Arm64_PutByte(Addr: QWord; V: Byte);
+Begin
+ If (Addr >= ARM64_UART_BASE) And (Addr < ARM64_UART_BASE + ARM64_UART_SIZE) Then
+  Arm64_UartWrite(Addr - ARM64_UART_BASE, V)
+ Else If (Addr >= ARM64_RAM_BASE) And ((Addr - ARM64_RAM_BASE) <= QWord(High(ARM64_Mem))) Then
+  ARM64_Mem[LongInt(Addr - ARM64_RAM_BASE)] := V;
+End;
+
+{ GICv2 minimal (Etape 3) - une seule source geree : IRQ 30 (PPI, minuteur  }
+{ EL1 non securise). Registres accedes en un seul mot de 32 bits par le     }
+{ noyau reel (jamais octet par octet) - traites ici comme des acces 32     }
+{ bits ATOMIQUES plutot que 4 appels Arm64_GetByte/PutByte separes,         }
+{ deliberement : GICC_IAR a un effet de bord a la lecture (accuse de        }
+{ reception) qui serait applique 4 fois - une par octet - si on le          }
+{ decomposait naivement, avec un risque reel d incoherence entre les        }
+{ octets lus (voir Arm64_GetMem/PutMem ci-dessous pour le branchement).     }
+Function Arm64_GicdRead32(Offset: QWord): LongWord;
+Begin
+ Case Offset Of
+  $000: Arm64_GicdRead32 := Arm64_Bit(ARM64_GicDistEnable);
+  $100, $180: Arm64_GicdRead32 := ARM64_GicEnableMask; { ISENABLER0/ICENABLER0 }
+  Else Arm64_GicdRead32 := 0;
+ End;
+End;
+
+Procedure Arm64_GicdWrite32(Offset: QWord; V: LongWord);
+Begin
+ Case Offset Of
+  $000: ARM64_GicDistEnable := (V And 1) <> 0;
+  $100: ARM64_GicEnableMask := ARM64_GicEnableMask Or V;        { ISENABLER0 : 1=activer }
+  $180: ARM64_GicEnableMask := ARM64_GicEnableMask And (Not V); { ICENABLER0 : 1=desactiver }
+ End;
+End;
+
+Function Arm64_GiccRead32(Offset: QWord): LongWord;
+Begin
+ Case Offset Of
+  $000: Arm64_GiccRead32 := Arm64_Bit(ARM64_GicCpuEnable);
+  $004: Arm64_GiccRead32 := ARM64_GicPmr;
+  $00C: Begin { IAR : lecture = accuse de reception (pending -> active) }
+         If ARM64_GicPending Then Begin
+          ARM64_GicActive := True;
+          Arm64_GiccRead32 := 30;
+         End Else
+          Arm64_GiccRead32 := 1023; { $3FF = spurious, aucune IRQ reelle }
+        End;
+  Else Arm64_GiccRead32 := 0;
+ End;
+End;
+
+Procedure Arm64_GiccWrite32(Offset: QWord; V: LongWord);
+Begin
+ Case Offset Of
+  $000: ARM64_GicCpuEnable := (V And 1) <> 0;
+  $004: ARM64_GicPmr := Byte(V And $FF);
+  $010: If V = 30 Then ARM64_GicActive := False; { EOIR }
+ End;
+End;
+
+Function Arm64_GetMem(Addr: QWord; ByteWidth: Byte): QWord;
+Var
+ I: Byte;
+ R: QWord;
+Begin
+ If (ByteWidth = 4) And (Addr >= ARM64_GICD_BASE) And (Addr < ARM64_GICD_BASE + $10000) Then Begin
+  Arm64_GetMem := Arm64_GicdRead32(Addr - ARM64_GICD_BASE);
+  Exit;
+ End;
+ If (ByteWidth = 4) And (Addr >= ARM64_GICC_BASE) And (Addr < ARM64_GICC_BASE + $10000) Then Begin
+  Arm64_GetMem := Arm64_GiccRead32(Addr - ARM64_GICC_BASE);
+  Exit;
+ End;
+ R := 0;
+ For I := 0 To ByteWidth - 1 Do
+  R := R Or (QWord(Arm64_GetByte(Addr + I)) Shl (I * 8));
+ Arm64_GetMem := R;
+End;
+
+Procedure Arm64_PutMem(Addr: QWord; V: QWord; ByteWidth: Byte);
+Var
+ I: Byte;
+Begin
+ If (ByteWidth = 4) And (Addr >= ARM64_GICD_BASE) And (Addr < ARM64_GICD_BASE + $10000) Then Begin
+  Arm64_GicdWrite32(Addr - ARM64_GICD_BASE, LongWord(V));
+  Exit;
+ End;
+ If (ByteWidth = 4) And (Addr >= ARM64_GICC_BASE) And (Addr < ARM64_GICC_BASE + $10000) Then Begin
+  Arm64_GiccWrite32(Addr - ARM64_GICC_BASE, LongWord(V));
+  Exit;
+ End;
+ For I := 0 To ByteWidth - 1 Do
+  Arm64_PutByte(Addr + I, Byte((V Shr (I * 8)) And $FF));
+End;
+
+{ Chantier ARM64, Etape 4 (2026-09-01) : traduction stage-1 uniquement       }
+{ (granule 4 Ko, 2 a 4 niveaux selon TCR_EL1.T0SZ - pas de stage-2/EL2,     }
+{ inutile sans virtualisation). TRADUCTION SEULE : aucune faute n est       }
+{ injectee dans l invite (pas de VBAR+$0/$400 synchrone) - toute traduction }
+{ impossible arrete proprement l emulateur (ARM64_Halted), meme discipline  }
+{ que le reste du decodeur, plutot que de deviner un comportement de repli. }
+{ Descripteurs de bloc/table verifies contre le format VMSAv8-64 reel (bit0 }
+{ =valide, bit1=type table/bloc, bits[47:12]=adresse de sortie/table        }
+{ suivante) - AP/SH/AttrIndx/AF ignores (traduction pure, pas de modele de  }
+{ permission ni de fault d acces).                                          }
+Function Arm64_Translate(VA: QWord; Var PA: QWord): Boolean;
+Var
+ T0SZ, VABits: Byte;
+ StartLevel, Level: Integer;
+ TableBase, DescAddr, Desc, BlockMask: QWord;
+ Idx: QWord;
+ Shift: Byte;
+Begin
+ Arm64_Translate := False;
+ If (ARM64_Sctlr And 1) = 0 Then Begin { MMU desactivee : adressage direct }
+  PA := VA;
+  Arm64_Translate := True;
+  Exit;
+ End;
+ T0SZ := Byte(ARM64_Tcr And $3F);
+ If T0SZ > 51 Then Exit; { hors bornes possibles (VABits deviendrait < 13) }
+ VABits := 64 - T0SZ;
+ If (VABits <= 12) Or (((VABits - 12) Mod 9) <> 0) Then Exit; { T0SZ non standard }
+ StartLevel := 4 - ((VABits - 12) Div 9);
+ If (StartLevel < 0) Or (StartLevel > 3) Then Exit;
+ TableBase := ARM64_Ttbr0 And QWord($0000FFFFFFFFF000);
+ For Level := StartLevel To 3 Do Begin
+  Shift := Byte(12 + (3 - Level) * 9);
+  Idx := (VA Shr Shift) And $1FF;
+  DescAddr := TableBase + (Idx * 8);
+  Desc := Arm64_GetMem(DescAddr, 8);
+  If (Desc And 1) = 0 Then Exit; { descripteur non valide }
+  If Level = 3 Then Begin
+   If (Desc And 2) = 0 Then Exit; { doit etre une page au dernier niveau }
+   PA := (Desc And QWord($0000FFFFFFFFF000)) Or (VA And $FFF);
+   Arm64_Translate := True;
+   Exit;
+  End;
+  If (Desc And 2) = 0 Then Begin { descripteur de bloc a ce niveau }
+   BlockMask := (QWord(1) Shl Shift) - 1;
+   PA := (Desc And QWord($0000FFFFFFFFF000) And (Not BlockMask)) Or (VA And BlockMask);
+   Arm64_Translate := True;
+   Exit;
+  End;
+  TableBase := Desc And QWord($0000FFFFFFFFF000); { descripteur de table }
+ End;
+End;
+
+Function Arm64_FetchInstr(PC: QWord): LongWord;
+Var
+ PA: QWord;
+Begin
+ If Not Arm64_Translate(PC, PA) Then Begin
+  ARM64_Halted := True;
+  ARM64_LastBadPC := PC;
+  ARM64_HaltReason := 'faute de traduction MMU (recherche d instruction) a VA=$' + HexQWord(PC);
+  Arm64_FetchInstr := 0;
+  Exit;
+ End;
+ Arm64_FetchInstr := LongWord(Arm64_GetMem(PA, 4));
+End;
+
+{ Acces memoire "virtuels" - point d entree utilise par LDR/STR/LDP/STP :   }
+{ traduit d abord (Arm64_Translate se replie sur l identite si la MMU est   }
+{ desactivee, donc ces wrappers sont surs a utiliser inconditionnellement)  }
+{ puis delegue aux accesseurs physiques Arm64_GetMem/PutMem ci-dessus.      }
+Function Arm64_GetMemV(VA: QWord; ByteWidth: Byte): QWord;
+Var
+ PA: QWord;
+Begin
+ If Not Arm64_Translate(VA, PA) Then Begin
+  ARM64_Halted := True;
+  ARM64_LastBadPC := ARM64_PC;
+  ARM64_HaltReason := 'faute de traduction MMU (lecture) a VA=$' + HexQWord(VA);
+  Arm64_GetMemV := 0;
+  Exit;
+ End;
+ Arm64_GetMemV := Arm64_GetMem(PA, ByteWidth);
+End;
+
+Procedure Arm64_PutMemV(VA: QWord; V: QWord; ByteWidth: Byte);
+Var
+ PA: QWord;
+Begin
+ If Not Arm64_Translate(VA, PA) Then Begin
+  ARM64_Halted := True;
+  ARM64_LastBadPC := ARM64_PC;
+  ARM64_HaltReason := 'faute de traduction MMU (ecriture) a VA=$' + HexQWord(VA);
+  Exit;
+ End;
+ Arm64_PutMem(PA, V, ByteWidth);
+End;
+
+{ Extension de signe d un champ de Bits bits (complement a 2) vers 64 bits. }
+Function Arm64_SignExtend(Val: QWord; Bits: Byte): QWord;
+Var
+ SignBit, FieldMask: QWord;
+Begin
+ FieldMask := (QWord(1) Shl Bits) - 1;
+ Val := Val And FieldMask;
+ SignBit := QWord(1) Shl (Bits - 1);
+ If (Val And SignBit) <> 0 Then
+  Arm64_SignExtend := Val Or (Not FieldMask)
+ Else
+  Arm64_SignExtend := Val;
+End;
+
+{ Decalage arithmetique a droite manuel - le Shr de FPC est TOUJOURS        }
+{ logique, meme applique a un type signe, donc implante ici a la main       }
+{ plutot que de supposer un comportement de langage non garanti.           }
+Function Arm64_AsrManual(Val: QWord; Amount, Width: Byte): QWord;
+Var
+ SignBit, R: QWord;
+Begin
+ If Width = 32 Then SignBit := $80000000 Else SignBit := QWord($8000000000000000);
+ R := Val Shr Amount;
+ If (Val And SignBit) <> 0 Then Begin
+  If Width = 32 Then
+   R := (R Or (QWord($FFFFFFFF) Shl (32 - Amount))) And $FFFFFFFF
+  Else
+   R := R Or (QWord($FFFFFFFFFFFFFFFF) Shl (64 - Amount));
+ End;
+ Arm64_AsrManual := R;
+End;
+
+Function Arm64_ApplyShift(Val: QWord; ShiftType, Amount: Byte; Is32: Boolean): QWord;
+Var
+ Width: Byte;
+ V32: LongWord;
+ R: QWord;
+Begin
+ If Is32 Then Width := 32 Else Width := 64;
+ If Amount = 0 Then Begin
+  Arm64_ApplyShift := Val;
+  Exit;
+ End;
+ Case ShiftType Of
+  0: R := Val Shl Amount;                          { LSL }
+  1: R := Val Shr Amount;                          { LSR }
+  2: R := Arm64_AsrManual(Val, Amount, Width);      { ASR }
+  Else Begin                                        { ROR }
+   If Is32 Then Begin
+    V32 := LongWord(Val);
+    R := QWord((V32 Shr Amount) Or (V32 Shl (32 - Amount)));
+   End Else
+    R := (Val Shr Amount) Or (Val Shl (64 - Amount));
+  End;
+ End;
+ If Is32 Then R := R And $FFFFFFFF;
+ Arm64_ApplyShift := R;
+End;
+
+{ NZCV apres une addition (ADD/ADDS/CMN) - A et B doivent deja etre         }
+{ masques a la largeur voulue par l appelant, Res = A+B tronque a la meme   }
+{ largeur.                                                                  }
+Procedure Arm64_FlagsAfterAdd(A, B, Res: QWord; Is32: Boolean);
+Var
+ SignMask: QWord;
+Begin
+ If Is32 Then SignMask := $80000000 Else SignMask := QWord($8000000000000000);
+ ARM64_FlagN := (Res And SignMask) <> 0;
+ ARM64_FlagZ := Res = 0;
+ If Is32 Then
+  ARM64_FlagC := ((A And $FFFFFFFF) + (B And $FFFFFFFF)) > $FFFFFFFF
+ Else
+  ARM64_FlagC := Res < A;
+ ARM64_FlagV := (((Not (A Xor B)) And (A Xor Res)) And SignMask) <> 0;
+End;
+
+{ NZCV apres une soustraction (SUB/SUBS/CMP) - convention ARM : C=1         }
+{ signifie "pas d emprunt" (A>=B non signe), l INVERSE de la convention x86 }
+{ ou CF=1 signifie qu un emprunt a eu lieu - detail facile a inverser par   }
+{ erreur, ce qui casserait silencieusement chaque branchement conditionnel. }
+Procedure Arm64_FlagsAfterSub(A, B, Res: QWord; Is32: Boolean);
+Var
+ SignMask: QWord;
+Begin
+ If Is32 Then SignMask := $80000000 Else SignMask := QWord($8000000000000000);
+ ARM64_FlagN := (Res And SignMask) <> 0;
+ ARM64_FlagZ := Res = 0;
+ ARM64_FlagC := A >= B;
+ ARM64_FlagV := (((A Xor B) And (A Xor Res)) And SignMask) <> 0;
+End;
+
+Procedure Arm64_FlagsAfterLogical(Res: QWord; Is32: Boolean);
+Var
+ SignMask: QWord;
+Begin
+ If Is32 Then SignMask := $80000000 Else SignMask := QWord($8000000000000000);
+ ARM64_FlagN := (Res And SignMask) <> 0;
+ ARM64_FlagZ := Res = 0;
+ ARM64_FlagC := False;
+ ARM64_FlagV := False;
+End;
+
+Function Arm64_CondHolds(Cond: Byte): Boolean;
+Begin
+ Case Cond Of
+  0:  Arm64_CondHolds := ARM64_FlagZ;                                        { EQ }
+  1:  Arm64_CondHolds := Not ARM64_FlagZ;                                    { NE }
+  2:  Arm64_CondHolds := ARM64_FlagC;                                        { CS/HS }
+  3:  Arm64_CondHolds := Not ARM64_FlagC;                                    { CC/LO }
+  4:  Arm64_CondHolds := ARM64_FlagN;                                        { MI }
+  5:  Arm64_CondHolds := Not ARM64_FlagN;                                    { PL }
+  6:  Arm64_CondHolds := ARM64_FlagV;                                        { VS }
+  7:  Arm64_CondHolds := Not ARM64_FlagV;                                    { VC }
+  8:  Arm64_CondHolds := ARM64_FlagC And (Not ARM64_FlagZ);                  { HI }
+  9:  Arm64_CondHolds := Not (ARM64_FlagC And (Not ARM64_FlagZ));            { LS }
+  10: Arm64_CondHolds := ARM64_FlagN = ARM64_FlagV;                          { GE }
+  11: Arm64_CondHolds := ARM64_FlagN <> ARM64_FlagV;                         { LT }
+  12: Arm64_CondHolds := (Not ARM64_FlagZ) And (ARM64_FlagN = ARM64_FlagV);  { GT }
+  13: Arm64_CondHolds := Not ((Not ARM64_FlagZ) And (ARM64_FlagN = ARM64_FlagV)); { LE }
+  Else Arm64_CondHolds := True;                                              { AL, NV }
+ End;
+End;
+
+{ Lecture MRS d un registre systeme identifie par sa cle composee (voir les }
+{ constantes ARM64_SYSREG_*) - renvoie False si la cle est inconnue (l      }
+{ appelant traite alors l instruction comme non geree, meme discipline que  }
+{ le reste du decodeur).                                                    }
+Function Arm64_MrsRead(SysKey: LongWord; Var Val: QWord): Boolean;
+Begin
+ Arm64_MrsRead := True;
+ Case SysKey Of
+  ARM64_SYSREG_NZCV: Val := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
+   (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
+   (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28);
+  ARM64_SYSREG_DAIF: Val := QWord(Arm64_Bit(ARM64_DaifI)) Shl 7;
+  ARM64_SYSREG_CNTPCT_EL0: Val := ARM64_CntPct;
+  ARM64_SYSREG_CNTFRQ_EL0: Val := ARM64_CntFreq;
+  ARM64_SYSREG_CNTP_CVAL_EL0: Val := ARM64_CntpCval;
+  ARM64_SYSREG_CNTP_TVAL_EL0: Val := (ARM64_CntpCval - ARM64_CntPct) And $FFFFFFFF;
+  ARM64_SYSREG_CNTP_CTL_EL0: Val := QWord(Arm64_Bit(ARM64_CntpEnable)) Or
+   (QWord(Arm64_Bit(ARM64_CntpImask)) Shl 1) Or (QWord(Arm64_Bit(ARM64_GicPending)) Shl 2);
+  ARM64_SYSREG_VBAR_EL1: Val := ARM64_VBAR_EL1;
+  ARM64_SYSREG_ELR_EL1: Val := ARM64_ELR_EL1;
+  ARM64_SYSREG_SPSR_EL1: Val := ARM64_SPSR_EL1;
+  ARM64_SYSREG_SCTLR_EL1: Val := ARM64_Sctlr;
+  ARM64_SYSREG_TTBR0_EL1: Val := ARM64_Ttbr0;
+  ARM64_SYSREG_TCR_EL1: Val := ARM64_Tcr;
+  ARM64_SYSREG_MAIR_EL1: Val := ARM64_Mair;
+  ARM64_SYSREG_CURRENTEL: Val := 4; { EL[3:2]=01 (EL1) }
+  Else Arm64_MrsRead := False;
+ End;
+End;
+
+{ Ecriture MSR d un registre systeme - meme convention (False = cle         }
+{ inconnue).                                                                }
+Function Arm64_MsrWrite(SysKey: LongWord; Val: QWord): Boolean;
+Begin
+ Arm64_MsrWrite := True;
+ Case SysKey Of
+  ARM64_SYSREG_NZCV: Begin
+   ARM64_FlagN := (Val And $80000000) <> 0;
+   ARM64_FlagZ := (Val And $40000000) <> 0;
+   ARM64_FlagC := (Val And $20000000) <> 0;
+   ARM64_FlagV := (Val And $10000000) <> 0;
+  End;
+  ARM64_SYSREG_DAIF: ARM64_DaifI := (Val And $80) <> 0;
+  ARM64_SYSREG_CNTP_CVAL_EL0: ARM64_CntpCval := Val;
+  ARM64_SYSREG_CNTP_TVAL_EL0: ARM64_CntpCval := ARM64_CntPct + Arm64_SignExtend(Val And $FFFFFFFF, 32);
+  ARM64_SYSREG_CNTP_CTL_EL0: Begin
+   ARM64_CntpEnable := (Val And 1) <> 0;
+   ARM64_CntpImask := (Val And 2) <> 0;
+  End;
+  ARM64_SYSREG_VBAR_EL1: ARM64_VBAR_EL1 := Val;
+  ARM64_SYSREG_ELR_EL1: ARM64_ELR_EL1 := Val;
+  ARM64_SYSREG_SPSR_EL1: ARM64_SPSR_EL1 := Val;
+  ARM64_SYSREG_SCTLR_EL1: ARM64_Sctlr := Val;
+  ARM64_SYSREG_TTBR0_EL1: ARM64_Ttbr0 := Val;
+  ARM64_SYSREG_TCR_EL1: ARM64_Tcr := Val;
+  ARM64_SYSREG_MAIR_EL1: ARM64_Mair := Val;
+  Else Arm64_MsrWrite := False;
+ End;
+End;
+
+{ Avance le minuteur generique ARM (CNTPCT_EL0) et met a jour l etat "en    }
+{ attente" du GIC pour l IRQ 30 - signal a NIVEAU (recalcule entierement a  }
+{ chaque pas, jamais juste latch/OR) : reflete fidelement le fait qu un     }
+{ noyau qui reprogramme CNTP_CVAL_EL0 dans le futur desasserte le signal,   }
+{ exactement comme le ferait le vrai minuteur materiel. Appelee une fois    }
+{ par instruction executee, depuis Arm64_RunOneChunk.                       }
+Procedure Arm64_TickTimer;
+Begin
+ Inc(ARM64_CntPct);
+ ARM64_GicPending := ARM64_CntpEnable And (Not ARM64_CntpImask) And
+  (ARM64_CntPct >= ARM64_CntpCval);
+End;
+
+{ Distribution d IRQ minimale (GICv2, source unique). Meme motif que        }
+{ Emu_ServiceIrqs (backend DOS) : verifie d abord le masque PSTATE.I - qui  }
+{ a lui seul empeche toute reentrance pendant le gestionnaire, exactement   }
+{ comme sur un vrai coeur ARM64 - avant de consulter l etat du GIC. Appelee }
+{ une fois par instruction executee, depuis Arm64_RunOneChunk.              }
+Procedure Arm64_ServiceIrq;
+Begin
+ If ARM64_Halted Then Exit;
+ If ARM64_DaifI Then Exit;
+ If Not ARM64_GicDistEnable Then Exit;
+ If Not ARM64_GicCpuEnable Then Exit;
+ If (ARM64_GicEnableMask And (LongWord(1) Shl 30)) = 0 Then Exit;
+ If ARM64_GicPmr = 0 Then Exit;
+ If Not ARM64_GicPending Then Exit;
+ { Entree d exception IRQ, meme niveau (EL1), pile SP_ELx - offset $280.    }
+ ARM64_ELR_EL1 := ARM64_PC;
+ ARM64_SPSR_EL1 := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
+  (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
+  (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28) Or (QWord(Arm64_Bit(ARM64_DaifI)) Shl 7) Or
+  QWord(5); { M[3:0] = EL1h (EL1 avec SP_EL1) }
+ ARM64_DaifI := True;
+ ARM64_ExValid := False; { Etape 4 : une exception efface le moniteur exclusif }
+ ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_IRQ_OFFSET;
+End;
+
+{ Charge/stocke Rt a l adresse virtuelle Addr - partage entre la forme      }
+{ "decalage non signe" et la forme "immediat signe (non ecrit/post-index/   }
+{ pre-index)" de LDR/STR (Etape 4 : Opc=2/3, chargements signes LDRSB/      }
+{ LDRSH/LDRSW, geres ici en plus de STR/LDR de base).                       }
+Procedure Arm64_DoLdrStr(Addr: QWord; Size, Opc, Rt: Byte);
+Var
+ ByteWidth: Byte;
+ Val: QWord;
+Begin
+ ByteWidth := Byte(1 Shl Size);
+ Case Opc Of
+  0: Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth);                      { STR }
+  1: Begin Val := Arm64_GetMemV(Addr, ByteWidth); Arm64_SetRegZR(Rt, Val); End; { LDR, zero-extension }
+  2: Begin { LDRS* -> registre X (extension de signe sur 64 bits) }
+      Val := Arm64_GetMemV(Addr, ByteWidth);
+      Arm64_SetRegZR(Rt, Arm64_SignExtend(Val, ByteWidth * 8));
+     End;
+  3: Begin { LDRS* -> registre W (extension de signe sur 32 bits, LDRSW exclu} { en pratique reelle mais non garde explicitement) }
+      Val := Arm64_GetMemV(Addr, ByteWidth);
+      Arm64_SetRegZR(Rt, Arm64_SignExtend(Val, ByteWidth * 8) And $FFFFFFFF);
+     End;
+ End;
+End;
+
+{ Un pas fetch-decode-execute. Arrete proprement (ARM64_Halted) sur toute   }
+{ forme d instruction non encore reconnue - diagnostic PC/mot brut          }
+{ conserve, meme discipline que ELF64_Halted/LX_Halted.                     }
+Procedure Arm64_Step;
+Var
+ CurPC, NewPC: QWord;
+ W: LongWord;
+ Handled: Boolean;
+ sf, op, Sflag, ShiftT, Nflag, Opc, Hw, LFlag, Size: Byte;
+ Rd, Rn, Rm, Rt, Rt2, CondN: Byte;
+ Imm6, Imm7, Imm12, Imm14, Imm16, Imm19, Imm26, B40: LongWord;
+ BitPos, ByteWidth, TB, Imm4: Byte;
+ Is32: Boolean;
+ NVal, RnVal, RmVal, Res, ImmVal, Addr, Offset, TargetV, Val1, Val2: QWord;
+ SysOp1, SysCRn, SysCRm, SysOp2, SysKey: LongWord;
+ Idx2, Bit23V, Rs: Byte;
+ Imm9: LongWord;
+ WritebackVal: QWord;
+Begin
+ If ARM64_Halted Then Exit;
+ CurPC := ARM64_PC;
+ W := Arm64_FetchInstr(CurPC);
+ If ARM64_Halted Then Exit; { Etape 4 : faute de traduction MMU a la recherche }
+ NewPC := CurPC + 4;
+ Handled := False;
+
+ { NOP (HINT #0) et WFI (Etape 3) - WFI se comporte ici EXACTEMENT comme un }
+ { NOP (avance normalement a l instruction suivante) plutot que de "rester  }
+ { bloque" dessus : architecturalement, quand une IRQ reveille le coeur     }
+ { pendant un WFI, ELR pointe l instruction QUI SUIT le WFI (il est         }
+ { considere termine) - modeliser WFI comme un NOP produit exactement ce    }
+ { resultat sans code special, et Arm64_ServiceIrq (appelee apres chaque    }
+ { pas par Arm64_RunOneChunk) reste libre de detourner PC des qu une IRQ    }
+ { devient prete, quelle que soit l instruction qui vient de s executer.    }
+ If (W = $D503201F) Or (W = $D503207F) Then Handled := True;
+
+ { ERET (retour d exception) }
+ If (Not Handled) And (W = $D69F03E0) Then Begin
+  NewPC := ARM64_ELR_EL1;
+  ARM64_FlagN := (ARM64_SPSR_EL1 And $80000000) <> 0;
+  ARM64_FlagZ := (ARM64_SPSR_EL1 And $40000000) <> 0;
+  ARM64_FlagC := (ARM64_SPSR_EL1 And $20000000) <> 0;
+  ARM64_FlagV := (ARM64_SPSR_EL1 And $10000000) <> 0;
+  ARM64_DaifI := (ARM64_SPSR_EL1 And $80) <> 0;
+  Handled := True;
+ End;
+
+ { Famille "$D50" complete (op1=011, CRn variable) : DAIFSet/DAIFClr (CRn=4)}
+ { recoivent un vrai effet, CLREX (CRn=3,op2=2, Etape 4) efface le moniteur }
+ { d acces exclusif - tout le reste de cette famille (SPSel, WFE/SEV/YIELD  }
+ { via CRn=2, DSB/DMB/ISB via CRn=3 op2=4/5/6, et les operations DC/IC/TLBI }
+ { qui partagent ce meme prefixe avec un CRn different) est delibbrement    }
+ { un NO-OP : aucun modele de reordonnancement memoire, de cache, ni de     }
+ { veille basse consommation a cette etape (traduction MMU seule, voir      }
+ { l en-tete d Arm64_Translate).                                            }
+ If (Not Handled) And (((W Shr 20) And $FFF) = $D50) Then Begin
+  SysCRn := (W Shr 12) And $F;
+  Opc := (W Shr 5) And 7;   { op2 }
+  Imm4 := Byte((W Shr 8) And $F); { CRm sert d immediat 4 bits pour DAIFSet/Clr }
+  If SysCRn = 4 Then Begin
+   If Opc = 6 Then Begin { DAIFSet }
+    If (Imm4 And 2) <> 0 Then ARM64_DaifI := True;
+   End Else If Opc = 7 Then Begin { DAIFClr }
+    If (Imm4 And 2) <> 0 Then ARM64_DaifI := False;
+   End;
+  End Else If (SysCRn = 3) And (Opc = 2) Then
+   ARM64_ExValid := False; { CLREX }
+  Handled := True;
+ End;
+
+ { MRS/MSR (registre) - table (op1,CRn,CRm,op2) verifiee par assemblage     }
+ { keystone reel, voir Arm64_MrsRead/Arm64_MsrWrite. }
+ If (Not Handled) And ((((W Shr 20) And $FFF) = $D53) Or (((W Shr 20) And $FFF) = $D51)) Then Begin
+  LFlag := Byte((W Shr 21) And 1);
+  Rt := W And $1F;
+  SysOp1 := (W Shr 16) And 7;
+  SysCRn := (W Shr 12) And $F;
+  SysCRm := (W Shr 8) And $F;
+  SysOp2 := (W Shr 5) And 7;
+  SysKey := (SysOp1 Shl 11) Or (SysCRn Shl 7) Or (SysCRm Shl 3) Or SysOp2;
+  If LFlag = 1 Then Begin
+   If Arm64_MrsRead(SysKey, Val1) Then Begin
+    Arm64_SetRegZR(Rt, Val1);
+    Handled := True;
+   End;
+  End Else Begin
+   If Arm64_MsrWrite(SysKey, Arm64_RegZR(Rt)) Then Handled := True;
+  End;
+ End;
+
+ { MOVZ/MOVN/MOVK - deplacement large immediat (Opc=1 non alloue -> arret)  }
+ If (Not Handled) And (((W Shr 23) And $3F) = $25) Then Begin
+  sf := (W Shr 31) And 1;
+  Opc := (W Shr 29) And 3;
+  Hw := (W Shr 21) And 3;
+  Imm16 := (W Shr 5) And $FFFF;
+  Rd := W And $1F;
+  ImmVal := QWord(Imm16) Shl (Hw * 16);
+  Case Opc Of
+   0: Begin Res := Not ImmVal; Handled := True; End;                        { MOVN }
+   2: Begin Res := ImmVal; Handled := True; End;                            { MOVZ }
+   3: Begin
+       Res := (Arm64_RegZR(Rd) And (Not (QWord($FFFF) Shl (Hw*16)))) Or ImmVal;
+       Handled := True;
+      End;                                                                   { MOVK }
+  End;
+  If Handled Then Begin
+   If sf = 0 Then Res := Res And $FFFFFFFF;
+   Arm64_SetRegZR(Rd, Res);
+  End;
+ End;
+
+ { ADD/SUB (immediat) }
+ If (Not Handled) And (((W Shr 24) And $1F) = $11) Then Begin
+  sf := (W Shr 31) And 1;
+  op := (W Shr 30) And 1;
+  Sflag := (W Shr 29) And 1;
+  ShiftT := (W Shr 22) And 3;
+  Imm12 := (W Shr 10) And $FFF;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If ShiftT = 1 Then ImmVal := QWord(Imm12) Shl 12 Else ImmVal := QWord(Imm12);
+  NVal := Arm64_RegSP(Rn);
+  If Is32 Then NVal := NVal And $FFFFFFFF;
+  If op = 0 Then Res := NVal + ImmVal Else Res := (NVal - ImmVal) And QWord($FFFFFFFFFFFFFFFF);
+  If Is32 Then Res := Res And $FFFFFFFF;
+  If Sflag = 1 Then Begin
+   If op = 0 Then Arm64_FlagsAfterAdd(NVal, ImmVal, Res, Is32)
+   Else Arm64_FlagsAfterSub(NVal, ImmVal, Res, Is32);
+   Arm64_SetRegZR(Rd, Res);
+  End Else
+   Arm64_SetRegSP(Rd, Res);
+  Handled := True;
+ End;
+
+ { Logique (registre decale) : AND/ORR/EOR/ANDS - MOV/MVN/TST sont des      }
+ { alias reconnus automatiquement (Rn=XZR, N=1 ou Rd=XZR respectivement).   }
+ If (Not Handled) And (((W Shr 24) And $1F) = $0A) Then Begin
+  sf := (W Shr 31) And 1;
+  Opc := (W Shr 29) And 3;
+  ShiftT := (W Shr 22) And 3;
+  Nflag := (W Shr 21) And 1;
+  Rm := (W Shr 16) And $1F;
+  Imm6 := (W Shr 10) And $3F;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Is32 Then RmVal := Arm64_RegZR(Rm) And $FFFFFFFF Else RmVal := Arm64_RegZR(Rm);
+  If Is32 Then RmVal := Arm64_ApplyShift(RmVal, ShiftT, Byte(Imm6 And $1F), Is32)
+  Else RmVal := Arm64_ApplyShift(RmVal, ShiftT, Byte(Imm6 And $3F), Is32);
+  If Nflag = 1 Then Begin
+   If Is32 Then RmVal := (Not RmVal) And $FFFFFFFF Else RmVal := Not RmVal;
+  End;
+  If Is32 Then RnVal := Arm64_RegZR(Rn) And $FFFFFFFF Else RnVal := Arm64_RegZR(Rn);
+  Case Opc Of
+   0: Res := RnVal And RmVal;
+   1: Res := RnVal Or RmVal;
+   2: Res := RnVal Xor RmVal;
+   Else Res := RnVal And RmVal; { ANDS }
+  End;
+  If Is32 Then Res := Res And $FFFFFFFF;
+  If Opc = 3 Then Arm64_FlagsAfterLogical(Res, Is32);
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
+ { ADD/SUB (registre decale) - bit21=0 distingue de la forme "registre      }
+ { etendu" (UXTW/SXTW etc), non geree a cette etape.                        }
+ If (Not Handled) And (((W Shr 24) And $1F) = $0B) And (((W Shr 21) And 1) = 0) Then Begin
+  sf := (W Shr 31) And 1;
+  op := (W Shr 30) And 1;
+  Sflag := (W Shr 29) And 1;
+  ShiftT := (W Shr 22) And 3;
+  Rm := (W Shr 16) And $1F;
+  Imm6 := (W Shr 10) And $3F;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Is32 Then RmVal := Arm64_RegZR(Rm) And $FFFFFFFF Else RmVal := Arm64_RegZR(Rm);
+  If Is32 Then RmVal := Arm64_ApplyShift(RmVal, ShiftT, Byte(Imm6 And $1F), Is32)
+  Else RmVal := Arm64_ApplyShift(RmVal, ShiftT, Byte(Imm6 And $3F), Is32);
+  If Is32 Then RnVal := Arm64_RegZR(Rn) And $FFFFFFFF Else RnVal := Arm64_RegZR(Rn);
+  If op = 0 Then Res := RnVal + RmVal Else Res := (RnVal - RmVal) And QWord($FFFFFFFFFFFFFFFF);
+  If Is32 Then Res := Res And $FFFFFFFF;
+  If Sflag = 1 Then Begin
+   If op = 0 Then Arm64_FlagsAfterAdd(RnVal, RmVal, Res, Is32)
+   Else Arm64_FlagsAfterSub(RnVal, RmVal, Res, Is32);
+  End;
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
+ { B / BL (branchement immediat inconditionnel) }
+ If (Not Handled) And (((W Shr 26) And $1F) = $05) Then Begin
+  op := (W Shr 31) And 1;
+  Imm26 := W And $3FFFFFF;
+  Offset := Arm64_SignExtend(Imm26, 26) * 4;
+  If op = 1 Then ARM64_Reg[30] := CurPC + 4;
+  NewPC := CurPC + Offset;
+  Handled := True;
+ End;
+
+ { BR/BLR/RET (branchement inconditionnel par registre) - tout Opc autre    }
+ { que BR/BLR/RET (ex. ERET/DRPS) reste non gere -> arret plus bas.         }
+ If (Not Handled) And (((W Shr 25) And $7F) = $6B) Then Begin
+  Opc := (W Shr 21) And $F;
+  Rn := (W Shr 5) And $1F;
+  TargetV := Arm64_RegZR(Rn);
+  Case Opc Of
+   0: Begin NewPC := TargetV; Handled := True; End;                          { BR }
+   1: Begin ARM64_Reg[30] := CurPC + 4; NewPC := TargetV; Handled := True; End; { BLR }
+   2: Begin NewPC := TargetV; Handled := True; End;                          { RET }
+  End;
+ End;
+
+ { CBZ/CBNZ }
+ If (Not Handled) And (((W Shr 25) And $3F) = $1A) Then Begin
+  sf := (W Shr 31) And 1;
+  op := (W Shr 24) And 1;
+  Imm19 := (W Shr 5) And $7FFFF;
+  Rt := W And $1F;
+  Offset := Arm64_SignExtend(Imm19, 19) * 4;
+  Val1 := Arm64_RegZR(Rt);
+  If sf = 0 Then Val1 := Val1 And $FFFFFFFF;
+  If ((op = 0) And (Val1 = 0)) Or ((op = 1) And (Val1 <> 0)) Then
+   NewPC := CurPC + Offset;
+  Handled := True;
+ End;
+
+ { TBZ/TBNZ }
+ If (Not Handled) And (((W Shr 25) And $3F) = $1B) Then Begin
+  op := (W Shr 24) And 1;
+  B40 := (W Shr 19) And $1F;
+  BitPos := Byte((((W Shr 31) And 1) Shl 5) Or B40);
+  Imm14 := (W Shr 5) And $3FFF;
+  Rt := W And $1F;
+  Offset := Arm64_SignExtend(Imm14, 14) * 4;
+  Val1 := Arm64_RegZR(Rt);
+  TB := Byte((Val1 Shr BitPos) And 1);
+  If ((op = 0) And (TB = 0)) Or ((op = 1) And (TB = 1)) Then
+   NewPC := CurPC + Offset;
+  Handled := True;
+ End;
+
+ { B.cond }
+ If (Not Handled) And (((W Shr 24) And $FF) = $54) And (((W Shr 4) And 1) = 0) Then Begin
+  Imm19 := (W Shr 5) And $7FFFF;
+  CondN := W And $F;
+  Offset := Arm64_SignExtend(Imm19, 19) * 4;
+  If Arm64_CondHolds(CondN) Then NewPC := CurPC + Offset;
+  Handled := True;
+ End;
+
+ { LDR/STR (immediat, decalage non signe, tailles 8/16/32/64 bits) - Etape  }
+ { 4 : Opc=2/3 (LDRSB/LDRSH/LDRSW, extension de signe) geres via le meme    }
+ { helper partage Arm64_DoLdrStr que la forme immediat signe ci-dessous.    }
+ If (Not Handled) And (((W Shr 27) And 7) = 7) And (((W Shr 24) And 3) = 1)
+    And (((W Shr 26) And 1) = 0) Then Begin
+  Size := (W Shr 30) And 3;
+  Opc := (W Shr 22) And 3;
+  Imm12 := (W Shr 10) And $FFF;
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  ByteWidth := Byte(1 Shl Size);
+  Addr := Arm64_RegSP(Rn) + (QWord(Imm12) * ByteWidth);
+  Arm64_DoLdrStr(Addr, Size, Byte(Opc), Rt);
+  Handled := True;
+ End;
+
+ { LDR/STR (immediat signe, non ecrit/post-index/pre-index) - Etape 4.      }
+ { bit21=0 distingue de la forme "registre" (non geree, rare en pratique). }
+ { bits[11:10] : 00=non ecrit (LDUR/STUR), 01=post-index, 11=pre-index.     }
+ If (Not Handled) And (((W Shr 27) And 7) = 7) And (((W Shr 24) And 3) = 0)
+    And (((W Shr 26) And 1) = 0) And (((W Shr 21) And 1) = 0) Then Begin
+  Size := (W Shr 30) And 3;
+  Opc := (W Shr 22) And 3;
+  Imm9 := (W Shr 12) And $1FF;
+  Idx2 := Byte((W Shr 10) And 3);
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  If Idx2 In [0, 1, 3] Then Begin
+   Offset := Arm64_SignExtend(Imm9, 9);
+   NVal := Arm64_RegSP(Rn);
+   Case Idx2 Of
+    0: Addr := NVal + Offset;                              { non ecrit }
+    1: Begin Addr := NVal; WritebackVal := NVal + Offset; End; { post-index }
+    3: Begin Addr := NVal + Offset; WritebackVal := Addr; End; { pre-index }
+   End;
+   Arm64_DoLdrStr(Addr, Byte(Size), Byte(Opc), Rt);
+   If Idx2 <> 0 Then Arm64_SetRegSP(Rn, WritebackVal);
+   Handled := True;
+  End;
+ End;
+
+ { LDP/STP (decalage signe, sans pre/post-index - forme la plus courante,   }
+ { pre/post-index restent un ecart connu si un vrai noyau les exige)        }
+ If (Not Handled) And (((W Shr 27) And 7) = 5) And (((W Shr 26) And 1) = 0)
+    And (((W Shr 23) And 7) = 2) Then Begin
+  Opc := (W Shr 30) And 3;
+  LFlag := (W Shr 22) And 1;
+  Imm7 := (W Shr 15) And $7F;
+  Rt2 := (W Shr 10) And $1F;
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  If Opc = 2 Then ByteWidth := 8 Else ByteWidth := 4;
+  Offset := Arm64_SignExtend(Imm7, 7) * ByteWidth;
+  Addr := Arm64_RegSP(Rn) + Offset;
+  If LFlag = 1 Then Begin
+   Val1 := Arm64_GetMemV(Addr, ByteWidth);
+   Val2 := Arm64_GetMemV(Addr + ByteWidth, ByteWidth);
+   Arm64_SetRegZR(Rt, Val1);
+   Arm64_SetRegZR(Rt2, Val2);
+  End Else Begin
+   Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth);
+   Arm64_PutMemV(Addr + ByteWidth, Arm64_RegZR(Rt2), ByteWidth);
+  End;
+  Handled := True;
+ End;
+
+ { Load/store exclusif ET ordonne (LDXR/STXR/LDAXR/STLXR/LDAR/STLR, Etape   }
+ { 4) - une seule classe d instructions (bits[29:24]=$08). Modele mono-     }
+ { coeur : la reservation exclusive est TOUJOURS valide tant qu aucune      }
+ { exception ni CLREX ne l a effacee (aucune veritable concurrence a        }
+ { arbitrer). bit23=0 -> forme exclusive (Rs=registre de statut, o0 ignore  }
+ { -acquire/release non modelise) ; bit23=1 -> LDAR/STLR ordonnes, jamais   }
+ { exclusifs (toujours "reussis"). Forme paire LDXP/STXP (bit23=0,Rt2<>31)  }
+ { non geree distinctement - tres rare en pratique reelle, ecart documente. }
+ If (Not Handled) And (((W Shr 24) And $3F) = $08) Then Begin
+  Size := (W Shr 30) And 3;
+  Bit23V := Byte((W Shr 23) And 1);
+  LFlag := (W Shr 22) And 1;
+  Rs := Byte((W Shr 16) And $1F);
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  ByteWidth := Byte(1 Shl Size);
+  Addr := Arm64_RegSP(Rn);
+  If LFlag = 1 Then Begin { LDXR/LDAXR/LDAR : chargement normal }
+   Val1 := Arm64_GetMemV(Addr, ByteWidth);
+   Arm64_SetRegZR(Rt, Val1);
+   If Bit23V = 0 Then Begin { forme exclusive : pose la reservation }
+    ARM64_ExValid := True;
+    ARM64_ExAddr := Addr;
+   End;
+  End Else Begin { STXR/STLXR/STLR }
+   If Bit23V = 0 Then Begin { forme exclusive : verifie la reservation }
+    If ARM64_ExValid And (ARM64_ExAddr = Addr) Then Begin
+     Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth);
+     Arm64_SetRegZR(Rs, 0); { succes }
+    End Else
+     Arm64_SetRegZR(Rs, 1); { echec }
+    ARM64_ExValid := False;
+   End Else
+    Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth); { STLR : pas de reservation }
+  End;
+  Handled := True;
+ End;
+
+ If ARM64_Halted Then Exit; { une faute de traduction MMU a deja arrete proprement }
+
+ If Not Handled Then Begin
+  ARM64_Halted := True;
+  ARM64_LastBadPC := CurPC;
+  ARM64_HaltReason := 'instruction non implementee $' + HexLong(LongInt(W)) +
+   ' a PC=$' + HexQWord(CurPC);
+  Exit;
+ End;
+
+ ARM64_PC := NewPC;
+ Inc(ARM64_InstrCount);
+ ARM64_TracePC[ARM64_TraceCount And 255] := CurPC;
+ ARM64_TraceSP[ARM64_TraceCount And 255] := ARM64_SP;
+ Inc(ARM64_TraceCount);
+End;
+
+{ Reinitialise l etat CPU et charge un bloc de code brut a ARM64_RAM_BASE - }
+{ utilise pour l instant par la commande de diagnostic ARM64TEST. Les       }
+{ etapes suivantes remplaceront ce chargeur trivial par un vrai chargeur    }
+{ de noyau Linux (voir Etape 5 du plan).                                    }
+{ Reinitialise l etat introduit a l Etape 3 (registres systeme, minuteur,   }
+{ GIC) - facteur commun entre Arm64_Reset (ARM64TEST) et Emu_LoadARM64Raw   }
+{ (commande ARM64), pour ne jamais laisser un etat "en attente"/masque      }
+{ residuel d une precedente execution contaminer la suivante.               }
+Procedure Arm64_ResetSysState;
+Begin
+ ARM64_VBAR_EL1 := 0;
+ ARM64_ELR_EL1 := 0;
+ ARM64_SPSR_EL1 := 0;
+ ARM64_DaifI := False;
+ ARM64_Sctlr := 0;
+ ARM64_Ttbr0 := 0;
+ ARM64_Tcr := 0;
+ ARM64_Mair := 0;
+ ARM64_CntFreq := 62500000; { 62,5 MHz - meme valeur typique que QEMU virt }
+ ARM64_CntPct := 0;
+ ARM64_CntpCval := 0;
+ ARM64_CntpEnable := False;
+ ARM64_CntpImask := False;
+ ARM64_GicDistEnable := False;
+ ARM64_GicCpuEnable := False;
+ ARM64_GicPmr := 0;
+ ARM64_GicEnableMask := 0;
+ ARM64_GicPending := False;
+ ARM64_GicActive := False;
+ ARM64_ExValid := False;
+ ARM64_ExAddr := 0;
+End;
+
+Procedure Arm64_Reset(Const Code: Array Of Byte);
+Var
+ I: LongInt;
+Begin
+ FillChar(ARM64_Mem, SizeOf(ARM64_Mem), 0);
+ FillChar(ARM64_Reg, SizeOf(ARM64_Reg), 0);
+ For I := 0 To High(Code) Do
+  If I <= High(ARM64_Mem) Then ARM64_Mem[I] := Code[I];
+ ARM64_SP := ARM64_RAM_BASE + $8000;
+ ARM64_PC := ARM64_RAM_BASE;
+ ARM64_FlagN := False; ARM64_FlagZ := False; ARM64_FlagC := False; ARM64_FlagV := False;
+ ARM64_Halted := False;
+ ARM64_HaltReason := '';
+ ARM64_LastBadPC := 0;
+ ARM64_InstrCount := 0;
+ ARM64_TraceCount := 0;
+ Arm64_ResetSysState;
+End;
+
+{ Commande de diagnostic PERMANENTE (pas un crochet temporaire retire en   }
+{ fin de chantier) : charge un petit programme AArch64 nu couvrant chaque   }
+{ forme d instruction geree a cette etape (y compris 2 ecritures PL011,     }
+{ voir Etape 2) et affiche l etat final des registres - permet une          }
+{ verification de non-regression rapide a chaque etape future sans avoir   }
+{ besoin d un vrai noyau. Disponible uniquement dans "Invite de commande"   }
+{ (SK_CMD) pour l instant. Le panneau UART n est pas relie ici (ARM64_Panel }
+{ reste Nil - Arm64_UartWrite l ignore silencieusement), seul l etat CPU    }
+{ est verifie ; la sortie ecran reelle se verifie via la commande ARM64.    }
+Procedure TermCmd_ARM64TEST(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ { Programme de test Etape 1/2 (couvre le coeur entier + PL011) - voir      }
+ { l en-tete du bloc ARM64 ci-dessus. Inchange depuis l Etape 2.            }
+ TestCode: Array[0..207] Of Byte = (
+  $80, $46, $82, $D2, $00, $CF, $AA, $F2, $41, $01, $80, $D2,
+  $02, $00, $01, $8B, $03, $00, $01, $CB, $44, $90, $01, $91,
+  $05, $00, $01, $8A, $06, $00, $01, $AA, $07, $00, $01, $CA,
+  $E8, $03, $00, $AA, $09, $00, $80, $D2, $1F, $00, $01, $EB,
+  $4C, $00, $00, $54, $EA, $7C, $80, $D2, $EA, $0D, $80, $D2,
+  $69, $00, $00, $B4, $CB, $1B, $80, $D2, $02, $00, $00, $14,
+  $AB, $29, $80, $D2, $0C, $00, $84, $D2, $0C, $00, $A8, $F2,
+  $6D, $57, $95, $D2, $8D, $01, $00, $F9, $8E, $01, $40, $F9,
+  $80, $05, $01, $A9, $8F, $41, $41, $A9, $91, $00, $80, $D2,
+  $71, $00, $10, $37, $12, $00, $80, $D2, $02, $00, $00, $14,
+  $32, $00, $80, $D2, $02, $00, $00, $94, $03, $00, $00, $14,
+  $B3, $09, $80, $D2, $C0, $03, $5F, $D6, $14, $00, $80, $D2,
+  $14, $20, $A1, $F2, $35, $08, $80, $52, $95, $02, $00, $39,
+  $55, $0A, $80, $52, $95, $02, $00, $39, $B5, $09, $80, $52,
+  $95, $02, $00, $39, $D5, $06, $80, $52, $95, $02, $00, $39,
+  $95, $06, $80, $52, $95, $02, $00, $39, $B5, $01, $80, $52,
+  $95, $02, $00, $39, $55, $01, $80, $52, $95, $02, $00, $39,
+  $1F, $20, $03, $D5
+ );
+ { Programme de test Etape 3 (2026-09-01) : configure VBAR_EL1/le minuteur  }
+ { generique/GICv2, attend l IRQ 30 via WFI, le gestionnaire (installe a    }
+ { VBAR+$280) accuse reception (IAR), reprogramme CNTP_CVAL_EL0 et EOI,     }
+ { ERET, puis le programme principal ecrit "OK\r\n" sur PL011. Assemble     }
+ { avec keystone et simule en Python (meme decodage MMIO/minuteur/GIC)      }
+ { AVANT ce portage Pascal - voir project_devenv_arm64_emulator.md.         }
+ TestCode3: Array[0..1455] Of Byte = (
+  $00, $60, $80, $D2, $00, $00, $A8, $F2, $00, $C0, $18, $D5,
+  $21, $E0, $3B, $D5, $21, $C8, $00, $91, $41, $E2, $1B, $D5,
+  $22, $00, $80, $D2, $22, $E2, $1B, $D5, $03, $00, $A1, $D2,
+  $24, $00, $80, $D2, $64, $00, $00, $B9, $05, $00, $A8, $D2,
+  $65, $00, $01, $B9, $26, $00, $A1, $D2, $C4, $00, $00, $B9,
+  $E7, $1F, $80, $D2, $C7, $04, $00, $B9, $09, $00, $80, $D2,
+  $7F, $20, $03, $D5, $E9, $FF, $FF, $B4, $14, $20, $A1, $D2,
+  $F5, $09, $80, $52, $95, $02, $00, $39, $75, $09, $80, $52,
+  $95, $02, $00, $39, $B5, $01, $80, $52, $95, $02, $00, $39,
+  $55, $01, $80, $52, $95, $02, $00, $39, $00, $00, $00, $14,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $1F, $20, $03, $D5, $1F, $20, $03, $D5,
+  $1F, $20, $03, $D5, $2A, $00, $A1, $D2, $4B, $0D, $40, $B9,
+  $29, $00, $80, $D2, $2C, $E0, $3B, $D5, $8C, $01, $44, $91,
+  $4C, $E2, $1B, $D5, $4B, $11, $00, $B9, $E0, $03, $9F, $D6,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00
+ );
+ { Programme de test Etape 4 (2026-09-01) : construit une table de pages   }
+ { L1 (2 blocs de 1 Go, identite 0..1 Go et 1..2 Go - couvre PL011/GICD/    }
+ { GICC ET la RAM), active la MMU (SCTLR_EL1), verifie que l execution et   }
+ { l acces au PL011 continuent normalement une fois la traduction active,   }
+ { puis exerce LDRSB (extension de signe), STR/LDR post-index et pre-index, }
+ { et LDXR/STXR (acces exclusif). Assemble avec keystone, simule en Python  }
+ { (meme traduction MMU/decodage) avant ce portage - voir                   }
+ { project_devenv_arm64_emulator.md.                                        }
+ TestCode4: Array[0..195] Of Byte = (
+  $00, $00, $84, $D2, $00, $00, $A8, $F2, $21, $00, $80, $D2,
+  $01, $00, $00, $F9, $03, $00, $80, $D2, $03, $00, $A8, $F2,
+  $63, $04, $00, $91, $03, $04, $00, $F9, $00, $20, $18, $D5,
+  $25, $03, $80, $D2, $45, $20, $18, $D5, $26, $00, $80, $D2,
+  $06, $10, $18, $D5, $14, $00, $80, $D2, $14, $20, $A1, $F2,
+  $B5, $09, $80, $52, $95, $02, $00, $39, $B5, $09, $80, $52,
+  $95, $02, $00, $39, $B5, $0A, $80, $52, $95, $02, $00, $39,
+  $B5, $05, $80, $52, $95, $02, $00, $39, $F5, $09, $80, $52,
+  $95, $02, $00, $39, $75, $09, $80, $52, $95, $02, $00, $39,
+  $B5, $01, $80, $52, $95, $02, $00, $39, $55, $01, $80, $52,
+  $95, $02, $00, $39, $08, $00, $86, $D2, $08, $00, $A8, $F2,
+  $E9, $1F, $80, $52, $09, $01, $00, $39, $0A, $01, $80, $39,
+  $8B, $46, $82, $D2, $0B, $85, $00, $F8, $EC, $03, $08, $AA,
+  $0D, $8D, $5F, $F8, $0E, $20, $86, $D2, $0E, $00, $A8, $F2,
+  $AF, $AA, $8A, $D2, $CF, $01, $00, $F9, $D0, $7D, $5F, $C8,
+  $D1, $CC, $8C, $D2, $D1, $7D, $12, $C8, $D3, $01, $40, $F9,
+  $00, $00, $00, $14
+ );
+Var
+ I, Steps: Integer;
+Begin
+ { --- Bloc 1 : coeur + PL011 (Etapes 1/2), inchange --- }
+ Arm64_Reset(TestCode);
+ Steps := 0;
+ While (Not ARM64_Halted) And (ARM64_PC < (ARM64_RAM_BASE + 208)) And (Steps < 200) Do Begin
+  Arm64_Step;
+  Inc(Steps);
+ End;
+ TermAddLine(TP, 'ARM64TEST bloc 1 (coeur+PL011) : ' + IntToStr(Steps) +
+  ' pas executes, PC=$' + HexQWord(ARM64_PC));
+ If ARM64_Halted Then
+  TermAddLine(TP, 'ARM64TEST : ARRET - ' + ARM64_HaltReason);
+ For I := 0 To 21 Do
+  TermAddLine(TP, 'X' + IntToStr(I) + ' = $' + HexQWord(ARM64_Reg[I]));
+ TermAddLine(TP, 'NZCV = ' + Arm64_BoolChar(ARM64_FlagN) + Arm64_BoolChar(ARM64_FlagZ) +
+  Arm64_BoolChar(ARM64_FlagC) + Arm64_BoolChar(ARM64_FlagV));
+ { --- Bloc 2 : minuteur + GICv2 + IRQ reelle (Etape 3) --- }
+ Arm64_Reset(TestCode3);
+ Steps := 0;
+ While (Not ARM64_Halted) And (ARM64_PC <> (ARM64_RAM_BASE + $74)) And (Steps < 2000) Do Begin
+  Arm64_Step;
+  Arm64_TickTimer;
+  Arm64_ServiceIrq;
+  Inc(Steps);
+ End;
+ TermAddLine(TP, 'ARM64TEST bloc 2 (minuteur+GIC+IRQ) : ' + IntToStr(Steps) +
+  ' pas executes, PC=$' + HexQWord(ARM64_PC));
+ If ARM64_Halted Then
+  TermAddLine(TP, 'ARM64TEST : ARRET - ' + ARM64_HaltReason);
+ TermAddLine(TP, 'X9 (drapeau IRQ traitee par le gestionnaire) = $' + HexQWord(ARM64_Reg[9]));
+ TermAddLine(TP, 'GicPending = ' + Arm64_BoolChar(ARM64_GicPending) +
+  '  GicActive = ' + Arm64_BoolChar(ARM64_GicActive) +
+  '  DaifI = ' + Arm64_BoolChar(ARM64_DaifI));
+ TermAddLine(TP, 'CntPct = ' + HexQWord(ARM64_CntPct) + '  CntpCval = ' + HexQWord(ARM64_CntpCval));
+ { --- Bloc 3 : MMU (traduction stage-1) + ISA elargie (Etape 4) --- }
+ Arm64_Reset(TestCode4);
+ Steps := 0;
+ While (Not ARM64_Halted) And (ARM64_PC <> (ARM64_RAM_BASE + 192)) And (Steps < 500) Do Begin
+  Arm64_Step;
+  Arm64_TickTimer;
+  Arm64_ServiceIrq;
+  Inc(Steps);
+ End;
+ TermAddLine(TP, 'ARM64TEST bloc 3 (MMU+ISA elargie) : ' + IntToStr(Steps) +
+  ' pas executes, PC=$' + HexQWord(ARM64_PC));
+ If ARM64_Halted Then
+  TermAddLine(TP, 'ARM64TEST : ARRET - ' + ARM64_HaltReason);
+ TermAddLine(TP, 'SCTLR=$' + HexQWord(ARM64_Sctlr) + '  TTBR0=$' + HexQWord(ARM64_Ttbr0) +
+  '  TCR=$' + HexQWord(ARM64_Tcr));
+ For I := 8 To 19 Do
+  TermAddLine(TP, 'X' + IntToStr(I) + ' = $' + HexQWord(ARM64_Reg[I]));
+End;
+
+{ Chargeur minimal (Etape 2) : image binaire BRUTE (pas ELF, pas encore le  }
+{ format "Image" du noyau Linux - voir Etape 5) chargee telle quelle a      }
+{ l adresse physique ARM64_RAM_BASE. Utilise par la commande terminal       }
+{ ARM64 (le futur chargeur de noyau de l Etape 5 remplacera cette fonction, }
+{ pas le reste du backend).                                                 }
+Function Emu_LoadARM64Raw(Const FileName: String): Boolean;
+Var
+ F: File;
+ FSize, BytesReaded: LongInt;
+Begin
+ Emu_LoadARM64Raw := False;
+ FillChar(ARM64_Mem, SizeOf(ARM64_Mem), 0);
+ FillChar(ARM64_Reg, SizeOf(ARM64_Reg), 0);
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FSize := FileSize(F);
+ If FSize > (High(ARM64_Mem) + 1) Then FSize := High(ARM64_Mem) + 1;
+ BlockRead(F, ARM64_Mem, FSize, BytesReaded);
+ Close(F);
+ If BytesReaded <= 0 Then Exit;
+ ARM64_SP := ARM64_RAM_BASE + $1000000; { 16 Mo au-dessus de la base }
+ ARM64_PC := ARM64_RAM_BASE;
+ ARM64_FlagN := False; ARM64_FlagZ := False; ARM64_FlagC := False; ARM64_FlagV := False;
+ ARM64_Halted := False;
+ ARM64_HaltReason := '';
+ ARM64_LastBadPC := 0;
+ ARM64_InstrCount := 0;
+ ARM64_TraceCount := 0;
+ Arm64_ResetSysState;
+ Emu_LoadARM64Raw := True;
+End;
+
+{ Meme motif exact que ELF64_RunOneChunk/Lx_RunOneChunk (chargement Stage 1,}
+{ execution par tranches pilotee par l idle-tick de StepEmulator).          }
+Procedure Arm64_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then ARM64Async_KeyEsc := True;
+  End;
+  If ARM64Async_KeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If ARM64_Halted Then Break;
+  If P.TotalSteps >= 5000000 Then Break;
+  Arm64_Step;
+  { Etape 3 : minuteur + distribution d IRQ, une fois par instruction       }
+  { executee - meme cadence que Emu_ServiceIrqs pour le backend DOS.        }
+  Arm64_TickTimer;
+  Arm64_ServiceIrq;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+{ Meme motif exact que ELF64_PrintEndMessage. }
+Procedure Arm64_PrintEndMessage(Var P: TEmulatorPanel);
+Begin
+ If ARM64_Halted Then Begin
+  P.CurFg := 11;
+  EmuVScr_WriteStr(P, '[' + ARM64_HaltReason + ']');
+ End Else Begin
+  P.CurFg := 12;
+  EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(P.TotalSteps) + ' instructions atteinte]');
+ End;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, IntToStr(P.TotalSteps) + ' instruction(s) executee(s).');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'PC : 0x' + HexQWord(ARM64_PC) +
+   '   X0 : 0x' + HexQWord(ARM64_Reg[0]));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'SP : 0x' + HexQWord(ARM64_SP));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If ARM64_LastBadPC <> 0 Then Begin
+   EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : 0x' +
+    HexQWord(ARM64_LastBadPC));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+ End;
+End;
+
+{ Commande terminal ARM64 <fichier.bin> (Etape 2) : ouvre un vrai onglet    }
+{ emulateur pour une image binaire AArch64 BRUTE, chargee et executee a     }
+{ ARM64_RAM_BASE ($40000000) - permet de verifier visuellement la console   }
+{ PL011 (voir Arm64_UartWrite) sans attendre le chargeur de noyau reel de   }
+{ l Etape 5. Disponible uniquement dans "Invite de commande" pour l instant.}
+Procedure TermCmd_ARM64(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, FullPath: String;
+Begin
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ARM64 fichier.bin');
+  TermAddLine(TP, '(image binaire brute AArch64, chargee et executee a ' +
+   '$40000000 - chantier en cours, voir project_devenv_arm64_emulator.md)');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'ARM64 : disque virtuel non supporte, utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ FullPath := TermCombinePath(Dir, CurrParam);
+ If Not FileExists(FullPath) Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(FullPath, '-CARM64', '');
+End;
+
 { --- HELP --- }
 
 { BOGUE REEL (2026-08-29) signale par l utilisateur : cette liste n avait   }
@@ -63944,6 +65387,10 @@ Begin
    TermCmd_LOG(TP, ParamStr)
    Else If CurrCmd = 'ELFBP' Then
     TermCmd_ELFBP(TP, ParamStr)
+   Else If CurrCmd = 'ARM64TEST' Then
+    TermCmd_ARM64TEST(TP, ParamStr)
+   Else If CurrCmd = 'ARM64' Then
+    TermCmd_ARM64(TP, ParamStr)
    Else If CurrCmd = 'LXINFO' Then
     TermCmd_LXInfo(TP, ParamStr)
    Else If CurrCmd = 'WIN16INFO' Then
@@ -75854,6 +77301,8 @@ Begin
   EmuPanelTitleFor := 'Emulateur Thomson MO5 (6809)'
  Else If TargetCPU = '-CWIN16' Then
   EmuPanelTitleFor := 'Emulateur Windows 16 bits (NE)'
+ Else If TargetCPU = '-CARM64' Then
+  EmuPanelTitleFor := 'Emulateur ARM64 (AArch64)'
  Else
   EmuPanelTitleFor := 'Emulateur';
 End;
@@ -109658,6 +111107,7 @@ Var
  IsELF64: Boolean;
  IsOS2LX: Boolean;
  IsWin16: Boolean;
+ IsARM64: Boolean;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -109816,9 +111266,20 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CARM64' Then
+ Begin
+  { Chantier ARM64 (2026-09-01), Etape 2 - console 80x25, meme convention   }
+  { que DOS/ELF64/OS2LX (console PL011 uniquement, voir Arm64_UartWrite).   }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsELF64 := (TargetCPU = '-CELF64');
+ IsARM64 := (TargetCPU = '-CARM64');
  IsOS2LX := (TargetCPU = '-COS2LX');
  IsWin16 := (TargetCPU = '-CWIN16');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
@@ -109844,6 +111305,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CELF64'  Then CPUName := 'Linux x86-64 (ELF statique)'
  Else If TargetCPU = '-COS2LX'  Then CPUName := 'OS/2 LX 32 bits (console)'
  Else If TargetCPU = '-CWIN16'  Then CPUName := 'Windows 2.x/3.x 16 bits (NE, console texte)'
+ Else If TargetCPU = '-CARM64'  Then CPUName := 'ARM64 (AArch64) systeme'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
  Else If TargetCPU = '-CAPPLEII'Then CPUName := 'Apple II (6502)'
@@ -110715,6 +112177,48 @@ Begin NesActive := False;
   P.Loaded := True;
   Exit;
  End;
+ If IsARM64 Then Begin
+  { Chantier ARM64, Etape 2 - meme motif Stage 1 qu ELF64/OS2LX juste       }
+  { au-dessus (charge puis rend la main immediatement, execution reelle     }
+  { pilotee par l idle-tick via Arm64_RunOneChunk). Chargeur brut           }
+  { temporaire (voir Emu_LoadARM64Raw) - remplace par un vrai chargeur de   }
+  { noyau Linux a l Etape 5.                                                }
+  ARM64_Panel := @P;
+  Loaded := Emu_LoadARM64Raw(BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : impossible de charger ' + BinaryPath);
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    '(image binaire brute AArch64 attendue - pas encore de format ELF ni');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    'de noyau Linux "Image", voir Etape 5 de project_devenv_arm64_emulator.md)');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement ARM64';
+   Exit;
+  End;
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Image brute AArch64 chargee a 0x' + HexQWord(ARM64_RAM_BASE) + '.');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P, 'PC initial : 0x' + HexQWord(ARM64_PC));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'SP initial : 0x' + HexQWord(ARM64_SP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  ARM64Async_KeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
+  Exit;
+ End;
  If IsWin16 Then Begin
   { Chantier Windows 16 bits, Stage 4 (2026-08-28) : greffage UI reel.      }
   { Contrairement a ELF64/OS2LX (memoire lineaire dediee LX_Mem/etc.),      }
@@ -111523,6 +113027,33 @@ Begin
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    Lx_PrintEndMessage(P);
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CARM64') Then Begin
+  { Chantier ARM64, Etape 2 - meme motif exact que les blocs -CELF64/       }
+  { -COS2LX juste au-dessus. }
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  Arm64_RunOneChunk(P);
+  Finished := ARM64_Halted Or (P.TotalSteps >= 5000000) Or ARM64Async_KeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   Arm64_PrintEndMessage(P);
    DrawEmulatorPanel(P);
   End;
   Exit;
