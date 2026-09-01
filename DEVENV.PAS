@@ -10962,6 +10962,16 @@ Function TermFindNesRom(Const Dir, CmdName: String): String; Forward;
 { Meme raison (2026-08-29) : commandes ATARI2600/C64/COCO3/WIN16. }
 Function TermFindRomByExt(Const Dir, CmdName, Ext: String): String; Forward;
 Function TermFindCoco3Rom(Const Dir, CmdName: String): String; Forward;
+{ Meme raison (2026-08-31) : Start-Atari2600Program (PowerShell dev, voir   }
+{ TermCmd_StartAtari2600Program) a besoin de TermFindAtari2600Rom,          }
+{ normalement definie pres de TermFindRomByExt/TermFindCoco3Rom ci-dessus  }
+{ (~63200). }
+Function TermFindAtari2600Rom(Const Dir, CmdName: String): String; Forward;
+{ Meme raison : TermCmd_StartAtari2600Program retire aussi les guillemets   }
+{ d'un chemin tape entre guillemets (l'exemple de l'utilisateur) via        }
+{ YamlUnquote, normalement definie beaucoup plus loin dans le chantier      }
+{ YAML/ConvertFrom-* (~61700). }
+Function YamlUnquote(S: AnsiString): AnsiString; Forward;
 { Meme raison (2026-08-29) : commande LINUX, TermFindElfExecutable est      }
 { normalement definie beaucoup plus loin (~41085, deja utilisee par le      }
 { repli generique "commande inconnue -> executable" de TermExecuteCommand). }
@@ -39468,7 +39478,10 @@ Procedure TermCmd_Atari2600(Var TP: TTerminalPanel; ParamStr: String);
 Var
  CurrParam, Dir, RomPath: String;
 Begin
- CurrParam := TermExtractParam(ParamStr, 1);
+ { Guillemets retires (voir TermCmd_StartAtari2600Program) : le meme        }
+ { chemin entre guillemets fonctionne desormais aussi tape directement      }
+ { dans ce shell. }
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : ATARI2600 fichier.a26');
   Exit;
@@ -39479,7 +39492,7 @@ Begin
   Exit;
  End;
  If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
- RomPath := TermFindRomByExt(Dir, CurrParam, 'A26');
+ RomPath := TermFindAtari2600Rom(Dir, CurrParam);
  If RomPath = '' Then Begin
   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
   Exit;
@@ -39595,6 +39608,42 @@ Begin
  If P > 0 Then RestParam := TrimStr(Copy(TrimmedParams, P + 1, Length(TrimmedParams)))
  Else RestParam := '';
  CreateEmulatorTab(DosExe, '-CD', RestParam);
+End;
+
+{ Start-Atari2600Program (2026-08-31, demande explicite de l'utilisateur,  }
+{ exemples donnes avec .a26 ET .bin - voir le VRAI bogue trouve+corrige     }
+{ dans TermFindAtari2600Rom ci-dessus, pres de TermFindCoco3Rom) : meme     }
+{ motif exact que Start-DosProgram ci-dessus (procedure DEDIEE avec son     }
+{ propre message de syntaxe, plutot que de partager le message generique   }
+{ "ATARI2600 fichier.a26" comme le font par exemple les alias Start-Win16*/}
+{ Invoke-Win16* pour TermCmd_Win16Launch) - PowerShell dev uniquement. }
+Procedure TermCmd_StartAtari2600Program(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ { L'exemple de l'utilisateur passe un chemin ENTRE GUILLEMETS -            }
+ { TermExtractParam ne les retire jamais (coupe seulement sur espace/       }
+ { tabulation, deja rencontre pour ConvertFrom-SddlString ci-dessus) -      }
+ { YamlUnquote (deja ecrite) reutilisee pour eviter de chercher             }
+ { litteralement un fichier nomme "C:\ROMS\Pitfall.a26" guillemets           }
+ { compris. }
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-Atari2600Program fichier.a26 (ou .bin)');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-Atari2600Program : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ RomPath := TermFindAtari2600Rom(Dir, CurrParam);
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CATARI2600', '');
 End;
 
 { LOADFIX (2026-08-30, demande explicite de l utilisateur) : reproduit le  }
@@ -62873,6 +62922,8 @@ Begin
   TermAddLine(TP, '--- Lancer un programme DOS ---');
   TermAddLine(TP,
    '  Start-DosProgram fichier[.exe/.com]     Emulateur DOS (8086)');
+  TermAddLine(TP,
+   '  Start-Atari2600Program fichier[.a26/.bin]  Emulateur Atari 2600');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -63223,6 +63274,41 @@ Begin
  TermFindCoco3Rom := '';
 End;
 
+{ BOGUE REEL trouve en implantant Start-Atari2600Program (2026-08-31,      }
+{ demande explicite de l'utilisateur, exemples donnes avec .a26 ET .bin) : }
+{ TermCmd_Atari2600 (commande ATARI2600 existante) appelait                }
+{ `TermFindRomByExt(Dir,CmdName,'A26')`, qui n'accepte QUE l'extension      }
+{ .A26 explicitement - un nom se terminant par .bin (extension la PLUS      }
+{ courante en pratique pour les VRAIES ROM Atari 2600 trouvees en ligne,    }
+{ souvent plus repandue que .a26 lui-meme) tombait dans la branche          }
+{ "ajouter .A26" de TermFindRomByExt et cherchait "xxx.bin.A26" - un        }
+{ fichier qui n'existe jamais, echouant donc TOUJOURS silencieusement pour  }
+{ ce format pourtant tres repandu. Meme motif que TermFindCoco3Rom          }
+{ ci-dessus (essaie plusieurs extensions candidates quand aucune n'est      }
+{ deja presente) - reutilise ici pour Atari 2600 ET applique aussi a la     }
+{ commande ATARI2600 existante ci-dessous (meme gain, pas seulement le      }
+{ nouvel alias PowerShell). }
+Function TermFindAtari2600Rom(Const Dir, CmdName: String): String;
+Var
+ Base: String;
+Begin
+ Base := Dir;
+ If (Length(CmdName) >= 2) And (CmdName[2] = ':') Then Base := '';
+ If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ If Pos('.', CmdName) > 0 Then Begin
+  TermFindAtari2600Rom := '';
+  If FileExists(Base + CmdName) Then TermFindAtari2600Rom := Base + CmdName;
+  Exit;
+ End;
+ If FileExists(Base + CmdName + '.A26') Then Begin
+  TermFindAtari2600Rom := Base + CmdName + '.A26'; Exit;
+ End;
+ If FileExists(Base + CmdName + '.BIN') Then Begin
+  TermFindAtari2600Rom := Base + CmdName + '.BIN'; Exit;
+ End;
+ TermFindAtari2600Rom := '';
+End;
+
 { Cherche un .PRG executable pour CmdName tape dans un shell terminal -   }
 { soit sur le disque HOTE (TP.VirtDrive<0, dans Dir, tranche entre               }
 { Commodore 64 et Atari ST par signature GEMDOS, voir NCIsAtariSTPrg),      }
@@ -63282,7 +63368,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 99;
+ PS_CMD_ALIASES = 100;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -63359,6 +63445,7 @@ Const
   'START-WIN16PROGRAM','INVOKE-WIN16PROGRAM','START-WIN16APPLICATION',
    'INVOKE-WIN16','START-WIN16',
   'START-DOSPROGRAM',
+  'START-ATARI2600PROGRAM',
   'LOG',
   'HELP','GET-HELP','?'
  );
@@ -63437,6 +63524,7 @@ Const
   57,
   58,58,58,58,58,
   59,
+  77,
   60,
   61,61,61
  );
@@ -63908,6 +63996,7 @@ Begin
     { SK_NCOMMANDER - aucune duplication de logique. }
     58: TermCmd_Win16Launch(TP, ParamStr);  { START-WIN16*/INVOKE-WIN16* }
     59: TermCmd_DosLaunch(TP, ParamStr);          { START-DOSPROGRAM }
+    77: TermCmd_StartAtari2600Program(TP, ParamStr); { START-ATARI2600PROGRAM }
     60: TermCmd_LOG(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
    Else Begin
