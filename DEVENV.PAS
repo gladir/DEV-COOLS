@@ -7221,8 +7221,16 @@ Var
  ARM64_DaifI      : Boolean; { PSTATE.I - D/A/F non modelises (pas d EL2/3) }
  ARM64_Sctlr      : QWord;   { stockage passif - l Etape 4 (MMU) l utilisera}
  ARM64_Ttbr0      : QWord;
+ ARM64_Ttbr1      : QWord;   { Etape 5 : table "haute" (espace noyau), voir }
+                              { Arm64_Translate - VA[63]=1 la selectionne.  }
  ARM64_Tcr        : QWord;
  ARM64_Mair       : QWord;
+ ARM64_Tpidr0     : QWord;   { stockage passif (Etape 5) - pointeur de thread}
+ ARM64_Tpidr1     : QWord;
+ ARM64_Cpacr      : QWord;
+ ARM64_Mdscr      : QWord;   { stockage passif (Etape 5) - controle debug   }
+                              { materiel, jamais actionne (pas de fault de   }
+                              { debogage generee par cet emulateur).         }
  ARM64_CntFreq    : QWord;
  ARM64_CntPct     : QWord;
  ARM64_CntpCval   : QWord;
@@ -7240,6 +7248,11 @@ Var
  { mono-coeur, toujours valide tant qu aucune exception/CLREX ne l efface.  }
  ARM64_ExValid       : Boolean;
  ARM64_ExAddr        : QWord;
+ { Chantier ARM64, Etape 5 : signale a ShowEmulatorPanel qu Emu_LoadARM64   }
+ { Kernel a DEJA entierement prepare l etat CPU/memoire (BOOT /LINUXARM64) -}
+ { evite d ecraser ce travail en tentant de charger BinaryPath comme un     }
+ { fichier brut (motif identique a EmuBootFromDrive pour le backend DOS).   }
+ ARM64_BootPending   : Boolean;
 
 Const
  { ROM Commodore 64 (BASIC V2, KERNAL, generateur de caracteres) - clone   }
@@ -39400,6 +39413,16 @@ Begin
  TermBoot_ExtractDiskFlag := TrimStr(Val);
 End;
 
+{ Definies bien plus bas (pres d Emu_LoadARM64Raw) - Forward necessaire ici }
+{ car TermCmd_BOOT (Etape 5, /LINUXARM64) les appelle. Emu_IsoReadLBA (deja }
+{ existant, pour le montage CD-ROM du backend DOS) n avait lui-meme jamais  }
+{ eu besoin d un Forward avant ce chantier - Emu_LoadARM64Kernel (bien plus }
+{ haut dans le fichier que sa vraie definition, ~90800) en a desormais      }
+{ besoin lui aussi. }
+Function Emu_IsoReadLBA(Idx: Byte; LBA: LongInt; Var Buf: TEmuIsoSector): Boolean; Forward;
+Function Arm64_FindOpenCdromSlot: Integer; Forward;
+Function Emu_LoadARM64Kernel(CdIdx: Byte): Boolean; Forward;
+
 Procedure TermCmd_BOOT(Var TP: TTerminalPanel; ParamStr: String);
 Var
  P, Up, DispName: String;
@@ -39410,6 +39433,7 @@ Var
  Cluster, Sz: LongInt;
  DiskFlagFile: String;
  SlotIdx: Byte;
+ CdSlot: Integer;
 Begin
  P := TermExtractParam(ParamStr, 1);
  If (Length(P) < 2) Or (P[2] <> ':') Then Begin
@@ -39502,9 +39526,24 @@ Begin
  { EmuDbg) ni /OS2/LINUXARM/LINUXARM64 (stubs, jamais d onglet emulateur cree). }
  If Pos('/CMD', Up) > 0 Then EmuCmdConsoleArmOnLoad := True;
  If (Pos('/GUI', Up) > 0) Or (Pos('/CMD', Up) > 0) Then EmuDbgArmPauseOnLoad := True;
+ { Chantier ARM64, Etape 5 (2026-09-01) : demarrage reel d un noyau Linux   }
+ { ARM64 extrait d une image ISO9660 montee (/CDROM:/CDROM0:/CDROM1: sur    }
+ { CETTE commande BOOT, ou deja montee via le drapeau de demarrage /CDROM:  }
+ { de DEVENV lui-meme - Arm64_FindOpenCdromSlot cherche les deux). Voir     }
+ { Emu_LoadARM64Kernel pour le detail du chargement (vmlinuz+initrd.gz+DTB).}
  If Pos('/LINUXARM64', Up) > 0 Then Begin
-  TermAddLine(TP,
-   'BOOT /LINUXARM64 : aucun emulateur de processeur ARM64 dans cet IDE - non supporte.');
+  CdSlot := Arm64_FindOpenCdromSlot;
+  If CdSlot < 0 Then Begin
+   TermAddLine(TP, 'BOOT /LINUXARM64 : aucune image CD-ROM montee ' +
+    '(utiliser /CDROM:fichier.iso ou l''option de demarrage /CDROM: de DEVENV).');
+   Exit;
+  End;
+  If Not Emu_LoadARM64Kernel(Byte(CdSlot)) Then Begin
+   TermAddLine(TP, 'BOOT /LINUXARM64 : install.a64\vmlinuz ou install.a64\initrd.gz ' +
+    'introuvable(s), ou en-tete de noyau ARM64 invalide, sur l''image montee.');
+   Exit;
+  End;
+  CreateEmulatorTab('Debian ARM64 (install.a64)', '-CARM64', '');
   Exit;
  End;
  If Pos('/LINUXARM', Up) > 0 Then Begin
@@ -62815,6 +62854,43 @@ Const
  ARM64_SYSREG_TCR_EL1       = 258;
  ARM64_SYSREG_MAIR_EL1      = 1296;
  ARM64_SYSREG_CURRENTEL     = 530;
+ { Registres d identification/EL0 lus tres tot par un vrai noyau Linux      }
+ { ARM64 (detection de fonctionnalites CPU, avant meme que la console ne    }
+ { soit prete) - cles verifiees par assemblage keystone comme les autres.   }
+ ARM64_SYSREG_MIDR_EL1        = 0;
+ ARM64_SYSREG_MPIDR_EL1       = 5;
+ ARM64_SYSREG_REVIDR_EL1      = 6;
+ ARM64_SYSREG_ID_AA64PFR0_EL1 = 32;
+ ARM64_SYSREG_ID_AA64DFR0_EL1 = 40;
+ ARM64_SYSREG_ID_AA64ISAR0_EL1= 48;
+ ARM64_SYSREG_ID_AA64MMFR0_EL1= 56;
+ ARM64_SYSREG_CTR_EL0         = 6145;
+ ARM64_SYSREG_TPIDR_EL0       = 7810;
+ ARM64_SYSREG_CPACR_EL1       = 130;
+ ARM64_SYSREG_TPIDR_EL1       = 1668;
+ ARM64_SYSREG_MDSCR_EL1       = 18;
+ ARM64_SYSREG_ID_AA64MMFR1_EL1= 57;
+ ARM64_SYSREG_ID_AA64ISAR1_EL1= 49;
+ ARM64_SYSREG_ID_AA64PFR1_EL1 = 33;
+ ARM64_SYSREG_ID_AA64AFR0_EL1 = 44;
+ ARM64_SYSREG_ID_AA64AFR1_EL1 = 45;
+ ARM64_SYSREG_ID_AA64MMFR2_EL1= 58;
+ ARM64_SYSREG_ID_AA64MMFR3_EL1= 59;
+ ARM64_SYSREG_ID_AA64ZFR0_EL1 = 36;
+ ARM64_SYSREG_ID_AA64ISAR2_EL1= 50;
+ { Chantier ARM64, Etape 5 : plan memoire du chargeur de noyau reel. Le     }
+ { noyau se charge a RAM_BASE+text_offset (lu dans son propre en-tete, voir }
+ { Emu_LoadARM64Kernel) - DTB et initrd fixes bien plus haut pour ne jamais }
+ { chevaucher un noyau realiste (~38 Mo pour le vmlinuz Debian reel testé). }
+ ARM64_DTB_BASE    = ARM64_RAM_BASE + QWord($04000000); { RAM_BASE+64 Mo }
+ ARM64_INITRD_BASE = ARM64_RAM_BASE + QWord($08000000); { RAM_BASE+128 Mo }
+ { Offsets (verifies par construction du gabarit avec la bibliotheque      }
+ { Python "fdt" puis inspection binaire directe - PAS devines) des valeurs }
+ { u32 grand-boutistes linux,initrd-start/-end dans ARM64_DtbTemplate,     }
+ { seules proprietes du DTB qui dependent de la taille reelle de l initrd  }
+ { charge (tout le reste du "materiel" decrit est fixe, voir le plan).     }
+ ARM64_DTB_INITRD_START_OFS = 260;
+ ARM64_DTB_INITRD_END_OFS   = 276;
 
 Function Arm64_RegZR(Idx: Byte): QWord;
 Begin
@@ -63220,6 +63296,35 @@ Begin
   ARM64_SYSREG_TCR_EL1: Val := ARM64_Tcr;
   ARM64_SYSREG_MAIR_EL1: Val := ARM64_Mair;
   ARM64_SYSREG_CURRENTEL: Val := 4; { EL[3:2]=01 (EL1) }
+  { Etape 5 : registres d identification lus tres tot par un vrai noyau.   }
+  ARM64_SYSREG_MIDR_EL1: Val := 0; { implementeur inconnu - evite tout       }
+                                    { contournement d erratum materiel bases }
+                                    { sur une signature MIDR precise.        }
+  ARM64_SYSREG_MPIDR_EL1: Val := $80000000; { bit31 RAO, Aff0=0 (CPU0 seul) }
+  ARM64_SYSREG_REVIDR_EL1: Val := 0;
+  ARM64_SYSREG_ID_AA64PFR0_EL1: Val := $FF000011; { EL0/EL1 AArch64 seul,    }
+                                    { EL2/EL3 absents, FP/AdvSIMD "non       }
+                                    { implante" (evite que le noyau utilise  }
+                                    { des instructions FP/NEON non gerees).  }
+  ARM64_SYSREG_ID_AA64DFR0_EL1: Val := 0; { pas de PMU/debogueur materiel }
+  ARM64_SYSREG_ID_AA64ISAR0_EL1: Val := 0; { aucune extension optionnelle -  }
+                                    { force le repli sur LDXR/STXR (geres)   }
+                                    { plutot que sur des atomiques LSE       }
+                                    { (CAS/etc, non geres).                  }
+  ARM64_SYSREG_ID_AA64MMFR0_EL1: Val := 5; { PARange=0101 (48 bits), coherent}
+                                    { avec Arm64_Translate (granule 4 Ko).   }
+  ARM64_SYSREG_CTR_EL0: Val := $80038003; { lignes de cache 32 octets -      }
+                                    { purement indicatif, DC/IC sont deja    }
+                                    { des no-op.                             }
+  ARM64_SYSREG_TPIDR_EL0: Val := ARM64_Tpidr0;
+  ARM64_SYSREG_TPIDR_EL1: Val := ARM64_Tpidr1;
+  ARM64_SYSREG_CPACR_EL1: Val := ARM64_Cpacr;
+  ARM64_SYSREG_MDSCR_EL1: Val := ARM64_Mdscr;
+  ARM64_SYSREG_ID_AA64MMFR1_EL1, ARM64_SYSREG_ID_AA64ISAR1_EL1,
+  ARM64_SYSREG_ID_AA64PFR1_EL1, ARM64_SYSREG_ID_AA64AFR0_EL1,
+  ARM64_SYSREG_ID_AA64AFR1_EL1, ARM64_SYSREG_ID_AA64MMFR2_EL1,
+  ARM64_SYSREG_ID_AA64MMFR3_EL1, ARM64_SYSREG_ID_AA64ZFR0_EL1,
+  ARM64_SYSREG_ID_AA64ISAR2_EL1: Val := 0; { aucune fonctionnalite optionnelle }
   Else Arm64_MrsRead := False;
  End;
 End;
@@ -63250,6 +63355,10 @@ Begin
   ARM64_SYSREG_TTBR0_EL1: ARM64_Ttbr0 := Val;
   ARM64_SYSREG_TCR_EL1: ARM64_Tcr := Val;
   ARM64_SYSREG_MAIR_EL1: ARM64_Mair := Val;
+  ARM64_SYSREG_TPIDR_EL0: ARM64_Tpidr0 := Val;
+  ARM64_SYSREG_TPIDR_EL1: ARM64_Tpidr1 := Val;
+  ARM64_SYSREG_CPACR_EL1: ARM64_Cpacr := Val;
+  ARM64_SYSREG_MDSCR_EL1: ARM64_Mdscr := Val;
   Else Arm64_MsrWrite := False;
  End;
 End;
@@ -63290,6 +63399,123 @@ Begin
  ARM64_DaifI := True;
  ARM64_ExValid := False; { Etape 4 : une exception efface le moniteur exclusif }
  ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_IRQ_OFFSET;
+End;
+
+{ UBFM/SBFM/BFM (Etape 5) - couvre LSL/LSR/ASR/UBFX/SBFX/UBFIZ/SBFIZ/BFI/    }
+{ BFXIL/UXTB/UXTH/SXTB/SXTH/SXTW comme cas particuliers du MEME calcul, au  }
+{ lieu de reconnaitre chaque alias separement. Formules verifiees par       }
+{ EXECUTION REELLE (Unicorn, moteur d emulation CPU de la meme famille que  }
+{ keystone/capstone) sur chaque alias plutot que reconstruites de memoire   }
+{ depuis le pseudocode ARM (le cas "immr>imms", utilise par LSL/UBFIZ/      }
+{ SBFIZ/BFI, est notoirement facile a mal implanter - une premiere tentative}
+{ a la main s est revelee fausse a l execution avant que Unicorn ne         }
+{ permette de la corriger). Deux cas seulement, sans algorithme de masque   }
+{ generalise (DecodeBitMasks) : }
+{  - immr<=imms ("extraction", couvre LSR/ASR/UBFX/SBFX/UXT*/SXT*/BFXIL) :  }
+{    Lsb=immr, Width=imms-immr+1, Extracted=(Src Shr Lsb) And WidthMask.    }
+{  - immr>imms ("insertion", couvre LSL/UBFIZ/SBFIZ/BFI) : Lsb=Datasize-    }
+{    immr, Width=imms+1, Field=Src And WidthMask, resultat=Field Shl Lsb.   }
+Procedure Arm64_DoBfm(Opc: Byte; Immr, Imms: Byte; Is32: Boolean; Rn, Rd: Byte);
+Var
+ Datasize, Width, Lsb: Byte;
+ Src, RdOld, Field, Res, WidthMask: QWord;
+Begin
+ If Is32 Then Datasize := 32 Else Datasize := 64;
+ Src := Arm64_RegZR(Rn);
+ If Is32 Then Src := Src And $FFFFFFFF;
+ RdOld := Arm64_RegZR(Rd);
+ If Immr <= Imms Then Begin
+  Lsb := Immr;
+  Width := Imms - Immr + 1;
+  If Width >= 64 Then WidthMask := QWord($FFFFFFFFFFFFFFFF)
+  Else WidthMask := (QWord(1) Shl Width) - 1;
+  Field := (Src Shr Lsb) And WidthMask;
+  Case Opc Of
+   0: Res := Arm64_SignExtend(Field, Width);               { SBFM }
+   1: Res := (RdOld And (Not WidthMask)) Or Field;          { BFM (BFXIL) }
+   Else Res := Field;                                       { UBFM }
+  End;
+ End Else Begin
+  Lsb := Byte((Datasize - Immr) Mod Datasize);
+  Width := Imms + 1;
+  If Width >= 64 Then WidthMask := QWord($FFFFFFFFFFFFFFFF)
+  Else WidthMask := (QWord(1) Shl Width) - 1;
+  Field := Src And WidthMask;
+  Case Opc Of
+   0: Res := Arm64_SignExtend(Field, Width) Shl Lsb;                     { SBFM }
+   1: Res := (RdOld And (Not (WidthMask Shl Lsb))) Or (Field Shl Lsb);   { BFM (BFI) }
+   Else Res := Field Shl Lsb;                                            { UBFM }
+  End;
+ End;
+ If Is32 Then Res := Res And $FFFFFFFF;
+ Arm64_SetRegZR(Rd, Res);
+End;
+
+Function Arm64_UDiv(A, B: QWord; Is32: Boolean): QWord;
+Begin
+ If Is32 Then Begin A := A And $FFFFFFFF; B := B And $FFFFFFFF; End;
+ If B = 0 Then Arm64_UDiv := 0 Else Arm64_UDiv := A Div B;
+End;
+
+Function Arm64_SDiv(A, B: QWord; Is32: Boolean): QWord;
+Var
+ Ai, Bi, Ri: Int64;
+Begin
+ If Is32 Then Begin
+  Ai := Int64(LongInt(A And $FFFFFFFF));
+  Bi := Int64(LongInt(B And $FFFFFFFF));
+ End Else Begin
+  Ai := Int64(A);
+  Bi := Int64(B);
+ End;
+ If Bi = 0 Then Ri := 0
+ Else If (Bi = -1) And (Ai = Int64($8000000000000000)) Then Ri := Ai
+ Else Ri := Ai Div Bi;
+ Arm64_SDiv := QWord(Ri);
+End;
+
+Function Arm64_FullMask(Bits: Byte): QWord;
+Begin
+ If Bits >= 64 Then Arm64_FullMask := QWord($FFFFFFFFFFFFFFFF)
+ Else Arm64_FullMask := (QWord(1) Shl Bits) - 1;
+End;
+
+{ Decodage des masques immediat "logiques" (AND/ORR/EOR/ANDS #imm, TST =    }
+{ alias ANDS Rd=XZR) - Etape 5, halte reelle rencontree tres tot dans un    }
+{ vrai noyau Linux ARM64 (TST teste des bits de PSTATE/drapeaux tres        }
+{ frequemment). Algorithme DecodeBitMasks standard - verifie sur 5 cas      }
+{ reels couvrant des tailles d element 64/32/8 bits (assembles avec         }
+{ keystone, calcul manuel confirme AVANT ce portage, voir                   }
+{ project_devenv_arm64_emulator.md) plutot que reconstruit de memoire sans  }
+{ verification (risque connu et documente pour cette famille precise       }
+{ d instructions).                                                          }
+Function Arm64_DecodeBitMaskImm(N, Immr, Imms: Byte; Is32: Boolean): QWord;
+Var
+ Tmp: Byte;
+ Len, ESize, S, R: Byte;
+ Welem, Elem, FullE, Res: QWord;
+ I: Byte;
+Begin
+ Tmp := Byte((N Shl 6) Or ((Not Imms) And $3F));
+ Len := 0;
+ For I := 6 Downto 0 Do
+  If (Tmp And (1 Shl I)) <> 0 Then Begin Len := I; Break; End;
+ ESize := Byte(1 Shl Len);
+ FullE := Arm64_FullMask(ESize);
+ S := Imms And (ESize - 1);
+ R := Immr And (ESize - 1);
+ Welem := Arm64_FullMask(S + 1);
+ If R = 0 Then Elem := Welem
+ Else Elem := ((Welem Shr R) Or (Welem Shl (ESize - R))) And FullE;
+ Res := 0;
+ I := 0;
+ If Is32 Then Begin
+  While I < 32 Do Begin Res := Res Or (Elem Shl I); Inc(I, ESize); End;
+  Res := Res And $FFFFFFFF;
+ End Else Begin
+  While I < 64 Do Begin Res := Res Or (Elem Shl I); Inc(I, ESize); End;
+ End;
+ Arm64_DecodeBitMaskImm := Res;
 End;
 
 { Charge/stocke Rt a l adresse virtuelle Addr - partage entre la forme      }
@@ -63611,11 +63837,13 @@ Begin
   End;
  End;
 
- { LDP/STP (decalage signe, sans pre/post-index - forme la plus courante,   }
- { pre/post-index restent un ecart connu si un vrai noyau les exige)        }
+ { LDP/STP (decalage signe - Etape 1 ; post-index/pre-index - Etape 5,      }
+ { bits[24:23] : 1=post,2=decalage simple,3=pre - bit25 toujours 0 distingue}
+ { cette classe, verifie separement de idxtype)                             }
  If (Not Handled) And (((W Shr 27) And 7) = 5) And (((W Shr 26) And 1) = 0)
-    And (((W Shr 23) And 7) = 2) Then Begin
+    And (((W Shr 25) And 1) = 0) And ((((W Shr 23) And 3) >= 1) And (((W Shr 23) And 3) <= 3)) Then Begin
   Opc := (W Shr 30) And 3;
+  Idx2 := Byte((W Shr 23) And 3);
   LFlag := (W Shr 22) And 1;
   Imm7 := (W Shr 15) And $7F;
   Rt2 := (W Shr 10) And $1F;
@@ -63623,7 +63851,13 @@ Begin
   Rt := W And $1F;
   If Opc = 2 Then ByteWidth := 8 Else ByteWidth := 4;
   Offset := Arm64_SignExtend(Imm7, 7) * ByteWidth;
-  Addr := Arm64_RegSP(Rn) + Offset;
+  NVal := Arm64_RegSP(Rn);
+  WritebackVal := 0;
+  Case Idx2 Of
+   1: Begin Addr := NVal; WritebackVal := NVal + Offset; End;   { post-index }
+   3: Begin Addr := NVal + Offset; WritebackVal := Addr; End;   { pre-index }
+   Else Addr := NVal + Offset;                                  { decalage simple }
+  End;
   If LFlag = 1 Then Begin
    Val1 := Arm64_GetMemV(Addr, ByteWidth);
    Val2 := Arm64_GetMemV(Addr + ByteWidth, ByteWidth);
@@ -63633,6 +63867,7 @@ Begin
    Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth);
    Arm64_PutMemV(Addr + ByteWidth, Arm64_RegZR(Rt2), ByteWidth);
   End;
+  If Idx2 <> 2 Then Arm64_SetRegSP(Rn, WritebackVal);
   Handled := True;
  End;
 
@@ -63674,6 +63909,193 @@ Begin
   Handled := True;
  End;
 
+ { ADR/ADRP (adressage relatif au PC) - Etape 5. Champs verifies par        }
+ { assemblage keystone + execution reelle (Unicorn) : op(bit31)=0/1,        }
+ { immlo=bits[30:29], immhi=bits[23:5] (19 bits), Rd=bits[4:0].             }
+ If (Not Handled) And (((W Shr 24) And $1F) = $10) Then Begin
+  Op := (W Shr 31) And 1;
+  Imm19 := (W Shr 5) And $7FFFF;  { immhi }
+  Imm6 := (W Shr 29) And 3;       { immlo }
+  Rd := W And $1F;
+  Offset := Arm64_SignExtend((Imm19 Shl 2) Or Imm6, 21);
+  If Op = 1 Then
+   Arm64_SetRegZR(Rd, (CurPC And (Not QWord($FFF))) + (Offset Shl 12))
+  Else
+   Arm64_SetRegZR(Rd, CurPC + Offset);
+  Handled := True;
+ End;
+
+ { UBFM/SBFM/BFM - Etape 5, voir Arm64_DoBfm. }
+ If (Not Handled) And (((W Shr 23) And $3F) = $26) Then Begin
+  sf := (W Shr 31) And 1;
+  Opc := (W Shr 29) And 3;
+  Imm12 := (W Shr 16) And $3F; { immr }
+  Imm14 := (W Shr 10) And $3F; { imms }
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  If Opc In [0, 1, 2] Then Begin
+   Arm64_DoBfm(Byte(Opc), Byte(Imm12), Byte(Imm14), (sf = 0), Rn, Rd);
+   Handled := True;
+  End;
+ End;
+
+ { MADD/MSUB (MUL/MNEG = alias avec Ra=XZR) - Etape 5. }
+ If (Not Handled) And (((W Shr 21) And $3FF) = $0D8) Then Begin
+  sf := (W Shr 31) And 1;
+  Rm := (W Shr 16) And $1F;
+  LFlag := (W Shr 15) And 1; { o0 : 0=MADD, 1=MSUB }
+  Rt2 := (W Shr 10) And $1F; { Ra }
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Is32 Then Begin
+   RnVal := Arm64_RegZR(Rn) And $FFFFFFFF;
+   RmVal := Arm64_RegZR(Rm) And $FFFFFFFF;
+   NVal := Arm64_RegZR(Rt2) And $FFFFFFFF;
+  End Else Begin
+   RnVal := Arm64_RegZR(Rn);
+   RmVal := Arm64_RegZR(Rm);
+   NVal := Arm64_RegZR(Rt2);
+  End;
+  Res := RnVal * RmVal;
+  If LFlag = 1 Then Res := NVal - Res Else Res := NVal + Res;
+  If Is32 Then Res := Res And $FFFFFFFF;
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
+ { UDIV/SDIV/LSLV/LSRV/ASRV/RORV (LSL/LSR/ASR/ROR par registre - alias) -   }
+ { Etape 5. }
+ If (Not Handled) And (((W Shr 21) And $3FF) = $0D6) Then Begin
+  sf := (W Shr 31) And 1;
+  Rm := (W Shr 16) And $1F;
+  Opc := (W Shr 10) And $3F;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Opc In [2, 3, 8, 9, 10, 11] Then Begin
+   If Is32 Then Begin
+    RnVal := Arm64_RegZR(Rn) And $FFFFFFFF;
+    RmVal := Arm64_RegZR(Rm) And $FFFFFFFF;
+   End Else Begin
+    RnVal := Arm64_RegZR(Rn);
+    RmVal := Arm64_RegZR(Rm);
+   End;
+   Case Opc Of
+    2: Res := Arm64_UDiv(RnVal, RmVal, Is32);
+    3: Res := Arm64_SDiv(RnVal, RmVal, Is32);
+    8: Begin
+        If Is32 Then TB := Byte(RmVal And $1F) Else TB := Byte(RmVal And $3F);
+        Res := Arm64_ApplyShift(RnVal, 0, TB, Is32);
+       End;
+    9: Begin
+        If Is32 Then TB := Byte(RmVal And $1F) Else TB := Byte(RmVal And $3F);
+        Res := Arm64_ApplyShift(RnVal, 1, TB, Is32);
+       End;
+    10: Begin
+         If Is32 Then TB := Byte(RmVal And $1F) Else TB := Byte(RmVal And $3F);
+         Res := Arm64_ApplyShift(RnVal, 2, TB, Is32);
+        End;
+    Else Begin { RORV }
+         If Is32 Then TB := Byte(RmVal And $1F) Else TB := Byte(RmVal And $3F);
+         Res := Arm64_ApplyShift(RnVal, 3, TB, Is32);
+        End;
+   End;
+   If Is32 Then Res := Res And $FFFFFFFF;
+   Arm64_SetRegZR(Rd, Res);
+   Handled := True;
+  End;
+ End;
+
+ { CSEL/CSINC/CSINV/CSNEG - Etape 5. op(bit30)+op2(bits11:10) : 0,00=CSEL ; }
+ { 0,01=CSINC ; 1,00=CSINV ; 1,01=CSNEG (CSET/CSETM/CINC/CINV/CNEG = alias).}
+ If (Not Handled) And (((W Shr 21) And $1FF) = $0D4) Then Begin
+  sf := (W Shr 31) And 1;
+  Op := (W Shr 30) And 1;
+  Rm := (W Shr 16) And $1F;
+  CondN := Byte((W Shr 12) And $F);
+  Opc := (W Shr 10) And 3;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Opc In [0, 1] Then Begin
+   If Arm64_CondHolds(CondN) Then
+    Res := Arm64_RegZR(Rn)
+   Else Begin
+    RmVal := Arm64_RegZR(Rm);
+    If Op = 0 Then Res := RmVal Else Res := Not RmVal;
+    If Opc = 1 Then Res := Res + 1;
+   End;
+   If Is32 Then Res := Res And $FFFFFFFF;
+   Arm64_SetRegZR(Rd, Res);
+   Handled := True;
+  End;
+ End;
+
+ { CCMP/CCMN (comparaison conditionnelle) - Etape 5. Halte reelle           }
+ { rencontree des la toute premiere instruction d un vrai noyau Linux       }
+ { ARM64 : l en-tete "Image" commence par une astuce "EFI stub" ou les      }
+ { octets magiques "MZ" d un en-tete PE forment aussi une instruction       }
+ { CCMP inoffensive si executee comme code ARM64 brut - confirme via        }
+ { capstone sur le vrai vmlinuz de debian-13.6.0-arm64-netinst.iso, pas     }
+ { une supposition.                                                         }
+ If (Not Handled) And (((W Shr 21) And $FF) = $D2) Then Begin
+  sf := (W Shr 31) And 1;
+  Op := (W Shr 30) And 1; { 0=CCMN, 1=CCMP }
+  Rm := (W Shr 16) And $1F;
+  CondN := Byte((W Shr 12) And $F);
+  Bit23V := Byte((W Shr 11) And 1); { immed : 1=Rm sert d immediat 5 bits }
+  Rn := (W Shr 5) And $1F;
+  Imm4 := Byte(W And $F); { NZCV de repli si la condition est fausse }
+  Is32 := (sf = 0);
+  If Bit23V = 1 Then RmVal := Rm Else RmVal := Arm64_RegZR(Rm);
+  If Is32 Then RmVal := RmVal And $FFFFFFFF;
+  NVal := Arm64_RegZR(Rn);
+  If Is32 Then NVal := NVal And $FFFFFFFF;
+  If Arm64_CondHolds(CondN) Then Begin
+   If Op = 1 Then Res := (NVal - RmVal) And QWord($FFFFFFFFFFFFFFFF) Else Res := NVal + RmVal;
+   If Is32 Then Res := Res And $FFFFFFFF;
+   If Op = 1 Then Arm64_FlagsAfterSub(NVal, RmVal, Res, Is32)
+   Else Arm64_FlagsAfterAdd(NVal, RmVal, Res, Is32);
+  End Else Begin
+   ARM64_FlagN := (Imm4 And 8) <> 0;
+   ARM64_FlagZ := (Imm4 And 4) <> 0;
+   ARM64_FlagC := (Imm4 And 2) <> 0;
+   ARM64_FlagV := (Imm4 And 1) <> 0;
+  End;
+  Handled := True;
+ End;
+
+ { AND/ORR/EOR/ANDS (immediat, TST=alias ANDS Rd=XZR) - Etape 5, voir       }
+ { Arm64_DecodeBitMaskImm. Rd=31 -> SP pour AND/ORR/EOR (S=0), XZR pour     }
+ { ANDS (S=1) - meme convention que ADD/SUB immediat.                       }
+ If (Not Handled) And (((W Shr 23) And $3F) = $24) Then Begin
+  sf := (W Shr 31) And 1;
+  Opc := (W Shr 29) And 3;
+  LFlag := (W Shr 22) And 1; { N }
+  Imm12 := (W Shr 16) And $3F; { immr }
+  Imm14 := (W Shr 10) And $3F; { imms }
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  ImmVal := Arm64_DecodeBitMaskImm(Byte(LFlag), Byte(Imm12), Byte(Imm14), Is32);
+  RnVal := Arm64_RegZR(Rn);
+  If Is32 Then RnVal := RnVal And $FFFFFFFF;
+  Case Opc Of
+   0: Res := RnVal And ImmVal;
+   1: Res := RnVal Or ImmVal;
+   2: Res := RnVal Xor ImmVal;
+   Else Res := RnVal And ImmVal; { ANDS }
+  End;
+  If Is32 Then Res := Res And $FFFFFFFF;
+  If Opc = 3 Then Begin
+   Arm64_FlagsAfterLogical(Res, Is32);
+   Arm64_SetRegZR(Rd, Res);
+  End Else
+   Arm64_SetRegSP(Rd, Res);
+  Handled := True;
+ End;
+
  If ARM64_Halted Then Exit; { une faute de traduction MMU a deja arrete proprement }
 
  If Not Handled Then Begin
@@ -63709,6 +64131,10 @@ Begin
  ARM64_Ttbr0 := 0;
  ARM64_Tcr := 0;
  ARM64_Mair := 0;
+ ARM64_Tpidr0 := 0;
+ ARM64_Tpidr1 := 0;
+ ARM64_Cpacr := 0;
+ ARM64_Mdscr := 0;
  ARM64_CntFreq := 62500000; { 62,5 MHz - meme valeur typique que QEMU virt }
  ARM64_CntPct := 0;
  ARM64_CntpCval := 0;
@@ -63722,6 +64148,7 @@ Begin
  ARM64_GicActive := False;
  ARM64_ExValid := False;
  ARM64_ExAddr := 0;
+ ARM64_BootPending := False;
 End;
 
 Procedure Arm64_Reset(Const Code: Array Of Byte);
@@ -63933,6 +64360,25 @@ Const
   $D1, $CC, $8C, $D2, $D1, $7D, $12, $C8, $D3, $01, $40, $F9,
   $00, $00, $00, $14
  );
+ { Programme de test Etape 5 (2026-09-01) : ADR, UBFM/SBFM/BFM (LSL/LSR/    }
+ { ASR/UBFX/SBFX/UXTB/SXTW), MADD/MSUB/MUL, UDIV/SDIV, LSLV/RORV, CSEL/     }
+ { CSINC/CSINV/CSNEG, LDP/STP post/pre-index. Assemble avec keystone,       }
+ { execute reellement via Unicorn (moteur d emulation CPU) pour obtenir     }
+ { l etat de registres attendu AVANT ce portage Pascal - voir               }
+ { project_devenv_arm64_emulator.md.                                        }
+ TestCode5: Array[0..127] Of Byte = (
+  $81, $46, $82, $D2, $01, $CF, $AA, $F2, $81, $57, $D3, $F2,
+  $01, $DE, $FB, $F2, $02, $00, $80, $D2, $23, $00, $00, $10,
+  $24, $EC, $7C, $D3, $25, $FC, $44, $D3, $26, $FC, $44, $93,
+  $27, $2C, $44, $D3, $28, $2C, $44, $93, $29, $1C, $00, $53,
+  $2A, $7C, $40, $93, $CB, $00, $80, $D2, $EC, $00, $80, $D2,
+  $6D, $7D, $0C, $9B, $6E, $05, $0C, $9B, $6F, $85, $0C, $9B,
+  $30, $08, $CB, $9A, $31, $0C, $CB, $9A, $72, $21, $CC, $9A,
+  $33, $2C, $CC, $9A, $00, $00, $00, $EB, $74, $01, $8C, $9A,
+  $75, $15, $8C, $9A, $76, $11, $8C, $DA, $77, $15, $8C, $DA,
+  $F8, $03, $00, $91, $EB, $33, $BF, $A9, $F9, $6B, $C1, $A8,
+  $FB, $03, $00, $91, $00, $00, $00, $14
+ );
 Var
  I, Steps: Integer;
 Begin
@@ -63986,6 +64432,21 @@ Begin
   '  TCR=$' + HexQWord(ARM64_Tcr));
  For I := 8 To 19 Do
   TermAddLine(TP, 'X' + IntToStr(I) + ' = $' + HexQWord(ARM64_Reg[I]));
+ { --- Bloc 4 : ISA elargie Etape 5 (ADR, UBFM/SBFM/BFM, MADD/MSUB/MUL,     }
+ { UDIV/SDIV/LSLV/RORV, CSEL/CSINC/CSINV/CSNEG, LDP/STP pre/post-index) --- }
+ Arm64_Reset(TestCode5);
+ Steps := 0;
+ While (Not ARM64_Halted) And (ARM64_PC <> (ARM64_RAM_BASE + 124)) And (Steps < 200) Do Begin
+  Arm64_Step;
+  Inc(Steps);
+ End;
+ TermAddLine(TP, 'ARM64TEST bloc 4 (ISA elargie) : ' + IntToStr(Steps) +
+  ' pas executes, PC=$' + HexQWord(ARM64_PC));
+ If ARM64_Halted Then
+  TermAddLine(TP, 'ARM64TEST : ARRET - ' + ARM64_HaltReason);
+ For I := 1 To 27 Do
+  TermAddLine(TP, 'X' + IntToStr(I) + ' = $' + HexQWord(ARM64_Reg[I]));
+ TermAddLine(TP, 'SP = $' + HexQWord(ARM64_SP));
 End;
 
 { Chargeur minimal (Etape 2) : image binaire BRUTE (pas ELF, pas encore le  }
@@ -64021,6 +64482,249 @@ Begin
  ARM64_TraceCount := 0;
  Arm64_ResetSysState;
  Emu_LoadARM64Raw := True;
+End;
+
+{ Trouve le premier lecteur CD-ROM virtuel actuellement monte (0 ou 1), ou  }
+{ -1 si aucun - utilise par BOOT /LINUXARM64 pour savoir sur quel volume    }
+{ ISO9660 chercher le noyau, que l ISO ait ete montee via /CDROM: sur       }
+{ CETTE commande BOOT ou via le drapeau de demarrage /CDROM: de DEVENV.     }
+Function Arm64_FindOpenCdromSlot: Integer;
+Var
+ I: Integer;
+Begin
+ Arm64_FindOpenCdromSlot := -1;
+ For I := 0 To 1 Do
+  If EmuCdrom[I].Open Then Begin
+   Arm64_FindOpenCdromSlot := I;
+   Exit;
+  End;
+End;
+
+{ Lit un fichier entier resolu via Emu_IsoResolve dans ARM64_Mem, a partir  }
+{ de l offset physique DestPhysOfs (relatif a ARM64_RAM_BASE). Les extents  }
+{ ISO9660 commencent toujours sur une frontiere de secteur - pas besoin de  }
+{ gerer un decalage partiel initial (contrairement a Emu_CdromReadFile,     }
+{ concue pour une reprise de lecture a une position arbitraire pour le      }
+{ backend DOS).                                                             }
+Function Arm64_IsoReadFileToMem(Idx: Byte; Const Entry: TEmuIsoEntry;
+ DestPhysOfs: LongInt): Boolean;
+Var
+ Buf: TEmuIsoSector;
+ Remain, ChunkLen, LBA, GotTotal: LongInt;
+Begin
+ Arm64_IsoReadFileToMem := False;
+ If (DestPhysOfs < 0) Or ((DestPhysOfs + Entry.Size) > (High(ARM64_Mem) + 1)) Then Exit;
+ Remain := Entry.Size;
+ LBA := Entry.LBA;
+ GotTotal := 0;
+ While Remain > 0 Do Begin
+  If Not Emu_IsoReadLBA(Idx, LBA, Buf) Then Exit;
+  ChunkLen := EMU_ISO_SECTOR;
+  If ChunkLen > Remain Then ChunkLen := Remain;
+  Move(Buf, ARM64_Mem[DestPhysOfs + GotTotal], ChunkLen);
+  Inc(GotTotal, ChunkLen);
+  Inc(LBA);
+  Dec(Remain, ChunkLen);
+ End;
+ Arm64_IsoReadFileToMem := True;
+End;
+
+{ Ecrit une valeur 32 bits GROS-boutiste (format DTB reel) a l offset Ofs   }
+{ d ARM64_Mem - utilise pour corriger linux,initrd-start/end dans la copie  }
+{ du gabarit DTB statique (voir ARM64_DtbTemplate ci-dessous : tout le      }
+{ reste du "materiel" decrit est fixe, seule la taille reelle de l initrd,  }
+{ connue seulement au chargement, doit etre corrigee).                      }
+Procedure Arm64_PutBE32(Ofs: LongInt; V: LongWord);
+Begin
+ ARM64_Mem[Ofs + 0] := Byte((V Shr 24) And $FF);
+ ARM64_Mem[Ofs + 1] := Byte((V Shr 16) And $FF);
+ ARM64_Mem[Ofs + 2] := Byte((V Shr 8) And $FF);
+ ARM64_Mem[Ofs + 3] := Byte(V And $FF);
+End;
+
+{ Chargeur reel de noyau Linux ARM64 (Etape 5, "premier jalon touchant le   }
+{ vrai ISO" du plan) : extrait vmlinuz+initrd.gz depuis l ISO9660 monte sur }
+{ CdIdx via Emu_IsoResolve/Emu_IsoReadLBA (deja existants - aucune nouvelle }
+{ analyse ISO9660 necessaire), decode l en-tete "Image" ARM64 reel          }
+{ (text_offset a l octet 8, magic "ARM"+$64 a l octet 56 - voir "Booting    }
+{ AArch64 Linux" ; verifie contre les octets REELS du vmlinuz de           }
+{ debian-13.6.0-arm64-netinst.iso avant d ecrire ce code, pas suppose),     }
+{ copie le gabarit DTB statique en le corrigeant (adresse/taille reelles de }
+{ l initrd charge), et positionne les registres pour l entree noyau        }
+{ standard (X0=DTB, X1..X3=0, MMU desactivee, EL1, IRQ masquees - meme      }
+{ convention que le transfert firmware->noyau reel).                        }
+Function Emu_LoadARM64Kernel(CdIdx: Byte): Boolean;
+Const
+ { Gabarit DTB statique (1341 octets, construit et verifie hors ligne avec  }
+ { la bibliotheque Python "fdt" - relu en DTS pour confirmation - PAS       }
+ { assemble a la main) : memoire 256 Mo a partir de RAM_BASE, 1 CPU armv8,  }
+ { PSCI (methode hvc), minuteur generique (memes IRQ que Arm64_ServiceIrq), }
+ { GICv2 (memes adresses que ARM64_GICD_BASE/GICC_BASE), PL011 a           }
+ { ARM64_UART_BASE. Les valeurs linux,initrd-start/end integrees ici        }
+ { (adresses "placeholder" 0x48000000/0x49000000) sont corrigees a chaque   }
+ { chargement par Arm64_PutBE32 - voir ARM64_DTB_INITRD_START_OFS/END_OFS.  }
+ ARM64_DtbTemplate: Array[0..1340] Of Byte = (
+  $D0, $0D, $FE, $ED, $00, $00, $05, $3D, $00, $00, $00, $38,
+  $00, $00, $04, $4C, $00, $00, $00, $28, $00, $00, $00, $11,
+  $00, $00, $00, $10, $00, $00, $00, $00, $00, $00, $00, $F1,
+  $00, $00, $04, $14, $00, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $01,
+  $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
+  $00, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $0F, $00, $00, $00, $02,
+  $00, $00, $00, $03, $00, $00, $00, $11, $00, $00, $00, $1B,
+  $6C, $69, $6E, $75, $78, $2C, $64, $75, $6D, $6D, $79, $2D,
+  $76, $69, $72, $74, $00, $00, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $16, $00, $00, $00, $26, $44, $45, $56, $45,
+  $4E, $56, $20, $41, $52, $4D, $36, $34, $20, $65, $6D, $75,
+  $6C, $61, $74, $6F, $72, $00, $00, $00, $00, $00, $00, $01,
+  $63, $68, $6F, $73, $65, $6E, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $39, $00, $00, $00, $2C, $63, $6F, $6E, $73,
+  $6F, $6C, $65, $3D, $74, $74, $79, $41, $4D, $41, $30, $20,
+  $65, $61, $72, $6C, $79, $63, $6F, $6E, $3D, $70, $6C, $30,
+  $31, $31, $2C, $30, $78, $30, $39, $30, $30, $30, $30, $30,
+  $30, $20, $72, $6F, $6F, $74, $3D, $2F, $64, $65, $76, $2F,
+  $72, $61, $6D, $30, $00, $00, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $35, $48, $00, $00, $00,
+  $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $48,
+  $49, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $01,
+  $6D, $65, $6D, $6F, $72, $79, $40, $34, $30, $30, $30, $30,
+  $30, $30, $30, $00, $00, $00, $00, $03, $00, $00, $00, $07,
+  $00, $00, $00, $59, $6D, $65, $6D, $6F, $72, $79, $00, $00,
+  $00, $00, $00, $03, $00, $00, $00, $10, $00, $00, $00, $65,
+  $00, $00, $00, $00, $40, $00, $00, $00, $00, $00, $00, $00,
+  $10, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $01,
+  $63, $70, $75, $73, $00, $00, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $00, $00, $00, $00, $01,
+  $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $0F,
+  $00, $00, $00, $00, $00, $00, $00, $01, $63, $70, $75, $40,
+  $30, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
+  $00, $00, $00, $59, $63, $70, $75, $00, $00, $00, $00, $03,
+  $00, $00, $00, $0A, $00, $00, $00, $1B, $61, $72, $6D, $2C,
+  $61, $72, $6D, $76, $38, $00, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $65, $00, $00, $00, $00,
+  $00, $00, $00, $03, $00, $00, $00, $05, $00, $00, $00, $69,
+  $70, $73, $63, $69, $00, $00, $00, $00, $00, $00, $00, $02,
+  $00, $00, $00, $02, $00, $00, $00, $01, $70, $73, $63, $69,
+  $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $0D,
+  $00, $00, $00, $1B, $61, $72, $6D, $2C, $70, $73, $63, $69,
+  $2D, $30, $2E, $32, $00, $00, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $70, $68, $76, $63, $00,
+  $00, $00, $00, $02, $00, $00, $00, $01, $74, $69, $6D, $65,
+  $72, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $10,
+  $00, $00, $00, $1B, $61, $72, $6D, $2C, $61, $72, $6D, $76,
+  $38, $2D, $74, $69, $6D, $65, $72, $00, $00, $00, $00, $03,
+  $00, $00, $00, $30, $00, $00, $00, $77, $00, $00, $00, $01,
+  $00, $00, $00, $0D, $00, $00, $0F, $08, $00, $00, $00, $01,
+  $00, $00, $00, $0E, $00, $00, $0F, $08, $00, $00, $00, $01,
+  $00, $00, $00, $0B, $00, $00, $0F, $08, $00, $00, $00, $01,
+  $00, $00, $00, $0A, $00, $00, $0F, $08, $00, $00, $00, $02,
+  $00, $00, $00, $01, $69, $6E, $74, $65, $72, $72, $75, $70,
+  $74, $2D, $63, $6F, $6E, $74, $72, $6F, $6C, $6C, $65, $72,
+  $40, $38, $30, $30, $30, $30, $30, $30, $00, $00, $00, $00,
+  $00, $00, $00, $03, $00, $00, $00, $13, $00, $00, $00, $1B,
+  $61, $72, $6D, $2C, $63, $6F, $72, $74, $65, $78, $2D, $61,
+  $31, $35, $2D, $67, $69, $63, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $82, $00, $00, $00, $03,
+  $00, $00, $00, $03, $00, $00, $00, $00, $00, $00, $00, $93,
+  $00, $00, $00, $03, $00, $00, $00, $20, $00, $00, $00, $65,
+  $00, $00, $00, $00, $08, $00, $00, $00, $00, $00, $00, $00,
+  $00, $01, $00, $00, $00, $00, $00, $00, $08, $01, $00, $00,
+  $00, $00, $00, $00, $00, $01, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $A8, $00, $00, $00, $01,
+  $00, $00, $00, $02, $00, $00, $00, $01, $70, $6C, $30, $31,
+  $31, $40, $39, $30, $30, $30, $30, $30, $30, $00, $00, $00,
+  $00, $00, $00, $03, $00, $00, $00, $18, $00, $00, $00, $1B,
+  $61, $72, $6D, $2C, $70, $6C, $30, $31, $31, $00, $61, $72,
+  $6D, $2C, $70, $72, $69, $6D, $65, $63, $65, $6C, $6C, $00,
+  $00, $00, $00, $03, $00, $00, $00, $10, $00, $00, $00, $65,
+  $00, $00, $00, $00, $09, $00, $00, $00, $00, $00, $00, $00,
+  $00, $00, $10, $00, $00, $00, $00, $03, $00, $00, $00, $0C,
+  $00, $00, $00, $77, $00, $00, $00, $00, $00, $00, $00, $01,
+  $00, $00, $00, $04, $00, $00, $00, $03, $00, $00, $00, $04,
+  $00, $00, $00, $B0, $00, $00, $00, $01, $00, $00, $00, $03,
+  $00, $00, $00, $11, $00, $00, $00, $C1, $75, $61, $72, $74,
+  $63, $6C, $6B, $00, $61, $70, $62, $5F, $70, $63, $6C, $6B,
+  $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $08,
+  $00, $00, $00, $CD, $00, $00, $00, $02, $00, $00, $00, $02,
+  $00, $00, $00, $02, $00, $00, $00, $01, $61, $70, $62, $2D,
+  $70, $63, $6C, $6B, $00, $00, $00, $00, $00, $00, $00, $03,
+  $00, $00, $00, $0C, $00, $00, $00, $1B, $66, $69, $78, $65,
+  $64, $2D, $63, $6C, $6F, $63, $6B, $00, $00, $00, $00, $03,
+  $00, $00, $00, $04, $00, $00, $00, $D4, $00, $00, $00, $00,
+  $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $E1,
+  $01, $6E, $36, $00, $00, $00, $00, $03, $00, $00, $00, $04,
+  $00, $00, $00, $A8, $00, $00, $00, $02, $00, $00, $00, $02,
+  $00, $00, $00, $02, $00, $00, $00, $09, $23, $61, $64, $64,
+  $72, $65, $73, $73, $2D, $63, $65, $6C, $6C, $73, $00, $23,
+  $73, $69, $7A, $65, $2D, $63, $65, $6C, $6C, $73, $00, $63,
+  $6F, $6D, $70, $61, $74, $69, $62, $6C, $65, $00, $6D, $6F,
+  $64, $65, $6C, $00, $62, $6F, $6F, $74, $61, $72, $67, $73,
+  $00, $6C, $69, $6E, $75, $78, $2C, $69, $6E, $69, $74, $72,
+  $64, $2D, $73, $74, $61, $72, $74, $00, $6C, $69, $6E, $75,
+  $78, $2C, $69, $6E, $69, $74, $72, $64, $2D, $65, $6E, $64,
+  $00, $64, $65, $76, $69, $63, $65, $5F, $74, $79, $70, $65,
+  $00, $72, $65, $67, $00, $65, $6E, $61, $62, $6C, $65, $2D,
+  $6D, $65, $74, $68, $6F, $64, $00, $69, $6E, $74, $65, $72,
+  $72, $75, $70, $74, $73, $00, $23, $69, $6E, $74, $65, $72,
+  $72, $75, $70, $74, $2D, $63, $65, $6C, $6C, $73, $00, $69,
+  $6E, $74, $65, $72, $72, $75, $70, $74, $2D, $63, $6F, $6E,
+  $74, $72, $6F, $6C, $6C, $65, $72, $00, $70, $68, $61, $6E,
+  $64, $6C, $65, $00, $69, $6E, $74, $65, $72, $72, $75, $70,
+  $74, $2D, $70, $61, $72, $65, $6E, $74, $00, $63, $6C, $6F,
+  $63, $6B, $2D, $6E, $61, $6D, $65, $73, $00, $63, $6C, $6F,
+  $63, $6B, $73, $00, $23, $63, $6C, $6F, $63, $6B, $2D, $63,
+  $65, $6C, $6C, $73, $00, $63, $6C, $6F, $63, $6B, $2D, $66,
+  $72, $65, $71, $75, $65, $6E, $63, $79, $00
+ );
+Var
+ KernelEntry, InitrdEntry: TEmuIsoEntry;
+ Header: Array[0..63] Of Byte;
+ HeaderBuf: TEmuIsoSector;
+ TextOffset: QWord;
+ Magic: LongWord;
+ KernelPhysOfs, InitrdPhysOfs, DtbPhysOfs: LongInt;
+ I: Integer;
+Begin
+ Emu_LoadARM64Kernel := False;
+ If Not Emu_IsoResolve(CdIdx, 'install.a64\vmlinuz', KernelEntry) Then Exit;
+ If KernelEntry.IsDir Then Exit;
+ If Not Emu_IsoResolve(CdIdx, 'install.a64\initrd.gz', InitrdEntry) Then Exit;
+ If InitrdEntry.IsDir Then Exit;
+ If Not Emu_IsoReadLBA(CdIdx, KernelEntry.LBA, HeaderBuf) Then Exit;
+ For I := 0 To 63 Do Header[I] := HeaderBuf[I];
+ Magic := (LongWord(Header[59]) Shl 24) Or (LongWord(Header[58]) Shl 16) Or
+  (LongWord(Header[57]) Shl 8) Or LongWord(Header[56]);
+ If Magic <> $644D5241 Then Exit; { "ARM"+$64, voir "Booting AArch64 Linux" }
+ TextOffset := 0;
+ For I := 7 Downto 0 Do
+  TextOffset := (TextOffset Shl 8) Or Header[8 + I];
+ KernelPhysOfs := LongInt(TextOffset);
+ InitrdPhysOfs := LongInt(ARM64_INITRD_BASE - ARM64_RAM_BASE);
+ DtbPhysOfs := LongInt(ARM64_DTB_BASE - ARM64_RAM_BASE);
+ If (KernelPhysOfs + KernelEntry.Size) > InitrdPhysOfs Then Exit; { chevauchement, refuse }
+ FillChar(ARM64_Mem, SizeOf(ARM64_Mem), 0);
+ FillChar(ARM64_Reg, SizeOf(ARM64_Reg), 0);
+ If Not Arm64_IsoReadFileToMem(CdIdx, KernelEntry, KernelPhysOfs) Then Exit;
+ If Not Arm64_IsoReadFileToMem(CdIdx, InitrdEntry, InitrdPhysOfs) Then Exit;
+ For I := 0 To High(ARM64_DtbTemplate) Do
+  ARM64_Mem[DtbPhysOfs + I] := ARM64_DtbTemplate[I];
+ Arm64_PutBE32(DtbPhysOfs + ARM64_DTB_INITRD_START_OFS, LongWord(ARM64_INITRD_BASE));
+ Arm64_PutBE32(DtbPhysOfs + ARM64_DTB_INITRD_END_OFS,
+  LongWord(ARM64_INITRD_BASE + QWord(InitrdEntry.Size)));
+ ARM64_Reg[0] := ARM64_DTB_BASE;
+ ARM64_SP := ARM64_RAM_BASE + $0F000000; { marge large, bien sous la limite de 256 Mo }
+ ARM64_PC := ARM64_RAM_BASE + TextOffset;
+ ARM64_FlagN := False; ARM64_FlagZ := False; ARM64_FlagC := False; ARM64_FlagV := False;
+ ARM64_Halted := False;
+ ARM64_HaltReason := '';
+ ARM64_LastBadPC := 0;
+ ARM64_InstrCount := 0;
+ ARM64_TraceCount := 0;
+ Arm64_ResetSysState;
+ ARM64_DaifI := True; { IRQ masquees a l entree noyau - convention de transfert firmware reelle }
+ ARM64_BootPending := True; { APRES Arm64_ResetSysState, qui le remet sinon a False }
+ Emu_LoadARM64Kernel := True;
 End;
 
 { Meme motif exact que ELF64_RunOneChunk/Lx_RunOneChunk (chargement Stage 1,}
@@ -112178,23 +112882,26 @@ Begin NesActive := False;
   Exit;
  End;
  If IsARM64 Then Begin
-  { Chantier ARM64, Etape 2 - meme motif Stage 1 qu ELF64/OS2LX juste       }
-  { au-dessus (charge puis rend la main immediatement, execution reelle     }
-  { pilotee par l idle-tick via Arm64_RunOneChunk). Chargeur brut           }
-  { temporaire (voir Emu_LoadARM64Raw) - remplace par un vrai chargeur de   }
-  { noyau Linux a l Etape 5.                                                }
+  { Chantier ARM64 - Etape 2 : chargeur brut (Emu_LoadARM64Raw, commande    }
+  { terminal ARM64) pour les programmes de test nus. Etape 5 : BOOT         }
+  { /LINUXARM64 appelle Emu_LoadARM64Kernel puis arme ARM64_BootPending     }
+  { AVANT CreateEmulatorTab - l etat CPU/memoire (noyau+initrd+DTB+         }
+  { registres) est alors DEJA entierement pret, et tenter de recharger      }
+  { BinaryPath (qui n est ici qu un texte d affichage, pas un vrai fichier) }
+  { l ecraserait - meme motif que EmuBootFromDrive pour le backend DOS.     }
   ARM64_Panel := @P;
-  Loaded := Emu_LoadARM64Raw(BinaryPath);
+  If ARM64_BootPending Then Begin
+   Loaded := True;
+   ARM64_BootPending := False;
+  End Else
+   Loaded := Emu_LoadARM64Raw(BinaryPath);
   If Not Loaded Then Begin
    P.CurFg := 12;
    EmuVScr_WriteStr(P, 'Erreur : impossible de charger ' + BinaryPath);
    P.CurFg := 7;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_WriteStr(P,
-    '(image binaire brute AArch64 attendue - pas encore de format ELF ni');
-   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
-   EmuVScr_WriteStr(P,
-    'de noyau Linux "Image", voir Etape 5 de project_devenv_arm64_emulator.md)');
+    '(image binaire brute AArch64 attendue - pas encore de format ELF)');
    P.CurFg := OldFg; P.CurBg := OldBg;
    P.Running := False;
    P.Fault := sfEndProgram;
@@ -112203,12 +112910,14 @@ Begin NesActive := False;
   End;
   If OptionsDlg.Data.EmuShowDebugMessages Then Begin
    P.CurFg := 10;
-   EmuVScr_WriteStr(P, 'Image brute AArch64 chargee a 0x' + HexQWord(ARM64_RAM_BASE) + '.');
+   EmuVScr_WriteStr(P, 'Image AArch64 chargee.');
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    P.CurFg := 7;
    EmuVScr_WriteStr(P, 'PC initial : 0x' + HexQWord(ARM64_PC));
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_WriteStr(P, 'SP initial : 0x' + HexQWord(ARM64_SP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'X0 (DTB)   : 0x' + HexQWord(ARM64_Reg[0]));
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   End;
