@@ -62701,6 +62701,88 @@ Begin
  End;
 End;
 
+{ --- ConvertTo-Csv (2026-09-01) : sens inverse de ConvertFrom-Csv - ce    }
+{ terminal n'a pas de vrai pipeline d'objets (voir en-tete plus haut), le  }
+{ seul objet disponible en entree est donc une variable $obj DEJA          }
+{ construite par ConvertFrom-Yaml/StringData/SddlString ($obj = ...) -     }
+{ ConvertTo-Csv $obj affiche alors les 2 lignes CSV reelles (en-tete des   }
+{ proprietes puis leurs valeurs, guillemets doubles echapees en "" comme   }
+{ le fait vraiment la cmdlet), sans passer par un fichier. }
+
+Function ConvToCsvQuote(S: AnsiString; Delim: Char): AnsiString;
+Var
+ I: Integer;
+ Res: AnsiString;
+Begin
+ Res := '';
+ For I := 1 To Length(S) Do Begin
+  If S[I] = '"' Then Res := Res + '""' Else Res := Res + S[I];
+ End;
+ ConvToCsvQuote := '"' + Res + '"';
+End;
+
+Procedure TermCmd_ConvertToCsv(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, UpLevel, DelimArg, HeaderLine, ValueLine: String;
+ Delim: Char;
+ SrcVar: PPsVar;
+ P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ VarArg := ''; DelimArg := ',';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-INPUTOBJECT') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If (UpLevel = '-DELIMITER') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then DelimArg := LocalArgs[I];
+  End Else If (VarArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If Length(DelimArg) > 0 Then Delim := DelimArg[1] Else Delim := ',';
+
+ If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertTo-Csv $objet [-Delimiter c]');
+  TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
+   'ConvertFrom-Yaml/StringData/SddlString)');
+  Exit;
+ End;
+ SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'ConvertTo-Csv : ''' + VarArg + ''' n''est pas un objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'ConvertTo-Csv : objet sans propriete.');
+  Exit;
+ End;
+
+ HeaderLine := '';
+ ValueLine := '';
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  If HeaderLine <> '' Then Begin
+   HeaderLine := HeaderLine + Delim;
+   ValueLine := ValueLine + Delim;
+  End;
+  HeaderLine := HeaderLine + ConvToCsvQuote(P^.Name, Delim);
+  ValueLine := ValueLine + ConvToCsvQuote(P^.Value, Delim);
+  P := P^.Next;
+ End;
+ TermAddLine(TP, HeaderLine);
+ TermAddLine(TP, ValueLine);
+End;
+
 { --- Traitement des lignes tapees dans "PowerShell dev" (Entree) : here-  }
 { strings/assignations/lecture de propriete/substitution generique -       }
 { appelee depuis HandleTerminalEvent (touche Entree, SK_POWERSHELL         }
@@ -65392,6 +65474,9 @@ Begin
    '  Convert-Path -Path chemin             Resout en chemin absolu ' +
    '(jokers *,? geres)');
   TermAddLine(TP,
+   '  ConvertTo-Csv $objet [-Delimiter c]   Affiche l''en-tete+valeurs ' +
+   'CSV de $objet');
+  TermAddLine(TP,
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
   TermAddLine(TP,
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
@@ -66027,7 +66112,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 103;
+ PS_CMD_ALIASES = 104;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -66087,6 +66172,7 @@ Const
   'CONVERTFROM-SDDLSTRING',
   'CONVERTFROM-STRINGDATA',
   'CONVERT-PATH',
+  'CONVERTTO-CSV',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -66170,6 +66256,7 @@ Const
   75,
   76,
   80,
+  81,
   46,
   47,
   48,
@@ -66644,6 +66731,7 @@ Begin
     75: TermCmd_ConvertFromSddlString(TP, ParamStr);
     76: TermCmd_ConvertFromStringData(TP, ParamStr);
     80: TermCmd_ConvertPath(TP, ParamStr);
+    81: TermCmd_ConvertToCsv(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
