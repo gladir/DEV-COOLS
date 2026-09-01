@@ -1114,6 +1114,19 @@ Function Win_GetAce(pAcl: Pointer; dwAceIndex: LongWord;
 Const
  CF_TEXT_WINOLDAP = 1;        { format presse-papiers Win32 CF_TEXT       }
  GMEM_MOVEABLE_WINOLDAP = $0002;
+ { Menu contextuel du Terminal (2026-09-01, demande explicite de           }
+ { l utilisateur) - "Copier en image" pousse un vrai BITMAPINFOHEADER +    }
+ { pixels sur le presse-papiers Windows reel via ce format. }
+ CF_DIB = 8;
+ BMP_SIGNATURE = $4D42;
+ { Palette VGA 16 couleurs, portee telle quelle depuis PSP.PAS (meme mode  }
+ { graphique VGAHi que ce projet - voir la note pres de TBMPFileHeader).   }
+ VGA_R: Array[0..15] Of Byte =
+  (  0,   0,   0,   0, 168, 168, 168, 168,  84,  84,  84,  84, 252, 252, 252, 252);
+ VGA_G: Array[0..15] Of Byte =
+  (  0,   0, 168, 168,   0,   0,  84, 168,  84,  84, 252, 252,  84,  84, 252, 252);
+ VGA_B: Array[0..15] Of Byte =
+  (  0, 168,   0, 168,   0, 168,   0, 168,  84, 252,  84, 252,  84, 252,  84, 252);
  { Table CP437 (OEM, 80h-FFh) -> CP1252 (ANSI Windows) pour les lettres    }
  { accentuees usuelles (80h-AFh) - correspondance standard, bien connue et }
  { stable. Au-dela (B0h-FFh : traits de boite, blocs, symboles Grecs/math) }
@@ -2419,6 +2432,28 @@ Type
  End;
  PFormEditor = ^TFormEditor;
 
+ { Menu contextuel du Terminal (2026-09-01, demande explicite de           }
+ { l utilisateur) - "Copier en image"/"Sauvegarder en image" : formats     }
+ { BMP/PSD/TGA/PPM portes tels quels depuis C:\SOURCE\GITHUB\CLONEDRAW\    }
+ { PSP.PAS (memes en-tetes/memes tables de palette VGA - ce projet et      }
+ { DEVENV.PAS partagent le meme mode graphique VGAHi 16 couleurs, voir     }
+ { Emu_VidGetPixel/InitGraph(...,Mode:=VGAHi,...) - GetPixel renvoie donc   }
+ { bien un INDEX de palette 0-15 ici aussi, pas une vraie couleur RGB).     }
+ TBMPFileHeader = Packed Record
+  bfType: Word;
+  bfSize: LongInt;
+  bfReserved1, bfReserved2: Word;
+  bfOffBits: LongInt;
+ End;
+ TBMPInfoHeader = Packed Record
+  biSize: LongInt;
+  biWidth, biHeight: LongInt;
+  biPlanes, biBitCount: Word;
+  biCompression, biSizeImage: LongInt;
+  biXPelsPerMeter, biYPelsPerMeter: LongInt;
+  biClrUsed, biClrImportant: LongInt;
+ End;
+
  { Selection de texte }
  TSelection = Record
   StartLine  : LongInt;         { ligne de debut (0-based)       }
@@ -3059,6 +3094,13 @@ Type
   RexxWaiting    : (rwNone, rwLine, rwKey);
   RexxPendingLine: String;
   RexxPendingKey : Char;
+  { Selection/copie/collage souris (2026-09-01, demande explicite de        }
+  { l utilisateur) - le texte affiche a l ecran cette frame, rempli par     }
+  { DrawTerminalPanel, utilise par TermHitTest/TermGetSelectedText pour que }
+  { la selection corresponde toujours exactement a ce qui est visible      }
+  { plutot que de reparcourir la liste chainee HistHead/HistTail.          }
+  VisRowText : Array[0..127] Of String;
+  VisRowCount: Integer;
  End;
 
  { Etat d un disque virtuel FAT12/16/32 monte via /DISK0, /DISK1,
@@ -6436,6 +6478,18 @@ Var
  { Idem pour "Executer le PascalScript..." (2026-08-31) - voir              }
  { RunPascalScriptMacroOnEditor. }
  FileDlgForPascalScriptMacro: Boolean;
+ { Idem pour "Sauvegarder le texte du terminal..." et "Sauvegarder en       }
+ { image..." du menu contextuel du Terminal (2026-09-01, demande explicite }
+ { de l utilisateur) - voir TermSaveTextConfirmed/TermSaveImageConfirmed.   }
+ FileDlgForTermSave    : Boolean;
+ FileDlgForImageSave   : Boolean;
+ { Selection souris de texte dans le panneau Terminal (2026-09-01) -        }
+ { StartLine/EndLine sont des index de RANGEE VISIBLE (0-based, relatifs a  }
+ { la fenetre actuellement affichee - voir TP.VisRowText), pas des index    }
+ { absolus dans l historique HistHead/HistTail : choix delibere pour eviter}
+ { de parcourir la liste chainee, au prix mineur d une selection qui se     }
+ { reinitialise si l utilisateur defile pendant un glisser-deposer.         }
+ TermSel               : TSelection;
  { Dialogue gestionnaire de disques virtuels et sa sous-boite ajout/modif }
  VirtualDiskDlg : TVirtualDiskDialog;
  VirtAddDiskDlg : TVirtAddDiskDialog;
@@ -48979,6 +49033,34 @@ Begin
   ' (' + IntToStr(TP.HistCount) + ' lignes)');
 End;
 
+{ "Sauvegarder le texte du terminal..." du menu contextuel (2026-09-01,     }
+{ demande explicite de l utilisateur) - meme ecriture que TermSaveHistory   }
+{ ci-dessus mais vers un fichier CHOISI par l utilisateur (via FileDlg en   }
+{ mode Enregistrer, voir FileDlgForTermSave dans DispatchEvent) plutot que  }
+{ le nom automatique par shell. }
+Procedure TermSaveTextConfirmed(Var TP: TTerminalPanel; Const FileName: String);
+Var
+ F: Text;
+ N: PTermLine;
+ IOErr: Word;
+Begin
+ Assign(F, FileName);
+ {$I-} Rewrite(F); {$I+}
+ IOErr := IOResult;
+ If IOErr <> 0 Then Begin
+  TermAddLine(TP, 'Erreur : impossible d''ouvrir ' + FileName);
+  Exit;
+ End;
+ N := TP.HistHead;
+ While N <> Nil Do Begin
+  WriteLn(F, N^.S);
+  N := N^.Next;
+ End;
+ Close(F);
+ TermAddLine(TP, 'Texte du terminal sauve dans ' + FileName +
+  ' (' + IntToStr(TP.HistCount) + ' lignes)');
+End;
+
 { --- Zoom : agrandir/reduire la hauteur du panneau terminal --- }
 
 Procedure TermZoomCycle;
@@ -65540,6 +65622,10 @@ Begin
    WriteLn(DiagF, 'CurPC=$' + HexQWord(CurPC));
    WriteLn(DiagF, 'TTBR0=$' + HexQWord(ARM64_Ttbr0) + ' TTBR1=$' + HexQWord(ARM64_Ttbr1) +
     ' TCR=$' + HexQWord(ARM64_Tcr) + ' SCTLR=$' + HexQWord(ARM64_Sctlr));
+   WriteLn(DiagF, 'VBAR_EL1=$' + HexQWord(ARM64_VBAR_EL1) + ' offset-from-VBAR=$' +
+    HexQWord(CurPC - ARM64_VBAR_EL1) + ' AtEL0=' + IntToStr(Ord(ARM64_AtEL0)) +
+    ' ESR=$' + HexQWord(ARM64_Esr) + ' FAR=$' + HexQWord(ARM64_Far) +
+    ' ELR=$' + HexQWord(ARM64_ELR_EL1) + ' SPSR=$' + HexQWord(ARM64_SPSR_EL1));
    If Arm64_Translate(CurPC, DiagPA) Then Begin
     WriteLn(DiagF, 'Translate OK, PA=$' + HexQWord(DiagPA));
     Assign(DiagFB, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_KPTI_MEMDUMP.BIN');
@@ -65552,7 +65638,7 @@ Begin
     WriteLn(DiagF, 'dump base PA=$' + HexQWord((DiagPA And QWord($FFFFFFFFFFFF0000)) - 65536));
    End Else
     WriteLn(DiagF, 'Translate ECHOUE (ne devrait pas arriver, deja fetch avec succes)');
-   For DiagI := 0 To 15 Do
+   For DiagI := 0 To 255 Do
     WriteLn(DiagF, 'TracePC[' + IntToStr((ARM64_TraceCount - 1 - DiagI) And 255) + ']=$' +
      HexQWord(ARM64_TracePC[(ARM64_TraceCount - 1 - DiagI) And 255]));
    Close(DiagF);
@@ -71757,6 +71843,45 @@ End;
 
 { --- Dessiner le panneau terminal avec selecteur deroulant --- }
 
+{ Dessine le fond de la selection de texte du Terminal (2026-09-01, demande }
+{ explicite de l utilisateur) - meme motif que DrawSelection pour l editeur }
+{ (fond en Bar plein AVANT le texte, voir l appel dans DrawTerminalPanel).  }
+{ Utilise TP.VisRowText/VisRowCount (texte complet, non tronque, de chaque  }
+{ rangee visible cette image) plutot que de reparcourir HistHead/HistTail. }
+Procedure DrawTerminalSelection(Var TP: TTerminalPanel);
+Var
+ SL, SC, EL, EC: LongInt;
+ I: LongInt;
+ X1, X2, Y1: Integer;
+ LineLen: Integer;
+ TextRight: Integer;
+Begin
+ If Not TermVisible Then Exit;
+ If TP.Shell = SK_NCOMMANDER Then Exit;
+ If Not IsSelectionActive(TermSel) Then Exit;
+ TextRight := TermX + TermWidth - TERM_SCROLLBAR_WIDTH - 1;
+ GetOrderedSelection(TermSel, SL, SC, EL, EC);
+ For I := SL To EL Do Begin
+  If (I < 0) Or (I >= TP.VisRowCount) Then Continue;
+  Y1 := TermY + TERM_TAB_HEIGHT + 2 + I * TERM_LINE_HEIGHT;
+  LineLen := Length(TP.VisRowText[I]);
+  If I = SL Then
+   X1 := TermX + 4 + (SC - 1 - TP.HScrollOffset) * TERM_CHAR_WIDTH
+  Else
+   X1 := TermX + 4 + (1 - 1 - TP.HScrollOffset) * TERM_CHAR_WIDTH;
+  If I = EL Then
+   X2 := TermX + 4 + (EC - 1 - TP.HScrollOffset) * TERM_CHAR_WIDTH
+  Else
+   X2 := TermX + 4 + (LineLen + 1 - 1 - TP.HScrollOffset) * TERM_CHAR_WIDTH;
+  If X1 < TermX + 4 Then X1 := TermX + 4;
+  If X2 > TextRight Then X2 := TextRight;
+  If X2 > X1 Then Begin
+   SetFillStyle(SolidFill, CLR_SELECTION);
+   Bar(X1, Y1, X2 - 1, Y1 + TERM_LINE_HEIGHT - 1);
+  End;
+ End;
+End;
+
 Procedure DrawTerminalPanel(Var TP: TTerminalPanel);
 Var
  I, YPos, VisLines: Integer;
@@ -71885,18 +72010,32 @@ Begin
   { maximum different ailleurs). }
   MaxLineLen := 0;
   MeasureNode := Node;
+  TextLines := 0;
   For I := 0 To VisLines - 1 Do Begin
    If MeasureNode <> Nil Then Begin
     If Length(MeasureNode^.S) > MaxLineLen Then
      MaxLineLen := Length(MeasureNode^.S);
+    { Capture du texte COMPLET (avant defilement horizontal/troncature) de  }
+    { chaque rangee visible pour la selection souris/copie (2026-09-01,     }
+    { demande explicite de l utilisateur) - TermHitTest calcule la colonne  }
+    { en y rajoutant TP.HScrollOffset, donc c est bien le texte d origine   }
+    { qu il faut ici, pas une version deja recadree pour l affichage.       }
+    { Faite dans CETTE passe (qui parcourt deja les memes noeuds pour       }
+    { MaxLineLen) plutot que dans la boucle d affichage plus bas, pour que  }
+    { DrawTerminalSelection puisse peindre son fond de selection AVANT le   }
+    { texte (meme ordre que DrawSelection/DrawEditor). }
+    If I <= High(TP.VisRowText) Then TP.VisRowText[I] := MeasureNode^.S;
     MeasureNode := MeasureNode^.Next;
+    Inc(TextLines);
    End;
   End;
+  TP.VisRowCount := TextLines;
   MaxHScrollOffset := MaxLineLen - MaxCols;
   If MaxHScrollOffset < 0 Then MaxHScrollOffset := 0;
   If TP.HScrollOffset < 0 Then TP.HScrollOffset := 0;
   If TP.HScrollOffset > MaxHScrollOffset Then
    TP.HScrollOffset := MaxHScrollOffset;
+  DrawTerminalSelection(TP);
   { Afficher VisLines lignes en avant }
   SetColor(15);
   YPos := PY + TERM_TAB_HEIGHT + 2;
@@ -72215,6 +72354,25 @@ Begin
  TP.NeedRepaint := True;
 End;
 
+{ Convertit des coordonnees pixel de la souris en (rangee visible, colonne)  }
+{ pour la selection de texte du Terminal (2026-09-01, demande explicite de  }
+{ l utilisateur). Row est un index de RANGEE VISIBLE (0-based, voir la      }
+{ note pres du champ TermSel) borne a [0, VisRowCount-1] ; Col est 1-based  }
+{ et tient compte de TP.HScrollOffset puisque TP.VisRowText contient le     }
+{ texte COMPLET de la ligne (voir le commentaire dans DrawTerminalPanel).   }
+Procedure TermHitTest(Var TP: TTerminalPanel; MX, MY: Integer;
+ Var Row, Col: LongInt);
+Begin
+ Row := (MY - (TermY + TERM_TAB_HEIGHT + 2)) Div TERM_LINE_HEIGHT;
+ If Row < 0 Then Row := 0;
+ If TP.VisRowCount > 0 Then Begin
+  If Row >= TP.VisRowCount Then Row := TP.VisRowCount - 1;
+ End Else
+  Row := 0;
+ Col := TP.HScrollOffset + ((MX - (TermX + 4)) Div TERM_CHAR_WIDTH) + 1;
+ If Col < 1 Then Col := 1;
+End;
+
 Procedure HandleTerminalEvent(Var TP: TTerminalPanel;
  Var Ev: TEvent);
 Var
@@ -72226,6 +72384,7 @@ Var
  FakeEv: TEvent;
  DDLeft, DDRight, DDTop, DDBottom, TopHit, ItemHit: Integer;
  EvVisLines, EvMaxScroll: Integer;
+ HitRow, HitCol: LongInt;
 Begin
  If Not TermVisible Then Exit;
  { Position du SelectBox }
@@ -72246,6 +72405,13 @@ Begin
    AddContextItem(CtxMenu, 'Aide', 900);
    AddContextItem(CtxMenu, 'Sauvegarder historiques', 901);
    AddContextItem(CtxMenu, 'Zoom', 902);
+   { 2026-09-01, demande explicite de l utilisateur : presse-papiers texte/  }
+   { image + sauvegarde texte/image du terminal - voir Case CtxTag Of. }
+   AddContextItem(CtxMenu, 'Copier dans le presse-papier', 910);
+   AddContextItem(CtxMenu, 'Coller dans le presse-papier', 911);
+   AddContextItem(CtxMenu, 'Sauvegarder le texte du terminal...', 912);
+   AddContextItem(CtxMenu, 'Copier en image', 913);
+   AddContextItem(CtxMenu, 'Sauvegarder en image...', 914);
    CtxMenu.Visible := True;
    DrawContextMenu(CtxMenu);
    Exit;
@@ -72544,7 +72710,45 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Debut de selection de texte au clic gauche (2026-09-01, demande        }
+   { explicite de l utilisateur) - hors Norton Commander (grille double-    }
+   { panneau dediee, sans notion de TP.VisRowText). Toute autre zone         }
+   { speciale (SelectBox, barres de defilement, touches F de NC, menu F9)    }
+   { est deja interceptee plus haut avec son propre Exit. }
+   If (TP.Shell <> SK_NCOMMANDER) And (Ev.MouseBtn = MB_LEFT) Then Begin
+    TermHitTest(TP, Ev.MouseX, Ev.MouseY, HitRow, HitCol);
+    ClearSelection(TermSel);
+    StartSelection(TermSel, HitRow, HitCol);
+    TP.NeedRepaint := True;
+    FullRepaintNeeded := True;
+   End;
    Exit;
+  End;
+ End
+ Else If (Ev.Kind = EV_MOUSE_MOVE) Then Begin
+  { Glissement : etendre la selection si le bouton gauche est enfonce       }
+  { (2026-09-01, demande explicite de l utilisateur - meme motif que         }
+  { HandleEditorMouse). }
+  If IsSelectionActive(TermSel) And (TP.Shell <> SK_NCOMMANDER) And
+     (Ev.MouseBtn <> MB_NONE) Then Begin
+   TermHitTest(TP, Ev.MouseX, Ev.MouseY, HitRow, HitCol);
+   ExtendSelection(TermSel, HitRow, HitCol);
+   TP.NeedRepaint := True;
+   FullRepaintNeeded := True;
+  End;
+ End
+ Else If (Ev.Kind = EV_MOUSE_UP) Then Begin
+  { Relachement : finaliser la selection (l annuler si debut = fin, comme   }
+  { HandleEditorMouse - un simple clic sans glisser ne doit pas laisser une }
+  { "selection" degeneree d un seul caractere). }
+  If IsSelectionActive(TermSel) And (TP.Shell <> SK_NCOMMANDER) Then Begin
+   TermHitTest(TP, Ev.MouseX, Ev.MouseY, HitRow, HitCol);
+   ExtendSelection(TermSel, HitRow, HitCol);
+   If (TermSel.StartLine = TermSel.EndLine) And
+      (TermSel.StartCol = TermSel.EndCol) Then
+    ClearSelection(TermSel);
+   TP.NeedRepaint := True;
+   FullRepaintNeeded := True;
   End;
  End;
  { Navigation clavier dans la liste deroulante }
@@ -76741,6 +76945,372 @@ Begin
   Win_CloseClipboard;
  End;
  {$ENDIF}
+End;
+
+{ Lit le presse-papiers Windows REEL (texte simple) - pendant symetrique de }
+{ SetRealClipboardText ci-dessus, meme motif que la lecture faite pour       }
+{ AX=1705h dans Emu_DoInt2F (2026-09-01, demande explicite de l utilisateur }
+{ pour "Coller dans le presse-papier" du menu contextuel du Terminal).      }
+Function GetRealClipboardText: String;
+Var
+ HMem: LongInt;
+ P: PChar;
+ Sz, I: LongInt;
+ Result: String;
+Begin
+ Result := '';
+ {$IFDEF WINDOWS}
+ If Win_OpenClipboard(0) Then Begin
+  HMem := Win_GetClipboardData(CF_TEXT_WINOLDAP);
+  If HMem <> 0 Then Begin
+   Sz := Win_GlobalSize(HMem);
+   If Sz > 255 Then Sz := 255;
+   P := PChar(Win_GlobalLock(HMem));
+   If P <> Nil Then Begin
+    I := 0;
+    While (I < Sz) And (P[I] <> #0) Do Begin
+     Result := Result + P[I];
+     Inc(I);
+    End;
+    Win_GlobalUnlock(HMem);
+   End;
+  End;
+  Win_CloseClipboard;
+ End;
+ {$ENDIF}
+ GetRealClipboardText := Result;
+End;
+
+{ Texte a copier pour "Copier dans le presse-papier" du Terminal (2026-09-01, }
+{ demande explicite de l utilisateur) : la zone selectionnee si elle est     }
+{ active, sinon la commande en cours de saisie - meme motif que              }
+{ GetSelectedText pour l editeur, mais sur TP.VisRowText au lieu du buffer   }
+{ de l editeur. }
+Function TermGetSelectedText(Var TP: TTerminalPanel): String;
+Var
+ SL, SC, EL, EC: LongInt;
+ I: LongInt;
+ Line: String;
+ Result: String;
+Begin
+ If Not IsSelectionActive(TermSel) Then Begin
+  TermGetSelectedText := TP.InputLine;
+  Exit;
+ End;
+ Result := '';
+ GetOrderedSelection(TermSel, SL, SC, EL, EC);
+ If (SL < 0) Or (SL >= TP.VisRowCount) Or (EL < 0) Or (EL >= TP.VisRowCount) Then Begin
+  TermGetSelectedText := '';
+  Exit;
+ End;
+ If SL = EL Then Begin
+  Line := TP.VisRowText[SL];
+  If (SC >= 1) And (EC >= SC) And (SC <= Length(Line) + 1) Then Begin
+   If EC > Length(Line) + 1 Then EC := Length(Line) + 1;
+   Result := Copy(Line, SC, EC - SC);
+  End;
+ End Else Begin
+  Line := TP.VisRowText[SL];
+  If SC <= Length(Line) Then
+   Result := Copy(Line, SC, Length(Line) - SC + 1)
+  Else
+   Result := '';
+  For I := SL + 1 To EL - 1 Do
+   Result := Result + #13#10 + TP.VisRowText[I];
+  Line := TP.VisRowText[EL];
+  If EC > 1 Then
+   Result := Result + #13#10 + Copy(Line, 1, EC - 1)
+  Else
+   Result := Result + #13#10;
+ End;
+ TermGetSelectedText := Result;
+End;
+
+{ "Coller dans le presse-papier" du Terminal (2026-09-01, demande explicite }
+{ de l utilisateur) : insere le texte du presse-papiers reel du systeme     }
+{ hote a la position du curseur de saisie (TP.InputCol). Seule la premiere  }
+{ ligne est prise si le contenu colle est multi-lignes (une ligne de        }
+{ commande de terminal ne peut pas contenir de retour a la ligne). }
+Procedure TermPasteFromClipboard(Var TP: TTerminalPanel);
+Var
+ ClipText, Head, Tail: String;
+ CRPos, LFPos, CutPos: Integer;
+Begin
+ ClipText := GetRealClipboardText;
+ If ClipText = '' Then Exit;
+ CRPos := Pos(#13, ClipText);
+ LFPos := Pos(#10, ClipText);
+ CutPos := 0;
+ If (CRPos > 0) And ((LFPos = 0) Or (CRPos < LFPos)) Then CutPos := CRPos
+ Else If LFPos > 0 Then CutPos := LFPos;
+ If CutPos > 0 Then ClipText := Copy(ClipText, 1, CutPos - 1);
+ If TP.InputCol < 1 Then TP.InputCol := 1;
+ If TP.InputCol > Length(TP.InputLine) + 1 Then
+  TP.InputCol := Length(TP.InputLine) + 1;
+ Head := Copy(TP.InputLine, 1, TP.InputCol - 1);
+ Tail := Copy(TP.InputLine, TP.InputCol, Length(TP.InputLine));
+ TP.InputLine := Head + ClipText + Tail;
+ TP.InputCol := TP.InputCol + Length(ClipText);
+ TP.NeedRepaint := True;
+End;
+
+{ ========================================================================= }
+{ "Sauvegarder en image"/"Copier en image" du Terminal (2026-09-01, demande }
+{ explicite de l utilisateur) - 4 formats portes tels quels depuis          }
+{ C:\SOURCE\GITHUB\CLONEDRAW\PSP.PAS (SaveBMP24/SavePSD/SaveTGA24/SavePPM), }
+{ ImgW/ImgH/Composite(X,Y) remplaces par TermWidth/TermHeight/GetPixel sur  }
+{ le rectangle du panneau Terminal (TermX,TermY..TermX+TermWidth-1,         }
+{ TermY+TermHeight-1) - GetPixel renvoie deja un index de palette 0-15      }
+{ (meme mode VGAHi que PSP.PAS, voir la note pres de TBMPFileHeader).       }
+{ ========================================================================= }
+
+Function TermSaveBMP24(Const FileName: String): Boolean;
+Var
+ F: File;
+ FH: TBMPFileHeader;
+ IH: TBMPInfoHeader;
+ RowSize, Pad, X, Y: Integer;
+ V: Byte;
+ RowBuf: Array[0..8191] Of Byte;
+Begin
+ TermSaveBMP24 := False;
+ RowSize := ((LongInt(TermWidth) * 24 + 31) Div 32) * 4;
+ Pad := RowSize - TermWidth * 3;
+ Assign(F, FileName);
+ {$I-} Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ FillChar(FH, SizeOf(FH), 0);
+ FH.bfType := BMP_SIGNATURE;
+ FH.bfOffBits := SizeOf(FH) + SizeOf(IH);
+ FH.bfSize := FH.bfOffBits + LongInt(RowSize) * TermHeight;
+ FillChar(IH, SizeOf(IH), 0);
+ IH.biSize := SizeOf(IH);
+ IH.biWidth := TermWidth;
+ IH.biHeight := TermHeight;
+ IH.biPlanes := 1;
+ IH.biBitCount := 24;
+ IH.biCompression := 0;
+ IH.biSizeImage := LongInt(RowSize) * TermHeight;
+ BlockWrite(F, FH, SizeOf(FH));
+ BlockWrite(F, IH, SizeOf(IH));
+ For Y := TermHeight - 1 DownTo 0 Do Begin
+  For X := 0 To TermWidth - 1 Do Begin
+   V := Byte(GetPixel(TermX + X, TermY + Y));
+   If V > 15 Then V := 0;
+   RowBuf[X * 3]     := VGA_B[V];
+   RowBuf[X * 3 + 1] := VGA_G[V];
+   RowBuf[X * 3 + 2] := VGA_R[V];
+  End;
+  For X := 0 To Pad - 1 Do RowBuf[TermWidth * 3 + X] := 0;
+  BlockWrite(F, RowBuf, RowSize);
+ End;
+ Close(F);
+ TermSaveBMP24 := True;
+End;
+
+Function TermSavePSD(Const FileName: String): Boolean;
+Var
+ F: File;
+ Hdr: Array[0..25] Of Byte;
+ Sect: Array[0..3] Of Byte;
+ Comp: Array[0..1] Of Byte;
+ RowBuf: Array[0..8191] Of Byte;
+ X, Y, Ch: Integer;
+ V: Byte;
+Begin
+ TermSavePSD := False;
+ If (TermWidth < 1) Or (TermHeight < 1) Or (TermWidth > 8191) Then Exit;
+ Assign(F, FileName);
+ {$I-} Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ FillChar(Hdr, SizeOf(Hdr), 0);
+ Hdr[0]:=$38; Hdr[1]:=$42; Hdr[2]:=$50; Hdr[3]:=$53;
+ Hdr[4]:=0; Hdr[5]:=1;
+ Hdr[12]:=0; Hdr[13]:=3;
+ Hdr[14] := Byte((LongInt(TermHeight) Shr 24) And $FF);
+ Hdr[15] := Byte((LongInt(TermHeight) Shr 16) And $FF);
+ Hdr[16] := Byte((LongInt(TermHeight) Shr 8) And $FF);
+ Hdr[17] := Byte(LongInt(TermHeight) And $FF);
+ Hdr[18] := Byte((LongInt(TermWidth) Shr 24) And $FF);
+ Hdr[19] := Byte((LongInt(TermWidth) Shr 16) And $FF);
+ Hdr[20] := Byte((LongInt(TermWidth) Shr 8) And $FF);
+ Hdr[21] := Byte(LongInt(TermWidth) And $FF);
+ Hdr[22]:=0; Hdr[23]:=8;
+ Hdr[24]:=0; Hdr[25]:=3;
+ BlockWrite(F, Hdr, 26);
+ FillChar(Sect, 4, 0); BlockWrite(F, Sect, 4);
+ BlockWrite(F, Sect, 4);
+ BlockWrite(F, Sect, 4);
+ Comp[0]:=0; Comp[1]:=0;
+ BlockWrite(F, Comp, 2);
+ For Ch := 0 To 2 Do
+  For Y := 0 To TermHeight - 1 Do Begin
+   For X := 0 To TermWidth - 1 Do Begin
+    V := Byte(GetPixel(TermX + X, TermY + Y));
+    If V > 15 Then V := 0;
+    Case Ch Of
+     0: RowBuf[X] := VGA_R[V];
+     1: RowBuf[X] := VGA_G[V];
+     2: RowBuf[X] := VGA_B[V];
+    End;
+   End;
+   BlockWrite(F, RowBuf, TermWidth);
+  End;
+ Close(F);
+ TermSavePSD := True;
+End;
+
+Function TermSaveTGA24(Const FileName: String): Boolean;
+Var
+ F: File;
+ Hdr: Array[0..17] Of Byte;
+ RowBuf: Array[0..8191] Of Byte;
+ X, Y: Integer;
+ V: Byte;
+Begin
+ TermSaveTGA24 := False;
+ If (TermWidth < 1) Or (TermHeight < 1) Or (TermWidth > 2730) Then Exit;
+ Assign(F, FileName);
+ {$I-} Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ FillChar(Hdr, SizeOf(Hdr), 0);
+ Hdr[2] := 2;
+ Hdr[12] := Byte(TermWidth And $FF);
+ Hdr[13] := Byte((TermWidth Shr 8) And $FF);
+ Hdr[14] := Byte(TermHeight And $FF);
+ Hdr[15] := Byte((TermHeight Shr 8) And $FF);
+ Hdr[16] := 24;
+ Hdr[17] := $20;
+ BlockWrite(F, Hdr, 18);
+ For Y := 0 To TermHeight - 1 Do Begin
+  For X := 0 To TermWidth - 1 Do Begin
+   V := Byte(GetPixel(TermX + X, TermY + Y));
+   If V > 15 Then V := 0;
+   RowBuf[X * 3]     := VGA_B[V];
+   RowBuf[X * 3 + 1] := VGA_G[V];
+   RowBuf[X * 3 + 2] := VGA_R[V];
+  End;
+  BlockWrite(F, RowBuf, TermWidth * 3);
+ End;
+ Close(F);
+ TermSaveTGA24 := True;
+End;
+
+Function TermSavePPM(Const FileName: String): Boolean;
+Var
+ F: File;
+ RowBuf: Array[0..8191] Of Byte;
+ Header: String;
+ SW, SH: String;
+ X, Y: Integer;
+ V: Byte;
+Begin
+ TermSavePPM := False;
+ If (TermWidth < 1) Or (TermHeight < 1) Or (TermWidth > 2730) Then Exit;
+ Assign(F, FileName);
+ {$I-} Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ Str(TermWidth, SW);
+ Str(TermHeight, SH);
+ Header := 'P6' + #10 + SW + ' ' + SH + #10 + '255' + #10;
+ BlockWrite(F, Header[1], Length(Header));
+ For Y := 0 To TermHeight - 1 Do Begin
+  For X := 0 To TermWidth - 1 Do Begin
+   V := Byte(GetPixel(TermX + X, TermY + Y));
+   If V > 15 Then V := 0;
+   RowBuf[X * 3]     := VGA_R[V];
+   RowBuf[X * 3 + 1] := VGA_G[V];
+   RowBuf[X * 3 + 2] := VGA_B[V];
+  End;
+  BlockWrite(F, RowBuf, TermWidth * 3);
+ End;
+ Close(F);
+ TermSavePPM := True;
+End;
+
+{ Dispatcheur par extension (meme motif que SaveByExt dans PSP.PAS) - utilise }
+{ par le confirm-handler de FileDlgForImageSave (voir Case CtxTag/FileDlg    }
+{ plus bas). }
+Function TermSaveImageByExt(Const FN: String): Boolean;
+Var
+ Ext: String;
+Begin
+ Ext := UpCaseStr(ExtractFileExt(FN));
+ If Ext = '.BMP' Then TermSaveImageByExt := TermSaveBMP24(FN)
+ Else If Ext = '.PSD' Then TermSaveImageByExt := TermSavePSD(FN)
+ Else If Ext = '.TGA' Then TermSaveImageByExt := TermSaveTGA24(FN)
+ Else If Ext = '.PPM' Then TermSaveImageByExt := TermSavePPM(FN)
+ Else TermSaveImageByExt := TermSaveBMP24(FN);
+End;
+
+{ "Copier en image" (2026-09-01, demande explicite de l utilisateur) : pousse }
+{ un vrai BITMAPINFOHEADER + pixels 24 bits sur le presse-papiers Windows    }
+{ REEL au format CF_DIB - meme motif Win_OpenClipboard/GlobalAlloc/          }
+{ GlobalLock/SetClipboardData que SetRealClipboardText, mais avec le format  }
+{ CF_DIB au lieu de CF_TEXT_WINOLDAP. }
+Procedure CopyTerminalImageToClipboard;
+Type
+ { Tableau d octets "assez grand" pour indexer par pointeur (meme motif que }
+ { PClipByteArr/TClipByteArr deja utilise ailleurs dans ce fichier pour le  }
+ { presse-papiers, plutot que de l arithmetique de pointeur brute). }
+ TDibBuf = Array[0..16777215] Of Byte;
+ PDibBuf = ^TDibBuf;
+Var
+ IH: TBMPInfoHeader;
+ RowSize: LongInt;
+ DataSize: LongInt;
+ HMem: LongInt;
+ Buf: PDibBuf;
+ X, Y: Integer;
+ V: Byte;
+ RowBase: LongInt;
+Begin
+ {$IFDEF WINDOWS}
+ RowSize := ((LongInt(TermWidth) * 24 + 31) Div 32) * 4;
+ DataSize := RowSize * TermHeight;
+ If Win_OpenClipboard(0) Then Begin
+  Win_EmptyClipboard;
+  HMem := Win_GlobalAlloc(GMEM_MOVEABLE_WINOLDAP, SizeOf(IH) + DataSize);
+  If HMem <> 0 Then Begin
+   Buf := PDibBuf(Win_GlobalLock(HMem));
+   If Buf <> Nil Then Begin
+    FillChar(IH, SizeOf(IH), 0);
+    IH.biSize := SizeOf(IH);
+    IH.biWidth := TermWidth;
+    IH.biHeight := TermHeight;
+    IH.biPlanes := 1;
+    IH.biBitCount := 24;
+    IH.biCompression := 0;
+    IH.biSizeImage := DataSize;
+    Move(IH, Buf^, SizeOf(IH));
+    For Y := TermHeight - 1 DownTo 0 Do Begin
+     RowBase := SizeOf(IH) + LongInt(TermHeight - 1 - Y) * RowSize;
+     For X := 0 To TermWidth - 1 Do Begin
+      V := Byte(GetPixel(TermX + X, TermY + Y));
+      If V > 15 Then V := 0;
+      Buf^[RowBase + X * 3]     := VGA_B[V];
+      Buf^[RowBase + X * 3 + 1] := VGA_G[V];
+      Buf^[RowBase + X * 3 + 2] := VGA_R[V];
+     End;
+    End;
+    Win_GlobalUnlock(HMem);
+    Win_SetClipboardData(CF_DIB, HMem);
+   End;
+  End;
+  Win_CloseClipboard;
+ End;
+ {$ENDIF}
+End;
+
+{ "Sauvegarder en image..." du menu contextuel (2026-09-01, demande         }
+{ explicite de l utilisateur) - confirm-handler pour FileDlgForImageSave,   }
+{ voir DispatchEvent. }
+Procedure TermSaveImageConfirmed(Var TP: TTerminalPanel; Const FileName: String);
+Begin
+ If TermSaveImageByExt(FileName) Then
+  TermAddLine(TP, 'Image du terminal sauvee dans ' + FileName)
+ Else
+  TermAddLine(TP, 'Erreur : impossible de sauver l''image dans ' + FileName);
 End;
 
 { --- Positionner le curseur texte au point du clic droit avant d ouvrir   }
@@ -128445,6 +129015,37 @@ Begin
      902: Begin { Cycler le zoom du terminal }
       TermZoomCycle;
      End;
+     910: Begin { Copier dans le presse-papier (selection, sinon la commande) }
+      SetRealClipboardText(TermGetSelectedText(TermPanels[ActiveShell]));
+     End;
+     911: Begin { Coller dans le presse-papier }
+      TermPasteFromClipboard(TermPanels[ActiveShell]);
+      TermPanels[ActiveShell].NeedRepaint := True;
+      FullRepaintNeeded := True;
+     End;
+     912: Begin { Sauvegarder le texte du terminal... }
+      FileDlgForTermSave := True;
+      InitFileDialog(FileDlg, True);
+      AddFileFilter(FileDlg, 'Fichiers texte (*.txt)', '*.TXT');
+      AddFileFilter(FileDlg, 'Tous les fichiers (*.*)', '*.*');
+      LoadDirectoryFiles(FileDlg);
+      FileDlg.Base.Visible := True;
+      DrawFileDialog(FileDlg);
+     End;
+     913: Begin { Copier en image }
+      CopyTerminalImageToClipboard;
+     End;
+     914: Begin { Sauvegarder en image... }
+      FileDlgForImageSave := True;
+      InitFileDialog(FileDlg, True);
+      AddFileFilter(FileDlg, 'Bitmap Windows (*.bmp)', '*.BMP');
+      AddFileFilter(FileDlg, 'Photoshop (*.psd)', '*.PSD');
+      AddFileFilter(FileDlg, 'Targa (*.tga)', '*.TGA');
+      AddFileFilter(FileDlg, 'Portable Pixmap (*.ppm)', '*.PPM');
+      LoadDirectoryFiles(FileDlg);
+      FileDlg.Base.Visible := True;
+      DrawFileDialog(FileDlg);
+     End;
      { Menu contextuel (clic droit) sur la fenetre du Debogueur - voir       }
      { EmuDbg_ShowContextMenu/EmuDbg_Ctx* ci-dessus dans le fichier. }
      950: EmuDbg_CtxDumpRam;
@@ -128807,6 +129408,13 @@ Begin
     { "Executer le PascalScript..." (2026-08-31) : meme principe. }
     Else If FileDlgForPascalScriptMacro Then
      RunPascalScriptMacroOnEditor(FileDlg.SelectedFile)
+    { "Sauvegarder le texte du terminal..."/"Sauvegarder en image..."       }
+    { (2026-09-01, demande explicite de l utilisateur) : meme principe,     }
+    { voir TermSaveTextConfirmed/TermSaveImageConfirmed/CtxTag 912/914. }
+    Else If FileDlgForTermSave Then
+     TermSaveTextConfirmed(TermPanels[ActiveShell], FileDlg.SelectedFile)
+    Else If FileDlgForImageSave Then
+     TermSaveImageConfirmed(TermPanels[ActiveShell], FileDlg.SelectedFile)
     Else If FileDlg.FolderMode Then
      HandleOpenFolderConfirmed
     Else
@@ -128814,6 +129422,8 @@ Begin
    End;
    FileDlgForVBScriptMacro := False;
    FileDlgForPascalScriptMacro := False;
+   FileDlgForTermSave := False;
+   FileDlgForImageSave := False;
    FileDlg.FolderMode := False;
    FullRepaintNeeded := True;
   End;
@@ -129216,9 +129826,13 @@ Begin
    DrawExplorer(SolExplorer);
   Exit;
  End;
- { Si le terminal a le focus, lui envoyer les evenements clavier }
+ { Si le terminal a le focus, lui envoyer les evenements clavier, ainsi     }
+ { que le glissement/relachement souris (2026-09-01, demande explicite de   }
+ { l utilisateur : selection de texte au glisser-deposer) - le clic initial }
+ { (EV_MOUSE_DOWN) est deja route plus haut. }
  If TermVisible And TerminalHasFocus Then Begin
-  If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
+  If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Or
+     (Ev.Kind = EV_MOUSE_MOVE) Or (Ev.Kind = EV_MOUSE_UP) Then Begin
    HandleTerminalEvent(TermPanels[ActiveShell], Ev);
    Exit;
   End;
