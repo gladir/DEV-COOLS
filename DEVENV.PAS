@@ -7231,6 +7231,9 @@ Var
  ARM64_Mdscr      : QWord;   { stockage passif (Etape 5) - controle debug   }
                               { materiel, jamais actionne (pas de fault de   }
                               { debogage generee par cet emulateur).         }
+ ARM64_SpEl0      : QWord;   { stockage passif (Etape 5) - jamais lu/utilise}
+                              { activement (pas de modele EL0/SP_EL0 reel,   }
+                              { toujours EL1 avec SP_EL1 dans ce modele).    }
  ARM64_CntFreq    : QWord;
  ARM64_CntPct     : QWord;
  ARM64_CntpCval   : QWord;
@@ -33342,7 +33345,14 @@ End;
 Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
 Var
  Node, Old: PTermLine;
+ DbgF: Text;
 Begin
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ Assign(DbgF, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\TERM_DEBUG.TXT');
+ If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\TERM_DEBUG.TXT') Then Append(DbgF) Else Rewrite(DbgF);
+ WriteLn(DbgF, S);
+ Close(DbgF);
+ {$ENDIF}
  If TP.LineCount < MAX_TERM_LINES Then Begin
   TP.Lines[TP.LineCount] := S;
   Inc(TP.LineCount);
@@ -62851,6 +62861,7 @@ Const
  ARM64_SYSREG_SPSR_EL1      = 512;
  ARM64_SYSREG_SCTLR_EL1     = 128;
  ARM64_SYSREG_TTBR0_EL1     = 256;
+ ARM64_SYSREG_TTBR1_EL1     = 257;
  ARM64_SYSREG_TCR_EL1       = 258;
  ARM64_SYSREG_MAIR_EL1      = 1296;
  ARM64_SYSREG_CURRENTEL     = 530;
@@ -62878,6 +62889,14 @@ Const
  ARM64_SYSREG_ID_AA64MMFR3_EL1= 59;
  ARM64_SYSREG_ID_AA64ZFR0_EL1 = 36;
  ARM64_SYSREG_ID_AA64ISAR2_EL1= 50;
+ ARM64_SYSREG_DCZID_EL0       = 6151;
+ ARM64_SYSREG_SP_EL0          = 520;
+ { Etape 5 : plafond d instructions PAR ONGLET nettement plus eleve que les }
+ { 5 000 000 partages par ELF64/OS2LX (un seul programme utilisateur) - un  }
+ { vrai demarrage de noyau Linux complet execute legitimement bien plus     }
+ { d instructions avant le premier message console, meme sans boucle        }
+ { infinie (mise en place de TOUTES les tables de pages du noyau, etc).     }
+ ARM64_MAX_STEPS = 500000000;
  { Chantier ARM64, Etape 5 : plan memoire du chargeur de noyau reel. Le     }
  { noyau se charge a RAM_BASE+text_offset (lu dans son propre en-tete, voir }
  { Emu_LoadARM64Kernel) - DTB et initrd fixes bien plus haut pour ne jamais }
@@ -63050,8 +63069,8 @@ Begin
 End;
 
 { Chantier ARM64, Etape 4 (2026-09-01) : traduction stage-1 uniquement       }
-{ (granule 4 Ko, 2 a 4 niveaux selon TCR_EL1.T0SZ - pas de stage-2/EL2,     }
-{ inutile sans virtualisation). TRADUCTION SEULE : aucune faute n est       }
+{ (granule 4 Ko, 2 a 4 niveaux selon TCR_EL1.T0SZ/T1SZ - pas de stage-2/    }
+{ EL2, inutile sans virtualisation). TRADUCTION SEULE : aucune faute n est  }
 { injectee dans l invite (pas de VBAR+$0/$400 synchrone) - toute traduction }
 { impossible arrete proprement l emulateur (ARM64_Halted), meme discipline  }
 { que le reste du decodeur, plutot que de deviner un comportement de repli. }
@@ -63059,13 +63078,24 @@ End;
 { =valide, bit1=type table/bloc, bits[47:12]=adresse de sortie/table        }
 { suivante) - AP/SH/AttrIndx/AF ignores (traduction pure, pas de modele de  }
 { permission ni de fault d acces).                                          }
+{ Etape 5 (2026-09-02) : double table TTBR0/TTBR1 - un vrai noyau Linux     }
+{ bascule vers TTBR1_EL1 (espace noyau "haut") une fois ses propres tables  }
+{ pretes, rencontre reellement en poursuivant le demarrage du vrai vmlinuz  }
+{ de debian-13.6.0-arm64-netinst.iso au-dela du point ou l Etape 4          }
+{ s arretait. Selection simplifiee mais correcte en pratique (utilisee par  }
+{ la quasi-totalite des implementations reelles pour une configuration      }
+{ T0SZ/T1SZ symetrique, systematiquement le cas sous Linux) : VA[63]=0 ->   }
+{ TTBR0, VA[63]=1 -> TTBR1, plutot que la verification formelle complete    }
+{ "bits[63:T0SZ] tous nuls / bits[63:T1SZ] tous uns, sinon fault" - une     }
+{ configuration symetrique rend les deux verifications equivalentes.       }
 Function Arm64_Translate(VA: QWord; Var PA: QWord): Boolean;
 Var
- T0SZ, VABits: Byte;
+ TxSZ, VABits: Byte;
  StartLevel, Level: Integer;
  TableBase, DescAddr, Desc, BlockMask: QWord;
  Idx: QWord;
  Shift: Byte;
+ UseTTBR1: Boolean;
 Begin
  Arm64_Translate := False;
  If (ARM64_Sctlr And 1) = 0 Then Begin { MMU desactivee : adressage direct }
@@ -63073,13 +63103,20 @@ Begin
   Arm64_Translate := True;
   Exit;
  End;
- T0SZ := Byte(ARM64_Tcr And $3F);
- If T0SZ > 51 Then Exit; { hors bornes possibles (VABits deviendrait < 13) }
- VABits := 64 - T0SZ;
- If (VABits <= 12) Or (((VABits - 12) Mod 9) <> 0) Then Exit; { T0SZ non standard }
+ UseTTBR1 := (VA And QWord($8000000000000000)) <> 0;
+ If UseTTBR1 Then
+  TxSZ := Byte((ARM64_Tcr Shr 16) And $3F) { T1SZ }
+ Else
+  TxSZ := Byte(ARM64_Tcr And $3F); { T0SZ }
+ If TxSZ > 51 Then Exit; { hors bornes possibles (VABits deviendrait < 13) }
+ VABits := 64 - TxSZ;
+ If (VABits <= 12) Or (((VABits - 12) Mod 9) <> 0) Then Exit; { TxSZ non standard }
  StartLevel := 4 - ((VABits - 12) Div 9);
  If (StartLevel < 0) Or (StartLevel > 3) Then Exit;
- TableBase := ARM64_Ttbr0 And QWord($0000FFFFFFFFF000);
+ If UseTTBR1 Then
+  TableBase := ARM64_Ttbr1 And QWord($0000FFFFFFFFF000)
+ Else
+  TableBase := ARM64_Ttbr0 And QWord($0000FFFFFFFFF000);
  For Level := StartLevel To 3 Do Begin
   Shift := Byte(12 + (3 - Level) * 9);
   Idx := (VA Shr Shift) And $1FF;
@@ -63293,6 +63330,7 @@ Begin
   ARM64_SYSREG_SPSR_EL1: Val := ARM64_SPSR_EL1;
   ARM64_SYSREG_SCTLR_EL1: Val := ARM64_Sctlr;
   ARM64_SYSREG_TTBR0_EL1: Val := ARM64_Ttbr0;
+  ARM64_SYSREG_TTBR1_EL1: Val := ARM64_Ttbr1;
   ARM64_SYSREG_TCR_EL1: Val := ARM64_Tcr;
   ARM64_SYSREG_MAIR_EL1: Val := ARM64_Mair;
   ARM64_SYSREG_CURRENTEL: Val := 4; { EL[3:2]=01 (EL1) }
@@ -63320,11 +63358,17 @@ Begin
   ARM64_SYSREG_TPIDR_EL1: Val := ARM64_Tpidr1;
   ARM64_SYSREG_CPACR_EL1: Val := ARM64_Cpacr;
   ARM64_SYSREG_MDSCR_EL1: Val := ARM64_Mdscr;
+  ARM64_SYSREG_SP_EL0: Val := ARM64_SpEl0;
   ARM64_SYSREG_ID_AA64MMFR1_EL1, ARM64_SYSREG_ID_AA64ISAR1_EL1,
   ARM64_SYSREG_ID_AA64PFR1_EL1, ARM64_SYSREG_ID_AA64AFR0_EL1,
   ARM64_SYSREG_ID_AA64AFR1_EL1, ARM64_SYSREG_ID_AA64MMFR2_EL1,
   ARM64_SYSREG_ID_AA64MMFR3_EL1, ARM64_SYSREG_ID_AA64ZFR0_EL1,
   ARM64_SYSREG_ID_AA64ISAR2_EL1: Val := 0; { aucune fonctionnalite optionnelle }
+  ARM64_SYSREG_DCZID_EL0: Val := $10; { DZP=1 (DC ZVA interdite) - evite que  }
+   { le noyau compte sur DC ZVA pour mettre a zero de la memoire : DC/IC     }
+   { restent des no-op purs dans cet emulateur (voir la famille "$D50"), un  }
+   { DZP=0 aurait ete une fausse promesse silencieuse (memoire jamais        }
+   { reellement mise a zero) plutot qu un arret propre.                      }
   Else Arm64_MrsRead := False;
  End;
 End;
@@ -63353,12 +63397,14 @@ Begin
   ARM64_SYSREG_SPSR_EL1: ARM64_SPSR_EL1 := Val;
   ARM64_SYSREG_SCTLR_EL1: ARM64_Sctlr := Val;
   ARM64_SYSREG_TTBR0_EL1: ARM64_Ttbr0 := Val;
+  ARM64_SYSREG_TTBR1_EL1: ARM64_Ttbr1 := Val;
   ARM64_SYSREG_TCR_EL1: ARM64_Tcr := Val;
   ARM64_SYSREG_MAIR_EL1: ARM64_Mair := Val;
   ARM64_SYSREG_TPIDR_EL0: ARM64_Tpidr0 := Val;
   ARM64_SYSREG_TPIDR_EL1: ARM64_Tpidr1 := Val;
   ARM64_SYSREG_CPACR_EL1: ARM64_Cpacr := Val;
   ARM64_SYSREG_MDSCR_EL1: ARM64_Mdscr := Val;
+  ARM64_SYSREG_SP_EL0: ARM64_SpEl0 := Val;
   Else Arm64_MsrWrite := False;
  End;
 End;
@@ -63451,6 +63497,25 @@ Begin
  Arm64_SetRegZR(Rd, Res);
 End;
 
+{ Bits hauts d une multiplication 64x64 NON SIGNEE (128 bits, moitie haute) }
+{ - decomposition scolaire 32x32 standard, verifiee par execution reelle    }
+{ (Unicorn) sur plusieurs cas incluant les bornes avant ce portage.         }
+Function Arm64_UMulH(A, B: QWord): QWord;
+Var
+ ALo, AHi, BLo, BHi: QWord;
+ LoLo, LoHi, HiLo, HiHi, Mid, ResHi: QWord;
+Begin
+ ALo := A And $FFFFFFFF; AHi := A Shr 32;
+ BLo := B And $FFFFFFFF; BHi := B Shr 32;
+ LoLo := ALo * BLo;
+ LoHi := ALo * BHi;
+ HiLo := AHi * BLo;
+ HiHi := AHi * BHi;
+ Mid := (LoLo Shr 32) + (LoHi And $FFFFFFFF) + (HiLo And $FFFFFFFF);
+ ResHi := HiHi + (LoHi Shr 32) + (HiLo Shr 32) + (Mid Shr 32);
+ Arm64_UMulH := ResHi;
+End;
+
 Function Arm64_UDiv(A, B: QWord; Is32: Boolean): QWord;
 Begin
  If Is32 Then Begin A := A And $FFFFFFFF; B := B And $FFFFFFFF; End;
@@ -63516,6 +63581,77 @@ Begin
   While I < 64 Do Begin Res := Res Or (Elem Shl I); Inc(I, ESize); End;
  End;
  Arm64_DecodeBitMaskImm := Res;
+End;
+
+{ REV/REV16/REV32/RBIT/CLZ/CLS ("Data-processing a une source") - Etape 5, }
+{ rencontres en traitant le Device Tree (conversion gros-boutiste - REV     }
+{ est l operation naturelle pour lire un champ big-endian). Formules        }
+{ verifiees par execution reelle (Unicorn) avant ce portage.                }
+Function Arm64_RevBytes(V: QWord; NBytes: Byte): QWord;
+Var
+ I: Byte;
+ Res: QWord;
+Begin
+ Res := 0;
+ For I := 0 To NBytes - 1 Do
+  Res := Res Or (((V Shr (I * 8)) And $FF) Shl ((NBytes - 1 - I) * 8));
+ Arm64_RevBytes := Res;
+End;
+
+Function Arm64_RevChunks(V: QWord; TotalBytes, ChunkBytes: Byte): QWord;
+Var
+ I: Byte;
+ Res, Chunk: QWord;
+Begin
+ Res := 0;
+ I := 0;
+ While I < TotalBytes Do Begin
+  Chunk := (V Shr (I * 8)) And Arm64_FullMask(ChunkBytes * 8);
+  Chunk := Arm64_RevBytes(Chunk, ChunkBytes);
+  Res := Res Or (Chunk Shl (I * 8));
+  Inc(I, ChunkBytes);
+ End;
+ Arm64_RevChunks := Res;
+End;
+
+Function Arm64_RevBits(V: QWord; NBits: Byte): QWord;
+Var
+ I: Byte;
+ Res: QWord;
+Begin
+ Res := 0;
+ For I := 0 To NBits - 1 Do
+  If (V And (QWord(1) Shl I)) <> 0 Then
+   Res := Res Or (QWord(1) Shl (NBits - 1 - I));
+ Arm64_RevBits := Res;
+End;
+
+Function Arm64_Clz(V: QWord; NBits: Byte): QWord;
+Var
+ I: Integer;
+ Count: QWord;
+Begin
+ Count := 0;
+ For I := NBits - 1 Downto 0 Do Begin
+  If (V And (QWord(1) Shl I)) <> 0 Then Break;
+  Inc(Count);
+ End;
+ Arm64_Clz := Count;
+End;
+
+Function Arm64_Cls(V: QWord; NBits: Byte): QWord;
+Var
+ SignSet: Boolean;
+ I: Integer;
+ Count: QWord;
+Begin
+ SignSet := (V And (QWord(1) Shl (NBits - 1))) <> 0;
+ Count := 0;
+ For I := NBits - 2 Downto 0 Do Begin
+  If (((V Shr I) And 1) <> 0) <> SignSet Then Break;
+  Inc(Count);
+ End;
+ Arm64_Cls := Count;
 End;
 
 { Charge/stocke Rt a l adresse virtuelle Addr - partage entre la forme      }
@@ -63838,10 +63974,12 @@ Begin
  End;
 
  { LDP/STP (decalage signe - Etape 1 ; post-index/pre-index - Etape 5,      }
- { bits[24:23] : 1=post,2=decalage simple,3=pre - bit25 toujours 0 distingue}
- { cette classe, verifie separement de idxtype)                             }
+ { bits[24:23] : 0=STNP/LDNP (non-allouant, jamais d ecriture arriere),     }
+ { 1=post,2=decalage simple,3=pre - bit25 toujours 0 distingue cette classe,}
+ { verifie separement de idxtype ; STNP/LDNP traite comme un decalage      }
+ { signe ordinaire (aucun modele de cache dans cet emulateur)               }
  If (Not Handled) And (((W Shr 27) And 7) = 5) And (((W Shr 26) And 1) = 0)
-    And (((W Shr 25) And 1) = 0) And ((((W Shr 23) And 3) >= 1) And (((W Shr 23) And 3) <= 3)) Then Begin
+    And (((W Shr 25) And 1) = 0) And (((W Shr 23) And 3) <= 3) Then Begin
   Opc := (W Shr 30) And 3;
   Idx2 := Byte((W Shr 23) And 3);
   LFlag := (W Shr 22) And 1;
@@ -63856,7 +63994,7 @@ Begin
   Case Idx2 Of
    1: Begin Addr := NVal; WritebackVal := NVal + Offset; End;   { post-index }
    3: Begin Addr := NVal + Offset; WritebackVal := Addr; End;   { pre-index }
-   Else Addr := NVal + Offset;                                  { decalage simple }
+   Else Addr := NVal + Offset;                { decalage simple / STNP-LDNP (0) }
   End;
   If LFlag = 1 Then Begin
    Val1 := Arm64_GetMemV(Addr, ByteWidth);
@@ -63867,7 +64005,7 @@ Begin
    Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth);
    Arm64_PutMemV(Addr + ByteWidth, Arm64_RegZR(Rt2), ByteWidth);
   End;
-  If Idx2 <> 2 Then Arm64_SetRegSP(Rn, WritebackVal);
+  If Idx2 In [1, 3] Then Arm64_SetRegSP(Rn, WritebackVal);
   Handled := True;
  End;
 
@@ -63960,6 +64098,51 @@ Begin
   Res := RnVal * RmVal;
   If LFlag = 1 Then Res := NVal - Res Else Res := NVal + Res;
   If Is32 Then Res := Res And $FFFFFFFF;
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
+ { SMADDL/SMSUBL/SMULL/SMNEGL et UMADDL/UMSUBL/UMULL/UMNEGL (multiplication }
+ { 32x32 elargie sur 64 bits, signee ou non) - Etape 5, meme "prefixe fixe" }
+ { bits[28:24]=$1B que MADD/MSUB (op31=bits[23:21] selectionne la famille : }
+ { 0=MADD/MSUB deja gere, 1=SMADDL/SMSUBL, 5=UMADDL/UMSUBL - verifie par    }
+ { assemblage keystone, pas suppose).                                       }
+ If (Not Handled) And ((((W Shr 21) And $3FF) = $0D9) Or (((W Shr 21) And $3FF) = $0DD)) Then Begin
+  Rm := (W Shr 16) And $1F;
+  LFlag := (W Shr 15) And 1; { o0 : 0=ADD, 1=SUB }
+  Rt2 := (W Shr 10) And $1F; { Ra }
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  If (((W Shr 21) And $3FF) = $0D9) Then Begin { signe }
+   RnVal := Arm64_SignExtend(Arm64_RegZR(Rn) And $FFFFFFFF, 32);
+   RmVal := Arm64_SignExtend(Arm64_RegZR(Rm) And $FFFFFFFF, 32);
+  End Else Begin { non signe }
+   RnVal := Arm64_RegZR(Rn) And $FFFFFFFF;
+   RmVal := Arm64_RegZR(Rm) And $FFFFFFFF;
+  End;
+  NVal := Arm64_RegZR(Rt2);
+  Res := RnVal * RmVal;
+  If LFlag = 1 Then Res := NVal - Res Else Res := NVal + Res;
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
+ { SMULH/UMULH (bits hauts d une multiplication 64x64 signee/non signee -   }
+ { pas de type 128 bits natif en Pascal, decomposition scolaire 32x32       }
+ { standard) - Etape 5, meme prefixe (op31=2 pour SMULH, 6 pour UMULH).     }
+ { Formule verifiee par execution reelle (Unicorn, 3 cas dont les bornes    }
+ { MIN_INT64*MIN_INT64 et tous-bits-a-1) avant ce portage.                  }
+ If (Not Handled) And ((((W Shr 21) And $3FF) = $0DA) Or (((W Shr 21) And $3FF) = $0DE)) Then Begin
+  Rm := (W Shr 16) And $1F;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  RnVal := Arm64_RegZR(Rn);
+  RmVal := Arm64_RegZR(Rm);
+  Res := Arm64_UMulH(RnVal, RmVal);
+  If (((W Shr 21) And $3FF) = $0DA) Then Begin { SMULH : correction de signe }
+   If (RnVal And QWord($8000000000000000)) <> 0 Then Res := Res - RmVal;
+   If (RmVal And QWord($8000000000000000)) <> 0 Then Res := Res - RnVal;
+  End;
   Arm64_SetRegZR(Rd, Res);
   Handled := True;
  End;
@@ -64096,6 +64279,129 @@ Begin
   Handled := True;
  End;
 
+ { REV/REV16/REV32/RBIT/CLZ/CLS ("1 source") - Etape 5. bit30=1 distingue   }
+ { precisement cette classe de UDIV/SDIV/LSLV ("2 sources", bit30=0) malgre }
+ { des bits partages par ailleurs - verifie, pas suppose.                   }
+ If (Not Handled) And (((W Shr 21) And $3FF) = $2D6) Then Begin
+  sf := (W Shr 31) And 1;
+  Opc := (W Shr 10) And $3F;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Is32 Then RnVal := Arm64_RegZR(Rn) And $FFFFFFFF Else RnVal := Arm64_RegZR(Rn);
+  If Is32 Then ByteWidth := 4 Else ByteWidth := 8;
+  If Opc In [0, 1, 2, 3, 4, 5] Then Begin
+   Case Opc Of
+    0: Res := Arm64_RevBits(RnVal, ByteWidth * 8);
+    1: Res := Arm64_RevChunks(RnVal, ByteWidth, 2);
+    2: Begin
+        If Is32 Then Res := Arm64_RevChunks(RnVal, 4, 4)  { REV, 32 bits }
+        Else Res := Arm64_RevChunks(RnVal, 8, 4);         { REV32, 64 bits }
+       End;
+    3: Res := Arm64_RevChunks(RnVal, 8, 8);                { REV, 64 bits seul }
+    4: Res := Arm64_Clz(RnVal, ByteWidth * 8);
+    Else Res := Arm64_Cls(RnVal, ByteWidth * 8);           { opc=5 }
+   End;
+   If Is32 Then Res := Res And $FFFFFFFF;
+   Arm64_SetRegZR(Rd, Res);
+   Handled := True;
+  End;
+ End;
+
+ { ADD/SUB (registre etendu) - Etape 5, ecart documente depuis l Etape 1    }
+ { desormais comble (rencontre reellement en poursuivant le vrai vmlinuz,   }
+ { motif frequent d indexation de tableau pointeur+index32 signe/non signe).}
+ { bit21=1 distingue cette forme de "registre decale" (bit21=0, deja geree) }
+ { au sein du meme prefixe bits[28:24]=$0B. Formule verifiee par execution  }
+ { reelle (Unicorn, 4 cas : SXTW/UXTW/SXTW+decalage/UXTX) avant ce portage.  }
+ If (Not Handled) And (((W Shr 24) And $1F) = $0B) And (((W Shr 21) And 1) = 1)
+    And (((W Shr 22) And 3) = 0) Then Begin
+  sf := (W Shr 31) And 1;
+  Op := (W Shr 30) And 1;
+  Sflag := (W Shr 29) And 1;
+  Rm := (W Shr 16) And $1F;
+  Opc := (W Shr 13) And 7; { "option" : type d extension UXT*/SXT* }
+  Imm6 := (W Shr 10) And 7; { "imm3" : decalage 0-4 apres extension }
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  RmVal := Arm64_RegZR(Rm);
+  Case Opc And 3 Of
+   0: RmVal := RmVal And $FF;
+   1: RmVal := RmVal And $FFFF;
+   2: RmVal := RmVal And $FFFFFFFF;
+   Else ; { 3 = X, largeur complete deja }
+  End;
+  If Opc >= 4 Then
+   Case Opc And 3 Of
+    0: RmVal := Arm64_SignExtend(RmVal, 8);
+    1: RmVal := Arm64_SignExtend(RmVal, 16);
+    2: RmVal := Arm64_SignExtend(RmVal, 32);
+    Else ; { SXTX : rien a etendre }
+   End;
+  RmVal := RmVal Shl Imm6;
+  NVal := Arm64_RegSP(Rn);
+  If Is32 Then Begin NVal := NVal And $FFFFFFFF; RmVal := RmVal And $FFFFFFFF; End;
+  If Op = 0 Then Res := NVal + RmVal Else Res := (NVal - RmVal) And QWord($FFFFFFFFFFFFFFFF);
+  If Is32 Then Res := Res And $FFFFFFFF;
+  If Sflag = 1 Then Begin
+   If Op = 0 Then Arm64_FlagsAfterAdd(NVal, RmVal, Res, Is32)
+   Else Arm64_FlagsAfterSub(NVal, RmVal, Res, Is32);
+   Arm64_SetRegZR(Rd, Res);
+  End Else
+   Arm64_SetRegSP(Rd, Res);
+  Handled := True;
+ End;
+
+ { LDR/STR (registre, decalage/extension optionnel) - Etape 5. bit21=1 et   }
+ { bits[11:10]=10 distinguent cette forme de "immediat signe" (bit21=0) au  }
+ { sein du meme prefixe ; meme table Opc (0=STR,1=LDR,2/3=LDRS*) que les    }
+ { formes immediat, via Arm64_DoLdrStr. Formule (UXTW/SXTW/LSL-ou-X, mise   }
+ { a l echelle optionnelle par S) verifiee par execution reelle (Unicorn)   }
+ { avant ce portage.                                                        }
+ If (Not Handled) And (((W Shr 27) And 7) = 7) And (((W Shr 24) And 3) = 0)
+    And (((W Shr 26) And 1) = 0) And (((W Shr 21) And 1) = 1)
+    And (((W Shr 10) And 3) = 2) Then Begin
+  Size := (W Shr 30) And 3;
+  Opc := (W Shr 22) And 3;
+  Rm := (W Shr 16) And $1F;
+  LFlag := (W Shr 13) And 7; { "option" : type d extension de l index }
+  Bit23V := Byte((W Shr 12) And 1); { "S" : mise a l echelle par la taille }
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  RmVal := Arm64_RegZR(Rm);
+  Case LFlag Of
+   2: RmVal := RmVal And $FFFFFFFF; { UXTW }
+   6: RmVal := Arm64_SignExtend(RmVal And $FFFFFFFF, 32); { SXTW }
+   Else ; { 3=LSL (registre X, pas d extension), 7=SXTX }
+  End;
+  If Bit23V = 1 Then RmVal := RmVal Shl Size;
+  Addr := Arm64_RegSP(Rn) + RmVal;
+  Arm64_DoLdrStr(Addr, Byte(Size), Byte(Opc), Rt);
+  Handled := True;
+ End;
+
+ { LDR (litteral, relatif au PC) - Etape 5, tres frequent dans du code       }
+ { compile reel (chargement de constantes/adresses "pool"). opc : 0=W (32   }
+ { bits), 1=X (64 bits), 2=LDRSW (32->64 signe), 3=PRFM (prefetch, no-op).  }
+ If (Not Handled) And (((W Shr 24) And $3F) = $18) Then Begin
+  Opc := (W Shr 30) And 3;
+  Imm19 := (W Shr 5) And $7FFFF;
+  Rt := W And $1F;
+  Offset := Arm64_SignExtend(Imm19, 19) * 4;
+  Addr := CurPC + Offset;
+  Case Opc Of
+   0: Begin Val1 := Arm64_GetMemV(Addr, 4); Arm64_SetRegZR(Rt, Val1); End;
+   1: Begin Val1 := Arm64_GetMemV(Addr, 8); Arm64_SetRegZR(Rt, Val1); End;
+   2: Begin
+       Val1 := Arm64_GetMemV(Addr, 4);
+       Arm64_SetRegZR(Rt, Arm64_SignExtend(Val1, 32));
+      End;
+   Else ; { PRFM : prefetch pur, no-op }
+  End;
+  Handled := True;
+ End;
+
  If ARM64_Halted Then Exit; { une faute de traduction MMU a deja arrete proprement }
 
  If Not Handled Then Begin
@@ -64129,12 +64435,14 @@ Begin
  ARM64_DaifI := False;
  ARM64_Sctlr := 0;
  ARM64_Ttbr0 := 0;
+ ARM64_Ttbr1 := 0;
  ARM64_Tcr := 0;
  ARM64_Mair := 0;
  ARM64_Tpidr0 := 0;
  ARM64_Tpidr1 := 0;
  ARM64_Cpacr := 0;
  ARM64_Mdscr := 0;
+ ARM64_SpEl0 := 0;
  ARM64_CntFreq := 62500000; { 62,5 MHz - meme valeur typique que QEMU virt }
  ARM64_CntPct := 0;
  ARM64_CntpCval := 0;
@@ -64743,7 +65051,7 @@ Begin
  End;
  For ChunkI := 0 To 19999 Do Begin
   If ARM64_Halted Then Break;
-  If P.TotalSteps >= 5000000 Then Break;
+  If P.TotalSteps >= ARM64_MAX_STEPS Then Break;
   Arm64_Step;
   { Etape 3 : minuteur + distribution d IRQ, une fois par instruction       }
   { executee - meme cadence que Emu_ServiceIrqs pour le backend DOS.        }
@@ -77748,7 +78056,17 @@ End;
 { --- Afficher un caractere a la position courante --- }
 
 Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char);
+Var
+ DbgF: Text;
 Begin
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ If P.TargetCPU = '-CARM64' Then Begin
+  Assign(DbgF, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_UART_DEBUG.TXT');
+  If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_UART_DEBUG.TXT') Then Append(DbgF) Else Rewrite(DbgF);
+  Write(DbgF, C);
+  Close(DbgF);
+ End;
+ {$ENDIF}
  If OptionsDlg.Data.DosAnsiSys And
     ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) And
     EmuVScr_AnsiFeed(P, C) Then Exit;
@@ -113758,7 +114076,7 @@ Begin
    EmuLastActiveState := True;
   End;
   Arm64_RunOneChunk(P);
-  Finished := ARM64_Halted Or (P.TotalSteps >= 5000000) Or ARM64Async_KeyEsc;
+  Finished := ARM64_Halted Or (P.TotalSteps >= ARM64_MAX_STEPS) Or ARM64Async_KeyEsc;
   DrawEmulatorPanel(P);
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
