@@ -63361,6 +63361,9 @@ Const
  ARM64_SYSREG_NZCV          = 6672;
  ARM64_SYSREG_DAIF          = 6673;
  ARM64_SYSREG_CNTPCT_EL0    = 7937;
+ ARM64_SYSREG_CNTVCT_EL0    = 7938; { CNTVOFF suppose toujours 0 (pas d EL2   }
+                                     { reel modelise) - meme valeur que le    }
+                                     { compteur physique, voir Arm64_MrsRead. }
  ARM64_SYSREG_CNTFRQ_EL0    = 7936;
  ARM64_SYSREG_CNTP_CVAL_EL0 = 7954;
  ARM64_SYSREG_CNTP_TVAL_EL0 = 7952;
@@ -63402,6 +63405,15 @@ Const
  ARM64_SYSREG_SP_EL0          = 520;
  ARM64_SYSREG_CLIDR_EL1       = 2049;
  ARM64_SYSREG_ID_AA64DFR1_EL1 = 41;
+ { ICC_SRE_EL1 (interface CPU du GIC par registres systeme) - toujours lu    }
+ { comme SRE=0 (voir Arm64_MrsRead) : le DTB genere n annonce que "arm,      }
+ { cortex-a15-gic" (GICv2, MMIO) et jamais "arm,gic-v3" (portee du plan -    }
+ { "GICv2 uniquement (pas v3)") ; drivers/irqchip/irq-gic-v3.c fait toujours }
+ { ecriture-puis-relecture de ce bit pour decider s il existe une interface  }
+ { GICv3 par registres systeme - le relire a 0 apres ecriture confirme       }
+ { honnetement l absence de cette interface et fait retomber le noyau sur    }
+ { le pilote GICv2/MMIO attendu.                                            }
+ ARM64_SYSREG_ICC_SRE_EL1     = 1637;
  { Etape 5 : plafond d instructions PAR ONGLET nettement plus eleve que les }
  { 5 000 000 partages par ELF64/OS2LX (un seul programme utilisateur) - un  }
  { vrai demarrage de noyau Linux complet execute legitimement bien plus     }
@@ -63830,7 +63842,7 @@ Begin
    (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
    (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28);
   ARM64_SYSREG_DAIF: Val := QWord(Arm64_Bit(ARM64_DaifI)) Shl 7;
-  ARM64_SYSREG_CNTPCT_EL0: Val := ARM64_CntPct;
+  ARM64_SYSREG_CNTPCT_EL0, ARM64_SYSREG_CNTVCT_EL0: Val := ARM64_CntPct;
   ARM64_SYSREG_CNTFRQ_EL0: Val := ARM64_CntFreq;
   ARM64_SYSREG_CNTP_CVAL_EL0: Val := ARM64_CntpCval;
   ARM64_SYSREG_CNTP_TVAL_EL0: Val := (ARM64_CntpCval - ARM64_CntPct) And $FFFFFFFF;
@@ -63886,7 +63898,19 @@ Begin
    { alors proprement toute la boucle d enumeration CCSIDR_EL1/CSSELR_EL1     }
    { (non geres), comportement architecturalement valide pour un coeur sans   }
    { hierarchie de cache annoncee.                                           }
-  Else Arm64_MrsRead := False;
+  Else Begin
+   { Repli general (Etape 5) : op1=0,CRn=0,CRm=1..7 est l espace "registres  }
+   { d identification" ou l architecture ARM garantit que toute encodage non }
+   { alloue se lit comme zero (RAZ), justement pour la compatibilite avant   }
+   { avec des noyaux plus recents qui interrogent des registres ID pas       }
+   { encore nommes ici (verifie : chaque nouveau tel registre rencontre au   }
+   { boot reel jusqu ici - ID_AA64DFR1_EL1, puis un s3_0_c0_c6_3 inconnu     }
+   { de capstone - est retombe dans cette plage). SysKey=(op1 Shl 11) Or     }
+   { (CRn Shl 7) Or (CRm Shl 3) Or op2 ; op1=0,CRn=0,CRm<=7 => SysKey<=63.    }
+   If SysKey <= 63 Then Val := 0
+   Else If SysKey = ARM64_SYSREG_ICC_SRE_EL1 Then Val := 0 { SRE=0 : pas d interface GICv3, voir la constante }
+   Else Arm64_MrsRead := False;
+  End;
  End;
 End;
 
@@ -63922,6 +63946,7 @@ Begin
   ARM64_SYSREG_CPACR_EL1: ARM64_Cpacr := Val;
   ARM64_SYSREG_MDSCR_EL1: ARM64_Mdscr := Val;
   ARM64_SYSREG_SP_EL0: ARM64_SpEl0 := Val;
+  ARM64_SYSREG_ICC_SRE_EL1: ; { accepte et ignore : MRS relit toujours SRE=0 }
   Else Arm64_MsrWrite := False;
  End;
 End;
@@ -64954,6 +64979,37 @@ Begin
   Handled := True;
  End;
 
+ { EXTR (extraction sur registres, et son alias ROR par registre quand       }
+ { Rn=Rm) - Etape 5. Classe verifiee via keystone reel : "extr x1,x2,x3,#5"  }
+ { -> $93C31441 (sf=N=1, imms=5=Rm=3,Rn=2,Rd=1), "ror w1,w1,#0x10" ->        }
+ { $13814021 (sf=N=0, Rm=Rn=Rd=1, imms=16) - operande = (Rn:Rm) concatenes   }
+ { (Rn en poids fort) puis extraction de <largeur> bits a partir du bit lsb ;}
+ { avec Rn=Rm cela redonne exactement une rotation a droite. lsb=0 traite a  }
+ { part pour eviter un Shl de la largeur entiere (indefini en Pascal).       }
+ If (Not Handled) And (((W Shr 23) And $3F) = $27) And (((W Shr 21) And 1) = 0)
+    And (((W Shr 22) And 1) = ((W Shr 31) And 1)) Then Begin
+  Is32 := ((W Shr 31) And 1) = 0;
+  Rm := (W Shr 16) And $1F;
+  BitPos := Byte((W Shr 10) And $3F); { lsb }
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  If Is32 Then Begin
+   RnVal := Arm64_RegZR(Rn) And $FFFFFFFF;
+   RmVal := Arm64_RegZR(Rm) And $FFFFFFFF;
+  End Else Begin
+   RnVal := Arm64_RegZR(Rn);
+   RmVal := Arm64_RegZR(Rm);
+  End;
+  If BitPos = 0 Then Res := RmVal
+  Else Begin
+   If Is32 Then Res := (RmVal Shr BitPos) Or (RnVal Shl (32 - BitPos))
+   Else Res := (RmVal Shr BitPos) Or (RnVal Shl (64 - BitPos));
+  End;
+  If Is32 Then Res := Res And $FFFFFFFF;
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
  { HVC/SMC (appel PSCI) - Etape 5. Le DTB genere annonce method="hvc" pour le }
  { noeud "psci" ; SMC traite de facon identique par simplicite (ni EL2 ni EL3 }
  { reels modelises - l appel est resolu directement, sans vecteur d           }
@@ -65605,6 +65661,13 @@ Procedure Arm64_RunOneChunk(Var P: TEmulatorPanel);
 Var
  ChunkI: LongInt;
  K: LongInt;
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ DbgF2: Text;
+ DbgF3B: File;
+ DumpPA, DumpStartPA: QWord;
+ DumpI: LongInt;
+ DumpB: Byte;
+ {$ENDIF}
 Begin
  If EmuHasFocus Then Begin
   While KeyPressed Do Begin
@@ -65622,6 +65685,31 @@ Begin
   Arm64_TickTimer;
   Arm64_ServiceIrq;
   Inc(P.TotalSteps);
+  {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+  If (P.TotalSteps Mod 5000000) = 0 Then Begin
+   Assign(DbgF2, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_PC_TRACE.TXT');
+   If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_PC_TRACE.TXT') Then Append(DbgF2) Else Rewrite(DbgF2);
+   WriteLn(DbgF2, 'steps=' + IntToStr(P.TotalSteps) + '  PC=$' + HexQWord(ARM64_PC));
+   Close(DbgF2);
+  End;
+  If P.TotalSteps = 25000000 Then Begin
+   If Arm64_Translate(ARM64_PC, DumpPA) Then Begin
+    DumpStartPA := DumpPA - 128;
+    Assign(DbgF3B, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_LOOP_DUMP.BIN');
+    Rewrite(DbgF3B, 1);
+    For DumpI := 0 To 511 Do Begin
+     DumpB := Arm64_GetByte(DumpStartPA + DumpI);
+     BlockWrite(DbgF3B, DumpB, 1);
+    End;
+    Close(DbgF3B);
+    Assign(DbgF2, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_PC_TRACE.TXT');
+    Append(DbgF2);
+    WriteLn(DbgF2, 'DUMP: PC=$' + HexQWord(ARM64_PC) + ' PA=$' + HexQWord(DumpPA) +
+     ' dumpstart_PA=$' + HexQWord(DumpStartPA));
+    Close(DbgF2);
+   End;
+  End;
+  {$ENDIF}
  End;
 End;
 
