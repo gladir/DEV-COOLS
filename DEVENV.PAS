@@ -39447,7 +39447,9 @@ Procedure TermCmd_NES(Var TP: TTerminalPanel; ParamStr: String);
 Var
  CurrParam, Dir, RomPath: String;
 Begin
- CurrParam := TermExtractParam(ParamStr, 1);
+ { Guillemets retires (voir TermCmd_StartNesProgram) : un chemin entre      }
+ { guillemets fonctionne desormais aussi tape directement dans ce shell. }
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : NES fichier.nes');
   Exit;
@@ -39644,6 +39646,71 @@ Begin
   Exit;
  End;
  CreateEmulatorTab(RomPath, '-CATARI2600', '');
+End;
+
+{ Start-NesProgram (2026-08-31, demande explicite de l'utilisateur) - meme }
+{ motif exact que Start-DosProgram/Start-Atari2600Program ci-dessus        }
+{ (procedure DEDIEE avec son propre message de syntaxe) - PowerShell dev   }
+{ uniquement. `.nes` est le seul format reel/standard des ROM NES (aucune  }
+{ ambiguite d'extension comme .a26/.bin pour Atari 2600 - TermFindNesRom    }
+{ gere deja correctement le cas "extension deja presente" vs "nom nu" ). }
+Procedure TermCmd_StartNesProgram(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ { Meme retrait de guillemets que Start-Atari2600Program ci-dessus. }
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-NesProgram fichier.nes');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-NesProgram : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ RomPath := TermFindNesRom(Dir, CurrParam);
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CNES', '');
+End;
+
+{ Start-LinuxProgram (2026-08-31, demande explicite de l'utilisateur,      }
+{ exemples donnes avec un nom SANS extension (".\hello") ET un ELF nomme    }
+{ explicitement (".elf")) - meme motif exact que les Start-*Program        }
+{ ci-dessus (procedure DEDIEE, message de syntaxe propre) - PowerShell dev }
+{ uniquement. Reutilise TermFindElfExecutable (voir le VRAI bogue de       }
+{ chemin absolu trouve+corrige juste au-dessus, pres de TermFindNesRom) -   }
+{ detection PAR SIGNATURE ELF reelle (octets $7F 'E' 'L' 'F'), jamais par   }
+{ extension - fonctionne donc deja uniformement pour les 2 exemples de     }
+{ l'utilisateur sans logique supplementaire specifique a l'extension. }
+Procedure TermCmd_StartLinuxProgram(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, ElfPath: String;
+Begin
+ { Meme retrait de guillemets que Start-Atari2600Program/Start-NesProgram   }
+ { ci-dessus. }
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-LinuxProgram fichier (executable ELF)');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-LinuxProgram : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ ElfPath := TermFindElfExecutable(Dir, CurrParam);
+ If ElfPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie, ou ce ' +
+   'n''est pas un executable ELF valide.');
+  Exit;
+ End;
+ CreateEmulatorTab(ElfPath, '-CELF64', '');
 End;
 
 { LOADFIX (2026-08-30, demande explicite de l utilisateur) : reproduit le  }
@@ -43864,7 +43931,9 @@ Procedure TermCmd_Linux(Var TP: TTerminalPanel; ParamStr: String);
 Var
  CurrParam, Dir, ElfPath: String;
 Begin
- CurrParam := TermExtractParam(ParamStr, 1);
+ { Guillemets retires (voir TermCmd_StartLinuxProgram) : un chemin entre    }
+ { guillemets fonctionne desormais aussi tape directement dans ce shell. }
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : LINUX fichier');
   Exit;
@@ -62924,6 +62993,10 @@ Begin
    '  Start-DosProgram fichier[.exe/.com]     Emulateur DOS (8086)');
   TermAddLine(TP,
    '  Start-Atari2600Program fichier[.a26/.bin]  Emulateur Atari 2600');
+  TermAddLine(TP,
+   '  Start-NesProgram fichier[.nes]           Emulateur NES');
+  TermAddLine(TP,
+   '  Start-LinuxProgram fichier               Emulateur Linux x86-64 (ELF)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -63164,6 +63237,16 @@ Var
 Begin
  TermFindElfExecutable := '';
  Base := Dir;
+ { BOGUE REEL trouve en implantant Start-LinuxProgram (2026-08-31,          }
+ { demande explicite de l'utilisateur, exemple donne avec un chemin         }
+ { ABSOLU) : contrairement a TOUTES les fonctions TermFind*Rom/Executable   }
+ { soeurs (Nes/Atari2600/Coco3/Dos), il manquait ici la garde "chemin deja  }
+ { absolu (lettre de lecteur) : ne pas le prefixer par Dir" - un chemin     }
+ { comme "C:\Programs\Linux\hello.elf" se retrouvait donc concatene EN      }
+ { PLUS du repertoire courant ("C:\Dossier\Actuel\C:\Programs\..."), un     }
+ { chemin invalide qui echouait TOUJOURS silencieusement - deja un bogue    }
+ { pour la commande LINUX existante, pas seulement le nouvel alias. }
+ If (Length(CmdName) >= 2) And (CmdName[2] = ':') Then Base := '';
  If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
  Candidate := Base + CmdName;
  If Not FileExists(Candidate) Then Exit;
@@ -63368,7 +63451,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 100;
+ PS_CMD_ALIASES = 102;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -63446,6 +63529,8 @@ Const
    'INVOKE-WIN16','START-WIN16',
   'START-DOSPROGRAM',
   'START-ATARI2600PROGRAM',
+  'START-NESPROGRAM',
+  'START-LINUXPROGRAM',
   'LOG',
   'HELP','GET-HELP','?'
  );
@@ -63525,6 +63610,8 @@ Const
   58,58,58,58,58,
   59,
   77,
+  78,
+  79,
   60,
   61,61,61
  );
@@ -63997,6 +64084,8 @@ Begin
     58: TermCmd_Win16Launch(TP, ParamStr);  { START-WIN16*/INVOKE-WIN16* }
     59: TermCmd_DosLaunch(TP, ParamStr);          { START-DOSPROGRAM }
     77: TermCmd_StartAtari2600Program(TP, ParamStr); { START-ATARI2600PROGRAM }
+    78: TermCmd_StartNesProgram(TP, ParamStr);       { START-NESPROGRAM }
+    79: TermCmd_StartLinuxProgram(TP, ParamStr);      { START-LINUXPROGRAM }
     60: TermCmd_LOG(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
    Else Begin
