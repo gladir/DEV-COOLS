@@ -62783,6 +62783,95 @@ Begin
  TermAddLine(TP, ValueLine);
 End;
 
+{ --- ConvertTo-Html (2026-09-01) : meme entree que ConvertTo-Csv ($objet  }
+{ deja construit par ConvertFrom-Yaml/StringData/SddlString), sortie =     }
+{ le VRAI document HTML que produit la cmdlet reelle (<html><head><title> }
+{ ... <table> avec une ligne <th> et une ligne <td>) plutot qu'un simple   }
+{ echo - noms/valeurs de propriete echappes (&amp;/&lt;/&gt;) puisqu'ils   }
+{ peuvent contenir ces caracteres et casseraient sinon le HTML genere. }
+
+Function ConvToHtmlEscape(S: AnsiString): AnsiString;
+Var
+ I: Integer;
+ Res: AnsiString;
+Begin
+ Res := '';
+ For I := 1 To Length(S) Do Begin
+  Case S[I] Of
+   '&': Res := Res + '&amp;';
+   '<': Res := Res + '&lt;';
+   '>': Res := Res + '&gt;';
+   Else Res := Res + S[I];
+  End;
+ End;
+ ConvToHtmlEscape := Res;
+End;
+
+Procedure TermCmd_ConvertToHtml(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, UpLevel, TitleArg, HeaderRow, ValueRow, ColGroup: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ VarArg := ''; TitleArg := 'HTML TABLE';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-INPUTOBJECT') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If (UpLevel = '-TITLE') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then TitleArg := LocalArgs[I];
+  End Else If (VarArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertTo-Html $objet [-Title texte]');
+  TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
+   'ConvertFrom-Yaml/StringData/SddlString)');
+  Exit;
+ End;
+ SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'ConvertTo-Html : ''' + VarArg + ''' n''est pas un objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'ConvertTo-Html : objet sans propriete.');
+  Exit;
+ End;
+
+ HeaderRow := '<tr>'; ValueRow := '<tr>'; ColGroup := '<colgroup>';
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  ColGroup := ColGroup + '<col/>';
+  HeaderRow := HeaderRow + '<th>' + ConvToHtmlEscape(P^.Name) + '</th>';
+  ValueRow := ValueRow + '<td>' + ConvToHtmlEscape(P^.Value) + '</td>';
+  P := P^.Next;
+ End;
+ ColGroup := ColGroup + '</colgroup>';
+ HeaderRow := HeaderRow + '</tr>';
+ ValueRow := ValueRow + '</tr>';
+
+ TermAddLine(TP, '<html><head><title>' + TitleArg + '</title></head><body>');
+ TermAddLine(TP, '<table>');
+ TermAddLine(TP, ColGroup);
+ TermAddLine(TP, HeaderRow);
+ TermAddLine(TP, ValueRow);
+ TermAddLine(TP, '</table>');
+ TermAddLine(TP, '</body></html>');
+End;
+
 { --- Traitement des lignes tapees dans "PowerShell dev" (Entree) : here-  }
 { strings/assignations/lecture de propriete/substitution generique -       }
 { appelee depuis HandleTerminalEvent (touche Entree, SK_POWERSHELL         }
@@ -65477,6 +65566,9 @@ Begin
    '  ConvertTo-Csv $objet [-Delimiter c]   Affiche l''en-tete+valeurs ' +
    'CSV de $objet');
   TermAddLine(TP,
+   '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
+   'reel (table) de $objet');
+  TermAddLine(TP,
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
   TermAddLine(TP,
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
@@ -66112,7 +66204,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 104;
+ PS_CMD_ALIASES = 105;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -66173,6 +66265,7 @@ Const
   'CONVERTFROM-STRINGDATA',
   'CONVERT-PATH',
   'CONVERTTO-CSV',
+  'CONVERTTO-HTML',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -66257,6 +66350,7 @@ Const
   76,
   80,
   81,
+  82,
   46,
   47,
   48,
@@ -66732,6 +66826,7 @@ Begin
     76: TermCmd_ConvertFromStringData(TP, ParamStr);
     80: TermCmd_ConvertPath(TP, ParamStr);
     81: TermCmd_ConvertToCsv(TP, ParamStr);
+    82: TermCmd_ConvertToHtml(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
