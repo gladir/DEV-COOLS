@@ -48937,6 +48937,69 @@ Begin
  TermAddLine(TP, Dir);
 End;
 
+{ --- CONVERT-PATH (2026-09-01) : resout un chemin relatif/avec jokers vers }
+{ son chemin PSPath absolu, comme le fait la vraie cmdlet. Wildcards (*/?) }
+{ enumeres via FindFirst/FindNext (meme mecanisme que Get-ChildItem plus    }
+{ haut) ; sans jokers, un simple FExpand suffit mais le resultat doit      }
+{ malgre tout exister sur disque (comportement reel : erreur sinon). }
+
+Procedure TermCmd_ConvertPath(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ PathArg, UpLevel, Dir, FullPath, Matched: String;
+ Info: SearchRec;
+ Found: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ PathArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-PATH') Or (UpLevel = '-LITERALPATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := LocalArgs[I];
+  End Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Convert-Path -Path chemin');
+  Exit;
+ End;
+
+ If (Pos('*', PathArg) > 0) Or (Pos('?', PathArg) > 0) Then Begin
+  Dir := ExtractFilePath(FExpand(PathArg));
+  Found := False;
+  FindFirst(PathArg, AnyFile, Info);
+  While DosError = 0 Do Begin
+   If (Info.Name <> '.') And (Info.Name <> '..') Then Begin
+    Found := True;
+    Matched := Dir + Info.Name;
+    TermAddLine(TP, Matched);
+   End;
+   FindNext(Info);
+  End;
+  If Not Found Then
+   TermAddLine(TP,
+    'Convert-Path : Impossible de trouver le chemin ''' + PathArg +
+    ''' car il n''existe pas.');
+ End Else Begin
+  FullPath := FExpand(PathArg);
+  If Not (FileExists(FullPath) Or DirectoryExists(FullPath)) Then
+   TermAddLine(TP,
+    'Convert-Path : Impossible de trouver le chemin ''' + PathArg +
+    ''' car il n''existe pas.')
+  Else
+   TermAddLine(TP, FullPath);
+ End;
+End;
+
 { --- PUSHD / PUSH-LOCATION --- }
 
 Procedure TermCmd_PUSHD(Var TP: TTerminalPanel;
@@ -65326,6 +65389,9 @@ Begin
   TermAddLine(TP,
    '  ConvertFrom-StringData -Path f.txt    Affiche les paires cle=valeur');
   TermAddLine(TP,
+   '  Convert-Path -Path chemin             Resout en chemin absolu ' +
+   '(jokers *,? geres)');
+  TermAddLine(TP,
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
   TermAddLine(TP,
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
@@ -65961,7 +66027,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 102;
+ PS_CMD_ALIASES = 103;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -66020,6 +66086,7 @@ Const
   'CONVERTFROM-SECURESTRING',
   'CONVERTFROM-SDDLSTRING',
   'CONVERTFROM-STRINGDATA',
+  'CONVERT-PATH',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -66102,6 +66169,7 @@ Const
   74,
   75,
   76,
+  80,
   46,
   47,
   48,
@@ -66575,6 +66643,7 @@ Begin
     74: TermCmd_ConvertFromSecureString(TP, ParamStr);
     75: TermCmd_ConvertFromSddlString(TP, ParamStr);
     76: TermCmd_ConvertFromStringData(TP, ParamStr);
+    80: TermCmd_ConvertPath(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
