@@ -4533,7 +4533,16 @@ Type
   { inchange (Loaded jamais mis a True pour eux). TotalSteps remplace la   }
   { variable locale "Steps" qui ne peut plus survivre entre les appels.    }
   Loaded     : Boolean;
-  TotalSteps : LongInt;
+  { Elargi LongInt->Int64 (Etape 5 ARM64) : une verification RSA/bignum      }
+  { reelle (cle de signature du noyau) execute legitimement plusieurs        }
+  { milliards d instructions dans un interpreteur - depassait la marge sous  }
+  { le plafond LongInt (~2,147 milliards) deja presque atteinte par          }
+  { ARM64_MAX_STEPS=1,8 milliard. Sans risque pour les AUTRES backends       }
+  { (C64/NES/A2600/CoCo3/6809/6502/68000/Cray1/p-machine/Z80/ELF64/OS2LX) :  }
+  { tous comparent a des plafonds bien plus petits (<=5 000 000),            }
+  { elargissement purement additif, aucune comparaison/format existante ne   }
+  { change de comportement.                                                 }
+  TotalSteps : Int64;
   { BOGUE REEL (2026-08-29) signale par l utilisateur : le pompage         }
   { periodique (DOS_RunOneChunk, toutes les 80 ms) rappelait               }
   { INCONDITIONNELLEMENT DrawEmulatorPanel meme quand P.VRAM/le curseur/   }
@@ -7198,7 +7207,23 @@ Var
  { l instant (voir project_devenv_arm64_emulator.md pour la feuille de route }
  { complete en etapes). Modele memoire plat calque sur ELF64_Mem/LX_Mem      }
  { (un seul tampon, adresse physique = index direct).                        }
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ ARM64_ElrLogCount : LongInt; { crochet temporaire - trace toute ecriture de }
+                               { ELR_EL1 pour diagnostiquer le trampoline KPTI}
+ ARM64_LoopTraceCount : LongInt; { crochet temporaire de deboguage Etape 5,   }
+                                  { voir Arm64_RunOneChunk - PAS pour le code }
+                                  { livre final.                              }
+ {$ENDIF}
  ARM64_Mem        : Array[0..$FFFFFFF] Of Byte; { 256 Mo de RAM physique emulee }
+ { NEON/AdvSIMD minimal (Etape 5) - V0-V31, 128 bits chacun (Hi=bits[127:64],}
+ { Lo=bits[63:0], pas de type 128 bits natif en Pascal). NEON/AdvSIMD fait   }
+ { partie du socle OBLIGATOIRE de l architecture AArch64 (contrairement a   }
+ { SVE/SVE2, vraies extensions optionnelles) - signaler son absence via     }
+ { ID_AA64PFR0_EL1 (fait a l Etape 5 initiale) n empeche PAS le noyau de l  }
+ { utiliser dans ses chemins de code memcpy/clear_page optimises, qui ne    }
+ { verifient jamais cette capacite (erreur de comprehension initiale).      }
+ ARM64_VRegHi     : Array[0..31] Of QWord;
+ ARM64_VRegLo     : Array[0..31] Of QWord;
  ARM64_Reg        : Array[0..30] Of QWord;      { X0..X30 (X30=LR par convention}
                                     { ABI, RET/BLR utilisent le registre       }
                                     { explicitement decode, pas un registre    }
@@ -7228,6 +7253,21 @@ Var
  ARM64_ELR_EL1    : QWord;
  ARM64_SPSR_EL1   : QWord;
  ARM64_DaifI      : Boolean; { PSTATE.I - D/A/F non modelises (pas d EL2/3) }
+ { Etape 5 : distingue EL0 (True) de EL1 (False) - necessaire pour choisir  }
+ { le bon vecteur d exception (meme niveau $200/$280 vs niveau inferieur    }
+ { $400/$480) et le bon EC (Data/Instruction Abort "meme niveau" vs "niveau }
+ { inferieur") au moment d une injection de fault/IRQ. Bogue reel decouvert }
+ { en atteignant le tout premier ERET vers l espace utilisateur : sans      }
+ { cette distinction, Arm64_InjectFault utilisait TOUJOURS le vecteur       }
+ { "meme niveau", ce qui fait entrer le noyau par le MAUVAIS gestionnaire   }
+ { (celui prevu pour une fault noyau-vers-noyau) des qu une fault survient  }
+ { APRES un ERET vers l espace utilisateur - corrompant silencieusement ses }
+ { propres hypotheses de contexte (constate : ELR_EL1 finit par contenir    }
+ { une adresse aberrante quelques instructions plus tard, dans le           }
+ { trampoline KPTI). Mis a jour uniquement par ERET (d apres SPSR_EL1.M) et }
+ { remis a False a l entree de TOUTE exception (une exception ramene        }
+ { toujours a EL1 par definition).                                         }
+ ARM64_AtEL0      : Boolean;
  ARM64_Sctlr      : QWord;   { stockage passif - l Etape 4 (MMU) l utilisera}
  ARM64_Ttbr0      : QWord;
  ARM64_Ttbr1      : QWord;   { Etape 5 : table "haute" (espace noyau), voir }
@@ -7236,13 +7276,35 @@ Var
  ARM64_Mair       : QWord;
  ARM64_Tpidr0     : QWord;   { stockage passif (Etape 5) - pointeur de thread}
  ARM64_Tpidr1     : QWord;
+ ARM64_TpidrRO0   : QWord;   { stockage passif (Etape 5) - TPIDRRO_EL0        }
+ ARM64_ContextIdr : QWord;   { stockage passif (Etape 5) - CONTEXTIDR_EL1     }
+ ARM64_Disr       : QWord;   { stockage passif (Etape 5) - DISR_EL1           }
+ ARM64_Osdlr      : QWord;   { stockage passif (Etape 5) - OSDLR_EL1          }
+ ARM64_DbgBvr0    : QWord;   { stockage passif (Etape 5) - DBGBVR0_EL1        }
+ ARM64_DbgBcr0    : QWord;   { stockage passif (Etape 5) - DBGBCR0_EL1        }
+ ARM64_DbgWvr0    : QWord;   { stockage passif (Etape 5) - DBGWVR0_EL1        }
+ ARM64_DbgWcr0    : QWord;   { stockage passif (Etape 5) - DBGWCR0_EL1        }
+ ARM64_CntKCtl    : QWord;   { stockage passif (Etape 5) - CNTKCTL_EL1        }
+ { Etape 5 : injection de fault synchrone reelle (voir Arm64_InjectFault) - }
+ { FAR_EL1/ESR_EL1 renseignes a chaque Data/Instruction Abort injecte dans  }
+ { l invite, lus normalement par le VRAI gestionnaire de fault du noyau.    }
+ ARM64_Far        : QWord;
+ ARM64_Esr        : QWord;
+ ARM64_Fpcr       : QWord;   { stockage passif (Etape 5, NEON) - FPCR       }
+ ARM64_Fpsr       : QWord;   { stockage passif (Etape 5, NEON) - FPSR       }
  ARM64_Cpacr      : QWord;
  ARM64_Mdscr      : QWord;   { stockage passif (Etape 5) - controle debug   }
                               { materiel, jamais actionne (pas de fault de   }
                               { debogage generee par cet emulateur).         }
- ARM64_SpEl0      : QWord;   { stockage passif (Etape 5) - jamais lu/utilise}
-                              { activement (pas de modele EL0/SP_EL0 reel,   }
-                              { toujours EL1 avec SP_EL1 dans ce modele).    }
+ { ARM64_SpEl0 ACTIVEMENT utilise depuis que EL0 est reellement atteint     }
+ { (voir ARM64_AtEL0) : ARM64_SP EST SP_EL0 ou SP_EL1 selon le niveau       }
+ { COURANT, banque physiquement echangee (comme le vrai materiel) a chaque  }
+ { transition ERET/exception - voir la note sur ARM64_AtEL0 pour le bogue   }
+ { reel que cette confusion a cause (SP restait celui du noyau meme en      }
+ { executant du "code utilisateur", corrompant silencieusement tout acces   }
+ { relatif a SP dans ce code).                                              }
+ ARM64_SpEl0      : QWord;
+ ARM64_SpEl1      : QWord;
  ARM64_CntFreq    : QWord;
  ARM64_CntPct     : QWord;
  ARM64_CntpCval   : QWord;
@@ -8694,6 +8756,13 @@ Var
  { anciennes variables LOCALES EmuPumpCnt/EmuLastDraw. }
  DOSAsync_PumpCnt  : LongInt;
  DOSAsync_LastDraw : LongInt;
+ { Meme correctif que DOSAsync_LastDraw (voir StepEmulator, bloc -CARM64) :  }
+ { Arm64_RunOneChunk n a, contrairement a DOS_RunOneChunk, AUCUN pompage     }
+ { interne throttlant deja son propre rythme - DrawEmulatorPanel etait donc }
+ { rappelee a la cadence BRUTE de la boucle principale (potentiellement     }
+ { bien plus rapide que les ~12 Hz du cas DOS deja corrige), scintillement  }
+ { signale par l utilisateur comme "insupportable" (2026-09-01). }
+ ARM64Async_LastDraw : LongInt;
 Const
  { Palette C64 (16 couleurs standard, indices $00-$0F du VIC-II) mise en }
  { correspondance avec la palette EGA 16 couleurs du panneau emulateur - }
@@ -63355,6 +63424,14 @@ Const
  { SP_EL0 dans ce modele) - offset $280 dans la table de vecteurs pointee   }
  { par VBAR_EL1 (convention AArch64 fixe, independante de l implementation).}
  ARM64_VEC_IRQ_OFFSET = QWord($280);
+ { Etape 5 : exception synchrone (Data/Instruction Abort), MEME niveau      }
+ { (EL1), pile SP_ELx - offset $200 (distinct de $280 pour IRQ ci-dessus).  }
+ ARM64_VEC_SYNC_OFFSET = QWord($200);
+ { Meme famille de vecteurs, mais pour une exception prise depuis EL0        }
+ { (ARM64_AtEL0=True) plutot que depuis EL1 - offsets $400/$480 au lieu de   }
+ { $200/$280, table des 16 emplacements du vecteur d exception AArch64.      }
+ ARM64_VEC_SYNC_LOWER_OFFSET = QWord($400);
+ ARM64_VEC_IRQ_LOWER_OFFSET  = QWord($480);
  { Cles composees (op1,CRn,CRm,op2) des registres systeme geres par MRS/MSR }
  { - verifiees par assemblage keystone + inspection bit-a-bit reelle (voir  }
  { project_devenv_arm64_emulator.md), aucune constante devinee a la main.   }
@@ -63389,9 +63466,35 @@ Const
  ARM64_SYSREG_ID_AA64MMFR0_EL1= 56;
  ARM64_SYSREG_CTR_EL0         = 6145;
  ARM64_SYSREG_TPIDR_EL0       = 7810;
+ ARM64_SYSREG_TPIDRRO_EL0     = 7811;
+ ARM64_SYSREG_CONTEXTIDR_EL1  = 1665;
+ ARM64_SYSREG_DISR_EL1        = 1545;
+ { OSDLR_EL1/OSLAR_EL1/MDSCR_EL1 (voir plus bas) sont op0=2 (registres de     }
+ { debogage) - corrige pour inclure le bit $4000 (voir SysKey ci-dessus) qui }
+ { les distingue desormais des registres op0=3 de meme (op1,CRn,CRm,op2) ;   }
+ { AVANT ce correctif ces 3 constantes etaient numeriquement fausses (o0     }
+ { jamais capture), mais avaient par chance fonctionne quand meme puisque    }
+ { rien d autre ne revendiquait encore leurs valeurs sans le bit $4000 - le  }
+ { correctif SysKey les a fait cesser de correspondre du jour au lendemain,  }
+ { cause du regression reelle observee juste apres (plus AUCUNE ligne de     }
+ { console, echec des la toute premiere utilisation de MDSCR_EL1).          }
+ ARM64_SYSREG_OSDLR_EL1       = $4000 Or 156;
+ ARM64_SYSREG_OSLAR_EL1       = $4000 Or 132;
+ { registres de point d arret/observation materiels (index 0 uniquement -   }
+ { "hw-breakpoint: found 1 breakpoint and 1 watchpoint registers" dans le    }
+ { DTB/materiel simule) - op0=2, d ou le bit $4000 (voir SysKey ci-dessus). }
+ ARM64_SYSREG_DBGBVR0_EL1     = $4000 Or 4;
+ ARM64_SYSREG_DBGBCR0_EL1     = $4000 Or 5;
+ ARM64_SYSREG_DBGWVR0_EL1     = $4000 Or 6;
+ ARM64_SYSREG_DBGWCR0_EL1     = $4000 Or 7;
+ ARM64_SYSREG_CNTKCTL_EL1     = 1800;
+ ARM64_SYSREG_FAR_EL1         = 768;
+ ARM64_SYSREG_ESR_EL1         = 656;
+ ARM64_SYSREG_FPCR            = 6688;
+ ARM64_SYSREG_FPSR            = 6689;
  ARM64_SYSREG_CPACR_EL1       = 130;
  ARM64_SYSREG_TPIDR_EL1       = 1668;
- ARM64_SYSREG_MDSCR_EL1       = 18;
+ ARM64_SYSREG_MDSCR_EL1       = $4000 Or 18; { op0=2, voir la note plus haut }
  ARM64_SYSREG_ID_AA64MMFR1_EL1= 57;
  ARM64_SYSREG_ID_AA64ISAR1_EL1= 49;
  ARM64_SYSREG_ID_AA64PFR1_EL1 = 33;
@@ -63419,7 +63522,20 @@ Const
  { vrai demarrage de noyau Linux complet execute legitimement bien plus     }
  { d instructions avant le premier message console, meme sans boucle        }
  { infinie (mise en place de TOUTES les tables de pages du noyau, etc).     }
- ARM64_MAX_STEPS = 500000000;
+ { Releve une seconde fois (500M->1.8Md) : le PC scrute lors du deballage   }
+ { reel de initramfs (gunzip+cpio d un vrai initrd Debian de 25,68 Mo) varie}
+ { largement d un echantillon a l autre (pas le motif d adresses fixes et   }
+ { repetitives observe lors du vrai deadlock LDXP/STXP resolu cette meme    }
+ { session) - travail legitimement lourd, pas une boucle bloquee.           }
+ { Releve une TROISIEME fois (1,8Md->10Md) : le noyau a ensuite atteint une }
+ { VRAIE verification RSA/bignum (cle de signature du noyau, motif          }
+ { umull/adc de multiplication multi-precision confirme par desassemblage   }
+ { direct du vmlinuz) qui a consomme l integralite du plafond precedent     }
+ { sans terminer - un modexp RSA reel execute legitimement plusieurs        }
+ { milliards d instructions dans un interpreteur. `P.TotalSteps` elargi     }
+ { LongInt->Int64 pour lever la contrainte qui plafonnait a 1,8 milliard    }
+ { (voir sa declaration).                                                  }
+ ARM64_MAX_STEPS = 10000000000;
  { Chantier ARM64, Etape 5 : plan memoire du chargeur de noyau reel. Le     }
  { noyau se charge a RAM_BASE+text_offset (lu dans son propre en-tete, voir }
  { Emu_LoadARM64Kernel) - DTB et initrd fixes bien plus haut pour ne jamais }
@@ -63431,8 +63547,8 @@ Const
  { u32 grand-boutistes linux,initrd-start/-end dans ARM64_DtbTemplate,     }
  { seules proprietes du DTB qui dependent de la taille reelle de l initrd  }
  { charge (tout le reste du "materiel" decrit est fixe, voir le plan).     }
- ARM64_DTB_INITRD_START_OFS = 260;
- ARM64_DTB_INITRD_END_OFS   = 276;
+ ARM64_DTB_INITRD_START_OFS = 264; { experience "nosmp" - offsets recalcules  }
+ ARM64_DTB_INITRD_END_OFS   = 280; { par recherche binaire, pas devines.      }
 
 Function Arm64_RegZR(Idx: Byte): QWord;
 Begin
@@ -63611,6 +63727,11 @@ End;
 { TTBR0, VA[63]=1 -> TTBR1, plutot que la verification formelle complete    }
 { "bits[63:T0SZ] tous nuls / bits[63:T1SZ] tous uns, sinon fault" - une     }
 { configuration symetrique rend les deux verifications equivalentes.       }
+{ Definie plus bas (juste apres Arm64_ServiceIrq, meme motif d entree d      }
+{ exception) - Forward necessaire car Arm64_FetchInstr/GetMemV/PutMemV      }
+{ ci-dessous en ont besoin des l Etape 5 (injection de fault reelle).       }
+Procedure Arm64_InjectFault(FaultVA: QWord; IsWrite, IsInstrFetch: Boolean); Forward;
+
 Function Arm64_Translate(VA: QWord; Var PA: QWord): Boolean;
 Var
  TxSZ, VABits: Byte;
@@ -63667,9 +63788,21 @@ Var
  PA: QWord;
 Begin
  If Not Arm64_Translate(PC, PA) Then Begin
-  ARM64_Halted := True;
-  ARM64_LastBadPC := PC;
-  ARM64_HaltReason := 'faute de traduction MMU (recherche d instruction) a VA=$' + HexQWord(PC);
+  { Etape 5 : VRAIE injection de Data/Instruction Abort dans l invite (voir }
+  { Arm64_InjectFault) plutot que l ancien "arret propre" de l Etape 4 -    }
+  { le noyau gere lui-meme le "demand paging" via son propre gestionnaire   }
+  { de fault, exactement comme sur du vrai materiel. Repli sur l ancien     }
+  { comportement (arret) UNIQUEMENT si VBAR_EL1 n est pas encore installe   }
+  { (avant que le noyau n ait configure ses propres vecteurs) - sinon la    }
+  { faute sauterait vers une adresse non significative, boucle infinie de  }
+  { fautes sans aucun diagnostic utile.                                     }
+  If ARM64_VBAR_EL1 <> 0 Then
+   Arm64_InjectFault(PC, False, True)
+  Else Begin
+   ARM64_Halted := True;
+   ARM64_LastBadPC := PC;
+   ARM64_HaltReason := 'faute de traduction MMU (recherche d instruction) a VA=$' + HexQWord(PC);
+  End;
   Arm64_FetchInstr := 0;
   Exit;
  End;
@@ -63685,9 +63818,14 @@ Var
  PA: QWord;
 Begin
  If Not Arm64_Translate(VA, PA) Then Begin
-  ARM64_Halted := True;
-  ARM64_LastBadPC := ARM64_PC;
-  ARM64_HaltReason := 'faute de traduction MMU (lecture) a VA=$' + HexQWord(VA);
+  If ARM64_VBAR_EL1 <> 0 Then
+   Arm64_InjectFault(VA, False, False)
+  Else Begin
+   ARM64_Halted := True;
+   ARM64_LastBadPC := ARM64_PC;
+   ARM64_HaltReason := 'faute de traduction MMU (lecture) a VA=$' + HexQWord(VA) +
+    ' a PC=$' + HexQWord(ARM64_PC);
+  End;
   Arm64_GetMemV := 0;
   Exit;
  End;
@@ -63699,9 +63837,14 @@ Var
  PA: QWord;
 Begin
  If Not Arm64_Translate(VA, PA) Then Begin
-  ARM64_Halted := True;
-  ARM64_LastBadPC := ARM64_PC;
-  ARM64_HaltReason := 'faute de traduction MMU (ecriture) a VA=$' + HexQWord(VA);
+  If ARM64_VBAR_EL1 <> 0 Then
+   Arm64_InjectFault(VA, True, False)
+  Else Begin
+   ARM64_Halted := True;
+   ARM64_LastBadPC := ARM64_PC;
+   ARM64_HaltReason := 'faute de traduction MMU (ecriture) a VA=$' + HexQWord(VA) +
+    ' a PC=$' + HexQWord(ARM64_PC);
+  End;
   Exit;
  End;
  Arm64_PutMem(PA, V, ByteWidth);
@@ -63878,6 +64021,19 @@ Begin
                                     { purement indicatif, DC/IC sont deja    }
                                     { des no-op.                             }
   ARM64_SYSREG_TPIDR_EL0: Val := ARM64_Tpidr0;
+  ARM64_SYSREG_TPIDRRO_EL0: Val := ARM64_TpidrRO0;
+  ARM64_SYSREG_CONTEXTIDR_EL1: Val := ARM64_ContextIdr;
+  ARM64_SYSREG_DISR_EL1: Val := ARM64_Disr;
+  ARM64_SYSREG_OSDLR_EL1: Val := ARM64_Osdlr;
+  ARM64_SYSREG_DBGBVR0_EL1: Val := ARM64_DbgBvr0;
+  ARM64_SYSREG_DBGBCR0_EL1: Val := ARM64_DbgBcr0;
+  ARM64_SYSREG_DBGWVR0_EL1: Val := ARM64_DbgWvr0;
+  ARM64_SYSREG_DBGWCR0_EL1: Val := ARM64_DbgWcr0;
+  ARM64_SYSREG_CNTKCTL_EL1: Val := ARM64_CntKCtl;
+  ARM64_SYSREG_FAR_EL1: Val := ARM64_Far;
+  ARM64_SYSREG_ESR_EL1: Val := ARM64_Esr;
+  ARM64_SYSREG_FPCR: Val := ARM64_Fpcr;
+  ARM64_SYSREG_FPSR: Val := ARM64_Fpsr;
   ARM64_SYSREG_TPIDR_EL1: Val := ARM64_Tpidr1;
   ARM64_SYSREG_CPACR_EL1: Val := ARM64_Cpacr;
   ARM64_SYSREG_MDSCR_EL1: Val := ARM64_Mdscr;
@@ -63917,7 +64073,20 @@ End;
 { Ecriture MSR d un registre systeme - meme convention (False = cle         }
 { inconnue).                                                                }
 Function Arm64_MsrWrite(SysKey: LongWord; Val: QWord): Boolean;
+{$IFDEF ARM64_STAGE5_DEBUGHOOK}
+Var
+ ElrDbgF: Text;
+{$ENDIF}
 Begin
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ If (SysKey = ARM64_SYSREG_ELR_EL1) And (ARM64_ElrLogCount < 500) Then Begin
+  Inc(ARM64_ElrLogCount);
+  Assign(ElrDbgF, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_ELR_TRACE.TXT');
+  If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_ELR_TRACE.TXT') Then Append(ElrDbgF) Else Rewrite(ElrDbgF);
+  WriteLn(ElrDbgF, 'MSR ELR_EL1 := $' + HexQWord(Val) + '  (PC=$' + HexQWord(ARM64_PC) + ')');
+  Close(ElrDbgF);
+ End;
+ {$ENDIF}
  Arm64_MsrWrite := True;
  Case SysKey Of
   ARM64_SYSREG_NZCV: Begin
@@ -63942,6 +64111,20 @@ Begin
   ARM64_SYSREG_TCR_EL1: ARM64_Tcr := Val;
   ARM64_SYSREG_MAIR_EL1: ARM64_Mair := Val;
   ARM64_SYSREG_TPIDR_EL0: ARM64_Tpidr0 := Val;
+  ARM64_SYSREG_TPIDRRO_EL0: ARM64_TpidrRO0 := Val;
+  ARM64_SYSREG_CONTEXTIDR_EL1: ARM64_ContextIdr := Val;
+  ARM64_SYSREG_DISR_EL1: ARM64_Disr := Val;
+  ARM64_SYSREG_OSDLR_EL1: ARM64_Osdlr := Val;
+  ARM64_SYSREG_DBGBVR0_EL1: ARM64_DbgBvr0 := Val;
+  ARM64_SYSREG_DBGBCR0_EL1: ARM64_DbgBcr0 := Val;
+  ARM64_SYSREG_DBGWVR0_EL1: ARM64_DbgWvr0 := Val;
+  ARM64_SYSREG_DBGWCR0_EL1: ARM64_DbgWcr0 := Val;
+  ARM64_SYSREG_CNTKCTL_EL1: ARM64_CntKCtl := Val;
+  ARM64_SYSREG_FAR_EL1: ARM64_Far := Val;
+  ARM64_SYSREG_ESR_EL1: ARM64_Esr := Val;
+  ARM64_SYSREG_FPCR: ARM64_Fpcr := Val;
+  ARM64_SYSREG_FPSR: ARM64_Fpsr := Val;
+  ARM64_SYSREG_OSLAR_EL1: ; { verrou de debogage OS, non modelise : ignore }
   ARM64_SYSREG_TPIDR_EL1: ARM64_Tpidr1 := Val;
   ARM64_SYSREG_CPACR_EL1: ARM64_Cpacr := Val;
   ARM64_SYSREG_MDSCR_EL1: ARM64_Mdscr := Val;
@@ -63970,6 +64153,10 @@ End;
 { comme sur un vrai coeur ARM64 - avant de consulter l etat du GIC. Appelee }
 { une fois par instruction executee, depuis Arm64_RunOneChunk.              }
 Procedure Arm64_ServiceIrq;
+{$IFDEF ARM64_STAGE5_DEBUGHOOK}
+Var
+ ElrDbgF2: Text;
+{$ENDIF}
 Begin
  If ARM64_Halted Then Exit;
  If ARM64_DaifI Then Exit;
@@ -63979,14 +64166,119 @@ Begin
  If ARM64_GicPmr = 0 Then Exit;
  If Not ARM64_GicPending Then Exit;
  { Entree d exception IRQ, meme niveau (EL1), pile SP_ELx - offset $280.    }
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ If ARM64_ElrLogCount < 500 Then Begin
+  Inc(ARM64_ElrLogCount);
+  Assign(ElrDbgF2, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_ELR_TRACE.TXT');
+  If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_ELR_TRACE.TXT') Then Append(ElrDbgF2) Else Rewrite(ElrDbgF2);
+  WriteLn(ElrDbgF2, 'IRQ ELR_EL1 := $' + HexQWord(ARM64_PC));
+  Close(ElrDbgF2);
+ End;
+ {$ENDIF}
  ARM64_ELR_EL1 := ARM64_PC;
- ARM64_SPSR_EL1 := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
-  (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
-  (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28) Or (QWord(Arm64_Bit(ARM64_DaifI)) Shl 7) Or
-  QWord(5); { M[3:0] = EL1h (EL1 avec SP_EL1) }
+ { Etape 5 : M[3:0] enregistre desormais D'OU vient l exception (EL0t=0 si  }
+ { ARM64_AtEL0, EL1h=5 sinon) - le noyau en a besoin pour savoir comment     }
+ { revenir. Meme distinction pour le vecteur cible ($480 depuis EL0, $280   }
+ { depuis EL1) - voir la note sur ARM64_AtEL0.                              }
+ If ARM64_AtEL0 Then
+  ARM64_SPSR_EL1 := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
+   (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
+   (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28) Or (QWord(Arm64_Bit(ARM64_DaifI)) Shl 7) Or
+   QWord(0) { M[3:0] = EL0t }
+ Else
+  ARM64_SPSR_EL1 := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
+   (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
+   (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28) Or (QWord(Arm64_Bit(ARM64_DaifI)) Shl 7) Or
+   QWord(5); { M[3:0] = EL1h }
  ARM64_DaifI := True;
  ARM64_ExValid := False; { Etape 4 : une exception efface le moniteur exclusif }
- ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_IRQ_OFFSET;
+ { Banque SP_EL0/SP_EL1 (Etape 5, voir la note sur ARM64_SpEl0/SpEl1) :     }
+ { si l exception vient d EL0, ARM64_SP EST actuellement SP_EL0 - le sauver }
+ { puis rebasculer sur SP_EL1 (le noyau s attend a retrouver SA PROPRE      }
+ { pile, pas celle du processus interrompu). Si elle vient deja d EL1,      }
+ { ARM64_SP est deja SP_EL1, rien a faire.                                  }
+ If ARM64_AtEL0 Then Begin
+  ARM64_SpEl0 := ARM64_SP;
+  ARM64_SP := ARM64_SpEl1;
+ End;
+ If ARM64_AtEL0 Then ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_IRQ_LOWER_OFFSET
+ Else ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_IRQ_OFFSET;
+ ARM64_AtEL0 := False; { une exception ramene toujours a EL1 }
+End;
+
+{ Etape 5 : injection reelle de fault synchrone (Data/Instruction Abort)    }
+{ dans l invite, remplace l ancien "arret propre" de l Etape 4 - decouvert  }
+{ necessaire en atteignant la creation du tout premier processus           }
+{ utilisateur (`/init` depuis l initramfs) : le noyau y ecrit reellement    }
+{ sur une page pas encore mappee (argv/envp/auxv), exactement le mecanisme  }
+{ fondamental de "demand paging" que TOUT noyau Linux reel gere lui-meme    }
+{ via son propre gestionnaire de fault - ce n est pas un cas limite. Meme   }
+{ motif exact qu Arm64_ServiceIrq (ELR/SPSR/DAIF/PC), mais vecteur $200     }
+{ (exception synchrone, meme niveau, SP_ELx) au lieu de $280 (IRQ), et      }
+{ FAR_EL1/ESR_EL1 renseignes en plus pour que le VRAI gestionnaire de fault }
+{ du noyau puisse determiner l adresse et la cause. DFSC/IFSC utilise       }
+{ toujours "Translation fault, niveau 0" (ISS=$04) - le niveau exact importe}
+{ peu au gestionnaire generique (seule la FAMILLE de fault - traduction -   }
+{ compte pour choisir le chemin "page manquante, l allouer" plutot qu une   }
+{ autre reponse). ELR_EL1 pointe l instruction FAUTIVE elle-meme (pas       }
+{ l instruction suivante) afin qu ERET la reessaie une fois la page mappee. }
+Procedure Arm64_InjectFault(FaultVA: QWord; IsWrite, IsInstrFetch: Boolean);
+Var
+ EC, ISS: QWord;
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ ElrDbgF3: Text;
+ {$ENDIF}
+Begin
+ ARM64_Far := FaultVA;
+ { Etape 5 : EC distingue "meme niveau" ($21/$25, la fault reste a EL1, ex.  }
+ { le noyau qui ecrit lui-meme sur une page utilisateur via STTR) de        }
+ { "niveau inferieur" ($20/$24, un ERET a deja eu lieu vers EL0 - voir la   }
+ { note sur ARM64_AtEL0). Bogue reel corrige ici : utiliser TOUJOURS "meme  }
+ { niveau" faisait entrer le noyau par le mauvais gestionnaire des qu une   }
+ { fault survenait apres le tout premier retour vers l espace utilisateur.  }
+ If ARM64_AtEL0 Then Begin
+  If IsInstrFetch Then EC := $20 Else EC := $24;
+ End Else Begin
+  If IsInstrFetch Then EC := $21 Else EC := $25;
+ End;
+ ISS := $04; { DFSC/IFSC = "Translation fault, niveau 0" }
+ If (Not IsInstrFetch) And IsWrite Then ISS := ISS Or (QWord(1) Shl 6); { WnR }
+ ARM64_Esr := (EC Shl 26) Or (QWord(1) Shl 25) Or ISS; { IL=1 (instruction 32 bits) }
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ If ARM64_ElrLogCount < 500 Then Begin
+  Inc(ARM64_ElrLogCount);
+  Assign(ElrDbgF3, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_ELR_TRACE.TXT');
+  If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_ELR_TRACE.TXT') Then Append(ElrDbgF3) Else Rewrite(ElrDbgF3);
+  WriteLn(ElrDbgF3, 'FAULT ELR_EL1 := $' + HexQWord(ARM64_PC) + ' FaultVA=$' + HexQWord(FaultVA) +
+   ' IsWrite=' + IntToStr(Ord(IsWrite)) + ' IsInstrFetch=' + IntToStr(Ord(IsInstrFetch)) +
+   ' AtEL0=' + IntToStr(Ord(ARM64_AtEL0)) +
+   ' X0=$' + HexQWord(ARM64_Reg[0]) + ' X1=$' + HexQWord(ARM64_Reg[1]) +
+   ' X8=$' + HexQWord(ARM64_Reg[8]) + ' TPIDR0=$' + HexQWord(ARM64_Tpidr0) +
+   ' SP=$' + HexQWord(ARM64_SP));
+  Close(ElrDbgF3);
+ End;
+ {$ENDIF}
+ ARM64_ELR_EL1 := ARM64_PC;
+ If ARM64_AtEL0 Then
+  ARM64_SPSR_EL1 := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
+   (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
+   (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28) Or (QWord(Arm64_Bit(ARM64_DaifI)) Shl 7) Or
+   QWord(0) { M[3:0] = EL0t }
+ Else
+  ARM64_SPSR_EL1 := (QWord(Arm64_Bit(ARM64_FlagN)) Shl 31) Or
+   (QWord(Arm64_Bit(ARM64_FlagZ)) Shl 30) Or (QWord(Arm64_Bit(ARM64_FlagC)) Shl 29) Or
+   (QWord(Arm64_Bit(ARM64_FlagV)) Shl 28) Or (QWord(Arm64_Bit(ARM64_DaifI)) Shl 7) Or
+   QWord(5); { M[3:0] = EL1h }
+ ARM64_DaifI := True;
+ ARM64_ExValid := False;
+ { Banque SP_EL0/SP_EL1 (Etape 5, voir Arm64_ServiceIrq pour la meme note). }
+ If ARM64_AtEL0 Then Begin
+  ARM64_SpEl0 := ARM64_SP;
+  ARM64_SP := ARM64_SpEl1;
+ End;
+ If ARM64_AtEL0 Then ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_SYNC_LOWER_OFFSET
+ Else ARM64_PC := ARM64_VBAR_EL1 + ARM64_VEC_SYNC_OFFSET;
+ ARM64_AtEL0 := False; { une exception ramene toujours a EL1 }
 End;
 
 { UBFM/SBFM/BFM (Etape 5) - couvre LSL/LSR/ASR/UBFX/SBFX/UBFIZ/SBFIZ/BFI/    }
@@ -64273,11 +64565,22 @@ Var
  Idx2, Bit23V, Rs: Byte;
  Imm9: LongWord;
  WritebackVal: QWord;
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ DiagPA: QWord;
+ DiagI: LongInt;
+ DiagB: Byte;
+ DiagF: Text;
+ DiagFB: File;
+ {$ENDIF}
 Begin
  If ARM64_Halted Then Exit;
  CurPC := ARM64_PC;
  W := Arm64_FetchInstr(CurPC);
- If ARM64_Halted Then Exit; { Etape 4 : faute de traduction MMU a la recherche }
+ { Etape 4/5 : une faute de traduction a la recherche d instruction a deja  }
+ { soit arrete proprement l emulateur (ARM64_Halted), soit deja redirige    }
+ { ARM64_PC vers le vecteur d exception (Arm64_InjectFault, Etape 5) - dans }
+ { les deux cas, ne PAS continuer le decodage avec W=0.                     }
+ If ARM64_Halted Or (ARM64_PC <> CurPC) Then Exit;
  NewPC := CurPC + 4;
  Handled := False;
 
@@ -64299,6 +64602,15 @@ Begin
   ARM64_FlagC := (ARM64_SPSR_EL1 And $20000000) <> 0;
   ARM64_FlagV := (ARM64_SPSR_EL1 And $10000000) <> 0;
   ARM64_DaifI := (ARM64_SPSR_EL1 And $80) <> 0;
+  { Banque SP_EL0/SP_EL1 (Etape 5) - voir la note sur ARM64_SpEl0/SpEl1 :   }
+  { tant qu on execute a EL1h, ARM64_SP EST SP_EL1 ; juste avant de quitter }
+  { EL1 vers EL0, on le sauve dans SP_EL1 puis on bascule ARM64_SP sur la   }
+  { valeur SP_EL0 (deja configuree par le noyau via "msr sp_el0,xN" avant   }
+  { cet ERET) - exactement l echange physique de banque que fait le vrai    }
+  { materiel a cette transition.                                           }
+  ARM64_SpEl1 := ARM64_SP;
+  ARM64_AtEL0 := (ARM64_SPSR_EL1 And $F) = 0; { M[3:0]=0000 = EL0t }
+  If ARM64_AtEL0 Then ARM64_SP := ARM64_SpEl0;
   Handled := True;
  End;
 
@@ -64335,6 +64647,14 @@ Begin
   SysCRm := (W Shr 8) And $F;
   SysOp2 := (W Shr 5) And 7;
   SysKey := (SysOp1 Shl 11) Or (SysCRn Shl 7) Or (SysCRm Shl 3) Or SysOp2;
+  { o0 (bit19) distingue op0=2 (registres de debogage) de op0=3 (le reste) -}
+  { jamais capture avant l Etape 5 (suite), ce qui aurait fait collisionner  }
+  { par ex. DBGBCR0_EL1 (op0=2) avec l ARM64_SYSREG_MPIDR_EL1=5 existant     }
+  { (op0=3), meme (op1,CRn,CRm,op2)=(0,0,0,5) - verifie via keystone reel    }
+  { (mrs x0,midr_el1 : bit19=1 ; msr dbgbcr0_el1,x2 : bit19=0). o0=1 (la     }
+  { grande majorite deja geree) ne change AUCUNE constante existante ; seul  }
+  { o0=0 bascule dans une plage disjointe ($4000+) pour ne rien collisionner.}
+  If ((W Shr 19) And 1) = 0 Then SysKey := SysKey Or $4000;
   If LFlag = 1 Then Begin
    If Arm64_MrsRead(SysKey, Val1) Then Begin
     Arm64_SetRegZR(Rt, Val1);
@@ -64448,6 +64768,49 @@ Begin
   Handled := True;
  End;
 
+ { ADC/ADCS/SBC/SBCS (addition/soustraction AVEC retenue) - Etape 5,        }
+ { rencontre en pratique reelle (routine bas niveau du dynamic linker).     }
+ { Verifie par assemblage keystone : "adc x8,x4,x8"->$9A080088 (sf=1,op=0,  }
+ { S=0), "adcs"->$BA080088 (S=1), "sbc"->$DA080088 (op=1,S=0), "sbcs"->     }
+ { $FA080088 (op=1,S=1) - classe fixe bits[28:21]=$D0 (11010000). SBC       }
+ { implante comme ADC avec Rm complemente (Rn + NOT(Rm) + C = Rn-Rm-1+C =   }
+ { Rn-Rm-NOT(C), l identite classique utilisee par le vrai materiel pour    }
+ { reutiliser la meme chaine de retenue entre addition et soustraction).    }
+ { Carry-out calcule directement (Rm > espace-restant, ou egal ET Cin=1) -  }
+ { Arm64_FlagsAfterAdd reutilise seulement pour N/Z/V (sa formule V/N/Z est }
+ { deja correcte independamment de la retenue entrante, verifie a la main   }
+ { sur plusieurs cas limites AVANT ce portage ; seul son calcul de C est    }
+ { faux ici car il ignore Cin - corrige juste apres l appel).               }
+ If (Not Handled) And (((W Shr 21) And $FF) = $D0) And (((W Shr 10) And $3F) = 0) Then Begin
+  sf := (W Shr 31) And 1;
+  op := (W Shr 30) And 1;
+  Sflag := (W Shr 29) And 1;
+  Rm := (W Shr 16) And $1F;
+  Rn := (W Shr 5) And $1F;
+  Rd := W And $1F;
+  Is32 := (sf = 0);
+  If Is32 Then RnVal := Arm64_RegZR(Rn) And $FFFFFFFF Else RnVal := Arm64_RegZR(Rn);
+  If Is32 Then RmVal := Arm64_RegZR(Rm) And $FFFFFFFF Else RmVal := Arm64_RegZR(Rm);
+  If op = 1 Then Begin { SBC/SBCS : complemente Rm avant la meme addition }
+   RmVal := Not RmVal;
+   If Is32 Then RmVal := RmVal And $FFFFFFFF;
+  End;
+  If ARM64_FlagC Then ImmVal := 1 Else ImmVal := 0; { Cin, reutilise ImmVal comme scratch }
+  Res := RnVal + RmVal + ImmVal;
+  If Is32 Then Res := Res And $FFFFFFFF;
+  If Sflag = 1 Then Begin
+   Arm64_FlagsAfterAdd(RnVal, RmVal, Res, Is32); { N/Z/V corrects, C a corriger }
+   If Is32 Then
+    ARM64_FlagC := (RmVal > ($FFFFFFFF - RnVal)) Or
+     ((RmVal = ($FFFFFFFF - RnVal)) And (ImmVal = 1))
+   Else
+    ARM64_FlagC := (RmVal > (QWord($FFFFFFFFFFFFFFFF) - RnVal)) Or
+     ((RmVal = (QWord($FFFFFFFFFFFFFFFF) - RnVal)) And (ImmVal = 1));
+  End;
+  Arm64_SetRegZR(Rd, Res);
+  Handled := True;
+ End;
+
  { B / BL (branchement immediat inconditionnel) }
  If (Not Handled) And (((W Shr 26) And $1F) = $05) Then Begin
   op := (W Shr 31) And 1;
@@ -64525,9 +64888,16 @@ Begin
   Handled := True;
  End;
 
- { LDR/STR (immediat signe, non ecrit/post-index/pre-index) - Etape 4.      }
- { bit21=0 distingue de la forme "registre" (non geree, rare en pratique). }
- { bits[11:10] : 00=non ecrit (LDUR/STUR), 01=post-index, 11=pre-index.     }
+ { LDR/STR (immediat signe, non ecrit/post-index/pre-index/NON PRIVILEGIE)  }
+ { - Etape 4 (etendu Etape 5). bit21=0 distingue de la forme "registre"     }
+ { (non geree, rare en pratique). bits[11:10] : 00=non ecrit (LDUR/STUR),   }
+ { 01=post-index, 10=NON PRIVILEGIE (LDTR/STTR), 11=pre-index. LDTR/STTR    }
+ { traite exactement comme LDUR/STUR (meme adressage, aucune ecriture       }
+ { arriere) : cet emulateur ne modelise aucune distinction de permission    }
+ { EL0/EL1 (deja documente Etape 4, "pas de veritable modele de permission  }
+ { AP/PXN/UXN"), donc rien ne distingue architecturalement les deux formes  }
+ { ici - rencontre via `sttr xzr,[x0]` (copy_to_user sous PAN), verifiee    }
+ { par keystone (`$F800081F`, Idx2=(bits[11:10])=2).                        }
  If (Not Handled) And (((W Shr 27) And 7) = 7) And (((W Shr 24) And 3) = 0)
     And (((W Shr 26) And 1) = 0) And (((W Shr 21) And 1) = 0) Then Begin
   Size := (W Shr 30) And 3;
@@ -64536,16 +64906,16 @@ Begin
   Idx2 := Byte((W Shr 10) And 3);
   Rn := (W Shr 5) And $1F;
   Rt := W And $1F;
-  If Idx2 In [0, 1, 3] Then Begin
+  If Idx2 In [0, 1, 2, 3] Then Begin
    Offset := Arm64_SignExtend(Imm9, 9);
    NVal := Arm64_RegSP(Rn);
    Case Idx2 Of
-    0: Addr := NVal + Offset;                              { non ecrit }
+    0, 2: Addr := NVal + Offset;                           { non ecrit / LDTR-STTR }
     1: Begin Addr := NVal; WritebackVal := NVal + Offset; End; { post-index }
     3: Begin Addr := NVal + Offset; WritebackVal := Addr; End; { pre-index }
    End;
    Arm64_DoLdrStr(Addr, Byte(Size), Byte(Opc), Rt);
-   If Idx2 <> 0 Then Arm64_SetRegSP(Rn, WritebackVal);
+   If Idx2 In [1, 3] Then Arm64_SetRegSP(Rn, WritebackVal);
    Handled := True;
   End;
  End;
@@ -64586,15 +64956,114 @@ Begin
   Handled := True;
  End;
 
- { Load/store exclusif ET ordonne (LDXR/STXR/LDAXR/STLXR/LDAR/STLR, Etape   }
- { 4) - une seule classe d instructions (bits[29:24]=$08). Modele mono-     }
- { coeur : la reservation exclusive est TOUJOURS valide tant qu aucune      }
- { exception ni CLREX ne l a effacee (aucune veritable concurrence a        }
- { arbitrer). bit23=0 -> forme exclusive (Rs=registre de statut, o0 ignore  }
- { -acquire/release non modelise) ; bit23=1 -> LDAR/STLR ordonnes, jamais   }
- { exclusifs (toujours "reussis"). Forme paire LDXP/STXP (bit23=0,Rt2<>31)  }
- { non geree distinctement - tres rare en pratique reelle, ecart documente. }
- If (Not Handled) And (((W Shr 24) And $3F) = $08) Then Begin
+ { LDP/STP (SIMD&FP, registres V/Q/D/S) - Etape 5 (NEON minimal). MEME       }
+ { disposition de champs que la forme GPR juste au-dessus (opc/101/V/idx/L/ }
+ { imm7/Rt2/Rn/Rt) - bit26=1 (V) est l unique difference de classe ; opc    }
+ { code ici la LARGEUR du transfert (0=S 4o, 1=D 8o, 2=Q 16o, 3=reserve)     }
+ { plutot que la distinction W/X-paire du cas GPR. Verifie par assemblage   }
+ { keystone reel : `ldp q0,q1,[x0]`->`$AD400400` (idx=2, offset simple),     }
+ { `stp q2,q3,[x4,#32]`->`$AD010C82` (confirme l echelle x16 de imm7 pour   }
+ { Q), `ldp q0,q1,[x0,#32]!`->`$ADC10400` (idx=3, pre-index), `ldp q0,q1,   }
+ { [x0],#32`->`$ACC10400` (idx=1, post-index) - chaque champ recoupe.       }
+ { Rencontre via une routine memcpy/clear_page optimisee d arch/arm64 qui   }
+ { utilise les registres vectoriels SANS jamais verifier ID_AA64PFR0_EL1 -  }
+ { NEON/AdvSIMD fait partie du socle OBLIGATOIRE de l architecture (a       }
+ { l inverse de SVE, une vraie extension optionnelle), erreur de portee     }
+ { initiale a l Etape 5 corrigee ici. Ecriture via une forme S/D (opc<2)    }
+ { met a zero la moitie haute du registre V correspondant - regle           }
+ { architecturale reelle (toute ecriture FP/SIMD etroite efface le reste du }
+ { registre vectoriel). Seul LDP/STP est implante pour l instant (juste     }
+ { assez pour debloquer ce chemin de code) - toute AUTRE operation NEON     }
+ { reelle (arithmetique vectorielle, etc) reste "non geree" et s arretera    }
+ { proprement, a traiter au prochain blocage, meme discipline qu ailleurs.  }
+ If (Not Handled) And (((W Shr 27) And 7) = 5) And (((W Shr 26) And 1) = 1)
+    And (((W Shr 25) And 1) = 0) Then Begin
+  Opc := (W Shr 30) And 3;
+  Idx2 := Byte((W Shr 23) And 3);
+  LFlag := (W Shr 22) And 1;
+  Imm7 := (W Shr 15) And $7F;
+  Rt2 := (W Shr 10) And $1F;
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  If Opc = 0 Then ByteWidth := 4 Else If Opc = 1 Then ByteWidth := 8 Else ByteWidth := 16;
+  Offset := Arm64_SignExtend(Imm7, 7) * ByteWidth;
+  NVal := Arm64_RegSP(Rn);
+  WritebackVal := 0;
+  Case Idx2 Of
+   1: Begin Addr := NVal; WritebackVal := NVal + Offset; End;   { post-index }
+   3: Begin Addr := NVal + Offset; WritebackVal := Addr; End;   { pre-index }
+   Else Addr := NVal + Offset;                { decalage simple / STNP-LDNP (0) }
+  End;
+  If LFlag = 1 Then Begin
+   ARM64_VRegLo[Rt] := Arm64_GetMemV(Addr, 8);
+   ARM64_VRegLo[Rt2] := Arm64_GetMemV(Addr + ByteWidth, 8);
+   If ByteWidth = 16 Then Begin
+    ARM64_VRegHi[Rt] := Arm64_GetMemV(Addr + 8, 8);
+    ARM64_VRegHi[Rt2] := Arm64_GetMemV(Addr + ByteWidth + 8, 8);
+   End Else Begin
+    ARM64_VRegHi[Rt] := 0;
+    ARM64_VRegHi[Rt2] := 0;
+   End;
+  End Else Begin
+   Arm64_PutMemV(Addr, ARM64_VRegLo[Rt], 8);
+   Arm64_PutMemV(Addr + ByteWidth, ARM64_VRegLo[Rt2], 8);
+   If ByteWidth = 16 Then Begin
+    Arm64_PutMemV(Addr + 8, ARM64_VRegHi[Rt], 8);
+    Arm64_PutMemV(Addr + ByteWidth + 8, ARM64_VRegHi[Rt2], 8);
+   End;
+  End;
+  If Idx2 In [1, 3] Then Arm64_SetRegSP(Rn, WritebackVal);
+  Handled := True;
+ End;
+
+ { Load/store exclusif ET ordonne, FORME PAIRE (LDXP/STXP/LDAXP/STLXP) -     }
+ { Etape 5 : ecart documente depuis l Etape 4 ("tres rare en pratique       }
+ { reelle") en fait rencontre par du VRAI code noyau (SLUB : cmpxchg_double }
+ { sur page->freelist/counters via ldxp/stlxp, cause reelle d un blocage    }
+ { infini observe au boot reel - la forme simple ci-dessous decodait Rt2 a  }
+ { tort comme le registre de statut Rs, faisant systematiquement echouer la }
+ { comparaison de la paire). Distinguee par bit21 (o1=1) au sein de la meme }
+ { classe $08 ; Rt2 vit en bits[14:10] (Rs, bits[20:16], reste le registre  }
+ { de statut meme pour la paire) - verifie par assemblage keystone reel :   }
+ { "ldxp x2,x0,[x4]"->$C87F0082, "stlxp w1,x11,x3,[x4]"->$C8218C8B, chaque   }
+ { champ confirme bit par bit avant ce portage.                             }
+ If (Not Handled) And (((W Shr 24) And $3F) = $08) And (((W Shr 21) And 1) = 1) Then Begin
+  Size := (W Shr 30) And 3;
+  LFlag := (W Shr 22) And 1;
+  Rs := Byte((W Shr 16) And $1F);
+  Rt2 := (W Shr 10) And $1F;
+  Rn := (W Shr 5) And $1F;
+  Rt := W And $1F;
+  ByteWidth := Byte(1 Shl Size);
+  Addr := Arm64_RegSP(Rn);
+  If LFlag = 1 Then Begin { LDXP/LDAXP }
+   Val1 := Arm64_GetMemV(Addr, ByteWidth);
+   Val2 := Arm64_GetMemV(Addr + ByteWidth, ByteWidth);
+   Arm64_SetRegZR(Rt, Val1);
+   Arm64_SetRegZR(Rt2, Val2);
+   ARM64_ExValid := True;
+   ARM64_ExAddr := Addr;
+  End Else Begin { STXP/STLXP }
+   If ARM64_ExValid And (ARM64_ExAddr = Addr) Then Begin
+    Arm64_PutMemV(Addr, Arm64_RegZR(Rt), ByteWidth);
+    Arm64_PutMemV(Addr + ByteWidth, Arm64_RegZR(Rt2), ByteWidth);
+    Arm64_SetRegZR(Rs, 0); { succes }
+   End Else
+    Arm64_SetRegZR(Rs, 1); { echec }
+   ARM64_ExValid := False;
+  End;
+  Handled := True;
+ End;
+
+ { Load/store exclusif ET ordonne, FORME SIMPLE (LDXR/STXR/LDAXR/STLXR/     }
+ { LDAR/STLR, Etape 4) - meme classe $08, bit21=0 (voir le bloc "forme      }
+ { paire" juste au-dessus pour bit21=1). Modele mono-coeur : la reservation }
+ { exclusive est TOUJOURS valide tant qu aucune exception ni CLREX ne l a   }
+ { effacee (aucune veritable concurrence a arbitrer). bit23=0 -> forme      }
+ { exclusive (Rs=registre de statut, o0 ignore - acquire/release non        }
+ { modelise) ; bit23=1 -> LDAR/STLR ordonnes, jamais exclusifs (toujours    }
+ { "reussis").                                                              }
+ If (Not Handled) And (((W Shr 24) And $3F) = $08) And (((W Shr 21) And 1) = 0) Then Begin
   Size := (W Shr 30) And 3;
   Bit23V := Byte((W Shr 23) And 1);
   LFlag := (W Shr 22) And 1;
@@ -64954,7 +65423,16 @@ Begin
   End;
   If Bit23V = 1 Then RmVal := RmVal Shl Size;
   Addr := Arm64_RegSP(Rn) + RmVal;
-  Arm64_DoLdrStr(Addr, Byte(Size), Byte(Opc), Rt);
+  { PRFM (registre) : Size=3(11) ET Opc=2(10) - meme table Opc que ci-dessus }
+  { mais un sens different pour cette combinaison precise (verifiee keystone:}
+  { "prfm pstl1keep,[x21,x0]"->$F8A06AB0 donne Size=3,Opc=2, alors que        }
+  { "ldr x0,[x1,x2]"->$F8626820 donne Size=3,Opc=1). PRFM DOIT rester un     }
+  { pur hint qui ne provoque JAMAIS de faute meme vers une adresse invalide  }
+  { (garantie architecturale) - l appeler via Arm64_DoLdrStr declenchait a   }
+  { tort une vraie lecture MMU, cause reelle d un arret au boot reel juste   }
+  { apres le correctif LDXP/STXP (page->flags prefetche avant verification). }
+  If Not ((Size = 3) And (Opc = 2)) Then { sinon : no-op, prefetch pur }
+   Arm64_DoLdrStr(Addr, Byte(Size), Byte(Opc), Rt);
   Handled := True;
  End;
 
@@ -65022,9 +65500,43 @@ Begin
   Handled := True;
  End;
 
- If ARM64_Halted Then Exit; { une faute de traduction MMU a deja arrete proprement }
+ { Idem : un LDR/STR/LDP/STP/etc peut avoir declenche une faute de          }
+ { traduction EN COURS de decodage (Arm64_GetMemV/PutMemV) - soit un arret  }
+ { propre (ARM64_Halted), soit (Etape 5) une redirection deja faite de      }
+ { ARM64_PC vers le vecteur d exception par Arm64_InjectFault. Dans ce      }
+ { second cas NE JAMAIS laisser l epilogue `ARM64_PC := NewPC` plus bas     }
+ { ecraser ce saut deja effectue - seules Arm64_InjectFault/ServiceIrq (et  }
+ { la lecture initiale CurPC:=ARM64_PC) touchent ARM64_PC directement,      }
+ { toute la logique de decodage normale (branchements, ERET) ne modifie que }
+ { la variable LOCALE NewPC.                                                }
+ If ARM64_Halted Or (ARM64_PC <> CurPC) Then Exit;
 
  If Not Handled Then Begin
+  {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+  If W = 0 Then Begin { diagnostic cible : PC "hors norme" lisant des zeros }
+   Assign(DiagF, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_KPTI_DIAG.TXT');
+   Rewrite(DiagF);
+   WriteLn(DiagF, 'CurPC=$' + HexQWord(CurPC));
+   WriteLn(DiagF, 'TTBR0=$' + HexQWord(ARM64_Ttbr0) + ' TTBR1=$' + HexQWord(ARM64_Ttbr1) +
+    ' TCR=$' + HexQWord(ARM64_Tcr) + ' SCTLR=$' + HexQWord(ARM64_Sctlr));
+   If Arm64_Translate(CurPC, DiagPA) Then Begin
+    WriteLn(DiagF, 'Translate OK, PA=$' + HexQWord(DiagPA));
+    Assign(DiagFB, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_KPTI_MEMDUMP.BIN');
+    Rewrite(DiagFB, 1);
+    For DiagI := -65536 To 65535 Do Begin
+     DiagB := Arm64_GetByte((DiagPA And QWord($FFFFFFFFFFFF0000)) + QWord(DiagI));
+     BlockWrite(DiagFB, DiagB, 1);
+    End;
+    Close(DiagFB);
+    WriteLn(DiagF, 'dump base PA=$' + HexQWord((DiagPA And QWord($FFFFFFFFFFFF0000)) - 65536));
+   End Else
+    WriteLn(DiagF, 'Translate ECHOUE (ne devrait pas arriver, deja fetch avec succes)');
+   For DiagI := 0 To 15 Do
+    WriteLn(DiagF, 'TracePC[' + IntToStr((ARM64_TraceCount - 1 - DiagI) And 255) + ']=$' +
+     HexQWord(ARM64_TracePC[(ARM64_TraceCount - 1 - DiagI) And 255]));
+   Close(DiagF);
+  End;
+  {$ENDIF}
   ARM64_Halted := True;
   ARM64_LastBadPC := CurPC;
   ARM64_HaltReason := 'instruction non implementee $' + HexLong(LongInt(W)) +
@@ -65049,20 +65561,39 @@ End;
 { residuel d une precedente execution contaminer la suivante.               }
 Procedure Arm64_ResetSysState;
 Begin
+ {$IFDEF ARM64_STAGE5_DEBUGHOOK}
+ ARM64_LoopTraceCount := 0;
+ ARM64_ElrLogCount := 0;
+ {$ENDIF}
  ARM64_VBAR_EL1 := 0;
  ARM64_ELR_EL1 := 0;
  ARM64_SPSR_EL1 := 0;
  ARM64_DaifI := False;
+ ARM64_AtEL0 := False;
  ARM64_Sctlr := 0;
  ARM64_Ttbr0 := 0;
  ARM64_Ttbr1 := 0;
  ARM64_Tcr := 0;
  ARM64_Mair := 0;
  ARM64_Tpidr0 := 0;
+ ARM64_TpidrRO0 := 0;
+ ARM64_ContextIdr := 0;
+ ARM64_Disr := 0;
+ ARM64_Osdlr := 0;
+ ARM64_DbgBvr0 := 0;
+ ARM64_DbgBcr0 := 0;
+ ARM64_DbgWvr0 := 0;
+ ARM64_DbgWcr0 := 0;
+ ARM64_CntKCtl := 0;
+ ARM64_Far := 0;
+ ARM64_Esr := 0;
+ ARM64_Fpcr := 0;
+ ARM64_Fpsr := 0;
  ARM64_Tpidr1 := 0;
  ARM64_Cpacr := 0;
  ARM64_Mdscr := 0;
  ARM64_SpEl0 := 0;
+ ARM64_SpEl1 := 0;
  ARM64_CntFreq := 62500000; { 62,5 MHz - meme valeur typique que QEMU virt }
  ARM64_CntPct := 0;
  ARM64_CntpCval := 0;
@@ -65491,119 +66022,120 @@ Const
  { ARM64_UART_BASE. Les valeurs linux,initrd-start/end integrees ici        }
  { (adresses "placeholder" 0x48000000/0x49000000) sont corrigees a chaque   }
  { chargement par Arm64_PutBE32 - voir ARM64_DTB_INITRD_START_OFS/END_OFS.  }
- ARM64_DtbTemplate: Array[0..1340] Of Byte = (
-  $D0, $0D, $FE, $ED, $00, $00, $05, $3D, $00, $00, $00, $38,
-  $00, $00, $04, $4C, $00, $00, $00, $28, $00, $00, $00, $11,
-  $00, $00, $00, $10, $00, $00, $00, $00, $00, $00, $00, $F1,
-  $00, $00, $04, $14, $00, $00, $00, $00, $00, $00, $00, $00,
-  $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $01,
-  $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
-  $00, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $0F, $00, $00, $00, $02,
-  $00, $00, $00, $03, $00, $00, $00, $11, $00, $00, $00, $1B,
-  $6C, $69, $6E, $75, $78, $2C, $64, $75, $6D, $6D, $79, $2D,
-  $76, $69, $72, $74, $00, $00, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $16, $00, $00, $00, $26, $44, $45, $56, $45,
-  $4E, $56, $20, $41, $52, $4D, $36, $34, $20, $65, $6D, $75,
-  $6C, $61, $74, $6F, $72, $00, $00, $00, $00, $00, $00, $01,
-  $63, $68, $6F, $73, $65, $6E, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $39, $00, $00, $00, $2C, $63, $6F, $6E, $73,
-  $6F, $6C, $65, $3D, $74, $74, $79, $41, $4D, $41, $30, $20,
-  $65, $61, $72, $6C, $79, $63, $6F, $6E, $3D, $70, $6C, $30,
-  $31, $31, $2C, $30, $78, $30, $39, $30, $30, $30, $30, $30,
-  $30, $20, $72, $6F, $6F, $74, $3D, $2F, $64, $65, $76, $2F,
-  $72, $61, $6D, $30, $00, $00, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $35, $48, $00, $00, $00,
-  $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $48,
-  $49, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $01,
-  $6D, $65, $6D, $6F, $72, $79, $40, $34, $30, $30, $30, $30,
-  $30, $30, $30, $00, $00, $00, $00, $03, $00, $00, $00, $07,
-  $00, $00, $00, $59, $6D, $65, $6D, $6F, $72, $79, $00, $00,
-  $00, $00, $00, $03, $00, $00, $00, $10, $00, $00, $00, $65,
-  $00, $00, $00, $00, $40, $00, $00, $00, $00, $00, $00, $00,
-  $10, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $01,
-  $63, $70, $75, $73, $00, $00, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $00, $00, $00, $00, $01,
-  $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $0F,
-  $00, $00, $00, $00, $00, $00, $00, $01, $63, $70, $75, $40,
-  $30, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
-  $00, $00, $00, $59, $63, $70, $75, $00, $00, $00, $00, $03,
-  $00, $00, $00, $0A, $00, $00, $00, $1B, $61, $72, $6D, $2C,
-  $61, $72, $6D, $76, $38, $00, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $65, $00, $00, $00, $00,
-  $00, $00, $00, $03, $00, $00, $00, $05, $00, $00, $00, $69,
-  $70, $73, $63, $69, $00, $00, $00, $00, $00, $00, $00, $02,
-  $00, $00, $00, $02, $00, $00, $00, $01, $70, $73, $63, $69,
-  $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $0D,
-  $00, $00, $00, $1B, $61, $72, $6D, $2C, $70, $73, $63, $69,
-  $2D, $30, $2E, $32, $00, $00, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $70, $68, $76, $63, $00,
-  $00, $00, $00, $02, $00, $00, $00, $01, $74, $69, $6D, $65,
-  $72, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $10,
-  $00, $00, $00, $1B, $61, $72, $6D, $2C, $61, $72, $6D, $76,
-  $38, $2D, $74, $69, $6D, $65, $72, $00, $00, $00, $00, $03,
-  $00, $00, $00, $30, $00, $00, $00, $77, $00, $00, $00, $01,
-  $00, $00, $00, $0D, $00, $00, $0F, $08, $00, $00, $00, $01,
-  $00, $00, $00, $0E, $00, $00, $0F, $08, $00, $00, $00, $01,
-  $00, $00, $00, $0B, $00, $00, $0F, $08, $00, $00, $00, $01,
-  $00, $00, $00, $0A, $00, $00, $0F, $08, $00, $00, $00, $02,
-  $00, $00, $00, $01, $69, $6E, $74, $65, $72, $72, $75, $70,
-  $74, $2D, $63, $6F, $6E, $74, $72, $6F, $6C, $6C, $65, $72,
-  $40, $38, $30, $30, $30, $30, $30, $30, $00, $00, $00, $00,
-  $00, $00, $00, $03, $00, $00, $00, $13, $00, $00, $00, $1B,
-  $61, $72, $6D, $2C, $63, $6F, $72, $74, $65, $78, $2D, $61,
-  $31, $35, $2D, $67, $69, $63, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $82, $00, $00, $00, $03,
-  $00, $00, $00, $03, $00, $00, $00, $00, $00, $00, $00, $93,
-  $00, $00, $00, $03, $00, $00, $00, $20, $00, $00, $00, $65,
-  $00, $00, $00, $00, $08, $00, $00, $00, $00, $00, $00, $00,
-  $00, $01, $00, $00, $00, $00, $00, $00, $08, $01, $00, $00,
-  $00, $00, $00, $00, $00, $01, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $A8, $00, $00, $00, $01,
-  $00, $00, $00, $02, $00, $00, $00, $01, $70, $6C, $30, $31,
-  $31, $40, $39, $30, $30, $30, $30, $30, $30, $00, $00, $00,
-  $00, $00, $00, $03, $00, $00, $00, $18, $00, $00, $00, $1B,
-  $61, $72, $6D, $2C, $70, $6C, $30, $31, $31, $00, $61, $72,
-  $6D, $2C, $70, $72, $69, $6D, $65, $63, $65, $6C, $6C, $00,
-  $00, $00, $00, $03, $00, $00, $00, $10, $00, $00, $00, $65,
-  $00, $00, $00, $00, $09, $00, $00, $00, $00, $00, $00, $00,
-  $00, $00, $10, $00, $00, $00, $00, $03, $00, $00, $00, $0C,
-  $00, $00, $00, $77, $00, $00, $00, $00, $00, $00, $00, $01,
-  $00, $00, $00, $04, $00, $00, $00, $03, $00, $00, $00, $04,
-  $00, $00, $00, $B0, $00, $00, $00, $01, $00, $00, $00, $03,
-  $00, $00, $00, $11, $00, $00, $00, $C1, $75, $61, $72, $74,
-  $63, $6C, $6B, $00, $61, $70, $62, $5F, $70, $63, $6C, $6B,
-  $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $08,
-  $00, $00, $00, $CD, $00, $00, $00, $02, $00, $00, $00, $02,
-  $00, $00, $00, $02, $00, $00, $00, $01, $61, $70, $62, $2D,
-  $70, $63, $6C, $6B, $00, $00, $00, $00, $00, $00, $00, $03,
-  $00, $00, $00, $0C, $00, $00, $00, $1B, $66, $69, $78, $65,
-  $64, $2D, $63, $6C, $6F, $63, $6B, $00, $00, $00, $00, $03,
-  $00, $00, $00, $04, $00, $00, $00, $D4, $00, $00, $00, $00,
-  $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $E1,
-  $01, $6E, $36, $00, $00, $00, $00, $03, $00, $00, $00, $04,
-  $00, $00, $00, $A8, $00, $00, $00, $02, $00, $00, $00, $02,
-  $00, $00, $00, $02, $00, $00, $00, $09, $23, $61, $64, $64,
-  $72, $65, $73, $73, $2D, $63, $65, $6C, $6C, $73, $00, $23,
-  $73, $69, $7A, $65, $2D, $63, $65, $6C, $6C, $73, $00, $63,
-  $6F, $6D, $70, $61, $74, $69, $62, $6C, $65, $00, $6D, $6F,
-  $64, $65, $6C, $00, $62, $6F, $6F, $74, $61, $72, $67, $73,
-  $00, $6C, $69, $6E, $75, $78, $2C, $69, $6E, $69, $74, $72,
-  $64, $2D, $73, $74, $61, $72, $74, $00, $6C, $69, $6E, $75,
-  $78, $2C, $69, $6E, $69, $74, $72, $64, $2D, $65, $6E, $64,
-  $00, $64, $65, $76, $69, $63, $65, $5F, $74, $79, $70, $65,
-  $00, $72, $65, $67, $00, $65, $6E, $61, $62, $6C, $65, $2D,
-  $6D, $65, $74, $68, $6F, $64, $00, $69, $6E, $74, $65, $72,
-  $72, $75, $70, $74, $73, $00, $23, $69, $6E, $74, $65, $72,
-  $72, $75, $70, $74, $2D, $63, $65, $6C, $6C, $73, $00, $69,
-  $6E, $74, $65, $72, $72, $75, $70, $74, $2D, $63, $6F, $6E,
-  $74, $72, $6F, $6C, $6C, $65, $72, $00, $70, $68, $61, $6E,
-  $64, $6C, $65, $00, $69, $6E, $74, $65, $72, $72, $75, $70,
-  $74, $2D, $70, $61, $72, $65, $6E, $74, $00, $63, $6C, $6F,
-  $63, $6B, $2D, $6E, $61, $6D, $65, $73, $00, $63, $6C, $6F,
-  $63, $6B, $73, $00, $23, $63, $6C, $6F, $63, $6B, $2D, $63,
-  $65, $6C, $6C, $73, $00, $63, $6C, $6F, $63, $6B, $2D, $66,
-  $72, $65, $71, $75, $65, $6E, $63, $79, $00
+ ARM64_DtbTemplate: Array[0..1344] Of Byte = (
+ $D0, $0D, $FE, $ED, $00, $00, $05, $41, $00, $00, $00, $38,
+ $00, $00, $04, $50, $00, $00, $00, $28, $00, $00, $00, $11,
+ $00, $00, $00, $10, $00, $00, $00, $00, $00, $00, $00, $F1,
+ $00, $00, $04, $18, $00, $00, $00, $00, $00, $00, $00, $00,
+ $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $01,
+ $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
+ $00, $00, $00, $00, $00, $00, $00, $02, $00, $00, $00, $03,
+ $00, $00, $00, $04, $00, $00, $00, $0F, $00, $00, $00, $02,
+ $00, $00, $00, $03, $00, $00, $00, $11, $00, $00, $00, $1B,
+ $6C, $69, $6E, $75, $78, $2C, $64, $75, $6D, $6D, $79, $2D,
+ $76, $69, $72, $74, $00, $00, $00, $00, $00, $00, $00, $03,
+ $00, $00, $00, $16, $00, $00, $00, $26, $44, $45, $56, $45,
+ $4E, $56, $20, $41, $52, $4D, $36, $34, $20, $65, $6D, $75,
+ $6C, $61, $74, $6F, $72, $00, $00, $00, $00, $00, $00, $01,
+ $63, $68, $6F, $73, $65, $6E, $00, $00, $00, $00, $00, $03,
+ $00, $00, $00, $3F, $00, $00, $00, $2C, $63, $6F, $6E, $73,
+ $6F, $6C, $65, $3D, $74, $74, $79, $41, $4D, $41, $30, $20,
+ $65, $61, $72, $6C, $79, $63, $6F, $6E, $3D, $70, $6C, $30,
+ $31, $31, $2C, $30, $78, $30, $39, $30, $30, $30, $30, $30,
+ $30, $20, $72, $6F, $6F, $74, $3D, $2F, $64, $65, $76, $2F,
+ $72, $61, $6D, $30, $20, $6E, $6F, $73, $6D, $70, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $35,
+ $48, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
+ $00, $00, $00, $48, $49, $00, $00, $00, $00, $00, $00, $02,
+ $00, $00, $00, $01, $6D, $65, $6D, $6F, $72, $79, $40, $34,
+ $30, $30, $30, $30, $30, $30, $30, $00, $00, $00, $00, $03,
+ $00, $00, $00, $07, $00, $00, $00, $59, $6D, $65, $6D, $6F,
+ $72, $79, $00, $00, $00, $00, $00, $03, $00, $00, $00, $10,
+ $00, $00, $00, $65, $00, $00, $00, $00, $40, $00, $00, $00,
+ $00, $00, $00, $00, $10, $00, $00, $00, $00, $00, $00, $02,
+ $00, $00, $00, $01, $63, $70, $75, $73, $00, $00, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $00,
+ $00, $00, $00, $01, $00, $00, $00, $03, $00, $00, $00, $04,
+ $00, $00, $00, $0F, $00, $00, $00, $00, $00, $00, $00, $01,
+ $63, $70, $75, $40, $30, $00, $00, $00, $00, $00, $00, $03,
+ $00, $00, $00, $04, $00, $00, $00, $59, $63, $70, $75, $00,
+ $00, $00, $00, $03, $00, $00, $00, $0A, $00, $00, $00, $1B,
+ $61, $72, $6D, $2C, $61, $72, $6D, $76, $38, $00, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $65,
+ $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $05,
+ $00, $00, $00, $69, $70, $73, $63, $69, $00, $00, $00, $00,
+ $00, $00, $00, $02, $00, $00, $00, $02, $00, $00, $00, $01,
+ $70, $73, $63, $69, $00, $00, $00, $00, $00, $00, $00, $03,
+ $00, $00, $00, $0D, $00, $00, $00, $1B, $61, $72, $6D, $2C,
+ $70, $73, $63, $69, $2D, $30, $2E, $32, $00, $00, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $70,
+ $68, $76, $63, $00, $00, $00, $00, $02, $00, $00, $00, $01,
+ $74, $69, $6D, $65, $72, $00, $00, $00, $00, $00, $00, $03,
+ $00, $00, $00, $10, $00, $00, $00, $1B, $61, $72, $6D, $2C,
+ $61, $72, $6D, $76, $38, $2D, $74, $69, $6D, $65, $72, $00,
+ $00, $00, $00, $03, $00, $00, $00, $30, $00, $00, $00, $77,
+ $00, $00, $00, $01, $00, $00, $00, $0D, $00, $00, $0F, $08,
+ $00, $00, $00, $01, $00, $00, $00, $0E, $00, $00, $0F, $08,
+ $00, $00, $00, $01, $00, $00, $00, $0B, $00, $00, $0F, $08,
+ $00, $00, $00, $01, $00, $00, $00, $0A, $00, $00, $0F, $08,
+ $00, $00, $00, $02, $00, $00, $00, $01, $69, $6E, $74, $65,
+ $72, $72, $75, $70, $74, $2D, $63, $6F, $6E, $74, $72, $6F,
+ $6C, $6C, $65, $72, $40, $38, $30, $30, $30, $30, $30, $30,
+ $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $13,
+ $00, $00, $00, $1B, $61, $72, $6D, $2C, $63, $6F, $72, $74,
+ $65, $78, $2D, $61, $31, $35, $2D, $67, $69, $63, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $82,
+ $00, $00, $00, $03, $00, $00, $00, $03, $00, $00, $00, $00,
+ $00, $00, $00, $93, $00, $00, $00, $03, $00, $00, $00, $20,
+ $00, $00, $00, $65, $00, $00, $00, $00, $08, $00, $00, $00,
+ $00, $00, $00, $00, $00, $01, $00, $00, $00, $00, $00, $00,
+ $08, $01, $00, $00, $00, $00, $00, $00, $00, $01, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $A8,
+ $00, $00, $00, $01, $00, $00, $00, $02, $00, $00, $00, $01,
+ $70, $6C, $30, $31, $31, $40, $39, $30, $30, $30, $30, $30,
+ $30, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $18,
+ $00, $00, $00, $1B, $61, $72, $6D, $2C, $70, $6C, $30, $31,
+ $31, $00, $61, $72, $6D, $2C, $70, $72, $69, $6D, $65, $63,
+ $65, $6C, $6C, $00, $00, $00, $00, $03, $00, $00, $00, $10,
+ $00, $00, $00, $65, $00, $00, $00, $00, $09, $00, $00, $00,
+ $00, $00, $00, $00, $00, $00, $10, $00, $00, $00, $00, $03,
+ $00, $00, $00, $0C, $00, $00, $00, $77, $00, $00, $00, $00,
+ $00, $00, $00, $01, $00, $00, $00, $04, $00, $00, $00, $03,
+ $00, $00, $00, $04, $00, $00, $00, $B0, $00, $00, $00, $01,
+ $00, $00, $00, $03, $00, $00, $00, $11, $00, $00, $00, $C1,
+ $75, $61, $72, $74, $63, $6C, $6B, $00, $61, $70, $62, $5F,
+ $70, $63, $6C, $6B, $00, $00, $00, $00, $00, $00, $00, $03,
+ $00, $00, $00, $08, $00, $00, $00, $CD, $00, $00, $00, $02,
+ $00, $00, $00, $02, $00, $00, $00, $02, $00, $00, $00, $01,
+ $61, $70, $62, $2D, $70, $63, $6C, $6B, $00, $00, $00, $00,
+ $00, $00, $00, $03, $00, $00, $00, $0C, $00, $00, $00, $1B,
+ $66, $69, $78, $65, $64, $2D, $63, $6C, $6F, $63, $6B, $00,
+ $00, $00, $00, $03, $00, $00, $00, $04, $00, $00, $00, $D4,
+ $00, $00, $00, $00, $00, $00, $00, $03, $00, $00, $00, $04,
+ $00, $00, $00, $E1, $01, $6E, $36, $00, $00, $00, $00, $03,
+ $00, $00, $00, $04, $00, $00, $00, $A8, $00, $00, $00, $02,
+ $00, $00, $00, $02, $00, $00, $00, $02, $00, $00, $00, $09,
+ $23, $61, $64, $64, $72, $65, $73, $73, $2D, $63, $65, $6C,
+ $6C, $73, $00, $23, $73, $69, $7A, $65, $2D, $63, $65, $6C,
+ $6C, $73, $00, $63, $6F, $6D, $70, $61, $74, $69, $62, $6C,
+ $65, $00, $6D, $6F, $64, $65, $6C, $00, $62, $6F, $6F, $74,
+ $61, $72, $67, $73, $00, $6C, $69, $6E, $75, $78, $2C, $69,
+ $6E, $69, $74, $72, $64, $2D, $73, $74, $61, $72, $74, $00,
+ $6C, $69, $6E, $75, $78, $2C, $69, $6E, $69, $74, $72, $64,
+ $2D, $65, $6E, $64, $00, $64, $65, $76, $69, $63, $65, $5F,
+ $74, $79, $70, $65, $00, $72, $65, $67, $00, $65, $6E, $61,
+ $62, $6C, $65, $2D, $6D, $65, $74, $68, $6F, $64, $00, $69,
+ $6E, $74, $65, $72, $72, $75, $70, $74, $73, $00, $23, $69,
+ $6E, $74, $65, $72, $72, $75, $70, $74, $2D, $63, $65, $6C,
+ $6C, $73, $00, $69, $6E, $74, $65, $72, $72, $75, $70, $74,
+ $2D, $63, $6F, $6E, $74, $72, $6F, $6C, $6C, $65, $72, $00,
+ $70, $68, $61, $6E, $64, $6C, $65, $00, $69, $6E, $74, $65,
+ $72, $72, $75, $70, $74, $2D, $70, $61, $72, $65, $6E, $74,
+ $00, $63, $6C, $6F, $63, $6B, $2D, $6E, $61, $6D, $65, $73,
+ $00, $63, $6C, $6F, $63, $6B, $73, $00, $23, $63, $6C, $6F,
+ $63, $6B, $2D, $63, $65, $6C, $6C, $73, $00, $63, $6C, $6F,
+ $63, $6B, $2D, $66, $72, $65, $71, $75, $65, $6E, $63, $79,
+ $00
  );
 Var
  KernelEntry, InitrdEntry: TEmuIsoEntry;
@@ -65667,6 +66199,7 @@ Var
  DumpPA, DumpStartPA: QWord;
  DumpI: LongInt;
  DumpB: Byte;
+ DumpDaifStr: String;
  {$ENDIF}
 Begin
  If EmuHasFocus Then Begin
@@ -65692,12 +66225,45 @@ Begin
    WriteLn(DbgF2, 'steps=' + IntToStr(P.TotalSteps) + '  PC=$' + HexQWord(ARM64_PC));
    Close(DbgF2);
   End;
-  If P.TotalSteps = 25000000 Then Begin
-   If Arm64_Translate(ARM64_PC, DumpPA) Then Begin
+  If (P.TotalSteps >= 20000000) And (P.TotalSteps <= 20000120) Then Begin
+   Assign(DbgF2, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_FULL_TRACE.TXT');
+   If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_FULL_TRACE.TXT') Then Append(DbgF2) Else Rewrite(DbgF2);
+   WriteLn(DbgF2, IntToStr(P.TotalSteps) + ' PC=$' + HexQWord(ARM64_PC) +
+    ' X0=$' + HexQWord(ARM64_Reg[0]) + ' X1=$' + HexQWord(ARM64_Reg[1]) +
+    ' X9=$' + HexQWord(ARM64_Reg[9]) + ' X10=$' + HexQWord(ARM64_Reg[10]) +
+    ' X27=$' + HexQWord(ARM64_Reg[27]) + ' X28=$' + HexQWord(ARM64_Reg[28]));
+   Close(DbgF2);
+  End;
+  If (P.TotalSteps > 20000000) And (ARM64_PC >= QWord($FFFF8000803C7900)) And
+     (ARM64_PC <= QWord($FFFF8000803C8120)) And (ARM64_LoopTraceCount < 60) Then Begin
+   Inc(ARM64_LoopTraceCount);
+   If Not Arm64_Translate(ARM64_Reg[27], DumpPA) Then DumpPA := QWord($FFFFFFFFFFFFFFFF);
+   If (ARM64_LoopTraceCount = 1) And (DumpPA <> QWord($FFFFFFFFFFFFFFFF)) Then Begin
     DumpStartPA := DumpPA - 128;
-    Assign(DbgF3B, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_LOOP_DUMP.BIN');
+    Assign(DbgF3B, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_LOCKMEM_DUMP.BIN');
     Rewrite(DbgF3B, 1);
     For DumpI := 0 To 511 Do Begin
+     DumpB := Arm64_GetByte(DumpStartPA + QWord(DumpI));
+     BlockWrite(DbgF3B, DumpB, 1);
+    End;
+    Close(DbgF3B);
+   End;
+   Assign(DbgF2, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_LOCK_TRACE.TXT');
+   If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_LOCK_TRACE.TXT') Then Append(DbgF2) Else Rewrite(DbgF2);
+   If ARM64_DaifI Then DumpDaifStr := '1' Else DumpDaifStr := '0';
+   WriteLn(DbgF2, 'hit#' + IntToStr(ARM64_LoopTraceCount) + ' steps=' + IntToStr(P.TotalSteps) +
+    ' PC=$' + HexQWord(ARM64_PC) + ' X0=$' + HexQWord(ARM64_Reg[0]) + ' X27=$' + HexQWord(ARM64_Reg[27]) +
+    ' X27_PA=$' + HexQWord(DumpPA) +
+    ' X28=$' + HexQWord(ARM64_Reg[28]) + ' X9=$' + HexQWord(ARM64_Reg[9]) +
+    ' DaifI=' + DumpDaifStr);
+   Close(DbgF2);
+  End;
+  If P.TotalSteps = 25000000 Then Begin
+   If Arm64_Translate(ARM64_PC, DumpPA) Then Begin
+    DumpStartPA := QWord($403C7900); { plage fixe couvrant toute la boucle observee }
+    Assign(DbgF3B, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\ARM64_LOOP_DUMP.BIN');
+    Rewrite(DbgF3B, 1);
+    For DumpI := 0 To 1791 Do Begin
      DumpB := Arm64_GetByte(DumpStartPA + DumpI);
      BlockWrite(DbgF3B, DumpB, 1);
     End;
@@ -114253,6 +114819,8 @@ End;
 { gere via P.CPU.Fault ci-dessous, inchange. --- }
 Procedure StepEmulator(Var P: TEmulatorPanel);
 Var NowTS: LongInt; Finished: Boolean; Active: Boolean;
+ EmuPumpNow: LongInt; FrameChanged: Boolean; CurBlink: Boolean;
+ YChk, XChk: Integer;
 Begin
  If P.Loaded And (P.TargetCPU = '-CC64') Then Begin
   If Not P.Running Then Exit;
@@ -114762,7 +115330,56 @@ Begin
   End;
   Arm64_RunOneChunk(P);
   Finished := ARM64_Halted Or (P.TotalSteps >= ARM64_MAX_STEPS) Or ARM64Async_KeyEsc;
-  DrawEmulatorPanel(P);
+  { Correctif scintillement (2026-09-01, signale par l utilisateur comme     }
+  { "insupportable") - meme motif exact que DOSAsync_LastDraw/FrameChanged   }
+  { dans DOS_RunOneChunk : Arm64_RunOneChunk n a aucun pompage interne       }
+  { throttlant deja son rythme (contrairement a DOS), donc DrawEmulatorPanel}
+  { etait rappelee a CHAQUE tour de la boucle principale - un noyau qui     }
+  { calcule silencieusement entre deux lignes de console (tres frequent,    }
+  { cf. le deballage d initramfs) redessinait donc l ecran en boucle POUR   }
+  { RIEN. Reutilise directement P.VRAM/P.Cursor* (EmuVScr_PutChar ecrit     }
+  { dans les MEMES champs que DOS) - jamais un dessin partiel : soit la     }
+  { trame complete est identique et on ne touche a rien, soit elle differe  }
+  { et DrawEmulatorPanel s execute integralement comme avant.               }
+  EmuPumpNow := GetTimestamp;
+  If (EmuPumpNow - ARM64Async_LastDraw) >= 80 Then Begin
+   ARM64Async_LastDraw := EmuPumpNow;
+   CurBlink := ((EmuPumpNow Div 500) Mod 2) = 0;
+   FrameChanged := (Not P.PrevDrawValid) Or
+    (P.CursorX <> P.PrevDrawCursorX) Or
+    (P.CursorY <> P.PrevDrawCursorY) Or
+    (P.CursorOn <> P.PrevDrawCursorOn) Or
+    (CurBlink <> P.PrevDrawBlink) Or
+    (P.StatusMsg <> P.PrevDrawStatusMsg) Or
+    (P.Running <> P.PrevDrawRunning) Or
+    (P.Fault <> P.PrevDrawFault) Or Finished;
+   If Not FrameChanged Then Begin
+    YChk := 0;
+    While (Not FrameChanged) And (YChk <= 24) Do Begin
+     XChk := 0;
+     While (Not FrameChanged) And (XChk <= 131) Do Begin
+      If (P.VRAM[YChk, XChk].Ch <> P.PrevDrawVRAM[YChk, XChk].Ch) Or
+         (P.VRAM[YChk, XChk].Fg <> P.PrevDrawVRAM[YChk, XChk].Fg) Or
+         (P.VRAM[YChk, XChk].Bg <> P.PrevDrawVRAM[YChk, XChk].Bg) Then
+       FrameChanged := True;
+      Inc(XChk);
+     End;
+     Inc(YChk);
+    End;
+   End;
+   If FrameChanged Then Begin
+    DrawEmulatorPanel(P);
+    P.PrevDrawVRAM := P.VRAM;
+    P.PrevDrawCursorX := P.CursorX;
+    P.PrevDrawCursorY := P.CursorY;
+    P.PrevDrawCursorOn := P.CursorOn;
+    P.PrevDrawBlink := CurBlink;
+    P.PrevDrawStatusMsg := P.StatusMsg;
+    P.PrevDrawRunning := P.Running;
+    P.PrevDrawFault := P.Fault;
+    P.PrevDrawValid := True;
+   End;
+  End;
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    Arm64_PrintEndMessage(P);
