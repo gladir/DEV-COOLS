@@ -62891,6 +62891,8 @@ Const
  ARM64_SYSREG_ID_AA64ISAR2_EL1= 50;
  ARM64_SYSREG_DCZID_EL0       = 6151;
  ARM64_SYSREG_SP_EL0          = 520;
+ ARM64_SYSREG_CLIDR_EL1       = 2049;
+ ARM64_SYSREG_ID_AA64DFR1_EL1 = 41;
  { Etape 5 : plafond d instructions PAR ONGLET nettement plus eleve que les }
  { 5 000 000 partages par ELF64/OS2LX (un seul programme utilisateur) - un  }
  { vrai demarrage de noyau Linux complet execute legitimement bien plus     }
@@ -63363,12 +63365,18 @@ Begin
   ARM64_SYSREG_ID_AA64PFR1_EL1, ARM64_SYSREG_ID_AA64AFR0_EL1,
   ARM64_SYSREG_ID_AA64AFR1_EL1, ARM64_SYSREG_ID_AA64MMFR2_EL1,
   ARM64_SYSREG_ID_AA64MMFR3_EL1, ARM64_SYSREG_ID_AA64ZFR0_EL1,
-  ARM64_SYSREG_ID_AA64ISAR2_EL1: Val := 0; { aucune fonctionnalite optionnelle }
+  ARM64_SYSREG_ID_AA64ISAR2_EL1,
+  ARM64_SYSREG_ID_AA64DFR1_EL1: Val := 0; { aucune fonctionnalite optionnelle }
   ARM64_SYSREG_DCZID_EL0: Val := $10; { DZP=1 (DC ZVA interdite) - evite que  }
    { le noyau compte sur DC ZVA pour mettre a zero de la memoire : DC/IC     }
    { restent des no-op purs dans cet emulateur (voir la famille "$D50"), un  }
    { DZP=0 aurait ete une fausse promesse silencieuse (memoire jamais        }
    { reellement mise a zero) plutot qu un arret propre.                      }
+  ARM64_SYSREG_CLIDR_EL1: Val := 0; { tous les champs Ctype(n)=000 : aucun    }
+   { niveau de cache decrit - le noyau (cacheinfo/__flush_dcache_all) saute   }
+   { alors proprement toute la boucle d enumeration CCSIDR_EL1/CSSELR_EL1     }
+   { (non geres), comportement architecturalement valide pour un coeur sans   }
+   { hierarchie de cache annoncee.                                           }
   Else Arm64_MrsRead := False;
  End;
 End;
@@ -63681,6 +63689,41 @@ End;
 { Un pas fetch-decode-execute. Arrete proprement (ARM64_Halted) sur toute   }
 { forme d instruction non encore reconnue - diagnostic PC/mot brut          }
 { conserve, meme discipline que ELF64_Halted/LX_Halted.                     }
+{ Chantier ARM64, Etape 5 : gestionnaire d appels PSCI (Power State            }
+{ Coordination Interface) minimal - le DTB genere annonce "arm,psci-0.2" avec  }
+{ method="hvc", et Linux reel interroge systematiquement PSCI_VERSION puis     }
+{ PSCI_FEATURES au demarrage meme sans SMP. Portee du plan : pas de CPU_ON/    }
+{ SMP (un seul vCPU) - toutes les fonctions d activation d autres coeurs       }
+{ repondent NOT_SUPPORTED, ce qui est une reponse PSCI parfaitement valide.    }
+Function Arm64_DoPsci(FuncId: LongWord; Arg1: QWord): Int64;
+Const
+ PSCI_SUCCESS       = 0;
+ PSCI_NOT_SUPPORTED = -1;
+Begin
+ Case FuncId Of
+  $84000000: Arm64_DoPsci := 2;   { PSCI_VERSION -> 0.2 (majeur=0, mineur=2) }
+  $84000006: Arm64_DoPsci := 2;   { MIGRATE_INFO_TYPE -> 2 = pas de Trusted OS migrable }
+  $84000008: Begin                { SYSTEM_OFF }
+              ARM64_Halted := True;
+              ARM64_HaltReason := '[ARM64] SYSTEM_OFF (PSCI) - arret demande par le noyau invite';
+              Arm64_DoPsci := PSCI_SUCCESS;
+             End;
+  $84000009: Begin                { SYSTEM_RESET }
+              ARM64_Halted := True;
+              ARM64_HaltReason := '[ARM64] SYSTEM_RESET (PSCI) - redemarrage demande par le noyau invite';
+              Arm64_DoPsci := PSCI_SUCCESS;
+             End;
+  $8400000A: Begin                { PSCI_FEATURES }
+              Case Arg1 Of
+               $84000000, $84000006, $84000008, $84000009, $8400000A:
+                Arm64_DoPsci := 0;   { fonctionnalite geree, aucun drapeau supplementaire }
+               Else Arm64_DoPsci := PSCI_NOT_SUPPORTED;
+              End;
+             End;
+  Else Arm64_DoPsci := PSCI_NOT_SUPPORTED; { CPU_ON/OFF/SUSPEND/MIGRATE/etc - pas de SMP (portee) }
+ End;
+End;
+
 Procedure Arm64_Step;
 Var
  CurPC, NewPC: QWord;
@@ -64399,6 +64442,18 @@ Begin
       End;
    Else ; { PRFM : prefetch pur, no-op }
   End;
+  Handled := True;
+ End;
+
+ { HVC/SMC (appel PSCI) - Etape 5. Le DTB genere annonce method="hvc" pour le }
+ { noeud "psci" ; SMC traite de facon identique par simplicite (ni EL2 ni EL3 }
+ { reels modelises - l appel est resolu directement, sans vecteur d           }
+ { exception, exactement comme Elf64_DoSyscall resout un appel systeme). Classe}
+ { verifiee via keystone : SVC=$D4000001 (LL=1, exclu ici), HVC=$D4000002     }
+ { (LL=2), SMC=$D4000003 (LL=3) - opc=bits[23:21]=0 commun aux trois.         }
+ If (Not Handled) And (((W Shr 24) And $FF) = $D4) And (((W Shr 21) And 7) = 0)
+    And (((W And 3) = 2) Or ((W And 3) = 3)) Then Begin
+  ARM64_Reg[0] := QWord(Arm64_DoPsci(LongWord(ARM64_Reg[0]), ARM64_Reg[1]));
   Handled := True;
  End;
 
