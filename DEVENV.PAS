@@ -62872,6 +62872,116 @@ Begin
  TermAddLine(TP, '</body></html>');
 End;
 
+{ --- ConvertTo-Json (2026-09-01) : meme entree $objet que ConvertTo-Csv/  }
+{ Html (deja construit par ConvertFrom-Yaml/StringData/SddlString), mais   }
+{ SANS reconstruction d'arbre a partir des cles aplaties par point/crochet  }
+{ ("a.b", "tags[0]") - chaque propriete redevient simplement une paire     }
+{ "cle": valeur au premier niveau du JSON emis, meme simplification         }
+{ deliberee que le tableau plat deja produit par ConvertTo-Csv/Html         }
+{ ci-dessus pour ces memes objets. Nombres/true/false/null reconnus et      }
+{ emis SANS guillemets (comme le ferait la vraie cmdlet), toute autre       }
+{ valeur en chaine JSON echappee. }
+
+Function ConvToJsonIsNumber(S: AnsiString): Boolean;
+Var
+ I: Integer;
+ SeenDigit, SeenDot: Boolean;
+Begin
+ ConvToJsonIsNumber := False;
+ If S = '' Then Exit;
+ I := 1;
+ If S[1] = '-' Then Inc(I);
+ If I > Length(S) Then Exit;
+ SeenDigit := False; SeenDot := False;
+ While I <= Length(S) Do Begin
+  If S[I] In ['0'..'9'] Then SeenDigit := True
+  Else If (S[I] = '.') And (Not SeenDot) Then SeenDot := True
+  Else Exit;
+  Inc(I);
+ End;
+ ConvToJsonIsNumber := SeenDigit;
+End;
+
+Function ConvToJsonEscape(S: AnsiString): AnsiString;
+Var
+ I: Integer;
+ Res: AnsiString;
+Begin
+ Res := '';
+ For I := 1 To Length(S) Do Begin
+  Case S[I] Of
+   '"' : Res := Res + '\"';
+   '\' : Res := Res + '\\';
+   #10 : Res := Res + '\n';
+   #13 : Res := Res + '\r';
+   #9  : Res := Res + '\t';
+   Else Res := Res + S[I];
+  End;
+ End;
+ ConvToJsonEscape := '"' + Res + '"';
+End;
+
+Procedure TermCmd_ConvertToJson(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, UpLevel, ValStr: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ VarArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-INPUTOBJECT') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If (UpLevel = '-DEPTH') Then
+   Inc(I)
+  Else If (VarArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertTo-Json $objet [-Depth n]');
+  TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
+   'ConvertFrom-Yaml/StringData/SddlString)');
+  Exit;
+ End;
+ SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'ConvertTo-Json : ''' + VarArg + ''' n''est pas un objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'ConvertTo-Json : objet sans propriete.');
+  Exit;
+ End;
+
+ TermAddLine(TP, '{');
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  If (P^.Value = '') Then ValStr := 'null'
+  Else If (TermStrToUpper(P^.Value) = 'TRUE') Or
+          (TermStrToUpper(P^.Value) = 'FALSE') Then
+   ValStr := TermStrToUpper(P^.Value)
+  Else If ConvToJsonIsNumber(P^.Value) Then ValStr := P^.Value
+  Else ValStr := ConvToJsonEscape(P^.Value);
+  If P^.Next <> Nil Then
+   TermAddLine(TP, '  "' + P^.Name + '": ' + ValStr + ',')
+  Else
+   TermAddLine(TP, '  "' + P^.Name + '": ' + ValStr);
+  P := P^.Next;
+ End;
+ TermAddLine(TP, '}');
+End;
+
 { --- Traitement des lignes tapees dans "PowerShell dev" (Entree) : here-  }
 { strings/assignations/lecture de propriete/substitution generique -       }
 { appelee depuis HandleTerminalEvent (touche Entree, SK_POWERSHELL         }
@@ -65569,6 +65679,9 @@ Begin
    '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
    'reel (table) de $objet');
   TermAddLine(TP,
+   '  ConvertTo-Json $objet [-Depth n]      Affiche le JSON reel ' +
+   '(nombres/bool non guillemetes) de $objet');
+  TermAddLine(TP,
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
   TermAddLine(TP,
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
@@ -66204,7 +66317,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 105;
+ PS_CMD_ALIASES = 106;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -66266,6 +66379,7 @@ Const
   'CONVERT-PATH',
   'CONVERTTO-CSV',
   'CONVERTTO-HTML',
+  'CONVERTTO-JSON',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -66351,6 +66465,7 @@ Const
   80,
   81,
   82,
+  83,
   46,
   47,
   48,
@@ -66827,6 +66942,7 @@ Begin
     80: TermCmd_ConvertPath(TP, ParamStr);
     81: TermCmd_ConvertToCsv(TP, ParamStr);
     82: TermCmd_ConvertToHtml(TP, ParamStr);
+    83: TermCmd_ConvertToJson(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
