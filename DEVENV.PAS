@@ -1076,6 +1076,15 @@ Function CryptProtectData(Var pDataIn: TDpapiBlob; szDataDescr: Pointer;
          pPromptStruct: Pointer; dwFlags: LongWord;
          Var pDataOut: TDpapiBlob): LongBool;
          StdCall; External 'crypt32.dll' Name 'CryptProtectData';
+{ ConvertTo-SecureString (2026-09-01, demande explicite) - sens inverse :   }
+{ CryptUnprotectData redechiffre REELLEMENT le blob DPAPI hex produit par   }
+{ ConvertFrom-SecureString (voir PsDpapiUnprotectFromHex), meme frontiere   }
+{ de securite authentique (lie a l'utilisateur+machine courants). }
+Function CryptUnprotectData(Var pDataIn: TDpapiBlob; ppszDataDescr: Pointer;
+         pOptionalEntropy: Pointer; pvReserved: Pointer;
+         pPromptStruct: Pointer; dwFlags: LongWord;
+         Var pDataOut: TDpapiBlob): LongBool;
+         StdCall; External 'crypt32.dll' Name 'CryptUnprotectData';
 { ConvertFrom-SddlString (2026-08-31, demande explicite) - VRAIES API        }
 { Windows de securite (advapi32.dll) : analyse REELLEMENT une chaine SDDL   }
 { en descripteur de securite binaire, aucun analyseur SDDL maison ecrit ici -}
@@ -62512,6 +62521,56 @@ Begin
  {$ENDIF}
 End;
 
+Function ConvToSecHexNibble(C: Char): Integer;
+Begin
+ Case C Of
+  '0'..'9': ConvToSecHexNibble := Ord(C) - Ord('0');
+  'A'..'F': ConvToSecHexNibble := Ord(C) - Ord('A') + 10;
+  'a'..'f': ConvToSecHexNibble := Ord(C) - Ord('a') + 10;
+  Else ConvToSecHexNibble := -1;
+ End;
+End;
+
+{ Sens inverse de PsDpapiProtectToHex - decode d'abord le hex en octets     }
+{ bruts puis CryptUnprotectData redechiffre REELLEMENT (meme frontiere     }
+{ DPAPI, echoue si un autre utilisateur/machine a produit le blob). }
+Function PsDpapiUnprotectFromHex(HexText: AnsiString): AnsiString;
+Var
+ InBlob, OutBlob: TDpapiBlob;
+ Buf: PDpapiByteArr;
+ BufLen, I, Hi4, Lo4: Integer;
+ Res: AnsiString;
+Begin
+ PsDpapiUnprotectFromHex := '';
+ HexText := TermTrim(HexText);
+ If (HexText = '') Or (Length(HexText) Mod 2 <> 0) Then Exit;
+ BufLen := Length(HexText) Div 2;
+ GetMem(Buf, BufLen);
+ For I := 0 To BufLen - 1 Do Begin
+  Hi4 := ConvToSecHexNibble(HexText[I*2+1]);
+  Lo4 := ConvToSecHexNibble(HexText[I*2+2]);
+  If (Hi4 < 0) Or (Lo4 < 0) Then Begin
+   FreeMem(Buf, BufLen);
+   Exit;
+  End;
+  Buf^[I] := (Hi4 Shl 4) Or Lo4;
+ End;
+ {$IFDEF WINDOWS}
+ InBlob.cbData := BufLen;
+ InBlob.pbData := Buf;
+ OutBlob.cbData := 0;
+ OutBlob.pbData := Nil;
+ If CryptUnprotectData(InBlob, Nil, Nil, Nil, Nil, 1, OutBlob) Then Begin
+  Res := '';
+  For I := 0 To OutBlob.cbData - 1 Do
+   Res := Res + Chr(PDpapiByteArr(OutBlob.pbData)^[I]);
+  Win_LocalFree(OutBlob.pbData);
+  PsDpapiUnprotectFromHex := Res;
+ End;
+ {$ENDIF}
+ FreeMem(Buf, BufLen);
+End;
+
 Procedure TermCmd_ConvertFromSecureString(Var TP: TTerminalPanel; ParamStr: String);
 Var
  LocalArgCount, I: Integer;
@@ -62544,6 +62603,69 @@ Begin
   TermAddLine(TP, 'ConvertFrom-SecureString : echec du chiffrement DPAPI.')
  Else
   TermAddLineWrapped(TP, Encrypted);
+End;
+
+{ --- ConvertTo-SecureString --- (2026-09-01, demande explicite) : sens    }
+{ inverse de ConvertFrom-SecureString ci-dessus, memes limitations          }
+{ honnetes DISCLOSEES (pas de vrai type SecureString/saisie masquee) - a    }
+{ l'affichage direct (sans capture dans une variable), imite fidelement ce  }
+{ qu'affiche reellement PowerShell dans ce cas precis (le SecureString      }
+{ reste opaque a l'ecran, seul son .ToString() generique apparait) ; via    }
+{ `$sec = ConvertTo-SecureString ...` (TermPSEvaluateAssignment plus bas),   }
+{ le texte reel (clair, ou redechiffre via CryptUnprotectData si -String   }
+{ etait deja une sortie chiffree de ConvertFrom-SecureString) est stocke    }
+{ dans la variable - meme convention "rien de cache dans les variables"     }
+{ deja utilisee par ConvertFrom-SecureString. }
+
+Procedure TermCmd_ConvertToSecureString(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ StringArg, UpLevel: String;
+ AsPlainText, ForceFlag: Boolean;
+ Decrypted: AnsiString;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ StringArg := ''; AsPlainText := False; ForceFlag := False;
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-STRING') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then StringArg := LocalArgs[I];
+  End Else If (UpLevel = '-ASPLAINTEXT') Then AsPlainText := True
+  Else If (UpLevel = '-FORCE') Then ForceFlag := True
+  Else If (UpLevel = '-KEY') Or (UpLevel = '-SECUREKEY') Then Inc(I)
+  Else If (StringArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   StringArg := LocalArgs[I];
+  Inc(I);
+ End;
+ StringArg := YamlUnquote(StringArg);
+
+ If StringArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertTo-SecureString -String texte ' +
+   '-AsPlainText -Force');
+  TermAddLine(TP, '          ConvertTo-SecureString -String texteChiffreHex ' +
+   '(sortie de ConvertFrom-SecureString)');
+  Exit;
+ End;
+ If AsPlainText And (Not ForceFlag) Then Begin
+  TermAddLine(TP, 'ConvertTo-SecureString : -AsPlainText necessite -Force.');
+  Exit;
+ End;
+ If Not AsPlainText Then Begin
+  Decrypted := PsDpapiUnprotectFromHex(StringArg);
+  If Decrypted = '' Then Begin
+   TermAddLine(TP, 'ConvertTo-SecureString : chaine chiffree invalide ou ' +
+    'echec DPAPI (autre utilisateur/machine ?).');
+   Exit;
+  End;
+ End;
+ TermAddLine(TP, 'System.Security.SecureString');
 End;
 
 { --- ConvertFrom-SddlString --- (2026-08-31, demande explicite) : VRAIES  }
@@ -63025,6 +63147,10 @@ Var
  CmdName, ArgPart, SrcVarName: String;
  SpacePos: Integer;
  SrcVar: PPsVar;
+ CtsArgCount, CtsI: Integer;
+ CtsArgs: Array[1..80] Of String;
+ CtsStringArg, CtsUpLevel: String;
+ CtsAsPlainText, CtsForce: Boolean;
 Begin
  If RHS = '' Then Begin
   PsSetScalar(VarName, '');
@@ -63090,6 +63216,45 @@ Begin
     PsSetScalar(VarName, PsDpapiProtectToHex(SrcVar^.ScalarValue))
    Else
     PsSetScalar(VarName, '');
+   Exit;
+  End;
+  { ConvertTo-SecureString : ici (contrairement a l'invocation directe qui  }
+  { affiche 'System.Security.SecureString', voir TermCmd_ConvertToSecureString) }
+  { la variable stocke le VRAI texte utile - clair (-AsPlainText -Force),   }
+  { ou redechiffre via DPAPI si -String etait une sortie de                 }
+  { ConvertFrom-SecureString - meme convention "rien de cache" que le       }
+  { $enc = ConvertFrom-SecureString $texte ci-dessus. }
+  If (CmdName = 'CONVERTTO-SECURESTRING') Then Begin
+   CtsArgCount := 0;
+   While (TermExtractParam(ArgPart, CtsArgCount+1) <> '') And
+         (CtsArgCount < 80) Do Inc(CtsArgCount);
+   For CtsI := 1 To CtsArgCount Do CtsArgs[CtsI] := TermExtractParam(ArgPart, CtsI);
+   CtsStringArg := ''; CtsAsPlainText := False; CtsForce := False;
+   CtsI := 1;
+   While CtsI <= CtsArgCount Do Begin
+    CtsUpLevel := TermStrToUpper(CtsArgs[CtsI]);
+    If (CtsUpLevel = '-STRING') Then Begin
+     Inc(CtsI);
+     If CtsI <= CtsArgCount Then CtsStringArg := CtsArgs[CtsI];
+    End Else If (CtsUpLevel = '-ASPLAINTEXT') Then CtsAsPlainText := True
+    Else If (CtsUpLevel = '-FORCE') Then CtsForce := True
+    Else If (CtsUpLevel = '-KEY') Or (CtsUpLevel = '-SECUREKEY') Then Inc(CtsI)
+    Else If (CtsStringArg = '') And (Copy(CtsArgs[CtsI],1,1) <> '-') Then
+     CtsStringArg := CtsArgs[CtsI];
+    Inc(CtsI);
+   End;
+   If (Length(CtsStringArg) > 1) And (CtsStringArg[1] = '$') Then Begin
+    SrcVar := PsFindVar(Copy(CtsStringArg, 2, Length(CtsStringArg) - 1));
+    If (SrcVar <> Nil) And (Not SrcVar^.IsObject) Then
+     CtsStringArg := SrcVar^.ScalarValue
+    Else
+     CtsStringArg := '';
+   End Else
+    CtsStringArg := YamlUnquote(CtsStringArg);
+   If CtsStringArg = '' Then PsSetScalar(VarName, '')
+   Else If CtsAsPlainText And CtsForce Then PsSetScalar(VarName, CtsStringArg)
+   Else If CtsAsPlainText Then PsSetScalar(VarName, '')
+   Else PsSetScalar(VarName, PsDpapiUnprotectFromHex(CtsStringArg));
    Exit;
   End;
  End;
@@ -65682,6 +65847,12 @@ Begin
    '  ConvertTo-Json $objet [-Depth n]      Affiche le JSON reel ' +
    '(nombres/bool non guillemetes) de $objet');
   TermAddLine(TP,
+   '  ConvertTo-SecureString -String t -AsPlainText -Force   Cree (VRAI ' +
+   'DPAPI si $var=)');
+  TermAddLine(TP,
+   '  ConvertTo-SecureString -String hexChiffre   Redechiffre (DPAPI) ' +
+   'une sortie ConvertFrom-SecureString');
+  TermAddLine(TP,
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
   TermAddLine(TP,
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
@@ -66317,7 +66488,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 106;
+ PS_CMD_ALIASES = 107;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -66380,6 +66551,7 @@ Const
   'CONVERTTO-CSV',
   'CONVERTTO-HTML',
   'CONVERTTO-JSON',
+  'CONVERTTO-SECURESTRING',
   'EDIT',
   'ARJ',
   'UNZIP',
@@ -66466,6 +66638,7 @@ Const
   81,
   82,
   83,
+  84,
   46,
   47,
   48,
@@ -66943,6 +67116,7 @@ Begin
     81: TermCmd_ConvertToCsv(TP, ParamStr);
     82: TermCmd_ConvertToHtml(TP, ParamStr);
     83: TermCmd_ConvertToJson(TP, ParamStr);
+    84: TermCmd_ConvertToSecureString(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
