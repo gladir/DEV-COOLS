@@ -3936,6 +3936,34 @@ Type
   { fidelement TOUT ce qu il charge, meme la partie sans effet observable. }
   IdtBase  : LongInt;
   IdtLimit : Word;
+  { Registre de tache (2026-09-02, LTR/STR) : simple valeur lisible/          }
+  { inscriptible, voir le commentaire au site d appel ($0F 00 groupe 6) -     }
+  { aucun vrai task-switch modelise, aucune TSS jamais consultee. }
+  TaskReg  : Word;
+  { Registre LDTR (2026-09-02, SLDT/LLDT) : meme principe que TaskReg -       }
+  { simple valeur lisible/inscriptible, aucune vraie table LDT consultee. }
+  LdtReg   : Word;
+  { Registres de controle CR2 (adresse lineaire de faute de page) et CR3      }
+  { (base de repertoire de pages) (2026-09-02, demande explicite de           }
+  { l utilisateur) : simples valeurs lisibles/inscriptibles comme TaskReg -   }
+  { aucune pagination reelle n est modelisee dans ce fichier (pas de MMU),    }
+  { donc CR2 n est jamais rempli automatiquement par une vraie faute de       }
+  { page, et CR3 n est jamais consulte pour traduire une adresse. }
+  CR2      : LongInt;
+  CR3      : LongInt;
+  { Registres de deboguage DR0-DR7 (2026-09-02, demande explicite) : simples  }
+  { valeurs lisibles/inscriptibles - aucun point d arret materiel reel n est  }
+  { arme (DR7 peut etre ecrit/relu mais son contenu n est jamais consulte     }
+  { pour declencher quoi que ce soit). }
+  DebugRegs: Array[0..7] Of LongInt;
+  { Registres de test TR3-TR7 du 80386 (2026-09-02, demande explicite,        }
+  { opcodes $0F 24/$0F 26, jamais geres avant - l Else generique leur         }
+  { donnait a tort une longueur de 2 octets au lieu de 3, un bogue de         }
+  { desynchronisation JAMAIS declenche en pratique tant qu ils restaient      }
+  { inaccessibles) : simples valeurs lisibles/inscriptibles, aucun test de    }
+  { cache/TLB reel (obsoletes des le 486, jamais reimplantes ensuite chez     }
+  { Intel). }
+  TestRegs : Array[0..7] Of LongInt;
   UnrealSegs: Array[0..7] Of TEmuUnrealSeg;  { cache valeur -> base 32 bits,  }
                                               { rempli par un MOV Sreg,r/m16   }
                                               { execute pendant que CR0.PE=1,  }
@@ -81611,11 +81639,27 @@ Begin
  C.GdtLimit := 0;
  C.IdtBase := 0;
  C.IdtLimit := 0;
+ C.TaskReg := 0;
+ C.LdtReg := 0;
+ C.CR2 := 0;
+ C.CR3 := 0;
  For I := 0 To 7 Do Begin
   C.UnrealSegs[I].Active := False;
   C.UnrealSegs[I].SegVal := 0;
   C.UnrealSegs[I].Base := 0;
+  C.DebugRegs[I] := 0;
+  C.TestRegs[I] := 0;
  End;
+ { BOGUE REEL CORRIGE (2026-09-02, trouve en verifiant l etat de FS/GS avant  }
+ { de les rendre reellement utilisables par MOV Sreg/prefixes FS:/GS: -       }
+ { C.FS/C.GS n etaient JAMAIS remis a zero ici, contrairement a Regs/Segs     }
+ { plus bas : une valeur FS/GS chargee par un test /TESTUNIT pouvait donc     }
+ { "fuiter" silencieusement vers le test SUIVANT (Emu_TestPanel est reutilise}
+ { d un test a l autre, jamais realloue) - sans consequence tant que FS/GS    }
+ { restaient des champs quasiment morts, mais desormais porteur d un vrai     }
+ { risque de test qui passe ou echoue selon l ORDRE d execution. }
+ C.FS := 0;
+ C.GS := 0;
  FillChar(C.ParityTable, SizeOf(C.ParityTable), 0);
  { Pre-calcul de la table de parite : un octet a parite paire si
    son nombre de bits a 1 est pair. Implementation simple. }
@@ -85428,23 +85472,38 @@ End;
 
 { --- Acces aux registres de segment par numero (0=ES,1=CS,2=SS,3=DS) --- }
 
+{ BOGUE REEL CORRIGE (2026-09-02, demande explicite de l utilisateur -       }
+{ "MOV AX,FS / MOV FS,AX ... FS et GS sont des registres 16 bits") : cette   }
+{ fonction masquait le champ reg avec "And 3", ce qui repliait silencieusement}
+{ reg=4 (FS) sur 0 (ES) et reg=5 (GS) sur 1 (CS) pour TOUT $8C/$8E rencontrant}
+{ FS/GS - "MOV AX,FS" lisait donc a tort ES, "MOV FS,AX" ecrivait a tort ES.  }
+{ FS/GS existent deja comme champs a part entiere de TEmuCPU (utilises par   }
+{ LFS/LGS et LOADALL) - il ne manquait que leur branchement ici. reg=6/7      }
+{ sont indefinis sur un vrai CPU (aucun 7e/8e registre de segment) ; laisses  }
+{ sans effet plutot que d inventer un comportement, comme partout ailleurs   }
+{ dans ce fichier pour les valeurs hors specification. }
 Function Emu_GetSReg(Var C: TEmuCPU; Num: Byte): Word;
 Begin
- Case Num And 3 Of
+ Emu_GetSReg := 0;
+ Case Num And 7 Of
   0: Emu_GetSReg := C.Segs.ES;
   1: Emu_GetSReg := C.Segs.CS;
   2: Emu_GetSReg := C.Segs.SS;
   3: Emu_GetSReg := C.Segs.DS;
+  4: Emu_GetSReg := C.FS;
+  5: Emu_GetSReg := C.GS;
  End;
 End;
 
 Procedure Emu_SetSReg(Var C: TEmuCPU; Num: Byte; Value: Word);
 Begin
- Case Num And 3 Of
+ Case Num And 7 Of
   0: C.Segs.ES := Value;
   1: C.Segs.CS := Value;
   2: C.Segs.SS := Value;
   3: C.Segs.DS := Value;
+  4: C.FS := Value;
+  5: C.GS := Value;
  End;
 End;
 
@@ -100617,10 +100676,17 @@ Begin
               ResetSegOvr := True; Inc(P.CPU.IP); End;
    $3E: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
               ResetSegOvr := True; Inc(P.CPU.IP); End;
-   $64: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
-              ResetSegOvr := True; Inc(P.CPU.IP); End; { FS -> traite comme DS }
-   $65: Begin P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.Segs.DS;
-              ResetSegOvr := True; Inc(P.CPU.IP); End; { GS -> traite comme DS }
+   $64: Begin { FS: - BOGUE REEL CORRIGE (2026-09-02, demande explicite de     }
+        { l utilisateur "MOV EAX,FS:[EBX]") : ce prefixe traitait auparavant   }
+        { FS comme un simple alias de DS (simplification deliberee documentee }
+        { a l epoque, faute d usage reel connu de FS/GS) - utilise desormais   }
+        { la VRAIE valeur de FS (voir aussi Emu_GetSReg/$8C/$8E ci-dessus pour }
+        { le meme correctif applique a MOV Sreg). }
+        P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.FS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End;
+   $65: Begin { GS: - meme correctif que $64 ci-dessus. }
+        P.CPU.HasSegOvr := True; P.CPU.SegOvr := P.CPU.GS;
+              ResetSegOvr := True; Inc(P.CPU.IP); End;
    $66: Begin P.CPU.OperandSize32 := True; Inc(P.CPU.IP); End;
         { BOGUE REEL CORRIGE (2026-08-24, HIMEM.SYS utilise reellement des    }
         { instructions 32 bits en mode reel pour verifier la memoire         }
@@ -101228,9 +101294,53 @@ Begin
     { Lit le 2eme octet et un eventuel ModRM ; on saute l instruction. }
     Imm8 := Emu_FetchByte(P.CPU, 1);
     Case Imm8 Of
-     $00: Begin { LLDT/LTR/VERR/VERW - ignore (mode reel), meme discipline }
+     $00: Begin { Groupe 6 : SLDT(/0)/STR(/1)/LLDT(/2)/LTR(/3)/VERR(/4)/       }
+           { VERW(/5). STR/LTR : registre de tache reel TaskReg, LTR valide   }
+           { contre le GDT et marque le bit "busy" (deja en place).           }
+           { SLDT/LLDT - BOGUE REEL CORRIGE (2026-09-02, demande explicite    }
+           { de l utilisateur "implemente tous les trucs speciaux du 386" -   }
+           { table LDTR/GDTR/IDTR/TR) : meme traitement minimal que STR/LTR,  }
+           { nouveau champ TEmuCPU.LdtReg (Word). LLDT accepte un selecteur   }
+           { NUL sans condition (convention reelle : "invalide LDTR",         }
+           { LdtReg:=0) ; pour un selecteur non nul, memes conditions de      }
+           { validite que LAR/LSL/LTR (TI=0, dans GdtLimit, Present) - mais   }
+           { SANS bit "busy" (specifique aux descripteurs TSS, pas LDT).      }
+           { Toujours aucune vraie table LDT consultee pour la resolution     }
+           { d adresses (TI=1 reste toujours invalide ailleurs, cf LAR/LSL) - }
+           { LdtReg est juste un registre lisible/inscriptible, comme TaskReg.}
+           { VERR/VERW restent des no-op PURS : exigeraient une verification  }
+           { de type/privilege de descripteur hors de portee ici. }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Emu_DecodeModRM0F(P.CPU, ModRM, Op);
+           Case (ModRM Shr 3) And 7 Of
+            0: Emu_PutOpWord(P.CPU, Op, P.CPU.LdtReg);   { SLDT }
+            1: Emu_PutOpWord(P.CPU, Op, P.CPU.TaskReg);  { STR }
+            2: Begin { LLDT }
+                V16 := Emu_GetOpWord(P.CPU, Op);
+                If V16 = 0 Then
+                 P.CPU.LdtReg := 0
+                Else If ((V16 And 4) = 0) And ((V16 And $FFF8) <> 0) And
+                   ((LongInt(V16 And $FFF8) + 7) <= P.CPU.GdtLimit) Then Begin
+                 V8 := 0;
+                 Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+                 If (V8 And $80) <> 0 Then
+                  P.CPU.LdtReg := V16;
+                End;
+               End;
+            3: Begin { LTR }
+                V16 := Emu_GetOpWord(P.CPU, Op);
+                If ((V16 And 4) = 0) And ((V16 And $FFF8) <> 0) And
+                   ((LongInt(V16 And $FFF8) + 7) <= P.CPU.GdtLimit) Then Begin
+                 V8 := 0;
+                 Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+                 If (V8 And $80) <> 0 Then Begin
+                  P.CPU.TaskReg := V16;
+                  V8 := V8 Or $02;
+                  Emu_WriteAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+                 End;
+                End;
+               End;
+           End;
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
      $01: Begin { SGDT/SIDT/LGDT/LIDT/SMSW/LMSW - BOGUE REEL CORRIGE          }
@@ -101247,15 +101357,35 @@ Begin
            { que le chargement de segment sous PE=1 (case $8E plus bas)       }
            { puisse resoudre un vrai descripteur. SMSW (reg=4) reflete        }
            { desormais le vrai mot bas de CR0 (plus seulement 0 en dur) et    }
-           { LMSW (reg=6) met a jour son bit PE. SGDT/SIDT/LIDT restent des   }
-           { no-op (IDT jamais consultee par ce cas reel) - meme limite de    }
-           { portee que documentee ailleurs pour ce groupe d opcodes. }
+           { LMSW (reg=6) met a jour son bit PE. SGDT(reg=0)/SIDT(reg=1)/     }
+           { LIDT(reg=3) - BOGUE REEL CORRIGE (2026-09-02, demande explicite  }
+           { de l utilisateur "implemente ce qui manque pour le 386",         }
+           { categorie GDTR/IDTR) : SGDT/SIDT ecrivent desormais VRAIMENT     }
+           { GdtBase/GdtLimit ou IdtBase/IdtLimit en memoire (symetrique de   }
+           { LGDT deja reel) et LIDT les charge (symetrique de SGDT) - IdtBase}
+           { /IdtLimit existent deja (ajoutes pour LOADALL) mais restent      }
+           { purement informatifs : aucune IDT n est jamais CONSULTEE ailleurs}
+           { dans ce fichier (les interruptions reelles passent par la table  }
+           { de vecteurs 0000:0000 classique, pas par une IDT protegee) -     }
+           { seul le round-trip LIDT/SIDT devient reel, pas son usage. }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            Case (ModRM Shr 3) And 7 Of
+            0: Begin { SGDT m16:32 }
+                Emu_PutOpWord(P.CPU, Op, P.CPU.GdtLimit);
+                Emu_WriteDWord(P.CPU, Op.Seg, Word(Op.Ofs + 2), P.CPU.GdtBase);
+               End;
+            1: Begin { SIDT m16:32 }
+                Emu_PutOpWord(P.CPU, Op, P.CPU.IdtLimit);
+                Emu_WriteDWord(P.CPU, Op.Seg, Word(Op.Ofs + 2), P.CPU.IdtBase);
+               End;
             2: Begin { LGDT m16:32 }
                 P.CPU.GdtLimit := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
                 P.CPU.GdtBase := Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+               End;
+            3: Begin { LIDT m16:32 }
+                P.CPU.IdtLimit := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
+                P.CPU.IdtBase := Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
                End;
             4: Emu_PutOpWord(P.CPU, Op, Word(P.CPU.CR0));            { SMSW }
             6: P.CPU.CR0 := (P.CPU.CR0 And Not 1) Or                 { LMSW }
@@ -101263,25 +101393,37 @@ Begin
            End;
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
-     $20: Begin { MOV r32, CR0 - BOGUE REEL CORRIGE 2026-08-24 : necessaire   }
-           { pour "unreal mode" (voir case $01/reg=2 ci-dessus) - le ModRM    }
-           { d une instruction MOV CRn est TOUJOURS registre-a-registre       }
-           { (mod force a 11 par le processeur reel, ignore ici volontairement}
-           { - seul le champ reg (quel CRn) et rm (quel registre 32 bits)     }
-           { comptent) ; seul CR0 (reg=0) est suivi, les autres CRn renvoient }
-           { 0 (aucun etat reellement modelise, portee volontairement limitee}
-           { au strict necessaire pour "unreal mode"). }
+     $20: Begin { MOV r32, CRn - CR0 (reg=0) suivi depuis 2026-08-24 pour       }
+           { "unreal mode" (voir case $01/reg=2 ci-dessus) - le ModRM d une    }
+           { instruction MOV CRn est TOUJOURS registre-a-registre (mod force  }
+           { a 11 par le processeur reel, ignore ici volontairement - seul le }
+           { champ reg (quel CRn) et rm (quel registre 32 bits) comptent).    }
+           { CR2/CR3 - BOGUE REEL CORRIGE (2026-09-02, demande explicite de   }
+           { l utilisateur "MOV EAX,CR2 / MOV EAX,CR3") : desormais suivis    }
+           { comme de simples registres lisibles/inscriptibles (nouveaux      }
+           { champs TEmuCPU.CR2/CR3), MEME LIMITE que TaskReg/LdtReg : aucune }
+           { pagination reelle n est modelisee (pas de MMU dans ce fichier),  }
+           { donc CR2 n est jamais rempli par une vraie faute de page et CR3  }
+           { n est jamais consulte pour traduire une adresse - juste un       }
+           { registre qui retient ce qu on y ecrit. CR1/CR4+ (reg 1,4-7)      }
+           { restent a 0 (non definis sur un 80386, ou hors de portee). }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           If ((ModRM Shr 3) And 7) = 0 Then
-            Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR0)
+           Case (ModRM Shr 3) And 7 Of
+            0: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR0);
+            2: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR2);
+            3: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR3);
            Else
             Emu_SetReg32(P.CPU, ModRM And 7, 0);
+           End;
            Inc(P.CPU.IP, 3);
           End;
-     $22: Begin { MOV CR0, r32 - voir $20 ci-dessus pour le contexte complet. }
+     $22: Begin { MOV CRn, r32 - voir $20 ci-dessus pour le contexte complet. }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           If ((ModRM Shr 3) And 7) = 0 Then
-            P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
+           Case (ModRM Shr 3) And 7 Of
+            0: P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
+            2: P.CPU.CR2 := Emu_GetReg32(P.CPU, ModRM And 7);
+            3: P.CPU.CR3 := Emu_GetReg32(P.CPU, ModRM And 7);
+           End;
            Inc(P.CPU.IP, 3);
           End;
      $B6: Begin { MOVZX r32(/r16), r/m8 - BOGUE REEL CORRIGE (2026-08-25,     }
@@ -101566,13 +101708,39 @@ Begin
            End;
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
-     $21: Begin { MOV r32, DRn - aucun registre de debogage reellement modelise }
+     $21: Begin { MOV r32, DRn - BOGUE REEL CORRIGE (2026-09-02, demande       }
+           { explicite de l utilisateur "MOV EAX,DR0 / MOV EAX,DR7") :         }
+           { DR0-DR7 sont desormais de vrais registres lisibles/inscriptibles }
+           { (nouveau tableau TEmuCPU.DebugRegs[0..7]) au lieu de toujours     }
+           { renvoyer 0 - meme limite que TaskReg/CR2/CR3 : aucun point       }
+           { d arret materiel n est reellement arme, DR7 peut etre ecrit puis }
+           { relu mais son contenu n est jamais consulte pour declencher quoi }
+           { que ce soit pendant l execution. }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_SetReg32(P.CPU, ModRM And 7, 0);
+           Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.DebugRegs[(ModRM Shr 3) And 7]);
            Inc(P.CPU.IP, 3);
           End;
-     $23: Begin { MOV DRn, r32 - ignore, aucun etat de debogage suivi }
+     $23: Begin { MOV DRn, r32 - voir $21 ci-dessus pour le contexte complet. }
            ModRM := Emu_FetchByte(P.CPU, 2);
+           P.CPU.DebugRegs[(ModRM Shr 3) And 7] := Emu_GetReg32(P.CPU, ModRM And 7);
+           Inc(P.CPU.IP, 3);
+          End;
+     $24: Begin { MOV r32, TRn (registres de test 80386, obsoletes des le     }
+           { 486) - BOGUE REEL CORRIGE (2026-09-02, demande explicite de      }
+           { l utilisateur, "TR6/TR7") : cet opcode n etait pas gere du tout, }
+           { tombait dans l Else generique qui lui donnait a tort 2 octets    }
+           { de longueur au lieu de 3 (ModRM jamais saute) - jamais declenche }
+           { en pratique (aucun vrai code 386 rencontre ici n y touche), mais }
+           { corrige par la meme occasion. Meme registre minimal lisible/     }
+           { inscriptible que DR0-DR7 (nouveau tableau TEmuCPU.TestRegs),     }
+           { aucun test de cache/TLB reel. }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.TestRegs[(ModRM Shr 3) And 7]);
+           Inc(P.CPU.IP, 3);
+          End;
+     $26: Begin { MOV TRn, r32 - voir $24 ci-dessus pour le contexte complet. }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           P.CPU.TestRegs[(ModRM Shr 3) And 7] := Emu_GetReg32(P.CPU, ModRM And 7);
            Inc(P.CPU.IP, 3);
           End;
      $A3, $AB, $B3, $BB: Begin { BT/BTS/BTR/BTC r/m, r }
@@ -102078,18 +102246,25 @@ Begin
                                Else Include(P.CPU.Flags.s, EFG_CF);
     Inc(P.CPU.IP);
    End;
-  $88: { MOV rm8, r8 }
+  $88: { MOV rm8, r8 - BOGUE REEL CORRIGE (2026-09-02, demande explicite de   }
+        { l utilisateur "MOV EAX,FS:[EBX]") : ne consultait jamais AddrSize32,}
+        { contrairement a $87/$F6/$F7 qui utilisent deja Emu_DecodeModRM32 -  }
+        { meme motif applique ici et aux 3 formes MOV suivantes ($89/$8A/$8B)}
+        { pour que $67 (adressage 32 bits) fonctionne aussi avec MOV, pas     }
+        { seulement avec XCHG/TEST/NOT/etc. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Emu_PutOpByte(P.CPU, Op,
      Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $89: { MOV rm16, r16 (rm32, r32 si OperandSize32) }
+  $89: { MOV rm16, r16 (rm32, r32 si OperandSize32) - voir $88 ci-dessus. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     If P.CPU.OperandSize32 Then
      Emu_PutOpDWord(P.CPU, Op,
       Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7))
@@ -102098,18 +102273,20 @@ Begin
       Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8A: { MOV r8, rm8 }
+  $8A: { MOV r8, rm8 - voir $88 ci-dessus. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7,
      Emu_GetOpByte(P.CPU, Op));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8B: { MOV r16, rm16 (r32, rm32 si OperandSize32) }
+  $8B: { MOV r16, rm16 (r32, rm32 si OperandSize32) - voir $88 ci-dessus. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     If P.CPU.OperandSize32 Then
      Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7,
       Emu_GetOpDWord(P.CPU, Op))
@@ -102118,23 +102295,26 @@ Begin
       Emu_GetOpWord(P.CPU, Op));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8C: { MOV rm16, Sreg }
+  $8C: { MOV rm16, Sreg - BOGUE REEL CORRIGE (2026-09-02) : "And 3" repliait  }
+        { FS(reg=4)/GS(reg=5) sur ES/CS, voir le commentaire complet au       }
+        { site de Emu_GetSReg. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     Emu_PutOpWord(P.CPU, Op,
-     Emu_GetSReg(P.CPU, (ModRM Shr 3) And 3));
+     Emu_GetSReg(P.CPU, (ModRM Shr 3) And 7));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $8E: { MOV Sreg, rm16 - BOGUE REEL CORRIGE 2026-08-24 : voir                }
         { Emu_LoadSregUnreal, c est LE chargement reellement utilise par le   }
         { vrai HIMEM.SYS pour activer "unreal mode" ("8E D9 MOV DS,CX" etc.,  }
-        { observe en direct). }
+        { observe en direct). BOGUE REEL CORRIGE (2026-09-02) : "And 3"       }
+        { repliait FS(reg=4)/GS(reg=5) sur ES/CS - voir Emu_GetSReg. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
-    Emu_SetSReg(P.CPU, (ModRM Shr 3) And 3, V16);
+    Emu_SetSReg(P.CPU, (ModRM Shr 3) And 7, V16);
     Emu_LoadSregUnreal(P.CPU, V16);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;

@@ -133,6 +133,98 @@ Result:
 BX=1234h
 SS=2000h
 
+[MOV-32-bit-general-registers-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 78h 56h 34h 12h 66h BBh 00h 00h 00h 00h 66h 89h C3h
+BreakPoint: 1000:010F
+Result:
+BX=5678h
+
+[MOV-AX-FS-and-FS-AX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h 8Eh E0h B8h 00h 00h 8Ch E0h
+BreakPoint: 1000:010A
+Result:
+AX=1234h
+
+[MOV-BX-GS-and-GS-BX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BBh 78h 56h 8Eh EBh BBh 00h 00h 8Ch EBh
+BreakPoint: 1000:010A
+Result:
+BX=5678h
+
+[MOV-EAX-CR0-and-CR0-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 34h 12h 00h 00h 0Fh 22h C0h 66h B8h 00h 00h 00h 00h 0Fh 20h C0h
+BreakPoint: 1000:0112
+Result:
+AX=1234h
+
+[MOV-EAX-CR2-and-CR2-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 78h 56h 34h 12h 0Fh 22h D0h 66h B8h 00h 00h 00h 00h 0Fh 20h D0h
+BreakPoint: 1000:0112
+Result:
+AX=5678h
+
+[MOV-EAX-CR3-and-CR3-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 78h 56h 34h 12h 0Fh 22h D8h 66h B8h 00h 00h 00h 00h 0Fh 20h D8h
+BreakPoint: 1000:0112
+Result:
+AX=5678h
+
+[MOV-EAX-DR0-and-DR0-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 11h 11h 11h 11h 0Fh 23h C0h 66h B8h 00h 00h 00h 00h 0Fh 21h C0h
+BreakPoint: 1000:0112
+Result:
+AX=1111h
+
+[MOV-EAX-DR7-and-DR7-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 77h 77h 77h 77h 0Fh 23h F8h 66h B8h 00h 00h 00h 00h 0Fh 21h F8h
+BreakPoint: 1000:0112
+Result:
+AX=7777h
+
+[MOV-EAX-TR6-and-TR6-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 66h 66h 66h 66h 0Fh 26h F0h 66h B8h 00h 00h 00h 00h 0Fh 24h F0h
+BreakPoint: 1000:0112
+Result:
+AX=6666h
+
+[MOV-EAX-from-FS-override-with-32-bit-EBX-addressing]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 20h 8Eh E0h 66h BBh 10h 00h 00h 00h 64h 66h 67h 8Bh 03h
+Data in 2000:0010:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:0110
+Result:
+AX=5678h
+
+[MOV-ECX-from-GS-override-with-32-bit-ESI-addressing]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 30h 8Eh E8h 66h BEh 20h 00h 00h 00h 65h 66h 67h 8Bh 0Eh
+Data in 3000:0020:
+DB EFh CDh ABh 89h
+BreakPoint: 1000:0110
+Result:
+CX=CDEFh
+
 [MOVSX-sign-extends-byte-and-word-from-memory-with-displacement]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -159,6 +251,21 @@ Result:
 BX=00FFh
 CX=1234h
 
+[SGDT-and-SIDT-write-real-GDTR-IDTR-loaded-by-LGDT-LIDT]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB FFh 00h 34h 12h 05h 00h
+Data in 1000:0306:
+DB EEh 00h 78h 56h 06h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h 0Fh 01h 1Eh 06h 03h 0Fh 01h 06h 0Ch 03h 0Fh 01h 0Eh 12h 03h 8Bh 1Eh 0Ch 03h 8Bh 16h 12h 03h 8Bh 36h 0Eh 03h 8Bh 3Eh 14h 03h
+BreakPoint: 1000:0129
+Result:
+BX=00FFh
+DX=00EEh
+SI=1234h
+DI=5678h
+
 [SHLD-shifts-memory-word-with-displacement-using-immediate-count]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -179,6 +286,19 @@ DB 00h 80h
 BreakPoint: 1000:0118
 Result:
 CX=1800h
+AX=0000h
+
+[SLDT-and-LLDT-validate-against-GDT-and-accept-null-selector]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 0Fh 00h 00h 00h 07h 00h
+Data in 7000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 82h 00h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h B9h 08h 00h 0Fh 00h D1h 0Fh 00h C0h 89h C2h B9h 00h 00h 0Fh 00h D1h 0Fh 00h C0h
+BreakPoint: 1000:011E
+Result:
+DX=0008h
 AX=0000h
 
 [XADD-exchanges-and-adds-byte-and-word-in-memory-with-displacement]

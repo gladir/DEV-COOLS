@@ -386,6 +386,16 @@ DI=FFFAh
 BP=FFFEh
 SP=FFF6h
 
+[ES-segment-override-MOV]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 20h 8Eh C0h BFh 00h 04h B0h 42h 26h 88h 05h BBh 00h 00h 8Ah 1Dh B9h 00h 00h 26h 8Ah 0Dh
+BreakPoint: 1000:0118
+Result:
+BX=00F6h
+CX=0042h
+ES=2000h
+
 [ESC-FPU-stub-strict-nop-memory-untouched]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1146,6 +1156,119 @@ BP=0FFFh
 DI=0040h
 AX=0000h
 
+[LTR-validates-selector-against-GDT-and-marks-descriptor-busy]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 0Fh 00h 00h 00h 06h 00h
+Data in 6000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 89h 00h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h B9h 08h 00h 0Fh 00h D9h 0Fh 00h C8h 89h C2h B8h 00h 60h 8Eh D8h 8Ah 1Eh 0Dh 00h B9h 18h 00h 0Fh 00h D9h 0Fh 00h C8h
+BreakPoint: 1000:0127
+Result:
+DX=0008h
+BX=008Bh
+AX=0008h
+CX=0018h
+
+[MOV-direct-disp16-modRM00rm110]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h 89h 06h 70h 01h B8h 00h 00h A1h 70h 01h
+BreakPoint: 1000:010D
+Result:
+AX=1234h
+
+[MOV-moffs8-AL-and-moffs16-AX-write-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h B0h 42h A2h 00h 04h B8h 34h 12h A3h 02h 04h 8Ah 1Eh 00h 04h B7h 00h 8Bh 0Eh 02h 04h
+BreakPoint: 1000:011A
+Result:
+BX=0042h
+CX=1234h
+
+[MOV-r-m16-imm16-writes-memory-word]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C7h 06h 00h 03h 34h 12h 8Bh 1Eh 00h 03h
+BreakPoint: 1000:010F
+Result:
+BX=1234h
+
+[MOV-r-m8-imm8-writes-memory-byte]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C6h 06h 00h 03h 42h B5h 00h 8Ah 0Eh 00h 03h
+BreakPoint: 1000:0110
+Result:
+CX=0042h
+
+[MOV-r16-from-memory-via-general-ModRM]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Bh 1Eh 00h 03h
+Data in 1000:0300:
+DB 34h 12h
+BreakPoint: 1000:0109
+Result:
+BX=1234h
+
+[MOV-r8-imm8-loads-all-eight-byte-registers]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 11h B4h 22h B1h 33h B5h 44h B2h 55h B6h 66h B3h 77h B7h 88h
+BreakPoint: 1000:0110
+Result:
+AX=2211h
+CX=4433h
+DX=6655h
+BX=8877h
+
+[MOV-register-to-register-preserves-value]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h 89h D8h
+BreakPoint: 1000:0108
+Result:
+AX=5678h
+BX=5678h
+
+[MOV-segment-register-from-memory-operand]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh 16h 00h 03h
+Data in 1000:0300:
+DB 00h 20h
+BreakPoint: 1000:0109
+Result:
+SS=2000h
+
+[MOVmemCS-reload-CMP-JE-hang-repro]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 00h 00h BFh 00h 03h 8Ch 0Dh 8Bh 1Dh 8Ch C8h 39h D8h 74h 03h B9h 99h 99h BAh 11h 11h
+BreakPoint: 1000:0116
+Result:
+AX=1000h
+BX=1000h
+CX=0000h
+DX=1111h
+
+[MOVmemCS-then-INT-dispatch]
+Data in 0000:03C4:
+DB 00h 03h 00h 10h
+Data in 1000:0100:
+DB BFh 00h 05h 8Ch 0Dh CDh F1h
+Data in 1000:0300:
+DB B8h 78h 56h CFh
+EntryPoint: 1000:0100
+BreakPoint: 1000:0107
+Result:
+AX=5678h
+CS=1000h
+IP=0107h
+
 [OUTSB-and-OUTSW-write-port-from-DS-SI-leave-memory-untouched]
 Data in 1000:0300:
 DB AAh
@@ -1160,3 +1283,12 @@ CX=00AAh
 DI=0301h
 AX=BBBBh
 SI=04FEh
+
+[Sanity-MOV-immediat]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h
+BreakPoint: 1000:0106
+Result:
+AX=1234h
+BX=5678h
