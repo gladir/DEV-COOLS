@@ -492,6 +492,104 @@ SI=2468h
 DI=369Ah
 BP=5678h
 
+[IRET-restores-IP-CS-and-flags-from-stack]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 02h 50h B8h 00h 10h 50h B8h 08h 03h 50h CFh
+Data in 1000:0308:
+DB B8h 34h 12h
+BreakPoint: 1000:030B
+Result:
+AX=1234h
+CS=1000h
+IP=030Bh
+
+[JAE-taken-when-equal-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 73h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0005h
+CX=0001h
+
+[JA-taken-when-above-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 39h D8h 77h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0003h
+CX=0001h
+
+[JBE-taken-when-equal-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 76h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0005h
+CX=0001h
+
+[JB-taken-when-below-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 72h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0003h
+BX=0005h
+CX=0001h
+
+[JC-taken-when-carry-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h 72h 05h BBh 00h 00h EBh 03h BBh 01h 00h
+BreakPoint: 1000:010B
+Result:
+BX=0001h
+
+[JCXZ-taken-when-CX-is-zero]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 00h 00h E3h 05h B8h 00h 00h EBh 03h B8h 01h 00h
+BreakPoint: 1000:010D
+Result:
+AX=0001h
+CX=0000h
+
+[JECXZ-8086-runner-uses-CX-zero-condition]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 00h 00h E3h 05h B8h 00h 00h EBh 03h B8h 01h 00h
+BreakPoint: 1000:010D
+Result:
+AX=0001h
+CX=0000h
+
+[JE-taken-when-comparison-is-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 74h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0005h
+CX=0001h
+
+[JG-taken-when-signed-value-is-greater]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 39h D8h 7Fh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0003h
+CX=0001h
+
 [JMP-indirect-word-ptr-BX]
 EntryPoint: 1000:0100
 Data in 1000:0100:
