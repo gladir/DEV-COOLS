@@ -85534,6 +85534,95 @@ Begin
  If C.HasSegOvr Then Op.Seg := C.SegOvr;
 End;
 
+{ --- Variante de Emu_DecodeModRM pour les opcodes a PREFIXE $0F (2 octets   }
+{ d opcode avant le ModRM, pas 1) - BOGUE REEL CORRIGE (2026-09-02, trouve   }
+{ en approfondissant le test unitaire LAR sur demande de l utilisateur -    }
+{ "j'ai l'impression que l'instruction est mal supportee") : Emu_DecodeModRM}
+{ ci-dessus recupere tout deplacement via Emu_FetchByte/Word(C,2), un        }
+{ decalage FIXE suppose valide UNIQUEMENT quand le ModRM se trouve juste     }
+{ apres UN SEUL octet d opcode (IP+1) - le deplacement, lui, commence alors  }
+{ a IP+2, d ou le "2" code en dur. Pour tout opcode prefixe $0F, le ModRM    }
+{ se trouve en realite a IP+2 (0F + sous-code + ModRM), donc son deplacement }
+{ commence a IP+3 - appeler Emu_DecodeModRM tel quel depuis un gestionnaire  }
+{ $0F lisait donc le deplacement UN OCTET TROP TOT (chevauchant le ModRM     }
+{ lui-meme), corrompant silencieusement toute adresse effective calculee    }
+{ pour un operande MEMOIRE AVEC DEPLACEMENT (mod=01/10, ou mod=00/rm=110     }
+{ adresse directe) - LGDT (utilise par le nouveau test LAR) en a ete la      }
+{ premiere victime detectee, mais ~20 autres gestionnaires $0F partageant    }
+{ ce meme appel etaient exposes de la meme maniere des qu ils recoivent un   }
+{ operande memoire avec deplacement (formes registre-registre mod=11, ou    }
+{ memoire SANS deplacement comme [BX+SI]/[DI], n etaient PAS affectees,      }
+{ d ou le fait que ce bogue soit reste invisible dans tous les tests         }
+{ precedents qui n exercaient que ces formes-la). Implementation identique  }
+{ a Emu_DecodeModRM, seul le decalage fixe passe de 2 a 3 dans les 2 appels  }
+{ de recuperation du deplacement. }
+Procedure Emu_DecodeModRM0F(Var C: TEmuCPU; ModRM: Byte;
+ Var Op: TEmuOperand);
+Var
+ Mode, RM: Byte;
+ Disp: Word;
+ DefSeg: Word;
+Begin
+ Op.IsReg := False;
+ Op.RegNum := 0;
+ Op.Seg := C.Segs.DS;
+ Op.Ofs := 0;
+ Op.AddrIs32 := False;
+ Op.Len := 1;            { ModRM byte }
+ Mode := (ModRM Shr 6) And 3;
+ RM := ModRM And 7;
+ If Mode = 3 Then Begin
+  Op.IsReg := True;
+  Op.RegNum := RM;
+  Exit;
+ End;
+ { Adresse effective : segment par defaut DS, sauf si BP est utilise }
+ DefSeg := C.Segs.DS;
+ Case RM Of
+  0: Op.Ofs := Word(C.Regs.BX + C.Regs.SI);
+  1: Op.Ofs := Word(C.Regs.BX + C.Regs.DI);
+  2: Begin
+      Op.Ofs := Word(C.Regs.BP + C.Regs.SI);
+      DefSeg := C.Segs.SS;
+     End;
+  3: Begin
+      Op.Ofs := Word(C.Regs.BP + C.Regs.DI);
+      DefSeg := C.Segs.SS;
+     End;
+  4: Op.Ofs := C.Regs.SI;
+  5: Op.Ofs := C.Regs.DI;
+  6: Begin
+      If Mode = 0 Then Begin
+       { [disp16] - decalage 3 (pas 2) : voir le commentaire de tete. }
+       Op.Ofs := Emu_FetchWord(C, 3);
+       Op.Len := 3;
+      End Else Begin
+       Op.Ofs := C.Regs.BP;
+       DefSeg := C.Segs.SS;
+      End;
+     End;
+  7: Op.Ofs := C.Regs.BX;
+ End;
+ { Ajouter le deplacement si mode <> 0, sauf rm=6 mode=0 deja traite }
+ Case Mode Of
+  1: Begin
+      { Disp8 signe - decalage 3 (pas 2) : voir le commentaire de tete. }
+      Disp := Emu_FetchByte(C, 3);
+      If (Disp And $80) <> 0 Then
+       Disp := Disp Or $FF00;
+      Op.Ofs := Word(Op.Ofs + Disp);
+      Op.Len := 2;
+     End;
+  2: Begin
+      Disp := Emu_FetchWord(C, 3);
+      Op.Ofs := Word(Op.Ofs + Disp);
+      Op.Len := 3;
+     End;
+ End;
+ Op.Seg := DefSeg;
+ If C.HasSegOvr Then Op.Seg := C.SegOvr;
+End;
+
 { --- Decoder un octet ModR/M en operande, adressage 32 bits (prefixe $67) --
        BOGUE REEL CORRIGE (2026-08-24, retro-ingenierie du vrai HIMEM.SYS)  :
        le vrai HIMEM.SYS utilise `67h` pour un adressage direct disp32 sans
@@ -100984,7 +101073,7 @@ Begin
     Case Imm8 Of
      $00: Begin { LLDT/LTR/VERR/VERW - ignore (mode reel), meme discipline }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
      $01: Begin { SGDT/SIDT/LGDT/LIDT/SMSW/LMSW - BOGUE REEL CORRIGE          }
@@ -101005,7 +101094,7 @@ Begin
            { no-op (IDT jamais consultee par ce cas reel) - meme limite de    }
            { portee que documentee ailleurs pour ce groupe d opcodes. }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            Case (ModRM Shr 3) And 7 Of
             2: Begin { LGDT m16:32 }
                 P.CPU.GdtLimit := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
@@ -101049,7 +101138,7 @@ Begin
            { decalage). Ajoute au passage par symetrie/precaution, meme si     }
            { non rencontre directement dans ce cas precis. }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            V8 := Emu_GetOpByte(P.CPU, Op);
            If P.CPU.OperandSize32 Then
             Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, LongInt(V8))
@@ -101064,7 +101153,7 @@ Begin
            { compacte en un mot 32 bits (voir Emu_LoadSregUnreal / le case    }
            { $C1 du groupe 2 juste en dessous pour la suite de la sequence).  }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            V16 := Emu_GetOpWord(P.CPU, Op);
            If P.CPU.OperandSize32 Then
             Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, LongInt(V16))
@@ -101166,7 +101255,7 @@ Begin
      $A9: Begin P.CPU.GS := Emu_PopWord(P.CPU); Inc(P.CPU.IP, 2); End; { POP GS }
      $B0: Begin { CMPXCHG r/m8, r8 }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            V8 := Emu_GetOpByte(P.CPU, Op);
            R8 := Emu_AluByte(P.CPU, 5, P.CPU.Regs.AL, V8); { SUB pour les fanions }
            If P.CPU.Regs.AL = V8 Then
@@ -101177,7 +101266,7 @@ Begin
           End;
      $B1: Begin { CMPXCHG r/m, r }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             V32 := Emu_GetOpDWord(P.CPU, Op);
             R32 := Emu_AluDWord(P.CPU, 5, P.CPU.Regs.EAX, V32);
@@ -101197,7 +101286,7 @@ Begin
           End;
      $C0: Begin { XADD r/m8, r8 : echange puis addition }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            V8 := Emu_GetOpByte(P.CPU, Op);
            R8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
            Emu_SetReg8(P.CPU, (ModRM Shr 3) And 7, V8);
@@ -101206,7 +101295,7 @@ Begin
           End;
      $C1: Begin { XADD r/m, r }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             V32 := Emu_GetOpDWord(P.CPU, Op);
             R32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
@@ -101235,9 +101324,41 @@ Begin
            End;
            Inc(P.CPU.IP, 2);
           End;
-     $02, $03: Begin { LAR/LSL r,r/m16 - mode reel : jamais valide, ZF efface }
+     $02: Begin { LAR r16,r/m16 - BOGUE REEL CORRIGE (2026-09-02, l          }
+          { utilisateur a juge le stub precedent ("toujours invalide")      }
+          { insuffisant - a raison : LGDT charge deja un vrai               }
+          { GdtBase/GdtLimit (voir Emu_LoadSregUnreal/case $01 reg=2         }
+          { ci-dessus), il est donc possible de resoudre un VRAI            }
+          { descripteur pour tout selecteur GDT (bit TI=0) dans les limites }
+          { chargees, et d en extraire le VRAI octet de droits d acces      }
+          { (octet 5 du descripteur, place en bits 8-15 du resultat, comme  }
+          { le vrai materiel) plutot que de toujours echouer. Un selecteur  }
+          { NUL, LDT (bit TI=1, aucun LDT modelise), hors limite, ou dont   }
+          { le bit Present (bit 7 de l octet d acces) est absent reste      }
+          { correctement rapporte invalide (ZF=0, destination INCHANGEE,    }
+          { exactement comme le vrai LAR) - portee volontairement limitee   }
+          { au GDT, sans verification de privilege CPL/DPL (aucun etat de   }
+          { privilege reel n est suivi par ce fichier). }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
+           V16 := Emu_GetOpWord(P.CPU, Op);
+           Exclude(P.CPU.Flags.s, EFG_ZF);
+           If ((V16 And 4) = 0) And ((V16 And $FFF8) <> 0) And
+              ((LongInt(V16 And $FFF8) + 7) <= P.CPU.GdtLimit) Then Begin
+            V8 := 0;
+            Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+            If (V8 And $80) <> 0 Then Begin
+             Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Word(V8) Shl 8);
+             Include(P.CPU.Flags.s, EFG_ZF);
+            End;
+           End;
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $03: Begin { LSL r16,r/m16 - mode reel : jamais valide, ZF efface - hors }
+          { de la demande explicite de l utilisateur (2026-09-02 : seul LAR, }
+          { ci-dessus, a ete implante reellement sur demande). }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            Exclude(P.CPU.Flags.s, EFG_ZF);
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
@@ -101253,7 +101374,7 @@ Begin
      $A3, $AB, $B3, $BB: Begin { BT/BTS/BTR/BTC r/m, r }
            OpSel := Imm8;
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             V32 := Emu_GetOpDWord(P.CPU, Op);
             R32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
@@ -101282,7 +101403,7 @@ Begin
      $A4, $A5: Begin { SHLD r/m,r,imm8 (0F A4) / SHLD r/m,r,CL (0F A5) }
            OpSel := Imm8;
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If OpSel = $A4 Then
             ShCnt := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP + 2 + Op.Len)
            Else
@@ -101319,7 +101440,7 @@ Begin
      $AC, $AD: Begin { SHRD r/m,r,imm8 (0F AC) / SHRD r/m,r,CL (0F AD) }
            OpSel := Imm8;
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If OpSel = $AC Then
             ShCnt := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP + 2 + Op.Len)
            Else
@@ -101355,7 +101476,7 @@ Begin
           End;
      $AF: Begin { IMUL r, r/m (signe, resultat tronque dans r) }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             V32 := Emu_GetOpDWord(P.CPU, Op);
             R32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
@@ -101383,7 +101504,7 @@ Begin
           End;
      $B2: Begin { LSS r, m16:16/32 }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7,
              Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs)));
@@ -101398,7 +101519,7 @@ Begin
           End;
      $B4: Begin { LFS r, m16:16/32 }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7,
              Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs)));
@@ -101412,7 +101533,7 @@ Begin
           End;
      $B5: Begin { LGS r, m16:16/32 }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7,
              Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs)));
@@ -101426,7 +101547,7 @@ Begin
           End;
      $BA: Begin { Groupe 8 : BT/BTS/BTR/BTC r/m, imm8 (reg=4..7) }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            SubOp := (ModRM Shr 3) And 7;
            If P.CPU.OperandSize32 Then Begin
             Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP + 2 + Op.Len);
@@ -101456,7 +101577,7 @@ Begin
      $BC, $BD: Begin { BSF r,r/m (index du bit de poids faible) / BSR (fort) }
            OpSel := Imm8;
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            If P.CPU.OperandSize32 Then Begin
             V32 := Emu_GetOpDWord(P.CPU, Op);
             If V32 = 0 Then Include(P.CPU.Flags.s, EFG_ZF)
@@ -101491,7 +101612,7 @@ Begin
      $BE: Begin { MOVSX r32(/r16), r/m8 - frere direct de $B6, meme famille   }
                 { de bogue que $B6/$B7 corrige plus haut. }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            V8 := Emu_GetOpByte(P.CPU, Op);
            If P.CPU.OperandSize32 Then Begin
             If (V8 And $80) <> 0 Then S32 := LongInt(LongWord(V8) Or $FFFFFF00)
@@ -101506,7 +101627,7 @@ Begin
           End;
      $BF: Begin { MOVSX r32, r/m16 - frere direct de $B7. }
            ModRM := Emu_FetchByte(P.CPU, 2);
-           Emu_DecodeModRM(P.CPU, ModRM, Op);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            V16 := Emu_GetOpWord(P.CPU, Op);
            If (V16 And $8000) <> 0 Then S32 := LongInt(LongWord(V16) Or $FFFF0000)
                                     Else S32 := LongInt(V16);
