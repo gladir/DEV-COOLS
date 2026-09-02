@@ -166,3 +166,48 @@ Result:
 SI=1234h
 SS=2000h
 BP=0050h
+
+[CMP-reg-reg-flags-full]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 9Ch 5Eh 81h E6h D1h 08h B8h 03h 00h BBh 05h 00h 39h D8h 9Ch 5Fh 81h E7h D1h 08h B8h 05h 00h BBh 03h 00h 39h D8h 9Ch 5Dh 81h E5h D1h 08h B8h 00h 80h BBh 01h 00h 39h D8h 9Ch 5Ah 81h E2h D1h 08h
+BreakPoint: 1000:0138
+Result:
+SI=0040h
+DI=0091h
+BP=0000h
+DX=0810h
+
+[CMP-mem-operand-flags-both-directions]
+Data in 1000:0300:
+DB 05h 00h
+Data in 1000:0302:
+DB 03h 00h
+Data in 1000:0304:
+DB 0Fh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 03h 00h 39h 1Eh 00h 03h 9Ch 58h 25h D1h 08h 89h C6h A1h 00h 03h 89h C7h B9h 01h 00h 3Bh 0Eh 02h 03h 9Ch 58h 25h D1h 08h 89h C5h B0h 10h 38h 06h 04h 03h 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:0133
+Result:
+SI=0000h
+DI=0005h
+BP=0091h
+DX=0081h
+
+[TEST-reg-mem-flags]
+Data in 1000:0400:
+DB 80h 00h
+Data in 1000:0402:
+DB 00h 80h
+Data in 1000:0404:
+DB 00h FFh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h B8h FFh 00h 85h 06h 00h 04h 9Ch 5Bh 81h E3h C1h 08h 89h C6h B8h 00h 80h 85h 06h 02h 04h 9Ch 59h 81h E1h C1h 08h B8h FFh 00h 85h 06h 04h 04h 9Ch 5Ah 81h E2h C1h 08h
+BreakPoint: 1000:012E
+Result:
+SI=00FFh
+BX=0000h
+CX=0080h
+DX=0040h
