@@ -101151,11 +101151,25 @@ Begin
     P.CPU.Segs.CS := Emu_PopWord(P.CPU);
     P.CPU.Regs.SP := P.CPU.Regs.SP + Imm16;
    End;
-  $CF: { IRET : pop IP, CS, FLAGS }
+  $CF: { IRET : pop IP, CS, FLAGS (IRETD : pop EIP/CS/EFLAGS 32 bits si       }
+       { OperandSize32) - BOGUE REEL CORRIGE (2026-09-02, demande explicite   }
+       { de l utilisateur, meme classe de bogue que CDQ/CWDE/INSD deja        }
+       { corriges cette session) : ignorait totalement OperandSize32, faisait}
+       { TOUJOURS la forme 16 bits. LIMITE HONNETE : P.CPU.IP reste un champ  }
+       { 16 bits partout dans ce fichier (pas de vrai EIP) - seul le mot bas  }
+       { de l EIP depile est conserve, coherent avec le reste de ce coeur qui}
+       { ne modelise jamais de code au-dela de 64 Ko par segment ; de meme    }
+       { pour EFLAGS, tronque a son mot bas (Flags.Base est deja 16 bits). }
    Begin
-    P.CPU.IP := Emu_PopWord(P.CPU);
-    P.CPU.Segs.CS := Emu_PopWord(P.CPU);
-    P.CPU.Flags.Base := Emu_PopWord(P.CPU);
+    If P.CPU.OperandSize32 Then Begin
+     P.CPU.IP := Word(Emu_PopDWord(P.CPU));
+     P.CPU.Segs.CS := Word(Emu_PopDWord(P.CPU));
+     P.CPU.Flags.Base := Word(Emu_PopDWord(P.CPU));
+    End Else Begin
+     P.CPU.IP := Emu_PopWord(P.CPU);
+     P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+     P.CPU.Flags.Base := Emu_PopWord(P.CPU);
+    End;
    End;
   $B0..$B7: { MOV r8,imm8 }
    Begin
@@ -101388,14 +101402,28 @@ Begin
     P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
     Inc(P.CPU.IP);
    End;
-  $6D: { INSW (80186+) - voir $6C ci-dessus pour le contexte complet. Le mot  }
-       { lu est assemble a partir de 2 lectures d octet consecutives (DX puis}
-       { DX+1), meme convention que $ED (IN AX,DX) plus bas. }
+  $6D: { INSW (80186+) / INSD si OperandSize32 - BOGUE REEL CORRIGE           }
+       { (2026-09-02, demande explicite de l utilisateur, meme classe de     }
+       { bogue que $99/CDQ et $98/CWDE) : ignorait totalement OperandSize32  }
+       { et faisait TOUJOURS la forme 16 bits (INSW), meme avec le prefixe   }
+       { $66 present - INSD (lecture 32 bits du port vers ES:[DI]) etait     }
+       { silencieusement non fonctionnel. Le mot/double mot lu est assemble  }
+       { a partir de lectures d octet consecutives (DX, DX+1, ... ), meme    }
+       { convention que $ED (IN AX,DX) plus bas. }
    Begin
-    If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
-    Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
-     Word(Emu_PortRead(P, P.CPU.Regs.DX)) Or
-     (Word(Emu_PortRead(P, P.CPU.Regs.DX + 1)) Shl 8));
+    If P.CPU.OperandSize32 Then Begin
+     If EFG_DF In P.CPU.Flags.s Then Inc16 := -4 Else Inc16 := 4;
+     Emu_WriteDWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+      LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX))) Or
+      (LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX + 1))) Shl 8) Or
+      (LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX + 2))) Shl 16) Or
+      (LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX + 3))) Shl 24));
+    End Else Begin
+     If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
+     Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+      Word(Emu_PortRead(P, P.CPU.Regs.DX)) Or
+      (Word(Emu_PortRead(P, P.CPU.Regs.DX + 1)) Shl 8));
+    End;
     P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
     Inc(P.CPU.IP);
    End;
