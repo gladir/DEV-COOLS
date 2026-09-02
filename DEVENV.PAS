@@ -1559,6 +1559,15 @@ Const
  EMU_ISO_SECTOR = 2048;          { taille de secteur ISO9660 - universelle}
                                   { pour les CD-ROM, jamais lue dynamique- }
                                   { ment depuis le PVD (voir Emu_CdromOpenOne) }
+ { Numero d unite BIOS (registre DL) reserve a l amorcage El Torito       }
+ { depuis un CD-ROM (2026-09-02, demande explicite de l utilisateur) -    }
+ { valeur hors plage de Emu_DiskIdxFromDL (00h/01h/80h/81h uniquement),    }
+ { choisie pour ne jamais collisionner avec une unite disquette/disque    }
+ { dur reelle - voir Emu_DoInt13/Emu_LoadElToritoBoot. $E0 est aussi la    }
+ { valeur reellement utilisee par des BIOS reels (ex. SeaBIOS) pour un     }
+ { lecteur El Torito, mais la valeur exacte est arbitraire ici : seul      }
+ { compte qu Emu_LoadElToritoBoot et Emu_DoInt13 s accordent sur la meme. }
+ EMU_ELTORITO_DL = $E0;
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -3182,6 +3191,16 @@ Type
 
  { Un secteur logique ISO9660 brut (2048 octets, voir EMU_ISO_SECTOR). }
  TEmuIsoSector = Array[0..EMU_ISO_SECTOR - 1] Of Byte;
+
+ { Entree Initial/Default du catalogue d amorcage El Torito d une image   }
+ { ISO9660 (2026-09-02, demande explicite de l utilisateur), voir          }
+ { Emu_ElToritoFindEntry/Emu_LoadElToritoBoot. }
+ TEmuElToritoEntry = Record
+  MediaType  : Byte;      { 0=aucune emulation, 1/2/3=disquette, 4=disque dur }
+  LoadSeg    : Word;      { segment de chargement (0 -> defaut $7C0) }
+  SectorCount: Word;      { nombre de "secteurs virtuels" de 512 octets }
+  BootLBA    : LongInt;   { LBA (secteurs ISO9660 de 2048 octets) de l image }
+ End;
 
  { Norton Commander (5e shell du panneau Terminal, DEVENV.PAS) - navigation
    double-panneau sur la disquette virtuelle FAT deja utilisee par les 4
@@ -6544,6 +6563,13 @@ Var
                                  { Emu_LoadBootSector/CreateEmulatorBootTab.}
                                  { Arme juste avant ShowEmulatorPanel,     }
                                  { consomme et remis a -1 immediatement.  }
+ { Amorcage El Torito depuis un CD-ROM (2026-09-02, demande explicite de }
+ { l utilisateur) - meme motif exactement que EmuBootFromDrive ci-dessus  }
+ { (arme juste avant ShowEmulatorPanel, consomme et remis a -1            }
+ { immediatement) mais indexe dans EmuCdrom (0/1) plutot que dans         }
+ { FatVol/EmuFloppyOpen - voir Emu_LoadElToritoBoot/                      }
+ { CreateEmulatorElToritoBootTab. }
+ EmuBootFromElTorito: Integer;
  EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
                                  { s il a ete cree par Emu_LoadBootSector }
                                  { (vs Emu_LoadProgram) - voir le garde-  }
@@ -6629,6 +6655,19 @@ Var
  { Emu_CdromOpenAll/Emu_IsoResolve - lettre de lecteur assignee          }
  { uniquement si Open=True (voir Emu_CdromOpenAll), au plus tot D:. }
  EmuCdrom          : Array[0..1] Of TEmuCdromVol;
+ { Amorcage El Torito depuis un CD-ROM monte (2026-09-02, demande         }
+ { explicite de l utilisateur - voir Emu_LoadElToritoBoot/Emu_DoInt13-    }
+ { ElTorito) : -1 = aucun amorcage El Torito en cours, sinon indice        }
+ { (0/1) dans EmuCdrom du CD-ROM depuis lequel le systeme a demarre -      }
+ { Emu_DoInt13 redirige alors les appels adresses a EMU_ELTORITO_DL vers   }
+ { ce CD au lieu des unites FatVol/EmuFloppyOpen habituelles. }
+ Emu_ElToritoCdSlot: Integer;
+ { Tampon de chargement de la charge utile El Torito "sans emulation"     }
+ { (voir Emu_LoadElToritoBoot) - global plutot que local pour eviter une  }
+ { grosse reservation de pile ; taille genereuse (64 Ko) pour couvrir les }
+ { chargeurs d amorcage CD-ROM reels les plus gros observes (ex. le        }
+ { core.img El Torito de GRUB2 fait typiquement quelques dizaines de Ko). }
+ Emu_ElToritoPayload: Array[0..65535] Of Byte;
  EmuMscdexActive   : Boolean;   { case "MSCDEX" (DosMSCDEX), voir        }
                                  { Emu_MscdexInit - gate INT 2Fh AX=15xxh}
  { Fichiers ouverts (handles 5..31, voir EmuFileOpen ci-dessus) dont le  }
@@ -11154,6 +11193,7 @@ Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
 Procedure CreateEmulatorTab(BinaryPath, TargetCPU: String;
  Args: String); Forward;
 Procedure CreateEmulatorBootTab(DriveIdx: Byte; Const DispName: String); Forward;
+Procedure CreateEmulatorElToritoBootTab(CdIdx: Byte; Const DispName: String); Forward;
 Procedure C64_SaveState(Var Snap: TC64Snapshot); Forward;
 Procedure C64_LoadState(Var Snap: TC64Snapshot); Forward;
 Procedure Nes_SaveState(Var Snap: TNesSnapshot); Forward;
@@ -39564,6 +39604,12 @@ End;
 Function Emu_IsoReadLBA(Idx: Byte; LBA: LongInt; Var Buf: TEmuIsoSector): Boolean; Forward;
 Function Arm64_FindOpenCdromSlot: Integer; Forward;
 Function Emu_LoadARM64Kernel(CdIdx: Byte; SigEnforceFlag: ShortInt): Boolean; Forward;
+{ Amorcage El Torito (2026-09-02, demande explicite de l utilisateur) -    }
+{ memes raisons de Forward que ci-dessus : definies bien plus bas, pres    }
+{ d Emu_DoInt13, mais appelees ici par TermCmd_BOOT. }
+Function Emu_ElToritoFindEntry(CdIdx: Byte;
+ Var Entry: TEmuElToritoEntry): Boolean; Forward;
+Function Emu_LoadElToritoBoot(Var C: TEmuCPU; CdIdx: Byte): Boolean; Forward;
 
 Procedure TermCmd_BOOT(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -39578,6 +39624,7 @@ Var
  CdSlot: Integer;
  SigEnforceFlag: ShortInt;
  HasExplicitDrive: Boolean;
+ ElToritoEntry: TEmuElToritoEntry;
 Begin
  { BOGUE REEL / demande explicite de l utilisateur (2026-09-02) : "BOOT" tape }
  { seul (sans lettre de lecteur) affichait toujours la syntaxe, meme quand un }
@@ -39666,15 +39713,38 @@ Begin
   For SlotIdx := 0 To 3 Do
    If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
   If Idx = 255 Then Begin
-   If EmuCdrom[0].Open Or EmuCdrom[1].Open Then
-    TermAddLine(TP, 'BOOT : un CD-ROM est monte, mais l''amorcage direct ' +
-     'depuis une image ISO9660 (El Torito) n''est pas encore pris en charge. ' +
-     'Utilisez BOOT d: avec un disque/disquette monte via /DISK0:, /DISK1:, ' +
-     '/DISK80: ou /DISK81:.')
-   Else
-    TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
-     '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
-     '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG_ENFORCE=True|False] [/GUI] [/CMD]');
+   { Aucun disque/disquette monte : tenter un amorcage El Torito reel si   }
+   { un CD-ROM est monte (2026-09-02, demande explicite de l utilisateur, }
+   { chantier separe annonce lors du correctif precedent - voir            }
+   { Emu_ElToritoFindEntry/Emu_LoadElToritoBoot/                           }
+   { CreateEmulatorElToritoBootTab). Seule l entree "sans emulation"       }
+   { (isolinux/GRUB2, la norme des CD/DVD d installation modernes) est     }
+   { vraiment amorcee - un type d emulation disquette/disque dur est       }
+   { refuse honnetement (voir le commentaire de Emu_LoadElToritoBoot pour  }
+   { le pourquoi). }
+   CdSlot := -1;
+   If EmuCdrom[0].Open Then CdSlot := 0
+   Else If EmuCdrom[1].Open Then CdSlot := 1;
+   If CdSlot >= 0 Then Begin
+    If Not Emu_ElToritoFindEntry(Byte(CdSlot), ElToritoEntry) Then Begin
+     TermAddLine(TP, 'BOOT : ce CD-ROM ne contient pas de catalogue ' +
+      'd''amorcage El Torito (image de donnees, pas une image ' +
+      'd''installation amorcable).');
+     Exit;
+    End;
+    If ElToritoEntry.MediaType <> 0 Then Begin
+     TermAddLine(TP, 'BOOT : le catalogue El Torito de ce CD-ROM demande ' +
+      'une emulation disquette/disque dur (type ' +
+      IntToStr(ElToritoEntry.MediaType) + '), non prise en charge - seul ' +
+      'le mode "sans emulation" (isolinux/GRUB2) est gere.');
+     Exit;
+    End;
+    CreateEmulatorElToritoBootTab(Byte(CdSlot), 'CD-ROM (El Torito)');
+    Exit;
+   End;
+   TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
+    '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
+    '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG_ENFORCE=True|False] [/GUI] [/CMD]');
    Exit;
   End;
   DL := Term_DriveLetterFromIdx(Idx);
@@ -68488,6 +68558,8 @@ Begin
  { lancement d un emulateur -CD, avant meme qu aucune commande BOOT n ait  }
  { jamais ete tapee - voir Emu_LoadBootSector/CreateEmulatorBootTab. }
  EmuBootFromDrive := -1;
+ EmuBootFromElTorito := -1;
+ Emu_ElToritoCdSlot := -1;
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
  InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
@@ -84919,13 +84991,14 @@ Function Emu_DLFromDiskIdx(Idx: Byte): Byte; Forward;
 { DOS que Emu_LoadProgram par coherence (handles/DTA/EXEC), meme si un      }
 { vrai secteur de boot ne les consulte generalement pas avant que DOS lui-  }
 { meme ne soit charge. }
-Function Emu_LoadBootSector(Var C: TEmuCPU; DriveIdx: Byte): Boolean;
-Var
- SectorBuf: Array[0..511] Of Byte;
- DriveParam: Array[0..10] Of Byte;
- I: Integer;
+{ Remettre a zero l etat DOS/emulateur commun a tout amorcage reel        }
+{ (secteur de boot classique OU catalogue El Torito depuis un CD-ROM) -   }
+{ facteur commun de Emu_LoadBootSector et Emu_LoadElToritoBoot (2026-09-  }
+{ 02, demande explicite de l utilisateur) pour eviter de dupliquer ce      }
+{ bloc identique entre les deux. }
+Procedure Emu_ResetBootDosState;
+Var I: Integer;
 Begin
- Emu_LoadBootSector := False;
  For I := 5 To 31 Do EmuFileOpen[I] := False;
  EmuDtaSeg := $0060;
  EmuDtaOfs := $0080;
@@ -84946,6 +85019,15 @@ Begin
  EmuOS2SetTitle := '';
  EmuOS2TitleSaved := False;
  EmuOS2LastDrive := 'E';
+End;
+
+Function Emu_LoadBootSector(Var C: TEmuCPU; DriveIdx: Byte): Boolean;
+Var
+ SectorBuf: Array[0..511] Of Byte;
+ DriveParam: Array[0..10] Of Byte;
+Begin
+ Emu_LoadBootSector := False;
+ Emu_ResetBootDosState;
  If Not Emu_ImageReadSector(DriveIdx, 0, SectorBuf) Then Exit;
  Emu_WriteBlock(C, 0, $7C00, SectorBuf, 512);
  { INT 1Eh doit pointer vers une vraie table de parametres BIOS : le VBR
@@ -84981,6 +85063,60 @@ Begin
                        { cense reprogrammer sa propre pile immediatement.  }
  C.Regs.DL := Emu_DLFromDiskIdx(DriveIdx);
  Emu_LoadBootSector := True;
+End;
+
+{ Amorcer un CD-ROM monte via son catalogue El Torito (2026-09-02,        }
+{ demande explicite de l utilisateur - voir TermCmd_BOOT/                }
+{ CreateEmulatorElToritoBootTab). Seule l entree "sans emulation"         }
+{ (MediaType=0, la norme pour les CD/DVD Linux modernes - isolinux/       }
+{ syslinux/GRUB2 El Torito) est vraiment amorcee ici : une image          }
+{ demandant une emulation disquette/disque dur (types 1-4) est refusee    }
+{ (False) plutot que silencieusement mal emulee - cela exigerait de       }
+{ rediriger TOUTES les lectures INT13h ulterieures d une unite virtuelle   }
+{ entiere vers le CD, un chantier distinct, et est de toute facon          }
+{ rarissime sur les CD-ROM produits apres ~2003. Arme                     }
+{ Emu_ElToritoCdSlot pour que Emu_DoInt13 puisse ensuite servir les        }
+{ lectures etendues (AH=42h) que l image chargee emettra elle-meme pour   }
+{ lire la suite du CD - en LBA NATIFS de 2048 octets, PAS 512, meme        }
+{ convention qu un BIOS reel pour un lecteur El Torito. }
+Function Emu_LoadElToritoBoot(Var C: TEmuCPU; CdIdx: Byte): Boolean;
+Var
+ Entry: TEmuElToritoEntry;
+ SectorBuf: TEmuIsoSector;
+ TotalBytes: LongInt;
+ NumCdSectors, I: LongInt;
+ LoadSeg: Word;
+Begin
+ Emu_LoadElToritoBoot := False;
+ If Not Emu_ElToritoFindEntry(CdIdx, Entry) Then Exit;
+ If Entry.MediaType <> 0 Then Exit;
+ TotalBytes := LongInt(Entry.SectorCount) * 512;
+ If TotalBytes <= 0 Then TotalBytes := 512;
+ If TotalBytes > SizeOf(Emu_ElToritoPayload) Then
+  TotalBytes := SizeOf(Emu_ElToritoPayload);
+ NumCdSectors := (TotalBytes + EMU_ISO_SECTOR - 1) Div EMU_ISO_SECTOR;
+ For I := 0 To NumCdSectors - 1 Do Begin
+  If Not Emu_IsoReadLBA(CdIdx, Entry.BootLBA + I, SectorBuf) Then Exit;
+  Move(SectorBuf, Emu_ElToritoPayload[I * EMU_ISO_SECTOR], EMU_ISO_SECTOR);
+ End;
+ Emu_ResetBootDosState;
+ LoadSeg := Entry.LoadSeg;
+ If LoadSeg = 0 Then LoadSeg := $07C0;
+ Emu_WriteBlock(C, LoadSeg, 0, Emu_ElToritoPayload, Word(TotalBytes));
+ { Convention El Torito (differente du secteur de boot classique) :       }
+ { CS:IP = Segment de chargement:0000 - PAS Segment 0:$7C00, meme si les  }
+ { deux formes ci-dessus (Emu_LoadBootSector) designent la meme adresse   }
+ { physique quand LoadSeg=$07C0 (defaut). Un vrai chargeur El Torito       }
+ { (isolinux, core.img GRUB2) est ecrit pour ce CS precis, pas CS=0. }
+ C.Segs.CS := LoadSeg;
+ C.IP      := 0;
+ C.Segs.DS := LoadSeg;
+ C.Segs.ES := LoadSeg;
+ C.Segs.SS := LoadSeg;
+ C.Regs.SP := $FFFE;  { pile haute dans le meme segment, loin du code charge }
+ C.Regs.DL := EMU_ELTORITO_DL;
+ Emu_ElToritoCdSlot := CdIdx;
+ Emu_LoadElToritoBoot := True;
 End;
 
 { ============================================================
@@ -93725,6 +93861,66 @@ Begin
  Emu_IsoReadLBA := BytesIO = EMU_ISO_SECTOR;
 End;
 
+{ ============================================================
+  Amorcage El Torito (2026-09-02, demande explicite de l utilisateur) :
+  extraire l entree Initial/Default du catalogue d amorcage El Torito
+  d une image ISO9660 montee, pour permettre a BOOT de demarrer         }
+{ directement depuis un CD-ROM. Reference : "El Torito" Bootable CD-ROM
+  Format Specification v1.0 (Phoenix/IBM, 1995). Seule la plateforme
+  80x86 (le seul CPU reel de ce backend DOS) et une entree unique
+  Initial/Default sont geres - pas de sections/entrees multiples
+  (multi-boot El Torito), superflu pour l usage vise ici (demarrer une
+  image d installation Linux/DOS classique). }
+
+{ Chercher le catalogue d amorcage El Torito de l image montee en CdIdx  }
+{ et en extraire l entree Initial/Default (plateforme 80x86, amorcable). }
+{ Retourne False si l image n a pas d extension El Torito, si la         }
+{ plateforme n est pas 80x86, ou si l entree n est pas marquee amorcable.}
+Function Emu_ElToritoFindEntry(CdIdx: Byte;
+ Var Entry: TEmuElToritoEntry): Boolean;
+Var
+ Buf: TEmuIsoSector;
+ CatalogLBA: LongInt;
+Begin
+ Emu_ElToritoFindEntry := False;
+ { Descripteur de volume "Boot Record" (Type=0), toujours au LBA 17 pour  }
+ { une image ISO9660 conforme (meme convention que le Descripteur de      }
+ { Volume Primaire au LBA 16, deja utilise par Emu_CdromOpenOne). }
+ If Not Emu_IsoReadLBA(CdIdx, 17, Buf) Then Exit;
+ If (Buf[0] <> 0) Or (Buf[1] <> Ord('C')) Or (Buf[2] <> Ord('D')) Or
+    (Buf[3] <> Ord('0')) Or (Buf[4] <> Ord('0')) Or (Buf[5] <> Ord('1')) Then
+  Exit;
+ { Identifiant systeme d amorcage : "EL TORITO SPECIFICATION" (complete   }
+ { par des zeros jusqu a 32 octets) a partir de l octet 7 - seuls les 4   }
+ { premiers caracteres sont verifies, suffisant pour distinguer un        }
+ { Boot Record El Torito d un Boot Record d un autre systeme (rarissime). }
+ If (Buf[7] <> Ord('E')) Or (Buf[8] <> Ord('L')) Or (Buf[9] <> Ord(' ')) Or
+    (Buf[10] <> Ord('T')) Then Exit;
+ { LBA du catalogue d amorcage : entier 32 bits PETIT BOUTISTE simple,    }
+ { PAS la convention "double boutisme" utilisee ailleurs en ISO9660 -     }
+ { c est ainsi que la specification El Torito le definit, a l octet 71.  }
+ CatalogLBA := LongInt(Buf[71]) Or (LongInt(Buf[72]) Shl 8) Or
+  (LongInt(Buf[73]) Shl 16) Or (LongInt(Buf[74]) Shl 24);
+ If Not Emu_IsoReadLBA(CdIdx, CatalogLBA, Buf) Then Exit;
+ { Entree de validation (32 premiers octets) : Header ID=01h, plateforme  }
+ { (octet 1) doit etre 80x86 (00h, seule plateforme emulee ici), cle      }
+ { 55h/AAh en fin d entree. }
+ If Buf[0] <> $01 Then Exit;
+ If Buf[1] <> $00 Then Exit;
+ If (Buf[30] <> $55) Or (Buf[31] <> $AA) Then Exit;
+ { Entree Initial/Default (32 octets suivants) : doit etre marquee        }
+ { amorcable (88h) - une entree non amorcable (00h) n est pas exploitable }
+ { par BOOT (correspond a une image qui exige un choix interactif au      }
+ { menu d amorcage du BIOS, jamais implante ici). }
+ If Buf[32] <> $88 Then Exit;
+ Entry.MediaType := Buf[33] And $0F;
+ Entry.LoadSeg := Word(Buf[34]) Or (Word(Buf[35]) Shl 8);
+ Entry.SectorCount := Word(Buf[38]) Or (Word(Buf[39]) Shl 8);
+ Entry.BootLBA := LongInt(Buf[40]) Or (LongInt(Buf[41]) Shl 8) Or
+  (LongInt(Buf[42]) Shl 16) Or (LongInt(Buf[43]) Shl 24);
+ Emu_ElToritoFindEntry := True;
+End;
+
 { Decoder un enregistrement de repertoire ISO9660 a Buf[Ofs..] dans Entry.
   Retourne False pour un enregistrement vide (fin de la zone utile du
   secteur - le reste est du remplissage jusqu a la fin du secteur, les
@@ -94260,6 +94456,11 @@ End;
   classique est emule, comme pour les disquettes. }
 Var
  EmuFloppyLastStatus: Array[0..3] Of Byte;
+ { Dernier statut INT13h pour l unite El Torito synthetique (2026-09-02,   }
+ { demande explicite de l utilisateur) - meme role que EmuFloppyLastStatus }
+ { ci-dessus mais pour EMU_ELTORITO_DL, qui n a pas d indice dans          }
+ { EmuFloppy*/FatVol - voir Emu_DoInt13ElTorito. }
+ Emu_ElToritoLastStatus: Byte;
 
 { Traduire DL (numero d unite BIOS) en index 0..3 dans les tableaux
   EmuFloppy*/FatVol : 00h/01h -> 0/1 (A:/B:), 80h/81h -> 2/3 (C:/D:).
@@ -94335,6 +94536,143 @@ Begin
  Inc(EmuInt13LogCount);
 End;
 
+{ Lire NSect secteurs ISO9660 (2048 octets chacun) depuis LBA du CD-ROM   }
+{ El Torito actif (Emu_ElToritoCdSlot) vers Seg:Ofs - meme motif exact    }
+{ que Emu_FloppyReadSectors plus bas, avec 2048 au lieu de 512 octets par }
+{ unite (2026-09-02, demande explicite de l utilisateur). }
+Function Emu_ElToritoReadSectors(Var P: TEmulatorPanel;
+ LBA: LongInt; NSect: Word; Seg, Ofs: Word): Word;
+Var
+ SBuf: TEmuIsoSector;
+ N: Word;
+ J: Integer;
+ PhysAddr: LongInt;
+ WriteSeg, WriteOfs: Word;
+Begin
+ Emu_ElToritoReadSectors := 0;
+ If Emu_ElToritoCdSlot < 0 Then Exit;
+ N := 0;
+ While N < NSect Do Begin
+  If Not Emu_IsoReadLBA(Byte(Emu_ElToritoCdSlot), LBA + N, SBuf) Then Break;
+  PhysAddr := (LongInt(Seg) Shl 4) + Ofs + LongInt(N) * EMU_ISO_SECTOR;
+  WriteSeg := Word(PhysAddr Shr 4);
+  WriteOfs := Word(PhysAddr And $000F);
+  For J := 0 To EMU_ISO_SECTOR - 1 Do Begin
+   Emu_WriteByte(P.CPU, WriteSeg, WriteOfs, SBuf[J]);
+   Inc(WriteOfs);
+   If WriteOfs = 0 Then Inc(WriteSeg);
+  End;
+  Inc(N);
+ End;
+ Emu_ElToritoReadSectors := N;
+End;
+
+{ Sous-ensemble INT13h EDD servi pour EMU_ELTORITO_DL (2026-09-02,        }
+{ demande explicite de l utilisateur) - l unite CD-ROM synthetique sur    }
+{ laquelle Emu_LoadElToritoBoot positionne DL apres un amorcage El        }
+{ Torito "sans emulation" reussi. Seules les fonctions reellement         }
+{ utilisees par un chargeur d amorcage CD-ROM reel (isolinux/GRUB2, qui   }
+{ n utilisent QUE des lectures LBA etendues une fois l amorcage lance)    }
+{ sont servies - PAS d acces CHS classique (AH=02h/03h/etc.), une unite   }
+{ El Torito n ayant de toute facon pas de geometrie CHS reelle a offrir,  }
+{ et EDD est TOUJOURS annonce present pour cette unite (contrairement aux }
+{ disques/disquettes normaux, ou Emu_DiskIfSupportsEDD est une option de  }
+{ simulation de vieux BIOS) puisque c est l UNIQUE mode d acces implante  }
+{ ici pour elle. }
+Procedure Emu_DoInt13ElTorito(Var P: TEmulatorPanel; AH: Byte);
+Var
+ DapSeg, DapOfs, NSectW, BufOfs, BufSeg, LBALo, LBAHi: Word;
+ LBA, TotalSectors: LongInt;
+ Done: Word;
+Begin
+ Case AH Of
+  $00: Begin { Reset disk system }
+   Emu_ElToritoLastStatus := 0;
+   P.CPU.Regs.AH := 0;
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  End;
+  $01: Begin { Get status of last operation }
+   P.CPU.Regs.AH := Emu_ElToritoLastStatus;
+   If Emu_ElToritoLastStatus = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
+   Else Include(P.CPU.Flags.s, EFG_CF);
+  End;
+  $41: Begin { Check Extensions Present (entree : BX=55AAh) }
+   If P.CPU.Regs.BX = $55AA Then Begin
+    P.CPU.Regs.BX := $AA55;
+    P.CPU.Regs.AH := $21;
+    P.CPU.Regs.CX := $0001;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End Else Begin
+    Emu_ElToritoLastStatus := $01;
+    P.CPU.Regs.AH := $01;
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $42: Begin { Extended Read - DAP a DS:SI, LBA en secteurs NATIFS de 2048 octets }
+   DapSeg := P.CPU.Segs.DS; DapOfs := P.CPU.Regs.SI;
+   NSectW := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 2);
+   If NSectW = 0 Then Begin
+    Emu_ElToritoLastStatus := $01;
+    P.CPU.Regs.AH := $01;
+    Include(P.CPU.Flags.s, EFG_CF);
+    Exit;
+   End;
+   If NSectW > 127 Then NSectW := 127;  { < 65536/EMU_ISO_SECTOR, garde-fou large }
+   BufOfs := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 4);
+   BufSeg := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 6);
+   LBALo  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 8);
+   LBAHi  := Emu_ReadWord(P.CPU, DapSeg, DapOfs + 10);
+   LBA := LongInt(LBALo) Or (LongInt(LBAHi) Shl 16);
+   Done := Emu_ElToritoReadSectors(P, LBA, NSectW, BufSeg, BufOfs);
+   If Done = NSectW Then Begin
+    Emu_ElToritoLastStatus := 0;
+    P.CPU.Regs.AH := 0;
+    Exclude(P.CPU.Flags.s, EFG_CF);
+   End Else Begin
+    Emu_ElToritoLastStatus := $04;
+    P.CPU.Regs.AH := $04;
+    Include(P.CPU.Flags.s, EFG_CF);
+   End;
+  End;
+  $43: Begin { Extended Write : CD-ROM en lecture seule }
+   Emu_ElToritoLastStatus := $03;
+   P.CPU.Regs.AH := $03;
+   Include(P.CPU.Flags.s, EFG_CF);
+  End;
+  $48: Begin { Extended Get Drive Parameters - tampon a DS:SI }
+   If Emu_ElToritoCdSlot < 0 Then Begin
+    Emu_ElToritoLastStatus := $80;
+    P.CPU.Regs.AH := $80;
+    Include(P.CPU.Flags.s, EFG_CF);
+    Exit;
+   End;
+   DapSeg := P.CPU.Segs.DS; DapOfs := P.CPU.Regs.SI;
+   TotalSectors := EmuCdrom[Emu_ElToritoCdSlot].IsoSize Div EMU_ISO_SECTOR;
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs, 26);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 2, $0004); { support media amovible, pas de CHS }
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 4, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 6, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 8, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 10, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 12, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 14, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 16, Word(TotalSectors));
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 18, Word(TotalSectors Shr 16));
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 20, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 22, 0);
+   Emu_WriteWord(P.CPU, DapSeg, DapOfs + 24, EMU_ISO_SECTOR);
+   Emu_ElToritoLastStatus := 0;
+   P.CPU.Regs.AH := 0;
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  End;
+ Else Begin
+  Emu_ElToritoLastStatus := $01;
+  P.CPU.Regs.AH := $01;  { 01 = invalid function/parameter }
+  Include(P.CPU.Flags.s, EFG_CF);
+ End;
+ End;
+End;
+
 Procedure Emu_DoInt13(Var P: TEmulatorPanel);
 Var
  DL, AH, AL: Byte;
@@ -94352,6 +94690,14 @@ Begin
  Emu_LogInt13('INT13', AH, AL, P.CPU.Regs.CH, P.CPU.Regs.CL,
   P.CPU.Regs.DH, DL, P.CPU.Regs.CX, P.CPU.Regs.DX,
   P.CPU.Segs.ES, P.CPU.Regs.BX, -1, AL);
+ { Amorcage El Torito (2026-09-02, demande explicite de l utilisateur) :  }
+ { DL=EMU_ELTORITO_DL est une unite CD-ROM synthetique, hors plage de     }
+ { Emu_DiskIdxFromDL (qui la rejetterait comme "unite hors plage") -      }
+ { doit donc etre interceptee ICI, avant ce garde-fou. }
+ If (DL = EMU_ELTORITO_DL) And (Emu_ElToritoCdSlot >= 0) Then Begin
+  Emu_DoInt13ElTorito(P, AH);
+  Exit;
+ End;
  If Not Emu_DiskIdxFromDL(DL, Idx) Then Begin
   { Unite hors plage (ni 00h/01h, ni 80h/81h) : pas de slot de statut
     a mettre a jour, juste signaler l erreur. }
@@ -115291,6 +115637,13 @@ Begin NesActive := False;
   EmuBootActive := True;
   Loaded := Emu_LoadBootSector(P.CPU, Byte(EmuBootFromDrive));
   EmuBootFromDrive := -1;
+ End Else If EmuBootFromElTorito >= 0 Then Begin
+  { Amorcage El Torito depuis un CD-ROM (2026-09-02, demande explicite     }
+  { de l utilisateur) - meme motif exactement que EmuBootFromDrive         }
+  { ci-dessus, voir Emu_LoadElToritoBoot/CreateEmulatorElToritoBootTab. }
+  EmuBootActive := True;
+  Loaded := Emu_LoadElToritoBoot(P.CPU, Byte(EmuBootFromElTorito));
+  EmuBootFromElTorito := -1;
  End Else Begin
   EmuBootActive := False;
   Loaded := Emu_LoadProgram(P.CPU, BinaryPath);
@@ -116186,6 +116539,36 @@ Begin
  EmuTabs[Idx] := EmuPanel;
  { Pas de SaveState (-CD n en a jamais, voir le commentaire au-dessus de   }
  { CreateEmulatorTab) - meme raisonnement, s applique identiquement ici. }
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+End;
+
+{ Variante de CreateEmulatorBootTab ci-dessus pour l amorcage El Torito    }
+{ depuis un CD-ROM monte (2026-09-02, demande explicite de l utilisateur, }
+{ voir TermCmd_BOOT) - meme structure exacte, juste EmuBootFromElTorito    }
+{ arme a la place de EmuBootFromDrive (voir Emu_LoadElToritoBoot). }
+Procedure CreateEmulatorElToritoBootTab(CdIdx: Byte; Const DispName: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ SyncActiveWindowOut;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_EMU;
+ WinMgr.Windows[Idx].FileName := DispName;
+ WinMgr.Windows[Idx].Title := EmuPanelTitleFor('-CD') + ' - Amorcage ' + DispName;
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ EmuBootFromElTorito := CdIdx;
+ ShowEmulatorPanel(EmuPanel, DispName, '-CD', '');
+ EmuTabs[Idx] := EmuPanel;
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
 End;
