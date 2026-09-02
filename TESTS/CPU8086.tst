@@ -1521,6 +1521,32 @@ CX=0801h
 DX=0001h
 SI=0000h
 
+[STC-sets-carry-verified-via-JC-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B9h 00h 00h 72h 03h B9h 99h 99h BAh 11h 11h
+BreakPoint: 1000:010C
+Result:
+CX=0000h
+DX=1111h
+
+[STD-sets-direction-verified-via-STOSB-decrement]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 10h 00h B0h AAh FDh AAh
+BreakPoint: 1000:010C
+Result:
+DI=000Fh
+
+[STOSB-writes-byte-and-advances-DI-by-one]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 03h B0h 42h AAh B8h 00h 10h 8Eh D8h A0h 00h 03h B4h 00h 89h C1h
+BreakPoint: 1000:0117
+Result:
+DI=0301h
+CX=0042h
+
 [STOSW-INC-INC-LOOP-seg-reinit]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1531,6 +1557,15 @@ AX=55AAh
 CX=0000h
 DI=0210h
 ES=1000h
+
+[STOSW-writes-word-and-advances-DI-by-two]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BFh 00h 04h B8h 34h 12h ABh A1h 00h 04h 89h C1h
+BreakPoint: 1000:0113
+Result:
+DI=0402h
+CX=1234h
 
 [SUB-reg-reg-flags-full]
 EntryPoint: 1000:0100
@@ -1570,6 +1605,46 @@ SI=00FFh
 BX=0000h
 CX=0080h
 DX=0040h
+
+[WAIT-is-a-strict-nop-registers-and-flags-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh B8h 34h 12h BBh 78h 56h 9Bh 9Ch 5Eh 81h E6h D1h 08h
+BreakPoint: 1000:0110
+Result:
+AX=1234h
+BX=5678h
+SI=0091h
+
+[XCHG-AX-reg-short-form]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 33h 33h BAh 44h 44h 92h
+BreakPoint: 1000:0107
+Result:
+AX=4444h
+DX=3333h
+
+[XCHG-mem-reg-swaps-memory-and-register]
+Data in 1000:0300:
+DB 55h 55h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 00h 03h B9h 66h 66h 87h 0Fh A1h 00h 03h
+BreakPoint: 1000:0110
+Result:
+AX=6666h
+CX=5555h
+
+[XCHG-reg-reg-swaps-values-flags-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh BBh 11h 11h B9h 22h 22h 87h CBh 89h DEh 9Ch 58h 25h D1h 08h
+BreakPoint: 1000:0112
+Result:
+SI=2222h
+CX=1111h
+AX=0091h
 
 [XLAT-table-lookup-with-segment-override]
 Data in 1000:0300:
