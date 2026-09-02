@@ -4677,6 +4677,24 @@ Type
   CbPmOfs   : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of LongInt;
   CbRealSeg : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Word;
   CbRealOfs : Array[0..EMU_DPMI_MAX_CALLBACK - 1] Of Word;
+  { $0F 00/01 (SLDT/STR/LLDT/LTR/SGDT/SIDT/LGDT/LIDT/SMSW/LMSW) - 2026-09-02,  }
+  { demande explicite de l utilisateur ("porter les memes extensions dans    }
+  { le coeur DPMI") : ce groupe d opcodes n existait pas DU TOUT dans         }
+  { Dpmi_Step (seul $0F 80-8F/Jcc etait gere, tout le reste $0F declenchait   }
+  { sfInvalidCode) - memes registres minimaux lisibles/inscriptibles que      }
+  { TEmuCPU (coeur 8086/80286/80386 reel) : PAS un portage 1:1 du modele de   }
+  { pagination/protection DPMI reel (DpmiCPU.LDT est deja une VRAIE table    }
+  { LDT geree par les appels API DPMI AX=0000h - LLDT/SLDT ci-dessous ne s y  }
+  { raccrochent PAS, ce serait une fonctionnalite differente et plus         }
+  { profonde ; meme limite honnete que documentee partout ailleurs dans ce    }
+  { fichier pour ce type de registre). }
+  CR0      : LongInt;
+  GdtBase  : LongInt;
+  GdtLimit : Word;
+  IdtBase  : LongInt;
+  IdtLimit : Word;
+  TaskReg  : Word;
+  LdtReg   : Word;
  End;
 
  { Operande decode a partir d un octet ModR/M (+ eventuel SIB) par          }
@@ -99343,6 +99361,7 @@ Var
  Op: TDpmiOperand;
  A, Imm, Res, Target, OldCF: LongInt;
  Op2: Byte;
+ V8: Byte;    { octet de droits d acces GDT, voir $0F 00/01 }
 Begin
  If Not DpmiCPU.Active Then Exit;
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
@@ -99378,6 +99397,81 @@ Begin
      Target := Dpmi_FetchDWord(P, 0);
      Inc(DpmiCPU.EIP, 4);
      If Dpmi_TestCond(Op2 And $F) Then DpmiCPU.EIP := DpmiCPU.EIP + Target;
+    End;
+    $00: Begin { Groupe 6 : SLDT(/0)/STR(/1)/LLDT(/2)/LTR(/3)/VERR(/4)/        }
+         { VERW(/5) - BOGUE REEL CORRIGE (2026-09-02, demande explicite de    }
+         { l utilisateur "porte les memes extensions dans le coeur DPMI") :   }
+         { ce groupe n existait pas du tout ici avant (tombait dans le Else   }
+         { ci-dessous, sfInvalidCode). Meme registres minimaux lisibles/      }
+         { inscriptibles que le coeur 8086/80286/80386 reel (TaskReg/LdtReg,  }
+         { voir les nouveaux champs TDpmiCPU) - PAS raccroche a la VRAIE      }
+         { table LDT DPMI (DpmiCPU.LDT, geree par les appels API AX=0000h) :  }
+         { la LDT DPMI est une ressource hote fixe, pas quelque chose qu un   }
+         { client rechargerait via LLDT - meme limite honnete que documentee  }
+         { partout ailleurs pour ce type de registre boite noire. LTR marque  }
+         { le bit "busy" du descripteur GDT comme le coeur reel. SLDT/LLDT    }
+         { acceptent un selecteur NUL sans condition (LdtReg:=0). VERR/VERW   }
+         { restent des no-op purs (exigeraient une verification de type/      }
+         { privilege de descripteur hors de portee ici, meme raisonnement que }
+         { le coeur reel). }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Sub := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     Case Sub Of
+      0: Dpmi_PutOp(P, Op, 2, DpmiCPU.LdtReg);  { SLDT }
+      1: Dpmi_PutOp(P, Op, 2, DpmiCPU.TaskReg); { STR }
+      2: Begin { LLDT }
+          A := Dpmi_GetOp(P, Op, 2);
+          If A = 0 Then DpmiCPU.LdtReg := 0
+          Else If ((A And 4) = 0) And ((A And $FFF8) <> 0) And
+             ((A And $FFF8) + 7 <= DpmiCPU.GdtLimit) Then Begin
+           V8 := Dpmi_ReadByte(P, DpmiCPU.GdtBase + (A And $FFF8) + 5);
+           If (V8 And $80) <> 0 Then DpmiCPU.LdtReg := Word(A);
+          End;
+         End;
+      3: Begin { LTR }
+          A := Dpmi_GetOp(P, Op, 2);
+          If ((A And 4) = 0) And ((A And $FFF8) <> 0) And
+             ((A And $FFF8) + 7 <= DpmiCPU.GdtLimit) Then Begin
+           V8 := Dpmi_ReadByte(P, DpmiCPU.GdtBase + (A And $FFF8) + 5);
+           If (V8 And $80) <> 0 Then Begin
+            DpmiCPU.TaskReg := Word(A);
+            Dpmi_WriteByte(P, DpmiCPU.GdtBase + (A And $FFF8) + 5, V8 Or $02);
+           End;
+          End;
+         End;
+     End;
+    End;
+    $01: Begin { SGDT(/0)/SIDT(/1)/LGDT(/2)/LIDT(/3)/SMSW(/4)/LMSW(/6) - meme  }
+         { correctif que $00 ci-dessus : n existait pas du tout avant. Meme   }
+         { registres minimaux que le coeur reel (GdtBase/GdtLimit/IdtBase/    }
+         { IdtLimit/CR0), voir les nouveaux champs TDpmiCPU. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Sub := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     Case Sub Of
+      0: Begin { SGDT m16:32 }
+          Dpmi_PutOp(P, Op, 2, DpmiCPU.GdtLimit);
+          Dpmi_WriteDWord(P, Op.LinAddr + 2, DpmiCPU.GdtBase);
+         End;
+      1: Begin { SIDT m16:32 }
+          Dpmi_PutOp(P, Op, 2, DpmiCPU.IdtLimit);
+          Dpmi_WriteDWord(P, Op.LinAddr + 2, DpmiCPU.IdtBase);
+         End;
+      2: Begin { LGDT m16:32 }
+          DpmiCPU.GdtLimit := Dpmi_ReadWord(P, Op.LinAddr);
+          DpmiCPU.GdtBase := Dpmi_ReadDWord(P, Op.LinAddr + 2);
+         End;
+      3: Begin { LIDT m16:32 }
+          DpmiCPU.IdtLimit := Dpmi_ReadWord(P, Op.LinAddr);
+          DpmiCPU.IdtBase := Dpmi_ReadDWord(P, Op.LinAddr + 2);
+         End;
+      4: Dpmi_PutOp(P, Op, 2, DpmiCPU.CR0);             { SMSW }
+      6: DpmiCPU.CR0 := (DpmiCPU.CR0 And Not 1) Or       { LMSW }
+          (Dpmi_GetOp(P, Op, 2) And 1);
+     End;
     End;
    Else Begin
     P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
