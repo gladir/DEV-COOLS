@@ -1836,6 +1836,139 @@ BreakPoint: 1000:0112
 Result:
 AX=00C3h
 
+[POP-restores-values-in-LIFO-order-and-SP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 89h E6h 68h 11h 11h 68h 22h 22h 68h 33h 33h 58h 5Bh 59h 89h E7h
+BreakPoint: 1000:0110
+Result:
+SI=0000h
+DI=0000h
+AX=3333h
+BX=2222h
+CX=1111h
+
+[POPA-restores-all-eight-registers-in-reverse-PUSHA-order]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 11h 11h BBh 22h 22h B9h 33h 33h BAh 44h 44h BDh 55h 55h BEh 66h 66h BFh 77h 77h 60h 31h C0h 31h DBh 31h C9h 31h D2h 31h EDh 31h F6h 31h FFh 61h
+BreakPoint: 1000:0125
+Result:
+AX=1111h
+BX=2222h
+CX=3333h
+DX=4444h
+BP=5555h
+SI=6666h
+DI=7777h
+SP=0000h
+
+[POPAD-restores-all-eight-32-bit-registers-in-reverse-PUSHAD-order]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 11h 11h 11h 11h 66h BBh 22h 22h 22h 22h 66h B9h 33h 33h 33h 33h 66h BAh 44h 44h 44h 44h 66h BDh 55h 55h 55h 55h 66h BEh 66h 66h 66h 66h 66h BFh 77h 77h 77h 77h 66h 60h 66h 31h C0h 66h 31h DBh 66h 31h C9h 66h 31h D2h 66h 31h EDh 66h 31h F6h 66h 31h FFh 66h 61h
+BreakPoint: 1000:0143
+Result:
+EAX=11111111h
+EBX=22222222h
+ECX=33333333h
+EDX=44444444h
+EBP=55555555h
+ESI=66666666h
+EDI=77777777h
+SP=0000h
+
+[POPF-loads-flags-from-stack-affects-JZ]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 68h 40h 00h 9Dh B9h 00h 00h 74h 03h B9h 99h 99h BAh 11h 11h 68h 00h 00h 9Dh BBh 00h 00h 74h 03h BBh 99h 99h BEh 22h 22h
+BreakPoint: 1000:011E
+Result:
+CX=0000h
+DX=1111h
+BX=9999h
+SI=2222h
+
+[POPFD-pops-full-dword-from-stack-affects-JZ]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h 68h 40h 00h 00h 00h 66h 9Dh B9h 00h 00h 74h 03h B9h 99h 99h BAh 11h 11h 66h 68h 00h 00h 00h 00h 66h 9Dh BBh 00h 00h 74h 03h BBh 99h 99h BEh 22h 22h
+BreakPoint: 1000:0126
+Result:
+CX=0000h
+DX=1111h
+BX=9999h
+SI=2222h
+
+[PUSH-fabricated-far-ptr-RETF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 50h B8h 00h 02h 50h CBh
+Data in 1000:0200:
+DB B9h 34h 12h
+BreakPoint: 1000:0203
+Result:
+CX=1234h
+CS=1000h
+IP=0203h
+
+[PUSH-writes-to-correct-stack-address-and-decrements-SP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D0h 8Eh D8h BBh CDh ABh 53h A1h FEh FFh 89h E1h
+BreakPoint: 1000:0110
+Result:
+AX=ABCDh
+CX=FFFEh
+
+[PUSHA-writes-all-eight-registers-to-stack-in-order]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 11h 11h BBh 22h 22h B9h 33h 33h BAh 44h 44h BDh 55h 55h BEh 66h 66h BFh 77h 77h 60h 31h C0h 31h DBh 31h C9h 31h D2h 31h EDh 31h F6h 31h FFh A1h FEh FFh 8Bh 1Eh F8h FFh 8Bh 0Eh FCh FFh 8Bh 16h FAh FFh 8Bh 2Eh F4h FFh 8Bh 36h F2h FFh 8Bh 3Eh F0h FFh
+BreakPoint: 1000:013F
+Result:
+AX=1111h
+BX=2222h
+CX=3333h
+DX=4444h
+BP=5555h
+SI=6666h
+DI=7777h
+SP=FFF0h
+
+[PUSHAD-writes-all-eight-32-bit-registers-to-stack-in-order]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 11h 11h 11h 11h 66h BBh 22h 22h 22h 22h 66h B9h 33h 33h 33h 33h 66h BAh 44h 44h 44h 44h 66h BDh 55h 55h 55h 55h 66h BEh 66h 66h 66h 66h 66h BFh 77h 77h 77h 77h 66h 60h 66h 31h C0h 66h 31h DBh 66h 31h C9h 66h 31h D2h 66h 31h EDh 66h 31h F6h 66h 31h FFh 66h A1h FCh FFh 66h 8Bh 1Eh F0h FFh 66h 8Bh 0Eh F8h FFh 66h 8Bh 16h F4h FFh 66h 8Bh 2Eh E8h FFh 66h 8Bh 36h E4h FFh 66h 8Bh 3Eh E0h FFh
+BreakPoint: 1000:0163
+Result:
+EAX=11111111h
+EBX=22222222h
+ECX=33333333h
+EDX=44444444h
+EBP=55555555h
+ESI=66666666h
+EDI=77777777h
+SP=FFE0h
+
+[PUSHF-writes-flags-to-correct-stack-address]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D0h 8Eh D8h B4h 91h 9Eh 9Ch A1h FEh FFh 25h FFh 00h 89h C1h 89h E2h
+BreakPoint: 1000:0115
+Result:
+CX=0091h
+DX=FFFEh
+
+[PUSHFD-writes-full-dword-flags-to-correct-stack-address]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D0h 8Eh D8h B4h 91h 9Eh 66h 9Ch 66h A1h FCh FFh 66h 25h FFh 00h 00h 00h 66h 89h C1h 89h E2h
+BreakPoint: 1000:011B
+Result:
+ECX=00000091h
+DX=FFFCh
+
 [SGDT-and-SIDT-write-real-GDTR-IDTR-loaded-by-LGDT-LIDT]
 EntryPoint: 1000:0100
 Data in 1000:0300:

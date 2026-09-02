@@ -102268,10 +102268,25 @@ Begin
   $1F: { POP  DS }
    Begin P.CPU.Segs.DS := Emu_PopWord(P.CPU);
     Emu_LoadSregUnreal(P.CPU, P.CPU.Segs.DS); Inc(P.CPU.IP); End;
-  $9C: { PUSHF }
-   Begin Emu_PushWord(P.CPU, P.CPU.Flags.Base); Inc(P.CPU.IP); End;
-  $9D: { POPF }
-   Begin P.CPU.Flags.Base := Emu_PopWord(P.CPU); Inc(P.CPU.IP); End;
+  $9C: { PUSHF (PUSHFD si OperandSize32) - BOGUE REEL CORRIGE (2026-09-02,     }
+       { demande explicite de l utilisateur, meme classe de bogue que $6F/     }
+       { OUTSD et $CF/IRETD) : ignorait totalement OperandSize32 et poussait   }
+       { TOUJOURS un mot de 16 bits, meme avec le prefixe $66 present. Le mot  }
+       { haut pousse est 0 (aucun bit EFLAGS au-dela du mot bas n est modelise }
+       { dans ce coeur, meme limitation deja documentee pour IRETD/IP). }
+   Begin
+    If P.CPU.OperandSize32 Then Emu_PushDWord(P.CPU, LongInt(LongWord(P.CPU.Flags.Base)))
+    Else Emu_PushWord(P.CPU, P.CPU.Flags.Base);
+    Inc(P.CPU.IP);
+   End;
+  $9D: { POPF (POPFD si OperandSize32) - voir $9C ci-dessus pour le contexte   }
+       { complet. Seul le mot bas de la valeur depilee sur 32 bits est         }
+       { conserve (Flags.Base est un Word), meme convention que IRETD. }
+   Begin
+    If P.CPU.OperandSize32 Then P.CPU.Flags.Base := Word(Emu_PopDWord(P.CPU))
+    Else P.CPU.Flags.Base := Emu_PopWord(P.CPU);
+    Inc(P.CPU.IP);
+   End;
   { BOGUE REEL (2026-08-24, trouve en verifiant le correctif HasSegOvr sur   }
   { le vrai boot MS-DOS 6.22 - une fois le blocage precedent leve, le boot   }
   { progressait de 19893 a 25616 instructions avant de planter sur "opcode  }
