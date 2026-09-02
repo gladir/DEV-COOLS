@@ -1014,6 +1014,35 @@ Function GetAsyncKeyState(vKey: LongInt): SmallInt;
          StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
 Procedure WinSleep(MilliSec: LongInt);
          StdCall; External 'kernel32.dll' Name 'Sleep';
+{ Ecriture console BRUTE, contournant Output (2026-09-02, decouvert en      }
+{ mettant au point /TESTUNIT,8086: WriteLn(Output,...) ne produit STRICTEMENT}
+{ aucun texte visible des que PtcCrt est charge - confirme par test isole   }
+{ (Uses ...PtcCrt seul suffit a reproduire), Flush(Output) et IOResult      }
+{ rapportent pourtant un succes (0) : PtcCrt detourne silencieusement le    }
+{ TextRec de Output vers son propre tampon de fenetre CRT virtuelle des     }
+{ l initialisation de l unite, avant meme le BEGIN du programme principal - }
+{ ce n est PAS un bogue de ce fichier, c est le fonctionnement normal d une }
+{ bibliotheque de remplacement du Crt de Borland. Un appel WriteFile direct }
+{ sur STD_OUTPUT_HANDLE (verifie fonctionner, capture confirmee) est le seul}
+{ moyen fiable de produire du texte console visible en mode /TESTUNIT (ou   }
+{ tout futur mode ligne de commande pur) tant que PtcCrt reste charge. }
+Function GetStdHandle(nStdHandle: LongInt): LongInt;
+         StdCall; External 'kernel32.dll' Name 'GetStdHandle';
+Function WinRawWriteFile(hFile: LongInt; Const Buffer; NumberOfBytesToWrite: LongWord;
+         Var NumberOfBytesWritten: LongWord; Overlapped: Pointer): LongBool;
+         StdCall; External 'kernel32.dll' Name 'WriteFile';
+Const
+ STD_OUTPUT_HANDLE = -11;
+Procedure ConRawWriteLn(Const S: String);
+Var
+ H: LongInt;
+ Buf: String;
+ Written: LongWord;
+Begin
+ H := GetStdHandle(STD_OUTPUT_HANDLE);
+ Buf := S + #13#10;
+ WinRawWriteFile(H, Buf[1], Length(Buf), Written, Nil);
+End;
 { Fibres Win32 (2026-08-30, integration de l interprete REXX.PAS dans le    }
 { terminal "OS/2 & REXX" - demande explicite de l utilisateur) - meme       }
 { motif External 'kernel32.dll' que GetAsyncKeyState/WinSleep ci-dessus.    }
@@ -1568,6 +1597,16 @@ Const
  { lecteur El Torito, mais la valeur exacte est arbitraire ici : seul      }
  { compte qu Emu_LoadElToritoBoot et Emu_DoInt13 s accordent sur la meme. }
  EMU_ELTORITO_DL = $E0;
+ { Tests unitaires CPU (2026-09-02, demande explicite de l utilisateur -    }
+ { DEVENV /TESTUNIT,8086:fichier), voir TUnitTest8086/RunUnitTests8086. }
+ MAX_UNITTEST_DATA  = 512;      { octets de donnees max par test }
+ MAX_UNITTESTS      = 500;      { nombre max de tests dans un seul fichier }
+ MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
+                                 { gel reel observe avec CMP reg,reg+Jcc,    }
+                                 { 2026-09-02) - un point d arret jamais      }
+                                 { atteint dans cette limite est un ECHEC    }
+                                 { ("boucle infinie possible"), jamais un    }
+                                 { blocage reel de l IDE. }
  MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
@@ -3200,6 +3239,37 @@ Type
   LoadSeg    : Word;      { segment de chargement (0 -> defaut $7C0) }
   SectorCount: Word;      { nombre de "secteurs virtuels" de 512 octets }
   BootLBA    : LongInt;   { LBA (secteurs ISO9660 de 2048 octets) de l image }
+ End;
+
+ { Un test unitaire CPU 8086 charge depuis un fichier .tst (2026-09-02,      }
+ { demande explicite de l utilisateur - voir DEVENV /TESTUNIT,8086:fichier, }
+ { LoadUnitTestFile8086/RunUnitTests8086). Format texte, une section         }
+ { [Titre] par test :                                                       }
+ {   [Mon Test]                                                             }
+ {   EntryPoint: SEG:OFS                                                    }
+ {   Data in SEG:OFS :                                                      }
+ {   DB 01h 02h 03h,...          (une ou plusieurs lignes DB)               }
+ {   BreakPoint: SEG:OFS                                                    }
+ {   Result:                                                                }
+ {   Flags=1234h                                                            }
+ {   AX=1244h ... (tout sous-ensemble de Flags/AX/BX/CX/DX/SI/DI/BP/SP/     }
+ {                 CS/DS/ES/SS/IP - seuls les champs presents sont verifies)}
+ { Champ "HasXxx" = True si l attribut correspondant a ete precise dans le  }
+ { fichier - permet de ne verifier QUE ce que le fichier demande. }
+ TUnitTest8086 = Record
+  Title       : String;
+  HasEntry    : Boolean;
+  EntryCS, EntryIP: Word;
+  HasData     : Boolean;
+  DataSeg, DataOfs: Word;
+  DataBytes   : Array[0..MAX_UNITTEST_DATA - 1] Of Byte;
+  DataLen     : Integer;
+  HasBreak    : Boolean;
+  BreakCS, BreakIP: Word;
+  HasFlags, HasAX, HasBX, HasCX, HasDX, HasSI, HasDI, HasBP, HasSP,
+   HasCS, HasDS, HasES, HasSS, HasIP: Boolean;
+  ExpFlags, ExpAX, ExpBX, ExpCX, ExpDX, ExpSI, ExpDI, ExpBP, ExpSP,
+   ExpCS, ExpDS, ExpES, ExpSS, ExpIP: Word;
  End;
 
  { Norton Commander (5e shell du panneau Terminal, DEVENV.PAS) - navigation
@@ -6570,6 +6640,16 @@ Var
  { FatVol/EmuFloppyOpen - voir Emu_LoadElToritoBoot/                      }
  { CreateEmulatorElToritoBootTab. }
  EmuBootFromElTorito: Integer;
+ { Tests unitaires CPU (2026-09-02, demande explicite de l utilisateur) -   }
+ { voir TUnitTest8086/LoadUnitTestFile8086/RunUnitTests8086. Emu_TestPanel  }
+ { est un panneau emulateur DEDIE, JAMAIS ajoute a WinMgr/jamais affiche -   }
+ { pur "banc d essai" headless reutilisant Emu_StepOne/Emu_InitComputer     }
+ { tels quels, sans lancer la moindre fenetre (le mode /TESTUNIT tourne en  }
+ { pure console, avant tout demarrage de l IDE graphique - voir             }
+ { ParseCommandLine). }
+ Emu_TestPanel  : TEmulatorPanel;
+ UnitTests8086  : Array[0..MAX_UNITTESTS - 1] Of TUnitTest8086;
+ UnitTest8086Count: Integer;
  EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
                                  { s il a ete cree par Emu_LoadBootSector }
                                  { (vs Emu_LoadProgram) - voir le garde-  }
@@ -6835,6 +6915,20 @@ Var
  Win16_GdiTraceFile : Text;
  EmuCallDumped  : Boolean;  { dump diag fait une seule fois }
  EmuOvrDumped   : Boolean;  { dump overlay diagnostic une seule fois }
+ { Diagnostic dedie "saut errant vers CS=0" (2026-09-02, demande explicite }
+ { de l utilisateur - bogue de division par zero au demarrage d un disque  }
+ { dur/CD-ROM reel) - flag SEPARE de EmuOvrDumped (deja utilise par 2       }
+ { AUTRES diagnostics ponctuels sans rapport, voir ~89091/~100163) pour ne }
+ { jamais interferer avec eux. Voir DOS_RunOneChunk. }
+ EmuCS0Dumped   : Boolean;
+ { True des que CS a ete vu different de 0 au moins une fois depuis le    }
+ { debut de CETTE session -CD (voir DOS_RunOneChunk) - un vrai secteur de }
+ { boot reste legitimement a CS=0 pendant TOUTE sa phase initiale (auto-   }
+ { relocation, sauts proches...) avant de charger IO.SYS ailleurs ; ce     }
+ { n est qu un RETOUR a CS=0 APRES l avoir quitte qui est illegitime       }
+ { (voir EmuCS0Dumped) - sans ce garde-fou, le diagnostic se declenchait    }
+ { a tort des la toute premiere instruction du secteur de boot lui-meme.  }
+ EmuLeftCS0     : Boolean;
  EmuWatchEnabled: Boolean;  { actif quand on veut tracer les ecritures }
  EmuWatchPhysLo : LongInt;  { adresse physique min surveillee }
  EmuWatchPhysHi : LongInt;  { adresse physique max surveillee }
@@ -9388,7 +9482,12 @@ End;
 
 Procedure FatalError(Msg: String);
 Begin
- WriteLn('DEVENV: Erreur: ', Msg);
+ { WriteLn(Output,...) ne produit aucun texte visible des que PtcCrt est   }
+ { charge (voir ConRawWriteLn plus haut) - utiliser l ecriture console     }
+ { brute ici aussi, sinon un message d erreur en ligne de commande         }
+ { (fichier /TESTUNIT introuvable, syntaxe invalide, etc.) disparait        }
+ { silencieusement au lieu d etre vu par l utilisateur. }
+ ConRawWriteLn('DEVENV: Erreur: ' + Msg);
  Halt(EXIT_ERROR);
 End;
 
@@ -9433,6 +9532,9 @@ Procedure ShowHelp;Begin
  WriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
  WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
  WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
+ WriteLn('  /TESTUNIT,8086:fichier.tst  Execute un fichier de tests unitaires');
+ WriteLn('                 CPU 8086 en mode console (voir DOC/TESTUNIT.txt),');
+ WriteLn('                 affiche Succes/Echec pour chaque test, puis quitte.');
  WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
   WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
   WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
@@ -9491,6 +9593,11 @@ Begin
 End;
 
 { --- Analyse de la ligne de commande --- }
+
+{ Definie bien plus bas (pres d Emu_StepOne/Emu_InitComputer, dont elle a    }
+{ besoin) - Forward necessaire ici car ParseCommandLine (/TESTUNIT) l appelle}
+{ bien plus haut dans le fichier. }
+Procedure RunUnitTests8086(Const FileName: String); Forward;
 
 Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
 Var
@@ -9687,6 +9794,33 @@ Begin
    If Not FileExists(EmuFn) Then
     FatalError('Image CD-ROM introuvable: ' + EmuFn);
    Opts.CdromImg1 := EmuFn;
+  End
+  Else If (Length(Arg) >= 10) And
+          ((Copy(Arg, 1, 10) = '/TESTUNIT,') Or (Copy(Arg, 1, 10) = '/testunit,') Or
+           (Copy(Arg, 1, 10) = '-TESTUNIT,') Or (Copy(Arg, 1, 10) = '-testunit,') Or
+           (Copy(Arg, 1, 10) = '/TestUnit,') Or (Copy(Arg, 1, 10) = '-TestUnit,')) Then Begin
+   { /TESTUNIT,architecture:fichier (2026-09-02, demande explicite de       }
+   { l utilisateur) : execute un fichier de tests unitaires CPU en pure     }
+   { console (WriteLn/Halt, comme -h/--help ci-dessus) puis quitte SANS      }
+   { jamais lancer l IDE graphique - voir RunUnitTests8086/TUnitTest8086.    }
+   { Seule l architecture "8086" est geree pour l instant ; toute autre      }
+   { valeur est signalee honnetement plutot que silencieusement ignoree,    }
+   { pour ne jamais faire croire a tort qu un autre coeur est deja supporte. }
+   EmuArg := Copy(Arg, 11, Length(Arg) - 10);
+   K := Pos(':', EmuArg);
+   If K = 0 Then
+    FatalError('Syntaxe /TESTUNIT attendue : /TESTUNIT,8086:fichier.tst');
+   EmuName := UpCaseStr(Copy(EmuArg, 1, K - 1));
+   EmuFn := Copy(EmuArg, K + 1, Length(EmuArg) - K);
+   If EmuFn = '' Then
+    FatalError('Syntaxe /TESTUNIT attendue : /TESTUNIT,8086:fichier.tst');
+   If Not FileExists(EmuFn) Then
+    FatalError('Fichier de tests introuvable: ' + EmuFn);
+   If EmuName <> '8086' Then
+    FatalError('Architecture de tests non prise en charge : ' + EmuName +
+     ' (seul "8086" est implante pour l instant).');
+   RunUnitTests8086(EmuFn);
+   Halt(EXIT_OK);
   End
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
    FatalError('Option inconnue: ' + Arg)
@@ -112451,6 +112585,319 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Tests unitaires CPU 8086 (2026-09-02, demande explicite de l utilisateur -
+  DEVENV /TESTUNIT,8086:fichier.tst) : charge un fichier texte decrivant
+  une serie de micro-programmes 8086 (voir TUnitTest8086 pour le format),
+  les execute un par un sur un CPU FRAIS et ISOLE (Emu_TestPanel, jamais
+  ajoute a WinMgr/jamais affiche), et compare l etat final des registres/
+  drapeaux a ce qui est attendu. Mode CONSOLE pur (WriteLn), lance et quitte
+  AVANT tout demarrage de l IDE graphique - voir ParseCommandLine.
+  ============================================================ }
+
+{ Retire les espaces de tete/fin (TrimStr existe deja plus haut dans ce      }
+{ fichier, mais Reader/parsers de fichiers de tests sont regroupes ici pour  }
+{ rester lisibles d un bloc). }
+
+{ Convertit "1234h"/"1234H"/"1234" en mot hexadecimal. }
+Function TestParseHexWord(S: String; Var V: Word): Boolean;
+Var
+ T: String;
+ Code: Integer;
+ LV: LongInt;
+Begin
+ TestParseHexWord := False;
+ T := TrimStr(S);
+ If T = '' Then Exit;
+ If UpCaseStr(Copy(T, Length(T), 1)) = 'H' Then T := Copy(T, 1, Length(T) - 1);
+ T := TrimStr(T);
+ If T = '' Then Exit;
+ Val('$' + T, LV, Code);
+ If Code <> 0 Then Exit;
+ V := Word(LV);
+ TestParseHexWord := True;
+End;
+
+{ Convertit "SEG:OFS" (chaque moitie hexadecimale, "h" final optionnel). }
+Function TestParseSegOfs(S: String; Var Seg, Ofs: Word): Boolean;
+Var
+ P: Integer;
+Begin
+ TestParseSegOfs := False;
+ P := Pos(':', S);
+ If P = 0 Then Exit;
+ If Not TestParseHexWord(Copy(S, 1, P - 1), Seg) Then Exit;
+ If Not TestParseHexWord(Copy(S, P + 1, Length(S) - P), Ofs) Then Exit;
+ TestParseSegOfs := True;
+End;
+
+{ Si Line (deja "trimmee") commence par Key (insensible a la casse) suivi   }
+{ (apres espaces optionnels) de ':' ou '=', renvoie True et place le reste  }
+{ (trimme) dans Value - sinon False. Evite qu une cle "AX" corresponde a    }
+{ tort a une ligne commencant par un mot plus long (ex. "AXE:"). }
+Function TestKeyValue(Const Line, Key: String; Var Value: String): Boolean;
+Var
+ UL, UK: String;
+ P: Integer;
+Begin
+ TestKeyValue := False;
+ UL := UpCaseStr(Line);
+ UK := UpCaseStr(Key);
+ If Copy(UL, 1, Length(UK)) <> UK Then Exit;
+ P := Length(UK) + 1;
+ While (P <= Length(Line)) And (Line[P] = ' ') Do Inc(P);
+ If (P > Length(Line)) Or ((Line[P] <> ':') And (Line[P] <> '=')) Then Exit;
+ Inc(P);
+ Value := TrimStr(Copy(Line, P, Length(Line) - P + 1));
+ TestKeyValue := True;
+End;
+
+{ Si Line (trimmee) est de la forme "[Titre]", renvoie "Titre" - sinon ''. }
+Function TestExtractSection(Const Line: String): String;
+Begin
+ TestExtractSection := '';
+ If (Length(Line) >= 2) And (Line[1] = '[') And (Line[Length(Line)] = ']') Then
+  TestExtractSection := TrimStr(Copy(Line, 2, Length(Line) - 2));
+End;
+
+{ Ajoute a Bytes[Len..] les octets hexadecimaux d une ligne "DB" (separes   }
+{ par des espaces et/ou des virgules, "h" final optionnel sur chacun -      }
+{ ex. "01h 02h 03h,04h"). }
+Procedure TestParseDBBytes(S: String; Var Bytes: Array Of Byte; Var Len: Integer);
+Var
+ I: Integer;
+ Tok: String;
+ V: Word;
+Begin
+ For I := 1 To Length(S) Do
+  If S[I] = ',' Then S[I] := ' ';
+ Tok := '';
+ For I := 1 To Length(S) + 1 Do Begin
+  If (I <= Length(S)) And (S[I] <> ' ') Then
+   Tok := Tok + S[I]
+  Else Begin
+   If Tok <> '' Then Begin
+    If TestParseHexWord(Tok, V) And (Len <= High(Bytes)) Then Begin
+     Bytes[Len] := Byte(V);
+     Inc(Len);
+    End;
+    Tok := '';
+   End;
+  End;
+ End;
+End;
+
+{ Charge et analyse FileName dans le tableau global UnitTests8086/           }
+{ UnitTest8086Count. Retourne False si le fichier n a pas pu etre ouvert     }
+{ (une section malformee est tout simplement ignoree champ par champ,       }
+{ plutot que de faire echouer tout le fichier - un fichier de tests reste   }
+{ un document que l utilisateur editera/etendra a la main). }
+Function LoadUnitTestFile8086(Const FileName: String): Boolean;
+Var
+ F: Text;
+ Line, Trimmed, SectionTitle, Value: String;
+ InResult: Boolean;
+ CurTest: ^TUnitTest8086;
+ Seg, Ofs, V: Word;
+Begin
+ LoadUnitTestFile8086 := False;
+ UnitTest8086Count := 0;
+ Assign(F, FileName);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Exit;
+ CurTest := Nil;
+ InResult := False;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  Trimmed := TrimStr(Line);
+  If Trimmed = '' Then Continue;
+  SectionTitle := TestExtractSection(Trimmed);
+  If SectionTitle <> '' Then Begin
+   If UnitTest8086Count < MAX_UNITTESTS Then Begin
+    CurTest := @UnitTests8086[UnitTest8086Count];
+    FillChar(CurTest^, SizeOf(TUnitTest8086), 0);
+    CurTest^.Title := SectionTitle;
+    Inc(UnitTest8086Count);
+   End Else
+    CurTest := Nil;
+   InResult := False;
+   Continue;
+  End;
+  If CurTest = Nil Then Continue;
+  If UpCaseStr(Trimmed) = 'RESULT:' Then Begin
+   InResult := True;
+   Continue;
+  End;
+  If Copy(UpCaseStr(Trimmed), 1, 7) = 'DATA IN' Then Begin
+   Value := TrimStr(Copy(Trimmed, 8, Length(Trimmed) - 7));
+   If (Length(Value) > 0) And (Value[Length(Value)] = ':') Then
+    Value := TrimStr(Copy(Value, 1, Length(Value) - 1));
+   If TestParseSegOfs(Value, Seg, Ofs) Then Begin
+    CurTest^.HasData := True;
+    CurTest^.DataSeg := Seg;
+    CurTest^.DataOfs := Ofs;
+   End;
+   Continue;
+  End;
+  If Copy(UpCaseStr(Trimmed), 1, 2) = 'DB' Then Begin
+   TestParseDBBytes(Copy(Trimmed, 3, Length(Trimmed) - 2),
+    CurTest^.DataBytes, CurTest^.DataLen);
+   Continue;
+  End;
+  If TestKeyValue(Trimmed, 'ENTRYPOINT', Value) Then Begin
+   If TestParseSegOfs(Value, Seg, Ofs) Then Begin
+    CurTest^.HasEntry := True;
+    CurTest^.EntryCS := Seg;
+    CurTest^.EntryIP := Ofs;
+   End;
+   Continue;
+  End;
+  If TestKeyValue(Trimmed, 'BREAKPOINT', Value) Then Begin
+   If TestParseSegOfs(Value, Seg, Ofs) Then Begin
+    CurTest^.HasBreak := True;
+    CurTest^.BreakCS := Seg;
+    CurTest^.BreakIP := Ofs;
+   End;
+   Continue;
+  End;
+  If Not InResult Then Continue;
+  If TestKeyValue(Trimmed, 'FLAGS', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasFlags := True; CurTest^.ExpFlags := V; End;
+  End Else If TestKeyValue(Trimmed, 'AX', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasAX := True; CurTest^.ExpAX := V; End;
+  End Else If TestKeyValue(Trimmed, 'BX', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasBX := True; CurTest^.ExpBX := V; End;
+  End Else If TestKeyValue(Trimmed, 'CX', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasCX := True; CurTest^.ExpCX := V; End;
+  End Else If TestKeyValue(Trimmed, 'DX', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasDX := True; CurTest^.ExpDX := V; End;
+  End Else If TestKeyValue(Trimmed, 'SI', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasSI := True; CurTest^.ExpSI := V; End;
+  End Else If TestKeyValue(Trimmed, 'DI', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasDI := True; CurTest^.ExpDI := V; End;
+  End Else If TestKeyValue(Trimmed, 'BP', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasBP := True; CurTest^.ExpBP := V; End;
+  End Else If TestKeyValue(Trimmed, 'SP', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasSP := True; CurTest^.ExpSP := V; End;
+  End Else If TestKeyValue(Trimmed, 'CS', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasCS := True; CurTest^.ExpCS := V; End;
+  End Else If TestKeyValue(Trimmed, 'DS', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasDS := True; CurTest^.ExpDS := V; End;
+  End Else If TestKeyValue(Trimmed, 'ES', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasES := True; CurTest^.ExpES := V; End;
+  End Else If TestKeyValue(Trimmed, 'SS', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasSS := True; CurTest^.ExpSS := V; End;
+  End Else If TestKeyValue(Trimmed, 'IP', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasIP := True; CurTest^.ExpIP := V; End;
+  End;
+ End;
+ Close(F);
+ LoadUnitTestFile8086 := True;
+End;
+
+{ Execute tous les tests de FileName et affiche Succes/Echec pour chacun    }
+{ (console pure - voir ParseCommandLine, /TESTUNIT). Chaque test tourne sur }
+{ un CPU 8086 FRAIS (Emu_InitComputer reinitialise memoire+registres a      }
+{ chaque fois - aucun etat ne fuit d un test au suivant). Un point d arret  }
+{ jamais atteint dans MAX_UNITTEST_STEPS pas est un ECHEC explicite         }
+{ ("boucle infinie possible") plutot qu un gel reel de ce processus         }
+{ console - voir le gel reel trouve en investiguant CMP reg,reg+Jcc         }
+{ (2026-09-02) qui a motive cette limite. }
+Procedure RunUnitTests8086(Const FileName: String);
+Var
+ I, J: Integer;
+ T: ^TUnitTest8086;
+ Steps: LongInt;
+ HitBreak, Failed: Boolean;
+ FailMsg: String;
+ PassCount, FailCount: Integer;
+
+ Procedure CheckReg(Has: Boolean; Exp, Actual: Word; Const Name: String);
+ Begin
+  If Has And (Exp <> Actual) Then Begin
+   Failed := True;
+   FailMsg := FailMsg + ' ' + Name + '(attendu ' + HexWord(Exp) +
+    ', obtenu ' + HexWord(Actual) + ')';
+  End;
+ End;
+
+Begin
+ ConRawWriteLn('DEVENV /TESTUNIT,8086 : ' + FileName);
+ If Not LoadUnitTestFile8086(FileName) Then Begin
+  ConRawWriteLn('Erreur : impossible d''ouvrir ' + FileName);
+  Exit;
+ End;
+ ConRawWriteLn(IntToStr(UnitTest8086Count) + ' test(s) charge(s).');
+ ConRawWriteLn('');
+ PassCount := 0;
+ FailCount := 0;
+ For I := 0 To UnitTest8086Count - 1 Do Begin
+  T := @UnitTests8086[I];
+  Emu_InitComputer(Emu_TestPanel.CPU);
+  If Not Emu_TestPanel.CPU.MemReady Then Begin
+   ConRawWriteLn(T^.Title + ' : ECHEC, memoire emulee indisponible.');
+   Inc(FailCount);
+   Continue;
+  End;
+  Emu_TestPanel.TotalSteps := 0;
+  If T^.HasData Then
+   For J := 0 To T^.DataLen - 1 Do
+    Emu_WriteByte(Emu_TestPanel.CPU, T^.DataSeg, Word(T^.DataOfs + J), T^.DataBytes[J]);
+  If T^.HasEntry Then Begin
+   Emu_TestPanel.CPU.Segs.CS := T^.EntryCS;
+   Emu_TestPanel.CPU.IP := T^.EntryIP;
+  End;
+  Steps := 0;
+  HitBreak := Not T^.HasBreak;
+  While (Steps < MAX_UNITTEST_STEPS) And (Emu_TestPanel.CPU.Fault = sfNone) Do Begin
+   If T^.HasBreak And (Emu_TestPanel.CPU.Segs.CS = T^.BreakCS) And
+      (Emu_TestPanel.CPU.IP = T^.BreakIP) Then Begin
+    HitBreak := True;
+    Break;
+   End;
+   Emu_StepOne(Emu_TestPanel);
+   Inc(Steps);
+  End;
+  Failed := False;
+  FailMsg := '';
+  If T^.HasBreak And Not HitBreak And (Emu_TestPanel.CPU.Fault = sfNone) Then Begin
+   Failed := True;
+   FailMsg := ' point d''arret jamais atteint apres ' + IntToStr(Steps) +
+    ' pas (boucle infinie possible, bogue potentiel du CPU)';
+  End Else If Emu_TestPanel.CPU.Fault <> sfNone Then Begin
+   Failed := True;
+   FailMsg := ' fin prematuree (' + Emu_FaultText(Emu_TestPanel.CPU.Fault) +
+    ') apres ' + IntToStr(Steps) + ' pas';
+  End Else Begin
+   CheckReg(T^.HasFlags, T^.ExpFlags, Emu_TestPanel.CPU.Flags.Base, 'Flags');
+   CheckReg(T^.HasAX, T^.ExpAX, Emu_TestPanel.CPU.Regs.AX, 'AX');
+   CheckReg(T^.HasBX, T^.ExpBX, Emu_TestPanel.CPU.Regs.BX, 'BX');
+   CheckReg(T^.HasCX, T^.ExpCX, Emu_TestPanel.CPU.Regs.CX, 'CX');
+   CheckReg(T^.HasDX, T^.ExpDX, Emu_TestPanel.CPU.Regs.DX, 'DX');
+   CheckReg(T^.HasSI, T^.ExpSI, Emu_TestPanel.CPU.Regs.SI, 'SI');
+   CheckReg(T^.HasDI, T^.ExpDI, Emu_TestPanel.CPU.Regs.DI, 'DI');
+   CheckReg(T^.HasBP, T^.ExpBP, Emu_TestPanel.CPU.Regs.BP, 'BP');
+   CheckReg(T^.HasSP, T^.ExpSP, Emu_TestPanel.CPU.Regs.SP, 'SP');
+   CheckReg(T^.HasCS, T^.ExpCS, Emu_TestPanel.CPU.Segs.CS, 'CS');
+   CheckReg(T^.HasDS, T^.ExpDS, Emu_TestPanel.CPU.Segs.DS, 'DS');
+   CheckReg(T^.HasES, T^.ExpES, Emu_TestPanel.CPU.Segs.ES, 'ES');
+   CheckReg(T^.HasSS, T^.ExpSS, Emu_TestPanel.CPU.Segs.SS, 'SS');
+   CheckReg(T^.HasIP, T^.ExpIP, Emu_TestPanel.CPU.IP, 'IP');
+  End;
+  If Failed Then Begin
+   ConRawWriteLn(T^.Title + ' : Echec,' + FailMsg);
+   Inc(FailCount);
+  End Else Begin
+   ConRawWriteLn(T^.Title + ' : Succes');
+   Inc(PassCount);
+  End;
+  Emu_Done(Emu_TestPanel.CPU);
+ End;
+ ConRawWriteLn('');
+ ConRawWriteLn('Resultat : ' + IntToStr(PassCount) + ' succes, ' +
+  IntToStr(FailCount) + ' echec(s) sur ' + IntToStr(UnitTest8086Count) + ' test(s).');
+End;
+
 { --- Vidage du trace circulaire CS:IP/opcode dans EMUTRACE.LOG --- }
 
 Procedure Emu_DumpTrace;
@@ -113786,6 +114233,80 @@ Begin
       HexWord(EmuTraceBuf[KK_R].IP), ' op=',
       HexByte(EmuTraceBuf[KK_R].Op), ' AX=',
       HexWord(EmuTraceBuf[KK_R].AX));
+    End;
+    Close(LogF_R);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
+  { Diagnostic dedie (2026-09-02, demande explicite de l utilisateur) :    }
+  { le bloc EMUDIAG.LOG ci-dessus n exige IP < $0010 - trop etroit pour    }
+  { capturer le VRAI saut errant vers CS=0 observe pendant un amorcage      }
+  { BOOT reel (ex. IP=$A6A2), puisque cette meme condition ne se produit    }
+  { pas pres de l adresse nulle. On dedouble donc ici avec un flag SEPARE  }
+  { (EmuCS0Dumped, jamais EmuOvrDumped - deja utilise par 2 AUTRES          }
+  { diagnostics ponctuels sans rapport). BOGUE REEL trouve en testant       }
+  { (2026-09-02) : exclure uniquement IP=$7C00 declenchait a tort DES LA    }
+  { TOUTE PREMIERE INSTRUCTION du secteur de boot lui-meme (des IP=$7C01) -}
+  { un vrai secteur de boot reste legitimement a CS=0 pendant TOUTE sa      }
+  { phase initiale (auto-relocation, sauts proches) avant de charger        }
+  { IO.SYS ailleurs. On ne surveille donc qu un RETOUR a CS=0 APRES l avoir}
+  { quitte au moins une fois (EmuLeftCS0, mis a jour juste plus bas), ce    }
+  { qui est illegitime dans tous les cas (.COM/.EXE ou BOOT). BOGUE REEL     }
+  { trouve en testant un amorcage El Torito (2026-09-02) : un chargeur       }
+  { "sans emulation" demarre a CS=LoadSeg (souvent $07C0) IP=0000, PAS      }
+  { CS=0 - et fait quasi TOUJOURS, comme premiere action, un "JMP FAR       }
+  { 0000:xxxx" pour se renormaliser a CS=0 (exactement ce que fait aussi un }
+  { secteur de boot classique) - un faux positif se declenchait donc des    }
+  { le pas 2. D ou le plancher `P.TotalSteps > 20` : un vrai derapage       }
+  { (observe au pas 265124 pour MS-DOS) survient bien plus tard qu un        }
+  { saut de renormalisation fait dans les toutes premieres instructions. }
+  If P.CPU.Segs.CS <> 0 Then EmuLeftCS0 := True;
+  If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = 0) And
+     EmuLeftCS0 And (P.TotalSteps > 20) And (Not EmuCS0Dumped) Then Begin
+   EmuCS0Dumped := True;
+   {$I-} Assign(LogF_R, 'EMUCS0.LOG'); Rewrite(LogF_R);
+   If IOResult = 0 Then Begin
+    WriteLn(LogF_R, 'Saut errant vers CS=0 : CS:IP = 0000:', HexWord(P.CPU.IP),
+      ' Steps=', P.TotalSteps, ' EmuBootActive=', EmuBootActive);
+    WriteLn(LogF_R, 'SS:SP=', HexWord(P.CPU.Segs.SS), ':',
+      HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
+      ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+    WriteLn(LogF_R, 'AX=', HexWord(P.CPU.Regs.AX), ' BX=', HexWord(P.CPU.Regs.BX),
+      ' CX=', HexWord(P.CPU.Regs.CX), ' DX=', HexWord(P.CPU.Regs.DX),
+      ' SI=', HexWord(P.CPU.Regs.SI), ' DI=', HexWord(P.CPU.Regs.DI));
+    WriteLn(LogF_R, 'Octets a CS:IP (0000:', HexWord(P.CPU.IP), '..+1F) :');
+    Write(LogF_R, '  ');
+    For Idx_R := 0 To $1F Do
+     Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, 0,
+      Word(P.CPU.IP + Idx_R))), ' ');
+    WriteLn(LogF_R);
+    WriteLn(LogF_R, 'Octets aux 6 DERNIERES instructions tracees avant ce saut ' +
+     '(pour decoder precisement un eventuel FF/ModRM ou RETF suspect) :');
+    For Idx_R := -6 To -1 Do Begin
+     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+     Write(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+      HexWord(EmuTraceBuf[KK_R].IP), ' : ');
+     For K := 0 To 7 Do
+      Write(LogF_R, HexByte(Emu_ReadByte(P.CPU, EmuTraceBuf[KK_R].CS,
+       Word(EmuTraceBuf[KK_R].IP + K))), ' ');
+     WriteLn(LogF_R);
+    End;
+    WriteLn(LogF_R, 'Pile (32 mots a partir de SS:SP - un RETF/IRET errant y   ');
+    WriteLn(LogF_R, 'laisserait un couple CS:IP incorrect en haut de pile) :');
+    For Idx_R := 0 To 31 Do
+     WriteLn(LogF_R, '  [SP+', HexWord(Idx_R * 2), '] = ',
+      HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.SP + Idx_R * 2))));
+    WriteLn(LogF_R, 'Trace circulaire (last 512 avant ce saut) :');
+    For Idx_R := -512 To -1 Do Begin
+     KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
+     WriteLn(LogF_R, '  ', HexWord(EmuTraceBuf[KK_R].CS), ':',
+      HexWord(EmuTraceBuf[KK_R].IP), ' op=',
+      HexByte(EmuTraceBuf[KK_R].Op), ' AX=',
+      HexWord(EmuTraceBuf[KK_R].AX), ' ES=',
+      HexWord(EmuTraceBuf[KK_R].ES), ' DI=',
+      HexWord(EmuTraceBuf[KK_R].DI), ' CX=',
+      HexWord(EmuTraceBuf[KK_R].CX));
     End;
     Close(LogF_R);
    End;
@@ -115736,6 +116257,8 @@ Begin NesActive := False;
  EmuTraceIdx := 0;
  EmuRunaway := 0;
  EmuOvrDumped := False;
+ EmuCS0Dumped := False;
+ EmuLeftCS0 := False;
  {$I-} Assign(LogF_R, 'EMUDIAGSTART.LOG'); Rewrite(LogF_R);
  If IOResult = 0 Then Begin
   WriteLn(LogF_R, 'Run loop starting CS:IP=', HexWord(P.CPU.Segs.CS), ':',
