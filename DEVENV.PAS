@@ -100461,6 +100461,8 @@ Var
  I_Dbg: Integer;
  InstructionIP: Word;
  DecPreserveCF: Boolean;
+ LslB0, LslB1, LslB6: Byte;            { octets de limite/indicateurs LSL   }
+ LslRawLimit, LslEffLimit: LongInt;    { limite brute puis apres granularite}
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
  InstructionIP := P.CPU.IP;
@@ -101524,12 +101526,44 @@ Begin
            End;
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
-     $03: Begin { LSL r16,r/m16 - mode reel : jamais valide, ZF efface - hors }
-          { de la demande explicite de l utilisateur (2026-09-02 : seul LAR, }
-          { ci-dessus, a ete implante reellement sur demande). }
+     $03: Begin { LSL r16,r/m16 - BOGUE REEL CORRIGE (2026-09-02, meme        }
+          { demande explicite que LAR ci-dessus, l utilisateur a cette fois  }
+          { directement demande LSL) : resout un vrai descripteur GDT        }
+          { (memes conditions de validite que LAR : selecteur non nul, GDT   }
+          { (bit TI=0), dans les limites chargees par LGDT, bit Present      }
+          { de l octet de droits d acces present) et renvoie sa VRAIE        }
+          { limite - les 16 bits de poids faible (octets 0-1) combines aux 4 }
+          { bits de poids fort (octet 6, bits 0-3) donnent une limite brute  }
+          { 20 bits, puis le bit G (granularite, octet 6 bit 7) est applique }
+          { exactement comme le materiel reel : G=1 => limite effective =    }
+          { (brute Shl 12) Or $FFF (pages de 4 Ko), G=0 => limite = brute    }
+          { telle quelle (granularite octet). Meme portee volontairement     }
+          { limitee que LAR : pas de verification de privilege CPL/DPL, et   }
+          { resultat toujours ecrit sur 16 bits (comme LAR), sans egard a    }
+          { OperandSize32 - aucun code 32 bits reel rencontre qui en aurait  }
+          { besoin. }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Emu_DecodeModRM0F(P.CPU, ModRM, Op);
+           V16 := Emu_GetOpWord(P.CPU, Op);
            Exclude(P.CPU.Flags.s, EFG_ZF);
+           If ((V16 And 4) = 0) And ((V16 And $FFF8) <> 0) And
+              ((LongInt(V16 And $FFF8) + 7) <= P.CPU.GdtLimit) Then Begin
+            V8 := 0;
+            Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+            If (V8 And $80) <> 0 Then Begin
+             LslB0 := 0; Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8),     LslB0, 1);
+             LslB1 := 0; Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 1, LslB1, 1);
+             LslB6 := 0; Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 6, LslB6, 1);
+             LslRawLimit := LongInt(LslB0) Or (LongInt(LslB1) Shl 8) Or
+              (LongInt(LslB6 And $0F) Shl 16);
+             If (LslB6 And $80) <> 0 Then
+              LslEffLimit := (LslRawLimit Shl 12) Or $FFF
+             Else
+              LslEffLimit := LslRawLimit;
+             Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Word(LslEffLimit));
+             Include(P.CPU.Flags.s, EFG_ZF);
+            End;
+           End;
            Inc(P.CPU.IP, 2 + Op.Len);
           End;
      $21: Begin { MOV r32, DRn - aucun registre de debogage reellement modelise }

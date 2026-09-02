@@ -1055,6 +1055,97 @@ ES=0068h
 IP=0064h
 Flags=0001h
 
+[LOCK-prefix-preserves-following-instruction-semantics]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F0h B8h 34h 12h BBh 78h 56h
+BreakPoint: 1000:0107
+Result:
+AX=1234h
+BX=5678h
+
+[LODS-word-with-segment-override-reads-from-ES-not-DS]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BEh 00h 40h 26h ADh
+Data in 1000:4000:
+DB 78h 56h
+BreakPoint: 1000:010A
+Result:
+AX=5678h
+SI=4002h
+ES=1000h
+DS=0000h
+
+[LODSB-loads-DS-SI-and-increments-SI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 30h ACh
+Data in 1000:3000:
+DB A5h
+BreakPoint: 1000:0109
+Result:
+AX=10A5h
+SI=3001h
+DS=1000h
+
+[LODSW-loads-word-and-increments-SI-by-two]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 30h ADh
+Data in 1000:3000:
+DB 34h 12h
+BreakPoint: 1000:0109
+Result:
+AX=1234h
+SI=3002h
+DS=1000h
+
+[LOOP-decrements-CX-until-zero]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 03h 00h 90h E2h FDh B8h 34h 12h
+BreakPoint: 1000:0109
+Result:
+AX=1234h
+CX=0000h
+
+[LOOPE-repeats-while-CX-nonzero-and-ZF-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 03h 00h 31h C0h E1h FCh B8h 78h 56h
+BreakPoint: 1000:010A
+Result:
+AX=5678h
+CX=0000h
+
+[LOOPNE-stops-when-zero-flag-becomes-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 02h 00h B8h 01h 00h 3Dh 00h 00h E0h FEh B8h 34h 12h
+BreakPoint: 1000:010E
+Result:
+AX=1234h
+CX=0000h
+
+[LSL-resolves-real-GDT-limit-with-granularity-and-fails-on-invalid-selector]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 17h 00h 00h 00h 05h 00h
+Data in 5000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 01h 00h 00h 00h 9Ah 00h 00h 00h 00h 00h 00h 00h 9Ah 80h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h BBh 34h 12h B9h 08h 00h 0Fh 03h D9h 9Ch 5Eh 81h E6h 40h 00h 89h DAh BBh 34h 12h B9h 10h 00h 0Fh 03h D9h 9Ch 5Fh 81h E7h 40h 00h 89h DDh BBh 34h 12h B9h 18h 00h 0Fh 03h D9h 9Ch 58h 25h 40h 00h
+BreakPoint: 1000:013A
+Result:
+BX=1234h
+CX=0018h
+DX=0100h
+SI=0040h
+BP=0FFFh
+DI=0040h
+AX=0000h
+
 [OUTSB-and-OUTSW-write-port-from-DS-SI-leave-memory-untouched]
 Data in 1000:0300:
 DB AAh
