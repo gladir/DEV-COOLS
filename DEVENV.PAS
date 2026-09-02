@@ -112670,10 +112670,34 @@ Begin
   TestExtractSection := TrimStr(Copy(Line, 2, Length(Line) - 2));
 End;
 
+{ Version AnsiString (sans plafond 255 caracteres) de TrimStr, reservee au  }
+{ chargeur de tests unitaires - BOGUE REEL TROUVE ET CORRIGE (2026-09-02) : }
+{ une ligne "DB" avec beaucoup d octets (ex. 66 octets -> 266 caracteres)   }
+{ depasse le plafond 255 caracteres du type String par defaut en $MODE TP - }
+{ TrimStr(S:String) et LoadUnitTestFile8086's Var Line/Trimmed:String       }
+{ TRONQUAIENT SILENCIEUSEMENT la ligne, perdant les derniers octets DB      }
+{ sans aucune erreur - ils restaient alors a $F6 (remplissage RAM non      }
+{ initialisee), provoquant un vrai plantage division par zero du CPU DE    }
+{ TEST des que l execution atteignait cette zone jamais reellement ecrite. }
+{ Trouve en ajoutant un diagnostic temporaire (octet+CS:IP au moment de la }
+{ faute) qui a revele "octet=F6" a l adresse meme ou un octet $25 (AND)    }
+{ avait pourtant ete specifie dans le fichier .tst. }
+Function AnsiTrimStr(Const S: AnsiString): AnsiString;
+Var
+ A, B: Integer;
+Begin
+ A := 1;
+ B := Length(S);
+ While (A <= B) And (S[A] = ' ') Do Inc(A);
+ While (B >= A) And (S[B] = ' ') Do Dec(B);
+ AnsiTrimStr := Copy(S, A, B - A + 1);
+End;
+
 { Ajoute a Bytes[Len..] les octets hexadecimaux d une ligne "DB" (separes   }
 { par des espaces et/ou des virgules, "h" final optionnel sur chacun -      }
-{ ex. "01h 02h 03h,04h"). }
-Procedure TestParseDBBytes(S: String; Var Bytes: Array Of Byte; Var Len: Integer);
+{ ex. "01h 02h 03h,04h"). Parametre AnsiString (voir AnsiTrimStr ci-dessus) }
+{ pour ne jamais tronquer une longue ligne DB. }
+Procedure TestParseDBBytes(S: AnsiString; Var Bytes: Array Of Byte; Var Len: Integer);
 Var
  I: Integer;
  Tok: String;
@@ -112705,7 +112729,8 @@ End;
 Function LoadUnitTestFile8086(Const FileName: String): Boolean;
 Var
  F: Text;
- Line, Trimmed, SectionTitle, Value: String;
+ Line, Trimmed: AnsiString;
+ SectionTitle, Value: String;
  InResult: Boolean;
  CurTest: ^TUnitTest8086;
  CurBlock: ^TUnitTestDataBlock;
@@ -112721,7 +112746,7 @@ Begin
  InResult := False;
  While Not Eof(F) Do Begin
   ReadLn(F, Line);
-  Trimmed := TrimStr(Line);
+  Trimmed := AnsiTrimStr(Line);
   If Trimmed = '' Then Continue;
   SectionTitle := TestExtractSection(Trimmed);
   If SectionTitle <> '' Then Begin
@@ -112889,7 +112914,11 @@ Begin
   End Else If Emu_TestPanel.CPU.Fault <> sfNone Then Begin
    Failed := True;
    FailMsg := ' fin prematuree (' + Emu_FaultText(Emu_TestPanel.CPU.Fault) +
-    ') apres ' + IntToStr(Steps) + ' pas';
+    ') apres ' + IntToStr(Steps) + ' pas a CS:IP=' +
+    HexWord(Emu_TestPanel.CPU.Segs.CS) + ':' + HexWord(Emu_TestPanel.CPU.IP) +
+    ' octet=' + HexByte(Emu_ReadByte(Emu_TestPanel.CPU, Emu_TestPanel.CPU.Segs.CS,
+     Emu_TestPanel.CPU.IP)) + ' SS:SP=' + HexWord(Emu_TestPanel.CPU.Segs.SS) +
+    ':' + HexWord(Emu_TestPanel.CPU.Regs.SP);
   End Else Begin
    CheckReg(T^.HasFlags, T^.ExpFlags, Emu_TestPanel.CPU.Flags.Base, 'Flags');
    CheckReg(T^.HasAX, T^.ExpAX, Emu_TestPanel.CPU.Regs.AX, 'AX');

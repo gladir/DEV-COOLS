@@ -211,3 +211,32 @@ SI=00FFh
 BX=0000h
 CX=0080h
 DX=0040h
+
+[AND-OR-XOR-reg-reg-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 00h BBh 00h FFh 21h D8h 9Ch 5Eh 81h E6h C5h 08h B8h FFh FFh BBh 01h 80h 21h D8h 9Ch 5Fh 81h E7h C5h 08h B8h F0h 00h BBh 0Fh 00h 09h D8h 9Ch 5Dh 81h E5h C5h 08h B8h 34h 12h 31h C0h 9Ch 5Ah 81h E2h C5h 08h B8h FFh 00h BBh 0Fh 0Fh 31h D8h 9Ch 58h 25h C5h 08h
+BreakPoint: 1000:0142
+Result:
+SI=0044h
+DI=0080h
+BP=0004h
+DX=0044h
+AX=0004h
+
+[AND-OR-XOR-mem-operand]
+Data in 1000:0500:
+DB F0h 00h
+Data in 1000:0502:
+DB 0Fh 00h
+Data in 1000:0504:
+DB F0h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 0Fh 00h 21h 1Eh 00h 05h A1h 00h 05h 89h C6h B9h F0h 00h 0Bh 0Eh 02h 05h 89h CFh A1h 02h 05h 89h C5h B0h 0Fh 30h 06h 04h 05h B0h 00h A0h 04h 05h 89h C2h
+BreakPoint: 1000:012C
+Result:
+SI=0000h
+DI=00FFh
+BP=000Fh
+DX=00FFh
