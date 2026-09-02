@@ -100943,10 +100943,30 @@ Begin
     P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
     Inc(P.CPU.IP);
    End;
-  $6E, $6F: { OUTSB/OUTSW (80186+) - ignore (pas d'I/O port) - hors de la     }
-            { demande explicite de l utilisateur (2026-09-02 : seul INSB/    }
-            { INSW, ci-dessus, a ete implante reellement sur demande). }
-   Inc(P.CPU.IP);
+  $6E: { OUTSB (80186+) - BOGUE REEL CORRIGE (2026-09-02, demande explicite   }
+       { de l utilisateur, symetrique de INSB ci-dessus) : ignorait           }
+       { auparavant totalement l E/S (ni lecture memoire, ni ecriture de      }
+       { port, ni avancement de SI). Implemente maintenant la vraie           }
+       { semantique : OUT(DX) := [DS:SI] (octet, DS via Emu_DataSeg pour      }
+       { honorer un eventuel prefixe de segment, meme convention que          }
+       { MOVSB/CMPSB), SI avance de +/-1 selon DF. }
+   Begin
+    If EFG_DF In P.CPU.Flags.s Then Inc16 := -1 Else Inc16 := 1;
+    Emu_PortWrite(P, P.CPU.Regs.DX, Emu_ReadByte(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI));
+    P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
+    Inc(P.CPU.IP);
+   End;
+  $6F: { OUTSW (80186+) - voir $6E ci-dessus pour le contexte complet. Le mot }
+       { lu est envoye en 2 ecritures d octet consecutives (DX puis DX+1),    }
+       { meme convention que $E7/$EF (OUT imm8/DX,AX) deja existants. }
+   Begin
+    If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
+    V16 := Emu_ReadWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+    Emu_PortWrite(P, P.CPU.Regs.DX, Byte(V16));
+    Emu_PortWrite(P, P.CPU.Regs.DX + 1, Byte(V16 Shr 8));
+    P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
+    Inc(P.CPU.IP);
+   End;
   $0F: { Prefixe 286+ : LGDT/LIDT/LMSW/SMSW/etc. - ignore (mode reel), SAUF   }
        { $80-$8F (Jcc near, voir ci-dessous) - BOGUE REEL CORRIGE (2026-08-24,}
        { trouve en poursuivant l enquete DOS=HIGH/XMS : HIMEM.SYS utilise      }

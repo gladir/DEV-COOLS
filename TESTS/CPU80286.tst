@@ -495,3 +495,18 @@ SI=0301h
 CX=0000h
 DI=04FEh
 AX=0000h
+
+[OUTSB-and-OUTSW-write-port-from-DS-SI-leave-memory-untouched]
+Data in 1000:0300:
+DB AAh
+Data in 1000:0500:
+DB BBh BBh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 03h BAh FFh 00h 6Eh A0h 00h 03h B4h 00h 89h C1h 89h F7h FDh BEh 00h 05h BAh FEh 00h 6Fh A1h 00h 05h
+BreakPoint: 1000:0120
+Result:
+CX=00AAh
+DI=0301h
+AX=BBBBh
+SI=04FEh
