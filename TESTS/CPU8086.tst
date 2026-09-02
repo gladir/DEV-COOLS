@@ -486,3 +486,137 @@ BX=00C2h
 CX=0000h
 DX=00FFh
 SI=0001h
+
+[REPE-CMPSB-runs-to-completion-all-equal]
+Data in 1000:0300:
+DB 11h 22h 33h 44h
+Data in 1000:0400:
+DB 11h 22h 33h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 04h 00h F3h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0000h
+SI=0304h
+DI=0404h
+BX=0040h
+
+[REPE-CMPSW-runs-to-completion-all-equal]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 33h 33h 44h 44h
+Data in 1000:0600:
+DB 11h 11h 22h 22h 33h 33h 44h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h B9h 04h 00h F3h A7h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0000h
+SI=0508h
+DI=0608h
+BX=0040h
+
+[REPNE-CMPSB-stops-early-on-first-match]
+Data in 1000:0300:
+DB 11h 22h 99h 44h
+Data in 1000:0400:
+DB 55h 66h 99h 77h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 04h 00h F2h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0303h
+DI=0403h
+BX=0040h
+
+[REPNE-CMPSW-stops-early-on-first-match]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 99h 99h 44h 44h
+Data in 1000:0600:
+DB 55h 55h 66h 66h 99h 99h 77h 77h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h B9h 04h 00h F2h A7h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0506h
+DI=0606h
+BX=0040h
+
+[SCASB-single-both-directions]
+Data in 1000:0400:
+DB 05h 05h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 04h B0h 05h AEh 9Ch 58h 25h D1h 08h 89h C3h 89h F9h B0h 03h AEh 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:011E
+Result:
+BX=0040h
+CX=0401h
+DX=0091h
+DI=0402h
+
+[SCASW-single-both-directions]
+Data in 1000:0500:
+DB 05h 00h 05h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B8h 05h 00h AFh 9Ch 58h 25h D1h 08h 89h C3h 89h F9h B8h 03h 00h AFh 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:0120
+Result:
+BX=0040h
+CX=0502h
+DX=0091h
+DI=0504h
+
+[REPE-SCASB-stops-on-first-difference]
+Data in 1000:0400:
+DB 11h 11h 99h 11h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 04h B0h 11h B9h 04h 00h F3h AEh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0116
+Result:
+CX=0001h
+DI=0403h
+BX=0000h
+
+[REPE-SCASW-stops-on-first-difference]
+Data in 1000:0500:
+DB 11h 11h 11h 11h 99h 99h 11h 11h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B8h 11h 11h B9h 04h 00h F3h AFh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0117
+Result:
+CX=0001h
+DI=0506h
+BX=0000h
+
+[REPNE-SCASB-finds-first-match]
+Data in 1000:0400:
+DB 11h 22h 99h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 04h B0h 99h B9h 04h 00h F2h AEh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0116
+Result:
+CX=0001h
+DI=0403h
+BX=0040h
+
+[REPNE-SCASW-finds-first-match]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 99h 99h 44h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B8h 99h 99h B9h 04h 00h F2h AFh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0117
+Result:
+CX=0001h
+DI=0506h
+BX=0040h
