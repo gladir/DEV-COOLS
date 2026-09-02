@@ -561,19 +561,20 @@ Result:
 AX=0001h
 CX=0000h
 
-[JECXZ-8086-runner-uses-CX-zero-condition]
-EntryPoint: 1000:0100
-Data in 1000:0100:
-DB B9h 00h 00h E3h 05h B8h 00h 00h EBh 03h B8h 01h 00h
-BreakPoint: 1000:010D
-Result:
-AX=0001h
-CX=0000h
-
 [JE-taken-when-comparison-is-equal]
 EntryPoint: 1000:0100
 Data in 1000:0100:
 DB B8h 05h 00h BBh 05h 00h 39h D8h 74h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0005h
+CX=0001h
+
+[JGE-taken-when-signed-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 7Dh 05h B9h 00h 00h EBh 03h B9h 01h 00h
 BreakPoint: 1000:0112
 Result:
 AX=0005h
@@ -590,6 +591,26 @@ AX=0005h
 BX=0003h
 CX=0001h
 
+[JLE-taken-when-signed-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 7Eh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0005h
+CX=0001h
+
+[JL-taken-when-signed-value-is-less]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 7Ch 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0003h
+BX=0005h
+CX=0001h
+
 [JMP-indirect-word-ptr-BX]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -604,6 +625,164 @@ AX=1234h
 BX=0200h
 DS=1000h
 IP=0303h
+
+[JNA-alias-taken-when-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 76h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0005h
+BX=0005h
+CX=0001h
+
+[JNAE-alias-taken-when-value-is-below]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 72h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=0003h
+BX=0005h
+CX=0001h
+
+[JNB-taken-when-carry-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F8h 73h 05h B8h 00h 00h EBh 03h B8h 01h 00h
+BreakPoint: 1000:010B
+Result:
+AX=0001h
+
+[JNC-taken-when-carry-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F8h 73h 05h B8h 00h 00h EBh 03h B8h 01h 00h
+BreakPoint: 1000:010B
+Result:
+AX=0001h
+
+[JNE-taken-when-values-are-different]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 75h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
+
+[JNGE-taken-when-signed-value-is-less]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 7Ch 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
+
+[JNG-taken-when-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 7Eh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
+
+[JNLE-taken-when-signed-value-is-greater]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 39h D8h 7Fh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
+
+[JNL-taken-when-signed-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 7Dh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
+
+[JNO-taken-when-overflow-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 71h 05h B8h 00h 00h EBh 03h B8h 01h 00h
+BreakPoint: 1000:010C
+Result:
+AX=0001h
+
+[JNP-taken-when-parity-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h 40h 7Bh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:010E
+Result:
+CX=0001h
+
+[JNS-taken-when-sign-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 79h 05h B8h 00h 00h EBh 03h B8h 01h 00h
+BreakPoint: 1000:010C
+Result:
+AX=0001h
+
+[JNZ-taken-when-zero-flag-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 75h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
+
+[JO-taken-when-signed-overflow-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 7Fh BBh 01h 00h 01h D8h 70h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=8000h
+CX=0001h
+
+[JPE-alias-taken-when-parity-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 7Ah 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:010C
+Result:
+CX=0001h
+
+[JPO-taken-when-parity-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h 40h 7Bh 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:010E
+Result:
+CX=0001h
+
+[JP-taken-when-parity-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 7Ah 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:010C
+Result:
+CX=0001h
+
+[JS-taken-when-sign-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h BBh 01h 00h 29h D8h 78h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=FFFFh
+CX=0001h
+
+[JZ-taken-when-zero-flag-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 74h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+CX=0001h
 
 [LAHF-loads-flags-into-AH]
 EntryPoint: 1000:0100
