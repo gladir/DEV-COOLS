@@ -1013,6 +1013,38 @@ Result:
 AX=000Ch
 DX=0000h
 
+[NEG-flags-and-zero-case]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 05h F6h D8h B4h 00h 89h C3h 9Ch 58h 25h D1h 08h 89h C1h B0h 00h F6h D8h B4h 00h 89h C7h 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:011E
+Result:
+BX=00FBh
+CX=0091h
+DI=0000h
+DX=0040h
+
+[NOP-changes-nothing-but-IP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh B8h 34h 12h BBh 78h 56h B9h BCh 9Ah 90h 90h 90h 9Ch 5Eh 81h E6h D1h 08h
+BreakPoint: 1000:0115
+Result:
+AX=1234h
+BX=5678h
+CX=9ABCh
+SI=0091h
+
+[NOT-inverts-bits-without-touching-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh B0h 0Fh F6h D0h 9Ch 5Bh 81h E3h D1h 08h 89h C1h B8h FFh 00h F7h D0h
+BreakPoint: 1000:0114
+Result:
+BX=0091h
+CX=91F0h
+AX=FF00h
+
 [Offset-wraparound-FFFF-STOSW-spills-to-next-segment]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1022,6 +1054,26 @@ Result:
 DI=0001h
 AX=F6ABh
 ES=2000h
+
+[OR-immediate-forms-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 0Fh 0Ch F0h B4h 00h 89h C3h 9Ch 58h 25h C5h 08h 89h C1h B8h 00h 00h 0Dh 00h 00h 89h C2h 9Ch 58h 25h C5h 08h
+BreakPoint: 1000:011C
+Result:
+BX=00FFh
+CX=0084h
+DX=0000h
+AX=0044h
+
+[OUT-to-unhandled-port-only-writes-does-not-touch-registers]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h BAh FFh 00h E6h FEh E7h FDh EEh EFh
+BreakPoint: 1000:010F
+Result:
+AX=1234h
+BX=5678h
 
 [PUSH-fabricated-far-ptr-RETF]
 EntryPoint: 1000:0100
