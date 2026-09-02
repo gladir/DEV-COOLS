@@ -420,3 +420,69 @@ CX=0000h
 DX=1111h
 BX=9999h
 SI=2222h
+
+[ROL-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h C0h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 02h 00h D0h C0h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0003h
+CX=0801h
+DX=0004h
+SI=0000h
+
+[ROR-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 01h 00h D0h C8h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 02h 00h D0h C8h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0080h
+CX=0801h
+DX=0001h
+SI=0000h
+
+[SHL-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h E0h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 40h 00h D0h E0h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0002h
+CX=0801h
+DX=0080h
+SI=0800h
+
+[SAL-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h F0h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 40h 00h D0h F0h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0002h
+CX=0801h
+DX=0080h
+SI=0800h
+
+[SHR-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h E8h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 02h 00h D0h E8h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0040h
+CX=0801h
+DX=0001h
+SI=0000h
+
+[SAR-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 84h 00h D0h F8h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h FFh 00h D0h F8h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=00C2h
+CX=0000h
+DX=00FFh
+SI=0001h

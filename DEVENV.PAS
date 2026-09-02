@@ -102319,10 +102319,17 @@ Begin
                                Else Exclude(P.CPU.Flags.s, EFG_CF);
            R8 := R8 Shr 1;
           End;
-       7: Begin { SAR }
+       7: Begin { SAR - BOGUE REEL CORRIGE (2026-09-02, trouve via                }
+                { TESTS/CPU8086.tst "SAR-by-1") : `ShortInt(R8) Div 2` tronque   }
+                { VERS ZERO (convention Pascal), pas vers -l infini comme un      }
+                { vrai decalage arithmetique - divergent uniquement pour une      }
+                { valeur NEGATIVE IMPAIRE (ex. $FF/-1 Div 2 = 0 au lieu du $FF    }
+                { attendu, puisqu un vrai SAR de tous les bits a 1 doit rester    }
+                { tous les bits a 1). Remplace par un decalage logique + report   }
+                { manuel du bit de signe d origine, sans aucune division. }
            If (R8 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                Else Exclude(P.CPU.Flags.s, EFG_CF);
-           R8 := Byte((ShortInt(R8)) Div 2);
+           R8 := (R8 Shr 1) Or (R8 And $80);
           End;
       End;
       Dec(Cnt);
@@ -102395,10 +102402,14 @@ Begin
                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
            R32 := LongInt(LongWord(R32) Shr 1);
           End;
-       7: Begin { SAR }
+       7: Begin { SAR - BOGUE REEL CORRIGE (2026-09-02) : voir le commentaire     }
+                { complet pres du SAR 8 bits ci-dessus (meme chantier) - la       }
+                { division signee ("R32 Div 2") tronque VERS ZERO, PAS vers -inf }
+                { comme un vrai decalage arithmetique, et diverge donc pour toute}
+                { valeur NEGATIVE IMPAIRE. }
            If (R32 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
-           R32 := R32 Div 2; { division signee = decalage arithmetique }
+           R32 := LongInt((LongWord(R32) Shr 1) Or (LongWord(R32) And $80000000));
           End;
       End;
       Dec(Cnt);
@@ -102470,10 +102481,12 @@ Begin
                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
            R16 := R16 Shr 1;
           End;
-       7: Begin
+       7: Begin { SAR - BOGUE REEL CORRIGE (2026-09-02) : voir le commentaire     }
+                { complet pres du SAR 8 bits (meme chantier, meme cause : la      }
+                { division signee tronque vers zero, pas vers -inf). }
            If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
-           R16 := Word(SmallInt(R16) Div 2);
+           R16 := (R16 Shr 1) Or (R16 And $8000);
           End;
       End;
       Dec(Cnt);
