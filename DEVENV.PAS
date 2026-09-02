@@ -102627,12 +102627,24 @@ Begin
      P.CPU.Regs.AH := 0;
     Inc(P.CPU.IP);
    End;
-  $99: { CWD : AX -> DX:AX }
+  $99: { CWD : AX -> DX:AX (CDQ : EAX -> EDX:EAX si OperandSize32) - BOGUE   }
+       { REEL CORRIGE (2026-09-02, demande explicite de l utilisateur) :    }
+       { cet opcode ignorait totalement OperandSize32 et faisait TOUJOURS   }
+       { la logique 16 bits (CWD), meme avec le prefixe $66 present - EDX   }
+       { n etait alors jamais sign-etendu depuis EAX (CDQ silencieusement   }
+       { non fonctionnel). }
    Begin
-    If (P.CPU.Regs.AX And $8000) <> 0 Then
-     P.CPU.Regs.DX := $FFFF
-    Else
-     P.CPU.Regs.DX := 0;
+    If P.CPU.OperandSize32 Then Begin
+     If (P.CPU.Regs.EAX And LongInt($80000000)) <> 0 Then
+      P.CPU.Regs.EDX := LongInt($FFFFFFFF)
+     Else
+      P.CPU.Regs.EDX := 0;
+    End Else Begin
+     If (P.CPU.Regs.AX And $8000) <> 0 Then
+      P.CPU.Regs.DX := $FFFF
+     Else
+      P.CPU.Regs.DX := 0;
+    End;
     Inc(P.CPU.IP);
    End;
   $A4, $A5, $AA, $AB, $AC, $AD, $AE, $AF, $A6, $A7:

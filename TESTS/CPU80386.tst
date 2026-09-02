@@ -1,3 +1,147 @@
+[AAA-ASCII-Adjust-Addition]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 0Fh 00h 37h 89h C3h 9Ch 58h 25h 11h 00h 89h C1h B4h 10h 9Eh B8h 03h 02h 37h 89h C2h 9Ch 58h 25h 11h 00h 89h C6h B4h 00h 9Eh B8h 03h 02h 37h 89h C7h 9Ch 58h 25h 11h 00h 89h C5h
+BreakPoint: 1000:012D
+Result:
+BX=0105h
+CX=0011h
+DX=0309h
+SI=0011h
+DI=0203h
+BP=0000h
+
+[AAD-ASCII-Adjust-before-Division]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 01h 03h D5h 0Ah 89h C3h 9Ch 58h 25h C4h 00h 89h C1h B8h 00h 00h D5h 0Ah 89h C2h 9Ch 58h 25h C4h 00h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=001Fh
+CX=0000h
+DX=0000h
+SI=0044h
+
+[AAM-ASCII-Adjust-Multiply]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 1Fh D4h 0Ah 89h C3h 9Ch 58h 25h C4h 00h 89h C1h B0h 64h D4h 0Ah 89h C2h 9Ch 58h 25h C4h 00h 89h C6h
+BreakPoint: 1000:011A
+Result:
+BX=0301h
+CX=0000h
+DX=0A00h
+SI=0044h
+
+[AAS-ASCII-Adjust-Subtraction]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 0Fh 00h 3Fh 89h C3h 9Ch 58h 25h 11h 00h 89h C1h B4h 10h 9Eh B8h 03h 02h 3Fh 89h C2h 9Ch 58h 25h 11h 00h 89h C6h B4h 00h 9Eh B8h 03h 02h 3Fh 89h C7h 9Ch 58h 25h 11h 00h 89h C5h
+BreakPoint: 1000:012D
+Result:
+BX=FF09h
+CX=0011h
+DX=010Dh
+SI=0011h
+DI=0203h
+BP=0000h
+
+[ADC-propagates-carry-from-previous-ADD]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh FFh BBh 01h 00h 01h D8h 11h D8h
+BreakPoint: 1000:010A
+Result:
+AX=0002h
+BX=0001h
+
+[ADC-signed-overflow-with-carry-in-sets-OF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h FFh 7Fh BBh 00h 00h 11h D8h 70h 05h BAh 00h 00h EBh 03h BAh 02h 00h
+BreakPoint: 1000:0113
+Result:
+AX=8000h
+DX=0002h
+
+[ADD-reg-reg-flags-full]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 02h 00h BBh 03h 00h 01h D8h 89h C7h 9Ch 58h 25h D1h 08h 89h C5h B8h FFh FFh BBh 01h 00h 01h D8h 89h C6h 9Ch 58h 25h D1h 08h 89h C2h B8h FFh 7Fh BBh 01h 00h 01h D8h 89h C1h 9Ch 58h 25h D1h 08h 89h C3h
+BreakPoint: 1000:0133
+Result:
+DI=0005h
+BP=0000h
+SI=0000h
+DX=0051h
+CX=8000h
+BX=0890h
+
+[ADD-signed-overflow-sets-OF-verified-via-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 7Fh BBh 01h 00h 01h D8h 70h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=8000h
+CX=0001h
+
+[AND-OR-XOR-mem-operand]
+Data in 1000:0500:
+DB F0h 00h
+Data in 1000:0502:
+DB 0Fh 00h
+Data in 1000:0504:
+DB F0h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 0Fh 00h 21h 1Eh 00h 05h A1h 00h 05h 89h C6h B9h F0h 00h 0Bh 0Eh 02h 05h 89h CFh A1h 02h 05h 89h C5h B0h 0Fh 30h 06h 04h 05h B0h 00h A0h 04h 05h 89h C2h
+BreakPoint: 1000:012C
+Result:
+SI=0000h
+DI=00FFh
+BP=000Fh
+DX=00FFh
+
+[AND-OR-XOR-reg-reg-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 00h BBh 00h FFh 21h D8h 9Ch 5Eh 81h E6h C5h 08h B8h FFh FFh BBh 01h 80h 21h D8h 9Ch 5Fh 81h E7h C5h 08h B8h F0h 00h BBh 0Fh 00h 09h D8h 9Ch 5Dh 81h E5h C5h 08h B8h 34h 12h 31h C0h 9Ch 5Ah 81h E2h C5h 08h B8h FFh 00h BBh 0Fh 0Fh 31h D8h 9Ch 58h 25h C5h 08h
+BreakPoint: 1000:0142
+Result:
+SI=0044h
+DI=0080h
+BP=0004h
+DX=0044h
+AX=0004h
+
+[ARPL-adjusts-RPL-and-sets-ZF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BBh 08h 00h B9h 13h 00h 63h CBh 89h DFh 9Ch 5Eh 81h E6h 40h 00h BBh 0Bh 00h B9h 10h 00h 63h CBh 9Ch 58h 25h 40h 00h
+BreakPoint: 1000:011D
+Result:
+DI=000Bh
+SI=0040h
+BX=000Bh
+AX=0000h
+
+[BOUND-checks-index-and-fires-INT5-on-overflow]
+Data in 1000:0300:
+DB 00h 00h 0Ah 00h
+Data in 0000:0014:
+DB 00h 02h 00h 10h
+Data in 1000:0200:
+DB BBh 78h 56h CFh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BAh 05h 00h 62h 16h 00h 03h B9h 34h 12h BAh 0Fh 00h 62h 16h 00h 03h BAh 99h 99h
+BreakPoint: 1000:0119
+Result:
+CX=1234h
+BX=5678h
+DX=9999h
+
 [BSF-and-BSR-scan-bits-in-memory-word-with-displacement]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -64,6 +208,33 @@ BreakPoint: 1000:0116
 Result:
 AX=0000h
 BX=0008h
+
+[CALL-near-then-RET-resumes-correct-address]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB E8h 04h 00h B0h 34h EBh 03h B4h 12h C3h
+BreakPoint: 1000:010A
+Result:
+AX=1234h
+SP=0000h
+
+[CBW-sign-extends-AL-into-AX-both-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 7Fh 98h 89h C3h B0h 80h 98h
+BreakPoint: 1000:0108
+Result:
+AX=FF80h
+BX=007Fh
+
+[CDQ-sign-extends-EAX-into-EDX-both-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 00h 00h 00h 80h 66h 99h 66h 89h D1h 66h B8h FFh FFh FFh 7Fh 66h 99h
+BreakPoint: 1000:0113
+Result:
+ECX=FFFFFFFFh
+EDX=00000000h
 
 [CMPXCHG-r-m16-r16-compares-memory-with-displacement-and-exchanges-on-match]
 EntryPoint: 1000:0100
