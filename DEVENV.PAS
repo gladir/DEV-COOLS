@@ -102619,12 +102619,24 @@ Begin
     R16 := Emu_AluWord(P.CPU, 4, P.CPU.Regs.AX, Imm16);
     Inc(P.CPU.IP, 3);
    End;
-  $98: { CBW : AL -> AX (extension de signe) }
+  $98: { CBW : AL -> AX (CWDE : AX -> EAX complet si OperandSize32) - BOGUE  }
+       { REEL CORRIGE (2026-09-02, demande explicite de l utilisateur, meme }
+       { bogue que $99/CDQ juste corrige) : ignorait totalement             }
+       { OperandSize32 et faisait TOUJOURS l extension 8->16 bits (CBW),    }
+       { meme avec le prefixe $66 present - CWDE (AX sign-etendu dans EAX   }
+       { complet) etait silencieusement non fonctionnel. }
    Begin
-    If (P.CPU.Regs.AL And $80) <> 0 Then
-     P.CPU.Regs.AH := $FF
-    Else
-     P.CPU.Regs.AH := 0;
+    If P.CPU.OperandSize32 Then Begin
+     If (P.CPU.Regs.AX And $8000) <> 0 Then
+      P.CPU.Regs.EAX := LongInt(Word(P.CPU.Regs.AX)) Or LongInt($FFFF0000)
+     Else
+      P.CPU.Regs.EAX := LongInt(Word(P.CPU.Regs.AX));
+    End Else Begin
+     If (P.CPU.Regs.AL And $80) <> 0 Then
+      P.CPU.Regs.AH := $FF
+     Else
+      P.CPU.Regs.AH := 0;
+    End;
     Inc(P.CPU.IP);
    End;
   $99: { CWD : AX -> DX:AX (CDQ : EAX -> EDX:EAX si OperandSize32) - BOGUE   }
