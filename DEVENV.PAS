@@ -102413,32 +102413,57 @@ Begin
     P.CPU.IP := NewIP;
     P.CPU.Segs.CS := NewCS;
    End;
-  $E2: { LOOP rel8 }
+  $E2: { LOOP rel8 (LOOPD : decompte sur ECX complet si AddrSize32) -         }
+       { BOGUE REEL CORRIGE (2026-09-02, demande explicite de l utilisateur, }
+       { meme classe de bogue que CDQ/CWDE/INSD/IRETD deja corriges cette    }
+       { session, mais ici declenche par AddrSize32/$67 plutot que           }
+       { OperandSize32/$66) : ignorait totalement AddrSize32 et decrementait }
+       { TOUJOURS CX (16 bits) - LOOPD/LOOPED/LOOPNED/LOOPZD/LOOPNZD (simples}
+       { alias assembleur de ces 3 memes opcodes sous prefixe $67) etaient   }
+       { silencieusement non fonctionnels. }
    Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
     Disp8 := ShortInt(Imm8);
     Inc(P.CPU.IP, 2);
-    P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
-    If P.CPU.Regs.CX <> 0 Then
-     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    If P.CPU.AddrSize32 Then Begin
+     P.CPU.Regs.ECX := P.CPU.Regs.ECX - 1;
+     If P.CPU.Regs.ECX <> 0 Then
+      P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    End Else Begin
+     P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+     If P.CPU.Regs.CX <> 0 Then
+      P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    End;
    End;
-  $E1: { LOOPE rel8 }
+  $E1: { LOOPE rel8 - voir $E2 (LOOP) ci-dessus pour le contexte complet. }
    Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
     Disp8 := ShortInt(Imm8);
     Inc(P.CPU.IP, 2);
-    P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
-    If (P.CPU.Regs.CX <> 0) And (EFG_ZF In P.CPU.Flags.s) Then
-     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    If P.CPU.AddrSize32 Then Begin
+     P.CPU.Regs.ECX := P.CPU.Regs.ECX - 1;
+     If (P.CPU.Regs.ECX <> 0) And (EFG_ZF In P.CPU.Flags.s) Then
+      P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    End Else Begin
+     P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+     If (P.CPU.Regs.CX <> 0) And (EFG_ZF In P.CPU.Flags.s) Then
+      P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    End;
    End;
-  $E0: { LOOPNE rel8 }
+  $E0: { LOOPNE rel8 - voir $E2 (LOOP) ci-dessus pour le contexte complet. }
    Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
     Disp8 := ShortInt(Imm8);
     Inc(P.CPU.IP, 2);
-    P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
-    If (P.CPU.Regs.CX <> 0) And Not (EFG_ZF In P.CPU.Flags.s) Then
-     P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    If P.CPU.AddrSize32 Then Begin
+     P.CPU.Regs.ECX := P.CPU.Regs.ECX - 1;
+     If (P.CPU.Regs.ECX <> 0) And Not (EFG_ZF In P.CPU.Flags.s) Then
+      P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    End Else Begin
+     P.CPU.Regs.CX := P.CPU.Regs.CX - 1;
+     If (P.CPU.Regs.CX <> 0) And Not (EFG_ZF In P.CPU.Flags.s) Then
+      P.CPU.IP := Word(Integer(P.CPU.IP) + Disp8);
+    End;
    End;
   $E3: { JCXZ rel8 }
    Begin
