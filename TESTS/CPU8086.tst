@@ -374,3 +374,49 @@ BX=0008h
 CX=0010h
 DX=0090h
 SI=0081h
+
+[ADD-reg-reg-flags-full]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 02h 00h BBh 03h 00h 01h D8h 89h C7h 9Ch 58h 25h D1h 08h 89h C5h B8h FFh FFh BBh 01h 00h 01h D8h 89h C6h 9Ch 58h 25h D1h 08h 89h C2h B8h FFh 7Fh BBh 01h 00h 01h D8h 89h C1h 9Ch 58h 25h D1h 08h 89h C3h
+BreakPoint: 1000:0133
+Result:
+DI=0005h
+BP=0000h
+SI=0000h
+DX=0051h
+CX=8000h
+BX=0890h
+
+[SUB-reg-reg-flags-full]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 29h D8h 89h C7h 9Ch 58h 25h D1h 08h 89h C5h B8h 03h 00h BBh 05h 00h 29h D8h 89h C6h 9Ch 58h 25h D1h 08h 89h C2h B8h 00h 80h BBh 01h 00h 29h D8h 89h C1h 9Ch 58h 25h D1h 08h 89h C3h
+BreakPoint: 1000:0133
+Result:
+DI=0002h
+BP=0000h
+SI=FFFEh
+DX=0091h
+CX=7FFFh
+BX=0810h
+
+[LAHF-loads-flags-into-AH]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h 3Dh 05h 00h B0h 00h 9Fh 89h C3h B8h 03h 00h 3Dh 05h 00h B0h 00h 9Fh 89h C1h
+BreakPoint: 1000:0116
+Result:
+BX=4400h
+CX=9100h
+
+[SAHF-loads-AH-into-flags-affects-JZ]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 44h 9Eh B9h 00h 00h 74h 03h B9h 99h 99h BAh 11h 11h B4h 00h 9Eh BBh 00h 00h 74h 03h BBh 99h 99h BEh 22h 22h
+BreakPoint: 1000:011C
+Result:
+CX=0000h
+DX=1111h
+BX=9999h
+SI=2222h
