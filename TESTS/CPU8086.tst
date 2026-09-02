@@ -413,6 +413,15 @@ CX=0002h
 DX=100Fh
 AX=0001h
 
+[INC-signed-overflow-preserves-carry]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h FFh 7Fh 40h 72h 05h BBh 00h 00h EBh 03h BBh 01h 00h
+BreakPoint: 1000:010F
+Result:
+AX=8000h
+BX=0001h
+
 [INC-signed-overflow-sets-OF-preserves-CF]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -436,6 +445,52 @@ Result:
 AX=1234h
 CS=1000h
 IP=0102h
+
+[INT-immediate-dispatches-handler-and-returns]
+Data in 0000:0040:
+DB 00h 03h 00h 10h
+Data in 1000:0100:
+DB CDh 10h BBh 34h 12h
+Data in 1000:0300:
+DB B8h 78h 56h CFh
+EntryPoint: 1000:0100
+BreakPoint: 1000:0105
+Result:
+AX=5678h
+BX=1234h
+CS=1000h
+IP=0105h
+
+[INTO-overflow-dispatches-vector-four-handler]
+Data in 0000:0010:
+DB 00h 03h 00h 10h
+Data in 1000:0100:
+DB B8h FFh 7Fh BBh 01h 00h 01h D8h CEh BAh 34h 12h
+Data in 1000:0300:
+DB B9h 78h 56h CFh
+EntryPoint: 1000:0100
+BreakPoint: 1000:010C
+Result:
+AX=8000h
+BX=0001h
+CX=5678h
+DX=1234h
+CS=1000h
+IP=010Ch
+
+[IN-unhandled-port-only-changes-AX]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h B9h BCh 9Ah BAh 57h 13h BEh 68h 24h BFh 9Ah 36h BDh 78h 56h E4h FFh E5h FEh
+BreakPoint: 1000:0119
+Result:
+AX=0000h
+BX=5678h
+CX=9ABCh
+DX=1357h
+SI=2468h
+DI=369Ah
+BP=5678h
 
 [JMP-indirect-word-ptr-BX]
 EntryPoint: 1000:0100
