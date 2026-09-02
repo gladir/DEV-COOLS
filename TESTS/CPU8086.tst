@@ -1351,6 +1351,17 @@ CX=1234h
 DX=0000h
 AX=1000h
 
+[RETN-pops-return-address-and-advances-SP-by-two-only]
+Data in 1000:0200:
+DB C3h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB E8h FDh 00h B9h 34h 12h 89h E2h
+BreakPoint: 1000:0108
+Result:
+CX=1234h
+DX=0000h
+
 [ROL-by-1]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1476,6 +1487,17 @@ Result:
 SI=1234h
 SS=2000h
 BP=0050h
+
+[SETALC-undocumented-sets-AL-from-carry-flags-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 01h 9Eh B0h 00h D6h 89h C3h 9Ch 5Eh 81h E6h 01h 00h B4h 00h 9Eh B0h FFh D6h 89h C2h 9Ch 58h 25h 01h 00h 89h C1h
+BreakPoint: 1000:011D
+Result:
+BX=01FFh
+SI=0001h
+DX=0000h
+CX=0000h
 
 [SHL-by-1]
 EntryPoint: 1000:0100
