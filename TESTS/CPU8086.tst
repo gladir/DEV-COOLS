@@ -1075,6 +1075,29 @@ Result:
 AX=1234h
 BX=5678h
 
+[POP-restores-values-in-LIFO-order-and-SP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 89h E6h 68h 11h 11h 68h 22h 22h 68h 33h 33h 58h 5Bh 59h 89h E7h
+BreakPoint: 1000:0110
+Result:
+SI=0000h
+DI=0000h
+AX=3333h
+BX=2222h
+CX=1111h
+
+[POPF-loads-flags-from-stack-affects-JZ]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 68h 40h 00h 9Dh B9h 00h 00h 74h 03h B9h 99h 99h BAh 11h 11h 68h 00h 00h 9Dh BBh 00h 00h 74h 03h BBh 99h 99h BEh 22h 22h
+BreakPoint: 1000:011E
+Result:
+CX=0000h
+DX=1111h
+BX=9999h
+SI=2222h
+
 [PUSH-fabricated-far-ptr-RETF]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1086,6 +1109,44 @@ Result:
 CX=1234h
 CS=1000h
 IP=0203h
+
+[PUSH-writes-to-correct-stack-address-and-decrements-SP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D0h 8Eh D8h BBh CDh ABh 53h A1h FEh FFh 89h E1h
+BreakPoint: 1000:0110
+Result:
+AX=ABCDh
+CX=FFFEh
+
+[PUSHF-writes-flags-to-correct-stack-address]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D0h 8Eh D8h B4h 91h 9Eh 9Ch A1h FEh FFh 25h FFh 00h 89h C1h 89h E2h
+BreakPoint: 1000:0115
+Result:
+CX=0091h
+DX=FFFEh
+
+[RCL-by-1-rotates-through-carry-chained]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h 0Dh 00h 00h D0h D0h 89h C3h D0h D0h 89h C2h 9Ch 58h 25h 01h 08h 89h C1h
+BreakPoint: 1000:0115
+Result:
+BX=0002h
+DX=0005h
+CX=0000h
+
+[RCR-by-1-rotates-through-carry-chained]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h 0Dh 00h 00h D0h D8h 89h C3h D0h D8h 89h C2h 9Ch 58h 25h 01h 08h 89h C1h
+BreakPoint: 1000:0115
+Result:
+BX=0040h
+DX=00A0h
+CX=0800h
 
 [REP-CMPSB-stops-early-on-mismatch]
 Data in 1000:0300:
@@ -1186,6 +1247,21 @@ CX=0000h
 DS=1000h
 ES=1000h
 
+[REPE-with-CX-zero-executes-nothing]
+Data in 1000:0300:
+DB 05h
+Data in 1000:0400:
+DB 05h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 00h 00h B8h 01h 00h 0Dh 00h 00h F3h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:011F
+Result:
+SI=0300h
+DI=0400h
+CX=0000h
+BX=0000h
+
 [REPNE-CMPSB-stops-early-on-first-match]
 Data in 1000:0300:
 DB 11h 22h 99h 44h
@@ -1239,6 +1315,41 @@ Result:
 CX=0001h
 DI=0506h
 BX=0040h
+
+[REPNE-with-CX-zero-executes-nothing]
+Data in 1000:0500:
+DB 99h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B9h 00h 00h B8h 00h 00h 0Dh 00h 00h B0h 99h F2h AEh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:011C
+Result:
+DI=0500h
+CX=0000h
+BX=0040h
+
+[RET-imm16-pops-and-cleans-up-caller-stack]
+Data in 1000:0200:
+DB C2h 04h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 68h 11h 11h 68h 22h 22h E8h F7h 00h B9h 34h 12h 89h E2h
+BreakPoint: 1000:010E
+Result:
+CX=1234h
+DX=0000h
+
+[RETF-imm16-pops-far-and-cleans-up-caller-stack]
+Data in 2000:0200:
+DB CAh 02h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 68h 11h 11h 9Ah 00h 02h 00h 20h B9h 34h 12h 89h E2h 8Ch C8h
+BreakPoint: 1000:010F
+Result:
+CX=1234h
+DX=0000h
+AX=1000h
 
 [ROL-by-1]
 EntryPoint: 1000:0100
