@@ -39417,6 +39417,12 @@ End;
 { propre a un noeud de solution (RelPath+ProjDir) puisqu ici on part deja   }
 { d un chemin complet. Reutilisee telle quelle par TermCmd_EDIT plus bas. }
 
+{ Definies bien plus bas (pres de TermLoadCmdHistory) - Forward necessaire  }
+{ ici car "EDIT HISTORY" (2026-09-02, demande explicite de l utilisateur)  }
+{ en a besoin dans TermCmd_EDIT. }
+Function TermCmdHistFile(Kind: TShellKind): String; Forward;
+Procedure TermSaveCmdHistory(Var TP: TTerminalPanel); Forward;
+
 Procedure TermOpenFileInEditor(FullPath: String);
 Var
  WIdx: Integer;
@@ -39458,6 +39464,22 @@ Begin
  CurrParam := TermExtractParam(ParamStr, 1);
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : EDIT fichier');
+  Exit;
+ End;
+ { "EDIT HISTORY" (2026-09-02, demande explicite de l utilisateur) : ouvre }
+ { le fichier d historique de commandes (rappel Haut/Bas) du shell         }
+ { COURANT au lieu de traiter "HISTORY" comme un nom de fichier relatif -  }
+ { voir TermCmdHistFile/TermSaveCmdHistory/TermLoadCmdHistory. Sauvegarde  }
+ { d abord TP.TermHistory (en memoire) vers ce fichier pour qu il reflete  }
+ { toujours l etat ACTUEL de cette session : ce fichier n est sinon reecrit}
+ { qu a la fermeture de l IDE (et meme jamais pour Norton Commander/OS2 &  }
+ { REXX aujourd hui), ce qui l aurait sinon laisse perime ou vide. }
+ If UpCaseStr(CurrParam) = 'HISTORY' Then Begin
+  TermSaveCmdHistory(TP);
+  GetDir(0, Dir);
+  FullPath := TermCombinePath(Dir, TermCmdHistFile(TP.Shell));
+  TermOpenFileInEditor(FullPath);
+  TermAddLine(TP, 'Historique des commandes ouvert dans l''editeur : ' + FullPath);
   Exit;
  End;
  If TP.VirtDrive >= 0 Then Begin
