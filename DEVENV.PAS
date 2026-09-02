@@ -1599,7 +1599,13 @@ Const
  EMU_ELTORITO_DL = $E0;
  { Tests unitaires CPU (2026-09-02, demande explicite de l utilisateur -    }
  { DEVENV /TESTUNIT,8086:fichier), voir TUnitTest8086/RunUnitTests8086. }
- MAX_UNITTEST_DATA  = 512;      { octets de donnees max par test }
+ MAX_UNITTEST_DATA  = 512;      { octets de donnees max PAR BLOC }
+ MAX_UNITTEST_DATABLOCKS = 8;   { blocs "Data in seg:ofs" max par test -    }
+                                 { plusieurs blocs necessaires des qu un     }
+                                 { test doit placer du code ET un gestionnaire}
+                                 { d interruption ET une entree IVT a des    }
+                                 { adresses distinctes (2026-09-02, ajoute   }
+                                 { en poursuivant l enquete division par 0). }
  MAX_UNITTESTS      = 500;      { nombre max de tests dans un seul fichier }
  MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
                                  { gel reel observe avec CMP reg,reg+Jcc,    }
@@ -3256,14 +3262,18 @@ Type
  {                 CS/DS/ES/SS/IP - seuls les champs presents sont verifies)}
  { Champ "HasXxx" = True si l attribut correspondant a ete precise dans le  }
  { fichier - permet de ne verifier QUE ce que le fichier demande. }
+ TUnitTestDataBlock = Record
+  Seg, Ofs: Word;
+  Bytes   : Array[0..MAX_UNITTEST_DATA - 1] Of Byte;
+  Len     : Integer;
+ End;
+
  TUnitTest8086 = Record
   Title       : String;
   HasEntry    : Boolean;
   EntryCS, EntryIP: Word;
-  HasData     : Boolean;
-  DataSeg, DataOfs: Word;
-  DataBytes   : Array[0..MAX_UNITTEST_DATA - 1] Of Byte;
-  DataLen     : Integer;
+  DataBlocks  : Array[0..MAX_UNITTEST_DATABLOCKS - 1] Of TUnitTestDataBlock;
+  DataBlockCount: Integer;
   HasBreak    : Boolean;
   BreakCS, BreakIP: Word;
   HasFlags, HasAX, HasBX, HasCX, HasDX, HasSI, HasDI, HasBP, HasSP,
@@ -112698,6 +112708,7 @@ Var
  Line, Trimmed, SectionTitle, Value: String;
  InResult: Boolean;
  CurTest: ^TUnitTest8086;
+ CurBlock: ^TUnitTestDataBlock;
  Seg, Ofs, V: Word;
 Begin
  LoadUnitTestFile8086 := False;
@@ -112706,6 +112717,7 @@ Begin
  {$I-} Reset(F); {$I+}
  If IOResult <> 0 Then Exit;
  CurTest := Nil;
+ CurBlock := Nil;
  InResult := False;
  While Not Eof(F) Do Begin
   ReadLn(F, Line);
@@ -112720,6 +112732,7 @@ Begin
     Inc(UnitTest8086Count);
    End Else
     CurTest := Nil;
+   CurBlock := Nil;
    InResult := False;
    Continue;
   End;
@@ -112728,20 +112741,28 @@ Begin
    InResult := True;
    Continue;
   End;
+  { Chaque ligne "Data in seg:ofs:" DEMARRE UN NOUVEAU bloc - un test peut  }
+  { en avoir plusieurs (code + gestionnaire d interruption + entree IVT,    }
+  { chacun a une adresse differente - voir 2026-09-02, enquete division 0). }
   If Copy(UpCaseStr(Trimmed), 1, 7) = 'DATA IN' Then Begin
    Value := TrimStr(Copy(Trimmed, 8, Length(Trimmed) - 7));
    If (Length(Value) > 0) And (Value[Length(Value)] = ':') Then
     Value := TrimStr(Copy(Value, 1, Length(Value) - 1));
-   If TestParseSegOfs(Value, Seg, Ofs) Then Begin
-    CurTest^.HasData := True;
-    CurTest^.DataSeg := Seg;
-    CurTest^.DataOfs := Ofs;
-   End;
+   If TestParseSegOfs(Value, Seg, Ofs) And
+      (CurTest^.DataBlockCount < MAX_UNITTEST_DATABLOCKS) Then Begin
+    CurBlock := @CurTest^.DataBlocks[CurTest^.DataBlockCount];
+    Inc(CurTest^.DataBlockCount);
+    CurBlock^.Seg := Seg;
+    CurBlock^.Ofs := Ofs;
+    CurBlock^.Len := 0;
+   End Else
+    CurBlock := Nil;
    Continue;
   End;
   If Copy(UpCaseStr(Trimmed), 1, 2) = 'DB' Then Begin
-   TestParseDBBytes(Copy(Trimmed, 3, Length(Trimmed) - 2),
-    CurTest^.DataBytes, CurTest^.DataLen);
+   If CurBlock <> Nil Then
+    TestParseDBBytes(Copy(Trimmed, 3, Length(Trimmed) - 2),
+     CurBlock^.Bytes, CurBlock^.Len);
    Continue;
   End;
   If TestKeyValue(Trimmed, 'ENTRYPOINT', Value) Then Begin
@@ -112805,7 +112826,7 @@ End;
 { (2026-09-02) qui a motive cette limite. }
 Procedure RunUnitTests8086(Const FileName: String);
 Var
- I, J: Integer;
+ I, J, K: Integer;
  T: ^TUnitTest8086;
  Steps: LongInt;
  HitBreak, Failed: Boolean;
@@ -112840,9 +112861,10 @@ Begin
    Continue;
   End;
   Emu_TestPanel.TotalSteps := 0;
-  If T^.HasData Then
-   For J := 0 To T^.DataLen - 1 Do
-    Emu_WriteByte(Emu_TestPanel.CPU, T^.DataSeg, Word(T^.DataOfs + J), T^.DataBytes[J]);
+  For K := 0 To T^.DataBlockCount - 1 Do
+   For J := 0 To T^.DataBlocks[K].Len - 1 Do
+    Emu_WriteByte(Emu_TestPanel.CPU, T^.DataBlocks[K].Seg,
+     Word(T^.DataBlocks[K].Ofs + J), T^.DataBlocks[K].Bytes[J]);
   If T^.HasEntry Then Begin
    Emu_TestPanel.CPU.Segs.CS := T^.EntryCS;
    Emu_TestPanel.CPU.IP := T^.EntryIP;
