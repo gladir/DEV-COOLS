@@ -662,3 +662,84 @@ BreakPoint: 1000:0118
 Result:
 DI=0002h
 AX=0001h
+
+[ADC-propagates-carry-from-previous-ADD]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh FFh BBh 01h 00h 01h D8h 11h D8h
+BreakPoint: 1000:010A
+Result:
+AX=0002h
+BX=0001h
+
+[JMP-indirect-word-ptr-BX]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 00h 02h FFh 27h
+Data in 1000:0200:
+DB 00h 03h
+Data in 1000:0300:
+DB B8h 34h 12h
+BreakPoint: 1000:0303
+Result:
+AX=1234h
+BX=0200h
+DS=1000h
+IP=0303h
+
+[LDS-loads-reg-and-DS-from-farptr]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB C5h 1Eh 00h 03h
+Data in 0000:0300:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:0104
+Result:
+BX=5678h
+DS=1234h
+
+[LEA-computes-base-index-disp-without-memory-read]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BEh 10h 00h BBh 20h 00h 8Dh 40h 05h
+BreakPoint: 1000:0109
+Result:
+AX=0035h
+BX=0020h
+SI=0010h
+
+[CALL-near-then-RET-resumes-correct-address]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB E8h 04h 00h B0h 34h EBh 03h B4h 12h C3h
+BreakPoint: 1000:010A
+Result:
+AX=1234h
+SP=0000h
+
+[CBW-sign-extends-AL-into-AX-both-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 7Fh 98h 89h C3h B0h 80h 98h
+BreakPoint: 1000:0108
+Result:
+AX=FF80h
+BX=007Fh
+
+[CLC-clears-carry-verified-via-JNC-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h F8h 73h 05h B8h ADh 0Bh EBh 03h B8h 34h 12h
+BreakPoint: 1000:010C
+Result:
+AX=1234h
+
+[CLD-clears-direction-verified-via-STOSB-increment]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 10h 00h B0h AAh FDh AAh FCh AAh
+BreakPoint: 1000:010E
+Result:
+DI=0010h
+ES=1000h
+
