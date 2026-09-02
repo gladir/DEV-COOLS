@@ -141,6 +141,16 @@ BreakPoint: 1000:010F
 Result:
 BX=5678h
 
+[MOV-EAX-moffs32-loads-doubleword]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 66h 67h A1h 00h 30h 00h 00h
+Data in 1000:3000:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:010C
+Result:
+AX=5678h
+
 [MOV-AX-FS-and-FS-AX-round-trip]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -181,6 +191,14 @@ BreakPoint: 1000:0112
 Result:
 AX=5678h
 
+[MOV-EAX-CR4-and-CR4-EAX-round-trip]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 78h 56h 34h 12h 0Fh 22h E0h 66h B8h 00h 00h 00h 00h 0Fh 20h E0h
+BreakPoint: 1000:0112
+Result:
+EAX=12345678h
+
 [MOV-EAX-DR0-and-DR0-EAX-round-trip]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -214,6 +232,21 @@ DB 78h 56h 34h 12h
 BreakPoint: 1000:0110
 Result:
 AX=5678h
+
+[MOV-EAX-through-EDI-32-bit-immediates-verify-full-registers]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 66h B8h 11h 11h 11h 11h 66h B9h 22h 22h 22h 22h 66h BAh 33h 33h 33h 33h 66h BBh 44h 44h 44h 44h 66h BCh 55h 55h 55h 55h 66h BDh 66h 66h 66h 66h 66h BEh 77h 77h 77h 77h 66h BFh 78h 56h 34h 12h
+BreakPoint: 1000:0130
+Result:
+EAX=11111111h
+ECX=22222222h
+EDX=33333333h
+EBX=44444444h
+ESP=55555555h
+EBP=66666666h
+ESI=77777777h
+EDI=12345678h
 
 [MOV-ECX-from-GS-override-with-32-bit-ESI-addressing]
 EntryPoint: 1000:0100

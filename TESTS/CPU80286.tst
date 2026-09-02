@@ -1188,6 +1188,17 @@ Result:
 BX=0042h
 CX=1234h
 
+[MOV-AL-moffs8-and-AX-moffs16-load-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h A0h 00h 03h B4h 00h A1h 02h 03h
+Data in 1000:0300:
+DB A5h 00h 34h 12h
+BreakPoint: 1000:010D
+Result:
+AX=1234h
+DS=1000h
+
 [MOV-r-m16-imm16-writes-memory-word]
 EntryPoint: 1000:0100
 Data in 1000:0100:

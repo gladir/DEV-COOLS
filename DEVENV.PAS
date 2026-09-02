@@ -3287,6 +3287,14 @@ Type
    HasCS, HasDS, HasES, HasSS, HasIP: Boolean;
   ExpFlags, ExpAX, ExpBX, ExpCX, ExpDX, ExpSI, ExpDI, ExpBP, ExpSP,
    ExpCS, ExpDS, ExpES, ExpSS, ExpIP: Word;
+  { Champs 32 bits (2026-09-02, demande explicite de l utilisateur -          }
+  { "etendre le format des tests pour verifier EAX..EDI") : verifient le      }
+  { registre 32 bits COMPLET (ex. EAX), pas seulement son alias 16 bits bas   }
+  { (AX) deja couvert ci-dessus - utile pour verifier qu un opcode 386        }
+  { (OperandSize32) n a pas laisse la moitie haute du registre a une valeur   }
+  { inattendue, ce que le champ 16 bits seul ne peut jamais detecter. }
+  HasEAX, HasEBX, HasECX, HasEDX, HasESI, HasEDI, HasEBP, HasESP: Boolean;
+  ExpEAX, ExpEBX, ExpECX, ExpEDX, ExpESI, ExpEDI, ExpEBP, ExpESP: LongInt;
  End;
 
  { Norton Commander (5e shell du panneau Terminal, DEVENV.PAS) - navigation
@@ -3951,6 +3959,14 @@ Type
   { page, et CR3 n est jamais consulte pour traduire une adresse. }
   CR2      : LongInt;
   CR3      : LongInt;
+  { CR4 (2026-09-02, demande explicite de l utilisateur) : meme registre      }
+  { minimal lisible/inscriptible que CR2/CR3 - aucune des fonctionnalites que }
+  { CR4 controle sur un vrai CPU (PAE, VME, extensions SIMD, etc.) n est      }
+  { modelisee ici, un CPU 386 n a d ailleurs pas de CR4 du tout (introduit    }
+  { avec le Pentium) - ajoute par coherence avec CR0-CR3 et pour que du code  }
+  { qui le sonde ("y'a-t-il CR4 ?") obtienne au moins un registre stable      }
+  { plutot qu un comportement indefini. }
+  CR4      : LongInt;
   { Registres de deboguage DR0-DR7 (2026-09-02, demande explicite) : simples  }
   { valeurs lisibles/inscriptibles - aucun point d arret materiel reel n est  }
   { arme (DR7 peut etre ecrit/relu mais son contenu n est jamais consulte     }
@@ -7322,6 +7338,17 @@ Var
  { 0=RAX 1=RCX 2=RDX 3=RBX 4=RSP 5=RBP 6=RSI 7=RDI 8=R8..15=R15 - cet     }
  { ordre (PAS alphabetique) est celui utilise par les champs ModRM/REX.  }
  ELF64_Reg       : Array[0..15] Of QWord;
+ { CR8 (2026-09-02, demande explicite de l utilisateur, "CR8 avec REX.R") :  }
+ { registre de priorite de tache (TPR) accessible via MOV r64,CR8/MOV       }
+ { CR8,r64 quand REX.R=1 ET que le champ reg du ModRM vaut 0 (seul CR       }
+ { accessible via l extension REX.R - CR9-CR15 n existent pas). Simple      }
+ { valeur lisible/inscriptible, meme philosophie que TaskReg/CR2-CR4 dans   }
+ { le coeur 8086/80286/80386 : aucun vrai APIC/xAPIC n est modelise dans    }
+ { l emulateur ELF64 (programme UTILISATEUR Linux, jamais de code noyau qui }
+ { toucherait reellement a l'APIC), donc CR8 ne controle rien de reel -     }
+ { ajoute pour completude/testabilite, pas parce qu un vrai binaire ELF64   }
+ { user-mode y toucherait jamais (instruction privilegiee sur un vrai CPU). }
+ ELF64_CR8       : QWord;
  ELF64_RIP       : QWord;
  ELF64_RFlags    : QWord;
  ELF64_FSBase    : QWord;       { base %fs (arch_prctl ARCH_SET_FS)      }
@@ -81643,6 +81670,7 @@ Begin
  C.LdtReg := 0;
  C.CR2 := 0;
  C.CR3 := 0;
+ C.CR4 := 0;
  For I := 0 To 7 Do Begin
   C.UnrealSegs[I].Active := False;
   C.UnrealSegs[I].SegVal := 0;
@@ -82362,6 +82390,7 @@ Begin
  ELF64_RIP := ELF64_EntryPoint;
  ELF64_RFlags := $202; { IF=1, bit reserve 1=1 (etat initial standard)    }
  ELF64_FSBase := 0;
+ ELF64_CR8 := 0;
  Emu_LoadELF64 := True;
 End;
 
@@ -83871,6 +83900,27 @@ Begin
    Case Op2 Of
     $1E: Elf64_FetchByte; { F3 0F 1E FA/FB = ENDBR64/ENDBR32, deja consomme }
     $1F: EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField); { NOP r/m multi-octets (remplissage d alignement) }
+    $20: Begin { MOV r64, CR8 - BOGUE REEL CORRIGE (2026-09-02, demande       }
+         { explicite de l utilisateur "Ajouter CR8 avec REX.R") : cet opcode  }
+         { n etait pas gere du tout avant (tombait dans l Else generique      }
+         { plus bas qui declenche sfInvalidCode). Sur un vrai CPU x86-64,     }
+         { ModRM.mod est TOUJOURS 11 (forme registre-a-registre) et le champ  }
+         { reg (deja etendu par REX.R via Elf64_DecodeModRM) selectionne QUEL }
+         { CRn - seul reg=8 (donc REX.R=1 avec ModRM.reg=000) designe CR8,    }
+         { le seul CR accessible via l extension REX.R (CR9-CR15 n existent   }
+         { pas) ; toute autre valeur de reg est laissee a 0 (aucun autre CRn  }
+         { modelise dans cet emulateur UTILISATEUR - un vrai programme        }
+         { ELF64 user-mode ne devrait de toute facon jamais executer cette    }
+         { instruction privilegiee, ajoutee ici uniquement pour completude/   }
+         { testabilite sur demande explicite). }
+         EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+         If RegField = 8 Then Elf64_SetReg(EA.RegIdx, 64, ELF64_CR8)
+                         Else Elf64_SetReg(EA.RegIdx, 64, 0);
+        End;
+    $22: Begin { MOV CR8, r64 - voir $20 ci-dessus pour le contexte complet. }
+         EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField);
+         If RegField = 8 Then ELF64_CR8 := Elf64_GetReg(EA.RegIdx, 64);
+        End;
     $18: EA := Elf64_DecodeModRM(RexR, RexX, RexB, RegField); { PREFETCHx : indice de cache sans effet architectural }
     $05: Elf64_DoSyscall; { SYSCALL }
     $B6: Begin { MOVZX r, r/m8 }
@@ -101398,20 +101448,24 @@ Begin
            { instruction MOV CRn est TOUJOURS registre-a-registre (mod force  }
            { a 11 par le processeur reel, ignore ici volontairement - seul le }
            { champ reg (quel CRn) et rm (quel registre 32 bits) comptent).    }
-           { CR2/CR3 - BOGUE REEL CORRIGE (2026-09-02, demande explicite de   }
-           { l utilisateur "MOV EAX,CR2 / MOV EAX,CR3") : desormais suivis    }
-           { comme de simples registres lisibles/inscriptibles (nouveaux      }
-           { champs TEmuCPU.CR2/CR3), MEME LIMITE que TaskReg/LdtReg : aucune }
-           { pagination reelle n est modelisee (pas de MMU dans ce fichier),  }
-           { donc CR2 n est jamais rempli par une vraie faute de page et CR3  }
-           { n est jamais consulte pour traduire une adresse - juste un       }
-           { registre qui retient ce qu on y ecrit. CR1/CR4+ (reg 1,4-7)      }
-           { restent a 0 (non definis sur un 80386, ou hors de portee). }
+           { CR2/CR3/CR4 - BOGUE REEL CORRIGE (2026-09-02, demande explicite }
+           { de l utilisateur "MOV EAX,CR2 / MOV EAX,CR3", puis "Ajouter      }
+           { CR4") : desormais suivis comme de simples registres lisibles/    }
+           { inscriptibles (nouveaux champs TEmuCPU.CR2/CR3/CR4), MEME LIMITE }
+           { que TaskReg/LdtReg : aucune pagination reelle n est modelisee    }
+           { (pas de MMU dans ce fichier), donc CR2 n est jamais rempli par   }
+           { une vraie faute de page, CR3 n est jamais consulte pour traduire }
+           { une adresse, et CR4 ne controle reellement rien (PAE/VME/etc.,   }
+           { et n existe meme pas sur un vrai 80386 - introduit avec le       }
+           { Pentium, ajoute ici par coherence) - juste un registre qui       }
+           { retient ce qu on y ecrit. CR1 (reg=1) reste a 0 (non defini sur  }
+           { aucun x86). }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Case (ModRM Shr 3) And 7 Of
             0: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR0);
             2: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR2);
             3: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR3);
+            4: Emu_SetReg32(P.CPU, ModRM And 7, P.CPU.CR4);
            Else
             Emu_SetReg32(P.CPU, ModRM And 7, 0);
            End;
@@ -101423,6 +101477,7 @@ Begin
             0: P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
             2: P.CPU.CR2 := Emu_GetReg32(P.CPU, ModRM And 7);
             3: P.CPU.CR3 := Emu_GetReg32(P.CPU, ModRM And 7);
+            4: P.CPU.CR4 := Emu_GetReg32(P.CPU, ModRM And 7);
            End;
            Inc(P.CPU.IP, 3);
           End;
@@ -113246,6 +113301,26 @@ Begin
  TestParseHexWord := True;
 End;
 
+{ Meme principe que TestParseHexWord ci-dessus mais pour un registre 32       }
+{ bits complet (2026-09-02, champs EAX..ESP de TUnitTest8086). }
+Function TestParseHexDWord(S: String; Var V: LongInt): Boolean;
+Var
+ T: String;
+ Code: Integer;
+ LV: LongInt;
+Begin
+ TestParseHexDWord := False;
+ T := TrimStr(S);
+ If T = '' Then Exit;
+ If UpCaseStr(Copy(T, Length(T), 1)) = 'H' Then T := Copy(T, 1, Length(T) - 1);
+ T := TrimStr(T);
+ If T = '' Then Exit;
+ Val('$' + T, LV, Code);
+ If Code <> 0 Then Exit;
+ V := LV;
+ TestParseHexDWord := True;
+End;
+
 { Convertit "SEG:OFS" (chaque moitie hexadecimale, "h" final optionnel). }
 Function TestParseSegOfs(S: String; Var Seg, Ofs: Word): Boolean;
 Var
@@ -113353,6 +113428,7 @@ Var
  CurTest: ^TUnitTest8086;
  CurBlock: ^TUnitTestDataBlock;
  Seg, Ofs, V: Word;
+ VD: LongInt;
 Begin
  LoadUnitTestFile8086 := False;
  UnitTest8086Count := 0;
@@ -113464,6 +113540,22 @@ Begin
    If TestParseHexWord(Value, V) Then Begin CurTest^.HasSS := True; CurTest^.ExpSS := V; End;
   End Else If TestKeyValue(Trimmed, 'IP', Value) Then Begin
    If TestParseHexWord(Value, V) Then Begin CurTest^.HasIP := True; CurTest^.ExpIP := V; End;
+  End Else If TestKeyValue(Trimmed, 'EAX', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasEAX := True; CurTest^.ExpEAX := VD; End;
+  End Else If TestKeyValue(Trimmed, 'EBX', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasEBX := True; CurTest^.ExpEBX := VD; End;
+  End Else If TestKeyValue(Trimmed, 'ECX', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasECX := True; CurTest^.ExpECX := VD; End;
+  End Else If TestKeyValue(Trimmed, 'EDX', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasEDX := True; CurTest^.ExpEDX := VD; End;
+  End Else If TestKeyValue(Trimmed, 'ESI', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasESI := True; CurTest^.ExpESI := VD; End;
+  End Else If TestKeyValue(Trimmed, 'EDI', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasEDI := True; CurTest^.ExpEDI := VD; End;
+  End Else If TestKeyValue(Trimmed, 'EBP', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasEBP := True; CurTest^.ExpEBP := VD; End;
+  End Else If TestKeyValue(Trimmed, 'ESP', Value) Then Begin
+   If TestParseHexDWord(Value, VD) Then Begin CurTest^.HasESP := True; CurTest^.ExpESP := VD; End;
   End;
  End;
  Close(F);
@@ -113493,6 +113585,17 @@ Var
    Failed := True;
    FailMsg := FailMsg + ' ' + Name + '(attendu ' + HexWord(Exp) +
     ', obtenu ' + HexWord(Actual) + ')';
+  End;
+ End;
+
+ { Meme principe que CheckReg ci-dessus mais pour un registre 32 bits         }
+ { complet (2026-09-02, champs EAX..ESP). }
+ Procedure CheckReg32(Has: Boolean; Exp, Actual: LongInt; Const Name: String);
+ Begin
+  If Has And (Exp <> Actual) Then Begin
+   Failed := True;
+   FailMsg := FailMsg + ' ' + Name + '(attendu ' + HexLong(Exp) +
+    ', obtenu ' + HexLong(Actual) + ')';
   End;
  End;
 
@@ -113559,6 +113662,14 @@ Begin
     CheckReg(T^.HasES, T^.ExpES, Emu_TestPanel.CPU.Segs.ES, 'ES');
     CheckReg(T^.HasSS, T^.ExpSS, Emu_TestPanel.CPU.Segs.SS, 'SS');
     CheckReg(T^.HasIP, T^.ExpIP, Emu_TestPanel.CPU.IP, 'IP');
+    CheckReg32(T^.HasEAX, T^.ExpEAX, Emu_TestPanel.CPU.Regs.EAX, 'EAX');
+    CheckReg32(T^.HasEBX, T^.ExpEBX, Emu_TestPanel.CPU.Regs.EBX, 'EBX');
+    CheckReg32(T^.HasECX, T^.ExpECX, Emu_TestPanel.CPU.Regs.ECX, 'ECX');
+    CheckReg32(T^.HasEDX, T^.ExpEDX, Emu_TestPanel.CPU.Regs.EDX, 'EDX');
+    CheckReg32(T^.HasESI, T^.ExpESI, Emu_TestPanel.CPU.Regs.ESI, 'ESI');
+    CheckReg32(T^.HasEDI, T^.ExpEDI, Emu_TestPanel.CPU.Regs.EDI, 'EDI');
+    CheckReg32(T^.HasEBP, T^.ExpEBP, Emu_TestPanel.CPU.Regs.EBP, 'EBP');
+    CheckReg32(T^.HasESP, T^.ExpESP, Emu_TestPanel.CPU.Regs.ESP, 'ESP');
    End;
   End Else If T^.HasBreak And Not HitBreak And (Emu_TestPanel.CPU.Fault = sfNone) Then Begin
    Failed := True;
