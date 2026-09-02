@@ -626,6 +626,15 @@ BX=0200h
 DS=1000h
 IP=0303h
 
+[JMP-near-relative-skips-over-instruction]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB E9h 03h 00h B8h ADh 0Bh B8h 34h 12h
+BreakPoint: 1000:0109
+Result:
+AX=1234h
+IP=0109h
+
 [JNA-alias-taken-when-values-are-equal]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -784,6 +793,14 @@ BreakPoint: 1000:0112
 Result:
 CX=0001h
 
+[LAHF-captures-known-zero-comparison-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h BBh 00h 00h 39h D8h 9Fh
+BreakPoint: 1000:0109
+Result:
+AX=4400h
+
 [LAHF-loads-flags-into-AH]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -804,6 +821,17 @@ Result:
 BX=5678h
 DS=1234h
 
+[LDS-loads-SI-and-DS-from-farptr]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C5h 36h 00h 03h
+Data in 1000:0300:
+DB 34h 12h 78h 56h
+BreakPoint: 1000:0109
+Result:
+SI=1234h
+DS=5678h
+
 [LEA-computes-base-index-disp-without-memory-read]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -813,6 +841,16 @@ Result:
 AX=0035h
 BX=0020h
 SI=0010h
+
+[LEA-computes-BP-SI-displacement]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BDh 10h 00h BEh 20h 00h 8Dh 42h 05h
+BreakPoint: 1000:0109
+Result:
+AX=0035h
+BP=0010h
+SI=0020h
 
 [LES-LDS-farptr-load-cdev-pattern]
 EntryPoint: 1000:0100
@@ -828,6 +866,77 @@ BX=5678h
 ES=1234h
 DX=99AAh
 DS=5678h
+
+[LES-loads-DI-and-ES-from-farptr]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C4h 3Eh 00h 03h
+Data in 1000:0300:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:0109
+Result:
+DI=5678h
+ES=1234h
+
+[LOCK-prefix-preserves-following-instruction-semantics]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F0h B8h 34h 12h BBh 78h 56h
+BreakPoint: 1000:0107
+Result:
+AX=1234h
+BX=5678h
+
+[LODSB-loads-DS-SI-and-increments-SI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 30h ACh
+Data in 1000:3000:
+DB A5h
+BreakPoint: 1000:0109
+Result:
+AX=10A5h
+SI=3001h
+DS=1000h
+
+[LODSW-loads-word-and-increments-SI-by-two]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 30h ADh
+Data in 1000:3000:
+DB 34h 12h
+BreakPoint: 1000:0109
+Result:
+AX=1234h
+SI=3002h
+DS=1000h
+
+[LOOP-decrements-CX-until-zero]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 03h 00h 90h E2h FDh B8h 34h 12h
+BreakPoint: 1000:0109
+Result:
+AX=1234h
+CX=0000h
+
+[LOOPE-repeats-while-CX-nonzero-and-ZF-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 03h 00h 31h C0h E1h FCh B8h 78h 56h
+BreakPoint: 1000:010A
+Result:
+AX=5678h
+CX=0000h
+
+[LOOPNE-stops-when-zero-flag-becomes-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 02h 00h B8h 01h 00h 3Dh 00h 00h E0h FEh B8h 34h 12h
+BreakPoint: 1000:010E
+Result:
+AX=1234h
+CX=0000h
 
 [MOV-direct-disp16-modRM00rm110]
 EntryPoint: 1000:0100
@@ -861,6 +970,48 @@ Result:
 AX=5678h
 CS=1000h
 IP=0107h
+
+[MOV-register-to-register-preserves-value]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h 89h D8h
+BreakPoint: 1000:0108
+Result:
+AX=5678h
+BX=5678h
+
+[MOVSB-copies-byte-and-advances-SI-DI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 30h BFh 00h 40h A4h A1h 00h 40h
+Data in 1000:3000:
+DB A5h
+BreakPoint: 1000:0111
+Result:
+AX=F6A5h
+SI=3001h
+DI=4001h
+
+[MOVSW-copies-word-and-advances-SI-DI-by-two]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 30h BFh 00h 40h A5h A1h 00h 40h
+Data in 1000:3000:
+DB 34h 12h
+BreakPoint: 1000:0111
+Result:
+AX=1234h
+SI=3002h
+DI=4002h
+
+[MUL-word-produces-DX-AX-product]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 04h 00h F7h E3h
+BreakPoint: 1000:0108
+Result:
+AX=000Ch
+DX=0000h
 
 [Offset-wraparound-FFFF-STOSW-spills-to-next-segment]
 EntryPoint: 1000:0100
