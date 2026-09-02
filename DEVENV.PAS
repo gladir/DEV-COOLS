@@ -9549,9 +9549,10 @@ Procedure ShowHelp;Begin
  WriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
  WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
  WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
- WriteLn('  /TESTUNIT,8086:fichier.tst  Execute un fichier de tests unitaires');
- WriteLn('                 CPU 8086 en mode console (voir DOC/TESTUNIT.txt),');
- WriteLn('                 affiche Succes/Echec pour chaque test, puis quitte.');
+ WriteLn('  /TESTUNIT,8086:fichier.tst   Execute un fichier de tests unitaires');
+ WriteLn('  /TESTUNIT,80286:fichier.tst CPU (8086 ou 80286) en mode console');
+ WriteLn('                 (voir DOC/TESTUNIT.txt), affiche Succes/Echec pour');
+ WriteLn('                 chaque test, puis quitte.');
  WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
   WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
   WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
@@ -9614,7 +9615,7 @@ End;
 { Definie bien plus bas (pres d Emu_StepOne/Emu_InitComputer, dont elle a    }
 { besoin) - Forward necessaire ici car ParseCommandLine (/TESTUNIT) l appelle}
 { bien plus haut dans le fichier. }
-Procedure RunUnitTests8086(Const FileName: String); Forward;
+Procedure RunUnitTests8086(Const FileName: String; Const ArchName: String); Forward;
 
 Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
 Var
@@ -9820,9 +9821,11 @@ Begin
    { l utilisateur) : execute un fichier de tests unitaires CPU en pure     }
    { console (WriteLn/Halt, comme -h/--help ci-dessus) puis quitte SANS      }
    { jamais lancer l IDE graphique - voir RunUnitTests8086/TUnitTest8086.    }
-   { Seule l architecture "8086" est geree pour l instant ; toute autre      }
-   { valeur est signalee honnetement plutot que silencieusement ignoree,    }
-   { pour ne jamais faire croire a tort qu un autre coeur est deja supporte. }
+   { "8086" et "80286" sont geres (le meme coeur Emu_StepOne gere les deux   }
+   { jeux d instructions - "80286" ajoute simplement ARPL/BOUND/ENTER reels  }
+   { la ou "8086" ne les rencontre normalement jamais) ; toute autre valeur  }
+   { est signalee honnetement plutot que silencieusement ignoree, pour      }
+   { ne jamais faire croire a tort qu un autre coeur est deja supporte. }
    EmuArg := Copy(Arg, 11, Length(Arg) - 10);
    K := Pos(':', EmuArg);
    If K = 0 Then
@@ -9833,10 +9836,10 @@ Begin
     FatalError('Syntaxe /TESTUNIT attendue : /TESTUNIT,8086:fichier.tst');
    If Not FileExists(EmuFn) Then
     FatalError('Fichier de tests introuvable: ' + EmuFn);
-   If EmuName <> '8086' Then
+   If (EmuName <> '8086') And (EmuName <> '80286') Then
     FatalError('Architecture de tests non prise en charge : ' + EmuName +
-     ' (seul "8086" est implante pour l instant).');
-   RunUnitTests8086(EmuFn);
+     ' (seuls "8086" et "80286" sont implantes pour l instant).');
+   RunUnitTests8086(EmuFn, EmuName);
    Halt(EXIT_OK);
   End
   Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
@@ -100805,12 +100808,27 @@ Begin
     End;
     Inc(P.CPU.IP, 2);
    End;
-  $C8: { ENTER imm16, imm8 (80186+) - forme simple level=0 }
+  $C8: { ENTER imm16, imm8 (80186+) - BOGUE REEL CORRIGE (2026-09-02,         }
+       { demande explicite de l utilisateur pour /TESTUNIT,80286:) : le       }
+       { niveau d imbrication (imm8) etait recupere mais jamais utilise       }
+       { (comportement "level=0" force en permanence, meme pour un imm8 non  }
+       { nul). Implemente maintenant le chainage complet des pointeurs de    }
+       { frame (display a la Wirth) pour level>0, conforme au veritable      }
+       { algorithme ENTER du 80186+ (niveau tronque a 5 bits/modulo 32       }
+       { comme le vrai materiel). }
    Begin
     Imm16 := Emu_FetchWord(P.CPU, 1);
-    Imm8  := Emu_FetchByte(P.CPU, 3);
+    Imm8  := Emu_FetchByte(P.CPU, 3) And 31;
     Emu_PushWord(P.CPU, P.CPU.Regs.BP);
-    P.CPU.Regs.BP := P.CPU.Regs.SP;
+    V16 := P.CPU.Regs.SP;
+    If Imm8 > 0 Then Begin
+     For ScanI := 1 To Imm8 - 1 Do Begin
+      P.CPU.Regs.BP := P.CPU.Regs.BP - 2;
+      Emu_PushWord(P.CPU, Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.BP));
+     End;
+     Emu_PushWord(P.CPU, V16);
+    End;
+    P.CPU.Regs.BP := V16;
     P.CPU.Regs.SP := P.CPU.Regs.SP - Imm16;
     Inc(P.CPU.IP, 4);
    End;
@@ -100820,16 +100838,45 @@ Begin
     P.CPU.Regs.BP := Emu_PopWord(P.CPU);
     Inc(P.CPU.IP);
    End;
-  $62: { BOUND r16, m16&16 (80186+) - en mode reel : verifie ou ignore }
+  $62: { BOUND r16, m16&16 (80186+) - BOGUE REEL CORRIGE (2026-09-02,         }
+       { demande explicite de l utilisateur pour /TESTUNIT,80286:) :          }
+       { ignorait auparavant totalement la verification (aucune exception    }
+       { jamais emise). Implemente maintenant la vraie comparaison SIGNEE    }
+       { contre les 2 mots memoire (borne inferieure puis borne superieure,  }
+       { consecutifs) et declenche INT 5 (#BR, exception de depassement de   }
+       { bornes) en cas de depassement - IP avance AVANT le declenchement de }
+       { l interruption, comme le veut la convention #BR reelle (instruction }
+       { fautive consideree terminee, pas reprise au retour). }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Inc(P.CPU.IP, 1 + Op.Len);  { ignore (no exception emitted) }
+    R16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+    V16 := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
+    S16 := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+    Inc(P.CPU.IP, 1 + Op.Len);
+    If (SmallInt(R16) < SmallInt(V16)) Or (SmallInt(R16) > SmallInt(S16)) Then
+     Emu_DoInt(P, 5);
    End;
-  $63: { ARPL r/m16, r16 (286 prot) ou MOVSXD (64-bit) - traite comme NOP }
+  $63: { ARPL r/m16, r16 (286 prot) ou MOVSXD (64-bit) - BOGUE REEL CORRIGE   }
+       { (2026-09-02, demande explicite de l utilisateur pour                }
+       { /TESTUNIT,80286:) : traite auparavant comme un pur NOP. Le vrai      }
+       { ARPL compare le champ RPL (bits 0-1) du selecteur destination a      }
+       { celui du registre source : si RPL(dest)<RPL(source), RPL(dest) est   }
+       { releve a RPL(source) et ZF:=1 ; sinon ZF:=0. Operation purement      }
+       { arithmetique sur 2 bits, valide et deterministe meme hors vrai mode }
+       { protege (ce fichier ne modelise pas de vrai mode protege - voir      }
+       { TEmuCPU.CR0, seul le bit PE est suivi). }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
+    V16 := Emu_GetOpWord(P.CPU, Op);
+    S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
+    If (V16 And 3) < (S16 And 3) Then Begin
+     V16 := (V16 And $FFFC) Or (S16 And 3);
+     Emu_PutOpWord(P.CPU, Op, V16);
+     Include(P.CPU.Flags.s, EFG_ZF);
+    End Else
+     Exclude(P.CPU.Flags.s, EFG_ZF);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $69: { IMUL r16, r/m16, imm16 (80186+) }
@@ -112880,7 +112927,7 @@ End;
 { ("boucle infinie possible") plutot qu un gel reel de ce processus         }
 { console - voir le gel reel trouve en investiguant CMP reg,reg+Jcc         }
 { (2026-09-02) qui a motive cette limite. }
-Procedure RunUnitTests8086(Const FileName: String);
+Procedure RunUnitTests8086(Const FileName: String; Const ArchName: String);
 Var
  I, J, K: Integer;
  T: ^TUnitTest8086;
@@ -112899,7 +112946,7 @@ Var
  End;
 
 Begin
- ConRawWriteLn('DEVENV /TESTUNIT,8086 : ' + FileName);
+ ConRawWriteLn('DEVENV /TESTUNIT,' + ArchName + ' : ' + FileName);
  If Not LoadUnitTestFile8086(FileName) Then Begin
   ConRawWriteLn('Erreur : impossible d''ouvrir ' + FileName);
   Exit;
