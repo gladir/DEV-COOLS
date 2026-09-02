@@ -861,4 +861,59 @@ AX=0000h
 DX=0100h
 BP=0801h
 
+[DIV-by-zero-triggers-fault]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 64h 00h B3h 00h F6h F3h
+ExpectedFault: DIVISION0
+Result:
+AX=0064h
+IP=0105h
+
+[ADD-signed-overflow-sets-OF-verified-via-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 7Fh BBh 01h 00h 01h D8h 70h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=8000h
+CX=0001h
+
+[ADC-signed-overflow-with-carry-in-sets-OF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h FFh 7Fh BBh 00h 00h 11h D8h 70h 05h BAh 00h 00h EBh 03h BAh 02h 00h
+BreakPoint: 1000:0113
+Result:
+AX=8000h
+DX=0002h
+
+[INC-signed-overflow-sets-OF-preserves-CF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h FFh 7Fh 40h 72h 05h BBh 00h 00h EBh 03h BBh 01h 00h 70h 05h B9h 00h 00h EBh 03h B9h 02h 00h
+BreakPoint: 1000:0119
+Result:
+AX=8000h
+BX=0001h
+CX=0002h
+
+[SUB-signed-overflow-sets-OF-verified-via-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 80h BBh 01h 00h 29h D8h 70h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=7FFFh
+CX=0001h
+
+[SBB-signed-overflow-with-borrow-in-sets-OF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h 00h 80h BBh 00h 00h 19h D8h 70h 05h BAh 00h 00h EBh 03h BAh 02h 00h
+BreakPoint: 1000:0113
+Result:
+AX=7FFFh
+DX=0002h
+
 
