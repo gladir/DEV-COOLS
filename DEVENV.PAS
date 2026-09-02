@@ -101452,8 +101452,17 @@ Begin
            { Toujours aucune vraie table LDT consultee pour la resolution     }
            { d adresses (TI=1 reste toujours invalide ailleurs, cf LAR/LSL) - }
            { LdtReg est juste un registre lisible/inscriptible, comme TaskReg.}
-           { VERR/VERW restent des no-op PURS : exigeraient une verification  }
-           { de type/privilege de descripteur hors de portee ici. }
+           { VERR/VERW - BOGUE REEL CORRIGE (2026-09-02, demande explicite de }
+           { l utilisateur, derniers membres de ce groupe encore a l etat de  }
+           { stub pur) : resolvent desormais un vrai descripteur GDT (memes   }
+           { conditions de validite que LAR/LSL/LTR/LLDT ci-dessus) puis      }
+           { verifient le VRAI type du descripteur : un segment de DONNEES    }
+           { (bit3 du champ type = 0) est TOUJOURS lisible (VERR), un segment }
+           { de CODE (bit3 = 1) ne l est que si son bit "readable" (bit1) est }
+           { pose, et n est JAMAIS inscriptible (VERW echoue toujours pour du }
+           { code) ; un descripteur SYSTEME (bit4 S = 0, ex. TSS/LDT/porte)   }
+           { echoue toujours pour les deux. Meme simplification deja etablie  }
+           { pour LAR/LSL/LTR/LLDT : aucune verification CPL/DPL. }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Emu_DecodeModRM0F(P.CPU, ModRM, Op);
            Case (ModRM Shr 3) And 7 Of
@@ -101481,6 +101490,34 @@ Begin
                   P.CPU.TaskReg := V16;
                   V8 := V8 Or $02;
                   Emu_WriteAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+                 End;
+                End;
+               End;
+            4: Begin { VERR }
+                V16 := Emu_GetOpWord(P.CPU, Op);
+                Exclude(P.CPU.Flags.s, EFG_ZF);
+                If ((V16 And 4) = 0) And ((V16 And $FFF8) <> 0) And
+                   ((LongInt(V16 And $FFF8) + 7) <= P.CPU.GdtLimit) Then Begin
+                 V8 := 0;
+                 Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+                 If (V8 And $80) <> 0 Then Begin { Present }
+                  If (V8 And $10) <> 0 Then Begin { S=1 : segment code/donnees }
+                   If (V8 And $08) = 0 Then Include(P.CPU.Flags.s, EFG_ZF)
+                   Else If (V8 And $02) <> 0 Then Include(P.CPU.Flags.s, EFG_ZF);
+                  End;
+                 End;
+                End;
+               End;
+            5: Begin { VERW - voir le commentaire de tete pour le contexte complet. }
+                V16 := Emu_GetOpWord(P.CPU, Op);
+                Exclude(P.CPU.Flags.s, EFG_ZF);
+                If ((V16 And 4) = 0) And ((V16 And $FFF8) <> 0) And
+                   ((LongInt(V16 And $FFF8) + 7) <= P.CPU.GdtLimit) Then Begin
+                 V8 := 0;
+                 Emu_ReadAbsBlock(P.CPU, P.CPU.GdtBase + LongInt(V16 And $FFF8) + 5, V8, 1);
+                 If (V8 And $80) <> 0 Then Begin
+                  If ((V8 And $10) <> 0) And ((V8 And $08) = 0) And ((V8 And $02) <> 0) Then
+                   Include(P.CPU.Flags.s, EFG_ZF);
                  End;
                 End;
                End;

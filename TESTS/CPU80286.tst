@@ -1869,6 +1869,221 @@ DX=00EEh
 SI=1234h
 DI=5678h
 
+[SHL-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h E0h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 40h 00h D0h E0h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0002h
+CX=0801h
+DX=0080h
+SI=0800h
+
+[SHR-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h E8h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 02h 00h D0h E8h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0040h
+CX=0801h
+DX=0001h
+SI=0000h
+
+[SLDT-and-LLDT-validate-against-GDT-and-accept-null-selector]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 0Fh 00h 00h 00h 07h 00h
+Data in 7000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 82h 00h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h B9h 08h 00h 0Fh 00h D1h 0Fh 00h C0h 89h C2h B9h 00h 00h 0Fh 00h D1h 0Fh 00h C0h
+BreakPoint: 1000:011E
+Result:
+DX=0008h
+AX=0000h
+
+[STC-sets-carry-verified-via-JC-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B9h 00h 00h 72h 03h B9h 99h 99h BAh 11h 11h
+BreakPoint: 1000:010C
+Result:
+CX=0000h
+DX=1111h
+
+[STD-sets-direction-verified-via-STOSB-decrement]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 10h 00h B0h AAh FDh AAh
+BreakPoint: 1000:010C
+Result:
+DI=000Fh
+
+[STOS-byte-with-segment-override-ignored-still-uses-ES-DI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h B8h 00h 20h 8Eh E0h BFh 00h 03h B0h 42h 64h AAh 26h 8Ah 1Eh 00h 03h 64h 8Ah 0Eh 00h 03h
+Data in 1000:0300:
+DB 00h
+Data in 2000:0300:
+DB 99h
+BreakPoint: 1000:011B
+Result:
+BX=0042h
+CX=0099h
+DI=0301h
+
+[STOSB-writes-byte-and-advances-DI-by-one]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 03h B0h 42h AAh B8h 00h 10h 8Eh D8h A0h 00h 03h B4h 00h 89h C1h
+BreakPoint: 1000:0117
+Result:
+DI=0301h
+CX=0042h
+
+[STOSW-INC-INC-LOOP-seg-reinit]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 02h B9h 04h 00h B8h AAh 55h ABh 47h 47h E2h FBh
+BreakPoint: 1000:0113
+Result:
+AX=55AAh
+CX=0000h
+DI=0210h
+ES=1000h
+
+[STOSW-writes-word-and-advances-DI-by-two]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BFh 00h 04h B8h 34h 12h ABh A1h 00h 04h 89h C1h
+BreakPoint: 1000:0113
+Result:
+DI=0402h
+CX=1234h
+
+[STR-reads-task-register-set-by-LTR-via-real-GDT]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 0Fh 00h 00h 00h 08h 00h
+Data in 8000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 89h 00h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h B9h 08h 00h 0Fh 00h D9h 0Fh 00h 0Eh 00h 04h 8Bh 1Eh 00h 04h
+BreakPoint: 1000:0119
+Result:
+BX=0008h
+
+[SUB-reg-reg-flags-full]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 29h D8h 89h C7h 9Ch 58h 25h D1h 08h 89h C5h B8h 03h 00h BBh 05h 00h 29h D8h 89h C6h 9Ch 58h 25h D1h 08h 89h C2h B8h 00h 80h BBh 01h 00h 29h D8h 89h C1h 9Ch 58h 25h D1h 08h 89h C3h
+BreakPoint: 1000:0133
+Result:
+DI=0002h
+BP=0000h
+SI=FFFEh
+DX=0091h
+CX=7FFFh
+BX=0810h
+
+[SUB-signed-overflow-sets-OF-verified-via-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 80h BBh 01h 00h 29h D8h 70h 05h B9h 00h 00h EBh 03h B9h 01h 00h
+BreakPoint: 1000:0112
+Result:
+AX=7FFFh
+CX=0001h
+
+[TEST-reg-mem-flags]
+Data in 1000:0400:
+DB 80h 00h
+Data in 1000:0402:
+DB 00h 80h
+Data in 1000:0404:
+DB 00h FFh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h B8h FFh 00h 85h 06h 00h 04h 9Ch 5Bh 81h E3h C1h 08h 89h C6h B8h 00h 80h 85h 06h 02h 04h 9Ch 59h 81h E1h C1h 08h B8h FFh 00h 85h 06h 04h 04h 9Ch 5Ah 81h E2h C1h 08h
+BreakPoint: 1000:012E
+Result:
+SI=00FFh
+BX=0000h
+CX=0080h
+DX=0040h
+
+[VERR-and-VERW-resolve-real-GDT-descriptor-readability-and-writability]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 1Fh 00h 00h 00h 09h 00h
+Data in 9000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 93h 00h 00h 00h 00h 00h 00h 00h 98h 00h 00h 00h 00h 00h 00h 00h 9Ah 00h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h B9h 08h 00h 0Fh 00h E1h 9Ch 5Eh 81h E6h 40h 00h 0Fh 00h E9h 9Ch 5Fh 81h E7h 40h 00h B9h 10h 00h 0Fh 00h E1h 9Ch 58h 25h 40h 00h 0Fh 00h E9h 9Ch 59h 81h E1h 40h 00h BBh 18h 00h 0Fh 00h E3h 9Ch 5Bh 81h E3h 40h 00h
+BreakPoint: 1000:013F
+Result:
+SI=0040h
+DI=0040h
+AX=0000h
+CX=0000h
+BX=0040h
+
+[WAIT-is-a-strict-nop-registers-and-flags-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh B8h 34h 12h BBh 78h 56h 9Bh 9Ch 5Eh 81h E6h D1h 08h
+BreakPoint: 1000:0110
+Result:
+AX=1234h
+BX=5678h
+SI=0091h
+
+[XCHG-AX-reg-short-form]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 33h 33h BAh 44h 44h 92h
+BreakPoint: 1000:0107
+Result:
+AX=4444h
+DX=3333h
+
+[XCHG-mem-reg-swaps-memory-and-register]
+Data in 1000:0300:
+DB 55h 55h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 00h 03h B9h 66h 66h 87h 0Fh A1h 00h 03h
+BreakPoint: 1000:0110
+Result:
+AX=6666h
+CX=5555h
+
+[XCHG-reg-reg-swaps-values-flags-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh BBh 11h 11h B9h 22h 22h 87h CBh 89h DEh 9Ch 58h 25h D1h 08h
+BreakPoint: 1000:0112
+Result:
+SI=2222h
+CX=1111h
+AX=0091h
+
+[XLAT-table-lookup-with-segment-override]
+Data in 1000:0300:
+DB 10h 20h 30h 40h
+Data in 2000:0100:
+DB 99h AAh BBh CCh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 00h 03h B0h 02h D7h B4h 00h 89h C6h B8h 00h 20h 8Eh C0h BBh 00h 01h B0h 01h 26h D7h B4h 00h 89h C7h
+BreakPoint: 1000:011F
+Result:
+SI=0030h
+DI=00AAh
+
 [Sanity-MOV-immediat]
 EntryPoint: 1000:0100
 Data in 1000:0100:
