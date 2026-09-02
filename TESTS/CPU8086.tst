@@ -240,3 +240,137 @@ SI=0000h
 DI=00FFh
 BP=000Fh
 DX=00FFh
+
+[AAA-ASCII-Adjust-Addition]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 0Fh 00h 37h 89h C3h 9Ch 58h 25h 11h 00h 89h C1h B4h 10h 9Eh B8h 03h 02h 37h 89h C2h 9Ch 58h 25h 11h 00h 89h C6h B4h 00h 9Eh B8h 03h 02h 37h 89h C7h 9Ch 58h 25h 11h 00h 89h C5h
+BreakPoint: 1000:012D
+Result:
+BX=0105h
+CX=0011h
+DX=0309h
+SI=0011h
+DI=0203h
+BP=0000h
+
+[AAS-ASCII-Adjust-Subtraction]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 0Fh 00h 3Fh 89h C3h 9Ch 58h 25h 11h 00h 89h C1h B4h 10h 9Eh B8h 03h 02h 3Fh 89h C2h 9Ch 58h 25h 11h 00h 89h C6h B4h 00h 9Eh B8h 03h 02h 3Fh 89h C7h 9Ch 58h 25h 11h 00h 89h C5h
+BreakPoint: 1000:012D
+Result:
+BX=FF09h
+CX=0011h
+DX=010Dh
+SI=0011h
+DI=0203h
+BP=0000h
+
+[AAM-ASCII-Adjust-Multiply]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 1Fh D4h 0Ah 89h C3h 9Ch 58h 25h C4h 00h 89h C1h B0h 64h D4h 0Ah 89h C2h 9Ch 58h 25h C4h 00h 89h C6h
+BreakPoint: 1000:011A
+Result:
+BX=0301h
+CX=0000h
+DX=0A00h
+SI=0044h
+
+[AAD-ASCII-Adjust-before-Division]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 01h 03h D5h 0Ah 89h C3h 9Ch 58h 25h C4h 00h 89h C1h B8h 00h 00h D5h 0Ah 89h C2h 9Ch 58h 25h C4h 00h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=001Fh
+CX=0000h
+DX=0000h
+SI=0044h
+
+[CMPSB-single-both-directions]
+Data in 1000:0300:
+DB 05h 03h
+Data in 1000:0400:
+DB 05h 05h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h A6h 9Ch 58h 25h D1h 08h 89h C3h 89h F1h 89h FAh A6h 9Ch 58h 25h D1h 08h 89h C5h
+BreakPoint: 1000:0121
+Result:
+BX=0040h
+CX=0301h
+DX=0401h
+BP=0091h
+SI=0302h
+DI=0402h
+
+[CMPSW-single-both-directions]
+Data in 1000:0500:
+DB 05h 00h 03h 00h
+Data in 1000:0600:
+DB 05h 00h 05h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h A7h 9Ch 58h 25h D1h 08h 89h C3h 89h F1h 89h FAh A7h 9Ch 58h 25h D1h 08h 89h C5h
+BreakPoint: 1000:0121
+Result:
+BX=0040h
+CX=0502h
+DX=0602h
+BP=0091h
+SI=0504h
+DI=0604h
+
+[REP-CMPSB-stops-early-on-mismatch]
+Data in 1000:0300:
+DB 11h 22h 99h 44h
+Data in 1000:0400:
+DB 11h 22h 33h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 04h 00h F3h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0303h
+DI=0403h
+BX=0000h
+
+[REP-CMPSW-stops-early-on-mismatch]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 99h 99h 44h 44h
+Data in 1000:0600:
+DB 11h 11h 22h 22h 33h 33h 44h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h B9h 04h 00h F3h A7h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0506h
+DI=0606h
+BX=0000h
+
+[DAA-Decimal-Adjust-Addition]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 08h 00h 04h 08h 27h 89h C3h 9Ch 58h 25h D1h 08h 89h C1h B8h 90h 00h 04h 90h 27h 89h C2h 9Ch 58h 25h D1h 08h 89h C6h
+BreakPoint: 1000:011E
+Result:
+BX=0016h
+CX=0010h
+DX=0080h
+SI=0881h
+
+[DAS-Decimal-Adjust-Subtraction]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 16h 00h 2Ch 08h 2Fh 89h C3h 9Ch 58h 25h D1h 08h 89h C1h B8h 20h 00h 2Ch 30h 2Fh 89h C2h 9Ch 58h 25h D1h 08h 89h C6h
+BreakPoint: 1000:011E
+Result:
+BX=0008h
+CX=0010h
+DX=0090h
+SI=0081h
