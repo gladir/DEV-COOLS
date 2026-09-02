@@ -128,6 +128,17 @@ ES=1234h
 DX=99AAh
 DS=5678h
 
+[INC-DEC-AuxiliaryFlag-regression]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 0Fh FEh C0h 9Fh 80h E4h 10h 89h C3h B0h 01h FEh C0h 9Fh 80h E4h 10h 89h C1h B0h 10h FEh C8h 9Fh 80h E4h 10h 89h C2h B0h 02h FEh C8h 9Fh 80h E4h 10h
+BreakPoint: 1000:0126
+Result:
+BX=1010h
+CX=0002h
+DX=100Fh
+AX=0001h
+
 [Offset-wraparound-FFFF-STOSW-spills-to-next-segment]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -137,3 +148,21 @@ Result:
 DI=0001h
 AX=F6ABh
 ES=2000h
+
+[SegOverride-leak-across-indirect-JMP-regression]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 20h 8Eh D0h BDh 50h 00h 2Eh FFh 26h 30h 01h
+Data in 1000:0130:
+DB 40h 01h
+Data in 1000:0050:
+DB CDh AAh
+Data in 2000:0050:
+DB 34h 12h
+Data in 1000:0140:
+DB 8Bh 76h 00h
+BreakPoint: 1000:0143
+Result:
+SI=1234h
+SS=2000h
+BP=0050h
