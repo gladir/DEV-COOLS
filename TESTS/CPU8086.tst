@@ -620,3 +620,45 @@ Result:
 CX=0001h
 DI=0506h
 BX=0040h
+
+[XLAT-table-lookup-with-segment-override]
+Data in 1000:0300:
+DB 10h 20h 30h 40h
+Data in 2000:0100:
+DB 99h AAh BBh CCh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 00h 03h B0h 02h D7h B4h 00h 89h C6h B8h 00h 20h 8Eh C0h BBh 00h 01h B0h 01h 26h D7h B4h 00h 89h C7h
+BreakPoint: 1000:011F
+Result:
+SI=0030h
+DI=00AAh
+
+[DIV-unsigned-byte-and-word]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 64h 00h B3h 0Ah F6h F3h 89h C3h BAh 00h 00h B8h E8h 03h B9h 07h 00h F7h F1h 89h D1h
+BreakPoint: 1000:0116
+Result:
+BX=000Ah
+CX=0006h
+AX=008Eh
+
+[IDIV-signed-byte-and-word-negative]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 9Ch FFh B3h 0Ah F6h FBh 89h C3h BAh FFh FFh B8h 18h FCh B9h 07h 00h F7h F9h 89h D1h
+BreakPoint: 1000:0116
+Result:
+BX=00F6h
+CX=FFFAh
+AX=FF72h
+
+[SBB-incorporates-carry-borrow]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h 0Dh 00h 00h BBh 03h 00h 19h D8h 89h C7h B4h 01h 9Eh B8h 05h 00h BBh 03h 00h 19h D8h
+BreakPoint: 1000:0118
+Result:
+DI=0002h
+AX=0001h
