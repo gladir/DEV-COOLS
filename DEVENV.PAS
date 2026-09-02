@@ -3866,6 +3866,12 @@ Type
   Base  : LongInt;
  End;
 
+ { Tampon partage pour la lecture des tables LOADALL (2026-09-02, voir         }
+ { Emu_LoadAll286/Emu_LoadAll386) - une seule taille declaree une fois pour    }
+ { que les fonctions d extraction de champ (Emu_LA_Word/Emu_LA_DWord) soient   }
+ { utilisables par les deux, meme si chacune n en remplit qu un prefixe. }
+ TLoadAllBuf = Array[0..255] Of Byte;
+
  TEmuCPU = Record
   Memory       : PEmuMemBuf;          { 1 Mo de memoire RAM emulee  }
   MemReady     : Boolean;             { buffer alloue ?             }
@@ -3923,9 +3929,23 @@ Type
                          { "unreal mode" exploite pour charger un descripteur. }
   GdtBase  : LongInt;    { charges par LGDT (0F 01 /2) }
   GdtLimit : Word;
-  UnrealSegs: Array[0..3] Of TEmuUnrealSeg;  { cache valeur -> base 32 bits,  }
+  { IDTR (2026-09-02, LOADALL) : purement informatif - aucune table d          }
+  { interruptions n est jamais consultee dans ce fichier (voir ailleurs :      }
+  { "IDT jamais consultee par ce cas reel"), donc ces 2 champs n ont aucun     }
+  { lecteur ; ils existent uniquement pour que LOADALL puisse memoriser        }
+  { fidelement TOUT ce qu il charge, meme la partie sans effet observable. }
+  IdtBase  : LongInt;
+  IdtLimit : Word;
+  UnrealSegs: Array[0..7] Of TEmuUnrealSeg;  { cache valeur -> base 32 bits,  }
                                               { rempli par un MOV Sreg,r/m16   }
-                                              { execute pendant que CR0.PE=1 }
+                                              { execute pendant que CR0.PE=1,  }
+                                              { ou par LOADALL (2026-09-02) -  }
+                                              { elargi de 4 a 8 emplacements   }
+                                              { pour que LOADALL 386 (jusqu a  }
+                                              { 6 segments CS/DS/ES/SS/FS/GS   }
+                                              { charges d un seul coup) ne se  }
+                                              { chasse pas lui-meme hors de la }
+                                              { table. }
  End;
 
  { Operande decode a partir d un octet ModR/M }
@@ -81036,12 +81056,32 @@ Var I: Integer;
 Begin
  Found := False;
  Emu_UnrealBase := 0;
- For I := 0 To 3 Do
+ For I := 0 To 7 Do
   If C.UnrealSegs[I].Active And (C.UnrealSegs[I].SegVal = Seg) Then Begin
    Found := True;
    Emu_UnrealBase := C.UnrealSegs[I].Base;
    Exit;
   End;
+End;
+
+{ --- Enregistrer/rafraichir la base "unreal mode" cachee pour une VALEUR de  }
+{ registre de segment donnee - logique extraite de Emu_LoadSregUnreal        }
+{ (2026-09-02) pour etre partagee avec LOADALL (0F 05/0F 07), qui charge      }
+{ jusqu a 6 bases de segment (CS/DS/ES/SS/FS/GS) d un seul coup depuis sa     }
+{ table plutot que via un vrai MOV Sreg,r/m16 execute sous PE=1. }
+Procedure Emu_SetUnrealBase(Var C: TEmuCPU; SegVal: Word; Base: LongInt);
+Var Slot, I: Integer;
+Begin
+ Slot := -1;
+ For I := 0 To 7 Do
+  If C.UnrealSegs[I].Active And (C.UnrealSegs[I].SegVal = SegVal) Then Slot := I;
+ If Slot = -1 Then
+  For I := 0 To 7 Do
+   If Not C.UnrealSegs[I].Active Then Begin Slot := I; Break; End;
+ If Slot = -1 Then Slot := 0;
+ C.UnrealSegs[Slot].Active := True;
+ C.UnrealSegs[Slot].SegVal := SegVal;
+ C.UnrealSegs[Slot].Base := Base;
 End;
 
 Function Emu_Addr(Var C: TEmuCPU; Seg, Ofs: Word): LongInt;
@@ -81569,7 +81609,9 @@ Begin
  C.CR0 := 0;
  C.GdtBase := 0;
  C.GdtLimit := 0;
- For I := 0 To 3 Do Begin
+ C.IdtBase := 0;
+ C.IdtLimit := 0;
+ For I := 0 To 7 Do Begin
   C.UnrealSegs[I].Active := False;
   C.UnrealSegs[I].SegVal := 0;
   C.UnrealSegs[I].Base := 0;
@@ -85427,7 +85469,6 @@ Var
  Idx: Word;
  B0, B1, B2, B3, B4, B7: Byte;
  Base: LongInt;
- Slot, I: Integer;
 Begin
  If (C.CR0 And 1) = 0 Then Exit;   { PE=0 : chargement de segment classique }
  Idx := SegVal And $FFF8;         { masque RPL (bits 0-1) et TI (bit 2) }
@@ -85444,19 +85485,131 @@ Begin
  B7 := 0; Emu_ReadAbsBlock(C, C.GdtBase + Idx + 7, B7, 1);
  Base := LongInt(B2) Or (LongInt(B3) Shl 8) Or (LongInt(B4) Shl 16) Or
   (LongInt(B7) Shl 24);
- { Chercher un emplacement existant pour cette valeur, sinon le plus ancien   }
- { (rotation simple - 4 emplacements suffisent largement en pratique, voir    }
- { TEmuUnrealSeg). }
- Slot := -1;
- For I := 0 To 3 Do
-  If C.UnrealSegs[I].Active And (C.UnrealSegs[I].SegVal = SegVal) Then Slot := I;
- If Slot = -1 Then
-  For I := 0 To 3 Do
-   If Not C.UnrealSegs[I].Active Then Begin Slot := I; Break; End;
- If Slot = -1 Then Slot := 0;
- C.UnrealSegs[Slot].Active := True;
- C.UnrealSegs[Slot].SegVal := SegVal;
- C.UnrealSegs[Slot].Base := Base;
+ Emu_SetUnrealBase(C, SegVal, Base);
+End;
+
+Function Emu_LA_Word(Var Buf: TLoadAllBuf; Ofs: Integer): Word;
+Begin
+ Emu_LA_Word := Word(Buf[Ofs]) Or (Word(Buf[Ofs + 1]) Shl 8);
+End;
+
+Function Emu_LA_DWord(Var Buf: TLoadAllBuf; Ofs: Integer): LongInt;
+Begin
+ Emu_LA_DWord := LongInt(Buf[Ofs]) Or (LongInt(Buf[Ofs + 1]) Shl 8) Or
+  (LongInt(Buf[Ofs + 2]) Shl 16) Or (LongInt(Buf[Ofs + 3]) Shl 24);
+End;
+
+{ --- LOADALL 80286 (opcode non documente 0F 05) - demande explicite de       }
+{ l utilisateur (2026-09-02) malgre l avertissement pose au prealable :       }
+{ Intel n a JAMAIS documente cet opcode et aucune source verifiable ne peut   }
+{ etre consultee hors-ligne ici pour garantir une correspondance octet-pres   }
+{ avec un vrai silicium 80286 (plusieurs variantes circulent dans la          }
+{ litterature retro-informatique, parfois en desaccord entre elles sur le     }
+{ detail des caches de descripteurs). LA DISPOSITION CI-DESSOUS EST DONC UNE  }
+{ CONVENTION PROPRE A CE FICHIER (102 octets, adresse PHYSIQUE FIXE 0800h -   }
+{ ceci, en revanche, est bien le comportement reel connu : LOADALL ignore     }
+{ totalement les registres de segment courants) - coherente avec elle-meme   }
+{ et testee contre elle-meme (voir TESTS/CPU80286.tst), PAS une reconstitution}
+{ garantie fidele a un vrai 80286 - ne pas s y fier pour rejouer un vrai      }
+{ logiciel DOS historique qui exploiterait LOADALL. Chaque champ de la table  }
+{ est neanmoins reellement LU (rien n est saute par accident) ; TR/LDT et les }
+{ octets limite/droits des caches de descripteurs sont lus puis delibarement  }
+{ SANS EFFET, faute de tout modele de tache/LDT/limite de segment ailleurs    }
+{ dans ce fichier (meme limite deja documentee pour LAR/LLDT). Seule la BASE  }
+{ de chaque descripteur CS/DS/ES/SS est memorisee, via le meme cache          }
+{ "unreal mode" (Emu_SetUnrealBase) que LGDT+MOV Sreg sous PE=1 utilisent     }
+{ deja - c est la seule partie de LOADALL qui a un effet observable reel sur  }
+{ l adressage memoire de cet emulateur. }
+Procedure Emu_LoadAll286(Var C: TEmuCPU);
+Var
+ Buf: TLoadAllBuf;
+ SelDS, SelSS, SelCS, SelES: Word;
+Begin
+ FillChar(Buf, SizeOf(Buf), 0);
+ Emu_ReadAbsBlock(C, $800, Buf, $66);
+ C.CR0 := (C.CR0 And Not 1) Or (Emu_LA_Word(Buf, $02) And 1);      { MSW->PE }
+ { $1C: TR (selecteur) - lu, sans effet (aucune tache modelisee). }
+ C.Flags.Base := Emu_LA_Word(Buf, $1E);
+ SelDS := Emu_LA_Word(Buf, $24);
+ SelSS := Emu_LA_Word(Buf, $26);
+ SelCS := Emu_LA_Word(Buf, $28);
+ SelES := Emu_LA_Word(Buf, $2A);
+ C.Regs.DI := Emu_LA_Word(Buf, $2C);
+ C.Regs.SI := Emu_LA_Word(Buf, $2E);
+ C.Regs.BP := Emu_LA_Word(Buf, $30);
+ C.Regs.SP := Emu_LA_Word(Buf, $32);
+ C.Regs.BX := Emu_LA_Word(Buf, $34);
+ C.Regs.DX := Emu_LA_Word(Buf, $36);
+ C.Regs.CX := Emu_LA_Word(Buf, $38);
+ C.Regs.AX := Emu_LA_Word(Buf, $3A);
+ { Caches de descripteur (6 octets : base24 + droits8 + limite16) - seule la  }
+ { base (les 3 premiers octets) a un effet observable ici, voir ci-dessus. }
+ C.Segs.ES := SelES; Emu_SetUnrealBase(C, SelES, Emu_LA_DWord(Buf, $3C) And $FFFFFF);
+ C.Segs.CS := SelCS; Emu_SetUnrealBase(C, SelCS, Emu_LA_DWord(Buf, $42) And $FFFFFF);
+ C.Segs.SS := SelSS; Emu_SetUnrealBase(C, SelSS, Emu_LA_DWord(Buf, $48) And $FFFFFF);
+ C.Segs.DS := SelDS; Emu_SetUnrealBase(C, SelDS, Emu_LA_DWord(Buf, $4E) And $FFFFFF);
+ C.GdtBase := Emu_LA_DWord(Buf, $54) And $FFFFFF;
+ C.GdtLimit := Emu_LA_Word(Buf, $58);
+ C.IdtBase := Emu_LA_DWord(Buf, $5A) And $FFFFFF;
+ C.IdtLimit := Emu_LA_Word(Buf, $5E);
+ { $60: cache de descripteur LDT (6 octets) - lu, sans effet (aucun LDT       }
+ { modelise, meme limite deja documentee pour LAR). }
+ C.IP := Emu_LA_Word(Buf, $20);   { charge en dernier : change le flot }
+End;
+
+{ --- LOADALL 80386 (opcode non documente 0F 07) - meme demande explicite et  }
+{ meme avertissement que Emu_LoadAll286 ci-dessus (instruction non documentee }
+{ par Intel, disposition propre a ce fichier non garantie fidele a un vrai    }
+{ 80386). Difference reelle et bien connue avec la forme 80286 : la table (ici}
+{ 164 octets, disposition propre a ce fichier) n est PAS lue depuis une       }
+{ adresse physique fixe mais depuis ES:EDI (un pointeur normal, calcule via   }
+{ Emu_AddrL comme tout autre acces memoire "adresse 32 bits") ; elle couvre   }
+{ 6 registres de segment (CS/DS/ES/SS/FS/GS, pas seulement 4) et des          }
+{ registres 32 bits. TR/LDTR/DR6/DR7 et les octets limite/droits des caches   }
+{ de descripteurs sont lus puis SANS EFFET, meme raison que ci-dessus. Seules }
+{ les bases de descripteur (6, une par segment) sont memorisees via           }
+{ Emu_SetUnrealBase - UnrealSegs a ete elargi a 8 emplacements (2026-09-02)   }
+{ specifiquement pour que ces 6 chargements simultanes ne s evincent pas      }
+{ entre eux. }
+Procedure Emu_LoadAll386(Var C: TEmuCPU);
+Var
+ Buf: TLoadAllBuf;
+ Addr: LongInt;
+ SelCS, SelSS, SelDS, SelES, SelFS, SelGS: Word;
+Begin
+ FillChar(Buf, SizeOf(Buf), 0);
+ Addr := Emu_AddrL(C, C.Segs.ES, LongInt(C.Regs.EDI));
+ Emu_ReadAbsBlock(C, Addr, Buf, $A4);
+ C.CR0 := (C.CR0 And Not 1) Or (Emu_LA_DWord(Buf, $00) And 1);     { CR0->PE }
+ C.Flags.Base := Word(Emu_LA_DWord(Buf, $04));                     { EFLAGS }
+ C.Regs.EDI := Emu_LA_DWord(Buf, $0C);
+ C.Regs.ESI := Emu_LA_DWord(Buf, $10);
+ C.Regs.EBP := Emu_LA_DWord(Buf, $14);
+ C.Regs.ESP := Emu_LA_DWord(Buf, $18);
+ C.Regs.EBX := Emu_LA_DWord(Buf, $1C);
+ C.Regs.EDX := Emu_LA_DWord(Buf, $20);
+ C.Regs.ECX := Emu_LA_DWord(Buf, $24);
+ C.Regs.EAX := Emu_LA_DWord(Buf, $28);
+ { $2C: DR6, $30: DR7 - lus, sans effet (aucun registre de deboguage modelise)}
+ { $34: TR, $38: LDTR (selecteurs) - lus, sans effet (aucune tache/LDT).      }
+ SelGS := Word(Emu_LA_DWord(Buf, $3C));
+ SelFS := Word(Emu_LA_DWord(Buf, $40));
+ SelDS := Word(Emu_LA_DWord(Buf, $44));
+ SelSS := Word(Emu_LA_DWord(Buf, $48));
+ SelCS := Word(Emu_LA_DWord(Buf, $4C));
+ SelES := Word(Emu_LA_DWord(Buf, $50));
+ { $54: cache TR (8), $5C: cache LDTR (8) - lus, sans effet. }
+ C.GdtBase := Emu_LA_DWord(Buf, $64);
+ C.GdtLimit := Word(Emu_LA_DWord(Buf, $68));
+ C.IdtBase := Emu_LA_DWord(Buf, $6C);
+ C.IdtLimit := Word(Emu_LA_DWord(Buf, $70));
+ C.GS := SelGS; Emu_SetUnrealBase(C, SelGS, Emu_LA_DWord(Buf, $74));
+ C.FS := SelFS; Emu_SetUnrealBase(C, SelFS, Emu_LA_DWord(Buf, $7C));
+ C.Segs.DS := SelDS; Emu_SetUnrealBase(C, SelDS, Emu_LA_DWord(Buf, $84));
+ C.Segs.SS := SelSS; Emu_SetUnrealBase(C, SelSS, Emu_LA_DWord(Buf, $8C));
+ C.Segs.CS := SelCS; Emu_SetUnrealBase(C, SelCS, Emu_LA_DWord(Buf, $94));
+ C.Segs.ES := SelES; Emu_SetUnrealBase(C, SelES, Emu_LA_DWord(Buf, $9C));
+ C.IP := Word(Emu_LA_DWord(Buf, $08));  { charge en dernier : change le flot }
 End;
 
 { Segment de donnees a utiliser pour les operations string (DS sauf override) }
@@ -101225,9 +101378,24 @@ Begin
      { code reel trace cette session (contrairement a $B6/$B7) - ajoutes ici  }
      { par exhaustivite et pour eviter le meme risque de desynchronisation    }
      { d'instructions pour ceux munis d'un ModRM. }
+     $05: Begin { LOADALL 80286 (non documente) - voir Emu_LoadAll286 pour   }
+           { le detail complet et l avertissement sur la fidelite de la      }
+           { table (instruction jamais documentee par Intel). Aucun ModRM :  }
+           { l operande est la table FIXE a l adresse physique 0800h, pas    }
+           { des octets suivant l opcode. }
+           Inc(P.CPU.IP, 2);
+           Emu_LoadAll286(P.CPU);
+          End;
      $06: Begin { CLTS : efface le bit TS (bit 3) de CR0 }
            P.CPU.CR0 := P.CPU.CR0 And Not 8;
            Inc(P.CPU.IP, 2);
+          End;
+     $07: Begin { LOADALL 80386 (non documente) - voir Emu_LoadAll386 ; table }
+           { lue depuis ES:EDI (pas une adresse fixe, contrairement a la      }
+           { forme 80286 ci-dessus - difference reelle et bien connue entre   }
+           { les deux formes, voir le commentaire de Emu_LoadAll386). }
+           Inc(P.CPU.IP, 2);
+           Emu_LoadAll386(P.CPU);
           End;
      $08, $09: Inc(P.CPU.IP, 2); { INVD/WBINVD : aucun cache modelise, no-op }
      $0B: Begin { UD2 : opcode INVALIDE PAR CONCEPTION - contrairement aux   }

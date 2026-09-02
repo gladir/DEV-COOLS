@@ -876,6 +876,121 @@ BX=1234h
 CX=0000h
 AX=0000h
 
+[LDS-loads-reg-and-DS-from-farptr]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB C5h 1Eh 00h 03h
+Data in 0000:0300:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:0104
+Result:
+BX=5678h
+DS=1234h
+
+[LDS-loads-SI-and-DS-from-farptr]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C5h 36h 00h 03h
+Data in 1000:0300:
+DB 34h 12h 78h 56h
+BreakPoint: 1000:0109
+Result:
+SI=1234h
+DS=5678h
+
+[LEA-computes-base-index-disp-without-memory-read]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BEh 10h 00h BBh 20h 00h 8Dh 40h 05h
+BreakPoint: 1000:0109
+Result:
+AX=0035h
+BX=0020h
+SI=0010h
+
+[LEA-computes-BP-SI-displacement]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BDh 10h 00h BEh 20h 00h 8Dh 42h 05h
+BreakPoint: 1000:0109
+Result:
+AX=0035h
+BP=0010h
+SI=0020h
+
+[LEAVE-restores-SP-from-BP-and-pops-saved-BP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BDh 00h 03h C9h
+Data in 0000:0300:
+DB CDh ABh
+BreakPoint: 1000:0104
+Result:
+SP=0302h
+BP=ABCDh
+
+[LES-LDS-farptr-load-cdev-pattern]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C4h 1Eh 00h 03h C5h 16h 08h 03h
+Data in 1000:0300:
+DB 78h 56h 34h 12h
+Data in 1000:0308:
+DB AAh 99h 78h 56h
+BreakPoint: 1000:010D
+Result:
+BX=5678h
+ES=1234h
+DX=99AAh
+DS=5678h
+
+[LES-loads-DI-and-ES-from-farptr]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C4h 3Eh 00h 03h
+Data in 1000:0300:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:0109
+Result:
+DI=5678h
+ES=1234h
+
+[LGDT-loads-GdtBase-and-GdtLimit-verified-via-LAR-boundary]
+Data in 1000:0300:
+DB 0Fh 00h 00h 00h 04h 00h
+Data in 4000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 9Ah 00h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h BBh 34h 12h B9h 08h 00h 0Fh 02h D9h 9Ch 5Eh 81h E6h 40h 00h B9h 10h 00h 0Fh 02h D9h 9Ch 5Fh 81h E7h 40h 00h
+BreakPoint: 1000:0125
+Result:
+BX=9A00h
+SI=0040h
+DI=0000h
+
+[LIDT-consumes-memory-operand-with-displacement-as-real-mode-no-op]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 34h 12h 0Fh 01h 1Eh 00h 04h B9h 56h 78h
+Data in 1000:0400:
+DB 00h 00h 00h 00h 00h 00h
+BreakPoint: 1000:0110
+Result:
+BX=1234h
+CX=7856h
+
+[LLDT-consumes-memory-operand-with-displacement-as-real-mode-no-op]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BBh 34h 12h 0Fh 00h 16h 00h 04h B9h 56h 78h
+Data in 1000:0400:
+DB 00h 00h
+BreakPoint: 1000:0110
+Result:
+BX=1234h
+CX=7856h
+
 [LMSW-loads-CR0-PE-from-memory-SMSW-reads-it-back-via-displacement]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -885,6 +1000,60 @@ DB 01h 00h
 BreakPoint: 1000:0113
 Result:
 BX=0001h
+
+[LOADALL-80286-loads-full-state-and-descriptor-cache-base-from-fixed-address]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 0Fh 05h
+Data in 0000:0800:
+DB 00h 00h 01h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 01h 00h 50h 00h 00h 00h 28h 00h 30h 00h 00h 20h 38h 00h 11h 11h 22h 22h 33h 33h 44h 44h 55h 55h 66h 66h 77h 77h 88h 88h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 05h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h
+Data in 0000:0050:
+DB 8Bh 1Eh 10h 00h
+Data in 5000:0010:
+DB EFh BEh
+BreakPoint: 2000:0054
+Result:
+AX=8888h
+BX=BEEFh
+CX=7777h
+DX=6666h
+SI=2222h
+DI=1111h
+BP=3333h
+SP=4444h
+CS=2000h
+DS=0028h
+SS=0030h
+ES=0038h
+IP=0054h
+Flags=0001h
+
+[LOADALL-80386-loads-full-state-and-descriptor-cache-base-from-ES-EDI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h 66h BFh 00h 04h 00h 00h 0Fh 07h
+Data in 1000:0400:
+DB 01h 00h 00h 00h 01h 00h 00h 00h 60h 00h 00h 00h 11h 11h 11h 11h 22h 22h 22h 22h 33h 33h 33h 33h 44h 44h 44h 44h 55h 55h 55h 55h 66h 66h 66h 66h 77h 77h 77h 77h 88h 88h 88h 88h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 48h 00h 00h 00h 50h 00h 00h 00h 58h 00h 00h 00h 60h 00h 00h 00h 00h 30h 00h 00h 68h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 06h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h
+Data in 0000:0060:
+DB 8Bh 1Eh 20h 00h
+Data in 6000:0020:
+DB FEh CAh
+BreakPoint: 3000:0064
+Result:
+AX=8888h
+BX=CAFEh
+CX=7777h
+DX=6666h
+SI=2222h
+DI=1111h
+BP=3333h
+SP=4444h
+CS=3000h
+DS=0058h
+SS=0060h
+ES=0068h
+IP=0064h
+Flags=0001h
 
 [OUTSB-and-OUTSW-write-port-from-DS-SI-leave-memory-untouched]
 Data in 1000:0300:
