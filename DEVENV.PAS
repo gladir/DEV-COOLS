@@ -39577,18 +39577,25 @@ Var
  SlotIdx: Byte;
  CdSlot: Integer;
  SigEnforceFlag: ShortInt;
+ HasExplicitDrive: Boolean;
 Begin
+ { BOGUE REEL / demande explicite de l utilisateur (2026-09-02) : "BOOT" tape }
+ { seul (sans lettre de lecteur) affichait toujours la syntaxe, meme quand un }
+ { disque/disquette etait DEJA monte (via /DISK0../DISK81 au lancement de     }
+ { DEVENV.exe, ou par un appel BOOT precedent) - la lettre n est desormais    }
+ { exigee que si aucun lecteur DISK0../DISK81 n est deja ouvert (voir plus    }
+ { bas, apres les boucles de montage). Une image CD-ROM (ISO9660) deja        }
+ { montee ne compte PAS ici : un vrai amorcage El Torito depuis un CD n est   }
+ { pas implemente dans ce fichier - voir le message d erreur specifique plus  }
+ { bas qui le precise si SEUL un CD-ROM est monte (chantier separe, a venir). }
  P := TermExtractParam(ParamStr, 1);
- If (Length(P) < 2) Or (P[2] <> ':') Then Begin
-  TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
-   '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
-   '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG_ENFORCE=True|False] [/GUI] [/CMD]');
-  Exit;
- End;
- DL := UpCase(P[1]);
- If Not Term_DriveIdxFromLetter(DL, Idx) Then Begin
-  TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
-  Exit;
+ HasExplicitDrive := (Length(P) >= 2) And (P[2] = ':');
+ If HasExplicitDrive Then Begin
+  DL := UpCase(P[1]);
+  If Not Term_DriveIdxFromLetter(DL, Idx) Then Begin
+   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
+   Exit;
+  End;
  End;
  { BOGUE REEL / demande explicite de l utilisateur (2026-08-25) : BOOT ne     }
  { pouvait monter une image que si /DISK0../DISK81 avait deja ete passe EN   }
@@ -39649,6 +39656,28 @@ Begin
     Exit;
    End;
   End;
+ End;
+ If Not HasExplicitDrive Then Begin
+  { Aucune lettre fournie : choisir le premier emplacement DISK0../DISK81   }
+  { (A..D) reellement ouvert - couvre a la fois un montage fait ci-dessus   }
+  { par /DISK0../DISK81 sur CET appel, et un disque deja monte au           }
+  { lancement de DEVENV.exe ou par un BOOT precedent. }
+  Idx := 255;
+  For SlotIdx := 0 To 3 Do
+   If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
+  If Idx = 255 Then Begin
+   If EmuCdrom[0].Open Or EmuCdrom[1].Open Then
+    TermAddLine(TP, 'BOOT : un CD-ROM est monte, mais l''amorcage direct ' +
+     'depuis une image ISO9660 (El Torito) n''est pas encore pris en charge. ' +
+     'Utilisez BOOT d: avec un disque/disquette monte via /DISK0:, /DISK1:, ' +
+     '/DISK80: ou /DISK81:.')
+   Else
+    TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
+     '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
+     '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG_ENFORCE=True|False] [/GUI] [/CMD]');
+   Exit;
+  End;
+  DL := Term_DriveLetterFromIdx(Idx);
  End;
  Term_VirtEnsureMounted(Idx);
  If Not EmuFloppyOpen[Idx] Then Begin
