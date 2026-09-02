@@ -1365,6 +1365,24 @@ Result:
 AX=1234h
 ECX=00000000h
 
+[LSL-resolves-real-GDT-limit-with-granularity-and-fails-on-invalid-selector]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 17h 00h 00h 00h 05h 00h
+Data in 5000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 01h 00h 00h 00h 9Ah 00h 00h 00h 00h 00h 00h 00h 9Ah 80h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h BBh 34h 12h B9h 08h 00h 0Fh 03h D9h 9Ch 5Eh 81h E6h 40h 00h 89h DAh BBh 34h 12h B9h 10h 00h 0Fh 03h D9h 9Ch 5Fh 81h E7h 40h 00h 89h DDh BBh 34h 12h B9h 18h 00h 0Fh 03h D9h 9Ch 58h 25h 40h 00h
+BreakPoint: 1000:013A
+Result:
+BX=1234h
+CX=0018h
+DX=0100h
+SI=0040h
+BP=0FFFh
+DI=0040h
+AX=0000h
+
 [LSS-loads-register-and-SS-from-far-pointer-in-memory-with-displacement]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1376,6 +1394,21 @@ Result:
 BX=1234h
 SS=2000h
 
+[LTR-validates-selector-against-GDT-and-marks-descriptor-busy]
+EntryPoint: 1000:0100
+Data in 1000:0300:
+DB 0Fh 00h 00h 00h 06h 00h
+Data in 6000:0000:
+DB 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 00h 89h 00h 00h
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 16h 00h 03h B9h 08h 00h 0Fh 00h D9h 0Fh 00h C8h 89h C2h B8h 00h 60h 8Eh D8h 8Ah 1Eh 0Dh 00h B9h 18h 00h 0Fh 00h D9h 0Fh 00h C8h
+BreakPoint: 1000:0127
+Result:
+DX=0008h
+BX=008Bh
+AX=0008h
+CX=0018h
+
 [MOV-32-bit-general-registers-round-trip]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1384,15 +1417,16 @@ BreakPoint: 1000:010F
 Result:
 BX=5678h
 
-[MOV-EAX-moffs32-loads-doubleword]
+[MOV-AL-moffs8-and-AX-moffs16-load-directions]
 EntryPoint: 1000:0100
 Data in 1000:0100:
-DB B8h 00h 10h 8Eh D8h 66h 67h A1h 00h 30h 00h 00h
-Data in 1000:3000:
-DB 78h 56h 34h 12h
-BreakPoint: 1000:010C
+DB B8h 00h 10h 8Eh D8h A0h 00h 03h B4h 00h A1h 02h 03h
+Data in 1000:0300:
+DB A5h 00h 34h 12h
+BreakPoint: 1000:010D
 Result:
-AX=5678h
+AX=1234h
+DS=1000h
 
 [MOV-AX-FS-and-FS-AX-round-trip]
 EntryPoint: 1000:0100
@@ -1476,6 +1510,16 @@ BreakPoint: 1000:0110
 Result:
 AX=5678h
 
+[MOV-EAX-moffs32-loads-doubleword]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 66h 67h A1h 00h 30h 00h 00h
+Data in 1000:3000:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:010C
+Result:
+AX=5678h
+
 [MOV-EAX-through-EDI-32-bit-immediates-verify-full-registers]
 EntryPoint: 1000:0100
 Data in 1000:0100:
@@ -1500,6 +1544,127 @@ DB EFh CDh ABh 89h
 BreakPoint: 1000:0110
 Result:
 CX=CDEFh
+
+[MOV-direct-disp16-modRM00rm110]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h 89h 06h 70h 01h B8h 00h 00h A1h 70h 01h
+BreakPoint: 1000:010D
+Result:
+AX=1234h
+
+[MOV-moffs8-AL-and-moffs16-AX-write-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h B0h 42h A2h 00h 04h B8h 34h 12h A3h 02h 04h 8Ah 1Eh 00h 04h B7h 00h 8Bh 0Eh 02h 04h
+BreakPoint: 1000:011A
+Result:
+BX=0042h
+CX=1234h
+
+[MOV-r-m16-imm16-writes-memory-word]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C7h 06h 00h 03h 34h 12h 8Bh 1Eh 00h 03h
+BreakPoint: 1000:010F
+Result:
+BX=1234h
+
+[MOV-r-m8-imm8-writes-memory-byte]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h C6h 06h 00h 03h 42h B5h 00h 8Ah 0Eh 00h 03h
+BreakPoint: 1000:0110
+Result:
+CX=0042h
+
+[MOV-r16-from-memory-via-general-ModRM]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Bh 1Eh 00h 03h
+Data in 1000:0300:
+DB 34h 12h
+BreakPoint: 1000:0109
+Result:
+BX=1234h
+
+[MOV-r8-imm8-loads-all-eight-byte-registers]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 11h B4h 22h B1h 33h B5h 44h B2h 55h B6h 66h B3h 77h B7h 88h
+BreakPoint: 1000:0110
+Result:
+AX=2211h
+CX=4433h
+DX=6655h
+BX=8877h
+
+[MOV-register-to-register-preserves-value]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h 89h D8h
+BreakPoint: 1000:0108
+Result:
+AX=5678h
+BX=5678h
+
+[MOV-segment-register-from-memory-operand]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh 16h 00h 03h
+Data in 1000:0300:
+DB 00h 20h
+BreakPoint: 1000:0109
+Result:
+SS=2000h
+
+[MOVS-byte-with-FS-segment-override-copies-from-FS-SI-to-ES-DI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h B8h 00h 20h 8Eh E0h BEh 00h 30h BFh 00h 40h 64h A4h 26h 8Ah 1Eh 00h 40h
+Data in 2000:3000:
+DB 99h
+BreakPoint: 1000:0117
+Result:
+SI=3001h
+DI=4001h
+BX=0099h
+
+[MOVSB-copies-byte-and-advances-SI-DI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 30h BFh 00h 40h A4h A1h 00h 40h
+Data in 1000:3000:
+DB A5h
+BreakPoint: 1000:0111
+Result:
+AX=F6A5h
+SI=3001h
+DI=4001h
+
+[MOVSD-copies-dword-and-advances-SI-DI-by-four]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 30h BFh 00h 40h 66h A5h 66h A1h 00h 40h
+Data in 1000:3000:
+DB 78h 56h 34h 12h
+BreakPoint: 1000:0113
+Result:
+EAX=12345678h
+SI=3004h
+DI=4004h
+
+[MOVSW-copies-word-and-advances-SI-DI-by-two]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 30h BFh 00h 40h A5h A1h 00h 40h
+Data in 1000:3000:
+DB 34h 12h
+BreakPoint: 1000:0111
+Result:
+AX=1234h
+SI=3002h
+DI=4002h
 
 [MOVSX-sign-extends-byte-and-word-from-memory-with-displacement]
 EntryPoint: 1000:0100
@@ -1526,6 +1691,150 @@ BreakPoint: 1000:010F
 Result:
 BX=00FFh
 CX=1234h
+
+[MOVmemCS-reload-CMP-JE-hang-repro]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B9h 00h 00h BFh 00h 03h 8Ch 0Dh 8Bh 1Dh 8Ch C8h 39h D8h 74h 03h B9h 99h 99h BAh 11h 11h
+BreakPoint: 1000:0116
+Result:
+AX=1000h
+BX=1000h
+CX=0000h
+DX=1111h
+
+[MOVmemCS-then-INT-dispatch]
+Data in 0000:03C4:
+DB 00h 03h 00h 10h
+Data in 1000:0100:
+DB BFh 00h 05h 8Ch 0Dh CDh F1h
+Data in 1000:0300:
+DB B8h 78h 56h CFh
+EntryPoint: 1000:0100
+BreakPoint: 1000:0107
+Result:
+AX=5678h
+CS=1000h
+IP=0107h
+
+[MUL-word-produces-DX-AX-product]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 04h 00h F7h E3h
+BreakPoint: 1000:0108
+Result:
+AX=000Ch
+DX=0000h
+
+[NEG-flags-and-zero-case]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 05h F6h D8h B4h 00h 89h C3h 9Ch 58h 25h D1h 08h 89h C1h B0h 00h F6h D8h B4h 00h 89h C7h 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:011E
+Result:
+BX=00FBh
+CX=0091h
+DI=0000h
+DX=0040h
+
+[NOP-changes-nothing-but-IP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh B8h 34h 12h BBh 78h 56h B9h BCh 9Ah 90h 90h 90h 9Ch 5Eh 81h E6h D1h 08h
+BreakPoint: 1000:0115
+Result:
+AX=1234h
+BX=5678h
+CX=9ABCh
+SI=0091h
+
+[NOT-inverts-bits-without-touching-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 91h 9Eh B0h 0Fh F6h D0h 9Ch 5Bh 81h E3h D1h 08h 89h C1h B8h FFh 00h F7h D0h
+BreakPoint: 1000:0114
+Result:
+BX=0091h
+CX=91F0h
+AX=FF00h
+
+[OR-immediate-forms-flags]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B0h 0Fh 0Ch F0h B4h 00h 89h C3h 9Ch 58h 25h C5h 08h 89h C1h B8h 00h 00h 0Dh 00h 00h 89h C2h 9Ch 58h 25h C5h 08h
+BreakPoint: 1000:011C
+Result:
+BX=00FFh
+CX=0084h
+DX=0000h
+AX=0044h
+
+[OUT-to-unhandled-port-only-writes-does-not-touch-registers]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h BBh 78h 56h BAh FFh 00h E6h FEh E7h FDh EEh EFh
+BreakPoint: 1000:010F
+Result:
+AX=1234h
+BX=5678h
+
+[OUTS-byte-with-FS-segment-override-writes-port-from-FS-SI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 20h 8Eh E0h BEh 00h 30h BAh FFh 00h 64h 6Eh
+Data in 2000:3000:
+DB 77h
+BreakPoint: 1000:010D
+Result:
+SI=3001h
+DX=00FFh
+
+[OUTSB-and-OUTSW-write-port-from-DS-SI-leave-memory-untouched]
+Data in 1000:0300:
+DB AAh
+Data in 1000:0500:
+DB BBh BBh
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 03h BAh FFh 00h 6Eh A0h 00h 03h B4h 00h 89h C1h 89h F7h FDh BEh 00h 05h BAh FEh 00h 6Fh A1h 00h 05h
+BreakPoint: 1000:0120
+Result:
+CX=00AAh
+DI=0301h
+AX=BBBBh
+SI=04FEh
+
+[OUTSB-writes-real-byte-to-PPI-port-61h-readable-back-via-IN]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 03h BAh 61h 00h 6Eh E4h 61h 24h C3h B4h 00h
+Data in 1000:0300:
+DB C3h
+BreakPoint: 1000:0112
+Result:
+AX=00C3h
+SI=0301h
+
+[OUTSD-writes-real-low-byte-to-PPI-port-61h-readable-back-via-IN]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 05h BAh 61h 00h 66h 6Fh E4h 61h 24h C3h B4h 00h
+Data in 1000:0500:
+DB C3h 99h 00h 00h
+BreakPoint: 1000:0113
+Result:
+AX=00C3h
+SI=0504h
+
+[OUTSW-writes-real-low-byte-to-PPI-port-61h-readable-back-via-IN]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h BEh 00h 04h BAh 61h 00h 6Fh E4h 61h 24h C3h B4h 00h
+Data in 1000:0400:
+DB C3h 99h
+BreakPoint: 1000:0112
+Result:
+AX=00C3h
 
 [SGDT-and-SIDT-write-real-GDTR-IDTR-loaded-by-LGDT-LIDT]
 EntryPoint: 1000:0100

@@ -101440,14 +101440,28 @@ Begin
     P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
     Inc(P.CPU.IP);
    End;
-  $6F: { OUTSW (80186+) - voir $6E ci-dessus pour le contexte complet. Le mot }
-       { lu est envoye en 2 ecritures d octet consecutives (DX puis DX+1),    }
-       { meme convention que $E7/$EF (OUT imm8/DX,AX) deja existants. }
+  $6F: { OUTSW (80186+) / OUTSD si OperandSize32 - BOGUE REEL CORRIGE          }
+       { (2026-09-02, demande explicite de l utilisateur, meme classe de     }
+       { bogue que $99/CDQ, $98/CWDE et $6D/INSD) : ignorait totalement       }
+       { OperandSize32 et faisait TOUJOURS la forme 16 bits (OUTSW), meme     }
+       { avec le prefixe $66 present - OUTSD (envoi 32 bits de DS:[SI] vers   }
+       { le port) etait silencieusement non fonctionnel. Le mot/double mot lu }
+       { est envoye en ecritures d octet consecutives (DX, DX+1, ...), meme  }
+       { convention que $6E/OUTSB et $6D/INSD ci-dessus. }
    Begin
-    If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
-    V16 := Emu_ReadWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
-    Emu_PortWrite(P, P.CPU.Regs.DX, Byte(V16));
-    Emu_PortWrite(P, P.CPU.Regs.DX + 1, Byte(V16 Shr 8));
+    If P.CPU.OperandSize32 Then Begin
+     If EFG_DF In P.CPU.Flags.s Then Inc16 := -4 Else Inc16 := 4;
+     V32 := Emu_ReadDWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+     Emu_PortWrite(P, P.CPU.Regs.DX, Byte(V32));
+     Emu_PortWrite(P, P.CPU.Regs.DX + 1, Byte(V32 Shr 8));
+     Emu_PortWrite(P, P.CPU.Regs.DX + 2, Byte(V32 Shr 16));
+     Emu_PortWrite(P, P.CPU.Regs.DX + 3, Byte(V32 Shr 24));
+    End Else Begin
+     If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
+     V16 := Emu_ReadWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
+     Emu_PortWrite(P, P.CPU.Regs.DX, Byte(V16));
+     Emu_PortWrite(P, P.CPU.Regs.DX + 1, Byte(V16 Shr 8));
+    End;
     P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
     Inc(P.CPU.IP);
    End;
