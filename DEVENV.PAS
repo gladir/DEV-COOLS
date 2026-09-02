@@ -9550,9 +9550,9 @@ Procedure ShowHelp;Begin
  WriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
  WriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
  WriteLn('  /TESTUNIT,8086:fichier.tst   Execute un fichier de tests unitaires');
- WriteLn('  /TESTUNIT,80286:fichier.tst CPU (8086 ou 80286) en mode console');
- WriteLn('                 (voir DOC/TESTUNIT.txt), affiche Succes/Echec pour');
- WriteLn('                 chaque test, puis quitte.');
+ WriteLn('  /TESTUNIT,80286:fichier.tst CPU (8086, 80286 ou 80386) en mode');
+ WriteLn('  /TESTUNIT,80386:fichier.tst console (voir DOC/TESTUNIT.txt),');
+ WriteLn('                 affiche Succes/Echec pour chaque test, puis quitte.');
  WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
   WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
   WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
@@ -9821,11 +9821,13 @@ Begin
    { l utilisateur) : execute un fichier de tests unitaires CPU en pure     }
    { console (WriteLn/Halt, comme -h/--help ci-dessus) puis quitte SANS      }
    { jamais lancer l IDE graphique - voir RunUnitTests8086/TUnitTest8086.    }
-   { "8086" et "80286" sont geres (le meme coeur Emu_StepOne gere les deux   }
-   { jeux d instructions - "80286" ajoute simplement ARPL/BOUND/ENTER reels  }
-   { la ou "8086" ne les rencontre normalement jamais) ; toute autre valeur  }
-   { est signalee honnetement plutot que silencieusement ignoree, pour      }
-   { ne jamais faire croire a tort qu un autre coeur est deja supporte. }
+   { "8086", "80286" et "80386" sont geres (le meme coeur Emu_StepOne gere   }
+   { les trois jeux d instructions - "80286" ajoute ARPL/BOUND/ENTER reels,  }
+   { "80386" ajoute les opcodes $0F 32 bits (BT*/SHLD/SHRD/CMPXCHG/MOVZX/    }
+   { MOVSX/BSF/BSR/XADD/LSS/LFS/LGS/IMUL r,r-m) - 2026-09-02, demande       }
+   { explicite de l utilisateur) ; toute autre valeur est signalee          }
+   { honnetement plutot que silencieusement ignoree, pour ne jamais faire   }
+   { croire a tort qu un autre coeur est deja supporte. }
    EmuArg := Copy(Arg, 11, Length(Arg) - 10);
    K := Pos(':', EmuArg);
    If K = 0 Then
@@ -9836,9 +9838,9 @@ Begin
     FatalError('Syntaxe /TESTUNIT attendue : /TESTUNIT,8086:fichier.tst');
    If Not FileExists(EmuFn) Then
     FatalError('Fichier de tests introuvable: ' + EmuFn);
-   If (EmuName <> '8086') And (EmuName <> '80286') Then
+   If (EmuName <> '8086') And (EmuName <> '80286') And (EmuName <> '80386') Then
     FatalError('Architecture de tests non prise en charge : ' + EmuName +
-     ' (seuls "8086" et "80286" sont implantes pour l instant).');
+     ' (seuls "8086", "80286" et "80386" sont implantes pour l instant).');
    RunUnitTests8086(EmuFn, EmuName);
    Halt(EXIT_OK);
   End

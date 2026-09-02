@@ -876,6 +876,16 @@ BX=1234h
 CX=0000h
 AX=0000h
 
+[LMSW-loads-CR0-PE-from-memory-SMSW-reads-it-back-via-displacement]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 0Fh 01h 36h 00h 02h 0Fh 01h 26h 00h 04h 8Bh 1Eh 00h 04h
+Data in 1000:0200:
+DB 01h 00h
+BreakPoint: 1000:0113
+Result:
+BX=0001h
+
 [OUTSB-and-OUTSW-write-port-from-DS-SI-leave-memory-untouched]
 Data in 1000:0300:
 DB AAh
