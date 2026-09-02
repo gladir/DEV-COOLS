@@ -3276,6 +3276,13 @@ Type
   DataBlockCount: Integer;
   HasBreak    : Boolean;
   BreakCS, BreakIP: Word;
+  { ExpectedFault: NOM (2026-09-02, demande explicite - test HLT) : un test  }
+  { peut a la place attendre que l execution s arrete sur un code de faute   }
+  { CPU precis (ex. "HLT") plutot que d atteindre un BreakPoint - seul cas   }
+  { ou Fault<>sfNone est un SUCCES plutot qu un echec automatique, voir       }
+  { RunUnitTests8086. }
+  HasExpectedFault: Boolean;
+  ExpFault    : Byte;
   HasFlags, HasAX, HasBX, HasCX, HasDX, HasSI, HasDI, HasBP, HasSP,
    HasCS, HasDS, HasES, HasSS, HasIP: Boolean;
   ExpFlags, ExpAX, ExpBX, ExpCX, ExpDX, ExpSI, ExpDI, ExpBP, ExpSP,
@@ -112819,6 +112826,17 @@ Begin
    End;
    Continue;
   End;
+  If TestKeyValue(Trimmed, 'EXPECTEDFAULT', Value) Then Begin
+   CurTest^.HasExpectedFault := True;
+   Value := UpCaseStr(TrimStr(Value));
+   If Value = 'HLT' Then CurTest^.ExpFault := sfHLT
+   Else If Value = 'INVALIDCODE' Then CurTest^.ExpFault := sfInvalidCode
+   Else If Value = 'DIVISION0' Then CurTest^.ExpFault := sfDivision0
+   Else If Value = 'INVALIDINTR' Then CurTest^.ExpFault := sfInvalidIntr
+   Else If Value = 'ENDPROGRAM' Then CurTest^.ExpFault := sfEndProgram
+   Else CurTest^.HasExpectedFault := False;
+   Continue;
+  End;
   If Not InResult Then Continue;
   If TestKeyValue(Trimmed, 'FLAGS', Value) Then Begin
    If TestParseHexWord(Value, V) Then Begin CurTest^.HasFlags := True; CurTest^.ExpFlags := V; End;
@@ -112920,7 +112938,31 @@ Begin
   End;
   Failed := False;
   FailMsg := '';
-  If T^.HasBreak And Not HitBreak And (Emu_TestPanel.CPU.Fault = sfNone) Then Begin
+  If T^.HasExpectedFault Then Begin
+   { Test "ExpectedFault:" (ex. HLT) : Fault<>sfNone est ici le SUCCES        }
+   { attendu plutot que l echec automatique du cas general ci-dessous.       }
+   If Emu_TestPanel.CPU.Fault <> T^.ExpFault Then Begin
+    Failed := True;
+    FailMsg := ' fin attendue (' + Emu_FaultText(T^.ExpFault) +
+     ') non obtenue (obtenu : ' + Emu_FaultText(Emu_TestPanel.CPU.Fault) +
+     ') apres ' + IntToStr(Steps) + ' pas';
+   End Else Begin
+    CheckReg(T^.HasFlags, T^.ExpFlags, Emu_TestPanel.CPU.Flags.Base, 'Flags');
+    CheckReg(T^.HasAX, T^.ExpAX, Emu_TestPanel.CPU.Regs.AX, 'AX');
+    CheckReg(T^.HasBX, T^.ExpBX, Emu_TestPanel.CPU.Regs.BX, 'BX');
+    CheckReg(T^.HasCX, T^.ExpCX, Emu_TestPanel.CPU.Regs.CX, 'CX');
+    CheckReg(T^.HasDX, T^.ExpDX, Emu_TestPanel.CPU.Regs.DX, 'DX');
+    CheckReg(T^.HasSI, T^.ExpSI, Emu_TestPanel.CPU.Regs.SI, 'SI');
+    CheckReg(T^.HasDI, T^.ExpDI, Emu_TestPanel.CPU.Regs.DI, 'DI');
+    CheckReg(T^.HasBP, T^.ExpBP, Emu_TestPanel.CPU.Regs.BP, 'BP');
+    CheckReg(T^.HasSP, T^.ExpSP, Emu_TestPanel.CPU.Regs.SP, 'SP');
+    CheckReg(T^.HasCS, T^.ExpCS, Emu_TestPanel.CPU.Segs.CS, 'CS');
+    CheckReg(T^.HasDS, T^.ExpDS, Emu_TestPanel.CPU.Segs.DS, 'DS');
+    CheckReg(T^.HasES, T^.ExpES, Emu_TestPanel.CPU.Segs.ES, 'ES');
+    CheckReg(T^.HasSS, T^.ExpSS, Emu_TestPanel.CPU.Segs.SS, 'SS');
+    CheckReg(T^.HasIP, T^.ExpIP, Emu_TestPanel.CPU.IP, 'IP');
+   End;
+  End Else If T^.HasBreak And Not HitBreak And (Emu_TestPanel.CPU.Fault = sfNone) Then Begin
    Failed := True;
    FailMsg := ' point d''arret jamais atteint apres ' + IntToStr(Steps) +
     ' pas (boucle infinie possible, bogue potentiel du CPU)';

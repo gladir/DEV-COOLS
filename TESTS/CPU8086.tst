@@ -743,3 +743,122 @@ Result:
 DI=0010h
 ES=1000h
 
+[CLI-clears-and-STI-sets-interrupt-flag-snapshots]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB FBh 9Ch 58h 25h 00h 02h 89h C1h FAh 9Ch 58h 25h 00h 02h 89h C2h
+BreakPoint: 1000:0110
+Result:
+CX=0200h
+DX=0000h
+
+[CMC-toggles-carry-both-directions-verified-via-branch]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F8h F5h 72h 05h BBh 00h 00h EBh 03h BBh 01h 00h F5h 73h 05h B9h 00h 00h EBh 03h B9h 02h 00h
+BreakPoint: 1000:0117
+Result:
+BX=0001h
+CX=0002h
+
+[CMP-sets-branch-flags-without-modifying-operands]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 74h 05h B9h 00h 00h EBh 03h B9h 01h 00h B8h 03h 00h BBh 05h 00h 39h D8h 75h 05h BAh 00h 00h EBh 03h BAh 02h 00h
+BreakPoint: 1000:0124
+Result:
+CX=0001h
+DX=0002h
+AX=0003h
+BX=0005h
+
+[CWD-sign-extends-AX-into-DX-both-directions]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 7Fh 99h 89h D3h B8h 00h 80h 99h
+BreakPoint: 1000:010A
+Result:
+DX=FFFFh
+BX=0000h
+AX=8000h
+
+[DAA-adjusts-upper-nibble-only-without-AF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 50h 00h 04h 50h 27h 89h C3h 9Ch 58h 25h 01h 00h 89h C1h
+BreakPoint: 1000:010F
+Result:
+BX=0000h
+CX=0001h
+
+[DAS-adjusts-upper-nibble-only-without-AF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h A5h 00h 2Ch 05h 2Fh 89h C3h 9Ch 58h 25h 01h 00h 89h C1h
+BreakPoint: 1000:010F
+Result:
+BX=0040h
+CX=0001h
+
+[DEC-does-not-affect-carry-flag]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h 01h 00h 48h 72h 05h BBh 00h 00h EBh 03h BBh 01h 00h 74h 05h B9h 00h 00h EBh 03h B9h 02h 00h
+BreakPoint: 1000:0119
+Result:
+AX=0000h
+BX=0001h
+CX=0002h
+
+[DIV-word-with-nonzero-DX-dividend-high-part]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB BAh 01h 00h B8h A0h 86h B9h 03h 00h F7h F1h
+BreakPoint: 1000:010B
+Result:
+AX=8235h
+DX=0001h
+CX=0003h
+
+[ESC-FPU-stub-strict-nop-memory-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 5Ah 5Ah A3h 00h 03h D9h 3Eh 00h 03h 8Bh 1Eh 00h 03h
+BreakPoint: 1000:010E
+Result:
+AX=5A5Ah
+BX=5A5Ah
+
+[HLT-sets-fault-and-preserves-registers]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 34h 12h F4h
+ExpectedFault: HLT
+Result:
+AX=1234h
+IP=0104h
+
+[IDIV-negative-divisor-sign-handling]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 64h 00h B3h F6h F6h FBh 89h C3h BAh 00h 00h B8h E8h 03h B9h F9h FFh F7h F9h 89h D1h
+BreakPoint: 1000:0116
+Result:
+BX=00F6h
+CX=0006h
+AX=FF72h
+
+[IMUL-single-operand-overflow-flags-both-cases]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FBh FFh B9h 03h 00h F7h E9h 89h C6h 89h D7h 9Ch 5Bh 81h E3h 01h 08h B8h 00h 10h B9h 00h 10h F7h E9h 9Ch 5Dh 81h E5h 01h 08h
+BreakPoint: 1000:0120
+Result:
+SI=FFF1h
+DI=FFFFh
+BX=0000h
+AX=0000h
+DX=0100h
+BP=0801h
+
+
