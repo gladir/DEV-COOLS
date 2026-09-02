@@ -100919,7 +100919,33 @@ Begin
     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
     Inc(P.CPU.IP, 3 + Op.Len);
    End;
-  $6C, $6D, $6E, $6F: { INSB/INSW/OUTSB/OUTSW (80186+) - ignore (pas d'I/O port) }
+  $6C: { INSB (80186+) - BOGUE REEL CORRIGE (2026-09-02, demande explicite    }
+       { de l utilisateur) : ignorait auparavant totalement l E/S (ni         }
+       { lecture de port, ni ecriture memoire, ni avancement de DI - meme     }
+       { NOP silencieux que OUTSB/OUTSW, non demandes ici et donc laisses     }
+       { inchanges, voir $6E/$6F plus bas). Implemente maintenant la vraie    }
+       { semantique : ES:[DI] := IN(DX) (octet), DI avance de +/-1 selon DF,  }
+       { meme convention Inc16 que le bloc de chaines $A4..$AF plus haut. }
+   Begin
+    If EFG_DF In P.CPU.Flags.s Then Inc16 := -1 Else Inc16 := 1;
+    Emu_WriteByte(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI, Emu_PortRead(P, P.CPU.Regs.DX));
+    P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
+    Inc(P.CPU.IP);
+   End;
+  $6D: { INSW (80186+) - voir $6C ci-dessus pour le contexte complet. Le mot  }
+       { lu est assemble a partir de 2 lectures d octet consecutives (DX puis}
+       { DX+1), meme convention que $ED (IN AX,DX) plus bas. }
+   Begin
+    If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
+    Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
+     Word(Emu_PortRead(P, P.CPU.Regs.DX)) Or
+     (Word(Emu_PortRead(P, P.CPU.Regs.DX + 1)) Shl 8));
+    P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
+    Inc(P.CPU.IP);
+   End;
+  $6E, $6F: { OUTSB/OUTSW (80186+) - ignore (pas d'I/O port) - hors de la     }
+            { demande explicite de l utilisateur (2026-09-02 : seul INSB/    }
+            { INSW, ci-dessus, a ete implante reellement sur demande). }
    Inc(P.CPU.IP);
   $0F: { Prefixe 286+ : LGDT/LIDT/LMSW/SMSW/etc. - ignore (mode reel), SAUF   }
        { $80-$8F (Jcc near, voir ci-dessous) - BOGUE REEL CORRIGE (2026-08-24,}
