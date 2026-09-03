@@ -1606,7 +1606,12 @@ Const
                                  { d interruption ET une entree IVT a des    }
                                  { adresses distinctes (2026-09-02, ajoute   }
                                  { en poursuivant l enquete division par 0). }
- MAX_UNITTESTS      = 500;      { nombre max de tests dans un seul fichier }
+ { Releve de 500 a 10000 (2026-09-02, demande explicite - importateur de     }
+ { tests materiels reels SingleStepTests/8086 pour la chasse au bogue div0,  }
+ { 4 fichiers de 2000 tests DIV/IDIV chacun = 8000 tests dans un seul       }
+ { fichier .tst) - cout memoire negligeable sur un hote Win32 32 bits       }
+ { moderne (tableau global statique, ~4.5 Ko/test * 10000 = ~45 Mo). }
+ MAX_UNITTESTS      = 10000;    { nombre max de tests dans un seul fichier }
  MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
                                  { gel reel observe avec CMP reg,reg+Jcc,    }
                                  { 2026-09-02) - un point d arret jamais      }
@@ -7213,6 +7218,23 @@ Var
  { l execution emulee en cours - comme la pile CMOS d un vrai AT. }
  EmuCMOS_Index  : Byte;          { registre d index (bit7 = masque NMI) }
  EmuCMOS_Reg    : Array[0..63] Of Byte; { registres 02h-3Fh (RAM/config) }
+        { Diagnostic PERMANENT (ajoute 2026-09-02, enquete div0 BOOT MS-DOS) : }
+ { la trace circulaire habituelle (EmuTraceBuf) ne couvre que les 8192      }
+ { DERNIERS pas, insuffisant pour un boot de plusieurs centaines de         }
+ { milliers d instructions - ce journal LEGER n enregistre qu un point par  }
+ { VRAI changement de segment CS (quelques centaines/milliers attendus sur  }
+ { tout un boot, jamais des millions) pour obtenir une carte chronologique  }
+ { complete de TOUTE la duree sans le cout d une trace instruction-par-     }
+ { instruction complete. Gate par la meme option LOG ON /EMUDIAG. Utile     }
+ { pour toute future enquete BOOT, pas seulement celle-ci - conserve        }
+ { volontairement (contrairement aux dumps ponctuels EmuIoSysDumped/        }
+ { EmuHimemDumped, deja retires apres usage). Voir [[project_devenv]]. }
+ EmuSegLog      : Array[0..3999] Of Record
+   CS, IP: Word; Step: LongInt;
+  End;
+ EmuSegLogCount : Integer;
+ EmuSegLogLastCS: Word;
+ EmuSegLogArmed : Boolean;
  EmuTraceBuf    : Array[0..8191] Of Record
    CS, IP: Word; Op: Byte;
    ES, DI, CX, AX: Word;
@@ -81231,6 +81253,23 @@ Begin
  Else Emu_AddrL := Raw And $FFFFF;
 End;
 
+{ Nombre de colonnes texte a utiliser pour la redirection VRAM texte        }
+{ $B000/$B800 de Emu_ReadBlock/Emu_WriteBlock/Emu_WriteByte ci-dessous -    }
+{ BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur SingleStepTests  }
+{ pour /TESTUNIT,8086 : une ecriture memoire brute a une adresse tombant    }
+{ dans $B000-$BFFF plantait tout le processus avec EDivByZero) : dans un    }
+{ contexte headless (harnais /TESTUNIT, ou tout autre appel a ces fonctions }
+{ avant qu un vrai panneau GUI n ait ete cree), EmuPanel.Cols vaut 0 (jamais}
+{ initialise), et "Ofs Div EmuPanel.Cols" plantait immediatement. 80 est la }
+{ valeur par defaut reelle du materiel (MDA/CGA texte 80 colonnes) - une    }
+{ vraie session GUI a toujours Cols >= 1 des la creation du panneau, donc   }
+{ ce filet de securite ne change rien au comportement interactif existant. }
+Function Emu_SafeVramCols: Integer;
+Begin
+ If EmuPanel.Cols <= 0 Then Emu_SafeVramCols := 80
+ Else Emu_SafeVramCols := EmuPanel.Cols;
+End;
+
 { --- Lire un bloc absolu depuis la memoire emulee --- }
 
 Procedure Emu_ReadAbsBlock(Var C: TEmuCPU; Addr: LongInt;
@@ -81295,8 +81334,8 @@ Begin
     (SizeBytes > 0) Then Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
-   Row := ((Ofs + I) Shr 1) Div EmuPanel.Cols;
-   Col := ((Ofs + I) Shr 1) Mod EmuPanel.Cols;
+   Row := ((Ofs + I) Shr 1) Div Emu_SafeVramCols;
+   Col := ((Ofs + I) Shr 1) Mod Emu_SafeVramCols;
    B := 0;
    If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 131) Then Begin
     If ((Ofs + I) And 1) = 0 Then
@@ -81477,8 +81516,8 @@ Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
    B := BPtr^;
-   Row := ((Ofs + I) Shr 1) Div EmuPanel.Cols;
-   Col := ((Ofs + I) Shr 1) Mod EmuPanel.Cols;
+   Row := ((Ofs + I) Shr 1) Div Emu_SafeVramCols;
+   Col := ((Ofs + I) Shr 1) Mod Emu_SafeVramCols;
    If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 131) Then Begin
     If ((Ofs + I) And 1) = 0 Then
      EmuPanel.VRAM[Row, Col].Ch := Chr(B)
@@ -81536,8 +81575,8 @@ Begin
   { Graphics Solution (EMU_MODE_GSTXT132, voir Emu_ATIDetectMode) -       }
   { calculer dynamiquement plutot que de coder 80 en dur, sinon le texte  }
   { au-dela de la colonne 80 serait perdu. }
-  Row := (Ofs Shr 1) Div EmuPanel.Cols;
-  Col := (Ofs Shr 1) Mod EmuPanel.Cols;
+  Row := (Ofs Shr 1) Div Emu_SafeVramCols;
+  Col := (Ofs Shr 1) Mod Emu_SafeVramCols;
   If (Row >= 0) And (Row <= 24) And (Col >= 0) And (Col <= 131) Then Begin
    If (Ofs And 1) = 0 Then Begin
     EmuPanel.VRAM[Row, Col].Ch := Chr(X);
@@ -103530,7 +103569,13 @@ Begin
          End
          Else Begin
           Disp16 := SmallInt(P.CPU.Regs.AX) Div ShortInt(V8);
-          If (Disp16 > 127) Or (Disp16 < -128)
+          { BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur           }
+          { SingleStepTests/8086 - test materiel reel "idiv ch", sans prefixe) }
+          { : -128 est bien representable dans un ShortInt, mais le vrai       }
+          { silicium 8086/8088 leve #DE (Fault) meme pour ce quotient limite - }
+          { la verification doit donc etre <= -128, pas < -128 (meme correctif}
+          { applique au mode mot ci-dessous, limite -32768). }
+          If (Disp16 > 127) Or (Disp16 <= -128)
            Then Begin
             Emu_Div0Snapshot(P, $F6, 7, V8, P.CPU.IP);
             P.CPU.Fault := sfDivision0;
@@ -103685,8 +103730,11 @@ Begin
           Else Begin
            MulRes64 := Int64(SmallInt(P.CPU.Regs.DX)) * 65536 +
             Int64(P.CPU.Regs.AX);
+           { BOGUE REEL CORRIGE (2026-09-03) : meme correctif que IDIV rm8    }
+           { ci-dessus - -32768 est representable dans un SmallInt, mais le   }
+           { vrai silicium 8086/8088 leve #DE meme pour ce quotient limite. }
            If (MulRes64 Div Int64(SmallInt(V16)) > 32767) Or
-              (MulRes64 Div Int64(SmallInt(V16)) < -32768) Then Begin
+              (MulRes64 Div Int64(SmallInt(V16)) <= -32768) Then Begin
             Emu_Div0Snapshot(P, $F7, 7, V16, P.CPU.IP);
             P.CPU.Fault := sfDivision0;
            End Else Begin
@@ -115355,6 +115403,21 @@ Begin
   { (observe au pas 265124 pour MS-DOS) survient bien plus tard qu un        }
   { saut de renormalisation fait dans les toutes premieres instructions. }
   If P.CPU.Segs.CS <> 0 Then EmuLeftCS0 := True;
+  { Voir declaration EmuSegLog ci-dessus : un point par vrai changement de   }
+  { segment CS, sur TOUTE la duree du boot (pas seulement les 8192 derniers  }
+  { pas). Desarme silencieusement (EmuSegLogArmed:=False) si le tampon de     }
+  { 4000 entrees est plein plutot que de deborder. }
+  If OptionsDlg.Data.DosLogDiag And EmuSegLogArmed And
+     (P.CPU.Segs.CS <> EmuSegLogLastCS) Then Begin
+   EmuSegLogLastCS := P.CPU.Segs.CS;
+   If EmuSegLogCount <= 3999 Then Begin
+    EmuSegLog[EmuSegLogCount].CS := P.CPU.Segs.CS;
+    EmuSegLog[EmuSegLogCount].IP := P.CPU.IP;
+    EmuSegLog[EmuSegLogCount].Step := P.TotalSteps;
+    Inc(EmuSegLogCount);
+   End Else
+    EmuSegLogArmed := False;
+  End;
   { BOGUE REEL CORRIGE (2026-09-02, retour a l enquete div0 BOOT sur demande }
   { explicite de l utilisateur) : le plancher `>20` restait un FAUX POSITIF  }
   { pour El Torito/isolinux - verifie en relancant un BOOT reel avec         }
@@ -115646,6 +115709,11 @@ Begin
                   ' SHIFTcl(D2/D3)=', EmuOpCount[$D2]+EmuOpCount[$D3],
                   ' DIV/IDIV(F6/F7)=', EmuOpCount[$F6]+EmuOpCount[$F7],
                   ' INT(CD)=', EmuOpCount[$CD]);
+  WriteLn(LogF_R, 'EMUSEGLOG (', EmuSegLogCount,
+   ' changements de segment CS sur toute la duree, arme=', EmuSegLogArmed, ') :');
+  For Idx_R := 0 To EmuSegLogCount - 1 Do
+   WriteLn(LogF_R, '  Step=', EmuSegLog[Idx_R].Step, '  CS:IP=',
+    HexWord(EmuSegLog[Idx_R].CS), ':', HexWord(EmuSegLog[Idx_R].IP));
   If EmuDiv0Caught Then Begin
    WriteLn(LogF_R, 'DIV0 SNAPSHOT (1er fault) :');
    WriteLn(LogF_R, '  at ', HexWord(EmuDiv0CS), ':', HexWord(EmuDiv0IP),
@@ -117365,6 +117433,9 @@ Begin NesActive := False;
  EmuOvrDumped := False;
  EmuCS0Dumped := False;
  EmuLeftCS0 := False;
+ EmuSegLogCount := 0;
+ EmuSegLogLastCS := $FFFF;
+ EmuSegLogArmed := True;
  {$I-} Assign(LogF_R, 'EMUDIAGSTART.LOG'); Rewrite(LogF_R);
  If IOResult = 0 Then Begin
   WriteLn(LogF_R, 'Run loop starting CS:IP=', HexWord(P.CPU.Segs.CS), ':',
