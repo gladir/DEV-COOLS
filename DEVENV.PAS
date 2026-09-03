@@ -1606,12 +1606,14 @@ Const
                                  { d interruption ET une entree IVT a des    }
                                  { adresses distinctes (2026-09-02, ajoute   }
                                  { en poursuivant l enquete division par 0). }
- { Releve de 500 a 10000 (2026-09-02, demande explicite - importateur de     }
- { tests materiels reels SingleStepTests/8086 pour la chasse au bogue div0,  }
- { 4 fichiers de 2000 tests DIV/IDIV chacun = 8000 tests dans un seul       }
- { fichier .tst) - cout memoire negligeable sur un hote Win32 32 bits       }
- { moderne (tableau global statique, ~4.5 Ko/test * 10000 = ~45 Mo). }
- MAX_UNITTESTS      = 10000;    { nombre max de tests dans un seul fichier }
+ { Releve de 500 a 10000 (2026-09-02) puis a 20000 (2026-09-03, l importateur}
+ { SingleStepTests/8086 etendu aux instructions de chaine - MOVS/CMPS/STOS/  }
+ { LODS/SCAS x octet/mot = 10 fichiers de 2000 tests = 16012 apres filtrage, }
+ { depassait deja 10000 et etait tronque SILENCIEUSEMENT par la garde de la  }
+ { ligne ~113780 sans le moindre avertissement) - cout memoire toujours      }
+ { negligeable sur un hote Win32 32 bits moderne (tableau global statique,   }
+ { ~4.5 Ko/test * 20000 = ~90 Mo). }
+ MAX_UNITTESTS      = 20000;    { nombre max de tests dans un seul fichier }
  MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
                                  { gel reel observe avec CMP reg,reg+Jcc,    }
                                  { 2026-09-02) - un point d arret jamais      }
