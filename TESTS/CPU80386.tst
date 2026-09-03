@@ -1969,6 +1969,639 @@ Result:
 ECX=00000091h
 DX=FFFCh
 
+[RCL-by-1-rotates-through-carry-chained]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h 0Dh 00h 00h D0h D0h 89h C3h D0h D0h 89h C2h 9Ch 58h 25h 01h 08h 89h C1h
+BreakPoint: 1000:0115
+Result:
+BX=0002h
+DX=0005h
+CX=0000h
+
+[RCR-by-1-rotates-through-carry-chained]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h 0Dh 00h 00h D0h D8h 89h C3h D0h D8h 89h C2h 9Ch 58h 25h 01h 08h 89h C1h
+BreakPoint: 1000:0115
+Result:
+BX=0040h
+DX=00A0h
+CX=0800h
+
+[REP-CMPSB-stops-early-on-mismatch]
+Data in 1000:0300:
+DB 11h 22h 99h 44h
+Data in 1000:0400:
+DB 11h 22h 33h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 04h 00h F3h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0303h
+DI=0403h
+BX=0000h
+
+[REP-CMPSW-stops-early-on-mismatch]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 99h 99h 44h 44h
+Data in 1000:0600:
+DB 11h 11h 22h 22h 33h 33h 44h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h B9h 04h 00h F3h A7h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0506h
+DI=0606h
+BX=0000h
+
+[REP-MOVSW-relocation-sysinit1]
+Data in 1000:0300:
+DB 11h 22h 33h 44h 55h 66h 77h 88h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 05h B9h 04h 00h F3h A5h A1h 00h 05h
+BreakPoint: 1000:0115
+Result:
+AX=2211h
+SI=0308h
+DI=0508h
+CX=0000h
+DS=1000h
+ES=1000h
+
+[REPE-CMPSB-runs-to-completion-all-equal]
+Data in 1000:0300:
+DB 11h 22h 33h 44h
+Data in 1000:0400:
+DB 11h 22h 33h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 04h 00h F3h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0000h
+SI=0304h
+DI=0404h
+BX=0040h
+
+[REPE-CMPSW-runs-to-completion-all-equal]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 33h 33h 44h 44h
+Data in 1000:0600:
+DB 11h 11h 22h 22h 33h 33h 44h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h B9h 04h 00h F3h A7h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0000h
+SI=0508h
+DI=0608h
+BX=0040h
+
+[REPE-SCASB-stops-on-first-difference]
+Data in 1000:0400:
+DB 11h 11h 99h 11h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 04h B0h 11h B9h 04h 00h F3h AEh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0116
+Result:
+CX=0001h
+DI=0403h
+BX=0000h
+
+[REPE-SCASW-stops-on-first-difference]
+Data in 1000:0500:
+DB 11h 11h 11h 11h 99h 99h 11h 11h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B8h 11h 11h B9h 04h 00h F3h AFh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0117
+Result:
+CX=0001h
+DI=0506h
+BX=0000h
+
+[REPE-with-CX-zero-executes-nothing]
+Data in 1000:0300:
+DB 05h
+Data in 1000:0400:
+DB 05h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 00h 00h B8h 01h 00h 0Dh 00h 00h F3h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:011F
+Result:
+SI=0300h
+DI=0400h
+CX=0000h
+BX=0000h
+
+[REPNE-CMPSB-stops-early-on-first-match]
+Data in 1000:0300:
+DB 11h 22h 99h 44h
+Data in 1000:0400:
+DB 55h 66h 99h 77h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 03h BFh 00h 04h B9h 04h 00h F2h A6h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0303h
+DI=0403h
+BX=0040h
+
+[REPNE-CMPSW-stops-early-on-first-match]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 99h 99h 44h 44h
+Data in 1000:0600:
+DB 55h 55h 66h 66h 99h 99h 77h 77h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h 8Eh C0h BEh 00h 05h BFh 00h 06h B9h 04h 00h F2h A7h 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+SI=0506h
+DI=0606h
+BX=0040h
+
+[REPNE-SCASB-finds-first-match]
+Data in 1000:0400:
+DB 11h 22h 99h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 04h B0h 99h B9h 04h 00h F2h AEh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0116
+Result:
+CX=0001h
+DI=0403h
+BX=0040h
+
+[REPNE-SCASW-finds-first-match]
+Data in 1000:0500:
+DB 11h 11h 22h 22h 99h 99h 44h 44h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B8h 99h 99h B9h 04h 00h F2h AFh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:0117
+Result:
+CX=0001h
+DI=0506h
+BX=0040h
+
+[REPNE-with-CX-zero-executes-nothing]
+Data in 1000:0500:
+DB 99h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B9h 00h 00h B8h 00h 00h 0Dh 00h 00h B0h 99h F2h AEh 9Ch 58h 25h 40h 00h 89h C3h
+BreakPoint: 1000:011C
+Result:
+DI=0500h
+CX=0000h
+BX=0040h
+
+[RET-imm16-pops-and-cleans-up-caller-stack]
+Data in 1000:0200:
+DB C2h 04h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 68h 11h 11h 68h 22h 22h E8h F7h 00h B9h 34h 12h 89h E2h
+BreakPoint: 1000:010E
+Result:
+CX=1234h
+DX=0000h
+
+[RETF-imm16-pops-far-and-cleans-up-caller-stack]
+Data in 2000:0200:
+DB CAh 02h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 68h 11h 11h 9Ah 00h 02h 00h 20h B9h 34h 12h 89h E2h 8Ch C8h
+BreakPoint: 1000:010F
+Result:
+CX=1234h
+DX=0000h
+AX=1000h
+
+[RETN-pops-return-address-and-advances-SP-by-two-only]
+Data in 1000:0200:
+DB C3h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB E8h FDh 00h B9h 34h 12h 89h E2h
+BreakPoint: 1000:0108
+Result:
+CX=1234h
+DX=0000h
+
+[ROL-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h C0h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 02h 00h D0h C0h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0003h
+CX=0801h
+DX=0004h
+SI=0000h
+
+[ROL-by-imm8-count-rotates-multiple-bits]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h C0h C0h 02h 89h C3h 9Ch 58h 25h 01h 00h 89h C1h B8h 02h 00h C0h C0h 07h 89h C2h 9Ch 58h 25h 01h 00h 89h C6h
+BreakPoint: 1000:011E
+Result:
+BX=0006h
+CX=0000h
+DX=0001h
+SI=0001h
+
+[ROR-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 01h 00h D0h C8h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 02h 00h D0h C8h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0080h
+CX=0801h
+DX=0001h
+SI=0000h
+
+[ROR-by-imm8-count-rotates-multiple-bits]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h C0h C8h 02h 89h C3h 9Ch 58h 25h 01h 00h 89h C1h B8h 02h 00h C0h C8h 07h 89h C2h 9Ch 58h 25h 01h 00h 89h C6h
+BreakPoint: 1000:011E
+Result:
+BX=00C0h
+CX=0001h
+DX=0004h
+SI=0000h
+
+[SAHF-loads-AH-into-flags-affects-JZ]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 44h 9Eh B9h 00h 00h 74h 03h B9h 99h 99h BAh 11h 11h B4h 00h 9Eh BBh 00h 00h 74h 03h BBh 99h 99h BEh 22h 22h
+BreakPoint: 1000:011C
+Result:
+CX=0000h
+DX=1111h
+BX=9999h
+SI=2222h
+
+[SAL-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 81h 00h D0h F0h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h 40h 00h D0h F0h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=0002h
+CX=0801h
+DX=0080h
+SI=0800h
+
+[SAR-by-1]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 84h 00h D0h F8h 89h C3h 9Ch 58h 25h 01h 08h 89h C1h B8h FFh 00h D0h F8h 89h C2h 9Ch 58h 25h 01h 08h 89h C6h
+BreakPoint: 1000:011C
+Result:
+BX=00C2h
+CX=0000h
+DX=00FFh
+SI=0001h
+
+[SBB-incorporates-carry-borrow]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h 0Dh 00h 00h BBh 03h 00h 19h D8h 89h C7h B4h 01h 9Eh B8h 05h 00h BBh 03h 00h 19h D8h
+BreakPoint: 1000:0118
+Result:
+DI=0002h
+AX=0001h
+
+[SBB-signed-overflow-with-borrow-in-sets-OF]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h B8h 00h 80h BBh 00h 00h 19h D8h 70h 05h BAh 00h 00h EBh 03h BAh 02h 00h
+BreakPoint: 1000:0113
+Result:
+AX=7FFFh
+DX=0002h
+
+[SCAS-byte-with-segment-override-ignored-still-uses-ES-DI]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h B8h 00h 20h 8Eh E0h BFh 00h 03h B0h 05h 64h AEh 9Ch 58h 25h 40h 00h
+Data in 1000:0300:
+DB 05h
+Data in 2000:0300:
+DB 99h
+BreakPoint: 1000:0116
+Result:
+AX=0040h
+DI=0301h
+
+[SCASB-single-both-directions]
+Data in 1000:0400:
+DB 05h 05h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 04h B0h 05h AEh 9Ch 58h 25h D1h 08h 89h C3h 89h F9h B0h 03h AEh 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:011E
+Result:
+BX=0040h
+CX=0401h
+DX=0091h
+DI=0402h
+
+[SCASD-single-both-directions]
+Data in 1000:0500:
+DB 05h 00h 00h 00h 05h 00h 00h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h 66h B8h 05h 00h 00h 00h 66h AFh 9Ch 58h 25h D1h 08h 89h C3h 89h F9h 66h B8h 03h 00h 00h 00h 66h AFh 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:0128
+Result:
+BX=0040h
+CX=0504h
+DX=0091h
+DI=0508h
+
+[SCASW-single-both-directions]
+Data in 1000:0500:
+DB 05h 00h 05h 00h
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh C0h BFh 00h 05h B8h 05h 00h AFh 9Ch 58h 25h D1h 08h 89h C3h 89h F9h B8h 03h 00h AFh 9Ch 58h 25h D1h 08h 89h C2h
+BreakPoint: 1000:0120
+Result:
+BX=0040h
+CX=0502h
+DX=0091h
+DI=0504h
+
+[SETA-sets-1-when-above-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 39h D8h 0Fh 97h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETAE-sets-1-when-equal-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 93h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETALC-undocumented-sets-AL-from-carry-flags-untouched]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B4h 01h 9Eh B0h 00h D6h 89h C3h 9Ch 5Eh 81h E6h 01h 00h B4h 00h 9Eh B0h FFh D6h 89h C2h 9Ch 58h 25h 01h 00h 89h C1h
+BreakPoint: 1000:011D
+Result:
+BX=01FFh
+SI=0001h
+DX=0000h
+CX=0000h
+
+[SETB-sets-1-when-below-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 0Fh 92h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETBE-sets-1-when-equal-unsigned]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 96h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETC-sets-1-when-carry-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F9h 0Fh 92h C1h
+BreakPoint: 1000:0104
+Result:
+CX=0001h
+
+[SETE-sets-1-when-comparison-is-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 94h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETE-writes-to-memory-operand-with-displacement-without-desyncing-IP]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 10h 8Eh D8h B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 94h 06h 00h 03h 8Ah 0Eh 00h 03h BAh 34h 12h
+BreakPoint: 1000:0119
+Result:
+CX=0001h
+DX=1234h
+
+[SETG-sets-1-when-signed-value-is-greater]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 39h D8h 0Fh 9Fh C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETGE-sets-1-when-signed-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 9Dh C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETL-sets-1-when-signed-value-is-less]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 0Fh 9Ch C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETLE-sets-1-when-signed-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 9Eh C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNA-sets-1-when-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 96h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNAE-sets-1-when-value-is-below]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 0Fh 92h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNB-sets-1-when-carry-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F8h 0Fh 93h C1h
+BreakPoint: 1000:0104
+Result:
+CX=0001h
+
+[SETNC-sets-1-when-carry-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB F8h 0Fh 93h C1h
+BreakPoint: 1000:0104
+Result:
+CX=0001h
+
+[SETNE-sets-1-when-values-are-different]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 0Fh 95h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNG-sets-1-when-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 9Eh C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNGE-sets-1-when-signed-value-is-less]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 0Fh 9Ch C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNL-sets-1-when-signed-values-are-equal]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 9Dh C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNLE-sets-1-when-signed-value-is-greater]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 03h 00h 39h D8h 0Fh 9Fh C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETNO-sets-1-when-overflow-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 0Fh 91h C1h
+BreakPoint: 1000:0105
+Result:
+CX=0001h
+
+[SETNP-sets-1-when-parity-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h 40h 0Fh 9Bh C1h
+BreakPoint: 1000:0107
+Result:
+CX=0001h
+
+[SETNS-sets-1-when-sign-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 0Fh 99h C1h
+BreakPoint: 1000:0105
+Result:
+CX=0001h
+
+[SETNZ-sets-1-when-zero-flag-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 03h 00h BBh 05h 00h 39h D8h 0Fh 95h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETO-sets-1-when-signed-overflow-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h FFh 7Fh BBh 01h 00h 01h D8h 0Fh 90h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETP-sets-1-when-parity-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 0Fh 9Ah C1h
+BreakPoint: 1000:0105
+Result:
+CX=0001h
+
+[SETPE-sets-1-when-parity-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB 31h C0h 0Fh 9Ah C1h
+BreakPoint: 1000:0105
+Result:
+CX=0001h
+
+[SETPO-sets-1-when-parity-is-clear]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h 40h 0Fh 9Bh C1h
+BreakPoint: 1000:0107
+Result:
+CX=0001h
+
+[SETS-sets-1-when-sign-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 00h 00h BBh 01h 00h 29h D8h 0Fh 98h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
+[SETZ-sets-1-when-zero-flag-is-set]
+EntryPoint: 1000:0100
+Data in 1000:0100:
+DB B8h 05h 00h BBh 05h 00h 39h D8h 0Fh 94h C1h
+BreakPoint: 1000:010B
+Result:
+CX=0001h
+
 [SGDT-and-SIDT-write-real-GDTR-IDTR-loaded-by-LGDT-LIDT]
 EntryPoint: 1000:0100
 Data in 1000:0300:

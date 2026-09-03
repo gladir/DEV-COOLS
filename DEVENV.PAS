@@ -102247,6 +102247,24 @@ Begin
                   P.CPU.IP := Word(Integer(P.CPU.IP) + SmallInt(Imm16));
                 End;
                End;
+     $90..$9F: Begin { SETcc r/m8 (386+) - BOGUE REEL CORRIGE (2026-09-02,      }
+                { demande explicite de l utilisateur) : n etait pas implemente  }
+                { du tout, tombait dans le Else generique "opcode $0F inconnu" }
+                { ci-dessous qui n avance IP QUE de 2 octets sans tenir compte  }
+                { de l octet ModRM (ni d un eventuel deplacement) - meme classe }
+                { de bogue deja corrigee pour MOVZX/MOVSX ($0F B6/B7/BE/BF) :   }
+                { desynchronisait le flux d instructions des que la cible n    }
+                { etait pas un registre direct, en plus de ne jamais ecrire la }
+                { valeur attendue. Ecrit 0 ou 1 dans la destination Eb selon la}
+                { meme condition que Jcc (Emu_TestCond), IP avance de 2+Op.Len.}
+                ModRM := Emu_FetchByte(P.CPU, 2);
+                Emu_DecodeModRM0F(P.CPU, ModRM, Op);
+                If Emu_TestCond(P.CPU, Imm8 And $F) Then
+                 Emu_PutOpByte(P.CPU, Op, 1)
+                Else
+                 Emu_PutOpByte(P.CPU, Op, 0);
+                Inc(P.CPU.IP, 2 + Op.Len);
+               End;
      Else
       Inc(P.CPU.IP, 2);
     End;
