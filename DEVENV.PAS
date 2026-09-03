@@ -115355,8 +115355,20 @@ Begin
   { (observe au pas 265124 pour MS-DOS) survient bien plus tard qu un        }
   { saut de renormalisation fait dans les toutes premieres instructions. }
   If P.CPU.Segs.CS <> 0 Then EmuLeftCS0 := True;
+  { BOGUE REEL CORRIGE (2026-09-02, retour a l enquete div0 BOOT sur demande }
+  { explicite de l utilisateur) : le plancher `>20` restait un FAUX POSITIF  }
+  { pour El Torito/isolinux - verifie en relancant un BOOT reel avec         }
+  { `LOG ON /EMUDIAG` sur le vrai debian-12.1.0-i386-netinst.iso : le VRAI   }
+  { retour a CS=0 legitime d isolinux (renormalisation initiale) survient    }
+  { au pas 21, un cran a peine au-dessus de l ancien seuil - EMUCS0.LOG se   }
+  { verrouillait donc sur CE saut legitime (etant a sens unique via          }
+  { EmuCS0Dumped) et ne capturait plus jamais le VRAI derapage tardif        }
+  { (~155000 pas pour Debian, ~265000 pour MS-DOS, voir [[project_devenv]]). }
+  { Seuil releve a 1000 : large marge au-dessus de tout renormalisation      }
+  { legitime observee (MS-DOS et El Torito compris), tres en dessous des     }
+  { deux vrais derapages connus. }
   If OptionsDlg.Data.DosLogDiag And (P.CPU.Segs.CS = 0) And
-     EmuLeftCS0 And (P.TotalSteps > 20) And (Not EmuCS0Dumped) Then Begin
+     EmuLeftCS0 And (P.TotalSteps > 1000) And (Not EmuCS0Dumped) Then Begin
    EmuCS0Dumped := True;
    {$I-} Assign(LogF_R, 'EMUCS0.LOG'); Rewrite(LogF_R);
    If IOResult = 0 Then Begin
