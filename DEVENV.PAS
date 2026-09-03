@@ -72745,6 +72745,13 @@ Begin
  If Col < 1 Then Col := 1;
 End;
 
+{ Forward : definies plus bas (menu contextuel "Copier/Coller dans le        }
+{ presse-papier", 2026-09-01), reutilisees ici pour Ctrl+Ins/Shift+Ins        }
+{ (2026-09-02, demande explicite de l utilisateur). }
+Procedure SetRealClipboardText(S: String); Forward;
+Function TermGetSelectedText(Var TP: TTerminalPanel): String; Forward;
+Procedure TermPasteFromClipboard(Var TP: TTerminalPanel); Forward;
+
 Procedure HandleTerminalEvent(Var TP: TTerminalPanel;
  Var Ev: TEvent);
 Var
@@ -73314,6 +73321,23 @@ Begin
    If TP.ScrollOffset < 0 Then TP.ScrollOffset := 0;
    TP.NeedRepaint := True;
    FullRepaintNeeded := True;
+  End;
+  { Ctrl+Ins/Shift+Ins : copier/coller presse-papiers (2026-09-02, demande }
+  { explicite de l utilisateur) - conventions Windows historiques,          }
+  { evitent le conflit de Ctrl+C (deja affecte a l abandon/rupture d une    }
+  { commande en cours via EmuDbg_PollCrtBreak, voir CSCRIPT/PSCRIPT) et de  }
+  { Ctrl+V (non affecte ici mais reserve par coherence avec le menu         }
+  { contextuel). Reutilise telles quelles TermGetSelectedText/              }
+  { SetRealClipboardText/TermPasteFromClipboard deja ecrites pour le menu   }
+  { contextuel "Copier/Coller dans le presse-papier" (2026-09-01). }
+  If Ev.KeyCode = $52 Then Begin { Insert }
+   If (Ev.ShiftState And 2) <> 0 Then Begin { Ctrl+Ins : copier }
+    SetRealClipboardText(TermGetSelectedText(TP));
+   End Else If (Ev.ShiftState And 1) <> 0 Then Begin { Shift+Ins : coller }
+    TermPasteFromClipboard(TP);
+    TP.NeedRepaint := True;
+    FullRepaintNeeded := True;
+   End;
   End;
  End;
 End;
