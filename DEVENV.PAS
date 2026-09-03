@@ -86166,6 +86166,11 @@ Begin
       R8 := A Or B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      { BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur           }
+      { SingleStepTests/8086 - 3021/3021 echecs identiques, diff exact     }
+      { bit AF) : le vrai 8086 force AF=0 pour OR/AND/XOR (indefini par     }
+      { l ISA mais constant sur le silicium reel), jamais efface ici. }
+      Exclude(C.Flags.s, EFG_AF);
      End;
   2: Begin { ADC }
       R := LongInt(A) + B + OldCF;
@@ -86193,6 +86198,7 @@ Begin
       R8 := A And B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir OR ci-dessus }
      End;
   5, 7: Begin { SUB / CMP }
       R := LongInt(A) - B;
@@ -86209,6 +86215,7 @@ Begin
       R8 := A Xor B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir OR ci-dessus }
      End;
   Else
    R8 := 0;
@@ -86241,10 +86248,11 @@ Begin
       If (((A Xor B) Xor R16) And $10) <> 0
        Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
-  1: Begin
+  1: Begin { OR }
       R16 := A Or B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir Emu_AluByte }
      End;
   2: Begin { ADC }
       R := LongInt(A) + B + OldCF;
@@ -86268,10 +86276,11 @@ Begin
       If (((A Xor B) Xor R16) And $10) <> 0
        Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
-  4: Begin
+  4: Begin { AND }
       R16 := A And B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir Emu_AluByte }
      End;
   5, 7: Begin { SUB / CMP }
       R := LongInt(A) - B;
@@ -86284,10 +86293,11 @@ Begin
       If (((A Xor B) Xor R16) And $10) <> 0
        Then Include(C.Flags.s, EFG_AF) Else Exclude(C.Flags.s, EFG_AF);
      End;
-  6: Begin
+  6: Begin { XOR }
       R16 := A Xor B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir Emu_AluByte }
      End;
   Else
    R16 := 0;
@@ -86327,6 +86337,7 @@ Begin
       R32 := A Or B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir Emu_AluByte }
      End;
   2: Begin { ADC }
       R := Int64(LongWord(A)) + LongWord(B) + OldCF;
@@ -86354,6 +86365,7 @@ Begin
       R32 := A And B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir Emu_AluByte }
      End;
   5, 7: Begin { SUB / CMP }
       R := Int64(LongWord(A)) - LongWord(B);
@@ -86370,6 +86382,7 @@ Begin
       R32 := A Xor B;
       Exclude(C.Flags.s, EFG_CF);
       Exclude(C.Flags.s, EFG_OF);
+      Exclude(C.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir Emu_AluByte }
      End;
   Else
    R32 := 0;
