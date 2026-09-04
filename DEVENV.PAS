@@ -38367,6 +38367,81 @@ Begin
    'volume monte.');
 End;
 
+{ --- COPY-ITEMPROPERTY (PowerShell dev) --- }
+{ Seule la propriete FAT Attributes est modelisee par ce terminal. Les bits }
+{ structurels Repertoire/Etiquette-volume du destinataire restent inchanges. }
+Procedure TermCmd_CopyItemProperty(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, PathArg, DestArg, NameArg: String;
+ PathFlagPos, DestFlagPos, NameFlagPos: Integer;
+ SrcIdx, DstIdx: Byte;
+ SrcAbs, DstAbs: String;
+ SrcAttr, DstAttr: Byte;
+ SrcCluster, SrcSize, DstCluster, DstSize: LongInt;
+ NewAttr: Byte;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ DestFlagPos := System.Pos('-DESTINATION', UpParams);
+ NameFlagPos := System.Pos('-NAME', UpParams);
+ If PathFlagPos > 0 Then
+  PathArg := TrimStr(TermExtractParam(Copy(ParamStr, PathFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else
+  PathArg := TermExtractParam(ParamStr, 1);
+ If DestFlagPos > 0 Then
+  DestArg := TrimStr(TermExtractParam(Copy(ParamStr, DestFlagPos + 12,
+   Length(ParamStr)), 1))
+ Else
+  DestArg := TermExtractParam(ParamStr, 2);
+ If NameFlagPos > 0 Then
+  NameArg := TrimStr(TermExtractParam(Copy(ParamStr, NameFlagPos + 5,
+   Length(ParamStr)), 1))
+ Else
+  NameArg := '';
+ If (PathArg = '') Or (DestArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Copy-ItemProperty -Path source ' +
+   '-Destination destination [-Name Attributes]');
+  Exit;
+ End;
+ If (NameArg <> '') And (TermStrToUpper(NameArg) <> 'ATTRIBUTES') Then Begin
+  TermAddLine(TP, 'Copy-ItemProperty : seule la propriete "Attributes" ' +
+   'est modelisee ici.');
+  Exit;
+ End;
+ If Not Term_ResolveVirtTarget(TP, PathArg, SrcIdx, SrcAbs) Then Begin
+  TermAddLine(TP, 'Copy-ItemProperty : la source doit etre sur un volume ' +
+   'FAT monte.');
+  Exit;
+ End;
+ If Not Term_ResolveVirtTarget(TP, DestArg, DstIdx, DstAbs) Then Begin
+  TermAddLine(TP, 'Copy-ItemProperty : la destination doit etre sur un ' +
+   'volume FAT monte.');
+  Exit;
+ End;
+ If SrcIdx <> DstIdx Then Begin
+  TermAddLine(TP, 'Copy-ItemProperty : source et destination doivent etre ' +
+   'sur le meme volume FAT.');
+  Exit;
+ End;
+ If Not Fat_FindPath(SrcIdx, SrcAbs, SrcAttr, SrcCluster, SrcSize) Then Begin
+  TermAddLine(TP, 'Copy-ItemProperty : source introuvable : ' + PathArg);
+  Exit;
+ End;
+ If Not Fat_FindPath(DstIdx, DstAbs, DstAttr, DstCluster, DstSize) Then Begin
+  TermAddLine(TP, 'Copy-ItemProperty : destination introuvable : ' + DestArg);
+  Exit;
+ End;
+ NewAttr := (DstAttr And ($10 Or $08)) Or (SrcAttr And ($01 Or $02 Or
+  $04 Or $20));
+ If Fat_SetAttr(DstIdx, DstAbs, NewAttr) Then
+  TermAddLine(TP, 'Copy-ItemProperty : Attributes copie(s) de ' + PathArg +
+   ' vers ' + DestArg + '.')
+ Else
+  TermAddLine(TP, 'Copy-ItemProperty : echec de l''ecriture sur le volume ' +
+   'monte.');
+End;
+
 { --- CLEAR-VARIABLE / SET-VARIABLE (2026-08-31, REVISEES suite a une      }
 { demande explicite de l'utilisateur : "devrait etre possible de changer   }
 { les variables d'environnement [...] de l'executable de l'emulateur DOS   }
@@ -67131,6 +67206,8 @@ Begin
    '  Clear-ItemProperty f [-Name Attributes]  Efface RO/Hidden/Sys/' +
    'Archive (volume FAT monte)');
   TermAddLine(TP,
+   '  Copy-ItemProperty -Path f -Destination d  Copie Attributes FAT');
+  TermAddLine(TP,
    '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
    '(emulateur actif)');
   TermAddLine(TP,
@@ -67901,7 +67978,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 109;
+ PS_CMD_ALIASES = 110;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -67920,6 +67997,7 @@ Const
   'CLEAR-ITEM',
   'CLEAR-HISTORY',
   'CLEAR-ITEMPROPERTY',
+  'COPY-ITEMPROPERTY',
   'CLEAR-VARIABLE',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
@@ -68009,6 +68087,7 @@ Const
   15,
   16,
   17,
+  87,
   18,
   19,
   20,
@@ -68491,6 +68570,7 @@ Begin
     15: TermCmd_ClearItem(TP, ParamStr);
     16: TermCmd_ClearHistory(TP, ParamStr);
     17: TermCmd_ClearItemProperty(TP, ParamStr);
+    87: TermCmd_CopyItemProperty(TP, ParamStr);
     18: TermCmd_ClearVariable(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
