@@ -1,0 +1,596 @@
+==============================================================================
+     FORMAT DE BASE DES FICHIERS CSV
+==============================================================================
+
+CSV signifie Comma-Separated Values, ou « valeurs séparées par des virgules ».
+Ce format texte représente une table : chaque record est une ligne logique et
+chaque champ est une colonne.
+
+Ce document décrit le format commun de la RFC 4180, puis les variantes et les
+précautions nécessaires pour traiter les fichiers produits par des tableurs,
+des bases de données et les programmes du projet DEV-COOLS.
+
+Extension courante : .CSV
+Type MIME         : text/csv
+Référence         : RFC 4180
+                    https://www.rfc-editor.org/rfc/rfc4180.html
+
+IMPORTANT
+---------
+
+La RFC 4180 est informative : ce n'est pas une norme imposée à toutes les
+applications. En pratique, « CSV » désigne une famille de dialectes : virgule
+ou point-virgule, CRLF ou LF, UTF-8 ou page de codes locale, première ligne
+d'en-tête présente ou absente. Un échange fiable doit préciser son dialecte.
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Structure générale
+  2.  Records et fins de ligne
+  3.  Champs et séparateurs
+  4.  Guillemets et échappement
+  5.  Première ligne d'en-tête
+  6.  Champs vides, NULL et lignes vides
+  7.  Types de données
+  8.  Encodage des caractères
+  9.  Dialectes courants
+ 10.  Grammaire du format commun
+ 11.  Algorithme de lecture
+ 12.  Algorithme d'écriture
+ 13.  Validation et erreurs
+ 14.  Sécurité
+ 15.  Exemples
+ 16.  Lien avec DEV-COOLS
+ 17.  Profil recommandé
+
+==============================================================================
+1. STRUCTURE GÉNÉRALE
+==============================================================================
+
+Un fichier CSV est une suite de records textuels :
+
+  nom,age,ville<CRLF>
+  Alice,30,Paris<CRLF>
+  Bob,25,Lyon<CRLF>
+
+Les notations <CRLF>, <CR> et <LF> de ce document désignent des caractères de
+contrôle; elles ne sont pas écrites littéralement dans le fichier.
+
+Le CSV ne comporte normalement ni signature, ni compteur de records, ni
+description binaire des colonnes. Sa structure est déduite du séparateur, des
+guillemets et, éventuellement, de la première ligne.
+
+Un record est une ligne LOGIQUE. Il peut occuper plusieurs lignes PHYSIQUES si
+un champ entre guillemets contient un retour à la ligne.
+
+==============================================================================
+2. RECORDS ET FINS DE LIGNE
+==============================================================================
+
+La RFC 4180 emploie CRLF :
+
+  CR = $0D
+  LF = $0A
+  fin de record = CR suivi de LF
+
+Le dernier record peut être suivi ou non d'une fin de ligne. Les deux formes
+sont admises :
+
+  a,b,c<CRLF>
+  d,e,f<CRLF>
+
+et :
+
+  a,b,c<CRLF>
+  d,e,f<EOF>
+
+Les fichiers Unix utilisent souvent LF seul et les anciens fichiers Macintosh
+CR seul. Un lecteur tolérant peut accepter les trois formes, mais un générateur
+visant la RFC 4180 doit produire CRLF.
+
+Un CR, LF ou CRLF situé dans un champ cité appartient à la valeur :
+
+  id,commentaire<CRLF>
+  1,"première ligne<CRLF>
+  seconde ligne"<CRLF>
+
+Ce fichier contient deux records, et non trois.
+
+==============================================================================
+3. CHAMPS ET SÉPARATEURS
+==============================================================================
+
+Dans le format commun, le séparateur est la virgule $2C :
+
+  alpha,beta,gamma
+
+Les champs sont positionnels. Chaque record devrait avoir le même nombre de
+champs que les autres records et que l'en-tête, s'il existe.
+
+Les espaces sont significatifs. Dans :
+
+  alpha, beta ,gamma
+
+la deuxième valeur commence et finit par un espace. Un lecteur conforme ne doit
+pas appliquer automatiquement Trim().
+
+Les séparateurs consécutifs ou terminaux créent des champs vides :
+
+  a,b,    -> trois champs : "a", "b", ""
+  ,a      -> deux champs : "", "a"
+  ,,      -> trois champs vides
+
+Il ne faut donc pas supprimer une virgule terminale.
+
+==============================================================================
+4. GUILLEMETS ET ÉCHAPPEMENT
+==============================================================================
+
+4.1 CHAMP NON CITÉ
+------------------
+
+Un champ simple est écrit directement. Dans le profil RFC 4180, il ne peut
+contenir ni virgule, ni guillemet double, ni CR, ni LF.
+
+4.2 CHAMP CITÉ
+--------------
+
+Un champ peut être entouré de guillemets doubles $22 :
+
+  "Alice"
+  "Montréal, Québec"
+
+Les guillemets extérieurs ne font pas partie de la valeur. Ils sont nécessaires
+si la valeur contient le séparateur, un guillemet double, CR ou LF. Un
+générateur peut aussi citer tous les champs :
+
+  "Alice","30","Paris"
+
+4.3 GUILLEMET DANS UNE VALEUR
+-----------------------------
+
+Chaque guillemet contenu dans une valeur citée est doublé :
+
+  valeur logique : Il a dit "Bonjour".
+  champ CSV      : "Il a dit ""Bonjour""."
+
+La barre oblique inverse n'est pas l'échappement CSV. Les apostrophes ne
+délimitent pas non plus les champs. La valeur suivante contient donc une
+virgule séparatrice dans le format commun :
+
+  'Alice, Bob'
+
+4.4 APRÈS LE GUILLEMET FERMANT
+------------------------------
+
+Dans un fichier strict, le caractère suivant le guillemet fermant doit être le
+séparateur, la fin du record ou EOF. Ceci est invalide :
+
+  "abc"xyz,42
+
+Certains lecteurs tolèrent des espaces avant la virgule, mais ce comportement
+n'est pas portable et peut modifier la valeur.
+
+==============================================================================
+5. PREMIÈRE LIGNE D'EN-TÊTE
+==============================================================================
+
+La première ligne peut contenir les noms des colonnes :
+
+  nom,age,ville
+  Alice,30,Paris
+
+Elle suit les mêmes règles que les autres records. L'en-tête est facultatif et
+le fichier seul ne permet pas toujours de savoir s'il est présent. Le paramètre
+MIME header peut l'indiquer :
+
+  Content-Type: text/csv; charset=utf-8; header=present
+  Content-Type: text/csv; charset=utf-8; header=absent
+
+Sans métadonnée externe, une première ligne textuelle n'est pas nécessairement
+un en-tête. Une table peut légitimement ne contenir que du texte.
+
+Bonnes règles pour les noms de colonnes :
+
+  - noms uniques et non vides;
+  - aucun espace accidentel au début ou à la fin;
+  - ordre stable;
+  - échappement identique aux autres valeurs;
+  - règles de casse documentées.
+
+==============================================================================
+6. CHAMPS VIDES, NULL ET LIGNES VIDES
+==============================================================================
+
+CSV ne définit pas de valeur NULL universelle :
+
+  a,,c        le deuxième champ est une chaîne vide
+  a,"",c      le deuxième champ est aussi une chaîne vide selon la RFC
+
+Certaines applications distinguent ces deux écritures ou emploient NULL, NA,
+ou une autre sentinelle. Cette convention est extérieure au format et doit être
+documentée pour éviter une collision avec une vraie chaîne.
+
+Une ligne sans caractère est ambiguë. La grammaire peut la voir comme un record
+ayant un champ vide, tandis que certains outils l'ignorent. Une ligne contenant
+une virgule représente sans ambiguïté deux champs vides.
+
+Ne pas ignorer automatiquement les lignes vides : elles peuvent aussi se trouver
+à l'intérieur d'un champ multi-ligne et y être significatives.
+
+==============================================================================
+7. TYPES DE DONNÉES
+==============================================================================
+
+Le CSV n'enregistre aucun type. Toutes les valeurs sont des séquences de
+caractères. Les types viennent d'un schéma externe ou sont inférés par le
+logiciel importateur.
+
+Ambiguïtés fréquentes :
+
+  00123        texte avec zéros initiaux ou entier 123
+  1,234        deux champs ou nombre anglais si la valeur devait être citée
+  1,23         deux champs ou décimal français dans un dialecte à ';'
+  03/04/05     date ambiguë
+  2026-09-03   texte ou date ISO
+  TRUE         texte ou booléen
+  1E10         texte ou notation scientifique
+  12345678901234567890  entier risquant de perdre sa précision
+
+Un lecteur générique devrait conserver le texte exact avant d'appliquer un
+schéma. L'inférence doit pouvoir être désactivée.
+
+Profil conseillé pour les types :
+
+  - nombres : chiffres ASCII, signe '-' et point décimal;
+  - dates : YYYY-MM-DD;
+  - date/heure : ISO 8601 avec fuseau explicite;
+  - booléens : true et false;
+  - NULL : convention externe documentée;
+  - identifiants et codes : toujours du texte.
+
+Les guillemets CSV protègent la syntaxe mais ne garantissent pas qu'un tableur
+conservera le type texte. Même "00123" peut être converti automatiquement.
+
+==============================================================================
+8. ENCODAGE DES CARACTÈRES
+==============================================================================
+
+Le type text/csv accepte un paramètre charset facultatif. Le fichier lui-même
+n'impose pas un encodage détectable.
+
+UTF-8 est recommandé pour les nouveaux fichiers. Il faut néanmoins préciser :
+
+  - UTF-8 sans BOM : courant sous Unix et sur le Web;
+  - UTF-8 avec BOM EF BB BF : parfois utile aux tableurs Windows;
+  - pages ANSI/OEM : fréquentes dans les anciens exports;
+  - UTF-16 avec BOM : produit par certains outils, mais incompatible avec un
+    parseur qui suppose des octets ASCII ou UTF-8.
+
+Un BOM UTF-8 éventuel appartient au début du fichier, pas au nom de la première
+colonne. Le lecteur doit le retirer avant d'analyser le premier champ.
+
+On ne peut pas déduire fiablement l'encodage de l'extension .CSV. Sans charset
+ni BOM, le programme devrait permettre à l'utilisateur de le choisir au lieu de
+remplacer silencieusement les caractères invalides.
+
+==============================================================================
+9. DIALECTES COURANTS
+==============================================================================
+
+9.1 POINT-VIRGULE
+------------------
+
+Lorsque la virgule sert de séparateur décimal, les tableurs emploient souvent
+le point-virgule :
+
+  produit;prix;quantité
+  Stylo;1,25;4
+
+Ce n'est pas le profil RFC 4180. Les règles de citation restent habituellement
+les mêmes, mais c'est alors le point-virgule qui impose les guillemets.
+
+9.2 TSV ET AUTRES SÉPARATEURS
+-----------------------------
+
+Une tabulation produit plutôt un fichier TSV, de type
+text/tab-separated-values. Barre verticale, deux-points et autres séparateurs
+définissent des formats délimités apparentés, pas du CSV strict.
+
+9.3 DIRECTIVE sep=
+------------------
+
+Certains tableurs reconnaissent une première ligne spéciale :
+
+  sep=;
+
+C'est une convention applicative, pas un en-tête RFC 4180. Sa prise en charge
+doit être explicite et cette ligne ne doit alors pas devenir un record.
+
+9.4 AUTRES EXTENSIONS NON STANDARD
+----------------------------------
+
+On rencontre aussi une barre oblique inverse comme échappement, des apostrophes
+comme délimiteurs, des commentaires '#', la suppression des espaces ou un
+nombre variable de colonnes. Ces choix doivent être configurables et rester
+séparés du mode strict.
+
+==============================================================================
+10. GRAMMAIRE DU FORMAT COMMUN
+==============================================================================
+
+Grammaire simplifiée inspirée de la RFC 4180 :
+
+  fichier      = [en-tête CRLF] record *(CRLF record) [CRLF]
+  en-tête      = champ *(virgule champ)
+  record       = champ *(virgule champ)
+  champ        = champ-cité / champ-simple
+  champ-cité   = guillemet *(texte / virgule / CR / LF / deux-guillemets)
+                 guillemet
+  champ-simple = zéro ou plusieurs caractères ordinaires
+
+Cette grammaire montre que :
+
+  - ReadLn seul ne suffit pas si un champ cité contient une fin de ligne;
+  - Split(',') coupe à tort les virgules citées et perd souvent les champs vides
+    situés en fin de record.
+
+==============================================================================
+11. ALGORITHME DE LECTURE
+==============================================================================
+
+Un analyseur correct est une machine à états qui lit le flux caractère par
+caractère.
+
+États principaux :
+
+  DÉBUT_CHAMP      aucun caractère du champ n'a été lu
+  CHAMP_SIMPLE     lecture d'un champ non cité
+  CHAMP_CITÉ       lecture entre guillemets
+  APRÈS_GUILLEMET  guillemet de fermeture potentiel rencontré
+
+Transitions depuis DÉBUT_CHAMP :
+
+  séparateur -> produire un champ vide et rester à DÉBUT_CHAMP
+  guillemet  -> passer à CHAMP_CITÉ
+  fin record -> produire un champ vide et terminer le record
+  autre      -> ajouter le caractère et passer à CHAMP_SIMPLE
+
+Transitions depuis CHAMP_SIMPLE :
+
+  séparateur -> produire le champ et passer à DÉBUT_CHAMP
+  fin record -> produire le champ et terminer le record
+  guillemet  -> erreur en mode strict
+  autre      -> ajouter le caractère
+
+Transitions depuis CHAMP_CITÉ :
+
+  guillemet  -> passer à APRÈS_GUILLEMET
+  autre      -> ajouter le caractère, y compris CR et LF
+
+Transitions depuis APRÈS_GUILLEMET :
+
+  guillemet  -> ajouter un guillemet et retourner à CHAMP_CITÉ
+  séparateur -> produire le champ et passer à DÉBUT_CHAMP
+  fin record -> produire le champ et terminer le record
+  EOF        -> produire le champ et terminer le fichier
+  autre      -> erreur en mode strict
+
+À EOF, l'état CHAMP_CITÉ signale un guillemet fermant manquant. Si EOF arrive
+juste après un séparateur, le dernier champ vide doit encore être produit.
+
+==============================================================================
+12. ALGORITHME D'ÉCRITURE
+==============================================================================
+
+Pour chaque valeur :
+
+  1. la convertir en texte selon le schéma convenu;
+  2. rechercher séparateur, guillemet, CR ou LF;
+  3. si l'un est présent, doubler chaque guillemet;
+  4. entourer le résultat de guillemets doubles;
+  5. sinon écrire la valeur telle quelle;
+  6. écrire le séparateur entre les champs;
+  7. terminer le record par CRLF dans le profil RFC.
+
+Pseudo-code :
+
+  fonction ÉchapperCSV(valeur, séparateur):
+    si valeur contient séparateur, guillemet, CR ou LF alors
+      retourner guillemet + DoublerGuillemets(valeur) + guillemet
+    sinon
+      retourner valeur
+
+Exemples :
+
+  Alice                   -> Alice
+  Montréal, Québec        -> "Montréal, Québec"
+  Il dit "oui"            -> "Il dit ""oui"""
+  ligne une<LF>ligne deux -> "ligne une<LF>ligne deux"
+
+Citer aussi les valeurs ayant des espaces initiaux ou finaux améliore
+l'interopérabilité, même si ces espaces sont licites sans citation.
+
+==============================================================================
+13. VALIDATION ET ERREURS
+==============================================================================
+
+Un validateur strict vérifie :
+
+  - guillemets correctement fermés;
+  - doublement de chaque guillemet interne;
+  - aucun caractère après la citation sauf séparateur ou fin;
+  - même nombre de champs dans tous les records;
+  - cohérence de l'en-tête avec les données;
+  - encodage valide;
+  - limites de taille de champ, record et fichier;
+  - absence d'octet NUL si le profil texte l'interdit.
+
+Un mode tolérant peut accepter LF, CR, espaces après citation ou colonnes
+irrégulières, mais doit rendre chaque tolérance configurable et signaler les
+anomalies sans modifier silencieusement les valeurs.
+
+Les limites doivent être appliquées pendant la lecture. Un champ cité sans
+guillemet fermant ne doit pas pouvoir accumuler tout le fichier en mémoire.
+
+==============================================================================
+14. SÉCURITÉ
+==============================================================================
+
+14.1 INJECTION DE FORMULE
+-------------------------
+
+Un tableur peut interpréter comme formule une cellule commençant notamment par
+=, +, -, @, tabulation ou retour chariot. Mettre la valeur entre guillemets CSV
+ne neutralise pas la formule; ces guillemets protègent seulement la syntaxe.
+
+Si des données non fiables sont destinées à un tableur, appliquer une politique
+explicite : refuser les valeurs dangereuses, les préfixer selon le tableur ciblé
+ou forcer la colonne comme texte à l'importation. Toute transformation modifie
+la donnée et doit être documentée; il n'existe pas de solution universelle.
+
+14.2 AUTRES RISQUES
+-------------------
+
+  - épuisement de mémoire par champ immense ou citation non fermée;
+  - nombre excessif de colonnes ou de records;
+  - confusion de colonnes causée par un mauvais séparateur;
+  - perte de précision et conversion automatique des dates;
+  - injection SQL si les valeurs sont concaténées à une requête;
+  - injection HTML/XML si la sortie n'est pas échappée à nouveau;
+  - caractères de contrôle ou NUL dans les champs.
+
+Un convertisseur CSV vers SQL doit employer des requêtes paramétrées. Échapper
+les apostrophes est utile pour certains littéraux SQL, mais ne remplace ni la
+paramétrisation ni la validation des noms de tables et colonnes.
+
+==============================================================================
+15. EXEMPLES
+==============================================================================
+
+15.1 FICHIER SIMPLE
+-------------------
+
+  Nom,Age,Ville
+  Alice,30,Paris
+  Bob,25,Lyon
+
+15.2 VIRGULE ET GUILLEMETS
+--------------------------
+
+  Nom,Adresse,Commentaire
+  Alice,"12, rue Principale","Elle a dit ""Bonjour""."
+
+Valeurs du second record :
+
+  [0] Alice
+  [1] 12, rue Principale
+  [2] Elle a dit "Bonjour".
+
+15.3 CHAMPS VIDES
+------------------
+
+  A,B,C,D
+  1,,3,
+
+Le deuxième record comporte quatre champs : "1", "", "3" et "".
+
+15.4 CHAMP MULTI-LIGNE
+----------------------
+
+  id,note
+  1,"ligne une
+  ligne deux"
+  2,fin
+
+Il y a trois records logiques : l'en-tête et deux records de données.
+
+15.5 DIALECTE FRANÇAIS
+----------------------
+
+  Produit;Prix;Description
+  Stylo;1,25;Bleu
+  Cahier;3,50;"Format A4; 96 pages"
+
+Le point-virgule dans la dernière valeur impose les guillemets.
+
+==============================================================================
+16. LIEN AVEC DEV-COOLS
+==============================================================================
+
+16.1 DATA.CSV
+-------------
+
+Le fichier DATA.CSV du dépôt est un exemple simple :
+
+  "Nom","Age","Ville"
+  "Alice",30,"Paris"
+  "Bob",25,"Lyon"
+  "Carol",35,"Marseille"
+
+Il utilise la virgule, un en-tête et des guillemets autour des champs textuels.
+Il ne contient aucun séparateur interne, guillemet échappé ou champ multi-ligne.
+
+16.2 CODEQL.PAS
+----------------
+
+CsvEscField dans CODEQL.PAS applique la règle essentielle : elle cite un champ
+contenant virgule, guillemet, CR ou LF et double les guillemets internes.
+WriteResultCSV génère une première ligne contenant les noms des colonnes.
+
+Ce comportement est recommandé pour les nouveaux générateurs du projet.
+L'encodage et la fin de ligne restent dépendants du runtime Pascal et de la
+plate-forme et doivent être fixés pour une reproductibilité octet par octet.
+
+16.3 CSV2SQL.PAS
+----------------
+
+CSV2SQL.PAS lit actuellement avec ReadLn et coupe à chaque virgule. Cela suffit
+pour DATA.CSV, mais ne forme pas un parseur CSV complet. Il ne gère pas :
+
+  - les virgules à l'intérieur de champs cités;
+  - les guillemets internes doublés;
+  - les retours à la ligne dans un champ cité;
+  - certains champs vides;
+  - les nombres variables de colonnes;
+  - l'encodage et le BOM;
+  - la distinction entre chaîne vide et NULL.
+
+Une évolution devrait employer la machine à états de la section 11, valider
+l'en-tête et produire du SQL paramétré ou échapper séparément identificateurs
+SQL et valeurs.
+
+==============================================================================
+17. PROFIL RECOMMANDÉ
+==============================================================================
+
+Profil conseillé pour les fichiers générés par DEV-COOLS :
+
+  Séparateur       virgule $2C
+  Guillemets       doubles $22
+  Échappement      doublement des guillemets
+  Fin de record    CRLF
+  Encodage         UTF-8, choix du BOM documenté
+  En-tête          présent, noms uniques
+  Colonnes         nombre identique dans tous les records
+  Dates            ISO 8601
+  Décimaux         point, sans séparateur de milliers
+  NULL             convention externe explicitement documentée
+  Type MIME        text/csv; charset=utf-8; header=present
+
+Lors de la lecture, séparateur, encodage, présence de l'en-tête et politique
+NULL devraient être des paramètres explicites. Une détection automatique peut
+aider, mais son résultat doit rester visible et modifiable.
+
+Résumé :
+
+  - ne jamais analyser un CSV complet avec Split(',');
+  - ne pas considérer chaque ligne physique comme un record;
+  - préserver champs vides, espaces et retours à la ligne;
+  - doubler les guillemets contenus dans un champ cité;
+  - citer toute valeur contenant séparateur, guillemet, CR ou LF;
+  - ne pas inventer de types ou de NULL sans schéma;
+  - traiter encodage, dialecte et sécurité comme parties du contrat d'échange.
+

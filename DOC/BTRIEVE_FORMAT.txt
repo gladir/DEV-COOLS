@@ -1,0 +1,721 @@
+==============================================================================
+     FORMAT DE BASE DES FICHIERS BTRIEVE
+==============================================================================
+
+Ce document décrit le format physique des fichiers Btrieve classiques pour
+DOS, principalement les formats antérieurs à la version 6 et le nouveau format
+apparu avec Btrieve 6.x. Il est fondé sur les structures et les programmes de
+lecture directe conservés dans C:\BACKUP\BTRIEVE, notamment BTRIEVE.H,
+BTATR.C, BTKEY.C, DUMPDATA.C, DUMPFREE.C et LISTKEYS.C de Jim Kyle.
+
+Les fichiers réels POL.DAT, CUST.DAT, FILE.DDF, FIELD.DDF et INDEX.DDF du
+dossier Reilly ont servi à vérifier les signatures, les tailles de pages, les
+compteurs, les pages d'index et les pages de données.
+
+AVERTISSEMENT
+-------------
+
+Le format interne dépend de la version du moteur et de nombreuses options de
+création. Une écriture incorrecte peut détruire les données et les index. Il
+faut toujours travailler sur une copie. Pour réparer ou convertir une base, la
+méthode sûre reste l'emploi du moteur Btrieve/Pervasive correspondant et de ses
+outils RECOVER, SAVE, LOAD ou REBUILD.
+
+Ce document vise la lecture et l'identification. Il ne constitue pas une
+spécification suffisante pour réécrire toutes les variantes du format.
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Principes généraux
+  2.  Familles de formats
+  3.  Codage des nombres et des pointeurs
+  4.  Page FCR : en-tête du fichier
+  5.  Attributs du fichier
+  6.  Descripteurs de clés
+  7.  En-tête commun des pages
+  8.  Pages de données à longueur fixe
+  9.  Enregistrements variables et pages de fragments
+ 10.  Pages d'index B-tree
+ 11.  PAT et adressage logique du format 6.x
+ 12.  Pages libres et récupération
+ 13.  Types de données des clés
+ 14.  Fichiers DDF et schéma logique
+ 15.  Exemples réels du dossier de référence
+ 16.  Stratégie de lecture sûre
+ 17.  Limites et références locales
+
+==============================================================================
+1. PRINCIPES GÉNÉRAUX
+==============================================================================
+
+Btrieve est un gestionnaire de fichiers indexés. Un même fichier contient :
+
+  - une ou deux copies du contrôle de fichier FCR;
+  - la définition physique des clés;
+  - des pages d'index organisées en arbres B-tree;
+  - des pages contenant les enregistrements fixes;
+  - éventuellement des pages de fragments pour les parties variables;
+  - des structures de gestion des pages et enregistrements libres;
+  - dans le format 6.x, des tables PAT traduisant page logique en page physique.
+
+La taille du fichier est normalement un multiple de la taille de page. Les
+tailles rencontrées dans les exemples sont 512, 2 048 et 3 584 octets; la
+documentation locale accepte des multiples de 512 jusqu'à 4 096 octets.
+
+Un fichier Btrieve ne contient pas nécessairement le nom et le type de tous ses
+champs applicatifs. Il connaît la longueur du record et les portions employées
+par les clés. La description relationnelle complète, lorsqu'elle existe, se
+trouve dans les fichiers dictionnaires FILE.DDF, FIELD.DDF et INDEX.DDF.
+
+==============================================================================
+2. FAMILLES DE FORMATS
+==============================================================================
+
+2.1 FORMAT ORIGINAL, AVANT 6.0
+------------------------------
+
+Le premier WORD du fichier vaut zéro. Le premier pointeur de page décrit la
+page logique zéro et le WORD situé à l'offset $0002 vaut également zéro. La
+première page est directement le FCR et contient aussi les descripteurs de clés
+à partir de l'offset $0110.
+
+Dans ce format, un numéro de page logique correspond directement à sa position
+physique :
+
+  offset_fichier = numéro_page * taille_page
+
+2.2 NOUVEAU FORMAT 6.x
+----------------------
+
+Les deux premiers octets contiennent les caractères "FC" sur disque, soit le
+WORD little-endian $4346. Le WORD à $0002, SeqNbr, vaut zéro. Les deux premières
+pages sont deux copies du FCR; on choisit celle dont le compteur Usage à $0004
+est le plus récent.
+
+Les pages 2 et 3 forment normalement la première paire de PAT. À partir de ce
+format, les références internes utilisent des pages logiques qu'il faut
+traduire par la PAT avant de calculer l'offset physique.
+
+2.3 TEST MINIMAL D'IDENTIFICATION
+---------------------------------
+
+  lire sig = WORD($0000), seq = WORD($0002), pagesize = WORD($0008)
+
+  si seq <> 0                       -> format non reconnu
+  sinon si sig = $0000              -> format original probable
+  sinon si sig = $4346              -> format 6.x probable
+  sinon                             -> pas un fichier Btrieve reconnu
+
+Il faut ensuite valider pagesize, la taille réelle du fichier et les autres
+champs du FCR. La seule signature ne suffit pas.
+
+==============================================================================
+3. CODAGE DES NOMBRES ET DES POINTEURS
+==============================================================================
+
+3.1 ENTIERS COURTS
+------------------
+
+Les BYTE occupent 1 octet et les WORD 2 octets. Les WORD sont little-endian.
+
+  00 0E -> $0E00 = 3 584, par exemple une taille de page
+
+3.2 DWORD « WORD-SWAPPED »
+--------------------------
+
+Plusieurs compteurs et pointeurs de record sur 32 bits ne sont pas un DWORD
+little-endian ordinaire. Les deux WORD de 16 bits sont intervertis, tandis que
+les octets de chaque WORD restent little-endian.
+
+Octets sur disque : W_hi faible, W_hi fort, W_lo faible, W_lo fort
+
+  valeur = (WORD[0..1] << 16) | WORD[2..3]
+
+Exemple réel, compteur Nrecs = 7 :
+
+  octets à $001A : 00 00 07 00
+  premier WORD   : $0000
+  second WORD    : $0007
+  valeur         : $00000007
+
+Les sources locales appellent cette opération swap(). Elle est utilisée pour
+Nrecs, Npages, Total et plusieurs pointeurs de record. Il ne faut pas appliquer
+aveuglément cette permutation à tous les champs de quatre octets.
+
+3.3 POINTEUR DE PAGE PGPTR, 4 OCTETS
+------------------------------------
+
+Format original :
+
+  +$00  WORD hi
+  +$02  WORD lo
+  numéro_page = (hi << 16) | lo
+
+Format 6.x :
+
+  +$00  BYTE hi
+  +$01  BYTE code       identifiant/type interne de page
+  +$02  WORD lo
+  numéro_logique = (hi << 16) | lo
+
+La valeur de page $FFFFFF, et selon le contexte $FFFFFFFF, représente un
+pointeur nul.
+
+3.4 POINTEUR DE RECORD RECPTR, 4 OCTETS
+---------------------------------------
+
+Un RECPTR est stocké sous la forme WORD-swapped décrite en 3.2. Dans le format
+original, la valeur peut être traitée comme un offset physique dans le fichier.
+Dans le format 6.x :
+
+  page_logique  = recptr div taille_page
+  offset_page   = recptr mod taille_page
+  page_physique = traduction_PAT(page_logique)
+  offset_fichier= page_physique * taille_page + offset_page
+
+3.5 POINTEUR DE FRAGMENT VRECPTR, 4 OCTETS
+-----------------------------------------
+
+  +$00  BYTE hi
+  +$01  BYTE lo
+  +$02  BYTE mid
+  +$03  BYTE fragment
+
+  numéro_page = (hi << 16) | (mid << 8) | lo
+
+Le dernier octet sélectionne un fragment dans la page variable. La convention
+de fin rencontrée par les utilitaires est page $FFFFFF ou fragment > 254.
+
+==============================================================================
+4. PAGE FCR : EN-TÊTE DU FICHIER
+==============================================================================
+
+FCR signifie File Control Record. La partie commune FCRTOP occupe $110 octets
+(272 octets). Les descripteurs de clés commencent immédiatement après.
+
+Offset Taille Nom          Description
+------ ------ ------------ --------------------------------------------------
+$0000  4      PgSeq/FC     Ancien : pointeur de page; 6.x : "FC", SeqNbr
+$0004  2/4    Usage        Ancien : compteur WORD; 6.x : compteur DWORD
+$0006  2      Version      Ancien seulement; appartient à Usage en 6.x
+$0008  2      PagSize      Taille d'une page en octets
+$000A  2      AccelFlags   État interne d'ouverture/mise à jour accélérée
+$000C  4      NxtReusePag  Première page supprimée réutilisable
+$0010  4      NxtReuseRec  Premier record supprimé réutilisable
+$0014  2      Nkeys        Nombre de clés
+$0016  2      RecLen       Longueur logique des données du record
+$0018  2      PhyLen       Longueur physique d'un emplacement de record
+$001A  4      Nrecs        Nombre de records, DWORD word-swapped
+$001E  4      LastAlloc    Ancien : dernière page allouée; réservé en 6.x
+$0022  2      Consistent   $FFFF signale un besoin de récupération
+$0024  2      ExtFile      Ancien : nombre de fichiers étendus; réservé 6.x
+$0026  4      Npages       Nombre de pages, DWORD word-swapped
+$002A  2      FreeBytes    Ancien : octets libres de la dernière page
+$002C  2      PrePages     Ancien : présence de pages preimage
+$002E  9      Owner        Nom de propriétaire codé
+$0037  1      OwnerFlags   Accès et chiffrement liés au propriétaire
+$0038  1      VRecsOkay    État des records variables/troncature
+$0039  3      VFree        6.x : pointeur 3 octets vers une page variable libre
+$003C  8      ACSName      Identificateur de séquence de classement ACS
+$0044  2      Extended     Ancien : $FFFF si fichier étendu
+$0046  2      Reserved     Réservé
+$0048  2      PreAlloc     Nombre de pages préallouées à la création
+$004A  2      Version      6.x : code de version du fichier
+$004C  2      PaPage       6.x : paire PAT de la première page non allouée
+$004E  2      PaOffset     6.x : position dans cette PAT
+$0050  2      PaLast       6.x : dernière page PAT du tableau
+$0052  2      LastOp       Dernière opération, biais inclus
+$0054  2      Reserved     Réservé
+$0056  28     Variant      Champs différents entre ancien format et 6.x
+$0072  2      DupOffset    Offset du premier pointeur de doublon dans le record
+$0074  1      NumDupes     Nombre de pointeurs de doublons
+$0075  1      NumUnused    Nombre de pointeurs inutilisés
+$0076  144    Variant      Ancien : PRE/EXTEND; 6.x : KAT, RI, pools libres
+$0106  2      UsrFlags     Attributs demandés à CREATE, voir section 5
+$0108  2      VarThresh    Seuil d'espace variable
+$010A  4      ACSPage      Page ACS ajoutée après création
+$010E  2      ComprLen     Longueur du record lorsque les données sont compressées
+
+Les zones Variant ne doivent pas être recopiées d'une version à l'autre. Dans
+la variante 6.x, on y trouve notamment :
+
+  $0056 DWORD MainBitMap   indique les FCR/PAT actifs
+  $005A 12    Backup       copie du pool libre
+  $0076 BYTE  KATSize      nombre de clés dans la KAT
+  $0077 BYTE  KATUsed      nombre de segments employés
+  $0078 WORD  KATOffset    offset de la Key Allocation Table depuis le FCR
+  $0094 4     RIData       pointeur vers les définitions d'intégrité référentielle
+  $0098 60    Free[5]      cinq ensembles de ressources libres simultanées
+  $00D8 BYTE  DupeRes      pointeurs de doublons réservés à la création
+  $00D9 BYTE  PrivDataSz   taille des données privées dans chaque record
+
+Dans l'ancien format, un Version négatif indique qu'un propriétaire a été
+défini; sa valeur absolue encode aussi la version minimale du moteur. Dans le
+format 6.x, la version se trouve à $004A.
+
+Chaque ensemble libre FSPSET contient un PGPTR de page libre, un RECPTR de
+record libre et un VRECPTR de fragment variable libre, soit 12 octets.
+
+4.1 CHOIX DU FCR ACTIF EN 6.x
+-----------------------------
+
+Lire les pages physiques 0 et 1. Si elles portent toutes deux la signature FC,
+comparer leur compteur Usage à $0004 et sélectionner la copie la plus récente.
+Les sources historiques utilisent une comparaison simple; un lecteur moderne
+doit aussi prévoir le retour à zéro du compteur et vérifier la cohérence des
+deux pages avant de décider.
+
+==============================================================================
+5. ATTRIBUTS DU FICHIER
+==============================================================================
+
+UsrFlags à $0106 est le bitmap fourni lors de la création :
+
+Masque  Nom local    Signification
+------  -----------  --------------------------------------------------------
+$0001   VARLEN       Records de longueur variable
+$0002   TRUNCBLK     Suppression des blancs finaux dans la partie variable
+$0004   PREALLOC     Pages préallouées
+$0008   COMPRDAT     Données compressées
+$0010   KEYONLY      Fichier ne contenant que des clés
+$0020   BALANCE      Équilibrage des index demandé
+$0040   KEEP10       Conserver environ 10 % d'espace variable
+$0080   KEEP20       Conserver environ 20 % d'espace variable
+$00C0   KEEP30       Conserver environ 30 % d'espace variable
+$0100   DUPPTRS      Pointeurs de doublons réservés
+$0200   RESERVE      Réservé
+$0400   SPECKEY      Numéros de clés spécifiés à la création
+$0800   USEVATS      Emploi des VAT dans le format 6.x
+
+Les bits $0040 et $0080 forment ensemble un champ à deux bits. S'il vaut zéro,
+les outils locaux emploient un seuil variable par défaut de 5 %.
+
+VRecsOkay à $0038 apporte une indication historique supplémentaire : une
+valeur non nulle signale des records variables et $FD signale la troncature des
+blancs. Pour classifier un fichier ancien, il faut examiner UsrFlags et
+VRecsOkay ensemble.
+
+OwnerFlags et le signe du code de version déterminent les droits du propriétaire
+et le chiffrement. Leur traitement complet dépend du moteur; les données Owner
+ne doivent pas être interprétées comme une chaîne en clair.
+
+==============================================================================
+6. DESCRIPTEURS DE CLÉS
+==============================================================================
+
+Les descripteurs SEGSPEC commencent à l'offset $0110 du FCR. Chaque segment
+occupe 30 octets. Une clé comporte un ou plusieurs segments consécutifs.
+
+Offset Taille Nom        Description
+------ ------ ---------- ----------------------------------------------------
++$00   4      Entry      Racine du B-tree; zéro pour certaines continuations
++$04   4      Total      Nombre d'entrées uniques, DWORD word-swapped
++$08   2      Kflags     Attributs du segment
++$0A   2      Siz        Longueur totale des données de tous les segments
++$0C   2      Klen       Taille physique d'un item, pointeurs compris
++$0E   2      PgMax      Nombre maximal d'items par page
++$10   2      PgMin      Nombre minimal d'items par page
++$12   2      DupOffset  Offset des pointeurs de doublons dans le record
++$14   2      Beg        Position du premier octet dans le record
++$16   2      Len        Longueur de ce segment
++$18   1      KeyID      Identifiant de clé en 6.x
++$19   3      ACSPage    Identifiant ACS en 6.1+; réservé auparavant
++$1C   1      ExTyp      Type étendu du segment, voir section 13
++$1D   1      NullVal    Octet représentant NULL pour ce segment
+
+Les champs Entry, Total, Siz, Klen, PgMax, PgMin et DupOffset sont significatifs
+surtout dans le premier segment d'une clé. Le bit $0010 de Kflags indique qu'un
+autre segment de la même clé suit. Le nombre de clés est Nkeys, mais le nombre
+de SEGSPEC peut donc être supérieur à Nkeys.
+
+6.1 DRAPEAUX Kflags
+-------------------
+
+Masque  Signification
+------  ---------------------------------------------------------------------
+$0001   Doublons autorisés
+$0002   Clé modifiable
+$0004   Ancien codage : segment binaire plutôt qu'ASCII
+$0008   NULL seulement si tous les segments sont NULL
+$0010   Un autre segment appartient à cette clé
+$0020   Séquence de classement alternative ACS
+$0040   Ordre décroissant
+$0080   Version 5 : index supplémentaire; 6.x : doublons répétés
+$0100   ExTyp contient un type étendu valide
+$0200   Clé manuelle / NULL si n'importe quel segment est NULL
+$0400   Sans ACS : insensible à la casse; avec ACS : ACS multiples
+
+Plusieurs bits changent de sens selon la version. Il faut déterminer la version
+du FCR avant de produire une interprétation définitive.
+
+Beg est un offset binaire à partir de zéro. Les outils de définition destinés à
+l'utilisateur présentent souvent START à partir de 1; START=1 devient donc
+Beg=0 dans SEGSPEC.
+
+==============================================================================
+7. EN-TÊTE COMMUN DES PAGES
+==============================================================================
+
+À l'exception des pages FC et PP du format 6.x, les pages commencent par :
+
+Offset Taille Nom    Description
+------ ------ ------ --------------------------------------------------------
++$00   4      PgSeq  Pointeur/identité de la page, dépend du format
++$04   2      Usage  Compteur d'usage et indicateur de catégorie
+
+Dans le format original, le bit $8000 de Usage identifie une page de données.
+Les utilitaires locaux parcourent toutes les pages, testent ce bit, puis lisent
+les emplacements fixes à partir de l'offset 6.
+
+Exemple POL.DAT, page 3 :
+
+  00 00 03 00 0F 80 ...
+  PgSeq désigne la page 3; Usage = $800F, donc page de données.
+
+Les pages d'index ont un Usage sans le bit $8000 et ajoutent les champs décrits
+à la section 10.
+
+==============================================================================
+8. PAGES DE DONNÉES À LONGUEUR FIXE
+==============================================================================
+
+Une page de données simple est organisée ainsi :
+
+  +-------------------------------------------+ offset 0
+  | PgSeq (4) | Usage (2)                    | 6 octets
+  +-------------------------------------------+ offset 6
+  | emplacement physique 0 (PhyLen octets)   |
+  +-------------------------------------------+
+  | emplacement physique 1 (PhyLen octets)   |
+  +-------------------------------------------+
+  | ...                                       |
+  +-------------------------------------------+
+  | bourrage éventuel                         |
+  +-------------------------------------------+ fin de page
+
+La capacité est :
+
+  records_par_page = (PagSize - 6) div PhyLen
+  perte_par_page   = (PagSize - 6) mod PhyLen
+
+RecLen représente les octets de données logiques. PhyLen comprend les champs
+internes nécessaires au moteur : pointeurs vers les listes libres, informations
+d'usage du format 6.x, pointeurs de doublons et pointeur vers la partie variable.
+La disposition exacte dépend des options; il est donc incorrect de supposer que
+les données commencent toujours après un préfixe fixe de quatre octets.
+
+Dans les records non compressés du format 6.x, les deux premiers octets de
+l'emplacement forment un compteur d'usage; zéro indique un emplacement libre.
+Dans plusieurs fichiers anciens, les utilitaires considèrent un emplacement
+libre lorsque tous ses octets, sauf le pointeur initial de quatre octets, sont
+nuls.
+
+DupOffset, NumDupes et NumUnused du FCR permettent de localiser et compter les
+pointeurs réservés aux clés qui autorisent des doublons. C'est une raison
+fréquente pour laquelle PhyLen est supérieur à RecLen.
+
+==============================================================================
+9. ENREGISTREMENTS VARIABLES ET PAGES DE FRAGMENTS
+==============================================================================
+
+Un record variable conserve une partie fixe dans son emplacement de page de
+données. Un VRECPTR placé après la partie fixe désigne le premier fragment de la
+partie variable. Les sources locales lisent aussi un WORD suivant ce pointeur
+pour restituer les blancs supprimés lorsque TRUNCBLK est actif.
+
+Une page de fragments utilise un tableau d'offsets WORD à la fin de la page. Le
+numéro fragment du VRECPTR sélectionne une entrée en remontant depuis la fin :
+
+  index = ((PagSize - 1) div 2) - numéro_fragment
+  début = table[index] & $7FFF
+
+La limite du fragment se déduit de l'entrée précédente non égale à $FFFF. Le
+bit $8000 de l'entrée indique, dans certaines anciennes variantes, la présence
+d'un VRECPTR en tête du fragment. Dans le format 6.x, ce pointeur de chaînage est
+toujours traité comme présent. Le chaînage continue jusqu'au pointeur nul.
+
+9.1 COMPRESSION
+---------------
+
+Les utilitaires étudiés reconnaissent les records fixes compressés et la
+combinaison compression + longueur variable. Le flux comprimé alterne :
+
+  - un WORD compteur suivi de ce nombre d'octets littéraux;
+  - un WORD compteur suivi d'un octet à répéter ce nombre de fois.
+
+L'alternance recommence jusqu'à la fin de la chaîne de fragments et peut
+traverser une frontière de page. L'octet d'algorithme placé dans l'emplacement
+fixe vaut zéro pour un record supprimé. Cette description suffit à reconnaître
+le mécanisme historique, mais une implémentation doit vérifier les compteurs et
+limiter strictement la taille décompressée.
+
+9.2 VAT
+-------
+
+Le bit USEVATS ($0800) signale une autre organisation des données variables du
+format 6.x. Les sources de référence locales déclarent explicitement cette
+variante non prise en charge. Un lecteur de base doit donc la détecter et la
+refuser plutôt que d'interpréter ses pointeurs comme des fragments ordinaires.
+
+==============================================================================
+10. PAGES D'INDEX B-TREE
+==============================================================================
+
+Chaque clé possède une racine Entry dans son premier SEGSPEC. Une page d'index
+commence par l'en-tête suivant :
+
+Offset Taille Nom    Description
+------ ------ ------ --------------------------------------------------------
++$00   4      PgSeq  Identité de cette page
++$04   2      Usage  Compteur d'utilisation
++$06   2      Count  Nombre d'items présents
++$08   4      Above  Sous-page située après le dernier item
+
+Les Count items suivent à l'offset $0C. Leur taille est Klen :
+
+  +----------------------+ 4 octets
+  | pointeur LessThan    | sous-arbre dont les valeurs sont inférieures
+  +----------------------+ Siz octets
+  | valeur de la clé     | concaténation des segments
+  +----------------------+ 4 octets ou davantage
+  | pointeur(s) record   | un ou plusieurs en cas de doublons
+  +----------------------+
+
+Le parcours en ordre est : sous-arbre LessThan, valeur courante et ses records,
+puis, après le dernier item, sous-arbre Above. Un pointeur de sous-page nul
+indique une feuille.
+
+Pour les clés composites, les Len octets de chaque segment sont concaténés; Siz
+est leur longueur totale. L'ordre binaire dépend de ExTyp, de DESCENDING, de la
+casse et de l'ACS. Lire les données brutes de la clé est donc plus simple que
+reproduire exactement son ordre de comparaison.
+
+Le nombre de pointeurs de records dans un item peut être estimé par :
+
+  (Klen - (4 + Siz)) div 4
+
+Cette formule doit être validée contre Klen et les attributs de doublons avant
+toute lecture.
+
+==============================================================================
+11. PAT ET ADRESSAGE LOGIQUE DU FORMAT 6.x
+==============================================================================
+
+PAT signifie Page Allocation Table. Chaque PAT existe en paire redondante; la
+copie ayant le compteur Usage le plus récent est retenue.
+
+En-tête PP d'une PAT :
+
+Offset Taille Nom    Description
+------ ------ ------ --------------------------------------------------------
++$00   2      sig    Signature "PP"
++$02   2      pair   Numéro de paire, à partir de zéro
++$04   4      Usage  Compteur de génération
++$08   ...           Entrées de traduction, 4 octets chacune
+
+Pour une page de taille P :
+
+  entrées_par_PAT = (P div 4) - 2
+
+La première paire est placée aux pages physiques 2 et 3. Lorsque le numéro
+logique dépasse la capacité d'une PAT, les sources avancent de P/4 pages
+physiques pour trouver la paire suivante.
+
+Chaque entrée est un DWORD word-swapped. Après permutation des WORD, ses 24 bits
+faibles donnent le numéro de page physique :
+
+  entrée = swap_words32(valeur_lue)
+  page_physique = entrée & $00FFFFFF
+
+$FFFFFF signifie qu'aucune page physique n'est associée. L'adresse d'une page
+logique est donc obtenue par consultation de la PAT, pas par une simple
+multiplication.
+
+==============================================================================
+12. PAGES LIBRES ET RÉCUPÉRATION
+==============================================================================
+
+Le format maintient des listes chaînées pour réutiliser l'espace supprimé :
+
+  - NxtReusePag pointe vers une page libre dans l'ancien format;
+  - NxtReuseRec pointe vers un record libre dans l'ancien format;
+  - le format 6.x emploie principalement les ensembles Free[0..4];
+  - chaque FSPSET contient page libre, record libre et fragment libre;
+  - les records supprimés contiennent le RECPTR du record libre suivant.
+
+Le marqueur de fin pour une chaîne de records est un pointeur dont les 24 bits
+faibles valent $FFFFFF. Dans le format 6.x, la partie page du RECPTR doit passer
+par la PAT avant d'être convertie en offset de fichier.
+
+Le champ Consistent à $0022 vaut $FFFF lorsque le fichier requiert une
+récupération. Cela doit être traité comme un avertissement sérieux : les listes
+libres, index et compteurs peuvent alors être incohérents entre eux.
+
+Les pages preimage de l'ancien format et les copies redondantes FCR/PAT du
+format 6.x protègent les mises à jour interrompues. Leur restauration complète
+dépasse ce format de base.
+
+==============================================================================
+13. TYPES DE DONNÉES DES CLÉS
+==============================================================================
+
+Lorsque Kflags contient EXTENDED ($0100), ExTyp décrit la comparaison à
+appliquer au segment :
+
+Code  Type Btrieve       Remarque
+----  -----------------  ----------------------------------------------------
+  0   String             Chaîne d'octets
+  1   Integer            Entier signé
+  2   Float              Virgule flottante
+  3   Date               Date Btrieve
+  4   Time               Heure Btrieve
+  5   Decimal            Décimal
+  6   Money              Monétaire
+  7   Logical            Booléen/logique
+  8   Numeric            Numérique
+  9   Bfloat             Flottant Btrieve
+ 10   Lstring            Chaîne préfixée par sa longueur
+ 11   Zstring            Chaîne terminée par zéro
+ 12   Note               Texte NOTE
+ 13   Lvar               Valeur variable préfixée par sa longueur
+ 14   Unsigned           Entier non signé
+ 15   AutoInc            Entier auto-incrémenté
+ 16   Bit                Champ de bits
+ 17   STS                Horodatage système
+
+Sans le bit EXTENDED, les sources assimilent le segment à ASCII, ou à binaire
+si le bit $0004 est actif. Le type de clé sert à trier et comparer; il ne décrit
+pas à lui seul le schéma complet du record.
+
+NULL est défini par NullVal avec les bits de politique $0008 et $0200. Selon les
+drapeaux, la clé est absente lorsque tous les segments valent NULL ou lorsqu'un
+seul segment vaut NULL.
+
+==============================================================================
+14. FICHIERS DDF ET SCHÉMA LOGIQUE
+==============================================================================
+
+Les Data Dictionary Files sont eux-mêmes des fichiers Btrieve ordinaires :
+
+  FILE.DDF   décrit les fichiers/tables, leur emplacement et certains attributs;
+  FIELD.DDF  décrit les champs, positions, longueurs et types;
+  INDEX.DDF  décrit les index et leurs segments.
+
+Ils permettent à des couches relationnelles et à des outils génériques de
+donner un sens aux octets des records. Ils ne font pas partie obligatoire de
+chaque fichier utilisateur et peuvent être absents ou désynchronisés.
+
+Pour une récupération sans DDF, on peut encore extraire RecLen octets et suivre
+les clés, mais les noms de colonnes et les types des champs non indexés restent
+inconnus. Un document applicatif externe, comme POL.DOC dans les exemples, est
+alors nécessaire.
+
+==============================================================================
+15. EXEMPLES RÉELS DU DOSSIER DE RÉFÉRENCE
+==============================================================================
+
+Les valeurs suivantes ont été lues directement dans les FCR :
+
+Fichier    Format    Page  Pages Records Clés RecLen PhyLen
+---------  --------  ----  ----- ------- ---- ------ ------
+POL.DAT    original  2048      4       8    2    127    135
+CUST.DAT   original  3584      5       7    3    298    314
+FIELD.DDF  original   512     18      30    4     32     48
+FILE.DDF   original   512      5       4    2     97     97
+INDEX.DDF  original   512      4      13    2     10     26
+
+POL.DAT illustre particulièrement bien la séparation des pages :
+
+  page 0 : FCR, PagSize=2048, Nkeys=2, Nrecs=8
+  page 1 : page d'index, Usage=$000F, Count=8
+  page 2 : page d'index, Usage=$000F, Count=8
+  page 3 : page de données, Usage=$800F
+
+Avec PhyLen=135, la capacité de sa page de données est :
+
+  (2048 - 6) div 135 = 15 emplacements
+
+Seulement huit sont actifs. POL.DOC confirme une longueur applicative de 127
+octets et deux clés : une clé composite po_num + sequence et une clé possku.
+POL.ASC fournit les huit lignes textuelles attendues, ce qui permet de vérifier
+l'extraction des records.
+
+CUST.DAT montre qu'un record applicatif peut commencer par des octets binaires
+nuls; il ne faut donc pas confondre un préfixe nul avec un emplacement libre sans
+tenir compte du format, de PhyLen et des règles d'usage.
+
+Les fichiers CINSTALL.DAT de 24 octets présents dans certains répertoires ne
+sont pas des bases Btrieve malgré leur extension .DAT. La validation de la
+signature et de la taille de page est indispensable.
+
+==============================================================================
+16. STRATÉGIE DE LECTURE SÛRE
+==============================================================================
+
+Procédure recommandée pour un inspecteur en lecture seule :
+
+  1. Ouvrir le fichier en mode binaire et obtenir sa taille réelle.
+  2. Lire au moins $110 octets sans supposer que tout .DAT est du Btrieve.
+  3. Identifier format original ou 6.x avec sig et SeqNbr.
+  4. Valider PagSize : multiple de 512, valeur prise en charge et non nulle.
+  5. Vérifier que la taille du fichier est un multiple de PagSize.
+  6. En 6.x, lire les deux FCR et choisir prudemment la copie active.
+  7. Décoder séparément WORD little-endian et DWORD word-swapped.
+  8. Vérifier RecLen <= PhyLen et PhyLen <= PagSize - 6.
+  9. Lire les SEGSPEC à partir de $110 en bornant le nombre total de segments.
+ 10. Rejeter tout Beg + Len dépassant la longueur logique du record.
+ 11. En 6.x, construire et valider la traduction PAT avant de suivre un PGPTR.
+ 12. Classer les pages d'après leur en-tête et les références connues.
+ 13. Pour chaque page de données, ne lire que (PagSize-6) div PhyLen slots.
+ 14. Pour les records variables, borner fragments, chaînages et taille totale.
+ 15. Détecter les cycles dans tous les arbres et listes chaînées.
+ 16. Si Consistent=$FFFF, signaler le besoin de récupération.
+ 17. Refuser les VAT et variantes inconnues plutôt que de deviner leur format.
+
+Contrôles supplémentaires :
+
+  - Npages ne doit pas dépasser le nombre de pages physiques sans explication;
+  - Count * Klen + $0C doit tenir dans une page d'index;
+  - Siz doit égaler la somme des Len des segments d'une clé;
+  - Klen doit être au moins égal à 4 + Siz + 4;
+  - les pointeurs de page traduits doivent rester dans le fichier;
+  - les offsets de record doivent être alignés sur un slot valide;
+  - Nrecs est un objectif de cohérence, pas une permission de dépasser EOF;
+  - aucune allocation ne doit être calculée avec un compteur non borné.
+
+==============================================================================
+17. LIMITES ET RÉFÉRENCES LOCALES
+==============================================================================
+
+Ce document ne couvre pas complètement :
+
+  - les formats modernes Pervasive PSQL/Actian Zen;
+  - toutes les variantes de Btrieve 6.x et des moteurs réseau/NLM;
+  - les fichiers étendus EXTEND et PRE de l'ancien format;
+  - les VAT;
+  - le chiffrement associé au propriétaire;
+  - toutes les séquences ACS et règles exactes de comparaison;
+  - la réparation transactionnelle à partir des preimages;
+  - la réécriture atomique des copies FCR et PAT.
+
+Références principales dans C:\BACKUP\BTRIEVE :
+
+  KYLE\BTRIEVE.H             structures FCR, SEGSPEC, pages, PAT et pointeurs
+  KYLE\BTATR.ZIP\BTATR.C     détection des formats et attributs UsrFlags
+  KYLE\BTKEY.ZIP\BTKEY.C     types et drapeaux des segments de clés
+  KYLE\DUMPDATA.ZIP          parcours des pages et records variables/compressés
+  KYLE\DUMPFREE.ZIP          listes d'enregistrements supprimés
+  KYLE\LISTKEYS.ZIP          parcours récursif des pages B-tree
+  KYLE\MAKCRE.ZIP            conversion du FCR en définition de création
+  REILLY\BTUTIL\SAMPLE.BTB   options de création et définition logique de clés
+  REILLY\BTUTIL\SAMPLE.BTS   définition d'un index supplémentaire
+  REILLY\BTFL14\POL.*        base fixe réelle, schéma et données de contrôle
+  REILLY\BTVIEW\SAMPLES\*   base CUST et dictionnaires DDF réels
+
+Les commentaires d'offset de BTRIEVE.H comportent au moins une coquille autour
+de FreeBytes/PrePages; les offsets de ce document sont calculés à partir des
+tailles de la structure et confirmés par le champ Owner à $002E. Toute nouvelle
+implémentation doit de la même manière confronter la documentation aux fichiers
+réels avant d'écrire des données.

@@ -1,0 +1,457 @@
+==============================================================================
+     FORMAT DE BASE DES FICHIERS CLARION DAT
+==============================================================================
+
+Ce document décrit le format binaire des fichiers de données créés par
+Clarion Professional Developer et Clarion Personal Developer, version 2 et
+suivantes. Il présente principalement le fichier .DAT, puis résume le rôle
+des fichiers de clés, d'index et de mémos qui peuvent l'accompagner.
+
+Extensions : .DAT       données et description de la structure
+             .K??       clés (?? est un numéro à deux chiffres)
+             .I??       index (?? est un numéro à deux chiffres)
+             .MEM       champs mémo
+
+AVERTISSEMENT
+-------------
+
+Une modification incorrecte d'un fichier Clarion peut le rendre illisible.
+Il faut toujours travailler sur une copie. Le chiffrement et la compression
+ne sont pas détaillés ici : un lecteur simple doit refuser proprement les
+fichiers qui emploient ces options.
+
+Source principale :
+  https://www.clarionlife.net/clarion-dat-fayl/
+  (reproduction d'un bulletin technique Clarion sur les fichiers DAT)
+
+==============================================================================
+1. CONVENTIONS
+==============================================================================
+
+Toutes les valeurs numériques multioctets sont enregistrées en petit-boutiste
+(little-endian), ordre naturel des processeurs Intel : l'octet de poids faible
+vient en premier.
+
+  BYTE / unsigned char : 1 octet
+  WORD / unsigned      : 2 octets, non signé, little-endian
+  DWORD / unsigned long: 4 octets, non signé, little-endian
+
+Exemple : les octets 44 01 00 00 représentent la valeur $00000144, soit 324.
+
+Les chaînes de longueur fixe ne se terminent pas par un octet NUL. Elles sont
+complétées à droite par des espaces ($20). Les offsets donnés dans ce document
+partent de zéro.
+
+==============================================================================
+2. ORGANISATION GÉNÉRALE D'UN FICHIER DAT
+==============================================================================
+
+Les sections apparaissent dans cet ordre :
+
+  +-----------------------------------------------+
+  | En-tête du fichier                 85 octets  | obligatoire
+  +-----------------------------------------------+
+  | Descripteurs de champs       27 octets chacun| obligatoire
+  +-----------------------------------------------+
+  | Descripteurs de clés et d'index               | optionnel
+  +-----------------------------------------------+
+  | Descripteurs d'images de présentation         | optionnel
+  | (PICTURE, c.-à-d. masques de formatage)       |
+  +-----------------------------------------------+
+  | Descripteurs de tableaux                      | optionnel
+  +-----------------------------------------------+
+  | Enregistrements de données                    | optionnel
+  +-----------------------------------------------+
+
+Le champ offset de l'en-tête donne directement le début de la zone de
+données. Il est préférable de l'utiliser plutôt que de recalculer cette
+position, puisque plusieurs sections intermédiaires sont facultatives et de
+taille variable.
+
+==============================================================================
+3. EN-TÊTE DU FICHIER DAT (85 OCTETS)
+==============================================================================
+
+Offset  Taille  Nom       Description
+------  ------  --------  ---------------------------------------------------
+$0000   2       filesig   Signature/version du fichier
+$0002   2       sfatr     Attributs et état du fichier (bitmap, voir 3.1)
+$0004   1       numbkeys  Nombre de clés et d'index
+$0005   4       numrecs   Nombre d'enregistrements actifs
+$0009   4       numdels   Nombre d'enregistrements supprimés
+$000D   2       numflds   Nombre de descripteurs de champs
+$000F   2       numpics   Nombre de descripteurs PICTURE
+$0011   2       numarrs   Nombre de descripteurs de tableaux
+$0013   2       reclen    Taille d'un enregistrement, en-tête compris
+$0015   4       offset    Offset absolu de la zone de données
+$0019   4       logeof    Fin logique du fichier (numéro d'enregistrement)
+$001D   4       logbof    Début logique du fichier (numéro d'enregistrement)
+$0021   4       freerec   Premier enregistrement supprimé réutilisable
+$0025   12      recname   Nom de RECORD sans préfixe, complété par espaces
+$0031   12      memname   Nom du mémo sans préfixe, complété par espaces
+$003D   3       filepre   Préfixe du fichier
+$0040   3       recpre    Préfixe de l'enregistrement
+$0043   2       memolen   Taille déclarée du mémo
+$0045   2       memowid   Largeur en colonnes du mémo
+$0047   4       reserved  Réservé
+$004B   4       chgtime   Heure absolue de la dernière modification
+$004F   4       chgdate   Date absolue de la dernière modification
+$0053   2       reserved2 Réservé
+
+La taille totale est $55, soit 85 octets. Dans l'exemple PHONEBK du bulletin,
+filesig contient les octets 43 33, donc la valeur WORD $3343. Cette signature
+désigne un fichier créé par Professional Developer version 2. Un programme ne
+doit toutefois pas supposer que toutes les signatures Clarion sont identiques :
+il doit valider les versions qu'il sait réellement lire.
+
+3.1 ATTRIBUTS sfatr
+-------------------
+
+sfatr est un WORD, mais seuls ses huit bits faibles sont définis :
+
+  Bit  Masque  Signification si le bit vaut 1
+  ---  ------  --------------------------------------------------------------
+   0   $0001   Fichier verrouillé
+   1   $0002   Fichier possédé (owned)
+   2   $0004   Enregistrements chiffrés
+   3   $0008   Présence d'un fichier mémo
+   4   $0010   Fichier compressé
+   5   $0020   Réutilisation des enregistrements supprimés (RECLAIM)
+   6   $0040   Fichier en lecture seule
+   7   $0080   Le fichier peut être créé (CREATE)
+
+Exemple : A0 00 donne $00A0, donc les bits 7 et 5 sont actifs : CREATE et
+RECLAIM.
+
+==============================================================================
+4. DESCRIPTEURS DE CHAMPS (27 OCTETS CHACUN)
+==============================================================================
+
+Les numflds descripteurs suivent immédiatement l'en-tête. Leur disposition
+est la suivante :
+
+Offset  Taille  Nom      Description
+------  ------  -------  ----------------------------------------------------
++$00    1       fldtype  Type du champ
++$01    16      fldname  Nom complet, préfixe inclus, complété par espaces
++$11    2       foffset  Offset du champ dans la partie utile du record
++$13    2       length   Taille physique du champ en octets
++$15    1       decsig   Précision/signification décimale
++$16    1       decdec   Nombre de décimales
++$17    2       arrnum   Numéro de descripteur de tableau, ou zéro
++$19    2       picnum   Numéro de descripteur PICTURE, ou zéro
+
+Les numéros arrnum et picnum commencent à 1. Zéro signifie qu'aucun
+descripteur de ce genre n'est associé au champ.
+
+Valeurs de fldtype :
+
+  Valeur  Type Clarion
+  ------  -----------------------------
+    1     LONG
+    2     REAL
+    3     STRING
+    4     STRING avec masque PICTURE
+    5     BYTE
+    6     SHORT
+    7     GROUP
+    8     DECIMAL
+
+foffset est relatif au début des données utilisateur de l'enregistrement,
+juste après son en-tête interne de 5 octets. Ainsi, le premier champ a
+normalement foffset = 0.
+
+Les champs sont contigus, sans séparateur. Un STRING occupe toujours sa taille
+déclarée et est complété avec des espaces. Un DECIMAL est codé sous une forme
+proche du BCD compacté, à raison de deux chiffres par octet. Une déclaration
+DECIMAL(11) occupe donc 6 octets; le demi-octet inutilisé sert de remplissage.
+Le masque d'affichage n'est pas stocké avec les chiffres, mais dans un
+descripteur PICTURE séparé.
+
+Remarque : certains exemplaires du bulletin inversent les commentaires de
+decsig et decdec dans le texte explicatif. Les noms de la structure donnent
+decsig comme précision et decdec comme nombre de décimales; un lecteur robuste
+doit confirmer leur interprétation avec des fichiers de référence.
+
+==============================================================================
+5. DESCRIPTEURS DE CLÉS ET D'INDEX
+==============================================================================
+
+Chaque clé ou index possède d'abord une partie KEYSECT de 19 octets, suivie
+d'une partie KEYPART de 6 octets pour chacun de ses composants.
+
+KEYSECT :
+
+Offset  Taille  Nom       Description
+------  ------  --------  ---------------------------------------------------
++$00    1       numcomps  Nombre de champs composant la clé
++$01    16      keyname   Nom de la clé, complété par espaces
++$11    1       comptype  Type et attributs de la clé composite (bitmap)
++$12    1       complen   Taille totale de la clé composite
+
+KEYPART :
+
+Offset  Taille  Nom      Description
+------  ------  -------  ----------------------------------------------------
++$00    1       fldtype  Type du champ (mêmes valeurs qu'à la section 4)
++$01    2       fldnum   Numéro du champ, à partir de 1
++$03    2       elmoff   Offset de cet élément dans le record
++$05    1       elmlen   Taille de l'élément dans la clé
+
+Pour une clé simple, numcomps vaut 1 et un seul KEYPART suit le KEYSECT. Pour
+une clé composite, numcomps donne le nombre de champs, complen est la somme de
+leurs tailles et autant de KEYPART sont présents.
+
+Le détail du bitmap comptype et du stockage des fichiers de clés est hors du
+périmètre de ce format de base. Il permet notamment de distinguer clé/index,
+d'autoriser les doublons et de sélectionner la sensibilité à la casse.
+
+==============================================================================
+6. DESCRIPTEURS PICTURE
+==============================================================================
+
+Les descripteurs PICTURE suivent les descripteurs de clés. Ils enregistrent le
+masque de présentation d'un champ, et non une image bitmap :
+
+  Offset  Taille  Nom     Description
+  ------  ------  ------  -----------------------------------------------
+  +$00    2       piclen  Longueur effective du masque
+  +$02    256     picstr  Masque dans un tampon fixe, sans NUL imposé
+
+Un descripteur occupe donc 258 octets. Le tampon picstr réserve 256 caractères,
+mais seuls les piclen premiers sont significatifs; piclen reste indispensable
+puisque la chaîne n'est pas terminée par NUL. Le champ picnum du descripteur de
+champ référence ce tableau, numéroté à partir de 1.
+
+Ces descripteurs occupent de l'espace avant la zone des données. Là encore,
+l'offset du début des données enregistré dans l'en-tête fait autorité.
+
+==============================================================================
+7. DESCRIPTEURS DE TABLEAUX
+==============================================================================
+
+Les descripteurs de tableaux suivent les PICTURE. Leur en-tête est suivi de
+totdim parties de dimension :
+
+ARRDESC :
+
+  Offset  Taille  Nom     Description
+  ------  ------  ------  -----------------------------------------------
+  +$00    2       numdim  Nombre de dimensions propres au champ courant
+  +$02    2       totdim  Nombre total de dimensions, groupes parents inclus
+  +$04    2       elmsiz  Taille totale du champ courant
+  +$06    variable        totdim structures ARRPART
+
+ARRPART (4 octets par dimension) :
+
+  +$00    2       maxdim  Nombre d'éléments de cette dimension
+  +$02    2       lendim  Taille en octets d'un élément de cette dimension
+
+Exemple simple : STRING(10),DIM(3)
+
+  numdim = 1, totdim = 1, elmsiz = 30
+  ARRPART[0] : maxdim = 3, lendim = 10
+
+Lorsqu'un tableau est contenu dans un GROUP lui-même dimensionné, totdim inclut
+les dimensions du groupe. Par exemple :
+
+  GROUP,DIM(5)
+    STRING(10),DIM(3)
+
+Le descripteur du GROUP décrit 5 éléments de 30 octets, soit 150 octets. Le
+descripteur du STRING contient deux ARRPART : la dimension héritée du groupe
+(5 éléments de 30 octets), puis sa propre dimension (3 éléments de 10 octets).
+
+Les descripteurs sont numérotés à partir de 1 et référencés par arrnum dans le
+descripteur du champ correspondant.
+
+==============================================================================
+8. ENREGISTREMENTS DE DONNÉES
+==============================================================================
+
+La zone des données commence à l'offset indiqué par le champ offset de
+l'en-tête. Chaque enregistrement a une taille fixe reclen et commence par un
+en-tête interne de 5 octets :
+
+Offset  Taille  Nom   Description
+------  ------  ----  -------------------------------------------------------
++$00    1       rhd   Type et état de l'enregistrement (bitmap)
++$01    4       rptr  Pointeur vers le mémo ou prochain record supprimé
++$05    variable     Champs utilisateur contigus
+
+La somme des tailles physiques des champs, groupes et tableaux, augmentée de
+5 octets, doit correspondre à reclen.
+
+Bits définis de rhd :
+
+  Bit  Masque  Signification
+  ---  ------  --------------------------------------------------------------
+   0    $01    Nouvel enregistrement
+   1    $02    Ancien enregistrement
+   2    $04    Enregistrement révisé
+   4    $10    Enregistrement supprimé
+   6    $40    Enregistrement retenu/verrouillé (held)
+
+Pour un enregistrement actif ayant un mémo, rptr désigne son premier bloc dans
+le fichier .MEM. Pour un enregistrement supprimé, il désigne le prochain
+élément de la chaîne des enregistrements supprimés. freerec, dans l'en-tête du
+fichier, donne le premier élément réutilisable de cette chaîne.
+
+Accès au record logique N, lorsque les records sont stockés séquentiellement :
+
+  position = offset + (N - 1) * reclen
+
+Cette formule ne dispense pas de vérifier logbof, logeof, numrecs, numdels et
+l'état rhd. Tous les produits et additions d'offsets doivent être contrôlés
+contre les débordements et la taille réelle du fichier.
+
+==============================================================================
+9. FICHIERS DE CLÉS ET D'INDEX K?? / I??
+==============================================================================
+
+Clarion stocke les clés dans une variante d'arbre B+. Ces fichiers sont lus et
+écrits par blocs de 512 octets. Le premier bloc est l'en-tête; seuls ses 35
+premiers octets sont définis par le bulletin de base :
+
+Offset  Taille  Nom      Description
+------  ------  -------  ----------------------------------------------------
++$00    4       root     Numéro du nœud racine
++$04    4       numkent  Nombre d'entrées de clé
++$08    4       numnode  Nombre de nœuds de cet index
++$0C    4       lastnode Numéro du dernier nœud
++$10    4       keyeof   Numéro de record de fin logique
++$14    4       keybof   Numéro de record de début logique
++$18    4       unused   Premier nœud inutilisé
++$1C    1       keytype  Type de clé
++$1D    1       keynode  Nombre de clés par nœud
++$1E    1       numcomps Nombre de composants
++$1F    2       keylen   Taille totale d'une entrée
++$21    2       numlevels Nombre de niveaux
++$23    477              Réservé, complète le bloc de 512 octets
+
+Les clés sont transformées pour que leur ordre binaire corresponde à leur
+ordre de tri, ce qui implique plusieurs inversions de bits et d'octets. Le
+présent document ne suffit donc ni à reconstruire ni à modifier sûrement un
+fichier K?? ou I??. En pratique, il vaut mieux laisser Clarion régénérer les
+index ou lire le DAT dans l'ordre physique.
+
+==============================================================================
+10. FICHIER MÉMO MEM
+==============================================================================
+
+Un mémo n'est pas stocké dans le DAT. Le fichier .MEM comprend un en-tête de
+6 octets, puis des blocs fixes de 256 octets.
+
+En-tête MEM :
+
+Offset  Taille  Nom       Description
+------  ------  --------  ---------------------------------------------------
++$00    2       memsig    Signature $334D (octets 4D 33 sur disque)
++$02    4       firstdel  Premier bloc mémo supprimé
+
+Bloc mémo :
+
+Offset  Taille  Nom     Description
+------  ------  ------  -----------------------------------------------------
++$00    4       nextblk Numéro du bloc suivant; zéro marque la fin
++$04    252     memo    Texte du mémo
+
+À partir du rptr d'un enregistrement DAT, l'offset du premier bloc est :
+
+  offset_memo = ((rptr - 1) * 256) + 6
+
+On lit ensuite 256 octets, on conserve les 252 octets de texte et on suit
+nextblk jusqu'à zéro. Une implémentation doit détecter les numéros hors fichier,
+les cycles et les chaînes anormalement longues.
+
+==============================================================================
+11. DATES ET HEURES ABSOLUES
+==============================================================================
+
+chgtime et chgdate sont des DWORD little-endian au format absolu Clarion.
+
+11.1 Heure
+----------
+
+Une heure valide est comprise entre 1 et 8 640 000. L'unité est le centième
+de seconde et la valeur 1 représente minuit exactement :
+
+  t = chgtime - 1
+  heure       = t div 360000
+  t           = t mod 360000
+  minute      = t div 6000
+  t           = t mod 6000
+  seconde     = t div 100
+  centième    = t mod 100
+
+Exemple : 9B E4 4F 00 donne $004FE49B = 5 235 867, soit 14:32:38.67.
+
+11.2 Date
+---------
+
+La date absolue est un numéro de jour Clarion. Le bulletin historique fournit
+l'algorithme entier suivant pour les valeurs 4 à 109 211 :
+
+  d = chgdate
+  si d > 36527 alors d = d - 3, sinon d = d - 4
+
+  année = 1801 + 4 * (d div 1461)
+  d     = d mod 1461
+
+  si d <> 1460 alors
+    année = année + (d div 365)
+    jour_dans_année = d mod 365
+  sinon
+    année = année + 3
+    jour_dans_année = 365
+
+On convertit ensuite jour_dans_année, compté à partir de zéro, en mois et jour
+en retranchant successivement les longueurs des mois. Février a 29 jours si
+l'année est divisible par 4, sauf en 1900 selon l'algorithme historique.
+
+Exemple : 1C 0D 01 00 donne $00010D1C = 68 892, soit le 11 août 1989.
+
+==============================================================================
+12. STRATÉGIE DE LECTURE SÛRE
+==============================================================================
+
+Ordre recommandé pour un lecteur minimal :
+
+  1. Lire exactement 85 octets et décoder les entiers en little-endian.
+  2. Valider la signature et refuser les variantes inconnues.
+  3. Refuser ou signaler sfatr.ENCRYPTED et sfatr.COMPRESSED.
+  4. Vérifier que offset et les compteurs restent dans la taille du fichier.
+  5. Lire numflds descripteurs de 27 octets.
+  6. Lire numbkeys couples KEYSECT/KEYPART selon leur numcomps.
+  7. Parcourir numpics et numarrs descripteurs de taille variable.
+  8. Se positionner à offset et lire les blocs de reclen octets.
+  9. Interpréter rhd avant d'exposer les champs d'un record.
+ 10. Ouvrir le fichier MEM seulement si le bit sfatr correspondant est actif
+     et valider chaque rptr avant de suivre sa chaîne.
+
+Contrôles de cohérence utiles :
+
+  - reclen doit être au moins égal à 5;
+  - foffset + length ne doit pas dépasser reclen - 5;
+  - numcomps ne doit pas faire dépasser la zone des descripteurs;
+  - piclen et totdim doivent être bornés avant allocation;
+  - offset doit être au moins égal à la fin calculée des métadonnées;
+  - offset + nombre_physique_de_records * reclen ne doit pas dépasser EOF;
+  - les champs réservés inconnus doivent être conservés lors d'une réécriture;
+  - les fichiers doivent être ouverts en mode binaire.
+
+==============================================================================
+13. LIMITES DE CETTE DESCRIPTION
+==============================================================================
+
+Ce document couvre le format de base publié pour Clarion Developer version 2
+et suivantes. Il ne spécifie pas :
+
+  - l'algorithme de chiffrement;
+  - l'algorithme de compression;
+  - la transformation complète des clés en ordre triable;
+  - la structure détaillée des nœuds B+ des fichiers K?? et I??;
+  - toutes les signatures et extensions introduites par d'autres versions.
+
+Pour écrire ou réparer un fichier, il faut compléter ces informations avec la
+documentation de la version Clarion ciblée et des fichiers d'essai connus.

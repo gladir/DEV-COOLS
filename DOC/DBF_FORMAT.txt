@@ -1,0 +1,658 @@
+==============================================================================
+     FORMAT DE BASE DES FICHIERS dBASE DBF
+==============================================================================
+
+Ce document décrit principalement le format dBASE III / dBASE III PLUS, qui
+est la variante employée par les convertisseurs DBF2SQL.PAS, DBF2PAS.PAS,
+DBF2XML.PAS et DBF2HTML.PAS du projet DEV-COOLS. Les différences importantes
+de dBASE IV, dBASE 5/7, FoxBASE et Visual FoxPro sont ensuite résumées afin de
+permettre une détection sûre.
+
+Extensions courantes :
+
+  .DBF   table : en-tête, description des champs et enregistrements
+  .DBT   données des champs mémo dBASE
+  .NDX   index dBASE simple
+  .MDX   fichier regroupant plusieurs index dBASE IV et suivants
+  .FPT   données mémo FoxPro
+  .CDX   index composé FoxPro
+
+AVERTISSEMENT
+-------------
+
+« DBF » désigne une famille de formats xBase, pas une spécification unique.
+Les valeurs réservées, les types binaires, les mémos et les index changent
+selon le logiciel et la version. Une écriture incorrecte peut rendre la table,
+ses mémos et ses index incohérents. Toujours travailler sur une copie et ne
+jamais déduire la variante d'après la seule extension du fichier.
+
+Sources principales :
+
+  - structures dBASE III présentes dans les programmes DBF2*.PAS du dépôt;
+  - runtime DBF de CLIPPER86.PAS;
+  - documentation dBASE officielle :
+    https://www.dbase.com/Knowledgebase/INT/db7_file_fmt.htm
+  - description dBASE III conservée par PRONOM :
+    https://www.nationalarchives.gov.uk/PRONOM/
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Organisation générale
+  2.  Conventions binaires
+  3.  Octet de version
+  4.  En-tête dBASE III/IV de 32 octets
+  5.  Descripteurs de champs de 32 octets
+  6.  Calcul du nombre de champs et des offsets
+  7.  Enregistrements
+  8.  Types classiques et représentation des valeurs
+  9.  Champs mémo et fichiers DBT
+ 10.  Index NDX, MDX et CDX
+ 11.  Jeu de caractères et Language Driver
+ 12.  Variantes dBASE 7 et Visual FoxPro
+ 13.  Lecture sûre d'un fichier DBF
+ 14.  Écriture et mise à jour
+ 15.  Lien avec les programmes DEV-COOLS
+ 16.  Limites et références
+
+==============================================================================
+1. ORGANISATION GÉNÉRALE
+==============================================================================
+
+Un fichier dBASE III classique comprend trois zones :
+
+  +---------------------------------------------------------------+ offset 0
+  | En-tête de table                                32 octets     |
+  +---------------------------------------------------------------+ offset 32
+  | Descripteur du champ 0                         32 octets     |
+  +---------------------------------------------------------------+
+  | Descripteur du champ 1                         32 octets     |
+  +---------------------------------------------------------------+
+  | ...                                                           |
+  +---------------------------------------------------------------+
+  | Terminateur de descripteurs                       $0D         |
+  +---------------------------------------------------------------+
+  | Bourrage ou extensions éventuelles                            |
+  +---------------------------------------------------------------+ HeaderLength
+  | Enregistrement 0                           RecordLength octets |
+  +---------------------------------------------------------------+
+  | Enregistrement 1                           RecordLength octets |
+  +---------------------------------------------------------------+
+  | ...                                                           |
+  +---------------------------------------------------------------+
+  | Marque de fin facultative                         $1A         |
+  +---------------------------------------------------------------+
+
+L'en-tête décrit la structure de la table. Chaque enregistrement a une taille
+fixe. Les champs sont placés bout à bout, sans séparateur, et sont généralement
+représentés en texte de largeur fixe. Les données volumineuses de type mémo ne
+sont pas dans le DBF : le record contient une référence vers le DBT associé.
+
+==============================================================================
+2. CONVENTIONS BINAIRES
+==============================================================================
+
+Les entiers multioctets de l'en-tête DBF classique sont little-endian : l'octet
+de poids faible vient en premier.
+
+  WORD  : 2 octets non signés, little-endian
+  DWORD : 4 octets non signés, little-endian
+
+Exemple : 21 01 représente $0121, soit 289 octets d'en-tête.
+
+Les offsets de ce document commencent à zéro. Les longueurs des champs et des
+records sont exprimées en octets, pas en caractères Unicode. Les DBF classiques
+emploient une page de codes mono-octet DOS ou Windows.
+
+Les chaînes de l'en-tête, comme les noms de champs, sont terminées ou complétées
+par des octets NUL. Les valeurs de type Character contenues dans les records
+sont au contraire complétées à droite par des espaces $20.
+
+==============================================================================
+3. OCTET DE VERSION
+==============================================================================
+
+Le premier octet identifie la famille du fichier et indique souvent la présence
+d'un fichier mémo. Valeurs fréquemment rencontrées :
+
+Valeur  Famille approximative
+------  ---------------------------------------------------------------------
+$02     FoxBASE
+$03     dBASE III sans mémo
+$04     dBASE IV sans mémo
+$05     dBASE 5 sans mémo
+$30     Visual FoxPro
+$31     Visual FoxPro avec auto-incrément
+$32     Visual FoxPro avec types VARCHAR/VARBINARY
+$43     dBASE IV SQL sans mémo
+$63     dBASE IV SQL, fichier système
+$7B     dBASE IV avec mémo
+$83     dBASE III avec mémo DBT
+$8B     dBASE IV avec mémo
+$8E     dBASE IV SQL avec mémo
+$F5     FoxPro avec mémo FPT
+
+Cette liste sert à l'identification, pas à accepter automatiquement le fichier.
+Certains dialectes xBase ont réutilisé ou ajouté des valeurs. Un lecteur limité
+à dBASE III devrait accepter explicitement $03 et, s'il sait lire les DBT, $83;
+les autres valeurs doivent être routées vers un décodeur adapté.
+
+Dans plusieurs variantes, le bit $80 indique la présence de mémos, mais cette
+règle n'est pas universelle : $F5 et certaines versions modernes exigent une
+table de correspondance complète.
+
+==============================================================================
+4. EN-TÊTE dBASE III/IV DE 32 OCTETS
+==============================================================================
+
+Offset Taille Nom             Description
+------ ------ --------------- ------------------------------------------------
+$00    1      Version         Type/version du fichier, voir section 3
+$01    1      LastUpdateYY    Année depuis 1900
+$02    1      LastUpdateMM    Mois, 1 à 12
+$03    1      LastUpdateDD    Jour, 1 à 31
+$04    4      RecordCount     Nombre d'enregistrements, little-endian
+$08    2      HeaderLength    Offset du premier enregistrement
+$0A    2      RecordLength    Taille d'un enregistrement, marque incluse
+$0C    2      Reserved        Réservé
+$0E    1      Transaction     dBASE IV : transaction incomplète si non nul
+$0F    1      Encryption      dBASE IV : indicateur de chiffrement
+$10    12     MultiUser       Réservé aux informations multi-utilisateur
+$1C    1      ProductionMDX   $01 si un MDX de production est associé
+$1D    1      LanguageDriver  Identifiant de page de codes
+$1E    2      Reserved        Réservé
+
+dBASE III ne donne pas de signification publique à la plupart des octets $0C à
+$1F; ils doivent néanmoins être lus et conservés lors d'une réécriture. dBASE IV
+et les versions suivantes en utilisent certains comme indiqué ci-dessus.
+
+4.1 DATE DE DERNIÈRE MISE À JOUR
+--------------------------------
+
+Les trois octets sont des nombres binaires, pas les caractères ASCII d'une
+date :
+
+  année = 1900 + LastUpdateYY
+
+Une valeur YY sur un octet permet théoriquement 1900 à 2155. Il faut valider le
+mois et le jour et tolérer prudemment les vieux fichiers dont cette date n'a pas
+été maintenue correctement.
+
+4.2 HeaderLength ET RecordLength
+--------------------------------
+
+HeaderLength est l'offset absolu du premier record. Il doit être utilisé comme
+tel. Il ne faut pas ajouter un octet supplémentaire.
+
+Pour un dBASE III canonique sans extension :
+
+  HeaderLength = 32 + FieldCount * 32 + 1
+  RecordLength = 1 + somme(FieldLength)
+
+Le « + 1 » de HeaderLength est le terminateur $0D. Le « + 1 » de RecordLength
+est la marque actif/supprimé au début de chaque record.
+
+Les égalités sont des contrôles utiles, mais HeaderLength fait autorité pour
+localiser les données : des variantes peuvent ajouter du bourrage ou des
+propriétés entre le terminateur et les records.
+
+==============================================================================
+5. DESCRIPTEURS DE CHAMPS DE 32 OCTETS
+==============================================================================
+
+Dans les formats dBASE III, IV et 5 classiques, un descripteur occupe 32 octets :
+
+Offset Taille Nom           Description
+------ ------ ------------- --------------------------------------------------
++$00   11     FieldName     Nom ASCII/OEM terminé par NUL, 10 ou 11 utiles
++$0B   1      FieldType     Code ASCII du type : C, N, D, L, M, etc.
++$0C   4      FieldAddress  Adresse mémoire historique; généralement ignorée
++$10   1      FieldLength   Largeur physique du champ en octets
++$11   1      DecimalCount  Nombre de décimales pour N ou F
++$12   2      Reserved      Réservé à dBASE III PLUS/LAN
++$14   1      WorkAreaID    Identifiant de zone de travail
++$15   2      Reserved      Réservé à dBASE III PLUS/LAN
++$17   1      SetFields     Indicateur interne SET FIELDS
++$18   7      Reserved      Réservé
++$1F   1      MDXField      dBASE IV+ : champ associé à un tag du MDX
+
+Dans un fichier dBASE III, les octets $18 à $1F sont normalement traités comme
+réservés. FieldAddress à $0C était rempli en mémoire par certains logiciels et
+n'est pas une méthode portable pour localiser le champ sur disque.
+
+Les descripteurs commencent à l'offset 32. Le premier octet $0D rencontré à la
+place du prochain nom de champ termine le tableau. Le terminateur n'est pas un
+descripteur complet de 32 octets.
+
+5.1 NOMS DE CHAMPS
+------------------
+
+Le nom est normalement une suite d'octets non nuls suivie de NUL. Les limites,
+caractères permis et règles de casse dépendent du dialecte. Pour une lecture
+sûre :
+
+  - arrêter le nom au premier NUL ou après 11 octets;
+  - ne pas supposer que le nom est en UTF-8;
+  - préserver les octets originaux si le fichier doit être réécrit;
+  - détecter les noms vides, dupliqués ou non imprimables.
+
+==============================================================================
+6. CALCUL DU NOMBRE DE CHAMPS ET DES OFFSETS
+==============================================================================
+
+Pour un dBASE III strict :
+
+  FieldCount = (HeaderLength - 33) div 32
+
+Cette formule n'est valide que si :
+
+  - HeaderLength >= 33;
+  - HeaderLength - 33 est divisible par 32;
+  - le terminateur $0D est exactement à HeaderLength - 1;
+  - aucune extension de format n'est présente dans l'en-tête.
+
+La méthode générale consiste à partir de l'offset 32, lire des blocs de 32
+octets et s'arrêter lorsque le prochain octet vaut $0D, sans dépasser
+HeaderLength. Le nombre obtenu doit ensuite être confronté à la formule.
+
+Les positions physiques des champs ne sont pas stockées de façon portable dans
+dBASE III. Elles se calculent par cumul :
+
+  offset_record_champ[0] = 1
+  offset_record_champ[i] = 1 + somme(FieldLength[0..i-1])
+
+Le premier octet du record, à l'offset zéro, est réservé à l'état de suppression.
+
+Exemple avec NOM C(20), DATE_NAISS D(8), ACTIF L(1) :
+
+  Octet 0       marque de suppression
+  Octets 1-20   NOM
+  Octets 21-28  DATE_NAISS
+  Octet 29      ACTIF
+
+  RecordLength = 1 + 20 + 8 + 1 = 30
+
+==============================================================================
+7. ENREGISTREMENTS
+==============================================================================
+
+La zone des records commence exactement à HeaderLength. Tous les records ont
+RecordLength octets :
+
+  +$00  1 octet                 marque de suppression
+  +$01  somme des largeurs      champs contigus dans l'ordre des descripteurs
+
+Valeurs usuelles de la marque :
+
+  $20  espace   record actif
+  $2A  '*'      record supprimé logiquement
+
+Un record supprimé demeure physiquement présent et peut encore contenir ses
+anciennes valeurs. La commande PACK reconstruit normalement la table en
+omettant ces records. La commande RECALL remplace la marque $2A par $20 avant
+le compactage.
+
+Position du record numéro R, avec R compté à partir de zéro :
+
+  RecordOffset(R) = HeaderLength + R * RecordLength
+
+Avec la numérotation dBASE habituelle à partir de 1 :
+
+  RecordOffset(RECNO) = HeaderLength + (RECNO - 1) * RecordLength
+
+Les champs ne sont séparés ni par virgule, ni par NUL, ni par fin de ligne. Leur
+seule délimitation est la largeur enregistrée dans les descripteurs.
+
+7.1 FIN PHYSIQUE DU FICHIER
+---------------------------
+
+Les implémentations historiques placent souvent un octet $1A après le dernier
+record :
+
+  ExpectedEnd = HeaderLength + RecordCount * RecordLength
+
+L'octet situé à ExpectedEnd peut être $1A. Certains producteurs modernes
+l'omettent; un lecteur ne doit donc pas en dépendre. En revanche, tout record
+annoncé par RecordCount doit tenir entièrement dans le fichier.
+
+Les octets éventuellement présents après la marque $1A ne doivent pas être
+interprétés comme des records sans connaître la variante ou l'historique du
+fichier.
+
+==============================================================================
+8. TYPES CLASSIQUES ET REPRÉSENTATION DES VALEURS
+==============================================================================
+
+8.1 TYPES dBASE III DE BASE
+---------------------------
+
+Code Type       Stockage dans le record
+---- ---------- --------------------------------------------------------------
+C    Character  Texte de FieldLength octets, complété à droite par $20
+N    Numeric    Nombre ASCII, justifié à droite, complété à gauche par $20
+F    Float      Nombre ASCII en largeur fixe, souvent avec décimales/exposant
+D    Date       8 caractères ASCII au format YYYYMMDD
+L    Logical    Un caractère : T/F, Y/N, ? ou espace selon l'état/producteur
+M    Memo       Référence ASCII de 10 caractères vers un bloc du fichier DBT
+
+Les types N et F ne sont pas des flottants IEEE dans dBASE III : ce sont des
+chaînes ASCII. DecimalCount précise combien de chiffres suivent le séparateur
+décimal. Le séparateur enregistré est normalement le point, indépendamment des
+paramètres régionaux d'affichage.
+
+Un champ Numeric vide contient généralement uniquement des espaces. Une valeur
+qui ne tient pas dans la largeur peut être remplacée par une suite d'astérisques
+par certains logiciels; elle doit être signalée comme invalide ou débordée.
+
+Une date vide est fréquemment huit espaces. Il faut valider les chiffres, le
+mois et le nombre de jours plutôt que de convertir directement tout bloc de
+huit octets.
+
+Un champ Logical doit accepter en lecture au minimum T/t/Y/y comme vrai,
+F/f/N/n comme faux, et espace ou ? comme inconnu. L'écriture canonique emploie
+habituellement T, F ou ?.
+
+8.2 TYPES AJOUTÉS PAR DES VARIANTES
+-----------------------------------
+
+Code Type courant          Représentation typique
+---- --------------------- ---------------------------------------------------
+B    Binary/Double         Signification dépendante de dBASE/FoxPro
+G    General/OLE           Référence vers DBT ou FPT
+I    Integer/Long          Entier signé binaire de 4 octets
++    AutoIncrement         Entier binaire de 4 octets avec état dans l'en-tête
+O    Double                Flottant IEEE de 8 octets
+@    Timestamp             Deux entiers de 4 octets : jour julien et millisecondes
+T    DateTime FoxPro       Deux entiers de 4 octets, variante FoxPro
+Y    Currency FoxPro       Entier signé de 8 octets, valeur multipliée par 10 000
+V    Varchar/Varbinary     Visual FoxPro, dépend de drapeaux et données auxiliaires
+Q    Varbinary             Visual FoxPro
+
+Ces codes ne peuvent pas être décodés correctement sans tenir compte de l'octet
+Version. Le code B, en particulier, ne signifie pas la même chose dans toutes
+les branches dBASE et FoxPro.
+
+Les entiers et flottants binaires sont généralement little-endian sur disque,
+mais un lecteur limité à dBASE III devrait les refuser au lieu de les deviner.
+
+==============================================================================
+9. CHAMPS MÉMO ET FICHIERS DBT
+==============================================================================
+
+Un champ M dBASE III occupe normalement 10 octets dans chaque record. Il ne
+contient pas le texte, mais le numéro décimal ASCII du bloc où commence le mémo
+dans le fichier de même nom et d'extension .DBT :
+
+  CLIENT.DBF -> CLIENT.DBT
+
+La référence est justifiée à droite et complétée par des espaces. Un champ mémo
+vide contient dix espaces, parfois une valeur zéro selon le producteur.
+
+9.1 DBT dBASE III
+-----------------
+
+Le DBT dBASE III est divisé en blocs fixes de 512 octets. Le bloc 0 est un
+en-tête; les blocs de données sont numérotés à partir de 1. Le début physique
+d'un mémo est donc :
+
+  MemoOffset = BlockNumber * 512
+
+Le texte peut occuper plusieurs blocs contigus et se termine historiquement par
+un marqueur composé de deux octets $1A. Les octets restants du dernier bloc sont
+du bourrage. Les premiers octets de l'en-tête DBT indiquent le prochain bloc
+libre, mais leur ordre et le reste de l'en-tête varient selon le producteur.
+
+Un lecteur minimal peut lire un DBT dBASE III ainsi :
+
+  1. analyser strictement les 10 octets du pointeur comme un entier décimal;
+  2. refuser zéro, un dépassement ou une multiplication qui déborde;
+  3. se positionner à BlockNumber * 512;
+  4. lire par blocs avec une limite de taille;
+  5. s'arrêter au marqueur $1A $1A;
+  6. signaler l'absence de marqueur avant EOF comme une corruption possible.
+
+9.2 DBT dBASE IV ET SUIVANTS
+----------------------------
+
+dBASE IV ajoute un en-tête aux entrées mémo : un type et une longueur précèdent
+les données. La taille de bloc peut être enregistrée dans l'en-tête DBT au lieu
+d'être implicitement 512. Ces champs sont traditionnellement en ordre réseau
+(big-endian), contrairement aux entiers de l'en-tête DBF.
+
+Cette variante ne doit pas être lue avec la recherche $1A $1A de dBASE III. Il
+faut sélectionner le décodeur DBT d'après Version et valider la taille de bloc.
+
+9.3 FPT FOXPRO
+--------------
+
+FoxPro utilise généralement un fichier .FPT. Le record DBF contient alors un
+numéro de bloc binaire de 4 octets plutôt qu'un numéro décimal ASCII de 10
+caractères. Chaque entrée FPT possède un type et une longueur. Le FPT n'est pas
+interchangeable avec un DBT dBASE III.
+
+Une table et son fichier mémo forment une unité : déplacer, restaurer ou copier
+le DBF sans le DBT/FPT correspondant produit des pointeurs inutilisables.
+
+==============================================================================
+10. INDEX NDX, MDX ET CDX
+==============================================================================
+
+Les index ne sont pas contenus dans les records du DBF :
+
+  .NDX  index dBASE historique contenant généralement une seule expression;
+  .MDX  Multiple Index, plusieurs tags dans un fichier de production;
+  .CDX  Compound Index de FoxPro.
+
+Le byte ProductionMDX à $1C vaut normalement $01 lorsqu'un MDX de production
+est associé à la table. Le byte MDXField à $1F d'un descripteur peut signaler
+qu'un champ participe à un tag. Ces indicateurs ne décrivent ni l'expression
+complète ni l'arbre de l'index.
+
+Les index utilisent des structures arborescentes, des règles de classement et
+des numéros de records propres à leur version. Après toute modification directe
+du DBF, ils peuvent devenir faux même si le DBF reste lisible. La pratique sûre
+est de modifier la table via le moteur xBase approprié ou de supprimer puis
+reconstruire explicitement les index avec cet outil.
+
+Le format détaillé de NDX/MDX/CDX est hors du périmètre de ce document de base.
+
+==============================================================================
+11. JEU DE CARACTÈRES ET LANGUAGE DRIVER
+==============================================================================
+
+Les DBF classiques ne sont généralement pas en UTF-8. Ils emploient une page de
+codes OEM DOS, ANSI Windows ou une page définie par le producteur. L'octet
+LanguageDriver à $1D identifie cette page dans dBASE IV et les versions
+suivantes, mais sa table de correspondance dépend du dialecte.
+
+Pour dBASE III, l'indicateur est souvent nul même lorsque les données utilisent
+CP437, CP850 ou une autre page OEM. Il faut alors obtenir l'encodage du contexte
+de création ou permettre à l'utilisateur de le préciser.
+
+Règles pratiques :
+
+  - conserver les octets bruts séparément du texte décodé;
+  - ne jamais appliquer UTF-8 par défaut à un vieux DBF DOS;
+  - ne pas confondre espace de bourrage et caractère significatif interne;
+  - convertir uniquement les champs textuels, jamais les champs binaires;
+  - lors d'une réécriture, réencoder avec la page d'origine et détecter les
+    caractères non représentables.
+
+==============================================================================
+12. VARIANTES dBASE 7 ET VISUAL FOXPRO
+==============================================================================
+
+12.1 dBASE NIVEAU 7
+-------------------
+
+dBASE 7 n'utilise plus l'en-tête minimal de la même manière :
+
+  - la partie fixe de l'en-tête atteint 68 octets;
+  - les descripteurs de champs occupent 48 octets;
+  - les noms de champs peuvent occuper 32 octets;
+  - une structure de propriétés suit le terminateur $0D;
+  - cette structure peut décrire valeurs par défaut, contraintes et intégrité
+    référentielle;
+  - HeaderLength demeure le moyen sûr de trouver les records.
+
+Il est donc dangereux d'appliquer la formule (HeaderLength-33)/32 à un fichier
+dBASE 7.
+
+12.2 VISUAL FOXPRO
+------------------
+
+Visual FoxPro conserve une structure ressemblant au DBF classique, mais ajoute
+notamment :
+
+  - des indicateurs de champ système, nullable ou binaire;
+  - un bitmap de valeurs NULL à la fin de chaque record;
+  - des types DateTime, Currency, Integer et Double binaires;
+  - des champs auto-incrémentés;
+  - des champs Varchar et Varbinary dans les versions récentes;
+  - des fichiers FPT et CDX plutôt que DBT et MDX.
+
+RecordLength inclut les octets auxiliaires propres à la variante. La simple
+somme des FieldLength peut alors être inférieure à RecordLength - 1.
+
+==============================================================================
+13. LECTURE SÛRE D'UN FICHIER DBF
+==============================================================================
+
+Procédure recommandée pour un lecteur dBASE III en lecture seule :
+
+  1. Obtenir la taille du fichier et lire exactement les 32 premiers octets.
+  2. Vérifier Version; accepter seulement les variantes réellement gérées.
+  3. Décoder RecordCount, HeaderLength et RecordLength en little-endian.
+  4. Exiger HeaderLength >= 33 et RecordLength >= 1.
+  5. Exiger HeaderLength <= taille_fichier.
+  6. Parcourir les descripteurs depuis l'offset 32 jusqu'au $0D.
+  7. Ne jamais dépasser HeaderLength pendant ce parcours.
+  8. Valider chaque FieldType, FieldLength et DecimalCount.
+  9. Additionner les largeurs avec détection de débordement.
+ 10. Comparer 1 + somme des largeurs à RecordLength.
+ 11. Calculer la fin des records avec un entier suffisamment large.
+ 12. Exiger que tous les RecordCount records tiennent dans le fichier.
+ 13. Pour chaque record, interpréter d'abord la marque $20 ou $2A.
+ 14. Découper ensuite les champs selon les offsets cumulés.
+ 15. Décoder le texte avec la page de codes choisie, pas automatiquement UTF-8.
+ 16. Si un mémo est présent, ouvrir le DBT/FPT correspondant en lecture seule.
+ 17. Borner tout pointeur, numéro de bloc et contenu variable avant allocation.
+
+Calcul de taille sans débordement :
+
+  DataBytes = RecordCount * RecordLength
+  DataEnd   = HeaderLength + DataBytes
+
+Il faut effectuer ces opérations sur au moins 64 bits et vérifier le résultat
+avant tout seek ou allocation. Ne jamais allouer RecordCount * RecordLength
+octets uniquement parce que l'en-tête l'annonce.
+
+13.1 TOLÉRANCE CONTRÔLÉE
+-------------------------
+
+Les anciens fichiers rencontrés en pratique peuvent avoir une date invalide,
+des réservés non nuls, aucun $1A final ou une valeur FieldAddress arbitraire.
+Ces anomalies peuvent être des avertissements plutôt que des erreurs fatales.
+
+En revanche, les situations suivantes doivent normalement arrêter la lecture :
+
+  - variante Version inconnue;
+  - HeaderLength ou RecordLength nul/incohérent;
+  - absence de terminateur $0D avant la zone des données;
+  - largeur cumulée dépassant le record;
+  - record annoncé au-delà de EOF;
+  - pointeur de mémo hors du DBT/FPT;
+  - type binaire interprété sans connaître le dialecte.
+
+==============================================================================
+14. ÉCRITURE ET MISE À JOUR
+==============================================================================
+
+Pour créer un dBASE III simple :
+
+  1. construire l'en-tête fixe de 32 octets;
+  2. écrire un descripteur de 32 octets par champ;
+  3. écrire le terminateur $0D;
+  4. fixer HeaderLength à la position exacte qui suit l'en-tête complet;
+  5. fixer RecordLength à 1 + somme des largeurs;
+  6. écrire chaque record avec une marque $20;
+  7. mettre à jour RecordCount et la date;
+  8. terminer éventuellement par $1A;
+  9. créer et synchroniser le DBT si des champs M existent;
+ 10. reconstruire les index avec le moteur correspondant.
+
+Pour une mise à jour en place, écrire d'abord le record complet puis actualiser
+les métadonnées avec prudence. Une vraie sûreté transactionnelle n'est pas
+offerte par une simple suite d'écritures de fichier. Une copie temporaire suivie
+d'un remplacement atomique est préférable pour PACK, ZAP ou une modification de
+structure.
+
+14.1 SUPPRESSION, RECALL, PACK ET ZAP
+-------------------------------------
+
+  DELETE : remplacer le premier octet du record par '*'.
+  RECALL : le remplacer par un espace.
+  PACK   : reconstruire un nouveau DBF sans les records marqués '*', mettre à
+           jour RecordCount, les mémos et les index.
+  ZAP    : ramener RecordCount à zéro et tronquer/reconstruire proprement les
+           fichiers associés.
+
+PACK ne doit pas être réalisé par simple déplacement des records si des index
+référencent leurs numéros ou si les mémos doivent être récupérés et compactés.
+
+==============================================================================
+15. LIEN AVEC LES PROGRAMMES DEV-COOLS
+==============================================================================
+
+Les programmes DBF2SQL.PAS, DBF2PAS.PAS, DBF2XML.PAS et DBF2HTML.PAS déclarent
+deux records Pascal correspondant aux 32 octets de l'en-tête dBASE III et aux
+32 octets d'un descripteur. Ils reconnaissent actuellement HeadType=$03 et
+traitent surtout C, N, I et L.
+
+Points importants pour ces programmes :
+
+  - la zone des données commence à HeaderLength, pas HeaderLength + 1;
+  - le premier octet de chaque record est la marque de suppression;
+  - les offsets des champs commencent donc à 1 dans le record;
+  - le type I standard des variantes récentes occupe 4 octets, pas 2;
+  - la taille d'un champ doit venir de FieldLength même pour un type binaire;
+  - les records marqués $2A doivent être ignorés ou signalés;
+  - les chaînes SQL/XML/HTML exigent un échappement adapté;
+  - RecordCount est un DWORD et ne doit pas être tronqué à 16 bits;
+  - la page de codes doit être prise en compte avant de produire de l'Unicode.
+
+Le runtime DBF généré par CLIPPER86.PAS calcule correctement le nombre de
+champs classique par (HeaderLength - 33) / 32, mais il limite volontairement
+plusieurs compteurs et tailles à l'environnement DOS 16 bits. Cette
+implémentation est adaptée à des fichiers dBASE III simples, pas aux variantes
+dBASE 7 ou Visual FoxPro.
+
+==============================================================================
+16. LIMITES ET RÉFÉRENCES
+==============================================================================
+
+Ce document détaille le conteneur DBF de base et le stockage dBASE III. Il ne
+spécifie pas intégralement :
+
+  - les arbres et expressions des index NDX, MDX et CDX;
+  - tous les identifiants de pages de codes;
+  - le chiffrement dBASE IV;
+  - les structures de propriétés dBASE 7;
+  - les bases conteneurs DBC de Visual FoxPro;
+  - les formats propriétaires de mémo de tous les dialectes xBase;
+  - les extensions Clipper, Harbour, ESRI et autres producteurs.
+
+Références utiles dans le dépôt :
+
+  DBF2SQL.PAS       lecture dBASE III et génération SQL
+  DBF2PAS.PAS       lecture dBASE III et génération Pascal
+  DBF2XML.PAS       lecture dBASE III et génération XML
+  DBF2HTML.PAS      lecture dBASE III et génération HTML
+  CLIPPER86.PAS     runtime DOS d'ouverture et navigation DBF
+  SQL2DBF.PAS       génération de tables DBF
+
+Lorsqu'un fichier réel contredit une hypothèse de ce document, conserver une
+copie intacte, relever Version et tous les champs réservés, puis identifier le
+logiciel producteur avant d'étendre le lecteur.
+

@@ -1606,14 +1606,13 @@ Const
                                  { d interruption ET une entree IVT a des    }
                                  { adresses distinctes (2026-09-02, ajoute   }
                                  { en poursuivant l enquete division par 0). }
- { Releve de 500 a 10000 (2026-09-02) puis a 20000 (2026-09-03, l importateur}
- { SingleStepTests/8086 etendu aux instructions de chaine - MOVS/CMPS/STOS/  }
- { LODS/SCAS x octet/mot = 10 fichiers de 2000 tests = 16012 apres filtrage, }
- { depassait deja 10000 et etait tronque SILENCIEUSEMENT par la garde de la  }
- { ligne ~113780 sans le moindre avertissement) - cout memoire toujours      }
- { negligeable sur un hote Win32 32 bits moderne (tableau global statique,   }
- { ~4.5 Ko/test * 20000 = ~90 Mo). }
- MAX_UNITTESTS      = 20000;    { nombre max de tests dans un seul fichier }
+ { Releve de 500 a 10000 (2026-09-02), 20000 (2026-09-03, chaines), puis     }
+ { 40000 (2026-09-03, Jcc - 16 conditions x ~2000 tests/opcode, presque      }
+ { aucun filtrage necessaire faute d operande memoire = 31243 gardes sur     }
+ { 32000 bruts, depassait deja 20000) - cout memoire toujours negligeable    }
+ { sur un hote Win32 32 bits moderne (tableau global statique, ~4.5 Ko/test  }
+ { * 40000 = ~180 Mo). }
+ MAX_UNITTESTS      = 40000;    { nombre max de tests dans un seul fichier }
  MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
                                  { gel reel observe avec CMP reg,reg+Jcc,    }
                                  { 2026-09-02) - un point d arret jamais      }
@@ -6755,7 +6754,12 @@ Var
  { ParseCommandLine). }
  Emu_TestPanel  : TEmulatorPanel;
  UnitTests8086  : Array[0..MAX_UNITTESTS - 1] Of TUnitTest8086;
- UnitTest8086Count: Integer;
+ { LongInt (pas Integer/16 bits) - BOGUE REEL CORRIGE (2026-09-03, trouve   }
+ { par le compilateur lui-meme : "Comparison might be always true" des que  }
+ { MAX_UNITTESTS a depasse 32767, l Integer signe 16 bits ne pouvant jamais }
+ { atteindre cette valeur - l indexation de UnitTests8086[] au-dela de      }
+ { 32767 tests aurait silencieusement corrompu ou plante). }
+ UnitTest8086Count: LongInt;
  EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
                                  { s il a ete cree par Emu_LoadBootSector }
                                  { (vs Emu_LoadProgram) - voir le garde-  }
@@ -81351,7 +81355,25 @@ Begin
   End;
   Exit;
  End;
- Emu_ReadAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
+ { BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur              }
+ { SingleStepTests/8086 - 1 echec sur 20045 tests TEST/NOT/NEG : "test   }
+ { word [ss:bx-1h]" avec bx=0 lit un mot a l offset $FFFF - le vrai      }
+ { silicium 8086 enveloppe l OFFSET (16 bits) avant de calculer l adresse}
+ { physique de CHAQUE octet, donc le 2e octet d un mot a cheval sur la   }
+ { limite $FFFF/$0000 se trouve dans le MEME segment a l offset $0000,   }
+ { pas a l octet physique suivant (qui appartient a un segment sans      }
+ { rapport). Un Move sur SizeBytes octets physiquement consecutifs ne     }
+ { peut pas reproduire cela - boucle octet par octet, avec Ofs+I         }
+ { enveloppe en Word, uniquement dans ce cas limite (le chemin rapide     }
+ { normal reste un Move direct). }
+ If LongInt(Ofs) + SizeBytes > $10000 Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   Emu_ReadAbsBlock(C, Emu_Addr(C, Seg, Word(Ofs + I)), BPtr^, 1);
+   Inc(BPtr);
+  End;
+ End Else
+  Emu_ReadAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
 End;
 
 { --- Lire un octet seg:ofs --- }
@@ -81533,7 +81555,17 @@ Begin
   EmuPanel.NeedRepaint := True;
   Exit;
  End;
- Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
+ { BOGUE REEL CORRIGE (2026-09-03) : meme correctif que Emu_ReadBlock -   }
+ { voir son commentaire pour le contexte complet (enroulement de l offset}
+ { a la limite $FFFF/$0000 d un segment). }
+ If LongInt(Ofs) + SizeBytes > $10000 Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Word(Ofs + I)), BPtr^, 1);
+   Inc(BPtr);
+  End;
+ End Else
+  Emu_WriteAbsBlock(C, Emu_Addr(C, Seg, Ofs), Buffer, SizeBytes);
 End;
 
 { --- Ecrire un octet seg:ofs --- }
