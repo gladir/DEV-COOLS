@@ -69663,6 +69663,8 @@ Begin
   TermAddLine(TP,
    '  Get-Date [-Format format]               Affiche date et heure');
   TermAddLine(TP,
+   '  Get-Command [-Name nom]                 Liste les commandes reconnues');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70450,7 +70452,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 119;
+ PS_CMD_ALIASES = 120;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70478,6 +70480,7 @@ Const
   'FORMAT-WIDE',
   'GET-ALIAS',
   'GET-DATE',
+  'GET-COMMAND',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70577,6 +70580,7 @@ Const
   94,
   95,
   96,
+  97,
   19,
   20,
   21,
@@ -70680,6 +70684,28 @@ End;
    If MatchCount = 0 Then
     TermAddLine(TP, 'Get-Alias : alias introuvable : ' + NameArg);
   End;
+
+{ --- GET-COMMAND (PowerShell dev) --- }
+Procedure TermCmd_GetCommand(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ NameArg, UpName: String;
+ I, MatchCount: Integer;
+Begin
+ NameArg := TermExtractParam(ParamStr, 1);
+ If TermStrToUpper(NameArg) = '-NAME' Then
+  NameArg := TermExtractParam(ParamStr, 2);
+ NameArg := YamlUnquote(NameArg);
+ UpName := TermStrToUpper(NameArg);
+ MatchCount := 0;
+ For I := 1 To PS_CMD_ALIASES Do
+  If (NameArg = '') Or (TermStrToUpper(PSCmdNames[I]) = UpName) Then Begin
+   TermAddLine(TP, PSCmdNames[I] + '  Cmdlet  ' +
+    IntToStr(PSCmdIDs[I]));
+   Inc(MatchCount);
+  End;
+ If MatchCount = 0 Then
+  TermAddLine(TP, 'Get-Command : commande introuvable : ' + NameArg);
+End;
 
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
@@ -71090,6 +71116,7 @@ Begin
     94: TermCmd_FormatWide(TP, ParamStr);
     95: TermCmd_GetAlias(TP, ParamStr);
     96: TermCmd_GetDate(TP, ParamStr);
+    97: TermCmd_GetCommand(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
