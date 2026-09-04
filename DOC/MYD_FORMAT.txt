@@ -1,0 +1,510 @@
+==============================================================================
+     FORMAT DE BASE DES FICHIERS MYD DE MYSQL / MyISAM
+==============================================================================
+
+Un fichier .MYD (MyISAM Data) contient les enregistrements d'une table MyISAM.
+Il ne constitue pas, à lui seul, une base de données MySQL complète. Une table
+MyISAM classique est normalement représentée par plusieurs fichiers portant le
+même nom :
+
+  table.MYD   données des enregistrements;
+  table.MYI   description interne MyISAM, état de la table et index;
+  table.frm   définition SQL de la table dans les anciennes versions de MySQL.
+
+Depuis MySQL 8.0, les nouvelles tables utilisateur ne sont plus stockées en
+MyISAM et le dictionnaire de données n'emploie plus les fichiers .frm. Les
+fichiers MYD restent toutefois importants pour les anciennes installations,
+les sauvegardes et certains fichiers internes historiques.
+
+AVERTISSEMENT
+-------------
+
+MYD n'est pas un format autonome et universel comparable à DBF. Le fichier ne
+commence pas par une signature, un numéro de version, une liste de colonnes ou
+un en-tête global suffisant pour le décoder. La disposition exacte dépend des
+métadonnées du MYI, du schéma SQL, de la version de MySQL et parfois des options
+de compilation. Ne jamais déterminer la longueur ou le type des champs en
+examinant seulement quelques lignes du MYD.
+
+Avant toute réparation, travailler sur une copie cohérente de tous les fichiers
+de la table. Une copie prise pendant une écriture peut associer un MYD et un MYI
+provenant de deux états différents.
+
+Sources principales :
+
+  - manuel de référence MySQL, formats de table MyISAM :
+    https://dev.mysql.com/doc/refman/en/myisam-table-formats.html
+  - caractéristiques du format statique :
+    https://dev.mysql.com/doc/refman/en/static-format.html
+  - caractéristiques du format dynamique :
+    https://dev.mysql.com/doc/refman/en/dynamic-format.html
+  - caractéristiques du format compressé :
+    https://dev.mysql.com/doc/refman/en/compressed-format.html
+  - code source officiel MySQL :
+    storage/myisam/mi_statrec.cc
+    storage/myisam/mi_dynrec.cc
+    storage/myisam/mi_packrec.cc
+    storage/myisam/myisamdef.h
+    https://github.com/mysql/mysql-server/tree/trunk/storage/myisam
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Organisation d'une table MyISAM
+  2.  Les trois formats d'enregistrements
+  3.  Conventions binaires et positions
+  4.  Format statique ou FIXED
+  5.  Format dynamique ou DYNAMIC
+  6.  En-têtes des blocs dynamiques
+  7.  Représentation compactée d'une ligne dynamique
+  8.  Format compressé
+  9.  Suppression, espace libre et fragmentation
+ 10.  Rôle indispensable du fichier MYI
+ 11.  Types SQL, NULL, chaînes et BLOB
+ 12.  Méthode de lecture et de récupération
+ 13.  Écriture, réparation et sécurité
+ 14.  Limites et résumé
+
+==============================================================================
+1. ORGANISATION D'UNE TABLE MyISAM
+==============================================================================
+
+MyISAM sépare les données et les index :
+
+                 +-----------------------------+
+  définition SQL | table.frm (anciens MySQL)   |
+                 +-----------------------------+
+                              |
+                 +------------+----------------+
+                 |                             |
+          +-------------+               +-------------+
+          | table.MYI   |  positions     | table.MYD   |
+          | état/index  |--------------->| lignes      |
+          +-------------+               +-------------+
+
+Le MYD contient les octets des lignes, les petits en-têtes nécessaires au
+chaînage des blocs dynamiques et les listes de zones supprimées. Il ne contient
+pas les arbres d'index. Les feuilles d'index du MYI désignent une ligne par sa
+position dans le MYD.
+
+Selon le format, cette position est :
+
+  - l'offset du début d'un emplacement fixe;
+  - l'offset du premier bloc d'une ligne dynamique;
+  - une référence interprétée avec les paramètres du MYI pour une table
+    compressée.
+
+Le répertoire d'une base peut aussi contenir .MYD/.MYI sans .frm si la
+définition a été perdue. Les données ne sont pas nécessairement perdues, mais
+leur interprétation fiable exige alors de reconstituer exactement le schéma et
+les paramètres de stockage.
+
+==============================================================================
+2. LES TROIS FORMATS D'ENREGISTREMENTS
+==============================================================================
+
+MyISAM possède trois organisations physiques :
+
+  FIXED / statique
+    Choisi normalement lorsqu'aucune colonne n'est de longueur variable. Tous
+    les emplacements ont la même taille. C'est le format le plus simple et le
+    plus facile à parcourir ou à récupérer.
+
+  DYNAMIC / dynamique
+    Choisi lorsqu'une table contient notamment VARCHAR, VARBINARY, TEXT ou BLOB,
+    ou demandé avec ROW_FORMAT=DYNAMIC. Une ligne est compactée puis placée
+    dans un ou plusieurs blocs chaînés de tailles variables.
+
+  COMPRESSED / compressé
+    Produit hors ligne par myisampack. Chaque ligne est compressée séparément.
+    La table devient normalement accessible en lecture seulement.
+
+Le moteur choisit automatiquement FIXED ou DYNAMIC lors de la création de la
+table. COMPRESSED n'est pas simplement un DYNAMIC dont tous les octets auraient
+été passés dans un compresseur générique.
+
+Il n'existe aucune marque fiable dans les premiers octets du MYD pour choisir
+entre ces variantes. Cette information provient du MYI.
+
+==============================================================================
+3. CONVENTIONS BINAIRES ET POSITIONS
+==============================================================================
+
+Les entiers des en-têtes MyISAM décrits ci-dessous sont stockés en ordre petit-
+boutiste (octet de poids faible en premier). Le code MySQL les lit notamment
+avec mi_uint2korr, mi_uint3korr, mi_uint4korr et mi_sizekorr.
+
+Notations utilisées dans ce document :
+
+  uint2      entier non signé sur 2 octets, petit-boutiste;
+  uint3      entier non signé sur 3 octets, petit-boutiste;
+  uint4      entier non signé sur 4 octets, petit-boutiste;
+  offset8    position de fichier sur 8 octets dans les en-têtes dynamiques
+             du code MySQL moderne;
+  filepos    offset absolu, compté depuis le début du MYD;
+  data_len   nombre d'octets utiles présents dans le bloc;
+  block_len  longueur de la zone après l'en-tête, incluant éventuellement
+             une petite zone inutilisée;
+  rec_len    longueur totale de la représentation compactée de la ligne.
+
+Les références de lignes enregistrées dans les index n'ont pas nécessairement
+une largeur de 8 octets. Le MYI conserve rec_reflength, généralement compris
+entre 2 et 8 octets selon la taille maximale prévue du fichier. Il faut utiliser
+ce paramètre et non la taille native d'un pointeur du programme lecteur.
+
+==============================================================================
+4. FORMAT STATIQUE OU FIXED
+==============================================================================
+
+Le MYD est une succession d'emplacements de pack_reclength octets :
+
+  offset de l'emplacement N = N * pack_reclength
+
+  +-------------------------------+------------------+
+  | représentation de la ligne   | bourrage éventuel|
+  | reclength octets              |                  |
+  +-------------------------------+------------------+
+  <--------------- pack_reclength ------------------>
+
+pack_reclength et reclength sont lus dans le MYI. Ils sont souvent égaux, mais
+le code MyISAM prévoit un bourrage d'alignement, rempli de zéros à l'écriture.
+
+Une ligne active commence par un octet non nul. Pour une ligne supprimée :
+
+  offset  taille                    contenu
+  ------  ------------------------  ------------------------------------------
+       0  1                         00, marque de suppression
+       1  rec_reflength             prochain emplacement supprimé
+   suite  reste de l'emplacement    anciennes données, non significatives
+
+Le premier emplacement libre est indiqué par dellink dans l'état du MYI. Quand
+une nouvelle ligne est insérée, MyISAM peut retirer cet emplacement de la liste
+et le réutiliser. Une recherche de textes dans les emplacements supprimés peut
+donc retrouver des fragments anciens sans qu'ils constituent des lignes actives.
+
+La représentation logique d'une ligne fixe est construite d'après le schéma.
+Le manuel donne pour sa taille physique le principe suivant :
+
+  1 + somme des tailles de colonnes
+    + arrondi des bits NULL et du marqueur de suppression
+    + nombre de colonnes de longueur variable
+
+La formule exacte est exprimée dans le manuel comme :
+
+  1 + somme + (nb_NULL + delete_flag + 7) / 8 + nb_varlen
+
+avec une division entière, delete_flag valant 1 pour une table statique. Les
+colonnes CHAR/VARCHAR sont complétées par des espaces et BINARY/VARBINARY par
+des zéros dans ce format. Même si VARCHAR a une taille physique fixe ici, son
+octet de longueur reste nécessaire à l'interprétation logique.
+
+Avantages : accès direct, parcours rapide, corruption généralement localisée.
+Inconvénient : occupation égale à la taille maximale de chaque ligne.
+
+==============================================================================
+5. FORMAT DYNAMIQUE OU DYNAMIC
+==============================================================================
+
+Une ligne dynamique subit deux transformations distinctes :
+
+  ligne MySQL -> compactage des champs -> suite d'octets compactée
+              -> découpage en un ou plusieurs blocs du MYD
+
+Il ne faut donc pas confondre la longueur SQL de la ligne avec rec_len, ni
+rec_len avec l'espace physique total occupé par ses blocs.
+
+Le premier bloc contient rec_len. Si toute la ligne y tient, il est marqué
+FIRST|LAST. Sinon, il contient aussi l'offset du bloc suivant. Les blocs
+intermédiaires contiennent leur data_len et l'offset suivant; le dernier bloc
+ne possède pas de lien suivant.
+
+  +---------------+     +----------------+     +---------------+
+  | FIRST          | --> | continuation   | --> | LAST          |
+  | rec_len        |     | data_len       |     | data_len      |
+  | data + next    |     | data + next    |     | data          |
+  +---------------+     +----------------+     +---------------+
+
+Les blocs commencent sur une frontière de 4 octets. Les constantes du code
+actuel comprennent une taille minimale de bloc de 20 octets, un en-tête maximal
+de 20 octets et une longueur maximale de bloc dynamique de 2^24 - 4 octets.
+Une ligne peut toutefois dépasser la capacité uint3 grâce au type 13, dont
+rec_len est sur 4 octets et dont les données continuent dans d'autres blocs.
+
+Pour lire une ligne :
+
+  1. partir de l'offset du premier bloc fourni par l'index ou le parcours;
+  2. décoder le type et vérifier qu'il est autorisé pour un premier bloc;
+  3. allouer au plus rec_len octets après validation contre max_pack_length;
+  4. copier data_len octets;
+  5. suivre next_filepos jusqu'à avoir exactement rec_len octets;
+  6. décompacter les champs en utilisant les descriptions du MYI et le schéma.
+
+Toujours vérifier les offsets, les longueurs, les alignements, le nombre de
+blocs visités et les cycles avant toute allocation ou lecture.
+
+==============================================================================
+6. EN-TÊTES DES BLOCS DYNAMIQUES
+==============================================================================
+
+Le premier octet est un code de type de 0 à 13. Les offsets du tableau sont
+relatifs au début du bloc. « données à » désigne le premier octet utile.
+
+ Type  Rôle                         Champs après le type           Données à
+ ----  ---------------------------  -----------------------------  ----------
+   0   bloc supprimé                uint3 block_len                --
+                                    offset8 next_free à +4
+                                    offset8 prev_free à +12
+   1   FIRST|LAST, court            uint2 rec_len                  +3
+   2   FIRST|LAST, long             uint3 rec_len                  +4
+   3   FIRST|LAST + reste, court    uint2 rec_len, uint1 reste     +4
+   4   FIRST|LAST + reste, long     uint3 rec_len, uint1 reste     +5
+   5   FIRST, chaîné, court         uint2 rec_len, uint2 data_len  +13
+                                    offset8 next à +5
+   6   FIRST, chaîné, long          uint3 rec_len, uint3 data_len  +15
+                                    offset8 next à +7
+   7   LAST, court                  uint2 data_len                 +3
+   8   LAST, long                   uint3 data_len                 +4
+   9   LAST + reste, court          uint2 data_len, uint1 reste    +4
+  10   LAST + reste, long           uint3 data_len, uint1 reste    +5
+  11   continuation, court          uint2 data_len                 +11
+                                    offset8 next à +3
+  12   continuation, long           uint3 data_len                 +12
+                                    offset8 next à +4
+  13   FIRST, très grande ligne     uint4 rec_len, uint3 data_len  +16
+                                    offset8 next à +8
+
+Pour les types 1, 2, 5 à 8 et 11 à 13, block_len égale data_len. Pour les types
+3, 4, 9 et 10 :
+
+  block_len = data_len + reste
+
+« reste » est une petite zone inutilisée conservée dans le bloc. La position du
+bloc physique suivant lors d'un parcours séquentiel est :
+
+  données_à + block_len
+
+et non simplement début_du_bloc + data_len. Pour le type 0, block_len est la
+longueur physique complète du bloc supprimé et doit être un multiple de 4 et au
+moins égal à 20.
+
+Les codes 1 à 6 et 13 ne sont valides qu'au début d'une ligne. Les codes 7 à 12
+ne sont valides qu'après un bloc chaîné. Un code incompatible signale une perte
+de synchronisation ou une corruption.
+
+Ce tableau reproduit le décodage de _mi_get_block_info() dans mi_dynrec.cc. Il
+convient de vérifier le code de la version exacte de MySQL/MariaDB concernée
+avant de construire un outil de réparation destructif.
+
+==============================================================================
+7. REPRÉSENTATION COMPACTÉE D'UNE LIGNE DYNAMIQUE
+==============================================================================
+
+Les données réassemblées des blocs ne sont pas encore une suite universelle de
+valeurs SQL. _mi_rec_pack() construit une représentation pilotée par les
+descripteurs de colonnes conservés dans le MYI.
+
+Elle commence par pack_bits bits de contrôle, arrondis en octets. Un bit peut
+indiquer qu'un champ admissible a été omis ou raccourci. Parmi les méthodes du
+code MyISAM :
+
+  FIELD_SKIP_ZERO
+    Une valeur entièrement nulle peut être absente; son bit est positionné.
+
+  FIELD_SKIP_ENDSPACE
+    Les espaces terminaux sont retirés lorsque le gain est suffisant. Une
+    longueur sur un ou deux octets précède le contenu restant.
+
+  FIELD_SKIP_PRESPACE
+    Même principe pour les espaces placés au début du champ.
+
+  FIELD_VARCHAR
+    Une longueur sur un ou deux octets, selon la définition, précède les octets
+    réellement utilisés.
+
+  FIELD_BLOB
+    La longueur et les octets du BLOB/TEXT sont incorporés à la ligne compactée.
+    Le pointeur mémoire présent dans la représentation interne du serveur n'est
+    pas un pointeur persistant utilisable dans le MYD.
+
+  champ ordinaire
+    Les octets de taille fixe sont copiés tels que définis par le moteur.
+
+La signification de chaque bit, la longueur de son préfixe et l'ordre des
+champs dépendent de pack_fields, pack_bits et des descriptions MI_COLUMNDEF du
+MYI. Deux tables ayant des octets MYD semblables peuvent donc représenter des
+schémas complètement différents.
+
+==============================================================================
+8. FORMAT COMPRESSÉ
+==============================================================================
+
+myisampack analyse les valeurs, construit des statistiques et compresse chaque
+ligne séparément. Selon les colonnes, il peut notamment employer des arbres de
+Huffman, des dictionnaires de valeurs, la suppression d'espaces ou de zéros et
+des représentations de nombres plus courtes.
+
+Chaque ligne possède un petit préfixe de longueur, généralement de 1 à 3 octets,
+mais les tables et arbres nécessaires au décodage résident dans le MYI. Copier
+uniquement le MYD d'une table compressée rend donc la décompression normale
+impossible.
+
+Propriétés pratiques :
+
+  - une ligne est décompressable indépendamment des autres;
+  - le fichier occupe souvent moins d'espace et les lectures disque diminuent;
+  - les tables sont normalement en lecture seule;
+  - myisamchk peut décompresser la table avec l'option appropriée;
+  - une simple bibliothèque zlib/gzip ne sait pas décoder ce format.
+
+Ne pas confondre une table MyISAM COMPRESSED avec une table créée avec l'ancien
+type MERGE, ni avec la compression d'un fichier de sauvegarde externe.
+
+==============================================================================
+9. SUPPRESSION, ESPACE LIBRE ET FRAGMENTATION
+==============================================================================
+
+Dans une table fixe, les emplacements supprimés forment une liste simplement
+chaînée. Dans une table dynamique, le type 0 forme une liste doublement chaînée
+de blocs libres par next_free et prev_free; le MYI en conserve la tête.
+
+Une mise à jour qui agrandit une ligne dynamique peut :
+
+  - réutiliser une zone libre;
+  - diviser une zone libre;
+  - ajouter un bloc à la fin du MYD;
+  - laisser la ligne répartie sur plusieurs blocs.
+
+Une mise à jour qui raccourcit une ligne peut libérer ou fusionner de l'espace.
+La fragmentation est donc normale et l'ordre physique n'est pas nécessairement
+l'ordre d'insertion ou celui d'une clé SQL. OPTIMIZE TABLE réorganise les
+données; comparer les offsets avant et après cette opération n'a pas de sens.
+
+Les compteurs records, del, empty, data_file_length et la tête dellink se
+trouvent dans l'état MyISAM du MYI. Ils servent à contrôler un parcours mais ne
+doivent pas remplacer les validations des limites physiques du fichier.
+
+==============================================================================
+10. RÔLE INDISPENSABLE DU FICHIER MYI
+==============================================================================
+
+Le MYI ne contient pas seulement les index SQL. Ses structures MI_STATE_INFO et
+MI_BASE_INFO fournissent notamment :
+
+  - le nombre de lignes actives et supprimées;
+  - la longueur logique utilisée du MYD;
+  - la quantité d'espace vide et la tête de liste libre;
+  - reclength, pack_reclength, min_pack_length et max_pack_length;
+  - le nombre de champs, de champs compactés et de BLOB;
+  - pack_bits et les méthodes de compactage des colonnes;
+  - rec_reflength, largeur des références de lignes;
+  - les racines et pages des index.
+
+Le .frm historique, un CREATE TABLE conservé, un dump SQL ou la sortie de
+myisamchk -dvv apporte la définition SQL : ordre et types des colonnes, tailles,
+NULL, jeu de caractères, etc. Le MYI permet au moteur de lire physiquement la
+ligne, mais conserver aussi la définition SQL reste essentiel pour restituer
+correctement les valeurs et leurs noms.
+
+==============================================================================
+11. TYPES SQL, NULL, CHAÎNES ET BLOB
+==============================================================================
+
+Les valeurs d'un MYD ne suivent pas le protocole client MySQL ni le format texte
+d'un INSERT. Les entiers et nombres sont des représentations internes binaires;
+les dates, décimaux, ENUM/SET et champs BIT dépendent du type et de la version.
+
+NULL est représenté par des bits associés à la disposition interne de la ligne,
+pas par le texte « NULL ». Une chaîne vide, une chaîne remplie de zéros et NULL
+sont trois valeurs différentes.
+
+Les chaînes contiennent les octets du jeu de caractères de la colonne. Le MYD
+n'embarque pas son nom de collation. Décoder arbitrairement tout le fichier en
+UTF-8 détruit donc potentiellement des données latin1, DOS ou multioctets.
+
+Pour MyISAM dynamique, les octets des BLOB et TEXT sont incorporés dans la
+représentation compactée et peuvent traverser plusieurs blocs. Il n'existe pas
+de fichier auxiliaire MYB. Le schéma reste requis pour connaître la largeur de
+la longueur et la nature texte ou binaire du contenu.
+
+==============================================================================
+12. MÉTHODE DE LECTURE ET DE RÉCUPÉRATION
+==============================================================================
+
+Procédure recommandée :
+
+  1. Identifier le serveur d'origine : MySQL, MariaDB ou dérivé, et sa version.
+  2. Dupliquer ensemble MYD, MYI et frm ainsi que toute sauvegarde du schéma.
+  3. Calculer et conserver les empreintes des originaux.
+  4. Utiliser myisamchk -dvv sur la copie pour obtenir les paramètres physiques.
+  5. Déterminer FIXED, DYNAMIC ou COMPRESSED depuis le MYI.
+  6. Charger le schéma exact et les descriptions de compactage.
+  7. Valider data_file_length par rapport à la taille réelle du MYD.
+  8. Parcourir les emplacements fixes ou les blocs dynamiques sans jamais lire
+     au-delà du fichier.
+  9. Pour une ligne chaînée, détecter cycles, doubles références et rec_len
+     impossible avant d'allouer la mémoire.
+ 10. Décompacter la ligne, appliquer le bitmap NULL puis convertir les types.
+ 11. Comparer les lignes obtenues aux index et compteurs, sans considérer un
+     fragment supprimé comme une ligne active.
+
+Si le MYI est absent, une analyse heuristique est parfois possible pour FIXED si
+le schéma et la longueur exacte des lignes sont connus. Pour DYNAMIC, on peut
+repérer des en-têtes plausibles et reconstruire certains chaînages. Pour
+COMPRESSED, l'absence des arbres du MYI est généralement rédhibitoire. Dans tous
+les cas, qualifier les résultats d'heuristiques : un octet compris entre 0 et 13
+dans des données utilisateur n'est pas la preuve d'un début de bloc.
+
+==============================================================================
+13. ÉCRITURE, RÉPARATION ET SÉCURITÉ
+==============================================================================
+
+Modifier directement un MYD exige aussi de mettre à jour le MYI : index,
+compteurs, data_file_length, listes libres et sommes/états éventuels. Écrire une
+ligne correcte dans le MYD sans modifier ses index peut rendre la table
+incohérente ou invisible au serveur.
+
+Employer de préférence les outils du serveur d'origine :
+
+  CHECK TABLE
+    contrôle effectué par MySQL lorsque la table peut être ouverte;
+
+  REPAIR TABLE
+    reconstruction pilotée par le serveur;
+
+  myisamchk
+    contrôle et réparation hors ligne, serveur arrêté ou table garantie non
+    utilisée. Ne jamais l'exécuter concurremment avec mysqld sur la même table;
+
+  myisampack
+    création d'une table compressée en lecture seule;
+
+  mysqldump / SELECT ... INTO OUTFILE
+    export logique recommandé dès que la table redevient lisible.
+
+Après récupération, importer les données dans une nouvelle table et comparer le
+nombre de lignes, les clés uniques, les valeurs NULL, les longueurs de BLOB et
+un échantillon des données. Conserver les originaux jusqu'à validation.
+
+==============================================================================
+14. LIMITES ET RÉSUMÉ
+==============================================================================
+
+À retenir :
+
+  - MYD signifie le fichier de données d'une table MyISAM;
+  - il n'a pas d'en-tête global auto-descriptif;
+  - FIXED emploie des emplacements de taille constante;
+  - DYNAMIC compacte les lignes et les place dans des blocs éventuellement
+    chaînés, précédés d'un type de 0 à 13;
+  - COMPRESSED dépend de tables de décodage conservées dans le MYI;
+  - le MYI et le schéma sont indispensables à une interprétation fiable;
+  - les zones supprimées peuvent conserver d'anciens octets;
+  - les offsets, tailles de références et jeux de caractères ne doivent jamais
+    être supposés;
+  - une modification brute du MYD ne maintient pas les index.
+
+Ce document décrit les principes du code MyISAM officiel actuel et les formats
+classiques de MySQL. Les forks et versions historiques peuvent différer. Pour un
+outil d'analyse médico-légale ou de conversion, confronter systématiquement ces
+informations aux sources de la version ayant créé le fichier.
