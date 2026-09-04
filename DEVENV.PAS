@@ -101061,18 +101061,38 @@ Begin
    End;
   $9B: { FWAIT/WAIT : ignore }
    Inc(P.CPU.IP);
-  $27: { DAA - Decimal Adjust after Addition }
+  $27: { DAA - Decimal Adjust after Addition - BOGUE REEL CORRIGE           }
+       { (2026-09-03, trouve via l importateur SingleStepTests/8086, 39     }
+       { echecs avec une VRAIE valeur AL fausse) - formule de declenchement }
+       { du 2e ajustement (+$60) verifiee EMPIRIQUEMENT sur 4000 cas        }
+       { materiels reels (2000 DAA + 2000 DAS, 100% de correspondance,      }
+       { aucun pseudo-code manuel standard - y compris "> $99" - ne         }
+       { correspondait) : le 2e ajustement s applique si                    }
+       { (AL_ORIGINE > $9F) OU CF_avant OU (AL_ORIGINE dans [$9A,$9F] ET    }
+       { AF_AVANT L INSTRUCTION valait 0). Ce dernier cas est le plus       }
+       { subtil : quand AL_origine est dans $9A-$9F (chiffre de poids fort  }
+       { =9, poids faible >9), le 1er ajustement (+6) fait toujours         }
+       { depasser $9F APRES coup, mais le silicium reel ne declenche le 2e  }
+       { ajustement pour cela QUE si AF n etait PAS deja positionne avant   }
+       { l instruction - si AF etait deja a 1 (positionne par une           }
+       { instruction precedente), le 2e ajustement reste sauté meme si le   }
+       { resultat intermediaire depasse $9F. D ou WasAF, capture AVANT le   }
+       { 1er ajustement (qui modifie EFG_AF en place). }
    Begin
     V8 := P.CPU.Regs.AL;
+    R8 := V8; { AL D ORIGINE, avant tout ajustement }
     R16 := 0; { reutilise comme drapeau old_CF }
     If EFG_CF In P.CPU.Flags.s Then R16 := 1;
-    If ((V8 And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+    S8 := 0; { reutilise comme drapeau AF AVANT l instruction - voir commentaire }
+    If EFG_AF In P.CPU.Flags.s Then S8 := 1;
+    If ((V8 And $0F) > 9) Or (S8 = 1) Then Begin
      If (Word(V8) + 6) > $FF Then Include(P.CPU.Flags.s, EFG_CF);
      V8 := Byte(V8 + 6);
      Include(P.CPU.Flags.s, EFG_AF);
     End Else
      Exclude(P.CPU.Flags.s, EFG_AF);
-    If (V8 > $9F) Or (R16 = 1) Then Begin
+    If (R8 > $9F) Or (R16 = 1) Or
+       ((R8 >= $9A) And (R8 <= $9F) And (S8 = 0)) Then Begin
      V8 := Byte(V8 + $60);
      Include(P.CPU.Flags.s, EFG_CF);
     End Else
@@ -101081,18 +101101,24 @@ Begin
     Emu_SetSFB(P.CPU, V8); Emu_SetZFB(P.CPU, V8); Emu_SetPF(P.CPU, V8);
     Inc(P.CPU.IP);
    End;
-  $2F: { DAS - Decimal Adjust after Subtraction }
+  $2F: { DAS - Decimal Adjust after Subtraction - meme correctif que DAA,   }
+       { voir son commentaire pour le contexte complet (formule identique, }
+       { verifiee sur les 2000 cas DAS separement). }
    Begin
     V8 := P.CPU.Regs.AL;
+    R8 := V8; { AL D ORIGINE, avant tout ajustement }
     R16 := 0;
     If EFG_CF In P.CPU.Flags.s Then R16 := 1;
-    If ((V8 And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+    S8 := 0;
+    If EFG_AF In P.CPU.Flags.s Then S8 := 1;
+    If ((V8 And $0F) > 9) Or (S8 = 1) Then Begin
      If V8 < 6 Then Include(P.CPU.Flags.s, EFG_CF);
      V8 := Byte(V8 - 6);
      Include(P.CPU.Flags.s, EFG_AF);
     End Else
      Exclude(P.CPU.Flags.s, EFG_AF);
-    If (V8 > $9F) Or (R16 = 1) Then Begin
+    If (R8 > $9F) Or (R16 = 1) Or
+       ((R8 >= $9A) And (R8 <= $9F) And (S8 = 0)) Then Begin
      V8 := Byte(V8 - $60);
      Include(P.CPU.Flags.s, EFG_CF);
     End;
@@ -113993,12 +114019,21 @@ End;
 { (2026-09-02) qui a motive cette limite. }
 Procedure RunUnitTests8086(Const FileName: String; Const ArchName: String);
 Var
- I, J, K: Integer;
+ { LongInt (pas Integer/16 bits) - BOGUE REEL CORRIGE (2026-09-03) : I      }
+ { indexe "For I := 0 To UnitTest8086Count - 1" plus bas ; UnitTest8086Count}
+ { est deja LongInt (voir son propre correctif) mais I etait reste Integer,}
+ { rendant la boucle silencieusement no-op (0 succes/0 echec rapportes,     }
+ { aucune erreur) des que le fichier depassait 32767 tests - trouve avec un}
+ { corpus INC/DEC de 38682 tests. }
+ I, J, K: LongInt;
  T: ^TUnitTest8086;
  Steps: LongInt;
  HitBreak, Failed: Boolean;
  FailMsg: String;
- PassCount, FailCount: Integer;
+ { LongInt (pas Integer/16 bits) - BOGUE REEL CORRIGE (2026-09-03, meme    }
+ { chantier que I/J/K ci-dessus) : PassCount debordait silencieusement en  }
+ { negatif (38682 succes affiches comme -26854) des qu il depassait 32767. }
+ PassCount, FailCount: LongInt;
 
  Procedure CheckReg(Has: Boolean; Exp, Actual: Word; Const Name: String);
  Begin
