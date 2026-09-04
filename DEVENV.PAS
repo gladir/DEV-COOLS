@@ -35628,11 +35628,26 @@ End;
 
 { --- Ajouter une ligne au buffer du terminal --- }
 
+Const
+ PS_PIPE_MAX_LINES = 256;
+
+Var
+ PsPipelineCapture: Boolean;
+ PsPipelineLineCount: Integer;
+ PsPipelineLines: Array[1..PS_PIPE_MAX_LINES] Of String;
+
 Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
 Var
  Node, Old: PTermLine;
  DbgF: Text;
 Begin
+ If PsPipelineCapture Then Begin
+  If PsPipelineLineCount < PS_PIPE_MAX_LINES Then Begin
+   Inc(PsPipelineLineCount);
+   PsPipelineLines[PsPipelineLineCount] := S;
+  End;
+  Exit;
+ End;
  {$IFDEF ARM64_STAGE5_DEBUGHOOK}
  Assign(DbgF, 'C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\TERM_DEBUG.TXT');
  If FileExists('C:\Users\SYLVAI~1\AppData\Local\Temp\claude\c--SOURCE-GITHUB-DEV-COOLS\daa7d10c-4000-4baf-8791-6c4f4ee8a46e\scratchpad\TERM_DEBUG.TXT') Then Append(DbgF) Else Rewrite(DbgF);
@@ -64504,6 +64519,7 @@ Type
 
 Var
  PsVarsHead: PPsVar;
+ PsPipelineObject: PPsVar;
  PsHereStringActive: Boolean;
  PsHereStringVarName: String;
  PsHereStringBuf: AnsiString;
@@ -65454,13 +65470,15 @@ Begin
  End;
  If Length(DelimArg) > 0 Then Delim := DelimArg[1] Else Delim := ',';
 
- If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+   ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
   TermAddLine(TP, 'Syntaxe : ConvertTo-Csv $objet [-Delimiter c]');
   TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
    'ConvertFrom-Yaml/StringData/SddlString)');
   Exit;
  End;
- SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
  If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
   TermAddLine(TP, 'ConvertTo-Csv : ''' + VarArg + ''' n''est pas un objet.');
   Exit;
@@ -65528,12 +65546,15 @@ Begin
  End;
  If Length(DelimArg) > 0 Then Delim := DelimArg[1] Else Delim := ',';
 
- If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Or (PathArg = '') Then Begin
+ If (((VarArg = '') And (PsPipelineObject = Nil)) Or
+   ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$'))) Or
+  (PathArg = '') Then Begin
   TermAddLine(TP, 'Syntaxe : Export-Csv -Path fichier -InputObject $objet ' +
    '[-Delimiter c] [-Force]');
   Exit;
  End;
- SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
  If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
   TermAddLine(TP, 'Export-Csv : ''' + VarArg + ''' n''est pas un objet.');
   Exit;
@@ -65596,12 +65617,14 @@ Begin
    VarArg := LocalArgs[I];
   Inc(I);
  End;
- If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+   ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
   TermAddLine(TP, 'Syntaxe : ForEach-Object -InputObject $objet');
   TermAddLine(TP, '          ForEach-Object $objet [-MemberName nom]');
   Exit;
  End;
- SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
  If SrcVar = Nil Then Begin
   TermAddLine(TP, 'ForEach-Object : ''' + VarArg + ''' n''existe pas.');
   Exit;
@@ -65686,13 +65709,15 @@ Begin
   Inc(I);
  End;
 
- If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+   ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
   TermAddLine(TP, 'Syntaxe : ConvertTo-Html $objet [-Title texte]');
   TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
    'ConvertFrom-Yaml/StringData/SddlString)');
   Exit;
  End;
- SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
  If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
   TermAddLine(TP, 'ConvertTo-Html : ''' + VarArg + ''' n''est pas un objet.');
   Exit;
@@ -65799,13 +65824,15 @@ Begin
   Inc(I);
  End;
 
- If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+   ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
   TermAddLine(TP, 'Syntaxe : ConvertTo-Json $objet [-Depth n]');
   TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
    'ConvertFrom-Yaml/StringData/SddlString)');
   Exit;
  End;
- SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
  If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
   TermAddLine(TP, 'ConvertTo-Json : ''' + VarArg + ''' n''est pas un objet.');
   Exit;
@@ -65959,6 +65986,122 @@ Begin
  TermPSSubstituteVars := Res;
 End;
 
+Procedure TermPSExecutePipeline(Var TP: TTerminalPanel; Line: String);
+Var
+ Stages: Array[1..32] Of String;
+ Lines: Array[1..PS_PIPE_MAX_LINES] Of String;
+ StageCount, LineCount, I, J, StartPos: Integer;
+ Token: String;
+ CmdName, Stage, ParamPart, UpCmd, MemberName: String;
+ V: PPsVar;
+ P: PPsProp;
+ Capturing: Boolean;
+Begin
+ PsPipelineObject := Nil;
+ StageCount := 0; StartPos := 1; I := 1;
+ While I <= Length(Line) Do Begin
+  If Line[I] = '|' Then Begin
+   Inc(StageCount);
+   If StageCount <= 32 Then
+    Stages[StageCount] := TermTrim(Copy(Line, StartPos, I - StartPos));
+   StartPos := I + 1;
+  End;
+  Inc(I);
+ End;
+ Inc(StageCount);
+ If StageCount <= 32 Then
+  Stages[StageCount] := TermTrim(Copy(Line, StartPos, Length(Line)));
+ If (StageCount < 2) Or (Stages[1] = '') Then Begin
+  TermExecuteCommand(TP, TermTrim(Line));
+  Exit;
+ End;
+
+ LineCount := 0;
+ Stage := Stages[1];
+ If (Length(Stage) > 1) And (Stage[1] = '$') And
+    (Pos(' ', Stage) = 0) Then Begin
+  V := PsFindVar(Copy(Stage, 2, Length(Stage) - 1));
+  If V <> Nil Then Begin
+    If V^.IsObject Then PsPipelineObject := V;
+   If V^.IsObject Then Begin
+    P := V^.Props;
+    While (P <> Nil) And (LineCount < PS_PIPE_MAX_LINES) Do Begin
+     Inc(LineCount);
+     Lines[LineCount] := P^.Name + ' : ' + P^.Value;
+     P := P^.Next;
+    End;
+   End Else Begin
+    Inc(LineCount); Lines[LineCount] := V^.ScalarValue;
+   End;
+  End;
+ End Else Begin
+  PsPipelineCapture := True;
+  PsPipelineLineCount := 0;
+  TermExecuteCommand(TP, Stage);
+  PsPipelineCapture := False;
+  LineCount := PsPipelineLineCount;
+  For I := 1 To LineCount Do Lines[I] := PsPipelineLines[I];
+ End;
+
+ For J := 2 To StageCount Do Begin
+  Stage := Stages[J];
+  TermExtractCommand(Stage, CmdName, ParamPart);
+  UpCmd := TermStrToUpper(CmdName);
+  If (UpCmd = 'EXPORT-CSV') Or (UpCmd = 'CONVERTTO-CSV') Or
+     (UpCmd = 'CONVERTTO-JSON') Or (UpCmd = 'CONVERTTO-HTML') Or
+     (UpCmd = 'CONVERTTO-XML') Then Begin
+   If J < StageCount Then Begin
+    PsPipelineCapture := True;
+    PsPipelineLineCount := 0;
+    TermExecuteCommand(TP, Stage);
+    PsPipelineCapture := False;
+    LineCount := PsPipelineLineCount;
+    For I := 1 To LineCount Do Lines[I] := PsPipelineLines[I];
+   End Else Begin
+    PsPipelineCapture := False;
+    TermExecuteCommand(TP, Stage);
+    LineCount := 0;
+   End;
+  End Else If UpCmd = 'FOREACH-OBJECT' Then Begin
+   MemberName := '';
+   I := 1;
+   While I <= 80 Do Begin
+    Token := TermExtractParam(ParamPart, I);
+    If Token = '' Then Break;
+    If TermStrToUpper(Token) = '-MEMBERNAME' Then Begin
+     Inc(I); MemberName := TermExtractParam(ParamPart, I); Break;
+    End;
+    Inc(I);
+   End;
+   If MemberName <> '' Then Begin
+    MemberName := YamlUnquote(MemberName);
+    I := 1;
+    While I <= LineCount Do Begin
+     If Pos(TermStrToUpper(MemberName) + ' :',
+       TermStrToUpper(Lines[I])) = 1 Then Lines[I] :=
+       TermTrim(Copy(Lines[I], Length(MemberName) + 3, Length(Lines[I])));
+     Inc(I);
+    End;
+   End;
+  End Else If (UpCmd = 'SELECT-OBJECT') Or (UpCmd = 'FORMAT-CUSTOM') Then Begin
+   { Ces stages conservent le flux textuel; leur rendu final est volontairement
+     laisse a la commande suivante ou a l affichage terminal. }
+  End Else Begin
+   { Un stage inconnu recoit chaque element via $_, comme un pipeline texte. }
+   PsPipelineCapture := True;
+   PsPipelineLineCount := 0;
+   For I := 1 To LineCount Do
+    TermExecuteCommand(TP, TermPSSubstituteVars(StringReplace(Stage, '$_',
+     Lines[I])));
+   PsPipelineCapture := False;
+   LineCount := PsPipelineLineCount;
+   For I := 1 To LineCount Do Lines[I] := PsPipelineLines[I];
+  End;
+ End;
+ For I := 1 To LineCount Do TermAddLine(TP, Lines[I]);
+ PsPipelineObject := Nil;
+End;
+
 Procedure TermPSEvaluateAssignment(VarName, RHS: String);
 Var
  CmdName, ArgPart, SrcVarName: String;
@@ -66103,6 +66246,11 @@ Begin
  End;
 
  TermAddLine(TP, 'PS ' + Dir + '> ' + Line);
+
+ If Pos('|', Trimmed) > 0 Then Begin
+  TermPSExecutePipeline(TP, Trimmed);
+  Exit;
+ End;
 
  If (Length(Trimmed) > 1) And (Trimmed[1] = '$') Then Begin
   EqPos := Pos('=', Trimmed);
