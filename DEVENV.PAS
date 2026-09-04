@@ -41907,6 +41907,40 @@ Begin
   TermPadZeroLeft(Sec, 2));
 End;
 
+{ --- GET-DATE (PowerShell dev) --- }
+Procedure TermCmd_GetDate(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Year, Month, Day, DayOfWeek: Word;
+ Hour, Min, Sec, Sec100: Word;
+ FormatArg, UpFormat, DatePart, TimePart: String;
+ FormatPos: Integer;
+Begin
+ GetDate(Year, Month, Day, DayOfWeek);
+ GetTime(Hour, Min, Sec, Sec100);
+ DatePart := TermPadZeroLeft(Year, 4) + '-' +
+  TermPadZeroLeft(Month, 2) + '-' + TermPadZeroLeft(Day, 2);
+ TimePart := TermPadZeroLeft(Hour, 2) + ':' +
+  TermPadZeroLeft(Min, 2) + ':' + TermPadZeroLeft(Sec, 2);
+ FormatArg := '';
+ FormatPos := System.Pos('-FORMAT', TermStrToUpper(ParamStr));
+ If FormatPos > 0 Then
+  FormatArg := YamlUnquote(TrimStr(TermExtractParam(Copy(ParamStr,
+   FormatPos + 7, Length(ParamStr)), 1)));
+ UpFormat := TermStrToUpper(FormatArg);
+ If FormatArg = '' Then
+  TermAddLine(TP, DatePart + ' ' + TimePart)
+ Else If UpFormat = 'YYYY-MM-DD' Then
+  TermAddLine(TP, DatePart)
+ Else If UpFormat = 'HH:MM:SS' Then
+  TermAddLine(TP, TimePart)
+ Else If UpFormat = 'YYYY-MM-DD HH:MM:SS' Then
+  TermAddLine(TP, DatePart + ' ' + TimePart)
+ Else Begin
+  TermAddLine(TP, 'Get-Date : format non pris en charge : ' + FormatArg);
+  TermAddLine(TP, 'Formats : yyyy-MM-dd, HH:mm:ss, yyyy-MM-dd HH:mm:ss');
+ End;
+End;
+
 { --- VER --- }
 
 Procedure TermCmd_VER(Var TP: TTerminalPanel);
@@ -69625,6 +69659,10 @@ Begin
   TermAddLine(TP,
    '  Format-Wide [-InputObject $objet] [-Property nom] Affiche en largeur');
   TermAddLine(TP,
+   '  Get-Alias [-Name nom]                  Liste les alias reconnus');
+  TermAddLine(TP,
+   '  Get-Date [-Format format]               Affiche date et heure');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70412,7 +70450,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 117;
+ PS_CMD_ALIASES = 119;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70438,6 +70476,8 @@ Const
   'FORMAT-LIST',
   'FORMAT-TABLE',
   'FORMAT-WIDE',
+  'GET-ALIAS',
+  'GET-DATE',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70535,6 +70575,8 @@ Const
   92,
   93,
   94,
+  95,
+  96,
   19,
   20,
   21,
@@ -70617,6 +70659,27 @@ Begin
    Exit;
   End;
 End;
+
+  { --- GET-ALIAS (PowerShell dev) --- }
+  Procedure TermCmd_GetAlias(Var TP: TTerminalPanel; ParamStr: String);
+  Var
+   NameArg, UpName: String;
+   I, MatchCount: Integer;
+  Begin
+   NameArg := TermExtractParam(ParamStr, 1);
+   If TermStrToUpper(NameArg) = '-NAME' Then
+    NameArg := TermExtractParam(ParamStr, 2);
+   NameArg := YamlUnquote(NameArg);
+   UpName := TermStrToUpper(NameArg);
+   MatchCount := 0;
+   For I := 1 To PS_CMD_ALIASES Do
+    If (NameArg = '') Or (TermStrToUpper(PSCmdNames[I]) = UpName) Then Begin
+     TermAddLine(TP, PSCmdNames[I] + ' -> CommandId ' + IntToStr(PSCmdIDs[I]));
+     Inc(MatchCount);
+    End;
+   If MatchCount = 0 Then
+    TermAddLine(TP, 'Get-Alias : alias introuvable : ' + NameArg);
+  End;
 
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
@@ -71025,6 +71088,8 @@ Begin
     92: TermCmd_FormatList(TP, ParamStr);
     93: TermCmd_FormatTable(TP, ParamStr);
     94: TermCmd_FormatWide(TP, ParamStr);
+    95: TermCmd_GetAlias(TP, ParamStr);
+    96: TermCmd_GetDate(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
