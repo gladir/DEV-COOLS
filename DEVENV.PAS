@@ -40903,6 +40903,72 @@ Begin
  TermAddHistory(TP, ParamStr);
 End;
 
+{ --- GET-HISTORY (PowerShell dev) --- }
+Procedure TermCmd_GetHistory(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I, StartIndex, EndIndex, CountArg, IdArg, Err: Integer;
+ Token, UpToken: String;
+Begin
+ StartIndex := 1;
+ EndIndex := TP.NumberHistory - 1;
+ CountArg := -1;
+ IdArg := -1;
+ I := 1;
+ While I <= 80 Do Begin
+  Token := TermExtractParam(ParamStr, I);
+  If Token = '' Then Break;
+  UpToken := TermStrToUpper(Token);
+  If (UpToken = '-ID') Or (UpToken = '-COUNT') Or
+     (UpToken = '-NEWEST') Then Begin
+   Inc(I);
+   If TermExtractParam(ParamStr, I) = '' Then Begin
+    TermAddLine(TP, 'Syntaxe : Get-History [-Id n] [-Count n] [-Newest n]');
+    Exit;
+   End;
+   Err := 0;
+   Val(TermExtractParam(ParamStr, I), CountArg, Err);
+   If Err <> 0 Then Begin
+    TermAddLine(TP, 'Get-History : valeur numerique invalide.');
+    Exit;
+   End;
+   If UpToken = '-ID' Then IdArg := CountArg;
+   If (UpToken = '-COUNT') Or (UpToken = '-NEWEST') Then
+    CountArg := CountArg;
+  End Else Begin
+   Err := 0;
+   Val(Token, IdArg, Err);
+   If Err <> 0 Then Begin
+    TermAddLine(TP, 'Syntaxe : Get-History [-Id n] [-Count n] [-Newest n]');
+    Exit;
+   End;
+  End;
+  Inc(I);
+ End;
+ If (IdArg < -1) Or (CountArg < -1) Or (IdArg = 0) Or (CountArg = 0) Then Begin
+  TermAddLine(TP, 'Get-History : les valeurs doivent etre positives.');
+  Exit;
+ End;
+ If IdArg > 0 Then Begin
+  If (IdArg > EndIndex) Or (IdArg > TP.NumberHistory) Then Begin
+   TermAddLine(TP, 'Get-History : identifiant introuvable : ' + IntToStr(IdArg));
+   Exit;
+  End;
+  StartIndex := IdArg;
+  EndIndex := IdArg;
+ End Else If CountArg > 0 Then Begin
+  StartIndex := EndIndex - CountArg + 1;
+  If StartIndex < 1 Then StartIndex := 1;
+ End;
+ If EndIndex < StartIndex Then Begin
+  TermAddLine(TP, 'Get-History : aucun historique.');
+  Exit;
+ End;
+ TermAddLine(TP, ' Id  CommandLine');
+ TermAddLine(TP, ' --- --------------------------------------------------');
+ For I := StartIndex To EndIndex Do
+  TermAddLine(TP, ' ' + IntToStr(I) + '  ' + TP.TermHistory[I]);
+End;
+
 { --- ADD-MEMBER (2026-08-30, demande explicite de l'utilisateur) : la     }
 { VRAIE cmdlet attache dynamiquement une propriete/methode a UNE INSTANCE   }
 { d'objet .NET/PSObject deja existante. Ce terminal n'a JAMAIS eu le moindre}
@@ -69797,6 +69863,10 @@ Begin
   TermAddLine(TP,
    '  Get-FormatData [-TypeName nom]           Liste les vues de format');
   TermAddLine(TP,
+   '  Get-Help [-Name commande]                Affiche l''aide');
+  TermAddLine(TP,
+   '  Get-History [-Id n] [-Count n] [-Newest n] Affiche l''historique');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70584,7 +70654,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 122;
+ PS_CMD_ALIASES = 123;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70686,7 +70756,8 @@ Const
   'START-LINUXPROGRAM',
   'LOG',
   'DEVENV',
-  'HELP','GET-HELP','?'
+  'HELP','?','GET-HELP',
+  'GET-HISTORY'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -70788,7 +70859,8 @@ Const
   79,
   60,
   85,
-  61,61,61
+  61,61,101,
+  102
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -70844,6 +70916,53 @@ Begin
  If MatchCount = 0 Then
   TermAddLine(TP, 'Get-Command : commande introuvable : ' + NameArg);
 End;
+
+  { --- GET-HELP (PowerShell dev) --- }
+  Procedure TermCmd_GetHelp(Var TP: TTerminalPanel; ParamStr: String);
+  Var
+   NameArg, UpName: String;
+   I, CmdId: Byte;
+   Found: Boolean;
+  Begin
+   NameArg := TermExtractParam(ParamStr, 1);
+   If TermStrToUpper(NameArg) = '-NAME' Then
+    NameArg := TermExtractParam(ParamStr, 2);
+   NameArg := YamlUnquote(NameArg);
+   If NameArg = '' Then Begin
+    TermCmd_HELP(TP);
+    Exit;
+   End;
+   UpName := TermStrToUpper(NameArg);
+   Found := False; CmdId := 0;
+   For I := 1 To PS_CMD_ALIASES Do
+    If TermStrToUpper(PSCmdNames[I]) = UpName Then Begin
+     Found := True; CmdId := PSCmdIDs[I]; Break;
+    End;
+   If Not Found Then Begin
+    TermAddLine(TP, 'Get-Help : commande introuvable : ' + NameArg);
+    Exit;
+   End;
+   TermAddLine(TP, 'Nom : ' + NameArg);
+   TermAddLine(TP, 'CommandId : ' + IntToStr(CmdId));
+   If UpName = 'GET-HISTORY' Then
+    TermAddLine(TP, 'Syntaxe : Get-History [-Id n] [-Count n] [-Newest n]')
+   Else If UpName = 'GET-CONTENT' Then
+    TermAddLine(TP, 'Syntaxe : Get-Content -Path fichier [-TotalCount n] [-Tail n]')
+   Else If UpName = 'GET-DATE' Then
+    TermAddLine(TP, 'Syntaxe : Get-Date [-Format yyyy-MM-dd|HH:mm:ss]')
+   Else If UpName = 'GET-ERROR' Then
+    TermAddLine(TP, 'Syntaxe : Get-Error [-Newest n]')
+   Else If UpName = 'FORMAT-LIST' Then
+    TermAddLine(TP, 'Syntaxe : Format-List -InputObject $objet [-Property nom]')
+   Else If UpName = 'FORMAT-TABLE' Then
+    TermAddLine(TP, 'Syntaxe : Format-Table -InputObject $objet [-Property nom]')
+   Else If UpName = 'FORMAT-WIDE' Then
+    TermAddLine(TP, 'Syntaxe : Format-Wide -InputObject $objet [-Property nom]')
+   Else If UpName = 'GET-HELP' Then
+    TermAddLine(TP, 'Syntaxe : Get-Help [-Name commande]')
+   Else
+    TermAddLine(TP, 'Commande reconnue par le terminal PowerShell dev.');
+  End;
 
 Procedure TermExecuteCommand(Var TP: TTerminalPanel;
  CmdStr: String);
@@ -71258,6 +71377,8 @@ Begin
     98: TermCmd_GetContent(TP, ParamStr);
     99: TermCmd_GetError(TP, ParamStr);
     100: TermCmd_GetFormatData(TP, ParamStr);
+    101: TermCmd_GetHelp(TP, ParamStr);
+    102: TermCmd_GetHistory(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
@@ -71472,6 +71593,7 @@ Begin
     TermAddLine(TP, ' STACK   STATUS TYPE    WHY');
    End
    Else
+
     TermAddLine(TP, CurrCmd +
      ': Unknown command');
   End;
