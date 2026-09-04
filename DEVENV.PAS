@@ -1404,6 +1404,7 @@ Const
  EXPLORER_SCROLL_STEP  = 3;        { pas de defilement              }
  SPLITTER_WIDTH        = 4;        { largeur du splitter vertical   }
  MAX_EXPLORER_NODES    = 512;      { nombre max de noeuds           }
+ MAX_SQL_NODES         = 512;      { Explorateur d objets SQL Server (meme echelle) }
  { EXTENSION (2026-08-08) : barre d outils + champ de recherche live,   }
  { comme dans Visual Studio (sous le titre "Explorateur de solutions",     }
  { avant l arbre). }
@@ -2371,7 +2372,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -6480,6 +6481,52 @@ Type
   RoamingMsg   : String[127]; { resultat du dernier export/import       }
   ActionMsg    : String[127]; { resultat de la derniere compilation      }
  End;
+
+ { Explorateur d objets SQL Server (menu Affichage) : arbre de connexions,
+   calque sur TSolutionExplorer/TExplorerNode (tableau PLAT avec ParentIdx/
+   Level/Expanded, pas une vraie structure pointee - meme discipline que
+   GridEditors[] : un type INDEPENDANT plutot que de forcer ces nouveaux
+   noeuds dans TExplorerNodeKind, qui est propre aux fichiers/projets).
+   ChildrenLoaded permet le chargement paresseux (Etape 3 et suivantes) :
+   une table/colonne n est interrogee via SQLCMD qu au premier depliage,
+   jamais par avance. }
+ TSqlNodeKind = (
+  SQLNK_ROOT,            { "SQL Server" - racine statique }
+  SQLNK_SERVER,          { "(localdb)" ou une connexion .mdf nommee }
+  SQLNK_DATABASES,       { dossier "Base de donnees" }
+  SQLNK_DATABASE,        { "master" - le seul reellement supporte par SQLCMD }
+  SQLNK_TABLES,          { dossier "Tables" sous une base }
+  SQLNK_TABLE,           { une table (EXEC sp_tables) }
+  SQLNK_COLUMNS,         { dossier "Colonnes" sous une table }
+  SQLNK_COLUMN,          { une colonne (EXEC sp_columns) }
+  SQLNK_SECURITY,        { dossier "Securite" - toujours vide, honnete }
+  SQLNK_SERVEROBJECTS,   { dossier "Objet serveur" - toujours vide, honnete }
+  SQLNK_FILECONN,        { connexion fichier .DBF/.CSV }
+  SQLNK_FILETABLE        { le fichier lui-meme, ouvre CreateGridWindow au double-clic }
+ );
+
+ TSqlExplorerNode = Record
+  Caption       : String[127];
+  Kind          : TSqlNodeKind;
+  ParentIdx     : Integer;
+  Level         : Integer;
+  Expanded      : Boolean;
+  HasChildren   : Boolean;
+  ChildrenLoaded: Boolean;
+  FilePath      : String[255]; { .mdf ou .dbf/.csv associe a la racine de connexion }
+  ObjName       : String[127]; { nom de table pour un noeud Colonnes/Table }
+ End;
+
+ TSqlExplorerState = Record
+  Nodes      : Array[0..MAX_SQL_NODES - 1] Of TSqlExplorerNode;
+  NodeCount  : Integer;
+  SelectedIdx: Integer;
+  ScrollTop  : Integer;
+  X, Y       : Integer;
+  Width, Height: Integer;
+  NeedRepaint: Boolean;
+ End;
+
  { INT 21h/AX=714Eh-714Fh (Windows 95, Stage 5) - un resultat de recherche }
  { de nom long capture d avance (contrairement au FindFirst/Next classique}
  { $4E/$4F, qui ne recapture QUE le nom pour FindNext - voir Emu_DoInt21). }
@@ -6783,6 +6830,7 @@ Var
  { Page de demarrage }
  StartPage      : TStartPage;
  ExtMgr         : TExtManager;   { Gestionnaire d extensions (singleton) }
+ SqlExplorer    : TSqlExplorerState; { Explorateur d objets SQL Server (singleton) }
  { Dialogue nouveau projet / nouvelle solution }
  NewProjDlg     : TNewProjectDialog;
  { Dialogue nouveau fichier }
@@ -11379,6 +11427,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[2], 'Sortie', 'Ctrl+Alt+O', 301);
  AddMenuItem(MainMenuBar.Menus[2], 'Liste d erreurs', 'Ctrl+\+E', 302);
  AddMenuItem(MainMenuBar.Menus[2], 'Terminal', 'Ctrl+`', 303);
+ AddMenuItem(MainMenuBar.Menus[2], 'Explorateur d''objets SQL Server', '', 304);
  AddMenuSeparator(MainMenuBar.Menus[2]);
  AddMenuItem(MainMenuBar.Menus[2], 'Barre d outils', '', 310);
  AddMenuItem(MainMenuBar.Menus[2], 'Plein ecran', 'Maj+Alt+Entree', 311);
@@ -11764,6 +11813,7 @@ Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
 Procedure HandleRunCommentTool; Forward;
 Procedure CreateExtManagerWindow; Forward;
+Procedure CreateSqlObjectExplorerWindow; Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
@@ -12417,6 +12467,10 @@ Begin
         End Else Begin
          TerminalHasFocus := False;
         End;
+        FullRepaintNeeded := True;
+       End;
+  304: Begin { Affichage > Explorateur d objets SQL Server }
+        CreateSqlObjectExplorerWindow;
         FullRepaintNeeded := True;
        End;
  End;
@@ -14289,6 +14343,367 @@ Begin
  EditorReady := True;
 End;
 
+{ ============================================================================
+  EXPLORATEUR D OBJETS SQL SERVER (menu Affichage)
+  ============================================================================
+  Arbre de connexions a des bases de donnees, calque sur le SQL Server
+  Object Explorer de Visual Studio. Structure de donnees INDEPENDANTE de
+  TSolutionExplorer/TExplorerNode (memes principes - tableau PLAT avec
+  ParentIdx/Level/Expanded/HasChildren - mais un type a part, puisque
+  TExplorerNodeKind est propre aux fichiers/projets, pas aux objets SQL ;
+  meme discipline que GridEditors[] plutot que de reutiliser HexEditors[]).
+
+  Etape 1 de ce chantier (voir le plan) : infrastructure generique + arbre
+  STATIQUE (racine "SQL Server" > "(localdb)" > 3 dossiers vides) - aucune
+  connexion reelle a SQLCMD.EXE pour l instant (Etape 3), aucune barre
+  d icones (Etape 2), aucune connexion fichier .DBF/.CSV (Etape 4). --- }
+
+{ --- Trouve l onglet Explorateur SQL deja ouvert, s il existe (singleton,
+  meme patron que FindExtMgrWindow). --- }
+
+Function FindSqlExplorerWindow: Integer;
+Var
+ I: Integer;
+Begin
+ FindSqlExplorerWindow := -1;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].Kind = WK_SQLEXPLORER Then Begin
+   FindSqlExplorerWindow := I;
+   Exit;
+   End;
+End;
+
+{ --- Index juste apres le dernier descendant de NodeIdx (ou NodeCount si
+  NodeIdx est le dernier noeud du tableau) - necessaire pour inserer de
+  nouveaux enfants au bon endroit (immediatement apres leurs freres deja
+  presents), meme principe que FindExplorerSubtreeEnd pour
+  TSolutionExplorer. --- }
+
+Function SqlFindSubtreeEnd(Var ST: TSqlExplorerState; NodeIdx: Integer): Integer;
+Var
+ I, Lvl: Integer;
+Begin
+ Lvl := ST.Nodes[NodeIdx].Level;
+ I := NodeIdx + 1;
+ While (I < ST.NodeCount) And (ST.Nodes[I].Level > Lvl) Do Inc(I);
+ SqlFindSubtreeEnd := I;
+End;
+
+{ --- Insere Node a la position Pos, decalant tout ce qui suit - met a jour
+  ParentIdx/SelectedIdx des noeuds deplaces en consequence (jamais une
+  simple ecriture en fin de tableau : les enfants doivent apparaitre
+  immediatement apres leur parent, pas apres tout le reste de l arbre). --- }
+
+Procedure SqlInsertNodeAt(Var ST: TSqlExplorerState; Pos: Integer;
+ Const ANode: TSqlExplorerNode);
+Var
+ I: Integer;
+Begin
+ If ST.NodeCount >= MAX_SQL_NODES Then Exit;
+ For I := ST.NodeCount DownTo Pos + 1 Do Begin
+  ST.Nodes[I] := ST.Nodes[I - 1];
+  If ST.Nodes[I].ParentIdx >= Pos Then Inc(ST.Nodes[I].ParentIdx);
+ End;
+ ST.Nodes[Pos] := ANode;
+ Inc(ST.NodeCount);
+ If ST.SelectedIdx >= Pos Then Inc(ST.SelectedIdx);
+End;
+
+{ --- Ajoute un noeud enfant de AParentIdx (-1 = racine), renvoie son index.
+  Insere toujours immediatement apres le sous-arbre existant de
+  AParentIdx (jamais en fin de tableau) - voir SqlFindSubtreeEnd. --- }
+
+Function SqlAddChildNode(Var ST: TSqlExplorerState; Const ACaption: String;
+ AKind: TSqlNodeKind; AParentIdx: Integer): Integer;
+Var
+ InsertPos: Integer;
+ NewNode: TSqlExplorerNode;
+Begin
+ SqlAddChildNode := -1;
+ If ST.NodeCount >= MAX_SQL_NODES Then Exit;
+ If AParentIdx < 0 Then
+  InsertPos := ST.NodeCount
+ Else
+  InsertPos := SqlFindSubtreeEnd(ST, AParentIdx);
+ NewNode.Caption := ACaption;
+ NewNode.Kind := AKind;
+ NewNode.ParentIdx := AParentIdx;
+ If AParentIdx >= 0 Then
+  NewNode.Level := ST.Nodes[AParentIdx].Level + 1
+ Else
+  NewNode.Level := 0;
+ NewNode.Expanded := False;
+ NewNode.HasChildren := False;
+ NewNode.ChildrenLoaded := False;
+ NewNode.FilePath := '';
+ NewNode.ObjName := '';
+ SqlInsertNodeAt(ST, InsertPos, NewNode);
+ If AParentIdx >= 0 Then ST.Nodes[AParentIdx].HasChildren := True;
+ SqlAddChildNode := InsertPos;
+End;
+
+{ --- Un noeud est visible si TOUS ses ancetres sont Expanded - calcule a
+  la demande (jamais mis en cache) : cet arbre reste petit (quelques
+  dizaines de noeuds au plus), un parcours des ancetres a chaque
+  affichage est largement assez rapide et evite d avoir a invalider un
+  cache apres chaque depli/repli, contrairement a
+  TSolutionExplorer.RefreshExplorer. --- }
+
+Function SqlNodeVisible(Var ST: TSqlExplorerState; NodeIdx: Integer): Boolean;
+Var
+ P: Integer;
+Begin
+ SqlNodeVisible := True;
+ P := ST.Nodes[NodeIdx].ParentIdx;
+ While P >= 0 Do Begin
+  If Not ST.Nodes[P].Expanded Then Begin
+   SqlNodeVisible := False;
+   Exit;
+  End;
+  P := ST.Nodes[P].ParentIdx;
+ End;
+End;
+
+Procedure SqlExpandNode(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= ST.NodeCount) Then Exit;
+ If Not ST.Nodes[NodeIdx].HasChildren Then Exit;
+ ST.Nodes[NodeIdx].Expanded := True;
+ ST.NeedRepaint := True;
+End;
+
+Procedure SqlCollapseNode(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= ST.NodeCount) Then Exit;
+ ST.Nodes[NodeIdx].Expanded := False;
+ ST.NeedRepaint := True;
+End;
+
+Procedure SqlToggleNode(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= ST.NodeCount) Then Exit;
+ If ST.Nodes[NodeIdx].Expanded Then
+  SqlCollapseNode(ST, NodeIdx)
+ Else
+  SqlExpandNode(ST, NodeIdx);
+End;
+
+{ --- Construit le squelette statique "SQL Server" > "(localdb)" > 3
+  dossiers (Base de donnees/Securite/Objet serveur) - aucune connexion
+  reelle a SQLCMD.EXE a cette etape (Etape 3 du plan). --- }
+
+Procedure BuildSqlExplorerSkeleton(Var ST: TSqlExplorerState);
+Var
+ RootIdx, ServerIdx: Integer;
+Begin
+ ST.NodeCount := 0;
+ RootIdx := SqlAddChildNode(ST, 'SQL Server', SQLNK_ROOT, -1);
+ ST.Nodes[RootIdx].Expanded := True;
+ ServerIdx := SqlAddChildNode(ST, '(localdb)', SQLNK_SERVER, RootIdx);
+ SqlAddChildNode(ST, 'Base de donnees', SQLNK_DATABASES, ServerIdx);
+ SqlAddChildNode(ST, 'Securite', SQLNK_SECURITY, ServerIdx);
+ SqlAddChildNode(ST, 'Objet serveur', SQLNK_SERVEROBJECTS, ServerIdx);
+ ST.SelectedIdx := RootIdx;
+ ST.ScrollTop := 0;
+ ST.NeedRepaint := True;
+End;
+
+Procedure InitSqlExplorer(Var ST: TSqlExplorerState);
+Begin
+ BuildSqlExplorerSkeleton(ST);
+End;
+
+{ --- Ouvrir (ou activer si deja ouvert) l onglet Explorateur d objets SQL
+  Server - meme patron exact que CreateExtManagerWindow (singleton, aucun
+  tableau parallele par index). --- }
+
+Procedure CreateSqlObjectExplorerWindow;
+Var
+ Idx: Integer;
+Begin
+ Idx := FindSqlExplorerWindow;
+ If Idx >= 0 Then Begin
+  ActivateWindow(Idx);
+  Exit;
+ End;
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_SQLEXPLORER;
+ WinMgr.Windows[Idx].FileName := '';
+ WinMgr.Windows[Idx].Title := 'Explorateur d''objets SQL Server';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ InitSqlExplorer(SqlExplorer);
+ SqlExplorer.X := WinMgr.Windows[Idx].X;
+ SqlExplorer.Y := WinMgr.Windows[Idx].Y;
+ SqlExplorer.Width := WinMgr.Windows[Idx].Width;
+ SqlExplorer.Height := WinMgr.Windows[Idx].Height;
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ EditorReady := True;
+End;
+
+{ --- Dessine un noeud (indentation par Level, triangle depli/replie s il a
+  des enfants, petit carre de couleur selon TSqlNodeKind - pas d icone
+  16x16 comme TSolutionExplorer, cet arbre n a pas de "langage de
+  fichier" a distinguer). --- }
+
+Procedure DrawSqlExplorerNode(Var ST: TSqlExplorerState; NodeIdx, DrawY: Integer);
+Var
+ DrawX, TriX, TriY, GlyphColor: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= ST.NodeCount) Then Exit;
+ DrawX := ST.X + 4 + ST.Nodes[NodeIdx].Level * EXPLORER_INDENT;
+ If NodeIdx = ST.SelectedIdx Then Begin
+  SetFillStyle(SolidFill, CLR_SELECTION);
+  Bar(ST.X, DrawY, ST.X + ST.Width - 1, DrawY + EXPLORER_NODE_HEIGHT - 1);
+ End;
+ If ST.Nodes[NodeIdx].HasChildren Then Begin
+  TriX := DrawX;
+  TriY := DrawY + EXPLORER_NODE_HEIGHT Div 2;
+  SetColor(CLR_MENU_TEXT);
+  If ST.Nodes[NodeIdx].Expanded Then Begin
+   Line(TriX, TriY - 3, TriX + 6, TriY - 3);
+   Line(TriX, TriY - 3, TriX + 3, TriY + 3);
+   Line(TriX + 6, TriY - 3, TriX + 3, TriY + 3);
+  End Else Begin
+   Line(TriX, TriY - 4, TriX, TriY + 4);
+   Line(TriX, TriY - 4, TriX + 6, TriY);
+   Line(TriX, TriY + 4, TriX + 6, TriY);
+  End;
+ End;
+ DrawX := DrawX + 10;
+ { Petit glyphe carre : bleu = serveur, jaune = dossier, vert = table,     }
+ { gris = colonne - simple repere visuel, jamais un vrai jeu d icones      }
+ { comme l Explorateur de solution (hors de portee de cette Etape 1). }
+ Case ST.Nodes[NodeIdx].Kind Of
+  SQLNK_ROOT, SQLNK_SERVER: GlyphColor := 1;   { bleu }
+  SQLNK_DATABASES, SQLNK_SECURITY, SQLNK_SERVEROBJECTS,
+  SQLNK_TABLES, SQLNK_COLUMNS, SQLNK_FILECONN: GlyphColor := 14; { jaune }
+  SQLNK_DATABASE, SQLNK_TABLE, SQLNK_FILETABLE: GlyphColor := 2; { vert }
+ Else
+  GlyphColor := 8; { gris - colonnes }
+ End;
+ SetFillStyle(SolidFill, GlyphColor);
+ Bar(DrawX, DrawY + 6, DrawX + 8, DrawY + 14);
+ SetColor(CLR_BORDER);
+ Rectangle(DrawX, DrawY + 6, DrawX + 8, DrawY + 14);
+ DrawX := DrawX + 14;
+ If NodeIdx = ST.SelectedIdx Then
+  SetColor(CLR_EDITOR_BG)
+ Else
+  SetColor(CLR_MENU_TEXT);
+ OutTextXY(DrawX, DrawY + 3, ST.Nodes[NodeIdx].Caption);
+End;
+
+{ --- Dessine l Explorateur d objets SQL Server (arbre pleine largeur -
+  pas de scrollbar en Etape 1, cet arbre reste minuscule tant qu aucune
+  vraie connexion n a peuple de tables/colonnes ; a revisiter si necessaire
+  aux etapes suivantes). --- }
+
+Procedure DrawSqlExplorer(Var ST: TSqlExplorerState);
+Var
+ DrawY, I: Integer;
+Begin
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(ST.X, ST.Y, ST.X + ST.Width - 1, ST.Y + ST.Height - 1);
+ DrawY := ST.Y;
+ For I := 0 To ST.NodeCount - 1 Do
+  If SqlNodeVisible(ST, I) Then Begin
+   DrawSqlExplorerNode(ST, I, DrawY);
+   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+   If DrawY >= ST.Y + ST.Height Then Break;
+  End;
+End;
+
+{ --- Trouve le noeud VISIBLE affiche a l ordonnee ecran MY (-1 si aucun) -
+  meme parcours exact que DrawSqlExplorer, pour ne jamais desynchroniser
+  affichage et clic. --- }
+
+Function SqlNodeHitTest(Var ST: TSqlExplorerState; MY: Integer): Integer;
+Var
+ DrawY, I: Integer;
+Begin
+ SqlNodeHitTest := -1;
+ DrawY := ST.Y;
+ For I := 0 To ST.NodeCount - 1 Do
+  If SqlNodeVisible(ST, I) Then Begin
+   If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
+    SqlNodeHitTest := I;
+    Exit;
+   End;
+   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+   If DrawY >= ST.Y + ST.Height Then Break;
+  End;
+End;
+
+{ --- Gere clic/double-clic (depli/repli, selection) et clavier (fleches,
+  Entree) dans l Explorateur d objets SQL Server - meme repartition
+  haut/bas/gauche/droite que HandleGridEditorKey. --- }
+
+Procedure HandleSqlExplorerEvent(Var ST: TSqlExplorerState; Ev: TEvent);
+Var
+ HitIdx, TriLeft, I, PrevVisible, NextVisible: Integer;
+Begin
+ If ST.NodeCount <= 0 Then Exit;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If (Ev.MouseX < ST.X) Or (Ev.MouseX >= ST.X + ST.Width) Or
+     (Ev.MouseY < ST.Y) Or (Ev.MouseY >= ST.Y + ST.Height) Then Exit;
+  HitIdx := SqlNodeHitTest(ST, Ev.MouseY);
+  If HitIdx < 0 Then Exit;
+  ST.SelectedIdx := HitIdx;
+  If ST.Nodes[HitIdx].HasChildren Then Begin
+   TriLeft := ST.X + 4 + ST.Nodes[HitIdx].Level * EXPLORER_INDENT;
+   If (Ev.MouseX >= TriLeft) And (Ev.MouseX < TriLeft + 10) Then
+    SqlToggleNode(ST, HitIdx);
+  End;
+  ST.NeedRepaint := True;
+  Exit;
+ End;
+ If Ev.Kind = EV_MOUSE_DBLCLICK Then Begin
+  If (Ev.MouseX < ST.X) Or (Ev.MouseX >= ST.X + ST.Width) Or
+     (Ev.MouseY < ST.Y) Or (Ev.MouseY >= ST.Y + ST.Height) Then Exit;
+  HitIdx := SqlNodeHitTest(ST, Ev.MouseY);
+  If HitIdx < 0 Then Exit;
+  ST.SelectedIdx := HitIdx;
+  If ST.Nodes[HitIdx].HasChildren Then SqlToggleNode(ST, HitIdx);
+  ST.NeedRepaint := True;
+  Exit;
+ End;
+ If Ev.Kind <> EV_KEY_DOWN Then Exit;
+ Case Ev.KeyCode Of
+  $48: Begin { Haut : noeud visible precedent }
+        PrevVisible := -1;
+        For I := 0 To ST.SelectedIdx - 1 Do
+         If SqlNodeVisible(ST, I) Then PrevVisible := I;
+        If PrevVisible >= 0 Then ST.SelectedIdx := PrevVisible;
+       End;
+  $50: Begin { Bas : noeud visible suivant }
+        NextVisible := -1;
+        For I := ST.SelectedIdx + 1 To ST.NodeCount - 1 Do
+         If SqlNodeVisible(ST, I) Then Begin
+          NextVisible := I;
+          Break;
+         End;
+        If NextVisible >= 0 Then ST.SelectedIdx := NextVisible;
+       End;
+  $4B: SqlCollapseNode(ST, ST.SelectedIdx);  { Gauche : replier }
+  $4D: SqlExpandNode(ST, ST.SelectedIdx);    { Droite : deplier }
+  $1C: SqlToggleNode(ST, ST.SelectedIdx);    { Entree : basculer }
+ End;
+ ST.NeedRepaint := True;
+End;
+
 { --- Ouvrir un fichier d aide dans un nouvel editeur --- }
 
 { Declarations anticipees : ces routines sont definies plus bas.
@@ -15296,6 +15711,8 @@ Begin
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
   { Rien a synchroniser : ExtMgr est un singleton global, pas un etat  }
   { par-index comme HexEditors[]/FormEditors[]. }
+ End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then Begin
+  { Rien a synchroniser : SqlExplorer est aussi un singleton global. }
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
   If GridEditors[WinMgr.ActiveIdx] <> Nil Then
    GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
@@ -15360,6 +15777,8 @@ Begin
    ActiveFormEditor := FormEditors[Idx]^;
  End Else If WinMgr.Windows[Idx].Kind = WK_EXTMGR Then Begin
   { Rien a restaurer : ExtMgr est un singleton global. }
+ End Else If WinMgr.Windows[Idx].Kind = WK_SQLEXPLORER Then Begin
+  { Rien a restaurer : SqlExplorer est aussi un singleton global. }
  End Else If WinMgr.Windows[Idx].Kind = WK_GRID Then Begin
   If GridEditors[Idx] <> Nil Then
    ActiveGridEditor := GridEditors[Idx]^;
@@ -130038,6 +130457,8 @@ Begin
    SB.Language := 'Formulaire'
   Else If WM.Windows[Idx].Kind = WK_GRID Then
    SB.Language := 'Grille'
+  Else If WM.Windows[Idx].Kind = WK_SQLEXPLORER Then
+   SB.Language := 'SQL Server'
   Else
    SB.Language := 'Text';
  End Else Begin
@@ -132224,6 +132645,8 @@ Begin
    DrawExtManager(ExtMgr)
   Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then
    DrawGridEditor(ActiveGridEditor)
+  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then
+   DrawSqlExplorer(SqlExplorer)
   Else
    DrawEditor(ActiveEditor);
  End;
@@ -136718,6 +137141,15 @@ Begin
    GridHandleDoubleClick(ActiveGridEditor, Ev);
    Exit;
   End;
+  { Double-clic dans l Explorateur d objets SQL Server : deplie/replie le  }
+  { noeud sous le curseur (Etape 1) - point d ancrage aussi pour un futur  }
+  { double-clic "ouvrir la table" une fois les connexions fichier .DBF/    }
+  { .CSV cablees (Etape 4 du plan). }
+  If (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER) And
+     (Ev.Kind = EV_MOUSE_DBLCLICK) Then Begin
+   HandleSqlExplorerEvent(SqlExplorer, Ev);
+   Exit;
+  End;
   { Si renommage en cours dans l explorateur, lui envoyer les touches }
   If SolExplorer.Renaming And
      ((Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN)) Then Begin
@@ -136739,6 +137171,8 @@ Begin
     { Apercu de formulaire : lecture seule, aucune frappe traitee }
    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
     { Gestionnaire d extensions : pilote a la souris, aucune frappe traitee }
+   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then Begin
+    HandleSqlExplorerEvent(SqlExplorer, Ev);
    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
     HandleGridEditorKey(ActiveGridEditor, Ev);
     If GridEditors[WinMgr.ActiveIdx] <> Nil Then
@@ -136789,6 +137223,8 @@ Begin
       MarkWindowModified(WinMgr.ActiveIdx);
     End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
      HandleExtManagerMouse(ExtMgr, Ev);
+    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then Begin
+     HandleSqlExplorerEvent(SqlExplorer, Ev);
     End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
      HandleGridEditorMouse(ActiveGridEditor, Ev);
      If GridEditors[WinMgr.ActiveIdx] <> Nil Then
