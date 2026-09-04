@@ -39946,6 +39946,79 @@ Begin
  Close(Handle);
 End;
 
+{ --- FORMAT-HEX (PowerShell dev) --- }
+Procedure TermCmd_FormatHex(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, UpParams, CountArg, OffsetArg: String;
+ PathFlagPos, LiteralFlagPos, CountFlagPos, OffsetFlagPos: Integer;
+ Offset, Limit, Done, I, N, Err: LongInt;
+ F: File;
+ Buf: Array[0..15] Of Byte;
+ BytesRead: Integer;
+ HexLine, AsciiLine, S: String;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathFlagPos := System.Pos('-PATH', UpParams);
+ LiteralFlagPos := System.Pos('-LITERALPATH', UpParams);
+ CountFlagPos := System.Pos('-COUNT', UpParams);
+ OffsetFlagPos := System.Pos('-OFFSET', UpParams);
+ If LiteralFlagPos > 0 Then
+  PathArg := YamlUnquote(TrimStr(TermExtractParam(Copy(ParamStr,
+   LiteralFlagPos + 12, Length(ParamStr)), 1)))
+ Else If PathFlagPos > 0 Then
+  PathArg := YamlUnquote(TrimStr(TermExtractParam(Copy(ParamStr,
+   PathFlagPos + 5, Length(ParamStr)), 1)))
+ Else
+  PathArg := YamlUnquote(TermExtractParam(ParamStr, 1));
+ CountArg := ''; OffsetArg := '0';
+ If CountFlagPos > 0 Then
+  CountArg := TermExtractParam(Copy(ParamStr, CountFlagPos + 6,
+   Length(ParamStr)), 1);
+ If OffsetFlagPos > 0 Then
+  OffsetArg := TermExtractParam(Copy(ParamStr, OffsetFlagPos + 7,
+   Length(ParamStr)), 1);
+ Offset := 0; Limit := -1; Err := 0;
+ If OffsetArg <> '' Then Val(OffsetArg, Offset, Err);
+ If (Err <> 0) Or (Offset < 0) Then Offset := 0;
+ If CountArg <> '' Then Begin
+  Err := 0; Val(CountArg, Limit, Err);
+  If (Err <> 0) Or (Limit < 0) Then Limit := -1;
+ End;
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Format-Hex -Path fichier [-Count n] [-Offset n]');
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Format-Hex : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ If Offset > FileSize(F) Then Offset := FileSize(F);
+ Seek(F, Offset);
+ Done := 0;
+ While (Not Eof(F)) And ((Limit < 0) Or (Done < Limit)) Do Begin
+  BlockRead(F, Buf, SizeOf(Buf), BytesRead);
+  If BytesRead <= 0 Then Break;
+  If (Limit >= 0) And (Done + BytesRead > Limit) Then
+   BytesRead := Limit - Done;
+  HexLine := ''; AsciiLine := '';
+  For I := 0 To BytesRead - 1 Do Begin
+   HexLine := HexLine + HexByte(Buf[I]) + ' ';
+   If (Buf[I] >= 32) And (Buf[I] <= 126) Then
+    AsciiLine := AsciiLine + Chr(Buf[I])
+   Else
+    AsciiLine := AsciiLine + '.';
+  End;
+  For N := BytesRead To 15 Do HexLine := HexLine + '   ';
+  Str(Offset + Done, S);
+  While Length(S) < 8 Do S := '0' + S;
+  TermAddLine(TP, S + '   ' + HexLine + '  *' + AsciiLine + '*');
+  Inc(Done, BytesRead);
+ End;
+ Close(F);
+End;
+
 { --- ADD-CONTENT (2026-08-30, demande explicite de l'utilisateur, "support}
 { complet" dans PowerShell dev) : contrepartie en ECRITURE de TYPE/        }
 { GET-CONTENT ci-dessus - AJOUTE une ligne de texte a la fin d'un fichier   }
@@ -69342,6 +69415,8 @@ Begin
   TermAddLine(TP,
    '  Copy-Item -Path f -Destination d     Copie (syntaxe nommee)');
   TermAddLine(TP,
+   '  Format-Hex -Path f [-Count n] [-Offset n] Affiche les octets');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70129,7 +70204,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 113;
+ PS_CMD_ALIASES = 114;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70151,6 +70226,7 @@ Const
   'COPY-VMFILE',
   'COPY-ITEMPROPERTY',
   'CLEAR-VARIABLE',
+  'FORMAT-HEX',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70244,6 +70320,7 @@ Const
   87,
   88,
   18,
+  91,
   19,
   20,
   21,
@@ -70730,6 +70807,7 @@ Begin
     87: TermCmd_CopyVMFile(TP, ParamStr);
     88: TermCmd_CopyItemProperty(TP, ParamStr);
     18: TermCmd_ClearVariable(TP, ParamStr);
+    91: TermCmd_FormatHex(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
