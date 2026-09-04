@@ -2371,7 +2371,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -2476,6 +2476,99 @@ Type
   VisibleRows : Integer;      { nombre de rangees visibles         }
  End;
  PHexEditor = ^THexEditor;
+
+Const
+ { Chantier grille (DBF/Clarion/Btrieve/CSV/MyISAM) - genre de fournisseur }
+ { de table actif pour une TGridEditor donnee (TGridEditor.Format). Les    }
+ { formats reels sont branches un a un (Etape 2 et suivantes) ; seul       }
+ { GTF_NONE existe fonctionnellement a l Etape 1 (infrastructure           }
+ { generique). }
+ GTF_NONE     = 0;
+ GTF_DBF      = 1;
+ GTF_CSV      = 2;
+ GTF_CLARION  = 3;
+ GTF_BTRIEVE  = 4;
+ GTF_MYD      = 5;
+ GRID_MAX_COLS = 128;  { dBase III limite deja a 128 champs - large pour   }
+                       { couvrir aussi Clarion/Btrieve en pratique }
+
+Type
+ { Description d un champ/colonne, remplie par le fournisseur GridOpen_Xxx }
+ { propre a chaque format (Etape 2 et suivantes) - TypeCode reste un code  }
+ { BRUT propre au format d origine (ex. 'C'/'N'/'D'/'L'/'M' pour DBF), la   }
+ { traduction en texte affichable est faite par GridCellText, jamais ici. }
+ TGridColumn = Record
+  Name     : String[63];
+  TypeCode : Char;
+  Ofs      : LongInt;    { offset dans l enregistrement                }
+  Len      : Integer;    { longueur en octets                          }
+  Decimals : Integer;
+ End;
+
+ { Tampon de l unique enregistrement courant (taille dynamique, alloue via }
+ { GetMem a l ouverture selon TGridEditor.RecordLen) - meme patron que      }
+ { PHexByteArr/THexByteArr ci-dessus. }
+ TGridRecBuf = Array[0..0] Of Byte;
+ PGridRecBuf = ^TGridRecBuf;
+
+ { Tableau d offsets/longueurs d enregistrement (taille dynamique, alloue  }
+ { via GetMem puis agrandi via ReallocMem au fil du balayage) - necessaire }
+ { pour les formats sans arithmetique directe Offset+N*RecordLen (CSV,     }
+ { Etape 3 ; Btrieve, Etape 5), ou seule la POSITION de chaque ligne est    }
+ { connue a l avance, jamais sa longueur (variable). Volontairement un      }
+ { simple tableau de pointeur+capacite plutot qu un "Array Of" dynamique -  }
+ { ce fichier n utilise nulle part ailleurs de tableau dynamique comme      }
+ { type de champ, seulement comme parametre de procedure (voir Emu_Image*  }
+ { Sector) ; rester dans le meme style GetMem/ReallocMem que PGridRecBuf    }
+ { ci-dessus evite d introduire un deuxieme idiome. }
+ TLongIntArr = Array[0..0] Of LongInt;
+ PLongIntArr = ^TLongIntArr;
+
+ { Editeur grille (WK_GRID, un par fichier de table ouvert) : ne garde en  }
+ { memoire que l enregistrement COURANT (CurrentRecBuf), jamais la table   }
+ { entiere - le fichier reste ouvert (F, FileOpen) pendant toute la vie de }
+ { l onglet, dans le meme esprit que Emu_FloppyOpenOne (Seek+BlockRead a   }
+ { la demande plutot qu un chargement complet en memoire, voir             }
+ { Emu_ImageReadSector/D64_ReadSector). }
+ TGridEditor = Record
+  FileName       : String[255];
+  Format         : Byte;         { GTF_xxx }
+  F              : File;         { fichier non type, ouvert en permanence }
+  FileOpen       : Boolean;
+  RecordCount    : LongInt;
+  RecordLen      : Integer;      { longueur d un enregistrement, en octets }
+  DataStart      : LongInt;      { offset du premier enregistrement        }
+  ColCount       : Integer;
+  Columns        : Array[0..GRID_MAX_COLS - 1] Of TGridColumn;
+  CurrentRecBuf  : PGridRecBuf;  { alloue via GetMem(RecordLen), voir plus haut }
+  CurrentRecNum  : LongInt;      { -1 = aucun enregistrement charge         }
+  CurrentRecValid: Boolean;
+  CurrentRecLen  : Integer;      { octets reellement valides dans           }
+                                 { CurrentRecBuf pour CurrentRecNum -        }
+                                 { toujours = RecordLen pour un format a     }
+                                 { largeur fixe (DBF), variable pour CSV     }
+  RowOffsets     : PLongIntArr;  { CSV/Btrieve (Etapes 3/5) : offset de      }
+                                 { chaque ligne, construit au premier         }
+                                 { chargement - Nil pour les formats a       }
+                                 { arithmetique directe (DBF)                }
+  RowLens        : PLongIntArr;  { longueur en octets de chaque ligne (CSV) -}
+                                 { toujours de meme taille que RowOffsets    }
+  RowCapacity    : LongInt;      { taille allouee de RowOffsets/RowLens      }
+                                 { (>= RecordCount, agrandie par doublement) }
+  ScrollRow      : LongInt;      { premiere ligne visible                   }
+  ScrollCol      : Integer;      { premiere colonne visible (defilement horiz.) }
+  SelRow         : LongInt;      { ligne selectionnee                       }
+  SelCol         : Integer;      { colonne selectionnee                     }
+  ColWidth       : Array[0..GRID_MAX_COLS - 1] Of Integer; { largeur en pixels }
+  X              : Integer;
+  Y              : Integer;
+  Width          : Integer;
+  Height         : Integer;
+  ErrorMsg       : String[127];  { refus explicite (version/format non     }
+                                 { pris en charge) - affiche a la place de }
+                                 { la grille tant que non vide             }
+ End;
+ PGridEditor = ^TGridEditor;
 
  { Controle visuel d un formulaire .FRM (apercu lecture seule) }
  TFRMVisControl = Record
@@ -2897,6 +2990,8 @@ Type
   ENK_FILE_VB,         { fichier VB.NET (.vb)                    }
   ENK_FILE_PAS,        { fichier Pascal (.pas)                   }
   ENK_FILE_FRM,        { fichier formulaire VB6 (.frm)           }
+  ENK_FILE_TABLE,      { fichier de table (DBF/Clarion/Btrieve/  }
+                       { CSV/MyISAM), ouvert dans la grille       }
   ENK_FILE_OTHER       { autre type de fichier                   }
  );
 
@@ -6447,6 +6542,10 @@ Var
  { Editeurs hexadecimaux (un par fenetre de type WK_HEX) }
  HexEditors     : Array[0..MAX_WINDOWS - 1] Of PHexEditor;
  ActiveHexEditor: THexEditor;
+ { Editeurs grille - DBF/Clarion/Btrieve/CSV/MyISAM (un par fenetre de     }
+ { type WK_GRID) - meme motif que HexEditors[]/ActiveHexEditor. }
+ GridEditors     : Array[0..MAX_WINDOWS - 1] Of PGridEditor;
+ ActiveGridEditor: TGridEditor;
  { Editeurs de formulaire (un par fenetre de type WK_FORM) }
  FormEditors     : Array[0..MAX_WINDOWS - 1] Of PFormEditor;
  ActiveFormEditor: TFormEditor;
@@ -13919,6 +14018,7 @@ Procedure SaveFileHex(Var HE: THexEditor; AFileName: String); Forward;
 Procedure FreeHexEditor(Var HE: THexEditor); Forward;
 Procedure LoadFileForm(Var FE: TFormEditor; AFileName: String); Forward;
 Procedure FreeFormEditor(Var FE: TFormEditor); Forward;
+Procedure FreeGridEditor(Var GE: TGridEditor); Forward;
 
 { --- Creer une nouvelle fenetre d edition hexadecimale et y charger
   le fichier --- }
@@ -15192,6 +15292,9 @@ Begin
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
   { Rien a synchroniser : ExtMgr est un singleton global, pas un etat  }
   { par-index comme HexEditors[]/FormEditors[]. }
+ End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
+  If GridEditors[WinMgr.ActiveIdx] <> Nil Then
+   GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU Then Begin
   { Stage 2 : met en securite le panneau ET (pour C64) tout l etat qui vit  }
   { hors de TEmulatorPanel, dans des globales partagees CPU6502_*/C64_*.   }
@@ -15253,6 +15356,9 @@ Begin
    ActiveFormEditor := FormEditors[Idx]^;
  End Else If WinMgr.Windows[Idx].Kind = WK_EXTMGR Then Begin
   { Rien a restaurer : ExtMgr est un singleton global. }
+ End Else If WinMgr.Windows[Idx].Kind = WK_GRID Then Begin
+  If GridEditors[Idx] <> Nil Then
+   ActiveGridEditor := GridEditors[Idx]^;
  End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
   EmuPanel := EmuTabs[Idx];
   If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
@@ -15343,6 +15449,11 @@ Begin
   Dispose(FormEditors[Index]);
   FormEditors[Index] := Nil;
  End;
+ If GridEditors[Index] <> Nil Then Begin
+  FreeGridEditor(GridEditors[Index]^);
+  Dispose(GridEditors[Index]);
+  GridEditors[Index] := Nil;
+ End;
  { Onglet emulateur (Stage 2) : rien a Dispose (EmuTabs[]/C64Snaps[] sont   }
  { des enregistrements simples, pas des pointeurs) - juste s assurer que    }
  { l emulateur ne continue pas de tourner "fantome" si c est l onglet ACTIF }
@@ -15357,6 +15468,7 @@ Begin
   Editors[I] := Editors[I + 1];
   HexEditors[I] := HexEditors[I + 1];
   FormEditors[I] := FormEditors[I + 1];
+  GridEditors[I] := GridEditors[I + 1];
   EmuTabs[I] := EmuTabs[I + 1];
   C64Snaps[I] := C64Snaps[I + 1];
   NesSnaps[I] := NesSnaps[I + 1];
@@ -15372,6 +15484,7 @@ Begin
  Editors[WinMgr.WinCount - 1] := Nil;
  HexEditors[WinMgr.WinCount - 1] := Nil;
  FormEditors[WinMgr.WinCount - 1] := Nil;
+ GridEditors[WinMgr.WinCount - 1] := Nil;
  Dec(WinMgr.WinCount);
  { Ajuster l index actif }
  If WinMgr.WinCount = 0 Then Begin
@@ -18243,6 +18356,1601 @@ Begin
    EnsureHexCursorVisible(HE);
   End;
  End;
+End;
+
+{ ============================================================
+  EDITEUR GRILLE (WK_GRID) : DBF/Clarion/Btrieve/CSV/MyISAM
+  ============================================================
+  Etape 1 (infrastructure generique) : GridFormatForExtension ne
+  reconnait encore aucune extension reelle (retourne toujours GTF_NONE) -
+  les formats sont branches un a un dans les etapes suivantes, sans
+  jamais retoucher DrawGridEditor/HandleGridEditorMouse/
+  HandleGridEditorKey ci-dessous, qui ne connaissent que GE.ColCount/
+  GE.RecordCount/GridCellText, jamais un format concret. Ne garde en
+  memoire que l enregistrement COURANT (CurrentRecBuf) - jamais la
+  table entiere, meme discipline que Emu_FloppyOpenOne/
+  Emu_ImageReadSector (Seek+BlockRead a la demande plutot qu un
+  chargement complet). }
+
+Const
+ GRID_HEADER_H = 18;
+ GRID_ROW_H    = 16;
+ GRID_SB_W     = 14;
+ GRID_COL_MINW = 60;
+ GRID_COL_PAD  = 8;
+
+{ Avancee depuis son emplacement d origine (pres de HandleTerminalEvent,     }
+{ voir le commentaire laisse la-bas) : HandleGridEditorKey (plus bas dans    }
+{ ce bloc) en a besoin pour Ctrl+C sur une cellule, et ce bloc grille est    }
+{ defini plus haut dans le fichier que la vraie implementation (~ligne       }
+{ 78300+, section presse-papiers du menu contextuel Terminal/Explorateur). }
+Procedure SetRealClipboardText(S: String); Forward;
+
+{ --- Extrait l extension d un nom de fichier (tout ce qui suit le
+  dernier point, sans le point ; '' si aucun point) - copie locale
+  volontairement independante de NCExtractExt (DEVENV.PAS ne definit
+  cette derniere que bien plus bas dans le fichier ; aucune raison
+  structurelle de toute facon pour ce module generique de dependre d un
+  nom "NC"-prefixe specifique au panneau Norton Commander). --- }
+
+Function GridExtOfPath(Const Name: String): String;
+Var
+ P: Integer;
+Begin
+ P := Length(Name);
+ While (P > 0) And (Name[P] <> '.') Do Dec(P);
+ If P > 0 Then GridExtOfPath := Copy(Name, P + 1, Length(Name) - P)
+ Else GridExtOfPath := '';
+End;
+
+{ --- Vrai si Ext ressemble a une extension de cle/index Clarion : 1er
+  caractere K ou I, suivi de 2 chiffres (DOC/CLARION_FORMAT.txt §"Extensions" :
+  ".K??"/".I??", ?? etant un numero a 2 chiffres) - PAS une comparaison
+  exacte de chaine, contrairement a .DBF/.CSV/.DAT : GridExtOfPath/
+  NCExtractExt renvoient tout ce qui suit le dernier point, donc
+  "TABLE.K01" donne l Ext "K01". --- }
+
+Function GridIsClarionKeyExt(Const Ext: String): Boolean;
+Begin
+ GridIsClarionKeyExt := (Length(Ext) = 3) And
+  ((Ext[1] = 'K') Or (Ext[1] = 'I')) And
+  (Ext[2] In ['0'..'9']) And (Ext[3] In ['0'..'9']);
+End;
+
+{ --- Reconnait une extension de fichier ouvrable en grille - fonction
+  PURE partagee par l Explorateur de solutions (NodeKindFromExtension)
+  ET le panneau Norton Commander du Terminal (NCActionOpenAssociated),
+  pour n avoir jamais qu une seule liste d extensions a maintenir. Ext
+  est attendue DEJA en majuscules (UpCaseStr), sans le point. .DAT est
+  AMBIGU (Clarion ET Btrieve utilisent tous deux cette extension,
+  DOC/CLARION_FORMAT.txt §2 et DOC/BTRIEVE_FORMAT.txt) - GTF_CLARION est
+  renvoye dans les deux cas, la vraie distinction se faisant a
+  l ouverture (GridOpen_Clarion tente la coherence Clarion en premier,
+  puis la signature Btrieve, voir plus bas) : ce n est qu une etiquette
+  de repartition, pas une affirmation que le fichier EST du Clarion. --- }
+
+Function GridFormatForExtension(Const Ext: String): Byte;
+Begin
+ GridFormatForExtension := GTF_NONE;
+ { Les extensions reelles sont ajoutees une a une - ce squelette a permis
+   de cabler des l Etape 1 les deux points d entree (Explorateur + Norton
+   Commander) sans qu ils aient besoin d etre retouches par les etapes
+   suivantes : chaque etape n a plus qu a completer cette fonction. }
+ If Ext = 'DBF' Then GridFormatForExtension := GTF_DBF
+ Else If Ext = 'CSV' Then GridFormatForExtension := GTF_CSV
+ Else If Ext = 'DAT' Then GridFormatForExtension := GTF_CLARION
+ Else If GridIsClarionKeyExt(Ext) Then GridFormatForExtension := GTF_CLARION;
+End;
+
+{ --- Texte affichable d une cellule (Row, Col absolus, 0-based) - seule
+  fonction qui connait le format concret (Case GE.Format Of), tout le
+  reste du moteur (dessin, souris, clavier) ne l appelle qu a travers
+  cette facade et ne sait rien d autre sur les formats. --- }
+
+{ --- Charge l enregistrement RecNum dans GE.CurrentRecBuf, s il n y est
+  pas deja - Seek+BlockRead a la demande, jamais la table entiere. Deux
+  facons de localiser la ligne selon le format : arithmetique directe
+  (DataStart+N*RecordLen, formats a largeur fixe comme DBF) si
+  GE.RowOffsets est Nil, sinon GE.RowOffsets^[N]/GE.RowLens^[N] (CSV,
+  Etape 3 ; Btrieve, Etape 5 - constuits en un seul passage a l ouverture
+  par leur GridOpen_Xxx respectif, la longueur variable empechant tout
+  calcul direct). DrawGridEditor/HandleGridEditorMouse/Key n ont jamais
+  besoin de savoir laquelle des deux s applique (ils ne testent jamais
+  GE.Format, seulement "l enregistrement courant est pret"). Definie
+  AVANT GridCellText (qui l appelle) plutot qu apres, pour eviter une
+  declaration Forward. --- }
+
+Procedure GridReadRecord(Var GE: TGridEditor; RecNum: LongInt);
+Var
+ Got: Word;
+ Ofs, Len: LongInt;
+Begin
+ If (RecNum < 0) Or (RecNum >= GE.RecordCount) Then Exit;
+ If GE.CurrentRecNum = RecNum Then Exit;
+ If (Not GE.FileOpen) Or (GE.CurrentRecBuf = Nil) Then Exit;
+ If GE.RowOffsets <> Nil Then Begin
+  Ofs := GE.RowOffsets^[RecNum];
+  Len := GE.RowLens^[RecNum];
+ End Else Begin
+  If GE.RecordLen <= 0 Then Exit;
+  Ofs := GE.DataStart + RecNum * LongInt(GE.RecordLen);
+  Len := GE.RecordLen;
+ End;
+ If Len <= 0 Then Begin
+  { Ligne vide (CSV : deux fins de ligne consecutives) - rien a lire,     }
+  { mais reste un enregistrement legitime, pas un echec. }
+  GE.CurrentRecNum := RecNum;
+  GE.CurrentRecValid := True;
+  GE.CurrentRecLen := 0;
+  Exit;
+ End;
+ {$I-}
+ Seek(GE.F, Ofs);
+ BlockRead(GE.F, GE.CurrentRecBuf^, Len, Got);
+ {$I+}
+ { Echec de lecture (fichier tronque/corrompu) : NE PAS marquer ce         }
+ { RecNum comme courant - laisser CurrentRecNum/CurrentRecValid tels        }
+ { quels (refletant encore fidelement le DERNIER enregistrement lu avec    }
+ { succes) plutot que de risquer d attribuer son contenu au mauvais         }
+ { numero de ligne. GridCellText verifie explicitement CurrentRecNum =     }
+ { Row avant de lire, donc cet echec silencieux affiche une cellule vide   }
+ { plutot qu une valeur erronee. }
+ If (IOResult <> 0) Or (Got <> Word(Len)) Then Exit;
+ GE.CurrentRecNum := RecNum;
+ GE.CurrentRecValid := True;
+ GE.CurrentRecLen := Len;
+End;
+
+{ --- Extrait le champ Col (0-based) de la ligne CSV brute deja chargee   }
+{ dans GE.CurrentRecBuf^[0..GE.CurrentRecLen-1] - machine a etats a 3      }
+{ etats (normal/dans-guillemets/apres-guillemet-dans-guillemets),         }
+{ DOC/CSV_FORMAT.txt §4 et §11 : un guillemet double a l interieur d un   }
+{ champ cite represente un guillemet litteral, jamais une fermeture. Ne   }
+{ decoupe PAS sur la virgule aveuglement (une virgule dans un champ cite  }
+{ fait partie de la valeur). Rappelee a chaque cellule affichee plutot    }
+{ que mise en cache : les lignes visees par cette V1 restent courtes,     }
+{ et une grille n affiche jamais plus que quelques dizaines de cellules    }
+{ a la fois. --- }
+
+Function GridCsvFieldAt(Var GE: TGridEditor; Col: Integer): String;
+Var
+ I, FieldIdx: Integer;
+ InQ: Boolean;
+ Res: String;
+ Ch: Char;
+Begin
+ GridCsvFieldAt := '';
+ FieldIdx := 0;
+ InQ := False;
+ Res := '';
+ I := 0;
+ While I < GE.CurrentRecLen Do Begin
+  Ch := Chr(GE.CurrentRecBuf^[I]);
+  If InQ Then Begin
+   If Ch = '"' Then Begin
+    If (I + 1 < GE.CurrentRecLen) And (Chr(GE.CurrentRecBuf^[I + 1]) = '"') Then Begin
+     If (FieldIdx = Col) And (Length(Res) < 250) Then Res := Res + '"';
+     Inc(I);
+    End Else
+     InQ := False;
+   End Else If (FieldIdx = Col) And (Length(Res) < 250) Then
+    Res := Res + Ch;
+  End Else Begin
+   If Ch = '"' Then
+    InQ := True
+   Else If Ch = ',' Then Begin
+    If FieldIdx = Col Then Begin
+     GridCsvFieldAt := Res;
+     Exit;
+    End;
+    Inc(FieldIdx);
+    Res := '';
+   End Else If (FieldIdx = Col) And (Length(Res) < 250) Then
+    Res := Res + Ch;
+  End;
+  Inc(I);
+ End;
+ If FieldIdx = Col Then GridCsvFieldAt := Res;
+End;
+
+{ --- Decode le champ Col d un enregistrement Clarion deja charge dans
+  GE.CurrentRecBuf^ - fldtype (DOC/CLARION_FORMAT.txt §4) : 1=LONG,
+  2=REAL, 3/4=STRING(+PICTURE, masque non applique en V1), 5=BYTE,
+  6=SHORT, 7=GROUP, 8=DECIMAL. Isole de GridCellText (comme GridCsvFieldAt
+  pour le CSV) parce que c est de loin le format le plus riche en types
+  parmi ceux geres par cette grille. --- }
+
+Function GridClarionFieldText(Var GE: TGridEditor; Col: Integer): String;
+Var
+ Ofs, J, Len: Integer;
+ Raw: String;
+ V4: LongInt;
+ V2: Integer;
+ SingleVal: Single;
+ DoubleVal: Double;
+ FloatStr: String;
+ Digits, IntPart, FracPart: String;
+ B: Byte;
+ Neg: Boolean;
+Begin
+ GridClarionFieldText := '';
+ Ofs := GE.Columns[Col].Ofs;
+ Len := GE.Columns[Col].Len;
+ Case Ord(GE.Columns[Col].TypeCode) Of
+  1: Begin { LONG : entier signe 4 octets little-endian }
+      V4 := LongInt(GE.CurrentRecBuf^[Ofs]) Or
+       (LongInt(GE.CurrentRecBuf^[Ofs + 1]) Shl 8) Or
+       (LongInt(GE.CurrentRecBuf^[Ofs + 2]) Shl 16) Or
+       (LongInt(GE.CurrentRecBuf^[Ofs + 3]) Shl 24);
+      GridClarionFieldText := IntToStr(V4);
+     End;
+  6: Begin { SHORT : entier signe 2 octets little-endian }
+      V2 := Integer(Word(GE.CurrentRecBuf^[Ofs]) Or
+       (Word(GE.CurrentRecBuf^[Ofs + 1]) Shl 8));
+      GridClarionFieldText := IntToStr(V2);
+     End;
+  5: GridClarionFieldText := IntToStr(GE.CurrentRecBuf^[Ofs]); { BYTE, 0-255 }
+  3, 4: Begin { STRING / STRING+PICTURE - texte largeur fixe, espaces a droite }
+         Raw := '';
+         For J := 0 To Len - 1 Do Raw := Raw + Chr(GE.CurrentRecBuf^[Ofs + J]);
+         GridClarionFieldText := TrimStr(Raw);
+        End;
+  2: Begin { REAL - le document ne precise pas l encodage binaire exact,     }
+       { seulement la taille via length (§4) : IEEE 754 est la seule         }
+       { hypothese verifiable pour les 2 tailles standard (4/8 octets) -     }
+       { toute autre taille est signalee plutot que devinee. }
+      If Len = 4 Then Begin
+       Move(GE.CurrentRecBuf^[Ofs], SingleVal, 4);
+       Str(SingleVal, FloatStr);
+       GridClarionFieldText := TrimStr(FloatStr);
+      End Else If Len = 8 Then Begin
+       Move(GE.CurrentRecBuf^[Ofs], DoubleVal, 8);
+       Str(DoubleVal, FloatStr);
+       GridClarionFieldText := TrimStr(FloatStr);
+      End Else
+       GridClarionFieldText := '[reel : ' + IntToStr(Len) + ' octets, taille inattendue]';
+     End;
+  7: Begin { GROUP - bloc d octets bruts, pas de decomposition recursive (V1) }
+      Raw := '';
+      For J := 0 To Len - 1 Do
+       Raw := Raw + HexByte(GE.CurrentRecBuf^[Ofs + J]) + ' ';
+      GridClarionFieldText := TrimStr(Raw);
+     End;
+  8: Begin { DECIMAL - BCD compacte, 2 chiffres/octet ; dernier demi-octet =  }
+       { signe plutot qu un chiffre (convention "proche du COMP-3" - §4      }
+       { confirme exactement ce decoupage avec son propre exemple :          }
+       { DECIMAL(11) = 6 octets = 12 demi-octets = 11 chiffres + 1 demi-      }
+       { octet de signe/remplissage). $0D = negatif, tout le reste           }
+       { (habituellement $0C/$0F) = positif. }
+      Digits := '';
+      Neg := False;
+      For J := 0 To Len - 1 Do Begin
+       B := GE.CurrentRecBuf^[Ofs + J];
+       Digits := Digits + Chr(Ord('0') + (B Shr 4));
+       If J < Len - 1 Then
+        Digits := Digits + Chr(Ord('0') + (B And $0F))
+       Else If (B And $0F) = $0D Then
+        Neg := True;
+      End;
+      If Digits = '' Then Digits := '0';
+      If GE.Columns[Col].Decimals > 0 Then Begin
+       While Length(Digits) <= GE.Columns[Col].Decimals Do Digits := '0' + Digits;
+       IntPart := Copy(Digits, 1, Length(Digits) - GE.Columns[Col].Decimals);
+       FracPart := Copy(Digits, Length(Digits) - GE.Columns[Col].Decimals + 1,
+        GE.Columns[Col].Decimals);
+      End Else Begin
+       IntPart := Digits;
+       FracPart := '';
+      End;
+      While (Length(IntPart) > 1) And (IntPart[1] = '0') Do
+       IntPart := Copy(IntPart, 2, Length(IntPart) - 1);
+      If FracPart <> '' Then IntPart := IntPart + '.' + FracPart;
+      If Neg And (IntPart <> '0') Then IntPart := '-' + IntPart;
+      GridClarionFieldText := IntPart;
+     End;
+ Else
+  GridClarionFieldText := '[type ' + IntToStr(Ord(GE.Columns[Col].TypeCode)) +
+   ' non pris en charge]';
+ End;
+End;
+
+Function GridCellText(Var GE: TGridEditor; Row: LongInt; Col: Integer): String;
+Var
+ Raw: String;
+ I: Integer;
+ Ch: Char;
+Begin
+ GridCellText := '';
+ If (Col < 0) Or (Col >= GE.ColCount) Then Exit;
+ GridReadRecord(GE, Row);
+ If (Not GE.CurrentRecValid) Or (GE.CurrentRecNum <> Row) Then Exit;
+ If GE.Format = GTF_DBF Then Begin
+  If GE.Columns[Col].TypeCode = 'M' Then Begin
+   GridCellText := '[memo]';
+   Exit;
+  End;
+  Raw := '';
+  For I := 0 To GE.Columns[Col].Len - 1 Do
+   Raw := Raw + Chr(GE.CurrentRecBuf^[GE.Columns[Col].Ofs + I]);
+  If GE.Columns[Col].TypeCode = 'D' Then Begin
+   { YYYYMMDD -> JJ/MM/AAAA ; une date vide (huit espaces) ou invalide     }
+   { est affichee telle quelle plutot que devinee (DOC/DBF_FORMAT.txt §8.1) }
+   If (Length(TrimStr(Raw)) = 8) Then
+    GridCellText := Copy(Raw, 7, 2) + '/' + Copy(Raw, 5, 2) + '/' + Copy(Raw, 1, 4)
+   Else
+    GridCellText := TrimStr(Raw);
+  End Else If GE.Columns[Col].TypeCode = 'L' Then Begin
+   Ch := ' ';
+   If Length(Raw) > 0 Then Ch := Raw[1];
+   Case Ch Of
+    'T', 't', 'Y', 'y': GridCellText := 'Vrai';
+    'F', 'f', 'N', 'n': GridCellText := 'Faux';
+   Else
+    GridCellText := '?';
+   End;
+  End Else
+   GridCellText := TrimStr(Raw);
+ End Else If GE.Format = GTF_CSV Then
+  { Aucun typage de colonne en CSV (DOC/CSV_FORMAT.txt §7) - toujours du   }
+  { texte brut, jamais de Trim (les espaces sont significatifs, §3). }
+  GridCellText := GridCsvFieldAt(GE, Col)
+ Else If GE.Format = GTF_CLARION Then
+  GridCellText := GridClarionFieldText(GE, Col);
+End;
+
+{ --- Largeur visible utile (hors barre de defilement verticale) et
+  nombre de rangees visibles - calcul UNIQUE partage par le dessin et
+  la souris, meme discipline que ExtMgrCountVisible (une seule formule
+  de maximum, jamais deux qui pourraient diverger). --- }
+
+Function GridVisibleRows(Var GE: TGridEditor): Integer;
+Var
+ R: Integer;
+Begin
+ { GRID_SB_W est deduit inconditionnellement (pas seulement quand un       }
+ { defilement horizontal est reellement necessaire) : la bande du bas est  }
+ { toujours reservee pour la barre de defilement horizontale pleine        }
+ { largeur (voir DrawGridEditor), meme quand elle est vide/inactive -      }
+ { evite que la hauteur utile de la grille change select on que la table   }
+ { deborde horizontalement ou non. }
+ R := (GE.Height - GRID_HEADER_H - GRID_SB_W) Div GRID_ROW_H;
+ If R < 1 Then R := 1;
+ GridVisibleRows := R;
+End;
+
+{ --- Plus grande colonne de depart valide pour ScrollCol : celle au-dela }
+{ de laquelle il resterait de l espace vide a droite de la derniere        }
+{ colonne visible - meme esprit que le clamp de ScrollRow base sur         }
+{ RecordCount-VisRows, mais en pixels puisque les colonnes n ont pas       }
+{ toutes la meme largeur. Fonction PURE partagee par GridClampView, le      }
+{ dessin de la barre de defilement horizontale et son gestionnaire de      }
+{ clic - une seule formule, jamais deux qui pourraient diverger. --- }
+
+Function GridMaxScrollCol(Var GE: TGridEditor; ListW: Integer): Integer;
+Var
+ AccW, C, Best: Integer;
+Begin
+ Best := 0;
+ AccW := 0;
+ For C := GE.ColCount - 1 DownTo 0 Do Begin
+  Best := C;
+  AccW := AccW + GE.ColWidth[C];
+  If AccW >= ListW Then Break;
+ End;
+ GridMaxScrollCol := Best;
+End;
+
+{ --- Clamp ScrollRow/SelRow/ScrollCol/SelCol dans leurs bornes valides -
+  appele par le dessin ET par la souris/clavier avant tout calcul de
+  position, pour ne jamais dessiner une selection hors bornes apres un
+  redimensionnement ou un changement de RecordCount. --- }
+
+Procedure GridClampView(Var GE: TGridEditor);
+Var
+ VisRows, MaxScroll: LongInt;
+ ListW, AccW, C: Integer;
+Begin
+ If GE.ColCount <= 0 Then Exit;
+ If GE.SelCol < 0 Then GE.SelCol := 0;
+ If GE.SelCol >= GE.ColCount Then GE.SelCol := GE.ColCount - 1;
+ If GE.ScrollCol < 0 Then GE.ScrollCol := 0;
+ If GE.ScrollCol >= GE.ColCount Then GE.ScrollCol := GE.ColCount - 1;
+ { Garder la selection visible horizontalement (meme esprit que
+   EnsureHexCursorVisible) : reculer ScrollCol si SelCol est passe a
+   gauche de la fenetre visible, l avancer colonne par colonne tant que
+   la largeur cumulee de [ScrollCol..SelCol] deborde la largeur utile -
+   ColCount reste borne par GRID_MAX_COLS (128), la recherche lineaire
+   est donc toujours bon marche. }
+ If GE.SelCol < GE.ScrollCol Then GE.ScrollCol := GE.SelCol;
+ ListW := GE.Width - GRID_SB_W;
+ While GE.ScrollCol < GE.SelCol Do Begin
+  AccW := 0;
+  For C := GE.ScrollCol To GE.SelCol Do AccW := AccW + GE.ColWidth[C];
+  If AccW <= ListW Then Break;
+  Inc(GE.ScrollCol);
+ End;
+ { Jamais d espace vide a droite de la derniere colonne (barre de          }
+ { defilement horizontale pleine largeur, voir GridMaxScrollCol). }
+ If GE.ScrollCol > GridMaxScrollCol(GE, ListW) Then
+  GE.ScrollCol := GridMaxScrollCol(GE, ListW);
+ If GE.RecordCount <= 0 Then Exit;
+ If GE.SelRow < 0 Then GE.SelRow := 0;
+ If GE.SelRow >= GE.RecordCount Then GE.SelRow := GE.RecordCount - 1;
+ VisRows := GridVisibleRows(GE);
+ MaxScroll := GE.RecordCount - VisRows;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If GE.ScrollRow > MaxScroll Then GE.ScrollRow := MaxScroll;
+ If GE.ScrollRow < 0 Then GE.ScrollRow := 0;
+ { Garder la selection visible verticalement }
+ If GE.SelRow < GE.ScrollRow Then GE.ScrollRow := GE.SelRow;
+ If GE.SelRow >= GE.ScrollRow + VisRows Then
+  GE.ScrollRow := GE.SelRow - VisRows + 1;
+End;
+
+{ --- Tronque S (avec "...") pour tenir dans PixelWidth pixels, meme       }
+{ technique que EXTMGR_NAME_MAXCHARS (~ExtMgrFormatDate/DispName ci-       }
+{ dessus dans ce fichier) : caractere bitmap fixe de TERM_CHAR_WIDTH (8)   }
+{ pixels. BOGUE REEL trouve par capture d ecran (2026-09-04, verification }
+{ Etape 3 CSV) : sans ceci, une valeur plus longue que sa colonne          }
+{ debordait visuellement par-dessus le texte de la colonne suivante,       }
+{ rendant les deux illisibles - inoffensif avec les colonnes DBF (largeur  }
+{ deja calculee sur FieldLength) mais systematique avec la largeur fixe    }
+{ des colonnes CSV (aucune largeur de champ connue a l avance, §7). --- }
+
+Function GridTruncateForWidth(Const S: String; PixelWidth: Integer): String;
+Var
+ MaxChars: Integer;
+Begin
+ MaxChars := (PixelWidth - GRID_COL_PAD) Div TERM_CHAR_WIDTH;
+ If MaxChars < 1 Then MaxChars := 1;
+ If Length(S) <= MaxChars Then
+  GridTruncateForWidth := S
+ Else If MaxChars <= 3 Then
+  GridTruncateForWidth := Copy(S, 1, MaxChars)
+ Else
+  GridTruncateForWidth := Copy(S, 1, MaxChars - 3) + '...';
+End;
+
+{ --- Remplace CR/LF par des espaces pour un AFFICHAGE sur une seule       }
+{ ligne de grille - un champ CSV cite peut legitimement contenir un        }
+{ retour a la ligne litteral (DOC/CSV_FORMAT.txt §2/§4), que la police      }
+{ bitmap de cet IDE rend sinon comme un glyphe de controle illisible.      }
+{ N est utilisee QUE pour l affichage : GridCellText (et donc Ctrl+C/      }
+{ Ctrl+Ins) continue de renvoyer la valeur EXACTE, retours a la ligne       }
+{ compris - copier la cellule ne doit jamais perdre d information. --- }
+
+Function GridSanitizeForDisplay(Const S: String): String;
+Var
+ I: Integer;
+ Res: String;
+Begin
+ Res := S;
+ For I := 1 To Length(Res) Do
+  If (Res[I] = #13) Or (Res[I] = #10) Then Res[I] := ' ';
+ GridSanitizeForDisplay := Res;
+End;
+
+{ --- Dessine la grille : entetes de colonnes (largeur GE.ColWidth[]),
+  lignes de donnees (une par enregistrement visible, GridCellText pour
+  chaque cellule), cellule selectionnee en surbrillance, barre de
+  defilement verticale (meme style que DrawExtManager) et 2 boutons
+  gauche/droite pour le defilement horizontal. --- }
+
+Procedure DrawGridEditor(Var GE: TGridEditor);
+Var
+ ListW, VisRows, RowY, ColX, C, R, VisIdx: Integer;
+ SBX1, SBX2, MidX, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop: Integer;
+ VTop, VBot: Integer;
+ MaxScroll, TotalW: Integer;
+ HScrollY, MidY, HLeft, HRight, TrackLeft, TrackRight: Integer;
+ TrackW, ThumbW, ScrolledPx, MaxScrollPx, ThumbLeft: Integer;
+ CellStr: String;
+Begin
+ If GE.ColCount <= 0 Then Begin
+  SetColor(CLR_EDITOR_BG);
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(GE.X, GE.Y, GE.X + GE.Width - 1, GE.Y + GE.Height - 1);
+  SetColor(CLR_MENU_TEXT);
+  If GE.ErrorMsg <> '' Then
+   OutTextXY(GE.X + 8, GE.Y + 8, GE.ErrorMsg)
+  Else
+   OutTextXY(GE.X + 8, GE.Y + 8, 'Aucune donnee.');
+  Exit;
+ End;
+ GridClampView(GE);
+ ListW := GE.Width - GRID_SB_W;
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(GE.X, GE.Y, GE.X + GE.Width - 1, GE.Y + GE.Height - 1);
+ { --- Entetes de colonnes, a partir de GE.ScrollCol - fond distinct des  }
+ { cellules de donnees (demande explicite de l utilisateur, 2026-09-04 : }
+ { "d habitude les titres des colonnes sont grises") - CLR_TOOLBAR, deja  }
+ { le gris clair utilise partout ailleurs dans cet IDE pour distinguer un }
+ { bandeau/une barre du contenu qu il surplombe. --- }
+ SetColor(CLR_TOOLBAR);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(GE.X, GE.Y, GE.X + ListW - 1, GE.Y + GRID_HEADER_H - 1);
+ SetColor(CLR_MENU_TEXT);
+ ColX := GE.X;
+ C := GE.ScrollCol;
+ While (C < GE.ColCount) And (ColX < GE.X + ListW) Do Begin
+  OutTextXY(ColX + GRID_COL_PAD Div 2, GE.Y,
+   GridTruncateForWidth(GE.Columns[C].Name, GE.ColWidth[C]));
+  ColX := ColX + GE.ColWidth[C];
+  Inc(C);
+ End;
+ SetColor(CLR_BORDER);
+ Line(GE.X, GE.Y + GRID_HEADER_H, GE.X + GE.Width - 1, GE.Y + GRID_HEADER_H);
+ { --- Lignes de donnees --- }
+ VisRows := GridVisibleRows(GE);
+ RowY := GE.Y + GRID_HEADER_H;
+ For VisIdx := 0 To VisRows - 1 Do Begin
+  R := GE.ScrollRow + VisIdx;
+  If R >= GE.RecordCount Then Break;
+  GridReadRecord(GE, R);
+  ColX := GE.X;
+  C := GE.ScrollCol;
+  While (C < GE.ColCount) And (ColX < GE.X + ListW) Do Begin
+   If (R = GE.SelRow) And (C = GE.SelCol) Then Begin
+    SetFillStyle(SolidFill, CLR_SELECTION);
+    Bar(ColX, RowY, ColX + GE.ColWidth[C] - 2, RowY + GRID_ROW_H - 2);
+    SetColor(CLR_HIGHLIGHTTEXT);
+   End Else
+    SetColor(CLR_EDITOR_TEXT);
+   CellStr := GridTruncateForWidth(
+    GridSanitizeForDisplay(GridCellText(GE, R, C)), GE.ColWidth[C]);
+   OutTextXY(ColX + GRID_COL_PAD Div 2, RowY, CellStr);
+   ColX := ColX + GE.ColWidth[C];
+   Inc(C);
+  End;
+  RowY := RowY + GRID_ROW_H;
+ End;
+ { --- Lignes de separation des cellules (demande explicite de           }
+ { l utilisateur, 2026-09-04, apres verification live de l Etape 2 -      }
+ { sans elles, une grille dense de plusieurs colonnes numeriques est      }
+ { difficile a lire ligne par ligne). Dessinees APRES le contenu (jamais  }
+ { avant), pour ne pas etre recouvertes par le fond de la cellule         }
+ { selectionnee (CLR_SELECTION). RowY vaut ici le bas de la DERNIERE      }
+ { rangee reellement dessinee (peut etre < zone visible totale si la      }
+ { table a moins de VisRows enregistrements) - les lignes ne descendent    }
+ { donc jamais plus bas que les vraies donnees. --- }
+ SetColor(CLR_BORDER);
+ ColX := GE.X;
+ C := GE.ScrollCol;
+ While (C < GE.ColCount) And (ColX < GE.X + ListW) Do Begin
+  ColX := ColX + GE.ColWidth[C];
+  Line(ColX - 1, GE.Y, ColX - 1, RowY - 1);
+  Inc(C);
+ End;
+ For VisIdx := 1 To (RowY - GE.Y - GRID_HEADER_H) Div GRID_ROW_H Do
+  Line(GE.X, GE.Y + GRID_HEADER_H + VisIdx * GRID_ROW_H - 1,
+   ColX - 1, GE.Y + GRID_HEADER_H + VisIdx * GRID_ROW_H - 1);
+ { --- Barre de defilement verticale, fleches haut/bas + piste/pouce,      }
+ { EXACTEMENT le meme style que DrawExtManager (boutons carres            }
+ { CLR_BACKGROUND/CLR_BORDER, fleches en 2 segments Line() formant un      }
+ { triangle CLR_EDITOR_TEXT) - fleches rajoutees le 2026-09-04 suite a la  }
+ { remarque de l utilisateur ("les 4 icones de fleches ont disparu") sur   }
+ { la version simplifiee (piste/pouce seuls) livree avec l Etape 1.        }
+ { S arrete au-dessus de la barre horizontale (GRID_SB_W de moins en       }
+ { bas) - le petit carre au coin bas-droit ou les deux barres se           }
+ { rencontreraient reste vide, meme convention qu un tableur classique. --- }
+ SBX1 := GE.X + ListW;
+ SBX2 := GE.X + GE.Width - 1;
+ MidX := (SBX1 + SBX2) Div 2;
+ VTop := GE.Y + GRID_HEADER_H;
+ VBot := GE.Y + GE.Height - GRID_SB_W - 1;
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(SBX1, VTop, SBX2, VTop + GRID_SB_W - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, VTop, SBX2, VTop + GRID_SB_W - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, VTop + 9, MidX, VTop + 4);
+ Line(MidX, VTop + 4, SBX2 - 3, VTop + 9);
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(SBX1, VBot - GRID_SB_W + 1, SBX2, VBot);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, VBot - GRID_SB_W + 1, SBX2, VBot);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, VBot - 9, MidX, VBot - 4);
+ Line(MidX, VBot - 4, SBX2 - 3, VBot - 9);
+ TrackTop := VTop + GRID_SB_W;
+ TrackBot := VBot - GRID_SB_W;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(SBX1, TrackTop, SBX2, TrackBot);
+ MaxScroll := GE.RecordCount - VisRows;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If MaxScroll > 0 Then Begin
+  TrackH := TrackBot - TrackTop;
+  ThumbH := (TrackH * VisRows) Div GE.RecordCount;
+  If ThumbH < 12 Then ThumbH := 12;
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbTop := TrackTop + 1;
+  If TrackH - 2 - ThumbH > 0 Then
+   ThumbTop := ThumbTop + (GE.ScrollRow * (TrackH - 2 - ThumbH)) Div MaxScroll;
+  Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
+ { --- Barre de defilement horizontale, fleches gauche/droite + piste/     }
+ { pouce, pleine largeur de la zone de donnees (demande explicite de       }
+ { l utilisateur, 2026-09-04 : "devrait prendre toute la largeur de la     }
+ { fenetre de l onglet" puis "les 4 icones de fleches ont disparu") -      }
+ { memes boutons carres/triangles que la barre verticale ci-dessus,        }
+ { simplement tournes de 90 degres, jamais de zone morte a droite de la    }
+ { derniere colonne (GridMaxScrollCol). --- }
+ HScrollY := GE.Y + GE.Height - GRID_SB_W;
+ MidY := HScrollY + (GRID_SB_W Div 2);
+ HLeft := GE.X;
+ HRight := GE.X + ListW - 1;
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(HLeft, HScrollY, HLeft + GRID_SB_W - 1, GE.Y + GE.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(HLeft, HScrollY, HLeft + GRID_SB_W - 1, GE.Y + GE.Height - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(HLeft + 9, HScrollY + 3, HLeft + 4, MidY);
+ Line(HLeft + 4, MidY, HLeft + 9, GE.Y + GE.Height - 4);
+ SetFillStyle(SolidFill, CLR_BACKGROUND);
+ Bar(HRight - GRID_SB_W + 1, HScrollY, HRight, GE.Y + GE.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(HRight - GRID_SB_W + 1, HScrollY, HRight, GE.Y + GE.Height - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(HRight - 9, HScrollY + 3, HRight - 4, MidY);
+ Line(HRight - 4, MidY, HRight - 9, GE.Y + GE.Height - 4);
+ TrackLeft := HLeft + GRID_SB_W;
+ TrackRight := HRight - GRID_SB_W;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(TrackLeft, HScrollY, TrackRight, GE.Y + GE.Height - 1);
+ TotalW := 0;
+ For C := 0 To GE.ColCount - 1 Do TotalW := TotalW + GE.ColWidth[C];
+ If TotalW > ListW Then Begin
+  TrackW := TrackRight - TrackLeft;
+  ThumbW := (TrackW * ListW) Div TotalW;
+  If ThumbW < 12 Then ThumbW := 12;
+  ScrolledPx := 0;
+  For C := 0 To GE.ScrollCol - 1 Do ScrolledPx := ScrolledPx + GE.ColWidth[C];
+  MaxScrollPx := TotalW - ListW;
+  If MaxScrollPx < 1 Then MaxScrollPx := 1;
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbLeft := TrackLeft + 1;
+  If TrackW - 2 - ThumbW > 0 Then
+   ThumbLeft := ThumbLeft + (ScrolledPx * (TrackW - 2 - ThumbW)) Div MaxScrollPx;
+  Bar(ThumbLeft, HScrollY + 1, ThumbLeft + ThumbW, GE.Y + GE.Height - 2);
+ End;
+End;
+
+{ --- Trouve la colonne visible sous une abscisse ecran donnee (-1 si
+  hors grille) - fonction partagee par HandleGridEditorMouse pour ne
+  jamais recalculer la geometrie differemment du dessin. --- }
+
+Function GridColAtX(Var GE: TGridEditor; MX: Integer): Integer;
+Var
+ ColX, C: Integer;
+Begin
+ GridColAtX := -1;
+ ColX := GE.X;
+ C := GE.ScrollCol;
+ While C < GE.ColCount Do Begin
+  If (MX >= ColX) And (MX < ColX + GE.ColWidth[C]) Then Begin
+   GridColAtX := C;
+   Exit;
+  End;
+  ColX := ColX + GE.ColWidth[C];
+  If ColX >= GE.X + GE.Width - GRID_SB_W Then Exit;
+  Inc(C);
+ End;
+End;
+
+{ --- Gerer un clic souris dans la grille : selection de cellule,
+  barre de defilement verticale, boutons de defilement horizontal. --- }
+
+Procedure HandleGridEditorMouse(Var GE: TGridEditor; Ev: TEvent);
+Var
+ ListW, VisRows, VisIdx, ClickedRow, ClickedCol: Integer;
+ TrackTop, TrackBot, TotalW, TargetPx, AccW, C: Integer;
+ MaxScroll, HScrollY, TrackLeft, TrackRight: Integer;
+Begin
+ If GE.ColCount <= 0 Then Exit;
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ If (Ev.MouseX < GE.X) Or (Ev.MouseX >= GE.X + GE.Width) Or
+    (Ev.MouseY < GE.Y) Or (Ev.MouseY >= GE.Y + GE.Height) Then Exit;
+ ListW := GE.Width - GRID_SB_W;
+ VisRows := GridVisibleRows(GE);
+ HScrollY := GE.Y + GE.Height - GRID_SB_W;
+ { Petit carre vide au coin bas-droit (les deux barres de defilement ne   }
+ { se rencontrent jamais) - aucune action. }
+ If (Ev.MouseX >= GE.X + ListW) And (Ev.MouseY >= HScrollY) Then
+  Exit;
+ { Barre de defilement verticale : fleches haut/bas (boutons carres de    }
+ { GRID_SB_W, memes zones que celles dessinees par DrawGridEditor) +      }
+ { clic sur la piste (au-dessus/en-dessous du milieu = page precedente/    }
+ { suivante) - meme discipline que HandleExtManagerMouse. }
+ If Ev.MouseX >= GE.X + ListW Then Begin
+  TrackTop := GE.Y + GRID_HEADER_H + GRID_SB_W;
+  TrackBot := HScrollY - GRID_SB_W;
+  MaxScroll := GE.RecordCount - VisRows;
+  If MaxScroll < 0 Then MaxScroll := 0;
+  If Ev.MouseY < GE.Y + GRID_HEADER_H + GRID_SB_W Then
+   Dec(GE.ScrollRow)
+  Else If Ev.MouseY >= TrackBot Then
+   Inc(GE.ScrollRow)
+  Else If Ev.MouseY < (TrackTop + TrackBot) Div 2 Then
+   Dec(GE.ScrollRow, VisRows)
+  Else
+   Inc(GE.ScrollRow, VisRows);
+  If GE.ScrollRow < 0 Then GE.ScrollRow := 0;
+  If GE.ScrollRow > MaxScroll Then GE.ScrollRow := MaxScroll;
+  Exit;
+ End;
+ { Barre de defilement horizontale : fleches gauche/droite + clic sur la  }
+ { piste (avant/apres le milieu = page precedente/suivante), meme          }
+ { discipline - demande explicite de l utilisateur (2026-09-04) de           }
+ { remplacer les 2 anciens petits boutons "<"/">" par une vraie barre       }
+ { pleine largeur AVEC ses fleches (les boutons carres tiennent lieu de    }
+ { fleches gauche/droite, aux memes zones que DrawGridEditor). Le saut      }
+ { sur la piste elle-meme reste proportionnel en pixels cumules de          }
+ { largeur de colonnes (chacune a sa propre largeur) ; jamais au-dela de   }
+ { GridMaxScrollCol (aucune zone morte a droite de la derniere colonne). }
+ If Ev.MouseY >= HScrollY Then Begin
+  TrackLeft := GE.X + GRID_SB_W;
+  TrackRight := GE.X + ListW - 1 - GRID_SB_W;
+  TotalW := 0;
+  For C := 0 To GE.ColCount - 1 Do TotalW := TotalW + GE.ColWidth[C];
+  If TotalW > ListW Then Begin
+   If Ev.MouseX < TrackLeft Then
+    Dec(GE.ScrollCol)
+   Else If Ev.MouseX >= TrackRight Then
+    Inc(GE.ScrollCol)
+   Else Begin
+    { Clic sur la piste elle-meme (ni fleche ni bouton) : saut             }
+    { proportionnel direct a la position cliquee, plus intuitif ici qu une }
+    { page precedente/suivante puisque les colonnes n ont pas de largeur    }
+    { uniforme (contrairement aux rangees, ou VisRows a un sens clair). }
+    TargetPx := ((Ev.MouseX - TrackLeft) * TotalW) Div (TrackRight - TrackLeft);
+    AccW := 0;
+    GE.ScrollCol := 0;
+    For C := 0 To GE.ColCount - 1 Do Begin
+     If AccW >= TargetPx Then Begin
+      GE.ScrollCol := C;
+      Break;
+     End;
+     AccW := AccW + GE.ColWidth[C];
+     GE.ScrollCol := C;
+    End;
+   End;
+   If GE.ScrollCol < 0 Then GE.ScrollCol := 0;
+   If GE.ScrollCol > GridMaxScrollCol(GE, ListW) Then
+    GE.ScrollCol := GridMaxScrollCol(GE, ListW);
+  End;
+  Exit;
+ End;
+ { Clic sur une cellule }
+ If Ev.MouseY < GE.Y + GRID_HEADER_H Then Exit;
+ VisIdx := (Ev.MouseY - GE.Y - GRID_HEADER_H) Div GRID_ROW_H;
+ ClickedRow := GE.ScrollRow + VisIdx;
+ If ClickedRow >= GE.RecordCount Then Exit;
+ ClickedCol := GridColAtX(GE, Ev.MouseX);
+ If ClickedCol < 0 Then Exit;
+ GE.SelRow := ClickedRow;
+ GE.SelCol := ClickedCol;
+End;
+
+{ --- Gerer une touche dans la grille : navigation (fleches/PageUp/
+  PageDown/Home/End), Ctrl+C copie la cellule selectionnee vers le
+  presse-papiers REEL du systeme hote (SetRealClipboardText, deja
+  utilise par le menu contextuel du panneau NC/Explorateur pour
+  "Copier le nom/chemin") - coherent avec l objectif V1 "lire, copier"
+  (l edition/collage est un chantier separe, Etape 7). --- }
+
+Procedure HandleGridEditorKey(Var GE: TGridEditor; Ev: TEvent);
+Var
+ VisRows: Integer;
+Begin
+ If GE.ColCount <= 0 Then Exit;
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  VisRows := GridVisibleRows(GE);
+  Case Ev.KeyCode Of
+   $48: If GE.SelRow > 0 Then Dec(GE.SelRow);              { Haut }
+   $50: If GE.SelRow < GE.RecordCount - 1 Then Inc(GE.SelRow); { Bas }
+   $4B: If GE.SelCol > 0 Then Dec(GE.SelCol);               { Gauche }
+   $4D: If GE.SelCol < GE.ColCount - 1 Then Inc(GE.SelCol); { Droite }
+   $49: Begin { Page haut }
+         Dec(GE.SelRow, VisRows - 1);
+         If GE.SelRow < 0 Then GE.SelRow := 0;
+        End;
+   $51: Begin { Page bas }
+         Inc(GE.SelRow, VisRows - 1);
+         If GE.SelRow >= GE.RecordCount Then GE.SelRow := GE.RecordCount - 1;
+        End;
+   $47: GE.SelRow := 0;                    { Debut }
+   $4F: GE.SelRow := GE.RecordCount - 1;   { Fin }
+   $52: { Inser - Ctrl+Ins copie la cellule, meme convention Windows       }
+        { historique deja reprise pour le Terminal (2026-09-02, demande    }
+        { explicite de l utilisateur) ; Shift+Ins (coller) n a pas de sens }
+        { ici, cette grille etant V1 strictement en lecture seule - aucune }
+        { cellule receptrice a coller dedans. }
+    If (Ev.ShiftState And 2) <> 0 Then
+     SetRealClipboardText(GridCellText(GE, GE.SelRow, GE.SelCol));
+  End;
+  GridClampView(GE);
+  Exit;
+ End;
+ If Ev.Kind <> EV_KEY_CHAR Then Exit;
+ If Ev.KeyChar = #3 Then Begin { Ctrl+C : copier la cellule }
+  SetRealClipboardText(GridCellText(GE, GE.SelRow, GE.SelCol));
+  Exit;
+ End;
+End;
+
+{ --- Construit le chemin .DBT associe a un .DBF (meme base, meme
+  dossier) - DOC/DBF_FORMAT.txt §9 : "CLIENT.DBF -> CLIENT.DBT". --- }
+
+Function GridDbtPathFor(Const DbfPath: String): String;
+Var
+ P: Integer;
+Begin
+ P := Length(DbfPath);
+ While (P > 0) And (DbfPath[P] <> '.') And (DbfPath[P] <> '\') Do Dec(P);
+ If (P > 0) And (DbfPath[P] = '.') Then
+  GridDbtPathFor := Copy(DbfPath, 1, P) + 'DBT'
+ Else
+  GridDbtPathFor := DbfPath + '.DBT';
+End;
+
+{ --- Construit le chemin d un fichier de meme base mais d une extension  }
+{ differente (meme dossier) - generalisation de GridDbtPathFor ci-dessus, }
+{ utilisee pour la redirection Clarion .K??/.I?? -> .DAT frere (§9 :       }
+{ "en pratique, il vaut mieux laisser Clarion regenerer les index ou      }
+{ lire le DAT dans l ordre physique" - jamais de parsing de l arbre B+     }
+{ lui-meme). --- }
+
+Function GridSiblingWithExt(Const Path, NewExt: String): String;
+Var
+ P: Integer;
+Begin
+ P := Length(Path);
+ While (P > 0) And (Path[P] <> '.') And (Path[P] <> '\') Do Dec(P);
+ If (P > 0) And (Path[P] = '.') Then
+  GridSiblingWithExt := Copy(Path, 1, P) + NewExt
+ Else
+  GridSiblingWithExt := Path + '.' + NewExt;
+End;
+
+{ --- Ouvre le contenu d un memo DBT dans une fenetre texte separee, en
+  le lisant directement ligne par ligne dans le tampon (§9.1 : blocs
+  fixes de 512 octets, texte termine par deux $1A consecutifs) - PAS
+  question d assembler le memo entier dans une seule variable String :
+  ce fichier compile avec l indicateur H desactive (chaines courtes,
+  255 caracteres max, voir ~ligne 976), un memo DBT depasse couramment
+  cette limite (c est justement pour ca qu il existe). Chaque ligne
+  individuelle reste neanmoins bornee a 255 caracteres, meme limite deja
+  assumee partout ailleurs dans cet IDE (LoadFile/ReadLn) pour du texte
+  ordinaire.
+  FileName reste vide (jamais associee au vrai .DBT) : un Ctrl+S sur
+  cette fenetre echoue proprement ("Aucun nom de fichier") au lieu de
+  risquer d ecrire du texte reformate par-dessus le fichier binaire .DBT
+  reel - meme prudence que le reste de cette V1 lecture seule. --- }
+
+Procedure GridOpenMemoViewer(Const DbfPath: String; BlockNum: LongInt);
+Const
+ DBT_BLOCK = 512;
+ MAX_MEMO_BLOCKS = 2000; { borne large mais finie (~1 Mo) - jamais de     }
+                        { lecture sans fin sur un fichier corrompu        }
+                        { depourvu de marqueur $1A$1A (§9.1, point 6).    }
+Var
+ DbtPath, CurLine: String;
+ F: File;
+ Buf: Array[0..DBT_BLOCK - 1] Of Byte;
+ Got: Word;
+ I, BlocksRead: Integer;
+ FoundEnd, PrevWas1A, OpenOK: Boolean;
+
+ Procedure EmitLine;
+ Begin
+  If ActiveEditor.Buffer.LineCount < MAX_LINES Then Begin
+   ActiveEditor.Buffer.Lines[ActiveEditor.Buffer.LineCount] := CurLine;
+   Inc(ActiveEditor.Buffer.LineCount);
+  End;
+  CurLine := '';
+ End;
+
+Begin
+ DbtPath := GridDbtPathFor(DbfPath);
+ CreateEditorWindow('');
+ InitBuffer(ActiveEditor.Buffer);
+ ActiveEditor.Buffer.LineCount := 0;
+ CurLine := '';
+ OpenOK := False;
+ If BlockNum > 0 Then Begin
+  {$I-}
+  Assign(F, DbtPath);
+  FileMode := 0;
+  Reset(F, 1);
+  {$I+}
+  If IOResult = 0 Then Begin
+   OpenOK := True;
+   {$I-}
+   Seek(F, BlockNum * LongInt(DBT_BLOCK));
+   {$I+}
+   If IOResult <> 0 Then Begin
+    Close(F);
+    OpenOK := False;
+   End;
+  End;
+ End;
+ If Not OpenOK Then Begin
+  If BlockNum <= 0 Then
+   ActiveEditor.Buffer.Lines[0] := '[memo : pointeur de bloc invalide]'
+  Else
+   ActiveEditor.Buffer.Lines[0] := '[memo : fichier ' +
+    ExtractFileName(DbtPath) + ' introuvable ou bloc hors fichier]';
+  ActiveEditor.Buffer.LineCount := 1;
+ End Else Begin
+  FoundEnd := False;
+  PrevWas1A := False;
+  BlocksRead := 0;
+  While (Not FoundEnd) And (BlocksRead < MAX_MEMO_BLOCKS) Do Begin
+   {$I-}
+   BlockRead(F, Buf, DBT_BLOCK, Got);
+   {$I+}
+   If (IOResult <> 0) Or (Got = 0) Then Break;
+   Inc(BlocksRead);
+   I := 0;
+   While I < Got Do Begin
+    If Buf[I] = $1A Then Begin
+     If PrevWas1A Then Begin
+      FoundEnd := True;
+      Break;
+     End;
+     PrevWas1A := True;
+    End Else Begin
+     { Un $1A isole (pas suivi d un second) ne fait pas partie du         }
+     { marqueur de fin - reintegre au texte comme un octet ordinaire. }
+     If PrevWas1A Then Begin
+      If Length(CurLine) < 250 Then CurLine := CurLine + Chr($1A);
+      PrevWas1A := False;
+     End;
+     If Buf[I] = 10 Then Begin
+      If (Length(CurLine) > 0) And (CurLine[Length(CurLine)] = #13) Then
+       CurLine := Copy(CurLine, 1, Length(CurLine) - 1);
+      EmitLine;
+     End Else If Length(CurLine) < 250 Then
+      CurLine := CurLine + Chr(Buf[I]);
+     { Au-dela de 250 caracteres sur une seule ligne, le surplus est      }
+     { simplement tronque plutot que de risquer un debordement de chaine }
+     { courte - un memo affiche coupe reste plus utile qu un plantage. }
+    End;
+    Inc(I);
+   End;
+   If Got < DBT_BLOCK Then Break;
+  End;
+  Close(F);
+  If Length(CurLine) > 0 Then EmitLine;
+  If ActiveEditor.Buffer.LineCount = 0 Then Begin
+   ActiveEditor.Buffer.Lines[0] := '';
+   ActiveEditor.Buffer.LineCount := 1;
+  End;
+  If Not FoundEnd And (ActiveEditor.Buffer.LineCount < MAX_LINES) Then Begin
+   ActiveEditor.Buffer.Lines[ActiveEditor.Buffer.LineCount] :=
+    '[... marqueur de fin $1A$1A absent - memo possiblement tronque ...]';
+   Inc(ActiveEditor.Buffer.LineCount);
+  End;
+ End;
+ ActiveEditor.Buffer.Modified := False;
+ WinMgr.Windows[WinMgr.ActiveIdx].Title :=
+  'Memo (' + ExtractFileName(DbfPath) + ', bloc ' + IntToStr(BlockNum) + ')';
+ If Editors[WinMgr.ActiveIdx] <> Nil Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
+{ --- Double-clic sur une cellule [memo] (DBF, type M) : ouvre son
+  contenu dans une fenetre texte separee en lecture seule - voir
+  GridOpenMemoViewer ci-dessus. Sans effet sur toute autre cellule ou
+  tout autre format (Format <> GTF_DBF sort immediatement). --- }
+
+Procedure GridHandleDoubleClick(Var GE: TGridEditor; Ev: TEvent);
+Var
+ VisIdx, ClickedRow, ClickedCol, I, Code: Integer;
+ BlockStr: String;
+ BlockNum: LongInt;
+Begin
+ If (GE.ColCount <= 0) Or (GE.Format <> GTF_DBF) Then Exit;
+ If (Ev.MouseX < GE.X) Or (Ev.MouseX >= GE.X + GE.Width) Or
+    (Ev.MouseY < GE.Y) Or (Ev.MouseY >= GE.Y + GE.Height) Then Exit;
+ If Ev.MouseY < GE.Y + GRID_HEADER_H Then Exit;
+ VisIdx := (Ev.MouseY - GE.Y - GRID_HEADER_H) Div GRID_ROW_H;
+ ClickedRow := GE.ScrollRow + VisIdx;
+ If ClickedRow >= GE.RecordCount Then Exit;
+ ClickedCol := GridColAtX(GE, Ev.MouseX);
+ If ClickedCol < 0 Then Exit;
+ If GE.Columns[ClickedCol].TypeCode <> 'M' Then Exit;
+ GridReadRecord(GE, ClickedRow);
+ If (Not GE.CurrentRecValid) Or (GE.CurrentRecNum <> ClickedRow) Then Exit;
+ BlockStr := '';
+ For I := 0 To GE.Columns[ClickedCol].Len - 1 Do
+  BlockStr := BlockStr + Chr(GE.CurrentRecBuf^[GE.Columns[ClickedCol].Ofs + I]);
+ BlockStr := TrimStr(BlockStr);
+ BlockNum := 0;
+ Val(BlockStr, BlockNum, Code);
+ If Code <> 0 Then BlockNum := 0;
+ GridOpenMemoViewer(GE.FileName, BlockNum);
+End;
+
+{ --- Cherche une fenetre grille deja ouverte pour ce fichier - meme
+  motif que FindHexWindowByFileName. --- }
+
+Function FindGridWindowByFileName(FN: String): Integer;
+Var
+ I: Integer;
+ A, B: String;
+Begin
+ FindGridWindowByFileName := -1;
+ A := UpCaseStr(FN);
+ For I := 0 To WinMgr.WinCount - 1 Do Begin
+  If WinMgr.Windows[I].Kind = WK_GRID Then Begin
+   B := UpCaseStr(WinMgr.Windows[I].FileName);
+   If A = B Then Begin
+    FindGridWindowByFileName := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ --- Ouvre un fichier DBF (dBase III uniquement, Version $03 ou $83 avec
+  memo DBT - DOC/DBF_FORMAT.txt §3-6) : lit l en-tete de 32 octets, refuse
+  toute version non geree, parcourt les descripteurs de champs depuis
+  l offset 32 jusqu au terminateur $0D sans depasser HeaderLength, calcule
+  les offsets de champs par cumul (dBase III ne les stocke pas sur
+  disque - §6). Ne fait JAMAIS confiance aveuglement a RecordCount de
+  l en-tete : le nombre reel de records est borne par ce qui tient
+  effectivement dans le fichier (§13, point 12). Refuse explicitement
+  (ErrorMsg) plutot que de deviner : version inconnue, en-tete
+  incoherent, ou plus de champs que GRID_MAX_COLS. --- }
+
+Function GridOpen_Dbf(Var GE: TGridEditor): Boolean;
+Var
+ Hdr, FieldBuf: Array[0..31] Of Byte;
+ Got: Word;
+ Ver: Byte;
+ HdrLen, RecLen: Word;
+ RecCount, Available, FSize, FP, SumLen: LongInt;
+ I, NameLen, W: Integer;
+ FldName: String;
+Begin
+ GridOpen_Dbf := False;
+ {$I-}
+ Seek(GE.F, 0);
+ BlockRead(GE.F, Hdr, 32, Got);
+ {$I+}
+ If (IOResult <> 0) Or (Got <> 32) Then Begin
+  GE.ErrorMsg := 'DBF : en-tete illisible (fichier trop court).';
+  Exit;
+ End;
+ Ver := Hdr[0];
+ If (Ver <> $03) And (Ver <> $83) Then Begin
+  GE.ErrorMsg := 'DBF : version $' + HexByte(Ver) +
+   ' non prise en charge - seuls dBase III ($03) et dBase III avec ' +
+   'memo DBT ($83) sont geres en V1 (voir DOC/DBF_FORMAT.txt section 3).';
+  Exit;
+ End;
+ RecCount := LongInt(Hdr[4]) Or (LongInt(Hdr[5]) Shl 8) Or
+  (LongInt(Hdr[6]) Shl 16) Or (LongInt(Hdr[7]) Shl 24);
+ HdrLen := Word(Hdr[8]) Or (Word(Hdr[9]) Shl 8);
+ RecLen := Word(Hdr[10]) Or (Word(Hdr[11]) Shl 8);
+ If (HdrLen < 33) Or (RecLen < 1) Then Begin
+  GE.ErrorMsg := 'DBF : en-tete incoherent (HeaderLength/RecordLength).';
+  Exit;
+ End;
+ FSize := FileSize(GE.F);
+ If LongInt(HdrLen) > FSize Then Begin
+  GE.ErrorMsg := 'DBF : HeaderLength depasse la taille du fichier.';
+  Exit;
+ End;
+ GE.ColCount := 0;
+ SumLen := 1; { marque de suppression, occupe l octet 0 de chaque record }
+ FP := 32;
+ While FP + 1 <= LongInt(HdrLen) Do Begin
+  {$I-}
+  Seek(GE.F, FP);
+  BlockRead(GE.F, FieldBuf, 32, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got < 1) Then Break;
+  If FieldBuf[0] = $0D Then Break;
+  If Got < 32 Then Break;
+  If GE.ColCount >= GRID_MAX_COLS Then Begin
+   GE.ErrorMsg := 'DBF : trop de champs (limite ' + IntToStr(GRID_MAX_COLS) + ').';
+   Exit;
+  End;
+  { Nom : arrete au premier NUL ou apres 11 octets (§5.1) - jamais suppose UTF-8 }
+  NameLen := 0;
+  While (NameLen < 11) And (FieldBuf[NameLen] <> 0) Do Inc(NameLen);
+  FldName := '';
+  For I := 0 To NameLen - 1 Do FldName := FldName + Chr(FieldBuf[I]);
+  GE.Columns[GE.ColCount].Name := FldName;
+  GE.Columns[GE.ColCount].TypeCode := Chr(FieldBuf[$0B]);
+  GE.Columns[GE.ColCount].Ofs := SumLen;
+  GE.Columns[GE.ColCount].Len := FieldBuf[$10];
+  GE.Columns[GE.ColCount].Decimals := FieldBuf[$11];
+  SumLen := SumLen + FieldBuf[$10];
+  Inc(GE.ColCount);
+  FP := FP + 32;
+ End;
+ If GE.ColCount = 0 Then Begin
+  GE.ErrorMsg := 'DBF : aucun descripteur de champ trouve.';
+  Exit;
+ End;
+ GE.RecordLen := RecLen;
+ GE.DataStart := HdrLen;
+ If RecLen > 0 Then Available := (FSize - HdrLen) Div RecLen Else Available := 0;
+ If Available < 0 Then Available := 0;
+ If RecCount > Available Then RecCount := Available;
+ If RecCount < 0 Then RecCount := 0;
+ GE.RecordCount := RecCount;
+ GetMem(GE.CurrentRecBuf, GE.RecordLen);
+ { Largeur de colonne par defaut, proportionnelle a FieldLength (borne a  }
+ { GRID_COL_MINW pour rester cliquable meme sur un champ tres court). }
+ For I := 0 To GE.ColCount - 1 Do Begin
+  W := GE.Columns[I].Len * 8 + GRID_COL_PAD;
+  If W < GRID_COL_MINW Then W := GRID_COL_MINW;
+  GE.ColWidth[I] := W;
+ End;
+ GridOpen_Dbf := True;
+End;
+
+{ --- Ouvre un fichier CSV (RFC 4180, DOC/CSV_FORMAT.txt) : un seul        }
+{ passage sequentiel construit GE.RowOffsets[]/RowLens[] (position et      }
+{ longueur de chaque ligne LOGIQUE, pas physique - un champ cite peut       }
+{ contenir un retour a la ligne litteral, §2) via une machine a etats a    }
+{ 3 etats operant sur l etat "dans un champ cite ou non", suffisant pour   }
+{ localiser les frontieres de record sans avoir besoin d extraire les      }
+{ champs eux-memes a ce stade (§11 - fait a la demande par                 }
+{ GridCsvFieldAt, plus haut). RowOffsets/RowLens sont GetMem'es a une       }
+{ petite capacite initiale puis doubles via ReallocMem au besoin - la      }
+{ taille finale (RecordCount lignes) n est jamais connue avant la fin du   }
+{ balayage. Le nombre de colonnes est fixe UNE FOIS pour toutes par le      }
+{ nombre de champs de la ligne 0 (comptes au passage) - aucune ligne       }
+{ suivante n est jamais masquee ou traitee differemment : contrairement a  }
+{ un tableur, cette grille ne DEVINE jamais si la ligne 0 est un en-tete    }
+{ ou une donnee (DOC/CSV_FORMAT.txt §5 : "sans metadonnee externe, une      }
+{ premiere ligne textuelle n est pas necessairement un en-tete") - elle     }
+{ reste toujours visible et copiable comme n importe quel autre            }
+{ enregistrement, avec des noms de colonnes generiques ("Champ1", "Champ2",}
+{ ...), meme convention que le secours sans DDF prevu pour Btrieve          }
+{ (Etape 5). --- }
+
+Function GridOpen_Csv(Var GE: TGridEditor): Boolean;
+Const
+ SCANBUF = 8192;
+ INITIAL_CAP = 256;
+Var
+ Buf: Array[0..SCANBUF - 1] Of Byte;
+ Got: Word;
+ I, Col: Integer;
+ Pos, RecStart, RecLen, FSize, NewCap: LongInt;
+ MaxRowLen: LongInt;
+ Row0Fields: Integer;
+ InQuoted, AfterQuoteInQuoted, SkipNextLF, Reprocessed: Boolean;
+ Ch: Byte;
+
+ Procedure EmitRecord;
+ Begin
+  If GE.RecordCount >= GE.RowCapacity Then Begin
+   NewCap := GE.RowCapacity * 2;
+   ReallocMem(GE.RowOffsets, NewCap * SizeOf(LongInt));
+   ReallocMem(GE.RowLens, NewCap * SizeOf(LongInt));
+   GE.RowCapacity := NewCap;
+  End;
+  RecLen := Pos - RecStart;
+  GE.RowOffsets^[GE.RecordCount] := RecStart;
+  GE.RowLens^[GE.RecordCount] := RecLen;
+  If RecLen > MaxRowLen Then MaxRowLen := RecLen;
+  Inc(GE.RecordCount);
+  RecStart := Pos + 1;
+ End;
+
+Begin
+ GridOpen_Csv := False;
+ FSize := FileSize(GE.F);
+ If FSize <= 0 Then Begin
+  GE.ErrorMsg := 'CSV : fichier vide.';
+  Exit;
+ End;
+ GE.RowCapacity := INITIAL_CAP;
+ GetMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+ GetMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+ GE.RecordCount := 0;
+ MaxRowLen := 0;
+ Row0Fields := 1;
+ InQuoted := False;
+ AfterQuoteInQuoted := False;
+ SkipNextLF := False;
+ Pos := 0;
+ RecStart := 0;
+ {$I-}
+ Seek(GE.F, 0);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  GE.ErrorMsg := 'CSV : impossible de repositionner le fichier.';
+  FreeMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+  FreeMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+  GE.RowOffsets := Nil;
+  GE.RowLens := Nil;
+  Exit;
+ End;
+ Repeat
+  {$I-}
+  BlockRead(GE.F, Buf, SCANBUF, Got);
+  {$I+}
+  If IOResult <> 0 Then Break;
+  I := 0;
+  While I < Got Do Begin
+   Ch := Buf[I];
+   Repeat
+    Reprocessed := False;
+    If AfterQuoteInQuoted Then Begin
+     If Ch = Ord('"') Then Begin
+      AfterQuoteInQuoted := False;
+      InQuoted := True;
+     End Else Begin
+      AfterQuoteInQuoted := False;
+      InQuoted := False;
+      Reprocessed := True; { ce meme octet doit encore etre traite "hors guillemets" }
+     End;
+    End Else If InQuoted Then Begin
+     If Ch = Ord('"') Then AfterQuoteInQuoted := True;
+     { CR/LF/virgule ici sont litteraux, font partie de la valeur (§2/§4). }
+    End Else Begin
+     { Hors guillemets }
+     If Ch = Ord('"') Then Begin
+      InQuoted := True;
+      SkipNextLF := False;
+     End Else If Ch = 10 Then Begin
+      If SkipNextLF Then
+       SkipNextLF := False { second octet d un CRLF deja termine au CR }
+      Else
+       EmitRecord;         { LF seul (Unix) }
+     End Else If Ch = 13 Then Begin
+      EmitRecord;
+      SkipNextLF := True;
+     End Else Begin
+      SkipNextLF := False;
+      If (Ch = Ord(',')) And (GE.RecordCount = 0) Then Inc(Row0Fields);
+     End;
+    End;
+   Until Not Reprocessed;
+   Inc(Pos);
+   Inc(I);
+  End;
+ Until Got < SCANBUF;
+ { Dernier enregistrement sans fin de ligne finale (§2 : les deux formes   }
+ { sont admises) - seulement s il reste du contenu non deja emis. }
+ If RecStart < Pos Then EmitRecord;
+ If GE.RecordCount = 0 Then Begin
+  GE.ErrorMsg := 'CSV : aucune ligne trouvee.';
+  FreeMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+  FreeMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+  GE.RowOffsets := Nil;
+  GE.RowLens := Nil;
+  Exit;
+ End;
+ If Row0Fields > GRID_MAX_COLS Then Begin
+  GE.ErrorMsg := 'CSV : trop de colonnes sur la premiere ligne (limite ' +
+   IntToStr(GRID_MAX_COLS) + ').';
+  FreeMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+  FreeMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+  GE.RowOffsets := Nil;
+  GE.RowLens := Nil;
+  Exit;
+ End;
+ GE.ColCount := Row0Fields;
+ For Col := 0 To GE.ColCount - 1 Do Begin
+  GE.Columns[Col].Name := 'Champ' + IntToStr(Col + 1);
+  GE.Columns[Col].TypeCode := 'C';
+  GE.Columns[Col].Ofs := 0;
+  GE.Columns[Col].Len := 0;
+  GE.Columns[Col].Decimals := 0;
+  { Largeur fixe genereuse (pas de FieldLength connu a l avance comme     }
+  { pour DBF, §7 - aucune largeur de colonne n existe en CSV) : tronquee   }
+  { proprement avec "..." si une valeur deborde (GridTruncateForWidth),    }
+  { jamais de chevauchement illisible entre colonnes adjacentes. }
+  GE.ColWidth[Col] := 200;
+ End;
+ If MaxRowLen < 1 Then MaxRowLen := 1;
+ GE.RecordLen := MaxRowLen;
+ GE.DataStart := 0;
+ GetMem(GE.CurrentRecBuf, GE.RecordLen);
+ GridOpen_Csv := True;
+End;
+
+{ --- Ouvre un fichier .DAT (Clarion, DOC/CLARION_FORMAT.txt §2-4) - .DAT
+  est AMBIGU (Btrieve utilise la meme extension, voir GridFormatForExtension
+  ci-dessus) : tente d abord la coherence Clarion (numflds*27+85 <=
+  offset, reclen >= 5, dans les bornes du fichier - PAS uniquement
+  filesig, qui n a aucune valeur unique documentee de facon fiable, §3),
+  puis si ca echoue regarde si les 2 premiers octets ressemblent a un FCR
+  Btrieve (WORD $0000 ou $0002, DOC/BTRIEVE_FORMAT.txt §2.3) pour le
+  signaler honnetement comme "pas encore pris en charge" (Etape 5) plutot
+  que de le confondre avec un Clarion mal forme. Refuse explicitement le
+  chiffrement/la compression (sfatr, §3.1) - jamais devine. --- }
+
+Function GridOpen_Clarion(Var GE: TGridEditor): Boolean;
+Const
+ HDR_LEN = 85;
+Var
+ Hdr: Array[0..HDR_LEN - 1] Of Byte;
+ FieldBuf: Array[0..26] Of Byte;
+ Got: Word;
+ FSize, DataOffset, NumRecs, Available, FP: LongInt;
+ NumFlds: Integer;
+ RecLen, Sfatr: Word;
+ I, J, W: Integer;
+ FldName: String;
+Begin
+ GridOpen_Clarion := False;
+ FSize := FileSize(GE.F);
+ If FSize < HDR_LEN Then Begin
+  GE.ErrorMsg := '.DAT : fichier trop court pour un en-tete Clarion/Btrieve.';
+  Exit;
+ End;
+ {$I-}
+ Seek(GE.F, 0);
+ BlockRead(GE.F, Hdr, HDR_LEN, Got);
+ {$I+}
+ If (IOResult <> 0) Or (Got <> HDR_LEN) Then Begin
+  GE.ErrorMsg := '.DAT : en-tete illisible.';
+  Exit;
+ End;
+ NumFlds := Word(Hdr[$0D]) Or (Word(Hdr[$0E]) Shl 8);
+ RecLen := Word(Hdr[$13]) Or (Word(Hdr[$14]) Shl 8);
+ DataOffset := LongInt(Hdr[$15]) Or (LongInt(Hdr[$16]) Shl 8) Or
+  (LongInt(Hdr[$17]) Shl 16) Or (LongInt(Hdr[$18]) Shl 24);
+ NumRecs := LongInt(Hdr[$05]) Or (LongInt(Hdr[$06]) Shl 8) Or
+  (LongInt(Hdr[$07]) Shl 16) Or (LongInt(Hdr[$08]) Shl 24);
+ Sfatr := Word(Hdr[$02]) Or (Word(Hdr[$03]) Shl 8);
+ If Not ((NumFlds > 0) And (NumFlds <= GRID_MAX_COLS) And (RecLen >= 5) And
+    (LongInt(HDR_LEN) + LongInt(NumFlds) * 27 <= DataOffset) And
+    (DataOffset <= FSize)) Then Begin
+  If (Hdr[0] = 0) And ((Hdr[1] = 0) Or (Hdr[1] = 2)) Then
+   GE.ErrorMsg := '.DAT : ressemble a un fichier Btrieve original (FCR ' +
+    'WORD($0000)/WORD($0002)), non encore pris en charge (voir Etape 5).'
+  Else
+   GE.ErrorMsg := '.DAT : en-tete incoherent (ni Clarion valide, ni Btrieve reconnaissable).';
+  Exit;
+ End;
+ If (Sfatr And $0004) <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Clarion : enregistrements chiffres, non pris en charge.';
+  Exit;
+ End;
+ If (Sfatr And $0010) <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Clarion : fichier compresse, non pris en charge.';
+  Exit;
+ End;
+ { --- Descripteurs de champs, 27 octets chacun, juste apres l en-tete --- }
+ GE.ColCount := 0;
+ FP := HDR_LEN;
+ For I := 0 To NumFlds - 1 Do Begin
+  {$I-}
+  Seek(GE.F, FP);
+  BlockRead(GE.F, FieldBuf, 27, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got <> 27) Then Begin
+   GE.ErrorMsg := '.DAT Clarion : descripteur de champ illisible.';
+   Exit;
+  End;
+  FldName := '';
+  For J := 0 To 15 Do FldName := FldName + Chr(FieldBuf[1 + J]);
+  { fldname est complete par des espaces a droite, jamais termine par NUL  }
+  { (§1) - retirer ce bourrage. }
+  While (Length(FldName) > 0) And (FldName[Length(FldName)] = ' ') Do
+   FldName := Copy(FldName, 1, Length(FldName) - 1);
+  GE.Columns[GE.ColCount].Name := FldName;
+  GE.Columns[GE.ColCount].TypeCode := Chr(FieldBuf[0]);
+  { foffset (+$11) est relatif au debut des donnees UTILISATEUR, apres     }
+  { l en-tete interne de 5 octets de chaque record (§4/§8) - d ou le +5. }
+  GE.Columns[GE.ColCount].Ofs := 5 +
+   (Word(FieldBuf[$11]) Or (Word(FieldBuf[$12]) Shl 8));
+  GE.Columns[GE.ColCount].Len := Word(FieldBuf[$13]) Or (Word(FieldBuf[$14]) Shl 8);
+  GE.Columns[GE.ColCount].Decimals := FieldBuf[$16];
+  Inc(GE.ColCount);
+  FP := FP + 27;
+ End;
+ If GE.ColCount = 0 Then Begin
+  GE.ErrorMsg := '.DAT Clarion : aucun descripteur de champ trouve.';
+  Exit;
+ End;
+ GE.RecordLen := RecLen;
+ GE.DataStart := DataOffset;
+ If RecLen > 0 Then Available := (FSize - DataOffset) Div RecLen Else Available := 0;
+ If Available < 0 Then Available := 0;
+ If NumRecs > Available Then NumRecs := Available;
+ If NumRecs < 0 Then NumRecs := 0;
+ GE.RecordCount := NumRecs;
+ GetMem(GE.CurrentRecBuf, GE.RecordLen);
+ For I := 0 To GE.ColCount - 1 Do Begin
+  W := GE.Columns[I].Len * 8 + GRID_COL_PAD;
+  If W < GRID_COL_MINW Then W := GRID_COL_MINW;
+  GE.ColWidth[I] := W;
+ End;
+ GridOpen_Clarion := True;
+End;
+
+{ --- Ouvre AFileName selon GE.Format (deja determine par l appelant via
+  GridFormatForExtension) et remplit GE.Columns[]/ColCount/RecordLen/
+  RecordCount/DataStart - renvoie False (avec GE.ErrorMsg rempli) si le
+  format/la version n est pas pris en charge, PLUTOT que de deviner
+  (discipline rappelee par les 5 documents DOC/*_FORMAT.txt). --- }
+
+Function GridOpenFile(Var GE: TGridEditor; AFileName: String): Boolean;
+Begin
+ GridOpenFile := False;
+ GE.FileName := AFileName;
+ GE.ColCount := 0;
+ GE.RecordCount := 0;
+ GE.RecordLen := 0;
+ GE.DataStart := 0;
+ GE.CurrentRecNum := -1;
+ GE.CurrentRecValid := False;
+ GE.CurrentRecLen := 0;
+ GE.RowOffsets := Nil;
+ GE.RowLens := Nil;
+ GE.RowCapacity := 0;
+ GE.ScrollRow := 0;
+ GE.ScrollCol := 0;
+ GE.SelRow := 0;
+ GE.SelCol := 0;
+ {$I-}
+ Assign(GE.F, AFileName);
+ FileMode := 0; { lecture seule - V1 est un lecteur, jamais un ecrivain }
+ Reset(GE.F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  GE.FileOpen := False;
+  GE.ErrorMsg := 'Impossible d''ouvrir le fichier : ' + AFileName;
+  Exit;
+ End;
+ GE.FileOpen := True;
+ { GTF_BTRIEVE/GTF_MYD : ajoutes un a un, Etapes 5 et 6 - chacun ajoute   }
+ { sa propre branche ici, calquee sur GTF_DBF/GTF_CSV/GTF_CLARION. }
+ If GE.Format = GTF_DBF Then Begin
+  If Not GridOpen_Dbf(GE) Then Begin
+   Close(GE.F);
+   GE.FileOpen := False;
+   Exit;
+  End;
+ End Else If GE.Format = GTF_CSV Then Begin
+  If Not GridOpen_Csv(GE) Then Begin
+   Close(GE.F);
+   GE.FileOpen := False;
+   Exit;
+  End;
+ End Else If GE.Format = GTF_CLARION Then Begin
+  If Not GridOpen_Clarion(GE) Then Begin
+   Close(GE.F);
+   GE.FileOpen := False;
+   Exit;
+  End;
+ End Else Begin
+  GE.ErrorMsg := 'Format de fichier non reconnu.';
+  Close(GE.F);
+  GE.FileOpen := False;
+  Exit;
+ End;
+ GridOpenFile := True;
+End;
+
+{ --- Libere une TGridEditor : ferme le fichier et le tampon
+  d enregistrement - besoin de nettoyage reellement nouveau, aucun
+  autre genre d editeur ne garde de handle fichier ouvert en
+  permanence (voir CloseEditorWindow). --- }
+
+Procedure FreeGridEditor(Var GE: TGridEditor);
+Begin
+ If GE.FileOpen Then Begin
+  {$I-}
+  Close(GE.F);
+  {$I+}
+  If IOResult <> 0 Then ;
+  GE.FileOpen := False;
+ End;
+ If GE.CurrentRecBuf <> Nil Then Begin
+  FreeMem(GE.CurrentRecBuf, GE.RecordLen);
+  GE.CurrentRecBuf := Nil;
+ End;
+ If GE.RowOffsets <> Nil Then Begin
+  FreeMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+  GE.RowOffsets := Nil;
+ End;
+ If GE.RowLens <> Nil Then Begin
+  FreeMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+  GE.RowLens := Nil;
+ End;
+End;
+
+{ --- Point d entree UNIQUE pour ouvrir un fichier de donnees dans une
+  grille - appele a la fois par l Explorateur de solutions
+  (OpenExplorerFileNodeGrid) et par le panneau Norton Commander du
+  Terminal (NCActionOpenAssociated), qui partagent tous deux
+  GridFormatForExtension pour reconnaitre l extension en amont. Si le
+  fichier est deja ouvert dans une grille, active cet onglet au lieu
+  d en ouvrir un second (meme discipline que les autres genres
+  d editeur, meme si aucun appelant Etape 1 n exploite encore ce cas). --- }
+
+Procedure CreateGridWindow(AFileName: String);
+Var
+ Idx, Fmt: Integer;
+ GE: TGridEditor;
+ DatPath: String;
+Begin
+ { Redirection Clarion .K??/.I?? -> le .DAT frere, AVANT toute autre       }
+ { logique (y compris FindGridWindowByFileName : ouvrir NOM.K01 puis        }
+ { NOM.I01 doit activer le MEME onglet grille que NOM.DAT, pas en creer    }
+ { deux differents) - jamais de parsing de l arbre B+ lui-meme (§9). }
+ If GridIsClarionKeyExt(UpCaseStr(GridExtOfPath(AFileName))) Then Begin
+  DatPath := GridSiblingWithExt(AFileName, 'DAT');
+  If Not FileExists(DatPath) Then Begin
+   AppendOutput(OutputPanel,
+    'Grille : fichier .DAT associe introuvable : ' + DatPath, Ord(OTK_BUILD));
+   Exit;
+  End;
+  CreateGridWindow(DatPath);
+  Exit;
+ End;
+ Idx := FindGridWindowByFileName(AFileName);
+ If Idx >= 0 Then Begin
+  SyncActiveWindowOut;
+  WinMgr.ActiveIdx := Idx;
+  SyncActiveWindowIn(Idx);
+  EditorReady := True;
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ Fmt := GridFormatForExtension(UpCaseStr(GridExtOfPath(AFileName)));
+ If Fmt = GTF_NONE Then Exit;
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+ FillChar(GE, SizeOf(GE), 0);
+ GE.Format := Fmt;
+ If Not GridOpenFile(GE, AFileName) Then Begin
+  AppendOutput(OutputPanel,
+   'Grille : ' + GE.ErrorMsg, Ord(OTK_BUILD));
+  Exit;
+ End;
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_GRID;
+ WinMgr.Windows[Idx].FileName := AFileName;
+ WinMgr.Windows[Idx].Title := GetTabLabel(AFileName) + ' (Grille)';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ GE.X := WinMgr.Windows[Idx].X;
+ GE.Y := WinMgr.Windows[Idx].Y;
+ GE.Width := WinMgr.Windows[Idx].Width;
+ GE.Height := WinMgr.Windows[Idx].Height;
+ If GridEditors[Idx] = Nil Then New(GridEditors[Idx]);
+ GridEditors[Idx]^ := GE;
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ ActiveGridEditor := GridEditors[Idx]^;
+ { BOGUE REEL trouve en verifiant cette etape par capture d ecran           }
+ { (2026-09-04) : sans ceci, la grille s ouvrait bien (onglet cree, fichier }
+ { analyse avec succes) mais restait a l ecran completement VIDE -          }
+ { DrawAllWidgets ne dessine la fenetre active que si EditorReady est deja  }
+ { a True, et CreateGridWindow (contrairement a CreateHexWindow/            }
+ { CreateFormWindow, des primitives plus bas niveau dont les rares          }
+ { appelants s en chargent eux-memes) est cense etre LE point d entree      }
+ { unique appele directement par NCActionOpenAssociated - un appelant qui   }
+ { oublierait de le faire (c etait le cas de la branche Norton Commander,   }
+ { ajoutee a l Etape 1 avant qu aucun format reel ne rende le bogue          }
+ { visible) se serait retrouve avec le meme ecran vide. }
+ EditorReady := True;
+ FullRepaintNeeded := True;
 End;
 
 { ============================================================
@@ -28987,6 +30695,8 @@ Begin
   NodeKindFromExtension := ENK_FILE_PAS
  Else If Ext = '.frm' Then
   NodeKindFromExtension := ENK_FILE_FRM
+ Else If GridFormatForExtension(UpCaseStr(Copy(Ext, 2, Length(Ext) - 1))) <> GTF_NONE Then
+  NodeKindFromExtension := ENK_FILE_TABLE
  Else
   NodeKindFromExtension := ENK_FILE_OTHER;
 End;
@@ -31313,6 +33023,63 @@ Begin
  FullRepaintNeeded := True;
 End;
 
+{ --- Ouvrir un fichier de table (DBF/Clarion/Btrieve/CSV/MyISAM) depuis
+  l explorateur dans la grille (WK_GRID) - calque du squelette de
+  OpenExplorerFileNodeHex ci-dessus. CreateGridWindow determine lui-meme
+  le format via GridFormatForExtension et n ouvre aucun onglet si
+  l extension n est pas (encore) reconnue - voir le chantier grille.
+  N est pas encore appelee par aucun site de repartition
+  ENK_FILE_FRM : cablee ici des l Etape 1 (infrastructure generique)
+  pour que l Etape 2 (DBF) n ait plus qu a ajouter le nouveau genre de
+  noeud ENK_FILE_TABLE et ses branches de repartition, sans retoucher
+  cette procedure. --- }
+
+Procedure OpenExplorerFileNodeGrid(Var Exp: TSolutionExplorer;
+ NodeIdx: Integer);
+Var
+ FN: String;
+ SolDir: String;
+ ProjDir: String;
+ FullPath: String;
+ WIdx: Integer;
+ I: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= Exp.NodeCount) Then Exit;
+ FN := Exp.Nodes[NodeIdx].RelPath;
+ If FN = '' Then Exit;
+ If SolutionLoaded And (CurrentSolution.ProjectCount > 0) Then
+ Begin
+  SolDir := CurrentSolution.Info.SolutionPath;
+  If Length(SolDir) > 0 Then Begin
+   If (SolDir[Length(SolDir)] <> '\') And
+      (SolDir[Length(SolDir)] <> '/') Then
+    SolDir := SolDir + '\';
+  End;
+  ProjDir := ExtractFilePath(
+   CurrentSolution.Projects[
+    FindProjectIndexForExplorerNode(Exp, NodeIdx)].ProjectPath);
+  FullPath := SolDir + ProjDir + FN;
+  For I := 1 To Length(FullPath) Do
+   If FullPath[I] = '/' Then FullPath[I] := '\';
+ End
+ Else
+  FullPath := FN;
+ If EditorReady Then SyncActiveWindowOut;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ WIdx := FindGridWindowByFileName(FullPath);
+ If WIdx >= 0 Then Begin
+  ActivateWindow(WIdx);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+ CreateGridWindow(FullPath);
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
 { --- Ouvrir un fichier .FRM depuis l explorateur dans l apercu de
   formulaire (menu contextuel "Ouvrir", par defaut pour les .FRM) --- }
 
@@ -31642,6 +33409,8 @@ Begin
     ToggleNode(Exp, HitIdx)
    Else If Exp.Nodes[HitIdx].Kind = ENK_FILE_FRM Then
     OpenExplorerFileNodeForm(Exp, HitIdx)
+   Else If Exp.Nodes[HitIdx].Kind = ENK_FILE_TABLE Then
+    OpenExplorerFileNodeGrid(Exp, HitIdx)
    Else If Exp.Nodes[HitIdx].Kind In
     [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
      ENK_FILE_OTHER] Then
@@ -31751,6 +33520,8 @@ Begin
        (Exp.SelectedIdx < Exp.NodeCount) Then Begin
      If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_FILE_FRM Then
       OpenExplorerFileNodeForm(Exp, Exp.SelectedIdx)
+     Else If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_FILE_TABLE Then
+      OpenExplorerFileNodeGrid(Exp, Exp.SelectedIdx)
      Else If Exp.Nodes[Exp.SelectedIdx].Kind In
       [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
        ENK_FILE_OTHER] Then
@@ -31825,6 +33596,8 @@ Begin
      (Exp.SelectedIdx < Exp.NodeCount) Then Begin
    If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_FILE_FRM Then
     OpenExplorerFileNodeForm(Exp, Exp.SelectedIdx)
+   Else If Exp.Nodes[Exp.SelectedIdx].Kind = ENK_FILE_TABLE Then
+    OpenExplorerFileNodeGrid(Exp, Exp.SelectedIdx)
    Else If Exp.Nodes[Exp.SelectedIdx].Kind In
     [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
      ENK_FILE_OTHER] Then
@@ -32017,6 +33790,14 @@ Begin
   End;
   ENK_FILE_FRM: Begin
    AddContextItem(CM, 'Ouvrir', 500);
+   AddContextItem(CM, 'Ouvrir dans l''editeur texte', 502);
+   AddContextItem(CM, 'Edition hexadecimal', 501);
+   AddContextSeparator(CM);
+   AddContextItem(CM, 'Renommer', 520);
+   AddContextItem(CM, 'Supprimer', 521);
+  End;
+  ENK_FILE_TABLE: Begin
+   AddContextItem(CM, 'Ouvrir dans la grille', 500);
    AddContextItem(CM, 'Ouvrir dans l''editeur texte', 502);
    AddContextItem(CM, 'Edition hexadecimal', 501);
    AddContextSeparator(CM);
@@ -32492,7 +34273,8 @@ Begin
     SetPropertySourceProject(PropsPanel, CurrentProject)
    Else
     ClearPropertiesPanel(PropsPanel);
-  ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_OTHER: Begin
+  ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_TABLE,
+  ENK_FILE_OTHER: Begin
    If SolutionLoaded Then Begin
     Idx := FindFileInProject(CurrentProject, Exp.Nodes[NodeIdx].RelPath);
     If Idx >= 0 Then
@@ -71521,6 +73303,19 @@ Begin
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
     CreateEmulatorTab(FullPath, '-CELF64', '');
     NCActionOpenAssociated := True;
+   End
+   { Chantier grille (DBF/Clarion/Btrieve/CSV/MyISAM) : deuxieme point    }
+   { d entree demande explicitement par l utilisateur, en plus du         }
+   { double-clic dans l Explorateur de solutions - voir GridFormatForExtension }
+   { pour la liste des extensions reconnues (partagee avec              }
+   { NodeKindFromExtension, jamais deux listes separees). Retourne GTF_NONE }
+   { pour tout le monde tant qu aucun format reel n est branche (Etape 1), }
+   { donc cette branche ne fait encore rien en pratique - cablee des        }
+   { maintenant pour que les etapes suivantes n aient plus qu a enrichir    }
+   { GridFormatForExtension, jamais ce site d appel. }
+   Else If GridFormatForExtension(Ext) <> GTF_NONE Then Begin
+    CreateGridWindow(FullPath);
+    NCActionOpenAssociated := True;
    End;
   End;
 End;
@@ -73170,8 +74965,10 @@ End;
 
 { Forward : definies plus bas (menu contextuel "Copier/Coller dans le        }
 { presse-papier", 2026-09-01), reutilisees ici pour Ctrl+Ins/Shift+Ins        }
-{ (2026-09-02, demande explicite de l utilisateur). }
-Procedure SetRealClipboardText(S: String); Forward;
+{ (2026-09-02, demande explicite de l utilisateur). SetRealClipboardText     }
+{ elle-meme est desormais avancee bien plus haut (chantier grille,           }
+{ HandleGridEditorKey/Ctrl+C) - voir sa declaration Forward juste avant      }
+{ GridFormatForExtension. }
 Function TermGetSelectedText(Var TP: TTerminalPanel): String; Forward;
 Procedure TermPasteFromClipboard(Var TP: TTerminalPanel); Forward;
 
@@ -78240,7 +80037,8 @@ Begin
   ActiveEditor.Buffer.FileName := NewPath;
  For I := 0 To SolExplorer.NodeCount - 1 Do
   If SolExplorer.Nodes[I].Kind In
-   [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_OTHER] Then
+   [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS, ENK_FILE_FRM, ENK_FILE_TABLE,
+    ENK_FILE_OTHER] Then
    If UpCaseStr(SolExplorer.Nodes[I].Caption) =
       UpCaseStr(ExtractFileName(OldPath)) Then
     SolExplorer.Nodes[I].Caption := NewName;
@@ -126079,6 +127877,8 @@ Begin
    SB.Language := 'Extensions'
   Else If WM.Windows[Idx].Kind = WK_FORM Then
    SB.Language := 'Formulaire'
+  Else If WM.Windows[Idx].Kind = WK_GRID Then
+   SB.Language := 'Grille'
   Else
    SB.Language := 'Text';
  End Else Begin
@@ -127549,6 +129349,20 @@ Begin
    Ord(OTK_BUILD));
   Exit;
  End;
+ { Grille (DBF/Clarion/Btrieve/CSV/MyISAM) : V1 est LECTURE SEULE (voir le  }
+ { chantier grille) - laisser tomber jusqu au SaveFile(ActiveEditor.Buffer, }
+ { FN) generique ci-dessous ECRIRAIT le tampon texte perime de              }
+ { ActiveEditor (vide ou celui d un autre onglet) par-dessus le vrai        }
+ { fichier de table, le corrompant silencieusement. Meme discipline de      }
+ { refus explicite que GridOpenFile pour les versions/sous-formats non      }
+ { pris en charge. }
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) Then Begin
+  AppendOutput(OutputPanel,
+   'Cette version de la grille est en lecture seule - rien a enregistrer.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
  FN := '';
  If Opts.SourceFile <> '' Then
   FN := Opts.SourceFile
@@ -127635,6 +129449,13 @@ Begin
     (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
   AppendOutput(OutputPanel,
    'COMMENT ne s''applique pas a un fichier ouvert en hexadecimal.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) Then Begin
+  AppendOutput(OutputPanel,
+   'COMMENT ne s''applique pas a un fichier de table ouvert en grille.',
    Ord(OTK_BUILD));
   Exit;
  End;
@@ -128242,6 +130063,8 @@ Begin
    DrawFormEditor(ActiveFormEditor)
   Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then
    DrawExtManager(ExtMgr)
+  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then
+   DrawGridEditor(ActiveGridEditor)
   Else
    DrawEditor(ActiveEditor);
  End;
@@ -131992,6 +133815,8 @@ Begin
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then Begin
        If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind = ENK_FILE_FRM Then
         OpenExplorerFileNodeForm(SolExplorer, CtxMenu.NodeIdx)
+       Else If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind = ENK_FILE_TABLE Then
+        OpenExplorerFileNodeGrid(SolExplorer, CtxMenu.NodeIdx)
        Else If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind =
         ENK_PROPERTIES Then Begin
         InitProjectPropertiesDialog(ProjPropDlg);
@@ -132102,7 +133927,7 @@ Begin
       Begin
        If SolExplorer.Nodes[CtxMenu.NodeIdx].Kind In
         [ENK_FILE_CS, ENK_FILE_VB, ENK_FILE_PAS,
-         ENK_FILE_FRM, ENK_FILE_OTHER] Then
+         ENK_FILE_FRM, ENK_FILE_TABLE, ENK_FILE_OTHER] Then
        Begin
         { Retirer du projet }
         If SolutionLoaded Then Begin
@@ -132722,6 +134547,18 @@ Begin
   End;
  End;
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
+  { Double-clic sur une grille (DBF/Clarion/Btrieve/CSV/MyISAM) : ouvre le }
+  { memo de la cellule cliquee, s il y en a un - voir GridHandleDoubleClick. }
+  { A part, car EV_MOUSE_DBLCLICK n est traite par aucune autre branche du  }
+  { dispatch souris ci-dessous (WK_HEX/WK_FORM/WK_EXTMGR ne le geraient pas }
+  { non plus). Pas de rechargement de GridEditors[] apres l appel :         }
+  { GridHandleDoubleClick peut avoir change WinMgr.ActiveIdx (ouverture du  }
+  { visualiseur de memo), et de toute facon elle ne modifie jamais GE. }
+  If (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) And
+     (Ev.Kind = EV_MOUSE_DBLCLICK) Then Begin
+   GridHandleDoubleClick(ActiveGridEditor, Ev);
+   Exit;
+  End;
   { Si renommage en cours dans l explorateur, lui envoyer les touches }
   If SolExplorer.Renaming And
      ((Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN)) Then Begin
@@ -132743,6 +134580,12 @@ Begin
     { Apercu de formulaire : lecture seule, aucune frappe traitee }
    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
     { Gestionnaire d extensions : pilote a la souris, aucune frappe traitee }
+   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
+    HandleGridEditorKey(ActiveGridEditor, Ev);
+    If GridEditors[WinMgr.ActiveIdx] <> Nil Then
+     GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveGridEditor.SelRow;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveGridEditor.SelCol;
    End Else Begin
     HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
      EditorUndo, EditorRedo, Ev);
@@ -132787,6 +134630,12 @@ Begin
       MarkWindowModified(WinMgr.ActiveIdx);
     End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
      HandleExtManagerMouse(ExtMgr, Ev);
+    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
+     HandleGridEditorMouse(ActiveGridEditor, Ev);
+     If GridEditors[WinMgr.ActiveIdx] <> Nil Then
+      GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveGridEditor.SelRow;
+     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveGridEditor.SelCol;
     End Else If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_RIGHT) Then Begin
      { Menu contextuel de l editeur de texte source (2026-08-31) - voir     }
      { ShowEditorContextMenu / Case CtxTag Of (tags 800-808). }
