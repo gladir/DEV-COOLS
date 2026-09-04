@@ -65568,6 +65568,72 @@ Begin
  TermAddLine(TP, 'Export-Csv : fichier exporte : ' + PathArg);
 End;
 
+{ --- ForEach-Object (2026-09-04) : parcours des objets plats conserves par }
+{ le terminal. Il n'existe pas de pipeline PowerShell complet ici;           }
+Procedure TermCmd_ForEachObject(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, MemberArg, UpLevel: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+   (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ VarArg := ''; MemberArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If UpLevel = '-INPUTOBJECT' Then Begin
+   Inc(I); If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If (UpLevel = '-MEMBERNAME') Or (UpLevel = '-PROPERTY') Then Begin
+   Inc(I); If I <= LocalArgCount Then MemberArg := LocalArgs[I];
+  End Else If (UpLevel = '-BEGIN') Or (UpLevel = '-PROCESS') Or
+     (UpLevel = '-END') Then Inc(I)
+  Else If (VarArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+  TermAddLine(TP, 'Syntaxe : ForEach-Object -InputObject $objet');
+  TermAddLine(TP, '          ForEach-Object $objet [-MemberName nom]');
+  Exit;
+ End;
+ SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If SrcVar = Nil Then Begin
+  TermAddLine(TP, 'ForEach-Object : ''' + VarArg + ''' n''existe pas.');
+  Exit;
+ End;
+ If Not SrcVar^.IsObject Then Begin
+  TermAddLineWrapped(TP, SrcVar^.ScalarValue);
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'ForEach-Object : objet sans propriete.');
+  Exit;
+ End;
+ If MemberArg <> '' Then Begin
+  MemberArg := YamlUnquote(MemberArg);
+  P := SrcVar^.Props;
+  While P <> Nil Do Begin
+   If TermStrToUpper(P^.Name) = TermStrToUpper(MemberArg) Then Begin
+    TermAddLineWrapped(TP, P^.Value);
+    Exit;
+   End;
+   P := P^.Next;
+  End;
+  TermAddLine(TP, 'ForEach-Object : propriete introuvable : ' + MemberArg);
+  Exit;
+ End;
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  TermAddLine(TP, P^.Name + ' : ' + P^.Value);
+  P := P^.Next;
+ End;
+End;
+
 { --- ConvertTo-Html (2026-09-01) : meme entree que ConvertTo-Csv ($objet  }
 { deja construit par ConvertFrom-Yaml/StringData/SddlString), sortie =     }
 { le VRAI document HTML que produit la cmdlet reelle (<html><head><title> }
@@ -69224,6 +69290,8 @@ Begin
   TermAddLine(TP,
    '  Export-Csv -Path f -InputObject $objet  Ecrit un fichier CSV');
   TermAddLine(TP,
+   '  ForEach-Object $objet [-MemberName nom]  Parcourt un objet');
+  TermAddLine(TP,
    '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
    'reel (table) de $objet');
   TermAddLine(TP,
@@ -69913,7 +69981,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 112;
+ PS_CMD_ALIASES = 113;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -69976,6 +70044,7 @@ Const
   'CONVERTFROM-STRINGDATA',
   'CONVERT-PATH',
   'EXPORT-CSV',
+  'FOREACH-OBJECT',
   'CONVERTTO-CSV',
   'CONVERTTO-HTML',
   'CONVERTTO-JSON',
@@ -70068,6 +70137,7 @@ Const
   76,
   80,
   89,
+  90,
   81,
   82,
   83,
@@ -70553,6 +70623,7 @@ Begin
     76: TermCmd_ConvertFromStringData(TP, ParamStr);
     80: TermCmd_ConvertPath(TP, ParamStr);
     89: TermCmd_ExportCsv(TP, ParamStr);
+    90: TermCmd_ForEachObject(TP, ParamStr);
     81: TermCmd_ConvertToCsv(TP, ParamStr);
     82: TermCmd_ConvertToHtml(TP, ParamStr);
     83: TermCmd_ConvertToJson(TP, ParamStr);
