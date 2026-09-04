@@ -100319,8 +100319,18 @@ Begin
     End;
    End;
   $12:
-   { Memory size en KB (640). }
-   If Emu_IntIsHooked(P, $12) Then Emu_FireHwInt(P, $12) Else P.CPU.Regs.AX := 640;
+   { Memory size en KB - BOGUE LATENT CORRIGE (2026-09-04, analyse           }
+   { independante) : renvoyait 640 en dur au lieu de relire le mot de la BDA }
+   { a 0000:0413h (ecrit une seule fois a l initialisation, voir             }
+   { Emu_WriteWord(C, 0, $0413, 640) plus bas) - un vrai BIOS relit          }
+   { toujours cette case memoire a chaque appel plutot que de renvoyer une   }
+   { constante. Aucun bogue observable actuellement (rien n ecrit cette     }
+   { case apres l initialisation), mais une double source de verite qui     }
+   { pourrait diverger silencieusement si une fonctionnalite future          }
+   { reduisait la memoire conventionnelle rapportee - meme categorie que     }
+   { les incoherences INT13h/INT41h deja corrigees. }
+   If Emu_IntIsHooked(P, $12) Then Emu_FireHwInt(P, $12)
+   Else P.CPU.Regs.AX := Emu_ReadWord(P.CPU, 0, $0413);
   $13: If Emu_IntIsHooked(P, $13) Then Emu_FireHwInt(P, $13) Else Emu_DoInt13(P);
   $16: If Emu_IntIsHooked(P, $16) Then Emu_FireHwInt(P, $16) Else Emu_DoInt16(P);
   $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
@@ -100910,6 +100920,7 @@ Var
  I_Dbg: Integer;
  InstructionIP: Word;
  DecPreserveCF: Boolean;
+ Borrow1: Boolean; { DAS ($2F) : report du 1er ajustement, voir son commentaire }
  LslB0, LslB1, LslB6: Byte;            { octets de limite/indicateurs LSL   }
  LslRawLimit, LslEffLimit: LongInt;    { limite brute puis apres granularite}
 Begin
@@ -101208,12 +101219,21 @@ Begin
        { AF_AVANT L INSTRUCTION valait 0). Ce dernier cas est le plus       }
        { subtil : quand AL_origine est dans $9A-$9F (chiffre de poids fort  }
        { =9, poids faible >9), le 1er ajustement (+6) fait toujours         }
-       { depasser $9F APRES coup, mais le silicium reel ne declenche le 2e  }
-       { ajustement pour cela QUE si AF n etait PAS deja positionne avant   }
-       { l instruction - si AF etait deja a 1 (positionne par une           }
-       { instruction precedente), le 2e ajustement reste sauté meme si le   }
-       { resultat intermediaire depasse $9F. D ou WasAF, capture AVANT le   }
-       { 1er ajustement (qui modifie EFG_AF en place). }
+       { depasser $9F APRES coup, mais le silicium 8086/8088 reel ne        }
+       { declenche le 2e ajustement pour cela QUE si AF n etait PAS deja    }
+       { positionne avant l instruction. D ou WasAF, capture AVANT le 1er   }
+       { ajustement (qui modifie EFG_AF en place).                          }
+       { DEUXIEME BOGUE REEL CORRIGE (2026-09-04, corpus SST286 sur         }
+       { silicium 80286 reel - 3e conflit de generation de ce chantier,     }
+       { meme famille que SETMO/masquage CL de Group2) : la dependance a AF }
+       { ci-dessus est SPECIFIQUE au 8086/8088 - sur 80186+ reel, le 2e     }
+       { ajustement se declenche INCONDITIONNELLEMENT des que AL_origine    }
+       { est dans [$9A,$9F], que AF ait deja ete positionne ou non (verifie }
+       { empiriquement : formule sans la dependance AF = 100% sur 5000 cas  }
+       { 80286 reels, formule AVEC la dependance = seulement 99.22% - et     }
+       { inversement, verifie que la formule 80286 degrade a 99.15% sur les }
+       { 2000 cas 8086 reels d origine). D ou EmuCpu286Plus (voir sa        }
+       { declaration complete pres de EmuDiv0SubOp). }
    Begin
     V8 := P.CPU.Regs.AL;
     R8 := V8; { AL D ORIGINE, avant tout ajustement }
@@ -101228,7 +101248,7 @@ Begin
     End Else
      Exclude(P.CPU.Flags.s, EFG_AF);
     If (R8 > $9F) Or (R16 = 1) Or
-       ((R8 >= $9A) And (R8 <= $9F) And (S8 = 0)) Then Begin
+       ((R8 >= $9A) And (R8 <= $9F) And (EmuCpu286Plus Or (S8 = 0))) Then Begin
      V8 := Byte(V8 + $60);
      Include(P.CPU.Flags.s, EFG_CF);
     End Else
@@ -101240,6 +101260,27 @@ Begin
   $2F: { DAS - Decimal Adjust after Subtraction - meme correctif que DAA,   }
        { voir son commentaire pour le contexte complet (formule identique, }
        { verifiee sur les 2000 cas DAS separement). }
+       { BOGUE REEL CORRIGE (2026-09-04, trouve via le corpus SST286 - la      }
+       { verification retroactive du corpus BCD 8086 a repere 26/11986 echecs }
+       { CF, tous DAS) : contrairement a DAA ci-dessus, le Else de la          }
+       { condition du 2e ajustement manquait - CF restait bloque a 1           }
+       { (positionne par le 1er ajustement quelques lignes plus haut) au lieu }
+       { d etre recalcule par la condition du 2e ajustement. Ajoute alors.     }
+       { DEUXIEME BOGUE REEL CORRIGE (2026-09-04, corpus SST286 sur silicium   }
+       { 80286 reel - meme conflit de generation que DAA ci-dessus, PLUS une   }
+       { nuance propre a DAS) : sur 80186+, en plus de la meme independance a  }
+       { AF pour le declenchement du 2e ajustement, le REPORT (emprunt) du 1er}
+       { ajustement (quand AL_origine<6) doit rester visible dans CF meme si   }
+       { le 2e ajustement ne s applique pas lui-meme - contrairement au Else   }
+       { juste ajoute ci-dessus (qui EFFACE CF), le 80286 reel conserve ce     }
+       { report (OU logique), alors que le 8086/8088 l efface bel et bien     }
+       { (formule sans cette conservation = 100% sur les 2000 cas 8086        }
+       { d origine, formule AVEC = seulement 98.15% - et inversement, formule }
+       { avec conservation = 100% sur 5000 cas 80286 reels, sans = 97.52%).    }
+       { N affecte QUE CF, jamais la valeur V8 elle-meme (verifie : la vraie   }
+       { valeur finale AL, dans les cas ou le report seul s applique sans le   }
+       { 2e ajustement, correspond exactement a la valeur issue du 1er         }
+       { ajustement seul, sans la soustraction $60 supplementaire). }
    Begin
     V8 := P.CPU.Regs.AL;
     R8 := V8; { AL D ORIGINE, avant tout ajustement }
@@ -101247,34 +101288,45 @@ Begin
     If EFG_CF In P.CPU.Flags.s Then R16 := 1;
     S8 := 0;
     If EFG_AF In P.CPU.Flags.s Then S8 := 1;
+    Borrow1 := False;
     If ((V8 And $0F) > 9) Or (S8 = 1) Then Begin
-     If V8 < 6 Then Include(P.CPU.Flags.s, EFG_CF);
+     If V8 < 6 Then Begin
+      Include(P.CPU.Flags.s, EFG_CF);
+      Borrow1 := True;
+     End;
      V8 := Byte(V8 - 6);
      Include(P.CPU.Flags.s, EFG_AF);
     End Else
      Exclude(P.CPU.Flags.s, EFG_AF);
     If (R8 > $9F) Or (R16 = 1) Or
-       ((R8 >= $9A) And (R8 <= $9F) And (S8 = 0)) Then Begin
+       ((R8 >= $9A) And (R8 <= $9F) And (EmuCpu286Plus Or (S8 = 0))) Then Begin
      V8 := Byte(V8 - $60);
      Include(P.CPU.Flags.s, EFG_CF);
-    End Else
-     { BOGUE REEL CORRIGE (2026-09-04, trouve via le corpus SST286 - la      }
-     { verification retroactive du corpus BCD 8086 a repere 26/11986 echecs }
-     { CF, tous DAS) : contrairement a DAA ci-dessus, ce Else manquait -     }
-     { CF restait bloque a 1 (positionne par le 1er ajustement quelques     }
-     { lignes plus haut) au lieu d etre recalcule par la condition du 2e    }
-     { ajustement, seule autorite sur CF en sortie de DAS (meme formule     }
-     { empirique que DAA, verifiee separement sur 2000 cas DAS reels). }
-     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
+     If EmuCpu286Plus And Borrow1 Then Include(P.CPU.Flags.s, EFG_CF)
+                                   Else Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
     P.CPU.Regs.AL := V8;
     Emu_SetSFB(P.CPU, V8); Emu_SetZFB(P.CPU, V8); Emu_SetPF(P.CPU, V8);
     Inc(P.CPU.IP);
    End;
-  $37: { AAA - ASCII Adjust after Addition }
+  $37: { AAA - ASCII Adjust after Addition - BOGUE REEL CORRIGE (2026-09-04, }
+       { corpus SST286 sur silicium 80286 reel - 4e conflit de generation de }
+       { ce chantier) : sur 8086/8088 reel, AH est simplement incremente de  }
+       { 1 quand l ajustement se declenche (formule ci-dessous, verifiee     }
+       { 100% sur 2000 cas 8086 reels). Sur 80186+ reel, la RETENUE de       }
+       { l addition AL+6 (quand AL+6 depasse 255) s ajoute EN PLUS a cet     }
+       { incrementation (verifie empiriquement : formule avec retenue =      }
+       { 100% sur 5000 cas 80286 reels, sans retenue seulement 92.82% ; et   }
+       { inversement la formule "avec retenue" degrade a 97.80% sur les      }
+       { 2000 cas 8086 d origine). D ou EmuCpu286Plus. }
    Begin
     If ((P.CPU.Regs.AL And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+     If EmuCpu286Plus And (Word(P.CPU.Regs.AL) + 6 > 255) Then
+      P.CPU.Regs.AH := Byte(P.CPU.Regs.AH + 2)
+     Else
+      P.CPU.Regs.AH := Byte(P.CPU.Regs.AH + 1);
      P.CPU.Regs.AL := Byte(P.CPU.Regs.AL + 6);
-     P.CPU.Regs.AH := Byte(P.CPU.Regs.AH + 1);
      Include(P.CPU.Flags.s, EFG_AF);
      Include(P.CPU.Flags.s, EFG_CF);
     End Else Begin
@@ -101284,11 +101336,17 @@ Begin
     P.CPU.Regs.AL := P.CPU.Regs.AL And $0F;
     Inc(P.CPU.IP);
    End;
-  $3F: { AAS - ASCII Adjust after Subtraction }
+  $3F: { AAS - ASCII Adjust after Subtraction - meme conflit de generation   }
+       { que AAA ci-dessus (verifie separement, memes pourcentages de        }
+       { correspondance) : sur 80186+, l EMPRUNT de la soustraction AL-6     }
+       { (quand AL-6 est negatif) s ajoute EN PLUS au decrement de AH. }
    Begin
     If ((P.CPU.Regs.AL And $0F) > 9) Or (EFG_AF In P.CPU.Flags.s) Then Begin
+     If EmuCpu286Plus And (Integer(P.CPU.Regs.AL) - 6 < 0) Then
+      P.CPU.Regs.AH := Byte(P.CPU.Regs.AH - 2)
+     Else
+      P.CPU.Regs.AH := Byte(P.CPU.Regs.AH - 1);
      P.CPU.Regs.AL := Byte(P.CPU.Regs.AL - 6);
-     P.CPU.Regs.AH := Byte(P.CPU.Regs.AH - 1);
      Include(P.CPU.Flags.s, EFG_AF);
      Include(P.CPU.Flags.s, EFG_CF);
     End Else Begin
@@ -101302,8 +101360,13 @@ Begin
    Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
     If Imm8 = 0 Then Begin
-     { #DE divide error : signaler en faute }
-     P.CPU.Fault := sfInvalidCode;
+     { #DE divide error : signaler en faute - BOGUE REEL CORRIGE            }
+     { (2026-09-04, trouve via le corpus SST286 - "opcode non supporte"     }
+     { rapporte au lieu de "division par zero" pour AAM base=0) : le          }
+     { commentaire disait deja la bonne intention (#DE) mais le code          }
+     { positionnait sfInvalidCode au lieu de sfDivision0. }
+     Emu_Div0Snapshot(P, $D4, 0, Imm8, P.CPU.IP);
+     P.CPU.Fault := sfDivision0;
      Inc(P.CPU.IP, 2);
     End Else Begin
      P.CPU.Regs.AH := P.CPU.Regs.AL Div Imm8;

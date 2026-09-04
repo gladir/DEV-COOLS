@@ -41,7 +41,7 @@ BreakPoint: 1000:012D
 Result:
 BX=FF09h
 CX=0011h
-DX=010Dh
+DX=000Dh
 SI=0011h
 DI=0203h
 BP=0000h
