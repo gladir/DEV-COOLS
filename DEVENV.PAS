@@ -39205,6 +39205,73 @@ Begin
   Term_DriveLetterFromIdx(Idx) + ': monte sur ' + PathArg + '.');
 End;
 
+{ --- COPY-VMFILE (PowerShell dev) --- }
+{ Les emulateurs DEVENV sont les VM de cette commande. FileSource=Host      }
+{ copie un fichier hote vers le disque virtuel monte; FileSource=Guest     }
+{ extrait un fichier du disque virtuel vers l hote. Les options Hyper-V     }
+{ -VMName/-Force/-CreateFullPath sont reconnues; VMName est informatif car }
+{ DEVENV n associe pas de nom persistant aux onglets emulateur, et les      }
+{ repertoires parents doivent deja exister dans l image FAT.               }
+Procedure TermCmd_CopyVMFile(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, SourcePath, DestinationPath, VMNameArg, FileSourceArg: String;
+ SourceFlagPos, DestFlagPos, VMNameFlagPos, FileSourceFlagPos: Integer;
+ VMLabel: String;
+ IsGuest: Boolean;
+ Ok: Boolean;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ SourceFlagPos := System.Pos('-SOURCEPATH', UpParams);
+ DestFlagPos := System.Pos('-DESTINATIONPATH', UpParams);
+ VMNameFlagPos := System.Pos('-VMNAME', UpParams);
+ FileSourceFlagPos := System.Pos('-FILESOURCE', UpParams);
+ If SourceFlagPos > 0 Then
+  SourcePath := YamlUnquote(TrimStr(TermExtractParam(
+   Copy(ParamStr, SourceFlagPos + 11, Length(ParamStr)), 1)))
+ Else
+  SourcePath := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If DestFlagPos > 0 Then
+  DestinationPath := YamlUnquote(TrimStr(TermExtractParam(
+    Copy(ParamStr, DestFlagPos + 16, Length(ParamStr)), 1)))
+ Else
+  DestinationPath := YamlUnquote(TermExtractParam(ParamStr, 2));
+ If VMNameFlagPos > 0 Then
+  VMNameArg := YamlUnquote(TrimStr(TermExtractParam(
+   Copy(ParamStr, VMNameFlagPos + 7, Length(ParamStr)), 1)))
+ Else
+  VMNameArg := '';
+ If FileSourceFlagPos > 0 Then
+  FileSourceArg := TermStrToUpper(YamlUnquote(TrimStr(TermExtractParam(
+   Copy(ParamStr, FileSourceFlagPos + 11, Length(ParamStr)), 1))))
+ Else
+  FileSourceArg := 'HOST';
+ If VMNameArg <> '' Then VMLabel := ' (VM "' + VMNameArg + '")'
+ Else VMLabel := '';
+ If (SourcePath = '') Or (DestinationPath = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Copy-VMFile -VMName nom -SourcePath source ' +
+   '-DestinationPath destination [-FileSource Host|Guest]');
+  Exit;
+ End;
+ If (FileSourceArg <> 'HOST') And (FileSourceArg <> 'GUEST') Then Begin
+  TermAddLine(TP, 'Copy-VMFile : -FileSource doit etre Host ou Guest.');
+  Exit;
+ End;
+ If TP.VirtDrive < 0 Then Begin
+  TermAddLine(TP, 'Copy-VMFile' + VMLabel + ' : aucun disque virtuel n''est ' +
+   'monte dans ce terminal (utilisez Add-VMHardDiskDrive ou /DISK80).');
+  Exit;
+ End;
+ IsGuest := FileSourceArg = 'GUEST';
+ If IsGuest Then
+  Ok := TermCopyFile(TP, SourcePath, DestinationPath, False)
+ Else
+  Ok := TermCopyFile(TP, SourcePath, DestinationPath, True);
+ If Ok Then
+  TermAddLine(TP, 'Copy-VMFile' + VMLabel + ' : fichier copie.')
+ Else
+  TermAddLine(TP, 'Copy-VMFile' + VMLabel + ' : echec de la copie.');
+End;
+
 Procedure TermCmd_AddVMFibreChannelHba(Var TP: TTerminalPanel; ParamStr: String);
 Begin
  TermCmd_HyperVUnsupported(TP, 'Add-VMFibreChannelHba',
@@ -67206,8 +67273,6 @@ Begin
    '  Clear-ItemProperty f [-Name Attributes]  Efface RO/Hidden/Sys/' +
    'Archive (volume FAT monte)');
   TermAddLine(TP,
-   '  Copy-ItemProperty -Path f -Destination d  Copie Attributes FAT');
-  TermAddLine(TP,
    '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
    '(emulateur actif)');
   TermAddLine(TP,
@@ -67236,6 +67301,10 @@ Begin
    'emulateur est actif)');
   TermAddLine(TP,
    '  Add-VMDvdDrive -Path f.iso [-VMName n]   Idem pour un lecteur CD-ROM');
+  TermAddLine(TP,
+   '  Copy-VMFile -SourcePath f -DestinationPath d  Copie hote/VM');
+  TermAddLine(TP,
+   '  Copy-ItemProperty -Path f -Destination d  Copie Attributes FAT');
   TermAddLine(TP,
    '  Add-VMFibreChannelHba / Add-VMGroupMember   Reconnues, sans equivalent');
   TermAddLine(TP,
@@ -67978,7 +68047,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 110;
+ PS_CMD_ALIASES = 111;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -67997,6 +68066,7 @@ Const
   'CLEAR-ITEM',
   'CLEAR-HISTORY',
   'CLEAR-ITEMPROPERTY',
+  'COPY-VMFILE',
   'COPY-ITEMPROPERTY',
   'CLEAR-VARIABLE',
   'SET-VARIABLE',
@@ -68088,6 +68158,7 @@ Const
   16,
   17,
   87,
+  88,
   18,
   19,
   20,
@@ -68570,7 +68641,8 @@ Begin
     15: TermCmd_ClearItem(TP, ParamStr);
     16: TermCmd_ClearHistory(TP, ParamStr);
     17: TermCmd_ClearItemProperty(TP, ParamStr);
-    87: TermCmd_CopyItemProperty(TP, ParamStr);
+    87: TermCmd_CopyVMFile(TP, ParamStr);
+    88: TermCmd_CopyItemProperty(TP, ParamStr);
     18: TermCmd_ClearVariable(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
