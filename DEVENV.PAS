@@ -2567,6 +2567,10 @@ Type
   ErrorMsg       : String[127];  { refus explicite (version/format non     }
                                  { pris en charge) - affiche a la place de }
                                  { la grille tant que non vide             }
+  EditActive     : Boolean;      { Etape 7 : edition en place en cours sur }
+                                 { SelRow/SelCol - meme patron que          }
+                                 { TPropertiesPanel.EditActive/EditBuffer   }
+  EditBuffer     : String[255];  { tampon d edition temporaire (Etape 7)   }
  End;
  PGridEditor = ^TGridEditor;
 
@@ -18386,6 +18390,14 @@ Const
 { 78300+, section presse-papiers du menu contextuel Terminal/Explorateur). }
 Procedure SetRealClipboardText(S: String); Forward;
 
+{ Meme raison, pour Etape 7 (edition de cellule) : GridCellEditBegin/Commit
+  ont besoin de signaler un refus/echec dans le panneau de sortie, dont la
+  vraie implementation (~ligne 35500+) est elle aussi definie plus bas que
+  ce bloc grille. }
+Procedure AppendOutputEx(Var OP: TOutputPanel; AText: String;
+ Tab: Integer; Kind: TOutputLineKind;
+ AFile: String; ALine, ACol: Integer); Forward;
+
 { --- Extrait l extension d un nom de fichier (tout ce qui suit le
   dernier point, sans le point ; '' si aucun point) - copie locale
   volontairement independante de NCExtractExt (DEVENV.PAS ne definit
@@ -18439,7 +18451,25 @@ Begin
  If Ext = 'DBF' Then GridFormatForExtension := GTF_DBF
  Else If Ext = 'CSV' Then GridFormatForExtension := GTF_CSV
  Else If Ext = 'DAT' Then GridFormatForExtension := GTF_CLARION
- Else If GridIsClarionKeyExt(Ext) Then GridFormatForExtension := GTF_CLARION;
+ Else If GridIsClarionKeyExt(Ext) Then GridFormatForExtension := GTF_CLARION
+ Else If Ext = 'MYD' Then GridFormatForExtension := GTF_MYD;
+End;
+
+{ --- Etape 7 (edition + reecriture) : formats pour lesquels GridOpenFile
+  ouvre le fichier en lecture/ecriture (FileMode:=2) plutot qu en lecture
+  seule - DBF/Clarion/Btrieve (enregistrements a emplacement physique fixe,
+  Seek+BlockWrite direct) et CSV (reecriture complete via fichier temporaire,
+  voir GridCommitCsvEdit). MyISAM (.MYD) reste TOUJOURS refuse : reecrire le
+  .MYD sans mettre a jour le .MYI (compteurs, longueurs) corromprait la
+  table, contrairement aux autres formats ou le fichier de donnees se
+  suffit a lui-meme (DOC/MYI_FORMAT.txt) - decision de portee du plan
+  d origine, jamais remise en cause meme apres le decodage reel du .MYI a
+  l Etape 6. --- }
+
+Function GridFormatIsEditable(Fmt: Byte): Boolean;
+Begin
+ GridFormatIsEditable := (Fmt = GTF_DBF) Or (Fmt = GTF_CLARION) Or
+  (Fmt = GTF_BTRIEVE) Or (Fmt = GTF_CSV);
 End;
 
 { --- Texte affichable d une cellule (Row, Col absolus, 0-based) - seule
@@ -18695,7 +18725,17 @@ Begin
   { texte brut, jamais de Trim (les espaces sont significatifs, §3). }
   GridCellText := GridCsvFieldAt(GE, Col)
  Else If GE.Format = GTF_CLARION Then
-  GridCellText := GridClarionFieldText(GE, Col);
+  GridCellText := GridClarionFieldText(GE, Col)
+ Else If (GE.Format = GTF_BTRIEVE) Or (GE.Format = GTF_MYD) Then Begin
+  { Pas de FIELD.DDF pour Btrieve (jamais lu, voir GridOpen_Btrieve) ; pour }
+  { MYD, le type SQL exact de chaque colonne (en_fieldtype) n a pas pu     }
+  { etre confirme (DOC/MYI_FORMAT.txt section 7/9) - dump hexadecimal brut }
+  { du bloc de colonne dans les deux cas, jamais un texte devine. }
+  Raw := '';
+  For I := 0 To GE.Columns[Col].Len - 1 Do
+   Raw := Raw + HexByte(GE.CurrentRecBuf^[GE.Columns[Col].Ofs + I]) + ' ';
+  GridCellText := TrimStr(Raw);
+ End;
 End;
 
 { --- Largeur visible utile (hors barre de defilement verticale) et
@@ -18897,8 +18937,15 @@ Begin
     SetColor(CLR_HIGHLIGHTTEXT);
    End Else
     SetColor(CLR_EDITOR_TEXT);
-   CellStr := GridTruncateForWidth(
-    GridSanitizeForDisplay(GridCellText(GE, R, C)), GE.ColWidth[C]);
+   { Etape 7 : pendant l edition de CETTE cellule, afficher le tampon de   }
+   { saisie (GE.EditBuffer) plutot que la valeur decodee - meme convention }
+   { que DrawPropertyRow (TPropertiesPanel.EditBuffer). }
+   If GE.EditActive And (R = GE.SelRow) And (C = GE.SelCol) Then
+    CellStr := GridTruncateForWidth(
+     GridSanitizeForDisplay(GE.EditBuffer), GE.ColWidth[C])
+   Else
+    CellStr := GridTruncateForWidth(
+     GridSanitizeForDisplay(GridCellText(GE, R, C)), GE.ColWidth[C]);
    OutTextXY(ColX + GRID_COL_PAD Div 2, RowY, CellStr);
    ColX := ColX + GE.ColWidth[C];
    Inc(C);
@@ -19132,12 +19179,716 @@ Begin
  GE.SelCol := ClickedCol;
 End;
 
+{ ============================================================================
+  ETAPE 7 - EDITION DE CELLULE + REECRITURE SUR DISQUE
+  ============================================================================
+  Portee (annoncee, voir le plan) : DBF/Clarion/Btrieve (emplacement
+  physique fixe, Seek+BlockWrite direct sur GE.F, deja ouvert en
+  permanence) et CSV (longueur d enregistrement variable - reecriture
+  complete via un fichier temporaire, en un seul passage sequentiel qui ne
+  charge jamais la table entiere en memoire, voir GridCommitCsvEdit).
+  MyISAM (.MYD) reste TOUJOURS refuse (GridFormatIsEditable) : reecrire le
+  .MYD sans mettre a jour le .MYI corromprait la table.
+  Memo DBF (type M) et REAL Clarion de taille inhabituelle restent aussi
+  refuses (GridCellEditable) - memes raisons que leur decodage prudent en
+  lecture (Etapes 2/4). GROUP Clarion et les colonnes Btrieve sans DDF
+  s editent via leur representation hexadecimale deja affichee (inverse
+  exact de GridCellText), jamais un texte devine. --- }
+
+{ --- Retire les espaces d un texte hexadecimal ("41 42 43") et le convertit
+  en Len octets bruts, ecrits directement dans GE.CurrentRecBuf^ a la
+  colonne Col - partage par Btrieve (toutes les colonnes) et Clarion GROUP
+  (Etape 4), les deux seuls types sans decodage fiable ou l edition ne peut
+  etre qu un remplacement octet-a-octet explicite. --- }
+
+Function GridPackHexIntoCell(Var GE: TGridEditor; Col: Integer;
+ Const Text: String; Var ErrMsg: String): Boolean;
+Var
+ Ofs, Len, I, Code: Integer;
+ Cleaned, Pair: String;
+ B: Byte;
+Begin
+ GridPackHexIntoCell := False;
+ Ofs := GE.Columns[Col].Ofs;
+ Len := GE.Columns[Col].Len;
+ Cleaned := '';
+ For I := 1 To Length(Text) Do
+  If Text[I] <> ' ' Then Cleaned := Cleaned + Text[I];
+ If Length(Cleaned) <> Len * 2 Then Begin
+  ErrMsg := 'attendu ' + IntToStr(Len) + ' octets hexadecimaux (' +
+   IntToStr(Len * 2) + ' chiffres), ' + IntToStr(Length(Cleaned)) + ' recus.';
+  Exit;
+ End;
+ For I := 0 To Len - 1 Do Begin
+  Pair := Copy(Cleaned, I * 2 + 1, 2);
+  {$I-} Val('$' + Pair, B, Code); {$I+}
+  If (IOResult <> 0) Or (Code <> 0) Then Begin
+   ErrMsg := 'chiffre hexadecimal invalide ("' + Pair + '").';
+   Exit;
+  End;
+  GE.CurrentRecBuf^[Ofs + I] := B;
+ End;
+ GridPackHexIntoCell := True;
+End;
+
+{ --- Encode Text vers les Len octets de la colonne Col (DBF, DOC/
+  DBF_FORMAT.txt §5-6) dans GE.CurrentRecBuf^ - inverse exact de la
+  section DBF de GridCellText. Refuse (ErrMsg rempli) plutot que
+  tronquer/deformer silencieusement une valeur qui ne correspond pas au
+  type ou ne tient pas dans Len. --- }
+
+Function GridPackDbfCell(Var GE: TGridEditor; Col: Integer;
+ Const Text: String; Var ErrMsg: String): Boolean;
+Var
+ Ofs, Len, Dec, I, Code: Integer;
+ S: String;
+ D: Double;
+ Ch: Char;
+Begin
+ GridPackDbfCell := False;
+ Ofs := GE.Columns[Col].Ofs;
+ Len := GE.Columns[Col].Len;
+ Dec := GE.Columns[Col].Decimals;
+ If GE.Columns[Col].TypeCode = 'M' Then Begin
+  ErrMsg := 'memo non modifiable dans la grille (voir le double-clic).';
+  Exit;
+ End;
+ If GE.Columns[Col].TypeCode = 'C' Then Begin
+  If Length(Text) > Len Then Begin
+   ErrMsg := 'texte trop long (max ' + IntToStr(Len) + ' caracteres).';
+   Exit;
+  End;
+  S := Text;
+  While Length(S) < Len Do S := S + ' ';
+  For I := 0 To Len - 1 Do GE.CurrentRecBuf^[Ofs + I] := Ord(S[I + 1]);
+  GridPackDbfCell := True;
+  Exit;
+ End;
+ If GE.Columns[Col].TypeCode = 'L' Then Begin
+  S := UpCaseStr(TrimStr(Text));
+  Ch := #0;
+  If (S = 'VRAI') Or (S = 'T') Or (S = 'Y') Then Ch := 'T'
+  Else If (S = 'FAUX') Or (S = 'F') Or (S = 'N') Then Ch := 'F';
+  If Ch = #0 Then Begin
+   ErrMsg := 'valeur logique attendue (Vrai/Faux).';
+   Exit;
+  End;
+  GE.CurrentRecBuf^[Ofs] := Ord(Ch);
+  For I := 1 To Len - 1 Do GE.CurrentRecBuf^[Ofs + I] := Ord(' ');
+  GridPackDbfCell := True;
+  Exit;
+ End;
+ If GE.Columns[Col].TypeCode = 'D' Then Begin
+  S := TrimStr(Text);
+  If S = '' Then Begin
+   For I := 0 To Len - 1 Do GE.CurrentRecBuf^[Ofs + I] := Ord(' ');
+   GridPackDbfCell := True;
+   Exit;
+  End;
+  If (Length(S) <> 10) Or (S[3] <> '/') Or (S[6] <> '/') Then Begin
+   ErrMsg := 'date attendue au format JJ/MM/AAAA.';
+   Exit;
+  End;
+  S := Copy(S, 7, 4) + Copy(S, 4, 2) + Copy(S, 1, 2); { JJ/MM/AAAA -> AAAAMMJJ }
+  For I := 1 To 8 Do
+   If Not (S[I] In ['0'..'9']) Then Begin
+    ErrMsg := 'date invalide (chiffres attendus).';
+    Exit;
+   End;
+  If Len <> 8 Then Begin
+   ErrMsg := 'largeur de champ date inattendue (' + IntToStr(Len) + ').';
+   Exit;
+  End;
+  For I := 0 To 7 Do GE.CurrentRecBuf^[Ofs + I] := Ord(S[I + 1]);
+  GridPackDbfCell := True;
+  Exit;
+ End;
+ If GE.Columns[Col].TypeCode = 'N' Then Begin
+  S := TrimStr(Text);
+  If S = '' Then S := '0';
+  {$I-} Val(S, D, Code); {$I+}
+  If (IOResult <> 0) Or (Code <> 0) Then Begin
+   ErrMsg := 'nombre invalide.';
+   Exit;
+  End;
+  If Dec > 0 Then Str(D:0:Dec, S) Else Str(Round(D), S);
+  If Length(S) > Len Then Begin
+   ErrMsg := 'nombre trop grand pour ' + IntToStr(Len) + ' caracteres.';
+   Exit;
+  End;
+  While Length(S) < Len Do S := ' ' + S; { justifie a droite, convention dBase }
+  For I := 0 To Len - 1 Do GE.CurrentRecBuf^[Ofs + I] := Ord(S[I + 1]);
+  GridPackDbfCell := True;
+  Exit;
+ End;
+ ErrMsg := 'type de champ non modifiable.';
+End;
+
+{ --- Encode Text vers les Len octets de la colonne Col (Clarion, DOC/
+  CLARION_FORMAT.txt §4) - inverse exact de GridClarionFieldText, memes
+  codes de type (1=LONG, 2=REAL, 3/4=STRING(+PICTURE), 5=BYTE, 6=SHORT,
+  7=GROUP, 8=DECIMAL). GROUP delegue a GridPackHexIntoCell ci-dessus
+  (aucune decomposition, memes principe que le decodage). --- }
+
+Function GridPackClarionCell(Var GE: TGridEditor; Col: Integer;
+ Const Text: String; Var ErrMsg: String): Boolean;
+Var
+ Ofs, Len, Dec, I, J, Code, HighNib, LowNib: Integer;
+ S, IntPart, FracPart, Digits: String;
+ L: LongInt;
+ D: Double;
+ SngVal: Single;
+ DblVal: Double;
+ Neg, BadDigit: Boolean;
+Begin
+ GridPackClarionCell := False;
+ Ofs := GE.Columns[Col].Ofs;
+ Len := GE.Columns[Col].Len;
+ Dec := GE.Columns[Col].Decimals;
+ Case Ord(GE.Columns[Col].TypeCode) Of
+  1: Begin { LONG : entier signe 4 octets little-endian }
+      S := TrimStr(Text);
+      {$I-} Val(S, L, Code); {$I+}
+      If (IOResult <> 0) Or (Code <> 0) Then Begin
+       ErrMsg := 'entier invalide.';
+       Exit;
+      End;
+      GE.CurrentRecBuf^[Ofs] := Byte(L And $FF);
+      GE.CurrentRecBuf^[Ofs + 1] := Byte((L Shr 8) And $FF);
+      GE.CurrentRecBuf^[Ofs + 2] := Byte((L Shr 16) And $FF);
+      GE.CurrentRecBuf^[Ofs + 3] := Byte((L Shr 24) And $FF);
+      GridPackClarionCell := True;
+     End;
+  6: Begin { SHORT : entier signe 2 octets little-endian }
+      S := TrimStr(Text);
+      {$I-} Val(S, L, Code); {$I+}
+      If (IOResult <> 0) Or (Code <> 0) Or (L < -32768) Or (L > 32767) Then Begin
+       ErrMsg := 'entier 16 bits invalide (-32768..32767).';
+       Exit;
+      End;
+      GE.CurrentRecBuf^[Ofs] := Byte(L And $FF);
+      GE.CurrentRecBuf^[Ofs + 1] := Byte((L Shr 8) And $FF);
+      GridPackClarionCell := True;
+     End;
+  5: Begin { BYTE : 0-255 }
+      S := TrimStr(Text);
+      {$I-} Val(S, L, Code); {$I+}
+      If (IOResult <> 0) Or (Code <> 0) Or (L < 0) Or (L > 255) Then Begin
+       ErrMsg := 'entier 0..255 invalide.';
+       Exit;
+      End;
+      GE.CurrentRecBuf^[Ofs] := Byte(L);
+      GridPackClarionCell := True;
+     End;
+  3, 4: Begin { STRING / STRING+PICTURE - texte largeur fixe }
+      If Length(Text) > Len Then Begin
+       ErrMsg := 'texte trop long (max ' + IntToStr(Len) + ' caracteres).';
+       Exit;
+      End;
+      S := Text;
+      While Length(S) < Len Do S := S + ' ';
+      For I := 0 To Len - 1 Do GE.CurrentRecBuf^[Ofs + I] := Ord(S[I + 1]);
+      GridPackClarionCell := True;
+     End;
+  2: Begin { REAL - seulement IEEE754 4/8 octets, meme limite que le decodage }
+      If Len = 4 Then Begin
+       {$I-} Val(TrimStr(Text), D, Code); {$I+}
+       If (IOResult <> 0) Or (Code <> 0) Then Begin
+        ErrMsg := 'nombre reel invalide.';
+        Exit;
+       End;
+       SngVal := D;
+       Move(SngVal, GE.CurrentRecBuf^[Ofs], 4);
+       GridPackClarionCell := True;
+      End Else If Len = 8 Then Begin
+       {$I-} Val(TrimStr(Text), D, Code); {$I+}
+       If (IOResult <> 0) Or (Code <> 0) Then Begin
+        ErrMsg := 'nombre reel invalide.';
+        Exit;
+       End;
+       DblVal := D;
+       Move(DblVal, GE.CurrentRecBuf^[Ofs], 8);
+       GridPackClarionCell := True;
+      End Else
+       ErrMsg := 'reel de taille inhabituelle (' + IntToStr(Len) + ' octets), non modifiable.';
+     End;
+  7: GridPackClarionCell := GridPackHexIntoCell(GE, Col, Text, ErrMsg); { GROUP }
+  8: Begin { DECIMAL - BCD compacte, inverse exact de GridClarionFieldText :  }
+      { Len*2-1 chiffres (le dernier demi-octet est le signe, pas un chiffre)}
+      S := TrimStr(Text);
+      Neg := (Length(S) > 0) And (S[1] = '-');
+      If Neg Then Delete(S, 1, 1);
+      I := Pos('.', S);
+      If I > 0 Then Begin
+       IntPart := Copy(S, 1, I - 1);
+       FracPart := Copy(S, I + 1, Length(S) - I);
+      End Else Begin
+       IntPart := S;
+       FracPart := '';
+      End;
+      If IntPart = '' Then IntPart := '0';
+      While Length(FracPart) < Dec Do FracPart := FracPart + '0';
+      FracPart := Copy(FracPart, 1, Dec);
+      Digits := IntPart + FracPart;
+      BadDigit := (Digits = '');
+      For I := 1 To Length(Digits) Do
+       If Not (Digits[I] In ['0'..'9']) Then BadDigit := True;
+      If BadDigit Then Begin
+       ErrMsg := 'nombre decimal invalide.';
+       Exit;
+      End;
+      If Length(Digits) > Len * 2 - 1 Then Begin
+       ErrMsg := 'nombre trop grand pour ' + IntToStr(Len) + ' octets.';
+       Exit;
+      End;
+      While Length(Digits) < Len * 2 - 1 Do Digits := '0' + Digits;
+      For J := 0 To Len - 1 Do Begin
+       HighNib := Ord(Digits[2 * J + 1]) - Ord('0');
+       If J < Len - 1 Then
+        LowNib := Ord(Digits[2 * J + 2]) - Ord('0')
+       Else If Neg Then
+        LowNib := $0D
+       Else
+        LowNib := $0C;
+       GE.CurrentRecBuf^[Ofs + J] := Byte((HighNib Shl 4) Or LowNib);
+      End;
+      GridPackClarionCell := True;
+     End;
+ Else
+  ErrMsg := 'type de champ non modifiable.';
+ End;
+End;
+
+{ --- Offset fichier du debut de l enregistrement Row - meme branchement
+  que GridReadRecord (RowOffsets<>Nil pour Btrieve/CSV, arithmetique
+  directe sinon), jamais recalcule differemment. --- }
+
+Function GridRecordFileOffset(Var GE: TGridEditor; Row: LongInt): LongInt;
+Begin
+ If GE.RowOffsets <> Nil Then
+  GridRecordFileOffset := GE.RowOffsets^[Row]
+ Else
+  GridRecordFileOffset := GE.DataStart + Row * LongInt(GE.RecordLen);
+End;
+
+{ --- Reecrit GE.CurrentRecBuf^ (deja mute par un GridPackXxxCell) a
+  l emplacement d origine de Row - DBF/Clarion/Btrieve uniquement (longueur
+  d enregistrement CONSTANTE, jamais CSV qui a sa propre procedure de
+  reecriture complete ci-dessous). --- }
+
+Function GridWriteFixedRecord(Var GE: TGridEditor; Row: LongInt): Boolean;
+Var
+ Ofs: LongInt;
+ Wrote: Word;
+Begin
+ GridWriteFixedRecord := False;
+ If (Not GE.FileOpen) Or (GE.CurrentRecBuf = Nil) Then Exit;
+ Ofs := GridRecordFileOffset(GE, Row);
+ {$I-}
+ Seek(GE.F, Ofs);
+ BlockWrite(GE.F, GE.CurrentRecBuf^, GE.RecordLen, Wrote);
+ {$I+}
+ If (IOResult <> 0) Or (Wrote <> Word(GE.RecordLen)) Then Exit;
+ GridWriteFixedRecord := True;
+End;
+
+{ --- Compte le nombre REEL de champs (separateurs virgule hors guillemets)
+  de la ligne CSV deja chargee dans GE.CurrentRecBuf^ - meme machine a
+  etats que GridCsvFieldAt, mais ne decoupe rien : sert uniquement a
+  detecter une ligne IRREGULIERE (nombre de champs different de GE.ColCount,
+  DOC/CSV_FORMAT.txt §5) avant d y ecrire, pour ne jamais perdre un champ
+  surnumeraire en reconstruisant la ligne avec seulement GE.ColCount
+  colonnes. --- }
+
+Function GridCsvCountFields(Var GE: TGridEditor): Integer;
+Var
+ I, Count: Integer;
+ InQ: Boolean;
+ Ch: Char;
+Begin
+ Count := 1;
+ InQ := False;
+ I := 0;
+ While I < GE.CurrentRecLen Do Begin
+  Ch := Chr(GE.CurrentRecBuf^[I]);
+  If InQ Then Begin
+   If Ch = '"' Then Begin
+    If (I + 1 < GE.CurrentRecLen) And (Chr(GE.CurrentRecBuf^[I + 1]) = '"') Then
+     Inc(I)
+    Else
+     InQ := False;
+   End;
+  End Else Begin
+   If Ch = '"' Then InQ := True
+   Else If Ch = ',' Then Inc(Count);
+  End;
+  Inc(I);
+ End;
+ GridCsvCountFields := Count;
+End;
+
+{ --- Un champ CSV doit etre mis entre guillemets s il contient une virgule,
+  un guillemet ou un retour a la ligne litteral (DOC/CSV_FORMAT.txt §4) -
+  regle unique partagee par le calcul de longueur et l ecriture reelle,
+  jamais deux implementations qui pourraient diverger. --- }
+
+Function GridCsvNeedsQuoting(Const S: String): Boolean;
+Var
+ I: Integer;
+Begin
+ GridCsvNeedsQuoting := False;
+ For I := 1 To Length(S) Do
+  If (S[I] = ',') Or (S[I] = '"') Or (S[I] = #13) Or (S[I] = #10) Then Begin
+   GridCsvNeedsQuoting := True;
+   Exit;
+  End;
+End;
+
+{ --- Longueur en octets qu occuperait S une fois serialise (guillemets +
+  doublement des guillemets internes si necessaire) - calculee AVANT
+  d ecrire quoi que ce soit, pour ajuster RowOffsets/RowLens sans avoir a
+  rebalayer le fichier (voir GridCommitCsvEdit). --- }
+
+Function GridCsvFieldSerializedLen(Const S: String): LongInt;
+Var
+ I: Integer;
+ N: LongInt;
+Begin
+ N := Length(S);
+ If GridCsvNeedsQuoting(S) Then Begin
+  N := N + 2;
+  For I := 1 To Length(S) Do
+   If S[I] = '"' Then Inc(N);
+ End;
+ GridCsvFieldSerializedLen := N;
+End;
+
+{ --- Ecrit S dans F au format CSV (guillemete si necessaire, guillemets
+  internes doubles) - octet par octet plutot que par une String assemblee :
+  une ligne CSV a plusieurs colonnes peut depasser 255 caracteres, la
+  limite des chaines courtes de ce fichier (indicateur H desactive, meme
+  prudence que GridOpenMemoViewer pour les memos DBT). --- }
+
+Procedure GridCsvWriteField(Var F: File; Const S: String);
+Var
+ I: Integer;
+ B: Byte;
+Begin
+ If GridCsvNeedsQuoting(S) Then Begin
+  B := Ord('"'); BlockWrite(F, B, 1);
+  For I := 1 To Length(S) Do Begin
+   If S[I] = '"' Then Begin
+    B := Ord('"'); BlockWrite(F, B, 1);
+   End;
+   B := Ord(S[I]); BlockWrite(F, B, 1);
+  End;
+  B := Ord('"'); BlockWrite(F, B, 1);
+ End Else
+  For I := 1 To Length(S) Do Begin
+   B := Ord(S[I]); BlockWrite(F, B, 1);
+  End;
+End;
+
+{ --- Reecrit une ligne CSV entiere avec le champ Col remplace par NewText,
+  via un fichier temporaire (".tmp") : copie tel quel tout ce qui precede
+  et tout ce qui suit la ligne editee (jamais rechargee en memoire dans son
+  entier, meme pour un fichier enorme - copie par blocs de 8 Ko), n
+  ecrit que la ligne modifiee elle-meme champ par champ. Le terminateur
+  (CRLF/LF/CR/absent en fin de fichier) est copie tel quel, jamais recalcule
+  (DOC/CSV_FORMAT.txt §2 : les trois formes sont admises). Refuse (sans
+  toucher au fichier) si la ligne est irreguliere (nombre de champs
+  different de l en-tete) ou si un AUTRE champ de la meme ligne atteint la
+  limite de 250 caracteres de GridCsvFieldAt (signe qu il a pu etre tronque
+  a la lecture - le reecrire tel quel perdrait silencieusement des
+  donnees). Apres succes, RowOffsets/RowLens sont ajustes par un simple
+  decalage arithmetique (jamais un nouveau balayage complet du fichier). --- }
+
+Function GridCommitCsvEdit(Var GE: TGridEditor; Row, Col: Integer;
+ Const NewText: String; Var ErrMsg: String): Boolean;
+Const
+ COPY_CHUNK = 8192;
+Var
+ ActualFields, I: Integer;
+ Fields: Array[0..GRID_MAX_COLS - 1] Of String;
+ Got, ThisChunk: Word;
+ NewRowLen, Delta, OldOfs, OldLen, TermStart, TermLen, NextOfs, FSize, Remain: LongInt;
+ TempPath: String;
+ TempF: File;
+ CopyBuf: Array[0..COPY_CHUNK - 1] Of Byte;
+Begin
+ GridCommitCsvEdit := False;
+ GridReadRecord(GE, Row);
+ If (Not GE.CurrentRecValid) Or (GE.CurrentRecNum <> Row) Then Begin
+  ErrMsg := 'ligne illisible.';
+  Exit;
+ End;
+ ActualFields := GridCsvCountFields(GE);
+ If ActualFields <> GE.ColCount Then Begin
+  ErrMsg := 'ligne irreguliere (' + IntToStr(ActualFields) +
+   ' champs au lieu de ' + IntToStr(GE.ColCount) +
+   ') - non modifiable pour ne perdre aucune donnee.';
+  Exit;
+ End;
+ If Length(NewText) > 250 Then Begin
+  ErrMsg := 'valeur trop longue (limite 250 caracteres).';
+  Exit;
+ End;
+ For I := 0 To GE.ColCount - 1 Do Begin
+  If I = Col Then
+   Fields[I] := NewText
+  Else Begin
+   Fields[I] := GridCsvFieldAt(GE, I);
+   If Length(Fields[I]) >= 250 Then Begin
+    ErrMsg := 'un autre champ de cette ligne atteint 250 caracteres ' +
+     '(possiblement tronque) - non modifiable pour ne rien perdre.';
+    Exit;
+   End;
+  End;
+ End;
+ NewRowLen := 0;
+ For I := 0 To GE.ColCount - 1 Do Begin
+  If I > 0 Then Inc(NewRowLen);
+  NewRowLen := NewRowLen + GridCsvFieldSerializedLen(Fields[I]);
+ End;
+ OldOfs := GE.RowOffsets^[Row];
+ OldLen := GE.RowLens^[Row];
+ FSize := FileSize(GE.F);
+ TermStart := OldOfs + OldLen;
+ If Row + 1 < GE.RecordCount Then
+  NextOfs := GE.RowOffsets^[Row + 1]
+ Else
+  NextOfs := FSize;
+ TermLen := NextOfs - TermStart;
+ If TermLen < 0 Then TermLen := 0;
+ TempPath := GE.FileName + '.tmp';
+ {$I-}
+ Assign(TempF, TempPath);
+ Rewrite(TempF, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'impossible de creer le fichier temporaire.';
+  Exit;
+ End;
+ { 1) Copier tel quel tout ce qui precede la ligne editee. }
+ {$I-} Seek(GE.F, 0); {$I+}
+ Remain := OldOfs;
+ While Remain > 0 Do Begin
+  If Remain > COPY_CHUNK Then ThisChunk := COPY_CHUNK Else ThisChunk := Word(Remain);
+  {$I-} BlockRead(GE.F, CopyBuf, ThisChunk, Got); {$I+}
+  If (IOResult <> 0) Or (Got <> ThisChunk) Then Begin
+   ErrMsg := 'echec de lecture pendant la copie.';
+   Close(TempF); Erase(TempF);
+   Exit;
+  End;
+  {$I-} BlockWrite(TempF, CopyBuf, ThisChunk); {$I+}
+  If IOResult <> 0 Then Begin
+   ErrMsg := 'echec d''ecriture dans le fichier temporaire.';
+   Close(TempF); Erase(TempF);
+   Exit;
+  End;
+  Dec(Remain, ThisChunk);
+ End;
+ { 2) Ecrire la nouvelle ligne, champ par champ. }
+ For I := 0 To GE.ColCount - 1 Do Begin
+  If I > 0 Then Begin
+   CopyBuf[0] := Ord(',');
+   {$I-} BlockWrite(TempF, CopyBuf, 1); {$I+}
+  End;
+  GridCsvWriteField(TempF, Fields[I]);
+ End;
+ { 3) Copier le terminateur d origine tel quel. }
+ If TermLen > 0 Then Begin
+  {$I-}
+  Seek(GE.F, TermStart);
+  BlockRead(GE.F, CopyBuf, TermLen, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got <> Word(TermLen)) Then Begin
+   ErrMsg := 'echec de lecture du terminateur.';
+   Close(TempF); Erase(TempF);
+   Exit;
+  End;
+  {$I-} BlockWrite(TempF, CopyBuf, TermLen); {$I+}
+  If IOResult <> 0 Then Begin
+   ErrMsg := 'echec d''ecriture du terminateur.';
+   Close(TempF); Erase(TempF);
+   Exit;
+  End;
+ End;
+ { 4) Copier tel quel tout le reste du fichier. }
+ {$I-} Seek(GE.F, NextOfs); {$I+}
+ Remain := FSize - NextOfs;
+ While Remain > 0 Do Begin
+  If Remain > COPY_CHUNK Then ThisChunk := COPY_CHUNK Else ThisChunk := Word(Remain);
+  {$I-} BlockRead(GE.F, CopyBuf, ThisChunk, Got); {$I+}
+  If (IOResult <> 0) Or (Got <> ThisChunk) Then Begin
+   ErrMsg := 'echec de lecture pendant la copie finale.';
+   Close(TempF); Erase(TempF);
+   Exit;
+  End;
+  {$I-} BlockWrite(TempF, CopyBuf, ThisChunk); {$I+}
+  If IOResult <> 0 Then Begin
+   ErrMsg := 'echec d''ecriture pendant la copie finale.';
+   Close(TempF); Erase(TempF);
+   Exit;
+  End;
+  Dec(Remain, ThisChunk);
+ End;
+ Close(TempF);
+ { 5) Remplacer le fichier original par le temporaire - GE.F est ferme le  }
+ { temps du remplacement puis rouvert sur le nouveau contenu (meme nom,   }
+ { un seul handle persistant comme toujours). }
+ Close(GE.F);
+ {$I-} Erase(GE.F); {$I+}
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'echec de remplacement (original non supprime) - fichier ' +
+   'temporaire conserve : ' + TempPath;
+  {$I-} Assign(GE.F, GE.FileName); FileMode := 2; Reset(GE.F, 1); {$I+}
+  Exit;
+ End;
+ {$I-} Rename(TempF, GE.FileName); {$I+}
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'echec de remplacement (temporaire non renomme, donnees ' +
+   'intactes dans ' + TempPath + ').';
+  Exit;
+ End;
+ {$I-}
+ Assign(GE.F, GE.FileName);
+ FileMode := 2;
+ Reset(GE.F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'reecriture reussie mais reouverture du fichier a echoue.';
+  GE.FileOpen := False;
+  Exit;
+ End;
+ { 6) RowOffsets/RowLens : rien avant Row n a bouge, seul RowLens[Row]      }
+ { change et tout ce qui suit se decale du meme delta - jamais besoin de   }
+ { rebalayer le fichier entier. }
+ Delta := NewRowLen - OldLen;
+ GE.RowLens^[Row] := NewRowLen;
+ For I := Row + 1 To GE.RecordCount - 1 Do
+  GE.RowOffsets^[I] := GE.RowOffsets^[I] + Delta;
+ If NewRowLen > GE.RecordLen Then Begin
+  ReallocMem(GE.CurrentRecBuf, NewRowLen);
+  GE.RecordLen := NewRowLen;
+ End;
+ GE.CurrentRecNum := -1;
+ GE.CurrentRecValid := False;
+ GridCommitCsvEdit := True;
+End;
+
+{ --- Une cellule est-elle modifiable ? MyISAM : jamais (voir l en-tete de  }
+{ section ci-dessus). DBF : tout sauf memo. Clarion : tout sauf REAL de     }
+{ taille inhabituelle. Btrieve/CSV : toute colonne. --- }
+
+Function GridCellEditable(Var GE: TGridEditor; Row, Col: Integer): Boolean;
+Begin
+ GridCellEditable := False;
+ If Not GridFormatIsEditable(GE.Format) Then Exit;
+ If (Col < 0) Or (Col >= GE.ColCount) Then Exit;
+ If (Row < 0) Or (Row >= GE.RecordCount) Then Exit;
+ If GE.Format = GTF_DBF Then Begin
+  If GE.Columns[Col].TypeCode = 'M' Then Exit;
+ End Else If GE.Format = GTF_CLARION Then Begin
+  If (Ord(GE.Columns[Col].TypeCode) = 2) And
+     (GE.Columns[Col].Len <> 4) And (GE.Columns[Col].Len <> 8) Then Exit;
+ End;
+ GridCellEditable := True;
+End;
+
+{ --- Demarre l edition de la cellule selectionnee (touche Entree) - refuse
+  avec un message dans le panneau de sortie si GridCellEditable est faux,
+  plutot qu un echec silencieux. --- }
+
+Procedure GridCellEditBegin(Var GE: TGridEditor);
+Begin
+ If GE.ColCount <= 0 Then Exit;
+ If Not GridCellEditable(GE, GE.SelRow, GE.SelCol) Then Begin
+  AppendOutputEx(OutputPanel, 'Cellule non modifiable (' +
+   GE.Columns[GE.SelCol].Name + ').', Ord(OTK_BUILD), OLK_WARNING,
+   GE.FileName, 0, 0);
+  Exit;
+ End;
+ GridReadRecord(GE, GE.SelRow);
+ If (Not GE.CurrentRecValid) Or (GE.CurrentRecNum <> GE.SelRow) Then Exit;
+ GE.EditBuffer := GridCellText(GE, GE.SelRow, GE.SelCol);
+ GE.EditActive := True;
+End;
+
+{ --- Annule l edition en cours sans rien ecrire. --- }
+
+Procedure GridCellEditCancel(Var GE: TGridEditor);
+Begin
+ GE.EditActive := False;
+ GE.EditBuffer := '';
+End;
+
+{ --- Confirme l edition en cours : encode+ecrit sur disque selon le
+  format, ou affiche le motif de refus dans le panneau de sortie et RESTE
+  en edition (l utilisateur peut corriger sa saisie ou faire Echap) plutot
+  que de perdre silencieusement ce qu il vient de taper.
+  IMPORTANT (bogue reel trouve en verifiant cette etape en direct) :
+  DrawGridEditor appelle GridReadRecord pour CHAQUE ligne VISIBLE afin de
+  les dessiner - un simple repaint pendant la frappe (pour afficher
+  EditBuffer a jour) fait donc glisser GE.CurrentRecNum/CurrentRecBuf vers
+  la DERNIERE ligne dessinee, jamais forcement SelRow. Sans le
+  rechargement forcé ci-dessous, GridPackXxxCell muterait les octets de
+  SelCol dans le tampon d une AUTRE ligne, et GridWriteFixedRecord
+  ecrirait ce contenu melange a l emplacement de SelRow - corruption
+  silencieuse confirmee lors d un test reel (AGE modifie sur la ligne 0
+  a fini par y ecrire le NOM/la DATE de la ligne 3). Forcer un
+  rechargement DEPUIS LE DISQUE juste avant de packer annule cette
+  derive, quel que soit l etat de CurrentRecNum au moment de l appel. --- }
+
+Function GridCellEditCommit(Var GE: TGridEditor): Boolean;
+Var
+ ErrMsg: String;
+ OK: Boolean;
+Begin
+ ErrMsg := '';
+ If GE.Format <> GTF_CSV Then Begin
+  GE.CurrentRecNum := -1;
+  GridReadRecord(GE, GE.SelRow);
+  If (Not GE.CurrentRecValid) Or (GE.CurrentRecNum <> GE.SelRow) Then Begin
+   AppendOutputEx(OutputPanel, 'Cellule non modifiee : ligne illisible.',
+    Ord(OTK_BUILD), OLK_ERROR, GE.FileName, 0, 0);
+   GridCellEditCommit := False;
+   Exit;
+  End;
+ End;
+ If GE.Format = GTF_CSV Then
+  OK := GridCommitCsvEdit(GE, GE.SelRow, GE.SelCol, GE.EditBuffer, ErrMsg)
+ Else Begin
+  If GE.Format = GTF_DBF Then
+   OK := GridPackDbfCell(GE, GE.SelCol, GE.EditBuffer, ErrMsg)
+  Else If GE.Format = GTF_CLARION Then
+   OK := GridPackClarionCell(GE, GE.SelCol, GE.EditBuffer, ErrMsg)
+  Else If GE.Format = GTF_BTRIEVE Then
+   OK := GridPackHexIntoCell(GE, GE.SelCol, GE.EditBuffer, ErrMsg)
+  Else Begin
+   OK := False;
+   ErrMsg := 'format non modifiable.';
+  End;
+  If OK Then OK := GridWriteFixedRecord(GE, GE.SelRow);
+  If (Not OK) And (ErrMsg = '') Then ErrMsg := 'echec d''ecriture sur disque.';
+ End;
+ If OK Then Begin
+  GE.EditActive := False;
+  GE.EditBuffer := '';
+ End Else
+  AppendOutputEx(OutputPanel, 'Cellule non modifiee : ' + ErrMsg,
+   Ord(OTK_BUILD), OLK_ERROR, GE.FileName, 0, 0);
+ GridCellEditCommit := OK;
+End;
+
 { --- Gerer une touche dans la grille : navigation (fleches/PageUp/
   PageDown/Home/End), Ctrl+C copie la cellule selectionnee vers le
   presse-papiers REEL du systeme hote (SetRealClipboardText, deja
   utilise par le menu contextuel du panneau NC/Explorateur pour
-  "Copier le nom/chemin") - coherent avec l objectif V1 "lire, copier"
-  (l edition/collage est un chantier separe, Etape 7). --- }
+  "Copier le nom/chemin"). Entree demarre/confirme l edition d une cellule,
+  Echap l annule (Etape 7, GridCellEditBegin/Commit/Cancel ci-dessus) -
+  meme convention que TPropertiesPanel (BeginPropertyEdit/CommitPropertyEdit/
+  CancelPropertyEdit). --- }
 
 Procedure HandleGridEditorKey(Var GE: TGridEditor; Ev: TEvent);
 Var
@@ -19145,6 +19896,14 @@ Var
 Begin
  If GE.ColCount <= 0 Then Exit;
  If Ev.Kind = EV_KEY_DOWN Then Begin
+  { Pendant l edition, la navigation par fleches/PgUp/PgDn/Home/End/Entree }
+  { n a plus le meme sens (Entree confirme au lieu de re-demarrer une      }
+  { edition) - desactivee ici, exactement comme                           }
+  { HandlePropertiesEvent/EV_KEY_DOWN le fait pour TPropertiesPanel        }
+  { ("If Not PP.EditActive Then ..."). Commit/Cancel/Backspace/saisie      }
+  { arrivent tous par EV_KEY_CHAR (#13/#27/#8/imprimable) plus bas, meme    }
+  { convention eprouvee que CommitPropertyEdit/CancelPropertyEdit. }
+  If GE.EditActive Then Exit;
   VisRows := GridVisibleRows(GE);
   Case Ev.KeyCode Of
    $48: If GE.SelRow > 0 Then Dec(GE.SelRow);              { Haut }
@@ -19161,11 +19920,15 @@ Begin
         End;
    $47: GE.SelRow := 0;                    { Debut }
    $4F: GE.SelRow := GE.RecordCount - 1;   { Fin }
+   $1C: GridCellEditBegin(GE);             { Entree : demarrer l edition (Etape 7) }
    $52: { Inser - Ctrl+Ins copie la cellule, meme convention Windows       }
         { historique deja reprise pour le Terminal (2026-09-02, demande    }
-        { explicite de l utilisateur) ; Shift+Ins (coller) n a pas de sens }
-        { ici, cette grille etant V1 strictement en lecture seule - aucune }
-        { cellule receptrice a coller dedans. }
+        { explicite de l utilisateur). Shift+Ins (coller) reste sans effet }
+        { ici : coller remplacerait toute la cellule sans passer par la    }
+        { validation de GridCellEditCommit, un raccourci volontairement    }
+        { pas offert - Entree puis taper/Ctrl+V dans le presse-papiers du   }
+        { systeme hote n est pas cable non plus (EditBuffer est un tampon   }
+        { de saisie clavier simple, meme portee que TPropertiesPanel). }
     If (Ev.ShiftState And 2) <> 0 Then
      SetRealClipboardText(GridCellText(GE, GE.SelRow, GE.SelCol));
   End;
@@ -19173,8 +19936,30 @@ Begin
   Exit;
  End;
  If Ev.Kind <> EV_KEY_CHAR Then Exit;
+ If GE.EditActive Then Begin
+  Case Ev.KeyChar Of
+   #13: GridCellEditCommit(GE);
+   #27: GridCellEditCancel(GE);
+   #8:  If Length(GE.EditBuffer) > 0 Then
+         Delete(GE.EditBuffer, Length(GE.EditBuffer), 1);
+  Else
+   If (Ev.KeyChar >= ' ') And (Length(GE.EditBuffer) < 255) Then
+    GE.EditBuffer := GE.EditBuffer + Ev.KeyChar;
+  End;
+  Exit;
+ End;
  If Ev.KeyChar = #3 Then Begin { Ctrl+C : copier la cellule }
   SetRealClipboardText(GridCellText(GE, GE.SelRow, GE.SelCol));
+  Exit;
+ End;
+ If Ev.KeyChar = #13 Then Begin
+  { Filet de securite : sur certaines sources d evenements, Entree n arrive }
+  { qu en EV_KEY_CHAR (#13) et jamais en EV_KEY_DOWN ($1C ci-dessus) - sans }
+  { ceci, l edition ne demarrerait jamais dans ce cas. Inoffensif si les     }
+  { deux arrivent pour une meme frappe (GridCellEditBegin est deja gardee   }
+  { par GE.EditActive plus haut, donc jamais appelee deux fois d affilee     }
+  { pour la meme edition : ici on est forcement encore hors edition). }
+  GridCellEditBegin(GE);
   Exit;
  End;
 End;
@@ -19605,9 +20390,16 @@ Begin
       InQuoted := True;
       SkipNextLF := False;
      End Else If Ch = 10 Then Begin
-      If SkipNextLF Then
-       SkipNextLF := False { second octet d un CRLF deja termine au CR }
-      Else
+      If SkipNextLF Then Begin
+       SkipNextLF := False; { second octet d un CRLF deja termine au CR }
+       { Correctif (trouve en concevant l Etape 7) : le CR precedent a deja }
+       { avance RecStart juste apres lui-meme, donc sur CE LF - sans cette  }
+       { ligne, l enregistrement suivant commencerait par ce LF au lieu du  }
+       { premier octet reel de la ligne (decalage d un octet sur TOUT       }
+       { fichier CRLF apres la 1ere ligne, jamais detecte car le fichier de }
+       { test de l Etape 3 utilisait des fins de ligne Unix LF seules). }
+       RecStart := Pos + 1;
+      End Else
        EmitRecord;         { LF seul (Unix) }
      End Else If Ch = 13 Then Begin
       EmitRecord;
@@ -19662,16 +20454,212 @@ Begin
  GridOpen_Csv := True;
 End;
 
+{ --- Ouvre un fichier Btrieve "original" pre-6.0 (DOC/BTRIEVE_FORMAT.txt,
+  sections 2.1/4/8) - appelee par GridOpen_Clarion quand la coherence
+  Clarion echoue mais que le fichier ressemble a un FCR Btrieve (section
+  2.3). Lit le FCR (272 premiers octets, $110), refuse explicitement le
+  format 6.x ("FC"), VARLEN, COMPRDAT et USEVATS (jamais de records
+  variables/compresses en V1), puis fait un SEUL passage sequentiel sur
+  toutes les pages physiques : le bit $8000 de Usage identifie une page
+  de donnees (section 7), et chaque emplacement dont les octets (hors
+  les 4 premiers) ne sont pas tous nuls est un enregistrement actif
+  (heuristique documentee a la section 8, pas une invention). Le B-tree
+  d index n est JAMAIS parcouru - seul l ordre physique des pages compte.
+  Sans FIELD.DDF associe (dont le document ne donne PAS la disposition
+  binaire exacte - tenter de le lire serait deviner, contraire a la
+  discipline de tout ce chantier), les colonnes sont un decoupage
+  generique de RecLen en blocs de 16 octets bruts affiches en
+  hexadecimal, memes noms "ChampN" que le secours GROUP de Clarion. --- }
+
+Function GridOpen_Btrieve(Var GE: TGridEditor): Boolean;
+Const
+ FCRTOP_LEN = 272; { $110 }
+ MAX_PAGE = 4096;
+ CHUNK = 16;
+Var
+ Hdr: Array[0..FCRTOP_LEN - 1] Of Byte;
+ PageBuf: Array[0..MAX_PAGE - 1] Of Byte;
+ Got: Word;
+ FSize, NPages, PageNum, PageOfs, SlotOfs, NewCap: LongInt;
+ Nrecs: LongInt;
+ Sig, Seq, PagSize, RecLenW, PhyLenW, Consistent, UsrFlags, Usage: Word;
+ VRecsOkay: Byte;
+ CapPerPage: LongInt;
+ SlotIdx, K, I, NCols, ColLen: Integer;
+ AllZero: Boolean;
+Begin
+ GridOpen_Btrieve := False;
+ FSize := FileSize(GE.F);
+ If FSize < FCRTOP_LEN Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : fichier trop court pour un FCR.';
+  Exit;
+ End;
+ {$I-}
+ Seek(GE.F, 0);
+ BlockRead(GE.F, Hdr, FCRTOP_LEN, Got);
+ {$I+}
+ If (IOResult <> 0) Or (Got <> FCRTOP_LEN) Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : FCR illisible.';
+  Exit;
+ End;
+ { --- Test minimal d identification (section 2.3) --- }
+ Sig := Word(Hdr[0]) Or (Word(Hdr[1]) Shl 8);
+ Seq := Word(Hdr[2]) Or (Word(Hdr[3]) Shl 8);
+ PagSize := Word(Hdr[8]) Or (Word(Hdr[9]) Shl 8);
+ If Seq <> 0 Then Begin
+  GE.ErrorMsg := '.DAT : format non reconnu (ni Clarion coherent, ni Btrieve - SeqNbr non nul).';
+  Exit;
+ End;
+ If Sig = $4346 Then Begin
+  { ErrorMsg est un String[127] (TGridEditor) - message volontairement    }
+  { court pour ne jamais etre tronque silencieusement. }
+  GE.ErrorMsg := '.DAT Btrieve : format 6.x ("FC") non pris en charge, ' +
+   'seul le format original pre-6.0 est gere en V1.';
+  Exit;
+ End;
+ If Sig <> 0 Then Begin
+  GE.ErrorMsg := '.DAT : signature non reconnue (ni Clarion coherent, ni Btrieve original/6.x).';
+  Exit;
+ End;
+ { --- Format original confirme (sig=0, seq=0) - valider PagSize (section 16) --- }
+ If (PagSize = 0) Or (PagSize Mod 512 <> 0) Or (PagSize > MAX_PAGE) Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : PagSize invalide (' + IntToStr(PagSize) + ').';
+  Exit;
+ End;
+ If FSize Mod LongInt(PagSize) <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : taille de fichier non multiple de PagSize.';
+  Exit;
+ End;
+ RecLenW := Word(Hdr[$16]) Or (Word(Hdr[$17]) Shl 8);
+ PhyLenW := Word(Hdr[$18]) Or (Word(Hdr[$19]) Shl 8);
+ { Nrecs : DWORD "word-swapped" (section 3.2) - PAS little-endian ordinaire : }
+ { les 2 WORD de 16 bits sont intervertis, chaque WORD restant lui-meme    }
+ { little-endian (non utilise directement ici, RecordCount vient du        }
+ { comptage reel des emplacements actifs - Nrecs n est qu un objectif de   }
+ { coherence par le document lui-meme, section 16). }
+ Nrecs := (LongInt(Word(Hdr[$1A]) Or (Word(Hdr[$1B]) Shl 8)) Shl 16) Or
+  LongInt(Word(Hdr[$1C]) Or (Word(Hdr[$1D]) Shl 8));
+ Consistent := Word(Hdr[$22]) Or (Word(Hdr[$23]) Shl 8);
+ UsrFlags := Word(Hdr[$106]) Or (Word(Hdr[$107]) Shl 8);
+ VRecsOkay := Hdr[$38];
+ If (RecLenW = 0) Or (PhyLenW = 0) Or (RecLenW > PhyLenW) Or
+    (LongInt(PhyLenW) > LongInt(PagSize) - 6) Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : RecLen/PhyLen incoherents.';
+  Exit;
+ End;
+ { Refuser explicitement (jamais deviner) : VARLEN/COMPRDAT/USEVATS         }
+ { (sections 5 et 9.2) et l indication historique VRecsOkay (section 5) -  }
+ { cette V1 ne gere que des enregistrements FIXES du format original. }
+ If (UsrFlags And $0001) <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : enregistrements de longueur variable (VARLEN), non pris en charge en V1.';
+  Exit;
+ End;
+ If (UsrFlags And $0008) <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : donnees compressees (COMPRDAT), non pris en charge.';
+  Exit;
+ End;
+ If (UsrFlags And $0800) <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : USEVATS incoherent avec un FCR original - refuse.';
+  Exit;
+ End;
+ If VRecsOkay <> 0 Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : indicateur VRecsOkay actif (enregistrements variables), non pris en charge.';
+  Exit;
+ End;
+ { --- Un seul passage sequentiel sur toutes les pages physiques (sections }
+ { 7 et 8) - jamais le B-tree d index. RowOffsets/RowLens (meme mecanisme  }
+ { que CSV, Etape 3) stockent la position de chaque emplacement ACTIF      }
+ { trouve. --- }
+ CapPerPage := (LongInt(PagSize) - 6) Div LongInt(PhyLenW);
+ If CapPerPage < 1 Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : PhyLen trop grand pour PagSize (aucun emplacement par page).';
+  Exit;
+ End;
+ GE.RowCapacity := 256;
+ GetMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+ GetMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+ GE.RecordCount := 0;
+ NPages := FSize Div LongInt(PagSize);
+ For PageNum := 1 To NPages - 1 Do Begin { la page 0 EST le FCR, jamais une page de donnees }
+  PageOfs := PageNum * LongInt(PagSize);
+  {$I-}
+  Seek(GE.F, PageOfs);
+  BlockRead(GE.F, PageBuf, PagSize, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got <> PagSize) Then Break; { fin prudente, jamais de plantage }
+  Usage := Word(PageBuf[4]) Or (Word(PageBuf[5]) Shl 8);
+  If (Usage And $8000) = 0 Then Continue; { page d index ou autre, pas de donnees (section 7) }
+  For SlotIdx := 0 To CapPerPage - 1 Do Begin
+   SlotOfs := 6 + SlotIdx * LongInt(PhyLenW);
+   { Emplacement libre : dans plusieurs fichiers anciens, tous les octets  }
+   { sauf le pointeur initial de 4 octets sont nuls (section 8) -           }
+   { heuristique documentee, pas une invention (un vrai record peut         }
+   { legitimement commencer par des octets nuls, section 15 CUST.DAT -      }
+   { d ou l exclusion des 4 premiers octets, jamais du record entier). }
+   AllZero := True;
+   For K := 4 To PhyLenW - 1 Do
+    If PageBuf[SlotOfs + K] <> 0 Then Begin
+     AllZero := False;
+     Break;
+    End;
+   If AllZero Then Continue;
+   If GE.RecordCount >= GE.RowCapacity Then Begin
+    NewCap := GE.RowCapacity * 2;
+    ReallocMem(GE.RowOffsets, NewCap * SizeOf(LongInt));
+    ReallocMem(GE.RowLens, NewCap * SizeOf(LongInt));
+    GE.RowCapacity := NewCap;
+   End;
+   { RecLen (donnees logiques), PAS PhyLen : le reste de l emplacement est }
+   { reserve au moteur (listes libres, doublons, partie variable - hors    }
+   { de portee ici, section 8). }
+   GE.RowOffsets^[GE.RecordCount] := PageOfs + SlotOfs;
+   GE.RowLens^[GE.RecordCount] := RecLenW;
+   Inc(GE.RecordCount);
+  End;
+ End;
+ { --- Sans FIELD.DDF (jamais lu - le document ne documente pas sa         }
+ { disposition binaire exacte, le lire serait deviner) : decoupage         }
+ { generique de RecLen en blocs de 16 octets bruts, memes noms "ChampN"    }
+ { que le secours GROUP de Clarion. --- }
+ NCols := (Integer(RecLenW) + CHUNK - 1) Div CHUNK;
+ If NCols > GRID_MAX_COLS Then Begin
+  GE.ErrorMsg := '.DAT Btrieve : RecLen trop grand pour le decoupage generique (limite ' +
+   IntToStr(GRID_MAX_COLS * CHUNK) + ' octets).';
+  FreeMem(GE.RowOffsets, GE.RowCapacity * SizeOf(LongInt));
+  FreeMem(GE.RowLens, GE.RowCapacity * SizeOf(LongInt));
+  GE.RowOffsets := Nil;
+  GE.RowLens := Nil;
+  Exit;
+ End;
+ GE.ColCount := NCols;
+ For I := 0 To NCols - 1 Do Begin
+  ColLen := CHUNK;
+  If (I + 1) * CHUNK > Integer(RecLenW) Then ColLen := Integer(RecLenW) - I * CHUNK;
+  GE.Columns[I].Name := 'Champ' + IntToStr(I + 1);
+  GE.Columns[I].TypeCode := 'X';
+  GE.Columns[I].Ofs := I * CHUNK;
+  GE.Columns[I].Len := ColLen;
+  GE.Columns[I].Decimals := 0;
+  GE.ColWidth[I] := ColLen * 3 * TERM_CHAR_WIDTH + GRID_COL_PAD;
+ End;
+ GE.RecordLen := RecLenW;
+ GE.DataStart := 0;
+ GetMem(GE.CurrentRecBuf, GE.RecordLen);
+ GE.Format := GTF_BTRIEVE;
+ GridOpen_Btrieve := True;
+End;
+
 { --- Ouvre un fichier .DAT (Clarion, DOC/CLARION_FORMAT.txt §2-4) - .DAT
   est AMBIGU (Btrieve utilise la meme extension, voir GridFormatForExtension
   ci-dessus) : tente d abord la coherence Clarion (numflds*27+85 <=
   offset, reclen >= 5, dans les bornes du fichier - PAS uniquement
   filesig, qui n a aucune valeur unique documentee de facon fiable, §3),
-  puis si ca echoue regarde si les 2 premiers octets ressemblent a un FCR
-  Btrieve (WORD $0000 ou $0002, DOC/BTRIEVE_FORMAT.txt §2.3) pour le
-  signaler honnetement comme "pas encore pris en charge" (Etape 5) plutot
-  que de le confondre avec un Clarion mal forme. Refuse explicitement le
-  chiffrement/la compression (sfatr, §3.1) - jamais devine. --- }
+  puis si ca echoue delegue a GridOpen_Btrieve (Etape 5, DOC/
+  BTRIEVE_FORMAT.txt), qui applique son propre test de signature et
+  refuse proprement lui-meme si ni Clarion ni Btrieve ne correspond -
+  jamais de confusion entre un Clarion mal forme et un vrai Btrieve.
+  Refuse explicitement le chiffrement/la compression (sfatr, §3.1) -
+  jamais devine. --- }
 
 Function GridOpen_Clarion(Var GE: TGridEditor): Boolean;
 Const
@@ -19710,11 +20698,15 @@ Begin
  If Not ((NumFlds > 0) And (NumFlds <= GRID_MAX_COLS) And (RecLen >= 5) And
     (LongInt(HDR_LEN) + LongInt(NumFlds) * 27 <= DataOffset) And
     (DataOffset <= FSize)) Then Begin
-  If (Hdr[0] = 0) And ((Hdr[1] = 0) Or (Hdr[1] = 2)) Then
-   GE.ErrorMsg := '.DAT : ressemble a un fichier Btrieve original (FCR ' +
-    'WORD($0000)/WORD($0002)), non encore pris en charge (voir Etape 5).'
-  Else
-   GE.ErrorMsg := '.DAT : en-tete incoherent (ni Clarion valide, ni Btrieve reconnaissable).';
+  { La coherence Clarion echoue - tenter Btrieve (format original pre-6.0,  }
+  { Etape 5) avant de refuser purement et simplement : GridOpen_Btrieve      }
+  { applique son propre test de signature (sig=WORD a $0000, seq=WORD a     }
+  { $0002, DOC/BTRIEVE_FORMAT.txt section 2.3 - PAS le test errone            }
+  { "Hdr[0]=0 And (Hdr[1]=0 Or Hdr[1]=2)" d abord ecrit ici a l Etape 4,     }
+  { qui confondait a tort le WORD de signature et le WORD SeqNbr voisin       }
+  { comme deux valeurs possibles d une meme signature) et refuse             }
+  { proprement lui-meme si ni Clarion ni Btrieve ne correspond. }
+  GridOpen_Clarion := GridOpen_Btrieve(GE);
   Exit;
  End;
  If (Sfatr And $0004) <> 0 Then Begin
@@ -19774,6 +20766,203 @@ Begin
  GridOpen_Clarion := True;
 End;
 
+{ --- Ouvre un fichier .MYD (MySQL/MyISAM, DOC/MYD_FORMAT.txt et
+  DOC/MYI_FORMAT.txt) en decodant reellement son .MYI frere -
+  DOC/MYI_FORMAT.txt sections 2 a 8 (Fileheader, prefixe fixe de
+  MI_STATE_INFO, MI_BASE_INFO, MI_KEYDEF/MI_UNIQUEDEF, MI_COLUMNDEF) ont ete
+  verifiees directement contre le code source reel du depot mysql/mysql-
+  server (mi_open.cc, myisamdef.h, my_base.h). Portee volontairement
+  etroite (section 9 du document) : uniquement les tables FIXED (pas
+  DYNAMIC ni COMPRESSED, detectees via le bitmap options du Fileheader)
+  SANS AUCUNE colonne NULLable - verifie non pas en devinant le type exact
+  de chaque colonne (en_fieldtype, jamais confirme), mais par une
+  verification arithmetique : la somme des longueurs de colonnes doit
+  correspondre EXACTEMENT a pack_reclength-1, ce qui ne peut etre vrai que
+  si l enregistrement ne contient ni bitmap NULL ni octet de longueur
+  VARCHAR cache. Tout le reste (DYNAMIC, COMPRESSED, NULL, arithmetique qui
+  ne correspond pas) est refuse explicitement plutot que devine, meme
+  discipline que partout ailleurs dans ce chantier. --- }
+
+Function GridOpen_Myd(Var GE: TGridEditor): Boolean;
+Const
+ HA_OPTION_PACK_RECORD     = $0001;
+ HA_OPTION_COMPRESS_RECORD = $0004;
+Var
+ MyiPath: String;
+ MyiF: File;
+ Got: Word;
+ Hdr: Array[0..123] Of Byte;    { Fileheader (24) + prefixe fixe MI_STATE_INFO (100), DOC/MYI_FORMAT.txt §2-3 }
+ BaseBuf: Array[0..99] Of Byte; { MI_BASE_INFO, §4 }
+ ColBuf: Array[0..6] Of Byte;   { MI_COLUMNDEF, §7 }
+ SkipBuf: Array[0..1] Of Byte;
+ MyiSize, BasePos, Pos, FSize: LongInt;
+ Options: Word;
+ NKeys, NUniques, NFields, KeySegs: Integer;
+ PackRecLength: LongInt;
+ StateRecords: LongInt;
+ SumLen: LongInt;
+ I: Integer;
+Begin
+ GridOpen_Myd := False;
+ MyiPath := GridSiblingWithExt(GE.FileName, 'MYI');
+ If Not FileExists(MyiPath) Then Begin
+  GE.ErrorMsg := '.MYD : fichier .MYI associe introuvable (' + MyiPath +
+   ') - indispensable a toute lecture fiable (DOC/MYD_FORMAT.txt).';
+  Exit;
+ End;
+ {$I-}
+ FileMode := 0; { lecture seule, meme prudence que GE.F }
+ Assign(MyiF, MyiPath);
+ Reset(MyiF, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  GE.ErrorMsg := '.MYI : impossible d''ouvrir le fichier associe.';
+  Exit;
+ End;
+ MyiSize := FileSize(MyiF);
+ If MyiSize < SizeOf(Hdr) Then Begin
+  GE.ErrorMsg := '.MYI : fichier trop court pour l''en-tete MI_STATE_INFO.';
+  Close(MyiF);
+  Exit;
+ End;
+ {$I-}
+ Seek(MyiF, 0);
+ BlockRead(MyiF, Hdr, SizeOf(Hdr), Got);
+ {$I+}
+ If (IOResult <> 0) Or (Got <> SizeOf(Hdr)) Then Begin
+  GE.ErrorMsg := '.MYI : en-tete illisible.';
+  Close(MyiF);
+  Exit;
+ End;
+ Options := Word(Hdr[$04]) Or (Word(Hdr[$05]) Shl 8);
+ BasePos := LongInt(Word(Hdr[$0C]) Or (Word(Hdr[$0D]) Shl 8));
+ NKeys := Hdr[$12];
+ NUniques := Hdr[$13];
+ StateRecords := LongInt(Hdr[28]) Or (LongInt(Hdr[29]) Shl 8) Or
+  (LongInt(Hdr[30]) Shl 16) Or (LongInt(Hdr[31]) Shl 24);
+ { DOC/MYI_FORMAT.txt section 5 : meme ordre de test que mi_open_share -   }
+ { COMPRESSED puis DYNAMIC, toutes deux hors de portee de cette V1. }
+ If (Options And HA_OPTION_COMPRESS_RECORD) <> 0 Then Begin
+  GE.ErrorMsg := '.MYD : table COMPRESSEE (myisampack), non prise en charge.';
+  Close(MyiF);
+  Exit;
+ End;
+ If (Options And HA_OPTION_PACK_RECORD) <> 0 Then Begin
+  GE.ErrorMsg := '.MYD : table DYNAMIC (enregistrements compactes), non prise en charge en V1.';
+  Close(MyiF);
+  Exit;
+ End;
+ If (BasePos < LongInt(SizeOf(Hdr))) Or (BasePos + 100 > MyiSize) Then Begin
+  GE.ErrorMsg := '.MYI : base_pos incoherent.';
+  Close(MyiF);
+  Exit;
+ End;
+ {$I-}
+ Seek(MyiF, BasePos);
+ BlockRead(MyiF, BaseBuf, SizeOf(BaseBuf), Got);
+ {$I+}
+ If (IOResult <> 0) Or (Got <> SizeOf(BaseBuf)) Then Begin
+  GE.ErrorMsg := '.MYI : MI_BASE_INFO illisible.';
+  Close(MyiF);
+  Exit;
+ End;
+ PackRecLength := LongInt(BaseBuf[$30]) Or (LongInt(BaseBuf[$31]) Shl 8) Or
+  (LongInt(BaseBuf[$32]) Shl 16) Or (LongInt(BaseBuf[$33]) Shl 24);
+ NFields := LongInt(BaseBuf[$40]) Or (LongInt(BaseBuf[$41]) Shl 8) Or
+  (LongInt(BaseBuf[$42]) Shl 16) Or (LongInt(BaseBuf[$43]) Shl 24);
+ If (NFields <= 0) Or (NFields > GRID_MAX_COLS) Or (PackRecLength <= 1) Then Begin
+  GE.ErrorMsg := '.MYI : MI_BASE_INFO incoherent (fields/pack_reclength).';
+  Close(MyiF);
+  Exit;
+ End;
+ { --- Sauter les MI_KEYDEF puis MI_UNIQUEDEF (DOC/MYI_FORMAT.txt section   }
+ { 6) pour atteindre MI_COLUMNDEF - seul keysegs (premier(s) octet(s) de    }
+ { chaque descripteur) est lu, jamais le reste (jamais necessaire aux       }
+ { donnees elles-memes). --- }
+ Pos := BasePos + 100;
+ For I := 1 To NKeys Do Begin
+  {$I-}
+  Seek(MyiF, Pos);
+  BlockRead(MyiF, SkipBuf, 1, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got <> 1) Then Begin
+   GE.ErrorMsg := '.MYI : MI_KEYDEF illisible.';
+   Close(MyiF);
+   Exit;
+  End;
+  KeySegs := SkipBuf[0];
+  Pos := Pos + 12 + LongInt(KeySegs) * 18;
+ End;
+ For I := 1 To NUniques Do Begin
+  {$I-}
+  Seek(MyiF, Pos);
+  BlockRead(MyiF, SkipBuf, 2, Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got <> 2) Then Begin
+   GE.ErrorMsg := '.MYI : MI_UNIQUEDEF illisible.';
+   Close(MyiF);
+   Exit;
+  End;
+  KeySegs := Word(SkipBuf[0]) Or (Word(SkipBuf[1]) Shl 8);
+  Pos := Pos + 4 + LongInt(KeySegs) * 18;
+ End;
+ { --- MI_COLUMNDEF (DOC/MYI_FORMAT.txt section 7) : disposition binaire   }
+ { fiable, mais pas la signification exacte de "type" (en_fieldtype non    }
+ { confirme) - accepte seulement si l arithmetique des longueurs           }
+ { correspond EXACTEMENT a pack_reclength-1 ET qu aucune colonne n a de    }
+ { bit NULL actif (regle complete section 9 du document). --- }
+ GE.ColCount := 0;
+ SumLen := 0;
+ For I := 0 To NFields - 1 Do Begin
+  {$I-}
+  Seek(MyiF, Pos);
+  BlockRead(MyiF, ColBuf, SizeOf(ColBuf), Got);
+  {$I+}
+  If (IOResult <> 0) Or (Got <> SizeOf(ColBuf)) Then Begin
+   GE.ErrorMsg := '.MYI : MI_COLUMNDEF illisible.';
+   Close(MyiF);
+   Exit;
+  End;
+  If ColBuf[4] <> 0 Then Begin
+   GE.ErrorMsg := '.MYD : colonne(s) NULLable(s), disposition du bitmap NULL non verifiee - refuse.';
+   Close(MyiF);
+   Exit;
+  End;
+  GE.Columns[GE.ColCount].Name := 'Champ' + IntToStr(I + 1);
+  GE.Columns[GE.ColCount].TypeCode := 'X';
+  GE.Columns[GE.ColCount].Ofs := 1 + SumLen; { +1 : marque de suppression, section 9 }
+  GE.Columns[GE.ColCount].Len := Word(ColBuf[2]) Or (Word(ColBuf[3]) Shl 8);
+  GE.Columns[GE.ColCount].Decimals := 0;
+  SumLen := SumLen + LongInt(GE.Columns[GE.ColCount].Len);
+  Inc(GE.ColCount);
+  Pos := Pos + SizeOf(ColBuf);
+ End;
+ Close(MyiF);
+ If SumLen <> PackRecLength - 1 Then Begin
+  GE.ErrorMsg := '.MYD : disposition de l''enregistrement plus complexe ' +
+   'qu''une simple concatenation (bitmap NULL/VARCHAR) - refuse.';
+  Exit;
+ End;
+ { --- Format accepte : meme arithmetique directe que DBF/Clarion          }
+ { (DataStart + N*RecordLen) - le MYD lui-meme n a pas d en-tete de         }
+ { fichier (DOC/MYD_FORMAT.txt section 3). --- }
+ GE.RecordLen := PackRecLength;
+ GE.DataStart := 0;
+ FSize := FileSize(GE.F);
+ If GE.RecordLen > 0 Then
+  GE.RecordCount := FSize Div GE.RecordLen
+ Else
+  GE.RecordCount := 0;
+ If StateRecords < GE.RecordCount Then GE.RecordCount := StateRecords;
+ If GE.RecordCount < 0 Then GE.RecordCount := 0;
+ GetMem(GE.CurrentRecBuf, GE.RecordLen);
+ For I := 0 To GE.ColCount - 1 Do Begin
+  GE.ColWidth[I] := GE.Columns[I].Len * 3 * TERM_CHAR_WIDTH + GRID_COL_PAD;
+  If GE.ColWidth[I] < GRID_COL_MINW Then GE.ColWidth[I] := GRID_COL_MINW;
+ End;
+ GridOpen_Myd := True;
+End;
+
 { --- Ouvre AFileName selon GE.Format (deja determine par l appelant via
   GridFormatForExtension) et remplit GE.Columns[]/ColCount/RecordLen/
   RecordCount/DataStart - renvoie False (avec GE.ErrorMsg rempli) si le
@@ -19798,9 +20987,16 @@ Begin
  GE.ScrollCol := 0;
  GE.SelRow := 0;
  GE.SelCol := 0;
+ GE.EditActive := False;
+ GE.EditBuffer := '';
  {$I-}
  Assign(GE.F, AFileName);
- FileMode := 0; { lecture seule - V1 est un lecteur, jamais un ecrivain }
+ { Etape 7 : lecture/ecriture pour les formats editables (voir             }
+ { GridFormatIsEditable), lecture seule pour MyISAM (jamais modifiable). }
+ If GridFormatIsEditable(GE.Format) Then
+  FileMode := 2
+ Else
+  FileMode := 0;
  Reset(GE.F, 1);
  {$I+}
  If IOResult <> 0 Then Begin
@@ -19809,8 +21005,6 @@ Begin
   Exit;
  End;
  GE.FileOpen := True;
- { GTF_BTRIEVE/GTF_MYD : ajoutes un a un, Etapes 5 et 6 - chacun ajoute   }
- { sa propre branche ici, calquee sur GTF_DBF/GTF_CSV/GTF_CLARION. }
  If GE.Format = GTF_DBF Then Begin
   If Not GridOpen_Dbf(GE) Then Begin
    Close(GE.F);
@@ -19825,6 +21019,15 @@ Begin
   End;
  End Else If GE.Format = GTF_CLARION Then Begin
   If Not GridOpen_Clarion(GE) Then Begin
+   Close(GE.F);
+   GE.FileOpen := False;
+   Exit;
+  End;
+ End Else If GE.Format = GTF_MYD Then Begin
+  { GridOpen_Myd decode reellement le .MYI frere (DOC/MYI_FORMAT.txt) mais }
+  { refuse explicitement DYNAMIC/COMPRESSED et toute colonne NULLable -    }
+  { voir la portee exacte dans le commentaire de GridOpen_Myd lui-meme. }
+  If Not GridOpen_Myd(GE) Then Begin
    Close(GE.F);
    GE.FileOpen := False;
    Exit;
