@@ -40045,6 +40045,33 @@ Begin
   TermAddLine(TP, 'Get-Error : aucune erreur recente dans le terminal.');
 End;
 
+{ --- GET-FORMATDATA (PowerShell dev) --- }
+Procedure TermCmd_GetFormatData(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ TypeArg, UpType: String;
+ TypePos: Integer;
+Begin
+ TypeArg := '';
+ TypePos := System.Pos('-TYPENAME', TermStrToUpper(ParamStr));
+ If TypePos > 0 Then
+  TypeArg := YamlUnquote(TrimStr(TermExtractParam(Copy(ParamStr,
+   TypePos + 9, Length(ParamStr)), 1)))
+ Else
+  TypeArg := YamlUnquote(TermExtractParam(ParamStr, 1));
+ UpType := TermStrToUpper(TypeArg);
+ If (TypeArg <> '') And (UpType <> 'PSCUSTOMOBJECT') And
+    (UpType <> 'SYSTEM.OBJECT') Then Begin
+  TermAddLine(TP, 'Get-FormatData : aucune vue pour le type ' + TypeArg + '.');
+  Exit;
+ End;
+ TermAddLine(TP, 'TypeName : System.Management.Automation.PSCustomObject');
+ TermAddLine(TP, 'View    : Format-List  (proprietes, une par ligne)');
+ TermAddLine(TP, 'View    : Format-Table (en-tetes et valeurs en colonnes)');
+ TermAddLine(TP, 'View    : Format-Wide  (valeurs compactes en largeur)');
+ TermAddLine(TP, 'View    : Format-Custom (vue personnalisee non definie)');
+ TermAddLine(TP, 'Source  : vues natives du terminal PowerShell dev');
+End;
+
 { --- FORMAT-HEX (PowerShell dev) --- }
 Procedure TermCmd_FormatHex(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -69768,6 +69795,8 @@ Begin
   TermAddLine(TP,
    '  Get-Error [-Newest n]                    Affiche les erreurs recentes');
   TermAddLine(TP,
+   '  Get-FormatData [-TypeName nom]           Liste les vues de format');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70555,7 +70584,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 121;
+ PS_CMD_ALIASES = 122;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70586,6 +70615,7 @@ Const
   'GET-COMMAND',
   'GET-CONTENT',
   'GET-ERROR',
+  'GET-FORMATDATA',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70688,6 +70718,7 @@ Const
   97,
   98,
   99,
+  100,
   19,
   20,
   21,
@@ -71226,6 +71257,7 @@ Begin
     97: TermCmd_GetCommand(TP, ParamStr);
     98: TermCmd_GetContent(TP, ParamStr);
     99: TermCmd_GetError(TP, ParamStr);
+    100: TermCmd_GetFormatData(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
