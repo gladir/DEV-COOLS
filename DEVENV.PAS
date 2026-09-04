@@ -39946,6 +39946,77 @@ Begin
  Close(Handle);
 End;
 
+{ --- GET-CONTENT (PowerShell dev) --- }
+Procedure TermCmd_GetContent(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, PathArg, CountArg, TailArg, Line: String;
+ PathPos, LiteralPos, CountPos, TailPos: Integer;
+ TotalCount, TailCount, Err, I, StartLine, LineCount: Integer;
+ Idx: Byte;
+ AbsP: String;
+ Lines: Array[1..512] Of String;
+ F: Text;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ PathPos := System.Pos('-PATH', UpParams);
+ LiteralPos := System.Pos('-LITERALPATH', UpParams);
+ CountPos := System.Pos('-TOTALCOUNT', UpParams);
+ TailPos := System.Pos('-TAIL', UpParams);
+ If LiteralPos > 0 Then
+  PathArg := YamlUnquote(TrimStr(TermExtractParam(Copy(ParamStr,
+   LiteralPos + 12, Length(ParamStr)), 1)))
+ Else If PathPos > 0 Then
+  PathArg := YamlUnquote(TrimStr(TermExtractParam(Copy(ParamStr,
+   PathPos + 5, Length(ParamStr)), 1)))
+ Else
+  PathArg := YamlUnquote(TermExtractParam(ParamStr, 1));
+ CountArg := ''; TailArg := '';
+ If CountPos > 0 Then CountArg := TermExtractParam(Copy(ParamStr,
+  CountPos + 11, Length(ParamStr)), 1);
+ If TailPos > 0 Then TailArg := TermExtractParam(Copy(ParamStr,
+  TailPos + 5, Length(ParamStr)), 1);
+ TotalCount := -1; TailCount := -1; Err := 0;
+ If CountArg <> '' Then Val(CountArg, TotalCount, Err);
+ If (Err <> 0) Or (TotalCount < 0) Then TotalCount := -1;
+ Err := 0;
+ If TailArg <> '' Then Val(TailArg, TailCount, Err);
+ If (Err <> 0) Or (TailCount < 0) Then TailCount := -1;
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-Content -Path fichier [-TotalCount n] [-Tail n]');
+  Exit;
+ End;
+ If Term_ResolveVirtTarget(TP, PathArg, Idx, AbsP) Then Begin
+  { Les images virtuelles utilisent deja le lecteur texte FAT. }
+  If (TotalCount >= 0) Or (TailCount >= 0) Then Begin
+   TermAddLine(TP, 'Get-Content : -TotalCount/-Tail non disponibles sur un ' +
+    'fichier virtuel.');
+   Exit;
+  End;
+  TermCmd_TYPE(TP, PathArg);
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Get-Content : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ LineCount := 0;
+ While (Not Eof(F)) And (LineCount < 512) Do Begin
+  ReadLn(F, Line);
+  Inc(LineCount); Lines[LineCount] := Line;
+ End;
+ Close(F);
+ If TailCount >= 0 Then Begin
+  StartLine := LineCount - TailCount + 1;
+  If StartLine < 1 Then StartLine := 1;
+  For I := StartLine To LineCount Do TermAddLine(TP, Lines[I]);
+ End Else Begin
+  If (TotalCount >= 0) And (TotalCount < LineCount) Then LineCount := TotalCount;
+  For I := 1 To LineCount Do TermAddLine(TP, Lines[I]);
+ End;
+End;
+
 { --- FORMAT-HEX (PowerShell dev) --- }
 Procedure TermCmd_FormatHex(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -69663,6 +69734,8 @@ Begin
   TermAddLine(TP,
    '  Get-Date [-Format format]               Affiche date et heure');
   TermAddLine(TP,
+   '  Get-Content -Path f [-TotalCount n]     Lit un fichier');
+  TermAddLine(TP,
    '  Get-Command [-Name nom]                 Liste les commandes reconnues');
   TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
@@ -70465,7 +70538,7 @@ Const
   'RMDIR','RD',
   'REN','RENAME-ITEM',
   'MOVE','MOVE-ITEM',
-  'TYPE','CAT','GET-CONTENT',
+  'TYPE','CAT',
   'ADD-CONTENT',
   'CLEAR-CONTENT',
   'CLEAR-ITEM',
@@ -70481,6 +70554,7 @@ Const
   'GET-ALIAS',
   'GET-DATE',
   'GET-COMMAND',
+  'GET-CONTENT',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70565,7 +70639,7 @@ Const
   9,9,
   10,10,
   11,11,
-  12,12,12,
+  12,12,
   13,
   14,
   15,
@@ -70581,6 +70655,7 @@ Const
   95,
   96,
   97,
+  98,
   19,
   20,
   21,
@@ -71101,7 +71176,7 @@ Begin
     9: TermCmd_RMDIR(TP, ParamStr);              { RMDIR/RD }
     10: TermCmd_REN(TP, ParamStr);               { REN/RENAME-ITEM }
     11: TermCmd_MOVE(TP, ParamStr);              { MOVE/MOVE-ITEM }
-    12: TermCmd_TYPE(TP, ParamStr);              { TYPE/CAT/GET-CONTENT }
+    12: TermCmd_TYPE(TP, ParamStr);              { TYPE/CAT }
     13: TermCmd_AddContent(TP, ParamStr);
     14: TermCmd_ClearContent(TP, ParamStr);
     15: TermCmd_ClearItem(TP, ParamStr);
@@ -71117,6 +71192,7 @@ Begin
     95: TermCmd_GetAlias(TP, ParamStr);
     96: TermCmd_GetDate(TP, ParamStr);
     97: TermCmd_GetCommand(TP, ParamStr);
+    98: TermCmd_GetContent(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
