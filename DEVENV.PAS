@@ -65577,6 +65577,70 @@ Begin
  TermAddLine(TP, ValueLine);
 End;
 
+{ --- FORMAT-LIST (PowerShell dev) --- }
+Procedure TermCmd_FormatList(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, PropertyArg, UpLevel: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+ ShowAll: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+   (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ VarArg := ''; PropertyArg := ''; ShowAll := True;
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If UpLevel = '-INPUTOBJECT' Then Begin
+   Inc(I); If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If UpLevel = '-PROPERTY' Then Begin
+   Inc(I); If I <= LocalArgCount Then PropertyArg := LocalArgs[I];
+  End Else If (VarArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+    ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
+  TermAddLine(TP, 'Syntaxe : Format-List -InputObject $objet [-Property nom]');
+  Exit;
+ End;
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'Format-List : objet introuvable ou non objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'Format-List : objet sans propriete.');
+  Exit;
+ End;
+ If PropertyArg <> '' Then Begin
+  PropertyArg := YamlUnquote(PropertyArg);
+  ShowAll := False;
+  P := SrcVar^.Props;
+  While P <> Nil Do Begin
+   If TermStrToUpper(P^.Name) = TermStrToUpper(PropertyArg) Then Begin
+    TermAddLine(TP, PropertyArg + ' : ' + P^.Value);
+    Exit;
+   End;
+   P := P^.Next;
+  End;
+  TermAddLine(TP, 'Format-List : propriete introuvable : ' + PropertyArg);
+  Exit;
+ End;
+ If ShowAll Then Begin
+  P := SrcVar^.Props;
+  While P <> Nil Do Begin
+   TermAddLine(TP, P^.Name + ' : ' + P^.Value);
+   P := P^.Next;
+  End;
+ End;
+End;
+
 { --- Export-Csv (2026-09-04) : meme serialisation CSV que ConvertTo-Csv, }
 { mais vers un fichier. L'objet plat est celui conserve par ce terminal;   }
 { -Force autorise le remplacement du fichier cible.                       }
@@ -66120,7 +66184,8 @@ Begin
   Stage := Stages[J];
   TermExtractCommand(Stage, CmdName, ParamPart);
   UpCmd := TermStrToUpper(CmdName);
-  If (UpCmd = 'EXPORT-CSV') Or (UpCmd = 'CONVERTTO-CSV') Or
+    If (UpCmd = 'FORMAT-LIST') Or (UpCmd = 'EXPORT-CSV') Or
+      (UpCmd = 'CONVERTTO-CSV') Or
      (UpCmd = 'CONVERTTO-JSON') Or (UpCmd = 'CONVERTTO-HTML') Or
      (UpCmd = 'CONVERTTO-XML') Then Begin
    If J < StageCount Then Begin
@@ -69417,6 +69482,8 @@ Begin
   TermAddLine(TP,
    '  Format-Hex -Path f [-Count n] [-Offset n] Affiche les octets');
   TermAddLine(TP,
+   '  Format-List [-InputObject $objet] [-Property nom]  Affiche les proprietes');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70204,7 +70271,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 114;
+ PS_CMD_ALIASES = 115;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70227,6 +70294,7 @@ Const
   'COPY-ITEMPROPERTY',
   'CLEAR-VARIABLE',
   'FORMAT-HEX',
+  'FORMAT-LIST',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70321,6 +70389,7 @@ Const
   88,
   18,
   91,
+  92,
   19,
   20,
   21,
@@ -70808,6 +70877,7 @@ Begin
     88: TermCmd_CopyItemProperty(TP, ParamStr);
     18: TermCmd_ClearVariable(TP, ParamStr);
     91: TermCmd_FormatHex(TP, ParamStr);
+    92: TermCmd_FormatList(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
