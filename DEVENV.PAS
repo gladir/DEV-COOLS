@@ -67290,6 +67290,15 @@ Begin
   TermAddLine(TP,
    '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
  End;
+ { DEVENV solution.sln : SK_CMD/SK_POWERSHELL/SK_NCOMMANDER seulement       }
+ { (verifie de la meme facon que les autres blocs conditionnels ci-dessus). }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
+    (TP.Shell = SK_NCOMMANDER) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Ouvrir une solution ---');
+  TermAddLine(TP,
+   '  DEVENV solution.sln    Ouvrir dans l''Explorateur de solutions');
+ End;
  { NES/ATARI2600/C64/COCO3/WIN16, MOUNT et tous les diagnostics OS/2 LX/     }
  { Windows 16 bits : SK_CMD et SK_NCOMMANDER uniquement (verifie de la      }
  { meme facon). }
@@ -67439,6 +67448,36 @@ Begin
   TermAddLine(TP, 'Etat du journal EMUINT13 : ' + State);
   TermAddLine(TP, 'Syntaxe : LOG /?');
  End;
+End;
+
+{ DEVENV solution.sln (2026-09-04, demande explicite de l'utilisateur) :   }
+{ ouvre solution.sln dans l'Explorateur de solutions depuis le terminal    }
+{ (Invite de commande/PowerShell dev/Norton Commander) - meme comportement }
+{ que l'argument /SolutionFile en ligne de commande ou le double-clic sur  }
+{ un .sln (voir OpenSolutionFile). ClearExplorer y est deja appele en tete,}
+{ donc une solution deja chargee est automatiquement remplacee. }
+Procedure TermCmd_DEVENV(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ SlnPath: String;
+Begin
+ SlnPath := YamlUnquote(TermTrim(TermExtractParam(ParamStr, 1)));
+ If SlnPath = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : DEVENV solution.sln');
+  Exit;
+ End;
+ SlnPath := FExpand(SlnPath);
+ If UpCaseStr(ExtractFileExt(SlnPath)) <> '.SLN' Then Begin
+  TermAddLine(TP, 'DEVENV : ''' + SlnPath + ''' n''est pas un fichier .sln.');
+  Exit;
+ End;
+ If Not FileExists(SlnPath) Then Begin
+  TermAddLine(TP, 'DEVENV : fichier introuvable : ' + SlnPath);
+  Exit;
+ End;
+ StartPage.Visible := False;
+ FullRepaintNeeded := True;
+ OpenSolutionFile(SlnPath);
+ TermAddLine(TP, 'Solution ouverte dans l''Explorateur de solutions : ' + SlnPath);
 End;
 
 { ============================================================
@@ -67723,7 +67762,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 107;
+ PS_CMD_ALIASES = 108;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -67809,6 +67848,7 @@ Const
   'START-NESPROGRAM',
   'START-LINUXPROGRAM',
   'LOG',
+  'DEVENV',
   'HELP','GET-HELP','?'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
@@ -67895,6 +67935,7 @@ Const
   78,
   79,
   60,
+  85,
   61,61,61
  );
 
@@ -68252,6 +68293,8 @@ Begin
     TermCmd_LXScan(TP, ParamStr)
    Else If CurrCmd = 'LXGET' Then
     TermCmd_LXGet(TP, ParamStr)
+   Else If CurrCmd = 'DEVENV' Then
+    TermCmd_DEVENV(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else Begin
@@ -68378,6 +68421,7 @@ Begin
     78: TermCmd_StartNesProgram(TP, ParamStr);       { START-NESPROGRAM }
     79: TermCmd_StartLinuxProgram(TP, ParamStr);      { START-LINUXPROGRAM }
     60: TermCmd_LOG(TP, ParamStr);
+    85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
    Else Begin
     { Meme repli que le shell CMD (voir plus haut) : un vrai PowerShell }
@@ -68640,6 +68684,8 @@ Begin
    TermCmd_LXScan(TP, ParamStr)
   Else If CurrCmd = 'LXGET' Then
    TermCmd_LXGet(TP, ParamStr)
+  Else If CurrCmd = 'DEVENV' Then
+   TermCmd_DEVENV(TP, ParamStr)
   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
    TermCmd_HELP(TP)
   Else Begin
