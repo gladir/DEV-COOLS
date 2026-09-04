@@ -18,24 +18,6 @@ DS=54DDh
 ES=39F6h
 SS=B5F6h
 
-[SST-F6_6-div-dl-0002]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F4h 9Dh BBh 76h 65h B9h 9Ch E4h BAh E9h A4h BEh 8Bh 9Dh BFh A0h 13h BDh D2h 42h B8h FBh DDh 8Eh D8h B8h 95h 58h 8Eh C0h B8h 73h AFh 8Eh D0h BCh C1h 1Ah B8h D2h 1Eh F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=C921h
-BX=6576h
-CX=E49Ch
-DX=A4E9h
-SI=9D8Bh
-DI=13A0h
-BP=42D2h
-SP=1AC1h
-DS=DDFBh
-ES=5895h
-SS=AF73h
-
 [SST-F6_6-div-byte-ds-bx-5Ch-0003]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -756,21 +738,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-0055]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D2h FCh 9Dh BBh B3h 15h B9h 48h F8h BAh D5h A4h BEh 31h 72h BFh 39h C4h BDh FBh 9Ah B8h 10h A8h 8Eh D8h B8h 69h 81h 8Eh C0h B8h E2h A6h 8Eh D0h BCh EBh 0Dh B8h 2Fh E4h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F6_6-div-dh-0056]
@@ -1778,21 +1745,6 @@ SP=314Ah
 DS=2B66h
 ES=B085h
 SS=A7AFh
-
-[SST-F6_6-div-bl-0118]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F0h 9Dh BBh 14h CBh B9h 00h 00h BAh 8Ch 34h BEh BFh 55h BFh 79h 8Bh BDh EBh C2h B8h 04h 40h 8Eh D8h B8h 7Bh FDh 8Eh C0h B8h 35h 5Bh 8Eh D0h BCh FFh 4Dh B8h 82h 73h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ds-3A0Fh-0119]
 EntryPoint: 1000:0000
@@ -3459,24 +3411,6 @@ DS=55B3h
 ES=9E30h
 SS=0072h
 
-[SST-F6_6-div-dl-0230]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F4h 9Dh BBh 52h 96h B9h E6h 17h BAh DDh 6Ah BEh 41h 42h BFh 75h 23h BDh ADh CEh B8h 3Bh D7h 8Eh D8h B8h FDh 9Dh 8Eh C0h B8h 3Bh FFh 8Eh D0h BCh 60h 16h B8h 6Fh C2h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=32E1h
-BX=9652h
-CX=17E6h
-DX=6ADDh
-SI=4241h
-DI=2375h
-BP=CEADh
-SP=1660h
-DS=D73Bh
-ES=9DFDh
-SS=FF3Bh
-
 [SST-F6_6-div-byte-ds-bp-si-3Eh-0231]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -3497,21 +3431,6 @@ DS=FB21h
 ES=09C9h
 SS=C8FFh
 
-[SST-F6_6-div-dl-0232]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F4h 9Dh BBh BAh B9h B9h 50h 69h BAh 9Ch F0h BEh 2Ch F7h BFh 28h 3Eh BDh F3h F8h B8h F5h 96h 8Eh D8h B8h B8h A8h 8Eh C0h B8h 59h 8Eh 8Eh D0h BCh 11h EEh B8h C1h F2h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-es-bp-si-6DE3h-0233]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -3527,21 +3446,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-0234]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F4h 9Dh BBh F0h 4Dh B9h A6h F3h BAh 92h F7h BEh E5h 17h BFh A8h 9Ch BDh DFh 01h B8h 50h 71h 8Eh D8h B8h FCh E0h 8Eh C0h B8h 6Ah A7h 8Eh D0h BCh E9h 91h B8h 62h F0h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ss-bp-4DFAh-0236]
@@ -3560,24 +3464,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-0238]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F8h 9Dh BBh 06h 02h B9h D0h 0Ch BAh 8Ah F2h BEh EEh E7h BFh EEh E7h BDh D8h 18h B8h CDh BDh 8Eh D8h B8h DEh 53h 8Eh C0h B8h 6Fh 35h 8Eh D0h BCh 9Fh 61h B8h 00h 00h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=0000h
-BX=0206h
-CX=0CD0h
-DX=F28Ah
-SI=E7EEh
-DI=E7EEh
-BP=18D8h
-SP=619Fh
-DS=BDCDh
-ES=53DEh
-SS=356Fh
 
 [SST-F6_6-div-byte-ds-bx-1DDBh-0239]
 EntryPoint: 1000:0000
@@ -3872,21 +3758,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-0257]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F8h 9Dh BBh C2h 64h B9h 5Eh 45h BAh 88h E2h BEh E1h F0h BFh D9h A8h BDh 7Ch 28h B8h D1h 3Eh 8Eh D8h B8h 5Dh 4Fh 8Eh C0h B8h A5h 44h 8Eh D0h BCh 6Ch EAh B8h BEh DEh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ss-bp-si-0259]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -4032,24 +3903,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-0270]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F4h 9Dh BBh E0h 6Ch B9h 1Ah 3Bh BAh FEh E3h BEh 1Dh 6Ch BFh 13h 0Bh BDh 33h 9Ah B8h 93h 91h 8Eh D8h B8h B7h 14h 8Eh C0h B8h 18h 65h 8Eh D0h BCh 4Eh 86h B8h 64h 43h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=EA43h
-BX=6CE0h
-CX=3B1Ah
-DX=E3FEh
-SI=6C1Dh
-DI=0B13h
-BP=9A33h
-SP=864Eh
-DS=9193h
-ES=14B7h
-SS=6518h
 
 [SST-F6_6-div-byte-ds-bx-di-4Dh-0273]
 EntryPoint: 1000:0000
@@ -4228,21 +4081,6 @@ SP=8F35h
 DS=E209h
 ES=B569h
 SS=AA4Bh
-
-[SST-F6_6-div-bl-0284]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h F8h 9Dh BBh 6Fh 53h B9h FCh 81h BAh 36h 36h BEh 00h 00h BFh 1Fh 2Ch BDh 03h E9h B8h BAh B1h 8Eh D8h B8h EAh D5h 8Eh C0h B8h 41h 9Fh 8Eh D0h BCh 78h D4h B8h 4Ch 83h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-es-bp-di-61h-0285]
 EntryPoint: 1000:0000
@@ -5374,24 +5212,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-0360]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F4h 9Dh BBh E4h 6Fh B9h 90h 3Ch BAh 4Ah 5Bh BEh 9Fh FEh BFh 75h F4h BDh CBh 10h B8h 58h 9Bh 8Eh D8h B8h E2h C3h 8Eh C0h B8h 88h 5Fh 8Eh D0h BCh 1Dh 26h B8h 14h A0h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=A8B3h
-BX=6FE4h
-CX=3C90h
-DX=5B4Ah
-SI=FE9Fh
-DI=F475h
-BP=10CBh
-SP=261Dh
-DS=9B58h
-ES=C3E2h
-SS=5F88h
-
 [SST-F6_6-div-dh-0361]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -5998,21 +5818,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-0404]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h FCh 9Dh BBh 45h 35h B9h 62h 9Dh BAh 82h 9Bh BEh 78h 1Dh BFh A9h D9h BDh 82h 33h B8h ABh 99h 8Eh D8h B8h 5Ah C9h 8Eh C0h B8h F3h 24h 8Eh D0h BCh 43h 34h B8h ACh 49h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-ah-0405]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -6027,24 +5832,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-0406]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h FCh 9Dh BBh CAh 67h B9h 9Eh 1Ah BAh 47h 0Bh BEh 5Eh DCh BFh 92h B5h BDh 80h F3h B8h 72h 2Eh 8Eh D8h B8h A3h A2h 8Eh C0h B8h 9Bh AAh 8Eh D0h BCh 2Ah 65h B8h 00h 00h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=0000h
-BX=67CAh
-CX=1A9Eh
-DX=0B47h
-SI=DC5Eh
-DI=B592h
-BP=F380h
-SP=652Ah
-DS=2E72h
-ES=A2A3h
-SS=AA9Bh
 
 [SST-F6_6-div-byte-ss-bp-si-6E02h-0407]
 EntryPoint: 1000:0000
@@ -7237,21 +7024,6 @@ DS=6A4Ch
 ES=3811h
 SS=603Ch
 
-[SST-F6_6-div-dl-0488]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h FCh 9Dh BBh C2h 8Eh B9h D6h 9Eh BAh 12h 34h BEh 55h D7h BFh 2Fh 04h BDh E0h 23h B8h D1h 2Fh 8Eh D8h B8h 55h 9Eh 8Eh C0h B8h 65h 6Dh 8Eh D0h BCh 4Bh 39h B8h 3Ch 49h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-bx-0489]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -7938,21 +7710,6 @@ DS=80E0h
 ES=08ADh
 SS=BDABh
 
-[SST-F6_6-div-bl-0531]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 87h F4h 9Dh BBh 4Ah 44h B9h F6h 61h BAh 40h 2Fh BEh 12h 6Eh BFh B2h 62h BDh 69h 06h B8h 5Ch A8h 8Eh D8h B8h 8Dh 42h 8Eh C0h B8h EEh 43h 8Eh D0h BCh 7Eh F2h B8h 05h C2h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-bx-di-2C03h-0532]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -8355,24 +8112,6 @@ SP=BBE4h
 DS=6B3Dh
 ES=2436h
 SS=992Ch
-
-[SST-F6_6-div-bl-0557]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh 3Bh EEh B9h 10h B7h BAh 72h 02h BEh B6h A8h BFh CCh 5Ch BDh 6Bh B0h B8h 3Ah 16h 8Eh D8h B8h 1Eh 68h 8Eh C0h B8h A0h 53h 8Eh D0h BCh 81h 23h B8h 01h 14h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=2F56h
-BX=EE3Bh
-CX=B710h
-DX=0272h
-SI=A8B6h
-DI=5CCCh
-BP=B06Bh
-SP=2381h
-DS=163Ah
-ES=681Eh
-SS=53A0h
 
 [SST-F6_6-div-byte-ds-bx-0558]
 EntryPoint: 1000:0000
@@ -9906,21 +9645,6 @@ DS=3636h
 ES=75A1h
 SS=8772h
 
-[SST-F6_6-div-dl-0667]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h FCh 9Dh BBh AAh 74h B9h 00h 00h BAh 5Eh 33h BEh 00h 00h BFh CBh 03h BDh 7Dh BEh B8h CEh F9h 8Eh D8h B8h A4h C4h 8Eh C0h B8h EDh DBh 8Eh D0h BCh 37h 48h B8h 55h EFh F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-3F31h-0668]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -10044,24 +9768,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-0676]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh EBh A7h B9h 7Ch AFh BAh 02h E5h BEh 77h DCh BFh 40h B7h BDh 05h 47h B8h F9h ADh 8Eh D8h B8h 08h 67h 8Eh C0h B8h D8h 6Ah 8Eh D0h BCh 00h 00h B8h 22h 38h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=233Dh
-BX=A7EBh
-CX=AF7Ch
-DX=E502h
-SI=DC77h
-DI=B740h
-BP=4705h
-SP=0000h
-DS=ADF9h
-ES=6708h
-SS=6AD8h
 
 [SST-F6_6-div-byte-ds-si-3h-0677]
 EntryPoint: 1000:0000
@@ -10213,21 +9919,6 @@ SP=C765h
 DS=0B1Eh
 ES=57ABh
 SS=C7AEh
-
-[SST-F6_6-div-bl-0687]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F4h 9Dh BBh 43h 3Ch B9h F4h 94h BAh ECh E2h BEh 3Eh C3h BFh B3h A0h BDh 84h 66h B8h 4Dh 21h 8Eh D8h B8h C1h 0Ch 8Eh C0h B8h 50h 1Dh 8Eh D0h BCh DDh 7Ch B8h B4h 55h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ss-bp-595Dh-0688]
 EntryPoint: 1000:0000
@@ -11246,21 +10937,6 @@ DS=FAEBh
 ES=2AEBh
 SS=4B5Dh
 
-[SST-F6_6-div-dl-0754]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh 3Ch 1Ch B9h D2h 5Eh BAh 2Ch C7h BEh 8Ch 04h BFh ADh 3Ah BDh 00h 00h B8h 02h 75h 8Eh D8h B8h 45h 08h 8Eh C0h B8h B5h 8Fh 8Eh D0h BCh 3Ah A8h B8h 2Eh A5h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-es-bx-0755]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -11320,21 +10996,6 @@ SP=17ADh
 DS=D4E3h
 ES=2FA8h
 SS=BBE3h
-
-[SST-F6_6-div-bl-0758]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h FCh 9Dh BBh 7Ch 69h B9h CEh E6h BAh 46h F7h BEh 77h 0Fh BFh 07h 13h BDh D8h 28h B8h E4h 48h 8Eh D8h B8h 0Ah D6h 8Eh C0h B8h 71h 2Fh 8Eh D0h BCh CAh D3h B8h B8h D7h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ds-bx-di-38F2h-0759]
 EntryPoint: 1000:0000
@@ -11459,21 +11120,6 @@ SP=BE84h
 DS=FD70h
 ES=112Ch
 SS=012Dh
-
-[SST-F6_6-div-dl-0766]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh E7h C2h B9h 6Ah F5h BAh 0Eh 2Fh BEh CDh 68h BFh 59h 5Ah BDh ABh 99h B8h 06h 3Ch 8Eh D8h B8h 8Eh 1Bh 8Eh C0h B8h 2Bh 04h 8Eh D0h BCh CCh D0h B8h ECh 4Fh F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ss-bp-2Ah-0767]
 EntryPoint: 1000:0000
@@ -11901,24 +11547,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-0793]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F8h 9Dh BBh F5h 40h B9h C0h 23h BAh 62h E7h BEh 14h 7Dh BFh 5Bh BBh BDh 3Eh D8h B8h EFh 4Dh 8Eh D8h B8h D9h 10h 8Eh C0h B8h 5Fh ACh 8Eh D0h BCh 0Dh 7Dh B8h 90h 01h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=9B01h
-BX=40F5h
-CX=23C0h
-DX=E762h
-SI=7D14h
-DI=BB5Bh
-BP=D83Eh
-SP=7D0Dh
-DS=4DEFh
-ES=10D9h
-SS=AC5Fh
 
 [SST-F6_6-div-byte-ds-bx-di-7D3Eh-0794]
 EntryPoint: 1000:0000
@@ -12555,21 +12183,6 @@ DS=C994h
 ES=E720h
 SS=EB17h
 
-[SST-F6_6-div-bl-0837]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F4h 9Dh BBh 37h 00h B9h 8Eh F8h BAh E6h F8h BEh BEh 62h BFh E9h 06h BDh 35h D0h B8h B0h A4h 8Eh D8h B8h 0Ah BDh 8Eh C0h B8h 6Dh 46h 8Eh D0h BCh 70h F4h B8h D2h BFh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-ah-0838]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -13011,24 +12624,6 @@ DS=8792h
 ES=308Ch
 SS=D05Eh
 
-[SST-F6_6-div-bl-0868]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F4h 9Dh BBh B8h 91h B9h ACh D1h BAh 0Ah 5Dh BEh A9h 2Eh BFh 53h 9Fh BDh 69h F5h B8h 9Ch EEh 8Eh D8h B8h D5h 39h 8Eh C0h B8h EFh 50h 8Eh D0h BCh 62h 25h B8h 95h 95h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=15D0h
-BX=91B8h
-CX=D1ACh
-DX=5D0Ah
-SI=2EA9h
-DI=9F53h
-BP=F569h
-SP=2562h
-DS=EE9Ch
-ES=39D5h
-SS=50EFh
-
 [SST-F6_6-div-byte-ss-bp-si-0871]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -13154,21 +12749,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-dl-0879]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F0h 9Dh BBh AFh D7h B9h E0h FDh BAh 1Dh 58h BEh E2h D7h BFh 56h 3Ah BDh 84h 66h B8h D9h 1Ch 8Eh D8h B8h BCh 51h 8Eh C0h B8h D7h 3Dh 8Eh D0h BCh 72h CEh B8h 56h 44h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-dh-0880]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -13260,24 +12840,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-0885]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F8h 9Dh BBh BEh CBh B9h 0Eh 5Fh BAh C0h D5h BEh 06h CCh BFh BFh C3h BDh 00h 00h B8h 8Ah 2Bh 8Eh D8h B8h 63h 9Bh 8Eh C0h B8h 34h BCh 8Eh D0h BCh D1h FCh B8h 3Bh 09h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=530Ch
-BX=CBBEh
-CX=5F0Eh
-DX=D5C0h
-SI=CC06h
-DI=C3BFh
-BP=0000h
-SP=FCD1h
-DS=2B8Ah
-ES=9B63h
-SS=BC34h
 
 [SST-F6_6-div-ch-0886]
 EntryPoint: 1000:0000
@@ -13500,24 +13062,6 @@ SP=E353h
 DS=03BAh
 ES=08C2h
 SS=E434h
-
-[SST-F6_6-div-dl-0902]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F4h 9Dh BBh D5h 3Ch B9h D8h C9h BAh E6h 88h BEh FEh 1Bh BFh 43h 8Bh BDh 00h 00h B8h 47h 91h 8Eh D8h B8h 62h 3Ah 8Eh C0h B8h F8h 33h 8Eh D0h BCh 48h 22h B8h 33h 33h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=E338h
-BX=3CD5h
-CX=C9D8h
-DX=88E6h
-SI=1BFEh
-DI=8B43h
-BP=0000h
-SP=2248h
-DS=9147h
-ES=3A62h
-SS=33F8h
 
 [SST-F6_6-div-byte-es-bp-di-4Dh-0903]
 EntryPoint: 1000:0000
@@ -14051,21 +13595,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-0938]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h FCh 9Dh BBh 7Bh 54h B9h E0h B5h BAh 45h A8h BEh 0Bh E3h BFh A8h 73h BDh ECh 47h B8h 2Ah 8Eh 8Eh D8h B8h B3h 0Eh 8Eh C0h B8h 42h 36h 8Eh D0h BCh 1Fh C4h B8h ECh BBh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F6_6-div-dl-0939]
@@ -14997,24 +14526,6 @@ DS=913Eh
 ES=1002h
 SS=A59Eh
 
-[SST-F6_6-div-bl-1004]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F4h 9Dh BBh 26h D1h B9h 14h A5h BAh E3h 94h BEh E8h 60h BFh B4h 71h BDh D6h 13h B8h 22h 4Ch 8Eh D8h B8h EEh FBh 8Eh C0h B8h 5Ch F6h 8Eh D0h BCh DBh E6h B8h 86h 11h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=0276h
-BX=D126h
-CX=A514h
-DX=94E3h
-SI=60E8h
-DI=71B4h
-BP=13D6h
-SP=E6DBh
-DS=4C22h
-ES=FBEEh
-SS=F65Ch
-
 [SST-F6_6-div-al-1005]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -15372,24 +14883,6 @@ DS=E196h
 ES=FBECh
 SS=C701h
 
-[SST-F6_6-div-bl-1031]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F0h 9Dh BBh 53h E5h B9h 5Ch 41h BAh 30h 46h BEh CEh 45h BFh F7h DBh BDh 4Ch F9h B8h E2h 15h 8Eh D8h B8h 34h 89h 8Eh C0h B8h 25h 30h 8Eh D0h BCh 00h 00h B8h 01h 02h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=0F06h
-BX=E553h
-CX=415Ch
-DX=4630h
-SI=45CEh
-DI=DBF7h
-BP=F94Ch
-SP=0000h
-DS=15E2h
-ES=8934h
-SS=3025h
-
 [SST-F6_6-div-byte-es-bp-si-57h-1032]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -15571,24 +15064,6 @@ SP=00C8h
 DS=E52Fh
 ES=2242h
 SS=36DBh
-
-[SST-F6_6-div-bl-1044]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F0h 9Dh BBh B7h 9Dh B9h 34h 39h BAh 4Eh E2h BEh AFh 20h BFh E1h 16h BDh 14h 21h B8h BEh 81h 8Eh D8h B8h DFh 3Fh 8Eh C0h B8h 62h 7Ch 8Eh D0h BCh D5h 97h B8h DDh 9Bh F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=07DAh
-BX=9DB7h
-CX=3934h
-DX=E24Eh
-SI=20AFh
-DI=16E1h
-BP=2114h
-SP=97D5h
-DS=81BEh
-ES=3FDFh
-SS=7C62h
 
 [SST-F6_6-div-byte-ss-bp-58h-1045]
 EntryPoint: 1000:0000
@@ -15803,24 +15278,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1062]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh D6h 2Ah B9h 1Ah D6h BAh D0h 93h BEh 31h 86h BFh 19h C2h BDh CFh DBh B8h 8Eh 66h 8Eh D8h B8h 2Dh 92h 8Eh C0h B8h 4Fh C9h 8Eh D0h BCh AAh E5h B8h 7Ah 3Bh F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=2A49h
-BX=2AD6h
-CX=D61Ah
-DX=93D0h
-SI=8631h
-DI=C219h
-BP=DBCFh
-SP=E5AAh
-DS=668Eh
-ES=922Dh
-SS=C94Fh
 
 [SST-F6_6-div-byte-ss-bp-71h-1064]
 EntryPoint: 1000:0000
@@ -16054,21 +15511,6 @@ SP=DA08h
 DS=A36Dh
 ES=0FAFh
 SS=7EDAh
-
-[SST-F6_6-div-dl-1088]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D6h F0h 9Dh BBh 90h 81h B9h 88h 51h BAh 62h 48h BEh 8Ch 3Ah BFh 31h 14h BDh 74h 06h B8h BCh 9Bh 8Eh D8h B8h E2h 75h 8Eh C0h B8h 7Bh 78h 8Eh D0h BCh CAh 1Ah B8h 31h A3h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ss-bp-si-1089]
 EntryPoint: 1000:0000
@@ -16453,21 +15895,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-1113]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F8h 9Dh BBh 82h 67h B9h 4Eh 9Dh BAh 53h B9h BEh 5Ch F6h BFh 09h 17h BDh 1Dh 3Eh B8h E3h 5Fh 8Eh D8h B8h 81h F9h 8Eh C0h B8h B7h DFh 8Eh D0h BCh 9Dh 6Dh B8h 8Fh DFh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ss-bp-B0Ah-1115]
@@ -16917,21 +16344,6 @@ SP=EF95h
 DS=E4EAh
 ES=B57Fh
 SS=CFC2h
-
-[SST-F6_6-div-bl-1143]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h FCh 9Dh BBh 0Eh 82h B9h 00h 00h BAh 0Fh 32h BEh 00h 00h BFh B9h 8Ah BDh 8Eh 2Fh B8h CDh 7Ch 8Eh D8h B8h BDh 2Bh 8Eh C0h B8h 65h BBh 8Eh D0h BCh 28h 88h B8h EFh 9Bh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-ah-1144]
 EntryPoint: 1000:0000
@@ -18363,21 +17775,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1234]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh 5Ah ACh B9h EEh 16h BAh 3Ah E6h BEh 3Ch 6Bh BFh 16h 53h BDh 00h 00h B8h 4Ah C4h 8Eh D8h B8h B3h 88h 8Eh C0h B8h 35h 31h 8Eh D0h BCh 9Eh D2h B8h 1Bh ACh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-bl-1235]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -18483,24 +17880,6 @@ SP=2FAEh
 DS=0B6Ah
 ES=9EB3h
 SS=C9E1h
-
-[SST-F6_6-div-bl-1241]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F0h 9Dh BBh 6Bh 29h B9h 88h B0h BAh 90h DEh BEh 83h 5Dh BFh BBh 39h BDh 68h 10h B8h 6Fh 2Eh 8Eh D8h B8h A5h 5Ah 8Eh C0h B8h F6h 56h 8Eh D0h BCh 0Eh 2Eh B8h 61h 4Ch F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=4FB6h
-BX=296Bh
-CX=B088h
-DX=DE90h
-SI=5D83h
-DI=39BBh
-BP=1068h
-SP=2E0Eh
-DS=2E6Fh
-ES=5AA5h
-SS=56F6h
 
 [SST-F6_6-div-byte-ds-di-7Fh-1242]
 EntryPoint: 1000:0000
@@ -18644,24 +18023,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-dl-1250]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h FCh 9Dh BBh 65h C7h B9h 2Ch C5h BAh D5h 69h BEh 00h 00h BFh F9h 7Bh BDh E0h 47h B8h B3h 42h 8Eh D8h B8h C3h BDh 8Eh C0h B8h D4h 41h 8Eh D0h BCh C6h 0Dh B8h F0h 09h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=C90Bh
-BX=C765h
-CX=C52Ch
-DX=69D5h
-SI=0000h
-DI=7BF9h
-BP=47E0h
-SP=0DC6h
-DS=42B3h
-ES=BDC3h
-SS=41D4h
-
 [SST-F6_6-div-dh-1251]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -18747,24 +18108,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-dl-1258]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F8h 9Dh BBh B7h 9Ah B9h 8Eh F2h BAh CAh 7Dh BEh 00h 00h BFh 2Eh BCh BDh 25h 88h B8h FEh 30h 8Eh D8h B8h 45h 49h 8Eh C0h B8h F8h FEh 8Eh D0h BCh 11h 81h B8h C7h 69h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=0B86h
-BX=9AB7h
-CX=F28Eh
-DX=7DCAh
-SI=0000h
-DI=BC2Eh
-BP=8825h
-SP=8111h
-DS=30FEh
-ES=4945h
-SS=FEF8h
-
 [SST-F6_6-div-bh-1259]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -18797,24 +18140,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1261]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F8h 9Dh BBh 84h B1h B9h E4h 1Ah BAh E1h 3Ah BEh 6Bh A6h BFh 00h 00h BDh 39h 31h B8h FCh 45h 8Eh D8h B8h 35h C8h 8Eh C0h B8h 27h E6h 8Eh D0h BCh 8Dh 9Fh B8h D8h 77h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=5088h
-BX=B184h
-CX=1AE4h
-DX=3AE1h
-SI=A66Bh
-DI=0000h
-BP=3139h
-SP=9F8Dh
-DS=45FCh
-ES=C835h
-SS=E627h
 
 [SST-F6_6-div-byte-ds-bx-di-1263]
 EntryPoint: 1000:0000
@@ -19055,21 +18380,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-1277]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h FCh 9Dh BBh 56h FBh B9h A0h B1h BAh 42h DAh BEh C0h B4h BFh 96h AEh BDh 49h 28h B8h 3Eh 88h 8Eh D8h B8h CCh D9h 8Eh C0h B8h 77h 4Fh 8Eh D0h BCh 19h B4h B8h C9h B6h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ds-bx-3Ch-1278]
@@ -19577,24 +18887,6 @@ DS=3518h
 ES=79A2h
 SS=AC69h
 
-[SST-F6_6-div-bl-1315]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h F0h 9Dh BBh B5h 8Bh B9h 88h 2Ah BAh 18h A6h BEh 9Ch 2Fh BFh B2h 75h BDh 29h 9Bh B8h E8h 15h 8Eh D8h B8h D7h 2Bh 8Eh C0h B8h 35h D5h 8Eh D0h BCh 69h 1Ah B8h 41h 79h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=5AABh
-BX=8BB5h
-CX=2A88h
-DX=A618h
-SI=2F9Ch
-DI=75B2h
-BP=9B29h
-SP=1A69h
-DS=15E8h
-ES=2BD7h
-SS=D535h
-
 [SST-F6_6-div-cl-1317]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -20038,21 +19330,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1345]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh 67h 45h B9h F6h EBh BAh 16h 54h BEh 35h A0h BFh 23h 6Bh BDh 18h 2Bh B8h 2Ch C2h 8Eh D8h B8h 5Ch E0h 8Eh C0h B8h 2Bh A5h 8Eh D0h BCh 27h 73h B8h E1h A8h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-bx-si-1346]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -20230,24 +19507,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1362]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F4h 9Dh BBh 22h C7h B9h 6Ch C1h BAh D6h 85h BEh 3Ah 65h BFh 01h FAh BDh 2Bh 3Dh B8h BFh 38h 8Eh D8h B8h D5h 6Eh 8Eh C0h B8h FBh DAh 8Eh D0h BCh 24h 87h B8h 8Ah 52h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=9E62h
-BX=C722h
-CX=C16Ch
-DX=85D6h
-SI=653Ah
-DI=FA01h
-BP=3D2Bh
-SP=8724h
-DS=38BFh
-ES=6ED5h
-SS=DAFBh
 
 [SST-F6_6-div-ch-1363]
 EntryPoint: 1000:0000
@@ -20674,24 +19933,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1391]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F0h 9Dh BBh 1Fh 7Fh B9h 86h 34h BAh D7h B0h BEh 7Ch F5h BFh 88h 88h BDh 5Ah D8h B8h F6h 81h 8Eh D8h B8h C6h F0h 8Eh C0h B8h A8h FEh 8Eh D0h BCh D7h 88h B8h A3h 81h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=4D9Ah
-BX=7F1Fh
-CX=3486h
-DX=B0D7h
-SI=F57Ch
-DI=8888h
-BP=D85Ah
-SP=88D7h
-DS=81F6h
-ES=F0C6h
-SS=FEA8h
 
 [SST-F6_6-div-dl-1392]
 EntryPoint: 1000:0000
@@ -21253,24 +20494,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1429]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F4h 9Dh BBh 8Dh 6Ah B9h DEh 24h BAh 3Fh 57h BEh 4Eh C9h BFh 00h B0h BDh 1Eh C2h B8h B4h B5h 8Eh D8h B8h ADh DFh 8Eh C0h B8h A9h F2h 8Eh D0h BCh 2Ch 3Ah B8h 60h 01h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=4602h
-BX=6A8Dh
-CX=24DEh
-DX=573Fh
-SI=C94Eh
-DI=B000h
-BP=C21Eh
-SP=3A2Ch
-DS=B5B4h
-ES=DFADh
-SS=F2A9h
-
 [SST-F6_6-div-byte-ss-bp-di-4Ah-1430]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -21368,21 +20591,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1436]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F8h 9Dh BBh 17h CEh B9h 96h 8Bh BAh 81h C7h BEh 0Ch 99h BFh 5Fh E7h BDh DCh 4Eh B8h DAh 43h 8Eh D8h B8h 02h 6Dh 8Eh C0h B8h D9h 69h 8Eh D0h BCh F2h A4h B8h B2h 4Ah F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-bx-di-1437]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -21477,21 +20685,6 @@ Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F8h 9Dh BBh F3h 8Ch B9h 2Eh ABh BAh 9Ah D6h BEh 77h 2Dh BFh 8Ch DDh BDh 3Fh E4h B8h FFh 0Dh 8Eh D8h B8h 1Bh DAh 8Eh C0h B8h A1h AFh 8Eh D0h BCh 00h 00h B8h 45h AEh F6h 32h
 Data in AFFF:0BD6:
 DB 5Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-1447]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F4h 9Dh BBh 00h 00h B9h 46h 2Ch BAh 21h BFh BEh 26h 6Eh BFh 09h AEh BDh DAh 3Ch B8h CAh A0h 8Eh D8h B8h EDh 59h 8Eh C0h B8h EFh 45h 8Eh D0h BCh A2h 26h B8h 00h 00h F6h F3h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -21646,21 +20839,6 @@ SP=7795h
 DS=2955h
 ES=6C95h
 SS=206Fh
-
-[SST-F6_6-div-bl-1458]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F0h 9Dh BBh 00h 00h B9h 00h 00h BAh 37h CCh BEh A7h BFh BFh 46h A9h BDh BEh 65h B8h DDh 2Fh 8Eh D8h B8h B8h 69h 8Eh C0h B8h 4Fh A1h 8Eh D0h BCh 5Ah B6h B8h 72h 3Fh F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ds-bp-di-4D1Fh-1459]
 EntryPoint: 1000:0000
@@ -21954,24 +21132,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1478]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h FCh 9Dh BBh F7h EDh B9h C2h 53h BAh F2h 5Fh BEh 90h 50h BFh A3h 27h BDh 64h EDh B8h A6h 65h 8Eh D8h B8h 6Fh 0Dh 8Eh C0h B8h 7Eh 55h 8Eh D0h BCh 00h 00h B8h F8h 77h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=DC7Eh
-BX=EDF7h
-CX=53C2h
-DX=5FF2h
-SI=5090h
-DI=27A3h
-BP=ED64h
-SP=0000h
-DS=65A6h
-ES=0D6Fh
-SS=557Eh
 
 [SST-F6_6-div-byte-es-bx-481Dh-1479]
 EntryPoint: 1000:0000
@@ -22346,21 +21506,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1501]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h FCh 9Dh BBh ADh 1Ch B9h CEh F8h BAh D7h 03h BEh E5h 97h BFh BCh 93h BDh 78h 83h B8h F8h 3Dh 8Eh D8h B8h F4h 9Ch 8Eh C0h B8h 3Ah 8Ch 8Eh D0h BCh 94h FEh B8h E3h E3h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-bx-di-2Fh-1502]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -22507,24 +21652,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1512]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h F4h 9Dh BBh 95h 47h B9h 76h 27h BAh 35h 0Fh BEh 9Bh F7h BFh 99h 4Eh BDh 8Bh 8Fh B8h 28h C4h 8Eh D8h B8h 61h 67h 8Eh C0h B8h 8Bh 70h 8Eh D0h BCh E1h DBh B8h 27h 30h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=1FE8h
-BX=4795h
-CX=2776h
-DX=0F35h
-SI=F79Bh
-DI=4E99h
-BP=8F8Bh
-SP=DBE1h
-DS=C428h
-ES=6761h
-SS=708Bh
 
 [SST-F6_6-div-ch-1513]
 EntryPoint: 1000:0000
@@ -23268,24 +22395,6 @@ DS=4BC7h
 ES=AB33h
 SS=6BAAh
 
-[SST-F6_6-div-dl-1559]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh 6Eh 50h B9h 6Ah 5Ah BAh F5h F6h BEh 3Eh 2Dh BFh 8Bh DCh BDh 98h 5Fh B8h 88h 0Eh 8Eh D8h B8h EBh 9Ch 8Eh C0h B8h B9h 80h 8Eh D0h BCh 2Fh FCh B8h BBh 71h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=CD76h
-BX=506Eh
-CX=5A6Ah
-DX=F6F5h
-SI=2D3Eh
-DI=DC8Bh
-BP=5F98h
-SP=FC2Fh
-DS=0E88h
-ES=9CEBh
-SS=80B9h
-
 [SST-F6_6-div-byte-ss-bx-di-7965h-1560]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -23786,21 +22895,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1597]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F8h 9Dh BBh 9Ah CEh B9h 30h 21h BAh A9h A5h BEh FFh 21h BFh 48h B1h BDh 42h 16h B8h 5Dh 88h 8Eh D8h B8h 88h 8Dh 8Eh C0h B8h 5Eh DDh 8Eh D0h BCh 6Bh 03h B8h E6h F9h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-es-si-2A2h-1598]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -24058,24 +23152,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1616]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F4h 9Dh BBh BEh 0Ah B9h C2h 50h BAh 8Fh 91h BEh 81h DEh BFh F6h 94h BDh ECh 8Dh B8h 9Eh 0Eh 8Eh D8h B8h 1Ah C4h 8Eh C0h B8h DCh 3Bh 8Eh D0h BCh 2Dh E1h B8h 2Dh 10h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=9715h
-BX=0ABEh
-CX=50C2h
-DX=918Fh
-SI=DE81h
-DI=94F6h
-BP=8DECh
-SP=E12Dh
-DS=0E9Eh
-ES=C41Ah
-SS=3BDCh
-
 [SST-F6_6-div-byte-es-bx-si-1617]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -24270,24 +23346,6 @@ SP=A154h
 DS=9A5Eh
 ES=31B8h
 SS=A6C5h
-
-[SST-F6_6-div-dl-1632]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F4h 9Dh BBh 6Fh 19h B9h 4Eh E1h BAh E7h 31h BEh 23h 6Fh BFh 00h 00h BDh FBh 53h B8h 0Ah 63h 8Eh D8h B8h EAh A2h 8Eh C0h B8h 60h 25h 8Eh D0h BCh C3h 81h B8h 70h 4Ah F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=7252h
-BX=196Fh
-CX=E14Eh
-DX=31E7h
-SI=6F23h
-DI=0000h
-BP=53FBh
-SP=81C3h
-DS=630Ah
-ES=A2EAh
-SS=2560h
 
 [SST-F6_6-div-byte-ss-bx-di-4Fh-1634]
 EntryPoint: 1000:0000
@@ -25409,24 +24467,6 @@ DS=1D14h
 ES=6183h
 SS=B133h
 
-[SST-F6_6-div-dl-1707]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh B0h E9h B9h 14h 41h BAh EBh 6Ah BEh C6h 0Bh BFh 3Bh 79h BDh 00h C2h B8h A7h 28h 8Eh D8h B8h 32h 29h 8Eh C0h B8h 99h 34h 8Eh D0h BCh 45h 19h B8h 78h 38h F6h F2h
-BreakPoint: 1000:0035
-Result:
-AX=793Dh
-BX=E9B0h
-CX=4114h
-DX=6AEBh
-SI=0BC6h
-DI=793Bh
-BP=C200h
-SP=1945h
-DS=28A7h
-ES=2932h
-SS=3499h
-
 [SST-F6_6-div-al-1708]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -25703,21 +24743,6 @@ SP=B8D5h
 DS=6117h
 ES=9966h
 SS=8C35h
-
-[SST-F6_6-div-bl-1725]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h FCh 9Dh BBh 08h 69h B9h D8h 13h BAh 5Eh 67h BEh 58h 25h BFh FEh 47h BDh 74h 4Bh B8h 3Dh 7Fh 8Eh D8h B8h 02h 13h 8Eh C0h B8h C2h A3h 8Eh D0h BCh 3Ch 1Ah B8h 1Bh 40h F6h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-ss-di-2319h-1726]
 EntryPoint: 1000:0000
@@ -26079,21 +25104,6 @@ DS=7754h
 ES=67B4h
 SS=20F3h
 
-[SST-F6_6-div-dl-1749]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h F8h 9Dh BBh 05h DEh B9h 7Ah 4Bh BAh 00h 00h BEh 5Ah FFh BFh 56h F1h BDh 7Eh 8Dh B8h 4Eh C5h 8Eh D8h B8h 93h 12h 8Eh C0h B8h 4Eh 88h 8Eh D0h BCh B2h 87h B8h 48h D8h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ds-bx-1751]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -26337,24 +25347,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_6-div-bl-1771]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F8h 9Dh BBh E9h 3Fh B9h B2h 38h BAh F4h A6h BEh C0h 7Fh BFh 89h AEh BDh 8Ch 24h B8h 22h C9h 8Eh D8h B8h 15h 30h 8Eh C0h B8h 92h 20h 8Eh D0h BCh 33h 71h B8h D6h 7Dh F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=3C8Ah
-BX=3FE9h
-CX=38B2h
-DX=A6F4h
-SI=7FC0h
-DI=AE89h
-BP=248Ch
-SP=7133h
-DS=C922h
-ES=3015h
-SS=2092h
 
 [SST-F6_6-div-byte-ds-bx-6185h-1772]
 EntryPoint: 1000:0000
@@ -26760,24 +25752,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-bl-1802]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh 23h AAh B9h ACh 07h BAh 69h A4h BEh D0h 9Fh BFh B9h D2h BDh 0Dh 99h B8h 81h 4Bh 8Eh D8h B8h 54h 1Ch 8Eh C0h B8h 4Ch 70h 8Eh D0h BCh 67h B5h B8h 81h 00h F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=1803h
-BX=AA23h
-CX=07ACh
-DX=A469h
-SI=9FD0h
-DI=D2B9h
-BP=990Dh
-SP=B567h
-DS=4B81h
-ES=1C54h
-SS=704Ch
-
 [SST-F6_6-div-byte-ss-bx-si-59h-1803]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -26854,24 +25828,6 @@ SP=9D68h
 DS=49E4h
 ES=F76Dh
 SS=C787h
-
-[SST-F6_6-div-bl-1807]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h FCh 9Dh BBh F7h A3h B9h F4h CEh BAh C7h D2h BEh 89h D1h BFh 03h FCh BDh E0h 96h B8h 95h C6h 8Eh D8h B8h 61h DDh 8Eh C0h B8h B1h 8Ah 8Eh D0h BCh 20h E0h B8h D1h 8Bh F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=E190h
-BX=A3F7h
-CX=CEF4h
-DX=D2C7h
-SI=D189h
-DI=FC03h
-BP=96E0h
-SP=E020h
-DS=C695h
-ES=DD61h
-SS=8AB1h
 
 [SST-F6_6-div-byte-es-bx-4Ah-1808]
 EntryPoint: 1000:0000
@@ -27827,21 +26783,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_6-div-dl-1873]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F8h 9Dh BBh 9Fh 56h B9h 4Ah B8h BAh B3h 56h BEh 77h 1Ch BFh CEh 22h BDh ECh C4h B8h DEh 26h 8Eh D8h B8h 6Eh FEh 8Eh C0h B8h 42h 12h 8Eh D0h BCh C7h 5Dh B8h A5h B7h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F6_6-div-byte-ss-bp-si-6Ch-1874]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -28400,24 +27341,6 @@ DS=0F57h
 ES=C9B6h
 SS=1D84h
 
-[SST-F6_6-div-bl-1911]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F4h 9Dh BBh 86h 7Ah B9h FAh 8Ah BAh 7Dh 72h BEh E8h 9Ch BFh 95h 8Ch BDh E3h 7Fh B8h 49h 30h 8Eh D8h B8h 87h 37h 8Eh C0h B8h 03h 72h 8Eh D0h BCh 69h 02h B8h F5h 5Ch F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=4FB1h
-BX=7A86h
-CX=8AFAh
-DX=727Dh
-SI=9CE8h
-DI=8C95h
-BP=7FE3h
-SP=0269h
-DS=3049h
-ES=3787h
-SS=7203h
-
 [SST-F6_6-div-byte-ds-954Ch-1912]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -28512,21 +27435,6 @@ SP=87B0h
 DS=3329h
 ES=EBCCh
 SS=A2F9h
-
-[SST-F6_6-div-dl-1917]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F8h 9Dh BBh 27h A7h B9h B2h EBh BAh 33h 8Ah BEh 9Bh D9h BFh 96h 00h BDh C4h 47h B8h 89h 21h 8Eh D8h B8h 4Fh 66h 8Eh C0h B8h A9h BCh 8Eh D0h BCh C4h CAh B8h A4h 99h F6h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F6_6-div-byte-es-bp-si-1F4Fh-1918]
 EntryPoint: 1000:0000
@@ -28843,24 +27751,6 @@ DS=E09Bh
 ES=D203h
 SS=8D38h
 
-[SST-F6_6-div-bl-1940]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F8h 9Dh BBh 5Dh 0Ah B9h DAh 2Eh BAh B9h 2Eh BEh 0Eh 5Fh BFh 00h 00h BDh D0h FAh B8h FAh 98h 8Eh D8h B8h 9Ch 64h 8Eh C0h B8h C9h BDh 8Eh D0h BCh 38h D2h B8h 87h 3Ch F6h F3h
-BreakPoint: 1000:0035
-Result:
-AX=39A6h
-BX=0A5Dh
-CX=2EDAh
-DX=2EB9h
-SI=5F0Eh
-DI=0000h
-BP=FAD0h
-SP=D238h
-DS=98FAh
-ES=649Ch
-SS=BDC9h
-
 [SST-F6_6-div-byte-ss-bp-di-64h-1941]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -29050,21 +27940,6 @@ ExpectedFault: DIVISION0
 EntryPoint: 1000:0000
 Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h F8h 9Dh BBh A5h DFh B9h A6h 68h BAh A3h 2Ch BEh 65h 4Ch BFh 63h 1Fh BDh E5h 02h B8h 19h C6h 8Eh D8h B8h 85h 06h 8Eh C0h B8h 19h B6h 8Eh D0h BCh 6Fh 9Bh B8h DAh CBh F6h F5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_6-div-dl-1953]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h FCh 9Dh BBh 01h 6Bh B9h 24h EAh BAh 00h 00h BEh 8Fh 22h BFh 3Fh 9Bh BDh E2h 6Bh B8h 68h 3Eh 8Eh D8h B8h 84h B0h 8Eh C0h B8h A3h 47h 8Eh D0h BCh 8Dh EFh B8h A5h 05h F6h F2h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -29905,23 +28780,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-di-0006]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F4h 9Dh BBh 38h 8Ch B9h 5Eh BBh BAh 00h 00h BEh 00h 00h BFh DDh DFh BDh A7h 75h B8h DEh 33h 8Eh D8h B8h 3Fh 84h 8Eh C0h B8h 36h 7Eh 8Eh D0h BCh 9Ah 3Fh B8h E7h 60h F3h F6h 39h
-Data in 3A9F:0005:
-DB 73h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-si-778h-0007]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -29959,21 +28817,6 @@ DS=7005h
 ES=D004h
 SS=0394h
 
-[SST-F6_7-idiv-dh-0010]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh 9Eh 6Dh B9h D8h EEh BAh 35h 44h BEh CDh 72h BFh 00h 00h BDh C3h 56h B8h 22h CBh 8Eh D8h B8h ECh ACh 8Eh C0h B8h 73h D1h 8Eh D0h BCh 15h 3Ah B8h 35h C6h F3h F6h FEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-di-2CFh-0011]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -30006,23 +28849,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-1Eh-0015]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F4h 9Dh BBh 10h 97h B9h F2h C6h BAh 9Fh 1Fh BEh 04h 64h BFh 29h 2Fh BDh DFh 20h B8h 7Dh 02h 8Eh D8h B8h 28h CEh 8Eh C0h B8h 85h B5h 8Eh D0h BCh D6h 62h B8h 09h 61h F3h F6h 7Eh E2h
-Data in AFFF:7921:
-DB 77h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-si-4923h-0016]
@@ -30255,23 +29081,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-di-532Ch-0031]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F8h 9Dh BBh FCh C8h B9h 94h 86h BAh 38h 4Ch BEh 63h 6Eh BFh C0h 2Bh BDh 5Fh 78h B8h B5h 4Eh 8Eh D8h B8h 03h ABh 8Eh C0h B8h 1Ch CBh 8Eh D0h BCh 47h 7Dh B8h 47h 7Ch 36h F3h F6h BDh D4h ACh
-Data in D8A5:0004:
-DB 00h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-cl-0032]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -30285,23 +29094,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-si-71h-0033]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F0h 9Dh BBh 7Ch 84h B9h B6h 32h BAh 7Ch BEh BEh 7Ch B5h BFh 71h 5Fh BDh CFh 56h B8h 2Dh A4h 8Eh D8h B8h 51h D9h 8Eh C0h B8h C0h 55h 8Eh D0h BCh A3h 98h B8h AFh 1Ch F3h F6h 78h 71h
-Data in A7D3:0009:
-DB EBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-dh-0034]
@@ -30541,26 +29333,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-es-bp-7Eh-0050]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F8h 9Dh BBh F2h 0Fh B9h C4h 35h BAh 0Fh 8Fh BEh 85h 05h BFh 10h EAh BDh 6Bh 38h B8h A7h BFh 8Eh D8h B8h ADh E5h 8Eh C0h B8h D3h E8h 8Eh D0h BCh 34h 5Fh B8h 9Fh 0Bh 26h F2h F6h 7Eh 7Eh
-Data in E93B:0009:
-DB BEh
-BreakPoint: 1000:0038
-Result:
-AX=052Dh
-BX=0FF2h
-CX=35C4h
-DX=8F0Fh
-SI=0585h
-DI=EA10h
-BP=386Bh
-SP=5F34h
-DS=BFA7h
-ES=E5ADh
-SS=E8D3h
-
 [SST-F6_7-idiv-byte-ss-si-35h-0052]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -30647,26 +29419,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-di-7286h-0059]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F8h 9Dh BBh 51h ECh B9h 9Ah C1h BAh 16h E9h BEh CCh 08h BFh A0h 4Ch BDh 65h 48h B8h 09h 68h 8Eh D8h B8h CFh 1Fh 8Eh C0h B8h B8h 5Fh 8Eh D0h BCh FBh BCh B8h 00h 00h F2h F6h B9h 7Ah 8Dh
-Data in 746F:000B:
-DB 1Bh
-BreakPoint: 1000:0038
-Result:
-AX=0000h
-BX=EC51h
-CX=C19Ah
-DX=E916h
-SI=08CCh
-DI=4CA0h
-BP=4865h
-SP=BCFBh
-DS=6809h
-ES=1FCFh
-SS=5FB8h
-
 [SST-F6_7-idiv-byte-ds-bx-di-7EACh-0060]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -30717,23 +29469,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-A356h-0063]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C6h F0h 9Dh BBh B9h F9h B9h 6Eh 65h BAh 7Bh 95h BEh A3h BFh BFh 52h 42h BDh 3Eh 98h B8h 45h C2h 8Eh D8h B8h 89h 3Fh 8Eh C0h B8h 75h 8Eh 8Eh D0h BCh DEh CBh B8h 2Eh A8h F2h F6h 3Eh 56h A3h
-Data in CC7A:0006:
-DB 0Eh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-C83Eh-0064]
@@ -30854,23 +29589,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-2Eh-0074]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F0h 9Dh BBh BFh 82h B9h DCh 67h BAh 56h CBh BEh 76h 16h BFh D4h 6Ch BDh E6h F4h B8h 6Fh C9h 8Eh D8h B8h E0h A5h 8Eh C0h B8h 71h 28h 8Eh D0h BCh BBh 97h B8h 62h B3h F3h F6h 7Fh 2Eh
-Data in D19D:000D:
-DB 1Bh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-si-0075]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -30924,23 +29642,6 @@ SP=354Ah
 DS=980Ch
 ES=E174h
 SS=0F46h
-
-[SST-F6_7-idiv-byte-ss-bp-di-69DFh-0079]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F0h 9Dh BBh 00h 00h B9h F0h 55h BAh CEh B3h BEh FAh 12h BFh 90h 9Dh BDh 66h 0Ch B8h 3Bh 0Bh 8Eh D8h B8h D0h E7h 8Eh C0h B8h BFh 4Fh 8Eh D0h BCh CCh ACh B8h 5Ch E9h F3h F6h BBh 21h 96h
-Data in 53C0:0007:
-DB 00h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-si-2C01h-0080]
 EntryPoint: 1000:0000
@@ -30999,23 +29700,6 @@ SP=C931h
 DS=B197h
 ES=510Dh
 SS=E50Ch
-
-[SST-F6_7-idiv-byte-ss-bp-2Ch-0083]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F4h 9Dh BBh 2Ch A3h B9h 1Ch ADh BAh 1Fh 0Dh BEh 0Bh 91h BFh E8h 1Ch BDh 77h 02h B8h 97h F7h 8Eh D8h B8h 5Ah 8Bh 8Eh C0h B8h 3Dh C2h 8Eh D0h BCh 24h A5h B8h 63h C9h 36h F2h F6h 7Eh 2Ch
-Data in C267:0003:
-DB 44h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-es-90AEh-0085]
 EntryPoint: 1000:0000
@@ -31145,23 +29829,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-si-7B17h-0094]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F4h 9Dh BBh E2h 7Dh B9h C0h E6h BAh A3h 47h BEh 19h 4Fh BFh E0h 6Dh BDh 55h 96h B8h EAh CEh 8Eh D8h B8h 83h 9Ch 8Eh C0h B8h 4Eh 3Ch 8Eh D0h BCh F1h EEh B8h 8Eh C9h F3h F6h BAh 17h 7Bh
-Data in 4256:0005:
-DB 04h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-di-0095]
@@ -31798,23 +30465,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-es-bx-5Dh-0148]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F0h 9Dh BBh 6Ch B2h B9h 4Eh 87h BAh E4h 77h BEh 51h 59h BFh 2Ah AAh BDh 5Ch F8h B8h 0Ch 5Dh 8Eh D8h B8h 87h D5h 8Eh C0h B8h 35h 37h 8Eh D0h BCh 94h F4h B8h ABh 5Dh 26h F3h F6h 7Fh 5Dh
-Data in E0B3:0009:
-DB 23h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-bl-0149]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -32093,26 +30743,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-es-si-19h-0170]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F8h 9Dh BBh 7Fh AAh B9h 26h 8Bh BAh 34h E1h BEh 00h 00h BFh FBh 11h BDh EEh 81h B8h 3Eh F0h 8Eh D8h B8h 8Ah 34h 8Eh C0h B8h DEh 76h 8Eh D0h BCh 70h 25h B8h 00h 00h 26h F3h F6h 7Ch 19h
-Data in 348B:0009:
-DB AAh
-BreakPoint: 1000:0038
-Result:
-AX=0000h
-BX=AA7Fh
-CX=8B26h
-DX=E134h
-SI=0000h
-DI=11FBh
-BP=81EEh
-SP=2570h
-DS=F03Eh
-ES=348Ah
-SS=76DEh
-
 [SST-F6_7-idiv-bh-0172]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -32268,23 +30898,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-si-43CFh-0183]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h FCh 9Dh BBh B5h C5h B9h B6h 7Ch BAh FFh 1Fh BEh F7h 82h BFh 72h 37h BDh 67h A7h B8h 44h CBh 8Eh D8h B8h 8Ah 3Ah 8Eh C0h B8h ABh E6h 8Eh D0h BCh EFh 2Eh B8h 1Fh 58h F3h F6h BAh 31h BCh
-Data in F513:000F:
-DB 28h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-ah-0184]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -32350,23 +30963,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-es-EDF4h-0188]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F8h 9Dh BBh A6h FBh B9h 00h 00h BAh E0h ABh BEh 23h 4Ah BFh BFh BCh BDh C8h 80h B8h 86h 32h 8Eh D8h B8h 9Ah 2Bh 8Eh C0h B8h B5h 52h 8Eh D0h BCh 9Fh 3Dh B8h 8Fh 98h 26h F2h F6h 3Eh F4h EDh
-Data in 3A79:0004:
-DB ECh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bx-si-0189]
@@ -32507,23 +31103,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-0198]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h F8h 9Dh BBh D9h F2h B9h C2h 67h BAh 93h FDh BEh 7Ch C2h BFh 7Ch FDh BDh 68h 1Ah B8h 07h A7h 8Eh D8h B8h 05h 7Dh 8Eh C0h B8h 6Ah 28h 8Eh D0h BCh FAh F4h B8h E1h 1Fh F2h F6h 3Fh
-Data in AFFF:6359:
-DB E4h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-di-0199]
@@ -32721,23 +31300,6 @@ SP=A598h
 DS=62CFh
 ES=B769h
 SS=10F6h
-
-[SST-F6_7-idiv-byte-ds-bp-si-2E14h-0214]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h FCh 9Dh BBh 95h EFh B9h C8h 89h BAh 83h 0Fh BEh 9Eh 74h BFh 6Ah B1h BDh F6h 63h B8h C2h 9Ah 8Eh D8h B8h A6h 2Dh 8Eh C0h B8h 93h F1h 8Eh D0h BCh 84h 75h B8h 88h AAh 3Eh F2h F6h BAh 14h 2Eh
-Data in 9B2C:0008:
-DB 93h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-es-bp-di-0217]
 EntryPoint: 1000:0000
@@ -33078,23 +31640,6 @@ DS=4132h
 ES=BC5Ah
 SS=1640h
 
-[SST-F6_7-idiv-byte-ds-di-5F7h-0243]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F8h 9Dh BBh 10h 9Bh B9h C8h 65h BAh 34h 81h BEh 65h B1h BFh 8Ch 2Ah BDh 24h 28h B8h 17h 55h 8Eh D8h B8h 76h 1Fh 8Eh C0h B8h 7Eh 14h 8Eh D0h BCh 9Dh 31h B8h 2Ah 0Eh F3h F6h BDh F7h 05h
-Data in 581F:0003:
-DB F4h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-si-28h-0244]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -33184,23 +31729,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-es-bp-176Ch-0250]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h FCh 9Dh BBh C4h 89h B9h 00h 00h BAh 13h B2h BEh C1h 90h BFh 65h ACh BDh A3h A3h B8h 00h A8h 8Eh D8h B8h CDh 34h 8Eh C0h B8h 9Bh C4h 8Eh D0h BCh D5h 3Ch B8h FFh 91h 26h F2h F6h BEh 94h E8h
-Data in 3D90:0007:
-DB 6Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-di-5CBAh-0251]
@@ -33611,23 +32139,6 @@ DS=F276h
 ES=A4B6h
 SS=CA87h
 
-[SST-F6_7-idiv-byte-es-si-0278]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h FCh 9Dh BBh 75h 4Ch B9h F4h 47h BAh 1Ah C8h BEh 2Eh A7h BFh 43h F3h BDh 5Ch EAh B8h 49h E9h 8Eh D8h B8h E7h 3Eh 8Eh C0h B8h EDh 8Eh 8Eh D0h BCh 20h ECh B8h 53h 80h 26h F3h F6h 3Ch
-Data in 4959:000E:
-DB 02h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-di-22h-0279]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -33803,23 +32314,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-es-bp-si-26h-0294]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh D9h E5h B9h 06h EDh BAh 0Fh C8h BEh C0h DBh BFh 75h E8h BDh 06h 15h B8h 32h 2Eh 8Eh D8h B8h 8Fh D0h 8Eh C0h B8h E7h 69h 8Eh D0h BCh AEh 45h B8h 36h 0Fh 26h F2h F6h 7Ah DAh
-Data in DF99:0000:
-DB FFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-13h-0295]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -33981,23 +32475,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-7Dh-0304]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F4h 9Dh BBh 49h EDh B9h EEh 8Ah BAh 78h 32h BEh 00h 00h BFh F5h 3Eh BDh AEh 55h B8h 2Ah 83h 8Eh D8h B8h F0h A3h 8Eh C0h B8h 00h EFh 8Eh D0h BCh F7h 29h B8h 4Dh A6h F2h F6h 7Eh 83h
-Data in F453:0001:
-DB DFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bx-di-4551h-0305]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -34097,23 +32574,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-di-0311]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h FCh 9Dh BBh 17h FBh B9h 72h 8Fh BAh 8Ch 46h BEh B1h 6Bh BFh D9h 3Eh BDh 90h 43h B8h 24h 1Ah 8Eh D8h B8h 92h D0h 8Eh C0h B8h 56h 12h 8Eh D0h BCh A6h 76h B8h AFh 90h F2h F6h 3Dh
-Data in 1E11:0009:
-DB CCh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-dl-0312]
@@ -34407,26 +32867,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-di-68h-0336]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h FCh 9Dh BBh 61h F1h B9h 5Ah 06h BAh 00h 00h BEh 1Bh B3h BFh 2Bh 86h BDh F9h C6h B8h 52h DCh 8Eh D8h B8h 15h A2h 8Eh C0h B8h 2Fh 5Eh 8Eh D0h BCh 25h 8Bh B8h 5Eh E3h F3h F6h 7Bh 68h
-Data in 6307:000C:
-DB B8h
-BreakPoint: 1000:0037
-Result:
-AX=C69Bh
-BX=F161h
-CX=065Ah
-DX=0000h
-SI=B31Bh
-DI=862Bh
-BP=C6F9h
-SP=8B25h
-DS=DC52h
-ES=A215h
-SS=5E2Fh
 
 [SST-F6_7-idiv-byte-ds-bx-1643h-0337]
 EntryPoint: 1000:0000
@@ -34842,23 +33282,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-di-0365]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F0h 9Dh BBh 14h 85h B9h EEh 60h BAh 2Ah 94h BEh CFh 54h BFh 96h F5h BDh E2h 5Ah B8h B0h 64h 8Eh D8h B8h AFh 5Dh 8Eh C0h B8h 61h ADh 8Eh D0h BCh E6h 3Dh B8h C7h 9Fh F3h F6h 3Bh
-Data in AFFF:2698:
-DB 06h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-di-4Dh-0366]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -34997,24 +33420,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-dh-0374]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F4h 9Dh BBh 1Eh D2h B9h 6Ch 06h BAh 3Ch 8Eh BEh F3h B4h BFh 29h 77h BDh 2Dh E0h B8h EFh 2Fh 8Eh D8h B8h CFh B1h 8Eh C0h B8h 60h 64h 8Eh D0h BCh 2Dh EAh B8h 06h E3h F2h F6h FEh
-BreakPoint: 1000:0036
-Result:
-AX=F8BFh
-BX=D21Eh
-CX=066Ch
-DX=8E3Ch
-SI=B4F3h
-DI=7729h
-BP=E02Dh
-SP=EA2Dh
-DS=2FEFh
-ES=B1CFh
-SS=6460h
-
 [SST-F6_7-idiv-bl-0375]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -35093,24 +33498,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-dl-0380]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F8h 9Dh BBh CCh 85h B9h 8Ch A3h BAh 85h EBh BEh B5h 3Ah BFh 58h D4h BDh 0Dh 94h B8h 6Ah DCh 8Eh D8h B8h 66h C0h 8Eh C0h B8h 7Eh E4h 8Eh D0h BCh 36h D6h B8h 06h F7h 3Eh F3h F6h FAh
-BreakPoint: 1000:0037
-Result:
-AX=ACEEh
-BX=85CCh
-CX=A38Ch
-DX=EB85h
-SI=3AB5h
-DI=D458h
-BP=940Dh
-SP=D636h
-DS=DC6Ah
-ES=C066h
-SS=E47Eh
 
 [SST-F6_7-idiv-bl-0381]
 EntryPoint: 1000:0000
@@ -35362,23 +33749,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-es-bx-di-4Ch-0396]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F8h 9Dh BBh 37h F2h B9h 00h 00h BAh F2h 6Ch BEh 16h 3Ch BFh 0Ch 9Ch BDh 4Ah A2h B8h CFh 0Bh 8Eh D8h B8h 11h 93h 8Eh C0h B8h B7h 1Eh 8Eh D0h BCh 3Bh E6h B8h 20h 76h 26h F3h F6h 79h B4h
-Data in 9BF0:0007:
-DB 92h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-0398]
@@ -35676,21 +34046,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-cl-0419]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 02h F4h 9Dh BBh 8Bh 7Dh B9h 4Ch 4Ah BAh 37h 0Bh BEh 11h BFh BFh 73h 40h BDh 55h 20h B8h 2Eh 70h 8Eh D8h B8h AAh F4h 8Eh C0h B8h 33h 70h 8Eh D0h BCh 86h 1Eh B8h 62h 95h F2h F6h F9h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-si-0420]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -35811,40 +34166,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-si-76B4h-0429]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F8h 9Dh BBh 0Ch 0Ah B9h 1Ah F7h BAh 59h BAh BEh 23h 13h BFh 81h 35h BDh 88h 32h B8h 9Bh E8h 8Eh D8h B8h 84h A9h 8Eh C0h B8h A7h D8h 8Eh D0h BCh 1Eh 5Fh B8h 2Ch EBh F2h F6h BCh B4h 76h
-Data in F138:0007:
-DB E0h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-di-403Ah-0430]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh D6h 55h B9h CEh ACh BAh 27h FEh BEh B8h 8Ch BFh 13h 02h BDh CEh 0Dh B8h 47h 1Ah 8Eh D8h B8h DFh 3Ah 8Eh C0h B8h 5Ch 1Dh 8Eh D0h BCh 69h DEh B8h AAh 4Bh F2h F6h BDh 3Ah 40h
-Data in 1E6B:000D:
-DB 63h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-si-7Ch-0431]
@@ -36280,21 +34601,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-dl-0462]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F4h 9Dh BBh 20h BDh B9h 00h 00h BAh F8h 68h BEh F5h 0Ah BFh 71h DEh BDh E7h 40h B8h 01h 40h 8Eh D8h B8h 77h 9Fh 8Eh C0h B8h 6Fh ECh 8Eh D0h BCh 45h 30h B8h 83h 3Dh F3h F6h FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-al-0463]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -36582,26 +34888,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-si-0481]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F0h 9Dh BBh B7h F8h B9h A2h 08h BAh E0h 8Eh BEh EEh 5Ah BFh F8h EFh BDh F9h F4h B8h 29h 82h 8Eh D8h B8h 1Eh 40h 8Eh C0h B8h 1Fh 37h 8Eh D0h BCh 39h 9Ah B8h 00h 00h F3h F6h 3Ah
-Data in 3C1D:0007:
-DB 98h
-BreakPoint: 1000:0036
-Result:
-AX=0000h
-BX=F8B7h
-CX=08A2h
-DX=8EE0h
-SI=5AEEh
-DI=EFF8h
-BP=F4F9h
-SP=9A39h
-DS=8229h
-ES=401Eh
-SS=371Fh
-
 [SST-F6_7-idiv-byte-ds-si-5Fh-0482]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -36618,24 +34904,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-al-0483]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F8h 9Dh BBh EFh 7Dh B9h 90h 63h BAh 24h 13h BEh 07h 81h BFh B7h 11h BDh F7h 85h B8h 91h 9Fh 8Eh D8h B8h 6Fh 2Ch 8Eh C0h B8h 45h 26h 8Eh D0h BCh 10h 9Fh B8h 52h E7h 26h F3h F6h F8h
-BreakPoint: 1000:0037
-Result:
-AX=FC4Dh
-BX=7DEFh
-CX=6390h
-DX=1324h
-SI=8107h
-DI=11B7h
-BP=85F7h
-SP=9F10h
-DS=9F91h
-ES=2C6Fh
-SS=2645h
 
 [SST-F6_7-idiv-byte-ss-bp-30h-0484]
 EntryPoint: 1000:0000
@@ -36697,21 +34965,6 @@ Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh 3Ch 65h B9h A2h 96h BAh 56h EBh BEh D2h 9Eh BFh 17h 61h BDh BCh 18h B8h 02h F8h 8Eh D8h B8h 8Fh 2Eh 8Eh C0h B8h DBh 20h 8Eh D0h BCh F1h 00h B8h 56h 8Ch F6h 7Eh 8Eh
 Data in 225F:000A:
 DB BEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-ah-0488]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h FCh 9Dh BBh 05h CDh B9h F6h 8Ch BAh 7Ch 4Dh BEh 97h 92h BFh 00h 00h BDh 4Eh 23h B8h 44h E4h 8Eh D8h B8h 8Bh A2h 8Eh C0h B8h BDh 70h 8Eh D0h BCh 60h AEh B8h E3h D6h F3h F6h FCh
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -36892,23 +35145,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-si-15B8h-0500]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh BFh 9Dh B9h 16h C9h BAh 00h 00h BEh AAh 3Ch BFh D1h 0Ah BDh 60h 04h B8h CEh 97h 8Eh D8h B8h E5h 36h 8Eh C0h B8h A3h 1Eh 8Eh D0h BCh A4h 65h B8h 44h B8h 3Eh F3h F6h B8h B8h 15h
-Data in A6D0:0001:
-DB 43h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-di-3706h-0501]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -37016,23 +35252,6 @@ DS=B06Ch
 ES=6CC2h
 SS=7286h
 
-[SST-F6_7-idiv-byte-ds-si-0507]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 02h FCh 9Dh BBh 5Ah 16h B9h 02h E8h BAh 3Ch 2Bh BEh E7h 9Ch BFh DDh 54h BDh E4h F8h B8h A5h C6h 8Eh D8h B8h F7h 04h 8Eh C0h B8h 0Ah 46h 8Eh D0h BCh 9Bh CFh B8h E4h 6Ah F2h F6h 3Ch
-Data in D073:0007:
-DB 11h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-dl-0508]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -37068,23 +35287,6 @@ SP=2D08h
 DS=F6F3h
 ES=E158h
 SS=E169h
-
-[SST-F6_7-idiv-byte-ds-si-1h-0511]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F4h 9Dh BBh 81h 5Bh B9h 90h 43h BAh 04h ECh BEh CFh DCh BFh DEh E4h BDh 9Bh 7Fh B8h 23h DEh 8Eh D8h B8h 65h 6Fh 8Eh C0h B8h DEh 8Ch 8Eh D0h BCh 19h 6Bh B8h D1h 1Bh F2h F6h 7Ch 01h
-Data in EBF0:0000:
-DB 12h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bx-di-0513]
 EntryPoint: 1000:0000
@@ -37454,23 +35656,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-di-0536]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h FCh 9Dh BBh B0h E4h B9h 5Ah C0h BAh 00h 00h BEh B1h B7h BFh 52h FBh BDh 06h E0h B8h 11h C5h 8Eh D8h B8h 01h 70h 8Eh C0h B8h B4h 2Eh 8Eh D0h BCh 1Dh 4Ah B8h 00h 3Dh F3h F6h 39h
-Data in D311:0002:
-DB 91h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-es-si-0538]
@@ -37958,21 +36143,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-al-0568]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h FCh 9Dh BBh AFh F2h B9h 6Ch 24h BAh C6h 6Ah BEh 33h EDh BFh 8Bh 34h BDh 3Dh E1h B8h F6h 8Fh 8Eh D8h B8h BBh 4Bh 8Eh C0h B8h C5h 12h 8Eh D0h BCh E8h 05h B8h E7h 31h F2h F6h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-1A1Dh-0569]
@@ -38631,21 +36801,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-al-0614]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F4h 9Dh BBh 4Fh D8h B9h 9Ch FCh BAh 70h 0Ch BEh 57h F0h BFh 36h 9Dh BDh A2h 73h B8h 03h BCh 8Eh D8h B8h 17h 80h 8Eh C0h B8h 58h 29h 8Eh D0h BCh C7h 4Ah B8h 07h 42h F3h F6h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-si-72h-0616]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -38924,23 +37079,6 @@ DS=2363h
 ES=D2E5h
 SS=2B7Ch
 
-[SST-F6_7-idiv-byte-es-3B43h-0634]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F8h 9Dh BBh 01h 4Bh B9h 08h 98h BAh E6h 03h BEh 5Fh F7h BFh 5Ah ADh BDh 91h B1h B8h 3Eh B7h 8Eh D8h B8h 43h EEh 8Eh C0h B8h 81h 11h 8Eh D0h BCh 70h D5h B8h 24h 7Fh 26h F3h F6h 3Eh 43h 3Bh
-Data in F1F7:0003:
-DB 4Ch
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bx-si-68CEh-0635]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -38998,23 +37136,6 @@ Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 02h F4h 9Dh BBh 72h 5Ah B9h 8Eh 35h BAh 5Dh 75h BEh 58h C9h BFh 54h 41h BDh 03h 84h B8h 5Ah 1Eh 8Eh D8h B8h 37h 9Bh 8Eh C0h B8h 15h E0h 8Eh D0h BCh CBh 77h B8h 3Ch 7Eh F6h 78h 2Fh
 Data in 2099:0009:
 DB EAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-di-0639]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F8h 9Dh BBh FCh D6h B9h 6Ch C8h BAh 96h E1h BEh FFh AFh BFh 9Dh 60h BDh 29h 53h B8h E4h F3h 8Eh D8h B8h F3h 00h 8Eh C0h B8h A5h D7h 8Eh D0h BCh B6h 4Ah B8h C1h A1h F3h F6h 3Bh
-Data in E2E1:0006:
-DB E2h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -39489,21 +37610,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-dl-0673]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F0h 9Dh BBh 67h 69h B9h A8h 55h BAh F0h A3h BEh 7Ch A4h BFh 9Eh C6h BDh 49h D5h B8h 22h 87h 8Eh D8h B8h 2Ch 91h 8Eh C0h B8h 21h 05h 8Eh D0h BCh E9h ACh B8h 43h 60h 26h F3h F6h FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-si-0674]
@@ -40479,23 +38585,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-BF0h-0738]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 87h FCh 9Dh BBh 34h 4Dh B9h FCh 6Ch BAh 4Ah 45h BEh 26h 19h BFh 5Dh 65h BDh 95h 51h B8h B0h E0h 8Eh D8h B8h D3h 70h 8Eh C0h B8h 08h 9Ch 8Eh D0h BCh 8Bh A0h B8h C2h 80h F3h F6h BFh F0h 0Bh
-Data in E642:0004:
-DB E5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-ch-0739]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -40610,23 +38699,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bx-di-3Bh-0747]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F4h 9Dh BBh 72h F6h B9h 72h E3h BAh 05h 15h BEh 04h 09h BFh 0Fh DAh BDh B9h FBh B8h A8h 1Eh 8Eh D8h B8h 3Fh 6Fh 8Eh C0h B8h 5Dh 89h 8Eh D0h BCh F9h 02h B8h CDh 9Eh 36h F3h F6h 79h 3Bh
-Data in 9668:000C:
-DB 47h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-si-43h-0748]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -40689,21 +38761,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-ch-0753]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h FCh 9Dh BBh A6h 9Dh B9h ECh 8Ah BAh FFh 81h BEh 47h 76h BFh 72h F7h BDh 9Bh 87h B8h 83h 38h 8Eh D8h B8h EFh A4h 8Eh C0h B8h 58h A9h 8Eh D0h BCh 3Ch 36h B8h 76h 51h 3Eh F3h F6h FDh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-5Dh-0754]
@@ -40843,21 +38900,6 @@ Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F4h 9Dh BBh A4h F1h B9h 58h CBh BAh 7Ah 7Dh BEh 23h 72h BFh 39h E6h BDh D1h 76h B8h 98h 0Dh 8Eh D8h B8h 73h 86h 8Eh C0h B8h CFh FEh 8Eh D0h BCh 50h CBh B8h 7Fh E8h F6h 78h 2Fh
 Data in 13D7:0006:
 DB F5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-al-0764]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh F0h BFh B9h 50h C2h BAh 5Dh B4h BEh E8h C7h BFh B7h 64h BDh 6Bh 23h B8h 7Dh CCh 8Eh D8h B8h BCh 4Dh 8Eh C0h B8h 6Ah BEh 8Eh D0h BCh C1h FFh B8h 25h 3Eh F3h F6h F8h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -41070,23 +39112,6 @@ SP=2ACCh
 DS=65C7h
 ES=330Fh
 SS=490Dh
-
-[SST-F6_7-idiv-byte-ds-bx-0781]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F0h 9Dh BBh CDh 98h B9h 0Eh 29h BAh 8Fh 70h BEh 1Ch 7Fh BFh CCh CAh BDh CAh 30h B8h 7Eh F6h 8Eh D8h B8h 78h F3h 8Eh C0h B8h B2h CFh 8Eh D0h BCh BDh FFh B8h 04h 19h 3Eh F3h F6h 3Fh
-Data in 000A:000D:
-DB E1h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bx-di-6545h-0782]
 EntryPoint: 1000:0000
@@ -41325,23 +39350,6 @@ DS=CE62h
 ES=0119h
 SS=4119h
 
-[SST-F6_7-idiv-byte-es-bp-si-12h-0799]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F0h 9Dh BBh B0h 39h B9h 70h A3h BAh AEh 4Ah BEh 52h 80h BFh A7h 63h BDh 6Fh 82h B8h BFh 64h 8Eh D8h B8h BCh 7Eh 8Eh C0h B8h 09h 40h 8Eh D0h BCh E1h D5h B8h 8Dh 66h 26h F2h F6h BAh EEh FFh
-Data in 7EE6:000F:
-DB 76h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-dl-0800]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -41519,23 +39527,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-di-6C51h-0811]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F0h 9Dh BBh 54h F9h B9h D4h 94h BAh C7h 1Dh BEh 61h 85h BFh DAh A8h BDh B5h 75h B8h 1Bh 33h 8Eh D8h B8h 99h C1h 8Eh C0h B8h 63h 01h 8Eh D0h BCh D7h 9Ah B8h 0Fh CBh F3h F6h BBh AFh 93h
-Data in 0C86:000E:
-DB D5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-si-0812]
@@ -41721,21 +39712,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-ah-0825]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F0h 9Dh BBh D4h 9Bh B9h 38h 84h BAh F4h 44h BEh A6h C1h BFh 33h C3h BDh 4Dh E1h B8h A0h 98h 8Eh D8h B8h 0Bh 32h 8Eh C0h B8h 2Eh C8h 8Eh D0h BCh D4h 0Ch B8h 91h 97h F2h F6h FCh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-5h-0826]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -41871,26 +39847,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bp-si-46h-0835]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F4h 9Dh BBh B3h DFh B9h 6Eh 05h BAh 50h D7h BEh 7Dh 31h BFh 71h 58h BDh 00h 00h B8h D6h 87h 8Eh D8h B8h 86h 21h 8Eh C0h B8h 8Ch ADh 8Eh D0h BCh 00h 00h B8h 00h 00h 3Eh F3h F6h 7Ah 46h
-Data in 8AF2:0003:
-DB 67h
-BreakPoint: 1000:0038
-Result:
-AX=0000h
-BX=DFB3h
-CX=056Eh
-DX=D750h
-SI=317Dh
-DI=5871h
-BP=0000h
-SP=0000h
-DS=87D6h
-ES=2186h
-SS=AD8Ch
 
 [SST-F6_7-idiv-byte-ds-bx-53A0h-0837]
 EntryPoint: 1000:0000
@@ -42066,21 +40022,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-ah-0847]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h FCh 9Dh BBh 15h C6h B9h 14h FAh BAh BCh C1h BEh 00h 00h BFh C6h B7h BDh AFh B6h B8h 51h CAh 8Eh D8h B8h 5Ah 45h 8Eh C0h B8h 1Dh F8h 8Eh D0h BCh ABh 50h B8h F1h 56h 36h F3h F6h FCh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-dh-0848]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -42202,26 +40143,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-21F1h-0857]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F4h 9Dh BBh 12h B9h B9h CAh EBh BAh 6Fh FAh BEh 84h 52h BFh F5h 17h BDh 29h 71h B8h B7h 45h 8Eh D8h B8h 18h A0h 8Eh C0h B8h C6h 7Ch 8Eh D0h BCh 0Bh F1h B8h 4Fh 27h F3h F6h BEh 0Fh DEh
-Data in 81B9:0008:
-DB A6h
-BreakPoint: 1000:0038
-Result:
-AX=496Fh
-BX=B912h
-CX=EBCAh
-DX=FA6Fh
-SI=5284h
-DI=17F5h
-BP=7129h
-SP=F10Bh
-DS=45B7h
-ES=A018h
-SS=7CC6h
 
 [SST-F6_7-idiv-cl-0858]
 EntryPoint: 1000:0000
@@ -42862,26 +40783,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-di-0900]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F0h 9Dh BBh 51h 5Ah B9h 64h 18h BAh EFh AFh BEh 06h 16h BFh C1h 9Eh BDh 73h BBh B8h 9Bh DCh 8Eh D8h B8h 8Ah 13h 8Eh C0h B8h 45h E2h 8Eh D0h BCh 6Fh E2h B8h 94h 10h F3h F6h 3Dh
-Data in E687:0001:
-DB 2Dh
-BreakPoint: 1000:0036
-Result:
-AX=0EA2h
-BX=5A51h
-CX=1864h
-DX=AFEFh
-SI=1606h
-DI=9EC1h
-BP=BB73h
-SP=E26Fh
-DS=DC9Bh
-ES=138Ah
-SS=E245h
-
 [SST-F6_7-idiv-byte-ss-bx-di-73DEh-0901]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -42897,21 +40798,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-dl-0902]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F0h 9Dh BBh 4Ch 2Bh B9h 9Eh 55h BAh D9h B2h BEh 7Ah 03h BFh 00h 00h BDh 4Ah 54h B8h 6Dh 47h 8Eh D8h B8h 81h 2Eh 8Eh C0h B8h E2h 47h 8Eh D0h BCh 11h 7Dh B8h 8Ah CCh F3h F6h FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-bl-0903]
@@ -43235,23 +41121,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-di-7255h-0924]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F0h 9Dh BBh E6h A1h B9h 96h 45h BAh DDh 59h BEh 76h CAh BFh 67h 67h BDh F9h 21h B8h 37h 81h 8Eh D8h B8h 00h B9h 8Eh C0h B8h BAh AAh 8Eh D0h BCh C5h 61h B8h 6Ch 47h 3Eh F2h F6h B9h ABh 8Dh
-Data in 8AA6:0008:
-DB D8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-0925]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -43285,23 +41154,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-0h-0928]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F4h 9Dh BBh 22h 45h B9h 7Eh 62h BAh E6h 2Ch BEh 1Bh B7h BFh 96h B9h BDh 89h E7h B8h BEh 26h 8Eh D8h B8h F4h A4h 8Eh C0h B8h 4Ah 5Ch 8Eh D0h BCh 9Eh 36h B8h 56h 34h 3Eh F2h F6h 7Fh 00h
-Data in 2B10:0002:
-DB BDh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-3E1Bh-0930]
@@ -43651,26 +41503,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-0953]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F8h 9Dh BBh F0h 89h B9h 16h 95h BAh E8h 0Ah BEh 8Dh 54h BFh 96h 67h BDh 1Ah CEh B8h C0h AEh 8Eh D8h B8h DEh 98h 8Eh C0h B8h BCh 8Ah 8Eh D0h BCh B0h 09h B8h 16h E9h F2h F6h 3Fh
-Data in AFFF:7600:
-DB BFh
-BreakPoint: 1000:0036
-Result:
-AX=F0A6h
-BX=89F0h
-CX=9516h
-DX=0AE8h
-SI=548Dh
-DI=6796h
-BP=CE1Ah
-SP=09B0h
-DS=AEC0h
-ES=98DEh
-SS=8ABCh
-
 [SST-F6_7-idiv-bh-0954]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -43807,23 +41639,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-si-439Dh-0962]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h FCh 9Dh BBh C9h B7h B9h 88h 46h BAh E6h 9Dh BEh 33h FFh BFh 00h 00h BDh A0h 1Bh B8h 2Eh 5Eh 8Eh D8h B8h DCh 20h 8Eh C0h B8h 22h 7Eh 8Eh D0h BCh 95h 39h B8h 7Ch 32h F3h F6h B8h 63h BCh
-Data in 6563:000F:
-DB C2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-si-53h-0963]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -43873,23 +41688,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-di-0966]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh CEh 00h B9h 04h 67h BAh CFh B4h BEh F2h 23h BFh 05h 28h BDh 55h B5h B8h 74h 5Eh 8Eh D8h B8h E6h DFh 8Eh C0h B8h 1Fh A5h 8Eh D0h BCh 6Eh 55h B8h A1h 6Dh 36h F2h F6h 3Dh
-Data in A79F:0005:
-DB 6Ah
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-1A71h-0968]
@@ -44124,23 +41922,6 @@ SP=1E59h
 DS=4DA2h
 ES=6F00h
 SS=DF41h
-
-[SST-F6_7-idiv-byte-es-bx-0984]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h F4h 9Dh BBh 96h D2h B9h C0h EAh BAh 2Bh 74h BEh 46h B5h BFh E1h 73h BDh E9h 04h B8h D7h 6Fh 8Eh D8h B8h 3Eh 56h 8Eh C0h B8h EFh 50h 8Eh D0h BCh 51h 35h B8h D7h 58h 26h F3h F6h 3Fh
-Data in 6367:0006:
-DB 87h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-dh-0986]
 EntryPoint: 1000:0000
@@ -44624,26 +42405,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-si-5Dh-1017]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h F8h 9Dh BBh F3h C9h B9h 70h 1Ah BAh 00h 00h BEh 2Fh 0Fh BFh 76h AAh BDh 9Eh C3h B8h 93h E9h 8Eh D8h B8h 50h 32h 8Eh C0h B8h BCh C4h 8Eh D0h BCh 85h 03h B8h ACh 12h F3h F6h 7Ch 5Dh
-Data in EA8B:000C:
-DB A0h
-BreakPoint: 1000:0037
-Result:
-AX=4C31h
-BX=C9F3h
-CX=1A70h
-DX=0000h
-SI=0F2Fh
-DI=AA76h
-BP=C39Eh
-SP=0385h
-DS=E993h
-ES=3250h
-SS=C4BCh
-
 [SST-F6_7-idiv-byte-ds-bx-1019]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -44824,21 +42585,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-bh-1033]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F8h 9Dh BBh 14h B7h B9h 68h E6h BAh 47h A2h BEh F2h F3h BFh 00h 00h BDh A2h FAh B8h 80h EEh 8Eh D8h B8h E0h 69h 8Eh C0h B8h 39h 1Dh 8Eh D0h BCh 52h CCh B8h 11h CDh F3h F6h FFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-dl-1034]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -44854,23 +42600,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-es-di-71h-1035]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F4h 9Dh BBh A3h 40h B9h 70h 67h BAh 7Bh 78h BEh F7h 1Ch BFh 8Bh 37h BDh 5Bh 58h B8h FAh 38h 8Eh D8h B8h A3h 82h 8Eh C0h B8h FEh 0Eh 8Eh D0h BCh 9Eh 1Eh B8h 0Bh 19h 26h F3h F6h 7Dh 8Fh
-Data in 8614:000A:
-DB 00h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-cl-1036]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -44884,23 +42613,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-di-620Ah-1037]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h FCh 9Dh BBh C3h 61h B9h 82h C5h BAh 00h 00h BEh 16h 64h BFh 24h E9h BDh 96h 51h B8h 0Fh D5h 8Eh D8h B8h FBh BDh 8Eh C0h B8h C4h CCh 8Eh D0h BCh C5h 43h B8h 10h CFh F2h F6h BDh F6h 9Dh
-Data in DD80:000A:
-DB E9h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-di-3615h-1038]
@@ -45457,43 +43169,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-si-1074]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F4h 9Dh BBh A5h 10h B9h 4Eh 49h BAh 64h ECh BEh 67h 8Eh BFh 23h 72h BDh A5h 7Bh B8h AEh 43h 8Eh D8h B8h C5h A7h 8Eh C0h B8h 81h A7h 8Eh D0h BCh 62h A1h B8h 96h FAh F2h F6h 3Ah
-Data in A821:000C:
-DB ADh
-BreakPoint: 1000:0036
-Result:
-AX=C6F0h
-BX=10A5h
-CX=494Eh
-DX=EC64h
-SI=8E67h
-DI=7223h
-BP=7BA5h
-SP=A162h
-DS=43AEh
-ES=A7C5h
-SS=A781h
-
-[SST-F6_7-idiv-byte-ss-bp-si-1075]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F0h 9Dh BBh 6Ch 9Eh B9h 0Eh 4Eh BAh 0Eh 73h BEh AFh 03h BFh E3h 3Ah BDh ECh C7h B8h 99h 78h 8Eh D8h B8h 38h 57h 8Eh C0h B8h 3Ah 67h 8Eh D0h BCh 0Fh 9Ch B8h 44h F7h F3h F6h 3Ah
-Data in 73F3:000B:
-DB 05h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-di-1076]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -45544,26 +43219,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-F09h-1080]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F0h 9Dh BBh FBh 15h B9h B2h D7h BAh 42h 60h BEh 9Fh 0Ch BFh FCh F0h BDh 70h DEh B8h A0h 34h 8Eh D8h B8h DCh 22h 8Eh C0h B8h 2Ah 33h 8Eh D0h BCh E7h FDh B8h 4Bh 1Eh 36h F3h F6h 3Eh 09h 0Fh
-Data in 341A:0009:
-DB 5Ch
-BreakPoint: 1000:0039
-Result:
-AX=1BACh
-BX=15FBh
-CX=D7B2h
-DX=6042h
-SI=0C9Fh
-DI=F0FCh
-BP=DE70h
-SP=FDE7h
-DS=34A0h
-ES=22DCh
-SS=332Ah
 
 [SST-F6_7-idiv-byte-ds-di-4A9Dh-1081]
 EntryPoint: 1000:0000
@@ -45690,21 +43345,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-bh-1088]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F4h 9Dh BBh E3h CDh B9h A6h DDh BAh 00h 00h BEh 9Ah 1Bh BFh 03h D8h BDh FCh 19h B8h F1h A3h 8Eh D8h B8h E2h C6h 8Eh C0h B8h 28h BFh 8Eh D0h BCh 2Dh A8h B8h B9h C4h 36h F2h F6h FFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-si-1090]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -45720,21 +43360,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-ah-1091]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F8h 9Dh BBh 7Dh 18h B9h 36h 68h BAh 07h 12h BEh EBh 45h BFh 67h E3h BDh F9h 17h B8h B3h FFh 8Eh D8h B8h ADh C6h 8Eh C0h B8h 36h 09h 8Eh D0h BCh 58h 00h B8h 00h 00h 26h F3h F6h FCh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-al-1093]
@@ -45787,23 +43412,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-di-1098]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F0h 9Dh BBh 24h 8Bh B9h C6h 6Fh BAh 29h B8h BEh E2h CFh BFh EDh FDh BDh 73h CBh B8h 65h 1Fh 8Eh D8h B8h 07h 2Fh 8Eh C0h B8h EBh 63h 8Eh D0h BCh 6Fh 4Ch B8h 4Ch 6Ah F3h F6h 3Bh
-Data in 7081:0000:
-DB 45h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bx-28C9h-1099]
@@ -45945,21 +43553,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-bl-1110]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h FCh 9Dh BBh BEh 1Ah B9h F4h 5Fh BAh 9Bh 20h BEh 06h A3h BFh FFh 1Dh BDh EEh E3h B8h 72h F7h 8Eh D8h B8h 08h 1Ch 8Eh C0h B8h 57h 46h 8Eh D0h BCh 00h 00h B8h 9Fh 38h 36h F2h F6h FBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-di-1111]
@@ -46469,23 +44062,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-si-7B95h-1148]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 87h F8h 9Dh BBh 53h 6Eh B9h 78h 62h BAh 7Ch F4h BEh 9Eh 72h BFh 93h B6h BDh 50h FBh B8h 7Fh 62h 8Eh D8h B8h A3h 30h 8Eh C0h B8h 86h E8h 8Eh D0h BCh 60h 74h B8h 3Eh 0Dh F3h F6h B8h 95h 7Bh
-Data in 6847:0006:
-DB 18h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-es-bp-di-4E19h-1149]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -46854,26 +44430,6 @@ DS=1E2Ch
 ES=6542h
 SS=5291h
 
-[SST-F6_7-idiv-byte-ds-di-2Eh-1172]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh 5Ah 1Ah B9h 2Eh 44h BAh 64h 9Eh BEh 80h 9Ah BFh 74h E6h BDh 9Dh 64h B8h 6Dh 4Ah 8Eh D8h B8h E0h AFh 8Eh C0h B8h 27h A5h 8Eh D0h BCh 1Bh B1h B8h 02h 18h F3h F6h 7Dh 2Eh
-Data in 58D7:0002:
-DB 55h
-BreakPoint: 1000:0037
-Result:
-AX=1AB8h
-BX=1A5Ah
-CX=442Eh
-DX=9E64h
-SI=9A80h
-DI=E674h
-BP=649Dh
-SP=B11Bh
-DS=4A6Dh
-ES=AFE0h
-SS=A527h
-
 [SST-F6_7-idiv-dl-1173]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -47080,21 +44636,6 @@ DS=CE17h
 ES=44FFh
 SS=464Bh
 
-[SST-F6_7-idiv-dh-1185]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h FCh 9Dh BBh 59h F4h B9h 28h 72h BAh 8Fh 59h BEh CEh 51h BFh 78h 7Dh BDh E2h 7Ch B8h 6Ah 84h 8Eh D8h B8h 3Bh D3h 8Eh C0h B8h 8Fh 4Ch 8Eh D0h BCh C0h 98h B8h BCh 87h 36h F3h F6h FEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-dl-1186]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -47286,26 +44827,6 @@ SP=ED6Fh
 DS=C513h
 ES=248Dh
 SS=BC51h
-
-[SST-F6_7-idiv-byte-ss-bx-si-4F2Fh-1199]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F8h 9Dh BBh 48h CCh B9h 6Ch D6h BAh B8h F7h BEh 50h 11h BFh 51h D1h BDh 36h 4Ch B8h 24h 53h 8Eh D8h B8h 12h 17h 8Eh C0h B8h B1h EBh 8Eh D0h BCh BEh 67h B8h A2h 07h 36h F3h F6h B8h 2Fh 4Fh
-Data in EE7D:0007:
-DB 57h
-BreakPoint: 1000:0039
-Result:
-AX=28EAh
-BX=CC48h
-CX=D66Ch
-DX=F7B8h
-SI=1150h
-DI=D151h
-BP=4C36h
-SP=67BEh
-DS=5324h
-ES=1712h
-SS=EBB1h
 
 [SST-F6_7-idiv-byte-ds-bx-12h-1200]
 EntryPoint: 1000:0000
@@ -47710,44 +45231,12 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-cl-1229]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h FCh 9Dh BBh 9Ch 5Ch B9h 66h B7h BAh 31h EFh BEh A0h 68h BFh DBh 18h BDh C3h DEh B8h 7Fh 6Ah 8Eh D8h B8h B7h A4h 8Eh C0h B8h 23h 37h 8Eh D0h BCh 57h BFh B8h EBh 35h 36h F2h F6h F9h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-56AFh-1230]
 EntryPoint: 1000:0000
 Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D6h F0h 9Dh BBh 9Ch FEh B9h CCh A4h BAh 95h EDh BEh 75h E7h BFh D5h F5h BDh 9Ah 4Eh B8h BAh 7Ch 8Eh D8h B8h 42h ACh 8Eh C0h B8h DDh AFh 8Eh D0h BCh 66h ACh B8h D0h 9Eh F6h 3Eh AFh 56h
 Data in 8224:000F:
 DB 2Fh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-4Ch-1231]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F8h 9Dh BBh 8Eh 01h B9h 4Ah BFh BAh A0h 13h BEh 61h 8Eh BFh B9h 5Fh BDh 8Ah 02h B8h 68h 70h 8Eh D8h B8h 9Fh C4h 8Eh C0h B8h B5h 2Ch 8Eh D0h BCh F0h 0Eh B8h 13h CCh F2h F6h 7Fh 4Ch
-Data in 7085:000A:
-DB 53h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -47977,21 +45466,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-al-1249]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F4h 9Dh BBh 6Eh 3Bh B9h E6h F3h BAh E3h 55h BEh 1Ah A3h BFh 3Ch DDh BDh 86h 08h B8h B2h 0Dh 8Eh D8h B8h B3h CBh 8Eh C0h B8h 78h 85h 8Eh D0h BCh 90h 05h B8h 5Eh 66h F3h F6h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-es-bp-si-1250]
@@ -48313,26 +45787,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-si-6915h-1271]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F0h 9Dh BBh 84h A1h B9h 6Ch 98h BAh DBh 94h BEh C4h 0Bh BFh A1h B1h BDh 23h 3Fh B8h 1Eh 86h 8Eh D8h B8h 66h FFh 8Eh C0h B8h CBh B7h 8Eh D0h BCh 76h E9h B8h F2h 08h F3h F6h B8h 15h 69h
-Data in 8783:000D:
-DB B1h
-BreakPoint: 1000:0038
-Result:
-AX=4E1Ch
-BX=A184h
-CX=986Ch
-DX=94DBh
-SI=0BC4h
-DI=B1A1h
-BP=3F23h
-SP=E976h
-DS=861Eh
-ES=FF66h
-SS=B7CBh
 
 [SST-F6_7-idiv-ch-1272]
 EntryPoint: 1000:0000
@@ -48727,23 +46181,6 @@ DS=BF2Ch
 ES=51AFh
 SS=2366h
 
-[SST-F6_7-idiv-byte-ss-si-4783h-1297]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C6h F8h 9Dh BBh D5h 46h B9h 24h 70h BAh 9Fh 32h BEh 23h 27h BFh 41h C2h BDh 01h 65h B8h C0h B0h 8Eh D8h B8h E7h 05h 8Eh C0h B8h 04h 43h 8Eh D0h BCh 62h 52h B8h ABh 3Ch 36h F2h F6h BCh 7Dh B8h
-Data in 50FE:0000:
-DB DEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-es-bx-di-3B71h-1298]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -48823,23 +46260,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-es-si-32h-1303]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h FCh 9Dh BBh C5h 9Fh B9h 12h 8Ch BAh 2Dh 24h BEh D9h 2Eh BFh 82h 44h BDh FBh 1Bh B8h 57h A8h 8Eh D8h B8h 22h 88h 8Eh C0h B8h 1Bh 45h 8Eh D0h BCh 8Ch D4h B8h 1Dh E1h 26h F3h F6h BCh CEh FFh
-Data in 8B0C:0007:
-DB D5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-6E97h-1304]
@@ -48947,26 +46367,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-di-1310]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F4h 9Dh BBh 9Ch C4h B9h 00h F9h BAh 5Dh F4h BEh 41h C7h BFh 88h BEh BDh 24h 12h B8h E6h 93h 8Eh D8h B8h CDh C6h 8Eh C0h B8h CEh 30h 8Eh D0h BCh B0h 62h B8h 00h 00h F3h F6h 39h
-Data in 9C18:0004:
-DB 81h
-BreakPoint: 1000:0036
-Result:
-AX=0000h
-BX=C49Ch
-CX=F900h
-DX=F45Dh
-SI=C741h
-DI=BE88h
-BP=1224h
-SP=62B0h
-DS=93E6h
-ES=C6CDh
-SS=30CEh
 
 [SST-F6_7-idiv-bl-1311]
 EntryPoint: 1000:0000
@@ -49326,23 +46726,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-di-1337]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F0h 9Dh BBh E4h 0Ah B9h 54h 51h BAh DEh 48h BEh 1Ch 0Bh BFh 47h B9h BDh 41h 90h B8h 27h 5Eh 8Eh D8h B8h 49h 41h 8Eh C0h B8h 27h C1h 8Eh D0h BCh 00h 00h B8h B0h 89h F3h F6h 3Dh
-Data in 69BB:0007:
-DB A8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-di-1338]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -49599,23 +46982,6 @@ DS=2473h
 ES=9CA1h
 SS=996Eh
 
-[SST-F6_7-idiv-byte-ss-bx-si-78B2h-1354]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F0h 9Dh BBh DDh 03h B9h 0Eh DBh BAh B9h 71h BEh 4Bh 35h BFh A8h 22h BDh 29h B7h B8h C4h ACh 8Eh D8h B8h 2Fh 84h 8Eh C0h B8h 29h 13h 8Eh D0h BCh 44h C1h B8h 33h 70h 36h F3h F6h B8h 4Eh 87h
-Data in 1F30:0006:
-DB 3Bh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-58D4h-1356]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -49760,24 +47126,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-dh-1365]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F4h 9Dh BBh 71h E9h B9h 2Ah 74h BAh 08h 39h BEh 4Bh 8Eh BFh 81h F2h BDh 9Dh 80h B8h 6Bh EBh 8Eh D8h B8h 89h 2Bh 8Eh C0h B8h 29h 24h 8Eh D0h BCh BCh 66h B8h F2h 00h F3h F6h FEh
-BreakPoint: 1000:0036
-Result:
-AX=0EFCh
-BX=E971h
-CX=742Ah
-DX=3908h
-SI=8E4Bh
-DI=F281h
-BP=809Dh
-SP=66BCh
-DS=EB6Bh
-ES=2B89h
-SS=2429h
-
 [SST-F6_7-idiv-al-1367]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -49792,26 +47140,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-di-12h-1368]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F0h 9Dh BBh 5Dh E3h B9h 94h 66h BAh B9h 9Dh BEh B8h FBh BFh 0Fh 40h BDh DAh CEh B8h 00h 33h 8Eh D8h B8h 98h 8Eh 8Eh C0h B8h 3Dh 44h 8Eh D0h BCh CFh E2h B8h FFh F8h F2h F6h 7Bh EEh
-Data in 452A:0007:
-DB A6h
-BreakPoint: 1000:0037
-Result:
-AX=ADEDh
-BX=E35Dh
-CX=6694h
-DX=9DB9h
-SI=FBB8h
-DI=400Fh
-BP=CEDAh
-SP=E2CFh
-DS=3300h
-ES=8E98h
-SS=443Dh
 
 [SST-F6_7-idiv-byte-ds-si-4Fh-1369]
 EntryPoint: 1000:0000
@@ -50276,23 +47604,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-es-bp-di-3Ch-1400]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F8h 9Dh BBh E8h 6Eh B9h 0Ch 6Eh BAh 6Ch 44h BEh 0Ah 53h BFh 65h 6Bh BDh ADh 52h B8h 81h 88h 8Eh D8h B8h 57h 82h 8Eh C0h B8h 8Ah C2h 8Eh D0h BCh A6h 31h B8h 93h D0h 26h F2h F6h 7Bh 3Ch
-Data in 8E3B:000E:
-DB AFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-bl-1401]
@@ -51128,23 +48439,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-6Bh-1461]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F8h 9Dh BBh F4h 81h B9h F8h 1Bh BAh 70h 69h BEh AFh 11h BFh 82h A4h BDh DFh CFh B8h 06h 2Fh 8Eh D8h B8h E0h E6h 8Eh C0h B8h 12h 52h 8Eh D0h BCh 7Fh 1Eh B8h D4h 7Eh 36h F2h F6h BEh 95h FFh
-Data in 5F09:0004:
-DB 4Eh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-si-661Bh-1463]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -51178,26 +48472,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-si-409Dh-1466]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F4h 9Dh BBh 9Eh 38h B9h 58h 23h BAh CFh B5h BEh 3Bh 60h BFh 11h 4Fh BDh A5h BBh B8h 5Fh AFh 8Eh D8h B8h 24h 50h 8Eh C0h B8h 40h 73h 8Eh D0h BCh BBh 37h B8h 06h C9h F3h F6h BAh 9Dh 40h
-Data in 7907:000D:
-DB 8Dh
-BreakPoint: 1000:0038
-Result:
-AX=D486h
-BX=389Eh
-CX=2358h
-DX=B5CFh
-SI=603Bh
-DI=4F11h
-BP=BBA5h
-SP=37BBh
-DS=AF5Fh
-ES=5024h
-SS=7340h
 
 [SST-F6_7-idiv-byte-ds-bx-si-12h-1467]
 EntryPoint: 1000:0000
@@ -51352,23 +48626,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-es-bx-1Ch-1479]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h FCh 9Dh BBh 31h D1h B9h 68h F9h BAh CEh C8h BEh 2Ah 36h BFh 2Dh ECh BDh 2Dh 9Ah B8h 2Ah A3h 8Eh D8h B8h 68h BEh 8Eh C0h B8h 11h 6Dh 8Eh D0h BCh 1Ah F4h B8h 8Fh 53h 26h F3h F6h 7Fh E4h
-Data in CB79:0005:
-DB 99h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-di-6D84h-1481]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -51388,21 +48645,6 @@ SP=B0E0h
 DS=A63Eh
 ES=40AFh
 SS=CA9Dh
-
-[SST-F6_7-idiv-bl-1483]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F4h 9Dh BBh 81h E0h B9h 4Ah 73h BAh 9Ah 2Dh BEh F6h 9Ch BFh FBh 53h BDh CBh 61h B8h C8h D5h 8Eh D8h B8h 97h 7Fh 8Eh C0h B8h 9Ah 10h 8Eh D0h BCh 00h 00h B8h 6Eh 53h 36h F3h F6h FBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-di-1Bh-1484]
 EntryPoint: 1000:0000
@@ -51540,23 +48782,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-7BC1h-1493]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F0h 9Dh BBh D9h E4h B9h 30h 92h BAh EBh D4h BEh CFh 2Ch BFh 44h 50h BDh 9Eh 35h B8h 3Ah 8Ch 8Eh D8h B8h 13h 41h 8Eh C0h B8h 3Eh 74h 8Eh D0h BCh 3Ch 06h B8h 4Bh ADh F3h F6h BFh C1h 7Bh
-Data in 9243:000A:
-DB 75h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-ch-1494]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -51647,23 +48872,6 @@ Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F8h 9Dh BBh F3h D5h B9h B2h 83h BAh 41h 16h BEh A5h 2Dh BFh 79h 9Ah BDh 34h 46h B8h DAh 15h 8Eh D8h B8h BFh 5Ah 8Eh C0h B8h F6h 79h 8Eh D0h BCh 00h 00h B8h 27h 92h F6h BCh 4Eh 06h
 Data in 1919:0003:
 DB ADh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-di-1Fh-1500]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F4h 9Dh BBh 00h 00h B9h D8h A7h BAh ECh A5h BEh 64h 3Fh BFh 00h 00h BDh 86h AAh B8h ECh E7h 8Eh D8h B8h 74h 27h 8Eh C0h B8h B5h 13h 8Eh D0h BCh B6h 1Bh B8h 7Ch 40h F3h F6h 7Dh E1h
-Data in F7EA:0001:
-DB DEh
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -51838,26 +49046,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-di-6AFEh-1513]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h FCh 9Dh BBh FDh BCh B9h 26h D8h BAh C0h 94h BEh 24h 0Dh BFh 7Fh E8h BDh 99h E8h B8h 92h C9h 8Eh D8h B8h C5h FBh 8Eh C0h B8h C8h 96h 8Eh D0h BCh 1Dh 65h B8h DDh E5h 3Eh F3h F6h BDh 02h 95h
-Data in D16A:0001:
-DB 52h
-BreakPoint: 1000:0039
-Result:
-AX=CF51h
-BX=BCFDh
-CX=D826h
-DX=94C0h
-SI=0D24h
-DI=E87Fh
-BP=E899h
-SP=651Dh
-DS=C992h
-ES=FBC5h
-SS=96C8h
-
 [SST-F6_7-idiv-byte-ds-bx-di-57h-1514]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -51877,23 +49065,6 @@ SP=91EDh
 DS=94CFh
 ES=5559h
 SS=3CBFh
-
-[SST-F6_7-idiv-byte-ds-bx-1515]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F4h 9Dh BBh 87h FAh B9h 10h DAh BAh DAh D5h BEh 61h E1h BFh 84h 8Bh BDh 18h A5h B8h 27h 08h 8Eh D8h B8h EDh 5Dh 8Eh C0h B8h 0Dh 9Ch 8Eh D0h BCh 13h C1h B8h D6h 77h F3h F6h 3Fh
-Data in 17CF:0007:
-DB DEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-si-6Bh-1516]
 EntryPoint: 1000:0000
@@ -52282,23 +49453,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ss-bp-62h-1542]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h F0h 9Dh BBh 23h D4h B9h 04h 05h BAh E0h 0Ch BEh A2h 67h BFh 99h 8Ch BDh 46h D7h B8h 0Fh 58h 8Eh D8h B8h 1Fh D8h 8Eh C0h B8h B7h 0Ch 8Eh D0h BCh E3h 78h B8h 13h 84h 36h F2h F6h 7Eh 9Eh
-Data in 1A25:0004:
-DB C5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-24h-1543]
@@ -52759,24 +49913,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-dh-1579]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F4h 9Dh BBh 82h 90h B9h D2h D6h BAh 44h 6Dh BEh F1h CCh BFh 01h 4Fh BDh ABh B1h B8h EAh F2h 8Eh D8h B8h F5h 3Ch 8Eh C0h B8h 36h 9Fh 8Eh D0h BCh ADh FEh B8h 4Ah ECh 36h F3h F6h FEh
-BreakPoint: 1000:0037
-Result:
-AX=E02Eh
-BX=9082h
-CX=D6D2h
-DX=6D44h
-SI=CCF1h
-DI=4F01h
-BP=B1ABh
-SP=FEADh
-DS=F2EAh
-ES=3CF5h
-SS=9F36h
-
 [SST-F6_7-idiv-byte-ds-di-4Dh-1580]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -52847,23 +49983,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-di-58C1h-1585]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F0h 9Dh BBh 13h 8Bh B9h 8Eh 59h BAh CFh A3h BEh 2Dh 45h BFh CDh 31h BDh 00h 00h B8h 65h 1Ah 8Eh D8h B8h 7Fh B1h 8Eh C0h B8h E1h 5Dh 8Eh D0h BCh 14h E9h B8h 0Eh DDh 3Eh F2h F6h B9h 3Fh A7h
-Data in 20A6:000F:
-DB E5h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-ah-1586]
@@ -53138,23 +50257,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bp-di-6Ch-1607]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F0h 9Dh BBh 20h 71h B9h D4h E4h BAh 16h 6Ch BEh DEh 5Fh BFh 39h 70h BDh 00h 00h B8h 9Fh 43h 8Eh D8h B8h 67h A5h 8Eh C0h B8h 8Ah 81h 8Eh D0h BCh 40h FCh B8h F4h 4Dh 3Eh F3h F6h 7Bh 6Ch
-Data in 4AA9:0005:
-DB 75h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-al-1608]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -53342,23 +50444,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bp-di-2F0Fh-1621]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h FCh 9Dh BBh 53h D5h B9h F4h 8Bh BAh FCh ACh BEh 7Fh 06h BFh 25h A8h BDh 90h 69h B8h DFh B4h 8Eh D8h B8h FFh 48h 8Eh C0h B8h AAh 50h 8Eh D0h BCh D6h 24h B8h E2h 2Dh F3h F6h BBh 0Fh 2Fh
-Data in 54B6:0004:
-DB 33h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-es-bx-76DDh-1622]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -53478,26 +50563,6 @@ SP=11D0h
 DS=E6DEh
 ES=043Ah
 SS=639Eh
-
-[SST-F6_7-idiv-byte-ds-bx-si-8h-1629]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F0h 9Dh BBh 09h A1h B9h 5Ch 24h BAh C4h F0h BEh ECh 86h BFh 00h 00h BDh 15h 28h B8h 14h 34h 8Eh D8h B8h 11h 58h 8Eh C0h B8h A8h 74h 8Eh D0h BCh 0Ch 30h B8h D3h 06h F3h F6h 78h 08h
-Data in 3693:000D:
-DB A3h
-BreakPoint: 1000:0037
-Result:
-AX=4912h
-BX=A109h
-CX=245Ch
-DX=F0C4h
-SI=86ECh
-DI=0000h
-BP=2815h
-SP=300Ch
-DS=3414h
-ES=5811h
-SS=74A8h
 
 [SST-F6_7-idiv-byte-ds-di-25FFh-1630]
 EntryPoint: 1000:0000
@@ -53883,23 +50948,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-bx-si-7Dh-1660]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F4h 9Dh BBh B1h F5h B9h 6Eh 18h BAh 8Bh C9h BEh E2h 14h BFh 9Fh 8Bh BDh 85h B4h B8h 69h 0Fh 8Eh D8h B8h 62h 79h 8Eh C0h B8h C3h DEh 8Eh D0h BCh E3h 2Bh B8h 62h 77h F2h F6h 78h 7Dh
-Data in 101A:0000:
-DB D3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bp-di-1661]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -54173,23 +51221,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-si-1680]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D6h FCh 9Dh BBh 0Bh F6h B9h C4h 0Eh BAh FEh 6Bh BEh 00h 7Bh BFh 19h F7h BDh A4h 38h B8h 82h E6h 8Eh D8h B8h 45h AAh 8Eh C0h B8h D8h E0h 8Eh D0h BCh 4Ch 34h B8h 5Ah 35h F2h F6h 3Ch
-Data in EE32:0000:
-DB A2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-438Fh-1681]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -54346,26 +51377,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-si-6793h-1691]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F4h 9Dh BBh 3Ch B4h B9h 8Ch 57h BAh BDh A6h BEh 26h 59h BFh 4Ah E9h BDh 73h 8Ch B8h FEh 4Fh 8Eh D8h B8h 7Fh B6h 8Eh C0h B8h D7h 25h 8Eh D0h BCh 82h A7h B8h 6Ah F7h F3h F6h BCh 6Dh 98h
-Data in 5F17:0003:
-DB 2Dh
-BreakPoint: 1000:0038
-Result:
-AX=DA30h
-BX=B43Ch
-CX=578Ch
-DX=A6BDh
-SI=5926h
-DI=E94Ah
-BP=8C73h
-SP=A782h
-DS=4FFEh
-ES=B67Fh
-SS=25D7h
 
 [SST-F6_7-idiv-byte-ds-bx-di-1Ch-1693]
 EntryPoint: 1000:0000
@@ -54557,23 +51568,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-si-18h-1707]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h FCh 9Dh BBh EBh 01h B9h 22h F4h BAh 29h 35h BEh 2Fh B2h BFh DCh 54h BDh DEh 48h B8h ECh D1h 8Eh D8h B8h 2Eh 42h 8Eh C0h B8h 0Ah 75h 8Eh D0h BCh C5h B2h B8h 5Eh 74h F2h F6h 7Ch E8h
-Data in DD0D:0007:
-DB 00h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-ch-1709]
@@ -54932,38 +51926,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-ah-1734]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F4h 9Dh BBh 32h A3h B9h 78h 3Dh BAh 1Fh BFh BEh 75h D6h BFh 2Dh 6Bh BDh 96h BDh B8h DAh 81h 8Eh D8h B8h F6h F2h 8Eh C0h B8h 7Bh F1h 8Eh D0h BCh E5h 30h B8h 4Dh 75h F3h F6h FCh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-di-1735]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D2h FCh 9Dh BBh 9Eh 22h B9h 62h 7Ah BAh F3h 28h BEh 09h 8Ah BFh 66h 5Bh BDh 90h 53h B8h A8h E4h 8Eh D8h B8h 9Ah 62h 8Eh C0h B8h 24h 72h 8Eh D0h BCh C0h BDh B8h 1Fh 43h 3Eh F2h F6h 39h
-Data in EC88:0004:
-DB 8Eh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ss-bp-si-4h-1736]
@@ -55471,23 +52433,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ss-bx-di-1777]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F4h 9Dh BBh D0h ADh B9h A2h AAh BAh 75h 7Eh BEh 5Ah 56h BFh 3Ch 6Eh BDh BAh 4Fh B8h 7Ch 6Ah 8Eh D8h B8h CAh 35h 8Eh C0h B8h 31h 5Ch 8Eh D0h BCh 63h 1Dh B8h 9Eh 26h 36h F3h F6h 39h
-Data in 5DF1:000C:
-DB 2Bh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-si-6ABCh-1778]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -55629,23 +52574,6 @@ DS=65A4h
 ES=E02Ah
 SS=1675h
 
-[SST-F6_7-idiv-byte-ds-si-37h-1787]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh 31h 3Ch B9h 90h 08h BAh DAh 0Eh BEh 34h 09h BFh 25h 67h BDh E6h E7h B8h 64h 61h 8Eh D8h B8h 5Bh F7h 8Eh C0h B8h 3Bh BFh 8Eh D0h BCh A6h 32h B8h 4Dh A3h F2h F6h 7Ch C9h
-Data in 61F3:000D:
-DB B6h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ss-bx-76FFh-1788]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -55696,23 +52624,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-si-Dh-1791]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F8h 9Dh BBh 35h 41h B9h 9Eh E8h BAh 17h 25h BEh D3h F1h BFh A5h FBh BDh 6Ch BBh B8h E4h 84h 8Eh D8h B8h 61h E9h 8Eh C0h B8h 58h 27h 8Eh D0h BCh B3h 5Bh B8h C0h 74h F3h F6h 78h 0Dh
-Data in 8815:0005:
-DB 2Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-al-1792]
@@ -55836,26 +52747,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-5741h-1801]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F0h 9Dh BBh 45h F3h B9h 90h C3h BAh 63h D7h BEh BBh 92h BFh 08h 84h BDh 5Bh B3h B8h 37h DDh 8Eh D8h B8h F9h 3Eh 8Eh C0h B8h D0h 3Ch 8Eh D0h BCh 97h 52h B8h 31h E7h F2h F6h BFh BFh A8h
-Data in E6F7:0004:
-DB 8Bh
-BreakPoint: 1000:0038
-Result:
-AX=DFCAh
-BX=F345h
-CX=C390h
-DX=D763h
-SI=92BBh
-DI=8408h
-BP=B35Bh
-SP=5297h
-DS=DD37h
-ES=3EF9h
-SS=3CD0h
 
 [SST-F6_7-idiv-byte-ds-bx-di-6Ah-1802]
 EntryPoint: 1000:0000
@@ -56647,23 +53538,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F6_7-idiv-byte-ds-di-1849]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h FCh 9Dh BBh A1h 92h B9h 6Ch 74h BAh 12h 56h BEh B7h BEh BFh B4h 6Fh BDh 03h 88h B8h 51h B5h 8Eh D8h B8h 24h CDh 8Eh C0h B8h BAh 83h 8Eh D0h BCh 42h C0h B8h 35h 5Ah F3h F6h 3Dh
-Data in AFFF:C4D4:
-DB 3Ch
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-es-si-24D3h-1850]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -56895,23 +53769,6 @@ DS=71BFh
 ES=91B8h
 SS=1116h
 
-[SST-F6_7-idiv-byte-ss-bp-250Dh-1868]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F8h 9Dh BBh 8Ch 13h B9h A6h 26h BAh CDh BBh BEh EAh B0h BFh 7Ch EEh BDh 22h E8h B8h E1h BBh 8Eh D8h B8h 2Bh 2Eh 8Eh C0h B8h 5Eh 97h 8Eh D0h BCh CCh B5h B8h 5Eh C3h F2h F6h BEh F3h DAh
-Data in A38F:0005:
-DB A7h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-byte-ds-bx-di-6h-1869]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -57011,23 +53868,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-si-1876]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h FCh 9Dh BBh 00h 00h B9h E6h 82h BAh C7h 30h BEh 00h 00h BFh 13h D6h BDh DCh 34h B8h 7Ah 27h 8Eh D8h B8h BEh 9Ah 8Eh C0h B8h E4h 0Bh 8Eh D0h BCh 93h 02h B8h 8Dh A7h F2h F6h 38h
-Data in 277A:0000:
-DB 7Eh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-si-43h-1877]
@@ -57498,21 +54338,6 @@ DS=E287h
 ES=303Eh
 SS=8226h
 
-[SST-F6_7-idiv-dh-1908]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F0h 9Dh BBh 88h 79h B9h 32h AFh BAh B6h 0Dh BEh D4h 90h BFh F3h 3Bh BDh 69h 17h B8h 2Bh E4h 8Eh D8h B8h 2Ch 42h 8Eh C0h B8h D5h 66h 8Eh D0h BCh 00h 00h B8h 83h 53h F2h F6h FEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F6_7-idiv-dl-1911]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -57612,23 +54437,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F6_7-idiv-byte-ds-bx-si-42BEh-1918]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F0h 9Dh BBh 10h 19h B9h 6Ch 8Ch BAh 62h F2h BEh 54h 67h BFh 58h 76h BDh 36h BEh B8h 9Fh CAh 8Eh D8h B8h AEh E4h 8Eh C0h B8h 7Bh 4Ch 8Eh D0h BCh 9Fh 01h B8h 6Bh 14h F2h F6h B8h BEh 42h
-Data in D6D1:0002:
-DB 23h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-es-bx-1919]
@@ -58284,23 +55092,6 @@ SP=4DF5h
 DS=DE0Bh
 ES=033Eh
 SS=CCD1h
-
-[SST-F6_7-idiv-byte-ds-bp-di-7Dh-1961]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F0h 9Dh BBh 6Eh 19h B9h 02h 16h BAh 28h F5h BEh FBh C7h BFh EDh 9Ah BDh 9Ch 8Ah B8h 8Ah 44h 8Eh D8h B8h C1h 2Ah 8Eh C0h B8h 6Bh E7h 8Eh D0h BCh 2Dh 1Fh B8h 16h 32h 3Eh F2h F6h 7Bh 7Dh
-Data in 46EA:0006:
-DB 3Fh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F6_7-idiv-byte-ds-bx-74h-1962]
 EntryPoint: 1000:0000
@@ -59711,24 +56502,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-bx-0050]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F8h 9Dh BBh 47h BDh B9h A0h C6h BAh 00h 00h BEh A6h 18h BFh FAh 57h BDh 58h C1h B8h 3Fh 27h 8Eh D8h B8h BBh 7Dh 8Eh C0h B8h 41h 17h 8Eh D0h BCh BCh FEh B8h CEh DFh F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=0001h
-BX=BD47h
-CX=C6A0h
-DX=2287h
-SI=18A6h
-DI=57FAh
-BP=C158h
-SP=FEBCh
-DS=273Fh
-ES=7DBBh
-SS=1741h
-
 [SST-F7_6-div-word-ss-di-2042h-0052]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -60659,21 +57432,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-0112]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h FCh 9Dh BBh 8Ch B4h B9h E4h 17h BAh F3h B0h BEh C9h EBh BFh 5Bh 3Ch BDh C6h D0h B8h ABh 4Fh 8Eh D8h B8h 0Bh EAh 8Eh C0h B8h E8h 54h 8Eh D0h BCh 86h DDh B8h C9h 96h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-bp-0114]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -60748,21 +57506,6 @@ SP=AE49h
 DS=370Bh
 ES=3F29h
 SS=EAC7h
-
-[SST-F7_6-div-dx-0119]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh B4h FBh B9h 86h C5h BAh 86h 91h BEh F5h 8Ch BFh 0Fh 6Dh BDh ADh 45h B8h 04h A1h 8Eh D8h B8h FDh ADh 8Eh C0h B8h CCh F0h 8Eh D0h BCh ABh BAh B8h A2h 0Bh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ds-di-0120]
 EntryPoint: 1000:0000
@@ -60974,21 +57717,6 @@ DS=1CD1h
 ES=F4ECh
 SS=651Ch
 
-[SST-F7_6-div-bx-0130]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F8h 9Dh BBh 38h 58h B9h 74h 7Eh BAh 55h F0h BEh F2h 16h BFh FFh 07h BDh 0Eh 28h B8h 2Fh 9Ah 8Eh D8h B8h B1h C0h 8Eh C0h B8h F3h D6h 8Eh D0h BCh 01h 3Bh B8h B1h DEh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bp-di-3B77h-0132]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -61043,21 +57771,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-0135]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h F8h 9Dh BBh A6h 16h B9h 30h 56h BAh FDh 87h BEh AEh 1Ch BFh 19h 57h BDh 86h ADh B8h C5h CEh 8Eh D8h B8h BFh FEh 8Eh C0h B8h 39h 76h 8Eh D0h BCh 8Fh 78h B8h 78h 08h F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ss-bx-di-0137]
@@ -61228,24 +57941,6 @@ SP=3437h
 DS=1604h
 ES=5186h
 SS=5453h
-
-[SST-F7_6-div-bx-0146]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F0h 9Dh BBh DDh CEh B9h 3Ch E8h BAh 56h 39h BEh 30h E9h BFh 76h EDh BDh 1Eh F6h B8h 11h BCh 8Eh D8h B8h 6Eh D0h 8Eh C0h B8h 7Ch 9Dh 8Eh D0h BCh BCh 17h B8h F5h B7h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=46F5h
-BX=CEDDh
-CX=E83Ch
-DX=5074h
-SI=E930h
-DI=ED76h
-BP=F61Eh
-SP=17BCh
-DS=BC11h
-ES=D06Eh
-SS=9D7Ch
 
 [SST-F7_6-div-word-ds-bx-1548h-0147]
 EntryPoint: 1000:0000
@@ -61995,21 +58690,6 @@ DS=1609h
 ES=0D90h
 SS=E623h
 
-[SST-F7_6-div-bx-0195]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h FCh 9Dh BBh CDh 80h B9h 22h 36h BAh 18h 94h BEh 97h AEh BFh A2h ECh BDh F8h 31h B8h 1Dh 03h 8Eh D8h B8h 47h 78h 8Eh C0h B8h F7h 61h 8Eh D0h BCh 2Ch ABh B8h 1Eh A2h F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bx-30h-0198]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -62072,21 +58752,6 @@ SP=0C77h
 DS=C3B0h
 ES=694Fh
 SS=E182h
-
-[SST-F7_6-div-bx-0203]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh 92h 94h B9h 6Eh FDh BAh F2h A1h BEh 70h 9Dh BFh EBh A1h BDh 92h 14h B8h A8h F3h 8Eh D8h B8h 3Ch 75h 8Eh C0h B8h C3h 97h 8Eh D0h BCh 78h 1Eh B8h 9Dh BCh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ds-di-7Eh-0204]
 EntryPoint: 1000:0000
@@ -62460,21 +59125,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-0223]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F8h 9Dh BBh 6Bh 10h B9h C8h 9Dh BAh 88h A2h BEh 79h 45h BFh B7h EDh BDh FAh AAh B8h 22h 5Eh 8Eh D8h B8h ADh 20h 8Eh C0h B8h 4Bh 03h 8Eh D0h BCh FCh 1Ah B8h 49h 9Ch F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ss-bp-si-390Eh-0224]
@@ -63764,21 +60414,6 @@ DS=41E9h
 ES=C48Ah
 SS=8E83h
 
-[SST-F7_6-div-bx-0315]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh C8h 24h B9h D4h ADh BAh FCh 6Dh BEh 10h 06h BFh 38h 81h BDh 03h C9h B8h C1h 3Dh 8Eh D8h B8h 0Ah AAh 8Eh C0h B8h 80h 67h 8Eh D0h BCh 51h 7Eh B8h CFh 9Eh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-di-0317]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -63933,21 +60568,6 @@ ExpectedFault: DIVISION0
 EntryPoint: 1000:0000
 Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F4h 9Dh BBh F1h 3Eh B9h AAh 5Fh BAh 8Eh E0h BEh 82h 4Ah BFh C3h 63h BDh 36h CFh B8h 6Bh E7h 8Eh D8h B8h 29h BEh 8Eh C0h B8h FFh 04h 8Eh D0h BCh 20h 8Fh B8h DDh 26h F7h F6h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-0331]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh ADh 9Eh B9h 44h DBh BAh E6h B6h BEh 23h 10h BFh 46h CEh BDh 7Eh 6Ah B8h EBh 74h 8Eh D8h B8h 8Ah C1h 8Eh C0h B8h BFh 6Ch 8Eh D0h BCh 46h E9h B8h 8Ah 3Eh F7h F3h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -64204,21 +60824,6 @@ SP=09CDh
 DS=009Ah
 ES=5CCCh
 SS=EB63h
-
-[SST-F7_6-div-bx-0345]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h F8h 9Dh BBh 97h 43h B9h A6h 09h BAh FBh 49h BEh D0h 40h BFh 34h 68h BDh 83h F4h B8h 44h 4Fh 8Eh D8h B8h FFh 3Ah 8Eh C0h B8h DEh 35h 8Eh D0h BCh 00h 00h B8h 27h 8Fh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ds-bx-di-0346]
 EntryPoint: 1000:0000
@@ -65242,21 +61847,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-0408]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h FCh 9Dh BBh E6h FEh B9h 00h 00h BAh E3h 47h BEh D5h C2h BFh B7h EEh BDh 11h 76h B8h E6h BEh 8Eh D8h B8h B4h 4Ch 8Eh C0h B8h 76h EDh 8Eh D0h BCh 99h F4h B8h 70h E2h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-di-0409]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -65454,21 +62044,6 @@ DS=08E9h
 ES=DC24h
 SS=4335h
 
-[SST-F7_6-div-dx-0422]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h FCh 9Dh BBh 7Ah 06h B9h 5Eh C0h BAh 5Ah 2Fh BEh AEh 8Ch BFh 00h 00h BDh 1Bh BDh B8h 41h FAh 8Eh D8h B8h 32h 1Ch 8Eh C0h B8h 26h 2Ch 8Eh D0h BCh CCh F4h B8h 3Bh C9h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-si-6D18h-0423]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -65495,39 +62070,6 @@ SS=F5F7h
 EntryPoint: 1000:0000
 Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h FCh 9Dh BBh 56h 44h B9h 10h 27h BAh 8Bh B8h BEh EFh F6h BFh 30h 9Ah BDh A6h E7h B8h 18h E0h 8Eh D8h B8h 6Dh 25h 8Eh C0h B8h 30h 00h 8Eh D0h BCh 00h 00h B8h 29h 22h F7h F0h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-0425]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh E9h A6h B9h ACh 3Ch BAh ABh 55h BEh B3h F8h BFh E4h CEh BDh E4h 37h B8h 8Bh 57h 8Eh D8h B8h 52h 99h 8Eh C0h B8h 1Eh 0Dh 8Eh D0h BCh AEh 65h B8h 05h 97h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=8365h
-BX=A6E9h
-CX=3CACh
-DX=8218h
-SI=F8B3h
-DI=CEE4h
-BP=37E4h
-SP=65AEh
-DS=578Bh
-ES=9952h
-SS=0D1Eh
-
-[SST-F7_6-div-dx-0426]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh CAh 63h B9h C6h 67h BAh A6h 04h BEh 67h 5Eh BFh 16h E5h BDh C0h 5Ah B8h F8h 7Bh 8Eh D8h B8h 3Dh F9h 8Eh C0h B8h C8h EAh 8Eh D0h BCh C3h 21h B8h 9Dh 7Fh F7h F2h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -65643,21 +62185,6 @@ DS=B40Bh
 ES=A654h
 SS=0F7Ch
 
-[SST-F7_6-div-dx-0435]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h FCh 9Dh BBh 72h B0h B9h 84h 64h BAh EBh 54h BEh 70h A2h BFh 97h 53h BDh EFh 3Ah B8h 23h 35h 8Eh D8h B8h 5Eh BCh 8Eh C0h B8h 06h A8h 8Eh D0h BCh DCh 11h B8h FFh 11h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bx-0436]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -65721,24 +62248,6 @@ DS=5F71h
 ES=135Fh
 SS=5CF7h
 
-[SST-F7_6-div-bx-0440]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F0h 9Dh BBh 22h C9h B9h BEh BCh BAh EAh 44h BEh 1Ah 48h BFh AFh D4h BDh 61h 32h B8h 85h 69h 8Eh D8h B8h C2h 75h 8Eh C0h B8h 14h 9Fh 8Eh D0h BCh 0Ah FBh B8h 13h C7h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=57B7h
-BX=C922h
-CX=BCBEh
-DX=71C5h
-SI=481Ah
-DI=D4AFh
-BP=3261h
-SP=FB0Ah
-DS=6985h
-ES=75C2h
-SS=9F14h
-
 [SST-F7_6-div-bx-0441]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -65792,21 +62301,6 @@ SP=282Fh
 DS=E9DDh
 ES=D8E5h
 SS=CA01h
-
-[SST-F7_6-div-dx-0445]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h F8h 9Dh BBh B5h ECh B9h CEh 69h BAh 73h 52h BEh E0h E0h BFh 4Bh E4h BDh 23h 78h B8h D4h B7h 8Eh D8h B8h DDh 52h 8Eh C0h B8h D6h 67h 8Eh D0h BCh C9h 13h B8h D5h 32h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-bp-0446]
 EntryPoint: 1000:0000
@@ -65941,21 +62435,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-dx-0453]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F0h 9Dh BBh 83h DDh B9h 00h 00h BAh BCh 46h BEh 5Fh 58h BFh DBh 31h BDh 2Eh EDh B8h 03h 55h 8Eh D8h B8h 65h F5h 8Eh C0h B8h 59h 8Eh 8Eh D0h BCh ABh 18h B8h D2h 11h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-es-bx-si-0454]
@@ -66279,21 +62758,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-0472]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh F8h 50h B9h F2h C8h BAh A4h 23h BEh 21h 85h BFh 53h 54h BDh F4h 60h B8h EBh 0Dh 8Eh D8h B8h B1h 95h 8Eh C0h B8h 90h 55h 8Eh D0h BCh 99h B1h B8h 89h EAh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-es-bx-1689h-0474]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -66436,21 +62900,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-bx-0481]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh 58h 46h B9h 3Ch 63h BAh 6Fh 4Bh BEh FBh 74h BFh EDh 3Ah BDh 67h 8Dh B8h 70h B9h 8Eh D8h B8h D7h 55h 8Eh C0h B8h 63h 29h 8Eh D0h BCh 4Dh 99h B8h 67h 0Ch F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bx-di-642Ch-0482]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -66472,24 +62921,6 @@ SP=DA96h
 DS=5C61h
 ES=BBBEh
 SS=E58Eh
-
-[SST-F7_6-div-bx-0483]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F8h 9Dh BBh 9Dh B3h B9h 24h A1h BAh A8h 1Dh BEh BCh 38h BFh 6Fh B8h BDh 29h 40h B8h 5Dh A6h 8Eh D8h B8h C5h 34h 8Eh C0h B8h 88h C4h 8Eh D0h BCh CAh E4h B8h A8h A5h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=2A45h
-BX=B39Dh
-CX=A124h
-DX=7A57h
-SI=38BCh
-DI=B86Fh
-BP=4029h
-SP=E4CAh
-DS=A65Dh
-ES=34C5h
-SS=C488h
 
 [SST-F7_6-div-si-0484]
 EntryPoint: 1000:0000
@@ -67242,21 +63673,6 @@ DS=9902h
 ES=4508h
 SS=C5D4h
 
-[SST-F7_6-div-bx-0530]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h F8h 9Dh BBh 87h 14h B9h 30h D2h BAh 2Dh 77h BEh 00h 2Eh BFh B6h B9h BDh 4Ch 0Ch B8h 7Dh 54h 8Eh D8h B8h F4h DEh 8Eh C0h B8h 83h 38h 8Eh D0h BCh EBh 69h B8h B6h 6Eh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bp-si-Dh-0531]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -67370,21 +63786,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-0538]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F8h 9Dh BBh F4h A8h B9h 1Eh AEh BAh A9h 2Eh BEh C6h 50h BFh ADh 92h BDh FEh 2Eh B8h 81h C9h 8Eh D8h B8h F8h 23h 8Eh C0h B8h 29h F2h 8Eh D0h BCh 26h 88h B8h 69h E6h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bp-si-77FEh-0539]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -67487,21 +63888,6 @@ Data in CCEB:000C:
 DB E6h
 Data in CCEB:000D:
 DB 93h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-0547]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F8h 9Dh BBh 3Ch 90h B9h 88h 20h BAh EAh FBh BEh 29h 78h BFh 3Ch B4h BDh 47h 79h B8h A7h 46h 8Eh D8h B8h 38h BEh 8Eh C0h B8h F5h 49h 8Eh D0h BCh 76h C1h B8h BCh 75h F7h F3h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -68540,21 +64926,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-bx-0613]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h FCh 9Dh BBh A9h 41h B9h 94h 5Dh BAh 9Dh CCh BEh C8h FCh BFh 4Fh 87h BDh C6h 24h B8h 35h 35h 8Eh D8h B8h EDh A1h 8Eh C0h B8h 97h 05h 8Eh D0h BCh 8Dh F2h B8h BAh 9Ah F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-bp-0614]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -68854,21 +65225,6 @@ SP=4469h
 DS=7CF2h
 ES=9E67h
 SS=91EFh
-
-[SST-F7_6-div-dx-0635]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F0h 9Dh BBh A1h 94h B9h 4Eh 12h BAh E0h 7Ah BEh BFh F3h BFh 56h 43h BDh 0Ch DAh B8h 3Fh 3Fh 8Eh D8h B8h 45h 42h 8Eh C0h B8h FBh 37h 8Eh D0h BCh AAh ABh B8h ACh F7h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-di-0636]
 EntryPoint: 1000:0000
@@ -69413,21 +65769,6 @@ DS=9BF1h
 ES=B8D6h
 SS=66D2h
 
-[SST-F7_6-div-bx-0667]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh F9h 8Eh B9h AEh E1h BAh 0Bh 9Dh BEh F7h 46h BFh 98h 13h BDh 06h AEh B8h 98h 4Bh 8Eh D8h B8h C0h F6h 8Eh C0h B8h 23h AEh 8Eh D0h BCh B6h C1h B8h D4h 0Dh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bp-si-0668]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -69534,24 +65875,6 @@ SP=3DC9h
 DS=34B5h
 ES=87E1h
 SS=5A7Ch
-
-[SST-F7_6-div-bx-0674]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h FCh 9Dh BBh E6h 95h B9h 9Ch 57h BAh 59h 68h BEh CBh 82h BFh 58h 14h BDh FBh 2Dh B8h 9Ch DCh 8Eh D8h B8h 95h 24h 8Eh C0h B8h 4Eh E3h 8Eh D0h BCh 61h 89h B8h E1h D9h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=B236h
-BX=95E6h
-CX=579Ch
-DX=4F5Dh
-SI=82CBh
-DI=1458h
-BP=2DFBh
-SP=8961h
-DS=DC9Ch
-ES=2495h
-SS=E34Eh
 
 [SST-F7_6-div-word-ds-bp-di-28h-0675]
 EntryPoint: 1000:0000
@@ -70188,24 +66511,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-bx-0712]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F0h 9Dh BBh 7Fh BEh B9h 22h 44h BAh 21h 67h BEh C3h 0Dh BFh 95h 1Dh BDh 84h 77h B8h 36h B3h 8Eh D8h B8h 76h 18h 8Eh C0h B8h ECh AAh 8Eh D0h BCh FEh 03h B8h 5Fh 2Bh F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=8A97h
-BX=BE7Fh
-CX=4422h
-DX=5876h
-SI=0DC3h
-DI=1D95h
-BP=7784h
-SP=03FEh
-DS=B336h
-ES=1876h
-SS=AAECh
-
 [SST-F7_6-div-word-ds-bx-si-0713]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -70499,21 +66804,6 @@ SP=947Bh
 DS=D496h
 ES=B4F8h
 SS=E994h
-
-[SST-F7_6-div-dx-0737]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F0h 9Dh BBh 26h 0Eh B9h C0h 2Dh BAh 89h 53h BEh C6h 94h BFh 3Ah 6Ch BDh 12h A6h B8h 11h 70h 8Eh D8h B8h 2Fh DEh 8Eh C0h B8h D5h 0Fh 8Eh D0h BCh D7h DDh B8h 3Dh 56h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-es-bx-di-4Ch-0738]
 EntryPoint: 1000:0000
@@ -71246,24 +67536,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-bx-0781]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F0h 9Dh BBh BFh 4Ch B9h 64h 4Fh BAh 00h 00h BEh D8h 7Eh BFh 51h ECh BDh 3Bh 59h B8h 1Eh EBh 8Eh D8h B8h 90h E0h 8Eh C0h B8h FCh 07h 8Eh D0h BCh 00h 00h B8h 5Dh 7Ah F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=0001h
-BX=4CBFh
-CX=4F64h
-DX=2D9Eh
-SI=7ED8h
-DI=EC51h
-BP=593Bh
-SP=0000h
-DS=EB1Eh
-ES=E090h
-SS=07FCh
-
 [SST-F7_6-div-word-ds-bx-di-11h-0783]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -71589,21 +67861,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-0802]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F4h 9Dh BBh 8Fh 6Ch B9h 32h D5h BAh 8Dh C0h BEh 86h 6Ch BFh 76h 26h BDh 46h 75h B8h B8h 15h 8Eh D8h B8h F4h 59h 8Eh C0h B8h D0h A2h 8Eh D0h BCh 18h 88h B8h 34h 70h F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ds-bx-di-0803]
@@ -74184,21 +70441,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-0962]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F0h 9Dh BBh 21h C2h B9h 00h 00h BAh AFh DFh BEh AFh 5Fh BFh FFh C5h BDh BDh 17h B8h 7Ch 17h 8Eh D8h B8h 75h CAh 8Eh C0h B8h E0h 0Bh 8Eh D0h BCh 45h 1Eh B8h E6h 72h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-cx-0964]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -74723,21 +70965,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-0992]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h FCh 9Dh BBh 0Dh 77h B9h A0h 12h BAh 8Fh EDh BEh 9Ch CCh BFh A7h 70h BDh C9h 23h B8h 66h 48h 8Eh D8h B8h 45h 5Dh 8Eh C0h B8h E6h D6h 8Eh D0h BCh 64h 5Ch B8h 63h 64h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bx-43B3h-0993]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -74781,21 +71008,6 @@ SP=8157h
 DS=AB7Fh
 ES=5C04h
 SS=8098h
-
-[SST-F7_6-div-dx-0995]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F0h 9Dh BBh 31h 1Dh B9h CCh 79h BAh 3Dh 7Dh BEh A8h 44h BFh D3h 72h BDh 86h D4h B8h F6h 58h 8Eh D8h B8h D7h 22h 8Eh C0h B8h 2Bh 94h 8Eh D0h BCh 5Eh B1h B8h A1h CCh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ss-bp-si-2EB0h-0996]
 EntryPoint: 1000:0000
@@ -75441,21 +71653,6 @@ SP=4495h
 DS=8DEDh
 ES=831Bh
 SS=29FFh
-
-[SST-F7_6-div-dx-1035]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F0h 9Dh BBh E1h DEh B9h F4h D7h BAh F8h C9h BEh 7Ah 5Eh BFh 00h 00h BDh 6Bh 6Fh B8h 37h 73h 8Eh D8h B8h 78h 11h 8Eh C0h B8h CCh 74h 8Eh D0h BCh CBh 2Bh B8h ACh 1Eh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-si-1036]
 EntryPoint: 1000:0000
@@ -76515,21 +72712,6 @@ DS=9DCBh
 ES=91C1h
 SS=57D7h
 
-[SST-F7_6-div-dx-1096]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F8h 9Dh BBh 31h BBh B9h E0h BFh BAh E9h 2Fh BEh 26h 58h BFh 37h 8Fh BDh 5Bh 5Fh B8h 72h 0Bh 8Eh D8h B8h 6Bh EAh 8Eh C0h B8h BDh 96h 8Eh D0h BCh 80h 1Ch B8h 14h 90h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bp-si-8h-1097]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -77201,21 +73383,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-bx-1131]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h FCh 9Dh BBh E6h 0Eh B9h 6Ah 59h BAh 10h 4Eh BEh 4Fh 66h BFh 8Eh 44h BDh EAh 66h B8h 40h A8h 8Eh D8h B8h 76h B5h 8Eh C0h B8h B4h B9h 8Eh D0h BCh 31h FFh B8h 08h D2h F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-es-bx-si-31h-1132]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -77431,21 +73598,6 @@ Data in AFFF:1526:
 DB D7h
 Data in AFFF:1527:
 DB 3Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-dx-1146]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h FCh 9Dh BBh DEh F4h B9h 00h 00h BAh 05h 8Fh BEh E7h 51h BFh 00h 00h BDh 87h 31h B8h 51h 9Ah 8Eh D8h B8h 29h 50h 8Eh C0h B8h DEh ECh 8Eh D0h BCh 82h 50h B8h 5Ch 95h F7h F2h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -78112,24 +74264,6 @@ DS=D60Fh
 ES=45CBh
 SS=1250h
 
-[SST-F7_6-div-bx-1183]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h FCh 9Dh BBh EFh 56h B9h F8h 6Eh BAh 73h 3Ch BEh C3h 40h BFh 8Ch 76h BDh BBh 3Eh B8h 94h E3h 8Eh D8h B8h 36h D9h 8Eh C0h B8h 03h 8Ah 8Eh D0h BCh 5Dh 7Dh B8h 9Dh 56h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=B203h
-BX=56EFh
-CX=6EF8h
-DX=23D0h
-SI=40C3h
-DI=768Ch
-BP=3EBBh
-SP=7D5Dh
-DS=E394h
-ES=D936h
-SS=8A03h
-
 [SST-F7_6-div-word-ds-bx-1184]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -78718,21 +74852,6 @@ SP=3FAFh
 DS=A696h
 ES=ECA2h
 SS=A801h
-
-[SST-F7_6-div-dx-1221]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h FCh 9Dh BBh E8h 74h B9h 64h B0h BAh 99h FDh BEh 70h 1Ch BFh 88h 38h BDh 69h 28h B8h C6h 07h 8Eh D8h B8h 34h 15h 8Eh C0h B8h B9h B5h 8Eh D0h BCh 49h 25h B8h 7Eh F2h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ds-bx-5D22h-1222]
 EntryPoint: 1000:0000
@@ -80949,21 +77068,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-1358]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F4h 9Dh BBh DEh 0Ah B9h F2h 11h BAh BEh FEh BEh E9h 6Ch BFh 14h 71h BDh CFh 4Dh B8h 3Bh CEh 8Eh D8h B8h 98h CDh 8Eh C0h B8h D0h 7Eh 8Eh D0h BCh 00h 00h B8h 14h 4Ah F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bx-di-1359]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -81030,21 +77134,6 @@ SP=69E4h
 DS=1577h
 ES=069Ch
 SS=F813h
-
-[SST-F7_6-div-dx-1364]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h FCh 9Dh BBh 81h 54h B9h 6Ch 26h BAh 47h 44h BEh 8Ah 21h BFh D5h 03h BDh 6Bh 3Eh B8h 89h C3h 8Eh D8h B8h 8Dh 52h 8Eh C0h B8h 20h FCh 8Eh D0h BCh B7h 79h B8h 00h 00h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-sp-1366]
 EntryPoint: 1000:0000
@@ -81614,21 +77703,6 @@ SP=FC3Fh
 DS=CA57h
 ES=A958h
 SS=2643h
-
-[SST-F7_6-div-dx-1400]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F4h 9Dh BBh 36h 29h B9h 30h 5Eh BAh 5Eh E2h BEh 82h D1h BFh 0Eh 79h BDh BEh 31h B8h 59h 45h 8Eh D8h B8h 8Dh 57h 8Eh C0h B8h 1Ch 77h 8Eh D0h BCh C3h 14h B8h 57h AAh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-sp-1401]
 EntryPoint: 1000:0000
@@ -82224,21 +78298,6 @@ DS=9452h
 ES=9552h
 SS=C4BCh
 
-[SST-F7_6-div-dx-1435]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh 90h DAh B9h C6h 63h BAh 4Eh 09h BEh 5Ah 28h BFh EBh 7Eh BDh FDh 87h B8h 43h 69h 8Eh D8h B8h 61h A3h 8Eh C0h B8h 61h 2Dh 8Eh D0h BCh D3h 06h B8h EEh C6h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-si-1436]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -82612,21 +78671,6 @@ DS=468Dh
 ES=8BA9h
 SS=BF1Dh
 
-[SST-F7_6-div-dx-1457]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F0h 9Dh BBh 6Dh FBh B9h 8Eh D6h BAh 02h B5h BEh 08h 9Eh BFh 8Ah B5h BDh 00h 00h B8h ADh EBh 8Eh D8h B8h 0Dh 50h 8Eh C0h B8h 89h 33h 8Eh D0h BCh ECh 53h B8h 04h EAh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bx-1Dh-1459]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -82841,24 +78885,6 @@ SP=4C33h
 DS=0F6Fh
 ES=4A98h
 SS=3F07h
-
-[SST-F7_6-div-bx-1471]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F4h 9Dh BBh 46h E6h B9h 5Ah 67h BAh B2h BFh BEh 00h 00h BFh 77h A8h BDh 9Dh B0h B8h 58h BBh 8Eh D8h B8h D4h CBh 8Eh C0h B8h 80h 28h 8Eh D0h BCh 9Bh 74h B8h 3Ch D4h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=D51Dh
-BX=E646h
-CX=675Ah
-DX=804Eh
-SI=0000h
-DI=A877h
-BP=B09Dh
-SP=749Bh
-DS=BB58h
-ES=CBD4h
-SS=2880h
 
 [SST-F7_6-div-word-ds-bx-0h-1475]
 EntryPoint: 1000:0000
@@ -83095,21 +79121,6 @@ SP=93E1h
 DS=820Fh
 ES=9BF5h
 SS=8654h
-
-[SST-F7_6-div-dx-1488]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C6h F4h 9Dh BBh 5Dh 79h B9h 14h A2h BAh 88h B8h BEh C7h 95h BFh BEh 14h BDh 9Eh 6Ch B8h A6h C9h 8Eh D8h B8h 6Eh 4Ah 8Eh C0h B8h 4Ch DEh 8Eh D0h BCh 72h ECh B8h A9h 9Dh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-es-bp-di-738Fh-1490]
 EntryPoint: 1000:0000
@@ -84263,21 +80274,6 @@ DS=FC3Eh
 ES=44A3h
 SS=29FFh
 
-[SST-F7_6-div-bx-1562]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h FCh 9Dh BBh 23h 53h B9h 50h 99h BAh 9Ch A5h BEh 7Eh CFh BFh 79h CEh BDh B4h C8h B8h 27h 39h 8Eh D8h B8h 2Ah D4h 8Eh C0h B8h 7Ch 97h 8Eh D0h BCh 74h ECh B8h FCh 6Eh F7h F3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bx-di-1563]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -84579,24 +80575,6 @@ SP=FE0Ah
 DS=32FCh
 ES=8296h
 SS=98AAh
-
-[SST-F7_6-div-bx-1584]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F0h 9Dh BBh A6h F0h B9h 5Eh 57h BAh 63h 1Bh BEh 32h 72h BFh BAh 53h BDh DCh 57h B8h 1Bh 89h 8Eh D8h B8h ABh 31h 8Eh C0h B8h 02h F5h 8Eh D0h BCh 7Bh 55h B8h 1Ah 0Eh F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=1D22h
-BX=F0A6h
-CX=575Eh
-DX=4A0Eh
-SI=7232h
-DI=53BAh
-BP=57DCh
-SP=557Bh
-DS=891Bh
-ES=31ABh
-SS=F502h
 
 [SST-F7_6-div-word-ds-si-605Eh-1585]
 EntryPoint: 1000:0000
@@ -85638,21 +81616,6 @@ DS=90F2h
 ES=8EA6h
 SS=70FEh
 
-[SST-F7_6-div-dx-1647]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h F4h 9Dh BBh 01h 77h B9h 0Ch F8h BAh ACh 3Bh BEh 76h 7Eh BFh A4h 2Ch BDh 34h C4h B8h 0Bh BDh 8Eh D8h B8h 3Ch 92h 8Eh C0h B8h 3Dh E7h 8Eh D0h BCh 8Ch 24h B8h E5h A1h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-bx-1648]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -86372,24 +82335,6 @@ SP=0338h
 DS=B14Bh
 ES=83B4h
 SS=8448h
-
-[SST-F7_6-div-bx-1691]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F8h 9Dh BBh E2h D9h B9h 56h 0Dh BAh ACh 9Ah BEh F6h AFh BFh 9Ch 66h BDh DCh 72h B8h C2h 36h 8Eh D8h B8h 3Bh 73h 8Eh C0h B8h 4Ch DDh 8Eh D0h BCh 97h 0Ch B8h BBh 97h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=B5BBh
-BX=D9E2h
-CX=0D56h
-DX=A5A5h
-SI=AFF6h
-DI=669Ch
-BP=72DCh
-SP=0C97h
-DS=36C2h
-ES=733Bh
-SS=DD4Ch
 
 [SST-F7_6-div-word-ss-bp-di-1692]
 EntryPoint: 1000:0000
@@ -87253,21 +83198,6 @@ SP=27F1h
 DS=F87Ah
 ES=FAE5h
 SS=DA2Bh
-
-[SST-F7_6-div-dx-1741]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h FCh 9Dh BBh C6h 97h B9h 50h 91h BAh A8h F2h BEh 89h A6h BFh BFh 77h BDh 57h C7h B8h 45h D2h 8Eh D8h B8h 56h E0h 8Eh C0h B8h 7Ah BCh 8Eh D0h BCh 72h 2Dh B8h BEh CAh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
 
 [SST-F7_6-div-word-ds-si-1742]
 EntryPoint: 1000:0000
@@ -88584,21 +84514,6 @@ DS=8959h
 ES=FA26h
 SS=6889h
 
-[SST-F7_6-div-dx-1820]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h FCh 9Dh BBh EEh E1h B9h CEh BAh BAh CFh 05h BEh 41h AEh BFh F1h CBh BDh 23h 86h B8h CEh F1h 8Eh D8h B8h 09h ECh 8Eh C0h B8h CBh F0h 8Eh D0h BCh 25h 81h B8h 1Dh 2Fh F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bp-di-3A99h-1821]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -88916,24 +84831,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-1840]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D2h F4h 9Dh BBh 1Fh 9Dh B9h 38h 10h BAh DDh 37h BEh 08h B9h BFh 47h 53h BDh DCh 93h B8h E4h 1Bh 8Eh D8h B8h A4h 3Fh 8Eh C0h B8h 26h 3Ch 8Eh D0h BCh A8h 76h B8h 2Ch 16h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=5B04h
-BX=9D1Fh
-CX=1038h
-DX=9CB0h
-SI=B908h
-DI=5347h
-BP=93DCh
-SP=76A8h
-DS=1BE4h
-ES=3FA4h
-SS=3C26h
 
 [SST-F7_6-div-word-ds-bx-di-59h-1841]
 EntryPoint: 1000:0000
@@ -89634,21 +85531,6 @@ DS=190Fh
 ES=95F2h
 SS=3F23h
 
-[SST-F7_6-div-dx-1881]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F8h 9Dh BBh 94h C9h B9h D8h 67h BAh 5Ch 09h BEh 39h BFh BFh 96h 4Eh BDh 23h C3h B8h B7h 84h 8Eh D8h B8h A7h 90h 8Eh C0h B8h 99h 0Ch 8Eh D0h BCh C7h D5h B8h 6Ah 38h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ds-bp-di-1882]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -90187,21 +86069,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_6-div-dx-1915]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h F8h 9Dh BBh 21h 06h B9h DEh 57h BAh 18h 26h BEh CDh 01h BFh C7h 90h BDh 3Dh BEh B8h 13h 51h 8Eh D8h B8h 56h 96h 8Eh C0h B8h 41h 90h 8Eh D0h BCh 1Fh D7h B8h 61h 24h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bp-91Fh-1916]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -90677,24 +86544,6 @@ DS=D8ECh
 ES=79AFh
 SS=8EDAh
 
-[SST-F7_6-div-bx-1943]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F8h 9Dh BBh 66h CEh B9h AAh A7h BAh 5Dh 70h BEh 34h C3h BFh 0Ah CEh BDh 00h 00h B8h BDh B5h 8Eh D8h B8h 73h 6Dh 8Eh C0h B8h 60h 48h 8Eh D0h BCh A5h D8h B8h 69h 37h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=8B5Eh
-BX=CE66h
-CX=A7AAh
-DX=0BF5h
-SI=C334h
-DI=CE0Ah
-BP=0000h
-SP=D8A5h
-DS=B5BDh
-ES=6D73h
-SS=4860h
-
 [SST-F7_6-div-word-ds-bx-di-1944]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -90757,24 +86606,6 @@ SP=9D5Ah
 DS=D67Dh
 ES=9E90h
 SS=C187h
-
-[SST-F7_6-div-bx-1948]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F8h 9Dh BBh 6Fh BBh B9h B6h BDh BAh B1h 5Bh BEh 9Dh 19h BFh E4h A8h BDh F0h 92h B8h E6h CCh 8Eh D8h B8h 2Ah A2h 8Eh C0h B8h 08h FDh 8Eh D0h BCh 36h 9Eh B8h 8Bh 63h F7h F3h
-BreakPoint: 1000:0035
-Result:
-AX=7D3Ch
-BX=BB6Fh
-CX=BDB6h
-DX=4287h
-SI=199Dh
-DI=A8E4h
-BP=92F0h
-SP=9E36h
-DS=CCE6h
-ES=A22Ah
-SS=FD08h
 
 [SST-F7_6-div-ax-1949]
 EntryPoint: 1000:0000
@@ -91210,21 +87041,6 @@ DS=2274h
 ES=B309h
 SS=63E2h
 
-[SST-F7_6-div-dx-1972]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h F0h 9Dh BBh 42h DCh B9h 26h 22h BAh A8h 64h BEh C7h 5Ah BFh 0Ch E8h BDh 6Ch 2Ah B8h FBh 80h 8Eh D8h B8h 23h D4h 8Eh C0h B8h 80h E3h 8Eh D0h BCh 89h 65h B8h 76h 33h F7h F2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
 [SST-F7_6-div-word-ss-bx-di-5Dh-1973]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -91404,21 +87220,6 @@ SS=93AEh
 EntryPoint: 1000:0000
 Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F0h 9Dh BBh 17h 58h B9h 00h 00h BAh 87h 3Fh BEh 00h B5h BFh ECh BBh BDh 1Eh 07h B8h 3Bh 1Ch 8Eh D8h B8h 95h 7Bh 8Eh C0h B8h 7Ch B6h 8Eh D0h BCh 99h 6Fh B8h BBh EEh F7h F1h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_6-div-bx-1984]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F8h 9Dh BBh 63h 83h B9h 78h 99h BAh 4Eh A4h BEh C3h 1Dh BFh DEh 7Eh BDh AEh 2Dh B8h D6h C2h 8Eh D8h B8h 41h 97h 8Eh C0h B8h 54h 07h 8Eh D0h BCh DBh D1h B8h 94h C2h F7h F3h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -92034,21 +87835,6 @@ SP=0000h
 DS=1E02h
 ES=152Eh
 SS=2F67h
-
-[SST-F7_7-idiv-bx-0022]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C6h F0h 9Dh BBh 0Dh 58h B9h 60h 3Ah BAh 9Ch A1h BEh 29h 38h BFh D6h 3Dh BDh 66h 5Ch B8h 06h 05h 8Eh D8h B8h 16h 03h 8Eh C0h B8h D4h 5Dh 8Eh D0h BCh 6Dh A4h B8h 4Bh 7Fh 26h F3h F7h FBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-6E5Ch-0024]
 EntryPoint: 1000:0000
@@ -92838,25 +88624,6 @@ DS=444Ch
 ES=AC37h
 SS=11F4h
 
-[SST-F7_7-idiv-word-ss-si-117h-0085]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F0h 9Dh BBh 00h 00h B9h BEh B9h BAh 0Bh 8Bh BEh A2h DBh BFh 00h 00h BDh 00h 00h B8h C7h 37h 8Eh D8h B8h 09h 07h 8Eh C0h B8h DFh FCh 8Eh D0h BCh 13h 30h B8h F5h D9h 36h F3h F7h BCh E9h FEh
-Data in 0A87:000B:
-DB 46h
-Data in 0A87:000C:
-DB AEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-si-72h-0086]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -92943,25 +88710,6 @@ ExpectedFault: DIVISION0
 EntryPoint: 1000:0000
 Data in 1000:0000:
 DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D6h FCh 9Dh BBh 56h FFh B9h FAh 4Bh BAh B8h BCh BEh F5h 4Ch BFh 43h 57h BDh 39h B7h B8h D0h 14h 8Eh D8h B8h 07h 40h 8Eh C0h B8h 87h A2h 8Eh D0h BCh EFh 22h B8h 7Fh 12h 26h F7h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-0091]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F4h 9Dh BBh 21h 64h B9h A6h A8h BAh DFh A0h BEh A0h 96h BFh 31h 9Bh BDh 0Eh A3h B8h 41h A2h 8Eh D8h B8h 02h 4Fh 8Eh C0h B8h 6Fh 92h 8Eh D0h BCh B8h CDh B8h CFh 31h F2h F7h 3Fh
-Data in A883:0001:
-DB 3Fh
-Data in A883:0002:
-DB F5h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -93406,25 +89154,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-es-bx-si-15h-0120]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F8h 9Dh BBh 00h 00h B9h EAh 1Eh BAh 20h 4Fh BEh 07h 84h BFh 15h F2h BDh 2Ah 3Ch B8h A4h 8Dh 8Eh D8h B8h B9h E0h 8Eh C0h B8h 04h 28h 8Eh D0h BCh 00h 00h B8h F9h DAh 26h F3h F7h 78h 15h
-Data in E8FA:000C:
-DB CFh
-Data in E8FA:000D:
-DB 5Bh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-es-bx-5B8Fh-0121]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -93433,25 +89162,6 @@ Data in 4A7D:000A:
 DB ABh
 Data in 4A7D:000B:
 DB FBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bp-di-6h-0122]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh 63h EDh B9h 32h FFh BAh 66h 83h BEh D6h C6h BFh B0h 2Bh BDh 1Fh 6Dh B8h 67h B7h 8Eh D8h B8h 91h C4h 8Eh C0h B8h 5Ah 92h 8Eh D0h BCh BAh A0h B8h 31h EEh 3Eh F3h F7h 7Bh FAh
-Data in C0F3:0009:
-DB 5Ch
-Data in C0F3:000A:
-DB 59h
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -93495,25 +89205,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-di-4Eh-0125]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F4h 9Dh BBh 00h 00h B9h AAh F2h BAh 2Dh AAh BEh B2h 08h BFh B1h 07h BDh D3h 5Ch B8h 7Eh C9h 8Eh D8h B8h E6h 80h 8Eh C0h B8h D5h 21h 8Eh D0h BCh 67h F0h B8h 29h 1Bh F3h F7h 7Dh B2h
-Data in C9F4:0003:
-DB 54h
-Data in C9F4:0004:
-DB 65h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-cx-0126]
@@ -94069,25 +89760,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-si-0157]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F0h 9Dh BBh 67h 8Ah B9h 44h 7Ah BAh 91h 19h BEh 62h 06h BFh FFh 24h BDh 53h 54h B8h 75h 84h 8Eh D8h B8h 39h D8h 8Eh C0h B8h D5h 15h 8Eh D0h BCh C0h 50h B8h 10h 53h F3h F7h 3Ch
-Data in 84DB:0002:
-DB B7h
-Data in 84DB:0003:
-DB FDh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-23h-0158]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -94209,25 +89881,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-di-BCDh-0164]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh 70h CFh B9h B6h BBh BAh AEh 97h BEh 75h 7Eh BFh 84h 6Eh BDh 00h 00h B8h 56h 38h 8Eh D8h B8h 45h 88h 8Eh C0h B8h F1h 9Dh 8Eh D0h BCh F7h 96h B8h 9Eh F7h F2h F7h BBh CDh 0Bh
-Data in A596:0001:
-DB C7h
-Data in A596:0002:
-DB DFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-di-0165]
@@ -94494,28 +90147,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-es-bx-62h-0183]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F8h 9Dh BBh EFh A5h B9h A6h 66h BAh BCh DDh BEh ECh E7h BFh D6h 95h BDh 05h 30h B8h 6Ah BBh 8Eh D8h B8h 91h 2Ah 8Eh C0h B8h E3h 1Eh 8Eh D0h BCh 4Dh 5Bh B8h E6h 3Eh 26h F3h F7h 7Fh 9Eh
-Data in 34E9:000D:
-DB D1h
-Data in 34E9:000E:
-DB 58h
-BreakPoint: 1000:0038
-Result:
-AX=62C3h
-BX=A5EFh
-CX=66A6h
-DX=E819h
-SI=E7ECh
-DI=95D6h
-BP=3005h
-SP=5B4Dh
-DS=BB6Ah
-ES=2A91h
-SS=1EE3h
-
 [SST-F7_7-idiv-dx-0184]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -94529,21 +90160,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-dx-0185]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h FCh 9Dh BBh DFh 82h B9h 00h 00h BAh A5h 03h BEh C0h 1Ah BFh 7Dh 50h BDh 26h 52h B8h 37h 74h 8Eh D8h B8h 68h 60h 8Eh C0h B8h 2Bh 4Dh 8Eh D0h BCh 8Ch 58h B8h D9h 06h F2h F7h FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-si-4931h-0186]
@@ -95098,25 +90714,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-1Fh-0224]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F4h 9Dh BBh 54h 93h B9h C6h BFh BAh 3Ch 48h BEh CBh 24h BFh E1h B6h BDh B8h FBh B8h 5Dh 2Fh 8Eh D8h B8h 3Bh 10h 8Eh C0h B8h E2h 69h 8Eh D0h BCh 20h 0Eh B8h 16h DAh F2h F7h 7Fh E1h
-Data in 3890:0005:
-DB 50h
-Data in 3890:0006:
-DB 88h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-es-di-12h-0225]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -95138,25 +90735,6 @@ SP=E37Ah
 DS=8608h
 ES=528Fh
 SS=B5BFh
-
-[SST-F7_7-idiv-word-ds-bx-si-5FCh-0226]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h FCh 9Dh BBh 6Dh 46h B9h 88h 47h BAh F3h 86h BEh D7h 0Ah BFh 3Bh 3Eh BDh 89h 42h B8h 83h 15h 8Eh D8h B8h BBh 15h 8Eh C0h B8h CAh FCh 8Eh D0h BCh 0Ch 00h B8h 17h E4h F2h F7h B8h FCh 05h
-Data in 1AF7:0000:
-DB 39h
-Data in 1AF7:0001:
-DB FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-bx-0228]
 EntryPoint: 1000:0000
@@ -95636,28 +91214,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-di-48h-0257]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h FCh 9Dh BBh B5h A2h B9h 9Ch 24h BAh 27h 02h BEh C2h C6h BFh 5Dh 8Fh BDh B1h 39h B8h B6h 5Bh 8Eh D8h B8h 60h 1Bh 8Eh C0h B8h 35h E7h 8Eh D0h BCh 54h 63h B8h D5h FBh 3Eh F3h F7h 79h B8h
-Data in 5ED2:000A:
-DB 0Eh
-Data in 5ED2:000B:
-DB 1Fh
-BreakPoint: 1000:0038
-Result:
-AX=EE3Ah
-BX=A2B5h
-CX=249Ch
-DX=0901h
-SI=C6C2h
-DI=8F5Dh
-BP=39B1h
-SP=6354h
-DS=5BB6h
-ES=1B60h
-SS=E735h
-
 [SST-F7_7-idiv-word-ds-bx-di-2Eh-0258]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -95879,25 +91435,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-es-bp-75h-0271]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h FCh 9Dh BBh 2Ch 9Eh B9h FCh 5Dh BAh DCh 6Eh BEh 18h FFh BFh CDh 44h BDh 5Ah 54h B8h 7Ch 43h 8Eh D8h B8h ADh 80h 8Eh C0h B8h CDh 95h 8Eh D0h BCh CDh 0Ch B8h 07h 91h 26h F2h F7h 7Eh 75h
-Data in 85F9:000F:
-DB 3Dh
-Data in 85FA:0000:
-DB 05h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-di-23h-0272]
@@ -96186,25 +91723,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-di-0295]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F0h 9Dh BBh 17h 50h B9h 58h 4Dh BAh 37h 9Ch BEh DAh AAh BFh 44h A2h BDh 55h 15h B8h 8Fh 92h 8Eh D8h B8h 3Bh 59h 8Eh C0h B8h 1Eh E6h 8Eh D0h BCh 00h 00h B8h 91h B1h F3h F7h 39h
-Data in A1B4:000B:
-DB C7h
-Data in A1B4:000C:
-DB 81h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-di-598Bh-0296]
@@ -96551,25 +92069,6 @@ DS=9EEBh
 ES=2A6Fh
 SS=AA0Bh
 
-[SST-F7_7-idiv-word-ss-bp-26h-0317]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h FCh 9Dh BBh 63h 98h B9h ACh 20h BAh F3h 3Fh BEh 0Ah F0h BFh E0h F3h BDh 70h 1Bh B8h E4h C7h 8Eh D8h B8h BFh 1Dh 8Eh C0h B8h CDh FCh 8Eh D0h BCh AEh CCh B8h 0Dh 03h F3h F7h 7Eh DAh
-Data in FE81:000A:
-DB C3h
-Data in FE81:000B:
-DB A9h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-53h-0318]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -96664,25 +92163,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ss-bp-si-31h-0324]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h F0h 9Dh BBh 72h ACh B9h FCh ADh BAh DAh C6h BEh 53h 2Ch BFh 6Ah 47h BDh A8h 54h B8h 86h CCh 8Eh D8h B8h 89h F3h 8Eh C0h B8h DBh C1h 8Eh D0h BCh 5Ah 5Eh B8h 66h D9h F3h F7h 7Ah 31h
-Data in C9ED:000C:
-DB 00h
-Data in C9ED:000D:
-DB 1Fh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-si-7Dh-0325]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -96701,47 +92181,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-es-bp-di-41h-0326]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h FCh 9Dh BBh BBh A0h B9h 30h 9Fh BAh ABh B0h BEh 79h E4h BFh E8h 10h BDh 11h 0Ah B8h ABh 8Bh 8Eh D8h B8h 86h D4h 8Eh C0h B8h 64h 19h 8Eh D0h BCh E6h E8h B8h FAh D6h 26h F2h F7h 7Bh 41h
-Data in D639:000A:
-DB 44h
-Data in D639:000B:
-DB 88h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-si-0327]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F0h 9Dh BBh F2h 13h B9h 48h 62h BAh 43h F9h BEh CAh DCh BFh 5Bh 91h BDh 29h 94h B8h ECh 24h 8Eh D8h B8h 60h 33h 8Eh C0h B8h B1h 03h 8Eh D0h BCh 00h 00h B8h FCh 81h F2h F7h 38h
-Data in 33F7:000C:
-DB 52h
-Data in 33F7:000D:
-DB 7Fh
-BreakPoint: 1000:0036
-Result:
-AX=0D8Bh
-BX=13F2h
-CX=6248h
-DX=CD82h
-SI=DCCAh
-DI=915Bh
-BP=9429h
-SP=0000h
-DS=24ECh
-ES=3360h
-SS=03B1h
 
 [SST-F7_7-idiv-word-ds-bx-si-0328]
 EntryPoint: 1000:0000
@@ -97263,25 +92702,6 @@ DS=F0A2h
 ES=FB43h
 SS=A780h
 
-[SST-F7_7-idiv-word-es-di-2h-0361]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h FCh 9Dh BBh 15h 34h B9h 34h ECh BAh 02h 89h BEh 69h C0h BFh A0h DFh BDh 59h 81h B8h 3Eh 91h 8Eh D8h B8h CCh 18h 8Eh C0h B8h 43h 7Eh 8Eh D0h BCh DBh E9h B8h 46h D8h 26h F2h F7h 7Dh FEh
-Data in 26C5:000E:
-DB 78h
-Data in 26C5:000F:
-DB 4Eh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-DB5h-0362]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -97780,25 +93200,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-6D62h-0396]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h FCh 9Dh BBh 2Eh 3Bh B9h A0h DBh BAh 0Ch 7Ch BEh EDh 78h BFh CCh D2h BDh 21h 37h B8h 50h E4h 8Eh D8h B8h 8Ah CBh 8Eh C0h B8h 7Ah C0h 8Eh D0h BCh 3Fh 64h B8h 2Ch 1Ch F3h F7h BFh 9Eh 92h
-Data in F12C:000C:
-DB 9Ah
-Data in F12C:000D:
-DB FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-sp-0397]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -97831,21 +93232,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-cx-0399]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F4h 9Dh BBh 11h 3Eh B9h B4h 09h BAh C1h 84h BEh 1Ch ACh BFh ECh 6Fh BDh 1Eh 2Eh B8h 8Fh 86h 8Eh D8h B8h 11h DEh 8Eh C0h B8h C9h 00h 8Eh D0h BCh A4h D0h B8h 48h EDh F3h F7h F9h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-es-di-27h-0400]
@@ -98952,21 +94338,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-bp-0467]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 07h F4h 9Dh BBh 8Ah 3Fh B9h 00h 00h BAh C8h 3Dh BEh BFh D6h BFh 51h 12h BDh 42h 8Bh B8h DFh 66h 8Eh D8h B8h 1Ah 95h 8Eh C0h B8h 46h 7Dh 8Eh D0h BCh D4h 01h B8h 4Fh 77h 36h F2h F7h FDh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bx-58h-0470]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -99025,21 +94396,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-bp-0473]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h FCh 9Dh BBh A8h 8Fh B9h 84h 25h BAh 51h 7Ah BEh 9Ah ADh BFh 5Ah 8Eh BDh 0Fh F5h B8h 63h 78h 8Eh D8h B8h BDh B3h 8Eh C0h B8h B3h 43h 8Eh D0h BCh D9h FCh B8h B0h 97h 26h F3h F7h FDh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-B57Ch-0474]
@@ -99176,43 +94532,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-si-0481]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F4h 9Dh BBh 2Fh 66h B9h 40h 6Dh BAh 4Fh 05h BEh 12h FDh BFh 9Bh 54h BDh C0h EAh B8h CAh 27h 8Eh D8h B8h 9Dh 4Fh 8Eh C0h B8h 7Bh 72h 8Eh D0h BCh 20h 5Eh B8h 9Fh 47h F2h F7h 38h
-Data in 2DFE:0001:
-DB 41h
-Data in 2DFE:0002:
-DB 41h
-BreakPoint: 1000:0036
-Result:
-AX=EB2Ch
-BX=662Fh
-CX=6D40h
-DX=29CBh
-SI=FD12h
-DI=549Bh
-BP=EAC0h
-SP=5E20h
-DS=27CAh
-ES=4F9Dh
-SS=727Bh
-
-[SST-F7_7-idiv-ax-0482]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F8h 9Dh BBh 16h 71h B9h 20h 72h BAh 60h 7Dh BEh 21h B7h BFh EFh E6h BDh BEh 2Eh B8h 37h 2Eh 8Eh D8h B8h 41h DBh 8Eh C0h B8h 5Ah CAh 8Eh D0h BCh 00h 00h B8h 96h 11h F3h F7h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-sp-0483]
@@ -99363,25 +94682,6 @@ SP=CC22h
 DS=A46Bh
 ES=8C95h
 SS=B1C0h
-
-[SST-F7_7-idiv-word-ds-bx-di-0494]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C6h F0h 9Dh BBh 45h 3Eh B9h 9Eh C2h BAh 36h 23h BEh 10h D7h BFh 8Eh 2Dh BDh B2h 0Dh B8h A7h C5h 8Eh D8h B8h FBh 44h 8Eh C0h B8h E7h 3Eh 8Eh D0h BCh DAh 7Bh B8h 00h 00h F2h F7h 39h
-Data in CC64:0003:
-DB 3Fh
-Data in CC64:0004:
-DB FBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-bx-0496]
 EntryPoint: 1000:0000
@@ -99574,25 +94874,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-es-bx-si-0507]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F4h 9Dh BBh D6h 21h B9h 06h 8Bh BAh 99h 19h BEh 90h B5h BFh 06h 68h BDh DFh D8h B8h 29h B1h 8Eh D8h B8h CFh 96h 8Eh C0h B8h BDh 86h 8Eh D0h BCh 5Fh F4h B8h 65h 1Dh 26h F3h F7h 38h
-Data in A445:0006:
-DB D8h
-Data in A445:0007:
-DB 10h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-es-si-79C4h-0508]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -99747,25 +95028,6 @@ SP=2ABFh
 DS=0B7Eh
 ES=92A7h
 SS=0D54h
-
-[SST-F7_7-idiv-word-ds-bx-si-6Dh-0521]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h FCh 9Dh BBh FAh C7h B9h E8h 2Eh BAh E0h 28h BEh 5Bh 65h BFh BFh 53h BDh 32h CFh B8h F0h BAh 8Eh D8h B8h 2Eh 2Fh 8Eh C0h B8h A6h 6Ch 8Eh D0h BCh C5h B0h B8h 4Eh CBh 3Eh F3h F7h 78h 6Dh
-Data in AFFF:DCD2:
-DB 23h
-Data in AFFF:DCD3:
-DB DBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-dx-0522]
 EntryPoint: 1000:0000
@@ -100111,25 +95373,6 @@ DS=A78Eh
 ES=7317h
 SS=2487h
 
-[SST-F7_7-idiv-word-ds-si-0543]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 02h F4h 9Dh BBh DFh 0Dh B9h 8Ch 01h BAh 14h C4h BEh DBh 1Dh BFh 0Ah 4Fh BDh 16h E1h B8h FCh 41h 8Eh D8h B8h 98h 5Bh 8Eh C0h B8h C7h 06h 8Eh D0h BCh 9Dh 5Dh B8h BAh D4h F3h F7h 3Ch
-Data in 43D9:000B:
-DB AFh
-Data in 43D9:000C:
-DB C3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-es-7505h-0544]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -100470,21 +95713,6 @@ DS=1DAAh
 ES=76BBh
 SS=4E0Ch
 
-[SST-F7_7-idiv-dx-0562]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F0h 9Dh BBh 98h 0Ah B9h 84h D0h BAh 81h F1h BEh 96h C9h BFh 95h 07h BDh EFh B0h B8h C6h 56h 8Eh D8h B8h C1h 59h 8Eh C0h B8h ADh 95h 8Eh D0h BCh 00h 00h B8h B9h A0h 3Eh F3h F7h FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-di-0563]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -100507,24 +95735,6 @@ DS=79B9h
 ES=29A0h
 SS=95C6h
 
-[SST-F7_7-idiv-cx-0564]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h FCh 9Dh BBh A4h 09h B9h 26h 4Eh BAh 8Ah E6h BEh 95h EDh BFh 37h 71h BDh D8h 9Eh B8h 4Fh 39h 8Eh D8h B8h DAh 06h 8Eh C0h B8h 89h 10h 8Eh D0h BCh DDh 25h B8h DFh 4Fh F2h F7h F9h
-BreakPoint: 1000:0036
-Result:
-AX=5366h
-BX=09A4h
-CX=4E26h
-DX=C503h
-SI=ED95h
-DI=7137h
-BP=9ED8h
-SP=25DDh
-DS=394Fh
-ES=06DAh
-SS=1089h
-
 [SST-F7_7-idiv-sp-0565]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -100538,25 +95748,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-0h-0566]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 13h F0h 9Dh BBh 4Eh A3h B9h 32h 45h BAh CBh 7Bh BEh FAh 1Bh BFh 5Eh 02h BDh 11h 53h B8h F8h 37h 8Eh D8h B8h A4h 97h 8Eh C0h B8h E1h 11h 8Eh D0h BCh C3h 45h B8h DEh E9h F3h F7h 7Eh 00h
-Data in 1712:0001:
-DB 69h
-Data in 1712:0002:
-DB 14h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-bx-si-0567]
@@ -101010,21 +96201,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-di-0597]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh B6h 2Ch B9h F8h 95h BAh 44h 5Bh BEh B9h 03h BFh 4Eh 7Dh BDh ADh 14h B8h 50h A6h 8Eh D8h B8h DDh E5h 8Eh C0h B8h 2Eh C6h 8Eh D0h BCh D5h 69h B8h CEh 0Ah F3h F7h FFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-si-0598]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -101079,44 +96255,6 @@ SP=909Dh
 DS=88C2h
 ES=3730h
 SS=BD93h
-
-[SST-F7_7-idiv-word-ss-bx-di-4733h-0601]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h F0h 9Dh BBh 3Ch 3Bh B9h A6h 76h BAh BEh 93h BEh EAh 74h BFh 2Fh 2Fh BDh BFh A8h B8h D2h 2Ah 8Eh D8h B8h F6h 18h 8Eh C0h B8h 82h 85h 8Eh D0h BCh 5Dh 9Ch B8h 3Ah 31h 36h F3h F7h B9h 33h 47h
-Data in 909B:000E:
-DB 3Ah
-Data in 909B:000F:
-DB BEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-di-0602]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F4h 9Dh BBh 21h 5Dh B9h B2h 66h BAh 1Eh 34h BEh 33h 17h BFh 7Bh 0Bh BDh 63h 5Eh B8h 36h 1Fh 8Eh D8h B8h 74h ABh 8Eh C0h B8h 81h B4h 8Eh D0h BCh F7h 6Ch B8h 0Ah 6Ch F2h F7h 3Dh
-Data in 1FED:000B:
-DB F9h
-Data in 1FED:000C:
-DB CDh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-es-bp-di-0603]
 EntryPoint: 1000:0000
@@ -101227,47 +96365,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-2591h-0609]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h FCh 9Dh BBh D6h 64h B9h 18h 0Eh BAh 2Dh 3Eh BEh 85h FAh BFh 10h C6h BDh 1Fh C2h B8h A6h 45h 8Eh D8h B8h 82h C8h 8Eh C0h B8h 26h B8h 8Eh D0h BCh 04h 99h B8h B3h 92h F3h F7h BFh 6Fh DAh
-Data in 499A:0005:
-DB BFh
-Data in 499A:0006:
-DB DFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-795h-0610]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F0h 9Dh BBh 2Fh 62h B9h E0h 64h BAh ACh 0Bh BEh E5h B3h BFh 8Bh 48h BDh DEh DAh B8h E0h 8Fh 8Eh D8h B8h C7h 96h 8Eh C0h B8h A5h B7h 8Eh D0h BCh 4Fh D1h B8h 4Dh 6Fh 3Eh F3h F7h BFh 95h 07h
-Data in 967C:0004:
-DB 54h
-Data in 967C:0005:
-DB 4Fh
-BreakPoint: 1000:0039
-Result:
-AX=DA55h
-BX=622Fh
-CX=64E0h
-DX=4E31h
-SI=B3E5h
-DI=488Bh
-BP=DADEh
-SP=D14Fh
-DS=8FE0h
-ES=96C7h
-SS=B7A5h
-
 [SST-F7_7-idiv-word-ss-di-5Bh-0611]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -101313,21 +96410,6 @@ Data in AD88:0003:
 DB 2Dh
 Data in AD88:0004:
 DB A4h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-bp-0614]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F4h 9Dh BBh 15h DBh B9h 08h F5h BAh BCh 21h BEh 21h 20h BFh E4h 24h BDh 6Fh F0h B8h 4Ah A4h 8Eh D8h B8h 1Dh 67h 8Eh C0h B8h DEh 3Ah 8Eh D0h BCh D9h C1h B8h 07h 20h 36h F3h F7h FDh
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -101574,21 +96656,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-dx-0632]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h FCh 9Dh BBh 76h ACh B9h 96h F0h BAh 55h 85h BEh ACh 8Eh BFh 10h CCh BDh 09h 86h B8h F9h CDh 8Eh D8h B8h D2h 8Dh 8Eh C0h B8h EFh BBh 8Eh D0h BCh CEh D1h B8h 72h 5Eh F3h F7h FAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-si-76h-0633]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -101625,24 +96692,6 @@ SP=78D7h
 DS=AD48h
 ES=2C04h
 SS=B0E5h
-
-[SST-F7_7-idiv-ax-0635]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F0h 9Dh BBh 6Dh 94h B9h 52h 38h BAh E0h 16h BEh 75h 18h BFh E9h 37h BDh 2Bh 8Eh B8h AAh 0Fh 8Eh D8h B8h FFh A6h 8Eh C0h B8h 2Ch 55h 8Eh D0h BCh 1Ah CBh B8h 0Dh 33h F2h F7h F8h
-BreakPoint: 1000:0036
-Result:
-AX=8D4Ah
-BX=946Dh
-CX=3852h
-DX=1DCFh
-SI=1875h
-DI=37E9h
-BP=8E2Bh
-SP=CB1Ah
-DS=0FAAh
-ES=A6FFh
-SS=552Ch
 
 [SST-F7_7-idiv-si-0636]
 EntryPoint: 1000:0000
@@ -101759,21 +96808,6 @@ SP=873Ch
 DS=C605h
 ES=E472h
 SS=6E82h
-
-[SST-F7_7-idiv-di-0644]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F0h 9Dh BBh 59h 94h B9h 70h 6Dh BAh 6Eh 29h BEh ACh FDh BFh D4h C6h BDh F0h 52h B8h A6h 87h 8Eh D8h B8h A9h 0Fh 8Eh C0h B8h B2h 48h 8Eh D0h BCh B6h 34h B8h FAh A6h F3h F7h FFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-bx-0645]
 EntryPoint: 1000:0000
@@ -102336,25 +97370,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ss-bx-si-0680]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h FCh 9Dh BBh 69h 21h B9h F0h DDh BAh 0Dh C2h BEh 89h D1h BFh 39h DDh BDh 82h 22h B8h 46h 04h 8Eh D8h B8h 63h 61h 8Eh C0h B8h D9h 0Ah 8Eh D0h BCh D0h FCh B8h 9Bh A7h 36h F3h F7h 38h
-Data in 1A08:0002:
-DB 9Eh
-Data in 1A08:0003:
-DB F6h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-dx-0681]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -102391,25 +97406,6 @@ SP=514Dh
 DS=72B1h
 ES=CA3Ah
 SS=F6A9h
-
-[SST-F7_7-idiv-word-ds-di-5DB2h-0683]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h FCh 9Dh BBh 00h 00h B9h 00h 8Ch BAh 9Fh 86h BEh 3Eh 85h BFh 91h 7Bh BDh 1Fh CEh B8h C1h 8Dh 8Eh D8h B8h 32h CCh 8Eh C0h B8h 14h DDh 8Eh D0h BCh 23h 5Ch B8h 83h 3Dh F3h F7h BDh 4Eh A2h
-Data in 8F9E:000F:
-DB F4h
-Data in 8F9F:0000:
-DB C1h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-si-0684]
 EntryPoint: 1000:0000
@@ -103210,25 +98206,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-si-146h-0735]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh B8h A5h B9h 6Ah FDh BAh 9Fh 4Ch BEh C5h 17h BFh A0h 33h BDh 2Bh 72h B8h 92h 4Bh 8Eh D8h B8h 60h E8h 8Eh C0h B8h 50h 2Ah 8Eh D0h BCh E6h BEh B8h DDh B8h F2h F7h B8h BAh FEh
-Data in 5755:0007:
-DB F6h
-Data in 5755:0008:
-DB 26h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-di-0736]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -103308,40 +98285,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-ax-0740]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C6h F0h 9Dh BBh F9h FEh B9h BAh 51h BAh E8h 67h BEh 9Bh 71h BFh 91h C3h BDh D3h 3Dh B8h 5Ch 7Eh 8Eh D8h B8h 54h 1Bh 8Eh C0h B8h 1Ch E6h 8Eh D0h BCh 31h 33h B8h 5Ch AAh F3h F7h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-es-bx-si-0741]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 83h F8h 9Dh BBh 5Eh 21h B9h B4h A9h BAh AAh 90h BEh DEh B0h BFh 7Dh 4Fh BDh 5Bh 5Ch B8h 91h 85h 8Eh D8h B8h BAh 89h 8Eh C0h B8h 05h EEh 8Eh D0h BCh 21h ABh B8h 1Eh 49h 26h F3h F7h 38h
-Data in 96DD:000C:
-DB 89h
-Data in 96DD:000D:
-DB D1h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-AAF6h-0743]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -103400,25 +98343,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bx-si-4Dh-0746]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F4h 9Dh BBh F9h 87h B9h 9Ah 4Fh BAh 48h A6h BEh 68h 76h BFh DDh AEh BDh 3Fh 45h B8h CBh A0h 8Eh D8h B8h 81h 93h 8Eh C0h B8h 10h 6Bh 8Eh D0h BCh 37h DFh B8h CCh 00h 36h F3h F7h 78h B3h
-Data in 7AF1:0004:
-DB 8Eh
-Data in 7AF1:0005:
-DB AFh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-es-bx-si-0748]
@@ -104720,25 +99644,6 @@ DB 00h
 BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-si-7DD1h-0827]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F0h 9Dh BBh FDh A4h B9h 88h 29h BAh FAh A7h BEh 8Dh 2Fh BFh C7h 7Ah BDh B7h B4h B8h FDh AEh 8Eh D8h B8h EDh CEh 8Eh C0h B8h 15h 9Fh 8Eh D0h BCh F3h 6Dh B8h F7h 57h F3h F7h B8h 2Fh 82h
-Data in AFFF:4699:
-DB 62h
-Data in AFFF:469A:
-DB 35h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-si-0829]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -104797,44 +99702,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-si-12h-0833]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h F0h 9Dh BBh 93h 8Dh B9h DEh A6h BAh FBh 23h BEh C1h F4h BFh 31h EEh BDh 3Bh 15h B8h 74h 4Eh 8Eh D8h B8h 92h 68h 8Eh C0h B8h C2h 55h 8Eh D0h BCh 35h 3Dh B8h 34h AEh F3h F7h 7Ch EEh
-Data in 5DBE:000F:
-DB B6h
-Data in 5DBF:0000:
-DB 2Ah
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-di-437Ch-0835]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F8h 9Dh BBh F0h 44h B9h 66h 9Eh BAh 0Ch C7h BEh 61h A2h BFh 18h 92h BDh 47h F7h B8h CDh DFh 8Eh D8h B8h 41h 93h 8Eh C0h B8h 0Eh B8h 8Eh D0h BCh E5h FEh B8h 89h FDh F3h F7h BDh 7Ch 43h
-Data in ED26:0004:
-DB D4h
-Data in ED26:0005:
-DB 44h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-di-0836]
@@ -105661,44 +100528,6 @@ DS=EC64h
 ES=24B5h
 SS=9AF1h
 
-[SST-F7_7-idiv-word-ds-di-0885]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h FCh 9Dh BBh 3Eh 7Dh B9h 4Eh 2Bh BAh C9h 6Bh BEh 27h BCh BFh F6h F3h BDh 01h F6h B8h 47h 53h 8Eh D8h B8h C0h 37h 8Eh C0h B8h E5h 2Eh 8Eh D0h BCh 00h 00h B8h 5Bh BAh F3h F7h 3Dh
-Data in 6286:0006:
-DB 51h
-Data in 6286:0007:
-DB 88h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-16h-0888]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F0h 9Dh BBh E5h B7h B9h DAh 6Fh BAh 97h 88h BEh 00h 00h BFh C9h FAh BDh 74h 7Ah B8h 42h 31h 8Eh D8h B8h D5h 5Dh 8Eh C0h B8h 28h DCh 8Eh D0h BCh 5Dh 40h B8h 66h D6h F3h F7h 7Eh EAh
-Data in E3CD:000E:
-DB D3h
-Data in E3CD:000F:
-DB 1Bh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-di-68h-0889]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -105840,25 +100669,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-si-196Ch-0899]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h FCh 9Dh BBh 01h 93h B9h 14h 44h BAh 4Eh 49h BEh E8h 49h BFh 8Fh BBh BDh D3h 40h B8h 9Ah A2h 8Eh D8h B8h 84h 1Dh 8Eh C0h B8h 40h E0h 8Eh D0h BCh 7Bh 28h B8h 5Ch 67h F2h F7h BAh 6Ch 19h
-Data in EA82:0007:
-DB A3h
-Data in EA82:0008:
-DB FBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-bp-si-46h-0900]
@@ -106255,25 +101065,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-si-2988h-0923]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h FCh 9Dh BBh D9h D0h B9h 26h 48h BAh A3h 3Fh BEh 8Ah C7h BFh 97h 01h BDh 7Bh 68h B8h 1Eh 85h 8Eh D8h B8h 0Ah 50h 8Eh C0h B8h 78h FFh 8Eh D0h BCh 7Ah C7h B8h 08h B1h F3h F7h BAh 88h 29h
-Data in 0510:000D:
-DB C4h
-Data in 0510:000E:
-DB 8Ah
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-dx-0924]
@@ -106689,28 +101480,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-si-0949]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h FCh 9Dh BBh 00h 00h B9h C8h 22h BAh 64h EAh BEh 8Ah 5Dh BFh 3Ch 83h BDh 38h 5Fh B8h 52h 66h 8Eh D8h B8h A2h 16h 8Eh C0h B8h CDh 13h 8Eh D0h BCh DCh 45h B8h 00h 00h F3h F7h 38h
-Data in 6C2A:000A:
-DB E7h
-Data in 6C2A:000B:
-DB B1h
-BreakPoint: 1000:0036
-Result:
-AX=B92Bh
-BX=0000h
-CX=22C8h
-DX=D0CDh
-SI=5D8Ah
-DI=833Ch
-BP=5F38h
-SP=45DCh
-DS=6652h
-ES=16A2h
-SS=13CDh
-
 [SST-F7_7-idiv-word-ds-si-14CBh-0950]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -106767,28 +101536,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-di-0953]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F4h 9Dh BBh A1h 77h B9h 98h D9h BAh 02h 01h BEh CAh C8h BFh EEh 03h BDh 2Dh 19h B8h AFh D0h 8Eh D8h B8h F3h 8Ch 8Eh C0h B8h 79h 19h 8Eh D0h BCh 59h ADh B8h A1h E1h 3Eh F2h F7h 3Dh
-Data in D0ED:000E:
-DB 70h
-Data in D0ED:000F:
-DB 6Bh
-BreakPoint: 1000:0037
-Result:
-AX=FD98h
-BX=77A1h
-CX=D998h
-DX=5C21h
-SI=C8CAh
-DI=03EEh
-BP=192Dh
-SP=AD59h
-DS=D0AFh
-ES=8CF3h
-SS=1979h
 
 [SST-F7_7-idiv-word-ds-di-12h-0954]
 EntryPoint: 1000:0000
@@ -108625,25 +103372,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ss-bp-si-1060]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 96h F8h 9Dh BBh 0Ch 7Ch B9h 00h 00h BAh 7Bh D5h BEh 00h 6Fh BFh C0h 83h BDh 5Dh 9Ah B8h 52h 03h 8Eh D8h B8h 71h 84h 8Eh C0h B8h 70h 64h 8Eh D0h BCh A2h 7Ch B8h A4h 2Eh F3h F7h 3Ah
-Data in 6505:000D:
-DB 97h
-Data in 6505:000E:
-DB 21h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-es-si-7Fh-1061]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -108762,25 +103490,6 @@ SP=E039h
 DS=04ACh
 ES=F0A9h
 SS=1070h
-
-[SST-F7_7-idiv-word-ds-di-13h-1068]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F0h 9Dh BBh 9Dh ACh B9h C6h 02h BAh 40h 84h BEh 53h E1h BFh 58h C4h BDh 26h 64h B8h 0Bh 13h 8Eh D8h B8h 3Bh 5Bh 8Eh C0h B8h D4h BDh 8Eh D0h BCh 8Eh 14h B8h F1h E9h 3Eh F3h F7h 7Dh 13h
-Data in 1F51:000B:
-DB CCh
-Data in 1F51:000C:
-DB 8Fh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-di-7h-1069]
 EntryPoint: 1000:0000
@@ -108941,25 +103650,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-es-bp-si-1081]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 43h FCh 9Dh BBh D9h 1Bh B9h 84h 17h BAh F7h 39h BEh 07h D1h BFh 1Bh E1h BDh 50h EFh B8h 44h 87h 8Eh D8h B8h 74h 14h 8Eh C0h B8h 8Ah B7h 8Eh D0h BCh E7h 91h B8h 5Ch C7h 26h F3h F7h 3Ah
-Data in 2079:0007:
-DB D6h
-Data in 2079:0008:
-DB 21h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-si-2Eh-1082]
@@ -110271,25 +104961,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-di-1166]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h FCh 9Dh BBh 53h 5Ch B9h 9Eh 03h BAh 14h 5Ah BEh FCh 29h BFh F7h 73h BDh 00h 00h B8h B6h 04h 8Eh D8h B8h BDh 60h 8Eh C0h B8h C3h DFh 8Eh D0h BCh 95h BCh B8h D0h 17h F2h F7h 39h
-Data in 11BA:000A:
-DB DCh
-Data in 11BA:000B:
-DB A9h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-cx-1167]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -111456,28 +106127,6 @@ DS=39AEh
 ES=575Dh
 SS=2231h
 
-[SST-F7_7-idiv-word-es-bx-1240]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h F4h 9Dh BBh 77h FCh B9h E6h 58h BAh 91h EFh BEh 81h 0Fh BFh 2Ah E5h BDh E2h 5Dh B8h E3h 35h 8Eh D8h B8h 05h 5Dh 8Eh C0h B8h 63h BBh 8Eh D0h BCh C6h 15h B8h 2Ch 96h 26h F2h F7h 3Fh
-Data in 6CCC:0007:
-DB 98h
-Data in 6CCC:0008:
-DB B5h
-BreakPoint: 1000:0037
-Result:
-AX=C778h
-BX=FC77h
-CX=58E6h
-DX=DD6Ch
-SI=0F81h
-DI=E52Ah
-BP=5DE2h
-SP=15C6h
-DS=35E3h
-ES=5D05h
-SS=BB63h
-
 [SST-F7_7-idiv-bx-1241]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -111544,25 +106193,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-es-si-5Fh-1245]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F4h 9Dh BBh FCh A0h B9h 86h 15h BAh F1h C4h BEh D3h 9Ah BFh 00h 00h BDh 6Ah 67h B8h 2Fh 39h 8Eh D8h B8h E5h D8h 8Eh C0h B8h B8h 7Fh 8Eh D0h BCh 08h 0Eh B8h 34h 56h 26h F3h F7h 7Ch A1h
-Data in E28C:0004:
-DB F0h
-Data in E28C:0005:
-DB 16h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-cx-1246]
@@ -111842,25 +106472,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bp-si-37h-1262]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h F0h 9Dh BBh 2Ah 34h B9h C0h CBh BAh AFh 9Fh BEh 51h A3h BFh 00h 00h BDh 19h B2h B8h D6h D9h 8Eh D8h B8h 5Bh F4h 8Eh C0h B8h 2Dh 46h 8Eh D0h BCh FDh 1Fh B8h F4h ABh 3Eh F2h F7h 7Ah 37h
-Data in DF30:0001:
-DB FAh
-Data in DF30:0002:
-DB 90h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-di-73A8h-1263]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -112057,25 +106668,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-si-1276]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h F0h 9Dh BBh 12h F5h B9h 14h CFh BAh 71h 2Ah BEh F7h F7h BFh 2Bh 38h BDh 74h E9h B8h E4h 81h 8Eh D8h B8h DDh 21h 8Eh C0h B8h 61h 48h 8Eh D0h BCh ACh 0Bh B8h FFh 4Ch F2h F7h 3Ch
-Data in 9163:0007:
-DB B7h
-Data in 9163:0008:
-DB 45h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-1278]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -112119,25 +106711,6 @@ SP=C3AAh
 DS=429Dh
 ES=1A04h
 SS=7B59h
-
-[SST-F7_7-idiv-word-ds-bp-di-39h-1280]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F8h 9Dh BBh 05h 9Dh B9h C8h F7h BAh CFh 46h BEh FBh 9Dh BFh D1h FCh BDh 9Dh E9h B8h 22h 98h 8Eh D8h B8h 98h DEh 8Eh C0h B8h 69h 8Eh 8Eh D0h BCh 76h B3h B8h C6h 7Eh 3Eh F3h F7h 7Bh 39h
-Data in A68C:0007:
-DB 9Dh
-Data in A68C:0008:
-DB 6Eh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-42EFh-1281]
 EntryPoint: 1000:0000
@@ -112415,25 +106988,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-di-8h-1300]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F4h 9Dh BBh 12h FAh B9h E4h 76h BAh 96h B8h BEh A4h 73h BFh 33h 5Bh BDh 51h B3h B8h 6Dh 0Ch 8Eh D8h B8h D0h BEh 8Eh C0h B8h 37h 69h 8Eh D0h BCh 05h B1h B8h 83h A4h F3h F7h 79h 08h
-Data in 11C1:000D:
-DB D0h
-Data in 11C1:000E:
-DB 77h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-si-5B71h-1301]
@@ -112825,25 +107379,6 @@ DS=2589h
 ES=8F06h
 SS=4537h
 
-[SST-F7_7-idiv-word-ds-si-4565h-1326]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F0h 9Dh BBh 8Eh 81h B9h C8h E9h BAh F7h 3Ch BEh DCh FBh BFh A5h 10h BDh 99h AEh B8h 9Ah 18h 8Eh D8h B8h 70h E3h 8Eh C0h B8h 3Dh C4h 8Eh D0h BCh 48h 46h B8h 98h 97h F3h F7h BCh 9Bh BAh
-Data in 2401:0007:
-DB 6Dh
-Data in 2401:0008:
-DB 06h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-bx-1327]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -112913,44 +107448,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-di-11D2h-1332]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 57h F8h 9Dh BBh 33h 9Bh B9h 3Ch D0h BAh 95h 63h BEh 5Eh FBh BFh 0Eh 7Ch BDh D7h 4Dh B8h 06h BCh 8Eh D8h B8h E2h 63h 8Eh C0h B8h AAh 59h 8Eh D0h BCh 75h 63h B8h 00h 00h F2h F7h B9h 2Eh EEh
-Data in AFFF:C5DF:
-DB 00h
-Data in AFFF:C5E0:
-DB 75h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-D189h-1333]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 87h F8h 9Dh BBh 32h 38h B9h E4h 4Eh BAh 39h 9Dh BEh 46h 09h BFh A9h 3Eh BDh 02h 0Eh B8h FEh F4h 8Eh D8h B8h 36h A7h 8Eh C0h B8h 33h A1h 8Eh D0h BCh FFh 8Eh B8h 09h 9Bh F3h F7h 3Eh 89h D1h
-Data in 0216:0009:
-DB 43h
-Data in 0216:000A:
-DB 1Fh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-dx-1334]
@@ -113126,25 +107623,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-si-1343]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 02h F4h 9Dh BBh 0Bh D9h B9h 16h B2h BAh 60h 7Ah BEh 0Ah 3Ch BFh 95h D7h BDh 6Dh 24h B8h 73h D3h 8Eh D8h B8h 81h 5Dh 8Eh C0h B8h 16h F9h 8Eh D0h BCh 8Eh 20h B8h 96h 61h F3h F7h 38h
-Data in D4C4:0005:
-DB B2h
-Data in D4C4:0006:
-DB 3Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-ax-1344]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -113214,21 +107692,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-ax-1348]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h F8h 9Dh BBh F0h 82h B9h F4h 90h BAh A5h B8h BEh 33h 78h BFh 31h 07h BDh 0Fh 57h B8h D1h 58h 8Eh D8h B8h 7Ch EDh 8Eh C0h B8h 6Ch 11h 8Eh D0h BCh FFh F5h B8h 7Dh 8Fh 36h F3h F7h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-si-5FBDh-1349]
@@ -113642,25 +108105,6 @@ DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-30C6h-1373]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 02h F0h 9Dh BBh 3Bh D9h B9h 5Ah A0h BAh 0Bh E5h BEh 91h 73h BFh 7Ah 41h BDh 57h 9Ch B8h AFh 05h 8Eh D8h B8h E4h 15h 8Eh C0h B8h CCh 3Bh 8Eh D0h BCh 7Ch BBh B8h 4Ah CAh F2h F7h BFh 3Ah CFh
-Data in 1036:0005:
-DB 77h
-Data in 1036:0006:
-DB 06h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-Dh-1374]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -113698,28 +108142,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-di-3821h-1376]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh 9Ch A9h B9h 2Ah 61h BAh 00h 00h BEh 64h 07h BFh 19h 99h BDh 0Bh 77h B8h 4Ch 0Bh 8Eh D8h B8h 92h 0Fh 8Eh C0h B8h FBh BBh 8Eh D0h BCh E8h 8Eh B8h 07h E6h F2h F7h B9h DFh C7h
-Data in 0BF5:0004:
-DB 2Ch
-Data in 0BF5:0005:
-DB FFh
-BreakPoint: 1000:0038
-Result:
-AX=0115h
-BX=A99Ch
-CX=612Ah
-DX=00A3h
-SI=0764h
-DI=9919h
-BP=770Bh
-SP=8EE8h
-DS=0B4Ch
-ES=0F92h
-SS=BBFBh
 
 [SST-F7_7-idiv-cx-1377]
 EntryPoint: 1000:0000
@@ -113907,28 +108329,6 @@ SP=130Eh
 DS=60E1h
 ES=C509h
 SS=EEDEh
-
-[SST-F7_7-idiv-word-es-bp-di-4B9Dh-1388]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F8h 9Dh BBh 0Eh E1h B9h FEh 37h BAh 7Ah 08h BEh D8h 74h BFh 87h 8Dh BDh 27h 0Ch B8h DAh 8Ah 8Eh D8h B8h 52h 3Eh 8Eh C0h B8h C1h 88h 8Eh D0h BCh 1Eh 88h B8h FBh 82h 26h F2h F7h BBh 9Dh 4Bh
-Data in 4CA6:000B:
-DB 7Fh
-Data in 4CA6:000C:
-DB 57h
-BreakPoint: 1000:0039
-Result:
-AX=E732h
-BX=E10Eh
-CX=37FEh
-DX=32C9h
-SI=74D8h
-DI=8D87h
-BP=0C27h
-SP=881Eh
-DS=8ADAh
-ES=3E52h
-SS=88C1h
 
 [SST-F7_7-idiv-dx-1389]
 EntryPoint: 1000:0000
@@ -114408,28 +108808,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-es-bp-di-6Fh-1417]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h F0h 9Dh BBh CBh 23h B9h 82h 36h BAh 68h 03h BEh 83h A8h BFh 00h C7h BDh DBh 95h B8h 9Bh EFh 8Eh D8h B8h 16h 04h 8Eh C0h B8h 9Ah 25h 8Eh D0h BCh CEh 08h B8h AAh AEh 26h F2h F7h 7Bh 91h
-Data in 09DC:000C:
-DB 3Fh
-Data in 09DC:000D:
-DB E7h
-BreakPoint: 1000:0038
-Result:
-AX=2341h
-BX=23CBh
-CX=3682h
-DX=02A9h
-SI=A883h
-DI=C700h
-BP=95DBh
-SP=08CEh
-DS=EF9Bh
-ES=0416h
-SS=259Ah
-
 [SST-F7_7-idiv-word-es-di-4697h-1418]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -114808,25 +109186,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ss-di-670Dh-1439]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 97h F0h 9Dh BBh 6Fh 17h B9h 00h 00h BAh 3Ah 22h BEh 8Dh 22h BFh 32h 26h BDh 00h 00h B8h BCh 07h 8Eh D8h B8h DDh 30h 8Eh C0h B8h B6h C3h 8Eh D0h BCh 4Eh CCh B8h D3h 37h 36h F2h F7h BDh F3h 98h
-Data in CFA8:0005:
-DB E8h
-Data in CFA8:0006:
-DB E6h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-di-1440]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -114855,25 +109214,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-di-6BECh-1442]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh C5h DEh B9h A6h D9h BAh C8h 43h BEh 56h 3Dh BFh 25h 41h BDh 6Ah CDh B8h 0Dh C2h 8Eh D8h B8h C4h 3Fh 8Eh C0h B8h 9Fh 58h 8Eh D0h BCh C9h 70h B8h 23h 93h F2h F7h BBh ECh 6Bh
-Data in 6046:000B:
-DB BBh
-Data in 6046:000C:
-DB B3h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-si-1444]
@@ -115134,25 +109474,6 @@ DS=84D8h
 ES=448Ch
 SS=D8A9h
 
-[SST-F7_7-idiv-word-ds-bx-15h-1459]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F8h 9Dh BBh 10h ECh B9h 4Eh C7h BAh D7h 57h BEh 41h ECh BFh 31h 04h BDh 26h 0Ch B8h EDh 5Dh 8Eh D8h B8h 2Ah 24h 8Eh C0h B8h 3Ch 5Ch 8Eh D0h BCh 79h BEh B8h BAh 0Eh F3h F7h 7Fh EBh
-Data in 6CAC:000B:
-DB 25h
-Data in 6CAC:000C:
-DB 68h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-si-8h-1460]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -115254,25 +109575,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-di-25h-1467]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 82h F4h 9Dh BBh 64h 8Dh B9h 6Ah 60h BAh 1Dh 4Eh BEh 09h E6h BFh 51h 28h BDh DEh 2Eh B8h 05h EAh 8Eh D8h B8h 46h BDh 8Eh C0h B8h 75h 14h 8Eh D0h BCh 6Bh 49h B8h 4Eh 3Dh F2h F7h 79h DBh
-Data in F55E:0000:
-DB E3h
-Data in F55E:0001:
-DB 84h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-di-1468]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -115323,25 +109625,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bx-si-1Eh-1471]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D6h FCh 9Dh BBh EAh DBh B9h E2h ECh BAh 2Ah B7h BEh 95h 1Fh BFh 00h 00h BDh 34h 07h B8h 93h 86h 8Eh D8h B8h 9Bh CCh 8Eh C0h B8h 98h 83h 8Eh D0h BCh 54h C7h B8h C2h FAh 36h F3h F7h 78h 1Eh
-Data in 9351:000D:
-DB 00h
-Data in 9351:000E:
-DB BAh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-di-3DBDh-1472]
@@ -115426,28 +109709,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-es-bp-di-1478]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F4h 9Dh BBh 59h 05h B9h 76h 5Dh BAh CBh EDh BEh BBh DBh BFh 3Fh D6h BDh 8Dh 4Ah B8h 65h ABh 8Eh D8h B8h 89h CAh 8Eh C0h B8h 12h 34h 8Eh D0h BCh 0Bh 21h B8h 07h 97h 26h F3h F7h 3Bh
-Data in CC95:000C:
-DB BFh
-Data in CC95:000D:
-DB C5h
-BreakPoint: 1000:0037
-Result:
-AX=B000h
-BX=0559h
-CX=5D76h
-DX=E707h
-SI=DBBBh
-DI=D63Fh
-BP=4A8Dh
-SP=210Bh
-DS=AB65h
-ES=CA89h
-SS=3412h
 
 [SST-F7_7-idiv-dx-1479]
 EntryPoint: 1000:0000
@@ -115586,25 +109847,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-28h-1492]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F4h 9Dh BBh A6h C6h B9h BAh CEh BAh 2Ch 9Fh BEh 82h 1Eh BFh 6Bh CDh BDh 3Eh 75h B8h 6Fh CCh 8Eh D8h B8h BAh 18h 8Eh C0h B8h 67h E9h 8Eh D0h BCh DAh 72h B8h 7Eh BCh F2h F7h 7Fh D8h
-Data in D8D6:000E:
-DB 44h
-Data in D8D6:000F:
-DB 80h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-2837h-1493]
@@ -115949,28 +110191,6 @@ DS=EE45h
 ES=426Eh
 SS=4EF4h
 
-[SST-F7_7-idiv-word-es-bx-1514]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h FCh 9Dh BBh 15h 4Eh B9h ACh CCh BAh 47h E8h BEh E7h 2Fh BFh 30h 1Fh BDh 1Eh 03h B8h C4h 9Fh 8Eh D8h B8h 53h CFh 8Eh C0h B8h 8Ah 67h 8Eh D0h BCh DBh EFh B8h 36h F8h 26h F2h F7h 3Fh
-Data in D434:0005:
-DB 61h
-Data in D434:0006:
-DB 40h
-BreakPoint: 1000:0037
-Result:
-AX=5E51h
-BX=4E15h
-CX=CCACh
-DX=F4E7h
-SI=2FE7h
-DI=1F30h
-BP=031Eh
-SP=EFDBh
-DS=9FC4h
-ES=CF53h
-SS=678Ah
-
 [SST-F7_7-idiv-bx-1515]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -116137,28 +110357,6 @@ SP=E8F1h
 DS=0118h
 ES=C236h
 SS=0639h
-
-[SST-F7_7-idiv-word-ds-si-6860h-1527]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h FCh 9Dh BBh 07h 26h B9h 2Ch EEh BAh 93h EEh BEh 7Dh 56h BFh E1h 86h BDh 68h B1h B8h 67h EEh 8Eh D8h B8h 2Bh 95h 8Eh C0h B8h E4h B5h 8Eh D0h BCh D6h 6Bh B8h 64h 30h 3Eh F3h F7h BCh A0h 97h
-Data in FD48:000D:
-DB E6h
-Data in FD48:000E:
-DB BEh
-BreakPoint: 1000:0039
-Result:
-AX=BB7Bh
-BX=2607h
-CX=EE2Ch
-DX=EAE6h
-SI=567Dh
-DI=86E1h
-BP=B168h
-SP=6BD6h
-DS=EE67h
-ES=952Bh
-SS=B5E4h
 
 [SST-F7_7-idiv-word-ds-bx-si-1528]
 EntryPoint: 1000:0000
@@ -116497,47 +110695,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-1549]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 46h F0h 9Dh BBh AFh 18h B9h 6Eh 09h BAh B9h BFh BEh 49h 35h BFh BEh 4Ah BDh 78h FEh B8h 9Ch 12h 8Eh D8h B8h 8Ah 09h 8Eh C0h B8h 76h 6Ah 8Eh D0h BCh FDh 52h B8h CDh 5Fh F2h F7h 3Fh
-Data in 1426:000F:
-DB 56h
-Data in 1427:0000:
-DB 72h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-si-A19h-1550]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C2h FCh 9Dh BBh 11h 7Fh B9h AAh 00h BAh 92h D7h BEh C9h ACh BFh C9h F5h BDh 58h A3h B8h 24h C4h 8Eh D8h B8h 37h A2h 8Eh C0h B8h FAh DAh 8Eh D0h BCh 66h 6Ch B8h 1Dh 55h F3h F7h BAh 19h 0Ah
-Data in E09D:000A:
-DB 91h
-Data in E09D:000B:
-DB 74h
-BreakPoint: 1000:0038
-Result:
-AX=58C9h
-BX=7F11h
-CX=00AAh
-DX=B2F6h
-SI=ACC9h
-DI=F5C9h
-BP=A358h
-SP=6C66h
-DS=C424h
-ES=A237h
-SS=DAFAh
 
 [SST-F7_7-idiv-dx-1551]
 EntryPoint: 1000:0000
@@ -116882,44 +111039,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-5CF6h-1575]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h F8h 9Dh BBh BBh 0Ch B9h 1Eh A5h BAh CDh 41h BEh 03h 3Eh BFh 5Fh E5h BDh 27h AFh B8h 03h EFh 8Eh D8h B8h 1Ah A9h 8Eh C0h B8h 0Bh 57h 8Eh D0h BCh C0h 1Bh B8h FBh 1Bh F2h F7h BFh 0Ah A3h
-Data in F9FF:0005:
-DB 72h
-Data in F9FF:0006:
-DB 80h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-si-31h-1576]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F8h 9Dh BBh 00h 00h B9h DAh 86h BAh 75h 79h BEh 73h 93h BFh 00h 00h BDh 03h 32h B8h C6h A6h 8Eh D8h B8h 55h 86h 8Eh C0h B8h 6Fh E7h 8Eh D0h BCh B4h 11h B8h A4h EBh F3h F7h 78h CFh
-Data in AFFA:0002:
-DB ECh
-Data in AFFA:0003:
-DB 65h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-bp-1577]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -117086,21 +111205,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-ax-1588]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F0h 9Dh BBh EAh 08h B9h 60h 23h BAh 9Bh 9Ah BEh D3h C9h BFh FAh 4Ch BDh 2Eh 96h B8h 52h 4Ah 8Eh D8h B8h B0h 03h 8Eh C0h B8h 55h 20h 8Eh D0h BCh EBh 0Bh B8h 08h E7h 36h F3h F7h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-di-1589]
@@ -117590,28 +111694,6 @@ DS=DBCDh
 ES=48A5h
 SS=7CAFh
 
-[SST-F7_7-idiv-word-ss-bp-si-1618]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h FCh 9Dh BBh 2Eh DBh B9h BAh 6Eh BAh 05h 25h BEh DBh EBh BFh F1h 42h BDh 99h 4Bh B8h 40h 3Ch 8Eh D8h B8h 77h 42h 8Eh C0h B8h 40h 7Bh 8Eh D0h BCh 63h 40h B8h 8Fh 6Dh F3h F7h 3Ah
-Data in 7EB7:0004:
-DB F9h
-Data in 7EB7:0005:
-DB 56h
-BreakPoint: 1000:0036
-Result:
-AX=9308h
-BX=DB2Eh
-CX=6EBAh
-DX=2057h
-SI=EBDBh
-DI=42F1h
-BP=4B99h
-SP=4063h
-DS=3C40h
-ES=4277h
-SS=7B40h
-
 [SST-F7_7-idiv-word-ds-si-1619]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -118043,25 +112125,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ds-bx-di-4FB2h-1647]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h FCh 9Dh BBh 6Ah 89h B9h E4h EDh BAh 9Bh 80h BEh EDh 25h BFh EAh 73h BDh 31h 7Ah B8h 78h 36h 8Eh D8h B8h 54h 88h 8Eh C0h B8h 6Bh 15h 8Eh D0h BCh D2h 94h B8h B2h BBh F2h F7h B9h 4Eh B0h
-Data in 4152:0002:
-DB A5h
-Data in 4152:0003:
-DB 14h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-si-1648]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -118238,28 +112301,6 @@ DS=E706h
 ES=A919h
 SS=B13Fh
 
-[SST-F7_7-idiv-word-ds-di-1659]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh 9Ah 4Eh B9h 92h 84h BAh 98h 0Ah BEh 2Dh F8h BFh 3Fh F2h BDh C6h FDh B8h 66h 34h 8Eh D8h B8h 1Ch BBh 8Eh C0h B8h EBh 85h 8Eh D0h BCh 78h AAh B8h 73h 96h F3h F7h 3Dh
-Data in 4389:000F:
-DB 62h
-Data in 438A:0000:
-DB 86h
-BreakPoint: 1000:0036
-Result:
-AX=164Dh
-BX=4E9Ah
-CX=8492h
-DX=6DEDh
-SI=F82Dh
-DI=F23Fh
-BP=FDC6h
-SP=AA78h
-DS=3466h
-ES=BB1Ch
-SS=85EBh
-
 [SST-F7_7-idiv-word-ds-bx-si-1661]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -118360,25 +112401,6 @@ DS=D05Eh
 ES=04CBh
 SS=9984h
 
-[SST-F7_7-idiv-word-ds-bx-di-73h-1667]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 47h F0h 9Dh BBh 84h B5h B9h E4h EEh BAh A5h B4h BEh 16h B4h BFh 0Bh 47h BDh B4h 25h B8h 6Eh A3h 8Eh D8h B8h F4h C8h 8Eh C0h B8h E9h 14h 8Eh D0h BCh 53h A7h B8h 7Ch AEh F3h F7h 79h 73h
-Data in AFFF:33F2:
-DB 10h
-Data in AFFF:33F3:
-DB 2Fh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-Eh-1668]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -118434,24 +112456,6 @@ SP=1585h
 DS=A2FCh
 ES=EA1Ah
 SS=3F04h
-
-[SST-F7_7-idiv-bx-1672]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 16h FCh 9Dh BBh ACh 82h B9h 20h 88h BAh FEh 0Ch BEh 6Ch 6Dh BFh 67h 6Ch BDh BEh D3h B8h C0h 6Fh 8Eh D8h B8h 49h EEh 8Eh C0h B8h F8h 1Dh 8Eh D0h BCh 00h 00h B8h 00h 00h F3h F7h FBh
-BreakPoint: 1000:0036
-Result:
-AX=1A89h
-BX=82ACh
-CX=8820h
-DX=660Ch
-SI=6D6Ch
-DI=6C67h
-BP=D3BEh
-SP=0000h
-DS=6FC0h
-ES=EE49h
-SS=1DF8h
 
 [SST-F7_7-idiv-word-ds-bx-si-2Fh-1673]
 EntryPoint: 1000:0000
@@ -118585,24 +112589,6 @@ DB 00h
 BreakPoint: 1000:0037
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-ax-1681]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 12h F8h 9Dh BBh 7Dh F5h B9h 3Ch 21h BAh 51h FEh BEh 02h F4h BFh 1Ah E8h BDh 71h 27h B8h C5h B0h 8Eh D8h B8h D4h 3Fh 8Eh C0h B8h A5h 88h 8Eh D0h BCh E5h CAh B8h 62h 79h 26h F3h F7h F8h
-BreakPoint: 1000:0037
-Result:
-AX=038Bh
-BX=F57Dh
-CX=213Ch
-DX=8798h
-SI=F402h
-DI=E81Ah
-BP=2771h
-SP=CAE5h
-DS=B0C5h
-ES=3FD4h
-SS=88A5h
-
 [SST-F7_7-idiv-word-ds-bx-di-217Bh-1682]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -118624,25 +112610,6 @@ SP=C249h
 DS=00D3h
 ES=709Ah
 SS=29B9h
-
-[SST-F7_7-idiv-word-ds-bx-1684]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 42h F8h 9Dh BBh 5Fh FDh B9h C6h AAh BAh D6h 61h BEh 11h BFh BFh A7h 56h BDh 93h 90h B8h 78h 78h 8Eh D8h B8h 0Ch 0Fh 8Eh C0h B8h 23h FFh 8Eh D0h BCh 37h 4Ah B8h E4h 0Fh F3h F7h 3Fh
-Data in 884D:000F:
-DB 64h
-Data in 884E:0000:
-DB 92h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ss-bp-729h-1686]
 EntryPoint: 1000:0000
@@ -119318,28 +113285,6 @@ DS=7C4Ah
 ES=130Fh
 SS=AA72h
 
-[SST-F7_7-idiv-word-ss-bp-si-6Eh-1729]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D7h F0h 9Dh BBh DCh 40h B9h F6h 99h BAh 99h E5h BEh FDh D5h BFh C8h 97h BDh 03h 2Ch B8h 96h 1Ah 8Eh D8h B8h 62h 09h 8Eh C0h B8h A5h 61h 8Eh D0h BCh A2h 6Eh B8h 23h 6Ch F3h F7h 7Ah 92h
-Data in 61BE:0002:
-DB 55h
-Data in 61BE:0003:
-DB A9h
-BreakPoint: 1000:0037
-Result:
-AX=B205h
-BX=40DCh
-CX=99F6h
-DX=D4CCh
-SI=D5FDh
-DI=97C8h
-BP=2C03h
-SP=6EA2h
-DS=1A96h
-ES=0962h
-SS=61A5h
-
 [SST-F7_7-idiv-word-ds-bx-si-1730]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -119466,25 +113411,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-di-1740]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F8h 9Dh BBh D1h 46h B9h E2h FDh BAh A5h CBh BEh 4Ch 1Eh BFh 7Fh 47h BDh DDh EAh B8h D1h 29h 8Eh D8h B8h B7h AAh 8Eh C0h B8h 49h 4Dh 8Eh D0h BCh 01h F5h B8h 21h 25h F3h F7h 39h
-Data in 32B6:0000:
-DB DDh
-Data in 32B6:0001:
-DB A6h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-bx-3408h-1743]
@@ -119745,25 +113671,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-ss-bp-di-1760]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 53h F8h 9Dh BBh C5h 1Fh B9h 2Ah 62h BAh 0Ah 82h BEh 0Ch 4Bh BFh D0h 07h BDh B4h 0Eh B8h 17h FEh 8Eh D8h B8h E5h C0h 8Eh C0h B8h B3h E0h 8Eh D0h BCh ACh B2h B8h CAh 43h F3h F7h 3Bh
-Data in E21B:0004:
-DB 95h
-Data in E21B:0005:
-DB 40h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-es-bp-17h-1761]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -119917,28 +113824,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-si-61CCh-1770]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 93h F8h 9Dh BBh A2h D8h B9h D6h DFh BAh 5Bh 01h BEh 42h ECh BFh CBh 0Bh BDh 45h FFh B8h D8h 11h 8Eh D8h B8h 0Ah 8Eh 8Eh C0h B8h F7h F5h 8Eh D0h BCh 0Bh 3Fh B8h DFh EDh F3h F7h BCh 34h 9Eh
-Data in 1A7F:0006:
-DB A4h
-Data in 1A7F:0007:
-DB 5Dh
-BreakPoint: 1000:0038
-Result:
-AX=FC49h
-BX=D8A2h
-CX=DFD6h
-DX=11A3h
-SI=EC42h
-DI=0BCBh
-BP=FF45h
-SP=3F0Bh
-DS=11D8h
-ES=8E0Ah
-SS=F5F7h
 
 [SST-F7_7-idiv-word-ds-bx-19h-1771]
 EntryPoint: 1000:0000
@@ -120105,25 +113990,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-si-27E9h-1782]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C7h F4h 9Dh BBh 66h 92h B9h 88h 4Ah BAh 0Eh C3h BEh 00h 00h BFh 23h 2Fh BDh FFh 5Eh B8h 53h 36h 8Eh D8h B8h 8Dh 4Dh 8Eh C0h B8h 92h F6h 8Eh D0h BCh 66h BDh B8h 3Fh 12h F3h F7h B8h 17h D8h
-Data in 3CFA:000D:
-DB 0Fh
-Data in 3CFA:000E:
-DB B1h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-si-24h-1783]
@@ -120545,25 +114411,6 @@ DS=65F3h
 ES=47A5h
 SS=76D0h
 
-[SST-F7_7-idiv-word-ds-bp-di-1809]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F0h 9Dh BBh 2Fh E2h B9h 8Eh 36h BAh A3h 82h BEh 68h EEh BFh CEh 78h BDh 49h 67h B8h 65h AFh 8Eh D8h B8h BAh E2h 8Eh C0h B8h F7h 14h 8Eh D0h BCh 4Eh 86h B8h B0h 15h 3Eh F2h F7h 3Bh
-Data in AFFF:D677:
-DB A2h
-Data in AFFF:D678:
-DB 6Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-E998h-1810]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -120659,25 +114506,6 @@ SP=3F62h
 DS=3A0Fh
 ES=42D3h
 SS=CF90h
-
-[SST-F7_7-idiv-word-ds-bx-di-20h-1817]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 52h F8h 9Dh BBh B3h 46h B9h 04h 64h BAh B9h D8h BEh AFh 51h BFh 1Eh 56h BDh 40h D0h B8h F8h 91h 8Eh D8h B8h C9h F8h 8Eh C0h B8h 35h 1Eh 8Eh D0h BCh 12h 30h B8h D5h 77h F3h F7h 79h E0h
-Data in 9BC3:0001:
-DB 38h
-Data in 9BC3:0002:
-DB E2h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-bx-1818]
 EntryPoint: 1000:0000
@@ -121389,25 +115217,6 @@ DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
 
-[SST-F7_7-idiv-word-es-di-611Ch-1863]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 06h F4h 9Dh BBh DDh 70h B9h E0h EDh BAh 05h 57h BEh 00h 00h BFh 79h CBh BDh 94h 29h B8h F3h 85h 8Eh D8h B8h 13h 21h 8Eh C0h B8h A5h D1h 8Eh D0h BCh 34h 7Ch B8h CAh 99h 26h F2h F7h BDh 1Ch 61h
-Data in 23DC:0005:
-DB 4Bh
-Data in 23DC:0006:
-DB 51h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-di-1E3h-1864]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -121627,21 +115436,6 @@ DS=9E82h
 ES=7094h
 SS=1BA3h
 
-[SST-F7_7-idiv-si-1877]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 92h F4h 9Dh BBh A4h 6Dh B9h DEh 6Ah BAh 9Ah 4Eh BEh 85h 14h BFh 01h 81h BDh 16h A3h B8h 67h 00h 8Eh D8h B8h F0h C1h 8Eh C0h B8h 9Eh 6Ch 8Eh D0h BCh 8Ah 15h B8h 93h B1h F3h F7h FEh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ds-bx-di-4918h-1878]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -121669,21 +115463,6 @@ Data in A8B4:0000:
 DB 63h
 Data in A8B4:0001:
 DB CBh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-bp-1880]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h C3h FCh 9Dh BBh AAh 06h B9h D2h 46h BAh 5Dh 88h BEh E6h 55h BFh 70h 17h BDh A6h CCh B8h 59h 07h 8Eh D8h B8h AFh 38h 8Eh C0h B8h 3Dh 4Eh 8Eh D0h BCh D5h 57h B8h 1Fh CBh 26h F3h F7h FDh
 Data in 0000:0000:
 DB 00h
 Data in 0000:0001:
@@ -121769,28 +115548,6 @@ Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
 ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ss-bp-di-3Dh-1886]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 03h FCh 9Dh BBh B1h 51h B9h 00h 00h BAh 6Bh EBh BEh F4h 3Ah BFh 8Fh 08h BDh 6Bh D9h B8h 7Eh 4Ch 8Eh D8h B8h 00h 36h 8Eh C0h B8h 45h 1Dh 8Eh D0h BCh 60h 91h B8h 77h 5Ah F2h F7h 7Bh C3h
-Data in 2B60:000D:
-DB 4Eh
-Data in 2B60:000E:
-DB 30h
-BreakPoint: 1000:0037
-Result:
-AX=6D12h
-BX=51B1h
-CX=0000h
-DX=F5F3h
-SI=3AF4h
-DI=088Fh
-BP=D96Bh
-SP=9160h
-DS=4C7Eh
-ES=3600h
-SS=1D45h
 
 [SST-F7_7-idiv-dx-1887]
 EntryPoint: 1000:0000
@@ -121910,25 +115667,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0035
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-si-6842h-1894]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 56h FCh 9Dh BBh 6Ch 12h B9h CCh B2h BAh 26h 3Ch BEh 46h 36h BFh 38h F1h BDh B3h DCh B8h 37h DEh 8Eh D8h B8h B2h A8h 8Eh C0h B8h 80h DDh 8Eh D0h BCh 5Dh B2h B8h DCh DCh 3Eh F3h F7h B8h 42h 68h
-Data in E946:0004:
-DB A0h
-Data in E946:0005:
-DB 08h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0039
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-es-bx-di-47h-1895]
@@ -122955,21 +116693,6 @@ DS=24B4h
 ES=D63Eh
 SS=ADC2h
 
-[SST-F7_7-idiv-ax-1965]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h D3h F8h 9Dh BBh B6h 74h B9h 46h B5h BAh C0h 43h BEh E6h FCh BFh 90h BAh BDh CAh 12h B8h 49h DCh 8Eh D8h B8h 97h 2Bh 8Eh C0h B8h C4h 35h 8Eh D0h BCh E8h B0h B8h CFh 24h 26h F3h F7h F8h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
-
 [SST-F7_7-idiv-word-ss-bp-si-47h-1967]
 EntryPoint: 1000:0000
 Data in 1000:0000:
@@ -123099,25 +116822,6 @@ SP=2762h
 DS=722Dh
 ES=D8F5h
 SS=A770h
-
-[SST-F7_7-idiv-word-ds-bp-di-1974]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 86h F4h 9Dh BBh 8Eh 0Eh B9h 82h B6h BAh CAh 6Bh BEh A8h 97h BFh 8Eh 2Fh BDh 34h D2h B8h 3Dh D1h 8Eh D8h B8h 01h 68h 8Eh C0h B8h 9Dh 35h 8Eh D0h BCh 38h FDh B8h BFh 50h 3Eh F3h F7h 3Bh
-Data in D159:0002:
-DB 28h
-Data in D159:0003:
-DB 15h
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0037
-ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-di-1975]
 EntryPoint: 1000:0000
@@ -123328,25 +117032,6 @@ DB 00h
 Data in 0000:0003:
 DB 00h
 BreakPoint: 1000:0036
-ExpectedFault: DIVISION0
-
-[SST-F7_7-idiv-word-ds-bx-si-5CB7h-1991]
-EntryPoint: 1000:0000
-Data in 1000:0000:
-DB B8h 00h 20h 8Eh D0h BCh FEh FFh 68h 17h F0h 9Dh BBh E9h 78h B9h 4Ch B1h BAh 1Dh 90h BEh B2h CBh BFh 63h 14h BDh 00h 00h B8h 85h A5h 8Eh D8h B8h F4h 73h 8Eh C0h B8h 98h A7h 8Eh D0h BCh C2h D9h B8h 88h E6h F3h F7h B8h 49h A3h
-Data in AFFF:4044:
-DB BEh
-Data in AFFF:4045:
-DB 2Dh
-Data in 0000:0000:
-DB 00h
-Data in 0000:0001:
-DB 04h
-Data in 0000:0002:
-DB 00h
-Data in 0000:0003:
-DB 00h
-BreakPoint: 1000:0038
 ExpectedFault: DIVISION0
 
 [SST-F7_7-idiv-word-ds-bx-di-4Ch-1992]

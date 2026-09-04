@@ -1606,13 +1606,15 @@ Const
                                  { d interruption ET une entree IVT a des    }
                                  { adresses distinctes (2026-09-02, ajoute   }
                                  { en poursuivant l enquete division par 0). }
- { Releve de 500 a 10000 (2026-09-02), 20000 (2026-09-03, chaines), puis     }
- { 40000 (2026-09-03, Jcc - 16 conditions x ~2000 tests/opcode, presque      }
- { aucun filtrage necessaire faute d operande memoire = 31243 gardes sur     }
- { 32000 bruts, depassait deja 20000) - cout memoire toujours negligeable    }
- { sur un hote Win32 32 bits moderne (tableau global statique, ~4.5 Ko/test  }
- { * 40000 = ~180 Mo). }
- MAX_UNITTESTS      = 40000;    { nombre max de tests dans un seul fichier }
+ { Releve de 500 a 10000, 20000, 40000, 60000 (2026-09-02/03, voir chantiers }
+ { precedents), puis 80000 (2026-09-04, famille decalage/rotation par imm8  }
+ { du SingleStepTests/80286 - C0/C1 x 8 sous-codes x 5000 tests) - cout     }
+ { memoire toujours negligeable sur un hote Win32 32 bits moderne (tableau  }
+ { global statique, ~4.5 Ko/test * 80000 = ~360 Mo). UnitTest8086Count/     }
+ { PassCount/FailCount/les indices de boucle I,J,K de RunUnitTests8086 sont }
+ { deja LongInt - aucune autre variable 16 bits connue ne limite cette      }
+ { valeur. }
+ MAX_UNITTESTS      = 80000;    { nombre max de tests dans un seul fichier }
  MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
                                  { gel reel observe avec CMP reg,reg+Jcc,    }
                                  { 2026-09-02) - un point d arret jamais      }
@@ -3293,6 +3295,18 @@ Type
    HasCS, HasDS, HasES, HasSS, HasIP: Boolean;
   ExpFlags, ExpAX, ExpBX, ExpCX, ExpDX, ExpSI, ExpDI, ExpBP, ExpSP,
    ExpCS, ExpDS, ExpES, ExpSS, ExpIP: Word;
+  { FlagsMask: optionnel (2026-09-04), permet a un test de ne verifier      }
+  { qu un sous-ensemble des 16 bits de Flags - necessaire pour les          }
+  { instructions ou certains bits sont officiellement "indefinis" (ex.      }
+  { AF pour les decalages/rotations, SF/ZF/AF/PF pour IMUL Ev,Iz/Ib) et ou  }
+  { le materiel reel 80286 produit une valeur precise mais non deductible   }
+  { d aucune formule (confirme empiriquement, pas juste suppose) - plutot   }
+  { que d abandonner completement la verification de Flags (perdant CF/OF   }
+  { qui eux SONT bien definis), un test peut cibler juste les bits fiables. }
+  { Absent (HasFlagsMask=False) => comportement inchange, tous les bits     }
+  { sont verifies, comme avant l ajout de ce champ. }
+  HasFlagsMask: Boolean;
+  FlagsMaskVal: Word;
   { Champs 32 bits (2026-09-02, demande explicite de l utilisateur -          }
   { "etendre le format des tests pour verifier EAX..EDI") : verifient le      }
   { registre 32 bits COMPLET (ex. EAX), pas seulement son alias 16 bits bas   }
@@ -101121,7 +101135,15 @@ Begin
        ((R8 >= $9A) And (R8 <= $9F) And (S8 = 0)) Then Begin
      V8 := Byte(V8 - $60);
      Include(P.CPU.Flags.s, EFG_CF);
-    End;
+    End Else
+     { BOGUE REEL CORRIGE (2026-09-04, trouve via le corpus SST286 - la      }
+     { verification retroactive du corpus BCD 8086 a repere 26/11986 echecs }
+     { CF, tous DAS) : contrairement a DAA ci-dessus, ce Else manquait -     }
+     { CF restait bloque a 1 (positionne par le 1er ajustement quelques     }
+     { lignes plus haut) au lieu d etre recalcule par la condition du 2e    }
+     { ajustement, seule autorite sur CF en sortie de DAS (meme formule     }
+     { empirique que DAA, verifiee separement sur 2000 cas DAS reels). }
+     Exclude(P.CPU.Flags.s, EFG_CF);
     P.CPU.Regs.AL := V8;
     Emu_SetSFB(P.CPU, V8); Emu_SetZFB(P.CPU, V8); Emu_SetPF(P.CPU, V8);
     Inc(P.CPU.IP);
@@ -101491,9 +101513,9 @@ Begin
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     Imm16 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
-              P.CPU.IP + 2 + Op.Len) Or
+              P.CPU.IP + 1 + Op.Len) Or
              (Word(Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
-              P.CPU.IP + 3 + Op.Len)) Shl 8);
+              P.CPU.IP + 2 + Op.Len)) Shl 8);
     MulRes := LongInt(SmallInt(V16)) * LongInt(SmallInt(Imm16));
     R16 := Word(MulRes);
     If (MulRes < -32768) Or (MulRes > 32767) Then Begin
@@ -101504,7 +101526,7 @@ Begin
      Exclude(P.CPU.Flags.s, EFG_OF);
     End;
     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
-    Inc(P.CPU.IP, 4 + Op.Len);
+    Inc(P.CPU.IP, 3 + Op.Len);
    End;
   $6B: { IMUL r16, r/m16, imm8 sign-extended (80186+) }
    Begin
@@ -101512,7 +101534,7 @@ Begin
     Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
-              P.CPU.IP + 2 + Op.Len);
+              P.CPU.IP + 1 + Op.Len);
     MulRes := LongInt(SmallInt(V16)) * LongInt(ShortInt(Imm8));
     R16 := Word(MulRes);
     If (MulRes < -32768) Or (MulRes > 32767) Then Begin
@@ -101523,7 +101545,7 @@ Begin
      Exclude(P.CPU.Flags.s, EFG_OF);
     End;
     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, R16);
-    Inc(P.CPU.IP, 3 + Op.Len);
+    Inc(P.CPU.IP, 2 + Op.Len);
    End;
   $6C: { INSB (80186+) - BOGUE REEL CORRIGE (2026-09-02, demande explicite    }
        { de l utilisateur) : ignorait auparavant totalement l E/S (ni         }
@@ -103380,10 +103402,37 @@ Begin
                                Else Exclude(P.CPU.Flags.s, EFG_CF);
            R8 := Byte((R8 Shr 1) Or (V16 Shl 7));
           End;
-       4, 6: Begin { SHL/SAL }
+       4: Begin { SHL/SAL }
               If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                     Else Exclude(P.CPU.Flags.s, EFG_CF);
               R8 := Byte(R8 Shl 1);
+             End;
+       6: Begin { SETMO sur D0-D3 (8086/8088), alias reel de SHL/SAL sur       }
+                { C0/C1 (80186+) - BOGUE REEL CORRIGE (2026-09-04, trouve    }
+                { via le corpus SST286 en verifiant l absence de regression  }
+                { sur la famille Group2 8086) : le sous-code 6 est l opcode  }
+                { NON DOCUMENTE "SETMO" ("Set to One", cf. secrets d opcode  }
+                { 8086/8088 bien connus) qui met l operande a tous les bits  }
+                { a 1 des que le compte d origine est non nul (CF/OF         }
+                { toujours a 0, pas la formule SHL) UNIQUEMENT sur D0-D3 -   }
+                { verifie empiriquement sur donnees materielles reelles      }
+                { (5000 cas D0_6 count=1, 5000 cas D2_6 count=CL variable).  }
+                { Un premier correctif appliquait ceci sans condition        }
+                { d opcode et a fait regresser le corpus SST286 C0_6/C1_6    }
+                { (80186+) : sur ces opcodes, subop 6 est un ALIAS REEL et   }
+                { documente de SHL/SAL (confirme par les memes 5000 cas      }
+                { materiels reels par sous-code, aucun ecart hors drapeaux   }
+                { indefinis deja masques) - Intel/les clones ont recycle     }
+                { l encodage non documente en alias officiel lors de         }
+                { l introduction du compte immediat 80186+. }
+              If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+               If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                     Else Exclude(P.CPU.Flags.s, EFG_CF);
+               R8 := Byte(R8 Shl 1);
+              End Else Begin
+               R8 := $FF;
+               Exclude(P.CPU.Flags.s, EFG_CF);
+              End;
              End;
        5: Begin { SHR }
            If (R8 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
@@ -103408,12 +103457,19 @@ Begin
      { OF flag : defini uniquement pour count d origine = 1 (Intel). }
      If Disp16 = 1 Then Begin
       Case SubOp Of
-       0, 2, 4, 6: { ROL/RCL/SHL/SAL : OF = MSB(R) XOR CF }
+       0, 2, 4: { ROL/RCL/SHL/SAL : OF = MSB(R) XOR CF }
         Begin
          If (((R8 Shr 7) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
           Then Include(P.CPU.Flags.s, EFG_OF)
           Else Exclude(P.CPU.Flags.s, EFG_OF);
         End;
+       6: Begin { SETMO(D0-D3)/SHL alias(C0-C1) : voir plus haut }
+           If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+            If (((R8 Shr 7) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
+             Then Include(P.CPU.Flags.s, EFG_OF)
+             Else Exclude(P.CPU.Flags.s, EFG_OF);
+           End Else Exclude(P.CPU.Flags.s, EFG_OF);
+          End;
        1, 3: { ROR/RCR : OF = MSB(R) XOR bit(MSB-1, R) }
         Begin
          If (((R8 Shr 7) And 1) Xor ((R8 Shr 6) And 1)) <> 0
@@ -103564,10 +103620,20 @@ Begin
                                 Else Exclude(P.CPU.Flags.s, EFG_CF);
            R16 := Word((R16 Shr 1) Or (Word(V8) Shl 15));
           End;
-       4, 6: Begin
+       4: Begin
               If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                        Else Exclude(P.CPU.Flags.s, EFG_CF);
               R16 := Word(R16 Shl 1);
+             End;
+       6: Begin { SETMO(D0-D3)/alias SHL(C0-C1) - voir la variante 8 bits ci-dessus. }
+              If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+               If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
+                                        Else Exclude(P.CPU.Flags.s, EFG_CF);
+               R16 := Word(R16 Shl 1);
+              End Else Begin
+               R16 := $FFFF;
+               Exclude(P.CPU.Flags.s, EFG_CF);
+              End;
              End;
        5: Begin
            If (R16 And 1) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
@@ -103587,12 +103653,19 @@ Begin
      { OF flag : defini uniquement pour count d origine = 1 (Intel). }
      If Disp16 = 1 Then Begin
       Case SubOp Of
-       0, 2, 4, 6: { ROL/RCL/SHL/SAL : OF = MSB(R) XOR CF }
+       0, 2, 4: { ROL/RCL/SHL/SAL : OF = MSB(R) XOR CF }
         Begin
          If (((R16 Shr 15) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
           Then Include(P.CPU.Flags.s, EFG_OF)
           Else Exclude(P.CPU.Flags.s, EFG_OF);
         End;
+       6: Begin { SETMO(D0-D3)/SHL alias(C0-C1) : voir plus haut }
+           If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+            If (((R16 Shr 15) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
+             Then Include(P.CPU.Flags.s, EFG_OF)
+             Else Exclude(P.CPU.Flags.s, EFG_OF);
+           End Else Exclude(P.CPU.Flags.s, EFG_OF);
+          End;
        1, 3: { ROR/RCR : OF = MSB(R) XOR bit(MSB-1, R) }
         Begin
          If (((R16 Shr 15) And 1) Xor ((R16 Shr 14) And 1)) <> 0
@@ -113961,6 +114034,8 @@ Begin
   If Not InResult Then Continue;
   If TestKeyValue(Trimmed, 'FLAGS', Value) Then Begin
    If TestParseHexWord(Value, V) Then Begin CurTest^.HasFlags := True; CurTest^.ExpFlags := V; End;
+  End Else If TestKeyValue(Trimmed, 'FLAGSMASK', Value) Then Begin
+   If TestParseHexWord(Value, V) Then Begin CurTest^.HasFlagsMask := True; CurTest^.FlagsMaskVal := V; End;
   End Else If TestKeyValue(Trimmed, 'AX', Value) Then Begin
    If TestParseHexWord(Value, V) Then Begin CurTest^.HasAX := True; CurTest^.ExpAX := V; End;
   End Else If TestKeyValue(Trimmed, 'BX', Value) Then Begin
@@ -114055,6 +114130,17 @@ Var
   End;
  End;
 
+ { Meme principe que CheckReg mais pour Flags, avec prise en compte du       }
+ { FlagsMask optionnel (voir TUnitTest8086.HasFlagsMask ci-dessus) - seuls   }
+ { les bits a 1 dans le masque sont compares quand un masque est present. }
+ Procedure CheckFlags(Has, HasMask: Boolean; Exp, Actual, Mask: Word);
+ Begin
+  If Has Then Begin
+   If HasMask Then CheckReg(True, Exp And Mask, Actual And Mask, 'Flags')
+   Else CheckReg(True, Exp, Actual, 'Flags');
+  End;
+ End;
+
 Begin
  ConRawWriteLn('DEVENV /TESTUNIT,' + ArchName + ' : ' + FileName);
  If Not LoadUnitTestFile8086(FileName) Then Begin
@@ -114104,7 +114190,8 @@ Begin
      ') non obtenue (obtenu : ' + Emu_FaultText(Emu_TestPanel.CPU.Fault) +
      ') apres ' + IntToStr(Steps) + ' pas';
    End Else Begin
-    CheckReg(T^.HasFlags, T^.ExpFlags, Emu_TestPanel.CPU.Flags.Base, 'Flags');
+    CheckFlags(T^.HasFlags, T^.HasFlagsMask, T^.ExpFlags,
+     Emu_TestPanel.CPU.Flags.Base, T^.FlagsMaskVal);
     CheckReg(T^.HasAX, T^.ExpAX, Emu_TestPanel.CPU.Regs.AX, 'AX');
     CheckReg(T^.HasBX, T^.ExpBX, Emu_TestPanel.CPU.Regs.BX, 'BX');
     CheckReg(T^.HasCX, T^.ExpCX, Emu_TestPanel.CPU.Regs.CX, 'CX');
@@ -114140,7 +114227,8 @@ Begin
      Emu_TestPanel.CPU.IP)) + ' SS:SP=' + HexWord(Emu_TestPanel.CPU.Segs.SS) +
     ':' + HexWord(Emu_TestPanel.CPU.Regs.SP);
   End Else Begin
-   CheckReg(T^.HasFlags, T^.ExpFlags, Emu_TestPanel.CPU.Flags.Base, 'Flags');
+   CheckFlags(T^.HasFlags, T^.HasFlagsMask, T^.ExpFlags,
+    Emu_TestPanel.CPU.Flags.Base, T^.FlagsMaskVal);
    CheckReg(T^.HasAX, T^.ExpAX, Emu_TestPanel.CPU.Regs.AX, 'AX');
    CheckReg(T^.HasBX, T^.ExpBX, Emu_TestPanel.CPU.Regs.BX, 'BX');
    CheckReg(T^.HasCX, T^.ExpCX, Emu_TestPanel.CPU.Regs.CX, 'CX');
