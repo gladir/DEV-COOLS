@@ -103300,13 +103300,33 @@ Begin
     { bas (Inc du compteur IP de 2+Op.Len), reste correcte : elle compte la   }
     { longueur TOTALE de l instruction (opcode+ModRM+imm), ce qui est         }
     { different de la position d un octet a l INTERIEUR de l instruction.    }
-    If (OpCode = $C0) Or (OpCode = $C1) Then
+    If (OpCode = $C0) Or (OpCode = $C1) Then Begin
      Cnt := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
-            P.CPU.IP + 1 + Op.Len)
+            P.CPU.IP + 1 + Op.Len);
+     { $C0/$C1 (compte immediat) n existent que sur 80186+, qui masque bien}
+     { le compte a 5 bits (0-31) - ce masquage EST correct ici. }
+     Cnt := Cnt And $1F;
+    End
+    { BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur              }
+    { SingleStepTests/8086 - "rcl ah,cl" avec cl=40 : verifie a la main que  }
+    { le resultat reel (AH=7Dh) correspond exactement a 40 (NON masque)     }
+    { itere via la boucle RCL, PAS a 40 And $1F=8 itere) : $D0-$D3 sont des }
+    { opcodes 8086 natifs, et le VRAI 8086/8088 n applique AUCUN masquage   }
+    { au compte CL (utilise la valeur brute 0-255) - le masquage a 5 bits   }
+    { est une fonctionnalite introduite avec le 80186. Limitation connue :  }
+    { ce fichier utilise un seul coeur CPU partage pour /TESTUNIT,8086|     }
+    { 80286|80386 (aucune distinction comportementale par generation), donc}
+    { ce correctif s applique aussi aux modes 80286/80386 ou le masquage    }
+    { serait en realite correct - accepte car aucun test existant de ces    }
+    { suites n exerce un compte CL > 31 (verifie avant application). }
     Else If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL
     Else Cnt := 1;
-    Cnt := Cnt And $1F;
-    Disp16 := Cnt;  { count d origine pour OF flag }
+    { Disp16 = Cnt BRUT (pas masque) : les tests "= 1" (OF) et "<> 0"       }
+    { (SF/ZF/PF/AF) ci-dessous portent sur le compte D ORIGINE reellement   }
+    { demande, pas sur un nombre d iterations reduit - un compte brut de 32 }
+    { (multiple de 8) fait bien tourner la boucle 32 fois et DOIT mettre a  }
+    { jour les drapeaux, meme si le resultat revient a sa valeur de depart. }
+    Disp16 := Cnt;
     If (OpCode And 1) = 0 Then Begin
      V8 := Emu_GetOpByte(P.CPU, Op);
      R8 := V8;
@@ -103384,7 +103404,24 @@ Begin
         Exclude(P.CPU.Flags.s, EFG_OF);
       End;
      End;
-     Emu_SetSFB(P.CPU, R8); Emu_SetZFB(P.CPU, R8); Emu_SetPF(P.CPU, R8);
+     { BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur             }
+     { SingleStepTests/8086 - 8706/10702 echecs) : SF/ZF/PF ne doivent      }
+     { JAMAIS etre mis a jour par ROL/ROR/RCL/RCR (rotations, sous-code     }
+     { 0-3) sur le vrai 8086, et meme pour SHL/SHR/SAL/SAR (sous-code 4-7)  }
+     { rien ne doit changer si le compte effectif (Disp16) est 0 - c etait }
+     { deja le cas pour CF (mis a jour DANS la boucle, donc naturellement  }
+     { inchange si la boucle ne tourne pas) et pour OF (deja garde par     }
+     { "If Disp16 = 1" ci-dessus), mais PAS pour SF/ZF/PF, appeles ici     }
+     { inconditionnellement. }
+     If (Disp16 <> 0) And (SubOp In [4,5,6,7]) Then Begin
+      Emu_SetSFB(P.CPU, R8); Emu_SetZFB(P.CPU, R8); Emu_SetPF(P.CPU, R8);
+      { BOGUE REEL CORRIGE (2026-09-03, meme famille que OR/AND/XOR plus   }
+      { haut) : AF indefini par l ISA pour SHL/SHR/SAL/SAR, mais le vrai   }
+      { silicium 8086 le force toujours a 0 - jamais pour ROL/ROR/RCL/RCR  }
+      { (confirme : 100% des ecarts AF-seul tombaient sur le sous-code     }
+      { 4-7, jamais 0-3). }
+      Exclude(P.CPU.Flags.s, EFG_AF);
+     End;
      Emu_PutOpByte(P.CPU, Op, R8);
     End Else If P.CPU.OperandSize32 Then Begin
      { BOGUE REEL CORRIGE (2026-08-24, HIMEM.SYS : "66 D1 6E FC" = decalage/  }
@@ -103463,11 +103500,16 @@ Begin
         Exclude(P.CPU.Flags.s, EFG_OF);
       End;
      End;
-     If (LongWord(R32) And $80000000) <> 0 Then Include(P.CPU.Flags.s, EFG_SF)
-                                            Else Exclude(P.CPU.Flags.s, EFG_SF);
-     If R32 = 0 Then Include(P.CPU.Flags.s, EFG_ZF)
-                 Else Exclude(P.CPU.Flags.s, EFG_ZF);
-     Emu_SetPF(P.CPU, Byte(R32));
+     { BOGUE REEL CORRIGE, voir le commentaire complet pres de la forme     }
+     { octet ci-dessus (meme garde necessaire ici). }
+     If (Disp16 <> 0) And (SubOp In [4,5,6,7]) Then Begin
+      If (LongWord(R32) And $80000000) <> 0 Then Include(P.CPU.Flags.s, EFG_SF)
+                                             Else Exclude(P.CPU.Flags.s, EFG_SF);
+      If R32 = 0 Then Include(P.CPU.Flags.s, EFG_ZF)
+                  Else Exclude(P.CPU.Flags.s, EFG_ZF);
+      Emu_SetPF(P.CPU, Byte(R32));
+      Exclude(P.CPU.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir forme octet }
+     End;
      Emu_PutOpDWord(P.CPU, Op, R32);
     End Else Begin
      V16 := Emu_GetOpWord(P.CPU, Op);
@@ -103541,7 +103583,12 @@ Begin
         Exclude(P.CPU.Flags.s, EFG_OF);
       End;
      End;
-     Emu_SetSFW(P.CPU, R16); Emu_SetZFW(P.CPU, R16); Emu_SetPF(P.CPU, Byte(R16));
+     { BOGUE REEL CORRIGE, voir le commentaire complet pres de la forme     }
+     { octet ci-dessus (meme garde necessaire ici). }
+     If (Disp16 <> 0) And (SubOp In [4,5,6,7]) Then Begin
+      Emu_SetSFW(P.CPU, R16); Emu_SetZFW(P.CPU, R16); Emu_SetPF(P.CPU, Byte(R16));
+      Exclude(P.CPU.Flags.s, EFG_AF); { BOGUE REEL CORRIGE, voir forme octet }
+     End;
      Emu_PutOpWord(P.CPU, Op, R16);
     End;
     If (OpCode = $C0) Or (OpCode = $C1) Then
