@@ -37907,7 +37907,7 @@ Begin
   TermPadZeroLeft(TotalDirs, 1) + ' directories');
 End;
 
-{ --- COPY / COPY-ITEM --- }
+{ --- COPY --- }
 
 Procedure TermCmd_COPY(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -37916,8 +37916,52 @@ Begin
  Source := TermExtractParam(ParamStr, 1);
  Target := TermExtractParam(ParamStr, 2);
  If (Source = '') Or (Target = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : COPY source destination');
+  Exit;
+ End;
+ If TermCopyFile(TP, Source, Target, False) Then
+  TermAddLine(TP, '1 fichier copie.')
+ Else
+  TermAddLine(TP, 'Echec de la copie.');
+End;
+
+{ --- COPY-ITEM (PowerShell dev) --- }
+
+Procedure TermCmd_CopyItem(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Source, Target, Token, UpToken: String;
+ I, ArgCount: Integer;
+ Args: Array[1..80] Of String;
+Begin
+ ArgCount := 0;
+ While (TermExtractParam(ParamStr, ArgCount + 1) <> '') And
+       (ArgCount < 80) Do Inc(ArgCount);
+ For I := 1 To ArgCount Do Args[I] := TermExtractParam(ParamStr, I);
+
+ Source := ''; Target := '';
+ I := 1;
+ While I <= ArgCount Do Begin
+  Token := Args[I];
+  UpToken := TermStrToUpper(Token);
+  If (UpToken = '-PATH') Or (UpToken = '-LITERALPATH') Then Begin
+   Inc(I);
+   If I <= ArgCount Then Source := YamlUnquote(Args[I]);
+  End Else If (UpToken = '-DESTINATION') Or (UpToken = '-DEST') Then Begin
+   Inc(I);
+   If I <= ArgCount Then Target := YamlUnquote(Args[I]);
+  End Else If (UpToken = '-FORCE') Or (UpToken = '-CONFIRM') Then Begin
+  End Else If Copy(UpToken, 1, 1) <> '-' Then Begin
+   If Source = '' Then Source := YamlUnquote(Token)
+   Else If Target = '' Then Target := YamlUnquote(Token);
+  End;
+  Inc(I);
+ End;
+
+ If (Source = '') Or (Target = '') Then Begin
   TermAddLine(TP,
-   'Syntaxe : COPY source destination');
+   'Syntaxe : Copy-Item source destination');
+  TermAddLine(TP,
+   '          Copy-Item -Path source -Destination destination [-Force]');
   Exit;
  End;
  If TermCopyFile(TP, Source, Target, False) Then
@@ -63717,6 +63761,94 @@ Begin
  TermAddLine(TP, '}');
 End;
 
+{ --- ConvertTo-Xml (2026-09-04) : serialisation XML du meme objet plat   }
+{ que ConvertTo-Csv/Html/Json. Le format Objs/MS reprend la structure       }
+{ PowerShell des proprietes scalaires, sans pretendre reconstruire un      }
+{ pipeline ou des objets imbriques que ce terminal ne conserve pas.         }
+
+Function ConvToXmlEscape(S: AnsiString): AnsiString;
+Var
+ I: Integer;
+ Res: AnsiString;
+Begin
+ Res := '';
+ For I := 1 To Length(S) Do Begin
+  Case S[I] Of
+   '&': Res := Res + '&amp;';
+   '<': Res := Res + '&lt;';
+   '>': Res := Res + '&gt;';
+   '"': Res := Res + '&quot;';
+   '''': Res := Res + '&apos;';
+   Else Res := Res + S[I];
+  End;
+ End;
+ ConvToXmlEscape := Res;
+End;
+
+Procedure TermCmd_ConvertToXml(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, UpLevel: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+   (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ VarArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-INPUTOBJECT') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If (UpLevel = '-AS') Or (UpLevel = '-DEPTH') Then
+   Inc(I)
+  Else If (VarArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Then Begin
+  TermAddLine(TP, 'Syntaxe : ConvertTo-Xml $objet [-As String|Property] ' +
+   '[-Depth n]');
+  TermAddLine(TP, '          ($objet doit avoir ete cree par ' +
+   'ConvertFrom-Yaml/StringData/SddlString)');
+  Exit;
+ End;
+ SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'ConvertTo-Xml : ''' + VarArg + ''' n''est pas un objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'ConvertTo-Xml : objet sans propriete.');
+  Exit;
+ End;
+
+ TermAddLine(TP, '<?xml version="1.0" encoding="utf-8"?>');
+ TermAddLine(TP, '<Objs Version="1.1.0.1" ' +
+  'xmlns="http://schemas.microsoft.com/powershell/2004/04">');
+ TermAddLine(TP, '  <Obj RefId="0">');
+ TermAddLine(TP, '    <TN RefId="0">');
+ TermAddLine(TP, '      <T>System.Management.Automation.PSCustomObject</T>');
+ TermAddLine(TP, '      <T>System.Object</T>');
+ TermAddLine(TP, '    </TN>');
+ TermAddLine(TP, '    <Props>');
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  TermAddLine(TP, '      <S N="' + ConvToXmlEscape(P^.Name) + '">' +
+   ConvToXmlEscape(P^.Value) + '</S>');
+  P := P^.Next;
+ End;
+ TermAddLine(TP, '    </Props>');
+ TermAddLine(TP, '  </Obj>');
+ TermAddLine(TP, '</Objs>');
+End;
+
 { --- Traitement des lignes tapees dans "PowerShell dev" (Entree) : here-  }
 { strings/assignations/lecture de propriete/substitution generique -       }
 { appelee depuis HandleTerminalEvent (touche Entree, SK_POWERSHELL         }
@@ -66986,6 +67118,10 @@ Begin
   TermAddLine(TP,
    '  Add-Content -Path f -Value texte     Meme chose (syntaxe nommee)');
   TermAddLine(TP,
+   '  Copy-Item source destination         Copie un fichier');
+  TermAddLine(TP,
+   '  Copy-Item -Path f -Destination d     Copie (syntaxe nommee)');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -67081,6 +67217,9 @@ Begin
   TermAddLine(TP,
    '  ConvertTo-Json $objet [-Depth n]      Affiche le JSON reel ' +
    '(nombres/bool non guillemetes) de $objet');
+  TermAddLine(TP,
+   '  ConvertTo-Xml $objet [-As String|Property]  Affiche le XML ' +
+   'PowerShell de $objet');
   TermAddLine(TP,
    '  ConvertTo-SecureString -String t -AsPlainText -Force   Cree (VRAI ' +
    'DPAPI si $var=)');
@@ -67762,7 +67901,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 108;
+ PS_CMD_ALIASES = 109;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -67825,6 +67964,7 @@ Const
   'CONVERTTO-CSV',
   'CONVERTTO-HTML',
   'CONVERTTO-JSON',
+  'CONVERTTO-XML',
   'CONVERTTO-SECURESTRING',
   'EDIT',
   'ARJ',
@@ -67913,6 +68053,7 @@ Const
   81,
   82,
   83,
+  86,
   84,
   46,
   47,
@@ -68337,7 +68478,7 @@ Begin
     2: TermCmd_CD(TP, ParamStr);                { CD/CHDIR/SET-LOCATION }
     3: TermCmd_CLS(TP);                          { CLS/CLEAR-HOST/CLEAR }
     4: TermCmd_DIR_PS(TP, ParamStr);             { DIR/LS/GET-CHILDITEM }
-    5: TermCmd_COPY(TP, ParamStr);               { COPY/COPY-ITEM }
+    5: TermCmd_CopyItem(TP, ParamStr);           { COPY/COPY-ITEM }
     6: TermCmd_DEL(TP, ParamStr);                { DEL/REMOVE-ITEM }
     7: TermCmd_ECHO(TP, ParamStr);               { ECHO/WRITE-OUTPUT }
     8: TermCmd_MKDIR(TP, ParamStr);              { MKDIR/NEW-ITEM }
@@ -68395,6 +68536,7 @@ Begin
     82: TermCmd_ConvertToHtml(TP, ParamStr);
     83: TermCmd_ConvertToJson(TP, ParamStr);
     84: TermCmd_ConvertToSecureString(TP, ParamStr);
+    86: TermCmd_ConvertToXml(TP, ParamStr);
     46: TermCmd_EDIT(TP, ParamStr);
     47: TermCmd_ARJ(TP, ParamStr);
     48: TermCmd_UNZIP(TP, ParamStr);
