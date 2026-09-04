@@ -65486,6 +65486,88 @@ Begin
  TermAddLine(TP, ValueLine);
 End;
 
+{ --- Export-Csv (2026-09-04) : meme serialisation CSV que ConvertTo-Csv, }
+{ mais vers un fichier. L'objet plat est celui conserve par ce terminal;   }
+{ -Force autorise le remplacement du fichier cible.                       }
+Procedure TermCmd_ExportCsv(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, PathArg, UpLevel, DelimArg, HeaderLine, ValueLine: String;
+ Delim: Char;
+ ForceFlag: Boolean;
+ SrcVar: PPsVar;
+ P: PPsProp;
+ OutputFile: Text;
+ Err: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+   (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+
+ VarArg := ''; PathArg := ''; DelimArg := ',';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If (UpLevel = '-INPUTOBJECT') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If (UpLevel = '-PATH') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then PathArg := YamlUnquote(LocalArgs[I]);
+  End Else If (UpLevel = '-DELIMITER') Then Begin
+   Inc(I);
+   If I <= LocalArgCount Then DelimArg := LocalArgs[I];
+  End Else If (UpLevel = '-FORCE') Then
+  Else If (VarArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   VarArg := LocalArgs[I]
+  Else If (PathArg = '') And (Copy(LocalArgs[I],1,1) <> '-') Then
+   PathArg := YamlUnquote(LocalArgs[I]);
+  Inc(I);
+ End;
+ If Length(DelimArg) > 0 Then Delim := DelimArg[1] Else Delim := ',';
+
+ If (VarArg = '') Or (Copy(VarArg, 1, 1) <> '$') Or (PathArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Export-Csv -Path fichier -InputObject $objet ' +
+   '[-Delimiter c] [-Force]');
+  Exit;
+ End;
+ SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'Export-Csv : ''' + VarArg + ''' n''est pas un objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'Export-Csv : objet sans propriete.');
+  Exit;
+ End;
+ Assign(OutputFile, PathArg);
+ {$I-}
+ Rewrite(OutputFile);
+ {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Export-Csv : impossible de creer ou remplacer ' + PathArg);
+  Exit;
+ End;
+ HeaderLine := ''; ValueLine := '';
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  If HeaderLine <> '' Then Begin
+   HeaderLine := HeaderLine + Delim;
+   ValueLine := ValueLine + Delim;
+  End;
+  HeaderLine := HeaderLine + ConvToCsvQuote(P^.Name, Delim);
+  ValueLine := ValueLine + ConvToCsvQuote(P^.Value, Delim);
+  P := P^.Next;
+ End;
+ WriteLn(OutputFile, HeaderLine);
+ WriteLn(OutputFile, ValueLine);
+ Close(OutputFile);
+ TermAddLine(TP, 'Export-Csv : fichier exporte : ' + PathArg);
+End;
+
 { --- ConvertTo-Html (2026-09-01) : meme entree que ConvertTo-Csv ($objet  }
 { deja construit par ConvertFrom-Yaml/StringData/SddlString), sortie =     }
 { le VRAI document HTML que produit la cmdlet reelle (<html><head><title> }
@@ -69140,6 +69222,8 @@ Begin
    '  ConvertTo-Csv $objet [-Delimiter c]   Affiche l''en-tete+valeurs ' +
    'CSV de $objet');
   TermAddLine(TP,
+   '  Export-Csv -Path f -InputObject $objet  Ecrit un fichier CSV');
+  TermAddLine(TP,
    '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
    'reel (table) de $objet');
   TermAddLine(TP,
@@ -69829,7 +69913,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 111;
+ PS_CMD_ALIASES = 112;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -69891,6 +69975,7 @@ Const
   'CONVERTFROM-SDDLSTRING',
   'CONVERTFROM-STRINGDATA',
   'CONVERT-PATH',
+  'EXPORT-CSV',
   'CONVERTTO-CSV',
   'CONVERTTO-HTML',
   'CONVERTTO-JSON',
@@ -69982,6 +70067,7 @@ Const
   75,
   76,
   80,
+  89,
   81,
   82,
   83,
@@ -70466,6 +70552,7 @@ Begin
     75: TermCmd_ConvertFromSddlString(TP, ParamStr);
     76: TermCmd_ConvertFromStringData(TP, ParamStr);
     80: TermCmd_ConvertPath(TP, ParamStr);
+    89: TermCmd_ExportCsv(TP, ParamStr);
     81: TermCmd_ConvertToCsv(TP, ParamStr);
     82: TermCmd_ConvertToHtml(TP, ParamStr);
     83: TermCmd_ConvertToJson(TP, ParamStr);
