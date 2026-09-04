@@ -1411,6 +1411,7 @@ Const
  EXPLORER_TOOLBAR_HEIGHT = 24;     { hauteur de la mini barre d outils }
  EXPLORER_SEARCH_HEIGHT  = 20;     { hauteur du champ de recherche  }
  EXPLORER_TOOLBAR_BTNCOUNT = 3;    { Actualiser/Tout replier/Proprietes }
+ SQL_TOOLBAR_BTNCOUNT      = 3;    { Actualiser/Nouvelle connexion/Nouvelle requete }
  { EXTENSION (2026-08-08) : bande d onglets (Explorateur de solutions/    }
  { Modification Git/Team Explorer/PasChat) en bas du panneau. }
  EXPLORER_TABSTRIP_HEIGHT = 24;
@@ -6694,6 +6695,11 @@ Var
  { EXTENSION (2026-08-08) : icones de la mini barre d outils de l onglet  }
  { "Modification Git" (Actualiser/Tout indexer/Push/Pull). }
  GitToolbarIcons : Array[0..3] Of TIcon16;
+ { Etape 2 (Explorateur d objets SQL Server) : icones + info-bulles de sa  }
+ { propre mini barre d outils (Actualiser/Nouvelle connexion/Nouvelle      }
+ { requete), meme patron exact que ExplorerToolbarIcons/Tooltips. }
+ SqlToolbarIcons    : Array[0..SQL_TOOLBAR_BTNCOUNT - 1] Of TIcon16;
+ SqlToolbarTooltips : Array[0..SQL_TOOLBAR_BTNCOUNT - 1] Of String[63];
  { EXTENSION (2026-08-08) : onglet actif du panneau Explorateur (voir     }
  { TExplorerTabKind) - un seul contenu visible a la fois, partageant le      }
  { meme titre/bande d onglets/splitter. }
@@ -13349,6 +13355,47 @@ Begin
  IconHLine(Icon, 9, 12, 9, 8);
 End;
 
+{ --- Icones de la mini barre d outils de l Explorateur d objets SQL       }
+{ Server (Etape 2 du chantier) - "Actualiser" reutilise directement        }
+{ MakeIconExplorerRefresh (meme glyphe, meme reutilisation deja faite pour }
+{ GitToolbarIcons[0] ci-dessous) ; les 2 autres sont nouveaux. --- }
+
+Procedure MakeIconSqlNewConnection(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Deux carres qui se chevauchent, pour suggerer un lien/une connexion    }
+ { entre deux points - meme esprit minimaliste que les autres glyphes de  }
+ { ce fichier (jamais une vraie icone bitmap). }
+ IconRect(Icon, 1, 1, 9, 9, 1);
+ IconRect(Icon, 6, 6, 14, 14, 2);
+End;
+
+Procedure MakeIconSqlNewQuery(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Page de document (feuille de requete) avec quelques lignes de texte    }
+ { stylisees, plus un petit "+" en bas a droite pour suggerer "nouveau". }
+ IconRect(Icon, 2, 0, 11, 14, 1);
+ IconHLine(Icon, 4, 9, 3, 1);
+ IconHLine(Icon, 4, 9, 6, 1);
+ IconHLine(Icon, 4, 9, 9, 1);
+ IconHLine(Icon, 11, 15, 12, 2);
+ IconVLine(Icon, 13, 10, 14, 2);
+End;
+
+{ --- Initialiser les icones + info-bulles de cette mini barre d outils - }
+{ meme patron exact que InitExplorerIcons. --- }
+
+Procedure InitSqlExplorerIcons;
+Begin
+ MakeIconExplorerRefresh(SqlToolbarIcons[0]);
+ MakeIconSqlNewConnection(SqlToolbarIcons[1]);
+ MakeIconSqlNewQuery(SqlToolbarIcons[2]);
+ SqlToolbarTooltips[0] := 'Actualiser';
+ SqlToolbarTooltips[1] := 'Nouvelle connexion';
+ SqlToolbarTooltips[2] := 'Nouvelle requete';
+End;
+
 { --- Icones de la mini barre d outils de l onglet "Modification Git" -   }
 { EXTENSION (2026-08-08). --- }
 
@@ -14610,14 +14657,32 @@ End;
   vraie connexion n a peuple de tables/colonnes ; a revisiter si necessaire
   aux etapes suivantes). --- }
 
+Function SqlTreeTop(Var ST: TSqlExplorerState): Integer;
+Begin
+ SqlTreeTop := ST.Y + EXPLORER_TOOLBAR_HEIGHT;
+End;
+
 Procedure DrawSqlExplorer(Var ST: TSqlExplorerState);
 Var
- DrawY, I: Integer;
+ DrawY, I, BtnX, BtnY, TreeTop: Integer;
 Begin
  SetColor(CLR_EDITOR_BG);
  SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(ST.X, ST.Y, ST.X + ST.Width - 1, ST.Y + ST.Height - 1);
- DrawY := ST.Y;
+ { Etape 2 : mini barre d outils (Actualiser/Nouvelle connexion/Nouvelle   }
+ { requete) - meme presentation exacte que la barre d outils de           }
+ { l Explorateur de solution (DrawExplorer). }
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(ST.X, ST.Y, ST.X + ST.Width - 1, ST.Y + EXPLORER_TOOLBAR_HEIGHT - 1);
+ For I := 0 To SQL_TOOLBAR_BTNCOUNT - 1 Do Begin
+  BtnX := ST.X + 2 + I * 22;
+  BtnY := ST.Y + 2;
+  SetColor(CLR_BORDER);
+  Rectangle(BtnX, BtnY, BtnX + 19, BtnY + 19);
+  DrawIcon16x16(BtnX + 2, BtnY + 2, SqlToolbarIcons[I]);
+ End;
+ TreeTop := SqlTreeTop(ST);
+ DrawY := TreeTop;
  For I := 0 To ST.NodeCount - 1 Do
   If SqlNodeVisible(ST, I) Then Begin
    DrawSqlExplorerNode(ST, I, DrawY);
@@ -14635,7 +14700,7 @@ Var
  DrawY, I: Integer;
 Begin
  SqlNodeHitTest := -1;
- DrawY := ST.Y;
+ DrawY := SqlTreeTop(ST);
  For I := 0 To ST.NodeCount - 1 Do
   If SqlNodeVisible(ST, I) Then Begin
    If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
@@ -14647,18 +14712,60 @@ Begin
   End;
 End;
 
-{ --- Gere clic/double-clic (depli/repli, selection) et clavier (fleches,
-  Entree) dans l Explorateur d objets SQL Server - meme repartition
-  haut/bas/gauche/droite que HandleGridEditorKey. --- }
+{ --- Trouve le bouton de la mini barre d outils sous (MX,MY), -1 si aucun -
+  meme geometrie exacte que ExplorerToolbarHitTest. --- }
+
+Function SqlToolbarHitTest(Var ST: TSqlExplorerState; MX, MY: Integer): Integer;
+Var
+ I, BtnX, BtnY: Integer;
+Begin
+ SqlToolbarHitTest := -1;
+ BtnY := ST.Y + 2;
+ If (MY < BtnY) Or (MY > BtnY + 19) Then Exit;
+ For I := 0 To SQL_TOOLBAR_BTNCOUNT - 1 Do Begin
+  BtnX := ST.X + 2 + I * 22;
+  If (MX >= BtnX) And (MX <= BtnX + 19) Then Begin
+   SqlToolbarHitTest := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ --- Execute l action du bouton BtnIdx (0=Actualiser, 1=Nouvelle
+  connexion, 2=Nouvelle requete). A cette Etape 2, seul "Actualiser" fait
+  quelque chose (repaint - aucune vraie connexion a rafraichir avant
+  l Etape 3) ; les deux autres sont des points d ancrage vides, completes
+  aux Etapes 3/4/5 du plan - jamais un Case sans branche reelle (piege de
+  compilation deja rencontre dans le chantier grille : garder du code
+  lineaire tant qu aucune vraie branche n existe). --- }
+
+Procedure ExecuteSqlToolbarButton(Var ST: TSqlExplorerState; BtnIdx: Integer);
+Begin
+ If BtnIdx = 0 Then Begin
+  { Actualiser : pour l instant un simple repaint (aucune connexion reelle }
+  { a interroger avant l Etape 3). }
+  ST.NeedRepaint := True;
+ End;
+ { BtnIdx 1 (Nouvelle connexion) et 2 (Nouvelle requete) : Etapes 4/5. }
+End;
+
+{ --- Gere clic/double-clic (depli/repli, selection, barre d outils) et
+  clavier (fleches, Entree) dans l Explorateur d objets SQL Server - meme
+  repartition haut/bas/gauche/droite que HandleGridEditorKey. --- }
 
 Procedure HandleSqlExplorerEvent(Var ST: TSqlExplorerState; Ev: TEvent);
 Var
- HitIdx, TriLeft, I, PrevVisible, NextVisible: Integer;
+ HitIdx, TriLeft, I, PrevVisible, NextVisible, BtnIdx: Integer;
 Begin
  If ST.NodeCount <= 0 Then Exit;
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
   If (Ev.MouseX < ST.X) Or (Ev.MouseX >= ST.X + ST.Width) Or
      (Ev.MouseY < ST.Y) Or (Ev.MouseY >= ST.Y + ST.Height) Then Exit;
+  BtnIdx := SqlToolbarHitTest(ST, Ev.MouseX, Ev.MouseY);
+  If BtnIdx >= 0 Then Begin
+   ExecuteSqlToolbarButton(ST, BtnIdx);
+   Exit;
+  End;
   HitIdx := SqlNodeHitTest(ST, Ev.MouseY);
   If HitIdx < 0 Then Exit;
   ST.SelectedIdx := HitIdx;
@@ -137859,6 +137966,7 @@ BEGIN
  DrawMenuBar;
  InitToolBar;
  InitExplorerIcons;
+ InitSqlExplorerIcons;
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
