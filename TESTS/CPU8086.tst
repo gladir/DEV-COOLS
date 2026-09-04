@@ -1045,15 +1045,15 @@ BX=0091h
 CX=91F0h
 AX=FF00h
 
-[Offset-wraparound-FFFF-STOSW-spills-to-next-segment]
+[Offset-wraparound-FFFF-STOSW-wraps-within-segment]
 EntryPoint: 1000:0100
 Data in 1000:0100:
-DB B8h 00h 10h 8Eh C0h BFh FFh FFh B8h CDh ABh ABh B8h 00h 20h 8Eh C0h B8h 00h 00h 26h A1h 00h 00h
-BreakPoint: 1000:0118
+DB B8h 00h 10h 8Eh C0h BFh FFh FFh B8h CDh ABh ABh B8h 00h 00h 26h A1h 00h 00h
+BreakPoint: 1000:0113
 Result:
 DI=0001h
 AX=F6ABh
-ES=2000h
+ES=1000h
 
 [OR-immediate-forms-flags]
 EntryPoint: 1000:0100
