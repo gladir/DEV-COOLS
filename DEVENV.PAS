@@ -1606,15 +1606,15 @@ Const
                                  { d interruption ET une entree IVT a des    }
                                  { adresses distinctes (2026-09-02, ajoute   }
                                  { en poursuivant l enquete division par 0). }
- { Releve de 500 a 10000, 20000, 40000, 60000 (2026-09-02/03, voir chantiers }
- { precedents), puis 80000 (2026-09-04, famille decalage/rotation par imm8  }
- { du SingleStepTests/80286 - C0/C1 x 8 sous-codes x 5000 tests) - cout     }
- { memoire toujours negligeable sur un hote Win32 32 bits moderne (tableau  }
- { global statique, ~4.5 Ko/test * 80000 = ~360 Mo). UnitTest8086Count/     }
- { PassCount/FailCount/les indices de boucle I,J,K de RunUnitTests8086 sont }
- { deja LongInt - aucune autre variable 16 bits connue ne limite cette      }
- { valeur. }
- MAX_UNITTESTS      = 80000;    { nombre max de tests dans un seul fichier }
+ { Releve de 500 a 10000, 20000, 40000, 60000, 80000 (2026-09-02/03/04, voir }
+ { chantiers precedents), puis 150000 (2026-09-04, famille Group2 D0-D3     }
+ { retestee sur silicium 80286 reel - 4 opcodes x 8 sous-codes x 5000 tests }
+ { bruts) - cout memoire toujours negligeable sur un hote Win32 32 bits     }
+ { moderne (tableau global statique, ~4.5 Ko/test * 150000 = ~675 Mo).      }
+ { UnitTest8086Count/PassCount/FailCount/les indices de boucle I,J,K de     }
+ { RunUnitTests8086 sont deja LongInt - aucune autre variable 16 bits       }
+ { connue ne limite cette valeur. }
+ MAX_UNITTESTS      = 150000;   { nombre max de tests dans un seul fichier }
  MAX_UNITTEST_STEPS = 2000000;  { plafond anti-blocage par test (voir le    }
                                  { gel reel observe avec CMP reg,reg+Jcc,    }
                                  { 2026-09-02) - un point d arret jamais      }
@@ -1978,6 +1978,25 @@ Const
  { ci-dessus ($0000..$0140) pour eviter toute collision. }
  EMU_DEFAULT_IVT_SEG  = $F000;
  EMU_DEFAULT_IVT_OFS0 = $0300;
+ { Table de parametres du disque fixe (INT 41h=disque 0, INT 46h=disque 1) -}
+ { BOGUE REEL CORRIGE (2026-09-04, analyse independante verifiee) : INT     }
+ { 41h/46h ne sont PAS des vecteurs de service (jamais invoques via une      }
+ { vraie instruction INT) mais de simples POINTEURS que le BIOS fait        }
+ { pointer directement sur une table de 16 octets (cylindres/tetes/         }
+ { secteurs/precompensation/controle), generalement en ROM - un programme   }
+ { DOS bas niveau (vieux FDISK/utilitaires) lit ce pointeur directement      }
+ { pour connaitre la geometrie du disque 0/1 sans passer par INT 13h.       }
+ { Emu_MakeIntrAddr remplit l IVT entiere au demarrage avec des valeurs      }
+ { PLACEHOLDER (segment=0000), et rien n ecrivait de vraie table ni ne       }
+ { faisait pointer ces 2 entrees dessus - un programme qui lit ce vecteur    }
+ { obtenait donc une adresse invalide (segment nul) au lieu de la vraie      }
+ { geometrie du disque dur virtuel monte, provoquant un plantage au lieu     }
+ { d une lecture de table normale. Emplacement choisi juste apres la zone    }
+ { des 256 trampolines par defaut ($0300-$06FF) pour eviter toute            }
+ { collision, 16 octets par disque. }
+ EMU_FDPT_SEG    = $F000;
+ EMU_FDPT_OFS0   = $0700; { disque 0 (INT 41h) : $0700-$070F }
+ EMU_FDPT_OFS1   = $0710; { disque 1 (INT 46h) : $0710-$071F }
  { Bump allocator "memoire DOS basse" pour INT 31h AX=0100h (voir          }
  { Dpmi_AllocDosMem) - zone scratch dediee, largement apres tous les       }
  { autres trampolines de $F000 pour eviter toute collision. }
@@ -7115,6 +7134,28 @@ Var
  EmuDiv0IP      : Word;
  EmuDiv0Op      : Byte;     { F6 ou F7 }
  EmuDiv0SubOp   : Byte;     { 6=DIV, 7=IDIV }
+ { EmuCpu286Plus (2026-09-04, demande explicite de l utilisateur suite a la  }
+ { decouverte, via le corpus SST286 D0-D3 sur silicium 80286 reel, de DEUX   }
+ { vrais changements de comportement Group2 (D0-D3) entre 8086/8088 et       }
+ { 80186+ que le coeur CPU partage ne pouvait pas encoder jusqu ici :        }
+ { (1) le sous-code 6 (D0-D3) est l opcode non documente "SETMO" sur 8086/   }
+ { 8088 reel (verifie sur donnees materielles /8086) mais un ALIAS REEL de   }
+ { SHL/SAL sur 80186+ (verifie sur donnees materielles /80286 - DL=0x66      }
+ { devient 0xCC, pas 0xFF) ; (2) le compte CL de D2/D3 n est PAS masque a 5  }
+ { bits sur 8086/8088 reel (RCL AH,CL avec CL=40 execute bien 40 iterations, }
+ { deja verifie plus tot dans ce chantier) mais EST masque sur 80186+ reel   }
+ { (RCL byte,CL avec CL=52 donne le resultat de CL AND 1Fh=20, pas de CL=52  }
+ { brut - verifie sur donnees materielles /80286). Premiere fois que ce      }
+ { fichier a besoin d une DISTINCTION DE GENERATION CPU dans le coeur        }
+ { Emu_StepOne partage (2 conflits precedents - masquage CL de Group2 et     }
+ { masquage du champ reg de MOV Sreg - avaient ete resolus en choisissant un }
+ { seul camp, faute d un tel commutateur). Pilote : mis a True par defaut    }
+ { (l emulateur DOS gere deja des fonctionnalites 386, 80286+ est le choix   }
+ { le plus coherent pour l usage reel) et positionne explicitement par       }
+ { RunUnitTests8086 selon l architecture demandee ("8086" -> False, "80286"/ }
+ { "80386" -> True) pour que chaque suite /TESTUNIT verifie le bon           }
+ { comportement materiel. }
+ EmuCpu286Plus  : Boolean;
  EmuDiv0Div     : LongInt;  { divisor }
  EmuDiv0AX      : Word;
  EmuDiv0DX      : Word;
@@ -95267,11 +95308,15 @@ Begin
    If Emu_ElToritoLastStatus = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
    Else Include(P.CPU.Flags.s, EFG_CF);
   End;
-  $41: Begin { Check Extensions Present (entree : BX=55AAh) }
+  $41: Begin { Check Extensions Present (entree : BX=55AAh) - BOGUE REEL      }
+              { CORRIGE (2026-09-04, meme famille que Emu_DoInt13 ci-dessus) :}
+              { branche succes ne remettait jamais Emu_ElToritoLastStatus a   }
+              { 0, alors que la branche echec le fait bien pour $01. }
    If P.CPU.Regs.BX = $55AA Then Begin
     P.CPU.Regs.BX := $AA55;
     P.CPU.Regs.AH := $21;
     P.CPU.Regs.CX := $0001;
+    Emu_ElToritoLastStatus := 0;
     Exclude(P.CPU.Flags.s, EFG_CF);
    End Else Begin
     Emu_ElToritoLastStatus := $01;
@@ -95516,7 +95561,11 @@ Begin
    End;
    If IsHD And (EmuFloppySpt[Idx] < 1) Then EmuFloppySpt[Idx] := 63;
    If IsHD And (EmuFloppyHeads[Idx] < 1) Then EmuFloppyHeads[Idx] := 16;
-   P.CPU.Regs.BL := EmuFloppyType[Idx];
+   { BOGUE REEL CORRIGE (2026-09-04) : BL (type de disquette AT/PS2) n a de   }
+   { sens que pour une disquette - un vrai BIOS ne le definit pas pour un     }
+   { disque dur, meme convention que ES:DI juste en dessous (deja            }
+   { correctement conditionne par IsHD). }
+   If Not IsHD Then P.CPU.Regs.BL := EmuFloppyType[Idx];
    P.CPU.Regs.CH := Byte((EmuFloppyCyls[Idx] - 1) And $FF);
    P.CPU.Regs.CL := Byte(((EmuFloppyCyls[Idx] - 1) Shr 2) And $C0)
                  Or Byte(EmuFloppySpt[Idx] And $3F);
@@ -95549,34 +95598,61 @@ Begin
    End;
    Emu_Int13SetOK(P, Idx);
   End;
-  $15: Begin   { Get disk type }
+  $15: Begin   { Get disk type - BOGUE REEL CORRIGE (2026-09-04, analyse      }
+                { independante verifiee) : les 3 branches ecrivaient AH       }
+                { directement sans jamais toucher EmuFloppyLastStatus[Idx],   }
+                { contrairement a toutes les autres sous-fonctions qui        }
+                { passent par Emu_Int13SetOK/SetError - un appelant qui       }
+                { enchaine AH=15h puis AH=01h (Get status of last operation,  }
+                { verification courante) recevait donc le statut d une        }
+                { operation ANTERIEURE (lecture/ecriture precedente) au lieu  }
+                { de refleter cet appel-ci. Ne peut pas reutiliser            }
+                { Emu_Int13SetOK tel quel (il force AH:=0, alors que le vrai  }
+                { AH=15h retourne 0/1/2/3 selon le type) - mise a jour        }
+                { directe de EmuFloppyLastStatus a 0 (statut "succes") dans   }
+                { les 3 branches, AH deja correctement positionne par         }
+                { ailleurs. }
    If Not EmuFloppyOpen[Idx] Then Begin
     P.CPU.Regs.AH := 0;     { 00 = no disk present }
+    EmuFloppyLastStatus[Idx] := 0;
     Exclude(P.CPU.Flags.s, EFG_CF);
    End Else If IsHD Then Begin
     P.CPU.Regs.AH := 3;     { 03 = disque dur, CX:DX = nb secteurs }
     P.CPU.Regs.CX := Word((LongInt(EmuFloppySize[Idx] Div 512)
                             Shr 16) And $FFFF);
     P.CPU.Regs.DX := Word(LongInt(EmuFloppySize[Idx] Div 512) And $FFFF);
+    EmuFloppyLastStatus[Idx] := 0;
     Exclude(P.CPU.Flags.s, EFG_CF);
    End Else Begin
     If EmuFloppyType[Idx] >= 3 Then
      P.CPU.Regs.AH := 2      { 02 = floppy with changeline (3.5") }
     Else
      P.CPU.Regs.AH := 1;     { 01 = floppy sans changeline (5.25") }
+    EmuFloppyLastStatus[Idx] := 0;
     Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   End;
-  $16: Begin   { Detect disk change (sans objet pour un disque dur) }
-   If Not EmuFloppyOpen[Idx] Then
-    Emu_Int13SetError(P, Idx, $80)
-   Else Begin
-    P.CPU.Regs.AH := 0;     { 00 = pas de changement }
-    Exclude(P.CPU.Flags.s, EFG_CF);
-   End;
+  $16: Begin   { Detect disk change - BOGUE REEL CORRIGE (2026-09-04) :       }
+                { meme defaut EmuFloppyLastStatus qu AH=15h ci-dessus dans la }
+                { branche succes (utilisait AH/CF manuels au lieu de          }
+                { Emu_Int13SetOK, qui convient ici puisque le vrai AH=16h ne  }
+                { retourne QUE 0 en succes) - remplace par l appel direct.    }
+                { PLUS : aucun BIOS reel ne definit cette fonction pour un    }
+                { disque dur (elle depend du signal de changement de          }
+                { disquette, absent sur un disque dur) - ajout d un rejet     }
+                { IsHD (fonction invalide, AH=01h), meme convention que les   }
+                { AH=41h-49h EDD non supportes juste en dessous. }
+   If IsHD Then Emu_Int13SetError(P, Idx, $01)
+   Else If Not EmuFloppyOpen[Idx] Then Emu_Int13SetError(P, Idx, $80)
+   Else Emu_Int13SetOK(P, Idx);
   End;
-  $17, $18: Begin   { Set DASD / Set media type for format : stubs OK }
-   If EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, Idx)
+  $17, $18: Begin   { Set DASD / Set media type for format : stubs OK -       }
+                { BOGUE REEL CORRIGE (2026-09-04) : memes fonctions           }
+                { strictement disquette qu AH=16h ci-dessus (formatage bas    }
+                { niveau, sans objet sur un disque dur) - meme rejet IsHD     }
+                { ajoute, meme convention que les EDD non supportes. }
+   If IsHD Then Emu_Int13SetError(P, Idx, $01)
+   Else If EmuFloppyOpen[Idx] Then Emu_Int13SetOK(P, Idx)
    Else Emu_Int13SetError(P, Idx, $80);
   End;
   { INT13h etendu (EDD, AH=41h-49h) - disponible seulement sur les        }
@@ -95585,14 +95661,19 @@ Begin
   { SASI/IDE simple, ces AH tombent dans le Else ci-dessous (AH=01h,      }
   { invalide) - fidele au fait qu un vrai BIOS de cette generation ne les }
   { reconnait pas du tout. }
-  $41: Begin { Check Extensions Present (entree : BX=55AAh) }
+  $41: Begin { Check Extensions Present (entree : BX=55AAh) - BOGUE REEL      }
+              { CORRIGE (2026-09-04) : meme defaut EmuFloppyLastStatus qu     }
+              { AH=15h/16h ci-dessus - branche succes ecrivait AH:=$21 sans   }
+              { jamais reinitialiser EmuFloppyLastStatus[Idx] a 0. }
    If Emu_DiskIfSupportsEDD And (P.CPU.Regs.BX = $55AA) Then Begin
     P.CPU.Regs.BX := $AA55;
     P.CPU.Regs.AH := $21; { version EDD 2.1 }
     P.CPU.Regs.CX := $0001; { bit0 : jeu de fonctions DAP lecture/ecriture etendues }
+    EmuFloppyLastStatus[Idx] := 0;
     Exclude(P.CPU.Flags.s, EFG_CF);
    End Else Begin
     P.CPU.Regs.AH := $01;
+    EmuFloppyLastStatus[Idx] := $01;
     Include(P.CPU.Flags.s, EFG_CF);
    End;
   End;
@@ -100444,6 +100525,39 @@ Begin
  Emu_WriteWord(P.CPU, 0, Word(Num) * 4 + 2, EMU_DEFAULT_IVT_SEG);
 End;
 
+{ Ecrit la vraie table de parametres du disque fixe (16 octets, voir         }
+{ EMU_FDPT_OFS0/1 pour le contexte complet du bogue corrige) pour le disque  }
+{ dur DiskIdx (2=disque 0/INT 41h, 3=disque 1/INT 46h), a partir de la       }
+{ VRAIE geometrie du disque virtuel monte (memes tableaux EmuFloppyCyls/     }
+{ Heads/Spt que INT 13h AH=08h), ET fait pointer l entree IVT correspondante}
+{ (VecNum) dessus - PAS un trampoline executable (INT 41h/46h ne sont       }
+{ jamais reellement invoques comme interruption par un programme reel, }
+{ seul le pointeur est lu directement). }
+Procedure Emu_WriteFixedDiskParamTable(Var P: TEmulatorPanel; DiskIdx: Byte;
+ VecNum: Byte; TableOfs: Word);
+Var FDPT: Array[0..15] Of Byte;
+    Cyls, Spt: Word;
+    Heads: Byte;
+Begin
+ Cyls := EmuFloppyCyls[DiskIdx];
+ Heads := EmuFloppyHeads[DiskIdx];
+ Spt := EmuFloppySpt[DiskIdx];
+ FillChar(FDPT, SizeOf(FDPT), 0);
+ FDPT[0] := Lo(Cyls); FDPT[1] := Hi(Cyls);       { cylindres max }
+ FDPT[2] := Heads;                                { tetes max }
+ FDPT[3] := Lo(Cyls); FDPT[4] := Hi(Cyls);       { cylindre courant reduit : desactive (=max) }
+ FDPT[5] := $FF; FDPT[6] := $FF;                  { cylindre precompensation : desactive }
+ FDPT[7] := $0B;                                  { longueur ECC max (valeur BIOS classique) }
+ FDPT[8] := 0;                                    { octet de controle : aucune option speciale }
+ FDPT[9] := 0; FDPT[10] := 0; FDPT[11] := 0;      { delais (non utilises par ce coeur) }
+ FDPT[12] := Lo(Cyls); FDPT[13] := Hi(Cyls);      { cylindre zone d atterrissage : = max }
+ FDPT[14] := Lo(Spt);                              { secteurs par piste }
+ FDPT[15] := 0;                                    { reserve }
+ Emu_WriteBlock(P.CPU, EMU_FDPT_SEG, TableOfs, FDPT, SizeOf(FDPT));
+ Emu_WriteWord(P.CPU, 0, Word(VecNum) * 4,     TableOfs);
+ Emu_WriteWord(P.CPU, 0, Word(VecNum) * 4 + 2, EMU_FDPT_SEG);
+End;
+
 { Initialise, au demarrage d une session DOS (voir ShowEmulatorPanel), les   }
 { trampolines par defaut de TOUTES les interruptions dotees d un handler     }
 { interne dans Emu_DoInt - les 10 toujours actives, PLUS les 5 dependant     }
@@ -100495,6 +100609,14 @@ Begin
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
  If EmuEms.Active     Then Emu_WriteDefaultVector(P, $67);
  If EmuIpx.Active     Then Emu_WriteDefaultVector(P, $7A);
+ { INT 41h/46h : table de parametres du disque fixe, voir                   }
+ { Emu_WriteFixedDiskParamTable et EMU_FDPT_OFS0/1 pour le contexte complet.}
+ { Seulement si le disque dur correspondant est reellement monte - une      }
+ { vraie machine sans disque dur n a pas non plus de table valide a $41h.  }
+ If EmuFloppyOpen[2] Then
+  Emu_WriteFixedDiskParamTable(P, 2, $41, EMU_FDPT_OFS0);
+ If EmuFloppyOpen[3] Then
+  Emu_WriteFixedDiskParamTable(P, 3, $46, EMU_FDPT_OFS1);
 End;
 
 { Tentative de trap divide-by-zero via INT 0. Si l application a installe
@@ -103358,16 +103480,22 @@ Begin
     { BOGUE REEL CORRIGE (2026-09-03, trouve via l importateur              }
     { SingleStepTests/8086 - "rcl ah,cl" avec cl=40 : verifie a la main que  }
     { le resultat reel (AH=7Dh) correspond exactement a 40 (NON masque)     }
-    { itere via la boucle RCL, PAS a 40 And $1F=8 itere) : $D0-$D3 sont des }
-    { opcodes 8086 natifs, et le VRAI 8086/8088 n applique AUCUN masquage   }
-    { au compte CL (utilise la valeur brute 0-255) - le masquage a 5 bits   }
-    { est une fonctionnalite introduite avec le 80186. Limitation connue :  }
-    { ce fichier utilise un seul coeur CPU partage pour /TESTUNIT,8086|     }
-    { 80286|80386 (aucune distinction comportementale par generation), donc}
-    { ce correctif s applique aussi aux modes 80286/80386 ou le masquage    }
-    { serait en realite correct - accepte car aucun test existant de ces    }
-    { suites n exerce un compte CL > 31 (verifie avant application). }
-    Else If (OpCode And 2) <> 0 Then Cnt := P.CPU.Regs.CL
+    { itere via la boucle RCL, PAS a 40 And $1F=8 itere) : le VRAI 8086/8088 }
+    { n applique AUCUN masquage au compte CL de $D2/$D3 (utilise la valeur  }
+    { brute 0-255) - le masquage a 5 bits est une fonctionnalite introduite }
+    { avec le 80186. CONFIRME a l inverse sur 80286 reel (2026-09-04, corpus}
+    { SST286 D2/D3 sur silicium 80286 - "rcl byte,cl" avec CL=52 brut donne }
+    { un resultat FAUX, alors que CL And $1F=20 correspond EXACTEMENT au    }
+    { materiel reel) : le masquage EST actif sur 80186+ meme pour $D2/$D3   }
+    { (pas seulement $C0/$C1). D ou EmuCpu286Plus (voir sa declaration) -   }
+    { premiere vraie distinction de generation dans ce coeur CPU partage,   }
+    { les 2 tentatives precedentes (ce commentaire avant sa reecriture, et  }
+    { le masquage du champ reg de MOV Sreg) ayant chacune du choisir un     }
+    { seul camp faute d un tel commutateur. }
+    Else If (OpCode And 2) <> 0 Then Begin
+     Cnt := P.CPU.Regs.CL;
+     If EmuCpu286Plus Then Cnt := Cnt And $1F;
+    End
     Else Cnt := 1;
     { Disp16 = Cnt BRUT (pas masque) : les tests "= 1" (OF) et "<> 0"       }
     { (SF/ZF/PF/AF) ci-dessous portent sur le compte D ORIGINE reellement   }
@@ -103407,25 +103535,23 @@ Begin
                                     Else Exclude(P.CPU.Flags.s, EFG_CF);
               R8 := Byte(R8 Shl 1);
              End;
-       6: Begin { SETMO sur D0-D3 (8086/8088), alias reel de SHL/SAL sur       }
-                { C0/C1 (80186+) - BOGUE REEL CORRIGE (2026-09-04, trouve    }
-                { via le corpus SST286 en verifiant l absence de regression  }
-                { sur la famille Group2 8086) : le sous-code 6 est l opcode  }
-                { NON DOCUMENTE "SETMO" ("Set to One", cf. secrets d opcode  }
-                { 8086/8088 bien connus) qui met l operande a tous les bits  }
-                { a 1 des que le compte d origine est non nul (CF/OF         }
-                { toujours a 0, pas la formule SHL) UNIQUEMENT sur D0-D3 -   }
-                { verifie empiriquement sur donnees materielles reelles      }
-                { (5000 cas D0_6 count=1, 5000 cas D2_6 count=CL variable).  }
-                { Un premier correctif appliquait ceci sans condition        }
-                { d opcode et a fait regresser le corpus SST286 C0_6/C1_6    }
-                { (80186+) : sur ces opcodes, subop 6 est un ALIAS REEL et   }
-                { documente de SHL/SAL (confirme par les memes 5000 cas      }
-                { materiels reels par sous-code, aucun ecart hors drapeaux   }
-                { indefinis deja masques) - Intel/les clones ont recycle     }
-                { l encodage non documente en alias officiel lors de         }
-                { l introduction du compte immediat 80186+. }
-              If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+       6: Begin { SETMO sur 8086/8088 reel, alias reel de SHL/SAL sur 80186+ }
+                { (D0-D3 ET C0/C1) - BOGUE REEL CORRIGE (2026-09-04) : le    }
+                { sous-code 6 est l opcode NON DOCUMENTE "SETMO" ("Set to    }
+                { One") sur 8086/8088 reel (verifie via le corpus SST/8086 - }
+                { met l operande a tous les bits a 1 des que le compte       }
+                { d origine est non nul, CF/OF toujours a 0). Un premier     }
+                { correctif appliquait ceci a TOUS les opcodes D0-D3/C0/C1   }
+                { sans condition et a fait regresser le corpus SST286        }
+                { C0_6/C1_6 (deja verifie SHL). Un DEUXIEME correctif a      }
+                { alors distingue par OPCODE (D0-D3 vs C0/C1) - mais le      }
+                { corpus SST286 D0.6-D3.6 sur SILICIUM 80286 REEL a ensuite  }
+                { prouve que cette distinction etait FAUSSE : sur du vrai    }
+                { 80286, D0.6-D3.6 font AUSSI un vrai SHL (DL=0x66 -> 0xCC,  }
+                { pas 0xFF) - la vraie distinction est la GENERATION du CPU  }
+                { execute (8086/8088 reel vs 80186+ reel), pas l encodage    }
+                { D0-D3-vs-C0/C1. D ou EmuCpu286Plus (voir sa declaration). }
+              If EmuCpu286Plus Or (OpCode = $C0) Or (OpCode = $C1) Then Begin
                If (R8 And $80) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                      Else Exclude(P.CPU.Flags.s, EFG_CF);
                R8 := Byte(R8 Shl 1);
@@ -103463,8 +103589,8 @@ Begin
           Then Include(P.CPU.Flags.s, EFG_OF)
           Else Exclude(P.CPU.Flags.s, EFG_OF);
         End;
-       6: Begin { SETMO(D0-D3)/SHL alias(C0-C1) : voir plus haut }
-           If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+       6: Begin { SETMO(8086)/SHL alias(80186+) : voir EmuCpu286Plus plus haut }
+           If EmuCpu286Plus Or (OpCode = $C0) Or (OpCode = $C1) Then Begin
             If (((R8 Shr 7) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
              Then Include(P.CPU.Flags.s, EFG_OF)
              Else Exclude(P.CPU.Flags.s, EFG_OF);
@@ -103625,8 +103751,8 @@ Begin
                                        Else Exclude(P.CPU.Flags.s, EFG_CF);
               R16 := Word(R16 Shl 1);
              End;
-       6: Begin { SETMO(D0-D3)/alias SHL(C0-C1) - voir la variante 8 bits ci-dessus. }
-              If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+       6: Begin { SETMO(8086)/alias SHL(80186+) - voir la variante 8 bits ci-dessus. }
+              If EmuCpu286Plus Or (OpCode = $C0) Or (OpCode = $C1) Then Begin
                If (R16 And $8000) <> 0 Then Include(P.CPU.Flags.s, EFG_CF)
                                         Else Exclude(P.CPU.Flags.s, EFG_CF);
                R16 := Word(R16 Shl 1);
@@ -103659,8 +103785,8 @@ Begin
           Then Include(P.CPU.Flags.s, EFG_OF)
           Else Exclude(P.CPU.Flags.s, EFG_OF);
         End;
-       6: Begin { SETMO(D0-D3)/SHL alias(C0-C1) : voir plus haut }
-           If (OpCode = $C0) Or (OpCode = $C1) Then Begin
+       6: Begin { SETMO(8086)/SHL alias(80186+) : voir plus haut }
+           If EmuCpu286Plus Or (OpCode = $C0) Or (OpCode = $C1) Then Begin
             If (((R16 Shr 15) And 1) Xor (Ord(EFG_CF In P.CPU.Flags.s))) <> 0
              Then Include(P.CPU.Flags.s, EFG_OF)
              Else Exclude(P.CPU.Flags.s, EFG_OF);
@@ -114142,6 +114268,10 @@ Var
  End;
 
 Begin
+ { Positionne EmuCpu286Plus selon l architecture explicitement demandee -    }
+ { voir sa declaration pour le contexte complet (conflit Group2 D0-D3 SETMO/ }
+ { masquage CL entre 8086 et 80186+, decouvert via le corpus SST286). }
+ EmuCpu286Plus := (ArchName = '80286') Or (ArchName = '80386');
  ConRawWriteLn('DEVENV /TESTUNIT,' + ArchName + ' : ' + FileName);
  If Not LoadUnitTestFile8086(FileName) Then Begin
   ConRawWriteLn('Erreur : impossible d''ouvrir ' + FileName);
@@ -132853,6 +132983,12 @@ BEGIN
  { Permettre l ouverture de fichiers en lecture seule via Reset(F, 1). }
  { FileMode = 0 = lecture seule (defaut TP est 2 = read/write).        }
  FileMode := 0;
+ { Valeur par defaut de EmuCpu286Plus (voir sa declaration pour le contexte }
+ { complet) - DOIT etre positionne avant ParseCommandLine puisque          }
+ { /TESTUNIT,... y appelle directement RunUnitTests8086 (qui le repositionne}
+ { explicitement selon l architecture demandee) puis Halt() sans jamais    }
+ { atteindre le reste de ce bloc. }
+ EmuCpu286Plus := True;
  InitOptions(Opts);
  ParseCommandLine(Opts);
  LoadOptions(OptionsDlg.Data, OPT_CFG_FILENAME);
