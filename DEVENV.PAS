@@ -65641,6 +65641,141 @@ Begin
  End;
 End;
 
+{ --- FORMAT-TABLE (PowerShell dev) --- }
+Procedure TermCmd_FormatTable(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, PropertyArg, UpLevel, HeaderLine, ValueLine: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+       (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ VarArg := ''; PropertyArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If UpLevel = '-INPUTOBJECT' Then Begin
+   Inc(I); If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If UpLevel = '-PROPERTY' Then Begin
+   Inc(I); If I <= LocalArgCount Then PropertyArg := LocalArgs[I];
+  End Else If (VarArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+    ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
+  TermAddLine(TP, 'Syntaxe : Format-Table -InputObject $objet [-Property nom]');
+  Exit;
+ End;
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'Format-Table : objet introuvable ou non objet.');
+  Exit;
+ End;
+ If SrcVar^.Props = Nil Then Begin
+  TermAddLine(TP, 'Format-Table : objet sans propriete.');
+  Exit;
+ End;
+ HeaderLine := ''; ValueLine := '';
+ P := SrcVar^.Props;
+ While P <> Nil Do Begin
+  If (PropertyArg = '') Or
+     (TermStrToUpper(P^.Name) = TermStrToUpper(YamlUnquote(PropertyArg))) Then Begin
+   If HeaderLine <> '' Then Begin
+    HeaderLine := HeaderLine + '  ';
+    ValueLine := ValueLine + '  ';
+   End;
+   HeaderLine := HeaderLine + P^.Name;
+   ValueLine := ValueLine + P^.Value;
+  End;
+  P := P^.Next;
+ End;
+ If HeaderLine = '' Then Begin
+  TermAddLine(TP, 'Format-Table : propriete introuvable : ' + PropertyArg);
+  Exit;
+ End;
+ TermAddLine(TP, HeaderLine);
+ TermAddLine(TP, ValueLine);
+End;
+
+{ --- FORMAT-WIDE (PowerShell dev) --- }
+Procedure TermCmd_FormatWide(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I, ColumnCount, ColumnIndex: Integer;
+ LocalArgs: Array[1..80] Of String;
+ VarArg, PropertyArg, ColumnArg, UpLevel, Line: String;
+ SrcVar: PPsVar;
+ P: PPsProp;
+begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And
+   (LocalArgCount < 80) Do Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ VarArg := ''; PropertyArg := ''; ColumnArg := '1';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpLevel := TermStrToUpper(LocalArgs[I]);
+  If UpLevel = '-INPUTOBJECT' Then Begin
+   Inc(I); If I <= LocalArgCount Then VarArg := LocalArgs[I];
+  End Else If UpLevel = '-PROPERTY' Then Begin
+   Inc(I); If I <= LocalArgCount Then PropertyArg := LocalArgs[I];
+  End Else If UpLevel = '-COLUMN' Then Begin
+   Inc(I); If I <= LocalArgCount Then ColumnArg := LocalArgs[I];
+  End Else If (VarArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   VarArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If ((VarArg = '') And (PsPipelineObject = Nil)) Or
+    ((VarArg <> '') And (Copy(VarArg, 1, 1) <> '$')) Then Begin
+  TermAddLine(TP, 'Syntaxe : Format-Wide -InputObject $objet ' +
+   '[-Property nom] [-Column n]');
+  Exit;
+ End;
+ If VarArg = '' Then SrcVar := PsPipelineObject
+ Else SrcVar := PsFindVar(Copy(VarArg, 2, Length(VarArg) - 1));
+ If (SrcVar = Nil) Or (Not SrcVar^.IsObject) Then Begin
+  TermAddLine(TP, 'Format-Wide : objet introuvable ou non objet.');
+  Exit;
+ End;
+ ColumnCount := 1; Val(ColumnArg, ColumnCount, I);
+ If (I <> 0) Or (ColumnCount < 1) Then ColumnCount := 1;
+ If PropertyArg = '' Then Begin
+  P := SrcVar^.Props;
+  If P = Nil Then Begin
+   TermAddLine(TP, 'Format-Wide : objet sans propriete.');
+   Exit;
+  End;
+  PropertyArg := P^.Name;
+ End Else
+  PropertyArg := YamlUnquote(PropertyArg);
+ P := SrcVar^.Props;
+ While (P <> Nil) And
+   (TermStrToUpper(P^.Name) <> TermStrToUpper(PropertyArg)) Do P := P^.Next;
+ If P = Nil Then Begin
+  TermAddLine(TP, 'Format-Wide : propriete introuvable : ' + PropertyArg);
+  Exit;
+ End;
+ Line := ''; ColumnIndex := 0;
+ While P <> Nil Do Begin
+  If TermStrToUpper(P^.Name) = TermStrToUpper(PropertyArg) Then Begin
+   If Line <> '' Then Line := Line + '  ';
+   Line := Line + P^.Value;
+   Inc(ColumnIndex);
+   If ColumnIndex >= ColumnCount Then Begin
+    TermAddLine(TP, Line);
+    Line := ''; ColumnIndex := 0;
+   End;
+  End;
+  P := P^.Next;
+ End;
+ If Line <> '' Then TermAddLine(TP, Line);
+End;
+
 { --- Export-Csv (2026-09-04) : meme serialisation CSV que ConvertTo-Csv, }
 { mais vers un fichier. L'objet plat est celui conserve par ce terminal;   }
 { -Force autorise le remplacement du fichier cible.                       }
@@ -66184,7 +66319,9 @@ Begin
   Stage := Stages[J];
   TermExtractCommand(Stage, CmdName, ParamPart);
   UpCmd := TermStrToUpper(CmdName);
-    If (UpCmd = 'FORMAT-LIST') Or (UpCmd = 'EXPORT-CSV') Or
+      If (UpCmd = 'FORMAT-LIST') Or (UpCmd = 'FORMAT-TABLE') Or
+        (UpCmd = 'FORMAT-WIDE') Or
+        (UpCmd = 'EXPORT-CSV') Or
       (UpCmd = 'CONVERTTO-CSV') Or
      (UpCmd = 'CONVERTTO-JSON') Or (UpCmd = 'CONVERTTO-HTML') Or
      (UpCmd = 'CONVERTTO-XML') Then Begin
@@ -69484,6 +69621,10 @@ Begin
   TermAddLine(TP,
    '  Format-List [-InputObject $objet] [-Property nom]  Affiche les proprietes');
   TermAddLine(TP,
+   '  Format-Table [-InputObject $objet] [-Property nom] Affiche en colonnes');
+  TermAddLine(TP,
+   '  Format-Wide [-InputObject $objet] [-Property nom] Affiche en largeur');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70271,7 +70412,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 115;
+ PS_CMD_ALIASES = 117;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70295,6 +70436,8 @@ Const
   'CLEAR-VARIABLE',
   'FORMAT-HEX',
   'FORMAT-LIST',
+  'FORMAT-TABLE',
+  'FORMAT-WIDE',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70390,6 +70533,8 @@ Const
   18,
   91,
   92,
+  93,
+  94,
   19,
   20,
   21,
@@ -70878,6 +71023,8 @@ Begin
     18: TermCmd_ClearVariable(TP, ParamStr);
     91: TermCmd_FormatHex(TP, ParamStr);
     92: TermCmd_FormatList(TP, ParamStr);
+    93: TermCmd_FormatTable(TP, ParamStr);
+    94: TermCmd_FormatWide(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
