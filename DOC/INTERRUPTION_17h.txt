@@ -1,0 +1,702 @@
+==============================================================================
+     INTERRUPTION 17h DU BIOS 8086 : IMPRIMANTE ET PORT PARALLÈLE
+==============================================================================
+
+INT 17h est le service BIOS historique des imprimantes parallèles des IBM PC et
+compatibles. Il permet d'envoyer un octet, d'initialiser une imprimante et de
+lire son état par l'intermédiaire d'un port LPT.
+
+Les trois fonctions IBM sont :
+
+  AH=00h   imprimer un caractère
+  AH=01h   initialiser l'imprimante
+  AH=02h   lire son état
+
+DX sélectionne LPT1, LPT2 ou LPT3. Le BIOS recherche l'adresse matérielle dans
+la BIOS Data Area au lieu d'imposer 378h ou 3BCh.
+
+AVERTISSEMENT
+-------------
+
+INT 17h est une interface d'imprimante Centronics unidirectionnelle et lente.
+Elle ne constitue pas une API générale pour EPP, ECP, IEEE 1284, USB ou les
+imprimantes réseau. Une sortie peut attendre jusqu'à expiration du délai BIOS;
+les bits d'état de certaines imprimantes et adaptateurs ne sont pas fiables.
+
+Sources principales :
+
+  - IBM PC/XT, PC/AT et PS/2 Technical References;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles :
+    https://www.vtda.org/books/Computing/Programming/SystemBIOSforIBMPC_XT_ATComputersandCompatibles_Phoenix.pdf
+  - Ralf Brown's Interrupt List :
+    https://www.cs.cmu.edu/~ralf/files.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Contexte 8086 et vecteur
+  2.  Ports logiques et BIOS Data Area
+  3.  Résumé et conventions
+  4.  AH=00h : imprimer un caractère
+  5.  AH=01h : initialiser l'imprimante
+  6.  AH=02h : lire l'état
+  7.  Décodage du registre AH
+  8.  Interprétation prudente des états
+  9.  Temporisations BIOS
+ 10.  Interface Centronics et séquence d'impression
+ 11.  Registres matériels SPP
+ 12.  Registre de données
+ 13.  Registre d'état et inversions
+ 14.  Registre de contrôle
+ 15.  Connecteur DB-25 et signaux
+ 16.  LPT1, LPT2, LPT3 et adresses courantes
+ 17.  Relations avec INT 11h, INT 05h et INT 15h
+ 18.  Impression BIOS et services DOS
+ 19.  Encodage des caractères et commandes d'imprimante
+ 20.  Exemple assembleur 8086
+ 21.  Exemple Pascal pour DOS
+ 22.  Accès matériel direct
+ 23.  Ports bidirectionnels, PS/2, EPP et ECP
+ 24.  Adaptateurs USB, réseau et virtualisation
+ 25.  Diagnostic et câble de boucle
+ 26.  Programmation défensive
+ 27.  Résumé
+
+==============================================================================
+1. CONTEXTE 8086 ET VECTEUR
+==============================================================================
+
+Le numéro 17h est une convention du BIOS IBM PC, pas une fonction intrinsèque
+du processeur. En mode réel, INT 17h empile FLAGS, CS et IP, met IF et TF à zéro,
+puis charge CS:IP depuis l'entrée 17h de l'Interrupt Vector Table :
+
+  17h * 4 = 005Ch
+
+  0000:005Ch  WORD  offset de la routine
+  0000:005Eh  WORD  segment de la routine
+
+AH sélectionne la fonction, AL transporte le caractère pour AH=00h et DX
+sélectionne le port logique. La routine revient par IRET.
+
+En mode protégé, l'instruction INT consulte l'IDT et n'appelle pas automatiquement
+la ROM BIOS. Un programme DPMI doit demander une simulation d'interruption réelle
+ou utiliser l'interface d'impression du système.
+
+==============================================================================
+2. PORTS LOGIQUES ET BIOS DATA AREA
+==============================================================================
+
+DX est un index logique :
+
+  DX=0000h   LPT1
+  DX=0001h   LPT2
+  DX=0002h   LPT3
+
+Il ne contient pas l'adresse d'E/S. Le BIOS consulte la table BDA :
+
+  BDA             physique   contenu
+  --------------  ---------  ----------------------------------------------
+  0040:0008h      0408h      adresse de base LPT1
+  0040:000Ah      040Ah      adresse de base LPT2
+  0040:000Ch      040Ch      adresse de base LPT3
+  0040:000Eh      040Eh      adresse de base LPT4/réservée selon BIOS
+
+Une entrée nulle signifie normalement qu'aucun port n'a été enregistré. Les BIOS
+IBM classiques offrent officiellement DX=0..2, même si la BDA réserve quatre
+WORD. Les BIOS tardifs peuvent accepter LPT4; ne pas le supposer.
+
+Les quatre octets à 0040:0078h..007Bh contiennent généralement les délais de
+LPT1..LPT4. Le mot d'équipement à 0040:0010h compte aussi les adaptateurs
+parallèles dans ses bits 15..14.
+
+==============================================================================
+3. RÉSUMÉ ET CONVENTIONS
+==============================================================================
+
+ AH    Entrées principales           Sortie
+ ----  ----------------------------  ---------------------------------------
+ 00h   AL=octet, DX=port             AH=état après tentative
+ 01h   DX=port                       AH=état après initialisation
+ 02h   DX=port                       AH=état courant
+ 03h+  réservées par IBM             extensions privées possibles
+
+Il n'existe pas de convention Carry Flag standard. Le programme doit examiner
+AH. Tous les registres sauf AH sont normalement préservés par les BIOS IBM
+classiques; un logiciel portable ne doit toutefois dépendre que des valeurs
+explicitement documentées.
+
+Un port invalide ou une entrée BDA nulle produit un comportement qui varie selon
+la version. Des XT anciens vérifient insuffisamment DX; les BIOS tardifs peuvent
+retourner AH=29h. Toujours valider DX et la BDA avant l'appel.
+
+==============================================================================
+4. AH=00h : IMPRIMER UN CARACTÈRE
+==============================================================================
+
+Entrée :
+
+  AH = 00h
+  AL = octet à transmettre
+  DX = 0 pour LPT1, 1 pour LPT2, 2 pour LPT3
+
+Retour :
+
+  AH = état de l'imprimante et timeout
+
+Le BIOS vérifie d'abord que l'imprimante est prête. S'il rencontre une erreur
+initiale ou si BUSY reste actif jusqu'à la fin du délai, il retourne sans envoyer
+le caractère. Sinon, il place AL sur les lignes de données et produit une
+impulsion STROBE.
+
+Le succès indique que l'octet a été accepté par l'interface selon le handshake,
+pas qu'il a été imprimé sur le papier. L'imprimante possède un tampon, interprète
+les commandes et peut imprimer beaucoup plus tard.
+
+INT 17h n'ajoute ni CR, ni LF. Pour une ligne conventionnelle, envoyer 0Dh puis
+0Ah si l'imprimante attend les deux. Le réglage Auto Line Feed peut modifier ce
+comportement et provoquer des doubles espacements si le logiciel envoie déjà LF.
+
+==============================================================================
+5. AH=01h : INITIALISER L'IMPRIMANTE
+==============================================================================
+
+Entrée :
+
+  AH = 01h
+  DX = port logique
+
+Retour :
+
+  AH = état
+
+Le BIOS produit une impulsion sur la ligne INIT du port, puis lit l'état. Cette
+opération réinitialise l'interface de l'imprimante; selon le modèle, elle peut
+vider son tampon, restaurer police/marges par défaut et abandonner le travail en
+cours.
+
+Ce n'est pas une simple détection sans effet. Ne pas appeler AH=01h pendant une
+impression importante. Certaines imprimantes ont besoin d'un délai après INIT;
+le BIOS ou le périphérique peut ne pas être prêt immédiatement.
+
+Une imprimante éteinte ou un câble absent produit des bits d'état dépendant des
+résistances de tirage du port. L'initialisation ne garantit pas la présence.
+
+==============================================================================
+6. AH=02h : LIRE L'ÉTAT
+==============================================================================
+
+Entrée :
+
+  AH = 02h
+  DX = port logique
+
+Retour :
+
+  AH = état BIOS normalisé
+
+La fonction ne transmet normalement aucun octet et ne produit pas INIT. Elle lit
+le registre matériel, applique les inversions attendues par la convention BIOS
+et retourne les bits décrits à la section suivante.
+
+Certaines lignes sont fugitives, notamment ACK. Une lecture isolée peut donc ne
+jamais observer l'impulsion. Les niveaux stables BUSY, SELECT, PAPER OUT et ERROR
+sont plus utiles pour le diagnostic.
+
+Le bit timeout n'est pas une ligne matérielle : AH=02h le retourne généralement
+à zéro, alors qu'AH=00h peut le positionner après son attente.
+
+==============================================================================
+7. DÉCODAGE DU REGISTRE AH
+==============================================================================
+
+  Bit  Masque  Signification BIOS si le bit vaut 1
+  ---  ------  --------------------------------------------------------------
+   7   80h     imprimante non occupée, prête du point de vue BUSY
+   6   40h     acquittement ACK observé/niveau normalisé
+   5   20h     papier épuisé, PAPER OUT
+   4   10h     imprimante sélectionnée/en ligne, SELECT
+   3   08h     erreur d'entrée/sortie, dérivée de nERROR
+   2   04h     réservé
+   1   02h     réservé
+   0   01h     délai BIOS expiré
+
+Test de disponibilité strict, fréquemment utilisé :
+
+  timeout absent       (AH AND 01h) = 0
+  erreur absente       (AH AND 08h) = 0
+  papier présent       (AH AND 20h) = 0
+  sélectionnée         (AH AND 10h) <> 0
+  non occupée          (AH AND 80h) <> 0
+
+Les imprimantes ne pilotent pas toutes les lignes de la même manière. La
+documentation IBM avertit que certains états sont peu fiables; bits 3 et 7 sont
+souvent les plus utiles sur les matériels classiques.
+
+==============================================================================
+8. INTERPRÉTATION PRUDENTE DES ÉTATS
+==============================================================================
+
+Combinaisons typiques, non universelles :
+
+  90h   sélectionnée et non occupée, état souvent prêt
+  B0h   non occupée, papier épuisé, sélectionnée
+  10h   sélectionnée mais occupée
+  08h   erreur active
+  01h   expiration de l'attente BIOS
+
+Il est incorrect d'exiger AH=90h exactement : ACK peut modifier bit 6 et des
+lignes réservées peuvent différer. Tester seulement les conditions nécessaires.
+
+BUSY est un signal inversé au connecteur/registre sur le matériel classique,
+mais le BIOS retourne bit 7=1 pour « not busy ». ERROR est une ligne active basse
+et le BIOS la transforme en bit 3=1 pour « erreur ». La section 13 distingue les
+niveaux matériels et l'état BIOS.
+
+Un timeout n'identifie pas sa cause : imprimante occupée, hors ligne, câble
+absent, erreur, adresse erronée ou adaptateur non compatible sont possibles.
+
+==============================================================================
+9. TEMPORISATIONS BIOS
+==============================================================================
+
+Octets BDA classiques :
+
+  0040:0078h   timeout LPT1
+  0040:0079h   timeout LPT2
+  0040:007Ah   timeout LPT3
+  0040:007Bh   timeout LPT4
+
+La valeur est un compteur utilisé par des boucles liées au tick BIOS ou à des
+boucles internes selon la version. Le tick classique est d'environ 54,925 ms,
+mais l'unité effective du timeout INT 17h n'est pas parfaitement portable.
+
+Un grand délai peut figer perceptiblement un programme si l'imprimante est
+débranchée. Une valeur nulle n'assure pas un retour instantané sur tous les BIOS.
+
+Sur AT, XT 286 et PS/2, le BIOS peut appeler INT 15h/AH=90h avec AL=FEh avant
+d'attendre une imprimante occupée, afin qu'un système multitâche puisse céder le
+processeur.
+
+Modifier la BDA affecte globalement tous les utilisateurs d'INT 17h. Conserver
+l'ancienne valeur et la restaurer si une application doit temporairement changer
+le délai.
+
+==============================================================================
+10. INTERFACE CENTRONICS ET SÉQUENCE D'IMPRESSION
+==============================================================================
+
+Séquence simplifiée d'un octet :
+
+  1. vérifier BUSY, SELECT, PAPER OUT et ERROR;
+  2. placer l'octet sur DATA0..DATA7;
+  3. attendre le temps d'établissement;
+  4. activer brièvement STROBE, ligne active basse;
+  5. l'imprimante mémorise l'octet et active BUSY;
+  6. elle produit une impulsion ACK active basse;
+  7. BUSY revient inactif lorsque l'interface accepte l'octet suivant.
+
+Les délais électriques sont de l'ordre de la microseconde, mais l'attente de
+l'imprimante peut être beaucoup plus longue. Le BIOS original effectue cette
+séquence par scrutation et n'utilise normalement pas l'IRQ du port.
+
+« Centronics » décrit ici le handshake historique parallèle. Les imprimantes
+réelles ajoutent leurs propres langages, tampons et états.
+
+==============================================================================
+11. REGISTRES MATÉRIELS SPP
+==============================================================================
+
+Pour une adresse de base B :
+
+  B+0   Data Register, données D0..D7
+  B+1   Status Register, entrées de l'imprimante
+  B+2   Control Register, STROBE/AUTOFD/INIT/SELECTIN/IRQ
+
+Exemple avec LPT1 à 378h :
+
+  378h   données
+  379h   état
+  37Ah   contrôle
+
+Ce sont des ports d'E/S, accessibles par IN/OUT, pas des adresses mémoire.
+L'adresse doit venir de la BDA ou de l'énumération du matériel.
+
+Les extensions EPP/ECP ajoutent d'autres registres au-delà de B+2 et parfois un
+bloc de contrôle à B+400h. INT 17h classique ne les configure pas.
+
+==============================================================================
+12. REGISTRE DE DONNÉES
+==============================================================================
+
+Écriture à B+0 :
+
+  bit 0 -> DATA0
+  ...
+  bit 7 -> DATA7
+
+L'octet reste présenté jusqu'à l'écriture suivante. Sur un port SPP original,
+ce registre est une sortie. La lecture peut retourner le latch de sortie, une
+valeur flottante ou les données externes selon l'implémentation.
+
+Les ports PS/2 bidirectionnels peuvent transformer les lignes en entrées via un
+bit de direction étendu, souvent bit 5 du registre de contrôle. Ne pas activer
+deux pilotes en sortie l'un contre l'autre.
+
+INT 17h/AH=00h utilise ce registre mais ne fournit aucune fonction pour lire un
+octet de données depuis un périphérique parallèle.
+
+==============================================================================
+13. REGISTRE D'ÉTAT ET INVERSIONS
+==============================================================================
+
+Registre matériel SPP à B+1 :
+
+  bit 7   BUSY, inversion matérielle courante de la broche nBUSY/logique
+  bit 6   ACK
+  bit 5   PAPER OUT
+  bit 4   SELECT
+  bit 3   ERROR/nERROR avec polarité à prendre en compte
+  2..0    non utilisés sur SPP classique
+
+Le matériel et la convention BIOS n'emploient pas toujours la même polarité
+sémantique. Le BIOS IBM normalise l'octet, historiquement par des opérations
+d'inversion/masquage, pour produire : bit 7 « not busy » et bit 3 « I/O error ».
+
+Lors d'un accès direct, ne réutiliser pas automatiquement les tests de AH sur
+l'octet lu à B+1. Déterminer la polarité du contrôleur et du signal. Les noms
+avec barre, nERROR ou /ACK indiquent une ligne active basse.
+
+ACK est une impulsion courte. Un pilote scruté peut la manquer sans que
+l'impression ait échoué; BUSY est généralement le handshake principal du BIOS.
+
+==============================================================================
+14. REGISTRE DE CONTRÔLE
+==============================================================================
+
+Bits SPP courants de B+2 :
+
+  bit 0   STROBE, inversé sur l'interface classique
+  bit 1   AUTO LINE FEED, inversé
+  bit 2   INIT, polarité matérielle particulière, active basse au connecteur
+  bit 3   SELECT IN, inversé
+  bit 4   autorisation IRQ du port parallèle
+  bit 5   direction bidirectionnelle sur PS/2 et ports ultérieurs
+  7..6    réservés ou propres au mode étendu
+
+Les valeurs classiques 0Ch/0Dh sont souvent utilisées pour produire l'impulsion
+STROBE tout en maintenant INIT/SELECTIN. Leur sens dépend des inversions du
+registre; ne pas appliquer ces constantes à un contrôleur non compatible.
+
+Une écriture directe doit effectuer un read-modify-write ou conserver une copie
+du registre afin de ne pas changer AUTOFD, INIT, IRQ ou direction par accident.
+
+==============================================================================
+15. CONNECTEUR DB-25 ET SIGNAUX
+==============================================================================
+
+Brochage PC DB-25 classique :
+
+  Broche  Signal       Direction vue du PC
+  ------  -----------  -------------------
+    1     STROBE       sortie
+   2..9   DATA0..7     sortie en SPP
+   10     ACK          entrée
+   11     BUSY         entrée
+   12     PAPER OUT    entrée
+   13     SELECT       entrée
+   14     AUTOFD       sortie
+   15     ERROR        entrée
+   16     INIT         sortie
+   17     SELECT IN    sortie
+  18..25  masses       --
+
+Le connecteur Centronics côté imprimante possède un autre format et une autre
+numérotation. Vérifier le câble plutôt que relier des numéros identiques.
+
+Le port parallèle utilise des niveaux logiques TTL historiques, pas les tensions
+RS-232. Il ne faut pas relier directement un signal LPT à une prise série COM.
+
+Les sorties anciennes peuvent fournir peu de courant. Utiliser buffers et
+protection pour commander relais, moteurs ou montages externes.
+
+==============================================================================
+16. LPT1, LPT2, LPT3 ET ADRESSES COURANTES
+==============================================================================
+
+Adresses historiques :
+
+  03BCh   port parallèle intégré à l'adaptateur MDA, souvent premier détecté
+  0378h   adaptateur parallèle principal courant
+  0278h   adaptateur parallèle secondaire courant
+
+L'affectation LPT dépend de l'ordre de détection et de la configuration :
+
+  - avec un port 3BCh présent, il peut devenir LPT1;
+  - 378h devient souvent LPT1 sinon, ou LPT2 avec 3BCh;
+  - 278h devient le port suivant;
+  - un BIOS Plug and Play peut choisir une autre adresse.
+
+Ne jamais supposer LPT1=378h. Lire le WORD à 0040:0008h. Une adresse non nulle ne
+garantit toutefois pas qu'une imprimante est connectée.
+
+Les IRQ classiques sont IRQ7 pour LPT1 et IRQ5 pour LPT2, mais INT 17h fonctionne
+par scrutation et ne dépend normalement pas de ces IRQ.
+
+==============================================================================
+17. RELATIONS AVEC INT 11h, INT 05h ET INT 15h
+==============================================================================
+
+INT 11h
+  Bits 15..14 du mot d'équipement indiquent le nombre d'adaptateurs parallèles
+  détectés. Comparer ce nombre aux adresses BDA.
+
+INT 05h
+  Service Print Screen historique. Le gestionnaire parcourt l'écran texte et
+  transmet des caractères, généralement par INT 17h vers LPT1. Le drapeau BDA à
+  0050:0000h/0040:0100h selon génération évite une réentrance.
+
+INT 15h/AH=90h
+  Le BIOS AT peut l'appeler avec AL=FEh avant une attente d'imprimante afin de
+  coopérer avec un système multitâche.
+
+INT 17h n'est pas l'IRQ matérielle parallèle. IRQ7 arrive normalement par le
+vecteur INT 0Fh après le PIC; IRQ5 par INT 0Dh sur PC/AT. Un pilote IRQ doit gérer
+et acquitter le contrôleur séparément.
+
+==============================================================================
+18. IMPRESSION BIOS ET SERVICES DOS
+==============================================================================
+
+INT 17h
+  Accès BIOS direct au port logique; pas de fichier, redirection ou spooler.
+
+INT 21h/AH=05h
+  Envoie DL au périphérique imprimante standard DOS. Le pilote PRN peut être
+  redirigé/configuré différemment de LPT1.
+
+INT 21h/AH=40h
+  Écrit un bloc vers un handle ouvert sur PRN ou LPTn. Permet les erreurs DOS,
+  pilotes de périphérique et une interface de fichier plus générale.
+
+Commande DOS PRINT/spooler
+  Peut mettre les fichiers en file et imprimer en arrière-plan.
+
+Un programme DOS ordinaire doit préférer DOS s'il souhaite respecter MODE,
+redirection, réseau et pilotes. Un BIOS, chargeur ou diagnostic matériel peut
+préférer INT 17h.
+
+==============================================================================
+19. ENCODAGE DES CARACTÈRES ET COMMANDES D'IMPRIMANTE
+==============================================================================
+
+INT 17h transmet exactement l'octet AL. Il ne convertit généralement pas :
+
+  - page de codes DOS vers jeu de l'imprimante;
+  - tabulations en espaces;
+  - CR/LF;
+  - accents ou Unicode;
+  - commandes graphiques;
+  - fin de page.
+
+Les imprimantes matricielles utilisent souvent ASCII plus commandes ESC/P,
+Proprinter ou propres au fabricant. Les imprimantes laser peuvent utiliser PCL,
+PostScript ou un langage de page. Une imprimante moderne « host-based » peut ne
+pas savoir imprimer un simple flux ASCII.
+
+Form Feed 0Ch éjecte généralement la page; ESC 1Bh commence souvent une commande,
+mais les effets dépendent du langage. INT 17h ne protège pas contre une séquence
+qui change les marges, réinitialise ou imprime des données binaires.
+
+==============================================================================
+20. EXEMPLE ASSEMBLEUR 8086
+==============================================================================
+
+Initialiser LPT1 puis imprimer une chaîne terminée par zéro :
+
+        mov     ah, 01h
+        xor     dx, dx          ; LPT1
+        int     17h
+        test    ah, 09h         ; timeout ou erreur ?
+        jnz     PrinterError
+
+        mov     si, Message
+.next:
+        lodsb                   ; DS:SI
+        test    al, al
+        jz      .done
+        mov     ah, 00h
+        xor     dx, dx
+        int     17h
+        test    ah, 01h         ; timeout
+        jnz     PrinterError
+        test    ah, 08h         ; I/O error
+        jnz     PrinterError
+        jmp     .next
+.done:
+        ret
+
+Message db 'Test imprimante', 13, 10, 0
+
+Pour un diagnostic plus strict, tester aussi PAPER OUT et SELECT. AL est
+préservé sur les BIOS classiques, mais la boucle recharge chaque caractère de
+toute façon.
+
+==============================================================================
+21. EXEMPLE PASCAL POUR DOS
+==============================================================================
+
+  uses Dos;
+
+  function PrinterStatus(Port: Word): Byte;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0200;
+    R.DX := Port;              { 0=LPT1 }
+    Intr($17, R);
+    PrinterStatus := Hi(R.AX);
+  end;
+
+  function PrintByte(Port: Word; B: Byte): Boolean;
+  var R: Registers;
+      S: Byte;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := B;                 { AH=00, AL=B }
+    R.DX := Port;
+    Intr($17, R);
+    S := Hi(R.AX);
+    PrintByte := (S and $09) = 0; { pas timeout ni I/O error }
+  end;
+
+Cette fonction ne vérifie pas papier/sélection afin d'illustrer le minimum. Une
+application doit retourner l'octet complet au lieu de réduire toutes les causes
+à un Boolean.
+
+==============================================================================
+22. ACCÈS MATÉRIEL DIRECT
+==============================================================================
+
+Exemple conceptuel pour envoyer un octet, adresse B dans DX :
+
+  1. lire B+1 jusqu'à l'état prêt ou expiration d'un compteur;
+  2. écrire l'octet à B+0;
+  3. lire la copie du registre de contrôle;
+  4. activer STROBE pendant la durée minimale;
+  5. désactiver STROBE;
+  6. surveiller BUSY/ACK/ERROR.
+
+Un code direct doit connaître les polarités et produire un vrai délai matériel.
+Une boucle vide varie avec la fréquence CPU; sur une machine rapide, utiliser un
+timer ou des lectures d'E/S retardatrices appropriées.
+
+Il doit aussi préserver la configuration du port et empêcher deux programmes de
+l'utiliser simultanément. Sous DOS, aucune protection centrale ne le garantit.
+
+==============================================================================
+23. PORTS BIDIRECTIONNELS, PS/2, EPP ET ECP
+==============================================================================
+
+PS/2 bidirectionnel
+  Permet de placer les données en entrée. Le bit de direction est souvent dans
+  le registre de contrôle. INT 17h IBM de base reste orienté imprimante.
+
+IEEE 1284
+  Normalise modes Compatibility, Nibble, Byte, EPP et ECP ainsi que négociation
+  et identification du périphérique.
+
+EPP
+  Fournit cycles adresse/données bidirectionnels assistés matériellement.
+
+ECP
+  Ajoute FIFO, DMA, compression RLE et canaux logiques selon contrôleur.
+
+Ces modes nécessitent la documentation du chipset, configuration BIOS/PCI/ISA et
+souvent un pilote. INT 17h/AH=00h..02h n'expose pas leurs capacités.
+
+==============================================================================
+24. ADAPTATEURS USB, RÉSEAU ET VIRTUALISATION
+==============================================================================
+
+Une imprimante USB n'apparaît normalement pas dans la table LPT de la BDA. Un
+adaptateur USB-parallèle grand public émule souvent seulement l'impression et ne
+permet pas de contrôler chaque broche ou de lire les états comme un vrai SPP.
+
+Une redirection LPT DOS vers réseau est gérée par un pilote/redirigeur DOS, pas
+par INT 17h direct. Employer PRN/LPT via DOS pour en bénéficier.
+
+Dans DOSBox, 86Box, PCem, QEMU ou un hyperviseur, LPT peut être absent, relié à
+un fichier ou émulé partiellement. Les timeouts et impulsions ne reproduisent
+pas toujours un matériel réel.
+
+Sous UEFI natif, INT 17h n'est normalement pas disponible sans CSM. Les systèmes
+modernes utilisent un spooler et des pilotes d'impression.
+
+==============================================================================
+25. DIAGNOSTIC ET CÂBLE DE BOUCLE
+==============================================================================
+
+Procédure prudente :
+
+  1. lire l'adresse BDA et vérifier qu'elle n'est pas nulle;
+  2. appeler AH=02h et conserver l'état brut;
+  3. allumer/sélectionner l'imprimante, charger du papier;
+  4. vérifier câble, connecteurs et masse;
+  5. initialiser une seule fois;
+  6. envoyer un caractère imprimable puis CR/LF;
+  7. comparer les transitions BUSY/ACK avec un analyseur logique si nécessaire;
+  8. essayer un accès DOS pour distinguer BIOS et pilote;
+  9. tester sur un vrai port, pas un adaptateur USB limité.
+
+Un connecteur de boucle peut relier certaines sorties de contrôle aux entrées
+d'état pour tester la carte, mais son schéma doit tenir compte des inversions et
+éviter tout conflit entre sorties. Ne jamais improviser des courts-circuits sur
+un port ancien difficile à remplacer.
+
+==============================================================================
+26. PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+  1. Limiter DX aux ports pris en charge par le BIOS.
+  2. Vérifier l'adresse BDA avant l'appel.
+  3. Ne pas supposer LPT1=378h.
+  4. Examiner AH plutôt que CF.
+  5. Tester timeout et erreur après chaque octet important.
+  6. Traiter PAPER OUT et SELECT selon la politique de l'application.
+  7. Ne pas exiger une égalité exacte avec 90h.
+  8. Éviter AH=01h pendant un travail en cours.
+  9. Borner l'attente et offrir annulation/diagnostic à l'utilisateur.
+ 10. Ne pas mélanger accès BIOS, accès direct et pilote IRQ simultanément.
+ 11. Ne pas interpréter le registre matériel comme AH sans normaliser les bits.
+ 12. Préserver le registre de contrôle lors d'un accès direct.
+ 13. Utiliser DOS pour respecter redirection et pilotes.
+ 14. Ne pas supposer qu'une imprimante comprend ASCII ou la page de codes DOS.
+ 15. Détecter explicitement EPP/ECP avant leurs registres.
+ 16. Employer les API du système pour USB/réseau/impression moderne.
+
+==============================================================================
+27. RÉSUMÉ
+==============================================================================
+
+  - INT 17h est le service BIOS de l'imprimante parallèle;
+  - AH=00h transmet AL, AH=01h initialise, AH=02h lit l'état;
+  - DX=0,1,2 désigne LPT1,LPT2,LPT3;
+  - les adresses de base sont à 0040:0008h..000Ch;
+  - les timeouts sont à 0040:0078h..007Bh;
+  - AH bit 7 signifie non occupée, bit 5 papier épuisé;
+  - AH bit 4 signifie sélectionnée, bit 3 erreur, bit 0 timeout;
+  - CF n'est pas le mécanisme d'erreur standard;
+  - le succès signifie octet accepté, pas page physiquement imprimée;
+  - INT 17h ne transforme ni caractères, ni CR/LF, ni langage d'imprimante;
+  - le port SPP possède données B+0, état B+1 et contrôle B+2;
+  - les polarités matérielles ne correspondent pas toutes aux bits BIOS;
+  - EPP/ECP, USB et réseau nécessitent un pilote ou une autre interface;
+  - sous DOS, les services de fichier/périphérique respectent mieux la
+    redirection qu'un appel BIOS direct.
+
+INT 17h offre ainsi une couche minimale au-dessus du handshake Centronics. Elle
+est adaptée au BIOS, aux diagnostics et aux imprimantes historiques, mais pas à
+l'architecture d'impression moderne.

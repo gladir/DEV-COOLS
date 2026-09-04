@@ -1,0 +1,683 @@
+==============================================================================
+     INTERRUPTION 11h DU BIOS 8086 : LISTE DES ÉQUIPEMENTS INSTALLÉS
+==============================================================================
+
+INT 11h est le service BIOS historique qui retourne dans AX un mot de 16 bits
+résumant certains équipements détectés ou configurés pendant le POST : lecteur
+de disquette, coprocesseur mathématique, mode vidéo initial, ports série et
+parallèles, notamment.
+
+Appel minimal :
+
+        int     11h
+        ; AX = mot d'équipement BIOS
+
+La routine retourne normalement une copie du WORD conservé dans la BIOS Data
+Area à 0040:0010h. Elle ne relance pas une détection matérielle.
+
+AVERTISSEMENT
+-------------
+
+Le sens de plusieurs bits a changé entre IBM PC, PC/XT, PCjr, PC/AT, PS/2 et
+BIOS compatibles. Ce mot ne constitue pas un inventaire universel du matériel.
+Il ne décrit pas les périphériques PCI, USB, IDE, SCSI ou réseau modernes et
+peut être incomplet, périmé ou volontairement synthétique dans un émulateur.
+
+Sources principales :
+
+  - IBM PC, PC/XT et PC/AT Technical References;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles :
+    https://www.vtda.org/books/Computing/Programming/SystemBIOSforIBMPC_XT_ATComputersandCompatibles_Phoenix.pdf
+  - Ralf Brown's Interrupt List, INT 11h :
+    https://fd.lod.bz/rbil/interrup/bios/11.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Interface du service
+  2.  Fonctionnement de INT 11h sur 8086
+  3.  Mot d'équipement dans la BIOS Data Area
+  4.  Vue générale des bits
+  5.  Interprétation IBM PC et PC/XT
+  6.  Interprétation PC/AT, PS/2 et BIOS compatibles
+  7.  Bit 0 et lecteurs de disquette
+  8.  Bit 1 et coprocesseur mathématique
+  9.  Bits 2 et 3 : mémoire ou dispositif de pointage
+ 10.  Bits 4 et 5 : mode vidéo initial
+ 11.  Bits 6 et 7 : nombre de lecteurs de disquette
+ 12.  Bits 9 à 11 : ports série
+ 13.  Bits 12 et 13 : port jeu, modem et variantes
+ 14.  Bits 14 et 15 : ports parallèles
+ 15.  Exemple de décodage
+ 16.  Exemple en assembleur 8086
+ 17.  Exemple en Pascal pour DOS
+ 18.  Lecture directe de la BDA
+ 19.  Relations avec les autres services BIOS
+ 20.  Ce que INT 11h ne permet pas de détecter
+ 21.  Émulation, virtualisation et systèmes modernes
+ 22.  Validation et programmation défensive
+ 23.  Résumé
+
+==============================================================================
+1. INTERFACE DU SERVICE
+==============================================================================
+
+Entrée :
+
+  aucune
+
+Sortie :
+
+  AX = mot d'équipement BIOS
+
+Drapeaux :
+
+  aucune convention d'erreur n'est définie. CF ne joue pas le rôle qu'il possède
+  dans les services de disque INT 13h.
+
+Registres :
+
+  AX est modifié. Les autres registres sont normalement préservés par les BIOS
+  compatibles, mais un programme portable ne doit dépendre que des sorties
+  officiellement documentées.
+
+Le résultat est un ensemble de champs de bits, pas un nombre à afficher tel
+quel. Chaque champ doit être isolé par un masque et, si nécessaire, décalé.
+
+==============================================================================
+2. FONCTIONNEMENT DE INT 11h SUR 8086
+==============================================================================
+
+Le processeur 8086 n'attribue aucune fonction matérielle particulière au numéro
+11h. En mode réel, l'instruction INT 11h :
+
+  1. empile FLAGS;
+  2. met IF et TF à zéro;
+  3. empile CS puis IP;
+  4. charge IP depuis 0000:(11h * 4);
+  5. charge CS depuis 0000:(11h * 4 + 2);
+  6. exécute la routine BIOS, qui revient par IRET.
+
+L'entrée 11h de l'Interrupt Vector Table se trouve à :
+
+  11h * 4 = 0044h
+
+  0000:0044h  WORD  offset de la routine
+  0000:0046h  WORD  segment de la routine
+
+La signification « Equipment Determination » appartient à l'architecture BIOS
+de l'IBM PC. En mode protégé, l'instruction INT consulte l'IDT et n'appelle pas
+automatiquement le BIOS réel.
+
+==============================================================================
+3. MOT D'ÉQUIPEMENT DANS LA BIOS DATA AREA
+==============================================================================
+
+La BIOS Data Area, BDA, commence au segment 0040h. Le résultat d'INT 11h est
+normalement le WORD situé ici :
+
+  adresse segmentée   adresse physique   taille   contenu
+  ------------------  -----------------  -------  -------------------------
+  0040:0010h          00000410h          WORD     mot d'équipement
+
+Le mot est petit-boutiste : bits 7..0 à l'adresse physique 0410h, bits 15..8 à
+0411h. Une implémentation BIOS classique équivaut essentiellement à :
+
+        push    ds
+        xor     ax, ax
+        mov     ds, ax
+        mov     ax, [0410h]
+        pop     ds
+        iret
+
+Le POST construit la valeur à partir des interrupteurs de configuration, du
+matériel détecté, du CMOS et des règles du modèle. INT 11h ne sonde donc ni les
+ports série, ni la vidéo, ni le coprocesseur au moment de l'appel.
+
+Un BIOS, une ROM optionnelle, un émulateur ou un système d'exploitation peut
+modifier 0040:0010h après le POST. Le résultat décrit l'état annoncé, qui n'est
+pas nécessairement identique au matériel physiquement présent à cet instant.
+
+==============================================================================
+4. VUE GÉNÉRALE DES BITS
+==============================================================================
+
+Interprétation commune aux BIOS PC tardifs, avec variantes signalées :
+
+ Bit(s)   Signification générale
+ -------  ------------------------------------------------------------------
+ 0        sous-système de disquette présent / disponible pour l'amorçage
+ 1        coprocesseur mathématique détecté
+ 3..2     RAM de carte mère sur PC ancien; bit 2=souris sur certains PS/2
+ 5..4     mode vidéo initial
+ 7..6     nombre de lecteurs de disquette moins un, si bit 0=1
+ 8        réservé sur AT/PS2; indicateur DMA dans certaines descriptions PC
+ 11..9    nombre de ports série/asynchrones
+ 12       port jeu sur PC ancien; réservé dans des définitions plus tardives
+ 13       usage PCjr ou modem interne PS/2; sinon réservé
+ 15..14   nombre de ports parallèles/imprimantes
+
+Le même masque ne suffit donc pas pour tous les modèles. Avant d'interpréter les
+bits 2, 3, 8, 12 et 13, identifier au minimum la famille de BIOS.
+
+==============================================================================
+5. INTERPRÉTATION IBM PC ET PC/XT
+==============================================================================
+
+Disposition communément documentée pour le PC original et le PC/XT :
+
+ Bit(s)  Masque  Description
+ ------  ------  ------------------------------------------------------------
+ 0       0001h   au moins un lecteur de disquette installé
+ 1       0002h   coprocesseur mathématique 8087 installé
+ 3..2    000Ch   quantité de RAM sur la carte système du PC ancien
+ 5..4    0030h   mode vidéo sélectionné au démarrage
+ 7..6    00C0h   nombre de lecteurs de disquette moins un
+ 8       0100h   DMA présent dans certaines définitions anciennes
+ 11..9   0E00h   nombre d'adaptateurs série RS-232
+ 12      1000h   adaptateur de jeu/joystick installé
+ 13      2000h   usage spécifique au PCjr, sinon réservé
+ 15..14  C000h   nombre d'adaptateurs parallèles
+
+Les bits 3..2 avaient un sens parce que les premières cartes mères IBM PC ne
+pouvaient recevoir qu'une petite partie de la RAM totale; le reste se trouvait
+sur des cartes d'extension. Ce champ devient obsolète avec les cartes mères de
+plus grande capacité.
+
+Le bit 8 n'est pas uniformément décrit dans les références tardives. Il faut le
+considérer comme réservé hors d'un BIOS PC ancien précisément identifié.
+
+==============================================================================
+6. INTERPRÉTATION PC/AT, PS/2 ET BIOS COMPATIBLES
+==============================================================================
+
+La référence IBM PS/2 décrit le résultat ainsi :
+
+ Bit(s)  Description
+ ------  --------------------------------------------------------------------
+ 15..14  nombre d'imprimantes/adaptateurs parallèles
+ 13      modem interne installé sur les modèles concernés
+ 12      non utilisé
+ 11..9   nombre de cartes RS-232-C
+ 8       non utilisé
+ 7..6    nombre de lecteurs de disquette moins un, si bit 0=1
+ 5..4    type de mode vidéo initial
+ 3       non utilisé
+ 2       dispositif de pointage installé
+ 1       coprocesseur mathématique installé
+ 0       disquette IPL installée/disponible
+
+Des BIOS Phoenix généralisés indiquent parfois 13..12 comme réservés et donnent
+00b du champ vidéo pour EGA ou PGA. Les BIOS VGA emploient souvent également
+00b, puisque les anciens codes ne prévoyaient pas VGA.
+
+Sur un 80386 ou processeur ultérieur avec unité flottante intégrée, le bit 1
+peut signifier « calcul flottant matériel utilisable » plutôt que la présence
+physique d'une puce 8087/80287 séparée. Le comportement précis dépend du POST.
+
+==============================================================================
+7. BIT 0 ET LECTEURS DE DISQUETTE
+==============================================================================
+
+Le bit 0 conditionne l'interprétation des bits 7..6 :
+
+  bit 0 = 0   aucun sous-système de disquette annoncé;
+  bit 0 = 1   au moins un lecteur est annoncé et bits 7..6 donnent N-1.
+
+Sur les références IBM, l'expression « IPL diskette installed » désigne la
+possibilité d'un chargement initial depuis disquette, pas la certitude qu'une
+disquette est actuellement insérée.
+
+Ce bit ne dit pas :
+
+  - si la porte du lecteur est fermée;
+  - si un média est présent;
+  - le format du média;
+  - si la dernière lecture a réussi;
+  - si le lecteur correspond à A: ou B: sous un DOS reconfiguré.
+
+Pour connaître les paramètres des lecteurs, employer INT 13h/AH=08h et les
+données CMOS/BDA adaptées. Pour détecter un changement de média, certains BIOS
+offrent INT 13h/AH=16h.
+
+==============================================================================
+8. BIT 1 ET COPROCESSEUR MATHÉMATIQUE
+==============================================================================
+
+Le bit 1 vaut historiquement 1 lorsque le POST a détecté un coprocesseur :
+
+  8086/8088 -> 8087
+  80286     -> 80287
+  80386     -> 80387 ou unité compatible
+
+La détection peut dépendre des interrupteurs de configuration sur les tout
+premiers PC. Une valeur à 1 ne garantit pas que le système d'exploitation laisse
+une application exécuter directement toutes les instructions flottantes; il
+peut émuler, virtualiser ou gérer les exceptions.
+
+À partir du 80486DX et sur les processeurs modernes, l'unité flottante est
+souvent intégrée. Certains BIOS continuent de positionner ce bit pour la
+compatibilité, d'autres logiciels détectent directement le processeur.
+
+Un programme 8086 qui veut réellement utiliser un 8087 ne doit pas se fonder
+uniquement sur INT 11h dans un environnement inconnu. Il doit respecter les
+mécanismes de détection et d'émulation du DOS ou du système hôte.
+
+==============================================================================
+9. BITS 2 ET 3 : MÉMOIRE OU DISPOSITIF DE POINTAGE
+==============================================================================
+
+IBM PC original
+---------------
+
+Les bits 3..2 codent la RAM installée sur la carte système ancienne :
+
+  bits 3..2   quantité sur la carte système
+  ----------  -------------------------------
+      00b     16 Kio
+      01b     32 Kio
+      10b     48 Kio
+      11b     64 Kio
+
+Ce n'est pas la quantité totale de mémoire conventionnelle. Une carte
+d'extension peut ajouter beaucoup plus de RAM. Pour la taille de mémoire de base
+annoncée par le BIOS, utiliser INT 12h.
+
+PC/AT et PS/2
+-------------
+
+Le champ de RAM est devenu inutile. Dans la définition PS/2, bit 2 signale un
+dispositif de pointage et bit 3 est inutilisé. Il s'agit généralement de la
+souris auxiliaire PS/2 gérée par le contrôleur clavier, mais la formulation BIOS
+reste « pointing device ».
+
+Conclusion : un programme qui ne connaît pas le modèle ne doit jamais conclure
+que bit 2 signifie simultanément 32 Kio de RAM et présence d'une souris.
+
+==============================================================================
+10. BITS 4 ET 5 : MODE VIDÉO INITIAL
+==============================================================================
+
+Décodage classique :
+
+  bits 5..4   mode/type vidéo initial
+  ----------  --------------------------------------------------------------
+      00b     réservé sur les premiers IBM; EGA/PGA/VGA sur beaucoup de BIOS
+      01b     couleur 40 colonnes par 25 lignes
+      10b     couleur 80 colonnes par 25 lignes
+      11b     monochrome 80 colonnes par 25 lignes
+
+Le champ décrit la sélection initiale ou le type d'adaptateur configuré au POST.
+Il ne suit pas nécessairement les changements effectués ensuite par INT 10h ou
+par un programme graphique.
+
+Les valeurs couleur correspondent historiquement aux modes texte CGA 00h/01h
+et 02h/03h; monochrome correspond à l'environnement MDA. Avec EGA/VGA et leurs
+ROMs, 00b signifie souvent qu'un BIOS vidéo évolué fournit sa propre détection.
+
+Pour connaître l'état vidéo courant, employer les services INT 10h appropriés
+et les données du BIOS vidéo. INT 11h ne donne ni la résolution actuelle, ni le
+nombre de couleurs, ni la quantité de mémoire vidéo.
+
+==============================================================================
+11. BITS 6 ET 7 : NOMBRE DE LECTEURS DE DISQUETTE
+==============================================================================
+
+Ces deux bits codent N-1, mais seulement lorsque le bit 0 vaut 1 :
+
+  bits 7..6   nombre codé   lecteurs annoncés
+  ----------  -----------   ------------------
+      00b          0              1
+      01b          1              2
+      10b          2              3
+      11b          3              4
+
+Formule correcte :
+
+  si (AX AND 0001h) = 0 alors N = 0
+  sinon N = ((AX SHR 6) AND 3) + 1
+
+Erreur fréquente : interpréter 00b comme zéro lecteur sans vérifier le bit 0.
+
+Les BIOS IBM courants ne prennent physiquement en charge que deux lecteurs,
+même si le champ peut en encoder quatre. Des contrôleurs ou BIOS compatibles
+peuvent employer les autres valeurs.
+
+==============================================================================
+12. BITS 9 À 11 : PORTS SÉRIE
+==============================================================================
+
+Le champ contient directement le nombre de cartes/adaptateurs asynchrones :
+
+  nombre = (AX SHR 9) AND 7
+
+Il peut donc coder 0 à 7. Dans la pratique, la BDA ne réserve que quatre mots
+d'adresses de base COM à 0040:0000h..0007h pour les interfaces classiques.
+
+Le compteur seul ne donne pas l'adresse des ports. Consulter la BDA :
+
+  0040:0000h   adresse de base COM1
+  0040:0002h   adresse de base COM2
+  0040:0004h   adresse de base COM3
+  0040:0006h   adresse de base COM4
+
+Un WORD nul signifie normalement qu'aucun port correspondant n'a été enregistré.
+Comparer le compteur et ces adresses permet de détecter certaines incohérences.
+
+INT 11h n'indique ni l'IRQ, ni le type d'UART, ni le débit, ni la présence d'un
+périphérique connecté. INT 14h fournit des services série BIOS limités.
+
+==============================================================================
+13. BITS 12 ET 13 : PORT JEU, MODEM ET VARIANTES
+==============================================================================
+
+Bit 12
+  Dans la disposition PC/XT couramment publiée, signale un adaptateur de jeu ou
+  joystick. Certaines références Phoenix/PS2 le déclarent réservé. INT 15h avec
+  les fonctions joystick de certains BIOS est une interface distincte.
+
+Bit 13
+  Réservé sur de nombreux PC/XT/AT. Sur PCjr, il a reçu une signification propre
+  liée à l'interface série/imprimante selon la révision de documentation. Sur
+  certains PS/2, IBM le définit comme « modem interne installé ».
+
+Ces bits sont les exemples les plus visibles de la dépendance au modèle. Une
+bibliothèque générique devrait retourner leur état brut et une interprétation
+qualifiée, par exemple :
+
+  bit12=1, interprétation PC/XT : adaptateur de jeu possible
+  bit13=1, interprétation PS/2 : modem interne possible
+
+Elle ne devrait pas annoncer un périphérique certain sans identifier le BIOS et
+sans confirmation par une interface plus spécifique.
+
+==============================================================================
+14. BITS 14 ET 15 : PORTS PARALLÈLES
+==============================================================================
+
+Le champ contient le nombre d'adaptateurs parallèles/imprimantes :
+
+  nombre = (AX SHR 14) AND 3
+
+Il code donc 0 à 3. Les adresses de base classiques se trouvent dans la BDA :
+
+  0040:0008h   LPT1
+  0040:000Ah   LPT2
+  0040:000Ch   LPT3
+
+Un WORD nul indique normalement une entrée absente. Le BIOS peut compter une
+interface intégrée ou sur carte, qu'une imprimante soit effectivement branchée
+ou non. La formulation IBM « printers attached » ne garantit donc pas la
+présence, l'alimentation ou l'état en ligne d'une imprimante externe.
+
+INT 17h fournit les services BIOS d'imprimante parallèle. Il ne remplace pas un
+pilote moderne et ne connaît pas USB.
+
+==============================================================================
+15. EXEMPLE DE DÉCODAGE
+==============================================================================
+
+Supposons AX = 5263h :
+
+  5263h = 0101 0010 0110 0011b
+
+Interprétation selon une convention PC/XT tardive :
+
+  bit 0      = 1       sous-système de disquette présent
+  bit 1      = 1       coprocesseur mathématique annoncé
+  bits 3..2  = 00b     16 Kio sur la carte mère du PC original
+  bits 5..4  = 10b     mode couleur 80x25
+  bits 7..6  = 01b     deux lecteurs de disquette
+  bits 11..9 = 001b    un port série
+  bit 12     = 1       adaptateur de jeu selon cette convention
+  bit 13     = 0       réservé/absent
+  bits 15..14= 01b     un port parallèle
+
+Sur un PS/2, les bits 2 et 12 n'ont pas cette signification. La même valeur
+brute doit donc produire une description différente ou des champs « réservés ».
+
+Masques usuels :
+
+  disquette présente    AX AND 0001h
+  coprocesseur          AX AND 0002h
+  vidéo                 (AX AND 0030h) SHR 4
+  lecteurs disquette    (AX AND 00C0h) SHR 6
+  ports série           (AX AND 0E00h) SHR 9
+  ports parallèles      (AX AND C000h) SHR 14
+
+==============================================================================
+16. EXEMPLE EN ASSEMBLEUR 8086
+==============================================================================
+
+Décoder les compteurs sans instructions postérieures au 8086 :
+
+        int     11h             ; AX = mot d'équipement
+        mov     bx, ax          ; conserver la valeur brute
+
+        ; Nombre de lecteurs de disquette dans DL
+        xor     dx, dx
+        test    bx, 0001h
+        jz      .no_floppy
+        mov     ax, bx
+        mov     cl, 6
+        shr     ax, cl
+        and     al, 03h
+        inc     al
+        mov     dl, al
+.no_floppy:
+
+        ; Nombre de ports série dans DH
+        mov     ax, bx
+        mov     cl, 9
+        shr     ax, cl
+        and     al, 07h
+        mov     dh, al
+
+        ; Nombre de ports parallèles dans AL
+        mov     ax, bx
+        mov     cl, 14
+        shr     ax, cl
+        and     al, 03h
+
+À la fin : DL contient les lecteurs de disquette, DH les ports série et AL les
+ports parallèles. BX conserve le mot brut.
+
+Sur 8086, SHR AX,imm avec une valeur supérieure à 1 n'existe pas. Il faut
+charger CL comme ci-dessus ou répéter SHR AX,1. Le contenu initial de CH n'a pas
+d'importance pour le décalage, seul CL est utilisé.
+
+==============================================================================
+17. EXEMPLE EN PASCAL POUR DOS
+==============================================================================
+
+Exemple avec l'unité DOS d'un compilateur Pascal 16 bits :
+
+  uses Dos;
+
+  var
+    R: Registers;
+    Equip: Word;
+    Floppies, SerialPorts, ParallelPorts: Byte;
+
+  begin
+    FillChar(R, SizeOf(R), 0);
+    Intr($11, R);
+    Equip := R.AX;
+
+    if (Equip and $0001) = 0 then
+      Floppies := 0
+    else
+      Floppies := ((Equip shr 6) and 3) + 1;
+
+    SerialPorts := (Equip shr 9) and 7;
+    ParallelPorts := (Equip shr 14) and 3;
+
+    WriteLn('Mot BIOS : $', HexStr(Equip, 4));
+    WriteLn('Disquettes : ', Floppies);
+    WriteLn('Ports serie : ', SerialPorts);
+    WriteLn('Ports paralleles : ', ParallelPorts);
+  end.
+
+HexStr n'existe pas dans toutes les versions de Pascal. Elle peut être remplacée
+par une routine locale ou un affichage décimal. Les opérations doivent porter
+sur un Word non signé pour éviter une propagation de signe lors des décalages.
+
+==============================================================================
+18. LECTURE DIRECTE DE LA BDA
+==============================================================================
+
+En assembleur réel :
+
+        push    ds
+        mov     ax, 0040h
+        mov     ds, ax
+        mov     bx, [0010h]     ; BX = mot d'équipement
+        pop     ds
+
+Équivalent avec DS=0000h :
+
+        mov     bx, [0410h]
+
+à condition d'avoir préalablement établi DS=0 et de le restaurer ensuite.
+
+Sous Turbo Pascal réel :
+
+  Equip := MemW[$0040:$0010];
+
+L'appel INT 11h est préférable dans un programme ordinaire : il exprime
+l'interface BIOS et permet à un émulateur ou moniteur d'intercepter le service.
+La lecture directe sert aux diagnostics, BIOS, chargeurs ou études de la BDA.
+
+Le WORD peut théoriquement être modifié entre deux lectures d'octets sur 8088.
+Une seule lecture WORD par le processeur ou une courte section protégée réduit
+ce risque, mais la valeur change rarement après le POST.
+
+==============================================================================
+19. RELATIONS AVEC LES AUTRES SERVICES BIOS
+==============================================================================
+
+INT 10h
+  Services vidéo. À employer pour le mode et l'état vidéo courants.
+
+INT 12h
+  Retourne la taille totale de mémoire conventionnelle annoncée. Il remplace le
+  vieux champ RAM des bits 3..2 pour connaître la mémoire de base.
+
+INT 13h
+  Services de disquettes et disques. AH=08h retourne les paramètres d'un lecteur
+  donné; AH=16h peut tester le changement de média.
+
+INT 14h
+  Services de communication série BIOS. Les adresses COM sont dans la BDA.
+
+INT 15h
+  Services système variés, dont mémoire étendue, joystick sur certains BIOS,
+  identification et fonctions PS/2.
+
+INT 17h
+  Services d'imprimante parallèle. Les adresses LPT sont dans la BDA.
+
+INT 1Ah
+  Heure, date et, sur BIOS ultérieurs, services PCI. Ce dernier mécanisme est
+  beaucoup plus approprié qu'INT 11h pour découvrir du matériel PCI.
+
+Le mot d'équipement offre un aperçu rapide, puis chaque sous-système doit être
+interrogé par son interface spécialisée.
+
+==============================================================================
+20. CE QUE INT 11h NE PERMET PAS DE DÉTECTER
+==============================================================================
+
+INT 11h ne donne pas directement :
+
+  - le nombre ou la taille des disques durs;
+  - les contrôleurs IDE, SATA, SCSI ou NVMe;
+  - les ports USB;
+  - les cartes PCI/PCI Express;
+  - les interfaces réseau;
+  - le modèle précis de carte vidéo;
+  - la résolution ou le mode vidéo courant;
+  - la quantité totale de RAM;
+  - les IRQ, DMA ou adresses d'E/S de chaque périphérique;
+  - le type des lecteurs de disquette;
+  - la présence actuelle d'un média ou d'une imprimante;
+  - les périphériques Plug and Play;
+  - l'état fonctionnel complet des éléments annoncés.
+
+Une valeur de compteur nulle ne prouve pas toujours l'absence physique. Une
+carte peut ne pas avoir été reconnue par le POST, être désactivée, ajoutée après
+le démarrage ou gérée uniquement par un pilote.
+
+==============================================================================
+21. ÉMULATION, VIRTUALISATION ET SYSTÈMES MODERNES
+==============================================================================
+
+Un émulateur PC choisit un mot compatible avec le matériel virtuel qu'il veut
+présenter. Il peut annoncer un VGA par le code vidéo 00b, aucun port série ou un
+coprocesseur même si les calculs flottants sont exécutés par le processeur hôte.
+
+Dans une machine virtuelle, la valeur décrit le PC virtuel et non l'ordinateur
+physique. Elle reste importante pour les logiciels DOS qui déterminent ainsi
+leur configuration initiale.
+
+Sous Windows, Linux, BSD ou un autre système protégé, une application doit
+utiliser les interfaces du système d'exploitation. L'accès à l'IVT/BDA peut être
+interdit ou virtualisé. Sous UEFI natif, INT 11h n'existe pas nécessairement;
+seul un Compatibility Support Module peut fournir l'environnement BIOS réel.
+
+Pour un nouveau noyau, ACPI, SMBIOS, PCI, PnP et les pilotes de bus fournissent
+un inventaire beaucoup plus complet. INT 11h peut rester une indication de
+compatibilité pendant le tout premier stade d'amorçage BIOS.
+
+==============================================================================
+22. VALIDATION ET PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+Procédure recommandée :
+
+  1. conserver le mot AX brut pour le diagnostic;
+  2. identifier si possible le modèle ou la famille de BIOS;
+  3. appliquer une table de bits adaptée à cette famille;
+  4. traiter les bits variables comme réservés si le modèle est inconnu;
+  5. vérifier bit 0 avant de calculer le nombre de disquettes;
+  6. comparer les compteurs série/parallèle aux adresses COM/LPT de la BDA;
+  7. utiliser INT 12h, et non bits 3..2, pour la mémoire conventionnelle;
+  8. interroger INT 10h pour l'état vidéo actuel;
+  9. interroger INT 13h pour les lecteurs réellement accessibles;
+ 10. ne pas conclure qu'un périphérique externe est connecté parce que son
+     adaptateur est annoncé;
+ 11. ne pas écrire dans 0040:0010h dans un programme ordinaire;
+ 12. ne pas sonder des ports matériels par écriture destructive;
+ 13. prévoir les valeurs synthétiques des émulateurs;
+ 14. employer les API modernes après la phase BIOS d'amorçage.
+
+Les champs de comptage ont une capacité limitée. Trois bits série ne peuvent
+pas décrire plus de sept interfaces et deux bits parallèles pas plus de trois.
+Une machine moderne peut dépasser ces quantités sans que le mot puisse le dire.
+
+==============================================================================
+23. RÉSUMÉ
+==============================================================================
+
+  - INT 11h ne demande aucun registre d'entrée;
+  - AX reçoit un mot de drapeaux et compteurs d'équipement;
+  - la valeur provient normalement de 0040:0010h dans la BDA;
+  - l'entrée IVT de la routine est à 0000:0044h;
+  - bit 0 annonce le sous-système de disquette;
+  - bit 1 annonce historiquement le coprocesseur mathématique;
+  - bits 5..4 décrivent le mode vidéo initial;
+  - bits 7..6 donnent le nombre de disquettes moins un si bit 0=1;
+  - bits 11..9 comptent les ports série;
+  - bits 15..14 comptent les ports parallèles;
+  - bits 2, 3, 8, 12 et 13 dépendent fortement du modèle;
+  - le résultat est préparé au POST et ne constitue pas une nouvelle détection;
+  - les interfaces spécialisées doivent confirmer chaque sous-système;
+  - INT 11h est utile pour les PC historiques et les logiciels DOS, mais ne
+    remplace pas l'énumération matérielle moderne.
+
+INT 11h reflète ainsi la configuration simple prévue pour le PC original. Sa
+lecture est triviale; son interprétation correcte exige de respecter l'époque et
+le modèle du BIOS qui a construit le mot.

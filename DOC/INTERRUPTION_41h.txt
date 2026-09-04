@@ -1,0 +1,600 @@
+==============================================================================
+     INTERRUPTION 41h DU BIOS 8086 : PARAMÈTRES DU PREMIER DISQUE DUR
+==============================================================================
+
+Sur les IBM PC, PC/XT, PC/AT et de nombreux compatibles en mode réel, l'entrée
+41h de la table des vecteurs d'interruption contient l'adresse de la table des
+paramètres du premier disque dur BIOS, le lecteur 80h.
+
+Malgré son nom traditionnel, INT 41h n'est normalement PAS une routine à
+appeler avec l'instruction « INT 41h ». C'est un emplacement de quatre octets
+dans l'IVT détourné pour conserver un pointeur de données. Exécuter INT 41h
+transfère le contrôle vers des données et provoque généralement un plantage.
+
+Résumé :
+
+  IVT 0000:0104  (41h * 4)  ->  offset:segment de la table du disque 80h
+  IVT 0000:0118  (46h * 4)  ->  table du disque 81h sur PC/AT et compatibles
+  INT 13h                     ->  véritables services BIOS de disque
+
+AVERTISSEMENT
+-------------
+
+La table INT 41h décrit une géométrie CHS et des réglages d'anciens contrôleurs
+ST-506/ST-412. Elle ne décrit ni les partitions, ni FAT, ni le contenu des
+secteurs. Sur un BIOS plus récent, sa géométrie peut être traduite, synthétique,
+absente ou sans rapport avec la géométrie physique du disque.
+
+Ne jamais modifier la table ou ses vecteurs sur une machine active sans savoir
+quel BIOS de contrôleur les utilise. Une mauvaise géométrie peut provoquer des
+lectures ou écritures au mauvais endroit. Faire les essais dans un émulateur ou
+sur une image sauvegardée.
+
+Sources principales :
+
+  - IBM Personal Computer XT Technical Reference, listings du BIOS :
+    https://erikarn.github.io/pcxt/PC-XT.pdf
+  - IBM PC/AT Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/at/
+  - IBM Personal System/2 and Personal Computer BIOS Interface Technical
+    Reference, sections INT 13h et Fixed Disk Drive Parameter Table :
+    https://dokumen.pub/15f0306-technical-reference-personal-system-2-and-personal-computer-bios-interface.html
+  - Ralf Brown's Interrupt List, INT 41h :
+    https://fd.lod.bz/rbil/interrup/bios/41.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Signification sur la famille 8086
+  2.  Entrée 41h dans la table des vecteurs
+  3.  Installation par le BIOS
+  4.  Structure commune de 16 octets
+  5.  Variante IBM PC/XT
+  6.  Variante IBM PC/AT
+  7.  Octet de contrôle
+  8.  INT 46h et plusieurs disques
+  9.  Géométrie CHS et capacité
+ 10.  Lire le pointeur en assembleur 8086
+ 11.  Lire la table sous DOS
+ 12.  Exemple de décodage
+ 13.  Relation avec les services INT 13h
+ 14.  Trois « 41h » à ne pas confondre
+ 15.  Compatibilité, BIOS étendus et limites
+ 16.  Validation et programmation défensive
+ 17.  Résumé pratique
+
+==============================================================================
+1. SIGNIFICATION SUR LA FAMILLE 8086
+==============================================================================
+
+Le processeur 8086 ne donne aucune signification matérielle particulière au
+numéro 41h. Pour lui, l'instruction :
+
+        INT 41h
+
+effectue toujours les opérations générales d'une interruption logicielle :
+
+  1. empiler FLAGS;
+  2. mettre IF et TF à zéro;
+  3. empiler CS puis IP;
+  4. charger IP depuis 0000:(41h * 4);
+  5. charger CS depuis 0000:(41h * 4 + 2);
+  6. commencer l'exécution à la nouvelle adresse CS:IP.
+
+La convention « paramètres du disque dur » vient du BIOS IBM PC, pas de
+l'architecture du processeur. Or l'adresse enregistrée à l'entrée 41h pointe
+vers une structure de données et non vers du code terminé par IRET. C'est
+pourquoi la documentation parle d'un vecteur, tout en précisant qu'il ne faut
+pas l'invoquer.
+
+Cette convention concerne le mode réel 8086/8088 et les modes compatibles des
+80286 et suivants. En mode protégé, l'instruction INT consulte l'IDT, dont
+l'organisation et la fonction sont différentes. Un système d'exploitation
+moderne ne permet pas à une application ordinaire de consulter le BIOS comme
+un programme DOS.
+
+==============================================================================
+2. ENTRÉE 41h DANS LA TABLE DES VECTEURS
+==============================================================================
+
+En mode réel, l'Interrupt Vector Table ou IVT occupe les 1024 premiers octets
+de la mémoire physique : 256 entrées de quatre octets.
+
+  adresse de l'entrée n = n * 4
+
+Pour 41h :
+
+  41h * 4 = 0104h
+
+La disposition est petit-boutiste :
+
+  adresse       taille   contenu
+  ------------  -------  -----------------------------------------------
+  0000:0104h    WORD     offset de la table de paramètres
+  0000:0106h    WORD     segment de la table de paramètres
+
+Si les quatre octets sont, par exemple :
+
+  01 E4 00 F0
+
+le pointeur est F000:E401. Son adresse physique, hors repliement de la ligne
+A20, vaut :
+
+  F000h * 10h + E401h = FE401h
+
+L'ordre offset puis segment est celui de tous les pointeurs lointains conservés
+dans l'IVT. Ne pas interpréter les quatre octets comme un entier linéaire 32 bits.
+
+==============================================================================
+3. INSTALLATION PAR LE BIOS
+==============================================================================
+
+Pendant le POST et l'initialisation du disque, le BIOS choisit les paramètres
+correspondant au type configuré et place leur adresse dans l'entrée 41h.
+
+Sur un PC/XT IBM ancien :
+
+  - la ROM du contrôleur de disque dur accroche généralement INT 13h;
+  - des interrupteurs du contrôleur sélectionnent une entrée parmi quatre;
+  - INT 41h peut pointer sur le début du groupe de tables, le BIOS du contrôleur
+    appliquant lui-même l'index déterminé par les interrupteurs;
+  - une ROM d'extension peut remplacer le pointeur du BIOS système afin de
+    prendre en charge un modèle de disque inconnu de celui-ci.
+
+Sur le PC/AT :
+
+  - la configuration CMOS contient un numéro de type de disque;
+  - INT 41h pointe vers l'entrée choisie pour le disque 0, BIOS 80h;
+  - INT 46h pointe vers l'entrée du disque 1, BIOS 81h;
+  - les tables standard sont souvent dans la ROM à partir de F000:E401, mais
+    cette adresse n'est pas garantie.
+
+Une table personnalisée peut être copiée en RAM par le BIOS ou par une ROM de
+contrôleur. Il faut donc toujours suivre le pointeur courant plutôt que coder
+F000:E401 en dur.
+
+==============================================================================
+4. STRUCTURE COMMUNE DE 16 OCTETS
+==============================================================================
+
+Les tables classiques XT et AT occupent toutes deux 16 octets, mais certains
+champs changent de signification :
+
+ Offset  Taille  PC/XT                         PC/AT et compatibles
+ ------  ------  ----------------------------  ----------------------------
+ 00h     WORD    nombre de cylindres            nombre de cylindres
+ 02h     BYTE    nombre de têtes                nombre de têtes
+ 03h     WORD    début courant réduit           réservé, normalement zéro
+ 05h     WORD    début précompensation          début précompensation
+ 07h     BYTE    longueur rafale ECC maximale  réservé, normalement zéro
+ 08h     BYTE    octet de contrôle XT           octet de contrôle AT
+ 09h     BYTE    délai standard                 réservé, normalement zéro
+ 0Ah     BYTE    délai de formatage             réservé, normalement zéro
+ 0Bh     BYTE    délai de vérification          réservé, normalement zéro
+ 0Ch     WORD    réservé                        cylindre d'atterrissage
+ 0Eh     BYTE    réservé                        secteurs par piste
+ 0Fh     BYTE    réservé                        réservé
+
+Tous les WORD sont non signés et petit-boutistes. Les valeurs FFFFh rencontrées
+pour la précompensation signifient généralement « aucune précompensation »;
+zéro peut signifier qu'elle s'applique dès le premier cylindre.
+
+Les ouvrages emploient parfois « maximum cylinders » ou « maximum heads ».
+Dans ces tables, les valeurs usuelles 306 cylindres et 4 têtes sont des nombres
+d'éléments. Les numéros CHS adressables vont donc normalement de 0 à 305 et de
+0 à 3. INT 13h/AH=08h retourne au contraire des numéros maximaux codés à partir
+de zéro. Cette différence produit facilement une erreur de un.
+
+==============================================================================
+5. VARIANTE IBM PC/XT
+==============================================================================
+
+La structure XT est liée aux contrôleurs Xebec/IBM pour disques ST-506/ST-412.
+
+00h, WORD : nombre de cylindres
+  Nombre de cylindres de la géométrie. Le cylindre zéro est le premier.
+
+02h, BYTE : nombre de têtes
+  Nombre de surfaces/têtes employées par la géométrie.
+
+03h, WORD : cylindre de début du courant d'écriture réduit
+  À partir de ce cylindre, le contrôleur adapte le courant d'écriture aux pistes
+  internes plus denses. Cette notion est propre aux anciens mécanismes.
+
+05h, WORD : cylindre de début de précompensation d'écriture
+  Indique à partir de quel cylindre le contrôleur applique la compensation du
+  déplacement magnétique. FFFFh signifie normalement aucune; zéro, tous les
+  cylindres.
+
+07h, BYTE : longueur maximale de rafale ECC
+  Nombre maximal de bits d'une erreur en rafale que le contrôleur tente de
+  corriger. La valeur classique IBM est 0Bh.
+
+08h, BYTE : contrôle
+  Vitesse de pas et options de répétition/ECC, détaillées à la section 7.
+
+09h, BYTE : délai standard
+0Ah, BYTE : délai de formatage
+0Bh, BYTE : délai de vérification du lecteur
+  Délais utilisés par le BIOS du contrôleur XT. Leur unité et leur emploi sont
+  propres à l'implémentation; ne pas les convertir en millisecondes sans la
+  documentation du BIOS concerné.
+
+0Ch à 0Fh : réservés
+  Les tables IBM classiques les mettent à zéro. Ils ne fournissent donc pas le
+  nombre de secteurs par piste. Le contrôleur XT standard emploie typiquement
+  17 secteurs de 512 octets, mais cette valeur ne doit pas être déduite de ces
+  quatre octets ni généralisée à toutes les ROMs compatibles.
+
+Exemple historique simplifié :
+
+  cylindres = 306, têtes = 4, 17 secteurs/piste, 512 octets/secteur
+
+Cette géométrie donne environ 10 653 696 octets bruts adressables par CHS, avant
+les secteurs réservés, partitions et structures du système de fichiers.
+
+==============================================================================
+6. VARIANTE IBM PC/AT
+==============================================================================
+
+La table AT conserve les champs communs nécessaires au BIOS, élimine les délais
+du contrôleur XT et ajoute la géométrie complète :
+
+00h, WORD : nombre de cylindres
+02h, BYTE : nombre de têtes
+05h, WORD : cylindre de début de précompensation
+08h, BYTE : contrôle AT
+0Ch, WORD : cylindre de zone d'atterrissage
+0Eh, BYTE : nombre de secteurs par piste
+
+Le cylindre d'atterrissage est celui sur lequel les têtes peuvent être garées à
+l'arrêt. Il peut se trouver hors de la zone normale de données. Ce champ n'est
+pas une partition, une piste d'amorçage ou l'emplacement d'un MBR.
+
+Les octets 03h-04h, 07h, 09h-0Bh et 0Fh sont réservés dans la définition AT
+classique. Ils devraient être ignorés à la lecture et écrits à zéro lors de la
+construction d'une table strictement compatible, sauf indication contraire du
+fabricant du BIOS.
+
+La table IBM AT historique propose des types numérotés. Le type est une entrée
+de configuration; il ne fait pas partie des 16 octets pointés par INT 41h. Deux
+BIOS peuvent associer des géométries différentes au même numéro de type.
+
+==============================================================================
+7. OCTET DE CONTRÔLE
+==============================================================================
+
+La signification de l'octet 08h dépend de la variante.
+
+Contrôle XT :
+
+  bits 2..0   vitesse de pas du mécanisme;
+              000b = 3 ms, 100b = 200 ms, 101b = 70 ms,
+              110b et 111b = 3 ms dans la table IBM documentée;
+  bits 5..3   inutilisés;
+  bit 6       1 = désactiver les nouvelles tentatives ECC;
+  bit 7       1 = désactiver les nouvelles tentatives d'accès.
+
+Contrôle AT :
+
+  bits 2..0   réservés, normalement zéro;
+  bit 3       1 lorsque le lecteur possède plus de huit têtes;
+  bit 4       réservé, normalement zéro;
+  bit 5       1 si une carte des défauts du constructeur existe au cylindre
+              suivant le dernier cylindre normal;
+  bit 6       1 = désactiver les nouvelles tentatives ECC;
+  bit 7       1 = désactiver les nouvelles tentatives d'accès.
+
+Les bits 6 et 7 sont des ordres de contrôle, pas des indicateurs d'erreur. Une
+valeur à zéro autorise normalement les répétitions gérées par le BIOS.
+
+==============================================================================
+8. INT 46h ET PLUSIEURS DISQUES
+==============================================================================
+
+Sur PC/AT et compatibles :
+
+  INT 41h -> table du lecteur BIOS 80h, premier disque dur;
+  INT 46h -> table du lecteur BIOS 81h, second disque dur.
+
+Le PC/XT d'origine traite différemment sa sélection de tables et INT 46h ne doit
+pas être supposé disponible. Certains BIOS ultérieurs qui acceptent quatre
+disques rangent plusieurs tables consécutives derrière INT 41h, parfois avec
+une copie séparée de la table 81h derrière INT 46h. Ce comportement est une
+extension de fabricant, pas une règle universelle.
+
+Ne pas calculer automatiquement :
+
+  adresse_disque_N = pointeur_INT_41h + N * 16
+
+sauf si le BIOS visé documente expressément cet arrangement. Pour les deux
+premiers disques AT, lire séparément les entrées 41h et 46h.
+
+==============================================================================
+9. GÉOMÉTRIE CHS ET CAPACITÉ
+==============================================================================
+
+Pour une table AT classique, une capacité géométrique peut être estimée par :
+
+  capacité = cylindres * têtes * secteurs_par_piste * octets_par_secteur
+
+avec généralement 512 octets par secteur sur ces BIOS. Exemple :
+
+  615 * 4 * 17 * 512 = 21 411 840 octets
+
+Cette valeur est une capacité CHS présentée au BIOS. Elle peut différer de la
+capacité nominale, du nombre de secteurs réellement utilisables et, sur IDE,
+de la géométrie physique.
+
+L'interface INT 13h CHS classique encode :
+
+  - le disque dans DL : 80h pour le premier disque dur;
+  - la tête dans DH;
+  - les huit bits faibles du cylindre dans CH;
+  - les deux bits hauts du cylindre dans CL bits 7..6;
+  - le secteur, numéroté à partir de 1, dans CL bits 5..0.
+
+Elle est donc limitée classiquement à 1024 cylindres, 256 têtes et 63 secteurs
+par piste par son encodage, avec des limites pratiques souvent inférieures. Les
+BIOS ont ensuite utilisé la traduction CHS, puis les extensions EDD et LBA.
+
+INT 41h ne contient aucune information LBA 28/48 bits et ne convient pas pour
+déterminer la capacité réelle d'un disque moderne.
+
+==============================================================================
+10. LIRE LE POINTEUR EN ASSEMBLEUR 8086
+==============================================================================
+
+Lecture directe de l'IVT en mode réel :
+
+        pushf                   ; préserver notamment l'état de IF
+        cli                     ; éviter une modification entre les deux WORD
+        xor     ax, ax
+        mov     es, ax
+        mov     bx, es:[0104h]  ; offset de la table
+        mov     dx, es:[0106h]  ; segment de la table
+        popf
+
+À la sortie, DX:BX est le pointeur segment:offset. Pour lire la structure avec
+DS:SI sans perdre DS :
+
+        push    ds
+        mov     ds, dx
+        mov     si, bx
+
+        mov     ax, [si+00h]    ; AX = nombre de cylindres
+        mov     cl, [si+02h]    ; CL = nombre de têtes
+        mov     di, [si+05h]    ; DI = début précompensation
+        mov     ch, [si+08h]    ; CH = octet de contrôle
+        ; pour une table AT seulement :
+        mov     bp, [si+0Ch]    ; BP = cylindre d'atterrissage
+        mov     dl, [si+0Eh]    ; DL = secteurs par piste
+
+        pop     ds
+
+Sur 8086, MOV ES,0 n'existe pas; il faut passer par un registre général comme
+AX. Les lectures WORD à un offset impair sont autorisées, mais plus lentes sur
+certains processeurs/bus.
+
+CLI/POPF n'est approprié que dans un environnement où le programme est autorisé
+à masquer brièvement les interruptions, typiquement DOS réel. Il ne rend pas
+sûre une lecture BIOS depuis un système multitâche en mode protégé.
+
+==============================================================================
+11. LIRE LA TABLE SOUS DOS
+==============================================================================
+
+DOS offre INT 21h/AH=35h pour obtenir une entrée de vecteur :
+
+        mov     ax, 3541h       ; AH=35h, AL=41h
+        int     21h
+        ; retour ES:BX = adresse enregistrée dans l'entrée 41h
+
+Cette fonction ne « connaît » pas la table de disque : elle retourne simplement
+les quatre octets de l'entrée sous forme ES:BX. Elle évite au programme DOS de
+lire directement 0000:0104h.
+
+Exemple conceptuel en Pascal 16 bits compatible avec un type pointeur lointain :
+
+  type
+    TDiskParameterTable = packed record
+      Cylinders: Word;
+      Heads: Byte;
+      ReducedWriteCylinder: Word;
+      WritePrecompCylinder: Word;
+      MaxECCBurst: Byte;
+      Control: Byte;
+      Extra: array[0..6] of Byte;
+    end;
+    PDiskParameterTable = ^TDiskParameterTable;
+
+Le compilateur doit impérativement produire une structure compactée sans octet
+d'alignement. Le champ Extra n'a pas la même interprétation sur XT et AT. Un
+programme sérieux définit deux vues explicites et choisit celle qui correspond
+à la machine détectée.
+
+Sous DOS, GetIntVec($41, P) ou l'équivalent de la bibliothèque retourne ce
+pointeur sans exécuter INT 41h. Ne jamais appeler Intr($41, Regs).
+
+==============================================================================
+12. EXEMPLE DE DÉCODAGE
+==============================================================================
+
+Prenons cette table AT fictive de 16 octets :
+
+  67 02 04  00 00  2C 01  00  08  00 00 00  67 02  11 00
+
+Décodage petit-boutiste :
+
+  00h  0267h = 615 cylindres
+  02h  04h   = 4 têtes
+  03h  0000h = réservé
+  05h  012Ch = précompensation à partir du cylindre 300
+  07h  00h   = réservé
+  08h  08h   = bit « plus de huit têtes » positionné ici de façon incohérente
+  09h  000000h = réservé
+  0Ch  0267h = zone d'atterrissage au cylindre 615
+  0Eh  11h   = 17 secteurs par piste
+  0Fh  00h   = réservé
+
+Cet exemple illustre une validation utile : 4 têtes ne justifient pas le bit 3
+de contrôle. Un lecteur doit signaler l'incohérence plutôt que corriger les
+octets silencieusement. En remplaçant l'octet de contrôle par 00h, la table
+correspond au cas attendu.
+
+Capacité CHS calculée :
+
+  615 * 4 * 17 * 512 = 21 411 840 octets
+
+Le cylindre d'atterrissage égal à 615 se situe juste après les cylindres de
+données numérotés 0 à 614, ce qui est plausible pour une zone de parcage.
+
+==============================================================================
+13. RELATION AVEC LES SERVICES INT 13h
+==============================================================================
+
+INT 13h est l'interface BIOS à appeler pour accéder aux disques. Parmi ses
+fonctions classiques :
+
+  AH=00h   réinitialiser le sous-système disque;
+  AH=02h   lire des secteurs CHS;
+  AH=03h   écrire des secteurs CHS;
+  AH=04h   vérifier des secteurs;
+  AH=08h   obtenir les paramètres courants du lecteur;
+  AH=09h   initialiser les caractéristiques d'une paire de lecteurs sur les
+           anciens BIOS qui utilisent les tables INT 41h/46h;
+  AH=0Ch   positionner les têtes;
+  AH=15h   obtenir le type du lecteur et parfois sa taille.
+
+Pour découvrir la géométrie utilisable par les appels CHS, préférer
+INT 13h/AH=08h. Pour DL=80h, cette fonction retourne notamment :
+
+  CH       huit bits faibles du numéro maximal de cylindre;
+  CL 7..6  deux bits forts du numéro maximal de cylindre;
+  CL 5..0  nombre de secteurs par piste;
+  DH       numéro maximal de tête;
+  DL       nombre de disques durs attachés, selon le BIOS.
+
+Conversion des valeurs maximales en nombres :
+
+  cylindres = (((CL AND C0h) << 2) OR CH) + 1
+  têtes     = DH + 1
+  secteurs  = CL AND 3Fh
+
+Le décalage de CL doit être réalisé avec une largeur suffisante pour conserver
+les bits devenus bits 8 et 9. La formule écrite est conceptuelle; en assembleur
+8086, employer AX ou un autre registre WORD.
+
+La table INT 41h reste intéressante pour l'émulation, le diagnostic historique
+et les paramètres électriques absents du résultat AH=08h. Elle ne remplace pas
+l'interrogation du service BIOS réellement actif.
+
+==============================================================================
+14. TROIS « 41h » À NE PAS CONFONDRE
+==============================================================================
+
+1. Entrée IVT 41h
+
+   Pointeur de données vers la table du premier disque dur. C'est le sujet de
+   ce document. On lit le vecteur; on ne l'appelle pas.
+
+2. INT 13h avec AH=41h
+
+   Fonction beaucoup plus récente de détection des extensions IBM/MS EDD.
+   L'appel typique place BX=55AAh, DL=80h, AH=41h puis exécute INT 13h. En cas
+   de succès, BX revient AA55h et CX décrit les extensions disponibles. Cela
+   n'a aucun rapport avec l'entrée IVT 41h.
+
+3. Opcode CD 41
+
+   Encodage machine de l'instruction INT 41h. Le 8086 charge alors CS:IP depuis
+   l'entrée IVT 41h et tente d'exécuter la table comme du code : opération
+   incorrecte dans le BIOS PC traditionnel.
+
+De même, INT 41h ne doit pas être confondu avec l'entrée IVT 1Eh, qui pointe sur
+la table des paramètres des lecteurs de disquettes.
+
+==============================================================================
+15. COMPATIBILITÉ, BIOS ÉTENDUS ET LIMITES
+==============================================================================
+
+Variations à prévoir :
+
+  - une ROM optionnelle de contrôleur peut remplacer INT 13h et INT 41h;
+  - un BIOS clone peut stocker la table en RAM plutôt qu'en ROM;
+  - les types utilisateur 47/48 de certains BIOS placent les paramètres dans
+    le CMOS, la zone de données étendue EBDA ou une structure propriétaire;
+  - des BIOS IDE peuvent exposer plusieurs tables consécutives;
+  - certains IBM PS/2 n'utilisent pas ces vecteurs; IBM indique même INT 41h et
+    INT 46h comme réservés sur certains Model 70/80 à partir de BIOS de 1987;
+  - SCSI, ESDI et contrôleurs intelligents obtiennent parfois leur configuration
+    directement du périphérique;
+  - les hyperviseurs et émulateurs peuvent fournir une table minimale uniquement
+    pour la compatibilité;
+  - UEFI natif ne repose pas sur l'IVT du BIOS réel, sauf couche CSM éventuelle.
+
+Une Extended Fixed Disk Parameter Table ou FDPT étendue peut contenir, selon le
+fabricant, des octets supplémentaires, une signature et des paramètres de
+traduction. La structure IBM de base demeure les 16 octets pointés, mais il ne
+faut pas lire au-delà sans identifier et valider l'extension exacte.
+
+La table ne donne pas :
+
+  - la table des partitions MBR/GPT;
+  - le BIOS Parameter Block d'un volume FAT;
+  - le numéro de série ATA;
+  - le modèle du disque;
+  - le nombre LBA exact de secteurs;
+  - l'état SMART;
+  - une garantie que le disque 80h est amorçable.
+
+==============================================================================
+16. VALIDATION ET PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+Avant d'utiliser les 16 octets :
+
+  1. vérifier que le pointeur n'est ni 0000:0000 ni manifestement invalide;
+  2. copier les 16 octets avant de les analyser si le BIOS peut les modifier;
+  3. traiter les WORD comme petit-boutistes et la structure comme compactée;
+  4. distinguer la disposition XT de la disposition AT;
+  5. refuser zéro cylindre ou zéro tête;
+  6. pour AT, exiger 1 à 63 secteurs par piste pour un usage INT 13h CHS;
+  7. vérifier la cohérence du bit « plus de huit têtes »;
+  8. protéger les multiplications de capacité contre le dépassement;
+  9. comparer si possible avec INT 13h/AH=08h;
+ 10. considérer une divergence comme une traduction ou une incompatibilité,
+     pas automatiquement comme une corruption;
+ 11. ne jamais écrire sur le disque uniquement parce qu'une table paraît
+     plausible;
+ 12. conserver les octets réservés, mais ne leur attribuer aucun sens générique.
+
+Sur 8086, un calcul de capacité dépasse rapidement 16 bits et même 32 bits pour
+les extensions ultérieures. Effectuer la multiplication dans un type assez
+large ou contrôler chaque produit intermédiaire.
+
+Pour identifier la machine, les informations d'équipement, la date/signature du
+BIOS et le comportement réel d'INT 13h sont plus fiables qu'une supposition
+fondée uniquement sur le segment F000h.
+
+==============================================================================
+17. RÉSUMÉ PRATIQUE
+==============================================================================
+
+  - l'adresse IVT de INT 41h est 0000:0104h;
+  - les deux premiers octets forment l'offset et les deux suivants le segment;
+  - le pointeur vise une table de données de 16 octets pour le disque BIOS 80h;
+  - ne jamais exécuter l'instruction INT 41h pour obtenir cette table;
+  - la table XT et la table AT partagent leur taille, mais pas tous leurs champs;
+  - INT 46h désigne normalement le disque 81h sur AT;
+  - INT 13h/AH=08h est préférable pour obtenir la géométrie CHS active;
+  - INT 13h/AH=41h teste les extensions EDD et est une autre interface;
+  - la géométrie rapportée peut être logique et non physique;
+  - les BIOS récents, PS/2, SCSI, IDE traduit et UEFI peuvent ignorer ou étendre
+    cette convention historique.
+
+INT 41h est ainsi un exemple particulier de l'architecture du PC original : une
+case conçue comme vecteur d'interruption est utilisée comme pointeur global vers
+des paramètres matériels. Cette convention est essentielle pour reproduire un
+BIOS XT/AT, mais insuffisante et souvent obsolète pour examiner un disque moderne.

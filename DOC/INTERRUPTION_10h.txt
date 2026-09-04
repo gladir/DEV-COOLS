@@ -1,0 +1,960 @@
+==============================================================================
+     INTERRUPTION 10h DU BIOS 8086 : SERVICES VIDÉO ET AFFICHAGE
+==============================================================================
+
+INT 10h est l'interface vidéo du BIOS des IBM PC et compatibles. Elle permet à
+un programme en mode réel de sélectionner un mode d'affichage, gérer le curseur,
+faire défiler une fenêtre, lire ou écrire des caractères, tracer des pixels et,
+sur EGA/VGA, configurer les palettes et les polices.
+
+Appel général :
+
+        mov     ah, numero_fonction
+        ; charger les autres paramètres
+        int     10h
+
+Le BIOS système ou la ROM de l'adaptateur vidéo fournit la routine appelée. Les
+fonctions de base existaient sur 8086/8088 avec MDA et CGA; EGA, VGA, MCGA et
+VESA VBE ont ensuite enrichi la même interruption.
+
+AVERTISSEMENT
+-------------
+
+INT 10h regroupe plusieurs générations d'interfaces. Une fonction ou un mode
+valide sur VGA peut être absent sur CGA, MDA ou EGA. Il n'existe pas de code
+d'erreur uniforme pour les fonctions IBM anciennes : une fonction inconnue peut
+ne rien faire et laisser les registres dans un état trompeur. Toujours détecter
+l'adaptateur ou l'extension avant d'en employer les fonctions avancées.
+
+Sources principales :
+
+  - IBM PC/XT, PC/AT et PS/2 Technical References;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles :
+    https://www.vtda.org/books/Computing/Programming/SystemBIOSforIBMPC_XT_ATComputersandCompatibles_Phoenix.pdf
+  - VESA BIOS Extension 3.0 :
+    https://pdos.csail.mit.edu/6.828/2008/readings/hardware/vbe3.pdf
+  - Ralf Brown's Interrupt List :
+    https://www.cs.cmu.edu/~ralf/files.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Contexte 8086 et vecteur
+  2.  Résumé des fonctions
+  3.  Modes vidéo classiques
+  4.  AH=00h : sélectionner un mode
+  5.  Mémoire et pages vidéo
+  6.  Attributs des caractères en mode texte
+  7.  AH=01h à 03h : curseur
+  8.  AH=05h : page active
+  9.  AH=06h et 07h : défilement de fenêtre
+ 10.  AH=08h à 0Ah : caractères et attributs
+ 11.  AH=0Bh : palette CGA
+ 12.  AH=0Ch et 0Dh : pixels
+ 13.  AH=0Eh : sortie téléscripteur
+ 14.  AH=0Fh : état vidéo courant
+ 15.  AH=10h : palette EGA/VGA et DAC
+ 16.  AH=11h : générateur de caractères et polices
+ 17.  AH=12h : sélection alternative et informations EGA/VGA
+ 18.  AH=13h : écrire une chaîne
+ 19.  AH=1Ah : Display Combination Code
+ 20.  AH=1Bh et 1Ch : état et sauvegarde vidéo
+ 21.  BIOS Data Area vidéo
+ 22.  Accès direct à la mémoire texte
+ 23.  Accès direct aux modes graphiques classiques
+ 24.  Extensions VESA VBE, AX=4Fxxh
+ 25.  Exemples assembleur 8086
+ 26.  Exemple Pascal pour DOS
+ 27.  Redirection, émulation et compatibilité
+ 28.  Performances et synchronisation
+ 29.  Programmation défensive
+ 30.  Limites modernes et résumé
+
+==============================================================================
+1. CONTEXTE 8086 ET VECTEUR
+==============================================================================
+
+Le processeur n'attribue aucune signification intrinsèque au numéro 10h. En mode
+réel, INT 10h empile FLAGS, CS et IP, efface IF et TF, puis charge CS:IP depuis
+l'entrée 10h de l'Interrupt Vector Table :
+
+  10h * 4 = 0040h
+
+  0000:0040h  WORD  offset de la routine vidéo
+  0000:0042h  WORD  segment de la routine vidéo
+
+La routine revient avec IRET. La ROM d'une carte EGA/VGA peut remplacer ce
+vecteur pendant le POST afin d'offrir ses propres services tout en conservant
+les fonctions compatibles IBM.
+
+Attention à la ressemblance d'adresses : 0000:0040h est l'entrée IVT, tandis
+que le segment 0040h contient la BIOS Data Area. Ce ne sont pas les mêmes
+emplacements physiques.
+
+INT 10h concerne le mode réel BIOS. En mode protégé, INT consulte l'IDT du
+système. Un programme protégé doit passer par un moniteur DPMI, revenir en mode
+réel ou employer un pilote vidéo.
+
+==============================================================================
+2. RÉSUMÉ DES FONCTIONS
+==============================================================================
+
+ AH    Fonction principale                         Génération typique
+ ----  -------------------------------------------  --------------------------
+ 00h   sélectionner le mode vidéo                  MDA/CGA+
+ 01h   définir la forme du curseur                 texte
+ 02h   placer le curseur                           texte
+ 03h   lire position et forme du curseur           texte
+ 04h   lire la position du crayon optique          ancien CGA, obsolète
+ 05h   sélectionner la page d'affichage active     texte/CGA+
+ 06h   faire défiler une fenêtre vers le haut      texte
+ 07h   faire défiler une fenêtre vers le bas       texte
+ 08h   lire caractère et attribut au curseur       texte, certains graphiques
+ 09h   écrire caractère et attribut/couleur        texte et graphiques
+ 0Ah   écrire caractère seulement                  texte et graphiques
+ 0Bh   définir palette/bordure CGA                 CGA+
+ 0Ch   écrire un pixel                             graphiques
+ 0Dh   lire un pixel                               graphiques
+ 0Eh   sortie téléscripteur                        texte et graphiques
+ 0Fh   lire le mode vidéo courant                  MDA/CGA+
+ 10h   palette et DAC                              EGA/VGA
+ 11h   charger/sélectionner les polices            EGA/VGA
+ 12h   sélection alternative/informations          EGA/VGA/PS2
+ 13h   écrire une chaîne                           XT tardif/AT/EGA+
+ 14h   fonctions LCD                               certains portables
+ 15h   paramètres physiques d'affichage            certains IBM
+ 1Ah   lire/écrire Display Combination Code        VGA/MCGA/PS2
+ 1Bh   informations de fonctionnalité/état         VGA
+ 1Ch   taille, sauvegarde ou restauration d'état   VGA
+ 4Fxxh extensions VESA BIOS Extension              Super VGA/VBE
+
+Les numéros non pris en charge sont réservés dans la spécification IBM, mais
+certains fabricants les ont utilisés. Ne jamais appeler une extension privée
+sans signature ou détection documentée.
+
+==============================================================================
+3. MODES VIDÉO CLASSIQUES
+==============================================================================
+
+Modes IBM les plus courants :
+
+ Mode  Type       Résolution/caractères   Couleurs       Mémoire principale
+ ----  ---------  ----------------------  -------------  ------------------
+ 00h   texte      40x25                   16             B800:0000
+ 01h   texte      40x25                   16             B800:0000
+ 02h   texte      80x25                   16/gris        B800:0000
+ 03h   texte      80x25                   16             B800:0000
+ 04h   graphique  320x200                 4              B800:0000
+ 05h   graphique  320x200                 4/gris         B800:0000
+ 06h   graphique  640x200                 2              B800:0000
+ 07h   texte      80x25 monochrome        mono           B000:0000
+ 08h   graphique  160x200                 16             PCjr/Tandy
+ 09h   graphique  320x200                 16             PCjr/Tandy
+ 0Ah   graphique  640x200                 4              PCjr/Tandy
+ 0Dh   graphique  320x200                 16             A000:0000, EGA/VGA
+ 0Eh   graphique  640x200                 16             A000:0000, EGA/VGA
+ 0Fh   graphique  640x350                 2              A000:0000, EGA/VGA
+ 10h   graphique  640x350                 16             A000:0000, EGA/VGA
+ 11h   graphique  640x480                 2              A000:0000, VGA
+ 12h   graphique  640x480                 16             A000:0000, VGA
+ 13h   graphique  320x200                 256            A000:0000, VGA
+
+Les dimensions physiques des modes texte varient avec la police : 80x25 peut
+occuper 640x200 en 8x8, 720x350 en 9x14 ou 720x400 en 9x16. Le numéro de mode ne
+suffit donc pas toujours à déterminer le nombre exact de pixels.
+
+Modes 08h à 0Ah ne sont pas les modes EGA de mêmes numéros : ils viennent du
+PCjr/Tandy. Modes 0Bh et 0Ch sont réservés dans les tables IBM usuelles.
+
+Des BIOS clones définissent des modes supplémentaires. Pour Super VGA, préférer
+la liste de modes VBE plutôt qu'une table de numéros propre au fabricant.
+
+==============================================================================
+4. AH=00h : SÉLECTIONNER UN MODE
+==============================================================================
+
+Entrée :
+
+  AH = 00h
+  AL = numéro de mode
+
+Effets normaux : programmation du contrôleur, sélection de la mémoire vidéo,
+réinitialisation des curseurs/pages, chargement de palette et effacement de
+l'écran.
+
+Sur de nombreux BIOS EGA/VGA, positionner le bit 7 de AL demande de conserver le
+contenu de la mémoire vidéo :
+
+  AL = mode OR 80h
+
+Ce comportement n'existe pas sur le BIOS PC/CGA original et ne doit pas être
+supposé sans adaptateur compatible. La BDA peut conserver le bit de non-
+effacement séparément du numéro de mode.
+
+Il n'existe pas de retour d'erreur IBM uniforme. Lire ensuite AH=0Fh et vérifier
+le mode constitue un contrôle partiel; un BIOS peut cependant substituer un
+mode proche.
+
+Le changement de mode peut effacer l'écran et modifier palette, police, taille
+des caractères, segment mémoire et nombre de pages. Toute adresse ou géométrie
+mémorisée auparavant devient potentiellement invalide.
+
+==============================================================================
+5. MÉMOIRE ET PAGES VIDÉO
+==============================================================================
+
+Une page vidéo est une zone de mémoire contenant un écran logique. En mode
+texte, chaque cellule occupe deux octets, caractère puis attribut. Plusieurs
+pages peuvent tenir dans la mémoire de l'adaptateur.
+
+Deux notions doivent être distinguées :
+
+  page active/affichée
+    page dont le début est programmé dans le contrôleur et visible à l'écran;
+
+  page passée à une fonction
+    page BH sur laquelle le BIOS lit ou écrit, qui peut être invisible.
+
+Le nombre de pages dépend du mode et de la mémoire vidéo. Les modes texte 40
+colonnes permettent souvent huit pages; les modes 80 colonnes quatre sur CGA,
+et davantage ou différemment sur EGA/VGA. Ne pas coder une limite unique.
+
+La BDA contient la taille d'une page et son offset courant. Après un changement
+de mode, laisser le BIOS mettre ces valeurs à jour avant tout accès direct.
+
+==============================================================================
+6. ATTRIBUTS DES CARACTÈRES EN MODE TEXTE
+==============================================================================
+
+Attribut couleur classique :
+
+  bits 2..0   couleur de premier plan : bleu, vert, rouge
+  bit 3       intensité du premier plan
+  bits 6..4   couleur de fond : bleu, vert, rouge
+  bit 7       clignotement, ou intensité de fond si reconfiguré
+
+Couleurs usuelles 0..15 :
+
+  0 noir          4 rouge         8 gris foncé       12 rouge clair
+  1 bleu          5 magenta       9 bleu clair       13 magenta clair
+  2 vert          6 brun         10 vert clair       14 jaune
+  3 cyan          7 gris clair   11 cyan clair       15 blanc
+
+L'attribut 07h signifie gris clair sur noir; 1Fh, blanc intense sur bleu.
+
+Sur VGA, AX=1003h sélectionne l'interprétation du bit 7 : BL=00h active
+l'intensité du fond, BL=01h active le clignotement. BH doit être zéro pour une
+compatibilité maximale.
+
+MDA utilise aussi certains attributs pour soulignement, intensité, vidéo inverse
+et clignotement. Les mêmes valeurs ne produisent donc pas toujours la même
+apparence sur MDA, CGA et VGA monochrome.
+
+==============================================================================
+7. AH=01h À 03h : CURSEUR
+==============================================================================
+
+AH=01h, définir la forme :
+
+  CH = ligne de balayage de début, avec bits de visibilité selon le BIOS
+  CL = ligne de balayage de fin
+
+Les valeurs dépendent de la hauteur de police. Sur de nombreux BIOS, CH bits
+6..5 = 01b masque le curseur; 00b l'affiche. Conserver les bits réservés et ne
+pas supposer une police de 8, 14 ou 16 lignes.
+
+AH=02h, placer le curseur :
+
+  BH = page
+  DH = ligne, à partir de 0
+  DL = colonne, à partir de 0
+
+AH=03h, lire position et forme :
+
+  BH = page
+  retour CH = début, CL = fin, DH = ligne, DL = colonne
+
+Le BIOS maintient une position de curseur par page, mais généralement une seule
+forme commune. Une position hors écran produit un résultat dépendant du BIOS.
+Les fonctions graphiques peuvent ignorer le curseur matériel tout en conservant
+une position logique utilisée par le téléscripteur.
+
+==============================================================================
+8. AH=05h : PAGE ACTIVE
+==============================================================================
+
+Entrée classique :
+
+  AH = 05h
+  AL = numéro de page à afficher
+
+Le BIOS programme l'adresse de départ du contrôleur et restaure la position du
+curseur associée. Les pages invisibles permettent de préparer un écran puis de
+le révéler rapidement.
+
+Sur EGA/VGA et certains BIOS, des sous-fonctions placées dans AL contrôlent
+séparément page d'accès et page d'affichage. Elles ne sont pas portables vers
+CGA/MDA. Pour la fonction classique, choisir une page valide pour le mode.
+
+Changer la page active n'efface aucune page. AH=0Eh écrit généralement sur la
+page active, tandis que AH=09h/0Ah reçoit explicitement BH.
+
+==============================================================================
+9. AH=06h ET 07h : DÉFILEMENT DE FENÊTRE
+==============================================================================
+
+Paramètres :
+
+  AH = 06h vers le haut, 07h vers le bas
+  AL = nombre de lignes; 00h efface toute la fenêtre
+  BH = attribut utilisé pour les lignes devenues vides
+  CH = ligne du coin supérieur gauche
+  CL = colonne du coin supérieur gauche
+  DH = ligne du coin inférieur droit
+  DL = colonne du coin inférieur droit
+
+Les deux coins sont inclus. Pour effacer un écran texte 80x25 :
+
+        mov     ax, 0600h       ; AH=06, AL=0
+        mov     bh, 07h
+        xor     cx, cx          ; coin 0,0
+        mov     dx, 184Fh       ; ligne 24, colonne 79
+        int     10h
+
+La position du curseur n'est pas automatiquement replacée en 0,0; appeler
+AH=02h ensuite si nécessaire.
+
+Si AL est supérieur ou égal à la hauteur, le résultat équivaut normalement à
+un effacement. Des coordonnées inversées ou hors écran sont invalides et leur
+traitement varie selon le BIOS.
+
+==============================================================================
+10. AH=08h À 0Ah : CARACTÈRES ET ATTRIBUTS
+==============================================================================
+
+AH=08h, lire au curseur :
+
+  entrée  BH = page
+  retour  AL = caractère, AH = attribut en mode texte
+
+En mode graphique, la lecture d'un caractère n'est pas fiable sur tous les BIOS
+car elle peut tenter de reconnaître les pixels par rapport à la police.
+
+AH=09h, écrire caractère et attribut/couleur :
+
+  AL = caractère
+  BH = page
+  BL = attribut en texte, couleur en graphique
+  CX = nombre de répétitions
+
+AH=0Ah, écrire caractère seulement :
+
+  AL = caractère
+  BH = page
+  CX = nombre de répétitions
+
+En mode texte, AH=0Ah conserve l'attribut déjà présent. AH=09h le remplace. Ces
+fonctions ne déplacent normalement pas le curseur après l'écriture, contrairement
+à AH=0Eh.
+
+En graphique, le bit 7 de BL peut demander un XOR avec les pixels existants sur
+certains modes/adaptateurs. Les caractères sont dessinés avec la police BIOS.
+Les BIOS anciens peuvent limiter une répétition à la ligne courante.
+
+==============================================================================
+11. AH=0Bh : PALETTE CGA
+==============================================================================
+
+Entrée :
+
+  AH = 0Bh
+  BH = 00h : définir couleur de fond/bordure avec BL
+  BH = 01h : sélectionner la palette avec BL
+
+Dans les modes graphiques CGA 320x200 à quatre couleurs, BL bit 0 choisit l'un
+des ensembles de palette; d'autres bits et la couleur intense dépendent du mode
+et du matériel. En mode texte couleur, la couleur de bordure peut être modifiée.
+
+Cette fonction programme les possibilités réduites du CGA. Elle ne remplace pas
+les services de palette EGA/VGA AH=10h et ne permet pas de définir librement des
+composantes RVB.
+
+Sur MDA, elle est sans objet. Sur VGA en mode compatible, le BIOS émule souvent
+le comportement CGA.
+
+==============================================================================
+12. AH=0Ch ET 0Dh : PIXELS
+==============================================================================
+
+AH=0Ch, écrire un pixel :
+
+  AL = couleur; bit 7 peut sélectionner XOR dans certains modes
+  BH = page, lorsque le mode possède des pages
+  CX = coordonnée X
+  DX = coordonnée Y
+
+AH=0Dh, lire un pixel :
+
+  BH = page
+  CX = X
+  DX = Y
+  retour AL = couleur
+
+Les coordonnées commencent à zéro. Elles doivent rester dans la résolution du
+mode. Le nombre de bits significatifs de la couleur dépend du mode.
+
+Ces appels privilégient la compatibilité, pas la vitesse. Tracer une image pixel
+par pixel avec INT 10h est très lent. Un logiciel graphique initialise le mode
+avec le BIOS, puis écrit directement dans la mémoire vidéo en respectant
+l'organisation CGA, planaire EGA/VGA ou linéaire VBE.
+
+AH=0Ch/0Dh ne sont pas garantis dans tous les modes VBE et ne prennent pas en
+charge les formats modernes de framebuffer de manière générale.
+
+==============================================================================
+13. AH=0Eh : SORTIE TÉLÉSCRIPTEUR
+==============================================================================
+
+Entrée :
+
+  AH = 0Eh
+  AL = caractère
+  BH = page sur certains BIOS anciens; souvent zéro recommandé
+  BL = couleur de premier plan en mode graphique
+
+Le BIOS affiche le caractère à la position courante, avance le curseur et fait
+défiler l'écran si nécessaire. Caractères de contrôle usuels :
+
+  07h   sonnerie
+  08h   retour arrière
+  0Ah   saut de ligne
+  0Dh   retour au début de ligne
+
+LF ne ramène pas nécessairement en colonne zéro; produire une nouvelle ligne
+DOS classique demande CR puis LF.
+
+Exemple d'affichage d'une chaîne terminée par zéro :
+
+PrintString:
+        lodsb                   ; DS:SI -> caractère
+        test    al, al
+        jz      .done
+        mov     ah, 0Eh
+        mov     bh, 00h
+        mov     bl, 07h
+        int     10h
+        jmp     PrintString
+.done:
+        ret
+
+Cette fonction est la plus portable pour les messages d'un chargeur BIOS. Elle
+reste lente et peut être redirigée vers une console série sur certains systèmes.
+
+==============================================================================
+14. AH=0Fh : ÉTAT VIDÉO COURANT
+==============================================================================
+
+Entrée :
+
+  AH = 0Fh
+
+Retour :
+
+  AL = mode vidéo courant
+  AH = nombre de colonnes de caractères
+  BH = page d'affichage active
+
+Sur EGA/VGA, AL bit 7 peut refléter l'indicateur de non-effacement; masquer ce
+bit avant de comparer le mode :
+
+  mode = AL AND 7Fh
+
+AH retourne les colonnes, pas la largeur en pixels. Cette fonction ne donne ni
+le nombre de lignes texte, ni la hauteur de police, ni la résolution complète.
+Ces données se trouvent dans la BDA ou dans les informations VGA/VBE.
+
+==============================================================================
+15. AH=10h : PALETTE EGA/VGA ET DAC
+==============================================================================
+
+AH=10h utilise AL comme sous-fonction. Fonctions courantes :
+
+  AL=00h   définir un registre de palette EGA
+  AL=01h   définir la couleur de bordure/overscan
+  AL=02h   définir tous les registres de palette
+  AL=03h   activer/désactiver clignotement ou intensité de fond
+  AL=07h   lire un registre de palette
+  AL=08h   lire la couleur de bordure
+  AL=09h   lire tous les registres
+  AL=10h   définir un registre DAC VGA
+  AL=12h   définir un bloc de registres DAC
+  AL=13h   sélectionner page/masque de couleurs DAC
+  AL=15h   lire un registre DAC
+  AL=17h   lire un bloc de registres DAC
+  AL=18h/19h définir/lire le masque de pel VGA selon BIOS
+
+Pour les opérations DAC VGA, les composantes rouge, verte et bleue sont
+normalement sur six bits, de 0 à 63, même si elles sont passées dans des BYTE.
+Les matériels ultérieurs peuvent offrir huit bits grâce à une extension VBE.
+
+Les paramètres exacts varient : un registre unique utilise souvent BX comme
+index et DH/CH/CL ou DH/CH/CL selon la sous-fonction; un bloc utilise ES:DX vers
+des triplets RVB et CX comme compte. Consulter la définition de la sous-fonction
+avant l'appel et ne pas mélanger ordre RGB et BGR.
+
+EGA n'a pas le DAC 256 entrées du VGA. Tester le type d'adaptateur avant les
+sous-fonctions AL=10h et suivantes.
+
+==============================================================================
+16. AH=11h : GÉNÉRATEUR DE CARACTÈRES ET POLICES
+==============================================================================
+
+Les sous-fonctions AH=11h permettent notamment :
+
+  AL=00h/10h   charger une police utilisateur
+  AL=01h/11h   charger la police ROM 8x14
+  AL=02h/12h   charger la police ROM 8x8
+  AL=03h       sélectionner les blocs de caractères
+  AL=04h/14h   charger la police ROM 8x16 VGA
+  AL=20h       définir le vecteur de caractères graphiques utilisateur
+  AL=21h/22h/23h sélectionner des polices ROM pour les modes graphiques
+  AL=30h       obtenir des informations/pointeurs de police
+
+Pour charger une police, ES:BP pointe généralement vers les glyphes, CX indique
+le nombre de caractères, DX le premier code, BH la hauteur en octets et BL le
+bloc. Les sous-fonctions 00h..04h et 10h..14h diffèrent notamment par la mise à
+jour du nombre de lignes et des paramètres d'affichage.
+
+La mémoire EGA/VGA est planaire; le BIOS configure temporairement les registres
+nécessaires. Un accès direct sans les programmer correctement peut corrompre
+l'écran.
+
+Les pointeurs retournés peuvent viser la ROM vidéo ou RAM BIOS et ne restent pas
+nécessairement valides après un changement de mode ou de police.
+
+==============================================================================
+17. AH=12h : SÉLECTION ALTERNATIVE ET INFORMATIONS EGA/VGA
+==============================================================================
+
+AH=12h est un groupe de fonctions dont BL sélectionne l'opération. Exemples
+courants :
+
+  BL=10h   retourner les informations EGA
+  BL=20h   sélectionner une routine d'impression écran alternative
+  BL=30h   sélectionner 200, 350 ou 400 lignes de balayage
+  BL=31h   activer/désactiver le chargement de palette lors du changement mode
+  BL=32h   activer/désactiver l'adaptateur vidéo
+  BL=33h   activer/désactiver la conversion en niveaux de gris
+  BL=34h   contrôle du curseur selon BIOS
+  BL=35h   commutation d'affichage sur certains PS/2
+  BL=36h   écran allumé/éteint sur certains PS/2/VGA
+
+Pour BL=10h, les retours courants comprennent BH pour le mode couleur/mono, BL
+pour la mémoire EGA, CH pour les bits de fonctions et CL pour les commutateurs.
+La convention de succès doit être vérifiée selon la sous-fonction.
+
+Ce groupe est particulièrement dépendant du matériel. Une fonction PS/2 ou VGA
+ne doit pas être appelée aveuglément sur CGA/MDA.
+
+==============================================================================
+18. AH=13h : ÉCRIRE UNE CHAÎNE
+==============================================================================
+
+Entrée :
+
+  AH = 13h
+  AL bits :
+       bit 0 = mettre à jour le curseur après l'écriture
+       bit 1 = la chaîne contient caractère,attribut pour chaque cellule
+  BH = page
+  BL = attribut utilisé si AL bit 1=0
+  CX = nombre de caractères, pas nombre d'octets
+  DH = ligne initiale
+  DL = colonne initiale
+  ES:BP -> chaîne
+
+Valeurs usuelles de AL :
+
+  00h   caractères seuls, curseur non déplacé
+  01h   caractères seuls, curseur déplacé
+  02h   paires caractère/attribut, curseur non déplacé
+  03h   paires caractère/attribut, curseur déplacé
+
+La chaîne n'est pas terminée par zéro ou '$'; CX donne sa longueur. Les
+caractères de contrôle peuvent être interprétés selon le BIOS. ES:BP doit rester
+valide pour toute la longueur, et CX compte les caractères même lorsque chaque
+élément occupe deux octets.
+
+Cette fonction apparaît dans les BIOS XT tardifs/AT et EGA. Pour un PC original,
+utiliser AH=0Eh ou AH=09h.
+
+==============================================================================
+19. AH=1Ah : DISPLAY COMBINATION CODE
+==============================================================================
+
+Cette fonction VGA/MCGA identifie la combinaison d'adaptateurs :
+
+Lire :
+
+  AX = 1A00h
+  INT 10h
+  retour AL = 1Ah si fonction prise en charge
+         BL = code de l'affichage actif
+         BH = code de l'affichage inactif
+
+Écrire :
+
+  AX = 1A01h
+  BL/BH = nouvelle combinaison selon la spécification
+
+Codes possibles selon génération : aucun, MDA, CGA, EGA couleur/mono, PGA,
+VGA couleur/mono, MCGA et autres IBM. La présence de AL=1Ah est essentielle :
+un BIOS ancien peut laisser BX inchangé et produire un faux résultat.
+
+Cette fonction identifie une classe d'adaptateur, pas un fabricant ou un modèle
+précis. Elle ne remplace pas VBE ni l'énumération PCI.
+
+==============================================================================
+20. AH=1Bh ET 1Ch : ÉTAT ET SAUVEGARDE VIDÉO
+==============================================================================
+
+AH=1Bh, informations de fonctionnalité/état VGA :
+
+  BX = 0000h
+  ES:DI -> tampon d'informations
+  retour AL = 1Bh si fonction prise en charge
+
+Le tampon décrit notamment modes acceptés, colonnes, mémoire, pages, lignes,
+hauteur de caractère et informations de palette. Sa disposition doit suivre la
+référence VGA exacte.
+
+AH=1Ch, sauvegarde/restauration :
+
+  AL=00h   obtenir la taille nécessaire
+  AL=01h   sauvegarder l'état
+  AL=02h   restaurer l'état
+  CX       masque des catégories : matériel, BDA, DAC selon bits
+  ES:BX    tampon pour sauvegarde/restauration
+
+Le retour de taille est généralement exprimé en blocs de 64 octets. Allouer la
+taille annoncée, conserver le même masque et vérifier la signature de support.
+Cette fonction sauvegarde l'état vidéo, pas nécessairement toute la mémoire
+d'image. Restaurer des registres sans restaurer les pixels ne recrée pas l'écran.
+
+==============================================================================
+21. BIOS DATA AREA VIDÉO
+==============================================================================
+
+Champs classiques du segment 0040h :
+
+  Offset  Taille  Description
+  ------  ------  ----------------------------------------------------------
+  49h     BYTE    mode vidéo courant
+  4Ah     WORD    nombre de colonnes
+  4Ch     WORD    taille d'une page vidéo en octets
+  4Eh     WORD    offset de début de la page active
+  50h     16 B    positions curseur des pages 0 à 7, colonne puis ligne
+  60h     WORD    forme du curseur, fin puis début selon octets
+  62h     BYTE    page active
+  63h     WORD    adresse de base du contrôleur CRT, 3B4h ou 3D4h
+  65h     BYTE    valeur courante du registre de mode
+  66h     BYTE    couleur/palette CGA
+  84h     BYTE    dernière ligne de texte, valeur N-1 sur BIOS EGA/VGA
+  85h     WORD    hauteur du caractère en lignes de balayage
+
+Les champs après 66h n'existent pas sur tous les premiers BIOS. Les extensions
+EGA/VGA ajoutent d'autres indicateurs. Lire uniquement ceux que la génération
+identifiée garantit.
+
+Un accès direct au matériel doit maintenir la BDA cohérente si le programme
+compte rappeler le BIOS. Sinon, le BIOS peut écrire à la mauvaise page ou
+restaurer un curseur incohérent.
+
+==============================================================================
+22. ACCÈS DIRECT À LA MÉMOIRE TEXTE
+==============================================================================
+
+Segments usuels :
+
+  B800h   modes texte couleur CGA/EGA/VGA
+  B000h   mode texte monochrome MDA/Hercules/EGA/VGA
+
+Pour une page commençant à PageBase, cellule ligne Y, colonne X, avec C colonnes :
+
+  offset = PageBase + 2 * (Y * C + X)
+
+  [offset+0] = code du caractère
+  [offset+1] = attribut
+
+Exemple 80x25, écrire 'A' blanc sur bleu en haut à gauche :
+
+        mov     ax, 0B800h
+        mov     es, ax
+        xor     di, di
+        mov     ax, 1F41h       ; AH=attribut 1Fh, AL='A'
+        stosw
+
+Cette méthode est beaucoup plus rapide que INT 10h, mais suppose le bon segment,
+la bonne page et un mode texte compatible. Elle ne met pas à jour la position
+du curseur BIOS. Sur un écran monochrome, employer B000h.
+
+==============================================================================
+23. ACCÈS DIRECT AUX MODES GRAPHIQUES CLASSIQUES
+==============================================================================
+
+CGA 320x200/640x200
+  Mémoire à B800h, lignes paires et impaires entrelacées dans deux banques. Les
+  pixels sont compactés; l'adresse n'est pas simplement Y*largeur+X.
+
+EGA/VGA 16 couleurs
+  Mémoire à A000h organisée en quatre plans. Les registres Sequencer et Graphics
+  Controller choisissent plans, masque, rotation et mode d'écriture.
+
+VGA mode 13h
+  Mémoire à A000:0000, un octet par pixel, 320*200=64000 octets. Offset :
+
+    offset = Y * 320 + X
+
+  La valeur de l'octet est l'index 0..255 dans la palette DAC.
+
+MDA/Hercules
+  MDA est texte à B000h. Hercules ajoute des modes graphiques non normalisés par
+  l'INT 10h IBM d'origine; ils nécessitent une détection et programmation propres.
+
+L'accès direct est spécifique au mode. Ne pas appliquer la formule du mode 13h
+à un mode EGA planaire ou VBE à bank switching.
+
+==============================================================================
+24. EXTENSIONS VESA VBE, AX=4Fxxh
+==============================================================================
+
+VBE étend INT 10h pour les cartes Super VGA. AX contient la fonction complète.
+Le retour standard est :
+
+  AX=004Fh   succès
+  AL=4Fh     fonction reconnue
+  AH=00h     succès; autre valeur = échec/non prise en charge
+
+Fonctions principales :
+
+  AX=4F00h   informations du contrôleur VBE
+  AX=4F01h   informations d'un mode
+  AX=4F02h   sélectionner un mode
+  AX=4F03h   lire le mode courant
+  AX=4F04h   sauvegarder/restaurer l'état VBE
+  AX=4F05h   sélectionner/lire la fenêtre mémoire bancaire
+  AX=4F06h   définir/lire la longueur logique de ligne
+  AX=4F07h   définir/lire le début d'affichage
+  AX=4F08h   définir/lire la largeur des composantes DAC
+  AX=4F09h   définir/lire des entrées de palette
+  AX=4F0Ah   obtenir l'interface protégée VBE
+
+Pour AX=4F00h, ES:DI pointe vers un bloc VbeInfoBlock de 512 octets. Écrire
+« VBE2 » dans les quatre premiers octets avant l'appel demande les informations
+VBE 2.0 étendues. Au retour, vérifier la signature « VESA », AX=004Fh et borner
+tous les pointeurs lointains.
+
+Pour AX=4F01h, CX est le numéro de mode et ES:DI pointe vers ModeInfoBlock. Les
+informations comprennent résolution, bits par pixel, modèle mémoire, fenêtres,
+longueur de ligne et, si disponible, adresse physique du framebuffer linéaire.
+
+Pour AX=4F02h :
+
+  BX bits 8..0/13..0  numéro de mode selon version
+  BX bit 14           demander le Linear Frame Buffer
+  BX bit 15           conserver la mémoire, si pris en charge
+
+Ne pas utiliser le framebuffer linéaire avant d'avoir vérifié le bit de capacité
+du mode et obtenu son adresse. Un 8086 réel ne peut pas adresser directement une
+adresse physique au-dessus de 1 Mio; un programme protégé ou un mécanisme de
+fenêtrage est nécessaire.
+
+VBE n'est pas présent sur les PC/XT originaux et n'est pas synonyme de VGA.
+
+==============================================================================
+25. EXEMPLES ASSEMBLEUR 8086
+==============================================================================
+
+Sélectionner le mode texte couleur 80x25 et afficher un message :
+
+        mov     ax, 0003h
+        int     10h
+
+        xor     dx, dx          ; ligne 0, colonne 0
+        xor     bx, bx          ; page 0
+        mov     ah, 02h
+        int     10h
+
+        mov     si, Message
+.next:
+        lodsb
+        test    al, al
+        jz      .done
+        mov     ah, 0Eh
+        mov     bx, 0007h       ; page 0, couleur 7 en graphique
+        int     10h
+        jmp     .next
+.done:
+        ret
+
+Message db 'Bonjour depuis INT 10h', 13, 10, 0
+
+Tracer un pixel rouge clair en mode VGA 13h :
+
+        mov     ax, 0013h
+        int     10h
+        mov     ah, 0Ch
+        mov     al, 12          ; index de couleur
+        xor     bh, bh
+        mov     cx, 160         ; X
+        mov     dx, 100         ; Y
+        int     10h
+
+Restaurer le texte avant de quitter un programme DOS :
+
+        mov     ax, 0003h
+        int     10h
+
+Sauvegarder le mode avec AH=0Fh avant de le modifier est préférable, mais la
+restauration exacte d'une police/palette personnalisée nécessite AH=1Ch ou une
+sauvegarde plus complète.
+
+==============================================================================
+26. EXEMPLE PASCAL POUR DOS
+==============================================================================
+
+Exemple avec l'unité Dos :
+
+  uses Dos;
+
+  procedure SetVideoMode(Mode: Byte);
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := Mode;              { AH=0, AL=Mode }
+    Intr($10, R);
+  end;
+
+  procedure PutTTY(C: Char);
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0E00 or Ord(C);
+    R.BX := $0007;
+    Intr($10, R);
+  end;
+
+  var R: Registers;
+  begin
+    SetVideoMode($03);
+    PutTTY('O');
+    PutTTY('K');
+
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0F00;
+    Intr($10, R);
+    WriteLn('Mode : ', R.AX and $FF,
+            ', colonnes : ', R.AX shr 8,
+            ', page : ', R.BX shr 8);
+  end.
+
+L'appel WriteLn utilise lui-même les services DOS/BIOS et peut faire défiler
+l'écran. Lire les résultats avant toute sortie susceptible de modifier l'état.
+
+==============================================================================
+27. REDIRECTION, ÉMULATION ET COMPATIBILITÉ
+==============================================================================
+
+Une ROM vidéo accroche normalement INT 10h. Un programme résident, un débogueur,
+un BIOS de portable ou une console distante peut à son tour intercepter le
+vecteur et chaîner vers l'ancien gestionnaire.
+
+Conséquences :
+
+  - AH=0Eh peut apparaître sur une console série plutôt que sur un écran;
+  - l'accès direct à B800h ne suit pas cette redirection;
+  - un émulateur peut implémenter les appels sans reproduire chaque délai;
+  - DOSBox peut accepter des modes absents d'un vrai CGA;
+  - certains BIOS clones préservent moins de registres que prévu;
+  - un double adaptateur MDA+CGA nécessite de distinguer contrôleur actif et
+    segment mémoire.
+
+Les applications DOS peuvent interroger le mot d'équipement par INT 11h, les
+informations EGA/VGA par AH=12h/1Ah et VBE par AX=4F00h. Aucune méthode isolée
+n'identifie parfaitement toutes les cartes historiques.
+
+==============================================================================
+28. PERFORMANCES ET SYNCHRONISATION
+==============================================================================
+
+Le BIOS est adapté à l'initialisation et au texte occasionnel. Pour animations,
+jeux et interfaces rapides :
+
+  1. utiliser INT 10h pour sélectionner et restaurer le mode;
+  2. obtenir les paramètres exacts;
+  3. écrire directement dans la mémoire vidéo;
+  4. synchroniser avec le balayage vertical si le matériel l'exige;
+  5. conserver la BDA cohérente avant de rappeler le BIOS.
+
+Sur CGA, écrire pendant l'affichage peut produire de la « neige » selon la carte.
+Attendre le retrace ou désactiver brièvement la sortie réduit ce défaut, au prix
+de performances. Sur VGA, les registres de protection, flip-flop d'attribut et
+séquence d'accès aux ports doivent être respectés.
+
+Un BIOS peut désactiver les interruptions pendant une opération longue. Ne pas
+appeler INT 10h depuis une routine d'interruption matérielle sans connaître sa
+réentrance : les services BIOS ne sont généralement pas réentrants.
+
+==============================================================================
+29. PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+  1. Identifier la classe d'adaptateur avant une fonction EGA/VGA/VBE.
+  2. Employer uniquement les modes annoncés par la bonne interface.
+  3. Vérifier AX=004Fh après chaque appel VBE.
+  4. Masquer AL bit 7 lorsque AH=0Fh retourne un mode EGA/VGA.
+  5. Vérifier pages, coordonnées et tailles avant l'appel.
+  6. Ne pas supposer 80x25; lire colonnes et nombre de lignes.
+  7. Sauvegarder le mode et l'état nécessaires avant modification.
+  8. Restaurer le mode texte à la sortie d'un programme graphique DOS.
+  9. Préserver les registres dont le programme a besoin.
+ 10. Ne pas compter sur CF pour les anciennes fonctions INT 10h.
+ 11. Pour AH=13h, distinguer caractères et octets de la chaîne.
+ 12. Pour une police, valider ES:BP, CX, DX et la hauteur BH.
+ 13. Ne pas utiliser une adresse VBE au-dessus de 1 Mio en mode 8086 direct.
+ 14. Ne pas mélanger organisation CGA, plans EGA/VGA et framebuffer linéaire.
+ 15. Éviter INT 10h depuis une autre interruption BIOS ou matérielle.
+ 16. Tester sur matériel ou émulation correspondant à la cible minimale.
+
+==============================================================================
+30. LIMITES MODERNES ET RÉSUMÉ
+==============================================================================
+
+Sous Windows, Linux ou un autre système protégé, les applications utilisent le
+pilote graphique et les API du système. UEFI natif offre GOP, Graphics Output
+Protocol, plutôt qu'INT 10h; un CSM facultatif peut encore fournir le BIOS vidéo.
+
+À retenir :
+
+  - INT 10h est le service vidéo BIOS du PC en mode réel;
+  - AH sélectionne la fonction, avec des sous-fonctions dans AL ou BL;
+  - AH=00h choisit le mode;
+  - AH=01h..07h gèrent curseur, pages et défilement;
+  - AH=08h..0Eh lisent/écrivent caractères et pixels;
+  - AH=0Fh retourne mode, colonnes et page active;
+  - AH=10h..12h ajoutent palette, polices et contrôle EGA/VGA;
+  - AH=13h écrit une chaîne depuis ES:BP;
+  - AH=1Ah détecte la combinaison d'affichage VGA/MCGA;
+  - AX=4Fxxh désigne les extensions VESA VBE;
+  - B800h est la mémoire texte couleur, B000h la mémoire monochrome;
+  - le mode VGA 13h utilise généralement un octet par pixel à A000h;
+  - les appels BIOS sont portables mais lents pour le dessin intensif;
+  - les fonctions avancées exigent une détection et un contrôle de résultat;
+  - INT 10h ne remplace pas les pilotes graphiques ni UEFI GOP modernes.
+
+INT 10h forme ainsi le pont entre le logiciel 8086 et plusieurs générations de
+matériel vidéo. Sa partie de base demeure simple et robuste; ses extensions
+doivent toujours être utilisées avec la version et l'adaptateur appropriés.

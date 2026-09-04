@@ -1,0 +1,938 @@
+==============================================================================
+     INTERRUPTION 13h DU BIOS 8086 : DISQUETTES ET DISQUES DURS
+==============================================================================
+
+INT 13h est l'interface historique du BIOS IBM PC pour les entrées/sorties par
+secteurs. Elle dessert les lecteurs de disquettes et les disques durs, puis a
+été étendue aux contrôleurs IDE, ESDI, SCSI, CD-ROM amorçables et autres unités
+présentées au BIOS comme des disques.
+
+Deux familles d'appels coexistent :
+
+  - les fonctions classiques CHS, principalement AH=00h à AH=19h;
+  - les extensions EDD/LBA, principalement AH=41h à AH=4Eh.
+
+INT 13h est une interface de micrologiciel, pas un pilote matériel universel.
+Un BIOS SCSI peut traduire une lecture INT 13h en commande SCSI READ, tandis
+qu'un BIOS IDE traduit le même appel en commandes ATA. L'appelant n'a donc pas
+besoin de connaître le bus pour lire le disque amorçable.
+
+AVERTISSEMENT
+-------------
+
+Les fonctions d'écriture et de formatage peuvent détruire instantanément les
+partitions et les données. Tester d'abord sur une image ou dans un émulateur.
+Toujours contrôler CF après l'appel, limiter les transferts à la mémoire valide
+et ne jamais supposer que tous les BIOS implémentent les mêmes extensions.
+
+Sources principales :
+
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - transcription consultable de la référence IBM :
+    https://dokumen.pub/15f0306-technical-reference-personal-system-2-and-personal-computer-bios-interface.html
+  - Phoenix/IBM BIOS Enhanced Disk Drive Specification, documents T13 :
+    https://t13.org/documents
+  - Ralf Brown's Interrupt List :
+    https://www.cs.cmu.edu/~ralf/files.html
+  - El Torito Bootable CD-ROM Format Specification :
+    https://technion-csl.github.io/ose/readings/boot-cdrom.pdf
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Contexte 8086 et appel général
+  2.  Numéros de lecteurs BIOS
+  3.  Résultat, Carry Flag et codes d'état
+  4.  Résumé des fonctions classiques
+  5.  AH=00h et 0Dh : réinitialisation
+  6.  AH=01h : état de la dernière opération
+  7.  AH=02h, 03h et 04h : lecture, écriture, vérification CHS
+  8.  Encodage CHS dans CX et DX
+  9.  Contraintes de mémoire et frontière de 64 Kio
+ 10.  Fonctions de formatage
+ 11.  AH=08h : paramètres du lecteur
+ 12.  Fonctions classiques complémentaires
+ 13.  Particularités des disquettes
+ 14.  Paramètres de disquette INT 1Eh
+ 15.  Particularités des disques durs
+ 16.  Limites CHS et traduction de géométrie
+ 17.  Extensions EDD : détection AH=41h
+ 18.  Disk Address Packet et transferts LBA
+ 19.  Fonctions EDD principales
+ 20.  AH=48h : paramètres étendus
+ 21.  BIOS SCSI et INT 13h
+ 22.  CD-ROM amorçable et émulation El Torito
+ 23.  Exemple de lecture CHS en assembleur 8086
+ 24.  Exemple de lecture LBA avec EDD
+ 25.  Chargeurs d'amorçage
+ 26.  Programmation défensive et compatibilité
+ 27.  Limites sous les systèmes modernes
+ 28.  Résumé
+
+==============================================================================
+1. CONTEXTE 8086 ET APPEL GÉNÉRAL
+==============================================================================
+
+En mode réel, l'instruction :
+
+        int     13h
+
+charge CS:IP depuis l'entrée 13h de la table des vecteurs, à 0000:004Ch. AH
+sélectionne une fonction, DL un lecteur et les autres registres ses paramètres.
+Le BIOS revient normalement par IRET.
+
+Le numéro 13h n'a pas de signification intrinsèque pour le processeur 8086. Il
+s'agit d'une convention du BIOS PC. Sur un PC/XT doté d'un disque dur, la ROM du
+contrôleur peut remplacer le vecteur INT 13h et conserver l'ancien gestionnaire
+de disquette derrière INT 40h. Cette redirection est transparente : les
+programmes doivent continuer d'appeler INT 13h pour les deux catégories.
+
+L'interface est utilisable directement en mode réel et en mode virtuel 8086 si
+le moniteur l'émule. Un noyau passé en mode protégé ou long doit revenir par un
+trampoline approprié, utiliser un moniteur BIOS, ou de préférence ses propres
+pilotes. Un appel INT 13h en mode protégé consulte l'IDT et n'appelle pas
+automatiquement le BIOS réel.
+
+==============================================================================
+2. NUMÉROS DE LECTEURS BIOS
+==============================================================================
+
+DL identifie l'unité :
+
+  00h   premier lecteur de disquette, normalement A:
+  01h   second lecteur de disquette, normalement B:
+  02h+  lecteurs de disquette supplémentaires sur certains BIOS
+  80h   premier disque dur BIOS
+  81h   second disque dur BIOS
+  82h+  autres disques exposés par les ROMs de contrôleurs
+
+La séparation principale est le bit 7 : clair pour une disquette, positionné
+pour un disque fixe. Une lettre DOS n'est pas un numéro BIOS. DOS peut affecter
+C: à une partition du disque 80h, D: à une autre partition du même disque et E:
+à un CD-ROM; la correspondance n'est donc ni directe ni permanente.
+
+Lors de l'amorçage, le BIOS charge le secteur initial à 0000:7C00h ou 07C0:0000h
+et place normalement dans DL le numéro du lecteur utilisé. Un chargeur doit
+sauvegarder DL immédiatement et le réutiliser, plutôt que supposer 00h ou 80h.
+
+Les ROMs optionnelles IDE/SCSI peuvent modifier l'ordre des disques. Le premier
+disque SCSI amorçable peut devenir 80h et décaler un disque IDE à 81h, selon la
+configuration du BIOS.
+
+==============================================================================
+3. RÉSULTAT, CARRY FLAG ET CODES D'ÉTAT
+==============================================================================
+
+Convention normale :
+
+  CF=0   succès, AH vaut généralement 00h;
+  CF=1   erreur, AH contient un code d'état.
+
+Certains vieux BIOS ne rétablissent pas CF exactement comme prévu. Un logiciel
+destiné à des machines très anciennes peut initialiser CF avant l'appel et
+contrôler à la fois CF et AH. Pour les lectures/écritures, AL est parfois censé
+contenir le nombre de secteurs transférés en cas d'erreur, mais ce résultat est
+inconstant : ne jamais utiliser un transfert partiel sans vérification propre.
+
+Codes classiques courants :
+
+  00h   succès
+  01h   commande invalide ou fonction non prise en charge
+  02h   marque d'adresse introuvable
+  03h   support protégé en écriture
+  04h   secteur demandé introuvable ou lecture impossible
+  05h   échec de réinitialisation
+  06h   média changé
+  07h   échec d'activité des paramètres du disque
+  08h   dépassement DMA
+  09h   frontière DMA ou adresse de mémoire invalide
+  0Ah   secteur défectueux signalé
+  0Bh   cylindre défectueux
+  0Ch   type de média ou piste non pris en charge
+  0Dh   nombre de secteurs de formatage invalide
+  0Eh   marque d'adresse de contrôle détectée
+  0Fh   niveau d'arbitrage DMA hors limites
+  10h   erreur CRC/ECC non corrigée
+  11h   ECC a corrigé les données
+  20h   panne générale du contrôleur
+  31h   aucun média dans le lecteur, sur certaines extensions
+  40h   échec de positionnement
+  80h   expiration du délai
+  AAh   lecteur non prêt
+  B0h   volume non verrouillé, fonction EDD
+  B1h   volume verrouillé
+  B2h   volume non amovible
+  B3h   volume utilisé
+  B4h   compteur de verrouillage dépassé
+  B5h   requête d'éjection valide échouée
+  B6h   média présent changé
+  BBh   erreur non définie
+  CCh   défaut d'écriture
+  E0h   erreur de registre d'état
+  FFh   échec de l'opération Sense
+
+Les codes varient avec le BIOS et le périphérique. Le code 11h est généralement
+un succès corrigé, mais certains BIOS positionnent CF; l'application doit tenir
+compte de la documentation de la machine si cette distinction est importante.
+
+Après une erreur de lecture classique, la pratique historique consiste à
+réinitialiser avec AH=00h, puis recommencer un petit nombre de fois. Une boucle
+infinie de répétitions masque une panne et peut bloquer définitivement le boot.
+
+==============================================================================
+4. RÉSUMÉ DES FONCTIONS CLASSIQUES
+==============================================================================
+
+ AH    Fonction                         Disquette       Disque dur classique
+ ----  -------------------------------  --------------  ----------------------
+ 00h   réinitialiser                    oui             oui
+ 01h   lire dernier état                oui             oui
+ 02h   lire secteurs CHS                oui             oui
+ 03h   écrire secteurs CHS              oui             oui
+ 04h   vérifier secteurs CHS            oui             oui
+ 05h   formater piste/cylindre          piste           cylindre selon BIOS
+ 06h   formater avec défauts            réservé         XT seulement
+ 07h   formater depuis cylindre         réservé         XT seulement
+ 08h   lire paramètres                  oui             oui
+ 09h   initialiser caractéristiques     réservé         anciens disques
+ 0Ch   positionner                      réservé         certains disques
+ 0Dh   réinitialisation alternative     réservé         AT/PS/2
+ 10h   tester prêt                      réservé         certains disques
+ 11h   recalibrer                       réservé         certains disques
+ 15h   lire type DASD                   oui             oui
+ 16h   état de changement du média      oui             réservé disque
+ 17h   définir type pour formatage      oui             réservé disque
+ 18h   définir média pour formatage     oui             réservé disque
+ 19h   garer les têtes                  réservé         PS/2 seulement
+ 1Ah   formater l'unité                 réservé         ESDI/PS/2
+
+« Réservé » ne garantit pas le même résultat sur tous les clones. Des BIOS de
+fabricants ont utilisé des numéros libres pour des diagnostics ou extensions.
+Tester une capacité documentée avant d'en dépendre.
+
+==============================================================================
+5. AH=00h ET 0Dh : RÉINITIALISATION
+==============================================================================
+
+Entrée AH=00h :
+
+  AH = 00h
+  DL = numéro du lecteur
+
+Sortie : CF et AH selon l'état. La fonction remet à zéro le contrôleur associé,
+recalibre ou réinitialise son état selon le matériel. Sur plusieurs BIOS IBM,
+une réinitialisation de disque dur réinitialise également le système disquette.
+
+AH=0Dh est une réinitialisation alternative définie pour certains PC/AT, XT 286
+et PS/2. Elle n'est pas la fonction portable de base; employer AH=00h sauf besoin
+spécifique documenté.
+
+La réinitialisation ne reformate pas le disque et n'efface pas les secteurs.
+Elle invalide toutefois l'état interne du contrôleur et peut être lente.
+
+==============================================================================
+6. AH=01h : ÉTAT DE LA DERNIÈRE OPÉRATION
+==============================================================================
+
+Entrée :
+
+  AH = 01h
+  DL = lecteur concerné selon le BIOS
+
+Sortie : AH contient le dernier état, CF est positionné si celui-ci n'est pas
+nul. Les BIOS IBM conservent historiquement l'état disquette à 0040:0041h et
+l'état disque dur à 0040:0074h.
+
+Cette fonction n'est pas une file d'erreurs et sa valeur peut avoir été modifiée
+par un autre appel BIOS, DOS, un pilote ou une interruption. La meilleure source
+du résultat reste AH et CF immédiatement après l'opération qui vient d'échouer.
+
+==============================================================================
+7. AH=02h, 03h ET 04h : LECTURE, ÉCRITURE, VÉRIFICATION CHS
+==============================================================================
+
+Registres d'entrée communs :
+
+  AH = 02h lecture, 03h écriture, 04h vérification
+  AL = nombre de secteurs, normalement 1 à 127 selon le BIOS
+  CH = bits 7..0 du cylindre
+  CL = bits 7..6 du cylindre et bits 5..0 du secteur
+  DH = tête
+  DL = lecteur
+  ES:BX = tampon pour lecture/écriture; non utilisé pour vérifier
+
+Sortie :
+
+  CF = 0 succès
+  CF = 1 erreur
+  AH = état
+  AL = nombre transféré sur certains BIOS seulement, résultat non portable
+
+AH=02h copie les secteurs du support vers ES:BX. AH=03h fait l'inverse et peut
+détruire les données. AH=04h demande au contrôleur de vérifier la lisibilité ou
+le CRC sans remettre le contenu au programme; sa portée exacte dépend du
+contrôleur.
+
+Un transfert ne doit généralement pas traverser une piste avec les anciens
+BIOS. Beaucoup de BIOS plus récents l'acceptent, d'autres échouent ou limitent
+AL aux secteurs restants. La méthode portable découpe les opérations à la fin de
+chaque piste et à la frontière mémoire de 64 Kio.
+
+Le secteur CHS commence à 1, contrairement au cylindre et à la tête qui
+commencent à 0. CL bits 5..0 égal à zéro est invalide.
+
+==============================================================================
+8. ENCODAGE CHS DANS CX ET DX
+==============================================================================
+
+Pour cylindre C, tête H, secteur S :
+
+  CH = C AND 00FFh
+  CL = ((C SHR 2) AND C0h) OR (S AND 3Fh)
+  DH = H
+  DL = lecteur
+
+Décodage :
+
+  C = CH OR ((CL AND C0h) SHL 2)
+  S = CL AND 3Fh
+  H = DH
+
+C doit tenir sur 10 bits, H sur 8 bits et S sur 6 bits. En pratique :
+
+  0 <= C <= 1023
+  0 <= H <= 255
+  1 <= S <= 63
+
+Conversion d'un LBA en CHS, connaissant HPC têtes par cylindre et SPT secteurs
+par piste :
+
+  C = LBA DIV (HPC * SPT)
+  reste = LBA MOD (HPC * SPT)
+  H = reste DIV SPT
+  S = (reste MOD SPT) + 1
+
+Conversion inverse :
+
+  LBA = ((C * HPC) + H) * SPT + (S - 1)
+
+Ces formules utilisent la géométrie logique rapportée par le BIOS, pas
+nécessairement la géométrie physique inscrite sur le support.
+
+==============================================================================
+9. CONTRAINTES DE MÉMOIRE ET FRONTIÈRE DE 64 Kio
+==============================================================================
+
+Les services classiques utilisent ES:BX. Le BIOS, surtout pour les disquettes
+avec DMA 8237, peut exiger que le tampon entier reste dans la même fenêtre de
+64 Kio physique :
+
+  (adresse_physique AND FFFFh) + taille_transfert <= 10000h
+
+L'adresse physique réelle vaut normalement ES*16+BX. Tester uniquement
+BX+taille est insuffisant si ES n'est pas aligné sur 4096 paragraphes.
+
+Autres précautions :
+
+  - ne pas dépasser la mémoire conventionnelle réellement disponible;
+  - éviter qu'ES:BX pointe dans l'IVT, la BIOS Data Area, le code ou la pile;
+  - certains BIOS refusent AL=00h, d'autres l'interprètent dangereusement;
+  - limiter les transferts à 127 secteurs même si un émulateur en accepte 128;
+  - segmenter aussi aux limites de piste pour la compatibilité CHS;
+  - les BIOS anciens peuvent exiger ES:BX aligné au mot.
+
+Une stratégie robuste utilise un petit tampon sous 1 Mio, par exemple 32 Kio,
+puis copie les données vers leur destination finale.
+
+==============================================================================
+10. FONCTIONS DE FORMATAGE
+==============================================================================
+
+AH=05h formate une piste de disquette. Entrées classiques :
+
+  AH = 05h
+  AL = nombre de secteurs à formater
+  CH = cylindre/piste
+  DH = tête
+  DL = lecteur de disquette
+  ES:BX -> liste de descripteurs de secteurs
+
+Chaque descripteur comporte quatre octets CHRN : cylindre, tête, numéro de
+secteur et code de taille N. La taille vaut 128 * 2^N octets; N=2 désigne donc
+512 octets. Le BIOS emploie aussi la table INT 1Eh pour le gap, l'octet de
+remplissage et les délais.
+
+Pour les disques durs historiques, AH=05h à AH=07h changent selon XT, AT et
+contrôleur. AH=06h peut formater un cylindre et marquer les secteurs défectueux;
+AH=07h peut formater depuis un cylindre jusqu'à la fin. AH=1Ah concerne certains
+périphériques ESDI. Ces appels ne sont pas portables vers IDE/SCSI modernes.
+
+Ne jamais explorer une fonction de formatage « pour voir son résultat ». Même
+un appel qui finit avec CF=1 peut avoir déjà modifié une partie du support.
+
+==============================================================================
+11. AH=08h : PARAMÈTRES DU LECTEUR
+==============================================================================
+
+Entrée :
+
+  AH = 08h
+  DL = lecteur
+
+Retour typique pour un disque dur :
+
+  CF      état
+  AH      code d'erreur ou zéro
+  CH      huit bits faibles du cylindre maximal
+  CL 7..6 deux bits forts du cylindre maximal
+  CL 5..0 secteurs par piste
+  DH      numéro maximal de tête
+  DL      nombre de disques durs attachés selon le BIOS
+
+Nombres utilisables :
+
+  cylindres = cylindre_maximal + 1
+  têtes     = DH + 1
+  secteurs  = CL AND 3Fh
+
+Pour une disquette, le BIOS peut aussi retourner :
+
+  BL      code de type de disquette;
+  DL      nombre de lecteurs;
+  ES:DI   adresse de la table de paramètres de disquette.
+
+La présence et la fiabilité de ces retours supplémentaires varient entre les
+premiers PC, AT, PS/2 et clones. Contrôler CF avant de les utiliser.
+
+AH=08h rapporte la géométrie CHS employée par le BIOS. Pour la capacité complète
+d'un disque EDD, utiliser AH=48h et le nombre total de secteurs 64 bits.
+
+==============================================================================
+12. FONCTIONS CLASSIQUES COMPLÉMENTAIRES
+==============================================================================
+
+AH=09h, initialiser les caractéristiques
+  Sur XT, initialise la paire à partir de la table pointée par INT 41h et des
+  commutateurs du contrôleur. Sur AT, DL=80h utilise INT 41h et DL=81h INT 46h.
+  Obsolète pour les contrôleurs auto-configurés.
+
+AH=0Ch, Seek
+  Positionne les têtes au CHS donné sur certains disques. Une lecture normale
+  effectue déjà le positionnement nécessaire.
+
+AH=10h, tester si prêt
+  Attend ou interroge l'état de disponibilité du disque fixe.
+
+AH=11h, recalibrer
+  Replace le mécanisme sur une piste de référence. Le sens est matériel et
+  historique; un BIOS moderne peut retourner succès sans mouvement physique.
+
+AH=15h, lire le type DASD
+  Retour dépendant du lecteur. Les valeurs classiques comprennent 00h absent,
+  01h disquette sans ligne de changement, 02h disquette avec détection de
+  changement et 03h disque dur. Pour un disque dur, CX:DX peut contenir le
+  nombre de blocs de 512 octets sur certaines machines.
+
+AH=16h, état de changement du média
+  Concerne les lecteurs de disquette dotés d'une ligne Disk Change. CF et AH
+  indiquent si le média a changé depuis le dernier accès reconnu.
+
+AH=17h, définir le type de disquette pour formatage
+  Sélectionne une combinaison historique de pistes/taille avant AH=05h.
+
+AH=18h, définir le média pour formatage
+  Fournit la géométrie demandée; certains BIOS retournent ES:DI vers une table
+  de paramètres adaptée.
+
+AH=19h, garer les têtes
+  Défini sur certains PS/2, non portable sur PC/XT/AT ordinaires.
+
+==============================================================================
+13. PARTICULARITÉS DES DISQUETTES
+==============================================================================
+
+Formats classiques à secteurs de 512 octets :
+
+  capacité   pistes  têtes  secteurs/piste  média courant
+  ---------  ------  -----  ---------------  -----------------------------
+  160 Kio      40      1          8           5,25 pouces simple face
+  180 Kio      40      1          9           5,25 pouces simple face
+  320 Kio      40      2          8           5,25 pouces double face
+  360 Kio      40      2          9           5,25 pouces DD
+  720 Kio      80      2          9           3,5 pouces DD
+  1,2 Mio      80      2         15           5,25 pouces HD
+  1,44 Mio     80      2         18           3,5 pouces HD
+  2,88 Mio     80      2         36           3,5 pouces ED
+
+Ces valeurs décrivent les formats IBM usuels, non tous les formats possibles.
+Le contrôleur, le lecteur, le débit et le BIOS doivent tous accepter le média.
+
+Les disquettes utilisent couramment DMA, d'où la stricte frontière de 64 Kio.
+Le moteur doit également démarrer et atteindre sa vitesse; le BIOS gère les
+délais via sa table de paramètres. Après changement de disquette, les anciennes
+informations de FAT ou de géométrie mises en cache ne sont plus valides.
+
+EDD n'est généralement pas offert pour DL=00h/01h. Pour une vraie disquette,
+utiliser les fonctions CHS classiques, sauf si AH=41h confirme explicitement
+les extensions sur le lecteur concerné.
+
+==============================================================================
+14. PARAMÈTRES DE DISQUETTE INT 1Eh
+==============================================================================
+
+L'entrée IVT 1Eh pointe vers une table, généralement de 11 octets, utilisée par
+le service de disquette :
+
+  offset  contenu
+  ------  ---------------------------------------------------------------
+  00h     premier octet Specify du contrôleur
+  01h     second octet Specify
+  02h     délai avant arrêt du moteur, en ticks
+  03h     code de taille de secteur, 2 pour 512 octets
+  04h     dernier secteur de la piste
+  05h     longueur du gap de lecture/écriture
+  06h     longueur de données, souvent FFh
+  07h     longueur du gap de formatage
+  08h     octet de remplissage de formatage, souvent F6h
+  09h     délai de stabilisation des têtes
+  0Ah     délai de démarrage du moteur, en huitièmes de seconde
+
+INT 1Eh ressemble à INT 41h : c'est normalement un pointeur de données stocké
+dans l'IVT, pas un service à appeler. Voir aussi DOC/INTERRUPTION_41h.txt pour le
+mécanisme des pointeurs de tables dans l'IVT.
+
+Certains chargeurs remplacent temporairement INT 1Eh par une copie modifiée afin
+de lire une géométrie non standard. Ils doivent conserver l'ancien vecteur,
+placer la table dans une mémoire persistante et restaurer le vecteur avant de
+quitter.
+
+==============================================================================
+15. PARTICULARITÉS DES DISQUES DURS
+==============================================================================
+
+Les anciens disques utilisent les tables de paramètres pointées par INT 41h
+pour DL=80h et, sur AT, INT 46h pour DL=81h. Elles contiennent cylindres, têtes,
+précompensation et paramètres du contrôleur; la table AT ajoute secteurs par
+piste et zone d'atterrissage.
+
+INT 13h lit des secteurs absolus du disque BIOS. Il ignore les partitions et les
+systèmes de fichiers. Lire CHS 0/0/1 du disque 80h retourne traditionnellement
+le MBR, mais un gestionnaire de disque, une ROM SCSI ou une émulation peut
+interposer une traduction.
+
+Un secteur réussi n'est pas nécessairement de 512 octets dans toutes les
+extensions, bien que 512 soit la valeur historique. AH=48h fournit la taille
+logique de secteur; les chargeurs doivent la vérifier si leur conception exige
+512 octets.
+
+==============================================================================
+16. LIMITES CHS ET TRADUCTION DE GÉOMÉTRIE
+==============================================================================
+
+Le champ CHS INT 13h atteint au plus 1024*256*63 secteurs, environ 8,46 Go en
+décimal avec des secteurs de 512 octets. Des limites plus anciennes proviennent
+des tables BIOS, contrôleurs, IDE, DOS et partitions, notamment 504 Mio lorsque
+les contraintes BIOS et ATA sont combinées sans traduction.
+
+Pour dépasser ces limites, les BIOS ont présenté une géométrie logique telle
+que 1024 cylindres, 255 têtes et 63 secteurs, puis traduit cette adresse vers
+le matériel. Les têtes logiques ne correspondent alors à aucune tête physique.
+
+Conséquences :
+
+  - employer la géométrie retournée par le BIOS qui fera l'accès;
+  - ne pas mélanger les valeurs IDENTIFY ATA et INT 13h/AH=08h;
+  - ne pas déduire la capacité réelle de CHS si EDD est disponible;
+  - deux BIOS peuvent attribuer des CHS différents aux mêmes LBA;
+  - déplacer un disque ancien entre machines peut casser un logiciel ayant
+    enregistré une géométrie plutôt que les numéros de secteurs absolus.
+
+==============================================================================
+17. EXTENSIONS EDD : DÉTECTION AH=41h
+==============================================================================
+
+Avant tout appel EDD, tester le lecteur :
+
+  AH = 41h
+  BX = 55AAh
+  DL = lecteur, normalement 80h ou plus
+  INT 13h
+
+Succès valide uniquement si :
+
+  CF = 0
+  BX = AA55h
+
+Retours :
+
+  AH = version majeure de l'interface selon le BIOS;
+  CX = bitmap des sous-ensembles pris en charge.
+
+Bits CX courants :
+
+  bit 0   accès étendu AH=42h à AH=44h et AH=47h;
+  bit 1   verrouillage/éjection AH=45h et AH=46h;
+  bit 2   paramètres étendus AH=48h et changements EDD associés;
+
+Ne tester AH, CX ou BX qu'après CF. La signature inversée AA55h empêche de
+prendre un BIOS ignorant la fonction pour un BIOS EDD.
+
+Ne pas confondre INT 13h/AH=41h avec l'entrée INT 41h de l'IVT, qui pointe vers
+la table des paramètres du premier disque dur.
+
+==============================================================================
+18. DISK ADDRESS PACKET ET TRANSFERTS LBA
+==============================================================================
+
+AH=42h, 43h, 44h et 47h reçoivent DS:SI vers un Disk Address Packet, DAP.
+Forme de base de 16 octets :
+
+ Offset  Taille  Contenu
+ ------  ------  ----------------------------------------------------------
+ 00h     BYTE    taille du paquet = 10h
+ 01h     BYTE    réservé = 00h
+ 02h     WORD    nombre de blocs à transférer
+ 04h     WORD    offset du tampon
+ 06h     WORD    segment du tampon
+ 08h     QWORD   premier numéro de bloc LBA, non signé, petit-boutiste
+
+Le pointeur du tampon est stocké offset puis segment, comme un pointeur lointain
+8086. Le LBA zéro désigne le premier secteur du disque BIOS.
+
+Forme EDD de 24 octets :
+
+  00h BYTE  taille = 18h
+  01h BYTE  réservé
+  02h WORD  nombre de blocs
+  04h DWORD FFFFFFFFh pour demander l'adresse plate
+  08h QWORD LBA initial
+  10h QWORD adresse physique plate 64 bits du tampon
+
+Cette forme et l'adresse plate ne sont pas implémentées par tous les BIOS. Pour
+un programme 8086/boot ancien, préférer le DAP de 10h octets et un tampon réel
+sous 1 Mio.
+
+Le DAP doit généralement être aligné au mot et ne pas traverser une frontière de
+segment problématique. La spécification permet davantage de blocs que certains
+BIOS réels; des lots modestes, par exemple 1 à 127 secteurs, sont plus sûrs.
+Certains BIOS modifient le champ nombre de blocs : le réinitialiser avant chaque
+nouvel appel.
+
+==============================================================================
+19. FONCTIONS EDD PRINCIPALES
+==============================================================================
+
+AH=42h, lecture étendue
+  DS:SI -> DAP; DL = lecteur. Copie les blocs LBA vers le tampon.
+
+AH=43h, écriture étendue
+  DS:SI -> DAP; DL = lecteur. Écrit les blocs; AL peut contenir des drapeaux,
+  dont une demande de vérification selon la version EDD. Fonction destructive.
+
+AH=44h, vérification étendue
+  Vérifie les blocs décrits par le DAP sans tampon de données utile.
+
+AH=45h, verrouiller/déverrouiller un média
+  Pour unités amovibles. AL sélectionne l'opération et le niveau de verrouillage.
+  Tester le sous-ensemble correspondant dans CX après AH=41h.
+
+AH=46h, éjecter le média
+  Demande l'éjection d'une unité amovible. Un verrou ou un périphérique non
+  éjectable entraîne une erreur.
+
+AH=47h, seek étendu
+  Positionne le périphérique sur le LBA indiqué par le DAP. Souvent inutile pour
+  les unités modernes et parfois simulé.
+
+AH=48h, lire les paramètres étendus
+  DS:SI pointe vers une structure dont le premier WORD contient la taille du
+  tampon fourni. Voir section suivante.
+
+AH=49h, changement de média étendu
+  Présent dans certaines versions/extensions pour interroger une unité amovible.
+
+AH=4Ah, démarrer l'émulation disque
+AH=4Bh, terminer/obtenir l'état de l'émulation
+  Associés notamment aux mécanismes de CD-ROM amorçable El Torito. Leur présence
+  et leur convention exacte doivent être détectées/documentées par le BIOS.
+
+AH=4Eh, configuration matérielle EDD
+  Fonction avancée de contrôle, par exemple prélecture ou cache selon la version.
+  Ne pas l'utiliser comme fonction générique sans lire la spécification EDD du
+  BIOS ciblé.
+
+==============================================================================
+20. AH=48h : PARAMÈTRES ÉTENDUS
+==============================================================================
+
+Entrée :
+
+  AH = 48h
+  DL = lecteur
+  DS:SI -> tampon
+  [DS:SI+00h] = taille disponible, 1Ah, 1Eh ou 42h selon version souhaitée
+
+Début commun de la structure :
+
+ Offset  Taille  Contenu
+ ------  ------  ----------------------------------------------------------
+ 00h     WORD    taille fournie/retournée
+ 02h     WORD    drapeaux d'information
+ 04h     DWORD   nombre de cylindres physiques
+ 08h     DWORD   nombre de têtes physiques
+ 0Ch     DWORD   secteurs par piste physiques
+ 10h     QWORD   nombre total de secteurs accessibles
+ 18h     WORD    octets par secteur logique
+
+Les versions plus longues peuvent ajouter :
+
+  - un pointeur vers une Device Parameter Table EDD;
+  - une signature, une longueur et une somme de contrôle;
+  - le chemin de bus, par exemple ISA, PCI ou PCMCIA;
+  - le type d'interface, par exemple ATA, ATAPI, SCSI, USB ou IEEE 1394;
+  - le chemin du périphérique sur ce bus;
+  - des informations de contrôleur et d'unité.
+
+Initialiser tout le tampon à zéro, inscrire sa taille, puis ne lire que les
+octets compris dans la taille effectivement retournée. Les géométries physiques
+peuvent valoir FFFFFFFFh lorsqu'elles ne sont pas disponibles. Le QWORD du
+nombre total de secteurs est la donnée à privilégier pour la capacité :
+
+  capacité_octets = secteurs_totaux * octets_par_secteur
+
+Effectuer ce calcul sur au moins 64 bits avec détection de dépassement.
+
+==============================================================================
+21. BIOS SCSI ET INT 13h
+==============================================================================
+
+Une carte SCSI amorçable contient souvent une ROM optionnelle. Pendant le POST,
+cette ROM :
+
+  1. initialise l'adaptateur et parcourt le bus SCSI;
+  2. choisit les unités autorisées à démarrer;
+  3. leur attribue des numéros BIOS 80h, 81h, etc.;
+  4. accroche INT 13h et chaîne les demandes qu'elle ne traite pas;
+  5. traduit CHS ou LBA en commandes SCSI.
+
+Exemples de traduction interne possibles :
+
+  INT 13h AH=02h ou 42h  -> SCSI READ(6), READ(10) ou autre
+  INT 13h AH=03h ou 43h  -> SCSI WRITE(6), WRITE(10) ou autre
+  INT 13h AH=00h         -> TEST UNIT READY / remise à zéro interne
+  INT 13h AH=48h         -> READ CAPACITY et données mémorisées par la ROM
+
+Ce sont des comportements d'implémentation, pas une correspondance obligatoire
+commande par commande. INT 13h ne fournit pas de fonction IBM universelle pour
+envoyer un Command Descriptor Block SCSI arbitraire. Pour INQUIRY, REQUEST
+SENSE, MODE SENSE ou une unité non exposée comme disque BIOS, il faut une
+interface spécifique : pilote ASPI, CAM, service de la ROM du fabricant ou
+pilote SCSI du système d'exploitation.
+
+La géométrie CHS d'un disque SCSI est presque toujours inventée par le BIOS. Les
+accès EDD LBA évitent cette traduction, mais passent encore par la ROM. Un disque
+visible sur le bus SCSI n'est pas forcément visible par INT 13h; la ROM peut
+limiter le nombre d'unités, exclure certains LUN ou réserver les périphériques
+non disques.
+
+Les codes SCSI détaillés Sense Key/ASC/ASCQ sont généralement convertis en un
+code AH beaucoup moins précis. INT 13h ne permet donc pas un diagnostic SCSI
+complet.
+
+==============================================================================
+22. CD-ROM AMORÇABLE ET ÉMULATION EL TORITO
+==============================================================================
+
+El Torito permet au BIOS de démarrer depuis un CD-ROM. Selon l'entrée du Boot
+Catalog, le BIOS peut offrir :
+
+  - une émulation de disquette;
+  - une émulation de disque dur;
+  - aucune émulation, le chargeur recevant un numéro de lecteur propre au BIOS.
+
+En mode émulation, INT 13h présente une image du CD comme un disque traditionnel
+et peut déplacer les numéros des unités existantes. En mode sans émulation, le
+chargeur doit suivre les conventions El Torito et les fonctions BIOS offertes.
+Les secteurs logiques du CD font normalement 2048 octets, alors que l'image
+émulée peut présenter des secteurs de 512 octets.
+
+Des fonctions autour de AH=4Ah/4Bh gèrent ou décrivent l'émulation. Elles ne
+doivent pas être supposées sur un BIOS sans support El Torito. INT 41h, la table
+historique du disque 80h, n'est pas une source valide pour décrire un CD-ROM.
+
+==============================================================================
+23. EXEMPLE DE LECTURE CHS EN ASSEMBLEUR 8086
+==============================================================================
+
+Lecture du premier secteur du lecteur de démarrage vers 0000:0600h. DL a été
+sauvegardé dans BootDrive :
+
+BootDrive       db      0
+
+ReadFirstSector:
+        xor     ax, ax
+        mov     es, ax
+        mov     bx, 0600h
+        mov     si, 3           ; trois tentatives maximum
+
+.retry:
+        mov     ah, 02h
+        mov     al, 1
+        xor     ch, ch          ; cylindre 0
+        mov     cl, 1           ; secteur 1
+        xor     dh, dh          ; tête 0
+        mov     dl, [BootDrive]
+        int     13h
+        jnc     .ok
+
+        xor     ah, ah          ; AH=00h, reset
+        mov     dl, [BootDrive]
+        int     13h
+        dec     si
+        jnz     .retry
+        stc
+        ret
+
+.ok:
+        clc
+        ret
+
+Le code réel doit initialiser SS:SP avant d'utiliser CALL/PUSH, préserver les
+registres nécessaires et s'assurer que 0000:0600h ne chevauche aucune donnée
+utile. Il ne faut pas recharger DL avec 80h si le BIOS a démarré depuis une
+disquette, un CD ou un autre disque.
+
+==============================================================================
+24. EXEMPLE DE LECTURE LBA AVEC EDD
+==============================================================================
+
+Structure et détection conceptuelles en assembleur 16 bits :
+
+BootDrive       db      0
+DiskPacket:
+        db      10h, 0
+        dw      1               ; un secteur
+        dw      0600h           ; offset du tampon
+        dw      0000h           ; segment du tampon
+        dd      00000000h       ; LBA bits 31..0
+        dd      00000000h       ; LBA bits 63..32
+
+CheckEDD:
+        mov     bx, 55AAh
+        mov     ah, 41h
+        mov     dl, [BootDrive]
+        int     13h
+        jc      .no
+        cmp     bx, 0AA55h
+        jne     .no
+        test    cx, 1
+        jz      .no
+
+        mov     si, DiskPacket
+        mov     ah, 42h
+        mov     dl, [BootDrive]
+        int     13h
+        jc      .read_error
+        ; succès
+
+.no:
+        ; utiliser CHS ou annoncer l'absence d'EDD
+
+DS doit désigner le segment contenant DiskPacket. Si le paquet ou le programme
+est relocalisé, ses champs segment:offset doivent être recalculés. Réinitialiser
+le compte de secteurs avant chaque nouvelle tentative.
+
+==============================================================================
+25. CHARGEURS D'AMORÇAGE
+==============================================================================
+
+Un secteur d'amorçage fiable suit généralement cette séquence :
+
+  1. exécuter un saut initial et normaliser CS si nécessaire;
+  2. initialiser une pile sûre;
+  3. sauvegarder immédiatement DL;
+  4. détecter EDD pour ce même DL;
+  5. préférer AH=42h si disponible;
+  6. sinon obtenir ou connaître la géométrie et convertir LBA en CHS;
+  7. découper les lectures par piste, taille maximale et frontière de 64 Kio;
+  8. contrôler CF après chaque appel;
+  9. réinitialiser et répéter un nombre limité de fois;
+ 10. vérifier une signature ou somme de contrôle du second étage avant saut.
+
+Le BIOS ne garantit pas toutes les valeurs de registres non documentées. Un
+chargeur doit préserver ce dont il dépend et ne pas supposer DS=ES=SS=0, même si
+de nombreux BIOS démarrent ainsi. Il doit également activer ou gérer A20 avant
+d'utiliser une adresse au-dessus de 1 Mio.
+
+==============================================================================
+26. PROGRAMMATION DÉFENSIVE ET COMPATIBILITÉ
+==============================================================================
+
+Règles recommandées :
+
+  - contrôler CF immédiatement après INT 13h;
+  - sauvegarder le code AH avant tout autre appel BIOS;
+  - ne pas faire confiance à AL comme compteur de transfert partiel;
+  - ne jamais demander un secteur CHS zéro;
+  - vérifier C, H et S contre AH=08h;
+  - ne pas traverser une piste sur les BIOS anciens;
+  - ne pas traverser une fenêtre DMA de 64 Kio;
+  - employer de petits transferts et les fractionner;
+  - détecter EDD avec BX=55AAh et vérifier BX=AA55h au retour;
+  - tester les bits de capacité CX avant chaque sous-ensemble EDD;
+  - aligner le DAP et initialiser ses octets réservés à zéro;
+  - borner les LBA à la taille retournée par AH=48h;
+  - tenir compte de la taille logique de secteur;
+  - réinitialiser les champs du DAP qu'un BIOS peut modifier;
+  - prévoir un nombre fini de nouvelles tentatives;
+  - ne pas utiliser les fonctions de formatage comme tests de présence;
+  - conserver DL reçu à l'amorçage;
+  - tester sur BIOS IBM, clones anciens et au moins un émulateur strict.
+
+Certains BIOS détruisent des registres qu'ils devraient préserver ou gèrent mal
+les tampons proches d'une frontière. Un logiciel d'amorçage compatible peut
+sauvegarder DS, ES, SI, DI et BP autour des appels lorsqu'il en a besoin, sans
+supposer qu'un clone imparfait respecte toutes les conventions.
+
+==============================================================================
+27. LIMITES SOUS LES SYSTÈMES MODERNES
+==============================================================================
+
+INT 13h est conçu pour le BIOS hérité :
+
+  - DOS l'emploie au démarrage, puis ses pilotes de bloc peuvent l'encapsuler;
+  - Windows, Linux et BSD modernes utilisent leurs pilotes ATA/SCSI/NVMe;
+  - une application protégée ne doit pas contourner le système pour écrire des
+    secteurs physiques;
+  - UEFI fournit Block I/O et Disk I/O, non INT 13h, sauf Compatibility Support
+    Module facultatif;
+  - Secure Boot et les hyperviseurs ajoutent d'autres couches sans modifier la
+    convention historique du code exécuté en BIOS hérité.
+
+INT 13h reste essentiel pour les bootloaders BIOS, les logiciels DOS,
+l'émulation, la restauration de machines anciennes et l'étude des ROMs. Il ne
+faut pas en faire une API de stockage générale pour un nouveau système 64 bits.
+
+==============================================================================
+28. RÉSUMÉ
+==============================================================================
+
+  - INT 13h est le service BIOS commun aux disquettes et disques durs;
+  - DL=00h commence la famille disquette, DL=80h la famille disque dur;
+  - les fonctions AH=02h/03h utilisent CHS et un tampon ES:BX;
+  - les secteurs CHS commencent à 1, cylindres et têtes à 0;
+  - la géométrie du BIOS peut être traduite et non physique;
+  - AH=08h fournit les limites CHS actives;
+  - AH=41h détecte EDD, AH=42h/43h transfèrent par LBA avec un DAP;
+  - AH=48h fournit capacité 64 bits, taille de secteur et chemin matériel;
+  - un BIOS SCSI accroche INT 13h et traduit les requêtes, mais INT 13h n'est
+    pas une interface générique permettant d'envoyer tout CDB SCSI;
+  - les disquettes emploient généralement les fonctions classiques et la table
+    de paramètres pointée par INT 1Eh;
+  - toujours contrôler CF, borner les adresses et éviter les écritures pendant
+    une simple détection.
+
+Pour les détails de la table historique du premier disque dur, consulter aussi
+DOC/INTERRUPTION_41h.txt.

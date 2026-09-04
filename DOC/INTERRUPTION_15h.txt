@@ -1,0 +1,840 @@
+==============================================================================
+     INTERRUPTION 15h DU BIOS x86 : SERVICES SYSTÈME
+==============================================================================
+
+INT 15h regroupe les services système divers du BIOS IBM PC et compatibles. À
+l'origine, sur IBM PC et PCjr, il commande l'interface cassette. Les générations
+AT et PS/2 lui ont ajouté attente, joystick, déplacement de mémoire étendue,
+passage en mode protégé, identification de la machine, EBDA, souris PS/2 et
+coordination avec les systèmes multitâches. Les BIOS ultérieurs ont encore
+ajouté A20, APM et les cartes de mémoire E801/E820.
+
+Il n'existe donc pas une unique « fonction INT 15h » : AH ou AX sélectionne une
+interface, dont le matériel minimal peut aller du 8086 au 80386 et au-delà.
+
+AVERTISSEMENT
+-------------
+
+Une fonction inconnue doit normalement revenir avec CF=1 et AH=86h, mais les
+premiers BIOS et certains clones ne respectent pas tous cette règle. Sur un
+PC/XT ancien, appeler aveuglément une fonction tardive peut ne rien faire,
+retourner une valeur trompeuse ou même planter. Toujours détecter la machine,
+initialiser tous les registres exigés et vérifier CF ainsi que la signature de
+chaque extension.
+
+Sources principales :
+
+  - IBM PC/XT, PC/AT et PS/2 Technical References;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles;
+  - ACPI Specification, System Address Map Interfaces :
+    https://uefi.org/specs/ACPI/6.6/15_System_Address_Map_Interfaces.html
+  - Ralf Brown's Interrupt List :
+    https://www.cs.cmu.edu/~ralf/files.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Contexte x86, vecteur et conventions
+  2.  Évolution selon les machines
+  3.  Résumé des fonctions IBM principales
+  4.  AH=00h à 03h : cassette PC/PCjr
+  5.  AH=0Fh et 21h : services PS/2 particuliers
+  6.  AH=4Fh : interception du clavier
+  7.  AH=80h à 82h et 85h : crochets multitâches
+  8.  AH=83h : attente asynchrone
+  9.  AH=84h : joystick
+ 10.  AH=86h : attente synchrone
+ 11.  AH=87h : déplacement de mémoire étendue
+ 12.  AH=88h : taille de mémoire étendue
+ 13.  AH=89h : passage 80286 en mode protégé
+ 14.  AH=90h et 91h : périphérique occupé/terminé
+ 15.  AH=C0h : paramètres de configuration système
+ 16.  AH=C1h : adresse de l'EBDA
+ 17.  AH=C2h : souris/dispositif de pointage PS/2
+ 18.  AH=C3h et C4h : watchdog et POS
+ 19.  AX=2400h à 2403h : ligne A20
+ 20.  AX=E801h : mémoire étendue intermédiaire
+ 21.  EAX=E820h : carte mémoire système
+ 22.  AX=53xxh : Advanced Power Management
+ 23.  Autres extensions et conflits de numéros
+ 24.  Exemples assembleur 8086
+ 25.  Exemple E820 pour 80386+
+ 26.  Exemple Pascal pour DOS
+ 27.  BIOS Data Area associée
+ 28.  Mode réel, protégé, virtuel et UEFI
+ 29.  Programmation défensive
+ 30.  Résumé
+
+==============================================================================
+1. CONTEXTE x86, VECTEUR ET CONVENTIONS
+==============================================================================
+
+En mode réel, l'instruction INT 15h charge CS:IP depuis l'entrée 15h de
+l'Interrupt Vector Table :
+
+  15h * 4 = 0054h
+
+  0000:0054h  WORD  offset de la routine
+  0000:0056h  WORD  segment de la routine
+
+Le processeur ne connaît pas le sens « services système »; il vient du BIOS.
+AH sélectionne les fonctions anciennes, tandis que les extensions emploient
+souvent AX ou EAX complet.
+
+Convention habituelle :
+
+  CF=0   fonction exécutée avec succès;
+  CF=1   erreur ou fonction non prise en charge;
+  AH     code d'état, souvent 00h succès, 80h/86h non pris en charge.
+
+Codes IBM fréquents :
+
+  00h   succès
+  01h   appel ou paramètre invalide selon fonction
+  80h   commande invalide sur PC/PCjr
+  86h   fonction non prise en charge sur XT/AT et compatibles
+
+Chaque extension peut définir ses propres codes. CF doit être testé avant les
+registres de sortie. Contrairement à INT 11h/12h, INT 15h n'a pas une seule
+structure de résultat.
+
+==============================================================================
+2. ÉVOLUTION SELON LES MACHINES
+==============================================================================
+
+IBM PC 5150 et PCjr
+  Fonctions 00h..03h pour cassette. Plusieurs fonctions inconnues retournent
+  AH=80h et CF=1.
+
+IBM PC/XT 5160
+  Le port cassette a disparu. Les fonctions correspondantes ne sont pas utiles;
+  certains BIOS anciens offrent peu de garanties pour les appels inconnus.
+
+IBM PC/AT et XT 286
+  Ajoutent attente, mémoire étendue, mode protégé, hooks de périphériques et
+  configuration système. Plusieurs fonctions exigent un 80286.
+
+IBM PS/2
+  Ajoute EBDA, souris auxiliaire, watchdog, POS et fonctions propres aux modèles.
+
+BIOS 386/486/Pentium et compatibles
+  Ajoutent contrôle A20, APM, E801, E820 et nombreuses fonctions de fabricants.
+
+UEFI
+  INT 15h n'existe qu'avec un environnement de compatibilité BIOS/CSM. Les
+  interfaces UEFI natives remplacent mémoire, puissance et périphériques.
+
+Le titre « famille 8086 » désigne ici l'héritage x86. Une fonction utilisant EAX
+ou une table de descripteurs 286 ne peut pas être exécutée par un 8086 original.
+
+==============================================================================
+3. RÉSUMÉ DES FONCTIONS IBM PRINCIPALES
+==============================================================================
+
+ Fonction    Description                               Machine typique
+ ----------  ----------------------------------------  ----------------------
+ AH=00h      moteur cassette en marche                 PC/PCjr
+ AH=01h      moteur cassette arrêté                    PC/PCjr
+ AH=02h      lire la cassette                          PC/PCjr
+ AH=03h      écrire la cassette                        PC/PCjr
+ AH=0Fh      hook périodique formatage ESDI            PS/2/contrôleur
+ AH=21h      journal d'erreurs POST                     certains PS/2
+ AH=40h..44h profils/énergie/modem                    modèles portables IBM
+ AH=4Fh      interception clavier                      AT+
+ AH=80h      ouverture de périphérique                 hooks multitâches
+ AH=81h      fermeture de périphérique                 hooks multitâches
+ AH=82h      fin de programme                          hooks multitâches
+ AH=83h      programmer/annuler une attente            AT+
+ AH=84h      joystick                                  AT+
+ AH=85h      touche System Request                     hooks multitâches
+ AH=86h      attendre                                  AT+
+ AH=87h      déplacer un bloc de mémoire étendue       80286+
+ AH=88h      taille de mémoire étendue                 80286+
+ AH=89h      passer en mode protégé                    80286+
+ AH=90h      périphérique occupé                       AT+
+ AH=91h      opération terminée                        AT+
+ AH=C0h      paramètres système                        AT tardif/PS2
+ AH=C1h      segment EBDA                              PS/2+
+ AH=C2h      interface souris PS/2                     PS/2+
+ AH=C3h      watchdog                                  certains PS/2
+ AH=C4h      Programmable Option Select                MCA/PS2
+ AX=240xh    contrôle A20                              BIOS tardif
+ AX=530xh    APM                                       BIOS APM
+ AX=E801h    quantité de mémoire étendue               BIOS 386+
+ EAX=E820h   carte complète des plages mémoire         BIOS 386+
+
+Les fonctions réservées par IBM ont souvent été réutilisées. Ce tableau ne
+constitue pas une autorisation d'appel sans détection.
+
+==============================================================================
+4. AH=00h À 03h : CASSETTE PC/PCjr
+==============================================================================
+
+AH=00h, mettre le moteur en marche
+AH=01h, arrêter le moteur
+
+  aucune entrée supplémentaire sur l'interface IBM de base;
+  retour CF=0, AH=00h sur PC/PCjr;
+  sur les autres modèles, normalement CF=1 et AH=86h.
+
+AH=02h, lire des octets :
+
+  ES:BX -> tampon
+  CX = nombre d'octets demandé
+  retour ES:BX -> octet suivant le dernier transféré
+         DX = nombre d'octets lus
+         CF = état
+
+AH=03h, écrire des octets :
+
+  ES:BX -> tampon
+  CX = nombre d'octets
+  retour ES:BX avancé, CX normalement zéro, CF = état
+
+Erreurs cassette PCjr documentées : 01h CRC, 02h transitions perdues, 04h
+aucune donnée trouvée. Le format physique, les temporisations et le connecteur
+sont spécifiques aux premières machines.
+
+Le PC/XT a supprimé le port cassette. Ne pas confondre ces appels avec un lecteur
+de bande SCSI, QIC ou une cassette audio gérée par une carte son.
+
+==============================================================================
+5. AH=0Fh ET 21h : SERVICES PS/2 PARTICULIERS
+==============================================================================
+
+AH=0Fh
+  Hook appelé périodiquement pendant certaines opérations de formatage/analyse
+  d'unité ESDI. AL indique la phase. CF permet au gestionnaire de demander la
+  poursuite ou l'arrêt. Ce n'est pas une fonction générale de formatage à appeler
+  depuis une application.
+
+AH=21h
+  Sur certains PS/2, AL=00h lit le journal d'erreurs du POST et retourne ES:DI
+  vers celui-ci ainsi que BX, nombre de codes. AL=01h peut y inscrire un code.
+  La capacité, la persistance et le format dépendent du modèle.
+
+Ces numéros sont réservés ou invalides sur les PC ordinaires. Un programme
+portable doit identifier précisément le produit avant leur emploi.
+
+==============================================================================
+6. AH=4Fh : INTERCEPTION DU CLAVIER
+==============================================================================
+
+AH=4Fh est un crochet appelé par le BIOS clavier AT après réception/traduction
+initiale d'un code de balayage. Il permet à un gestionnaire qui a accroché
+INT 15h d'examiner ou remplacer AL.
+
+Convention courante du hook :
+
+  AH = 4Fh
+  AL = code de balayage
+  CF = 1 à l'entrée
+
+Retour :
+
+  CF=1   le BIOS doit continuer à traiter AL, éventuellement modifié;
+  CF=0   le gestionnaire a consommé la frappe.
+
+Cette fonction est normalement appelée par INT 09h, pas directement par une
+application. Un hook doit être extrêmement court, préserver les registres et
+chaîner correctement. Il s'exécute dans un contexte d'interruption matérielle :
+pas d'appel DOS, pas d'attente et pas de code non réentrant.
+
+==============================================================================
+7. AH=80h À 82h ET 85h : CROCHETS MULTITÂCHES
+==============================================================================
+
+Ces appels permettent à un système multitâche interceptant INT 15h d'observer :
+
+  AH=80h   ouverture d'un périphérique
+  AH=81h   fermeture d'un périphérique
+  AH=82h   fin d'un programme
+  AH=85h   touche System Request pressée
+
+Sous un BIOS/DOS sans moniteur multitâche, ils retournent généralement aussitôt
+avec CF=0 ou un résultat propre à la génération. Ils ne remplacent pas les
+fonctions DOS d'ouverture de fichiers et ne constituent pas une API portable
+pour piloter un périphérique.
+
+Un gestionnaire qui les accroche doit respecter le chaînage, les appels
+réentrants et les conventions exactes IBM de sa machine.
+
+==============================================================================
+8. AH=83h : ATTENTE ASYNCHRONE
+==============================================================================
+
+Cette fonction programme le Real-Time Clock pour positionner ultérieurement un
+bit en mémoire sans bloquer le programme.
+
+Programmer :
+
+  AH = 83h
+  AL = 00h
+  CX:DX = délai en microsecondes
+  ES:BX -> octet indicateur utilisateur
+
+Annuler :
+
+  AH = 83h
+  AL = 01h
+
+Quand le délai expire, le BIOS positionne normalement le bit 7 de l'octet
+indiqué. Une seule attente utilisateur est souvent possible. Une demande alors
+qu'une autre est active peut échouer.
+
+Le pointeur doit rester valide pendant toute l'attente. Il ne peut pas viser une
+variable locale libérée, un segment déchargé ou une mémoire paginée inaccessible
+au BIOS. La résolution réelle est souvent proche de 976 microsecondes malgré
+l'unité annoncée en microsecondes.
+
+==============================================================================
+9. AH=84h : JOYSTICK
+==============================================================================
+
+Sous-fonctions classiques :
+
+  DX=0000h   lire les boutons
+             retour AL, bits reflétant les commutateurs du port jeu;
+
+  DX=0001h   lire les positions résistives
+             retour AX, BX, CX, DX pour les axes A/B selon BIOS.
+
+La mesure des axes charge puis chronomètre des circuits RC et peut être lente.
+Une absence de joystick ou un axe hors plage peut produire une valeur maximale
+ou un timeout dépendant du BIOS.
+
+Le calibrage min/centre/max appartient à l'application. Cette fonction ne
+détecte pas USB, manette numérique, gamepad moderne ou souris PS/2.
+
+==============================================================================
+10. AH=86h : ATTENTE SYNCHRONE
+==============================================================================
+
+Entrée :
+
+  AH = 86h
+  CX:DX = durée non signée de 32 bits, en microsecondes
+
+Retour :
+
+  CF=0   attente terminée
+  CF=1   fonction non prise en charge ou attente déjà active selon BIOS
+
+Exemple approximatif d'une seconde :
+
+  1 000 000 décimal = 000F4240h
+  CX=000Fh, DX=4240h
+
+La granularité de l'horloge RTC est beaucoup plus grossière que la microseconde,
+souvent environ 976 us. Le BIOS peut réactiver les interruptions pendant
+l'attente. Cette fonction ne convient ni aux délais matériels très précis ni à
+une routine d'interruption.
+
+Elle exige un AT/PS2 ou compatible; un 8086 PC original ne l'offre pas.
+
+==============================================================================
+11. AH=87h : DÉPLACEMENT DE MÉMOIRE ÉTENDUE
+==============================================================================
+
+Cette fonction 80286+ copie un bloc entre adresses physiques décrites par des
+descripteurs, en passant temporairement en mode protégé.
+
+Entrée courante :
+
+  AH = 87h
+  CX = nombre de WORD à déplacer
+  ES:SI -> table GDT préparée par l'appelant
+
+La table comprend des descripteurs réservés, un descripteur source et un
+descripteur destination. Les bases sur 24 bits du 286 peuvent viser jusqu'à
+16 Mio. Le BIOS gère A20 et restaure normalement le mode réel.
+
+Retour : CF et AH, avec erreurs possibles de mémoire, A20 ou descripteur.
+
+Risques :
+
+  - CX compte des mots, pas des octets;
+  - la GDT doit respecter exactement la disposition IBM;
+  - source/destination ne doivent pas écraser BIOS, tables ou programme;
+  - interruption/NMI et contrôleurs doivent rester cohérents;
+  - certains BIOS altèrent des registres ou ne copient pas correctement aux
+    limites particulières.
+
+Pour DOS 286+, un gestionnaire XMS est généralement préférable.
+
+==============================================================================
+12. AH=88h : TAILLE DE MÉMOIRE ÉTENDUE
+==============================================================================
+
+Entrée : AH=88h.
+
+Retour normal :
+
+  CF=0
+  AX = nombre de Kio contigus disponibles à partir de 1 Mio
+
+La valeur historique est limitée à 16 bits et souvent plafonnée par le BIOS à
+15 Mio ou 64 Mio moins 1 Mio. Elle ne décrit pas les trous réservés, ACPI, ROMs
+ou mémoire au-dessus de cette limite.
+
+Ne pas additionner naïvement AX à INT 12h pour fabriquer une carte mémoire. Sur
+les machines modernes, E820 est prioritaire. AH=88h reste une solution de repli
+pour un logiciel AT ancien.
+
+==============================================================================
+13. AH=89h : PASSAGE 80286 EN MODE PROTÉGÉ
+==============================================================================
+
+Entrée IBM :
+
+  AH = 89h
+  ES:SI -> GDT contenant les descripteurs exigés
+  BH = nouvel offset de base des IRQ du premier 8259
+  BL = nouvel offset de base des IRQ du second 8259
+
+Au succès, le processeur continue en mode protégé; les registres de segments,
+AX et BP sont modifiés. L'appelant doit fournir GDT, IDT/gestionnaires, piles et
+code accessibles selon les nouveaux descripteurs.
+
+Cette fonction nécessite un 80286 et ne revient pas simplement au contexte réel
+comme une fonction ordinaire. Le 286 ne possède pas de moyen logiciel simple de
+revenir en mode réel; les systèmes historiques utilisent un reset contrôlé ou
+LOADALL selon machine.
+
+Un noyau 386+ moderne effectue directement la transition après avoir préparé
+GDT, IDT, A20 et PIC; AH=89h est surtout historique.
+
+==============================================================================
+14. AH=90h ET 91h : PÉRIPHÉRIQUE OCCUPÉ/TERMINÉ
+==============================================================================
+
+Le BIOS appelle ces hooks pour informer un système multitâche :
+
+  AH=90h   le BIOS va attendre un périphérique;
+  AH=91h   l'opération du périphérique vient de se terminer.
+
+AL identifie le type. Valeurs IBM courantes :
+
+  00h disque dur     01h disquette       02h clavier
+  03h pointage       80h réseau          FCh reset disque dur
+  FDh moteur disquette                  FEh imprimante
+
+Pour un périphérique réentrant, ES:BX peut distinguer une requête. Avec AH=90h,
+CF indique au BIOS si le temps minimal d'attente est satisfait selon le hook.
+
+Ces fonctions sont destinées au BIOS et au moniteur qui intercepte INT 15h, pas
+à une application ordinaire. Un hook incorrect peut bloquer toutes les E/S.
+
+==============================================================================
+15. AH=C0h : PARAMÈTRES DE CONFIGURATION SYSTÈME
+==============================================================================
+
+Entrée : AH=C0h.
+
+Retour au succès :
+
+  CF=0, AH=00h
+  ES:BX -> System Descriptor Table en ROM
+
+Le premier WORD donne le nombre d'octets suivants. Les octets classiques
+comprennent l'identificateur de modèle, le sous-modèle, la révision BIOS et des
+drapeaux de fonctionnalités.
+
+Ne jamais supposer une longueur fixe : lire le WORD, vérifier qu'il atteint le
+champ désiré et ne pas écrire dans la table. Les codes modèle ne remplacent pas
+une détection de fonction. Des clones peuvent retourner des identifiants IBM
+pour la compatibilité.
+
+Les premiers PC/XT/AT BIOS ne prennent pas tous cette fonction en charge.
+
+==============================================================================
+16. AH=C1h : ADRESSE DE L'EBDA
+==============================================================================
+
+Entrée : AH=C1h.
+
+Retour typique :
+
+  CF=0
+  ES = segment de l'Extended BIOS Data Area
+
+La BDA contient également ce segment au WORD 0040:000Eh sur les machines
+compatibles. L'EBDA se situe normalement au sommet de la mémoire conventionnelle
+et INT 12h retourne une limite réduite pour la protéger.
+
+Le premier octet de l'EBDA indique souvent sa taille en Kio. Sa structure interne
+dépend du BIOS. Valider segment, limite INT 12h et taille avant toute lecture;
+ne jamais l'utiliser comme mémoire libre.
+
+==============================================================================
+17. AH=C2h : SOURIS/DISPOSITIF DE POINTAGE PS/2
+==============================================================================
+
+AH=C2h utilise AL comme sous-fonction et BH/ES:BX selon l'opération. Le groupe
+permet notamment :
+
+  - activer ou désactiver l'interface auxiliaire;
+  - réinitialiser la souris;
+  - choisir le taux d'échantillonnage;
+  - choisir la résolution;
+  - obtenir type et état;
+  - installer l'adresse d'un gestionnaire de paquets.
+
+Le gestionnaire reçoit des paquets bas niveau du dispositif PS/2. Ce n'est pas
+la même interface que le pilote souris DOS INT 33h, qui fournit curseur,
+boutons et coordonnées normalisées.
+
+La programmation est dépendante du contrôleur clavier 8042 et du BIOS. Les
+valeurs exactes de sous-fonction doivent provenir de la référence du modèle;
+tester CF et AH après chaque appel.
+
+==============================================================================
+18. AH=C3h ET C4h : WATCHDOG ET POS
+==============================================================================
+
+AH=C3h
+  Active/désactive ou contrôle un watchdog sur certains PS/2. Une expiration
+  peut réinitialiser la machine. Ne pas expérimenter sur un système contenant
+  des données non sauvegardées.
+
+AH=C4h
+  Interface Programmable Option Select des machines Micro Channel. Elle sert à
+  lire/configurer les informations POS des adaptateurs MCA.
+
+Ces fonctions ne sont pas génériques aux PC ISA/PCI. Elles peuvent être
+réservées ou réutilisées ailleurs. Une détection de modèle et la documentation
+matérielle IBM correspondante sont obligatoires.
+
+==============================================================================
+19. AX=2400h À 2403h : LIGNE A20
+==============================================================================
+
+Interfaces BIOS tardives :
+
+  AX=2400h   désactiver A20
+  AX=2401h   activer A20
+  AX=2402h   lire l'état A20
+  AX=2403h   lire les mécanismes A20 disponibles
+
+Retour typique : CF et AH, AL pour l'état ou BX comme bitmap de mécanismes selon
+la sous-fonction.
+
+A20 distingue l'adresse 100000h de 00000h. Lorsqu'elle est coupée, les adresses
+au-dessus de 1 Mio se replient comme sur le bus 8086 à 20 bits. Elle doit être
+active avant d'utiliser la HMA ou de passer un noyau moderne en mode protégé.
+
+Ne jamais désactiver A20 si du code, une pile, une table ou une interruption peut
+accéder au-dessus de 1 Mio. Plusieurs méthodes existent : BIOS, contrôleur 8042,
+port 92h et chipset; AX=240xh est préférable quand il fonctionne. Vérifier l'état
+réel par un test non destructif soigneusement restauré.
+
+Un 8086 original n'a pas de 21e ligne d'adresse et cette interface n'a pas de
+sens sur lui.
+
+==============================================================================
+20. AX=E801h : MÉMOIRE ÉTENDUE INTERMÉDIAIRE
+==============================================================================
+
+AX=E801h rapporte la mémoire sous et au-dessus de 16 Mio.
+
+Retour courant :
+
+  AX = Kio entre 1 Mio et 16 Mio
+  BX = blocs de 64 Kio au-dessus de 16 Mio
+  CX = copie de AX ou valeur équivalente préférée
+  DX = copie de BX ou valeur équivalente préférée
+
+De nombreux logiciels utilisent CX/DX s'ils sont non nuls, sinon AX/BX. Tester
+CF et borner les valeurs.
+
+Cette fonction suppose un BIOS et un processeur tardifs. Elle ne donne pas une
+liste des trous : elle indique des quantités contiguës selon la vue du BIOS.
+E820 la remplace pour construire une carte fiable.
+
+==============================================================================
+21. EAX=E820h : CARTE MÉMOIRE SYSTÈME
+==============================================================================
+
+Entrée pour chaque appel, processeur 80386+ :
+
+  EAX = 0000E820h
+  EDX = 534D4150h, signature ASCII « SMAP »
+  EBX = 00000000h au premier appel, continuation retournée ensuite
+  ECX = taille du tampon, au moins 20, souvent 24
+  ES:DI -> tampon en mémoire basse
+
+Retour réussi :
+
+  CF=0
+  EAX=534D4150h
+  ECX=taille réellement retournée
+  EBX=valeur de continuation; zéro signifie dernière entrée
+
+Entrée de 20 octets :
+
+  +00 QWORD  adresse physique de base
+  +08 QWORD  longueur
+  +10 DWORD  type
+
+Avec 24 octets :
+
+  +14 DWORD  attributs étendus ACPI
+
+Types principaux :
+
+  1   mémoire utilisable
+  2   réservée
+  3   ACPI reclaimable après traitement approprié
+  4   ACPI NVS, à préserver
+  5   mémoire défectueuse
+
+Règles essentielles :
+
+  - remettre EAX et EDX avant chaque appel;
+  - réutiliser exactement EBX retourné;
+  - vérifier CF et la signature EAX;
+  - accepter une liste non triée et des entrées de longueur zéro à ignorer;
+  - traiter les chevauchements de façon conservatrice, réservé dominant;
+  - avec un tampon 24 octets, initialiser l'attribut étendu à 1 avant l'appel;
+  - ignorer une entrée dont l'attribut « enabled » est clair;
+  - copier toute la carte avant de quitter le mode réel;
+  - ne jamais considérer les types 2/3/4/5 comme RAM immédiatement libre.
+
+E820 est la source BIOS héritée à privilégier pour un noyau moderne. Elle n'est
+pas exécutable sur 8086 car elle utilise les registres 32 bits EAX/EBX/ECX/EDX.
+
+==============================================================================
+22. AX=53xxh : ADVANCED POWER MANAGEMENT
+==============================================================================
+
+APM BIOS utilise INT 15h avec AH=53h et AL comme sous-fonction :
+
+  AX=5300h   vérifier l'installation APM
+  AX=5301h   connecter l'interface mode réel
+  AX=5302h   connecter l'interface mode protégé 16 bits
+  AX=5303h   connecter l'interface mode protégé 32 bits
+  AX=5304h   déconnecter
+  AX=5305h   CPU idle
+  AX=5306h   CPU busy
+  AX=5307h   définir l'état d'alimentation
+  AX=5308h   activer/désactiver la gestion
+  AX=530Ah   obtenir l'état d'alimentation
+  AX=530Bh   obtenir un événement PM
+  AX=530Eh   négocier la version
+  AX=530Fh   activer/désactiver APM
+
+L'installation retourne normalement la signature BX=504Dh, ASCII « PM », une
+version et des drapeaux. Ne poursuivre qu'après validation de CF et signature.
+
+La mise hors tension demande habituellement une connexion APM, la négociation
+de version, l'activation puis AX=5307h avec BX=0001h et CX=0003h. Ces valeurs et
+l'ordre dépendent de la version; une erreur peut suspendre ou arrêter la machine.
+
+APM est antérieur à ACPI et repose sur le BIOS. Les systèmes modernes utilisent
+ACPI/UEFI. Un 8086 PC original ne prend évidemment pas APM en charge.
+
+==============================================================================
+23. AUTRES EXTENSIONS ET CONFLITS DE NUMÉROS
+==============================================================================
+
+INT 15h a servi à de nombreux fabricants : mémoire, cache, portables, clavier,
+USB legacy, EISA, MCA, services réseau, BIOS flash et gestion d'énergie. Deux
+BIOS peuvent attribuer des sens différents au même AX.
+
+Principes :
+
+  - préférer une spécification IBM, Phoenix, ACPI ou constructeur;
+  - exiger une signature quand elle existe;
+  - détecter modèle/version avant une fonction privée;
+  - ne pas considérer la Ralf Brown Interrupt List comme promesse que tout BIOS
+    implémente chaque entrée qu'elle catalogue;
+  - préserver les fonctions inconnues lorsqu'on accroche le vecteur;
+  - ne pas deviner la taille d'une structure retournée.
+
+Les fonctions AH=40h..44h de certains portables IBM concernent profils, attente
+d'événement, extinction, état système et alimentation de modem. Elles ne sont
+pas les fonctions universelles de tout compatible.
+
+==============================================================================
+24. EXEMPLES ASSEMBLEUR 8086
+==============================================================================
+
+Attendre environ une seconde sur AT compatible :
+
+        mov     ah, 86h
+        mov     cx, 000Fh
+        mov     dx, 4240h       ; CX:DX = 1 000 000 us
+        int     15h
+        jc      WaitUnsupported
+
+Obtenir la mémoire étendue historique :
+
+        mov     ah, 88h
+        int     15h
+        jc      NoExtendedMemoryService
+        ; AX = Kio au-dessus de 1 Mio
+
+Obtenir le segment EBDA :
+
+        mov     ah, 0C1h
+        int     15h
+        jc      NoEBDAService
+        ; ES = segment EBDA; valider avant lecture
+
+Ces fragments n'emploient que des registres 16 bits, mais les fonctions 86h,
+88h et C1h ne sont pas présentes sur le PC 8086 d'origine. « Code assemblable
+pour 8086 » ne signifie pas « service disponible sur tout 8086 ».
+
+==============================================================================
+25. EXEMPLE E820 POUR 80386+
+==============================================================================
+
+Pseudo-assembleur 16 bits utilisant les registres 32 bits :
+
+        xor     ebx, ebx        ; première entrée
+.next:
+        mov     eax, 0000E820h
+        mov     edx, 0534D4150h ; 'SMAP'
+        mov     ecx, 24
+        mov     dword [es:di+20], 1
+        int     15h
+        jc      .end_or_error
+        cmp     eax, 0534D4150h
+        jne     .error
+        cmp     ecx, 20
+        jb      .error
+
+        ; copier/traiter l'entrée ES:DI ici
+        ; avancer DI vers un autre tampon sans dépasser le segment
+
+        test    ebx, ebx
+        jnz     .next
+        ; fin normale
+
+Réinitialiser EAX, EDX et ECX à chaque tour. EBX est opaque : ne pas l'incrémenter.
+Ce code requiert au minimum un 80386, même s'il est exécuté en mode réel 16 bits.
+
+Une implémentation réelle doit distinguer erreur au premier appel et fin après
+des entrées valides, conserver ECX, gérer les entrées de 20/24 octets et vérifier
+le débordement du tampon.
+
+==============================================================================
+26. EXEMPLE PASCAL POUR DOS
+==============================================================================
+
+Attente avec l'unité Dos d'un compilateur 16 bits :
+
+  uses Dos;
+
+  function BIOSWait(Microseconds: LongInt): Boolean;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $8600;
+    R.CX := Word(LongWord(Microseconds) shr 16);
+    R.DX := Word(LongWord(Microseconds));
+    Intr($15, R);
+    BIOSWait := (R.Flags and FCarry) = 0;
+  end;
+
+Le nom du type non signé 32 bits et de FCarry varie entre Turbo Pascal, Free
+Pascal et bibliothèques DOS. Une durée négative ne doit jamais être passée.
+
+Pour E820, le type Registers 16 bits ordinaire ne donne pas toujours accès à
+EAX/EBX/ECX/EDX. Il faut une routine assembleur 386, un extender DPMI adapté ou
+le service du chargeur. Ne pas tronquer silencieusement EBX à 16 bits.
+
+==============================================================================
+27. BIOS DATA AREA ASSOCIÉE
+==============================================================================
+
+Champs AT classiques utilisés par les fonctions d'attente :
+
+  BDA          Description
+  -----------  -------------------------------------------------------------
+  0040:0067h   pointeur de reprise/reset utilisé par certaines transitions
+  0040:0098h   offset du pointeur indicateur d'attente utilisateur
+  0040:009Ah   segment du pointeur indicateur
+  0040:009Ch   partie basse du compteur d'attente
+  0040:009Eh   partie haute du compteur d'attente
+  0040:00A0h   drapeaux d'attente active/écoulée
+
+Ces champs appartiennent au BIOS. Une application ne doit pas les modifier
+directement pour simuler AH=83h/86h. Une corruption peut affecter IRQ8/RTC ou
+faire écrire le BIOS à une adresse arbitraire.
+
+Le segment EBDA est généralement conservé à 0040:000Eh et la mémoire
+conventionnelle à 0040:0013h. Vérifier la génération du BIOS avant de lire les
+champs tardifs de la BDA.
+
+==============================================================================
+28. MODE RÉEL, PROTÉGÉ, VIRTUEL ET UEFI
+==============================================================================
+
+Mode réel
+  INT 15h appelle directement le BIOS/ROM ou un hook résident.
+
+Mode virtuel 8086
+  Un moniteur peut intercepter et simuler l'appel. Les pointeurs ES:BX/ES:DI
+  doivent être traduits ou accessibles conformément au moniteur.
+
+Mode protégé DOS/DPMI
+  Utiliser le service DPMI de simulation d'interruption réelle et un tampon DOS
+  sous 1 Mio. Un simple INT 15h vise l'IDT protégée, pas nécessairement le BIOS.
+
+Mode long 64 bits
+  Le BIOS réel n'est pas directement appelable. Les données nécessaires, par
+  exemple E820, doivent être recueillies par le chargeur avant la transition.
+
+UEFI
+  GetMemoryMap remplace E820, Boot/Runtime Services remplacent une partie des
+  fonctions système et ACPI décrit l'alimentation. Un CSM peut fournir INT 15h,
+  mais il est facultatif et absent des machines UEFI Class 3.
+
+==============================================================================
+29. PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+  1. Identifier la fonction exacte par AH, AX ou EAX.
+  2. Vérifier le processeur minimal avant d'utiliser registres/instructions 32 bits.
+  3. Initialiser tous les registres et octets réservés demandés.
+  4. Positionner CF avant l'appel si un très vieux BIOS peut oublier de le faire.
+  5. Tester CF immédiatement au retour.
+  6. Vérifier les signatures « SMAP », « PM » ou autres lorsqu'elles existent.
+  7. Valider taille, pointeur et limites de toute structure retournée.
+  8. Ne pas appeler une fonction PS/2 seulement sur un PC/XT inconnu.
+  9. Ne pas employer AH=83h avec une variable qui cessera d'exister.
+ 10. Ne pas utiliser AH=86h ou le BIOS depuis une interruption sensible.
+ 11. Ne pas écraser EBDA, BDA, GDT ou zones réservées E820.
+ 12. Garder A20 active tant qu'une adresse au-dessus de 1 Mio est utilisée.
+ 13. Traiter E820 type réservé comme prioritaire lors des chevauchements.
+ 14. Copier les informations BIOS avant de quitter le mode réel.
+ 15. Préférer XMS/DPMI ou les API du système dans une application DOS avancée.
+ 16. Préférer ACPI/UEFI et les pilotes natifs dans un système moderne.
+
+==============================================================================
+30. RÉSUMÉ
+==============================================================================
+
+  - INT 15h est une collection évolutive de services système BIOS;
+  - 00h..03h concernent la cassette du PC/PCjr original;
+  - 4Fh est un hook du gestionnaire clavier AT;
+  - 83h/86h offrent des attentes RTC sur AT et suivants;
+  - 84h lit le joystick analogique;
+  - 87h/88h/89h concernent mémoire étendue et mode protégé 80286;
+  - 90h/91h sont des hooks de coordination avec un système multitâche;
+  - C0h retourne la configuration, C1h l'EBDA, C2h la souris PS/2;
+  - AX=240xh contrôle A20 sur des BIOS tardifs;
+  - E801 rapporte des quantités de mémoire étendue;
+  - E820 fournit la carte mémoire de référence pour un BIOS moderne;
+  - AX=53xxh fournit APM, remplacé ensuite par ACPI;
+  - une fonction codée avec des registres 16 bits n'est pas nécessairement
+    disponible sur un véritable 8086;
+  - CF, les signatures, les tailles et les modèles doivent toujours être vérifiés.
+
+INT 15h reflète toute l'histoire du PC : d'un moteur de cassette commandé par
+un 8086 jusqu'à une carte mémoire 64 bits et à la gestion d'énergie. Cette
+richesse impose de traiter chaque sous-interface comme une spécification séparée.

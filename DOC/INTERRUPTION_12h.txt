@@ -1,0 +1,597 @@
+==============================================================================
+     INTERRUPTION 12h DU BIOS 8086 : TAILLE DE LA MÉMOIRE CONVENTIONNELLE
+==============================================================================
+
+INT 12h est le service BIOS historique qui retourne la quantité de mémoire de
+base, dite conventionnelle, disponible dans l'espace inférieur du PC. Il ne
+reteste pas la RAM : il retourne normalement dans AX la valeur en kilooctets
+que le BIOS a placée pendant le POST à l'adresse 0040:0013h.
+
+Appel minimal :
+
+        int     12h
+        ; AX = nombre de blocs contigus de 1 Kio depuis l'adresse physique 0
+
+Sur un PC/XT ou PC/AT classique entièrement équipé, AX vaut souvent 640, soit
+0280h. Sur certaines machines dotées d'une Extended BIOS Data Area, la valeur
+est légèrement inférieure afin de réserver cette zone au BIOS.
+
+AVERTISSEMENT
+-------------
+
+INT 12h ne donne ni la mémoire DOS actuellement libre, ni la mémoire étendue au-
+dessus de 1 Mio, ni la mémoire EMS/XMS. La valeur décrit une limite de mémoire
+conventionnelle établie par le BIOS. Elle ne constitue pas à elle seule une
+carte complète et fiable de la mémoire d'un PC moderne.
+
+Sources principales :
+
+  - IBM PC/XT et PC/AT Technical References, service Memory Size;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles :
+    https://www.vtda.org/books/Computing/Programming/SystemBIOSforIBMPC_XT_ATComputersandCompatibles_Phoenix.pdf
+  - Ralf Brown's Interrupt List, INT 12h :
+    https://fd.lod.bz/rbil/interrup/bios/12.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Interface du service
+  2.  Fonctionnement de l'instruction INT sur 8086
+  3.  Valeur conservée dans la BIOS Data Area
+  4.  Signification exacte de la valeur retournée
+  5.  Carte mémoire classique du PC
+  6.  Valeurs historiques courantes
+  7.  Extended BIOS Data Area et réservations
+  8.  Ce que INT 12h ne mesure pas
+  9.  Différences avec mémoire libre, XMS et EMS
+ 10.  Services BIOS plus récents
+ 11.  Exemple en assembleur 8086
+ 12.  Conversion et affichage de la valeur
+ 13.  Exemple en Pascal pour DOS
+ 14.  Utilisation dans un secteur d'amorçage
+ 15.  Lire directement la BDA
+ 16.  Compatibilité et cas particuliers
+ 17.  Validation et programmation défensive
+ 18.  Résumé
+
+==============================================================================
+1. INTERFACE DU SERVICE
+==============================================================================
+
+Entrée :
+
+  aucune
+
+Sortie :
+
+  AX = taille de la mémoire conventionnelle contiguë, en blocs de 1 Kio
+
+Drapeaux :
+
+  aucune convention d'erreur n'est définie; CF n'indique pas un succès ou un
+  échec comme pour INT 13h.
+
+Registres :
+
+  AX est modifié. Les BIOS compatibles préservent normalement les autres
+  registres, mais un programme très défensif ne doit dépendre que des sorties
+  documentées.
+
+Exemple :
+
+  AX = 0280h = 640 décimal = 640 Kio
+  limite physique = 640 * 1024 = 655360 = 000A0000h
+
+La valeur est binaire. Elle n'est ni en BCD, ni en paragraphes de 16 octets, ni
+en pages de 4 Kio.
+
+==============================================================================
+2. FONCTIONNEMENT DE L'INSTRUCTION INT SUR 8086
+==============================================================================
+
+Le numéro 12h est une convention du BIOS IBM PC, pas une fonction intrinsèque
+du processeur. En mode réel, l'instruction INT 12h :
+
+  1. empile FLAGS;
+  2. met IF et TF à zéro;
+  3. empile CS et IP;
+  4. charge IP depuis 0000:(12h * 4);
+  5. charge CS depuis 0000:(12h * 4 + 2);
+  6. exécute la routine BIOS, qui revient par IRET.
+
+L'entrée 12h de l'Interrupt Vector Table se trouve donc à :
+
+  12h * 4 = 0048h
+
+  0000:0048h  WORD  offset de la routine
+  0000:004Ah  WORD  segment de la routine
+
+Contrairement à INT 41h ou INT 1Eh, qui servent traditionnellement de pointeurs
+de données, INT 12h pointe bien vers du code exécutable et doit être appelé.
+
+Cette description concerne le 8086/8088 réel et les modes compatibles. En mode
+protégé, INT consulte l'IDT et n'atteint pas automatiquement la ROM BIOS.
+
+==============================================================================
+3. VALEUR CONSERVÉE DANS LA BIOS DATA AREA
+==============================================================================
+
+La BIOS Data Area, BDA, commence au segment 0040h, adresse physique 0400h. Le
+mot situé à 0040:0013h contient la taille retournée :
+
+  adresse segmentée   adresse physique   taille   contenu
+  ------------------  -----------------  -------  ---------------------------
+  0040:0013h          00000413h          WORD     mémoire de base en Kio
+
+Le WORD est stocké en petit-boutiste : octet faible à 0413h, octet fort à
+0414h. Pour 640 Kio, les deux octets sont donc 80h 02h.
+
+Le fonctionnement classique de la routine BIOS équivaut essentiellement à :
+
+        push    ds
+        xor     ax, ax
+        mov     ds, ax
+        mov     ax, [0413h]
+        pop     ds
+        iret
+
+Certains listings IBM réactivent aussi les interruptions par STI au début de la
+routine. Le point important est que le service copie une valeur préparée; il ne
+parcourt pas la mémoire et n'effectue aucun nouveau test destructif.
+
+Le POST détermine la taille et écrit la BDA. Par la suite, un BIOS, un chargeur,
+un gestionnaire de mémoire ou un programme résident peut réduire cette valeur
+pour réserver la partie supérieure de la mémoire conventionnelle.
+
+==============================================================================
+4. SIGNIFICATION EXACTE DE LA VALEUR RETOURNÉE
+==============================================================================
+
+La documentation IBM décrit AX comme le nombre de blocs contigus de 1 Kio à
+partir de l'adresse physique zéro. En pratique, AX sert surtout à calculer la
+limite supérieure de la RAM de base que le logiciel général peut considérer
+comme disponible :
+
+  limite = AX * 1024
+
+La plage [0, limite) contient de la RAM, mais elle n'est pas entièrement libre :
+
+  - 00000h à 003FFh contient l'IVT;
+  - 00400h à 004FFh contient la BDA;
+  - le BIOS, DOS, des pilotes et le programme occupent d'autres parties;
+  - une EBDA peut occuper les derniers kilooctets sous la limite habituelle.
+
+« Contiguë depuis zéro » décrit donc la configuration physique/logique de base,
+pas un bloc que l'appelant peut écraser de bout en bout.
+
+INT 12h ne retourne pas une adresse segmentée. Pour transformer K Kio en un
+segment correspondant à la limite :
+
+  segment_limite = K * 64
+
+car 1 Kio contient 64 paragraphes de 16 octets. Pour 640 Kio :
+
+  640 * 64 = 40960 = A000h
+
+La limite est A000:0000h, début classique de la mémoire vidéo, et le dernier
+octet sous cette limite est 9FFF:000Fh, adresse physique 9FFFFh.
+
+==============================================================================
+5. CARTE MÉMOIRE CLASSIQUE DU PC
+==============================================================================
+
+Carte simplifiée du premier mégaoctet :
+
+  00000h +----------------------------------------------------+
+         | IVT, 1 Kio                                        |
+  00400h +----------------------------------------------------+
+         | BIOS Data Area, puis zones système                 |
+  00500h +----------------------------------------------------+
+         | mémoire conventionnelle pour DOS et programmes     |
+         |                                                    |
+         | la limite exacte est AX * 1024                     |
+  9FC00h +----------------------------------------------------+  exemple EBDA
+         | EBDA éventuelle                                    |
+  A0000h +----------------------------------------------------+
+         | mémoire vidéo / Upper Memory Area                  |
+  C0000h +----------------------------------------------------+
+         | ROM vidéo, ROMs d'extension, fenêtres matérielles  |
+  F0000h +----------------------------------------------------+
+         | ROM BIOS                                           |
+  FFFFFh +----------------------------------------------------+
+
+Sur une machine sans EBDA et avec 640 Kio, INT 12h retourne 640 et la limite
+est A0000h. Avec une EBDA de 1 Kio placée à 9FC00h, il peut retourner 639 et la
+limite indiquée devient 9FC00h.
+
+Cette carte est une convention PC typique. Certains compatibles utilisent une
+disposition différente ou rendent disponibles des zones de l'UMA grâce à un
+gestionnaire de mémoire.
+
+==============================================================================
+6. VALEURS HISTORIQUES COURANTES
+==============================================================================
+
+  AX hex   AX décimal   Limite physique   Contexte possible
+  -------  -----------  ----------------  ------------------------------
+  0010h       16 Kio    00004000h          IBM PC minimal ancien
+  0020h       32 Kio    00008000h          minimum pratique de certains DOS
+  0040h       64 Kio    00010000h          petite configuration PC
+  0100h      256 Kio    00040000h          PC/XT partiellement équipé
+  0200h      512 Kio    00080000h          PC/XT ou compatible
+  027Eh      638 Kio    0009F800h          640 Kio moins 2 Kio réservés
+  027Fh      639 Kio    0009FC00h          640 Kio moins EBDA de 1 Kio
+  0280h      640 Kio    000A0000h          valeur PC/AT classique
+
+Il ne faut pas refuser automatiquement toute valeur différente de 640. Les PC
+anciens peuvent réellement avoir moins de RAM; des BIOS réservent plusieurs
+kilooctets; des compatibles non IBM ont parfois plus de mémoire conventionnelle
+si leur carte vidéo et leurs ROMs laissent la place.
+
+La valeur maximale théorique d'AX est 65535 Kio, mais elle n'est pas réaliste
+pour cette interface du premier mégaoctet. Sur un PC compatible ordinaire, une
+valeur supérieure à la limite de l'UMA doit être traitée avec prudence et
+confirmée par une documentation spécifique.
+
+==============================================================================
+7. EXTENDED BIOS DATA AREA ET RÉSERVATIONS
+==============================================================================
+
+Les PC/AT tardifs, PS/2 et compatibles utilisent souvent une Extended BIOS Data
+Area, EBDA, située au sommet de la mémoire conventionnelle. Le WORD à
+0040:000Eh contient normalement son segment de base.
+
+Exemple :
+
+  [0040:000Eh] = 9FC0h
+  adresse physique EBDA = 9FC0h * 16 = 9FC00h
+  INT 12h retourne normalement 639 Kio
+  639 * 1024 = 9FC00h
+
+Le premier octet de l'EBDA contient souvent sa taille en Kio, mais ce champ et
+les données suivantes dépendent du BIOS. Avant de l'employer :
+
+  - vérifier que le segment n'est pas zéro;
+  - vérifier qu'il appartient à une plage plausible de mémoire basse;
+  - vérifier sa cohérence avec AX;
+  - ne jamais écrire dans l'EBDA;
+  - ne pas supposer une taille d'un seul kilooctet.
+
+Un BIOS peut aussi réduire le mot 0040:0013h afin de réserver une zone de travail
+sans EBDA IBM standard. Les ROMs de réseau, gestionnaires de disque, programmes
+de reprise ou chargeurs peuvent utiliser la même technique : diminuer la limite
+annoncée empêche DOS ou un chargeur respectueux de réutiliser cette mémoire.
+
+Ainsi, la valeur retournée peut être inférieure à la quantité de RAM testée et
+installée. C'est intentionnel : elle représente la mémoire de base laissée à la
+disposition du logiciel suivant.
+
+==============================================================================
+8. CE QUE INT 12h NE MESURE PAS
+==============================================================================
+
+INT 12h ne rapporte pas :
+
+  - la mémoire libre après chargement de DOS;
+  - la mémoire au-dessus de 1 Mio;
+  - la High Memory Area, HMA;
+  - les Upper Memory Blocks disponibles dans A0000h-FFFFFh;
+  - la mémoire XMS gérée par HIMEM.SYS;
+  - la mémoire EMS paginée dans une fenêtre;
+  - la mémoire vidéo;
+  - la mémoire d'une carte d'extension non mappée comme RAM de base;
+  - les trous de mémoire et plages réservées détaillées;
+  - une garantie que chaque octet sous la limite est libre ou sain aujourd'hui;
+  - la mémoire virtuelle, le fichier d'échange ou le cache disque.
+
+Le nom « Get Memory Size » rencontré dans les manuels doit donc être compris
+comme « obtenir la taille de la mémoire conventionnelle configurée », non comme
+un inventaire complet de la RAM.
+
+==============================================================================
+9. DIFFÉRENCES AVEC MÉMOIRE LIBRE, XMS ET EMS
+==============================================================================
+
+Mémoire conventionnelle
+  Zone basse utilisée directement avec des adresses réelles segment:offset.
+  INT 12h en fournit la limite configurée.
+
+Mémoire libre DOS
+  Blocs non alloués dans les Memory Control Blocks de DOS. Elle varie pendant
+  l'exécution. Utiliser les services d'allocation INT 21h/AH=48h et de libération
+  AH=49h; ne pas déduire cette quantité d'INT 12h.
+
+HMA/XMS
+  Mémoire haute et étendue gérée par un pilote XMS. L'interface XMS passe
+  typiquement par INT 2Fh/AX=4310h pour obtenir le point d'entrée du pilote.
+
+EMS
+  Mémoire étendue paginée par l'Expanded Memory Manager, traditionnellement via
+  INT 67h. Sa fenêtre peut se trouver dans l'UMA, mais sa quantité n'est pas
+  incluse dans AX.
+
+UMB
+  Blocs libres entre les ROMs et zones vidéo de l'Upper Memory Area. Un
+  gestionnaire DOS peut les rendre allouables; INT 12h s'arrête normalement
+  avant A0000h et ne les compte pas.
+
+==============================================================================
+10. SERVICES BIOS PLUS RÉCENTS
+==============================================================================
+
+Pour la mémoire située au-dessus de la mémoire conventionnelle, plusieurs
+interfaces se sont succédé :
+
+  INT 15h/AH=88h
+    Retourne dans AX un nombre de Kio de mémoire étendue contiguë au-dessus de
+    1 Mio, avec des limites historiques importantes.
+
+  INT 15h/AX=E801h
+    Retourne des quantités sous et au-dessus de 16 Mio avec des unités
+    différentes. Plus adapté aux machines 386/486 tardives, mais encore limité.
+
+  INT 15h/EAX=E820h
+    Retourne une carte de plages mémoire typées : utilisable, réservée, ACPI,
+    etc. C'est l'interface BIOS héritée à privilégier pour un système moderne.
+    Elle nécessite un processeur et un BIOS bien postérieurs au 8086.
+
+  INT 15h/AH=C1h
+    Retourne le segment de l'EBDA sur les machines IBM qui le prennent en charge.
+
+E820 ne rend pas INT 12h faux : les deux répondent à des besoins et époques
+différents. Un chargeur moderne peut utiliser E820 pour la carte complète tout
+en conservant INT 12h comme solution de repli pour la mémoire basse.
+
+Sous UEFI natif, employer GetMemoryMap() des services UEFI. Il n'existe pas
+nécessairement de véritable INT 12h sans Compatibility Support Module.
+
+==============================================================================
+11. EXEMPLE EN ASSEMBLEUR 8086
+==============================================================================
+
+Obtenir la taille, la convertir en paragraphes et calculer le segment supérieur :
+
+        int     12h             ; AX = Kio conventionnels
+        mov     bx, ax          ; conserver la taille en Kio
+
+        ; 1 Kio = 1024 octets = 64 paragraphes
+        mov     cl, 6
+        shl     ax, cl          ; AX = segment de la limite
+                                ; valide pour les valeurs PC classiques
+
+        ; Exemple si BX=640 : AX=A000h
+
+Sur un 8086, SHL r16,CL est disponible; l'écriture SHL AX,6 immédiate n'existe
+pas avant le 80186 et doit être remplacée par CL ou six décalages de un.
+
+Calcul de la limite physique sur 32 bits DX:AX, compatible 8086 :
+
+        int     12h             ; AX = Kio
+        xor     dx, dx
+        mov     cx, 10
+.shift:
+        shl     ax, 1
+        rcl     dx, 1
+        loop    .shift          ; DX:AX = taille en octets
+
+Pour 640 Kio, DX:AX vaut 000A:0000h en représentation entière 32 bits, soit
+000A0000h. Ne pas confondre ce couple entier avec le pointeur segmenté
+A000:0000h.
+
+==============================================================================
+12. CONVERSION ET AFFICHAGE DE LA VALEUR
+==============================================================================
+
+Pour afficher AX en décimal sous DOS, diviser successivement par 10 et empiler
+les restes. Exemple simplifié :
+
+PrintAXDecimal:
+        push    ax
+        push    bx
+        push    cx
+        push    dx
+        xor     cx, cx
+        mov     bx, 10
+
+.divide:
+        xor     dx, dx
+        div     bx              ; AX=quotient, DX=reste
+        push    dx
+        inc     cx
+        test    ax, ax
+        jnz     .divide
+
+.digit:
+        pop     dx
+        add     dl, '0'
+        mov     ah, 02h
+        int     21h
+        loop    .digit
+
+        pop     dx
+        pop     cx
+        pop     bx
+        pop     ax
+        ret
+
+Après INT 12h, sauvegarder AX avant d'appeler INT 21h, car AH sélectionnera le
+service DOS et détruira une partie de la valeur.
+
+==============================================================================
+13. EXEMPLE EN PASCAL POUR DOS
+==============================================================================
+
+Avec Turbo Pascal ou un compilateur DOS offrant Intr :
+
+  uses Dos;
+
+  var
+    R: Registers;
+    Kio: Word;
+    Octets: LongInt;
+
+  begin
+    FillChar(R, SizeOf(R), 0);
+    Intr($12, R);
+    Kio := R.AX;
+    Octets := LongInt(Kio) * 1024;
+    WriteLn('Mémoire conventionnelle : ', Kio, ' Kio');
+    WriteLn('Limite physique : ', Octets, ' octets');
+  end.
+
+La conversion en LongInt doit avoir lieu avant la multiplication. Avec une
+arithmétique Word 16 bits, 640*1024 déborde et donne une valeur incorrecte.
+
+Lire MemW[$0040:$0013] donne normalement le même résultat, mais Intr($12,R)
+exprime mieux l'intention et laisse le BIOS fournir son interface officielle.
+
+==============================================================================
+14. UTILISATION DANS UN SECTEUR D'AMORÇAGE
+==============================================================================
+
+Un chargeur peut employer INT 12h pour placer temporairement une pile ou une
+copie de lui-même près du sommet de la mémoire conventionnelle. Il doit réserver
+une marge et ne pas écraser l'EBDA.
+
+Exemple conceptuel pour une pile située 1 Kio sous la limite :
+
+        int     12h             ; AX = Kio
+        cmp     ax, 2
+        jb      NotEnoughMemory
+        dec     ax              ; réserver le dernier Kio
+        mov     cl, 6
+        shl     ax, cl          ; segment correspondant
+        cli
+        mov     ss, ax
+        mov     sp, 0400h       ; sommet du Kio réservé
+        sti
+
+Ce fragment n'est sûr que si le chargeur sait que cette zone n'est utilisée par
+personne et si le BIOS n'a pas déjà réservé davantage. En particulier :
+
+  - comparer la limite avec le segment EBDA à 0040:000Eh;
+  - ne pas placer la pile dans les données du chargeur;
+  - sur 8086, masquer les interruptions lors du changement SS:SP;
+  - tenir compte du comportement spécial de MOV SS et des BIOS clones;
+  - conserver DL et les autres informations reçues du BIOS d'amorçage.
+
+Réduire le mot 0040:0013h est une ancienne technique pour protéger une zone
+résidente au sommet de la mémoire. Elle affecte les appels INT 12h ultérieurs et
+ne doit être pratiquée que par un composant qui maîtrise toute la séquence de
+démarrage.
+
+==============================================================================
+15. LIRE DIRECTEMENT LA BDA
+==============================================================================
+
+Lecture directe, sans appeler le BIOS :
+
+        push    ds
+        mov     ax, 0040h
+        mov     ds, ax
+        mov     bx, [0013h]     ; BX = Kio
+        pop     ds
+
+Ou avec un segment zéro :
+
+        push    ds
+        xor     ax, ax
+        mov     ds, ax
+        mov     bx, [0413h]
+        pop     ds
+
+Les deux adresses segmentées représentent la même adresse physique :
+
+  0040h * 10h + 0013h = 0000h * 10h + 0413h = 0413h
+
+L'appel INT 12h est normalement préférable. La lecture directe est utile dans
+un BIOS, un moniteur, un diagnostic ou pour comprendre l'implémentation.
+
+Si un autre composant peut modifier la valeur, la lecture d'un WORD n'est pas
+nécessairement atomique sur un bus 8088. Masquer brièvement les interruptions ou
+appeler le BIOS évite une valeur composée de deux états, bien que cette taille
+change très rarement après le démarrage.
+
+==============================================================================
+16. COMPATIBILITÉ ET CAS PARTICULIERS
+==============================================================================
+
+PC et PC/XT
+  Le POST compte la mémoire de la carte mère et des cartes d'extension dans la
+  zone conventionnelle. Les configurations peuvent être très inférieures à
+  640 Kio. Le service retourne simplement la valeur résultante.
+
+PCjr et Tandy
+  Une partie de la RAM peut être partagée avec la vidéo. Le BIOS ajuste la
+  quantité annoncée; utiliser INT 12h plutôt qu'une constante propre au modèle.
+
+PC/AT et PS/2
+  Une EBDA peut réduire la valeur sous 640 Kio. La mémoire étendue installée au-
+  dessus de 1 Mio n'est pas ajoutée au résultat.
+
+BIOS clones
+  Certains retournent 639, 638 ou une autre valeur à cause de zones privées.
+  Quelques compatibles atypiques annoncent plus de 640 Kio lorsque leur carte
+  mémoire le permet. Vérifier la carte mémoire de la machine.
+
+Gestionnaires et chargeurs
+  Un gestionnaire de disque, une ROM réseau ou un hyperviseur peut réserver de
+  la mémoire en diminuant 0040:0013h. La nouvelle valeur est intentionnelle et
+  doit être respectée, même si un test physique découvre encore de la RAM.
+
+Émulateurs
+  Ils retournent souvent 640 ou 639 Kio indépendamment de la quantité de RAM
+  virtuelle totale. La RAM supplémentaire est décrite par INT 15h/E820.
+
+Mode protégé ou système moderne
+  L'accès direct à 0040:0013h peut être intercepté, interdit ou ne représenter
+  qu'une machine virtuelle. Utiliser l'API du système d'exploitation.
+
+==============================================================================
+17. VALIDATION ET PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+Lorsqu'un chargeur dépend de la valeur :
+
+  1. traiter AX comme un entier non signé en Kio;
+  2. accepter que la valeur soit inférieure à 640 sur une machine valide;
+  3. rejeter ou signaler zéro et les valeurs incompatibles avec les besoins;
+  4. convertir dans un type assez large avant de multiplier par 1024;
+  5. comparer la limite à l'adresse de l'EBDA lorsqu'elle existe;
+  6. ne jamais écrire dans l'IVT, la BDA ou l'EBDA;
+  7. ne pas considérer toute la plage inférieure comme libre;
+  8. utiliser les services DOS pour allouer sous DOS;
+  9. employer E820 pour obtenir une carte mémoire complète sur BIOS récent;
+ 10. conserver une solution de repli si E820 n'est pas disponible;
+ 11. ne pas sonder la RAM par écriture destructive après le démarrage;
+ 12. tester sur la classe minimale de processeur annoncée par le programme.
+
+Un programme strictement 8086 ne doit pas utiliser des instructions apparues
+sur 80186 ou 80386 dans son chemin INT 12h. Les exemples de ce document évitent
+notamment les décalages immédiats supérieurs à un et les registres 32 bits.
+
+==============================================================================
+18. RÉSUMÉ
+==============================================================================
+
+  - INT 12h retourne AX = mémoire conventionnelle en Kio;
+  - aucun registre d'entrée n'est requis;
+  - le service lit normalement le WORD à 0040:0013h;
+  - l'entrée IVT de la routine se trouve à 0000:0048h;
+  - 640 Kio correspond à AX=0280h et à la limite physique A0000h;
+  - la valeur a été déterminée au POST et n'est pas retestée lors de l'appel;
+  - une EBDA ou un logiciel résident peut réduire la mémoire annoncée;
+  - la mémoire sous cette limite n'est pas entièrement libre;
+  - INT 12h ne compte ni mémoire étendue, ni XMS, ni EMS, ni UMB;
+  - INT 15h/E820 est préférable pour la carte complète d'un BIOS récent;
+  - sous DOS, employer l'allocateur DOS plutôt qu'INT 12h pour connaître ou
+    réserver la mémoire libre;
+  - sous UEFI ou un système protégé moderne, employer l'interface native.
+
+INT 12h est donc un service très simple mais fondamental : il communique la
+frontière historique entre la mémoire de base utilisable et les zones hautes
+réservées du PC, tout en laissant aux autres interfaces la description de la
+mémoire supplémentaire.

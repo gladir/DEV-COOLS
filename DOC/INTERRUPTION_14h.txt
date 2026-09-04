@@ -1,0 +1,821 @@
+==============================================================================
+     INTERRUPTION 14h DU BIOS 8086 : COMMUNICATIONS SÉRIE RS-232
+==============================================================================
+
+INT 14h est le service BIOS historique des ports de communication asynchrones
+des IBM PC et compatibles. Il initialise un port COM, transmet ou reçoit un
+octet et retourne l'état de l'UART et des signaux modem RS-232.
+
+Les quatre fonctions de base sont :
+
+  AH=00h   initialiser le port
+  AH=01h   transmettre un caractère
+  AH=02h   recevoir un caractère
+  AH=03h   lire l'état du port
+
+Les IBM PC Convertible et PS/2 ajoutent AH=04h et AH=05h. Des pilotes résidents,
+notamment FOSSIL, réutilisent aussi INT 14h avec une interface plus riche qui ne
+doit pas être confondue avec celle du BIOS.
+
+AVERTISSEMENT
+-------------
+
+Le BIOS original utilise des entrées/sorties scrutées et ne fournit ni tampon
+de réception, ni protocole de haut niveau. À vitesse élevée, des caractères
+peuvent être perdus pendant que le programme effectue une autre tâche. Pour une
+communication soutenue, employer un pilote à interruptions avec tampons ou une
+interface FOSSIL correctement détectée.
+
+Sources principales :
+
+  - IBM PC/XT, PC/AT et PS/2 Technical References;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles :
+    https://www.vtda.org/books/Computing/Programming/SystemBIOSforIBMPC_XT_ATComputersandCompatibles_Phoenix.pdf
+  - Ralf Brown's Interrupt List :
+    https://www.cs.cmu.edu/~ralf/files.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Contexte 8086 et vecteur
+  2.  Ports logiques et BIOS Data Area
+  3.  Résumé des fonctions et conventions
+  4.  AH=00h : initialisation classique
+  5.  Codage du paramètre AL
+  6.  AH=01h : transmettre un caractère
+  7.  AH=02h : recevoir un caractère
+  8.  AH=03h : lire l'état
+  9.  Registre d'état de ligne, AH
+ 10.  Registre d'état modem, AL
+ 11.  Temporisations BIOS
+ 12.  AH=04h : initialisation étendue PS/2
+ 13.  AH=05h : contrôle étendu du modem
+ 14.  UART 8250/16450/16550
+ 15.  Registres matériels de l'UART
+ 16.  Débit et diviseur
+ 17.  Trames, parité et bits d'arrêt
+ 18.  Signaux RS-232 et câblage
+ 19.  Scrutation, interruptions et tampons FIFO
+ 20.  Exemple d'initialisation et d'émission 8086
+ 21.  Exemple de réception avec temporisation applicative
+ 22.  Exemple en Pascal pour DOS
+ 23.  Pilotes FOSSIL et extensions de fabricants
+ 24.  Redirection vers console série
+ 25.  Erreurs et diagnostic en boucle locale
+ 26.  Compatibilité USB, virtualisation et systèmes modernes
+ 27.  Programmation défensive
+ 28.  Résumé
+
+==============================================================================
+1. CONTEXTE 8086 ET VECTEUR
+==============================================================================
+
+Le numéro 14h est une convention du BIOS IBM PC, pas une fonction intrinsèque
+du processeur. En mode réel, l'instruction INT 14h empile FLAGS, CS et IP, met IF
+et TF à zéro, puis charge CS:IP depuis l'entrée 14h de l'Interrupt Vector Table :
+
+  14h * 4 = 0050h
+
+  0000:0050h  WORD  offset de la routine
+  0000:0052h  WORD  segment de la routine
+
+La routine revient avec IRET. Un pilote résident peut remplacer ce vecteur et
+chaîner les fonctions inconnues vers l'ancien gestionnaire BIOS.
+
+En mode protégé, INT consulte l'IDT du système et ne rejoint pas automatiquement
+la ROM BIOS. Un programme DPMI doit demander une simulation d'interruption réelle
+ou employer les services du système d'exploitation.
+
+==============================================================================
+2. PORTS LOGIQUES ET BIOS DATA AREA
+==============================================================================
+
+DX sélectionne un port logique, à partir de zéro :
+
+  DX=0000h   COM1
+  DX=0001h   COM2
+  DX=0002h   COM3
+  DX=0003h   COM4
+
+DX n'est pas l'adresse d'E/S. Le BIOS consulte les WORD de la BIOS Data Area :
+
+  BDA             physique   contenu
+  --------------  ---------  ----------------------------------------------
+  0040:0000h      0400h      adresse de base COM1
+  0040:0002h      0402h      adresse de base COM2
+  0040:0004h      0404h      adresse de base COM3
+  0040:0006h      0406h      adresse de base COM4
+
+Adresses fréquentes, mais non garanties :
+
+  COM1 = 03F8h     COM2 = 02F8h
+  COM3 = 03E8h     COM4 = 02E8h
+
+Une entrée BDA nulle indique normalement qu'aucun port n'a été enregistré. Ne
+pas calculer l'adresse à partir du seul numéro COM. Le mot d'équipement retourné
+par INT 11h contient aussi un compteur de ports série, mais les adresses BDA sont
+plus directement utiles.
+
+Les quatre octets à 0040:007Ch..007Fh sont généralement les temporisations des
+ports COM1..COM4. Leur usage dépend du BIOS; voir section 11.
+
+==============================================================================
+3. RÉSUMÉ DES FONCTIONS ET CONVENTIONS
+==============================================================================
+
+ AH    Fonction                              Disponibilité
+ ----  ------------------------------------  -------------------------------
+ 00h   initialiser                           IBM PC et compatibles
+ 01h   transmettre un octet                  IBM PC et compatibles
+ 02h   recevoir un octet                     IBM PC et compatibles
+ 03h   lire état ligne et modem              IBM PC et compatibles
+ 04h   initialisation étendue                Convertible/PS2 ou FOSSIL
+ 05h   contrôle du registre modem            Convertible/PS2 ou FOSSIL autre
+ 06h+  réservées par IBM, extensions privées dépendantes
+
+Pour AH=00h..03h :
+
+  DX = numéro logique 0..3
+  AH au retour = état de ligne, avec bit 7 utilisé comme timeout par le BIOS
+  AL au retour = état modem pour 00h/03h, caractère reçu pour 02h
+
+Il n'existe pas de Carry Flag d'erreur standard. Tester les bits de AH. Les
+fonctions attendent jusqu'au succès ou à l'expiration du délai BIOS.
+
+==============================================================================
+4. AH=00h : INITIALISATION CLASSIQUE
+==============================================================================
+
+Entrée :
+
+  AH = 00h
+  AL = paramètres débit/parité/arrêt/longueur
+  DX = port logique
+
+Retour :
+
+  AH = état de ligne
+  AL = état modem
+
+Le BIOS programme le diviseur de débit et le Line Control Register. Sur les
+implémentations classiques, il désactive les interruptions de l'UART et établit
+les signaux DTR/RTS nécessaires.
+
+Cette fonction ne crée aucun tampon logiciel. Un octet déjà en attente peut être
+perdu pendant la réinitialisation. Initialiser avant que le correspondant ne
+commence à transmettre.
+
+Le format classique ne permet que 7 ou 8 bits de données et des débits jusqu'à
+9600 bauds. L'initialisation étendue AH=04h ajoute 5/6 bits, parités stick et
+19200 bauds sur les PS/2 concernés.
+
+==============================================================================
+5. CODAGE DU PARAMÈTRE AL
+==============================================================================
+
+  bits 7..5   débit
+      000b    110 bauds
+      001b    150 bauds
+      010b    300 bauds
+      011b    600 bauds
+      100b    1200 bauds
+      101b    2400 bauds
+      110b    4800 bauds
+      111b    9600 bauds
+
+  bits 4..3   parité
+      00b     aucune
+      01b     impaire
+      10b     aucune, variante historique du codage
+      11b     paire
+
+  bit 2       nombre de bits d'arrêt
+      0       un bit d'arrêt
+      1       deux bits d'arrêt
+
+  bits 1..0   longueur du mot
+      10b     7 bits
+      11b     8 bits
+
+Les codes 00b/01b de longueur ne font pas partie de l'interface IBM classique
+portable, même si l'UART les interprète comme 5/6 bits. Employer AH=04h sur les
+machines qui l'offrent.
+
+Exemples :
+
+  E3h = 111 00 0 11b = 9600, aucune parité, 1 arrêt, 8 bits
+  AAh = 101 01 0 10b = 2400, parité impaire, 1 arrêt, 7 bits
+  7Bh = 011 11 0 11b = 600, parité paire, 1 arrêt, 8 bits
+
+La notation courante « 9600 8N1 » correspond à AL=E3h.
+
+==============================================================================
+6. AH=01h : TRANSMETTRE UN CARACTÈRE
+==============================================================================
+
+Entrée :
+
+  AH = 01h
+  AL = octet à transmettre
+  DX = port logique
+
+Retour :
+
+  AL = normalement préservé
+  AH = état de ligne; bit 7=1 indique un timeout BIOS
+
+Le BIOS attend les conditions de modem requises et que le Transmitter Holding
+Register soit vide, puis écrit AL. Le retour peut se produire avant que tous les
+bits aient quitté physiquement la ligne : THRE et TEMT ne signifient pas la même
+chose.
+
+Si le correspondant n'affirme pas CTS/DSR ou si le câble ne fournit pas les
+signaux attendus, le BIOS peut attendre jusqu'au timeout. Pour une liaison trois
+fils sans contrôle matériel, le câble ou l'adaptateur doit satisfaire les
+entrées modem, ou un pilote direct doit appliquer une politique différente.
+
+Tester AH bit 7 après chaque octet. Cette interface n'offre pas une écriture de
+bloc; une chaîne demande un appel par caractère.
+
+==============================================================================
+7. AH=02h : RECEVOIR UN CARACTÈRE
+==============================================================================
+
+Entrée :
+
+  AH = 02h
+  DX = port logique
+
+Retour :
+
+  AL = caractère reçu si aucun timeout
+  AH = état de ligne; bit 7=1 indique le timeout BIOS
+
+La fonction attend qu'un octet soit disponible ou que le délai expire. Elle est
+donc bloquante. Pour tester sans attendre, appeler AH=03h et vérifier AH bit 0
+avant AH=02h; un caractère peut néanmoins arriver ou être consommé entre les
+deux appels dans un environnement concurrent.
+
+Les bits d'erreur de AH indiquent overrun, parité, cadrage ou break. Si bit 7 est
+positionné, les autres bits peuvent être indéterminés selon IBM; ne pas utiliser
+AL comme caractère valide.
+
+Avec un UART sans FIFO et sans pilote d'interruption, un nouvel octet arrivant
+avant la lecture du précédent provoque un overrun. L'ancien ou le nouveau
+caractère est alors perdu selon le matériel.
+
+==============================================================================
+8. AH=03h : LIRE L'ÉTAT
+==============================================================================
+
+Entrée :
+
+  AH = 03h
+  DX = port logique
+
+Retour :
+
+  AH = Line Status Register interprété par le BIOS
+  AL = Modem Status Register
+
+La fonction n'attend normalement pas et ne retire aucun caractère du Receiver
+Buffer Register. Elle permet donc une scrutation :
+
+  - AH bit 0 : caractère disponible;
+  - AH bit 5 : registre d'émission prêt pour un nouvel octet;
+  - AH bit 6 : émetteur entièrement vide;
+  - AL bits 4..7 : CTS, DSR, RI et DCD courants.
+
+Lire le Modem Status Register efface normalement ses bits delta matériels. Par
+conséquent, un appel AH=03h peut acquitter une transition que voulait observer
+un autre pilote. Ne pas partager le même UART entre BIOS et pilote interruptif
+sans coordination.
+
+==============================================================================
+9. REGISTRE D'ÉTAT DE LIGNE, AH
+==============================================================================
+
+  Bit  Nom BIOS/UART  Signification
+  ---  -------------  ------------------------------------------------------
+   7   TIMEOUT        délai BIOS expiré; ce n'est pas le bit FIFO du LSR brut
+   6   TEMT           registre d'émission et shift register vides
+   5   THRE           Transmitter Holding Register vide
+   4   BI             break reçu
+   3   FE             erreur de cadrage
+   2   PE             erreur de parité
+   1   OE             overrun de réception
+   0   DR             donnée reçue disponible
+
+Le bit 7 retourné par INT 14h est un indicateur logiciel de timeout. Sur un
+16550, le bit 7 du LSR matériel peut signaler une erreur dans la FIFO; le BIOS
+classique ne retourne donc pas nécessairement le registre brut à l'identique.
+
+THRE=1 signifie que le programme peut fournir un autre octet. TEMT=1 signifie
+que même le registre à décalage est vide, utile avant de couper RTS/DTR ou de
+changer la direction d'une liaison demi-duplex.
+
+DR et les bits d'erreur se rapportent au caractère en tête de réception. La
+lecture du caractère et/ou du LSR peut acquitter des conditions matérielles.
+
+==============================================================================
+10. REGISTRE D'ÉTAT MODEM, AL
+==============================================================================
+
+  Bit  Signal   Signification
+  ---  -------  -------------------------------------------------------------
+   7   DCD/RLSD Data Carrier Detect, porteuse reçue
+   6   RI       Ring Indicator
+   5   DSR      Data Set Ready
+   4   CTS      Clear To Send
+   3   DDCD     changement de DCD
+   2   TERI     front descendant de RI
+   1   DDSR     changement de DSR
+   0   DCTS     changement de CTS
+
+Les quatre bits hauts sont les niveaux présents. Les quatre bits bas mémorisent
+des transitions depuis la lecture précédente du MSR.
+
+Le vocabulaire vient des modems DTE/DCE. Avec un câble null-modem, les signaux
+sont croisés ou bouclés différemment. Une entrée à zéro ne signifie pas toujours
+une panne : le câble peut ne transporter que TXD, RXD et masse.
+
+==============================================================================
+11. TEMPORISATIONS BIOS
+==============================================================================
+
+La BDA contient généralement quatre octets de timeout série :
+
+  0040:007Ch   COM1
+  0040:007Dh   COM2
+  0040:007Eh   COM3
+  0040:007Fh   COM4
+
+Le BIOS les utilise avec le compteur de ticks système pour borner l'attente.
+L'unité et la précision pratique sont liées à l'implémentation; le tick BIOS
+classique vaut environ 54,925 ms, soit 18,2065 ticks par seconde.
+
+Une valeur nulle ne garantit pas un retour instantané sur tous les BIOS. Les
+clones ont des boucles, arrondis et défauts différents. Un programme qui exige
+un délai précis doit effectuer sa propre scrutation avec INT 1Ah, le compteur
+8253/8254 ou une horloge du système.
+
+Ne modifier les octets BDA qu'en maîtrisant toutes les applications qui utilisent
+INT 14h. Une valeur globale affecte tous les appels du port.
+
+==============================================================================
+12. AH=04h : INITIALISATION ÉTENDUE PS/2
+==============================================================================
+
+Fonction IBM Convertible/PS2 :
+
+  AH = 04h
+  DX = port logique
+  AL = break : 00h sans break, 01h break actif
+  BH = parité
+       00h aucune, 01h impaire, 02h paire,
+       03h stick impaire, 04h stick paire
+  BL = arrêt : 00h un bit, 01h deux bits
+       avec 5 bits de données, la seconde valeur produit 1,5 bit
+  CH = longueur : 00h=5, 01h=6, 02h=7, 03h=8 bits
+  CL = débit
+       00h=110, 01h=150, 02h=300, 03h=600,
+       04h=1200, 05h=2400, 06h=4800, 07h=9600,
+       08h=19200 bauds sur les modèles concernés
+
+Retour :
+
+  AH = état de ligne
+  AL = état modem
+
+Cette fonction doit être utilisée seulement après identification d'un BIOS qui
+la prend en charge. Un pilote FOSSIL emploie AH=04h pour sa propre initialisation
+et possède une signature différente; voir section 23.
+
+==============================================================================
+13. AH=05h : CONTRÔLE ÉTENDU DU MODEM
+==============================================================================
+
+Fonction IBM Convertible/PS2 :
+
+  AH = 05h
+  DX = port logique
+  AL = 00h lire le Modem Control Register
+       retour BL = contenu du MCR
+  AL = 01h écrire le Modem Control Register
+       entrée BL = nouvelle valeur
+
+Retours supplémentaires usuels : AH état de ligne et AL état modem, selon le
+modèle et la sous-fonction.
+
+Bits du Modem Control Register :
+
+  bit 0   DTR, Data Terminal Ready
+  bit 1   RTS, Request To Send
+  bit 2   OUT1, sortie auxiliaire
+  bit 3   OUT2, souvent autorisation de l'IRQ vers le bus PC
+  bit 4   LOOP, boucle locale interne de l'UART
+  7..5    réservés sur 8250 classique
+
+Écrire le MCR peut couper une connexion modem, bloquer le contrôle de flux ou
+désactiver les interruptions. Préserver les bits non concernés et coordonner
+l'opération avec tout pilote du port.
+
+==============================================================================
+14. UART 8250/16450/16550
+==============================================================================
+
+L'adaptateur série IBM original utilise un UART de famille 8250. Les compatibles
+ont ensuite employé 16450, 16550, 16550A et dérivés.
+
+8250
+  Un octet de réception et un registre d'émission; pas de FIFO utilisable.
+
+16450
+  Améliorations électriques/registre, toujours sans FIFO de données efficace.
+
+16550
+  Première FIFO, mais la révision originale a un défaut connu.
+
+16550A et suivants
+  FIFO de réception/émission, généralement 16 octets ou davantage sur dérivés.
+
+INT 14h IBM classique traite principalement l'UART comme un 8250 et peut laisser
+les FIFO désactivées. La présence d'un 16550 ne transforme donc pas le BIOS en
+pilote rapide et tamponné.
+
+==============================================================================
+15. REGISTRES MATÉRIELS DE L'UART
+==============================================================================
+
+Pour une adresse de base B :
+
+ Offset  DLAB  Lecture                         Écriture
+ ------  ----  ------------------------------  ------------------------------
+ +0      0     RBR, octet reçu                 THR, octet à transmettre
+ +0      1     DLL, diviseur bas               DLL
+ +1      0     IER, autorisations IRQ           IER
+ +1      1     DLM, diviseur haut              DLM
+ +2      -     IIR, identification IRQ          FCR sur 16550+
+ +3      -     LCR, format et DLAB              LCR
+ +4      -     MCR, commandes modem             MCR
+ +5      -     LSR, état de ligne               --
+ +6      -     MSR, état modem                  --
+ +7      -     Scratch Register                 Scratch Register
+
+DLAB est le bit 7 du LCR. Quand il vaut 1, B+0/B+1 ne donnent plus les données et
+interruptions mais le diviseur. Toute programmation directe doit restaurer DLAB
+à zéro avant émission/réception.
+
+Les adresses sont des ports d'E/S et s'utilisent avec IN/OUT, pas comme mémoire.
+Sous un système protégé, ces instructions sont privilégiées ou contrôlées.
+
+==============================================================================
+16. DÉBIT ET DIVISEUR
+==============================================================================
+
+L'horloge classique vaut 1,8432 MHz et l'UART divise encore par 16 :
+
+  diviseur = 115200 / débit
+
+  débit    diviseur décimal   hexadécimal
+  -------  -----------------  -----------
+    110          1047          0417h
+    150           768          0300h
+    300           384          0180h
+    600           192          00C0h
+   1200            96          0060h
+   2400            48          0030h
+   4800            24          0018h
+   9600            12          000Ch
+  19200             6          0006h
+  38400             3          0003h
+  57600             2          0002h
+ 115200             1          0001h
+
+Le BIOS classique n'expose que la partie supérieure de cette table. Les vitesses
+38400+ exigent une extension ou la programmation directe. Un UART utilisant une
+autre horloge produit des valeurs différentes.
+
+La vitesse réellement obtenue est horloge/(16*diviseur); si la division n'est
+pas exacte, calculer l'erreur relative et vérifier la tolérance des deux côtés.
+
+==============================================================================
+17. TRAMES, PARITÉ ET BITS D'ARRÊT
+==============================================================================
+
+Une trame asynchrone courante 8N1 comprend :
+
+  repos=1, start=0, 8 bits de données LSB d'abord, stop=1
+
+À 9600 bauds, dix bits par caractère donnent au mieux environ 960 caractères
+par seconde, avant protocole.
+
+Les deux extrémités doivent partager :
+
+  - débit;
+  - longueur 5/6/7/8 bits;
+  - parité aucune/impaire/paire/mark/space;
+  - nombre de bits d'arrêt;
+  - contrôle de flux matériel ou logiciel.
+
+Un désaccord de débit ou d'arrêt cause des erreurs de cadrage. Un désaccord de
+parité positionne PE. Avec 7 bits, le huitième bit des caractères n'est pas
+transmis; l'encodage de texte doit en tenir compte.
+
+INT 14h ne met en œuvre ni XON/XOFF, ni paquets, ni contrôle CRC. Ceux-ci relèvent
+du programme ou du pilote.
+
+==============================================================================
+18. SIGNAUX RS-232 ET CÂBLAGE
+==============================================================================
+
+Signaux principaux côté terminal DTE :
+
+  TXD   données émises
+  RXD   données reçues
+  RTS   demande d'émettre
+  CTS   autorisation d'émettre
+  DTR   terminal prêt
+  DSR   modem prêt
+  DCD   porteuse détectée
+  RI    sonnerie
+  GND   masse de signal
+
+Un modem relie normalement DTE à DCE avec un câble droit. Deux PC, tous deux
+DTE, demandent un câble null-modem qui croise TXD/RXD et éventuellement les
+signaux de contrôle.
+
+Connecteurs IBM courants : DB-25 puis DE-9. « DB-9 » est un nom populaire mais
+la désignation mécanique correcte est DE-9. Vérifier le brochage : le numéro de
+broche diffère entre DB-25 et DE-9.
+
+Le RS-232 réel utilise des tensions positives/négatives incompatibles avec une
+UART TTL directe. Un convertisseur de niveau comme MAX232 est requis pour relier
+un microcontrôleur TTL à un port RS-232.
+
+==============================================================================
+19. SCRUTATION, INTERRUPTIONS ET TAMPONS FIFO
+==============================================================================
+
+INT 14h classique fonctionne par scrutation : le processeur attend dans le BIOS.
+Avantages : simplicité et absence de pilote résident. Inconvénients :
+
+  - CPU immobilisé pendant l'attente;
+  - un seul octet traité à la fois;
+  - caractères perdus si le programme ne revient pas assez vite;
+  - contrôle de flux limité;
+  - faible débit pratique;
+  - service non réentrant.
+
+Un pilote performant configure les IRQ :
+
+  COM1/COM3 utilisent traditionnellement IRQ4 -> INT 0Ch
+  COM2/COM4 utilisent traditionnellement IRQ3 -> INT 0Bh
+
+Ces partages ne sont pas garantis sur toutes les cartes. Le pilote lit IIR, vide
+la FIFO RX dans un tampon circulaire, remplit TX et traite les changements modem.
+Il doit aussi gérer le 8259, l'EOI et le chaînage d'interruptions.
+
+Ne pas mélanger accès BIOS scruté et pilote IRQ sur le même port : chacun peut
+consommer les données ou acquitter les états de l'autre.
+
+==============================================================================
+20. EXEMPLE D'INITIALISATION ET D'ÉMISSION 8086
+==============================================================================
+
+Initialiser COM1 à 9600 8N1 et envoyer une chaîne terminée par zéro :
+
+        mov     dx, 0           ; COM1
+        mov     ax, 00E3h       ; AH=00, AL=9600 8N1
+        int     14h
+        test    ah, 80h
+        jnz     SerialError
+
+        mov     si, Message
+.send:
+        lodsb                   ; DS:SI
+        test    al, al
+        jz      .done
+        mov     ah, 01h
+        mov     dx, 0
+        int     14h
+        test    ah, 80h
+        jnz     SerialError
+        jmp     .send
+.done:
+        ret
+
+Message db 'Bonjour sur COM1', 13, 10, 0
+
+Le BIOS peut retourner une condition modem défavorable dès l'initialisation.
+Une application doit définir si elle exige CTS/DSR/DCD et afficher un diagnostic
+plus précis que « erreur série ».
+
+==============================================================================
+21. EXEMPLE DE RÉCEPTION AVEC TEMPORISATION APPLICATIVE
+==============================================================================
+
+Scrutation non bloquante du statut avant lecture :
+
+TryReceive:
+        mov     ah, 03h
+        mov     dx, 0           ; COM1
+        int     14h
+        test    ah, 01h         ; Data Ready ?
+        jz      .none
+
+        mov     ah, 02h
+        mov     dx, 0
+        int     14h
+        test    ah, 80h
+        jnz     .error
+        clc                     ; AL contient le caractère
+        ret
+.none:
+        stc                     ; aucun caractère pour l'instant
+        ret
+.error:
+        stc
+        ret
+
+Pour attendre pendant une durée déterminée, appeler cette routine en comparant
+les ticks d'INT 1Ah/AH=00h. Gérer le retour du compteur à minuit et ne pas faire
+une soustraction signée naïve.
+
+Entre AH=03h et AH=02h, une interruption ou un autre consommateur peut changer
+l'état. Réserver le port à un seul gestionnaire.
+
+==============================================================================
+22. EXEMPLE EN PASCAL POUR DOS
+==============================================================================
+
+  uses Dos;
+
+  function InitCOM1: Boolean;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $00E3;             { 9600 8N1 }
+    R.DX := 0;
+    Intr($14, R);
+    InitCOM1 := (R.AX and $8000) = 0;
+  end;
+
+  function SendCOM1(C: Byte): Boolean;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0100 or C;
+    R.DX := 0;
+    Intr($14, R);
+    SendCOM1 := (R.AX and $8000) = 0;
+  end;
+
+  function ReceiveReadyCOM1: Boolean;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0300;
+    R.DX := 0;
+    Intr($14, R);
+    ReceiveReadyCOM1 := (R.AX and $0100) <> 0;
+  end;
+
+Dans AX, AH bit 7 correspond au masque $8000 et AH bit 0 au masque $0100.
+L'appelant doit éviter AH=02h tant qu'il n'est pas prêt à attendre le timeout.
+
+==============================================================================
+23. PILOTES FOSSIL ET EXTENSIONS DE FABRICANTS
+==============================================================================
+
+FOSSIL signifie Fido/Opus/Seadog Standard Interface Layer. Les logiciels de BBS
+emploient ce pilote résident pour obtenir tampons, débits élevés et fonctions
+uniformes sans piloter chaque UART.
+
+FOSSIL accroche INT 14h et réutilise notamment :
+
+  AH=00h   régler la vitesse/format selon convention FOSSIL
+  AH=01h   transmettre avec attente
+  AH=02h   recevoir avec attente
+  AH=03h   état
+  AH=04h   initialiser le pilote
+  AH=05h   désactiver le pilote
+  AH=06h   lever/baisser DTR
+  AH=08h/09h vider les tampons
+  AH=0Ah   purge de sortie
+  AH=0Bh   transmettre sans attente
+  AH=0Ch   recevoir sans attente
+  AH=1Bh   informations du pilote, selon niveau
+
+Détection classique : appeler AH=04h avec la signature demandée par la norme,
+souvent BX=4F50h, puis n'accepter FOSSIL que si AX=1954h au retour. Consulter la
+spécification du niveau exact avant tout appel.
+
+Sans détection, AH=04h signifie « Extended Initialize » sur PS/2 et « Initialize
+Driver » sous FOSSIL : les registres et effets divergent. D'autres produits
+(Digiboard, Multi-Tech, réseau, BIOS de modem) utilisent également des numéros
+INT 14h privés. Une liste de numéros seule ne suffit pas; vérifier signature et
+fournisseur.
+
+==============================================================================
+24. REDIRECTION VERS CONSOLE SÉRIE
+==============================================================================
+
+Un BIOS serveur, moniteur ou débogueur peut rediriger la console vers un port
+série. Il peut accrocher INT 10h/16h ou proposer ses propres appels INT 14h.
+
+Pour produire une console série minimale dans un chargeur :
+
+  - initialiser le port une fois;
+  - transmettre CR puis LF pour une nouvelle ligne;
+  - limiter les attentes afin qu'un câble absent ne bloque pas le démarrage;
+  - conserver une sortie écran de secours;
+  - ne pas supposer DCD si la liaison est directe;
+  - documenter vitesse et format, par exemple 9600 8N1.
+
+Une ROM de gestion à distance peut virtualiser le port; les adresses BDA peuvent
+alors ne pas correspondre à un UART physique ordinaire.
+
+==============================================================================
+25. ERREURS ET DIAGNOSTIC EN BOUCLE LOCALE
+==============================================================================
+
+Diagnostic progressif :
+
+  1. vérifier l'adresse BDA du port;
+  2. initialiser les deux extrémités avec exactement le même format;
+  3. lire AH=03h et noter LSR/MSR;
+  4. vérifier TXD/RXD, masse et type droit/null-modem;
+  5. boucler physiquement TXD vers RXD et transmettre un motif;
+  6. tester ensuite les signaux RTS/CTS et DTR/DSR/DCD;
+  7. rechercher erreurs de parité/cadrage/overrun;
+  8. réduire le débit;
+  9. vérifier IRQ/FIFO seulement si un pilote à interruptions est utilisé.
+
+La boucle interne MCR bit 4 renvoie les sorties modem vers les entrées et les
+données de l'UART sans tester le convertisseur RS-232, le connecteur ou le câble.
+Une boucle physique teste davantage du chemin électrique.
+
+Ne jamais relier directement deux sorties TXD ou deux niveaux RS-232 à une
+entrée TTL. Employer le câble et le convertisseur appropriés.
+
+==============================================================================
+26. COMPATIBILITÉ USB, VIRTUALISATION ET SYSTÈMES MODERNES
+==============================================================================
+
+Un adaptateur USB-série n'est généralement pas visible au BIOS comme COM1/COM2
+et ne répond pas à INT 14h. Il nécessite un pilote USB du système. Quelques BIOS
+serveur émulent un port pour la redirection, mais ce n'est pas une règle.
+
+Dans DOSBox, PCem, 86Box, QEMU ou une machine virtuelle, INT 14h peut être relié
+à un fichier, socket ou port hôte. La valeur décrit le matériel virtuel.
+
+Sous Windows/Linux modernes, utiliser l'API série du système. Les accès IN/OUT
+et la BDA sont protégés. Sous UEFI natif, Serial I/O Protocol remplace le BIOS
+hérité; INT 14h n'existe que si une couche CSM l'émule.
+
+==============================================================================
+27. PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+  1. Vérifier que DX est dans la plage prise en charge.
+  2. Vérifier que l'adresse COM correspondante dans la BDA n'est pas nulle.
+  3. Initialiser le port avant les transferts.
+  4. Tester AH bit 7 après émission et réception.
+  5. Ne pas utiliser AL après un timeout de réception.
+  6. Inspecter PE, FE, OE et BI et décider comment traiter l'octet.
+  7. Employer AH=03h pour une scrutation non bloquante approximative.
+  8. Ne pas attendre indéfiniment CTS, DSR ou DCD sans politique explicite.
+  9. Ne pas mélanger le BIOS et un pilote IRQ/FOSSIL sur le même port.
+ 10. Détecter FOSSIL avant ses fonctions AH=04h+.
+ 11. Ne pas supposer AH=04h/05h sur PC/XT ou AT ancien.
+ 12. Conserver les bits réservés du MCR lors d'une modification.
+ 13. Ne pas supposer une adresse, IRQ ou horloge standard.
+ 14. Protéger les tampons circulaires contre débordement dans un pilote.
+ 15. Ne pas appeler le BIOS série depuis une interruption s'il peut attendre.
+ 16. Tester avec câble absent, correspondant éteint et flux saturé.
+
+==============================================================================
+28. RÉSUMÉ
+==============================================================================
+
+  - INT 14h est le service BIOS série RS-232 du PC en mode réel;
+  - DX=0..3 sélectionne COM1..COM4, pas une adresse d'E/S;
+  - les adresses de base sont à 0040:0000h..0006h;
+  - AH=00h initialise, 01h transmet, 02h reçoit, 03h lit l'état;
+  - AL=E3h configure classiquement 9600 8N1;
+  - AH bit 7 signale un timeout BIOS;
+  - AH bits 0..6 décrivent réception, erreurs et état d'émission;
+  - AL après AH=03h décrit CTS, DSR, RI, DCD et leurs transitions;
+  - AH=04h/05h sont des extensions PS/2 et entrent en conflit avec FOSSIL;
+  - le BIOS scrute l'UART et ne fournit normalement aucun tampon;
+  - un pilote IRQ/FIFO est préférable pour une communication soutenue;
+  - une interface FOSSIL doit être détectée par sa signature;
+  - USB-série et UEFI nécessitent normalement une autre interface.
+
+INT 14h est efficace pour un terminal, un diagnostic ou un chargeur simple. Sa
+simplicité reflète toutefois l'UART 8250 d'origine : les applications rapides ou
+multitâches doivent confier le port à un véritable pilote tamponné.

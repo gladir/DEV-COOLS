@@ -1,0 +1,763 @@
+==============================================================================
+     INTERRUPTION 16h DU BIOS 8086 : SERVICES DU CLAVIER
+==============================================================================
+
+INT 16h est l'interface BIOS historique du clavier des IBM PC et compatibles.
+Elle permet de lire une touche, vérifier sans attente si une touche traduite est
+disponible, consulter les états Shift/Ctrl/Alt/Lock et, sur les BIOS plus récents,
+gérer le typematic et les claviers étendus 101/102 touches.
+
+Le résultat courant d'une lecture est un couple :
+
+  AL = caractère ASCII ou traduction BIOS
+  AH = code de balayage BIOS de la touche
+
+Pour une touche sans caractère ASCII, AL vaut généralement 00h ou E0h et AH
+identifie la touche. Ce couple n'est pas l'octet brut reçu du clavier.
+
+AVERTISSEMENT
+-------------
+
+Les fonctions AH=00h/01h ont été définies pour les claviers 83/84 touches et
+peuvent filtrer ou convertir certaines touches étendues. Pour un clavier
+101/102 touches, utiliser AH=10h/11h après détection du support. INT 16h ne
+retourne ni Unicode, ni un événement complet press/release, ni l'état d'un
+clavier USB moderne hors émulation BIOS.
+
+Sources principales :
+
+  - IBM PC/XT, PC/AT et PS/2 Technical References;
+  - IBM PS/2 and Personal Computer BIOS Interface Technical Reference :
+    https://bitsavers.org/pdf/ibm/pc/ps2/PS2_and_PC_BIOS_Interface_Technical_Reference_Apr87.pdf
+  - Phoenix, System BIOS for IBM PC/XT/AT Computers and Compatibles :
+    https://www.vtda.org/books/Computing/Programming/SystemBIOSforIBMPC_XT_ATComputersandCompatibles_Phoenix.pdf
+  - Ralf Brown's Interrupt List :
+    https://www.cs.cmu.edu/~ralf/files.html
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Contexte 8086 et vecteur
+  2.  Chemin matériel d'une frappe
+  3.  Résumé des fonctions
+  4.  AH=00h : lire une touche classique
+  5.  AH=01h : vérifier une touche classique
+  6.  AH=02h : lire les indicateurs Shift
+  7.  AH=03h : régler la répétition typematic
+  8.  AH=04h : clic clavier PCjr
+  9.  AH=05h : insérer une touche dans le tampon
+ 10.  AH=09h et 0Ah : fonctions supportées et identifiant
+ 11.  AH=10h et 11h : lecture étendue
+ 12.  AH=12h : indicateurs étendus
+ 13.  ASCII, codes étendus et codes de balayage
+ 14.  Exemples de couples AX
+ 15.  Touches de modification et Lock
+ 16.  Tampon circulaire du clavier dans la BDA
+ 17.  Drapeaux clavier de la BDA
+ 18.  Claviers XT, AT et Enhanced
+ 19.  Codes make, break, E0h et E1h
+ 20.  Touches traitées directement par le BIOS
+ 21.  Exemple assembleur 8086 bloquant
+ 22.  Exemple assembleur 8086 non bloquant
+ 23.  Exemple en Pascal pour DOS
+ 24.  Modification et extension du tampon
+ 25.  INT 09h et hook INT 15h/AH=4Fh
+ 26.  DOS, redirection et internationalisation
+ 27.  USB, virtualisation et systèmes modernes
+ 28.  Programmation défensive
+ 29.  Résumé
+
+==============================================================================
+1. CONTEXTE 8086 ET VECTEUR
+==============================================================================
+
+Le numéro 16h est une convention du BIOS IBM PC, pas une fonction intrinsèque
+du processeur. En mode réel, INT 16h empile FLAGS, CS et IP, met IF et TF à zéro,
+puis charge CS:IP depuis l'entrée 16h de l'Interrupt Vector Table :
+
+  16h * 4 = 0058h
+
+  0000:0058h  WORD  offset de la routine
+  0000:005Ah  WORD  segment de la routine
+
+AH choisit la sous-fonction. La routine revient avec IRET. En mode protégé,
+l'instruction INT consulte l'IDT et n'atteint pas automatiquement le BIOS réel;
+un programme DPMI doit demander une simulation de l'interruption ou employer
+l'API du système.
+
+INT 16h est une interface logicielle. L'interruption matérielle du clavier est
+IRQ1, normalement reliée à INT 09h sur le premier contrôleur 8259. Confondre
+INT 09h et INT 16h conduit à mélanger gestionnaire matériel et service applicatif.
+
+==============================================================================
+2. CHEMIN MATÉRIEL D'UNE FRAPPE
+==============================================================================
+
+Chemin classique :
+
+  clavier -> liaison série clavier -> contrôleur/PPI -> IRQ1 -> INT 09h
+          -> traduction BIOS -> tampon circulaire BDA -> INT 16h -> programme
+
+Sur PC/XT, l'interface utilise le PPI 8255 et une liaison clavier unidirectionnelle
+du clavier vers la machine. Sur AT/PS2, un contrôleur 8042 ou compatible permet
+aussi d'envoyer des commandes : LEDs, répétition, activation, choix du jeu de
+codes, etc.
+
+Le gestionnaire INT 09h lit généralement le port 60h, traite les préfixes et
+états de modification, traduit la frappe selon les tables BIOS, puis dépose un
+WORD dans le tampon. INT 16h consomme ou examine ces WORD; il ne relit pas
+directement le matériel pour chaque appel.
+
+Conséquences :
+
+  - une frappe peut déjà être tamponnée lorsque le programme appelle INT 16h;
+  - le relâchement sert surtout à mettre à jour les modificateurs et n'est
+    normalement pas déposé comme événement distinct;
+  - le tampon peut déborder si le programme ne lit pas assez vite;
+  - certaines combinaisons sont interceptées par le BIOS sans entrer au tampon.
+
+==============================================================================
+3. RÉSUMÉ DES FONCTIONS
+==============================================================================
+
+ AH    Fonction                                  Disponibilité typique
+ ----  ----------------------------------------  ---------------------------
+ 00h   lire une touche, avec attente             PC/XT/AT/PS2
+ 01h   tester une touche, sans la retirer        PC/XT/AT/PS2
+ 02h   lire l'état Shift classique               PC/XT/AT/PS2
+ 03h   régler délai et vitesse typematic          AT/PS2 et BIOS récents
+ 04h   régler le clic clavier                     PCjr seulement
+ 05h   placer une touche dans le tampon           AT/PS2 et BIOS récents
+ 06h-08h réservées IBM                            extensions privées possibles
+ 09h   lire les fonctionnalités clavier          certains BIOS récents
+ 0Ah   lire l'identifiant du clavier             certains AT/PS2
+ 0Bh-0Fh réservées IBM                            extensions privées possibles
+ 10h   lire une touche étendue, avec attente      Enhanced 101/102 touches
+ 11h   tester une touche étendue                  Enhanced 101/102 touches
+ 12h   lire l'état Shift étendu                   Enhanced 101/102 touches
+
+Les fonctions 00h/01h/02h sont le noyau portable. Les autres doivent être
+détectées ou limitées aux BIOS connus.
+
+==============================================================================
+4. AH=00h : LIRE UNE TOUCHE CLASSIQUE
+==============================================================================
+
+Entrée :
+
+  AH = 00h
+
+Retour :
+
+  AL = caractère ASCII/traduit
+  AH = code de balayage BIOS
+
+Si le tampon est vide, le BIOS attend jusqu'à ce qu'une touche admissible y soit
+placée. La fonction est bloquante. Elle retire le WORD de tête du tampon.
+
+Pour une touche produisant un caractère ordinaire, par exemple A :
+
+  sans Shift, AL='a'=61h et AH=1Eh;
+  avec Shift, AL='A'=41h et AH=1Eh.
+
+Le code AH identifie principalement la position physique issue du jeu historique,
+tandis qu'AL dépend de Shift, Caps Lock, Ctrl, Alt et de la table nationale.
+
+Une touche fonction ou flèche classique retourne souvent AL=00h et AH non nul.
+Les touches étendues peuvent être converties par AH=00h pour rester compatibles;
+employer AH=10h si leur distinction est nécessaire.
+
+==============================================================================
+5. AH=01h : VÉRIFIER UNE TOUCHE CLASSIQUE
+==============================================================================
+
+Entrée :
+
+  AH = 01h
+
+Retour :
+
+  ZF=0   une touche est disponible; AX en contient une copie
+  ZF=1   aucune touche disponible; AX n'est pas un résultat valide
+
+La touche n'est pas retirée. Un appel AH=00h suivant retourne normalement le
+même AX, sauf si un autre consommateur intervient.
+
+Exemple :
+
+        mov     ah, 01h
+        int     16h
+        jz      NoKey
+        ; AX = touche en attente, mais encore dans le tampon
+
+Ne pas tester AX=0 pour conclure que le tampon est vide. Certaines combinaisons
+valides peuvent produire AL=00h; seul ZF donne l'état.
+
+Le drapeau ZF retourné est essentiel. Une instruction placée entre INT 16h et JZ
+peut modifier ZF et casser le test.
+
+==============================================================================
+6. AH=02h : LIRE LES INDICATEURS SHIFT
+==============================================================================
+
+Entrée : AH=02h.
+
+Retour AL :
+
+  bit 7   Insert actif
+  bit 6   Caps Lock actif
+  bit 5   Num Lock actif
+  bit 4   Scroll Lock actif
+  bit 3   Alt enfoncé
+  bit 2   Ctrl enfoncé
+  bit 1   Shift gauche enfoncé
+  bit 0   Shift droit enfoncé
+
+Les quatre bits hauts indiquent des états basculés; les quatre bits bas des
+touches actuellement maintenues. Sur un clavier étendu, AH=02h ne distingue pas
+Ctrl gauche/droit ni Alt gauche/droit. Utiliser AH=12h.
+
+L'état peut changer immédiatement après le retour. Il s'agit d'un instantané,
+pas d'un verrou sur le clavier.
+
+==============================================================================
+7. AH=03h : RÉGLER LA RÉPÉTITION TYPEMATIC
+==============================================================================
+
+Sous-fonctions historiques :
+
+  AL=00h   restaurer le typematic par défaut
+  AL=01h   augmenter le délai initial sur PCjr
+  AL=02h   ralentir la répétition sur PCjr
+  AL=03h   augmenter les deux délais sur PCjr
+  AL=04h   désactiver le typematic sur PCjr
+  AL=05h   définir délai et fréquence sur AT/PS2 :
+           BH = délai, BL = fréquence
+
+Pour l'interface IBM étendue courante :
+
+  BH=00h  250 ms      BH=01h  500 ms
+  BH=02h  750 ms      BH=03h 1000 ms
+
+BL=00h..1Fh code environ 30 à 2 répétitions par seconde. La relation est celle
+du contrôleur clavier et n'est pas linéaire.
+
+Les sous-fonctions 00h..04h viennent surtout du PCjr, alors que 05h est la
+fonction AT/PS2 de réglage explicite. Vérifier le bitmap retourné par AH=09h ou
+la référence du BIOS ciblé et ne pas expérimenter sur un XT ancien.
+
+Le réglage est global et affecte les programmes suivants. Une application polie
+sauvegarde ou rétablit le comportement attendu à sa sortie si le BIOS permet de
+le connaître.
+
+==============================================================================
+8. AH=04h : CLIC CLAVIER PCjr
+==============================================================================
+
+Fonction spécifique au PCjr :
+
+  AH = 04h
+  AL = 00h désactiver le clic
+       01h activer le clic
+
+Sur PC/XT/AT ordinaires, la fonction est réservée ou peut être réutilisée. Elle
+ne commande pas le haut-parleur pour produire un son arbitraire et n'est pas une
+fonction standard des claviers AT.
+
+==============================================================================
+9. AH=05h : INSÉRER UNE TOUCHE DANS LE TAMPON
+==============================================================================
+
+Entrée courante :
+
+  AH = 05h
+  CH = code de balayage
+  CL = caractère ASCII/traduit
+
+Retour :
+
+  AL = 00h insertion réussie
+       01h tampon plein
+
+La disposition CH:CL correspond au WORD AX retourné par une lecture, mais passe
+par CX à l'entrée. Cette fonction ajoute une frappe synthétique en queue sans
+simuler les transitions électriques ou modifier automatiquement les états Shift.
+
+Elle est utile aux outils d'automatisation et pilotes, mais n'est pas offerte par
+les premiers BIOS. Ne pas écrire directement dans le tampon quand AH=05h est
+disponible : le BIOS gère la tête, la queue et les sections critiques.
+
+==============================================================================
+10. AH=09h ET 0Ah : FONCTIONS SUPPORTÉES ET IDENTIFIANT
+==============================================================================
+
+AH=09h
+  Sur certains BIOS, retourne dans AL un bitmap des fonctions clavier prises en
+  charge : fonctions étendues, réglage typematic, écriture de tampon, identifiant
+  et autres capacités selon la version. Il faut vérifier la documentation du
+  BIOS; les anciens peuvent ne pas signaler l'échec proprement.
+
+AH=0Ah
+  Demande l'identifiant du clavier AT/Enhanced. BX peut recevoir deux octets
+  d'identification après une commande matérielle F2h. L'absence de réponse, un
+  clavier XT ou un BIOS non compatible produit une erreur/valeur variable.
+
+Ces appels ne donnent pas une chaîne de fabricant, une disposition nationale ou
+la liste des touches. Un clavier compatible peut retourner le même identifiant
+qu'un modèle IBM.
+
+==============================================================================
+11. AH=10h ET 11h : LECTURE ÉTENDUE
+==============================================================================
+
+AH=10h, Extended Keyboard Read :
+
+  attend si nécessaire, retire une touche, retourne AL caractère et AH code.
+
+AH=11h, Extended Keystroke Status :
+
+  ZF=0 si une touche est disponible et AX en contient une copie;
+  ZF=1 si le tampon est vide;
+  la touche n'est pas retirée.
+
+Ces fonctions conservent des distinctions des claviers 101/102 touches que les
+fonctions classiques peuvent supprimer. Par exemple, Enter du pavé numérique,
+Ctrl droit, Alt droit et touches de navigation préfixées E0h peuvent obtenir des
+couples uniques.
+
+Pour une application ciblant un BIOS Enhanced :
+
+  - employer 10h pour consommer;
+  - employer 11h pour tester;
+  - ne pas alterner 01h et 10h sans comprendre le filtrage;
+  - vérifier le support avant le premier appel.
+
+Des BIOS tardifs XT de 1986 offrent les fonctions étendues, mais elles ne sont
+pas présentes dans le PC/XT original.
+
+Certains BIOS IBM offrent aussi AH=20h, 21h et 22h, équivalents de lecture,
+test et indicateurs pour les claviers terminaux 122 touches. AH=09h bit 6 doit
+confirmer ce groupe avant son utilisation; il ne fait pas partie du noyau PC/AT.
+
+==============================================================================
+12. AH=12h : INDICATEURS ÉTENDUS
+==============================================================================
+
+Entrée : AH=12h.
+
+Retour :
+
+  AL = mêmes indicateurs principaux que AH=02h
+  AH = états supplémentaires du clavier étendu
+
+Disposition courante de AH :
+
+  bit 7   SysRq enfoncée
+  bit 6   Caps Lock physiquement enfoncée
+  bit 5   Num Lock physiquement enfoncée
+  bit 4   Scroll Lock physiquement enfoncée
+  bit 3   Alt droit enfoncé
+  bit 2   Ctrl droit enfoncé
+  bit 1   Alt gauche enfoncé
+  bit 0   Ctrl gauche enfoncé
+
+AL indique les bascules Caps/Num/Scroll/Insert et les modificateurs agrégés;
+AH distingue notamment gauche et droite.
+
+Alt droit peut être AltGr sur une disposition internationale. INT 16h expose
+l'état physique/traduit du BIOS, mais la production du caractère dépend des
+tables nationales de clavier chargées par DOS ou un pilote.
+
+==============================================================================
+13. ASCII, CODES ÉTENDUS ET CODES DE BALAYAGE
+==============================================================================
+
+Trois niveaux sont à distinguer :
+
+Code matériel
+  Séquence émise par le clavier, selon le jeu 1, 2 ou 3, avec make/break et
+  préfixes E0h/E1h.
+
+Code de balayage BIOS
+  Valeur placée dans AH après traduction par INT 09h. Elle ressemble souvent au
+  make code du jeu 1, mais les touches étendues et combinaisons changent.
+
+Caractère BIOS
+  Valeur AL, historiquement ASCII 7 bits puis page de codes OEM/« extended
+  ASCII ». Elle dépend des modificateurs et de la localisation.
+
+Une touche fonction ne possède pas de caractère imprimable. Le BIOS signale
+alors une séquence étendue : AL=00h suivi conceptuellement du code AH. Avec les
+fonctions Enhanced, AL=E0h peut également marquer certaines touches.
+
+Ne pas appeler INT 16h une seconde fois pour obtenir AH : les deux octets sont
+déjà retournés ensemble dans AX. Le protocole DOS INT 21h de console, qui peut
+retourner 00h puis exiger une seconde lecture, est une autre interface.
+
+==============================================================================
+14. EXEMPLES DE COUPLES AX
+==============================================================================
+
+Valeurs typiques d'un clavier US classique :
+
+  Touche/combinaison   AH scan   AL caractère   AX
+  -------------------  --------  -------------  -----
+  Échap                 01h       1Bh            011Bh
+  1                     02h       31h            0231h
+  Entrée                1Ch       0Dh            1C0Dh
+  Espace                39h       20h            3920h
+  a                     1Eh       61h            1E61h
+  Shift+A               1Eh       41h            1E41h
+  Retour arrière        0Eh       08h            0E08h
+  Tab                   0Fh       09h            0F09h
+  F1                    3Bh       00h            3B00h
+  F10                   44h       00h            4400h
+  Flèche haut           48h       00h/E0h        4800h/48E0h
+
+Les valeurs après Ctrl, Alt, Shift-Fn et pour un clavier national peuvent
+différer. Les codes 00h/E0h des touches étendues dépendent de la fonction
+classique ou Enhanced utilisée.
+
+==============================================================================
+15. TOUCHES DE MODIFICATION ET LOCK
+==============================================================================
+
+Shift, Ctrl et Alt modifient les traductions tant qu'ils sont maintenus. Caps
+Lock, Num Lock, Scroll Lock et Insert sont des états basculés.
+
+Caps Lock affecte principalement les lettres; Shift inverse temporairement son
+effet. Num Lock choisit chiffres ou navigation du pavé numérique, avec des cas
+particuliers sous Shift. Ctrl produit des codes de contrôle pour certaines
+touches. Alt peut produire des codes étendus ou permettre la saisie numérique
+Alt+nombre selon le BIOS.
+
+Sur AT/PS2, le BIOS commande les LEDs. Une divergence temporaire est possible
+pendant que le clavier est occupé. Certaines fonctions INT 16h étendues mettent
+les LEDs à jour si leurs états ne correspondent pas aux drapeaux BDA.
+
+Les touches de modification ne génèrent normalement pas de WORD dans le tampon
+à elles seules; leur pression et relâchement mettent à jour les drapeaux.
+
+==============================================================================
+16. TAMPON CIRCULAIRE DU CLAVIER DANS LA BDA
+==============================================================================
+
+Disposition classique :
+
+  BDA          Taille  Contenu
+  -----------  ------  ------------------------------------------------------
+  0040:001Ah   WORD    offset de tête du tampon
+  0040:001Ch   WORD    offset de queue du tampon
+  0040:001Eh   32 B    seize WORD, jusqu'à 0040:003Dh
+
+Chaque entrée contient caractère dans l'octet faible et scan dans l'octet fort.
+Les offsets tête/queue sont relatifs au segment 0040h. La tête désigne le prochain
+WORD à lire; la queue le prochain emplacement d'écriture.
+
+Le tampon est circulaire. Quand un pointeur atteint la fin, il revient au début.
+Une case doit rester libre afin de distinguer plein de vide; le tampon classique
+de seize WORD ne peut donc conserver que quinze frappes.
+
+Si le tampon est plein, le BIOS ignore normalement la nouvelle frappe et peut
+émettre un bip. Aucun code spécial d'overflow n'est nécessairement placé dans le
+tampon.
+
+Certains BIOS étendent le tampon et placent ses offsets de début/fin à
+0040:0080h/0082h. Toujours vérifier la génération avant d'utiliser ces champs.
+
+==============================================================================
+17. DRAPEAUX CLAVIER DE LA BDA
+==============================================================================
+
+0040:0017h, flags principaux, identiques à AH=02h/AL :
+
+  bit 7 Insert actif       bit 6 Caps Lock actif
+  bit 5 Num Lock actif     bit 4 Scroll Lock actif
+  bit 3 Alt enfoncé        bit 2 Ctrl enfoncé
+  bit 1 Shift gauche       bit 0 Shift droit
+
+0040:0018h, flags secondaires classiques :
+
+  bits hauts indiquent souvent les touches Insert/Caps/Num/Scroll physiquement
+  maintenues, ainsi que Pause/SysRq selon la génération; les bits bas servent à
+  des états internes Alt/Ctrl sur les BIOS étendus.
+
+Les BIOS AT/Enhanced ajoutent des drapeaux à 0040:0096h et 0040:0097h pour les
+préfixes E0/E1, Ctrl/Alt droite/gauche, LEDs et état de transmission clavier.
+
+Les significations précises des champs secondaires varient. AH=12h est
+préférable à une lecture directe lorsque le BIOS l'offre.
+
+==============================================================================
+18. CLAVIERS XT, AT ET ENHANCED
+==============================================================================
+
+Clavier PC/XT, 83 touches
+  Protocole unidirectionnel, jeu de codes proche du set 1; la machine ne commande
+  pas les LEDs ou le typematic comme sur AT.
+
+Clavier AT, 84 touches
+  Protocole bidirectionnel, disposition différente, contrôleur 8042. Le clavier
+  émet normalement un autre jeu que le contrôleur peut traduire vers le set 1.
+
+Enhanced, 101/102 touches
+  Ajoute F11/F12, Ctrl/Alt droits, pavé de navigation séparé et préfixes E0/E1.
+  Les fonctions INT 16h 10h/11h/12h préservent ces distinctions.
+
+Une prise DIN identique ne garantit pas un protocole compatible. Certains
+claviers disposent d'un commutateur XT/AT; d'autres exigent un convertisseur.
+Les connecteurs PS/2 mini-DIN utilisent le protocole AT/PS2, pas le protocole XT.
+
+==============================================================================
+19. CODES MAKE, BREAK, E0h ET E1h
+==============================================================================
+
+Une pression produit un make code; un relâchement un break code. Dans le jeu 1,
+le break classique est souvent make OR 80h. Dans le jeu 2, le préfixe F0h annonce
+le relâchement. Le contrôleur AT peut traduire le jeu 2 en jeu 1 avant le BIOS.
+
+E0h préfixe de nombreuses touches étendues : Ctrl droit, Alt droit, Insert,
+Delete, Home, End, flèches, Enter et / du pavé. E1h introduit notamment la longue
+séquence Pause.
+
+Print Screen et Pause produisent des séquences spéciales qui ne suivent pas la
+règle simple make/break. Le gestionnaire BIOS possède une machine d'état; lire
+un seul octet au port 60h et l'interpréter isolément est insuffisant.
+
+INT 16h masque cette complexité en retournant un couple traduit. Un pilote qui
+accroche IRQ1 doit au contraire gérer chaque préfixe, acquitter le contrôleur et
+le PIC, et conserver la compatibilité avec la BDA.
+
+==============================================================================
+20. TOUCHES TRAITÉES DIRECTEMENT PAR LE BIOS
+==============================================================================
+
+Certaines combinaisons ne deviennent pas une frappe ordinaire :
+
+  Ctrl+Alt+Delete
+    déclenche historiquement un redémarrage chaud après mise à jour du mot de
+    reset à 0040:0072h. Des BIOS modernes peuvent intercepter autrement.
+
+  Print Screen
+    appelle traditionnellement INT 05h pour imprimer l'écran texte.
+
+  Pause/Break
+    suspend ou modifie le traitement clavier selon l'état Ctrl et le BIOS.
+
+  SysRq
+    peut appeler le hook INT 15h/AH=85h sur AT/PS2.
+
+  Ctrl+Break
+    DOS peut transformer la combinaison en INT 23h pendant un service DOS.
+
+Par conséquent, toutes les pressions physiques ne sont pas visibles par
+AH=00h/10h. Pour une journalisation matérielle complète, il faut un gestionnaire
+IRQ1 soigneusement conçu, avec des implications de sécurité et de réentrance.
+
+==============================================================================
+21. EXEMPLE ASSEMBLEUR 8086 BLOQUANT
+==============================================================================
+
+Attendre une touche et distinguer caractère ordinaire/touche étendue :
+
+ReadKey:
+        xor     ah, ah          ; AH=00h
+        int     16h             ; AX = scan:ASCII
+        test    al, al
+        jz      ExtendedKey
+
+        ; AL contient le caractère, AH le scan
+        ret
+
+ExtendedKey:
+        ; AH identifie F1, flèche, etc.
+        ret
+
+Pour un BIOS Enhanced, remplacer AH=00h par AH=10h et considérer AL=E0h comme
+marque étendue en plus de 00h.
+
+La fonction attend indéfiniment. Ne pas l'appeler depuis une routine
+d'interruption ou un programme qui doit continuer à traiter d'autres événements.
+
+==============================================================================
+22. EXEMPLE ASSEMBLEUR 8086 NON BLOQUANT
+==============================================================================
+
+Tester puis consommer :
+
+PollKey:
+        mov     ah, 01h
+        int     16h
+        jz      .none           ; ZF doit être testé immédiatement
+
+        xor     ah, ah
+        int     16h             ; retire et retourne la touche
+        clc
+        ret
+
+.none:
+        stc                     ; convention propre à cette routine
+        ret
+
+Le CF produit ici appartient à PollKey, pas au BIOS INT 16h. Un système
+multitâche coopératif devrait céder le processeur plutôt que scruter dans une
+boucle à pleine vitesse.
+
+Version Enhanced : utiliser AH=11h pour tester puis AH=10h pour lire.
+
+==============================================================================
+23. EXEMPLE EN PASCAL POUR DOS
+==============================================================================
+
+  uses Dos;
+
+  function BIOSKeyPressed: Boolean;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0100;
+    Intr($16, R);
+    BIOSKeyPressed := (R.Flags and FZero) = 0;
+  end;
+
+  function BIOSReadKey: Word;
+  var R: Registers;
+  begin
+    FillChar(R, SizeOf(R), 0);
+    R.AX := $0000;
+    Intr($16, R);
+    BIOSReadKey := R.AX;
+  end;
+
+Le nom FZero varie selon la bibliothèque. Certaines procédures Intr ne
+restituent pas correctement ZF; dans ce cas, employer une petite routine
+assembleur ou les fonctions KeyPressed/ReadKey de l'environnement.
+
+ReadKey de l'unité CRT peut installer son propre traitement et ne doit pas être
+supposé identique octet pour octet à INT 16h.
+
+==============================================================================
+24. MODIFICATION ET EXTENSION DU TAMPON
+==============================================================================
+
+Une ancienne technique consiste à déplacer les limites du tampon en modifiant
+0040:0080h et 0082h, ou à écrire directement tête/queue. Elle dépend du BIOS et
+peut entrer en conflit avec DOS, un pilote clavier ou un gestionnaire de mémoire.
+
+Pour vider le tampon classique, certains programmes copient queue vers tête sous
+interruptions masquées. Cette opération perd volontairement toutes les touches
+et ne remet pas à zéro les modificateurs.
+
+Méthodes préférables :
+
+  - consommer avec AH=00h/10h tant que AH=01h/11h indique une touche;
+  - insérer avec AH=05h lorsqu'il est disponible;
+  - employer l'API du pilote ou du système;
+  - réserver les modifications BDA aux BIOS, TSR et chargeurs maîtrisant le
+    contexte complet.
+
+Une écriture incohérente ou un pointeur impair peut faire lire au BIOS des mots
+hors tampon et corrompre la mémoire.
+
+==============================================================================
+25. INT 09h ET HOOK INT 15h/AH=4Fh
+==============================================================================
+
+Accrocher INT 09h donne accès aux octets matériels, mais impose :
+
+  - lire le port 60h au bon moment;
+  - acquitter le contrôleur clavier/PPI;
+  - envoyer End Of Interrupt au 8259;
+  - gérer make, break, E0h, E1h et commandes en cours;
+  - préserver les registres et éviter DOS;
+  - chaîner sans lire deux fois le même octet.
+
+Sur AT BIOS tardif, INT 09h appelle INT 15h/AH=4Fh après la réception d'un code.
+Un hook de cette sous-fonction peut filtrer ou remplacer AL avec une convention
+de Carry Flag, sans remplacer tout le gestionnaire matériel.
+
+Ces hooks s'exécutent en contexte IRQ et ne sont pas réentrants. Une routine
+longue provoque des pertes de clavier et retarde les autres interruptions.
+
+==============================================================================
+26. DOS, REDIRECTION ET INTERNATIONALISATION
+==============================================================================
+
+INT 16h lit le tampon BIOS sans écho et sans redirection DOS. À l'inverse,
+INT 21h/AH=01h, 07h, 08h, 0Ah ou 3Fh suit différentes règles d'écho, Ctrl+C et
+redirection de l'entrée standard.
+
+Conséquences :
+
+  - INT 16h ignore généralement une entrée redirigée depuis un fichier ou pipe;
+  - les services DOS peuvent lire depuis CON, un fichier ou un pilote;
+  - un programme destiné au traitement par lots doit employer DOS;
+  - un jeu ou chargeur voulant les touches physiques emploie souvent INT 16h.
+
+KEYB et les pilotes nationaux peuvent intercepter/traduire les entrées DOS ou
+BIOS. « ASCII étendu » signifie souvent une page de codes OEM de 8 bits, pas
+Unicode. Les accents, touches mortes et AltGr peuvent nécessiter plusieurs
+étapes et produire des valeurs dépendantes du pays.
+
+==============================================================================
+27. USB, VIRTUALISATION ET SYSTÈMES MODERNES
+==============================================================================
+
+Un BIOS avec « USB Legacy Support » émule un clavier PS/2 et alimente INT 16h à
+partir d'un clavier USB pendant le démarrage. Une fois le système USB actif,
+cette émulation peut être désactivée.
+
+Dans DOSBox, 86Box, PCem, QEMU ou une machine virtuelle, l'hôte convertit ses
+événements vers le clavier virtuel. La disposition de l'hôte, du BIOS virtuel et
+de DOS peut produire des traductions différentes.
+
+Sous Windows/Linux modernes, une application n'appelle pas INT 16h; elle utilise
+les événements du système, qui connaissent Unicode, press/release, répétition et
+plusieurs périphériques. Sous UEFI natif, Simple Text Input ou Text Input Ex
+remplace INT 16h. Un CSM peut encore émuler l'interface BIOS.
+
+==============================================================================
+28. PROGRAMMATION DÉFENSIVE
+==============================================================================
+
+  1. Employer AH=00h/01h/02h pour la cible PC/XT minimale.
+  2. Détecter les fonctions Enhanced avant AH=10h/11h/12h.
+  3. Tester ZF immédiatement après AH=01h ou 11h.
+  4. Ne jamais utiliser AX si ZF=1 après une fonction d'état.
+  5. Considérer AL=00h et, en mode Enhanced, E0h comme touches spéciales.
+  6. Conserver ensemble AH et AL; ne pas séparer deux événements.
+  7. Ne pas supposer une disposition US ou une page de codes précise.
+  8. Ne pas attendre avec AH=00h/10h dans une interruption.
+  9. Ne pas modifier la BDA sans section critique et connaissance du BIOS.
+ 10. Utiliser AH=05h pour injecter lorsque disponible.
+ 11. Ne pas confondre IRQ1/INT 09h, hook 15h/4Fh et service INT 16h.
+ 12. Prévoir l'overflow du petit tampon BIOS.
+ 13. Sous DOS, choisir consciemment entre entrée BIOS brute et entrée DOS
+     redirigeable.
+ 14. Sous système moderne, employer l'API native.
+
+==============================================================================
+29. RÉSUMÉ
+==============================================================================
+
+  - INT 16h est le service BIOS du clavier en mode réel;
+  - AH=00h attend et retire une touche;
+  - AH=01h teste sans retirer, ZF=1 signifie aucune touche;
+  - AH=02h retourne les états Shift/Lock dans AL;
+  - AH=03h règle le typematic sur AT/PS2 selon la variante BIOS;
+  - AH=05h insère un couple scan/caractère dans le tampon;
+  - AH=10h/11h/12h préservent les touches Enhanced 101/102;
+  - AX contient généralement AH=scan et AL=caractère;
+  - AL=00h ou E0h peut annoncer une touche sans caractère;
+  - IRQ1 appelle INT 09h, qui traduit puis alimente le tampon BDA;
+  - le tampon classique se trouve à 0040:001Eh..003Dh;
+  - les flags principaux sont à 0040:0017h;
+  - INT 16h ne produit ni Unicode ni événements complets de relâchement;
+  - les fonctions DOS diffèrent par l'écho, Ctrl+C et la redirection;
+  - USB/UEFI et systèmes protégés nécessitent normalement une interface moderne.
+
+INT 16h transforme ainsi le protocole matériel complexe du clavier en une petite
+file de couples scan/caractère adaptée aux programmes 8086. Ses extensions
+conservent la compatibilité tout en exposant les touches ajoutées par l'AT et le
+clavier Enhanced.
