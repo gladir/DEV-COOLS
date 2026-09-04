@@ -40017,6 +40017,34 @@ Begin
  End;
 End;
 
+{ --- GET-ERROR (PowerShell dev) --- }
+Procedure TermCmd_GetError(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ NewestArg, S, UpS: String;
+ Newest, Err, I, Found: Integer;
+Begin
+ NewestArg := TermExtractParam(ParamStr, 1);
+ If TermStrToUpper(NewestArg) = '-NEWEST' Then
+  NewestArg := TermExtractParam(ParamStr, 2);
+ Newest := 1; Err := 0;
+ If NewestArg <> '' Then Val(NewestArg, Newest, Err);
+ If (Err <> 0) Or (Newest < 1) Then Newest := 1;
+ Found := 0;
+ For I := TP.LineCount - 1 DownTo 0 Do Begin
+  S := TP.Lines[I];
+  UpS := TermStrToUpper(S);
+  If (Pos('ERROR', UpS) > 0) Or (Pos('ERREUR', UpS) > 0) Or
+    (Pos('INTROUVABLE', UpS) > 0) Or (Pos('ECHEC', UpS) > 0) Or
+     (Pos('REFUSE', UpS) > 0) Then Begin
+   TermAddLine(TP, S);
+   Inc(Found);
+   If Found >= Newest Then Exit;
+  End;
+ End;
+ If Found = 0 Then
+  TermAddLine(TP, 'Get-Error : aucune erreur recente dans le terminal.');
+End;
+
 { --- FORMAT-HEX (PowerShell dev) --- }
 Procedure TermCmd_FormatHex(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -69738,6 +69766,8 @@ Begin
   TermAddLine(TP,
    '  Get-Command [-Name nom]                 Liste les commandes reconnues');
   TermAddLine(TP,
+   '  Get-Error [-Newest n]                    Affiche les erreurs recentes');
+  TermAddLine(TP,
    '  Clear-Content fichier                Vide un fichier (0 octet)');
   TermAddLine(TP,
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
@@ -70525,7 +70555,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 120;
+ PS_CMD_ALIASES = 121;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -70555,6 +70585,7 @@ Const
   'GET-DATE',
   'GET-COMMAND',
   'GET-CONTENT',
+  'GET-ERROR',
   'SET-VARIABLE',
   'CLEAR-RECYCLEBIN',
   'COMPARE-OBJECT',
@@ -70656,6 +70687,7 @@ Const
   96,
   97,
   98,
+  99,
   19,
   20,
   21,
@@ -71193,6 +71225,7 @@ Begin
     96: TermCmd_GetDate(TP, ParamStr);
     97: TermCmd_GetCommand(TP, ParamStr);
     98: TermCmd_GetContent(TP, ParamStr);
+    99: TermCmd_GetError(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
