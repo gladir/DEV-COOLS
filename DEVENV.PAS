@@ -5799,6 +5799,7 @@ Type
   OC_EDITOR_FORMAT,      { Editeur de texte > Mise en forme   }
   OC_PROJ_GENERAL,       { Projets et solutions > General     }
   OC_PROJ_BUILD,         { Projets et solutions > Build       }
+  OC_PROJ_SQLEXPLORER,   { Projets et solutions > Explorateur SQL Server }
   OC_DEBUG_GENERAL,      { Debogage > General                 }
   OC_DEBUG_OUTPUT,       { Debogage > Sortie                  }
   OC_EMU_GENERAL,        { Emulateur > General                }
@@ -5874,6 +5875,10 @@ Type
   DefaultProjectPath: String[255]; { chemin par defaut projets    }
   ShowOutputOnBuild: Boolean;    { afficher sortie au build       }
   BuildVerbose    : Boolean;     { build en mode verbeux          }
+  { Projets et solutions > Explorateur SQL Server }
+  SqlExplorerShowDiag: Boolean; { envoyer le detail des invocations SQLCMD.EXE
+                                  (chemin, commande, sortie) dans Sortie de
+                                  build - False par defaut (2026-09-05) }
   ParallelBuild   : Integer;     { nombre de builds paralleles    }
   BreakOnFirstError: Boolean;    { arreter au premier point arret }
   StepIntoProperties: Boolean;   { pas a pas dans proprietes      }
@@ -14771,6 +14776,35 @@ Begin
  End;
 End;
 
+{ --- Options > Projets et solutions > Explorateur SQL Server :
+  "Diagnostique dans Sortie de build" (2026-09-05, demande explicite -
+  une bascule persistante est une configuration, pas une commande directe
+  de menu) - envoie le detail de chaque invocation SQLCMD.EXE (chemin,
+  ligne de commande, sortie ligne par ligne) dans le panneau de sortie
+  quand OptionsDlg.Data.SqlExplorerShowDiag est actif (meme motif de
+  lecture directe que OptionsDlg.Data.EmuShowDebugMessages ailleurs dans
+  ce fichier). Partage par SqlLoadTables ET SqlLoadColumns (memes deux
+  seuls sites qui invoquent reellement SQLCMD.EXE dans cet explorateur). --- }
+
+Procedure SqlExplorerDiagDump(Const Caller, Cmd, MdfPath: String);
+Begin
+ AppendOutputEx(OutputPanel, 'DIAG [' + Caller + '] MDF=[' + MdfPath + ']',
+  Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+ AppendOutputEx(OutputPanel, 'DIAG [' + Caller + '] CMD=[' + Cmd + ']',
+  Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+End;
+
+Procedure SqlExplorerDiagDumpOutput(Var Buf: TCmdOutputLines; Cnt: Integer);
+Var
+ I: Integer;
+Begin
+ AppendOutputEx(OutputPanel, 'DIAG Cnt=' + IntToStr(Cnt),
+  Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+ For I := 0 To Cnt - 1 Do
+  AppendOutputEx(OutputPanel, 'DIAG L' + IntToStr(I) + ': [' + Buf[I] + ']',
+   Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+End;
+
 { --- "Tables" -> invoque REELLEMENT EXEC sp_tables et peuple une ligne
   par table trouvee. Si la base est vide, retire le triangle de depliage
   (HasChildren remis a False) plutot que de laisser un dossier
@@ -14792,7 +14826,11 @@ Begin
   SqlCmdEnsureMasterMdf;
  If FileExists(MdfPath) Then Begin
   Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -q "EXEC sp_tables"';
+  If OptionsDlg.Data.SqlExplorerShowDiag Then
+   SqlExplorerDiagDump('SqlLoadTables', Cmd, MdfPath);
   RunCommandCaptureOutput(Cmd, Buf, Cnt);
+  If OptionsDlg.Data.SqlExplorerShowDiag Then
+   SqlExplorerDiagDumpOutput(Buf, Cnt);
   For I := 0 To Cnt - 1 Do
    If Not SqlCmdIsMetaLine(Buf[I]) Then
     If SqlCmdSplit2(Buf[I], Name, ObjType) Then Begin
@@ -14820,7 +14858,11 @@ Begin
  If (Pos('"', TableName) = 0) And FileExists(MdfPath) Then Begin
   Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath +
    '" -q "EXEC sp_columns ' + TableName + '"';
+  If OptionsDlg.Data.SqlExplorerShowDiag Then
+   SqlExplorerDiagDump('SqlLoadColumns', Cmd, MdfPath);
   RunCommandCaptureOutput(Cmd, Buf, Cnt);
+  If OptionsDlg.Data.SqlExplorerShowDiag Then
+   SqlExplorerDiagDumpOutput(Buf, Cnt);
   For I := 0 To Cnt - 1 Do
    If Not SqlCmdIsMetaLine(Buf[I]) Then
     If SqlCmdSplitColumnsLine(Buf[I], RowTable, ColName, XTypeStr, NullableStr) Then Begin
@@ -44367,6 +44409,22 @@ End;
 { inexistant est ouvert comme un nouveau tampon vide (voir LoadFile) -     }
 { comportement d un editeur reel, pas une erreur. }
 
+{ --- OPEN-SQLSERVEROBJECTEXPLORER (PowerShell dev, 2026-09-05, demande
+  explicite de l utilisateur) : ouvre l onglet Explorateur d objets SQL
+  Server, meme point d entree unique que le menu Affichage (id 304) -
+  CreateSqlObjectExplorerWindow gere deja elle-meme le cas "deja ouvert"
+  (reactive l onglet existant plutot que d en creer un second, voir
+  [[project_devenv_sqlexplorer]] Etape 1). Ignore ParamStr : cette
+  commande ne prend aucun argument. }
+
+Procedure TermCmd_OpenSqlServerObjectExplorer(Var TP: TTerminalPanel;
+ ParamStr: String);
+Begin
+ CreateSqlObjectExplorerWindow;
+ FullRepaintNeeded := True;
+ TermAddLine(TP, 'Explorateur d''objets SQL Server ouvert.');
+End;
+
 Procedure TermCmd_EDIT(Var TP: TTerminalPanel; ParamStr: String);
 Var
  CurrParam, Dir, FullPath: String;
@@ -72984,7 +73042,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 123;
+ PS_CMD_ALIASES = 124;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -73087,7 +73145,8 @@ Const
   'LOG',
   'DEVENV',
   'HELP','?','GET-HELP',
-  'GET-HISTORY'
+  'GET-HISTORY',
+  'OPEN-SQLSERVEROBJECTEXPLORER'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -73190,7 +73249,8 @@ Const
   60,
   85,
   61,61,101,
-  102
+  102,
+  103
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -73709,6 +73769,7 @@ Begin
     100: TermCmd_GetFormatData(TP, ParamStr);
     101: TermCmd_GetHelp(TP, ParamStr);
     102: TermCmd_GetHistory(TP, ParamStr);
+    103: TermCmd_OpenSqlServerObjectExplorer(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
@@ -124296,6 +124357,7 @@ Begin
   OC_EDITOR_FORMAT:      OptionCategoryName := 'Mise en forme';
   OC_PROJ_GENERAL:       OptionCategoryName := 'General';
   OC_PROJ_BUILD:         OptionCategoryName := 'Build et execution';
+  OC_PROJ_SQLEXPLORER:   OptionCategoryName := 'Explorateur SQL Server';
   OC_DEBUG_GENERAL:      OptionCategoryName := 'General';
   OC_DEBUG_OUTPUT:       OptionCategoryName := 'Sortie';
   OC_EMU_GENERAL:        OptionCategoryName := 'General';
@@ -124373,6 +124435,7 @@ Begin
  D.DefaultProjectPath := '.';
  D.ShowOutputOnBuild := True;
  D.BuildVerbose := False;
+ D.SqlExplorerShowDiag := False;
  D.ParallelBuild := 1;
  D.BreakOnFirstError := True;
  D.StepIntoProperties := False;
@@ -124522,31 +124585,42 @@ Begin
  AddNode('Projets et solutions', -1, 0, True, OC_PROJ_GENERAL);
  AddNode('General', 12, 1, False, OC_PROJ_GENERAL);
  AddNode('Build et execution', 12, 1, False, OC_PROJ_BUILD);
- { Debogage (index 15) -- utilise le dernier slot disponible }
- { Note : 16 noeuds au total = MAX_OPT_CATEGORIES }
- { Emulateur (index 15) - replie par defaut (voir                        }
+ AddNode('Explorateur SQL Server', 12, 1, False, OC_PROJ_SQLEXPLORER);
+ { Debogage (index 16) - BOGUE REEL PREEXISTANT trouve+corrige (2026-09-05,
+   pendant l investigation d une regression signalee par l utilisateur sur
+   la section Emulateur, sans lien avec elle) : OC_DEBUG_GENERAL/
+   OC_DEBUG_OUTPUT ont deja leurs Draw*/gestionnaires de clic complets
+   (DrawOptionsDebugGeneral/DrawOptionsDebugOutput, cases a cocher
+   BreakOnFirstError/StepIntoProperties/ShowDebugMessages) mais n avaient
+   JAMAIS ete ajoutes a l arbre par un AddNode - categorie complete mais
+   totalement inaccessible depuis Options, un peu comme les elements de
+   menu 300-302 constates morts dans le chantier Explorateur SQL Server. }
+ AddNode('Debogage', -1, 0, False, OC_DEBUG_GENERAL);
+ AddNode('General', 16, 1, False, OC_DEBUG_GENERAL);
+ AddNode('Sortie', 16, 1, False, OC_DEBUG_OUTPUT);
+ { Emulateur (index 19) - replie par defaut (voir                        }
  { UpdateOptionsTreeVisibility) pour que l arbre garde a peu pres sa      }
  { hauteur d origine tant que l utilisateur ne le deplie pas explicitement.}
  AddNode('Emulateur', -1, 0, False, OC_EMU_NES);
- AddNode('General', 15, 1, False, OC_EMU_GENERAL);
- AddNode('NES', 15, 1, False, OC_EMU_NES);
- AddNode('DOS: Materiel', 15, 1, False, OC_EMU_DOS_HW);
- AddNode('DOS: OS', 15, 1, False, OC_EMU_DOS_OS);
- AddNode('DOS: Logiciel', 15, 1, False, OC_EMU_DOS_SW);
- AddNode('DOS: Debug', 15, 1, False, OC_EMU_DOS_DEBUG);
- AddNode('Linux x86-64', 15, 1, False, OC_EMU_LINUX);
- AddNode('Amiga', 15, 1, False, OC_EMU_AMIGA);
- AddNode('Atari ST', 15, 1, False, OC_EMU_ATARIST);
- AddNode('Commodore 64', 15, 1, False, OC_EMU_C64);
- AddNode('Apple II', 15, 1, False, OC_EMU_APPLEII);
- AddNode('Atari 400', 15, 1, False, OC_EMU_ATARI400);
- AddNode('Atari 800', 15, 1, False, OC_EMU_ATARI800);
- AddNode('Atari 2600', 15, 1, False, OC_EMU_ATARI2600);
- AddNode('MSX', 15, 1, False, OC_EMU_MSX);
- AddNode('TRS80', 15, 1, False, OC_EMU_TRS80);
- AddNode('Adam', 15, 1, False, OC_EMU_ADAM);
- AddNode('CoCo 3', 15, 1, False, OC_EMU_COCO3);
- AddNode('Cray 1', 15, 1, False, OC_EMU_CRAY1);
+ AddNode('General', 19, 1, False, OC_EMU_GENERAL);
+ AddNode('NES', 19, 1, False, OC_EMU_NES);
+ AddNode('DOS: Materiel', 19, 1, False, OC_EMU_DOS_HW);
+ AddNode('DOS: OS', 19, 1, False, OC_EMU_DOS_OS);
+ AddNode('DOS: Logiciel', 19, 1, False, OC_EMU_DOS_SW);
+ AddNode('DOS: Debug', 19, 1, False, OC_EMU_DOS_DEBUG);
+ AddNode('Linux x86-64', 19, 1, False, OC_EMU_LINUX);
+ AddNode('Amiga', 19, 1, False, OC_EMU_AMIGA);
+ AddNode('Atari ST', 19, 1, False, OC_EMU_ATARIST);
+ AddNode('Commodore 64', 19, 1, False, OC_EMU_C64);
+ AddNode('Apple II', 19, 1, False, OC_EMU_APPLEII);
+ AddNode('Atari 400', 19, 1, False, OC_EMU_ATARI400);
+ AddNode('Atari 800', 19, 1, False, OC_EMU_ATARI800);
+ AddNode('Atari 2600', 19, 1, False, OC_EMU_ATARI2600);
+ AddNode('MSX', 19, 1, False, OC_EMU_MSX);
+ AddNode('TRS80', 19, 1, False, OC_EMU_TRS80);
+ AddNode('Adam', 19, 1, False, OC_EMU_ADAM);
+ AddNode('CoCo 3', 19, 1, False, OC_EMU_COCO3);
+ AddNode('Cray 1', 19, 1, False, OC_EMU_CRAY1);
  UpdateOptionsTreeVisibility(Dlg);
 End;
 
@@ -125073,6 +125147,30 @@ Begin
   CLR_BORDER);
  DrawText(FX + OPT_LABEL_WIDTH + 4, BaseY, S,
   CLR_WINDOWTEXT);
+End;
+
+{ --- Dessiner la page Projets et solutions > Explorateur SQL Server
+  (2026-09-05, demande explicite de l utilisateur - une bascule de
+  diagnostic est une configuration persistante, pas une commande directe
+  de menu). Une seule case a cocher, meme gabarit exact que
+  DrawOptionsProjBuild ci-dessus. --- }
+
+Procedure DrawOptionsProjSqlExplorer(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Projets et solutions > Explorateur SQL Server',
+  CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+  BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+ If Dlg.Data.SqlExplorerShowDiag Then
+  DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+ DrawText(FX + OPT_CHECK_SIZE + 6, BaseY,
+  'Diagnostique dans Sortie de build', CLR_WINDOWTEXT);
 End;
 
 { --- Dessiner la page Debogage > General --- }
@@ -125722,6 +125820,7 @@ Begin
   OC_EDITOR_FORMAT:       DrawOptionsEditorFormat(Dlg);
   OC_PROJ_GENERAL:        DrawOptionsProjGeneral(Dlg);
   OC_PROJ_BUILD:          DrawOptionsProjBuild(Dlg);
+  OC_PROJ_SQLEXPLORER:    DrawOptionsProjSqlExplorer(Dlg);
   OC_DEBUG_GENERAL:       DrawOptionsDebugGeneral(Dlg);
   OC_DEBUG_OUTPUT:        DrawOptionsDebugOutput(Dlg);
   OC_EMU_GENERAL:         DrawOptionsEmuGeneral(Dlg);
@@ -126281,6 +126380,13 @@ Begin
         Not Dlg.Data.BuildVerbose;
        Dlg.Modified := True;
       End;
+     OC_PROJ_SQLEXPLORER:
+      If FieldIdx = 0 Then
+      Begin
+       Dlg.Data.SqlExplorerShowDiag :=
+        Not Dlg.Data.SqlExplorerShowDiag;
+       Dlg.Modified := True;
+      End;
      OC_DEBUG_GENERAL:
       Case FieldIdx Of
        0: Begin
@@ -126598,6 +126704,8 @@ Begin
   BoolToStr(Data.ShowOutputOnBuild));
  WriteCfgLine(F, 'BuildVerbose',
   BoolToStr(Data.BuildVerbose));
+ WriteCfgLine(F, 'SqlExplorerShowDiag',
+  BoolToStr(Data.SqlExplorerShowDiag));
  Str(Data.ParallelBuild, S);
  WriteCfgLine(F, 'ParallelBuild', S);
  WriteLn(F, '');
@@ -126752,6 +126860,8 @@ Begin
    Data.ShowOutputOnBuild := StrToBool(Value)
   Else If Key = 'BuildVerbose' Then
    Data.BuildVerbose := StrToBool(Value)
+  Else If Key = 'SqlExplorerShowDiag' Then
+   Data.SqlExplorerShowDiag := StrToBool(Value)
   Else If Key = 'ParallelBuild' Then
   Begin
    Val(Value, Data.ParallelBuild, Code);
@@ -128276,7 +128386,10 @@ Begin
  { Free Pascal : utiliser redirection shell }
  FullCmd := CmdLine + ' > ' + TempOutputFile + ' 2>&1';
   {$IFDEF WINDOWS}
-  Exec(GetEnv('COMSPEC'), '/C ' + FullCmd);
+  { Meme bogue CMD.EXE /C que RunCommandCaptureOutput (guillemet de tete
+    avale des que FullCmd commence par un chemin cite) - voir la note
+    detaillee la-bas, meme correctif (2026-09-05). }
+  Exec(GetEnv('COMSPEC'), '/C "' + FullCmd + '"');
   {$ELSE}
   Exec('/bin/sh', '-c ' + FullCmd);
   {$ENDIF}
@@ -128284,7 +128397,7 @@ Begin
  {$ELSE}
  { Turbo Pascal : utiliser COMSPEC }
  FullCmd := CmdLine + ' > ' + TempOutputFile;
- Exec(GetEnv('COMSPEC'), '/C ' + FullCmd);
+ Exec(GetEnv('COMSPEC'), '/C "' + FullCmd + '"');
  ExecuteCompiler := DosExitCode;
  {$ENDIF}
 End;
@@ -128370,7 +128483,30 @@ Begin
  LineCount := 0;
  FullCmd := Cmd + ' > ' + GIT_TEMP_OUTPUT + ' 2>&1';
  {$IFDEF WINDOWS}
- Exec(GetEnv('COMSPEC'), '/C ' + FullCmd);
+ { BOGUE REEL trouve+corrige (2026-09-05, chantier persistance CREATE
+   TABLE/INSERT SQLCMD.PAS - Etape 6, verification live de l Explorateur
+   SQL) : quand FullCmd commence par un chemin entre guillemets (le cas de
+   TOUT appel "exe" -flag "valeur"), CMD.EXE /C applique son comportement
+   historique bien documente de retrait du premier (et dernier) guillemet
+   de la ligne de commande complete - ici ca collait un guillemet parasite
+   directement apres "SQLCMD.EXE", rendant le chemin de l executable
+   invalide ("La syntaxe du nom de fichier... est incorrecte"). Ce bogue
+   preexistait pour TOUT appelant de RunCommandCaptureOutput dont Cmd
+   commence par un chemin cite - il ne s etait jamais manifeste avant cette
+   verification car le seul appelant a chemin cite jusqu ici (l Explorateur
+   SQL, Etape 3) n avait jamais eu de vraies donnees a retourner, et
+   l erreur shell resultante echouait silencieusement le parseur de sortie
+   (aucune ligne a double-espace) exactement comme "0 resultat" l aurait
+   fait - un faux negatif qui a masque le bogue. Correctif standard et
+   documente pour ce comportement de CMD.EXE : envelopper la commande
+   ENTIERE dans une paire supplementaire de guillemets exterieurs -
+   CMD.EXE retire alors le guillemet exterieur de tete ET celui de fin,
+   restituant exactement FullCmd inchange - fonctionne aussi bien pour les
+   appelants qui ne citent rien du tout (ex. Git : le contenu entre les
+   deux guillemets exterieurs n est alors jamais reconnu comme "le nom
+   d un executable autonome", donc l autre cas special de CMD.EXE ne
+   s applique jamais et le meme retrait tete+fin s applique uniformement). }
+ Exec(GetEnv('COMSPEC'), '/C "' + FullCmd + '"');
  {$ELSE}
  Exec('/bin/sh', '-c ' + FullCmd);
  {$ENDIF}

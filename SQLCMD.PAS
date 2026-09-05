@@ -1880,6 +1880,26 @@ Begin
            Or (LongInt(Buf[Ofs + 3]) Shl 24);
 End;
 
+{ ---- Utilitaires d ecriture Little-Endian (persistance reelle
+  CREATE TABLE/INSERT) - pendant symetrique de ReadWord/ReadLong
+  ci-dessus, a portee GLOBALE (contrairement aux WriteWord/WriteLong
+  prives de CreateMinimalMdf, qui operent sur un PageBuf local et
+  restent inchanges). ------------------------------------------- }
+
+Procedure WriteWord(Var Buf : TMdfPageBuf; Ofs : Integer; Val : Word);
+Begin
+  Buf[Ofs]     := Val And $FF;
+  Buf[Ofs + 1] := (Val Shr 8) And $FF;
+End;
+
+Procedure WriteLong(Var Buf : TMdfPageBuf; Ofs : Integer; Val : LongInt);
+Begin
+  Buf[Ofs]     := Val And $FF;
+  Buf[Ofs + 1] := (Val Shr 8) And $FF;
+  Buf[Ofs + 2] := (Val Shr 16) And $FF;
+  Buf[Ofs + 3] := (Val Shr 24) And $FF;
+End;
+
 { ---- Decoder l en-tete de page (96 octets) ------------------- }
 
 Procedure ParsePageHeader(Const Buf : TMdfPageBuf;
@@ -1901,6 +1921,33 @@ Begin
   Hdr.FreeCnt      := ReadWord(Buf, MDF_HDR_FREECNT);
   Hdr.FreeData     := ReadWord(Buf, MDF_HDR_FREEDATA);
   Hdr.ReservedCnt  := ReadWord(Buf, MDF_HDR_RESERVEDCNT);
+End;
+
+{ ---- Encoder l en-tete de page (96 octets) - pendant symetrique
+  de ParsePageHeader, a portee GLOBALE (miroir du WritePageHeader
+  prive de CreateMinimalMdf, generalise a tous les champs plutot
+  qu aux 4 seuls utilises par la creation d un .mdf minimal).
+  N ecrit QUE les 96 octets d en-tete - le corps de la page (buffer
+  deja rempli par l appelant, ex. lignes de donnees) n est pas touche. }
+
+Procedure WritePageHeaderBuf(Var Buf : TMdfPageBuf; Const Hdr : TMdfPageHeader);
+Begin
+  Buf[MDF_HDR_HEADERVER] := Hdr.HeaderVer;
+  Buf[MDF_HDR_TYPE]      := Hdr.PageType;
+  Buf[MDF_HDR_TYPEFLAG]  := Hdr.TypeFlagBits;
+  Buf[MDF_HDR_LEVEL]     := Hdr.Level;
+  WriteWord(Buf, MDF_HDR_FLAGBITS, Hdr.FlagBits);
+  WriteWord(Buf, MDF_HDR_INDEXID, Hdr.IndexId);
+  WriteLong(Buf, MDF_HDR_PREVPAGE, Hdr.PrevPage);
+  WriteWord(Buf, MDF_HDR_PREVFILE, Hdr.PrevFile);
+  WriteWord(Buf, MDF_HDR_PMINLEN, Hdr.PMinLen);
+  WriteLong(Buf, MDF_HDR_NEXTPAGE, Hdr.NextPage);
+  WriteWord(Buf, MDF_HDR_NEXTFILE, Hdr.NextFile);
+  WriteWord(Buf, MDF_HDR_SLOTCNT, Hdr.SlotCnt);
+  WriteLong(Buf, MDF_HDR_OBJID, Hdr.ObjId);
+  WriteWord(Buf, MDF_HDR_FREECNT, Hdr.FreeCnt);
+  WriteWord(Buf, MDF_HDR_FREEDATA, Hdr.FreeData);
+  WriteWord(Buf, MDF_HDR_RESERVEDCNT, Hdr.ReservedCnt);
 End;
 
 { ---- Nom de type de page (pour affichage) -------------------- }
@@ -1946,6 +1993,48 @@ Begin
   If IOResult <> 0 Then Exit;
 
   ReadPage := (BytesRead = MDF_PAGE_SIZE);
+End;
+
+{ ---- Ecrire une page par numero - pendant symetrique de ReadPage,
+  a portee GLOBALE, sur le MEME handle MdfF ouvert pour toute la
+  duree du processus (contrairement au WritePage prive de
+  CreateMinimalMdf, qui ecrit sur un File separe cree via Rewrite).
+  Persistance reelle CREATE TABLE/INSERT (2026-09-05). ----------- }
+
+Function WritePage(PageNum : LongInt;
+                   Var Buf : TMdfPageBuf) : Boolean;
+Var
+  BytesWritten : {$IFDEF FPC}LongInt{$ELSE}Word{$ENDIF};
+  TargetOfs : LongInt;
+Begin
+  WritePage := False;
+  If Not MdfOpen Then Exit;
+  If PageNum < 0 Then Exit;
+
+  TargetOfs := PageNum * MDF_PAGE_SIZE;
+  Seek(MdfF, TargetOfs);
+  If IOResult <> 0 Then Exit;
+
+  BlockWrite(MdfF, Buf, MDF_PAGE_SIZE, BytesWritten);
+  If IOResult <> 0 Then Exit;
+
+  WritePage := (BytesWritten = MDF_PAGE_SIZE);
+End;
+
+{ ---- Allouer une page neuve a la fin du fichier (etend MdfPageCnt)
+  - la page est ecrite entierement a zero, l appelant y ecrit ensuite
+  son propre en-tete/contenu via WritePageHeaderBuf/WritePage. ---- }
+
+Function AllocatePageAtEnd : LongInt;
+Var
+  Buf : TMdfPageBuf;
+Begin
+  AllocatePageAtEnd := -1;
+  If Not MdfOpen Then Exit;
+  FillChar(Buf, SizeOf(Buf), 0);
+  If Not WritePage(MdfPageCnt, Buf) Then Exit;
+  AllocatePageAtEnd := MdfPageCnt;
+  Inc(MdfPageCnt);
 End;
 
 { ---- Ouvrir le fichier MDF ----------------------------------- }
@@ -2903,6 +2992,117 @@ Begin
       WriteLn('    (affichage limite aux ', MaxDetail,
               ' premieres pages)');
   End;
+End;
+
+{ ============================================================
+  PERSISTANCE REELLE CREATE TABLE/INSERT (2026-09-05) - PLACEMENT
+  DE PAGE (Etape 3 du chantier)
+  ============================================================ }
+
+{ ---- Trouve (ou alloue) une page MDF_PT_DATA de l ObjId donne avec
+  assez d espace libre pour NeededBytes de plus (donnees de ligne +
+  une entree de tableau de slots) - meme parcours exact que
+  ScanDataPages ci-dessus (SeekPage/ParsePageHeader sur toutes les
+  pages), pour ne jamais desynchroniser ce que ScanDataPages/
+  ReadSystemCatalog voient de ce que ce code ecrit. Espace libre
+  calcule comme MDF_PAGE_SIZE - (SlotCnt*MDF_SLOT_ENTRY_SIZE) -
+  FreeData, meme convention que --createmdf (FreeData = premier
+  octet libre, croissant vers l avant ; le tableau de slots croit
+  vers l arriere depuis la fin de page). ---- }
+
+Function MdfPageFreeSpace(Const Hdr : TMdfPageHeader) : LongInt;
+Begin
+  MdfPageFreeSpace := MDF_PAGE_SIZE -
+    (LongInt(Hdr.SlotCnt) * MDF_SLOT_ENTRY_SIZE) - Hdr.FreeData;
+End;
+
+Function FindOrAllocateDataPage(ObjId : LongInt;
+                                 NeededBytes : Word) : LongInt;
+Var
+  Buf  : TMdfPageBuf;
+  Hdr  : TMdfPageHeader;
+  I    : LongInt;
+  NewPg: LongInt;
+Begin
+  FindOrAllocateDataPage := -1;
+  If Not MdfOpen Then Exit;
+
+  For I := 0 To MdfPageCnt - 1 Do
+    If SeekPage(I, Buf) Then
+    Begin
+      ParsePageHeader(Buf, Hdr);
+      If (Hdr.PageType = MDF_PT_DATA) And (Hdr.ObjId = ObjId) And
+         (MdfPageFreeSpace(Hdr) >= LongInt(NeededBytes) + MDF_SLOT_ENTRY_SIZE) Then
+      Begin
+        FindOrAllocateDataPage := I;
+        Exit;
+      End;
+    End;
+
+  { Aucune page existante avec assez de place : en allouer une neuve,
+    initialisee vide pour cet ObjId (meme WritePageHeaderBuf que
+    partout ailleurs dans ce chantier, jamais un format different). }
+  NewPg := AllocatePageAtEnd;
+  If NewPg < 0 Then Exit;
+
+  FillChar(Buf, SizeOf(Buf), 0);
+  Hdr.HeaderVer    := 1;
+  Hdr.PageType     := MDF_PT_DATA;
+  Hdr.TypeFlagBits := 0;
+  Hdr.Level        := 0;
+  Hdr.FlagBits     := 0;
+  Hdr.IndexId      := 0;
+  Hdr.PrevPage     := 0;
+  Hdr.PrevFile     := 0;
+  Hdr.PMinLen      := 0;
+  Hdr.NextPage     := 0;
+  Hdr.NextFile     := 0;
+  Hdr.SlotCnt      := 0;
+  Hdr.ObjId        := ObjId;
+  Hdr.FreeCnt      := 0;
+  Hdr.FreeData     := MDF_PAGE_HDR_SIZE;
+  Hdr.ReservedCnt  := 0;
+  WritePageHeaderBuf(Buf, Hdr);
+  If Not WritePage(NewPg, Buf) Then Exit;
+
+  FindOrAllocateDataPage := NewPg;
+End;
+
+{ ---- Ajoute une ligne (deja encodee par BuildDataRow) a la fin des
+  donnees d une page - ecrit une nouvelle entree de tableau de slots
+  (croissance depuis la fin de page, meme layout que ReadSlotArray
+  ci-dessus) et met a jour l en-tete. Renvoie False si la page n a
+  pas assez de place (l appelant doit alors demander une AUTRE page
+  via FindOrAllocateDataPage - jamais un debordement silencieux). ---- }
+
+Function AppendRowToPage(PageNum : LongInt;
+                          Var RowBuf : TMdfPageBuf;
+                          RowLen : Word) : Boolean;
+Var
+  Buf      : TMdfPageBuf;
+  Hdr      : TMdfPageHeader;
+  SlotOfs  : Word;
+  RowStart : Word;
+  I        : Word;
+Begin
+  AppendRowToPage := False;
+  If Not SeekPage(PageNum, Buf) Then Exit;
+  ParsePageHeader(Buf, Hdr);
+  If Hdr.PageType <> MDF_PT_DATA Then Exit;
+  If MdfPageFreeSpace(Hdr) < LongInt(RowLen) + MDF_SLOT_ENTRY_SIZE Then Exit;
+
+  RowStart := Hdr.FreeData;
+  For I := 0 To RowLen - 1 Do
+    Buf[RowStart + I] := RowBuf[I];
+
+  SlotOfs := MDF_PAGE_SIZE - MDF_SLOT_ENTRY_SIZE * (Hdr.SlotCnt + 1);
+  WriteWord(Buf, SlotOfs, RowStart);
+
+  Hdr.FreeData := Hdr.FreeData + RowLen;
+  Hdr.SlotCnt  := Hdr.SlotCnt + 1;
+  WritePageHeaderBuf(Buf, Hdr);
+
+  AppendRowToPage := WritePage(PageNum, Buf);
 End;
 
 { ============================================================
@@ -4252,6 +4452,327 @@ Begin
       V.StrVal   := '(unknown xtype ' + IntToStr(XT) + ')';
       V.Valid    := True;
     End;
+  End;
+End;
+
+{ ============================================================
+  PERSISTANCE REELLE CREATE TABLE/INSERT (2026-09-05) - ENCODAGE
+  ============================================================
+  Miroir INVERSE exact de DecodeInt/DecodeDecimal/DecodeString/
+  DecodeDateTime ci-dessus (jamais un format invente) - portee
+  disclosee : INT/BIGINT/SMALLINT/TINYINT/BIT, DECIMAL/NUMERIC
+  (precision <= 9 seulement - au-dela, SQLCMD.PAS ne decode que 8
+  octets de magnitude, voir DecodeDecimal ci-dessus), REAL/FLOAT,
+  CHAR/VARCHAR/NCHAR/NVARCHAR, DATE/DATETIME. Tout autre XType est
+  refuse proprement par ExecCreateTable (Etape 4), jamais atteint
+  ici en pratique - le comportement de secours (zero-remplissage)
+  n est qu un filet de securite. }
+
+{ ---- Nombre de jours ecoules depuis le 1er janvier de BaseYear
+  jusqu a Y-M-D inclus (calendrier gregorien proleptique, meme
+  regle bissextile EXACTE que les boucles de decodage DecodeDateTime
+  ci-dessus : bissextile si Y mod 4 = 0 et Y mod 100 <> 0, ou si
+  Y mod 400 = 0). Miroir inverse direct de ces boucles de decodage.
+  BaseYear=1 pour DATE (jours depuis 0001-01-01), BaseYear=1900
+  pour DATETIME/SMALLDATETIME (jours depuis 1900-01-01). ---- }
+
+Function DaysSinceBaseYear(Y, M, D : Word; BaseYear : Word) : LongInt;
+Var
+  YY   : Word;
+  Leap : Boolean;
+  Days : LongInt;
+  DaysInM : Array[1..12] Of Word;
+Begin
+  Days := 0;
+  YY := BaseYear;
+  While YY < Y Do
+  Begin
+    Leap := ((YY Mod 4 = 0) And (YY Mod 100 <> 0)) Or (YY Mod 400 = 0);
+    If Leap Then Days := Days + 366 Else Days := Days + 365;
+    Inc(YY);
+  End;
+
+  Leap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or (Y Mod 400 = 0);
+  DaysInM[1] := 31; DaysInM[2] := 28; If Leap Then DaysInM[2] := 29;
+  DaysInM[3] := 31; DaysInM[4] := 30; DaysInM[5]  := 31; DaysInM[6]  := 30;
+  DaysInM[7] := 31; DaysInM[8] := 31; DaysInM[9]  := 30; DaysInM[10] := 31;
+  DaysInM[11] := 30; DaysInM[12] := 31;
+
+  YY := 1;
+  While YY < M Do
+  Begin
+    Days := Days + DaysInM[YY];
+    Inc(YY);
+  End;
+  Days := Days + (LongInt(D) - 1);
+
+  DaysSinceBaseYear := Days;
+End;
+
+{ ---- Encoder une valeur SQL a taille FIXE - ecrit exactement FixSz
+  octets a Ofs (FixSz calcule EXACTEMENT comme cote lecture, voir
+  SqlTypeFixedSize/QEDecodeRow : ColMaxLen sert de repli pour
+  CHAR/NCHAR, dont la taille reelle depend de la longueur declaree).
+  Une colonne fixe NULL occupe quand meme ses FixSz octets (lus au
+  complet mais ignores cote decodage si le bit NULL est actif) -
+  l appelant (BuildDataRow) peut donc appeler cette fonction avec
+  n importe quelle valeur pour une colonne NULL, le contenu importe
+  peu. Retourne FixSz. ---- }
+
+Function EncodeFixedSqlValue(Var Buf : TMdfPageBuf; Ofs : Word;
+                              XT : Byte; ColMaxLen : Word;
+                              Const V : TSqlValue) : Word;
+Var
+  FixSz : Word;
+  I, PadLen : Integer;
+  Days, Ticks : LongInt;
+  Mag : LongInt;
+  FloatRec : Record
+    Case Byte Of
+      0: (S : Single);
+      1: (D : Double);
+      2: (B : Array[0..7] Of Byte);
+  End;
+Begin
+  FixSz := SqlTypeFixedSize(XT);
+  If FixSz = 0 Then
+  Begin
+    If ColMaxLen > 0 Then FixSz := ColMaxLen Else FixSz := 1;
+  End;
+  If Ofs + FixSz > MDF_PAGE_SIZE Then Begin EncodeFixedSqlValue := 0; Exit; End;
+  FillChar(Buf[Ofs], FixSz, 0);
+
+  Case XT Of
+    XT_BIT :
+      Buf[Ofs] := V.IntVal And 1;
+    XT_TINYINT :
+      Buf[Ofs] := V.IntVal And $FF;
+    XT_SMALLINT :
+      WriteWord(Buf, Ofs, Word(V.IntVal));
+    XT_INT :
+      WriteLong(Buf, Ofs, V.IntVal);
+    XT_BIGINT :
+    Begin
+      WriteLong(Buf, Ofs, V.IntVal);
+      WriteLong(Buf, Ofs + 4, V.HiVal);
+    End;
+    XT_REAL :
+    Begin
+      FloatRec.S := V.FloatVal;
+      For I := 0 To 3 Do Buf[Ofs + I] := FloatRec.B[I];
+    End;
+    XT_FLOAT :
+    Begin
+      FloatRec.D := V.FloatVal;
+      For I := 0 To 7 Do Buf[Ofs + I] := FloatRec.B[I];
+    End;
+    XT_DECIMAL, XT_NUMERIC :
+    Begin
+      { Portee disclosee : precision <= 9 seulement (magnitude tient
+        dans les 4 octets d IntVal - DecodeDecimal ci-dessus ne lit
+        HiVal que si ColPrec > 9, ExecCreateTable rejette les
+        precisions superieures avant d atteindre ce code). }
+      Mag := V.IntVal;
+      If Mag < 0 Then Begin Buf[Ofs] := 0; Mag := -Mag; End
+      Else Buf[Ofs] := 1;
+      WriteLong(Buf, Ofs + 1, Mag);
+    End;
+    XT_CHAR :
+    Begin
+      PadLen := Length(V.StrVal);
+      If PadLen > FixSz Then PadLen := FixSz;
+      For I := 1 To PadLen Do
+        Buf[Ofs + I - 1] := Ord(V.StrVal[I]);
+      For I := PadLen To FixSz - 1 Do
+        Buf[Ofs + I] := Ord(' ');
+    End;
+    XT_NCHAR :
+    Begin
+      PadLen := Length(V.StrVal);
+      If PadLen * 2 > FixSz Then PadLen := FixSz Div 2;
+      For I := 1 To PadLen Do
+      Begin
+        Buf[Ofs + (I - 1) * 2]     := Ord(V.StrVal[I]);
+        Buf[Ofs + (I - 1) * 2 + 1] := 0;
+      End;
+      For I := PadLen * 2 To FixSz - 1 Do
+      Begin
+        If (I - PadLen * 2) Mod 2 = 0 Then Buf[Ofs + I] := Ord(' ')
+        Else Buf[Ofs + I] := 0;
+      End;
+    End;
+    XT_DATE :
+    Begin
+      Days := DaysSinceBaseYear(V.Year, V.Month, V.Day, 1);
+      Buf[Ofs]     := Days And $FF;
+      Buf[Ofs + 1] := (Days Shr 8) And $FF;
+      Buf[Ofs + 2] := (Days Shr 16) And $FF;
+    End;
+    XT_DATETIME :
+    Begin
+      Days  := DaysSinceBaseYear(V.Year, V.Month, V.Day, 1900);
+      Ticks := (LongInt(V.Hour) * 3600 + LongInt(V.Minute) * 60 +
+                LongInt(V.Second)) * 300;
+      WriteLong(Buf, Ofs, Days);
+      WriteLong(Buf, Ofs + 4, Ticks);
+    End;
+  End;
+
+  EncodeFixedSqlValue := FixSz;
+End;
+
+{ ---- Encoder une valeur SQL a taille VARIABLE - ecrit les octets
+  a Ofs, retourne le nombre d octets ecrits (0 si V.IsNull, meme
+  convention que QEDecodeRow : une colonne variable NULL occupe un
+  DataLen de 0, jamais d octets reserves). ---- }
+
+Function EncodeVarSqlValue(Var Buf : TMdfPageBuf; Ofs : Word;
+                            XT : Byte; Const V : TSqlValue) : Word;
+Var
+  I, L : Integer;
+Begin
+  EncodeVarSqlValue := 0;
+  If V.IsNull Then Exit;
+  L := Length(V.StrVal);
+
+  Case XT Of
+    XT_VARCHAR :
+    Begin
+      If Ofs + L > MDF_PAGE_SIZE Then Exit;
+      For I := 1 To L Do
+        Buf[Ofs + I - 1] := Ord(V.StrVal[I]);
+      EncodeVarSqlValue := L;
+    End;
+    XT_NVARCHAR :
+    Begin
+      If Ofs + L * 2 > MDF_PAGE_SIZE Then Exit;
+      For I := 1 To L Do
+      Begin
+        Buf[Ofs + (I - 1) * 2]     := Ord(V.StrVal[I]);
+        Buf[Ofs + (I - 1) * 2 + 1] := 0;
+      End;
+      EncodeVarSqlValue := L * 2;
+    End;
+  End;
+End;
+
+{ ---- Descripteur d une colonne pour l encodage d une ligne (miroir
+  minimal de TQEColumn - seuls les champs necessaires a l encodage).
+  Tableaux a TAILLE FIXE + compteur, meme convention que TQEResult/
+  TQERow (pas de tableau ouvert - jamais utilise ailleurs dans ce
+  fichier compile en mode Turbo Pascal -Mtp). ---- }
+
+Type
+  TEncColInfo = Record
+    XType  : Byte;
+    MaxLen : Word;   { deja en OCTETS pour NCHAR/NVARCHAR (= car * 2) }
+    Prec   : Byte;
+    Scale  : Byte;
+  End;
+  TEncColArr = Array[0..MAX_QE_COLS - 1] Of TEncColInfo;
+  TEncValArr = Array[0..MAX_QE_COLS - 1] Of TSqlValue;
+
+{ ---- Construire une ligne complete (en-tete + donnees fixes +
+  bitmap NULL + donnees variables + tableau d offsets) - format
+  EXACTEMENT celui que ParseRowHeader/QEDecodeRow/ExtractRowVarUnicode
+  (code de lecture EXISTANT, INCHANGE) savent deja decoder. Colonnes
+  fixes ET variables peuvent etre mixees dans n importe quel ordre
+  (chaque colonne garde sa position physique ColInfos[I]/Vals[I]) -
+  les colonnes fixes sont ecrites dans l ordre dans la region fixe,
+  les colonnes variables dans l ordre dans la region variable (avec
+  leur propre tableau d offsets), exactement comme QEDecodeRow les
+  relit (CurFixed avance uniquement sur les colonnes fixes, VarIdx
+  uniquement sur les variables). ---- }
+
+Procedure BuildDataRow(Const ColInfos : TEncColArr;
+                        Const Vals : TEncValArr;
+                        ColCnt : Integer;
+                        Var RowBuf : TMdfPageBuf;
+                        Var RowLen : Word);
+Var
+  I, FixedLen, NullBmpSize, VarColCount : Integer;
+  CurFixed, CurVarOfs, OfsArrPos, NullBmpOfs : Word;
+  FixSz, VarLen : Word;
+  AnyNull : Boolean;
+Begin
+  FillChar(RowBuf, SizeOf(RowBuf), 0);
+
+  { --- Passe 1 : calculer FixedLen (region fixe), NullBmpSize et
+    VarColCount, sans encore rien ecrire (il faut connaitre FixedLen
+    et NullBmpSize AVANT de savoir ou commence la region variable). }
+  FixedLen := 4;
+  VarColCount := 0;
+  AnyNull := False;
+  For I := 0 To ColCnt - 1 Do
+  Begin
+    If Vals[I].IsNull Then AnyNull := True;
+    If SqlTypeIsVariable(ColInfos[I].XType) Then
+      Inc(VarColCount)
+    Else
+    Begin
+      FixSz := SqlTypeFixedSize(ColInfos[I].XType);
+      If FixSz = 0 Then
+      Begin
+        If ColInfos[I].MaxLen > 0 Then FixSz := ColInfos[I].MaxLen
+        Else FixSz := 1;
+      End;
+      FixedLen := FixedLen + FixSz;
+    End;
+  End;
+
+  If AnyNull Then
+    NullBmpSize := (ColCnt + 7) Div 8
+  Else
+    NullBmpSize := 0;
+
+  { --- Passe 2 : ecrire les colonnes fixes (dans l ordre) et le
+    bitmap NULL. --- }
+  CurFixed := 4;
+  NullBmpOfs := FixedLen + 2;
+  For I := 0 To ColCnt - 1 Do
+  Begin
+    If Vals[I].IsNull And (NullBmpSize > 0) Then
+      RowBuf[NullBmpOfs + (I Div 8)] :=
+        RowBuf[NullBmpOfs + (I Div 8)] Or (1 Shl (I Mod 8));
+    If Not SqlTypeIsVariable(ColInfos[I].XType) Then
+    Begin
+      FixSz := EncodeFixedSqlValue(RowBuf, CurFixed, ColInfos[I].XType,
+                                    ColInfos[I].MaxLen, Vals[I]);
+      CurFixed := CurFixed + FixSz;
+    End;
+  End;
+
+  { --- En-tete de ligne : StatusA/StatusB/FixedLen, puis ColCount. }
+  RowBuf[MDF_ROW_STATUSBITS] := (MDF_RECTYPE_PRIMARY Shl 1);
+  If NullBmpSize > 0 Then
+    RowBuf[MDF_ROW_STATUSBITS] := RowBuf[MDF_ROW_STATUSBITS] Or MDF_REC_HAS_NULL;
+  If VarColCount > 0 Then
+    RowBuf[MDF_ROW_STATUSBITS] := RowBuf[MDF_ROW_STATUSBITS] Or MDF_REC_HAS_VAR;
+  RowBuf[MDF_ROW_STATUSB] := 0;
+  WriteWord(RowBuf, MDF_ROW_FIXEDLEN, FixedLen);
+  WriteWord(RowBuf, FixedLen, ColCnt);
+
+  { --- Passe 3 : region variable (si presente) - tableau d offsets
+    puis donnees, dans l ordre des colonnes variables. Chaque entree
+    du tableau d offsets est la fin CUMULEE (relative au debut de la
+    ligne) de la colonne correspondante - EXACTEMENT ce que
+    QEDecodeRow/ExtractRowVarUnicode relisent (masque $7FFF, jamais
+    pose ici puisqu aucune colonne "complexe" n est generee). --- }
+  RowLen := FixedLen + 2 + NullBmpSize;
+  If VarColCount > 0 Then
+  Begin
+    WriteWord(RowBuf, FixedLen + 2 + NullBmpSize, VarColCount);
+    OfsArrPos := FixedLen + 2 + NullBmpSize + 2;
+    CurVarOfs := OfsArrPos + Word(VarColCount) * 2; { relatif au debut de ligne }
+    For I := 0 To ColCnt - 1 Do
+      If SqlTypeIsVariable(ColInfos[I].XType) Then
+      Begin
+        VarLen := EncodeVarSqlValue(RowBuf, CurVarOfs, ColInfos[I].XType, Vals[I]);
+        CurVarOfs := CurVarOfs + VarLen;
+        WriteWord(RowBuf, OfsArrPos, CurVarOfs);
+        OfsArrPos := OfsArrPos + 2;
+      End;
+    RowLen := CurVarOfs;
   End;
 End;
 
@@ -19960,6 +20481,81 @@ Begin
   TestAssert('SET SHOWPLAN_TEXT parse ok', ParseOk);
 End;
 
+{ ---- TestRowEncodeDecode : verifie que BuildDataRow (Etape 2 du
+  chantier de persistance CREATE TABLE/INSERT, 2026-09-05) produit
+  des lignes que le code de DECODAGE EXISTANT, INCHANGE
+  (ParseRowHeader/QEDecodeRow) sait relire correctement - le
+  round-trip complet encodage->decodage doit redonner exactement
+  les valeurs d origine. Colonnes choisies pour exercer : un entier
+  fixe, une chaine variable assez longue pour forcer la region
+  variable, une colonne NULL (bitmap), et un flottant. ---- }
+Procedure TestRowEncodeDecode;
+Var
+  ColInfos : TEncColArr;
+  Vals     : TEncValArr;
+  RowBuf   : TMdfPageBuf;
+  RowLen   : Word;
+  Res      : TQEResultPtr;
+  Row      : TQERow;
+  RH       : TMdfRowHeader;
+  LongStr  : TSqlValueStr;
+Begin
+  WriteLn('  [Persistance - encodage/decodage de lignes (BuildDataRow)]');
+
+  { TQEResult est un tableau MAX_QE_ROWS*MAX_QE_COLS de TSqlValue - bien
+    trop volumineux pour une variable LOCALE (pile), meme convention que
+    partout ailleurs dans ce fichier (New(QERes) plutot qu un TQEResult
+    en Var local - voir QEExecSelect et al.) : allocation sur le tas. }
+  New(Res);
+  FillChar(ColInfos, SizeOf(ColInfos), 0);
+  FillChar(Vals, SizeOf(Vals), 0);
+  FillChar(Res^, SizeOf(Res^), 0);
+
+  LongStr := 'Une chaine assez longue pour la region variable';
+
+  ColInfos[0].XType := XT_INT;
+  ColInfos[1].XType := XT_VARCHAR;
+  ColInfos[1].MaxLen := 50;
+  ColInfos[2].XType := XT_BIT;
+  ColInfos[3].XType := XT_FLOAT;
+
+  InitSqlValue(Vals[0]);
+  Vals[0].XType := XT_INT; Vals[0].IsNull := False; Vals[0].IntVal := 42;
+  InitSqlValue(Vals[1]);
+  Vals[1].XType := XT_VARCHAR; Vals[1].IsNull := False; Vals[1].StrVal := LongStr;
+  InitSqlValue(Vals[2]);
+  Vals[2].XType := XT_BIT; Vals[2].IsNull := True;
+  InitSqlValue(Vals[3]);
+  Vals[3].XType := XT_FLOAT; Vals[3].IsNull := False; Vals[3].FloatVal := 3.14159;
+
+  BuildDataRow(ColInfos, Vals, 4, RowBuf, RowLen);
+  TestAssert('BuildDataRow: RowLen > 0', RowLen > 0);
+  TestAssert('BuildDataRow: RowLen tient dans une page', RowLen < MDF_PAGE_SIZE);
+
+  ParseRowHeader(RowBuf, 0, RH);
+  TestAssert('round-trip: en-tete valide', RH.Valid);
+  TestAssert('round-trip: HasNullBmp', RH.HasNullBmp);
+  TestAssert('round-trip: HasVarCols', RH.HasVarCols);
+
+  Res^.ColCnt := 4;
+  Res^.Cols[0].XType := XT_INT;
+  Res^.Cols[1].XType := XT_VARCHAR; Res^.Cols[1].MaxLen := 50;
+  Res^.Cols[2].XType := XT_BIT;
+  Res^.Cols[3].XType := XT_FLOAT;
+
+  QEDecodeRow(RowBuf, 0, Res^, Row);
+
+  TestAssert('round-trip: colonne INT', (Not Row.Vals[0].IsNull) And
+             (Row.Vals[0].IntVal = 42));
+  TestAssert('round-trip: colonne VARCHAR', (Not Row.Vals[1].IsNull) And
+             (Row.Vals[1].StrVal = LongStr));
+  TestAssert('round-trip: colonne BIT NULL', Row.Vals[2].IsNull);
+  TestAssert('round-trip: colonne FLOAT', (Not Row.Vals[3].IsNull) And
+             (Abs(Row.Vals[3].FloatVal - 3.14159) < 0.0001));
+
+  Dispose(Res);
+End;
+
 { ---- RunSelfTests : pilote principal des tests --------------- }
 Procedure RunSelfTests;
 Begin
@@ -20007,6 +20603,11 @@ Begin
   TestParserTransactions;
   TestParserCursors;
   TestSetOptions;
+  WriteLn;
+
+  { Tests de persistance (chantier CREATE TABLE/INSERT, 2026-09-05) }
+  WriteLn('[5] Tests de persistance');
+  TestRowEncodeDecode;
   WriteLn;
 
   { Resume }
@@ -23092,6 +23693,634 @@ Begin
                IntToStr(MAX_WHILE_ITERATIONS) + ' iterations');
 End;
 
+{ ============================================================
+  PERSISTANCE REELLE CREATE TABLE (2026-09-05) - Etape 4 du chantier
+  ============================================================
+  Ecrit de VRAIES lignes sysschobjs/syscolpars (ObjId 34/41, memes
+  offsets MDF_SCHOBJ_*/MDF_COLPAR_* que ParseSysSchObjRow/
+  ParseSysColParRow existants, INCHANGES) via BuildDataRow +
+  FindOrAllocateDataPage/AppendRowToPage (Etapes 2-3) - jamais un
+  format invente. Une deuxieme invocation separee de SQLCMD.EXE
+  (le cas reel de l Explorateur SQL de DEVENV.PAS) relira donc
+  cette table via le VRAI ReadSystemCatalog, sans aucune
+  modification cote lecture. }
+
+{ ---- Types XType supportes par l encodeur reel (BuildDataRow/
+  EncodeFixedSqlValue/EncodeVarSqlValue, Etape 2) - portee disclosee
+  du plan. DECIMAL/NUMERIC seulement pour precision 1-9 (au-dela,
+  DecodeDecimal existant ne lit que 8 octets de magnitude). Tout
+  autre type (MONEY/UNIQUEIDENTIFIER/XML/SQL_VARIANT/VARBINARY/
+  NTEXT/BINARY/TIME/DATETIME2/DATETIMEOFFSET/TIMESTAMP) est refuse
+  proprement plutot que de creer une colonne dont l INSERT
+  echouerait toujours. ---- }
+
+Function XTypeSupportedForCreate(XT : Byte; Prec : LongInt) : Boolean;
+Begin
+  Case XT Of
+    XT_INT, XT_BIGINT, XT_SMALLINT, XT_TINYINT, XT_BIT,
+    XT_FLOAT, XT_REAL, XT_CHAR, XT_VARCHAR, XT_NCHAR, XT_NVARCHAR,
+    XT_DATE, XT_DATETIME :
+      XTypeSupportedForCreate := True;
+    XT_DECIMAL, XT_NUMERIC :
+      XTypeSupportedForCreate := (Prec > 0) And (Prec <= 9);
+  Else
+    XTypeSupportedForCreate := False;
+  End;
+End;
+
+{ ---- Nom simple (sans prefixe de schema) d un identificateur
+  eventuellement qualifie ('dbo.Clients' -> 'Clients') - meme
+  convention que QEFindTable/QEGetTableCols, qui ne comparent
+  jamais que le nom simple (aucune gestion de schema nulle part
+  ailleurs dans ce moteur - une reference qualifiee resterait de
+  toute facon introuvable si on gardait le prefixe). ---- }
+
+Function SimpleObjectName(Const FullName : TString) : TCatName;
+Var
+  P : Integer;
+Begin
+  P := Length(FullName);
+  While (P > 0) And (FullName[P] <> '.') Do Dec(P);
+  If P > 0 Then
+    SimpleObjectName := Copy(FullName, P + 1, Length(FullName) - P)
+  Else
+    SimpleObjectName := FullName;
+End;
+
+{ ---- Prochain ObjectId libre - hors de la plage systeme reservee
+  1-100 (sysschobjs=34, syscolpars=41, etc., voir MDF_SYSOBJ_*). ---- }
+
+Function AllocateObjectId : LongInt;
+Var
+  I : Integer;
+  MaxId : LongInt;
+Begin
+  MaxId := 1000;
+  For I := 0 To SysObjCount - 1 Do
+    If SysObjects[I].ObjectId > MaxId Then
+      MaxId := SysObjects[I].ObjectId;
+  AllocateObjectId := MaxId + 1;
+End;
+
+{ ---- Ecrit une ligne sysschobjs reelle (ObjId=34) - ordre de
+  colonnes CHOISI pour que BuildDataRow empaquete sequentiellement
+  les champs fixes EXACTEMENT aux offsets MDF_SCHOBJ_ID(4)/
+  NSID(8)/NSCLASS(12)/STATUS(13)/TYPE(17)/PID(19), FixedLen=23,
+  verifie a la main contre ces constantes avant d ecrire ce code -
+  puis la seule colonne variable (Name, UTF16) exactement comme
+  ExtractRowVarUnicode/ParseSysSchObjRow la relisent. ---- }
+
+Procedure WriteSysSchObjRow(ObjId, SchId, ParId : LongInt;
+                             Const Nm : TCatName);
+Var
+  ColInfos : TEncColArr;
+  Vals     : TEncValArr;
+  RowBuf   : TMdfPageBuf;
+  RowLen   : Word;
+  PageNum  : LongInt;
+Begin
+  FillChar(ColInfos, SizeOf(ColInfos), 0);
+  FillChar(Vals, SizeOf(Vals), 0);
+
+  ColInfos[0].XType := XT_INT;                     { ObjId    @4  }
+  ColInfos[1].XType := XT_INT;                     { SchId    @8  }
+  ColInfos[2].XType := XT_TINYINT;                 { NSClass  @12 }
+  ColInfos[3].XType := XT_INT;                     { Status   @13 }
+  ColInfos[4].XType := XT_CHAR; ColInfos[4].MaxLen := 2; { Type @17 }
+  ColInfos[5].XType := XT_INT;                     { ParentId @19 }
+  ColInfos[6].XType := XT_NVARCHAR;                { Name (variable) }
+
+  { NOTE : InitSqlValue met IsNull a True PAR DEFAUT (voir sa
+    definition) - chaque champ catalogue est TOUJOURS renseigne,
+    donc IsNull doit etre remis a False explicitement partout ici,
+    sinon EncodeVarSqlValue (qui respecte IsNull, contrairement a
+    EncodeFixedSqlValue) encoderait Name comme une chaine vide. }
+  InitSqlValue(Vals[0]); Vals[0].XType := XT_INT; Vals[0].IsNull := False; Vals[0].IntVal := ObjId;
+  InitSqlValue(Vals[1]); Vals[1].XType := XT_INT; Vals[1].IsNull := False; Vals[1].IntVal := SchId;
+  InitSqlValue(Vals[2]); Vals[2].XType := XT_TINYINT; Vals[2].IsNull := False; Vals[2].IntVal := 0;
+  InitSqlValue(Vals[3]); Vals[3].XType := XT_INT; Vals[3].IsNull := False; Vals[3].IntVal := 0;
+  InitSqlValue(Vals[4]); Vals[4].XType := XT_CHAR; Vals[4].IsNull := False; Vals[4].StrVal := 'U ';
+  InitSqlValue(Vals[5]); Vals[5].XType := XT_INT; Vals[5].IsNull := False; Vals[5].IntVal := ParId;
+  InitSqlValue(Vals[6]); Vals[6].XType := XT_NVARCHAR; Vals[6].IsNull := False; Vals[6].StrVal := Nm;
+
+  BuildDataRow(ColInfos, Vals, 7, RowBuf, RowLen);
+  PageNum := FindOrAllocateDataPage(MDF_SYSOBJ_SYSSCHOBJS, RowLen);
+  If PageNum >= 0 Then
+    AppendRowToPage(PageNum, RowBuf, RowLen);
+End;
+
+{ ---- Ecrit une ligne syscolpars reelle (ObjId=41) pour une colonne -
+  meme discipline que WriteSysSchObjRow : ordre de colonnes choisi
+  pour que l empaquetage sequentiel de BuildDataRow tombe EXACTEMENT
+  sur MDF_COLPAR_ID(4)/NUMBER(8)/COLID(10)/XTYPE(14)/UTYPE(15)/
+  LENGTH(19)/PREC(21)/SCALE(22)/COLLID(23)/STATUS(27), FixedLen=31,
+  verifie a la main contre ces constantes avant d ecrire ce code. ---- }
+
+Procedure WriteSysColParRow(ObjId : LongInt; ColPos : Integer;
+                             Const Nm : TCatName; XT : Byte;
+                             MaxLen : Word; Prec, Scale : Byte;
+                             Nullable : Boolean);
+Var
+  ColInfos  : TEncColArr;
+  Vals      : TEncValArr;
+  RowBuf    : TMdfPageBuf;
+  RowLen    : Word;
+  PageNum   : LongInt;
+  StatusVal : LongInt;
+Begin
+  FillChar(ColInfos, SizeOf(ColInfos), 0);
+  FillChar(Vals, SizeOf(Vals), 0);
+
+  ColInfos[0].XType  := XT_INT;       { ObjId   @4  }
+  ColInfos[1].XType  := XT_SMALLINT;  { Number  @8  }
+  ColInfos[2].XType  := XT_INT;       { ColId   @10 }
+  ColInfos[3].XType  := XT_TINYINT;   { XType   @14 }
+  ColInfos[4].XType  := XT_INT;       { UType   @15 }
+  ColInfos[5].XType  := XT_SMALLINT;  { Length  @19 }
+  ColInfos[6].XType  := XT_TINYINT;   { Prec    @21 }
+  ColInfos[7].XType  := XT_TINYINT;   { Scale   @22 }
+  ColInfos[8].XType  := XT_INT;       { CollId  @23 }
+  ColInfos[9].XType  := XT_INT;       { Status  @27 }
+  ColInfos[10].XType := XT_NVARCHAR;  { Name (variable) }
+
+  If Nullable Then StatusVal := 1 Else StatusVal := 0;
+
+  { Voir la note dans WriteSysSchObjRow ci-dessus : InitSqlValue met
+    IsNull a True par defaut, remis a False explicitement partout ici. }
+  InitSqlValue(Vals[0]);  Vals[0].XType := XT_INT; Vals[0].IsNull := False; Vals[0].IntVal := ObjId;
+  InitSqlValue(Vals[1]);  Vals[1].XType := XT_SMALLINT; Vals[1].IsNull := False; Vals[1].IntVal := ColPos;
+  InitSqlValue(Vals[2]);  Vals[2].XType := XT_INT; Vals[2].IsNull := False; Vals[2].IntVal := ColPos;
+  InitSqlValue(Vals[3]);  Vals[3].XType := XT_TINYINT; Vals[3].IsNull := False; Vals[3].IntVal := XT;
+  InitSqlValue(Vals[4]);  Vals[4].XType := XT_INT; Vals[4].IsNull := False; Vals[4].IntVal := XT;
+  InitSqlValue(Vals[5]);  Vals[5].XType := XT_SMALLINT; Vals[5].IsNull := False; Vals[5].IntVal := MaxLen;
+  InitSqlValue(Vals[6]);  Vals[6].XType := XT_TINYINT; Vals[6].IsNull := False; Vals[6].IntVal := Prec;
+  InitSqlValue(Vals[7]);  Vals[7].XType := XT_TINYINT; Vals[7].IsNull := False; Vals[7].IntVal := Scale;
+  InitSqlValue(Vals[8]);  Vals[8].XType := XT_INT; Vals[8].IsNull := False; Vals[8].IntVal := 0;
+  InitSqlValue(Vals[9]);  Vals[9].XType := XT_INT; Vals[9].IsNull := False; Vals[9].IntVal := StatusVal;
+  InitSqlValue(Vals[10]); Vals[10].XType := XT_NVARCHAR; Vals[10].IsNull := False; Vals[10].StrVal := Nm;
+
+  BuildDataRow(ColInfos, Vals, 11, RowBuf, RowLen);
+  PageNum := FindOrAllocateDataPage(MDF_SYSOBJ_SYSCOLPARS, RowLen);
+  If PageNum >= 0 Then
+    AppendRowToPage(PageNum, RowBuf, RowLen);
+End;
+
+{ ---- ExecCreateTable ---------------------------------------------- }
+{ Deux passes : (1) valider ET extraire les metadonnees de TOUTES les
+  colonnes sans rien ecrire (jamais une table a moitie creee si une
+  colonne plus loin dans la liste est invalide), (2) ecrire le
+  catalogue reel sur disque ET l ajouter directement dans les
+  tableaux EN MEMOIRE SysObjects/SysColumns (visible immediatement
+  dans la MEME session/script sans attendre un nouveau
+  ReadSystemCatalog complet). Les contraintes de table
+  (ND_PK_CONSTRAINT/ND_FK_CONSTRAINT/ND_UNIQUE_CONSTR/
+  ND_CHECK_CONSTR, deja reconnues par le parseur comme enfants
+  directs de ND_CREATE_TABLE ou de ND_COL_DEF) sont silencieusement
+  ignorees ici - portee exclue disclosee dans le plan, jamais une
+  fausse contrainte appliquee. ---- }
+
+Procedure ExecCreateTable(Root : Integer);
+Const
+  MAX_CT_COLS = MAX_QE_COLS;
+Var
+  NameNode, ColNode, TypeNode : Integer;
+  SimpleName : TCatName;
+  ObjId      : LongInt;
+  I, J, ColIdx : Integer;
+  LenVal, ScaleVal : LongInt;
+  ErrCode    : Integer;
+  XT         : Byte;
+  HasNotNull : Boolean;
+  { --- metadonnees extraites, une entree par colonne reelle --- }
+  CName    : Array[0..MAX_CT_COLS - 1] Of TCatName;
+  CXType   : Array[0..MAX_CT_COLS - 1] Of Byte;
+  CMaxLen  : Array[0..MAX_CT_COLS - 1] Of Word;
+  CPrec    : Array[0..MAX_CT_COLS - 1] Of Byte;
+  CScale   : Array[0..MAX_CT_COLS - 1] Of Byte;
+  CNullable: Array[0..MAX_CT_COLS - 1] Of Boolean;
+Begin
+  If ASTPool[Root].ChildCnt < 1 Then Exit;
+  NameNode := ASTPool[Root].Children[0];
+  SimpleName := SimpleObjectName(ASTPool[NameNode].Text);
+
+  If QEFindTable(SimpleName) >= 0 Then
+  Begin
+    OutputLine('-- Erreur : la table ''' + SimpleName + ''' existe deja');
+    Exit;
+  End;
+
+  { --- Passe 1 : valider et extraire --- }
+  ColIdx := 0;
+  For I := 1 To ASTPool[Root].ChildCnt - 1 Do
+  Begin
+    ColNode := ASTPool[Root].Children[I];
+    If ASTPool[ColNode].Kind <> ND_COL_DEF Then Continue;
+
+    If ColIdx >= MAX_CT_COLS Then
+    Begin
+      OutputLine('-- Erreur : trop de colonnes (maximum ' +
+                 IntToStr(MAX_CT_COLS) + ' dans cette version)');
+      Exit;
+    End;
+    If ASTPool[ColNode].ChildCnt < 1 Then
+    Begin
+      OutputLine('-- Erreur : colonne ''' + ASTPool[ColNode].Text +
+                 ''' sans type');
+      Exit;
+    End;
+
+    TypeNode := ASTPool[ColNode].Children[0];
+    XT := XTypeFromName(ASTPool[TypeNode].Text);
+
+    LenVal := 0; ScaleVal := 0;
+    If ASTPool[TypeNode].ChildCnt >= 1 Then
+    Begin
+      Val(ASTPool[ASTPool[TypeNode].Children[0]].Text, LenVal, ErrCode);
+      If ErrCode <> 0 Then LenVal := 0;
+    End;
+    If ASTPool[TypeNode].ChildCnt >= 2 Then
+    Begin
+      Val(ASTPool[ASTPool[TypeNode].Children[1]].Text, ScaleVal, ErrCode);
+      If ErrCode <> 0 Then ScaleVal := 0;
+    End;
+
+    If (XT = 0) Or (Not XTypeSupportedForCreate(XT, LenVal)) Then
+    Begin
+      OutputLine('-- Erreur : type ''' + ASTPool[TypeNode].Text +
+                 ''' non supporte pour la colonne ''' +
+                 ASTPool[ColNode].Text +
+                 ''' (persistance reelle - voir la portee disclosee)');
+      Exit;
+    End;
+
+    If ((XT = XT_VARCHAR) Or (XT = XT_CHAR) Or
+        (XT = XT_NVARCHAR) Or (XT = XT_NCHAR)) And (LenVal <= 0) Then
+    Begin
+      OutputLine('-- Erreur : longueur requise pour la colonne ''' +
+                 ASTPool[ColNode].Text + '''');
+      Exit;
+    End;
+
+    HasNotNull := False;
+    For J := 1 To ASTPool[ColNode].ChildCnt - 1 Do
+      If (ASTPool[ASTPool[ColNode].Children[J]].Kind = ND_IDENT) And
+         (ASTPool[ASTPool[ColNode].Children[J]].Text = 'NOT NULL') Then
+        HasNotNull := True;
+
+    CName[ColIdx]  := ASTPool[ColNode].Text;
+    CXType[ColIdx] := XT;
+    CPrec[ColIdx]  := 0;
+    CScale[ColIdx] := 0;
+    CMaxLen[ColIdx]:= 0;
+    Case XT Of
+      XT_DECIMAL, XT_NUMERIC :
+      Begin
+        CPrec[ColIdx]   := LenVal;
+        CScale[ColIdx]  := ScaleVal;
+        CMaxLen[ColIdx] := 5;
+      End;
+      XT_CHAR, XT_VARCHAR : CMaxLen[ColIdx] := LenVal;
+      XT_NCHAR, XT_NVARCHAR : CMaxLen[ColIdx] := LenVal * 2;
+    End;
+    CNullable[ColIdx] := Not HasNotNull;
+    Inc(ColIdx);
+  End;
+
+  If ColIdx = 0 Then
+  Begin
+    OutputLine('-- Erreur : CREATE TABLE sans colonne');
+    Exit;
+  End;
+
+  { --- Passe 2 : ecrire reellement (disque + memoire) --- }
+  ObjId := AllocateObjectId;
+  WriteSysSchObjRow(ObjId, 1, 0, SimpleName);
+  For I := 0 To ColIdx - 1 Do
+    WriteSysColParRow(ObjId, I + 1, CName[I], CXType[I], CMaxLen[I],
+                       CPrec[I], CScale[I], CNullable[I]);
+
+  If SysObjCount < MAX_SYS_OBJECTS Then
+  Begin
+    SysObjects[SysObjCount].ObjectId := ObjId;
+    SysObjects[SysObjCount].Name     := SimpleName;
+    SysObjects[SysObjCount].ObjType  := 'U ';
+    SysObjects[SysObjCount].ParentId := 0;
+    SysObjects[SysObjCount].SchemaId := 1;
+    SysObjects[SysObjCount].Status   := 0;
+    SysObjects[SysObjCount].Valid    := True;
+    Inc(SysObjCount);
+  End;
+
+  For I := 0 To ColIdx - 1 Do
+    If SysColCount < MAX_SYS_COLUMNS Then
+    Begin
+      SysColumns[SysColCount].ObjectId := ObjId;
+      SysColumns[SysColCount].ColumnId := I + 1;
+      SysColumns[SysColCount].ColNum   := I + 1;
+      SysColumns[SysColCount].Name     := CName[I];
+      SysColumns[SysColCount].XType    := CXType[I];
+      SysColumns[SysColCount].MaxLen   := CMaxLen[I];
+      SysColumns[SysColCount].Prec     := CPrec[I];
+      SysColumns[SysColCount].Scale    := CScale[I];
+      SysColumns[SysColCount].CollId   := 0;
+      SysColumns[SysColCount].Status   := Ord(CNullable[I]);
+      SysColumns[SysColCount].Nullable := CNullable[I];
+      SysColumns[SysColCount].Valid    := True;
+      Inc(SysColCount);
+    End;
+
+  CatalogValid := True;
+  OutputLine('Table ''' + SimpleName + ''' creee.');
+End;
+
+{ ============================================================
+  PERSISTANCE REELLE INSERT (2026-09-05) - Etape 5 du chantier
+  ============================================================
+  Portee disclosee : seul INSERT INTO table [(cols)] VALUES (...)
+  avec des LITTERAUX (jamais une expression non litterale, jamais
+  INSERT...SELECT/EXEC/DEFAULT VALUES) - voir le plan. Reutilise
+  QEEvalExpr (deja utilise par ExecPrint/ExecIf/ExecWhile pour
+  evaluer une expression hors contexte de ligne) plutot que de
+  reimplementer un evaluateur - ND_INT_LIT/ND_FLOAT_LIT/ND_STR_LIT/
+  ND_NULL_LIT et ND_UNARY('-') y sont deja geres correctement. }
+
+{ ---- Vrai seulement pour un litteral simple (int/float/string/
+  null) ou son oppose unaire (-5) - jamais un identificateur, un
+  appel de fonction ou une sous-requete (portee exclue). ---- }
+
+Function IsLiteralValueExpr(Node : Integer) : Boolean;
+Begin
+  IsLiteralValueExpr := False;
+  If (Node < 0) Or (Node >= ASTCount) Then Exit;
+  Case ASTPool[Node].Kind Of
+    ND_INT_LIT, ND_FLOAT_LIT, ND_STR_LIT, ND_NSTR_LIT, ND_NULL_LIT :
+      IsLiteralValueExpr := True;
+    ND_UNARY :
+      If ASTPool[Node].ChildCnt > 0 Then
+        IsLiteralValueExpr := IsLiteralValueExpr(ASTPool[Node].Children[0]);
+  End;
+End;
+
+{ ---- Adapte une valeur litterale evaluee (QEEvalExpr) a la colonne
+  cible : NULL toujours accepte (les contraintes NOT NULL ne sont
+  PAS appliquees dans cette portee, voir le plan) ; sinon la
+  categorie (SqlTypeCategory - deja utilisee par DecodeSqlValue)
+  doit correspondre, avec un seul elargissement implicite admis
+  (entier litteral vers colonne DECIMAL/FLOAT/REAL, cas courant) -
+  jamais une chaine vers une colonne numerique ou l inverse. ---- }
+
+Function CoerceLiteralForColumn(Const Src : TSqlValue; TargetXT : Byte;
+                                 Var Dst : TSqlValue) : Boolean;
+Var
+  TargetCat : Byte;
+Begin
+  Dst := Src;
+  Dst.XType := TargetXT;
+  CoerceLiteralForColumn := True;
+  If Src.IsNull Then Exit;
+
+  TargetCat := SqlTypeCategory(TargetXT);
+  If TargetCat = Src.Category Then Exit;
+  If (TargetCat = SQLCAT_DECIMAL) And (Src.Category = SQLCAT_INTEGER) Then
+  Begin
+    Dst.FloatVal := Src.IntVal;
+    Exit;
+  End;
+  CoerceLiteralForColumn := False;
+End;
+
+{ ---- ExecInsertStmt ---------------------------------------------- }
+{ Les enfants de ND_INSERT_STMT sont a des POSITIONS VARIABLES (TOP/
+  hint/liste de colonnes/OUTPUT sont tous optionnels, voir
+  ParseInsertStmt) - on les retrouve donc par KIND, jamais par index
+  fixe. ---- }
+
+Procedure ExecInsertStmt(Root : Integer);
+Var
+  I, J, K, K2   : Integer;
+  TblNode, ColListNode, ValsNode, RowNode : Integer;
+  HasValsClause : Boolean;
+  SimpleName    : TCatName;
+  ObjId         : LongInt;
+  TblIdx        : Integer;
+  NumTblCols    : Integer;
+  TblColIdx     : Array[0..MAX_QE_COLS - 1] Of Integer;
+  { SuppliedColSysIdx[i] = index dans SysColumns de la colonne visee
+    par la i-eme VALEUR fournie par l utilisateur (ordre de la liste
+    explicite, ou ordre physique de la table si aucune liste). }
+  SuppliedCnt      : Integer;
+  SuppliedColSysIdx: Array[0..MAX_QE_COLS - 1] Of Integer;
+  ValIdx        : Integer;
+  ColInfos      : TEncColArr;
+  Vals          : TEncValArr;
+  RowBuf        : TMdfPageBuf;
+  RowLen        : Word;
+  PageNum       : LongInt;
+  DummyRow      : TQERow;
+  DummyRes      : TQEResultPtr;
+  SrcVal, CoercedVal : TSqlValue;
+  RowsInserted  : Integer;
+  ColName       : TCatName;
+  Found         : Boolean;
+Begin
+  TblNode := -1; ColListNode := -1; ValsNode := -1;
+  HasValsClause := False;
+  For I := 0 To ASTPool[Root].ChildCnt - 1 Do
+  Begin
+    K := ASTPool[Root].Children[I];
+    If K < 0 Then Continue;
+    Case ASTPool[K].Kind Of
+      ND_TABLE_REF : TblNode := K;
+      ND_COL_LIST  : ColListNode := K;
+      ND_VALUES_CLAUSE :
+      Begin
+        ValsNode := K;
+        HasValsClause := True;
+      End;
+      ND_DEFAULT_VALUES, ND_SELECT_STMT, ND_EXEC_INSERT :
+      Begin
+        OutputLine('-- Erreur : seul INSERT INTO ... VALUES (...) est ' +
+                   'supporte (persistance reelle - voir la portee disclosee)');
+        Exit;
+      End;
+    End;
+  End;
+
+  If TblNode < 0 Then Exit;
+  If Not HasValsClause Then
+  Begin
+    OutputLine('-- Erreur : clause VALUES requise (persistance reelle)');
+    Exit;
+  End;
+
+  SimpleName := SimpleObjectName(ASTPool[TblNode].Text);
+  TblIdx := QEFindTable(SimpleName);
+  If TblIdx < 0 Then
+  Begin
+    OutputLine('-- Erreur : table ''' + SimpleName + ''' introuvable');
+    Exit;
+  End;
+  ObjId := SysObjects[TblIdx].ObjectId;
+
+  { Colonnes de la table dans l ordre PHYSIQUE - meme ordre que
+    QEGetTableCols/QEDecodeRow (ordre d insertion dans SysColumns,
+    jamais trie par ColNum - voir la note de ce chantier a ce sujet). }
+  NumTblCols := 0;
+  For I := 0 To SysColCount - 1 Do
+    If SysColumns[I].Valid And (SysColumns[I].ObjectId = ObjId) And
+       (NumTblCols < MAX_QE_COLS) Then
+    Begin
+      TblColIdx[NumTblCols] := I;
+      Inc(NumTblCols);
+    End;
+
+  If NumTblCols = 0 Then
+  Begin
+    OutputLine('-- Erreur : aucune colonne trouvee pour la table ''' +
+               SimpleName + '''');
+    Exit;
+  End;
+
+  { Colonnes VISEES PAR CHAQUE VALEUR fournie, dans l ordre de la
+    liste explicite si presente, sinon l ordre physique complet de
+    la table. NOTE IMPORTANTE : la ligne physique elle-meme sera
+    TOUJOURS construite plus bas dans l ordre PHYSIQUE COMPLET de la
+    table (NumTblCols colonnes, jamais seulement celles fournies) -
+    une colonne omise de la liste devient NULL - parce que
+    QEDecodeRow (code de lecture EXISTANT, INCHANGE) decode TOUJOURS
+    une ligne selon l ordre physique DECLARE de la table, jamais
+    selon l ordre d une liste INSERT particuliere. Construire la
+    ligne dans l ordre de la liste romprait donc le decodage des
+    qu une liste explicite reordonne ou omet des colonnes. }
+  SuppliedCnt := 0;
+  If ColListNode >= 0 Then
+  Begin
+    For I := 0 To ASTPool[ColListNode].ChildCnt - 1 Do
+    Begin
+      If SuppliedCnt >= MAX_QE_COLS Then Break;
+      ColName := ASTPool[ASTPool[ColListNode].Children[I]].Text;
+      Found := False;
+      For J := 0 To NumTblCols - 1 Do
+        If StrUpperCase(SysColumns[TblColIdx[J]].Name) =
+           StrUpperCase(ColName) Then
+        Begin
+          SuppliedColSysIdx[SuppliedCnt] := TblColIdx[J];
+          Inc(SuppliedCnt);
+          Found := True;
+          Break;
+        End;
+      If Not Found Then
+      Begin
+        OutputLine('-- Erreur : colonne ''' + ColName +
+                   ''' introuvable dans ''' + SimpleName + '''');
+        Exit;
+      End;
+    End;
+  End
+  Else
+    For J := 0 To NumTblCols - 1 Do
+    Begin
+      SuppliedColSysIdx[SuppliedCnt] := TblColIdx[J];
+      Inc(SuppliedCnt);
+    End;
+
+  FillChar(DummyRow, SizeOf(DummyRow), 0);
+  New(DummyRes);
+  FillChar(DummyRes^, SizeOf(DummyRes^), 0);
+
+  RowsInserted := 0;
+  For I := 0 To ASTPool[ValsNode].ChildCnt - 1 Do
+  Begin
+    RowNode := ASTPool[ValsNode].Children[I];
+    If ASTPool[RowNode].Kind <> ND_VALUES_ROW Then Continue;
+
+    If ASTPool[RowNode].ChildCnt <> SuppliedCnt Then
+    Begin
+      OutputLine('-- Erreur : nombre de valeurs (' +
+                 IntToStr(ASTPool[RowNode].ChildCnt) +
+                 ') different du nombre de colonnes (' +
+                 IntToStr(SuppliedCnt) + ')');
+      Dispose(DummyRes);
+      Exit;
+    End;
+
+    FillChar(ColInfos, SizeOf(ColInfos), 0);
+    FillChar(Vals, SizeOf(Vals), 0);
+
+    { Construire la ligne dans l ordre PHYSIQUE COMPLET de la table -
+      voir la note ci-dessus. }
+    For J := 0 To NumTblCols - 1 Do
+    Begin
+      ColInfos[J].XType  := SysColumns[TblColIdx[J]].XType;
+      ColInfos[J].MaxLen := SysColumns[TblColIdx[J]].MaxLen;
+      ColInfos[J].Prec   := SysColumns[TblColIdx[J]].Prec;
+      ColInfos[J].Scale  := SysColumns[TblColIdx[J]].Scale;
+
+      { Cette colonne de la table apparait-elle parmi les valeurs
+        fournies, et a quelle position ? }
+      ValIdx := -1;
+      For K2 := 0 To SuppliedCnt - 1 Do
+        If SuppliedColSysIdx[K2] = TblColIdx[J] Then
+        Begin
+          ValIdx := K2;
+          Break;
+        End;
+
+      If ValIdx < 0 Then
+      Begin
+        { Colonne omise de la liste explicite -> NULL (aucune valeur
+          DEFAULT de contrainte appliquee - portee exclue disclosee). }
+        InitSqlValue(Vals[J]);
+        Vals[J].IsNull := True;
+        Vals[J].XType  := ColInfos[J].XType;
+        Vals[J].Valid  := True;
+        Continue;
+      End;
+
+      K := ASTPool[RowNode].Children[ValIdx];
+      If ASTPool[K].Kind = ND_DEFAULT_LIT Then
+      Begin
+        OutputLine('-- Erreur : DEFAULT non supporte dans VALUES ' +
+                   '(persistance reelle - voir la portee disclosee)');
+        Dispose(DummyRes);
+        Exit;
+      End;
+      If Not IsLiteralValueExpr(K) Then
+      Begin
+        OutputLine('-- Erreur : seules les valeurs litterales sont ' +
+                   'supportees dans VALUES (persistance reelle - voir ' +
+                   'la portee disclosee)');
+        Dispose(DummyRes);
+        Exit;
+      End;
+
+      SrcVal := QEEvalExpr(K, DummyRow, DummyRes^);
+      If Not CoerceLiteralForColumn(SrcVal, ColInfos[J].XType, CoercedVal) Then
+      Begin
+        OutputLine('-- Erreur : valeur incompatible avec le type de la ' +
+                   'colonne ''' + SysColumns[TblColIdx[J]].Name + '''');
+        Dispose(DummyRes);
+        Exit;
+      End;
+      Vals[J] := CoercedVal;
+    End;
+
+    BuildDataRow(ColInfos, Vals, NumTblCols, RowBuf, RowLen);
+    PageNum := FindOrAllocateDataPage(ObjId, RowLen);
+    If (PageNum < 0) Or (Not AppendRowToPage(PageNum, RowBuf, RowLen)) Then
+    Begin
+      OutputLine('-- Erreur : echec d ecriture de la ligne sur disque');
+      Dispose(DummyRes);
+      Exit;
+    End;
+    Inc(RowsInserted);
+  End;
+
+  Dispose(DummyRes);
+  If Not ShowNoCount Then
+    OutputLine('(' + IntToStr(RowsInserted) + ' row(s) affected)');
+End;
+
 { ---- ExecStatement ---------------------------------------------- }
 { Execute recursivement une instruction de controle de flux.          }
 
@@ -23112,6 +24341,8 @@ Begin
     ND_SET_VAR      : ExecSetVar(Node);
     ND_DECLARE_TABLE: ExecDeclareTable(Node);
     ND_SELECT_STMT  : QEExecSelect(Node);
+    ND_CREATE_TABLE : ExecCreateTable(Node);
+    ND_INSERT_STMT  : ExecInsertStmt(Node);
   Else
     { Pour les autres types, ne rien faire pour l instant }
   End;
@@ -23412,6 +24643,11 @@ Begin
         OutputLine('Changed database context to ''' +
                    ASTPool[Root].Text + '''.');
     End;
+    { ---- Persistance reelle CREATE TABLE/INSERT (2026-09-05, Etapes 4-5) ---- }
+    If ASTPool[Root].Kind = ND_CREATE_TABLE Then
+      ExecCreateTable(Root);
+    If ASTPool[Root].Kind = ND_INSERT_STMT Then
+      ExecInsertStmt(Root);
   End; { If ParseOk And (Root >= 0) }
   End; { While ParseOk }
 End;
