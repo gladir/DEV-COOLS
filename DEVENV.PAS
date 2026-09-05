@@ -78352,6 +78352,18 @@ Begin
    Else If GridFormatForExtension(Ext) <> GTF_NONE Then Begin
     CreateGridWindow(FullPath);
     NCActionOpenAssociated := True;
+   End
+   { Entree sur une solution .sln (2026-09-05, demande explicite de        }
+   { l'utilisateur) : ouvre l'Explorateur de solutions, meme comportement  }
+   { exact que TermCmd_DEVENV ("DEVENV solution.sln" au clavier dans ce    }
+   { meme Terminal) et que le double-clic dans la boite "Ouvrir un         }
+   { fichier" (HandleOpenFileConfirmed) - jamais une troisieme logique      }
+   { separee pour ouvrir un .sln. }
+   Else If Ext = 'SLN' Then Begin
+    StartPage.Visible := False;
+    FullRepaintNeeded := True;
+    OpenSolutionFile(FullPath);
+    NCActionOpenAssociated := True;
    End;
   End;
 End;
@@ -79399,6 +79411,10 @@ Begin
        { pour ce sous-ensemble - restent hors-cadre pour l instant. }
    $68: NCBuildChangeDriveList(0);  { Alt+F1 : lettre de disque, panneau gauche }
    $69: NCBuildChangeDriveList(1);  { Alt+F2 : lettre de disque, panneau droite }
+   132: NCEnterDir(Side, '..'); { Ctrl+PgUp : remonter au repertoire parent -   }
+       { demande explicite de l'utilisateur, 2026-09-05 - meme mecanisme que   }
+       { le Retour arriere sur ligne de commande vide (voir plus bas dans      }
+       { cette procedure) ; NCParentPath gere deja la racine sans boucler.     }
   End;
   TP.NeedRepaint := True;
   FullRepaintNeeded := True;
