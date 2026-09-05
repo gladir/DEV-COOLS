@@ -11851,6 +11851,9 @@ Procedure CloseDialog(Var Dlg: TDialog); Forward;
 Procedure InitInputBox(Var IB: TInputBox; T, Prompt, Default: String); Forward;
 Function GetInputBoxText(Var IB: TInputBox): String; Forward;
 Procedure DrawInputBox(Var IB: TInputBox); Forward;
+{ Etape 5 (Explorateur d objets SQL Server) : "Nouvelle requete" a besoin
+  de trouver un nom SQLQueryN.sql pas deja ouvert, definie plus bas. }
+Function FindWindowByFileName(AFileName: String): Integer; Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
@@ -15258,6 +15261,40 @@ Begin
  End;
 End;
 
+{ --- "Nouvelle requete" (Etape 5) : cree un nouvel onglet editeur de texte
+  VIDE nomme SQLQueryN.sql (N = premier numero pas deja utilise par un
+  onglet ouvert, verifie via FindWindowByFileName - evite les titres
+  d onglet en double si l utilisateur clique plusieurs fois de suite) -
+  meme mecanisme exact que tout autre onglet .sql (CreateEditorWindow),
+  qui herite donc gratuitement de HighlightSQLLine (IsSQL := Ext = '.SQL'
+  Or ..., aucune logique de coloration syntaxique specifique a ecrire).
+  **Portee V1 explicitement limitee** (annoncee dans le plan, pas
+  silencieuse) : pas de bouton "Executer" integre qui invoquerait
+  SQLCMD.EXE et afficherait un jeu de resultats depuis cet onglet -
+  l utilisateur peut deja lancer sqlcmd -i fichier.sql depuis un terminal
+  existant de cet IDE. L execution integree (F5, resultats en grille) est
+  un chantier separe futur, a reprendre uniquement sur demande explicite -
+  meme discipline que l edition differee de l Etape 7 du chantier grille
+  precedent. --- }
+
+Function SqlNextQueryFileName: String;
+Var
+ N: Integer;
+ Candidate: String;
+Begin
+ N := 1;
+ Repeat
+  Candidate := 'SQLQuery' + IntToStr(N) + '.sql';
+  Inc(N);
+ Until FindWindowByFileName(Candidate) < 0;
+ SqlNextQueryFileName := Candidate;
+End;
+
+Procedure StartSqlNewQuery;
+Begin
+ CreateEditorWindow(SqlNextQueryFileName);
+End;
+
 { --- Execute l action du bouton BtnIdx (0=Actualiser, 1=Nouvelle
   connexion, 2=Nouvelle requete). "Actualiser" (Etape 3) reconstruit tout
   le squelette depuis zero (meme discipline que le bouton "Actualiser" de
@@ -15267,17 +15304,17 @@ End;
   "Nouvelle connexion" (Etape 4) ouvre la boite de saisie de chemin (voir
   StartSqlNewConnection/ApplySqlNewConnection ci-dessus - le dispatch de
   fermeture est cable pres de RenameFileDlg dans la boucle d evenements
-  principale). BtnIdx 2 (Nouvelle requete) reste un point d ancrage vide,
-  complete a l Etape 5 du plan - jamais un Case sans branche reelle (piege
-  de compilation deja rencontre dans le chantier grille). --- }
+  principale). "Nouvelle requete" (Etape 5, ci-dessus) ouvre un nouvel
+  onglet .sql vide. --- }
 
 Procedure ExecuteSqlToolbarButton(Var ST: TSqlExplorerState; BtnIdx: Integer);
 Begin
  If BtnIdx = 0 Then
   BuildSqlExplorerSkeleton(ST)
  Else If BtnIdx = 1 Then
-  StartSqlNewConnection;
- { BtnIdx 2 (Nouvelle requete) : Etape 5. }
+  StartSqlNewConnection
+ Else If BtnIdx = 2 Then
+  StartSqlNewQuery;
 End;
 
 { --- Gere clic/double-clic (depli/repli, selection, barre d outils) et
