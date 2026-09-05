@@ -1405,6 +1405,23 @@ Const
  SPLITTER_WIDTH        = 4;        { largeur du splitter vertical   }
  MAX_EXPLORER_NODES    = 512;      { nombre max de noeuds           }
  MAX_SQL_NODES         = 512;      { Explorateur d objets SQL Server (meme echelle) }
+ { Grille d apercu de donnees (2026-09-05, demande explicite de           }
+ { l utilisateur - clic sur une table affiche ses donnees a droite, dans   }
+ { le meme onglet). Lecture seule, apercu limite (SELECT TOP 100 - jamais }
+ { la table entiere), meme portee que les connexions fichier .DBF/.CSV de }
+ { ce chantier. }
+ SQL_GRID_MAX_COLS     = 64;       { meme limite que MAX_QE_COLS cote      }
+                                    { SQLCMD.PAS - aucun SELECT ne peut de  }
+                                    { toute facon renvoyer plus de colonnes.}
+ SQL_GRID_MAX_ROWS     = 100;
+ SQL_GRID_SB_W         = 14;       { meme largeur que SQL_SB_W/EXTMGR_SB_W }
+ SQL_GRID_COL_PAD      = 8;        { meme valeur que GRID_COL_PAD (defini  }
+                                    { bien plus bas dans ce fichier) - une  }
+                                    { constante separee evite une reference}
+                                    { en avant, GRID_COL_PAD n etant pas    }
+                                    { encore visible a ce point du fichier. }
+ SQL_GRID_ROW_H        = 16;       { meme valeur que GRID_ROW_H            }
+ SQL_GRID_HEADER_H     = 18;       { meme valeur que GRID_HEADER_H         }
  { EXTENSION (2026-08-08) : barre d outils + champ de recherche live,   }
  { comme dans Visual Studio (sous le titre "Explorateur de solutions",     }
  { avant l arbre). }
@@ -6534,6 +6551,14 @@ Type
   ObjName       : String[127]; { nom de table pour un noeud Colonnes/Table }
  End;
 
+ { Une ligne de l apercu de donnees (2026-09-05) - valeurs deja formatees  }
+ { en texte (sortie SQLCMD -s , -W, deja lisible telle quelle), jamais un  }
+ { TSqlValue typed - cet apercu est strictement en lecture seule, aucune   }
+ { conversion vers un type SQL n est necessaire. }
+ TSqlGridRow = Record
+  Vals: Array[0..SQL_GRID_MAX_COLS - 1] Of String[127];
+ End;
+
  TSqlExplorerState = Record
   Nodes      : Array[0..MAX_SQL_NODES - 1] Of TSqlExplorerNode;
   NodeCount  : Integer;
@@ -6542,6 +6567,16 @@ Type
   X, Y       : Integer;
   Width, Height: Integer;
   NeedRepaint: Boolean;
+  { --- Apercu de donnees (clic sur une table, 2026-09-05) --- }
+  GridVisible  : Boolean;
+  GridTableName: String[127];
+  GridColNames : Array[0..SQL_GRID_MAX_COLS - 1] Of String[63];
+  GridColWidths: Array[0..SQL_GRID_MAX_COLS - 1] Of Integer;
+  GridColCount : Integer;
+  GridRows     : Array[0..SQL_GRID_MAX_ROWS - 1] Of TSqlGridRow;
+  GridRowCount : Integer;
+  GridScrollRow: Integer;
+  GridErrorMsg : String[127];
  End;
 
  { INT 21h/AX=714Eh-714Fh (Windows 95, Stage 5) - un resultat de recherche }
@@ -14879,6 +14914,129 @@ Begin
  If Added = 0 Then ST.Nodes[NodeIdx].HasChildren := False;
 End;
 
+{ --- Decoupe une ligne separee par des virgules (sortie SQLCMD -s , -W,
+  format confirme par test direct : jamais de guillemets/echappement -
+  portee lecture seule de cet apercu, une valeur contenant elle-meme une
+  virgule resterait mal decoupee, limitation disclosee) - renvoie le champ
+  d index Idx (base 0), '' si hors limites. --- }
+
+Function SqlGridSplitField(Const S: String; Idx: Integer): String;
+Var
+ P, Start, Cur: Integer;
+Begin
+ SqlGridSplitField := '';
+ Start := 1;
+ Cur := 0;
+ P := 1;
+ While P <= Length(S) + 1 Do Begin
+  If (P > Length(S)) Or (S[P] = ',') Then Begin
+   If Cur = Idx Then Begin
+    SqlGridSplitField := Copy(S, Start, P - Start);
+    Exit;
+   End;
+   Inc(Cur);
+   Start := P + 1;
+  End;
+  Inc(P);
+ End;
+End;
+
+Function SqlGridCountFields(Const S: String): Integer;
+Var
+ I, Cnt: Integer;
+Begin
+ If S = '' Then Begin SqlGridCountFields := 0; Exit; End;
+ Cnt := 1;
+ For I := 1 To Length(S) Do
+  If S[I] = ',' Then Inc(Cnt);
+ SqlGridCountFields := Cnt;
+End;
+
+{ --- Noeud table -> charge un APERCU en lecture seule de ses donnees
+  reelles (clic sur le nom de la table, 2026-09-05, demande explicite de
+  l utilisateur : "je devrais pouvoir voir a droite dans le meme onglet,
+  une grille affichant les donnees") - invoque REELLEMENT
+  "SELECT TOP 100 * FROM <table>" via SQLCMD.EXE (deja execute en boite
+  noire, meme mecanisme que sp_tables/sp_columns), formate avec -s , -W
+  (confirme par test direct : ligne d en-tete, ligne de tirets, lignes de
+  donnees, ligne vide, puis "(N ligne(s) affectee(s))" - jamais le format
+  a espacement fixe code en dur de sp_tables/sp_columns, QEExecSelect
+  utilise le vrai formateur general QEFormatResult qui respecte -s/-W).
+  Aucune conversion de type : les valeurs sont deja du texte lisible. --- }
+
+Procedure SqlLoadTableGrid(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Var
+ TableName, Cmd, MdfPath, Ln: String;
+ Buf: TCmdOutputLines;
+ Cnt, I, J, W: Integer;
+Begin
+ ST.GridVisible   := True;
+ ST.GridTableName := ST.Nodes[NodeIdx].Caption;
+ ST.GridColCount  := 0;
+ ST.GridRowCount  := 0;
+ ST.GridScrollRow := 0;
+ ST.GridErrorMsg  := '';
+
+ TableName := ST.Nodes[NodeIdx].Caption;
+ MdfPath := SqlNodeMdfPath(ST, NodeIdx);
+ If Pos('"', TableName) > 0 Then Begin
+  ST.GridErrorMsg := 'Nom de table invalide.';
+  Exit;
+ End;
+ If Not FileExists(MdfPath) Then Begin
+  ST.GridErrorMsg := 'Fichier introuvable - ' + MdfPath;
+  Exit;
+ End;
+
+ Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath +
+  '" -q "SELECT TOP ' + IntToStr(SQL_GRID_MAX_ROWS) + ' * FROM ' +
+  TableName + '" -s , -W';
+ If OptionsDlg.Data.SqlExplorerShowDiag Then
+  SqlExplorerDiagDump('SqlLoadTableGrid', Cmd, MdfPath);
+ RunCommandCaptureOutput(Cmd, Buf, Cnt);
+ If OptionsDlg.Data.SqlExplorerShowDiag Then
+  SqlExplorerDiagDumpOutput(Buf, Cnt);
+
+ If Cnt < 2 Then Begin
+  ST.GridErrorMsg := 'Aucune donnee (reponse vide de SQLCMD.EXE).';
+  Exit;
+ End;
+
+ { Ligne 0 = en-tetes, ligne 1 = tirets de separation, lignes suivantes = }
+ { donnees jusqu a une ligne vide ou "(N ligne(s) affectee(s))". }
+ ST.GridColCount := SqlGridCountFields(Buf[0]);
+ If ST.GridColCount > SQL_GRID_MAX_COLS Then ST.GridColCount := SQL_GRID_MAX_COLS;
+ For I := 0 To ST.GridColCount - 1 Do
+  ST.GridColNames[I] := SqlGridSplitField(Buf[0], I);
+
+ For I := 2 To Cnt - 1 Do Begin
+  Ln := Buf[I];
+  If TrimStr(Ln) = '' Then Break;
+  If Copy(TrimStr(Ln), 1, 1) = '(' Then Break;
+  If ST.GridRowCount >= SQL_GRID_MAX_ROWS Then Break;
+  For J := 0 To ST.GridColCount - 1 Do
+   ST.GridRows[ST.GridRowCount].Vals[J] := SqlGridSplitField(Ln, J);
+  Inc(ST.GridRowCount);
+ End;
+
+ { Largeur de colonne d apres le contenu (en-tete ET donnees) - meme       }
+ { convention de troncature-avec-ellipse que la grille DBF/CSV existante   }
+ { (GridTruncateForWidth), bornes raisonnables pour cet apercu compact. }
+ For I := 0 To ST.GridColCount - 1 Do Begin
+  W := Length(ST.GridColNames[I]);
+  For J := 0 To ST.GridRowCount - 1 Do
+   If Length(ST.GridRows[J].Vals[I]) > W Then
+    W := Length(ST.GridRows[J].Vals[I]);
+  W := W * TERM_CHAR_WIDTH + SQL_GRID_COL_PAD;
+  If W < 60 Then W := 60;
+  If W > 200 Then W := 200;
+  ST.GridColWidths[I] := W;
+ End;
+
+ If ST.GridRowCount = 0 Then
+  ST.GridErrorMsg := 'Table vide.';
+End;
+
 { --- Point d entree unique du chargement paresseux, appele par
   SqlExpandNode avant de deplier - dispatch par TSqlNodeKind, jamais
   appele deux fois pour le meme noeud (ChildrenLoaded). --- }
@@ -15172,20 +15330,199 @@ Begin
  SqlTreeTop := ST.Y + EXPLORER_TOOLBAR_HEIGHT;
 End;
 
+{ --- Largeur de la portion ARBRE du panneau - toute la largeur si aucun
+  apercu de donnees n est affiche, sinon ~40% (avec des bornes minimales
+  pour l arbre ET pour la grille) des qu un clic sur une table a demande
+  l apercu (2026-09-05, demande explicite de l utilisateur). Fonction
+  UNIQUE partagee par le dessin ET le test de clic, meme discipline que
+  SqlTreeTop - jamais deux formules de geometrie qui pourraient diverger. --- }
+
+Function SqlTreeWidth(Var ST: TSqlExplorerState): Integer;
+Var
+ W: Integer;
+Begin
+ If Not ST.GridVisible Then Begin
+  SqlTreeWidth := ST.Width;
+  Exit;
+ End;
+ W := (ST.Width * 2) Div 5;
+ If W > ST.Width - 200 Then W := ST.Width - 200;
+ If W < 180 Then W := 180;
+ If W > ST.Width Then W := ST.Width;
+ SqlTreeWidth := W;
+End;
+
+{ --- Tronque une valeur pour l apercu de donnees - meme convention
+  exacte (troncature avec ellipse) que GridTruncateForWidth de la grille
+  DBF/CSV existante, mais fonction INDEPENDANTE (pas de dependance vers
+  cette autre partie du fichier, meme discipline que GridEditors[] etant
+  une structure parallele independante plutot qu une reutilisation
+  forcee de HexEditors[]). --- }
+
+Function SqlGridTruncate(Const S: String; PixelWidth: Integer): String;
+Var
+ MaxChars: Integer;
+Begin
+ MaxChars := (PixelWidth - SQL_GRID_COL_PAD) Div TERM_CHAR_WIDTH;
+ If MaxChars < 1 Then MaxChars := 1;
+ If Length(S) <= MaxChars Then
+  SqlGridTruncate := S
+ Else If MaxChars <= 3 Then
+  SqlGridTruncate := Copy(S, 1, MaxChars)
+ Else
+  SqlGridTruncate := Copy(S, 1, MaxChars - 3) + '...';
+End;
+
+{ --- Dessine l apercu de donnees (clic sur une table) dans le rectangle
+  (GX,GY,GW,GH) fourni par DrawSqlExplorer - en-tetes de colonnes, lignes
+  de donnees, barre de defilement verticale (meme motif exact que celle
+  de l arbre juste a cote). Lecture seule : aucune selection de cellule,
+  aucune edition, aucun defilement horizontal (les colonnes trop larges
+  sont tronquees avec ellipse) - portee V1 disclosee, meme discipline que
+  les connexions fichier .DBF/.CSV de ce chantier. --- }
+
+Procedure DrawSqlGrid(Var ST: TSqlExplorerState; GX, GY, GW, GH: Integer);
+Var
+ ColX, RowY, I, J, R, VisRows, MaxScroll, ListW: Integer;
+ SBX1, SBX2, MidX, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop: Integer;
+ CellStr: String;
+ ColBound: Array[0..SQL_GRID_MAX_COLS] Of Integer;
+ VisColCount, HeaderTop, GridBottomY, K: Integer;
+Begin
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(GX, GY, GX + GW - 1, GY + GH - 1);
+
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(GX, GY, GX + GW - 1, GY + EXPLORER_TOOLBAR_HEIGHT - 1);
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(GX + 4, GY + 4, 'Donnees : ' + ST.GridTableName);
+
+ RowY := GY + EXPLORER_TOOLBAR_HEIGHT;
+
+ If ST.GridErrorMsg <> '' Then Begin
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(GX + 4, RowY + 4, ST.GridErrorMsg);
+  Exit;
+ End;
+ If ST.GridColCount <= 0 Then Exit;
+
+ ListW := GW - SQL_GRID_SB_W;
+ If ListW < 20 Then ListW := GW;
+
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(GX, RowY, GX + ListW - 1, RowY + SQL_GRID_HEADER_H - 1);
+ SetColor(CLR_MENU_TEXT);
+ HeaderTop := RowY;
+ ColX := GX;
+ VisColCount := 0;
+ For I := 0 To ST.GridColCount - 1 Do Begin
+  If ColX >= GX + ListW Then Break;
+  ColBound[VisColCount] := ColX;
+  OutTextXY(ColX + SQL_GRID_COL_PAD Div 2, RowY,
+   SqlGridTruncate(ST.GridColNames[I], ST.GridColWidths[I]));
+  ColX := ColX + ST.GridColWidths[I];
+  Inc(VisColCount);
+ End;
+ If ColX > GX + ListW Then ColX := GX + ListW;
+ ColBound[VisColCount] := ColX;
+ SetColor(CLR_BORDER);
+ Line(GX, RowY + SQL_GRID_HEADER_H, GX + GW - 1, RowY + SQL_GRID_HEADER_H);
+
+ VisRows := (GY + GH - (RowY + SQL_GRID_HEADER_H)) Div SQL_GRID_ROW_H;
+ If VisRows < 1 Then VisRows := 1;
+ MaxScroll := ST.GridRowCount - VisRows;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If ST.GridScrollRow > MaxScroll Then ST.GridScrollRow := MaxScroll;
+ If ST.GridScrollRow < 0 Then ST.GridScrollRow := 0;
+
+ RowY := RowY + SQL_GRID_HEADER_H;
+ GridBottomY := RowY;
+ For I := 0 To VisRows - 1 Do Begin
+  R := ST.GridScrollRow + I;
+  If R >= ST.GridRowCount Then Break;
+  ColX := GX;
+  SetColor(CLR_EDITOR_TEXT);
+  For J := 0 To ST.GridColCount - 1 Do Begin
+   If ColX >= GX + ListW Then Break;
+   CellStr := SqlGridTruncate(ST.GridRows[R].Vals[J], ST.GridColWidths[J]);
+   OutTextXY(ColX + SQL_GRID_COL_PAD Div 2, RowY, CellStr);
+   ColX := ColX + ST.GridColWidths[J];
+  End;
+  RowY := RowY + SQL_GRID_ROW_H;
+  { --- Lignes de separation entre les cellules de la grille        }
+  { (2026-09-05, demande explicite de l utilisateur) - un trait fin }
+  { CLR_BORDER sous chaque ligne, meme couleur que le separateur    }
+  { sous l en-tete juste au-dessus. --- }
+  SetColor(CLR_BORDER);
+  Line(GX, RowY - 1, ColBound[VisColCount] - 1, RowY - 1);
+  GridBottomY := RowY;
+ End;
+
+ { --- Lignes de separation verticales entre les colonnes, de haut de   }
+ { l en-tete jusqu au bas de la derniere ligne reellement dessinee      }
+ { (2026-09-05, demande explicite de l utilisateur). --- }
+ SetColor(CLR_BORDER);
+ For K := 0 To VisColCount Do
+  Line(ColBound[K], HeaderTop, ColBound[K], GridBottomY - 1);
+
+ If ST.GridRowCount = 0 Then Begin
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(GX + 4, GY + EXPLORER_TOOLBAR_HEIGHT + SQL_GRID_HEADER_H + 4,
+   'Aucune ligne.');
+ End;
+
+ { --- Barre de defilement verticale, meme motif exact que celle de       }
+ { l arbre juste a cote (fleches haut/bas + piste/pouce). --- }
+ SBX1 := GX + GW - SQL_GRID_SB_W;
+ SBX2 := GX + GW - 1;
+ MidX := (SBX1 + SBX2) Div 2;
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(SBX1, GY, SBX2, GY + SQL_GRID_SB_W - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, GY, SBX2, GY + SQL_GRID_SB_W - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, GY + 9, MidX, GY + 4);
+ Line(MidX, GY + 4, SBX2 - 3, GY + 9);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(SBX1, GY + GH - SQL_GRID_SB_W, SBX2, GY + GH - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, GY + GH - SQL_GRID_SB_W, SBX2, GY + GH - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, GY + GH - 9, MidX, GY + GH - 4);
+ Line(MidX, GY + GH - 4, SBX2 - 3, GY + GH - 9);
+ TrackTop := GY + SQL_GRID_SB_W;
+ TrackBot := GY + GH - SQL_GRID_SB_W;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(SBX1, TrackTop, SBX2, TrackBot);
+ If MaxScroll > 0 Then Begin
+  TrackH := TrackBot - TrackTop;
+  ThumbH := (TrackH * VisRows) Div ST.GridRowCount;
+  If ThumbH < 12 Then ThumbH := 12;
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbTop := TrackTop + 1;
+  If TrackH - 2 - ThumbH > 0 Then
+   ThumbTop := ThumbTop + (ST.GridScrollRow * (TrackH - 2 - ThumbH)) Div MaxScroll;
+  Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
+End;
+
 Procedure DrawSqlExplorer(Var ST: TSqlExplorerState);
 Var
- DrawY, I, BtnX, BtnY, TreeTop: Integer;
+ DrawY, I, BtnX, BtnY, TreeTop, TreeW: Integer;
  VisLines, TotalVis, MaxScroll, VisCount, ShownRows: Integer;
  SBX1, SBX2, MidX, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop: Integer;
 Begin
+ TreeW := SqlTreeWidth(ST);
  SetColor(CLR_EDITOR_BG);
  SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(ST.X, ST.Y, ST.X + ST.Width - 1, ST.Y + ST.Height - 1);
  { Etape 2 : mini barre d outils (Actualiser/Nouvelle connexion/Nouvelle   }
  { requete) - meme presentation exacte que la barre d outils de           }
- { l Explorateur de solution (DrawExplorer). }
+ { l Explorateur de solution (DrawExplorer). Bornee a TreeW (pas          }
+ { ST.Width) des que l apercu de donnees occupe la portion droite. }
  SetFillStyle(SolidFill, CLR_TOOLBAR);
- Bar(ST.X, ST.Y, ST.X + ST.Width - 1, ST.Y + EXPLORER_TOOLBAR_HEIGHT - 1);
+ Bar(ST.X, ST.Y, ST.X + TreeW - 1, ST.Y + EXPLORER_TOOLBAR_HEIGHT - 1);
  For I := 0 To SQL_TOOLBAR_BTNCOUNT - 1 Do Begin
   BtnX := ST.X + 2 + I * 22;
   BtnY := ST.Y + 2;
@@ -15223,9 +15560,11 @@ Begin
    Inc(VisCount);
    Inc(ShownRows);
   End;
- { --- Barre de defilement verticale (fleches haut/bas + curseur) --- }
- SBX1 := ST.X + ST.Width - SQL_SB_W;
- SBX2 := ST.X + ST.Width - 1;
+ { --- Barre de defilement verticale (fleches haut/bas + curseur) - bornee }
+ { a TreeW (pas ST.Width) des que l apercu de donnees occupe la portion   }
+ { droite. --- }
+ SBX1 := ST.X + TreeW - SQL_SB_W;
+ SBX2 := ST.X + TreeW - 1;
  MidX := (SBX1 + SBX2) Div 2;
  SetFillStyle(SolidFill, CLR_TOOLBAR);
  Bar(SBX1, TreeTop, SBX2, TreeTop + SQL_SB_W - 1);
@@ -15254,6 +15593,15 @@ Begin
   If TrackH - 2 - ThumbH > 0 Then
    ThumbTop := ThumbTop + (ST.ScrollTop * (TrackH - 2 - ThumbH)) Div MaxScroll;
   Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
+
+ { --- Apercu de donnees (clic sur une table, 2026-09-05) - trait de       }
+ { separation puis grille en lecture seule occupant tout le reste de la   }
+ { largeur du panneau. --- }
+ If ST.GridVisible Then Begin
+  SetColor(CLR_BORDER);
+  Line(ST.X + TreeW, ST.Y, ST.X + TreeW, ST.Y + ST.Height - 1);
+  DrawSqlGrid(ST, ST.X + TreeW + 1, ST.Y, ST.Width - TreeW - 1, ST.Height);
  End;
 End;
 
@@ -15365,13 +15713,41 @@ End;
 
 Procedure HandleSqlExplorerEvent(Var ST: TSqlExplorerState; Ev: TEvent);
 Var
- HitIdx, TriLeft, I, PrevVisible, NextVisible, BtnIdx, WIdx: Integer;
+ HitIdx, TriLeft, I, PrevVisible, NextVisible, BtnIdx, WIdx, TreeW: Integer;
  TreeTop, VisLines, TotalVis, MaxScroll, TrackTop, TrackBot: Integer;
+ GVisRows, GMaxScroll, GTrackTop, GTrackBot: Integer;
 Begin
  If ST.NodeCount <= 0 Then Exit;
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
   If (Ev.MouseX < ST.X) Or (Ev.MouseX >= ST.X + ST.Width) Or
      (Ev.MouseY < ST.Y) Or (Ev.MouseY >= ST.Y + ST.Height) Then Exit;
+  TreeW := SqlTreeWidth(ST);
+  { Apercu de donnees (clic sur une table, 2026-09-05) : un clic a droite  }
+  { du trait de separation appartient a la grille, jamais a l arbre - sa   }
+  { seule interaction cliquable est sa propre barre de defilement.        }
+  If ST.GridVisible And (Ev.MouseX >= ST.X + TreeW) Then Begin
+   If Ev.MouseX >= ST.X + ST.Width - SQL_GRID_SB_W Then Begin
+    GVisRows := (ST.Y + ST.Height - (ST.Y + EXPLORER_TOOLBAR_HEIGHT +
+     SQL_GRID_HEADER_H)) Div SQL_GRID_ROW_H;
+    If GVisRows < 1 Then GVisRows := 1;
+    GMaxScroll := ST.GridRowCount - GVisRows;
+    If GMaxScroll < 0 Then GMaxScroll := 0;
+    GTrackTop := ST.Y + SQL_GRID_SB_W;
+    GTrackBot := ST.Y + ST.Height - SQL_GRID_SB_W;
+    If Ev.MouseY < GTrackTop Then
+     Dec(ST.GridScrollRow)
+    Else If Ev.MouseY >= GTrackBot Then
+     Inc(ST.GridScrollRow)
+    Else If Ev.MouseY < (GTrackTop + GTrackBot) Div 2 Then
+     Dec(ST.GridScrollRow, GVisRows)
+    Else
+     Inc(ST.GridScrollRow, GVisRows);
+    If ST.GridScrollRow < 0 Then ST.GridScrollRow := 0;
+    If ST.GridScrollRow > GMaxScroll Then ST.GridScrollRow := GMaxScroll;
+    ST.NeedRepaint := True;
+   End;
+   Exit;
+  End;
   BtnIdx := SqlToolbarHitTest(ST, Ev.MouseX, Ev.MouseY);
   If BtnIdx >= 0 Then Begin
    ExecuteSqlToolbarButton(ST, BtnIdx);
@@ -15380,8 +15756,9 @@ Begin
   { Barre de defilement verticale (2026-09-05, demande explicite de        }
   { l utilisateur pour les arbres a beaucoup de connexions) - fleches       }
   { haut/bas + clic sur la piste = page precedente/suivante, meme motif    }
-  { exact que la barre de defilement de l Extension Manager. }
-  If Ev.MouseX >= ST.X + ST.Width - SQL_SB_W Then Begin
+  { exact que la barre de defilement de l Extension Manager. Bornee a      }
+  { TreeW (pas ST.Width) des que l apercu de donnees occupe la droite. }
+  If Ev.MouseX >= ST.X + TreeW - SQL_SB_W Then Begin
    TreeTop := SqlTreeTop(ST);
    VisLines := (ST.Y + ST.Height - TreeTop) Div EXPLORER_NODE_HEIGHT;
    If VisLines < 1 Then VisLines := 1;
@@ -15411,6 +15788,12 @@ Begin
    If (Ev.MouseX >= TriLeft) And (Ev.MouseX < TriLeft + 10) Then
     SqlToggleNode(ST, HitIdx);
   End;
+  { Apercu de donnees (clic sur le nom d une table, 2026-09-05, demande     }
+  { explicite de l utilisateur) : affiche a droite, dans le meme onglet,  }
+  { une grille en lecture seule des donnees de cette table (SELECT TOP     }
+  { 100, jamais la table entiere). }
+  If ST.Nodes[HitIdx].Kind = SQLNK_TABLE Then
+   SqlLoadTableGrid(ST, HitIdx);
   ST.NeedRepaint := True;
   Exit;
  End;

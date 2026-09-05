@@ -8105,7 +8105,15 @@ Begin
     End
     Else
     Begin
-      N := ParseSqlExpr;
+      { Pas de parentheses : la vraie grammaire T-SQL n autorise ici       }
+      { qu une constante simple, jamais une expression complete - sinon   }
+      { "TOP 100 * FROM Clients" se ferait avaler par ParseMulExpr comme  }
+      { "100 multiplie par (FROM...)", perdant totalement le FROM et le   }
+      { "*" de la liste de colonnes (bogue reel trouve le 2026-09-05 via  }
+      { l apercu de donnees de l Explorateur SQL). ParseUnary s arrete    }
+      { avant tout operateur binaire, laissant le "*" au parseur de liste }
+      { de colonnes qui l attend juste apres. }
+      N := ParseUnary;
       AddChild(T, N);
     End;
     If KwIs(KW_PERCENT) Then
@@ -8511,7 +8519,10 @@ Begin
     End
     Else
     Begin
-      E := ParseSqlExpr;
+      { Constante simple uniquement sans parentheses, meme raison que la  }
+      { branche SELECT (voir son commentaire) - ParseUnary, pas           }
+      { ParseSqlExpr. }
+      E := ParseUnary;
       AddChild(N, E);
     End;
     If KwIs(KW_PERCENT) Then
@@ -8714,7 +8725,10 @@ Begin
     End
     Else
     Begin
-      E := ParseSqlExpr;
+      { Constante simple uniquement sans parentheses, meme raison que la  }
+      { branche SELECT (voir son commentaire) - ParseUnary, pas           }
+      { ParseSqlExpr. }
+      E := ParseUnary;
       AddChild(N, E);
     End;
     If KwIs(KW_PERCENT) Then
@@ -8921,7 +8935,10 @@ Begin
     End
     Else
     Begin
-      E := ParseSqlExpr;
+      { Constante simple uniquement sans parentheses, meme raison que la  }
+      { branche SELECT (voir son commentaire) - ParseUnary, pas           }
+      { ParseSqlExpr. }
+      E := ParseUnary;
       AddChild(N, E);
     End;
     If KwIs(KW_PERCENT) Then
@@ -9115,7 +9132,10 @@ Begin
     End
     Else
     Begin
-      E := ParseSqlExpr;
+      { Constante simple uniquement sans parentheses, meme raison que la  }
+      { branche SELECT (voir son commentaire) - ParseUnary, pas           }
+      { ParseSqlExpr. }
+      E := ParseUnary;
       AddChild(N, E);
     End;
     AddChild(Mrg, N);
