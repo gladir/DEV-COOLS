@@ -1412,6 +1412,10 @@ Const
  EXPLORER_SEARCH_HEIGHT  = 20;     { hauteur du champ de recherche  }
  EXPLORER_TOOLBAR_BTNCOUNT = 3;    { Actualiser/Tout replier/Proprietes }
  SQL_TOOLBAR_BTNCOUNT      = 3;    { Actualiser/Nouvelle connexion/Nouvelle requete }
+ SQL_SB_W                  = 14;   { largeur barre de defilement verticale de }
+                                    { l Explorateur d objets SQL Server (2026-09-05,}
+                                    { demande explicite - meme largeur que        }
+                                    { EXTMGR_SB_W) }
  { EXTENSION (2026-08-08) : bande d onglets (Explorateur de solutions/    }
  { Modification Git/Team Explorer/PasChat) en bas du panneau. }
  EXPLORER_TABSTRIP_HEIGHT = 24;
@@ -3754,6 +3758,13 @@ Type
   InputText: String[255];           { texte saisi                    }
   InputCursor: Integer;             { position curseur               }
   Cancelled: Boolean;               { True si annule                 }
+  ScrollOfs: Integer;               { Etape 4 (Explorateur SQL Server) :
+                                      premier caractere visible - permet
+                                      au champ de defiler horizontalement
+                                      quand le texte depasse sa largeur
+                                      (demande explicite, comportement
+                                      Visual Studio), au lieu de deborder
+                                      silencieusement du cadre.          }
  End;
 
  { Type de nouveau projet }
@@ -6855,6 +6866,11 @@ Var
  { (Visible/Draw/HandleXxxEvent verifies chaque frame dans DispatchEvent)   }
  { que ProjPropDlg/AddRefDlg ci-dessus. }
  RenameFileDlg  : TInputBox;
+ { Etape 4 (Explorateur d objets SQL Server) : "Nouvelle connexion" - meme  }
+ { motif TInputBox/image-par-image que RenameFileDlg ci-dessus (ShowOpenDialog}
+ { n a elle non plus jamais eu de vraie boucle modale, voir la note        }
+ { ci-dessus - un chemin tape au clavier, pas un navigateur graphique). }
+ SqlNewConnDlg  : TInputBox;
  { True pendant que FileDlg est ouvert pour "Executer le VBScript..." du   }
  { menu contextuel de l editeur - redirige la confirmation de FileDlg vers  }
  { RunVBScriptMacroOnEditor au lieu du chemin normal HandleOpenFileConfirmed}
@@ -11820,6 +11836,21 @@ Procedure HandleSaveAll; Forward;
 Procedure HandleRunCommentTool; Forward;
 Procedure CreateExtManagerWindow; Forward;
 Procedure CreateSqlObjectExplorerWindow; Forward;
+{ Etape 3 (Explorateur d objets SQL Server) : SqlCmdEnsureMasterMdf a       }
+{ besoin de signaler un echec dans le panneau de sortie, dont la vraie      }
+{ implementation (~ligne 37000+) est definie plus bas que ce bloc. }
+Procedure AppendOutputEx(Var OP: TOutputPanel; AText: String;
+ Tab: Integer; Kind: TOutputLineKind;
+ AFile: String; ALine, ACol: Integer); Forward;
+{ Etape 4 (Explorateur d objets SQL Server) : "Nouvelle connexion" et le
+  double-clic sur une table .DBF/.CSV ont besoin de ces routines de
+  dialogue/grille, toutes definies plus bas que ce bloc. }
+Function FindGridWindowByFileName(FN: String): Integer; Forward;
+Procedure CreateGridWindow(AFileName: String); Forward;
+Procedure CloseDialog(Var Dlg: TDialog); Forward;
+Procedure InitInputBox(Var IB: TInputBox; T, Prompt, Default: String); Forward;
+Function GetInputBoxText(Var IB: TInputBox): String; Forward;
+Procedure DrawInputBox(Var IB: TInputBox); Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
@@ -14511,9 +14542,319 @@ Begin
  End;
 End;
 
+{ --- Compte les noeuds visibles (deplies) - utilise par la barre de       }
+{ defilement verticale (2026-09-05, demande explicite de l utilisateur     }
+{ pour les arbres a beaucoup de connexions), meme motif que                }
+{ ExtMgrCountVisible. --- }
+
+Function SqlCountVisibleNodes(Var ST: TSqlExplorerState): Integer;
+Var
+ I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To ST.NodeCount - 1 Do
+  If SqlNodeVisible(ST, I) Then Inc(Cnt);
+ SqlCountVisibleNodes := Cnt;
+End;
+
+{ ============================================================================
+  ETAPE 3 - CONNEXION (localdb) REELLE VIA SQLCMD.EXE
+  ============================================================================
+  SQLCMD.PAS/.EXE (programme compagnon reel de ce depot, jamais embarque
+  dans DEVENV.PAS) est invoque en boite noire via RunCommandCaptureOutput
+  (meme mecanisme que Git/PasChat) - jamais de lien direct au code de
+  SQLCMD.PAS. Portee reelle confirmee en lisant SQLCMD.PAS avant d ecrire
+  cette etape (voir le plan) : un fichier .mdf = une seule vraie base
+  ("master", CREATE DATABASE n a pas d execution reelle) ; seules
+  EXEC sp_tables et EXEC sp_columns <table> renvoient de vraies donnees
+  (toutes deux via des OutputLine a espacement fixe codees en dur dans
+  SQLCMD.PAS, PAS via le formateur general de resultats pilote par -s/-W -
+  d ou un analyseur dedie ci-dessous plutot que de compter sur -s pour
+  produire un CSV). --- }
+
+{ --- Chemin de SQLCMD.EXE : meme resolution a 3 niveaux (dossier de
+  DEVENV.EXE, puis WIN32\, puis nom nu en dernier recours) que les autres
+  executables compagnons de ce fichier (voir le transpilateur generique
+  ci-dessus). --- }
+
+Function SqlCmdExePath: String;
+Var
+ P: String;
+Begin
+ P := ExtractFilePath(ParamStr(0)) + 'SQLCMD.EXE';
+ If Not FileExists(P) Then
+  P := ExtractFilePath(ParamStr(0)) + 'WIN32\SQLCMD.EXE';
+ If Not FileExists(P) Then
+  P := 'SQLCMD.EXE';
+ SqlCmdExePath := P;
+End;
+
+{ --- Chemin du master.mdf de la connexion (localdb) - toujours a cote de
+  DEVENV.EXE, jamais le repertoire courant implicite de SQLCMD (§16 de son
+  aide : "Si -S n est pas specifie, master.mdf du repertoire courant est
+  utilise") - explicite partout via -S pour un comportement deterministe
+  quel que soit le repertoire de lancement de DEVENV.exe. --- }
+
+Function SqlCmdMasterMdfPath: String;
+Begin
+ SqlCmdMasterMdfPath := ExtractFilePath(ParamStr(0)) + 'master.mdf';
+End;
+
+{ --- Cree master.mdf (--createmdf) s il n existe pas deja - jamais
+  recree s il existe deja (une base existante peut deja contenir de vraies
+  tables, la reecrire la detruirait). Renvoie False (avec un message dans
+  le panneau de sortie) si SQLCMD.EXE est introuvable ou si la creation
+  echoue - jamais une erreur silencieuse. --- }
+
+Function SqlCmdEnsureMasterMdf: Boolean;
+Var
+ ExePath, MdfPath, Cmd: String;
+ Buf: TCmdOutputLines;
+ Cnt: Integer;
+Begin
+ MdfPath := SqlCmdMasterMdfPath;
+ If FileExists(MdfPath) Then Begin
+  SqlCmdEnsureMasterMdf := True;
+  Exit;
+ End;
+ SqlCmdEnsureMasterMdf := False;
+ ExePath := SqlCmdExePath;
+ If Not FileExists(ExePath) Then Begin
+  AppendOutputEx(OutputPanel,
+   'SQL Server : SQLCMD.EXE introuvable - impossible de creer master.mdf.',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Exit;
+ End;
+ Cmd := '"' + ExePath + '" "--createmdf=' + MdfPath + '"';
+ RunCommandCaptureOutput(Cmd, Buf, Cnt);
+ SqlCmdEnsureMasterMdf := FileExists(MdfPath);
+ If Not SqlCmdEnsureMasterMdf Then
+  AppendOutputEx(OutputPanel,
+   'SQL Server : echec de creation de master.mdf (voir SQLCMD.EXE).',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+End;
+
+{ --- Nom lisible d un code XType (sys.types.system_type_id reel de SQL
+  Server) - copie EXACTE de XTypeName dans SQLCMD.PAS (memes valeurs,
+  jamais devinees) pour que "Colonnes" affiche un vrai nom de type plutot
+  qu un code numerique opaque. --- }
+
+Function SqlXTypeName(XT: Integer): String;
+Begin
+ Case XT Of
+  34:  SqlXTypeName := 'IMAGE';
+  35:  SqlXTypeName := 'TEXT';
+  36:  SqlXTypeName := 'UNIQUEIDENTIFIER';
+  40:  SqlXTypeName := 'DATE';
+  41:  SqlXTypeName := 'TIME';
+  42:  SqlXTypeName := 'DATETIME2';
+  43:  SqlXTypeName := 'DATETIMEOFFSET';
+  48:  SqlXTypeName := 'TINYINT';
+  52:  SqlXTypeName := 'SMALLINT';
+  56:  SqlXTypeName := 'INT';
+  58:  SqlXTypeName := 'SMALLDATETIME';
+  59:  SqlXTypeName := 'REAL';
+  60:  SqlXTypeName := 'MONEY';
+  61:  SqlXTypeName := 'DATETIME';
+  62:  SqlXTypeName := 'FLOAT';
+  98:  SqlXTypeName := 'SQL_VARIANT';
+  99:  SqlXTypeName := 'NTEXT';
+  104: SqlXTypeName := 'BIT';
+  106: SqlXTypeName := 'DECIMAL';
+  108: SqlXTypeName := 'NUMERIC';
+  122: SqlXTypeName := 'SMALLMONEY';
+  127: SqlXTypeName := 'BIGINT';
+  165: SqlXTypeName := 'VARBINARY';
+  167: SqlXTypeName := 'VARCHAR';
+  173: SqlXTypeName := 'BINARY';
+  175: SqlXTypeName := 'CHAR';
+  189: SqlXTypeName := 'TIMESTAMP';
+  231: SqlXTypeName := 'NVARCHAR';
+  239: SqlXTypeName := 'NCHAR';
+  240: SqlXTypeName := 'CLR/GEOGRAPHY';
+  241: SqlXTypeName := 'XML';
+ Else
+  SqlXTypeName := 'xtype(' + IntToStr(XT) + ')';
+ End;
+End;
+
+{ --- Une ligne de sortie SQLCMD est-elle du "bruit" (en-tete/tirets/
+  compte de lignes/vide) a ignorer plutot qu une vraie ligne de donnees -
+  EXEC sp_tables/sp_columns ecrivent toujours ces memes formes fixes
+  (voir SQLCMD.PAS, jamais pilotees par -s/-W). --- }
+
+Function SqlCmdIsMetaLine(Const S: String): Boolean;
+Begin
+ SqlCmdIsMetaLine := (TrimStr(S) = '') Or (Copy(S, 1, 1) = '-') Or
+  (Pos('row(s) affected', S) > 0) Or (Pos('TABLE_NAME', S) > 0);
+End;
+
+{ --- Decoupe une ligne de donnees "Champ1  Champ2" (separateur = premiere
+  occurrence de 2 espaces consecutifs) - format exact des lignes de
+  donnees de EXEC sp_tables dans SQLCMD.PAS
+  (Name + '  ' + ObjType). --- }
+
+Function SqlCmdSplit2(Const S: String; Var F1, F2: String): Boolean;
+Var
+ P: Integer;
+Begin
+ SqlCmdSplit2 := False;
+ P := Pos('  ', S);
+ If P <= 0 Then Exit;
+ F1 := TrimStr(Copy(S, 1, P - 1));
+ F2 := TrimStr(Copy(S, P, Length(S) - P + 1));
+ SqlCmdSplit2 := (F1 <> '') And (F2 <> '');
+End;
+
+{ --- Decoupe une ligne de donnees EXEC sp_columns (4 champs separes par
+  des paires d espaces : TableName/ColumnName/XType/Nullable) - format
+  exact de SQLCMD.PAS (Arg+'  '+Name+'  '+IntToStr(XType)+'  '+
+  IntToStr(Ord(Nullable))). --- }
+
+Function SqlCmdSplitColumnsLine(Const S: String;
+ Var ATable, ACol, AXType, ANullable: String): Boolean;
+Var
+ Rest: String;
+Begin
+ SqlCmdSplitColumnsLine := False;
+ If Not SqlCmdSplit2(S, ATable, Rest) Then Exit;
+ If Not SqlCmdSplit2(Rest, ACol, Rest) Then Exit;
+ If Not SqlCmdSplit2(Rest, AXType, ANullable) Then Exit;
+ SqlCmdSplitColumnsLine := True;
+End;
+
+{ --- "Base de donnees" -> un seul noeud statique "master" (le seul
+  reellement supporte par SQLCMD, voir l en-tete de section) - aucune
+  requete necessaire, jamais de liste inventee. --- }
+
+Procedure SqlLoadDatabases(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Var
+ DbIdx: Integer;
+Begin
+ DbIdx := SqlAddChildNode(ST, 'master', SQLNK_DATABASE, NodeIdx);
+ If DbIdx >= 0 Then ST.Nodes[DbIdx].HasChildren := True; { "Tables" a venir, deterministe }
+End;
+
+{ --- "master" -> dossier "Tables" (deterministe : un dossier Tables
+  existe toujours, c est SON PROPRE depliage qui interroge reellement
+  EXEC sp_tables, pas celui de "master" lui-meme). --- }
+
+Procedure SqlLoadDatabaseChildren(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Var
+ TablesIdx: Integer;
+Begin
+ TablesIdx := SqlAddChildNode(ST, 'Tables', SQLNK_TABLES, NodeIdx);
+ If TablesIdx >= 0 Then ST.Nodes[TablesIdx].HasChildren := True; { optimiste, corrige ci-dessous si vide }
+End;
+
+{ --- Remonte ParentIdx jusqu au premier ancetre SQLNK_SERVER et renvoie
+  son FilePath - Etape 4 : chaque connexion (localdb OU un .mdf ajoute via
+  "Nouvelle connexion") porte son propre chemin sur son noeud SQLNK_SERVER,
+  jamais un chemin unique code en dur (necessaire des qu il peut exister
+  plusieurs connexions .mdf simultanement dans l arbre). --- }
+
+Function SqlNodeMdfPath(Var ST: TSqlExplorerState; NodeIdx: Integer): String;
+Var
+ P: Integer;
+Begin
+ SqlNodeMdfPath := SqlCmdMasterMdfPath;
+ P := NodeIdx;
+ While P >= 0 Do Begin
+  If ST.Nodes[P].Kind = SQLNK_SERVER Then Begin
+   SqlNodeMdfPath := ST.Nodes[P].FilePath;
+   Exit;
+  End;
+  P := ST.Nodes[P].ParentIdx;
+ End;
+End;
+
+{ --- "Tables" -> invoque REELLEMENT EXEC sp_tables et peuple une ligne
+  par table trouvee. Si la base est vide, retire le triangle de depliage
+  (HasChildren remis a False) plutot que de laisser un dossier
+  "expansible" qui ne montrera jamais rien. La creation automatique
+  (SqlCmdEnsureMasterMdf) ne s applique qu a la connexion (localdb) par
+  defaut - un .mdf ajoute explicitement par l utilisateur (Etape 4) est
+  suppose deja exister (verifie a la creation de la connexion) et n est
+  jamais recree/invente s il a disparu depuis, juste signale. --- }
+
+Procedure SqlLoadTables(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Var
+ Cmd, Name, ObjType, MdfPath: String;
+ Buf: TCmdOutputLines;
+ Cnt, I, Added: Integer;
+Begin
+ Added := 0;
+ MdfPath := SqlNodeMdfPath(ST, NodeIdx);
+ If (MdfPath = SqlCmdMasterMdfPath) And (Not FileExists(MdfPath)) Then
+  SqlCmdEnsureMasterMdf;
+ If FileExists(MdfPath) Then Begin
+  Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -q "EXEC sp_tables"';
+  RunCommandCaptureOutput(Cmd, Buf, Cnt);
+  For I := 0 To Cnt - 1 Do
+   If Not SqlCmdIsMetaLine(Buf[I]) Then
+    If SqlCmdSplit2(Buf[I], Name, ObjType) Then Begin
+     SqlAddChildNode(ST, Name, SQLNK_TABLE, NodeIdx);
+     Inc(Added);
+    End;
+ End Else
+  AppendOutputEx(OutputPanel, 'SQL Server : fichier introuvable - ' + MdfPath,
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ If Added = 0 Then ST.Nodes[NodeIdx].HasChildren := False;
+End;
+
+{ --- Noeud table -> invoque REELLEMENT EXEC sp_columns <table> et peuple
+  une ligne "Nom - TYPE [NOT NULL]" par colonne reelle trouvee. --- }
+
+Procedure SqlLoadColumns(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Var
+ TableName, Cmd, MdfPath, RowTable, ColName, XTypeStr, NullableStr, Caption: String;
+ Buf: TCmdOutputLines;
+ Cnt, I, Added, XT, NullFlag, Code: Integer;
+Begin
+ Added := 0;
+ TableName := ST.Nodes[NodeIdx].Caption;
+ MdfPath := SqlNodeMdfPath(ST, NodeIdx);
+ If (Pos('"', TableName) = 0) And FileExists(MdfPath) Then Begin
+  Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath +
+   '" -q "EXEC sp_columns ' + TableName + '"';
+  RunCommandCaptureOutput(Cmd, Buf, Cnt);
+  For I := 0 To Cnt - 1 Do
+   If Not SqlCmdIsMetaLine(Buf[I]) Then
+    If SqlCmdSplitColumnsLine(Buf[I], RowTable, ColName, XTypeStr, NullableStr) Then Begin
+     {$I-} Val(XTypeStr, XT, Code); {$I+}
+     If (IOResult <> 0) Or (Code <> 0) Then XT := -1;
+     {$I-} Val(NullableStr, NullFlag, Code); {$I+}
+     If (IOResult <> 0) Or (Code <> 0) Then NullFlag := 1;
+     Caption := ColName + ' - ' + SqlXTypeName(XT);
+     If NullFlag = 0 Then Caption := Caption + ' NOT NULL';
+     SqlAddChildNode(ST, Caption, SQLNK_COLUMN, NodeIdx);
+     Inc(Added);
+    End;
+ End;
+ If Added = 0 Then ST.Nodes[NodeIdx].HasChildren := False;
+End;
+
+{ --- Point d entree unique du chargement paresseux, appele par
+  SqlExpandNode avant de deplier - dispatch par TSqlNodeKind, jamais
+  appele deux fois pour le meme noeud (ChildrenLoaded). --- }
+
+Procedure SqlLoadChildrenIfNeeded(Var ST: TSqlExplorerState; NodeIdx: Integer);
+Begin
+ If ST.Nodes[NodeIdx].ChildrenLoaded Then Exit;
+ Case ST.Nodes[NodeIdx].Kind Of
+  SQLNK_DATABASES: SqlLoadDatabases(ST, NodeIdx);
+  SQLNK_DATABASE:  SqlLoadDatabaseChildren(ST, NodeIdx);
+  SQLNK_TABLES:    SqlLoadTables(ST, NodeIdx);
+  SQLNK_TABLE:     SqlLoadColumns(ST, NodeIdx);
+ End;
+ ST.Nodes[NodeIdx].ChildrenLoaded := True;
+End;
+
 Procedure SqlExpandNode(Var ST: TSqlExplorerState; NodeIdx: Integer);
 Begin
  If (NodeIdx < 0) Or (NodeIdx >= ST.NodeCount) Then Exit;
+ If Not ST.Nodes[NodeIdx].ChildrenLoaded Then
+  SqlLoadChildrenIfNeeded(ST, NodeIdx);
  If Not ST.Nodes[NodeIdx].HasChildren Then Exit;
  ST.Nodes[NodeIdx].Expanded := True;
  ST.NeedRepaint := True;
@@ -14536,20 +14877,28 @@ Begin
 End;
 
 { --- Construit le squelette statique "SQL Server" > "(localdb)" > 3
-  dossiers (Base de donnees/Securite/Objet serveur) - aucune connexion
-  reelle a SQLCMD.EXE a cette etape (Etape 3 du plan). --- }
+  dossiers (Base de donnees/Securite/Objet serveur) et s assure que
+  master.mdf existe reellement (SqlCmdEnsureMasterMdf, Etape 3) - Securite
+  et Objet serveur restent volontairement sans enfants pour toujours
+  (SQLCMD n a aucune execution reelle de CREATE LOGIN/USER ni aucun
+  concept de serveur lie, voir l en-tete du plan) : jamais de donnee
+  inventee, un dossier honnetement vide plutot qu une fausse liste. --- }
 
 Procedure BuildSqlExplorerSkeleton(Var ST: TSqlExplorerState);
 Var
- RootIdx, ServerIdx: Integer;
+ RootIdx, ServerIdx, DatabasesIdx: Integer;
 Begin
  ST.NodeCount := 0;
  RootIdx := SqlAddChildNode(ST, 'SQL Server', SQLNK_ROOT, -1);
  ST.Nodes[RootIdx].Expanded := True;
  ServerIdx := SqlAddChildNode(ST, '(localdb)', SQLNK_SERVER, RootIdx);
- SqlAddChildNode(ST, 'Base de donnees', SQLNK_DATABASES, ServerIdx);
+ ST.Nodes[ServerIdx].FilePath := SqlCmdMasterMdfPath;
+ DatabasesIdx := SqlAddChildNode(ST, 'Base de donnees', SQLNK_DATABASES, ServerIdx);
+ ST.Nodes[DatabasesIdx].HasChildren := True; { "master" a venir, deterministe }
  SqlAddChildNode(ST, 'Securite', SQLNK_SECURITY, ServerIdx);
  SqlAddChildNode(ST, 'Objet serveur', SQLNK_SERVEROBJECTS, ServerIdx);
+ If Not SqlCmdEnsureMasterMdf Then
+  ST.Nodes[ServerIdx].Caption := '(localdb) - non connecte';
  ST.SelectedIdx := RootIdx;
  ST.ScrollTop := 0;
  ST.NeedRepaint := True;
@@ -14558,6 +14907,119 @@ End;
 Procedure InitSqlExplorer(Var ST: TSqlExplorerState);
 Begin
  BuildSqlExplorerSkeleton(ST);
+End;
+
+{ ============================================================================
+  ETAPE 4 - "NOUVELLE CONNEXION" (.mdf existant + .DBF/.CSV)
+  ============================================================================
+  ShowOpenDialog/ShowInputBox n ont JAMAIS eu de vraie boucle modale dans ce
+  fichier (voir le commentaire pres de la declaration de RenameFileDlg,
+  ~ligne 6853 : "seule une fonction bloquante ShowInputBox jamais completee
+  l utilisait") - le seul mecanisme de saisie REELLEMENT fonctionnel dans
+  cet IDE est le patron TInputBox/image-par-image deja prouve par
+  "Renommer" (StartEditorFileRename/ApplyEditorFileRename). Plutot que de
+  pretendre reutiliser un navigateur graphique qui n existe pas, "Nouvelle
+  connexion" demande le CHEMIN COMPLET du fichier au clavier - honnete et
+  coherent avec ce qui existe reellement dans ce projet, pas une
+  regression par rapport a un navigateur qui n a jamais marche. --- }
+
+{ --- Extension d un chemin (tout ce qui suit le dernier point) - copie
+  locale minimale plutot que de reutiliser GridExtOfPath (definie plus bas
+  dans le fichier, meme raison de decouplage que GridExtOfPath elle-meme
+  vis-a-vis de NCExtractExt dans le chantier grille : eviter une chaine de
+  Forward supplementaire pour une fonction de 5 lignes). --- }
+
+Function SqlExtOfPath(Const Path: String): String;
+Var
+ P: Integer;
+Begin
+ P := Length(Path);
+ While (P > 0) And (Path[P] <> '.') And (Path[P] <> '\') And (Path[P] <> '/') Do Dec(P);
+ If (P > 0) And (Path[P] = '.') Then
+  SqlExtOfPath := Copy(Path, P + 1, Length(Path) - P)
+ Else
+  SqlExtOfPath := '';
+End;
+
+Function SqlFindRootNode(Var ST: TSqlExplorerState): Integer;
+Var
+ I: Integer;
+Begin
+ SqlFindRootNode := -1;
+ For I := 0 To ST.NodeCount - 1 Do
+  If ST.Nodes[I].Kind = SQLNK_ROOT Then Begin
+   SqlFindRootNode := I;
+   Exit;
+  End;
+End;
+
+{ --- Ouvre la boite de saisie du chemin - meme motif exact que
+  StartEditorFileRename. --- }
+
+Procedure StartSqlNewConnection;
+Begin
+ InitInputBox(SqlNewConnDlg, 'Nouvelle connexion',
+  'Chemin complet du fichier (.mdf, .dbf ou .csv) :', '');
+ SqlNewConnDlg.Base.Visible := True;
+ DrawInputBox(SqlNewConnDlg);
+End;
+
+{ --- Applique le resultat de la boite de saisie une fois refermee (voir
+  le dispatch principal, meme emplacement que RenameFileDlg) : .mdf ->
+  nouvelle connexion serveur avec son propre sous-arbre Base de donnees/
+  Securite/Objet serveur ; .dbf/.csv -> connexion fichier dont l unique
+  enfant ouvre la grille lecture seule deja construite (chantier
+  precedent) au double-clic. Extension non reconnue ou fichier
+  introuvable : message clair dans le panneau de sortie, jamais une
+  invention silencieuse. --- }
+
+Procedure ApplySqlNewConnection;
+Var
+ Path, Ext, FName: String;
+ RootIdx, ConnIdx, DbIdx: Integer;
+Begin
+ If SqlNewConnDlg.Cancelled Then Exit;
+ Path := TrimStr(GetInputBoxText(SqlNewConnDlg));
+ If Path = '' Then Exit;
+ If Not FileExists(Path) Then Begin
+  AppendOutputEx(OutputPanel, 'Nouvelle connexion : fichier introuvable - ' + Path,
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Exit;
+ End;
+ RootIdx := SqlFindRootNode(SqlExplorer);
+ If RootIdx < 0 Then Exit;
+ FName := ExtractFileName(Path);
+ Ext := UpCaseStr(SqlExtOfPath(Path));
+ If Ext = 'MDF' Then Begin
+  ConnIdx := SqlAddChildNode(SqlExplorer, '(local) - ' + FName, SQLNK_SERVER, RootIdx);
+  If ConnIdx < 0 Then Exit;
+  SqlExplorer.Nodes[ConnIdx].FilePath := Path;
+  DbIdx := SqlAddChildNode(SqlExplorer, 'Base de donnees', SQLNK_DATABASES, ConnIdx);
+  If DbIdx >= 0 Then SqlExplorer.Nodes[DbIdx].HasChildren := True;
+  SqlAddChildNode(SqlExplorer, 'Securite', SQLNK_SECURITY, ConnIdx);
+  SqlAddChildNode(SqlExplorer, 'Objet serveur', SQLNK_SERVEROBJECTS, ConnIdx);
+  SqlExplorer.Nodes[ConnIdx].ChildrenLoaded := True; { statique, jamais de rechargement }
+  SqlExplorer.Nodes[RootIdx].Expanded := True;
+  SqlExplorer.SelectedIdx := ConnIdx;
+ End Else If (Ext = 'DBF') Or (Ext = 'CSV') Then Begin
+  { Demande explicite de l utilisateur (2026-09-04) : une connexion       }
+  { fichier est un genre de connexion DIFFERENT d un serveur SQL Server -  }
+  { elle doit apparaitre au meme niveau que la racine "SQL Server"          }
+  { elle-meme (ParentIdx=-1), jamais imbriquee dessous. }
+  ConnIdx := SqlAddChildNode(SqlExplorer, 'Connexion fichier - ' + FName, SQLNK_FILECONN, -1);
+  If ConnIdx < 0 Then Exit;
+  SqlExplorer.Nodes[ConnIdx].FilePath := Path;
+  SqlAddChildNode(SqlExplorer, FName, SQLNK_FILETABLE, ConnIdx);
+  SqlExplorer.Nodes[ConnIdx].ChildrenLoaded := True; { statique, un seul fichier }
+  SqlExplorer.Nodes[ConnIdx].Expanded := True;
+  SqlExplorer.SelectedIdx := ConnIdx;
+ End Else Begin
+  AppendOutputEx(OutputPanel,
+   'Nouvelle connexion : extension non reconnue (attendu .mdf, .dbf ou .csv) - ' + Path,
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Exit;
+ End;
+ SqlExplorer.NeedRepaint := True;
 End;
 
 { --- Ouvrir (ou activer si deja ouvert) l onglet Explorateur d objets SQL
@@ -14652,10 +15114,13 @@ Begin
  OutTextXY(DrawX, DrawY + 3, ST.Nodes[NodeIdx].Caption);
 End;
 
-{ --- Dessine l Explorateur d objets SQL Server (arbre pleine largeur -
-  pas de scrollbar en Etape 1, cet arbre reste minuscule tant qu aucune
-  vraie connexion n a peuple de tables/colonnes ; a revisiter si necessaire
-  aux etapes suivantes). --- }
+{ --- Dessine l Explorateur d objets SQL Server (arbre pleine largeur, avec
+  barre de defilement verticale a fleches haut/bas - 2026-09-05, demande
+  explicite de l utilisateur pour les arbres a beaucoup de connexions -
+  meme motif exact que la barre de defilement de l Extension Manager :
+  fleches dessinees en triangles Line(), piste CLR_SCROLLBAR, curseur
+  CLR_BORDER proportionnel a VisLines/TotalVis, toujours visible (comme
+  l Extension Manager) meme quand rien a faire defiler). --- }
 
 Function SqlTreeTop(Var ST: TSqlExplorerState): Integer;
 Begin
@@ -14665,6 +15130,8 @@ End;
 Procedure DrawSqlExplorer(Var ST: TSqlExplorerState);
 Var
  DrawY, I, BtnX, BtnY, TreeTop: Integer;
+ VisLines, TotalVis, MaxScroll, VisCount, ShownRows: Integer;
+ SBX1, SBX2, MidX, TrackTop, TrackBot, TrackH, ThumbH, ThumbTop: Integer;
 Begin
  SetColor(CLR_EDITOR_BG);
  SetFillStyle(SolidFill, CLR_EDITOR_BG);
@@ -14682,33 +15149,93 @@ Begin
   DrawIcon16x16(BtnX + 2, BtnY + 2, SqlToolbarIcons[I]);
  End;
  TreeTop := SqlTreeTop(ST);
+ { Nombre de rangees visibles dans l espace restant, et clamp de           }
+ { ST.ScrollTop a [0, MaxScroll] - calcul UNIQUE partage avec le dessin    }
+ { du curseur, meme discipline que DrawExtManager (deux formules de        }
+ { maximum divergentes avaient cause un bogue par le passe). }
+ VisLines := (ST.Y + ST.Height - TreeTop) Div EXPLORER_NODE_HEIGHT;
+ If VisLines < 1 Then VisLines := 1;
+ TotalVis := SqlCountVisibleNodes(ST);
+ MaxScroll := TotalVis - VisLines;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If ST.ScrollTop > MaxScroll Then ST.ScrollTop := MaxScroll;
+ If ST.ScrollTop < 0 Then ST.ScrollTop := 0;
  DrawY := TreeTop;
+ VisCount := 0;
+ ShownRows := 0;
  For I := 0 To ST.NodeCount - 1 Do
   If SqlNodeVisible(ST, I) Then Begin
+   If VisCount < ST.ScrollTop Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
+   If ShownRows >= VisLines Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
    DrawSqlExplorerNode(ST, I, DrawY);
    DrawY := DrawY + EXPLORER_NODE_HEIGHT;
-   If DrawY >= ST.Y + ST.Height Then Break;
+   Inc(VisCount);
+   Inc(ShownRows);
   End;
+ { --- Barre de defilement verticale (fleches haut/bas + curseur) --- }
+ SBX1 := ST.X + ST.Width - SQL_SB_W;
+ SBX2 := ST.X + ST.Width - 1;
+ MidX := (SBX1 + SBX2) Div 2;
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(SBX1, TreeTop, SBX2, TreeTop + SQL_SB_W - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, TreeTop, SBX2, TreeTop + SQL_SB_W - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, TreeTop + 9, MidX, TreeTop + 4);
+ Line(MidX, TreeTop + 4, SBX2 - 3, TreeTop + 9);
+ SetFillStyle(SolidFill, CLR_TOOLBAR);
+ Bar(SBX1, ST.Y + ST.Height - SQL_SB_W, SBX2, ST.Y + ST.Height - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(SBX1, ST.Y + ST.Height - SQL_SB_W, SBX2, ST.Y + ST.Height - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ Line(SBX1 + 3, ST.Y + ST.Height - 9, MidX, ST.Y + ST.Height - 4);
+ Line(MidX, ST.Y + ST.Height - 4, SBX2 - 3, ST.Y + ST.Height - 9);
+ TrackTop := TreeTop + SQL_SB_W;
+ TrackBot := ST.Y + ST.Height - SQL_SB_W;
+ SetFillStyle(SolidFill, CLR_SCROLLBAR);
+ Bar(SBX1, TrackTop, SBX2, TrackBot);
+ If MaxScroll > 0 Then Begin
+  TrackH := TrackBot - TrackTop;
+  ThumbH := (TrackH * VisLines) Div TotalVis;
+  If ThumbH < 12 Then ThumbH := 12;
+  SetFillStyle(SolidFill, CLR_BORDER);
+  ThumbTop := TrackTop + 1;
+  If TrackH - 2 - ThumbH > 0 Then
+   ThumbTop := ThumbTop + (ST.ScrollTop * (TrackH - 2 - ThumbH)) Div MaxScroll;
+  Bar(SBX1 + 1, ThumbTop, SBX2 - 1, ThumbTop + ThumbH);
+ End;
 End;
 
 { --- Trouve le noeud VISIBLE affiche a l ordonnee ecran MY (-1 si aucun) -
-  meme parcours exact que DrawSqlExplorer, pour ne jamais desynchroniser
-  affichage et clic. --- }
+  meme parcours exact que DrawSqlExplorer (a partir de ST.ScrollTop), pour
+  ne jamais desynchroniser affichage et clic. --- }
 
 Function SqlNodeHitTest(Var ST: TSqlExplorerState; MY: Integer): Integer;
 Var
- DrawY, I: Integer;
+ DrawY, I, VisCount: Integer;
 Begin
  SqlNodeHitTest := -1;
  DrawY := SqlTreeTop(ST);
+ VisCount := 0;
  For I := 0 To ST.NodeCount - 1 Do
   If SqlNodeVisible(ST, I) Then Begin
+   If VisCount < ST.ScrollTop Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
    If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
     SqlNodeHitTest := I;
     Exit;
    End;
    DrawY := DrawY + EXPLORER_NODE_HEIGHT;
    If DrawY >= ST.Y + ST.Height Then Break;
+   Inc(VisCount);
   End;
 End;
 
@@ -14732,21 +15259,25 @@ Begin
 End;
 
 { --- Execute l action du bouton BtnIdx (0=Actualiser, 1=Nouvelle
-  connexion, 2=Nouvelle requete). A cette Etape 2, seul "Actualiser" fait
-  quelque chose (repaint - aucune vraie connexion a rafraichir avant
-  l Etape 3) ; les deux autres sont des points d ancrage vides, completes
-  aux Etapes 3/4/5 du plan - jamais un Case sans branche reelle (piege de
-  compilation deja rencontre dans le chantier grille : garder du code
-  lineaire tant qu aucune vraie branche n existe). --- }
+  connexion, 2=Nouvelle requete). "Actualiser" (Etape 3) reconstruit tout
+  le squelette depuis zero (meme discipline que le bouton "Actualiser" de
+  l Explorateur de solution, qui re-analyse entierement la solution plutot
+  qu un rafraichissement partiel) - une prochaine expansion d un noeud
+  interrogera donc a nouveau SQLCMD.EXE pour des donnees fraiches.
+  "Nouvelle connexion" (Etape 4) ouvre la boite de saisie de chemin (voir
+  StartSqlNewConnection/ApplySqlNewConnection ci-dessus - le dispatch de
+  fermeture est cable pres de RenameFileDlg dans la boucle d evenements
+  principale). BtnIdx 2 (Nouvelle requete) reste un point d ancrage vide,
+  complete a l Etape 5 du plan - jamais un Case sans branche reelle (piege
+  de compilation deja rencontre dans le chantier grille). --- }
 
 Procedure ExecuteSqlToolbarButton(Var ST: TSqlExplorerState; BtnIdx: Integer);
 Begin
- If BtnIdx = 0 Then Begin
-  { Actualiser : pour l instant un simple repaint (aucune connexion reelle }
-  { a interroger avant l Etape 3). }
-  ST.NeedRepaint := True;
- End;
- { BtnIdx 1 (Nouvelle connexion) et 2 (Nouvelle requete) : Etapes 4/5. }
+ If BtnIdx = 0 Then
+  BuildSqlExplorerSkeleton(ST)
+ Else If BtnIdx = 1 Then
+  StartSqlNewConnection;
+ { BtnIdx 2 (Nouvelle requete) : Etape 5. }
 End;
 
 { --- Gere clic/double-clic (depli/repli, selection, barre d outils) et
@@ -14755,7 +15286,8 @@ End;
 
 Procedure HandleSqlExplorerEvent(Var ST: TSqlExplorerState; Ev: TEvent);
 Var
- HitIdx, TriLeft, I, PrevVisible, NextVisible, BtnIdx: Integer;
+ HitIdx, TriLeft, I, PrevVisible, NextVisible, BtnIdx, WIdx: Integer;
+ TreeTop, VisLines, TotalVis, MaxScroll, TrackTop, TrackBot: Integer;
 Begin
  If ST.NodeCount <= 0 Then Exit;
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
@@ -14764,6 +15296,32 @@ Begin
   BtnIdx := SqlToolbarHitTest(ST, Ev.MouseX, Ev.MouseY);
   If BtnIdx >= 0 Then Begin
    ExecuteSqlToolbarButton(ST, BtnIdx);
+   Exit;
+  End;
+  { Barre de defilement verticale (2026-09-05, demande explicite de        }
+  { l utilisateur pour les arbres a beaucoup de connexions) - fleches       }
+  { haut/bas + clic sur la piste = page precedente/suivante, meme motif    }
+  { exact que la barre de defilement de l Extension Manager. }
+  If Ev.MouseX >= ST.X + ST.Width - SQL_SB_W Then Begin
+   TreeTop := SqlTreeTop(ST);
+   VisLines := (ST.Y + ST.Height - TreeTop) Div EXPLORER_NODE_HEIGHT;
+   If VisLines < 1 Then VisLines := 1;
+   TotalVis := SqlCountVisibleNodes(ST);
+   MaxScroll := TotalVis - VisLines;
+   If MaxScroll < 0 Then MaxScroll := 0;
+   TrackTop := TreeTop + SQL_SB_W;
+   TrackBot := ST.Y + ST.Height - SQL_SB_W;
+   If Ev.MouseY < TrackTop Then
+    Dec(ST.ScrollTop)
+   Else If Ev.MouseY >= TrackBot Then
+    Inc(ST.ScrollTop)
+   Else If Ev.MouseY < (TrackTop + TrackBot) Div 2 Then
+    Dec(ST.ScrollTop, VisLines)
+   Else
+    Inc(ST.ScrollTop, VisLines);
+   If ST.ScrollTop < 0 Then ST.ScrollTop := 0;
+   If ST.ScrollTop > MaxScroll Then ST.ScrollTop := MaxScroll;
+   ST.NeedRepaint := True;
    Exit;
   End;
   HitIdx := SqlNodeHitTest(ST, Ev.MouseY);
@@ -14783,6 +15341,15 @@ Begin
   HitIdx := SqlNodeHitTest(ST, Ev.MouseY);
   If HitIdx < 0 Then Exit;
   ST.SelectedIdx := HitIdx;
+  { Connexion fichier .DBF/.CSV (Etape 4) : double-clic ouvre la grille    }
+  { lecture seule deja construite (chantier precedent), meme patron exact }
+  { que OpenExplorerFileNodeGrid cote Explorateur de solution. }
+  If ST.Nodes[HitIdx].Kind = SQLNK_FILETABLE Then Begin
+   WIdx := FindGridWindowByFileName(ST.Nodes[HitIdx].FilePath);
+   If WIdx >= 0 Then ActivateWindow(WIdx)
+   Else CreateGridWindow(ST.Nodes[HitIdx].FilePath);
+   Exit;
+  End;
   If ST.Nodes[HitIdx].HasChildren Then SqlToggleNode(ST, HitIdx);
   ST.NeedRepaint := True;
   Exit;
@@ -18916,13 +19483,10 @@ Const
 { 78300+, section presse-papiers du menu contextuel Terminal/Explorateur). }
 Procedure SetRealClipboardText(S: String); Forward;
 
-{ Meme raison, pour Etape 7 (edition de cellule) : GridCellEditBegin/Commit
-  ont besoin de signaler un refus/echec dans le panneau de sortie, dont la
-  vraie implementation (~ligne 35500+) est elle aussi definie plus bas que
-  ce bloc grille. }
-Procedure AppendOutputEx(Var OP: TOutputPanel; AText: String;
- Tab: Integer; Kind: TOutputLineKind;
- AFile: String; ALine, ACol: Integer); Forward;
+{ Pendant symetrique du forward ci-dessus - InputBoxPasteFromClipboard      }
+{ (Shift+Ins dans TInputBox, 2026-09-04) en a besoin avant la vraie         }
+{ implementation (~ligne 82739, meme bloc presse-papiers). }
+Function GetRealClipboardText: String; Forward;
 
 { --- Extrait l extension d un nom de fichier (tout ce qui suit le
   dernier point, sans le point ; '' si aucun point) - copie locale
@@ -80516,28 +81080,57 @@ Begin
  IB.InputText := Default;
  IB.InputCursor := Length(Default);
  IB.Cancelled := False;
+ IB.ScrollOfs := 0;
 End;
 
 { --- Dessiner le champ de saisie de la boite de saisie --- }
 
+{ --- Defilement horizontal (Etape 4, Explorateur d objets SQL Server -
+  demande explicite de l utilisateur, "Nouvelle connexion" avec un chemin
+  trop long pour tenir dans le champ) : ScrollOfs (premier caractere
+  visible) est ajuste pour que le curseur reste toujours visible, comme
+  une saisie normale de Visual Studio, au lieu de deborder silencieusement
+  du cadre. Partagee par TOUS les TInputBox (donc aussi "Renommer"), pas
+  seulement "Nouvelle connexion" - meme widget generique. --- }
+
 Procedure DrawInputField(Var IB: TInputBox);
 Var
- IX, IY, IW: Integer;
+ IX, IY, IW, AvailW, VisEnd: Integer;
+ VisText: String;
 Begin
  IX := IB.Base.X + DLG_PADDING;
  IY := IB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING + 20;
  IW := IB.Base.Width - 2 * DLG_PADDING;
+ AvailW := IW - 8;
+ If TextWidth(IB.InputText) <= AvailW Then
+  IB.ScrollOfs := 0
+ Else Begin
+  If IB.InputCursor < IB.ScrollOfs Then IB.ScrollOfs := IB.InputCursor;
+  While (IB.InputCursor > IB.ScrollOfs) And
+   (TextWidth(Copy(IB.InputText, IB.ScrollOfs + 1,
+    IB.InputCursor - IB.ScrollOfs)) > AvailW) Do
+   Inc(IB.ScrollOfs);
+ End;
+ If IB.ScrollOfs > Length(IB.InputText) Then IB.ScrollOfs := Length(IB.InputText);
+ If IB.ScrollOfs < 0 Then IB.ScrollOfs := 0;
+ VisEnd := Length(IB.InputText);
+ While (VisEnd > IB.ScrollOfs) And
+  (TextWidth(Copy(IB.InputText, IB.ScrollOfs + 1, VisEnd - IB.ScrollOfs)) > AvailW) Do
+  Dec(VisEnd);
+ VisText := Copy(IB.InputText, IB.ScrollOfs + 1, VisEnd - IB.ScrollOfs);
  SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
  SetColor(CLR_BORDER);
  Rectangle(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
  SetColor(CLR_EDITOR_TEXT);
- OutTextXY(IX + 4, IY + 3, IB.InputText);
- { Curseur }
+ OutTextXY(IX + 4, IY + 3, VisText);
+ { Curseur - position relative au debut de la portion visible affichee }
  SetColor(CLR_CURSOR);
- Line(IX + 4 + TextWidth(Copy(IB.InputText, 1, IB.InputCursor)),
+ Line(IX + 4 + TextWidth(Copy(IB.InputText, IB.ScrollOfs + 1,
+   IB.InputCursor - IB.ScrollOfs)),
   IY + 2,
-  IX + 4 + TextWidth(Copy(IB.InputText, 1, IB.InputCursor)),
+  IX + 4 + TextWidth(Copy(IB.InputText, IB.ScrollOfs + 1,
+   IB.InputCursor - IB.ScrollOfs)),
   IY + DLG_INPUT_HEIGHT - 3);
 End;
 
@@ -80580,6 +81173,38 @@ Begin
  End;
 End;
 
+{ --- Coller le presse-papiers Windows REEL dans la boite de saisie ---     }
+{ Shift+Ins (2026-09-04, demande explicite de l utilisateur) - meme        }
+{ convention/motif que TermPasteFromClipboard (coupe a la premiere fin de  }
+{ ligne, un champ de saisie ne tient qu une seule ligne) mais insere a la  }
+{ position du curseur plutot qu a la fin, et respecte la limite String[255]. }
+
+Procedure InputBoxPasteFromClipboard(Var IB: TInputBox);
+Var
+ ClipText, Head, Tail: String;
+ CRPos, LFPos, CutPos, MaxLen: Integer;
+Begin
+ ClipText := GetRealClipboardText;
+ If ClipText = '' Then Exit;
+ CRPos := Pos(#13, ClipText);
+ LFPos := Pos(#10, ClipText);
+ CutPos := 0;
+ If (CRPos > 0) And ((LFPos = 0) Or (CRPos < LFPos)) Then CutPos := CRPos
+ Else If LFPos > 0 Then CutPos := LFPos;
+ If CutPos > 0 Then ClipText := Copy(ClipText, 1, CutPos - 1);
+ If IB.InputCursor < 0 Then IB.InputCursor := 0;
+ If IB.InputCursor > Length(IB.InputText) Then
+  IB.InputCursor := Length(IB.InputText);
+ MaxLen := 255 - Length(IB.InputText);
+ If MaxLen < 0 Then MaxLen := 0;
+ If Length(ClipText) > MaxLen Then ClipText := Copy(ClipText, 1, MaxLen);
+ If ClipText = '' Then Exit;
+ Head := Copy(IB.InputText, 1, IB.InputCursor);
+ Tail := Copy(IB.InputText, IB.InputCursor + 1, Length(IB.InputText));
+ IB.InputText := Head + ClipText + Tail;
+ IB.InputCursor := IB.InputCursor + Length(ClipText);
+End;
+
 { --- Gerer un evenement dans la boite de saisie --- }
 
 Procedure HandleInputBoxEvent(Var IB: TInputBox; Var Ev: TEvent);
@@ -80600,7 +81225,10 @@ Begin
    CloseDialog(IB.Base);
   End;
  End Else If Ev.Kind = EV_KEY_CHAR Then
-  HandleInputBoxKey(IB, Ev.KeyChar);
+  HandleInputBoxKey(IB, Ev.KeyChar)
+ Else If (Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = $52) And
+  ((Ev.ShiftState And 1) <> 0) Then { Shift+Ins : coller, meme convention }
+  InputBoxPasteFromClipboard(IB);          { que TermPasteFromClipboard  }
 End;
 
 { --- Afficher une boite de saisie (modale) --- }
@@ -132780,6 +133408,18 @@ Begin
   DrawProjectPropertiesDialog(ProjPropDlg);
  If AddRefDlg.Base.Visible Then
   DrawAddReferenceDialog(AddRefDlg);
+ { BOGUE REEL PREEXISTANT trouve en verifiant l Etape 4 du chantier SQL   }
+ { Server (2026-09-04) : contrairement a AddRefDlg/ProjPropDlg/etc.       }
+ { ci-dessus, aucun dialogue TInputBox (RenameFileDlg) n etait jamais     }
+ { redessine ici - un DrawAllWidgets declenche juste apres l ouverture     }
+ { du dialogue (ex. par un evenement souris incident pendant la meme       }
+ { frappe) l effacait aussitot, meme si son etat restait Visible=True.     }
+ { Corrige ici pour RenameFileDlg (deja affecte) et SqlNewConnDlg (Etape   }
+ { 4, meme motif exact). }
+ If RenameFileDlg.Base.Visible Then
+  DrawInputBox(RenameFileDlg);
+ If SqlNewConnDlg.Base.Visible Then
+  DrawInputBox(SqlNewConnDlg);
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
  { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) -
@@ -136879,6 +137519,17 @@ Begin
    FullRepaintNeeded := True;
   End Else
    DrawInputBox(RenameFileDlg);
+  Exit;
+ End;
+ { "Nouvelle connexion" de l Explorateur d objets SQL Server (Etape 4) -   }
+ { meme motif image-par-image exact que RenameFileDlg ci-dessus. }
+ If SqlNewConnDlg.Base.Visible Then Begin
+  HandleInputBoxEvent(SqlNewConnDlg, Ev);
+  If Not SqlNewConnDlg.Base.Visible Then Begin
+   ApplySqlNewConnection;
+   FullRepaintNeeded := True;
+  End Else
+   DrawInputBox(SqlNewConnDlg);
   Exit;
  End;
  { Sous-boite Ajouter/Modifier en premier : elle doit recevoir les
