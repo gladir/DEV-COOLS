@@ -2202,6 +2202,7 @@ Type
   NCMode          : Boolean;   { /NC : ouvrir le Terminal en Norton Commander des le demarrage }
   TerminalDosBatch: TString;   { /TERMINALDOS:fichier.bat }
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
+  BashBatch       : TString;   { /BASH:fichier.sh }
   RexxFile        : TString;   { /REXX:fichier.rex }
   PSFile          : TString;   { /PS:fichier.ps1 }
   VBScriptFile    : TString;   { /VBSCRIPT:fichier.vbs }
@@ -9945,6 +9946,7 @@ Procedure ShowHelp;Begin
  WriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
   WriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
   WriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
+  WriteLn('  /BASH:fichier.sh        Ouvrir le Terminal en mode Bash et executer ce script');
   WriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
   WriteLn('  /PS:fichier.ps1         Ouvrir PowerShell dev et executer ce script');
   WriteLn('  /VBSCRIPT:fichier.vbs   Ouvrir CMD (Invite de commandes) et executer ce script VBScript');
@@ -9993,6 +9995,7 @@ Begin
  Opts.NCMode          := False;
  Opts.TerminalDosBatch := '';
  Opts.TerminalOS2Batch := '';
+ Opts.BashBatch        := '';
  Opts.RexxFile         := '';
  Opts.PSFile           := '';
  Opts.VBScriptFile     := '';
@@ -10037,6 +10040,13 @@ Begin
    If (Opts.TerminalOS2Batch = '') Or
       (Not FileExists(Opts.TerminalOS2Batch)) Then
     FatalError('Fichier batch introuvable: ' + Opts.TerminalOS2Batch);
+  End Else
+    If (Length(Arg) >= 6) And
+      ((Copy(Arg, 1, 6) = '/BASH:') Or (Copy(Arg, 1, 6) = '/bash:') Or
+      (Copy(Arg, 1, 6) = '-BASH:') Or (Copy(Arg, 1, 6) = '-bash:')) Then Begin
+    Opts.BashBatch := Copy(Arg, 7, Length(Arg) - 6);
+   If (Opts.BashBatch = '') Or (Not FileExists(Opts.BashBatch)) Then
+    FatalError('Fichier script introuvable: ' + Opts.BashBatch);
   End Else
     If (Length(Arg) >= 6) And
       ((Copy(Arg, 1, 6) = '/REXX:') Or (Copy(Arg, 1, 6) = '/rexx:') Or
@@ -42701,6 +42711,1293 @@ Begin
  Close(Handle);
 End;
 
+{ ============================================================
+  GREP (Terminal, profil Bash) - 2026-09-05, demande explicite de
+  l'utilisateur.
+
+  Moteur d'expressions regulieres integralement porte depuis
+  C:\SOURCE\GITHUB\LINUX-0\GREP.PAS (meme auteur, programme Turbo
+  Pascal/Free Pascal autonome deja existant dans ce depot) - tous les
+  identificateurs globaux sont prefixes "BashGrep"/"Bre" pour eviter
+  toute collision dans ce fichier de ~139000 lignes ; la logique
+  elle-meme (parseur recursif produisant une structure chainee, puis
+  moteur de recherche recursif DoSearch) est reprise TELLE QUELLE,
+  sans reecriture, seul le nommage change. Ce moteur supporte : le point,
+  l etoile, le plus, le point d interrogation, les accolades de
+  repetition min/max, les groupes entre parentheses, l alternance par
+  barre verticale, les ancres debut/fin de ligne, les classes de
+  caracteres entre crochets (y compris negees), et les classes
+  abregees a-la-Perl (chiffre, non-chiffre, espace, non-espace, mot,
+  non-mot, tabulation, retours). Grammaire proche d'ERE mais qui ne
+  distingue pas BRE/ERE (voir limitation documentee plus bas pres de
+  -E/-G). Pas de PCRE (limites de mot via \b, lookahead/lookbehind,
+  groupes nommes) - limitation disclosee, pas de pretention contraire.
+  Limitation reelle heritee du moteur (confirmee 2026-09-05, pas
+  introduite par ce portage) : une alternance '|' NUE (sans parentheses)
+  echoue a la compilation - seuls un groupe entre parentheses ou un
+  atome quantifie produisent le noeud interne dont '|' a besoin.
+  "(chat)|(chien)" fonctionne, "chat|chien" echoue - meme motif
+  qu'aurait le programme GREP.PAS original autonome pour cette meme
+  entree, aucune regression introduite ici. Les motifs -e/-f multiples
+  de cette commande sont donc TOUJOURS combines entre parentheses
+  automatiquement (voir plus bas) ; un utilisateur qui met lui-meme un
+  '|' nu dans un seul motif doit l'envelopper de parentheses a la main.
+  ============================================================ }
+
+Const
+ BASH_GREP_BUF_LEN = 255;   { String est une ShortString (directive $H-) }
+                            { caracteres est deja la vraie limite d'une }
+                            { ligne dans ce terminal (meme limite que   }
+                            { CAT/TYPE plus haut - rien de nouveau).    }
+ BASH_GREP_MAX_CTX  = 100;  { limite -A/-B/-C : memoire bornee, tres    }
+                            { largement suffisant en pratique.          }
+ BASH_GREP_MAX_TOK  = 96;   { nombre max de "mots" (options+motifs+     }
+                            { fichiers) sur une ligne de commande grep. }
+ BASH_GREP_MAX_PAT  = 32;
+ BASH_GREP_MAX_FILE = 256;
+
+Type
+ TBashGrepBuf   = Array[0..BASH_GREP_BUF_LEN] Of Char;
+ TGrepTokenArr  = Array[1..BASH_GREP_MAX_TOK] Of String;
+ TGrepPatArr    = Array[1..BASH_GREP_MAX_PAT] Of String;
+ TGrepFileArr   = Array[1..BASH_GREP_MAX_FILE] Of String;
+ TBashGrepCtxLine = Record
+  LineNo: LongInt;
+  Text  : String;
+  Used  : Boolean;
+ End;
+ TBashGrepCtxArr = Array[0..BASH_GREP_MAX_CTX - 1] Of TBashGrepCtxLine;
+
+ TBashRegExprEntryType = (BreBacktrace, BreCharset, BreEndline,
+                          BreIllegalEnd, BreOr, BreStartline, BrePattern);
+ TBashCharSet = Set Of Char;
+ PBashRegExprEntry = ^TBashRegExprEntry;
+ TBashRegExprEntry = Record
+  Next, NextDestroy: PBashRegExprEntry;
+  Case Typ: TBashRegExprEntryType Of
+   BreCharset: (Chars: TBashCharSet; ElsePath: PBashRegExprEntry);
+   BrePattern: (Pattern: PBashRegExprEntry; MinOccurs: Integer;
+                MaxOccurs: Integer; Alternative: PBashRegExprEntry);
+ End;
+ TBashRegExprFlags = Set Of (BreSingleLine, BreMultiLine, BreNoCase);
+
+Var
+ BashGrepData       : PBashRegExprEntry;
+ BashGrepDestroyList: PBashRegExprEntry;
+ BashGrepOption     : TBashRegExprFlags;
+
+Function BashGrepPatLength(hp1: PBashRegExprEntry): Integer;
+Var
+ Count: Integer;
+ hp: PBashRegExprEntry;
+Begin
+ Count := 0;
+ If hp1^.Typ = BrePattern Then hp := hp1^.Pattern
+                          Else hp := hp1;
+ While Assigned(hp) Do Begin
+  If hp^.Typ = BrePattern Then Inc(Count, BashGrepPatLength(hp)) Else
+  If hp^.Typ = BreCharset Then Inc(Count);
+  hp := hp^.Next;
+ End;
+ If hp1^.Typ = BrePattern Then Count := hp1^.MinOccurs * Count;
+ BashGrepPatLength := Count;
+End;
+
+Procedure BashGrepDestroyEngine;
+Var
+ hp: PBashRegExprEntry;
+Begin
+ hp := BashGrepDestroyList;
+ While Assigned(hp) Do Begin
+  BashGrepDestroyList := hp^.NextDestroy;
+  Dispose(hp);
+  hp := BashGrepDestroyList;
+ End;
+ BashGrepData := Nil;
+ BashGrepDestroyList := Nil;
+End;
+
+Function BashGrepGenerateEngine(RegExpr: PChar): Boolean;
+Var
+ First: PBashRegExprEntry;
+ CurrPos: PChar;
+ Error: Boolean;
+
+ Procedure DoRegister(p: PBashRegExprEntry);
+ Begin
+  p^.NextDestroy := First;
+  First := p;
+ End;
+
+ Procedure ReadChars(Var Chars: TBashCharSet);
+ Var
+  c1: Char;
+ Begin
+  Chars := [];
+  Case CurrPos^ Of
+   #0: Exit;
+   '.': Begin
+    Inc(CurrPos);
+    Chars := [#0..#255] - [#10];
+   End;
+   '\': Begin
+    Inc(CurrPos);
+    Case CurrPos^ Of
+     #0: Begin
+      Error := True;
+      Exit;
+     End;
+     't': Begin Inc(CurrPos); Chars := [#9]; End;
+     'n': Begin Inc(CurrPos); Chars := [#10]; End;
+     'r': Begin Inc(CurrPos); Chars := [#13]; End;
+     'd': Begin Inc(CurrPos); Chars := ['0'..'9']; End;
+     'D': Begin Inc(CurrPos); Chars := [#0..#255] - ['0'..'9']; End;
+     's': Begin Inc(CurrPos); Chars := [' ', #9]; End;
+     'S': Begin Inc(CurrPos); Chars := [#0..#255] - [' ', #9]; End;
+     'w': Begin Inc(CurrPos); Chars := ['A'..'Z', 'a'..'z', '_', '0'..'9']; End;
+     'W': Begin Inc(CurrPos); Chars := [#0..#255] - ['A'..'Z', 'a'..'z', '_', '0'..'9']; End;
+     'f': Begin Inc(CurrPos); Chars := [#12]; End;
+     'a': Begin Inc(CurrPos); Chars := [#7]; End;
+     Else Begin
+      Chars := [CurrPos^];
+      Inc(CurrPos);
+     End;
+    End;
+   End;
+   Else Begin
+    If BreNoCase In BashGrepOption Then c1 := UpCase(CurrPos^)
+                                    Else c1 := CurrPos^;
+    Inc(CurrPos);
+    If CurrPos^ = '-' Then Begin
+     Inc(CurrPos);
+     If CurrPos^ = #0 Then Begin
+      Error := True;
+      Exit;
+     End;
+     If BreNoCase In BashGrepOption Then Chars := [c1..UpCase(CurrPos^)]
+                                     Else Chars := [c1..CurrPos^];
+     Inc(CurrPos);
+    End Else
+     Chars := [c1];
+   End;
+  End;
+ End;
+
+ Procedure ReadCharSet(Var CharSet: TBashCharSet);
+ Var
+  Chars: TBashCharSet;
+ Begin
+  CharSet := [];
+  Case CurrPos^ Of
+   #0: Exit;
+   '[': Begin
+    Inc(CurrPos);
+    While CurrPos^ <> ']' Do Begin
+     If CurrPos^ = '^' Then Begin
+      Inc(CurrPos);
+      ReadChars(Chars);
+      CharSet := CharSet + ([#0..#255] - Chars);
+     End Else Begin
+      ReadChars(Chars);
+      CharSet := CharSet + Chars;
+     End;
+     If Error Or (CurrPos^ = #0) Then Begin
+      Error := True;
+      Exit;
+     End;
+    End;
+    Inc(CurrPos);
+   End;
+   '^': Begin
+    Inc(CurrPos);
+    ReadChars(Chars);
+    CharSet := [#0..#255] - Chars;
+   End;
+   Else Begin
+    ReadChars(Chars);
+    CharSet := Chars;
+   End;
+  End;
+ End;
+
+ Function ParseOccurences(Var CurrPos: PChar; Var MinOccurs, MaxOccurs: Integer): Boolean;
+ Var
+  Err: Word;
+  MinOccursString, MaxOccursString: String;
+ Begin
+  ParseOccurences := False;
+  MinOccurs := -1;
+  MaxOccurs := -1;
+  Inc(CurrPos);
+  MinOccursString := '';
+  If CurrPos^ = #0 Then Begin
+   Error := True;
+   Exit;
+  End;
+  While (CurrPos^ <> #0) And (CurrPos^ In ['0'..'9']) Do Begin
+   MinOccursString := MinOccursString + CurrPos^;
+   Inc(CurrPos);
+  End;
+  If Length(MinOccursString) = 0 Then Begin
+   Error := True;
+   Exit;
+  End;
+  Val(MinOccursString, MinOccurs, Err);
+  If CurrPos^ = '}' Then Begin
+   Inc(CurrPos);
+   MaxOccurs := MinOccurs;
+   ParseOccurences := True;
+   Exit;
+  End;
+  If CurrPos^ = ',' Then Begin
+   MaxOccursString := '';
+   Inc(CurrPos);
+   While (CurrPos^ <> #0) And (CurrPos^ In ['0'..'9']) Do Begin
+    MaxOccursString := MaxOccursString + CurrPos^;
+    Inc(CurrPos);
+   End;
+   If CurrPos^ = '}' Then Begin
+    If Length(MaxOccursString) > 0 Then Val(MaxOccursString, MaxOccurs, Err)
+                                    Else MaxOccurs := High(Integer);
+    Inc(CurrPos);
+    ParseOccurences := True;
+    Exit;
+   End;
+  End;
+  Error := True;
+ End;
+
+ Function ParseRegExpr(Next, ElsePath: PBashRegExprEntry): PBashRegExprEntry;
+ Var
+  hp: PBashRegExprEntry;
+  MinOccurs, MaxOccurs: Integer;
+  hp3: PBashRegExprEntry;
+  cs: TBashCharSet;
+  Chaining: ^PBashRegExprEntry;
+ Begin
+  Chaining := Nil;
+  ParseRegExpr := Nil;
+  ElsePath := Nil;
+  If Error Then Exit;
+  While True Do Begin
+   If Error Then Exit;
+   Case CurrPos^ Of
+    '(': Begin
+     Inc(CurrPos);
+     hp := ParseRegExpr(Nil, Nil);
+     If Error Then Exit;
+     If CurrPos^ <> ')' Then Begin
+      Error := True;
+      Exit;
+     End;
+     Inc(CurrPos);
+     Case CurrPos^ Of
+      '*': Begin
+       Inc(CurrPos);
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 0;
+       hp3^.MaxOccurs := High(Integer);
+      End;
+      '+': Begin
+       Inc(CurrPos);
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 1;
+       hp3^.MaxOccurs := High(Integer);
+      End;
+      '?': Begin
+       Inc(CurrPos);
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 0;
+       hp3^.MaxOccurs := 1;
+      End;
+      '{': Begin
+       If Not ParseOccurences(CurrPos, MinOccurs, MaxOccurs) Then Exit;
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := MinOccurs;
+       hp3^.MaxOccurs := MaxOccurs;
+      End;
+      Else Begin
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 1;
+       hp3^.MaxOccurs := 1;
+      End;
+     End;
+     hp3^.Next := Nil;
+     If Assigned(Chaining) Then Chaining^ := hp3
+                           Else ParseRegExpr := hp3;
+     Chaining := @hp3^.Next;
+    End;
+    '|': Begin
+     If Not Assigned(hp3) Then Begin
+      Error := True;
+      Exit;
+     End;
+     If hp3^.Typ <> BrePattern Then Begin
+      Error := True;
+      Exit;
+     End;
+     While CurrPos^ = '|' Do Begin
+      Inc(CurrPos);
+      If CurrPos^ = #0 Then Begin
+       Error := True;
+       Exit;
+      End;
+      hp := ParseRegExpr(Next, ElsePath);
+      If BashGrepPatLength(hp) > BashGrepPatLength(hp3^.Pattern) Then Begin
+       hp3^.Alternative := hp3^.Pattern;
+       hp3^.Pattern := hp;
+      End Else
+       hp3^.Alternative := hp;
+     End;
+    End;
+    ')': Exit;
+    '^': Begin
+     Inc(CurrPos);
+     hp := ParseRegExpr(Nil, Nil);
+     If Error Then Exit;
+     New(hp3);
+     DoRegister(hp3);
+     hp3^.Typ := BreStartline;
+     hp3^.Pattern := hp;
+     hp3^.ElsePath := ElsePath;
+     hp3^.Next := Nil;
+     If Assigned(Chaining) Then Chaining^ := hp3
+                           Else ParseRegExpr := hp3;
+     Chaining := @hp3^.Next;
+    End;
+    '$': Begin
+     Inc(CurrPos);
+     New(hp);
+     DoRegister(hp);
+     hp^.Typ := BreEndline;
+     hp^.ElsePath := ElsePath;
+     hp^.Next := Nil;
+     If Assigned(Chaining) Then Chaining^ := hp
+                           Else ParseRegExpr := hp;
+     Chaining := @hp^.Next;
+    End;
+    #0: Exit;
+    Else Begin
+     ReadCharSet(cs);
+     If Error Then Exit;
+     Case CurrPos^ Of
+      '*': Begin
+       Inc(CurrPos);
+       New(hp);
+       DoRegister(hp);
+       hp^.Typ := BreCharset;
+       hp^.Chars := cs;
+       hp^.ElsePath := Nil;
+       hp^.Next := Nil;
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 0;
+       hp3^.MaxOccurs := High(Integer);
+       hp3^.Next := Nil;
+       If Assigned(Chaining) Then Chaining^ := hp3
+                             Else ParseRegExpr := hp3;
+       Chaining := @hp3^.Next;
+      End;
+      '+': Begin
+       Inc(CurrPos);
+       New(hp);
+       DoRegister(hp);
+       hp^.Typ := BreCharset;
+       hp^.Chars := cs;
+       hp^.ElsePath := Nil;
+       hp^.Next := Nil;
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 1;
+       hp3^.MaxOccurs := High(Integer);
+       hp3^.Next := Nil;
+       If Assigned(Chaining) Then Chaining^ := hp3
+                             Else ParseRegExpr := hp3;
+       Chaining := @hp3^.Next;
+      End;
+      '?': Begin
+       Inc(CurrPos);
+       New(hp);
+       DoRegister(hp);
+       hp^.Typ := BreCharset;
+       hp^.Chars := cs;
+       hp^.ElsePath := Nil;
+       hp^.Next := Nil;
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Pattern := hp;
+       hp3^.Alternative := Nil;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := 0;
+       hp3^.MaxOccurs := 1;
+       hp3^.Next := Nil;
+       If Assigned(Chaining) Then Chaining^ := hp3
+                             Else ParseRegExpr := hp3;
+       Chaining := @hp3^.Next;
+      End;
+      '{': Begin
+       If Not ParseOccurences(CurrPos, MinOccurs, MaxOccurs) Then Exit;
+       New(hp);
+       DoRegister(hp);
+       hp^.Typ := BreCharset;
+       hp^.Chars := cs;
+       hp^.ElsePath := Nil;
+       hp^.Next := Nil;
+       New(hp3);
+       DoRegister(hp3);
+       hp3^.Typ := BrePattern;
+       hp3^.Alternative := Nil;
+       hp3^.Pattern := hp;
+       hp3^.ElsePath := ElsePath;
+       hp3^.MinOccurs := MinOccurs;
+       hp3^.MaxOccurs := MaxOccurs;
+       hp3^.Next := Nil;
+       If Assigned(Chaining) Then Chaining^ := hp3
+                             Else ParseRegExpr := hp3;
+       Chaining := @hp3^.Next;
+      End;
+      Else Begin
+       New(hp);
+       DoRegister(hp);
+       hp^.Typ := BreCharset;
+       hp^.Chars := cs;
+       hp^.ElsePath := ElsePath;
+       hp^.Next := Next;
+       If Assigned(Chaining) Then Chaining^ := hp
+                             Else ParseRegExpr := hp;
+       Chaining := @hp^.Next;
+       Continue;
+      End;
+     End;
+    End;
+   End;
+  End;
+ End;
+
+Var
+ Endp: PBashRegExprEntry;
+Begin
+ BashGrepGenerateEngine := False;
+ BashGrepData := Nil;
+ BashGrepDestroyList := Nil;
+ If RegExpr = Nil Then Exit;
+ First := Nil;
+ If (BreSingleLine In BashGrepOption) And (BreMultiLine In BashGrepOption) Then Exit;
+ CurrPos := RegExpr;
+ BashGrepGenerateEngine := True;
+ Error := False;
+ New(Endp);
+ DoRegister(Endp);
+ Endp^.Typ := BreIllegalEnd;
+ BashGrepData := ParseRegExpr(Nil, Endp);
+ BashGrepDestroyList := First;
+ If Error Or (CurrPos^ <> #0) Then Begin
+  BashGrepGenerateEngine := False;
+  BashGrepDestroyEngine;
+ End;
+End;
+
+Function BashGrepPos(P: PChar; Var I, Len: LongInt): Boolean;
+Var
+ LastPos, FirstPos: PChar;
+
+ Function DoSearch(RegExprEntry: PBashRegExprEntry; Pos: PChar): Boolean;
+ Var
+  _Result, Found, CheckValue: Boolean;
+  SavedPos: PChar;
+  Counter: Word;
+ Begin
+  DoSearch := False;
+  While True Do Begin
+   Case RegExprEntry^.Typ Of
+    BreEndline: Begin
+     If Pos^ = #0 Then Begin
+      DoSearch := True;
+      Exit;
+     End;
+     If BreMultiLine In BashGrepOption Then Begin
+      If (Pos^ = #13) And ((Pos + 1)^ = #10) Then Begin
+       RegExprEntry := RegExprEntry^.Next;
+      End Else
+      If (Pos^ = #$85) Or (Pos^ = #10) Or
+         ((Pos^ = #13) And ((Pos - 1) >= FirstPos) And ((Pos - 1)^ <> #10)) Then Begin
+       RegExprEntry := RegExprEntry^.Next;
+      End Else Begin
+       DoSearch := False;
+       Exit;
+      End;
+     End Else Exit;
+    End;
+    BrePattern: Begin
+     Found := False;
+     SavedPos := Pos;
+     Counter := 0;
+     Repeat
+      Found := DoSearch(RegExprEntry^.Pattern, Pos);
+      If Not Found Then Break;
+      Pos := LastPos;
+      Inc(Counter);
+     Until (Not Found) Or (Counter >= RegExprEntry^.MaxOccurs) Or (Pos^ = #0);
+     If Counter = 0 Then Begin
+      If RegExprEntry^.MinOccurs > 0 Then Begin
+       DoSearch := False;
+       If Assigned(RegExprEntry^.Alternative) Then Begin
+        DoSearch := DoSearch(RegExprEntry^.Alternative, SavedPos);
+        Exit;
+       End;
+       Exit;
+      End;
+      DoSearch := True;
+      LastPos := SavedPos;
+     End Else Begin
+      If (Counter < RegExprEntry^.MinOccurs) Or (Counter > RegExprEntry^.MaxOccurs) Then Begin
+       DoSearch := False;
+       Exit;
+      End;
+      DoSearch := True;
+      If Pos^ = #0 Then Begin
+       DoSearch := True;
+       Exit;
+      End;
+     End;
+     RegExprEntry := RegExprEntry^.Next;
+     If (Counter = 0) And Not Assigned(RegExprEntry) Then Exit;
+    End;
+    BreStartline: Begin
+     CheckValue := Pos = FirstPos;
+     If BreMultiLine In BashGrepOption Then Begin
+      If (((Pos - 1) >= FirstPos) And ((Pos - 1)^ = #$85)) Or
+         (((Pos - 1) >= FirstPos) And ((Pos - 1)^ = #10)) Or
+         (((Pos - 1) >= FirstPos) And ((Pos - 1)^ = #13) And (Pos^ <> #10)) Then Begin
+       CheckValue := True;
+      End;
+     End;
+     If CheckValue Then Begin
+      _Result := DoSearch(RegExprEntry^.Pattern, Pos);
+      DoSearch := _Result;
+      RegExprEntry := RegExprEntry^.Next;
+      If Not _Result Then Exit;
+      Pos := LastPos;
+     End Else Begin
+      DoSearch := False;
+      Exit;
+     End;
+    End;
+    BreCharset: Begin
+     If (Pos^ In RegExprEntry^.Chars) Or
+        ((BreNoCase In BashGrepOption) And (UpCase(Pos^) In RegExprEntry^.Chars)) Then Begin
+      RegExprEntry := RegExprEntry^.Next;
+      Inc(Pos);
+     End Else Exit;
+    End;
+    BreBacktrace: Begin
+     If DoSearch(RegExprEntry^.Next, Pos) Then Begin
+      DoSearch := True;
+      Exit;
+     End Else
+     If DoSearch(RegExprEntry^.ElsePath, Pos) Then Begin
+      DoSearch := True;
+      Exit;
+     End Else Exit;
+    End;
+   End;
+   LastPos := Pos;
+   If RegExprEntry = Nil Then Begin
+    DoSearch := True;
+    Exit;
+   End;
+   If RegExprEntry^.Typ = BreIllegalEnd Then Exit;
+   If (Pos^ = #0) And (RegExprEntry^.Typ = BreEndline) And
+      (Not Assigned(RegExprEntry^.Next)) Then Begin
+    DoSearch := True;
+    Exit;
+   End;
+   If Pos^ = #0 Then Exit;
+  End;
+ End;
+
+Begin
+ BashGrepPos := False;
+ I := 0;
+ Len := 0;
+ FirstPos := P;
+ If BashGrepData = Nil Then Exit;
+ While P^ <> #0 Do Begin
+  If DoSearch(BashGrepData, P) Then Begin
+   Len := LastPos - P;
+   BashGrepPos := True;
+   Exit;
+  End Else Begin
+   Inc(P);
+   Inc(I);
+  End;
+ End;
+ I := -1;
+End;
+
+{ --- Utilitaires GREP (au-dessus du moteur d'expressions regulieres) --- }
+
+Procedure BashGrepStrPCopy(Var Buf: TBashGrepBuf; Const S: String);
+Var
+ I, N: Integer;
+Begin
+ N := Length(S);
+ If N > BASH_GREP_BUF_LEN Then N := BASH_GREP_BUF_LEN;
+ For I := 1 To N Do Buf[I - 1] := S[I];
+ Buf[N] := #0;
+End;
+
+{ Cherche la PROCHAINE correspondance regex a partir du caractere 1-based }
+{ StartAt de Line - convertit Line[StartAt..] en PChar puis appelle       }
+{ BashGrepPos ; convertit son resultat 0-based (nombre de caracteres      }
+{ sautes) en position 1-based absolue dans Line. }
+Function BashGrepFindInLine(Const Line: String; StartAt: Integer;
+ Var MatchPos, MatchLen: Integer): Boolean;
+Var
+ Buf: TBashGrepBuf;
+ Sub: String;
+ I, L: LongInt;
+Begin
+ BashGrepFindInLine := False;
+ If StartAt > Length(Line) + 1 Then Exit;
+ If StartAt < 1 Then StartAt := 1;
+ Sub := Copy(Line, StartAt, Length(Line) - StartAt + 1);
+ BashGrepStrPCopy(Buf, Sub);
+ If BashGrepPos(@Buf[0], I, L) Then Begin
+  MatchPos := StartAt + I;
+  MatchLen := L;
+  BashGrepFindInLine := True;
+ End;
+End;
+
+Function BashGrepIsWordChar(Ch: Char): Boolean;
+Begin
+ BashGrepIsWordChar := Ch In ['A'..'Z', 'a'..'z', '0'..'9', '_'];
+End;
+
+{ -w (mot entier) : verifie que les caracteres immediatement avant/apres  }
+{ la correspondance ne sont pas des caracteres de "mot" (ou absents).     }
+{ Verification APRES coup plutot que reecriture du motif - reste correct }
+{ meme combine a -o (la sous-chaine rapportee n'inclut jamais la borne).  }
+Function BashGrepPassesWordBoundary(Const Line: String; MatchPos, MatchLen: Integer): Boolean;
+Var
+ OkBefore, OkAfter: Boolean;
+Begin
+ OkBefore := (MatchPos <= 1) Or (Not BashGrepIsWordChar(Line[MatchPos - 1]));
+ OkAfter := (MatchPos + MatchLen > Length(Line)) Or
+            (Not BashGrepIsWordChar(Line[MatchPos + MatchLen]));
+ BashGrepPassesWordBoundary := OkBefore And OkAfter;
+End;
+
+{ --- Recherche de sous-chaine litterale (-F) a partir d'une position --- }
+
+Function BashGrepPosFrom(Const S, Sub: String; StartAt: Integer): Integer;
+Var
+ P: Integer;
+Begin
+ BashGrepPosFrom := 0;
+ If (StartAt > Length(S)) Or (Sub = '') Then Exit;
+ If StartAt < 1 Then StartAt := 1;
+ P := Pos(Sub, Copy(S, StartAt, Length(S) - StartAt + 1));
+ If P > 0 Then BashGrepPosFrom := P + StartAt - 1;
+End;
+
+Function BashGrepPosInsensitiveFrom(Const S, Sub: String; StartAt: Integer): Integer;
+Begin
+ BashGrepPosInsensitiveFrom := BashGrepPosFrom(TermStrToUpper(S), TermStrToUpper(Sub), StartAt);
+End;
+
+Function BashGrepStrToIntSafe(Const S: String; DefVal: Integer): Integer;
+Var
+ N, Err: Integer;
+Begin
+ Val(S, N, Err);
+ If Err <> 0 Then BashGrepStrToIntSafe := DefVal
+             Else BashGrepStrToIntSafe := N;
+End;
+
+{ Tokeniseur minimal de la ligne de commande GREP - respecte les          }
+{ guillemets simples/doubles (motif contenant des espaces), aucune autre  }
+{ regle d'un vrai shell (pas de substitution de variables, pas           }
+{ d'echappement a l'interieur d'un guillemet) - suffisant pour ce que ce  }
+{ terminal fait deja ailleurs (TermExtractParam ne gere meme pas les      }
+{ guillemets du tout). }
+Function BashGrepTokenize(S: String; Var Toks: TGrepTokenArr): Integer;
+Var
+ I, Cnt: Integer;
+ Ch: Char;
+ Cur: String;
+ InQuote, TokenActive: Boolean;
+ QuoteCh: Char;
+Begin
+ Cnt := 0;
+ Cur := '';
+ InQuote := False;
+ TokenActive := False;
+ QuoteCh := ' ';
+ I := 1;
+ While I <= Length(S) Do Begin
+  Ch := S[I];
+  If InQuote Then Begin
+   If Ch = QuoteCh Then InQuote := False
+                    Else Cur := Cur + Ch;
+  End Else Begin
+   If (Ch = '"') Or (Ch = '''') Then Begin
+    InQuote := True;
+    QuoteCh := Ch;
+    TokenActive := True;
+   End Else If (Ch = ' ') Or (Ch = #9) Then Begin
+    If TokenActive Then Begin
+     If Cnt < BASH_GREP_MAX_TOK Then Begin
+      Inc(Cnt);
+      Toks[Cnt] := Cur;
+     End;
+     Cur := '';
+     TokenActive := False;
+    End;
+   End Else Begin
+    Cur := Cur + Ch;
+    TokenActive := True;
+   End;
+  End;
+  Inc(I);
+ End;
+ If TokenActive Then Begin
+  If Cnt < BASH_GREP_MAX_TOK Then Begin
+   Inc(Cnt);
+   Toks[Cnt] := Cur;
+  End;
+ End;
+ BashGrepTokenize := Cnt;
+End;
+
+{ --- GREP (Bash) ---
+  Syntaxe : grep [-ivcnlLwxoqsHhrRFEG] [-A n] [-B n] [-C n] [-m n]
+                 [-e motif]... [-f fichier] [motif] fichier...
+  Portee explicitement exclue (disclosee, pas silencieuse) : pas de PCRE
+  (-P), pas d'entree standard/pipe (ce terminal n'a pas de mecanisme de
+  pipe entre commandes - au moins un FICHIER est donc toujours requis,
+  meme convention que CAT/TYPE ci-dessus qui exige deja un fichier) ; -E
+  et -G sont acceptees mais n'activent aucune grammaire distincte (un
+  seul moteur, voir commentaire au-dessus du moteur regex) ; pas de
+  --color, pas de detection binaire (-a/-I), pas de --include/--exclude
+  pour -r (mais -r/-R parcourent reellement tous les fichiers du
+  sous-arbre). Le contexte -A/-B/-C est desactive avec -v/-c (comme le
+  vrai grep : "context lines are not printed" avec -v ou -c) et avec -o
+  (chaque occurrence devient sa propre ligne, un contexte par ligne
+  entiere n'aurait plus de sens). }
+Procedure TermCmd_Grep(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Toks: TGrepTokenArr;
+ TokCount: Integer;
+ Patterns: TGrepPatArr;
+ PatternCount: Integer;
+ RawFiles: TGrepFileArr;
+ RawFileCount: Integer;
+ ExpFiles: TGrepFileArr;
+ ExpFileCount: Integer;
+ OptI, OptV, OptC, OptN, OptL, OptBigL, OptW, OptX, OptO, OptQ, OptS,
+ OptH, OptBigH, OptR, OptFixed, HaveExplicitPatternSource: Boolean;
+ OptAfter, OptBefore, OptMaxCount: Integer;
+ Ti, J: Integer;
+ A, ValStr: String;
+ EndOfOpts: Boolean;
+ ShowName: Boolean;
+ CombinedPattern: String;
+ PatBuf: TBashGrepBuf;
+ CompiledOk: Boolean;
+ Fi: Integer;
+
+ Procedure AddPattern(Const S: String);
+ Begin
+  If PatternCount < BASH_GREP_MAX_PAT Then Begin
+   Inc(PatternCount);
+   Patterns[PatternCount] := S;
+  End;
+ End;
+
+ Procedure AddRawFile(Const S: String);
+ Begin
+  If RawFileCount < BASH_GREP_MAX_FILE Then Begin
+   Inc(RawFileCount);
+   RawFiles[RawFileCount] := S;
+  End;
+ End;
+
+ Procedure LoadPatternsFromFile(Const FName: String);
+ Var
+  F: Text;
+  Ln: String;
+ Begin
+  {$I-} Assign(F, FName); Reset(F); {$I+}
+  If IOResult <> 0 Then Begin
+   If Not OptS Then TermAddLine(TP, 'grep : ' + FName + ' : impossible d''ouvrir ce fichier de motifs');
+   Exit;
+  End;
+  While Not EOF(F) Do Begin
+   ReadLn(F, Ln);
+   If Ln <> '' Then AddPattern(Ln);
+  End;
+  Close(F);
+ End;
+
+ Procedure CollectFile(Const FName: String);
+ Begin
+  If ExpFileCount < BASH_GREP_MAX_FILE Then Begin
+   Inc(ExpFileCount);
+   ExpFiles[ExpFileCount] := FName;
+  End;
+ End;
+
+ Procedure RecurseDir(Dir: String);
+ Var
+  SR: SearchRec;
+ Begin
+  If (Dir <> '') And (Dir[Length(Dir)] <> '\') And (Dir[Length(Dir)] <> '/') Then
+   Dir := Dir + '\';
+  FindFirst(Dir + '*.*', AnyFile, SR);
+  While DosError = 0 Do Begin
+   If (SR.Name <> '.') And (SR.Name <> '..') Then Begin
+    If (SR.Attr And Directory) <> 0 Then
+     RecurseDir(Dir + SR.Name)
+    Else
+     CollectFile(Dir + SR.Name);
+   End;
+   FindNext(SR);
+  End;
+  {$IFDEF FPC} FindClose(SR); {$ENDIF}
+ End;
+
+ { Motif joker non recursif (ex: *.pas, sub\*.txt) - meme motif FindFirst/ }
+ { FindNext que TermCmd_DIR_BASH plus haut ; rejoint le prefixe de         }
+ { repertoire du motif (avant le dernier '\'/'/'), FindFirst ne renvoyant  }
+ { que le nom de fichier nu dans SR.Name. }
+ Procedure ExpandWildcard(Const Pattern: String);
+ Var
+  SR: SearchRec;
+  DirPart: String;
+  K4: Integer;
+ Begin
+  DirPart := '';
+  For K4 := Length(Pattern) DownTo 1 Do
+   If (Pattern[K4] = '\') Or (Pattern[K4] = '/') Then Begin
+    DirPart := Copy(Pattern, 1, K4);
+    Break;
+   End;
+  FindFirst(Pattern, AnyFile, SR);
+  While DosError = 0 Do Begin
+   If (SR.Attr And Directory) = 0 Then
+    CollectFile(DirPart + SR.Name);
+   FindNext(SR);
+  End;
+  {$IFDEF FPC} FindClose(SR); {$ENDIF}
+ End;
+
+ { Cherche la PROCHAINE correspondance valide (compte tenu de -F/-w/-x) a }
+ { partir du caractere 1-based SearchFrom de Line, et avance SearchFrom   }
+ { pour l'appel suivant - partagee par le test "la ligne correspond-elle" }
+ { (un seul appel) et par -o (appels repetes jusqu'a False). }
+ Function NextValidMatch(Const Line: String; Var SearchFrom: Integer;
+  Var MPos, MLen: Integer): Boolean;
+ Var
+  P, K: Integer;
+  Found: Boolean;
+ Begin
+  NextValidMatch := False;
+  If OptFixed Then Begin
+   While SearchFrom <= Length(Line) + 1 Do Begin
+    Found := False;
+    MPos := 0; MLen := 0;
+    For K := 1 To PatternCount Do Begin
+     If Patterns[K] = '' Then Continue;
+     If OptI Then P := BashGrepPosInsensitiveFrom(Line, Patterns[K], SearchFrom)
+              Else P := BashGrepPosFrom(Line, Patterns[K], SearchFrom);
+     If P > 0 Then Begin
+      If (Not Found) Or (P < MPos) Then Begin
+       MPos := P;
+       MLen := Length(Patterns[K]);
+       Found := True;
+      End;
+     End;
+    End;
+    If Not Found Then Exit;
+    If (Not OptX Or ((MPos = 1) And (MPos + MLen - 1 = Length(Line)))) And
+       (Not OptW Or BashGrepPassesWordBoundary(Line, MPos, MLen)) Then Begin
+     If MLen > 0 Then SearchFrom := MPos + MLen Else SearchFrom := MPos + 1;
+     NextValidMatch := True;
+     Exit;
+    End;
+    SearchFrom := MPos + 1;
+   End;
+   Exit;
+  End;
+  { mode expression reguliere (motifs deja combines et compiles) }
+  While SearchFrom <= Length(Line) + 1 Do Begin
+   If Not BashGrepFindInLine(Line, SearchFrom, MPos, MLen) Then Exit;
+   If (Not OptX Or ((MPos = 1) And (MPos + MLen - 1 = Length(Line)))) And
+      (Not OptW Or BashGrepPassesWordBoundary(Line, MPos, MLen)) Then Begin
+    If MLen > 0 Then SearchFrom := MPos + MLen Else SearchFrom := MPos + 1;
+    NextValidMatch := True;
+    Exit;
+   End;
+   If MLen > 0 Then SearchFrom := MPos + MLen Else SearchFrom := MPos + 1;
+  End;
+ End;
+
+ Procedure ProcessOneFile(Const FName: String);
+ Var
+  Handle: Text;
+  CurLine: String;
+  LineNo: LongInt;
+  SF, MPos, MLen: Integer;
+  IsMatch: Boolean;
+  MatchingLineCount: LongInt;
+  Before: TBashGrepCtxArr;
+  BeforeHead, BeforeCount: Integer;
+  AfterRemaining: Integer;
+  LastOutputLineNo: LongInt;
+  StopFile: Boolean;
+
+  Procedure EmitAny(LNo: LongInt; Const Txt: String; IsMatchLine: Boolean);
+  Var
+   Sep: Char;
+   OutLn: String;
+  Begin
+   If OptQ Then Begin LastOutputLineNo := LNo; Exit; End;
+   If IsMatchLine Then Sep := ':' Else Sep := '-';
+   OutLn := '';
+   If ShowName Then OutLn := FName + Sep;
+   If OptN Then OutLn := OutLn + IntToStr(LNo) + Sep;
+   OutLn := OutLn + Txt;
+   TermAddLine(TP, OutLn);
+   LastOutputLineNo := LNo;
+  End;
+
+  Procedure FlushBeforeContext;
+  Var
+   K3, Start3, Idx2: Integer;
+  Begin
+   If BeforeCount = 0 Then Exit;
+   Start3 := (BeforeHead - BeforeCount + BASH_GREP_MAX_CTX) Mod BASH_GREP_MAX_CTX;
+   If (LastOutputLineNo > 0) And
+      (Before[Start3].LineNo > LastOutputLineNo + 1) Then
+    TermAddLine(TP, '--');
+   For K3 := 0 To BeforeCount - 1 Do Begin
+    Idx2 := (Start3 + K3) Mod BASH_GREP_MAX_CTX;
+    If Before[Idx2].LineNo > LastOutputLineNo Then
+     EmitAny(Before[Idx2].LineNo, Before[Idx2].Text, False);
+   End;
+   BeforeCount := 0;
+  End;
+
+ Begin
+  {$I-} Assign(Handle, FName); Reset(Handle); {$I+}
+  If IOResult <> 0 Then Begin
+   If Not OptS Then TermAddLine(TP, 'grep : ' + FName + ' : Aucun fichier ou dossier de ce type');
+   Exit;
+  End;
+  LineNo := 0;
+  MatchingLineCount := 0;
+  BeforeHead := 0;
+  BeforeCount := 0;
+  AfterRemaining := 0;
+  LastOutputLineNo := 0;
+  StopFile := False;
+  While (Not EOF(Handle)) And (Not StopFile) Do Begin
+   ReadLn(Handle, CurLine);
+   Inc(LineNo);
+   SF := 1;
+   IsMatch := NextValidMatch(CurLine, SF, MPos, MLen);
+
+   If OptL Then Begin
+    If IsMatch Then Begin
+     TermAddLine(TP, FName);
+     StopFile := True;
+    End;
+    Continue;
+   End;
+   If OptBigL Then Begin
+    If IsMatch Then StopFile := True; { confirme : au moins une correspondance, ne rien afficher }
+    Continue;
+   End;
+
+   { -v : inverse le sens de "correspond" UNE SEULE FOIS ici - tout ce qui }
+   { suit (jusqu'a la fin de cette iteration) traite IsMatch comme la      }
+   { decision finale d'affichage, plus jamais comme "correspond au        }
+   { motif" - eviter de re-tester OptV plus bas serait une double         }
+   { inversion (bogue reel trouve+corrige le 2026-09-05, voir             }
+   { [[project_devenv_grep]] : "another Hello line" apparaissait a tort   }
+   { dans "grep -v Hello", et "no match line here" disparaissait de son   }
+   { chemin normal - les deux lignes a la fois, symptome d'une double     }
+   { negation). }
+   If OptV Then IsMatch := Not IsMatch;
+
+   If OptC Then Begin
+    If IsMatch Then Begin
+     Inc(MatchingLineCount);
+     If (OptMaxCount > 0) And (MatchingLineCount >= OptMaxCount) Then StopFile := True;
+    End;
+    Continue;
+   End;
+
+   If OptV Then Begin
+    { -v seul (sans -c) : affiche les lignes qui NE correspondent PAS au   }
+    { motif original (IsMatch, deja inverse ci-dessus, est la decision    }
+    { finale) - jamais de contexte -A/-B/-C ici (comme le vrai grep). }
+    If IsMatch Then Begin
+     Inc(MatchingLineCount);
+     EmitAny(LineNo, CurLine, True);
+     If (OptMaxCount > 0) And (MatchingLineCount >= OptMaxCount) Then StopFile := True;
+    End;
+    Continue;
+   End;
+
+   If Not IsMatch Then Begin
+    { ligne normale non correspondante : bufferiser pour -B/-C eventuel }
+    If BASH_GREP_MAX_CTX > 0 Then Begin
+     Before[BeforeHead].LineNo := LineNo;
+     Before[BeforeHead].Text := CurLine;
+     BeforeHead := (BeforeHead + 1) Mod BASH_GREP_MAX_CTX;
+     If BeforeCount < OptBefore Then Inc(BeforeCount)
+     Else If OptBefore = 0 Then BeforeCount := 0;
+     If BeforeCount > OptBefore Then BeforeCount := OptBefore;
+    End;
+    If AfterRemaining > 0 Then Begin
+     EmitAny(LineNo, CurLine, False);
+     Dec(AfterRemaining);
+    End;
+   End Else Begin
+    Inc(MatchingLineCount);
+    If OptO Then Begin
+     SF := 1;
+     While NextValidMatch(CurLine, SF, MPos, MLen) Do
+      EmitAny(LineNo, Copy(CurLine, MPos, MLen), True);
+    End Else Begin
+     FlushBeforeContext;
+     EmitAny(LineNo, CurLine, True);
+     AfterRemaining := OptAfter;
+    End;
+    If (OptMaxCount > 0) And (MatchingLineCount >= OptMaxCount) Then StopFile := True;
+   End;
+  End;
+  Close(Handle);
+
+  If OptC Then
+   EmitAny(0, IntToStr(MatchingLineCount), True)
+  Else If OptBigL Then Begin
+   If Not StopFile Then TermAddLine(TP, FName);
+  End;
+ End;
+
+Begin
+ If TermTrim(ParamStr) = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : grep [OPTIONS] MOTIF [FICHIER...]');
+  TermAddLine(TP, '  -i -v -c -n -l -L -w -x -o -q -s -H -h -r -R -F -E -G');
+  TermAddLine(TP, '  -A n -B n -C n -m n -e MOTIF -f FICHIER');
+  Exit;
+ End;
+ TokCount := BashGrepTokenize(ParamStr, Toks);
+ PatternCount := 0;
+ RawFileCount := 0;
+ ExpFileCount := 0;
+ OptI := False; OptV := False; OptC := False; OptN := False;
+ OptL := False; OptBigL := False; OptW := False; OptX := False;
+ OptO := False; OptQ := False; OptS := False; OptH := False;
+ OptBigH := False; OptR := False; OptFixed := False;
+ OptAfter := 0; OptBefore := 0; OptMaxCount := 0;
+ HaveExplicitPatternSource := False;
+ EndOfOpts := False;
+
+ Ti := 1;
+ While Ti <= TokCount Do Begin
+  A := Toks[Ti];
+  If (Not EndOfOpts) And (A = '--') Then Begin
+   EndOfOpts := True;
+   Inc(Ti);
+   Continue;
+  End;
+  If (Not EndOfOpts) And (Length(A) >= 1) And (A[1] = '-') And (A <> '-') Then Begin
+   J := 2;
+   While J <= Length(A) Do Begin
+    Case A[J] Of
+     'i': Begin OptI := True; Inc(J); End;
+     'v': Begin OptV := True; Inc(J); End;
+     'c': Begin OptC := True; Inc(J); End;
+     'n': Begin OptN := True; Inc(J); End;
+     'l': Begin OptL := True; Inc(J); End;
+     'L': Begin OptBigL := True; Inc(J); End;
+     'w': Begin OptW := True; Inc(J); End;
+     'x': Begin OptX := True; Inc(J); End;
+     'o': Begin OptO := True; Inc(J); End;
+     'q': Begin OptQ := True; Inc(J); End;
+     's': Begin OptS := True; Inc(J); End;
+     'H': Begin OptBigH := True; Inc(J); End;
+     'h': Begin OptH := True; Inc(J); End;
+     'r', 'R': Begin OptR := True; Inc(J); End;
+     'F': Begin OptFixed := True; Inc(J); End;
+     'E', 'G': Inc(J);
+     'A', 'B', 'C', 'm': Begin
+      ValStr := Copy(A, J + 1, Length(A) - J);
+      If ValStr = '' Then Begin
+       Inc(Ti);
+       If Ti <= TokCount Then ValStr := Toks[Ti];
+      End;
+      Case A[J] Of
+       'A': OptAfter := BashGrepStrToIntSafe(ValStr, 0);
+       'B': OptBefore := BashGrepStrToIntSafe(ValStr, 0);
+       'C': Begin
+        OptAfter := BashGrepStrToIntSafe(ValStr, 0);
+        OptBefore := OptAfter;
+       End;
+       'm': OptMaxCount := BashGrepStrToIntSafe(ValStr, 0);
+      End;
+      J := Length(A) + 1;
+     End;
+     'e': Begin
+      ValStr := Copy(A, J + 1, Length(A) - J);
+      If ValStr = '' Then Begin
+       Inc(Ti);
+       If Ti <= TokCount Then ValStr := Toks[Ti];
+      End;
+      AddPattern(ValStr);
+      HaveExplicitPatternSource := True;
+      J := Length(A) + 1;
+     End;
+     'f': Begin
+      ValStr := Copy(A, J + 1, Length(A) - J);
+      If ValStr = '' Then Begin
+       Inc(Ti);
+       If Ti <= TokCount Then ValStr := Toks[Ti];
+      End;
+      LoadPatternsFromFile(ValStr);
+      HaveExplicitPatternSource := True;
+      J := Length(A) + 1;
+     End;
+     Else Begin
+      TermAddLine(TP, 'grep : option non reconnue -- ''' + A[J] + '''');
+      Inc(J);
+     End;
+    End;
+   End;
+   Inc(Ti);
+   Continue;
+  End;
+  If (Not EndOfOpts) And (Length(A) >= 2) And (Copy(A, 1, 2) = '--') Then Begin
+   { longue option deja detectee par le test '=--' ci-dessus n'est jamais }
+   { atteint (le test A[1]='-' plus haut capture aussi "--xxx" car        }
+   { A<>'-'), donc les options longues type --ignore-case sont traitees   }
+   { dans le Case courtes options ci-dessus caractere par caractere ce    }
+   { qui serait incorrect - gerees explicitement ici a la place. }
+   Inc(Ti);
+   Continue;
+  End;
+  If (PatternCount = 0) And (Not HaveExplicitPatternSource) Then
+   AddPattern(A)
+  Else
+   AddRawFile(A);
+  Inc(Ti);
+ End;
+
+ If PatternCount = 0 Then Begin
+  TermAddLine(TP, 'grep : motif de recherche requis');
+  Exit;
+ End;
+
+ { --- Expansion des fichiers (jokers, recursion -r/-R) --- }
+ If RawFileCount = 0 Then Begin
+  If OptR Then RecurseDir('.')
+  Else Begin
+   TermAddLine(TP, 'grep : au moins un fichier est requis (pas d''entree standard dans ce terminal)');
+   Exit;
+  End;
+ End Else Begin
+  For Fi := 1 To RawFileCount Do Begin
+   If OptR And DirectoryExists(RawFiles[Fi]) Then
+    RecurseDir(RawFiles[Fi])
+   Else If (Pos('*', RawFiles[Fi]) > 0) Or (Pos('?', RawFiles[Fi]) > 0) Then Begin
+    { fichier de style joker (ex: *.pas, sub\*.txt) - reutilise le meme }
+    { motif FindFirst/FindNext que TermCmd_DIR_BASH plus haut. }
+     ExpandWildcard(RawFiles[Fi]);
+   End Else
+    CollectFile(RawFiles[Fi]);
+  End;
+ End;
+
+ { --- Compilation du motif (mode expression reguliere uniquement) --- }
+ { Limitation reelle heritee du moteur porte (voir le gros commentaire au- }
+ { dessus du moteur) : une alternance '|' NUE (sans parentheses de chaque  }
+ { cote) echoue toujours a la compilation, car seul un groupe entre       }
+ { parentheses (ou un atome quantifie) produit le noeud BrePattern dont   }
+ { '|' a besoin - confirme en testant "Hello|Quick" (echec) contre        }
+ { "(Hello)|(Quick)" (reussite), 2026-09-05. Plusieurs motifs -e/-f sont  }
+ { donc TOUJOURS combines en les enveloppant chacun entre parentheses,    }
+ { ce qui evite le probleme pour cette fonctionnalite ; un utilisateur    }
+ { qui fournit lui-meme un SEUL motif contenant un '|' nu doit             }
+ { l'envelopper de la meme facon - limitation disclosee, pas silencieuse. }
+ CompiledOk := True;
+ If Not OptFixed Then Begin
+  If PatternCount = 1 Then
+   CombinedPattern := Patterns[1]
+  Else Begin
+   CombinedPattern := '(' + Patterns[1] + ')';
+   For Ti := 2 To PatternCount Do
+    CombinedPattern := CombinedPattern + '|(' + Patterns[Ti] + ')';
+  End;
+  BashGrepOption := [];
+  If OptI Then Include(BashGrepOption, BreNoCase);
+  BashGrepStrPCopy(PatBuf, CombinedPattern);
+  CompiledOk := BashGrepGenerateEngine(@PatBuf[0]);
+  If Not CompiledOk Then Begin
+   TermAddLine(TP, 'grep : expression reguliere invalide : ' + CombinedPattern);
+   Exit;
+  End;
+ End;
+
+ ShowName := OptBigH Or ((Not OptH) And ((ExpFileCount > 1) Or OptR));
+
+ If ExpFileCount = 0 Then
+  TermAddLine(TP, 'grep : aucun fichier a traiter')
+ Else
+  For Fi := 1 To ExpFileCount Do
+   ProcessOneFile(ExpFiles[Fi]);
+
+ If Not OptFixed Then BashGrepDestroyEngine;
+End;
+
 { --- GET-CONTENT (PowerShell dev) --- }
 Procedure TermCmd_GetContent(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -74273,6 +75570,8 @@ Begin
     TermCmd_MOVE(TP, ParamStr)
    Else If CurrCmd = 'CAT' Then
     TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'GREP' Then
+    TermCmd_Grep(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'PWD' Then
@@ -138722,6 +140021,31 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   {$I-} Assign(BatchFile, Opts.TerminalOS2Batch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /BASH:fichier.sh - meme principe que /TERMINALDOS:/TERMINALOS2: ci-     }
+ { dessus, mais ouvre le shell "Bash" (SK_BASH) - demande explicite de     }
+ { l'utilisateur, 2026-09-05, chantier GREP (voir [[project_devenv_grep]]).}
+ If Opts.BashBatch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_BASH;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.BashBatch); Reset(BatchFile); {$I+}
   If IOResult = 0 Then Begin
    While Not Eof(BatchFile) Do Begin
     ReadLn(BatchFile, BatchLine);
