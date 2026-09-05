@@ -1,0 +1,390 @@
+==============================================================================
+     FORMAT DE BASE DU FICHIER MYI DE MYSQL / MyISAM
+==============================================================================
+
+Ce document décrit le fichier .MYI (MyISAM Index), qui accompagne un .MYD
+(voir DOC/MYD_FORMAT.txt) dans une table MyISAM classique.
+
+NIVEAU DE CONFIANCE DE CE DOCUMENT
+-----------------------------------
+
+Contrairement aux quatre autres documents DOC/*_FORMAT.txt de ce dépôt
+(écrits à partir d'une spécification fournie ou de fichiers réels du
+dossier Reilly pour Btrieve), ce document a été complété en cours de
+rédaction en consultant directement le CODE SOURCE RÉEL du dépôt officiel
+mysql/mysql-server (branche trunk, récupéré via le web pendant cette
+session) : storage/myisam/myisamdef.h, storage/myisam/mi_open.cc,
+storage/myisam/mi_statrec.cc, storage/myisam/mi_packrec.cc,
+include/myisam.h et include/my_base.h. Les structures et offsets marqués
+[FIABLE] ci-dessous sont recopiés depuis les fonctions de (dé)sérialisation
+réelles (mi_state_info_write/read, mi_base_info_write/read,
+mi_keydef_write/read, mi_uniquedef_write/read, mi_keyseg_write/read,
+mi_recinfo_write/read), pas devinés.
+
+Il reste néanmoins des zones [INCERTAIN] : le code exact du calcul de
+disposition d'un enregistrement FIXED avec bitmap NULL ou colonnes VARCHAR
+(dans _mi_unpack_record, non consulté avec assez de détail), et les valeurs
+numériques exactes de l'énumération en_fieldtype (FIELD_NORMAL,
+FIELD_VARCHAR, etc. - leur EXISTENCE est confirmée par mi_packrec.cc, mais
+pas leurs valeurs entières ni l'ordre exact de déclaration). Aucun fichier
+.MYI réel n'a été utilisé pour une vérification empirique indépendante du
+code source - seul le code source lui-même a servi de référence.
+
+RÈGLE D'IMPLÉMENTATION DÉCOULANT DE CES ZONES [INCERTAIN] : le lecteur
+GridOpen_Myd de ce projet n'exploite QUE les zones [FIABLE] ci-dessous. Il
+calcule, pour chaque table FIXED sans colonne NULLable (null_bit=0 partout,
+vérifié), la somme des longueurs de colonnes et la compare à
+pack_reclength - 1 (le -1 pour l'octet de suppression, section 4). Si cette
+somme correspond EXACTEMENT, la disposition est acceptée avec confiance :
+elle ne peut alors contenir ni bitmap NULL ni octet de longueur VARCHAR
+caché, par construction arithmétique, sans avoir besoin de connaître
+en_fieldtype. Si la somme ne correspond pas, ou si le format n'est pas
+FIXED, ou si une colonne a null_bit<>0, le fichier est refusé avec un
+message explicite plutôt que deviné - même discipline que partout ailleurs
+dans ce chantier (versions DBF inconnues, Btrieve 6.x/VAT, Clarion REAL de
+taille atypique).
+
+Sources consultées directement pendant la rédaction (voir chaque section) :
+
+  storage/myisam/myisamdef.h    structures MI_STATE_INFO/MI_BASE_INFO en
+                                 mémoire, constantes *_SIZE
+  storage/myisam/mi_open.cc     mi_state_info_write/read,
+                                 mi_base_info_write/read,
+                                 mi_keydef_write/read, mi_uniquedef_write/
+                                 read, mi_keyseg_write/read,
+                                 mi_recinfo_write/read, mi_open_share
+                                 (ordre de lecture sequentiel, detection
+                                 FIXED/DYNAMIC/COMPRESSED)
+  storage/myisam/mi_statrec.cc  _mi_read_static_record (octet 0 = marque
+                                 de suppression)
+  storage/myisam/mi_packrec.cc  confirmation de l existence de en_fieldtype
+                                 et de ses noms (valeurs non confirmees)
+  include/myisam.h              structures MI_KEYDEF/MI_COLUMNDEF en
+                                 memoire
+  include/my_base.h             HA_OPTION_PACK_RECORD=1,
+                                 HA_OPTION_COMPRESS_RECORD=4
+
+==============================================================================
+TABLE DES MATIÈRES
+==============================================================================
+
+  1.  Rôle du MYI (rappel de DOC/MYD_FORMAT.txt)          [FIABLE]
+  2.  En-tête de fichier (Fileheader, 24 octets)           [FIABLE]
+  3.  Bloc d'état MI_STATE_INFO                            [FIABLE/partiel]
+  4.  Bloc de base MI_BASE_INFO (100 octets)                [FIABLE]
+  5.  Détection FIXED / DYNAMIC / COMPRESSED                [FIABLE]
+  6.  Descripteurs de clés et de segments                   [FIABLE]
+  7.  Descripteurs de colonnes MI_COLUMNDEF (7 octets)      [FIABLE/partiel]
+  8.  Ordre de lecture séquentiel complet                   [FIABLE]
+  9.  Stratégie de lecture retenue pour ce projet           [FIABLE]
+ 10.  Limites et travaux futurs                             [FIABLE]
+
+==============================================================================
+1. RÔLE DU MYI (RAPPEL DE DOC/MYD_FORMAT.txt)
+==============================================================================
+[FIABLE]
+
+Le MYI porte les métadonnées nécessaires pour interpréter physiquement le
+MYD associé : compteurs de lignes, longueur logique utilisée du MYD,
+reclength/pack_reclength, nombre de champs et leur longueur, et les index
+eux-mêmes (jamais nécessaires à ce projet, qui lit uniquement dans l'ordre
+physique - voir section 9). Sans un MYI lisible et compris, un MYD ne peut
+pas être interprété de façon fiable (DOC/MYD_FORMAT.txt, section 12).
+
+==============================================================================
+2. EN-TÊTE DE FICHIER (FILEHEADER, 24 OCTETS)
+==============================================================================
+[FIABLE - recopié de MI_STATE_INFO::header dans myisamdef.h]
+
+Les 24 premiers octets du MYI, little-endian :
+
+Offset Taille Nom                  Description
+------ ------ -------------------- -----------------------------------------
+$00    4      file_version         Version du format de fichier
+$04    2      options              Bitmap HA_OPTION_* (voir section 5)
+$06    2      header_length        Longueur totale de l en-tete complet
+$08    2      state_info_length    Longueur du bloc MI_STATE_INFO
+$0A    2      base_info_length     Longueur du bloc MI_BASE_INFO (=100, §4)
+$0C    2      base_pos             Offset ABSOLU (depuis le debut du
+                                    fichier) du bloc MI_BASE_INFO - a
+                                    utiliser directement, jamais recalcule
+$0E    2      key_parts            Nombre total de KEYPART parmi les cles
+$10    2      unique_key_parts     Nombre total de segments parmi les uniques
+$12    1      keys                 Nombre de cles (MI_KEYDEF)
+$13    1      uniques              Nombre d index uniques (MI_UNIQUEDEF)
+$14    1      language             Identifiant de jeu de caracteres/collation
+$15    1      max_block_size_index Nombre de tailles de bloc utilisees
+$16    1      fulltext_keys        Nombre de cles fulltext
+$17    1      not_used             Reserve
+
+base_pos est la seule valeur strictement necessaire pour localiser
+MI_BASE_INFO sans avoir a reproduire tout le decodage variable de
+MI_STATE_INFO (section 3) - c'est le choix retenu par ce projet (section 9).
+
+==============================================================================
+3. BLOC D'ÉTAT MI_STATE_INFO
+==============================================================================
+[FIABLE pour le prefixe fixe ; la partie finale est de taille VARIABLE et
+n est pas necessaire a ce projet, voir section 9]
+
+Immediatement apres le Fileheader (donc a partir de l offset 24), toujours
+dans cet ordre exact (recopie de mi_state_info_write/read) :
+
+Offset  Taille  Nom               Description
+------  ------  ----------------- -------------------------------------------
++$00    2       open_count        Compteur d ouvertures concurrentes
++$02    1       changed           Indicateur de modification non vidangee
++$03    1       sortkey           Cle de tri active, ou 0
++$04    8       records           NOMBRE DE LIGNES ACTIVES (little-endian)
++$0C    8       del               Nombre de lignes supprimees
++$14    8       split             Nombre de "splits" d index
++$1C    8       dellink           Tete de la liste des lignes supprimees
+                                   ($FFFFFFFFFFFFFFFF = liste vide)
++$24    8       key_file_length   Longueur utilisee du MYI
++$2C    8       data_file_length  LONGUEUR UTILISEE DU MYD (§9 : essentiel
+                                   pour borner RecordCount contre la taille
+                                   reelle du fichier, meme discipline que
+                                   DBF/Clarion/Btrieve)
++$34    8       empty             Octets libres dans le MYD
++$3C    8       key_empty         Octets libres dans le MYI
++$44    8       auto_increment    Valeur AUTO_INCREMENT courante
++$4C    8       checksum          Somme de controle de la table
++$54    4       process           Identifiant du dernier processus ecrivain
++$58    4       unique            Compteur d unicite interne
++$5C    4       status            Bitmap d etat interne
++$60    4       update_count      Compteur de mises a jour
+
+Soit un prefixe fixe de 24+2+1+1+8*8+8+8+4*4 = 100 octets (offsets $00 a
+$63 relatifs au debut de MI_STATE_INFO, soit fichier $18 a $7B). Suivent
+ensuite une zone de state_diff_length octets (reservee, ignoree ici), puis
+des tableaux key_root[]/key_del[] de taille variable (keys et
+max_block_size_index entrees de 8 octets chacune) et, selon un indicateur
+d ecriture interne non expose sur disque de facon fixe, un bloc etendu
+(sec_index_changed, version, key_map, dates, rec_per_key_part[]). Cette
+partie variable N EST PAS necessaire a ce projet (section 9) : seul
+base_pos (section 2) sert a localiser la suite.
+
+==============================================================================
+4. BLOC DE BASE MI_BASE_INFO (100 OCTETS)
+==============================================================================
+[FIABLE - recopie de mi_base_info_write/my_n_base_info_read, verifie par
+somme : 5*8 + 8*4 + 4 + 4*2 + 16 = 100, exactement MI_BASE_INFO_SIZE]
+
+A l offset ABSOLU base_pos (section 2), toujours dans cet ordre exact,
+little-endian :
+
+Offset   Taille  Nom                   Description
+-------  ------  --------------------- ---------------------------------------
+base_pos+$00  8  keystart              Offset ABSOLU de debut des pages
+                                        d index B-tree dans le MYI
+base_pos+$08  8  max_data_file_length  Taille maximale prevue du MYD
+base_pos+$10  8  max_key_file_length   Taille maximale prevue du MYI
+base_pos+$18  8  records               Estimation du nombre de lignes
+base_pos+$20  8  reloc                 Parametre de reallocation
+base_pos+$28  4  mean_row_length       Longueur moyenne estimee d une ligne
+base_pos+$2C  4  reclength             LONGUEUR LOGIQUE d une ligne (avant
+                                        tout bourrage d alignement)
+base_pos+$30  4  pack_reclength        LONGUEUR PHYSIQUE d un emplacement
+                                        FIXED (inclut l octet de suppression,
+                                        DOC/MYD_FORMAT.txt §4)
+base_pos+$34  4  min_pack_length       Longueur compactee minimale (DYNAMIC)
+base_pos+$38  4  max_pack_length       Longueur compactee maximale (DYNAMIC)
+base_pos+$3C  4  min_block_length      Longueur minimale d un bloc (DYNAMIC)
+base_pos+$40  4  fields                NOMBRE DE COLONNES (MI_COLUMNDEF)
+base_pos+$44  4  pack_fields           Nombre de colonnes compactees
+base_pos+$48  1  rec_reflength         Largeur d une reference de ligne
+base_pos+$49  1  key_reflength         Largeur d une reference d index
+base_pos+$4A  1  keys                  Nombre de cles (redondant avec §2)
+base_pos+$4B  1  auto_key              Numero de la cle AUTO_INCREMENT, ou 0
+base_pos+$4C  2  pack_bits             Nombre de bits de compactage
+base_pos+$4E  2  blobs                 Nombre de colonnes BLOB/TEXT
+base_pos+$50  2  max_key_block_length  Taille maximale d un bloc d index
+base_pos+$52  2  max_key_length        Longueur maximale d une cle
+base_pos+$54  2  extra_alloc_bytes     Octets supplementaires alloues
+base_pos+$56  1  extra_alloc_procent   Pourcentage supplementaire alloue
+base_pos+$57  13 (reserve)             Zeros
+
+reclength et pack_reclength emploient ici mi_int4store (4 octets), a la
+difference des DWORD "word-swapped" de Btrieve (DOC/BTRIEVE_FORMAT.txt
+§3.2) - MyISAM n a pas cette particularite, tout y est little-endian
+ordinaire (confirme par le code source, contrairement a Btrieve qui a ete
+verifie contre des fichiers reels avec cette permutation constatee).
+
+==============================================================================
+5. DÉTECTION FIXED / DYNAMIC / COMPRESSED
+==============================================================================
+[FIABLE - recopie de mi_open_share et include/my_base.h]
+
+Le champ options du Fileheader (section 2, offset $04, WORD little-endian)
+est un bitmap HA_OPTION_* :
+
+  HA_OPTION_PACK_RECORD     = $0001
+  HA_OPTION_PACK_KEYS       = $0002
+  HA_OPTION_COMPRESS_RECORD = $0004
+  HA_OPTION_CHECKSUM        = $0020
+  HA_OPTION_DELAY_KEY_WRITE = $0040
+  HA_OPTION_NO_PACK_KEYS    = $0080
+
+Decision exacte prise par mi_open_share (recopiee sans interpretation) :
+
+  si (options AND HA_OPTION_COMPRESS_RECORD) <> 0 alors COMPRESSED
+  sinon si (options AND HA_OPTION_PACK_RECORD) <> 0 alors DYNAMIC
+  sinon FIXED (statique)
+
+==============================================================================
+6. DESCRIPTEURS DE CLÉS ET DE SEGMENTS
+==============================================================================
+[FIABLE - recopie de mi_keydef_write/read, mi_uniquedef_write/read,
+mi_keyseg_write/read - JAMAIS necessaire au contenu des donnees, seulement
+a les SAUTER correctement pour atteindre MI_COLUMNDEF, section 7]
+
+Immediatement apres MI_BASE_INFO (base_pos + 100), dans cet ordre :
+
+MI_KEYDEF (12 octets), un par cle (keys fois, section 2) :
+
+  +$00  1  keysegs       Nombre de segments de CETTE cle (pilote le nombre
+                          de HA_KEYSEG qui suivent immediatement)
+  +$01  1  key_alg       BTREE ou RTREE
+  +$02  2  flag          Drapeaux (NOSAME, PACK_USED, ...)
+  +$04  2  block_length  Longueur d un bloc d index pour cette cle
+  +$06  2  keylength     Longueur totale des segments de cle
+  +$08  2  minlength     Longueur minimale compactee
+  +$0A  2  maxlength     Longueur maximale compactee
+
+HA_KEYSEG (18 octets), keysegs fois immediatement apres chaque MI_KEYDEF :
+
+  +$00  1  type          Type du segment
+  +$01  1  language_lo   Collation, octet faible
+  +$02  1  null_bit      Bit NULL de ce segment
+  +$03  1  bit_start     Position de depart du bit NULL
+  +$04  1  language_hi   Collation, octet fort
+  +$05  1  bit_length    Longueur en bits
+  +$06  2  flag          Drapeaux du segment
+  +$08  2  length        Longueur du segment
+  +$0A  4  start         Offset du segment dans l enregistrement
+  +$0E  4  null_pos      Position du bit NULL (ou bit_pos si null_bit=0)
+
+MI_UNIQUEDEF (4 octets), un par index unique (uniques fois, section 2) :
+
+  +$00  2  keysegs       Nombre de segments de CET index unique (pilote le
+                          nombre de HA_KEYSEG qui suivent, meme structure
+                          18 octets que ci-dessus)
+  +$02  1  key           Numero de la cle B-tree associee
+  +$03  1  null_are_equal Deux NULL sont-ils consideres egaux
+
+Pour atteindre MI_COLUMNDEF (section 7), il faut donc parcourir
+sequentiellement les "keys" MI_KEYDEF (chacun suivi de ses propres
+HA_KEYSEG), PUIS les "uniques" MI_UNIQUEDEF (chacun suivi de ses propres
+HA_KEYSEG) - jamais une simple multiplication, le nombre de segments variant
+par cle/index.
+
+==============================================================================
+7. DESCRIPTEURS DE COLONNES MI_COLUMNDEF (7 OCTETS)
+==============================================================================
+[FIABLE pour la disposition binaire (recopiee de mi_recinfo_write/read) ;
+INCERTAIN pour la signification exacte des valeurs de "type"]
+
+Immediatement apres le dernier MI_UNIQUEDEF (ou apres le dernier MI_KEYDEF
+si uniques=0), "fields" descripteurs de 7 octets chacun (section 4) :
+
+  +$00  2  type      Code de champ interne (enum en_fieldtype - valeurs
+                      exactes NON confirmees, voir avertissement en tete)
+  +$02  2  length    Longueur physique de la colonne, en octets
+  +$04  1  null_bit  Non nul si la colonne accepte NULL (bit dans un
+                      bitmap - la disposition exacte de ce bitmap n est
+                      PAS documentee ici, voir la regle de la section 9)
+  +$05  2  null_pos  Position du bit NULL
+
+Le NOM SQL de chaque colonne n est PAS stocke dans le MYI (rappel de
+DOC/MYD_FORMAT.txt section 10) : meme un decodage MI_COLUMNDEF parfait ne
+donnerait jamais que des types/longueurs, jamais un nom de colonne
+lisible - d ou le recours a des noms generiques ("ChampN") par ce projet.
+
+Le champ "offset" de la structure MI_COLUMNDEF EN MEMOIRE (include/myisam.h)
+n est PAS stocke sur disque : il est recalcule sequentiellement a
+l ouverture (mi_open_share) en accumulant les "length" successifs dans
+l ordre du tableau, a partir de zero. Ce projet fait de meme (section 9),
+mais decale le point de depart de 1 octet pour tenir compte de la marque
+de suppression en tete de chaque enregistrement FIXED (DOC/MYD_FORMAT.txt
+section 4, confirme par _mi_read_static_record dans mi_statrec.cc : l
+octet 0 du record vaut zero si et seulement si la ligne est supprimee).
+
+==============================================================================
+8. ORDRE DE LECTURE SÉQUENTIEL COMPLET
+==============================================================================
+[FIABLE - recopie de la sequence reelle dans mi_open_share]
+
+  1. Fileheader (24 octets, offset 0) - section 2
+  2. Prefixe fixe de MI_STATE_INFO (offset 24) - section 3 (le reste de
+     MI_STATE_INFO, de taille variable, est ignore par ce projet)
+  3. MI_BASE_INFO a l offset ABSOLU base_pos (100 octets) - section 4
+  4. "keys" x [MI_KEYDEF (12 octets) + son propre nombre de HA_KEYSEG (18
+     octets chacun)] - section 6
+  5. "uniques" x [MI_UNIQUEDEF (4 octets) + son propre nombre de HA_KEYSEG
+     (18 octets chacun)] - section 6
+  6. "fields" x MI_COLUMNDEF (7 octets chacun) - section 7
+  7. Pages d index B-tree, a partir de l offset ABSOLU keystart (base.$00)
+     - jamais necessaires a ce projet (meme principe que Clarion .K??/.I??
+     et Btrieve : lire les donnees dans leur ordre PHYSIQUE suffit).
+
+==============================================================================
+9. STRATÉGIE DE LECTURE RETENUE POUR CE PROJET
+==============================================================================
+[FIABLE - decision de portee du projet]
+
+GridOpen_Myd (voir le chantier "grille de donnees" dans DEVENV.PAS) :
+
+  1. Refuse si le .MYI frere est absent (deja une regle du plan).
+  2. Decode le Fileheader + le prefixe fixe de MI_STATE_INFO + MI_BASE_INFO
+     + saute les MI_KEYDEF/MI_UNIQUEDEF (sections 2 a 6 ci-dessus, toutes
+     [FIABLE]) pour atteindre MI_COLUMNDEF.
+  3. Refuse explicitement si le format n est pas FIXED (section 5) :
+     DYNAMIC exige de rejouer le decoupage en blocs chaines ET le
+     decompactage pilote par en_fieldtype (INCERTAIN, section 7) ;
+     COMPRESSED exige les tables de Huffman du MYI (hors de portee de
+     toute facon, DOC/MYD_FORMAT.txt section 8).
+  4. Lit les "fields" MI_COLUMNDEF. Refuse explicitement si une seule
+     colonne a null_bit <> 0 (disposition du bitmap NULL non confirmee,
+     section 7).
+  5. Verifie que pack_reclength - 1 = somme des "length" de toutes les
+     colonnes, EXACTEMENT. Cette egalite ne peut etre vraie que si
+     l enregistrement ne contient ni bitmap NULL (deja exclu a l etape 4)
+     ni octet de longueur VARCHAR cache (DOC/MYD_FORMAT.txt section 4) -
+     une verification arithmetique qui remplace la connaissance des
+     valeurs exactes de en_fieldtype, jamais une supposition. Si l egalite
+     est fausse, refuse explicitement (disposition plus complexe que ce
+     que ce lecteur sait decoder avec confiance).
+  6. Si tout concorde, chaque colonne est un bloc d octets bruts a
+     l offset cumule (a partir de 1, apres la marque de suppression) -
+     affiche en hexadecimal comme le secours Btrieve sans DDF (Etape 5),
+     par la meme prudence : le type SQL reel de chaque colonne (entier,
+     texte, binaire...) reste inconnu sans en_fieldtype confirme, afficher
+     du texte devine risquerait de presenter un entier binaire comme du
+     texte errone.
+  7. RecordCount = MI_STATE_INFO.records, borne par
+     (taille reelle du MYD) div pack_reclength, meme discipline
+     defensive que DBF/Clarion/Btrieve (ne jamais faire confiance
+     aveuglement a un compteur d en-tete).
+
+==============================================================================
+10. LIMITES ET TRAVAUX FUTURS
+==============================================================================
+[FIABLE]
+
+Cette V1 ne lit donc que des tables MyISAM FIXED, sans aucune colonne
+NULLable. C'est une portion probablement minoritaire des tables MyISAM
+reelles (VARCHAR/TEXT/BLOB entrainent presque toujours DYNAMIC ; NULL est
+frequent). Pour lever cette limite dans une session future :
+
+  - confirmer les valeurs exactes de l enumeration en_fieldtype (necessite
+    soit un fichier .MYI reel avec une table de reference connue, soit un
+    acces plus complet a mi_packrec.h/myisampack.h ou au code source
+    complet plutot qu une consultation partielle via recherche web);
+  - consulter _mi_unpack_record (probablement dans mi_dynrec.cc ou un
+    fichier de packing generique) pour la disposition exacte du bitmap
+    NULL dans un enregistrement FIXED;
+  - implementer alors le decoupage en blocs chaines DYNAMIC
+    (DOC/MYD_FORMAT.txt sections 5 a 7, deja bien documente) et le
+    decompactage complet pilote par MI_COLUMNDEF.type;
+  - obtenir si possible un couple .MYD/.MYI reel pour valider empiriquement
+    tout ce qui precede, comme cela a ete fait pour Btrieve.
