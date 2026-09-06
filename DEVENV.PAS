@@ -58408,7 +58408,7 @@ Begin
  RecomputeSegmentAddresses;
  GenerateExe(ExeFileName);
  GenerateMapFile(MapFileName);
- WriteLn('Liaison compl�t�');
+ WriteLn('Liaison compl'+#130+'t'+#130);
  If PauseRequested Then
   WriteLn('(/PAUSE demande - ignore dans ce terminal, aucune pause interactive possible.)');
  CleanupTempLibObjFiles;
@@ -60292,32 +60292,32 @@ Function GetErrorMessage(Code:Word):String;Begin
   2:GetErrorMessage:='Fichier introuvable';
   3:GetErrorMessage:='Chemin introuvable';
   4:GetErrorMessage:='Trop de fichiers ouvert';
-  5:GetErrorMessage:='AccŠs refuse';
+  5:GetErrorMessage:='Acc'+#138+'s refuse';
   6:GetErrorMessage:='Handle de fichier invalide';
   12:GetErrorMessage:='Mode d''acces sur disque invalide';
-  15:GetErrorMessage:='Num‚ro de disque invalide';
-  16:GetErrorMessage:='Impossible de supprimer le r‚pertoire';
+  15:GetErrorMessage:='Num'+#130+'ro de disque invalide';
+  16:GetErrorMessage:='Impossible de supprimer le r'+#130+'pertoire';
   17:GetErrorMessage:='Impossible de renommer sur plusieurs volumes';
   100:GetErrorMessage:='Erreur de lecture … partir du disque';
-  101:GetErrorMessage:='Erreur d''‚criture sur le disque';
+  101:GetErrorMessage:='Erreur d'''+#130+'criture sur le disque';
   102:GetErrorMessage:='Fichier non attribue';
   103:GetErrorMessage:='Le fichier n''est pas ouvert';
-  104:GetErrorMessage:='Le fichier n''est pas ouvert … l''entr‚e';
-  105:GetErrorMessage:='Le fichier n''est pas ouvert … la sortie';
-  106:GetErrorMessage:='Num‚ro invalide';
-  150:GetErrorMessage:='Disque protege en ‚criture';
-  151:GetErrorMessage:='P‚riph‚rique est inconnu';
-  152:GetErrorMessage:='Disque pas prˆt';
+  104:GetErrorMessage:='Le fichier n''est pas ouvert '+#133+' l''entr'+#130+'e';
+  105:GetErrorMessage:='Le fichier n''est pas ouvert '+#133+' la sortie';
+  106:GetErrorMessage:='Num'+#130+'ro invalide';
+  150:GetErrorMessage:='Disque protege en '+#130+'criture';
+  151:GetErrorMessage:='P'+#130+'riph'+#130+'rique est inconnu';
+  152:GetErrorMessage:='Disque pas pr'+#136+'t';
   153:GetErrorMessage:='Commande inconnue';
-  154:GetErrorMessage:='Echec de v‚rification CRC';
+  154:GetErrorMessage:='Echec de v'+#130+'rification CRC';
   155:GetErrorMessage:='Disque invalide';
   156:GetErrorMessage:='Erreur de recherche sur disque';
-  157:GetErrorMessage:='Type de m‚dia invalide';
+  157:GetErrorMessage:='Type de m'+#130+'dia invalide';
   158:GetErrorMessage:='Secteur introuvable';
   159:GetErrorMessage:='L''imprimante n''a plus de papier';
-  160:GetErrorMessage:='Erreur d''‚criture sur le p‚ripherique';
-  161:GetErrorMessage:='Erreur de lecture sur le p‚ripherique';
-  162:GetErrorMessage:='D‚faillance mat‚rielle';
+  160:GetErrorMessage:='Erreur d'''+#130+'criture sur le p'+#130+'ripherique';
+  161:GetErrorMessage:='Erreur de lecture sur le p'+#130+'ripherique';
+  162:GetErrorMessage:='D'+#130+'faillance mat'+#130+'rielle';
   Else GetErrorMessage:='Erreur inconnue';
  End;
 End;
@@ -112886,6 +112886,33 @@ Begin
  PSP.HandlePtrSeg := C.Segs.CS;
  PSP.Int21h := $21CD;
  PSP.RETF := $CB;
+ { BOGUE REEL CORRIGE (2026-09-06, demande explicite : "Implementer      }
+ { l'interruption 22h") - le champ Int22h du PSP (egalement Int23h/Int24h}
+ { par le meme mecanisme) existait deja dans TEmuPSPRecord mais restait  }
+ { toujours a zero (jamais rempli par FillChar ci-dessus, jamais ecrit   }
+ { ensuite). Sur un vrai DOS, ces 3 champs recoivent une COPIE des        }
+ { vecteurs INT 22h/23h/24h ACTUELS au moment du chargement, pour que     }
+ { DOS les restaure a la terminaison (voir Emu_DosTerminate) - annulant  }
+ { ainsi tout gestionnaire (ex. Ctrl-Break) que CE programme aurait       }
+ { installe entre-temps. Ecrit via Buffer (octets bruts) plutot que le   }
+ { champ Int22h/23h/24h:Pointer directement - Ptr() sous le mode Turbo   }
+ { Pascal de ce compilateur renvoie un type "NearFsPointer" incompatible }
+ { avec un Pointer generique, alors que TEmuPSPRecord n est de toute     }
+ { facon qu un recouvrement d octets (Case Byte Of) : ecrire les 2 mots  }
+ { directement au bon offset evite ce probleme de type sans rien changer }
+ { au resultat en memoire. }
+ PSP.Buffer[$0A] := Lo(Emu_ReadWord(C, 0, $22*4));
+ PSP.Buffer[$0B] := Hi(Emu_ReadWord(C, 0, $22*4));
+ PSP.Buffer[$0C] := Lo(Emu_ReadWord(C, 0, $22*4+2));
+ PSP.Buffer[$0D] := Hi(Emu_ReadWord(C, 0, $22*4+2));
+ PSP.Buffer[$0E] := Lo(Emu_ReadWord(C, 0, $23*4));
+ PSP.Buffer[$0F] := Hi(Emu_ReadWord(C, 0, $23*4));
+ PSP.Buffer[$10] := Lo(Emu_ReadWord(C, 0, $23*4+2));
+ PSP.Buffer[$11] := Hi(Emu_ReadWord(C, 0, $23*4+2));
+ PSP.Buffer[$12] := Lo(Emu_ReadWord(C, 0, $24*4));
+ PSP.Buffer[$13] := Hi(Emu_ReadWord(C, 0, $24*4));
+ PSP.Buffer[$14] := Lo(Emu_ReadWord(C, 0, $24*4+2));
+ PSP.Buffer[$15] := Hi(Emu_ReadWord(C, 0, $24*4+2));
  { Injecter la ligne de commande (meme convention que Emu_LoadExeAt : offset
    $80 = longueur, $81..$FE = cmdline, terminee par $0D). Absent de la
    version .COM d origine -jamais reclame par le seul appelant historique-
@@ -113024,6 +113051,26 @@ Begin
  PSP.HandlePtrSeg := C.Segs.CS;
  PSP.Int21h := $21CD;
  PSP.RETF := $CB;
+ { INT 22h/23h/24h : voir le commentaire detaille pres de l autre PSP    }
+ { (Emu_LoadComAt ci-dessus) - meme correctif, meme raison. Important    }
+ { ICI en particulier car ce chargeur sert aussi aux enfants EXEC        }
+ { (AH=4Bh) : un enfant doit capturer ce que le PARENT a EVENTUELLEMENT  }
+ { deja accroche sur ces vecteurs, pas juste les valeurs par defaut.     }
+ { Ecrit via Buffer (octets bruts) - voir Emu_LoadComAt pour la raison   }
+ { (Ptr() sous le mode Turbo Pascal de ce compilateur renvoie un type    }
+ { incompatible avec le champ Pointer generique). }
+ PSP.Buffer[$0A] := Lo(Emu_ReadWord(C, 0, $22*4));
+ PSP.Buffer[$0B] := Hi(Emu_ReadWord(C, 0, $22*4));
+ PSP.Buffer[$0C] := Lo(Emu_ReadWord(C, 0, $22*4+2));
+ PSP.Buffer[$0D] := Hi(Emu_ReadWord(C, 0, $22*4+2));
+ PSP.Buffer[$0E] := Lo(Emu_ReadWord(C, 0, $23*4));
+ PSP.Buffer[$0F] := Hi(Emu_ReadWord(C, 0, $23*4));
+ PSP.Buffer[$10] := Lo(Emu_ReadWord(C, 0, $23*4+2));
+ PSP.Buffer[$11] := Hi(Emu_ReadWord(C, 0, $23*4+2));
+ PSP.Buffer[$12] := Lo(Emu_ReadWord(C, 0, $24*4));
+ PSP.Buffer[$13] := Hi(Emu_ReadWord(C, 0, $24*4));
+ PSP.Buffer[$14] := Lo(Emu_ReadWord(C, 0, $24*4+2));
+ PSP.Buffer[$15] := Hi(Emu_ReadWord(C, 0, $24*4+2));
  { Injecter la ligne de commande dans le PSP : offset $80 = longueur,
    $81..$FE = cmdline (max 126 octets), terminee par $0D ($FF reserve). }
  If Length(CmdTail) > 0 Then Begin
@@ -121146,7 +121193,36 @@ End;
 { assignes par l appelant juste avant, ils doivent "remonter" au parent     }
 { pour qu AH=4Dh (get return code) lise le code de sortie de l enfant.      }
 Procedure Emu_DosTerminate(Var P: TEmulatorPanel; Const NormalMsg: String);
+Var Int22Ofs, Int22Seg, Int23Ofs, Int23Seg, Int24Ofs, Int24Seg: Word;
 Begin
+ { BOGUE REEL CORRIGE (2026-09-06, demande explicite : "Implementer      }
+ { l'interruption 22h") - moitie "restauration" du mecanisme (voir       }
+ { Emu_LoadComAt/Emu_LoadExeAt pour la moitie "capture a la creation").  }
+ { Lu ICI, AVANT que EmuPspSeg ne change plus bas (retour a un parent    }
+ { EXEC ou fin de session) - remet en place les vecteurs INT 22h/23h/24h }
+ { "d avant" ce programme, annulant tout gestionnaire qu il aurait       }
+ { installe entre-temps (ex. Ctrl-Break), exactement comme un vrai DOS.  }
+ { Garde Seg/Ofs=0 : PSP jamais rempli (chemin de restauration           }
+ { d'ancienne session/snapshot anterieur a ce correctif) - ne pas         }
+ { ecraser un vecteur reel par du zero dans ce cas limite. }
+ Int22Ofs := Emu_ReadWord(P.CPU, EmuPspSeg, $0A);
+ Int22Seg := Emu_ReadWord(P.CPU, EmuPspSeg, $0C);
+ Int23Ofs := Emu_ReadWord(P.CPU, EmuPspSeg, $0E);
+ Int23Seg := Emu_ReadWord(P.CPU, EmuPspSeg, $10);
+ Int24Ofs := Emu_ReadWord(P.CPU, EmuPspSeg, $12);
+ Int24Seg := Emu_ReadWord(P.CPU, EmuPspSeg, $14);
+ If (Int22Seg <> 0) Or (Int22Ofs <> 0) Then Begin
+  Emu_WriteWord(P.CPU, 0, $22*4, Int22Ofs);
+  Emu_WriteWord(P.CPU, 0, $22*4+2, Int22Seg);
+ End;
+ If (Int23Seg <> 0) Or (Int23Ofs <> 0) Then Begin
+  Emu_WriteWord(P.CPU, 0, $23*4, Int23Ofs);
+  Emu_WriteWord(P.CPU, 0, $23*4+2, Int23Seg);
+ End;
+ If (Int24Seg <> 0) Or (Int24Ofs <> 0) Then Begin
+  Emu_WriteWord(P.CPU, 0, $24*4, Int24Ofs);
+  Emu_WriteWord(P.CPU, 0, $24*4+2, Int24Seg);
+ End;
  If EmuExecDepth > 0 Then Begin
   Dec(EmuExecDepth);
   P.CPU.Regs  := EmuExecStack[EmuExecDepth].Regs;
@@ -131105,6 +131181,7 @@ Var LogF: Text;
  Int25CF: Boolean;
  Int26Al, Int26Dl, Int26Idx: Byte;
  Int26NSect, Int26Done: Byte;
+ LptPtr: ^TEmuLPT;
  Int26CF: Boolean;
 Begin
  { Journal EMU21.LOG : voir Options > Emulateur > DOS: Debug              }
@@ -131308,6 +131385,39 @@ Begin
    End;
   End;
   $16: If Emu_IntIsHooked(P, $16) Then Emu_FireHwInt(P, $16) Else Emu_DoInt16(P);
+  $17:
+   { BOGUE REEL CORRIGE (2026-09-06, demande explicite de l utilisateur :   }
+   { "Implementer l'interruption 17h") - services BIOS imprimante :         }
+   { AH=00 Imprimer AL, AH=01 Initialiser, AH=02 Obtenir l etat. DX          }
+   { selectionne le port (0=LPT1,1=LPT2,2=LPT3) comme sur un vrai PC, via    }
+   { la table BDA 0040:0008-000D deja correctement remplie (Emu_InitBDA).   }
+   { Reutilise directement Emu_LPT_Read/Write (deja existants, deja          }
+   { verifies au niveau des ports E/S 03BCh/0278h) - le registre d etat      }
+   { materiel a DEJA exactement le format de bits attendu en retour dans    }
+   { AH, aucune traduction necessaire. Seuls LPT1/LPT2 sont reellement       }
+   { cables ; LPT3 (DX=2) renvoie un etat "absent" honnete (AH=0), jamais    }
+   { un plantage. }
+   If Emu_IntIsHooked(P, $17) Then Emu_FireHwInt(P, $17)
+   Else Begin
+    LptPtr := Nil;
+    Case P.CPU.Regs.DX Of
+     0: LptPtr := @EmuLPT1;
+     1: LptPtr := @EmuLPT2;
+    End;
+    If LptPtr = Nil Then
+     P.CPU.Regs.AH := 0
+    Else Case P.CPU.Regs.AH Of
+     0: Begin
+      Emu_LPT_Write(LptPtr^, 0, P.CPU.Regs.AL);
+      P.CPU.Regs.AH := Emu_LPT_Read(LptPtr^, 1);
+     End;
+     1: Begin
+      FillChar(LptPtr^, SizeOf(LptPtr^), 0);
+      P.CPU.Regs.AH := Emu_LPT_Read(LptPtr^, 1);
+     End;
+     2: P.CPU.Regs.AH := Emu_LPT_Read(LptPtr^, 1);
+    End;
+   End;
   $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
   $20: If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20) Else P.CPU.Fault := sfEndProgram;
   $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Emu_DoInt21(P);
