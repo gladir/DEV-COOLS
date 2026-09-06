@@ -122371,6 +122371,21 @@ Begin
     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 15, Ord(' '));
     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 16, Ord(' '));
     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 17, Ord(' '));
+    { BOGUE REEL CORRIGE (2026-09-06, signale par l utilisateur : NC.EXE     }
+    { affiche "0 Bytes Memory"/"917264 Bytes Free" - deux nombres           }
+    { incoherents, le second depassant meme les 640 Ko de memoire           }
+    { conventionnelle totale, et corrompant d autres programmes DOS). Le     }
+    { champ manquant ici est le tres connu "segment du premier MCB", lu par }
+    { tout utilitaire memoire DOS (NC, MEM, CHKDSK...) via l astuce standard }
+    { AH=52h puis ES:[BX-2] = segment du premier Memory Control Block -     }
+    { jamais peuple, ce mot restait a zero (voir la remise a zero generale  }
+    { ci-dessus), donc ces programmes suivaient un pointeur nul/errone et   }
+    { lisaient de la memoire sans rapport, d ou des valeurs absurdes -      }
+    { exactement le meme genre de "structure factice sans rien derriere"    }
+    { deja corrige pour HIMEM.SYS le 2026-08-24 (voir plus haut), mais pour }
+    { un AUTRE champ. Un vrai MCB existe deja (voir Emu_LoadExeAt, installe  }
+    { a PSPSeg-1) - on fait simplement pointer ES:[BX-2] dessus. }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS - 2, Word(EmuPspSeg - 1));
     P.CPU.Segs.ES := EMU_LOL_SEG;
     P.CPU.Regs.BX := EMU_LOL_OFS;
    End;
@@ -131082,6 +131097,15 @@ End;
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
+ UartPtr: ^TEmuUART;
+ UartLcr: Byte;
+ UartDiv: Word;
+ Int25Al, Int25Dl, Int25Idx: Byte;
+ Int25NSect, Int25Done: Word;
+ Int25CF: Boolean;
+ Int26Al, Int26Dl, Int26Idx: Byte;
+ Int26NSect, Int26Done: Byte;
+ Int26CF: Boolean;
 Begin
  { Journal EMU21.LOG : voir Options > Emulateur > DOS: Debug              }
  { (Dlg.Data.DosLogInt21) - desactive par defaut, ecrire ici INCONDITION- }
@@ -131119,6 +131143,9 @@ Begin
  { programme invite qui a REELLEMENT installe son propre gestionnaire via    }
  { INT 21h AH=25h (Emu_IntIsHooked) est desormais chaine pour de bon plutot  }
  { qu ignore, voir Emu_DefaultVectorsInit/Emu_IntIsHooked ci-dessus. }
+ { Case suivant reordonne par numero croissant (2026-09-06, demande        }
+ { explicite de l utilisateur) - aucun changement de logique, uniquement   }
+ { l ordre des branches. }
  Case Num Of
   $08: If Emu_IntIsHooked(P, $08) Then Emu_FireHwInt(P, $08); { voir Emu_DefaultVectorsInit }
        { : le tic minuterie reel (compteur 0040:006C) est deja gere ailleurs }
@@ -131158,12 +131185,72 @@ Begin
    If Emu_IntIsHooked(P, $12) Then Emu_FireHwInt(P, $12)
    Else P.CPU.Regs.AX := Emu_ReadWord(P.CPU, 0, $0413);
   $13: If Emu_IntIsHooked(P, $13) Then Emu_FireHwInt(P, $13) Else Emu_DoInt13(P);
-  $16: If Emu_IntIsHooked(P, $16) Then Emu_FireHwInt(P, $16) Else Emu_DoInt16(P);
-  $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
-  $20: If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20) Else P.CPU.Fault := sfEndProgram;
-  $27: If Emu_IntIsHooked(P, $27) Then Emu_FireHwInt(P, $27) Else P.CPU.Fault := sfEndProgram;
-  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Emu_DoInt21(P);
-  $2F: If Emu_IntIsHooked(P, $2F) Then Emu_FireHwInt(P, $2F) Else Emu_DoInt2F(P);
+  $14:
+   { BOGUE REEL CORRIGE (2026-09-06, demande explicite de l utilisateur :   }
+   { "Implementer l'interruption 14h dans l'emulateur DOS") - n existait    }
+   { pas du tout : un vrai UART 8250/16450 est deja emule au niveau des     }
+   { ports (COM2 02F8h/COM4 02E8h, voir TEmuUART/Emu_UART_Read/Write), mais }
+   { rien ne fournissait le SERVICE BIOS de haut niveau qu un programme DOS }
+   { appelle normalement plutot que de programmer les ports directement.   }
+   { AH=00 Initialiser, 01 Envoyer, 02 Recevoir, 03 Obtenir l etat - DX     }
+   { selectionne le port (0=COM1,1=COM2,2=COM3,3=COM4) comme sur un vrai    }
+   { PC, via la table BDA 0040:0000-0007 deja correctement remplie          }
+   { (Emu_InitBDA). Seuls COM2/COM4 sont reellement cables ici ; COM1/COM3  }
+   { (BDA=0000h, absents) repondent par un statut d echec/timeout coherent  }
+   { (AH bit7), jamais un plantage - exactement ce qu un vrai BIOS renvoie  }
+   { pour un port absent sonde par un logiciel optimiste. }
+   If Emu_IntIsHooked(P, $14) Then Emu_FireHwInt(P, $14)
+   Else Begin
+    UartPtr := Nil;
+    Case P.CPU.Regs.DX Of
+     1: UartPtr := @EmuCOM2;
+     3: UartPtr := @EmuCOM4;
+    End;
+    If UartPtr = Nil Then Begin
+     If P.CPU.Regs.AH = 3 Then Begin
+      P.CPU.Regs.AH := 0; P.CPU.Regs.AL := 0;
+     End Else
+      P.CPU.Regs.AH := $80; { timeout : port absent, comme un vrai BIOS }
+    End Else Begin
+     Case P.CPU.Regs.AH Of
+      0: Begin { Initialiser : AL = parametres de ligne (voir INT 14h,0) }
+       UartLcr := P.CPU.Regs.AL And $07;  { longueur de mot + bit(s) stop }
+       Case (P.CPU.Regs.AL Shr 3) And $03 Of
+        1: UartLcr := UartLcr Or $08;     { parite impaire }
+        3: UartLcr := UartLcr Or $18;     { parite paire }
+       End;
+       Case (P.CPU.Regs.AL Shr 5) And $07 Of
+        0: UartDiv := 1047; 1: UartDiv := 768; 2: UartDiv := 384;
+        3: UartDiv := 192;  4: UartDiv := 96;  5: UartDiv := 48;
+        6: UartDiv := 24;
+       Else UartDiv := 12; End; { 7 = 9600 bauds, valeur par defaut }
+       Emu_UART_Write(UartPtr^, 3, $80);      { DLAB=1 pour ecrire le diviseur }
+       Emu_UART_Write(UartPtr^, 0, Lo(UartDiv));
+       Emu_UART_Write(UartPtr^, 1, Hi(UartDiv));
+       Emu_UART_Write(UartPtr^, 3, UartLcr);  { DLAB=0 + format de ligne }
+       P.CPU.Regs.AH := Emu_UART_Read(UartPtr^, 5);
+       P.CPU.Regs.AL := Emu_UART_Read(UartPtr^, 6);
+      End;
+      1: Begin { Envoyer le caractere AL }
+       Emu_UART_Write(UartPtr^, 0, P.CPU.Regs.AL);
+       P.CPU.Regs.AH := Emu_UART_Read(UartPtr^, 5) And $7F;
+      End;
+      2: Begin { Recevoir un caractere dans AL }
+       If (Emu_UART_Read(UartPtr^, 5) And $01) <> 0 Then Begin
+        P.CPU.Regs.AL := Emu_UART_Read(UartPtr^, 0);
+        P.CPU.Regs.AH := Emu_UART_Read(UartPtr^, 5) And $7F;
+       End Else
+        { Rien de cable a l autre bout (voir TEmuUART) hors boucle locale - }
+        { timeout honnete, jamais un octet invente. }
+        P.CPU.Regs.AH := $80;
+      End;
+      3: Begin { Obtenir l etat de la ligne/du modem }
+       P.CPU.Regs.AH := Emu_UART_Read(UartPtr^, 5);
+       P.CPU.Regs.AL := Emu_UART_Read(UartPtr^, 6);
+      End;
+     End;
+    End;
+   End;
   $15: Begin
    { N intercepter reellement que AH=C2h (BIOS souris PS/2) et seulement    }
    { si la case "Souris BIOS PS/2" est cochee (EmuMousePS2Active) - toute   }
@@ -131220,6 +131307,109 @@ Begin
     End;
    End;
   End;
+  $16: If Emu_IntIsHooked(P, $16) Then Emu_FireHwInt(P, $16) Else Emu_DoInt16(P);
+  $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
+  $20: If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20) Else P.CPU.Fault := sfEndProgram;
+  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Emu_DoInt21(P);
+  $25:
+   { BOGUE REEL CORRIGE (2026-09-06, demande explicite de l utilisateur :   }
+   { "Implementer l'interruption 25h") - lecture disque absolue DOS         }
+   { classique (pre-4.0), reutilise directement Emu_FloppyReadSectors/      }
+   { Emu_DiskIdxFromDL deja existants et deja verifies (INT 13h AH=02h).    }
+   { Convention : AL=unite (0=A:,1=B:,2=C:,3=D:... PAS la meme numerotation }
+   { que le DL d INT 13h, traduite ci-dessous), CX=nb secteurs, DX=secteur  }
+   { logique de depart (utilise TEL QUEL comme LBA - c est exactement ce    }
+   { qu apporte cette interface par rapport a INT 13h/CHS), DS:BX=tampon    }
+   { (PAS ES:BX). PARTICULARITE CELEBRE ET DOCUMENTEE de INT 25h/26h,       }
+   { indispensable a respecter : contrairement a toute autre interruption,  }
+   { l appelant retire LUI-MEME les FLAGS de la pile au retour (POPF ou     }
+   { ADD SP,2) - sur un vrai DOS ceci vient du mecanisme materiel INT qui   }
+   { empile FLAGS avant meme d entrer dans le gestionnaire. Ce moteur       }
+   { execute "INT nn" nativement SANS jamais toucher a la pile invitee     }
+   { pour un vecteur non hooke (voir le decodage de l opcode CD, Emu_DoInt  }
+   { est appele directement, aucun push n a eu lieu) - pour respecter ce    }
+   { contrat cote logiciel invite malgre tout, ce gestionnaire empile donc  }
+   { EXPLICITEMENT un mot FLAGS (CF reglee selon le resultat) juste avant   }
+   { de rendre la main, exactement ce qu un vrai DOS y laisse. }
+   If Emu_IntIsHooked(P, $25) Then Emu_FireHwInt(P, $25)
+   Else Begin
+    Int25Al := P.CPU.Regs.AL;
+    If Int25Al <= 1 Then Int25Dl := Int25Al
+                    Else Int25Dl := Byte($80 + (Int25Al - 2));
+    If (Not Emu_DiskIdxFromDL(Int25Dl, Int25Idx)) Or
+       (Not EmuFloppyOpen[Int25Idx]) Then Begin
+     Int25CF := True;
+     P.CPU.Regs.AX := $0F; { unite invalide }
+    End Else Begin
+     Int25NSect := P.CPU.Regs.CX;
+     Int25Done := Emu_FloppyReadSectors(P, Int25Idx, LongInt(P.CPU.Regs.DX),
+                   Int25NSect, P.CPU.Segs.DS, P.CPU.Regs.BX);
+     If Int25Done = Int25NSect Then Begin
+      Int25CF := False;
+      P.CPU.Regs.AX := 0;
+     End Else Begin
+      Int25CF := True;
+      P.CPU.Regs.AX := $04; { secteur introuvable }
+     End;
+    End;
+    If Int25CF Then Include(P.CPU.Flags.s, EFG_CF)
+               Else Exclude(P.CPU.Flags.s, EFG_CF);
+    Emu_PushWord(P.CPU, P.CPU.Flags.Base);
+   End;
+  $26:
+   { BOGUE REEL CORRIGE (2026-09-06, demande explicite de l utilisateur :   }
+   { "Implementer l'interruption 26h") - ecriture disque absolue DOS        }
+   { classique, jumelle exacte de INT 25h ci-dessus (meme conventions       }
+   { AL/CX/DX/DS:BX, meme particularite des FLAGS laisses sur la pile -     }
+   { voir le commentaire detaille de INT 25h) mais via                      }
+   { Emu_FloppyWriteSectors (deja existant, deja verifie par INT 13h        }
+   { AH=03h) au lieu de Emu_FloppyReadSectors. NSect est plafonne a un      }
+   { octet (0-255) car Emu_FloppyWriteSectors, comme INT 13h AH=03h dont il }
+   { partage l implementation, ne prend qu un compte de secteurs 8 bits -   }
+   { limitation deja existante et acceptee ailleurs, pas nouvelle ici. }
+   If Emu_IntIsHooked(P, $26) Then Emu_FireHwInt(P, $26)
+   Else Begin
+    Int26Al := P.CPU.Regs.AL;
+    If Int26Al <= 1 Then Int26Dl := Int26Al
+                    Else Int26Dl := Byte($80 + (Int26Al - 2));
+    If (Not Emu_DiskIdxFromDL(Int26Dl, Int26Idx)) Or
+       (Not EmuFloppyOpen[Int26Idx]) Then Begin
+     Int26CF := True;
+     P.CPU.Regs.AX := $0F; { unite invalide }
+    End Else If EmuFloppyRO[Int26Idx] Then Begin
+     Int26CF := True;
+     P.CPU.Regs.AX := $03; { protege en ecriture }
+    End Else Begin
+     If P.CPU.Regs.CX > 255 Then Int26NSect := 255
+     Else Int26NSect := Byte(P.CPU.Regs.CX);
+     Int26Done := Emu_FloppyWriteSectors(P, Int26Idx, LongInt(P.CPU.Regs.DX),
+                   Int26NSect, P.CPU.Segs.DS, P.CPU.Regs.BX);
+     If Int26Done = Int26NSect Then Begin
+      Int26CF := False;
+      P.CPU.Regs.AX := 0;
+     End Else Begin
+      Int26CF := True;
+      P.CPU.Regs.AX := $04; { secteur introuvable }
+     End;
+    End;
+    If Int26CF Then Include(P.CPU.Flags.s, EFG_CF)
+               Else Exclude(P.CPU.Flags.s, EFG_CF);
+    Emu_PushWord(P.CPU, P.CPU.Flags.Base);
+   End;
+  $27: If Emu_IntIsHooked(P, $27) Then Emu_FireHwInt(P, $27) Else P.CPU.Fault := sfEndProgram;
+  $29:
+   { BOGUE REEL CORRIGE (2026-09-06, demande explicite de l utilisateur :   }
+   { "Implementer l'interruption 29h") - "fast console output"/TTY rapide, }
+   { AL=caractere. Le commentaire d en-tete d EmuVScr_PutChar (voir juste   }
+   { avant sa definition) decrit deja INT 29h comme l un des points d appel}
+   { CENSES converger vers cette routine commune (comme INT 21h AH=02h/    }
+   { 06h/09h/40h et INT 10h AH=0Eh, deja cables) - mais $29 etait absent    }
+   { de ce dispatcheur, retombant silencieusement dans la branche Else     }
+   { generique (ignorait purement et simplement le caractere). Corrige en  }
+   { l ajoutant enfin, exactement comme documente. }
+   If Emu_IntIsHooked(P, $29) Then Emu_FireHwInt(P, $29)
+   Else EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
+  $2F: If Emu_IntIsHooked(P, $2F) Then Emu_FireHwInt(P, $2F) Else Emu_DoInt2F(P);
   $33: Begin
    { N intercepter reellement que si la case "Souris" est cochee            }
    { (EmuMouseActive) - sinon, comportement identique a toute autre         }
@@ -131237,12 +131427,6 @@ Begin
     If IvtOfs = IvtOfs Then ;
    End;
   End;
-  $FC: If EmuMouseCallPending Then Emu_MouseCont(P); { continuation interne  }
-       { de l upcall gestionnaire souris/callback BIOS PS/2 - voir           }
-       { Emu_MouseCont. Jamais atteint par du logiciel DOS reel. }
-  $FB: If EmuDpmi.Active Then Dpmi_Switch(P); { trampoline de commutation    }
-       { reel -> protege DPMI, voir Dpmi_Switch/Emu_DpmiInit. Jamais         }
-       { atteint par du logiciel DOS reel. }
   $60: Begin
    { N intercepter reellement que si la case "Reseau LAN" est cochee       }
    { (EmuPkt.Active) - sinon, comportement identique a toute autre         }
@@ -131257,28 +131441,6 @@ Begin
     If IvtSeg <> 0 Then Emu_FireHwInt(P, $60);
     If IvtOfs = IvtOfs Then ;
    End;
-  End;
-  $FD: If EmuPkt.Cont.Pending Then Emu_PktCont(P); { continuation interne  }
-       { du protocole d upcall recepteur/as_send_pkt du pilote de paquets  }
-       { - voir Emu_PktCont. Jamais atteint par du logiciel DOS reel. }
-  $FE: If EmuXms.Active Then Emu_DoIntFE(P); { point d entree XMM du       }
-       { pilote XMS, atteint uniquement via le trampoline installe par     }
-       { Emu_XmsInit (jamais un vrai numero d interruption DOS/BIOS,       }
-       { contrairement a $60/$7A - pas de repli generique necessaire). }
-  $F8: Begin
-   { Chantier Windows 16 bits, Stage 3 : point d entree de trappe KERNEL/   }
-   { USER/GDI - jamais un vrai numero d interruption DOS/BIOS/Windows      }
-   { (comme $FC/$FD/$FE ci-dessus), atteint UNIQUEMENT via les thunks      }
-   { CD F8 <slot:Word> CB ecrits par Win16_ResolveImportSlot (Stage 2).    }
-   { L index de slot suit immediatement l opcode INT dans le flux           }
-   { d instructions (P.CPU.IP y pointe deja - Emu_StepOne a deja avance    }
-   { IP au-dela de "CD F8" avant d appeler Emu_DoInt, meme convention que   }
-   { tout autre INT). PAS besoin d avancer IP nous-memes au-dela du slot :  }
-   { Win16_DispatchCall termine TOUJOURS par un retour synthetique complet }
-   { (depile lui-meme l adresse de retour et ECRASE P.CPU.IP avec elle) -  }
-   { le CB final du thunk n est donc JAMAIS reellement execute, pur filet  }
-   { de securite si jamais atteint par erreur. }
-   Win16_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
   End;
   $67: Begin
    { N intercepter reellement que si la case "EMS" est cochee (EmuEms.     }
@@ -131311,6 +131473,34 @@ Begin
     If IvtOfs = IvtOfs Then ;
    End;
   End;
+  $F8: Begin
+   { Chantier Windows 16 bits, Stage 3 : point d entree de trappe KERNEL/   }
+   { USER/GDI - jamais un vrai numero d interruption DOS/BIOS/Windows      }
+   { (comme $FC/$FD/$FE ci-dessus), atteint UNIQUEMENT via les thunks      }
+   { CD F8 <slot:Word> CB ecrits par Win16_ResolveImportSlot (Stage 2).    }
+   { L index de slot suit immediatement l opcode INT dans le flux           }
+   { d instructions (P.CPU.IP y pointe deja - Emu_StepOne a deja avance    }
+   { IP au-dela de "CD F8" avant d appeler Emu_DoInt, meme convention que   }
+   { tout autre INT). PAS besoin d avancer IP nous-memes au-dela du slot :  }
+   { Win16_DispatchCall termine TOUJOURS par un retour synthetique complet }
+   { (depile lui-meme l adresse de retour et ECRASE P.CPU.IP avec elle) -  }
+   { le CB final du thunk n est donc JAMAIS reellement execute, pur filet  }
+   { de securite si jamais atteint par erreur. }
+   Win16_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
+  End;
+  $FB: If EmuDpmi.Active Then Dpmi_Switch(P); { trampoline de commutation    }
+       { reel -> protege DPMI, voir Dpmi_Switch/Emu_DpmiInit. Jamais         }
+       { atteint par du logiciel DOS reel. }
+  $FC: If EmuMouseCallPending Then Emu_MouseCont(P); { continuation interne  }
+       { de l upcall gestionnaire souris/callback BIOS PS/2 - voir           }
+       { Emu_MouseCont. Jamais atteint par du logiciel DOS reel. }
+  $FD: If EmuPkt.Cont.Pending Then Emu_PktCont(P); { continuation interne  }
+       { du protocole d upcall recepteur/as_send_pkt du pilote de paquets  }
+       { - voir Emu_PktCont. Jamais atteint par du logiciel DOS reel. }
+  $FE: If EmuXms.Active Then Emu_DoIntFE(P); { point d entree XMM du       }
+       { pilote XMS, atteint uniquement via le trampoline installe par     }
+       { Emu_XmsInit (jamais un vrai numero d interruption DOS/BIOS,       }
+       { contrairement a $60/$7A - pas de repli generique necessaire). }
   Else Begin
    { Pour les autres INT, si l application a installe un ISR
      via INT 21h AH=25h, on saute dedans. Sinon on ignore. }
@@ -131670,7 +131860,27 @@ Begin
  If ((EmuIrqPending And $01) <> 0) And ((EmuPICMaster.IMR And $01) = 0) Then Begin
    EmuIrqPending := EmuIrqPending And Not Byte($01);
    EmuPICMaster.ISR := EmuPICMaster.ISR Or $01;
-   Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 0));
+   { BOGUE REEL CORRIGE (2026-09-06, question directe de l utilisateur :     }
+   { "Est-ce que l'interruption 1Ch a ete correctement implementee ?") -     }
+   { NON, elle ne l etait pas du tout : recherche exhaustive dans tout ce    }
+   { fichier, aucun Emu_FireHwInt/Emu_DoInt ne visait jamais le vecteur      }
+   { $1C. Sur un vrai PC, le gestionnaire BIOS par defaut de INT 08h met a   }
+   { jour le compteur de tics (deja fait ici par Emu_TimerTick) PUIS appelle }
+   { INCONDITIONNELLEMENT INT 1Ch (dont le gestionnaire par defaut n est     }
+   { qu un simple retour immediat) - un TSR ou programme qui accroche ce     }
+   { vecteur (tres courant : horloges, barres de progression, planifica-     }
+   { teurs) ne recevait donc jamais aucun appel periodique. Corrige en       }
+   { chainant nativement vers INT 1Ch quand il est reellement accroche,      }
+   { juste apres le tic - SEULEMENT si INT 08h lui-meme n est PAS accroche   }
+   { (s il l est, le code invite gere sa propre chaine, comme un vrai        }
+   { gestionnaire INT 08h de remplacement le ferait). L ISR du 8259A n est   }
+   { jamais lu ailleurs dans ce fichier (seul l IMR gate reellement la       }
+   { livraison, voir le commentaire juste au-dessus) - aucun risque de       }
+   { blocage en sautant ainsi le trampoline INT 08h par defaut. }
+   If Emu_IntIsHooked(P, $08) Then
+    Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 0))
+   Else If Emu_IntIsHooked(P, $1C) Then
+    Emu_FireHwInt(P, $1C);
    Exit;
  End;
  If ((EmuIrqPending And $02) <> 0) And ((EmuPICMaster.IMR And $02) = 0) Then Begin
