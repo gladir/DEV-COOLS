@@ -9957,6 +9957,8 @@ Procedure ShowHelp;Begin
  ConRawWriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
  ConRawWriteLn('  /BASH:fichier.sh        Ouvrir le Terminal en mode Bash et executer ce script');
  ConRawWriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
+ ConRawWriteLn('  /AWK:fichier.awk        Ouvrir le Terminal en mode Bash et executer ce script AWK');
+ ConRawWriteLn('  /PERL:fichier.pl        Ouvrir le Terminal en mode Bash et executer ce script Perl');
  ConRawWriteLn('  /PS:fichier.ps1         Ouvrir PowerShell dev et executer ce script');
  ConRawWriteLn('  /VBSCRIPT:fichier.vbs   Ouvrir CMD (Invite de commandes) et executer ce script VBScript');
  ConRawWriteLn('  /PASCALSCRIPT:fichier.psc  Ouvrir CMD (Invite de commandes) et executer ce script PascalScript');
