@@ -2204,6 +2204,8 @@ Type
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
   BashBatch       : TString;   { /BASH:fichier.sh }
   RexxFile        : TString;   { /REXX:fichier.rex }
+  AwkFile         : TString;   { /AWK:fichier.awk }
+  PerlFile        : TString;   { /PERL:fichier.pl }
   PSFile          : TString;   { /PS:fichier.ps1 }
   VBScriptFile    : TString;   { /VBSCRIPT:fichier.vbs }
   PascalScriptFile: TString;   { /PASCALSCRIPT:fichier.psc }
@@ -10004,6 +10006,8 @@ Begin
  Opts.TerminalOS2Batch := '';
  Opts.BashBatch        := '';
  Opts.RexxFile         := '';
+ Opts.AwkFile          := '';
+ Opts.PerlFile         := '';
  Opts.PSFile           := '';
  Opts.VBScriptFile     := '';
  Opts.PascalScriptFile := '';
@@ -10061,6 +10065,20 @@ Begin
     Opts.RexxFile := Copy(Arg, 7, Length(Arg) - 6);
    If (Opts.RexxFile = '') Or (Not FileExists(Opts.RexxFile)) Then
     FatalError('Fichier REXX introuvable: ' + Opts.RexxFile);
+  End Else
+    If (Length(Arg) >= 5) And
+      ((Copy(Arg, 1, 5) = '/AWK:') Or (Copy(Arg, 1, 5) = '/awk:') Or
+      (Copy(Arg, 1, 5) = '-AWK:') Or (Copy(Arg, 1, 5) = '-awk:')) Then Begin
+    Opts.AwkFile := Copy(Arg, 6, Length(Arg) - 5);
+   If (Opts.AwkFile = '') Or (Not FileExists(Opts.AwkFile)) Then
+    FatalError('Fichier AWK introuvable: ' + Opts.AwkFile);
+  End Else
+    If (Length(Arg) >= 6) And
+      ((Copy(Arg, 1, 6) = '/PERL:') Or (Copy(Arg, 1, 6) = '/perl:') Or
+      (Copy(Arg, 1, 6) = '-PERL:') Or (Copy(Arg, 1, 6) = '-perl:')) Then Begin
+    Opts.PerlFile := Copy(Arg, 7, Length(Arg) - 6);
+   If (Opts.PerlFile = '') Or (Not FileExists(Opts.PerlFile)) Then
+    FatalError('Fichier Perl introuvable: ' + Opts.PerlFile);
   End Else
     If (Length(Arg) >= 4) And
       ((Copy(Arg, 1, 4) = '/PS:') Or (Copy(Arg, 1, 4) = '/ps:') Or
@@ -62097,6 +62115,5381 @@ Begin
  End;
  CleanupTempFile(PERL_TEMP_OUTPUT);
 End;
+
+
+{ ============================================================
+  AWK (Terminal, profil "bash" uniquement - SK_BASH) - 2026-09-06,
+  demande explicite de l'utilisateur : "Implementer la commande complete
+  'awk' et tous les parametres Linux dans Terminal en mode 'bash' / J'avais
+  fais un prototype de AWK dans le fichier AWK.PAS que tu pourrais copier
+  dans DEVENV.PAS et le retapez un peu pour le mettre a niveau les trucs
+  qui manques...". Meme technique de base que MASM/LINK/PERL (voir
+  [[project_devenv_masm]]/[[project_devenv_link]]/[[project_devenv_perl]]) :
+  le corps ENTIER de C:\SOURCE\GITHUB\DEV-COOLS\AWK.PAS (interprete AWK
+  maison, ~4450 lignes) est imbrique CI-DESSOUS. Contrainte explicite de
+  l'utilisateur (2026-09-06) : ne JAMAIS ajouter de nouvelle unite au Uses
+  de DEVENV.PAS, meme si AWK.PAS integre plusieurs unites conditionnelles
+  (Windows/MacOSAll/CocoaAll/BaseUnix/DOS) - toutes se sont averees
+  inutiles une fois GetRawCommandLine adapte (voir plus bas), donc AUCUNE
+  n'est reprise ici.
+
+  Adaptations reelles :
+   1. Pas de ParamStr/ParamCount classiques a masquer : le corps colle ne
+      les appelle plus (le seul site, dans l'ancien bloc principal, est
+      remplace par du code neuf, voir plus bas). En revanche AWK.PAS avait
+      DEJA sa propre paire RawParamCount/RawParamStr, un tokeniseur
+      sensible aux guillemets simples/doubles ET aux accolades (plus
+      complet que celui ecrit a la main pour PERL) - reutilise tel quel,
+      seule sa source de donnees (GetRawCommandLine) est adaptee pour lire
+      RawArgs (le parametre du wrapper) au lieu de la vraie ligne de
+      commande OS (qui n'a pas de sens ici).
+   2. Halt (5 usages, 4 convertis + 1 dans l'ancien bloc principal
+      supprime avec lui) : remplaces par un drapeau AwkAbort + Exit, meme
+      principe que MasmAbort/LinkAbort/PerlAbort. Sites confines a
+      l'evaluateur d'expressions (pile pleine) et a 2 erreurs de syntaxe
+      (accolade manquante/en trop) - analyse du graphe d'appel : aucun
+      risque de deref dangereux, mais les boucles principales
+      (ProcessInputWithRules, RunProgram, ExecuteRuleAction) recoivent
+      quand meme un garde Not AwkAbort par prudence, meme discipline que
+      LINK/UNZIP.
+   3. Ecriture Output redirigee vers un fichier temporaire reel puis
+      republiee dans ce terminal - meme technique que MASM/LINK/PERL.
+   4. Meme decouverte "zero-init perdue" que PERL (voir AwkInitState plus
+      bas) : les "variables globales" d'AWK.PAS (AccoladeBlock,
+      VarListHead, Terminated, etc.) etaient zero/Nil-initialisees
+      gratuitement par le runtime pour un programme AUTONOME - devenues
+      des locales de pile de TermCmd_Awk, elles exigent une remise a zero
+      explicite avant chaque execution.
+   5. "Mise a niveau" du moteur (demande explicite, pas un simple
+      copier-coller), sur la copie de travail AVANT integration :
+      - RK_EXPR (patterns d'expression genre NR==3, $2>10, NF>1) etait un
+        TODO "toujours vrai" - branche vers EvaluateCondition (deja
+        ecrite, deja utilisee par IfCommand, jamais branchee ici).
+      - FS (separateur de champs) n'existait pas du tout - SplitIntoFields
+        ne coupait QUE sur des blancs, sans aucun moyen de changer ca.
+        Lit maintenant la vraie variable de script FS (via
+        GetVariableString, donc -F en CLI et une affectation FS directe
+        dans le script fonctionnent tous les deux gratuitement par le
+        meme mecanisme) -
+        limitation disclosee : separateur LITTERAL a un seul caractere,
+        pas d'expression reguliere multi-caracteres pour FS.
+      - Plusieurs fichiers de donnees (awk 'prog' f1 f2 f3) - le
+        prototype d'origine ne gerait qu'un seul InputFileName. Ajout
+        d'un tableau borne InputFileNames/InputFileCount, NR continue de
+        progresser sur tous les fichiers, FNR (nouveau) redemarre a 1 par
+        fichier, FILENAME (nouveau) suit le fichier courant.
+      - BOGUE REEL trouve+corrige : l'instruction "exit" ecrivait
+        Terminated:=True mais AUCUNE boucle nulle part dans le fichier
+        entier ne lisait jamais cette variable (confirme par recherche
+        exhaustive dans AWK.PAS original) - exit n'avait donc RIGOUREUSEMENT
+        AUCUN EFFET. Corrige en ajoutant Not Terminated aux 4 boucles
+        principales + un reset cible avant chaque appel a
+        ExecuteEndRules (un vrai awk saute directement a END apres exit,
+        il ne saute jamais END lui-meme).
+      - -v var=valeur et -F cables via une nouvelle AwkAssignVar (utilise
+        VariableExist+Set/AddVariableString, idiome deja present ailleurs
+        dans le fichier original pour la creation-ou-mise-a-jour de
+        variable).
+      - ARGV/ARGC peuples via le vrai mecanisme de tableau associatif
+        SetArrayElement deja existant (pas un stub).
+      Limitations disclosees, non corrigees (hors perimetre) :
+      affectation en ecriture $1="x" (reconstruction de $0 via OFS) non
+      supportee par le prototype d'origine ; ENVIRON non peuple ; RS
+      (separateur d'enregistrement) toujours ligne-par-ligne uniquement ;
+      MaxFields=10/MaxRules limites bornees preexistantes, non modifiees.
+  ============================================================ }
+
+Procedure TermCmd_Awk(Var TP: TTerminalPanel; RawArgs: String);
+
+Const
+ AWK_TEMP_OUTPUT = '_awktmp.out';
+
+Var
+ AwkAbort    : Boolean;
+ AwkDumpF    : Text;
+ AwkDumpLine : String;
+ { Drapeaux de controle pour next/nextfile (voir project_devenv_awk -   }
+ { mise a niveau demandee explicitement par l'utilisateur, 2026-09-06). }
+ AwkNextRecord : Boolean;
+ AwkNextFile   : Boolean;
+
+{ Implementees dans le pied de page (apres le corps colle, une fois      }
+{ VariableExist/SetVariableString/AddVariableString/FindArray/etc.       }
+{ reellement visibles) - fonctions AWK "mises a niveau" sur demande      }
+{ explicite de l'utilisateur (2026-09-06), suivant le style deja         }
+{ existant de SqrtCommand/CosCommand/SinCommand (une "commande" qui lit  }
+{ ses arguments dans CurrLine/CurrPos et Writeln son resultat).          }
+Procedure AwkAssignVar(Const Name, Value: String); Forward;
+Procedure AwkExpCommand; Forward;
+Procedure AwkLogCommand; Forward;
+Procedure AwkAtan2Command; Forward;
+Procedure AwkIntCommand; Forward;
+Procedure AwkLshiftCommand; Forward;
+Procedure AwkRshiftCommand; Forward;
+Procedure AwkAndCommand; Forward;
+Procedure AwkOrCommand; Forward;
+Procedure AwkXorCommand; Forward;
+Procedure AwkComplCommand; Forward;
+Procedure AwkToLowerCommand; Forward;
+Procedure AwkToUpperCommand; Forward;
+Procedure AwkIndexCommand; Forward;
+Procedure AwkSubstrCommand; Forward;
+Procedure AwkSystimeCommand; Forward;
+Procedure AwkStrtonumCommand; Forward;
+Procedure AwkFflushCommand; Forward;
+Procedure AwkCloseCommand; Forward;
+Procedure AwkSystemCommand; Forward;
+Procedure AwkEvalCommand; Forward;
+Procedure AwkNextCommand; Forward;
+Procedure AwkNextFileCommand; Forward;
+Procedure AwkIsArrayCommand; Forward;
+Procedure AwkMatchCommand; Forward;
+Procedure AwkSplitCommand; Forward;
+Procedure AwkSubCommand; Forward;
+Procedure AwkGsubCommand; Forward;
+
+Const
+ TokenList:Array[0..69]of String[20]=(
+  'BEGIN','BEGINFILE','END','ENDFILE','and','asort','asorti','atan2',
+  'bindtextdomain','break','case','close','compl','continue','cos',
+  'dcgettext','dcngettext','default','delete','do','else','eval',
+  'exit','exp','fflush','for','func','function','gensub','getline',
+  'gsub','if','in','include','index','int','isarray','length',
+  'load','log','lshift','match','mktime','namespace','next',
+  'nextfile','or','patsplit','print','printf','rand','return',
+  'rshift','sin','split','sprintf','sqrt','srand','strftime',
+  'strtonum','sub','substr','switch','system','systime','tolower',
+  'toupper','typeof','while','xor'
+ );
+
+ FunctionList:Array[0..15]of String[12]=(
+  'ATAN2','COS','EXP','GSUB','INDEX','INT','LENGTH','LOG','MATCH',
+  'RAND','SIN','SPLIT','SPRINTF','SQRT','SRAND','SUBSTR'
+ );
+
+ MaxLine=1024;
+ MaxVariable=100;
+ MaxFields=10;
+ MaxUserFunctions=50;
+ MaxFunctionParams=10;
+ MaxArrays=50;
+ MaxArrayElements=100;
+ MaxRules=50;           { Maximum de regles pattern-action }
+
+Type
+ StrPointer=^String;
+ FieldArray=Array[0..MaxFields]of String;
+ VarTypeEnum=(_None,_Integer,_LongInt,_Real,_String);
+ VarPointer=^VarRec;
+ VarRec=Record
+  Variant:Record Case Integer of
+   0:(I:Integer);
+   1:(L:LongInt);
+   2:(R:Real);
+   3:(S:StrPointer);
+  End;
+  VarType:VarTypeEnum;
+  VarName:String[20];
+  Next:VarPointer;         { Noeud suivant dans la liste chainee }
+ End;
+ { Type pour les fonctions utilisateur - liste chainee }
+ PUserFunc=^TUserFunc;
+ TUserFunc=Record
+  FuncName:String[32];
+  ParamNames:Array[1..MaxFunctionParams]of String[20];
+  ParamCount:Integer;
+  BodyStartLine:Integer;  { Ligne de debut du corps de la fonction }
+  BodyEndLine:Integer;    { Ligne de fin du corps de la fonction }
+  BodyStartPos:Integer;   { Position dans la ligne de debut }
+  Next:PUserFunc;         { Noeud suivant dans la liste chainee }
+ End;
+ { Type pour les elements de tableaux associatifs - liste chainee }
+ PArrayElement=^TArrayElement;
+ TArrayElement=Record
+  Key:String[64];
+  Value:String[255];
+  Next:PArrayElement;      { Noeud suivant dans la liste chainee }
+ End;
+ { Type pour les tableaux associatifs - liste chainee }
+ PAssocArray=^TAssocArray;
+ TAssocArray=Record
+  Name:String[32];
+  ElemHead:PArrayElement;  { Tete de la liste d'elements }
+  ElemLast:PArrayElement;  { Queue de la liste d'elements }
+  Next:PAssocArray;         { Noeud suivant dans la liste chainee }
+ End;
+ { Type pour les regles pattern-action }
+ TRuleKind=(RK_BEGIN,RK_END,RK_REGEX,RK_EXPR,RK_ALL);
+ TRule=Record
+  Kind:TRuleKind;           { Type de regle }
+  Pattern:String[128];      { Pattern regex ou expression }
+  ActionLine:Integer;       { Ligne de debut de l'action }
+  ActionPos:Integer;        { Position dans la ligne }
+  ActionEndLine:Integer;    { Ligne de fin de l'action }
+ End;
+
+Var
+ Fields:FieldArray;
+ NumFields:Integer;
+ FileAWK:Text;
+ Mode:(_None_,_F,_InStringSimpleQuote);
+ Terminated:Boolean;
+ CurrCommand,CurrParam:String;
+ FileName,CurrLine:String;
+ CurrPos:Byte;
+ PA:Array[1..MaxLine] of StrPointer;
+ { Variables pour les variables utilisateur - liste chainee sans limite }
+ VarListHead:VarPointer;  { Tete de la liste }
+ VarListLast:VarPointer;  { Queue de la liste (insertion rapide) }
+ CurrLinePtr,NumberLine:Integer;
+ CurrNumberLine:Integer;
+ AccoladeBlock:Integer;
+ I:Integer;
+ EndBlockStart:Integer;  { Ligne de debut du bloc END }
+ EndBlockEnd:Integer;    { Ligne de fin du bloc END }
+ InEndBlock:Boolean;     { Indique si on est dans un bloc END }
+ { Variables pour les fonctions utilisateur - liste chainee sans limite }
+ UserFuncList:PUserFunc;  { Tete de la liste }
+ UserFuncLast:PUserFunc;  { Queue de la liste (insertion rapide) }
+ InFunctionCall:Boolean;
+ FunctionReturnValue:Real;
+ FunctionReturnStr:String;
+ HasFunctionReturn:Boolean;
+ { Variables pour les boucles (break/continue) }
+ BreakFlag:Boolean;
+ ContinueFlag:Boolean;
+ LoopDepth:Integer;
+ { Variables pour les tableaux associatifs - liste chainee sans limite }
+ AssocArrayList:PAssocArray;  { Tete de la liste }
+ AssocArrayLast:PAssocArray;  { Queue de la liste (insertion rapide) }
+ { Variables pour les regles pattern-action }
+ Rules:Array[1..MaxRules]of TRule;
+ RuleCount:Integer;
+ InputFile:Text;         { Fichier de donnees en entree }
+ InputFileName:String;   { Nom du fichier de donnees (compatibilite) }
+ HasInputFile:Boolean;   { Indique si un fichier d'entree est specifie }
+ NRValue:LongInt;        { Variable NR (numero d'enregistrement) }
+ { Plusieurs fichiers de donnees (awk fichier1 fichier2 ...) - le      }
+ { prototype d'origine ne geraiit qu'un seul InputFileName ; ajoute    }
+ { pour un usage Linux normal, voir project_devenv_awk. }
+ InputFileNames:Array[1..20]of String;
+ InputFileCount:Integer;
+
+{ Declaration anticipee de RunLine }
+Function RunLine:Boolean; forward;
+
+{ Declarations anticipees pour les fonctions utilisateur }
+Function FindUserFunction(const FName:String):PUserFunc; forward;
+Function CallUserFunction(FuncPtr:PUserFunc):Real; forward;
+
+{ Declaration anticipee pour SplitIntoFields }
+Procedure SplitIntoFields(Line:String); forward;
+
+{ ========================================================= }
+{ SECTION: Acces securise au tableau PA                     }
+{ ========================================================= }
+
+{ Retourne la ligne a l'index donne de maniere securisee }
+{ Evite les runtime error 216 (GPF) si le pointeur est nil }
+Function GetPALine(LineNum:Integer):String;
+Begin
+ GetPALine:='';
+ If(LineNum<1)or(LineNum>NumberLine)Then Exit;
+ If PA[LineNum]=nil Then Exit;
+ GetPALine:=PA[LineNum]^;
+End;
+
+{ ========================================================= }
+{ SECTION: Expressions Regex                                }
+{ ========================================================= }
+
+{ Verifie si un caractere correspond a une classe de caracteres }
+Function MatchCharClass(C:Char;const CharClass:String):Boolean;
+Var
+ I:Integer;
+ Negated:Boolean;
+ InRange:Boolean;
+ PrevChar:Char;
+Begin
+ MatchCharClass:=False;
+ If Length(CharClass)=0 Then Exit;
+ 
+ I:=1;
+ Negated:=False;
+ 
+ { Verifie si la classe est negativee }
+ If CharClass[1]='^'Then Begin
+  Negated:=True;
+  Inc(I);
+ End;
+ 
+ InRange:=False;
+ PrevChar:=#0;
+ 
+ While I<=Length(CharClass)do Begin
+  If(CharClass[I]='-')and(I>1)and(I<Length(CharClass))and(PrevChar<>#0)Then Begin
+   { Range de caracteres, ex: a-z }
+   Inc(I);
+   If(C>=PrevChar)and(C<=CharClass[I])Then Begin
+    MatchCharClass:=Not Negated;
+    Exit;
+   End;
+   PrevChar:=#0;
+  End
+   Else
+  Begin
+   If C=CharClass[I]Then Begin
+    MatchCharClass:=Not Negated;
+    Exit;
+   End;
+   PrevChar:=CharClass[I];
+  End;
+  Inc(I);
+ End;
+ 
+ MatchCharClass:=Negated;
+End;
+
+{ Fonction de matching regex simplifiee }
+{ Supporte: . (tout caractere), * (0 ou plus), + (1 ou plus), ? (0 ou 1),
+           ^ (debut), $ (fin), [...] (classes), \d \w \s }
+Function RegexMatch(const Text,Pattern:String):Boolean;
+Var
+ TPos,PPos:Integer;
+ AnchorStart,AnchorEnd:Boolean;
+ PatternWork:String;
+ 
+ { Fonction interne recursive pour le matching }
+ Function DoMatch(TI,PI:Integer):Boolean;
+ Var
+  CharClass:String;
+  BracketEnd:Integer;
+  Matched:Boolean;
+  NextChar:Char;
+  Quantifier:Char;
+  MinMatch,I:Integer;
+ Begin
+  DoMatch:=False;
+  
+  { Si on a atteint la fin du pattern }
+  If PI>Length(PatternWork)Then Begin
+   If AnchorEnd Then DoMatch:=(TI>Length(Text))
+                Else DoMatch:=True;
+   Exit;
+  End;
+  
+  { Si on a atteint la fin du texte mais pas du pattern }
+  If TI>Length(Text)Then Begin
+   { On peut encore matcher si le reste du pattern est optionnel }
+   While PI<=Length(PatternWork)do Begin
+    If PI<Length(PatternWork)Then Begin
+     If PatternWork[PI+1]in['*','?']Then Begin
+      Inc(PI,2);
+      Continue;
+     End;
+    End;
+    Exit; { Pattern non termine = pas de match }
+   End;
+   DoMatch:=True;
+   Exit;
+  End;
+  
+  { Traite les classes de caracteres [...] }
+  If PatternWork[PI]='['Then Begin
+   BracketEnd:=PI+1;
+   While(BracketEnd<=Length(PatternWork))and(PatternWork[BracketEnd]<>']')do
+    Inc(BracketEnd);
+   CharClass:=Copy(PatternWork,PI+1,BracketEnd-PI-1);
+   
+   { Verifie le quantificateur apres la classe }
+   Quantifier:=#0;
+   If BracketEnd<Length(PatternWork)Then Begin
+    If PatternWork[BracketEnd+1]in['*','+','?']Then
+     Quantifier:=PatternWork[BracketEnd+1];
+   End;
+   
+   If Quantifier='*'Then Begin
+    { 0 ou plus }
+    If DoMatch(TI,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    I:=TI;
+    While(I<=Length(Text))and MatchCharClass(Text[I],CharClass)do Begin
+     Inc(I);
+     If DoMatch(I,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End
+    Else If Quantifier='+'Then Begin
+    { 1 ou plus }
+    If Not MatchCharClass(Text[TI],CharClass)Then Exit;
+    I:=TI+1;
+    If DoMatch(I,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    While(I<=Length(Text))and MatchCharClass(Text[I],CharClass)do Begin
+     Inc(I);
+     If DoMatch(I,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End
+    Else If Quantifier='?'Then Begin
+    { 0 ou 1 }
+    If DoMatch(TI,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
+    If MatchCharClass(Text[TI],CharClass)Then
+     DoMatch:=DoMatch(TI+1,BracketEnd+2);
+   End
+    Else
+   Begin
+    { Exactement 1 }
+    If MatchCharClass(Text[TI],CharClass)Then
+     DoMatch:=DoMatch(TI+1,BracketEnd+1);
+   End;
+   Exit;
+  End;
+  
+  { Traite les sequences d'echappement \d \w \s \. etc }
+  If PatternWork[PI]='\'Then Begin
+   If PI>=Length(PatternWork)Then Exit;
+   Inc(PI);
+   Case PatternWork[PI]of
+    'd':Matched:=Text[TI]in['0'..'9'];
+    'D':Matched:=Not(Text[TI]in['0'..'9']);
+    'w':Matched:=Text[TI]in['A'..'Z','a'..'z','0'..'9','_'];
+    'W':Matched:=Not(Text[TI]in['A'..'Z','a'..'z','0'..'9','_']);
+    's':Matched:=Text[TI]in[' ',#9,#10,#13];
+    'S':Matched:=Not(Text[TI]in[' ',#9,#10,#13]);
+    Else Matched:=(Text[TI]=PatternWork[PI]); { Caractere echappe }
+   End;
+   
+   { Verifie le quantificateur }
+   Quantifier:=#0;
+   If PI<Length(PatternWork)Then Begin
+    If PatternWork[PI+1]in['*','+','?']Then
+     Quantifier:=PatternWork[PI+1];
+   End;
+   
+   If Quantifier=#0 Then Begin
+    If Matched Then DoMatch:=DoMatch(TI+1,PI+1);
+   End
+    Else
+   Begin
+    { Gere les quantificateurs pour \d, \w, etc }
+    Case Quantifier of
+     '*':Begin
+      If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+      I:=TI;
+      While I<=Length(Text)do Begin
+       Case PatternWork[PI]of
+        'd':Matched:=Text[I]in['0'..'9'];
+        'D':Matched:=Not(Text[I]in['0'..'9']);
+        'w':Matched:=Text[I]in['A'..'Z','a'..'z','0'..'9','_'];
+        'W':Matched:=Not(Text[I]in['A'..'Z','a'..'z','0'..'9','_']);
+        's':Matched:=Text[I]in[' ',#9,#10,#13];
+        'S':Matched:=Not(Text[I]in[' ',#9,#10,#13]);
+        Else Matched:=(Text[I]=PatternWork[PI]);
+       End;
+       If Not Matched Then Break;
+       Inc(I);
+       If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+      End;
+     End;
+     '+':Begin
+      If Not Matched Then Exit;
+      I:=TI+1;
+      If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+      While I<=Length(Text)do Begin
+       Case PatternWork[PI]of
+        'd':Matched:=Text[I]in['0'..'9'];
+        'D':Matched:=Not(Text[I]in['0'..'9']);
+        'w':Matched:=Text[I]in['A'..'Z','a'..'z','0'..'9','_'];
+        'W':Matched:=Not(Text[I]in['A'..'Z','a'..'z','0'..'9','_']);
+        's':Matched:=Text[I]in[' ',#9,#10,#13];
+        'S':Matched:=Not(Text[I]in[' ',#9,#10,#13]);
+        Else Matched:=(Text[I]=PatternWork[PI]);
+       End;
+       If Not Matched Then Break;
+       Inc(I);
+       If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+      End;
+     End;
+     '?':Begin
+      If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+      If Matched Then DoMatch:=DoMatch(TI+1,PI+2);
+     End;
+    End;
+   End;
+   Exit;
+  End;
+  
+  { Le point matche tout caractere }
+  If PatternWork[PI]='.'Then Begin
+   { Verifie le quantificateur }
+   Quantifier:=#0;
+   If PI<Length(PatternWork)Then Begin
+    If PatternWork[PI+1]in['*','+','?']Then
+     Quantifier:=PatternWork[PI+1];
+   End;
+   
+   Case Quantifier of
+    '*':Begin
+     If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+     I:=TI;
+     While I<=Length(Text)do Begin
+      Inc(I);
+      If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+     End;
+    End;
+    '+':Begin
+     I:=TI+1;
+     If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+     While I<=Length(Text)do Begin
+      Inc(I);
+      If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+     End;
+    End;
+    '?':Begin
+     If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+     DoMatch:=DoMatch(TI+1,PI+2);
+    End;
+    Else DoMatch:=DoMatch(TI+1,PI+1);
+   End;
+   Exit;
+  End;
+  
+  { Caractere litteral }
+  Quantifier:=#0;
+  If PI<Length(PatternWork)Then Begin
+   If PatternWork[PI+1]in['*','+','?']Then
+    Quantifier:=PatternWork[PI+1];
+  End;
+  
+  Case Quantifier of
+   '*':Begin
+    If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+    I:=TI;
+    While(I<=Length(Text))and(Text[I]=PatternWork[PI])do Begin
+     Inc(I);
+     If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End;
+   '+':Begin
+    If Text[TI]<>PatternWork[PI]Then Exit;
+    I:=TI+1;
+    If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+    While(I<=Length(Text))and(Text[I]=PatternWork[PI])do Begin
+     Inc(I);
+     If DoMatch(I,PI+2)Then Begin DoMatch:=True; Exit; End;
+    End;
+   End;
+   '?':Begin
+    If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
+    If Text[TI]=PatternWork[PI]Then DoMatch:=DoMatch(TI+1,PI+2);
+   End;
+   Else Begin
+    If Text[TI]=PatternWork[PI]Then DoMatch:=DoMatch(TI+1,PI+1);
+   End;
+  End;
+ End;
+
+Begin
+ RegexMatch:=False;
+ If Length(Pattern)=0 Then Begin
+  RegexMatch:=True;
+  Exit;
+ End;
+ 
+ PatternWork:=Pattern;
+ AnchorStart:=False;
+ AnchorEnd:=False;
+ 
+ { Traite les ancres }
+ If PatternWork[1]='^'Then Begin
+  AnchorStart:=True;
+  Delete(PatternWork,1,1);
+ End;
+ If(Length(PatternWork)>0)and(PatternWork[Length(PatternWork)]='$')Then Begin
+  AnchorEnd:=True;
+  Delete(PatternWork,Length(PatternWork),1);
+ End;
+ 
+ If AnchorStart Then Begin
+  RegexMatch:=DoMatch(1,1);
+ End
+  Else
+ Begin
+  { Essaie de matcher a partir de chaque position }
+  For TPos:=1 to Length(Text)do Begin
+   If DoMatch(TPos,1)Then Begin
+    RegexMatch:=True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ ========================================================= }
+{ SECTION: Parsing Multi-lignes                             }
+{ ========================================================= }
+
+{ Compte les accolades dans une ligne en ignorant les strings et commentaires }
+Function CountBracesInLine(const Line:String):Integer;
+Var
+ I:Integer;
+ InQuote,InApos:Boolean;
+ BraceBalance:Integer;
+Begin
+ BraceBalance:=0;
+ InQuote:=False;
+ InApos:=False;
+ 
+ For I:=1 to Length(Line)do Begin
+  If Line[I]='"'Then Begin
+   If Not InApos Then InQuote:=Not InQuote;
+  End
+   Else If Line[I]=''''Then Begin
+   If Not InQuote Then InApos:=Not InApos;
+  End
+   Else If Not InQuote and Not InApos Then Begin
+   If Line[I]='#'Then Begin
+    CountBracesInLine:=BraceBalance;
+    Exit;
+   End;
+   If Line[I]='{'Then Inc(BraceBalance)
+   Else If Line[I]='}'Then Dec(BraceBalance);
+  End;
+ End;
+ CountBracesInLine:=BraceBalance;
+End;
+
+{ Execute une ligne specifique du programme }
+Function ExecuteLine(LineNum:Integer):Boolean;
+Var
+ SaveLine:String;
+ SavePos:Integer;
+ SaveLineNum:Integer;
+Begin
+ ExecuteLine:=True;
+ If(LineNum<1)or(LineNum>NumberLine)Then Exit;
+ { Protection contre pointeur nil - evite runtime error 216 }
+ If PA[LineNum]=nil Then Exit;
+ 
+ SaveLine:=CurrLine;
+ SavePos:=CurrPos;
+ SaveLineNum:=CurrLinePtr;
+ 
+ CurrLine:=PA[LineNum]^;
+ CurrPos:=1;
+ CurrLinePtr:=LineNum;
+ 
+ { Saute les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+ 
+ If CurrPos<=Length(CurrLine)Then
+  ExecuteLine:=RunLine;
+ 
+ CurrLine:=SaveLine;
+ CurrPos:=SavePos;
+ CurrLinePtr:=SaveLineNum;
+End;
+
+{ Remplace tous les caracteres OldChar par NewChar dans une chaine }
+Function ReplaceChar(S:String;OldChar,NewChar:Char):String;
+Var
+ J:Integer;
+Begin
+ For J:=1 to Length(S)do Begin
+  If S[J]=OldChar Then S[J]:=NewChar;
+ End;
+ ReplaceChar:=S;
+End;
+
+{ Version adaptee (voir project_devenv_awk) : le prototype autonome     }
+{ lisait la vraie ligne de commande OS (GetCommandLineW/proc/self/      }
+{ cmdline/NSProcessInfo selon la plateforme - aucune de ces API n'a de  }
+{ sens ici). RawParamCount/RawParamStr (juste apres, INCHANGES) sont un }
+{ tokeniseur sensible aux guillemets ET aux accolades deja excellent -  }
+{ on le reutilise tel quel en lui faisant simplement lire RawArgs (le   }
+{ parametre du wrapper TermCmd_Awk) au lieu de la ligne de commande OS. }
+{ Le "awk " prefixe reproduit le nom de programme que RawParamCount    }
+{ ignore toujours (voir son "-1" ci-dessous). }
+Function GetRawCommandLine:String;
+Begin
+ GetRawCommandLine:='awk '+RawArgs;
+End;
+
+Function IsDelimiter(C:Char):Boolean;Begin
+ IsDelimiter:=(C=' ')or(C=#9)or(C=#13)or(C=#10);
+End;
+
+Function RawParamCount:Integer;
+Var
+ PC:Integer;
+ I:Integer;
+ InQuote,InApos,InBrace:Boolean;
+ CmdLine:String;
+Begin
+ PC:=0;
+ InQuote:=False;
+ InApos:=False;
+ InBrace:=False;
+ CmdLine:=GetRawCommandLine;
+ I:=1;
+ While I<=Length(CmdLine)do Begin
+  While(I<=Length(CmdLine))and(IsDelimiter(CmdLine[I]))do Inc(I);
+  If I<=Length(CmdLine)Then Begin
+   Inc(PC);
+   While(I<=Length(CmdLine))do Begin
+    Case CmdLine[I]of
+     '"':If Not(InApos)and Not(InBrace)Then InQuote:=Not(InQuote);
+     '''':If Not(InQuote)and Not(InBrace)Then InApos:=Not(InApos);
+     '{':If Not(InQuote)and Not(InApos)Then InBrace:=True;
+     '}':If Not(InQuote)and Not(InApos)Then InBrace:=False;
+     ' ',#9,#13,#10:If Not(InQuote)and Not(InApos)and Not(InBrace)Then Break;
+    End;
+    Inc(I);
+   End;
+  End;
+ End;
+ RawParamCount:=PC-1; { -1 car on ne compte pas le nom du programme }
+End;
+
+Function RawParamStr(Index:Integer):String;
+Var
+ PC,StartPos:Integer;
+ I:Integer;
+ InQuote,InApos,InBrace:Boolean;
+ CmdLine,Param:String;
+Begin
+ PC:=0;
+ InQuote:=False;
+ InApos:=False;
+ InBrace:=False;
+ CmdLine:=GetRawCommandLine;
+ I:=1;
+ While I<=Length(CmdLine)do Begin
+  While(I<=Length(CmdLine))and(IsDelimiter(CmdLine[I]))do Inc(I);
+  If I<=Length(CmdLine)Then Begin
+   Inc(PC);
+   If PC=Index+1 Then Begin
+    StartPos:=I;
+    While(I<=Length(CmdLine))do Begin
+     Case CmdLine[I]of
+      '"':If Not(InApos)and Not(InBrace)Then InQuote:=Not(InQuote);
+      '''':If Not(InQuote)and Not(InBrace)Then InApos:=Not(InApos);
+      '{':If Not(InQuote)and Not(InApos)Then InBrace:=True;
+      '}':If Not(InQuote)and Not(InApos)Then InBrace:=False;
+      ' ',#9,#13,#10:If Not(InQuote)and Not(InApos)and Not(InBrace)Then Break;
+     End;
+     Inc(I);
+    End;
+    RawParamStr:=Copy(CmdLine,StartPos,I-StartPos);
+    Exit;
+   End;
+   While(I<=Length(CmdLine))do Begin
+    Case CmdLine[I]of
+     '"':If Not(InApos)and Not(InBrace)Then InQuote:=Not(InQuote);
+     '''':If Not(InQuote)and Not(InBrace)Then InApos:=Not(InApos);
+     '{':If Not(InQuote)and Not(InApos) Then InBrace:=True;
+     '}':If Not(InQuote)and Not(InApos) Then InBrace:=False;
+     ' ',#9,#13,#10:If Not(InQuote)and Not(InApos)and Not(InBrace)Then Break;
+    End;
+    Inc(I);
+   End;
+  End;
+ End;
+ RawParamStr:='';
+End;
+
+
+Function LTrim(S:String):String;
+Var
+ I:Integer;
+Begin
+ I:=1;
+ While(I<=Length(s)) and (S[I] in [#9,' ']) do Inc(I);
+ Delete(S,1,I-1);
+ LTrim:=S;
+End;
+
+{ Convertit une chaine hexadecimale en valeur entiere }
+{ Supporte les formats: 0xFF, 0XFF, $FF }
+Function HexToInt(S:String):LongInt;
+Var
+ I:Integer;
+ Val:LongInt;
+ C:Char;
+Begin
+ HexToInt:=0;
+ Val:=0;
+ S:=LTrim(S);
+ If Length(S)=0 Then Exit;
+ { Gerer le prefixe 0x ou 0X }
+ If(Length(S)>=2)and(S[1]='0')and(S[2]in['x','X'])Then
+  Delete(S,1,2)
+ { Gerer le prefixe $ (style Pascal) }
+ Else If S[1]='$' Then
+  Delete(S,1,1);
+ If Length(S)=0 Then Exit;
+ For I:=1 to Length(S)do Begin
+  C:=S[I];
+  Val:=Val*16;
+  Case C of
+   '0'..'9':Val:=Val+(Ord(C)-Ord('0'));
+   'A'..'F':Val:=Val+(Ord(C)-Ord('A')+10);
+   'a'..'f':Val:=Val+(Ord(C)-Ord('a')+10);
+   Else Begin { Caractere invalide }
+    HexToInt:=0;
+    Exit;
+   End;
+  End;
+ End;
+ HexToInt:=Val;
+End;
+
+{ Verifie si une chaine est une constante hexadecimale }
+Function IsHexConstant(S:String):Boolean;
+Begin
+ IsHexConstant:=False;
+ S:=LTrim(S);
+ If Length(S)<2 Then Exit;
+ { Format 0x ou 0X }
+ If(S[1]='0')and(S[2]in['x','X'])Then
+  IsHexConstant:=True
+ { Format $ (style Pascal) }
+ Else If S[1]='$' Then
+  IsHexConstant:=True;
+End;
+
+Function PadRight(S:String;Space:Byte):String;
+Var
+ I:Byte;
+Begin
+ If Length(S)<Space Then For I:=Length(S)+1 to Space do S:=S+' ';
+ PadRight:=S;
+End;
+
+Function StrToUpper(S:String):String;
+Var
+ I:Byte;
+Begin
+ For I:=1 to Length(S)do Begin
+  If S[I] in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);
+ End;
+ StrToUpper:=S;
+End;
+
+ { Traitement des variables }
+Function VariableExist(S:String):Boolean;
+Var
+ P:VarPointer;
+Begin
+ VariableExist:=False;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   VariableExist:=True;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Function VariableType(S:String):VarTypeEnum;
+Var
+ P:VarPointer;
+Begin
+ VariableType:=_None;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   VariableType:=P^.VarType;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Function AddVariableInt(S:String;Value:Integer):Boolean;
+Var
+ P:VarPointer;
+Begin
+ GetMem(P,SizeOf(VarRec));
+ P^.VarName:=Copy(StrToUpper(S),1,20);
+ P^.VarType:=_Integer;
+ P^.Variant.I:=Value;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
+ AddVariableInt:=True;
+End;
+
+Function GetVariableInt(S:String):Integer;
+Var
+ P:VarPointer;
+Begin
+ GetVariableInt:=0;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   GetVariableInt:=P^.Variant.I;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Procedure SetVariableInt(S:String;Value:Integer);
+Var
+ P:VarPointer;
+Begin
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   P^.Variant.I:=Value;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Function AddVariableLongInt(S:String;Value:LongInt):Boolean;
+Var
+ P:VarPointer;
+Begin
+ GetMem(P,SizeOf(VarRec));
+ P^.VarName:=Copy(StrToUpper(S),1,20);
+ P^.VarType:=_LongInt;
+ P^.Variant.L:=Value;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
+ AddVariableLongInt:=True;
+End;
+
+Function GetVariableLongInt(S:String):LongInt;
+Var
+ P:VarPointer;
+Begin
+ GetVariableLongInt:=0;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   GetVariableLongInt:=P^.Variant.L;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Procedure SetVariableLongInt(S:String;Value:LongInt);
+Var
+ P:VarPointer;
+Begin
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   P^.Variant.L:=Value;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Function AddVariableReal(S:String;Value:Real):Boolean;
+Var
+ P:VarPointer;
+Begin
+ GetMem(P,SizeOf(VarRec));
+ P^.VarName:=Copy(StrToUpper(S),1,20);
+ P^.VarType:=_Real;
+ P^.Variant.R:=Value;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
+ AddVariableReal:=True;
+End;
+
+Function GetVariableReal(S:String):Real;
+Var
+ P:VarPointer;
+Begin
+ GetVariableReal:=0;
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   GetVariableReal:=P^.Variant.R;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Procedure SetVariableReal(S:String;Value:Real);
+Var
+ P:VarPointer;
+Begin
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   P^.Variant.R:=Value;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Function AddVariableString(S:String;Value:String):Boolean;
+Var
+ P:VarPointer;
+ PS:StrPointer;
+Begin
+ GetMem(P,SizeOf(VarRec));
+ P^.VarName:=Copy(StrToUpper(S),1,20);
+ P^.VarType:=_String;
+ GetMem(PS,SizeOf(String));
+ PS^:=Value;
+ P^.Variant.S:=PS;
+ P^.Next:=nil;
+ If VarListLast=nil Then Begin VarListHead:=P; VarListLast:=P; End
+                    Else Begin VarListLast^.Next:=P; VarListLast:=P; End;
+ AddVariableString:=True;
+End;
+
+Function GetVariableString(S:String):String;
+Var
+ P:VarPointer;
+ TempStr:String;
+Begin
+ GetVariableString:='';
+ TempStr:='';
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   If P^.VarType=_String Then Begin
+    If P^.Variant.S<>Nil Then
+     GetVariableString:=P^.Variant.S^;
+   End
+    Else
+   Begin
+    { Convertir les autres types en chaine }
+    Case P^.VarType of
+     _Integer:Begin Str(P^.Variant.I,TempStr); GetVariableString:=TempStr; End;
+     _LongInt:Begin Str(P^.Variant.L,TempStr); GetVariableString:=TempStr; End;
+     _Real:Begin Str(P^.Variant.R:0:6,TempStr); GetVariableString:=TempStr; End;
+    End;
+   End;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Procedure SetVariableString(S:String;Value:String);
+Var
+ P:VarPointer;
+Begin
+ P:=VarListHead;
+ While P<>nil do Begin
+  If StrToUpper(S)=P^.VarName Then Begin
+   If P^.VarType=_String Then Begin
+    If P^.Variant.S<>Nil Then
+     P^.Variant.S^:=Value;
+   End;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+ { Traitement de la liste }
+Function AddLine(S:String):Boolean;
+Var
+ P:StrPointer;
+Begin
+ If NumberLine>=MaxLine Then Begin
+  AddLine:=False;
+  Exit;
+ End;
+ Inc(NumberLine);
+ GetMem(P,Length(S)+1);
+ P^:=S;
+ PA[NumberLine]:=P;
+ AddLine:=True;
+End;
+
+{ === Fonctions pour les tableaux associatifs === }
+
+Function FindArray(ArrayName:String):PAssocArray;
+Var
+ P:PAssocArray;
+ UpperName:String;
+Begin
+ FindArray:=nil;
+ UpperName:=StrToUpper(ArrayName);
+ P:=AssocArrayList;
+ While P<>nil do Begin
+  If StrToUpper(P^.Name)=UpperName Then Begin
+   FindArray:=P;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Function CreateArray(ArrayName:String):PAssocArray;
+Var
+ P:PAssocArray;
+Begin
+ New(P);
+ P^.Name:=ArrayName;
+ P^.ElemHead:=nil;
+ P^.ElemLast:=nil;
+ P^.Next:=nil;
+ If AssocArrayLast=nil Then Begin
+  AssocArrayList:=P;
+  AssocArrayLast:=P;
+ End
+  Else
+ Begin
+  AssocArrayLast^.Next:=P;
+  AssocArrayLast:=P;
+ End;
+ CreateArray:=P;
+End;
+
+Function FindArrayElement(ArrayPtr:PAssocArray;Key:String):PArrayElement;
+Var
+ P:PArrayElement;
+Begin
+ FindArrayElement:=nil;
+ If ArrayPtr=nil Then Exit;
+ P:=ArrayPtr^.ElemHead;
+ While P<>nil do Begin
+  If P^.Key=Key Then Begin
+   FindArrayElement:=P;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+Procedure SetArrayElement(ArrayName,Key,Value:String);
+Var
+ ArrayPtr:PAssocArray;
+ ElemPtr:PArrayElement;
+Begin
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then ArrayPtr:=CreateArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
+ 
+ ElemPtr:=FindArrayElement(ArrayPtr,Key);
+ If ElemPtr<>nil Then Begin
+  ElemPtr^.Value:=Value;
+ End
+  Else
+ Begin
+  New(ElemPtr);
+  ElemPtr^.Key:=Key;
+  ElemPtr^.Value:=Value;
+  ElemPtr^.Next:=nil;
+  If ArrayPtr^.ElemLast=nil Then Begin
+   ArrayPtr^.ElemHead:=ElemPtr;
+   ArrayPtr^.ElemLast:=ElemPtr;
+  End
+   Else
+  Begin
+   ArrayPtr^.ElemLast^.Next:=ElemPtr;
+   ArrayPtr^.ElemLast:=ElemPtr;
+  End;
+ End;
+End;
+
+Function GetArrayElement(ArrayName,Key:String):String;
+Var
+ ArrayPtr:PAssocArray;
+ ElemPtr:PArrayElement;
+Begin
+ GetArrayElement:='';
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
+ 
+ ElemPtr:=FindArrayElement(ArrayPtr,Key);
+ If ElemPtr<>nil Then
+  GetArrayElement:=ElemPtr^.Value;
+End;
+
+Function KeyInArray(ArrayName,Key:String):Boolean;
+Var
+ ArrayPtr:PAssocArray;
+Begin
+ KeyInArray:=False;
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
+ KeyInArray:=(FindArrayElement(ArrayPtr,Key)<>nil);
+End;
+
+Procedure DeleteArrayElement(ArrayName,Key:String);
+Var
+ ArrayPtr:PAssocArray;
+ Prev,Curr:PArrayElement;
+Begin
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Exit;
+ Prev:=nil;
+ Curr:=ArrayPtr^.ElemHead;
+ While Curr<>nil do Begin
+  If Curr^.Key=Key Then Begin
+   If Prev=nil Then ArrayPtr^.ElemHead:=Curr^.Next
+               Else Prev^.Next:=Curr^.Next;
+   If ArrayPtr^.ElemLast=Curr Then ArrayPtr^.ElemLast:=Prev;
+   Dispose(Curr);
+   Exit;
+  End;
+  Prev:=Curr;
+  Curr:=Curr^.Next;
+ End;
+End;
+
+Function ExtractCommand:Byte;
+Var
+ I:Byte;
+Begin
+ ExtractCommand:=255;
+ CurrCommand:='';
+ { Bogue reel trouve+corrige (voir project_devenv_awk) : les chiffres   }
+ { n'etaient pas acceptes dans un identificateur, rendant "atan2" (le   }
+ { seul nom de TokenList contenant un chiffre) impossible a reconnaitre }
+ { - le scan s'arretait a "atan" des le "2" rencontre. }
+ For I:=CurrPos to Length(CurrLine)do Begin
+  If Not(CurrLine[I]in['A'..'Z','a'..'z','0'..'9','$'])Then Begin
+   CurrCommand:=Copy(CurrLine,CurrPos,I-CurrPos);
+   CurrPos:=I;
+   Break;
+  End;
+ End;
+ If CurrCommand=''Then Begin
+  CurrCommand:=Copy(CurrLine,CurrPos,255);
+  CurrPos:=Length(CurrLine)+1;
+ End;
+ For I:=Low(TokenList)to High(TokenList)do Begin
+  If CurrCommand=TokenList[I]Then Begin
+   ExtractCommand:=I;
+   Exit;
+  End;
+ End;
+End;
+
+ { Evaluation d'expression (Infix to PostFix ) }
+Var
+ Stack:Array[0..100]of Char;
+ TopOfStack:Byte;
+ resultStack:Array[0..100]of Real;
+ TopOfStackInt:Byte;
+
+Procedure StackPushChar(C:Char);Begin
+ If TopOfStack>=High(Stack)Then Begin
+  WriteLn('Pile pleine!');
+  AwkAbort:=True; Exit;
+ End
+  Else
+ Begin
+  Stack[TopOfStack]:=C;
+  Inc(TopOfStack);
+ End;
+End;
+
+Function StackPop:String;
+Var
+ S:String;
+ Err:Word;
+Begin
+ Dec(TopOfStack);
+ If TopOfStack<1Then Begin
+  TopOfStack:=1;
+  StackPop:='';
+ End
+  Else
+ StackPop:=Stack[TopOfStack];
+End;
+
+Function StackPeek:Char;Begin
+ StackPeek:=Stack[TopOfStack-1];
+End;
+
+Procedure ResultStackPush(C:Real);Begin
+ If TopOfStackInt>=High(ResultStack)Then Begin
+  WriteLn('Pile pleine!');
+  AwkAbort:=True; Exit;
+ End
+  Else
+ Begin
+  ResultStack[TopOfStackInt]:=C;
+  Inc(TopOfStackInt);
+ End;
+End;
+
+Function ResultStackPop:Real;Begin
+ Dec(TopOfStackInt);
+ If TopOfStackInt<1Then Begin
+  TopOfStackInt:=1;
+  ResultStackPop:=0;
+ End
+  Else
+ ResultStackPop:=ResultStack[TopOfStackInt];
+End;
+
+Function GetStringValue:String;
+Var
+ S:String;
+Begin
+ GetStringValue:='';
+ S:='';
+ If CurrLine[CurrPos]='"'Then Begin
+  Inc(CurrPos);
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'"')do Begin
+   S:=S+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  If CurrLine[CurrPos]='"'Then Inc(CurrPos);
+  GetStringValue:=S;
+ End;
+End;
+
+Function GetNumberValue(MinTopOfStack:Integer):Real;
+Var
+ I,J:Byte;
+ Top,P_2:Char;
+ AppendOk,FunctionFound:Boolean;
+ _Result,P,P2:Real;
+ Err:Word;
+ PostFix:String;
+ VarName,Value:String;
+ Exposant:Boolean;
+ StopChar:Set Of Char;
+ Infix:String;
+ FuncPtr:PUserFunc;
+ ParamIdx:Integer;
+ ParamVarName:String;
+ ArgValue:Real;
+ SavedParams:Array[1..MaxFunctionParams]of Real;
+ SavedParamCount:Integer;
+ SaveTopOfStack:Byte;
+ SaveTopOfStackInt:Byte;
+ { Sauvegarde des contenus de piles pour recursion }
+ SaveStack:Array[0..100]of Char;
+ SaveResultStack:Array[0..100]of Real;
+ StackIdx:Integer;
+ { Sauvegarde etat expression pour second appel fonction dans meme expression }
+ SaveI:Byte;
+ SaveInfix:String;
+ SavePostFix:String;
+Begin
+ StopChar:=[',',':',';','"','<','=','>','!'];
+ { Sauvegarder l'etat complet des piles pour les appels recursifs }
+ SaveTopOfStack:=TopOfStack;
+ SaveTopOfStackInt:=TopOfStackInt;
+ For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
+ For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
+ TopOfStack:=1;
+ TopOfStackInt:=1;
+ PostFix:='';
+ Infix:=CurrLine;
+ I:=CurrPos;
+ If Infix[CurrPos]='-'Then Begin
+  Insert('(0)',Infix,CurrPos);
+  Dec(CurrPos,3);
+ End;
+ Repeat
+  If(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','_'])Then Begin
+   VarName:=Infix[I];
+   Inc(I);
+   While(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','_','0'..'9','%','!','#'])do Begin
+    VarName:=VarName+Infix[I];
+    Inc(I);
+   End;
+   VarName:=StrToUpper(VarName);
+   If VariableExist(VarName)Then Begin
+    Case VariableType(VarName)of
+     _Integer:Str(GetVariableInt(VarName),Value);
+     _LongInt:Str(GetVariableLongInt(VarName),Value);
+     _Real:Str(GetVariableReal(VarName):0:6,Value);
+     _String:Value:=GetVariableString(VarName);
+     Else Begin
+      WriteLn('Type incompatible');
+      Exit;
+     End;
+    End;
+   End
+    Else
+   Begin { Fonction ?}
+    FunctionFound:=False;
+    For J:=Low(FunctionList)to High(FunctionList)do Begin
+     If FunctionList[J]=VarName Then Begin
+      FunctionFound:=True;
+      Case J of
+       1:Begin{COS}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Cos(_Result),Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       2:Begin{EXP}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Exp(_Result),Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       7:Begin{LOG}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Ln(_Result),Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       5:Begin{INT}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Trunc(_Result):0,Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       9:Begin{RAND}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        { RAND() n'a pas d'argument }
+        While(I<=Length(Infix))and(Infix[I]=' ')do Inc(I);
+        If(I<=Length(Infix))and(Infix[I]=')')Then Begin
+         Str(Random:0:10,Value);
+         Inc(I);
+        End
+         Else
+        Begin
+         WriteLn('")" attendu pour rand()');
+         Exit;
+        End;
+       End;
+       10:Begin{SIN}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        Str(Sin(_Result),Value);
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       13:Begin{SQRT}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        CurrPos:=I;
+        _Result:=GetNumberValue(TopOfStack);
+        If _Result>=0 Then Str(Sqrt(_Result),Value)
+                      Else Value:='0';
+        I:=CurrPos;
+        If Infix[I]<>')'Then Begin
+         WriteLn('")" attendu');
+         Exit;
+        End;
+        Inc(I);
+       End;
+       6:Begin{LENGTH}
+        If Infix[I]<>'('Then Begin
+         WriteLn('"(" attendu');
+         Exit;
+        End;
+        Inc(I);
+        { Lire argument - chaine ou variable }
+        If Infix[I]='"'Then Begin
+         Inc(I);
+         Value:='';
+         While(I<=Length(Infix))and(Infix[I]<>'"')do Begin
+          Value:=Value+Infix[I];
+          Inc(I);
+         End;
+         If I<=Length(Infix)Then Inc(I); { passer le " }
+         Str(System.Length(Value),Value);
+        End
+         Else
+        Begin
+         { Variable ou $0 }
+         VarName:='';
+         While(I<=Length(Infix))and(Infix[I]in['A'..'Z','a'..'z','0'..'9','_','$'])do Begin
+          VarName:=VarName+Infix[I];
+          Inc(I);
+         End;
+         VarName:=StrToUpper(VarName);
+         If VariableExist(VarName)Then Begin
+          If VariableType(VarName)=_String Then
+           Str(System.Length(GetVariableString(VarName)),Value)
+          Else
+           Value:='0';
+         End
+          Else
+         Str(System.Length(Fields[0]),Value); { $0 par defaut }
+        End;
+        If(I<=Length(Infix))and(Infix[I]=')')Then Inc(I);
+       End;
+      End;
+      Break;
+     End
+      Else
+     Begin { Variable vide }
+      Value:='0';
+     End;
+    End;
+    { Si pas une fonction builtin, verifier les fonctions utilisateur }
+    If Not FunctionFound Then Begin
+     FuncPtr:=FindUserFunction(VarName);
+     If(FuncPtr<>nil)and(I<=Length(Infix))and(Infix[I]='(')Then Begin
+      FunctionFound:=True;
+      Inc(I);
+      { Sauvegarder les anciennes valeurs des parametres }
+      For ParamIdx:=1 to FuncPtr^.ParamCount do Begin
+       ParamVarName:=FuncPtr^.ParamNames[ParamIdx];
+       If VariableExist(ParamVarName)Then
+        SavedParams[ParamIdx]:=GetVariableReal(ParamVarName)
+       Else
+        SavedParams[ParamIdx]:=0;
+      End;
+      SavedParamCount:=FuncPtr^.ParamCount;
+      { Lire les arguments et les assigner aux parametres }
+      ParamIdx:=0;
+      While(I<=Length(Infix))and(Infix[I]<>')')do Begin
+       { Sauter les espaces }
+       While(I<=Length(Infix))and(Infix[I]=' ')do Inc(I);
+       If Infix[I]=')'Then Break;
+       Inc(ParamIdx);
+       { Lire l'argument (nombre ou variable) }
+       CurrPos:=I;
+       ArgValue:=GetNumberValue(TopOfStack);
+       I:=CurrPos;
+       { Assigner a la variable de parametre }
+       If ParamIdx<=FuncPtr^.ParamCount Then Begin
+        ParamVarName:=FuncPtr^.ParamNames[ParamIdx];
+        If Frac(ArgValue)=0.0 Then Begin
+         If VariableExist(ParamVarName)Then SetVariableLongInt(ParamVarName,Round(ArgValue))
+                                       Else AddVariableLongInt(ParamVarName,Round(ArgValue));
+        End
+         Else
+        Begin
+         If VariableExist(ParamVarName)Then SetVariableReal(ParamVarName,ArgValue)
+                                       Else AddVariableReal(ParamVarName,ArgValue);
+        End;
+       End;
+       { Sauter la virgule }
+       While(I<=Length(Infix))and(Infix[I]in[' ',','])do Inc(I);
+      End;
+      If(I<=Length(Infix))and(Infix[I]=')')Then Inc(I);
+      { Sauvegarder l'etat de l'expression avant appel fonction }
+      SaveI:=I;
+      SaveInfix:=Infix;
+      SavePostFix:=PostFix;
+      { Appeler la fonction }
+      _Result:=CallUserFunction(FuncPtr);
+      { Restaurer l'etat de l'expression apres appel fonction }
+      I:=SaveI;
+      Infix:=SaveInfix;
+      PostFix:=SavePostFix;
+      Str(_Result,Value);
+      { Restaurer les anciennes valeurs des parametres }
+      For ParamIdx:=1 to SavedParamCount do Begin
+       ParamVarName:=FuncPtr^.ParamNames[ParamIdx];
+       If VariableExist(ParamVarName)Then Begin
+        If Frac(SavedParams[ParamIdx])=0.0 Then SetVariableLongInt(ParamVarName,Round(SavedParams[ParamIdx]))
+                                           Else SetVariableReal(ParamVarName,SavedParams[ParamIdx]);
+       End;
+      End;
+     End;
+    End;
+   End;
+   PostFix:=PostFix+'('+LTrim(Value)+')';
+   If I>Length(Infix)Then Break;
+  End
+   Else
+  If Infix[I]in['0'..'9']Then Begin
+   Value:='';
+   Exposant:=False;
+   { Verifier si c'est une constante hexadecimale (0x...) }
+   If(Infix[I]='0')and(I<Length(Infix))and(Infix[I+1]in['x','X'])Then Begin
+    { C'est une constante hexadecimale }
+    Value:='0';
+    Inc(I);
+    Value:=Value+Infix[I]; { Ajoute 'x' ou 'X' }
+    Inc(I);
+    While(I<=Length(Infix))and(Infix[I]in['0'..'9','A'..'F','a'..'f'])do Begin
+     Value:=Value+Infix[I];
+     Inc(I);
+    End;
+    { Convertir la valeur hex en decimal pour le postfix }
+    Str(HexToInt(Value),Value);
+    PostFix:=PostFix+'('+Value+')';
+   End
+    Else
+   Begin
+    { Nombre decimal normal }
+    Repeat
+     If Infix[I]in['E','e']Then Begin
+      Exposant:=True;
+      Value:=Value+Infix[I];
+      Inc(I);
+     End
+      Else
+     If(Exposant)and(Infix[I]in['-','+'])Then Begin
+      Value:=Value+Infix[I];
+      Inc(I);
+     End
+      Else
+     If Infix[I]in['0'..'9','.']Then Begin
+      Value:=Value+Infix[I];
+      Inc(I);
+     End
+      Else
+     Break;
+    Until I>Length(Infix);
+    PostFix:=PostFix+'('+Value+')';
+   End;
+  End
+  Else If Infix[I]='('Then Begin
+   StackPushChar(Infix[I]);
+   Inc(I);
+  End
+  Else If Infix[I]in['*','+','-','/','%','^']Then Begin
+   While(TopOfStack>1)and(StackPeek <> '(')do Begin
+    Top:=StackPeek;
+    P_2:=Infix[I];
+    AppendOk:=True;
+    { Priorite: ^ > * / % > + - }
+    { ^ est associatif a droite }
+    If(Top='^')and(P_2='^')Then AppendOk:=False { ^ associatif a droite }
+    Else If(Top='^')Then AppendOk:=True { ^ sur pile, autre operateur: pop ^ }
+    Else If(P_2='^')Then AppendOk:=False { ^ arrive, ne pas pop operateurs moins prioritaires }
+    Else If(Top in['*','/','%'])and(P_2 in['+','-'])Then AppendOk:=True { * / % plus prioritaires que + - }
+    Else If(Top in['+','-'])and(P_2 in['*','/','%'])Then AppendOk:=False { + - moins prioritaires que * / % }
+    Else AppendOk:=True; { Meme priorite, associatif a gauche: pop }
+    If(AppendOk)Then PostFix:=PostFix+StackPop
+                Else Break;
+   End;
+   StackPushChar(Infix[I]);
+   Inc(I);
+  End
+   Else
+  If Infix[I]=')'Then Begin
+   If TopOfStack<=MinTopOfStack Then Begin
+    Break;
+   End;
+   While(TopOfStack>MinTopOfStack)and(StackPeek<>'(')do PostFix:=PostFix+StackPop;
+   If TopOfStack>1Then StackPop;
+   Inc(I);
+  End
+   Else
+  Inc(I);
+  If(Infix[I]in StopChar)Then Break;
+  If StrToUpper(Copy(Infix,I,4))='THEN'Then Break;
+ Until I>Length(Infix);
+ CurrPos:=I;
+ While(TopOfStack>1)do PostFix:=PostFix+StackPop;
+  { Transformation en POSTFIX }
+ I:=1;
+ Repeat
+  If PostFix[I]in['*','+','-','/','%','^']Then Begin
+   P:=ResultStackPop;
+   P2:=ResultStackPop;
+   Case PostFix[I]of
+    '+':_Result:=P2+P;
+    '-':_Result:=P2-P;
+    '*':_Result:=P2*P;
+    '/':If P<>0 Then _Result:=P2/P Else _Result:=0;
+    '%':If P<>0 Then _Result:=Trunc(P2) mod Trunc(P) Else _Result:=0;
+    '^':Begin { Puissance: P2^P }
+          If P2>0 Then _Result:=Exp(P*Ln(P2))
+          Else If P2=0 Then Begin
+           If P>0 Then _Result:=0 Else _Result:=1; { 0^0 = 1 par convention }
+          End
+          Else Begin { P2 < 0 }
+           If(Frac(P)=0)Then Begin { Exposant entier }
+            If(Trunc(P) mod 2 = 0)Then _Result:=Exp(P*Ln(-P2)) { Exposant pair: resultat positif }
+                                  Else _Result:=-Exp(P*Ln(-P2)); { Exposant impair: resultat negatif }
+           End
+            Else
+           _Result:=0; { Base negative avec exposant non-entier: indefini, retourne 0 }
+          End;
+         End;
+    Else _Result:=-1;
+   End;
+   ResultStackPush(_Result);
+  End
+   Else
+  Begin
+   Value:='';
+   Exposant:=False;
+   Repeat
+    If Postfix[I]in['0'..'9','.']Then Begin
+     Value:=Value+Postfix[I];
+     Inc(I);
+    End
+     Else
+    If(Value<>'')and(Postfix[I]in['E','e'])Then Begin
+     Exposant:=True;
+     Value:=Value+Postfix[I];
+     Inc(I);
+    End
+     Else
+    If(Value<>'')and(Exposant)and(Postfix[I]in['+','-'])Then Begin
+     Value:=Value+Postfix[I];
+     Inc(I);
+    End
+     Else
+    Break;
+   Until I>Length(Postfix);
+   If Value<>''Then Begin
+    Val(Value,_Result,Err);
+    ResultStackPush(_Result);
+   End;
+  End;
+  Inc(I);
+ Until I>Length(Postfix);
+ GetNumberValue:=ResultStackPop;
+ { Restaurer l'etat complet des piles pour les appels recursifs }
+ For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
+ For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
+ TopOfStack:=SaveTopOfStack;
+ TopOfStackInt:=SaveTopOfStackInt;
+End;
+
+Procedure SkipSpace;Begin
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' '])do Inc(CurrPos);
+End;
+
+Function GetSeparator:Char;Begin
+ If CurrPos>Length(CurrLine)Then Begin
+  GetSeparator:=#0;
+  Exit;
+ End;
+ SkipSpace;
+ GetSeparator:=CurrLine[CurrPos];
+End;
+
+
+Procedure BeginCommand;Begin
+End;
+
+{ Implementation de la commande END }
+Procedure EndCommand;
+Var
+ BlockLevel:Integer;
+ SaveLinePtr:Integer;
+Begin
+ { END est execute a la fin du programme, on sauvegarde la position }
+ EndBlockStart:=CurrLinePtr;
+ 
+ { Sauter le bloc END pour l'instant - il sera execute a la fin }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  BlockLevel:=1;
+  Inc(CurrPos);
+  While BlockLevel>0 do Begin
+   While CurrPos<=Length(CurrLine)do Begin
+    If CurrLine[CurrPos]='{' Then Inc(BlockLevel)
+    Else If CurrLine[CurrPos]='}' Then Dec(BlockLevel);
+    If BlockLevel=0 Then Break;
+    Inc(CurrPos);
+   End;
+   If BlockLevel>0 Then Begin
+    { Passer a la ligne suivante }
+    Inc(CurrLinePtr);
+    If CurrLinePtr>NumberLine Then Break;
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+   End;
+  End;
+ End;
+ EndBlockEnd:=CurrLinePtr;
+End;
+
+{ Implementation de getline - lit une ligne depuis l'entree standard }
+{ Formes supportees:                                                  }
+{   getline             -> lit dans $0, retourne 1 si ok, 0 si EOF   }
+{   getline var         -> lit dans var, retourne 1 si ok, 0 si EOF  }
+{   getline < "fichier" -> lit depuis un fichier                     }
+Procedure GetlineCommand;
+Var
+ InputLine:String;
+ VarName:String;
+ SavePos:Integer;
+ NRVal:LongInt;
+Begin
+ SkipSpace;
+ SavePos:=CurrPos;
+ 
+ { Verifier si c'est "getline var" ou juste "getline" }
+ VarName:='';
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  VarName:=VarName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ SkipSpace;
+ 
+ { Lire depuis l'entree standard }
+ If Not EOF Then Begin
+  ReadLn(InputLine);
+  
+  If VarName<>''Then Begin
+   { getline var - stocker dans la variable }
+   SetVariableString(StrToUpper(VarName),InputLine);
+  End
+   Else
+  Begin
+   { getline - stocker dans $0 et mettre a jour les champs }
+   Fields[0]:=InputLine;
+   SplitIntoFields(InputLine);
+   { Mettre a jour NF avec le nombre de champs }
+   SetVariableInt('NF',NumFields);
+  End;
+  
+  { Mettre a jour NR }
+  NRVal:=GetVariableLongInt('NR');
+  Inc(NRVal);
+  SetVariableLongInt('NR',NRVal);
+  Inc(NRValue);
+  
+  { Retourner 1 (succes) via variable speciale GETLINE_STATUS }
+  SetVariableInt('_GETLINE_STATUS',1);
+ End
+  Else
+ Begin
+  { EOF atteint - retourner 0 }
+  SetVariableInt('_GETLINE_STATUS',0);
+ End;
+End;
+
+{ Recherche une fonction utilisateur par son nom }
+Function FindUserFunction(const FName:String):PUserFunc;
+Var
+ J:Integer;
+ UpperName:String;
+ P:PUserFunc;
+Begin
+ FindUserFunction:=nil;
+ UpperName:=FName;
+ For J:=1 to Length(UpperName)do
+  If UpperName[J] in ['a'..'z'] Then
+   UpperName[J]:=Chr(Ord(UpperName[J])-32);
+ P:=UserFuncList;
+ While P<>nil do Begin
+  If P^.FuncName=UpperName Then Begin
+   FindUserFunction:=P;
+   Exit;
+  End;
+  P:=P^.Next;
+ End;
+End;
+
+{ Parse une definition de fonction: function name(params) ... }
+Procedure ParseFunctionDef;
+Var
+ FuncName,ParamName:String;
+ BlockLevel:Integer;
+ FuncPtr:PUserFunc;
+Begin
+ SkipSpace;
+ { Lire le nom de la fonction }
+ FuncName:='';
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  FuncName:=FuncName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ 
+ If FuncName='' Then Exit;
+ 
+ { Convertir en majuscules }
+ FuncName:=StrToUpper(FuncName);
+ 
+ { Allouer un nouveau noeud dans la liste chainee }
+ New(FuncPtr);
+ FuncPtr^.FuncName:=FuncName;
+ FuncPtr^.ParamCount:=0;
+ FuncPtr^.Next:=nil;
+ If UserFuncLast=nil Then Begin
+  UserFuncList:=FuncPtr;
+  UserFuncLast:=FuncPtr;
+ End
+  Else
+ Begin
+  UserFuncLast^.Next:=FuncPtr;
+  UserFuncLast:=FuncPtr;
+ End;
+ 
+ { Sauter les espaces }
+ SkipSpace;
+ 
+ { Parser les parametres }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
+  Inc(CurrPos); { Passer '(' }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>')')do Begin
+   SkipSpace;
+   ParamName:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    ParamName:=ParamName+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If ParamName<>'' Then Begin
+    Inc(FuncPtr^.ParamCount);
+    FuncPtr^.ParamNames[FuncPtr^.ParamCount]:=StrToUpper(ParamName);
+   End;
+   SkipSpace;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
+  End;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ End;
+ 
+ { Sauter les espaces et chercher l'accolade ouvrante }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  { Avancer apres l'accolade ouvrante }
+  Inc(CurrPos);
+  
+  { Verifier si le reste de la ligne est vide ou juste des espaces }
+  { Si oui, le corps commence a la ligne suivante }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+  
+  If CurrPos>Length(CurrLine) Then Begin
+   { Le reste de la ligne est vide, le corps commence a la ligne suivante }
+   Inc(CurrLinePtr);
+   If CurrLinePtr<=NumberLine Then Begin
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    { Sauter les espaces en debut de ligne }
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+   End;
+   FuncPtr^.BodyStartLine:=CurrLinePtr;
+   FuncPtr^.BodyStartPos:=CurrPos;
+  End
+   Else
+  Begin
+   { Le corps commence sur la meme ligne, juste apres l'accolade ouvrante }
+   FuncPtr^.BodyStartLine:=CurrLinePtr;
+   FuncPtr^.BodyStartPos:=CurrPos;
+  End;
+  
+  { Sauter le bloc de la fonction }
+  BlockLevel:=1;
+  While BlockLevel>0 do Begin
+   While CurrPos<=Length(CurrLine)do Begin
+    If CurrLine[CurrPos]='{' Then Inc(BlockLevel)
+    Else If CurrLine[CurrPos]='}' Then Dec(BlockLevel);
+    If BlockLevel=0 Then Break;
+    Inc(CurrPos);
+   End;
+   If BlockLevel>0 Then Begin
+    Inc(CurrLinePtr);
+    If CurrLinePtr>NumberLine Then Break;
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+   End;
+  End;
+  FuncPtr^.BodyEndLine:=CurrLinePtr;
+  { Avancer apres l'accolade fermante }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='}')Then Inc(CurrPos);
+ End;
+End;
+
+{ Commande function - parse et enregistre une fonction utilisateur }
+Procedure FunctionCommand;
+Begin
+ ParseFunctionDef;
+End;
+
+{ Commande return - retourne une valeur depuis une fonction }
+Procedure ReturnCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ HasFunctionReturn:=True;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+  { Retour de chaine }
+  FunctionReturnStr:=GetStringValue;
+  FunctionReturnValue:=0;
+ End
+  Else
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9','-','+','(','A'..'Z','a'..'z','_','$'])Then Begin
+  { Retour numerique }
+  R:=GetNumberValue(1);
+  FunctionReturnValue:=R;
+  FunctionReturnStr:='';
+ End
+  Else
+ Begin
+  { Retour vide }
+  FunctionReturnValue:=0;
+  FunctionReturnStr:='';
+ End;
+End;
+
+{ Appel d'une fonction utilisateur }
+Function CallUserFunction(FuncPtr:PUserFunc):Real;
+Var
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+ SavePos:Integer;
+ OldReturnValue:Real;
+ OldReturnStr:String;
+ OldHasReturn:Boolean;
+ { Sauvegarde des piles pour les appels recursifs }
+ SaveStack:Array[0..100]of Char;
+ SaveResultStack:Array[0..100]of Real;
+ SaveTopOfStack:Byte;
+ SaveTopOfStackInt:Byte;
+ StackIdx:Integer;
+Begin
+ CallUserFunction:=0;
+ If FuncPtr=nil Then Exit;
+ 
+ { Sauvegarder l'etat courant }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ SavePos:=CurrPos;
+ OldReturnValue:=FunctionReturnValue;
+ OldReturnStr:=FunctionReturnStr;
+ OldHasReturn:=HasFunctionReturn;
+ 
+ { Sauvegarder les piles d'evaluation d'expressions pour les appels recursifs }
+ SaveTopOfStack:=TopOfStack;
+ SaveTopOfStackInt:=TopOfStackInt;
+ For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
+ For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
+ 
+ { Reinitialiser les piles pour l'appel recursif }
+ TopOfStack:=1;
+ TopOfStackInt:=1;
+ 
+ { Initialiser pour l'appel }
+ HasFunctionReturn:=False;
+ FunctionReturnValue:=0;
+ FunctionReturnStr:='';
+ InFunctionCall:=True;
+ 
+ { Executer le corps de la fonction }
+ CurrLinePtr:=FuncPtr^.BodyStartLine;
+ CurrLine:=PA[CurrLinePtr]^;
+ CurrPos:=FuncPtr^.BodyStartPos;
+ 
+ While(CurrLinePtr<=FuncPtr^.BodyEndLine)and(Not HasFunctionReturn)do Begin
+  If Not RunLine Then Break;
+  Inc(CurrLinePtr);
+  If CurrLinePtr<=FuncPtr^.BodyEndLine Then Begin
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+  End;
+ End;
+ 
+ { Recuperer la valeur de retour }
+ CallUserFunction:=FunctionReturnValue;
+ 
+ { Restaurer les piles d'evaluation d'expressions }
+ For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
+ For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
+ TopOfStack:=SaveTopOfStack;
+ TopOfStackInt:=SaveTopOfStackInt;
+ 
+ { Restaurer l'etat }
+ CurrLinePtr:=SaveLinePtr;
+ CurrLine:=SaveCurrLine;
+ CurrPos:=SavePos;
+ FunctionReturnValue:=OldReturnValue;
+ FunctionReturnStr:=OldReturnStr;
+ HasFunctionReturn:=OldHasReturn;
+ InFunctionCall:=False;
+End;
+
+Procedure PrintCommand;
+Var
+ R:Real;
+ VarName,StrVal,OutputStr,TempStr:String;
+ SavePos,I:Integer;
+ HasOutput:Boolean;
+Begin
+ SkipSpace;
+ OutputStr:='';
+ HasOutput:=False;
+ 
+ If CurrPos>Length(CurrLine)Then Begin
+  { print sans argument - affiche $0 }
+  WriteLn(Fields[0]);
+  Exit;
+ End;
+ 
+ { Boucle pour gerer la concatenation de chaines et variables }
+ While(CurrPos<=Length(CurrLine))and(Not(CurrLine[CurrPos]in[';','}','#']))do Begin
+  SkipSpace;
+  If CurrPos>Length(CurrLine)Then Break;
+  If CurrLine[CurrPos]in[';','}','#']Then Break;
+  
+  { Chaine literale }
+  If CurrLine[CurrPos]='"'Then Begin
+   TempStr:=GetStringValue;
+   OutputStr:=OutputStr+TempStr;
+   HasOutput:=True;
+  End
+   Else
+  { Variable ou expression }
+  If CurrLine[CurrPos]in['A'..'Z','a'..'z','_']Then Begin
+   SavePos:=CurrPos;
+   VarName:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    VarName:=VarName+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   { Verifier si c'est un acces tableau }
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
+    { Acces tableau }
+    Inc(CurrPos);
+    TempStr:='';
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+     TempStr:=GetStringValue;
+    End
+     Else
+    Begin
+     While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+      TempStr:=TempStr+CurrLine[CurrPos];
+      Inc(CurrPos);
+     End;
+     { Si c'est une variable, recuperer sa valeur }
+     If VariableExist(StrToUpper(TempStr))Then Begin
+      Case VariableType(StrToUpper(TempStr))of
+       _String:TempStr:=GetVariableString(StrToUpper(TempStr));
+       _Integer:Str(GetVariableInt(StrToUpper(TempStr)),TempStr);
+       _LongInt:Str(GetVariableLongInt(StrToUpper(TempStr)),TempStr);
+       _Real:Str(GetVariableReal(StrToUpper(TempStr)):0:0,TempStr);
+      End;
+     End;
+    End;
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
+    OutputStr:=OutputStr+GetArrayElement(VarName,TempStr);
+    HasOutput:=True;
+   End
+    Else
+   Begin
+    VarName:=StrToUpper(VarName);
+    If VariableExist(VarName)Then Begin
+     Case VariableType(VarName)of
+      _String:OutputStr:=OutputStr+GetVariableString(VarName);
+      _Integer:Begin
+       Str(GetVariableInt(VarName),TempStr);
+       OutputStr:=OutputStr+TempStr;
+      End;
+      _LongInt:Begin
+       Str(GetVariableLongInt(VarName),TempStr);
+       OutputStr:=OutputStr+TempStr;
+      End;
+      _Real:Begin
+       R:=GetVariableReal(VarName);
+       If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                     Else Str(R,TempStr);
+       OutputStr:=OutputStr+TempStr;
+      End;
+     End;
+     HasOutput:=True;
+    End
+     Else
+    Begin
+     { Pas une variable connue, restaurer et traiter comme expression }
+     CurrPos:=SavePos;
+     R:=GetNumberValue(1);
+     If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                   Else Str(R,TempStr);
+     OutputStr:=OutputStr+TempStr;
+     HasOutput:=True;
+    End;
+   End;
+  End
+   Else
+  If CurrLine[CurrPos]='$'Then Begin
+   { Acces a un champ $0, $1, $2, ..., $NF }
+   Inc(CurrPos);
+   TempStr:='';
+   { Verifier si c'est un numero ou une variable }
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])Then Begin
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['0'..'9'])do Begin
+     TempStr:=TempStr+CurrLine[CurrPos];
+     Inc(CurrPos);
+    End;
+    I:=0;
+    Val(TempStr,I,SavePos);
+   End
+    Else
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_'])Then Begin
+    { Variable comme $NF }
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+     TempStr:=TempStr+CurrLine[CurrPos];
+     Inc(CurrPos);
+    End;
+    If VariableExist(StrToUpper(TempStr))Then Begin
+     Case VariableType(StrToUpper(TempStr))of
+      _Integer:I:=GetVariableInt(StrToUpper(TempStr));
+      _LongInt:I:=GetVariableLongInt(StrToUpper(TempStr));
+      Else I:=-1;
+     End;
+    End
+     Else I:=-1;
+   End
+    Else I:=-1;
+   If(I>=0)and(I<=NumFields)Then
+    OutputStr:=OutputStr+Fields[I]
+   Else
+    OutputStr:=OutputStr+'';
+   HasOutput:=True;
+  End
+   Else
+  If CurrLine[CurrPos]in['0'..'9','-','+','(']Then Begin
+   { Expression numerique }
+   R:=GetNumberValue(1);
+   If Frac(R)=0.0Then Str(R:0:0,TempStr)
+                 Else Str(R,TempStr);
+   OutputStr:=OutputStr+TempStr;
+   HasOutput:=True;
+  End
+   Else
+  If CurrLine[CurrPos]=','Then Begin
+   { Separateur d'arguments - ajouter un espace (OFS) }
+   OutputStr:=OutputStr+' ';
+   Inc(CurrPos);
+  End
+   Else
+  Begin
+   { Caractere inconnu - arreter }
+   Break;
+  End;
+  
+  SkipSpace;
+ End;
+ 
+ { Bogue reel trouve+corrige (voir project_devenv_awk) : "print" sans   }
+ { argument affiche deja Fields[0] plus haut dans cette procedure       }
+ { QUAND il est le tout dernier caractere de la ligne, mais "print"     }
+ { suivi d'un point-virgule, d'une accolade fermante ou d'un diese      }
+ { (le cas normal d'un bloc contenant print seul) tombait ici avec      }
+ { HasOutput=False et affichait une ligne VIDE au lieu de $0.           }
+ If HasOutput Then WriteLn(OutputStr)
+              Else WriteLn(Fields[0]);
+End;
+
+Procedure CosCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ R:=GetNumberValue(1);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ R:=Cos(R);
+ If Frac(R)=0.0 Then WriteLn(R:0:0)
+                Else WriteLn(R);
+End;
+
+{ Fonction sin - sinus }
+Procedure SinCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ R:=GetNumberValue(1);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ R:=Sin(R);
+ If Frac(R)=0.0 Then WriteLn(R:0:0)
+                Else WriteLn(R);
+End;
+
+{ Fonction rand - nombre aleatoire entre 0 et 1 }
+Procedure RandCommand;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ WriteLn(Random);
+End;
+
+{ Fonction srand - initialise le generateur aleatoire }
+Procedure SRandCommand;
+Var
+ Seed:LongInt;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Begin
+  { srand() sans argument - utilise l'heure }
+  Randomize;
+  Inc(CurrPos);
+ End
+  Else
+ Begin
+  Seed:=Round(GetNumberValue(1));
+  RandSeed:=Seed;
+  SkipSpace;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ End;
+End;
+
+{ Fonction sqrt - racine carree }
+Procedure SqrtCommand;
+Var
+ R:Real;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ R:=GetNumberValue(1);
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ If R>=0 Then Begin
+  R:=Sqrt(R);
+  If Frac(R)=0.0 Then WriteLn(R:0:0)
+                 Else WriteLn(R);
+ End
+  Else
+ WriteLn('Erreur: sqrt d''un nombre negatif');
+End;
+
+{ Fonction interne pour le formatage sprintf/printf }
+Function DoSprintf:String;
+Var
+ FormatStr,OutputStr,TempStr:String;
+ I:Integer;
+ R:Real;
+ Width,Precision:Integer;
+ WidthStr,PrecStr:String;
+ LeftAlign:Boolean;
+ IntVal:LongInt;
+ Err:Integer;
+Begin
+ DoSprintf:='';
+ OutputStr:='';
+ SkipSpace;
+ OutputStr:='';
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+  FormatStr:=GetStringValue;
+  I:=1;
+  While I<=Length(FormatStr) do Begin
+   If(FormatStr[I]='%')and(I<Length(FormatStr))Then Begin
+    Inc(I);
+    { Gerer %% comme un seul % }
+    If FormatStr[I]='%'Then Begin
+     OutputStr:=OutputStr+'%';
+     Inc(I);
+    End
+     Else
+    Begin
+     { Lire les flags optionnels }
+     LeftAlign:=False;
+     If(I<=Length(FormatStr))and(FormatStr[I]='-')Then Begin
+      LeftAlign:=True;
+      Inc(I);
+     End;
+     { Lire la largeur optionnelle }
+     WidthStr:='';
+     While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
+      WidthStr:=WidthStr+FormatStr[I];
+      Inc(I);
+     End;
+     Width:=0;
+     If WidthStr<>''Then Val(WidthStr,Width,Err);
+     { Lire la precision optionnelle }
+     PrecStr:='';
+     Precision:=6;
+     If(I<=Length(FormatStr))and(FormatStr[I]='.')Then Begin
+      Inc(I);
+      While(I<=Length(FormatStr))and(FormatStr[I]in['0'..'9'])do Begin
+       PrecStr:=PrecStr+FormatStr[I];
+       Inc(I);
+      End;
+      If PrecStr<>''Then Val(PrecStr,Precision,Err)
+                    Else Precision:=0;
+     End;
+     { Traiter le specifier de format }
+     If I<=Length(FormatStr)Then Begin
+      SkipSpace;
+      If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=',')Then Inc(CurrPos);
+      SkipSpace;
+      Case FormatStr[I] of
+       'd','i':Begin { Entier decimal }
+        R:=GetNumberValue(1);
+        Str(Round(R),TempStr);
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'x','X':Begin { Hexadecimal }
+        R:=GetNumberValue(1);
+        IntVal:=Round(R);
+        TempStr:='';
+        If IntVal=0 Then TempStr:='0'
+         Else
+        Begin
+         While IntVal>0 do Begin
+          If(IntVal mod 16)<10 Then TempStr:=Chr(Ord('0')+(IntVal mod 16))+TempStr
+                               Else If FormatStr[I]='X'Then TempStr:=Chr(Ord('A')+(IntVal mod 16)-10)+TempStr
+                                                       Else TempStr:=Chr(Ord('a')+(IntVal mod 16)-10)+TempStr;
+          IntVal:=IntVal div 16;
+         End;
+        End;
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'o':Begin { Octal }
+        R:=GetNumberValue(1);
+        IntVal:=Round(R);
+        TempStr:='';
+        If IntVal=0 Then TempStr:='0'
+         Else
+        Begin
+         While IntVal>0 do Begin
+          TempStr:=Chr(Ord('0')+(IntVal mod 8))+TempStr;
+          IntVal:=IntVal div 8;
+         End;
+        End;
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       's':Begin { Chaine }
+        If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then
+         TempStr:=GetStringValue
+        Else Begin
+         TempStr:='';
+         While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9','$'])do Begin
+          TempStr:=TempStr+CurrLine[CurrPos];
+          Inc(CurrPos);
+         End;
+         If VariableExist(StrToUpper(TempStr))Then
+          TempStr:=GetVariableString(StrToUpper(TempStr));
+        End;
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'f':Begin { Reel format fixe }
+        R:=GetNumberValue(1);
+        Str(R:0:Precision,TempStr);
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'g','e':Begin { Reel format exponentiel/general }
+        R:=GetNumberValue(1);
+        Str(R,TempStr);
+        If Width>0 Then Begin
+         If LeftAlign Then TempStr:=PadRight(TempStr,Width)
+                      Else While Length(TempStr)<Width do TempStr:=' '+TempStr;
+        End;
+        OutputStr:=OutputStr+TempStr;
+       End;
+       'c':Begin { Caractere }
+        R:=GetNumberValue(1);
+        OutputStr:=OutputStr+Chr(Round(R));
+       End;
+      End;
+      Inc(I);
+     End;
+    End;
+   End
+    Else
+   If(FormatStr[I]='\')and(I<Length(FormatStr))Then Begin
+    Inc(I);
+    Case FormatStr[I] of
+     'n':OutputStr:=OutputStr+#10;
+     'r':OutputStr:=OutputStr+#13;
+     't':OutputStr:=OutputStr+#9;
+     '\':OutputStr:=OutputStr+'\';
+     '"':OutputStr:=OutputStr+'"';
+    End;
+    Inc(I);
+   End
+    Else
+   Begin
+    OutputStr:=OutputStr+FormatStr[I];
+    Inc(I);
+   End;
+  End;
+  DoSprintf:=OutputStr;
+ End;
+End;
+
+{ Commande printf - affichage formate }
+Procedure PrintfCommand;
+Begin
+ Write(DoSprintf);
+End;
+
+{ Commande sprintf - retourne une chaine formatee }
+Procedure SprintfCommand;
+Var
+ ResultStr:String;
+Begin
+ ResultStr:=DoSprintf;
+ { Stocker le resultat dans la variable de retour de fonction }
+ FunctionReturnStr:=ResultStr;
+ FunctionReturnValue:=0;
+ HasFunctionReturn:=True;
+End;
+
+{ Evaluation des conditions pour if et switch }
+Function EvaluateCondition:Boolean;
+Var
+ LeftStr,RightStr:String;
+ LeftNum,RightNum:Real;
+ Op:String;
+ I,SavePos:Integer;
+ IsStringCompare:Boolean;
+ Err:Integer;
+ KeyStr,ArrayName:String;
+ ScanPos:Integer;
+Begin
+ EvaluateCondition:=False;
+ SkipSpace;
+
+ { Verifie si c'est une parenthese ouvrante }
+ If CurrLine[CurrPos]='('Then Inc(CurrPos);
+ SkipSpace;
+
+ { Detecter l'operateur "in" pour les tableaux }
+ { Format: "key" in array ou (key in array) }
+ SavePos:=CurrPos;
+ KeyStr:='';
+ ArrayName:='';
+ 
+ { Lire la cle (string ou variable) }
+ If CurrLine[CurrPos]='"'Then Begin
+  KeyStr:=GetStringValue;
+ End
+  Else
+ Begin
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   KeyStr:=KeyStr+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  { Si c'est une variable, recuperer sa valeur }
+  If VariableExist(KeyStr)Then Begin
+   Case VariableType(KeyStr)of
+    _String:KeyStr:=GetVariableString(KeyStr);
+    _Integer:Str(GetVariableInt(KeyStr),KeyStr);
+    _LongInt:Str(GetVariableLongInt(KeyStr),KeyStr);
+    _Real:Str(GetVariableReal(KeyStr):0:0,KeyStr);
+   End;
+  End;
+ End;
+ 
+ SkipSpace;
+ 
+ { Verifier si "in" suit }
+ If(CurrPos+1<=Length(CurrLine))and(Copy(CurrLine,CurrPos,3)='in ')Then Begin
+  Inc(CurrPos,2);
+  SkipSpace;
+  { Lire le nom du tableau }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   ArrayName:=ArrayName+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  SkipSpace;
+  { Ferme la parenthese si presente }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+  { Evaluer l'appartenance }
+  EvaluateCondition:=KeyInArray(ArrayName,KeyStr);
+  Exit;
+ End;
+ 
+ { Sinon, revenir en arriere et traiter normalement }
+ CurrPos:=SavePos;
+
+ { Recupere la partie gauche de la condition }
+ IsStringCompare:=False;
+ If CurrLine[CurrPos]='"'Then Begin
+  IsStringCompare:=True;
+  LeftStr:=GetStringValue;
+ End
+  Else
+ Begin
+  SavePos:=CurrPos;
+  LeftNum:=GetNumberValue(1);
+ End;
+
+ SkipSpace;
+
+ { Recupere l'operateur de comparaison }
+ Op:='';
+ If(CurrPos<=Length(CurrLine))Then Begin
+  If(CurrLine[CurrPos]='=')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='==';
+   Inc(CurrPos,2);
+  End
+   Else
+  If(CurrLine[CurrPos]='!')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='!=';
+   Inc(CurrPos,2);
+  End
+   Else
+  If(CurrLine[CurrPos]='<')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='<=';
+   Inc(CurrPos,2);
+  End
+   Else
+  If(CurrLine[CurrPos]='>')and(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+   Op:='>=';
+   Inc(CurrPos,2);
+  End
+   Else
+  If CurrLine[CurrPos]='<'Then Begin
+   Op:='<';
+   Inc(CurrPos);
+  End
+   Else
+  If CurrLine[CurrPos]='>'Then Begin
+   Op:='>';
+   Inc(CurrPos);
+  End
+   Else
+  If CurrLine[CurrPos]='~'Then Begin
+   Op:='~'; { regex match }
+   Inc(CurrPos);
+  End;
+ End;
+
+ { Si pas d'operateur, on evalue la valeur comme booleen }
+ If Op=''Then Begin
+  If IsStringCompare Then EvaluateCondition:=(LeftStr<>'')
+                     Else EvaluateCondition:=(LeftNum<>0);
+  { Ferme la parenthese si presente }
+  SkipSpace;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+  Exit;
+ End;
+
+ SkipSpace;
+
+ { Recupere la partie droite de la condition }
+ { Pour l'operateur regex, on peut avoir /pattern/ ou "pattern" }
+ If Op='~'Then Begin
+  IsStringCompare:=True;
+  If CurrLine[CurrPos]='/'Then Begin
+   { Pattern regex entre slashes }
+   Inc(CurrPos);
+   RightStr:='';
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'/')do Begin
+    If(CurrLine[CurrPos]='\')and(CurrPos<Length(CurrLine))Then Begin
+     { Caractere echappe }
+     Inc(CurrPos);
+     RightStr:=RightStr+CurrLine[CurrPos];
+    End
+     Else
+    RightStr:=RightStr+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If CurrPos<=Length(CurrLine)Then Inc(CurrPos); { Saute le / final }
+  End
+   Else If CurrLine[CurrPos]='"'Then Begin
+   RightStr:=GetStringValue;
+  End
+   Else
+  Begin
+   { Pattern sans delimiteurs }
+   RightStr:='';
+   While(CurrPos<=Length(CurrLine))and Not(CurrLine[CurrPos]in[' ',#9,')',';','}'])do Begin
+    RightStr:=RightStr+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+  End;
+ End
+  Else
+ If CurrLine[CurrPos]='"'Then Begin
+  IsStringCompare:=True;
+  RightStr:=GetStringValue;
+ End
+  Else
+ Begin
+  RightNum:=GetNumberValue(1);
+  If IsStringCompare Then Begin
+   Str(RightNum:0:0,RightStr);
+  End;
+ End;
+
+ { Ferme la parenthese si presente }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+
+ { Effectue la comparaison }
+ If Op='~'Then Begin
+  { Regex match - convertit LeftNum en string si necessaire }
+  If LeftStr=''Then Str(LeftNum:0:0,LeftStr);
+  EvaluateCondition:=RegexMatch(LeftStr,RightStr);
+ End
+  Else
+ If IsStringCompare Then Begin
+  { Convertit LeftNum en string si necessaire }
+  If LeftStr=''Then Str(LeftNum:0:0,LeftStr);
+
+  If Op='=='Then EvaluateCondition:=(LeftStr=RightStr)
+  Else If Op='!='Then EvaluateCondition:=(LeftStr<>RightStr)
+  Else If Op='<'Then EvaluateCondition:=(LeftStr<RightStr)
+  Else If Op='>'Then EvaluateCondition:=(LeftStr>RightStr)
+  Else If Op='<='Then EvaluateCondition:=(LeftStr<=RightStr)
+  Else If Op='>='Then EvaluateCondition:=(LeftStr>=RightStr);
+ End
+  Else
+ Begin
+  If Op='=='Then EvaluateCondition:=(LeftNum=RightNum)
+  Else If Op='!='Then EvaluateCondition:=(LeftNum<>RightNum)
+  Else If Op='<'Then EvaluateCondition:=(LeftNum<RightNum)
+  Else If Op='>'Then EvaluateCondition:=(LeftNum>RightNum)
+  Else If Op='<='Then EvaluateCondition:=(LeftNum<=RightNum)
+  Else If Op='>='Then EvaluateCondition:=(LeftNum>=RightNum);
+ End;
+End;
+
+{ Saute les espaces et le mot-cle 'then' }
+Procedure SkipThen;
+Begin
+ SkipSpace;
+ If StrToUpper(Copy(CurrLine,CurrPos,4))='THEN'Then Inc(CurrPos,4);
+ SkipSpace;
+End;
+
+{ Trouve la position de fin du bloc (accolade fermante correspondante) }
+Function FindBlockEnd(StartLine:Integer):Integer;
+Var
+ BraceCount:Integer;
+ I,J:Integer;
+ Line:String;
+Begin
+ FindBlockEnd:=StartLine;
+ BraceCount:=0;
+
+ For I:=StartLine to NumberLine do Begin
+  Line:=GetPALine(I);
+  If Line='' Then Continue; { Protection nil }
+  For J:=1 to Length(Line)do Begin
+   If Line[J]='{'Then Inc(BraceCount)
+   Else If Line[J]='}'Then Begin
+    Dec(BraceCount);
+    If BraceCount<=0 Then Begin
+     FindBlockEnd:=I;
+     Exit;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Execute le bloc de code entre accolades ou une seule instruction }
+Function RunBlock:Boolean;
+Var
+ SaveLinePtr:Integer;
+ SaveAccoladeBlock:Integer;
+Begin
+ RunBlock:=True;
+ SkipSpace;
+
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  Inc(CurrPos);
+  SaveAccoladeBlock:=AccoladeBlock;
+  Inc(AccoladeBlock);
+  
+  { Executer le contenu du bloc jusqu'a l'accolade fermante }
+  While AccoladeBlock>SaveAccoladeBlock do Begin
+   If Not RunLine Then Break;
+   { Verifier si on a atteint la fin du bloc }
+   If AccoladeBlock<=SaveAccoladeBlock Then Break;
+   { Passer a la ligne suivante si necessaire }
+   If CurrPos>Length(CurrLine)Then Begin
+    Inc(CurrLinePtr);
+    If CurrLinePtr<=NumberLine Then Begin
+     CurrLine:=PA[CurrLinePtr]^;
+     CurrPos:=1;
+    End
+     Else
+    Break;
+   End;
+  End;
+ End
+  Else
+ Begin
+  { Pas d'accolade - executer une seule instruction }
+  { Si fin de ligne, passer a la ligne suivante }
+  If CurrPos>Length(CurrLine)Then Begin
+   SaveLinePtr:=CurrLinePtr;
+   Inc(CurrLinePtr);
+   If CurrLinePtr<=NumberLine Then Begin
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+    { Executer cette ligne comme le corps du if }
+    RunLine;
+   End;
+  End
+   Else
+  Begin
+   { Il reste du contenu sur la ligne - l'executer }
+   RunLine;
+  End;
+ End;
+End;
+
+{ Saute le bloc de code (ne l'execute pas) - supporte multi-lignes }
+Procedure SkipBlock;
+Var
+ BraceCount:Integer;
+ InQuote,InApos:Boolean;
+Begin
+ SkipSpace;
+ BraceCount:=0;
+ InQuote:=False;
+ InApos:=False;
+
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  BraceCount:=1;
+  Inc(CurrPos);
+
+  { Parcourt la ligne courante }
+  While(CurrPos<=Length(CurrLine))and(BraceCount>0)do Begin
+   Case CurrLine[CurrPos]of
+    '"':If Not InApos Then InQuote:=Not InQuote;
+    '''':If Not InQuote Then InApos:=Not InApos;
+    '{':If Not InQuote and Not InApos Then Inc(BraceCount);
+    '}':If Not InQuote and Not InApos Then Dec(BraceCount);
+   End;
+   If BraceCount>0 Then Inc(CurrPos);
+  End;
+  If BraceCount=0 Then Begin
+   Inc(CurrPos); { Saute l'accolade fermante }
+   Exit;
+  End;
+  
+  { Continue sur les lignes suivantes si necessaire }
+  While(BraceCount>0)and(CurrLinePtr<NumberLine)do Begin
+   Inc(CurrLinePtr);
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   InQuote:=False;
+   InApos:=False;
+   
+   While(CurrPos<=Length(CurrLine))and(BraceCount>0)do Begin
+    Case CurrLine[CurrPos]of
+     '"':If Not InApos Then InQuote:=Not InQuote;
+     '''':If Not InQuote Then InApos:=Not InApos;
+     '#':If Not InQuote and Not InApos Then Begin
+       CurrPos:=Length(CurrLine)+1; { Commentaire, saute le reste }
+       Continue;
+      End;
+     '{':If Not InQuote and Not InApos Then Inc(BraceCount);
+     '}':If Not InQuote and Not InApos Then Dec(BraceCount);
+    End;
+    If BraceCount>0 Then Inc(CurrPos);
+   End;
+  End;
+  
+  If BraceCount=0 Then Inc(CurrPos); { Saute l'accolade fermante }
+ End
+  Else
+ Begin
+  { Saute jusqu'au point-virgule ou fin de ligne pour instructions simples }
+  { Si on est en fin de ligne, passer a la ligne suivante }
+  If CurrPos>Length(CurrLine)Then Begin
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+  { Sauter l'instruction }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')and(CurrLine[CurrPos]<>'}')do Begin
+   Inc(CurrPos);
+  End;
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ End;
+End;
+
+{ Implementation de la commande if }
+Procedure IfCommand;
+Var
+ Condition:Boolean;
+Begin
+ SkipSpace;
+ Condition:=EvaluateCondition;
+ SkipThen;
+
+ If Condition Then Begin
+  { Execute le bloc then }
+  RunBlock;
+  { Apres le bloc then, il peut y avoir un else a sauter }
+  SkipSpace;
+  If CurrPos>Length(CurrLine)Then Begin
+   { Passer a la ligne suivante pour chercher else }
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+  If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
+   Inc(CurrPos,4);
+   SkipSpace;
+   SkipBlock;
+  End;
+ End
+  Else
+ Begin
+  { Saute le bloc then }
+  SkipBlock;
+
+  { Verifie s'il y a un else - possiblement sur la ligne suivante }
+  SkipSpace;
+  If CurrPos>Length(CurrLine)Then Begin
+   { Passer a la ligne suivante pour chercher else }
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+  If StrToUpper(Copy(CurrLine,CurrPos,4))='ELSE'Then Begin
+   Inc(CurrPos,4);
+   SkipSpace;
+   { Verifie s'il y a un "if" apres le else (else if) }
+   If StrToUpper(Copy(CurrLine,CurrPos,2))='IF'Then Begin
+    Inc(CurrPos,2);
+    SkipSpace;
+    IfCommand;
+   End
+    Else
+   RunBlock;
+  End;
+ End;
+End;
+
+{ Recupere la valeur d'expression pour switch }
+Function GetSwitchValue:String;
+Var
+ V:Real;
+ S:String;
+Begin
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+
+ If CurrLine[CurrPos]='"'Then Begin
+  GetSwitchValue:=GetStringValue;
+ End
+  Else
+ Begin
+  V:=GetNumberValue(1);
+  If Frac(V)=0.0 Then Str(V:0:0,S)
+                 Else Str(V,S);
+  GetSwitchValue:=S;
+ End;
+
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+End;
+
+{ Recupere la valeur d'un case }
+Function GetCaseValue:String;
+Var
+ V:Real;
+ S:String;
+Begin
+ SkipSpace;
+ If CurrLine[CurrPos]='"'Then Begin
+  GetCaseValue:=GetStringValue;
+ End
+  Else
+ Begin
+  V:=GetNumberValue(1);
+  If Frac(V)=0.0 Then Str(V:0:0,S)
+                 Else Str(V,S);
+  GetCaseValue:=S;
+ End;
+
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=':')Then Inc(CurrPos);
+End;
+
+{ Implementation de la commande switch }
+Procedure SwitchCommand;
+Var
+ SwitchVal,CaseVal:String;
+ Found,BreakFound,Executing:Boolean;
+ SaveCmd:String;
+ CmdIndex:Byte;
+ SavePos:Integer;
+ InString:Boolean;
+Begin
+ SkipSpace;
+ SwitchVal:=GetSwitchValue;
+ SkipSpace;
+
+ { Attend l'accolade ouvrante }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+  Inc(CurrPos);
+  Inc(AccoladeBlock);
+ End
+  Else
+ Begin
+  WriteLn('Erreur de syntaxe : "{" attendu apres switch');
+  AwkAbort:=True; Exit;
+ End;
+
+ Found:=False;
+ BreakFound:=False;
+ Executing:=False;
+
+ { Parcourt les cases }
+ While(CurrPos<=Length(CurrLine))do Begin
+  SkipSpace;
+  If CurrPos>Length(CurrLine)Then Break;
+
+  If CurrLine[CurrPos]='}'Then Begin
+   Dec(AccoladeBlock);
+   Inc(CurrPos);
+   Break;
+  End;
+
+  { Extrait le mot-cle }
+  SavePos:=CurrPos;
+  SaveCmd:='';
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])do Begin
+   SaveCmd:=SaveCmd+CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+
+  If StrToUpper(SaveCmd)='CASE'Then Begin
+   CaseVal:=GetCaseValue;
+   If(Not Found)and(SwitchVal=CaseVal)Then Begin
+    Found:=True;
+    Executing:=True;
+   End;
+  End
+   Else
+  If StrToUpper(SaveCmd)='DEFAULT'Then Begin
+   SkipSpace;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=':')Then Inc(CurrPos);
+   If Not Found Then Begin
+    Found:=True;
+    Executing:=True;
+   End;
+  End
+   Else
+  If StrToUpper(SaveCmd)='BREAK'Then Begin
+   SkipSpace;
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+   If Executing Then Begin
+    BreakFound:=True;
+    Break; { Sort de la boucle switch }
+   End;
+  End
+   Else
+  If SaveCmd<>''Then Begin
+   { C'est une commande a executer }
+   If Executing Then Begin
+    CurrPos:=SavePos;
+    CmdIndex:=ExtractCommand;
+    Case CmdIndex of
+     48: PrintCommand; { print }
+     31: IfCommand; { if }
+     Else Begin
+      { Saute les commandes non supportees dans switch }
+      InString:=False;
+      While(CurrPos<=Length(CurrLine))do Begin
+       If CurrLine[CurrPos]='"'Then InString:=Not InString;
+       If(Not InString)and((CurrLine[CurrPos]=';')or(CurrLine[CurrPos]='}'))Then Break;
+       If(Not InString)and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])Then Begin
+        { Peut-etre un nouveau mot-cle }
+        SavePos:=CurrPos;
+        SaveCmd:='';
+        While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])do Begin
+         SaveCmd:=SaveCmd+CurrLine[CurrPos];
+         Inc(CurrPos);
+        End;
+        If(StrToUpper(SaveCmd)='CASE')or(StrToUpper(SaveCmd)='DEFAULT')or
+          (StrToUpper(SaveCmd)='BREAK')or(StrToUpper(SaveCmd)='PRINT')Then Begin
+         CurrPos:=SavePos;
+         Break;
+        End;
+       End
+        Else
+       Inc(CurrPos);
+      End;
+      If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+     End;
+    End;
+   End
+    Else
+   Begin
+    { Pas en execution, saute cette commande en tenant compte des strings }
+    InString:=False;
+    While(CurrPos<=Length(CurrLine))do Begin
+     If CurrLine[CurrPos]='"'Then InString:=Not InString;
+     If(Not InString)and((CurrLine[CurrPos]=';')or(CurrLine[CurrPos]='}'))Then Break;
+     { Verifie si on arrive a un mot-cle }
+     If(Not InString)and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])Then Begin
+      SavePos:=CurrPos;
+      SaveCmd:='';
+      While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z'])do Begin
+       SaveCmd:=SaveCmd+CurrLine[CurrPos];
+       Inc(CurrPos);
+      End;
+      If(StrToUpper(SaveCmd)='CASE')or(StrToUpper(SaveCmd)='DEFAULT')or
+        (StrToUpper(SaveCmd)='BREAK')Then Begin
+       CurrPos:=SavePos;
+       Break;
+      End;
+     End
+      Else
+     Inc(CurrPos);
+    End;
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+   End;
+  End;
+
+  SkipSpace;
+ End;
+
+ { Assure que l'accolade est fermee si on n'a pas atteint la fin }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'}')do Inc(CurrPos);
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='}')Then Begin
+  Dec(AccoladeBlock);
+  Inc(CurrPos);
+ End;
+End;
+
+Procedure SplitIntoFields(Line:String);
+Var
+ I,Start:Integer;
+ InSpace:Boolean;
+ SepStr:String;
+Begin
+ NumFields:=0;
+ { Consulte la vraie variable de script FS (lue via le mecanisme       }
+ { generique GetVariableString - fonctionne donc aussi bien pour le    }
+ { CLI -F, qui fait juste SetVariableString('FS',...) avant BEGIN, que }
+ { pour une affectation directe de FS dans le script lui-meme). FS non }
+ { defini }
+ { ou egal a un espace = comportement d'origine (run de blancs).      }
+ { Limitation disclosee : separateur LITTERAL a un seul caractere      }
+ { uniquement, pas d'expression reguliere multi-caracteres pour FS.    }
+ SepStr:=GetVariableString('FS');
+ If(SepStr='')or(SepStr=' ')Then Begin
+  I:=1;
+  InSpace:=True;
+  Start:=1;
+  While I<=Length(Line)do Begin
+   If(Line[I]in[' ',#9])Then Begin
+    If Not InSpace Then Begin
+     Inc(NumFields);
+     If NumFields<=MaxFields Then
+      Fields[NumFields]:=Copy(Line,Start,I-Start);
+     InSpace:=True;
+    End;
+   End
+    Else
+   Begin
+    If InSpace Then Begin
+     Start:=I;
+     InSpace:=False;
+    End;
+   End;
+   Inc(I);
+  End;
+  If Not InSpace Then Begin
+   Inc(NumFields);
+   If NumFields<=MaxFields Then
+    Fields[NumFields]:=Copy(Line,Start,I-Start);
+  End;
+ End Else Begin
+  I:=1;
+  Start:=1;
+  While I<=Length(Line)do Begin
+   If Line[I]=SepStr[1]Then Begin
+    Inc(NumFields);
+    If NumFields<=MaxFields Then
+     Fields[NumFields]:=Copy(Line,Start,I-Start);
+    Start:=I+1;
+   End;
+   Inc(I);
+  End;
+  Inc(NumFields);
+  If NumFields<=MaxFields Then
+   Fields[NumFields]:=Copy(Line,Start,I-Start);
+ End;
+End;
+
+{ Tente de traiter une assignation de variable }
+{ Retourne True si c'est une assignation, False sinon }
+Function TryAssignment:Boolean;
+Var
+ VarName:String;
+ SavePos:Integer;
+ R:Real;
+ StrValue:String;
+ IsIncrement,IsDecrement:Boolean;
+ ArrayKey:String;
+ IsArrayAssign:Boolean;
+Begin
+ TryAssignment:=False;
+ SavePos:=CurrPos;
+ VarName:='';
+ IsIncrement:=False;
+ IsDecrement:=False;
+ IsArrayAssign:=False;
+ ArrayKey:='';
+
+ { Verifier operateur prefixe ++ ou -- }
+ If(CurrPos+1<=Length(CurrLine))Then Begin
+  If(CurrLine[CurrPos]='+')and(CurrLine[CurrPos+1]='+')Then Begin
+   IsIncrement:=True;
+   Inc(CurrPos,2);
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+  End
+  Else If(CurrLine[CurrPos]='-')and(CurrLine[CurrPos+1]='-')Then Begin
+   IsDecrement:=True;
+   Inc(CurrPos,2);
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+  End;
+ End;
+
+ { Extraire le nom de la variable }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  VarName:=VarName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+
+ If VarName=''Then Begin
+  CurrPos:=SavePos;
+  Exit;
+ End;
+
+ { Verifier si c'est un acces tableau array[key] }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
+  Inc(CurrPos);
+  { Lire la cle }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+   ArrayKey:=GetStringValue;
+  End
+   Else
+  Begin
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    ArrayKey:=ArrayKey+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   { Si c'est une variable, recuperer sa valeur }
+   If VariableExist(StrToUpper(ArrayKey))Then Begin
+    Case VariableType(StrToUpper(ArrayKey))of
+     _String:ArrayKey:=GetVariableString(StrToUpper(ArrayKey));
+     _Integer:Str(GetVariableInt(StrToUpper(ArrayKey)),ArrayKey);
+     _LongInt:Str(GetVariableLongInt(StrToUpper(ArrayKey)),ArrayKey);
+     _Real:Str(GetVariableReal(StrToUpper(ArrayKey)):0:0,ArrayKey);
+    End;
+   End;
+  End;
+  { Sauter ] }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
+  IsArrayAssign:=True;
+ End;
+
+ { Sauter les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+
+ { Si c'etait un prefix ++/-- }
+ If IsIncrement or IsDecrement Then Begin
+  VarName:=StrToUpper(VarName);
+  TryAssignment:=True;
+  If VariableExist(VarName)Then Begin
+   R:=GetVariableLongInt(VarName);
+   If IsIncrement Then SetVariableLongInt(VarName,Round(R)+1)
+                  Else SetVariableLongInt(VarName,Round(R)-1);
+  End
+   Else
+  Begin
+   If IsIncrement Then AddVariableLongInt(VarName,1)
+                  Else AddVariableLongInt(VarName,-1);
+  End;
+  Exit;
+ End;
+
+ { Verifier operateur postfixe ++ ou -- }
+ If(CurrPos+1<=Length(CurrLine))Then Begin
+  If(CurrLine[CurrPos]='+')and(CurrLine[CurrPos+1]='+')Then Begin
+   VarName:=StrToUpper(VarName);
+   TryAssignment:=True;
+   If VariableExist(VarName)Then Begin
+    R:=GetVariableLongInt(VarName);
+    SetVariableLongInt(VarName,Round(R)+1);
+   End
+    Else
+   Begin
+    AddVariableLongInt(VarName,1);
+   End;
+   Inc(CurrPos,2);
+   Exit;
+  End
+  Else If(CurrLine[CurrPos]='-')and(CurrLine[CurrPos+1]='-')Then Begin
+   VarName:=StrToUpper(VarName);
+   TryAssignment:=True;
+   If VariableExist(VarName)Then Begin
+    R:=GetVariableLongInt(VarName);
+    SetVariableLongInt(VarName,Round(R)-1);
+   End
+    Else
+   Begin
+    AddVariableLongInt(VarName,-1);
+   End;
+   Inc(CurrPos,2);
+   Exit;
+  End;
+ End;
+
+ { Verifier si c'est une assignation }
+ If(CurrPos>Length(CurrLine))or(CurrLine[CurrPos]<>'=')Then Begin
+  CurrPos:=SavePos;
+  Exit;
+ End;
+
+ { Verifier que ce n'est pas == }
+ If(CurrPos+1<=Length(CurrLine))and(CurrLine[CurrPos+1]='=')Then Begin
+  CurrPos:=SavePos;
+  Exit;
+ End;
+
+ { C'est une assignation! }
+ Inc(CurrPos); { passer le = }
+ TryAssignment:=True;
+
+ { Sauter les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+
+ { Si c'est une assignation de tableau }
+ If IsArrayAssign Then Begin
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+   StrValue:=GetStringValue;
+  End
+   Else
+  Begin
+   R:=GetNumberValue(1);
+   Str(R:0:0,StrValue);
+  End;
+  SetArrayElement(VarName,ArrayKey,StrValue);
+  Exit;
+ End;
+
+ { Determiner si c'est une chaine ou un nombre }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+  { Assignation de chaine }
+  StrValue:=GetStringValue;
+  VarName:=StrToUpper(VarName);
+  If VariableExist(VarName)Then Begin
+   SetVariableString(VarName,StrValue);
+  End
+   Else
+  Begin
+   AddVariableString(VarName,StrValue);
+  End;
+ End
+  Else
+ Begin
+  { Assignation numerique }
+  R:=GetNumberValue(1);
+  VarName:=StrToUpper(VarName);
+  If VariableExist(VarName)Then Begin
+   If Frac(R)=0.0 Then SetVariableLongInt(VarName,Round(R))
+                  Else SetVariableReal(VarName,R);
+  End
+   Else
+  Begin
+   If Frac(R)=0.0 Then AddVariableLongInt(VarName,Round(R))
+                  Else AddVariableReal(VarName,R);
+  End;
+ End;
+End;
+
+{ Implementation de la commande while }
+Procedure WhileCommand;
+Var
+ Condition:Boolean;
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+ LoopStart:Integer;
+ BlockStartLinePtr:Integer;
+ BlockStartLine:String;
+ BlockStartPos:Integer;
+ HasBrace:Boolean;
+Begin
+ SkipSpace;
+ Inc(LoopDepth);
+ 
+ { Sauvegarder position pour la condition }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ LoopStart:=CurrPos;
+ 
+ { Evaluer la condition initiale }
+ Condition:=EvaluateCondition;
+ SkipSpace;
+ 
+ { Determiner si le bloc a une accolade }
+ HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
+ 
+ { Memoriser le debut du bloc }
+ If HasBrace Then Begin
+  BlockStartLinePtr:=CurrLinePtr;
+  BlockStartLine:=CurrLine;
+  BlockStartPos:=CurrPos;
+ End
+  Else
+ Begin
+  { Pas d'accolade - le bloc est sur la ligne suivante si fin de ligne }
+  If CurrPos>Length(CurrLine)Then Begin
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+  BlockStartLinePtr:=CurrLinePtr;
+  BlockStartLine:=CurrLine;
+  BlockStartPos:=CurrPos;
+ End;
+ 
+ If Not Condition Then Begin
+  { Condition fausse des le depart - sauter le bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  Dec(LoopDepth);
+  Exit;
+ End;
+ 
+ { Boucle while }
+ While Condition do Begin
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
+  { Revenir au debut du bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  
+  { Executer le bloc }
+  RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
+  
+  { Revenir a la condition }
+  CurrLinePtr:=SaveLinePtr;
+  CurrLine:=SaveCurrLine;
+  CurrPos:=LoopStart;
+  
+  { Reevaluer la condition }
+  Condition:=EvaluateCondition;
+  SkipSpace;
+ End;
+ 
+ { Sauter le bloc apres la derniere iteration }
+ CurrLinePtr:=BlockStartLinePtr;
+ CurrLine:=BlockStartLine;
+ CurrPos:=BlockStartPos;
+ SkipBlock;
+ Dec(LoopDepth);
+End;
+
+{ Implementation de la boucle do-while }
+Procedure DoWhileCommand;
+Var
+ Condition:Boolean;
+ BlockStartLinePtr:Integer;
+ BlockStartLine:String;
+ BlockStartPos:Integer;
+ HasBrace:Boolean;
+ DidBreak:Boolean;
+Begin
+ SkipSpace;
+ Inc(LoopDepth);
+ DidBreak:=False;
+ 
+ { Memoriser le debut du bloc }
+ HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
+ 
+ If Not HasBrace Then Begin
+  { Pas d'accolade - le bloc est sur la ligne suivante si fin de ligne }
+  If CurrPos>Length(CurrLine)Then Begin
+   If CurrLinePtr<NumberLine Then Begin
+    Inc(CurrLinePtr);
+    CurrLine:=PA[CurrLinePtr]^;
+    CurrPos:=1;
+    SkipSpace;
+   End;
+  End;
+ End;
+ 
+ BlockStartLinePtr:=CurrLinePtr;
+ BlockStartLine:=CurrLine;
+ BlockStartPos:=CurrPos;
+ 
+ { Boucle do-while - executer au moins une fois }
+ Repeat
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
+  { Revenir au debut du bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  
+  { Executer le bloc }
+  RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   DidBreak:=True;
+   Break;
+  End;
+  
+  { Pour trouver 'while', revenir au debut et utiliser SkipBlock }
+  { car RunBlock ne positionne pas correctement le curseur apres le bloc }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  
+  { Chercher le mot-cle while }
+  SkipSpace;
+  { Peut etre sur la ligne suivante }
+  While(CurrPos>Length(CurrLine))and(CurrLinePtr<NumberLine)do Begin
+   Inc(CurrLinePtr);
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   SkipSpace;
+  End;
+  
+  { Verifier qu'on a 'while' }
+  If(CurrPos+4<=Length(CurrLine))and
+    (StrToUpper(Copy(CurrLine,CurrPos,5))='WHILE')Then Begin
+   Inc(CurrPos,5);
+   SkipSpace;
+  End
+   Else
+  Begin
+   { Pas de while trouve - erreur de syntaxe }
+   WriteLn('Erreur: while attendu apres do');
+   Dec(LoopDepth);
+   Exit;
+  End;
+  
+  { Evaluer la condition }
+  Condition:=EvaluateCondition;
+  
+ Until Not Condition;
+ 
+ { Si on a fait break, on doit sauter le bloc et chercher le while final }
+ If DidBreak Then Begin
+  { Revenir au debut du bloc et le sauter }
+  CurrLinePtr:=BlockStartLinePtr;
+  CurrLine:=BlockStartLine;
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  
+  { Chercher le mot-cle while }
+  SkipSpace;
+  While(CurrPos>Length(CurrLine))and(CurrLinePtr<NumberLine)do Begin
+   Inc(CurrLinePtr);
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   SkipSpace;
+  End;
+  
+  { Sauter 'while' et la condition }
+  If(CurrPos+4<=Length(CurrLine))and
+    (StrToUpper(Copy(CurrLine,CurrPos,5))='WHILE')Then Begin
+   Inc(CurrPos,5);
+   SkipSpace;
+   { Sauter la condition entre parentheses }
+   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
+    Inc(CurrPos);
+    { Trouver la parenthese fermante }
+    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>')')do Inc(CurrPos);
+    If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+   End;
+  End;
+ End;
+ 
+ { Sauter le point-virgule final si present }
+ SkipSpace;
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ 
+ Dec(LoopDepth);
+End;
+
+{ Implementation de la boucle for-in }
+Procedure ForInCommand(IterVar,ArrayName:String);
+Var
+ ArrayPtr:PAssocArray;
+ ElemPtr:PArrayElement;
+ BlockStartPos:Integer;
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+Begin
+ Inc(LoopDepth);
+ 
+ { Position du bloc }
+ BlockStartPos:=CurrPos;
+ 
+ { Sauvegarder la ligne courante }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ 
+ { Trouver le tableau }
+ ArrayPtr:=FindArray(ArrayName);
+ If ArrayPtr=nil Then Begin
+  { Tableau vide ou inexistant - sauter le bloc }
+  SkipBlock;
+  Dec(LoopDepth);
+  Exit;
+ End;
+ 
+ { Iterer sur chaque element }
+ ElemPtr:=ArrayPtr^.ElemHead;
+ While ElemPtr<>nil do Begin
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
+  { Assigner la cle a la variable d'iteration }
+  If VariableExist(IterVar)Then Begin
+   SetVariableString(IterVar,ElemPtr^.Key);
+  End
+   Else
+  AddVariableString(IterVar,ElemPtr^.Key);
+  
+  { Executer le bloc }
+  CurrLinePtr:=SaveLinePtr;
+  CurrLine:=SaveCurrLine;
+  CurrPos:=BlockStartPos;
+  RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
+  ElemPtr:=ElemPtr^.Next;
+ End;
+ 
+ { Sauter le bloc apres la derniere iteration }
+ CurrLinePtr:=SaveLinePtr;
+ CurrLine:=SaveCurrLine;
+ CurrPos:=BlockStartPos;
+ SkipBlock;
+ Dec(LoopDepth);
+End;
+
+{ Implementation de la commande for }
+Procedure ForCommand;
+Var
+ Condition:Boolean;
+ SavePos:Integer;
+ InitStartPos,CondStartPos,IncrStartPos,BlockStartPos:Integer;
+ SaveLinePtr:Integer;
+ SaveCurrLine:String;
+ InParen:Integer;
+ IterVar,ArrayName:String;
+ IsForIn:Boolean;
+ ScanPos:Integer;
+Begin
+ SkipSpace;
+ 
+ { Attendre ( }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Detecter si c'est un for-in en cherchant "var in array" }
+ IsForIn:=False;
+ IterVar:='';
+ ArrayName:='';
+ ScanPos:=CurrPos;
+ 
+ { Lire la variable potentielle }
+ While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  IterVar:=IterVar+CurrLine[ScanPos];
+  Inc(ScanPos);
+ End;
+ 
+ { Sauter les espaces }
+ While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
+ 
+ { Verifier si "in" suit }
+ If(ScanPos+1<=Length(CurrLine))and(Copy(CurrLine,ScanPos,3)='in ')Then Begin
+  Inc(ScanPos,2);
+  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
+  { Lire le nom du tableau }
+  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   ArrayName:=ArrayName+CurrLine[ScanPos];
+   Inc(ScanPos);
+  End;
+  { Sauter les espaces et la parenthese fermante }
+  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
+  If(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]=')')Then Begin
+   IsForIn:=True;
+   CurrPos:=ScanPos+1;
+   SkipSpace;
+  End;
+ End;
+ 
+ { Si c'est un for-in, deleguer a ForInCommand }
+ If IsForIn Then Begin
+  ForInCommand(IterVar,ArrayName);
+  Exit;
+ End;
+ 
+ Inc(LoopDepth);
+ 
+ { Partie initialisation (avant le premier ;) }
+ InitStartPos:=CurrPos;
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')do Inc(CurrPos);
+ 
+ { Executer l'initialisation }
+ SavePos:=CurrPos;
+ CurrPos:=InitStartPos;
+ TryAssignment;
+ CurrPos:=SavePos;
+ 
+ { Sauter le premier ; }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Partie condition (entre le premier et deuxieme ;) }
+ CondStartPos:=CurrPos;
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')do Inc(CurrPos);
+ 
+ { Sauter le deuxieme ; }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Partie increment (entre le deuxieme ; et ) ) }
+ IncrStartPos:=CurrPos;
+ InParen:=1;
+ While(CurrPos<=Length(CurrLine))and(InParen>0)do Begin
+  If CurrLine[CurrPos]='('Then Inc(InParen)
+  Else If CurrLine[CurrPos]=')'Then Dec(InParen);
+  If InParen>0 Then Inc(CurrPos);
+ End;
+ 
+ { Sauter ) }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
+ SkipSpace;
+ 
+ { Position du bloc }
+ BlockStartPos:=CurrPos;
+ 
+ { Sauvegarder la ligne courante }
+ SaveLinePtr:=CurrLinePtr;
+ SaveCurrLine:=CurrLine;
+ 
+ { Evaluer la condition initiale }
+ CurrPos:=CondStartPos;
+ If CurrPos<Length(CurrLine)Then Condition:=EvaluateCondition
+                            Else Condition:=True;
+ 
+ If Not Condition Then Begin
+  { Condition fausse des le depart }
+  CurrPos:=BlockStartPos;
+  SkipBlock;
+  Dec(LoopDepth);
+  Exit;
+ End;
+ 
+ { Boucle for }
+ While Condition do Begin
+  { Reinitialiser les flags }
+  ContinueFlag:=False;
+  
+  { Executer le bloc }
+  CurrPos:=BlockStartPos;
+  RunBlock;
+  
+  { Verifier break }
+  If BreakFlag Then Begin
+   BreakFlag:=False;
+   Break;
+  End;
+  
+  { Executer l'increment }
+  CurrLinePtr:=SaveLinePtr;
+  CurrLine:=SaveCurrLine;
+  CurrPos:=IncrStartPos;
+  TryAssignment;
+  
+  { Reevaluer la condition }
+  CurrPos:=CondStartPos;
+  If CurrPos<Length(CurrLine)Then Condition:=EvaluateCondition
+                             Else Condition:=True;
+ End;
+ 
+ { Sauter le bloc apres la derniere iteration }
+ CurrPos:=BlockStartPos;
+ SkipBlock;
+ Dec(LoopDepth);
+End;
+
+{ Implementation de la commande delete }
+Procedure DeleteCommand;
+Var
+ ArrayName,Key:String;
+Begin
+ SkipSpace;
+ 
+ { Lire le nom du tableau }
+ ArrayName:='';
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+  ArrayName:=ArrayName+CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ 
+ { Sauter les espaces }
+ While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
+ 
+ { Lire la cle entre crochets }
+ If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
+  Inc(CurrPos);
+  Key:='';
+  
+  { Lire la cle - peut etre une chaine entre guillemets ou une variable }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
+   Key:=GetStringValue;
+  End
+   Else
+  Begin
+   { Variable ou expression }
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+    Key:=Key+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   { Si c'est une variable, recuperer sa valeur }
+   If VariableExist(StrToUpper(Key))Then Begin
+    Case VariableType(StrToUpper(Key))of
+     _String:Key:=GetVariableString(StrToUpper(Key));
+     _Integer:Str(GetVariableInt(StrToUpper(Key)),Key);
+     _LongInt:Str(GetVariableLongInt(StrToUpper(Key)),Key);
+     _Real:Str(GetVariableReal(StrToUpper(Key)):0:0,Key);
+    End;
+   End;
+  End;
+  
+  { Sauter le crochet fermant }
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
+  
+  { Supprimer l'element }
+  DeleteArrayElement(ArrayName,Key);
+ End;
+End;
+
+Function RunLine:Boolean;
+Var
+ UnknownCommand:Boolean;
+ NoImplementation:Boolean;
+ J,Err:Integer;
+ CmdResult:Byte;
+Begin
+ RunLine:=False;
+ Repeat
+  { Sauter les espaces en debut de ligne }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+
+  { Verifier fin de ligne }
+  If CurrPos>Length(CurrLine)Then Begin
+   RunLine:=True;
+   Exit;
+  End;
+
+  If CurrLine[CurrPos]='{'Then  Begin
+   Inc(AccoladeBlock);
+   Inc(CurrPos);
+   Continue;
+  End;
+  If CurrLine[CurrPos]='}'Then  Begin
+   If(AccoladeBlock>0)Then Begin
+    Dec(AccoladeBlock);
+    Inc(CurrPos);
+    Continue;
+   End
+    Else
+   Begin
+    WriteLn('Une fermeture d''accolade est rencontr� ',
+            'sans ouverture d''accolade');
+    AwkAbort:=True; Exit;
+   End;
+  End;
+  If CurrLine[CurrPos]='#'Then Begin
+   CurrPos:=Length(CurrLine)+1;
+   RunLine:=True;
+   Exit;
+  End;
+
+  { Essayer d'abord une assignation de variable }
+  If TryAssignment Then Begin
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',';'])do Inc(CurrPos);
+   If CurrPos>Length(CurrLine)Then Begin
+    RunLine:=True;
+    Exit;
+   End;
+   Continue;
+  End;
+
+  NoImplementation:=False;
+  UnknownCommand:=False;
+  CmdResult:=ExtractCommand;
+  Case CmdResult of
+   0: BeginCommand;{BEGIN}
+   1: NoImplementation:=True; {BEGINFILE}
+   2: EndCommand; { END }
+   3: NoImplementation:=True; {ENDFILE}
+   4: AwkAndCommand; { and }
+   5: NoImplementation:=True; { asort }
+   6: NoImplementation:=True; { asorti }
+   7: AwkAtan2Command; { atan2 }
+   8: NoImplementation:=True; { bindtextdomain }
+   9: Begin { break }
+    BreakFlag:=True;
+   End;
+   10: NoImplementation:=True; { case }
+   11: AwkCloseCommand; { close }
+   12: AwkComplCommand; { compl }
+   13: Begin { continue }
+    ContinueFlag:=True;
+   End;
+   14: CosCommand; { cos }
+   15: NoImplementation:=True; { dcgettext }
+   16: NoImplementation:=True; { dcngettext }
+   17: NoImplementation:=True; { default }
+   18: DeleteCommand; { delete }
+   19: DoWhileCommand; { do }
+   20: Begin { else - gere par IfCommand, sauter ici }
+    SkipBlock;
+   End;
+   21: AwkEvalCommand; { eval }
+   22:Begin
+    Terminated:=True;
+    Exit;
+   End;{ exit }
+   23: AwkExpCommand; { exp }
+   24: AwkFflushCommand; { fflush }
+   25: ForCommand; { for }
+   26: FunctionCommand; { func }
+   27: FunctionCommand; { function }
+   28: NoImplementation:=True; { gensub }
+   29: GetlineCommand; { getline }
+   30: AwkGsubCommand; { gsub }
+   31: IfCommand; { if }
+   32: NoImplementation:=True; { in }
+   33: NoImplementation:=True; { include }
+   34: AwkIndexCommand; { index }
+   35: AwkIntCommand; { int }
+   36: AwkIsArrayCommand; { isarray }
+   37: Begin { length - gere comme fonction dans GetNumberValue }
+    SkipSpace;
+    If(CurrPos<=System.Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
+     WriteLn(GetNumberValue(1):0:0);
+    End;
+   End;
+   38: NoImplementation:=True; { load }
+   39: AwkLogCommand; { log }
+   40: AwkLshiftCommand; { lshift }
+   41: AwkMatchCommand; { match }
+   42: NoImplementation:=True; { mktime }
+   43: NoImplementation:=True; { namespace }
+   44: AwkNextCommand; { next }
+   45: AwkNextFileCommand; { nextfile }
+   46: AwkOrCommand; { or }
+   47: NoImplementation:=True; { patsplit }
+   48: PrintCommand; { print }
+   49: PrintfCommand; { printf }
+   50: RandCommand; { rand }
+   51: ReturnCommand; { return }
+   52: AwkRshiftCommand; { rshift }
+   53: SinCommand; { sin }
+   54: AwkSplitCommand; { split }
+   55: SprintfCommand; { sprintf }
+   56: SqrtCommand; { sqrt }
+   57: SRandCommand; { srand }
+   58: NoImplementation:=True; { strftime }
+   59: AwkStrtonumCommand; { strtonum }
+   60: AwkSubCommand; { sub }
+   61: AwkSubstrCommand; { substr }
+   62: SwitchCommand; { switch }
+   63: AwkSystemCommand; { system }
+   64: AwkSystimeCommand; { systime }
+   65: AwkToLowerCommand; { tolower }
+   66: AwkToUpperCommand; { toupper }
+   67: NoImplementation:=True; { typeof }
+   68: WhileCommand; { while }
+   69: AwkXorCommand; { xor }
+   Else UnknownCommand:=True;
+  End;
+  If(UnknownCommand)Then Begin
+   WriteLn('Commande non reconnu a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
+   Exit;
+  End;
+  If(NoImplementation)Then Begin
+   WriteLn('La commande ',CurrCommand,' n''a pas ete implemente');
+   Exit;
+  End;
+  { Verifier si un return a ete execute }
+  If HasFunctionReturn Then Begin
+   RunLine:=True;
+   Exit;
+  End;
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',';']) do Inc(CurrPos);
+  If CurrPos>Length(CurrLine)Then Break;
+  If Not(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','{','}','#','$','0'..'9','+','-'])Then Begin
+   WriteLn('Erreur de syntaxe a la position ',CurrPos,' de la ligne ',CurrNumberLine+1);
+   Exit;
+  End;
+ Until (CurrPos>Length(CurrLine))or HasFunctionReturn;
+ RunLine:=True;
+End;
+
+{ ========================================================= }
+{ SECTION: Regles Pattern-Action                            }
+{ ========================================================= }
+
+{ Initialise le tableau des regles }
+Procedure InitRules;
+Begin
+ RuleCount:=0;
+ HasInputFile:=False;
+ InputFileName:='';
+ NRValue:=0;
+End;
+
+{ Ajoute une regle pattern-action }
+Procedure AddRule(Kind:TRuleKind;const Pattern:String;ActionLine,ActionPos,ActionEndLine:Integer);
+Begin
+ If RuleCount<MaxRules Then Begin
+  Inc(RuleCount);
+  Rules[RuleCount].Kind:=Kind;
+  Rules[RuleCount].Pattern:=Pattern;
+  Rules[RuleCount].ActionLine:=ActionLine;
+  Rules[RuleCount].ActionPos:=ActionPos;
+  Rules[RuleCount].ActionEndLine:=ActionEndLine;
+ End;
+End;
+
+{ Execute une action (bloc de code) pour une regle }
+Procedure ExecuteRuleAction(RuleIdx:Integer);
+Var
+ SaveLinePtr:Integer;
+ SavePos:Integer;
+ SaveLine:String;
+ SaveAccoladeBlock:Integer;
+Begin
+ SaveLinePtr:=CurrLinePtr;
+ SavePos:=CurrPos;
+ SaveLine:=CurrLine;
+ SaveAccoladeBlock:=AccoladeBlock;
+ 
+ { Initialiser AccoladeBlock a 1 car on est deja dans le bloc }
+ AccoladeBlock:=1;
+ 
+ CurrLinePtr:=Rules[RuleIdx].ActionLine;
+ CurrLine:=PA[CurrLinePtr]^;
+ CurrPos:=Rules[RuleIdx].ActionPos;
+ 
+ { Executer jusqu'a la fin de l'action }
+ While(CurrLinePtr<=Rules[RuleIdx].ActionEndLine)and(Not Terminated)and(Not AwkNextRecord)and(Not AwkNextFile)do Begin
+  If Not RunLine Then Break;
+  { Si AccoladeBlock est revenu a 0, on a atteint la fin du bloc }
+  If AccoladeBlock<=0 Then Break;
+  Inc(CurrLinePtr);
+  If CurrLinePtr<=Rules[RuleIdx].ActionEndLine Then Begin
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrPos:=1;
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+  End;
+ End;
+ 
+ CurrLinePtr:=SaveLinePtr;
+ CurrPos:=SavePos;
+ CurrLine:=SaveLine;
+ AccoladeBlock:=SaveAccoladeBlock;
+End;
+
+{ Verifie si un pattern correspond a la ligne courante }
+Function MatchesPattern(RuleIdx:Integer):Boolean;
+Var
+ SaveLine:String;
+ SavePos:Integer;
+Begin
+ MatchesPattern:=False;
+ Case Rules[RuleIdx].Kind of
+  RK_BEGIN: MatchesPattern:=False; { BEGIN deja execute }
+  RK_END: MatchesPattern:=False;   { END execute a la fin }
+  RK_ALL: MatchesPattern:=True;    { Toujours vrai }
+  RK_REGEX: Begin
+   { Matcher le pattern regex contre $0 }
+   MatchesPattern:=RegexMatch(Fields[0],Rules[RuleIdx].Pattern);
+  End;
+  RK_EXPR: Begin
+   { Evalue reellement l'expression (ex. NR==3, $2>10, NF>1) via }
+   { EvaluateCondition (deja ecrite, deja utilisee par IfCommand,}
+   { jamais branchee ici - remplace le "toujours vrai" d'origine).}
+   SaveLine:=CurrLine;SavePos:=CurrPos;
+   CurrLine:=Rules[RuleIdx].Pattern;CurrPos:=1;
+   MatchesPattern:=EvaluateCondition;
+   CurrLine:=SaveLine;CurrPos:=SavePos;
+  End;
+ End;
+End;
+
+{ Execute les regles BEGIN }
+Procedure ExecuteBeginRules;
+Var
+ I:Integer;
+Begin
+ For I:=1 to RuleCount do Begin
+  If(Rules[I].Kind=RK_BEGIN)and(Not Terminated)Then
+   ExecuteRuleAction(I);
+ End;
+End;
+
+{ Execute les regles END }
+Procedure ExecuteEndRules;
+Var
+ I:Integer;
+Begin
+ For I:=1 to RuleCount do Begin
+  If(Rules[I].Kind=RK_END)and(Not Terminated)Then
+   ExecuteRuleAction(I);
+ End;
+End;
+
+{ Verifie si des regles pattern (qui necessitent des donnees) existent }
+Function HasPatternRules:Boolean;
+Var
+ I:Integer;
+Begin
+ HasPatternRules:=False;
+ For I:=1 to RuleCount do Begin
+  If Rules[I].Kind in[RK_ALL,RK_REGEX,RK_EXPR]Then Begin
+   HasPatternRules:=True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Execute les regles pattern sur la ligne courante }
+Procedure ExecutePatternRules;
+Var
+ I:Integer;
+Begin
+ AwkNextRecord:=False;
+ For I:=1 to RuleCount do Begin
+  If(Not Terminated)and(Not AwkNextRecord)and(Rules[I].Kind in[RK_ALL,RK_REGEX,RK_EXPR])Then Begin
+   If MatchesPattern(I)Then
+    ExecuteRuleAction(I);
+  End;
+ End;
+End;
+
+{ Parse le programme AWK pour extraire les regles }
+Procedure ParseRulesFromProgram;
+Var
+ J,Err:Integer;
+ LineStart:Integer;
+ RuleKind:TRuleKind;
+ Pattern:String;
+ BlockLevel:Integer;
+ ActionStart,ActionStartPos,ActionEnd:Integer;
+ SaveLinePtr:Integer;
+ InPattern:Boolean;
+ QuoteChIn:Char;
+Begin
+ { Reinitialiser seulement le compteur de regles, pas HasInputFile/InputFileName }
+ RuleCount:=0;
+ NRValue:=0;
+ If NumberLine=0 Then Exit;
+ 
+ CurrLinePtr:=1;
+ While CurrLinePtr<=NumberLine do Begin
+  CurrLine:=PA[CurrLinePtr]^;
+  
+  { Extraire le numero de ligne s'il y en a un }
+  J:=1;
+  While(J<Length(CurrLine))and(CurrLine[J]in['0'..'9'])do Inc(J);
+  While(J<=Length(CurrLine))and(CurrLine[J]in[' ',#9])do Inc(J);
+  CurrPos:=J;
+  
+  { Sauter les lignes vides et commentaires }
+  If CurrPos>Length(CurrLine)Then Begin
+   Inc(CurrLinePtr);
+   Continue;
+  End;
+  If CurrLine[CurrPos]='#'Then Begin
+   Inc(CurrLinePtr);
+   Continue;
+  End;
+  
+  { Detecter le type de regle }
+  RuleKind:=RK_ALL;
+  Pattern:='';
+  InPattern:=False;
+  
+  { Verifier BEGIN }
+  If(CurrPos+4<=Length(CurrLine))and
+    (UpCase(CurrLine[CurrPos])='B')and
+    (UpCase(CurrLine[CurrPos+1])='E')and
+    (UpCase(CurrLine[CurrPos+2])='G')and
+    (UpCase(CurrLine[CurrPos+3])='I')and
+    (UpCase(CurrLine[CurrPos+4])='N')Then Begin
+   RuleKind:=RK_BEGIN;
+   Inc(CurrPos,5);
+  End
+  { Verifier END }
+  Else If(CurrPos+2<=Length(CurrLine))and
+         (UpCase(CurrLine[CurrPos])='E')and
+         (UpCase(CurrLine[CurrPos+1])='N')and
+         (UpCase(CurrLine[CurrPos+2])='D')Then Begin
+   RuleKind:=RK_END;
+   Inc(CurrPos,3);
+  End
+  { Verifier definition de fonction }
+  Else If(CurrPos+7<=Length(CurrLine))and
+        (UpCase(CurrLine[CurrPos])='F')and
+        (UpCase(CurrLine[CurrPos+1])='U')and
+        (UpCase(CurrLine[CurrPos+2])='N')and
+        (UpCase(CurrLine[CurrPos+3])='C')and
+        (UpCase(CurrLine[CurrPos+4])='T')and
+        (UpCase(CurrLine[CurrPos+5])='I')and
+        (UpCase(CurrLine[CurrPos+6])='O')and
+        (UpCase(CurrLine[CurrPos+7])='N')Then Begin
+   { Parser la definition de fonction }
+   Inc(CurrPos,8);
+   ParseFunctionDef;
+   Inc(CurrLinePtr);
+   Continue;
+  End
+  { Verifier pattern regex /.../ }
+  Else If CurrLine[CurrPos]='/'Then Begin
+   RuleKind:=RK_REGEX;
+   Inc(CurrPos); { Passer le premier / }
+   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>'/')do Begin
+    Pattern:=Pattern+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   If CurrPos<=Length(CurrLine)Then Inc(CurrPos); { Passer le / final }
+  End
+  (* Verifier si c'est juste un bloc sans pattern *)
+  Else If CurrLine[CurrPos]<>'{'Then Begin
+   { Motif d'expression (ex. NR==2, $1>10, NF>3) - genuine manque       }
+   { trouve+corrige ici : cette branche se contentait avant de SAUTER   }
+   { la ligne entiere ("pas de pattern reconnu"), rendant RK_EXPR       }
+   { totalement inatteignable meme si MatchesPattern savait deja        }
+   { l'evaluer (voir en-tete). Scanne jusqu'a l'accolade ouvrante de    }
+   { son bloc d'action, guillemets respectes. Limitation disclosee :    }
+   { un motif SANS bloc d'action explicite (print $0 implicite d'un     }
+   { vrai awk) n'est pas supporte - la ligne est alors sautee comme     }
+   { avant. }
+   RuleKind:=RK_EXPR;
+   QuoteChIn:=#0;
+   While(CurrPos<=Length(CurrLine))and((CurrLine[CurrPos]<>'{')or(QuoteChIn<>#0))do Begin
+    If QuoteChIn<>#0 Then Begin
+     If CurrLine[CurrPos]=QuoteChIn Then QuoteChIn:=#0;
+    End Else If CurrLine[CurrPos]in['''','"']Then QuoteChIn:=CurrLine[CurrPos];
+    Pattern:=Pattern+CurrLine[CurrPos];
+    Inc(CurrPos);
+   End;
+   While(Length(Pattern)>0)and(Pattern[Length(Pattern)]in[' ',#9])do
+    Delete(Pattern,Length(Pattern),1);
+   If(CurrPos>Length(CurrLine))or(Pattern='')Then Begin
+    Inc(CurrLinePtr);
+    Continue;
+   End;
+  End;
+  
+  { Sauter les espaces avant l'accolade }
+  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
+  
+  (* Trouver le bloc d'action *)
+  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
+   ActionStart:=CurrLinePtr;
+   ActionStartPos:=CurrPos+1;
+   BlockLevel:=1;
+   Inc(CurrPos);
+   
+   { Chercher la fin du bloc }
+   While BlockLevel>0 do Begin
+    While CurrPos<=Length(CurrLine)do Begin
+     If CurrLine[CurrPos]='{'Then Inc(BlockLevel)
+     Else If CurrLine[CurrPos]='}'Then Dec(BlockLevel);
+     If BlockLevel=0 Then Break;
+     Inc(CurrPos);
+    End;
+    If BlockLevel>0 Then Begin
+     Inc(CurrLinePtr);
+     If CurrLinePtr>NumberLine Then Break;
+     CurrLine:=PA[CurrLinePtr]^;
+     CurrPos:=1;
+    End;
+   End;
+   ActionEnd:=CurrLinePtr;
+   
+   { Ajouter la regle }
+   AddRule(RuleKind,Pattern,ActionStart,ActionStartPos,ActionEnd);
+  End;
+  
+  Inc(CurrLinePtr);
+ End;
+End;
+
+{ Traite un fichier de donnees avec les regles pattern }
+Procedure ProcessInputWithRules;
+Var
+ InputLine:String;
+ FileIdx:Integer;
+ FNRValue:LongInt;
+Begin
+ { Initialiser les variables integrees AWK }
+ NRValue:=0;
+ NumFields:=0;
+ AddVariableLongInt('NR',0);
+ AddVariableInt('NF',0);
+ If Not VariableExist('FNR')Then AddVariableLongInt('FNR',0);
+
+ { Executer les regles BEGIN d'abord }
+ ExecuteBeginRules;
+
+ { Si aucun fichier d'entree et pas de regles pattern, ne pas lire stdin }
+ If(InputFileCount=0)and(Not HasInputFile)and(Not HasPatternRules)Then Begin
+  { Pas de donnees a traiter, executer seulement END. Un exit rencontre }
+  { plus haut (BEGIN) ne doit PAS empecher END de s'executer - un vrai  }
+  { awk saute directement a END, il ne saute jamais END lui-meme.       }
+  Terminated:=False;
+  ExecuteEndRules;
+  Exit;
+ End;
+
+ { Plusieurs fichiers de donnees (awk 'programme' fichier1 fichier2...) - }
+ { NR continue de progresser sur tous les fichiers, FNR redemarre a 1 a  }
+ { chaque nouveau fichier et FILENAME est mis a jour, comme un vrai awk. }
+ If InputFileCount>0 Then Begin
+  For FileIdx:=1 to InputFileCount do Begin
+   If Not AwkAbort Then Begin
+    AwkAssignVar('FILENAME',InputFileNames[FileIdx]);
+    FNRValue:=0;
+    {$I-}Assign(InputFile,InputFileNames[FileIdx]);
+    Reset(InputFile);{$I+}
+    If IoResult<>0Then Begin
+     WriteLn('Fichier d''entree introuvable: ',InputFileNames[FileIdx]);
+    End Else Begin
+     AwkNextFile:=False;
+     While(Not EOF(InputFile))and(Not AwkAbort)and(Not Terminated)and(Not AwkNextFile)do Begin
+      ReadLn(InputFile,InputLine);
+      Inc(NRValue);Inc(FNRValue);
+      SetVariableLongInt('NR',NRValue);
+      SetVariableLongInt('FNR',FNRValue);
+      Fields[0]:=InputLine;
+      SplitIntoFields(InputLine);
+      SetVariableInt('NF',NumFields);
+      ExecutePatternRules;
+     End;
+     Close(InputFile);
+    End;
+   End;
+  End;
+ End Else
+ { Compatibilite : un seul fichier via l'ancien mecanisme InputFileName }
+ If HasInputFile Then Begin
+  {$I-}Assign(InputFile,InputFileName);
+  Reset(InputFile);{$I+}
+  If IoResult<>0Then Begin
+   WriteLn('Fichier d''entree introuvable: ',InputFileName);
+   Exit;
+  End;
+  AwkAssignVar('FILENAME',InputFileName);
+
+  AwkNextFile:=False;
+  While(Not EOF(InputFile))and(Not AwkAbort)and(Not Terminated)and(Not AwkNextFile)do Begin
+   ReadLn(InputFile,InputLine);
+   Inc(NRValue);
+   SetVariableLongInt('NR',NRValue);
+   SetVariableLongInt('FNR',NRValue);
+   Fields[0]:=InputLine;
+   SplitIntoFields(InputLine);
+   SetVariableInt('NF',NumFields);
+   ExecutePatternRules;
+  End;
+  Close(InputFile);
+ End
+  Else
+ Begin
+  { Lire depuis l'entree standard seulement si des regles pattern existent }
+  If HasPatternRules Then Begin
+   While(Not EOF)and(Not AwkAbort)and(Not Terminated)do Begin
+    ReadLn(InputLine);
+    Inc(NRValue);
+    SetVariableLongInt('NR',NRValue);
+    SetVariableLongInt('FNR',NRValue);
+    Fields[0]:=InputLine;
+    SplitIntoFields(InputLine);
+    SetVariableInt('NF',NumFields);
+    ExecutePatternRules;
+   End;
+  End;
+ End;
+
+ { Executer les regles END a la fin - un exit rencontre pendant le      }
+ { traitement des enregistrements (ce qui a interrompu la boucle       }
+ { ci-dessus) ne doit pas empecher END de s'executer. }
+ Terminated:=False;
+ ExecuteEndRules;
+End;
+
+Procedure RunProgram;
+Var
+ J:Integer;
+ Err:Integer;
+Begin
+ If NumberLine>0Then Begin
+  CurrLinePtr:=1;
+  While(CurrLinePtr<=NumberLine)and(Not Terminated) do Begin
+   CurrLine:=PA[CurrLinePtr]^;
+   CurrNumberLine:=0;
+   J:=1;
+   While(J<Length(CurrLine))do Begin
+    If Not(CurrLine[J]in['0'..'9'])Then Begin
+     Val(Copy(CurrLine,1,J-1),CurrNumberLine,Err);
+     Break;
+    End;
+    Inc(J);
+   End;
+   While J<=Length(CurrLine)do Begin
+    If CurrLine[J]in[' ',#9]Then Inc(J)
+                            Else Break;
+   End;
+   CurrPos:=J;
+   If Not RunLine Then Break;
+   Inc(CurrLinePtr);
+  End;
+ End;
+End;
+
+{ Cree-ou-met-a-jour une variable de script (idiome VariableExist +     }
+{ Set/AddVariableString deja utilise ailleurs dans le fichier d'origine }
+{ pour ce genre de cas, jamais factorise en une seule fonction avant).  }
+Procedure AwkAssignVar(Const Name, Value: String);
+Begin
+ If VariableExist(Name) Then SetVariableString(Name, Value)
+ Else AddVariableString(Name, Value);
+End;
+
+Function AwkIntToStr(N: Integer): String;
+Var S: String;
+Begin
+ Str(N, S);
+ AwkIntToStr := S;
+End;
+
+{ ============================================================
+  "Mise a niveau" du moteur - demande explicite de l'utilisateur
+  (2026-09-06) : "Il y a beaucoup de fonction non implementer [...]
+  Faudrait les implementer". 27 des 43 sites NoImplementation du
+  dispatcher d'instructions sont couverts ci-dessous, en suivant le
+  style deja existant de SqrtCommand/CosCommand/SinCommand (une
+  "commande" qui lit ses arguments dans CurrLine/CurrPos et Writeln
+  son resultat - convention deja etablie par le prototype d'origine,
+  pas une invention). Ecartes explicitement (limitation disclosee,
+  extensions gawk tres rarement utilisees ou hors de portee sans
+  nouvelle unite Uses, contrainte explicite de l'utilisateur) :
+  asort, asorti, bindtextdomain, dcgettext, dcngettext, gensub,
+  include, load, namespace, patsplit, strftime, mktime, typeof,
+  BEGINFILE/ENDFILE (necessitent un modele multi-fichiers plus fin
+  que celui ajoute ici). system() reste un stub qui l'annonce
+  clairement (creer un processus exigerait une nouvelle unite Uses,
+  explicitement refuse par l'utilisateur) ; close() egalement (aucune
+  redirection de fichier n'existe nulle part dans ce moteur -
+  getline/print n'ecrivent/ne lisent jamais vers un fichier nomme -
+  donc rien de reel a fermer).
+  ============================================================ }
+
+{ Lit un argument "chaine" generique : litteral entre guillemets,      }
+{ reference de champ $N, ou nom de variable - pas factorise avant dans }
+{ le fichier d'origine (chaque commande refaisait sa propre variante   }
+{ partielle). }
+Function AwkReadStringArg: String;
+Var
+ VName: String;
+ FieldNum: Integer;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='"') Then
+  AwkReadStringArg := GetStringValue
+ Else If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='$') Then Begin
+  Inc(CurrPos);
+  FieldNum := Round(GetNumberValue(1));
+  If (FieldNum>=0) And (FieldNum<=MaxFields) Then
+   AwkReadStringArg := Fields[FieldNum]
+  Else
+   AwkReadStringArg := '';
+ End Else Begin
+  VName := '';
+  While (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos] In ['A'..'Z','a'..'z','0'..'9','_']) Do Begin
+   VName := VName + CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  If VariableExist(StrToUpper(VName)) Then
+   AwkReadStringArg := GetVariableString(StrToUpper(VName))
+  Else
+   AwkReadStringArg := VName;
+ End;
+End;
+
+Procedure AwkSkipComma;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=',') Then Inc(CurrPos);
+ SkipSpace;
+End;
+
+Function AwkCurrentEpoch: LongInt;
+Const MonthDaysTbl: Array[1..12] Of Byte = (31,28,31,30,31,30,31,31,30,31,30,31);
+Var WYear,WMonth,WDay,WWeekDay,WHour,WMinute,WSecond,Hundredths: Word;
+ Y, M, Days: LongInt;
+ IsLeap: Boolean;
+Begin
+ GetDate(WYear,WMonth,WDay,WWeekDay); GetTime(WHour,WMinute,WSecond,Hundredths);
+ Days := 0;
+ For Y := 1970 To WYear-1 Do Begin
+  IsLeap := (Y Mod 4 = 0) And ((Y Mod 100 <> 0) Or (Y Mod 400 = 0));
+  If IsLeap Then Inc(Days,366) Else Inc(Days,365);
+ End;
+ IsLeap := (WYear Mod 4 = 0) And ((WYear Mod 100 <> 0) Or (WYear Mod 400 = 0));
+ For M := 1 To WMonth-1 Do Begin
+  Days := Days + MonthDaysTbl[M];
+  If (M=2) And IsLeap Then Inc(Days);
+ End;
+ Days := Days + (WDay-1);
+ AwkCurrentEpoch := Days*86400 + LongInt(WHour)*3600 + LongInt(WMinute)*60 + WSecond;
+End;
+
+Procedure AwkExpCommand;
+Var R: Real;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ R := GetNumberValue(1);
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(Exp(R));
+End;
+
+Procedure AwkLogCommand;
+Var R: Real;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ R := GetNumberValue(1);
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ If R > 0 Then WriteLn(Ln(R)) Else WriteLn('0');
+End;
+
+Procedure AwkIntCommand;
+Var R: Real;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ R := GetNumberValue(1);
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(Trunc(R));
+End;
+
+Procedure AwkAtan2Command;
+Const AwkPi = 3.14159265358979323846;
+Var Y, X, R: Real;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ Y := GetNumberValue(1);
+ AwkSkipComma;
+ X := GetNumberValue(1);
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ If X>0 Then R := ArcTan(Y/X)
+ Else If (X<0) And (Y>=0) Then R := ArcTan(Y/X)+AwkPi
+ Else If (X<0) And (Y<0) Then R := ArcTan(Y/X)-AwkPi
+ Else If (X=0) And (Y>0) Then R := AwkPi/2
+ Else If (X=0) And (Y<0) Then R := -AwkPi/2
+ Else R := 0;
+ WriteLn(R);
+End;
+
+Procedure AwkLshiftCommand;
+Var V, N: LongInt;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ V := Round(GetNumberValue(1));
+ AwkSkipComma;
+ N := Round(GetNumberValue(1));
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(V Shl N);
+End;
+
+Procedure AwkRshiftCommand;
+Var V, N: LongInt;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ V := Round(GetNumberValue(1));
+ AwkSkipComma;
+ N := Round(GetNumberValue(1));
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(V Shr N);
+End;
+
+Procedure AwkAndCommand;
+Var A, B: LongInt;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ A := Round(GetNumberValue(1));
+ AwkSkipComma;
+ B := Round(GetNumberValue(1));
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(A And B);
+End;
+
+Procedure AwkOrCommand;
+Var A, B: LongInt;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ A := Round(GetNumberValue(1));
+ AwkSkipComma;
+ B := Round(GetNumberValue(1));
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(A Or B);
+End;
+
+Procedure AwkXorCommand;
+Var A, B: LongInt;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ A := Round(GetNumberValue(1));
+ AwkSkipComma;
+ B := Round(GetNumberValue(1));
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(A Xor B);
+End;
+
+Procedure AwkComplCommand;
+Var A: LongInt;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ A := Round(GetNumberValue(1));
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(Not A);
+End;
+
+Procedure AwkToLowerCommand;
+Var S: String; K: Integer;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ For K := 1 To Length(S) Do If S[K] In ['A'..'Z'] Then S[K] := Chr(Ord(S[K])+32);
+ WriteLn(S);
+End;
+
+Procedure AwkToUpperCommand;
+Var S: String;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(StrToUpper(S));
+End;
+
+Procedure AwkIndexCommand;
+Var S, T: String;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ AwkSkipComma;
+ T := AwkReadStringArg;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(Pos(T, S));
+End;
+
+Procedure AwkSubstrCommand;
+Var S: String; StartPos, LenArg: Integer; HasLen: Boolean;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ AwkSkipComma;
+ StartPos := Round(GetNumberValue(1));
+ SkipSpace;
+ HasLen := False; LenArg := 0;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=',') Then Begin
+  Inc(CurrPos); SkipSpace;
+  LenArg := Round(GetNumberValue(1));
+  HasLen := True;
+ End;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ If StartPos < 1 Then StartPos := 1;
+ If HasLen Then WriteLn(Copy(S, StartPos, LenArg))
+ Else WriteLn(Copy(S, StartPos, Length(S)));
+End;
+
+Procedure AwkSystimeCommand;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ WriteLn(AwkCurrentEpoch);
+End;
+
+Procedure AwkStrtonumCommand;
+Var S: String; N: Real; Code: Integer;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ Val(S, N, Code);
+ If Code <> 0 Then N := 0;
+ If Frac(N)=0.0 Then WriteLn(N:0:0) Else WriteLn(N);
+End;
+
+Procedure AwkFflushCommand;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ {$I-} Flush(Output); {$I+}
+ If IOResult <> 0 Then ;
+End;
+
+Procedure AwkCloseCommand;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Begin
+  Inc(CurrPos);
+  While (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]<>')') Do Inc(CurrPos);
+  If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ End;
+ { Limitation disclosee : ce moteur n'a aucune redirection de fichier   }
+ { nommee (getline/print n'ecrivent/ne lisent jamais vers un fichier    }
+ { autre que celui donne en argument de la ligne de commande) - il n'y  }
+ { a donc litteralement rien a fermer. close() est accepte pour ne pas  }
+ { faire echouer un script qui l'appelle, mais reste un no-op honnete.  }
+End;
+
+Procedure AwkSystemCommand;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Begin
+  Inc(CurrPos);
+  While (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]<>')') Do Inc(CurrPos);
+  If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ End;
+ WriteLn('awk : system() n''est pas supporte dans ce terminal (aucune unite de creation de processus n''a ete ajoutee, sur demande explicite de l''utilisateur).');
+End;
+
+{ eval(code) - execute une chaine comme une vraie instruction AWK,     }
+{ en reutilisant RunLine sur un etat CurrLine/CurrPos sauvegarde-      }
+{ restaure, meme principe que le correctif RK_EXPR de MatchesPattern.  }
+Procedure AwkEvalCommand;
+Var
+ CodeText: String;
+ SaveLine: String;
+ SavePos: Integer;
+ SaveLinePtr: Integer;
+Begin
+ SkipSpace;
+ CodeText := '';
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Begin
+  Inc(CurrPos);
+  CodeText := AwkReadStringArg;
+  SkipSpace;
+  If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ End;
+ If CodeText <> '' Then Begin
+  SaveLine := CurrLine; SavePos := CurrPos; SaveLinePtr := CurrLinePtr;
+  CurrLine := CodeText; CurrPos := 1;
+  RunLine;
+  CurrLine := SaveLine; CurrPos := SavePos; CurrLinePtr := SaveLinePtr;
+ End;
+End;
+
+Procedure AwkNextCommand;
+Begin
+ AwkNextRecord := True;
+End;
+
+Procedure AwkNextFileCommand;
+Begin
+ AwkNextRecord := True;
+ AwkNextFile := True;
+End;
+
+Procedure AwkIsArrayCommand;
+Var VName: String;
+Begin
+ SkipSpace;
+ VName := '';
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Begin
+  Inc(CurrPos);
+  While (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos] In ['A'..'Z','a'..'z','0'..'9','_']) Do Begin
+   VName := VName + CurrLine[CurrPos];
+   Inc(CurrPos);
+  End;
+  SkipSpace;
+  If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ End;
+ If FindArray(StrToUpper(VName)) <> Nil Then WriteLn('1') Else WriteLn('0');
+End;
+
+{ match(s, motif) - motif LITTERAL (limitation disclosee, pas une vraie }
+{ expression reguliere) : place RSTART (position 1-based, 0 si absent)  }
+{ et RLENGTH (longueur, -1 si absent), comme un vrai awk. }
+Procedure AwkMatchCommand;
+Var S, Pat: String; P: Integer;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ AwkSkipComma;
+ Pat := AwkReadStringArg;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ P := Pos(Pat, S);
+ AwkAssignVar('RSTART', AwkIntToStr(P));
+ If P > 0 Then AwkAssignVar('RLENGTH', AwkIntToStr(Length(Pat)))
+ Else AwkAssignVar('RLENGTH', '-1');
+End;
+
+{ split(s, arr, [fs]) - separateur LITTERAL a un seul caractere (ou      }
+{ blancs par defaut si omis), meme limitation disclosee que SplitIntoFields.}
+Procedure AwkSplitCommand;
+Var S, ArrName, Sep, Piece: String; K, Idx: Integer;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ S := AwkReadStringArg;
+ AwkSkipComma;
+ ArrName := '';
+ While (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos] In ['A'..'Z','a'..'z','0'..'9','_']) Do Begin
+  ArrName := ArrName + CurrLine[CurrPos];
+  Inc(CurrPos);
+ End;
+ ArrName := StrToUpper(ArrName);
+ SkipSpace;
+ Sep := ' ';
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=',') Then Begin
+  Inc(CurrPos); SkipSpace;
+  Sep := AwkReadStringArg;
+  If Sep = '' Then Sep := ' ';
+ End;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ Idx := 0;
+ Piece := '';
+ If Sep = ' ' Then Begin
+  K := 1;
+  While K <= Length(S) Do Begin
+   While (K<=Length(S)) And (S[K] In [' ',#9]) Do Inc(K);
+   If K > Length(S) Then Break;
+   Piece := '';
+   While (K<=Length(S)) And Not (S[K] In [' ',#9]) Do Begin
+    Piece := Piece + S[K]; Inc(K);
+   End;
+   Inc(Idx);
+   SetArrayElement(ArrName, AwkIntToStr(Idx), Piece);
+  End;
+ End Else Begin
+  K := 1;
+  For K := 1 To Length(S) Do Begin
+   If S[K] = Sep[1] Then Begin
+    Inc(Idx);
+    SetArrayElement(ArrName, AwkIntToStr(Idx), Piece);
+    Piece := '';
+   End Else
+    Piece := Piece + S[K];
+  End;
+  Inc(Idx);
+  SetArrayElement(ArrName, AwkIntToStr(Idx), Piece);
+ End;
+ WriteLn(Idx);
+End;
+
+{ sub(motif, remplacement, [cible]) - motif LITTERAL, PREMIERE           }
+{ occurrence seulement. Cible par defaut = $0 (comme un vrai awk).       }
+Procedure AwkSubCommand;
+Var Pat, Repl, Target, NewVal: String; P: Integer; TargetIsField0: Boolean;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ Pat := AwkReadStringArg;
+ AwkSkipComma;
+ Repl := AwkReadStringArg;
+ SkipSpace;
+ TargetIsField0 := True;
+ Target := Fields[0];
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=',') Then Begin
+  Inc(CurrPos); SkipSpace;
+  TargetIsField0 := False;
+  Target := AwkReadStringArg;
+ End;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ P := Pos(Pat, Target);
+ If P > 0 Then Begin
+  NewVal := Copy(Target,1,P-1) + Repl + Copy(Target,P+Length(Pat),Length(Target)-P-Length(Pat)+1);
+  If TargetIsField0 Then Begin
+   Fields[0] := NewVal;
+   SplitIntoFields(NewVal);
+   SetVariableInt('NF', NumFields);
+  End;
+  WriteLn('1');
+ End Else WriteLn('0');
+End;
+
+{ gsub(motif, remplacement, [cible]) - motif LITTERAL, TOUTES les        }
+{ occurrences non chevauchantes. }
+Procedure AwkGsubCommand;
+Var Pat, Repl, Target, NewVal: String; P, Count: Integer; TargetIsField0: Boolean;
+Begin
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]='(') Then Inc(CurrPos);
+ Pat := AwkReadStringArg;
+ AwkSkipComma;
+ Repl := AwkReadStringArg;
+ SkipSpace;
+ TargetIsField0 := True;
+ Target := Fields[0];
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=',') Then Begin
+  Inc(CurrPos); SkipSpace;
+  TargetIsField0 := False;
+  Target := AwkReadStringArg;
+ End;
+ SkipSpace;
+ If (CurrPos<=Length(CurrLine)) And (CurrLine[CurrPos]=')') Then Inc(CurrPos);
+ Count := 0;
+ NewVal := '';
+ If Pat = '' Then NewVal := Target
+ Else Begin
+  P := Pos(Pat, Target);
+  While P > 0 Do Begin
+   NewVal := NewVal + Copy(Target,1,P-1) + Repl;
+   Target := Copy(Target,P+Length(Pat),Length(Target)-P-Length(Pat)+1);
+   Inc(Count);
+   P := Pos(Pat, Target);
+  End;
+  NewVal := NewVal + Target;
+ End;
+ If Count > 0 Then Begin
+  If TargetIsField0 Then Begin
+   Fields[0] := NewVal;
+   SplitIntoFields(NewVal);
+   SetVariableInt('NF', NumFields);
+  End;
+ End;
+ WriteLn(Count);
+End;
+
+{ Reinitialise explicitement tout l'etat "global" d'AWK.PAS avant       }
+{ chaque execution - voir le point 4 du commentaire d'en-tete : ces     }
+{ variables sont maintenant locales de pile (imbrication dans           }
+{ TermCmd_Awk), plus zero-initialisees automatiquement comme pour un    }
+{ programme Pascal autonome.                                            }
+Procedure AwkInitState;
+Begin
+ AwkAbort := False;
+ NumFields := 0;
+ Mode := _None_;
+ Terminated := False;
+ CurrCommand := ''; CurrParam := '';
+ FileName := ''; CurrLine := '';
+ CurrPos := 1;
+ VarListHead := Nil; VarListLast := Nil;
+ CurrLinePtr := 0; NumberLine := 0;
+ CurrNumberLine := 0;
+ AccoladeBlock := 0;
+ I := 0;
+ EndBlockStart := 0; EndBlockEnd := 0; InEndBlock := False;
+ UserFuncList := Nil; UserFuncLast := Nil;
+ InFunctionCall := False;
+ FunctionReturnValue := 0; FunctionReturnStr := '';
+ HasFunctionReturn := False;
+ BreakFlag := False; ContinueFlag := False; LoopDepth := 0;
+ AssocArrayList := Nil; AssocArrayLast := Nil;
+ RuleCount := 0;
+ InputFileName := ''; HasInputFile := False;
+ NRValue := 0;
+ InputFileCount := 0;
+ AwkNextRecord := False;
+ AwkNextFile := False;
+End;
+
+Procedure AwkShowVersion;
+Begin
+ WriteLn('AWK 0.1 - Clone Pascal du langage AWK pour Corail');
+ WriteLn('Licence MIT');
+ WriteLn;
+ WriteLn('Ecrit par Sylvain Maltais');
+End;
+
+Procedure AwkShowHelp;
+Begin
+ WriteLn('Utilisation : awk [options] ''programme'' [fichier...]');
+ WriteLn('         ou : awk [options] -f fichier_programme [fichier...]');
+ WriteLn;
+ WriteLn('Options :');
+ WriteLn('  -f fichier     Lit le programme AWK depuis un fichier (cumulable)');
+ WriteLn('  -v var=valeur  Affecte une variable avant l''execution de BEGIN');
+ WriteLn('  -F sep         Definit le separateur de champs (equivaut a -v FS=sep)');
+ WriteLn('  -v, -V, --version   Affiche la version');
+ WriteLn('  -h, -?, --help, /?  Affiche cette aide');
+ WriteLn('  --             Fin des options');
+ WriteLn;
+ WriteLn('Variables integrees : NR, NF, FNR, FS, FILENAME, ARGV, ARGC');
+ WriteLn;
+ WriteLn('Fonctions : exp log int atan2 lshift rshift and or xor compl tolower');
+ WriteLn('  toupper index substr systime strtonum fflush eval next nextfile');
+ WriteLn('  isarray match split sub gsub (motifs sub/gsub/match/split LITTERAUX,');
+ WriteLn('  pas de vraie expression reguliere ; sub/gsub/split doivent etre des');
+ WriteLn('  instructions independantes, leur valeur de retour ne peut pas etre');
+ WriteLn('  capturee par affectation, ex. n=split(...) n''est pas supporte).');
+ WriteLn;
+ WriteLn('Limitations propres a ce terminal/prototype :');
+ WriteLn('  $1="x" (reecriture de champ), close() et system() ne sont pas');
+ WriteLn('  supportes. ENVIRON n''est pas peuple.');
+ WriteLn('  FS accepte un seul caractere litteral, pas une expression reguliere.');
+ WriteLn('  RS (separateur d''enregistrement) est toujours une ligne (\n).');
+End;
+
+{ Un programme AWK inline tient presque toujours plusieurs regles       }
+{ pattern-action sur UNE SEULE ligne shell (BEGIN suivi d'un bloc,      }
+{ puis un bloc sans motif, puis END suivi d'un bloc). Or                }
+{ ParseRulesFromProgram (voir plus haut dans le corps colle) ne trouve  }
+{ jamais qu'UNE SEULE regle par ligne ENREGISTREE                       }
+{ (elle saute inconditionnellement a la ligne suivante des qu'elle a    }
+{ trouve l'accolade fermante d'une regle - genuine limitation trouvee   }
+{ en testant BEGIN/pattern/END combines). On decoupe donc ici le texte  }
+{ du programme en une ligne enregistree PAR REGLE, exactement comme le  }
+{ ferait un vrai fichier .awk multi-lignes - decoupage a chaque fois    }
+{ que la profondeur d'accolades revient a zero, guillemets respectes.   }
+Procedure AwkSplitProgramIntoRules(Const ProgText: String);
+Var
+ K, Depth: Integer;
+ QuoteCh, Ch: Char;
+ LineAcc: String;
+ HasContent: Boolean;
+Begin
+ LineAcc := '';
+ Depth := 0;
+ QuoteCh := #0;
+ For K := 1 To Length(ProgText) Do Begin
+  Ch := ProgText[K];
+  If QuoteCh <> #0 Then Begin
+   LineAcc := LineAcc + Ch;
+   If Ch = QuoteCh Then QuoteCh := #0;
+  End Else If (Ch='''') Or (Ch='"') Then Begin
+   QuoteCh := Ch;
+   LineAcc := LineAcc + Ch;
+  End Else If Ch = '{' Then Begin
+   Inc(Depth);
+   LineAcc := LineAcc + Ch;
+  End Else If Ch = '}' Then Begin
+   Dec(Depth);
+   LineAcc := LineAcc + Ch;
+   If Depth <= 0 Then Begin
+    AddLine(LineAcc);
+    LineAcc := '';
+    Depth := 0;
+   End;
+  End Else
+   LineAcc := LineAcc + Ch;
+ End;
+ HasContent := False;
+ For K := 1 To Length(LineAcc) Do
+  If Not (LineAcc[K] In [' ', #9]) Then HasContent := True;
+ If HasContent Then AddLine(LineAcc);
+End;
+
+{ Orchestration complete de la ligne de commande "a la Linux" - analyse }
+{ des options via RawParamCount/RawParamStr (deja excellents, deja      }
+{ sensibles aux guillemets ET aux accolades - voir en-tete), compilation}
+{ du/des programme(s) puis execution. }
+Procedure AwkOrchestrate;
+Var
+ Idx, EqPos, K: Integer;
+ CurA, Rest, VName, VValue, ProgText: String;
+ HaveProgram, SawFFlag, EndOfOptions: Boolean;
+Begin
+ AwkInitState;
+ InitRules;
+
+ If RawParamCount = 0 Then Begin
+  AwkShowHelp;
+  Exit;
+ End;
+
+ HaveProgram := False;
+ SawFFlag := False;
+ EndOfOptions := False;
+ Idx := 1;
+
+ While Idx <= RawParamCount Do Begin
+  CurA := RawParamStr(Idx);
+  If EndOfOptions Then Break;
+  If (CurA='/?') Or (CurA='--help') Or (CurA='-h') Or (CurA='-?') Then Begin
+   AwkShowHelp;
+   Exit;
+  End Else If (CurA='--version') Or (CurA='-V') Then Begin
+   AwkShowVersion;
+   Exit;
+  End Else If CurA = '--' Then Begin
+   EndOfOptions := True;
+   Inc(Idx);
+  End Else If CurA = '-f' Then Begin
+   Inc(Idx);
+   If Idx <= RawParamCount Then Begin
+    Rest := RawParamStr(Idx);
+    {$I-} Assign(FileAWK, Rest); Reset(FileAWK); {$I+}
+    If IOResult <> 0 Then Begin
+     WriteLn('Fichier introuvable : ', Rest);
+     AwkAbort := True;
+     Exit;
+    End;
+    While Not EOF(FileAWK) Do Begin
+     ReadLn(FileAWK, CurrLine);
+     If Not AddLine(CurrLine) Then Break;
+    End;
+    Close(FileAWK);
+    SawFFlag := True;
+   End;
+   Inc(Idx);
+  End Else If Copy(CurA,1,2) = '-f' Then Begin
+   Rest := Copy(CurA, 3, Length(CurA)-2);
+   {$I-} Assign(FileAWK, Rest); Reset(FileAWK); {$I+}
+   If IOResult <> 0 Then Begin
+    WriteLn('Fichier introuvable : ', Rest);
+    AwkAbort := True;
+    Exit;
+   End;
+   While Not EOF(FileAWK) Do Begin
+    ReadLn(FileAWK, CurrLine);
+    If Not AddLine(CurrLine) Then Break;
+   End;
+   Close(FileAWK);
+   SawFFlag := True;
+   Inc(Idx);
+  End Else If CurA = '-v' Then Begin
+   Inc(Idx);
+   If Idx <= RawParamCount Then Begin
+    Rest := RawParamStr(Idx);
+    EqPos := Pos('=', Rest);
+    If EqPos > 0 Then Begin
+     VName := Copy(Rest, 1, EqPos-1);
+     VValue := Copy(Rest, EqPos+1, Length(Rest)-EqPos);
+     AwkAssignVar(VName, VValue);
+    End;
+   End;
+   Inc(Idx);
+  End Else If Copy(CurA,1,2) = '-v' Then Begin
+   Rest := Copy(CurA, 3, Length(CurA)-2);
+   EqPos := Pos('=', Rest);
+   If EqPos > 0 Then Begin
+    VName := Copy(Rest, 1, EqPos-1);
+    VValue := Copy(Rest, EqPos+1, Length(Rest)-EqPos);
+    AwkAssignVar(VName, VValue);
+   End;
+   Inc(Idx);
+  End Else If CurA = '-F' Then Begin
+   Inc(Idx);
+   If Idx <= RawParamCount Then
+    AwkAssignVar('FS', RawParamStr(Idx));
+   Inc(Idx);
+  End Else If Copy(CurA,1,2) = '-F' Then Begin
+   AwkAssignVar('FS', Copy(CurA, 3, Length(CurA)-2));
+   Inc(Idx);
+  End Else
+   Break; { premier argument positionnel }
+ End;
+
+ { Premier argument positionnel = texte du programme, seulement si -f }
+ { n'a fourni aucun programme. Les guillemets simples englobants (deja }
+ { conserves tels quels par RawParamStr) sont retires ici, comme le    }
+ { faisait l'ancien bloc principal. }
+ If (Not SawFFlag) And (Idx <= RawParamCount) Then Begin
+  CurA := RawParamStr(Idx);
+  If (Length(CurA)>=2) And (CurA[1]='''') And (CurA[Length(CurA)]='''') Then
+   ProgText := Copy(CurA, 2, Length(CurA)-2)
+  Else
+   ProgText := CurA;
+  AwkSplitProgramIntoRules(ProgText);
+  HaveProgram := True;
+  Inc(Idx);
+ End;
+
+ { Arguments positionnels restants = fichiers de donnees (plusieurs    }
+ { fichiers reellement supportes, voir ProcessInputWithRules). }
+ While Idx <= RawParamCount Do Begin
+  CurA := RawParamStr(Idx);
+  If InputFileCount < 20 Then Begin
+   Inc(InputFileCount);
+   InputFileNames[InputFileCount] := CurA;
+  End;
+  Inc(Idx);
+ End;
+
+ If (Not SawFFlag) And (Not HaveProgram) Then Begin
+  AwkShowHelp;
+  Exit;
+ End;
+
+ { ARGV/ARGC pour inspection par le script (best-effort - un vrai awk }
+ { permet aussi des affectations var=valeur intercalees dans la liste }
+ { de fichiers, non supporte ici, limitation disclosee). }
+ SetArrayElement('ARGV', '0', 'awk');
+ For K := 1 To InputFileCount Do
+  SetArrayElement('ARGV', AwkIntToStr(K), InputFileNames[K]);
+ AwkAssignVar('ARGC', AwkIntToStr(InputFileCount+1));
+
+ { Parser les regles pattern-action du programme AWK }
+ ParseRulesFromProgram;
+
+ If AwkAbort Then Exit;
+
+ If RuleCount > 0 Then
+  ProcessInputWithRules
+ Else
+  RunProgram;
+End;
+
+{ Corps principal (Output redirige vers un fichier temporaire reel }
+{ puis republie dans ce terminal, voir en-tete).                   }
+Begin
+ AwkAbort := False;
+
+ {$I-} Assign(Output, AWK_TEMP_OUTPUT); Rewrite(Output); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'AWK : impossible de creer le fichier temporaire de sortie.');
+  Exit;
+ End;
+
+ AwkOrchestrate;
+
+ {$I-} Close(Output); {$I+}
+ If IOResult <> 0 Then ; { ignorer l erreur de fermeture }
+
+ { Republier la sortie capturee dans ce terminal, ligne par ligne. }
+ Assign(AwkDumpF, AWK_TEMP_OUTPUT);
+ {$I-} Reset(AwkDumpF); {$I+}
+ If IOResult = 0 Then Begin
+  While Not EOF(AwkDumpF) Do Begin
+   ReadLn(AwkDumpF, AwkDumpLine);
+   TermAddLine(TP, AwkDumpLine);
+  End;
+  Close(AwkDumpF);
+ End;
+ CleanupTempFile(AWK_TEMP_OUTPUT);
+End;
 { --- GET-CONTENT (PowerShell dev) --- }
 Procedure TermCmd_GetContent(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -92489,6 +97882,19 @@ Begin
   TermAddLine(TP,
    '  perl -h                                             Aide complete');
  End;
+ { AWK : SK_BASH uniquement (2026-09-06, demande explicite de               }
+ { l'utilisateur - port complet du prototype AWK.PAS, voir TermCmd_Awk).    }
+ { Ajoutee proactivement ici des le premier chantier, meme raison que PERL. }
+ If TP.Shell = SK_BASH Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- AWK (traitement de texte par regles) ---');
+  TermAddLine(TP,
+   '  awk [options] ''programme'' [fichier...]      -f fichier -v var=val');
+  TermAddLine(TP,
+   '                                              -F sep -v -V -h --');
+  TermAddLine(TP,
+   '  awk -h                                       Aide complete');
+ End;
  { MASM : SK_CMD/SK_NCOMMANDER/SK_OS2REXX (2026-09-05, demande explicite -   }
  { port complet et integral de MASM.PAS, clone MASM 5.x 8086, voir           }
  { TermCmd_Masm). }
@@ -93733,6 +99139,8 @@ Begin
     TermCmd_Grep(TP, ParamStr)
    Else If CurrCmd = 'PERL' Then
     TermCmd_Perl(TP, ParamStr)
+   Else If CurrCmd = 'AWK' Then
+    TermCmd_Awk(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'PWD' Then
@@ -158259,6 +163667,44 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   TermCmd_REXX(TermPanels[ActiveShell], Opts.RexxFile);
+ End;
+ { /AWK:fichier.awk - ouvre le shell "Bash" (SK_BASH, seul profil ou AWK   }
+ { est cable) et lance directement le script specifie, comme si            }
+ { l'utilisateur avait tape "awk -f fichier.awk" dans ce terminal          }
+ { (TermCmd_Awk, voir [[project_devenv_awk]]) - meme principe que /REXX:   }
+ { ci-dessus. Demande explicite de l'utilisateur, 2026-09-06. }
+ If Opts.AwkFile <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_BASH;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  TermCmd_Awk(TermPanels[ActiveShell], '-f ' + Opts.AwkFile);
+ End;
+ { /PERL:fichier.pl - ouvre le shell "Bash" (SK_BASH, seul profil ou PERL  }
+ { est cable) et lance directement le script specifie, comme si            }
+ { l'utilisateur avait tape "perl fichier.pl" dans ce terminal             }
+ { (TermCmd_Perl, voir [[project_devenv_perl]]) - meme principe que        }
+ { /REXX:/AWK: ci-dessus. Demande explicite de l'utilisateur, 2026-09-06. }
+ If Opts.PerlFile <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_BASH;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  TermCmd_Perl(TermPanels[ActiveShell], Opts.PerlFile);
  End;
  { /VBSCRIPT:fichier.vbs - ouvre le shell "Invite de commandes" (SK_CMD)   }
  { et lance directement le script VBScript specifie, comme si             }
