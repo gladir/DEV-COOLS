@@ -7268,7 +7268,13 @@ Var
  EmuDtaSeg      : Word;
  EmuDtaOfs      : Word;
  EmuPspSeg      : Word;     { segment du PSP du programme courant }
- EmuNextFreeSeg : Word;     { segment libre pour AH=48 (alloc) }
+ EmuNextFreeSeg : Word;     { ancien allocateur "bump" AH=48 - conserve   }
+                            { pour compat Snap.NextFreeSeg (EmuExecStack, }
+                            { voir DOS_SaveState/LoadState) mais plus lu   }
+                            { par Emu_DoInt21 (voir Emu_McbAlloc/Resize/    }
+                            { Free ci-dessus, chaine MCB reelle).           }
+ EmuMcbFirstSeg : Word;     { segment du 1er MCB de la chaine, 0=aucune    }
+                            { chaine initialisee (voir Emu_McbChainInit)   }
  { Clear-Variable/Set-Variable (2026-08-31, PowerShell dev, demande         }
  { explicite de l'utilisateur) : segment REEL et DEDIE de l'environnement   }
  { DOS du programme courant - carve a meme EmuNextFreeSeg (16 paragraphes,  }
@@ -112979,10 +112985,277 @@ Begin
  Emu_DosEnvWrite(C, EnvSeg, Vars, 3);
 End;
 
+{ ========================================================================= }
+{ Chaine MCB (Memory Control Block) reelle (2026-09-06, demande explicite : }
+{ "Faudrait corriger" le plantage de TP4/TURBO.EXE apres 363 instructions,  }
+{ voir [[project_devenv_netbios]]/investigation associee). AVANT ce         }
+{ chantier, AH=48h/49h/4Ah (allocation memoire DOS) etaient de simples       }
+{ compteurs "bump" (EmuNextFreeSeg) sans jamais ecrire le moindre octet de   }
+{ MCB en memoire invite - tout programme qui parcourt la VRAIE chaine MCB   }
+{ (ES:[BX-2] de INT 21h AH=52h -> premier MCB, puis signature 'M'/'Z' +     }
+{ owner + taille tous les "1+taille" paragraphes) y trouvait donc des       }
+{ octets a zero, ni 'M' ni 'Z' - exactement ce que fait TP4 des son          }
+{ demarrage (verification/dimensionnement de la memoire disponible) avant   }
+{ de conclure "memoire corrompue" et d afficher son propre message          }
+{ defensif "Abnormal program termination". Format MCB (16 octets, un        }
+{ paragraphe) et convention de chainage IDENTIQUES au vrai DOS (voir Ralph  }
+{ Brown Interrupt List, entree "MCB") :                                     }
+{   +0  Byte  signature ('M'=autre MCB suit, 'Z'=dernier de la chaine)      }
+{   +1  Word  PSP proprietaire (0 = bloc LIBRE)                             }
+{   +3  Word  taille du bloc en paragraphes (SANS compter le MCB lui-meme)  }
+{   +5  10 octets reserves (nom de programme sur DOS 4+, non modelise ici)  }
+{ Le bloc de donnees utile commence au segment MCB+1 et fait exactement     }
+{ "taille" paragraphes ; le MCB suivant (si signature='M') est donc a       }
+{ MCB+1+taille. }
+Const
+ EMU_MCB_TOP_SEG = $9FFF; { dernier segment valide avant la zone video $A000 }
+
+Function Emu_McbSig(Var C: TEmuCPU; McbSeg: Word): Byte;
+Begin
+ Emu_McbSig := Emu_ReadByte(C, McbSeg, 0);
+End;
+
+Function Emu_McbOwner(Var C: TEmuCPU; McbSeg: Word): Word;
+Begin
+ Emu_McbOwner := Emu_ReadWord(C, McbSeg, 1);
+End;
+
+Function Emu_McbSize(Var C: TEmuCPU; McbSeg: Word): Word;
+Begin
+ Emu_McbSize := Emu_ReadWord(C, McbSeg, 3);
+End;
+
+Procedure Emu_McbSet(Var C: TEmuCPU; McbSeg: Word; Sig: Byte; Owner, SizePar: Word);
+Begin
+ Emu_WriteByte(C, McbSeg, 0, Sig);
+ Emu_WriteWord(C, McbSeg, 1, Owner);
+ Emu_WriteWord(C, McbSeg, 3, SizePar);
+End;
+
+{ Reinitialise TOUTE la chaine MCB couvrant ArenaSeg-1..$9FFF, deja         }
+{ attribuee a PspSeg - convention reelle DOS "EXEC accorde toute la        }
+{ memoire libre au nouveau programme, qui la reduit lui-meme ensuite via   }
+{ AH=4Ah" (confirme par la propre sequence de demarrage de TP4 : AH=4Ah     }
+{ juste apres le chargement). ArenaSeg et PspSeg different pour un .EXE     }
+{ dont l environnement est carve AVANT le PSP, PSPSeg:=AtSeg+15 (voir       }
+{ Emu_LoadExeAt) - dans ce cas, DEUX MCB sont ecrits : un premier "de       }
+{ remplissage" (possede par PspSeg lui-meme) couvrant l ecart              }
+{ ArenaSeg..PspSeg-1, puis le VRAI MCB a PspSeg-1 - celui-la meme que       }
+{ INT 21h AH=52h annonce via ES:[BX-2]=EmuPspSeg-1 (voir plus bas dans      }
+{ Emu_DoInt21), et donc celui qu un programme qui suit la convention        }
+{ standard "mon MCB est juste avant mon PSP" ira lire. Pour un .COM         }
+{ (ArenaSeg=PspSeg, pas de tel ecart, voir Emu_LoadComAt), un seul MCB      }
+{ suffit. Appelee UNIQUEMENT au chargement de PREMIER niveau (Emu_LoadCom/  }
+{ Emu_LoadExe), jamais pour un enfant EXEC (voir Emu_McbAllocWhole, qui     }
+{ reutilise la chaine existante sans la reinitialiser). }
+Procedure Emu_McbChainInit(Var C: TEmuCPU; ArenaSeg, PspSeg: Word);
+Begin
+ EmuMcbFirstSeg := ArenaSeg - 1;
+ If ArenaSeg < PspSeg Then Begin
+  Emu_McbSet(C, EmuMcbFirstSeg, Ord('M'), PspSeg, Word(PspSeg - ArenaSeg - 1));
+  Emu_McbSet(C, Word(PspSeg - 1), Ord('Z'), PspSeg, Word(EMU_MCB_TOP_SEG - PspSeg));
+ End Else
+  Emu_McbSet(C, EmuMcbFirstSeg, Ord('Z'), PspSeg, Word(EMU_MCB_TOP_SEG - PspSeg));
+End;
+
+{ Trouve le plus grand bloc LIBRE de la chaine et l attribue ENTIEREMENT    }
+{ (auto-possede) - pour un enfant EXEC (voir Emu_DoInt21 AH=4Bh), qui        }
+{ reduira lui-meme son allocation au demarrage comme n importe quel         }
+{ programme reel. Renvoie le segment PSP resultant (McbSeg+1), ou 0 si      }
+{ aucun bloc libre n existe (chaine jamais initialisee ou memoire pleine).  }
+Function Emu_McbAllocWhole(Var C: TEmuCPU): Word;
+Var
+ McbSeg, BestSeg: Word;
+ BestSize: LongInt;
+ Sig: Byte;
+ Done: Boolean;
+Begin
+ Emu_McbAllocWhole := 0;
+ If EmuMcbFirstSeg = 0 Then Exit;
+ BestSeg := 0; BestSize := -1;
+ McbSeg := EmuMcbFirstSeg;
+ Done := False;
+ While Not Done Do Begin
+  Sig := Emu_McbSig(C, McbSeg);
+  If (Emu_McbOwner(C, McbSeg) = 0) And (LongInt(Emu_McbSize(C, McbSeg)) > BestSize) Then Begin
+   BestSize := Emu_McbSize(C, McbSeg);
+   BestSeg := McbSeg;
+  End;
+  If Sig = Ord('M') Then McbSeg := Word(McbSeg + 1 + Emu_McbSize(C, McbSeg))
+  Else Done := True;
+ End;
+ If BestSeg = 0 Then Exit;
+ Emu_McbSet(C, BestSeg, Emu_McbSig(C, BestSeg), Word(BestSeg + 1), Emu_McbSize(C, BestSeg));
+ Emu_McbAllocWhole := BestSeg + 1;
+End;
+
+{ Fusionne toute paire de blocs LIBRES adjacents sur l ensemble de la       }
+{ chaine (un seul passage suffit, parcouru une seule fois du debut a la     }
+{ fin, en re-examinant le meme bloc apres chaque fusion pour capter une     }
+{ eventuelle 3e fusion en chaine) - appelee apres toute liberation pour     }
+{ eviter la fragmentation de blocs libres consecutifs, comme le ferait un   }
+{ vrai DOS. Gere aussi bien la fusion "en arriere" (bloc libere qui touche  }
+{ un libre precedent) que "en avant", puisque toute la chaine est revue.    }
+Procedure Emu_McbCoalesceAll(Var C: TEmuCPU);
+Var McbSeg, NextSeg: Word; Sig, NextSig: Byte; Done: Boolean;
+Begin
+ If EmuMcbFirstSeg = 0 Then Exit;
+ McbSeg := EmuMcbFirstSeg;
+ Done := False;
+ While Not Done Do Begin
+  Sig := Emu_McbSig(C, McbSeg);
+  If Sig <> Ord('M') Then
+   Done := True
+  Else Begin
+   NextSeg := Word(McbSeg + 1 + Emu_McbSize(C, McbSeg));
+   If (Emu_McbOwner(C, McbSeg) = 0) And (Emu_McbOwner(C, NextSeg) = 0) Then Begin
+    NextSig := Emu_McbSig(C, NextSeg);
+    Emu_McbSet(C, McbSeg, NextSig, 0, Word(Emu_McbSize(C, McbSeg) + 1 + Emu_McbSize(C, NextSeg)));
+    { Ne pas avancer : reexaminer McbSeg (nouvelle taille) au tour suivant. }
+   End Else
+    McbSeg := NextSeg;
+  End;
+ End;
+End;
+
+{ ALLOUER (INT 21h AH=48h) : premier bloc libre assez grand (first-fit,     }
+{ convention DOS classique), scinde si plus grand que necessaire (le        }
+{ residu devient un nouveau bloc libre). En cas d echec, MaxFree recoit la  }
+{ taille du plus grand bloc libre trouve (meme convention que le vrai DOS : }
+{ BX en sortie, l appelant l utilise pour ajuster sa demande). }
+Function Emu_McbAlloc(Var C: TEmuCPU; NeedParas, Owner: Word; Var GotSeg, MaxFree: Word): Boolean;
+Var
+ McbSeg, RemSeg: Word;
+ Sig: Byte;
+ Done, Found: Boolean;
+ FreeSize: Word;
+Begin
+ Emu_McbAlloc := False;
+ GotSeg := 0; MaxFree := 0;
+ If EmuMcbFirstSeg = 0 Then Exit;
+ Found := False;
+ McbSeg := EmuMcbFirstSeg;
+ Done := False;
+ While Not Done Do Begin
+  Sig := Emu_McbSig(C, McbSeg);
+  If Emu_McbOwner(C, McbSeg) = 0 Then Begin
+   FreeSize := Emu_McbSize(C, McbSeg);
+   If FreeSize > MaxFree Then MaxFree := FreeSize;
+   If (Not Found) And (FreeSize >= NeedParas) Then Begin
+    If FreeSize > NeedParas Then Begin
+     RemSeg := Word(McbSeg + 1 + NeedParas);
+     Emu_McbSet(C, RemSeg, Sig, 0, Word(FreeSize - NeedParas - 1));
+     Emu_McbSet(C, McbSeg, Ord('M'), Owner, NeedParas);
+    End Else
+     Emu_McbSet(C, McbSeg, Sig, Owner, FreeSize);
+    GotSeg := McbSeg + 1;
+    Found := True;
+   End;
+  End;
+  If Sig = Ord('M') Then McbSeg := Word(McbSeg + 1 + Emu_McbSize(C, McbSeg))
+  Else Done := True;
+ End;
+ Emu_McbAlloc := Found;
+End;
+
+{ LIBERER (INT 21h AH=49h) : marque le bloc libre (Owner=0) puis fusionne   }
+{ avec tout voisin lui aussi libre (Emu_McbCoalesceAll). Renvoie False si   }
+{ BlockSeg-1 n a pas une signature MCB valide (poignee/adresse invalide,    }
+{ code DOS reel 9 - "memory block address invalid"). }
+Function Emu_McbFree(Var C: TEmuCPU; BlockSeg: Word): Boolean;
+Var McbSeg: Word; Sig: Byte;
+Begin
+ Emu_McbFree := False;
+ If (EmuMcbFirstSeg = 0) Or (BlockSeg = 0) Then Exit;
+ McbSeg := BlockSeg - 1;
+ Sig := Emu_McbSig(C, McbSeg);
+ If (Sig <> Ord('M')) And (Sig <> Ord('Z')) Then Exit;
+ Emu_McbSet(C, McbSeg, Sig, 0, Emu_McbSize(C, McbSeg));
+ Emu_McbCoalesceAll(C);
+ Emu_McbFree := True;
+End;
+
+{ REDIMENSIONNER (INT 21h AH=4Ah) : BlockSeg=segment du bloc (ES en         }
+{ entree), NewParas=nouvelle taille demandee (BX en entree). Reduction :    }
+{ toujours acceptee, le reste devient un nouveau bloc libre (fusionne       }
+{ aussitot si un libre le suit deja). Agrandissement : possible seulement   }
+{ si ce bloc est le DERNIER de la chaine (jusqu a EMU_MCB_TOP_SEG) ou si    }
+{ son voisin immediat est libre et assez grand ; sinon False avec MaxParas  }
+{ = plus grande taille atteignable (BX en sortie, convention reelle DOS :   }
+{ l appelant peut redemander avec cette valeur). }
+Function Emu_McbResize(Var C: TEmuCPU; BlockSeg, NewParas: Word; Var MaxParas: Word): Boolean;
+Var
+ McbSeg, NextSeg: Word;
+ Sig, NextSig: Byte;
+ CurSize, Avail: LongInt;
+Begin
+ Emu_McbResize := False;
+ MaxParas := 0;
+ If (EmuMcbFirstSeg = 0) Or (BlockSeg = 0) Then Exit;
+ McbSeg := BlockSeg - 1;
+ Sig := Emu_McbSig(C, McbSeg);
+ If (Sig <> Ord('M')) And (Sig <> Ord('Z')) Then Exit;
+ CurSize := Emu_McbSize(C, McbSeg);
+ MaxParas := Word(CurSize);
+ If LongInt(NewParas) <= CurSize Then Begin
+  If LongInt(NewParas) < CurSize Then Begin
+   NextSeg := Word(McbSeg + 1 + NewParas);
+   Emu_McbSet(C, NextSeg, Sig, 0, Word(CurSize - NewParas - 1));
+   Emu_McbSet(C, McbSeg, Ord('M'), Emu_McbOwner(C, McbSeg), NewParas);
+   Emu_McbCoalesceAll(C);
+  End;
+  MaxParas := NewParas;
+  Emu_McbResize := True;
+  Exit;
+ End;
+ If Sig = Ord('Z') Then
+  Avail := LongInt(EMU_MCB_TOP_SEG) - LongInt(McbSeg) - CurSize - 1
+ Else Begin
+  NextSeg := Word(McbSeg + 1 + CurSize);
+  If Emu_McbOwner(C, NextSeg) = 0 Then Avail := LongInt(Emu_McbSize(C, NextSeg)) + 1
+  Else Avail := 0;
+ End;
+ MaxParas := Word(CurSize + Avail);
+ If LongInt(NewParas) > CurSize + Avail Then Exit;
+ If Sig = Ord('Z') Then
+  Emu_McbSet(C, McbSeg, Ord('Z'), Emu_McbOwner(C, McbSeg), NewParas)
+ Else Begin
+  NextSeg := Word(McbSeg + 1 + CurSize);
+  NextSig := Emu_McbSig(C, NextSeg);
+  If LongInt(NewParas) = CurSize + Avail Then
+   Emu_McbSet(C, McbSeg, NextSig, Emu_McbOwner(C, McbSeg), NewParas)
+  Else Begin
+   Emu_McbSet(C, McbSeg, Ord('M'), Emu_McbOwner(C, McbSeg), NewParas);
+   Emu_McbSet(C, Word(McbSeg + 1 + NewParas), NextSig, 0,
+    Word(CurSize + Avail - NewParas - 1));
+  End;
+ End;
+ Emu_McbResize := True;
+End;
+
+{ Libere TOUS les blocs appartenant a PspSeg (utilise a la terminaison      }
+{ d un programme, voir Emu_DosTerminate) - un programme peut posseder       }
+{ plusieurs blocs (son image initiale + toute allocation AH=48h ulterieure).}
+Procedure Emu_McbFreeAllOwnedBy(Var C: TEmuCPU; PspSeg: Word);
+Var McbSeg: Word; Sig: Byte; Done: Boolean;
+Begin
+ If EmuMcbFirstSeg = 0 Then Exit;
+ McbSeg := EmuMcbFirstSeg;
+ Done := False;
+ While Not Done Do Begin
+  Sig := Emu_McbSig(C, McbSeg);
+  If Emu_McbOwner(C, McbSeg) = PspSeg Then
+   Emu_McbSet(C, McbSeg, Sig, 0, Emu_McbSize(C, McbSeg));
+  If Sig = Ord('M') Then McbSeg := Word(McbSeg + 1 + Emu_McbSize(C, McbSeg))
+  Else Done := True;
+ End;
+ Emu_McbCoalesceAll(C);
+End;
+
 { --- Charger un fichier .COM dans la memoire emulee --- }
 
 Function Emu_LoadComAt(Var C: TEmuCPU; Const FileName: String; AtSeg: Word;
- Const CmdTail: String): Boolean;
+ Const CmdTail: String; McbInit: Boolean): Boolean;
 Var
  PSP: TEmuPSPRecord;
  Buffer: Array[0..511] Of Byte;
@@ -113009,6 +113282,13 @@ Begin
  C.Regs.BP := $091C;
  C.IP := $100;
  EmuPspSeg := C.Segs.CS;
+ { Chaine MCB reelle (voir Emu_McbChainInit, section "Chaine MCB (Memory   }
+ { Control Block) reelle" plus haut) : UNIQUEMENT au chargement de premier }
+ { niveau (McbInit=True) - un enfant EXEC (McbInit=False) possede deja son }
+ { MCB, cree par Emu_McbAllocWhole AVANT cet appel. Pas d environnement    }
+ { carve avant le PSP pour un .COM (contrairement a Emu_LoadExeAt) :       }
+ { ArenaSeg=OwnerPspSeg=AtSeg ici. }
+ If McbInit Then Emu_McbChainInit(C, AtSeg, AtSeg);
  EmuExeDir := '';
  For I := Length(FileName) DownTo 1 Do
   If (FileName[I] = '\') Or (FileName[I] = '/') Then Begin
@@ -113113,24 +113393,24 @@ Function Emu_LoadCom(Var C: TEmuCPU; Const FileName: String): Boolean;
 Begin
  If EmuLoadFixArmOnLoad Then Begin
   EmuLoadFixArmOnLoad := False;
-  Emu_LoadCom := Emu_LoadComAt(C, FileName, $1000, EmuStartCmdLine);
+  Emu_LoadCom := Emu_LoadComAt(C, FileName, $1000, EmuStartCmdLine, True);
  End Else If EmuLoadHighArmOnLoad Then Begin
   EmuLoadHighArmOnLoad := False;
-  Emu_LoadCom := Emu_LoadComAt(C, FileName, $C000, EmuStartCmdLine);
+  Emu_LoadCom := Emu_LoadComAt(C, FileName, $C000, EmuStartCmdLine, True);
  End Else
-  Emu_LoadCom := Emu_LoadComAt(C, FileName, $0060, EmuStartCmdLine);
+  Emu_LoadCom := Emu_LoadComAt(C, FileName, $0060, EmuStartCmdLine, True);
 End;
 
 { --- Charger un fichier .EXE dans la memoire emulee --- }
 
 Function Emu_LoadExeAt(Var C: TEmuCPU; Const FileName: String; AtSeg: Word;
- Const CmdTail: String): Boolean;
+ Const CmdTail: String; McbInit: Boolean): Boolean;
 Var
  HeadSize, Addr, RPos: LongInt;
  N: LongInt;
  I: LongInt;
  LoadSeg: LongInt;
- PSPSeg, ROff, RSeg, OldPspSeg, McbSize: Word;
+ PSPSeg, ROff, RSeg, OldPspSeg: Word;
  PSP: TEmuPSPRecord;
  Handle: File;
  ByteReaded: Word;
@@ -113231,28 +113511,13 @@ Begin
  { jusqu'ici. Aucun carve/patch necessaire ici, juste la remplir. }
  EmuDosEnvSeg := AtSeg;
  Emu_DosEnvBuildDefault(C, EmuDosEnvSeg);
- { Installer un MCB (Memory Control Block) DOS a PSPSeg-1
-   pour que le runtime TP/DOS voie la memoire disponible. Format MCB :
-   offset 0 : byte 'M' (continue) ou 'Z' (dernier)
-   offset 1 : Word owner segment (= PSP du proprietaire)
-   offset 3 : Word size en paragraphes (sans le MCB lui-meme)
-   offset 5..7 : reserve 3 octets
-   offset 8..15 : nom proprietaire (8 octets) }
- { Taille declaree du bloc : jusqu au plafond reel $9F00 utilise par
-   l allocateur bump AH=48 (Emu_DoInt21), PAS une valeur fixe $9F9F -
-   sinon un programme qui lit cette taille pour dimensionner son propre
-   tas (au lieu de systematiquement passer par AH=48/4A) croirait
-   disposer de bien plus de memoire que ce qui lui est reellement
-   reserve, en particulier pour un enfant EXEC (AH=4Bh) charge haut en
-   memoire (PSPSeg proche de $9F00) - risque concret de corruption par
-   ecriture au-dela de la zone reellement libre. }
- If PSPSeg < $9F00 Then McbSize := Word($9F00) - PSPSeg
-                   Else McbSize := 1;
- Emu_WriteByte(C, Word(PSPSeg - 1), 0, $5A);     { 'Z' bloc final }
- Emu_WriteByte(C, Word(PSPSeg - 1), 1, Lo(PSPSeg));
- Emu_WriteByte(C, Word(PSPSeg - 1), 2, Hi(PSPSeg));
- Emu_WriteByte(C, Word(PSPSeg - 1), 3, Lo(McbSize));
- Emu_WriteByte(C, Word(PSPSeg - 1), 4, Hi(McbSize));
+ { Chaine MCB reelle (2026-09-06, voir Emu_McbChainInit ci-dessus, section  }
+ { "Chaine MCB (Memory Control Block) reelle") : UNIQUEMENT au chargement   }
+ { de premier niveau (McbInit=True) - un enfant EXEC (McbInit=False)        }
+ { possede deja son MCB, cree par Emu_McbAllocWhole AVANT cet appel.        }
+ { ArenaSeg=AtSeg (avant l environnement carve ci-dessus) mais              }
+ { OwnerPspSeg=PSPSeg (calcule plus haut, differe de AtSeg pour un .EXE).   }
+ If McbInit Then Emu_McbChainInit(C, AtSeg, PSPSeg);
  { Construire un bloc d environnement standard a AtSeg:0000.
    Format DOS :
      [chaines "VAR=val\0" successives]
@@ -113313,12 +113578,12 @@ Function Emu_LoadExe(Var C: TEmuCPU; Const FileName: String): Boolean;
 Begin
  If EmuLoadFixArmOnLoad Then Begin
   EmuLoadFixArmOnLoad := False;
-  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $1000, EmuStartCmdLine);
+  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $1000, EmuStartCmdLine, True);
  End Else If EmuLoadHighArmOnLoad Then Begin
   EmuLoadHighArmOnLoad := False;
-  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $C000, EmuStartCmdLine);
+  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $C000, EmuStartCmdLine, True);
  End Else
-  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $0051, EmuStartCmdLine);
+  Emu_LoadExe := Emu_LoadExeAt(C, FileName, $0051, EmuStartCmdLine, True);
 End;
 
 { --- Acces a la memoire virtuelle emulee de l ELF64 (petit-boutiste) --- }
@@ -121335,6 +121600,12 @@ End;
 Procedure Emu_DosTerminate(Var P: TEmulatorPanel; Const NormalMsg: String);
 Var Int22Ofs, Int22Seg, Int23Ofs, Int23Seg, Int24Ofs, Int24Seg: Word;
 Begin
+ { Chaine MCB (voir Emu_McbFreeAllOwnedBy/Emu_McbChainInit ci-dessus) :    }
+ { liberer TOUS les blocs appartenant a ce programme (son image initiale  }
+ { ET toute allocation AH=48h ulterieure) AVANT que EmuPspSeg ne change    }
+ { plus bas - sinon la memoire du programme termine resterait marquee     }
+ { "occupee" pour toujours, indisponible a un futur EXEC ou AH=48h. }
+ Emu_McbFreeAllOwnedBy(P.CPU, EmuPspSeg);
  { BOGUE REEL CORRIGE (2026-09-06, demande explicite : "Implementer      }
  { l'interruption 22h") - moitie "restauration" du mecanisme (voir       }
  { Emu_LoadComAt/Emu_LoadExeAt pour la moitie "capture a la creation").  }
@@ -121508,6 +121779,8 @@ Var
  LCenti: Byte;
  LFT: QWord;
  LFindCnt: Integer;
+ { --- AH=48h/49h/4Ah (voir Emu_McbAlloc/Free/Resize) --- }
+ McbGotSeg, McbMaxFree: Word;
 Begin
  Case P.CPU.Regs.AH Of
   $00:
@@ -122301,32 +122574,48 @@ Begin
     Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   $48:
+   { ALLOUER : voir Emu_McbAlloc, section "Chaine MCB (Memory Control      }
+   { Block) reelle" plus haut - premier bloc libre assez grand de la VRAIE }
+   { chaine MCB, scinde si besoin. EmuPspSeg (programme APPELANT, deja     }
+   { correct a ce point) devient le proprietaire, exactement comme un vrai}
+   { DOS. Remplace l ancien allocateur "bump" (EmuNextFreeSeg) qui ne       }
+   { touchait jamais a la memoire invite et ne pouvait donc jamais etre     }
+   { libere ni vu par un programme qui parcourt la chaine (voir            }
+   { l enquete TP4/TURBO.EXE, [[project_devenv_netbios]]). }
    Begin
-    If EmuNextFreeSeg = 0 Then EmuNextFreeSeg := $2000;
-    If EmuNextFreeSeg >= $9F00 Then K := 0
-    Else K := LongInt($9F00) - LongInt(EmuNextFreeSeg);
-    If LongInt(P.CPU.Regs.BX) > K Then Begin
+    If Emu_McbAlloc(P.CPU, P.CPU.Regs.BX, EmuPspSeg, McbGotSeg, McbMaxFree) Then Begin
+     P.CPU.Regs.AX := McbGotSeg;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
      Include(P.CPU.Flags.s, EFG_CF);
      P.CPU.Regs.AX := 8;
-     P.CPU.Regs.BX := Word(K);
+     P.CPU.Regs.BX := McbMaxFree;
      EmuExtErr := 8;
-    End Else Begin
-     P.CPU.Regs.AX := EmuNextFreeSeg;
-     EmuNextFreeSeg := EmuNextFreeSeg + P.CPU.Regs.BX;
-     Exclude(P.CPU.Flags.s, EFG_CF);
     End;
    End;
   $49:
-   Exclude(P.CPU.Flags.s, EFG_CF);
-  $4A:
+   { LIBERER : voir Emu_McbFree - ES=segment du bloc a liberer. }
    Begin
-    If LongInt(P.CPU.Segs.ES) + LongInt(P.CPU.Regs.BX) > LongInt($A000) Then Begin
+    If Emu_McbFree(P.CPU, P.CPU.Segs.ES) Then
+     Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Begin
      Include(P.CPU.Flags.s, EFG_CF);
-     P.CPU.Regs.BX := Word($A000 - P.CPU.Segs.ES);
+     P.CPU.Regs.AX := 9; { adresse de bloc memoire invalide }
+     EmuExtErr := 9;
+    End;
+   End;
+  $4A:
+   { REDIMENSIONNER : voir Emu_McbResize - ES=segment du bloc, BX=nouvelle }
+   { taille demandee en paragraphes. }
+   Begin
+    If Emu_McbResize(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX, McbMaxFree) Then
+     Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.BX := McbMaxFree;
      P.CPU.Regs.AX := 8;
      EmuExtErr := 8;
-    End Else
-     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
    End;
   $4B:
    { EXEC - Load and Execute Program. Seul AL=0 (charger et executer) est   }
@@ -122392,29 +122681,36 @@ Begin
       ExecFrame.ExtErrCls := EmuExtErrCls;
       ExecFrame.ExtErrAct := EmuExtErrAct;
       ExecFrame.ExtErrLoc := EmuExtErrLoc;
-      { L enfant est charge dans une region libre au-dessus de l image du   }
-      { parent (meme allocateur bump que AH=48) - aucune collision possible. }
-      ExecChildSeg := EmuNextFreeSeg;
-      ExecExt := '';
-      For ExecI := Length(ExecHostPath) DownTo 1 Do
-       If ExecHostPath[ExecI] = '.' Then Begin
-        ExecExt := Copy(ExecHostPath, ExecI, Length(ExecHostPath) - ExecI + 1);
-        Break;
-       End;
-      For ExecI := 1 To Length(ExecExt) Do
-       If ExecExt[ExecI] In ['a'..'z'] Then ExecExt[ExecI] := Chr(Ord(ExecExt[ExecI]) - 32);
-      If ExecExt = '.EXE' Then
-       ExecLoadOk := Emu_LoadExeAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail)
-      Else
-       ExecLoadOk := Emu_LoadComAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail);
-      If Not ExecLoadOk Then
-       Emu_SetDosErr(P, 2)
+      { L enfant est charge dans le plus grand bloc LIBRE de la vraie       }
+      { chaine MCB (voir Emu_McbAllocWhole, section "Chaine MCB (Memory    }
+      { Control Block) reelle" plus haut) - aucune collision possible avec }
+      { l image du parent, dont le(s) bloc(s) restent Owner=EmuPspSeg      }
+      { (jamais Owner=0) tant qu il n a pas lui-meme termine. }
+      ExecChildSeg := Emu_McbAllocWhole(P.CPU);
+      If ExecChildSeg = 0 Then
+       Emu_SetDosErr(P, 8) { mots memoire insuffisants }
       Else Begin
-       EmuExecStack[EmuExecDepth] := ExecFrame;
-       Inc(EmuExecDepth);
-       EmuDtaSeg := EmuPspSeg;
-       EmuDtaOfs := $0080;      { DTA par defaut = PSP+80h du nouveau programme }
-       Exclude(P.CPU.Flags.s, EFG_CF);
+       ExecExt := '';
+       For ExecI := Length(ExecHostPath) DownTo 1 Do
+        If ExecHostPath[ExecI] = '.' Then Begin
+         ExecExt := Copy(ExecHostPath, ExecI, Length(ExecHostPath) - ExecI + 1);
+         Break;
+        End;
+       For ExecI := 1 To Length(ExecExt) Do
+        If ExecExt[ExecI] In ['a'..'z'] Then ExecExt[ExecI] := Chr(Ord(ExecExt[ExecI]) - 32);
+       If ExecExt = '.EXE' Then
+        ExecLoadOk := Emu_LoadExeAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail, False)
+       Else
+        ExecLoadOk := Emu_LoadComAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail, False);
+       If Not ExecLoadOk Then
+        Emu_SetDosErr(P, 2)
+       Else Begin
+        EmuExecStack[EmuExecDepth] := ExecFrame;
+        Inc(EmuExecDepth);
+        EmuDtaSeg := EmuPspSeg;
+        EmuDtaOfs := $0080;      { DTA par defaut = PSP+80h du nouveau programme }
+        Exclude(P.CPU.Flags.s, EFG_CF);
+       End;
       End;
      End;
     End;
