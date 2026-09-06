@@ -12028,6 +12028,12 @@ Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
 { pour lire la BDA (ports COM) bien avant la definition complete du      }
 { sous-systeme d emulation 8086 plus bas dans ce fichier. }
 Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
+{ Necessaire a TermCmd_MEM (voir plus bas, section "Chaine MCB (Memory     }
+{ Control Block) reelle") bien avant la definition complete de ce sous-    }
+{ systeme, comme Emu_ReadWord ci-dessus pour NCCmd_ViewNetworkStatus. }
+Function Emu_McbSig(Var C: TEmuCPU; McbSeg: Word): Byte; Forward;
+Function Emu_McbOwner(Var C: TEmuCPU; McbSeg: Word): Word; Forward;
+Function Emu_McbSize(Var C: TEmuCPU; McbSeg: Word): Word; Forward;
 { Necessaire a NCCmd_ViewNetworkStatus (Disque > "Utilitaire reseau...")  }
 { bien avant la definition des noms de listes deroulantes de la page      }
 { Emulateur > DOS plus bas dans ce fichier. }
@@ -70549,6 +70555,101 @@ Begin
  CreateEmulatorTab(DosExe, '-CD', RestParam);
 End;
 
+{ --- MEM (2026-09-06, demande explicite de l utilisateur) : reprend le    }
+{ format texte du vrai MEM.EXE de DOS (sections conventionnelle/EMS/XMS/   }
+{ UMB, memes libelles anglais que l original) mais avec de VRAIS chiffres  }
+{ tires de l etat courant de l emulateur DOS - PAS de valeurs inventees :  }
+{ memoire conventionnelle = parcours de la vraie chaine MCB (voir          }
+{ Emu_McbSig/Owner/Size, section "Chaine MCB (Memory Control Block)        }
+{ reelle" plus haut, EmuPanel.CPU) ; EMS/XMS = OptionsDlg.Data.DosEMSSize/  }
+{ DosXMSSize (ce qui est CONFIGURE, toujours a jour meme si aucun          }
+{ programme n a encore tourne) plus EmuEms.UsedPages/EmuXms.UsedBytes      }
+{ (ce qui est REELLEMENT consomme, seulement si le sous-systeme a deja ete }
+{ initialise par un chargement - EmuEms.Active/EmuXms.Active) ; UMB =      }
+{ EMU_UMB_SEG/EmuXms.UmbInUse. Si aucun programme n a jamais ete charge    }
+{ (EmuMcbFirstSeg=0, chaine MCB jamais initialisee), la section            }
+{ conventionnelle l indique honnetement plutot que d afficher des          }
+{ chiffres fabriques. }
+Procedure TermCmd_MEM(Var TP: TTerminalPanel);
+Var
+ McbSeg: Word;
+ Sig: Byte;
+ Done: Boolean;
+ UsedB, FreeB, LargestB: LongInt;
+ EmsTotalB, EmsFreeB, XmsTotalB, XmsFreeB: LongInt;
+
+ Function Pad(N: LongInt; W: Integer): String;
+ Var S: String;
+ Begin
+  Str(N, S);
+  While Length(S) < W Do S := ' ' + S;
+  Pad := S;
+ End;
+
+Begin
+ TermAddLine(TP, '');
+ If EmuMcbFirstSeg = 0 Then Begin
+  TermAddLine(TP, '  655360  bytes total conventional memory');
+  TermAddLine(TP, '     (aucun programme DOS charge actuellement dans l''emulateur -');
+  TermAddLine(TP, '      memoire conventionnelle reellement utilisee/disponible/bloc');
+  TermAddLine(TP, '      libre le plus grand non disponibles ; utiliser -emu:DOS, ou');
+  TermAddLine(TP, '      BOOT pour charger un programme d''abord.)');
+ End Else Begin
+  UsedB := 0; FreeB := 0; LargestB := 0;
+  McbSeg := EmuMcbFirstSeg;
+  Done := False;
+  While Not Done Do Begin
+   Sig := Emu_McbSig(EmuPanel.CPU, McbSeg);
+   If Emu_McbOwner(EmuPanel.CPU, McbSeg) = 0 Then Begin
+    Inc(FreeB, LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16);
+    If LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16 > LargestB Then
+     LargestB := LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16;
+   End Else
+    Inc(UsedB, LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16);
+   If Sig = Ord('M') Then
+    McbSeg := Word(McbSeg + 1 + Emu_McbSize(EmuPanel.CPU, McbSeg))
+   Else Done := True;
+  End;
+  TermAddLine(TP, Pad(655360, 8) + '  bytes total conventional memory');
+  TermAddLine(TP, Pad(FreeB, 8) + '  bytes available to MS-DOS');
+  TermAddLine(TP, Pad(LargestB, 8) + '  largest executable program size');
+  TermAddLine(TP, Pad(UsedB, 8) + '  bytes used by currently loaded program(s)');
+ End;
+ TermAddLine(TP, '');
+ If OptionsDlg.Data.DosEMS Then Begin
+  EmsTotalB := LongInt(OptionsDlg.Data.DosEMSSize) * 1024;
+  If EmuEms.Active Then
+   EmsFreeB := (EmuEms.TotalPages - EmuEms.UsedPages) * 16384
+  Else
+   EmsFreeB := EmsTotalB;
+  TermAddLine(TP, Pad(EmsTotalB, 8) + '  bytes total EMS memory');
+  TermAddLine(TP, Pad(EmsFreeB, 8) + '  bytes free EMS memory');
+  TermAddLine(TP, '');
+ End;
+ If OptionsDlg.Data.DosXMS Then Begin
+  XmsTotalB := LongInt(OptionsDlg.Data.DosXMSSize) * 1024;
+  If EmuXms.Active Then Begin
+   XmsFreeB := XmsTotalB - EmuXms.UsedBytes;
+   If XmsFreeB < 0 Then XmsFreeB := 0;
+  End Else
+   XmsFreeB := XmsTotalB;
+  TermAddLine(TP, Pad(XmsTotalB, 8) + '  bytes total contiguous extended memory');
+  TermAddLine(TP, Pad(XmsFreeB, 8) + '  bytes available XMS memory');
+  If EmuXms.Active And EmuXms.HmaOwned Then
+   TermAddLine(TP, 'MS-DOS is resident in the high memory area.');
+  TermAddLine(TP, '');
+ End;
+ If OptionsDlg.Data.DosUMB Then Begin
+  TermAddLine(TP, Pad(65536, 8) + '  bytes total upper memory (UMB, segment ' +
+   HexWord(EMU_UMB_SEG) + ')');
+  If EmuXms.Active And EmuXms.UmbInUse Then
+   TermAddLine(TP, '       0  bytes free upper memory (deja en usage)')
+  Else
+   TermAddLine(TP, Pad(65536, 8) + '  bytes free upper memory');
+  TermAddLine(TP, '');
+ End;
+End;
+
 { --- MOUNT (2026-08-29, demande explicite de l utilisateur, "dans le      }
 { meme genre que DOSBox") : associe une lettre a un repertoire HOTE reel   }
 { (voir TermMountDir/TermMountActive ci-dessus pour la conception          }
@@ -97976,6 +98077,16 @@ Begin
   TermAddLine(TP,
    '  LOADFIX programme [arguments]  Charge au-dessus des 64 premiers Ko');
  End;
+ { MEM : SK_CMD et SK_NCOMMANDER (2026-09-06, demande explicite de          }
+ { l utilisateur - voir TermCmd_MEM pres de TermCmd_LOADHIGH). Reprend le   }
+ { format texte du vrai MEM.EXE de DOS avec les VRAIS chiffres de           }
+ { l emulateur courant (chaine MCB/EMS/XMS/UMB). }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Etat memoire de l''emulateur DOS courant (comme MS-DOS) ---');
+  TermAddLine(TP,
+   '  MEM                             Memoire conventionnelle/EMS/XMS/UMB');
+ End;
  { LH/LOADHIGH : SK_CMD et SK_OS2REXX (2026-08-30, demande explicite de     }
  { l utilisateur pour ces 2 shells precisement - voir TermCmd_LOADHIGH      }
  { pres de TermCmd_LOADFIX). Case a cocher "UMB" (Options > Emulateur >     }
@@ -99026,6 +99137,8 @@ Begin
     TermCmd_TIME(TP)
    Else If CurrCmd = 'VER' Then
     TermCmd_VER(TP)
+   Else If CurrCmd = 'MEM' Then
+    TermCmd_MEM(TP)
    Else If CurrCmd = 'PWD' Then
     TermCmd_PWD(TP)
    Else If CurrCmd = 'PUSHD' Then
@@ -99454,6 +99567,8 @@ Begin
    TermCmd_TIME(TP)
   Else If CurrCmd = 'VER' Then
    TermCmd_VER(TP)
+  Else If CurrCmd = 'MEM' Then
+   TermCmd_MEM(TP)
   Else If CurrCmd = 'PWD' Then
    TermCmd_PWD(TP)
   Else If CurrCmd = 'PUSHD' Then
@@ -99608,6 +99723,8 @@ Begin
     TermCmd_TIME(TP)
    Else If CurrCmd = 'VER' Then
     TermCmd_VER(TP)
+   Else If CurrCmd = 'MEM' Then
+    TermCmd_MEM(TP)
    Else If CurrCmd = 'PWD' Then
     TermCmd_PWD(TP)
    Else If CurrCmd = 'PUSHD' Then

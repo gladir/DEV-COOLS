@@ -79,7 +79,7 @@ End;
 
 Procedure ChkSum;Begin
  dum:=getb;
- If chk<>0 Then Write('..mauvaise sommation de v‚rification..',chk)
+ If chk<>0 Then Write('..mauvaise sommation de v'+#130+'rification..',chk)
 End;
 
 Function Bit(D,N:byte):Boolean;Begin
@@ -99,7 +99,7 @@ Begin
   Else
  Begin
   Write(FileOutput,'  FR: ');
-  Case fld(d,5,3) of  { Seulement F0..F5 est autoris‚ }
+  Case fld(d,5,3) of  { Seulement F0..F5 est autorisï¿½ }
    0:Write(FileOutput,'SEG(',sname[getx],')');
    1:Write(FileOutput,'GRP(',gname[getx],')');
    2:Write(FileOutput,'EXT(',ename[getx],')');
@@ -131,27 +131,27 @@ Begin
 End;
 
 Procedure RHEADR;Begin
- Error('Balise RHEADR non impl‚ment‚.');
+ Error('Balise RHEADR non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure REGINT;Begin
- Error('Balise REGINT non impl‚ment‚.');
+ Error('Balise REGINT non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure REDATA;Begin
- Error('Balise REDATA non impl‚ment‚.');
+ Error('Balise REDATA non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure RIDATA;Begin
- Error('Balise RIDATA non impl‚ment‚.');
+ Error('Balise RIDATA non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure OVLDEF;Begin
- Error('Balise OVLDEF non impl‚ment‚.');
+ Error('Balise OVLDEF non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure ENDREC;Begin
- Error('Balise ENDREC non impl‚ment‚.');
+ Error('Balise ENDREC non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure BLKREC;
@@ -165,7 +165,7 @@ Begin
  Write(FileOutput,getname);
  If(gr=0)and(sg<>0)Then Write(FileOutput,'  dans SEG( ',sname[sg],' )  ')
                    Else Error('Combinaison de groupe et de segment invalide pour le BLOC');
- Write(' … ', HexWord2Str(geti),' longueur= ',HexWord2Str(geti),'    ');
+ Write(' '+#133+' ', HexWord2Str(geti),' longueur= ',HexWord2Str(geti),'    ');
  While rleft>1 do Write(FileOutput,ByteHex2Str(getb):4)
 End;
 
@@ -177,7 +177,7 @@ Procedure BLKEND;Begin
 End;
 
 Procedure DEBSYM;Begin
- Error('Balise DEBSYM non impl‚ment‚.');
+ Error('Balise DEBSYM non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure THEADR;Begin
@@ -186,15 +186,15 @@ Procedure THEADR;Begin
 End;
 
 Procedure LHEADR;Begin
- Error('Balise LHEADR non impl‚ment‚.');
+ Error('Balise LHEADR non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure PEDATA;Begin
- Error('Balise PEDATA non impl‚ment‚.');
+ Error('Balise PEDATA non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure PIDATA;Begin
- Error('Balise PIDATA non impl‚ment‚.');
+ Error('Balise PIDATA non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure COMENT;Begin
@@ -215,7 +215,7 @@ Procedure MODEND;Begin
  If fld(d,2,5)<>0 Then Error('Erreur de format de type de module');
  If bit(d,7) Then Begin
   If bit(d,1)Then LogicalRef
-             Else Error('Adresse de d‚but physique');
+             Else Error('Adresse de d'+#130+'but physique');
  End;
 End;
 
@@ -283,27 +283,27 @@ gr:=getx;
           Else Write(FileOutput,'pour Seg= ',sname[sg]);
  While rleft>1 do Begin
   WriteLn(FileOutput);
-  Write(FileOutput,getname:30,' … ',HexWord2Str(geti),' , type=',getx)
+  Write(FileOutput,getname:30,' '+#133+' ',HexWord2Str(geti),' , type=',getx)
  End;
 End;
 
 Procedure PUBDEFL;Begin
- Error('Balise PUBDEFL non impl‚ment‚.');
+ Error('Balise PUBDEFL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LOCSYM;Begin
- Error('Balise LOCSYM non impl‚ment‚.');
+ Error('Balise LOCSYM non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LINNUM;Begin
  rlen:=geti;
  rleft:=rlen;
- Writeln(FileOutput,rlen:6,' Num‚ro de lignes:' );
+ Writeln(FileOutput,rlen:6,' Num'+#130+'ro de lignes:' );
  dum:=getx;
  Write(FileOutput,{' Gr:',gname[getx],}' Seg:',sname[getx]);
  While rleft>1 do Begin
   WriteLn(FileOutput);
-  Write(FileOutput,'LIGNE: ',geti:6,' … ',HexWord2Str(geti));
+  Write(FileOutput,'LIGNE: ',geti:6,' '+#133+' ',HexWord2Str(geti));
  End;
 End;
 
@@ -336,7 +336,7 @@ Begin
  sname[si]:=lname[getx];
  Write(FileOutput,' SEGM(',sname[si]:12,' )   ');
  Case fld(d,6,3) of
-  0:Write(FileOutput,' … ',HexWord2Str(fr):4,':',HexWord2Str(ofs):2);
+  0:Write(FileOutput,' '+#133+' ',HexWord2Str(fr):4,':',HexWord2Str(ofs):2);
   1:Write(FileOutput,'BYTE');
   2:Write(FileOutput,'WORD');
   3:Write(FileOutput,'PARA');
@@ -358,7 +358,7 @@ Begin
 End;
 
 Procedure SEGDEFL;Begin
- Error('Balise SEGDEFL non impl‚ment‚.');
+ Error('Balise SEGDEFL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure GRPDEF;Begin
@@ -386,7 +386,7 @@ Begin
   If Not bit(d,8) Then Begin
    m:=fld(d,3,3);
    fr:=bit(d,7);
-   If bit(d,6)Then Error('Processus l‚ger Z_bit=1');
+   If bit(d,6)Then Error('Processus l'+#130+'ger Z_bit=1');
    Write(FileOutput,'     TRD #',fld(d,1,2),'   ');
    If fr Then Begin
     Case m of
@@ -419,7 +419,7 @@ Begin
    Write(FileOutput,' FIXUP: ');
    If bit(d,7)Then Write(FileOutput,' SEGM-REL,')
               Else Write(FileOutput,' SELF-REL,');
-   If bit(d,6) then Error('Mauvaise longueur de destination ou mal-plac‚');
+   If bit(d,6) then Error('Mauvaise longueur de destination ou mal-plac'+#130+'');
    Case fld(d,3,3) of
     0:write(FileOutput,'LOBYTE ,');
     1:write(FileOutput,'OFFSET ,');
@@ -464,7 +464,7 @@ Begin
 End;
 
 Procedure LEDATAL;Begin
- Error('Balise LEDATAL non impl‚ment‚.');
+ Error('Balise LEDATAL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIDATA;
@@ -488,23 +488,23 @@ Begin
 End;
 
 Procedure LIDATAL;Begin
- Error('Balise LIDATAL non impl‚ment‚.');
+ Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIBHED;Begin
- Error('Balise LIDATAL non impl‚ment‚.');
+ Error('Balise LIBHED non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIBNAM;Begin
- Error('Balise LIDATAL non impl‚ment‚.');
+ Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIBLOC;Begin
- Error('Balise LIDATAL non impl‚ment‚.');
+ Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIBDIC;Begin
- Error('Balise LIDATAL non impl‚ment‚.');
+ Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure COMDEF;Begin
@@ -519,27 +519,27 @@ Procedure COMDEF;Begin
 End;
 
 Procedure LEXTDEF;Begin
- Error('Balise LEXTDEF non impl‚ment‚.');
+ Error('Balise LEXTDEF non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LPUBDEF;Begin
- Error('Balise LPUBDEF non impl‚ment‚.');
+ Error('Balise LPUBDEF non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LPUBDF2;Begin
- Error('Balise LPUBDF2 non impl‚ment‚.');
+ Error('Balise LPUBDF2 non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LCOMDEF;Begin
- Error('Balise LCOMDEF non impl‚ment‚.');
+ Error('Balise LCOMDEF non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIBHDR;Begin
- Error('Balise LIBHDR non impl‚ment‚.');
+ Error('Balise LIBHDR non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure LIBEND;Begin
- Error('Balise LIBEND non impl‚ment‚.');
+ Error('Balise LIBEND non impl'+#130+'ment'+#130+'.');
 End;
 
 Procedure GetRecordToBuffer;
@@ -563,7 +563,7 @@ Begin
  End
   else
  Error('Enregistrement trop long');
- If chk<>0 Then WriteLn('Sommation de v‚rification du tampon : ',chk);
+ If chk<>0 Then WriteLn('Sommation de vï¿½rification du tampon : ',chk);
 End;
 
 Procedure ProcessRecord;Begin
@@ -627,7 +627,7 @@ End;
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')Then Begin
   WriteLn('DISOBJ : Cette commande permet d''analyser et ',
-                  ' de d‚sassembler un fichier .OBJ');
+                  ' de d'+#130+'sassembler un fichier .OBJ');
   WriteLn;
   WriteLn('Syntaxe : DISOBJ [fichier-obj] [sortie-texte] ');
  End
@@ -636,7 +636,7 @@ BEGIN
   FileNameOutput:='';
   Case ParamCount of
    0:Begin
-    Write('Entr‚e :');
+    Write('Entr'+#130+'e :');
     ReadLn(FileNameOBJ);
     If Pos('.',FileNameOBJ)=0 Then FileNameOBJ:=FileNameOBJ+'.OBJ';
     Assign(FileInput,FileNameOBJ);
@@ -648,7 +648,7 @@ BEGIN
    1:Begin
     FileNameOBJ:=ParamStr(1);
     If Pos('?',FileNameOutput)<>0 Then Begin
-     WriteLn('ParamŠtre invalide');
+     WriteLn('Param'+#138+'tre invalide');
      Halt;
     End;
     Assign(FileOutput,'CON')
@@ -657,7 +657,7 @@ BEGIN
     FileNameOBJ:=ParamStr(1);
     Assign(FileOutput,ParamStr(2))
    End;
-   Else WriteLn('ParamŠtre invalide');
+   Else WriteLn('Param'+#138+'tre invalide');
   End;
   If Pos('.',FileNameOBJ)=0 Then FileNameOBJ:=FileNameOBJ+'.OBJ';
   Assign(FileInput,FileNameOBJ);
