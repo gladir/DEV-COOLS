@@ -4658,6 +4658,143 @@ Type
   AsSendResult     : Word;
  End;
 
+ { --- NetBIOS (Options > Emulateur > DOS: Logiciel > "NetBIOS") - INT 5Ch, }
+ { IBM/Sytek NetBIOS 3.0 (1984). Structure NCB (Network Control Block) et   }
+ { codes de commande/retour verifies contre nb30.h (Microsoft, portage      }
+ { Win32 de l API DOS d origine - memes valeurs numeriques, meme disposition}
+ { de champs) et le sommaire INT 5Ch de la Ralph Brown Interrupt List       }
+ { (ES:BX = pointeur NCB, AL = code retour en sortie). Meme modele "boucle  }
+ { locale" que IPX/Packet Driver ci-dessus (aucune autre machine sur le fil }
+ { virtuel) : un CALL/LISTEN/SEND DATAGRAM local est mis en correspondance  }
+ { avec un LISTEN/CALL/RECEIVE DATAGRAM local deja en attente, exactement   }
+ { comme Emu_IpxDeliverOrQueue. Limite assumee et documentee (meme famille  }
+ { que l ESR IPX) : une commande qui devrait normalement BLOQUER en         }
+ { attendant un evenement reseau (LISTEN sans CALL en attente, RECEIVE sans }
+ { donnees) ne peut pas suspendre l unique thread CPU de cet emulateur -    }
+ { elle est donc enregistree comme "en attente" (voir Pending/PendingRecv/  }
+ { PendingDgRecv) et retourne IMMEDIATEMENT avec NCB_RETCODE=NRC_PENDING    }
+ { ($FF), a charge du programme invite de RE-INTERROGER ncb_retcode plus    }
+ { tard (usage documente et courant, meme sans routine NCB_POST) - la       }
+ { completion elle-meme se fait par ecriture DIRECTE des champs de la NCB   }
+ { en memoire invite au moment ou l evenement correspondant survient        }
+ { (nouvelle CALL/SEND/SEND DATAGRAM), jamais par un rappel NCB_POST reel.  }
+ TEmuNb16 = Array[0..15] Of Char;   { nom NetBIOS, 16 car., bourre d espaces }
+ TEmuNbBuf2048 = Array[0..2047] Of Byte; { tampon SEND/RECEIVE (voir TEmuNbSession.RecvBuf) }
+
+ { Network Control Block (NCB), 64 octets - disposition exacte verifiee    }
+ { contre nb30.h (Microsoft), voir le commentaire de tete ci-dessus.       }
+ TEmuNbNcbFields = Packed Record
+  Command   : Byte;
+  RetCode   : Byte;
+  Lsn       : Byte;
+  Num       : Byte;
+  BufOfs    : Word;
+  BufSeg    : Word;
+  Length    : Word;
+  CallName  : TEmuNb16;
+  Name      : TEmuNb16;
+  Rto       : Byte;
+  Sto       : Byte;
+  PostOfs   : Word;
+  PostSeg   : Word;
+  LanaNum   : Byte;
+  CmdCplt   : Byte;
+  Reserve   : Array[0..13] Of Byte;
+ End;
+
+ { Variant/overlay (meme motif que TEmuPSPRecord, voir Emu_LoadComAt) :    }
+ { .Buf donne un acces brut a la lecture/ecriture memoire invite octet par }
+ { octet, .F donne un acces structure par champ nomme pour le code natif. }
+ TEmuNbNcb = Packed Record
+  Case Byte Of
+   0: (Buf: Array[0..63] Of Byte);
+   1: (F: TEmuNbNcbFields);
+ End;
+
+ TEmuNbName = Record
+  InUse   : Boolean;
+  Nom     : TEmuNb16;
+  IsGroup : Boolean;               { ADD NAME=False / ADD GROUP NAME=True  }
+  Num     : Byte;                  { "ncb_num" rendu par ADD (GROUP) NAME  }
+ End;
+
+ TEmuNbSession = Record
+  InUse      : Boolean;
+  Lsn        : Byte;               { numero de session locale (ncb_lsn)    }
+  LocalNum   : Byte;                { ncb_num du nom local de cette session }
+  LocalName  : TEmuNb16;
+  RemoteName : TEmuNb16;
+  PeerLsn    : Byte;                { session miroir (boucle locale)       }
+  RecvBuf    : TEmuNbBuf2048;       { octets envoyes par le pair, non      }
+                                     { encore lus (style tube/pipe)         }
+  RecvLen    : Word;
+  Aborted    : Boolean;
+ End;
+
+ { CALL/LISTEN en attente d un partenaire local correspondant. }
+ TEmuNbPending = Record
+  InUse     : Boolean;
+  IsListen  : Boolean;             { True=LISTEN, False=CALL               }
+  LocalNum  : Byte;
+  LocalName : TEmuNb16;
+  CallName  : TEmuNb16;             { motif attendu (LISTEN) / nom appele  }
+  NcbSeg, NcbOfs : Word;           { adresse invite de la NCB a completer  }
+ End;
+
+ { RECEIVE/RECEIVE ANY en attente de donnees de session - BufSeg/BufOfs/   }
+ { MaxLen sont captures au moment de l enregistrement pour que la          }
+ { livraison ulterieure (Emu_NbDeliverToPendingRecv) n ait pas besoin de   }
+ { relire toute la NCB d origine. }
+ TEmuNbPendingRecv = Record
+  InUse    : Boolean;
+  AnyName  : Boolean;              { True = RECEIVE ANY (Lsn ignore)       }
+  Lsn      : Byte;
+  LocalNum : Byte;
+  NcbSeg, NcbOfs : Word;
+  BufSeg, BufOfs : Word;
+  MaxLen   : Word;
+ End;
+
+ TEmuNbDgram = Record
+  Data     : Array[0..511] Of Byte; { max_dgram_size annonce = 512 (ASTAT) }
+  Len      : Word;
+  FromName : TEmuNb16;
+ End;
+
+ { File d attente de datagrammes non reclames pour UN nom local, style     }
+ { Emu_IpxQueuePush/PopInto (FIFO borne, le plus ancien est perdu en cas    }
+ { de debordement - un datagramme reste par nature un service "best        }
+ { effort", jamais garanti, meme sur un vrai reseau). }
+ TEmuNbDgQueue = Record
+  NameUsed : Boolean;
+  Name     : TEmuNb16;
+  Count    : Integer;
+  Head     : Integer;
+  Items    : Array[0..15] Of TEmuNbDgram;
+ End;
+
+ { RECEIVE DATAGRAM/RECEIVE BROADCAST DATAGRAM en attente. }
+ TEmuNbPendingDgRecv = Record
+  InUse     : Boolean;
+  Broadcast : Boolean;
+  LocalNum  : Byte;
+  NcbSeg, NcbOfs : Word;
+  BufSeg, BufOfs : Word;
+  MaxLen    : Word;
+ End;
+
+ TEmuNetBiosState = Record
+  Active       : Boolean;
+  LocalAddr    : Array[0..5] Of Byte; { adresse "materielle" synthetique   }
+  Names        : Array[0..31] Of TEmuNbName;
+  Sessions     : Array[0..31] Of TEmuNbSession;
+  Pending      : Array[0..31] Of TEmuNbPending;
+  PendingRecv  : Array[0..31] Of TEmuNbPendingRecv;
+  DgQueues     : Array[0..31] Of TEmuNbDgQueue;
+  BcastDg      : TEmuNbDgQueue;    { file d attente broadcast partagee     }
+  PendingDgRecv: Array[0..31] Of TEmuNbPendingDgRecv;
+ End;
+
  { --- Pilote XMS (Options > Emulateur > DOS: OS > "XMS") - eXtended       }
  { Memory Specification version 3.0 (Microsoft/Lotus/Intel/AST, 1991),     }
  { source verifiee : texte integral de la specification (xms30.txt).       }
@@ -5951,6 +6088,7 @@ Type
   DosNovell       : Boolean;     { reseau Novell NetWare          }
   DosLAN          : Boolean;     { reseau LAN generique           }
   DosLANVendor    : Integer;     { fabricant/produit du pilote LAN}
+  DosNetBios      : Boolean;     { pile NetBIOS (INT 5Ch)         }
   DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
   DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
   DosLogInt13     : Boolean;     { journal EMUINT13.LOG (appels BIOS disque) }
@@ -7533,6 +7671,8 @@ Var
  EmuIpx         : TEmuIpxState;
  { --- Etat du pilote de paquets generique (INT 60h) --- }
  EmuPkt         : TEmuPktState;
+ { --- Etat de la pile NetBIOS (INT 5Ch) --- }
+ EmuNetBios     : TEmuNetBiosState;
  { --- Etat du pilote XMS (INT 2Fh AX=4300h/4310h) --- }
  EmuXms         : TEmuXmsState;
  EmuXmsMem      : ^TEmuXmsBuf;   { tampon "memoire etendue" separe des     }
@@ -128295,6 +128435,795 @@ Begin
  End;
 End;
 
+{ ========================================================================= }
+{ Pile NetBIOS (Options > Emulateur > DOS: Logiciel > "NetBIOS") - INT 5Ch, }
+{ voir le commentaire de tete de TEmuNetBiosState ci-dessus pour les        }
+{ sources et le modele "boucle locale" repris de IPX/Packet Driver.         }
+{ ========================================================================= }
+
+Function Emu_NbNameEq(Const A, B: TEmuNb16): Boolean;
+Var I: Integer;
+Begin
+ Emu_NbNameEq := True;
+ For I := 0 To 15 Do
+  If A[I] <> B[I] Then Begin Emu_NbNameEq := False; Exit; End;
+End;
+
+{ '*' (suivi de blancs) en position 0 du motif d appelant = accepte         }
+{ n importe quel appelant - convention standard NetBIOS pour ncb_callname   }
+{ sur un LISTEN. }
+Function Emu_NbPatternMatch(Const Pattern, Actual: TEmuNb16): Boolean;
+Begin
+ If Pattern[0] = '*' Then Emu_NbPatternMatch := True
+ Else Emu_NbPatternMatch := Emu_NbNameEq(Pattern, Actual);
+End;
+
+Function Emu_NbFindNameText(Const Nom: TEmuNb16): Integer;
+Var I: Integer;
+Begin
+ Emu_NbFindNameText := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Names[I].InUse And Emu_NbNameEq(EmuNetBios.Names[I].Nom, Nom) Then Begin
+   Emu_NbFindNameText := I; Exit;
+  End;
+End;
+
+Function Emu_NbFindNameByNum(Num: Byte): Integer;
+Var I: Integer;
+Begin
+ Emu_NbFindNameByNum := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Names[I].InUse And (EmuNetBios.Names[I].Num = Num) Then Begin
+   Emu_NbFindNameByNum := I; Exit;
+  End;
+End;
+
+{ Plus petit numero 1..254 non deja utilise - NAME_NUMBER_1 (=1) n a pas de }
+{ signification particuliere ici (pas de "nom permanent" grave en usine     }
+{ dans ce modele), simple numerotation sequentielle. }
+Function Emu_NbNextNameNum: Byte;
+Var N, I: Integer; Used: Boolean;
+Begin
+ For N := 1 To 254 Do Begin
+  Used := False;
+  For I := 0 To 31 Do
+   If EmuNetBios.Names[I].InUse And (EmuNetBios.Names[I].Num = N) Then Used := True;
+  If Not Used Then Begin Emu_NbNextNameNum := N; Exit; End;
+ End;
+ Emu_NbNextNameNum := 1; { ne devrait jamais arriver (tableau limite a 32 noms) }
+End;
+
+Function Emu_NbFindFreePending: Integer;
+Var I: Integer;
+Begin
+ Emu_NbFindFreePending := -1;
+ For I := 0 To 31 Do
+  If Not EmuNetBios.Pending[I].InUse Then Begin Emu_NbFindFreePending := I; Exit; End;
+End;
+
+Function Emu_NbFindFreePendingRecv: Integer;
+Var I: Integer;
+Begin
+ Emu_NbFindFreePendingRecv := -1;
+ For I := 0 To 31 Do
+  If Not EmuNetBios.PendingRecv[I].InUse Then Begin Emu_NbFindFreePendingRecv := I; Exit; End;
+End;
+
+Function Emu_NbFindFreePendingDgRecv: Integer;
+Var I: Integer;
+Begin
+ Emu_NbFindFreePendingDgRecv := -1;
+ For I := 0 To 31 Do
+  If Not EmuNetBios.PendingDgRecv[I].InUse Then Begin Emu_NbFindFreePendingDgRecv := I; Exit; End;
+End;
+
+Function Emu_NbFindSessionByLsn(Lsn: Byte): Integer;
+Var I: Integer;
+Begin
+ Emu_NbFindSessionByLsn := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Sessions[I].InUse And (EmuNetBios.Sessions[I].Lsn = Lsn) Then Begin
+   Emu_NbFindSessionByLsn := I; Exit;
+  End;
+End;
+
+{ Reserve immediatement le slot trouve (InUse:=True) - l appelant DOIT      }
+{ ensuite remplir tous les autres champs (voir Emu_NbCmdCall/Listen), le    }
+{ contenu residuel d une session precedente n est pas remis a zero ici. }
+Function Emu_NbAllocSession: Integer;
+Var I: Integer;
+Begin
+ Emu_NbAllocSession := -1;
+ For I := 0 To 31 Do
+  If Not EmuNetBios.Sessions[I].InUse Then Begin
+   EmuNetBios.Sessions[I].InUse := True;
+   Emu_NbAllocSession := I;
+   Exit;
+  End;
+End;
+
+Function Emu_NbAllocLsn: Byte;
+Var N, I: Integer; Used: Boolean;
+Begin
+ For N := 1 To 254 Do Begin
+  Used := False;
+  For I := 0 To 31 Do
+   If EmuNetBios.Sessions[I].InUse And (EmuNetBios.Sessions[I].Lsn = N) Then Used := True;
+  If Not Used Then Begin Emu_NbAllocLsn := N; Exit; End;
+ End;
+ Emu_NbAllocLsn := 1;
+End;
+
+Function Emu_NbFindOrAllocDgQueue(Const Nom: TEmuNb16): Integer;
+Var I, Free: Integer;
+Begin
+ Free := -1;
+ For I := 0 To 31 Do Begin
+  If EmuNetBios.DgQueues[I].NameUsed Then Begin
+   If Emu_NbNameEq(EmuNetBios.DgQueues[I].Name, Nom) Then Begin
+    Emu_NbFindOrAllocDgQueue := I; Exit;
+   End;
+  End Else If Free < 0 Then Free := I;
+ End;
+ If Free >= 0 Then Begin
+  EmuNetBios.DgQueues[Free].NameUsed := True;
+  EmuNetBios.DgQueues[Free].Name := Nom;
+  EmuNetBios.DgQueues[Free].Count := 0;
+  EmuNetBios.DgQueues[Free].Head := 0;
+ End;
+ Emu_NbFindOrAllocDgQueue := Free;
+End;
+
+{ File circulaire bornee a 16 entrees - le plus ancien datagramme non       }
+{ reclame est perdu en cas de debordement (service "best effort" honnete,   }
+{ voir le commentaire de tete de TEmuNbDgQueue). }
+Procedure Emu_NbQueuePush(Var Q: TEmuNbDgQueue; Var Dg: TEmuNbDgram);
+Var Tail: Integer;
+Begin
+ If Q.Count >= 16 Then Begin
+  Q.Head := (Q.Head + 1) And 15;
+  Dec(Q.Count);
+ End;
+ Tail := (Q.Head + Q.Count) And 15;
+ Q.Items[Tail] := Dg;
+ Inc(Q.Count);
+End;
+
+Function Emu_NbQueuePopInto(Var Q: TEmuNbDgQueue; Var Dg: TEmuNbDgram): Boolean;
+Begin
+ If Q.Count <= 0 Then Begin Emu_NbQueuePopInto := False; Exit; End;
+ Dg := Q.Items[Q.Head];
+ Q.Head := (Q.Head + 1) And 15;
+ Dec(Q.Count);
+ Emu_NbQueuePopInto := True;
+End;
+
+Function Emu_NbReadNcb(Var P: TEmulatorPanel; Seg, Ofs: Word): TEmuNbNcb;
+Var I: Integer; R: TEmuNbNcb;
+Begin
+ For I := 0 To 63 Do R.Buf[I] := Emu_ReadByte(P.CPU, Seg, Ofs + I);
+ Emu_NbReadNcb := R;
+End;
+
+Procedure Emu_NbWriteNcb(Var P: TEmulatorPanel; Seg, Ofs: Word; Var N: TEmuNbNcb);
+Var I: Integer;
+Begin
+ For I := 0 To 63 Do Emu_WriteByte(P.CPU, Seg, Ofs + I, N.Buf[I]);
+End;
+
+Procedure Emu_NbCmdReset(Var Ncb: TEmuNbNcb);
+Begin
+ { ncb_callname[0]/[2] (nombre max de sessions/noms demande par l invite)   }
+ { est ignore : ce moteur utilise toujours la capacite fixe des tableaux    }
+ { ci-dessus (32) plutot que d honorer une taille dynamique - limitation    }
+ { assumee, documentee ici plutot que devinee. ncb_lana_num est egalement   }
+ { ignore (une seule pile pour tout l emulateur, pas de multi-adaptateur). }
+ FillChar(EmuNetBios.Names, SizeOf(EmuNetBios.Names), 0);
+ FillChar(EmuNetBios.Sessions, SizeOf(EmuNetBios.Sessions), 0);
+ FillChar(EmuNetBios.Pending, SizeOf(EmuNetBios.Pending), 0);
+ FillChar(EmuNetBios.PendingRecv, SizeOf(EmuNetBios.PendingRecv), 0);
+ FillChar(EmuNetBios.DgQueues, SizeOf(EmuNetBios.DgQueues), 0);
+ FillChar(EmuNetBios.BcastDg, SizeOf(EmuNetBios.BcastDg), 0);
+ FillChar(EmuNetBios.PendingDgRecv, SizeOf(EmuNetBios.PendingDgRecv), 0);
+ Ncb.F.RetCode := 0; { NRC_GOODRET }
+End;
+
+Procedure Emu_NbCmdAddName(Var Ncb: TEmuNbNcb; IsGroup: Boolean);
+Var I, Free, Dup: Integer;
+Begin
+ Dup := -1; Free := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Names[I].InUse Then Begin
+   { Deux noms de GROUPE identiques peuvent coexister (documente par        }
+   { Microsoft : "this name cannot be used ... as a unique name, but it     }
+   { can be added by anyone as a group name") - seul un nom UNIQUE en       }
+   { conflit avec n importe quel nom existant (groupe ou unique) est un     }
+   { vrai doublon. }
+   If Emu_NbNameEq(EmuNetBios.Names[I].Nom, Ncb.F.Name) Then
+    If (Not IsGroup) Or (Not EmuNetBios.Names[I].IsGroup) Then Dup := I;
+  End Else If Free < 0 Then Free := I;
+ If Dup >= 0 Then Begin Ncb.F.RetCode := $0D; Exit; End; { NRC_DUPNAME }
+ If Free < 0 Then Begin Ncb.F.RetCode := $0E; Exit; End; { NRC_NAMTFUL }
+ EmuNetBios.Names[Free].InUse := True;
+ EmuNetBios.Names[Free].Nom := Ncb.F.Name;
+ EmuNetBios.Names[Free].IsGroup := IsGroup;
+ EmuNetBios.Names[Free].Num := Emu_NbNextNameNum;
+ Ncb.F.Num := EmuNetBios.Names[Free].Num;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Emu_NbCmdDelName(Var Ncb: TEmuNbNcb);
+Var I, Idx: Integer; HasSession: Boolean;
+Begin
+ Idx := Emu_NbFindNameText(Ncb.F.Name);
+ If Idx < 0 Then Begin Ncb.F.RetCode := $17; Exit; End; { NRC_NAMERR }
+ HasSession := False;
+ For I := 0 To 31 Do
+  If EmuNetBios.Sessions[I].InUse And
+     (EmuNetBios.Sessions[I].LocalNum = EmuNetBios.Names[Idx].Num) Then
+   HasSession := True;
+ { Reel : un nom avec des sessions actives n est PAS supprime (l appelant    }
+ { doit d abord HANG UP chaque session) - simplification honnete par       }
+ { rapport au vrai NetBIOS qui marque le nom "a supprimer des que la        }
+ { derniere session se ferme" (etat intermediaire non modelise ici). }
+ If HasSession Then Begin Ncb.F.RetCode := $0F; Exit; End; { NRC_ACTSES }
+ EmuNetBios.Names[Idx].InUse := False;
+ Ncb.F.RetCode := 0;
+End;
+
+{ CALL/LISTEN : voir le commentaire de tete de TEmuNetBiosState - le seul   }
+{ moyen pour un CALL d aboutir dans ce modele "boucle locale" est qu un     }
+{ LISTEN correspondant soit DEJA en attente (localement) ; sinon il reste   }
+{ lui-meme en attente, a completer par un FUTUR LISTEN correspondant        }
+{ (jamais de vrai blocage CPU, voir la limite documentee plus haut). }
+Procedure Emu_NbCmdCall(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb; Seg, Ofs: Word);
+Var
+ I, PIdx, S1, S2, MyNameIdx: Integer;
+ OtherNcb: TEmuNbNcb;
+Begin
+ MyNameIdx := Emu_NbFindNameText(Ncb.F.Name);
+ If MyNameIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End; { NRC_ILLNN }
+ PIdx := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Pending[I].InUse And EmuNetBios.Pending[I].IsListen And
+     Emu_NbNameEq(EmuNetBios.Pending[I].LocalName, Ncb.F.CallName) And
+     Emu_NbPatternMatch(EmuNetBios.Pending[I].CallName, Ncb.F.Name) Then
+   PIdx := I;
+ If PIdx < 0 Then Begin
+  PIdx := Emu_NbFindFreePending;
+  If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End; { NRC_IFBUSY }
+  EmuNetBios.Pending[PIdx].InUse := True;
+  EmuNetBios.Pending[PIdx].IsListen := False;
+  EmuNetBios.Pending[PIdx].LocalNum := EmuNetBios.Names[MyNameIdx].Num;
+  EmuNetBios.Pending[PIdx].LocalName := Ncb.F.Name;
+  EmuNetBios.Pending[PIdx].CallName := Ncb.F.CallName;
+  EmuNetBios.Pending[PIdx].NcbSeg := Seg;
+  EmuNetBios.Pending[PIdx].NcbOfs := Ofs;
+  Ncb.F.RetCode := $FF; { NRC_PENDING }
+  Exit;
+ End;
+ S1 := Emu_NbAllocSession;
+ If S1 < 0 Then Begin Ncb.F.RetCode := $11; Exit; End; { NRC_LOCTFUL }
+ S2 := Emu_NbAllocSession;
+ If S2 < 0 Then Begin
+  EmuNetBios.Sessions[S1].InUse := False;
+  Ncb.F.RetCode := $11; Exit;
+ End;
+ EmuNetBios.Sessions[S1].Lsn := Emu_NbAllocLsn;
+ EmuNetBios.Sessions[S2].Lsn := Emu_NbAllocLsn;
+ EmuNetBios.Sessions[S1].LocalNum := EmuNetBios.Names[MyNameIdx].Num;
+ EmuNetBios.Sessions[S1].LocalName := Ncb.F.Name;
+ EmuNetBios.Sessions[S1].RemoteName := Ncb.F.CallName;
+ EmuNetBios.Sessions[S1].PeerLsn := EmuNetBios.Sessions[S2].Lsn;
+ EmuNetBios.Sessions[S1].RecvLen := 0;
+ EmuNetBios.Sessions[S1].Aborted := False;
+ EmuNetBios.Sessions[S2].LocalNum := EmuNetBios.Pending[PIdx].LocalNum;
+ EmuNetBios.Sessions[S2].LocalName := EmuNetBios.Pending[PIdx].LocalName;
+ EmuNetBios.Sessions[S2].RemoteName := Ncb.F.Name;
+ EmuNetBios.Sessions[S2].PeerLsn := EmuNetBios.Sessions[S1].Lsn;
+ EmuNetBios.Sessions[S2].RecvLen := 0;
+ EmuNetBios.Sessions[S2].Aborted := False;
+ { Completer immediatement le LISTEN en attente (ecriture directe de sa     }
+ { NCB en memoire invite - jamais de rappel NCB_POST reel, voir la limite   }
+ { documentee de tete). ncb_callname du LISTEN recoit le nom du VRAI        }
+ { appelant (comportement documente par Microsoft). }
+ OtherNcb := Emu_NbReadNcb(P, EmuNetBios.Pending[PIdx].NcbSeg, EmuNetBios.Pending[PIdx].NcbOfs);
+ OtherNcb.F.RetCode := 0;
+ OtherNcb.F.Lsn := EmuNetBios.Sessions[S2].Lsn;
+ OtherNcb.F.CallName := Ncb.F.Name;
+ Emu_NbWriteNcb(P, EmuNetBios.Pending[PIdx].NcbSeg, EmuNetBios.Pending[PIdx].NcbOfs, OtherNcb);
+ EmuNetBios.Pending[PIdx].InUse := False;
+ Ncb.F.RetCode := 0;
+ Ncb.F.Lsn := EmuNetBios.Sessions[S1].Lsn;
+End;
+
+Procedure Emu_NbCmdListen(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb; Seg, Ofs: Word);
+Var
+ I, PIdx, S1, S2, MyNameIdx: Integer;
+ OtherNcb: TEmuNbNcb;
+Begin
+ MyNameIdx := Emu_NbFindNameText(Ncb.F.Name);
+ If MyNameIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End; { NRC_ILLNN }
+ PIdx := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Pending[I].InUse And (Not EmuNetBios.Pending[I].IsListen) And
+     Emu_NbNameEq(EmuNetBios.Pending[I].CallName, Ncb.F.Name) And
+     Emu_NbPatternMatch(Ncb.F.CallName, EmuNetBios.Pending[I].LocalName) Then
+   PIdx := I;
+ If PIdx < 0 Then Begin
+  PIdx := Emu_NbFindFreePending;
+  If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End; { NRC_IFBUSY }
+  EmuNetBios.Pending[PIdx].InUse := True;
+  EmuNetBios.Pending[PIdx].IsListen := True;
+  EmuNetBios.Pending[PIdx].LocalNum := EmuNetBios.Names[MyNameIdx].Num;
+  EmuNetBios.Pending[PIdx].LocalName := Ncb.F.Name;
+  EmuNetBios.Pending[PIdx].CallName := Ncb.F.CallName;
+  EmuNetBios.Pending[PIdx].NcbSeg := Seg;
+  EmuNetBios.Pending[PIdx].NcbOfs := Ofs;
+  Ncb.F.RetCode := $FF; { NRC_PENDING }
+  Exit;
+ End;
+ S1 := Emu_NbAllocSession; { notre session (le LISTENER) }
+ If S1 < 0 Then Begin Ncb.F.RetCode := $11; Exit; End; { NRC_LOCTFUL }
+ S2 := Emu_NbAllocSession; { session du CALLER deja en attente }
+ If S2 < 0 Then Begin
+  EmuNetBios.Sessions[S1].InUse := False;
+  Ncb.F.RetCode := $11; Exit;
+ End;
+ EmuNetBios.Sessions[S1].Lsn := Emu_NbAllocLsn;
+ EmuNetBios.Sessions[S2].Lsn := Emu_NbAllocLsn;
+ EmuNetBios.Sessions[S1].LocalNum := EmuNetBios.Names[MyNameIdx].Num;
+ EmuNetBios.Sessions[S1].LocalName := Ncb.F.Name;
+ EmuNetBios.Sessions[S1].RemoteName := EmuNetBios.Pending[PIdx].LocalName;
+ EmuNetBios.Sessions[S1].PeerLsn := EmuNetBios.Sessions[S2].Lsn;
+ EmuNetBios.Sessions[S1].RecvLen := 0;
+ EmuNetBios.Sessions[S1].Aborted := False;
+ EmuNetBios.Sessions[S2].LocalNum := EmuNetBios.Pending[PIdx].LocalNum;
+ EmuNetBios.Sessions[S2].LocalName := EmuNetBios.Pending[PIdx].LocalName;
+ EmuNetBios.Sessions[S2].RemoteName := Ncb.F.Name;
+ EmuNetBios.Sessions[S2].PeerLsn := EmuNetBios.Sessions[S1].Lsn;
+ EmuNetBios.Sessions[S2].RecvLen := 0;
+ EmuNetBios.Sessions[S2].Aborted := False;
+ OtherNcb := Emu_NbReadNcb(P, EmuNetBios.Pending[PIdx].NcbSeg, EmuNetBios.Pending[PIdx].NcbOfs);
+ OtherNcb.F.RetCode := 0;
+ OtherNcb.F.Lsn := EmuNetBios.Sessions[S2].Lsn;
+ Emu_NbWriteNcb(P, EmuNetBios.Pending[PIdx].NcbSeg, EmuNetBios.Pending[PIdx].NcbOfs, OtherNcb);
+ Ncb.F.RetCode := 0;
+ Ncb.F.Lsn := EmuNetBios.Sessions[S1].Lsn;
+ Ncb.F.CallName := EmuNetBios.Pending[PIdx].LocalName; { LISTEN : nom du VRAI appelant }
+ EmuNetBios.Pending[PIdx].InUse := False;
+End;
+
+Procedure Emu_NbCmdHangup(Var Ncb: TEmuNbNcb);
+Var SIdx, PIdx: Integer;
+Begin
+ SIdx := Emu_NbFindSessionByLsn(Ncb.F.Lsn);
+ If SIdx < 0 Then Begin Ncb.F.RetCode := $08; Exit; End; { NRC_SNUMOUT }
+ { Le pair n est pas libere immediatement (juste marque "Aborted") pour     }
+ { qu un SEND/RECEIVE ulterieur de son cote observe NRC_SABORT plutot que   }
+ { "session introuvable" - il devra HANG UP a son tour pour liberer son     }
+ { propre slot, exactement comme sur un vrai reseau. }
+ PIdx := Emu_NbFindSessionByLsn(EmuNetBios.Sessions[SIdx].PeerLsn);
+ If PIdx >= 0 Then EmuNetBios.Sessions[PIdx].Aborted := True;
+ EmuNetBios.Sessions[SIdx].InUse := False;
+ Ncb.F.RetCode := 0;
+End;
+
+{ Livre directement Data[0..Len-1] dans la NCB d une RECEIVE/RECEIVE ANY    }
+{ deja en attente pour la session PeerIdx (ecriture memoire directe,        }
+{ jamais de rappel NCB_POST - voir la limite documentee de tete). }
+Function Emu_NbDeliverToPendingRecv(Var P: TEmulatorPanel; PeerIdx: Integer;
+ Var Data: TEmuNbBuf2048; Len: Integer): Boolean;
+Var I, J, Copied: Integer;
+Begin
+ Emu_NbDeliverToPendingRecv := False;
+ For I := 0 To 31 Do
+  If EmuNetBios.PendingRecv[I].InUse Then
+   If (EmuNetBios.PendingRecv[I].AnyName And
+       (EmuNetBios.PendingRecv[I].LocalNum = EmuNetBios.Sessions[PeerIdx].LocalNum)) Or
+      ((Not EmuNetBios.PendingRecv[I].AnyName) And
+       (EmuNetBios.PendingRecv[I].Lsn = EmuNetBios.Sessions[PeerIdx].Lsn)) Then Begin
+    Copied := Len;
+    If Copied > EmuNetBios.PendingRecv[I].MaxLen Then Copied := EmuNetBios.PendingRecv[I].MaxLen;
+    For J := 0 To Copied - 1 Do
+     Emu_WriteByte(P.CPU, EmuNetBios.PendingRecv[I].BufSeg,
+      EmuNetBios.PendingRecv[I].BufOfs + J, Data[J]);
+    Emu_WriteByte(P.CPU, EmuNetBios.PendingRecv[I].NcbSeg,
+     EmuNetBios.PendingRecv[I].NcbOfs + 1, 0); { ncb_retcode = NRC_GOODRET }
+    Emu_WriteByte(P.CPU, EmuNetBios.PendingRecv[I].NcbSeg,
+     EmuNetBios.PendingRecv[I].NcbOfs + 2, EmuNetBios.Sessions[PeerIdx].Lsn); { ncb_lsn }
+    Emu_WriteWord(P.CPU, EmuNetBios.PendingRecv[I].NcbSeg,
+     EmuNetBios.PendingRecv[I].NcbOfs + 8, Word(Copied)); { ncb_length }
+    EmuNetBios.PendingRecv[I].InUse := False;
+    Emu_NbDeliverToPendingRecv := True;
+    Exit;
+   End;
+End;
+
+Procedure Emu_NbCmdSend(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb);
+Var SIdx, PeerIdx, Len, I: Integer; Data: TEmuNbBuf2048;
+Begin
+ SIdx := Emu_NbFindSessionByLsn(Ncb.F.Lsn);
+ If SIdx < 0 Then Begin Ncb.F.RetCode := $08; Exit; End; { NRC_SNUMOUT }
+ If EmuNetBios.Sessions[SIdx].Aborted Then Begin Ncb.F.RetCode := $18; Exit; End; { NRC_SABORT }
+ Len := Ncb.F.Length;
+ { Limite assumee : tampon "tube" interne plafonne a 2048 octets par        }
+ { session (voir TEmuNbBuf2048/TEmuNbSession.RecvBuf) - un vrai NetBIOS     }
+ { n a pas cette limite basse, mais aucun credit-based flow control n est   }
+ { modelise ici de toute facon. CHAIN SEND (17h/72h, voir le dispatcheur    }
+ { Emu_DoInt5C) est traite comme un SEND simple du 1er tampon uniquement :  }
+ { la convention exacte de reutilisation de champs pour le 2e tampon n a    }
+ { pas pu etre confirmee contre une source primaire - limitation assumee,   }
+ { documentee plutot que devinee. }
+ If Len > 2048 Then Len := 2048;
+ For I := 0 To Len - 1 Do
+  Data[I] := Emu_ReadByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + I);
+ PeerIdx := Emu_NbFindSessionByLsn(EmuNetBios.Sessions[SIdx].PeerLsn);
+ If PeerIdx < 0 Then Begin Ncb.F.RetCode := $18; Exit; End; { NRC_SABORT }
+ If Not Emu_NbDeliverToPendingRecv(P, PeerIdx, Data, Len) Then
+  For I := 0 To Len - 1 Do
+   If EmuNetBios.Sessions[PeerIdx].RecvLen < 2048 Then Begin
+    EmuNetBios.Sessions[PeerIdx].RecvBuf[EmuNetBios.Sessions[PeerIdx].RecvLen] := Data[I];
+    Inc(EmuNetBios.Sessions[PeerIdx].RecvLen);
+   End;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Emu_NbCmdRecv(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb; Seg, Ofs: Word);
+Var SIdx, Copied, I, PIdx: Integer;
+Begin
+ SIdx := Emu_NbFindSessionByLsn(Ncb.F.Lsn);
+ If SIdx < 0 Then Begin Ncb.F.RetCode := $08; Exit; End; { NRC_SNUMOUT }
+ If EmuNetBios.Sessions[SIdx].RecvLen > 0 Then Begin
+  Copied := EmuNetBios.Sessions[SIdx].RecvLen;
+  If Copied > Ncb.F.Length Then Copied := Ncb.F.Length;
+  For I := 0 To Copied - 1 Do
+   Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + I, EmuNetBios.Sessions[SIdx].RecvBuf[I]);
+  For I := Copied To EmuNetBios.Sessions[SIdx].RecvLen - 1 Do
+   EmuNetBios.Sessions[SIdx].RecvBuf[I - Copied] := EmuNetBios.Sessions[SIdx].RecvBuf[I];
+  Dec(EmuNetBios.Sessions[SIdx].RecvLen, Copied);
+  Ncb.F.Length := Copied;
+  Ncb.F.RetCode := 0;
+  Exit;
+ End;
+ If EmuNetBios.Sessions[SIdx].Aborted Then Begin Ncb.F.RetCode := $18; Exit; End; { NRC_SABORT }
+ PIdx := Emu_NbFindFreePendingRecv;
+ If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End; { NRC_IFBUSY }
+ EmuNetBios.PendingRecv[PIdx].InUse := True;
+ EmuNetBios.PendingRecv[PIdx].AnyName := False;
+ EmuNetBios.PendingRecv[PIdx].Lsn := Ncb.F.Lsn;
+ EmuNetBios.PendingRecv[PIdx].LocalNum := EmuNetBios.Sessions[SIdx].LocalNum;
+ EmuNetBios.PendingRecv[PIdx].NcbSeg := Seg;
+ EmuNetBios.PendingRecv[PIdx].NcbOfs := Ofs;
+ EmuNetBios.PendingRecv[PIdx].BufSeg := Ncb.F.BufSeg;
+ EmuNetBios.PendingRecv[PIdx].BufOfs := Ncb.F.BufOfs;
+ EmuNetBios.PendingRecv[PIdx].MaxLen := Ncb.F.Length;
+ Ncb.F.RetCode := $FF; { NRC_PENDING }
+End;
+
+Procedure Emu_NbCmdRecvAny(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb; Seg, Ofs: Word);
+Var I, SIdx, Copied, PIdx: Integer;
+Begin
+ SIdx := -1;
+ For I := 0 To 31 Do
+  If EmuNetBios.Sessions[I].InUse And (EmuNetBios.Sessions[I].LocalNum = Ncb.F.Num) And
+     (EmuNetBios.Sessions[I].RecvLen > 0) Then
+   SIdx := I;
+ If SIdx >= 0 Then Begin
+  Copied := EmuNetBios.Sessions[SIdx].RecvLen;
+  If Copied > Ncb.F.Length Then Copied := Ncb.F.Length;
+  For I := 0 To Copied - 1 Do
+   Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + I, EmuNetBios.Sessions[SIdx].RecvBuf[I]);
+  For I := Copied To EmuNetBios.Sessions[SIdx].RecvLen - 1 Do
+   EmuNetBios.Sessions[SIdx].RecvBuf[I - Copied] := EmuNetBios.Sessions[SIdx].RecvBuf[I];
+  Dec(EmuNetBios.Sessions[SIdx].RecvLen, Copied);
+  Ncb.F.Length := Copied;
+  Ncb.F.Lsn := EmuNetBios.Sessions[SIdx].Lsn;
+  Ncb.F.RetCode := 0;
+  Exit;
+ End;
+ PIdx := Emu_NbFindFreePendingRecv;
+ If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End; { NRC_IFBUSY }
+ EmuNetBios.PendingRecv[PIdx].InUse := True;
+ EmuNetBios.PendingRecv[PIdx].AnyName := True;
+ EmuNetBios.PendingRecv[PIdx].LocalNum := Ncb.F.Num;
+ EmuNetBios.PendingRecv[PIdx].NcbSeg := Seg;
+ EmuNetBios.PendingRecv[PIdx].NcbOfs := Ofs;
+ EmuNetBios.PendingRecv[PIdx].BufSeg := Ncb.F.BufSeg;
+ EmuNetBios.PendingRecv[PIdx].BufOfs := Ncb.F.BufOfs;
+ EmuNetBios.PendingRecv[PIdx].MaxLen := Ncb.F.Length;
+ Ncb.F.RetCode := $FF; { NRC_PENDING }
+End;
+
+Function Emu_NbDeliverToPendingDgUnicast(Var P: TEmulatorPanel; Const DestName: TEmuNb16;
+ Var Dg: TEmuNbDgram): Boolean;
+Var I, J, Copied, NameIdx: Integer;
+Begin
+ Emu_NbDeliverToPendingDgUnicast := False;
+ For I := 0 To 31 Do
+  If EmuNetBios.PendingDgRecv[I].InUse And (Not EmuNetBios.PendingDgRecv[I].Broadcast) Then Begin
+   NameIdx := Emu_NbFindNameByNum(EmuNetBios.PendingDgRecv[I].LocalNum);
+   If (NameIdx >= 0) And Emu_NbNameEq(EmuNetBios.Names[NameIdx].Nom, DestName) Then Begin
+    Copied := Dg.Len;
+    If Copied > EmuNetBios.PendingDgRecv[I].MaxLen Then Copied := EmuNetBios.PendingDgRecv[I].MaxLen;
+    For J := 0 To Copied - 1 Do
+     Emu_WriteByte(P.CPU, EmuNetBios.PendingDgRecv[I].BufSeg,
+      EmuNetBios.PendingDgRecv[I].BufOfs + J, Dg.Data[J]);
+    Emu_WriteByte(P.CPU, EmuNetBios.PendingDgRecv[I].NcbSeg,
+     EmuNetBios.PendingDgRecv[I].NcbOfs + 1, 0);
+    Emu_WriteWord(P.CPU, EmuNetBios.PendingDgRecv[I].NcbSeg,
+     EmuNetBios.PendingDgRecv[I].NcbOfs + 8, Word(Copied));
+    For J := 0 To 15 Do
+     Emu_WriteByte(P.CPU, EmuNetBios.PendingDgRecv[I].NcbSeg,
+      EmuNetBios.PendingDgRecv[I].NcbOfs + 10 + J, Byte(Dg.FromName[J])); { ncb_callname = expediteur }
+    EmuNetBios.PendingDgRecv[I].InUse := False;
+    Emu_NbDeliverToPendingDgUnicast := True;
+    Exit;
+   End;
+  End;
+End;
+
+Procedure Emu_NbDeliverToPendingDgBroadcast(Var P: TEmulatorPanel; Var Dg: TEmuNbDgram;
+ Var AnyDelivered: Boolean);
+Var I, J, Copied: Integer;
+Begin
+ AnyDelivered := False;
+ For I := 0 To 31 Do
+  If EmuNetBios.PendingDgRecv[I].InUse And EmuNetBios.PendingDgRecv[I].Broadcast Then Begin
+   Copied := Dg.Len;
+   If Copied > EmuNetBios.PendingDgRecv[I].MaxLen Then Copied := EmuNetBios.PendingDgRecv[I].MaxLen;
+   For J := 0 To Copied - 1 Do
+    Emu_WriteByte(P.CPU, EmuNetBios.PendingDgRecv[I].BufSeg,
+     EmuNetBios.PendingDgRecv[I].BufOfs + J, Dg.Data[J]);
+   Emu_WriteByte(P.CPU, EmuNetBios.PendingDgRecv[I].NcbSeg,
+    EmuNetBios.PendingDgRecv[I].NcbOfs + 1, 0);
+   Emu_WriteWord(P.CPU, EmuNetBios.PendingDgRecv[I].NcbSeg,
+    EmuNetBios.PendingDgRecv[I].NcbOfs + 8, Word(Copied));
+   For J := 0 To 15 Do
+    Emu_WriteByte(P.CPU, EmuNetBios.PendingDgRecv[I].NcbSeg,
+     EmuNetBios.PendingDgRecv[I].NcbOfs + 10 + J, Byte(Dg.FromName[J]));
+   EmuNetBios.PendingDgRecv[I].InUse := False;
+   AnyDelivered := True;
+  End;
+End;
+
+Procedure Emu_NbCmdSendDg(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb; Broadcast: Boolean);
+Var SrcIdx, Len, I, QIdx: Integer; Dg: TEmuNbDgram; Delivered: Boolean;
+Begin
+ SrcIdx := Emu_NbFindNameByNum(Ncb.F.Num);
+ If SrcIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End; { NRC_ILLNN }
+ Len := Ncb.F.Length;
+ If Len > 512 Then Len := 512; { max_dgram_size annonce, voir ASTAT }
+ Dg.Len := Len;
+ For I := 0 To Len - 1 Do
+  Dg.Data[I] := Emu_ReadByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + I);
+ Dg.FromName := EmuNetBios.Names[SrcIdx].Nom;
+ If Broadcast Then Begin
+  Emu_NbDeliverToPendingDgBroadcast(P, Dg, Delivered);
+  If Not Delivered Then Emu_NbQueuePush(EmuNetBios.BcastDg, Dg);
+ End Else Begin
+  If Not Emu_NbDeliverToPendingDgUnicast(P, Ncb.F.CallName, Dg) Then Begin
+   QIdx := Emu_NbFindOrAllocDgQueue(Ncb.F.CallName);
+   If QIdx >= 0 Then Emu_NbQueuePush(EmuNetBios.DgQueues[QIdx], Dg);
+   { Si QIdx<0 (32 noms distincts deja en file simultanement - tres          }
+   { improbable), le datagramme est simplement perdu : comportement          }
+   { "best effort" honnete (voir commentaire de tete), jamais un blocage.   }
+  End;
+ End;
+ Ncb.F.RetCode := 0; { SEND DATAGRAM reussit toujours du point de vue de l expediteur }
+End;
+
+Procedure Emu_NbCmdRecvDg(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb; Seg, Ofs: Word;
+ Broadcast: Boolean);
+Var NameIdx, QIdx, Copied, I, PIdx: Integer; Dg: TEmuNbDgram; Got: Boolean;
+Begin
+ If Broadcast Then
+  Got := Emu_NbQueuePopInto(EmuNetBios.BcastDg, Dg)
+ Else Begin
+  NameIdx := Emu_NbFindNameByNum(Ncb.F.Num);
+  If NameIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End; { NRC_ILLNN }
+  Got := False;
+  QIdx := Emu_NbFindOrAllocDgQueue(EmuNetBios.Names[NameIdx].Nom);
+  If QIdx >= 0 Then Got := Emu_NbQueuePopInto(EmuNetBios.DgQueues[QIdx], Dg);
+ End;
+ If Got Then Begin
+  Copied := Dg.Len;
+  If Copied > Ncb.F.Length Then Copied := Ncb.F.Length;
+  For I := 0 To Copied - 1 Do
+   Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + I, Dg.Data[I]);
+  Ncb.F.Length := Copied;
+  Ncb.F.CallName := Dg.FromName;
+  Ncb.F.RetCode := 0;
+  Exit;
+ End;
+ PIdx := Emu_NbFindFreePendingDgRecv;
+ If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End; { NRC_IFBUSY }
+ EmuNetBios.PendingDgRecv[PIdx].InUse := True;
+ EmuNetBios.PendingDgRecv[PIdx].Broadcast := Broadcast;
+ EmuNetBios.PendingDgRecv[PIdx].LocalNum := Ncb.F.Num;
+ EmuNetBios.PendingDgRecv[PIdx].NcbSeg := Seg;
+ EmuNetBios.PendingDgRecv[PIdx].NcbOfs := Ofs;
+ EmuNetBios.PendingDgRecv[PIdx].BufSeg := Ncb.F.BufSeg;
+ EmuNetBios.PendingDgRecv[PIdx].BufOfs := Ncb.F.BufOfs;
+ EmuNetBios.PendingDgRecv[PIdx].MaxLen := Ncb.F.Length;
+ Ncb.F.RetCode := $FF; { NRC_PENDING }
+End;
+
+{ ADAPTER STATUS : disposition ADAPTER_STATUS (60 octets) + tableau         }
+{ NAME_BUFFER (18 octets/nom) verifiee contre nb30.h (Microsoft). Tous les  }
+{ compteurs de trafic (frmr_recv, xmit_success, etc.) restent a zero -      }
+{ aucune vraie comptabilisation n est tenue dans ce moteur (honnete plutot  }
+{ qu invente). }
+Procedure Emu_NbCmdAdapterStatus(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb);
+Var I, J, Cnt, Pos: Integer;
+
+ Procedure PB(V: Byte);
+ Begin
+  Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + Pos, V);
+  Inc(Pos);
+ End;
+
+ Procedure PW(V: Word);
+ Begin
+  PB(Lo(V)); PB(Hi(V));
+ End;
+
+ Procedure PD(V: LongInt);
+ Begin
+  PW(Word(V And $FFFF)); PW(Word((V Shr 16) And $FFFF));
+ End;
+
+Begin
+ Pos := 0;
+ For I := 0 To 5 Do PB(EmuNetBios.LocalAddr[I]);
+ PB(3); PB(0); PB($FE); PB(0); { rev_major=3/reserved0/adapter_type=Ethernet/rev_minor }
+ PW(0); PW(0); PW(0); PW(0); PW(0); { duration,frmr_recv,frmr_xmit,iframe_recv_err,xmit_aborts }
+ PD(0); PD(0);                      { xmit_success, recv_success }
+ PW(0); PW(0); PW(0); PW(0);        { iframe_xmit_err,recv_buff_unavail,t1_timeouts,ti_timeouts }
+ PD(0);                             { reserved1 }
+ PW(32); PW(0); PW(0); PW(0);       { free_ncbs=capacite Pending, max_cfg_ncbs/max_ncbs/xmit_buf_unavail indefinis }
+ PW(512);                           { max_dgram_size }
+ PW(0); PW(32); PW(0);              { pending_sess, max_cfg_sess=capacite Sessions, max_sess indefini }
+ PW(2048);                          { max_sess_pkt_size = capacite du tampon "tube" interne }
+ Cnt := 0;
+ For I := 0 To 31 Do If EmuNetBios.Names[I].InUse Then Inc(Cnt);
+ PW(Cnt);                           { name_count }
+ For I := 0 To 31 Do
+  If EmuNetBios.Names[I].InUse Then Begin
+   For J := 0 To 15 Do PB(Byte(EmuNetBios.Names[I].Nom[J]));
+   PB(EmuNetBios.Names[I].Num);
+   PB(0); { name_flags : bit groupe/actif non detaille ici, 0 = actif/unique }
+  End;
+ Ncb.F.Length := Pos;
+ Ncb.F.RetCode := 0;
+End;
+
+{ SESSION STATUS : SESSION_HEADER (4 octets) + tableau SESSION_BUFFER       }
+{ (36 octets/session) verifie contre nb30.h. Limite assumee : ce modele     }
+{ "boucle locale" met toujours en correspondance CALL/LISTEN immediatement  }
+{ des qu un partenaire existe, donc LISTEN_OUTSTANDING(1)/CALL_PENDING(2)   }
+{ ne sont jamais observables ici - seuls SESSION_ESTABLISHED(3) et          }
+{ SESSION_ABORTED(6) sont distingues. rcvs_outstanding/sends_outstanding    }
+{ et rcv_dg_outstanding/rcv_any_outstanding du header restent a 0 (non      }
+{ comptabilises). }
+Procedure Emu_NbCmdSessionStatus(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb);
+Var I, J, Cnt, Pos: Integer; St: Byte;
+
+ Procedure PB(V: Byte);
+ Begin
+  Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + Pos, V);
+  Inc(Pos);
+ End;
+
+Begin
+ Cnt := 0;
+ For I := 0 To 31 Do
+  If EmuNetBios.Sessions[I].InUse And (EmuNetBios.Sessions[I].LocalNum = Ncb.F.Num) Then Inc(Cnt);
+ Pos := 0;
+ PB(Ncb.F.Num); PB(Cnt); PB(0); PB(0);
+ For I := 0 To 31 Do
+  If EmuNetBios.Sessions[I].InUse And (EmuNetBios.Sessions[I].LocalNum = Ncb.F.Num) Then Begin
+   PB(EmuNetBios.Sessions[I].Lsn);
+   If EmuNetBios.Sessions[I].Aborted Then St := 6 Else St := 3;
+   PB(St);
+   For J := 0 To 15 Do PB(Byte(EmuNetBios.Sessions[I].LocalName[J]));
+   For J := 0 To 15 Do PB(Byte(EmuNetBios.Sessions[I].RemoteName[J]));
+   PB(0); PB(0);
+  End;
+ Ncb.F.Length := Pos;
+ Ncb.F.RetCode := 0;
+End;
+
+{ NCBCANCEL : ncb_buffer de la commande CANCEL elle-meme pointe vers la     }
+{ NCB a annuler (convention documentee) - cherchee parmi les 3 tables      }
+{ d attente possibles. }
+Procedure Emu_NbCmdCancel(Var P: TEmulatorPanel; Var Ncb: TEmuNbNcb);
+Var I: Integer; Found: Boolean;
+Begin
+ Found := False;
+ For I := 0 To 31 Do
+  If EmuNetBios.Pending[I].InUse And (EmuNetBios.Pending[I].NcbSeg = Ncb.F.BufSeg) And
+     (EmuNetBios.Pending[I].NcbOfs = Ncb.F.BufOfs) Then Begin
+   Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + 1, $0B); { NRC_CMDCAN }
+   EmuNetBios.Pending[I].InUse := False;
+   Found := True;
+  End;
+ For I := 0 To 31 Do
+  If EmuNetBios.PendingRecv[I].InUse And (EmuNetBios.PendingRecv[I].NcbSeg = Ncb.F.BufSeg) And
+     (EmuNetBios.PendingRecv[I].NcbOfs = Ncb.F.BufOfs) Then Begin
+   Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + 1, $0B);
+   EmuNetBios.PendingRecv[I].InUse := False;
+   Found := True;
+  End;
+ For I := 0 To 31 Do
+  If EmuNetBios.PendingDgRecv[I].InUse And (EmuNetBios.PendingDgRecv[I].NcbSeg = Ncb.F.BufSeg) And
+     (EmuNetBios.PendingDgRecv[I].NcbOfs = Ncb.F.BufOfs) Then Begin
+   Emu_WriteByte(P.CPU, Ncb.F.BufSeg, Ncb.F.BufOfs + 1, $0B);
+   EmuNetBios.PendingDgRecv[I].InUse := False;
+   Found := True;
+  End;
+ If Found Then Ncb.F.RetCode := 0 Else Ncb.F.RetCode := $26; { NRC_CANCEL }
+End;
+
+{ Dispatcheur central INT 5Ch : ES:BX = pointeur NCB, AL = code retour en   }
+{ sortie (egalement ecrit dans ncb_retcode, voir la Ralph Brown Interrupt   }
+{ List). Le bit ASYNCH ($80) de ncb_command est masque avant le Case - ce   }
+{ moteur ne bloque jamais (voir la limite documentee de tete), donc la      }
+{ version "wait"/"no wait" d une meme commande est traitee identiquement. }
+Procedure Emu_DoInt5C(Var P: TEmulatorPanel);
+Var
+ Ncb: TEmuNbNcb;
+ Seg, Ofs: Word;
+ Cmd: Byte;
+Begin
+ Seg := P.CPU.Segs.ES;
+ Ofs := P.CPU.Regs.BX;
+ Ncb := Emu_NbReadNcb(P, Seg, Ofs);
+ Cmd := Ncb.F.Command And $7F;
+ Case Cmd Of
+  $32: Emu_NbCmdReset(Ncb);
+  $30: Emu_NbCmdAddName(Ncb, False);
+  $36: Emu_NbCmdAddName(Ncb, True);
+  $31: Emu_NbCmdDelName(Ncb);
+  $10: Emu_NbCmdCall(P, Ncb, Seg, Ofs);
+  $11: Emu_NbCmdListen(P, Ncb, Seg, Ofs);
+  $12: Emu_NbCmdHangup(Ncb);
+  $14, $71, $17, $72: Emu_NbCmdSend(P, Ncb);
+  $15: Emu_NbCmdRecv(P, Ncb, Seg, Ofs);
+  $16: Emu_NbCmdRecvAny(P, Ncb, Seg, Ofs);
+  $20: Emu_NbCmdSendDg(P, Ncb, False);
+  $22: Emu_NbCmdSendDg(P, Ncb, True);
+  $21: Emu_NbCmdRecvDg(P, Ncb, Seg, Ofs, False);
+  $23: Emu_NbCmdRecvDg(P, Ncb, Seg, Ofs, True);
+  $33: Emu_NbCmdAdapterStatus(P, Ncb);
+  $34: Emu_NbCmdSessionStatus(P, Ncb);
+  $35: Emu_NbCmdCancel(P, Ncb);
+  $70: Ncb.F.RetCode := 0; { UNLINK : sans effet (documente ainsi par Microsoft) }
+ Else
+  Ncb.F.RetCode := $03; { NRC_ILLCMD - NCBFINDNAME/NCBACTION/NCBENUM/NCBTRACE }
+                         { non implantes, voir le commentaire de tete du type }
+ End;
+ Emu_NbWriteNcb(P, Seg, Ofs, Ncb);
+ P.CPU.Regs.AL := Ncb.F.RetCode;
+End;
+
+{ Reinitialise la pile NetBIOS et, si la case "NetBIOS" est cochee, active  }
+{ EmuNetBios.Active (consulte par Emu_DefaultVectorsInit pour decider si le }
+{ vecteur $5C pointe vers ce dispatcheur ou reste a 0000h:0000h). Appelee a }
+{ chaque (re)demarrage de l emulateur, comme Emu_IpxInit/Emu_PktInit. }
+Procedure Emu_NetBiosInit(Var P: TEmulatorPanel);
+Begin
+ FillChar(EmuNetBios, SizeOf(EmuNetBios), 0);
+ EmuNetBios.Active := OptionsDlg.Data.DosNetBios;
+ { Adresse "materielle" synthetique - distincte de celle d IPX              }
+ { (EmuIpx.LocalNode) et du pilote de paquets (EmuPkt.LocalMAC) pour ne     }
+ { jamais laisser croire a un programme qui interrogerait plusieurs piles   }
+ { reseau en meme temps qu il s agit du meme "adaptateur". }
+ EmuNetBios.LocalAddr[0] := $02; EmuNetBios.LocalAddr[1] := $00;
+ EmuNetBios.LocalAddr[2] := $00; EmuNetBios.LocalAddr[3] := $00;
+ EmuNetBios.LocalAddr[4] := $00; EmuNetBios.LocalAddr[5] := $02;
+End;
+
 { Reinitialise le pilote XMS et, si la case "XMS" est cochee, alloue le    }
 { tampon "memoire etendue" (separe des 1 Mo conventionnels de C.Memory)    }
 { et installe le trampoline "appel far direct" (INT FEh) retourne par      }
@@ -131537,6 +132466,23 @@ Begin
     If IvtOfs = IvtOfs Then ;
    End;
   End;
+  $5C: Begin
+   { N intercepter reellement que si la case "NetBIOS" est cochee          }
+   { (EmuNetBios.Active) - sinon, comportement identique a toute autre     }
+   { interruption non geree (branche Else) : une vraie machine sans pile   }
+   { NetBIOS chargee ne repond pas non plus sur ce vecteur (voir la Ralph  }
+   { Brown Interrupt List : un programme invite DOIT verifier que ce       }
+   { vecteur n est pas 0000h:0000h avant de l utiliser). }
+   If EmuNetBios.Active Then Begin
+    If Emu_IntIsHooked(P, $5C) Then Emu_FireHwInt(P, $5C) Else Emu_DoInt5C(P);
+   End
+   Else Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word($5C) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word($5C) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, $5C);
+    If IvtOfs = IvtOfs Then ;
+   End;
+  End;
   $60: Begin
    { N intercepter reellement que si la case "Reseau LAN" est cochee       }
    { (EmuPkt.Active) - sinon, comportement identique a toute autre         }
@@ -131745,6 +132691,7 @@ Begin
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
  If EmuEms.Active     Then Emu_WriteDefaultVector(P, $67);
  If EmuIpx.Active     Then Emu_WriteDefaultVector(P, $7A);
+ If EmuNetBios.Active Then Emu_WriteDefaultVector(P, $5C);
  { INT 41h/46h : table de parametres du disque fixe, voir                   }
  { Emu_WriteFixedDiskParamTable et EMU_FDPT_OFS0/1 pour le contexte complet.}
  { Seulement si le disque dur correspondant est reellement monte - une      }
@@ -148820,6 +149767,7 @@ Begin NesActive := False;
   Emu_InitBDA(P);
   Emu_IpxInit(P);
   Emu_PktInit(P);
+  Emu_NetBiosInit(P);
   Emu_XmsInit(P);
   Emu_EmsInit(P);
   Emu_MouseInit(P);
@@ -149026,6 +149974,7 @@ Begin NesActive := False;
  Emu_InitBDA(P);
  Emu_IpxInit(P);
  Emu_PktInit(P);
+ Emu_NetBiosInit(P);
  Emu_XmsInit(P);
  Emu_EmsInit(P);
  Emu_MouseInit(P);
@@ -150072,6 +151021,7 @@ Begin
  D.DosNovell := False;
  D.DosLAN := False;
  D.DosLANVendor := 0;
+ D.DosNetBios := False;
  { Journaux EMU*.LOG desactives par defaut - ecriture disque a chaque INT21h}
  { (EMU21.LOG) mesurable sur les performances, reserves au diagnostic. }
  D.DosLogInt21 := False;
@@ -151321,6 +152271,7 @@ Begin
   DosMouseVendorName(Dlg.Data.DosMouseVendor));
  Dropdown('Version pilote (INT 33h) :',                          { Row 5 }
   DosMouseVersionName(Dlg.Data.DosMouseVersion));
+ Check(Dlg.Data.DosNetBios, 'NetBIOS (INT 5Ch)');                 { Row 6 }
 
  If Dlg.DosDropdownOpen = 6 Then
   OpenList(3, DOS_LAN_VENDOR_COUNT, Dlg.Data.DosLANVendor)
@@ -152155,6 +153106,10 @@ Begin
        3: Dlg.DosDropdownOpen := 6;  { Fabricant reseau LAN }
        4: Dlg.DosDropdownOpen := 8;  { Fabricant pilote souris }
        5: Dlg.DosDropdownOpen := 9;  { Version pilote souris (INT 33h) }
+       6: Begin
+        Dlg.Data.DosNetBios := Not Dlg.Data.DosNetBios;
+        Dlg.Modified := True;
+       End;
       End;
      OC_EMU_DOS_DEBUG:
       Case FieldIdx Of
@@ -152371,6 +153326,7 @@ Begin
  WriteCfgLine(F, 'DosLAN', BoolToStr(Data.DosLAN));
  Str(Data.DosLANVendor, S);
  WriteCfgLine(F, 'DosLANVendor', S);
+ WriteCfgLine(F, 'DosNetBios', BoolToStr(Data.DosNetBios));
  WriteCfgLine(F, 'DosLogInt21', BoolToStr(Data.DosLogInt21));
  WriteCfgLine(F, 'DosLogDiag', BoolToStr(Data.DosLogDiag));
  Close(F);
@@ -152602,6 +153558,8 @@ Begin
       (Data.DosLANVendor >= DOS_LAN_VENDOR_COUNT) Then
     Data.DosLANVendor := 0;
   End
+  Else If Key = 'DosNetBios' Then
+   Data.DosNetBios := StrToBool(Value)
   Else If Key = 'DosLogInt21' Then
    Data.DosLogInt21 := StrToBool(Value)
   Else If Key = 'DosLogDiag' Then
