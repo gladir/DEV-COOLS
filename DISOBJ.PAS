@@ -8,18 +8,80 @@ Program DISOBJ;
 
 Const
  RecBufSize=8192;
+ LangText=0;
+ LangTurboPascal=1;
 
 var
  FileInput:File of byte;
  FileOutput:text;
  FileNameOBJ:String;
  FileNameOutput:String;
+ Arg:String;
+ OutputLanguage:Byte;
  i,rlen,rleft,dum:integer;
  chk,rect,d:byte;
  lname,sname,gname,ename:Array[0..100]of string[12];
+ pname:Array[0..100]of string[64];
+ pseg,pofs:Array[0..100]of Integer;
  si,gi,ei:integer;
+ pi:Integer;
  RecBuf:array[1..RecBufSize] of byte;
  bufp:integer;
+
+Function UpperStr(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1 To Length(S) Do S[I]:=UpCase(S[I]);
+ UpperStr:=S;
+End;
+
+Function StartsLanguageOption(S:String):Boolean;
+Var
+ U:String;
+Begin
+ U:=UpperStr(S);
+ StartsLanguageOption:=(Copy(U,1,10)='/LANGUAGE:') Or (Copy(U,1,10)='-LANGUAGE:');
+End;
+
+Procedure SetOutputLanguage(S:String);
+Var
+ U:String;
+Begin
+ U:=UpperStr(Copy(S,11,Length(S)-10));
+ If (U='TURBOPASCAL') Or (U='TP') Then OutputLanguage:=LangTurboPascal Else
+ If (U='TEXT') Or (U='TXT') Then OutputLanguage:=LangText Else Begin
+  WriteLn('Langage de sortie inconnu : ',U);
+  Halt;
+ End;
+End;
+
+Function ToPascalIdent(S:String):String;
+Var
+ I:Integer;
+ C:Char;
+ R:String;
+Begin
+ R:='';
+ For I:=1 To Length(S) Do Begin
+  C:=S[I];
+  If ((C>='A')And(C<='Z'))Or((C>='a')And(C<='z'))Or((C>='0')And(C<='9'))Or(C='_') Then R:=R+C
+                            Else R:=R+'_';
+ End;
+ If R='' Then R:='ObjCode';
+ C:=R[1];
+ If Not(((C>='A')And(C<='Z'))Or((C>='a')And(C<='z'))) Then R:='Obj_'+R;
+ If Length(R)>63 Then R:=Copy(R,1,63);
+ ToPascalIdent:=R;
+End;
+
+Function FindPublic(Seg,Ofs:Integer):Integer;
+Var
+ I:Integer;
+Begin
+ FindPublic:=0;
+ For I:=1 To pi Do If (pseg[I]=Seg)And(pofs[I]=Ofs) Then FindPublic:=I;
+End;
 
 Procedure Error(S:String);Begin
  WriteLn(FileOutput);
@@ -38,6 +100,15 @@ End;
 
 Function HexWord2Str(value:Word):String;Begin
  HexWord2Str:=ByteHex2Str(Hi(value))+ByteHex2Str(Lo(value));
+End;
+
+Function GeneratedProcName(Seg,Ofs:Integer):String;
+Var
+ P:Integer;
+Begin
+ P:=FindPublic(Seg,Ofs);
+ If P<>0 Then GeneratedProcName:=ToPascalIdent(pname[P])
+   Else GeneratedProcName:='ObjCode_'+HexWord2Str(Seg)+'_'+HexWord2Str(Ofs);
 End;
 
 Function GetB:Byte;
@@ -80,6 +151,13 @@ End;
 Procedure ChkSum;Begin
  dum:=getb;
  If chk<>0 Then Write('..mauvaise sommation de v'+#130+'rification..',chk)
+End;
+
+Procedure SkipRecord;
+Begin
+ RLen:=GetI;
+ RLeft:=RLen;
+ While RLeft>1 Do Dum:=GetB;
 End;
 
 Function Bit(D,N:byte):Boolean;Begin
@@ -130,16 +208,40 @@ Begin
  End
 End;
 
-Procedure RHEADR;Begin
- Error('Balise RHEADR non impl'+#130+'ment'+#130+'.');
+Procedure RHEADR;
+Var
+ S:String;
+Begin
+ RLen:=GetI;
+ RLeft:=RLen;
+ S:=GetName;
+ If OutputLanguage<>LangTurboPascal Then Begin
+  Write(FileOutput,rlen:6,' R-MODULE: ':15);
+  Write(FileOutput,S);
+  While RLeft>1 Do Write(FileOutput,ByteHex2Str(GetB):4);
+ End
+  Else
+ While RLeft>1 Do Dum:=GetB;
 End;
 
 Procedure REGINT;Begin
- Error('Balise REGINT non impl'+#130+'ment'+#130+'.');
+ RLen:=GetI;
+ RLeft:=RLen;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,rlen:6,' REGINT: ');
+ While RLeft>1 Do Begin
+  D:=GetB;
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,ByteHex2Str(D):4);
+ End;
 End;
 
 Procedure REDATA;Begin
- Error('Balise REDATA non impl'+#130+'ment'+#130+'.');
+ RLen:=GetI;
+ RLeft:=RLen;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,rlen:6,' REDATA: ');
+ While RLeft>1 Do Begin
+  D:=GetB;
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,ByteHex2Str(D):4);
+ End;
 End;
 
 Procedure RIDATA;Begin
@@ -180,9 +282,17 @@ Procedure DEBSYM;Begin
  Error('Balise DEBSYM non impl'+#130+'ment'+#130+'.');
 End;
 
-Procedure THEADR;Begin
- Write(FileOutput,geti:6,' T-MODULE: ':15);
- Write(FileOutput,getname);
+Procedure THEADR;
+Var
+ S:String;
+Begin
+ RLen:=GetI;
+ RLeft:=RLen;
+ S:=GetName;
+ If OutputLanguage<>LangTurboPascal Then Begin
+  Write(FileOutput,rlen:6,' T-MODULE: ':15);
+  Write(FileOutput,S);
+ End;
 End;
 
 Procedure LHEADR;Begin
@@ -271,19 +381,38 @@ End;
 
 Procedure PUBDEF;
 Var
- gr,sg:Byte;
+ gr,sg:Integer;
+ PublicName:String;
+ PublicOfs,PublicType:Integer;
 Begin
  rlen:=geti;
  rleft:=rlen;
- Write(FileOutput,rlen:6,' PUBLICS  ');
-gr:=getx;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,rlen:6,' PUBLICS  ');
+ gr:=getx;
  sg:=getx;
- If(gr=0)and(sg=0)Then Write(FileOutput,' CADRE=',HexWord2Str(geti)) Else
- If gr<>0 Then Write(FileOutput,'pour Gr= ',gname[gr],' Seg=',sname[sg])
-          Else Write(FileOutput,'pour Seg= ',sname[sg]);
+ If(gr=0)and(sg=0)Then Begin
+  PublicOfs:=GetI;
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,' CADRE=',HexWord2Str(PublicOfs));
+ End
+  Else
+ If OutputLanguage<>LangTurboPascal Then Begin
+  If gr<>0 Then Write(FileOutput,'pour Gr= ',gname[gr],' Seg=',sname[sg])
+           Else Write(FileOutput,'pour Seg= ',sname[sg]);
+ End;
  While rleft>1 do Begin
-  WriteLn(FileOutput);
-  Write(FileOutput,getname:30,' '+#133+' ',HexWord2Str(geti),' , type=',getx)
+  PublicName:=GetName;
+  PublicOfs:=GetI;
+  PublicType:=GetX;
+  If pi<100 Then Begin
+   pi:=pi+1;
+   pname[pi]:=PublicName;
+   pseg[pi]:=sg;
+   pofs[pi]:=PublicOfs;
+  End;
+  If OutputLanguage<>LangTurboPascal Then Begin
+   WriteLn(FileOutput);
+   Write(FileOutput,PublicName:30,' '+#133+' ',HexWord2Str(PublicOfs),' , type=',PublicType)
+  End;
  End;
 End;
 
@@ -312,19 +441,22 @@ Var
  ni:Integer;
 Begin
  rlen:=geti;
- WriteLn(FileOutput,rlen:6,'LNAMES:':15);
+ If OutputLanguage<>LangTurboPascal Then WriteLn(FileOutput,rlen:6,'LNAMES:':15);
  rleft:=rlen;i:=1;ni:=1; lname[0]:='????';
  Repeat
   lname[ni]:=getname;
-  Write(FileOutput,i:6,': ',lname[ni]:12);i:=i+1;ni:=ni+1
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,i:6,': ',lname[ni]:12);
+  i:=i+1;ni:=ni+1
  Until rleft<=1;
 End;
 
 Procedure SEGDEF;
 Var
- fr,ofs,len,w:Integer;
+ fr,ofs,len,w,SegName,ClassName:Integer;
 Begin
- Write(FileOutput,geti:6);
+ fr:=0; ofs:=0;
+ RLen:=GetI;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,rlen:6);
  d:=getb;
  If(d and 1)<>0 then Error('Page resident bit=1');
  If fld(d,6,3)=0 then Begin
@@ -333,28 +465,38 @@ Begin
  End;
  Len:=GetI;
  si:=si+1;
- sname[si]:=lname[getx];
- Write(FileOutput,' SEGM(',sname[si]:12,' )   ');
- Case fld(d,6,3) of
-  0:Write(FileOutput,' '+#133+' ',HexWord2Str(fr):4,':',HexWord2Str(ofs):2);
-  1:Write(FileOutput,'BYTE');
-  2:Write(FileOutput,'WORD');
-  3:Write(FileOutput,'PARA');
-  4:Write(FileOutput,'PAGE')
+ SegName:=GetX;
+ sname[si]:=lname[SegName];
+ If OutputLanguage<>LangTurboPascal Then Begin
+  Write(FileOutput,' SEGM(',sname[si]:12,' )   ');
+  Case fld(d,6,3) of
+   0:Write(FileOutput,' '+#133+' ',HexWord2Str(fr):4,':',HexWord2Str(ofs):2);
+   1:Write(FileOutput,'BYTE');
+   2:Write(FileOutput,'WORD');
+   3:Write(FileOutput,'PARA');
+   4:Write(FileOutput,'PAGE')
+  End;
+  Case fld(d,3,3) of
+   0:If(d shr 5)<>0 Then Write(FileOutput,' NOCOMB');
+   1,3:Error('Mauvaise combination de type');
+   2,4,7:Write(FileOutput,' PUBLIC');
+   5:    Write(FileOutput,'  STACK');
+   6:    Write(FileOutput,' COMMON')
+  End;
+  Write(FileOutput,' SIZE=');
+  If bit(d,2)Then Write(FileOutput,'10000')
+             Else Write(FileOutput,HexWord2Str(len));
+ End
+  Else
+ Begin
+  Case fld(d,3,3) of
+   1,3:Error('Mauvaise combination de type');
+  End;
  End;
- Case fld(d,3,3) of
-  0:If(d shr 5)<>0 Then Write(FileOutput,' NOCOMB');
-  1,3:Error('Mauvaise combination de type');
-  2,4,7:Write(FileOutput,' PUBLIC');
-  5:    Write(FileOutput,'  STACK');
-  6:    Write(FileOutput,' COMMON')
- End;
- Write(FileOutput,' SIZE=');
- If bit(d,2)Then Write(FileOutput,'10000')
-            Else Write(FileOutput,HexWord2Str(len));
- Write(FileOutput,' Class:',lname[getx]:8);
+ ClassName:=GetX;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,' Class:',lname[ClassName]:8);
  w:=GetX;
- If lname[w]<>'' then Write(FileOutput,' Recouvrement:',lname[w]:8);
+ If (OutputLanguage<>LangTurboPascal)And(lname[w]<>'') then Write(FileOutput,' Recouvrement:',lname[w]:8);
 End;
 
 Procedure SEGDEFL;Begin
@@ -434,16 +576,41 @@ Begin
  End
 End;
 
+Procedure WriteTurboPascalData(Seg,Ofs:Integer);
+Var
+ Cn:Byte;
+Begin
+ WriteLn(FileOutput,'Function ',GeneratedProcName(Seg,Ofs),':Boolean;Assembler;');
+ WriteLn(FileOutput,'ASM');
+ While RLeft<>1 Do Begin
+  Write(FileOutput,' DB ');
+  Cn:=0;
+  While (Cn<12) And (RLeft<>1) Do Begin
+   d:=GetB;
+   If Cn<>0 Then Write(FileOutput,',');
+   Write(FileOutput,'$',ByteHex2Str(d));
+   Cn:=Cn+1;
+  End;
+  WriteLn(FileOutput);
+ End;
+ WriteLn(FileOutput,'END;');
+End;
+
 Procedure LEDATA;
 Var
  cn,I:byte;
- ofs:Integer;
+ ofs,Seg:Integer;
  St:String[16];
 Begin
  rlen:=GetI;
  rleft:=rlen;
- Write(FileOutput,rlen:6,' ENUMERATION DE DONNEES pour ',sname[getx],' DEPLACEMENT=');
+ Seg:=GetX;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,rlen:6,' ENUMERATION DE DONNEES pour ',sname[Seg],' DEPLACEMENT=');
  ofs:=(geti);
+ If OutputLanguage=LangTurboPascal Then Begin
+  WriteTurboPascalData(Seg,Ofs);
+  Exit;
+ End;
  writeln(FileOutput,HexWord2Str(ofs));
  Repeat
  cn:=0;st:='';
@@ -570,58 +737,109 @@ Procedure ProcessRecord;Begin
  chk:=0;
  GetRecordToBuffer;
  Rect:=GetB;
- Case rect of
-  $6E:RHEADR;
-  $70:REGINT;
+ If OutputLanguage=LangTurboPascal Then Begin
+  Case rect of
+   $6E:RHEADR;
+    $70:REGINT;
   $72:REDATA;
-  $74:RIDATA;
-  $76:OVLDEF;
-  $78:ENDREC;
-  $7A:BLKREC;
-  $7C:BLKEND;
-  $7E:DEBSYM;
-  $80:THEADR;
-  $82:LHEADR;
-  $84:PEDATA;
-  $86:PIDATA;
-  $88:COMENT;
-  $8A:MODEND;
-  $8C:MODENDL;
-  $8E:TYPDEF;
-  $90:PUBDEF;
-  $91:PUBDEFL;
-  $92:LOCSYM;
-  $94:LINNUM;
-  $96:LNAMES;
-  $98:SEGDEF;
-  $99:SEGDEFL;
-  $9A:GRPDEF;
-  $9C:FIXUPP;
-  $9D:{FIXUPP};
-  $A0:LEDATA;
-  $A1:LEDATAL;
-  $A2:LIDATA;
-  $A3:LIDATAL;
-  $A4:LIBHED;
-  $A6:LIBNAM;
-  $A8:LIBLOC;
-  $AA:LIBDIC;
-  $B0:COMDEF;
-  $B4:LEXTDEF;
-  $B6:LPUBDEF;
-  $B7:LPUBDF2;
-  $B8:LCOMDEF;
-  $F0:LIBHDR;
-  $F1:LIBEND;
-  Else Begin
-   RLen:=GetI;
-   RLeft:=RLen;
-   WriteLn(FileOutput,rlen:6,' Inconnu:',ByteHex2Str(Rect));
-   While rleft>1 do Write(FileOutput,ByteHex2Str(GetB):4);
+   $74:SkipRecord;
+   $76:SkipRecord;
+   $78:SkipRecord;
+   $7A:SkipRecord;
+   $7C:SkipRecord;
+   $7E:SkipRecord;
+   $80:THEADR;
+   $82:SkipRecord;
+   $84:SkipRecord;
+   $86:SkipRecord;
+   $88:SkipRecord;
+   $8A:SkipRecord;
+   $8C:SkipRecord;
+   $8E:SkipRecord;
+   $90:PUBDEF;
+   $91:SkipRecord;
+   $92:SkipRecord;
+   $94:SkipRecord;
+   $96:LNAMES;
+   $98:SEGDEF;
+   $99:SkipRecord;
+   $9A:SkipRecord;
+   $9C:SkipRecord;
+   $9D:SkipRecord;
+   $A0:LEDATA;
+   $A1:SkipRecord;
+   $A2:SkipRecord;
+   $A3:SkipRecord;
+   $A4:SkipRecord;
+   $A6:SkipRecord;
+   $A8:SkipRecord;
+   $AA:SkipRecord;
+   $B0:SkipRecord;
+   $B4:SkipRecord;
+   $B6:SkipRecord;
+   $B7:SkipRecord;
+   $B8:SkipRecord;
+   $F0:SkipRecord;
+   $F1:SkipRecord;
+   Else SkipRecord;
+  End;
+ End
+  Else
+ Begin
+  Case rect of
+   $6E:RHEADR;
+   $70:REGINT;
+   $72:REDATA;
+   $74:RIDATA;
+   $76:OVLDEF;
+   $78:ENDREC;
+   $7A:BLKREC;
+   $7C:BLKEND;
+   $7E:DEBSYM;
+   $80:THEADR;
+   $82:LHEADR;
+   $84:PEDATA;
+   $86:PIDATA;
+   $88:COMENT;
+   $8A:MODEND;
+   $8C:MODENDL;
+   $8E:TYPDEF;
+   $90:PUBDEF;
+   $91:PUBDEFL;
+   $92:LOCSYM;
+   $94:LINNUM;
+   $96:LNAMES;
+   $98:SEGDEF;
+   $99:SEGDEFL;
+   $9A:GRPDEF;
+   $9C:FIXUPP;
+   $9D:{FIXUPP};
+   $A0:LEDATA;
+   $A1:LEDATAL;
+   $A2:LIDATA;
+   $A3:LIDATAL;
+   $A4:LIBHED;
+   $A6:LIBNAM;
+   $A8:LIBLOC;
+   $AA:LIBDIC;
+   $B0:COMDEF;
+   $B4:LEXTDEF;
+   $B6:LPUBDEF;
+   $B7:LPUBDF2;
+   $B8:LCOMDEF;
+   $F0:LIBHDR;
+   $F1:LIBEND;
+   Else Begin
+    RLen:=GetI;
+    RLeft:=RLen;
+    WriteLn(FileOutput,rlen:6,' Inconnu:',ByteHex2Str(Rect));
+    While rleft>1 do Write(FileOutput,ByteHex2Str(GetB):4);
+   End;
   End;
  End;
  ChkSum;
- WriteLn(FileOutput);
+ If OutputLanguage<>LangTurboPascal Then WriteLn(FileOutput)
+                                  Else If Rect=$A0 Then WriteLn(FileOutput);
 End;
 
 BEGIN
@@ -629,13 +847,13 @@ BEGIN
   WriteLn('DISOBJ : Cette commande permet d''analyser et ',
                   ' de d'+#130+'sassembler un fichier .OBJ');
   WriteLn;
-  WriteLn('Syntaxe : DISOBJ [fichier-obj] [sortie-texte] ');
+  WriteLn('Syntaxe : DISOBJ [fichier-obj] [sortie] [/LANGUAGE:TEXT|TURBOPASCAL|TP] ');
  End
   Else
  Begin
   FileNameOutput:='';
-  Case ParamCount of
-   0:Begin
+  OutputLanguage:=LangText;
+  If ParamCount=0 Then Begin
     Write('Entr'+#130+'e :');
     ReadLn(FileNameOBJ);
     If Pos('.',FileNameOBJ)=0 Then FileNameOBJ:=FileNameOBJ+'.OBJ';
@@ -644,20 +862,28 @@ BEGIN
     ReadLn(FileNameOutput);
     If FileNameOutput='' Then FileNameOutput:='CON';
     Assign(FileOutput,FileNameOutput)
-   End;
-   1:Begin
-    FileNameOBJ:=ParamStr(1);
-    If Pos('?',FileNameOutput)<>0 Then Begin
+  End
+   Else
+  Begin
+   FileNameOBJ:='';
+   For i:=1 To ParamCount Do Begin
+    Arg:=ParamStr(i);
+    If StartsLanguageOption(Arg) Then SetOutputLanguage(Arg) Else
+    If FileNameOBJ='' Then FileNameOBJ:=Arg Else
+    If FileNameOutput='' Then FileNameOutput:=Arg Else Begin
      WriteLn('Param'+#138+'tre invalide');
      Halt;
     End;
-    Assign(FileOutput,'CON')
    End;
-   2:Begin
-    FileNameOBJ:=ParamStr(1);
-    Assign(FileOutput,ParamStr(2))
+   If FileNameOBJ='' Then Begin
+    WriteLn('Param'+#138+'tre invalide');
+    Halt;
    End;
-   Else WriteLn('Param'+#138+'tre invalide');
+    If FileNameOutput='' Then Assign(FileOutput,'CON')
+     Else Begin
+     If (OutputLanguage=LangTurboPascal)And(Pos('.',FileNameOutput)=0)And(UpperStr(FileNameOutput)<>'CON') Then FileNameOutput:=FileNameOutput+'.PAS';
+     Assign(FileOutput,FileNameOutput);
+    End;
   End;
   If Pos('.',FileNameOBJ)=0 Then FileNameOBJ:=FileNameOBJ+'.OBJ';
   Assign(FileInput,FileNameOBJ);
@@ -667,11 +893,12 @@ BEGIN
    Halt;
   End;
   Rewrite(FileOutput);
-  si:=0;gi:=0;ei:=0;
+  si:=0;gi:=0;ei:=0;pi:=0;
   SName[0]:='????';
   GName[0]:='';
   EName[0]:='????';
   While Not Eof(FileInput) do ProcessRecord;
   Close(FileInput);
+  Close(FileOutput);
  End;
 END.

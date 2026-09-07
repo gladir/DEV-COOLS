@@ -2118,22 +2118,87 @@ Const
  { 0040:0100 (une adresse arbitraire dans la zone de donnees BIOS, SANS     }
  { aucune structure reelle derriere) donc HIMEM.SYS lisait des octets       }
  { totalement non lies et abandonnait silencieusement son installation.    }
- { Corrige en placant une VRAIE mini-structure : une "liste de listes"      }
- { presque entierement a zero (champs non implementes = 0, inoffensif pour }
- { un pilote qui ne s interesse qu a la chaine de peripheriques) SAUF le    }
- { champ "pointeur vers l en-tete NUL" a l offset $22 (disposition standard}
- { et stable DOS 3.x-6.x, tres documentee) qui pointe vers un VRAI en-tete }
- { de pilote NUL minimal (chainage FFFF:FFFF = fin de chaine, nom NUL      }
- { complete d espaces) - exactement ce qu un parcours de chaine reel       }
- { trouve sur un vrai MS-DOS fraichement demarre (NUL est toujours le      }
- { premier maillon), avant }
- { l installation de tout pilote DEVICE= supplementaire. Emplacement       }
- { choisi dans le segment $F000 ($F600/$F640) - au-dela de toute la fenetre}
- { deja utilisee par TopView ($9000-$F4FF), donc sans collision. }
+ { CHANTIER "structures internes DOS" (2026-09-06, demande explicite de     }
+ { l utilisateur - "implemente toutes les structures internes du DOS :     }
+ { SDA, InDOS, DPB, SFT, CDS, MCB, PSP, LOL", fidelite octet-pres y compris }
+ { le SDA integral) : la mini-structure ci-dessus (champ NUL uniquement)    }
+ { est remplacee par la VRAIE disposition DOS 4.0+ ("liste de listes"      }
+ { etendue, 71 octets) - source PRIMAIRE : code source MS-DOS 4.0 publie   }
+ { par Microsoft (github.com/microsoft/MS-DOS, v4.0/src/INC/SYSVAR.INC,    }
+ { structure SysInitVars), croise avec Ralph Brown Interrupt List Table    }
+ { #01627. Voir aussi DPB.INC/SF.INC/CURDIR.INC (memes sources) pour       }
+ { Emu_DpbInit/TEmuSftEntry/TEmuCdsEntry plus bas. MCB (Emu_McbChainInit,   }
+ { plus bas dans ce fichier) et PSP (TEmuPSPRecord, Emu_LoadComAt/ExeAt)    }
+ { deja reels depuis les chantiers precedents. }
  EMU_LOL_SEG        = $F000;
- EMU_LOL_OFS        = $F600; { "liste de listes" (SYSVARS), 48 octets reserves }
- EMU_LOL_NULDEV_OFS = $F640; { en-tete du pilote NUL (18 octets), pointe par   }
-                              { EMU_LOL_OFS+$22 }
+ EMU_LOL_OFS        = $F600; { "liste de listes" (SYSVARS), 71 octets      }
+ EMU_LOL_SIZE       = $47;
+ { En-tete de pilote NUL (18 octets : lien+attr+strategie+interruption+nom)}
+ { EMBARQUE directement a EMU_LOL_OFS+$22 (PAS un pointeur vers ailleurs   }
+ { comme avant) - disposition reelle confirmee par les DEUX sources        }
+ { primaires ci-dessus (SYSI_DEV/ATTR/STRAT/INTER/NAME contigus dans       }
+ { SYSVAR.INC ; "18 BYTEs NUL device driver header" dans RBIL, toutes       }
+ { versions DOS). }
+ EMU_LOL_NULDEV_OFS = EMU_LOL_OFS + $22;
+
+ { SDA (Swappable Data Area, INT 21h AX=5D06h) - disposition DOS 3.10-3.30 }
+ { complete (1852 octets, offsets -34..73Bh), source : Ralph Brown         }
+ { Interrupt List Table #01687. Champs reellement significatifs pour un    }
+ { programme invite (CritErr/InDOS/DTA/PSP/tampon date, voir               }
+ { Emu_LolSdaInit et le maintien de l indicateur InDOS autour de           }
+ { Emu_DoInt21) tenus a jour ; le reste (piles internes du noyau DOS,       }
+ { tampons de renommage, zones de travail de reentrance - jamais lues par  }
+ { un programme invite, et sans equivalent dans l architecture de cet      }
+ { emulateur qui ne reproduit pas la machine a etats de reentrance interne }
+ { du vrai noyau DOS) reste a zero, comme le serait une zone jamais         }
+ { touchee depuis le demarrage sur un vrai DOS inactif. }
+ EMU_SDA_SEG  = $E000;
+ EMU_SDA_OFS  = $0000;
+ EMU_SDA_SIZE = $073C;
+
+ { DPB (Drive Parameter Block) - disposition DOS 4.0, source : MS-DOS 4.0  }
+ { publie, DPB.INC (33 octets/entree). Une entree par lecteur monte        }
+ { (FatVol[0..3], voir Fat_TryMount), chainees par dpb_next_dpb - voir      }
+ { Emu_DpbInit. }
+ EMU_DPB_SEG        = $E100;
+ EMU_DPB_OFS        = $0000;
+ EMU_DPB_ENTRY_SIZE = 33;
+
+ { CDS (Current Directory Structure) - disposition DOS 4.0, source :       }
+ { MS-DOS 4.0 publie, CURDIR.INC (structure curdir_list, 88 octets/entree),}
+ { croisee avec la reference secondaire techhelpmanual.com (memes offsets).}
+ { Une entree par lettre de lecteur A..E (LASTDRIVE=E, valeur par defaut    }
+ { DOS classique en l absence de CONFIG.SYS - voir Emu_CdsInit et le       }
+ { nouveau suivi EmuDriveCwd, qui comble un vrai manque : AH=3Bh/47h ne      }
+ { suivaient auparavant AUCUN repertoire par lettre de lecteur, voir         }
+ { Emu_DoInt21 cases $3B/$47). }
+ EMU_CDS_SEG       = $E200;
+ EMU_CDS_OFS       = $0000;
+ EMU_CDS_ENTRY_SIZE = 88;
+ EMU_CDS_COUNT      = 5; { A: B: C: D: E: - LASTDRIVE=E par defaut }
+
+ { SFT (System File Table) - disposition DOS 4.0, source : MS-DOS 4.0      }
+ { publie, SF.INC (en-tete de chaine 6 octets + entrees de 59 octets).     }
+ { Une entree par handle EmuFileH[5..31] deja existant (voir Emu_SftInit/  }
+ { Emu_SftSetEntry/Emu_SftClearEntry, appelees aux memes points que         }
+ { EmuFileOpen). }
+ EMU_SFT_SEG        = $E300;
+ EMU_SFT_OFS        = $0000;
+ EMU_SFT_ENTRY_SIZE = 59;
+ EMU_SFT_HDR_SIZE   = 6;
+
+ { ASSIGN (INT 2Fh AH=06h, Options > Emulateur > DOS: OS > "ASSIGN") -      }
+ { demande explicite de l utilisateur (2026-09-06), rendue possible par la  }
+ { case a cocher precedente : AX=0600h (verification d installation) et     }
+ { AX=0601h (table d assignation, ES:0103h, source : Ralph Brown Interrupt  }
+ { List, entrees "2F0600"/"2F0601"). Limite assumee et documentee : la      }
+ { table est reellement lisible/modifiable (AX=0602h, voir Emu_DoInt2F)     }
+ { mais ne modifie PAS encore la resolution reelle des chemins              }
+ { (Emu_HostPath ignore deja la lettre de lecteur pour tout acces fichier,  }
+ { voir l enquete CDS/DPB plus haut - faire suivre une vraie redirection     }
+ { de lettre jusque-la serait un chantier separe, plus large). }
+ EMU_ASSIGN_SEG     = $E400;
+ EMU_ASSIGN_TBL_OFS = $0103;
 
  { INT 15h AH=C0h ("Get System Configuration Parameters") - voir                }
  { Emu_DoInt15AT case $C0 : BOGUE REEL (2026-08-24, trouve en poursuivant       }
@@ -6089,6 +6154,7 @@ Type
   DosLAN          : Boolean;     { reseau LAN generique           }
   DosLANVendor    : Integer;     { fabricant/produit du pilote LAN}
   DosNetBios      : Boolean;     { pile NetBIOS (INT 5Ch)         }
+  DosAssign       : Boolean;     { ASSIGN (INT 2Fh AH=06h)        }
   DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
   DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
   DosLogInt13     : Boolean;     { journal EMUINT13.LOG (appels BIOS disque) }
@@ -7275,6 +7341,13 @@ Var
                             { Free ci-dessus, chaine MCB reelle).           }
  EmuMcbFirstSeg : Word;     { segment du 1er MCB de la chaine, 0=aucune    }
                             { chaine initialisee (voir Emu_McbChainInit)   }
+ { CDS (Current Directory Structure, voir Emu_CdsInit/Emu_CdsRefreshPath) :}
+ { repertoire courant DOS de chaque lecteur A:..E: (EMU_CDS_COUNT),         }
+ { RELATIF a la racine du lecteur, sans lettre ni backslash de tete (meme   }
+ { convention que ce que AH=47h rend reellement) - '' = racine. Nouveau      }
+ { suivi reel (voir le commentaire de tete de Emu_CdsInit) : AH=3Bh/47h ne  }
+ { suivaient auparavant AUCUN repertoire par lecteur. }
+ EmuDriveCwd : Array[0..EMU_CDS_COUNT - 1] Of String;
  { Clear-Variable/Set-Variable (2026-08-31, PowerShell dev, demande         }
  { explicite de l'utilisateur) : segment REEL et DEDIE de l'environnement   }
  { DOS du programme courant - carve a meme EmuNextFreeSeg (16 paragraphes,  }
@@ -113369,6 +113442,266 @@ Begin
  Emu_McbCoalesceAll(C);
 End;
 
+{ ========================================================================= }
+{ DPB/CDS/SFT/SDA - suite du chantier "structures internes DOS" (2026-09-06,}
+{ demande explicite : "implemente toutes les structures internes du DOS :   }
+{ SDA, InDOS, DPB, SFT, CDS, MCB, PSP, LOL", fidelite octet-pres, y compris }
+{ le SDA integral). Sources primaires : code source MS-DOS 4.0 publie par   }
+{ Microsoft (github.com/microsoft/MS-DOS, v4.0/src/INC/DPB.INC, SF.INC,     }
+{ CURDIR.INC) et Ralph Brown Interrupt List Table #01687 (SDA). Voir le      }
+{ commentaire pres de EMU_SDA_SEG/EMU_DPB_SEG/EMU_CDS_SEG/EMU_SFT_SEG pour   }
+{ l implantation memoire retenue. }
+
+{ DPB (Drive Parameter Block, 33 octets/entree) - une entree par lecteur    }
+{ REELLEMENT monte (FatVol[0..3].Mounted, voir Fat_TryMount qui a deja       }
+{ extrait toute la geometie FAT necessaire), chainees par dpb_next_dpb.      }
+{ Limite assumee et documentee : les volumes FAT32 recoivent quand meme ce  }
+{ DPB "classique" 33 octets (pas la variante etendue DOS 7+) - un vrai DOS  }
+{ reel de cette epoque (celui que cet emulateur simule, voir AH=30h qui      }
+{ annonce 5.00) ne saurait de toute facon pas monter un volume FAT32.        }
+{ dpb_media/dpb_next_free/dpb_free_cnt n ont pas d equivalent traque par     }
+{ cet emulateur (pas de recherche de cluster libre ni de comptage tenu a     }
+{ jour) - valeurs par defaut honnetes ($F0/$F8 media plausible par type de   }
+{ lecteur, $FFFF "inconnu" pour free_cnt, convention documentee par la       }
+{ source MS-DOS elle-meme pour ce dernier champ). Appelee une fois au        }
+{ demarrage, comme Emu_InitBDA. }
+Procedure Emu_DpbInit(Var P: TEmulatorPanel);
+Var
+ I, Cnt: Integer;
+ Idx: Array[0..3] Of Integer;
+ Ofs: Word;
+ ClusterShift: Byte;
+ CM: LongInt;
+Begin
+ Cnt := 0;
+ For I := 0 To 3 Do
+  If EmuFloppyOpen[I] And FatVol[I].Mounted Then Begin
+   Idx[Cnt] := I;
+   Inc(Cnt);
+  End;
+ For I := 0 To Cnt - 1 Do Begin
+  Ofs := Word(I * EMU_DPB_ENTRY_SIZE);
+  Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 0, Byte(Idx[I])); { dpb_drive }
+  Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 1, Byte(Idx[I])); { dpb_UNIT }
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 2, Word(FatVol[Idx[I]].BytesPerSector));
+  CM := FatVol[Idx[I]].SectorsPerCluster;
+  ClusterShift := 0;
+  While CM > 1 Do Begin CM := CM Shr 1; Inc(ClusterShift); End;
+  Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 4, Byte(FatVol[Idx[I]].SectorsPerCluster - 1));
+  Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 5, ClusterShift);
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 6, Word(FatVol[Idx[I]].FATStart));
+  Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 8, Byte(FatVol[Idx[I]].NumFATs));
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 9, Word(FatVol[Idx[I]].RootEntries));
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 11, Word(FatVol[Idx[I]].DataStart));
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 13, Word(FatVol[Idx[I]].ClusterCount + 1));
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 15, Word(FatVol[Idx[I]].SectorsPerFAT));
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 17, Word(FatVol[Idx[I]].RootStart));
+  Emu_WriteDWord(P.CPU, EMU_DPB_SEG, Ofs + 19, 0); { dpb_driver_addr : aucun point d entree de pilote reel }
+  If Idx[I] < 2 Then Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 23, $F0) { disquette }
+  Else Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 23, $F8);              { disque dur }
+  Emu_WriteByte(P.CPU, EMU_DPB_SEG, Ofs + 24, $FF); { dpb_first_access : forcer verif media }
+  If I < Cnt - 1 Then Begin
+   Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 25, Word((I + 1) * EMU_DPB_ENTRY_SIZE));
+   Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 27, EMU_DPB_SEG);
+  End Else Begin
+   Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 25, $FFFF);
+   Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 27, $FFFF);
+  End;
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 29, 0);      { dpb_next_free : non suivi }
+  Emu_WriteWord(P.CPU, EMU_DPB_SEG, Ofs + 31, $FFFF);  { dpb_free_cnt : inconnu (convention documentee) }
+ End;
+End;
+
+{ Trouve le DPB (segment:offset dans EMU_DPB_SEG) du lecteur DL (0=A:,1=B:, }
+{ 2=C:,3=D:) - renvoie False si ce lecteur n est pas monte (aucun DPB). }
+Function Emu_DpbFind(DL: Byte; Var DpbOfs: Word): Boolean;
+Var I, Cnt: Integer;
+Begin
+ Emu_DpbFind := False;
+ Cnt := 0;
+ For I := 0 To 3 Do
+  If EmuFloppyOpen[I] And FatVol[I].Mounted Then Begin
+   If Byte(I) = DL Then Begin
+    DpbOfs := Word(Cnt * EMU_DPB_ENTRY_SIZE);
+    Emu_DpbFind := True;
+    Exit;
+   End;
+   Inc(Cnt);
+  End;
+End;
+
+{ CDS (Current Directory Structure, 88 octets/entree) - une entree par      }
+{ lettre A:..E: (EMU_CDS_COUNT, LASTDRIVE=E par defaut). BOGUE REEL corrige }
+{ au passage (2026-09-06) : AH=3Bh (CHDIR)/AH=47h (Get Current Directory)   }
+{ ne suivaient auparavant AUCUN repertoire par lettre de lecteur - AH=3Bh    }
+{ se contentait d un ChDir() hote inconditionnel et AH=47h renvoyait        }
+{ toujours une chaine vide, quelle que soit DL. Voir le nouveau tableau     }
+{ EmuDriveCwd (chemin DOS relatif a la racine du lecteur, sans lettre ni    }
+{ backslash de tete, comme le stocke reellement AH=47h) et les cases $3B/   }
+{ $47 de Emu_DoInt21. }
+Procedure Emu_CdsInit(Var P: TEmulatorPanel);
+Var I, J: Integer; Seg, Ofs: Word; PathStr: String; DpbOfs: Word;
+Begin
+ For I := 0 To EMU_CDS_COUNT - 1 Do Begin
+  EmuDriveCwd[I] := '';
+  Seg := EMU_CDS_SEG;
+  Ofs := Word(I * EMU_CDS_ENTRY_SIZE);
+  PathStr := Chr(Ord('A') + I) + ':\';
+  For J := 1 To 67 Do
+   If J <= Length(PathStr) Then Emu_WriteByte(P.CPU, Seg, Ofs + J - 1, Byte(PathStr[J]))
+   Else Emu_WriteByte(P.CPU, Seg, Ofs + J - 1, 0);
+  If Emu_DpbFind(Byte(I), DpbOfs) Then Begin
+   Emu_WriteWord(P.CPU, Seg, Ofs + $43, $8000); { curdir_flags : bit "en usage" (voir limite documentee de tete) }
+   Emu_WriteWord(P.CPU, Seg, Ofs + $45, DpbOfs);
+   Emu_WriteWord(P.CPU, Seg, Ofs + $47, EMU_DPB_SEG);
+  End Else Begin
+   Emu_WriteWord(P.CPU, Seg, Ofs + $43, 0); { lettre non montee : bit "en usage" absent }
+   Emu_WriteWord(P.CPU, Seg, Ofs + $45, 0);
+   Emu_WriteWord(P.CPU, Seg, Ofs + $47, 0);
+  End;
+  Emu_WriteWord(P.CPU, Seg, Ofs + $49, 0);      { curdir_ID : cluster du repertoire courant (racine=0) }
+  Emu_WriteDWord(P.CPU, Seg, Ofs + $4B, LongInt(-1)); { reserve, toujours FFFFFFFFh (documente ainsi) }
+  Emu_WriteWord(P.CPU, Seg, Ofs + $4D, 0);      { curdir_user_word }
+  Emu_WriteWord(P.CPU, Seg, Ofs + $4F, 2);      { curdir_end : offset du 1er '\' dans le chemin (apres "X:") }
+  Emu_WriteByte(P.CPU, Seg, Ofs + $51, 0);      { curdir_type : 0 = lecteur DOS local normal }
+  Emu_WriteDWord(P.CPU, Seg, Ofs + $52, 0);     { curdir_ifs_hdr : aucun IFS emule }
+  Emu_WriteWord(P.CPU, Seg, Ofs + $56, 0);
+ End;
+End;
+
+{ Reconstruit le texte du chemin (X:\...) d une entree CDS a partir de      }
+{ EmuDriveCwd[Idx] - appelee par les cases $3B/$47 de Emu_DoInt21 des que    }
+{ EmuDriveCwd change. Chemin DOS tronque a 64 caracteres utiles (67 octets  }
+{ de champ moins "X:\" et le NUL final) - limite honnete plutot que de       }
+{ risquer un debordement du champ curdir_text reel. }
+Procedure Emu_CdsRefreshPath(Var P: TEmulatorPanel; Idx: Integer);
+Var Seg, Ofs: Word; PathStr: String; J: Integer;
+Begin
+ If (Idx < 0) Or (Idx >= EMU_CDS_COUNT) Then Exit;
+ Seg := EMU_CDS_SEG;
+ Ofs := Word(Idx * EMU_CDS_ENTRY_SIZE);
+ PathStr := Chr(Ord('A') + Idx) + ':\' + EmuDriveCwd[Idx];
+ If Length(PathStr) > 66 Then PathStr := Copy(PathStr, 1, 66);
+ For J := 1 To 67 Do
+  If J <= Length(PathStr) Then Emu_WriteByte(P.CPU, Seg, Ofs + J - 1, Byte(PathStr[J]))
+  Else Emu_WriteByte(P.CPU, Seg, Ofs + J - 1, 0);
+End;
+
+{ SFT (System File Table, 59 octets/entree DOS 4.0+ avec UID/PID/MFT) -     }
+{ une entree par handle EmuFileH[5..31] deja existant. Contrairement a       }
+{ MCB/DPB/CDS, ce moteur ne conserve aujourd hui AUCUNE metadonnee par       }
+{ handle au-dela du triplet (File Pascal, chemin hote, mode) - taille/      }
+{ attribut/date sont donc relus EN DIRECT depuis le fichier hote au moment  }
+{ de construire l entree SFT (FileSize/FileGetDate, meme source que ce que  }
+{ AH=3Fh/AH=57h rapportent deja ailleurs) plutot que dupliques et           }
+{ potentiellement perimes. sf_ref_count reste a 1 (pas de partage de        }
+{ handle entre process modelise), sf_firclus/sf_cluspos/sf_dirsec/          }
+{ sf_dirpos n ont pas d equivalent reel (le fichier vit sur le systeme de   }
+{ fichiers HOTE, pas sur une image FAT montee - voir Emu_HostPath) : zero,  }
+{ honnete plutot qu invente. }
+Procedure Emu_SftClearEntry(Var P: TEmulatorPanel; H: Integer);
+Var Ofs: Word; I: Integer;
+Begin
+ If (H < 5) Or (H > 31) Then Exit;
+ Ofs := Word(EMU_SFT_HDR_SIZE + (H - 5) * EMU_SFT_ENTRY_SIZE);
+ For I := 0 To EMU_SFT_ENTRY_SIZE - 1 Do
+  Emu_WriteByte(P.CPU, EMU_SFT_SEG, Ofs + I, 0);
+End;
+
+Procedure Emu_SftSetEntry(Var P: TEmulatorPanel; H: Integer);
+Var
+ Ofs: Word; I: Integer;
+ Sz: LongInt;
+ NameStr: String;
+ ModeWord: Word;
+Begin
+ If (H < 5) Or (H > 31) Or (Not EmuFileOpen[H]) Then Exit;
+ Ofs := Word(EMU_SFT_HDR_SIZE + (H - 5) * EMU_SFT_ENTRY_SIZE);
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 0, 1);       { sf_ref_count }
+ Case EmuFileMode[H] Of
+  0: ModeWord := 0; 1: ModeWord := 1;
+  Else ModeWord := 2;
+ End;
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 2, ModeWord); { sf_mode }
+ Emu_WriteByte(P.CPU, EMU_SFT_SEG, Ofs + 4, $20);      { sf_attr : archive (valeur la plus courante, non suivie par octet) }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 5, 0);        { sf_flags }
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 7, 0);       { sf_devptr : pas de DPB (fichier hote, pas une image FAT montee) }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 11, 0);       { sf_firclus }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 13, 0);       { sf_time }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 15, 0);       { sf_date }
+ {$I-} Sz := FileSize(EmuFileH[H]); {$I+}
+ If IOResult <> 0 Then Sz := 0;
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 17, LongWord(Sz)); { sf_size }
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 21, 0);      { sf_position }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 25, 0);       { sf_cluspos }
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 27, 0);      { sf_dirsec }
+ Emu_WriteByte(P.CPU, EMU_SFT_SEG, Ofs + 31, 0);       { sf_dirpos }
+ NameStr := EmuFileName[H];
+ For I := Length(NameStr) DownTo 1 Do
+  If (NameStr[I] = '\') Or (NameStr[I] = '/') Then Begin
+   NameStr := Copy(NameStr, I + 1, Length(NameStr) - I);
+   Break;
+  End;
+ If Length(NameStr) > 11 Then NameStr := Copy(NameStr, 1, 11);
+ For I := 1 To 11 Do
+  If I <= Length(NameStr) Then Emu_WriteByte(P.CPU, EMU_SFT_SEG, Ofs + 31 + I, Byte(Upcase(NameStr[I])))
+  Else Emu_WriteByte(P.CPU, EMU_SFT_SEG, Ofs + 31 + I, Ord(' '));
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 43, 0);      { sf_chain : pas de partage multi-bloc modelise }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 47, 0);       { sf_UID }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 49, EmuPspSeg); { sf_PID }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 51, H);       { sf_MFT }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, Ofs + 53, 0);       { sf_lstclus }
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 55, 0);      { sf_IFS_HDR }
+End;
+
+Procedure Emu_SftInit(Var P: TEmulatorPanel);
+Var H: Integer;
+Begin
+ Emu_WriteDWord(P.CPU, EMU_SFT_SEG, 0, LongInt(-1)); { SFLink : un seul bloc SFT, jamais chaine }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, 4, 27);          { SFCount : 5..31 = 27 handles }
+ For H := 5 To 31 Do Emu_SftClearEntry(P, H);
+End;
+
+{ SDA (Swappable Data Area, INT 21h AX=5D06h, 1852 octets) - voir le         }
+{ commentaire pres de EMU_SDA_SEG pour la portee retenue (champs           }
+{ significatifs tenus a jour, reste a zero). Appelee une fois au            }
+{ demarrage, comme Emu_InitBDA ; les champs "courants" (DTA/PSP/drive/      }
+{ InDOS) sont rafraichis a chaque appel INT 21h par Emu_SdaRefresh          }
+{ (voir Emu_DoInt, case $21). }
+Procedure Emu_SdaInit(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ For I := 0 To EMU_SDA_SIZE - 1 Do
+  Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + I, 0);
+End;
+
+{ Rafraichit les champs "courants" du SDA - appelee a CHAQUE entree dans     }
+{ Emu_DoInt21 (voir Emu_DoInt, case $21), immediatement apres l incrementer }
+{ InDOS (offset 01h) et juste avant de le decrementer en sortie. }
+Procedure Emu_SdaRefresh(Var P: TEmulatorPanel);
+Var Yr, Mo, Dy, Wd: Word;
+Begin
+ Emu_WriteWord(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $0C, EmuDtaOfs); { DTA }
+ Emu_WriteWord(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $0E, EmuDtaSeg);
+ Emu_WriteWord(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $10, EmuPspSeg); { PSP courant }
+ GetDate(Yr, Mo, Dy, Wd);
+ Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $2E, Byte(Dy));
+ Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $2F, Byte(Mo));
+ Emu_WriteWord(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $30, Word(Yr - 1980));
+ Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $34, Byte(Wd));
+End;
+
+{ ASSIGN (INT 2Fh AH=06h) - voir EMU_ASSIGN_SEG/EMU_ASSIGN_TBL_OFS. Table   }
+{ par defaut = correspondance identite (A:->A:, B:->B:, ...), exactement    }
+{ ce qu un vrai ASSIGN fraichement installe (sans argument prealable)       }
+{ montre. Appelee une fois au demarrage, comme Emu_InitBDA. }
+Procedure Emu_AssignInit(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ For I := 0 To 25 Do
+  Emu_WriteByte(P.CPU, EMU_ASSIGN_SEG, EMU_ASSIGN_TBL_OFS + I, Byte(I));
+End;
+
 { --- Charger un fichier .COM dans la memoire emulee --- }
 
 Function Emu_LoadComAt(Var C: TEmuCPU; Const FileName: String; AtSeg: Word;
@@ -121824,6 +122157,7 @@ Begin
    Else Begin
     EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
     EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
+    Emu_SftSetEntry(P, H); { voir la section SFT plus haut }
     P.CPU.Regs.AX := H; P.CPU.Regs.CX := Word(K);
     Exclude(P.CPU.Flags.s, EFG_CF);
    End;
@@ -121839,11 +122173,26 @@ Begin
    Else Begin
     EmuFileOpen[H] := True; EmuFileIsCdrom[H] := False;
     EmuFileName[H] := HPath; EmuFileMode[H] := OpenMode; EmuFileFirstRd[H] := True;
+    Emu_SftSetEntry(P, H); { voir la section SFT plus haut }
     P.CPU.Regs.AX := H; P.CPU.Regs.CX := 3;
     Exclude(P.CPU.Flags.s, EFG_CF);
    End;
   End;
  End;
+End;
+
+{ Vrai si A commence par B, comparaison insensible a la casse (pas de       }
+{ CompareText/AnsiUpperCase disponible dans le mode Turbo Pascal de ce      }
+{ compilateur) - utilise par AH=3Bh pour reconnaitre EmuExeDir comme        }
+{ prefixe du repertoire hote courant. }
+Function Emu_SamePathPrefix(Const A, B: String): Boolean;
+Var I: Integer;
+Begin
+ Emu_SamePathPrefix := False;
+ If Length(A) < Length(B) Then Exit;
+ For I := 1 To Length(B) Do
+  If Upcase(A[I]) <> Upcase(B[I]) Then Exit;
+ Emu_SamePathPrefix := True;
 End;
 
 Procedure Emu_DoInt21(Var P: TEmulatorPanel);
@@ -121898,6 +122247,12 @@ Var
  LFindCnt: Integer;
  { --- AH=48h/49h/4Ah (voir Emu_McbAlloc/Free/Resize) --- }
  McbGotSeg, McbMaxFree: Word;
+ { --- AH=1Fh/32h (voir Emu_DpbFind) --- }
+ DpbDrv: Byte;
+ DpbFoundOfs: Word;
+ { --- AH=3Bh/47h (voir EmuDriveCwd/Emu_CdsRefreshPath) --- }
+ CdsIdx: Integer;
+ NewCwd: String;
 Begin
  Case P.CPU.Regs.AH Of
   $00:
@@ -122305,11 +122660,59 @@ Begin
       End;
     End;
    End;
-  $34:
+  $1F, $32:
+   { AH=1Fh (Get DPB for default drive, AL sortie=0Ffh si erreur) / AH=32h  }
+   { (Get DPB for specified drive, DL en entree : 0=lecteur par defaut,     }
+   { 1=A:,2=B:,3=C:,...) - voir Emu_DpbFind/EMU_DPB_SEG. Le "lecteur par    }
+   { defaut" de cet emulateur est toujours C: (voir AH=19h/0Eh ci-dessous,  }
+   { code=2). }
    Begin
-    P.CPU.Segs.ES := $40;
-    P.CPU.Regs.BX := $F0;
-    Emu_WriteByte(P.CPU, $40, $F0, 0);
+    If P.CPU.Regs.AH = $1F Then DpbDrv := 2
+    Else If P.CPU.Regs.DL = 0 Then DpbDrv := 2
+    Else DpbDrv := P.CPU.Regs.DL - 1;
+    If Emu_DpbFind(DpbDrv, DpbFoundOfs) Then Begin
+     P.CPU.Segs.DS := EMU_DPB_SEG;
+     P.CPU.Regs.BX := DpbFoundOfs;
+     P.CPU.Regs.AL := 0;
+    End Else
+     P.CPU.Regs.AL := $FF; { lecteur invalide ou non monte }
+   End;
+  $34:
+   { BOGUE REEL CORRIGE (2026-09-06, chantier "structures internes DOS") :  }
+   { AH=34h ("Get Address of InDOS Flag") renvoyait ES:BX=0040:00F0, une     }
+   { adresse arbitraire dans la zone de donnees BIOS SANS aucun rapport     }
+   { avec un vrai indicateur InDOS - exactement le meme genre de "pointeur  }
+   { vers rien de reel" deja corrige pour HIMEM.SYS (AH=52h) et NC.EXE       }
+   { (segment du 1er MCB). Tout TSR qui consulte cet indicateur avant de     }
+   { re-entrer dans DOS lisait donc un octet sans rapport (souvent 0 par     }
+   { coincidence, laissant croire a tort que DOS est toujours libre). Voir  }
+   { EMU_SDA_SEG/EMU_SDA_OFS+1 (VRAI indicateur InDOS, incremente/decremente}
+   { a chaque appel INT 21h par Emu_DoInt, case $21). }
+   Begin
+    P.CPU.Segs.ES := EMU_SDA_SEG;
+    P.CPU.Regs.BX := EMU_SDA_OFS + 1;
+   End;
+  $5D:
+   { AX=5D06h ("Get Address of DOS Swappable Data Area", DOS 3.0+) - voir   }
+   { EMU_SDA_SEG/OFS/SIZE (1852 octets, disposition RBIL Table #01687).     }
+   { CX/DX (tailles a echanger) : approximation honnete - ce moteur ne       }
+   { reproduit pas la separation exacte "toujours echange"/"echange         }
+   { seulement pendant un appel DOS" du vrai noyau (voir le commentaire de  }
+   { tete pres de EMU_SDA_SEG), CX=taille totale/DX=zone des 32 premiers    }
+   { octets (ou vivent CritErr/InDOS/DTA/PSP, les champs reellement tenus   }
+   { a jour ici) est une valeur plausible plutot qu inventee au hasard.     }
+   Case P.CPU.Regs.AL Of
+    6: Begin
+     P.CPU.Segs.DS := EMU_SDA_SEG;
+     P.CPU.Regs.SI := EMU_SDA_OFS;
+     P.CPU.Regs.CX := EMU_SDA_SIZE;
+     P.CPU.Regs.DX := $20;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
+    Else Begin
+     Include(P.CPU.Flags.s, EFG_CF);
+     P.CPU.Regs.AX := 1; { fonction invalide }
+    End;
    End;
   $35:
    Begin
@@ -122363,12 +122766,39 @@ Begin
     Else Emu_SetDosErr(P, 3);
    End;
   $3B:
+   { BOGUE REEL CORRIGE (2026-09-06, chantier "structures internes DOS") :  }
+   { CHDIR changeait bien le repertoire courant REEL de l hote, mais ne     }
+   { mettait a jour AUCUN etat cote DOS par lettre de lecteur - AH=47h      }
+   { (Get Current Directory, voir plus bas) renvoyait donc TOUJOURS une     }
+   { chaine vide, quel que soit le CHDIR precedent. Voir le nouveau tableau }
+   { EmuDriveCwd/Emu_CdsRefreshPath : le repertoire DOS affiche est calcule }
+   { RELATIF a EmuExeDir (le dossier du programme charge, considere comme   }
+   { la racine "C:\" de cet emulateur - voir Emu_HostPath, qui utilise deja }
+   { cette meme reference). }
    Begin
     FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
     HPath := Emu_HostPath(FName);
     {$I-} ChDir(HPath); {$I+}
-    If IOResult = 0 Then Exclude(P.CPU.Flags.s, EFG_CF)
-    Else Emu_SetDosErr(P, 3);
+    If IOResult = 0 Then Begin
+     Exclude(P.CPU.Flags.s, EFG_CF);
+     If (Length(FName) >= 2) And (FName[2] = ':') Then
+      CdsIdx := Ord(Upcase(FName[1])) - Ord('A')
+     Else
+      CdsIdx := 2; { lecteur par defaut de cet emulateur = C:, voir AH=19h }
+     If (CdsIdx >= 0) And (CdsIdx < EMU_CDS_COUNT) Then Begin
+      GetDir(0, NewCwd);
+      If (Length(EmuExeDir) > 0) And (Length(NewCwd) > Length(EmuExeDir)) And
+         (Emu_SamePathPrefix(NewCwd, EmuExeDir)) Then
+       NewCwd := Copy(NewCwd, Length(EmuExeDir) + 2, Length(NewCwd) - Length(EmuExeDir) - 1)
+      Else If (Length(NewCwd) >= 2) And (NewCwd[2] = ':') Then
+       NewCwd := Copy(NewCwd, 4, Length(NewCwd) - 3) { plafond honnete : lettre+':\ ' retires, reste tel quel }
+      Else
+       NewCwd := '';
+      EmuDriveCwd[CdsIdx] := NewCwd;
+      Emu_CdsRefreshPath(P, CdsIdx);
+     End;
+    End Else
+     Emu_SetDosErr(P, 3);
    End;
   $3C:
    Begin
@@ -122385,6 +122815,7 @@ Begin
       EmuFileName[H] := HPath;
       EmuFileMode[H] := 2;
       EmuFileFirstRd[H] := True;
+      Emu_SftSetEntry(P, H); { voir la section SFT plus haut }
       Exclude(P.CPU.Flags.s, EFG_CF);
       P.CPU.Regs.AX := H;
      End;
@@ -122420,6 +122851,7 @@ Begin
        EmuFileName[H] := HPath;
        EmuFileMode[H] := OpenMode;
        EmuFileFirstRd[H] := True;
+       Emu_SftSetEntry(P, H); { voir la section SFT plus haut }
        Exclude(P.CPU.Flags.s, EFG_CF);
        P.CPU.Regs.AX := H;
       End;
@@ -122436,6 +122868,7 @@ Begin
      End;
      EmuFileOpen[H] := False;
      EmuFileIsCdrom[H] := False;
+     Emu_SftClearEntry(P, H); { voir la section SFT plus haut }
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 0) And (H <= 4) Then
      Exclude(P.CPU.Flags.s, EFG_CF)
@@ -122686,9 +123119,22 @@ Begin
     End Else Emu_SetDosErr(P, 6);
    End;
   $47:
+   { BOGUE REEL CORRIGE (2026-09-06, chantier "structures internes DOS") :  }
+   { renvoyait TOUJOURS une chaine vide, quel que soit DL - voir            }
+   { EmuDriveCwd/le correctif jumeau de AH=3Bh ci-dessus. DL=0 -> lecteur   }
+   { par defaut (C:, voir AH=19h). }
    Begin
-    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI, 0);
-    Exclude(P.CPU.Flags.s, EFG_CF);
+    If P.CPU.Regs.DL = 0 Then CdsIdx := 2 Else CdsIdx := P.CPU.Regs.DL - 1;
+    If (CdsIdx >= 0) And (CdsIdx < EMU_CDS_COUNT) And (EmuDriveCwd[CdsIdx] <> '') Then Begin
+     NewCwd := EmuDriveCwd[CdsIdx];
+     For H := 1 To Length(NewCwd) Do
+      Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + H - 1, Byte(NewCwd[H]));
+     Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI + Length(NewCwd), 0);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Begin
+     Emu_WriteByte(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI, 0);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End;
    End;
   $48:
    { ALLOUER : voir Emu_McbAlloc, section "Chaine MCB (Memory Control      }
@@ -122971,22 +123417,31 @@ Begin
    P.CPU.Regs.BX := EmuPspSeg;
   $52:
    Begin
-    { BOGUE REEL CORRIGE (2026-08-24) - voir le commentaire pres de           }
-    { EMU_LOL_SEG/EMU_LOL_OFS : renvoyer une VRAIE mini "liste de listes"     }
-    { avec un en-tete NUL valide a l offset $22, au lieu d une adresse        }
-    { arbitraire sans structure derriere. Ecrite a CHAQUE appel (statique,    }
-    { idempotent, cout negligeable) plutot que via une routine d init         }
-    { separee - plus simple et suffisant, cet appel n est jamais sur un       }
-    { chemin critique en performance. }
-    For I := 0 To 47 Do
+    { CHANTIER "structures internes DOS" (2026-09-06) - voir le commentaire  }
+    { pres de EMU_LOL_SEG/EMU_LOL_OFS. Liste de listes DOS 4.0+ complete     }
+    { (71 octets), reecrite a CHAQUE appel (statique, idempotent, jamais sur }
+    { un chemin critique) plutot que via une init separee. Les pointeurs     }
+    { DPB/SFT/CDS visent les vraies chaines construites UNE FOIS au          }
+    { demarrage (Emu_DpbInit/Emu_SftInit/Emu_CdsInit, appelees comme          }
+    { Emu_InitBDA) - cet appel se contente d y pointer. }
+    For I := 0 To EMU_LOL_SIZE - 1 Do
      Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + I, 0);
-    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $22, EMU_LOL_NULDEV_OFS);
-    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $24, EMU_LOL_SEG);
-    { En-tete du pilote NUL : chainage FFFF:FFFF (fin de chaine), attribut   }
-    { $8004 (peripherique caractere + peripherique NUL, disposition reelle   }
-    { DOS), strategie/interruption factices (jamais reellement appelees      }
-    { par un simple parcours de nom), nom "NUL     " (8 octets, complete     }
-    { d espaces comme un vrai en-tete de pilote DOS). }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $00, EMU_DPB_OFS);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $02, EMU_DPB_SEG);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $04, EMU_SFT_OFS);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $06, EMU_SFT_SEG);
+    { CLOCK$/CON (+08h/+0Ch) : aucun pilote de peripherique reel emule a ce  }
+    { niveau (CLOCK$/CON sont geres directement par Emu_DoInt21, jamais       }
+    { via un vrai en-tete de pilote invite) - laisses a zero, honnete.       }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $10, 512); { max octets/secteur }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $16, EMU_CDS_OFS);
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $18, EMU_CDS_SEG);
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $20, 2); { NUMIO : 2 unites bloc (A:/B:) }
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $21, EMU_CDS_COUNT);
+    { En-tete du pilote NUL EMBARQUE a +$22 (18 octets) : chainage FFFF:FFFF }
+    { (fin de chaine), attribut $8004 (peripherique caractere + NUL),        }
+    { strategie/interruption factices (jamais reellement appelees par un     }
+    { simple parcours de nom), nom "NUL     " (8 octets). }
     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS, $FFFF);
     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 2, $FFFF);
     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 4, $8004);
@@ -123000,6 +123455,18 @@ Begin
     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 15, Ord(' '));
     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 16, Ord(' '));
     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_NULDEV_OFS + 17, Ord(' '));
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $35, 16); { taille DOS resident (paragraphes), valeur nominale }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $3F, 30); { BUFFERS=30,0 (valeur nominale) }
+    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $41, 0);
+    Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $43, 3); { lecteur de demarrage : C: (3), convention de cet emulateur }
+    If OptionsDlg.Data.DosEmu80386 Then
+     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $44, 1)
+    Else
+     Emu_WriteByte(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $44, 0);
+    If EmuXms.Active Then
+     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $45, Word(EmuXms.TotalKB))
+    Else
+     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS + $45, 0);
     { BOGUE REEL CORRIGE (2026-09-06, signale par l utilisateur : NC.EXE     }
     { affiche "0 Bytes Memory"/"917264 Bytes Free" - deux nombres           }
     { incoherents, le second depassant meme les 640 Ko de memoire           }
@@ -123012,9 +123479,12 @@ Begin
     { lisaient de la memoire sans rapport, d ou des valeurs absurdes -      }
     { exactement le meme genre de "structure factice sans rien derriere"    }
     { deja corrige pour HIMEM.SYS le 2026-08-24 (voir plus haut), mais pour }
-    { un AUTRE champ. Un vrai MCB existe deja (voir Emu_LoadExeAt, installe  }
-    { a PSPSeg-1) - on fait simplement pointer ES:[BX-2] dessus. }
-    Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS - 2, Word(EmuPspSeg - 1));
+    { un AUTRE champ. Un vrai MCB existe deja (voir Emu_McbChainInit) - on   }
+    { fait simplement pointer ES:[BX-2] dessus (EmuMcbFirstSeg). }
+    If EmuMcbFirstSeg <> 0 Then
+     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS - 2, EmuMcbFirstSeg)
+    Else
+     Emu_WriteWord(P.CPU, EMU_LOL_SEG, EMU_LOL_OFS - 2, Word(EmuPspSeg - 1));
     P.CPU.Segs.ES := EMU_LOL_SEG;
     P.CPU.Regs.BX := EMU_LOL_OFS;
    End;
@@ -132280,6 +132750,19 @@ Begin
   Emu_DoMscdex(P);
   Exit;
  End;
+ If OptionsDlg.Data.DosAssign And (P.CPU.Regs.AX = $0600) Then Begin
+  { ASSIGN - INSTALLATION CHECK (voir EMU_ASSIGN_SEG). AL=FFh = installe. }
+  P.CPU.Regs.AL := $FF;
+  Exit;
+ End;
+ If OptionsDlg.Data.DosAssign And (P.CPU.Regs.AX = $0601) Then Begin
+  { ASSIGN - GET DRIVE ASSIGNMENT TABLE : ES = segment de la zone de        }
+  { travail, table de 26 octets a ES:0103h (voir Emu_AssignInit pour son   }
+  { contenu par defaut - correspondance identite tant qu aucune            }
+  { affectation n a ete faite). }
+  P.CPU.Segs.ES := EMU_ASSIGN_SEG;
+  Exit;
+ End;
  If EmuDpmi.Active And (P.CPU.Regs.AX = $1687) And (Not DpmiCPU.Active) Then Begin
   { Detection DPMI (voir DOC/DPMI.txt 3.1) - ES:DI = trampoline de          }
   { commutation, voir Emu_DpmiInit/Dpmi_Switch. }
@@ -132762,7 +133245,19 @@ Begin
    End;
   $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
   $20: If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20) Else P.CPU.Fault := sfEndProgram;
-  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Emu_DoInt21(P);
+  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Begin
+   { InDOS (SDA+01h) : incremente pour la duree de l appel, exactement      }
+   { comme le vrai noyau DOS - c est CE compteur que INT 21h AH=34h renvoie }
+   { un pointeur vers (voir Emu_DoInt21 case $34), consulte par tout TSR    }
+   { avant de re-entrer dans DOS. Emu_SdaRefresh rafraichit au passage les  }
+   { champs DTA/PSP/date courants (voir sa tete de commentaire). }
+   Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + 1,
+    Byte(Emu_ReadByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + 1) + 1));
+   Emu_SdaRefresh(P);
+   Emu_DoInt21(P);
+   Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + 1,
+    Byte(Emu_ReadByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + 1) - 1));
+  End;
   $25:
    { BOGUE REEL CORRIGE (2026-09-06, demande explicite de l utilisateur :   }
    { "Implementer l'interruption 25h") - lecture disque absolue DOS         }
@@ -150178,6 +150673,17 @@ Begin NesActive := False;
   { s attend a un BDA/IVT/etc. valides - voir le commentaire de tete de     }
   { DOS_RunOneChunk pour le detail de chaque sous-systeme). }
   Emu_InitBDA(P);
+  { Structures internes DOS (2026-09-06) : DPB depend de FatVol/            }
+  { EmuFloppyOpen deja montes a ce point (montage par ligne de commande     }
+  { -DISK0:/-DISK80: traite avant la creation de cet onglet emulateur) ;    }
+  { CDS/SFT/SDA n ont aucune dependance d ordre. Limite assumee : un        }
+  { lecteur monte APRES ce point (aucune UI de montage a chaud pour ce      }
+  { backend) n aura pas de DPB tant que l onglet n est pas relance. }
+  Emu_DpbInit(P);
+  Emu_CdsInit(P);
+  Emu_SftInit(P);
+  Emu_SdaInit(P);
+  Emu_AssignInit(P);
   Emu_IpxInit(P);
   Emu_PktInit(P);
   Emu_NetBiosInit(P);
@@ -150385,6 +150891,11 @@ Begin NesActive := False;
  EmuInt13LogCount := 0;
  EmuSITraceCount := 0;
  Emu_InitBDA(P);
+ Emu_DpbInit(P);
+ Emu_CdsInit(P);
+ Emu_SftInit(P);
+ Emu_SdaInit(P);
+ Emu_AssignInit(P);
  Emu_IpxInit(P);
  Emu_PktInit(P);
  Emu_NetBiosInit(P);
@@ -151426,6 +151937,7 @@ Begin
  D.DosDPMISize := 8192;
  D.DosAnsiSys := True; { coche par defaut - imite CONFIG.SYS DEVICE=ANSI.SYS }
  D.DosUMB := True; { coche par defaut (demande explicite de l utilisateur) }
+ D.DosAssign := False;
  D.DosMSCDEX := False;
  D.DosSouris := True;
  D.DosMousePS2BIOS := False;
@@ -152554,6 +153066,7 @@ Begin
  CheckWithSize(Dlg.Data.DosDPMI, 'DPMI', Dlg.Data.DosDPMISize, 3); { Row 5 }
  CheckSimple(Dlg.Data.DosAnsiSys, 'Pilote ANSI.SYS');           { Row 6 }
  CheckSimple(Dlg.Data.DosUMB, 'UMB (memoire haute)');           { Row 7 }
+ CheckSimple(Dlg.Data.DosAssign, 'ASSIGN (INT 2Fh AH=06h)');    { Row 8 }
 
  If Dlg.DosDropdownOpen = 1 Then
   OpenList(0, DOS_TYPE_COUNT, Dlg.Data.DosType, OPT_LABEL_WIDTH)
@@ -153489,6 +154002,10 @@ Begin
         Dlg.Data.DosUMB := Not Dlg.Data.DosUMB;
         Dlg.Modified := True;
        End;
+       8: Begin
+        Dlg.Data.DosAssign := Not Dlg.Data.DosAssign;
+        Dlg.Modified := True;
+       End;
       End;
      OC_EMU_DOS_SW:
       Case FieldIdx Of
@@ -153728,6 +154245,7 @@ Begin
  WriteCfgLine(F, 'DosDPMISize', S);
  WriteCfgLine(F, 'DosAnsiSys', BoolToStr(Data.DosAnsiSys));
  WriteCfgLine(F, 'DosUMB', BoolToStr(Data.DosUMB));
+ WriteCfgLine(F, 'DosAssign', BoolToStr(Data.DosAssign));
  WriteCfgLine(F, 'DosMSCDEX', BoolToStr(Data.DosMSCDEX));
  WriteCfgLine(F, 'DosSouris', BoolToStr(Data.DosSouris));
  WriteCfgLine(F, 'DosMousePS2BIOS', BoolToStr(Data.DosMousePS2BIOS));
@@ -153938,6 +154456,8 @@ Begin
    Data.DosAnsiSys := StrToBool(Value)
   Else If Key = 'DosUMB' Then
    Data.DosUMB := StrToBool(Value)
+  Else If Key = 'DosAssign' Then
+   Data.DosAssign := StrToBool(Value)
   Else If Key = 'DosMSCDEX' Then
    Data.DosMSCDEX := StrToBool(Value)
   Else If Key = 'DosSouris' Then
