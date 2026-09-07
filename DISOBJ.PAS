@@ -251,7 +251,13 @@ Procedure REDATA;Begin
 End;
 
 Procedure RIDATA;Begin
- UnsupportedRecord('RIDATA');
+ RLen:=GetI;
+ RLeft:=RLen;
+ If OutputLanguage<>LangTurboPascal Then Write(FileOutput,rlen:6,' RIDATA: ');
+ While RLeft>1 Do Begin
+  D:=GetB;
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,ByteHex2Str(D):4);
+ End;
 End;
 
 Procedure OVLDEF;Begin

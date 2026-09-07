@@ -113169,7 +113169,7 @@ Procedure Emu_DosEnvBuildDefault(Var C: TEmuCPU; EnvSeg: Word);
 Var
  Vars: Array[0..7] Of String;
 Begin
- Vars[0] := 'COMSPEC=C:\COMMAND.COM';
+ Vars[0] := 'COMSPEC=C:\COMMAND.EXE';
  Vars[1] := 'PATH=C:\';
  Vars[2] := 'PROMPT=$P$G';
  Emu_DosEnvWrite(C, EnvSeg, Vars, 3);
@@ -121145,13 +121145,29 @@ Begin
       mais existe dans le dossier de l EXE, utiliser ce dernier.
       Cela permet a QP de trouver QPL.COM, QP.HLP, etc. quand il
       les cherche sur "C:\" sans PATH defini. }
-    If (Length(EmuExeDir) > 0) And (Not FileExists(S)) Then Begin
+    If Not FileExists(S) Then Begin
       I := Length(S);
       While (I > 0) And (S[I] <> '\') Do Dec(I);
       If (I > 0) And (I = 3) Then Begin
         { Le fichier est a la racine du drive, ex: C:\QPL.COM }
-        Emu_HostPath := EmuExeDir + '\' + Copy(S, 4, Length(S) - 3);
-        Exit;
+        If (Length(EmuExeDir) > 0) And
+         FileExists(EmuExeDir + '\' + Copy(S, 4, Length(S) - 3)) Then Begin
+          Emu_HostPath := EmuExeDir + '\' + Copy(S, 4, Length(S) - 3);
+          Exit;
+        End;
+        { BOGUE REEL / demande explicite (2026-09-06, "resoudre le COMSPEC     }
+        { de l emulateur") : COMMAND.EXE (contrairement a QPL.COM/TURBO.TPL,   }
+        { toujours co-localises avec le programme qui les cherche) n est       }
+        { co-localise avec AUCUN programme charge - NC.EXE affichait "COMSPEC  }
+        { is not set correctly" faute de tout fichier reel derriere            }
+        { C:\COMMAND.EXE. BIN16\ (dossier existant de binaires 8086 reels      }
+        { compagnons de DEVENV.EXE, voir COMMAND.PAS/CORAIL) comme dernier      }
+        { recours, meme convention deja etablie pour WIN32\ pres des           }
+        { transpilateurs (voir ExtractFilePath(ParamStr(0)) plus haut). }
+        If FileExists(ExtractFilePath(ParamStr(0)) + 'BIN16\' + Copy(S, 4, Length(S) - 3)) Then Begin
+          Emu_HostPath := ExtractFilePath(ParamStr(0)) + 'BIN16\' + Copy(S, 4, Length(S) - 3);
+          Exit;
+        End;
       End;
     End;
     Emu_HostPath := S;
