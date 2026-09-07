@@ -431,8 +431,8 @@ Const
   (BaseSize:$01;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C1h] }
   (BaseSize:$03;AsmName:'RETN ';    AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C2h] RETN iijj }
   (BaseSize:$01;AsmName:'RETN';     AsmName66h:'';         AsmName0Fh:'';Param:False),       { [C3h] RETN }
-  (BaseSize:$02;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C4h] LES }
-  (BaseSize:$02;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C5h] LDS }
+  (BaseSize:$01;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C4h] LES - BaseSize=1 (voir XtrkAddr, meme convention que [8Dh] LEA) }
+  (BaseSize:$01;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C5h] LDS - idem }
   (BaseSize:$01;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C6h] MOV }
   (BaseSize:$01;AsmName:'';         AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C7h] MOV }
   (BaseSize:$04;AsmName:'ENTER ';   AsmName66h:'';         AsmName0Fh:'';Param:True),        { [C8h] ENTER }
@@ -499,6 +499,7 @@ Var
  FPos:LongInt;
  DisStr:String;
  BinBuffer:Array[0..1024]of Byte;
+ CarryOver:Word;
 
 Function ByteHex2Str(value:Byte):String;
 Const
@@ -624,19 +625,35 @@ Var
   S:String;
   X2:Byte;
  Begin
-  S:=SegS+SAddr[T[I+1]and$7];
+  { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :  }
+  { mod=00,rm=110 (les 8 octets ModRM 06h,0Eh,16h,1Eh,26h,2Eh,36h,3Eh, un  }
+  { par valeur du champ reg) est le cas special "adressage direct [imm16]"}
+  { (aucun registre de base, l adresse complete suit en dur) - PAS "[BP]"  }
+  { (SAddr[6]) comme le reste du tableau le suggererait a tort. XtrkStandard}
+  { le traite deja correctement (liste explicite avant d appeler LoadAddr),}
+  { mais LoadAddr/XtrkAddr (utilises par LEA/8Dh, le groupe 1 arithmetique }
+  { immediat/80h-83h, MOV immediat/C6h-C7h, et le groupe 3 NOT/NEG/MUL/    }
+  { IMUL/DIV/IDIV/F6h-F7h) ne le faisaient PAS - une instruction comme     }
+  { "ADD Word Ptr [1234h],5" (adressage direct d une variable globale,     }
+  { motif tres courant) s affichait a tort "ADD Word Ptr [BP],0034h" et    }
+  { desynchronisait tout le flux suivant (les 2 octets d adresse jamais    }
+  { consommes). Confirme avec "83 06 34 12 05". }
+  If (T[I+1] and $C7)=$06Then S:=SegS+'['+HexWord(TWd(I+2))+']'
+                          Else S:=SegS+SAddr[T[I+1]and$7];
   X2:=(T[I+1]shr 3)and 7;
   If(CurrCode>=$FE)and(X2 in[2..5])Then LoadAddr:=PrcS[X2 and 1]+S
    Else
-  If(CurrCode=$8C)or(CurrCode=$8E)Then Begin
+  If(CurrCode=$8C)or(CurrCode=$8E)or(CurrCode=$C4)or(CurrCode=$C5)Then Begin
    { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) : }
-   { "CurrCode and 1" vaut TOUJOURS 0 pour 8Ch (MOV r/m,Sreg) et 8Eh (MOV  }
-   { Sreg,r/m) - le bit habituellement utilise pour choisir Byte/Word Ptr  }
-   { ne code PAS ici une taille d operande variable : un registre de       }
-   { segment est TOUJOURS sur 16 bits, il n existe aucune forme "octet" de }
-   { ces deux opcodes. L ancien code affichait donc a tort "Byte Ptr"      }
-   { (ex. "MOV Byte Ptr [BP+02h],SI" au lieu de "MOV Word Ptr [BP+02h],ES")}
-   { pour la forme memoire de MOV Sreg. }
+   { "CurrCode and 1" vaut TOUJOURS 0 pour 8Ch (MOV r/m,Sreg), 8Eh (MOV    }
+   { Sreg,r/m), C4h (LES) et C5h (LDS) - le bit habituellement utilise pour}
+   { choisir Byte/Word Ptr ne code PAS ici une taille d operande variable :}
+   { un registre de segment est TOUJOURS sur 16 bits (8Ch/8Eh) et LES/LDS  }
+   { chargent TOUJOURS un pointeur lointain complet (C4h/C5h) - aucune de  }
+   { ces 4 formes n a de variante "octet". L ancien code affichait donc a  }
+   { tort "Byte Ptr" (ex. "MOV Byte Ptr [BP+02h],SI" au lieu de "MOV Word  }
+   { Ptr [BP+02h],ES" ; "LES SI,Byte Ptr [BP+05h]" au lieu de "LES         }
+   { SI,Word Ptr [BP+05h]"). }
    LoadAddr:=PtrS[1]+S;
   End
    Else
@@ -657,7 +674,15 @@ Var
  Begin
   S:=LoadAddr;
   Case T[I+1]of
-   0..$3F:Inc(I);
+   0..$3F:Begin
+    { BOGUE REEL CORRIGE (2026-09-07, voir LoadAddr ci-dessus) : le cas    }
+    { special "adressage direct [imm16]" (mod=00,rm=110) consomme 2 octets }
+    { d adresse EN PLUS du ModRM lui-meme - le simple "Inc(I)" (mod=00     }
+    { generique, sans octet supplementaire) desynchronisait tout le flux   }
+    { suivant pour ce cas precis. }
+    If (T[I+1] and $C7)=$06Then Inc(I,3)
+                            Else Inc(I);
+   End;
    $40..$7F:Begin
     S:=Copy(S,1,Length(S)-1);
     Inc(I,2);
@@ -907,7 +932,21 @@ ReStart:
     $6E:Goto Xit;
     $6F:Goto Xit;
     $70,$71,$72,$73,$74,$75,$76,$77,$78,$79,$7A,$7B,$7C,$7D,$7E,$7F:Begin
+     { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :}
+     { il manquait "Goto Xit" ici - SANS lui, l execution "tombe" hors du   }
+     { Case(CurrCode) et atterrit sur le label "_999" juste en dessous     }
+     { (destine aux VRAIS prefixes de segment CS:/DS:/ES:/SS:), qui fait    }
+     { "XSeg:=CurrCode;Inc(I);Goto ReStart" - CHAQUE saut conditionnel     }
+     { court (Jcc, tout l intervalle 70h-7Fh - JO/JNO/JC/JNC/JZ/JNZ/JBE/    }
+     { JA/JS/JNS/JP/JNP/JL/JNL/JG/JLE, l instruction la plus courante de   }
+     { tout code compile reel) etait donc silencieusement traite comme un  }
+     { faux "prefixe de segment", son propre octet d opcode avale (jamais  }
+     { affiche), et le decodage REDEMARRAIT sur l octet de deplacement rel8}
+     { qui suit comme si c etait un TOUT NOUVEL opcode - desynchronisant   }
+     { irremediablement tout le reste du flux. Confirme avec "75 0A 90 90  }
+     { 90" (JNZ +0Ah) qui s affichait a tort "OR DL,[BX+SI-6F70h]". }
      S:='J'+FlgS[CurrCode and$F]+' '+JmpAddr;
+     Goto Xit;
     End;
     $80,$81,$82,$83:Begin
      X2:=T[I+1];
@@ -954,8 +993,19 @@ ReStart:
      Goto Xit;
     End;
     $8D:Begin
+     { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :}
+     { le registre destination de LEA vient du champ REG du ModRM          }
+     { (bits 5-3, "(X shr 3) and 7"), PAS du champ RM (bits 2-0, "X and 7") }
+     { qui designe le registre de BASE de l adresse memoire calculee, pas  }
+     { le registre destination. L ancien code utilisait "T[I+1] and 7"     }
+     { (le champ rm) - confirme casse reel sur TURBO.EXE : "8D BE FC FE"   }
+     { (reg=7=DI, rm=6=[BP+disp16]) s affichait a tort "LEA SI,[BP-0104h]" }
+     { (SI=registre 6, le rm, au lieu du vrai DI=registre 7, le reg) au    }
+     { lieu de "LEA DI,[BP-0104h]". Etendu aussi a mod=00 ($00..$3F, ex.   }
+     { "LEA AX,[BX+SI]" sans deplacement) qui n etait pas gere du tout     }
+     { (tombait dans le "Else" DW, desynchronisant tout le flux suivant).  }
      Case T[I+1]of
-      $40..$BF:S:='LEA '+RegxWord(T[I+1]and 7)+','+XtrkAddr;
+      $00..$BF:S:='LEA '+RegxWord((T[I+1]shr 3)and 7)+','+XtrkAddr;
       Else S:='DW '+HexWord(TWd(I));
      End;
      Goto Xit;
@@ -1034,29 +1084,24 @@ ReStart:
     End;
     $C3:Goto Xit;
     $C4,$C5:Begin
+     { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :}
+     { l ancien code ne geriat que 4 octets ModRM CODES EN DUR ($76,$7E,     }
+     { $B4,$BE) au lieu de decoder l adressage generiquement (comme partout }
+     { ailleurs via XtrkAddr) - toute AUTRE combinaison mod=01/mod=10 (ex.   }
+     { un deplacement different de ceux-la, ou un registre de base autre    }
+     { que BP/SI) tombait dans le "Else" generique qui appelle LoadAddr     }
+     { SEUL (sans jamais lire ni afficher le deplacement, ni avancer I en   }
+     { consequence) - copie du meme bogue deja corrige dans XtrkStandard.   }
+     { De plus, le cas $BE oubliait carrement d ajouter le registre         }
+     { destination ("DI,") au resultat - confirme sur TURBO.EXE reel :      }
+     { "C4 BE FA FE" (LES DI,[BP-0106h]) s affichait a tort juste           }
+     { "LES [BP-0106h]" (registre destination manquant). Remplace par un    }
+     { decodage generique via XtrkAddr (meme principe que le correctif      }
+     { LEA/8Dh ci-dessus - BaseSize passe de 2 a 1 en consequence, voir la   }
+     { table Instr80x86). }
      If Boolean(CurrCode and 1)Then S:='LDS '
                                Else S:='LES ';
-     Case T[I+1]of
-      $76:Begin
-       Inc(I,2);
-       S:=S+'SI,'+SegS+'[BP'+OfsByte+']';
-       Dec(I);
-      End;
-      $7E:Begin
-       Inc(I,2);
-       S:=S+'DI,'+SegS+'[BP'+OfsByte+']';
-       Dec(I);
-      End;
-      $B4:If T[I+2]=$B4Then Begin
-       Inc(I,3);
-       S:=S+'DI,'+SegS+'[SI'+OfsWord+']';
-      End;
-      $BE:Begin
-       Inc(I,2);
-       S:=S+SegS+'[BP'+OfsWord+']';
-      End;
-      Else S:=S+RegxWord((T[I+1]shr 3)and 7)+','+LoadAddr;
-     End;
+     S:=S+RegxWord((T[I+1]shr 3)and 7)+','+XtrkAddr;
      Goto Xit;
     End;
     $C6,$C7:Begin
@@ -1239,7 +1284,17 @@ ReStart:
                  Else Break;
        4,5:If(Wd)Then S:='JMP '
                  Else Break;
-       7:S:='PUSH ';
+       { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :}
+       { le champ reg de FFh/groupe 5 vaut 6 pour PUSH r/m16 (0=INC,1=DEC,   }
+       { 2=CALL pres,3=CALL loin,4=JMP pres,5=JMP loin,6=PUSH,7=indefini) -  }
+       { l ancien code testait a tort la valeur 7 (jamais generee par un    }
+       { assembleur reel), donc TOUTE instruction "PUSH [mem]" via ce codage}
+       { (reg=6) tombait dans le "Else Break" et restait un simple octet    }
+       { "DB" brut, desynchronisant tout le flux suivant. Confirme sur      }
+       { TURBO.EXE reel : "FF B6 FA FE" (PUSH Word Ptr [BP-0106h]) rendu    }
+       { a tort "DB FFh" puis 3-4 "instructions" fantomes desynchronisees.  }
+       6:If(Wd)Then S:='PUSH '
+               Else Break;
        Else Break;
       End;
       Case T[I+1]of
@@ -1283,7 +1338,7 @@ End;
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('DIS8086 : Cette commande permet de d�sassembleur un code binaire de');
+  WriteLn('DIS8086 : Cette commande permet de d'+#130+'sassembleur un code binaire de');
   WriteLn('          microprocesseur 8086 en langage de programmation assembleur 8086.');
   WriteLn;
   WriteLn('Syntaxe : DIS8086 nomdufichier');
@@ -1295,14 +1350,39 @@ BEGIN
   {$I-}Assign(FileBIN,ParamStr(1));
   Reset(FileBIN,1);{$I+}
   If IOResult=0 Then Begin
+   { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) : }
+   { l ancienne condition "ByteReaded<15" confondait a tort "combien       }
+   { d octets on vient de lire" avec "reste-t-il encore des donnees dans   }
+   { le fichier" - pour un fichier dont la taille totale tombe entre 15    }
+   { octets et SizeOf(BinBuffer) (le cas le PLUS courant en pratique - un  }
+   { simple .COM, une routine extraite pour diagnostic, etc.), UNE SEULE   }
+   { lecture ramenait DEJA tout le fichier (ByteReaded=FileSize>=15), donc }
+   { la branche "marge de securite de 15 octets" (pour NE PAS lire au-dela}
+   { d un bloc dont la SUITE reste a venir) s appliquait a tort MEME QUAND }
+   { IL N Y AVAIT PLUS RIEN APRES - les 15 DERNIERS octets du fichier      }
+   { (souvent plusieurs instructions completes) etaient donc simplement    }
+   { JAMAIS decodes ni affiches, sans aucun message d erreur. De plus,     }
+   { meme dans le cas legitime "il reste des donnees" (fichier de plus de  }
+   { SizeOf(BinBuffer) octets), ces derniers octets non traites de CHAQUE  }
+   { bloc n etaient JAMAIS reportes vers le bloc suivant - perdus pour de  }
+   { bon a CHAQUE frontiere de bloc (tous les 1025 octets), pas seulement  }
+   { a la toute fin du fichier. Corrige : (1) detection correcte du        }
+   { DERNIER bloc via la taille reelle du fichier (FPos+ByteReaded) plutot }
+   { qu un seuil arbitraire sur ByteReaded ; (2) report reel des octets    }
+   { non traites en tete du buffer (CarryOver) avant la lecture suivante,  }
+   { pour qu aucune instruction ne soit plus jamais perdue a une frontiere }
+   { de bloc. }
    FPos:=0;
+   CarryOver:=0;
    While FPos<FileSize(FileBIN)do Begin
-    BlockRead(FileBIN,BinBuffer,SizeOf(BinBuffer),ByteReaded);
+    BlockRead(FileBIN,BinBuffer[CarryOver],SizeOf(BinBuffer)-CarryOver,ByteReaded);
+    ByteReaded:=ByteReaded+CarryOver;
     If ByteReaded=0 Then Break;
     Pos:=0;
-    If ByteReaded<15 Then Begin
+    If FPos+ByteReaded>=FileSize(FileBIN)Then Begin
+     { dernier bloc : plus rien apres, tout decoder sans marge de securite }
      While(Pos<ByteReaded)do Begin
-      Write(HexWord2Str(Pos),'h ');
+      Write(LongHex2Str(FPos+Pos),'h ');
       DisStr:=Decode(BinBuffer,Pos);
       WriteLn(DisStr);
      End;
@@ -1315,6 +1395,8 @@ BEGIN
       DisStr:=Decode(BinBuffer,Pos);
       WriteLn(DisStr);
      End;
+     CarryOver:=ByteReaded-Pos;
+     Move(BinBuffer[Pos],BinBuffer[0],CarryOver);
     End;
     Inc(FPos,Pos);
    End;
