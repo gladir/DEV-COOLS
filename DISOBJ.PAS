@@ -160,6 +160,12 @@ Begin
  While RLeft>1 Do Dum:=GetB;
 End;
 
+Procedure UnsupportedRecord(S:String);
+Begin
+ If OutputLanguage=LangTurboPascal Then SkipRecord
+                             Else Error('Balise '+S+' non impl'+#130+'ment'+#130+'.');
+End;
+
 Function Bit(D,N:byte):Boolean;Begin
  Bit:=Boolean((D shr (N-1)) and 1);
 End;
@@ -245,21 +251,25 @@ Procedure REDATA;Begin
 End;
 
 Procedure RIDATA;Begin
- Error('Balise RIDATA non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('RIDATA');
 End;
 
 Procedure OVLDEF;Begin
- Error('Balise OVLDEF non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('OVLDEF');
 End;
 
 Procedure ENDREC;Begin
- Error('Balise ENDREC non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('ENDREC');
 End;
 
 Procedure BLKREC;
 Var
  sg,gr:Integer;
 Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  rleft:=rlen;
  WriteLn(FileOutput,rlen:6,' BLKREC: ');
@@ -272,6 +282,10 @@ Begin
 End;
 
 Procedure BLKEND;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  rleft:=rlen;
  Writeln(FileOutput,rlen:6,' BLKEND');
@@ -279,7 +293,7 @@ Procedure BLKEND;Begin
 End;
 
 Procedure DEBSYM;Begin
- Error('Balise DEBSYM non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('DEBSYM');
 End;
 
 Procedure THEADR;
@@ -296,18 +310,22 @@ Begin
 End;
 
 Procedure LHEADR;Begin
- Error('Balise LHEADR non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LHEADR');
 End;
 
 Procedure PEDATA;Begin
- Error('Balise PEDATA non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('PEDATA');
 End;
 
 Procedure PIDATA;Begin
- Error('Balise PIDATA non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('PIDATA');
 End;
 
 Procedure COMENT;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  Write(FileOutput,rlen:6,' COMMENTAIRE, ':15);
  d:=getb;
@@ -318,6 +336,10 @@ Procedure COMENT;Begin
 End;
 
 Procedure MODEND;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  Write(FileOutput,geti:6,' MODEND:');
  d:=getb;
  If bit(d,8)Then Write(FileOutput,'PRINCIPAL, ')
@@ -330,6 +352,10 @@ Procedure MODEND;Begin
 End;
 
 Procedure MODENDL;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=GetI;
  rleft:=rlen;
  Write(FileOutput,rlen:6,' EXTERNE:');
@@ -345,6 +371,10 @@ Procedure TYPDEF;
 Var
  v:Real;
 Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  RLen:=GetI;
  RLeft:=rlen;
  Write(FileOutput,rlen:6,' TYPDEF:',GetName);
@@ -417,14 +447,18 @@ Begin
 End;
 
 Procedure PUBDEFL;Begin
- Error('Balise PUBDEFL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('PUBDEFL');
 End;
 
 Procedure LOCSYM;Begin
- Error('Balise LOCSYM non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LOCSYM');
 End;
 
 Procedure LINNUM;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  rleft:=rlen;
  Writeln(FileOutput,rlen:6,' Num'+#130+'ro de lignes:' );
@@ -500,10 +534,14 @@ Begin
 End;
 
 Procedure SEGDEFL;Begin
- Error('Balise SEGDEFL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('SEGDEFL');
 End;
 
 Procedure GRPDEF;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  rleft:=rlen;
  gi:=gi+1;
@@ -519,6 +557,10 @@ Var
  M:Byte;
  Dro:Integer;
 Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  RLen:=GetI;
  RLeft:=RLen;
  Write(FileOutput,rlen:6,' FIXUPP: ');
@@ -631,7 +673,7 @@ Begin
 End;
 
 Procedure LEDATAL;Begin
- Error('Balise LEDATAL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LEDATAL');
 End;
 
 Procedure LIDATA;
@@ -648,6 +690,10 @@ Procedure LIDATA;
  End;
 
 Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  rleft:=rlen;
  WriteLn(FileOutput,rlen:6,' DONNEES ITERATIVE pour ',sname[getx],' DEPLACEMENT=',HexWord2Str(geti));
@@ -655,26 +701,30 @@ Begin
 End;
 
 Procedure LIDATAL;Begin
- Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIDATAL');
 End;
 
 Procedure LIBHED;Begin
- Error('Balise LIBHED non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIBHED');
 End;
 
 Procedure LIBNAM;Begin
- Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIBNAM');
 End;
 
 Procedure LIBLOC;Begin
- Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIBLOC');
 End;
 
 Procedure LIBDIC;Begin
- Error('Balise LIDATAL non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIBDIC');
 End;
 
 Procedure COMDEF;Begin
+ If OutputLanguage=LangTurboPascal Then Begin
+  SkipRecord;
+  Exit;
+ End;
  rlen:=geti;
  rleft:=rlen;
  Write(FileOutput,rlen:6,' COMDEF:');
@@ -686,27 +736,27 @@ Procedure COMDEF;Begin
 End;
 
 Procedure LEXTDEF;Begin
- Error('Balise LEXTDEF non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LEXTDEF');
 End;
 
 Procedure LPUBDEF;Begin
- Error('Balise LPUBDEF non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LPUBDEF');
 End;
 
 Procedure LPUBDF2;Begin
- Error('Balise LPUBDF2 non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LPUBDF2');
 End;
 
 Procedure LCOMDEF;Begin
- Error('Balise LCOMDEF non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LCOMDEF');
 End;
 
 Procedure LIBHDR;Begin
- Error('Balise LIBHDR non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIBHDR');
 End;
 
 Procedure LIBEND;Begin
- Error('Balise LIBEND non impl'+#130+'ment'+#130+'.');
+ UnsupportedRecord('LIBEND');
 End;
 
 Procedure GetRecordToBuffer;
@@ -737,103 +787,56 @@ Procedure ProcessRecord;Begin
  chk:=0;
  GetRecordToBuffer;
  Rect:=GetB;
- If OutputLanguage=LangTurboPascal Then Begin
-  Case rect of
-   $6E:RHEADR;
-    $70:REGINT;
+ Case rect of
+  $6E:RHEADR;
+  $70:REGINT;
   $72:REDATA;
-   $74:SkipRecord;
-   $76:SkipRecord;
-   $78:SkipRecord;
-   $7A:SkipRecord;
-   $7C:SkipRecord;
-   $7E:SkipRecord;
-   $80:THEADR;
-   $82:SkipRecord;
-   $84:SkipRecord;
-   $86:SkipRecord;
-   $88:SkipRecord;
-   $8A:SkipRecord;
-   $8C:SkipRecord;
-   $8E:SkipRecord;
-   $90:PUBDEF;
-   $91:SkipRecord;
-   $92:SkipRecord;
-   $94:SkipRecord;
-   $96:LNAMES;
-   $98:SEGDEF;
-   $99:SkipRecord;
-   $9A:SkipRecord;
-   $9C:SkipRecord;
-   $9D:SkipRecord;
-   $A0:LEDATA;
-   $A1:SkipRecord;
-   $A2:SkipRecord;
-   $A3:SkipRecord;
-   $A4:SkipRecord;
-   $A6:SkipRecord;
-   $A8:SkipRecord;
-   $AA:SkipRecord;
-   $B0:SkipRecord;
-   $B4:SkipRecord;
-   $B6:SkipRecord;
-   $B7:SkipRecord;
-   $B8:SkipRecord;
-   $F0:SkipRecord;
-   $F1:SkipRecord;
-   Else SkipRecord;
-  End;
- End
-  Else
- Begin
-  Case rect of
-   $6E:RHEADR;
-   $70:REGINT;
-   $72:REDATA;
-   $74:RIDATA;
-   $76:OVLDEF;
-   $78:ENDREC;
-   $7A:BLKREC;
-   $7C:BLKEND;
-   $7E:DEBSYM;
-   $80:THEADR;
-   $82:LHEADR;
-   $84:PEDATA;
-   $86:PIDATA;
-   $88:COMENT;
-   $8A:MODEND;
-   $8C:MODENDL;
-   $8E:TYPDEF;
-   $90:PUBDEF;
-   $91:PUBDEFL;
-   $92:LOCSYM;
-   $94:LINNUM;
-   $96:LNAMES;
-   $98:SEGDEF;
-   $99:SEGDEFL;
-   $9A:GRPDEF;
-   $9C:FIXUPP;
-   $9D:{FIXUPP};
-   $A0:LEDATA;
-   $A1:LEDATAL;
-   $A2:LIDATA;
-   $A3:LIDATAL;
-   $A4:LIBHED;
-   $A6:LIBNAM;
-   $A8:LIBLOC;
-   $AA:LIBDIC;
-   $B0:COMDEF;
-   $B4:LEXTDEF;
-   $B6:LPUBDEF;
-   $B7:LPUBDF2;
-   $B8:LCOMDEF;
-   $F0:LIBHDR;
-   $F1:LIBEND;
-   Else Begin
-    RLen:=GetI;
-    RLeft:=RLen;
-    WriteLn(FileOutput,rlen:6,' Inconnu:',ByteHex2Str(Rect));
-    While rleft>1 do Write(FileOutput,ByteHex2Str(GetB):4);
+  $74:RIDATA;
+  $76:OVLDEF;
+  $78:ENDREC;
+  $7A:BLKREC;
+  $7C:BLKEND;
+  $7E:DEBSYM;
+  $80:THEADR;
+  $82:LHEADR;
+  $84:PEDATA;
+  $86:PIDATA;
+  $88:COMENT;
+  $8A:MODEND;
+  $8C:MODENDL;
+  $8E:TYPDEF;
+  $90:PUBDEF;
+  $91:PUBDEFL;
+  $92:LOCSYM;
+  $94:LINNUM;
+  $96:LNAMES;
+  $98:SEGDEF;
+  $99:SEGDEFL;
+  $9A:GRPDEF;
+  $9C:FIXUPP;
+  $9D:{FIXUPP};
+  $A0:LEDATA;
+  $A1:LEDATAL;
+  $A2:LIDATA;
+  $A3:LIDATAL;
+  $A4:LIBHED;
+  $A6:LIBNAM;
+  $A8:LIBLOC;
+  $AA:LIBDIC;
+  $B0:COMDEF;
+  $B4:LEXTDEF;
+  $B6:LPUBDEF;
+  $B7:LPUBDF2;
+  $B8:LCOMDEF;
+  $F0:LIBHDR;
+  $F1:LIBEND;
+  Else Begin
+   RLen:=GetI;
+   RLeft:=RLen;
+   If OutputLanguage<>LangTurboPascal Then WriteLn(FileOutput,rlen:6,' Inconnu:',ByteHex2Str(Rect));
+   While rleft>1 do Begin
+    D:=GetB;
+    If OutputLanguage<>LangTurboPascal Then Write(FileOutput,ByteHex2Str(D):4);
    End;
   End;
  End;

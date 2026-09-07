@@ -70662,7 +70662,7 @@ Var
 Begin
  TermAddLine(TP, '');
  If EmuMcbFirstSeg = 0 Then Begin
-  TermAddLine(TP, '  655360  bytes total conventional memory');
+  TermAddLine(TP, '  655360  octets de memoire conventionnelle totale');
   TermAddLine(TP, '     (aucun programme DOS charge actuellement dans l''emulateur -');
   TermAddLine(TP, '      memoire conventionnelle reellement utilisee/disponible/bloc');
   TermAddLine(TP, '      libre le plus grand non disponibles ; utiliser -emu:DOS, ou');
@@ -70683,10 +70683,10 @@ Begin
     McbSeg := Word(McbSeg + 1 + Emu_McbSize(EmuPanel.CPU, McbSeg))
    Else Done := True;
   End;
-  TermAddLine(TP, Pad(655360, 8) + '  bytes total conventional memory');
-  TermAddLine(TP, Pad(FreeB, 8) + '  bytes available to MS-DOS');
-  TermAddLine(TP, Pad(LargestB, 8) + '  largest executable program size');
-  TermAddLine(TP, Pad(UsedB, 8) + '  bytes used by currently loaded program(s)');
+  TermAddLine(TP, Pad(655360, 8) + '  octets de memoire conventionnelle totale');
+  TermAddLine(TP, Pad(FreeB, 8) + '  octets disponibles pour MS-DOS');
+  TermAddLine(TP, Pad(LargestB, 8) + '  taille du plus grand programme executable');
+  TermAddLine(TP, Pad(UsedB, 8) + '  octets utilises par le(s) programme(s) charge(s)');
  End;
  TermAddLine(TP, '');
  If OptionsDlg.Data.DosEMS Then Begin
@@ -70695,8 +70695,8 @@ Begin
    EmsFreeB := (EmuEms.TotalPages - EmuEms.UsedPages) * 16384
   Else
    EmsFreeB := EmsTotalB;
-  TermAddLine(TP, Pad(EmsTotalB, 8) + '  bytes total EMS memory');
-  TermAddLine(TP, Pad(EmsFreeB, 8) + '  bytes free EMS memory');
+  TermAddLine(TP, Pad(EmsTotalB, 8) + '  octets de memoire EMS totale');
+  TermAddLine(TP, Pad(EmsFreeB, 8) + '  octets de memoire EMS libre');
   TermAddLine(TP, '');
  End;
  If OptionsDlg.Data.DosXMS Then Begin
@@ -70706,19 +70706,19 @@ Begin
    If XmsFreeB < 0 Then XmsFreeB := 0;
   End Else
    XmsFreeB := XmsTotalB;
-  TermAddLine(TP, Pad(XmsTotalB, 8) + '  bytes total contiguous extended memory');
-  TermAddLine(TP, Pad(XmsFreeB, 8) + '  bytes available XMS memory');
+  TermAddLine(TP, Pad(XmsTotalB, 8) + '  octets de memoire etendue contigue totale');
+  TermAddLine(TP, Pad(XmsFreeB, 8) + '  octets de memoire XMS disponible');
   If EmuXms.Active And EmuXms.HmaOwned Then
-   TermAddLine(TP, 'MS-DOS is resident in the high memory area.');
+   TermAddLine(TP, 'MS-DOS reside dans la zone de memoire haute (HMA).');
   TermAddLine(TP, '');
  End;
  If OptionsDlg.Data.DosUMB Then Begin
-  TermAddLine(TP, Pad(65536, 8) + '  bytes total upper memory (UMB, segment ' +
+  TermAddLine(TP, Pad(65536, 8) + '  octets de memoire superieure totale (UMB, segment ' +
    HexWord(EMU_UMB_SEG) + ')');
   If EmuXms.Active And EmuXms.UmbInUse Then
-   TermAddLine(TP, '       0  bytes free upper memory (deja en usage)')
+   TermAddLine(TP, '       0  octet de memoire superieure libre (deja en usage)')
   Else
-   TermAddLine(TP, Pad(65536, 8) + '  bytes free upper memory');
+   TermAddLine(TP, Pad(65536, 8) + '  octets de memoire superieure libre');
   TermAddLine(TP, '');
  End;
 End;
@@ -113279,6 +113279,55 @@ Begin
  Emu_McbAllocWhole := BestSeg + 1;
 End;
 
+{ Variante d Emu_McbAllocWhole POUR UN ENFANT .EXE (EXEC, AH=4Bh) : un       }
+{ .EXE a besoin, comme au chargement de premier niveau (voir                }
+{ Emu_McbChainInit), d un ecart de 15 paragraphes entre son segment         }
+{ d environnement et son PSP reel (Emu_LoadExeAt calcule toujours           }
+{ PSPSeg:=AtSeg+15 sans savoir si McbInit est vrai ou faux). Utiliser        }
+{ Emu_McbAllocWhole seul pour un .EXE laissait le bloc entier auto-possede  }
+{ par le segment d environnement (convention .COM, Arena=PSP) - le VRAI MCB }
+{ que l enfant s attend a trouver a PSPSeg-1 (pour son propre AH=48h/49h/   }
+{ 4Ah, ES=PSPSeg au demarrage) etait alors totalement absent, faisant       }
+{ silencieusement echouer sa reduction memoire initiale (signature MCB      }
+{ invalide lue a PSPSeg-1) - BOGUE REEL, trouve en enquetant sur le rapport }
+{ "MEM affiche 0 octet utilise alors qu un programme tourne". Cette         }
+{ variante ecrit directement les DEUX MCB (remplissage possede par PspSeg + }
+{ le vrai MCB 'Z' a PspSeg-1), confines a la taille du bloc libre trouve    }
+{ (jamais jusqu a EMU_MCB_TOP_SEG comme le ferait Emu_McbChainInit - un     }
+{ enfant EXEC n a pas necessairement tout le reste de la memoire au-dessus  }
+{ de lui, contrairement a un programme de premier niveau). Renvoie          }
+{ ArenaSeg/PspSeg par reference (a passer tels quels a Emu_LoadExeAt) et    }
+{ False si aucun bloc libre d au moins 16 paragraphes n existe. }
+Function Emu_McbAllocWholeExe(Var C: TEmuCPU; Var ArenaSeg, PspSeg: Word): Boolean;
+Var
+ McbSeg, BestSeg: Word;
+ BestSize: LongInt;
+ Sig: Byte;
+ Done: Boolean;
+Begin
+ Emu_McbAllocWholeExe := False;
+ ArenaSeg := 0; PspSeg := 0;
+ If EmuMcbFirstSeg = 0 Then Exit;
+ BestSeg := 0; BestSize := -1;
+ McbSeg := EmuMcbFirstSeg;
+ Done := False;
+ While Not Done Do Begin
+  Sig := Emu_McbSig(C, McbSeg);
+  If (Emu_McbOwner(C, McbSeg) = 0) And (LongInt(Emu_McbSize(C, McbSeg)) > BestSize) Then Begin
+   BestSize := Emu_McbSize(C, McbSeg);
+   BestSeg := McbSeg;
+  End;
+  If Sig = Ord('M') Then McbSeg := Word(McbSeg + 1 + Emu_McbSize(C, McbSeg))
+  Else Done := True;
+ End;
+ If (BestSeg = 0) Or (BestSize < 16) Then Exit;
+ ArenaSeg := BestSeg + 1;
+ PspSeg := Word(ArenaSeg + 15);
+ Emu_McbSet(C, BestSeg, Ord('M'), PspSeg, 14);
+ Emu_McbSet(C, Word(PspSeg - 1), Ord('Z'), PspSeg, Word(BestSize - 15));
+ Emu_McbAllocWholeExe := True;
+End;
+
 { Fusionne toute paire de blocs LIBRES adjacents sur l ensemble de la       }
 { chaine (un seul passage suffit, parcouru une seule fois du debut a la     }
 { fin, en re-examinant le meme bloc apres chaque fusion pour capter une     }
@@ -122222,7 +122271,7 @@ Var
  { --- AH=4Bh EXEC (voir Emu_DosTerminate pour le retour au parent) --- }
  ExecChildPath, ExecHostPath, ExecCmdTail, ExecExt: String;
  ExecFrame: TEmuExecFrame;
- ExecChildSeg, ExecTailOfs, ExecTailSeg: Word;
+ ExecChildSeg, ExecArenaSeg, ExecTailOfs, ExecTailSeg: Word;
  ExecTailLen: Byte;
  ExecLoadOk: Boolean;
  ExecI: Integer;
@@ -123249,20 +123298,36 @@ Begin
       { Control Block) reelle" plus haut) - aucune collision possible avec }
       { l image du parent, dont le(s) bloc(s) restent Owner=EmuPspSeg      }
       { (jamais Owner=0) tant qu il n a pas lui-meme termine. }
-      ExecChildSeg := Emu_McbAllocWhole(P.CPU);
+      ExecExt := '';
+      For ExecI := Length(ExecHostPath) DownTo 1 Do
+       If ExecHostPath[ExecI] = '.' Then Begin
+        ExecExt := Copy(ExecHostPath, ExecI, Length(ExecHostPath) - ExecI + 1);
+        Break;
+       End;
+      For ExecI := 1 To Length(ExecExt) Do
+       If ExecExt[ExecI] In ['a'..'z'] Then ExecExt[ExecI] := Chr(Ord(ExecExt[ExecI]) - 32);
+      { BOGUE REEL CORRIGE (2026-09-06, trouve en enquetant sur "MEM signale  }
+      { 0 octet utilise alors qu un programme tourne") : un enfant .EXE a     }
+      { besoin, comme au chargement de premier niveau, d un ecart de 15       }
+      { paragraphes entre son segment d environnement et son PSP             }
+      { (Emu_LoadExeAt calcule toujours PSPSeg:=AtSeg+15) - Emu_McbAllocWhole }
+      { seul (qui possede ENTIEREMENT le bloc a AtSeg, convention .COM ou     }
+      { Arena=PSP) laissait alors le VRAI MCB attendu a PSPSeg-1 totalement   }
+      { absent : le propre AH=48h/49h/4Ah de l enfant sur SON PROPRE bloc     }
+      { (ES=PSPSeg) lisait une signature invalide a PSPSeg-1 et echouait      }
+      { silencieusement (le bloc entier restait donc marque "utilise" par     }
+      { l ancien MCB self-owned, sans jamais etre reduit ni retrouve par le  }
+      { parcours de MEM comme appartenant reellement au PSP en cours). }
+      If ExecExt = '.EXE' Then Begin
+       If Not Emu_McbAllocWholeExe(P.CPU, ExecArenaSeg, ExecChildSeg) Then
+        ExecChildSeg := 0;
+      End Else
+       ExecChildSeg := Emu_McbAllocWhole(P.CPU);
       If ExecChildSeg = 0 Then
        Emu_SetDosErr(P, 8) { mots memoire insuffisants }
       Else Begin
-       ExecExt := '';
-       For ExecI := Length(ExecHostPath) DownTo 1 Do
-        If ExecHostPath[ExecI] = '.' Then Begin
-         ExecExt := Copy(ExecHostPath, ExecI, Length(ExecHostPath) - ExecI + 1);
-         Break;
-        End;
-       For ExecI := 1 To Length(ExecExt) Do
-        If ExecExt[ExecI] In ['a'..'z'] Then ExecExt[ExecI] := Chr(Ord(ExecExt[ExecI]) - 32);
        If ExecExt = '.EXE' Then
-        ExecLoadOk := Emu_LoadExeAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail, False)
+        ExecLoadOk := Emu_LoadExeAt(P.CPU, ExecHostPath, ExecArenaSeg, ExecCmdTail, False)
        Else
         ExecLoadOk := Emu_LoadComAt(P.CPU, ExecHostPath, ExecChildSeg, ExecCmdTail, False);
        If Not ExecLoadOk Then
