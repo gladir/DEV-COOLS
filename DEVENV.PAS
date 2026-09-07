@@ -113111,7 +113111,20 @@ End;
 Function Emu_DosEnvRead(Var C: TEmuCPU; EnvSeg: Word;
  Var Vars: Array Of String; Var Count: Integer): Boolean;
 Const
- ENV_WINDOW_SIZE = 256;
+ { BOGUE REEL CORRIGE (2026-09-06, trouve en enquetant sur NCMAIN.EXE       }
+ { (EXEC enfant de NC.EXE) dont son propre AH=4Ah echouait toujours avec    }
+ { MaxParas=0) : EnvSeg n a que 14 paragraphes (224 octets) de reellement    }
+ { disponibles avant le MCB 'Z' du programme (voir Emu_McbChainInit/        }
+ { Emu_McbAllocWholeExe, qui reservent tous les deux exactement 14          }
+ { paragraphes pour l environnement) - 256 (16 paragraphes) deborde de 32   }
+ { octets DANS ce MCB. Pour un chargement de PREMIER niveau (McbInit=True), }
+ { le MCB est reecrit APRES cet appel (Emu_McbChainInit), masquant le        }
+ { degat ; pour un enfant EXEC (McbInit=False), le MCB avait deja ete ecrit  }
+ { AVANT par Emu_McbAllocWholeExe et n est JAMAIS reecrit ensuite - ce       }
+ { debordement l ecrasait donc pour de bon (sig/owner/taille tous a zero),   }
+ { faisant echouer silencieusement le propre AH=4Ah de l enfant sur son      }
+ { propre bloc (signature MCB invalide a PSPSeg-1). }
+ ENV_WINDOW_SIZE = 224;
 Var
  Buf: Array[0..255] Of Byte;
  Pos, MaxN: Integer;
@@ -113139,7 +113152,9 @@ End;
 Function Emu_DosEnvWrite(Var C: TEmuCPU; EnvSeg: Word;
  Var Vars: Array Of String; Count: Integer): Boolean;
 Const
- ENV_WINDOW_SIZE = 256;
+ { Voir le commentaire jumeau dans Emu_DosEnvRead ci-dessus - meme bogue,    }
+ { meme correctif (14 paragraphes/224 octets, pas 16/256, avant le MCB).    }
+ ENV_WINDOW_SIZE = 224;
 Var
  Buf: Array[0..255] Of Byte;
  Pos, I, J: Integer;
