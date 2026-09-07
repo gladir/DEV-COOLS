@@ -47766,7 +47766,39 @@ Var
   tmp  : Array[0..MAX_SEG] Of Integer;
   tcnt : Integer;
 Begin
-  { 1. ecrire LNAMES (accumules) }
+  { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :  }
+  { ObjOpen() remet lnames_count a 0 des l ouverture du fichier .OBJ en    }
+  { sortie (precaution normale pour repartir a zero) - mais chaque         }
+  { segment avait DEJA ete enregistre dans la table LNAMES PENDANT LE      }
+  { PARSING (bien avant cet appel a ObjOpen, voir seg_table[i].lnames_idx  }
+  { rempli par LNamesRegister au moment de la declaration du segment) -    }
+  { son index etait donc PERIME des que WriteAllSegments (toujours appele  }
+  { APRES ObjOpen) essayait de le reutiliser tel quel. ObjLNAMES etait en   }
+  { plus appelee AVANT la boucle SEGDEF qui ne re-enregistrait, par        }
+  { accident, que la CLASSE (jamais le NOM) du segment - resultat :        }
+  { ObjLNAMES voyait TOUJOURS lnames_count=0 et n ecrivait RIEN, tandis     }
+  { que les SEGDEF ecrits ensuite referencaient des index LNAMES           }
+  { n existant dans AUCUN record du fichier .OBJ genere - chaque nom/      }
+  { classe de segment (`.model small`/medium/large, des qu il y a plus     }
+  { d un segment - jamais remarque pour `.model tiny`, un seul segment)    }
+  { se resolvait alors a vide cote LINK (segment de pile introuvable par   }
+  { classe, plantage "division par zero" faute de bon SS/SP - voir         }
+  { memoire project_devenv_link_org_bug). Correctif : RE-enregistrer        }
+  { explicitement nom ET classe de CHAQUE segment (et nom de chaque        }
+  { groupe) DANS LA TABLE FRAICHEMENT VIDEE, AVANT d ecrire le record       }
+  { LNAMES - LNamesRegister est idempotent (renvoie l index existant si    }
+  { le nom est deja present), donc les rappels plus bas dans les boucles   }
+  { SEGDEF/GRPDEF restent sans danger et renvoient les MEMES index frais.  }
+  For i := 1 To seg_count Do
+    With seg_table[i] Do
+    Begin
+      lnames_idx := LNamesRegister(name);
+      If class_name <> '' Then LNamesRegister(class_name);
+    End;
+  For gi := 1 To grp_count Do
+    LNamesRegister(grp_table[gi].name);
+
+  { 1. ecrire LNAMES (maintenant correctement peuplee) }
   ObjLNAMES;
 
   { 2. ecrire un SEGDEF par segment }
