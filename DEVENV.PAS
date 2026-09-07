@@ -165270,8 +165270,24 @@ Begin
     { Stage 1 : clic HORS du panneau -> relache le focus, l evenement
       retombe sur le reste de l IDE (voir plus bas dans DispatchEvent). }
     EmuHasFocus := False;
-   End Else If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus) Then Begin
-    { Debogueur en pause, ou pas (plus) le focus emulateur : laisser passer. }
+   End Else If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus And
+              (Ev.Kind <> EV_MOUSE_DOWN)) Then Begin
+    { Debogueur en pause, ou pas (plus) le focus emulateur ET ce n est pas  }
+    { un clic (qui doit au contraire tomber dans la branche suivante pour   }
+    { le regagner) : laisser passer. BOGUE REEL CORRIGE (2026-09-06,        }
+    { signale par l utilisateur : "clique sur la fenetre de l emulateur     }
+    { DOS, elle ne revient pas du mode Pause") - AVANT ce correctif, cette   }
+    { branche interceptait AUSSI un clic (EV_MOUSE_DOWN) DANS le panneau    }
+    { pendant que EmuHasFocus=False (le cas exact du message "En pause      }
+    { (cliquez sur l ecran pour reprendre)" affiche par DOS_RunOneChunk/    }
+    { StepEmulator ci-dessus, IDENTIQUE pour tous les backends convertis :  }
+    { C64/NES/A2600/CoCo3/68000/etc.) - le clic etait donc "laisse passer"  }
+    { SANS jamais remettre EmuHasFocus a True (voir la branche suivante,     }
+    { seul endroit qui le fait), rendant la reprise par clic totalement     }
+    { impossible malgre le message qui la promettait explicitement. Un      }
+    { clic DEHORS du panneau (branche precedente) continue de relacher le   }
+    { focus normalement ; seul un clic DEDANS pendant que le focus est deja }
+    { perdu doit desormais le regagner plutot que d etre avale ici. }
    End Else Begin
     If EmuPanel.Loaded And (Ev.Kind = EV_MOUSE_DOWN) Then EmuHasFocus := True;
     HandleEmulatorPanelEvent(EmuPanel, Ev);
