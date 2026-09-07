@@ -1170,6 +1170,15 @@ Function Mcp_HttpQueryInfoA(hRequest: LongInt; dwInfoLevel: LongWord;
          Var lpBuffer; Var lpdwBufferLength: LongWord;
          Var lpdwIndex: LongWord): LongBool;
          StdCall; External 'wininet.dll' Name 'HttpQueryInfoA';
+{ Necessaire pour HTTPS (voir PsWebHttpGet plus bas) : sans ceci,           }
+{ HttpSendRequestA sur une requete https:// peut se bloquer INDEFINIMENT -  }
+{ la verification de revocation de certificat (CRL/OCSP) de WinInet a       }
+{ besoin de pomper les messages du thread appelant, or ce meme thread est   }
+{ bloque a l interieur de HttpSendRequestA : interblocage classique quand   }
+{ WinInet est appele de facon synchrone depuis le thread d une IHM. }
+Function Mcp_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
+         Var lpBuffer; dwBufferLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
 {$ENDIF}
 
 Const
@@ -92781,6 +92790,12 @@ Type
   IsObject    : Boolean;
   ScalarValue : AnsiString;
   Props       : PPsProp;
+  { New-Object (2026-09-07, demande explicite) - '' pour une variable        }
+  { normale (scalaire ou objet aplati existant) ; sinon le nom court en      }
+  { MAJUSCULES du type .NET simule (ex. 'WEBCLIENT') sur lequel une methode  }
+  { peut ensuite etre appelee via $var.Methode(args) - voir                  }
+  { PsInvokeMethodCall plus bas. }
+  ObjTypeName : String;
   Next        : PPsVar;
  End;
 
@@ -92865,6 +92880,7 @@ Begin
  End;
  P^.IsObject := False;
  P^.ScalarValue := Value;
+ P^.ObjTypeName := '';
 End;
 
 Procedure PsSetObject(Name: String; Props: PPsProp);
@@ -92883,6 +92899,30 @@ Begin
  P^.IsObject := True;
  P^.Props := Props;
  P^.ScalarValue := '';
+ P^.ObjTypeName := '';
+End;
+
+{ New-Object (2026-09-07, demande explicite) - cree une variable "objet .NET }
+{ simule" : pas de proprietes aplaties (contrairement a PsSetObject, utilise }
+{ par ConvertFrom-Yaml/StringData/SddlString), juste une etiquette de type   }
+{ (voir TPsVar.ObjTypeName) sur laquelle PsInvokeMethodCall sait dispatcher  }
+{ un appel de methode $var.Methode(args). }
+Procedure PsSetTypedObject(Name: String; TypeName: String);
+Var
+ P: PPsVar;
+Begin
+ P := PsFindVar(Name);
+ If P = Nil Then Begin
+  New(P);
+  P^.Name := Name;
+  P^.Next := PsVarsHead;
+  PsVarsHead := P;
+ End Else If P^.IsObject Then
+  PsDisposeProps(P^.Props);
+ P^.IsObject := False;
+ P^.Props := Nil;
+ P^.ScalarValue := '';
+ P^.ObjTypeName := TypeName;
 End;
 
 Function PsGetPropValue(V: PPsVar; PropPath: String): AnsiString;
@@ -92933,7 +92973,13 @@ Procedure TermAddLineWrapped(Var TP: TTerminalPanel; S: AnsiString);
 Const
  PS_LINE_CHUNK = 240;
 Var
- P: Integer;
+ { LongInt (pas Integer, 16 bits sous ce mode TP) : une reponse HTTP reelle }
+ { (voir New-Object System.Net.WebClient/DownloadString) depasse aisement   }
+ { les 32767 caracteres - P debordait alors en negatif et la boucle ne se   }
+ { terminait jamais (trouve en direct contre https://www.gladir.com/, page }
+ { de 34311 caracteres, meme famille de bogue que PortVal dans              }
+ { Mcp_ParseUrl - voir project_devenv_mcp.md). }
+ P: LongInt;
 Begin
  If S = '' Then Begin
   TermAddLine(TP, '');
@@ -94571,6 +94617,154 @@ Begin
  PsPipelineObject := Nil;
 End;
 
+{ ============================================================ }
+{ === New-Object / appel de methode $var.Methode(args)     === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite de l'utilisateur : "$webClient = New-Object }
+{ System.Net.WebClient" puis "$webClient.DownloadString('url')") - premier   }
+{ support d'un VRAI objet .NET simule (par opposition aux objets aplatis     }
+{ de ConvertFrom-Yaml/StringData/SddlString, qui ne sont que des sacs de     }
+{ proprietes texte sans methode). Seul `System.Net.WebClient` (methode       }
+{ `DownloadString`) est reconnu - tout autre type/methode retombe            }
+{ silencieusement sur le comportement generique existant (texte litteral),   }
+{ meme discipline "arret honnete, pas invente" que le reste de ce chantier.  }
+{ Reutilise les liaisons WinInet DEJA existantes de Connect-McpServer (voir  }
+{ project_devenv_mcp.md) via un GET direct DEDIE (PsWebHttpGet) plutot que   }
+{ Mcp_HttpRequest lui-meme, qui envoie des en-tetes specifiques a MCP        }
+{ (Accept "application/json, text/event-stream") hors de propos pour        }
+{ telecharger une VRAIE page web quelconque. }
+Procedure Mcp_ParseUrl(Url: AnsiString; Var UseHttps: Boolean; Var HostName: String;
+ Var Port: Word; Var UrlPath: String; Var Ok: Boolean); Forward;
+
+Const
+ PSWEB_OPEN_TYPE_DIRECT = 1;
+ PSWEB_SERVICE_HTTP     = 3;
+ PSWEB_FLAG_RELOAD      = LongWord($80000000);
+ PSWEB_FLAG_SECURE      = LongWord($00800000);
+ { Option 31 = INTERNET_OPTION_SECURITY_FLAGS. Seul le drapeau de            }
+ { revocation est ignore (le certificat lui-meme, sa date et son CN restent  }
+ { verifies) - evite le blocage synchrone decrit ci-dessus sans desactiver   }
+ { la validation du certificat. }
+ PSWEB_OPTION_SECURITY_FLAGS       = 31;
+ PSWEB_SECURITY_FLAG_IGNORE_REVOC  = LongWord($00000080);
+
+{$IFDEF WINDOWS}
+Function PsWebHttpGet(Url: AnsiString; Var Content: AnsiString): Boolean;
+Var
+ UseHttps, UrlOk: Boolean;
+ HostName, UrlPath: String;
+ Port: Word;
+ hInet, hConnect, hRequest: LongInt;
+ OpenFlags, SecFlags: LongWord;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: AnsiString;
+ J: Integer;
+ SendOk: LongBool;
+Begin
+ PsWebHttpGet := False;
+ Content := '';
+ Mcp_ParseUrl(Url, UseHttps, HostName, Port, UrlPath, UrlOk);
+ If Not UrlOk Then Exit;
+ hInet := Mcp_InternetOpenA('DEVENV-PowerShell-dev/1.0', PSWEB_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Exit;
+ hConnect := Mcp_InternetConnectA(hInet, PChar(AnsiString(HostName)), Port, Nil, Nil,
+  PSWEB_SERVICE_HTTP, 0, 0);
+ If hConnect = 0 Then Begin
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then OpenFlags := PSWEB_FLAG_SECURE Or PSWEB_FLAG_RELOAD
+             Else OpenFlags := PSWEB_FLAG_RELOAD;
+ hRequest := Mcp_HttpOpenRequestA(hConnect, 'GET', PChar(AnsiString(UrlPath)), Nil, Nil,
+  Nil, OpenFlags, 0);
+ If hRequest = 0 Then Begin
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then Begin
+  SecFlags := PSWEB_SECURITY_FLAG_IGNORE_REVOC;
+  Mcp_InternetSetOptionA(hRequest, PSWEB_OPTION_SECURITY_FLAGS, SecFlags, SizeOf(SecFlags));
+ End;
+ SendOk := Mcp_HttpSendRequestA(hRequest, Nil, 0, Nil, 0);
+ If Not SendOk Then Begin
+  Mcp_InternetCloseHandle(hRequest);
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ Repeat
+  BytesRead := 0;
+  If Not Mcp_InternetReadFile(hRequest, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J-1];
+  Content := Content + Chunk;
+ Until False;
+ Mcp_InternetCloseHandle(hRequest);
+ Mcp_InternetCloseHandle(hConnect);
+ Mcp_InternetCloseHandle(hInet);
+ PsWebHttpGet := True;
+End;
+{$ENDIF}
+
+{ Decoupe "$objet.Methode(args)" (que ce soit le membre droit d'une          }
+{ affectation, ou une instruction independante) en ses 3 morceaux. Renvoie  }
+{ False pour toute autre forme (y compris une simple lecture de propriete    }
+{ "$objet.propriete" SANS parentheses, deja geree ailleurs). }
+Function PsParseMethodCall(Expr: String; Var ObjVarName, MethodName: String;
+ Var ArgsRaw: String): Boolean;
+Var
+ DotPos, ParenPos: Integer;
+Begin
+ PsParseMethodCall := False;
+ ObjVarName := ''; MethodName := ''; ArgsRaw := '';
+ If (Length(Expr) < 2) Or (Expr[1] <> '$') Then Exit;
+ If Expr[Length(Expr)] <> ')' Then Exit;
+ DotPos := Pos('.', Expr);
+ If DotPos = 0 Then Exit;
+ ParenPos := Pos('(', Expr);
+ If (ParenPos = 0) Or (ParenPos < DotPos) Then Exit;
+ ObjVarName := Copy(Expr, 2, DotPos - 2);
+ MethodName := Copy(Expr, DotPos + 1, ParenPos - DotPos - 1);
+ ArgsRaw := Copy(Expr, ParenPos + 1, Length(Expr) - ParenPos - 1);
+ PsParseMethodCall := (ObjVarName <> '') And (MethodName <> '');
+End;
+
+{ Execute reellement un appel $objet.Methode(args) deja decoupe par          }
+{ PsParseMethodCall - seul WebClient.DownloadString est implante (voir       }
+{ l'en-tete de section). Renvoie False si l'objet/la methode n'est pas       }
+{ reconnu(e) OU si l'appel reel a echoue (ResultVal reste '' dans les deux   }
+{ cas - meme convention "silencieux" que le reste de ce systeme de           }
+{ variables, qui n'a pas acces a TP/TermAddLine pour signaler une erreur     }
+{ depuis TermPSEvaluateAssignment). }
+Function PsInvokeMethodCall(ObjVarName, MethodName, ArgsRaw: String;
+ Var ResultVal: AnsiString): Boolean;
+Var
+ ObjVar, ArgVar: PPsVar;
+ ArgVal: AnsiString;
+Begin
+ PsInvokeMethodCall := False;
+ ResultVal := '';
+ ObjVar := PsFindVar(ObjVarName);
+ If (ObjVar = Nil) Or (ObjVar^.ObjTypeName = '') Then Exit;
+ ArgVal := TermTrim(ArgsRaw);
+ If (Length(ArgVal) > 1) And (ArgVal[1] = '$') Then Begin
+  ArgVar := PsFindVar(Copy(ArgVal, 2, Length(ArgVal) - 1));
+  If (ArgVar <> Nil) And (Not ArgVar^.IsObject) Then ArgVal := ArgVar^.ScalarValue
+  Else ArgVal := '';
+ End Else
+  ArgVal := YamlUnquote(ArgVal);
+ If (ObjVar^.ObjTypeName = 'WEBCLIENT') And
+    (TermStrToUpper(MethodName) = 'DOWNLOADSTRING') Then Begin
+{$IFDEF WINDOWS}
+  PsInvokeMethodCall := PsWebHttpGet(ArgVal, ResultVal);
+{$ENDIF}
+  Exit;
+ End;
+End;
+
 Procedure TermPSEvaluateAssignment(VarName, RHS: String);
 Var
  CmdName, ArgPart, SrcVarName: String;
@@ -94580,6 +94774,11 @@ Var
  CtsArgs: Array[1..80] Of String;
  CtsStringArg, CtsUpLevel: String;
  CtsAsPlainText, CtsForce: Boolean;
+ McObjName, McMethodName, McArgsRaw: String;
+ McResult: AnsiString;
+ NoTypeName, NoShortType, NoUpLevel: String;
+ NoArgCount, NoI, NoDotPos: Integer;
+ NoArgs: Array[1..10] Of String;
 Begin
  If RHS = '' Then Begin
   PsSetScalar(VarName, '');
@@ -94591,6 +94790,19 @@ Begin
  End;
  If (Length(RHS) >= 2) And (RHS[1] = '''') And (RHS[Length(RHS)] = '''') Then Begin
   PsSetScalar(VarName, Copy(RHS, 2, Length(RHS) - 2));
+  Exit;
+ End;
+ { $resultat = $objet.Methode(args) - DOIT etre teste AVANT le motif         }
+ { generique "$autreVar sans espace" juste en dessous, qui matcherait sinon  }
+ { a tort la chaine ENTIERE "$objet.Methode(args)" comme un nom de variable  }
+ { litteral (jamais trouve, resultat vide silencieux sans jamais appeler la  }
+ { methode). Voir New-Object plus bas dans cette meme procedure pour creer   }
+ { l'objet .NET simule sur lequel une methode peut ensuite etre appelee. }
+ If PsParseMethodCall(RHS, McObjName, McMethodName, McArgsRaw) Then Begin
+  If PsInvokeMethodCall(McObjName, McMethodName, McArgsRaw, McResult) Then
+   PsSetScalar(VarName, McResult)
+  Else
+   PsSetScalar(VarName, '');
   Exit;
  End;
  If (RHS[1] = '$') And (Pos(' ', RHS) = 0) Then Begin
@@ -94613,6 +94825,39 @@ Begin
    Else
     PsSetScalar(VarName, '');
    Exit;
+  End;
+  { New-Object [-TypeName] TypeComplet.Net (2026-09-07, demande explicite) - }
+  { seul System.Net.WebClient est reconnu (voir PsInvokeMethodCall) ; tout   }
+  { autre type retombe SANS "Exit" sur le comportement generique existant    }
+  { (texte litteral, tout en bas de cette procedure) - arret honnete plutot  }
+  { qu invente, cette procedure n a de toute facon pas acces a TP pour       }
+  { signaler une erreur. }
+  If (CmdName = 'NEW-OBJECT') Then Begin
+   NoArgCount := 0;
+   While (TermExtractParam(ArgPart, NoArgCount+1) <> '') And (NoArgCount < 10) Do
+    Inc(NoArgCount);
+   For NoI := 1 To NoArgCount Do NoArgs[NoI] := TermExtractParam(ArgPart, NoI);
+   NoTypeName := '';
+   NoI := 1;
+   While NoI <= NoArgCount Do Begin
+    NoUpLevel := TermStrToUpper(NoArgs[NoI]);
+    If NoUpLevel = '-TYPENAME' Then Begin
+     Inc(NoI); If NoI <= NoArgCount Then NoTypeName := NoArgs[NoI];
+    End Else If (NoTypeName = '') And (Copy(NoArgs[NoI], 1, 1) <> '-') Then
+     NoTypeName := NoArgs[NoI];
+    Inc(NoI);
+   End;
+   NoShortType := NoTypeName;
+   NoDotPos := System.Pos('.', NoShortType);
+   While NoDotPos > 0 Do Begin
+    NoShortType := Copy(NoShortType, NoDotPos + 1, Length(NoShortType));
+    NoDotPos := System.Pos('.', NoShortType);
+   End;
+   NoShortType := TermStrToUpper(NoShortType);
+   If NoShortType = 'WEBCLIENT' Then Begin
+    PsSetTypedObject(VarName, 'WEBCLIENT');
+    Exit;
+   End;
   End;
   { Meme motif reconnu que ConvertFrom-Yaml ci-dessus - reutilise le meme  }
   { squelette pour ConvertFrom-StringData/SddlString (objets) et            }
@@ -94695,6 +94940,8 @@ Var
  Dir, Line, Trimmed, VarName, RHS, PropPath: String;
  EqPos, DotPos: Integer;
  SrcVar: PPsVar;
+ McObjName, McMethodName, McArgsRaw: String;
+ McResult: AnsiString;
 Begin
  GetDir(0, Dir);
  Line := TP.InputLine;
@@ -94739,6 +94986,17 @@ Begin
  End;
 
  If (Length(Trimmed) > 1) And (Trimmed[1] = '$') Then Begin
+  { $objet.Methode(args) tape seul (sans affectation) - vrai PowerShell      }
+  { affiche alors la VALEUR DE RETOUR (comportement d'echo automatique) -    }
+  { doit etre teste AVANT la lecture de propriete "$objet.propriete" juste   }
+  { en dessous, qui ne gere pas les parentheses. }
+  If PsParseMethodCall(Trimmed, McObjName, McMethodName, McArgsRaw) Then Begin
+   If PsInvokeMethodCall(McObjName, McMethodName, McArgsRaw, McResult) Then
+    TermAddLineWrapped(TP, McResult)
+   Else
+    TermAddLine(TP, '');
+   Exit;
+  End;
   VarName := Copy(Trimmed, 2, Length(Trimmed) - 1);
   DotPos := Pos('.', VarName);
   If DotPos > 0 Then Begin
