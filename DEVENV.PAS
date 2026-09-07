@@ -98559,12 +98559,15 @@ Begin
  End;
  { REXX : SK_OS2REXX uniquement (2026-08-30, demande explicite de           }
  { l utilisateur - integration complete de REXX.PAS, voir le bloc Rexx_*    }
- { pres de TermCmd_IMGMOUNT). }
+ { pres de TermCmd_IMGMOUNT). PMREXX (2026-09-07, demande explicite) :      }
+ { simple alias de REXX, voir TermExecuteCommand/SK_OS2REXX. }
  If TP.Shell = SK_OS2REXX Then Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Langage de script REXX ---');
   TermAddLine(TP,
    '  REXX fichier.rex [arguments]  Lance un script REXX complet');
+  TermAddLine(TP,
+   '  PMREXX fichier.rex [arguments]  Alias de REXX (nom du frontal OS/2)');
  End;
  { GREP : SK_BASH uniquement (2026-09-05, demande explicite de               }
  { l'utilisateur - port complet du moteur d'expressions regulieres de       }
@@ -102482,7 +102485,11 @@ Begin
     TermCmd_LOADHIGH(TP, ParamStr)
   Else If CurrCmd = 'LOG' Then
    TermCmd_LOG(TP, ParamStr)
-   Else If CurrCmd = 'REXX' Then
+   Else If (CurrCmd = 'REXX') Or (CurrCmd = 'PMREXX') Then
+    { PMREXX : alias de REXX (2026-09-07, demande explicite de l utilisateur) }
+    { - le vrai OS/2 utilise PMREXX.EXE comme frontal graphique de           }
+    { l interprete REXX texte : ici, un simple alias sur le MEME             }
+    { TermCmd_REXX (pas de fenetre separee, ce terminal n en a pas). }
     TermCmd_REXX(TP, ParamStr)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
