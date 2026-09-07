@@ -98261,6 +98261,20 @@ Begin
   TermAddLine(TP,
    '  EDIT fichier     Ouvrir un fichier dans l''editeur de texte');
  End;
+ { ASSIGN : SK_CMD/SK_NCOMMANDER/SK_OS2REXX uniquement (2026-09-07, demande }
+ { explicite de l'utilisateur) - PAS SK_POWERSHELL/SK_BASH/SK_AMIGADOS      }
+ { (AmigaDOS a deja sa PROPRE commande ASSIGN, sans rapport, voir plus bas). }
+ If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Or
+    (TP.Shell = SK_OS2REXX) Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Affectation de lecteur (emulateur DOS) ---');
+  TermAddLine(TP,
+   '  ASSIGN d1=d2 [...] Redirige le lecteur d1 vers d2 dans l''emulateur');
+  TermAddLine(TP,
+   '  ASSIGN /STATUS      Affiche les affectations en vigueur');
+  TermAddLine(TP,
+   '  ASSIGN              (seul) Retire toutes les affectations');
+ End;
  { ARJ (2026-08-31, demande explicite de l'utilisateur, port complet et      }
  { integral de C:\SOURCE\GITHUB\CORAIL\ARJ.PAS - AUCUN executable externe,   }
  { code natif directement dans DEVENV.PAS) - memes 4 shells que EDIT.        }
@@ -101205,6 +101219,135 @@ End;
 {$ENDIF}
 
 { ============================================================ }
+{ === Commande ASSIGN (Invite de commande/Norton Commander/=== }
+{ === OS/2 & REXX)                                         === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite : "implemente la commande complete de       }
+{ ASSIGN du DOS et qu'elle s'applique sur l'emulateur DOS de DEVENV.PAS") -   }
+{ VRAIE table INT 2Fh AX=0600h/0601h deja existante (voir EMU_ASSIGN_SEG/    }
+{ EMU_ASSIGN_TBL_OFS/Emu_AssignInit, chantier precedent qui l'avait laissee  }
+{ figee a l'identite, jamais lue ni ecrite par le reste de l'emulateur) -    }
+{ cette commande la lit/l'ecrit REELLEMENT, et Emu_AssignedDriveIdx (voir    }
+{ AH=3Bh/47h de Emu_DoInt21, chantier "structures internes DOS") la fait     }
+{ desormais suivre pour le repertoire courant par lecteur. Limite honnete    }
+{ documentee au meme endroit : l'ouverture de fichiers elle-meme             }
+{ (Emu_HostPath) ne distingue deja aucune lettre de lecteur entre elles -    }
+{ une redirection n'y changerait donc rien d'observable ; seul CHDIR/GetCwd  }
+{ par lecteur beneficie reellement de la redirection dans ce moteur. }
+{ BOGUE REEL trouve EN VERIFIANT en direct (2026-09-07), PUIS CORRIGE UNE     }
+{ 2e FOIS apres qu'un premier correctif se soit revele lui-meme dangereux -  }
+{ voir les deux paragraphes ci-dessous, tous deux garde comme mise en garde  }
+{ pour la suite. }
+{ 1) `EmuPanel` (la copie de travail globale, deja utilisee telle quelle par }
+{ TermCmd_MEM avant ce chantier) n'est valide QUE pendant que son onglet     }
+{ emulateur est la vue de PREMIER PLAN - fermer cet onglet (le seul moyen de }
+{ revenir au Terminal, les deux etant mutuellement exclusifs dans cette      }
+{ interface, verifie par capture d'ecran) remet `EmuPanel.CPU.MemReady` a    }
+{ False/`Memory` a Nil, alors meme que `EmuMcbFirstSeg` (variable globale    }
+{ INDEPENDANTE) reste a tort "a jour". }
+{ 2) Premiere tentative de correctif (RETIREE - dangereuse) : lire l'etat    }
+{ depuis `EmuTabs[]` (tableau de sauvegarde par onglet, alimente par         }
+{ `SyncActiveWindowOut`/`CreateEmulatorTab`) une fois l'onglet ferme.        }
+{ Semblait fonctionner (`EmuTabs[0].CPU.MemReady` restait a True apres       }
+{ fermeture, avec un `Memory` non-nil) MAIS VERIFICATION EN DIRECT (bogue    }
+{ REEL, pas suppose) a plante le processus a l'ECRITURE : `EmuTabs[Idx] :=   }
+{ EmuPanel` (affectation d'enregistrement, DEJA existante avant ce chantier) }
+{ ne copie que la VALEUR du pointeur `Memory`, pas la memoire pointee - un   }
+{ ALIAS du meme bloc que `EmuPanel.CPU.Memory`. Des que ce bloc est libere   }
+{ (a la fermeture de l'onglet), `EmuTabs[Idx].CPU.Memory` reste un pointeur  }
+{ PENDANT (use-after-free) : une LECTURE juste apres peut encore sembler     }
+{ fonctionner (memoire pas encore reutilisee), mais une ECRITURE plante      }
+{ reellement (confirme par journal ponctuel). `EmuTabs[]` n'est donc fiable  }
+{ QUE pour un AFFICHAGE passif (ce a quoi il sert ailleurs dans ce fichier), }
+{ jamais pour relire/reecrire quoi que ce soit apres coup - meme limite tres }
+{ probable pour `TermCmd_MEM` (meme pattern preexistant, jamais remis en     }
+{ cause avant ce chantier, PAS corrige ici, hors demande explicite). }
+{ CORRECTIF FINAL (sur) : une table PERSISTANTE et INDEPENDANTE de toute     }
+{ memoire emulee - `TermAssignTable` ci-dessous, un simple tableau Pascal    }
+{ global, TOUJOURS memoire-sur (aucun pointeur, aucun risque de use-after-   }
+{ free). `TermCmd_ASSIGN` lit/ecrit UNIQUEMENT cette table (jamais           }
+{ `EmuPanel`/`EmuTabs` directement) ; `Emu_AssignInit` (appelee au           }
+{ demarrage de CHAQUE session DOS) la copie desormais dans la memoire        }
+{ emulee de la NOUVELLE session AU LIEU d'ecrire l'identite figee - un       }
+{ ASSIGN tape AVANT de lancer un programme (le seul moment ou le Terminal    }
+{ est reellement atteignable, cette interface rendant Terminal et session    }
+{ DOS active mutuellement exclusifs) affecte donc bien CETTE session des     }
+{ son demarrage, exactement comme un vrai ASSIGN.COM lance avant d'autres    }
+{ commandes dans un AUTOEXEC.BAT. }
+Const
+ TermAssignTable: Array[0..25] Of Byte = (
+  0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25);
+
+Procedure TermCmd_ASSIGN(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..10] Of String;
+ Tok: String;
+ SrcIdx, DstIdx: Integer;
+ AnyAssigned, BadSyntax: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ If (LocalArgCount = 1) And (TermStrToUpper(LocalArgs[1]) = '/?') Then Begin
+  TermAddLine(TP, 'Syntaxe : ASSIGN [d1=d2 [d3=d4 ...]] [/STATUS]');
+  TermAddLine(TP, '  ASSIGN A=C        Toute reference au lecteur A devient une reference a C');
+  TermAddLine(TP, '  ASSIGN /STATUS    Affiche les affectations en vigueur');
+  TermAddLine(TP, '  ASSIGN            (sans argument) Retire TOUTES les affectations');
+  Exit;
+ End;
+ If (LocalArgCount = 1) And (TermStrToUpper(LocalArgs[1]) = '/STATUS') Then Begin
+  AnyAssigned := False;
+  For I := 0 To 25 Do
+   If TermAssignTable[I] <> I Then Begin
+    TermAddLine(TP, Chr(Ord('A') + I) + ' = ' + Chr(Ord('A') + TermAssignTable[I]));
+    AnyAssigned := True;
+   End;
+  If Not AnyAssigned Then TermAddLine(TP, 'Aucune affectation de lecteur en vigueur.');
+  Exit;
+ End;
+ If LocalArgCount = 0 Then Begin
+  For I := 0 To 25 Do Begin
+   TermAssignTable[I] := I;
+   If EmuPanel.CPU.MemReady Then
+    Emu_WriteByte(EmuPanel.CPU, EMU_ASSIGN_SEG, EMU_ASSIGN_TBL_OFS + I, Byte(I));
+  End;
+  TermAddLine(TP, 'ASSIGN : toutes les affectations de lecteur ont ete retirees.');
+  Exit;
+ End;
+ { Validation COMPLETE avant toute ecriture - un vrai ASSIGN n applique       }
+ { rien si un seul parametre est invalide, plutot que d appliquer            }
+ { partiellement la ligne de commande. }
+ BadSyntax := False;
+ For I := 1 To LocalArgCount Do Begin
+  Tok := TermStrToUpper(LocalArgs[I]);
+  If (Length(Tok) <> 3) Or (Tok[2] <> '=') Or
+     (Not (Tok[1] In ['A'..'Z'])) Or (Not (Tok[3] In ['A'..'Z'])) Then Begin
+   TermAddLine(TP, 'ASSIGN : parametre invalide : ' + LocalArgs[I]);
+   BadSyntax := True;
+  End;
+ End;
+ If BadSyntax Then Begin
+  TermAddLine(TP, 'Syntaxe : ASSIGN [d1=d2 [d3=d4 ...]] [/STATUS]');
+  Exit;
+ End;
+ For I := 1 To LocalArgCount Do Begin
+  Tok := TermStrToUpper(LocalArgs[I]);
+  SrcIdx := Ord(Tok[1]) - Ord('A');
+  DstIdx := Ord(Tok[3]) - Ord('A');
+  TermAssignTable[SrcIdx] := DstIdx;
+  { Miroir "au mieux" dans la session DOS actuellement live (EmuPanel), si   }
+  { il y en a une - SANS JAMAIS toucher EmuTabs[] (voir la mise en garde     }
+  { ci-dessus). Aucune consequence si aucune session n'est active : la       }
+  { VRAIE application se fera au prochain demarrage via Emu_AssignInit. }
+  If EmuPanel.CPU.MemReady Then
+   Emu_WriteByte(EmuPanel.CPU, EMU_ASSIGN_SEG, EMU_ASSIGN_TBL_OFS + SrcIdx, Byte(DstIdx));
+  TermAddLine(TP, Chr(Ord('A') + SrcIdx) + ' = ' + Chr(Ord('A') + DstIdx));
+ End;
+End;
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -101842,6 +101985,8 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'ASSIGN' Then
+    TermCmd_ASSIGN(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
@@ -102291,6 +102436,8 @@ Begin
    TermCmd_TYPE(TP, ParamStr)
   Else If CurrCmd = 'EDIT' Then
    TermCmd_EDIT(TP, ParamStr)
+  Else If CurrCmd = 'ASSIGN' Then
+   TermCmd_ASSIGN(TP, ParamStr)
   Else If CurrCmd = 'ARJ' Then
    TermCmd_ARJ(TP, ParamStr)
   Else If CurrCmd = 'UNZIP' Then
@@ -102451,6 +102598,8 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'ASSIGN' Then
+    TermCmd_ASSIGN(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
@@ -116430,15 +116579,43 @@ Begin
  Emu_WriteByte(P.CPU, EMU_SDA_SEG, EMU_SDA_OFS + $34, Byte(Wd));
 End;
 
-{ ASSIGN (INT 2Fh AH=06h) - voir EMU_ASSIGN_SEG/EMU_ASSIGN_TBL_OFS. Table   }
-{ par defaut = correspondance identite (A:->A:, B:->B:, ...), exactement    }
-{ ce qu un vrai ASSIGN fraichement installe (sans argument prealable)       }
-{ montre. Appelee une fois au demarrage, comme Emu_InitBDA. }
+{ ASSIGN (INT 2Fh AH=06h) - voir EMU_ASSIGN_SEG/EMU_ASSIGN_TBL_OFS. Copie   }
+{ desormais `TermAssignTable` (voir la commande Terminal ASSIGN plus haut,  }
+{ seule source de verite persistante et memoire-sure pour cet etat) au lieu }
+{ de toujours ecrire l identite figee - un ASSIGN tape AVANT de lancer ce   }
+{ programme affecte ainsi reellement CETTE session des son demarrage,       }
+{ exactement comme un vrai ASSIGN.COM lance plus tot dans un AUTOEXEC.BAT.  }
+{ Sans ASSIGN prealable, TermAssignTable reste l identite (A:->A:, B:->B:,  }
+{ ...), exactement ce qu un vrai ASSIGN fraichement installe montre.        }
+{ Appelee une fois au demarrage, comme Emu_InitBDA. }
 Procedure Emu_AssignInit(Var P: TEmulatorPanel);
 Var I: Integer;
 Begin
  For I := 0 To 25 Do
-  Emu_WriteByte(P.CPU, EMU_ASSIGN_SEG, EMU_ASSIGN_TBL_OFS + I, Byte(I));
+  Emu_WriteByte(P.CPU, EMU_ASSIGN_SEG, EMU_ASSIGN_TBL_OFS + I, TermAssignTable[I]);
+End;
+
+{ Fait REELLEMENT suivre une redirection ASSIGN (2026-09-07, demande         }
+{ explicite de l utilisateur - "que la commande ASSIGN s applique sur        }
+{ l emulateur DOS") - jusqu ici la table (EMU_ASSIGN_SEG:EMU_ASSIGN_TBL_OFS) }
+{ etait bien lisible/modifiable via INT 2Fh AX=0600h/0601h mais IGNOREE       }
+{ par le reste de l emulateur (voir le commentaire de tete de la section     }
+{ ASSIGN plus haut). Limite honnete assumee : `Emu_HostPath` (le SEUL point  }
+{ de resolution reel pour l OUVERTURE de fichiers) ne distingue deja AUCUNE  }
+{ lettre de lecteur entre elles (tous les lecteurs "normaux" partagent deja  }
+{ le meme dossier hote, voir son commentaire de tete) - une redirection n y  }
+{ changerait donc litteralement rien d observable. Le seul etat REEL et      }
+{ deja distinct PAR lettre dans ce moteur est le repertoire courant par      }
+{ lecteur (EmuDriveCwd/Emu_CdsRefreshPath, AH=3Bh/47h) - c est donc LA que    }
+{ cette fonction est branchee : CHDIR/GetCwd sur un lecteur assigne          }
+{ operent desormais reellement sur l entree CDS du lecteur CIBLE. }
+Function Emu_AssignedDriveIdx(Var C: TEmuCPU; RawIdx: Integer): Integer;
+Var B: Byte;
+Begin
+ Emu_AssignedDriveIdx := RawIdx;
+ If (RawIdx < 0) Or (RawIdx > 25) Then Exit;
+ B := Emu_ReadByte(C, EMU_ASSIGN_SEG, EMU_ASSIGN_TBL_OFS + RawIdx);
+ If B <= 25 Then Emu_AssignedDriveIdx := B;
 End;
 
 { --- Charger un fichier .COM dans la memoire emulee --- }
@@ -125583,6 +125760,10 @@ Begin
       CdsIdx := Ord(Upcase(FName[1])) - Ord('A')
      Else
       CdsIdx := 2; { lecteur par defaut de cet emulateur = C:, voir AH=19h }
+     { ASSIGN (voir Emu_AssignedDriveIdx) : un CHDIR sur un lecteur assigne  }
+     { met a jour l entree CDS du lecteur CIBLE, pas celle de la lettre      }
+     { tapee - comportement reel d ASSIGN. }
+     CdsIdx := Emu_AssignedDriveIdx(P.CPU, CdsIdx);
      If (CdsIdx >= 0) And (CdsIdx < EMU_CDS_COUNT) Then Begin
       GetDir(0, NewCwd);
       If (Length(EmuExeDir) > 0) And (Length(NewCwd) > Length(EmuExeDir)) And
@@ -125923,6 +126104,10 @@ Begin
    { par defaut (C:, voir AH=19h). }
    Begin
     If P.CPU.Regs.DL = 0 Then CdsIdx := 2 Else CdsIdx := P.CPU.Regs.DL - 1;
+    { ASSIGN (voir Emu_AssignedDriveIdx, meme redirection que le correctif    }
+    { jumeau de AH=3Bh ci-dessus) : GetCwd sur un lecteur assigne renvoie le  }
+    { repertoire courant du lecteur CIBLE. }
+    CdsIdx := Emu_AssignedDriveIdx(P.CPU, CdsIdx);
     If (CdsIdx >= 0) And (CdsIdx < EMU_CDS_COUNT) And (EmuDriveCwd[CdsIdx] <> '') Then Begin
      NewCwd := EmuDriveCwd[CdsIdx];
      For H := 1 To Length(NewCwd) Do
