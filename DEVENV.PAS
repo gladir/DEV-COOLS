@@ -98249,6 +98249,32 @@ Begin
    '  Add-JiraIssueComment -Issue PROJ-1 -Comment texte  Ajoute un commentaire');
   TermAddLine(TP,
    '  Get-JiraIssueComment -Issue PROJ-1 [-Session n]  Liste les commentaires');
+  TermAddLine(TP,
+   '  Connect-MicrosoftTeams -AccessToken t [-Uri url] [-Name n]  VRAI client Teams (Graph)');
+  TermAddLine(TP,
+   '  Get-Team [-GroupId id] [-DisplayName n] [-Session n]  Liste/affiche des equipes');
+  TermAddLine(TP,
+   '  Get-TeamUser -GroupId id [-Role Owner|Member]  Liste les membres d''une equipe');
+  TermAddLine(TP,
+   '  Get-TeamChannel -GroupId id [-Session n]  Liste les canaux d''une equipe');
+  TermAddLine(TP,
+   '  New-Team -DisplayName n [-Description d] [-Visibility Public|Private]  Cree une equipe');
+  TermAddLine(TP,
+   '  New-TeamChannel -GroupId id -DisplayName n [-Description d]  Cree un canal');
+  TermAddLine(TP,
+   '  Add-TeamUser -GroupId id -User u [-Role Owner|Member]  Ajoute un membre');
+  TermAddLine(TP,
+   '  Remove-TeamUser -GroupId id -User u [-Role Owner|Member]  Retire un membre');
+  TermAddLine(TP,
+   '  Set-Team -GroupId id [-DisplayName n] [-Description d] [-Visibility v]  Modifie une equipe');
+  TermAddLine(TP,
+   '  Set-TeamChannel -GroupId id -CurrentDisplayName n [-NewDisplayName n]  Modifie un canal');
+  TermAddLine(TP,
+   '  Remove-Team -GroupId id [-Session n]  Supprime une equipe');
+  TermAddLine(TP,
+   '  Remove-TeamChannel -GroupId id -DisplayName n [-Session n]  Supprime un canal');
+  TermAddLine(TP,
+   '  Disconnect-MicrosoftTeams [-Name n]  Deconnecte une session Teams');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -101348,6 +101374,984 @@ Begin
 End;
 
 { ============================================================ }
+{ === Commandes Microsoft Teams (PowerShell dev uniquement)=== }
+{ ============================================================ }
+{ (2026-09-07, demande explicite) : Connect-MicrosoftTeams/                 }
+{ Disconnect-MicrosoftTeams/Get-Team/Get-TeamUser/Get-TeamChannel/          }
+{ New-Team/New-TeamChannel/Add-TeamUser/Remove-TeamUser/Set-Team/           }
+{ Set-TeamChannel/Remove-Team/Remove-TeamChannel - memes noms que le VRAI   }
+{ module PowerShell MicrosoftTeams. API REST Microsoft Graph v1.0           }
+{ (graph.microsoft.com, endpoints /v1.0/teams et /v1.0/groups - une equipe  }
+{ Teams est toujours adossee a un groupe Microsoft 365). Reutilise TOUTE    }
+{ l'infrastructure HTTP/JSON deja construite pour project_devenv_jira       }
+{ (JiraHttpRequest generalise ci-dessous en TeamsHttpRequest - sa logique   }
+{ etait deja totalement generique, aucune dependance a Jira - arbre JSON    }
+{ McpJsonValue, ConvToJsonEscape). }
+{ Authentification : le VRAI module MicrosoftTeams utilise une connexion    }
+{ interactive (navigateur, MSAL/OAuth2 delegue) - hors de portee ici        }
+{ (aucun navigateur pilotable dans ce terminal). Deviation deliberee et     }
+{ documentee, meme esprit que l'authentification Basic choisie pour Jira    }
+{ au lieu d'OAuth : Connect-MicrosoftTeams -AccessToken accepte un jeton    }
+{ Bearer DEJA obtenu (scenario reel d'automatisation/CI) plutot que de      }
+{ mener l'authentification elle-meme. }
+{ Portee des champs modifiables par Set-Team/Set-TeamChannel limitee a      }
+{ DisplayName/Description/Visibility - le vrai module en expose des         }
+{ dizaines (AllowGiphy, AllowCreateUpdateChannels, etc.) hors de portee ici, }
+{ meme discipline que Set-JiraIssue limite a summary/description. }
+
+Const
+ TEAMS_MAX_SESSIONS = 8;
+ TEAMS_DEFAULT_URI = 'https://graph.microsoft.com';
+
+Type
+ TTeamsSession = Record
+  InUse       : Boolean;
+  SrvLabel    : String;
+  BaseUrl     : String;
+  AuthHeader  : AnsiString;
+  DisplayName : String;
+ End;
+
+Var
+ TeamsSessions: Array[1..TEAMS_MAX_SESSIONS] Of TTeamsSession;
+
+Function TeamsFindSession(Nm: String): Integer;
+Var I: Integer;
+Begin
+ TeamsFindSession := 0;
+ For I := 1 To TEAMS_MAX_SESSIONS Do
+  If TeamsSessions[I].InUse And
+     (TermStrToUpper(TeamsSessions[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   TeamsFindSession := I;
+   Exit;
+  End;
+End;
+
+Function TeamsFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ TeamsFindFreeSlot := 0;
+ For I := 1 To TEAMS_MAX_SESSIONS Do
+  If Not TeamsSessions[I].InUse Then Begin TeamsFindFreeSlot := I; Exit; End;
+End;
+
+Function TeamsSoleSession: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To TEAMS_MAX_SESSIONS Do
+  If TeamsSessions[I].InUse Then Begin
+   If Found <> 0 Then Begin TeamsSoleSession := 0; Exit; End;
+   Found := I;
+  End;
+ TeamsSoleSession := Found;
+End;
+
+Function TeamsResolveSession(NameArg: String): Integer;
+Begin
+ If NameArg = '' Then TeamsResolveSession := TeamsSoleSession
+ Else TeamsResolveSession := TeamsFindSession(NameArg);
+End;
+
+Function TeamsResolveSessionOrReport(Var TP: TTerminalPanel; Cmd, NameArg: String): Integer;
+Var Slot: Integer;
+Begin
+ Slot := TeamsResolveSession(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, Cmd + ' : aucune session Microsoft Teams active, ou plusieurs (utilisez -Session).')
+  Else
+   TermAddLine(TP, Cmd + ' : aucune session Microsoft Teams nommee "' + NameArg + '".');
+ End;
+ TeamsResolveSessionOrReport := Slot;
+End;
+
+{$IFDEF WINDOWS}
+{ JiraHttpRequest est deja 100% generique (verbe/corps/en-tete             }
+{ d'autorisation/code de statut arbitraires, aucune hypothese Jira dans sa  }
+{ logique) - simple renommage par delegation pour la clarte du code Teams,  }
+{ AUCUNE duplication de la logique WinInet. }
+Function TeamsHttpRequest(Verb: AnsiString; Url: AnsiString; Body: AnsiString;
+ AuthHeader: AnsiString; Var ResponseBody: AnsiString;
+ Var StatusCode: LongInt): Boolean;
+Begin
+ TeamsHttpRequest := JiraHttpRequest(Verb, Url, Body, AuthHeader, ResponseBody, StatusCode);
+End;
+
+{ Erreurs Microsoft Graph : forme "error"/"code"/"message" imbriquee -      }
+{ FORME DIFFERENTE de celle de Jira (tableau errorMessages a la racine) -   }
+{ jamais un simple "erreur" muet. }
+Procedure TeamsReportHttpError(Var TP: TTerminalPanel; Cmd: String;
+ StatusCode: LongInt; RespBody: AnsiString);
+Var
+ RootVal, ErrVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ TermAddLine(TP, Cmd + ' : le serveur Microsoft Graph a repondu avec le code HTTP ' +
+  IntToStr(StatusCode) + '.');
+ If RespBody = '' Then Exit;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ErrVal := McpJsonGet(RootVal, 'error');
+ If ErrVal <> Nil Then
+  TermAddLine(TP, '  ' + McpJsonAsString(McpJsonGet(ErrVal, 'message')))
+ Else
+  TermAddLineWrapped(TP, RespBody);
+ McpJsonFree(RootVal);
+End;
+{$ENDIF}
+
+{ --- Connect-MicrosoftTeams --- }
+Procedure TermCmd_ConnectMicrosoftTeams(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, TokenArg, UriArg, NameArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ TokenArg := ''; UriArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-ACCESSTOKEN' Then Begin
+   Inc(I); If I <= LocalArgCount Then TokenArg := LocalArgs[I];
+  End Else If UpTok = '-URI' Then Begin
+   Inc(I); If I <= LocalArgCount Then UriArg := YamlUnquote(LocalArgs[I]);
+  End Else If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If TokenArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Connect-MicrosoftTeams -AccessToken jeton [-Uri url] [-Name etiquette]');
+  Exit;
+ End;
+ If UriArg = '' Then UriArg := TEAMS_DEFAULT_URI;
+ If NameArg = '' Then NameArg := 'default';
+ If TeamsFindSession(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'Connect-MicrosoftTeams : une session nommee "' + NameArg + '" existe deja.');
+  Exit;
+ End;
+ Slot := TeamsFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'Connect-MicrosoftTeams : nombre maximal de sessions atteint (' +
+   IntToStr(TEAMS_MAX_SESSIONS) + ').');
+  Exit;
+ End;
+ AuthHdr := 'Bearer ' + TokenArg;
+ HttpOk := TeamsHttpRequest('GET', UriArg + '/v1.0/me', '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Connect-MicrosoftTeams : echec de connexion HTTP a ' + UriArg + '.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Connect-MicrosoftTeams', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TeamsSessions[Slot].InUse := True;
+ TeamsSessions[Slot].SrvLabel := NameArg;
+ TeamsSessions[Slot].BaseUrl := UriArg;
+ TeamsSessions[Slot].AuthHeader := AuthHdr;
+ TeamsSessions[Slot].DisplayName := McpJsonAsString(McpJsonGet(RootVal, 'displayName'));
+ McpJsonFree(RootVal);
+ If TeamsSessions[Slot].DisplayName = '' Then TeamsSessions[Slot].DisplayName := '(compte)';
+ TermAddLine(TP, 'Connect-MicrosoftTeams : connecte a "' + NameArg + '" en tant que ' +
+  TeamsSessions[Slot].DisplayName + '.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Connect-MicrosoftTeams : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Disconnect-MicrosoftTeams --- }
+Procedure TermCmd_DisconnectMicrosoftTeams(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, NameArg: String;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Disconnect-MicrosoftTeams', NameArg);
+ If Slot = 0 Then Exit;
+ TermAddLine(TP, 'Disconnect-MicrosoftTeams : "' + TeamsSessions[Slot].SrvLabel + '" deconnecte.');
+ TeamsSessions[Slot].InUse := False;
+ TeamsSessions[Slot].SrvLabel := '';
+ TeamsSessions[Slot].AuthHeader := '';
+End;
+
+{ --- Get-Team --- }
+Procedure TermCmd_GetTeam(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, DisplayNameArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ValueArr, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+ ItemName: AnsiString;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; DisplayNameArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-DISPLAYNAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then DisplayNameArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Get-Team', NameArg);
+ If Slot = 0 Then Exit;
+ If GroupIdArg <> '' Then Begin
+  HttpOk := TeamsHttpRequest('GET', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg,
+   '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+  If Not HttpOk Then Begin TermAddLine(TP, 'Get-Team : echec de la requete HTTP.'); Exit; End;
+  If (Status < 200) Or (Status >= 300) Then Begin
+   TeamsReportHttpError(TP, 'Get-Team', Status, RespBody);
+   Exit;
+  End;
+  P := 1;
+  RootVal := McpJsonParseValue(RespBody, P);
+  TermAddLine(TP, McpJsonAsString(McpJsonGet(RootVal, 'displayName')) + '  (' + GroupIdArg + ')');
+  TermAddLineWrapped(TP, McpJsonAsString(McpJsonGet(RootVal, 'description')));
+  McpJsonFree(RootVal);
+ End Else Begin
+  HttpOk := TeamsHttpRequest('GET',
+   TeamsSessions[Slot].BaseUrl + '/v1.0/groups?$filter=resourceProvisioningOptions/Any(x:x eq ''Team'')',
+   '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+  If Not HttpOk Then Begin TermAddLine(TP, 'Get-Team : echec de la requete HTTP.'); Exit; End;
+  If (Status < 200) Or (Status >= 300) Then Begin
+   TeamsReportHttpError(TP, 'Get-Team', Status, RespBody);
+   Exit;
+  End;
+  P := 1;
+  RootVal := McpJsonParseValue(RespBody, P);
+  ValueArr := McpJsonGet(RootVal, 'value');
+  If (ValueArr <> Nil) And (ValueArr^.Kind = mjArray) Then Begin
+   It := ValueArr^.Items;
+   While It <> Nil Do Begin
+    ItemVal := It^.Value;
+    ItemName := McpJsonAsString(McpJsonGet(ItemVal, 'displayName'));
+    If (DisplayNameArg = '') Or
+       (TermStrToUpper(ItemName) = TermStrToUpper(DisplayNameArg)) Then
+     TermAddLine(TP, ItemName + '  (' + McpJsonAsString(McpJsonGet(ItemVal, 'id')) + ')');
+    It := It^.Next;
+   End;
+  End;
+  McpJsonFree(RootVal);
+ End;
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-Team : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-TeamUser --- }
+Procedure TermCmd_GetTeamUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, RoleArg, NameArg, EndpointPath: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ValueArr, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; RoleArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-ROLE' Then Begin
+   Inc(I); If I <= LocalArgCount Then RoleArg := TermStrToUpper(LocalArgs[I]);
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (GroupIdArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   GroupIdArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If GroupIdArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-TeamUser -GroupId id [-Role Owner|Member] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Get-TeamUser', NameArg);
+ If Slot = 0 Then Exit;
+ If RoleArg = 'OWNER' Then EndpointPath := '/owners' Else EndpointPath := '/members';
+ HttpOk := TeamsHttpRequest('GET', TeamsSessions[Slot].BaseUrl + '/v1.0/groups/' + GroupIdArg + EndpointPath,
+  '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-TeamUser : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Get-TeamUser', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ValueArr := McpJsonGet(RootVal, 'value');
+ If (ValueArr <> Nil) And (ValueArr^.Kind = mjArray) Then Begin
+  It := ValueArr^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'displayName')) + '  <' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'mail')) + '>  (' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'id')) + ')');
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-TeamUser : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-TeamChannel --- }
+Procedure TermCmd_GetTeamChannel(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ValueArr, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (GroupIdArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   GroupIdArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If GroupIdArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-TeamChannel -GroupId id [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Get-TeamChannel', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := TeamsHttpRequest('GET', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg + '/channels',
+  '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-TeamChannel : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Get-TeamChannel', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ValueArr := McpJsonGet(RootVal, 'value');
+ If (ValueArr <> Nil) And (ValueArr^.Kind = mjArray) Then Begin
+  It := ValueArr^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'displayName')) + '  (' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'id')) + ')');
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-TeamChannel : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- New-Team --- }
+Procedure TermCmd_NewTeam(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, DisplayNameArg, DescArg, VisibilityArg, NameArg: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ DescArg := JiraExtractTrailingFlag(ParamStr, 'DESCRIPTION');
+ If DescArg <> '' Then DisplayNameArg := ''
+ Else DisplayNameArg := JiraExtractTrailingFlag(ParamStr, 'DISPLAYNAME');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ VisibilityArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If (UpTok = '-DISPLAYNAME') And (DisplayNameArg = '') Then Begin
+   Inc(I); If I <= LocalArgCount Then DisplayNameArg := LocalArgs[I];
+  End Else If UpTok = '-VISIBILITY' Then Begin
+   Inc(I); If I <= LocalArgCount Then VisibilityArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If DisplayNameArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : New-Team -DisplayName nom [-Description texte] [-Visibility Public|Private] [-Session etiquette]');
+  Exit;
+ End;
+ If VisibilityArg = '' Then VisibilityArg := 'Private';
+ Slot := TeamsResolveSessionOrReport(TP, 'New-Team', NameArg);
+ If Slot = 0 Then Exit;
+ Body := '{"displayName":' + ConvToJsonEscape(DisplayNameArg) +
+  ',"visibility":' + ConvToJsonEscape(VisibilityArg);
+ If DescArg <> '' Then Body := Body + ',"description":' + ConvToJsonEscape(DescArg);
+ Body := Body + '}';
+ HttpOk := TeamsHttpRequest('POST', TeamsSessions[Slot].BaseUrl + '/v1.0/teams',
+  Body, TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-Team : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'New-Team', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'New-Team : equipe creee : ' + DisplayNameArg + '  (' +
+  McpJsonAsString(McpJsonGet(RootVal, 'id')) + ')');
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-Team : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- New-TeamChannel --- }
+Procedure TermCmd_NewTeamChannel(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, DisplayNameArg, DescArg, NameArg: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ DescArg := JiraExtractTrailingFlag(ParamStr, 'DESCRIPTION');
+ If DescArg <> '' Then DisplayNameArg := ''
+ Else DisplayNameArg := JiraExtractTrailingFlag(ParamStr, 'DISPLAYNAME');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If (UpTok = '-DISPLAYNAME') And (DisplayNameArg = '') Then Begin
+   Inc(I); If I <= LocalArgCount Then DisplayNameArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (GroupIdArg = '') Or (DisplayNameArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : New-TeamChannel -GroupId id -DisplayName nom [-Description texte] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'New-TeamChannel', NameArg);
+ If Slot = 0 Then Exit;
+ Body := '{"displayName":' + ConvToJsonEscape(DisplayNameArg);
+ If DescArg <> '' Then Body := Body + ',"description":' + ConvToJsonEscape(DescArg);
+ Body := Body + '}';
+ HttpOk := TeamsHttpRequest('POST', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg + '/channels',
+  Body, TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-TeamChannel : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'New-TeamChannel', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'New-TeamChannel : canal cree : ' + DisplayNameArg + '  (' +
+  McpJsonAsString(McpJsonGet(RootVal, 'id')) + ')');
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-TeamChannel : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Add-TeamUser --- }
+Procedure TermCmd_AddTeamUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, UserArg, RoleArg, NameArg, EndpointPath: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; UserArg := ''; RoleArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-USER' Then Begin
+   Inc(I); If I <= LocalArgCount Then UserArg := LocalArgs[I];
+  End Else If UpTok = '-ROLE' Then Begin
+   Inc(I); If I <= LocalArgCount Then RoleArg := TermStrToUpper(LocalArgs[I]);
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (GroupIdArg = '') Or (UserArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-TeamUser -GroupId id -User utilisateur [-Role Owner|Member] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Add-TeamUser', NameArg);
+ If Slot = 0 Then Exit;
+ If RoleArg = 'OWNER' Then EndpointPath := '/owners/$ref' Else EndpointPath := '/members/$ref';
+ Body := '{"@odata.id":' + ConvToJsonEscape(TeamsSessions[Slot].BaseUrl + '/v1.0/users/' + UserArg) + '}';
+ HttpOk := TeamsHttpRequest('POST', TeamsSessions[Slot].BaseUrl + '/v1.0/groups/' + GroupIdArg + EndpointPath,
+  Body, TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Add-TeamUser : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Add-TeamUser', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Add-TeamUser : ' + UserArg + ' ajoute a ' + GroupIdArg + '.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Add-TeamUser : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Remove-TeamUser --- }
+Procedure TermCmd_RemoveTeamUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, UserArg, RoleArg, NameArg, EndpointPath: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; UserArg := ''; RoleArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-USER' Then Begin
+   Inc(I); If I <= LocalArgCount Then UserArg := LocalArgs[I];
+  End Else If UpTok = '-ROLE' Then Begin
+   Inc(I); If I <= LocalArgCount Then RoleArg := TermStrToUpper(LocalArgs[I]);
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (GroupIdArg = '') Or (UserArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-TeamUser -GroupId id -User utilisateur [-Role Owner|Member] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Remove-TeamUser', NameArg);
+ If Slot = 0 Then Exit;
+ If RoleArg = 'OWNER' Then EndpointPath := '/owners/' Else EndpointPath := '/members/';
+ HttpOk := TeamsHttpRequest('DELETE', TeamsSessions[Slot].BaseUrl + '/v1.0/groups/' + GroupIdArg +
+  EndpointPath + UserArg + '/$ref', '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Remove-TeamUser : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Remove-TeamUser', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Remove-TeamUser : ' + UserArg + ' retire de ' + GroupIdArg + '.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-TeamUser : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Set-Team --- }
+Procedure TermCmd_SetTeam(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot, FieldCount: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, DisplayNameArg, DescArg, VisibilityArg, NameArg: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ DescArg := JiraExtractTrailingFlag(ParamStr, 'DESCRIPTION');
+ If DescArg <> '' Then DisplayNameArg := ''
+ Else DisplayNameArg := JiraExtractTrailingFlag(ParamStr, 'DISPLAYNAME');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; VisibilityArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If (UpTok = '-DISPLAYNAME') And (DisplayNameArg = '') Then Begin
+   Inc(I); If I <= LocalArgCount Then DisplayNameArg := LocalArgs[I];
+  End Else If UpTok = '-VISIBILITY' Then Begin
+   Inc(I); If I <= LocalArgCount Then VisibilityArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (GroupIdArg = '') Or ((DisplayNameArg = '') And (DescArg = '') And (VisibilityArg = '')) Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-Team -GroupId id [-DisplayName nom] [-Description texte] [-Visibility Public|Private] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Set-Team', NameArg);
+ If Slot = 0 Then Exit;
+ Body := '{';
+ FieldCount := 0;
+ If DisplayNameArg <> '' Then Begin
+  Body := Body + '"displayName":' + ConvToJsonEscape(DisplayNameArg);
+  Inc(FieldCount);
+ End;
+ If DescArg <> '' Then Begin
+  If FieldCount > 0 Then Body := Body + ',';
+  Body := Body + '"description":' + ConvToJsonEscape(DescArg);
+  Inc(FieldCount);
+ End;
+ If VisibilityArg <> '' Then Begin
+  If FieldCount > 0 Then Body := Body + ',';
+  Body := Body + '"visibility":' + ConvToJsonEscape(VisibilityArg);
+ End;
+ Body := Body + '}';
+ HttpOk := TeamsHttpRequest('PATCH', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg,
+  Body, TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Set-Team : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Set-Team', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Set-Team : ' + GroupIdArg + ' mis a jour.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-Team : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Set-TeamChannel --- }
+Procedure TermCmd_SetTeamChannel(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot, FieldCount: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, CurrentNameArg, NewNameArg, DescArg, NameArg, ChannelId: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ValueArr, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ DescArg := JiraExtractTrailingFlag(ParamStr, 'DESCRIPTION');
+ If DescArg <> '' Then NewNameArg := ''
+ Else NewNameArg := JiraExtractTrailingFlag(ParamStr, 'NEWDISPLAYNAME');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; CurrentNameArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-CURRENTDISPLAYNAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then CurrentNameArg := LocalArgs[I];
+  End Else If (UpTok = '-NEWDISPLAYNAME') And (NewNameArg = '') Then Begin
+   Inc(I); If I <= LocalArgCount Then NewNameArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (GroupIdArg = '') Or (CurrentNameArg = '') Or ((NewNameArg = '') And (DescArg = '')) Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-TeamChannel -GroupId id -CurrentDisplayName nom [-NewDisplayName nom] [-Description texte] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Set-TeamChannel', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := TeamsHttpRequest('GET', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg + '/channels',
+  '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If (Not HttpOk) Or (Status < 200) Or (Status >= 300) Then Begin
+  TermAddLine(TP, 'Set-TeamChannel : impossible de retrouver le canal "' + CurrentNameArg + '".');
+  Exit;
+ End;
+ ChannelId := '';
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ValueArr := McpJsonGet(RootVal, 'value');
+ If (ValueArr <> Nil) And (ValueArr^.Kind = mjArray) Then Begin
+  It := ValueArr^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   If TermStrToUpper(McpJsonAsString(McpJsonGet(ItemVal, 'displayName'))) = TermStrToUpper(CurrentNameArg) Then
+    ChannelId := McpJsonAsString(McpJsonGet(ItemVal, 'id'));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+ If ChannelId = '' Then Begin
+  TermAddLine(TP, 'Set-TeamChannel : canal "' + CurrentNameArg + '" introuvable dans ' + GroupIdArg + '.');
+  Exit;
+ End;
+ Body := '{';
+ FieldCount := 0;
+ If NewNameArg <> '' Then Begin
+  Body := Body + '"displayName":' + ConvToJsonEscape(NewNameArg);
+  Inc(FieldCount);
+ End;
+ If DescArg <> '' Then Begin
+  If FieldCount > 0 Then Body := Body + ',';
+  Body := Body + '"description":' + ConvToJsonEscape(DescArg);
+ End;
+ Body := Body + '}';
+ HttpOk := TeamsHttpRequest('PATCH', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg +
+  '/channels/' + ChannelId, Body, TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Set-TeamChannel : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Set-TeamChannel', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Set-TeamChannel : "' + CurrentNameArg + '" mis a jour.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-TeamChannel : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Remove-Team --- }
+Procedure TermCmd_RemoveTeam(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (GroupIdArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   GroupIdArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If GroupIdArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-Team -GroupId id [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Remove-Team', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := TeamsHttpRequest('DELETE', TeamsSessions[Slot].BaseUrl + '/v1.0/groups/' + GroupIdArg,
+  '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Remove-Team : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Remove-Team', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Remove-Team : ' + GroupIdArg + ' supprime.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-Team : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Remove-TeamChannel --- }
+Procedure TermCmd_RemoveTeamChannel(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, GroupIdArg, DisplayNameArg, NameArg, ChannelId: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ValueArr, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ GroupIdArg := ''; DisplayNameArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-GROUPID' Then Begin
+   Inc(I); If I <= LocalArgCount Then GroupIdArg := LocalArgs[I];
+  End Else If UpTok = '-DISPLAYNAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then DisplayNameArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (GroupIdArg = '') Or (DisplayNameArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-TeamChannel -GroupId id -DisplayName nom [-Session etiquette]');
+  Exit;
+ End;
+ Slot := TeamsResolveSessionOrReport(TP, 'Remove-TeamChannel', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := TeamsHttpRequest('GET', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg + '/channels',
+  '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If (Not HttpOk) Or (Status < 200) Or (Status >= 300) Then Begin
+  TermAddLine(TP, 'Remove-TeamChannel : impossible de retrouver le canal "' + DisplayNameArg + '".');
+  Exit;
+ End;
+ ChannelId := '';
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ValueArr := McpJsonGet(RootVal, 'value');
+ If (ValueArr <> Nil) And (ValueArr^.Kind = mjArray) Then Begin
+  It := ValueArr^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   If TermStrToUpper(McpJsonAsString(McpJsonGet(ItemVal, 'displayName'))) = TermStrToUpper(DisplayNameArg) Then
+    ChannelId := McpJsonAsString(McpJsonGet(ItemVal, 'id'));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+ If ChannelId = '' Then Begin
+  TermAddLine(TP, 'Remove-TeamChannel : canal "' + DisplayNameArg + '" introuvable dans ' + GroupIdArg + '.');
+  Exit;
+ End;
+ HttpOk := TeamsHttpRequest('DELETE', TeamsSessions[Slot].BaseUrl + '/v1.0/teams/' + GroupIdArg +
+  '/channels/' + ChannelId, '', TeamsSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Remove-TeamChannel : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  TeamsReportHttpError(TP, 'Remove-TeamChannel', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Remove-TeamChannel : "' + DisplayNameArg + '" supprime de ' + GroupIdArg + '.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-TeamChannel : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -101363,7 +102367,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 143;
+ PS_CMD_ALIASES = 156;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -101486,7 +102490,20 @@ Const
   'GET-JIRATRANSITION',
   'INVOKE-JIRAISSUETRANSITION',
   'ADD-JIRAISSUECOMMENT',
-  'GET-JIRAISSUECOMMENT'
+  'GET-JIRAISSUECOMMENT',
+  'CONNECT-MICROSOFTTEAMS',
+  'DISCONNECT-MICROSOFTTEAMS',
+  'GET-TEAM',
+  'GET-TEAMUSER',
+  'GET-TEAMCHANNEL',
+  'NEW-TEAM',
+  'NEW-TEAMCHANNEL',
+  'ADD-TEAMUSER',
+  'REMOVE-TEAMUSER',
+  'SET-TEAM',
+  'SET-TEAMCHANNEL',
+  'REMOVE-TEAM',
+  'REMOVE-TEAMCHANNEL'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -101609,7 +102626,20 @@ Const
   119,
   120,
   121,
-  122
+  122,
+  123,
+  124,
+  125,
+  126,
+  127,
+  128,
+  129,
+  130,
+  131,
+  132,
+  133,
+  134,
+  135
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -102165,6 +103195,19 @@ Begin
     120: TermCmd_InvokeJiraIssueTransition(TP, ParamStr);
     121: TermCmd_AddJiraIssueComment(TP, ParamStr);
     122: TermCmd_GetJiraIssueComment(TP, ParamStr);
+    123: TermCmd_ConnectMicrosoftTeams(TP, ParamStr);
+    124: TermCmd_DisconnectMicrosoftTeams(TP, ParamStr);
+    125: TermCmd_GetTeam(TP, ParamStr);
+    126: TermCmd_GetTeamUser(TP, ParamStr);
+    127: TermCmd_GetTeamChannel(TP, ParamStr);
+    128: TermCmd_NewTeam(TP, ParamStr);
+    129: TermCmd_NewTeamChannel(TP, ParamStr);
+    130: TermCmd_AddTeamUser(TP, ParamStr);
+    131: TermCmd_RemoveTeamUser(TP, ParamStr);
+    132: TermCmd_SetTeam(TP, ParamStr);
+    133: TermCmd_SetTeamChannel(TP, ParamStr);
+    134: TermCmd_RemoveTeam(TP, ParamStr);
+    135: TermCmd_RemoveTeamChannel(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
