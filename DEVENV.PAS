@@ -121139,6 +121139,28 @@ Begin
   Emu_WriteByte(C, Seg, Word(Ofs + Length(S)), 0);
 End;
 
+{ BOGUE REEL CORRIGE (2026-09-07, demande explicite : "le repertoire        }
+{ courant... devrait etre le meme repertoire ou est situe l'executable") :  }
+{ un motif joker DOS ('*'/'?', ex. "*.*" ou "C:\*.*" - EXACTEMENT ce         }
+{ qu emet tout FindFirst/AH=4Eh, donc CHAQUE panneau de fichiers NC/TURBO/  }
+{ commande DIR) ne "existe" JAMAIS au sens de FileExists (qui ne gere pas   }
+{ les jokers, renvoie toujours False) - les tests Not FileExists(...) plus  }
+{ bas dans Emu_HostPath ne declenchaient donc JAMAIS le repli EmuExeDir     }
+{ pour un motif joker, laissant le motif tel quel se resoudre contre le     }
+{ repertoire de travail REEL de DEVENV.EXE lui-meme (jamais celui du        }
+{ programme DOS charge) - cause reelle du panneau de fichiers de NC.EXE     }
+{ affichant le contenu de DEV-COOLS au lieu de celui de C:\SYMANTEC\NC3.    }
+Function Emu_HasWildcard(Const S: String): Boolean;
+Var I: Integer;
+Begin
+ Emu_HasWildcard := False;
+ For I := 1 To Length(S) Do
+  If (S[I] = '*') Or (S[I] = '?') Then Begin
+   Emu_HasWildcard := True;
+   Exit;
+  End;
+End;
+
 { Convertir nom DOS en nom hote. Si chemin absolu avec drive (X:\...),
   le passer tel quel a FreePascal Windows (qui le supporte). Sinon
   conversion / -> \, drop des prefixes pour relatif. }
@@ -121156,6 +121178,18 @@ Begin
     If S[I] = '/' Then S[I] := '\';
   { Si chemin absolu avec drive (X:\...), le passer tel quel }
   If (Length(S) >= 3) And (S[2] = ':') And (S[3] = '\') Then Begin
+    { Motif joker a la racine (ex. "C:\*.*") : voir le commentaire de tete   }
+    { d Emu_HasWildcard - toujours preferer EmuExeDir, sans passer par le    }
+    { test FileExists (toujours faux pour un joker, et de toute facon router}
+    { un joker vers le VRAI C:\ de Windows n a jamais de sens ici). }
+    If Emu_HasWildcard(S) And (Length(EmuExeDir) > 0) Then Begin
+      I := Length(S);
+      While (I > 0) And (S[I] <> '\') Do Dec(I);
+      If (I > 0) And (I = 3) Then Begin
+        Emu_HostPath := EmuExeDir + Copy(S, 3, Length(S) - 2);
+        Exit;
+      End;
+    End;
     { Fallback : si le fichier n existe pas a la racine indiquee
       mais existe dans le dossier de l EXE, utiliser ce dernier.
       Cela permet a QP de trouver QPL.COM, QP.HLP, etc. quand il
@@ -121192,6 +121226,15 @@ Begin
   If (Length(S) >= 2) And (S[2] = ':') Then S := Copy(S, 3, Length(S) - 2);
   { Retirer prefixe '\' (chemin absolu DOS -> relatif hote) si present }
   If (Length(S) >= 1) And (S[1] = '\') Then S := Copy(S, 2, Length(S) - 1);
+  { Motif joker relatif "bare" (ex. "*.*", le cas FindFirst le PLUS courant  }
+  { en pratique - un panneau de fichiers ou un DIR sans lettre de lecteur    }
+  { explicite) : meme raisonnement que la branche absolue plus haut -        }
+  { toujours preferer EmuExeDir plutot que de laisser le motif se resoudre   }
+  { contre le repertoire de travail de DEVENV.EXE lui-meme. }
+  If Emu_HasWildcard(S) And (Length(EmuExeDir) > 0) Then Begin
+    Emu_HostPath := EmuExeDir + '\' + S;
+    Exit;
+  End;
   { Fallback : chemin relatif introuvable dans le repertoire courant
     (celui de DEVENV.exe) -> tenter le repertoire de l EXE charge.
     Indispensable pour TP4/TP5/TP6/QP qui cherchent TURBO.TPL,
