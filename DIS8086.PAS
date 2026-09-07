@@ -19,192 +19,192 @@ Type
 
 Const
  {Adresse d'assembleur pour le micro-processeur Intel (Cpu Intel)}
- ciBXnSI=$00;{©[BX+SI]î,88+}
- ciBXnDI=$01;{©[BX+DI]î,88+}
- ciBPnSI=$02;{©[BP+SI]î,88+}
- ciBPnDI=$03;{©[BP+DI]î,88+}
- ciSI=$04;{©[SI]î,88+}
- ciDI=$05;{©[DI]î,88+}
- ciBP=$06;{©[BP]î,88+}
- ciBX=$07;{©[BX]î,88+}
+ ciBXnSI=$00;{ï¿½[BX+SI]ï¿½,88+}
+ ciBXnDI=$01;{ï¿½[BX+DI]ï¿½,88+}
+ ciBPnSI=$02;{ï¿½[BP+SI]ï¿½,88+}
+ ciBPnDI=$03;{ï¿½[BP+DI]ï¿½,88+}
+ ciSI=$04;{ï¿½[SI]ï¿½,88+}
+ ciDI=$05;{ï¿½[DI]ï¿½,88+}
+ ciBP=$06;{ï¿½[BP]ï¿½,88+}
+ ciBX=$07;{ï¿½[BX]ï¿½,88+}
  {Instruction d'assembleur pour le micro-processeur Intel (Cpu Intel)}
- ciAAA=$37;{©AAAî,88+}
- ciAAD_=$D5;{©AADî,88+}
- ciAAM_=$D4;{©AAMî,88+}
- ciAAS=$3F;{©AASî,88+}
- ciAdcAL_=$14;{©ADC AL,??hî,286+}
- ciAdcAX_=$15;{©ADC AX,????hî,286+}
- ciAddAL_=$04;{©ADD AL,??hî,286+}
- ciAddAX_=$05;{©ADD AX,????hî,286+}
- ciAndAL_=$24;{©AND AL,??hî,286+}
- ciAndAX_=$25;{©AND AX,????hî,286+}
- ciCallFarAbs=$9A;{©CALL FAR ????h:????hî,88+}
- ciCBW=$98;{©CBWî,88+}
- ciCC=$CC;{©INT 03hî(Code Sp'cial CCh),88+}
- ciCLC=$F8;{©CLCî,88+}
- ciCLD=$FC;{©CLDî,88+}
- ciCLI=$FA;{©CLIî,88+}
- ciCMC=$F5;{©CMCî,88+}
- ciCmpAL_=$3C;{©CMP AL,??hî,286+}
- ciCmpAX_=$3D;{©CMP AX,????hî,286+}
- ciCmpSB=$A6;{©CMPSBî,88+}
- ciCmpSW=$A7;{©CMPSWî,88+}
- ciCS=$2E;{©CSî,88+}
- ciCWD=$99;{©CWDî,88+}
- ciDAA=$27;{©DAAî,88+}
- ciDAS=$2F;{©DASî,88+}
- ciDecAX=$48;{©DEC AXî,88+}
- ciDecBP=$4D;{©DEC BPî,88+}
- ciDecBX=$4B;{©DEC BXî,88+}
- ciDecCX=$49;{©DEC CXî,88+}
- ciDecDI=$4F;{©DEC DIî,88+}
- ciDecDX=$4A;{©DEC DXî,88+}
- ciDecSI=$4E;{©DEC SIî,88+}
- ciDecSP=$4C;{©DEC SPî,88+}
- ciDS=$3E;{©DSî,88+}
- ciES=$26;{©ESî,88+}
- ciFS=$64;{©FSî,386+}
- ciGS=$65;{©GSî,386+}
- ciHLT=$F4;{©HLTî,88+}
- ciIncAX=$40;{©INC AXî,88+}
- ciIncBP=$45;{©INC BPî,88+}
- ciIncBX=$43;{©INC BXî,88+}
- ciIncCX=$41;{©INC CXî,88+}
- ciIncDI=$47;{©INC DIî,88+}
- ciIncDX=$42;{©INC DXî,88+}
- ciIncSI=$46;{©INC SIî,88+}
- ciIncSP=$44;{©INC SPî,88+}
- ciInsB=$6C;{©INSBî,88+}
- ciInsW=$6D;{©INSWî,88+}
- ciInt=$CD;{©INT ??hî,88+}
- ciIntO=$CE;{©INTOî,88+}
- ciIRet=$CF;{©IRETî,88+}
- ciJBE=$76;{©JBE ?î,88+}
- ciJC=$72;{©JC ?î,88+}
- ciJG=$7E;{©JG ?î,88+}
- ciJL=$7C;{©JL ?î,88+}
- ciJMP_Word=$E9;{©JMP ????î,88+}
- ciJNBE=$77;{©JNBE ?î,88+}
- ciJNC=$73;{©JNC ?î,88+}
- ciJNG=$7F;{©JNG ?î,88+}
- ciJNL=$7D;{©JNL ?î,88+}
- ciJNO=$71;{©JNO ?î,88+}
- ciJNP=$7B;{©JNP ?î,88+}
- ciJNS=$79;{©JNS ?î,88+}
- ciJNZ=$75;{©JNZ ?î,88+}
- ciJO=$70;{©JO ?î,88+}
- ciJP=$7A;{©JP ?î,88+}
- ciJS=$78;{©JS ?î,88+}
- ciJZ=$74;{©JZ ?î,88+}
- ciLAHF=$9F;{©LAHFî,88+}
- ciLAR=$020F;{©LARî,386+}
- ciLeave=$C9;{©LEAVEî,286+}
- ciLDS=$C5;{©LDS reg,memî,88+}
- ciLES=$C4;{©LES reg,memî,88+}
- ciLFS=$B40F;{©LFS reg,memî,386+}
- ciLGS=$B50F;{©LGS reg,memî,386+}
- ciLock=$F0;{©LOCK ?î,88+}
- ciLODSB=$AC;{©LODSBî,88+}
- ciLODSD=$AD66;{©LODSDî,386+}
- ciLODSW=$AD;{©LODSWî,88+}
- ciLSL=$030F;{©LSL ?î,386+}
- ciLSS=$B20F;{©LSS reg,memî,386+}
- ciMovAL_=$A0;{©MOV AL,[addr]î,286+}
- ciMovAL_Byte=$B0;{©MOV AL,??î,88+}
- ciMovAX_=$A1;{©MOV AX,[addr]î,286+}
- ciMovAX_Word=$B8;{©MOV AX,????î, 88+}
- ciMovAH_AL=$E08A;{©MOV AH,ALî,88+}
- ciMovBP_SP=$EC8B;{©MOV BP,SPî,88+}
- ciMovBX_CX=$D98B;{©MOV BX,CXî,88+}
- ciMovCX_BX=$CB8B;{©MOV CX,BXî,88+}
- ciMovDX_Word=$BA;{©MOV DX,????î,88+}
- ciMovEAX_ES_DI=$058B6626;{©MOV EAX,ES:[DI]î,386+}
- ciMovES_DI_EAX=$05896626;{©MOV ES:[DI],EAXî,386+}
- ciMovSB=$A4;{©MOVSBî,88+}
- ciMovSD=$A566;{©MOVSDî,386+}
- ciMovSW=$A5;{©MOVSWî,88+}
- ciNOP=$90;{©NOPî,88+}
- ciOutDX_AL=$EE;{©OUT DX,ALî,88+}
- ciOutDX_AX=$EF;{©OUT DX,AXî,88+}
- ciOutSB=$6E;{©OUTSBî,286+}
- ciOutSD=$6F66;{©OUTSDî,386+}
- ciOutSW=$6F;{©OUTSWî,286+}
- ciPopAX=$58;{©POP AXî,88+}
- ciPopBP=$5D;{©POP BPî,88+}
- ciPopBX=$5B;{©POP BXî,88+}
- ciPopCX=$59;{©POP CXî,88+}
- ciPopDX=$5A;{©POP DXî,88+}
- ciPopDI=$5F;{©POP DIî,88+}
- ciPopDS=$1F;{©POP DSî,88+}
- ciPopEAX=$5866;{©POP EAXî,386+}
- ciPopEBX=$5B66;{©POP EBXî,386+}
- ciPopECX=$5966;{©POP ECXî,386+}
- ciPopEDI=$66+(ciPopDI shl 8);{©PUSH EDIî,386+}
- ciPopEDX=$5A66;{©POP EDXî,386+}
- ciPopFS=$A10F;{©PUSH FSî,386+}
- ciPopGS=$A90F;{©PUSH GSî,386+}
- ciPopES=$07;{©POP ESî,88+}
- ciPopSI=$5E;{©POP SIî,88+}
- ciPopSP=$5C;{©POP SPî,88+}
- ciPopSS=$17;{©POP SSî,88+}
- ciPopA=$61;{©POPAî,286+}
- ciPopF=$9D;{©POPFî,88+}
- ciPushA=$60;{©PUSHAî,286+}
- ciPushAX=$50;{©PUSH AXî,88+}
- ciPushBP=$55;{©PUSH BPî,88+}
- ciPushBX=$53;{©PUSH BXî,88+}
- ciPushCS=$0E;{©PUSH CSî,88+}
- ciPushCX=$51;{©PUSH CXî,88+}
- ciPushDI=$57;{©PUSH DIî,88+}
- ciPushDS=$1E;{©PUSH DSî,88+}
- ciPushDX=$52;{©PUSH DXî,88+}
- ciPushEAX=$5066;{©PUSH EAXî,386+}
- ciPushEBX=$5366;{©PUSH EBXî,386+}
- ciPushECX=$5166;{©PUSH ECXî,386+}
- ciPushEDX=$5266;{©PUSH EDXî,386+}
- ciPushEDI=$66+(ciPushDI shl 8);{©PUSH EDIî,386+}
- ciPushES=$06;{©PUSH ESî,88+}
- ciPushFS=$A00F;{©PUSH FSî,386+}
- ciPushGS=$A80F;{©PUSH GSî, 386+}
- ciPushMemB=$6A;{©PUSH ??î, 286+}
- ciPushSI=$56;{©PUSH SIî,88+}
- ciPushSP=$54;{©PUSH SPî,88+}
- ciPushSS=$16;{©PUSH SSî,88+}
- ciPushF=$9C;{©PUSHFî,88+}
- ciRepNZ=$F2;{©REPNZ ?î,88+}
- ciRep=$F3;{©REP ?î,88+}
- ciRetF=$CB;{©RETFî,88+}
- ciRetN=$C3;{©RETNî,88+}
- ciRet=ciRetN;{©RETNîou©RETFî,88+}
- ciSAHF=$9E;{©SAHFî,88+}
- ciSbbAL_=$1C;{©SBB AL,??hî,286+}
- ciSbbAX_=$1D;{©SBB AX,????hî,286+}
- ciSCASB=$AE;{©SCASBî,88+}
- ciSCASD=$AF66;{©SCASSî,386+}
- ciSCASW=$AF;{©SCASWî,88+}
- ciSHR_AX_=$E8C1;{©SHR AX,?î,88+}
- ciSHR_CX_=$E9C1;{©SHR CX,?î,88+}
- ciSubAL_=$2C;{ ©SUB AL,??hî,286+}
- ciSubAX_=$2D;{©SUB AX,????hî,286+}
- ciSS=$36;{©SSî,88+}
- ciSTC=$F9;{©STCî,88+}
- ciSTD=$FD;{©STDî,88+}
- ciSTI=$FB;{©STIî,88+}
- ciSTOSB=$AA;{©STOSBî,88+}
- ciSTOSD=$AB66;{©STOSDî,386+}
- ciSTOSW=$AB;{©STOSWî,88+}
- ciXchgAXnBP=$95;{©XCHG AX,BPî,88+}
- ciXchgAXnBX=$93;{©XCHG AX,BXî,88+}
- ciXchgAXnCX=$91;{©XCHG AX,CXî,88+}
- ciXchgAXnDI=$97;{©XCHG AX,DIî,88+}
- ciXchgAXnDX=$92;{©XCHG AX,DXî,88+}
- ciXchgAXnSI=$96;{©XCHG AX,SIî,88+}
- ciXchgAXnSP=$94;{©XCHG AX,SPî,88+}
- ciXchgEAX_DS_SI=$048B663E;{©XCHG EAX,DS:[SI]î,386+}
- ciXlat=$D7;{©XLATî,88+}
- ciXOR_=$81;{©XOR ?,?î,88+}
- ciXOR_AL_=$34;{©XOR AL,??hî,286+}
- ciXOR_AX_=$35;{©XOR AX,????hî,286+}
+ ciAAA=$37;{ï¿½AAAï¿½,88+}
+ ciAAD_=$D5;{ï¿½AADï¿½,88+}
+ ciAAM_=$D4;{ï¿½AAMï¿½,88+}
+ ciAAS=$3F;{ï¿½AASï¿½,88+}
+ ciAdcAL_=$14;{ï¿½ADC AL,??hï¿½,286+}
+ ciAdcAX_=$15;{ï¿½ADC AX,????hï¿½,286+}
+ ciAddAL_=$04;{ï¿½ADD AL,??hï¿½,286+}
+ ciAddAX_=$05;{ï¿½ADD AX,????hï¿½,286+}
+ ciAndAL_=$24;{ï¿½AND AL,??hï¿½,286+}
+ ciAndAX_=$25;{ï¿½AND AX,????hï¿½,286+}
+ ciCallFarAbs=$9A;{ï¿½CALL FAR ????h:????hï¿½,88+}
+ ciCBW=$98;{ï¿½CBWï¿½,88+}
+ ciCC=$CC;{ï¿½INT 03hï¿½(Code Sp'cial CCh),88+}
+ ciCLC=$F8;{ï¿½CLCï¿½,88+}
+ ciCLD=$FC;{ï¿½CLDï¿½,88+}
+ ciCLI=$FA;{ï¿½CLIï¿½,88+}
+ ciCMC=$F5;{ï¿½CMCï¿½,88+}
+ ciCmpAL_=$3C;{ï¿½CMP AL,??hï¿½,286+}
+ ciCmpAX_=$3D;{ï¿½CMP AX,????hï¿½,286+}
+ ciCmpSB=$A6;{ï¿½CMPSBï¿½,88+}
+ ciCmpSW=$A7;{ï¿½CMPSWï¿½,88+}
+ ciCS=$2E;{ï¿½CSï¿½,88+}
+ ciCWD=$99;{ï¿½CWDï¿½,88+}
+ ciDAA=$27;{ï¿½DAAï¿½,88+}
+ ciDAS=$2F;{ï¿½DASï¿½,88+}
+ ciDecAX=$48;{ï¿½DEC AXï¿½,88+}
+ ciDecBP=$4D;{ï¿½DEC BPï¿½,88+}
+ ciDecBX=$4B;{ï¿½DEC BXï¿½,88+}
+ ciDecCX=$49;{ï¿½DEC CXï¿½,88+}
+ ciDecDI=$4F;{ï¿½DEC DIï¿½,88+}
+ ciDecDX=$4A;{ï¿½DEC DXï¿½,88+}
+ ciDecSI=$4E;{ï¿½DEC SIï¿½,88+}
+ ciDecSP=$4C;{ï¿½DEC SPï¿½,88+}
+ ciDS=$3E;{ï¿½DSï¿½,88+}
+ ciES=$26;{ï¿½ESï¿½,88+}
+ ciFS=$64;{ï¿½FSï¿½,386+}
+ ciGS=$65;{ï¿½GSï¿½,386+}
+ ciHLT=$F4;{ï¿½HLTï¿½,88+}
+ ciIncAX=$40;{ï¿½INC AXï¿½,88+}
+ ciIncBP=$45;{ï¿½INC BPï¿½,88+}
+ ciIncBX=$43;{ï¿½INC BXï¿½,88+}
+ ciIncCX=$41;{ï¿½INC CXï¿½,88+}
+ ciIncDI=$47;{ï¿½INC DIï¿½,88+}
+ ciIncDX=$42;{ï¿½INC DXï¿½,88+}
+ ciIncSI=$46;{ï¿½INC SIï¿½,88+}
+ ciIncSP=$44;{ï¿½INC SPï¿½,88+}
+ ciInsB=$6C;{ï¿½INSBï¿½,88+}
+ ciInsW=$6D;{ï¿½INSWï¿½,88+}
+ ciInt=$CD;{ï¿½INT ??hï¿½,88+}
+ ciIntO=$CE;{ï¿½INTOï¿½,88+}
+ ciIRet=$CF;{ï¿½IRETï¿½,88+}
+ ciJBE=$76;{ï¿½JBE ?ï¿½,88+}
+ ciJC=$72;{ï¿½JC ?ï¿½,88+}
+ ciJG=$7E;{ï¿½JG ?ï¿½,88+}
+ ciJL=$7C;{ï¿½JL ?ï¿½,88+}
+ ciJMP_Word=$E9;{ï¿½JMP ????ï¿½,88+}
+ ciJNBE=$77;{ï¿½JNBE ?ï¿½,88+}
+ ciJNC=$73;{ï¿½JNC ?ï¿½,88+}
+ ciJNG=$7F;{ï¿½JNG ?ï¿½,88+}
+ ciJNL=$7D;{ï¿½JNL ?ï¿½,88+}
+ ciJNO=$71;{ï¿½JNO ?ï¿½,88+}
+ ciJNP=$7B;{ï¿½JNP ?ï¿½,88+}
+ ciJNS=$79;{ï¿½JNS ?ï¿½,88+}
+ ciJNZ=$75;{ï¿½JNZ ?ï¿½,88+}
+ ciJO=$70;{ï¿½JO ?ï¿½,88+}
+ ciJP=$7A;{ï¿½JP ?ï¿½,88+}
+ ciJS=$78;{ï¿½JS ?ï¿½,88+}
+ ciJZ=$74;{ï¿½JZ ?ï¿½,88+}
+ ciLAHF=$9F;{ï¿½LAHFï¿½,88+}
+ ciLAR=$020F;{ï¿½LARï¿½,386+}
+ ciLeave=$C9;{ï¿½LEAVEï¿½,286+}
+ ciLDS=$C5;{ï¿½LDS reg,memï¿½,88+}
+ ciLES=$C4;{ï¿½LES reg,memï¿½,88+}
+ ciLFS=$B40F;{ï¿½LFS reg,memï¿½,386+}
+ ciLGS=$B50F;{ï¿½LGS reg,memï¿½,386+}
+ ciLock=$F0;{ï¿½LOCK ?ï¿½,88+}
+ ciLODSB=$AC;{ï¿½LODSBï¿½,88+}
+ ciLODSD=$AD66;{ï¿½LODSDï¿½,386+}
+ ciLODSW=$AD;{ï¿½LODSWï¿½,88+}
+ ciLSL=$030F;{ï¿½LSL ?ï¿½,386+}
+ ciLSS=$B20F;{ï¿½LSS reg,memï¿½,386+}
+ ciMovAL_=$A0;{ï¿½MOV AL,[addr]ï¿½,286+}
+ ciMovAL_Byte=$B0;{ï¿½MOV AL,??ï¿½,88+}
+ ciMovAX_=$A1;{ï¿½MOV AX,[addr]ï¿½,286+}
+ ciMovAX_Word=$B8;{ï¿½MOV AX,????ï¿½, 88+}
+ ciMovAH_AL=$E08A;{ï¿½MOV AH,ALï¿½,88+}
+ ciMovBP_SP=$EC8B;{ï¿½MOV BP,SPï¿½,88+}
+ ciMovBX_CX=$D98B;{ï¿½MOV BX,CXï¿½,88+}
+ ciMovCX_BX=$CB8B;{ï¿½MOV CX,BXï¿½,88+}
+ ciMovDX_Word=$BA;{ï¿½MOV DX,????ï¿½,88+}
+ ciMovEAX_ES_DI=$058B6626;{ï¿½MOV EAX,ES:[DI]ï¿½,386+}
+ ciMovES_DI_EAX=$05896626;{ï¿½MOV ES:[DI],EAXï¿½,386+}
+ ciMovSB=$A4;{ï¿½MOVSBï¿½,88+}
+ ciMovSD=$A566;{ï¿½MOVSDï¿½,386+}
+ ciMovSW=$A5;{ï¿½MOVSWï¿½,88+}
+ ciNOP=$90;{ï¿½NOPï¿½,88+}
+ ciOutDX_AL=$EE;{ï¿½OUT DX,ALï¿½,88+}
+ ciOutDX_AX=$EF;{ï¿½OUT DX,AXï¿½,88+}
+ ciOutSB=$6E;{ï¿½OUTSBï¿½,286+}
+ ciOutSD=$6F66;{ï¿½OUTSDï¿½,386+}
+ ciOutSW=$6F;{ï¿½OUTSWï¿½,286+}
+ ciPopAX=$58;{ï¿½POP AXï¿½,88+}
+ ciPopBP=$5D;{ï¿½POP BPï¿½,88+}
+ ciPopBX=$5B;{ï¿½POP BXï¿½,88+}
+ ciPopCX=$59;{ï¿½POP CXï¿½,88+}
+ ciPopDX=$5A;{ï¿½POP DXï¿½,88+}
+ ciPopDI=$5F;{ï¿½POP DIï¿½,88+}
+ ciPopDS=$1F;{ï¿½POP DSï¿½,88+}
+ ciPopEAX=$5866;{ï¿½POP EAXï¿½,386+}
+ ciPopEBX=$5B66;{ï¿½POP EBXï¿½,386+}
+ ciPopECX=$5966;{ï¿½POP ECXï¿½,386+}
+ ciPopEDI=$66+(ciPopDI shl 8);{ï¿½PUSH EDIï¿½,386+}
+ ciPopEDX=$5A66;{ï¿½POP EDXï¿½,386+}
+ ciPopFS=$A10F;{ï¿½PUSH FSï¿½,386+}
+ ciPopGS=$A90F;{ï¿½PUSH GSï¿½,386+}
+ ciPopES=$07;{ï¿½POP ESï¿½,88+}
+ ciPopSI=$5E;{ï¿½POP SIï¿½,88+}
+ ciPopSP=$5C;{ï¿½POP SPï¿½,88+}
+ ciPopSS=$17;{ï¿½POP SSï¿½,88+}
+ ciPopA=$61;{ï¿½POPAï¿½,286+}
+ ciPopF=$9D;{ï¿½POPFï¿½,88+}
+ ciPushA=$60;{ï¿½PUSHAï¿½,286+}
+ ciPushAX=$50;{ï¿½PUSH AXï¿½,88+}
+ ciPushBP=$55;{ï¿½PUSH BPï¿½,88+}
+ ciPushBX=$53;{ï¿½PUSH BXï¿½,88+}
+ ciPushCS=$0E;{ï¿½PUSH CSï¿½,88+}
+ ciPushCX=$51;{ï¿½PUSH CXï¿½,88+}
+ ciPushDI=$57;{ï¿½PUSH DIï¿½,88+}
+ ciPushDS=$1E;{ï¿½PUSH DSï¿½,88+}
+ ciPushDX=$52;{ï¿½PUSH DXï¿½,88+}
+ ciPushEAX=$5066;{ï¿½PUSH EAXï¿½,386+}
+ ciPushEBX=$5366;{ï¿½PUSH EBXï¿½,386+}
+ ciPushECX=$5166;{ï¿½PUSH ECXï¿½,386+}
+ ciPushEDX=$5266;{ï¿½PUSH EDXï¿½,386+}
+ ciPushEDI=$66+(ciPushDI shl 8);{ï¿½PUSH EDIï¿½,386+}
+ ciPushES=$06;{ï¿½PUSH ESï¿½,88+}
+ ciPushFS=$A00F;{ï¿½PUSH FSï¿½,386+}
+ ciPushGS=$A80F;{ï¿½PUSH GSï¿½, 386+}
+ ciPushMemB=$6A;{ï¿½PUSH ??ï¿½, 286+}
+ ciPushSI=$56;{ï¿½PUSH SIï¿½,88+}
+ ciPushSP=$54;{ï¿½PUSH SPï¿½,88+}
+ ciPushSS=$16;{ï¿½PUSH SSï¿½,88+}
+ ciPushF=$9C;{ï¿½PUSHFï¿½,88+}
+ ciRepNZ=$F2;{ï¿½REPNZ ?ï¿½,88+}
+ ciRep=$F3;{ï¿½REP ?ï¿½,88+}
+ ciRetF=$CB;{ï¿½RETFï¿½,88+}
+ ciRetN=$C3;{ï¿½RETNï¿½,88+}
+ ciRet=ciRetN;{ï¿½RETNï¿½ouï¿½RETFï¿½,88+}
+ ciSAHF=$9E;{ï¿½SAHFï¿½,88+}
+ ciSbbAL_=$1C;{ï¿½SBB AL,??hï¿½,286+}
+ ciSbbAX_=$1D;{ï¿½SBB AX,????hï¿½,286+}
+ ciSCASB=$AE;{ï¿½SCASBï¿½,88+}
+ ciSCASD=$AF66;{ï¿½SCASSï¿½,386+}
+ ciSCASW=$AF;{ï¿½SCASWï¿½,88+}
+ ciSHR_AX_=$E8C1;{ï¿½SHR AX,?ï¿½,88+}
+ ciSHR_CX_=$E9C1;{ï¿½SHR CX,?ï¿½,88+}
+ ciSubAL_=$2C;{ ï¿½SUB AL,??hï¿½,286+}
+ ciSubAX_=$2D;{ï¿½SUB AX,????hï¿½,286+}
+ ciSS=$36;{ï¿½SSï¿½,88+}
+ ciSTC=$F9;{ï¿½STCï¿½,88+}
+ ciSTD=$FD;{ï¿½STDï¿½,88+}
+ ciSTI=$FB;{ï¿½STIï¿½,88+}
+ ciSTOSB=$AA;{ï¿½STOSBï¿½,88+}
+ ciSTOSD=$AB66;{ï¿½STOSDï¿½,386+}
+ ciSTOSW=$AB;{ï¿½STOSWï¿½,88+}
+ ciXchgAXnBP=$95;{ï¿½XCHG AX,BPï¿½,88+}
+ ciXchgAXnBX=$93;{ï¿½XCHG AX,BXï¿½,88+}
+ ciXchgAXnCX=$91;{ï¿½XCHG AX,CXï¿½,88+}
+ ciXchgAXnDI=$97;{ï¿½XCHG AX,DIï¿½,88+}
+ ciXchgAXnDX=$92;{ï¿½XCHG AX,DXï¿½,88+}
+ ciXchgAXnSI=$96;{ï¿½XCHG AX,SIï¿½,88+}
+ ciXchgAXnSP=$94;{ï¿½XCHG AX,SPï¿½,88+}
+ ciXchgEAX_DS_SI=$048B663E;{ï¿½XCHG EAX,DS:[SI]ï¿½,386+}
+ ciXlat=$D7;{ï¿½XLATï¿½,88+}
+ ciXOR_=$81;{ï¿½XOR ?,?ï¿½,88+}
+ ciXOR_AL_=$34;{ï¿½XOR AL,??hï¿½,286+}
+ ciXOR_AX_=$35;{ï¿½XOR AX,????hï¿½,286+}
 
 
 Const
@@ -539,7 +539,7 @@ End;
 
 Function Decode(Var Buf;Var I:Word):String;
 Label
- ReStart,Rep,99,_999,Xit;
+ ReStart,99,_999,Xit;
 Var
  T:Array[0..65520] of Byte Absolute Buf;
  CurrCode,X2,X3:Byte;
@@ -577,14 +577,25 @@ Var
                Else JmpAddr:=HexWord(I+2+T[I+1]);
  End;
 
+ { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :   }
+ { le seuil ">=$7F" traitait a tort le deplacement +127 (7Fh, la plus       }
+ { grande valeur POSITIVE d un octet signe) comme negatif - rendu a tort    }
+ { "-81h" au lieu de "+7Fh". Seuil correct : $80 (les octets 80h..FFh sont  }
+ { les seuls reellement negatifs pour un signe sur 8 bits). }
  Function OfsByte:String;Begin
-  If T[I]>=$7FThen OfsByte:='-'+HexByte($100-T[I])
+  If T[I]>=$80Then OfsByte:='-'+HexByte($100-T[I])
               Else OfsByte:='+'+HexByte(T[I]);
  End;
 
+ { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :   }
+ { T[I] est un OCTET (0..255) - le comparer a $7FFF (32767) est TOUJOURS   }
+ { faux, donc AUCUN deplacement mot (disp16) negatif n etait jamais         }
+ { detecte : un vrai "[BX+SI-1234h]" s affichait a tort comme               }
+ { "[BX+SI+EDCCh]" (valeur positive enorme au lieu du bon signe). Il faut   }
+ { comparer le MOT complet (TWd(I)), pas son seul octet de poids faible. }
  Function OfsWord:String;Begin
-  If T[I]>$7FFFThen OfsWord:='-'+HexWord($10000-TWd(I))
-               Else OfsWord:='+'+HexWord(TWd(I));
+  If TWd(I)>$7FFFThen OfsWord:='-'+HexWord($10000-TWd(I))
+                 Else OfsWord:='+'+HexWord(TWd(I));
  End;
 
  Function RegxWord(I:Byte):String;Begin
@@ -616,6 +627,18 @@ Var
   S:=SegS+SAddr[T[I+1]and$7];
   X2:=(T[I+1]shr 3)and 7;
   If(CurrCode>=$FE)and(X2 in[2..5])Then LoadAddr:=PrcS[X2 and 1]+S
+   Else
+  If(CurrCode=$8C)or(CurrCode=$8E)Then Begin
+   { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) : }
+   { "CurrCode and 1" vaut TOUJOURS 0 pour 8Ch (MOV r/m,Sreg) et 8Eh (MOV  }
+   { Sreg,r/m) - le bit habituellement utilise pour choisir Byte/Word Ptr  }
+   { ne code PAS ici une taille d operande variable : un registre de       }
+   { segment est TOUJOURS sur 16 bits, il n existe aucune forme "octet" de }
+   { ces deux opcodes. L ancien code affichait donc a tort "Byte Ptr"      }
+   { (ex. "MOV Byte Ptr [BP+02h],SI" au lieu de "MOV Word Ptr [BP+02h],ES")}
+   { pour la forme memoire de MOV Sreg. }
+   LoadAddr:=PtrS[1]+S;
+  End
    Else
   Begin
    S:=PtrS[CurrCode and 1]+S;
@@ -654,27 +677,54 @@ Var
  Var First:Boolean;
 
  Function Register:String;
- Label 1;
  Var
   T2:Byte;
  Begin
   T2:=T[I+1];
-  If CurrCode=$8EThen Begin
-   If(First)Then Begin
+  { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) :  }
+  { l ancien code (un Goto/label partage entre les branches 8Ch et 8Eh)     }
+  { melangeait a tort DEUX contextes d appel distincts sous le seul drapeau }
+  { "First" : (a) la forme REGISTRE-REGISTRE (mod=11), ou XtrkStandard      }
+  { appelle Register DEUX fois de suite ("Register+','+Register") et ou    }
+  { "First" doit bien alterner entre le champ rm (registre GP) et le champ  }
+  { reg (registre de segment) ; et (b) la forme MEMOIRE (mod<>11), ou       }
+  { Register n est appele qu UNE SEULE fois (First=True, jamais modifie     }
+  { avant cet appel) pour recuperer le registre de SEGMENT (le cote memoire }
+  { etant deja gere separement par LoadAddr/XtrkAddr). Comme les DEUX       }
+  { contextes commencent avec First=True, l ancien code prenait a tort le   }
+  { MEME chemin pour les deux, donnant "MOV BX,BX" au lieu de "MOV BX,SS"   }
+  { (registre-registre, 8Ch) et "MOV Word Ptr [BP+02h],SI" au lieu de       }
+  { "MOV Word Ptr [BP+02h],ES" (memoire, 8Ch) - le champ reg (segment)      }
+  { n etait alors JAMAIS renvoye dans ces deux cas precis. Corrige en        }
+  { distinguant explicitement les deux formes via le champ mod du ModRM     }
+  { (T2 and $C0 = $C0 <=> registre-registre) plutot que de partager un       }
+  { seul drapeau ambigu entre les deux contextes. }
+  If (CurrCode=$8C) Or (CurrCode=$8E) Then Begin
+   If (T2 and $C0) <> $C0 Then Begin
+    { Forme memoire : un seul appel, toujours le registre de segment       }
+    { (le champ reg du ModRM), pour 8Ch comme pour 8Eh. }
     Register:=RegS[((T2 and$3F)shr 3)and 3];
-    First:=False;
     Exit;
    End;
-   Goto 1;
-  End
-   Else
-  If CurrCode=$8CThen Begin
-   If Not(First)Then Begin
-    Register:=RegS[((T2 and$3F)shr 3)and 3];
-    First:=True;
-    Exit;
+   { Forme registre-registre : deux appels consecutifs, "First" indique    }
+   { lequel des deux est en cours. }
+   If CurrCode=$8EThen Begin
+    If First Then Begin
+     Register:=RegS[((T2 and$3F)shr 3)and 3];
+     First:=False;
+    End Else Begin
+     Register:=RegxWord(T2 and 7);
+     First:=True;
+    End;
+   End Else Begin { $8Ch }
+    If First Then Begin
+     Register:=RegxWord(T2 and 7);
+     First:=False;
+    End Else Begin
+     Register:=RegS[((T2 and$3F)shr 3)and 3];
+     First:=True;
+    End;
    End;
- 1:Register:=RegxWord(T2 and 7)
   End
    Else
   Begin
@@ -724,6 +774,22 @@ Var
    Else Begin
     R:=Register;
     S:=LoadAddr;
+    { BOGUE REEL CORRIGE (2026-09-07, demande explicite de l utilisateur) : }
+    { cette branche "Else" recoit AUSSI mod=10 (deplacement 16 bits,        }
+    { ModRM 80h..BFh - seul $40..$7F/mod=01 et $C0..$FF/mod=11 sont         }
+    { exclus plus haut) mais ne consommait/affichait jamais les 2 octets    }
+    { de deplacement - toute instruction "MOV/ADD/.../CMP reg,[base+jjkk]"  }
+    { avec un deplacement 16 bits perdait purement et simplement ses 2      }
+    { octets de deplacement (jamais lus ni affiches) ET desynchronisait     }
+    { TOUT le desassemblage des instructions suivantes (I jamais avance     }
+    { pour ces 2 octets). Reproduit et verifie avec "8A 80 34 12"           }
+    { (MOV AL,[BX+SI+1234h]) : affichait a tort "MOV AL,[BX+SI]" puis       }
+    { desassemblait "34 12" comme une instruction "XOR AL,12h" a part.      }
+    If T[I+1]>=$80Then Begin
+     S:=Copy(S,1,Length(S)-1);
+     Inc(I,2);
+     S:=S+OfsWord+']';
+    End;
     Goto Swp;
    End;
   End;
@@ -1217,7 +1283,7 @@ End;
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('DIS8086 : Cette commande permet de d‚sassembleur un code binaire de');
+  WriteLn('DIS8086 : Cette commande permet de dï¿½sassembleur un code binaire de');
   WriteLn('          microprocesseur 8086 en langage de programmation assembleur 8086.');
   WriteLn;
   WriteLn('Syntaxe : DIS8086 nomdufichier');

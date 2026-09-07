@@ -3632,8 +3632,22 @@ Begin
           Addr := ReadImageDWord(K)
         Else
           Addr := ReadImageWord(K);
-        { Verifier que l'adresse pointe vers un label connu }
-        If FindLabel(Addr) >= 0 Then Begin
+        { Verifier que l'adresse pointe vers un label connu. BOGUE REEL     }
+        { CORRIGE (2026-09-07, demande explicite de l utilisateur) :        }
+        { Addr=0 est REJETE explicitement - le point d entree du programme  }
+        { est (InitCS=InitIP=0 pour la plupart des .EXE) presque toujours   }
+        { l adresse 0 de l image, donc un label EXISTE bel et bien a cette  }
+        { adresse (FindLabel(0)>=0 est vrai) - mais une longue plage de     }
+        { donnees NON-INITIALISEES (BSS, remplissage) contient typiquement  }
+        { des dizaines/centaines de mots nuls consecutifs, qui se faisaient }
+        { donc TOUS confirmer a tort comme "pointeurs valides vers le       }
+        { point d entree" par ce seul test d egalite d adresse - de vraies  }
+        { zones de donnees entieres etaient reclassees BF_JUMPTBL et        }
+        { rendues comme des dizaines d entrees "DD OFFSET sub_0000"         }
+        { factices (confirme sur TURBO.EXE : 384 entrees sub_0000 sur les   }
+        { 46 "tables de saut" detectees). Une vraie table de saut ne pointe }
+        { pour ainsi dire jamais vers l adresse 0 elle-meme. }
+        If (Addr <> 0) And (FindLabel(Addr) >= 0) Then Begin
           Inc(EntryCount);
           K := K + EntrySize;
         End Else
