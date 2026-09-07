@@ -1040,6 +1040,16 @@ Var
    Else Begin
     R:=Register;
     S:=LoadAddr;
+    { BOGUE REEL CORRIGE (2026-09-07, voir DIS8086.PAS) : cette branche     }
+    { "Else" recoit AUSSI mod=10 (deplacement 16 bits, ModRM 80h..BFh) mais }
+    { ne consommait/affichait jamais les 2 octets de deplacement - toute    }
+    { instruction "MOV/ADD/.../CMP reg,[base+jjkk]" avec deplacement 16     }
+    { bits perdait ses 2 octets et desynchronisait tout le flux suivant. }
+    If T[I+1]>=$80Then Begin
+     S:=Copy(S,1,Length(S)-1);
+     Inc(I,2);
+     S:=S+OfsWord+']';
+    End;
     Goto Swp;
    End;
   End;
