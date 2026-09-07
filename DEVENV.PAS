@@ -57214,6 +57214,8 @@ Var
  IdxSize:Integer;
  WritePos:LongInt;
  EntryLinear:LongInt;
+ SegParaBase:LongInt;
+ SegRemainder:LongInt;
  GroupPos,GroupLimit:Integer;
  MaxWrite,Produced:LongInt;
  DataOfs32:LongInt;
@@ -57297,14 +57299,34 @@ Begin
  End;
 
  { Point d'entree issu de MODEND/MODEND32, si disponible }
+ { BOGUE REEL CORRIGE (2026-09-07, trouve en enquetant sur TURBO.EXE/       }
+ { TPX.EXE - voir memoire project_devenv_turbo7_overlay) : decomposer      }
+ { EntryLinear=(Address+EntryOffset) directement via Div/Mod 16 melange a  }
+ { tort la base du SEGMENT (Address, deja en octets depuis le debut du     }
+ { module de chargement) avec l'offset DANS ce segment (EntryOffset, qui   }
+ { inclut deja tout decalage ORG assemble - ex. ORG 100h donne             }
+ { EntryOffset=100h pour l'etiquette de depart). Pour un module a UN SEUL   }
+ { segment (.model tiny + org 100h, jamais teste avant cette enquete car    }
+ { tous les tests anterieurs de ce depot repassaient par EXE2BIN pour       }
+ { produire un vrai .COM), Address=0 et l'ancien calcul donnait             }
+ { InitCS=10h/InitIP=0 - CORRECT pour l'execution seule (CS:IP retombe      }
+ { bien sur le bon octet), mais FAUX des qu'un programme copie CS ailleurs  }
+ { (ex. "mov ax,cs / mov ds,ax", tres courant) pour adresser SES PROPRES    }
+ { donnees via "offset etiquette" : la valeur d'offset (deja ORG-incluse,   }
+ { ex. 10Fh) se voit alors decalee une DEUXIEME fois par le segment CS=10h, }
+ { atterrissant 100h octets trop loin. Le bon decoupage separe la base du   }
+ { SEGMENT (paragraphes complets uniquement) de son reste, qui doit etre    }
+ { ABSORBE dans l'offset avec EntryOffset - pas redecouper la somme entiere.}
  If HasEntryPoint And (EntrySegIndex>0)And(EntrySegIndex<=SegmentCount) Then Begin
   SegPtr:=GetSegmentPtr(EntrySegIndex);
   If SegPtr<>Nil Then Begin
-   EntryLinear:=SegPtr^.Address+EntryOffset;
+   SegParaBase:=SegPtr^.Address Div 16;
+   SegRemainder:=SegPtr^.Address Mod 16;
+   EntryLinear:=SegRemainder+EntryOffset;
    If EntryLinear<0 Then EntryLinear:=0;
-   If EntryLinear>(LongInt($FFFF)*16+15) Then EntryLinear:=LongInt($FFFF)*16+15;
-   ExeHeader.InitCS:=EntryLinear Div 16;
-   ExeHeader.InitIP:=EntryLinear Mod 16;
+   If EntryLinear>$FFFF Then EntryLinear:=$FFFF;
+   ExeHeader.InitCS:=SegParaBase;
+   ExeHeader.InitIP:=EntryLinear;
   End;
  End;
 

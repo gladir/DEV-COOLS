@@ -1489,7 +1489,7 @@ Begin
     If RecType<$80 Then RecType:=RecType Or $80;
   BlockRead(ObjFile,RecLen,2);
   If RecLen>SizeOf(Buffer)Then Begin
-   WriteLn('Erreur : RecLen supÇrieur Ö la taille du tampon');
+   WriteLn('Erreur : RecLen sup'+#130+'rieur '+#133+' la taille du tampon');
    Halt(10);
   End;
   BlockRead(ObjFile,Buffer,RecLen);
@@ -2136,7 +2136,7 @@ Begin
       AddSymbol(SymRec);
      End;
     End;
-   $98:Begin { SEGDEF : DÔøΩfinition de segment OMF }
+   $98:Begin { SEGDEF : Definition de segment OMF }
       SegRec.Name:='';
       SegRec.Class:='CODE';
       If RecLen>=4 Then Move(Buffer[1], SegRec.Size, 2)
@@ -2165,7 +2165,7 @@ Begin
       AddSegment(SegRec);
         Inc(LocalSegCount);
    End;
-   $A0:Begin { LEDATA : DonnÇes de segment }
+   $A0:Begin { LEDATA : Donnees de segment }
     If RecLen>=5 Then Begin
      IdxSize:=1;
      SegIndex:=Buffer[0];
@@ -3097,7 +3097,8 @@ Begin
 
  unresolvedAfter:=CountUnresolvedExternalNames;
  If unresolvedAfter>0 Then
-  WriteLn('Avertissement : externes non resolus apres recherche LIB : ',unresolvedAfter);
+  WriteLn('Avertissement : externes non resolus '+
+           'apr'+#138+'s recherche LIB : ',unresolvedAfter);
  If TraceLibRequested Then
   WriteLn('TRACE LIB: fin resolution bibliotheques');
 End;
@@ -3124,6 +3125,8 @@ Var
  IdxSize:Integer;
  WritePos:LongInt;
  EntryLinear:LongInt;
+ SegParaBase:LongInt;
+ SegRemainder:LongInt;
  GroupPos,GroupLimit:Integer;
  MaxWrite,Produced:LongInt;
  DataOfs32:LongInt;
@@ -3170,6 +3173,14 @@ Var
     Else MapSegIndexObj:=ModuleSegBase+LocalIdx;
    End;
 
+ Function UpStrGenExe(Const S:String):String;
+ Var r:String; k:Integer;
+ Begin
+  r:=S;
+  For k:=1 to Length(r) do r[k]:=UpCase(r[k]);
+  UpStrGenExe:=r;
+ End;
+
  Function FindSymbolByNameObj(Const Nm:String; Var SegIdx:Word; Var OfsVal:LongInt):Boolean;
  Var
   symItem:PSymbolItem;
@@ -3193,7 +3204,7 @@ Var
  End;
 
 Begin
-  { Initialise l'entÔøΩte EXE }
+  { Initialise l'entete EXE }
  FillChar(ExeHeader, SizeOf(ExeHeader), 0);
  With ExeHeader do Begin
   Signature:=$5A4D;  { 'MZ' }
@@ -3206,15 +3217,61 @@ Begin
   RelocOffset:=SizeOf(TExeHeader);
  End;
 
+ { BOGUE REEL CORRIGE (2026-09-07, meme enquete que le correctif InitCS/    }
+ { InitIP juste plus bas) : InitSS restait TOUJOURS a 0 (le segment cod√©    }
+ { ci-dessus), quelle que soit la position REELLE du segment de pile        }
+ { (.STACK, .model small/medium/large - jamais le segment 0 des qu'il y a   }
+ { plusieurs segments) - SS pointait donc a tort sur le debut du module     }
+ { (typiquement le CODE), et SP=StackSize=une taille de pile plausible      }
+ { mais a l'INTERIEUR du code/donnees plutot que dans la vraie pile         }
+ { reservee : la premiere PUSH/CALL corrompt son propre code, expliquant    }
+ { le plantage "division par zero" observe des le premier test .model      }
+ { small de cette enquete. Cherche le segment dont la classe/le nom         }
+ { contient "STACK" (meme detection que DosSegPriority ci-dessus) et        }
+ { calcule SS/SP a partir de SA vraie adresse, comme pour CS/IP. }
+ For i:=1 to SegmentCount do Begin
+  SegPtr:=GetSegmentPtr(i);
+  If SegPtr<>Nil Then Begin
+   If (Pos('STACK',UpStrGenExe(SegPtr^.Class))>0)
+     Or(Pos('STACK',UpStrGenExe(SegPtr^.Name))>0) Then Begin
+    ExeHeader.InitSS:=Word(SegPtr^.Address Div 16);
+    ExeHeader.InitSP:=Word((SegPtr^.Address Mod 16)+StackSize);
+    Break;
+   End;
+  End;
+ End;
+
  { Point d'entree issu de MODEND/MODEND32, si disponible }
+ { BOGUE REEL CORRIGE (2026-09-07, trouve en enquetant sur TURBO.EXE/       }
+ { TPX.EXE dans DEVENV.PAS - voir memoire project_devenv_turbo7_overlay) : }
+ { decomposer EntryLinear=(Address+EntryOffset) directement via Div/Mod    }
+ { 16 melange a tort la base du SEGMENT (Address, deja en octets depuis le }
+ { debut du module de chargement) avec l'offset DANS ce segment           }
+ { (EntryOffset, qui inclut deja tout decalage ORG assemble - ex. ORG      }
+ { 100h donne EntryOffset=100h pour l'etiquette de depart). Pour un        }
+ { module a UN SEUL segment (.model tiny + org 100h, jamais teste avant    }
+ { cette enquete car tous les tests anterieurs de ce depot repassaient     }
+ { par EXE2BIN pour produire un vrai .COM), Address=0 et l'ancien calcul   }
+ { donnait InitCS=10h/InitIP=0 - CORRECT pour l'execution seule (CS:IP     }
+ { retombe bien sur le bon octet), mais FAUX des qu'un programme copie CS  }
+ { ailleurs (ex. "mov ax,cs / mov ds,ax", tres courant) pour adresser SES  }
+ { PROPRES donnees via "offset etiquette" : la valeur d'offset (deja       }
+ { ORG-incluse, ex. 10Fh) se voit alors decalee une DEUXIEME fois par le   }
+ { segment CS=10h, atterrissant 100h octets trop loin - exactement le      }
+ { motif observe (donnees lues comme "$F6", motif de remplissage jamais    }
+ { initialise). Le bon decoupage separe la base du SEGMENT (paragraphes    }
+ { complets uniquement) de son reste, qui doit etre ABSORBE dans l'offset  }
+ { avec EntryOffset - pas redecouper la somme entiere. }
  If HasEntryPoint And (EntrySegIndex>0)And(EntrySegIndex<=SegmentCount) Then Begin
   SegPtr:=GetSegmentPtr(EntrySegIndex);
   If SegPtr<>Nil Then Begin
-   EntryLinear:=SegPtr^.Address+EntryOffset;
+   SegParaBase:=SegPtr^.Address Div 16;
+   SegRemainder:=SegPtr^.Address Mod 16;
+   EntryLinear:=SegRemainder+EntryOffset;
    If EntryLinear<0 Then EntryLinear:=0;
-   If EntryLinear>(LongInt($FFFF)*16+15) Then EntryLinear:=LongInt($FFFF)*16+15;
-   ExeHeader.InitCS:=EntryLinear Div 16;
-   ExeHeader.InitIP:=EntryLinear Mod 16;
+   If EntryLinear>$FFFF Then EntryLinear:=$FFFF;
+   ExeHeader.InitCS:=SegParaBase;
+   ExeHeader.InitIP:=EntryLinear;
   End;
  End;
 
@@ -3238,14 +3295,14 @@ Begin
  Rewrite(ExeFile,1);
  BlockWrite(ExeFile,ExeHeader,SizeOf(ExeHeader));
 
-  { êcrire la relocations }
+  { Ecrire la relocations }
  RelocItem:=RelocationHead;
  While RelocItem<>Nil do Begin
   BlockWrite(ExeFile,RelocItem^.Value,4);
   RelocItem:=RelocItem^.Next;
  End;
 
-    { Remplit le padding d'entàte jusqu'Ö DataStart }
+    { Remplit le padding d'entete jusqu'a DataStart }
    FillChar(Buffer,SizeOf(Buffer),0);
    While FilePos(ExeFile)<DataStart do Begin
     ChunkSize:=SizeOf(Buffer);
@@ -3253,7 +3310,7 @@ Begin
     BlockWrite(ExeFile,Buffer,ChunkSize);
    End;
 
-    { RÇserve les segments de code (zÇro) }
+    { Reserve les segments de code (zero) }
  For i:=1 to SegmentCount do Begin
    SegPtr:=GetSegmentPtr(i);
    If SegPtr=Nil Then Continue;
@@ -3266,7 +3323,7 @@ Begin
     End;
  End;
 
-    { Copie les octets rÇels depuis LEDATA des fichiers OBJ }
+    { Copie les octets reels depuis LEDATA des fichiers OBJ }
    For ObjIdx:=1 to ObjInputCount do Begin
       CurObjName:=ObjInputList^[ObjIdx];
     ModuleSegBase:=ObjSegBaseList[ObjIdx];
@@ -3288,7 +3345,8 @@ Begin
      If RecType<$80 Then RecType:=RecType Or $80;
      BlockRead(ObjFile,RecLen,2);
      If RecLen>SizeOf(ObjBuf) Then Begin
-      WriteLn('Erreur : RecLen supÇrieur Ö la taille du tampon LEDATA');
+      WriteLn('Erreur : RecLen sup'+#130+'rieur '+#133+
+              ' la taille du tampon LEDATA');
       Close(ObjFile);
       Close(ExeFile);
       Exit;
@@ -3753,9 +3811,10 @@ Begin
    FillChar(unresolvedArr^,SizeOf(TUnresolvedMapArray),0);
 
  WriteLn(f,' Microsoft (R) Overlay Linker - MAP');
- WriteLn(f,' Executable : ',ExeFileName);
+ WriteLn(f,' Ex'+#130+'cutable : ',ExeFileName);
  WriteLn(f,' Objets     : ',ObjInputCount,' (CLI=',PrimaryObjInputCount,')');
- WriteLn(f,' Bibliotheques : ',LibInputCount,'  Modules charges : ',LibModulesLoadedCount);
+ WriteLn(f,' Biblioth'+#138+'ques : ',LibInputCount,
+           '  Modules charges : ',LibModulesLoadedCount);
  WriteLn(f);
  WriteLn(f,' Start         Length     Name                   Class');
 
@@ -3898,14 +3957,14 @@ Begin
  WriteLn(f,'   Segments              : ',segNo);
  WriteLn(f,'   Taille image (octets) : ',totalImage);
  WriteLn(f,'   Publics definis       : ',pubCount);
- WriteLn(f,'   References externes   : ',extCount);
+ WriteLn(f,'   R'+#130+'ferences externes   : ',extCount);
  WriteLn(f,'   Externes resolus      : ',resolvedCount);
  WriteLn(f,'   Externes non resolus  : ',unresNo);
  WriteLn(f,'   Relocations MZ        : ',RelocationCount);
  WriteLn(f,'   Infos lignes          : ',LineInfoCount);
  WriteLn(f,'   Modules LIB analyses  : ',LibModulesScannedCount);
  WriteLn(f,'   Modules LIB charges   : ',LibModulesLoadedCount);
- WriteLn(f,'   Passes resolution LIB : ',LibResolutionPasses);
+ WriteLn(f,'   Passes r'+#130+'solution LIB : ',LibResolutionPasses);
 
  Close(f);
 
@@ -3938,7 +3997,7 @@ Begin
  Negative:=False;
   { Saute les espaces blancs }
  While(i<=Length(S))and(S[i] = ' ')do Inc(i);
-  { VÔøΩrifie pour les signes }
+  { Verifie pour les signes }
  If(i<=Length(S))Then Begin
   If S[i]='-'Then Begin
    Negative:=True;
@@ -4538,9 +4597,9 @@ BEGIN
  RecomputeSegmentAddresses;
  GenerateExe(ExeFileName);
  GenerateMapFile(MapFileName);
- WriteLn('Liaison complÇtÇ');
+ WriteLn('Liaison compl'+#130+'t'+#130);
  If PauseRequested Then Begin
-  Write('Pause demandee (/PAUSE). Appuyez sur Entree pour continuer...');
+  Write('Pause demand'+#130+'e (/PAUSE). Appuyez sur Entr'+#130+'e pour continuer...');
   ReadLn;
  End;
  CleanupTempLibObjFiles;
