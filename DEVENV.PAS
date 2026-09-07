@@ -98223,6 +98223,32 @@ Begin
    '  Invoke-McpTool -ToolName t [-Arguments {json}] [-Name n]  Appelle un outil MCP');
   TermAddLine(TP,
    '  Disconnect-McpServer [-Name n]         Deconnecte un serveur MCP');
+  TermAddLine(TP,
+   '  Set-JiraConfigServer -Server url        Regle le serveur Jira par defaut');
+  TermAddLine(TP,
+   '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
+  TermAddLine(TP,
+   '  Get-JiraIssue -Key PROJ-1 [-Session n]   Affiche un ticket Jira');
+  TermAddLine(TP,
+   '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
+  TermAddLine(TP,
+   '  Set-JiraIssue -Key PROJ-1 [-Summary s] [-Description d]  Modifie un ticket');
+  TermAddLine(TP,
+   '  Get-JiraProject [-Project P] [-Session n]  Liste/affiche des projets Jira');
+  TermAddLine(TP,
+   '  Get-JiraUser -UserName u [-Session n]    Affiche un utilisateur Jira');
+  TermAddLine(TP,
+   '  Get-JiraIssueType [-Session n]           Liste les types de ticket Jira');
+  TermAddLine(TP,
+   '  Get-JiraStatus [-Session n]              Liste les statuts Jira');
+  TermAddLine(TP,
+   '  Get-JiraTransition -Issue PROJ-1 [-Session n]  Liste les transitions possibles');
+  TermAddLine(TP,
+   '  Invoke-JiraIssueTransition -Issue P -Transition id-ou-nom  Applique une transition');
+  TermAddLine(TP,
+   '  Add-JiraIssueComment -Issue PROJ-1 -Comment texte  Ajoute un commentaire');
+  TermAddLine(TP,
+   '  Get-JiraIssueComment -Issue PROJ-1 [-Session n]  Liste les commentaires');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -100074,6 +100100,1108 @@ End;
 {$ENDIF}
 
 { ============================================================ }
+{ === Commandes JIRA (PowerShell dev uniquement)           === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite) : New-JiraSession/Get-JiraIssue/          }
+{ New-JiraIssue/Set-JiraIssue/Get-JiraProject/Get-JiraUser/                 }
+{ Get-JiraIssueType/Get-JiraStatus/Get-JiraTransition/                      }
+{ Invoke-JiraIssueTransition/Add-JiraIssueComment/Get-JiraIssueComment/     }
+{ Set-JiraConfigServer - memes noms que le VRAI module PowerShell JiraPS.   }
+{ API REST Jira v2 (Server/Data Center - v3/Cloud avec accountId non gere,  }
+{ voir Get-JiraUser plus bas), authentification Basic (utilisateur + jeton  }
+{ API), reutilise les liaisons WinInet DEJA existantes (Mcp_InternetOpenA   }
+{ etc., Mcp_ParseUrl - voir project_devenv_mcp.md/project_devenv_curl.md)   }
+{ via une requete dediee JiraHttpRequest plutot que CurlHttpRequest         }
+{ (en-tetes JSON+Authorization figes, pas de "corps encode en formulaire"   }
+{ par defaut). }
+
+Const
+ JIRA_MAX_SESSIONS = 8;
+
+Type
+ TJiraSession = Record
+  InUse       : Boolean;
+  SrvLabel    : String;
+  BaseUrl     : String;
+  AuthHeader  : AnsiString;
+  UserName    : String;
+  DisplayName : String;
+ End;
+
+Var
+ JiraSessions: Array[1..JIRA_MAX_SESSIONS] Of TJiraSession;
+ JiraConfigServerUrl: String;
+
+{ Encodeur Base64 standard (RFC 4648, alphabet + bourrage '=') - necessaire }
+{ pour l'en-tete "Authorization: Basic <utilisateur:jeton en Base64>" -     }
+{ aucun encodeur Base64 n'existait nulle part dans ce fichier avant ce      }
+{ chantier (recherche prealable). }
+Function Base64Encode(S: AnsiString): AnsiString;
+Const
+ B64Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+Var
+ I, L: Integer;
+ B0, B1, B2: Byte;
+ Res: AnsiString;
+Begin
+ Res := '';
+ L := Length(S);
+ I := 1;
+ While I <= L Do Begin
+  B0 := Ord(S[I]);
+  If I + 1 <= L Then B1 := Ord(S[I+1]) Else B1 := 0;
+  If I + 2 <= L Then B2 := Ord(S[I+2]) Else B2 := 0;
+  Res := Res + B64Chars[(B0 Shr 2) + 1];
+  Res := Res + B64Chars[(((B0 And 3) Shl 4) Or (B1 Shr 4)) + 1];
+  If I + 1 <= L Then Res := Res + B64Chars[(((B1 And 15) Shl 2) Or (B2 Shr 6)) + 1]
+  Else Res := Res + '=';
+  If I + 2 <= L Then Res := Res + B64Chars[(B2 And 63) + 1]
+  Else Res := Res + '=';
+  Inc(I, 3);
+ End;
+ Base64Encode := Res;
+End;
+
+Function JiraFindSession(Nm: String): Integer;
+Var I: Integer;
+Begin
+ JiraFindSession := 0;
+ For I := 1 To JIRA_MAX_SESSIONS Do
+  If JiraSessions[I].InUse And
+     (TermStrToUpper(JiraSessions[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   JiraFindSession := I;
+   Exit;
+  End;
+End;
+
+Function JiraFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ JiraFindFreeSlot := 0;
+ For I := 1 To JIRA_MAX_SESSIONS Do
+  If Not JiraSessions[I].InUse Then Begin JiraFindFreeSlot := I; Exit; End;
+End;
+
+Function JiraSoleSession: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To JIRA_MAX_SESSIONS Do
+  If JiraSessions[I].InUse Then Begin
+   If Found <> 0 Then Begin JiraSoleSession := 0; Exit; End;
+   Found := I;
+  End;
+ JiraSoleSession := Found;
+End;
+
+Function JiraResolveSession(NameArg: String): Integer;
+Begin
+ If NameArg = '' Then JiraResolveSession := JiraSoleSession
+ Else JiraResolveSession := JiraFindSession(NameArg);
+End;
+
+{ Resout -Session (ou la session unique par defaut) ET signale l'erreur     }
+{ elle-meme dans le Terminal si besoin - factorise le bloc repete par les   }
+{ 11 commandes ci-dessous qui exigent une session (meme convention que      }
+{ McpFindServer/McpSoleServer pour Get-McpTools etc.). }
+Function JiraResolveSessionOrReport(Var TP: TTerminalPanel; Cmd, NameArg: String): Integer;
+Var Slot: Integer;
+Begin
+ Slot := JiraResolveSession(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, Cmd + ' : aucune session Jira active, ou plusieurs (utilisez -Session).')
+  Else
+   TermAddLine(TP, Cmd + ' : aucune session Jira nommee "' + NameArg + '".');
+ End;
+ JiraResolveSessionOrReport := Slot;
+End;
+
+{ Coupe "-NomDrapeau valeur..." jusqu'a la fin de la ligne (meme technique  }
+{ que Invoke-McpTool -Arguments avant ce chantier) - reutilise pour LE SEUL }
+{ champ texte libre attendu en dernier sur la ligne (-Description/-Summary/}
+{ -Comment selon la commande, voir chaque procedure) puisque              }
+{ TermExtractParam coupe sur espace/tabulation SANS egard aux guillemets.  }
+{ Retire la partie coupee de ParamStr (Var) pour que l'analyse             }
+{ positionnelle du reste ne la revoie plus. }
+Function JiraExtractTrailingFlag(Var ParamStr: String; FlagUpper: String): String;
+Var UpP: String; Pos1: Integer;
+Begin
+ JiraExtractTrailingFlag := '';
+ UpP := TermStrToUpper(ParamStr);
+ Pos1 := System.Pos('-' + FlagUpper, UpP);
+ If Pos1 = 0 Then Exit;
+ JiraExtractTrailingFlag := YamlUnquote(TermTrim(Copy(ParamStr,
+  Pos1 + Length(FlagUpper) + 1, Length(ParamStr))));
+ ParamStr := TermTrim(Copy(ParamStr, 1, Pos1 - 1));
+End;
+
+{$IFDEF WINDOWS}
+{ Requete HTTP dediee Jira - en-tetes Accept/Authorization/Content-Type     }
+{ (JSON, pas le formulaire par defaut de CurlHttpRequest) figes, code de    }
+{ statut expose - meme moule que Mcp_HttpRequest/CurlHttpRequest, liaisons  }
+{ WinInet partagees. }
+Function JiraHttpRequest(Verb: AnsiString; Url: AnsiString; Body: AnsiString;
+ AuthHeader: AnsiString; Var ResponseBody: AnsiString;
+ Var StatusCode: LongInt): Boolean;
+Var
+ UseHttps, UrlOk: Boolean;
+ HostName, UrlPath: String;
+ Port: Word;
+ hInet, hConnect, hRequest: LongInt;
+ OpenFlags, SecFlags: LongWord;
+ Headers: AnsiString;
+ SendOk: LongBool;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: AnsiString;
+ J: Integer;
+ StatusBuf: Array[0..31] Of Byte;
+ StatusLen, StatusIdx: LongWord;
+Begin
+ JiraHttpRequest := False;
+ ResponseBody := '';
+ StatusCode := 0;
+ Mcp_ParseUrl(Url, UseHttps, HostName, Port, UrlPath, UrlOk);
+ If Not UrlOk Then Exit;
+ hInet := Mcp_InternetOpenA('DEVENV-Jira/1.0', MCP_INTERNET_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Exit;
+ hConnect := Mcp_InternetConnectA(hInet, PChar(AnsiString(HostName)), Port, Nil, Nil,
+  MCP_INTERNET_SERVICE_HTTP, 0, 0);
+ If hConnect = 0 Then Begin
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then OpenFlags := MCP_INTERNET_FLAG_SECURE Or MCP_INTERNET_FLAG_RELOAD
+             Else OpenFlags := MCP_INTERNET_FLAG_RELOAD;
+ hRequest := Mcp_HttpOpenRequestA(hConnect, PChar(Verb), PChar(AnsiString(UrlPath)), Nil, Nil,
+  Nil, OpenFlags, 0);
+ If hRequest = 0 Then Begin
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then Begin
+  SecFlags := PSWEB_SECURITY_FLAG_IGNORE_REVOC;
+  Mcp_InternetSetOptionA(hRequest, PSWEB_OPTION_SECURITY_FLAGS, SecFlags, SizeOf(SecFlags));
+ End;
+ Headers := 'Accept: application/json'#13#10;
+ If AuthHeader <> '' Then Headers := Headers + 'Authorization: ' + AuthHeader + #13#10;
+ If Length(Body) > 0 Then Headers := Headers + 'Content-Type: application/json'#13#10;
+ If Length(Body) > 0 Then
+  SendOk := Mcp_HttpSendRequestA(hRequest, PChar(Headers), Length(Headers),
+   PChar(Body), Length(Body))
+ Else
+  SendOk := Mcp_HttpSendRequestA(hRequest, PChar(Headers), Length(Headers), Nil, 0);
+ If Not SendOk Then Begin
+  Mcp_InternetCloseHandle(hRequest);
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ StatusLen := SizeOf(StatusBuf);
+ StatusIdx := 0;
+ FillChar(StatusBuf, SizeOf(StatusBuf), 0);
+ If Mcp_HttpQueryInfoA(hRequest, MCP_HTTP_QUERY_STATUS_CODE Or MCP_HTTP_QUERY_FLAG_NUMBER,
+    StatusBuf, StatusLen, StatusIdx) Then
+  StatusCode := PLongInt(@StatusBuf)^;
+ Repeat
+  BytesRead := 0;
+  If Not Mcp_InternetReadFile(hRequest, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J-1];
+  ResponseBody := ResponseBody + Chunk;
+ Until False;
+ Mcp_InternetCloseHandle(hRequest);
+ Mcp_InternetCloseHandle(hConnect);
+ Mcp_InternetCloseHandle(hInet);
+ JiraHttpRequest := True;
+End;
+
+{ Affiche les VRAIS messages d'erreur de l'API Jira quand le code HTTP      }
+{ n'est pas 2xx (forme standard "errorMessages"/"errors"), ou a defaut le   }
+{ corps brut - jamais un simple "erreur" muet. }
+Procedure JiraReportHttpError(Var TP: TTerminalPanel; Cmd: String;
+ StatusCode: LongInt; RespBody: AnsiString);
+Var
+ RootVal, ErrArr: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ TermAddLine(TP, Cmd + ' : le serveur Jira a repondu avec le code HTTP ' +
+  IntToStr(StatusCode) + '.');
+ If RespBody = '' Then Exit;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ErrArr := McpJsonGet(RootVal, 'errorMessages');
+ If (ErrArr <> Nil) And (ErrArr^.Kind = mjArray) And (ErrArr^.Items <> Nil) Then Begin
+  It := ErrArr^.Items;
+  While It <> Nil Do Begin
+   TermAddLine(TP, '  ' + McpJsonAsString(It^.Value));
+   It := It^.Next;
+  End;
+ End Else
+  TermAddLineWrapped(TP, RespBody);
+ McpJsonFree(RootVal);
+End;
+{$ENDIF}
+
+{ --- Set-JiraConfigServer --- }
+Procedure TermCmd_SetJiraConfigServer(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, ServerArg: String;
+ UseHttps, UrlOk: Boolean;
+ HostName, UrlPath: String;
+ Port: Word;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ ServerArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-SERVER' Then Begin
+   Inc(I); If I <= LocalArgCount Then ServerArg := YamlUnquote(LocalArgs[I]);
+  End Else If (ServerArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   ServerArg := YamlUnquote(LocalArgs[I]);
+  Inc(I);
+ End;
+ If ServerArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-JiraConfigServer -Server http://hote[:port]');
+  Exit;
+ End;
+ Mcp_ParseUrl(ServerArg, UseHttps, HostName, Port, UrlPath, UrlOk);
+ If Not UrlOk Then Begin
+  TermAddLine(TP, 'Set-JiraConfigServer : URL invalide (seuls http:// et https:// sont supportes) : ' + ServerArg);
+  Exit;
+ End;
+ JiraConfigServerUrl := ServerArg;
+ TermAddLine(TP, 'Set-JiraConfigServer : serveur Jira par defaut regle a ' + ServerArg);
+End;
+
+{ --- New-JiraSession --- }
+Procedure TermCmd_NewJiraSession(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, UserArg, TokenArg, UriArg, NameArg, ResolvedUrl: String;
+ ReqHost, ReqPath: String;
+ ReqPort: Word;
+ ReqHttps, UrlOk, HttpOk: Boolean;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ UserArg := ''; TokenArg := ''; UriArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-USERNAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then UserArg := LocalArgs[I];
+  End Else If UpTok = '-APITOKEN' Then Begin
+   Inc(I); If I <= LocalArgCount Then TokenArg := LocalArgs[I];
+  End Else If UpTok = '-URI' Then Begin
+   Inc(I); If I <= LocalArgCount Then UriArg := YamlUnquote(LocalArgs[I]);
+  End Else If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (UserArg = '') Or (TokenArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : New-JiraSession -UserName utilisateur -ApiToken jeton [-Uri http://hote] [-Name etiquette]');
+  Exit;
+ End;
+ If UriArg <> '' Then ResolvedUrl := UriArg Else ResolvedUrl := JiraConfigServerUrl;
+ If ResolvedUrl = '' Then Begin
+  TermAddLine(TP, 'New-JiraSession : aucun serveur - passez -Uri ou appelez Set-JiraConfigServer d''abord.');
+  Exit;
+ End;
+ Mcp_ParseUrl(ResolvedUrl, ReqHttps, ReqHost, ReqPort, ReqPath, UrlOk);
+ If Not UrlOk Then Begin
+  TermAddLine(TP, 'New-JiraSession : URL invalide (seuls http:// et https:// sont supportes) : ' + ResolvedUrl);
+  Exit;
+ End;
+ If NameArg = '' Then NameArg := ReqHost;
+ If JiraFindSession(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'New-JiraSession : une session nommee "' + NameArg + '" existe deja (utilisez -Name pour une autre etiquette).');
+  Exit;
+ End;
+ Slot := JiraFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'New-JiraSession : nombre maximal de sessions Jira atteint (' +
+   IntToStr(JIRA_MAX_SESSIONS) + ').');
+  Exit;
+ End;
+ AuthHdr := 'Basic ' + Base64Encode(UserArg + ':' + TokenArg);
+ HttpOk := JiraHttpRequest('GET', ResolvedUrl + '/rest/api/2/myself', '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-JiraSession : echec de connexion HTTP a ' + ResolvedUrl + '.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'New-JiraSession', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ JiraSessions[Slot].InUse := True;
+ JiraSessions[Slot].SrvLabel := NameArg;
+ JiraSessions[Slot].BaseUrl := ResolvedUrl;
+ JiraSessions[Slot].AuthHeader := AuthHdr;
+ JiraSessions[Slot].UserName := UserArg;
+ JiraSessions[Slot].DisplayName := McpJsonAsString(McpJsonGet(RootVal, 'displayName'));
+ McpJsonFree(RootVal);
+ If JiraSessions[Slot].DisplayName = '' Then JiraSessions[Slot].DisplayName := UserArg;
+ TermAddLine(TP, 'New-JiraSession : connecte a "' + NameArg + '" en tant que ' +
+  JiraSessions[Slot].DisplayName + '.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-JiraSession : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraIssue --- }
+Procedure TermCmd_GetJiraIssue(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, KeyArg, NameArg: String;
+ HttpOk: Boolean;
+ RespBody: AnsiString;
+ Status: LongInt;
+ RootVal, FieldsVal, StatusVal, TypeVal, ProjVal, AssigneeVal: PMcpJsonValue;
+ P: Integer;
+ AssigneeName: AnsiString;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ KeyArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-KEY' Then Begin
+   Inc(I); If I <= LocalArgCount Then KeyArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (KeyArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   KeyArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-JiraIssue -Key PROJ-123 [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraIssue', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' + KeyArg,
+  '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-JiraIssue : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Get-JiraIssue', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ FieldsVal := McpJsonGet(RootVal, 'fields');
+ StatusVal := McpJsonGet(FieldsVal, 'status');
+ TypeVal := McpJsonGet(FieldsVal, 'issuetype');
+ ProjVal := McpJsonGet(FieldsVal, 'project');
+ AssigneeVal := McpJsonGet(FieldsVal, 'assignee');
+ If AssigneeVal <> Nil Then AssigneeName := McpJsonAsString(McpJsonGet(AssigneeVal, 'displayName'))
+ Else AssigneeName := '';
+ If AssigneeName = '' Then AssigneeName := '(non assigne)';
+ TermAddLine(TP, McpJsonAsString(McpJsonGet(RootVal, 'key')) + ' [' +
+  McpJsonAsString(McpJsonGet(ProjVal, 'key')) + '] ' +
+  McpJsonAsString(McpJsonGet(TypeVal, 'name')) + ' - ' +
+  McpJsonAsString(McpJsonGet(StatusVal, 'name')));
+ TermAddLineWrapped(TP, McpJsonAsString(McpJsonGet(FieldsVal, 'summary')));
+ TermAddLine(TP, 'Assigne a : ' + AssigneeName);
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraIssue : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- New-JiraIssue --- }
+Procedure TermCmd_NewJiraIssue(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, ProjectArg, TypeArg, SummaryArg, DescArg, NameArg: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ { -Description (si presente) s'etend jusqu'a la fin de ligne ; sinon       }
+ { c'est -Summary qui le peut. Si LES DEUX sont demandes, -Summary doit     }
+ { alors etre place AVANT -Description et rester UN SEUL mot - limitation   }
+ { deliberee et documentee (voir JiraExtractTrailingFlag), pas invente. }
+ DescArg := JiraExtractTrailingFlag(ParamStr, 'DESCRIPTION');
+ If DescArg <> '' Then SummaryArg := ''
+ Else SummaryArg := JiraExtractTrailingFlag(ParamStr, 'SUMMARY');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ ProjectArg := ''; TypeArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-PROJECT' Then Begin
+   Inc(I); If I <= LocalArgCount Then ProjectArg := LocalArgs[I];
+  End Else If UpTok = '-ISSUETYPE' Then Begin
+   Inc(I); If I <= LocalArgCount Then TypeArg := LocalArgs[I];
+  End Else If (UpTok = '-SUMMARY') And (SummaryArg = '') Then Begin
+   Inc(I); If I <= LocalArgCount Then SummaryArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (ProjectArg = '') Or (TypeArg = '') Or (SummaryArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : New-JiraIssue -Project CLE -IssueType type -Summary texte [-Description texte] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'New-JiraIssue', NameArg);
+ If Slot = 0 Then Exit;
+ Body := '{"fields":{"project":{"key":' + ConvToJsonEscape(ProjectArg) +
+  '},"summary":' + ConvToJsonEscape(SummaryArg) +
+  ',"issuetype":{"name":' + ConvToJsonEscape(TypeArg) + '}';
+ If DescArg <> '' Then Body := Body + ',"description":' + ConvToJsonEscape(DescArg);
+ Body := Body + '}}';
+ HttpOk := JiraHttpRequest('POST', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue',
+  Body, JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-JiraIssue : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'New-JiraIssue', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'New-JiraIssue : ticket cree : ' + McpJsonAsString(McpJsonGet(RootVal, 'key')));
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-JiraIssue : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Set-JiraIssue --- }
+Procedure TermCmd_SetJiraIssue(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, KeyArg, SummaryArg, DescArg, NameArg: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ FieldCount: Integer;
+Begin
+ DescArg := JiraExtractTrailingFlag(ParamStr, 'DESCRIPTION');
+ If DescArg <> '' Then SummaryArg := ''
+ Else SummaryArg := JiraExtractTrailingFlag(ParamStr, 'SUMMARY');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ KeyArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-KEY' Then Begin
+   Inc(I); If I <= LocalArgCount Then KeyArg := LocalArgs[I];
+  End Else If (UpTok = '-SUMMARY') And (SummaryArg = '') Then Begin
+   Inc(I); If I <= LocalArgCount Then SummaryArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (KeyArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   KeyArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If (KeyArg = '') Or ((SummaryArg = '') And (DescArg = '')) Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-JiraIssue -Key PROJ-123 [-Summary texte] [-Description texte] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Set-JiraIssue', NameArg);
+ If Slot = 0 Then Exit;
+ Body := '{"fields":{';
+ FieldCount := 0;
+ If SummaryArg <> '' Then Begin
+  Body := Body + '"summary":' + ConvToJsonEscape(SummaryArg);
+  Inc(FieldCount);
+ End;
+ If DescArg <> '' Then Begin
+  If FieldCount > 0 Then Body := Body + ',';
+  Body := Body + '"description":' + ConvToJsonEscape(DescArg);
+ End;
+ Body := Body + '}}';
+ HttpOk := JiraHttpRequest('PUT', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' + KeyArg,
+  Body, JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Set-JiraIssue : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Set-JiraIssue', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Set-JiraIssue : ' + KeyArg + ' mis a jour.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-JiraIssue : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraProject --- }
+Procedure TermCmd_GetJiraProject(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, ProjectArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ ProjectArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-PROJECT' Then Begin
+   Inc(I); If I <= LocalArgCount Then ProjectArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (ProjectArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   ProjectArg := LocalArgs[I];
+  Inc(I);
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraProject', NameArg);
+ If Slot = 0 Then Exit;
+ If ProjectArg <> '' Then Begin
+  HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/project/' + ProjectArg,
+   '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+  If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraProject : echec de la requete HTTP.'); Exit; End;
+  If (Status < 200) Or (Status >= 300) Then Begin
+   JiraReportHttpError(TP, 'Get-JiraProject', Status, RespBody);
+   Exit;
+  End;
+  P := 1;
+  RootVal := McpJsonParseValue(RespBody, P);
+  TermAddLine(TP, McpJsonAsString(McpJsonGet(RootVal, 'key')) + '  ' +
+   McpJsonAsString(McpJsonGet(RootVal, 'name')) + '  (id ' +
+   McpJsonAsString(McpJsonGet(RootVal, 'id')) + ')');
+  McpJsonFree(RootVal);
+ End Else Begin
+  HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/project',
+   '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+  If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraProject : echec de la requete HTTP.'); Exit; End;
+  If (Status < 200) Or (Status >= 300) Then Begin
+   JiraReportHttpError(TP, 'Get-JiraProject', Status, RespBody);
+   Exit;
+  End;
+  P := 1;
+  RootVal := McpJsonParseValue(RespBody, P);
+  If (RootVal <> Nil) And (RootVal^.Kind = mjArray) Then Begin
+   It := RootVal^.Items;
+   While It <> Nil Do Begin
+    ItemVal := It^.Value;
+    TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'key')) + '  ' +
+     McpJsonAsString(McpJsonGet(ItemVal, 'name')));
+    It := It^.Next;
+   End;
+  End;
+  McpJsonFree(RootVal);
+ End;
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraProject : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraUser --- }
+Procedure TermCmd_GetJiraUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, UserArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ UserArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-USERNAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then UserArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (UserArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   UserArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If UserArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-JiraUser -UserName utilisateur [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraUser', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/user?username=' + UserArg,
+  '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraUser : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Get-JiraUser', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, McpJsonAsString(McpJsonGet(RootVal, 'name')) + '  ' +
+  McpJsonAsString(McpJsonGet(RootVal, 'displayName')) + '  <' +
+  McpJsonAsString(McpJsonGet(RootVal, 'emailAddress')) + '>');
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraUser : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraIssueType --- }
+Procedure TermCmd_GetJiraIssueType(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraIssueType', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/issuetype',
+  '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraIssueType : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Get-JiraIssueType', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ If (RootVal <> Nil) And (RootVal^.Kind = mjArray) Then Begin
+  It := RootVal^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'name')) + ' : ' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'description')));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraIssueType : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraStatus --- }
+Procedure TermCmd_GetJiraStatus(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraStatus', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/status',
+  '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraStatus : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Get-JiraStatus', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ If (RootVal <> Nil) And (RootVal^.Kind = mjArray) Then Begin
+  It := RootVal^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'name')) + ' (id ' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'id')) + ')');
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraStatus : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraTransition --- }
+Procedure TermCmd_GetJiraTransition(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, IssueArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, TransArr, ItemVal, ToVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ IssueArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-ISSUE' Then Begin
+   Inc(I); If I <= LocalArgCount Then IssueArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (IssueArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   IssueArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If IssueArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-JiraTransition -Issue PROJ-123 [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraTransition', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' +
+  IssueArg + '/transitions', '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraTransition : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Get-JiraTransition', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TransArr := McpJsonGet(RootVal, 'transitions');
+ If (TransArr <> Nil) And (TransArr^.Kind = mjArray) Then Begin
+  It := TransArr^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   ToVal := McpJsonGet(ItemVal, 'to');
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'id')) + ' : ' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'name')) + ' -> ' +
+    McpJsonAsString(McpJsonGet(ToVal, 'name')));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraTransition : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Invoke-JiraIssueTransition --- }
+Procedure TermCmd_InvokeJiraIssueTransition(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot, K: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, IssueArg, TransArg, CommentArg, NameArg, ResolvedId: String;
+ RespBody, Body: AnsiString;
+ Status: LongInt;
+ HttpOk, AllDigits: Boolean;
+ RootVal, TransArrVal, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ CommentArg := JiraExtractTrailingFlag(ParamStr, 'COMMENT');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ IssueArg := ''; TransArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-ISSUE' Then Begin
+   Inc(I); If I <= LocalArgCount Then IssueArg := LocalArgs[I];
+  End Else If UpTok = '-TRANSITION' Then Begin
+   Inc(I); If I <= LocalArgCount Then TransArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If (IssueArg = '') Or (TransArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-JiraIssueTransition -Issue PROJ-123 -Transition id-ou-nom [-Comment texte] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Invoke-JiraIssueTransition', NameArg);
+ If Slot = 0 Then Exit;
+ { -Transition accepte un id numerique DIRECT ou un nom (recherche dans la  }
+ { VRAIE liste des transitions disponibles pour ce ticket, comme le vrai    }
+ { module JiraPS) - une seule requete GET supplementaire, cout negligeable. }
+ AllDigits := TransArg <> '';
+ For K := 1 To Length(TransArg) Do If Not (TransArg[K] In ['0'..'9']) Then AllDigits := False;
+ If AllDigits Then
+  ResolvedId := TransArg
+ Else Begin
+  ResolvedId := '';
+  HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' +
+   IssueArg + '/transitions', '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+  If HttpOk And (Status >= 200) And (Status < 300) Then Begin
+   P := 1;
+   RootVal := McpJsonParseValue(RespBody, P);
+   TransArrVal := McpJsonGet(RootVal, 'transitions');
+   If (TransArrVal <> Nil) And (TransArrVal^.Kind = mjArray) Then Begin
+    It := TransArrVal^.Items;
+    While It <> Nil Do Begin
+     ItemVal := It^.Value;
+     If TermStrToUpper(McpJsonAsString(McpJsonGet(ItemVal, 'name'))) = TermStrToUpper(TransArg) Then
+      ResolvedId := McpJsonAsString(McpJsonGet(ItemVal, 'id'));
+     It := It^.Next;
+    End;
+   End;
+   McpJsonFree(RootVal);
+  End;
+  If ResolvedId = '' Then Begin
+   TermAddLine(TP, 'Invoke-JiraIssueTransition : transition "' + TransArg +
+    '" introuvable pour ' + IssueArg + ' (voir Get-JiraTransition -Issue ' + IssueArg + ').');
+   Exit;
+  End;
+ End;
+ Body := '{"transition":{"id":' + ConvToJsonEscape(ResolvedId) + '}';
+ If CommentArg <> '' Then
+  Body := Body + ',"update":{"comment":[{"add":{"body":' + ConvToJsonEscape(CommentArg) + '}}]}';
+ Body := Body + '}';
+ HttpOk := JiraHttpRequest('POST', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' +
+  IssueArg + '/transitions', Body, JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Invoke-JiraIssueTransition : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Invoke-JiraIssueTransition', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Invoke-JiraIssueTransition : ' + IssueArg + ' transitionne (id ' + ResolvedId + ').');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Invoke-JiraIssueTransition : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Add-JiraIssueComment --- }
+Procedure TermCmd_AddJiraIssueComment(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, IssueArg, CommentArg, NameArg: String;
+ Body, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ CommentArg := JiraExtractTrailingFlag(ParamStr, 'COMMENT');
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ IssueArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-ISSUE' Then Begin
+   Inc(I); If I <= LocalArgCount Then IssueArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (IssueArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   IssueArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If (IssueArg = '') Or (CommentArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-JiraIssueComment -Issue PROJ-123 -Comment texte [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Add-JiraIssueComment', NameArg);
+ If Slot = 0 Then Exit;
+ Body := '{"body":' + ConvToJsonEscape(CommentArg) + '}';
+ HttpOk := JiraHttpRequest('POST', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' +
+  IssueArg + '/comment', Body, JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Add-JiraIssueComment : echec de la requete HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Add-JiraIssueComment', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'Add-JiraIssueComment : commentaire ajoute (id ' +
+  McpJsonAsString(McpJsonGet(RootVal, 'id')) + ').');
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Add-JiraIssueComment : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-JiraIssueComment --- }
+Procedure TermCmd_GetJiraIssueComment(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, IssueArg, NameArg: String;
+ RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, CommentsArr, ItemVal, AuthorVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ IssueArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-ISSUE' Then Begin
+   Inc(I); If I <= LocalArgCount Then IssueArg := LocalArgs[I];
+  End Else If UpTok = '-SESSION' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (IssueArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   IssueArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If IssueArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-JiraIssueComment -Issue PROJ-123 [-Session etiquette]');
+  Exit;
+ End;
+ Slot := JiraResolveSessionOrReport(TP, 'Get-JiraIssueComment', NameArg);
+ If Slot = 0 Then Exit;
+ HttpOk := JiraHttpRequest('GET', JiraSessions[Slot].BaseUrl + '/rest/api/2/issue/' +
+  IssueArg + '/comment', '', JiraSessions[Slot].AuthHeader, RespBody, Status);
+ If Not HttpOk Then Begin TermAddLine(TP, 'Get-JiraIssueComment : echec de la requete HTTP.'); Exit; End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  JiraReportHttpError(TP, 'Get-JiraIssueComment', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ CommentsArr := McpJsonGet(RootVal, 'comments');
+ If (CommentsArr <> Nil) And (CommentsArr^.Kind = mjArray) Then Begin
+  It := CommentsArr^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   AuthorVal := McpJsonGet(ItemVal, 'author');
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(AuthorVal, 'displayName')) + ' (' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'created')) + ') :');
+   TermAddLineWrapped(TP, McpJsonAsString(McpJsonGet(ItemVal, 'body')));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-JiraIssueComment : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -100089,7 +101217,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 130;
+ PS_CMD_ALIASES = 143;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -100199,7 +101327,20 @@ Const
   'GET-MCPSERVER',
   'GET-MCPTOOLS',
   'GET-MCPRESOURCES',
-  'INVOKE-MCPTOOL'
+  'INVOKE-MCPTOOL',
+  'SET-JIRACONFIGSERVER',
+  'NEW-JIRASESSION',
+  'GET-JIRAISSUE',
+  'NEW-JIRAISSUE',
+  'SET-JIRAISSUE',
+  'GET-JIRAPROJECT',
+  'GET-JIRAUSER',
+  'GET-JIRAISSUETYPE',
+  'GET-JIRASTATUS',
+  'GET-JIRATRANSITION',
+  'INVOKE-JIRAISSUETRANSITION',
+  'ADD-JIRAISSUECOMMENT',
+  'GET-JIRAISSUECOMMENT'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -100309,7 +101450,20 @@ Const
   106,
   107,
   108,
-  109
+  109,
+  110,
+  111,
+  112,
+  113,
+  114,
+  115,
+  116,
+  117,
+  118,
+  119,
+  120,
+  121,
+  122
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -100850,6 +102004,19 @@ Begin
     107: TermCmd_GetMcpTools(TP, ParamStr);
     108: TermCmd_GetMcpResources(TP, ParamStr);
     109: TermCmd_InvokeMcpTool(TP, ParamStr);
+    110: TermCmd_SetJiraConfigServer(TP, ParamStr);
+    111: TermCmd_NewJiraSession(TP, ParamStr);
+    112: TermCmd_GetJiraIssue(TP, ParamStr);
+    113: TermCmd_NewJiraIssue(TP, ParamStr);
+    114: TermCmd_SetJiraIssue(TP, ParamStr);
+    115: TermCmd_GetJiraProject(TP, ParamStr);
+    116: TermCmd_GetJiraUser(TP, ParamStr);
+    117: TermCmd_GetJiraIssueType(TP, ParamStr);
+    118: TermCmd_GetJiraStatus(TP, ParamStr);
+    119: TermCmd_GetJiraTransition(TP, ParamStr);
+    120: TermCmd_InvokeJiraIssueTransition(TP, ParamStr);
+    121: TermCmd_AddJiraIssueComment(TP, ParamStr);
+    122: TermCmd_GetJiraIssueComment(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
