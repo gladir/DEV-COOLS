@@ -1138,6 +1138,38 @@ Function ConvertSidToStringSidA(Sid: Pointer; Var StringSid: PChar): LongBool;
 Function Win_GetAce(pAcl: Pointer; dwAceIndex: LongWord;
          Var pAce: Pointer): LongBool;
          StdCall; External 'advapi32.dll' Name 'GetAce';
+{ Connect-McpServer/Disconnect-McpServer/Get-McpServer/Get-McpTools/         }
+{ Get-McpResources/Invoke-McpTool (2026-09-07, demande explicite) - VRAI     }
+{ client HTTP MCP (Model Context Protocol) via WinInet - PREMIERE capacite   }
+{ HTTP de tout ce fichier (recherche exhaustive prealable : aucun WinInet/   }
+{ WinHTTP/Winsock n existait avant). Voir Mcp_HttpRequest plus bas pour le   }
+{ detail du transport "Streamable HTTP" du protocole MCP (JSON-RPC 2.0 par   }
+{ POST), verifie EN DIRECT contre un vrai serveur de reference (SDK officiel }
+{ @modelcontextprotocol/sdk) avant integration. }
+Function Mcp_InternetOpenA(lpszAgent: PChar; dwAccessType: LongWord;
+         lpszProxyName, lpszProxyBypass: PChar; dwFlags: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetOpenA';
+Function Mcp_InternetConnectA(hInternet: LongInt; lpszServerName: PChar;
+         nServerPort: Word; lpszUserName, lpszPassword: PChar;
+         dwService: LongWord; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetConnectA';
+Function Mcp_HttpOpenRequestA(hConnect: LongInt; lpszVerb, lpszObjectName: PChar;
+         lpszVersion: PChar; lpszReferer: PChar; lplpszAcceptTypes: Pointer;
+         dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'HttpOpenRequestA';
+Function Mcp_HttpSendRequestA(hRequest: LongInt; lpszHeaders: PChar;
+         dwHeadersLength: LongWord; lpOptional: Pointer;
+         dwOptionalLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'HttpSendRequestA';
+Function Mcp_InternetReadFile(hFile: LongInt; Var lpBuffer; dwNumberOfBytesToRead: LongWord;
+         Var dwNumberOfBytesRead: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetReadFile';
+Function Mcp_InternetCloseHandle(hInternet: LongInt): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetCloseHandle';
+Function Mcp_HttpQueryInfoA(hRequest: LongInt; dwInfoLevel: LongWord;
+         Var lpBuffer; Var lpdwBufferLength: LongWord;
+         Var lpdwIndex: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'HttpQueryInfoA';
 {$ENDIF}
 
 Const
@@ -97919,6 +97951,18 @@ Begin
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
   TermAddLine(TP,
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
+  TermAddLine(TP,
+   '  Connect-McpServer -Url http://hote:port/chemin [-Name n]  VRAI client MCP (HTTP)');
+  TermAddLine(TP,
+   '  Get-McpServer [-Name n]                Liste les serveurs MCP connectes');
+  TermAddLine(TP,
+   '  Get-McpTools [-Name n]                 Liste les outils MCP (tools/list)');
+  TermAddLine(TP,
+   '  Get-McpResources [-Name n]             Liste les ressources MCP (resources/list)');
+  TermAddLine(TP,
+   '  Invoke-McpTool -ToolName t [-Arguments {json}] [-Name n]  Appelle un outil MCP');
+  TermAddLine(TP,
+   '  Disconnect-McpServer [-Name n]         Deconnecte un serveur MCP');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -98654,6 +98698,944 @@ Begin
 End;
 
 { ============================================================ }
+{ === Connect-McpServer/Disconnect-McpServer/Get-McpServer === }
+{ === Get-McpTools/Get-McpResources/Invoke-McpTool         === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite de l'utilisateur) - VRAI client MCP (Model  }
+{ Context Protocol) dans le terminal "PowerShell dev". Transport            }
+{ "Streamable HTTP" du protocole (JSON-RPC 2.0 par requetes POST/DELETE      }
+{ HTTP, voir Mcp_HttpRequest) - AUCUN support du transport stdio (lancement  }
+{ d'un serveur MCP local via une commande - demanderait des tubes anonymes   }
+{ CreateProcess/CreatePipe bidirectionnels qui n'existent nulle part ailleurs}
+{ dans ce fichier, un chantier distinct hors de portee ici) - limitation     }
+{ deliberee et documentee, pas un oubli.                                    }
+{                                                                            }
+{ Verifie EN DIRECT (pas seulement "semble plausible") contre un vrai        }
+{ serveur MCP de reference construit avec le SDK officiel                   }
+{ (@modelcontextprotocol/sdk, StreamableHTTPServerTransport) : la reponse    }
+{ HTTP a CHAQUE requete JSON-RPC (meme non-streamee) est encadree en SSE     }
+{ ("event: message" puis "data: " suivi du JSON), jamais en JSON brut,       }
+{ avec ce SDK -                                                             }
+{ Mcp_ExtractJsonFromBody gere donc les DEUX formes (SSE a un seul evenement }
+{ ET JSON brut, cette derniere permise par la specification mais non         }
+{ observee avec le serveur de reference). L'identifiant de session          }
+{ (en-tete "Mcp-Session-Id", emis par le serveur sur la reponse a            }
+{ "initialize" et devant etre renvoye sur CHAQUE requete suivante) est lu    }
+{ via HttpQueryInfoA(HTTP_QUERY_CUSTOM) et conserve par serveur connecte.    }
+
+Const
+ MCP_INTERNET_OPEN_TYPE_DIRECT = 1;
+ MCP_INTERNET_SERVICE_HTTP     = 3;
+ MCP_INTERNET_FLAG_RELOAD      = LongWord($80000000);
+ MCP_INTERNET_FLAG_SECURE      = LongWord($00800000);
+ MCP_HTTP_QUERY_STATUS_CODE    = 19;
+ MCP_HTTP_QUERY_CUSTOM         = 65535;
+ MCP_HTTP_QUERY_FLAG_NUMBER    = LongWord($20000000);
+ MCP_MAX_SERVERS               = 8;
+
+Type
+ { Arbre JSON generique minimal (contrairement au moteur de ConvertFrom-Json }
+ { ci-dessus, qui affiche directement via TermAddLine sans jamais construire }
+ { de structure interrogeable - voir son en-tete "--- ConvertFrom-Json ---") }
+ { - necessaire ici pour naviguer reellement une reponse JSON-RPC            }
+ { (result/error/tools[]/resources[]/content[]) plutot que de l'afficher     }
+ { telle quelle. Reutilise ConvJsonParseString/ConvJsonParseNumber (deja     }
+ { existantes, prouvees) pour les valeurs scalaires. }
+ TMcpJsonKind = (mjNull, mjBool, mjNumber, mjString, mjArray, mjObject);
+ PMcpJsonValue = ^TMcpJsonValue;
+ PMcpJsonMember = ^TMcpJsonMember;
+ PMcpJsonItem = ^TMcpJsonItem;
+ TMcpJsonMember = Record
+  Key: AnsiString;
+  Value: PMcpJsonValue;
+  Next: PMcpJsonMember;
+ End;
+ TMcpJsonItem = Record
+  Value: PMcpJsonValue;
+  Next: PMcpJsonItem;
+ End;
+ TMcpJsonValue = Record
+  Kind: TMcpJsonKind;
+  StrVal: AnsiString;
+  BoolVal: Boolean;
+  Members: PMcpJsonMember;
+  Items: PMcpJsonItem;
+ End;
+
+ TMcpServerInfo = Record
+  InUse           : Boolean;
+  SrvLabel        : String;
+  HostName        : String;
+  Port            : Word;
+  UrlPath         : String;
+  UseHttps        : Boolean;
+  SessionId       : String;
+  ServerName      : String;
+  ServerVersion   : String;
+  ProtocolVersion : String;
+ End;
+
+Var
+ McpServers: Array[1..MCP_MAX_SERVERS] Of TMcpServerInfo;
+ McpNextId: LongInt;
+
+Function McpJsonParseValue(S: AnsiString; Var P: Integer): PMcpJsonValue; Forward;
+
+Function McpJsonNew(Kind: TMcpJsonKind): PMcpJsonValue;
+Var V: PMcpJsonValue;
+Begin
+ New(V);
+ V^.Kind := Kind;
+ V^.StrVal := '';
+ V^.BoolVal := False;
+ V^.Members := Nil;
+ V^.Items := Nil;
+ McpJsonNew := V;
+End;
+
+Procedure McpJsonFree(V: PMcpJsonValue);
+Var M, MNext: PMcpJsonMember; It, ItNext: PMcpJsonItem;
+Begin
+ If V = Nil Then Exit;
+ M := V^.Members;
+ While M <> Nil Do Begin
+  MNext := M^.Next;
+  McpJsonFree(M^.Value);
+  Dispose(M);
+  M := MNext;
+ End;
+ It := V^.Items;
+ While It <> Nil Do Begin
+  ItNext := It^.Next;
+  McpJsonFree(It^.Value);
+  Dispose(It);
+  It := ItNext;
+ End;
+ Dispose(V);
+End;
+
+Procedure McpJsonSkipWs(S: AnsiString; Var P: Integer);
+Begin
+ While (P <= Length(S)) And (S[P] In [' ', #9, #10, #13]) Do Inc(P);
+End;
+
+Function McpJsonParseObject(S: AnsiString; Var P: Integer): PMcpJsonValue;
+Var
+ V: PMcpJsonValue;
+ Head, Tail, NewM: PMcpJsonMember;
+ KeyStr: AnsiString;
+ ChildOk: Boolean;
+ ChildVal: PMcpJsonValue;
+Begin
+ V := McpJsonNew(mjObject);
+ Head := Nil; Tail := Nil;
+ Inc(P); { consomme '{' }
+ McpJsonSkipWs(S, P);
+ If (P <= Length(S)) And (S[P] = '}') Then Begin
+  Inc(P);
+  McpJsonParseObject := V;
+  Exit;
+ End;
+ Repeat
+  McpJsonSkipWs(S, P);
+  If (P > Length(S)) Or (S[P] <> '"') Then Break;
+  KeyStr := ConvJsonParseString(S, P, ChildOk);
+  If Not ChildOk Then Break;
+  McpJsonSkipWs(S, P);
+  If (P > Length(S)) Or (S[P] <> ':') Then Break;
+  Inc(P);
+  ChildVal := McpJsonParseValue(S, P);
+  New(NewM);
+  NewM^.Key := KeyStr;
+  NewM^.Value := ChildVal;
+  NewM^.Next := Nil;
+  If Head = Nil Then Head := NewM Else Tail^.Next := NewM;
+  Tail := NewM;
+  McpJsonSkipWs(S, P);
+  If (P <= Length(S)) And (S[P] = ',') Then Begin Inc(P); End
+   Else Break;
+ Until False;
+ McpJsonSkipWs(S, P);
+ If (P <= Length(S)) And (S[P] = '}') Then Inc(P);
+ V^.Members := Head;
+ McpJsonParseObject := V;
+End;
+
+Function McpJsonParseArray(S: AnsiString; Var P: Integer): PMcpJsonValue;
+Var
+ V: PMcpJsonValue;
+ Head, Tail, NewIt: PMcpJsonItem;
+ ChildVal: PMcpJsonValue;
+Begin
+ V := McpJsonNew(mjArray);
+ Head := Nil; Tail := Nil;
+ Inc(P); { consomme '[' }
+ McpJsonSkipWs(S, P);
+ If (P <= Length(S)) And (S[P] = ']') Then Begin
+  Inc(P);
+  McpJsonParseArray := V;
+  Exit;
+ End;
+ Repeat
+  McpJsonSkipWs(S, P);
+  ChildVal := McpJsonParseValue(S, P);
+  New(NewIt);
+  NewIt^.Value := ChildVal;
+  NewIt^.Next := Nil;
+  If Head = Nil Then Head := NewIt Else Tail^.Next := NewIt;
+  Tail := NewIt;
+  McpJsonSkipWs(S, P);
+  If (P <= Length(S)) And (S[P] = ',') Then Begin Inc(P); End
+   Else Break;
+ Until False;
+ McpJsonSkipWs(S, P);
+ If (P <= Length(S)) And (S[P] = ']') Then Inc(P);
+ V^.Items := Head;
+ McpJsonParseArray := V;
+End;
+
+Function McpJsonParseValue(S: AnsiString; Var P: Integer): PMcpJsonValue;
+Var
+ V: PMcpJsonValue;
+ StrOk: Boolean;
+Begin
+ McpJsonSkipWs(S, P);
+ If P > Length(S) Then Begin
+  McpJsonParseValue := McpJsonNew(mjNull);
+  Exit;
+ End;
+ Case S[P] Of
+  '{': McpJsonParseValue := McpJsonParseObject(S, P);
+  '[': McpJsonParseValue := McpJsonParseArray(S, P);
+  '"': Begin
+   V := McpJsonNew(mjString);
+   V^.StrVal := ConvJsonParseString(S, P, StrOk);
+   McpJsonParseValue := V;
+  End;
+  't': Begin
+   V := McpJsonNew(mjBool); V^.BoolVal := True;
+   Inc(P, 4);
+   McpJsonParseValue := V;
+  End;
+  'f': Begin
+   V := McpJsonNew(mjBool); V^.BoolVal := False;
+   Inc(P, 5);
+   McpJsonParseValue := V;
+  End;
+  'n': Begin
+   V := McpJsonNew(mjNull);
+   Inc(P, 4);
+   McpJsonParseValue := V;
+  End;
+  Else Begin
+   V := McpJsonNew(mjNumber);
+   V^.StrVal := ConvJsonParseNumber(S, P);
+   McpJsonParseValue := V;
+  End;
+ End;
+End;
+
+Function McpJsonGet(Obj: PMcpJsonValue; Key: AnsiString): PMcpJsonValue;
+Var M: PMcpJsonMember;
+Begin
+ McpJsonGet := Nil;
+ If (Obj = Nil) Or (Obj^.Kind <> mjObject) Then Exit;
+ M := Obj^.Members;
+ While M <> Nil Do Begin
+  If M^.Key = Key Then Begin McpJsonGet := M^.Value; Exit; End;
+  M := M^.Next;
+ End;
+End;
+
+Function McpJsonAsString(V: PMcpJsonValue): AnsiString;
+Begin
+ If V = Nil Then McpJsonAsString := ''
+ Else Case V^.Kind Of
+  mjString, mjNumber: McpJsonAsString := V^.StrVal;
+  mjBool: If V^.BoolVal Then McpJsonAsString := 'true' Else McpJsonAsString := 'false';
+  mjNull: McpJsonAsString := 'null';
+  Else McpJsonAsString := '';
+ End;
+End;
+
+{ Decoupe une URL http://hote[:port]/chemin (ou https://) - analyseur maison}
+{ delibere plutot que InternetCrackUrlA (evite tout risque de mauvais         }
+{ alignement de la structure C URL_COMPONENTS sans pouvoir la tester en       }
+{ direct) - meme discipline "petit analyseur maison" que YAML/CSV/Markdown. }
+Procedure Mcp_ParseUrl(Url: AnsiString; Var UseHttps: Boolean; Var HostName: String;
+ Var Port: Word; Var UrlPath: String; Var Ok: Boolean);
+Var
+ Rest: AnsiString;
+ PortStr: String;
+ SlashPos, ColonPos, ErrCode: Integer;
+ PortVal: LongInt;
+Begin
+ Ok := False;
+ UseHttps := False;
+ HostName := '';
+ Port := 80;
+ UrlPath := '/';
+ If TermStrToUpper(Copy(Url, 1, 8)) = 'HTTPS://' Then Begin
+  UseHttps := True;
+  Port := 443;
+  Rest := Copy(Url, 9, Length(Url));
+ End Else If TermStrToUpper(Copy(Url, 1, 7)) = 'HTTP://' Then Begin
+  Rest := Copy(Url, 8, Length(Url));
+ End Else Exit;
+ SlashPos := System.Pos('/', Rest);
+ If SlashPos = 0 Then Begin
+  HostName := Rest;
+  UrlPath := '/';
+ End Else Begin
+  HostName := Copy(Rest, 1, SlashPos - 1);
+  UrlPath := Copy(Rest, SlashPos, Length(Rest));
+ End;
+ ColonPos := System.Pos(':', HostName);
+ If ColonPos > 0 Then Begin
+  PortStr := Copy(HostName, ColonPos + 1, Length(HostName));
+  HostName := Copy(HostName, 1, ColonPos - 1);
+  Val(PortStr, PortVal, ErrCode);
+  If (ErrCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := PortVal;
+ End;
+ Ok := HostName <> '';
+End;
+
+{ Extrait le JSON d'un corps de reponse HTTP MCP - gere le SSE a un seul     }
+{ evenement ("event: message" puis "data: " suivi du JSON) ET le JSON brut  }
+{ (voir l'en-tete de section ci-dessus pour la justification, verifiee en   }
+{ direct). Un flux SSE a plusieurs evenements reels resterait hors de       }
+{ portee (non necessaire pour une requete/reponse simple, cas exclusif      }
+{ couvert par ce client). }
+Function Mcp_ExtractJsonFromBody(Body: AnsiString): AnsiString;
+Var
+ P, LineStart: Integer;
+ OneLine, Res: AnsiString;
+Begin
+ If (Length(Body) >= 1) And (Body[1] = '{') Then Begin
+  Mcp_ExtractJsonFromBody := Body;
+  Exit;
+ End;
+ Res := '';
+ P := 1;
+ While P <= Length(Body) Do Begin
+  LineStart := P;
+  While (P <= Length(Body)) And (Body[P] <> #10) Do Inc(P);
+  OneLine := Copy(Body, LineStart, P - LineStart);
+  If (Length(OneLine) > 0) And (OneLine[Length(OneLine)] = #13) Then
+   OneLine := Copy(OneLine, 1, Length(OneLine) - 1);
+  If Copy(OneLine, 1, 5) = 'data:' Then Begin
+   OneLine := Copy(OneLine, 6, Length(OneLine));
+   If (Length(OneLine) > 0) And (OneLine[1] = ' ') Then
+    OneLine := Copy(OneLine, 2, Length(OneLine));
+   Res := Res + OneLine;
+  End;
+  Inc(P);
+ End;
+ Mcp_ExtractJsonFromBody := Res;
+End;
+
+{$IFDEF WINDOWS}
+{ Requete HTTP synchrone via WinInet - verifiee en direct (curl prealable    }
+{ contre le VRAI serveur de reference, puis ce client Pascal reteste contre  }
+{ le meme serveur - voir l'en-tete de section). Une seule requete = une      }
+{ seule connexion (ouvre/ferme a chaque appel, pas de pool de connexions) - }
+{ simple et suffisant pour un usage interactif au clavier dans ce terminal. }
+Function Mcp_HttpRequest(Verb: AnsiString; HostName: AnsiString; Port: Word;
+ UrlPath: AnsiString; UseHttps: Boolean; Body: AnsiString; SessionId: AnsiString;
+ Var ResponseBody: AnsiString; Var RespSessionId: AnsiString;
+ Var StatusCode: LongInt): Boolean;
+Var
+ hInet, hConnect, hRequest: LongInt;
+ Headers: AnsiString;
+ OpenFlags: LongWord;
+ SendOk: LongBool;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: AnsiString;
+ J: Integer;
+ QueryBuf: Array[0..511] Of Char;
+ QueryLen, QueryIdx: LongWord;
+ HeaderNameStr: String;
+ StatusBuf: Array[0..31] Of Byte;
+ StatusLen, StatusIdx: LongWord;
+Begin
+ Mcp_HttpRequest := False;
+ ResponseBody := '';
+ RespSessionId := '';
+ StatusCode := 0;
+ hInet := Mcp_InternetOpenA('DEVENV-MCP-Client/1.0', MCP_INTERNET_OPEN_TYPE_DIRECT,
+  Nil, Nil, 0);
+ If hInet = 0 Then Exit;
+ hConnect := Mcp_InternetConnectA(hInet, PChar(HostName), Port, Nil, Nil,
+  MCP_INTERNET_SERVICE_HTTP, 0, 0);
+ If hConnect = 0 Then Begin
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then OpenFlags := MCP_INTERNET_FLAG_SECURE Or MCP_INTERNET_FLAG_RELOAD
+             Else OpenFlags := MCP_INTERNET_FLAG_RELOAD;
+ hRequest := Mcp_HttpOpenRequestA(hConnect, PChar(Verb), PChar(UrlPath), Nil, Nil,
+  Nil, OpenFlags, 0);
+ If hRequest = 0 Then Begin
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ Headers := 'Content-Type: application/json'#13#10 +
+  'Accept: application/json, text/event-stream'#13#10;
+ If SessionId <> '' Then Headers := Headers + 'Mcp-Session-Id: ' + SessionId + #13#10;
+ If Length(Body) > 0 Then
+  SendOk := Mcp_HttpSendRequestA(hRequest, PChar(Headers), Length(Headers),
+   PChar(Body), Length(Body))
+ Else
+  SendOk := Mcp_HttpSendRequestA(hRequest, PChar(Headers), Length(Headers), Nil, 0);
+ If Not SendOk Then Begin
+  Mcp_InternetCloseHandle(hRequest);
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ { Code de statut HTTP (valeur NUMERIQUE brute via HTTP_QUERY_FLAG_NUMBER). }
+ StatusLen := SizeOf(StatusBuf);
+ StatusIdx := 0;
+ FillChar(StatusBuf, SizeOf(StatusBuf), 0);
+ If Mcp_HttpQueryInfoA(hRequest, MCP_HTTP_QUERY_STATUS_CODE Or MCP_HTTP_QUERY_FLAG_NUMBER,
+    StatusBuf, StatusLen, StatusIdx) Then
+  StatusCode := PLongInt(@StatusBuf)^;
+ { En-tete "Mcp-Session-Id" (present sur la reponse a "initialize" - le nom  }
+ { de l'en-tete recherche est fourni EN ENTREE dans le buffer, ecrase par la }
+ { valeur en sortie, convention HTTP_QUERY_CUSTOM de HttpQueryInfoA). }
+ HeaderNameStr := 'Mcp-Session-Id';
+ FillChar(QueryBuf, SizeOf(QueryBuf), 0);
+ For J := 1 To Length(HeaderNameStr) Do QueryBuf[J-1] := HeaderNameStr[J];
+ QueryLen := SizeOf(QueryBuf);
+ QueryIdx := 0;
+ If Mcp_HttpQueryInfoA(hRequest, MCP_HTTP_QUERY_CUSTOM, QueryBuf, QueryLen, QueryIdx) Then
+  RespSessionId := StrPas(QueryBuf);
+ { Corps de la reponse, lu par blocs jusqu'a la fin. }
+ Repeat
+  BytesRead := 0;
+  If Not Mcp_InternetReadFile(hRequest, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J-1];
+  ResponseBody := ResponseBody + Chunk;
+ Until False;
+ Mcp_InternetCloseHandle(hRequest);
+ Mcp_InternetCloseHandle(hConnect);
+ Mcp_InternetCloseHandle(hInet);
+ Mcp_HttpRequest := True;
+End;
+{$ENDIF}
+
+Function McpFindServer(Nm: String): Integer;
+Var I: Integer;
+Begin
+ McpFindServer := 0;
+ For I := 1 To MCP_MAX_SERVERS Do
+  If McpServers[I].InUse And
+     (TermStrToUpper(McpServers[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   McpFindServer := I;
+   Exit;
+  End;
+End;
+
+Function McpFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ McpFindFreeSlot := 0;
+ For I := 1 To MCP_MAX_SERVERS Do
+  If Not McpServers[I].InUse Then Begin McpFindFreeSlot := I; Exit; End;
+End;
+
+Function McpSoleServer: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To MCP_MAX_SERVERS Do
+  If McpServers[I].InUse Then Begin
+   If Found <> 0 Then Begin McpSoleServer := 0; Exit; End;
+   Found := I;
+  End;
+ McpSoleServer := Found;
+End;
+
+{ --- Connect-McpServer --- }
+Procedure TermCmd_ConnectMcpServer(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UrlArg, NameArg, UpTok: String;
+ ReqHost, ReqPath: String;
+ ReqPort: Word;
+ ReqHttps, UrlOk, HttpOk: Boolean;
+ ReqBody, RespBody, JsonBody, RespSid: AnsiString;
+ Status: LongInt;
+ RootVal, ResultVal, ServerInfoVal, ErrVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ UrlArg := ''; NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-URL' Then Begin
+   Inc(I); If I <= LocalArgCount Then UrlArg := YamlUnquote(LocalArgs[I]);
+  End Else If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (UrlArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   UrlArg := YamlUnquote(LocalArgs[I]);
+  Inc(I);
+ End;
+ If UrlArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Connect-McpServer -Url http://hote:port/chemin [-Name etiquette]');
+  Exit;
+ End;
+ Mcp_ParseUrl(UrlArg, ReqHttps, ReqHost, ReqPort, ReqPath, UrlOk);
+ If Not UrlOk Then Begin
+  TermAddLine(TP, 'Connect-McpServer : URL invalide (seuls http:// et https:// sont supportes) : ' + UrlArg);
+  Exit;
+ End;
+ If NameArg = '' Then NameArg := ReqHost + ':' + IntToStr(ReqPort);
+ If McpFindServer(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'Connect-McpServer : un serveur nomme "' + NameArg +
+   '" est deja connecte (Disconnect-McpServer d''abord).');
+  Exit;
+ End;
+ Slot := McpFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'Connect-McpServer : nombre maximal de serveurs MCP connectes atteint (' +
+   IntToStr(MCP_MAX_SERVERS) + ').');
+  Exit;
+ End;
+ Inc(McpNextId);
+ ReqBody := '{"jsonrpc":"2.0","id":' + IntToStr(McpNextId) +
+  ',"method":"initialize","params":{"protocolVersion":"2025-03-26",' +
+  '"capabilities":{},"clientInfo":{"name":"DEVENV-PowerShell-dev","version":"1.0"}}}';
+ HttpOk := Mcp_HttpRequest('POST', ReqHost, ReqPort, ReqPath, ReqHttps, ReqBody, '',
+  RespBody, RespSid, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Connect-McpServer : echec de connexion HTTP a ' + ReqHost + ':' +
+   IntToStr(ReqPort) + '.');
+  Exit;
+ End;
+ If (Status <> 0) And ((Status < 200) Or (Status >= 300)) Then Begin
+  TermAddLine(TP, 'Connect-McpServer : le serveur a repondu avec le code HTTP ' +
+   IntToStr(Status) + '.');
+  TermAddLineWrapped(TP, RespBody);
+  Exit;
+ End;
+ JsonBody := Mcp_ExtractJsonFromBody(RespBody);
+ P := 1;
+ RootVal := McpJsonParseValue(JsonBody, P);
+ ErrVal := McpJsonGet(RootVal, 'error');
+ If ErrVal <> Nil Then Begin
+  TermAddLine(TP, 'Connect-McpServer : le serveur a renvoye une erreur JSON-RPC : ' +
+   McpJsonAsString(McpJsonGet(ErrVal, 'message')));
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ ResultVal := McpJsonGet(RootVal, 'result');
+ If ResultVal = Nil Then Begin
+  TermAddLine(TP, 'Connect-McpServer : reponse inattendue du serveur (aucun champ "result").');
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ ServerInfoVal := McpJsonGet(ResultVal, 'serverInfo');
+ McpServers[Slot].InUse := True;
+ McpServers[Slot].SrvLabel := NameArg;
+ McpServers[Slot].HostName := ReqHost;
+ McpServers[Slot].Port := ReqPort;
+ McpServers[Slot].UrlPath := ReqPath;
+ McpServers[Slot].UseHttps := ReqHttps;
+ McpServers[Slot].SessionId := RespSid;
+ McpServers[Slot].ServerName := McpJsonAsString(McpJsonGet(ServerInfoVal, 'name'));
+ McpServers[Slot].ServerVersion := McpJsonAsString(McpJsonGet(ServerInfoVal, 'version'));
+ McpServers[Slot].ProtocolVersion := McpJsonAsString(McpJsonGet(ResultVal, 'protocolVersion'));
+ McpJsonFree(RootVal);
+ TermAddLine(TP, 'Connect-McpServer : connecte a "' + NameArg + '" (' +
+  McpServers[Slot].ServerName + ' ' + McpServers[Slot].ServerVersion +
+  ', protocole ' + McpServers[Slot].ProtocolVersion + ').');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Connect-McpServer : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Disconnect-McpServer --- }
+Procedure TermCmd_DisconnectMcpServer(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ NameArg, UpTok: String;
+ RespBody, RespSid: AnsiString;
+ Status: LongInt;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (NameArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   NameArg := LocalArgs[I];
+  Inc(I);
+ End;
+ If NameArg = '' Then Slot := McpSoleServer Else Slot := McpFindServer(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, 'Disconnect-McpServer : aucun serveur MCP connecte, ou plusieurs (utilisez -Name).')
+  Else
+   TermAddLine(TP, 'Disconnect-McpServer : aucun serveur MCP nomme "' + NameArg + '" n''est connecte.');
+  Exit;
+ End;
+ { Terminaison de session au mieux (DELETE, recommandee par la specification }
+ { MCP) - la deconnexion LOCALE se fait de toute facon, meme si l appel      }
+ { echoue (serveur deja arrete, reseau coupe, etc.). }
+ Mcp_HttpRequest('DELETE', McpServers[Slot].HostName, McpServers[Slot].Port,
+  McpServers[Slot].UrlPath, McpServers[Slot].UseHttps, '', McpServers[Slot].SessionId,
+  RespBody, RespSid, Status);
+ TermAddLine(TP, 'Disconnect-McpServer : "' + McpServers[Slot].SrvLabel + '" deconnecte.');
+ McpServers[Slot].InUse := False;
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Disconnect-McpServer : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-McpServer --- }
+Procedure TermCmd_GetMcpServer(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..10] Of String;
+ NameArg, UpTok: String;
+ Any: Boolean;
+ SchemeStr: String;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If (NameArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   NameArg := LocalArgs[I];
+  Inc(I);
+ End;
+ Any := False;
+ For I := 1 To MCP_MAX_SERVERS Do
+  If McpServers[I].InUse And ((NameArg = '') Or
+     (TermStrToUpper(McpServers[I].SrvLabel) = TermStrToUpper(NameArg))) Then Begin
+   Any := True;
+   If McpServers[I].UseHttps Then SchemeStr := 'https://' Else SchemeStr := 'http://';
+   TermAddLine(TP, McpServers[I].SrvLabel + '  ' + McpServers[I].ServerName + ' ' +
+    McpServers[I].ServerVersion + '  protocole ' + McpServers[I].ProtocolVersion);
+   TermAddLine(TP, '  ' + SchemeStr + McpServers[I].HostName + ':' +
+    IntToStr(McpServers[I].Port) + McpServers[I].UrlPath);
+  End;
+ If Not Any Then Begin
+  If NameArg = '' Then TermAddLine(TP, 'Get-McpServer : aucun serveur MCP connecte.')
+  Else TermAddLine(TP, 'Get-McpServer : aucun serveur MCP nomme "' + NameArg + '" n''est connecte.');
+ End;
+End;
+
+{ --- Get-McpTools --- }
+Procedure TermCmd_GetMcpTools(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ NameArg, UpTok: String;
+ ReqBody, RespBody, JsonBody, RespSid: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ResultVal, ToolsVal, ErrVal, ToolVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+ NameStr, DescStr: AnsiString;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If NameArg = '' Then Slot := McpSoleServer Else Slot := McpFindServer(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, 'Get-McpTools : aucun serveur MCP connecte, ou plusieurs (utilisez -Name).')
+  Else
+   TermAddLine(TP, 'Get-McpTools : aucun serveur MCP nomme "' + NameArg + '" n''est connecte.');
+  Exit;
+ End;
+ Inc(McpNextId);
+ ReqBody := '{"jsonrpc":"2.0","id":' + IntToStr(McpNextId) + ',"method":"tools/list","params":{}}';
+ HttpOk := Mcp_HttpRequest('POST', McpServers[Slot].HostName, McpServers[Slot].Port,
+  McpServers[Slot].UrlPath, McpServers[Slot].UseHttps, ReqBody, McpServers[Slot].SessionId,
+  RespBody, RespSid, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-McpTools : echec de la requete HTTP.');
+  Exit;
+ End;
+ JsonBody := Mcp_ExtractJsonFromBody(RespBody);
+ P := 1;
+ RootVal := McpJsonParseValue(JsonBody, P);
+ ErrVal := McpJsonGet(RootVal, 'error');
+ If ErrVal <> Nil Then Begin
+  TermAddLine(TP, 'Get-McpTools : erreur JSON-RPC : ' +
+   McpJsonAsString(McpJsonGet(ErrVal, 'message')));
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ ResultVal := McpJsonGet(RootVal, 'result');
+ ToolsVal := McpJsonGet(ResultVal, 'tools');
+ If (ToolsVal = Nil) Or (ToolsVal^.Kind <> mjArray) Then Begin
+  TermAddLine(TP, 'Get-McpTools : reponse inattendue (aucune liste "tools").');
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ TermAddLine(TP, 'Outils disponibles sur "' + McpServers[Slot].SrvLabel + '" :');
+ It := ToolsVal^.Items;
+ If It = Nil Then TermAddLine(TP, '  (aucun outil)');
+ While It <> Nil Do Begin
+  ToolVal := It^.Value;
+  NameStr := McpJsonAsString(McpJsonGet(ToolVal, 'name'));
+  DescStr := McpJsonAsString(McpJsonGet(ToolVal, 'description'));
+  If DescStr <> '' Then TermAddLineWrapped(TP, '  ' + NameStr + ' : ' + DescStr)
+  Else TermAddLineWrapped(TP, '  ' + NameStr);
+  It := It^.Next;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-McpTools : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-McpResources --- }
+Procedure TermCmd_GetMcpResources(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I, Slot: Integer;
+ LocalArgs: Array[1..10] Of String;
+ NameArg, UpTok: String;
+ ReqBody, RespBody, JsonBody, RespSid: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ResultVal, ResVal, ErrVal, OneVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+ UriStr, DescStr: AnsiString;
+Begin
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End;
+  Inc(I);
+ End;
+ If NameArg = '' Then Slot := McpSoleServer Else Slot := McpFindServer(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, 'Get-McpResources : aucun serveur MCP connecte, ou plusieurs (utilisez -Name).')
+  Else
+   TermAddLine(TP, 'Get-McpResources : aucun serveur MCP nomme "' + NameArg + '" n''est connecte.');
+  Exit;
+ End;
+ Inc(McpNextId);
+ ReqBody := '{"jsonrpc":"2.0","id":' + IntToStr(McpNextId) + ',"method":"resources/list","params":{}}';
+ HttpOk := Mcp_HttpRequest('POST', McpServers[Slot].HostName, McpServers[Slot].Port,
+  McpServers[Slot].UrlPath, McpServers[Slot].UseHttps, ReqBody, McpServers[Slot].SessionId,
+  RespBody, RespSid, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-McpResources : echec de la requete HTTP.');
+  Exit;
+ End;
+ JsonBody := Mcp_ExtractJsonFromBody(RespBody);
+ P := 1;
+ RootVal := McpJsonParseValue(JsonBody, P);
+ ErrVal := McpJsonGet(RootVal, 'error');
+ If ErrVal <> Nil Then Begin
+  TermAddLine(TP, 'Get-McpResources : erreur JSON-RPC : ' +
+   McpJsonAsString(McpJsonGet(ErrVal, 'message')));
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ ResultVal := McpJsonGet(RootVal, 'result');
+ ResVal := McpJsonGet(ResultVal, 'resources');
+ If (ResVal = Nil) Or (ResVal^.Kind <> mjArray) Then Begin
+  TermAddLine(TP, 'Get-McpResources : reponse inattendue (aucune liste "resources").');
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ TermAddLine(TP, 'Ressources disponibles sur "' + McpServers[Slot].SrvLabel + '" :');
+ It := ResVal^.Items;
+ If It = Nil Then TermAddLine(TP, '  (aucune ressource)');
+ While It <> Nil Do Begin
+  OneVal := It^.Value;
+  UriStr := McpJsonAsString(McpJsonGet(OneVal, 'uri'));
+  DescStr := McpJsonAsString(McpJsonGet(OneVal, 'description'));
+  If DescStr <> '' Then TermAddLineWrapped(TP, '  ' + UriStr + ' : ' + DescStr)
+  Else TermAddLineWrapped(TP, '  ' + UriStr);
+  It := It^.Next;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-McpResources : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Invoke-McpTool --- }
+Procedure TermCmd_InvokeMcpTool(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ UpParamStr: String;
+ PosArgs: Integer;
+ NameArg, ToolArg: String;
+ ArgsJson: AnsiString;
+ Slot: Integer;
+ ReqBody, RespBody, JsonBody, RespSid: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ResultVal, ContentVal, ErrVal, ItemVal, IsErrVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+ TypeStr, TextStr: AnsiString;
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok: String;
+Begin
+ { -Arguments doit etre le DERNIER drapeau de la ligne : sa valeur s etend   }
+ { jusqu a la fin de la ligne - ce terminal n a pas de vrai tokenizer         }
+ { respectant les guillemets (voir TermExtractParam) - limitation deliberee  }
+ { et documentee, meme discipline que ConvertFrom-SddlString/                }
+ { Start-Atari2600Program plus haut dans ce chantier. }
+ UpParamStr := TermStrToUpper(ParamStr);
+ PosArgs := System.Pos('-ARGUMENTS', UpParamStr);
+ If PosArgs > 0 Then Begin
+  ArgsJson := YamlUnquote(TermTrim(Copy(ParamStr, PosArgs + 10, Length(ParamStr))));
+  ParamStr := TermTrim(Copy(ParamStr, 1, PosArgs - 1));
+ End Else
+  ArgsJson := '';
+
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ NameArg := ''; ToolArg := '';
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-NAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then NameArg := LocalArgs[I];
+  End Else If UpTok = '-TOOLNAME' Then Begin
+   Inc(I); If I <= LocalArgCount Then ToolArg := LocalArgs[I];
+  End Else If (ToolArg = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   ToolArg := LocalArgs[I];
+  Inc(I);
+ End;
+
+ If ToolArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-McpTool -ToolName nom [-Arguments {json}] [-Name etiquette]');
+  Exit;
+ End;
+ If NameArg = '' Then Slot := McpSoleServer Else Slot := McpFindServer(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, 'Invoke-McpTool : aucun serveur MCP connecte, ou plusieurs (utilisez -Name).')
+  Else
+   TermAddLine(TP, 'Invoke-McpTool : aucun serveur MCP nomme "' + NameArg + '" n''est connecte.');
+  Exit;
+ End;
+ If ArgsJson = '' Then ArgsJson := '{}';
+
+ Inc(McpNextId);
+ ReqBody := '{"jsonrpc":"2.0","id":' + IntToStr(McpNextId) +
+  ',"method":"tools/call","params":{"name":' + ConvToJsonEscape(ToolArg) +
+  ',"arguments":' + ArgsJson + '}}';
+ HttpOk := Mcp_HttpRequest('POST', McpServers[Slot].HostName, McpServers[Slot].Port,
+  McpServers[Slot].UrlPath, McpServers[Slot].UseHttps, ReqBody, McpServers[Slot].SessionId,
+  RespBody, RespSid, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Invoke-McpTool : echec de la requete HTTP.');
+  Exit;
+ End;
+ JsonBody := Mcp_ExtractJsonFromBody(RespBody);
+ P := 1;
+ RootVal := McpJsonParseValue(JsonBody, P);
+ ErrVal := McpJsonGet(RootVal, 'error');
+ If ErrVal <> Nil Then Begin
+  TermAddLine(TP, 'Invoke-McpTool : erreur JSON-RPC : ' +
+   McpJsonAsString(McpJsonGet(ErrVal, 'message')));
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ ResultVal := McpJsonGet(RootVal, 'result');
+ If ResultVal = Nil Then Begin
+  TermAddLine(TP, 'Invoke-McpTool : reponse inattendue (aucun champ "result").');
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ IsErrVal := McpJsonGet(ResultVal, 'isError');
+ If (IsErrVal <> Nil) And (IsErrVal^.Kind = mjBool) And IsErrVal^.BoolVal Then
+  TermAddLine(TP, 'Invoke-McpTool : l''outil "' + ToolArg + '" a signale une erreur :');
+ ContentVal := McpJsonGet(ResultVal, 'content');
+ If (ContentVal = Nil) Or (ContentVal^.Kind <> mjArray) Then Begin
+  TermAddLine(TP, 'Invoke-McpTool : reponse sans contenu affichable.');
+  McpJsonFree(RootVal);
+  Exit;
+ End;
+ It := ContentVal^.Items;
+ While It <> Nil Do Begin
+  ItemVal := It^.Value;
+  TypeStr := McpJsonAsString(McpJsonGet(ItemVal, 'type'));
+  If TypeStr = 'text' Then Begin
+   TextStr := McpJsonAsString(McpJsonGet(ItemVal, 'text'));
+   TermAddLineWrapped(TP, TextStr);
+  End Else
+   TermAddLine(TP, '(contenu de type "' + TypeStr + '" non affichable dans ce terminal)');
+  It := It^.Next;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Invoke-McpTool : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -98669,7 +99651,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 124;
+ PS_CMD_ALIASES = 130;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -98773,7 +99755,13 @@ Const
   'DEVENV',
   'HELP','?','GET-HELP',
   'GET-HISTORY',
-  'OPEN-SQLSERVEROBJECTEXPLORER'
+  'OPEN-SQLSERVEROBJECTEXPLORER',
+  'CONNECT-MCPSERVER',
+  'DISCONNECT-MCPSERVER',
+  'GET-MCPSERVER',
+  'GET-MCPTOOLS',
+  'GET-MCPRESOURCES',
+  'INVOKE-MCPTOOL'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -98877,7 +99865,13 @@ Const
   85,
   61,61,101,
   102,
-  103
+  103,
+  104,
+  105,
+  106,
+  107,
+  108,
+  109
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -99403,6 +100397,12 @@ Begin
     101: TermCmd_GetHelp(TP, ParamStr);
     102: TermCmd_GetHistory(TP, ParamStr);
     103: TermCmd_OpenSqlServerObjectExplorer(TP, ParamStr);
+    104: TermCmd_ConnectMcpServer(TP, ParamStr);
+    105: TermCmd_DisconnectMcpServer(TP, ParamStr);
+    106: TermCmd_GetMcpServer(TP, ParamStr);
+    107: TermCmd_GetMcpTools(TP, ParamStr);
+    108: TermCmd_GetMcpResources(TP, ParamStr);
+    109: TermCmd_InvokeMcpTool(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
