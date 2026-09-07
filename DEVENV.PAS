@@ -98019,6 +98019,8 @@ Begin
  TermAddLine(TP,
   '  COPY src dst     Copier un fichier');
  TermAddLine(TP,
+  '  CURL [-X m][-d d][-H "N: V"][-o f][-s] url  VRAIE requete HTTP(S)');
+ TermAddLine(TP,
   '  DATE             Afficher la date');
  TermAddLine(TP,
   '  DEL fichier      Supprimer un fichier');
@@ -99386,6 +99388,96 @@ Begin
 End;
 {$ENDIF}
 
+{ ============================================================ }
+{ === Commande CURL du Terminal (5 shells)                 === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite : "Ajoute la commande curl dans le          }
+{ Terminal en mode Invite de commande/PowerShell dev/Norton Commander/bash/  }
+{ OS/2&REXX") - reutilise les MEMES liaisons WinInet que Mcp_HttpRequest     }
+{ ci-dessus, mais sans les en-tetes/JSON figes specifiques a MCP : verbe,    }
+{ corps et UN en-tete personnalise arbitraires, code de statut expose. }
+{$IFDEF WINDOWS}
+Function CurlHttpRequest(Verb: AnsiString; Url: AnsiString; Body: AnsiString;
+ ExtraHeader: AnsiString; Var ResponseBody: AnsiString;
+ Var StatusCode: LongInt): Boolean;
+Var
+ UseHttps, UrlOk: Boolean;
+ HostName, UrlPath: String;
+ Port: Word;
+ hInet, hConnect, hRequest: LongInt;
+ OpenFlags, SecFlags: LongWord;
+ Headers: AnsiString;
+ SendOk: LongBool;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: AnsiString;
+ J: Integer;
+ StatusBuf: Array[0..31] Of Byte;
+ StatusLen, StatusIdx: LongWord;
+Begin
+ CurlHttpRequest := False;
+ ResponseBody := '';
+ StatusCode := 0;
+ Mcp_ParseUrl(Url, UseHttps, HostName, Port, UrlPath, UrlOk);
+ If Not UrlOk Then Exit;
+ hInet := Mcp_InternetOpenA('DEVENV-curl/1.0', MCP_INTERNET_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Exit;
+ hConnect := Mcp_InternetConnectA(hInet, PChar(AnsiString(HostName)), Port, Nil, Nil,
+  MCP_INTERNET_SERVICE_HTTP, 0, 0);
+ If hConnect = 0 Then Begin
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then OpenFlags := MCP_INTERNET_FLAG_SECURE Or MCP_INTERNET_FLAG_RELOAD
+             Else OpenFlags := MCP_INTERNET_FLAG_RELOAD;
+ hRequest := Mcp_HttpOpenRequestA(hConnect, PChar(Verb), PChar(AnsiString(UrlPath)), Nil, Nil,
+  Nil, OpenFlags, 0);
+ If hRequest = 0 Then Begin
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then Begin
+  SecFlags := PSWEB_SECURITY_FLAG_IGNORE_REVOC;
+  Mcp_InternetSetOptionA(hRequest, PSWEB_OPTION_SECURITY_FLAGS, SecFlags, SizeOf(SecFlags));
+ End;
+ Headers := '';
+ If Length(Body) > 0 Then Headers := Headers + 'Content-Type: application/x-www-form-urlencoded'#13#10;
+ If ExtraHeader <> '' Then Headers := Headers + ExtraHeader + #13#10;
+ If Length(Body) > 0 Then
+  SendOk := Mcp_HttpSendRequestA(hRequest, PChar(Headers), Length(Headers),
+   PChar(Body), Length(Body))
+ Else
+  SendOk := Mcp_HttpSendRequestA(hRequest, PChar(Headers), Length(Headers), Nil, 0);
+ If Not SendOk Then Begin
+  Mcp_InternetCloseHandle(hRequest);
+  Mcp_InternetCloseHandle(hConnect);
+  Mcp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ { Code de statut HTTP (valeur NUMERIQUE brute, meme convention que          }
+ { Mcp_HttpRequest ci-dessus). }
+ StatusLen := SizeOf(StatusBuf);
+ StatusIdx := 0;
+ FillChar(StatusBuf, SizeOf(StatusBuf), 0);
+ If Mcp_HttpQueryInfoA(hRequest, MCP_HTTP_QUERY_STATUS_CODE Or MCP_HTTP_QUERY_FLAG_NUMBER,
+    StatusBuf, StatusLen, StatusIdx) Then
+  StatusCode := PLongInt(@StatusBuf)^;
+ Repeat
+  BytesRead := 0;
+  If Not Mcp_InternetReadFile(hRequest, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J-1];
+  ResponseBody := ResponseBody + Chunk;
+ Until False;
+ Mcp_InternetCloseHandle(hRequest);
+ Mcp_InternetCloseHandle(hConnect);
+ Mcp_InternetCloseHandle(hInet);
+ CurlHttpRequest := True;
+End;
+{$ENDIF}
+
 Function McpFindServer(Nm: String): Integer;
 Var I: Integer;
 Begin
@@ -99890,6 +99982,94 @@ End;
 {$ELSE}
 Begin
  TermAddLine(TP, 'Invoke-McpTool : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- CURL (commande partagee par les 5 shells, voir TermExecuteCommand) --- }
+{ "CURL [-X methode] [-d donnees] [-H "Nom: Valeur"] [-o fichier] [-s] <url>"}
+{ Analyse par mots separes par espace/tabulation UNIQUEMENT (voir            }
+{ TermExtractParam) - PAS de vrai tokenizer respectant les guillemets, donc  }
+{ -d/-H doivent etre UN SEUL mot SANS espace (ex. un JSON compact sans       }
+{ espaces internes), meme limitation deja documentee pour Invoke-McpTool     }
+{ -Arguments/ConvertFrom-SddlString. -L (suivre les redirections) et -v      }
+{ (verbeux) ne sont PAS geres (silencieusement ignores si tapes) - arret     }
+{ honnete plutot qu invente. }
+Procedure TermCmd_Curl(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..10] Of String;
+ UpTok, Method, DataVal, HeaderVal, OutFile, Url: String;
+ SilentMode: Boolean;
+ Content: AnsiString;
+ StatusCode: LongInt;
+ HttpOk: Boolean;
+ OutF: File;
+ BytesW: LongInt;
+Begin
+ If TermStrToUpper(TermTrim(ParamStr)) = '/?' Then Begin
+  TermAddLine(TP, 'Syntaxe : CURL [-X methode] [-d donnees] [-H "Nom: Valeur"] [-o fichier] [-s] <url>');
+  TermAddLine(TP, '  -X methode   Verbe HTTP (GET par defaut, POST si -d est present).');
+  TermAddLine(TP, '  -d donnees   Corps de la requete (un seul mot, sans espace).');
+  TermAddLine(TP, '  -H "N: V"    Un en-tete personnalise supplementaire (idem, un seul mot).');
+  TermAddLine(TP, '  -o fichier   Enregistre la reponse dans un fichier au lieu de l''afficher.');
+  TermAddLine(TP, '  -s           Silencieux : n''affiche pas la ligne "HTTP nnn".');
+  Exit;
+ End;
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 10) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ Method := ''; DataVal := ''; HeaderVal := ''; OutFile := ''; Url := '';
+ SilentMode := False;
+ I := 1;
+ While I <= LocalArgCount Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-X' Then Begin
+   Inc(I); If I <= LocalArgCount Then Method := TermStrToUpper(LocalArgs[I]);
+  End Else If UpTok = '-D' Then Begin
+   Inc(I); If I <= LocalArgCount Then DataVal := YamlUnquote(LocalArgs[I]);
+  End Else If UpTok = '-H' Then Begin
+   Inc(I); If I <= LocalArgCount Then HeaderVal := YamlUnquote(LocalArgs[I]);
+  End Else If UpTok = '-O' Then Begin
+   Inc(I); If I <= LocalArgCount Then OutFile := LocalArgs[I];
+  End Else If UpTok = '-S' Then
+   SilentMode := True
+  Else If (Url = '') And (Copy(LocalArgs[I], 1, 1) <> '-') Then
+   Url := YamlUnquote(LocalArgs[I]);
+  Inc(I);
+ End;
+ If Url = '' Then Begin
+  TermAddLine(TP, 'curl : URL manquante. Tapez CURL /? pour l''aide.');
+  Exit;
+ End;
+ If Method = '' Then Begin
+  If DataVal <> '' Then Method := 'POST' Else Method := 'GET';
+ End;
+ HttpOk := CurlHttpRequest(Method, Url, DataVal, HeaderVal, Content, StatusCode);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'curl : impossible de joindre ' + Url);
+  Exit;
+ End;
+ If Not SilentMode Then
+  TermAddLine(TP, 'HTTP ' + IntToStr(StatusCode));
+ If OutFile <> '' Then Begin
+  {$I-}
+  Assign(OutF, OutFile);
+  Rewrite(OutF, 1);
+  If IOResult = 0 Then Begin
+   If Length(Content) > 0 Then BlockWrite(OutF, Content[1], Length(Content), BytesW);
+   Close(OutF);
+   TermAddLine(TP, IntToStr(Length(Content)) + ' octets enregistres dans ' + OutFile);
+  End Else
+   TermAddLine(TP, 'curl : impossible d''ecrire ' + OutFile);
+  {$I+}
+ End Else
+  TermAddLineWrapped(TP, Content);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'curl : disponible uniquement sous Windows (WinInet).');
 End;
 {$ENDIF}
 
@@ -100464,6 +100644,15 @@ Begin
     End;
    End;
   End;
+  Exit;
+ End;
+ { "CURL [-X methode] [-d donnees] [-H "Nom: Valeur"] [-o fichier] [-s]      }
+ { <url>" (demande explicite de l utilisateur, 2026-09-07) : VRAIE requete   }
+ { HTTP(S) via WinInet (voir CurlHttpRequest/TermCmd_Curl plus haut) -       }
+ { commun aux 5 shells, intercepte ICI (avant le Case ci-dessous) comme      }
+ { DEBUG ci-dessus, plutot que duplique dans chacun. }
+ If CurrCmd = 'CURL' Then Begin
+  TermCmd_Curl(TP, ParamStr);
   Exit;
  End;
  { Dispatcher selon le type de shell }
