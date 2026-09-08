@@ -68823,6 +68823,25 @@ Begin
  TermAddHistory(TP, ParamStr);
 End;
 
+{ --- HISTORY (Invite de commandes / SK_CMD, demande explicite de          }
+{ l utilisateur) : affiche l historique de rappel Haut/Bas de CE panneau   }
+{ (TP.TermHistory[]/TP.NumberHistory, le meme mecanisme reel que Get-      }
+{ History cote PowerShell dev ci-dessous) - pas d options, juste la liste  }
+{ numerotee (equivalent de "doskey /history" sous un vrai CMD.EXE, un vrai }
+{ CMD.EXE n a pas de commande interne nommee HISTORY, mais l utilisateur   }
+{ en a demande une explicitement sous ce nom pour ce shell). }
+Procedure TermCmd_HISTORY(Var TP: TTerminalPanel);
+Var I, EndIndex: Integer;
+Begin
+ EndIndex := TP.NumberHistory - 1;
+ If EndIndex < 1 Then Begin
+  TermAddLine(TP, 'Aucun historique.');
+  Exit;
+ End;
+ For I := 1 To EndIndex Do
+  TermAddLine(TP, ' ' + IntToStr(I) + '  ' + TP.TermHistory[I]);
+End;
+
 { --- GET-HISTORY (PowerShell dev) --- }
 Procedure TermCmd_GetHistory(Var TP: TTerminalPanel; ParamStr: String);
 Var
@@ -70792,13 +70811,17 @@ End;
 { (EmuMcbFirstSeg=0, chaine MCB jamais initialisee), la section            }
 { conventionnelle l indique honnetement plutot que d afficher des          }
 { chiffres fabriques. }
-Procedure TermCmd_MEM(Var TP: TTerminalPanel);
+{ Commutateurs /CLASSIFY /DEBUG /FREE /MODULE /PROGRAM /RAW /SUMMARY        }
+{ ajoutes ici (demande explicite de l utilisateur) : chacun parcourt la     }
+{ MEME vraie chaine MCB que la vue par defaut ci-dessus, jamais de valeurs  }
+{ inventees. Limite honnete disclosee pour /MODULE : le MCB tel que modelise}
+{ dans cet emulateur ne porte PAS les 10 octets reserves au nom de          }
+{ programme d un vrai DOS 4+ (voir le commentaire pres d Emu_McbSet plus    }
+{ bas) - une recherche par nom ne peut donc pas etre honnetement satisfaite,}
+{ le commutateur le signale explicitement plutot que d halluciner un nom. }
+Procedure TermCmd_MEM(Var TP: TTerminalPanel; ParamStr: String);
 Var
- McbSeg: Word;
- Sig: Byte;
- Done: Boolean;
- UsedB, FreeB, LargestB: LongInt;
- EmsTotalB, EmsFreeB, XmsTotalB, XmsFreeB: LongInt;
+ SwitchArg, ModuleArg: String;
 
  Function Pad(N: LongInt; W: Integer): String;
  Var S: String;
@@ -70808,68 +70831,223 @@ Var
   Pad := S;
  End;
 
-Begin
- TermAddLine(TP, '');
- If EmuMcbFirstSeg = 0 Then Begin
-  TermAddLine(TP, '  655360  octets de memoire conventionnelle totale');
-  TermAddLine(TP, '     (aucun programme DOS charge actuellement dans l''emulateur -');
-  TermAddLine(TP, '      memoire conventionnelle reellement utilisee/disponible/bloc');
-  TermAddLine(TP, '      libre le plus grand non disponibles ; utiliser -emu:DOS, ou');
-  TermAddLine(TP, '      BOOT pour charger un programme d''abord.)');
- End Else Begin
-  UsedB := 0; FreeB := 0; LargestB := 0;
+ Procedure PrintSummary;
+ Var
+  McbSeg: Word;
+  Sig: Byte;
+  Done: Boolean;
+  UsedB, FreeB, LargestB: LongInt;
+  EmsTotalB, EmsFreeB, XmsTotalB, XmsFreeB: LongInt;
+ Begin
+  TermAddLine(TP, '');
+  If EmuMcbFirstSeg = 0 Then Begin
+   TermAddLine(TP, '  655360  octets de memoire conventionnelle totale');
+   TermAddLine(TP, '     (aucun programme DOS charge actuellement dans l''emulateur -');
+   TermAddLine(TP, '      memoire conventionnelle reellement utilisee/disponible/bloc');
+   TermAddLine(TP, '      libre le plus grand non disponibles ; utiliser -emu:DOS, ou');
+   TermAddLine(TP, '      BOOT pour charger un programme d''abord.)');
+  End Else Begin
+   UsedB := 0; FreeB := 0; LargestB := 0;
+   McbSeg := EmuMcbFirstSeg;
+   Done := False;
+   While Not Done Do Begin
+    Sig := Emu_McbSig(EmuPanel.CPU, McbSeg);
+    If Emu_McbOwner(EmuPanel.CPU, McbSeg) = 0 Then Begin
+     Inc(FreeB, LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16);
+     If LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16 > LargestB Then
+      LargestB := LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16;
+    End Else
+     Inc(UsedB, LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16);
+    If Sig = Ord('M') Then
+     McbSeg := Word(McbSeg + 1 + Emu_McbSize(EmuPanel.CPU, McbSeg))
+    Else Done := True;
+   End;
+   TermAddLine(TP, Pad(655360, 8) + '  octets de memoire conventionnelle totale');
+   TermAddLine(TP, Pad(FreeB, 8) + '  octets disponibles pour MS-DOS');
+   TermAddLine(TP, Pad(LargestB, 8) + '  taille du plus grand programme executable');
+   TermAddLine(TP, Pad(UsedB, 8) + '  octets utilises par le(s) programme(s) charge(s)');
+  End;
+  TermAddLine(TP, '');
+  If OptionsDlg.Data.DosEMS Then Begin
+   EmsTotalB := LongInt(OptionsDlg.Data.DosEMSSize) * 1024;
+   If EmuEms.Active Then
+    EmsFreeB := (EmuEms.TotalPages - EmuEms.UsedPages) * 16384
+   Else
+    EmsFreeB := EmsTotalB;
+   TermAddLine(TP, Pad(EmsTotalB, 8) + '  octets de memoire EMS totale');
+   TermAddLine(TP, Pad(EmsFreeB, 8) + '  octets de memoire EMS libre');
+   TermAddLine(TP, '');
+  End;
+  If OptionsDlg.Data.DosXMS Then Begin
+   XmsTotalB := LongInt(OptionsDlg.Data.DosXMSSize) * 1024;
+   If EmuXms.Active Then Begin
+    XmsFreeB := XmsTotalB - EmuXms.UsedBytes;
+    If XmsFreeB < 0 Then XmsFreeB := 0;
+   End Else
+    XmsFreeB := XmsTotalB;
+   TermAddLine(TP, Pad(XmsTotalB, 8) + '  octets de memoire etendue contigue totale');
+   TermAddLine(TP, Pad(XmsFreeB, 8) + '  octets de memoire XMS disponible');
+   If EmuXms.Active And EmuXms.HmaOwned Then
+    TermAddLine(TP, 'MS-DOS reside dans la zone de memoire haute (HMA).');
+   TermAddLine(TP, '');
+  End;
+  If OptionsDlg.Data.DosUMB Then Begin
+   TermAddLine(TP, Pad(65536, 8) + '  octets de memoire superieure totale (UMB, segment ' +
+    HexWord(EMU_UMB_SEG) + ')');
+   If EmuXms.Active And EmuXms.UmbInUse Then
+    TermAddLine(TP, '       0  octet de memoire superieure libre (deja en usage)')
+   Else
+    TermAddLine(TP, Pad(65536, 8) + '  octets de memoire superieure libre');
+   TermAddLine(TP, '');
+  End;
+ End;
+
+ Procedure PrintFree;
+ Var McbSeg: Word; Sig: Byte; Done: Boolean; SizeBytes, TotalFreeB: LongInt;
+ Begin
+  TermAddLine(TP, '');
+  If EmuMcbFirstSeg = 0 Then Begin
+   TermAddLine(TP, 'Aucun programme DOS charge actuellement - chaine MCB non initialisee.');
+   Exit;
+  End;
+  TermAddLine(TP, 'Segment   Taille (octets)');
+  TermAddLine(TP, '-------   ---------------');
+  TotalFreeB := 0;
   McbSeg := EmuMcbFirstSeg;
   Done := False;
   While Not Done Do Begin
    Sig := Emu_McbSig(EmuPanel.CPU, McbSeg);
    If Emu_McbOwner(EmuPanel.CPU, McbSeg) = 0 Then Begin
-    Inc(FreeB, LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16);
-    If LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16 > LargestB Then
-     LargestB := LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16;
-   End Else
-    Inc(UsedB, LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16);
+    SizeBytes := LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16;
+    TermAddLine(TP, HexWord(McbSeg) + '      ' + Pad(SizeBytes, 8));
+    Inc(TotalFreeB, SizeBytes);
+   End;
    If Sig = Ord('M') Then
     McbSeg := Word(McbSeg + 1 + Emu_McbSize(EmuPanel.CPU, McbSeg))
    Else Done := True;
   End;
-  TermAddLine(TP, Pad(655360, 8) + '  octets de memoire conventionnelle totale');
-  TermAddLine(TP, Pad(FreeB, 8) + '  octets disponibles pour MS-DOS');
-  TermAddLine(TP, Pad(LargestB, 8) + '  taille du plus grand programme executable');
-  TermAddLine(TP, Pad(UsedB, 8) + '  octets utilises par le(s) programme(s) charge(s)');
+  TermAddLine(TP, '');
+  TermAddLine(TP, Pad(TotalFreeB, 8) + '  octets de memoire conventionnelle libre au total.');
+  If OptionsDlg.Data.DosUMB Then Begin
+   If EmuXms.Active And EmuXms.UmbInUse Then
+    TermAddLine(TP, '       0  octet de memoire haute (UMB) libre (deja en usage).')
+   Else
+    TermAddLine(TP, Pad(65536, 8) + '  octets de memoire haute (UMB) libre.');
+  End;
  End;
- TermAddLine(TP, '');
- If OptionsDlg.Data.DosEMS Then Begin
-  EmsTotalB := LongInt(OptionsDlg.Data.DosEMSSize) * 1024;
-  If EmuEms.Active Then
-   EmsFreeB := (EmuEms.TotalPages - EmuEms.UsedPages) * 16384
+
+ Procedure PrintProgramsOrClassify(Classify: Boolean);
+ Var
+  McbSeg: Word; Sig: Byte; Done: Boolean; Owner: Word;
+  SizeBytes, TotalB: LongInt; ZoneStr: String;
+ Begin
+  TermAddLine(TP, '');
+  If EmuMcbFirstSeg = 0 Then Begin
+   TermAddLine(TP, 'Aucun programme DOS charge actuellement - chaine MCB non initialisee.');
+   Exit;
+  End;
+  If Classify Then
+   TermAddLine(TP, 'PSP proprietaire   Segment   Taille (octets)   Zone')
   Else
-   EmsFreeB := EmsTotalB;
-  TermAddLine(TP, Pad(EmsTotalB, 8) + '  octets de memoire EMS totale');
-  TermAddLine(TP, Pad(EmsFreeB, 8) + '  octets de memoire EMS libre');
+   TermAddLine(TP, 'PSP proprietaire   Segment   Taille (octets)');
+  TermAddLine(TP, '----------------   -------   ---------------   ----');
+  TotalB := 0;
+  McbSeg := EmuMcbFirstSeg;
+  Done := False;
+  While Not Done Do Begin
+   Sig := Emu_McbSig(EmuPanel.CPU, McbSeg);
+   Owner := Emu_McbOwner(EmuPanel.CPU, McbSeg);
+   If Owner <> 0 Then Begin
+    SizeBytes := LongInt(Emu_McbSize(EmuPanel.CPU, McbSeg)) * 16;
+    If Classify Then Begin
+     If McbSeg >= EMU_UMB_SEG Then ZoneStr := 'Haute (UMB)' Else ZoneStr := 'Conventionnelle';
+     TermAddLine(TP, HexWord(Owner) + '               ' + HexWord(McbSeg) + '      ' +
+      Pad(SizeBytes, 8) + '   ' + ZoneStr);
+    End Else
+     TermAddLine(TP, HexWord(Owner) + '               ' + HexWord(McbSeg) + '      ' +
+      Pad(SizeBytes, 8));
+    Inc(TotalB, SizeBytes);
+   End;
+   If Sig = Ord('M') Then
+    McbSeg := Word(McbSeg + 1 + Emu_McbSize(EmuPanel.CPU, McbSeg))
+   Else Done := True;
+  End;
   TermAddLine(TP, '');
+  TermAddLine(TP, Pad(TotalB, 8) +
+   '  octets utilises par le(s) programme(s)/DOS charge(s) au total.');
+  TermAddLine(TP, '(identification par segment PSP proprietaire - aucun nom de ' +
+   'programme n''est stocke dans le MCB de cet emulateur.)');
  End;
- If OptionsDlg.Data.DosXMS Then Begin
-  XmsTotalB := LongInt(OptionsDlg.Data.DosXMSSize) * 1024;
-  If EmuXms.Active Then Begin
-   XmsFreeB := XmsTotalB - EmuXms.UsedBytes;
-   If XmsFreeB < 0 Then XmsFreeB := 0;
-  End Else
-   XmsFreeB := XmsTotalB;
-  TermAddLine(TP, Pad(XmsTotalB, 8) + '  octets de memoire etendue contigue totale');
-  TermAddLine(TP, Pad(XmsFreeB, 8) + '  octets de memoire XMS disponible');
-  If EmuXms.Active And EmuXms.HmaOwned Then
-   TermAddLine(TP, 'MS-DOS reside dans la zone de memoire haute (HMA).');
+
+ Procedure PrintDebug;
+ Var
+  McbSeg, Owner, SizeParas: Word; Sig: Byte; Done: Boolean; EtatStr: String;
+ Begin
   TermAddLine(TP, '');
+  If EmuMcbFirstSeg = 0 Then Begin
+   TermAddLine(TP, 'Aucun programme DOS charge actuellement - chaine MCB non initialisee.');
+   Exit;
+  End;
+  TermAddLine(TP, 'Segment  Sig  Proprietaire  Taille(par.)  Taille(octets)  Etat');
+  TermAddLine(TP, '-------  ---  ------------  ------------  --------------  -------');
+  McbSeg := EmuMcbFirstSeg;
+  Done := False;
+  While Not Done Do Begin
+   Sig := Emu_McbSig(EmuPanel.CPU, McbSeg);
+   Owner := Emu_McbOwner(EmuPanel.CPU, McbSeg);
+   SizeParas := Emu_McbSize(EmuPanel.CPU, McbSeg);
+   If Owner = 0 Then EtatStr := 'LIBRE' Else EtatStr := 'UTILISE';
+   TermAddLine(TP, HexWord(McbSeg) + '    ' + Chr(Sig) + '    ' + HexWord(Owner) +
+    '          ' + Pad(SizeParas, 8) + '      ' + Pad(LongInt(SizeParas) * 16, 8) +
+    '   ' + EtatStr);
+   If Sig = Ord('M') Then McbSeg := Word(McbSeg + 1 + SizeParas)
+   Else Done := True;
+  End;
  End;
- If OptionsDlg.Data.DosUMB Then Begin
-  TermAddLine(TP, Pad(65536, 8) + '  octets de memoire superieure totale (UMB, segment ' +
-   HexWord(EMU_UMB_SEG) + ')');
-  If EmuXms.Active And EmuXms.UmbInUse Then
-   TermAddLine(TP, '       0  octet de memoire superieure libre (deja en usage)')
-  Else
-   TermAddLine(TP, Pad(65536, 8) + '  octets de memoire superieure libre');
-  TermAddLine(TP, '');
+
+ Procedure PrintRaw;
+ Var McbSeg, Owner, SizeParas: Word; Sig: Byte; Done: Boolean;
+ Begin
+  If EmuMcbFirstSeg = 0 Then Begin
+   TermAddLine(TP, '0');
+   Exit;
+  End;
+  McbSeg := EmuMcbFirstSeg;
+  Done := False;
+  While Not Done Do Begin
+   Sig := Emu_McbSig(EmuPanel.CPU, McbSeg);
+   Owner := Emu_McbOwner(EmuPanel.CPU, McbSeg);
+   SizeParas := Emu_McbSize(EmuPanel.CPU, McbSeg);
+   TermAddLine(TP, HexWord(McbSeg) + ';' + HexWord(Owner) + ';' + IntToStr(SizeParas) +
+    ';' + IntToStr(LongInt(SizeParas) * 16));
+   If Sig = Ord('M') Then McbSeg := Word(McbSeg + 1 + SizeParas)
+   Else Done := True;
+  End;
  End;
+
+Begin
+ SwitchArg := TermStrToUpper(TermExtractParam(ParamStr, 1));
+ If (SwitchArg = '') Or (SwitchArg = '/SUMMARY') Then
+  PrintSummary
+ Else If SwitchArg = '/FREE' Then
+  PrintFree
+ Else If SwitchArg = '/PROGRAM' Then
+  PrintProgramsOrClassify(False)
+ Else If SwitchArg = '/CLASSIFY' Then
+  PrintProgramsOrClassify(True)
+ Else If SwitchArg = '/DEBUG' Then
+  PrintDebug
+ Else If SwitchArg = '/RAW' Then
+  PrintRaw
+ Else If SwitchArg = '/MODULE' Then Begin
+  ModuleArg := TermExtractParam(ParamStr, 2);
+  TermAddLine(TP, 'MEM /MODULE ' + ModuleArg +
+   ' : non supporte - le MCB de cet emulateur ne stocke aucun nom de ' +
+   'programme (voir le commentaire pres d''Emu_McbSet), une recherche par ' +
+   'nom ne peut donc pas etre honnetement satisfaite. Utilisez MEM /DEBUG ' +
+   'pour voir chaque bloc par segment/proprietaire.');
+ End Else
+  TermAddLine(TP, 'MEM : commutateur non reconnu : ' + SwitchArg);
 End;
 
 { --- MOUNT (2026-08-29, demande explicite de l utilisateur, "dans le      }
@@ -98809,6 +98987,14 @@ Begin
   TermAddLine(TP,
    '  LOADFIX programme [arguments]  Charge au-dessus des 64 premiers Ko');
  End;
+ { HISTORY : SK_CMD uniquement (demande explicite de l utilisateur - voir   }
+ { TermCmd_HISTORY pres de TermCmd_GetHistory). }
+ If TP.Shell = SK_CMD Then Begin
+  TermAddLine(TP, '');
+  TermAddLine(TP, '--- Historique des commandes ---');
+  TermAddLine(TP,
+   '  HISTORY                         Affiche l''historique de rappel Haut/Bas');
+ End;
  { MEM : SK_CMD et SK_NCOMMANDER (2026-09-06, demande explicite de          }
  { l utilisateur - voir TermCmd_MEM pres de TermCmd_LOADHIGH). Reprend le   }
  { format texte du vrai MEM.EXE de DOS avec les VRAIS chiffres de           }
@@ -98817,7 +99003,19 @@ Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Etat memoire de l''emulateur DOS courant (comme MS-DOS) ---');
   TermAddLine(TP,
-   '  MEM                             Memoire conventionnelle/EMS/XMS/UMB');
+   '  MEM [/SUMMARY]                  Memoire conventionnelle/EMS/XMS/UMB');
+  TermAddLine(TP,
+   '  MEM /FREE                       Liste les blocs de memoire libres');
+  TermAddLine(TP,
+   '  MEM /PROGRAM                    Liste les blocs charges par segment/PSP');
+  TermAddLine(TP,
+   '  MEM /CLASSIFY                   Idem /PROGRAM, avec la zone (conv./UMB)');
+  TermAddLine(TP,
+   '  MEM /DEBUG                      Vidage complet de la chaine MCB');
+  TermAddLine(TP,
+   '  MEM /RAW                        Vidage MCB brut (segment;proprietaire;...)');
+  TermAddLine(TP,
+   '  MEM /MODULE nom                 Non supporte (aucun nom dans le MCB)');
  End;
  { LH/LOADHIGH : SK_CMD et SK_OS2REXX (2026-08-30, demande explicite de     }
  { l utilisateur pour ces 2 shells precisement - voir TermCmd_LOADHIGH      }
@@ -109037,7 +109235,7 @@ Begin
    Else If CurrCmd = 'VER' Then
     TermCmd_VER(TP)
    Else If CurrCmd = 'MEM' Then
-    TermCmd_MEM(TP)
+    TermCmd_MEM(TP, ParamStr)
    Else If CurrCmd = 'PWD' Then
     TermCmd_PWD(TP)
    Else If CurrCmd = 'PUSHD' Then
@@ -109104,6 +109302,8 @@ Begin
     TermCmd_LXGet(TP, ParamStr)
    Else If CurrCmd = 'DEVENV' Then
     TermCmd_DEVENV(TP, ParamStr)
+   Else If CurrCmd = 'HISTORY' Then
+    TermCmd_HISTORY(TP)
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then
     TermCmd_HELP(TP)
    Else Begin
@@ -109591,7 +109791,7 @@ Begin
   Else If CurrCmd = 'VER' Then
    TermCmd_VER(TP)
   Else If CurrCmd = 'MEM' Then
-   TermCmd_MEM(TP)
+   TermCmd_MEM(TP, ParamStr)
   Else If CurrCmd = 'PWD' Then
    TermCmd_PWD(TP)
   Else If CurrCmd = 'PUSHD' Then
@@ -109749,7 +109949,7 @@ Begin
    Else If CurrCmd = 'VER' Then
     TermCmd_VER(TP)
    Else If CurrCmd = 'MEM' Then
-    TermCmd_MEM(TP)
+    TermCmd_MEM(TP, ParamStr)
    Else If CurrCmd = 'PWD' Then
     TermCmd_PWD(TP)
    Else If CurrCmd = 'PUSHD' Then
