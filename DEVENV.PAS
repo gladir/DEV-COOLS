@@ -98181,6 +98181,8 @@ Begin
    '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
    '(emulateur actif)');
   TermAddLine(TP,
+   '  Close-Redis [-Session n]  Ferme une session Redis');
+  TermAddLine(TP,
    '  Compare-Object f1 f2                 Differences ligne-par-ligne');
   TermAddLine(TP,
    '  Compare-VM [n1 n2]                   Compare 2 onglets emulateur ' +
@@ -98272,6 +98274,18 @@ Begin
   TermAddLine(TP,
    '  Get-Content -Path f [-TotalCount n]     Lit un fichier');
   TermAddLine(TP,
+   '  Get-CouchDBActiveTask [-Server url]  Liste les taches actives');
+  TermAddLine(TP,
+   '  Get-CouchDBDatabase [-Name base] [-Server url]  Liste/affiche des bases');
+  TermAddLine(TP,
+   '  Get-CouchDBDocument -Database base -Id doc [-Server url]  Recupere un document');
+  TermAddLine(TP,
+   '  Get-CouchDBMembership [-Server url]  Infos sur les noeuds du cluster');
+  TermAddLine(TP,
+   '  Get-CouchDBServer [-Server url] [-UserName u] [-Password p]  Infos du serveur');
+  TermAddLine(TP,
+   '  Get-CouchDBUUID [-Count n] [-Server url]  Demande des UUID au serveur');
+  TermAddLine(TP,
    '  Get-Date [-Format format]               Affiche date et heure');
   TermAddLine(TP,
    '  Get-Error [-Newest n]                    Affiche les erreurs recentes');
@@ -98308,6 +98322,18 @@ Begin
   TermAddLine(TP,
    '  Get-MdbcDatabase [-Session n]          Liste les bases MongoDB (listDatabases)');
   TermAddLine(TP,
+   '  Get-RedisHash -Key cle [-Field champ]  Lit un hachage (HGET/HGETALL)');
+  TermAddLine(TP,
+   '  Get-RedisKey [-Pattern p]  Enumere les cles (KEYS)');
+  TermAddLine(TP,
+   '  Get-RedisList -Key cle [-Start n] [-Stop n]  Lit une liste (LRANGE)');
+  TermAddLine(TP,
+   '  Get-RedisServer [-Session n]  Infos du serveur (INFO server)');
+  TermAddLine(TP,
+   '  Get-RedisSet -Key cle  Lit un ensemble (SMEMBERS)');
+  TermAddLine(TP,
+   '  Get-RedisString -Key cle [-Session n]  Lit une chaine (GET)');
+  TermAddLine(TP,
    '  Get-SqlAgent  SQL Server Agent non disponible sur ce moteur');
   TermAddLine(TP,
    '  Get-SqlDatabase [-ServerInstance chemin] [-Name nom]  Affiche la base "master"');
@@ -98330,11 +98356,23 @@ Begin
   TermAddLine(TP,
    '  Invoke-MdbcCommand -Command json [-DatabaseName b]  Commande MongoDB brute (passe-plat)');
   TermAddLine(TP,
+   '  Invoke-RedisScript -Script lua [-KeyName c1,c2] [-Argument a1,a2]  Execute un script (EVAL)');
+  TermAddLine(TP,
+   '  Invoke-RedisTransaction [-Session n]  Execute la transaction (EXEC reel)');
+  TermAddLine(TP,
    '  Invoke-Sqlcmd [-ServerInstance chemin] [-Database nom] -Query "texte"  Execute du T-SQL');
+  TermAddLine(TP,
+   '  New-CouchDBAdmin -UserName u -Password p [-Server url]  Cree un administrateur');
+  TermAddLine(TP,
+   '  New-CouchDBDatabase -Name base [-Server url]  Cree une base');
+  TermAddLine(TP,
+   '  New-CouchDBDocument -Database base -Document json [-Id doc]  Cree un document');
   TermAddLine(TP,
    '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
   TermAddLine(TP,
    '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
+  TermAddLine(TP,
+   '  New-RedisTransaction [-Session n]  Demarre une transaction (MULTI reel)');
   TermAddLine(TP,
    '  New-SqlBackupEncryptionOption -Algorithm a -EncryptorType t -EncryptorName n  Descripteur');
   TermAddLine(TP,
@@ -98342,7 +98380,15 @@ Begin
   TermAddLine(TP,
    '  New-TeamChannel -GroupId id -DisplayName n [-Description d]  Cree un canal');
   TermAddLine(TP,
+   '  Open-Redis [-Server hote] [-Port n] [-Password p] [-Database n]  Connexion TCP reelle');
+  TermAddLine(TP,
    '  Read-SqlTableData -TableName t [-ColumnName c1,c2] [-TopN n] -Filter "clause"  Lit des lignes');
+  TermAddLine(TP,
+   '  Remove-CouchDBAdmin -UserName u [-Server url]  Supprime un administrateur');
+  TermAddLine(TP,
+   '  Remove-CouchDBDatabase -Name base [-Server url]  Supprime une base');
+  TermAddLine(TP,
+   '  Remove-CouchDBDocument -Database base -Id doc -Rev rev  Supprime un document');
   TermAddLine(TP,
    '  Remove-MdbcCollection -CollectionName c [-DatabaseName b]  Supprime une collection');
   TermAddLine(TP,
@@ -98350,16 +98396,22 @@ Begin
   TermAddLine(TP,
    '  Remove-MdbcDatabase [-DatabaseName b] [-Session n]  Supprime une base (dropDatabase)');
   TermAddLine(TP,
+   '  Remove-RedisKey -Key cle  Supprime une cle (DEL)');
+  TermAddLine(TP,
    '  Remove-Team -GroupId id [-Session n]  Supprime une equipe');
   TermAddLine(TP,
    '  Remove-TeamChannel -GroupId id -DisplayName n [-Session n]  Supprime un canal');
   TermAddLine(TP,
    '  Remove-TeamUser -GroupId id -User u [-Role Owner|Member]  Retire un membre');
   TermAddLine(TP,
+   '  Rename-RedisKey -Key cle -NewKey nouvelle  Renomme une cle (RENAME)');
+  TermAddLine(TP,
    '  Restore-SqlDatabase -Database nom -BackupFile f [-Force]  Restaure depuis une copie');
   TermAddLine(TP,
    '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
    '[+.avhdx]');
+  TermAddLine(TP,
+   '  Set-CouchDBDocument -Database base -Id doc -Rev rev -Document json  Modifie un document');
   TermAddLine(TP,
    '  Set-JiraConfigServer -Server url        Regle le serveur Jira par defaut');
   TermAddLine(TP,
@@ -98367,12 +98419,26 @@ Begin
   TermAddLine(TP,
    '  Set-MdbcData -Filter json -Document json [-CollectionName c]  Remplace un document');
   TermAddLine(TP,
+   '  Set-RedisHash -Key cle -Field champ -Value v  Ecrit un champ de hachage (HSET)');
+  TermAddLine(TP,
+   '  Set-RedisKey -Key cle -Value v [-ExpireSeconds n]  Ecrit une cle (SET generique)');
+  TermAddLine(TP,
+   '  Set-RedisList -Key cle -Value v  Ajoute en fin de liste (RPUSH reel)');
+  TermAddLine(TP,
+   '  Set-RedisSet -Key cle -Value v  Ajoute a un ensemble (SADD reel)');
+  TermAddLine(TP,
+   '  Set-RedisString -Key cle -Value v [-ExpireSeconds n]  Ecrit une chaine (SET)');
+  TermAddLine(TP,
    '  Set-Team -GroupId id [-DisplayName n] [-Description d] [-Visibility v]  Modifie une equipe');
   TermAddLine(TP,
    '  Set-TeamChannel -GroupId id -CurrentDisplayName n [-NewDisplayName n]  Modifie un canal');
   TermAddLine(TP,
    '  Set-Variable NOM VALEUR              Definit une variable d''env. ' +
    'DOS (idem)');
+  TermAddLine(TP,
+   '  Start-CouchDBReplication -Source s -Target t [-Continuous] [-CreateTarget]  Lance une replication');
+  TermAddLine(TP,
+   '  Test-RedisKey -Key cle  Verifie l''existence d''une cle (EXISTS)');
   TermAddLine(TP,
    '  Test-SqlAvailabilityGroup  Groupes de disponibilite non geres (fichier .mdf unique)');
   TermAddLine(TP,
@@ -104373,6 +104439,1795 @@ Begin
 End;
 
 { ============================================================ }
+{ === Commandes CouchDB (PowerShell dev uniquement)        === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite) : Get-CouchDBServer/Get-CouchDBDatabase/  }
+{ New-CouchDBDatabase/Remove-CouchDBDatabase/Get-CouchDBDocument/           }
+{ New-CouchDBDocument/Set-CouchDBDocument/Remove-CouchDBDocument/           }
+{ New-CouchDBAdmin/Remove-CouchDBAdmin/Get-CouchDBActiveTask/               }
+{ Get-CouchDBMembership/Get-CouchDBUUID/Start-CouchDBReplication - memes    }
+{ noms qu un vrai module PowerShell CouchDB. Retour au meme motif           }
+{ architectural que MCP/Jira/Teams (VRAIE API REST HTTP+JSON via WinInet)   }
+{ plutot que Mdbc (fil binaire) ou SQL Server (sous-processus) - CouchDB    }
+{ EST une base HTTP native, aucune nouvelle capacite de transport n est     }
+{ necessaire. `CouchDbHttpRequest` est un simple wrapper d une ligne autour }
+{ de `JiraHttpRequest` (deja totalement generique, confirme lors du         }
+{ chantier Teams), et l arbre JSON generique McpJsonValue/McpJsonGet/       }
+{ McpJsonSerialize (MCP/Jira/Teams/Mdbc) est reutilise TEL QUEL. }
+{ Decision d architecture (comme le chantier SQL Server juste avant) :      }
+{ AUCUNE commande Connect-CouchDBServer/session persistante n est           }
+{ necessaire ni demandee - chaque cmdlet est autonome et prend -Server      }
+{ [-UserName] [-Password] directement, exactement le modele du vrai module  }
+{ CouchDB PowerShell (pas d objet de session separe contrairement a         }
+{ JiraPS/MicrosoftTeams). Authentification HTTP Basic (utilisateur+mot de   }
+{ passe administrateur CouchDB), en-tete Authorization omis silencieusement }
+{ si -UserName est vide (acces anonyme, valide pour un serveur CouchDB en   }
+{ mode "admin party" ou pour les endpoints publics comme / et _uuids). }
+{ New-CouchDBAdmin/Remove-CouchDBAdmin ciblent l alias de noeud "_local"    }
+{ (`/_node/_local/_config/admins/...`) plutot qu un vrai nom de noeud       }
+{ cluster - alias standard et valide de l API CouchDB pour le noeud         }
+{ courant, suffisant pour l usage mono-noeud/local vise ici. }
+
+Const
+ COUCHDB_DEFAULT_SERVER = 'http://127.0.0.1:5984';
+
+{ Meme motif que MdbcGetFlag/SqlPsGetFlag (extraction d un drapeau "-Nom    }
+{ valeur" d un seul mot) - chantier autonome, son propre petit helper       }
+{ plutot qu une reutilisation croisee (meme discipline que les chantiers    }
+{ precedents). }
+Function CouchDbGetFlag(ParamStr: String; FlagUpper: String): String;
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..24] Of String;
+ UpTok: String;
+Begin
+ CouchDbGetFlag := '';
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 24) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ For I := 1 To LocalArgCount - 1 Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-' + FlagUpper Then Begin
+   CouchDbGetFlag := YamlUnquote(LocalArgs[I+1]);
+   Exit;
+  End;
+ End;
+End;
+
+Function CouchDbHasFlag(ParamStr: String; FlagUpper: String): Boolean;
+Begin
+ CouchDbHasFlag := System.Pos('-' + FlagUpper, TermStrToUpper(ParamStr)) > 0;
+End;
+
+Function CouchDbResolveServer(ServerArg: String): String;
+Begin
+ If ServerArg = '' Then CouchDbResolveServer := COUCHDB_DEFAULT_SERVER
+ Else CouchDbResolveServer := ServerArg;
+End;
+
+Function CouchDbAuthHeader(UserArg, PassArg: String): AnsiString;
+Begin
+ If UserArg = '' Then CouchDbAuthHeader := ''
+ Else CouchDbAuthHeader := 'Basic ' + Base64Encode(UserArg + ':' + PassArg);
+End;
+
+{$IFDEF WINDOWS}
+{ JiraHttpRequest est deja 100% generique - simple renommage par           }
+{ delegation, AUCUNE duplication de la logique WinInet (meme motif deja    }
+{ etabli pour TeamsHttpRequest). }
+Function CouchDbHttpRequest(Verb: AnsiString; Url: AnsiString; Body: AnsiString;
+ AuthHeader: AnsiString; Var ResponseBody: AnsiString;
+ Var StatusCode: LongInt): Boolean;
+Begin
+ CouchDbHttpRequest := JiraHttpRequest(Verb, Url, Body, AuthHeader, ResponseBody, StatusCode);
+End;
+
+{ Erreurs CouchDB : forme standard error/reason A LA RACINE du JSON (ni     }
+{ imbriquee comme Teams ni un tableau comme Jira) - jamais un simple        }
+{ "erreur" muet. }
+Procedure CouchDbReportHttpError(Var TP: TTerminalPanel; Cmd: String;
+ StatusCode: LongInt; RespBody: AnsiString);
+Var
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ TermAddLine(TP, Cmd + ' : le serveur CouchDB a repondu avec le code HTTP ' +
+  IntToStr(StatusCode) + '.');
+ If RespBody = '' Then Exit;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ If McpJsonGet(RootVal, 'error') <> Nil Then
+  TermAddLine(TP, '  ' + McpJsonAsString(McpJsonGet(RootVal, 'error')) + ' : ' +
+   McpJsonAsString(McpJsonGet(RootVal, 'reason')))
+ Else
+  TermAddLineWrapped(TP, RespBody);
+ McpJsonFree(RootVal);
+End;
+{$ENDIF}
+
+{ --- Get-CouchDBServer --- }
+Procedure TermCmd_GetCouchDBServer(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('GET', CouchDbResolveServer(ServerArg) + '/', '', AuthHdr,
+  RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-CouchDBServer : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Get-CouchDBServer', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, McpJsonAsString(McpJsonGet(RootVal, 'couchdb')) + ' - version ' +
+  McpJsonAsString(McpJsonGet(RootVal, 'version')));
+ TermAddLine(TP, '  vendor : ' + McpJsonAsString(McpJsonGet(McpJsonGet(RootVal, 'vendor'), 'name')));
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-CouchDBServer : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-CouchDBDatabase --- }
+{ Sans -Name : GET /_all_dbs (liste toutes les bases) ; avec -Name : GET    }
+{ /nom-de-base (infos d une base precise, doc_count/update_seq reels). }
+Procedure TermCmd_GetCouchDBDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, NameArg, UserArg, PassArg, Url: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ NameArg := CouchDbGetFlag(ParamStr, 'NAME');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ If NameArg = '' Then Url := CouchDbResolveServer(ServerArg) + '/_all_dbs'
+ Else Url := CouchDbResolveServer(ServerArg) + '/' + NameArg;
+ HttpOk := CouchDbHttpRequest('GET', Url, '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-CouchDBDatabase : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Get-CouchDBDatabase', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ If NameArg = '' Then Begin
+  If RootVal^.Kind = mjArray Then Begin
+   It := RootVal^.Items;
+   While It <> Nil Do Begin
+    TermAddLine(TP, McpJsonAsString(It^.Value));
+    It := It^.Next;
+   End;
+  End;
+ End Else
+  TermAddLine(TP, McpJsonAsString(McpJsonGet(RootVal, 'db_name')) + '  doc_count=' +
+   McpJsonAsString(McpJsonGet(RootVal, 'doc_count')) + '  update_seq=' +
+   McpJsonAsString(McpJsonGet(RootVal, 'update_seq')));
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-CouchDBDatabase : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- New-CouchDBDatabase --- }
+Procedure TermCmd_NewCouchDBDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, NameArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ NameArg := CouchDbGetFlag(ParamStr, 'NAME');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If NameArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : New-CouchDBDatabase -Name base [-Server url] ' +
+   '[-UserName u] [-Password p]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('PUT', CouchDbResolveServer(ServerArg) + '/' + NameArg, '',
+  AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-CouchDBDatabase : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'New-CouchDBDatabase', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'New-CouchDBDatabase : "' + NameArg + '" creee.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-CouchDBDatabase : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Remove-CouchDBDatabase --- }
+Procedure TermCmd_RemoveCouchDBDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, NameArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ NameArg := CouchDbGetFlag(ParamStr, 'NAME');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If NameArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-CouchDBDatabase -Name base [-Server url] ' +
+   '[-UserName u] [-Password p]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('DELETE', CouchDbResolveServer(ServerArg) + '/' + NameArg, '',
+  AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Remove-CouchDBDatabase : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Remove-CouchDBDatabase', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Remove-CouchDBDatabase : "' + NameArg + '" supprimee.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-CouchDBDatabase : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-CouchDBDocument --- }
+{ Schema de document totalement arbitraire (comme MongoDB) - affiche le     }
+{ JSON complet via McpJsonSerialize plutot qu un formatage invente, meme    }
+{ discipline que Get-MdbcData. }
+Procedure TermCmd_GetCouchDBDocument(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, DbArg, IdArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ DbArg := CouchDbGetFlag(ParamStr, 'DATABASE');
+ IdArg := CouchDbGetFlag(ParamStr, 'ID');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If (DbArg = '') Or (IdArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-CouchDBDocument -Database base -Id doc [-Server url] ' +
+   '[-UserName u] [-Password p]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('GET', CouchDbResolveServer(ServerArg) + '/' + DbArg + '/' +
+  IdArg, '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-CouchDBDocument : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Get-CouchDBDocument', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, RespBody);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-CouchDBDocument : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- New-CouchDBDocument --- }
+{ -Id fourni : PUT /base/id (identifiant impose par l appelant) ; sinon     }
+{ POST /base (CouchDB genere lui-meme un UUID) - les deux formes reelles    }
+{ du vrai module. }
+Procedure TermCmd_NewCouchDBDocument(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, DbArg, IdArg, DocArg, UserArg, PassArg, Url, Verb: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ DbArg := CouchDbGetFlag(ParamStr, 'DATABASE');
+ DocArg := CouchDbGetFlag(ParamStr, 'DOCUMENT');
+ IdArg := CouchDbGetFlag(ParamStr, 'ID');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If (DbArg = '') Or (DocArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : New-CouchDBDocument -Database base -Document json [-Id doc] ' +
+   '[-Server url] [-UserName u] [-Password p]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ If IdArg <> '' Then Begin
+  Url := CouchDbResolveServer(ServerArg) + '/' + DbArg + '/' + IdArg;
+  Verb := 'PUT';
+ End Else Begin
+  Url := CouchDbResolveServer(ServerArg) + '/' + DbArg;
+  Verb := 'POST';
+ End;
+ HttpOk := CouchDbHttpRequest(Verb, Url, DocArg, AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-CouchDBDocument : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'New-CouchDBDocument', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'New-CouchDBDocument : id=' + McpJsonAsString(McpJsonGet(RootVal, 'id')) +
+  '  rev=' + McpJsonAsString(McpJsonGet(RootVal, 'rev')));
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-CouchDBDocument : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Set-CouchDBDocument --- }
+{ CouchDB exige "_rev" DANS le corps JSON pour toute modification (MVCC) -  }
+{ injecte automatiquement en coupant juste avant l accolade fermante finale }
+{ de -Document (toujours construit comme un objet JSON plat par            }
+{ l appelant, meme convention que l injection de "$db" du chantier Mdbc). }
+Procedure TermCmd_SetCouchDBDocument(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, DbArg, IdArg, DocArg, RevArg, UserArg, PassArg, FullDoc: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ DbArg := CouchDbGetFlag(ParamStr, 'DATABASE');
+ IdArg := CouchDbGetFlag(ParamStr, 'ID');
+ RevArg := CouchDbGetFlag(ParamStr, 'REV');
+ DocArg := CouchDbGetFlag(ParamStr, 'DOCUMENT');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If (DbArg = '') Or (IdArg = '') Or (RevArg = '') Or (DocArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-CouchDBDocument -Database base -Id doc -Rev revision ' +
+   '-Document json [-Server url] [-UserName u] [-Password p]');
+  Exit;
+ End;
+ FullDoc := Copy(DocArg, 1, Length(DocArg) - 1) + ',"_rev":' + ConvToJsonEscape(RevArg) + '}';
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('PUT', CouchDbResolveServer(ServerArg) + '/' + DbArg + '/' +
+  IdArg, FullDoc, AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Set-CouchDBDocument : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Set-CouchDBDocument', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'Set-CouchDBDocument : id=' + McpJsonAsString(McpJsonGet(RootVal, 'id')) +
+  '  nouvelle rev=' + McpJsonAsString(McpJsonGet(RootVal, 'rev')));
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-CouchDBDocument : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Remove-CouchDBDocument --- }
+Procedure TermCmd_RemoveCouchDBDocument(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, DbArg, IdArg, RevArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ DbArg := CouchDbGetFlag(ParamStr, 'DATABASE');
+ IdArg := CouchDbGetFlag(ParamStr, 'ID');
+ RevArg := CouchDbGetFlag(ParamStr, 'REV');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If (DbArg = '') Or (IdArg = '') Or (RevArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-CouchDBDocument -Database base -Id doc -Rev revision ' +
+   '[-Server url] [-UserName u] [-Password p]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('DELETE', CouchDbResolveServer(ServerArg) + '/' + DbArg + '/' +
+  IdArg + '?rev=' + RevArg, '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Remove-CouchDBDocument : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Remove-CouchDBDocument', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Remove-CouchDBDocument : "' + IdArg + '" supprime de "' + DbArg + '".');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-CouchDBDocument : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- New-CouchDBAdmin --- }
+Procedure TermCmd_NewCouchDBAdmin(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, UserArg, PassArg, AdminUserArg, AdminPassArg: String;
+ AuthHdr, RespBody, Body: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ AdminUserArg := CouchDbGetFlag(ParamStr, 'ADMINUSERNAME');
+ AdminPassArg := CouchDbGetFlag(ParamStr, 'ADMINPASSWORD');
+ If (UserArg = '') Or (PassArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : New-CouchDBAdmin -UserName u -Password p [-Server url] ' +
+   '[-AdminUserName au] [-AdminPassword ap]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(AdminUserArg, AdminPassArg);
+ Body := ConvToJsonEscape(PassArg);
+ HttpOk := CouchDbHttpRequest('PUT', CouchDbResolveServer(ServerArg) +
+  '/_node/_local/_config/admins/' + UserArg, Body, AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'New-CouchDBAdmin : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'New-CouchDBAdmin', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'New-CouchDBAdmin : administrateur "' + UserArg + '" cree.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-CouchDBAdmin : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Remove-CouchDBAdmin --- }
+Procedure TermCmd_RemoveCouchDBAdmin(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, UserArg, AdminUserArg, AdminPassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+Begin
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ AdminUserArg := CouchDbGetFlag(ParamStr, 'ADMINUSERNAME');
+ AdminPassArg := CouchDbGetFlag(ParamStr, 'ADMINPASSWORD');
+ If UserArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-CouchDBAdmin -UserName u [-Server url] ' +
+   '[-AdminUserName au] [-AdminPassword ap]');
+  Exit;
+ End;
+ AuthHdr := CouchDbAuthHeader(AdminUserArg, AdminPassArg);
+ HttpOk := CouchDbHttpRequest('DELETE', CouchDbResolveServer(ServerArg) +
+  '/_node/_local/_config/admins/' + UserArg, '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Remove-CouchDBAdmin : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Remove-CouchDBAdmin', Status, RespBody);
+  Exit;
+ End;
+ TermAddLine(TP, 'Remove-CouchDBAdmin : administrateur "' + UserArg + '" supprime.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-CouchDBAdmin : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-CouchDBActiveTask --- }
+Procedure TermCmd_GetCouchDBActiveTask(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('GET', CouchDbResolveServer(ServerArg) + '/_active_tasks', '',
+  AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-CouchDBActiveTask : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Get-CouchDBActiveTask', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ If RootVal^.Kind = mjArray Then Begin
+  If RootVal^.Items = Nil Then
+   TermAddLine(TP, 'Get-CouchDBActiveTask : aucune tache active.')
+  Else Begin
+   It := RootVal^.Items;
+   While It <> Nil Do Begin
+    TermAddLine(TP, McpJsonSerialize(It^.Value));
+    It := It^.Next;
+   End;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-CouchDBActiveTask : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-CouchDBMembership --- }
+Procedure TermCmd_GetCouchDBMembership(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, UserArg, PassArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ArrVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('GET', CouchDbResolveServer(ServerArg) + '/_membership', '',
+  AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-CouchDBMembership : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Get-CouchDBMembership', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'Noeuds (all_nodes) :');
+ ArrVal := McpJsonGet(RootVal, 'all_nodes');
+ If (ArrVal <> Nil) And (ArrVal^.Kind = mjArray) Then Begin
+  It := ArrVal^.Items;
+  While It <> Nil Do Begin
+   TermAddLine(TP, '  ' + McpJsonAsString(It^.Value));
+   It := It^.Next;
+  End;
+ End;
+ TermAddLine(TP, 'Noeuds du cluster (cluster_nodes) :');
+ ArrVal := McpJsonGet(RootVal, 'cluster_nodes');
+ If (ArrVal <> Nil) And (ArrVal^.Kind = mjArray) Then Begin
+  It := ArrVal^.Items;
+  While It <> Nil Do Begin
+   TermAddLine(TP, '  ' + McpJsonAsString(It^.Value));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-CouchDBMembership : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Get-CouchDBUUID --- }
+Procedure TermCmd_GetCouchDBUUID(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, CountArg: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal, ArrVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ P: Integer;
+Begin
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ CountArg := CouchDbGetFlag(ParamStr, 'COUNT');
+ If CountArg = '' Then CountArg := '1';
+ AuthHdr := '';
+ HttpOk := CouchDbHttpRequest('GET', CouchDbResolveServer(ServerArg) + '/_uuids?count=' +
+  CountArg, '', AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Get-CouchDBUUID : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Get-CouchDBUUID', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ ArrVal := McpJsonGet(RootVal, 'uuids');
+ If (ArrVal <> Nil) And (ArrVal^.Kind = mjArray) Then Begin
+  It := ArrVal^.Items;
+  While It <> Nil Do Begin
+   TermAddLine(TP, McpJsonAsString(It^.Value));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-CouchDBUUID : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Start-CouchDBReplication --- }
+Procedure TermCmd_StartCouchDBReplication(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, SourceArg, TargetArg, UserArg, PassArg, Body, ContinuousStr, CreateTargetStr: String;
+ AuthHdr, RespBody: AnsiString;
+ Status: LongInt;
+ HttpOk: Boolean;
+ RootVal: PMcpJsonValue;
+ P: Integer;
+Begin
+ SourceArg := CouchDbGetFlag(ParamStr, 'SOURCE');
+ TargetArg := CouchDbGetFlag(ParamStr, 'TARGET');
+ ServerArg := CouchDbGetFlag(ParamStr, 'SERVER');
+ UserArg := CouchDbGetFlag(ParamStr, 'USERNAME');
+ PassArg := CouchDbGetFlag(ParamStr, 'PASSWORD');
+ If (SourceArg = '') Or (TargetArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-CouchDBReplication -Source base_ou_url ' +
+   '-Target base_ou_url [-Continuous] [-CreateTarget] [-Server url] ' +
+   '[-UserName u] [-Password p]');
+  Exit;
+ End;
+ If CouchDbHasFlag(ParamStr, 'CONTINUOUS') Then ContinuousStr := 'true' Else ContinuousStr := 'false';
+ If CouchDbHasFlag(ParamStr, 'CREATETARGET') Then CreateTargetStr := 'true' Else CreateTargetStr := 'false';
+ Body := '{"source":' + ConvToJsonEscape(SourceArg) + ',"target":' + ConvToJsonEscape(TargetArg) +
+  ',"continuous":' + ContinuousStr + ',"create_target":' + CreateTargetStr + '}';
+ AuthHdr := CouchDbAuthHeader(UserArg, PassArg);
+ HttpOk := CouchDbHttpRequest('POST', CouchDbResolveServer(ServerArg) + '/_replicate', Body,
+  AuthHdr, RespBody, Status);
+ If Not HttpOk Then Begin
+  TermAddLine(TP, 'Start-CouchDBReplication : echec de connexion HTTP.');
+  Exit;
+ End;
+ If (Status < 200) Or (Status >= 300) Then Begin
+  CouchDbReportHttpError(TP, 'Start-CouchDBReplication', Status, RespBody);
+  Exit;
+ End;
+ P := 1;
+ RootVal := McpJsonParseValue(RespBody, P);
+ TermAddLine(TP, 'Start-CouchDBReplication : ok=' +
+  McpJsonAsString(McpJsonGet(RootVal, 'ok')));
+ McpJsonFree(RootVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Start-CouchDBReplication : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ ============================================================ }
+{ === Commandes Redis (PowerShell dev uniquement)          === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite) : Open-Redis/Close-Redis/                 }
+{ Get-RedisString/Set-RedisString/Get-RedisHash/Set-RedisHash/              }
+{ Get-RedisList/Set-RedisList/Get-RedisSet/Set-RedisSet/Get-RedisKey/       }
+{ Set-RedisKey/Test-RedisKey/Remove-RedisKey/Rename-RedisKey/               }
+{ Get-RedisServer/Invoke-RedisScript/New-RedisTransaction/                  }
+{ Invoke-RedisTransaction - 19 cmdlets, memes noms qu un vrai module        }
+{ PowerShell Redis. Retour a une architecture TCP brute (comme Mdbc) mais   }
+{ AUCUNE nouvelle liaison Winsock necessaire : les fonctions deja           }
+{ construites pour MongoDB (Mdbc_socket/Mdbc_connect/Mdbc_send/Mdbc_recv/   }
+{ Mdbc_closesocket/MdbcConnectSocket/MdbcSendAll/MdbcRecvAll) sont           }
+{ REUTILISEES TELLES QUELLES - Winsock est un simple client TCP, rien de    }
+{ Mongo-specifique dans ces fonctions malgre leur prefixe historique. Seul  }
+{ le protocole applicatif change : RESP (REdis Serialization Protocol),     }
+{ bien plus simple que BSON (texte, delimite par CRLF, pas de longueur      }
+{ totale a l avance sauf pour les chaines/tableaux). Le decodeur RESP       }
+{ produit/consomme le MEME arbre generique McpJsonValue deja utilise par    }
+{ MCP/Jira/Teams/Mdbc (mjString pour chaine simple/en bloc, mjNumber pour   }
+{ entier, mjArray pour tableau, mjNull pour nil) - toute la logique de      }
+{ lecture (McpJsonSerialize) est donc reutilisee. }
+{ Open-Redis/Close-Redis (explicitement demandees, contrairement au         }
+{ chantier SQL Server/CouchDB precedent) retablissent une VRAIE session     }
+{ persistante (comme Jira/Teams/Mdbc) : TCP reste ouvert entre les          }
+{ commandes, ce qui rend New-RedisTransaction/Invoke-RedisTransaction       }
+{ REELLEMENT fonctionnels (MULTI/EXEC exigent la MEME connexion TCP pour    }
+{ toute la duree de la transaction - toute commande Redis envoyee sur       }
+{ cette session APRES New-RedisTransaction est reellement mise en file      }
+{ d attente par le VRAI serveur Redis, pas simulee cote client). }
+{ Portee documentee : Set-RedisList fait un VRAI RPUSH (ajoute, ne          }
+{ remplace pas - Redis n a pas de "remplacer toute la liste" atomique en    }
+{ une commande) ; Set-RedisSet fait un VRAI SADD (ajoute au set) ; ces deux }
+{ deviations de nommage sont disclosees dans l aide de chaque commande. }
+{ Set-RedisKey est fonctionnellement identique a Set-RedisString (SET est   }
+{ deja la commande Redis generique) - la distinction n existe que par nom   }
+{ dans le vrai module, pas par comportement reel different ici. }
+
+Const
+ REDIS_MAX_SESSIONS = 8;
+ REDIS_DEFAULT_PORT = 6379;
+ REDIS_MAX_CMD_ARGS = 16;
+
+Type
+ TRedisArgArray = Array[1..REDIS_MAX_CMD_ARGS] Of AnsiString;
+ TRedisSession = Record
+  InUse   : Boolean;
+  SrvLabel: String;
+  HostName: String;
+  Port    : Word;
+  Sock    : LongInt;
+ End;
+
+Var
+ RedisSessions: Array[1..REDIS_MAX_SESSIONS] Of TRedisSession;
+
+Function RedisFindSession(Nm: String): Integer;
+Var I: Integer;
+Begin
+ RedisFindSession := 0;
+ For I := 1 To REDIS_MAX_SESSIONS Do
+  If RedisSessions[I].InUse And
+     (TermStrToUpper(RedisSessions[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   RedisFindSession := I;
+   Exit;
+  End;
+End;
+
+Function RedisFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ RedisFindFreeSlot := 0;
+ For I := 1 To REDIS_MAX_SESSIONS Do
+  If Not RedisSessions[I].InUse Then Begin RedisFindFreeSlot := I; Exit; End;
+End;
+
+Function RedisSoleSession: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To REDIS_MAX_SESSIONS Do
+  If RedisSessions[I].InUse Then Begin
+   If Found <> 0 Then Begin RedisSoleSession := 0; Exit; End;
+   Found := I;
+  End;
+ RedisSoleSession := Found;
+End;
+
+Function RedisResolveSession(NameArg: String): Integer;
+Begin
+ If NameArg = '' Then RedisResolveSession := RedisSoleSession
+ Else RedisResolveSession := RedisFindSession(NameArg);
+End;
+
+Function RedisResolveSessionOrReport(Var TP: TTerminalPanel; Cmd, NameArg: String): Integer;
+Var Slot: Integer;
+Begin
+ Slot := RedisResolveSession(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, Cmd + ' : aucune session Redis active, ou plusieurs (utilisez -Session).')
+  Else
+   TermAddLine(TP, Cmd + ' : aucune session Redis nommee "' + NameArg + '".');
+ End;
+ RedisResolveSessionOrReport := Slot;
+End;
+
+Function RedisGetFlag(ParamStr: String; FlagUpper: String): String;
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..24] Of String;
+ UpTok: String;
+Begin
+ RedisGetFlag := '';
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 24) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ For I := 1 To LocalArgCount - 1 Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-' + FlagUpper Then Begin
+   RedisGetFlag := YamlUnquote(LocalArgs[I+1]);
+   Exit;
+  End;
+ End;
+End;
+
+{$IFDEF WINDOWS}
+{ ------------------------------------------------------------------------ }
+{ Encodeur/decodeur RESP (REdis Serialization Protocol) - encodeur simple   }
+{ (une commande = un tableau RESP de chaines en bloc), decodeur COMPLET des }
+{ 5 types RESP2 (chaine simple +/erreur -/entier :/chaine en bloc $/       }
+{ tableau *), recursif pour les tableaux imbriques (necessaire pour la      }
+{ reponse d EXEC, un tableau de sous-reponses de types varies). }
+
+Procedure RedisAddArg(Var Args: TRedisArgArray; Var ArgCount: Integer; Value: AnsiString);
+Begin
+ If ArgCount < REDIS_MAX_CMD_ARGS Then Begin
+  Inc(ArgCount);
+  Args[ArgCount] := Value;
+ End;
+End;
+
+Function RespEncodeCommand(Var Args: TRedisArgArray; ArgCount: Integer): AnsiString;
+Var I: Integer; Res: AnsiString;
+Begin
+ Res := '*' + IntToStr(ArgCount) + #13#10;
+ For I := 1 To ArgCount Do
+  Res := Res + '$' + IntToStr(Length(Args[I])) + #13#10 + Args[I] + #13#10;
+ RespEncodeCommand := Res;
+End;
+
+{ Lit une ligne terminee par CRLF depuis la socket, un octet a la fois      }
+{ (taille des lignes RESP toujours petite - type-prefixe/longueur/entier -  }
+{ la simplicite prime ici sur la performance) - renvoie la ligne SANS le    }
+{ CRLF final. Reutilise Mdbc_recv (Winsock, deja construit pour Mdbc). }
+Function RedisRecvLine(Sock: LongInt; Var Line: AnsiString): Boolean;
+Var B: Byte; N: LongInt;
+Begin
+ RedisRecvLine := False;
+ Line := '';
+ Repeat
+  N := Mdbc_recv(Sock, B, 1, 0);
+  If N <= 0 Then Exit;
+  If B = 13 Then Begin
+   N := Mdbc_recv(Sock, B, 1, 0);
+   If N <= 0 Then Exit;
+   RedisRecvLine := True;
+   Exit;
+  End;
+  Line := Line + Chr(B);
+ Until False;
+End;
+
+Function RedisRecvValue(Sock: LongInt; Var IsError: Boolean): PMcpJsonValue;
+Var
+ Line, Rest, Body, Trail: AnsiString;
+ TypeCh: Char;
+ Len, Code, I: Integer;
+ V: PMcpJsonValue;
+ HeadIt, TailIt, NewIt: PMcpJsonItem;
+ ChildVal: PMcpJsonValue;
+ ChildErr: Boolean;
+Begin
+ IsError := False;
+ RedisRecvValue := Nil;
+ If Not RedisRecvLine(Sock, Line) Then Exit;
+ If Length(Line) < 1 Then Exit;
+ TypeCh := Line[1];
+ Rest := Copy(Line, 2, Length(Line) - 1);
+ Case TypeCh Of
+  '+': Begin
+   V := McpJsonNew(mjString);
+   V^.StrVal := Rest;
+   RedisRecvValue := V;
+  End;
+  '-': Begin
+   IsError := True;
+   V := McpJsonNew(mjString);
+   V^.StrVal := Rest;
+   RedisRecvValue := V;
+  End;
+  ':': Begin
+   V := McpJsonNew(mjNumber);
+   V^.StrVal := Rest;
+   RedisRecvValue := V;
+  End;
+  '$': Begin
+   Val(Rest, Len, Code);
+   If (Code <> 0) Or (Len < 0) Then Begin
+    RedisRecvValue := McpJsonNew(mjNull);
+    Exit;
+   End;
+   If Not MdbcRecvAll(Sock, Body, Len) Then Exit;
+   MdbcRecvAll(Sock, Trail, 2);
+   V := McpJsonNew(mjString);
+   V^.StrVal := Body;
+   RedisRecvValue := V;
+  End;
+  '*': Begin
+   Val(Rest, Len, Code);
+   If (Code <> 0) Or (Len < 0) Then Begin
+    RedisRecvValue := McpJsonNew(mjNull);
+    Exit;
+   End;
+   V := McpJsonNew(mjArray);
+   HeadIt := Nil; TailIt := Nil;
+   For I := 1 To Len Do Begin
+    ChildVal := RedisRecvValue(Sock, ChildErr);
+    New(NewIt);
+    NewIt^.Value := ChildVal;
+    NewIt^.Next := Nil;
+    If HeadIt = Nil Then HeadIt := NewIt Else TailIt^.Next := NewIt;
+    TailIt := NewIt;
+   End;
+   V^.Items := HeadIt;
+   RedisRecvValue := V;
+  End;
+  Else Exit; { type RESP inconnu - arret honnete plutot que deviner }
+ End;
+End;
+
+Function RedisSendCommand(Sock: LongInt; Var Args: TRedisArgArray; ArgCount: Integer;
+ Var IsError: Boolean): PMcpJsonValue;
+Var Cmd: AnsiString;
+Begin
+ IsError := False;
+ RedisSendCommand := Nil;
+ Cmd := RespEncodeCommand(Args, ArgCount);
+ If Not MdbcSendAll(Sock, Cmd) Then Exit;
+ RedisSendCommand := RedisRecvValue(Sock, IsError);
+End;
+{$ENDIF}
+
+Function RedisReplyToDisplay(V: PMcpJsonValue): AnsiString;
+Begin
+ If V = Nil Then Begin RedisReplyToDisplay := '(nil)'; Exit; End;
+ Case V^.Kind Of
+  mjNull: RedisReplyToDisplay := '(nil)';
+  mjNumber, mjString: RedisReplyToDisplay := V^.StrVal;
+  Else RedisReplyToDisplay := McpJsonSerialize(V);
+ End;
+End;
+
+Procedure RedisPrintReply(Var TP: TTerminalPanel; V: PMcpJsonValue);
+Var It: PMcpJsonItem;
+Begin
+ If (V <> Nil) And (V^.Kind = mjArray) Then Begin
+  If V^.Items = Nil Then TermAddLine(TP, '(tableau vide)')
+  Else Begin
+   It := V^.Items;
+   While It <> Nil Do Begin
+    TermAddLine(TP, RedisReplyToDisplay(It^.Value));
+    It := It^.Next;
+   End;
+  End;
+ End Else
+  TermAddLine(TP, RedisReplyToDisplay(V));
+End;
+
+Function RedisCheckReply(Var TP: TTerminalPanel; Cmd: String; ReplyVal: PMcpJsonValue;
+ IsError: Boolean): Boolean;
+Begin
+ RedisCheckReply := False;
+ If ReplyVal = Nil Then Begin
+  TermAddLine(TP, Cmd + ' : aucune reponse (connexion perdue ?).');
+  Exit;
+ End;
+ If IsError Then Begin
+  TermAddLine(TP, Cmd + ' : erreur Redis - ' + McpJsonAsString(ReplyVal));
+  Exit;
+ End;
+ RedisCheckReply := True;
+End;
+
+{ --- Open-Redis --- }
+Procedure TermCmd_OpenRedis(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, PortArg, PassArg, DbArg, NameArg, HostName: String;
+ Port: Word;
+ PortVal, PortCode: LongInt;
+ Sock: LongInt;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ ServerArg := RedisGetFlag(ParamStr, 'SERVER');
+ PortArg := RedisGetFlag(ParamStr, 'PORT');
+ PassArg := RedisGetFlag(ParamStr, 'PASSWORD');
+ DbArg := RedisGetFlag(ParamStr, 'DATABASE');
+ NameArg := RedisGetFlag(ParamStr, 'NAME');
+ If ServerArg = '' Then HostName := '127.0.0.1' Else HostName := ServerArg;
+ Port := REDIS_DEFAULT_PORT;
+ If PortArg <> '' Then Begin
+  Val(PortArg, PortVal, PortCode);
+  If PortCode = 0 Then Port := Word(PortVal);
+ End;
+ If NameArg = '' Then NameArg := 'default';
+ If RedisFindSession(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'Open-Redis : une session nommee "' + NameArg + '" existe deja.');
+  Exit;
+ End;
+ Slot := RedisFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'Open-Redis : nombre maximal de sessions atteint (' +
+   IntToStr(REDIS_MAX_SESSIONS) + ').');
+  Exit;
+ End;
+ If Not MdbcConnectSocket(HostName, Port, Sock) Then Begin
+  TermAddLine(TP, 'Open-Redis : echec de connexion TCP a ' + HostName + ':' +
+   IntToStr(Port) + '.');
+  Exit;
+ End;
+ If PassArg <> '' Then Begin
+  ArgCount := 0;
+  RedisAddArg(Args, ArgCount, 'AUTH');
+  RedisAddArg(Args, ArgCount, PassArg);
+  ReplyVal := RedisSendCommand(Sock, Args, ArgCount, IsError);
+  If (ReplyVal = Nil) Or IsError Then Begin
+   TermAddLine(TP, 'Open-Redis : authentification refusee - ' +
+    McpJsonAsString(ReplyVal));
+   If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+   Mdbc_closesocket(Sock);
+   Exit;
+  End;
+  McpJsonFree(ReplyVal);
+ End;
+ If DbArg <> '' Then Begin
+  ArgCount := 0;
+  RedisAddArg(Args, ArgCount, 'SELECT');
+  RedisAddArg(Args, ArgCount, DbArg);
+  ReplyVal := RedisSendCommand(Sock, Args, ArgCount, IsError);
+  If (ReplyVal = Nil) Or IsError Then Begin
+   TermAddLine(TP, 'Open-Redis : selection de base refusee - ' +
+    McpJsonAsString(ReplyVal));
+   If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+   Mdbc_closesocket(Sock);
+   Exit;
+  End;
+  McpJsonFree(ReplyVal);
+ End;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'PING');
+ ReplyVal := RedisSendCommand(Sock, Args, ArgCount, IsError);
+ If (ReplyVal = Nil) Or IsError Then Begin
+  TermAddLine(TP, 'Open-Redis : echec du PING de verification.');
+  If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ McpJsonFree(ReplyVal);
+ RedisSessions[Slot].InUse := True;
+ RedisSessions[Slot].SrvLabel := NameArg;
+ RedisSessions[Slot].HostName := HostName;
+ RedisSessions[Slot].Port := Port;
+ RedisSessions[Slot].Sock := Sock;
+ TermAddLine(TP, 'Open-Redis : connecte a ' + HostName + ':' + IntToStr(Port) +
+  ' sous "' + NameArg + '".');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Open-Redis : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Close-Redis --- }
+Procedure TermCmd_CloseRedis(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg, Lbl: String;
+ Slot: Integer;
+Begin
+ NameArg := RedisGetFlag(ParamStr, 'NAME');
+ Slot := RedisResolveSessionOrReport(TP, 'Close-Redis', NameArg);
+ If Slot = 0 Then Exit;
+ Mdbc_closesocket(RedisSessions[Slot].Sock);
+ Lbl := RedisSessions[Slot].SrvLabel;
+ RedisSessions[Slot].InUse := False;
+ TermAddLine(TP, 'Close-Redis : session "' + Lbl + '" fermee.');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Close-Redis : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-RedisString --- }
+Procedure TermCmd_GetRedisString(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-RedisString -Key cle [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Get-RedisString', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'GET');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Get-RedisString', ReplyVal, IsError) Then
+  TermAddLine(TP, RedisReplyToDisplay(ReplyVal));
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-RedisString : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Set-RedisString --- }
+Procedure TermCmd_SetRedisString(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, ValueArg, ExpArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ ValueArg := RedisGetFlag(ParamStr, 'VALUE');
+ ExpArg := RedisGetFlag(ParamStr, 'EXPIRESECONDS');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If (KeyArg = '') Or (ValueArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-RedisString -Key cle -Value valeur ' +
+   '[-ExpireSeconds n] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Set-RedisString', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'SET');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, ValueArg);
+ If ExpArg <> '' Then Begin
+  RedisAddArg(Args, ArgCount, 'EX');
+  RedisAddArg(Args, ArgCount, ExpArg);
+ End;
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Set-RedisString', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Set-RedisString : ' + RedisReplyToDisplay(ReplyVal));
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-RedisString : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-RedisHash --- }
+{ Sans -Field : HGETALL (affiche "champ=valeur" par paire, le tableau plat  }
+{ RESP alterne champ/valeur) ; avec -Field : HGET (une seule valeur). }
+Procedure TermCmd_GetRedisHash(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, FieldArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+ FName: AnsiString;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ FieldArg := RedisGetFlag(ParamStr, 'FIELD');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-RedisHash -Key cle [-Field champ] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Get-RedisHash', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ If FieldArg <> '' Then Begin
+  RedisAddArg(Args, ArgCount, 'HGET');
+  RedisAddArg(Args, ArgCount, KeyArg);
+  RedisAddArg(Args, ArgCount, FieldArg);
+ End Else Begin
+  RedisAddArg(Args, ArgCount, 'HGETALL');
+  RedisAddArg(Args, ArgCount, KeyArg);
+ End;
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If Not RedisCheckReply(TP, 'Get-RedisHash', ReplyVal, IsError) Then Begin
+  If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+  Exit;
+ End;
+ If FieldArg <> '' Then
+  TermAddLine(TP, RedisReplyToDisplay(ReplyVal))
+ Else If ReplyVal^.Kind = mjArray Then Begin
+  It := ReplyVal^.Items;
+  While (It <> Nil) And (It^.Next <> Nil) Do Begin
+   FName := RedisReplyToDisplay(It^.Value);
+   It := It^.Next;
+   TermAddLine(TP, FName + '=' + RedisReplyToDisplay(It^.Value));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-RedisHash : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Set-RedisHash --- }
+Procedure TermCmd_SetRedisHash(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, FieldArg, ValueArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ FieldArg := RedisGetFlag(ParamStr, 'FIELD');
+ ValueArg := RedisGetFlag(ParamStr, 'VALUE');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If (KeyArg = '') Or (FieldArg = '') Or (ValueArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-RedisHash -Key cle -Field champ -Value valeur ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Set-RedisHash', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'HSET');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, FieldArg);
+ RedisAddArg(Args, ArgCount, ValueArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Set-RedisHash', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Set-RedisHash : champ(s) cree(s)/modifie(s) = ' +
+   RedisReplyToDisplay(ReplyVal));
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-RedisHash : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-RedisList --- }
+Procedure TermCmd_GetRedisList(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, StartArg, StopArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ StartArg := RedisGetFlag(ParamStr, 'START');
+ StopArg := RedisGetFlag(ParamStr, 'STOP');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-RedisList -Key cle [-Start n] [-Stop n] ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ If StartArg = '' Then StartArg := '0';
+ If StopArg = '' Then StopArg := '-1';
+ Slot := RedisResolveSessionOrReport(TP, 'Get-RedisList', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'LRANGE');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, StartArg);
+ RedisAddArg(Args, ArgCount, StopArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Get-RedisList', ReplyVal, IsError) Then
+  RedisPrintReply(TP, ReplyVal);
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-RedisList : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Set-RedisList --- }
+{ VRAI RPUSH (ajoute en fin de liste) - Redis n a pas de commande atomique  }
+{ "remplacer toute la liste", deviation de nommage disclosee. }
+Procedure TermCmd_SetRedisList(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, ValueArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ ValueArg := RedisGetFlag(ParamStr, 'VALUE');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If (KeyArg = '') Or (ValueArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-RedisList -Key cle -Value valeur [-Session etiquette] ' +
+   '(RPUSH reel - ajoute en fin de liste)');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Set-RedisList', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'RPUSH');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, ValueArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Set-RedisList', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Set-RedisList : nouvelle longueur = ' + RedisReplyToDisplay(ReplyVal));
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-RedisList : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-RedisSet --- }
+Procedure TermCmd_GetRedisSet(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-RedisSet -Key cle [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Get-RedisSet', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'SMEMBERS');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Get-RedisSet', ReplyVal, IsError) Then
+  RedisPrintReply(TP, ReplyVal);
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-RedisSet : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Set-RedisSet --- }
+Procedure TermCmd_SetRedisSet(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, ValueArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ ValueArg := RedisGetFlag(ParamStr, 'VALUE');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If (KeyArg = '') Or (ValueArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-RedisSet -Key cle -Value valeur [-Session etiquette] ' +
+   '(SADD reel)');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Set-RedisSet', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'SADD');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, ValueArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Set-RedisSet', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Set-RedisSet : element(s) ajoute(s) = ' + RedisReplyToDisplay(ReplyVal));
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-RedisSet : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-RedisKey --- }
+{ KEYS pattern (defaut '*') - enumeration generique de l espace de cles,   }
+{ distincte des commandes Get-RedisXxx specifiques a un type qui lisent    }
+{ la VALEUR d une cle deja connue. }
+Procedure TermCmd_GetRedisKey(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PatternArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ PatternArg := RedisGetFlag(ParamStr, 'PATTERN');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If PatternArg = '' Then PatternArg := '*';
+ Slot := RedisResolveSessionOrReport(TP, 'Get-RedisKey', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'KEYS');
+ RedisAddArg(Args, ArgCount, PatternArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Get-RedisKey', ReplyVal, IsError) Then
+  RedisPrintReply(TP, ReplyVal);
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-RedisKey : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Set-RedisKey --- }
+{ Fonctionnellement identique a Set-RedisString (SET est deja la commande  }
+{ Redis generique - la distinction n existe que par nom dans le vrai       }
+{ module PowerShell, jamais un comportement different ici). }
+Procedure TermCmd_SetRedisKey(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, ValueArg, ExpArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ ValueArg := RedisGetFlag(ParamStr, 'VALUE');
+ ExpArg := RedisGetFlag(ParamStr, 'EXPIRESECONDS');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If (KeyArg = '') Or (ValueArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-RedisKey -Key cle -Value valeur [-ExpireSeconds n] ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Set-RedisKey', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'SET');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, ValueArg);
+ If ExpArg <> '' Then Begin
+  RedisAddArg(Args, ArgCount, 'EX');
+  RedisAddArg(Args, ArgCount, ExpArg);
+ End;
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Set-RedisKey', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Set-RedisKey : ' + RedisReplyToDisplay(ReplyVal));
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-RedisKey : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Test-RedisKey --- }
+Procedure TermCmd_TestRedisKey(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Test-RedisKey -Key cle [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Test-RedisKey', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'EXISTS');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Test-RedisKey', ReplyVal, IsError) Then Begin
+  If McpJsonAsString(ReplyVal) = '0' Then TermAddLine(TP, 'Faux')
+  Else TermAddLine(TP, 'Vrai');
+ End;
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Test-RedisKey : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Remove-RedisKey --- }
+Procedure TermCmd_RemoveRedisKey(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If KeyArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-RedisKey -Key cle [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Remove-RedisKey', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'DEL');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Remove-RedisKey', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Remove-RedisKey : ' + RedisReplyToDisplay(ReplyVal) + ' cle(s) supprimee(s).');
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-RedisKey : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Rename-RedisKey --- }
+Procedure TermCmd_RenameRedisKey(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ KeyArg, NewKeyArg, NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ KeyArg := RedisGetFlag(ParamStr, 'KEY');
+ NewKeyArg := RedisGetFlag(ParamStr, 'NEWKEY');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If (KeyArg = '') Or (NewKeyArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Rename-RedisKey -Key cle -NewKey nouvelle_cle ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Rename-RedisKey', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'RENAME');
+ RedisAddArg(Args, ArgCount, KeyArg);
+ RedisAddArg(Args, ArgCount, NewKeyArg);
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Rename-RedisKey', ReplyVal, IsError) Then
+  TermAddLine(TP, 'Rename-RedisKey : "' + KeyArg + '" renommee en "' + NewKeyArg + '".');
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Rename-RedisKey : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-RedisServer --- }
+{ INFO server (Redis filtre lui-meme par section - vraie fonctionnalite du }
+{ serveur, pas un filtrage invente cote client) - affiche chaque ligne      }
+{ "cle:valeur" reelle, sans les lignes de commentaire "# Section". }
+Procedure TermCmd_GetRedisServer(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+ InfoText: AnsiString;
+ Ln: String;
+ P, LineStart: Integer;
+Begin
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ Slot := RedisResolveSessionOrReport(TP, 'Get-RedisServer', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'INFO');
+ RedisAddArg(Args, ArgCount, 'server');
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If Not RedisCheckReply(TP, 'Get-RedisServer', ReplyVal, IsError) Then Begin
+  If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+  Exit;
+ End;
+ InfoText := ReplyVal^.StrVal;
+ LineStart := 1;
+ For P := 1 To Length(InfoText) Do
+  If InfoText[P] = #10 Then Begin
+   Ln := Copy(InfoText, LineStart, P - LineStart);
+   { TermTrimR ne retire que les espaces, pas le \r final laisse par le      }
+   { CRLF de chaque ligne INFO - retire ce \r explicitement avant. }
+   If (Length(Ln) > 0) And (Ln[Length(Ln)] = #13) Then Ln := Copy(Ln, 1, Length(Ln) - 1);
+   If (Ln <> '') And (Copy(Ln, 1, 1) <> '#') Then TermAddLine(TP, Ln);
+   LineStart := P + 1;
+  End;
+ McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-RedisServer : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Invoke-RedisScript --- }
+{ EVAL reel (scripting Lua serveur) - -KeyName/-Argument acceptent des      }
+{ listes separees par virgule (reutilise SqlGridSplitField/                }
+{ SqlGridCountFields, deja globaux depuis l Explorateur SQL, un simple      }
+{ decoupeur CSV generique). }
+Procedure TermCmd_InvokeRedisScript(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ScriptArg, KeysArg, ArgsArg, NameArg: String;
+ Slot, NKeys, NArgs, I: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ ScriptArg := RedisGetFlag(ParamStr, 'SCRIPT');
+ KeysArg := RedisGetFlag(ParamStr, 'KEYNAME');
+ ArgsArg := RedisGetFlag(ParamStr, 'ARGUMENT');
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ If ScriptArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-RedisScript -Script lua [-KeyName c1,c2] ' +
+   '[-Argument a1,a2] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := RedisResolveSessionOrReport(TP, 'Invoke-RedisScript', NameArg);
+ If Slot = 0 Then Exit;
+ If KeysArg = '' Then NKeys := 0 Else NKeys := SqlGridCountFields(KeysArg);
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'EVAL');
+ RedisAddArg(Args, ArgCount, ScriptArg);
+ RedisAddArg(Args, ArgCount, IntToStr(NKeys));
+ For I := 0 To NKeys - 1 Do RedisAddArg(Args, ArgCount, SqlGridSplitField(KeysArg, I));
+ If ArgsArg <> '' Then Begin
+  NArgs := SqlGridCountFields(ArgsArg);
+  For I := 0 To NArgs - 1 Do RedisAddArg(Args, ArgCount, SqlGridSplitField(ArgsArg, I));
+ End;
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Invoke-RedisScript', ReplyVal, IsError) Then
+  RedisPrintReply(TP, ReplyVal);
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Invoke-RedisScript : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- New-RedisTransaction --- }
+{ MULTI reel - la connexion TCP persistante de la session (Open-Redis) fait}
+{ que toute commande Redis envoyee APRES sur cette meme session est         }
+{ REELLEMENT mise en file d attente par le serveur (pas simulee). }
+Procedure TermCmd_NewRedisTransaction(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ Slot := RedisResolveSessionOrReport(TP, 'New-RedisTransaction', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'MULTI');
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'New-RedisTransaction', ReplyVal, IsError) Then
+  TermAddLine(TP, 'New-RedisTransaction : transaction demarree (MULTI) - ' +
+   'les commandes suivantes sur cette session seront mises en file d''attente.');
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'New-RedisTransaction : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Invoke-RedisTransaction --- }
+{ EXEC reel - execute toutes les commandes mises en file d attente depuis  }
+{ New-RedisTransaction et affiche chaque resultat, un par ligne, dans      }
+{ l ORDRE reel d execution serveur. }
+Procedure TermCmd_InvokeRedisTransaction(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg: String;
+ Slot: Integer;
+ Args: TRedisArgArray;
+ ArgCount: Integer;
+ IsError: Boolean;
+ ReplyVal: PMcpJsonValue;
+Begin
+ NameArg := RedisGetFlag(ParamStr, 'SESSION');
+ Slot := RedisResolveSessionOrReport(TP, 'Invoke-RedisTransaction', NameArg);
+ If Slot = 0 Then Exit;
+ ArgCount := 0;
+ RedisAddArg(Args, ArgCount, 'EXEC');
+ ReplyVal := RedisSendCommand(RedisSessions[Slot].Sock, Args, ArgCount, IsError);
+ If RedisCheckReply(TP, 'Invoke-RedisTransaction', ReplyVal, IsError) Then
+  RedisPrintReply(TP, ReplyVal);
+ If ReplyVal <> Nil Then McpJsonFree(ReplyVal);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Invoke-RedisTransaction : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -104388,7 +106243,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 182;
+ PS_CMD_ALIASES = 215;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -104550,7 +106405,40 @@ Const
   'GET-SQLAGENT',
   'GET-SQLERRORLOG',
   'READ-SQLTABLEDATA',
-  'WRITE-SQLTABLEDATA'
+  'WRITE-SQLTABLEDATA',
+  'GET-COUCHDBSERVER',
+  'GET-COUCHDBDATABASE',
+  'NEW-COUCHDBDATABASE',
+  'REMOVE-COUCHDBDATABASE',
+  'GET-COUCHDBDOCUMENT',
+  'NEW-COUCHDBDOCUMENT',
+  'SET-COUCHDBDOCUMENT',
+  'REMOVE-COUCHDBDOCUMENT',
+  'NEW-COUCHDBADMIN',
+  'REMOVE-COUCHDBADMIN',
+  'GET-COUCHDBACTIVETASK',
+  'GET-COUCHDBMEMBERSHIP',
+  'GET-COUCHDBUUID',
+  'START-COUCHDBREPLICATION',
+  'OPEN-REDIS',
+  'CLOSE-REDIS',
+  'GET-REDISSTRING',
+  'SET-REDISSTRING',
+  'GET-REDISHASH',
+  'SET-REDISHASH',
+  'GET-REDISLIST',
+  'SET-REDISLIST',
+  'GET-REDISSET',
+  'SET-REDISSET',
+  'GET-REDISKEY',
+  'SET-REDISKEY',
+  'TEST-REDISKEY',
+  'REMOVE-REDISKEY',
+  'RENAME-REDISKEY',
+  'GET-REDISSERVER',
+  'INVOKE-REDISSCRIPT',
+  'NEW-REDISTRANSACTION',
+  'INVOKE-REDISTRANSACTION'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -104712,7 +106600,40 @@ Const
   158,
   159,
   160,
-  161
+  161,
+  162,
+  163,
+  164,
+  165,
+  166,
+  167,
+  168,
+  169,
+  170,
+  171,
+  172,
+  173,
+  174,
+  175,
+  176,
+  177,
+  178,
+  179,
+  180,
+  181,
+  182,
+  183,
+  184,
+  185,
+  186,
+  187,
+  188,
+  189,
+  190,
+  191,
+  192,
+  193,
+  194
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -105307,6 +107228,39 @@ Begin
     159: TermCmd_GetSqlErrorLog(TP, ParamStr);
     160: TermCmd_ReadSqlTableData(TP, ParamStr);
     161: TermCmd_WriteSqlTableData(TP, ParamStr);
+    162: TermCmd_GetCouchDBServer(TP, ParamStr);
+    163: TermCmd_GetCouchDBDatabase(TP, ParamStr);
+    164: TermCmd_NewCouchDBDatabase(TP, ParamStr);
+    165: TermCmd_RemoveCouchDBDatabase(TP, ParamStr);
+    166: TermCmd_GetCouchDBDocument(TP, ParamStr);
+    167: TermCmd_NewCouchDBDocument(TP, ParamStr);
+    168: TermCmd_SetCouchDBDocument(TP, ParamStr);
+    169: TermCmd_RemoveCouchDBDocument(TP, ParamStr);
+    170: TermCmd_NewCouchDBAdmin(TP, ParamStr);
+    171: TermCmd_RemoveCouchDBAdmin(TP, ParamStr);
+    172: TermCmd_GetCouchDBActiveTask(TP, ParamStr);
+    173: TermCmd_GetCouchDBMembership(TP, ParamStr);
+    174: TermCmd_GetCouchDBUUID(TP, ParamStr);
+    175: TermCmd_StartCouchDBReplication(TP, ParamStr);
+    176: TermCmd_OpenRedis(TP, ParamStr);
+    177: TermCmd_CloseRedis(TP, ParamStr);
+    178: TermCmd_GetRedisString(TP, ParamStr);
+    179: TermCmd_SetRedisString(TP, ParamStr);
+    180: TermCmd_GetRedisHash(TP, ParamStr);
+    181: TermCmd_SetRedisHash(TP, ParamStr);
+    182: TermCmd_GetRedisList(TP, ParamStr);
+    183: TermCmd_SetRedisList(TP, ParamStr);
+    184: TermCmd_GetRedisSet(TP, ParamStr);
+    185: TermCmd_SetRedisSet(TP, ParamStr);
+    186: TermCmd_GetRedisKey(TP, ParamStr);
+    187: TermCmd_SetRedisKey(TP, ParamStr);
+    188: TermCmd_TestRedisKey(TP, ParamStr);
+    189: TermCmd_RemoveRedisKey(TP, ParamStr);
+    190: TermCmd_RenameRedisKey(TP, ParamStr);
+    191: TermCmd_GetRedisServer(TP, ParamStr);
+    192: TermCmd_InvokeRedisScript(TP, ParamStr);
+    193: TermCmd_NewRedisTransaction(TP, ParamStr);
+    194: TermCmd_InvokeRedisTransaction(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
