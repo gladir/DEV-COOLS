@@ -23,6 +23,12 @@ Les fichiers sont numerotes par difficulte approximative :
   11  Variants et conversions
   12  Exceptions
   13  Sortie anticipee avec Exit
+  14  Acces base de donnees (Database/DatabaseConnection/RecordSet)
 
 PascalScript est un langage Pascal embarque : selon l'hote utilise, certaines
 extensions comme les tableaux dynamiques, Variant ou try/except peuvent varier.
+
+L'exemple 14 utilise Write/WriteLn (pas WScript.Echo) et les objets
+Database/DatabaseConnection/RecordSet - extensions specifiques a l'hote
+PSCRIPT de ce depot (DEVENV.PAS), reliees au vrai moteur SQL Server local
+(SQLCMD.EXE/master.mdf), pas une norme PascalScript generale.
