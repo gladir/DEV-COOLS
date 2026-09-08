@@ -1179,6 +1179,60 @@ Function Mcp_HttpQueryInfoA(hRequest: LongInt; dwInfoLevel: LongWord;
 Function Mcp_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
          Var lpBuffer; dwBufferLength: LongWord): LongBool;
          StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
+{ Connect-Mdbc/Get-MdbcDatabase/Get-MdbcCollection/Get-MdbcData/                }
+{ Add-MdbcCollection/Add-MdbcData/Set-MdbcData/Update-MdbcData/                }
+{ Remove-MdbcData/Remove-MdbcCollection/Remove-MdbcDatabase/                   }
+{ Invoke-MdbcAggregate/Invoke-MdbcCommand/Import-MdbcData/Export-MdbcData      }
+{ (2026-09-07, demande explicite) - VRAI client MongoDB (protocole fil binaire}
+{ OP_MSG + BSON), PREMIERE capacite de socket TCP brut de tout ce fichier      }
+{ (recherche exhaustive prealable : aucun ws2_32.dll/Winsock n existait avant, }
+{ seul WinInet/HTTP - voir project_devenv_mcp.md). MongoDB n est PAS du       }
+{ HTTP/JSON comme MCP/Jira/Teams : liaisons Winsock (ws2_32.dll) dediees,      }
+{ voir MdbcConnectSocket/MdbcSendCommand plus bas pour le protocole OP_MSG et  }
+{ l encodeur/decodeur BSON (reutilisant l arbre McpJsonValue existant). }
+Type
+ TMdbcWSAData = Record
+  wVersion       : Word;
+  wHighVersion   : Word;
+  szDescription  : Array[0..256] Of Char;
+  szSystemStatus : Array[0..128] Of Char;
+  iMaxSockets    : Word;
+  iMaxUdpDg      : Word;
+  lpVendorInfo   : PChar;
+ End;
+ TMdbcSockAddrIn = Record
+  sin_family : Word;
+  sin_port   : Word;
+  sin_addr   : LongWord;
+  sin_zero   : Array[0..7] Of Byte;
+ End;
+ PMdbcHostEnt = ^TMdbcHostEnt;
+ TMdbcHostEnt = Record
+  h_name     : PChar;
+  h_aliases  : Pointer;
+  h_addrtype : SmallInt;
+  h_length   : SmallInt;
+  h_addr_list: ^Pointer;
+ End;
+
+Function Mdbc_WSAStartup(wVersionRequested: Word; Var WSData: TMdbcWSAData): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'WSAStartup';
+Function Mdbc_socket(af, styp, protocol: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'socket';
+Function Mdbc_connect(s: LongInt; Var Addr: TMdbcSockAddrIn; NameLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'connect';
+Function Mdbc_send(s: LongInt; Var Buf; Len: LongInt; Flags: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'send';
+Function Mdbc_recv(s: LongInt; Var Buf; Len: LongInt; Flags: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'recv';
+Function Mdbc_closesocket(s: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'closesocket';
+Function Mdbc_htons(hostshort: Word): Word;
+         StdCall; External 'ws2_32.dll' Name 'htons';
+Function Mdbc_inet_addr(cp: PChar): LongWord;
+         StdCall; External 'ws2_32.dll' Name 'inet_addr';
+Function Mdbc_gethostbyname(Name: PChar): PMdbcHostEnt;
+         StdCall; External 'ws2_32.dll' Name 'gethostbyname';
 {$ENDIF}
 
 Const
@@ -98063,13 +98117,144 @@ Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Ajouter du contenu a un fichier ---');
   TermAddLine(TP,
+   '  $nom = "texte" / $nom = @"..."@       Variable scalaire / here-string');
+  TermAddLine(TP,
+   '  $nom  /  $nom.propriete               Affiche une variable/propriete');
+  TermAddLine(TP,
+   '  $obj = ConvertFrom-Yaml $texte        Capture dans une variable objet');
+  TermAddLine(TP,
    '  Add-Content fichier texte           Ajoute une ligne en fin de fichier');
   TermAddLine(TP,
    '  Add-Content -Path f -Value texte     Meme chose (syntaxe nommee)');
   TermAddLine(TP,
+   '  Add-History commande                Ajoute au rappel Haut/Bas');
+  TermAddLine(TP,
+   '  Add-JiraIssueComment -Issue PROJ-1 -Comment texte  Ajoute un commentaire');
+  TermAddLine(TP,
+   '  Add-MdbcCollection -CollectionName c [-DatabaseName b]  Cree une collection');
+  TermAddLine(TP,
+   '  Add-MdbcData -Document json [-CollectionName c]  Insere un ou plusieurs documents');
+  TermAddLine(TP,
+   '  Add-Member ...                       Reconnue, sans objet a completer');
+  TermAddLine(TP,
+   '  Add-TeamUser -GroupId id -User u [-Role Owner|Member]  Ajoute un membre');
+  TermAddLine(TP,
+   '  Add-Type -Path fichier.cs            Compile via CSCW32.EXE');
+  TermAddLine(TP,
+   '  Add-Type -TypeDefinition "code"      Idem, code C# sur une ligne');
+  TermAddLine(TP,
+   '  Add-VMDvdDrive -Path f.iso [-VMName n]   Idem pour un lecteur CD-ROM');
+  TermAddLine(TP,
+   '  Add-VMFibreChannelHba / Add-VMGroupMember   Reconnues, sans equivalent');
+  TermAddLine(TP,
+   '  Add-VMHardDiskDrive -Path f [-VMName n]  Monte f sur C:/D: (si un ' +
+   'emulateur est actif)');
+  TermAddLine(TP,
+   '  Add-VMMigrationNetwork/RemoteFx3dVideoAdapter  Idem');
+  TermAddLine(TP,
+   '  Add-VMNetworkAdapter [-VMName n]     Active le pilote de paquets ' +
+   '(INT 60h)');
+  TermAddLine(TP,
+   '  Add-VMNetworkAdapterAcl/ExtendedAcl/RoutingDomainMapping  Idem');
+  TermAddLine(TP,
+   '  Add-VMScsiController/StoragePath     Idem (redondantes/sans registre)');
+  TermAddLine(TP,
+   '  Add-VMSwitch/SwitchExtension*/SwitchTeamMember  Reconnues, sans ' +
+   'equivalent');
+  TermAddLine(TP,
+   '  Checkpoint-VM [-Path base]             Ecrit base.vmcx+.vmrs' +
+   '[+.avhdx] (si actif)');
+  TermAddLine(TP,
+   '  Clear-Content fichier                Vide un fichier (0 octet)');
+  TermAddLine(TP,
+   '  Clear-History                        Vide le rappel Haut/Bas');
+  TermAddLine(TP,
+   '  Clear-Item fichier                   Idem (meme fournisseur ici)');
+  TermAddLine(TP,
+   '  Clear-ItemProperty f [-Name Attributes]  Efface RO/Hidden/Sys/' +
+   'Archive (volume FAT monte)');
+  TermAddLine(TP,
+   '  Clear-RecycleBin -Force              Vide la VRAIE Corbeille (reel)');
+  TermAddLine(TP,
+   '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
+   '(emulateur actif)');
+  TermAddLine(TP,
+   '  Compare-Object f1 f2                 Differences ligne-par-ligne');
+  TermAddLine(TP,
+   '  Compare-VM [n1 n2]                   Compare 2 onglets emulateur ' +
+   'ouverts');
+  TermAddLine(TP,
+   '  Complete-VMFailover                  Reconnue, sans equivalent ' +
+   '(Hyper-V Replica)');
+  TermAddLine(TP,
+   '  Connect-McpServer -Url http://hote:port/chemin [-Name n]  VRAI client MCP (HTTP)');
+  TermAddLine(TP,
+   '  Connect-Mdbc [-ConnectionString mongodb://hote:port/base] [-DatabaseName b]  VRAI client MongoDB');
+  TermAddLine(TP,
+   '  Connect-MicrosoftTeams -AccessToken t [-Uri url] [-Name n]  VRAI client Teams (Graph)');
+  TermAddLine(TP,
+   '  Connect-PSSession / Connect-WSMan     Reconnues, sans remoting ' +
+   'PowerShell/WinRM');
+  TermAddLine(TP,
+   '  Connect-VMNetworkAdapter [-VMName n]  Reconnecte la carte reseau ' +
+   '(deja ajoutee)');
+  TermAddLine(TP,
+   '  Connect-VMSan                          Reconnue, sans equivalent ' +
+   '(Fibre Channel)');
+  TermAddLine(TP,
+   '  Convert-Path -Path chemin             Resout en chemin absolu ' +
+   '(jokers *,? geres)');
+  TermAddLine(TP,
+   '  ConvertFrom-Csv -Path f.csv [-Delimiter c]   Affiche les objets ' +
+   'analyses');
+  TermAddLine(TP,
+   '  ConvertFrom-Json -Path f.json         Affiche la structure analysee');
+  TermAddLine(TP,
+   '  ConvertFrom-Markdown -Path f.md       Affiche le HTML resultant');
+  TermAddLine(TP,
+   '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
+  TermAddLine(TP,
+   '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
+  TermAddLine(TP,
+   '  ConvertFrom-StringData -Path f.txt    Affiche les paires cle=valeur');
+  TermAddLine(TP,
+   '  ConvertFrom-Yaml -Path f.yaml         Affiche la structure analysee');
+  TermAddLine(TP,
+   '  ConvertTo-Csv $objet [-Delimiter c]   Affiche l''en-tete+valeurs ' +
+   'CSV de $objet');
+  TermAddLine(TP,
+   '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
+   'reel (table) de $objet');
+  TermAddLine(TP,
+   '  ConvertTo-Json $objet [-Depth n]      Affiche le JSON reel ' +
+   '(nombres/bool non guillemetes) de $objet');
+  TermAddLine(TP,
+   '  ConvertTo-SecureString -String t -AsPlainText -Force   Cree (VRAI ' +
+   'DPAPI si $var=)');
+  TermAddLine(TP,
+   '  ConvertTo-SecureString -String hexChiffre   Redechiffre (DPAPI) ' +
+   'une sortie ConvertFrom-SecureString');
+  TermAddLine(TP,
+   '  ConvertTo-Xml $objet [-As String|Property]  Affiche le XML ' +
+   'PowerShell de $objet');
+  TermAddLine(TP,
    '  Copy-Item source destination         Copie un fichier');
   TermAddLine(TP,
    '  Copy-Item -Path f -Destination d     Copie (syntaxe nommee)');
+  TermAddLine(TP,
+   '  Copy-ItemProperty -Path f -Destination d  Copie Attributes FAT');
+  TermAddLine(TP,
+   '  Copy-VMFile -SourcePath f -DestinationPath d  Copie hote/VM');
+  TermAddLine(TP,
+   '  Disconnect-McpServer [-Name n]         Deconnecte un serveur MCP');
+  TermAddLine(TP,
+   '  Disconnect-MicrosoftTeams [-Name n]  Deconnecte une session Teams');
+  TermAddLine(TP,
+   '  Export-Csv -Path f -InputObject $objet  Ecrit un fichier CSV');
+  TermAddLine(TP,
+   '  Export-MdbcData -Path f.json [-CollectionName c] [-Filter json]  Ecrit un fichier JSON');
+  TermAddLine(TP,
+   '  ForEach-Object $objet [-MemberName nom]  Parcourt un objet');
   TermAddLine(TP,
    '  Format-Hex -Path f [-Count n] [-Offset n] Affiche les octets');
   TermAddLine(TP,
@@ -98081,11 +98266,11 @@ Begin
   TermAddLine(TP,
    '  Get-Alias [-Name nom]                  Liste les alias reconnus');
   TermAddLine(TP,
-   '  Get-Date [-Format format]               Affiche date et heure');
+   '  Get-Command [-Name nom]                 Liste les commandes reconnues');
   TermAddLine(TP,
    '  Get-Content -Path f [-TotalCount n]     Lit un fichier');
   TermAddLine(TP,
-   '  Get-Command [-Name nom]                 Liste les commandes reconnues');
+   '  Get-Date [-Format format]               Affiche date et heure');
   TermAddLine(TP,
    '  Get-Error [-Newest n]                    Affiche les erreurs recentes');
   TermAddLine(TP,
@@ -98095,186 +98280,85 @@ Begin
   TermAddLine(TP,
    '  Get-History [-Id n] [-Count n] [-Newest n] Affiche l''historique');
   TermAddLine(TP,
-   '  Clear-Content fichier                Vide un fichier (0 octet)');
-  TermAddLine(TP,
-   '  Clear-Item fichier                   Idem (meme fournisseur ici)');
-  TermAddLine(TP,
-   '  Clear-History                        Vide le rappel Haut/Bas');
-  TermAddLine(TP,
-   '  Clear-ItemProperty f [-Name Attributes]  Efface RO/Hidden/Sys/' +
-   'Archive (volume FAT monte)');
-  TermAddLine(TP,
-   '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
-   '(emulateur actif)');
-  TermAddLine(TP,
-   '  Set-Variable NOM VALEUR              Definit une variable d''env. ' +
-   'DOS (idem)');
-  TermAddLine(TP,
-   '  Clear-RecycleBin -Force              Vide la VRAIE Corbeille (reel)');
-  TermAddLine(TP,
-   '  Compare-Object f1 f2                 Differences ligne-par-ligne');
-  TermAddLine(TP,
-   '  Compare-VM [n1 n2]                   Compare 2 onglets emulateur ' +
-   'ouverts');
-  TermAddLine(TP,
-   '  Complete-VMFailover                  Reconnue, sans equivalent ' +
-   '(Hyper-V Replica)');
-  TermAddLine(TP,
-   '  Add-History commande                Ajoute au rappel Haut/Bas');
-  TermAddLine(TP,
-   '  Add-Member ...                       Reconnue, sans objet a completer');
-  TermAddLine(TP,
-   '  Add-Type -Path fichier.cs            Compile via CSCW32.EXE');
-  TermAddLine(TP,
-   '  Add-Type -TypeDefinition "code"      Idem, code C# sur une ligne');
-  TermAddLine(TP,
-   '  Add-VMHardDiskDrive -Path f [-VMName n]  Monte f sur C:/D: (si un ' +
-   'emulateur est actif)');
-  TermAddLine(TP,
-   '  Add-VMDvdDrive -Path f.iso [-VMName n]   Idem pour un lecteur CD-ROM');
-  TermAddLine(TP,
-   '  Copy-VMFile -SourcePath f -DestinationPath d  Copie hote/VM');
-  TermAddLine(TP,
-   '  Copy-ItemProperty -Path f -Destination d  Copie Attributes FAT');
-  TermAddLine(TP,
-   '  Add-VMFibreChannelHba / Add-VMGroupMember   Reconnues, sans equivalent');
-  TermAddLine(TP,
-   '  Add-VMNetworkAdapter [-VMName n]     Active le pilote de paquets ' +
-   '(INT 60h)');
-  TermAddLine(TP,
-   '  Add-VMSwitch/SwitchExtension*/SwitchTeamMember  Reconnues, sans ' +
-   'equivalent');
-  TermAddLine(TP,
-   '  Add-VMNetworkAdapterAcl/ExtendedAcl/RoutingDomainMapping  Idem');
-  TermAddLine(TP,
-   '  Add-VMMigrationNetwork/RemoteFx3dVideoAdapter  Idem');
-  TermAddLine(TP,
-   '  Add-VMScsiController/StoragePath     Idem (redondantes/sans registre)');
-  TermAddLine(TP,
-   '  Checkpoint-VM [-Path base]             Ecrit base.vmcx+.vmrs' +
-   '[+.avhdx] (si actif)');
-  TermAddLine(TP,
-   '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
-   '[+.avhdx]');
-  TermAddLine(TP,
-   '  Connect-VMNetworkAdapter [-VMName n]  Reconnecte la carte reseau ' +
-   '(deja ajoutee)');
-  TermAddLine(TP,
-   '  Connect-VMSan                          Reconnue, sans equivalent ' +
-   '(Fibre Channel)');
-  TermAddLine(TP,
-   '  Connect-PSSession / Connect-WSMan     Reconnues, sans remoting ' +
-   'PowerShell/WinRM');
-  TermAddLine(TP,
-   '  ConvertFrom-Csv -Path f.csv [-Delimiter c]   Affiche les objets ' +
-   'analyses');
-  TermAddLine(TP,
-   '  ConvertFrom-Json -Path f.json         Affiche la structure analysee');
-  TermAddLine(TP,
-   '  ConvertFrom-Markdown -Path f.md       Affiche le HTML resultant');
-  TermAddLine(TP,
-   '  ConvertFrom-Yaml -Path f.yaml         Affiche la structure analysee');
-  TermAddLine(TP,
-   '  $obj = ConvertFrom-Yaml $texte        Capture dans une variable objet');
-  TermAddLine(TP,
-   '  $nom = "texte" / $nom = @"..."@       Variable scalaire / here-string');
-  TermAddLine(TP,
-   '  $nom  /  $nom.propriete               Affiche une variable/propriete');
-  TermAddLine(TP,
-   '  ConvertFrom-StringData -Path f.txt    Affiche les paires cle=valeur');
-  TermAddLine(TP,
-   '  Convert-Path -Path chemin             Resout en chemin absolu ' +
-   '(jokers *,? geres)');
-  TermAddLine(TP,
-   '  ConvertTo-Csv $objet [-Delimiter c]   Affiche l''en-tete+valeurs ' +
-   'CSV de $objet');
-  TermAddLine(TP,
-   '  Export-Csv -Path f -InputObject $objet  Ecrit un fichier CSV');
-  TermAddLine(TP,
-   '  ForEach-Object $objet [-MemberName nom]  Parcourt un objet');
-  TermAddLine(TP,
-   '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
-   'reel (table) de $objet');
-  TermAddLine(TP,
-   '  ConvertTo-Json $objet [-Depth n]      Affiche le JSON reel ' +
-   '(nombres/bool non guillemetes) de $objet');
-  TermAddLine(TP,
-   '  ConvertTo-Xml $objet [-As String|Property]  Affiche le XML ' +
-   'PowerShell de $objet');
-  TermAddLine(TP,
-   '  ConvertTo-SecureString -String t -AsPlainText -Force   Cree (VRAI ' +
-   'DPAPI si $var=)');
-  TermAddLine(TP,
-   '  ConvertTo-SecureString -String hexChiffre   Redechiffre (DPAPI) ' +
-   'une sortie ConvertFrom-SecureString');
-  TermAddLine(TP,
-   '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
-  TermAddLine(TP,
-   '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
-  TermAddLine(TP,
-   '  Connect-McpServer -Url http://hote:port/chemin [-Name n]  VRAI client MCP (HTTP)');
-  TermAddLine(TP,
-   '  Get-McpServer [-Name n]                Liste les serveurs MCP connectes');
-  TermAddLine(TP,
-   '  Get-McpTools [-Name n]                 Liste les outils MCP (tools/list)');
-  TermAddLine(TP,
-   '  Get-McpResources [-Name n]             Liste les ressources MCP (resources/list)');
-  TermAddLine(TP,
-   '  Invoke-McpTool -ToolName t [-Arguments {json}] [-Name n]  Appelle un outil MCP');
-  TermAddLine(TP,
-   '  Disconnect-McpServer [-Name n]         Deconnecte un serveur MCP');
-  TermAddLine(TP,
-   '  Set-JiraConfigServer -Server url        Regle le serveur Jira par defaut');
-  TermAddLine(TP,
-   '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
-  TermAddLine(TP,
    '  Get-JiraIssue -Key PROJ-1 [-Session n]   Affiche un ticket Jira');
   TermAddLine(TP,
-   '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
-  TermAddLine(TP,
-   '  Set-JiraIssue -Key PROJ-1 [-Summary s] [-Description d]  Modifie un ticket');
-  TermAddLine(TP,
-   '  Get-JiraProject [-Project P] [-Session n]  Liste/affiche des projets Jira');
-  TermAddLine(TP,
-   '  Get-JiraUser -UserName u [-Session n]    Affiche un utilisateur Jira');
+   '  Get-JiraIssueComment -Issue PROJ-1 [-Session n]  Liste les commentaires');
   TermAddLine(TP,
    '  Get-JiraIssueType [-Session n]           Liste les types de ticket Jira');
+  TermAddLine(TP,
+   '  Get-JiraProject [-Project P] [-Session n]  Liste/affiche des projets Jira');
   TermAddLine(TP,
    '  Get-JiraStatus [-Session n]              Liste les statuts Jira');
   TermAddLine(TP,
    '  Get-JiraTransition -Issue PROJ-1 [-Session n]  Liste les transitions possibles');
   TermAddLine(TP,
-   '  Invoke-JiraIssueTransition -Issue P -Transition id-ou-nom  Applique une transition');
+   '  Get-JiraUser -UserName u [-Session n]    Affiche un utilisateur Jira');
   TermAddLine(TP,
-   '  Add-JiraIssueComment -Issue PROJ-1 -Comment texte  Ajoute un commentaire');
+   '  Get-McpResources [-Name n]             Liste les ressources MCP (resources/list)');
   TermAddLine(TP,
-   '  Get-JiraIssueComment -Issue PROJ-1 [-Session n]  Liste les commentaires');
+   '  Get-McpServer [-Name n]                Liste les serveurs MCP connectes');
   TermAddLine(TP,
-   '  Connect-MicrosoftTeams -AccessToken t [-Uri url] [-Name n]  VRAI client Teams (Graph)');
+   '  Get-McpTools [-Name n]                 Liste les outils MCP (tools/list)');
+  TermAddLine(TP,
+   '  Get-MdbcCollection [-DatabaseName b] [-Session n]  Liste les collections');
+  TermAddLine(TP,
+   '  Get-MdbcData [-CollectionName c] [-Filter json] [-Limit n]  Cherche des documents');
+  TermAddLine(TP,
+   '  Get-MdbcDatabase [-Session n]          Liste les bases MongoDB (listDatabases)');
   TermAddLine(TP,
    '  Get-Team [-GroupId id] [-DisplayName n] [-Session n]  Liste/affiche des equipes');
   TermAddLine(TP,
+   '  Get-TeamChannel -GroupId id [-Session n]  Liste les canaux d''une equipe');
+  TermAddLine(TP,
    '  Get-TeamUser -GroupId id [-Role Owner|Member]  Liste les membres d''une equipe');
   TermAddLine(TP,
-   '  Get-TeamChannel -GroupId id [-Session n]  Liste les canaux d''une equipe');
+   '  Import-MdbcData -Path f.json [-CollectionName c]  Insere depuis un fichier JSON');
+  TermAddLine(TP,
+   '  Invoke-JiraIssueTransition -Issue P -Transition id-ou-nom  Applique une transition');
+  TermAddLine(TP,
+   '  Invoke-McpTool -ToolName t [-Arguments {json}] [-Name n]  Appelle un outil MCP');
+  TermAddLine(TP,
+   '  Invoke-MdbcAggregate -Pipeline json [-CollectionName c]  Execute un pipeline d''agregation');
+  TermAddLine(TP,
+   '  Invoke-MdbcCommand -Command json [-DatabaseName b]  Commande MongoDB brute (passe-plat)');
+  TermAddLine(TP,
+   '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
+  TermAddLine(TP,
+   '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
   TermAddLine(TP,
    '  New-Team -DisplayName n [-Description d] [-Visibility Public|Private]  Cree une equipe');
   TermAddLine(TP,
    '  New-TeamChannel -GroupId id -DisplayName n [-Description d]  Cree un canal');
   TermAddLine(TP,
-   '  Add-TeamUser -GroupId id -User u [-Role Owner|Member]  Ajoute un membre');
+   '  Remove-MdbcCollection -CollectionName c [-DatabaseName b]  Supprime une collection');
   TermAddLine(TP,
-   '  Remove-TeamUser -GroupId id -User u [-Role Owner|Member]  Retire un membre');
+   '  Remove-MdbcData -Filter json [-Many] [-CollectionName c]  Supprime des documents');
   TermAddLine(TP,
-   '  Set-Team -GroupId id [-DisplayName n] [-Description d] [-Visibility v]  Modifie une equipe');
-  TermAddLine(TP,
-   '  Set-TeamChannel -GroupId id -CurrentDisplayName n [-NewDisplayName n]  Modifie un canal');
+   '  Remove-MdbcDatabase [-DatabaseName b] [-Session n]  Supprime une base (dropDatabase)');
   TermAddLine(TP,
    '  Remove-Team -GroupId id [-Session n]  Supprime une equipe');
   TermAddLine(TP,
    '  Remove-TeamChannel -GroupId id -DisplayName n [-Session n]  Supprime un canal');
   TermAddLine(TP,
-   '  Disconnect-MicrosoftTeams [-Name n]  Deconnecte une session Teams');
+   '  Remove-TeamUser -GroupId id -User u [-Role Owner|Member]  Retire un membre');
+  TermAddLine(TP,
+   '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
+   '[+.avhdx]');
+  TermAddLine(TP,
+   '  Set-JiraConfigServer -Server url        Regle le serveur Jira par defaut');
+  TermAddLine(TP,
+   '  Set-JiraIssue -Key PROJ-1 [-Summary s] [-Description d]  Modifie un ticket');
+  TermAddLine(TP,
+   '  Set-MdbcData -Filter json -Document json [-CollectionName c]  Remplace un document');
+  TermAddLine(TP,
+   '  Set-Team -GroupId id [-DisplayName n] [-Description d] [-Visibility v]  Modifie une equipe');
+  TermAddLine(TP,
+   '  Set-TeamChannel -GroupId id -CurrentDisplayName n [-NewDisplayName n]  Modifie un canal');
+  TermAddLine(TP,
+   '  Set-Variable NOM VALEUR              Definit une variable d''env. ' +
+   'DOS (idem)');
+  TermAddLine(TP,
+   '  Update-MdbcData -Filter json -Update json [-Multi]  Modifie via operateurs $set etc.');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -99284,6 +99368,76 @@ Begin
   mjBool: If V^.BoolVal Then McpJsonAsString := 'true' Else McpJsonAsString := 'false';
   mjNull: McpJsonAsString := 'null';
   Else McpJsonAsString := '';
+ End;
+End;
+
+{ Remplace (ou ajoute) un membre dans un objet JSON deja construit - utilise   }
+{ par le client MongoDB (Mdbc, voir plus bas) pour injecter "$db" dans le      }
+{ document de commande avant l encodage BSON, sans devoir reconstruire tout    }
+{ le texte JSON a la main. }
+Procedure McpJsonSetMember(Obj: PMcpJsonValue; Key: AnsiString; Val: PMcpJsonValue);
+Var M, NewM: PMcpJsonMember;
+Begin
+ If (Obj = Nil) Or (Obj^.Kind <> mjObject) Then Exit;
+ M := Obj^.Members;
+ While M <> Nil Do Begin
+  If M^.Key = Key Then Begin
+   McpJsonFree(M^.Value);
+   M^.Value := Val;
+   Exit;
+  End;
+  M := M^.Next;
+ End;
+ New(NewM);
+ NewM^.Key := Key;
+ NewM^.Value := Val;
+ NewM^.Next := Obj^.Members;
+ Obj^.Members := NewM;
+End;
+
+Procedure McpJsonSetString(Obj: PMcpJsonValue; Key, Val: AnsiString);
+Var V: PMcpJsonValue;
+Begin
+ V := McpJsonNew(mjString);
+ V^.StrVal := Val;
+ McpJsonSetMember(Obj, Key, V);
+End;
+
+{ Serialise un arbre McpJsonValue en texte JSON compact - sens inverse de      }
+{ McpJsonParseValue, necessaire pour Export-MdbcData (ecrit sur disque des     }
+{ documents MongoDB decodes depuis du BSON binaire). }
+Function McpJsonSerialize(V: PMcpJsonValue): AnsiString;
+Var M: PMcpJsonMember; It: PMcpJsonItem; Res: AnsiString; First: Boolean;
+Begin
+ If V = Nil Then Begin McpJsonSerialize := 'null'; Exit; End;
+ Case V^.Kind Of
+  mjNull: McpJsonSerialize := 'null';
+  mjBool: If V^.BoolVal Then McpJsonSerialize := 'true' Else McpJsonSerialize := 'false';
+  mjNumber: McpJsonSerialize := V^.StrVal;
+  { ConvToJsonEscape renvoie deja la valeur ENTOUREE de guillemets (voir sa    }
+  { definition plus haut, reutilisee telle quelle par Jira/Teams) - pas de    }
+  { guillemets supplementaires ici. }
+  mjString: McpJsonSerialize := ConvToJsonEscape(V^.StrVal);
+  mjArray: Begin
+   Res := '['; First := True; It := V^.Items;
+   While It <> Nil Do Begin
+    If Not First Then Res := Res + ',';
+    Res := Res + McpJsonSerialize(It^.Value);
+    First := False;
+    It := It^.Next;
+   End;
+   McpJsonSerialize := Res + ']';
+  End;
+  mjObject: Begin
+   Res := '{'; First := True; M := V^.Members;
+   While M <> Nil Do Begin
+    If Not First Then Res := Res + ',';
+    Res := Res + ConvToJsonEscape(M^.Key) + ':' + McpJsonSerialize(M^.Value);
+    First := False;
+    M := M^.Next;
+   End;
+   McpJsonSerialize := Res + '}';
+  End;
  End;
 End;
 
@@ -102352,6 +102506,1309 @@ End;
 {$ENDIF}
 
 { ============================================================ }
+{ === Commandes MongoDB / Mdbc (PowerShell dev uniquement) === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite) : Connect-Mdbc/Get-MdbcDatabase/          }
+{ Get-MdbcCollection/Get-MdbcData/Add-MdbcCollection/Add-MdbcData/          }
+{ Set-MdbcData/Update-MdbcData/Remove-MdbcData/Remove-MdbcCollection/       }
+{ Remove-MdbcDatabase/Invoke-MdbcAggregate/Invoke-MdbcCommand/              }
+{ Import-MdbcData/Export-MdbcData - memes noms que le VRAI module            }
+{ PowerShell "Mdbc" (Roman Kuzmin), client MongoDB natif. Architecture       }
+{ TOTALEMENT differente des chantiers HTTP/JSON precedents (MCP/curl/Jira/   }
+{ Teams) : MongoDB parle un protocole fil BINAIRE (OP_MSG, l opcode moderne  }
+{ unique implemente ici, disponible depuis MongoDB 3.6 - les opcodes         }
+{ historiques OP_QUERY/OP_INSERT/OP_UPDATE/OP_DELETE/OP_GET_MORE sont        }
+{ volontairement absents, OP_MSG suffit a exprimer toute operation via un    }
+{ document de commande BSON) par-dessus une connexion TCP brute (liaisons    }
+{ Winsock declarees plus haut, PREMIERE capacite de socket brut de ce        }
+{ fichier), avec des documents encodes en BSON (binaire type-tague) plutot   }
+{ que du JSON texte. L encodeur/decodeur BSON ci-dessous produit/consomme    }
+{ le MEME arbre generique McpJsonValue deja utilise par MCP/Jira/Teams -     }
+{ toute la logique de lecture (McpJsonGet/McpJsonAsString/McpJsonSerialize)  }
+{ est donc reutilisee TELLE QUELLE une fois une reponse decodee. }
+{ Authentification : deviation deliberee et documentee, meme esprit que      }
+{ l authentification Basic/jeton Bearer choisie pour Jira/Teams au lieu      }
+{ d un vrai flux complet - l authentification SCRAM-SHA-1/256 reelle de      }
+{ MongoDB (PBKDF2 + HMAC-SHA256 + echange de nonces) N EST PAS implementee   }
+{ ici (aucune primitive PBKDF2/HMAC-SHA256 disponible dans ce fichier) ;     }
+{ Connect-Mdbc suppose un serveur MongoDB demarre SANS authentification      }
+{ (option --noauth), et SIGNALE explicitement (au lieu de les appliquer en   }
+{ silence) tout identifiant present dans -ConnectionString. Pas de commande  }
+{ Disconnect-Mdbc : non demandee, et absente aussi du VRAI module (une       }
+{ session Mdbc reste ouverte jusqu a la fin du processus). }
+
+Const
+ MDBC_MAX_SESSIONS = 8;
+ MDBC_DEFAULT_PORT = 27017;
+
+Type
+ TMdbcSession = Record
+  InUse         : Boolean;
+  SrvLabel      : String;
+  HostName      : String;
+  Port          : Word;
+  Sock          : LongInt;
+  DatabaseName  : String;
+  CollectionName: String;
+ End;
+
+Var
+ MdbcSessions: Array[1..MDBC_MAX_SESSIONS] Of TMdbcSession;
+ MdbcNextRequestId: LongInt;
+ MdbcWinsockReady: Boolean;
+
+Function MdbcFindSession(Nm: String): Integer;
+Var I: Integer;
+Begin
+ MdbcFindSession := 0;
+ For I := 1 To MDBC_MAX_SESSIONS Do
+  If MdbcSessions[I].InUse And
+     (TermStrToUpper(MdbcSessions[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   MdbcFindSession := I;
+   Exit;
+  End;
+End;
+
+Function MdbcFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ MdbcFindFreeSlot := 0;
+ For I := 1 To MDBC_MAX_SESSIONS Do
+  If Not MdbcSessions[I].InUse Then Begin MdbcFindFreeSlot := I; Exit; End;
+End;
+
+Function MdbcSoleSession: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To MDBC_MAX_SESSIONS Do
+  If MdbcSessions[I].InUse Then Begin
+   If Found <> 0 Then Begin MdbcSoleSession := 0; Exit; End;
+   Found := I;
+  End;
+ MdbcSoleSession := Found;
+End;
+
+Function MdbcResolveSession(NameArg: String): Integer;
+Begin
+ If NameArg = '' Then MdbcResolveSession := MdbcSoleSession
+ Else MdbcResolveSession := MdbcFindSession(NameArg);
+End;
+
+Function MdbcResolveSessionOrReport(Var TP: TTerminalPanel; Cmd, NameArg: String): Integer;
+Var Slot: Integer;
+Begin
+ Slot := MdbcResolveSession(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, Cmd + ' : aucune session Mdbc active, ou plusieurs (utilisez -Session).')
+  Else
+   TermAddLine(TP, Cmd + ' : aucune session Mdbc nommee "' + NameArg + '".');
+ End;
+ MdbcResolveSessionOrReport := Slot;
+End;
+
+Function MdbcResolveDbName(Slot: Integer; DbArg: String): String;
+Begin
+ If DbArg <> '' Then MdbcResolveDbName := DbArg
+ Else If MdbcSessions[Slot].DatabaseName <> '' Then
+  MdbcResolveDbName := MdbcSessions[Slot].DatabaseName
+ Else MdbcResolveDbName := 'test';
+End;
+
+Function MdbcResolveCollName(Slot: Integer; CollArg: String): String;
+Begin
+ If CollArg <> '' Then MdbcResolveCollName := CollArg
+ Else MdbcResolveCollName := MdbcSessions[Slot].CollectionName;
+End;
+
+{ Extrait la valeur d un drapeau "-Nom valeur" (un seul mot, sans egard aux    }
+{ guillemets - TermExtractParam coupe sur espace/tabulation, meme limitation  }
+{ deja documentee pour Invoke-McpTool/curl -d) - factorise la boucle repetee  }
+{ par les 15 commandes Mdbc ci-dessous (bien plus de repetitions que les      }
+{ chantiers Jira/Teams, d ou cette petite factorisation supplementaire). }
+Function MdbcGetFlag(ParamStr: String; FlagUpper: String): String;
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..24] Of String;
+ UpTok: String;
+Begin
+ MdbcGetFlag := '';
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 24) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ For I := 1 To LocalArgCount - 1 Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-' + FlagUpper Then Begin
+   MdbcGetFlag := YamlUnquote(LocalArgs[I+1]);
+   Exit;
+  End;
+ End;
+End;
+
+Function MdbcHasFlag(ParamStr: String; FlagUpper: String): Boolean;
+Begin
+ MdbcHasFlag := System.Pos('-' + FlagUpper, TermStrToUpper(ParamStr)) > 0;
+End;
+
+Function MdbcTrimAnsi(S: AnsiString): AnsiString;
+Var L, R: Integer;
+Begin
+ L := 1; R := Length(S);
+ While (L <= R) And (S[L] In [' ', #9, #13, #10]) Do Inc(L);
+ While (R >= L) And (S[R] In [' ', #9, #13, #10]) Do Dec(R);
+ MdbcTrimAnsi := Copy(S, L, R - L + 1);
+End;
+
+{ ------------------------------------------------------------------------ }
+{ Encodeur/decodeur BSON (format binaire de MongoDB) - produit/consomme     }
+{ l arbre McpJsonValue generique deja utilise par MCP/Jira/Teams. Portee    }
+{ des types BSON en ECRITURE (documents construits par ce terminal) :       }
+{ null/bool/string/int32/int64/double/document/array - largement suffisant  }
+{ puisque TOUS les documents envoyes ici sont construits par concatenation  }
+{ de texte JSON (meme convention que les corps JSON de Jira/Teams) avant    }
+{ d etre analyses en arbre puis encodes. En LECTURE, TOUS les types BSON du }
+{ standard sont geres (voir les cas ci-dessous) pour ne jamais desynchroniser}
+{ le decodage du reste d un document a cause d un type rencontre mais non   }
+{ pleinement interprete (ObjectId/Timestamp/Decimal128/etc. deviennent alors}
+{ un texte de remplacement lisible plutot qu une valeur inventee). }
+
+Function BsonInt32LE(V: LongInt): AnsiString;
+Var R: AnsiString; UV: LongWord;
+Begin
+ UV := LongWord(V);
+ SetLength(R, 4);
+ R[1] := Chr(UV And $FF);
+ R[2] := Chr((UV Shr 8) And $FF);
+ R[3] := Chr((UV Shr 16) And $FF);
+ R[4] := Chr((UV Shr 24) And $FF);
+ BsonInt32LE := R;
+End;
+
+Function BsonInt64LE(V: Int64): AnsiString;
+Var R: AnsiString; UV: QWord; I: Integer;
+Begin
+ UV := QWord(V);
+ SetLength(R, 8);
+ For I := 1 To 8 Do Begin
+  R[I] := Chr(UV And $FF);
+  UV := UV Shr 8;
+ End;
+ BsonInt64LE := R;
+End;
+
+Function BsonDoubleLE(V: Double): AnsiString;
+Var R: AnsiString;
+Begin
+ SetLength(R, 8);
+ Move(V, R[1], 8);
+ BsonDoubleLE := R;
+End;
+
+Function BsonReadInt32LE(Const S: AnsiString; P: Integer): LongInt;
+Var UV: LongWord;
+Begin
+ UV := LongWord(Byte(S[P])) Or (LongWord(Byte(S[P+1])) Shl 8) Or
+  (LongWord(Byte(S[P+2])) Shl 16) Or (LongWord(Byte(S[P+3])) Shl 24);
+ BsonReadInt32LE := LongInt(UV);
+End;
+
+Function BsonReadInt64LE(Const S: AnsiString; P: Integer): Int64;
+Var UV: QWord; I: Integer;
+Begin
+ UV := 0;
+ For I := 7 Downto 0 Do UV := (UV Shl 8) Or Byte(S[P+I]);
+ BsonReadInt64LE := Int64(UV);
+End;
+
+Function BsonReadDoubleLE(Const S: AnsiString; P: Integer): Double;
+Var V: Double;
+Begin
+ Move(S[P], V, 8);
+ BsonReadDoubleLE := V;
+End;
+
+Function BsonFormatDouble(V: Double): AnsiString;
+Var S: String; IV: Int64;
+Begin
+ IV := Round(V);
+ If Abs(V - IV) < 0.0000001 Then Str(IV, S)
+ Else Str(V:0:6, S);
+ BsonFormatDouble := TermTrim(S);
+End;
+
+Function BsonBytesToHex(Const S: AnsiString): AnsiString;
+Const HexDigits = '0123456789abcdef';
+Var I: Integer; B: Byte; Res: AnsiString;
+Begin
+ Res := '';
+ For I := 1 To Length(S) Do Begin
+  B := Byte(S[I]);
+  Res := Res + HexDigits[(B Shr 4) + 1] + HexDigits[(B And $F) + 1];
+ End;
+ BsonBytesToHex := Res;
+End;
+
+Function BsonEncodeCString(S: AnsiString): AnsiString;
+Begin
+ BsonEncodeCString := S + #0;
+End;
+
+Function BsonEncodeString(S: AnsiString): AnsiString;
+Begin
+ BsonEncodeString := BsonInt32LE(Length(S) + 1) + S + #0;
+End;
+
+Function BsonEncodeDocument(Obj: PMcpJsonValue): AnsiString; Forward;
+
+Function BsonEncodeElement(Key: AnsiString; V: PMcpJsonValue): AnsiString;
+Var
+ Body: AnsiString;
+ TypeByte: Byte;
+ Int64Val: Int64;
+ DblVal: Double;
+ Code: Integer;
+ IsFloatLike: Boolean;
+ It: PMcpJsonItem;
+ Idx: LongInt;
+Begin
+ Body := '';
+ TypeByte := $0A;
+ If V = Nil Then
+  TypeByte := $0A
+ Else Case V^.Kind Of
+  mjNull: TypeByte := $0A;
+  mjBool: Begin
+   TypeByte := $08;
+   If V^.BoolVal Then Body := #1 Else Body := #0;
+  End;
+  mjString: Begin
+   TypeByte := $02;
+   Body := BsonEncodeString(V^.StrVal);
+  End;
+  mjNumber: Begin
+   IsFloatLike := (System.Pos('.', V^.StrVal) > 0) Or (System.Pos('e', V^.StrVal) > 0) Or
+    (System.Pos('E', V^.StrVal) > 0);
+   If Not IsFloatLike Then Begin
+    Val(V^.StrVal, Int64Val, Code);
+    If Code <> 0 Then IsFloatLike := True
+    Else If (Int64Val >= -2147483648) And (Int64Val <= 2147483647) Then Begin
+     TypeByte := $10;
+     Body := BsonInt32LE(LongInt(Int64Val));
+    End Else Begin
+     TypeByte := $12;
+     Body := BsonInt64LE(Int64Val);
+    End;
+   End;
+   If IsFloatLike Then Begin
+    Val(V^.StrVal, DblVal, Code);
+    TypeByte := $01;
+    Body := BsonDoubleLE(DblVal);
+   End;
+  End;
+  mjArray: Begin
+   TypeByte := $04;
+   Idx := 0;
+   Body := '';
+   It := V^.Items;
+   While It <> Nil Do Begin
+    Body := Body + BsonEncodeElement(IntToStr(Idx), It^.Value);
+    Inc(Idx);
+    It := It^.Next;
+   End;
+   Body := BsonInt32LE(Length(Body) + 5) + Body + #0;
+  End;
+  mjObject: Begin
+   TypeByte := $03;
+   Body := BsonEncodeDocument(V);
+  End;
+ End;
+ BsonEncodeElement := Chr(TypeByte) + BsonEncodeCString(Key) + Body;
+End;
+
+Function BsonEncodeDocument(Obj: PMcpJsonValue): AnsiString;
+Var M: PMcpJsonMember; Body: AnsiString;
+Begin
+ Body := '';
+ If Obj <> Nil Then Begin
+  M := Obj^.Members;
+  While M <> Nil Do Begin
+   Body := Body + BsonEncodeElement(M^.Key, M^.Value);
+   M := M^.Next;
+  End;
+ End;
+ BsonEncodeDocument := BsonInt32LE(Length(Body) + 5) + Body + #0;
+End;
+
+Function BsonObjectToArray(Obj: PMcpJsonValue): PMcpJsonValue;
+Var M, MNext: PMcpJsonMember; HeadIt, TailIt, NewIt: PMcpJsonItem;
+Begin
+ HeadIt := Nil; TailIt := Nil;
+ M := Obj^.Members;
+ While M <> Nil Do Begin
+  MNext := M^.Next;
+  New(NewIt);
+  NewIt^.Value := M^.Value;
+  NewIt^.Next := Nil;
+  If HeadIt = Nil Then HeadIt := NewIt Else TailIt^.Next := NewIt;
+  TailIt := NewIt;
+  Dispose(M);
+  M := MNext;
+ End;
+ Obj^.Kind := mjArray;
+ Obj^.Members := Nil;
+ Obj^.Items := HeadIt;
+ BsonObjectToArray := Obj;
+End;
+
+Function BsonDecodeDocument(Const S: AnsiString; StartP: Integer): PMcpJsonValue;
+Var
+ DocLen, P, EndP: LongInt;
+ V: PMcpJsonValue;
+ HeadM, TailM, NewM: PMcpJsonMember;
+ KeyStr: AnsiString;
+ TypeByte: Byte;
+ ChildVal: PMcpJsonValue;
+ SLen, SubLen: LongInt;
+ UnknownHit: Boolean;
+Begin
+ V := McpJsonNew(mjObject);
+ HeadM := Nil; TailM := Nil;
+ UnknownHit := False;
+ DocLen := BsonReadInt32LE(S, StartP);
+ EndP := StartP + DocLen - 1;
+ P := StartP + 4;
+ While (P < EndP) And Not UnknownHit Do Begin
+  TypeByte := Byte(S[P]); Inc(P);
+  KeyStr := '';
+  While (P <= Length(S)) And (S[P] <> #0) Do Begin KeyStr := KeyStr + S[P]; Inc(P); End;
+  Inc(P);
+  ChildVal := Nil;
+  Case TypeByte Of
+   $01: Begin
+    ChildVal := McpJsonNew(mjNumber);
+    ChildVal^.StrVal := BsonFormatDouble(BsonReadDoubleLE(S, P));
+    Inc(P, 8);
+   End;
+   $02: Begin
+    SLen := BsonReadInt32LE(S, P); Inc(P, 4);
+    ChildVal := McpJsonNew(mjString);
+    ChildVal^.StrVal := Copy(S, P, SLen - 1);
+    Inc(P, SLen);
+   End;
+   $03: Begin
+    SubLen := BsonReadInt32LE(S, P);
+    ChildVal := BsonDecodeDocument(S, P);
+    Inc(P, SubLen);
+   End;
+   $04: Begin
+    SubLen := BsonReadInt32LE(S, P);
+    ChildVal := BsonObjectToArray(BsonDecodeDocument(S, P));
+    Inc(P, SubLen);
+   End;
+   $05: Begin
+    SLen := BsonReadInt32LE(S, P); Inc(P, 4);
+    Inc(P);
+    ChildVal := McpJsonNew(mjString);
+    ChildVal^.StrVal := '<binaire:' + IntToStr(SLen) + ' octets>';
+    Inc(P, SLen);
+   End;
+   $06: ChildVal := McpJsonNew(mjNull);
+   $07: Begin
+    ChildVal := McpJsonNew(mjString);
+    ChildVal^.StrVal := BsonBytesToHex(Copy(S, P, 12));
+    Inc(P, 12);
+   End;
+   $08: Begin
+    ChildVal := McpJsonNew(mjBool);
+    ChildVal^.BoolVal := Byte(S[P]) <> 0;
+    Inc(P);
+   End;
+   $09: Begin
+    ChildVal := McpJsonNew(mjNumber);
+    Str(BsonReadInt64LE(S, P), ChildVal^.StrVal);
+    Inc(P, 8);
+   End;
+   $0A: ChildVal := McpJsonNew(mjNull);
+   $0B: Begin
+    ChildVal := McpJsonNew(mjNull);
+    While (P <= Length(S)) And (S[P] <> #0) Do Inc(P);
+    Inc(P);
+    While (P <= Length(S)) And (S[P] <> #0) Do Inc(P);
+    Inc(P);
+   End;
+   $0C: Begin
+    SLen := BsonReadInt32LE(S, P);
+    ChildVal := McpJsonNew(mjNull);
+    Inc(P, 4 + SLen + 12);
+   End;
+   $0D, $0E: Begin
+    SLen := BsonReadInt32LE(S, P); Inc(P, 4);
+    ChildVal := McpJsonNew(mjString);
+    ChildVal^.StrVal := Copy(S, P, SLen - 1);
+    Inc(P, SLen);
+   End;
+   $0F: Begin
+    SubLen := BsonReadInt32LE(S, P);
+    ChildVal := McpJsonNew(mjNull);
+    Inc(P, SubLen);
+   End;
+   $10: Begin
+    ChildVal := McpJsonNew(mjNumber);
+    ChildVal^.StrVal := IntToStr(BsonReadInt32LE(S, P));
+    Inc(P, 4);
+   End;
+   $11, $12: Begin
+    ChildVal := McpJsonNew(mjNumber);
+    Str(BsonReadInt64LE(S, P), ChildVal^.StrVal);
+    Inc(P, 8);
+   End;
+   $13: Begin
+    ChildVal := McpJsonNew(mjString);
+    ChildVal^.StrVal := '<decimal128:' + BsonBytesToHex(Copy(S, P, 16)) + '>';
+    Inc(P, 16);
+   End;
+   $7F, $FF: ChildVal := McpJsonNew(mjNull);
+   Else Begin
+    ChildVal := McpJsonNew(mjNull);
+    UnknownHit := True;
+   End;
+  End;
+  New(NewM);
+  NewM^.Key := KeyStr;
+  NewM^.Value := ChildVal;
+  NewM^.Next := Nil;
+  If HeadM = Nil Then HeadM := NewM Else TailM^.Next := NewM;
+  TailM := NewM;
+ End;
+ V^.Members := HeadM;
+ BsonDecodeDocument := V;
+End;
+
+{ ------------------------------------------------------------------------ }
+{ Transport TCP brut (Winsock) + protocole fil OP_MSG. }
+
+Function MdbcConnectSocket(HostName: String; Port: Word; Var SockOut: LongInt): Boolean;
+Var
+ WSD: TMdbcWSAData;
+ Addr: TMdbcSockAddrIn;
+ S: LongInt;
+ IpVal: LongWord;
+ He: PMdbcHostEnt;
+Begin
+ MdbcConnectSocket := False;
+ If Not MdbcWinsockReady Then Begin
+  If Mdbc_WSAStartup($0202, WSD) <> 0 Then Exit;
+  MdbcWinsockReady := True;
+ End;
+ IpVal := Mdbc_inet_addr(PChar(AnsiString(HostName)));
+ If IpVal = LongWord($FFFFFFFF) Then Begin
+  He := Mdbc_gethostbyname(PChar(AnsiString(HostName)));
+  If He = Nil Then Exit;
+  IpVal := PLongWord(He^.h_addr_list^)^;
+ End;
+ S := Mdbc_socket(2, 1, 6);
+ If S = LongInt(LongWord($FFFFFFFF)) Then Exit;
+ FillChar(Addr, SizeOf(Addr), 0);
+ Addr.sin_family := 2;
+ Addr.sin_port := Mdbc_htons(Port);
+ Addr.sin_addr := IpVal;
+ If Mdbc_connect(S, Addr, SizeOf(Addr)) <> 0 Then Begin
+  Mdbc_closesocket(S);
+  Exit;
+ End;
+ SockOut := S;
+ MdbcConnectSocket := True;
+End;
+
+Function MdbcSendAll(S: LongInt; Data: AnsiString): Boolean;
+Var Sent, Total, N: LongInt;
+Begin
+ Total := Length(Data);
+ Sent := 0;
+ While Sent < Total Do Begin
+  N := Mdbc_send(S, Data[Sent+1], Total-Sent, 0);
+  If N <= 0 Then Begin MdbcSendAll := False; Exit; End;
+  Inc(Sent, N);
+ End;
+ MdbcSendAll := True;
+End;
+
+Function MdbcRecvAll(S: LongInt; Var Data: AnsiString; WantLen: LongInt): Boolean;
+Var Buf: Array[0..8191] Of Byte; N, Got, ChunkLen, OldLen: LongInt;
+Begin
+ Data := '';
+ Got := 0;
+ If WantLen <= 0 Then Begin MdbcRecvAll := True; Exit; End;
+ While Got < WantLen Do Begin
+  ChunkLen := WantLen - Got;
+  If ChunkLen > SizeOf(Buf) Then ChunkLen := SizeOf(Buf);
+  N := Mdbc_recv(S, Buf, ChunkLen, 0);
+  If N <= 0 Then Begin MdbcRecvAll := False; Exit; End;
+  OldLen := Length(Data);
+  SetLength(Data, OldLen + N);
+  Move(Buf, Data[OldLen+1], N);
+  Inc(Got, N);
+ End;
+ MdbcRecvAll := True;
+End;
+
+{ Construit et envoie un message OP_MSG (en-tete 16 octets + flagBits(4)=0 +  }
+{ une section de type 0 (document BSON unique) + corps BSON de CmdText), lit  }
+{ la reponse (meme structure) et la decode en arbre McpJsonValue. Injecte     }
+{ automatiquement "$db" (obligatoire pour OP_MSG) juste avant l accolade      }
+{ fermante finale de CmdText - CmdText est TOUJOURS construit ici comme un    }
+{ objet JSON plat (voir chaque TermCmd_XXX), donc son dernier caractere est   }
+{ toujours l accolade fermante de plus haut niveau. }
+Function MdbcSendCommand(S: LongInt; DbName: String; CmdText: AnsiString;
+ Var ReplyDoc: PMcpJsonValue): Boolean;
+Var
+ FullCmdText: AnsiString;
+ CmdDoc: PMcpJsonValue;
+ BodyBytes, Msg, HeaderBuf, RespHeader, RespBody: AnsiString;
+ MsgLen, RespLen: LongInt;
+ P: Integer;
+Begin
+ MdbcSendCommand := False;
+ ReplyDoc := Nil;
+ FullCmdText := Copy(CmdText, 1, Length(CmdText) - 1) + ',"$db":' +
+  ConvToJsonEscape(DbName) + '}';
+ P := 1;
+ CmdDoc := McpJsonParseValue(FullCmdText, P);
+ BodyBytes := BsonEncodeDocument(CmdDoc);
+ McpJsonFree(CmdDoc);
+ Msg := BsonInt32LE(0) + Chr(0) + BodyBytes;
+ Inc(MdbcNextRequestId);
+ MsgLen := Length(Msg) + 16;
+ HeaderBuf := BsonInt32LE(MsgLen) + BsonInt32LE(MdbcNextRequestId) + BsonInt32LE(0) +
+  BsonInt32LE(2013);
+ If Not MdbcSendAll(S, HeaderBuf + Msg) Then Exit;
+ If Not MdbcRecvAll(S, RespHeader, 16) Then Exit;
+ RespLen := BsonReadInt32LE(RespHeader, 1);
+ If RespLen < 21 Then Exit;
+ If Not MdbcRecvAll(S, RespBody, RespLen - 16) Then Exit;
+ P := 6;
+ ReplyDoc := BsonDecodeDocument(RespBody, P);
+ MdbcSendCommand := True;
+End;
+
+Function MdbcCheckOk(Var TP: TTerminalPanel; Cmd: String; ReplyDoc: PMcpJsonValue): Boolean;
+Var OkVal: PMcpJsonValue; OkNum: Double; Code: Integer;
+Begin
+ MdbcCheckOk := False;
+ If ReplyDoc = Nil Then Begin
+  TermAddLine(TP, Cmd + ' : aucune reponse du serveur MongoDB (connexion perdue ?).');
+  Exit;
+ End;
+ OkVal := McpJsonGet(ReplyDoc, 'ok');
+ OkNum := 0;
+ If OkVal <> Nil Then Begin
+  Val(McpJsonAsString(OkVal), OkNum, Code);
+  If Code <> 0 Then OkNum := 0;
+ End;
+ If OkNum >= 0.5 Then Begin
+  MdbcCheckOk := True;
+  Exit;
+ End;
+ TermAddLine(TP, Cmd + ' : le serveur MongoDB a signale une erreur (code ' +
+  McpJsonAsString(McpJsonGet(ReplyDoc, 'code')) + ') : ' +
+  McpJsonAsString(McpJsonGet(ReplyDoc, 'errmsg')) + '.');
+End;
+
+Procedure MdbcParseConnString(ConnStr: String; Var HostOut: String; Var PortOut: Word;
+ Var DbOut: String; Var HadCreds: Boolean);
+Var
+ Rest, HostPort, PortStr: String;
+ AtPos, ColonPos, SlashPos, ErrCode: Integer;
+ PortVal: LongInt;
+Begin
+ HadCreds := False;
+ HostOut := 'localhost';
+ PortOut := MDBC_DEFAULT_PORT;
+ DbOut := '';
+ Rest := ConnStr;
+ If TermStrToUpper(Copy(Rest, 1, 10)) = 'MONGODB://' Then
+  Rest := Copy(Rest, 11, Length(Rest));
+ If Rest = '' Then Rest := 'localhost';
+ AtPos := System.Pos('@', Rest);
+ If AtPos > 0 Then Begin
+  HadCreds := True;
+  Rest := Copy(Rest, AtPos + 1, Length(Rest));
+ End;
+ SlashPos := System.Pos('/', Rest);
+ If SlashPos > 0 Then Begin
+  DbOut := Copy(Rest, SlashPos + 1, Length(Rest));
+  HostPort := Copy(Rest, 1, SlashPos - 1);
+ End Else
+  HostPort := Rest;
+ ColonPos := System.Pos(':', HostPort);
+ If ColonPos > 0 Then Begin
+  HostOut := Copy(HostPort, 1, ColonPos - 1);
+  PortStr := Copy(HostPort, ColonPos + 1, Length(HostPort));
+  Val(PortStr, PortVal, ErrCode);
+  If ErrCode = 0 Then PortOut := Word(PortVal);
+ End Else
+  HostOut := HostPort;
+ If HostOut = '' Then HostOut := 'localhost';
+End;
+
+{ --- Connect-Mdbc --- }
+Procedure TermCmd_ConnectMdbc(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ConnArg, DbArg, CollArg, NameArg, HostName: String;
+ Port: Word;
+ HadCreds: Boolean;
+ Sock: LongInt;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ ConnArg := MdbcGetFlag(ParamStr, 'CONNECTIONSTRING');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ NameArg := MdbcGetFlag(ParamStr, 'NAME');
+ If ConnArg = '' Then ConnArg := 'mongodb://localhost';
+ If NameArg = '' Then NameArg := 'default';
+ If MdbcFindSession(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'Connect-Mdbc : une session nommee "' + NameArg + '" existe deja.');
+  Exit;
+ End;
+ Slot := MdbcFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'Connect-Mdbc : nombre maximal de sessions atteint (' +
+   IntToStr(MDBC_MAX_SESSIONS) + ').');
+  Exit;
+ End;
+ MdbcParseConnString(ConnArg, HostName, Port, MdbcSessions[Slot].DatabaseName, HadCreds);
+ If DbArg <> '' Then MdbcSessions[Slot].DatabaseName := DbArg;
+ If MdbcSessions[Slot].DatabaseName = '' Then MdbcSessions[Slot].DatabaseName := 'test';
+ MdbcSessions[Slot].CollectionName := CollArg;
+ If HadCreds Then
+  TermAddLine(TP, 'Connect-Mdbc : identifiants presents dans -ConnectionString ignores - ' +
+   'authentification SCRAM non geree (serveur --noauth suppose, voir HELP).');
+ If Not MdbcConnectSocket(HostName, Port, Sock) Then Begin
+  TermAddLine(TP, 'Connect-Mdbc : echec de connexion TCP a ' + HostName + ':' +
+   IntToStr(Port) + '.');
+  Exit;
+ End;
+ If Not MdbcSendCommand(Sock, 'admin', '{"isMaster":1}', ReplyDoc) Then Begin
+  TermAddLine(TP, 'Connect-Mdbc : echec du handshake MongoDB (isMaster).');
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ If Not MdbcCheckOk(TP, 'Connect-Mdbc', ReplyDoc) Then Begin
+  McpJsonFree(ReplyDoc);
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ McpJsonFree(ReplyDoc);
+ MdbcSessions[Slot].Sock := Sock;
+ MdbcSessions[Slot].InUse := True;
+ MdbcSessions[Slot].SrvLabel := NameArg;
+ MdbcSessions[Slot].HostName := HostName;
+ MdbcSessions[Slot].Port := Port;
+ TermAddLine(TP, 'Connect-Mdbc : connecte a ' + HostName + ':' + IntToStr(Port) +
+  ' (base par defaut "' + MdbcSessions[Slot].DatabaseName + '") sous "' + NameArg + '".');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Connect-Mdbc : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-MdbcDatabase --- }
+Procedure TermCmd_GetMdbcDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg: String;
+ Slot: Integer;
+ ReplyDoc, DbsVal, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+Begin
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ Slot := MdbcResolveSessionOrReport(TP, 'Get-MdbcDatabase', NameArg);
+ If Slot = 0 Then Exit;
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, 'admin', '{"listDatabases":1}', ReplyDoc) Then Begin
+  TermAddLine(TP, 'Get-MdbcDatabase : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If Not MdbcCheckOk(TP, 'Get-MdbcDatabase', ReplyDoc) Then Begin McpJsonFree(ReplyDoc); Exit; End;
+ DbsVal := McpJsonGet(ReplyDoc, 'databases');
+ If (DbsVal <> Nil) And (DbsVal^.Kind = mjArray) Then Begin
+  It := DbsVal^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'name')) + '  (' +
+    McpJsonAsString(McpJsonGet(ItemVal, 'sizeOnDisk')) + ' octets)');
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-MdbcDatabase : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-MdbcCollection --- }
+Procedure TermCmd_GetMdbcCollection(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ DbArg, NameArg, DbName: String;
+ Slot: Integer;
+ ReplyDoc, CursorVal, BatchVal, ItemVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+Begin
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ Slot := MdbcResolveSessionOrReport(TP, 'Get-MdbcCollection', NameArg);
+ If Slot = 0 Then Exit;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, '{"listCollections":1}', ReplyDoc) Then Begin
+  TermAddLine(TP, 'Get-MdbcCollection : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If Not MdbcCheckOk(TP, 'Get-MdbcCollection', ReplyDoc) Then Begin McpJsonFree(ReplyDoc); Exit; End;
+ CursorVal := McpJsonGet(ReplyDoc, 'cursor');
+ BatchVal := McpJsonGet(CursorVal, 'firstBatch');
+ If (BatchVal <> Nil) And (BatchVal^.Kind = mjArray) Then Begin
+  It := BatchVal^.Items;
+  While It <> Nil Do Begin
+   ItemVal := It^.Value;
+   TermAddLine(TP, McpJsonAsString(McpJsonGet(ItemVal, 'name')));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-MdbcCollection : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Get-MdbcData --- }
+Procedure TermCmd_GetMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, FilterArg, LimitArg, NameArg, DbName, CollName, CmdText: String;
+ Slot: Integer;
+ ReplyDoc, CursorVal, BatchVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ FilterArg := MdbcGetFlag(ParamStr, 'FILTER');
+ LimitArg := MdbcGetFlag(ParamStr, 'LIMIT');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ Slot := MdbcResolveSessionOrReport(TP, 'Get-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-MdbcData -CollectionName nom [-Filter json] [-Limit n] ' +
+   '[-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"find":' + ConvToJsonEscape(CollName);
+ If FilterArg <> '' Then CmdText := CmdText + ',"filter":' + FilterArg;
+ If LimitArg <> '' Then CmdText := CmdText + ',"limit":' + LimitArg;
+ CmdText := CmdText + '}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Get-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If Not MdbcCheckOk(TP, 'Get-MdbcData', ReplyDoc) Then Begin McpJsonFree(ReplyDoc); Exit; End;
+ CursorVal := McpJsonGet(ReplyDoc, 'cursor');
+ BatchVal := McpJsonGet(CursorVal, 'firstBatch');
+ If (BatchVal <> Nil) And (BatchVal^.Kind = mjArray) Then Begin
+  It := BatchVal^.Items;
+  While It <> Nil Do Begin
+   TermAddLine(TP, McpJsonSerialize(It^.Value));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Get-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Add-MdbcCollection --- }
+Procedure TermCmd_AddMdbcCollection(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, NameArg, DbName, CmdText: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If CollArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-MdbcCollection -CollectionName nom [-DatabaseName base] ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Add-MdbcCollection', NameArg);
+ If Slot = 0 Then Exit;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"create":' + ConvToJsonEscape(CollArg) + '}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Add-MdbcCollection : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Add-MdbcCollection', ReplyDoc) Then
+  TermAddLine(TP, 'Add-MdbcCollection : "' + CollArg + '" creee dans "' + DbName + '".');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Add-MdbcCollection : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Add-MdbcData --- }
+Procedure TermCmd_AddMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, DocArg, NameArg, DbName, CollName, CmdText, DocsText: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ DocArg := MdbcGetFlag(ParamStr, 'DOCUMENT');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If DocArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Add-MdbcData -Document json [-CollectionName nom] ' +
+   '[-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Add-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Add-MdbcData : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ If Copy(TermTrimL(DocArg), 1, 1) = '[' Then DocsText := DocArg
+ Else DocsText := '[' + DocArg + ']';
+ CmdText := '{"insert":' + ConvToJsonEscape(CollName) + ',"documents":' + DocsText + '}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Add-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Add-MdbcData', ReplyDoc) Then
+  TermAddLine(TP, 'Add-MdbcData : ' + McpJsonAsString(McpJsonGet(ReplyDoc, 'n')) +
+   ' document(s) insere(s) dans "' + CollName + '".');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Add-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Set-MdbcData (remplacement complet du document, comme le vrai module) --- }
+Procedure TermCmd_SetMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, FilterArg, DocArg, NameArg, DbName, CollName, CmdText: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ FilterArg := MdbcGetFlag(ParamStr, 'FILTER');
+ DocArg := MdbcGetFlag(ParamStr, 'DOCUMENT');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If (FilterArg = '') Or (DocArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-MdbcData -Filter json -Document json [-CollectionName nom] ' +
+   '[-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Set-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Set-MdbcData : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"update":' + ConvToJsonEscape(CollName) + ',"updates":[{"q":' + FilterArg +
+  ',"u":' + DocArg + ',"multi":false}]}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Set-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Set-MdbcData', ReplyDoc) Then
+  TermAddLine(TP, 'Set-MdbcData : ' + McpJsonAsString(McpJsonGet(ReplyDoc, 'nModified')) +
+   ' document(s) remplace(s) dans "' + CollName + '".');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Set-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Update-MdbcData (operateurs de modification $set etc., comme le vrai module) --- }
+Procedure TermCmd_UpdateMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, FilterArg, UpdArg, NameArg, DbName, CollName, CmdText, MultiFlag: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ FilterArg := MdbcGetFlag(ParamStr, 'FILTER');
+ UpdArg := MdbcGetFlag(ParamStr, 'UPDATE');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If (FilterArg = '') Or (UpdArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Update-MdbcData -Filter json -Update json [-Multi] ' +
+   '[-CollectionName nom] [-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Update-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Update-MdbcData : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ If MdbcHasFlag(ParamStr, 'MULTI') Then MultiFlag := 'true' Else MultiFlag := 'false';
+ CmdText := '{"update":' + ConvToJsonEscape(CollName) + ',"updates":[{"q":' + FilterArg +
+  ',"u":' + UpdArg + ',"multi":' + MultiFlag + '}]}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Update-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Update-MdbcData', ReplyDoc) Then
+  TermAddLine(TP, 'Update-MdbcData : ' + McpJsonAsString(McpJsonGet(ReplyDoc, 'nModified')) +
+   ' document(s) modifie(s) dans "' + CollName + '".');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Update-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Remove-MdbcData --- }
+Procedure TermCmd_RemoveMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, FilterArg, NameArg, DbName, CollName, CmdText, LimitVal: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ FilterArg := MdbcGetFlag(ParamStr, 'FILTER');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If FilterArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-MdbcData -Filter json [-Many] [-CollectionName nom] ' +
+   '[-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Remove-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Remove-MdbcData : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ If MdbcHasFlag(ParamStr, 'MANY') Then LimitVal := '0' Else LimitVal := '1';
+ CmdText := '{"delete":' + ConvToJsonEscape(CollName) + ',"deletes":[{"q":' + FilterArg +
+  ',"limit":' + LimitVal + '}]}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Remove-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Remove-MdbcData', ReplyDoc) Then
+  TermAddLine(TP, 'Remove-MdbcData : ' + McpJsonAsString(McpJsonGet(ReplyDoc, 'n')) +
+   ' document(s) supprime(s) de "' + CollName + '".');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Remove-MdbcCollection --- }
+Procedure TermCmd_RemoveMdbcCollection(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, NameArg, DbName, CmdText: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If CollArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-MdbcCollection -CollectionName nom [-DatabaseName base] ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Remove-MdbcCollection', NameArg);
+ If Slot = 0 Then Exit;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"drop":' + ConvToJsonEscape(CollArg) + '}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Remove-MdbcCollection : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Remove-MdbcCollection', ReplyDoc) Then
+  TermAddLine(TP, 'Remove-MdbcCollection : "' + CollArg + '" supprimee de "' + DbName + '".');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-MdbcCollection : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Remove-MdbcDatabase --- }
+Procedure TermCmd_RemoveMdbcDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ DbArg, NameArg, DbName, CmdText: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ Slot := MdbcResolveSessionOrReport(TP, 'Remove-MdbcDatabase', NameArg);
+ If Slot = 0 Then Exit;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"dropDatabase":1}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Remove-MdbcDatabase : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Remove-MdbcDatabase', ReplyDoc) Then
+  TermAddLine(TP, 'Remove-MdbcDatabase : "' + DbName + '" supprimee.');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Remove-MdbcDatabase : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Invoke-MdbcAggregate --- }
+Procedure TermCmd_InvokeMdbcAggregate(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CollArg, DbArg, PipelineArg, NameArg, DbName, CollName, CmdText: String;
+ Slot: Integer;
+ ReplyDoc, CursorVal, BatchVal: PMcpJsonValue;
+ It: PMcpJsonItem;
+Begin
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ PipelineArg := MdbcGetFlag(ParamStr, 'PIPELINE');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If PipelineArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-MdbcAggregate -Pipeline json [-CollectionName nom] ' +
+   '[-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Invoke-MdbcAggregate', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Invoke-MdbcAggregate : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"aggregate":' + ConvToJsonEscape(CollName) + ',"pipeline":' + PipelineArg +
+  ',"cursor":{}}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Invoke-MdbcAggregate : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If Not MdbcCheckOk(TP, 'Invoke-MdbcAggregate', ReplyDoc) Then Begin McpJsonFree(ReplyDoc); Exit; End;
+ CursorVal := McpJsonGet(ReplyDoc, 'cursor');
+ BatchVal := McpJsonGet(CursorVal, 'firstBatch');
+ If (BatchVal <> Nil) And (BatchVal^.Kind = mjArray) Then Begin
+  It := BatchVal^.Items;
+  While It <> Nil Do Begin
+   TermAddLine(TP, McpJsonSerialize(It^.Value));
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Invoke-MdbcAggregate : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Invoke-MdbcCommand (passe-plat brut, aucune interpretation du resultat) --- }
+Procedure TermCmd_InvokeMdbcCommand(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ DbArg, CmdArg, NameArg, DbName: String;
+ Slot: Integer;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ CmdArg := MdbcGetFlag(ParamStr, 'COMMAND');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If CmdArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-MdbcCommand -Command json [-DatabaseName base] ' +
+   '[-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Invoke-MdbcCommand', NameArg);
+ If Slot = 0 Then Exit;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdArg, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Invoke-MdbcCommand : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ TermAddLine(TP, McpJsonSerialize(ReplyDoc));
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Invoke-MdbcCommand : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Import-MdbcData (fichier JSON contenant un tableau de documents) --- }
+Procedure TermCmd_ImportMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, CollArg, DbArg, NameArg, DbName, CollName, CmdText: String;
+ Slot: Integer;
+ F: File;
+ Sz, BytesR: LongInt;
+ FileContent: AnsiString;
+ ReplyDoc: PMcpJsonValue;
+Begin
+ PathArg := MdbcGetFlag(ParamStr, 'PATH');
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Import-MdbcData -Path fichier.json [-CollectionName nom] ' +
+   '[-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Import-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Import-MdbcData : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ {$I-}
+ Assign(F, PathArg);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Import-MdbcData : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ Sz := FileSize(F);
+ SetLength(FileContent, Sz);
+ If Sz > 0 Then BlockRead(F, FileContent[1], Sz, BytesR);
+ Close(F);
+ FileContent := MdbcTrimAnsi(FileContent);
+ If Copy(FileContent, 1, 1) <> '[' Then FileContent := '[' + FileContent + ']';
+ CmdText := '{"insert":' + ConvToJsonEscape(CollName) + ',"documents":' + FileContent + '}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Import-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If MdbcCheckOk(TP, 'Import-MdbcData', ReplyDoc) Then
+  TermAddLine(TP, 'Import-MdbcData : ' + McpJsonAsString(McpJsonGet(ReplyDoc, 'n')) +
+   ' document(s) importe(s) dans "' + CollName + '" depuis ' + PathArg + '.');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Import-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Export-MdbcData (ecrit un tableau JSON des documents trouves) --- }
+Procedure TermCmd_ExportMdbcData(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, CollArg, DbArg, FilterArg, NameArg, DbName, CollName, CmdText, OutText: String;
+ Slot: Integer;
+ ReplyDoc, CursorVal, BatchVal: PMcpJsonValue;
+ F: File;
+ BytesW: LongInt;
+Begin
+ PathArg := MdbcGetFlag(ParamStr, 'PATH');
+ CollArg := MdbcGetFlag(ParamStr, 'COLLECTIONNAME');
+ DbArg := MdbcGetFlag(ParamStr, 'DATABASENAME');
+ FilterArg := MdbcGetFlag(ParamStr, 'FILTER');
+ NameArg := MdbcGetFlag(ParamStr, 'SESSION');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Export-MdbcData -Path fichier.json [-CollectionName nom] ' +
+   '[-Filter json] [-DatabaseName base] [-Session etiquette]');
+  Exit;
+ End;
+ Slot := MdbcResolveSessionOrReport(TP, 'Export-MdbcData', NameArg);
+ If Slot = 0 Then Exit;
+ CollName := MdbcResolveCollName(Slot, CollArg);
+ If CollName = '' Then Begin
+  TermAddLine(TP, 'Export-MdbcData : aucune collection resolue - utilisez -CollectionName.');
+  Exit;
+ End;
+ DbName := MdbcResolveDbName(Slot, DbArg);
+ CmdText := '{"find":' + ConvToJsonEscape(CollName);
+ If FilterArg <> '' Then CmdText := CmdText + ',"filter":' + FilterArg;
+ CmdText := CmdText + '}';
+ If Not MdbcSendCommand(MdbcSessions[Slot].Sock, DbName, CmdText, ReplyDoc) Then Begin
+  TermAddLine(TP, 'Export-MdbcData : echec de la requete (connexion perdue ?).');
+  Exit;
+ End;
+ If Not MdbcCheckOk(TP, 'Export-MdbcData', ReplyDoc) Then Begin McpJsonFree(ReplyDoc); Exit; End;
+ CursorVal := McpJsonGet(ReplyDoc, 'cursor');
+ BatchVal := McpJsonGet(CursorVal, 'firstBatch');
+ If BatchVal = Nil Then OutText := '[]'
+ Else OutText := McpJsonSerialize(BatchVal);
+ {$I-}
+ Assign(F, PathArg);
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Export-MdbcData : impossible d''ecrire ' + PathArg);
+  McpJsonFree(ReplyDoc);
+  Exit;
+ End;
+ If Length(OutText) > 0 Then BlockWrite(F, OutText[1], Length(OutText), BytesW);
+ Close(F);
+ TermAddLine(TP, 'Export-MdbcData : ' + IntToStr(Length(OutText)) + ' octets enregistres dans ' +
+  PathArg + '.');
+ McpJsonFree(ReplyDoc);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Export-MdbcData : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -102367,7 +103824,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 156;
+ PS_CMD_ALIASES = 171;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -102503,7 +103960,22 @@ Const
   'SET-TEAM',
   'SET-TEAMCHANNEL',
   'REMOVE-TEAM',
-  'REMOVE-TEAMCHANNEL'
+  'REMOVE-TEAMCHANNEL',
+  'CONNECT-MDBC',
+  'GET-MDBCDATABASE',
+  'GET-MDBCCOLLECTION',
+  'GET-MDBCDATA',
+  'ADD-MDBCCOLLECTION',
+  'ADD-MDBCDATA',
+  'SET-MDBCDATA',
+  'UPDATE-MDBCDATA',
+  'REMOVE-MDBCDATA',
+  'REMOVE-MDBCCOLLECTION',
+  'REMOVE-MDBCDATABASE',
+  'INVOKE-MDBCAGGREGATE',
+  'INVOKE-MDBCCOMMAND',
+  'IMPORT-MDBCDATA',
+  'EXPORT-MDBCDATA'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -102639,7 +104111,22 @@ Const
   132,
   133,
   134,
-  135
+  135,
+  136,
+  137,
+  138,
+  139,
+  140,
+  141,
+  142,
+  143,
+  144,
+  145,
+  146,
+  147,
+  148,
+  149,
+  150
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -103208,6 +104695,21 @@ Begin
     133: TermCmd_SetTeamChannel(TP, ParamStr);
     134: TermCmd_RemoveTeam(TP, ParamStr);
     135: TermCmd_RemoveTeamChannel(TP, ParamStr);
+    136: TermCmd_ConnectMdbc(TP, ParamStr);
+    137: TermCmd_GetMdbcDatabase(TP, ParamStr);
+    138: TermCmd_GetMdbcCollection(TP, ParamStr);
+    139: TermCmd_GetMdbcData(TP, ParamStr);
+    140: TermCmd_AddMdbcCollection(TP, ParamStr);
+    141: TermCmd_AddMdbcData(TP, ParamStr);
+    142: TermCmd_SetMdbcData(TP, ParamStr);
+    143: TermCmd_UpdateMdbcData(TP, ParamStr);
+    144: TermCmd_RemoveMdbcData(TP, ParamStr);
+    145: TermCmd_RemoveMdbcCollection(TP, ParamStr);
+    146: TermCmd_RemoveMdbcDatabase(TP, ParamStr);
+    147: TermCmd_InvokeMdbcAggregate(TP, ParamStr);
+    148: TermCmd_InvokeMdbcCommand(TP, ParamStr);
+    149: TermCmd_ImportMdbcData(TP, ParamStr);
+    150: TermCmd_ExportMdbcData(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
