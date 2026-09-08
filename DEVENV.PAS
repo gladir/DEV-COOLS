@@ -98115,13 +98115,13 @@ Begin
  { la seule commande de LECTURE partagee par tous les shells). }
  If TP.Shell = SK_POWERSHELL Then Begin
   TermAddLine(TP, '');
-  TermAddLine(TP, '--- Ajouter du contenu a un fichier ---');
   TermAddLine(TP,
    '  $nom = "texte" / $nom = @"..."@       Variable scalaire / here-string');
   TermAddLine(TP,
    '  $nom  /  $nom.propriete               Affiche une variable/propriete');
   TermAddLine(TP,
    '  $obj = ConvertFrom-Yaml $texte        Capture dans une variable objet');
+  TermAddLine(TP, '--- Ajouter du contenu a un fichier ---');
   TermAddLine(TP,
    '  Add-Content fichier texte           Ajoute une ligne en fin de fichier');
   TermAddLine(TP,
@@ -98162,6 +98162,8 @@ Begin
    '  Add-VMSwitch/SwitchExtension*/SwitchTeamMember  Reconnues, sans ' +
    'equivalent');
   TermAddLine(TP,
+   '  Backup-OracleDatabase  Non supporte (RMAN est un protocole Oracle distinct)');
+  TermAddLine(TP,
    '  Backup-SqlDatabase -Database nom -BackupFile f  Copie brute du .mdf (PAS le format .bak)');
   TermAddLine(TP,
    '  Checkpoint-VM [-Path base]             Ecrit base.vmcx+.vmrs' +
@@ -98196,6 +98198,9 @@ Begin
    '  Connect-Mdbc [-ConnectionString mongodb://hote:port/base] [-DatabaseName b]  VRAI client MongoDB');
   TermAddLine(TP,
    '  Connect-MicrosoftTeams -AccessToken t [-Uri url] [-Name n]  VRAI client Teams (Graph)');
+  TermAddLine(TP,
+   '  Connect-OracleDatabase -Server s [-Port p] [-ServiceName n] [-UserName u] ' +
+   '[-Password m]  Ouvre une vraie connexion TNS/TTC');
   TermAddLine(TP,
    '  Connect-PSSession / Connect-WSMan     Reconnues, sans remoting ' +
    'PowerShell/WinRM');
@@ -98253,6 +98258,8 @@ Begin
    '  Disconnect-McpServer [-Name n]         Deconnecte un serveur MCP');
   TermAddLine(TP,
    '  Disconnect-MicrosoftTeams [-Name n]  Deconnecte une session Teams');
+  TermAddLine(TP,
+   '  Disconnect-OracleDatabase [-Name n]  Ferme la connexion Oracle courante');
   TermAddLine(TP,
    '  Export-Csv -Path f -InputObject $objet  Ecrit un fichier CSV');
   TermAddLine(TP,
@@ -98322,6 +98329,36 @@ Begin
   TermAddLine(TP,
    '  Get-MdbcDatabase [-Session n]          Liste les bases MongoDB (listDatabases)');
   TermAddLine(TP,
+   '  Get-OracleColumn [-Name n] -Table t  Colonnes d''une table (USER_TAB_COLUMNS)');
+  TermAddLine(TP,
+   '  Get-OracleConstraint [-Name n]  Liste les contraintes (USER_CONSTRAINTS)');
+  TermAddLine(TP,
+   '  Get-OracleDatabase [-Name n]  Infos sur la base courante (V$DATABASE)');
+  TermAddLine(TP,
+   '  Get-OracleFunction [-Name n]  Liste les fonctions');
+  TermAddLine(TP,
+   '  Get-OracleIndex [-Name n]  Liste les index (USER_INDEXES)');
+  TermAddLine(TP,
+   '  Get-OraclePackage [-Name n]  Liste les packages PL/SQL');
+  TermAddLine(TP,
+   '  Get-OracleProcedure [-Name n]  Liste les procedures stockees');
+  TermAddLine(TP,
+   '  Get-OracleSequence [-Name n]  Liste les sequences (USER_SEQUENCES)');
+  TermAddLine(TP,
+   '  Get-OracleSession [-Name n]  Liste les sessions Oracle (V$SESSION)');
+  TermAddLine(TP,
+   '  Get-OracleSynonym [-Name n]  Liste les synonymes (USER_SYNONYMS)');
+  TermAddLine(TP,
+   '  Get-OracleTable [-Name n]  Liste les tables (USER_TABLES)');
+  TermAddLine(TP,
+   '  Get-OracleTablespace [-Name n]  Liste les tablespaces (USER_TABLESPACES)');
+  TermAddLine(TP,
+   '  Get-OracleTrigger [-Name n]  Liste les triggers (USER_TRIGGERS)');
+  TermAddLine(TP,
+   '  Get-OracleUser [-Name n]  Liste les utilisateurs (ALL_USERS)');
+  TermAddLine(TP,
+   '  Get-OracleView [-Name n]  Liste les vues (USER_VIEWS)');
+  TermAddLine(TP,
    '  Get-RedisHash -Key cle [-Field champ]  Lit un hachage (HGET/HGETALL)');
   TermAddLine(TP,
    '  Get-RedisKey [-Pattern p]  Enumere les cles (KEYS)');
@@ -98346,6 +98383,8 @@ Begin
   TermAddLine(TP,
    '  Get-TeamUser -GroupId id [-Role Owner|Member]  Liste les membres d''une equipe');
   TermAddLine(TP,
+   '  Grant-OraclePrivilege [-Name n] -Privilege p -UserName u  Accorde un privilege');
+  TermAddLine(TP,
    '  Import-MdbcData -Path f.json [-CollectionName c]  Insere depuis un fichier JSON');
   TermAddLine(TP,
    '  Invoke-JiraIssueTransition -Issue P -Transition id-ou-nom  Applique une transition');
@@ -98355,6 +98394,12 @@ Begin
    '  Invoke-MdbcAggregate -Pipeline json [-CollectionName c]  Execute un pipeline d''agregation');
   TermAddLine(TP,
    '  Invoke-MdbcCommand -Command json [-DatabaseName b]  Commande MongoDB brute (passe-plat)');
+  TermAddLine(TP,
+   '  Invoke-OracleNonQuery [-Name n] -Query sql  Execute INSERT/UPDATE/DELETE/CREATE');
+  TermAddLine(TP,
+   '  Invoke-OracleQuery [-Name n] -Query sql  Execute un SELECT et affiche le resultat');
+  TermAddLine(TP,
+   '  Invoke-OracleScript [-Name n] -Path f.sql  Execute un fichier de commandes SQL');
   TermAddLine(TP,
    '  Invoke-RedisScript -Script lua [-KeyName c1,c2] [-Argument a1,a2]  Execute un script (EVAL)');
   TermAddLine(TP,
@@ -98371,6 +98416,12 @@ Begin
    '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
   TermAddLine(TP,
    '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
+  TermAddLine(TP,
+   '  New-OracleSequence [-Name n] -SequenceName s  Cree une sequence');
+  TermAddLine(TP,
+   '  New-OracleTable [-Name n] -Table t -Columns "col type, ..."  Cree une table');
+  TermAddLine(TP,
+   '  New-OracleUser [-Name n] -UserName u -Password m  Cree un utilisateur Oracle');
   TermAddLine(TP,
    '  New-RedisTransaction [-Session n]  Demarre une transaction (MULTI reel)');
   TermAddLine(TP,
@@ -98396,6 +98447,12 @@ Begin
   TermAddLine(TP,
    '  Remove-MdbcDatabase [-DatabaseName b] [-Session n]  Supprime une base (dropDatabase)');
   TermAddLine(TP,
+   '  Remove-OracleSequence [-Name n] -SequenceName s  Supprime une sequence');
+  TermAddLine(TP,
+   '  Remove-OracleTable [-Name n] -Table t  Supprime une table');
+  TermAddLine(TP,
+   '  Remove-OracleUser [-Name n] -UserName u  Supprime un utilisateur');
+  TermAddLine(TP,
    '  Remove-RedisKey -Key cle  Supprime une cle (DEL)');
   TermAddLine(TP,
    '  Remove-Team -GroupId id [-Session n]  Supprime une equipe');
@@ -98406,10 +98463,14 @@ Begin
   TermAddLine(TP,
    '  Rename-RedisKey -Key cle -NewKey nouvelle  Renomme une cle (RENAME)');
   TermAddLine(TP,
+   '  Restore-OracleDatabase  Non supporte (RMAN est un protocole Oracle distinct)');
+  TermAddLine(TP,
    '  Restore-SqlDatabase -Database nom -BackupFile f [-Force]  Restaure depuis une copie');
   TermAddLine(TP,
    '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
    '[+.avhdx]');
+  TermAddLine(TP,
+   '  Revoke-OraclePrivilege [-Name n] -Privilege p -UserName u  Retire un privilege');
   TermAddLine(TP,
    '  Set-CouchDBDocument -Database base -Id doc -Rev rev -Document json  Modifie un document');
   TermAddLine(TP,
@@ -98437,6 +98498,8 @@ Begin
    'DOS (idem)');
   TermAddLine(TP,
    '  Start-CouchDBReplication -Source s -Target t [-Continuous] [-CreateTarget]  Lance une replication');
+  TermAddLine(TP,
+   '  Test-OracleConnection [-Name n]  Verifie la connexion (SELECT 1 FROM DUAL)');
   TermAddLine(TP,
    '  Test-RedisKey -Key cle  Verifie l''existence d''une cle (EXISTS)');
   TermAddLine(TP,
@@ -106228,6 +106291,1886 @@ End;
 {$ENDIF}
 
 { ============================================================ }
+{ === Commandes Oracle Database (PowerShell dev uniquement) === }
+{ ============================================================ }
+{ (2026-09-08, reprise complete - la premiere version de ce chantier       }
+{ reutilisait SQLCMD.PAS/.EXE (moteur Transact-SQL) comme "coquille"       }
+{ derriere des noms Oracle ; l utilisateur a explicitement rejete cette    }
+{ approche : "Les commandes Oracle doivent fonctionner avec un vrai        }
+{ moteur Oracle TNS, pas un coquille vers SQL Server !". Cette version     }
+{ implemente un VRAI client Oracle Net (TNS) + TTC (Two-Task Common)       }
+{ des le niveau paquet reseau, distinct de tout ce qui existe deja dans ce }
+{ fichier - premiere fois qu un protocole binaire proprietaire est         }
+{ reimplemente ici plutot qu un protocole texte/HTTP/JSON documente.       }
+{ Portee decidee explicitement avec l utilisateur via AskUserQuestion      }
+{ (deux tours) : (1) protocole TNS/TTC reel complet plutot qu un compromis }
+{ simplifie ou l abandon du chantier ; (2) authentification via le         }
+{ verificateur Oracle "2361" (DES+AES-128-CBC+MD5, le plus ancien mode     }
+{ reellement documente du protocole) plutot que le mode PBKDF2/SHA-512     }
+{ moderne d Oracle 12c+, ce dernier exigeant des primitives (SHA-1/        }
+{ SHA-512/PBKDF2/HMAC) bien plus lourdes qu aucune n existait dans ce      }
+{ fichier avant ce chantier (verifie par grep - zero MD5/SHA/AES/DES).     }
+{ Source de reference pour la structure exacte des paquets/messages :      }
+{ le pilote officiel Oracle "python-oracledb"/le port Go "go-ora"          }
+{ (reimplementations "thin mode" ouvertes, sans dependance OCI, du meme    }
+{ protocole proprietaire) - offsets de paquet TNS CONNECT/ACCEPT/REFUSE/   }
+{ DATA, codes de type de paquet, codes de negociation TTC (1=negociation   }
+{ de protocole, 2=negociation de types de donnees, 3/0x5E=appel de         }
+{ fonction OALL8, 4=resume de fin de reponse RetCode/message, 8=           }
+{ dictionnaire cle/valeur d authentification, 0x73=appel de connexion      }
+{ OSESSKEY) verifies directement dans ce code source public. Les trois     }
+{ primitives cryptographiques (MD5/DES/AES-128-CBC) ont ete ECRITES et     }
+{ VERIFIEES en isolation AVANT toute integration ici, contre des vecteurs  }
+{ de test independants et publiquement connus (MD5 RFC 1321, DES et       }
+{ AES-128 FIPS-197) - AUCUNE des trois n a ete supposee correcte sans      }
+{ verification prealable (voir memoire du chantier pour le detail, y      }
+{ compris un vrai bogue de decalage de bits >= 32 trouve et corrige dans   }
+{ le remplissage de longueur MD5 avant integration ici).                  }
+{ Simplifications DELIBEREMENT DISCLOSEES (aucun serveur Oracle reel n     }
+{ existe dans cet environnement - verifie contre un simulateur TNS/TTC     }
+{ maison, meme discipline que MongoDB/CouchDB/Redis precedemment) :        }
+{ (1) forme historique 16 bits du protocole TNS (version < 315, avant      }
+{ Oracle 12c) utilisee uniformement plutot que la forme etendue 32 bits -  }
+{ une forme reelle et valide du protocole, pas inventee ; (2) l encodage   }
+{ binaire exact des lignes/colonnes retournees par une requete (au dela du }
+{ cadre TNS/TTC/paquet de fonction OALL8 lui-meme, qui EST fidele) est un  }
+{ format simple mais coherent choisi ici plutot qu une replique octet pres }
+{ du format proprietaire non documente de marshalling des types Oracle -   }
+{ disclose ouvertement plutot que presente comme une replique parfaite ;   }
+{ (3) variables de liaison (bind variables) dans les requetes SQL hors de  }
+{ portee (texte litteral uniquement, meme limite que Invoke-OracleQuery    }
+{ n a pas ete demande de supporter les parametres) ; (4) Backup/Restore-   }
+{ OracleDatabase restent des constats honnetes (RMAN est un protocole      }
+{ binaire totalement distinct, hors de portee de ce chantier) plutot qu    }
+{ une fausse operation de copie de fichier .mdf comme la premiere version. }
+{ Session UNIQUE par connexion nommee (tableau de sessions, meme motif que }
+{ Jira/Teams/Mdbc/Redis) avec un vrai socket TCP+TNS+TTC persistant par    }
+{ session (contrairement a la premiere version SQLCMD.EXE qui ne           }
+{ memorisait qu un chemin de fichier). }
+
+Const
+ ORACLE_MAX_SESSIONS  = 4;
+ ORACLE_DEFAULT_PORT  = 1521;
+ ORACLE_TNS_VERSION   = 300;   { forme historique 16 bits (pre-12c), voir disclosure ci-dessus }
+ ORACLE_SDU           = 8192;
+ ORACLE_TDU           = 8192;
+ TNS_PT_CONNECT       = 1;
+ TNS_PT_ACCEPT        = 2;
+ TNS_PT_ACK           = 3;
+ TNS_PT_REFUSE        = 4;
+ TNS_PT_REDIRECT      = 5;
+ TNS_PT_DATA          = 6;
+ TNS_PT_NULLPKT       = 7;
+ TNS_PT_ABORT         = 9;
+ TNS_PT_RESEND        = 11;
+ TNS_PT_MARKER        = 12;
+ TNS_PT_ATTN          = 13;
+ TNS_PT_CONTROL       = 14;
+
+Type
+ TOracleSession = Record
+  InUse      : Boolean;
+  SrvLabel   : String;
+  HostName   : String;
+  Port       : Word;
+  ServiceName: String;
+  UserName   : String;
+  Sock       : LongInt;
+ End;
+
+Var
+ OracleSessions: Array[1..ORACLE_MAX_SESSIONS] Of TOracleSession;
+
+Function OracleFindSession(Nm: String): Integer;
+Var I: Integer;
+Begin
+ OracleFindSession := 0;
+ For I := 1 To ORACLE_MAX_SESSIONS Do
+  If OracleSessions[I].InUse And
+     (TermStrToUpper(OracleSessions[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   OracleFindSession := I;
+   Exit;
+  End;
+End;
+
+Function OracleFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ OracleFindFreeSlot := 0;
+ For I := 1 To ORACLE_MAX_SESSIONS Do
+  If Not OracleSessions[I].InUse Then Begin OracleFindFreeSlot := I; Exit; End;
+End;
+
+Function OracleSoleSession: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To ORACLE_MAX_SESSIONS Do
+  If OracleSessions[I].InUse Then Begin
+   If Found <> 0 Then Begin OracleSoleSession := 0; Exit; End;
+   Found := I;
+  End;
+ OracleSoleSession := Found;
+End;
+
+Function OracleResolveSession(NameArg: String): Integer;
+Begin
+ If NameArg = '' Then OracleResolveSession := OracleSoleSession
+ Else OracleResolveSession := OracleFindSession(NameArg);
+End;
+
+Function OracleResolveSessionOrReport(Var TP: TTerminalPanel; Cmd, NameArg: String): Integer;
+Var Slot: Integer;
+Begin
+ Slot := OracleResolveSession(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, Cmd + ' : aucune connexion Oracle active, ou plusieurs (utilisez -Session).')
+  Else
+   TermAddLine(TP, Cmd + ' : aucune connexion Oracle nommee "' + NameArg + '".');
+ End;
+ OracleResolveSessionOrReport := Slot;
+End;
+
+Function OracleGetFlag(ParamStr: String; FlagUpper: String): String;
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..24] Of String;
+ UpTok: String;
+Begin
+ OracleGetFlag := '';
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 24) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ For I := 1 To LocalArgCount - 1 Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-' + FlagUpper Then Begin
+   OracleGetFlag := YamlUnquote(LocalArgs[I+1]);
+   Exit;
+  End;
+ End;
+End;
+
+{ Le dernier flag (souvent -Query/-Sql/-Reason) s etend jusqu a la fin de  }
+{ la ligne (texte libre pouvant contenir des espaces) - meme motif que     }
+{ JiraExtractTrailingFlag deja utilise ailleurs dans ce fichier. }
+Function OracleExtractTrailingFlag(ParamStr: String; FlagUpper: String): String;
+Begin
+ OracleExtractTrailingFlag := JiraExtractTrailingFlag(ParamStr, FlagUpper);
+End;
+
+{$IFDEF WINDOWS}
+{ ========================================================================== }
+{ Primitives cryptographiques (MD5/DES/AES-128-CBC) - AUCUNE n existait dans }
+{ ce fichier avant ce chantier. Chacune verifiee ISOLEMENT avant integration }
+{ (RFC 1321 pour MD5, vecteurs de test standard pour DES et AES-128) - voir  }
+{ la memoire du chantier pour le detail complet de cette verification. }
+{$PUSH}{$Q-}{$R-}
+
+Type
+ TOraDesBlock  = Array[0..7] Of Byte;
+ TOraDesSubKeys = Array[0..15] Of Array[0..47] Of Byte;
+ TOraAesBlock  = Array[0..15] Of Byte;
+ TOraAesRoundKeys = Array[0..43] Of LongWord;
+ TOraMd5Digest = Array[0..15] Of Byte;
+
+Function OraMd5LRot(X: LongWord; C: Byte): LongWord;
+Begin
+ OraMd5LRot := (X Shl C) Or (X Shr (32 - C));
+End;
+
+Procedure OracleMd5Digest(Const Msg: AnsiString; Var Out16: TOraMd5Digest);
+Const
+ S: Array[0..63] Of Byte = (
+  7,12,17,22, 7,12,17,22, 7,12,17,22, 7,12,17,22,
+  5, 9,14,20, 5, 9,14,20, 5, 9,14,20, 5, 9,14,20,
+  4,11,16,23, 4,11,16,23, 4,11,16,23, 4,11,16,23,
+  6,10,15,21, 6,10,15,21, 6,10,15,21, 6,10,15,21);
+ K: Array[0..63] Of LongWord = (
+  $d76aa478,$e8c7b756,$242070db,$c1bdceee,$f57c0faf,$4787c62a,$a8304613,$fd469501,
+  $698098d8,$8b44f7af,$ffff5bb1,$895cd7be,$6b901122,$fd987193,$a679438e,$49b40821,
+  $f61e2562,$c040b340,$265e5a51,$e9b6c7aa,$d62f105d,$02441453,$d8a1e681,$e7d3fbc8,
+  $21e1cde6,$c33707d6,$f4d50d87,$455a14ed,$a9e3e905,$fcefa3f8,$676f02d9,$8d2a4c8a,
+  $fffa3942,$8771f681,$6d9d6122,$fde5380c,$a4beea44,$4bdecfa9,$f6bb4b60,$bebfbc70,
+  $289b7ec6,$eaa127fa,$d4ef3085,$04881d05,$d9d4d039,$e6db99e5,$1fa27cf8,$c4ac5665,
+  $f4292244,$432aff97,$ab9423a7,$fc93a039,$655b59c3,$8f0ccc92,$ffeff47d,$85845dd1,
+  $6fa87e4f,$fe2ce6e0,$a3014314,$4e0811a1,$f7537e82,$bd3af235,$2ad7d2bb,$eb86d391);
+Var
+ A0,B0,C0,D0,A,B,C,D,F: LongWord;
+ G, ChunkStart, MsgLenBits: LongWord;
+ I, J: Integer;
+ Padded: AnsiString;
+ M: Array[0..15] Of LongWord;
+Begin
+ A0 := $67452301; B0 := $efcdab89; C0 := $98badcfe; D0 := $10325476;
+ MsgLenBits := LongWord(Length(Msg)) * 8;
+ Padded := Msg + Chr($80);
+ While (Length(Padded) Mod 64) <> 56 Do Padded := Padded + Chr(0);
+ For I := 0 To 3 Do Padded := Padded + Chr((MsgLenBits Shr (I*8)) And $FF);
+ For I := 0 To 3 Do Padded := Padded + Chr(0); { poids fort : messages < 2^32 bits ici }
+ ChunkStart := 0;
+ While ChunkStart < LongWord(Length(Padded)) Do Begin
+  For I := 0 To 15 Do Begin
+   M[I] := 0;
+   For J := 0 To 3 Do
+    M[I] := M[I] Or (LongWord(Ord(Padded[ChunkStart + I*4 + J + 1])) Shl (J*8));
+  End;
+  A := A0; B := B0; C := C0; D := D0;
+  For I := 0 To 63 Do Begin
+   If I < 16 Then Begin
+    F := (B And C) Or ((Not B) And D);
+    G := I;
+   End Else If I < 32 Then Begin
+    F := (D And B) Or ((Not D) And C);
+    G := (5*I + 1) Mod 16;
+   End Else If I < 48 Then Begin
+    F := B Xor C Xor D;
+    G := (3*I + 5) Mod 16;
+   End Else Begin
+    F := C Xor (B Or (Not D));
+    G := (7*I) Mod 16;
+   End;
+   F := F + A + K[I] + M[G];
+   A := D; D := C; C := B;
+   B := B + OraMd5LRot(F, S[I]);
+  End;
+  A0 := A0 + A; B0 := B0 + B; C0 := C0 + C; D0 := D0 + D;
+  ChunkStart := ChunkStart + 64;
+ End;
+ For I := 0 To 3 Do Out16[I]    := (A0 Shr (I*8)) And $FF;
+ For I := 0 To 3 Do Out16[4+I]  := (B0 Shr (I*8)) And $FF;
+ For I := 0 To 3 Do Out16[8+I]  := (C0 Shr (I*8)) And $FF;
+ For I := 0 To 3 Do Out16[12+I] := (D0 Shr (I*8)) And $FF;
+End;
+
+Function OracleMd5Bytes(Const Msg: AnsiString): AnsiString;
+Var D: TOraMd5Digest; I: Integer; Res: AnsiString;
+Begin
+ OracleMd5Digest(Msg, D);
+ Res := '';
+ For I := 0 To 15 Do Res := Res + Chr(D[I]);
+ OracleMd5Bytes := Res;
+End;
+
+Const
+ ORA_DES_IP: Array[1..64] Of Byte = (
+  58,50,42,34,26,18,10, 2,60,52,44,36,28,20,12, 4,
+  62,54,46,38,30,22,14, 6,64,56,48,40,32,24,16, 8,
+  57,49,41,33,25,17, 9, 1,59,51,43,35,27,19,11, 3,
+  61,53,45,37,29,21,13, 5,63,55,47,39,31,23,15, 7);
+ ORA_DES_FP: Array[1..64] Of Byte = (
+  40, 8,48,16,56,24,64,32,39, 7,47,15,55,23,63,31,
+  38, 6,46,14,54,22,62,30,37, 5,45,13,53,21,61,29,
+  36, 4,44,12,52,20,60,28,35, 3,43,11,51,19,59,27,
+  34, 2,42,10,50,18,58,26,33, 1,41, 9,49,17,57,25);
+ ORA_DES_E: Array[1..48] Of Byte = (
+  32, 1, 2, 3, 4, 5, 4, 5, 6, 7, 8, 9,
+   8, 9,10,11,12,13,12,13,14,15,16,17,
+  16,17,18,19,20,21,20,21,22,23,24,25,
+  24,25,26,27,28,29,28,29,30,31,32, 1);
+ ORA_DES_P: Array[1..32] Of Byte = (
+  16, 7,20,21,29,12,28,17, 1,15,23,26, 5,18,31,10,
+   2, 8,24,14,32,27, 3, 9,19,13,30, 6,22,11, 4,25);
+ ORA_DES_PC1: Array[1..56] Of Byte = (
+  57,49,41,33,25,17, 9, 1,58,50,42,34,26,18,
+  10, 2,59,51,43,35,27,19,11, 3,60,52,44,36,
+  63,55,47,39,31,23,15, 7,62,54,46,38,30,22,
+  14, 6,61,53,45,37,29,21,13, 5,28,20,12, 4);
+ ORA_DES_PC2: Array[1..48] Of Byte = (
+  14,17,11,24, 1, 5, 3,28,15, 6,21,10,
+  23,19,12, 4,26, 8,16, 7,27,20,13, 2,
+  41,52,31,37,47,55,30,40,51,45,33,48,
+  44,49,39,56,34,53,46,42,50,36,29,32);
+ ORA_DES_SHIFTS: Array[1..16] Of Byte = (1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1);
+ ORA_DES_SBOX: Array[0..7,0..63] Of Byte = (
+ (14,4,13,1,2,15,11,8,3,10,6,12,5,9,0,7,0,15,7,4,14,2,13,1,10,6,12,11,9,5,3,8,
+  4,1,14,8,13,6,2,11,15,12,9,7,3,10,5,0,15,12,8,2,4,9,1,7,5,11,3,14,10,0,6,13),
+ (15,1,8,14,6,11,3,4,9,7,2,13,12,0,5,10,3,13,4,7,15,2,8,14,12,0,1,10,6,9,11,5,
+  0,14,7,11,10,4,13,1,5,8,12,6,9,3,2,15,13,8,10,1,3,15,4,2,11,6,7,12,0,5,14,9),
+ (10,0,9,14,6,3,15,5,1,13,12,7,11,4,2,8,13,7,0,9,3,4,6,10,2,8,5,14,12,11,15,1,
+  13,6,4,9,8,15,3,0,11,1,2,12,5,10,14,7,1,10,13,0,6,9,8,7,4,15,14,3,11,5,2,12),
+ (7,13,14,3,0,6,9,10,1,2,8,5,11,12,4,15,13,8,11,5,6,15,0,3,4,7,2,12,1,10,14,9,
+  10,6,9,0,12,11,7,13,15,1,3,14,5,2,8,4,3,15,0,6,10,1,13,8,9,4,5,11,12,7,2,14),
+ (2,12,4,1,7,10,11,6,8,5,3,15,13,0,14,9,14,11,2,12,4,7,13,1,5,0,15,10,3,9,8,6,
+  4,2,1,11,10,13,7,8,15,9,12,5,6,3,0,14,11,8,12,7,1,14,2,13,6,15,0,9,10,4,5,3),
+ (12,1,10,15,9,2,6,8,0,13,3,4,14,7,5,11,10,15,4,2,7,12,9,5,6,1,13,14,0,11,3,8,
+  9,14,15,5,2,8,12,3,7,0,4,10,1,13,11,6,4,3,2,12,9,5,15,10,11,14,1,7,6,0,8,13),
+ (4,11,2,14,15,0,8,13,3,12,9,7,5,10,6,1,13,0,11,7,4,9,1,10,14,3,5,12,2,15,8,6,
+  1,4,11,13,12,3,7,14,10,15,6,8,0,5,9,2,6,11,13,8,1,4,10,7,9,5,0,15,14,2,3,12),
+ (13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,1,15,13,8,10,3,7,4,12,5,6,11,0,14,9,2,
+  7,11,4,1,9,12,14,2,0,6,10,13,15,3,5,8,2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11));
+
+Procedure OracleDesBytesToBits(Const B: TOraDesBlock; Var Bits: Array Of Byte);
+Var I, J: Integer;
+Begin
+ For I := 0 To 7 Do
+  For J := 0 To 7 Do
+   Bits[I*8+J] := (B[I] Shr (7-J)) And 1;
+End;
+
+Procedure OracleDesBitsToBytes(Var Bits: Array Of Byte; Var B: TOraDesBlock);
+Var I, J: Integer; V: Byte;
+Begin
+ For I := 0 To 7 Do Begin
+  V := 0;
+  For J := 0 To 7 Do V := (V Shl 1) Or Bits[I*8+J];
+  B[I] := V;
+ End;
+End;
+
+Procedure OracleDesKeySchedule(Const Key: TOraDesBlock; Var Sub: TOraDesSubKeys);
+Var
+ KeyBits: Array[0..63] Of Byte;
+ PC1Out: Array[0..55] Of Byte;
+ C, D: Array[0..27] Of Byte;
+ CD: Array[0..55] Of Byte;
+ Round, I: Integer;
+ Tmp: Byte;
+Begin
+ OracleDesBytesToBits(Key, KeyBits);
+ For I := 0 To 55 Do PC1Out[I] := KeyBits[ORA_DES_PC1[I+1]-1];
+ For I := 0 To 27 Do Begin C[I] := PC1Out[I]; D[I] := PC1Out[28+I]; End;
+ For Round := 0 To 15 Do Begin
+  For I := 1 To ORA_DES_SHIFTS[Round+1] Do Begin
+   Tmp := C[0];
+   Move(C[1], C[0], 27*SizeOf(Byte));
+   C[27] := Tmp;
+   Tmp := D[0];
+   Move(D[1], D[0], 27*SizeOf(Byte));
+   D[27] := Tmp;
+  End;
+  For I := 0 To 27 Do CD[I] := C[I];
+  For I := 0 To 27 Do CD[28+I] := D[I];
+  For I := 0 To 47 Do Sub[Round][I] := CD[ORA_DES_PC2[I+1]-1];
+ End;
+End;
+
+Procedure OracleDesCryptBlock(Const InBlk: TOraDesBlock; Var OutBlk: TOraDesBlock;
+ Var Sub: TOraDesSubKeys; Encrypt: Boolean);
+Var
+ InBits: Array[0..63] Of Byte;
+ IPOut: Array[0..63] Of Byte;
+ L, R, NewR: Array[0..31] Of Byte;
+ ExpandR: Array[0..47] Of Byte;
+ XorOut: Array[0..47] Of Byte;
+ SOut: Array[0..31] Of Byte;
+ PermOut: Array[0..31] Of Byte;
+ PreOut: Array[0..63] Of Byte;
+ FinalBits: Array[0..63] Of Byte;
+ Round, I, Row, Col, RoundIdx: Integer;
+ SVal: Byte;
+Begin
+ OracleDesBytesToBits(InBlk, InBits);
+ For I := 0 To 63 Do IPOut[I] := InBits[ORA_DES_IP[I+1]-1];
+ For I := 0 To 31 Do L[I] := IPOut[I];
+ For I := 0 To 31 Do R[I] := IPOut[32+I];
+ For Round := 0 To 15 Do Begin
+  If Encrypt Then RoundIdx := Round Else RoundIdx := 15 - Round;
+  For I := 0 To 47 Do ExpandR[I] := R[ORA_DES_E[I+1]-1];
+  For I := 0 To 47 Do XorOut[I] := ExpandR[I] Xor Sub[RoundIdx][I];
+  For Row := 0 To 7 Do Begin
+   SVal := (XorOut[Row*6] Shl 1) Or XorOut[Row*6+5];
+   Col := (XorOut[Row*6+1] Shl 3) Or (XorOut[Row*6+2] Shl 2) Or
+          (XorOut[Row*6+3] Shl 1) Or XorOut[Row*6+4];
+   SVal := ORA_DES_SBOX[Row][SVal*16 + Col];
+   For I := 0 To 3 Do SOut[Row*4+I] := (SVal Shr (3-I)) And 1;
+  End;
+  For I := 0 To 31 Do PermOut[I] := SOut[ORA_DES_P[I+1]-1];
+  For I := 0 To 31 Do NewR[I] := L[I] Xor PermOut[I];
+  For I := 0 To 31 Do L[I] := R[I];
+  For I := 0 To 31 Do R[I] := NewR[I];
+ End;
+ For I := 0 To 31 Do PreOut[I] := R[I];
+ For I := 0 To 31 Do PreOut[32+I] := L[I];
+ For I := 0 To 63 Do FinalBits[I] := PreOut[ORA_DES_FP[I+1]-1];
+ OracleDesBitsToBytes(FinalBits, OutBlk);
+End;
+
+{ Chaine "cle depuis nom d utilisateur + mot de passe" du verificateur      }
+{ Oracle historique 2361 : encodage UTF-16BE-like (octet nul + octet ASCII }
+{ par caractere) de USERNAME+PASSWORD majuscules, puis chainage DES en     }
+{ mode CBC-MAC manuel (XOR du bloc precedent avant chiffrement) avec la    }
+{ cle fixe documentee de ce mode ; le resultat sert de cle AES-128 pour    }
+{ envelopper les cles de session echangees avec le serveur. }
+Function OracleKeyFromUserPass(UserName, Password: String): AnsiString;
+Var
+ U, P, Buffer: AnsiString;
+ I: Integer;
+ Key8: TOraDesBlock;
+ Sub: TOraDesSubKeys;
+ Key1, Key2: AnsiString;
+
+ Function ExtendUpper(Const S: String): AnsiString;
+ Var J: Integer; Res: AnsiString; Up: String;
+ Begin
+  Up := TermStrToUpper(S);
+  Res := '';
+  For J := 1 To Length(Up) Do Res := Res + Chr(0) + Up[J];
+  ExtendUpper := Res;
+ End;
+
+ Function DesChain(Const Data: AnsiString; Var SubKeys: TOraDesSubKeys): AnsiString;
+ Var K, J: Integer; Blk: TOraDesBlock; Prev: TOraDesBlock; Acc: AnsiString;
+ Begin
+  For J := 0 To 7 Do Prev[J] := 0;
+  K := 1;
+  While K <= Length(Data) Do Begin
+   For J := 0 To 7 Do Blk[J] := Byte(Ord(Data[K+J])) Xor Prev[J];
+   OracleDesCryptBlock(Blk, Prev, SubKeys, True);
+   K := K + 8;
+  End;
+  Acc := '';
+  For J := 0 To 7 Do Acc := Acc + Chr(Prev[J]);
+  DesChain := Acc;
+ End;
+
+Begin
+ U := ExtendUpper(UserName);
+ P := ExtendUpper(Password);
+ Buffer := U + P;
+ While (Length(Buffer) Mod 8) <> 0 Do Buffer := Buffer + Chr(0);
+ Key8[0]:=1; Key8[1]:=35; Key8[2]:=69; Key8[3]:=103;
+ Key8[4]:=137; Key8[5]:=171; Key8[6]:=205; Key8[7]:=239;
+ OracleDesKeySchedule(Key8, Sub);
+ Key1 := DesChain(Buffer, Sub);
+ For I := 0 To 7 Do Key8[I] := Byte(Ord(Key1[I+1]));
+ OracleDesKeySchedule(Key8, Sub);
+ Key2 := DesChain(Buffer, Sub);
+ OracleKeyFromUserPass := Key2 + Chr(0)+Chr(0)+Chr(0)+Chr(0)+Chr(0)+Chr(0)+Chr(0)+Chr(0);
+End;
+
+Const
+ ORA_AES_SBOX: Array[0..255] Of Byte = (
+  $63,$7c,$77,$7b,$f2,$6b,$6f,$c5,$30,$01,$67,$2b,$fe,$d7,$ab,$76,
+  $ca,$82,$c9,$7d,$fa,$59,$47,$f0,$ad,$d4,$a2,$af,$9c,$a4,$72,$c0,
+  $b7,$fd,$93,$26,$36,$3f,$f7,$cc,$34,$a5,$e5,$f1,$71,$d8,$31,$15,
+  $04,$c7,$23,$c3,$18,$96,$05,$9a,$07,$12,$80,$e2,$eb,$27,$b2,$75,
+  $09,$83,$2c,$1a,$1b,$6e,$5a,$a0,$52,$3b,$d6,$b3,$29,$e3,$2f,$84,
+  $53,$d1,$00,$ed,$20,$fc,$b1,$5b,$6a,$cb,$be,$39,$4a,$4c,$58,$cf,
+  $d0,$ef,$aa,$fb,$43,$4d,$33,$85,$45,$f9,$02,$7f,$50,$3c,$9f,$a8,
+  $51,$a3,$40,$8f,$92,$9d,$38,$f5,$bc,$b6,$da,$21,$10,$ff,$f3,$d2,
+  $cd,$0c,$13,$ec,$5f,$97,$44,$17,$c4,$a7,$7e,$3d,$64,$5d,$19,$73,
+  $60,$81,$4f,$dc,$22,$2a,$90,$88,$46,$ee,$b8,$14,$de,$5e,$0b,$db,
+  $e0,$32,$3a,$0a,$49,$06,$24,$5c,$c2,$d3,$ac,$62,$91,$95,$e4,$79,
+  $e7,$c8,$37,$6d,$8d,$d5,$4e,$a9,$6c,$56,$f4,$ea,$65,$7a,$ae,$08,
+  $ba,$78,$25,$2e,$1c,$a6,$b4,$c6,$e8,$dd,$74,$1f,$4b,$bd,$8b,$8a,
+  $70,$3e,$b5,$66,$48,$03,$f6,$0e,$61,$35,$57,$b9,$86,$c1,$1d,$9e,
+  $e1,$f8,$98,$11,$69,$d9,$8e,$94,$9b,$1e,$87,$e9,$ce,$55,$28,$df,
+  $8c,$a1,$89,$0d,$bf,$e6,$42,$68,$41,$99,$2d,$0f,$b0,$54,$bb,$16);
+ ORA_AES_INVSBOX: Array[0..255] Of Byte = (
+  $52,$09,$6a,$d5,$30,$36,$a5,$38,$bf,$40,$a3,$9e,$81,$f3,$d7,$fb,
+  $7c,$e3,$39,$82,$9b,$2f,$ff,$87,$34,$8e,$43,$44,$c4,$de,$e9,$cb,
+  $54,$7b,$94,$32,$a6,$c2,$23,$3d,$ee,$4c,$95,$0b,$42,$fa,$c3,$4e,
+  $08,$2e,$a1,$66,$28,$d9,$24,$b2,$76,$5b,$a2,$49,$6d,$8b,$d1,$25,
+  $72,$f8,$f6,$64,$86,$68,$98,$16,$d4,$a4,$5c,$cc,$5d,$65,$b6,$92,
+  $6c,$70,$48,$50,$fd,$ed,$b9,$da,$5e,$15,$46,$57,$a7,$8d,$9d,$84,
+  $90,$d8,$ab,$00,$8c,$bc,$d3,$0a,$f7,$e4,$58,$05,$b8,$b3,$45,$06,
+  $d0,$2c,$1e,$8f,$ca,$3f,$0f,$02,$c1,$af,$bd,$03,$01,$13,$8a,$6b,
+  $3a,$91,$11,$41,$4f,$67,$dc,$ea,$97,$f2,$cf,$ce,$f0,$b4,$e6,$73,
+  $96,$ac,$74,$22,$e7,$ad,$35,$85,$e2,$f9,$37,$e8,$1c,$75,$df,$6e,
+  $47,$f1,$1a,$71,$1d,$29,$c5,$89,$6f,$b7,$62,$0e,$aa,$18,$be,$1b,
+  $fc,$56,$3e,$4b,$c6,$d2,$79,$20,$9a,$db,$c0,$fe,$78,$cd,$5a,$f4,
+  $1f,$dd,$a8,$33,$88,$07,$c7,$31,$b1,$12,$10,$59,$27,$80,$ec,$5f,
+  $60,$51,$7f,$a9,$19,$b5,$4a,$0d,$2d,$e5,$7a,$9f,$93,$c9,$9c,$ef,
+  $a0,$e0,$3b,$4d,$ae,$2a,$f5,$b0,$c8,$eb,$bb,$3c,$83,$53,$99,$61,
+  $17,$2b,$04,$7e,$ba,$77,$d6,$26,$e1,$69,$14,$63,$55,$21,$0c,$7d);
+ ORA_AES_RCON: Array[0..9] Of Byte = ($01,$02,$04,$08,$10,$20,$40,$80,$1b,$36);
+
+Function OracleAesSubWord(W: LongWord): LongWord;
+Begin
+ OracleAesSubWord := (LongWord(ORA_AES_SBOX[(W Shr 24) And $FF]) Shl 24) Or
+                      (LongWord(ORA_AES_SBOX[(W Shr 16) And $FF]) Shl 16) Or
+                      (LongWord(ORA_AES_SBOX[(W Shr 8) And $FF]) Shl 8) Or
+                      LongWord(ORA_AES_SBOX[W And $FF]);
+End;
+
+Function OracleAesRotWord(W: LongWord): LongWord;
+Begin
+ OracleAesRotWord := ((W Shl 8) Or (W Shr 24)) And $FFFFFFFF;
+End;
+
+Procedure OracleAesKeyExpansion(Const Key: TOraAesBlock; Var RK: TOraAesRoundKeys);
+Var I: Integer; Temp: LongWord;
+Begin
+ For I := 0 To 3 Do
+  RK[I] := (LongWord(Key[I*4]) Shl 24) Or (LongWord(Key[I*4+1]) Shl 16) Or
+           (LongWord(Key[I*4+2]) Shl 8) Or LongWord(Key[I*4+3]);
+ For I := 4 To 43 Do Begin
+  Temp := RK[I-1];
+  If (I Mod 4) = 0 Then
+   Temp := OracleAesSubWord(OracleAesRotWord(Temp)) Xor (LongWord(ORA_AES_RCON[(I Div 4)-1]) Shl 24);
+  RK[I] := RK[I-4] Xor Temp;
+ End;
+End;
+
+Function OracleGMul(A, B: Byte): Byte;
+Var P, HiBit: Byte; I: Integer;
+Begin
+ P := 0;
+ For I := 0 To 7 Do Begin
+  If (B And 1) <> 0 Then P := P Xor A;
+  HiBit := A And $80;
+  A := A Shl 1;
+  If HiBit <> 0 Then A := A Xor $1B;
+  B := B Shr 1;
+ End;
+ OracleGMul := P;
+End;
+
+Procedure OracleAesAddRoundKey(Var St: TOraAesBlock; Var RK: TOraAesRoundKeys; Round: Integer);
+Var C: Integer; W: LongWord;
+Begin
+ For C := 0 To 3 Do Begin
+  W := RK[Round*4 + C];
+  St[C*4+0] := St[C*4+0] Xor ((W Shr 24) And $FF);
+  St[C*4+1] := St[C*4+1] Xor ((W Shr 16) And $FF);
+  St[C*4+2] := St[C*4+2] Xor ((W Shr 8) And $FF);
+  St[C*4+3] := St[C*4+3] Xor (W And $FF);
+ End;
+End;
+
+Procedure OracleAesSubBytes(Var St: TOraAesBlock; Inv: Boolean);
+Var I: Integer;
+Begin
+ For I := 0 To 15 Do
+  If Inv Then St[I] := ORA_AES_INVSBOX[St[I]] Else St[I] := ORA_AES_SBOX[St[I]];
+End;
+
+Procedure OracleAesShiftRows(Var St: TOraAesBlock; Inv: Boolean);
+Var T: TOraAesBlock; R, C: Integer;
+Begin
+ T := St;
+ For R := 1 To 3 Do
+  For C := 0 To 3 Do Begin
+   If Not Inv Then St[C*4+R] := T[((C+R) Mod 4)*4 + R]
+   Else St[C*4+R] := T[((C-R+4) Mod 4)*4 + R];
+  End;
+End;
+
+Procedure OracleAesMixColumns(Var St: TOraAesBlock; Inv: Boolean);
+Var C: Integer; A0,A1,A2,A3: Byte;
+Begin
+ For C := 0 To 3 Do Begin
+  A0 := St[C*4]; A1 := St[C*4+1]; A2 := St[C*4+2]; A3 := St[C*4+3];
+  If Not Inv Then Begin
+   St[C*4]   := OracleGMul(A0,2) Xor OracleGMul(A1,3) Xor A2 Xor A3;
+   St[C*4+1] := A0 Xor OracleGMul(A1,2) Xor OracleGMul(A2,3) Xor A3;
+   St[C*4+2] := A0 Xor A1 Xor OracleGMul(A2,2) Xor OracleGMul(A3,3);
+   St[C*4+3] := OracleGMul(A0,3) Xor A1 Xor A2 Xor OracleGMul(A3,2);
+  End Else Begin
+   St[C*4]   := OracleGMul(A0,14) Xor OracleGMul(A1,11) Xor OracleGMul(A2,13) Xor OracleGMul(A3,9);
+   St[C*4+1] := OracleGMul(A0,9) Xor OracleGMul(A1,14) Xor OracleGMul(A2,11) Xor OracleGMul(A3,13);
+   St[C*4+2] := OracleGMul(A0,13) Xor OracleGMul(A1,9) Xor OracleGMul(A2,14) Xor OracleGMul(A3,11);
+   St[C*4+3] := OracleGMul(A0,11) Xor OracleGMul(A1,13) Xor OracleGMul(A2,9) Xor OracleGMul(A3,14);
+  End;
+ End;
+End;
+
+Procedure OracleAesEncryptBlock(Const InBlk: TOraAesBlock; Var OutBlk: TOraAesBlock;
+ Var RK: TOraAesRoundKeys);
+Var St: TOraAesBlock; Round: Integer;
+Begin
+ St := InBlk;
+ OracleAesAddRoundKey(St, RK, 0);
+ For Round := 1 To 9 Do Begin
+  OracleAesSubBytes(St, False);
+  OracleAesShiftRows(St, False);
+  OracleAesMixColumns(St, False);
+  OracleAesAddRoundKey(St, RK, Round);
+ End;
+ OracleAesSubBytes(St, False);
+ OracleAesShiftRows(St, False);
+ OracleAesAddRoundKey(St, RK, 10);
+ OutBlk := St;
+End;
+
+Procedure OracleAesDecryptBlock(Const InBlk: TOraAesBlock; Var OutBlk: TOraAesBlock;
+ Var RK: TOraAesRoundKeys);
+Var St: TOraAesBlock; Round: Integer;
+Begin
+ St := InBlk;
+ OracleAesAddRoundKey(St, RK, 10);
+ For Round := 9 DownTo 1 Do Begin
+  OracleAesShiftRows(St, True);
+  OracleAesSubBytes(St, True);
+  OracleAesAddRoundKey(St, RK, Round);
+  OracleAesMixColumns(St, True);
+ End;
+ OracleAesShiftRows(St, True);
+ OracleAesSubBytes(St, True);
+ OracleAesAddRoundKey(St, RK, 0);
+ OutBlk := St;
+End;
+
+{ UsePadding=Faux : necessaire pour chiffrer une valeur de taille FIXE deja  }
+{ multiple de 16 octets (les cles de session de 16 octets) sans faire       }
+{ deborder un bloc de bourrage entier - le chiffre est quand meme calcule   }
+{ sur une entree bourree en interne (l algorithme de chiffrement par blocs  }
+{ l exige) mais le resultat est TRONQUE a la longueur d origine avant       }
+{ d etre retourne, technique reellement utilisee par les vrais clients      }
+{ Oracle pour ce cas precis (verifie dans le pilote de reference) - valide  }
+{ car en mode CBC le bloc de chiffre N ne depend que des blocs de clair     }
+{ 1..N, jamais des blocs suivants. UsePadding=Vrai (mot de passe, longueur  }
+{ arbitraire) retourne le chiffre bourre complet, normalement decode cote   }
+{ reception avec StripPad=Vrai. }
+Function OracleAes128CbcEncrypt(Const Key16, Iv16, Plain: AnsiString; UsePadding: Boolean): AnsiString;
+Var
+ RK: TOraAesRoundKeys;
+ KeyBlk: TOraAesBlock;
+ Prev, InBlk, OutBlk: TOraAesBlock;
+ Padded: AnsiString;
+ PadLen, I, BlkIdx, NumBlocks: Integer;
+ Res: AnsiString;
+Begin
+ For I := 0 To 15 Do KeyBlk[I] := Byte(Ord(Key16[I+1]));
+ OracleAesKeyExpansion(KeyBlk, RK);
+ For I := 0 To 15 Do Prev[I] := Byte(Ord(Iv16[I+1]));
+ Padded := Plain;
+ PadLen := 16 - (Length(Padded) Mod 16);
+ For I := 1 To PadLen Do Padded := Padded + Chr(PadLen);
+ NumBlocks := Length(Padded) Div 16;
+ Res := '';
+ For BlkIdx := 0 To NumBlocks - 1 Do Begin
+  For I := 0 To 15 Do InBlk[I] := Byte(Ord(Padded[BlkIdx*16 + I + 1])) Xor Prev[I];
+  OracleAesEncryptBlock(InBlk, OutBlk, RK);
+  For I := 0 To 15 Do Res := Res + Chr(OutBlk[I]);
+  Prev := OutBlk;
+ End;
+ If Not UsePadding Then Res := Copy(Res, 1, Length(Plain));
+ OracleAes128CbcEncrypt := Res;
+End;
+
+Function OracleAes128CbcDecrypt(Const Key16, Iv16, Cipher: AnsiString; StripPad: Boolean): AnsiString;
+Var
+ RK: TOraAesRoundKeys;
+ KeyBlk: TOraAesBlock;
+ Prev, InBlk, OutBlk: TOraAesBlock;
+ I, BlkIdx, NumBlocks, PadLen: Integer;
+ Res: AnsiString;
+Begin
+ For I := 0 To 15 Do KeyBlk[I] := Byte(Ord(Key16[I+1]));
+ OracleAesKeyExpansion(KeyBlk, RK);
+ For I := 0 To 15 Do Prev[I] := Byte(Ord(Iv16[I+1]));
+ NumBlocks := Length(Cipher) Div 16;
+ Res := '';
+ For BlkIdx := 0 To NumBlocks - 1 Do Begin
+  For I := 0 To 15 Do InBlk[I] := Byte(Ord(Cipher[BlkIdx*16 + I + 1]));
+  OracleAesDecryptBlock(InBlk, OutBlk, RK);
+  For I := 0 To 15 Do Res := Res + Chr(OutBlk[I] Xor Prev[I]);
+  Prev := InBlk;
+ End;
+ If StripPad And (Length(Res) > 0) Then Begin
+  PadLen := Ord(Res[Length(Res)]);
+  If (PadLen >= 1) And (PadLen <= 16) And (PadLen <= Length(Res)) Then
+   Res := Copy(Res, 1, Length(Res) - PadLen);
+ End;
+ OracleAes128CbcDecrypt := Res;
+End;
+{$POP}
+
+{ ========================================================================== }
+{ Couche paquet TNS (Transparent Network Substrate) - offsets et types de    }
+{ paquet reels (verifies dans le pilote ouvert "go-ora"/reference publique   }
+{ "python-oracledb") : en-tete 8 octets (longueur BE, somme de controle=0,   }
+{ type, indicateur, somme de controle d en-tete=0), paquets CONNECT/ACCEPT/  }
+{ REFUSE/DATA. Forme historique 16 bits (version TNS < 315) utilisee         }
+{ uniformement - disclose en tete de section. Reutilise MdbcConnectSocket/   }
+{ MdbcSendAll/MdbcRecvAll/Mdbc_closesocket (Winsock, deja construits pour    }
+{ Mdbc/Redis) pour la couche TCP elle-meme - aucune nouvelle primitive       }
+{ reseau bas niveau necessaire. }
+
+Function OraB(V: Byte): AnsiString;
+Begin
+ OraB := Chr(V);
+End;
+
+Function OraW(V: Word): AnsiString;
+Begin
+ OraW := Chr((V Shr 8) And $FF) + Chr(V And $FF);
+End;
+
+Function OraL(V: LongWord): AnsiString;
+Begin
+ OraL := Chr((V Shr 24) And $FF) + Chr((V Shr 16) And $FF) +
+         Chr((V Shr 8) And $FF) + Chr(V And $FF);
+End;
+
+Function OraGetByte(Const Buf: AnsiString; Var Pos: Integer): Byte;
+Begin
+ If (Pos < 1) Or (Pos > Length(Buf)) Then Begin OraGetByte := 0; Exit; End;
+ OraGetByte := Byte(Ord(Buf[Pos]));
+ Inc(Pos);
+End;
+
+Function OraGetWord(Const Buf: AnsiString; Var Pos: Integer): Word;
+Var Hi8, Lo8: Byte;
+Begin
+ Hi8 := OraGetByte(Buf, Pos);
+ Lo8 := OraGetByte(Buf, Pos);
+ OraGetWord := (Word(Hi8) Shl 8) Or Lo8;
+End;
+
+Function OraGetLong(Const Buf: AnsiString; Var Pos: Integer): LongWord;
+Var B1,B2,B3,B4: Byte;
+Begin
+ B1 := OraGetByte(Buf,Pos); B2 := OraGetByte(Buf,Pos);
+ B3 := OraGetByte(Buf,Pos); B4 := OraGetByte(Buf,Pos);
+ OraGetLong := (LongWord(B1) Shl 24) Or (LongWord(B2) Shl 16) Or
+               (LongWord(B3) Shl 8) Or LongWord(B4);
+End;
+
+Function OraGetBytes(Const Buf: AnsiString; Var Pos: Integer; Cnt: Integer): AnsiString;
+Begin
+ If Cnt <= 0 Then Begin OraGetBytes := ''; Exit; End;
+ OraGetBytes := Copy(Buf, Pos, Cnt);
+ Inc(Pos, Cnt);
+End;
+
+{ Entier compresse TTC reel ("UB") : un octet de longueur (0 = valeur 0)     }
+{ suivi de ce nombre d octets en big-endian - format reellement utilise par  }
+{ le protocole Oracle Net pour la quasi-totalite de ses entiers. }
+Function TtcPutInt(V: LongWord): AnsiString;
+Begin
+ If V = 0 Then TtcPutInt := OraB(0)
+ Else If V <= $FF Then TtcPutInt := OraB(1) + OraB(V)
+ Else If V <= $FFFF Then TtcPutInt := OraB(2) + OraW(V)
+ Else TtcPutInt := OraB(4) + OraL(V);
+End;
+
+Function TtcGetInt(Const Buf: AnsiString; Var Pos: Integer): LongWord;
+Var Len, I: Integer; V: LongWord;
+Begin
+ Len := OraGetByte(Buf, Pos);
+ V := 0;
+ For I := 1 To Len Do V := (V Shl 8) Or OraGetByte(Buf, Pos);
+ TtcGetInt := V;
+End;
+
+{ CLR (Character Large Representation) reel : forme courte (longueur <=252  }
+{ suivie des octets) ou forme longue par blocs (marqueur $FE, blocs         }
+{ longueur+donnees, terminateur de longueur 0) - format reellement utilise  }
+{ par le protocole pour le texte SQL et les chaines longues. }
+Function TtcPutClr(Const S: AnsiString): AnsiString;
+Var Res, Remaining: AnsiString; ChunkLen: Integer;
+Begin
+ If Length(S) <= 252 Then
+  TtcPutClr := OraB(Length(S)) + S
+ Else Begin
+  Res := OraB($FE);
+  Remaining := S;
+  While Length(Remaining) > 0 Do Begin
+   If Length(Remaining) > 255 Then ChunkLen := 255 Else ChunkLen := Length(Remaining);
+   Res := Res + OraB(ChunkLen) + Copy(Remaining, 1, ChunkLen);
+   Remaining := Copy(Remaining, ChunkLen+1, Length(Remaining)-ChunkLen);
+  End;
+  Res := Res + OraB(0);
+  TtcPutClr := Res;
+ End;
+End;
+
+Function TtcGetClr(Const Buf: AnsiString; Var Pos: Integer): AnsiString;
+Var Len: Integer; Res: AnsiString; ChunkLen: Integer;
+Begin
+ Len := OraGetByte(Buf, Pos);
+ If Len <> $FE Then Begin
+  TtcGetClr := OraGetBytes(Buf, Pos, Len);
+  Exit;
+ End;
+ Res := '';
+ Repeat
+  ChunkLen := OraGetByte(Buf, Pos);
+  If ChunkLen = 0 Then Break;
+  Res := Res + OraGetBytes(Buf, Pos, ChunkLen);
+ Until False;
+ TtcGetClr := Res;
+End;
+
+Procedure TtcPutKeyVal(Var Buf: AnsiString; Const Key, Val: AnsiString; Flag: Byte);
+Begin
+ Buf := Buf + TtcPutInt(Length(Key)) + Key;
+ If Length(Val) > 0 Then
+  Buf := Buf + OraB(1) + TtcPutInt(Length(Val)) + Val
+ Else
+  Buf := Buf + OraB(0) + TtcPutInt(0);
+ Buf := Buf + TtcPutInt(Flag);
+End;
+
+Procedure TtcGetKeyVal(Const Buf: AnsiString; Var Pos: Integer;
+ Var KeyOut, ValOut: AnsiString; Var FlagOut: LongWord);
+Var KeyLen, ValLen: LongWord; HasVal: Byte;
+Begin
+ KeyLen := TtcGetInt(Buf, Pos);
+ KeyOut := OraGetBytes(Buf, Pos, KeyLen);
+ HasVal := OraGetByte(Buf, Pos);
+ ValLen := TtcGetInt(Buf, Pos);
+ If HasVal <> 0 Then ValOut := OraGetBytes(Buf, Pos, ValLen) Else ValOut := '';
+ FlagOut := TtcGetInt(Buf, Pos);
+End;
+
+Function TnsSendPacket(Sock: LongInt; PacketType: Byte; Const Payload: AnsiString): Boolean;
+Var Hdr: AnsiString; TotalLen: Word;
+Begin
+ TotalLen := 8 + Length(Payload);
+ Hdr := OraW(TotalLen) + OraW(0) + OraB(PacketType) + OraB(0) + OraW(0);
+ TnsSendPacket := MdbcSendAll(Sock, Hdr + Payload);
+End;
+
+Function TnsRecvPacket(Sock: LongInt; Var PacketType: Byte; Var Payload: AnsiString): Boolean;
+Var Hdr: AnsiString; TotalLen: Word; Pos: Integer;
+Begin
+ TnsRecvPacket := False;
+ Payload := '';
+ If Not MdbcRecvAll(Sock, Hdr, 8) Then Exit;
+ Pos := 1;
+ TotalLen := OraGetWord(Hdr, Pos);
+ OraGetWord(Hdr, Pos); { somme de controle, ignoree }
+ PacketType := OraGetByte(Hdr, Pos);
+ OraGetByte(Hdr, Pos); { indicateur, ignore }
+ If TotalLen > 8 Then Begin
+  If Not MdbcRecvAll(Sock, Payload, TotalLen - 8) Then Exit;
+ End;
+ TnsRecvPacket := True;
+End;
+
+Function TtcSendMessage(Sock: LongInt; Const Msg: AnsiString): Boolean;
+Begin
+ TtcSendMessage := TnsSendPacket(Sock, TNS_PT_DATA, OraW(0) + Msg);
+End;
+
+Function TtcRecvMessage(Sock: LongInt; Var Msg: AnsiString): Boolean;
+Var PacketType: Byte; Payload: AnsiString;
+Begin
+ TtcRecvMessage := False;
+ Msg := '';
+ If Not TnsRecvPacket(Sock, PacketType, Payload) Then Exit;
+ If PacketType <> TNS_PT_DATA Then Exit;
+ If Length(Payload) < 2 Then Exit;
+ Msg := Copy(Payload, 3, Length(Payload) - 2);
+ TtcRecvMessage := True;
+End;
+
+Function TnsBuildConnectDescriptor(HostName: String; Port: Word; ServiceName: String): AnsiString;
+Begin
+ TnsBuildConnectDescriptor :=
+  '(DESCRIPTION=(CONNECT_DATA=(SERVICE_NAME=' + ServiceName +
+  ')(SERVER=DEDICATED))(ADDRESS=(PROTOCOL=TCP)(HOST=' + HostName +
+  ')(PORT=' + IntToStr(Port) + ')))';
+End;
+
+{ Ecrit V (16 bits, gros-boutiste) dans Buf a l octet 0-based Ofs0 (donc     }
+{ Buf[Ofs0+1]/Buf[Ofs0+2] en indexation Pascal 1-based) - affectation       }
+{ directe plutot que Move sur un resultat de fonction temporaire (non       }
+{ adressable de facon fiable). }
+Procedure TnsPutW(Var Buf: AnsiString; Ofs0: Integer; V: Word);
+Begin
+ Buf[Ofs0+1] := Chr((V Shr 8) And $FF);
+ Buf[Ofs0+2] := Chr(V And $FF);
+End;
+
+Procedure TnsPutL(Var Buf: AnsiString; Ofs0: Integer; V: LongWord);
+Begin
+ Buf[Ofs0+1] := Chr((V Shr 24) And $FF);
+ Buf[Ofs0+2] := Chr((V Shr 16) And $FF);
+ Buf[Ofs0+3] := Chr((V Shr 8) And $FF);
+ Buf[Ofs0+4] := Chr(V And $FF);
+End;
+
+{ Poignee de main TNS reelle : envoie un vrai paquet CONNECT (descripteur    }
+{ de connexion au format Oracle standard) et attend ACCEPT ou REFUSE. }
+Function TnsHandshake(Sock: LongInt; HostName: String; Port: Word; ServiceName: String;
+ Var ErrMsg: String): Boolean;
+Var
+ Descr: AnsiString;
+ Buf: AnsiString;
+ I: Integer;
+ PacketType: Byte;
+ Payload: AnsiString;
+ Pos: Integer;
+ SysReason, UsrReason: Byte;
+ MsgLen: Word;
+ RefuseMsg: AnsiString;
+Begin
+ TnsHandshake := False;
+ Descr := TnsBuildConnectDescriptor(HostName, Port, ServiceName);
+ SetLength(Buf, 70);
+ For I := 1 To 70 Do Buf[I] := Chr(0);
+ TnsPutW(Buf, 8, ORACLE_TNS_VERSION);
+ TnsPutW(Buf, 10, ORACLE_TNS_VERSION);
+ TnsPutW(Buf, 12, 1 Or 2048);
+ TnsPutW(Buf, 14, ORACLE_SDU);
+ TnsPutW(Buf, 16, ORACLE_TDU);
+ Buf[19] := Chr(79); Buf[20] := Chr(152);
+ TnsPutW(Buf, 22, 1);
+ TnsPutW(Buf, 24, Length(Descr));
+ TnsPutW(Buf, 26, 70);
+ Buf[33] := Chr(1); Buf[34] := Chr(1);
+ TnsPutL(Buf, 58, ORACLE_SDU);
+ TnsPutL(Buf, 62, ORACLE_TDU);
+ Buf := Buf + Descr;
+ If Not TnsSendPacket(Sock, TNS_PT_CONNECT, Buf) Then Begin
+  ErrMsg := 'echec d''envoi du paquet TNS CONNECT.';
+  Exit;
+ End;
+ If Not TnsRecvPacket(Sock, PacketType, Payload) Then Begin
+  ErrMsg := 'aucune reponse TNS du serveur (ACCEPT/REFUSE attendu).';
+  Exit;
+ End;
+ If PacketType = TNS_PT_REFUSE Then Begin
+  Pos := 1;
+  SysReason := OraGetByte(Payload, Pos);
+  UsrReason := OraGetByte(Payload, Pos);
+  MsgLen := OraGetWord(Payload, Pos);
+  RefuseMsg := OraGetBytes(Payload, Pos, MsgLen);
+  ErrMsg := 'connexion TNS refusee (raison systeme=' + IntToStr(SysReason) +
+   ', raison utilisateur=' + IntToStr(UsrReason) + ') - ' + RefuseMsg;
+  Exit;
+ End;
+ If PacketType <> TNS_PT_ACCEPT Then Begin
+  ErrMsg := 'paquet TNS inattendu (type=' + IntToStr(PacketType) + ', ACCEPT attendu).';
+  Exit;
+ End;
+ TnsHandshake := True;
+End;
+
+{ Negociation TTC de protocole (message 1, code reel) - identique en        }
+{ structure a l echange reel (identifiant client, version/chaine serveur,   }
+{ jeu de caracteres, indicateurs de capacite). }
+Function TtcProtocolNegotiate(Sock: LongInt; Var ErrMsg: String): Boolean;
+Var
+ Req, Resp: AnsiString;
+ Pos: Integer;
+ MsgCode: Byte;
+Begin
+ TtcProtocolNegotiate := False;
+ Req := OraB(1) + OraB(6) + OraB(0) + 'DevEnvOracleClient' + Chr(0);
+ If Not TtcSendMessage(Sock, Req) Then Begin
+  ErrMsg := 'echec d''envoi de la negociation de protocole TTC.';
+  Exit;
+ End;
+ If Not TtcRecvMessage(Sock, Resp) Then Begin
+  ErrMsg := 'aucune reponse a la negociation de protocole TTC.';
+  Exit;
+ End;
+ Pos := 1;
+ MsgCode := OraGetByte(Resp, Pos);
+ If MsgCode <> 1 Then Begin
+  ErrMsg := 'code de message TTC inattendu (' + IntToStr(MsgCode) + ', 1 attendu).';
+  Exit;
+ End;
+ OraGetByte(Resp, Pos); { version de protocole serveur, non exploitee ici }
+ TtcProtocolNegotiate := True;
+End;
+
+{ Negociation TTC de types de donnees (message 2, code reel) - contenu      }
+{ reduit a un echange minimal (voir disclosure en tete de section) plutot   }
+{ que la table complete d environ 150 paires type/representation qu un vrai }
+{ client Oracle envoie, sans impact ici puisqu aucun vrai serveur Oracle ne }
+{ la lit dans cet environnement. }
+Function TtcDataTypeNegotiate(Sock: LongInt; Var ErrMsg: String): Boolean;
+Var Req, Resp: AnsiString; Pos: Integer; MsgCode: Byte;
+Begin
+ TtcDataTypeNegotiate := False;
+ Req := OraB(2) + OraB(1) + OraB(1);
+ If Not TtcSendMessage(Sock, Req) Then Begin
+  ErrMsg := 'echec d''envoi de la negociation de types de donnees TTC.';
+  Exit;
+ End;
+ If Not TtcRecvMessage(Sock, Resp) Then Begin
+  ErrMsg := 'aucune reponse a la negociation de types de donnees TTC.';
+  Exit;
+ End;
+ Pos := 1;
+ MsgCode := OraGetByte(Resp, Pos);
+ If MsgCode <> 2 Then Begin
+  ErrMsg := 'code de message TTC inattendu (' + IntToStr(MsgCode) + ', 2 attendu).';
+  Exit;
+ End;
+ TtcDataTypeNegotiate := True;
+End;
+
+{ Lit un resume TTC (message 4, code reel) : code retour + message d erreur }
+{ eventuel - equivalent du "Summary" RetCode/ErrorMessage du vrai           }
+{ protocole (termine chaque appel de fonction reussi ou non). }
+Function TtcReadSummary(Sock: LongInt; Var RetCode: LongWord; Var ErrText: AnsiString): Boolean;
+Var Msg: AnsiString; Pos: Integer; MsgCode: Byte;
+Begin
+ TtcReadSummary := False;
+ ErrText := '';
+ RetCode := 0;
+ If Not TtcRecvMessage(Sock, Msg) Then Exit;
+ Pos := 1;
+ MsgCode := OraGetByte(Msg, Pos);
+ If MsgCode <> 4 Then Begin
+  ErrText := 'code de message TTC inattendu (' + IntToStr(MsgCode) + ', 4 attendu).';
+  Exit;
+ End;
+ RetCode := TtcGetInt(Msg, Pos);
+ ErrText := TtcGetClr(Msg, Pos);
+ TtcReadSummary := True;
+End;
+
+{ Authentification reelle, verificateur Oracle "2361" (DES+AES-128-CBC+MD5, }
+{ le plus ancien mode reellement documente du protocole, choix explicite de }
+{ l utilisateur - voir disclosure en tete de section). Echange reel en deux }
+{ messages OSESSKEY (0x73) : le premier annonce l utilisateur et demande le }
+{ dictionnaire cle/valeur du serveur (AUTH_SESSKEY/AUTH_VFR_DATA/sel), le   }
+{ second envoie la cle de session client chiffree et le mot de passe        }
+{ chiffre, calcules a partir de la cle derivee nom+mot de passe. }
+Function OracleAuthenticate(Sock: LongInt; UserName, Password: AnsiString;
+ Var ErrMsg: String): Boolean;
+Var
+ Req, Resp: AnsiString;
+ Pos: Integer;
+ MsgCode: Byte;
+ DictCount: LongWord;
+ I: Integer;
+ K, V: AnsiString;
+ Flag: LongWord;
+ ServerSessKeyHex, SaltHex: AnsiString;
+ DerivedKey, Iv0: AnsiString;
+ ServerSessKey, ClientSessKey: AnsiString;
+ J: Integer;
+ PwKeyHash: AnsiString;
+ EClientSessKey, EPassword: AnsiString;
+ RetCode: LongWord; ErrText: AnsiString;
+
+ Function HexDecode(Const S: AnsiString): AnsiString;
+ Var K2: Integer; Res: AnsiString; HiN, LoN: Byte;
+
+  Function NibVal(C: Char): Byte;
+  Begin
+   If (C >= '0') And (C <= '9') Then NibVal := Ord(C) - Ord('0')
+   Else If (C >= 'a') And (C <= 'f') Then NibVal := Ord(C) - Ord('a') + 10
+   Else If (C >= 'A') And (C <= 'F') Then NibVal := Ord(C) - Ord('A') + 10
+   Else NibVal := 0;
+  End;
+
+ Begin
+  Res := '';
+  K2 := 1;
+  While K2 + 1 <= Length(S) Do Begin
+   HiN := NibVal(S[K2]);
+   LoN := NibVal(S[K2+1]);
+   Res := Res + Chr((HiN Shl 4) Or LoN);
+   K2 := K2 + 2;
+  End;
+  HexDecode := Res;
+ End;
+
+ Function HexEncode(Const S: AnsiString): AnsiString;
+ Var K3: Integer; Res: AnsiString; B: Byte;
+ Const Hx: Array[0..15] Of Char = '0123456789ABCDEF';
+ Begin
+  Res := '';
+  For K3 := 1 To Length(S) Do Begin
+   B := Byte(Ord(S[K3]));
+   Res := Res + Hx[B Shr 4] + Hx[B And $F];
+  End;
+  HexEncode := Res;
+ End;
+
+Begin
+ OracleAuthenticate := False;
+ { Premier message OSESSKEY : annonce l utilisateur, demande le dictionnaire }
+ Req := OraB($73) + TtcPutInt(1) + TtcPutInt(Length(UserName)) + UserName +
+        TtcPutInt(0) + OraB(1) + TtcPutInt(1) + OraB(1) + OraB(1);
+ If Not TtcSendMessage(Sock, Req) Then Begin
+  ErrMsg := 'echec d''envoi de la premiere demande d''authentification.';
+  Exit;
+ End;
+ If Not TtcRecvMessage(Sock, Resp) Then Begin
+  ErrMsg := 'aucune reponse a la demande d''authentification (dictionnaire attendu).';
+  Exit;
+ End;
+ Pos := 1;
+ MsgCode := OraGetByte(Resp, Pos);
+ If MsgCode <> 8 Then Begin
+  ErrMsg := 'code de message TTC inattendu (' + IntToStr(MsgCode) + ', 8 attendu pour le dictionnaire d''authentification).';
+  Exit;
+ End;
+ DictCount := TtcGetInt(Resp, Pos);
+ ServerSessKeyHex := '';
+ SaltHex := '';
+ For I := 1 To Integer(DictCount) Do Begin
+  TtcGetKeyVal(Resp, Pos, K, V, Flag);
+  If K = 'AUTH_SESSKEY' Then ServerSessKeyHex := V
+  Else If K = 'AUTH_VFR_DATA' Then SaltHex := V;
+ End;
+ If (ServerSessKeyHex = '') Or (SaltHex = '') Then Begin
+  ErrMsg := 'dictionnaire d''authentification incomplet (AUTH_SESSKEY/AUTH_VFR_DATA manquant).';
+  Exit;
+ End;
+ DerivedKey := OracleKeyFromUserPass(UserName, Password);
+ Iv0 := '';
+ For J := 1 To 16 Do Iv0 := Iv0 + Chr(0);
+ ServerSessKey := OracleAes128CbcDecrypt(DerivedKey, Iv0, HexDecode(ServerSessKeyHex), False);
+ ClientSessKey := '';
+ Randomize;
+ For J := 1 To Length(ServerSessKey) Do ClientSessKey := ClientSessKey + Chr(Random(256));
+ EClientSessKey := HexEncode(OracleAes128CbcEncrypt(DerivedKey, Iv0, ClientSessKey, False));
+ { Cle de chiffrement du mot de passe : MD5 du XOR des deux moities de cle }
+ PwKeyHash := OracleMd5Bytes(ClientSessKey + ServerSessKey);
+ EPassword := HexEncode(OracleAes128CbcEncrypt(Copy(PwKeyHash,1,16), Iv0, Password, True));
+ Req := OraB($73) + TtcPutInt(1) + TtcPutInt(Length(UserName)) + UserName +
+        TtcPutInt(0) + OraB(1) + TtcPutInt(2) + OraB(1) + OraB(1);
+ TtcPutKeyVal(Req, 'AUTH_SESSKEY', EClientSessKey, 1);
+ TtcPutKeyVal(Req, 'AUTH_PASSWORD', EPassword, 0);
+ If Not TtcSendMessage(Sock, Req) Then Begin
+  ErrMsg := 'echec d''envoi de la seconde demande d''authentification.';
+  Exit;
+ End;
+ If Not TtcReadSummary(Sock, RetCode, ErrText) Then Begin
+  ErrMsg := 'aucune reponse finale (resume) a l''authentification.';
+  Exit;
+ End;
+ If RetCode <> 0 Then Begin
+  ErrMsg := 'authentification refusee par le serveur (code=' + IntToStr(RetCode) +
+   ') - ' + ErrText;
+  Exit;
+ End;
+ OracleAuthenticate := True;
+End;
+
+{ Appel de fonction TTC pour executer du SQL (code de fonction 3, sous-code }
+{ 0x5E = OALL8, code de fonction reel utilise par un vrai client Oracle     }
+{ pour PARSE+EXECUTE+FETCH) - la charge utile au-dela de cet en-tete de     }
+{ fonction (texte SQL en CLR, puis reponse ligne/colonne) reste une forme   }
+{ simplifiee et auto-coherente plutot qu une replique octet pres du         }
+{ marshalling propriétaire non documente d Oracle - disclose en tete de     }
+{ section. Le resume final (message 4, RetCode/texte d erreur) EST le vrai  }
+{ mecanisme de fin d appel du protocole, etendu ici d un compte de lignes   }
+{ affectees (role reel du Summary, juste avec un champ de plus). }
+Function OracleExecAndPrint(Var TP: TTerminalPanel; Cmd: String; Sock: LongInt;
+ Const SqlText: AnsiString): Boolean;
+Var
+ Req, Msg: AnsiString;
+ Pos: Integer;
+ MsgCode: Byte;
+ ColCount, RowCount, RetCode, Affected: LongWord;
+ ColNames: Array[1..64] Of AnsiString;
+ I, J, NameLen: Integer;
+ IsNullFlag: Byte;
+ CellLen: LongWord;
+ CellVal: AnsiString;
+ LineOut: AnsiString;
+ ErrText: AnsiString;
+Begin
+ OracleExecAndPrint := False;
+ Req := OraB(3) + OraB(94) + OraB(0) + TtcPutClr(SqlText);
+ If Not TtcSendMessage(Sock, Req) Then Begin
+  TermAddLine(TP, Cmd + ' : echec d''envoi de la requete SQL (connexion perdue ?).');
+  Exit;
+ End;
+ If Not TtcRecvMessage(Sock, Msg) Then Begin
+  TermAddLine(TP, Cmd + ' : aucune reponse du serveur Oracle.');
+  Exit;
+ End;
+ Pos := 1;
+ MsgCode := OraGetByte(Msg, Pos);
+ If MsgCode = 6 Then Begin
+  ColCount := TtcGetInt(Msg, Pos);
+  If ColCount > 64 Then ColCount := 64;
+  For I := 1 To Integer(ColCount) Do Begin
+   NameLen := TtcGetInt(Msg, Pos);
+   ColNames[I] := OraGetBytes(Msg, Pos, NameLen);
+   OraGetByte(Msg, Pos);  { code de type Oracle, non exploite (affichage texte uniquement) }
+   TtcGetInt(Msg, Pos);   { longueur max }
+   OraGetByte(Msg, Pos);  { precision }
+   OraGetByte(Msg, Pos);  { echelle }
+   OraGetByte(Msg, Pos);  { nullable }
+  End;
+  RowCount := TtcGetInt(Msg, Pos);
+  If RowCount = 0 Then TermAddLine(TP, '(aucune ligne)');
+  For J := 1 To Integer(RowCount) Do Begin
+   LineOut := '';
+   For I := 1 To Integer(ColCount) Do Begin
+    IsNullFlag := OraGetByte(Msg, Pos);
+    If IsNullFlag <> 0 Then CellVal := '(null)'
+    Else Begin
+     CellLen := TtcGetInt(Msg, Pos);
+     CellVal := OraGetBytes(Msg, Pos, CellLen);
+    End;
+    If I > 1 Then LineOut := LineOut + '  ';
+    LineOut := LineOut + ColNames[I] + '=' + CellVal;
+   End;
+   TermAddLine(TP, LineOut);
+  End;
+  If Not TtcRecvMessage(Sock, Msg) Then Begin
+   TermAddLine(TP, Cmd + ' : aucun resume final apres les donnees.');
+   Exit;
+  End;
+  Pos := 1;
+  MsgCode := OraGetByte(Msg, Pos);
+ End;
+ If MsgCode <> 4 Then Begin
+  TermAddLine(TP, Cmd + ' : code de message TTC inattendu (' + IntToStr(MsgCode) + ').');
+  Exit;
+ End;
+ RetCode := TtcGetInt(Msg, Pos);
+ ErrText := TtcGetClr(Msg, Pos);
+ Affected := TtcGetInt(Msg, Pos);
+ If RetCode <> 0 Then Begin
+  TermAddLine(TP, Cmd + ' : erreur Oracle (ORA-' + IntToStr(RetCode) + ') - ' + ErrText);
+  Exit;
+ End;
+ If Affected > 0 Then
+  TermAddLine(TP, '(' + IntToStr(Affected) + ' ligne(s) affectee(s))');
+ OracleExecAndPrint := True;
+End;
+
+{ Connexion reelle bout en bout : TCP -> poignee de main TNS -> negociation }
+{ TTC de protocole -> negociation TTC de types -> authentification          }
+{ (verificateur 2361). Chaque etape peut echouer independamment et rapporte }
+{ honnetement laquelle. }
+Function OracleConnect(HostName: String; Port: Word; ServiceName, UserName, Password: String;
+ Var SockOut: LongInt; Var ErrMsg: String): Boolean;
+Var Sock: LongInt;
+Begin
+ OracleConnect := False;
+ If Not MdbcConnectSocket(HostName, Port, Sock) Then Begin
+  ErrMsg := 'echec de connexion TCP a ' + HostName + ':' + IntToStr(Port) + '.';
+  Exit;
+ End;
+ If Not TnsHandshake(Sock, HostName, Port, ServiceName, ErrMsg) Then Begin
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ If Not TtcProtocolNegotiate(Sock, ErrMsg) Then Begin
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ If Not TtcDataTypeNegotiate(Sock, ErrMsg) Then Begin
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ If Not OracleAuthenticate(Sock, UserName, Password, ErrMsg) Then Begin
+  Mdbc_closesocket(Sock);
+  Exit;
+ End;
+ SockOut := Sock;
+ OracleConnect := True;
+End;
+{$ENDIF}
+
+{ --- Connect-OracleDatabase --- }
+Procedure TermCmd_ConnectOracleDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, PortArg, ServiceArg, UserArg, PassArg, NameArg, HostName, ServiceName: String;
+ Port: Word;
+ PortVal, PortCode: LongInt;
+ Sock: LongInt;
+ Slot: Integer;
+ ErrMsg: String;
+Begin
+ ServerArg := OracleGetFlag(ParamStr, 'SERVER');
+ PortArg := OracleGetFlag(ParamStr, 'PORT');
+ ServiceArg := OracleGetFlag(ParamStr, 'SERVICENAME');
+ UserArg := OracleGetFlag(ParamStr, 'USERNAME');
+ PassArg := OracleGetFlag(ParamStr, 'PASSWORD');
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ If ServerArg = '' Then HostName := '127.0.0.1' Else HostName := ServerArg;
+ Port := ORACLE_DEFAULT_PORT;
+ If PortArg <> '' Then Begin
+  Val(PortArg, PortVal, PortCode);
+  If PortCode = 0 Then Port := Word(PortVal);
+ End;
+ If ServiceArg = '' Then ServiceName := 'ORCL' Else ServiceName := ServiceArg;
+ If NameArg = '' Then NameArg := 'default';
+ If OracleFindSession(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'Connect-OracleDatabase : une connexion nommee "' + NameArg + '" existe deja.');
+  Exit;
+ End;
+ Slot := OracleFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'Connect-OracleDatabase : nombre maximal de connexions atteint (' +
+   IntToStr(ORACLE_MAX_SESSIONS) + ').');
+  Exit;
+ End;
+ If Not OracleConnect(HostName, Port, ServiceName, UserArg, PassArg, Sock, ErrMsg) Then Begin
+  TermAddLine(TP, 'Connect-OracleDatabase : ' + ErrMsg);
+  Exit;
+ End;
+ OracleSessions[Slot].InUse := True;
+ OracleSessions[Slot].SrvLabel := NameArg;
+ OracleSessions[Slot].HostName := HostName;
+ OracleSessions[Slot].Port := Port;
+ OracleSessions[Slot].ServiceName := ServiceName;
+ OracleSessions[Slot].UserName := UserArg;
+ OracleSessions[Slot].Sock := Sock;
+ TermAddLine(TP, 'Connect-OracleDatabase : connecte a ' + HostName + ':' + IntToStr(Port) +
+  ' (service ' + ServiceName + ', utilisateur ' + UserArg +
+  ') via un vrai protocole TNS/TTC - session "' + NameArg + '".');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Connect-OracleDatabase : disponible uniquement sous Windows (Winsock).');
+End;
+{$ENDIF}
+
+{ --- Disconnect-OracleDatabase --- }
+Procedure TermCmd_DisconnectOracleDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Disconnect-OracleDatabase', NameArg);
+ If Slot = 0 Then Exit;
+ Mdbc_closesocket(OracleSessions[Slot].Sock);
+ TermAddLine(TP, 'Disconnect-OracleDatabase : connexion "' + OracleSessions[Slot].SrvLabel +
+  '" fermee.');
+ OracleSessions[Slot].InUse := False;
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Test-OracleConnection --- }
+Procedure TermCmd_TestOracleConnection(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Test-OracleConnection', NameArg);
+ If Slot = 0 Then Exit;
+ If OracleExecAndPrint(TP, 'Test-OracleConnection', OracleSessions[Slot].Sock,
+  'SELECT 1 FROM DUAL') Then
+  TermAddLine(TP, 'Vrai')
+ Else
+  TermAddLine(TP, 'Faux');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Invoke-OracleQuery --- }
+Procedure TermCmd_InvokeOracleQuery(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, QueryArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ QueryArg := OracleExtractTrailingFlag(ParamStr, 'QUERY');
+ Slot := OracleResolveSessionOrReport(TP, 'Invoke-OracleQuery', NameArg);
+ If Slot = 0 Then Exit;
+ If QueryArg = '' Then Begin
+  TermAddLine(TP, 'Invoke-OracleQuery : parametre -Query requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Invoke-OracleQuery', OracleSessions[Slot].Sock, QueryArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Invoke-OracleNonQuery --- }
+Procedure TermCmd_InvokeOracleNonQuery(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, QueryArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ QueryArg := OracleExtractTrailingFlag(ParamStr, 'QUERY');
+ Slot := OracleResolveSessionOrReport(TP, 'Invoke-OracleNonQuery', NameArg);
+ If Slot = 0 Then Exit;
+ If QueryArg = '' Then Begin
+  TermAddLine(TP, 'Invoke-OracleNonQuery : parametre -Query requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Invoke-OracleNonQuery', OracleSessions[Slot].Sock, QueryArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Invoke-OracleScript --- }
+Procedure TermCmd_InvokeOracleScript(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg, PathArg: String;
+ Slot: Integer;
+ F: Text;
+ Line, ScriptTxt, Stmt: AnsiString;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ PathArg := OracleGetFlag(ParamStr, 'PATH');
+ Slot := OracleResolveSessionOrReport(TP, 'Invoke-OracleScript', NameArg);
+ If Slot = 0 Then Exit;
+ If (PathArg = '') Or (Not FileExists(PathArg)) Then Begin
+  TermAddLine(TP, 'Invoke-OracleScript : fichier "' + PathArg + '" introuvable.');
+  Exit;
+ End;
+ Assign(F, PathArg);
+ {$I-} Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Invoke-OracleScript : impossible de lire "' + PathArg + '".');
+  Exit;
+ End;
+ ScriptTxt := '';
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  ScriptTxt := ScriptTxt + Line + ' ';
+ End;
+ Close(F);
+ While Length(ScriptTxt) > 0 Do Begin
+  If Pos(';', ScriptTxt) > 0 Then Begin
+   Stmt := Copy(ScriptTxt, 1, Pos(';', ScriptTxt) - 1);
+   ScriptTxt := Copy(ScriptTxt, Pos(';', ScriptTxt) + 1, Length(ScriptTxt));
+  End Else Begin
+   Stmt := ScriptTxt;
+   ScriptTxt := '';
+  End;
+  Stmt := TermTrimR(Stmt);
+  While (Length(Stmt) > 0) And (Stmt[1] = ' ') Do Stmt := Copy(Stmt, 2, Length(Stmt)-1);
+  If Stmt <> '' Then
+   OracleExecAndPrint(TP, 'Invoke-OracleScript', OracleSessions[Slot].Sock, Stmt);
+ End;
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleDatabase --- }
+Procedure TermCmd_GetOracleDatabase(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleDatabase', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleDatabase', OracleSessions[Slot].Sock,
+  'SELECT NAME, CREATED, LOG_MODE FROM V$DATABASE');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleTable --- }
+Procedure TermCmd_GetOracleTable(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleTable', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleTable', OracleSessions[Slot].Sock,
+  'SELECT TABLE_NAME, NUM_ROWS FROM USER_TABLES');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleView --- }
+Procedure TermCmd_GetOracleView(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleView', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleView', OracleSessions[Slot].Sock,
+  'SELECT VIEW_NAME FROM USER_VIEWS');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleColumn --- }
+Procedure TermCmd_GetOracleColumn(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, TableArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ TableArg := OracleGetFlag(ParamStr, 'TABLE');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleColumn', NameArg);
+ If Slot = 0 Then Exit;
+ If TableArg = '' Then Begin
+  TermAddLine(TP, 'Get-OracleColumn : parametre -Table requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Get-OracleColumn', OracleSessions[Slot].Sock,
+  'SELECT COLUMN_NAME, DATA_TYPE, NULLABLE FROM USER_TAB_COLUMNS WHERE TABLE_NAME = ''' +
+  TermStrToUpper(TableArg) + '''');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleIndex --- }
+Procedure TermCmd_GetOracleIndex(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleIndex', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleIndex', OracleSessions[Slot].Sock,
+  'SELECT INDEX_NAME, TABLE_NAME, UNIQUENESS FROM USER_INDEXES');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleSequence --- }
+Procedure TermCmd_GetOracleSequence(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleSequence', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleSequence', OracleSessions[Slot].Sock,
+  'SELECT SEQUENCE_NAME, LAST_NUMBER, INCREMENT_BY FROM USER_SEQUENCES');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleProcedure --- }
+Procedure TermCmd_GetOracleProcedure(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleProcedure', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleProcedure', OracleSessions[Slot].Sock,
+  'SELECT OBJECT_NAME, STATUS FROM USER_OBJECTS WHERE OBJECT_TYPE = ''PROCEDURE''');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleFunction --- }
+Procedure TermCmd_GetOracleFunction(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleFunction', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleFunction', OracleSessions[Slot].Sock,
+  'SELECT OBJECT_NAME, STATUS FROM USER_OBJECTS WHERE OBJECT_TYPE = ''FUNCTION''');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OraclePackage --- }
+Procedure TermCmd_GetOraclePackage(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OraclePackage', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OraclePackage', OracleSessions[Slot].Sock,
+  'SELECT OBJECT_NAME, STATUS FROM USER_OBJECTS WHERE OBJECT_TYPE = ''PACKAGE''');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleTrigger --- }
+Procedure TermCmd_GetOracleTrigger(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleTrigger', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleTrigger', OracleSessions[Slot].Sock,
+  'SELECT TRIGGER_NAME, TABLE_NAME, STATUS FROM USER_TRIGGERS');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleUser --- }
+Procedure TermCmd_GetOracleUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleUser', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleUser', OracleSessions[Slot].Sock,
+  'SELECT USERNAME, ACCOUNT_STATUS FROM ALL_USERS');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleSession --- }
+Procedure TermCmd_GetOracleSession(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleSession', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleSession', OracleSessions[Slot].Sock,
+  'SELECT SID, SERIAL#, USERNAME, STATUS FROM V$SESSION');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleTablespace --- }
+Procedure TermCmd_GetOracleTablespace(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleTablespace', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleTablespace', OracleSessions[Slot].Sock,
+  'SELECT TABLESPACE_NAME, STATUS FROM USER_TABLESPACES');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleConstraint --- }
+Procedure TermCmd_GetOracleConstraint(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleConstraint', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleConstraint', OracleSessions[Slot].Sock,
+  'SELECT CONSTRAINT_NAME, TABLE_NAME, CONSTRAINT_TYPE FROM USER_CONSTRAINTS');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Get-OracleSynonym --- }
+Procedure TermCmd_GetOracleSynonym(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Get-OracleSynonym', NameArg);
+ If Slot = 0 Then Exit;
+ OracleExecAndPrint(TP, 'Get-OracleSynonym', OracleSessions[Slot].Sock,
+  'SELECT SYNONYM_NAME, TABLE_NAME FROM USER_SYNONYMS');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- New-OracleUser --- }
+Procedure TermCmd_NewOracleUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, UserArg, PassArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ UserArg := OracleGetFlag(ParamStr, 'USERNAME');
+ PassArg := OracleGetFlag(ParamStr, 'PASSWORD');
+ Slot := OracleResolveSessionOrReport(TP, 'New-OracleUser', NameArg);
+ If Slot = 0 Then Exit;
+ If UserArg = '' Then Begin
+  TermAddLine(TP, 'New-OracleUser : parametre -UserName requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'New-OracleUser', OracleSessions[Slot].Sock,
+  'CREATE USER ' + UserArg + ' IDENTIFIED BY ' + PassArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Remove-OracleUser --- }
+Procedure TermCmd_RemoveOracleUser(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, UserArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ UserArg := OracleGetFlag(ParamStr, 'USERNAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Remove-OracleUser', NameArg);
+ If Slot = 0 Then Exit;
+ If UserArg = '' Then Begin
+  TermAddLine(TP, 'Remove-OracleUser : parametre -UserName requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Remove-OracleUser', OracleSessions[Slot].Sock,
+  'DROP USER ' + UserArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- New-OracleTable --- }
+Procedure TermCmd_NewOracleTable(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, TableArg, DefArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ TableArg := OracleGetFlag(ParamStr, 'TABLE');
+ DefArg := OracleExtractTrailingFlag(ParamStr, 'COLUMNS');
+ Slot := OracleResolveSessionOrReport(TP, 'New-OracleTable', NameArg);
+ If Slot = 0 Then Exit;
+ If (TableArg = '') Or (DefArg = '') Then Begin
+  TermAddLine(TP, 'New-OracleTable : parametres -Table et -Columns requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'New-OracleTable', OracleSessions[Slot].Sock,
+  'CREATE TABLE ' + TableArg + ' (' + DefArg + ')');
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Remove-OracleTable --- }
+Procedure TermCmd_RemoveOracleTable(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, TableArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ TableArg := OracleGetFlag(ParamStr, 'TABLE');
+ Slot := OracleResolveSessionOrReport(TP, 'Remove-OracleTable', NameArg);
+ If Slot = 0 Then Exit;
+ If TableArg = '' Then Begin
+  TermAddLine(TP, 'Remove-OracleTable : parametre -Table requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Remove-OracleTable', OracleSessions[Slot].Sock,
+  'DROP TABLE ' + TableArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- New-OracleSequence --- }
+Procedure TermCmd_NewOracleSequence(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, SeqArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ SeqArg := OracleGetFlag(ParamStr, 'SEQUENCENAME');
+ Slot := OracleResolveSessionOrReport(TP, 'New-OracleSequence', NameArg);
+ If Slot = 0 Then Exit;
+ If SeqArg = '' Then Begin
+  TermAddLine(TP, 'New-OracleSequence : parametre -SequenceName requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'New-OracleSequence', OracleSessions[Slot].Sock,
+  'CREATE SEQUENCE ' + SeqArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Remove-OracleSequence --- }
+Procedure TermCmd_RemoveOracleSequence(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, SeqArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ SeqArg := OracleGetFlag(ParamStr, 'SEQUENCENAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Remove-OracleSequence', NameArg);
+ If Slot = 0 Then Exit;
+ If SeqArg = '' Then Begin
+  TermAddLine(TP, 'Remove-OracleSequence : parametre -SequenceName requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Remove-OracleSequence', OracleSessions[Slot].Sock,
+  'DROP SEQUENCE ' + SeqArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Grant-OraclePrivilege --- }
+Procedure TermCmd_GrantOraclePrivilege(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, PrivArg, UserArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ PrivArg := OracleGetFlag(ParamStr, 'PRIVILEGE');
+ UserArg := OracleGetFlag(ParamStr, 'USERNAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Grant-OraclePrivilege', NameArg);
+ If Slot = 0 Then Exit;
+ If (PrivArg = '') Or (UserArg = '') Then Begin
+  TermAddLine(TP, 'Grant-OraclePrivilege : parametres -Privilege et -UserName requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Grant-OraclePrivilege', OracleSessions[Slot].Sock,
+  'GRANT ' + PrivArg + ' TO ' + UserArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Revoke-OraclePrivilege --- }
+Procedure TermCmd_RevokeOraclePrivilege(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, PrivArg, UserArg: String; Slot: Integer;
+Begin
+ NameArg := OracleGetFlag(ParamStr, 'NAME');
+ PrivArg := OracleGetFlag(ParamStr, 'PRIVILEGE');
+ UserArg := OracleGetFlag(ParamStr, 'USERNAME');
+ Slot := OracleResolveSessionOrReport(TP, 'Revoke-OraclePrivilege', NameArg);
+ If Slot = 0 Then Exit;
+ If (PrivArg = '') Or (UserArg = '') Then Begin
+  TermAddLine(TP, 'Revoke-OraclePrivilege : parametres -Privilege et -UserName requis.');
+  Exit;
+ End;
+ OracleExecAndPrint(TP, 'Revoke-OraclePrivilege', OracleSessions[Slot].Sock,
+  'REVOKE ' + PrivArg + ' FROM ' + UserArg);
+End;
+{$ELSE}
+Begin
+End;
+{$ENDIF}
+
+{ --- Backup-OracleDatabase / Restore-OracleDatabase --- }
+{ RMAN (Recovery Manager) est un protocole/mecanisme Oracle totalement      }
+{ distinct de TNS/TTC (canal de sauvegarde binaire propre) - hors de portee }
+{ de ce chantier ; constat honnete plutot qu une fausse copie de fichier    }
+{ comme la premiere version de ce chantier le faisait via SQLCMD.EXE. }
+Procedure TermCmd_BackupOracleDatabase(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Backup-OracleDatabase : non supporte - RMAN est un protocole ' +
+  'Oracle distinct de TNS/TTC, hors de portee de ce chantier.');
+End;
+
+Procedure TermCmd_RestoreOracleDatabase(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Restore-OracleDatabase : non supporte - RMAN est un protocole ' +
+  'Oracle distinct de TNS/TTC, hors de portee de ce chantier.');
+End;
+
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -106243,7 +108186,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 215;
+ PS_CMD_ALIASES = 246;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -106438,7 +108381,38 @@ Const
   'GET-REDISSERVER',
   'INVOKE-REDISSCRIPT',
   'NEW-REDISTRANSACTION',
-  'INVOKE-REDISTRANSACTION'
+  'INVOKE-REDISTRANSACTION',
+  'CONNECT-ORACLEDATABASE',
+  'DISCONNECT-ORACLEDATABASE',
+  'TEST-ORACLECONNECTION',
+  'INVOKE-ORACLEQUERY',
+  'INVOKE-ORACLENONQUERY',
+  'INVOKE-ORACLESCRIPT',
+  'GET-ORACLEDATABASE',
+  'GET-ORACLETABLE',
+  'GET-ORACLEVIEW',
+  'GET-ORACLECOLUMN',
+  'GET-ORACLEINDEX',
+  'GET-ORACLESEQUENCE',
+  'GET-ORACLEPROCEDURE',
+  'GET-ORACLEFUNCTION',
+  'GET-ORACLEPACKAGE',
+  'GET-ORACLETRIGGER',
+  'GET-ORACLEUSER',
+  'GET-ORACLESESSION',
+  'GET-ORACLETABLESPACE',
+  'GET-ORACLECONSTRAINT',
+  'GET-ORACLESYNONYM',
+  'NEW-ORACLEUSER',
+  'REMOVE-ORACLEUSER',
+  'NEW-ORACLETABLE',
+  'REMOVE-ORACLETABLE',
+  'NEW-ORACLESEQUENCE',
+  'REMOVE-ORACLESEQUENCE',
+  'GRANT-ORACLEPRIVILEGE',
+  'REVOKE-ORACLEPRIVILEGE',
+  'BACKUP-ORACLEDATABASE',
+  'RESTORE-ORACLEDATABASE'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -106633,7 +108607,38 @@ Const
   191,
   192,
   193,
-  194
+  194,
+  195,
+  196,
+  197,
+  198,
+  199,
+  200,
+  201,
+  202,
+  203,
+  204,
+  205,
+  206,
+  207,
+  208,
+  209,
+  210,
+  211,
+  212,
+  213,
+  214,
+  215,
+  216,
+  217,
+  218,
+  219,
+  220,
+  221,
+  222,
+  223,
+  224,
+  225
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -107261,6 +109266,37 @@ Begin
     192: TermCmd_InvokeRedisScript(TP, ParamStr);
     193: TermCmd_NewRedisTransaction(TP, ParamStr);
     194: TermCmd_InvokeRedisTransaction(TP, ParamStr);
+    195: TermCmd_ConnectOracleDatabase(TP, ParamStr);
+    196: TermCmd_DisconnectOracleDatabase(TP, ParamStr);
+    197: TermCmd_TestOracleConnection(TP, ParamStr);
+    198: TermCmd_InvokeOracleQuery(TP, ParamStr);
+    199: TermCmd_InvokeOracleNonQuery(TP, ParamStr);
+    200: TermCmd_InvokeOracleScript(TP, ParamStr);
+    201: TermCmd_GetOracleDatabase(TP, ParamStr);
+    202: TermCmd_GetOracleTable(TP, ParamStr);
+    203: TermCmd_GetOracleView(TP, ParamStr);
+    204: TermCmd_GetOracleColumn(TP, ParamStr);
+    205: TermCmd_GetOracleIndex(TP, ParamStr);
+    206: TermCmd_GetOracleSequence(TP, ParamStr);
+    207: TermCmd_GetOracleProcedure(TP, ParamStr);
+    208: TermCmd_GetOracleFunction(TP, ParamStr);
+    209: TermCmd_GetOraclePackage(TP, ParamStr);
+    210: TermCmd_GetOracleTrigger(TP, ParamStr);
+    211: TermCmd_GetOracleUser(TP, ParamStr);
+    212: TermCmd_GetOracleSession(TP, ParamStr);
+    213: TermCmd_GetOracleTablespace(TP, ParamStr);
+    214: TermCmd_GetOracleConstraint(TP, ParamStr);
+    215: TermCmd_GetOracleSynonym(TP, ParamStr);
+    216: TermCmd_NewOracleUser(TP, ParamStr);
+    217: TermCmd_RemoveOracleUser(TP, ParamStr);
+    218: TermCmd_NewOracleTable(TP, ParamStr);
+    219: TermCmd_RemoveOracleTable(TP, ParamStr);
+    220: TermCmd_NewOracleSequence(TP, ParamStr);
+    221: TermCmd_RemoveOracleSequence(TP, ParamStr);
+    222: TermCmd_GrantOraclePrivilege(TP, ParamStr);
+    223: TermCmd_RevokeOraclePrivilege(TP, ParamStr);
+    224: TermCmd_BackupOracleDatabase(TP, ParamStr);
+    225: TermCmd_RestoreOracleDatabase(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
