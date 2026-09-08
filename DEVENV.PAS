@@ -98162,6 +98162,8 @@ Begin
    '  Add-VMSwitch/SwitchExtension*/SwitchTeamMember  Reconnues, sans ' +
    'equivalent');
   TermAddLine(TP,
+   '  Backup-SqlDatabase -Database nom -BackupFile f  Copie brute du .mdf (PAS le format .bak)');
+  TermAddLine(TP,
    '  Checkpoint-VM [-Path base]             Ecrit base.vmcx+.vmrs' +
    '[+.avhdx] (si actif)');
   TermAddLine(TP,
@@ -98306,6 +98308,12 @@ Begin
   TermAddLine(TP,
    '  Get-MdbcDatabase [-Session n]          Liste les bases MongoDB (listDatabases)');
   TermAddLine(TP,
+   '  Get-SqlAgent  SQL Server Agent non disponible sur ce moteur');
+  TermAddLine(TP,
+   '  Get-SqlDatabase [-ServerInstance chemin] [-Name nom]  Affiche la base "master"');
+  TermAddLine(TP,
+   '  Get-SqlErrorLog  Journal ERRORLOG non disponible sur ce moteur');
+  TermAddLine(TP,
    '  Get-Team [-GroupId id] [-DisplayName n] [-Session n]  Liste/affiche des equipes');
   TermAddLine(TP,
    '  Get-TeamChannel -GroupId id [-Session n]  Liste les canaux d''une equipe');
@@ -98322,13 +98330,19 @@ Begin
   TermAddLine(TP,
    '  Invoke-MdbcCommand -Command json [-DatabaseName b]  Commande MongoDB brute (passe-plat)');
   TermAddLine(TP,
+   '  Invoke-Sqlcmd [-ServerInstance chemin] [-Database nom] -Query "texte"  Execute du T-SQL');
+  TermAddLine(TP,
    '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
   TermAddLine(TP,
    '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
   TermAddLine(TP,
+   '  New-SqlBackupEncryptionOption -Algorithm a -EncryptorType t -EncryptorName n  Descripteur');
+  TermAddLine(TP,
    '  New-Team -DisplayName n [-Description d] [-Visibility Public|Private]  Cree une equipe');
   TermAddLine(TP,
    '  New-TeamChannel -GroupId id -DisplayName n [-Description d]  Cree un canal');
+  TermAddLine(TP,
+   '  Read-SqlTableData -TableName t [-ColumnName c1,c2] [-TopN n] -Filter "clause"  Lit des lignes');
   TermAddLine(TP,
    '  Remove-MdbcCollection -CollectionName c [-DatabaseName b]  Supprime une collection');
   TermAddLine(TP,
@@ -98341,6 +98355,8 @@ Begin
    '  Remove-TeamChannel -GroupId id -DisplayName n [-Session n]  Supprime un canal');
   TermAddLine(TP,
    '  Remove-TeamUser -GroupId id -User u [-Role Owner|Member]  Retire un membre');
+  TermAddLine(TP,
+   '  Restore-SqlDatabase -Database nom -BackupFile f [-Force]  Restaure depuis une copie');
   TermAddLine(TP,
    '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
    '[+.avhdx]');
@@ -98358,7 +98374,13 @@ Begin
    '  Set-Variable NOM VALEUR              Definit une variable d''env. ' +
    'DOS (idem)');
   TermAddLine(TP,
+   '  Test-SqlAvailabilityGroup  Groupes de disponibilite non geres (fichier .mdf unique)');
+  TermAddLine(TP,
+   '  Test-SqlDatabaseReplicaState  Repliques non gerees (fichier .mdf unique)');
+  TermAddLine(TP,
    '  Update-MdbcData -Filter json -Update json [-Multi]  Modifie via operateurs $set etc.');
+  TermAddLine(TP,
+   '  Write-SqlTableData -TableName t -InputData json  Insere des lignes (INSERT reel)');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
  { seulement (demande explicite de l utilisateur, 2026-08-30) - PAS          }
@@ -103809,6 +103831,548 @@ End;
 {$ENDIF}
 
 { ============================================================ }
+{ === Commandes SQL Server (PowerShell dev uniquement)     === }
+{ ============================================================ }
+{ (2026-09-07, demande explicite) : Invoke-Sqlcmd/Get-SqlDatabase/           }
+{ Backup-SqlDatabase/Restore-SqlDatabase/New-SqlBackupEncryptionOption/      }
+{ Test-SqlAvailabilityGroup/Test-SqlDatabaseReplicaState/Get-SqlAgent/       }
+{ Get-SqlErrorLog/Read-SqlTableData/Write-SqlTableData - memes noms que le   }
+{ VRAI module PowerShell "SqlServer". Architecture TOTALEMENT differente     }
+{ des chantiers HTTP/socket precedents (MCP/Jira/Teams/Mdbc) : aucun         }
+{ nouveau protocole reseau n est necessaire, ce depot contient DEJA un vrai  }
+{ moteur SQL Server clone (SQLCMD.PAS/.EXE, voir project_devenv_sqlexplorer/ }
+{ project_devenv_sqlcmd_persistence) deja invoque en boite noire via         }
+{ RunCommandCaptureOutput par l Explorateur d objets SQL Server - ces        }
+{ cmdlets reutilisent EXACTEMENT le meme mecanisme (SqlCmdExePath/           }
+{ SqlCmdMasterMdfPath/SqlCmdEnsureMasterMdf/RunCommandCaptureOutput/         }
+{ SqlGridSplitField/SqlGridCountFields, tous deja globaux) plutot que d en   }
+{ ecrire un second. }
+{ Portee reelle de SQLCMD.PAS (confirmee par lecture directe avant d ecrire  }
+{ ce chantier) : SELECT (y compris TOP)/CREATE TABLE/INSERT ont une VRAIE    }
+{ execution persistee sur disque ; UPDATE/DELETE/CREATE DATABASE/index/vue/  }
+{ DCL restent parse-only (aucune ecriture) ; AUCUN BACKUP/RESTORE/Agent de   }
+{ travaux/journal d erreurs serveur n existe nulle part dans SQLCMD.PAS - ni }
+{ groupes de disponibilite AlwaysOn ni replication (moteur mono-fichier,     }
+{ un .mdf = une seule base "master", meme decision de portee deja actee     }
+{ pour l Explorateur). Les cmdlets ci-dessous reflètent cette realite plutot }
+{ que d inventer un comportement : Backup/Restore-SqlDatabase font une VRAIE }
+{ copie brute du fichier .mdf (pas le format .bak proprietaire MTF de SQL    }
+{ Server - disclose explicitement a chaque appel), New-SqlBackupEncryptionOption}
+{ construit un descripteur mais rappelle qu aucun chiffrement reel n est     }
+{ applique, et Test-SqlAvailabilityGroup/Test-SqlDatabaseReplicaState/       }
+{ Get-SqlAgent/Get-SqlErrorLog rapportent honnetement l absence de la        }
+{ fonctionnalite plutot que d afficher une fausse reponse "tout va bien". }
+
+{ Extrait la valeur d un drapeau "-Nom valeur" (un seul mot) - meme motif   }
+{ deja etabli (MdbcGetFlag) pour Jira/Teams/Mdbc, ici sous son propre nom    }
+{ pour rester independant si ce chantier evolue separement. }
+Function SqlPsGetFlag(ParamStr: String; FlagUpper: String): String;
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..24] Of String;
+ UpTok: String;
+Begin
+ SqlPsGetFlag := '';
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 24) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ For I := 1 To LocalArgCount - 1 Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-' + FlagUpper Then Begin
+   SqlPsGetFlag := YamlUnquote(LocalArgs[I+1]);
+   Exit;
+  End;
+ End;
+End;
+
+Function SqlPsHasFlag(ParamStr: String; FlagUpper: String): Boolean;
+Begin
+ SqlPsHasFlag := System.Pos('-' + FlagUpper, TermStrToUpper(ParamStr)) > 0;
+End;
+
+{ Resout -ServerInstance : vide -> chemin (localdb) par defaut (cree si      }
+{ absent, meme garde que SqlLoadTables) ; sinon le chemin .mdf donne tel     }
+{ quel (suppose deja existant, jamais cree - meme discipline que les         }
+{ connexions .mdf ajoutees manuellement dans l Explorateur, Etape 4). }
+Function SqlPsResolveServer(ServerArg: String): String;
+Begin
+ If ServerArg = '' Then Begin
+  SqlCmdEnsureMasterMdf;
+  SqlPsResolveServer := SqlCmdMasterMdfPath;
+ End Else
+  SqlPsResolveServer := ServerArg;
+End;
+
+{ Copie brute octet-pour-octet d un fichier vers un autre (Assign/Reset/     }
+{ Rewrite/BlockRead/BlockWrite non types, meme convention que Export-MdbcData}
+{ pour l ecriture) - utilisee par Backup/Restore-SqlDatabase puisque ce      }
+{ moteur mono-fichier .mdf n a pas de format de sauvegarde separe : "la      }
+{ base" EST le fichier, la sauvegarder EST le copier. }
+Function SqlCopyFileBytes(SrcPath, DstPath: String; Var BytesCopied: LongInt): Boolean;
+Var
+ SrcF, DstF: File;
+ Buf: Array[1..32768] Of Byte;
+ NRead, NWritten: LongInt;
+Begin
+ SqlCopyFileBytes := False;
+ BytesCopied := 0;
+ {$I-}
+ Assign(SrcF, SrcPath);
+ Reset(SrcF, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ {$I-}
+ Assign(DstF, DstPath);
+ Rewrite(DstF, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin Close(SrcF); Exit; End;
+ Repeat
+  BlockRead(SrcF, Buf, SizeOf(Buf), NRead);
+  If NRead > 0 Then Begin
+   BlockWrite(DstF, Buf, NRead, NWritten);
+   Inc(BytesCopied, NWritten);
+  End;
+ Until NRead < SizeOf(Buf);
+ Close(SrcF);
+ Close(DstF);
+ SqlCopyFileBytes := True;
+End;
+
+{ Convertit une valeur McpJsonValue (arbre generique deja construit pour     }
+{ MCP/Jira/Teams/Mdbc, reutilise ICI pour analyser -InputData de             }
+{ Write-SqlTableData) en litteral T-SQL - chaine avec guillemets simples     }
+{ doubles (echappement standard), nombre tel quel, booleen -> 1/0 (colonne   }
+{ BIT), null JSON -> mot-cle NULL. }
+Function SqlPsJsonValueToLiteral(V: PMcpJsonValue): AnsiString;
+Var Esc: AnsiString; I: Integer;
+Begin
+ If (V = Nil) Or (V^.Kind = mjNull) Then Begin
+  SqlPsJsonValueToLiteral := 'NULL';
+  Exit;
+ End;
+ Case V^.Kind Of
+  mjNumber: SqlPsJsonValueToLiteral := V^.StrVal;
+  mjBool: If V^.BoolVal Then SqlPsJsonValueToLiteral := '1' Else SqlPsJsonValueToLiteral := '0';
+  Else Begin
+   Esc := '';
+   For I := 1 To Length(V^.StrVal) Do Begin
+    If V^.StrVal[I] = '''' Then Esc := Esc + ''''''
+    Else Esc := Esc + V^.StrVal[I];
+   End;
+   SqlPsJsonValueToLiteral := '''' + Esc + '''';
+  End;
+ End;
+End;
+
+{ Construit "(v1,v2,...)" pour UNE ligne, dans l ordre de ColListCsv (liste  }
+{ de colonnes separees par virgule, construite depuis la PREMIERE ligne de   }
+{ -InputData) - une cle absente d une ligne suivante devient NULL plutot     }
+{ qu une erreur, une cle en trop est simplement ignoree (convention          }
+{ disclosee dans l aide). Reutilise SqlGridSplitField/SqlGridCountFields     }
+{ (deja globaux, ecrits pour l apercu de grille de l Explorateur SQL) plutot }
+{ qu un second decoupeur CSV. }
+Function SqlPsRowToValuesClause(RowObj: PMcpJsonValue; Const ColListCsv: String): AnsiString;
+Var
+ NCols, I: Integer;
+ ColName: String;
+ Res: AnsiString;
+Begin
+ Res := '(';
+ NCols := SqlGridCountFields(ColListCsv);
+ For I := 0 To NCols - 1 Do Begin
+  If I > 0 Then Res := Res + ',';
+  ColName := SqlGridSplitField(ColListCsv, I);
+  Res := Res + SqlPsJsonValueToLiteral(McpJsonGet(RowObj, ColName));
+ End;
+ SqlPsRowToValuesClause := Res + ')';
+End;
+
+{ --- Invoke-Sqlcmd --- }
+{ Passe-plat quasi brut (meme esprit qu Invoke-MdbcCommand) : construit la   }
+{ ligne de commande SQLCMD.EXE (-q ou -i) et affiche TOUTE sa sortie telle    }
+{ quelle - aucune tentative d interpreter succes/echec, SQLCMD.EXE l affiche }
+{ deja lui-meme ("Table 'X' creee.", "(N row(s) affected)", messages         }
+{ d erreur...). Format de sortie PAR DEFAUT de SQLCMD.EXE (pas -s/-W) pour   }
+{ rester fidele a ce qu un vrai `sqlcmd -q` afficherait a l ecran. }
+Procedure TermCmd_InvokeSqlcmd(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ QueryArg, FileArg, ServerArg, DbArg, MdfPath, Cmd: String;
+ Buf: TCmdOutputLines;
+ Cnt, I: Integer;
+Begin
+ QueryArg := JiraExtractTrailingFlag(ParamStr, 'QUERY');
+ FileArg := SqlPsGetFlag(ParamStr, 'INPUTFILE');
+ ServerArg := SqlPsGetFlag(ParamStr, 'SERVERINSTANCE');
+ DbArg := SqlPsGetFlag(ParamStr, 'DATABASE');
+ If (QueryArg = '') And (FileArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-Sqlcmd [-ServerInstance chemin] [-Database nom] ' +
+   '[-InputFile fichier.sql] -Query "texte T-SQL"');
+  Exit;
+ End;
+ MdfPath := SqlPsResolveServer(ServerArg);
+ If Not FileExists(MdfPath) Then Begin
+  TermAddLine(TP, 'Invoke-Sqlcmd : fichier introuvable - ' + MdfPath);
+  Exit;
+ End;
+ If (DbArg <> '') And (TermStrToUpper(DbArg) <> 'MASTER') Then
+  TermAddLine(TP, 'Invoke-Sqlcmd : ce moteur ne gere qu''une seule base par fichier ' +
+   '.mdf ("master") - -Database ignore.');
+ If FileArg <> '' Then
+  Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -i "' + FileArg + '"'
+ Else Begin
+  If System.Pos('"', QueryArg) > 0 Then Begin
+   TermAddLine(TP, 'Invoke-Sqlcmd : la requete ne peut pas contenir de guillemets ' +
+    'doubles (limitation de citation shell) - utilisez -InputFile.');
+   Exit;
+  End;
+  Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -q "' + QueryArg + '"';
+ End;
+ RunCommandCaptureOutput(Cmd, Buf, Cnt);
+ For I := 0 To Cnt - 1 Do TermAddLine(TP, Buf[I]);
+End;
+
+{ --- Get-SqlDatabase --- }
+{ Ce moteur mono-fichier .mdf n a AUCUNE vraie liste de bases (sp_databases  }
+{ de SQLCMD.PAS est un stub code en dur, "master 0 (default)" toujours) -   }
+{ plutot que de relayer cette taille fictive, la VRAIE taille du fichier     }
+{ .mdf est calculee ici directement (plus honnete que de reutiliser un stub }
+{ deja connu comme trompeur, voir project_devenv_sqlexplorer). }
+Procedure TermCmd_GetSqlDatabase(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ ServerArg, NameArg, MdfPath: String;
+ F: File;
+ Sz: LongInt;
+Begin
+ ServerArg := SqlPsGetFlag(ParamStr, 'SERVERINSTANCE');
+ NameArg := SqlPsGetFlag(ParamStr, 'NAME');
+ MdfPath := SqlPsResolveServer(ServerArg);
+ If Not FileExists(MdfPath) Then Begin
+  TermAddLine(TP, 'Get-SqlDatabase : fichier introuvable - ' + MdfPath);
+  Exit;
+ End;
+ If (NameArg <> '') And (TermStrToUpper(NameArg) <> 'MASTER') Then Begin
+  TermAddLine(TP, 'Get-SqlDatabase : aucune base nommee "' + NameArg + '" (ce moteur ' +
+   'ne gere qu''une seule base par fichier .mdf, "master").');
+  Exit;
+ End;
+ {$I-}
+ Assign(F, MdfPath);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Get-SqlDatabase : impossible de lire ' + MdfPath);
+  Exit;
+ End;
+ Sz := FileSize(F);
+ Close(F);
+ TermAddLine(TP, 'master  (' + IntToStr(Sz) + ' octets)  ' + MdfPath);
+End;
+
+{ --- Backup-SqlDatabase --- }
+{ Deviation deliberee et disclosee (meme esprit que les autres deviations    }
+{ d authentification/protocole de ce terminal) : PAS le format .bak          }
+{ proprietaire (MTF) de SQL Server - une copie brute du fichier .mdf. Reste  }
+{ un VRAI mecanisme de sauvegarde/restauration fonctionnel (aller-retour     }
+{ verifiable), simplement pas byte-compatible avec un vrai fichier .bak. }
+Procedure TermCmd_BackupSqlDatabase(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ DbArg, BackupArg, ServerArg, MdfPath: String;
+ Bytes: LongInt;
+Begin
+ DbArg := SqlPsGetFlag(ParamStr, 'DATABASE');
+ BackupArg := SqlPsGetFlag(ParamStr, 'BACKUPFILE');
+ ServerArg := SqlPsGetFlag(ParamStr, 'SERVERINSTANCE');
+ If BackupArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Backup-SqlDatabase -Database nom -BackupFile chemin ' +
+   '[-ServerInstance chemin]');
+  Exit;
+ End;
+ MdfPath := SqlPsResolveServer(ServerArg);
+ If Not FileExists(MdfPath) Then Begin
+  TermAddLine(TP, 'Backup-SqlDatabase : fichier introuvable - ' + MdfPath);
+  Exit;
+ End;
+ If (DbArg <> '') And (TermStrToUpper(DbArg) <> 'MASTER') Then
+  TermAddLine(TP, 'Backup-SqlDatabase : ce moteur ne gere qu''une seule base par ' +
+   'fichier .mdf ("master") - sauvegarde de "' + MdfPath + '" quand meme.');
+ If Not SqlCopyFileBytes(MdfPath, BackupArg, Bytes) Then Begin
+  TermAddLine(TP, 'Backup-SqlDatabase : echec de l''ecriture de ' + BackupArg);
+  Exit;
+ End;
+ TermAddLine(TP, 'Backup-SqlDatabase : ' + IntToStr(Bytes) + ' octets copies dans "' +
+  BackupArg + '" (copie brute du fichier .mdf - PAS le format .bak proprietaire ' +
+  'de SQL Server).');
+End;
+
+{ --- Restore-SqlDatabase --- }
+Procedure TermCmd_RestoreSqlDatabase(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ DbArg, BackupArg, ServerArg, MdfPath: String;
+ Bytes: LongInt;
+Begin
+ DbArg := SqlPsGetFlag(ParamStr, 'DATABASE');
+ BackupArg := SqlPsGetFlag(ParamStr, 'BACKUPFILE');
+ ServerArg := SqlPsGetFlag(ParamStr, 'SERVERINSTANCE');
+ If BackupArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Restore-SqlDatabase -Database nom -BackupFile chemin ' +
+   '[-ServerInstance chemin] [-Force]');
+  Exit;
+ End;
+ If Not FileExists(BackupArg) Then Begin
+  TermAddLine(TP, 'Restore-SqlDatabase : fichier de sauvegarde introuvable - ' + BackupArg);
+  Exit;
+ End;
+ If ServerArg = '' Then MdfPath := SqlCmdMasterMdfPath Else MdfPath := ServerArg;
+ If FileExists(MdfPath) And Not SqlPsHasFlag(ParamStr, 'FORCE') Then Begin
+  TermAddLine(TP, 'Restore-SqlDatabase : "' + MdfPath + '" existe deja - utilisez ' +
+   '-Force pour l''ecraser.');
+  Exit;
+ End;
+ If (DbArg <> '') And (TermStrToUpper(DbArg) <> 'MASTER') Then
+  TermAddLine(TP, 'Restore-SqlDatabase : ce moteur ne gere qu''une seule base par ' +
+   'fichier .mdf ("master") - restauration vers "' + MdfPath + '" quand meme.');
+ If Not SqlCopyFileBytes(BackupArg, MdfPath, Bytes) Then Begin
+  TermAddLine(TP, 'Restore-SqlDatabase : echec de l''ecriture de ' + MdfPath);
+  Exit;
+ End;
+ TermAddLine(TP, 'Restore-SqlDatabase : ' + IntToStr(Bytes) + ' octets restaures dans "' +
+  MdfPath + '".');
+End;
+
+{ --- New-SqlBackupEncryptionOption --- }
+{ Le vrai module construit un OBJET local (aucun appel serveur) que          }
+{ Backup-SqlDatabase -EncryptionOption consommerait ensuite - ici, valide et }
+{ affiche un descripteur mais rappelle explicitement qu aucun chiffrement    }
+{ reel n est applique par Backup-SqlDatabase de ce terminal (copie brute). }
+Procedure TermCmd_NewSqlBackupEncryptionOption(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ AlgArg, TypeArg, NameArg, UpAlg, UpType: String;
+Begin
+ AlgArg := SqlPsGetFlag(ParamStr, 'ALGORITHM');
+ TypeArg := SqlPsGetFlag(ParamStr, 'ENCRYPTORTYPE');
+ NameArg := SqlPsGetFlag(ParamStr, 'ENCRYPTORNAME');
+ If (AlgArg = '') Or (TypeArg = '') Or (NameArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : New-SqlBackupEncryptionOption -Algorithm ' +
+   'Aes128|Aes192|Aes256|TripleDes -EncryptorType ' +
+   'ServerCertificate|ServerAsymmetricKey -EncryptorName nom');
+  Exit;
+ End;
+ UpAlg := TermStrToUpper(AlgArg);
+ If (UpAlg <> 'AES128') And (UpAlg <> 'AES192') And (UpAlg <> 'AES256') And
+    (UpAlg <> 'TRIPLEDES') Then Begin
+  TermAddLine(TP, 'New-SqlBackupEncryptionOption : -Algorithm invalide.');
+  Exit;
+ End;
+ UpType := TermStrToUpper(TypeArg);
+ If (UpType <> 'SERVERCERTIFICATE') And (UpType <> 'SERVERASYMMETRICKEY') Then Begin
+  TermAddLine(TP, 'New-SqlBackupEncryptionOption : -EncryptorType invalide.');
+  Exit;
+ End;
+ TermAddLine(TP, 'New-SqlBackupEncryptionOption : option construite (Algorithm=' +
+  AlgArg + ', EncryptorType=' + TypeArg + ', EncryptorName=' + NameArg + ').');
+ TermAddLine(TP, '  NOTE : Backup-SqlDatabase de ce terminal effectue une copie ' +
+  'brute du fichier .mdf - aucun chiffrement reel n''est applique.');
+End;
+
+{ --- Test-SqlAvailabilityGroup / Test-SqlDatabaseReplicaState / Get-SqlAgent /}
+{ Get-SqlErrorLog --- }
+{ Aucune de ces 4 fonctionnalites n existe dans SQLCMD.PAS (moteur           }
+{ mono-fichier sans replication/AlwaysOn, sans ordonnanceur de travaux, sans }
+{ journal ERRORLOG persistant) - meme discipline que les dossiers            }
+{ "Securite"/"Objet serveur" honnetement vides de l Explorateur : rapporter  }
+{ clairement l absence plutot que d inventer un etat "tout va bien". }
+Procedure TermCmd_TestSqlAvailabilityGroup(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Test-SqlAvailabilityGroup : les groupes de disponibilite AlwaysOn ' +
+  'ne sont pas pris en charge par ce moteur (fichier .mdf unique, aucune ' +
+  'replication).');
+End;
+
+Procedure TermCmd_TestSqlDatabaseReplicaState(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Test-SqlDatabaseReplicaState : aucune replique - ce moteur ne gere ' +
+  'ni la replication ni les groupes de disponibilite (fichier .mdf unique).');
+End;
+
+Procedure TermCmd_GetSqlAgent(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Get-SqlAgent : SQL Server Agent n''est pas disponible sur ce moteur ' +
+  '(aucun ordonnanceur de travaux implemente dans SQLCMD.PAS).');
+End;
+
+Procedure TermCmd_GetSqlErrorLog(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Get-SqlErrorLog : aucun journal d''erreurs persistant - SQLCMD.PAS ' +
+  'n''ecrit aucun fichier journal serveur (ERRORLOG).');
+End;
+
+{ --- Read-SqlTableData --- }
+{ SELECT [TOP n] colonnes FROM table [WHERE filtre] via SQLCMD.EXE, meme     }
+{ format de sortie compact "-s , -W" et meme decoupage que l apercu de       }
+{ grille de l Explorateur SQL (SqlLoadTableGrid) - affiche chaque ligne      }
+{ "Col=Val, Col=Val" (aucun objet PowerShell reel dans ce terminal, meme     }
+{ convention texte que Get-MdbcData). }
+Procedure TermCmd_ReadSqlTableData(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FilterArg, TableArg, ServerArg, ColArg, TopArg, MdfPath, SelectCols, Query, Cmd: String;
+ ColNames: Array[0..SQL_GRID_MAX_COLS - 1] Of String;
+ Buf: TCmdOutputLines;
+ Cnt, I, J, ColCount: Integer;
+ Ln, RowText: String;
+Begin
+ FilterArg := JiraExtractTrailingFlag(ParamStr, 'FILTER');
+ TableArg := SqlPsGetFlag(ParamStr, 'TABLENAME');
+ ServerArg := SqlPsGetFlag(ParamStr, 'SERVERINSTANCE');
+ ColArg := SqlPsGetFlag(ParamStr, 'COLUMNNAME');
+ TopArg := SqlPsGetFlag(ParamStr, 'TOPN');
+ If TableArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Read-SqlTableData -TableName nom [-ColumnName c1,c2] ' +
+   '[-TopN n] [-ServerInstance chemin] -Filter "clause where"');
+  Exit;
+ End;
+ If System.Pos('"', TableArg) > 0 Then Begin
+  TermAddLine(TP, 'Read-SqlTableData : nom de table invalide.');
+  Exit;
+ End;
+ MdfPath := SqlPsResolveServer(ServerArg);
+ If Not FileExists(MdfPath) Then Begin
+  TermAddLine(TP, 'Read-SqlTableData : fichier introuvable - ' + MdfPath);
+  Exit;
+ End;
+ If ColArg = '' Then SelectCols := '*' Else SelectCols := ColArg;
+ Query := 'SELECT ';
+ If TopArg <> '' Then Query := Query + 'TOP ' + TopArg + ' ';
+ Query := Query + SelectCols + ' FROM ' + TableArg;
+ If FilterArg <> '' Then Query := Query + ' WHERE ' + FilterArg;
+ If System.Pos('"', Query) > 0 Then Begin
+  TermAddLine(TP, 'Read-SqlTableData : le filtre ne peut pas contenir de guillemets ' +
+   'doubles (limitation de citation shell).');
+  Exit;
+ End;
+ Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -q "' + Query + '" -s , -W';
+ RunCommandCaptureOutput(Cmd, Buf, Cnt);
+ If Cnt < 2 Then Begin
+  TermAddLine(TP, 'Read-SqlTableData : aucune donnee (reponse vide de SQLCMD.EXE).');
+  Exit;
+ End;
+ ColCount := SqlGridCountFields(Buf[0]);
+ If ColCount > SQL_GRID_MAX_COLS Then ColCount := SQL_GRID_MAX_COLS;
+ For I := 0 To ColCount - 1 Do ColNames[I] := SqlGridSplitField(Buf[0], I);
+ For I := 2 To Cnt - 1 Do Begin
+  Ln := Buf[I];
+  If TrimStr(Ln) = '' Then Break;
+  If Copy(TrimStr(Ln), 1, 1) = '(' Then Break;
+  RowText := '';
+  For J := 0 To ColCount - 1 Do Begin
+   If J > 0 Then RowText := RowText + ', ';
+   RowText := RowText + ColNames[J] + '=' + SqlGridSplitField(Ln, J);
+  End;
+  TermAddLine(TP, RowText);
+ End;
+End;
+
+{ --- Write-SqlTableData --- }
+{ -InputData : un objet JSON ou un tableau d objets (meme convention JSON    }
+{ compact que -Filter/-Document des chantiers precedents) ; la liste de      }
+{ colonnes est prise dans l ORDRE des cles de la PREMIERE ligne - une cle    }
+{ absente d une ligne suivante devient NULL, une cle en trop est ignoree     }
+{ (disclose dans l aide). Construit UN SEUL "INSERT INTO table (...) VALUES  }
+{ (...),(...),..." (le VRAI moteur INSERT de SQLCMD.PAS accepte deja         }
+{ plusieurs tuples VALUES, voir project_devenv_sqlcmd_persistence) plutot    }
+{ qu un appel SQLCMD.EXE par ligne. N affirme un succes QUE si la vraie      }
+{ ligne de confirmation "(N row(s) affected)" est retrouvee dans la sortie - }
+{ sinon affiche la sortie brute plutot que de supposer un succes. }
+Procedure TermCmd_WriteSqlTableData(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ TableArg, ServerArg, DataArg, MdfPath, Cmd, ColList, ValuesClause: String;
+ InputDoc, FirstRow: PMcpJsonValue;
+ It: PMcpJsonItem;
+ M: PMcpJsonMember;
+ P, I, Cnt: Integer;
+ First, Found: Boolean;
+ Buf: TCmdOutputLines;
+ Ln: String;
+Begin
+ DataArg := SqlPsGetFlag(ParamStr, 'INPUTDATA');
+ TableArg := SqlPsGetFlag(ParamStr, 'TABLENAME');
+ ServerArg := SqlPsGetFlag(ParamStr, 'SERVERINSTANCE');
+ If (TableArg = '') Or (DataArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Write-SqlTableData -TableName nom -InputData json ' +
+   '[-ServerInstance chemin]');
+  Exit;
+ End;
+ If System.Pos('"', TableArg) > 0 Then Begin
+  TermAddLine(TP, 'Write-SqlTableData : nom de table invalide.');
+  Exit;
+ End;
+ MdfPath := SqlPsResolveServer(ServerArg);
+ If Not FileExists(MdfPath) Then Begin
+  TermAddLine(TP, 'Write-SqlTableData : fichier introuvable - ' + MdfPath);
+  Exit;
+ End;
+ P := 1;
+ InputDoc := McpJsonParseValue(DataArg, P);
+ If InputDoc = Nil Then Begin
+  TermAddLine(TP, 'Write-SqlTableData : donnees JSON invalides.');
+  Exit;
+ End;
+ If InputDoc^.Kind = mjObject Then
+  FirstRow := InputDoc
+ Else If (InputDoc^.Kind = mjArray) And (InputDoc^.Items <> Nil) Then
+  FirstRow := InputDoc^.Items^.Value
+ Else Begin
+  TermAddLine(TP, 'Write-SqlTableData : -InputData doit etre un objet JSON ou un ' +
+   'tableau d''objets.');
+  McpJsonFree(InputDoc);
+  Exit;
+ End;
+ ColList := '';
+ First := True;
+ M := FirstRow^.Members;
+ While M <> Nil Do Begin
+  If Not First Then ColList := ColList + ',';
+  ColList := ColList + M^.Key;
+  First := False;
+  M := M^.Next;
+ End;
+ If InputDoc^.Kind = mjObject Then
+  ValuesClause := SqlPsRowToValuesClause(InputDoc, ColList)
+ Else Begin
+  ValuesClause := '';
+  First := True;
+  It := InputDoc^.Items;
+  While It <> Nil Do Begin
+   If Not First Then ValuesClause := ValuesClause + ',';
+   ValuesClause := ValuesClause + SqlPsRowToValuesClause(It^.Value, ColList);
+   First := False;
+   It := It^.Next;
+  End;
+ End;
+ McpJsonFree(InputDoc);
+ If (System.Pos('"', ColList) > 0) Or (System.Pos('"', ValuesClause) > 0) Then Begin
+  TermAddLine(TP, 'Write-SqlTableData : les noms de colonne/valeurs ne peuvent pas ' +
+   'contenir de guillemets doubles (limitation de citation shell).');
+  Exit;
+ End;
+ Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -q "INSERT INTO ' + TableArg +
+  ' (' + ColList + ') VALUES ' + ValuesClause + '"';
+ RunCommandCaptureOutput(Cmd, Buf, Cnt);
+ Found := False;
+ For I := 0 To Cnt - 1 Do Begin
+  Ln := TrimStr(Buf[I]);
+  If (Copy(Ln, 1, 1) = '(') And (System.Pos('affected', Ln) > 0) Then Begin
+   TermAddLine(TP, 'Write-SqlTableData : ' + Ln + ' dans "' + TableArg + '".');
+   Found := True;
+  End;
+ End;
+ If Not Found Then Begin
+  TermAddLine(TP, 'Write-SqlTableData : reponse de SQLCMD.EXE :');
+  For I := 0 To Cnt - 1 Do TermAddLine(TP, '  ' + Buf[I]);
+ End;
+End;
+
+{ ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
 { Demande explicite de l'utilisateur (2026-08-31) : remplacer la longue      }
@@ -103824,7 +104388,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 171;
+ PS_CMD_ALIASES = 182;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -103975,7 +104539,18 @@ Const
   'INVOKE-MDBCAGGREGATE',
   'INVOKE-MDBCCOMMAND',
   'IMPORT-MDBCDATA',
-  'EXPORT-MDBCDATA'
+  'EXPORT-MDBCDATA',
+  'INVOKE-SQLCMD',
+  'GET-SQLDATABASE',
+  'BACKUP-SQLDATABASE',
+  'RESTORE-SQLDATABASE',
+  'NEW-SQLBACKUPENCRYPTIONOPTION',
+  'TEST-SQLAVAILABILITYGROUP',
+  'TEST-SQLDATABASEREPLICASTATE',
+  'GET-SQLAGENT',
+  'GET-SQLERRORLOG',
+  'READ-SQLTABLEDATA',
+  'WRITE-SQLTABLEDATA'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -104126,7 +104701,18 @@ Const
   147,
   148,
   149,
-  150
+  150,
+  151,
+  152,
+  153,
+  154,
+  155,
+  156,
+  157,
+  158,
+  159,
+  160,
+  161
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -104710,6 +105296,17 @@ Begin
     148: TermCmd_InvokeMdbcCommand(TP, ParamStr);
     149: TermCmd_ImportMdbcData(TP, ParamStr);
     150: TermCmd_ExportMdbcData(TP, ParamStr);
+    151: TermCmd_InvokeSqlcmd(TP, ParamStr);
+    152: TermCmd_GetSqlDatabase(TP, ParamStr);
+    153: TermCmd_BackupSqlDatabase(TP, ParamStr);
+    154: TermCmd_RestoreSqlDatabase(TP, ParamStr);
+    155: TermCmd_NewSqlBackupEncryptionOption(TP, ParamStr);
+    156: TermCmd_TestSqlAvailabilityGroup(TP, ParamStr);
+    157: TermCmd_TestSqlDatabaseReplicaState(TP, ParamStr);
+    158: TermCmd_GetSqlAgent(TP, ParamStr);
+    159: TermCmd_GetSqlErrorLog(TP, ParamStr);
+    160: TermCmd_ReadSqlTableData(TP, ParamStr);
+    161: TermCmd_WriteSqlTableData(TP, ParamStr);
     19: TermCmd_SetVariable(TP, ParamStr);
     20: TermCmd_ClearRecycleBin(TP, ParamStr);
     21: TermCmd_CompareObject(TP, ParamStr);
