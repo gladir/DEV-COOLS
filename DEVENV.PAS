@@ -91264,6 +91264,20 @@ Var
  PscOutLine:String;
  PscRawArgs:Array[1..128]Of String;
  PscRawArgCount:Integer;
+ { Ligne source EN COURS D'EXECUTION (2026-09-08, demande explicite de     }
+ { l'utilisateur : "indiquer le numero de ligne... dans le message         }
+ { d'erreur") - mise a jour au tout debut de chaque iteration de la        }
+ { boucle principale de PscExecRange, AVANT tout dispatch (blanc/PROCEDURE/}
+ { IF/FOR/WHILE/REPEAT/instruction simple), donc toujours correcte y       }
+ { compris a l interieur d appels recursifs (boucles/blocs imbriques) au   }
+ { moment ou PscRuntimeError se declenche. Un numero de COLONNE n a PAS ete}
+ { ajoute : PscEP (position d analyse) est relatif a PscExpr, qui ne        }
+ { contient souvent qu un SOUS-TEXTE de la ligne (ex. les arguments entre   }
+ { parentheses) plutot que la ligne source complete - l exposer comme       }
+ { "colonne" aurait ete un chiffre plausible mais FAUX dans le cas general, }
+ { pire qu aucune information ; le texte complet de la ligne fautive est    }
+ { affiche a la place, fiable dans tous les cas. }
+ PscCurrLineNo:LongInt;
 
 Procedure PscFlushLine;
 Begin
@@ -91476,6 +91490,240 @@ Procedure PscEvalE(Var V:TPscValue);Forward;
 Procedure PscEvalText(S:String;Var V:TPscValue);Forward;
 Procedure PscCallRoutine(Name,ArgText:String;WantResult:Boolean;Var V:TPscValue);Forward;
 
+{ ------------------------------------------------------------------------ }
+{ Objets Database/DatabaseConnection/RecordSet (2026-09-08, demande        }
+{ explicite de l'utilisateur, syntaxe fournie integralement) - reutilise   }
+{ le VRAI moteur SQL Server (SQLCMD.PAS/.EXE) deja construit pour          }
+{ l'Explorateur d'objets SQL Server et les cmdlets PowerShell dev SqlServer}
+{ -compatibles : SqlCmdExePath/SqlCmdMasterMdfPath/SqlCmdEnsureMasterMdf/  }
+{ SqlGridSplitField/SqlGridCountFields sont tous REUTILISES tels quels     }
+{ (definis bien plus haut dans ce fichier), pas un moteur invente. Portee  }
+{ disclosee explicitement (meme decision deja actee pour les autres        }
+{ chantiers SQL Server de ce fichier) : ce depot ne modelise qu'UNE seule  }
+{ base locale ("master.mdf") - "Server=.../Database=..." dans la chaine de}
+{ connexion n'est pas analyse (aucun reseau reel, aucune base nommee       }
+{ distincte) - contrairement au chantier Oracle qui a implemente un vrai   }
+{ protocole reseau parce que l'utilisateur l'exigeait explicitement pour   }
+{ Oracle precisement, cette demande-ci ne porte que sur la SYNTAXE du      }
+{ script, pas sur le protocole reseau. Une variable declaree               }
+{ "DatabaseConnection"/"RecordSet" reste une variable Psc ordinaire        }
+{ (TPscValue.Text/Num/Numeric, cet interprete n'a aucun systeme de type    }
+{ reel) - le "type" de la section Var est donc purement documentaire,      }
+{ jamais verifie ; l'objet lui-meme est un PSEUDO-HANDLE encode comme      }
+{ texte special ('$DBCONN$n'/'$RECSET$n') indexant une table globale       }
+{ bornee (meme convention que TRedisSession/TOracleSession ailleurs dans   }
+{ ce fichier). }
+
+Const
+ PSC_DB_TAG     = '$DBCONN$';
+ PSC_RS_TAG     = '$RECSET$';
+ PSC_DB_MAX     = 4;
+ PSC_RS_MAX     = 4;
+ PSC_RS_MAXCOLS = 16;
+ PSC_RS_MAXROWS = 200;
+
+Type
+ TPscDbConn = Record
+  InUse   : Boolean;
+  MdfPath : String;
+ End;
+ TPscRecSet = Record
+  InUse    : Boolean;
+  ColCount : Integer;
+  ColNames : Array[1..PSC_RS_MAXCOLS] Of String;
+  RowCount : Integer;
+  CurRow   : Integer; { 1-based ; CurRow > RowCount => Eof }
+  Cells    : Array[1..PSC_RS_MAXROWS,1..PSC_RS_MAXCOLS] Of String;
+ End;
+
+Var
+ PscDbConns : Array[1..PSC_DB_MAX] Of TPscDbConn;
+ PscRecSets : Array[1..PSC_RS_MAX] Of TPscRecSet;
+
+Function PscExtractConnParam(ConnStr,Key:String):String;
+Var UpConn,UpKey:String;P,E:Integer;
+Begin
+ PscExtractConnParam:='';
+ UpConn:=PscUp(ConnStr);
+ UpKey:=PscUp(Key)+'=';
+ P:=Pos(UpKey,UpConn);
+ If P=0 Then Exit;
+ P:=P+Length(UpKey);
+ E:=Pos(';',Copy(ConnStr,P,255));
+ If E=0 Then PscExtractConnParam:=PscTrimS(Copy(ConnStr,P,255))
+        Else PscExtractConnParam:=PscTrimS(Copy(ConnStr,P,E-1));
+End;
+
+Function PscHandleIdx(V:TPscValue;Const Tag:String):Integer;
+Var S:String;N,C:Integer;
+Begin
+ PscHandleIdx:=0;
+ If Copy(V.Text,1,Length(Tag))<>Tag Then Exit;
+ S:=Copy(V.Text,Length(Tag)+1,10);
+ Val(S,N,C);
+ If C=0 Then PscHandleIdx:=N;
+End;
+
+Function PscDbFreeSlot:Integer;
+Var I:Integer;
+Begin
+ PscDbFreeSlot:=0;
+ For I:=1 To PSC_DB_MAX Do
+  If Not PscDbConns[I].InUse Then Begin PscDbFreeSlot:=I;Exit;End;
+End;
+
+Function PscRsFreeSlot:Integer;
+Var I:Integer;
+Begin
+ PscRsFreeSlot:=0;
+ For I:=1 To PSC_RS_MAX Do
+  If Not PscRecSets[I].InUse Then Begin PscRsFreeSlot:=I;Exit;End;
+End;
+
+{ Database.Connect('Server=...;Database=...;...') - ouvre reellement       }
+{ master.mdf (le cree si absent, meme mecanisme que SqlCmdEnsureMasterMdf).}
+{ La chaine de connexion elle-meme n'est pas interpretee au-dela de ce     }
+{ constat honnete de portee (voir disclosure ci-dessus). }
+Function PscDbConnect(ConnStr:String):TPscValue;
+Var Slot:Integer;V:TPscValue;
+Begin
+ Slot:=PscDbFreeSlot;
+ If Slot=0 Then Begin
+  PscWL('Database.Connect : nombre maximal de connexions atteint.');
+  PscVText('',V);PscDbConnect:=V;Exit;
+ End;
+ If Not SqlCmdEnsureMasterMdf Then Begin
+  PscVText('',V);PscDbConnect:=V;Exit;
+ End;
+ PscDbConns[Slot].InUse:=True;
+ PscDbConns[Slot].MdfPath:=SqlCmdMasterMdfPath;
+ PscVText(PSC_DB_TAG+IntToStr(Slot),V);
+ PscDbConnect:=V;
+End;
+
+Procedure PscDbCloseConn(Idx:Integer);
+Begin
+ If(Idx>=1)and(Idx<=PSC_DB_MAX)Then PscDbConns[Idx].InUse:=False;
+End;
+
+{ Connexion.Query('SELECT ...') - execute REELLEMENT via SQLCMD.EXE        }
+{ (-s , -W, meme format que l'apercu de grille deja verifie de             }
+{ l'Explorateur d'objets SQL Server) et peuple un nouveau RecordSet. }
+Function PscDbQuery(ConnIdx:Integer;SqlText:String):TPscValue;
+Var
+ Slot:Integer;Cmd,Ln:String;Buf:TCmdOutputLines;Cnt,I,J:Integer;
+ V:TPscValue;
+Begin
+ PscVText('',V);
+ If(ConnIdx<1)or(ConnIdx>PSC_DB_MAX)or(Not PscDbConns[ConnIdx].InUse)Then Begin
+  PscWL('Query : connexion invalide ou fermee.');
+  PscDbQuery:=V;Exit;
+ End;
+ Slot:=PscRsFreeSlot;
+ If Slot=0 Then Begin
+  PscWL('Query : nombre maximal de RecordSet ouverts atteint.');
+  PscDbQuery:=V;Exit;
+ End;
+ Cmd:='"'+SqlCmdExePath+'" -S "'+PscDbConns[ConnIdx].MdfPath+
+  '" -q "'+SqlText+'" -s , -W';
+ RunCommandCaptureOutput(Cmd,Buf,Cnt);
+ PscRecSets[Slot].InUse:=True;
+ PscRecSets[Slot].ColCount:=0;
+ PscRecSets[Slot].RowCount:=0;
+ PscRecSets[Slot].CurRow:=1;
+ If Cnt>=2 Then Begin
+  PscRecSets[Slot].ColCount:=SqlGridCountFields(Buf[0]);
+  If PscRecSets[Slot].ColCount>PSC_RS_MAXCOLS Then
+   PscRecSets[Slot].ColCount:=PSC_RS_MAXCOLS;
+  For I:=1 To PscRecSets[Slot].ColCount Do
+   PscRecSets[Slot].ColNames[I]:=PscUp(SqlGridSplitField(Buf[0],I-1));
+  For I:=2 To Cnt-1 Do Begin
+   Ln:=Buf[I];
+   If TrimStr(Ln)=''Then Break;
+   If Copy(TrimStr(Ln),1,1)='('Then Break;
+   If PscRecSets[Slot].RowCount>=PSC_RS_MAXROWS Then Break;
+   Inc(PscRecSets[Slot].RowCount);
+   For J:=1 To PscRecSets[Slot].ColCount Do
+    PscRecSets[Slot].Cells[PscRecSets[Slot].RowCount,J]:=
+     SqlGridSplitField(Ln,J-1);
+  End;
+ End;
+ PscVText(PSC_RS_TAG+IntToStr(Slot),V);
+ PscDbQuery:=V;
+End;
+
+Function PscRsEofValue(RsIdx:Integer):TPscValue;
+Var V:TPscValue;
+Begin
+ If(RsIdx<1)or(RsIdx>PSC_RS_MAX)or(Not PscRecSets[RsIdx].InUse)Then Begin
+  PscVText('True',V);PscRsEofValue:=V;Exit;
+ End;
+ If PscRecSets[RsIdx].CurRow>PscRecSets[RsIdx].RowCount Then
+  PscVText('True',V)
+ Else
+  PscVText('False',V);
+ PscRsEofValue:=V;
+End;
+
+Procedure PscRsNextRow(RsIdx:Integer);
+Begin
+ If(RsIdx>=1)and(RsIdx<=PSC_RS_MAX)and PscRecSets[RsIdx].InUse Then
+  Inc(PscRecSets[RsIdx].CurRow);
+End;
+
+Procedure PscRsCloseSet(RsIdx:Integer);
+Begin
+ If(RsIdx>=1)and(RsIdx<=PSC_RS_MAX)Then PscRecSets[RsIdx].InUse:=False;
+End;
+
+Function PscRsFieldValue(RsIdx:Integer;FieldName:String):String;
+Var I:Integer;UpName:String;
+Begin
+ PscRsFieldValue:='';
+ If(RsIdx<1)or(RsIdx>PSC_RS_MAX)or(Not PscRecSets[RsIdx].InUse)Then Exit;
+ If(PscRecSets[RsIdx].CurRow<1)or
+  (PscRecSets[RsIdx].CurRow>PscRecSets[RsIdx].RowCount)Then Exit;
+ UpName:=PscUp(FieldName);
+ For I:=1 To PscRecSets[RsIdx].ColCount Do
+  If PscRecSets[RsIdx].ColNames[I]=UpName Then Begin
+   PscRsFieldValue:=PscRecSets[RsIdx].Cells[PscRecSets[RsIdx].CurRow,I];
+   Exit;
+  End;
+End;
+
+{ Dispatch generique "Variable.Suffixe" - point d'entree unique partage    }
+{ par PscPrimary (forme expression, ex. dans "While Not X.Eof do") et      }
+{ PscExecSimple (forme instruction sans parentheses, ex. "X.Next;") pour   }
+{ eviter de dupliquer cette logique a deux endroits. Renvoie Handled=Faux  }
+{ si Nm ne correspond a aucun objet Database/RecordSet connu - l'appelant   }
+{ garde alors son propre comportement de repli inchange. }
+Procedure PscTryObjectAccess(Nm:String;Var V:TPscValue;Var Handled:Boolean);
+Var
+ P:Integer;VarPart,Suffix,UpSuffix:String;HandleVal:TPscValue;Idx:Integer;
+Begin
+ Handled:=False;
+ P:=Pos('.',Nm);
+ If P=0 Then Exit;
+ VarPart:=Copy(Nm,1,P-1);
+ Suffix:=Copy(Nm,P+1,255);
+ UpSuffix:=PscUp(Suffix);
+ PscGetV(VarPart,HandleVal);
+ Idx:=PscHandleIdx(HandleVal,PSC_RS_TAG);
+ If Idx>0 Then Begin
+  Handled:=True;
+  If UpSuffix='EOF'Then V:=PscRsEofValue(Idx)
+  Else If UpSuffix='NEXT'Then Begin PscRsNextRow(Idx);PscVText('',V);End
+  Else If UpSuffix='CLOSE'Then Begin PscRsCloseSet(Idx);PscVText('',V);End
+  Else Handled:=False;
+  Exit;
+ End;
+ Idx:=PscHandleIdx(HandleVal,PSC_DB_TAG);
+ If Idx>0 Then
+  If UpSuffix='CLOSE'Then Begin
+   Handled:=True;PscDbCloseConn(Idx);PscVText('',V);
+  End;
+End;
+
 Procedure PscPrimary(Var V:TPscValue);
 Var
  Q:Char;
@@ -91483,6 +91731,7 @@ Var
  N:Real;
  C,I,Start:Integer;
  A,B,D:TPscValue;
+ HV:TPscValue;HIdx:Integer;ObjVarPart,ObjSuffix:String;ObjHandled:Boolean;
 Begin
  PscSkip;
  If PscEP>Length(PscExpr)Then Begin
@@ -91548,7 +91797,16 @@ Begin
   PscEvalE(A);
   PscSkip;
   If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]=']')Then Inc(PscEP);
-  Str(Trunc(A.Num),Idx);PscGetV(Nm+'['+PscTrimS(Idx)+']',V);
+  { Resultats['Id'] (2026-09-08) : si Nm designe un RecordSet, l'index est  }
+  { un NOM DE CHAMP (texte), pas un indice numerique - sinon, comportement  }
+  { de tableau existant, totalement inchange. }
+  PscGetV(Nm,HV);
+  HIdx:=PscHandleIdx(HV,PSC_RS_TAG);
+  If HIdx>0 Then
+   PscVText(PscRsFieldValue(HIdx,A.Text),V)
+  Else Begin
+   Str(Trunc(A.Num),Idx);PscGetV(Nm+'['+PscTrimS(Idx)+']',V);
+  End;
   Exit;
  End;
  If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]='(')Then Begin
@@ -91636,17 +91894,51 @@ Begin
                           Else PscVText('',V);
    Exit;
   End;
+  { Database.Connect(...)/Connexion.Query(...) (2026-09-08) - voir la       }
+  { disclosure complete pres de PscDbConnect/PscDbQuery plus haut. }
+  If U='DATABASE.CONNECT'Then Begin
+   PscEvalText(S,A);
+   V:=PscDbConnect(A.Text);
+   Exit;
+  End;
+  I:=Pos('.',Nm);
+  If I>0 Then Begin
+   ObjVarPart:=Copy(Nm,1,I-1);
+   ObjSuffix:=PscUp(Copy(Nm,I+1,255));
+   If ObjSuffix='QUERY'Then Begin
+    PscGetV(ObjVarPart,HV);
+    HIdx:=PscHandleIdx(HV,PSC_DB_TAG);
+    If HIdx>0 Then Begin
+     PscEvalText(S,A);
+     V:=PscDbQuery(HIdx,A.Text);
+     Exit;
+    End;
+   End;
+  End;
   PscCallRoutine(Nm,S,True,V);
   Exit;
  End;
  If U='WSCRIPT.SCRIPTNAME'Then PscVText(PscSourceName,V) Else
  If U='WSCRIPT.FULLNAME'Then PscVText(PscSourceName,V) Else
  If U='WSCRIPT.ARGUMENTS.COUNT'Then PscVNum(PscArgCount,V)
-                               Else PscGetV(Nm,V);
+ Else Begin
+  { Resultats.Eof (2026-09-08, forme propriete sans parentheses) - voir     }
+  { PscTryObjectAccess plus haut ; repli inchange pour tout le reste. }
+  PscTryObjectAccess(Nm,V,ObjHandled);
+  If Not ObjHandled Then PscGetV(Nm,V);
+ End;
 End;
 
 Procedure PscUnary(Var V:TPscValue);Begin
  PscSkip;
+ { Operateur booleen "not" (2026-09-08, ajoute pour "While not X.Eof do" -   }
+ { absent auparavant : aucun test de longueur 4 ci-dessous ne match un      }
+ { identificateur "NOTIFY"/etc, la 4e position doit etre un espace. }
+ If Copy(PscUp(PscExpr),PscEP,4)='NOT 'Then Begin
+  Inc(PscEP,4);
+  PscUnary(V);
+  If PscTruth(V)Then PscVText('False',V)Else PscVText('True',V);
+ End Else
  If(PscEP<=Length(PscExpr))and(PscExpr[PscEP]='-')Then Begin
   Inc(PscEP);
   PscUnary(V);
@@ -91929,11 +92221,33 @@ Begin
  PscSetV(N,V);
 End;
 
+{ Write/WriteLn (2026-09-08, demande explicite de l'utilisateur - absents  }
+{ auparavant : seul WScript.Echo existait comme mecanisme de sortie, un    }
+{ vrai "WriteLn(...)" de script echouait silencieusement en erreur         }
+{ d'execution, PscCallRoutine ne trouvant aucune procedure ainsi nommee    }
+{ dans le script). Args separes par des virgules DE NIVEAU SUPERIEUR       }
+{ uniquement (PscNextItem est deja sensible aux guillemets/parentheses,    }
+{ reutilise tel quel), chacun evalue puis concatene, meme semantique que   }
+{ le WriteLn(a,b,c) reel de Pascal. Reutilise PscW/PscWL, deja les memes   }
+{ primitives que WScript.Echo. }
+Procedure PscWriteArgs(ArgsRaw:String;NL:Boolean);
+Var Item,Out:String;V:TPscValue;
+Begin
+ Out:='';
+ While ArgsRaw<>''Do Begin
+  Item:=PscNextItem(ArgsRaw,',');
+  PscEvalText(Item,V);
+  Out:=Out+V.Text;
+ End;
+ If NL Then PscWL(Out)Else PscW(Out);
+End;
+
 Procedure PscExecSimple(S:String);
 Var
  P,I:Integer;
  N,A:String;
  V,X:TPscValue;
+ ObjHandled:Boolean;
 Begin
  S:=PscClean(S);
  If S=''Then Exit;
@@ -91945,6 +92259,22 @@ Begin
   A:=Copy(S,14,Length(S)-14);
   If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
   PscEvalText(A,V);PscWL(V.Text);
+  Exit;
+ End;
+ If PscStarts(S,'WRITELN(')Then Begin
+  A:=Copy(S,9,Length(S)-9);
+  If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
+  PscWriteArgs(A,True);
+  Exit;
+ End;
+ If PscUp(S)='WRITELN'Then Begin
+  PscWLBlank;
+  Exit;
+ End;
+ If PscStarts(S,'WRITE(')Then Begin
+  A:=Copy(S,7,Length(S)-7);
+  If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
+  PscWriteArgs(A,False);
   Exit;
  End;
  If PscStarts(S,'SETLENGTH(')Then Begin
@@ -91963,6 +92293,11 @@ Begin
   PscAssignStmt(S);
   Exit;
  End;
+ { Resultats.Next;/Resultats.Close;/Connexion.Close; (2026-09-08, forme     }
+ { instruction sans parentheses) - voir PscTryObjectAccess plus haut ;      }
+ { repli inchange (appel de procedure utilisateur reelle) si non gere. }
+ PscTryObjectAccess(S,V,ObjHandled);
+ If ObjHandled Then Exit;
  P:=Pos('(',S);If P>0Then Begin
   N:=PscTrimS(Copy(S,1,P-1));
   A:=Copy(S,P+1,255);
@@ -92008,6 +92343,7 @@ Begin
   If PscAbortRequested Then Exit;
   S:=PscClean(PscLS(I));
   U:=PscUp(S);
+  PscCurrLineNo:=I;
   If(S='')or(S[1]='{')or(U='BEGIN')or(U='END')Then Begin
    Inc(I);
    Continue;
@@ -92219,6 +92555,7 @@ Begin
  PscArgCount:=0;PscStopRoutine:=False;PscRuntimeError:=False;PscExitCode:=0;
  PscTerminated:=False;
  PscAbortRequested:=False;
+ PscCurrLineNo:=0;
 
  PscRawArgCount := 0;
  While (TermExtractParam(ParamStr, PscRawArgCount+1) <> '') And
@@ -92261,7 +92598,8 @@ Begin
    End Else Begin
     PscExecRange(M + 1, PscMatchEnd(M) - 1);
     If PscRuntimeError Then Begin
-     PscWL('PSCRIPT: erreur d''execution.');
+     PscWL('PSCRIPT: erreur d''execution (ligne ' + IntToStr(PscCurrLineNo) +
+      ') : ' + PscLS(PscCurrLineNo));
      PscExitCode := 1;
     End;
    End;
@@ -92318,6 +92656,7 @@ Begin
  PscArgCount:=0;PscStopRoutine:=False;PscRuntimeError:=False;PscExitCode:=0;
  PscTerminated:=False;
  PscAbortRequested:=False;
+ PscCurrLineNo:=0;
  PscSourceName := ScriptPath;
  PscLoad;
  If Not PscTerminated Then Begin
