@@ -1937,6 +1937,7 @@ Const
  TERM_TAB_HEIGHT       = 22;      { hauteur de l onglet terminal   }
  MAX_TERM_HISTORY      = 50;      { historique des commandes       }
  MAX_TERM_DIRSTACK     = 20;      { pile de repertoires            }
+ MAX_GULAM_ALIAS       = 32;      { table d alias du shell Gulam   }
  TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
  TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
@@ -3415,7 +3416,7 @@ Type
  End;
 
  { Type de shell du terminal }
- TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_AMIGADOS, SK_NCOMMANDER,
+ TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_AMIGADOS, SK_NCOMMANDER,
   SK_OS2REXX);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
@@ -7140,6 +7141,12 @@ Var
  { Terminal integre : deux instances independantes (PS et CMD) }
  TermPanels   : Array[TShellKind] Of TTerminalPanel;
  ActiveShell  : TShellKind;        { shell actuellement affiche      }
+ { Table d alias Gulam (ALIAS/UNALIAS) - globale, partagee par le seul     }
+ { onglet Gulam existant (meme simplification que les autres etats de       }
+ { shell "singleton" de ce fichier). }
+ GulamAliasName  : Array[0..MAX_GULAM_ALIAS - 1] Of String[31];
+ GulamAliasValue : Array[0..MAX_GULAM_ALIAS - 1] Of String;
+ GulamAliasCount : Integer;
  NCState      : TNCState;          { etat de Norton Commander (SK_NCOMMANDER) }
  TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
  ExplorerHasFocus : Boolean;       { l'explorateur a le focus clavier}
@@ -43177,6 +43184,322 @@ Begin
   TermAddLine(TP, CurrLine);
  End;
  Close(Handle);
+End;
+
+{ ============================================================
+  Commandes Gulam (shell Unix-like Atari ST) - head/tail/wc/sort/pr
+  operent sur le systeme de fichiers hote uniquement (meme portee que
+  la plupart des commandes deja limitees au hote dans ce fichier).
+  ============================================================ }
+
+Procedure TermCmd_Head(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FileArg: String;
+ Handle: Text;
+ Err: Word;
+ N, ErrCode, I: Integer;
+ CurrLine: String;
+Begin
+ FileArg := TermExtractParam(ParamStr, 1);
+ N := 10;
+ If UpCaseStr(FileArg) = '-N' Then Begin
+  Val(TermExtractParam(ParamStr, 2), N, ErrCode);
+  If ErrCode <> 0 Then N := 10;
+  FileArg := TermExtractParam(ParamStr, 3);
+ End;
+ If FileArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : head [-n N] fichier');
+  Exit;
+ End;
+ Assign(Handle, FileArg);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ I := 0;
+ While (Not EOF(Handle)) And (I < N) Do Begin
+  ReadLn(Handle, CurrLine);
+  TermAddLine(TP, CurrLine);
+  Inc(I);
+ End;
+ Close(Handle);
+End;
+
+Procedure TermCmd_Tail(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ BUFSZ = 500;
+Var
+ FileArg: String;
+ Handle: Text;
+ Err: Word;
+ N, ErrCode, Cnt, Head, I, Idx: Integer;
+ Buf: Array[0..BUFSZ - 1] Of String;
+Begin
+ FileArg := TermExtractParam(ParamStr, 1);
+ N := 10;
+ If UpCaseStr(FileArg) = '-N' Then Begin
+  Val(TermExtractParam(ParamStr, 2), N, ErrCode);
+  If ErrCode <> 0 Then N := 10;
+  FileArg := TermExtractParam(ParamStr, 3);
+ End;
+ If FileArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : tail [-n N] fichier');
+  Exit;
+ End;
+ If N > BUFSZ Then N := BUFSZ;
+ Assign(Handle, FileArg);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Cnt := 0;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, Buf[Cnt Mod BUFSZ]);
+  Inc(Cnt);
+ End;
+ Close(Handle);
+ If Cnt > N Then Head := Cnt - N Else Head := 0;
+ For I := Head To Cnt - 1 Do Begin
+  Idx := I Mod BUFSZ;
+  TermAddLine(TP, Buf[Idx]);
+ End;
+End;
+
+Procedure TermCmd_WC(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FileArg, CurrLine: String;
+ Handle: Text;
+ Err: Word;
+ Lines, Words, Chars: LongInt;
+ I: Integer;
+ InWord: Boolean;
+Begin
+ FileArg := TermExtractParam(ParamStr, 1);
+ If FileArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : wc fichier');
+  Exit;
+ End;
+ Assign(Handle, FileArg);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Lines := 0; Words := 0; Chars := 0;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  Inc(Lines);
+  Inc(Chars, Length(CurrLine) + 1);
+  InWord := False;
+  For I := 1 To Length(CurrLine) Do Begin
+   If CurrLine[I] = ' ' Then
+    InWord := False
+   Else Begin
+    If Not InWord Then Inc(Words);
+    InWord := True;
+   End;
+  End;
+ End;
+ Close(Handle);
+ TermAddLine(TP, '  ' + IntToStr(Lines) + '  ' + IntToStr(Words) +
+  '  ' + IntToStr(Chars) + '  ' + FileArg);
+End;
+
+Procedure TermCmd_Sort(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ MAXL = 2000;
+Var
+ FileArg: String;
+ Handle: Text;
+ Err: Word;
+ Cnt, I, J: Integer;
+ Lines: Array[0..MAXL - 1] Of String;
+ Tmp: String;
+Begin
+ FileArg := TermExtractParam(ParamStr, 1);
+ If FileArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : sort fichier');
+  Exit;
+ End;
+ Assign(Handle, FileArg);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Cnt := 0;
+ While (Not EOF(Handle)) And (Cnt < MAXL) Do Begin
+  ReadLn(Handle, Lines[Cnt]);
+  Inc(Cnt);
+ End;
+ Close(Handle);
+ For I := 1 To Cnt - 1 Do Begin
+  Tmp := Lines[I];
+  J := I - 1;
+  While (J >= 0) And (Lines[J] > Tmp) Do Begin
+   Lines[J + 1] := Lines[J];
+   Dec(J);
+  End;
+  Lines[J + 1] := Tmp;
+ End;
+ For I := 0 To Cnt - 1 Do
+  TermAddLine(TP, Lines[I]);
+End;
+
+Procedure TermCmd_PR(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ PAGE_LINES = 56;
+Var
+ FileArg, CurrLine, Pad: String;
+ Handle: Text;
+ Err: Word;
+ PageNo, LineOnPage: LongInt;
+
+ Procedure PrintHeader;
+ Begin
+  Pad := FileArg;
+  While Length(Pad) < 60 Do Pad := Pad + ' ';
+  TermAddLine(TP, '');
+  TermAddLine(TP, Pad + 'Page ' + IntToStr(PageNo));
+  TermAddLine(TP, '');
+ End;
+
+Begin
+ FileArg := TermExtractParam(ParamStr, 1);
+ If FileArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : pr fichier');
+  Exit;
+ End;
+ Assign(Handle, FileArg);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ PageNo := 1; LineOnPage := 0;
+ PrintHeader;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  Inc(LineOnPage);
+  TermAddLine(TP, CurrLine);
+  If LineOnPage >= PAGE_LINES Then Begin
+   Inc(PageNo);
+   LineOnPage := 0;
+   PrintHeader;
+  End;
+ End;
+ Close(Handle);
+End;
+
+Procedure TermCmd_Which(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, CurDir, Found: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : which commande');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'which : non supporte sur un lecteur virtuel.');
+  Exit;
+ End;
+ GetDir(0, CurDir);
+ Found := TermFindDosExecutable(CurDir, CurrParam);
+ If Found <> '' Then
+  TermAddLine(TP, Found)
+ Else
+  TermAddLine(TP, CurrParam + ': not found');
+End;
+
+Procedure TermCmd_Source(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, CurrLine: String;
+ Handle: Text;
+ Err: Word;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : source fichier');
+  Exit;
+ End;
+ Assign(Handle, CurrParam);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  CurrLine := TermTrim(CurrLine);
+  If (CurrLine <> '') And (Copy(CurrLine, 1, 1) <> '#') Then
+   TermExecuteCommand(TP, CurrLine);
+ End;
+ Close(Handle);
+End;
+
+Procedure TermCmd_GulamAlias(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I, EqPos: Integer;
+ Arg, AName, AValue: String;
+Begin
+ Arg := TermTrim(ParamStr);
+ If Arg = '' Then Begin
+  If GulamAliasCount = 0 Then
+   TermAddLine(TP, 'Aucun alias defini.')
+  Else
+   For I := 0 To GulamAliasCount - 1 Do
+    TermAddLine(TP, 'alias ' + GulamAliasName[I] + '=' + GulamAliasValue[I]);
+  Exit;
+ End;
+ EqPos := Pos('=', Arg);
+ If EqPos = 0 Then Begin
+  TermAddLine(TP, 'Syntaxe : alias nom=valeur');
+  Exit;
+ End;
+ AName := UpCaseStr(Copy(Arg, 1, EqPos - 1));
+ AValue := Copy(Arg, EqPos + 1, Length(Arg) - EqPos);
+ For I := 0 To GulamAliasCount - 1 Do
+  If GulamAliasName[I] = AName Then Begin
+   GulamAliasValue[I] := AValue;
+   Exit;
+  End;
+ If GulamAliasCount < MAX_GULAM_ALIAS Then Begin
+  GulamAliasName[GulamAliasCount] := AName;
+  GulamAliasValue[GulamAliasCount] := AValue;
+  Inc(GulamAliasCount);
+ End Else
+  TermAddLine(TP, 'alias : table pleine.');
+End;
+
+Procedure TermCmd_GulamUnalias(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I, J: Integer;
+ AName: String;
+Begin
+ AName := UpCaseStr(TermTrim(ParamStr));
+ If AName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : unalias nom');
+  Exit;
+ End;
+ For I := 0 To GulamAliasCount - 1 Do
+  If GulamAliasName[I] = AName Then Begin
+   For J := I To GulamAliasCount - 2 Do Begin
+    GulamAliasName[J] := GulamAliasName[J + 1];
+    GulamAliasValue[J] := GulamAliasValue[J + 1];
+   End;
+   Dec(GulamAliasCount);
+   Exit;
+  End;
+ TermAddLine(TP, 'unalias : alias inconnu : ' + ParamStr);
 End;
 
 { ============================================================
@@ -80826,6 +81149,7 @@ Begin
   SK_CMD:        FName := 'terminal-cmd.log';
   SK_POWERSHELL: FName := 'terminal-ps.log';
   SK_BASH:       FName := 'terminal-bash.log';
+  SK_GULAM:      FName := 'terminal-gulam.log';
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
   SK_OS2REXX:    FName := 'terminal-os2.log';
  Else
@@ -100186,7 +100510,7 @@ Begin
  { shells (meme Procedure appelee partout), ne PAS les lister pour ceux qui }
  { ne les comprennent pas serait aussi trompeur que l ancienne liste          }
  { incomplete signalee par l utilisateur. }
- If TP.Shell <> SK_BASH Then Begin
+ If (TP.Shell <> SK_BASH) And (TP.Shell <> SK_GULAM) Then Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- Journaux de diagnostic ---');
   TermAddLine(TP,
@@ -100347,7 +100671,7 @@ Begin
  { (2026-09-05) : MASM/LINK ci-dessous, et GREP ici, avaient ete cables      }
  { dans le dispatcher de commandes mais jamais ajoutes a cette aide - HELP   }
  { ne les mentionnait donc jamais, alors qu'ils fonctionnaient deja. }
- If TP.Shell = SK_BASH Then Begin
+ If (TP.Shell = SK_BASH) Or (TP.Shell = SK_GULAM) Then Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- GREP (recherche par expression reguliere) ---');
   TermAddLine(TP,
@@ -100361,7 +100685,7 @@ Begin
  { l'utilisateur - port complet du prototype PERL.PAS, voir TermCmd_Perl).  }
  { Ajoutee proactivement ici des le premier chantier, pour eviter de         }
  { reproduire le meme oubli que GREP/MASM/LINK ci-dessus. }
- If TP.Shell = SK_BASH Then Begin
+ If (TP.Shell = SK_BASH) Or (TP.Shell = SK_GULAM) Then Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- PERL (interprete Perl) ---');
   TermAddLine(TP,
@@ -100376,7 +100700,7 @@ Begin
  { AWK : SK_BASH uniquement (2026-09-06, demande explicite de               }
  { l'utilisateur - port complet du prototype AWK.PAS, voir TermCmd_Awk).    }
  { Ajoutee proactivement ici des le premier chantier, meme raison que PERL. }
- If TP.Shell = SK_BASH Then Begin
+ If (TP.Shell = SK_BASH) Or (TP.Shell = SK_GULAM) Then Begin
   TermAddLine(TP, '');
   TermAddLine(TP, '--- AWK (traitement de texte par regles) ---');
   TermAddLine(TP,
@@ -110255,6 +110579,7 @@ Var
  BPIdx: Integer;
  ArgCmd3, ArgCmd4: String;
  PSCmdID: Byte;
+ GulamAliasI: Integer;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -110962,6 +111287,94 @@ Begin
       ': command not found');
    End;
   End;
+  SK_GULAM: Begin
+   { Substitution d alias AVANT le dispatch normal (voir TermCmd_GulamAlias) }
+   For GulamAliasI := 0 To GulamAliasCount - 1 Do
+    If GulamAliasName[GulamAliasI] = CurrCmd Then Begin
+     TermExtractCommand(GulamAliasValue[GulamAliasI] + ' ' + ParamStr,
+      CurrCmd, ParamStr);
+     Break;
+    End;
+   If CurrCmd = 'EXIT' Then
+    TermVisible := False
+   Else If CurrCmd = 'CD' Then
+    TermCmd_CD(TP, ParamStr)
+   Else If CurrCmd = 'CLEAR' Then
+    TermCmd_CLS(TP)
+   Else If CurrCmd = 'LS' Then
+    TermCmd_DIR_BASH(TP, ParamStr)
+   Else If CurrCmd = 'CP' Then
+    TermCmd_COPY(TP, ParamStr)
+   Else If CurrCmd = 'RM' Then
+    TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'MKDIR' Then
+    TermCmd_MKDIR(TP, ParamStr)
+   Else If CurrCmd = 'RMDIR' Then
+    TermCmd_RMDIR(TP, ParamStr)
+   Else If CurrCmd = 'MV' Then
+    TermCmd_MOVE(TP, ParamStr)
+   Else If CurrCmd = 'CAT' Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'MORE' Then
+    TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'HEAD' Then
+    TermCmd_Head(TP, ParamStr)
+   Else If CurrCmd = 'TAIL' Then
+    TermCmd_Tail(TP, ParamStr)
+   Else If CurrCmd = 'GREP' Then
+    TermCmd_Grep(TP, ParamStr)
+   Else If CurrCmd = 'SORT' Then
+    TermCmd_Sort(TP, ParamStr)
+   Else If CurrCmd = 'WC' Then
+    TermCmd_WC(TP, ParamStr)
+   Else If CurrCmd = 'PR' Then
+    TermCmd_PR(TP, ParamStr)
+   Else If CurrCmd = 'ECHO' Then
+    TermCmd_ECHO(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then
+    TermCmd_DATE(TP)
+   Else If CurrCmd = 'TIME' Then
+    TermCmd_TIME(TP)
+   Else If CurrCmd = 'PWD' Then
+    TermCmd_PWD(TP)
+   Else If (CurrCmd = 'SETENV') Or (CurrCmd = 'EXPORT') Then
+    TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'PRINTENV' Then
+    TermCmd_SET(TP, ParamStr)
+   Else If CurrCmd = 'ALIAS' Then
+    TermCmd_GulamAlias(TP, ParamStr)
+   Else If CurrCmd = 'UNALIAS' Then
+    TermCmd_GulamUnalias(TP, ParamStr)
+   Else If CurrCmd = 'HISTORY' Then
+    TermCmd_HISTORY(TP)
+   Else If CurrCmd = 'REHASH' Then
+    TermAddLine(TP, 'rehash: table des programmes reconstruite.')
+   Else If CurrCmd = 'WHICH' Then
+    TermCmd_Which(TP, ParamStr)
+   Else If CurrCmd = 'SOURCE' Then
+    TermCmd_Source(TP, ParamStr)
+   Else If CurrCmd = 'HELP' Then
+    TermCmd_HELP(TP)
+   Else Begin
+    { Meme repli que SK_BASH ci-dessus : lancer un binaire tape par son nom.}
+    DosExe := '';
+    ElfExe := '';
+    If TP.VirtDrive < 0 Then Begin
+     GetDir(0, CurDir);
+     DosExe := TermFindDosExecutable(CurDir, CurrCmd);
+     If DosExe = '' Then ElfExe := TermFindElfExecutable(CurDir, CurrCmd);
+    End;
+    If DosExe <> '' Then
+     CreateEmulatorTab(DosExe, '-CD', ParamStr)
+    Else If ElfExe <> '' Then
+     CreateEmulatorTab(ElfExe, '-CELF64', ParamStr)
+    Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
+     CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
+    Else
+     TermAddLine(TP, 'gulam: ' + CurrCmd +
+      ': command not found');
+   End;
+  End;
   SK_AMIGADOS: Begin
    If (CurrCmd = 'QUIT') Or (CurrCmd = 'ENDCLI') Then
     TermVisible := False
@@ -111442,6 +111855,7 @@ Begin
  InitTerminalPanel(TermPanels[SK_CMD], SK_CMD);
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
  InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
+ InitTerminalPanel(TermPanels[SK_GULAM], SK_GULAM);
  InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
  InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
@@ -114972,6 +115386,7 @@ Begin
   SK_CMD:        SelLabel := 'Invite de commandes';
   SK_POWERSHELL: SelLabel := 'PowerShell dev';
   SK_BASH:       SelLabel := 'Bash';
+  SK_GULAM:      SelLabel := 'Gulam';
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
@@ -115114,6 +115529,8 @@ Begin
     PromptStr := 'PS ' + PromptStr + '> ' + TP.InputLine + '_';
    SK_BASH:
     PromptStr := 'user$ ' + TP.InputLine + '_';
+   SK_GULAM:
+    PromptStr := 'gulam$ ' + TP.InputLine + '_';
    SK_AMIGADOS:
     PromptStr := '1.SYS:> ' + TP.InputLine + '_';
   Else
@@ -115270,7 +115687,7 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H + 3,
    'Bash');
-  { Item 4 : AmigaDOS }
+  { Item 4 : Gulam }
   If TermSelectIdx = 3 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
   Else
@@ -115281,8 +115698,8 @@ Begin
   SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H + 3,
-   'AmigaDOS');
-  { Item 5 : Norton Commander }
+   'Gulam');
+  { Item 5 : AmigaDOS }
   If TermSelectIdx = 4 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
   Else
@@ -115293,8 +115710,8 @@ Begin
   SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H + 3,
-   'Norton Commander');
-  { Item 6 : OS/2 & REXX }
+   'AmigaDOS');
+  { Item 6 : Norton Commander }
   If TermSelectIdx = 5 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
   Else
@@ -115305,12 +115722,24 @@ Begin
   SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H + 3,
+   'Norton Commander');
+  { Item 7 : OS/2 & REXX }
+  If TermSelectIdx = 6 Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H + 3,
    'OS/2 & REXX');
   { Bordure de la liste }
   SetColor(CLR_BORDER);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H - 1);
  End;
  TP.NeedRepaint := False;
 End;
@@ -115523,13 +115952,32 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
-   { Item 4 : AmigaDOS }
+   { Item 4 : Gulam }
    If (Ev.MouseX >= SBX) And
       (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
       (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
        + 3 * TERM_SELECT_ITEM_H) And
       (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
        + 4 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_GULAM;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_GULAM].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_GULAM],
+       'Gulam shell. Tapez help.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+   { Item 5 : AmigaDOS }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 4 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 5 * TERM_SELECT_ITEM_H) Then Begin
     NewShell := SK_AMIGADOS;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -115542,13 +115990,13 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
-   { Item 5 : Norton Commander }
+   { Item 6 : Norton Commander }
    If (Ev.MouseX >= SBX) And
       (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
       (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 4 * TERM_SELECT_ITEM_H) And
+       + 5 * TERM_SELECT_ITEM_H) And
       (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 5 * TERM_SELECT_ITEM_H) Then Begin
+       + 6 * TERM_SELECT_ITEM_H) Then Begin
     NewShell := SK_NCOMMANDER;
     TermSelectOpen := False;
     ActiveShell := NewShell;
@@ -115556,13 +116004,13 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
-   { Item 6 : OS/2 & REXX }
+   { Item 7 : OS/2 & REXX }
    If (Ev.MouseX >= SBX) And
       (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
       (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 5 * TERM_SELECT_ITEM_H) And
+       + 6 * TERM_SELECT_ITEM_H) And
       (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 6 * TERM_SELECT_ITEM_H) Then Begin
+       + 7 * TERM_SELECT_ITEM_H) Then Begin
     NewShell := SK_OS2REXX;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -115590,9 +116038,10 @@ Begin
      SK_CMD:        TermSelectIdx := 0;
      SK_POWERSHELL: TermSelectIdx := 1;
      SK_BASH:       TermSelectIdx := 2;
-     SK_AMIGADOS:   TermSelectIdx := 3;
-     SK_NCOMMANDER: TermSelectIdx := 4;
-     SK_OS2REXX:    TermSelectIdx := 5;
+     SK_GULAM:      TermSelectIdx := 3;
+     SK_AMIGADOS:   TermSelectIdx := 4;
+     SK_NCOMMANDER: TermSelectIdx := 5;
+     SK_OS2REXX:    TermSelectIdx := 6;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -115822,9 +116271,10 @@ Begin
      0: NewShell := SK_CMD;
      1: NewShell := SK_POWERSHELL;
      2: NewShell := SK_BASH;
-     3: NewShell := SK_AMIGADOS;
-     4: NewShell := SK_NCOMMANDER;
-     5: NewShell := SK_OS2REXX;
+     3: NewShell := SK_GULAM;
+     4: NewShell := SK_AMIGADOS;
+     5: NewShell := SK_NCOMMANDER;
+     6: NewShell := SK_OS2REXX;
     End;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
