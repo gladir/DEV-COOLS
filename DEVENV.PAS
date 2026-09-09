@@ -149417,6 +149417,10 @@ Var
   gd_fname, gd_hostpath: String;
   gd_mode, gd_handle, gd_slot, gd_attrib: Integer;
   gd_cnt, gd_buf, gd_pos, gd_newpos: LongInt;
+  { BIOS Trap #13 (voir plus bas) }
+  bi_dev, bi_vecnum: Integer;
+  bi_key: Word;
+  bi_vec: LongInt;
 
   { Ecrit intout[Idx] seulement si l appelant a declare assez de sorties   }
   { (control[2]=nintout) - jamais au-dela, comme une vraie AES. }
@@ -149804,6 +149808,52 @@ Begin
       { Opcode AES non reconnu : succes generique - seul le PB compte      }
       { dans la convention AES, D0 n est jamais exploite par l appelant. }
       AesOut(0, 1);
+    End;
+  End
+  Else If vector = 13 Then Begin
+    { BIOS - Atari ST. Meme convention que GEMDOS/AES : mot fonction a      }
+    { [A7], arguments suivants dans l ordre declare. dev 0=PRT,1=AUX,2=CON  }
+    { (seul CON a une contrepartie reelle ici - clavier/ecran virtuel). }
+    func := M68K_Read16(M68K_A[7]);
+    Case func Of
+      1: Begin { Bconstat(dev) : -1 si un caractere attend, sinon 0 }
+           bi_dev := M68K_Read16(M68K_A[7] + 2);
+           If (bi_dev = 2) And EmuVScr_HasKey(M68K_Panel^) Then
+            M68K_D[0] := -1
+           Else
+            M68K_D[0] := 0;
+         End;
+      2: Begin { Bconin(dev) : caractere ASCII bas, scancode haut - 0 si   }
+                { aucune touche prete (pas de blocage reel possible ici). }
+           bi_dev := M68K_Read16(M68K_A[7] + 2);
+           If (bi_dev = 2) And EmuVScr_HasKey(M68K_Panel^) Then Begin
+            bi_key := EmuVScr_PopKey(M68K_Panel^);
+            M68K_D[0] := bi_key;
+           End Else
+            M68K_D[0] := 0;
+         End;
+      3: Begin { Bconout(dev, c) : affiche toujours (aucun peripherique     }
+                { imprimante/serie reel, la console suffit pour un ACC).   }
+           bi_key := M68K_Read16(M68K_A[7] + 4) And $FF;
+           EmuVScr_PutChar(M68K_Panel^, Chr(bi_key And $FF));
+           M68K_D[0] := 0;
+         End;
+      8: M68K_D[0] := -1; { Bcostat(dev) : sortie toujours prete }
+      7: M68K_D[0] := 0; { Getbpb(dev) : aucun disque bloc emule ici }
+      9: M68K_D[0] := 0; { Mediach(dev) : media jamais change (MEDIACH_NONE) }
+      10: M68K_D[0] := $00000007; { Drvmap() : A/B/C, meme bitmap que Dsetdrv }
+      11: M68K_D[0] := 0; { Kbshift(flag) : aucun etat de modificateur suivi }
+      5: Begin { Setexc(vecnum, vec) : aucune vraie table de vecteurs -    }
+                { l adresse 0 est deja occupee par le programme charge,   }
+                { ecrire dedans le corromprait. Query ou install, meme     }
+                { reponse honnete : aucun gestionnaire installe (0). }
+           bi_vecnum := M68K_Read16(M68K_A[7] + 2);
+           bi_vec := M68K_Read32(M68K_A[7] + 4);
+           M68K_D[0] := 0;
+         End;
+    Else
+      { Fonction BIOS non implementee : retourne 0 dans D0 }
+      M68K_D[0] := 0;
     End;
   End;
 End;
