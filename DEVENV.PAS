@@ -91569,13 +91569,18 @@ Const
 
 Type
  TPscDbConn = Record
-  InUse   : Boolean;
-  MdfPath : String;
-  IsDbf   : Boolean; { True : connexion 'File=xxx.DBF;...' - lit directement }
-                      { le fichier via le vrai lecteur GridOpen_Dbf/          }
-                      { GridCellText de la Grille de donnees (WK_GRID),       }
-                      { jamais via SQLCMD.EXE. }
-  DbfPath : String;
+  InUse    : Boolean;
+  MdfPath  : String;
+  IsFile   : Boolean; { True : connexion 'File=xxx.DBF/.CSV;...' - lit        }
+                       { directement le fichier via le vrai lecteur de la     }
+                       { Grille de donnees (GridOpenFile/GridCellText,        }
+                       { WK_GRID), jamais via SQLCMD.EXE. }
+  FilePath : String;
+  FileFmt  : Byte;    { GTF_xxx (voir GridFormatForExtension) - seuls         }
+                       { GTF_DBF et GTF_CSV sont acceptes par PscDbConnect    }
+                       { pour l'instant (Clarion/Btrieve/MyISAM : portee non  }
+                       { demandee), mais PscDbQueryFile lui-meme est deja     }
+                       { generique a n'importe quel GTF_xxx. }
  End;
  TPscRecSet = Record
   InUse    : Boolean;
@@ -91634,14 +91639,14 @@ End;
 { master.mdf (le cree si absent, meme mecanisme que SqlCmdEnsureMasterMdf).}
 { La chaine de connexion elle-meme n'est pas interpretee au-dela de ce     }
 { constat honnete de portee (voir disclosure ci-dessus). }
-{ Forme 'File=xxx.DBF;...' (demande explicite, 2026-09-08) : ouvre         }
-{ directement ce fichier via le vrai lecteur dBASE de la Grille de         }
-{ donnees (GridOpen_Dbf/GridCellText, WK_GRID) au lieu de master.mdf/      }
-{ SQLCMD.EXE - seul le type de fichier .DBF est supporte par cette forme   }
-{ (tout autre format reconnu par la Grille - CSV/Clarion/Btrieve/MYD -     }
-{ est refuse proprement, portee non demandee). }
+{ Forme 'File=xxx.DBF/.CSV;...' (demande explicite, 2026-09-08 pour .DBF,  }
+{ puis a nouveau pour .CSV) : ouvre directement ce fichier via le vrai     }
+{ lecteur de la Grille de donnees (GridOpenFile/GridCellText, WK_GRID) au  }
+{ lieu de master.mdf/SQLCMD.EXE - seuls .DBF et .CSV sont supportes par    }
+{ cette forme pour l'instant (Clarion/Btrieve/MyISAM, pourtant deja lus    }
+{ par la meme Grille - refuses proprement, portee non demandee). }
 Function PscDbConnect(ConnStr:String):TPscValue;
-Var Slot:Integer;V:TPscValue;FileParam:String;
+Var Slot:Integer;V:TPscValue;FileParam,FileExt:String;
 Begin
  Slot:=PscDbFreeSlot;
  If Slot=0 Then Begin
@@ -91650,9 +91655,10 @@ Begin
  End;
  FileParam:=PscExtractConnParam(ConnStr,'File');
  If FileParam<>''Then Begin
-  If PscUp(GridExtOfPath(FileParam))<>'DBF'Then Begin
+  FileExt:=PscUp(GridExtOfPath(FileParam));
+  If(FileExt<>'DBF')And(FileExt<>'CSV')Then Begin
    PscWL('Database.Connect : File='+FileParam+
-    ' - seul le format .DBF est pris en charge par cette forme.');
+    ' - seuls les formats .DBF et .CSV sont pris en charge par cette forme.');
    PscVText('',V);PscDbConnect:=V;Exit;
   End;
   If Not FileExists(FileParam)Then Begin
@@ -91660,8 +91666,9 @@ Begin
    PscVText('',V);PscDbConnect:=V;Exit;
   End;
   PscDbConns[Slot].InUse:=True;
-  PscDbConns[Slot].IsDbf:=True;
-  PscDbConns[Slot].DbfPath:=FileParam;
+  PscDbConns[Slot].IsFile:=True;
+  PscDbConns[Slot].FilePath:=FileParam;
+  PscDbConns[Slot].FileFmt:=GridFormatForExtension(FileExt);
   PscVText(PSC_DB_TAG+IntToStr(Slot),V);
   PscDbConnect:=V;
   Exit;
@@ -91670,7 +91677,7 @@ Begin
   PscVText('',V);PscDbConnect:=V;Exit;
  End;
  PscDbConns[Slot].InUse:=True;
- PscDbConns[Slot].IsDbf:=False;
+ PscDbConns[Slot].IsFile:=False;
  PscDbConns[Slot].MdfPath:=SqlCmdMasterMdfPath;
  PscVText(PSC_DB_TAG+IntToStr(Slot),V);
  PscDbConnect:=V;
@@ -91681,17 +91688,20 @@ Begin
  If(Idx>=1)and(Idx<=PSC_DB_MAX)Then PscDbConns[Idx].InUse:=False;
 End;
 
-{ Connexion.Query('SELECT ...') sur une connexion 'File=xxx.DBF;...'       }
+{ Connexion.Query('SELECT ...') sur une connexion 'File=xxx.DBF/.CSV;...'  }
 { (voir PscDbConnect) - ouvre reellement le fichier via GridOpenFile/       }
-{ GridCellText (meme lecteur DBF que la Grille de donnees, WK_GRID) et      }
-{ copie TOUTES ses lignes/colonnes dans le RecordSet. Portee honnetement    }
-{ disclosee : le texte SQL n'est PAS parse (ni liste de colonnes, ni        }
-{ WHERE/ORDER BY) - une connexion DBF pointe deja sur un seul fichier       }
-{ precis, donc 'SELECT * FROM CLIENTS' et 'SELECT Nom FROM Autre' ont       }
-{ rigoureusement le meme effet : toutes les colonnes/lignes du fichier      }
-{ connecte. Meme limite de troncature que la forme SQL Server              }
+{ GridCellText (meme lecteur que la Grille de donnees, WK_GRID - le format  }
+{ GTF_xxx exact vient de PscDbConns[ConnIdx].FileFmt, deja resolu par       }
+{ PscDbConnect, donc cette fonction est generique a tout format que la     }
+{ Grille sait lire, pas seulement DBF/CSV) et copie TOUTES ses              }
+{ lignes/colonnes dans le RecordSet. Portee honnetement disclosee : le     }
+{ texte SQL n'est PAS parse (ni liste de colonnes, ni WHERE/ORDER BY) -    }
+{ une connexion File=... pointe deja sur un seul fichier precis, donc      }
+{ 'SELECT * FROM CLIENTS' et 'SELECT Nom FROM Autre' ont rigoureusement    }
+{ le meme effet : toutes les colonnes/lignes du fichier connecte. Meme     }
+{ limite de troncature que la forme SQL Server                            }
 { (PSC_RS_MAXCOLS/PSC_RS_MAXROWS). }
-Function PscDbQueryDbf(ConnIdx:Integer):TPscValue;
+Function PscDbQueryFile(ConnIdx:Integer):TPscValue;
 Var
  Slot:Integer;V:TPscValue;GE:TGridEditor;I,J,ColN,RowN:Integer;
 Begin
@@ -91699,13 +91709,13 @@ Begin
  Slot:=PscRsFreeSlot;
  If Slot=0 Then Begin
   PscWL('Query : nombre maximal de RecordSet ouverts atteint.');
-  PscDbQueryDbf:=V;Exit;
+  PscDbQueryFile:=V;Exit;
  End;
  FillChar(GE,SizeOf(GE),0);
- GE.Format:=GTF_DBF;
- If Not GridOpenFile(GE,PscDbConns[ConnIdx].DbfPath)Then Begin
+ GE.Format:=PscDbConns[ConnIdx].FileFmt;
+ If Not GridOpenFile(GE,PscDbConns[ConnIdx].FilePath)Then Begin
   PscWL('Query : '+GE.ErrorMsg);
-  PscDbQueryDbf:=V;Exit;
+  PscDbQueryFile:=V;Exit;
  End;
  PscRecSets[Slot].InUse:=True;
  ColN:=GE.ColCount;
@@ -91722,13 +91732,13 @@ Begin
    PscRecSets[Slot].Cells[I,J]:=GridCellText(GE,I-1,J-1);
  FreeGridEditor(GE);
  PscVText(PSC_RS_TAG+IntToStr(Slot),V);
- PscDbQueryDbf:=V;
+ PscDbQueryFile:=V;
 End;
 
 { Connexion.Query('SELECT ...') - execute REELLEMENT via SQLCMD.EXE        }
 { (-s , -W, meme format que l'apercu de grille deja verifie de             }
 { l'Explorateur d'objets SQL Server) et peuple un nouveau RecordSet.        }
-{ Dispatche vers PscDbQueryDbf pour une connexion 'File=xxx.DBF;...'. }
+{ Dispatche vers PscDbQueryFile pour une connexion 'File=xxx.DBF/.CSV;...'.}
 Function PscDbQuery(ConnIdx:Integer;SqlText:String):TPscValue;
 Var
  Slot:Integer;Cmd,Ln:String;Buf:TCmdOutputLines;Cnt,I,J:Integer;
@@ -91739,8 +91749,8 @@ Begin
   PscWL('Query : connexion invalide ou fermee.');
   PscDbQuery:=V;Exit;
  End;
- If PscDbConns[ConnIdx].IsDbf Then Begin
-  PscDbQuery:=PscDbQueryDbf(ConnIdx);
+ If PscDbConns[ConnIdx].IsFile Then Begin
+  PscDbQuery:=PscDbQueryFile(ConnIdx);
   Exit;
  End;
  Slot:=PscRsFreeSlot;

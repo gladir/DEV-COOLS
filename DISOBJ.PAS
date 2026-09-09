@@ -884,8 +884,41 @@ Begin
  While rleft>1 do IteratedBlock
 End;
 
-Procedure LIDATAL;Begin
- UnsupportedRecord('LIDATAL');
+Procedure LIDATAL;
+
+ Procedure IteratedBlock32;
+ Var
+  RepeatCount,BlockCount,DataCount,I,J:LongInt;
+ Begin
+  RepeatCount:=GetL;
+  BlockCount:=GetI;
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,LongHex2Str(RepeatCount),'*/');
+  If BlockCount=0 Then Begin
+   DataCount:=GetI;
+   If OutputLanguage<>LangTurboPascal Then Write(FileOutput,HexWord2Str(DataCount),':');
+   For I:=1 To DataCount Do Begin
+    D:=GetB;
+    If OutputLanguage<>LangTurboPascal Then Write(FileOutput,ByteHex2Str(D):3);
+   End;
+  End
+   Else
+  For J:=1 To BlockCount Do IteratedBlock32;
+  If OutputLanguage<>LangTurboPascal Then Write(FileOutput,'/');
+ End;
+
+Var
+ Seg,Ofs:LongInt;
+Begin
+ RLen:=GetI;
+ RLeft:=RLen;
+ Seg:=GetX;
+ Ofs:=GetL;
+ If OutputLanguage=LangTurboPascal Then Begin
+  While RLeft>1 Do Dum:=GetB;
+  Exit;
+ End;
+ WriteLn(FileOutput,rlen:6,' DONNEES ITERATIVE32 pour ',sname[Seg],' DEPLACEMENT=',LongHex2Str(Ofs));
+ While RLeft>1 Do IteratedBlock32;
 End;
 
 Procedure LIBHED;Begin

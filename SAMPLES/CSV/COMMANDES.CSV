@@ -1,0 +1,6 @@
+"NumCommande","DateCommande","ClientID","Montant","Commentaire"
+5001,"2026-01-15",1,129.99,"Livraison standard"
+5002,"2026-02-03",2,349.00,"Livraison ""urgente"" demandee"
+5003,"2026-02-20",1,24.50,""
+5004,"2026-03-01",4,500.00,"Cadeau, emballage demande"
+5005,"2026-03-15",3,89.99,"Retour possible sous 30 jours"

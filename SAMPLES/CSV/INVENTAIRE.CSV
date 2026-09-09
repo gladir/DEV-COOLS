@@ -1,0 +1,6 @@
+"Reference","Designation","Quantite","PrixUnitaire","Emplacement"
+"REF-001","Boite carton moyenne",500,1.25,"ENTREPOT1"
+"REF-002","Ruban adhesif",300,2.75,"ENTREPOT1"
+"REF-003","Palette bois",40,15.00,"ENTREPOT2"
+"REF-004","Etiquette code-barre",10000,0.05,"ENTREPOT1"
+"REF-005","Film plastique",120,8.50,"ENTREPOT2"

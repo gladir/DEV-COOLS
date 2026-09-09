@@ -1,0 +1,6 @@
+"Code","Designation","Prix","Stock","Actif"
+"P001","Clavier mecanique",89.99,42,true
+"P002","Souris optique",24.50,150,true
+"P003","Chaise de bureau, ergonomique",349.00,8,true
+"P004","Casque audio",59.95,0,false
+"P005","Ecran 27"" incurve",289.00,15,true
