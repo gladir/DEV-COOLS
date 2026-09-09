@@ -2322,6 +2322,15 @@ Const
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
  MAX_CYCLES    = 100000;    { limite de surete 68k }
+ { GEMDOS Trap #1 (Fsfirst/Fsnext/Fgetdta) : 44 octets de DTA reserves en   }
+ { haut de memoire, sous la pile (M68K_A[7] demarre a MEM_SIZE-4) - jamais  }
+ { touches par le programme charge (TEXT/DATA a l adresse 0). }
+ M68K_GEMDOS_DTA_ADDR  = $F0000;
+ { Tas GEMDOS (Malloc/Mfree) : allocateur "bump" simple entre HEAP_BASE et  }
+ { HEAP_END, sous la zone DTA ci-dessus - largement suffisant pour un       }
+ { accessoire de bureau (CONTROL.ACC et semblables). }
+ M68K_GEMDOS_HEAP_BASE = $A0000;
+ M68K_GEMDOS_HEAP_END  = $EFFFF;
  CCR_C         = 1;
  CCR_V         = 2;
  CCR_Z         = 4;
@@ -7943,6 +7952,14 @@ Var
  M68K_AES_MouseX   : Integer;
  M68K_AES_MouseY   : Integer;
  M68K_AES_Buttons  : Word;
+ { Etat GEMDOS Trap #1 (fichiers, tas, lecteur/chemin courant, DTA) }
+ M68K_FileH        : Array[0..15] Of File;
+ M68K_FileOpen     : Array[0..15] Of Boolean;
+ M68K_HeapNext     : LongInt;
+ M68K_CurDrive     : Byte;
+ M68K_CurPath      : String[127];
+ M68K_DtaSearch    : SearchRec;
+ M68K_DtaActive    : Boolean;
  { Etat de l emulateur Cray-1 integre (parcels 16 bits) }
  CRAY1_Mem      : Array[0..65535] Of Word;
  CRAY1_Reg      : Array[0..7] Of LongInt;
@@ -149346,6 +149363,38 @@ Begin
   M68K_LongToStr := s;
 End;
 
+{ Lecture/ecriture d une chaine ASCIZ en memoire emulee - reutilise par     }
+{ les appels GEMDOS Trap #1 (Fopen/Fsfirst/Dgetpath/...) ci-dessous.        }
+Function M68K_ReadASCIZ(Adr: LongInt): String;
+Var
+  S: String;
+  I: Integer;
+  Ch: Byte;
+Begin
+  S := '';
+  I := 0;
+  While I < 255 Do Begin
+    Ch := M68K_Read8(Adr + I);
+    If Ch = 0 Then Break;
+    S := S + Chr(Ch);
+    Inc(I);
+  End;
+  M68K_ReadASCIZ := S;
+End;
+
+{ Tronque a MaxLen-1 caracteres (place pour le terminateur) - ne deborde    }
+{ jamais du tampon fourni par l appelant, comme une vraie GEMDOS. }
+Procedure M68K_WriteASCIZ(Adr: LongInt; Const S: String; MaxLen: Integer);
+Var
+  I, N: Integer;
+Begin
+  N := Length(S);
+  If N > MaxLen - 1 Then N := MaxLen - 1;
+  If N < 0 Then N := 0;
+  For I := 1 To N Do M68K_Write8(Adr + I - 1, Ord(S[I]));
+  M68K_Write8(Adr + N, 0);
+End;
+
 { ========================================================================== }
 {  TRAP #15 handler (convention Easy68k)                                     }
 { ========================================================================== }
@@ -149364,6 +149413,10 @@ Var
   aes_op, aes_nout, aes_anout: Integer;
   aes_j, aes_p1, aes_p2: Integer;
   aes_s, aes_line: String;
+  { GEMDOS Trap #1 (voir plus bas) }
+  gd_fname, gd_hostpath: String;
+  gd_mode, gd_handle, gd_slot, gd_attrib: Integer;
+  gd_cnt, gd_buf, gd_pos, gd_newpos: LongInt;
 
   { Ecrit intout[Idx] seulement si l appelant a declare assez de sorties   }
   { (control[2]=nintout) - jamais au-dela, comme une vraie AES. }
@@ -149438,6 +149491,166 @@ Begin
       $4C: Begin { Pterm - terminer avec code retour (mot a [A7+2]) }
              M68K_Halted := True;
              M68K_ExitCode := M68K_Read16(M68K_A[7] + 2);
+           End;
+      $0E: Begin { Dsetdrv - changer de lecteur, retourne le bitmap des     }
+                 { lecteurs "presents" (A/B/C simules). }
+             M68K_CurDrive := M68K_Read16(M68K_A[7] + 2) And $FF;
+             M68K_D[0] := $00000007;
+           End;
+      $19: M68K_D[0] := M68K_CurDrive; { Dgetdrv }
+      $47: Begin { Dgetpath(path, drv) - meme chemin courant quel que soit  }
+                 { le lecteur demande (un seul chemin courant simule). }
+             gd_buf := M68K_Read32(M68K_A[7] + 2);
+             M68K_WriteASCIZ(gd_buf, M68K_CurPath, 128);
+             M68K_D[0] := 0;
+           End;
+      $2F: M68K_D[0] := M68K_GEMDOS_DTA_ADDR; { Fgetdta }
+      $48: Begin { Malloc(nbytes) - allocateur "bump", jamais recycle }
+             gd_cnt := M68K_Read32(M68K_A[7] + 2);
+             If gd_cnt < 0 Then
+              M68K_D[0] := M68K_GEMDOS_HEAP_END - M68K_HeapNext + 1
+             Else If (gd_cnt = 0) Or
+              (M68K_HeapNext + gd_cnt > M68K_GEMDOS_HEAP_END) Then
+              M68K_D[0] := 0
+             Else Begin
+              M68K_D[0] := M68K_HeapNext;
+              M68K_HeapNext := M68K_HeapNext + gd_cnt;
+             End;
+           End;
+      $49: M68K_D[0] := 0; { Mfree - succes (rien a recycler, voir Malloc) }
+      $3D: Begin { Fopen(fname, mode) }
+             gd_fname := M68K_ReadASCIZ(M68K_Read32(M68K_A[7] + 2));
+             gd_mode := M68K_Read16(M68K_A[7] + 6);
+             gd_hostpath := Emu_HostPath(gd_fname);
+             gd_slot := -1;
+             For i := 0 To 15 Do
+              If Not M68K_FileOpen[i] Then Begin gd_slot := i; Break; End;
+             If gd_slot < 0 Then
+              M68K_D[0] := LongInt(-35) { ENHNDL }
+             Else Begin
+              Assign(M68K_FileH[gd_slot], gd_hostpath);
+              {$I-}
+              If gd_mode = 0 Then Reset(M68K_FileH[gd_slot], 1)
+              Else Begin
+               Reset(M68K_FileH[gd_slot], 1);
+               If IOResult <> 0 Then Rewrite(M68K_FileH[gd_slot], 1);
+              End;
+              {$I+}
+              If IOResult <> 0 Then
+               M68K_D[0] := LongInt(-33) { EFILNF }
+              Else Begin
+               M68K_FileOpen[gd_slot] := True;
+               M68K_D[0] := gd_slot + 6;
+              End;
+             End;
+           End;
+      $3E: Begin { Fclose(handle) }
+             gd_handle := M68K_Read16(M68K_A[7] + 2) - 6;
+             If (gd_handle < 0) Or (gd_handle > 15) Or
+              (Not M68K_FileOpen[gd_handle]) Then
+              M68K_D[0] := LongInt(-37) { EIHNDL }
+             Else Begin
+              {$I-} Close(M68K_FileH[gd_handle]); {$I+}
+              If IOResult <> 0 Then ;
+              M68K_FileOpen[gd_handle] := False;
+              M68K_D[0] := 0;
+             End;
+           End;
+      $3F: Begin { Fread(handle, count, buf) }
+             gd_handle := M68K_Read16(M68K_A[7] + 2) - 6;
+             gd_cnt := M68K_Read32(M68K_A[7] + 4);
+             gd_buf := M68K_Read32(M68K_A[7] + 8);
+             If (gd_handle < 0) Or (gd_handle > 15) Or
+              (Not M68K_FileOpen[gd_handle]) Then
+              M68K_D[0] := LongInt(-37) { EIHNDL }
+             Else Begin
+              gd_pos := 0;
+              While gd_pos < gd_cnt Do Begin
+               {$I-} BlockRead(M68K_FileH[gd_handle], c, 1); {$I+}
+               If IOResult <> 0 Then Break;
+               If Eof(M68K_FileH[gd_handle]) And (gd_pos = 0) Then ;
+               M68K_Write8(gd_buf + gd_pos, c);
+               Inc(gd_pos);
+              End;
+              M68K_D[0] := gd_pos;
+             End;
+           End;
+      $40: Begin { Fwrite(handle, count, buf) }
+             gd_handle := M68K_Read16(M68K_A[7] + 2) - 6;
+             gd_cnt := M68K_Read32(M68K_A[7] + 4);
+             gd_buf := M68K_Read32(M68K_A[7] + 8);
+             If (gd_handle < 0) Or (gd_handle > 15) Or
+              (Not M68K_FileOpen[gd_handle]) Then
+              M68K_D[0] := LongInt(-37) { EIHNDL }
+             Else Begin
+              For gd_pos := 0 To gd_cnt - 1 Do Begin
+               c := M68K_Read8(gd_buf + gd_pos);
+               {$I-} BlockWrite(M68K_FileH[gd_handle], c, 1); {$I+}
+               If IOResult <> 0 Then Break;
+              End;
+              M68K_D[0] := gd_cnt;
+             End;
+           End;
+      $42: Begin { Fseek(offset, handle, mode) }
+             gd_pos := M68K_Read32(M68K_A[7] + 2);
+             gd_handle := M68K_Read16(M68K_A[7] + 6) - 6;
+             gd_mode := M68K_Read16(M68K_A[7] + 8);
+             If (gd_handle < 0) Or (gd_handle > 15) Or
+              (Not M68K_FileOpen[gd_handle]) Then
+              M68K_D[0] := LongInt(-37) { EIHNDL }
+             Else Begin
+              Case gd_mode Of
+               1: gd_newpos := FilePos(M68K_FileH[gd_handle]) + gd_pos;
+               2: gd_newpos := FileSize(M68K_FileH[gd_handle]) + gd_pos;
+              Else
+               gd_newpos := gd_pos;
+              End;
+              {$I-} Seek(M68K_FileH[gd_handle], gd_newpos); {$I+}
+              If IOResult <> 0 Then ;
+              M68K_D[0] := gd_newpos;
+             End;
+           End;
+      $4E: Begin { Fsfirst(fname, attrib) }
+             gd_fname := M68K_ReadASCIZ(M68K_Read32(M68K_A[7] + 2));
+             gd_attrib := M68K_Read16(M68K_A[7] + 6) And $FF;
+             gd_hostpath := Emu_HostPath(gd_fname);
+             {$I-} FindFirst(gd_hostpath, AnyFile, M68K_DtaSearch); {$I+}
+             If (IOResult = 0) And (DosError = 0) Then Begin
+              M68K_DtaActive := True;
+              M68K_Write8(M68K_GEMDOS_DTA_ADDR + 21, M68K_DtaSearch.Attr);
+              M68K_Write16(M68K_GEMDOS_DTA_ADDR + 22,
+               Word(M68K_DtaSearch.Time And $FFFF));
+              M68K_Write16(M68K_GEMDOS_DTA_ADDR + 24,
+               Word((M68K_DtaSearch.Time Shr 16) And $FFFF));
+              M68K_Write32(M68K_GEMDOS_DTA_ADDR + 26, M68K_DtaSearch.Size);
+              M68K_WriteASCIZ(M68K_GEMDOS_DTA_ADDR + 30,
+               UpCaseStr(M68K_DtaSearch.Name), 14);
+              M68K_D[0] := 0;
+             End Else Begin
+              M68K_DtaActive := False;
+              M68K_D[0] := LongInt(-33); { EFILNF }
+             End;
+           End;
+      $4F: Begin { Fsnext - poursuit la recherche armee par Fsfirst }
+             If Not M68K_DtaActive Then
+              M68K_D[0] := LongInt(-33) { EFILNF }
+             Else Begin
+              {$I-} FindNext(M68K_DtaSearch); {$I+}
+              If (IOResult = 0) And (DosError = 0) Then Begin
+               M68K_Write8(M68K_GEMDOS_DTA_ADDR + 21, M68K_DtaSearch.Attr);
+               M68K_Write16(M68K_GEMDOS_DTA_ADDR + 22,
+                Word(M68K_DtaSearch.Time And $FFFF));
+               M68K_Write16(M68K_GEMDOS_DTA_ADDR + 24,
+                Word((M68K_DtaSearch.Time Shr 16) And $FFFF));
+               M68K_Write32(M68K_GEMDOS_DTA_ADDR + 26, M68K_DtaSearch.Size);
+               M68K_WriteASCIZ(M68K_GEMDOS_DTA_ADDR + 30,
+                UpCaseStr(M68K_DtaSearch.Name), 14);
+               M68K_D[0] := 0;
+              End Else Begin
+               M68K_DtaActive := False;
+               M68K_D[0] := LongInt(-49); { ENMFIL }
+              End;
+             End;
            End;
     Else
       { Fonction GEMDOS non implementee : retourne 0 dans D0 }
@@ -161532,6 +161745,16 @@ Begin NesActive := False;
   M68K_Verbose := False;
   M68K_Cycles := 0;
   M68K_Panel := @P;
+  M68K_AES_AppId := 0;
+  M68K_AES_NextHwnd := 0;
+  M68K_AES_MouseX := 0;
+  M68K_AES_MouseY := 0;
+  M68K_AES_Buttons := 0;
+  For Steps := 0 To 15 Do M68K_FileOpen[Steps] := False;
+  M68K_HeapNext := M68K_GEMDOS_HEAP_BASE;
+  M68K_CurDrive := 2; { C: - lecteur de demarrage suppose }
+  M68K_CurPath := '\';
+  M68K_DtaActive := False;
   Loaded := False;
   EntryAddr := -1;
   { Pour Atari ST, essayer le format PRG GEMDOS en premier }
