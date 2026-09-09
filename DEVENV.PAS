@@ -113601,6 +113601,10 @@ Begin
    CreateEmulatorTab(FullPath, '-CNES', '');
    NCActionOpenAssociated := True;
   End
+  Else If Ext = 'PAK' Then Begin
+   CreateEmulatorTab(FullPath, '-CCOCO3', '');
+   NCActionOpenAssociated := True;
+  End
     Else If Ext = 'A26' Then Begin
      CreateEmulatorTab(FullPath, '-CATARI2600', '');
      NCActionOpenAssociated := True;
