@@ -1311,8 +1311,8 @@ Type
   CONSTANTES GLOBALES
   ============================================================ }
 Const
- DEVENV_VERSION = '1.0';
- DEVENV_DATE    = '2026-04-03';
+ DEVENV_VERSION = '1.0.1';
+ DEVENV_DATE    = '2026-09-07';
 
  { Palette NES 64 couleurs -> palette EGA 16 couleurs (mappage approche). }
  NesPalToEga: Array[0..63] Of Byte = (
@@ -1833,70 +1833,70 @@ Const
  ABAP_EXT_EXE         = '.exe';     { extension executable           }
 
  { Integration compilateur PSP (Pascal Server Pages) }
- PSP_COMPILER_WIN32   = 'PSPCW32';  { compilateur PSP Win32 PE        }
- PSP_COMPILER_DOS     = 'PSP86';    { compilateur PSP DOS 8086        }
- PSP_TEMP_OUTPUT      = '_pspout.tmp'; { fichier temp sortie compil   }
- PSP_EXT_SOURCE       = '.psp';     { extension source PSP            }
- PSP_EXT_EXE          = '.exe';     { extension executable            }
+ PSP_COMPILER_WIN32   = 'PSPCW32';        { compilateur PSP Win32 PE        }
+ PSP_COMPILER_DOS     = 'PSP86';          { compilateur PSP DOS 8086        }
+ PSP_TEMP_OUTPUT      = '_pspout.tmp';    { fichier temp sortie compil      }
+ PSP_EXT_SOURCE       = '.psp';           { extension source PSP            }
+ PSP_EXT_EXE          = '.exe';           { extension executable            }
 
  { Integration compilateur AWK }
- AWK_COMPILER_WIN32   = 'AWKCW32';  { compilateur AWK Win32 PE        }
- AWK_COMPILER_DOS     = 'AWK86';    { compilateur AWK DOS 8086        }
- AWK_TEMP_OUTPUT      = '_awkout.tmp'; { fichier temp sortie compil   }
- AWK_EXT_SOURCE       = '.awk';     { extension source AWK            }
- AWK_EXT_EXE          = '.exe';     { extension executable            }
+ AWK_COMPILER_WIN32   = 'AWKCW32';        { compilateur AWK Win32 PE        }
+ AWK_COMPILER_DOS     = 'AWK86';          { compilateur AWK DOS 8086        }
+ AWK_TEMP_OUTPUT      = '_awkout.tmp';    { fichier temp sortie compil      }
+ AWK_EXT_SOURCE       = '.awk';           { extension source AWK            }
+ AWK_EXT_EXE          = '.exe';           { extension executable            }
 
  { Integration compilateur Java }
- JAVA_COMPILER_WIN32  = 'JAVACW32'; { compilateur Java Win32 PE       }
- JAVA_COMPILER_DOS    = 'JAVAC86';  { compilateur Java DOS 8086       }
- JAVA_TEMP_OUTPUT     = '_javaout.tmp'; { fichier temp sortie compil  }
- JAVA_EXT_SOURCE      = '.java';    { extension source Java           }
- JAVA_EXT_EXE         = '.exe';     { extension executable            }
+ JAVA_COMPILER_WIN32  = 'JAVACW32';       { compilateur Java Win32 PE       }
+ JAVA_COMPILER_DOS    = 'JAVAC86';        { compilateur Java DOS 8086       }
+ JAVA_TEMP_OUTPUT     = '_javaout.tmp';   { fichier temp sortie compil      }
+ JAVA_EXT_SOURCE      = '.java';          { extension source Java           }
+ JAVA_EXT_EXE         = '.exe';           { extension executable            }
 
  { Integration compilateur Python }
- PYTHON_COMPILER_WIN32 = 'PYTHCW32'; { compilateur Python Win32 PE    }
+ PYTHON_COMPILER_WIN32 = 'PYTHCW32';      { compilateur Python Win32 PE     }
 
  { Integration assembleur ML (clone MS ML.EXE, MASM x86 Win32) }
- ML_COMPILER_WIN32    = 'ML';        { assembleur ML Win32 PE         }
- ML_TEMP_OUTPUT       = '_mlout.tmp'; { fichier temp sortie compil    }
- ML_EXT_SOURCE        = '.asm';      { extension source assembleur    }
- ML_EXT_EXE           = '.exe';      { extension executable Win32     }
- PYTHON_COMPILER_DOS   = 'PYTHON86'; { compilateur Python DOS 8086    }
- PYTHON_TEMP_OUTPUT    = '_pyout.tmp'; { fichier temp sortie compil   }
- PYTHON_EXT_SOURCE     = '.py';     { extension source Python         }
- PYTHON_EXT_EXE        = '.exe';    { extension executable            }
+ ML_COMPILER_WIN32    = 'ML';             { assembleur ML Win32 PE          }
+ ML_TEMP_OUTPUT       = '_mlout.tmp';     { fichier temp sortie compil      }
+ ML_EXT_SOURCE        = '.asm';           { extension source assembleur     }
+ ML_EXT_EXE           = '.exe';           { extension executable Win32      }
+ PYTHON_COMPILER_DOS   = 'PYTHON86';      { compilateur Python DOS 8086     }
+ PYTHON_TEMP_OUTPUT    = '_pyout.tmp';    { fichier temp sortie compil      }
+ PYTHON_EXT_SOURCE     = '.py';           { extension source Python         }
+ PYTHON_EXT_EXE        = '.exe';          { extension executable            }
 
  { Systeme de build et configuration }
- BUILD_MAX_ORDER       = 64;       { nombre max projets dans l ordre }
- BUILD_CFG_DLG_WIDTH   = 400;      { largeur dialogue configuration  }
- BUILD_CFG_DLG_HEIGHT  = 300;      { hauteur dialogue configuration  }
- BUILD_CFG_ROW_HEIGHT  = 22;       { hauteur d une ligne config      }
- BUILD_CFG_COL_WIDTH   = 150;      { largeur colonne configuration   }
- BUILD_CFG_PADDING     = 8;        { marge interieure dialogue       }
- MAX_BUILD_RESULTS     = 64;       { nombre max de resultats build   }
+ BUILD_MAX_ORDER       = 64;              { nombre max projets dans l ordre }
+ BUILD_CFG_DLG_WIDTH   = 400;             { largeur dialogue configuration  }
+ BUILD_CFG_DLG_HEIGHT  = 300;             { hauteur dialogue configuration  }
+ BUILD_CFG_ROW_HEIGHT  = 22;              { hauteur d une ligne config      }
+ BUILD_CFG_COL_WIDTH   = 150;             { largeur colonne configuration   }
+ BUILD_CFG_PADDING     = 8;               { marge interieure dialogue       }
+ MAX_BUILD_RESULTS     = 64;              { nombre max de resultats build   }
 
  { Points d arret et debogage }
- BP_MARKER_SIZE        = 10;       { taille du marqueur (pixels)     }
- BP_MARKER_COLOR       = 4;        { couleur du marqueur (rouge)     }
- BP_DISABLED_COLOR     = 8;        { couleur marqueur desactive      }
- DEBUG_PANEL_WIDTH     = 300;      { largeur panneau debogage        }
- DEBUG_PANEL_HEIGHT    = 200;      { hauteur panneau debogage        }
- DEBUG_PANEL_ROW_HEIGHT= 20;       { hauteur d une ligne panneau     }
- DEBUG_PANEL_PADDING   = 6;        { marge interieure panneau        }
+ BP_MARKER_SIZE        = 10;              { taille du marqueur (pixels)     }
+ BP_MARKER_COLOR       = 4;               { couleur du marqueur (rouge)     }
+ BP_DISABLED_COLOR     = 8;               { couleur marqueur desactive      }
+ DEBUG_PANEL_WIDTH     = 300;             { largeur panneau debogage        }
+ DEBUG_PANEL_HEIGHT    = 200;             { hauteur panneau debogage        }
+ DEBUG_PANEL_ROW_HEIGHT= 20;              { hauteur d une ligne panneau     }
+ DEBUG_PANEL_PADDING   = 6;               { marge interieure panneau        }
 
  { Barre d etat, integration finale et polissage }
- STATUS_BAR_PADDING    = 6;        { marge interieure barre etat    }
- STATUS_BAR_SEP_WIDTH  = 1;        { largeur separateur             }
- STATUS_BAR_FIELD_GAP  = 12;       { espacement entre champs        }
- MRU_MAX_ENTRIES       = 16;       { nombre max de fichiers recents }
- MRU_FILENAME          = 'DEVENV.MRU'; { fichier MRU                }
- START_PAGE_TITLE_Y    = 40;       { position Y du titre            }
- START_PAGE_LIST_Y     = 160;      { position Y de la liste         }
- START_PAGE_BTN_Y      = 60;       { position Y des boutons         }
- START_PAGE_BTN_WIDTH  = 140;      { largeur bouton demarrage       }
- START_PAGE_BTN_HEIGHT = 28;       { hauteur bouton demarrage       }
- START_PAGE_ITEM_HEIGHT= 20;       { hauteur element liste recents  }
- IDE_VERSION           = '1.0.0';  { version de l IDE               }
+ STATUS_BAR_PADDING    = 6;               { marge interieure barre etat    }
+ STATUS_BAR_SEP_WIDTH  = 1;               { largeur separateur             }
+ STATUS_BAR_FIELD_GAP  = 12;              { espacement entre champs        }
+ MRU_MAX_ENTRIES       = 16;              { nombre max de fichiers recents }
+ MRU_FILENAME          = 'DEVENV.MRU';    { fichier MRU                    }
+ START_PAGE_TITLE_Y    = 40;              { position Y du titre            }
+ START_PAGE_LIST_Y     = 160;             { position Y de la liste         }
+ START_PAGE_BTN_Y      = 60;              { position Y des boutons         }
+ START_PAGE_BTN_WIDTH  = 140;             { largeur bouton demarrage       }
+ START_PAGE_BTN_HEIGHT = 28;              { hauteur bouton demarrage       }
+ START_PAGE_ITEM_HEIGHT= 20;              { hauteur element liste recents  }
+ IDE_VERSION           = DEVENV_VERSION;  { version de l IDE               }
 
  { Onglets de fenetres d edition }
  TAB_HEIGHT            = 22;      { hauteur d un onglet            }
@@ -10230,8 +10230,7 @@ End;
 
 { --- Aide et version --- }
 
-Procedure ShowVersion;
-Begin
+Procedure ShowVersion;Begin
  { WriteLn(Output,...) ne produit aucun texte visible des que PtcCrt est   }
  { charge (voir ConRawWriteLn plus haut, deja utilise par FatalError et    }
  { /TESTUNIT) - meme correctif applique ici (2026-09-05, bogue reel        }
@@ -10241,7 +10240,7 @@ Begin
  { fichier plutot qu'un vrai terminal). }
  ConRawWriteLn('DEVENV - Cette commande permet de lancer le clone de Visual Studio.');
  ConRawWriteLn('Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')');
- ConRawWriteLn('Compilateurs integres : C# (CSC), VB.NET (VBC), Pascal (TPC)');
+ ConRawWriteLn('Compilateurs int'+#130+'gr'+#130+'s : MASM');
 End;
 
 Procedure ShowHelp;Begin
@@ -10250,57 +10249,62 @@ Procedure ShowHelp;Begin
  ConRawWriteLn('Syntaxe: DEVENV [solution.sln] [options]');
  ConRawWriteLn('');
  ConRawWriteLn('Options:');
- ConRawWriteLn('  solution.sln   Ouvrir une solution existante au demarrage');
- ConRawWriteLn('  -v             Mode verbeux (afficher details de demarrage)');
- ConRawWriteLn('  -d             Mode debogage interne de l IDE');
- ConRawWriteLn('  -emu:XXX,fich  Lancer directement l emulateur XXX avec fich');
- ConRawWriteLn('                 XXX = NES, AMIGA, ATARIST, C64, APPLEII,');
- ConRawWriteLn('                       ATARI400, ATARI800, ATARI2600, MSX,');
- ConRawWriteLn('                       TRS80, ADAM, COCO3, TO7, CRAY1, ...');
- ConRawWriteLn('  /DISK0:img     Image disquette montee sur l unite A: (DOS)');
- ConRawWriteLn('  /DISK1:img     Image disquette montee sur l unite B: (DOS)');
- ConRawWriteLn('                 Formats: .IMG/.IMA brutes (160/180/320/360/720');
- ConRawWriteLn('                          /1200/1440/2880 Ko).');
- ConRawWriteLn('  /DISK80:img    Image disque dur montee sur l unite C: (DOS)');
- ConRawWriteLn('  /DISK81:img    Image disque dur montee sur l unite D: (DOS)');
- ConRawWriteLn('                 Formats: brute (.IMG), VHD fixe/dynamique,');
- ConRawWriteLn('                          VMDK sparse/descripteur. Avec ou sans');
- ConRawWriteLn('                          table de partitions (MBR).');
- ConRawWriteLn('                 Le terminal CMD/PowerShell integre peut');
- ConRawWriteLn('                 utiliser A:/B:/C:/D: et les commandes DIR,');
- ConRawWriteLn('                 TYPE, CD, VOL pour explorer l image (FAT12/16).');
- ConRawWriteLn('  /CDROM:img     Image ISO9660 (.iso) montee comme 1er lecteur');
- ConRawWriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
- ConRawWriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
- ConRawWriteLn('  /CDROM0:img    Image ISO9660 (.iso) montee comme 1er lecteur');
- ConRawWriteLn('                 CD-ROM (DOS). Necessite la case MSCDEX cochee');
- ConRawWriteLn('                 dans Options > Emulateur > DOS: Logiciel.');
- ConRawWriteLn('  /CDROM1:img    Image ISO9660 (.iso) montee comme 2e lecteur CD-ROM.');
- ConRawWriteLn('  /TESTUNIT,8086:fichier.tst   Execute un fichier de tests unitaires');
+ ConRawWriteLn('  solution.sln                Ouvrir une solution existante au d'+#130+'marrage');
+ ConRawWriteLn('  -v                          Mode verbeux (afficher d'+#130+'tails de d'+#130+'marrage)');
+ ConRawWriteLn('  -d                          Mode debogage interne de l''IDE');
+ ConRawWriteLn('  -emu:XXX,fich               Lancer directement l'''+#130+'mulateur XXX avec fich');
+ ConRawWriteLn('                               XXX = DOS, NES, AMIGA, ATARIST, C64, APPLEII,');
+ ConRawWriteLn('                                     ATARI400, ATARI800, ATARI2600, MSX,');
+ ConRawWriteLn('                                     TRS80, ADAM, COCO3, TO7, CRAY1, ...');
+ ConRawWriteLn('  /DISK0:img                  Image disquette mont'+#130+'e sur l unit'+#130+' A: (DOS)');
+ ConRawWriteLn('  /DISK1:img                  Image disquette mont'+#130+'e sur l unit'+#130+' B: (DOS)');
+ ConRawWriteLn('                              Formats: .IMG/.IMA brutes (160/180/320/360/720');
+ ConRawWriteLn('                                       /1200/1440/2880 Ko).');
+ ConRawWriteLn('  /DISK80:img                 Image disque dur mont'+#130+'e sur l''unit'+#130+' C: (DOS)');
+ ConRawWriteLn('  /DISK81:img                 Image disque dur mont'+#130+'e sur l''unit'+#130+' D: (DOS)');
+ ConRawWriteLn('                              Formats: brute (.IMG), VHD fixe/dynamique,');
+ ConRawWriteLn('                                       VMDK sparse/descripteur. Avec ou sans');
+ ConRawWriteLn('                                       table de partitions (MBR).');
+ ConRawWriteLn('                              Le terminal CMD/PowerShell int'+#130+'gr'+#130+' peut');
+ ConRawWriteLn('                              utiliser A:/B:/C:/D: et les commandes DIR,');
+ ConRawWriteLn('                              TYPE, CD, VOL pour explorer l''image (FAT12/16).');
+ ConRawWriteLn('  /CDROM:img                  Image ISO9660 (.iso) mont'+#130+'e comme 1er lecteur');
+ ConRawWriteLn('                              CD-ROM (DOS). N'+#130+'cessite la case MSCDEX coch'+#130+'e');
+ ConRawWriteLn('                              dans Options > Emulateur > DOS: Logiciel.');
+ ConRawWriteLn('  /CDROM0:img                 Image ISO9660 (.iso) mont'+#130+'e comme 1er lecteur');
+ ConRawWriteLn('                              CD-ROM (DOS). N'+#130+'cessite la case MSCDEX coch'+#130+'e');
+ ConRawWriteLn('                              dans Options > Emulateur > DOS: Logiciel.');
+ ConRawWriteLn('  /CDROM1:img                 Image ISO9660 (.iso) mont'+#130+'e comme 2e lecteur CD-ROM.');
+ ConRawWriteLn('  /TESTUNIT,8086:fichier.tst  Ex'+#130+'cute un fichier de tests unitaires');
  ConRawWriteLn('  /TESTUNIT,80286:fichier.tst CPU (8086, 80286 ou 80386) en mode');
  ConRawWriteLn('  /TESTUNIT,80386:fichier.tst console (voir DOC/TESTUNIT.txt),');
- ConRawWriteLn('                 affiche Succes/Echec pour chaque test, puis quitte.');
- ConRawWriteLn('  /NC            Ouvrir le Terminal en Norton Commander des le demarrage');
- ConRawWriteLn('  /TERMINALDOS:batchfile  Ouvrir CMD et executer un fichier .BAT');
- ConRawWriteLn('  /TERMINALOS2:batchfile  Ouvrir OS/2 & REXX et executer un fichier .BAT');
- ConRawWriteLn('  /BASH:fichier.sh        Ouvrir le Terminal en mode Bash et executer ce script');
- ConRawWriteLn('  /REXX:fichier.rex       Ouvrir OS/2 & REXX et executer ce script REXX');
- ConRawWriteLn('  /AWK:fichier.awk        Ouvrir le Terminal en mode Bash et executer ce script AWK');
- ConRawWriteLn('  /PERL:fichier.pl        Ouvrir le Terminal en mode Bash et executer ce script Perl');
- ConRawWriteLn('  /PS:fichier.ps1         Ouvrir PowerShell dev et executer ce script');
- ConRawWriteLn('  /VBSCRIPT:fichier.vbs   Ouvrir CMD (Invite de commandes) et executer ce script VBScript');
- ConRawWriteLn('  /PASCALSCRIPT:fichier.psc  Ouvrir CMD (Invite de commandes) et executer ce script PascalScript');
- ConRawWriteLn('  -maxscreen     Ouvrir l IDE en plein ecran');
- ConRawWriteLn('  -h             Afficher cette aide');
- ConRawWriteLn('  --help         Afficher cette aide');
+ ConRawWriteLn('                              affiche Succ'+#138+'s/Echec pour chaque test, puis quitte.');
+ ConRawWriteLn('  /NC                         Ouvrir le Terminal en Norton Commander');
+ ConRawWriteLn('                              d'+#138+'s le d'+#130+'marrage');
+ ConRawWriteLn('  /TERMINALDOS:batchfile      Ouvrir CMD et ex'+#130+'cuter un fichier .BAT');
+ ConRawWriteLn('  /TERMINALOS2:batchfile      Ouvrir OS/2 & REXX et ex'+#130+'cuter un fichier .BAT');
+ ConRawWriteLn('  /BASH:fichier.sh            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter ce script');
+ ConRawWriteLn('  /REXX:fichier.rex           Ouvrir OS/2 & REXX et ex'+#130+'cuter ce script REXX');
+ ConRawWriteLn('  /AWK:fichier.awk            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter');
+ ConRawWriteLn('                              ce script AWK');
+ ConRawWriteLn('  /PERL:fichier.pl            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter');
+ ConRawWriteLn('                              ce script Perl');
+ ConRawWriteLn('  /PS:fichier.ps1             Ouvrir PowerShell dev et ex'+#130+'cuter ce script');
+ ConRawWriteLn('  /VBSCRIPT:fichier.vbs       Ouvrir CMD (Invite de commandes) et ex'+#130+'cuter');
+ COnRawWriteLn('                              ce script VBScript');
+ ConRawWriteLn('  /PASCALSCRIPT:fichier.psc   Ouvrir CMD (Invite de commandes) et ex'+#130+'cuter');
+ ConRawWriteLn('                              ce script PascalScript');
+ ConRawWriteLn('  -maxscreen                  Ouvrir l''IDE en plein '+#130+'cran');
+ ConRawWriteLn('  -h                          Afficher cette aide');
+ ConRawWriteLn('  --help                      Afficher cette aide');
  ConRawWriteLn('');
- ConRawWriteLn('Langages supportes:');
- ConRawWriteLn('  C#      (.cs)   Compilateur CSCW32 / CSC86');
- ConRawWriteLn('  VB.NET  (.vb)   Compilateur VBCW32 / VBC86');
- ConRawWriteLn('  Pascal  (.pas)  Compilateur TPCW32 / VAXPAS86 / VAXPCW32');
+ ConRawWriteLn('Langages support'+#130+'s:');
+ ConRawWriteLn('  C#      (.cs)               Compilateur CSCW32 / CSC86');
+ ConRawWriteLn('  VB.NET  (.vb)               Compilateur VBNCW32');
+ ConRawWriteLn('  Pascal  (.pas)              Compilateur TPCW32 / VAXPAS86 / VAXPCW32');
  ConRawWriteLn('');
  ConRawWriteLn('Format de solution:');
- ConRawWriteLn('  .sln            Format Microsoft Visual Studio');
+ ConRawWriteLn('  .sln                        Format Microsoft Visual Studio');
  Halt(EXIT_OK);
 End;
 
@@ -63271,19 +63275,19 @@ Var
 Begin
  MatchCharClass:=False;
  If Length(CharClass)=0 Then Exit;
- 
+
  I:=1;
  Negated:=False;
- 
+
  { Verifie si la classe est negativee }
  If CharClass[1]='^'Then Begin
   Negated:=True;
   Inc(I);
  End;
- 
+
  InRange:=False;
  PrevChar:=#0;
- 
+
  While I<=Length(CharClass)do Begin
   If(CharClass[I]='-')and(I>1)and(I<Length(CharClass))and(PrevChar<>#0)Then Begin
    { Range de caracteres, ex: a-z }
@@ -63304,7 +63308,7 @@ Begin
   End;
   Inc(I);
  End;
- 
+
  MatchCharClass:=Negated;
 End;
 
@@ -63316,7 +63320,7 @@ Var
  TPos,PPos:Integer;
  AnchorStart,AnchorEnd:Boolean;
  PatternWork:String;
- 
+
  { Fonction interne recursive pour le matching }
  Function DoMatch(TI,PI:Integer):Boolean;
  Var
@@ -63328,14 +63332,14 @@ Var
   MinMatch,I:Integer;
  Begin
   DoMatch:=False;
-  
+
   { Si on a atteint la fin du pattern }
   If PI>Length(PatternWork)Then Begin
    If AnchorEnd Then DoMatch:=(TI>Length(Text))
                 Else DoMatch:=True;
    Exit;
   End;
-  
+
   { Si on a atteint la fin du texte mais pas du pattern }
   If TI>Length(Text)Then Begin
    { On peut encore matcher si le reste du pattern est optionnel }
@@ -63351,21 +63355,21 @@ Var
    DoMatch:=True;
    Exit;
   End;
-  
+
   { Traite les classes de caracteres [...] }
   If PatternWork[PI]='['Then Begin
    BracketEnd:=PI+1;
    While(BracketEnd<=Length(PatternWork))and(PatternWork[BracketEnd]<>']')do
     Inc(BracketEnd);
    CharClass:=Copy(PatternWork,PI+1,BracketEnd-PI-1);
-   
+
    { Verifie le quantificateur apres la classe }
    Quantifier:=#0;
    If BracketEnd<Length(PatternWork)Then Begin
     If PatternWork[BracketEnd+1]in['*','+','?']Then
      Quantifier:=PatternWork[BracketEnd+1];
    End;
-   
+
    If Quantifier='*'Then Begin
     { 0 ou plus }
     If DoMatch(TI,BracketEnd+2)Then Begin DoMatch:=True; Exit; End;
@@ -63399,7 +63403,7 @@ Var
    End;
    Exit;
   End;
-  
+
   { Traite les sequences d'echappement \d \w \s \. etc }
   If PatternWork[PI]='\'Then Begin
    If PI>=Length(PatternWork)Then Exit;
@@ -63413,14 +63417,14 @@ Var
     'S':Matched:=Not(Text[TI]in[' ',#9,#10,#13]);
     Else Matched:=(Text[TI]=PatternWork[PI]); { Caractere echappe }
    End;
-   
+
    { Verifie le quantificateur }
    Quantifier:=#0;
    If PI<Length(PatternWork)Then Begin
     If PatternWork[PI+1]in['*','+','?']Then
      Quantifier:=PatternWork[PI+1];
    End;
-   
+
    If Quantifier=#0 Then Begin
     If Matched Then DoMatch:=DoMatch(TI+1,PI+1);
    End
@@ -63473,7 +63477,7 @@ Var
    End;
    Exit;
   End;
-  
+
   { Le point matche tout caractere }
   If PatternWork[PI]='.'Then Begin
    { Verifie le quantificateur }
@@ -63482,7 +63486,7 @@ Var
     If PatternWork[PI+1]in['*','+','?']Then
      Quantifier:=PatternWork[PI+1];
    End;
-   
+
    Case Quantifier of
     '*':Begin
      If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
@@ -63508,14 +63512,14 @@ Var
    End;
    Exit;
   End;
-  
+
   { Caractere litteral }
   Quantifier:=#0;
   If PI<Length(PatternWork)Then Begin
    If PatternWork[PI+1]in['*','+','?']Then
     Quantifier:=PatternWork[PI+1];
   End;
-  
+
   Case Quantifier of
    '*':Begin
     If DoMatch(TI,PI+2)Then Begin DoMatch:=True; Exit; End;
@@ -63550,11 +63554,11 @@ Begin
   RegexMatch:=True;
   Exit;
  End;
- 
+
  PatternWork:=Pattern;
  AnchorStart:=False;
  AnchorEnd:=False;
- 
+
  { Traite les ancres }
  If PatternWork[1]='^'Then Begin
   AnchorStart:=True;
@@ -63564,7 +63568,7 @@ Begin
   AnchorEnd:=True;
   Delete(PatternWork,Length(PatternWork),1);
  End;
- 
+
  If AnchorStart Then Begin
   RegexMatch:=DoMatch(1,1);
  End
@@ -63594,7 +63598,7 @@ Begin
  BraceBalance:=0;
  InQuote:=False;
  InApos:=False;
- 
+
  For I:=1 to Length(Line)do Begin
   If Line[I]='"'Then Begin
    If Not InApos Then InQuote:=Not InQuote;
@@ -63625,21 +63629,21 @@ Begin
  If(LineNum<1)or(LineNum>NumberLine)Then Exit;
  { Protection contre pointeur nil - evite runtime error 216 }
  If PA[LineNum]=nil Then Exit;
- 
+
  SaveLine:=CurrLine;
  SavePos:=CurrPos;
  SaveLineNum:=CurrLinePtr;
- 
+
  CurrLine:=PA[LineNum]^;
  CurrPos:=1;
  CurrLinePtr:=LineNum;
- 
+
  { Saute les espaces }
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
- 
+
  If CurrPos<=Length(CurrLine)Then
   ExecuteLine:=RunLine;
- 
+
  CurrLine:=SaveLine;
  CurrPos:=SavePos;
  CurrLinePtr:=SaveLineNum;
@@ -64134,7 +64138,7 @@ Begin
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then ArrayPtr:=CreateArray(ArrayName);
  If ArrayPtr=nil Then Exit;
- 
+
  ElemPtr:=FindArrayElement(ArrayPtr,Key);
  If ElemPtr<>nil Then Begin
   ElemPtr^.Value:=Value;
@@ -64165,7 +64169,7 @@ Begin
  GetArrayElement:='';
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then Exit;
- 
+
  ElemPtr:=FindArrayElement(ArrayPtr,Key);
  If ElemPtr<>nil Then
   GetArrayElement:=ElemPtr^.Value;
@@ -64784,7 +64788,7 @@ Var
 Begin
  { END est execute a la fin du programme, on sauvegarde la position }
  EndBlockStart:=CurrLinePtr;
- 
+
  { Sauter le bloc END pour l'instant - il sera execute a la fin }
  SkipSpace;
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
@@ -64823,7 +64827,7 @@ Var
 Begin
  SkipSpace;
  SavePos:=CurrPos;
- 
+
  { Verifier si c'est "getline var" ou juste "getline" }
  VarName:='';
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
@@ -64831,11 +64835,11 @@ Begin
   Inc(CurrPos);
  End;
  SkipSpace;
- 
+
  { Lire depuis l'entree standard }
  If Not EOF Then Begin
   ReadLn(InputLine);
-  
+
   If VarName<>''Then Begin
    { getline var - stocker dans la variable }
    SetVariableString(StrToUpper(VarName),InputLine);
@@ -64848,13 +64852,13 @@ Begin
    { Mettre a jour NF avec le nombre de champs }
    SetVariableInt('NF',NumFields);
   End;
-  
+
   { Mettre a jour NR }
   NRVal:=GetVariableLongInt('NR');
   Inc(NRVal);
   SetVariableLongInt('NR',NRVal);
   Inc(NRValue);
-  
+
   { Retourner 1 (succes) via variable speciale GETLINE_STATUS }
   SetVariableInt('_GETLINE_STATUS',1);
  End
@@ -64901,12 +64905,12 @@ Begin
   FuncName:=FuncName+CurrLine[CurrPos];
   Inc(CurrPos);
  End;
- 
+
  If FuncName='' Then Exit;
- 
+
  { Convertir en majuscules }
  FuncName:=StrToUpper(FuncName);
- 
+
  { Allouer un nouveau noeud dans la liste chainee }
  New(FuncPtr);
  FuncPtr^.FuncName:=FuncName;
@@ -64921,10 +64925,10 @@ Begin
   UserFuncLast^.Next:=FuncPtr;
   UserFuncLast:=FuncPtr;
  End;
- 
+
  { Sauter les espaces }
  SkipSpace;
- 
+
  { Parser les parametres }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Begin
   Inc(CurrPos); { Passer '(' }
@@ -64944,17 +64948,17 @@ Begin
   End;
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
  End;
- 
+
  { Sauter les espaces et chercher l'accolade ouvrante }
  SkipSpace;
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
   { Avancer apres l'accolade ouvrante }
   Inc(CurrPos);
-  
+
   { Verifier si le reste de la ligne est vide ou juste des espaces }
   { Si oui, le corps commence a la ligne suivante }
   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
-  
+
   If CurrPos>Length(CurrLine) Then Begin
    { Le reste de la ligne est vide, le corps commence a la ligne suivante }
    Inc(CurrLinePtr);
@@ -64973,7 +64977,7 @@ Begin
    FuncPtr^.BodyStartLine:=CurrLinePtr;
    FuncPtr^.BodyStartPos:=CurrPos;
   End;
-  
+
   { Sauter le bloc de la fonction }
   BlockLevel:=1;
   While BlockLevel>0 do Begin
@@ -65047,7 +65051,7 @@ Var
 Begin
  CallUserFunction:=0;
  If FuncPtr=nil Then Exit;
- 
+
  { Sauvegarder l'etat courant }
  SaveLinePtr:=CurrLinePtr;
  SaveCurrLine:=CurrLine;
@@ -65055,28 +65059,28 @@ Begin
  OldReturnValue:=FunctionReturnValue;
  OldReturnStr:=FunctionReturnStr;
  OldHasReturn:=HasFunctionReturn;
- 
+
  { Sauvegarder les piles d'evaluation d'expressions pour les appels recursifs }
  SaveTopOfStack:=TopOfStack;
  SaveTopOfStackInt:=TopOfStackInt;
  For StackIdx:=0 to TopOfStack-1 do SaveStack[StackIdx]:=Stack[StackIdx];
  For StackIdx:=0 to TopOfStackInt-1 do SaveResultStack[StackIdx]:=ResultStack[StackIdx];
- 
+
  { Reinitialiser les piles pour l'appel recursif }
  TopOfStack:=1;
  TopOfStackInt:=1;
- 
+
  { Initialiser pour l'appel }
  HasFunctionReturn:=False;
  FunctionReturnValue:=0;
  FunctionReturnStr:='';
  InFunctionCall:=True;
- 
+
  { Executer le corps de la fonction }
  CurrLinePtr:=FuncPtr^.BodyStartLine;
  CurrLine:=PA[CurrLinePtr]^;
  CurrPos:=FuncPtr^.BodyStartPos;
- 
+
  While(CurrLinePtr<=FuncPtr^.BodyEndLine)and(Not HasFunctionReturn)do Begin
   If Not RunLine Then Break;
   Inc(CurrLinePtr);
@@ -65085,16 +65089,16 @@ Begin
    CurrPos:=1;
   End;
  End;
- 
+
  { Recuperer la valeur de retour }
  CallUserFunction:=FunctionReturnValue;
- 
+
  { Restaurer les piles d'evaluation d'expressions }
  For StackIdx:=0 to SaveTopOfStack-1 do Stack[StackIdx]:=SaveStack[StackIdx];
  For StackIdx:=0 to SaveTopOfStackInt-1 do ResultStack[StackIdx]:=SaveResultStack[StackIdx];
  TopOfStack:=SaveTopOfStack;
  TopOfStackInt:=SaveTopOfStackInt;
- 
+
  { Restaurer l'etat }
  CurrLinePtr:=SaveLinePtr;
  CurrLine:=SaveCurrLine;
@@ -65115,19 +65119,19 @@ Begin
  SkipSpace;
  OutputStr:='';
  HasOutput:=False;
- 
+
  If CurrPos>Length(CurrLine)Then Begin
   { print sans argument - affiche $0 }
   WriteLn(Fields[0]);
   Exit;
  End;
- 
+
  { Boucle pour gerer la concatenation de chaines et variables }
  While(CurrPos<=Length(CurrLine))and(Not(CurrLine[CurrPos]in[';','}','#']))do Begin
   SkipSpace;
   If CurrPos>Length(CurrLine)Then Break;
   If CurrLine[CurrPos]in[';','}','#']Then Break;
-  
+
   { Chaine literale }
   If CurrLine[CurrPos]='"'Then Begin
    TempStr:=GetStringValue;
@@ -65263,10 +65267,10 @@ Begin
    { Caractere inconnu - arreter }
    Break;
   End;
-  
+
   SkipSpace;
  End;
- 
+
  { Bogue reel trouve+corrige (voir project_devenv_awk) : "print" sans   }
  { argument affiche deja Fields[0] plus haut dans cette procedure       }
  { QUAND il est le tout dernier caractere de la ligne, mais "print"     }
@@ -65574,7 +65578,7 @@ Begin
  SavePos:=CurrPos;
  KeyStr:='';
  ArrayName:='';
- 
+
  { Lire la cle (string ou variable) }
  If CurrLine[CurrPos]='"'Then Begin
   KeyStr:=GetStringValue;
@@ -65595,9 +65599,9 @@ Begin
    End;
   End;
  End;
- 
+
  SkipSpace;
- 
+
  { Verifier si "in" suit }
  If(CurrPos+1<=Length(CurrLine))and(Copy(CurrLine,CurrPos,3)='in ')Then Begin
   Inc(CurrPos,2);
@@ -65614,7 +65618,7 @@ Begin
   EvaluateCondition:=KeyInArray(ArrayName,KeyStr);
   Exit;
  End;
- 
+
  { Sinon, revenir en arriere et traiter normalement }
  CurrPos:=SavePos;
 
@@ -65809,7 +65813,7 @@ Begin
   Inc(CurrPos);
   SaveAccoladeBlock:=AccoladeBlock;
   Inc(AccoladeBlock);
-  
+
   { Executer le contenu du bloc jusqu'a l'accolade fermante }
   While AccoladeBlock>SaveAccoladeBlock do Begin
    If Not RunLine Then Break;
@@ -65879,7 +65883,7 @@ Begin
    Inc(CurrPos); { Saute l'accolade fermante }
    Exit;
   End;
-  
+
   { Continue sur les lignes suivantes si necessaire }
   While(BraceCount>0)and(CurrLinePtr<NumberLine)do Begin
    Inc(CurrLinePtr);
@@ -65887,7 +65891,7 @@ Begin
    CurrPos:=1;
    InQuote:=False;
    InApos:=False;
-   
+
    While(CurrPos<=Length(CurrLine))and(BraceCount>0)do Begin
     Case CurrLine[CurrPos]of
      '"':If Not InApos Then InQuote:=Not InQuote;
@@ -65902,7 +65906,7 @@ Begin
     If BraceCount>0 Then Inc(CurrPos);
    End;
   End;
-  
+
   If BraceCount=0 Then Inc(CurrPos); { Saute l'accolade fermante }
  End
   Else
@@ -66443,19 +66447,19 @@ Var
 Begin
  SkipSpace;
  Inc(LoopDepth);
- 
+
  { Sauvegarder position pour la condition }
  SaveLinePtr:=CurrLinePtr;
  SaveCurrLine:=CurrLine;
  LoopStart:=CurrPos;
- 
+
  { Evaluer la condition initiale }
  Condition:=EvaluateCondition;
  SkipSpace;
- 
+
  { Determiner si le bloc a une accolade }
  HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
- 
+
  { Memoriser le debut du bloc }
  If HasBrace Then Begin
   BlockStartLinePtr:=CurrLinePtr;
@@ -66477,7 +66481,7 @@ Begin
   BlockStartLine:=CurrLine;
   BlockStartPos:=CurrPos;
  End;
- 
+
  If Not Condition Then Begin
   { Condition fausse des le depart - sauter le bloc }
   CurrLinePtr:=BlockStartLinePtr;
@@ -66487,36 +66491,36 @@ Begin
   Dec(LoopDepth);
   Exit;
  End;
- 
+
  { Boucle while }
  While Condition do Begin
   { Reinitialiser les flags }
   ContinueFlag:=False;
-  
+
   { Revenir au debut du bloc }
   CurrLinePtr:=BlockStartLinePtr;
   CurrLine:=BlockStartLine;
   CurrPos:=BlockStartPos;
-  
+
   { Executer le bloc }
   RunBlock;
-  
+
   { Verifier break }
   If BreakFlag Then Begin
    BreakFlag:=False;
    Break;
   End;
-  
+
   { Revenir a la condition }
   CurrLinePtr:=SaveLinePtr;
   CurrLine:=SaveCurrLine;
   CurrPos:=LoopStart;
-  
+
   { Reevaluer la condition }
   Condition:=EvaluateCondition;
   SkipSpace;
  End;
- 
+
  { Sauter le bloc apres la derniere iteration }
  CurrLinePtr:=BlockStartLinePtr;
  CurrLine:=BlockStartLine;
@@ -66538,10 +66542,10 @@ Begin
  SkipSpace;
  Inc(LoopDepth);
  DidBreak:=False;
- 
+
  { Memoriser le debut du bloc }
  HasBrace:=(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{');
- 
+
  If Not HasBrace Then Begin
   { Pas d'accolade - le bloc est sur la ligne suivante si fin de ligne }
   If CurrPos>Length(CurrLine)Then Begin
@@ -66553,38 +66557,38 @@ Begin
    End;
   End;
  End;
- 
+
  BlockStartLinePtr:=CurrLinePtr;
  BlockStartLine:=CurrLine;
  BlockStartPos:=CurrPos;
- 
+
  { Boucle do-while - executer au moins une fois }
  Repeat
   { Reinitialiser les flags }
   ContinueFlag:=False;
-  
+
   { Revenir au debut du bloc }
   CurrLinePtr:=BlockStartLinePtr;
   CurrLine:=BlockStartLine;
   CurrPos:=BlockStartPos;
-  
+
   { Executer le bloc }
   RunBlock;
-  
+
   { Verifier break }
   If BreakFlag Then Begin
    BreakFlag:=False;
    DidBreak:=True;
    Break;
   End;
-  
+
   { Pour trouver 'while', revenir au debut et utiliser SkipBlock }
   { car RunBlock ne positionne pas correctement le curseur apres le bloc }
   CurrLinePtr:=BlockStartLinePtr;
   CurrLine:=BlockStartLine;
   CurrPos:=BlockStartPos;
   SkipBlock;
-  
+
   { Chercher le mot-cle while }
   SkipSpace;
   { Peut etre sur la ligne suivante }
@@ -66594,7 +66598,7 @@ Begin
    CurrPos:=1;
    SkipSpace;
   End;
-  
+
   { Verifier qu'on a 'while' }
   If(CurrPos+4<=Length(CurrLine))and
     (StrToUpper(Copy(CurrLine,CurrPos,5))='WHILE')Then Begin
@@ -66608,12 +66612,12 @@ Begin
    Dec(LoopDepth);
    Exit;
   End;
-  
+
   { Evaluer la condition }
   Condition:=EvaluateCondition;
-  
+
  Until Not Condition;
- 
+
  { Si on a fait break, on doit sauter le bloc et chercher le while final }
  If DidBreak Then Begin
   { Revenir au debut du bloc et le sauter }
@@ -66621,7 +66625,7 @@ Begin
   CurrLine:=BlockStartLine;
   CurrPos:=BlockStartPos;
   SkipBlock;
-  
+
   { Chercher le mot-cle while }
   SkipSpace;
   While(CurrPos>Length(CurrLine))and(CurrLinePtr<NumberLine)do Begin
@@ -66630,7 +66634,7 @@ Begin
    CurrPos:=1;
    SkipSpace;
   End;
-  
+
   { Sauter 'while' et la condition }
   If(CurrPos+4<=Length(CurrLine))and
     (StrToUpper(Copy(CurrLine,CurrPos,5))='WHILE')Then Begin
@@ -66645,11 +66649,11 @@ Begin
    End;
   End;
  End;
- 
+
  { Sauter le point-virgule final si present }
  SkipSpace;
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
- 
+
  Dec(LoopDepth);
 End;
 
@@ -66663,14 +66667,14 @@ Var
  SaveCurrLine:String;
 Begin
  Inc(LoopDepth);
- 
+
  { Position du bloc }
  BlockStartPos:=CurrPos;
- 
+
  { Sauvegarder la ligne courante }
  SaveLinePtr:=CurrLinePtr;
  SaveCurrLine:=CurrLine;
- 
+
  { Trouver le tableau }
  ArrayPtr:=FindArray(ArrayName);
  If ArrayPtr=nil Then Begin
@@ -66679,26 +66683,26 @@ Begin
   Dec(LoopDepth);
   Exit;
  End;
- 
+
  { Iterer sur chaque element }
  ElemPtr:=ArrayPtr^.ElemHead;
  While ElemPtr<>nil do Begin
   { Reinitialiser les flags }
   ContinueFlag:=False;
-  
+
   { Assigner la cle a la variable d'iteration }
   If VariableExist(IterVar)Then Begin
    SetVariableString(IterVar,ElemPtr^.Key);
   End
    Else
   AddVariableString(IterVar,ElemPtr^.Key);
-  
+
   { Executer le bloc }
   CurrLinePtr:=SaveLinePtr;
   CurrLine:=SaveCurrLine;
   CurrPos:=BlockStartPos;
   RunBlock;
-  
+
   { Verifier break }
   If BreakFlag Then Begin
    BreakFlag:=False;
@@ -66706,7 +66710,7 @@ Begin
   End;
   ElemPtr:=ElemPtr^.Next;
  End;
- 
+
  { Sauter le bloc apres la derniere iteration }
  CurrLinePtr:=SaveLinePtr;
  CurrLine:=SaveCurrLine;
@@ -66729,26 +66733,26 @@ Var
  ScanPos:Integer;
 Begin
  SkipSpace;
- 
+
  { Attendre ( }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='(')Then Inc(CurrPos);
  SkipSpace;
- 
+
  { Detecter si c'est un for-in en cherchant "var in array" }
  IsForIn:=False;
  IterVar:='';
  ArrayName:='';
  ScanPos:=CurrPos;
- 
+
  { Lire la variable potentielle }
  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
   IterVar:=IterVar+CurrLine[ScanPos];
   Inc(ScanPos);
  End;
- 
+
  { Sauter les espaces }
  While(ScanPos<=Length(CurrLine))and(CurrLine[ScanPos]in[' ',#9])do Inc(ScanPos);
- 
+
  { Verifier si "in" suit }
  If(ScanPos+1<=Length(CurrLine))and(Copy(CurrLine,ScanPos,3)='in ')Then Begin
   Inc(ScanPos,2);
@@ -66766,37 +66770,37 @@ Begin
    SkipSpace;
   End;
  End;
- 
+
  { Si c'est un for-in, deleguer a ForInCommand }
  If IsForIn Then Begin
   ForInCommand(IterVar,ArrayName);
   Exit;
  End;
- 
+
  Inc(LoopDepth);
- 
+
  { Partie initialisation (avant le premier ;) }
  InitStartPos:=CurrPos;
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')do Inc(CurrPos);
- 
+
  { Executer l'initialisation }
  SavePos:=CurrPos;
  CurrPos:=InitStartPos;
  TryAssignment;
  CurrPos:=SavePos;
- 
+
  { Sauter le premier ; }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
  SkipSpace;
- 
+
  { Partie condition (entre le premier et deuxieme ;) }
  CondStartPos:=CurrPos;
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]<>';')do Inc(CurrPos);
- 
+
  { Sauter le deuxieme ; }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=';')Then Inc(CurrPos);
  SkipSpace;
- 
+
  { Partie increment (entre le deuxieme ; et ) ) }
  IncrStartPos:=CurrPos;
  InParen:=1;
@@ -66805,23 +66809,23 @@ Begin
   Else If CurrLine[CurrPos]=')'Then Dec(InParen);
   If InParen>0 Then Inc(CurrPos);
  End;
- 
+
  { Sauter ) }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=')')Then Inc(CurrPos);
  SkipSpace;
- 
+
  { Position du bloc }
  BlockStartPos:=CurrPos;
- 
+
  { Sauvegarder la ligne courante }
  SaveLinePtr:=CurrLinePtr;
  SaveCurrLine:=CurrLine;
- 
+
  { Evaluer la condition initiale }
  CurrPos:=CondStartPos;
  If CurrPos<Length(CurrLine)Then Condition:=EvaluateCondition
                             Else Condition:=True;
- 
+
  If Not Condition Then Begin
   { Condition fausse des le depart }
   CurrPos:=BlockStartPos;
@@ -66829,34 +66833,34 @@ Begin
   Dec(LoopDepth);
   Exit;
  End;
- 
+
  { Boucle for }
  While Condition do Begin
   { Reinitialiser les flags }
   ContinueFlag:=False;
-  
+
   { Executer le bloc }
   CurrPos:=BlockStartPos;
   RunBlock;
-  
+
   { Verifier break }
   If BreakFlag Then Begin
    BreakFlag:=False;
    Break;
   End;
-  
+
   { Executer l'increment }
   CurrLinePtr:=SaveLinePtr;
   CurrLine:=SaveCurrLine;
   CurrPos:=IncrStartPos;
   TryAssignment;
-  
+
   { Reevaluer la condition }
   CurrPos:=CondStartPos;
   If CurrPos<Length(CurrLine)Then Condition:=EvaluateCondition
                              Else Condition:=True;
  End;
- 
+
  { Sauter le bloc apres la derniere iteration }
  CurrPos:=BlockStartPos;
  SkipBlock;
@@ -66869,22 +66873,22 @@ Var
  ArrayName,Key:String;
 Begin
  SkipSpace;
- 
+
  { Lire le nom du tableau }
  ArrayName:='';
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in['A'..'Z','a'..'z','_','0'..'9'])do Begin
   ArrayName:=ArrayName+CurrLine[CurrPos];
   Inc(CurrPos);
  End;
- 
+
  { Sauter les espaces }
  While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=' ')do Inc(CurrPos);
- 
+
  { Lire la cle entre crochets }
  If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='[')Then Begin
   Inc(CurrPos);
   Key:='';
-  
+
   { Lire la cle - peut etre une chaine entre guillemets ou une variable }
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='"')Then Begin
    Key:=GetStringValue;
@@ -66906,10 +66910,10 @@ Begin
     End;
    End;
   End;
-  
+
   { Sauter le crochet fermant }
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]=']')Then Inc(CurrPos);
-  
+
   { Supprimer l'element }
   DeleteArrayElement(ArrayName,Key);
  End;
@@ -67118,14 +67122,14 @@ Begin
  SavePos:=CurrPos;
  SaveLine:=CurrLine;
  SaveAccoladeBlock:=AccoladeBlock;
- 
+
  { Initialiser AccoladeBlock a 1 car on est deja dans le bloc }
  AccoladeBlock:=1;
- 
+
  CurrLinePtr:=Rules[RuleIdx].ActionLine;
  CurrLine:=PA[CurrLinePtr]^;
  CurrPos:=Rules[RuleIdx].ActionPos;
- 
+
  { Executer jusqu'a la fin de l'action }
  While(CurrLinePtr<=Rules[RuleIdx].ActionEndLine)and(Not Terminated)and(Not AwkNextRecord)and(Not AwkNextFile)do Begin
   If Not RunLine Then Break;
@@ -67138,7 +67142,7 @@ Begin
    While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
   End;
  End;
- 
+
  CurrLinePtr:=SaveLinePtr;
  CurrPos:=SavePos;
  CurrLine:=SaveLine;
@@ -67239,17 +67243,17 @@ Begin
  RuleCount:=0;
  NRValue:=0;
  If NumberLine=0 Then Exit;
- 
+
  CurrLinePtr:=1;
  While CurrLinePtr<=NumberLine do Begin
   CurrLine:=PA[CurrLinePtr]^;
-  
+
   { Extraire le numero de ligne s'il y en a un }
   J:=1;
   While(J<Length(CurrLine))and(CurrLine[J]in['0'..'9'])do Inc(J);
   While(J<=Length(CurrLine))and(CurrLine[J]in[' ',#9])do Inc(J);
   CurrPos:=J;
-  
+
   { Sauter les lignes vides et commentaires }
   If CurrPos>Length(CurrLine)Then Begin
    Inc(CurrLinePtr);
@@ -67259,12 +67263,12 @@ Begin
    Inc(CurrLinePtr);
    Continue;
   End;
-  
+
   { Detecter le type de regle }
   RuleKind:=RK_ALL;
   Pattern:='';
   InPattern:=False;
-  
+
   { Verifier BEGIN }
   If(CurrPos+4<=Length(CurrLine))and
     (UpCase(CurrLine[CurrPos])='B')and
@@ -67336,17 +67340,17 @@ Begin
     Continue;
    End;
   End;
-  
+
   { Sauter les espaces avant l'accolade }
   While(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]in[' ',#9])do Inc(CurrPos);
-  
+
   (* Trouver le bloc d'action *)
   If(CurrPos<=Length(CurrLine))and(CurrLine[CurrPos]='{')Then Begin
    ActionStart:=CurrLinePtr;
    ActionStartPos:=CurrPos+1;
    BlockLevel:=1;
    Inc(CurrPos);
-   
+
    { Chercher la fin du bloc }
    While BlockLevel>0 do Begin
     While CurrPos<=Length(CurrLine)do Begin
@@ -67363,11 +67367,11 @@ Begin
     End;
    End;
    ActionEnd:=CurrLinePtr;
-   
+
    { Ajouter la regle }
    AddRule(RuleKind,Pattern,ActionStart,ActionStartPos,ActionEnd);
   End;
-  
+
   Inc(CurrLinePtr);
  End;
 End;
