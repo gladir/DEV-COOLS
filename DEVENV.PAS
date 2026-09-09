@@ -11805,7 +11805,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[0], 'Nouveau fichier...', 'Ctrl+N', 101);
  AddMenuItem(MainMenuBar.Menus[0], 'Nouvelle solution...', '', 102);
  AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir projet/solution...', 'Ctrl+Maj+O', 110);
+ AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir projet/solution...', 'Ctrl+Shift+O', 110);
  AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir fichier...', 'Ctrl+O', 111);
  AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir dossier...', '', 112);
  AddMenuSeparator(MainMenuBar.Menus[0]);
@@ -11814,13 +11814,13 @@ Begin
  AddMenuSeparator(MainMenuBar.Menus[0]);
  AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer', 'Ctrl+S', 130);
  AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer sous...', '', 131);
- AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer tout', 'Ctrl+Maj+S', 132);
+ AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer tout', 'Ctrl+Shift+S', 132);
  AddMenuSeparator(MainMenuBar.Menus[0]);
  AddMenuItem(MainMenuBar.Menus[0], 'Imprimer...', 'Ctrl+P', 140);
- AddMenuItem(MainMenuBar.Menus[0], 'Apercu avant impression', '', 141);
+ AddMenuItem(MainMenuBar.Menus[0], 'Aper'+#135+'u avant impression', '', 141);
  AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Fichiers recents', '', 150);
- AddMenuItem(MainMenuBar.Menus[0], 'Projets recents', '', 151);
+ AddMenuItem(MainMenuBar.Menus[0], 'Fichiers r'+#130+'cents', '', 150);
+ AddMenuItem(MainMenuBar.Menus[0], 'Projets r'+#130+'cents', '', 151);
  AddMenuSeparator(MainMenuBar.Menus[0]);
  AddMenuItem(MainMenuBar.Menus[0], 'Quitter', 'Alt+F4', 199);
  MainMenuBar.MenuCount := 1;
@@ -11828,27 +11828,27 @@ Begin
  { Menu Edition }
  InitMenu(MainMenuBar.Menus[1], 'Edition');
  AddMenuItem(MainMenuBar.Menus[1], 'Annuler', 'Ctrl+Z', 200);
- AddMenuItem(MainMenuBar.Menus[1], 'Retablir', 'Ctrl+Y', 201);
+ AddMenuItem(MainMenuBar.Menus[1], 'R'+#130+'tablir', 'Ctrl+Y', 201);
  AddMenuSeparator(MainMenuBar.Menus[1]);
  AddMenuItem(MainMenuBar.Menus[1], 'Couper', 'Ctrl+X', 210);
  AddMenuItem(MainMenuBar.Menus[1], 'Copier', 'Ctrl+C', 211);
  AddMenuItem(MainMenuBar.Menus[1], 'Coller', 'Ctrl+V', 212);
- AddMenuItem(MainMenuBar.Menus[1], 'Supprimer', 'Suppr', 213);
+ AddMenuItem(MainMenuBar.Menus[1], 'Supprimer', 'Delete', 213);
  AddMenuSeparator(MainMenuBar.Menus[1]);
- AddMenuItem(MainMenuBar.Menus[1], 'Selectionner tout', 'Ctrl+A', 220);
+ AddMenuItem(MainMenuBar.Menus[1], 'S'+#130+'lectionner tout', 'Ctrl+A', 220);
  AddMenuSeparator(MainMenuBar.Menus[1]);
  AddMenuItem(MainMenuBar.Menus[1], 'Rechercher...', 'Ctrl+F', 230);
  AddMenuItem(MainMenuBar.Menus[1], 'Remplacer...', 'Ctrl+H', 231);
- AddMenuItem(MainMenuBar.Menus[1], 'Aller a la ligne...', 'Ctrl+G', 232);
+ AddMenuItem(MainMenuBar.Menus[1], 'Aller '+#133+' la ligne...', 'Ctrl+G', 232);
  AddMenuSeparator(MainMenuBar.Menus[1]);
  AddMenuItem(MainMenuBar.Menus[1], 'Indenter', 'Tab', 240);
- AddMenuItem(MainMenuBar.Menus[1], 'Desindenter', 'Maj+Tab', 241);
+ AddMenuItem(MainMenuBar.Menus[1], 'D'+#130+'sindenter', 'Shift+Tab', 241);
  AddMenuItem(MainMenuBar.Menus[1], 'Mettre en majuscules', '', 242);
  AddMenuItem(MainMenuBar.Menus[1], 'Mettre en minuscules', '', 243);
  AddMenuSeparator(MainMenuBar.Menus[1]);
  AddMenuItem(MainMenuBar.Menus[1], 'Signet : activer', 'Ctrl+K,K', 250);
  AddMenuItem(MainMenuBar.Menus[1], 'Signet : suivant', 'Ctrl+K,N', 251);
- AddMenuItem(MainMenuBar.Menus[1], 'Signet : precedent', 'Ctrl+K,P', 252);
+ AddMenuItem(MainMenuBar.Menus[1], 'Signet : pr'+#130+'c'+#130+'dent', 'Ctrl+K,P', 252);
  AddMenuItem(MainMenuBar.Menus[1], 'Signet : effacer tout', 'Ctrl+K,L', 253);
  MainMenuBar.MenuCount := 2;
 
@@ -11856,39 +11856,39 @@ Begin
  InitMenu(MainMenuBar.Menus[2], 'Affichage');
  AddMenuItem(MainMenuBar.Menus[2], 'Explorateur de solution', 'Ctrl+Alt+L', 300);
  AddMenuItem(MainMenuBar.Menus[2], 'Sortie', 'Ctrl+Alt+O', 301);
- AddMenuItem(MainMenuBar.Menus[2], 'Liste d erreurs', 'Ctrl+\+E', 302);
+ AddMenuItem(MainMenuBar.Menus[2], 'Liste d''erreurs', 'Ctrl+\+E', 302);
  AddMenuItem(MainMenuBar.Menus[2], 'Terminal', 'Ctrl+`', 303);
- AddMenuItem(MainMenuBar.Menus[2], 'Explorateur d''objets SQL Server', '', 304);
+ AddMenuItem(MainMenuBar.Menus[2], 'Explorateur d''objets SQL Server,...', '', 304);
  AddMenuSeparator(MainMenuBar.Menus[2]);
- AddMenuItem(MainMenuBar.Menus[2], 'Barre d outils', '', 310);
- AddMenuItem(MainMenuBar.Menus[2], 'Plein ecran', 'Maj+Alt+Entree', 311);
+ AddMenuItem(MainMenuBar.Menus[2], 'Barre d''outils', '', 310);
+ AddMenuItem(MainMenuBar.Menus[2], 'Plein '+#130+'cran', 'Shift+Alt+Enter', 311);
  AddMenuSeparator(MainMenuBar.Menus[2]);
  AddMenuItem(MainMenuBar.Menus[2], 'Signets', '', 320);
- AddMenuItem(MainMenuBar.Menus[2], 'Pile d appels', '', 321);
+ AddMenuItem(MainMenuBar.Menus[2], 'Pile d''appels', '', 321);
  AddMenuItem(MainMenuBar.Menus[2], 'Espion', '', 322);
- AddMenuItem(MainMenuBar.Menus[2], 'Points d arret', '', 323);
+ AddMenuItem(MainMenuBar.Menus[2], 'Points d''arr'+#136+'t', '', 323);
  AddMenuSeparator(MainMenuBar.Menus[2]);
- AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en arriere', 'Ctrl+-', 330);
- AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en avant', 'Ctrl+Maj+-', 331);
+ AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en arri'+#138+'re', 'Ctrl+-', 330);
+ AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en avant', 'Ctrl+Shift+-', 331);
  MainMenuBar.MenuCount := 3;
 
  { Menu Projet }
  InitMenu(MainMenuBar.Menus[3], 'Projet');
- AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un element existant...', 'Maj+Alt+A', 400);
- AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un nouvel element...', 'Ctrl+Maj+A', 401);
+ AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un '+#130+'l'+#130+'ment existant...', 'Shift+Alt+A', 400);
+ AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un nouvel '+#130+'l'''+#130+'ment...', 'Ctrl+Shift+A', 401);
  AddMenuItem(MainMenuBar.Menus[3], 'Exclure du projet', '', 402);
  AddMenuSeparator(MainMenuBar.Menus[3]);
- AddMenuItem(MainMenuBar.Menus[3], 'Proprietes du projet', '', 410);
- AddMenuItem(MainMenuBar.Menus[3], 'Ajouter une reference...', '', 411);
- AddMenuItem(MainMenuBar.Menus[3], 'Gerer les packages NuGet...', '', 412);
+ AddMenuItem(MainMenuBar.Menus[3], 'Propri'+#130+'t'+#130+'s du projet', '', 410);
+ AddMenuItem(MainMenuBar.Menus[3], 'Ajouter une r'+#130+'f'+#130+'rence...', '', 411);
+ AddMenuItem(MainMenuBar.Menus[3], 'G'+#130+'rer les packages NuGet...', '', 412);
  MainMenuBar.MenuCount := 4;
 
  { Menu Generer }
- InitMenu(MainMenuBar.Menus[4], 'Generer');
- AddMenuItem(MainMenuBar.Menus[4], 'Generer la solution', 'F6', 500);
- AddMenuItem(MainMenuBar.Menus[4], 'Regenerer la solution', '', 501);
+ InitMenu(MainMenuBar.Menus[4], 'G'+#130+'n'+#130+'rer');
+ AddMenuItem(MainMenuBar.Menus[4], 'G'+#130+'n'+#130+'rer la solution', 'F6', 500);
+ AddMenuItem(MainMenuBar.Menus[4], 'Reg'+#130+'n'+#130+'rer la solution', '', 501);
  AddMenuSeparator(MainMenuBar.Menus[4]);
- AddMenuItem(MainMenuBar.Menus[4], 'Generer le projet', '', 510);
+ AddMenuItem(MainMenuBar.Menus[4], 'G'+#130+'n'+#130+'rer le projet', '', 510);
  AddMenuSeparator(MainMenuBar.Menus[4]);
  AddMenuItem(MainMenuBar.Menus[4], 'Nettoyer la solution', '', 520);
  AddMenuItem(MainMenuBar.Menus[4], 'Nettoyer le projet', '', 521);
@@ -11897,22 +11897,22 @@ Begin
  MainMenuBar.MenuCount := 5;
 
  { Menu Deboguer }
- InitMenu(MainMenuBar.Menus[5], 'Deboguer');
- AddMenuItem(MainMenuBar.Menus[5], 'Demarrer le debogage', 'F5', 600);
- AddMenuItem(MainMenuBar.Menus[5], 'Demarrer sans debogage', 'Ctrl+F5', 601);
+ InitMenu(MainMenuBar.Menus[5], 'D'+#130+'boguer');
+ AddMenuItem(MainMenuBar.Menus[5], 'D'+#130+'marrer le debogage', 'F5', 600);
+ AddMenuItem(MainMenuBar.Menus[5], 'D'+#130+'marrer sans debogage', 'Ctrl+F5', 601);
  AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Point d arret', 'F9', 610);
+ AddMenuItem(MainMenuBar.Menus[5], 'Point d''arr'+#136+'t', 'F9', 610);
  AddMenuSeparator(MainMenuBar.Menus[5]);
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas principal', 'F10', 620);
  AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas detaille', 'F11 ou Ctrl+F10', 621);
- AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Maj+F11 ou Alt+F10', 622);
+ AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Shift+F11 ou Alt+F10', 622);
  AddMenuItem(MainMenuBar.Menus[5], 'Animer', '', 623);
  AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Arreter le debogage', 'Maj+F5', 630);
+ AddMenuItem(MainMenuBar.Menus[5], 'Arr'+#136+'ter le d'+#130+'bogage', 'Shift+F5', 630);
  AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Activites observees...', '', 650);
+ AddMenuItem(MainMenuBar.Menus[5], 'Activit'+#130+'s observ'+#130+'es...', '', 650);
  AddMenuItem(MainMenuBar.Menus[5], 'Commandes...', '', 651);
- AddMenuItem(MainMenuBar.Menus[5], 'Desassembler l''executable...', '', 660);
+ AddMenuItem(MainMenuBar.Menus[5], 'D'+#130+'sassembler l''ex'+#130+'cutable...', '', 660);
  MainMenuBar.MenuCount := 6;
 
  { Menu Outils }
@@ -11921,21 +11921,21 @@ Begin
  AddMenuItem(MainMenuBar.Menus[6], 'Disque virtuel...', '', 705);
  AddMenuItem(MainMenuBar.Menus[6], 'Personnaliser...', '', 701);
  AddMenuSeparator(MainMenuBar.Menus[6]);
- AddMenuItem(MainMenuBar.Menus[6], 'Gestionnaire d extensions...', '', 710);
+ AddMenuItem(MainMenuBar.Menus[6], 'Gestionnaire d''extensions...', '', 710);
  AddMenuSeparator(MainMenuBar.Menus[6]);
  AddMenuItem(MainMenuBar.Menus[6], 'Ligne de commande externe', '', 720);
  AddMenuItem(MainMenuBar.Menus[6], 'COMMENT', '', 721);
  MainMenuBar.MenuCount := 7;
 
  { Menu Fenetre }
- InitMenu(MainMenuBar.Menus[7], 'Fenetre');
- AddMenuItem(MainMenuBar.Menus[7], 'Nouvelle fenetre', '', 800);
+ InitMenu(MainMenuBar.Menus[7], 'Fen'+#136+'tre');
+ AddMenuItem(MainMenuBar.Menus[7], 'Nouvelle fen'+#136+'tre', '', 800);
  AddMenuItem(MainMenuBar.Menus[7], 'Fractionner', '', 801);
  AddMenuSeparator(MainMenuBar.Menus[7]);
- AddMenuItem(MainMenuBar.Menus[7], 'Fermer toutes les fenetres', '', 810);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fermer toutes les fen'+#136+'tres', '', 810);
  AddMenuSeparator(MainMenuBar.Menus[7]);
- AddMenuItem(MainMenuBar.Menus[7], 'Fenetre suivante', 'Ctrl+F6', 820);
- AddMenuItem(MainMenuBar.Menus[7], 'Fenetre precedente', 'Ctrl+Maj+F6', 821);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fen'+#136+'tre suivante', 'Ctrl+F6', 820);
+ AddMenuItem(MainMenuBar.Menus[7], 'Fen'+#136+'tre pr'+#136+'c'+#136+'dente', 'Ctrl+Shift+F6', 821);
  MainMenuBar.MenuCount := 8;
 
  { Menu Aide }
