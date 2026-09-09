@@ -2331,6 +2331,11 @@ Const
  { accessoire de bureau (CONTROL.ACC et semblables). }
  M68K_GEMDOS_HEAP_BASE = $A0000;
  M68K_GEMDOS_HEAP_END  = $EFFFF;
+ { XBIOS Trap #14 : adresse ecran factice (Physbase/Logbase - aucun rendu   }
+ { bitmap reel pour ce backend texte) et zone KEYTAB (Kbdvbase/Keytbl),     }
+ { toutes deux sous le tas GEMDOS/la zone DTA, jamais recouvertes. }
+ M68K_XBIOS_SCREEN_ADDR = $90000;
+ M68K_XBIOS_KEYTBL_ADDR = $F0100;
  CCR_C         = 1;
  CCR_V         = 2;
  CCR_Z         = 4;
@@ -7960,6 +7965,10 @@ Var
  M68K_CurPath      : String[127];
  M68K_DtaSearch    : SearchRec;
  M68K_DtaActive    : Boolean;
+ { Etat XBIOS Trap #14 (resolution, palette 16 registres - pas de rendu   }
+ { bitmap reel, juste un etat coherent pour les lectures/ecritures) }
+ M68K_XBIOS_Rez     : Word;
+ M68K_XBIOS_Palette : Array[0..15] Of Word;
  { Etat de l emulateur Cray-1 integre (parcels 16 bits) }
  CRAY1_Mem      : Array[0..65535] Of Word;
  CRAY1_Reg      : Array[0..7] Of LongInt;
@@ -149399,6 +149408,10 @@ End;
 {  TRAP #15 handler (convention Easy68k)                                     }
 { ========================================================================== }
 
+{ Forward : Supexec (XBIOS Trap #14) execute reellement la routine appelee  }
+{ via une boucle de pas imbriquee - a besoin de M68K_Step, defini plus bas. }
+Function M68K_Step: Boolean; Forward;
+
 Function M68K_DoTrap(vector: Integer): Boolean;
 Var
   func: Integer;
@@ -149421,6 +149434,9 @@ Var
   bi_dev, bi_vecnum: Integer;
   bi_key: Word;
   bi_vec: LongInt;
+  { XBIOS Trap #14 (voir plus bas) }
+  xb_ptr, xb_saved_pc, xb_guard: LongInt;
+  xb_idx, xb_val, xb_j: Integer;
 
   { Ecrit intout[Idx] seulement si l appelant a declare assez de sorties   }
   { (control[2]=nintout) - jamais au-dela, comme une vraie AES. }
@@ -149853,6 +149869,57 @@ Begin
          End;
     Else
       { Fonction BIOS non implementee : retourne 0 dans D0 }
+      M68K_D[0] := 0;
+    End;
+  End
+  Else If vector = 14 Then Begin
+    { XBIOS - Atari ST. Meme convention que BIOS/GEMDOS/AES. }
+    func := M68K_Read16(M68K_A[7]);
+    Case func Of
+      4: M68K_D[0] := M68K_XBIOS_Rez; { Getrez }
+      2: M68K_D[0] := M68K_XBIOS_SCREEN_ADDR; { Physbase }
+      3: M68K_D[0] := M68K_XBIOS_SCREEN_ADDR; { Logbase }
+      5: Begin { Setscreen(logbase, physbase, rez) - adresses ignorees, }
+                { aucun rendu bitmap reel derriere ce backend texte. }
+           xb_val := M68K_Read16(M68K_A[7] + 10);
+           If xb_val <> -1 Then M68K_XBIOS_Rez := Word(xb_val);
+           M68K_D[0] := 0;
+         End;
+      6: Begin { Setpalette(palptr) - copie les 16 registres }
+           xb_ptr := M68K_Read32(M68K_A[7] + 2);
+           For xb_j := 0 To 15 Do
+            M68K_XBIOS_Palette[xb_j] := M68K_Read16(xb_ptr + xb_j * 2);
+           M68K_D[0] := 0;
+         End;
+      7: Begin { Setcolor(colornum, color) - -1 = requete sans modifier }
+           xb_idx := M68K_Read16(M68K_A[7] + 2) And $F;
+           xb_val := M68K_Read16(M68K_A[7] + 4);
+           M68K_D[0] := M68K_XBIOS_Palette[xb_idx];
+           If xb_val <> -1 Then M68K_XBIOS_Palette[xb_idx] := Word(xb_val);
+         End;
+      39: M68K_D[0] := 0; { Vsync : ne bloque jamais }
+      36: M68K_D[0] := M68K_XBIOS_KEYTBL_ADDR; { Kbdvbase }
+      18: M68K_D[0] := M68K_XBIOS_KEYTBL_ADDR; { Keytbl - tables ignorees, }
+                { aucune redirection de decodage clavier reelle. }
+      37: M68K_D[0] := 0; { Kbrate : aucune cadence suivie }
+      19: M68K_D[0] := LongInt(Random(LongInt($1000000))); { Random }
+      40: Begin { Supexec(fn) - execute reellement la routine (pas de mode }
+                { superviseur distinct ici, un JSR simule suffit). }
+           xb_ptr := M68K_Read32(M68K_A[7] + 2);
+           xb_saved_pc := M68K_PC;
+           M68K_A[7] := M68K_A[7] - 4;
+           M68K_Write32(M68K_A[7], $00FFFFFE);
+           M68K_PC := xb_ptr;
+           xb_guard := 0;
+           While (M68K_PC <> $00FFFFFE) And (Not M68K_Halted) And
+            (xb_guard < 1000000) Do Begin
+            M68K_Step;
+            Inc(xb_guard);
+           End;
+           If Not M68K_Halted Then M68K_PC := xb_saved_pc;
+         End;
+    Else
+      { Fonction XBIOS non implementee : retourne 0 dans D0 }
       M68K_D[0] := 0;
     End;
   End;
@@ -161805,6 +161872,8 @@ Begin NesActive := False;
   M68K_CurDrive := 2; { C: - lecteur de demarrage suppose }
   M68K_CurPath := '\';
   M68K_DtaActive := False;
+  M68K_XBIOS_Rez := 2; { haut resolution mono par defaut, valeur factice }
+  FillChar(M68K_XBIOS_Palette, SizeOf(M68K_XBIOS_Palette), 0);
   Loaded := False;
   EntryAddr := -1;
   { Pour Atari ST, essayer le format PRG GEMDOS en premier }
