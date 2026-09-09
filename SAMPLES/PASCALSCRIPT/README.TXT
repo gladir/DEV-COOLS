@@ -24,11 +24,17 @@ Les fichiers sont numerotes par difficulte approximative :
   12  Exceptions
   13  Sortie anticipee avec Exit
   14  Acces base de donnees (Database/DatabaseConnection/RecordSet)
+  15  Acces direct a un fichier dBASE .DBF (Database.Connect('File=...'))
 
 PascalScript est un langage Pascal embarque : selon l'hote utilise, certaines
 extensions comme les tableaux dynamiques, Variant ou try/except peuvent varier.
 
-L'exemple 14 utilise Write/WriteLn (pas WScript.Echo) et les objets
+Les exemples 14/15 utilisent Write/WriteLn (pas WScript.Echo) et les objets
 Database/DatabaseConnection/RecordSet - extensions specifiques a l'hote
-PSCRIPT de ce depot (DEVENV.PAS), reliees au vrai moteur SQL Server local
-(SQLCMD.EXE/master.mdf), pas une norme PascalScript generale.
+PSCRIPT de ce depot (DEVENV.PAS), pas une norme PascalScript generale.
+14 relie ces objets au vrai moteur SQL Server local (SQLCMD.EXE/master.mdf) ;
+15 utilise la forme 'File=xxx.DBF;...' de Database.Connect, qui ouvre
+directement le fichier .DBF indique via le meme lecteur dBASE que la Grille
+de donnees de l'IDE (WK_GRID) - aucun SQLCMD.EXE dans ce cas, et le texte de
+Query n'est pas analyse (une connexion File=... pointe deja sur un seul
+fichier, donc Query renvoie toujours toutes ses colonnes/lignes).

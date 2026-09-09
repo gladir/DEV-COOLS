@@ -42449,6 +42449,8 @@ End;
 
 { --- CD / CHDIR / SET-LOCATION --- }
 
+Procedure NCListDir(Slot: ShortInt; Var Pane: TNCPane); Forward;
+
 Procedure TermCmd_CD(Var TP: TTerminalPanel; ParamStr: String);
 Var
  Err: Word;
@@ -42479,6 +42481,44 @@ Begin
    Exit;
   End;
   TP.VirtCwd := AbsP;
+  Exit;
+ End;
+ { BOGUE REEL (2026-09-08, signale par l utilisateur : "la commande CD dans}
+ { Norton Commander ne change pas de repertoire de panneau courant") :     }
+ { NCListDir (mode systeme hote, PaneSlot<0) construit sa liste par un     }
+ { vrai FindFirst/FindNext directement sur NCState.Panes[x].Path - elle ne }
+ { consulte JAMAIS le repertoire courant du PROCESSUS. L ancien code       }
+ { ci-dessous (ChDir/GetDir seuls, toujours execute) deplacait donc le     }
+ { repertoire courant de DEVENV lui-meme, une donnee dont les panneaux     }
+ { visuels de NC ne tiennent absolument aucun compte - la commande         }
+ { "reussissait" (aucune erreur, une ligne de texte imprimee avec le bon   }
+ { chemin) mais les DEUX panneaux restaient affiches sur l ancien           }
+ { repertoire. Resolution faite ici relativement a                         }
+ { NCState.Panes[NCState.Active].Path (jamais le repertoire ambiant,        }
+ { potentiellement tout autre chose) via un double ChDir (vers le chemin   }
+ { du panneau, PUIS vers l argument) - reutilise la vraie resolution        }
+ { ".."/"."/chemins relatifs du systeme d exploitation plutot que d en      }
+ { reecrire une a la main - puis met a jour Panes[Active].Path et          }
+ { rappelle reellement NCListDir pour que l affichage reflete le           }
+ { changement (NCListDir reinitialise deja Cursor/ScrollTop en tete). }
+ If (TP.Shell = SK_NCOMMANDER) And (NCState.PaneSlot[NCState.Active] < 0) Then Begin
+  If Length(FirstParam) = 0 Then Begin
+   TermAddLine(TP, NCState.Panes[NCState.Active].Path);
+   Exit;
+  End;
+  {$I-}
+  ChDir(NCState.Panes[NCState.Active].Path);
+  ChDir(FirstParam);
+  {$I+}
+  Err := IOResult;
+  If Err <> 0 Then Begin
+   TermAddLine(TP, TermGetErrorMessage(Err));
+   Exit;
+  End;
+  GetDir(0, Dir);
+  NCState.Panes[NCState.Active].Path := Dir;
+  NCListDir(NCState.PaneSlot[NCState.Active], NCState.Panes[NCState.Active]);
+  TermAddLine(TP, Dir);
   Exit;
  End;
  If Length(FirstParam) > 0 Then Begin
@@ -91526,6 +91566,11 @@ Type
  TPscDbConn = Record
   InUse   : Boolean;
   MdfPath : String;
+  IsDbf   : Boolean; { True : connexion 'File=xxx.DBF;...' - lit directement }
+                      { le fichier via le vrai lecteur GridOpen_Dbf/          }
+                      { GridCellText de la Grille de donnees (WK_GRID),       }
+                      { jamais via SQLCMD.EXE. }
+  DbfPath : String;
  End;
  TPscRecSet = Record
   InUse    : Boolean;
@@ -91584,18 +91629,43 @@ End;
 { master.mdf (le cree si absent, meme mecanisme que SqlCmdEnsureMasterMdf).}
 { La chaine de connexion elle-meme n'est pas interpretee au-dela de ce     }
 { constat honnete de portee (voir disclosure ci-dessus). }
+{ Forme 'File=xxx.DBF;...' (demande explicite, 2026-09-08) : ouvre         }
+{ directement ce fichier via le vrai lecteur dBASE de la Grille de         }
+{ donnees (GridOpen_Dbf/GridCellText, WK_GRID) au lieu de master.mdf/      }
+{ SQLCMD.EXE - seul le type de fichier .DBF est supporte par cette forme   }
+{ (tout autre format reconnu par la Grille - CSV/Clarion/Btrieve/MYD -     }
+{ est refuse proprement, portee non demandee). }
 Function PscDbConnect(ConnStr:String):TPscValue;
-Var Slot:Integer;V:TPscValue;
+Var Slot:Integer;V:TPscValue;FileParam:String;
 Begin
  Slot:=PscDbFreeSlot;
  If Slot=0 Then Begin
   PscWL('Database.Connect : nombre maximal de connexions atteint.');
   PscVText('',V);PscDbConnect:=V;Exit;
  End;
+ FileParam:=PscExtractConnParam(ConnStr,'File');
+ If FileParam<>''Then Begin
+  If PscUp(GridExtOfPath(FileParam))<>'DBF'Then Begin
+   PscWL('Database.Connect : File='+FileParam+
+    ' - seul le format .DBF est pris en charge par cette forme.');
+   PscVText('',V);PscDbConnect:=V;Exit;
+  End;
+  If Not FileExists(FileParam)Then Begin
+   PscWL('Database.Connect : fichier introuvable : '+FileParam);
+   PscVText('',V);PscDbConnect:=V;Exit;
+  End;
+  PscDbConns[Slot].InUse:=True;
+  PscDbConns[Slot].IsDbf:=True;
+  PscDbConns[Slot].DbfPath:=FileParam;
+  PscVText(PSC_DB_TAG+IntToStr(Slot),V);
+  PscDbConnect:=V;
+  Exit;
+ End;
  If Not SqlCmdEnsureMasterMdf Then Begin
   PscVText('',V);PscDbConnect:=V;Exit;
  End;
  PscDbConns[Slot].InUse:=True;
+ PscDbConns[Slot].IsDbf:=False;
  PscDbConns[Slot].MdfPath:=SqlCmdMasterMdfPath;
  PscVText(PSC_DB_TAG+IntToStr(Slot),V);
  PscDbConnect:=V;
@@ -91606,9 +91676,54 @@ Begin
  If(Idx>=1)and(Idx<=PSC_DB_MAX)Then PscDbConns[Idx].InUse:=False;
 End;
 
+{ Connexion.Query('SELECT ...') sur une connexion 'File=xxx.DBF;...'       }
+{ (voir PscDbConnect) - ouvre reellement le fichier via GridOpenFile/       }
+{ GridCellText (meme lecteur DBF que la Grille de donnees, WK_GRID) et      }
+{ copie TOUTES ses lignes/colonnes dans le RecordSet. Portee honnetement    }
+{ disclosee : le texte SQL n'est PAS parse (ni liste de colonnes, ni        }
+{ WHERE/ORDER BY) - une connexion DBF pointe deja sur un seul fichier       }
+{ precis, donc 'SELECT * FROM CLIENTS' et 'SELECT Nom FROM Autre' ont       }
+{ rigoureusement le meme effet : toutes les colonnes/lignes du fichier      }
+{ connecte. Meme limite de troncature que la forme SQL Server              }
+{ (PSC_RS_MAXCOLS/PSC_RS_MAXROWS). }
+Function PscDbQueryDbf(ConnIdx:Integer):TPscValue;
+Var
+ Slot:Integer;V:TPscValue;GE:TGridEditor;I,J,ColN,RowN:Integer;
+Begin
+ PscVText('',V);
+ Slot:=PscRsFreeSlot;
+ If Slot=0 Then Begin
+  PscWL('Query : nombre maximal de RecordSet ouverts atteint.');
+  PscDbQueryDbf:=V;Exit;
+ End;
+ FillChar(GE,SizeOf(GE),0);
+ GE.Format:=GTF_DBF;
+ If Not GridOpenFile(GE,PscDbConns[ConnIdx].DbfPath)Then Begin
+  PscWL('Query : '+GE.ErrorMsg);
+  PscDbQueryDbf:=V;Exit;
+ End;
+ PscRecSets[Slot].InUse:=True;
+ ColN:=GE.ColCount;
+ If ColN>PSC_RS_MAXCOLS Then ColN:=PSC_RS_MAXCOLS;
+ PscRecSets[Slot].ColCount:=ColN;
+ For I:=1 To ColN Do
+  PscRecSets[Slot].ColNames[I]:=PscUp(GE.Columns[I-1].Name);
+ RowN:=GE.RecordCount;
+ If RowN>PSC_RS_MAXROWS Then RowN:=PSC_RS_MAXROWS;
+ PscRecSets[Slot].RowCount:=RowN;
+ PscRecSets[Slot].CurRow:=1;
+ For I:=1 To RowN Do
+  For J:=1 To ColN Do
+   PscRecSets[Slot].Cells[I,J]:=GridCellText(GE,I-1,J-1);
+ FreeGridEditor(GE);
+ PscVText(PSC_RS_TAG+IntToStr(Slot),V);
+ PscDbQueryDbf:=V;
+End;
+
 { Connexion.Query('SELECT ...') - execute REELLEMENT via SQLCMD.EXE        }
 { (-s , -W, meme format que l'apercu de grille deja verifie de             }
-{ l'Explorateur d'objets SQL Server) et peuple un nouveau RecordSet. }
+{ l'Explorateur d'objets SQL Server) et peuple un nouveau RecordSet.        }
+{ Dispatche vers PscDbQueryDbf pour une connexion 'File=xxx.DBF;...'. }
 Function PscDbQuery(ConnIdx:Integer;SqlText:String):TPscValue;
 Var
  Slot:Integer;Cmd,Ln:String;Buf:TCmdOutputLines;Cnt,I,J:Integer;
@@ -91618,6 +91733,10 @@ Begin
  If(ConnIdx<1)or(ConnIdx>PSC_DB_MAX)or(Not PscDbConns[ConnIdx].InUse)Then Begin
   PscWL('Query : connexion invalide ou fermee.');
   PscDbQuery:=V;Exit;
+ End;
+ If PscDbConns[ConnIdx].IsDbf Then Begin
+  PscDbQuery:=PscDbQueryDbf(ConnIdx);
+  Exit;
  End;
  Slot:=PscRsFreeSlot;
  If Slot=0 Then Begin
@@ -113861,8 +113980,19 @@ Begin
       TP.VirtDrive := NCState.PaneSlot[Side];
       TP.VirtCwd := NCState.Panes[Side].Path;
       TermExecuteCommand(TP, TP.InputLine);
-      NCState.Panes[Side].Path := TP.VirtCwd;
-      NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
+      { BOGUE REEL corrige (2026-09-08) : ce bloc ecrasait INCONDITIONNELLEMENT }
+      { NCState.Panes[Side].Path avec la valeur TP.VirtCwd CAPTUREE AVANT       }
+      { l appel, puis relistait ce meme chemin (perime) - annulant en silence  }
+      { toute mise a jour deja faite par la commande elle-meme (ex: TermCmd_CD }
+      { en mode systeme hote reel, qui ecrit directement dans                  }
+      { NCState.Panes[NCState.Active].Path et appelle deja NCListDir). Le      }
+      { rattrapage via TP.VirtCwd n a de sens qu en mode disque virtuel        }
+      { (PaneSlot[Side] >= 0), ou TermExecuteCommand ne connait que TP.VirtCwd }
+      { et jamais NCState.Panes[] directement. }
+      If NCState.PaneSlot[Side] >= 0 Then Begin
+       NCState.Panes[Side].Path := TP.VirtCwd;
+       NCListDir(NCState.PaneSlot[Side], NCState.Panes[Side]);
+      End;
      End;
      TP.InputLine := '';
      TP.InputCol := 1;
