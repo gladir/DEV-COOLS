@@ -113619,6 +113619,10 @@ Begin
    CreateEmulatorTab(FullPath, '-CATARI800', '');
    NCActionOpenAssociated := True;
   End
+  Else If Ext = 'ACC' Then Begin
+   CreateEmulatorTab(FullPath, '-CATARIST', '');
+   NCActionOpenAssociated := True;
+  End
   Else If Ext = 'PRG' Then Begin
    { .PRG hote : ambigu C64/Atari ST, tranche par la signature GEMDOS      }
    { (voir NCIsAtariSTPrg). }
