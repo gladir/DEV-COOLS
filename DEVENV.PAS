@@ -7936,6 +7936,13 @@ Var
  M68K_Verbose   : Boolean;
  M68K_Cycles    : LongInt;
  M68K_Panel     : ^TEmulatorPanel;
+ { Etat AES minimal (Trap #2) - un seul "process" GEM simule, une seule    }
+ { fenetre a la fois suffit pour les accessoires simples (CONTROL.ACC).   }
+ M68K_AES_AppId    : Word;
+ M68K_AES_NextHwnd : Word;
+ M68K_AES_MouseX   : Integer;
+ M68K_AES_MouseY   : Integer;
+ M68K_AES_Buttons  : Word;
  { Etat de l emulateur Cray-1 integre (parcels 16 bits) }
  CRAY1_Mem      : Array[0..65535] Of Word;
  CRAY1_Reg      : Array[0..7] Of LongInt;
@@ -149351,6 +149358,26 @@ Var
   i: Integer;
   val: LongInt;
   charcount: LongInt;
+  { AES Trap #2 (voir plus bas) : bloc de 6 pointeurs control/global/       }
+  { intin/intout/addrin/addrout, convention standard GEM AES.              }
+  aes_pb, aes_ctrl, aes_glob, aes_iin, aes_iout, aes_ain, aes_aout: LongInt;
+  aes_op, aes_nout, aes_anout: Integer;
+  aes_j, aes_p1, aes_p2: Integer;
+  aes_s, aes_line: String;
+
+  { Ecrit intout[Idx] seulement si l appelant a declare assez de sorties   }
+  { (control[2]=nintout) - jamais au-dela, comme une vraie AES. }
+  Procedure AesOut(Idx: Integer; V: Word);
+  Begin
+    If Idx < aes_nout Then M68K_Write16(aes_iout + Idx * 2, V);
+  End;
+
+  { Meme garde pour addrout[Idx] (control[4]=naddrout), valeurs 32 bits. }
+  Procedure AesOutL(Idx: Integer; V: LongInt);
+  Begin
+    If Idx < aes_anout Then M68K_Write32(aes_aout + Idx * 4, V);
+  End;
+
 Begin
   M68K_DoTrap := True;
   If vector = 15 Then Begin
@@ -149415,6 +149442,155 @@ Begin
     Else
       { Fonction GEMDOS non implementee : retourne 0 dans D0 }
       M68K_D[0] := 0;
+    End;
+  End
+  Else If vector = 2 Then Begin
+    { AES - Atari ST. Convention : D1 = pointeur vers un bloc de 6 longs   }
+    { (control,global,intin,intout,addrin,addrout) - voir GEM AES         }
+    { Reference Manual. Chaque appel lit ses entrees (intin/addrin) et    }
+    { n ecrit ses sorties (intout/addrout) que dans la limite declaree    }
+    { par control[2]/control[4] (AesOut/AesOutL ci-dessus), exactement    }
+    { comme une vraie AES le ferait. Objectif : ne jamais bloquer ni       }
+    { planter un accessoire (CONTROL.ACC) qui attend une interface         }
+    { graphique complete - reponses "sures" (echec/annulation) quand une   }
+    { vraie ressource (fichier .RSC, selecteur de fichiers, VDI reel)      }
+    { manque, plutot que de simuler un succes avec des donnees inventees. }
+    aes_pb   := M68K_D[1];
+    aes_ctrl := M68K_Read32(aes_pb);
+    aes_glob := M68K_Read32(aes_pb + 4);
+    aes_iin  := M68K_Read32(aes_pb + 8);
+    aes_iout := M68K_Read32(aes_pb + 12);
+    aes_ain  := M68K_Read32(aes_pb + 16);
+    aes_aout := M68K_Read32(aes_pb + 20);
+    aes_op    := M68K_Read16(aes_ctrl);
+    aes_nout  := M68K_Read16(aes_ctrl + 4);
+    aes_anout := M68K_Read16(aes_ctrl + 8);
+    Case aes_op Of
+      10: Begin { appl_init }
+            Inc(M68K_AES_AppId);
+            AesOut(0, M68K_AES_AppId);
+          End;
+      19: AesOut(0, 1); { appl_exit }
+      12: AesOut(0, 1); { appl_write }
+      11: Begin { appl_read : aucun message AES en attente }
+            If aes_ain <> 0 Then Begin
+              adr := M68K_Read32(aes_ain);
+              If adr <> 0 Then
+               For aes_j := 0 To 15 Do M68K_Write8(adr + aes_j, 0);
+            End;
+            AesOut(0, 1);
+          End;
+      20: AesOut(0, 0); { evnt_keybd : aucune touche disponible }
+      21: Begin { evnt_button }
+            AesOut(0, M68K_AES_MouseX); AesOut(1, M68K_AES_MouseY);
+            AesOut(2, M68K_AES_Buttons); AesOut(3, 0);
+          End;
+      23: Begin { evnt_mesag : aucun message AES en attente }
+            If aes_ain <> 0 Then Begin
+              adr := M68K_Read32(aes_ain);
+              If adr <> 0 Then
+               For aes_j := 0 To 15 Do M68K_Write8(adr + aes_j, 0);
+            End;
+            AesOut(0, 1);
+          End;
+      24: AesOut(0, 1); { evnt_timer : ne bloque jamais }
+      25: Begin { evnt_multi : ne bloque jamais - signale MU_TIMER ($20) }
+            AesOut(0, $0020); AesOut(1, M68K_AES_MouseX);
+            AesOut(2, M68K_AES_MouseY); AesOut(3, M68K_AES_Buttons);
+            AesOut(4, 0); AesOut(5, 0); AesOut(6, 0);
+          End;
+      30: AesOut(0, 1); { menu_bar }
+      32: AesOut(0, 1); { menu_ienable }
+      33: AesOut(0, 1); { menu_tnormal }
+      34: AesOut(0, 1); { menu_text }
+      42: AesOut(0, 1); { objc_draw }
+      43: AesOut(0, $FFFF); { objc_find : aucun objet trouve }
+      44: Begin AesOut(0, 0); AesOut(1, 0); End; { objc_offset }
+      46: Begin AesOut(0, 1); AesOut(1, 0); End; { objc_edit }
+      47: AesOut(0, 1); { objc_change }
+      50: AesOut(0, $8001); { form_do : "objet 1 selectionne" (bit sortie) }
+      51: AesOut(0, 1); { form_dial }
+      52: Begin { form_alert : affiche le texte, choisit le bouton par defaut }
+            aes_s := '';
+            If aes_ain <> 0 Then Begin
+              adr := M68K_Read32(aes_ain);
+              i := 0;
+              While i < 255 Do Begin
+                c := M68K_Read8(adr + i);
+                If c = 0 Then Break;
+                aes_s := aes_s + Chr(c);
+                Inc(i);
+              End;
+            End;
+            { Format GEM : "[icone][ligne1|ligne2|...][bouton1|bouton2]" - }
+            { on n affiche que le 2e groupe entre crochets (le texte). }
+            aes_line := aes_s;
+            aes_p1 := Pos('[', aes_line);
+            If aes_p1 > 0 Then Begin
+              aes_line := Copy(aes_line, aes_p1 + 1, Length(aes_line));
+              aes_p1 := Pos(']', aes_line);
+              If aes_p1 > 0 Then aes_line := Copy(aes_line, 1, aes_p1 - 1);
+              aes_p1 := Pos('[', aes_line);
+              If aes_p1 > 0 Then Begin
+                aes_line := Copy(aes_line, aes_p1 + 1, Length(aes_line));
+                aes_p2 := Pos(']', aes_line);
+                If aes_p2 > 0 Then aes_line := Copy(aes_line, 1, aes_p2 - 1);
+              End;
+            End;
+            While Length(aes_line) > 0 Do Begin
+              aes_p1 := Pos('|', aes_line);
+              If aes_p1 = 0 Then Begin
+                EmuVScr_WriteStr(M68K_Panel^, aes_line);
+                EmuVScr_PutChar(M68K_Panel^, #13); EmuVScr_PutChar(M68K_Panel^, #10);
+                aes_line := '';
+              End Else Begin
+                EmuVScr_WriteStr(M68K_Panel^, Copy(aes_line, 1, aes_p1 - 1));
+                EmuVScr_PutChar(M68K_Panel^, #13); EmuVScr_PutChar(M68K_Panel^, #10);
+                aes_line := Copy(aes_line, aes_p1 + 1, Length(aes_line));
+              End;
+            End;
+            val := M68K_Read16(aes_iin);
+            If val = 0 Then val := 1;
+            AesOut(0, Word(val));
+          End;
+      67: Begin { graf_handle : handle VDI factice, cellule 8x16 }
+            AesOut(0, 1); AesOut(1, 8); AesOut(2, 16); AesOut(3, 8); AesOut(4, 16);
+          End;
+      68: AesOut(0, 1); { graf_mouse }
+      69: Begin { graf_mkstate }
+            AesOut(0, M68K_AES_MouseX); AesOut(1, M68K_AES_MouseY);
+            AesOut(2, M68K_AES_Buttons); AesOut(3, 0);
+          End;
+      80: AesOut(0, 0); { fsel_input : "Annuler" (pas de selecteur reel) }
+      90: Begin { wind_create }
+            Inc(M68K_AES_NextHwnd);
+            AesOut(0, M68K_AES_NextHwnd);
+          End;
+      91: AesOut(0, 1); { wind_open }
+      92: AesOut(0, 1); { wind_close }
+      93: AesOut(0, 1); { wind_delete }
+      94: Begin { wind_get : zone de travail plausible par defaut }
+            AesOut(0, 0); AesOut(1, 20); AesOut(2, 640); AesOut(3, 380);
+          End;
+      95: AesOut(0, 1); { wind_set }
+      100: AesOut(0, 0); { rsrc_load : echec (aucun chargeur .RSC reel) }
+      101: AesOut(0, 1); { rsrc_free }
+      102: Begin AesOut(0, 0); AesOutL(0, 0); End; { rsrc_gaddr : echec }
+      104: AesOut(0, 1); { rsrc_obfix }
+      108: Begin { shel_read : ligne de commande et suffixe vides }
+            If aes_ain <> 0 Then Begin
+              adr := M68K_Read32(aes_ain);
+              If adr <> 0 Then M68K_Write8(adr, 0);
+              adr := M68K_Read32(aes_ain + 4);
+              If adr <> 0 Then M68K_Write8(adr, 0);
+            End;
+            AesOut(0, 1);
+          End;
+      109: AesOut(0, 1); { shel_write }
+    Else
+      { Opcode AES non reconnu : succes generique - seul le PB compte      }
+      { dans la convention AES, D0 n est jamais exploite par l appelant. }
+      AesOut(0, 1);
     End;
   End;
 End;
