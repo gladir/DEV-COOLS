@@ -2321,7 +2321,11 @@ Const
 
  { Constantes pour l emulateur Motorola 68000 integre }
  MEM_SIZE      = $100000;   { 1 Mo de RAM emulee 68k }
- MAX_CYCLES    = 100000;    { limite de surete 68k }
+ { Budget total d instructions (P.TotalSteps cumule, pas par appel de       }
+ { chunk) - releve a 1000000 pour s aligner sur les autres coeurs (6502/    }
+ { 6809/Cray1/PCode) : 100000 s epuisait avant meme la fin de l initialisation}
+ { GEM d un vrai accessoire (appl_init/menu_register/boucle evnt_multi).    }
+ MAX_CYCLES    = 1000000;
  { GEMDOS Trap #1 (Fsfirst/Fsnext/Fgetdta) : 44 octets de DTA reserves en   }
  { haut de memoire, sous la pile (M68K_A[7] demarre a MEM_SIZE-4) - jamais  }
  { touches par le programme charge (TEXT/DATA a l adresse 0). }
@@ -7950,6 +7954,18 @@ Var
  M68K_Verbose   : Boolean;
  M68K_Cycles    : LongInt;
  M68K_Panel     : ^TEmulatorPanel;
+ { Compteur d opcodes A-line/F-line toleres (trappes systeme non emulees, }
+ { voir M68K_Step) - meme motif que Coco3_DbgUnknown. }
+ M68K_DbgUnknown  : LongInt;
+ M68K_DbgLastBad  : LongInt;
+ { Diagnostic "pourquoi rien ne s affiche" (voir M68K_Step/M68K_DoTrap) : }
+ { compte les traps par vecteur, retient le dernier appel et la plage de  }
+ { PC visitee - affiche au moment de la limite de cycles. }
+ M68K_TrapCount    : Array[1..15] Of LongInt;
+ M68K_LastVector   : Integer;
+ M68K_LastFunc     : Integer;
+ M68K_PCLow        : LongInt;
+ M68K_PCHigh       : LongInt;
  { Etat AES minimal (Trap #2) - un seul "process" GEM simule, une seule    }
  { fenetre a la fois suffit pour les accessoires simples (CONTROL.ACC).   }
  M68K_AES_AppId    : Word;
@@ -7957,6 +7973,12 @@ Var
  M68K_AES_MouseX   : Integer;
  M68K_AES_MouseY   : Integer;
  M68K_AES_Buttons  : Word;
+ { Registration menu (menu_register) + auto-ouverture : un accessoire     }
+ { reel attend un MN_SELECTED apres avoir enregistre son entree de menu   }
+ { Bureau - aucun vrai bureau GEM ici, donc on simule ce clic une seule   }
+ { fois pour que sa boucle evnt_multi sorte de son attente initiale. }
+ M68K_AES_MenuId    : Word;
+ M68K_AES_AutoOpenPending : Boolean;
  { Etat GEMDOS Trap #1 (fichiers, tas, lecteur/chemin courant, DTA) }
  M68K_FileH        : Array[0..15] Of File;
  M68K_FileOpen     : Array[0..15] Of Boolean;
@@ -7969,6 +7991,9 @@ Var
  { bitmap reel, juste un etat coherent pour les lectures/ecritures) }
  M68K_XBIOS_Rez     : Word;
  M68K_XBIOS_Palette : Array[0..15] Of Word;
+ { Etat VDI (couleur texte/remplissage - pas de rendu bitmap reel) }
+ M68K_VDI_TextColor : Word;
+ M68K_VDI_FillColor : Word;
  { Etat de l emulateur Cray-1 integre (parcels 16 bits) }
  CRAY1_Mem      : Array[0..65535] Of Word;
  CRAY1_Reg      : Array[0..7] Of LongInt;
@@ -149034,6 +149059,17 @@ Begin
   M68K_Fetch16 := v;
 End;
 
+{ Deplacement 32 bits de Bcc/BSR (disp8=$FF) - simple extension de           }
+{ M68K_Fetch16 pour un mot long. }
+Function M68K_Fetch32: LongInt;
+Var
+  v: LongInt;
+Begin
+  v := M68K_Read32(M68K_PC);
+  M68K_PC := M68K_PC + 4;
+  M68K_Fetch32 := v;
+End;
+
 { ========================================================================== }
 {  Taille par champ de bits                                                   }
 { ========================================================================== }
@@ -149437,6 +149473,10 @@ Var
   { XBIOS Trap #14 (voir plus bas) }
   xb_ptr, xb_saved_pc, xb_guard: LongInt;
   xb_idx, xb_val, xb_j: Integer;
+  { VDI (voir plus bas, meme trappe #2 que l AES, discrimine par D0) }
+  vdi_x1, vdi_y1, vdi_shape, vdi_col, vdi_row: Integer;
+  vdi_ptr: LongInt;
+  vdi_str: String;
 
   { Ecrit intout[Idx] seulement si l appelant a declare assez de sorties   }
   { (control[2]=nintout) - jamais au-dela, comme une vraie AES. }
@@ -149453,6 +149493,8 @@ Var
 
 Begin
   M68K_DoTrap := True;
+  Inc(M68K_TrapCount[vector]);
+  M68K_LastVector := vector;
   If vector = 15 Then Begin
     func := M68K_D[0] And $FF;
     Case func Of
@@ -149481,6 +149523,7 @@ Begin
     { Convention : function code en mot a [A7], arguments suivants.       }
     { L'appelant retire les arguments avec ADDQ.L #n,A7 apres TRAP.       }
     func := M68K_Read16(M68K_A[7]);
+    M68K_LastFunc := func;
     Case func Of
       $00: Begin { Pterm0 - terminer le programme, code retour 0 }
              M68K_Halted := True;
@@ -149696,8 +149739,13 @@ Begin
     aes_ain  := M68K_Read32(aes_pb + 16);
     aes_aout := M68K_Read32(aes_pb + 20);
     aes_op    := M68K_Read16(aes_ctrl);
+    M68K_LastFunc := aes_op;
     aes_nout  := M68K_Read16(aes_ctrl + 4);
     aes_anout := M68K_Read16(aes_ctrl + 8);
+    { Discriminant AES/VDI standard : le binding AES charge D0=200 avant   }
+    { Trap #2 ; le binding vdi() ne le fait jamais - meme trappe partagee  }
+    { pour les deux sous-systemes GEM, distingues ainsi. }
+    If M68K_D[0] = 200 Then Begin
     Case aes_op Of
       10: Begin { appl_init }
             Inc(M68K_AES_AppId);
@@ -149727,15 +149775,35 @@ Begin
             AesOut(0, 1);
           End;
       24: AesOut(0, 1); { evnt_timer : ne bloque jamais }
-      25: Begin { evnt_multi : ne bloque jamais - signale MU_TIMER ($20) }
-            AesOut(0, $0020); AesOut(1, M68K_AES_MouseX);
-            AesOut(2, M68K_AES_MouseY); AesOut(3, M68K_AES_Buttons);
-            AesOut(4, 0); AesOut(5, 0); AesOut(6, 0);
+      25: Begin { evnt_multi : simule le clic Bureau une seule fois       }
+                { (voir M68K_AES_AutoOpenPending), sinon ne bloque jamais  }
+                { et signale MU_TIMER ($20). }
+            If M68K_AES_AutoOpenPending And (M68K_AES_MenuId <> 0) And
+               ((M68K_Read16(aes_iin) And $0010) <> 0) And (aes_ain <> 0) Then Begin
+              adr := M68K_Read32(aes_ain);
+              M68K_Write16(adr, 10);             { MN_SELECTED }
+              M68K_Write16(adr + 2, 0);          { emetteur : AES }
+              M68K_Write16(adr + 4, M68K_AES_AppId);
+              M68K_Write16(adr + 6, M68K_AES_MenuId);
+              M68K_Write16(adr + 8, 0); M68K_Write16(adr + 10, 0);
+              M68K_Write16(adr + 12, 0); M68K_Write16(adr + 14, 0);
+              AesOut(0, $0010); { MU_MESAG }
+              M68K_AES_AutoOpenPending := False;
+            End Else Begin
+              AesOut(0, $0020); AesOut(1, M68K_AES_MouseX);
+              AesOut(2, M68K_AES_MouseY); AesOut(3, M68K_AES_Buttons);
+              AesOut(4, 0); AesOut(5, 0); AesOut(6, 0);
+            End;
           End;
       30: AesOut(0, 1); { menu_bar }
       32: AesOut(0, 1); { menu_ienable }
       33: AesOut(0, 1); { menu_tnormal }
       34: AesOut(0, 1); { menu_text }
+      35: Begin { menu_register(ap_id, text) : identifiant unique pour     }
+                { reconnaitre plus tard son propre MN_SELECTED. }
+            Inc(M68K_AES_MenuId);
+            AesOut(0, M68K_AES_MenuId);
+          End;
       42: AesOut(0, 1); { objc_draw }
       43: AesOut(0, $FFFF); { objc_find : aucun objet trouve }
       44: Begin AesOut(0, 0); AesOut(1, 0); End; { objc_offset }
@@ -149824,6 +149892,62 @@ Begin
       { Opcode AES non reconnu : succes generique - seul le PB compte      }
       { dans la convention AES, D0 n est jamais exploite par l appelant. }
       AesOut(0, 1);
+    End
+    End Else Begin
+      { VDI - reutilise le meme decodage de PB que l AES ci-dessus         }
+      { (simplification : le vrai contrl VDI a 12 mots et separe           }
+      { ptsin/ptsout des intin/intout - ici aes_ain/aes_iin servent aux     }
+      { deux, suffisant pour un accessoire sans rendu bitmap reel). }
+      Case aes_op Of
+        1: Begin { v_opnwk : handle + geometrie coherente avec Getrez }
+             Inc(M68K_AES_NextHwnd);
+             AesOut(0, M68K_AES_NextHwnd);
+             If M68K_XBIOS_Rez = 0 Then Begin
+              vdi_x1 := 319; vdi_y1 := 199; vdi_shape := 16;
+             End Else If M68K_XBIOS_Rez = 1 Then Begin
+              vdi_x1 := 639; vdi_y1 := 199; vdi_shape := 4;
+             End Else Begin
+              vdi_x1 := 639; vdi_y1 := 399; vdi_shape := 2;
+             End;
+             AesOut(1, Word(vdi_x1)); AesOut(2, Word(vdi_y1));
+             AesOut(3, 1); AesOut(4, 1);
+             AesOut(14, Word(vdi_shape));
+           End;
+        2: ; { v_clswk : rien a liberer }
+        3: EmuVScr_Clear(M68K_Panel^); { v_clrwk }
+        6: ; { v_pline : aucun framebuffer, trace ignore }
+        8: Begin { v_gtext(handle,x,y,str) : seul appel VDI vraiment       }
+                 { rendu, sur l ecran texte virtuel deja existant. }
+             vdi_x1 := M68K_Read16(aes_iin);
+             vdi_y1 := M68K_Read16(aes_iin + 2);
+             vdi_col := vdi_x1 Div 8;
+             vdi_row := vdi_y1 Div 16;
+             If vdi_col < 0 Then vdi_col := 0;
+             If vdi_row < 0 Then vdi_row := 0;
+             If M68K_VDI_TextColor = 0 Then M68K_Panel^.CurFg := 7
+             Else M68K_Panel^.CurFg := Byte(M68K_VDI_TextColor And $F);
+             If aes_ain <> 0 Then Begin
+              vdi_ptr := M68K_Read32(aes_ain);
+              vdi_str := M68K_ReadASCIZ(vdi_ptr);
+              EmuVScr_GotoXY(M68K_Panel^, Byte(vdi_col), Byte(vdi_row));
+              EmuVScr_WriteStr(M68K_Panel^, vdi_str);
+             End;
+           End;
+        11: ; { v_bar : aucun framebuffer, remplissage ignore }
+        22: M68K_VDI_TextColor := Word(M68K_Read16(aes_iin)); { vst_color }
+        25: M68K_VDI_FillColor := Word(M68K_Read16(aes_iin)); { vsf_color }
+        109: ; { vro_cpyfm : aucun framebuffer, copie ignoree }
+        124: Begin { vq_mouse }
+              AesOut(0, M68K_AES_Buttons); AesOut(1, M68K_AES_MouseX);
+              AesOut(2, M68K_AES_MouseY);
+            End;
+        128: Begin { vsm_locator : ne bloque jamais }
+              AesOut(0, 1); AesOut(1, M68K_AES_MouseX);
+              AesOut(2, M68K_AES_MouseY);
+            End;
+      Else
+        ; { Opcode VDI non reconnu : sans effet, jamais de plantage }
+      End;
     End;
   End
   Else If vector = 13 Then Begin
@@ -149831,6 +149955,7 @@ Begin
     { [A7], arguments suivants dans l ordre declare. dev 0=PRT,1=AUX,2=CON  }
     { (seul CON a une contrepartie reelle ici - clavier/ecran virtuel). }
     func := M68K_Read16(M68K_A[7]);
+    M68K_LastFunc := func;
     Case func Of
       1: Begin { Bconstat(dev) : -1 si un caractere attend, sinon 0 }
            bi_dev := M68K_Read16(M68K_A[7] + 2);
@@ -149875,6 +150000,7 @@ Begin
   Else If vector = 14 Then Begin
     { XBIOS - Atari ST. Meme convention que BIOS/GEMDOS/AES. }
     func := M68K_Read16(M68K_A[7]);
+    M68K_LastFunc := func;
     Case func Of
       4: M68K_D[0] := M68K_XBIOS_Rez; { Getrez }
       2: M68K_D[0] := M68K_XBIOS_SCREEN_ADDR; { Physbase }
@@ -150370,11 +150496,10 @@ Begin
   If (opcode And $FFF0) = $4E60 Then
     Exit;
 
-  { Unimplemented }
-  WriteLn('Erreur: Instruction 0100 non implementee: $', M68K_HexN(opcode, 4));
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_Exec0100 := False;
+  { Instruction 0100 non decodee : tolerer plutot qu arreter tout le      }
+  { programme (meme motif que A-line/F-line dans M68K_Step). }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := M68K_PC - 2;
 End;
 
 { ========================================================================== }
@@ -150459,13 +150584,9 @@ Begin
 
   If disp8 = 0 Then
     disp := M68K_SignExtend(M68K_Fetch16, 2)
-  Else If disp8 = $FF Then Begin
-    WriteLn('Erreur: BCC long displacement non supporte');
-    M68K_Halted := True;
-    M68K_ExitCode := 1;
-    M68K_ExecBcc := False;
-    Exit;
-  End Else
+  Else If disp8 = $FF Then
+    disp := M68K_Fetch32 { deplacement 32 bits }
+  Else
     disp := M68K_SignExtend(disp8, 1);
 
   If cc = 1 Then Begin { BSR }
@@ -150473,6 +150594,8 @@ Begin
     M68K_Write32(M68K_A[7], M68K_PC);
     If disp8 = 0 Then
       M68K_PC := M68K_PC - 2 + disp
+    Else If disp8 = $FF Then
+      M68K_PC := M68K_PC - 4 + disp
     Else
       M68K_PC := M68K_PC + disp;
     Exit;
@@ -150481,6 +150604,8 @@ Begin
   If M68K_TestCC(cc) Then Begin
     If disp8 = 0 Then
       M68K_PC := M68K_PC - 2 + disp
+    Else If disp8 = $FF Then
+      M68K_PC := M68K_PC - 4 + disp
     Else
       M68K_PC := M68K_PC + disp;
   End;
@@ -150516,10 +150641,10 @@ Begin
   If opmode = 3 Then Begin
     val := M68K_ReadEA(ea_mode, ea_reg, 2, addr) And $FFFF;
     If val = 0 Then Begin
-      WriteLn('Erreur: Division par zero (DIVU)');
-      M68K_Halted := True;
-      M68K_ExitCode := 1;
-      M68K_Exec1000 := False;
+      { Division par zero (vecteur 5 reel) : recouvrable, ne pas arreter   }
+      { toute la session - D[reg] inchange, meme motif que A-line/F-line. }
+      Inc(M68K_DbgUnknown);
+      M68K_DbgLastBad := M68K_PC - 2;
       Exit;
     End;
     { Unsigned division: M68K_D[reg] is treated as unsigned 32-bit }
@@ -150559,10 +150684,8 @@ Begin
     val := M68K_ReadEA(ea_mode, ea_reg, 2, addr);
     divisor_s := M68K_ToSigned(val, 2);
     If divisor_s = 0 Then Begin
-      WriteLn('Erreur: Division par zero (DIVS)');
-      M68K_Halted := True;
-      M68K_ExitCode := 1;
-      M68K_Exec1000 := False;
+      Inc(M68K_DbgUnknown);
+      M68K_DbgLastBad := M68K_PC - 2;
       Exit;
     End;
     dividend_s := M68K_ToSigned(M68K_D[reg], 4);
@@ -150600,10 +150723,9 @@ Begin
     Exit;
   End;
 
-  WriteLn('Erreur: OR/DIV non implemente: $', M68K_HexN(opcode, 4));
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_Exec1000 := False;
+  { Opmode non decode (SBCD a une autre forme d adressage) : tolerer. }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := M68K_PC - 2;
 End;
 
 { ========================================================================== }
@@ -150706,10 +150828,9 @@ Begin
     Exit;
   End;
 
-  WriteLn('Erreur: ADD/SUB non implemente: opmode=', opmode);
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_ExecAddSub := False;
+  { Opmode non decode : tolerer plutot qu arreter tout le programme. }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := M68K_PC - 2;
 End;
 
 { ========================================================================== }
@@ -150764,10 +150885,9 @@ Begin
     Exit;
   End;
 
-  WriteLn('Erreur: CMP/EOR non implemente: opmode=', opmode);
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_Exec1011 := False;
+  { Opmode non decode : tolerer plutot qu arreter tout le programme. }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := M68K_PC - 2;
 End;
 
 { ========================================================================== }
@@ -150860,10 +150980,9 @@ Begin
     Exit;
   End;
 
-  WriteLn('Erreur: AND/MUL non implemente: $', M68K_HexN(opcode, 4));
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_Exec1100 := False;
+  { Opmode non decode : tolerer plutot qu arreter tout le programme. }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := M68K_PC - 2;
 End;
 
 { ========================================================================== }
@@ -151304,10 +151423,9 @@ Begin
     Exit;
   End;
 
-  WriteLn('Erreur: Instruction 0000 non implementee: $', M68K_HexN(opcode, 4));
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_Exec0000 := False;
+  { Instruction 0000 non decodee : tolerer plutot qu arreter le programme. }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := M68K_PC - 2;
 End;
 
 { ========================================================================== }
@@ -151338,6 +151456,8 @@ Begin
   End;
   Inc(M68K_Cycles);
   pc_before := M68K_PC;
+  If pc_before < M68K_PCLow Then M68K_PCLow := pc_before;
+  If pc_before > M68K_PCHigh Then M68K_PCHigh := pc_before;
   opcode := M68K_Fetch16;
 
   If M68K_Verbose Then
@@ -151361,10 +151481,10 @@ Begin
 
   If opcode = $4E76 Then Begin { TRAPV }
     If M68K_SR And CCR_V <> 0 Then Begin
-      WriteLn('Erreur: TRAPV: overflow trap');
-      M68K_Halted := True;
-      M68K_ExitCode := 1;
-      M68K_Step := False;
+      { Trap recouvrable (vecteur 7 reel) : tolerer plutot qu arreter la    }
+      { session entiere, meme motif que DIVU/DIVS. }
+      Inc(M68K_DbgUnknown);
+      M68K_DbgLastBad := pc_before;
     End;
     Exit;
   End;
@@ -151439,12 +151559,14 @@ Begin
     Exit;
   End;
 
-  { A-line }
+  { A-line : trappe systeme (Line 1010 Emulator, vecteur 10 reel) - aucun  }
+  { gestionnaire reel derriere, mais un vrai TOS ne plante pas non plus :  }
+  { NOP tolere plutot qu arret complet du programme (meme motif que        }
+  { Coco3_DbgUnknown pour les opcodes 6809 inconnus). }
   If top4 = $A Then Begin
-    WriteLn('Erreur: Instruction A-line non supportee: $', M68K_HexN(opcode, 4));
-    M68K_Halted := True;
-    M68K_ExitCode := 1;
-    M68K_Step := False;
+    Inc(M68K_DbgUnknown);
+    M68K_DbgLastBad := pc_before;
+    M68K_D[0] := 0;
     Exit;
   End;
 
@@ -151478,11 +151600,13 @@ Begin
     Exit;
   End;
 
-  WriteLn('Erreur: Instruction non implementee: $', M68K_HexN(opcode, 4),
-          ' a M68K_PC=$', M68K_HexN(pc_before, 6));
-  M68K_Halted := True;
-  M68K_ExitCode := 1;
-  M68K_Step := False;
+  { F-line : trappe systeme (Line 1111 Emulator, vecteur 11 reel -         }
+  { generalement des instructions FPU 68881/68882) - meme tolerance que    }
+  { A-line ci-dessus : un vrai TOS sans FPU emule ne plante pas le          }
+  { programme pour autant, il retourne juste un echec/0 au site d appel. }
+  Inc(M68K_DbgUnknown);
+  M68K_DbgLastBad := pc_before;
+  M68K_D[0] := 0;
 End;
 
 { ========================================================================== }
@@ -161861,12 +161985,21 @@ Begin NesActive := False;
   M68K_ExitCode := 0;
   M68K_Verbose := False;
   M68K_Cycles := 0;
+  M68K_DbgUnknown := 0;
+  M68K_DbgLastBad := 0;
+  FillChar(M68K_TrapCount, SizeOf(M68K_TrapCount), 0);
+  M68K_LastVector := 0;
+  M68K_LastFunc := -1;
+  M68K_PCLow := MEM_SIZE;
+  M68K_PCHigh := 0;
   M68K_Panel := @P;
   M68K_AES_AppId := 0;
   M68K_AES_NextHwnd := 0;
   M68K_AES_MouseX := 0;
   M68K_AES_MouseY := 0;
   M68K_AES_Buttons := 0;
+  M68K_AES_MenuId := 0;
+  M68K_AES_AutoOpenPending := True;
   For Steps := 0 To 15 Do M68K_FileOpen[Steps] := False;
   M68K_HeapNext := M68K_GEMDOS_HEAP_BASE;
   M68K_CurDrive := 2; { C: - lecteur de demarrage suppose }
@@ -161874,6 +162007,8 @@ Begin NesActive := False;
   M68K_DtaActive := False;
   M68K_XBIOS_Rez := 2; { haut resolution mono par defaut, valeur factice }
   FillChar(M68K_XBIOS_Palette, SizeOf(M68K_XBIOS_Palette), 0);
+  M68K_VDI_TextColor := 1; { noir, convention ST standard }
+  M68K_VDI_FillColor := 1;
   Loaded := False;
   EntryAddr := -1;
   { Pour Atari ST, essayer le format PRG GEMDOS en premier }
@@ -163407,9 +163542,25 @@ Begin
     EmuVScr_WriteStr(P, '[Fin d execution : TRAP #15 termine apres ' +
      IntToStr(P.TotalSteps) + ' instructions, code=' +
      IntToStr(M68K_ExitCode) + ']')
-   Else
+   Else Begin
     EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(MAX_CYCLES) +
      ' cycles atteinte (boucle infinie ?)]');
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+    EmuVScr_WriteStr(P, 'Traps : GEMDOS=' + IntToStr(M68K_TrapCount[1]) +
+     ' AES/VDI=' + IntToStr(M68K_TrapCount[2]) +
+     ' BIOS=' + IntToStr(M68K_TrapCount[13]) +
+     ' XBIOS=' + IntToStr(M68K_TrapCount[14]));
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+    EmuVScr_WriteStr(P, 'Dernier trap : vecteur ' + IntToStr(M68K_LastVector) +
+     ', fonction/opcode $' + M68K_HexN(M68K_LastFunc, 4));
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+    EmuVScr_WriteStr(P, 'Opcodes A-line/F-line toleres : ' +
+     IntToStr(M68K_DbgUnknown) + ' (dernier PC=$' +
+     M68K_HexN(M68K_DbgLastBad, 6) + ')');
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+    EmuVScr_WriteStr(P, 'Plage de PC visitee : $' + M68K_HexN(M68K_PCLow, 6) +
+     ' - $' + M68K_HexN(M68K_PCHigh, 6));
+   End;
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
