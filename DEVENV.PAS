@@ -19075,8 +19075,13 @@ Var
 Begin
  { Detecter si le fichier est du Pascal }
  Ext := UpCaseStr(ExtractFileExt(Ed.Buffer.FileName));
+ { .PSC (PascalScript, commande Terminal PSCRIPT) reutilise le highlighter }
+ { Pascal plutot que d en dupliquer un quasi identique (syntaxe Pascal      }
+ { reelle, voir project_devenv_pscript.md) - meme motif que .JPP->Java      }
+ { plus bas (IsJava), demande explicite de l'utilisateur ("l'editeur de    }
+ { texte ne supporte pas la syntaxe coloree de PascalScript"). }
  IsPascal := (Ext = '.PAS') Or (Ext = '.PP') Or (Ext = '.INC') Or
-             (Ext = '.DPR') Or (Ext = '.LPR');
+             (Ext = '.DPR') Or (Ext = '.LPR') Or (Ext = '.PSC');
  IsC := (Ext = '.C') Or (Ext = '.H');
  IsCSharp := (Ext = '.CS');
  IsVBNet := (Ext = '.VB');
@@ -112695,7 +112700,7 @@ End;
 { NCActionView/NCActionEdit, pas de chemin hote direct). Renvoie True si }
 { le fichier a ete pris en charge (l appelant ne doit alors rien faire      }
 { d autre). --- }
-Function NCActionOpenAssociated(Side: Integer): Boolean;
+Function NCActionOpenAssociated(Side: Integer; Var TP: TTerminalPanel): Boolean;
 Var
  E: TNCEntry;
  Ext, FullPath, TempPath: String;
@@ -112860,6 +112865,18 @@ Begin
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
     CreateEmulatorTab(FullPath, '-CELF64', '');
+    NCActionOpenAssociated := True;
+   End
+   { Entree sur un script PascalScript .PSC (2026-09-08, demande explicite }
+   { de l'utilisateur) : execute reellement le script via TermCmd_PSCRIPT, }
+   { meme moteur que la commande "PSCRIPT fichier.psc" tapee au clavier -  }
+   { la sortie (WriteLn/erreurs) s'affiche dans ce meme panneau Terminal   }
+   { (TP), pas dans une fenetre separee. Portee identique a la commande    }
+   { PSCRIPT elle-meme : un chemin contenant un espace n'est pas gere      }
+   { (TermExtractParam ne fait aucun decoupage sur guillemets), limite     }
+   { deja presente pour "PSCRIPT " tape au clavier, pas nouvelle ici. }
+   Else If Ext = 'PSC' Then Begin
+    TermCmd_PSCRIPT(TP, FullPath);
     NCActionOpenAssociated := True;
    End
    { Chantier grille (DBF/Clarion/Btrieve/CSV/MyISAM) : deuxieme point    }
@@ -113999,7 +114016,7 @@ Begin
     End Else If NCState.Panes[Side].Count > 0 Then Begin
      E := NCState.Panes[Side].Entries[NCState.Panes[Side].Cursor];
      If E.IsDir Then NCEnterDir(Side, E.Name)
-     Else NCActionOpenAssociated(Side);
+     Else NCActionOpenAssociated(Side, TP);
     End;
    #8: { Retour arriere : effacer la ligne de commande, sinon remonter }
     If Length(TP.InputLine) > 0 Then
@@ -170099,6 +170116,7 @@ Var
  SrcDir: String;
  I: Integer;
  EffectiveCPU: String;
+ DummyTP: TTerminalPanel;
 Begin
  { BOGUE REEL signale par l utilisateur (2026-08-02) : F5 recompilait      }
  { TOUJOURS le contenu SUR DISQUE du fichier actif, jamais le tampon         }
@@ -171059,6 +171077,46 @@ Begin
     Ord(OTK_BUILD));
    Exit;
   End;
+ End
+ Else If (Ext = '.psc') Then Begin
+  { PascalScript (.psc, 2026-09-08, demande explicite : "F5 devrait         }
+  { executer le script PascalScript") : aucune compilation - interprete     }
+  { directement par le meme moteur que la commande Terminal                 }
+  { "PSCRIPT fichier.psc" (TermCmd_PSCRIPT), egalement reutilise par        }
+  { NCActionOpenAssociated (Entree sur un .psc dans Norton Commander, voir  }
+  { plus haut). La sortie (WriteLn/erreurs) est recuperee via               }
+  { PsPipelineCapture, le mecanisme deja existant qui intercepte            }
+  { TermAddLine sans passer par un TTerminalPanel visible a l'ecran (meme   }
+  { motif que le pipeline PowerShell dev "commande | EDIT" plus haut dans   }
+  { ce fichier) - TermCmd_PSCRIPT ne touche jamais TP directement            }
+  { (seulement PscTermTP:=@TP puis TermAddLine, qui ressort avant tout      }
+  { acces a TP tant que la capture est active), donc DummyTP jamais         }
+  { initialise ne pose aucun probleme ici. }
+  AppendOutput(OutputPanel,
+   '------ Execution started: ' + SourceFile + ' ------',
+   Ord(OTK_BUILD));
+  ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+  PsPipelineCapture := True;
+  PsPipelineLineCount := 0;
+  TermCmd_PSCRIPT(DummyTP, SourceFile);
+  PsPipelineCapture := False;
+  For I := 1 To PsPipelineLineCount Do
+   AppendOutput(OutputPanel, PsPipelineLines[I], Ord(OTK_DEBUG));
+  SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+  If PscExitCode = 0 Then
+   AppendOutput(OutputPanel,
+    '========== Build: 1 succeeded, 0 failed ==========',
+    Ord(OTK_BUILD))
+  Else
+   AppendOutput(OutputPanel,
+    '========== Build: 0 succeeded, 1 failed ==========',
+    Ord(OTK_BUILD));
+  { Sortie explicite : contrairement aux langages compiles ci-dessus, il    }
+  { n'existe aucun ExeName pour un script interprete - ne JAMAIS tomber     }
+  { dans l'epilogue partage plus bas ("Afficher le resultat"), qui tenterait}
+  { d'executer un .exe inexistant en se basant sur la variable locale       }
+  { ExitCode (jamais affectee ici, resterait indeterminee). }
+  Exit;
  End
  Else Begin
   AppendOutput(OutputPanel,
