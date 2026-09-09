@@ -111371,7 +111371,7 @@ Begin
     Else If TermFindPrgExecutable(TP, CurDir, CurrCmd, PrgTarget, PrgPath) Then
      CreateEmulatorTab(PrgPath, PrgTarget, ParamStr)
     Else
-     TermAddLine(TP, 'gulam: ' + CurrCmd +
+     TermAddLine(TP, 'gul'+#132+'m: ' + CurrCmd +
       ': command not found');
    End;
   End;
@@ -115358,20 +115358,21 @@ Var
  HBarY, SBarBottom: Integer;
  { Gulam imite l ecran monochrome ST reel : fond blanc, texte noir -       }
  { seul shell distinct des autres (fond gris fonce/texte clair). }
- IsGulamPanel: Boolean;
+ IsAmigaDOSPanel:Boolean;
+ IsGulamPanel:Boolean;
 Begin
  If Not TermVisible Then Exit;
  PX := TermX;
  PY := TermY;
  PW := TermWidth;
  PH := TermHeight;
+ IsAmigaDOSPanel := (TP.Shell = SK_AMIGADOS);
  IsGulamPanel := (TP.Shell = SK_GULAM);
  { Fond sombre (8=gris fonce, pas 0 car SetBkColor remappe 0) - Gulam a  }
  { son propre fond blanc (15), voir IsGulamPanel ci-dessus. }
- If IsGulamPanel Then
-  SetFillStyle(SolidFill, 15)
- Else
-  SetFillStyle(SolidFill, 8);
+ If(IsAmigaDOSPanel)Then SetFillStyle(SolidFill, 1) Else
+ If(IsGulamPanel)Then SetFillStyle(SolidFill, 15)
+                 Else SetFillStyle(SolidFill, 8);
  Bar(PX, PY, PX + PW - 1, PY + PH - 1);
  { Barre du haut avec titre TERMINAL et SelectBox }
  SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
@@ -115394,7 +115395,7 @@ Begin
   SK_CMD:        SelLabel := 'Invite de commandes';
   SK_POWERSHELL: SelLabel := 'PowerShell dev';
   SK_BASH:       SelLabel := 'Bash';
-  SK_GULAM:      SelLabel := 'Gulam';
+  SK_GULAM:      SelLabel := 'gul'+#132+'m';
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
@@ -115707,7 +115708,7 @@ Begin
   SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H + 3,
-   'Gulam');
+   'Gul'+#132+'m');
   { Item 5 : AmigaDOS }
   If TermSelectIdx = 4 Then
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
@@ -115974,7 +115975,7 @@ Begin
      ActiveShell := NewShell;
      If TermPanels[SK_GULAM].LineCount = 0 Then
       TermAddLine(TermPanels[SK_GULAM],
-       'Gulam shell. Tapez help.');
+       'gul'+#132+'m shell. Tapez help.');
     End;
     TermPanels[ActiveShell].NeedRepaint := True;
     FullRepaintNeeded := True;
