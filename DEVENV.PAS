@@ -8096,6 +8096,20 @@ Var
  LX_ImportOrdinal : Array[0..LX_MAX_TRAP_SLOTS - 1] Of LongInt;
  LX_ImportNameOfs : Array[0..LX_MAX_TRAP_SLOTS - 1] Of LongInt;
  LX_ImportSlotCount: Integer;
+ { Chantier OS/2 LX, PMWIN Clipboard (2026-09-09) : noms REELS des modules  }
+ { importes (table e32_impmod, chaines prefixees d 1 octet de longueur -    }
+ { meme decodage que TermCmd_LXInfo, voir Emu_LoadLX ou ce tableau est       }
+ { rempli une fois pour toutes). AVANT cet ajout, Lx_DoDosCall supposait     }
+ { "module #1 = DOSCALLS" par simple CONVENTION DE POSITION (jamais verifie }
+ { par le nom reel) - fragile des qu un binaire importe un AUTRE module en  }
+ { premier ; desormais le nom reel decide, quel que soit l ordre d import.  }
+ LX_ImportModNames: Array[1..64] Of String;
+ { Chantier OS/2 LX, PMWIN Clipboard : "fenetre Viewer" du presse-papiers - }
+ { simple valeur memorisee (WinSetClipbrdViewer/WinQueryClipbrdViewer),     }
+ { AUCUNE vraie notification WM_DRAWCLIPBOARD envoyee (aucun gestionnaire   }
+ { de fenetres/file de messages n existe dans cet emulateur LX, portee      }
+ { "console uniquement" deja actee - voir project_devenv_os2lx.md). }
+ LX_ClipViewerHwnd: LongInt;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : T6502MemArr;
  CPU6502_A      : Byte;
@@ -78356,6 +78370,8 @@ Var
  Page: TLXObjPageEntry;
  GlobalPageNo: LongInt;
  FileOfs, DestAddr, CopyLen: LongInt;
+ ModNameLen: Byte;
+ ModNameBuf: String;
 Begin
  Emu_LoadLX := False;
  LX_Loaded := False;
@@ -78377,6 +78393,30 @@ Begin
  Reset(F, 1);
  {$I+}
  If IOResult <> 0 Then Exit;
+ { Table des noms de modules importes (e32_impmod) - chaines prefixees     }
+ { d 1 octet de longueur, LUES SEQUENTIELLEMENT (l offset de l entree N     }
+ { depend des longueurs cumulees de toutes les entrees precedentes, meme   }
+ { decodage que TermCmd_LXInfo). Remplie ICI, une fois pour toutes, pour   }
+ { que Lx_DoDosCall puisse identifier un module par son VRAI NOM plutot    }
+ { que par sa position dans la table (voir LX_ImportModNames plus haut). }
+ For I := 1 To 64 Do LX_ImportModNames[I] := '';
+ If (Hdr.e32_impmodcnt > 0) And (Hdr.e32_impmodcnt < 64) Then Begin
+  {$I-}
+  Seek(F, HdrOfs + Hdr.e32_impmod);
+  {$I+}
+  If IOResult = 0 Then
+   For I := 1 To Hdr.e32_impmodcnt Do Begin
+    BlockRead(F, ModNameLen, 1, BytesRead);
+    If BytesRead <> 1 Then Break;
+    ModNameBuf := '';
+    If ModNameLen > 0 Then Begin
+     SetLength(ModNameBuf, ModNameLen);
+     BlockRead(F, ModNameBuf[1], ModNameLen, BytesRead);
+     If BytesRead <> ModNameLen Then Break;
+    End;
+    LX_ImportModNames[I] := ModNameBuf;
+   End;
+ End;
  { 1ere passe : table des objets - juste memoriser base/taille, la copie   }
  { des pages se fait objet par objet dans la 2e passe (elle a besoin de    }
  { relire la table des pages a un offset different, donc de reculer le     }
@@ -79101,6 +79141,7 @@ End;
 Procedure Lx_DoDosCall(SlotIndex: Integer);
 Var
  ModOrd: Byte;
+ ModName: String;
  IsOrd: Boolean;
  OrdVal: LongInt;
  RetAddr: LongInt;
@@ -79111,6 +79152,37 @@ Var
  Action, ResultCode: LongInt;
  CbAlloc, PPtrOut: LongInt;
  Handled: Boolean;
+ { Chantier OS/2 LX, PMWIN Clipboard (2026-09-09, demande explicite -       }
+ { 10 entrees WinXxxClipbrdXxx de PMWIN.DLL) - variables locales des        }
+ { nouveaux cas ci-dessous. Ordinaux REELS verifies contre 2 sources        }
+ { independantes (EDM2/OS2286.LIB genere par EMXIMP, ET os2imports.pl du    }
+ { projet 2ine - meme discipline "verifie, jamais devine" que DOSCALLS) :   }
+ { 111=WinOpenClipbrd 112=WinCloseClipbrd 113=WinEmptyClipbrd                }
+ { 115=WinQueryClipbrdOwner 116=WinSetClipbrdData 117=WinQueryClipbrdData   }
+ { 118=WinEnumClipbrdFmts 119=WinQueryClipbrdFmtInfo 120=WinSetClipbrdViewer}
+ { 121=WinQueryClipbrdViewer (114=WinSetClipbrdOwner existe reellement mais }
+ { n a pas ete demande - non implante, refuse proprement si jamais appele). }
+ { Signatures reelles verifiees contre le vrai PMWIN.H du Developer s       }
+ { Toolkit 4.5 (github.com/bitwiseworks/os2tk45) - CF_TEXT=1,               }
+ { CFI_POINTER=$0400, CFI_HANDLE=$0200. Portee honnetement disclosee :      }
+ { aucun vrai HAB/anchor-block/HWND/file de messages n existe dans cet      }
+ { emulateur (console uniquement, voir project_devenv_os2lx.md) - le        }
+ { parametre hab n est jamais valide, et seul le format CF_TEXT rendu par   }
+ { POINTEUR (CFI_POINTER) est pris en charge ; CFI_HANDLE (memoire partagee }
+ { OS/2 reelle) et CFI_OWNERDISPLAY (rendu differe via message              }
+ { WM_RENDERFMT) sont refuses proprement plutot que mal simules. Les VRAIES }
+ { donnees passent par le presse-papiers REEL de l hote (Win_OpenClipboard/ }
+ { Win_SetClipboardData/etc., meme externals deja utilises par le pont      }
+ { WINOLDAP DOS INT 2Fh/AX=17xxh - PAS un tampon interne invente). }
+ ClipFmt, ClipFmtInfo, ClipDataPtr, ClipDataAddr, ClipInfoOutAddr: LongInt;
+ ClipHMem, ClipSize, ClipI: LongInt;
+ ClipPtr: PClipByteArr;
+ { AnsiString, PAS le String[255] par defaut de ce fichier (mode $H-) : un  }
+ { texte de presse-papiers reel depasse tres facilement 255 caracteres      }
+ { (plusieurs lignes) - un String[255] classique le tronquerait             }
+ { SILENCIEUSEMENT sans jamais le signaler, corrompant les donnees reelles  }
+ { de l utilisateur plutot que de refuser proprement. }
+ ClipStr: AnsiString;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
   Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -79121,7 +79193,21 @@ Begin
  OrdVal := LX_ImportOrdinal[SlotIndex];
  NArgsPopped := 0;
  Handled := False;
- If (ModOrd = 1) And IsOrd Then Begin { module #1 = DOSCALLS (verifie via LXINFO) }
+ If (ModOrd >= 1) And (ModOrd <= 64) Then ModName := UpCaseStr(LX_ImportModNames[ModOrd])
+ Else ModName := '';
+ { BOGUE REEL corrige (2026-09-09, trouve en preparant l ajout de PMWIN) :  }
+ { avant ce correctif, le dispatcheur supposait "module #1 = DOSCALLS" par  }
+ { simple CONVENTION DE POSITION (jamais verifiee par le nom reel du        }
+ { module importe) - vrai pour les 2 seuls fichiers testes a ce jour        }
+ { (ddnsicon.exe/LOGDAEM.EXE, ou DOSCALLS est effectivement le module #1),  }
+ { mais faux en general : un futur binaire important PMWIN (ou autre chose) }
+ { en premier aurait vu ses appels traites a tort comme des DOSCALLS.        }
+ { Desormais base sur LX_ImportModNames (rempli par Emu_LoadLX depuis la    }
+ { vraie table e32_impmod), quel que soit l ordre d import - AUCUNE          }
+ { regression sur les 2 fichiers deja verifies (leur module #1 s appelle    }
+ { bel et bien "DOSCALLS", le nom gagne desormais, pas la position, mais    }
+ { le resultat est identique pour eux). }
+ If (ModName = 'DOSCALLS') And IsOrd Then Begin
   Case OrdVal Of
    234: Begin { DosExit(ULONG action, ULONG result) - fin de processus, jamais de retour }
     Action := Lx_ReadDWord(LX_Reg.ESP + 4);
@@ -79176,10 +79262,150 @@ Begin
     Handled := True;
    End;
   End;
+ End Else
+ If (ModName = 'PMWIN') And IsOrd Then Begin
+  Case OrdVal Of
+   111: Begin { WinOpenClipbrd(HAB hab) - HAB jamais valide, voir disclosure }
+    If Win_OpenClipboard(0) Then LX_Reg.EAX := 1 Else LX_Reg.EAX := 0;
+    NArgsPopped := 1;
+    Handled := True;
+   End;
+   112: Begin { WinCloseClipbrd(HAB hab) }
+    If Win_CloseClipboard Then LX_Reg.EAX := 1 Else LX_Reg.EAX := 0;
+    NArgsPopped := 1;
+    Handled := True;
+   End;
+   113: Begin { WinEmptyClipbrd(HAB hab) }
+    If Win_EmptyClipboard Then LX_Reg.EAX := 1 Else LX_Reg.EAX := 0;
+    NArgsPopped := 1;
+    Handled := True;
+   End;
+   115: Begin { WinQueryClipbrdOwner(HAB hab) -> HWND ; WinSetClipbrdOwner   }
+    { (ordinal 114) n a pas ete demande et n est pas implante - aucun        }
+    { mecanisme ne peut donc jamais faire de ce presse-papiers un objet      }
+    { "possede" par une fenetre : NULLHANDLE toujours, honnetement. }
+    LX_Reg.EAX := 0;
+    NArgsPopped := 1;
+    Handled := True;
+   End;
+   116: Begin { WinSetClipbrdData(HAB hab, ULONG ulData, ULONG fmt, ULONG rgfFmtInfo) }
+    ClipDataPtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+    ClipFmt := Lx_ReadDWord(LX_Reg.ESP + 12);
+    ClipFmtInfo := Lx_ReadDWord(LX_Reg.ESP + 16);
+    LX_Reg.EAX := 0;
+    { Seul CF_TEXT(1) rendu par POINTEUR (CFI_POINTER=$0400) est pris en     }
+    { charge - CFI_HANDLE ($0200, memoire partagee OS/2 reelle) et           }
+    { CFI_OWNERDISPLAY ($0002, rendu differe via message) sont refuses       }
+    { proprement (EAX=0=echec), jamais mal simules. }
+    If (ClipFmt = 1) And ((ClipFmtInfo And $0400) <> 0) And (ClipDataPtr <> 0) Then Begin
+     ClipStr := '';
+     While (ClipDataPtr < High(LX_Mem)) And (Lx_ReadByte(ClipDataPtr) <> 0) And
+           (Length(ClipStr) < 8192) Do Begin
+      ClipStr := ClipStr + Chr(Lx_ReadByte(ClipDataPtr));
+      Inc(ClipDataPtr);
+     End;
+     { Meme technique EXACTE que le pont WINOLDAP DOS (INT 2Fh/AX=1703h) -   }
+     { GlobalAlloc/GlobalLock/copie/GlobalUnlock/SetClipboardData sur le     }
+     { VRAI presse-papiers Windows de l hote. Suppose que le programme a     }
+     { deja ouvert le presse-papiers via WinOpenClipbrd (111) avant d appeler}
+     { ceci, exactement comme l exige la vraie semantique OS/2 - cette       }
+     { fonction n ouvre/ferme jamais elle-meme (meme discipline que          }
+     { WinEmptyClipbrd/1702h ci-dessus, qui n ouvre pas non plus). }
+     ClipHMem := Win_GlobalAlloc(GMEM_MOVEABLE_WINOLDAP, Length(ClipStr) + 1);
+     If ClipHMem <> 0 Then Begin
+      ClipPtr := PClipByteArr(Win_GlobalLock(ClipHMem));
+      If ClipPtr <> Nil Then Begin
+       For ClipI := 1 To Length(ClipStr) Do ClipPtr^[ClipI - 1] := Ord(ClipStr[ClipI]);
+       ClipPtr^[Length(ClipStr)] := 0;
+       Win_GlobalUnlock(ClipHMem);
+       If Win_SetClipboardData(CF_TEXT_WINOLDAP, ClipHMem) <> 0 Then LX_Reg.EAX := 1;
+      End;
+     End;
+    End;
+    NArgsPopped := 4;
+    Handled := True;
+   End;
+   117: Begin { WinQueryClipbrdData(HAB hab, ULONG fmt) -> ULONG (pointeur   }
+    { lisible directement par l invite, PAS un HWND/BOOL) - aucune vraie     }
+    { memoire partagee OS/2 n existe ici, donc le texte reel du presse-      }
+    { papiers hote est copie dans une zone FRAICHEMENT allouee de LX_Mem     }
+    { (meme allocateur bump que DosAllocMem/ordinal 299) et CETTE adresse    }
+    { linaire est renvoyee - un pointeur reellement lisible par le           }
+    { programme invite, pas une valeur inventee. }
+    ClipFmt := Lx_ReadDWord(LX_Reg.ESP + 8);
+    LX_Reg.EAX := 0;
+    If ClipFmt = 1 Then Begin
+     ClipHMem := Win_GetClipboardData(CF_TEXT_WINOLDAP);
+     If ClipHMem <> 0 Then Begin
+      ClipSize := Win_GlobalSize(ClipHMem);
+      If ClipSize > 8192 Then ClipSize := 8192;
+      ClipPtr := PClipByteArr(Win_GlobalLock(ClipHMem));
+      If ClipPtr <> Nil Then Begin
+       CbAlloc := (ClipSize + 1 + 15) And Not 15;
+       If LX_HeapNext + CbAlloc <= LX_FS_BASE Then Begin
+        ClipDataAddr := LX_HeapNext;
+        LX_HeapNext := LX_HeapNext + CbAlloc;
+        For ClipI := 0 To ClipSize - 1 Do Lx_WriteByte(ClipDataAddr + ClipI, ClipPtr^[ClipI]);
+        Lx_WriteByte(ClipDataAddr + ClipSize, 0);
+        LX_Reg.EAX := ClipDataAddr;
+       End;
+       Win_GlobalUnlock(ClipHMem);
+      End;
+     End;
+    End;
+    NArgsPopped := 2;
+    Handled := True;
+   End;
+   118: Begin { WinEnumClipbrdFmts(HAB hab, ULONG fmt) -> ULONG (format     }
+    { suivant, 0=fin) - portee disclosee : seul CF_TEXT(1) peut jamais       }
+    { etre rapporte, puisque c est le seul format reellement stocke/lu par   }
+    { cette implementation ; fmt=0 (debut d enumeration) le rapporte SI le   }
+    { presse-papiers hote reel contient effectivement du texte, sinon        }
+    { l enumeration se termine immediatement (0), comme le ferait une        }
+    { vraie enumeration sur un presse-papiers reellement vide. }
+    ClipFmt := Lx_ReadDWord(LX_Reg.ESP + 8);
+    LX_Reg.EAX := 0;
+    If ClipFmt = 0 Then Begin
+     If Win_GetClipboardData(CF_TEXT_WINOLDAP) <> 0 Then LX_Reg.EAX := 1;
+    End;
+    NArgsPopped := 2;
+    Handled := True;
+   End;
+   119: Begin { WinQueryClipbrdFmtInfo(HAB hab, ULONG fmt, PULONG prgfFmtInfo) -> BOOL }
+    ClipFmt := Lx_ReadDWord(LX_Reg.ESP + 8);
+    ClipInfoOutAddr := Lx_ReadDWord(LX_Reg.ESP + 12);
+    LX_Reg.EAX := 0;
+    If ClipFmt = 1 Then Begin
+     If Win_GetClipboardData(CF_TEXT_WINOLDAP) <> 0 Then Begin
+      If (ClipInfoOutAddr >= 0) And (ClipInfoOutAddr + 4 <= High(LX_Mem)) Then
+       Lx_WriteDWord(ClipInfoOutAddr, $0400); { CFI_POINTER - seul rendu supporte }
+      LX_Reg.EAX := 1;
+     End;
+    End;
+    NArgsPopped := 3;
+    Handled := True;
+   End;
+   120: Begin { WinSetClipbrdViewer(HAB hab, HWND hwndNewClipViewer) -> BOOL }
+    { Simple valeur memorisee - AUCUNE vraie notification WM_DRAWCLIPBOARD   }
+    { envoyee (aucune fenetre/file de messages n existe, voir disclosure de  }
+    { tete) ; reussit toujours, comme le ferait la vraie fonction pour un    }
+    { hwnd valide. }
+    LX_ClipViewerHwnd := Lx_ReadDWord(LX_Reg.ESP + 8);
+    LX_Reg.EAX := 1;
+    NArgsPopped := 2;
+    Handled := True;
+   End;
+   121: Begin { WinQueryClipbrdViewer(HAB hab) -> HWND }
+    LX_Reg.EAX := LX_ClipViewerHwnd;
+    NArgsPopped := 1;
+    Handled := True;
+   End;
+  End;
  End;
  If Not Handled Then Begin
-  Lx_Halt('DOSCALLS non supporte : module#' + IntToStr(ModOrd) +
-   ' ordinal ' + IntToStr(OrdVal) + ' (Stage 3, sous-ensemble minimal)');
+  Lx_Halt('Appel systeme non supporte : module "' + ModName + '" (#' +
+   IntToStr(ModOrd) + ') ordinal ' + IntToStr(OrdVal) +
+   ' (sous-ensemble minimal DOSCALLS/PMWIN)');
   Exit;
  End;
  { Retour synthetique stdcall : depile l adresse de retour + les N*4        }
@@ -80211,6 +80437,121 @@ Begin
  Else
   TermAddLine(TP, '  ECHEC : EIP=$' + HexLong(LX_EIP) + ' (attendu $' + HexLong(SENTINEL_RET) + ')');
  If LX_Halted Then TermAddLine(TP, '  (LX_Halted : ' + LX_HaltReason + ')');
+End;
+
+{ Chantier OS/2 LX, PMWIN Clipboard (2026-09-09, demande explicite) -       }
+{ verification synthetique des 10 entrees Win*Clipbrd*, meme esprit que     }
+{ LXCALL (cadre d appel stdcall synthetique, sans redecoder) mais SANS      }
+{ dependre d un .exe reel qui importerait PMWIN - aucun des 2 fichiers      }
+{ reels deja disponibles pour ce chantier (ddnsicon.exe/LOGDAEM.EXE)        }
+{ n importe ce module (ddnsicon.exe importe "PMWP", un module OS/2 REEL     }
+{ mais DIFFERENT - verifie via recherche web independante avant de           }
+{ commencer, jamais suppose identique a PMWIN). Enregistre donc un nom de   }
+{ module SYNTHETIQUE ('PMWIN' a l ordinal d import 99, qui n existe dans    }
+{ AUCUN fichier reel) directement dans LX_ImportModNames, exactement comme  }
+{ un vrai chargeur l aurait fait pour un binaire qui importerait reellement }
+{ PMWIN - le mecanisme de trappe/dispatch lui-meme (Lx_ResolveImportSlot/    }
+{ Lx_DoDosCall) est identique, seule la SOURCE du nom de module change      }
+{ (synthetique ici, table e32_impmod reelle pour un vrai binaire). Prouve   }
+{ l aller-retour complet SET->QUERY via le VRAI presse-papiers Windows de   }
+{ l hote (pas un tampon interne) : le texte relu doit etre BYTE POUR BYTE   }
+{ identique au texte ecrit. }
+Procedure TermCmd_LXPMTest(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ SENTINEL_RET = $12345678;
+ PMWIN_SLOT = 63; { ordinal d import synthetique - doit rester dans les     }
+                   { bornes 1..64 de LX_ImportModNames, voir disclosure ci- }
+                   { dessus (aucun rapport avec un vrai fichier). }
+ { BOGUE REEL trouve+corrige EN VERIFIANT (pas dans Lx_DoDosCall lui-meme,  }
+ { dans CE HARNAIS DE TEST) : une 1ere version plaçait la pile synthetique  }
+ { a LX_HeapNext-256 CALCULEE APRES avoir deja avance LX_HeapNext de 256    }
+ { pour la zone de texte - les deux valeurs retombaient donc EXACTEMENT au }
+ { meme endroit (TextAddr = ancien LX_HeapNext = nouveau LX_HeapNext-256), }
+ { et ecrire le cadre d appel ECRASAIT le texte de test AVANT que          }
+ { WinSetClipbrdData ne le lise (confirme en observant le presse-papiers   }
+ { REEL de l hote apres coup : il contenait "xV4"+octet non imprimable,    }
+ { soit EXACTEMENT les 4 octets petit-boutiste de SENTINEL_RET=$12345678 - }
+ { pas un octet aleatoire, la preuve directe de l ecrasement). Corrige en  }
+ { reservant une zone de pile FIXE, totalement independante de            }
+ { LX_HeapNext (qui grandit continuellement pendant le test) - jamais      }
+ { recalculee a partir d une valeur qui bouge. }
+ TEST_STACK_TOP = $700000;
+Var
+ TestText, ReadBack: String;
+ TextAddr, InfoAddr, ReturnedAddr, I: LongInt;
+
+ Procedure CallOne(Ordinal, ArgCount: Integer; A1, A2, A3, A4: LongInt; Const Lbl: String);
+ Var Slot: Integer; SP: LongInt;
+ Begin
+  Slot := Lx_ResolveImportSlot(PMWIN_SLOT, True, Ordinal);
+  SP := TEST_STACK_TOP; { fixe, voir disclosure du bogue de pile ci-dessus }
+  If ArgCount >= 1 Then Lx_WriteDWord(SP + 4, A1);
+  If ArgCount >= 2 Then Lx_WriteDWord(SP + 8, A2);
+  If ArgCount >= 3 Then Lx_WriteDWord(SP + 12, A3);
+  If ArgCount >= 4 Then Lx_WriteDWord(SP + 16, A4);
+  Lx_WriteDWord(SP, SENTINEL_RET);
+  LX_Reg.ESP := SP;
+  LX_EIP := LX_TRAP_BASE + Slot * LX_TRAP_SLOT_SIZE;
+  Lx_Step;
+  If LX_EIP = SENTINEL_RET Then
+   TermAddLine(TP, '  ' + Lbl + ' -> EAX=' + IntToStr(LX_Reg.EAX) + ' (retour synthetique OK)')
+  Else
+   TermAddLine(TP, '  ' + Lbl + ' -> ECHEC (EIP=$' + HexLong(LX_EIP) + ')');
+ End;
+
+Begin
+ { Init minimale, SANS Emu_LoadLX (voir disclosure ci-dessus). }
+ FillChar(LX_Mem, SizeOf(LX_Mem), 0);
+ LX_ImportSlotCount := 0;
+ LX_HeapNext := $800000;
+ LX_Halted := False;
+ LX_HaltReason := '';
+ LX_ClipViewerHwnd := 0;
+ For I := 1 To 64 Do LX_ImportModNames[I] := '';
+ LX_ImportModNames[PMWIN_SLOT] := 'PMWIN';
+
+ TermAddLine(TP, 'LXPMTEST : sequence Clipboard PMWIN synthetique (aucun .exe reel requis).');
+ CallOne(111, 1, 0, 0, 0, 0, 'WinOpenClipbrd(hab)');
+ CallOne(113, 1, 0, 0, 0, 0, 'WinEmptyClipbrd(hab)');
+
+ TestText := 'Bonjour depuis DEVENV.PAS OS/2 LX !';
+ TextAddr := LX_HeapNext; LX_HeapNext := LX_HeapNext + 256;
+ For I := 1 To Length(TestText) Do Lx_WriteByte(TextAddr + I - 1, Ord(TestText[I]));
+ Lx_WriteByte(TextAddr + Length(TestText), 0);
+ CallOne(116, 4, 0, TextAddr, 1, $0400, 'WinSetClipbrdData(hab,texte,CF_TEXT,CFI_POINTER)');
+ CallOne(112, 1, 0, 0, 0, 0, 'WinCloseClipbrd(hab)');
+
+ CallOne(111, 1, 0, 0, 0, 0, 'WinOpenClipbrd(hab) [relecture]');
+
+ InfoAddr := LX_HeapNext; LX_HeapNext := LX_HeapNext + 16;
+ CallOne(119, 3, 0, 1, InfoAddr, 0, 'WinQueryClipbrdFmtInfo(hab,CF_TEXT,&info)');
+ TermAddLine(TP, '    rgfFmtInfo lu = $' + HexLong(Lx_ReadDWord(InfoAddr)) +
+  ' (attendu $00000400 = CFI_POINTER)');
+
+ CallOne(118, 2, 0, 0, 0, 0, 'WinEnumClipbrdFmts(hab,0) [1er format, attend 1=CF_TEXT]');
+
+ CallOne(117, 2, 0, 1, 0, 0, 'WinQueryClipbrdData(hab,CF_TEXT)');
+ ReturnedAddr := LX_Reg.EAX;
+ ReadBack := '';
+ I := 0;
+ While (ReturnedAddr + I < High(LX_Mem)) And (Lx_ReadByte(ReturnedAddr + I) <> 0) And (I < 255) Do Begin
+  ReadBack := ReadBack + Chr(Lx_ReadByte(ReturnedAddr + I));
+  Inc(I);
+ End;
+ TermAddLine(TP, '    texte relu depuis le pointeur renvoye ($' + HexLong(ReturnedAddr) +
+  ') = "' + ReadBack + '"');
+ If ReadBack = TestText Then
+  TermAddLine(TP, '    CONFORME : identique octet pour octet au texte ecrit.')
+ Else
+  TermAddLine(TP, '    DIVERGENCE : attendu "' + TestText + '".');
+
+ CallOne(121, 1, 0, 0, 0, 0, 'WinQueryClipbrdViewer(hab) [avant Set, attend 0]');
+ CallOne(120, 2, 0, $4242, 0, 0, 'WinSetClipbrdViewer(hab,$4242)');
+ CallOne(121, 1, 0, 0, 0, 0, 'WinQueryClipbrdViewer(hab) [apres Set, attend $4242]');
+ CallOne(115, 1, 0, 0, 0, 0, 'WinQueryClipbrdOwner(hab) [attend 0, non implante - voir disclosure]');
+ CallOne(112, 1, 0, 0, 0, 0, 'WinCloseClipbrd(hab) [final]');
+ TermAddLine(TP, 'LXPMTEST : termine - verifiable INDEPENDAMMENT avec Get-Clipboard ' +
+  '(PowerShell hote) tant que ce terminal reste ouvert.');
 End;
 
 { --- Chantier OS/2 LX, Stage 5 : recherche d une cible de verification.    }
@@ -110192,6 +110533,8 @@ Begin
     TermCmd_LXDump(TP, ParamStr)
    Else If CurrCmd = 'LXCALL' Then
     TermCmd_LXCall(TP, ParamStr)
+   Else If CurrCmd = 'LXPMTEST' Then
+    TermCmd_LXPMTest(TP, ParamStr)
    Else If CurrCmd = 'LXSCAN' Then
     TermCmd_LXScan(TP, ParamStr)
    Else If CurrCmd = 'LXGET' Then
@@ -110740,6 +111083,8 @@ Begin
    TermCmd_LXDump(TP, ParamStr)
   Else If CurrCmd = 'LXCALL' Then
    TermCmd_LXCall(TP, ParamStr)
+  Else If CurrCmd = 'LXPMTEST' Then
+   TermCmd_LXPMTest(TP, ParamStr)
   Else If CurrCmd = 'LXSCAN' Then
    TermCmd_LXScan(TP, ParamStr)
   Else If CurrCmd = 'LXGET' Then
