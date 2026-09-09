@@ -115356,14 +115356,22 @@ Var
  HTrackLeft, HTrackRight, HTrackW: Integer;
  ThumbX, ThumbW: Integer;
  HBarY, SBarBottom: Integer;
+ { Gulam imite l ecran monochrome ST reel : fond blanc, texte noir -       }
+ { seul shell distinct des autres (fond gris fonce/texte clair). }
+ IsGulamPanel: Boolean;
 Begin
  If Not TermVisible Then Exit;
  PX := TermX;
  PY := TermY;
  PW := TermWidth;
  PH := TermHeight;
- { Fond sombre (8=gris fonce, pas 0 car SetBkColor remappe 0) }
- SetFillStyle(SolidFill, 8);
+ IsGulamPanel := (TP.Shell = SK_GULAM);
+ { Fond sombre (8=gris fonce, pas 0 car SetBkColor remappe 0) - Gulam a  }
+ { son propre fond blanc (15), voir IsGulamPanel ci-dessus. }
+ If IsGulamPanel Then
+  SetFillStyle(SolidFill, 15)
+ Else
+  SetFillStyle(SolidFill, 8);
  Bar(PX, PY, PX + PW - 1, PY + PH - 1);
  { Barre du haut avec titre TERMINAL et SelectBox }
  SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
@@ -115492,7 +115500,7 @@ Begin
    TP.HScrollOffset := MaxHScrollOffset;
   DrawTerminalSelection(TP);
   { Afficher VisLines lignes en avant }
-  SetColor(15);
+  If IsGulamPanel Then SetColor(7) Else SetColor(15);
   YPos := PY + TERM_TAB_HEIGHT + 2;
   TextLines := 0;
   For I := 0 To VisLines - 1 Do Begin
@@ -115514,7 +115522,7 @@ Begin
   { Ligne de saisie : visible uniquement si on n est pas remonte
     dans l historique (ScrollOffset = 0). Sinon on conserve la
     ligne pour le prochain affichage. }
-  SetColor(10);
+  If IsGulamPanel Then SetColor(7) Else SetColor(10);
   If TextLines < VisLines Then
    YPos := PY + TERM_TAB_HEIGHT + 2
     + TextLines * TERM_LINE_HEIGHT
@@ -115530,7 +115538,8 @@ Begin
    SK_BASH:
     PromptStr := 'user$ ' + TP.InputLine + '_';
    SK_GULAM:
-    PromptStr := 'gulam$ ' + TP.InputLine + '_';
+    PromptStr := UpCaseStr(Copy(PromptStr, 1, 1)) + ': ' + Chr(175) +
+     ' ' + TP.InputLine + '_';
    SK_AMIGADOS:
     PromptStr := '1.SYS:> ' + TP.InputLine + '_';
   Else
