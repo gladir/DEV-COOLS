@@ -60328,6 +60328,335 @@ End;
 
 Procedure ParsePerlOr(Var V:TPerlValue);Forward;
 
+{ ==========================================================================}
+{ SUPPORT DBI (2026-09-08, demande explicite : "L'interpreteur Perl...      }
+{ devrait supporte l'affichage du contenu d'une base de donnees a distance  }
+{ comme SQL Server dans le style [DBI->connect/prepare/execute/             }
+{ fetchrow_hashref]") - reutilise EXACTEMENT le meme moteur SQL Server      }
+{ local (SqlCmdEnsureMasterMdf/SqlCmdExePath/SqlCmdMasterMdfPath/           }
+{ RunCommandCaptureOutput/SqlGridCountFields/SqlGridSplitField) deja        }
+{ utilise par PSCRIPT (Database.Connect, voir project_devenv_pscript.md)    }
+{ et par les cmdlets PowerShell dev SqlServer-compatibles - PAS un nouveau  }
+{ protocole. Comme pour Database.Connect, le DSN/utilisateur/mot de passe   }
+{ ne sont PAS interpretes au-dela de ce constat honnete de portee (une      }
+{ seule base locale, aucun reseau reel).                                   }
+{                                                                           }
+{ Objets simules via le meme motif de pseudo-handle texte tague que         }
+{ PSCRIPT (PscDbConns/PscRecSets) : $dbh/$sth/le hashref renvoye par        }
+{ fetchrow_hashref sont chacun une CHAINE ('$PERLDBH$n', '$PERLSTH$n',      }
+{ '$PERLHASHREF$n') indexant un tableau global borne - jamais un vrai       }
+{ pointeur/reference Perl (ce moteur n'a aucune notion de reference).       }
+{                                                                           }
+{ Methodes reellement cablees : DBI->connect, $dbh->prepare (stocke le SQL, }
+{ n'execute PAS encore - vraie semantique DBI), $sth->execute (execute      }
+{ REELLEMENT via SQLCMD.EXE a ce moment-la), $sth->fetchrow_hashref         }
+{ (avance ligne par ligne, renvoie ''/undef a la fin - falsy pour un        }
+{ while), $sth->finish, $dbh->disconnect. EXPLICITEMENT non pris en charge  }
+{ (refuse proprement avec un message, jamais un silence trompeur) :         }
+{ fetchrow_array/fetchall_arrayref, les parametres lies ('?'/bind_param),   }
+{ les transactions, $DBI::errstr/$sth->errstr, et toute methode DBI au-dela }
+{ de cette liste. }
+Const
+ PERL_DBH_TAG    = '$PERLDBH$';
+ PERL_STH_TAG    = '$PERLSTH$';
+ PERL_HR_TAG     = '$PERLHASHREF$';
+ PERL_DB_MAX     = 4;
+ PERL_ST_MAX     = 4;
+ PERL_HR_MAX     = 8;
+ PERL_ST_MAXCOLS = 16;
+ PERL_ST_MAXROWS = 200;
+
+Type
+ TPerlDbConn = Record
+  InUse   : Boolean;
+  MdfPath : String;
+ End;
+ TPerlStmt = Record
+  InUse    : Boolean;
+  ConnIdx  : Integer;
+  SqlText  : String;
+  ColCount : Integer;
+  ColNames : Array[1..PERL_ST_MAXCOLS] Of String;
+  RowCount : Integer;
+  CurRow   : Integer; { 1-based ; CurRow > RowCount => plus de lignes }
+  Cells    : Array[1..PERL_ST_MAXROWS,1..PERL_ST_MAXCOLS] Of String;
+ End;
+ TPerlHashRefSlot = Record
+  InUse      : Boolean;
+  FieldCount : Integer;
+  FieldNames : Array[1..PERL_ST_MAXCOLS] Of String;
+  FieldValues: Array[1..PERL_ST_MAXCOLS] Of String;
+ End;
+
+Var
+ PerlDbConns  : Array[1..PERL_DB_MAX] Of TPerlDbConn;
+ PerlStmts    : Array[1..PERL_ST_MAX] Of TPerlStmt;
+ PerlHashRefs : Array[1..PERL_HR_MAX] Of TPerlHashRefSlot;
+
+Function PerlHandleIdx(Text:String;Const Tag:String):Integer;
+Var S:String;N,C:Integer;
+Begin
+ PerlHandleIdx:=0;
+ If Copy(Text,1,Length(Tag))<>Tag Then Exit;
+ S:=Copy(Text,Length(Tag)+1,10);
+ Val(S,N,C);
+ If C=0Then PerlHandleIdx:=N;
+End;
+
+Function PerlDbFreeSlot:Integer;
+Var I:Integer;
+Begin
+ PerlDbFreeSlot:=0;
+ For I:=1 To PERL_DB_MAX Do
+  If Not PerlDbConns[I].InUse Then Begin PerlDbFreeSlot:=I;Exit;End;
+End;
+
+Function PerlStFreeSlot:Integer;
+Var I:Integer;
+Begin
+ PerlStFreeSlot:=0;
+ For I:=1 To PERL_ST_MAX Do
+  If Not PerlStmts[I].InUse Then Begin PerlStFreeSlot:=I;Exit;End;
+End;
+
+Function PerlHrFreeSlot:Integer;
+Var I:Integer;
+Begin
+ PerlHrFreeSlot:=0;
+ For I:=1 To PERL_HR_MAX Do
+  If Not PerlHashRefs[I].InUse Then Begin PerlHrFreeSlot:=I;Exit;End;
+End;
+
+Function PerlHashRefField(HrIdx:Integer;FieldName:String):String;
+Var I:Integer;UpName:String;
+Begin
+ PerlHashRefField:='';
+ If(HrIdx<1)or(HrIdx>PERL_HR_MAX)or(Not PerlHashRefs[HrIdx].InUse)Then Exit;
+ UpName:=StrToUpper(FieldName);
+ For I:=1 To PerlHashRefs[HrIdx].FieldCount Do
+  If PerlHashRefs[HrIdx].FieldNames[I]=UpName Then Begin
+   PerlHashRefField:=PerlHashRefs[HrIdx].FieldValues[I];Exit;
+  End;
+End;
+
+Function PerlDbiConnect(Dsn,UserName,Password:String):TPerlValue;
+Var Slot:Integer;V:TPerlValue;
+Begin
+ Slot:=PerlDbFreeSlot;
+ If Slot=0Then Begin
+  WriteLn('DBI->connect : nombre maximal de connexions atteint.');
+  PerlText('',V);PerlDbiConnect:=V;Exit;
+ End;
+ If Not SqlCmdEnsureMasterMdf Then Begin
+  PerlText('',V);PerlDbiConnect:=V;Exit;
+ End;
+ PerlDbConns[Slot].InUse:=True;
+ PerlDbConns[Slot].MdfPath:=SqlCmdMasterMdfPath;
+ PerlText(PERL_DBH_TAG+IntToStr(Slot),V);
+ PerlDbiConnect:=V;
+End;
+
+Function PerlSthPrepare(DbIdx:Integer;Sql:String):TPerlValue;
+Var Slot:Integer;V:TPerlValue;
+Begin
+ PerlText('',V);
+ If(DbIdx<1)or(DbIdx>PERL_DB_MAX)or(Not PerlDbConns[DbIdx].InUse)Then Begin
+  WriteLn('DBI : $dbh->prepare sur une connexion invalide ou fermee.');
+  PerlSthPrepare:=V;Exit;
+ End;
+ Slot:=PerlStFreeSlot;
+ If Slot=0Then Begin
+  WriteLn('DBI : nombre maximal de handles de requete atteint.');
+  PerlSthPrepare:=V;Exit;
+ End;
+ PerlStmts[Slot].InUse:=True;
+ PerlStmts[Slot].ConnIdx:=DbIdx;
+ PerlStmts[Slot].SqlText:=Sql;
+ PerlStmts[Slot].ColCount:=0;
+ PerlStmts[Slot].RowCount:=0;
+ PerlStmts[Slot].CurRow:=1;
+ PerlText(PERL_STH_TAG+IntToStr(Slot),V);
+ PerlSthPrepare:=V;
+End;
+
+{ Execute REELLEMENT la requete deja preparee, via SQLCMD.EXE (-s , -W,     }
+{ meme technique que PSCRIPT/PscDbQuery et l'Explorateur d'objets SQL       }
+{ Server) - $sth->prepare seul n'avait rien execute (vraie semantique DBI). }
+Function PerlSthExecute(SthIdx:Integer):TPerlValue;
+Var Cmd,Ln:String;Buf:TCmdOutputLines;Cnt,ConnIdx,I,J:Integer;V:TPerlValue;
+Begin
+ PerlNumber(0,V);
+ If(SthIdx<1)or(SthIdx>PERL_ST_MAX)or(Not PerlStmts[SthIdx].InUse)Then Begin
+  WriteLn('DBI : $sth->execute sur un handle de requete invalide ou ferme.');
+  PerlSthExecute:=V;Exit;
+ End;
+ ConnIdx:=PerlStmts[SthIdx].ConnIdx;
+ If(ConnIdx<1)or(ConnIdx>PERL_DB_MAX)or(Not PerlDbConns[ConnIdx].InUse)Then Begin
+  WriteLn('DBI : $sth->execute - connexion associee invalide ou fermee.');
+  PerlSthExecute:=V;Exit;
+ End;
+ Cmd:='"'+SqlCmdExePath+'" -S "'+PerlDbConns[ConnIdx].MdfPath+
+  '" -q "'+PerlStmts[SthIdx].SqlText+'" -s , -W';
+ RunCommandCaptureOutput(Cmd,Buf,Cnt);
+ PerlStmts[SthIdx].ColCount:=0;
+ PerlStmts[SthIdx].RowCount:=0;
+ PerlStmts[SthIdx].CurRow:=1;
+ If Cnt>=2Then Begin
+  PerlStmts[SthIdx].ColCount:=SqlGridCountFields(Buf[0]);
+  If PerlStmts[SthIdx].ColCount>PERL_ST_MAXCOLS Then
+   PerlStmts[SthIdx].ColCount:=PERL_ST_MAXCOLS;
+  For I:=1 To PerlStmts[SthIdx].ColCount Do
+   PerlStmts[SthIdx].ColNames[I]:=StrToUpper(SqlGridSplitField(Buf[0],I-1));
+  For I:=2 To Cnt-1 Do Begin
+   Ln:=Buf[I];
+   If TrimStr(Ln)=''Then Break;
+   If Copy(TrimStr(Ln),1,1)='('Then Break;
+   If PerlStmts[SthIdx].RowCount>=PERL_ST_MAXROWS Then Break;
+   Inc(PerlStmts[SthIdx].RowCount);
+   For J:=1 To PerlStmts[SthIdx].ColCount Do
+    PerlStmts[SthIdx].Cells[PerlStmts[SthIdx].RowCount,J]:=SqlGridSplitField(Ln,J-1);
+  End;
+ End;
+ PerlNumber(1,V);
+ PerlSthExecute:=V;
+End;
+
+{ Renvoie '' (undef/falsy - arrete un "while (my $x = ...)") a la fin des    }
+{ lignes, sinon batit un NOUVEAU hashref (nom de champ -> valeur de la      }
+{ ligne COURANTE) et avance le curseur - vraie semantique DBI               }
+{ fetchrow_hashref (une ligne a la fois, jamais tout charge d'un coup). }
+Function PerlSthFetchRowHashref(SthIdx:Integer):TPerlValue;
+Var Slot,I:Integer;V:TPerlValue;
+Begin
+ PerlText('',V);
+ If(SthIdx<1)or(SthIdx>PERL_ST_MAX)or(Not PerlStmts[SthIdx].InUse)Then Begin
+  PerlSthFetchRowHashref:=V;Exit;
+ End;
+ If PerlStmts[SthIdx].CurRow>PerlStmts[SthIdx].RowCount Then Begin
+  PerlSthFetchRowHashref:=V;Exit;
+ End;
+ Slot:=PerlHrFreeSlot;
+ If Slot=0Then Begin
+  WriteLn('DBI : nombre maximal de lignes (hashref) ouvertes atteint.');
+  PerlSthFetchRowHashref:=V;Exit;
+ End;
+ PerlHashRefs[Slot].InUse:=True;
+ PerlHashRefs[Slot].FieldCount:=PerlStmts[SthIdx].ColCount;
+ For I:=1 To PerlHashRefs[Slot].FieldCount Do Begin
+  PerlHashRefs[Slot].FieldNames[I]:=PerlStmts[SthIdx].ColNames[I];
+  PerlHashRefs[Slot].FieldValues[I]:=PerlStmts[SthIdx].Cells[PerlStmts[SthIdx].CurRow,I];
+ End;
+ Inc(PerlStmts[SthIdx].CurRow);
+ PerlText(PERL_HR_TAG+IntToStr(Slot),V);
+ PerlSthFetchRowHashref:=V;
+End;
+
+Function PerlSthFinish(SthIdx:Integer):TPerlValue;
+Var V:TPerlValue;
+Begin
+ If(SthIdx>=1)and(SthIdx<=PERL_ST_MAX)Then PerlStmts[SthIdx].InUse:=False;
+ PerlNumber(1,V);PerlSthFinish:=V;
+End;
+
+Function PerlDbhDisconnect(DbIdx:Integer):TPerlValue;
+Var V:TPerlValue;
+Begin
+ If(DbIdx>=1)and(DbIdx<=PERL_DB_MAX)Then PerlDbConns[DbIdx].InUse:=False;
+ PerlNumber(1,V);PerlDbhDisconnect:=V;
+End;
+
+{ Point d'entree unique du postfix "->" (voir ParsePerlPostfix) - Obj est   }
+{ soit le bareword de classe ('DBI', avant tout ->connect), soit un handle  }
+{ deja tague ($dbh/$sth). Toute methode/objet non reconnu est refuse avec   }
+{ un message explicite plutot que de renvoyer silencieusement undef. }
+Procedure PerlArrowCall(Var Obj:TPerlValue;MethodName:String;Var A,B,C:TPerlValue;
+ ArgCount:Integer;Var V:TPerlValue);
+Var UpMethod,UpObj:String;DbIdx,SthIdx:Integer;
+Begin
+ UpMethod:=StrToUpper(MethodName);
+ UpObj:=StrToUpper(Obj.Text);
+ If(UpObj='DBI')and(UpMethod='CONNECT')Then Begin
+  V:=PerlDbiConnect(A.Text,B.Text,C.Text);Exit;
+ End;
+ DbIdx:=PerlHandleIdx(Obj.Text,PERL_DBH_TAG);
+ If DbIdx>0Then Begin
+  If UpMethod='PREPARE'Then Begin V:=PerlSthPrepare(DbIdx,A.Text);Exit;End;
+  If UpMethod='DISCONNECT'Then Begin V:=PerlDbhDisconnect(DbIdx);Exit;End;
+  PerlText('',V);
+  WriteLn('DBI : methode $dbh->'+MethodName+' non prise en charge.');
+  Exit;
+ End;
+ SthIdx:=PerlHandleIdx(Obj.Text,PERL_STH_TAG);
+ If SthIdx>0Then Begin
+  If UpMethod='EXECUTE'Then Begin V:=PerlSthExecute(SthIdx);Exit;End;
+  If UpMethod='FETCHROW_HASHREF'Then Begin V:=PerlSthFetchRowHashref(SthIdx);Exit;End;
+  If UpMethod='FINISH'Then Begin V:=PerlSthFinish(SthIdx);Exit;End;
+  PerlText('',V);
+  WriteLn('DBI : methode $sth->'+MethodName+' non prise en charge.');
+  Exit;
+ End;
+ PerlText('',V);
+ WriteLn('DBI : objet ou methode non reconnu : '+Obj.Text+'->'+MethodName);
+End;
+
+{ Interpolation des variables dans une chaine "..." (2026-09-08, demande    }
+{ explicite - le style DBI fourni par l'utilisateur repose entierement sur  }
+{ "texte $var texte" plutot que sur la concatenation deja supportee par     }
+{ ailleurs). Appelee UNIQUEMENT pour les chaines double-guillemet, JAMAIS   }
+{ pour les simple-guillemet (semantique Perl reelle, deja respectee par le  }
+{ Q du branchement appelant). Simplification disclosee : les echappements   }
+{ (\n, \t, ...) sont deja resolus par la boucle appelante AVANT cet appel,  }
+{ donc \$ et $ sont indiscernables ici - un $ echappe sera donc, comme un $ }
+{ normal, interprete comme le debut d'une variable (limite mineure, sans    }
+{ impact sur le style DBI demande). Formes reconnues : $nom, $nom suivi     }
+{ d'une cle entre accolades (hash classique), $nom[i] (tableau classique),  }
+{ $nom-> suivi d'une cle entre accolades (dereference de hashref - le SEUL  }
+{ cas necessaire pour fetchrow_hashref). }
+Function PerlInterpolateVars(Raw:String):String;
+Var Res:String;K,Len,IdxVal,Code:Integer;Name,HashKey,IdxText:String;
+ V:TPerlValue;HrIdx:Integer;IsArrow:Boolean;
+Begin
+ Res:='';K:=1;Len:=Length(Raw);
+ While K<=Len Do Begin
+  If Raw[K]='$'Then Begin
+   Inc(K);Name:='';
+   While(K<=Len)and(Raw[K]in['A'..'Z','a'..'z','0'..'9','_'])Do Begin
+    Name:=Name+Raw[K];Inc(K);
+   End;
+   If Name=''Then Begin Res:=Res+'$';Continue;End;
+   IsArrow:=False;
+   If(K+1<=Len)and(Raw[K]='-')and(Raw[K+1]='>')Then Begin IsArrow:=True;Inc(K,2);End;
+   If(K<=Len)and(Raw[K]='{')Then Begin
+    Inc(K);HashKey:='';
+    While(K<=Len)and(Raw[K]<>'}')Do Begin HashKey:=HashKey+Raw[K];Inc(K);End;
+    If K<=Len Then Inc(K);
+    HashKey:=CleanText(HashKey);
+    If(Length(HashKey)>1)and(HashKey[1]in['''','"'])and
+      (HashKey[Length(HashKey)]=HashKey[1])Then
+     HashKey:=Copy(HashKey,2,Length(HashKey)-2);
+    If IsArrow Then Begin
+     GetPerlVariable(Name,V);HrIdx:=PerlHandleIdx(V.Text,PERL_HR_TAG);
+     Res:=Res+PerlHashRefField(HrIdx,HashKey);
+    End Else Begin
+     GetPerlHashEntry(Name,HashKey,V);Res:=Res+V.Text;
+    End;
+   End Else If(Not IsArrow)and(K<=Len)and(Raw[K]='[')Then Begin
+    Inc(K);IdxText:='';
+    While(K<=Len)and(Raw[K]<>']')Do Begin IdxText:=IdxText+Raw[K];Inc(K);End;
+    If K<=Len Then Inc(K);
+    Val(CleanText(IdxText),IdxVal,Code);If Code<>0Then IdxVal:=0;
+    GetPerlArrayElement(Name,IdxVal,V);Res:=Res+V.Text;
+   End Else Begin
+    GetPerlVariable(Name,V);Res:=Res+V.Text;
+   End;
+  End Else Begin
+   Res:=Res+Raw[K];Inc(K);
+  End;
+ End;
+ PerlInterpolateVars:=Res;
+End;
+{ ==========================================================================}
+
 Function PerlArcTan2(Y,X:Real):Real;
 Const PerlPi=3.14159265358979323846;
 Begin
@@ -60353,7 +60682,27 @@ Begin
      'n':S:=S+#10;'r':S:=S+#13;'t':S:=S+#9;'\':S:=S+'\';'"':S:=S+'"';Else S:=S+ExprSource[ExprPosition];End;
    End Else S:=S+ExprSource[ExprPosition];Inc(ExprPosition);
   End;
-  If ExprPosition<=Length(ExprSource)Then Inc(ExprPosition);PerlText(S,V);Exit;
+  If ExprPosition<=Length(ExprSource)Then Inc(ExprPosition);
+  If Q='"'Then S:=PerlInterpolateVars(S);
+  PerlText(S,V);Exit;
+ End;
+ If ExprSource[ExprPosition]='{'Then Begin
+  { Litteral de hashref anonyme entre accolades (ex. RaiseError=>1,        }
+  { AutoCommit=>1 en 4e argument de DBI->connect, voir le bloc DBI plus    }
+  { haut) : la VALEUR n'est PAS interpretee (portee non demandee) - seule  }
+  { l'etendue syntaxique est consommee correctement (profondeur           }
+  { d'accolades/guillemets suivie) pour ne jamais desynchroniser le reste  }
+  { de l'expression englobante (l'appel de methode qui suit, par exemple). }
+  FunctionByte:=1;Inc(ExprPosition);
+  While(ExprPosition<=Length(ExprSource))and(FunctionByte>0)Do Begin
+   If ExprSource[ExprPosition]in['''','"']Then Begin
+    Q:=ExprSource[ExprPosition];Inc(ExprPosition);
+    While(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]<>Q)Do Inc(ExprPosition);
+   End Else If ExprSource[ExprPosition]='{'Then Inc(FunctionByte)
+   Else If ExprSource[ExprPosition]='}'Then Dec(FunctionByte);
+   Inc(ExprPosition);
+  End;
+  PerlText('',V);Exit;
  End;
  If ExprSource[ExprPosition]='`'Then Begin
   Inc(ExprPosition);S:='';
@@ -60525,6 +60874,50 @@ Begin
  PerlText('',V);
 End;
 
+{ Postfix "->" (2026-09-08, demande explicite : style DBI) - enveloppe     }
+{ ParsePerlPrimary d'une boucle qui reconnait deux formes seulement :       }
+{ "-> cle entre accolades" (dereference de hashref, voir PerlHashRefField) }
+{ et "->methode(args...)" (voir PerlArrowCall, jusqu'a 4 arguments - le 4e }
+{ couvre le hashref d'options de DBI->connect, lui-meme ignore, voir plus   }
+{ haut). Le test "ExprSource[ExprPosition+1]='>'" (pas juste un espace ou   }
+{ un chiffre apres le '-') est ce qui distingue cette forme d'une simple    }
+{ soustraction binaire, geree plus haut dans la chaine de precedence        }
+{ (ParsePerlAdd) - '-' seul, sans '>' immediat, ressort de cette boucle     }
+{ sans etre consomme. }
+Procedure ParsePerlPostfix(Var V:TPerlValue);
+Var MethodName:String;A,B,C,D:TPerlValue;ArgCount:Integer;
+Begin
+ ParsePerlPrimary(V);
+ ExprSkip;
+ While(ExprPosition<Length(ExprSource))and(ExprSource[ExprPosition]='-')and
+   (ExprSource[ExprPosition+1]='>')Do Begin
+  Inc(ExprPosition,2);ExprSkip;
+  If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='{')Then Begin
+   Inc(ExprPosition);ParsePerlOr(A);ExprSkip;
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='}')Then Inc(ExprPosition);
+   PerlText(PerlHashRefField(PerlHandleIdx(V.Text,PERL_HR_TAG),A.Text),V);
+  End Else Begin
+   MethodName:=ExprWord;ExprSkip;
+   PerlText('',A);PerlText('',B);PerlText('',C);PerlText('',D);ArgCount:=0;
+   If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]='(')Then Begin
+    Inc(ExprPosition);ExprSkip;
+    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]<>')')Then Begin
+     ParsePerlOr(A);Inc(ArgCount);ExprSkip;
+     If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=',')Then Begin
+      Inc(ExprPosition);ParsePerlOr(B);Inc(ArgCount);ExprSkip;End;
+     If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=',')Then Begin
+      Inc(ExprPosition);ParsePerlOr(C);Inc(ArgCount);ExprSkip;End;
+     If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=',')Then Begin
+      Inc(ExprPosition);ParsePerlOr(D);Inc(ArgCount);ExprSkip;End;
+    End;
+    If(ExprPosition<=Length(ExprSource))and(ExprSource[ExprPosition]=')')Then Inc(ExprPosition);
+   End;
+   PerlArrowCall(V,MethodName,A,B,C,ArgCount,V);
+  End;
+  ExprSkip;
+ End;
+End;
+
 Procedure ParsePerlUnary(Var V:TPerlValue);
 Begin
  ExprSkip;
@@ -60533,7 +60926,8 @@ Begin
   If(V.Text='')or(V.Text='0')Then PerlNumber(1,V)Else PerlNumber(0,V);
  End
   Else
- If ExprSource[ExprPosition]='-'Then Begin
+ If(ExprSource[ExprPosition]='-')and Not
+   ((ExprPosition<Length(ExprSource))and(ExprSource[ExprPosition+1]='>'))Then Begin
   Inc(ExprPosition);ParsePerlUnary(V);
   PerlNumber(-V.Number,V);
  End
@@ -60544,7 +60938,7 @@ Begin
   PerlNumber(V.Number,V);
  End
   Else
- ParsePerlPrimary(V);
+ ParsePerlPostfix(V);
 End;
 
 Procedure ParsePerlMul(Var V:TPerlValue);
@@ -61381,6 +61775,16 @@ Begin
    End Else SetPerlVariable(Name,V.Text);
    Exit;
   End;
+  { Instruction "expression seule", ex. $sth->execute(); / $sth->finish(); /}
+  { $dbh->disconnect(); (2026-09-08, demande explicite : style DBI) -       }
+  { AUCUNE affectation ici (P=0 ci-dessus) - juste evaluer l'expression     }
+  { pour son effet de bord (execution reelle de la methode via             }
+  { PerlArrowCall) et jeter le resultat, exactement comme Perl le fait pour }
+  { tout appel de methode utilise comme instruction complete. }
+  If(J<=Length(S))and(Copy(S,J,2)='->')Then Begin
+   EvalPerlExpression(S,V);
+   Exit;
+  End;
  End;
  ExecutePerlCoreLine:=False;
 End;
@@ -61484,12 +61888,31 @@ Begin
 End;
 
 Function PerlConditionFromLine(S:String;Var Condition:TPerlValue):Boolean;
-Var P1,P2,J:Integer;ExpressionText:String;
+Var P1,P2,J,AssignPos:Integer;ExpressionText,LeftText,RightText:String;
 Begin
  P1:=Pos('(',S);P2:=0;
  If P1>0Then For J:=Length(S)DownTo P1+1Do If S[J]=')'Then Begin P2:=J;Break;End;
  If(P1=0)or(P2<=P1)Then Begin PerlConditionFromLine:=False;Exit;End;
- ExpressionText:=Copy(S,P1+1,P2-P1-1);EvalPerlExpression(ExpressionText,Condition);
+ ExpressionText:=Copy(S,P1+1,P2-P1-1);
+ { Idiome "while (my $x = expr)" / "while ($x = expr)" (2026-09-08, demande }
+ { explicite : style DBI "while (my $client = $sth->fetchrow_hashref())")  }
+ { - EvalPerlExpression seule ne gere JAMAIS l'affectation (seuls les       }
+ { dispatchers d'INSTRUCTION comme ExecutePerlCoreLine la gerent) - une     }
+ { condition de boucle est le seul endroit ou il faut affecter ET tester la}
+ { MEME valeur dans la MEME expression, donc interceptee ICI en cas        }
+ { special plutot que d'etendre la grammaire generale des expressions. }
+ AssignPos:=FindAssignment(ExpressionText);
+ If AssignPos>0Then Begin
+  LeftText:=CleanText(Copy(ExpressionText,1,AssignPos-1));
+  RightText:=CleanText(Copy(ExpressionText,AssignPos+1,255));
+  If Copy(StrToUpper(LeftText),1,3)='MY 'Then LeftText:=CleanText(Copy(LeftText,4,255));
+  If(Length(LeftText)>0)and(LeftText[1]='$')Then Begin
+   EvalPerlExpression(RightText,Condition);
+   SetPerlVariable(Copy(LeftText,2,255),Condition.Text);
+   PerlConditionFromLine:=True;Exit;
+  End;
+ End;
+ EvalPerlExpression(ExpressionText,Condition);
  PerlConditionFromLine:=True;
 End;
 
