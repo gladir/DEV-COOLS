@@ -13,9 +13,6 @@ Program LINK68;
 {$I-}
 
 Const
- MAX_MODULES = 1024;
- MAX_INPUTS  = 1024;
- MAX_MEMBERS = 32767;
  MAX_SYMBOLS = 32767;
  MAX_IMAGE   = 16 * 1024 * 1024;
  MAX_CMDLINE = 8192;
@@ -51,7 +48,9 @@ Type
  TSymbolBuffer = Array[0..MAX_SYMBOLS - 1] of TSymbol;
  PSymbolBuffer = ^TSymbolBuffer;
 
+ PModule = ^TModule;
  TModule = Record
+  Next : PModule;
   FileName : String;
   OrderKey : LongInt;
   TextSize, DataSize, BssSize : LongInt;
@@ -63,7 +62,9 @@ Type
   TextRel, DataRel : PWordBuffer;
  End;
 
+ PGlobal = ^TGlobal;
  TGlobal = Record
+  Next : PGlobal;
   Name : String[8];
   ModuleIndex, SymbolIndex : Integer;
   Defined, Needed : Boolean;
@@ -81,14 +82,18 @@ Type
   TempPath : String;
  End;
 
+ PInput = ^TInput;
  TInput = Record
+  Next : PInput;
   FileName : String;
   IncludeLocals, AllMods : Boolean;
   IncludeName : String[64];
   IndexPos, IndexSize : LongInt;
  End;
 
+ PMember = ^TMember;
  TMember = Record
+  Next : PMember;
   InputIndex : Integer;
   Name : String[64];
   DataPos, DataSize : LongInt;
@@ -97,13 +102,13 @@ Type
 
 Var
  Opt : TOptions;
- Modules : Array[1..MAX_MODULES] of TModule;
+ FirstModule, LastModule : PModule;
  ModuleCount : Integer;
- Globals : Array[1..MAX_SYMBOLS] of TGlobal;
+ FirstGlobal, LastGlobal : PGlobal;
  GlobalCount : Integer;
- Inputs : Array[1..MAX_INPUTS] of TInput;
+ FirstInput, LastInput : PInput;
  InputCount : Integer;
- Members : Array[1..MAX_MEMBERS] of TMember;
+ FirstMember, LastMember : PMember;
  MemberCount : Integer;
  OutText, OutData : PByteBuffer;
  OutTextRel, OutDataRel : PWordBuffer;
@@ -134,6 +139,51 @@ Begin Inc(WarningCount); WriteLn('LINK68: avertissement: ', S); End;
 
 Procedure Fatal(Const S: String);
 Begin Error(S); Halt(2); End;
+
+Function ModuleAt(Index: Integer): PModule;
+Var P: PModule; I: Integer;
+Begin P := FirstModule; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
+ If P = Nil Then Fatal('index de module interne invalide'); ModuleAt := P; End;
+
+Function GlobalAt(Index: Integer): PGlobal;
+Var P: PGlobal; I: Integer;
+Begin P := FirstGlobal; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
+ If P = Nil Then Fatal('index de symbole global interne invalide'); GlobalAt := P; End;
+
+Function InputAt(Index: Integer): PInput;
+Var P: PInput; I: Integer;
+Begin P := FirstInput; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
+ If P = Nil Then Fatal('index d''entree interne invalide'); InputAt := P; End;
+
+Function MemberAt(Index: Integer): PMember;
+Var P: PMember; I: Integer;
+Begin P := FirstMember; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
+ If P = Nil Then Fatal('index de membre interne invalide'); MemberAt := P; End;
+
+Function AppendModule: PModule;
+Var P: PModule;
+Begin New(P); FillChar(P^, SizeOf(TModule), 0); If FirstModule = Nil Then FirstModule := P Else LastModule^.Next := P;
+ LastModule := P; Inc(ModuleCount); AppendModule := P; End;
+
+Function AppendGlobal: PGlobal;
+Var P: PGlobal;
+Begin New(P); FillChar(P^, SizeOf(TGlobal), 0); If FirstGlobal = Nil Then FirstGlobal := P Else LastGlobal^.Next := P;
+ LastGlobal := P; Inc(GlobalCount); AppendGlobal := P; End;
+
+Function AppendInput: PInput;
+Var P: PInput;
+Begin New(P); FillChar(P^, SizeOf(TInput), 0); If FirstInput = Nil Then FirstInput := P Else LastInput^.Next := P;
+ LastInput := P; Inc(InputCount); AppendInput := P; End;
+
+Function AppendMember: PMember;
+Var P: PMember;
+Begin New(P); FillChar(P^, SizeOf(TMember), 0); If FirstMember = Nil Then FirstMember := P Else LastMember^.Next := P;
+ LastMember := P; Inc(MemberCount); AppendMember := P; End;
+
+Procedure ClearGlobals;
+Var P, N: PGlobal;
+Begin P := FirstGlobal; While P <> Nil do Begin N := P^.Next; Dispose(P); P := N; End;
+ FirstGlobal := Nil; LastGlobal := Nil; GlobalCount := 0; End;
 
 Function FileExists68(Const Name: String): Boolean;
 Var F: File; Exists: Boolean;
@@ -209,17 +259,17 @@ Procedure SeekFile(Var F: File; Posn: LongInt);
 Begin Seek(F, Posn); If IOResult <> 0 Then Fatal('position invalide dans un objet'); End;
 
 Function FindGlobal(Const Name: String): Integer;
-Var I: Integer;
+Var I: Integer; P: PGlobal;
 Begin
- For I := 1 to GlobalCount do If Globals[I].Name = Name Then Begin FindGlobal := I; Exit; End;
+ I := 1; P := FirstGlobal;
+ While P <> Nil do Begin If P^.Name = Name Then Begin FindGlobal := I; Exit; End; P := P^.Next; Inc(I); End;
  FindGlobal := 0;
 End;
 
 Function AddGlobal(Const Name: String): Integer;
+Var P: PGlobal;
 Begin
- If GlobalCount >= MAX_SYMBOLS Then Fatal('trop de symboles globaux');
- Inc(GlobalCount); FillChar(Globals[GlobalCount], SizeOf(TGlobal), 0);
- Globals[GlobalCount].Name := Name; AddGlobal := GlobalCount;
+ P := AppendGlobal; P^.Name := Name; AddGlobal := GlobalCount;
 End;
 
 Function SegmentOf(T: Word): Integer;
@@ -300,23 +350,22 @@ Begin
 End;
 
 Procedure AddInput(S: String);
-Var P, Q: Integer; LocalOpt, U: String;
+Var P, Q: Integer; LocalOpt, U: String; IP: PInput;
 Begin
  S := TrimStr(S); If S = '' Then Exit;
  P := Pos('[', S);
  LocalOpt := '';
  If P > 0 Then Begin LocalOpt := UpCaseStr(Copy(S, P + 1, Length(S) - P - 1)); S := TrimStr(Copy(S, 1, P - 1)); End;
- If InputCount >= MAX_INPUTS Then Fatal('trop de fichiers d''entree');
- Inc(InputCount); Inputs[InputCount].FileName := S;
- Inputs[InputCount].IncludeLocals := Opt.EmitLocals or (Pos('LOCALS', LocalOpt) > 0) or (LocalOpt = 'LO');
- If (Pos('NOLOCALS', LocalOpt) > 0) or (LocalOpt = 'NO') Then Inputs[InputCount].IncludeLocals := False;
- Inputs[InputCount].AllMods := Opt.AllMods or (Pos('ALLMODS', LocalOpt) > 0) or (LocalOpt = 'AL');
- Inputs[InputCount].IncludeName := '';
+ IP := AppendInput; IP^.FileName := S;
+ IP^.IncludeLocals := Opt.EmitLocals or (Pos('LOCALS', LocalOpt) > 0) or (LocalOpt = 'LO');
+ If (Pos('NOLOCALS', LocalOpt) > 0) or (LocalOpt = 'NO') Then IP^.IncludeLocals := False;
+ IP^.AllMods := Opt.AllMods or (Pos('ALLMODS', LocalOpt) > 0) or (LocalOpt = 'AL');
+ IP^.IncludeName := '';
  U := LocalOpt; P := Pos('INCLUDE', U); If P = 0 Then P := Pos('IN[', U);
  If P > 0 Then Begin
   P := Pos('[', U); Q := Pos(']', U);
-  If (P > 0) and (Q > P) Then Inputs[InputCount].IncludeName := TrimStr(Copy(U, P + 1, Q - P - 1))
-  Else Begin Delete(U, 1, Length('INCLUDE')); Inputs[InputCount].IncludeName := TrimStr(U); End;
+  If (P > 0) and (Q > P) Then IP^.IncludeName := TrimStr(Copy(U, P + 1, Q - P - 1))
+  Else Begin Delete(U, 1, Length('INCLUDE')); IP^.IncludeName := TrimStr(U); End;
  End;
 End;
 
@@ -355,22 +404,20 @@ Begin
  P := Pos('=', Rest);
  If P > 0 Then
  Begin Opt.OutputName := TrimStr(Copy(Rest, 1, P - 1)); ParseInputs(Copy(Rest, P + 1, Length(Rest))); End
- Else Begin ParseInputs(Rest); If InputCount > 0 Then Opt.OutputName := BaseName68(Inputs[1].FileName) + '.68K'; End;
+ Else Begin ParseInputs(Rest); If InputCount > 0 Then Opt.OutputName := BaseName68(FirstInput^.FileName) + '.68K'; End;
  If Opt.OutputName = '' Then Fatal('nom du fichier de sortie manquant');
  If InputCount = 0 Then Fatal('aucun fichier objet');
  Opt.OutputName := DefaultExtension(Opt.OutputName, '.68K');
 End;
 
 Procedure AllocateModuleBuffers(M: Integer);
+Var MP: PModule;
 Begin
- If Modules[M].SymCount > 0 Then GetMem(Modules[M].Symbols, LongInt(Modules[M].SymCount) * SizeOf(TSymbol))
- Else Modules[M].Symbols := Nil;
- GetMem(Modules[M].TextData, Modules[M].TextSize + 1);
- GetMem(Modules[M].DataData, Modules[M].DataSize + 1);
- GetMem(Modules[M].TextRel, ((Modules[M].TextSize + 1) div 2) * 2 + 2);
- GetMem(Modules[M].DataRel, ((Modules[M].DataSize + 1) div 2) * 2 + 2);
- FillChar(Modules[M].TextData^, Modules[M].TextSize, 0);
- FillChar(Modules[M].DataData^, Modules[M].DataSize, 0);
+ MP := ModuleAt(M);
+ If MP^.SymCount > 0 Then GetMem(MP^.Symbols, LongInt(MP^.SymCount) * SizeOf(TSymbol)) Else MP^.Symbols := Nil;
+ GetMem(MP^.TextData, MP^.TextSize + 1); GetMem(MP^.DataData, MP^.DataSize + 1);
+ GetMem(MP^.TextRel, ((MP^.TextSize + 1) div 2) * 2 + 2); GetMem(MP^.DataRel, ((MP^.DataSize + 1) div 2) * 2 + 2);
+ FillChar(MP^.TextData^, MP^.TextSize, 0); FillChar(MP^.DataData^, MP^.DataSize, 0);
 End;
 
 Function ResolveInputName(Const RequestedName: String): String;
@@ -398,48 +445,42 @@ End;
 Procedure ReadObjectAt(Const FN, DisplayName: String; BasePos, MemberSize, OrderKey: LongInt;
                        IncludeLocals: Boolean);
 Var F: File; Magic, AbsFlag: Word; SymBytes, Reserved, Entry: LongInt;
-    I, J, N: Integer; C: Byte; HeaderSize, RelPos: LongInt;
+    I, J, N: Integer; C: Byte; HeaderSize, RelPos: LongInt; MP: PModule;
 Begin
- If ModuleCount >= MAX_MODULES Then Fatal('trop de modules');
- Inc(ModuleCount); Modules[ModuleCount].FileName := DisplayName;
- Modules[ModuleCount].OrderKey := OrderKey;
- Modules[ModuleCount].IncludeLocals := IncludeLocals;
+ MP := AppendModule; MP^.FileName := DisplayName; MP^.OrderKey := OrderKey; MP^.IncludeLocals := IncludeLocals;
  Assign(F, FN); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de lire ' + FN);
  SeekFile(F, BasePos);
  Magic := GetWord(F);
  If (Magic <> $601A) and (Magic <> $601B) Then Fatal(DisplayName + ': format DRI invalide');
- Modules[ModuleCount].TextSize := GetLong(F); Modules[ModuleCount].DataSize := GetLong(F);
- Modules[ModuleCount].BssSize := GetLong(F); SymBytes := GetLong(F);
+ MP^.TextSize := GetLong(F); MP^.DataSize := GetLong(F); MP^.BssSize := GetLong(F); SymBytes := GetLong(F);
  Reserved := GetLong(F); Entry := GetLong(F); AbsFlag := GetWord(F);
  HeaderSize := 28; If Magic = $601B Then Begin GetLong(F); GetLong(F); HeaderSize := 36; End;
- If (Modules[ModuleCount].TextSize < 0) or (Modules[ModuleCount].DataSize < 0) or
-    (Modules[ModuleCount].TextSize > MAX_IMAGE) or (Modules[ModuleCount].DataSize > MAX_IMAGE) Then Fatal(DisplayName + ': segment trop grand');
+ If (MP^.TextSize < 0) or (MP^.DataSize < 0) or (MP^.TextSize > MAX_IMAGE) or (MP^.DataSize > MAX_IMAGE) Then Fatal(DisplayName + ': segment trop grand');
  If (SymBytes mod 14) <> 0 Then Fatal(DisplayName + ': taille de table des symboles invalide');
  If SymBytes div 14 > MAX_SYMBOLS Then Fatal(FN + ': trop de symboles');
- Modules[ModuleCount].SymCount := SymBytes div 14;
+ MP^.SymCount := SymBytes div 14;
  AllocateModuleBuffers(ModuleCount);
- If (MemberSize > 0) and (HeaderSize + Modules[ModuleCount].TextSize + Modules[ModuleCount].DataSize + SymBytes > MemberSize) Then
+ If (MemberSize > 0) and (HeaderSize + MP^.TextSize + MP^.DataSize + SymBytes > MemberSize) Then
   Fatal(DisplayName + ': membre d''archive tronque');
  SeekFile(F, BasePos + HeaderSize);
- For I := 0 to Modules[ModuleCount].TextSize - 1 do Modules[ModuleCount].TextData^[I] := GetByte(F);
- For I := 0 to Modules[ModuleCount].DataSize - 1 do Modules[ModuleCount].DataData^[I] := GetByte(F);
- For I := 0 to Modules[ModuleCount].SymCount - 1 do
+ For I := 0 to MP^.TextSize - 1 do MP^.TextData^[I] := GetByte(F);
+ For I := 0 to MP^.DataSize - 1 do MP^.DataData^[I] := GetByte(F);
+ For I := 0 to MP^.SymCount - 1 do
  Begin
-  Modules[ModuleCount].Symbols^[I].Name := '';
-  For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then Modules[ModuleCount].Symbols^[I].Name := Modules[ModuleCount].Symbols^[I].Name + Chr(C); End;
-  Modules[ModuleCount].Symbols^[I].SType := GetWord(F); Modules[ModuleCount].Symbols^[I].Value := GetLong(F);
+  MP^.Symbols^[I].Name := '';
+  For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then MP^.Symbols^[I].Name := MP^.Symbols^[I].Name + Chr(C); End;
+  MP^.Symbols^[I].SType := GetWord(F); MP^.Symbols^[I].Value := GetLong(F);
  End;
- RelPos := BasePos + HeaderSize + Modules[ModuleCount].TextSize + Modules[ModuleCount].DataSize + SymBytes;
+ RelPos := BasePos + HeaderSize + MP^.TextSize + MP^.DataSize + SymBytes;
  If AbsFlag = 0 Then
  Begin
-  SeekFile(F, RelPos); N := (Modules[ModuleCount].TextSize + 1) div 2;
-  For I := 0 to N - 1 do Modules[ModuleCount].TextRel^[I] := GetWord(F);
-  N := (Modules[ModuleCount].DataSize + 1) div 2;
-  For I := 0 to N - 1 do Modules[ModuleCount].DataRel^[I] := GetWord(F);
+  SeekFile(F, RelPos); N := (MP^.TextSize + 1) div 2;
+  For I := 0 to N - 1 do MP^.TextRel^[I] := GetWord(F);
+  N := (MP^.DataSize + 1) div 2; For I := 0 to N - 1 do MP^.DataRel^[I] := GetWord(F);
  End
  Else Begin
-  FillChar(Modules[ModuleCount].TextRel^, ((Modules[ModuleCount].TextSize + 1) div 2) * 2, 0);
-  FillChar(Modules[ModuleCount].DataRel^, ((Modules[ModuleCount].DataSize + 1) div 2) * 2, 0);
+  FillChar(MP^.TextRel^, ((MP^.TextSize + 1) div 2) * 2, 0);
+  FillChar(MP^.DataRel^, ((MP^.DataSize + 1) div 2) * 2, 0);
  End;
  Close(F);
  If Reserved <> 0 Then Warning(DisplayName + ': champ reserve non nul');
@@ -455,12 +496,10 @@ Var I: Integer; C: Char; R: String;
 Begin R := ''; For I := 1 to N do Begin C := Chr(GetByte(F)); R := R + C; End; ReadAscii := R; End;
 
 Procedure AddMember(InputIndex: Integer; Const Name: String; DataPos, DataSize: LongInt);
+Var MP: PMember;
 Begin
- If MemberCount >= MAX_MEMBERS Then Fatal('trop de membres de bibliotheque');
- Inc(MemberCount); Members[MemberCount].InputIndex := InputIndex;
- Members[MemberCount].Name := Name; Members[MemberCount].DataPos := DataPos;
- Members[MemberCount].DataSize := DataSize; Members[MemberCount].Loaded := False;
- Members[MemberCount].Selected := False;
+ MP := AppendMember; MP^.InputIndex := InputIndex; MP^.Name := Name; MP^.DataPos := DataPos;
+ MP^.DataSize := DataSize; MP^.Loaded := False; MP^.Selected := False;
 End;
 
 Procedure ReadUnixArchiveCatalog(InputIndex: Integer; Var F: File);
@@ -470,11 +509,11 @@ Begin
  While P + 60 <= FileSize(F) do
  Begin
   SeekFile(F, P); H := ReadAscii(F, 60);
-  If Copy(H, 59, 2) <> '`' + Chr(10) Then Fatal(Inputs[InputIndex].FileName + ': entete archive invalide');
+  If Copy(H, 59, 2) <> '`' + Chr(10) Then Fatal(InputAt(InputIndex)^.FileName + ': entete archive invalide');
   N := TrimStr(Copy(H, 1, 16)); Sz := DecimalField(Copy(H, 49, 10));
-  If (Sz < 0) or (P + 60 + Sz > FileSize(F)) Then Fatal(Inputs[InputIndex].FileName + ': membre archive tronque');
+  If (Sz < 0) or (P + 60 + Sz > FileSize(F)) Then Fatal(InputAt(InputIndex)^.FileName + ': membre archive tronque');
   If N = '//' Then Begin SeekFile(F, P + 60); LongNames := ReadAscii(F, Sz); End
-  Else If (N = '/') or (N = '/SYM64/') Then Begin Inputs[InputIndex].IndexPos := P + 60; Inputs[InputIndex].IndexSize := Sz; End
+  Else If (N = '/') or (N = '/SYM64/') Then Begin InputAt(InputIndex)^.IndexPos := P + 60; InputAt(InputIndex)^.IndexSize := Sz; End
   Else
   Begin
    NameLen := 0;
@@ -497,19 +536,19 @@ Function MarkIndexedNeeded(InputIndex: Integer): Boolean;
 Var F: File; Count, I, G, M: LongInt; NamePos, Offs, SavePos: LongInt; N: String[8]; C: Byte;
 Begin
  MarkIndexedNeeded := False;
- If (Inputs[InputIndex].IndexPos = 0) or (Inputs[InputIndex].IndexSize < 4) Then Exit;
- Assign(F, Inputs[InputIndex].FileName); Reset(F, 1); If IOResult <> 0 Then Exit;
- Count := GetLongBEAt(F, Inputs[InputIndex].IndexPos);
- If (Count < 0) or (4 + Count * 4 > Inputs[InputIndex].IndexSize) Then Begin Close(F); Exit; End;
- NamePos := Inputs[InputIndex].IndexPos + 4 + Count * 4; SeekFile(F, NamePos);
+ If (InputAt(InputIndex)^.IndexPos = 0) or (InputAt(InputIndex)^.IndexSize < 4) Then Exit;
+ Assign(F, InputAt(InputIndex)^.FileName); Reset(F, 1); If IOResult <> 0 Then Exit;
+ Count := GetLongBEAt(F, InputAt(InputIndex)^.IndexPos);
+ If (Count < 0) or (4 + Count * 4 > InputAt(InputIndex)^.IndexSize) Then Begin Close(F); Exit; End;
+ NamePos := InputAt(InputIndex)^.IndexPos + 4 + Count * 4; SeekFile(F, NamePos);
  For I := 0 to Count - 1 do Begin
   N := '';
-  While FilePos(F) < Inputs[InputIndex].IndexPos + Inputs[InputIndex].IndexSize do Begin C := GetByte(F); If C = 0 Then Break; If Length(N) < 8 Then N := N + Chr(C); End;
+  While FilePos(F) < InputAt(InputIndex)^.IndexPos + InputAt(InputIndex)^.IndexSize do Begin C := GetByte(F); If C = 0 Then Break; If Length(N) < 8 Then N := N + Chr(C); End;
   G := FindGlobal(N);
-  If (G > 0) and Globals[G].Needed and (not Globals[G].Defined) Then Begin
-   SavePos := FilePos(F); Offs := GetLongBEAt(F, Inputs[InputIndex].IndexPos + 4 + I * 4); SeekFile(F, SavePos);
-   For M := 1 to MemberCount do If (Members[M].InputIndex = InputIndex) and (Members[M].DataPos - 60 = Offs) and (not Members[M].Loaded) Then
-   Begin Members[M].Selected := True; MarkIndexedNeeded := True; Break; End;
+  If (G > 0) and GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then Begin
+   SavePos := FilePos(F); Offs := GetLongBEAt(F, InputAt(InputIndex)^.IndexPos + 4 + I * 4); SeekFile(F, SavePos);
+   For M := 1 to MemberCount do If (MemberAt(M)^.InputIndex = InputIndex) and (MemberAt(M)^.DataPos - 60 = Offs) and (not MemberAt(M)^.Loaded) Then
+   Begin MemberAt(M)^.Selected := True; MarkIndexedNeeded := True; Break; End;
   End;
  End;
  Close(F);
@@ -537,7 +576,7 @@ Begin
   Dummy := GetLongEndian(F, BigEndian); GetByte(F); GetByte(F); GetByte(F); GetByte(F);
   Sz := GetLongEndian(F, BigEndian);
   Dummy := GetWordEndian(F, BigEndian);
-  If (Sz < 0) or (P + 28 + Sz > FileSize(F)) Then Fatal(Inputs[InputIndex].FileName + ': membre AR68 tronque');
+  If (Sz < 0) or (P + 28 + Sz > FileSize(F)) Then Fatal(InputAt(InputIndex)^.FileName + ': membre AR68 tronque');
   AddMember(InputIndex, N, P + 28, Sz);
   P := P + 28 + Sz; If Odd(P) Then Inc(P);
  End;
@@ -551,7 +590,7 @@ Begin
   SeekFile(F, P); N := ''; For I := 1 to 8 do N := N + Chr(GetByte(F));
   While (Length(N) > 0) and (N[Length(N)] in [#0, ' ']) do Delete(N, Length(N), 1);
   Dummy := GetLongEndian(F, BigEndian); GetByte(F); GetByte(F); Sz := GetWordEndian(F, BigEndian);
-  If P + 16 + Sz > FileSize(F) Then Fatal(Inputs[InputIndex].FileName + ': ancien membre AR68 tronque');
+  If P + 16 + Sz > FileSize(F) Then Fatal(InputAt(InputIndex)^.FileName + ': ancien membre AR68 tronque');
   AddMember(InputIndex, N, P + 16, Sz); P := P + 16 + Sz; If Odd(P) Then Inc(P);
  End;
 End;
@@ -559,15 +598,15 @@ End;
 Procedure CollectGlobalNeeds;
 Var M, I, G: Integer; S: TSymbol;
 Begin
- GlobalCount := 0;
- For M := 1 to ModuleCount do For I := 0 to Modules[M].SymCount - 1 do
+ ClearGlobals;
+ For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do
  Begin
-  S := Modules[M].Symbols^[I];
+  S := ModuleAt(M)^.Symbols^[I];
   If (S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0 Then Continue;
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
-  If IsCommonSymbol(S) Then Begin Globals[G].Needed := True; Globals[G].IsCommon := True;
-   If S.Value > Globals[G].CommonSize Then Globals[G].CommonSize := S.Value; End
-  Else If (S.SType and SYM_DEFINED) <> 0 Then Globals[G].Defined := True Else Globals[G].Needed := True;
+  If IsCommonSymbol(S) Then Begin GlobalAt(G)^.Needed := True; GlobalAt(G)^.IsCommon := True;
+   If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value; End
+  Else If (S.SType and SYM_DEFINED) <> 0 Then GlobalAt(G)^.Defined := True Else GlobalAt(G)^.Needed := True;
  End;
 End;
 
@@ -576,21 +615,21 @@ Var F: File; Magic: Word; TextSize, DataSize, BssSize, SymBytes, P: LongInt;
     I, J: Integer; N: String[8]; T: Word; C: Byte; G: Integer;
 Begin
  MemberDefinesNeeded := False;
- Assign(F, Inputs[Members[MemberIndex].InputIndex].FileName); Reset(F, 1);
+ Assign(F, InputAt(MemberAt(MemberIndex)^.InputIndex)^.FileName); Reset(F, 1);
  If IOResult <> 0 Then Fatal('impossible de relire la bibliotheque');
- SeekFile(F, Members[MemberIndex].DataPos); Magic := GetWord(F);
+ SeekFile(F, MemberAt(MemberIndex)^.DataPos); Magic := GetWord(F);
   If (Magic <> $601A) and (Magic <> $601B) Then Begin Close(F); Exit; End;
  TextSize := GetLong(F); DataSize := GetLong(F); BssSize := GetLong(F); SymBytes := GetLong(F);
  GetLong(F); GetLong(F); GetWord(F); P := 28; If Magic = $601B Then P := 36;
  If (SymBytes < 0) or ((SymBytes mod 14) <> 0) or
-    (P + TextSize + DataSize + SymBytes > Members[MemberIndex].DataSize) Then Begin Close(F); Exit; End;
- SeekFile(F, Members[MemberIndex].DataPos + P + TextSize + DataSize);
+    (P + TextSize + DataSize + SymBytes > MemberAt(MemberIndex)^.DataSize) Then Begin Close(F); Exit; End;
+ SeekFile(F, MemberAt(MemberIndex)^.DataPos + P + TextSize + DataSize);
  For I := 1 to SymBytes div 14 do
  Begin
   N := ''; For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then N := N + Chr(C); End;
   T := GetWord(F); GetLong(F);
   If ((T and (SYM_DEFINED or SYM_GLOBAL)) = (SYM_DEFINED or SYM_GLOBAL)) and ((T and SYM_EXTERN) = 0) Then
-  Begin G := FindGlobal(N); If (G > 0) and Globals[G].Needed and (not Globals[G].Defined) Then Begin MemberDefinesNeeded := True; Break; End; End;
+  Begin G := FindGlobal(N); If (G > 0) and GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then Begin MemberDefinesNeeded := True; Break; End; End;
  End;
  Close(F);
 End;
@@ -602,10 +641,10 @@ Begin X := UpCaseStr(A); Y := UpCaseStr(B); MemberNameMatches := (X = Y) or (UpC
 Procedure LoadMember(MemberIndex: Integer);
 Var I: Integer; D: String;
 Begin
- I := Members[MemberIndex].InputIndex; D := Inputs[I].FileName + '(' + Members[MemberIndex].Name + ')';
- ReadObjectAt(Inputs[I].FileName, D, Members[MemberIndex].DataPos, Members[MemberIndex].DataSize,
-              LongInt(I) * 10000 + MemberIndex, Inputs[I].IncludeLocals);
- Members[MemberIndex].Loaded := True;
+ I := MemberAt(MemberIndex)^.InputIndex; D := InputAt(I)^.FileName + '(' + MemberAt(MemberIndex)^.Name + ')';
+ ReadObjectAt(InputAt(I)^.FileName, D, MemberAt(MemberIndex)^.DataPos, MemberAt(MemberIndex)^.DataSize,
+              LongInt(I) * 10000 + MemberIndex, InputAt(I)^.IncludeLocals);
+ MemberAt(MemberIndex)^.Loaded := True;
 End;
 
 Procedure LoadInputs;
@@ -614,13 +653,13 @@ Begin
  MemberCount := 0;
  For I := 1 to InputCount do
  Begin
-  S := ResolveInputName(Inputs[I].FileName);
-  If S = '' Then Fatal('fichier d''entree introuvable: ' + Inputs[I].FileName);
-  Inputs[I].FileName := S; Assign(F, S); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de lire ' + S);
+  S := ResolveInputName(InputAt(I)^.FileName);
+  If S = '' Then Fatal('fichier d''entree introuvable: ' + InputAt(I)^.FileName);
+  InputAt(I)^.FileName := S; Assign(F, S); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de lire ' + S);
   If FileSize(F) < 2 Then Fatal(S + ': fichier vide');
   B0 := GetByte(F); B1 := GetByte(F);
   If (B0 = $60) and (B1 in [$1A, $1B]) Then
-  Begin Close(F); ReadObjectAt(S, S, 0, 0, LongInt(I) * 10000, Inputs[I].IncludeLocals); End
+  Begin Close(F); ReadObjectAt(S, S, 0, 0, LongInt(I) * 10000, InputAt(I)^.IncludeLocals); End
   Else
   Begin
    SeekFile(F, 0); If (FileSize(F) >= 8) and (ReadAscii(F, 8) = '!<arch>' + Chr(10)) Then ReadUnixArchiveCatalog(I, F)
@@ -634,40 +673,41 @@ Begin
    Close(F);
   End;
  End;
- For I := 1 to InputCount do If Inputs[I].AllMods or (Inputs[I].IncludeName <> '') Then
+ For I := 1 to InputCount do If InputAt(I)^.AllMods or (InputAt(I)^.IncludeName <> '') Then
  Begin
-  Found := Inputs[I].IncludeName = '';
-  For M := 1 to MemberCount do If Members[M].InputIndex = I Then
-   If Inputs[I].AllMods or MemberNameMatches(Members[M].Name, Inputs[I].IncludeName) Then
-   Begin If not Members[M].Loaded Then LoadMember(M); If Inputs[I].IncludeName <> '' Then Found := True; End;
-  If not Found Then Error(Inputs[I].FileName + ': module INCLUDE introuvable: ' + Inputs[I].IncludeName);
+  Found := InputAt(I)^.IncludeName = '';
+  For M := 1 to MemberCount do If MemberAt(M)^.InputIndex = I Then
+   If InputAt(I)^.AllMods or MemberNameMatches(MemberAt(M)^.Name, InputAt(I)^.IncludeName) Then
+   Begin If not MemberAt(M)^.Loaded Then LoadMember(M); If InputAt(I)^.IncludeName <> '' Then Found := True; End;
+  If not Found Then Error(InputAt(I)^.FileName + ': module INCLUDE introuvable: ' + InputAt(I)^.IncludeName);
  End;
  Repeat
   CollectGlobalNeeds; Changed := False;
   For I := 1 to InputCount do If MarkIndexedNeeded(I) Then
-   For M := 1 to MemberCount do If Members[M].Selected and (not Members[M].Loaded) Then Begin LoadMember(M); Changed := True; End;
+   For M := 1 to MemberCount do If MemberAt(M)^.Selected and (not MemberAt(M)^.Loaded) Then Begin LoadMember(M); Changed := True; End;
   If Changed Then CollectGlobalNeeds;
-  For M := 1 to MemberCount do If (not Members[M].Loaded) and MemberDefinesNeeded(M) Then
+  For M := 1 to MemberCount do If (not MemberAt(M)^.Loaded) and MemberDefinesNeeded(M) Then
   Begin LoadMember(M); Changed := True; CollectGlobalNeeds; End;
  Until not Changed;
 End;
 
 Procedure SortModules;
-Var I, J: Integer; T: TModule;
+Var I, J: Integer; T: TModule; A, B: PModule; ANext, BNext: PModule;
 Begin
- For I := 2 to ModuleCount do Begin T := Modules[I]; J := I - 1;
-  While (J > 0) and (Modules[J].OrderKey > T.OrderKey) do Begin Modules[J + 1] := Modules[J]; Dec(J); End;
-  Modules[J + 1] := T;
- End;
+ For I := 1 to ModuleCount - 1 do For J := I + 1 to ModuleCount do
+  If ModuleAt(I)^.OrderKey > ModuleAt(J)^.OrderKey Then Begin
+   A := ModuleAt(I); B := ModuleAt(J); ANext := A^.Next; BNext := B^.Next;
+   T := A^; A^ := B^; B^ := T; A^.Next := ANext; B^.Next := BNext;
+  End;
 End;
 
 Procedure LayoutModules;
 Var I: Integer;
 Begin
  TotalText := 0; TotalData := 0; TotalBss := 0;
- For I := 1 to ModuleCount do Begin Modules[I].TextOffset := TotalText; Inc(TotalText, Modules[I].TextSize); If Odd(TotalText) Then Inc(TotalText); End;
- For I := 1 to ModuleCount do Begin Modules[I].DataOffset := TotalData; Inc(TotalData, Modules[I].DataSize); If Odd(TotalData) Then Inc(TotalData); End;
- For I := 1 to ModuleCount do Begin Modules[I].BssOffset := TotalBss; Inc(TotalBss, Modules[I].BssSize); If Odd(TotalBss) Then Inc(TotalBss); End;
+ For I := 1 to ModuleCount do Begin ModuleAt(I)^.TextOffset := TotalText; Inc(TotalText, ModuleAt(I)^.TextSize); If Odd(TotalText) Then Inc(TotalText); End;
+ For I := 1 to ModuleCount do Begin ModuleAt(I)^.DataOffset := TotalData; Inc(TotalData, ModuleAt(I)^.DataSize); If Odd(TotalData) Then Inc(TotalData); End;
+ For I := 1 to ModuleCount do Begin ModuleAt(I)^.BssOffset := TotalBss; Inc(TotalBss, ModuleAt(I)^.BssSize); If Odd(TotalBss) Then Inc(TotalBss); End;
  If Not Opt.TextBaseSet Then Opt.TextBase := 0;
  If Not Opt.DataBaseSet Then Opt.DataBase := Opt.TextBase + TotalText;
  If Not Opt.BssBaseSet Then Opt.BssBase := Opt.DataBase + TotalData;
@@ -676,9 +716,9 @@ End;
 Function SymbolFinalValue(M: Integer; Const S: TSymbol): LongInt;
 Begin
  Case SegmentOf(S.SType) of
-  REL_TEXT: SymbolFinalValue := Opt.TextBase + Modules[M].TextOffset + S.Value;
-  REL_DATA: SymbolFinalValue := Opt.DataBase + Modules[M].DataOffset + S.Value;
-  REL_BSS:  SymbolFinalValue := Opt.BssBase + Modules[M].BssOffset + S.Value;
+  REL_TEXT: SymbolFinalValue := Opt.TextBase + ModuleAt(M)^.TextOffset + S.Value;
+  REL_DATA: SymbolFinalValue := Opt.DataBase + ModuleAt(M)^.DataOffset + S.Value;
+  REL_BSS:  SymbolFinalValue := Opt.BssBase + ModuleAt(M)^.BssOffset + S.Value;
  Else SymbolFinalValue := S.Value;
  End;
 End;
@@ -686,34 +726,34 @@ End;
 Procedure BuildGlobals;
 Var M, I, G: Integer; S: TSymbol;
 Begin
- GlobalCount := 0;
- For M := 1 to ModuleCount do For I := 0 to Modules[M].SymCount - 1 do
+ ClearGlobals;
+ For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do
  Begin
-  S := Modules[M].Symbols^[I];
+  S := ModuleAt(M)^.Symbols^[I];
   If (S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0 Then Continue;
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
   If IsCommonSymbol(S) Then
   Begin
-   Globals[G].Needed := True; Globals[G].IsCommon := True;
-   If S.Value > Globals[G].CommonSize Then Globals[G].CommonSize := S.Value;
+   GlobalAt(G)^.Needed := True; GlobalAt(G)^.IsCommon := True;
+   If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value;
   End
   Else If (S.SType and SYM_DEFINED) <> 0 Then
   Begin
-   If Globals[G].Defined Then Error('symbole defini plusieurs fois: ' + S.Name)
-   Else Begin Globals[G].Defined := True; Globals[G].ModuleIndex := M; Globals[G].SymbolIndex := I;
-    Globals[G].FinalType := S.SType; Globals[G].FinalValue := SymbolFinalValue(M, S); End;
-  End Else Globals[G].Needed := True;
+   If GlobalAt(G)^.Defined Then Error('symbole defini plusieurs fois: ' + S.Name)
+   Else Begin GlobalAt(G)^.Defined := True; GlobalAt(G)^.ModuleIndex := M; GlobalAt(G)^.SymbolIndex := I;
+    GlobalAt(G)^.FinalType := S.SType; GlobalAt(G)^.FinalValue := SymbolFinalValue(M, S); End;
+  End Else GlobalAt(G)^.Needed := True;
  End;
- For G := 1 to GlobalCount do If Globals[G].IsCommon and (not Globals[G].Defined) Then
+ For G := 1 to GlobalCount do If GlobalAt(G)^.IsCommon and (not GlobalAt(G)^.Defined) Then
  Begin
   If Odd(TotalBss) Then Inc(TotalBss);
-  Globals[G].Defined := True; Globals[G].FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_BSS;
-  Globals[G].FinalValue := Opt.BssBase + TotalBss;
-  Inc(TotalBss, (Globals[G].CommonSize + 1) and not 1);
+  GlobalAt(G)^.Defined := True; GlobalAt(G)^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_BSS;
+  GlobalAt(G)^.FinalValue := Opt.BssBase + TotalBss;
+  Inc(TotalBss, (GlobalAt(G)^.CommonSize + 1) and not 1);
  End;
- For G := 1 to GlobalCount do If Globals[G].Needed and (not Globals[G].Defined) Then
-  If Opt.AllowUndefined Then Warning('symbole non defini conserve: ' + Globals[G].Name)
-  Else Error('symbole non defini: ' + Globals[G].Name);
+ For G := 1 to GlobalCount do If GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then
+  If Opt.AllowUndefined Then Warning('symbole non defini conserve: ' + GlobalAt(G)^.Name)
+  Else Error('symbole non defini: ' + GlobalAt(G)^.Name);
 End;
 
 Function ReadLongBuf(B: PByteBuffer; P: LongInt): LongInt;
@@ -731,9 +771,9 @@ Begin B^[P] := Byte(V shr 8); B^[P+1] := Byte(V); End;
 Function RelocBase(M, RType: Integer): LongInt;
 Begin
  Case RType of
-  REL_TEXT: RelocBase := Opt.TextBase + Modules[M].TextOffset;
-  REL_DATA: RelocBase := Opt.DataBase + Modules[M].DataOffset;
-  REL_BSS: RelocBase := Opt.BssBase + Modules[M].BssOffset;
+  REL_TEXT: RelocBase := Opt.TextBase + ModuleAt(M)^.TextOffset;
+  REL_DATA: RelocBase := Opt.DataBase + ModuleAt(M)^.DataOffset;
+  REL_BSS: RelocBase := Opt.BssBase + ModuleAt(M)^.BssOffset;
  Else RelocBase := 0;
  End;
 End;
@@ -742,7 +782,7 @@ Function OutputSymbolIndex(G: Integer): Integer;
 Var I, N: Integer;
 Begin
  N := 0;
- For I := 1 to G do If Opt.EmitSymbols or (not Globals[I].Defined) Then Inc(N);
+ For I := 1 to G do If Opt.EmitSymbols or (not GlobalAt(I)^.Defined) Then Inc(N);
  OutputSymbolIndex := N - 1;
 End;
 
@@ -768,16 +808,16 @@ Begin
   P := LongInt(WI) * 2; RT := SrcRel^[WI] and 7; AddValue := 0; OutType := RT;
   If RT = REL_UPPER Then
   Begin
-   If WI + 1 >= Words Then Begin Error(Modules[M].FileName + ': relogement long tronque'); Exit; End;
+   If WI + 1 >= Words Then Begin Error(ModuleAt(M)^.FileName + ': relogement long tronque'); Exit; End;
    NextRT := SrcRel^[WI + 1] and 7;
-   If NextRT = REL_PCREL Then Begin Error(Modules[M].FileName + ': PCREL long invalide'); NextRT := REL_ABS; End;
+   If NextRT = REL_PCREL Then Begin Error(ModuleAt(M)^.FileName + ': PCREL long invalide'); NextRT := REL_ABS; End;
    If NextRT in [REL_TEXT, REL_DATA, REL_BSS] Then AddValue := RelocBase(M, NextRT)
    Else If NextRT = REL_EXTERN Then
    Begin
     SI := SrcRel^[WI + 1] shr 3;
-    If SI >= Modules[M].SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
-    SName := Modules[M].Symbols^[SI].Name; G := FindGlobal(SName);
-    If (G > 0) and Globals[G].Defined Then Begin AddValue := Globals[G].FinalValue; NextRT := SegmentOf(Globals[G].FinalType); End
+    If SI >= ModuleAt(M)^.SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
+    SName := ModuleAt(M)^.Symbols^[SI].Name; G := FindGlobal(SName);
+    If (G > 0) and GlobalAt(G)^.Defined Then Begin AddValue := GlobalAt(G)^.FinalValue; NextRT := SegmentOf(GlobalAt(G)^.FinalType); End
     Else If Opt.AllowUndefined and (G > 0) Then NextRT := (OutputSymbolIndex(G) shl 3) or REL_EXTERN
     Else NextRT := REL_ABS;
    End;
@@ -790,26 +830,26 @@ Begin
   Else If RT = REL_EXTERN Then
   Begin
    SI := SrcRel^[WI] shr 3;
-   If SI >= Modules[M].SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
-   SName := Modules[M].Symbols^[SI].Name; G := FindGlobal(SName);
-   If (G > 0) and Globals[G].Defined Then Begin AddValue := Globals[G].FinalValue; OutType := SegmentOf(Globals[G].FinalType); End
+   If SI >= ModuleAt(M)^.SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
+   SName := ModuleAt(M)^.Symbols^[SI].Name; G := FindGlobal(SName);
+   If (G > 0) and GlobalAt(G)^.Defined Then Begin AddValue := GlobalAt(G)^.FinalValue; OutType := SegmentOf(GlobalAt(G)^.FinalType); End
    Else If Opt.AllowUndefined and (G > 0) Then OutType := (OutputSymbolIndex(G) shl 3) or REL_EXTERN
    Else OutType := REL_ABS;
   End
   Else If RT = REL_PCREL Then
   Begin
    SI := SrcRel^[WI] shr 3;
-   If SI >= Modules[M].SymCount Then Begin Error(Modules[M].FileName + ': index PCREL invalide'); SI := 0; End;
-   SName := Modules[M].Symbols^[SI].Name; G := FindGlobal(SName);
-   If (G > 0) and Globals[G].Defined Then AddValue := Globals[G].FinalValue - (Opt.TextBase + Modules[M].TextOffset + P)
-   Else Begin Error(Modules[M].FileName + ': symbole PCREL non defini: ' + SName); AddValue := 0; End;
+   If SI >= ModuleAt(M)^.SymCount Then Begin Error(ModuleAt(M)^.FileName + ': index PCREL invalide'); SI := 0; End;
+   SName := ModuleAt(M)^.Symbols^[SI].Name; G := FindGlobal(SName);
+   If (G > 0) and GlobalAt(G)^.Defined Then AddValue := GlobalAt(G)^.FinalValue - (Opt.TextBase + ModuleAt(M)^.TextOffset + P)
+   Else Begin Error(ModuleAt(M)^.FileName + ': symbole PCREL non defini: ' + SName); AddValue := 0; End;
    OutType := REL_ABS;
   End
-  Else If (RT <> REL_ABS) and (RT <> REL_INSTR) Then Error(Modules[M].FileName + ': type de relogement invalide');
+  Else If (RT <> REL_ABS) and (RT <> REL_INSTR) Then Error(ModuleAt(M)^.FileName + ': type de relogement invalide');
   If P + 1 < SrcSize Then Begin
    V16 := ReadWordBuf(Src, P); FullValue := SmallInt(V16) + AddValue;
-   If RT = REL_PCREL Then CheckShortOverflow(FullValue, True, Modules[M].FileName)
-   Else If RT in [REL_TEXT, REL_DATA, REL_BSS, REL_EXTERN] Then CheckShortOverflow(FullValue, False, Modules[M].FileName);
+   If RT = REL_PCREL Then CheckShortOverflow(FullValue, True, ModuleAt(M)^.FileName)
+   Else If RT in [REL_TEXT, REL_DATA, REL_BSS, REL_EXTERN] Then CheckShortOverflow(FullValue, False, ModuleAt(M)^.FileName);
    WriteWordBuf(Dst, DstBase + P, Word(FullValue));
   End
   Else Dst^[DstBase + P] := Src^[P];
@@ -828,10 +868,10 @@ Begin
  FillChar(OutTextRel^, ((TotalText + 1) div 2) * 2, 0); FillChar(OutDataRel^, ((TotalData + 1) div 2) * 2, 0);
  For M := 1 to ModuleCount do
  Begin
-  For I := 0 to Modules[M].TextSize - 1 do OutText^[Modules[M].TextOffset + I] := Modules[M].TextData^[I];
-  For I := 0 to Modules[M].DataSize - 1 do OutData^[Modules[M].DataOffset + I] := Modules[M].DataData^[I];
-  ApplyOneRelocation(M, Modules[M].TextData, Modules[M].TextRel, OutText, OutTextRel, Modules[M].TextSize, Modules[M].TextOffset);
-  ApplyOneRelocation(M, Modules[M].DataData, Modules[M].DataRel, OutData, OutDataRel, Modules[M].DataSize, Modules[M].DataOffset);
+  For I := 0 to ModuleAt(M)^.TextSize - 1 do OutText^[ModuleAt(M)^.TextOffset + I] := ModuleAt(M)^.TextData^[I];
+  For I := 0 to ModuleAt(M)^.DataSize - 1 do OutData^[ModuleAt(M)^.DataOffset + I] := ModuleAt(M)^.DataData^[I];
+  ApplyOneRelocation(M, ModuleAt(M)^.TextData, ModuleAt(M)^.TextRel, OutText, OutTextRel, ModuleAt(M)^.TextSize, ModuleAt(M)^.TextOffset);
+  ApplyOneRelocation(M, ModuleAt(M)^.DataData, ModuleAt(M)^.DataRel, OutData, OutDataRel, ModuleAt(M)^.DataSize, ModuleAt(M)^.DataOffset);
  End;
 End;
 
@@ -839,11 +879,11 @@ Function OutputSymbolCount: Integer;
 Var I, M, N: Integer; S: TSymbol;
 Begin
  N := 0;
- For I := 1 to GlobalCount do If Opt.EmitSymbols or (not Globals[I].Defined) Then Inc(N);
- If Opt.EmitSymbols Then For M := 1 to ModuleCount do If Modules[M].IncludeLocals Then
-  For I := 0 to Modules[M].SymCount - 1 do
+ For I := 1 to GlobalCount do If Opt.EmitSymbols or (not GlobalAt(I)^.Defined) Then Inc(N);
+ If Opt.EmitSymbols Then For M := 1 to ModuleCount do If ModuleAt(M)^.IncludeLocals Then
+  For I := 0 to ModuleAt(M)^.SymCount - 1 do
   Begin
-   S := Modules[M].Symbols^[I];
+   S := ModuleAt(M)^.Symbols^[I];
    If ((S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0) and
       ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then Inc(N);
   End;
@@ -863,16 +903,16 @@ Begin
  If NonContiguous Then Begin PutLong(F, Opt.DataBase); PutLong(F, Opt.BssBase); End;
  For I := 0 to TotalText - 1 do PutByte(F, OutText^[I]);
  For I := 0 to TotalData - 1 do PutByte(F, OutData^[I]);
- For I := 1 to GlobalCount do If Opt.EmitSymbols or (not Globals[I].Defined) Then
+ For I := 1 to GlobalCount do If Opt.EmitSymbols or (not GlobalAt(I)^.Defined) Then
  Begin
-  For J := 1 to 8 do If J <= Length(Globals[I].Name) Then PutByte(F, Ord(Globals[I].Name[J])) Else PutByte(F, 0);
-  If Globals[I].Defined Then Begin ST := Globals[I].FinalType or SYM_DEFINED or SYM_GLOBAL; PutWord(F, ST); PutLong(F, Globals[I].FinalValue); End
+  For J := 1 to 8 do If J <= Length(GlobalAt(I)^.Name) Then PutByte(F, Ord(GlobalAt(I)^.Name[J])) Else PutByte(F, 0);
+  If GlobalAt(I)^.Defined Then Begin ST := GlobalAt(I)^.FinalType or SYM_DEFINED or SYM_GLOBAL; PutWord(F, ST); PutLong(F, GlobalAt(I)^.FinalValue); End
   Else Begin PutWord(F, SYM_EXTERN or SYM_GLOBAL); PutLong(F, 0); End;
  End;
- If Opt.EmitSymbols Then For M := 1 to ModuleCount do If Modules[M].IncludeLocals Then
-  For I := 0 to Modules[M].SymCount - 1 do
+ If Opt.EmitSymbols Then For M := 1 to ModuleCount do If ModuleAt(M)^.IncludeLocals Then
+  For I := 0 to ModuleAt(M)^.SymCount - 1 do
   Begin
-   S := Modules[M].Symbols^[I];
+   S := ModuleAt(M)^.Symbols^[I];
    If ((S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0) and
       ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then
    Begin
@@ -889,14 +929,17 @@ Begin
 End;
 
 Procedure FreeAll;
-Var I: Integer;
+Var MP, MN: PModule; IP, INext: PInput; AP, AN: PMember;
 Begin
- For I := 1 to ModuleCount do Begin
-  If Modules[I].Symbols <> Nil Then FreeMem(Modules[I].Symbols, LongInt(Modules[I].SymCount) * SizeOf(TSymbol));
-  FreeMem(Modules[I].TextData, Modules[I].TextSize + 1); FreeMem(Modules[I].DataData, Modules[I].DataSize + 1);
-  FreeMem(Modules[I].TextRel, ((Modules[I].TextSize + 1) div 2) * 2 + 2);
-  FreeMem(Modules[I].DataRel, ((Modules[I].DataSize + 1) div 2) * 2 + 2);
+ MP := FirstModule; While MP <> Nil do Begin MN := MP^.Next;
+  If MP^.Symbols <> Nil Then FreeMem(MP^.Symbols, LongInt(MP^.SymCount) * SizeOf(TSymbol));
+  FreeMem(MP^.TextData, MP^.TextSize + 1); FreeMem(MP^.DataData, MP^.DataSize + 1);
+  FreeMem(MP^.TextRel, ((MP^.TextSize + 1) div 2) * 2 + 2); FreeMem(MP^.DataRel, ((MP^.DataSize + 1) div 2) * 2 + 2);
+  Dispose(MP); MP := MN;
  End;
+ ClearGlobals;
+ IP := FirstInput; While IP <> Nil do Begin INext := IP^.Next; Dispose(IP); IP := INext; End;
+ AP := FirstMember; While AP <> Nil do Begin AN := AP^.Next; Dispose(AP); AP := AN; End;
  If OutText <> Nil Then FreeMem(OutText, TotalText + 1); If OutData <> Nil Then FreeMem(OutData, TotalData + 1);
  If OutTextRel <> Nil Then FreeMem(OutTextRel, ((TotalText + 1) div 2) * 2 + 2);
  If OutDataRel <> Nil Then FreeMem(OutDataRel, ((TotalData + 1) div 2) * 2 + 2);
@@ -904,7 +947,9 @@ End;
 
 Procedure Run;
 Begin
- ErrorCount := 0; WarningCount := 0; ModuleCount := 0; GlobalCount := 0; MemberCount := 0;
+ ErrorCount := 0; WarningCount := 0; ModuleCount := 0; GlobalCount := 0; InputCount := 0; MemberCount := 0;
+ FirstModule := Nil; LastModule := Nil; FirstGlobal := Nil; LastGlobal := Nil;
+ FirstInput := Nil; LastInput := Nil; FirstMember := Nil; LastMember := Nil;
  OutText := Nil; OutData := Nil; OutTextRel := Nil; OutDataRel := Nil;
  ParseCommandLine;
  LoadInputs; SortModules;
