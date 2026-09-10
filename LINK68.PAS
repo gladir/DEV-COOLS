@@ -13,10 +13,10 @@ Program LINK68;
 {$I-}
 
 Const
- MAX_MODULES = 128;
- MAX_INPUTS  = 128;
- MAX_MEMBERS = 2048;
- MAX_SYMBOLS = 8192;
+ MAX_MODULES = 1024;
+ MAX_INPUTS  = 1024;
+ MAX_MEMBERS = 32767;
+ MAX_SYMBOLS = 32767;
  MAX_IMAGE   = 16 * 1024 * 1024;
  MAX_CMDLINE = 8192;
 
@@ -48,6 +48,8 @@ Type
   SType : Word;
   Value : LongInt;
  End;
+ TSymbolBuffer = Array[0..MAX_SYMBOLS - 1] of TSymbol;
+ PSymbolBuffer = ^TSymbolBuffer;
 
  TModule = Record
   FileName : String;
@@ -56,7 +58,7 @@ Type
   TextOffset, DataOffset, BssOffset : LongInt;
  SymCount : Integer;
   IncludeLocals : Boolean;
-  Symbols : Array[0..MAX_SYMBOLS - 1] of TSymbol;
+  Symbols : PSymbolBuffer;
   TextData, DataData : PByteBuffer;
   TextRel, DataRel : PWordBuffer;
  End;
@@ -65,28 +67,32 @@ Type
   Name : String[8];
   ModuleIndex, SymbolIndex : Integer;
   Defined, Needed : Boolean;
+  IsCommon : Boolean;
+  CommonSize : LongInt;
   FinalType : Word;
   FinalValue : LongInt;
  End;
 
  TOptions = Record
-  AllowUndefined, EmitSymbols, EmitLocals, Absolute, AllMods : Boolean;
+  AllowUndefined, EmitSymbols, EmitLocals, Absolute, AllMods, IgnoreOverflow : Boolean;
   TextBaseSet, DataBaseSet, BssBaseSet : Boolean;
   TextBase, DataBase, BssBase : LongInt;
   OutputName : String;
+  TempPath : String;
  End;
 
  TInput = Record
   FileName : String;
   IncludeLocals, AllMods : Boolean;
   IncludeName : String[64];
+  IndexPos, IndexSize : LongInt;
  End;
 
  TMember = Record
   InputIndex : Integer;
   Name : String[64];
   DataPos, DataSize : LongInt;
-  Loaded : Boolean;
+  Loaded, Selected : Boolean;
  End;
 
 Var
@@ -116,6 +122,10 @@ Begin
  TrimStr := Copy(S, A, B - A + 1);
 End;
 
+Function IsAbbrev(Const S, FullName: String; MinLen: Integer): Boolean;
+Begin IsAbbrev := (Length(S) >= MinLen) and (Length(S) <= Length(FullName)) and
+                  (Copy(FullName, 1, Length(S)) = S); End;
+
 Procedure Error(Const S: String);
 Begin Inc(ErrorCount); WriteLn('LINK68: erreur: ', S); End;
 
@@ -126,10 +136,10 @@ Procedure Fatal(Const S: String);
 Begin Error(S); Halt(2); End;
 
 Function FileExists68(Const Name: String): Boolean;
-Var F: File;
+Var F: File; Exists: Boolean;
 Begin
- Assign(F, Name); Reset(F, 1); FileExists68 := IOResult = 0;
- If FileExists68 Then Close(F);
+ Assign(F, Name); Reset(F, 1); Exists := IOResult = 0;
+ If Exists Then Close(F); FileExists68 := Exists;
 End;
 
 Function HasExtension(Const Name: String): Boolean;
@@ -220,6 +230,9 @@ Begin
  Else SegmentOf := REL_ABS;
 End;
 
+Function IsCommonSymbol(Const S: TSymbol): Boolean;
+Begin IsCommonSymbol := (S.SType and (SYM_DEFINED or SYM_EXTERN)) = (SYM_DEFINED or SYM_EXTERN); End;
+
 Procedure ShowHelp;
 Begin
  WriteLn('LINK68 - Cette commande permet de lancer un clone du linker Digital Research/Alcyon pour Atari ST.');
@@ -231,6 +244,8 @@ Begin
  WriteLn('  U              Autorise les symboles non definis');
  WriteLn('  S              Inclut la table des symboles');
  WriteLn('  ALLMODS (AL)   Charge tous les modules des bibliotheques');
+ WriteLn('  IGNORE (IG)    Continue apres un debordement d''adresse 16 bits');
+ WriteLn('  TEMPFILES[p]   Repertoire reserve aux fichiers temporaires');
  WriteLn('  ABSOLUTE       Produit une image non relogeable');
  WriteLn('  TEXTBASE[n]    Adresse de base TEXT (hexadecimal)');
  WriteLn('  DATABASE[n]    Adresse de base DATA (hexadecimal)');
@@ -246,25 +261,27 @@ Var U, A: String; P: Integer; V: LongInt;
 Begin
  S := TrimStr(S); U := UpCaseStr(S);
  If U = '' Then Exit;
- If (U = 'U') or (U = 'UNDEFINED') Then Opt.AllowUndefined := True
- Else If (U = 'S') or (U = 'SYMBOLS') Then Opt.EmitSymbols := True
- Else If (U = 'LO') or (U = 'LOCALS') Then Opt.EmitLocals := True
- Else If (U = 'NO') or (U = 'NOLOCALS') Then Opt.EmitLocals := False
- Else If (U = 'AB') or (U = 'ABS') or (U = 'ABSOLUTE') Then Opt.Absolute := True
- Else If (U = 'AL') or (U = 'ALLMODS') Then Opt.AllMods := True
- Else If (U = 'IG') or (U = 'IGNORE') Then Begin End
+ If IsAbbrev(U, 'UNDEFINED', 1) Then Opt.AllowUndefined := True
+ Else If IsAbbrev(U, 'SYMBOLS', 1) Then Opt.EmitSymbols := True
+ Else If IsAbbrev(U, 'LOCALS', 2) Then Opt.EmitLocals := True
+ Else If IsAbbrev(U, 'NOLOCALS', 2) Then Opt.EmitLocals := False
+ Else If IsAbbrev(U, 'ABSOLUTE', 2) Then Opt.Absolute := True
+ Else If IsAbbrev(U, 'ALLMODS', 2) Then Opt.AllMods := True
+ Else If IsAbbrev(U, 'IGNORE', 2) Then Opt.IgnoreOverflow := True
  Else Begin
   P := Pos('[', U);
   If (P > 0) and (U[Length(U)] = ']') Then
   Begin
    A := Copy(U, P + 1, Length(U) - P - 1);
-   If Not ParseAddress(A, V) Then Begin Error('adresse invalide dans ' + S); Exit; End;
    U := Copy(U, 1, P - 1);
-   If (U = 'TEX') or (U = 'TEXTBASE') Then Begin Opt.TextBase := V; Opt.TextBaseSet := True; End
-   Else If (U = 'D') or (U = 'DATA') or (U = 'DATABASE') Then Begin Opt.DataBase := V; Opt.DataBaseSet := True; End
-   Else If (U = 'B') or (U = 'BSS') or (U = 'BSSBASE') Then Begin Opt.BssBase := V; Opt.BssBaseSet := True; End
-   Else If (U = 'TEM') or (U = 'TEMPFILES') Then Begin End
-   Else Warning('option inconnue: ' + S);
+   If IsAbbrev(U, 'TEMPFILES', 3) Then Opt.TempPath := A
+   Else Begin
+    If Not ParseAddress(A, V) Then Begin Error('adresse invalide dans ' + S); Exit; End;
+    If IsAbbrev(U, 'TEXTBASE', 3) Then Begin Opt.TextBase := V; Opt.TextBaseSet := True; End
+    Else If IsAbbrev(U, 'DATABASE', 1) Then Begin Opt.DataBase := V; Opt.DataBaseSet := True; End
+    Else If IsAbbrev(U, 'BSSBASE', 1) Then Begin Opt.BssBase := V; Opt.BssBaseSet := True; End
+    Else Warning('option inconnue: ' + S);
+   End
   End Else Warning('option inconnue: ' + S);
  End;
 End;
@@ -291,11 +308,11 @@ Begin
  If P > 0 Then Begin LocalOpt := UpCaseStr(Copy(S, P + 1, Length(S) - P - 1)); S := TrimStr(Copy(S, 1, P - 1)); End;
  If InputCount >= MAX_INPUTS Then Fatal('trop de fichiers d''entree');
  Inc(InputCount); Inputs[InputCount].FileName := S;
- Inputs[InputCount].IncludeLocals := Opt.EmitLocals or (Pos('LOCALS', LocalOpt) > 0) or (LocalOpt = 'L');
- If (Pos('NOLOCALS', LocalOpt) > 0) or (LocalOpt = 'N') Then Inputs[InputCount].IncludeLocals := False;
+ Inputs[InputCount].IncludeLocals := Opt.EmitLocals or (Pos('LOCALS', LocalOpt) > 0) or (LocalOpt = 'LO');
+ If (Pos('NOLOCALS', LocalOpt) > 0) or (LocalOpt = 'NO') Then Inputs[InputCount].IncludeLocals := False;
  Inputs[InputCount].AllMods := Opt.AllMods or (Pos('ALLMODS', LocalOpt) > 0) or (LocalOpt = 'AL');
  Inputs[InputCount].IncludeName := '';
- U := LocalOpt; P := Pos('INCLUDE', U);
+ U := LocalOpt; P := Pos('INCLUDE', U); If P = 0 Then P := Pos('IN[', U);
  If P > 0 Then Begin
   P := Pos('[', U); Q := Pos(']', U);
   If (P > 0) and (Q > P) Then Inputs[InputCount].IncludeName := TrimStr(Copy(U, P + 1, Q - P - 1))
@@ -346,6 +363,8 @@ End;
 
 Procedure AllocateModuleBuffers(M: Integer);
 Begin
+ If Modules[M].SymCount > 0 Then GetMem(Modules[M].Symbols, LongInt(Modules[M].SymCount) * SizeOf(TSymbol))
+ Else Modules[M].Symbols := Nil;
  GetMem(Modules[M].TextData, Modules[M].TextSize + 1);
  GetMem(Modules[M].DataData, Modules[M].DataSize + 1);
  GetMem(Modules[M].TextRel, ((Modules[M].TextSize + 1) div 2) * 2 + 2);
@@ -396,8 +415,8 @@ Begin
  If (Modules[ModuleCount].TextSize < 0) or (Modules[ModuleCount].DataSize < 0) or
     (Modules[ModuleCount].TextSize > MAX_IMAGE) or (Modules[ModuleCount].DataSize > MAX_IMAGE) Then Fatal(DisplayName + ': segment trop grand');
  If (SymBytes mod 14) <> 0 Then Fatal(DisplayName + ': taille de table des symboles invalide');
+ If SymBytes div 14 > MAX_SYMBOLS Then Fatal(FN + ': trop de symboles');
  Modules[ModuleCount].SymCount := SymBytes div 14;
- If Modules[ModuleCount].SymCount > MAX_SYMBOLS Then Fatal(FN + ': trop de symboles');
  AllocateModuleBuffers(ModuleCount);
  If (MemberSize > 0) and (HeaderSize + Modules[ModuleCount].TextSize + Modules[ModuleCount].DataSize + SymBytes > MemberSize) Then
   Fatal(DisplayName + ': membre d''archive tronque');
@@ -406,9 +425,9 @@ Begin
  For I := 0 to Modules[ModuleCount].DataSize - 1 do Modules[ModuleCount].DataData^[I] := GetByte(F);
  For I := 0 to Modules[ModuleCount].SymCount - 1 do
  Begin
-  Modules[ModuleCount].Symbols[I].Name := '';
-  For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then Modules[ModuleCount].Symbols[I].Name := Modules[ModuleCount].Symbols[I].Name + Chr(C); End;
-  Modules[ModuleCount].Symbols[I].SType := GetWord(F); Modules[ModuleCount].Symbols[I].Value := GetLong(F);
+  Modules[ModuleCount].Symbols^[I].Name := '';
+  For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then Modules[ModuleCount].Symbols^[I].Name := Modules[ModuleCount].Symbols^[I].Name + Chr(C); End;
+  Modules[ModuleCount].Symbols^[I].SType := GetWord(F); Modules[ModuleCount].Symbols^[I].Value := GetLong(F);
  End;
  RelPos := BasePos + HeaderSize + Modules[ModuleCount].TextSize + Modules[ModuleCount].DataSize + SymBytes;
  If AbsFlag = 0 Then
@@ -432,8 +451,8 @@ Var I: Integer; V: LongInt;
 Begin V := 0; For I := 1 to Length(S) do If S[I] in ['0'..'9'] Then V := V * 10 + Ord(S[I]) - Ord('0'); DecimalField := V; End;
 
 Function ReadAscii(Var F: File; N: Integer): String;
-Var I: Integer; C: Char;
-Begin ReadAscii := ''; For I := 1 to N do Begin C := Chr(GetByte(F)); ReadAscii := ReadAscii + C; End; End;
+Var I: Integer; C: Char; R: String;
+Begin R := ''; For I := 1 to N do Begin C := Chr(GetByte(F)); R := R + C; End; ReadAscii := R; End;
 
 Procedure AddMember(InputIndex: Integer; Const Name: String; DataPos, DataSize: LongInt);
 Begin
@@ -441,6 +460,7 @@ Begin
  Inc(MemberCount); Members[MemberCount].InputIndex := InputIndex;
  Members[MemberCount].Name := Name; Members[MemberCount].DataPos := DataPos;
  Members[MemberCount].DataSize := DataSize; Members[MemberCount].Loaded := False;
+ Members[MemberCount].Selected := False;
 End;
 
 Procedure ReadUnixArchiveCatalog(InputIndex: Integer; Var F: File);
@@ -454,7 +474,8 @@ Begin
   N := TrimStr(Copy(H, 1, 16)); Sz := DecimalField(Copy(H, 49, 10));
   If (Sz < 0) or (P + 60 + Sz > FileSize(F)) Then Fatal(Inputs[InputIndex].FileName + ': membre archive tronque');
   If N = '//' Then Begin SeekFile(F, P + 60); LongNames := ReadAscii(F, Sz); End
-  Else If (N <> '/') and (N <> '/SYM64/') Then
+  Else If (N = '/') or (N = '/SYM64/') Then Begin Inputs[InputIndex].IndexPos := P + 60; Inputs[InputIndex].IndexSize := Sz; End
+  Else
   Begin
    NameLen := 0;
    If Copy(N, 1, 3) = '#1/' Then Begin NameLen := DecimalField(Copy(N, 4, Length(N))); SeekFile(F, P + 60); N := ReadAscii(F, NameLen); End
@@ -469,26 +490,69 @@ Begin
  End;
 End;
 
+Function GetLongBEAt(Var F: File; P: LongInt): LongInt;
+Begin SeekFile(F, P); GetLongBEAt := GetLong(F); End;
+
+Function MarkIndexedNeeded(InputIndex: Integer): Boolean;
+Var F: File; Count, I, G, M: LongInt; NamePos, Offs, SavePos: LongInt; N: String[8]; C: Byte;
+Begin
+ MarkIndexedNeeded := False;
+ If (Inputs[InputIndex].IndexPos = 0) or (Inputs[InputIndex].IndexSize < 4) Then Exit;
+ Assign(F, Inputs[InputIndex].FileName); Reset(F, 1); If IOResult <> 0 Then Exit;
+ Count := GetLongBEAt(F, Inputs[InputIndex].IndexPos);
+ If (Count < 0) or (4 + Count * 4 > Inputs[InputIndex].IndexSize) Then Begin Close(F); Exit; End;
+ NamePos := Inputs[InputIndex].IndexPos + 4 + Count * 4; SeekFile(F, NamePos);
+ For I := 0 to Count - 1 do Begin
+  N := '';
+  While FilePos(F) < Inputs[InputIndex].IndexPos + Inputs[InputIndex].IndexSize do Begin C := GetByte(F); If C = 0 Then Break; If Length(N) < 8 Then N := N + Chr(C); End;
+  G := FindGlobal(N);
+  If (G > 0) and Globals[G].Needed and (not Globals[G].Defined) Then Begin
+   SavePos := FilePos(F); Offs := GetLongBEAt(F, Inputs[InputIndex].IndexPos + 4 + I * 4); SeekFile(F, SavePos);
+   For M := 1 to MemberCount do If (Members[M].InputIndex = InputIndex) and (Members[M].DataPos - 60 = Offs) and (not Members[M].Loaded) Then
+   Begin Members[M].Selected := True; MarkIndexedNeeded := True; Break; End;
+  End;
+ End;
+ Close(F);
+End;
+
 Function GetLongEndian(Var F: File; BigEndian: Boolean): LongInt;
 Var B0, B1, B2, B3: Byte;
 Begin B0 := GetByte(F); B1 := GetByte(F); B2 := GetByte(F); B3 := GetByte(F);
  If BigEndian Then GetLongEndian := LongInt((LongWord(B0) shl 24) or (LongWord(B1) shl 16) or (LongWord(B2) shl 8) or B3)
  Else GetLongEndian := LongInt((LongWord(B3) shl 24) or (LongWord(B2) shl 16) or (LongWord(B1) shl 8) or B0); End;
 
+Function GetWordEndian(Var F: File; BigEndian: Boolean): Word;
+Var A, B: Byte;
+Begin A := GetByte(F); B := GetByte(F); If BigEndian Then GetWordEndian := Word(A) shl 8 or B Else GetWordEndian := Word(B) shl 8 or A; End;
+
 Procedure ReadOldArchiveCatalog(InputIndex: Integer; Var F: File; BigEndian: Boolean);
 Var P, Sz, Dummy: LongInt; N: String; I: Integer;
 Begin
  P := 2;
- While P + 26 <= FileSize(F) do
+ While P + 28 <= FileSize(F) do
  Begin
   SeekFile(F, P); N := '';
   For I := 1 to 14 do Begin If I = 1 Then N := ''; N := N + Chr(GetByte(F)); End;
   While (Length(N) > 0) and (N[Length(N)] in [#0, ' ']) do Delete(N, Length(N), 1);
   Dummy := GetLongEndian(F, BigEndian); GetByte(F); GetByte(F); GetByte(F); GetByte(F);
   Sz := GetLongEndian(F, BigEndian);
-  If (Sz < 0) or (P + 26 + Sz > FileSize(F)) Then Fatal(Inputs[InputIndex].FileName + ': membre AR68 tronque');
-  AddMember(InputIndex, N, P + 26, Sz);
-  P := P + 26 + Sz; If Odd(P) Then Inc(P);
+  Dummy := GetWordEndian(F, BigEndian);
+  If (Sz < 0) or (P + 28 + Sz > FileSize(F)) Then Fatal(Inputs[InputIndex].FileName + ': membre AR68 tronque');
+  AddMember(InputIndex, N, P + 28, Sz);
+  P := P + 28 + Sz; If Odd(P) Then Inc(P);
+ End;
+End;
+
+Procedure ReadVeryOldArchiveCatalog(InputIndex: Integer; Var F: File; BigEndian: Boolean);
+Var P, Sz, Dummy: LongInt; N: String; I: Integer;
+Begin
+ P := 2;
+ While P + 16 <= FileSize(F) do Begin
+  SeekFile(F, P); N := ''; For I := 1 to 8 do N := N + Chr(GetByte(F));
+  While (Length(N) > 0) and (N[Length(N)] in [#0, ' ']) do Delete(N, Length(N), 1);
+  Dummy := GetLongEndian(F, BigEndian); GetByte(F); GetByte(F); Sz := GetWordEndian(F, BigEndian);
+  If P + 16 + Sz > FileSize(F) Then Fatal(Inputs[InputIndex].FileName + ': ancien membre AR68 tronque');
+  AddMember(InputIndex, N, P + 16, Sz); P := P + 16 + Sz; If Odd(P) Then Inc(P);
  End;
 End;
 
@@ -498,10 +562,12 @@ Begin
  GlobalCount := 0;
  For M := 1 to ModuleCount do For I := 0 to Modules[M].SymCount - 1 do
  Begin
-  S := Modules[M].Symbols[I];
+  S := Modules[M].Symbols^[I];
   If (S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0 Then Continue;
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
-  If (S.SType and SYM_DEFINED) <> 0 Then Globals[G].Defined := True Else Globals[G].Needed := True;
+  If IsCommonSymbol(S) Then Begin Globals[G].Needed := True; Globals[G].IsCommon := True;
+   If S.Value > Globals[G].CommonSize Then Globals[G].CommonSize := S.Value; End
+  Else If (S.SType and SYM_DEFINED) <> 0 Then Globals[G].Defined := True Else Globals[G].Needed := True;
  End;
 End;
 
@@ -523,7 +589,7 @@ Begin
  Begin
   N := ''; For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then N := N + Chr(C); End;
   T := GetWord(F); GetLong(F);
-  If ((T and (SYM_DEFINED or SYM_GLOBAL)) = (SYM_DEFINED or SYM_GLOBAL)) Then
+  If ((T and (SYM_DEFINED or SYM_GLOBAL)) = (SYM_DEFINED or SYM_GLOBAL)) and ((T and SYM_EXTERN) = 0) Then
   Begin G := FindGlobal(N); If (G > 0) and Globals[G].Needed and (not Globals[G].Defined) Then Begin MemberDefinesNeeded := True; Break; End; End;
  End;
  Close(F);
@@ -559,7 +625,11 @@ Begin
   Begin
    SeekFile(F, 0); If (FileSize(F) >= 8) and (ReadAscii(F, 8) = '!<arch>' + Chr(10)) Then ReadUnixArchiveCatalog(I, F)
    Else If (B0 = $FF) and (B1 = $65) Then ReadOldArchiveCatalog(I, F, True)
+   Else If (B0 = $FF) and (B1 = $66) Then ReadOldArchiveCatalog(I, F, True)
    Else If (B0 = $65) and (B1 = $FF) Then ReadOldArchiveCatalog(I, F, False)
+   Else If (B0 = $66) and (B1 = $FF) Then ReadOldArchiveCatalog(I, F, False)
+   Else If (B0 = $FF) and (B1 = $6D) Then ReadVeryOldArchiveCatalog(I, F, True)
+   Else If (B0 = $6D) and (B1 = $FF) Then ReadVeryOldArchiveCatalog(I, F, False)
    Else Begin Close(F); Fatal(S + ': ni objet DRI ni bibliotheque AR68'); End;
    Close(F);
   End;
@@ -574,6 +644,9 @@ Begin
  End;
  Repeat
   CollectGlobalNeeds; Changed := False;
+  For I := 1 to InputCount do If MarkIndexedNeeded(I) Then
+   For M := 1 to MemberCount do If Members[M].Selected and (not Members[M].Loaded) Then Begin LoadMember(M); Changed := True; End;
+  If Changed Then CollectGlobalNeeds;
   For M := 1 to MemberCount do If (not Members[M].Loaded) and MemberDefinesNeeded(M) Then
   Begin LoadMember(M); Changed := True; CollectGlobalNeeds; End;
  Until not Changed;
@@ -616,15 +689,27 @@ Begin
  GlobalCount := 0;
  For M := 1 to ModuleCount do For I := 0 to Modules[M].SymCount - 1 do
  Begin
-  S := Modules[M].Symbols[I];
+  S := Modules[M].Symbols^[I];
   If (S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0 Then Continue;
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
-  If (S.SType and SYM_DEFINED) <> 0 Then
+  If IsCommonSymbol(S) Then
+  Begin
+   Globals[G].Needed := True; Globals[G].IsCommon := True;
+   If S.Value > Globals[G].CommonSize Then Globals[G].CommonSize := S.Value;
+  End
+  Else If (S.SType and SYM_DEFINED) <> 0 Then
   Begin
    If Globals[G].Defined Then Error('symbole defini plusieurs fois: ' + S.Name)
    Else Begin Globals[G].Defined := True; Globals[G].ModuleIndex := M; Globals[G].SymbolIndex := I;
     Globals[G].FinalType := S.SType; Globals[G].FinalValue := SymbolFinalValue(M, S); End;
   End Else Globals[G].Needed := True;
+ End;
+ For G := 1 to GlobalCount do If Globals[G].IsCommon and (not Globals[G].Defined) Then
+ Begin
+  If Odd(TotalBss) Then Inc(TotalBss);
+  Globals[G].Defined := True; Globals[G].FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_BSS;
+  Globals[G].FinalValue := Opt.BssBase + TotalBss;
+  Inc(TotalBss, (Globals[G].CommonSize + 1) and not 1);
  End;
  For G := 1 to GlobalCount do If Globals[G].Needed and (not Globals[G].Defined) Then
   If Opt.AllowUndefined Then Warning('symbole non defini conserve: ' + Globals[G].Name)
@@ -661,11 +746,21 @@ Begin
  OutputSymbolIndex := N - 1;
 End;
 
+Procedure CheckShortOverflow(Value: LongInt; SignedOnly: Boolean; Const Where: String);
+Var Bad: Boolean;
+Begin
+ If SignedOnly Then Bad := (Value < -32768) or (Value > 32767)
+ Else Bad := (Value < -32768) or (Value > 65535);
+ If Bad Then
+  If Opt.IgnoreOverflow Then Warning('debordement 16 bits ignore: ' + Where)
+  Else Error('debordement 16 bits: ' + Where);
+End;
+
 Procedure ApplyOneRelocation(M: Integer; Src: PByteBuffer; SrcRel: PWordBuffer;
                              Dst: PByteBuffer; DstRel: PWordBuffer;
                              SrcSize, DstBase: LongInt);
 Var WI, Words, RT, NextRT, SI, G: Integer; P: LongInt; V32: LongInt; V16: Word;
-    AddValue: LongInt; OutType: Word; SName: String;
+    AddValue, FullValue: LongInt; OutType: Word; SName: String;
 Begin
  Words := (SrcSize + 1) div 2; WI := 0;
  While WI < Words do
@@ -675,12 +770,13 @@ Begin
   Begin
    If WI + 1 >= Words Then Begin Error(Modules[M].FileName + ': relogement long tronque'); Exit; End;
    NextRT := SrcRel^[WI + 1] and 7;
+   If NextRT = REL_PCREL Then Begin Error(Modules[M].FileName + ': PCREL long invalide'); NextRT := REL_ABS; End;
    If NextRT in [REL_TEXT, REL_DATA, REL_BSS] Then AddValue := RelocBase(M, NextRT)
    Else If NextRT = REL_EXTERN Then
    Begin
     SI := SrcRel^[WI + 1] shr 3;
     If SI >= Modules[M].SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
-    SName := Modules[M].Symbols[SI].Name; G := FindGlobal(SName);
+    SName := Modules[M].Symbols^[SI].Name; G := FindGlobal(SName);
     If (G > 0) and Globals[G].Defined Then Begin AddValue := Globals[G].FinalValue; NextRT := SegmentOf(Globals[G].FinalType); End
     Else If Opt.AllowUndefined and (G > 0) Then NextRT := (OutputSymbolIndex(G) shl 3) or REL_EXTERN
     Else NextRT := REL_ABS;
@@ -695,12 +791,27 @@ Begin
   Begin
    SI := SrcRel^[WI] shr 3;
    If SI >= Modules[M].SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
-   SName := Modules[M].Symbols[SI].Name; G := FindGlobal(SName);
+   SName := Modules[M].Symbols^[SI].Name; G := FindGlobal(SName);
    If (G > 0) and Globals[G].Defined Then Begin AddValue := Globals[G].FinalValue; OutType := SegmentOf(Globals[G].FinalType); End
    Else If Opt.AllowUndefined and (G > 0) Then OutType := (OutputSymbolIndex(G) shl 3) or REL_EXTERN
    Else OutType := REL_ABS;
-  End;
-  If P + 1 < SrcSize Then Begin V16 := ReadWordBuf(Src, P) + Word(AddValue); WriteWordBuf(Dst, DstBase + P, V16); End
+  End
+  Else If RT = REL_PCREL Then
+  Begin
+   SI := SrcRel^[WI] shr 3;
+   If SI >= Modules[M].SymCount Then Begin Error(Modules[M].FileName + ': index PCREL invalide'); SI := 0; End;
+   SName := Modules[M].Symbols^[SI].Name; G := FindGlobal(SName);
+   If (G > 0) and Globals[G].Defined Then AddValue := Globals[G].FinalValue - (Opt.TextBase + Modules[M].TextOffset + P)
+   Else Begin Error(Modules[M].FileName + ': symbole PCREL non defini: ' + SName); AddValue := 0; End;
+   OutType := REL_ABS;
+  End
+  Else If (RT <> REL_ABS) and (RT <> REL_INSTR) Then Error(Modules[M].FileName + ': type de relogement invalide');
+  If P + 1 < SrcSize Then Begin
+   V16 := ReadWordBuf(Src, P); FullValue := SmallInt(V16) + AddValue;
+   If RT = REL_PCREL Then CheckShortOverflow(FullValue, True, Modules[M].FileName)
+   Else If RT in [REL_TEXT, REL_DATA, REL_BSS, REL_EXTERN] Then CheckShortOverflow(FullValue, False, Modules[M].FileName);
+   WriteWordBuf(Dst, DstBase + P, Word(FullValue));
+  End
   Else Dst^[DstBase + P] := Src^[P];
   If Opt.Absolute Then DstRel^[(DstBase div 2) + WI] := 0 Else DstRel^[(DstBase div 2) + WI] := OutType;
   Inc(WI);
@@ -732,7 +843,7 @@ Begin
  If Opt.EmitSymbols Then For M := 1 to ModuleCount do If Modules[M].IncludeLocals Then
   For I := 0 to Modules[M].SymCount - 1 do
   Begin
-   S := Modules[M].Symbols[I];
+   S := Modules[M].Symbols^[I];
    If ((S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0) and
       ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then Inc(N);
   End;
@@ -761,7 +872,7 @@ Begin
  If Opt.EmitSymbols Then For M := 1 to ModuleCount do If Modules[M].IncludeLocals Then
   For I := 0 to Modules[M].SymCount - 1 do
   Begin
-   S := Modules[M].Symbols[I];
+   S := Modules[M].Symbols^[I];
    If ((S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0) and
       ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then
    Begin
@@ -781,6 +892,7 @@ Procedure FreeAll;
 Var I: Integer;
 Begin
  For I := 1 to ModuleCount do Begin
+  If Modules[I].Symbols <> Nil Then FreeMem(Modules[I].Symbols, LongInt(Modules[I].SymCount) * SizeOf(TSymbol));
   FreeMem(Modules[I].TextData, Modules[I].TextSize + 1); FreeMem(Modules[I].DataData, Modules[I].DataSize + 1);
   FreeMem(Modules[I].TextRel, ((Modules[I].TextSize + 1) div 2) * 2 + 2);
   FreeMem(Modules[I].DataRel, ((Modules[I].DataSize + 1) div 2) * 2 + 2);
