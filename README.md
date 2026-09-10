@@ -71,6 +71,11 @@ L'application DEVENV possède plusieurs terminaux pour répondre aux différente
 		<td>Emulateur Linux</td>
 	</tr>
 	<tr>
+		<td><b>Norton Commander</b></td>
+		<td>Tous les emulateurs</td>
+		<td>Emulateurs OS/2, Linux, DOS, CoCo 3, Commodore 64</td>
+	</tr>
+	<tr>
 		<td><b>OS/2 &amp; REXX</b></td>
 		<td>OS/2</td>
 		<td>Emulateur OS/2</td>
