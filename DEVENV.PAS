@@ -2346,6 +2346,10 @@ Const
  OS9_MEM_BASE     = $8000;
  OS9_MEM_MAX      = $2000;
  OS9_FORK_SENTINEL = $FFFC;
+ { Zone de parametres (ligne de commande) ecrite par ShowEmulatorPanel et   }
+ { pointee par Y au demarrage - au-dela des 4 emplacements F$Load/F$Fork    }
+ { ($A000..$DFFF), avant la pile ($FFFE). }
+ OS9_PARAM_AREA   = $E000;
  CCR_C         = 1;
  CCR_V         = 2;
  CCR_Z         = 4;
@@ -72129,14 +72133,24 @@ End;
 { volume OS-9/6809 monte, voir Fat_ExtractToTempFile). }
 Procedure TermCmd_StartOS9Program(Var TP: TTerminalPanel; ParamStr: String);
 Var
- CurrParam, Dir, RomPath: String;
+ CurrParam, Dir, RomPath, TrimmedParams, RestParam: String;
  Idx: Byte;
+ P: Integer;
 Begin
  CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
  If CurrParam = '' Then Begin
-  TermAddLine(TP, 'Syntaxe : Start-OS9Program fichier.os9');
+  TermAddLine(TP, 'Syntaxe : Start-OS9Program fichier.os9 [arguments]');
   Exit;
  End;
+ { Meme extraction que Start-DosProgram ci-dessus : tout ce qui suit le    }
+ { premier mot devient la ligne de commande transmise au module OS-9       }
+ { (voir ShowEmulatorPanel, zone de parametres OS9_PARAM_AREA pointee par  }
+ { Y au demarrage - BOGUE REEL corrige 2026-09-11, aucun argument n etait   }
+ { jamais transmis auparavant). }
+ TrimmedParams := TrimStr(ParamStr);
+ P := System.Pos(' ', TrimmedParams);
+ If P > 0 Then RestParam := TrimStr(Copy(TrimmedParams, P + 1, Length(TrimmedParams)))
+ Else RestParam := '';
  If TP.VirtDrive >= 0 Then Begin
   Idx := Byte(TP.VirtDrive);
   { Un vrai module OS-9 n a jamais d extension et vit generalement dans     }
@@ -72148,7 +72162,7 @@ Begin
     TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
     Exit;
    End;
-  CreateEmulatorTab(RomPath, '-COS9', '');
+  CreateEmulatorTab(RomPath, '-COS9', RestParam);
   Exit;
  End;
  GetDir(0, Dir);
@@ -72157,7 +72171,7 @@ Begin
   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
   Exit;
  End;
- CreateEmulatorTab(RomPath, '-COS9', '');
+ CreateEmulatorTab(RomPath, '-COS9', RestParam);
 End;
 
 { Start-LinuxProgram (2026-08-31, demande explicite de l'utilisateur,      }
@@ -163242,6 +163256,7 @@ Var
  LogF_R: Text;
  Idx_R, KK_R: Integer;
  AllZero: Boolean;
+ OS9ArgI: Integer;
 Begin NesActive := False;
  InitEmulatorPanel(P);
  P.BinaryPath := BinaryPath;
@@ -164185,6 +164200,19 @@ Begin NesActive := False;
       (Pos('.ROM', UpCaseStr(BinaryPath)) > 0)) Then
     Coco3_Active := True;
   M6809_Reset(EntryAddr16);
+  { Convention reelle OS-9 : Y pointe au demarrage vers la zone de          }
+  { parametres (ligne de commande APRES le nom du module), terminee par    }
+  { un retour chariot ($0D) - ainsi un programme OS-9 recupere ses          }
+  { arguments (aucune convention "argv" a la C). BOGUE REEL corrige         }
+  { (2026-09-11, signale par l'utilisateur - Start-OS9Program semblait ne   }
+  { jamais transmettre les parametres) : Args n'etait ecrit nulle part      }
+  { pour cette cible (M6809_Reset l ignore completement). }
+  If TargetCPU = '-COS9' Then Begin
+   For OS9ArgI := 1 To Length(Args) Do
+    M6809_Mem[Word(OS9_PARAM_AREA + OS9ArgI - 1)] := Ord(Args[OS9ArgI]);
+   M6809_Mem[Word(OS9_PARAM_AREA + Length(Args))] := 13;
+   M6809_Y := OS9_PARAM_AREA;
+  End;
   If OptionsDlg.Data.EmuShowDebugMessages Then Begin
    P.CurFg := 10;
    EmuVScr_WriteStr(P, 'Programme charge (PC=$' +
