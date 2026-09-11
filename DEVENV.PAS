@@ -2341,6 +2341,11 @@ Const
  { toutes deux sous le tas GEMDOS/la zone DTA, jamais recouvertes. }
  M68K_XBIOS_SCREEN_ADDR = $90000;
  M68K_XBIOS_KEYTBL_ADDR = $F0100;
+ { OS-9/6809 : zone F$Mem (8 Ko), sentinelle de retour F$Fork (distincte    }
+ { de $FFFE, deja utilisee comme fin de programme). }
+ OS9_MEM_BASE     = $8000;
+ OS9_MEM_MAX      = $2000;
+ OS9_FORK_SENTINEL = $FFFC;
  CCR_C         = 1;
  CCR_V         = 2;
  CCR_Z         = 4;
@@ -9955,6 +9960,26 @@ Var
  { systeme, voir M6809_DoOS9Syscall) - pas de materiel CoCo3 (Coco3_Active   }
  { reste False), juste le coeur 6809 + une couche d appels systeme minimale.}
  OS9_Active     : Boolean;
+ { Repertoire de modules simplifie (F$Link/F$Load/F$UnLink/F$Fork) : 4      }
+ { emplacements fixes ($A000/$B000/$C000/$D000, 4 Ko chacun) - largement    }
+ { suffisant pour des programmes de test, jamais recycle finement (meme    }
+ { simplification que le tas GEMDOS Atari ST de ce fichier). }
+ OS9_ModName    : Array[0..3] Of String[32];
+ OS9_ModBase    : Array[0..3] Of Word;
+ OS9_ModExec    : Array[0..3] Of Word;
+ OS9_ModUsed    : Array[0..3] Of Boolean;
+ OS9_PrimaryName: String;
+ { F$Fork execute de facon SYNCHRONE (pas de vrai multitache ici) : F$Exit  }
+ { a l interieur d un fork saute vers OS9_FORK_SENTINEL au lieu d arreter    }
+ { tout le programme - voir M6809_DoOS9Syscall. }
+ OS9_ForkDepth    : Integer;
+ OS9_ForkExitCode : Byte;
+ { F$Mem : allocateur "bump" simple entre OS9_MEM_BASE et +OS9_MEM_MAX. }
+ OS9_MemSize    : Word;
+ { I$Open/Close/Read/Write : chemins hote reels 3..10 (0..2 reserves       }
+ { stdin/stdout/stderr, mappes sur l ecran virtuel). }
+ OS9_FileH      : Array[0..7] Of File;
+ OS9_FileOpen   : Array[0..7] Of Boolean;
  { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
  Coco3_Active   : Boolean;
  Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
@@ -158216,27 +158241,246 @@ Begin
   End;
 End;
 
+{ Forward : M6809_DoOS9Syscall a besoin de M6809_Step (F$Fork, execution    }
+{ synchrone imbriquee - meme motif que Supexec/XBIOS Atari ST) et de        }
+{ M6809_ReadOS9Name/M6809_LoadOS9ModuleAt (definies plus bas avec le reste  }
+{ des chargeurs 6809). }
+Procedure M6809_Step; Forward;
+Function M6809_ReadOS9Name(Addr: Word): String; Forward;
+Function M6809_LoadOS9ModuleAt(Const FileName: String; Base: Word;
+                               Var EntryAddr: Word;
+                               Var ModName: String): Boolean; Forward;
+
+{ Cherche un module deja resident (module principal ou table F$Load/       }
+{ F$Fork) par son nom. Retourne -2 pour le module principal, -1 si non      }
+{ trouve, sinon l index 0..3 dans OS9_ModName/OS9_ModBase/OS9_ModExec. }
+Function OS9_FindModuleSlot(Const Name: String): Integer;
+Var I: Integer;
+Begin
+  OS9_FindModuleSlot := -1;
+  If UpCaseStr(Name) = UpCaseStr(OS9_PrimaryName) Then Begin
+    OS9_FindModuleSlot := -2;
+    Exit;
+  End;
+  For I := 0 To 3 Do
+    If OS9_ModUsed[I] And (UpCaseStr(OS9_ModName[I]) = UpCaseStr(Name)) Then Begin
+      OS9_FindModuleSlot := I;
+      Exit;
+    End;
+End;
+
 { Appels systeme OS-9/6809 (SWI2 suivi d un octet de service inline,        }
-{ convention "OS9 servicecode" des assembleurs OS-9 reels) - seul un sous-  }
-{ ensemble minimal est implemente (F$Exit, I$Write, I$WritLn) ; tout autre  }
+{ convention "OS9 servicecode" des assembleurs OS-9 reels). Sous-ensemble    }
+{ implemente : F$Link, F$Load, F$UnLink, F$Fork (synchrone - pas de vrai    }
+{ multitache), F$Wait, F$Exit, F$Mem, F$Sleep, I$Open, I$Close, I$Read,     }
+{ I$Write, I$GetStt/I$SetStt (acceptes sans donnees reelles). Tout autre    }
 { code de service retourne une erreur generique (Carry positionne, B=$FF)  }
 { plutot que d inventer un resultat, meme principe que les autres backends  }
 { "trap systeme" de ce fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
-  Cnt, I: Word;
+  Cnt, I, N: Word;
+  ModName, LoadedName, HostDir, HostPath: String;
+  Slot, FreeSlot, J, Path, PIdx: Integer;
+  ChildEntry, SavedS, SavedPC: Word;
+  OK: Boolean;
+  Guard: LongInt;
+  DeltaW: Word;
+  DeltaS: LongInt;
+  NewSize: LongInt;
 Begin
   M6809_CC := M6809_CC And Not $01; { Carry clair = succes par defaut }
   Case SvcCode Of
+    $00: Begin { F$Link(name=Y) : module deja resident uniquement }
+           ModName := M6809_ReadOS9Name(M6809_Y);
+           Slot := OS9_FindModuleSlot(ModName);
+           If Slot = -2 Then Begin
+             M6809_U := 0; M6809_Y := 0;
+           End Else If Slot >= 0 Then Begin
+             M6809_U := OS9_ModBase[Slot]; M6809_Y := OS9_ModBase[Slot];
+           End Else Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0; { module absent }
+           End;
+         End;
+    $01: Begin { F$Load(name=Y) : F$Link, puis charge depuis l hote si absent }
+           ModName := M6809_ReadOS9Name(M6809_Y);
+           Slot := OS9_FindModuleSlot(ModName);
+           If Slot = -2 Then Begin
+             M6809_U := 0; M6809_Y := 0;
+           End Else If Slot >= 0 Then Begin
+             M6809_U := OS9_ModBase[Slot]; M6809_Y := OS9_ModBase[Slot];
+           End Else Begin
+             FreeSlot := -1;
+             For J := 0 To 3 Do
+               If Not OS9_ModUsed[J] Then Begin FreeSlot := J; Break; End;
+             OK := False;
+             If FreeSlot >= 0 Then Begin
+               GetDir(0, HostDir);
+               HostPath := HostDir + '\' + ModName;
+               OK := M6809_LoadOS9ModuleAt(HostPath,
+                Word($A000 + FreeSlot * $1000), ChildEntry, LoadedName);
+               If OK Then Begin
+                 OS9_ModName[FreeSlot] := ModName;
+                 OS9_ModBase[FreeSlot] := Word($A000 + FreeSlot * $1000);
+                 OS9_ModExec[FreeSlot] := ChildEntry;
+                 OS9_ModUsed[FreeSlot] := True;
+                 M6809_U := OS9_ModBase[FreeSlot];
+                 M6809_Y := OS9_ModBase[FreeSlot];
+               End;
+             End;
+             If Not OK Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $F0; { module introuvable }
+             End;
+           End;
+         End;
+    $02: Begin { F$UnLink(name=Y) : libere l emplacement (jamais recycle finement) }
+           ModName := M6809_ReadOS9Name(M6809_Y);
+           Slot := OS9_FindModuleSlot(ModName);
+           If Slot >= 0 Then OS9_ModUsed[Slot] := False;
+           { Slot=-2 (module principal) ou -1 (deja absent) : succes quand meme, }
+           { rien de plus a faire de facon honnete ici. }
+         End;
+    $03: Begin { F$Fork(name=Y) : execution SYNCHRONE (pas de vrai multitache) }
+           ModName := M6809_ReadOS9Name(M6809_Y);
+           Slot := OS9_FindModuleSlot(ModName);
+           OK := False;
+           If Slot = -2 Then Begin
+             ChildEntry := 0; { module principal : rare en pratique, non gere }
+           End Else If Slot >= 0 Then Begin
+             ChildEntry := OS9_ModExec[Slot];
+             OK := True;
+           End Else Begin
+             FreeSlot := -1;
+             For J := 0 To 3 Do
+               If Not OS9_ModUsed[J] Then Begin FreeSlot := J; Break; End;
+             If FreeSlot >= 0 Then Begin
+               GetDir(0, HostDir);
+               HostPath := HostDir + '\' + ModName;
+               OK := M6809_LoadOS9ModuleAt(HostPath,
+                Word($A000 + FreeSlot * $1000), ChildEntry, LoadedName);
+               If OK Then Begin
+                 OS9_ModName[FreeSlot] := ModName;
+                 OS9_ModBase[FreeSlot] := Word($A000 + FreeSlot * $1000);
+                 OS9_ModExec[FreeSlot] := ChildEntry;
+                 OS9_ModUsed[FreeSlot] := True;
+               End;
+             End;
+           End;
+           If Not OK Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End Else Begin
+             SavedS := M6809_S;
+             M6809_S := Word(M6809_S - 2);
+             M6809_Wr16(M6809_S, OS9_FORK_SENTINEL);
+             SavedPC := M6809_PC;
+             M6809_PC := ChildEntry;
+             Inc(OS9_ForkDepth);
+             Guard := 0;
+             While (M6809_PC <> OS9_FORK_SENTINEL) And (Not M6809_Halted) And
+                   (Guard < 1000000) Do Begin
+               M6809_Step;
+               Inc(Guard);
+             End;
+             Dec(OS9_ForkDepth);
+             M6809_S := SavedS;
+             M6809_PC := SavedPC;
+             M6809_B := OS9_ForkExitCode;
+           End;
+         End;
+    $04: M6809_B := OS9_ForkExitCode; { F$Wait : F$Fork est deja synchrone }
     $06: Begin { F$Exit(cc=B) }
-           M6809_Halted := True;
-           M6809_ExitCode := M6809_B;
+           If OS9_ForkDepth > 0 Then Begin
+             OS9_ForkExitCode := M6809_B;
+             M6809_PC := OS9_FORK_SENTINEL;
+           End Else Begin
+             M6809_Halted := True;
+             M6809_ExitCode := M6809_B;
+           End;
+         End;
+    $07: Begin { F$Mem(D=delta signe) -> D=nouvelle taille, U=Y=base }
+           DeltaW := M6809_GetD;
+           If DeltaW <> 0 Then Begin
+             DeltaS := SmallInt(DeltaW);
+             NewSize := LongInt(OS9_MemSize) + DeltaS;
+             If NewSize < 0 Then NewSize := 0;
+             If NewSize > OS9_MEM_MAX Then NewSize := OS9_MEM_MAX;
+             OS9_MemSize := NewSize;
+           End;
+           M6809_SetD(OS9_MemSize);
+           M6809_U := OS9_MEM_BASE;
+           M6809_Y := OS9_MEM_BASE;
+         End;
+    $0A: ; { F$Sleep(D=ticks) : ne bloque jamais }
+    $84: Begin { I$Open(mode=A, pathlist=X) }
+           HostPath := M6809_ReadOS9Name(M6809_X);
+           FreeSlot := -1;
+           For J := 0 To 7 Do
+             If Not OS9_FileOpen[J] Then Begin FreeSlot := J; Break; End;
+           If FreeSlot < 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F4; { table pleine }
+           End Else Begin
+             Assign(OS9_FileH[FreeSlot], HostPath);
+             {$I-}
+             If (M6809_A And $01) <> 0 Then Reset(OS9_FileH[FreeSlot], 1)
+             Else Begin
+               Reset(OS9_FileH[FreeSlot], 1);
+               If IOResult <> 0 Then Rewrite(OS9_FileH[FreeSlot], 1);
+             End;
+             {$I+}
+             If IOResult <> 0 Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $D6; { introuvable }
+             End Else Begin
+               OS9_FileOpen[FreeSlot] := True;
+               M6809_A := FreeSlot + 3; { 0..2 reserves stdin/out/err }
+             End;
+           End;
+         End;
+    $8F: Begin { I$Close(path=A) }
+           PIdx := M6809_A - 3;
+           If (PIdx < 0) Or (PIdx > 7) Or (Not OS9_FileOpen[PIdx]) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $C6; { chemin invalide }
+           End Else Begin
+             Close(OS9_FileH[PIdx]);
+             OS9_FileOpen[PIdx] := False;
+           End;
+         End;
+    $89: Begin { I$Read(path=A, buf=X, count=Y) }
+           Path := M6809_A;
+           Cnt := M6809_Y;
+           If Path <= 2 Then
+             M6809_Y := 0 { clavier non cable ici, meme limitation honnete }
+           Else Begin       { que Cconin GEMDOS (Atari ST) }
+             PIdx := Path - 3;
+             If (PIdx < 0) Or (PIdx > 7) Or (Not OS9_FileOpen[PIdx]) Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $C6;
+             End Else Begin
+               N := 0;
+               While (N < Cnt) And (Not Eof(OS9_FileH[PIdx])) Do Begin
+                 BlockRead(OS9_FileH[PIdx], Ch, 1);
+                 M6809_Wr(Word(M6809_X + N), Ch);
+                 Inc(N);
+               End;
+               M6809_Y := N;
+             End;
+           End;
          End;
     $8A: Begin { I$Write(path=A, buf=X, count=Y) }
+           Path := M6809_A;
            Cnt := M6809_Y;
-           For I := 0 To Cnt - 1 Do
-             EmuVScr_PutChar(M6809_Panel^, Chr(M6809_Rd(Word(M6809_X + I))));
+           If Path <= 2 Then Begin
+             For I := 0 To Cnt - 1 Do
+               EmuVScr_PutChar(M6809_Panel^, Chr(M6809_Rd(Word(M6809_X + I))));
+           End Else Begin
+             PIdx := Path - 3;
+             If (PIdx < 0) Or (PIdx > 7) Or (Not OS9_FileOpen[PIdx]) Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $C6;
+             End Else
+               For I := 0 To Cnt - 1 Do Begin
+                 Ch := M6809_Rd(Word(M6809_X + I));
+                 BlockWrite(OS9_FileH[PIdx], Ch, 1);
+               End;
+           End;
          End;
     $8C: Begin { I$WritLn(path=A, buf=X, maxcount=Y) - jusqu au CR inclus }
            Cnt := M6809_Y;
@@ -158253,6 +158497,8 @@ Begin
            End;
            M6809_Y := I;
          End;
+    $8D, $8E: ; { I$GetStt/I$SetStt : acceptes sans donnees reelles - aucune }
+                { table de codes de statut par peripherique implementee ici. }
   Else
     M6809_CC := M6809_CC Or $01;
     M6809_B := $FF;
@@ -159734,26 +159980,54 @@ Begin
   M6809_LoadThomsonBin := True;
 End;
 
-{ Charge un module OS-9/6809 : en-tete standard (sync $87CD, taille,        }
-{ offset nom, type/langage, attributs/revision, parite, offset execution,   }
-{ taille memoire permanente, nom, code/donnees, CRC 3 octets - voir tete    }
-{ de fichier pour le detail complet des offsets). Le module ENTIER          }
-{ (en-tete inclus) est charge tel quel a l adresse 0, car M$EXEC (l offset  }
-{ d execution) est TOUJOURS relatif au debut du module lui-meme, exactement }
-{ comme un vrai chargeur OS-9. Le CRC final n est pas verifie (aucune        }
-{ consequence sur l execution, meme choix que l absence de controle de      }
-{ parite EXE DOS ailleurs dans ce fichier). }
-Function M6809_LoadOS9Module(Const FileName: String;
-                             Var EntryAddr: Word): Boolean;
+{ Lit un nom de module OS-9 en memoire emulee : ASCII jusqu a un octet nul   }
+{ OU un octet dont le bit 7 est positionne (INCLUS, bit masque) - les deux  }
+{ conventions reelles OS-9 (en-tete de module ET pathlists I$Open). }
+Function M6809_ReadOS9Name(Addr: Word): String;
+Var
+  S: String;
+  Ch: Byte;
+  I: Integer;
+Begin
+  S := '';
+  I := 0;
+  While I < 32 Do Begin
+    Ch := M6809_Rd(Word(Addr + I));
+    If Ch = 0 Then Break;
+    If (Ch And $80) <> 0 Then Begin
+      S := S + Chr(Ch And $7F);
+      Break;
+    End;
+    S := S + Chr(Ch);
+    Inc(I);
+  End;
+  M6809_ReadOS9Name := S;
+End;
+
+{ Charge un module OS-9/6809 a une adresse de base arbitraire (utilise par  }
+{ F$Load/F$Fork pour les modules secondaires, et par M6809_LoadOS9Module    }
+{ ci-dessous pour le module principal a l adresse 0) : en-tete standard     }
+{ (sync $87CD, taille, offset nom, type/langage, attributs/revision,       }
+{ parite, offset execution, taille memoire permanente, nom, code/donnees,  }
+{ CRC 3 octets - voir tete de fichier pour le detail complet des offsets).  }
+{ Le module ENTIER (en-tete inclus) est charge tel quel, car M$EXEC (l     }
+{ offset d execution) et le nom du module sont TOUJOURS relatifs au debut   }
+{ du module lui-meme, exactement comme un vrai chargeur OS-9. Le CRC final  }
+{ n est pas verifie (aucune consequence sur l execution, meme choix que     }
+{ l absence de controle de parite EXE DOS ailleurs dans ce fichier). }
+Function M6809_LoadOS9ModuleAt(Const FileName: String; Base: Word;
+                               Var EntryAddr: Word;
+                               Var ModName: String): Boolean;
 Var
   F: File;
   Hdr: Array[0..12] Of Byte;
   BytesRead: Word;
-  Sync, ExecOfs: Word;
+  Sync, ExecOfs, NameOfs: Word;
   B: Byte;
   I: LongInt;
 Begin
-  M6809_LoadOS9Module := False;
+  M6809_LoadOS9ModuleAt := False;
+  ModName := '';
   Assign(F, FileName);
   {$I-} Reset(F, 1); {$I+}
   If IOResult <> 0 Then Exit;
@@ -159761,17 +160035,26 @@ Begin
   If BytesRead < SizeOf(Hdr) Then Begin Close(F); Exit; End;
   Sync := (Word(Hdr[0]) Shl 8) Or Hdr[1];
   If Sync <> $87CD Then Begin Close(F); Exit; End;
+  NameOfs := (Word(Hdr[4]) Shl 8) Or Hdr[5];
   ExecOfs := (Word(Hdr[9]) Shl 8) Or Hdr[10];
   Seek(F, 0);
   I := 0;
-  While (Not Eof(F)) And (I <= $FFFF) Do Begin
+  While (Not Eof(F)) And ((LongInt(Base) + I) <= $FFFF) Do Begin
     BlockRead(F, B, 1);
-    M6809_Mem[I] := B;
+    M6809_Mem[Base + I] := B;
     Inc(I);
   End;
   Close(F);
-  EntryAddr := ExecOfs;
-  M6809_LoadOS9Module := True;
+  EntryAddr := Word(Base + ExecOfs);
+  ModName := M6809_ReadOS9Name(Word(Base + NameOfs));
+  M6809_LoadOS9ModuleAt := True;
+End;
+
+Function M6809_LoadOS9Module(Const FileName: String;
+                             Var EntryAddr: Word): Boolean;
+Begin
+  M6809_LoadOS9Module :=
+   M6809_LoadOS9ModuleAt(FileName, 0, EntryAddr, OS9_PrimaryName);
 End;
 
 Procedure M6809_Reset(EntryAddr: Word);
@@ -163270,6 +163553,11 @@ Begin NesActive := False;
   End
   Else If TargetCPU = '-COS9' Then Begin
    M6809_Variant := 6;
+   FillChar(OS9_ModUsed, SizeOf(OS9_ModUsed), 0);
+   FillChar(OS9_FileOpen, SizeOf(OS9_FileOpen), 0);
+   OS9_ForkDepth := 0;
+   OS9_ForkExitCode := 0;
+   OS9_MemSize := 0;
    Loaded := M6809_LoadOS9Module(BinaryPath, EntryAddr16);
    OS9_Active := Loaded;
   End;
