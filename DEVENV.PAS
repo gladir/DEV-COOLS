@@ -40343,7 +40343,14 @@ Begin
     Dec(Remain, 32);
     If (Nm <> '') And (ChFD <> 0) And (UpCaseStr(Nm) = NameUp) Then Begin
      If Not OS9_ReadSector(Idx, ChFD, FDBuf) Then Exit;
-     Attr    := FDBuf[0];
+     { Normalise vers la convention FAT deja utilisee par tous les          }
+     { appelants generiques (Fat_ResolveDir/Fat_FindPath/TermCmd_TYPE/      }
+     { TermCopyFile/...) : bit $10 = repertoire. Le bit $80 de l octet      }
+     { d attributs OS-9 REEL (FD.ATT) a une signification differente en    }
+     { FAT (VolLabel) - sans cette traduction, Fat_ResolveDir ne pouvait    }
+     { jamais descendre dans un sous-repertoire OS-9 (BOGUE REEL trouve    }
+     { en implementant Start-OS9Program ci-dessous). }
+     If (FDBuf[0] And $80) <> 0 Then Attr := $10 Else Attr := 0;
      Size    := OS9_BE32(FDBuf, 9);
      ChildFD := ChFD;
      OS9_FindInDir := True;
@@ -41440,6 +41447,49 @@ Begin
   If Fat_FindPath(Idx, FullP, Attr, Cluster, Sz) And ((Attr And $10) = 0) Then Begin
    If Fat_ExtractToTempFile(Idx, Cluster, Sz, Candidates[I], OutPath) Then Begin
     Fat_FindDosExecutable := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Equivalent virtuel de TermFindRomByExt (systeme hote) : cherche CmdName  }
+{ TEL QUEL (un vrai module OS-9 n a jamais d extension - convention          }
+{ ".os9" ci-dessus propre aux fichiers HOTE de ce projet) puis, en repli,  }
+{ CmdName+'.'+Ext, dans Dir (chemin absolu FAT ou OS-9 - Fat_FindPath gere }
+{ deja les deux) sur le disque virtuel Idx, et l extrait vers un fichier    }
+{ hote temporaire via Fat_ExtractToTempFile (deja adapte a OS-9 - lecture }
+{ par segments plutot que par chaine de clusters). Utilise par les          }
+{ commandes Start-*Program pour lancer un programme stocke SUR un disque   }
+{ monte (/DISK0../DISK81), pas seulement sur le systeme hote. }
+Function Fat_FindRomByExt(Idx: Byte; Dir, CmdName, Ext: String;
+ Var OutPath: String): Boolean;
+Var
+ UpName, UpExt, FullP: String;
+ Candidates: Array[0..1] Of String;
+ NCand, I: Integer;
+ Attr: Byte;
+ Cluster, Sz: LongInt;
+Begin
+ Fat_FindRomByExt := False;
+ UpName := UpCaseStr(CmdName);
+ UpExt := UpCaseStr(Ext);
+ Candidates[0] := CmdName;
+ NCand := 1;
+ If Not ((Length(UpName) > Length(UpExt)) And
+    (Copy(UpName, Length(UpName) - Length(UpExt), Length(UpExt) + 1)
+     = '.' + UpExt)) Then Begin
+  Candidates[1] := CmdName + '.' + Ext;
+  NCand := 2;
+ End;
+ For I := 0 To NCand - 1 Do Begin
+  If (Length(Dir) > 0) And (Dir[Length(Dir)] = '\') Then
+   FullP := Dir + Candidates[I]
+  Else
+   FullP := Dir + '\' + Candidates[I];
+  If Fat_FindPath(Idx, FullP, Attr, Cluster, Sz) And ((Attr And $10) = 0) Then Begin
+   If Fat_ExtractToTempFile(Idx, Cluster, Sz, Candidates[I], OutPath) Then Begin
+    Fat_FindRomByExt := True;
     Exit;
    End;
   End;
@@ -72071,10 +72121,16 @@ End;
 
 { Start-OS9Program (meme motif exact que Start-NesProgram ci-dessus) -      }
 { lance un module OS-9/6809 (en-tete standard, voir M6809_LoadOS9Module)    }
-{ dans l emulateur -COS9. }
+{ dans l emulateur -COS9. BOGUE REEL corrige (2026-09-11, signale par l    }
+{ utilisateur - "meme pas capable de lancer un programme OS-9 sur un       }
+{ disque monte") : rejetait purement et simplement tout disque virtuel      }
+{ actif (TP.VirtDrive >= 0) au lieu d y chercher le module via              }
+{ Fat_FindRomByExt (deja capable de lire un fichier OS-9 REEL sur un       }
+{ volume OS-9/6809 monte, voir Fat_ExtractToTempFile). }
 Procedure TermCmd_StartOS9Program(Var TP: TTerminalPanel; ParamStr: String);
 Var
  CurrParam, Dir, RomPath: String;
+ Idx: Byte;
 Begin
  CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
  If CurrParam = '' Then Begin
@@ -72082,8 +72138,17 @@ Begin
   Exit;
  End;
  If TP.VirtDrive >= 0 Then Begin
-  TermAddLine(TP, 'Start-OS9Program : disque virtuel non supporte, ' +
-   'utiliser un chemin du systeme hote.');
+  Idx := Byte(TP.VirtDrive);
+  { Un vrai module OS-9 n a jamais d extension et vit generalement dans     }
+  { /CMDS (repertoire de commandes standard, cherche en repli si absent    }
+  { du repertoire courant - meme convention que le shell OS-9 reel qui       }
+  { cherche d abord le repertoire courant puis /CMDS). }
+  If Not Fat_FindRomByExt(Idx, TP.VirtCwd, CurrParam, 'OS9', RomPath) Then
+   If Not Fat_FindRomByExt(Idx, '\CMDS', CurrParam, 'OS9', RomPath) Then Begin
+    TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+    Exit;
+   End;
+  CreateEmulatorTab(RomPath, '-COS9', '');
   Exit;
  End;
  GetDir(0, Dir);
