@@ -36923,6 +36923,8 @@ End;
 
 Procedure AddContextItem(Var CM: TContextMenu; ACaption: String;
  ATag: LongInt);
+Var
+ NeededWidth: Integer;
 Begin
  If CM.ItemCount >= MAX_CTX_ITEMS Then Exit;
  CM.Items[CM.ItemCount].Caption := ACaption;
@@ -36932,6 +36934,22 @@ Begin
  CM.Items[CM.ItemCount].Separator := False;
  CM.Items[CM.ItemCount].Checked := False;
  Inc(CM.ItemCount);
+ { BOGUE REEL corrige (2026-09-11, demande explicite : "la largeur du menu }
+ { contextuel dans le Terminal... affiche tous les textes a l'interieur   }
+ { de la boite") : CM.Width restait FIGE a 160 (InitContextMenu) quel que  }
+ { soit le texte reellement ajoute - DrawContextMenu dessine la boite a    }
+ { cette largeur fixe puis ecrit Caption avec OutTextXY SANS aucune        }
+ { troncature/retour a la ligne, donc un libelle plus large que 160px      }
+ { deborde purement et simplement de la boite. Corrige en agrandissant     }
+ { CM.Width a la volee des qu'un libelle plus large est ajoute (jamais      }
+ { retreci - un menu ne doit jamais devenir plus etroit en cours de        }
+ { construction). Meme fonction TextWidth deja utilisee ailleurs dans ce    }
+ { fichier pour mesurer du texte a la police courante (ex. barre d onglets,}
+ { editeur de recherche) - pas une nouvelle capacite. +8 a gauche          }
+ { (OutTextXY(CM.X+8,...) dans DrawContextMenu) +8 a droite pour une marge }
+ { symetrique. }
+ NeededWidth := TextWidth(ACaption) + 16;
+ If NeededWidth > CM.Width Then CM.Width := NeededWidth;
 End;
 
 { --- Ajouter un separateur au menu contextuel --- }
@@ -36956,6 +36974,22 @@ Begin
  For I := 0 To CM.ItemCount - 1 Do
   If CM.Items[I].Separator Then MH := MH + 8
   Else MH := MH + 16;
+ { BOGUE REEL corrige (2026-09-11, demande explicite : "lorsque le menu    }
+ { contextuel du Terminal affiche plus bas que l'espace de l'ecran, faudrait}
+ { le remonter") : CM.X/CM.Y sont poses tels quels a la position du clic    }
+ { (voir ShowExplorerContextMenu et son equivalent Terminal) sans jamais    }
+ { verifier qu'ils tiennent dans l'ecran - un clic pres du bord bas/droit   }
+ { ouvrait donc un menu partiellement hors-ecran, invisible/inutilisable.   }
+ { Corrige ICI (site de dessin unique, partage par TOUS les menus          }
+ { contextuels de ce fichier - Explorateur, editeur, Terminal - pas         }
+ { seulement le Terminal) plutot qu'a chaque site d'ouverture : si la boite }
+ { deborderait a droite/en bas, la faire glisser vers la gauche/le haut     }
+ { pour rester entierement visible ; jamais remontee/deplacee au-dela du    }
+ { bord oppose (Max avec 0) si le menu est plus grand que l'ecran lui-meme. }
+ If CM.X + CM.Width > GetScreenWidth Then CM.X := GetScreenWidth - CM.Width;
+ If CM.X < 0 Then CM.X := 0;
+ If CM.Y + MH > GetScreenHeight Then CM.Y := GetScreenHeight - MH;
+ If CM.Y < 0 Then CM.Y := 0;
  { Ombre }
  SetColor(CLR_TITLEBAR);
  SetFillStyle(SolidFill, CLR_TITLEBAR);
@@ -111457,8 +111491,22 @@ Begin
  { Dispatcher selon le type de shell }
  Case TP.Shell Of
   SK_CMD: Begin
-   If CurrCmd = 'EXIT' Then
-    TermVisible := False
+   { BOGUE REEL corrige (2026-09-11, demande explicite : "Lorsqu je tape     }
+   { EXIT dans le Terminal, la fenetre reste encore affiche") : TermVisible }
+   { seul ne suffit pas - le toggle du menu Affichage>Terminal (tag 303,     }
+   { voir plus haut) met AUSSI TerminalHasFocus:=False et surtout           }
+   { FullRepaintNeeded:=True, sans quoi RIEN ne redessine par-dessus les     }
+   { pixels deja a l'ecran du panneau Terminal (son propre dessin s'arrete   }
+   { court-circuite des la 1ere ligne des que TermVisible=False) - le        }
+   { panneau reste donc visible a l'ecran, "fige", meme si son etat interne  }
+   { dit deja qu'il est ferme. Meme correctif applique a TOUS les autres     }
+   { shells (PowerShell dev/Bash/AmigaDOS/Norton Commander/OS2&REXX), qui    }
+   { avaient tous exactement le meme oubli. }
+   If CurrCmd = 'EXIT' Then Begin
+    TermVisible := False;
+    TerminalHasFocus := False;
+    FullRepaintNeeded := True;
+   End
    Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
     TermCmd_CD(TP, ParamStr)
    Else If CurrCmd = 'CLS' Then
@@ -111616,7 +111664,8 @@ Begin
   SK_POWERSHELL: Begin
    PSCmdID := TermLookupPSCmd(CurrCmd);
    Case PSCmdID Of
-    1: TermVisible := False;                                       { EXIT }
+    1: Begin TermVisible := False; TerminalHasFocus := False;         { EXIT }
+        FullRepaintNeeded := True; End;
     2: TermCmd_CD(TP, ParamStr);                { CD/CHDIR/SET-LOCATION }
     3: TermCmd_CLS(TP);                          { CLS/CLEAR-HOST/CLEAR }
     4: TermCmd_DIR_PS(TP, ParamStr);             { DIR/LS/GET-CHILDITEM }
@@ -111870,8 +111919,11 @@ Begin
    End;
   End;
   SK_BASH: Begin
-   If CurrCmd = 'EXIT' Then
-    TermVisible := False
+   If CurrCmd = 'EXIT' Then Begin
+    TermVisible := False;
+    TerminalHasFocus := False;
+    FullRepaintNeeded := True;
+   End
    Else If CurrCmd = 'CD' Then
     TermCmd_CD(TP, ParamStr)
    Else If CurrCmd = 'CLEAR' Then
@@ -111944,8 +111996,11 @@ Begin
       CurrCmd, ParamStr);
      Break;
     End;
-   If CurrCmd = 'EXIT' Then
-    TermVisible := False
+   If CurrCmd = 'EXIT' Then Begin
+    TermVisible := False;
+    TerminalHasFocus := False;
+    FullRepaintNeeded := True;
+   End
    Else If CurrCmd = 'CD' Then
     TermCmd_CD(TP, ParamStr)
    Else If CurrCmd = 'CLEAR' Then
@@ -112025,8 +112080,11 @@ Begin
    End;
   End;
   SK_AMIGADOS: Begin
-   If (CurrCmd = 'QUIT') Or (CurrCmd = 'ENDCLI') Then
-    TermVisible := False
+   If (CurrCmd = 'QUIT') Or (CurrCmd = 'ENDCLI') Then Begin
+    TermVisible := False;
+    TerminalHasFocus := False;
+    FullRepaintNeeded := True;
+   End
    Else If CurrCmd = 'CD' Then
     TermCmd_CD(TP, ParamStr)
    Else If CurrCmd = 'DIR' Then
@@ -112104,8 +112162,11 @@ Begin
    { generiques et deja compatibles TP.VirtDrive/TP.VirtCwd, voir        }
    { TermCmd_CD - aucun changement de comportement pour les autres       }
    { shells). }
-  If CurrCmd = 'EXIT' Then
-   TermVisible := False
+  If CurrCmd = 'EXIT' Then Begin
+   TermVisible := False;
+   TerminalHasFocus := False;
+   FullRepaintNeeded := True;
+  End
   Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
    TermCmd_CD(TP, ParamStr)
   Else If CurrCmd = 'CLS' Then
@@ -112268,8 +112329,11 @@ Begin
    { 2026-08-30 a la demande de l utilisateur : REXX ci-dessous integre    }
    { desormais integralement l interprete REXX.PAS (voir le grand bloc     }
    { Rexx_* pres de TermCmd_IMGMOUNT). }
-   If CurrCmd = 'EXIT' Then
-    TermVisible := False
+   If CurrCmd = 'EXIT' Then Begin
+    TermVisible := False;
+    TerminalHasFocus := False;
+    FullRepaintNeeded := True;
+   End
    Else If (CurrCmd = 'CD') Or (CurrCmd = 'CHDIR') Then
     TermCmd_CD(TP, ParamStr)
    Else If CurrCmd = 'CLS' Then
