@@ -9,6 +9,11 @@ Const MaxLineLength = 255;
 
 Type
  TCommentState = (csNone,csBrace,csParen);
+ {$IFDEF FPC}
+ TSourceString = AnsiString;
+ {$ELSE}
+ TSourceString = String;
+ {$ENDIF}
 
 Var
  SourceName,TempName,BackupName,ProgramName:String;
@@ -17,7 +22,7 @@ Var
  BeginTotal,EndTotal,BeginNumber,EndNumber,IndentLevel,MainBeginNumber,MainEndNumber:LongInt;
  BlockTop:Integer;BlockKind:Array[1..255]of Char;BlockBegin:Array[1..255]of LongInt;
  CommentState:TCommentState;
- OutLine:String;PreserveCommentIndent:Boolean;
+ OutLine:TSourceString;PreserveCommentIndent:Boolean;
 
 Function UpperString(Const S:String):String;
 Var R:String;I:Integer;
@@ -55,7 +60,25 @@ Begin
  WriteLn('Syntaxe : REPASCAL fichier.pas');
 End;
 
-Procedure CountLine(Const L:String;Var State:TCommentState;Var FirstFound:Boolean);
+Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
+{$IFDEF FPC}
+Begin
+ ReadSourceLine:=False;If Eof(T)Then Exit;ReadLn(T,L);
+ If IOResult<>0 Then Begin Error('erreur de lecture');Exit;End;ReadSourceLine:=True;
+End;
+{$ELSE}
+Var C:Char;TooLong:Boolean;
+Begin
+ ReadSourceLine:=False;If Eof(T)Then Exit;L:='';TooLong:=False;
+ While not Eoln(T)do Begin Read(T,C);If IOResult<>0 Then Begin Error('erreur de lecture');Exit;End;
+  If Length(L)<255 Then L:=L+C Else TooLong:=True;
+ End;ReadLn(T);If IOResult<>0 Then Begin Error('erreur de lecture');Exit;End;
+ If TooLong Then Begin Error('ligne de plus de 255 caracteres: Turbo Pascal ne peut pas la reformater sans perte');Exit;End;
+ ReadSourceLine:=True;
+End;
+{$ENDIF}
+
+Procedure CountLine(Const L:TSourceString;Var State:TCommentState;Var FirstFound:Boolean);
 Var I,J:Integer;W:String;C:Char;
 Begin I:=1;While I<=Length(L)do Begin C:=L[I];
  If State=csBrace Then Begin If C='}'Then State:=csNone;Inc(I);Continue;End;
@@ -73,31 +96,39 @@ Begin I:=1;While I<=Length(L)do Begin C:=L[I];
 End;
 
 Procedure FirstPass;
-Var L:String;FirstFound:Boolean;
+Var L:TSourceString;FirstFound:Boolean;
 Begin
  BeginTotal:=0;EndTotal:=0;MainBeginNumber:=0;MainEndNumber:=0;BlockTop:=0;IsUnit:=False;HasProgram:=False;CommentState:=csNone;FirstFound:=False;
  Assign(InputFile,SourceName);Reset(InputFile);If IOResult<>0 Then Begin Error('impossible d''ouvrir '+SourceName);Exit;End;
- While not Eof(InputFile)do Begin ReadLn(InputFile,L);If IOResult<>0 Then Begin Error('erreur de lecture');Break;End;CountLine(L,CommentState,FirstFound);End;
+ While ReadSourceLine(InputFile,L)do CountLine(L,CommentState,FirstFound);
  Close(InputFile);If IOResult<>0 Then Error('erreur de fermeture du fichier source');
 End;
 
-Function TrimLine(Const S:String):String;
-Var A,B:Integer;
+Function TrimLine(Const S:TSourceString):TSourceString;
+Var A,B:LongInt;
 Begin A:=1;While(A<=Length(S))and(S[A]=' ')do Inc(A);B:=Length(S);While(B>=A)and(S[B]=' ')do Dec(B);TrimLine:=Copy(S,A,B-A+1);End;
 
-Procedure AppendText(Const S:String);
-Var T:String;I:Integer;
+Procedure AppendText(Const S:TSourceString);
+Var T:TSourceString;I:LongInt;
 Begin T:=S;For I:=1 to Length(T)do If T[I]=#9 Then T[I]:=' ';
+ {$IFNDEF FPC}
  If Length(OutLine)+Length(T)>MaxLineLength Then Begin Error('ligne produite trop longue');Exit;End;OutLine:=OutLine+T;
+ {$ELSE}
+ OutLine:=OutLine+T;
+ {$ENDIF}
 End;
 
-Procedure AppendComment(Const S:String);
+Procedure AppendComment(Const S:TSourceString);
 Begin
+ {$IFNDEF FPC}
  If Length(OutLine)+Length(S)>MaxLineLength Then Begin Error('ligne de commentaire trop longue');Exit;End;OutLine:=OutLine+S;
+ {$ELSE}
+ OutLine:=OutLine+S;
+ {$ENDIF}
 End;
 
 Procedure EmitLine;
-Var S:String;I:LongInt;
+Var S:TSourceString;I:LongInt;
 Begin
  If PreserveCommentIndent Then S:=OutLine Else S:=TrimLine(OutLine);OutLine:='';
  If S=''Then Begin WriteLn(OutputFile);PreserveCommentIndent:=False;Exit;End;
@@ -108,8 +139,8 @@ End;
 Procedure EmitPending;
 Begin If TrimLine(OutLine)<>''Then EmitLine Else OutLine:='';End;
 
-Procedure FormatLine(Const L:String;Var State:TCommentState;Var SkipProgram:Boolean);
-Var I,J:Integer;W,U,S:String;C:Char;
+Procedure FormatLine(Const L:TSourceString;Var State:TCommentState;Var SkipProgram:Boolean);
+Var I,J:LongInt;W,U,S:String;C:Char;
 Begin I:=1;PreserveCommentIndent:=State<>csNone;While(I<=Length(L))and not HadError do Begin C:=L[I];
  If State=csBrace Then Begin J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin Inc(I);State:=csNone;End;AppendComment(Copy(L,J,I-J));Continue;End;
  If State=csParen Then Begin J:=I;While I<=Length(L)do Begin If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin Inc(I,2);State:=csNone;Break;End;Inc(I);End;AppendComment(Copy(L,J,I-J));Continue;End;
@@ -130,13 +161,13 @@ Begin I:=1;PreserveCommentIndent:=State<>csNone;While(I<=Length(L))and not HadEr
 End;
 
 Procedure SecondPass;
-Var L:String;SkipProgram:Boolean;
+Var L:TSourceString;SkipProgram:Boolean;
 Begin
  Assign(InputFile,SourceName);Reset(InputFile);If IOResult<>0 Then Begin Error('impossible de relire le fichier');Exit;End;
  Assign(OutputFile,TempName);Rewrite(OutputFile);If IOResult<>0 Then Begin Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;End;
  OutLine:='';PreserveCommentIndent:=False;IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;SkipProgram:=HasProgram and not IsUnit;
  If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
- While not Eof(InputFile)and not HadError do Begin ReadLn(InputFile,L);If IOResult<>0 Then Begin Error('erreur de lecture');Break;End;FormatLine(L,CommentState,SkipProgram);End;
+ While not HadError and ReadSourceLine(InputFile,L)do FormatLine(L,CommentState,SkipProgram);
  Close(InputFile);Close(OutputFile);If IOResult<>0 Then Error('erreur de fermeture du fichier temporaire');
 End;
 
