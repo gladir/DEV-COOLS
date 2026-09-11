@@ -1360,8 +1360,15 @@ Begin
   SrcBss := MP^.DataSize;
  End
   Else
- If Magic = DRI_MAGIC_4K Then Begin SrcData := AlignLong(CheckedAdd(Entry, MP^.TextSize, DisplayName + ' base DATA'), 4096); SrcBss := CheckedAdd(SrcData, MP^.DataSize, DisplayName + ' base BSS'); End
- Else Begin SrcData := 0; SrcBss := 0; End;
+ If Magic = DRI_MAGIC_4K Then Begin
+  SrcData := AlignLong(CheckedAdd(Entry, MP^.TextSize, DisplayName + ' base DATA'), 4096);
+  SrcBss := CheckedAdd(SrcData, MP^.DataSize, DisplayName + ' base BSS');
+ End
+  Else
+ Begin
+  SrcData := 0;
+  SrcBss := 0;
+ End;
  If (MP^.TextSize < 0) or (MP^.DataSize < 0) or (MP^.BssSize < 0) or (SymBytes < 0) Then
   Fatal(DisplayName + ': taille de segment negative');
  If (SymBytes mod 14) <> 0 Then Fatal(DisplayName + ': taille de table des symboles invalide');
@@ -1386,19 +1393,21 @@ Begin
  SeekFile(F, CheckedAdd(BasePos, HeaderSize, DisplayName + ' position TEXT'));
  ReadBufferBytes(F, MP^.TextData, MP^.TextSize);
  ReadBufferBytes(F, MP^.DataData, MP^.DataSize);
- For I := 0 to ExpectedSymbols - 1 do
- Begin
+ For I := 0 to ExpectedSymbols - 1 do Begin
   S := AppendSymbol(MP);
-  For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then S^.Name := S^.Name + Chr(C); End;
+  For J := 1 to 8 do Begin
+   C := GetByte(F);
+   If C <> 0 Then S^.Name := S^.Name + Chr(C);
+  End;
   S^.SType := GetWord(F); S^.Value := GetLong(F);
  End;
  RelPos := CheckedAdd(BasePos, HeaderSize, DisplayName + ' position relogements');
  RelPos := CheckedAdd(RelPos, MP^.TextSize, DisplayName + ' position relogements');
  RelPos := CheckedAdd(RelPos, MP^.DataSize, DisplayName + ' position relogements');
  RelPos := CheckedAdd(RelPos, SymBytes, DisplayName + ' position relogements');
- If AbsFlag = 0 Then
- Begin
-  SeekFile(F, RelPos); N := CheckedAdd(MP^.TextSize, 1, 'TEXT relocation count') div 2;
+ If AbsFlag = 0 Then Begin
+  SeekFile(F, RelPos);
+  N := CheckedAdd(MP^.TextSize, 1, 'TEXT relocation count') div 2;
   ReadBufferBytes(F, MP^.TextRel, CheckedMul(N, 2, 'TEXT relocation table'));
   N := CheckedAdd(MP^.DataSize, 1, 'DATA relocation count') div 2;
   ReadBufferBytes(F, MP^.DataRel, CheckedMul(N, 2, 'DATA relocation table'));
@@ -1413,134 +1422,235 @@ Begin
 End;
 
 Function DecimalField(Const S: String): LongInt;
-Var I: Integer; V: LongInt;
-Begin V := 0; For I := 1 to Length(S) do If S[I] in ['0'..'9'] Then V := V * 10 + Ord(S[I]) - Ord('0'); DecimalField := V; End;
+Var
+ I: Integer;
+ V: LongInt;
+Begin
+ V := 0;
+ For I := 1 to Length(S) do If S[I] in ['0'..'9'] Then V := V * 10 + Ord(S[I]) - Ord('0');
+ DecimalField := V;
+End;
 
 Function ReadAscii(Var F: File; N: Integer): String;
-Var I: Integer; C: Char; R: String;
-Begin R := ''; For I := 1 to N do Begin C := Chr(GetByte(F)); R := R + C; End; ReadAscii := R; End;
+Var
+ I: Integer;
+ C: Char;
+ R: String;
+Begin
+ R := '';
+ For I := 1 to N do Begin
+  C := Chr(GetByte(F));
+  R := R + C;
+ End;
+ ReadAscii := R;
+End;
 
 Procedure AddMember(InputIndex: Integer; Const Name: String; HeaderPos, DataPos, DataSize: LongInt);
-Var MP: PMember;
+Var
+ MP: PMember;
 Begin
  MP := AppendMember; MP^.InputIndex := InputIndex; MP^.Name := Name; MP^.HeaderPos := HeaderPos; MP^.DataPos := DataPos;
  MP^.DataSize := DataSize; MP^.Loaded := False; MP^.Selected := False;
 End;
 
 Function ReadArchiveName(Var F: File; Count: LongInt): String;
-Var I: LongInt; C: Byte; R: String;
+Var
+ I: LongInt;
+ C: Byte;
+ R: String;
 Begin
- R := ''; For I := 1 to Count do Begin C := GetByte(F); If (C <> 0) and (Length(R) < 255) Then R := R + Chr(C); End;
+ R := '';
+ For I := 1 to Count do Begin
+  C := GetByte(F);
+  If (C <> 0) and (Length(R) < 255) Then R := R + Chr(C);
+ End;
  While (Length(R) > 0) and (R[Length(R)] in [#0, ' ']) do Delete(R, Length(R), 1);
  ReadArchiveName := R;
 End;
 
 Function IsBSDIndexName(Const Name: String): Boolean;
-Var U: String;
-Begin U := UpCaseStr(Name); IsBSDIndexName := (Copy(U, 1, 9) = '__.SYMDEF') or (Copy(U, 1, 8) = '._SYMDEF'); End;
+Var
+ U: String;
+Begin
+ U := UpCaseStr(Name);
+ IsBSDIndexName := (Copy(U, 1, 9) = '__.SYMDEF') or (Copy(U, 1, 8) = '._SYMDEF');
+End;
 
 Function IsBSD64IndexName(Const Name: String): Boolean;
-Var U: String;
-Begin U := UpCaseStr(Name); IsBSD64IndexName := IsBSDIndexName(U) and (Pos('_64', U) > 0); End;
+Var
+ U: String;
+Begin
+ U := UpCaseStr(Name);
+ IsBSD64IndexName := IsBSDIndexName(U) and (Pos('_64', U) > 0);
+End;
 
 Procedure ReadUnixArchiveCatalog(InputIndex: Integer; Var F: File);
-Var H, N: String; P, Sz, NameLen, I, LongSize: LongInt; LongNames: PByteBuffer;
+Var
+ H, N: String;
+ P, Sz, NameLen, I, LongSize: LongInt;
+ LongNames: PByteBuffer;
 Begin
- LongNames := Nil; LongSize := 0; P := 8;
- { Premier passage: GNU autorise la table // avant ou apres ses utilisateurs. }
+ LongNames := Nil;
+ LongSize := 0;
+ P := 8;
+  { Premier passage: GNU autorise la table // avant ou apres ses utilisateurs. }
  While P <= FileSize(F) - 60 do Begin
-  SeekFile(F, P); H := ReadAscii(F, 60); If Copy(H, 59, 2) <> '`' + Chr(10) Then Fatal(InputAt(InputIndex)^.FileName + ': entete archive invalide');
-  N := TrimStr(Copy(H, 1, 16)); Sz := DecimalField(Copy(H, 49, 10));
+  SeekFile(F, P);
+  H := ReadAscii(F, 60);
+  If Copy(H, 59, 2) <> '`' + Chr(10) Then Fatal(InputAt(InputIndex)^.FileName + ': entete archive invalide');
+  N := TrimStr(Copy(H, 1, 16));
+  Sz := DecimalField(Copy(H, 49, 10));
   If (Sz < 0) or (Sz > FileSize(F) - P - 60) Then Fatal(InputAt(InputIndex)^.FileName + ': membre archive tronque');
   If N = '//' Then Begin
-   FreeByteBuffer(LongNames); LongNames := NewByteBuffer(CheckedAdd(Sz, 1, 'GNU name table')); LongSize := Sz;
-   SeekFile(F, P + 60); For I := 0 to Sz - 1 do StoreBufferByte(LongNames, I, GetByte(F));
+   FreeByteBuffer(LongNames);
+   LongNames := NewByteBuffer(CheckedAdd(Sz, 1, 'GNU name table'));
+   LongSize := Sz;
+   SeekFile(F, P + 60);
+   For I := 0 to Sz - 1 do StoreBufferByte(LongNames, I, GetByte(F));
   End;
   P := CheckedAdd(CheckedAdd(P, 60, 'archive member'), Sz, 'archive member'); If Odd(P) Then P := CheckedAdd(P, 1, 'archive padding');
  End;
  P := 8;
- While P <= FileSize(F) - 60 do
- Begin
+ While P <= FileSize(F) - 60 do Begin
   SeekFile(F, P); H := ReadAscii(F, 60);
   If Copy(H, 59, 2) <> '`' + Chr(10) Then Fatal(InputAt(InputIndex)^.FileName + ': entete archive invalide');
   N := TrimStr(Copy(H, 1, 16)); Sz := DecimalField(Copy(H, 49, 10));
   If (Sz < 0) or (Sz > FileSize(F) - P - 60) Then Fatal(InputAt(InputIndex)^.FileName + ': membre archive tronque');
-  If N = '//' Then Begin End
-  Else If (N = '/') or (N = '/SYM64/') Then Begin InputAt(InputIndex)^.IndexPos := P + 60; InputAt(InputIndex)^.IndexSize := Sz;
-   If N = '/SYM64/' Then InputAt(InputIndex)^.IndexKind := INDEX_GNU64 Else InputAt(InputIndex)^.IndexKind := INDEX_GNU32; End
-  Else
+  If N = '//' Then Begin
+  End
+   Else
+  If (N = '/') or (N = '/SYM64/') Then Begin
+   InputAt(InputIndex)^.IndexPos := P + 60;
+   InputAt(InputIndex)^.IndexSize := Sz;
+   If N = '/SYM64/' Then InputAt(InputIndex)^.IndexKind := INDEX_GNU64
+                    Else InputAt(InputIndex)^.IndexKind := INDEX_GNU32;
+  End
+   Else
   Begin
    NameLen := 0;
-   If Copy(N, 1, 3) = '#1/' Then Begin NameLen := DecimalField(Copy(N, 4, Length(N)));
+   If Copy(N, 1, 3) = '#1/' Then Begin
+    NameLen := DecimalField(Copy(N, 4, Length(N)));
     If (NameLen < 0) or (NameLen > Sz) Then Fatal(InputAt(InputIndex)^.FileName + ': nom BSD etendu invalide');
-    SeekFile(F, P + 60); N := ReadArchiveName(F, NameLen); End
-   Else If (Length(N) > 1) and (N[1] = '/') and (N[2] in ['0'..'9']) Then
-   Begin
-    I := DecimalField(Copy(N, 2, Length(N))); N := '';
+    SeekFile(F, P + 60);
+    N := ReadArchiveName(F, NameLen);
+   End
+    Else
+   If (Length(N) > 1) and (N[1] = '/') and (N[2] in ['0'..'9']) Then Begin
+    I := DecimalField(Copy(N, 2, Length(N)));
+    N := '';
     If (LongNames = Nil) or (I < 0) or (I >= LongSize) Then Fatal(InputAt(InputIndex)^.FileName + ': offset de nom GNU invalide');
     While (I < LongSize) and not (Chr(BufferByte(LongNames, I)) in ['/', Chr(10), Chr(13), #0]) do Begin
      If Length(N) < 255 Then N := N + Chr(BufferByte(LongNames, I)); Inc(I); End;
-   End Else If (Length(N) > 0) and (N[Length(N)] = '/') Then Delete(N, Length(N), 1);
-   If IsBSDIndexName(N) Then Begin InputAt(InputIndex)^.IndexPos := P + 60 + NameLen;
+   End
+    Else
+   If (Length(N) > 0) and (N[Length(N)] = '/') Then Delete(N, Length(N), 1);
+   If IsBSDIndexName(N) Then Begin
+    InputAt(InputIndex)^.IndexPos := P + 60 + NameLen;
     InputAt(InputIndex)^.IndexSize := Sz - NameLen;
     If IsBSD64IndexName(N) Then InputAt(InputIndex)^.IndexKind := INDEX_BSD64 Else InputAt(InputIndex)^.IndexKind := INDEX_BSD32;
-   End Else AddMember(InputIndex, N, P, P + 60 + NameLen, Sz - NameLen);
+   End
+    Else
+   AddMember(InputIndex, N, P, P + 60 + NameLen, Sz - NameLen);
   End;
   P := CheckedAdd(CheckedAdd(P, 60, 'archive member'), Sz, 'archive member'); If Odd(P) Then P := CheckedAdd(P, 1, 'archive padding');
  End;
  FreeByteBuffer(LongNames);
 End;
 
-Function GetLongBEAt(Var F: File; P: LongInt): LongInt;
-Begin SeekFile(F, P); GetLongBEAt := GetLong(F); End;
+Function GetLongBEAt(Var F:File;P:LongInt):LongInt;Begin
+ SeekFile(F, P);
+ GetLongBEAt := GetLong(F);
+End;
 
-Function SwapLong(V: LongInt): LongInt;
-Begin SwapLong := LongInt((LongWord(V) shr 24) or ((LongWord(V) shr 8) and $0000FF00) or
-                           ((LongWord(V) shl 8) and $00FF0000) or (LongWord(V) shl 24)); End;
+Function SwapLong(V:LongInt):LongInt;Begin
+ SwapLong := LongInt((LongWord(V) shr 24) or ((LongWord(V) shr 8) and $0000FF00) or
+                           ((LongWord(V) shl 8) and $00FF0000) or (LongWord(V) shl 24));
+End;
 
 Function GetIndexLongAt(Var F: File; P: LongInt; LittleEndian: Boolean): LongInt;
-Var V: LongInt;
-Begin V := GetLongBEAt(F, P); If LittleEndian Then V := SwapLong(V); GetIndexLongAt := V; End;
+Var
+ V: LongInt;
+Begin
+ V := GetLongBEAt(F, P);
+ If LittleEndian Then V := SwapLong(V);
+ GetIndexLongAt := V;
+End;
 
 Function GetIndex64At(Var F: File; P: LongInt; LittleEndian: Boolean; Var V: LongInt): Boolean;
-Var A, B: LongInt; Hi, Lo: LongWord; Fits: Boolean;
+Var
+ A, B: LongInt;
+ Hi, Lo: LongWord;
+ Fits: Boolean;
 Begin
  A := GetLongBEAt(F, P); B := GetLongBEAt(F, P + 4);
- If LittleEndian Then Begin Lo := LongWord(SwapLong(A)); Hi := LongWord(SwapLong(B)); End
- Else Begin Hi := LongWord(A); Lo := LongWord(B); End;
- Fits := (Hi = 0) and (Lo <= $7FFFFFFF); GetIndex64At := Fits; If Fits Then V := LongInt(Lo) Else V := -1;
+ If LittleEndian Then Begin
+  Lo := LongWord(SwapLong(A));
+  Hi := LongWord(SwapLong(B));
+ End
+  Else
+ Begin
+  Hi := LongWord(A);
+  Lo := LongWord(B);
+ End;
+ Fits := (Hi = 0) and (Lo <= $7FFFFFFF);
+ GetIndex64At := Fits;
+ If Fits Then V := LongInt(Lo) Else V := -1;
 End;
 
 Function IndexedNameAt(Var F: File; P, Limit: LongInt): String;
-Var C: Byte; R: String;
+Var
+ C: Byte;
+ R: String;
 Begin
- R := ''; SeekFile(F, P);
- While FilePos(F) < Limit do Begin C := GetByte(F); If C = 0 Then Break; If Length(R) < 8 Then R := R + Chr(C); End;
+ R := '';
+ SeekFile(F, P);
+ While FilePos(F) < Limit do Begin
+  C := GetByte(F); If C = 0 Then Break;
+  If Length(R) < 8 Then R := R + Chr(C);
+ End;
  IndexedNameAt := R;
 End;
 
 Function AfterIndexedName(Var F: File; P, Limit: LongInt): LongInt;
-Var C: Byte;
+Var
+ C: Byte;
 Begin
- SeekFile(F, P); While FilePos(F) < Limit do Begin C := GetByte(F); If C = 0 Then Break; End;
+ SeekFile(F, P);
+ While FilePos(F) < Limit do Begin
+  C := GetByte(F);
+  If C = 0 Then Break;
+ End;
  AfterIndexedName := FilePos(F);
 End;
 
 Function SelectIndexedMember(InputIndex: Integer; Offs: LongInt): Boolean;
-Var M: Integer;
+Var
+ M: Integer;
 Begin
  SelectIndexedMember := False;
  For M := 1 to MemberCount do If (MemberAt(M)^.InputIndex = InputIndex) and
    ((MemberAt(M)^.HeaderPos = Offs) or (MemberAt(M)^.DataPos = Offs) or (MemberAt(M)^.DataPos - 60 = Offs)) and
-   (not MemberAt(M)^.Loaded) Then Begin MemberAt(M)^.Selected := True; SelectIndexedMember := True; Exit; End;
+   (not MemberAt(M)^.Loaded) Then Begin
+    MemberAt(M)^.Selected := True;
+    SelectIndexedMember := True;
+  Exit;
+ End;
 End;
 
 Function NeededIndexSymbol(Const N: String): Boolean;
-Var G: Integer;
-Begin G := FindGlobal(N); NeededIndexSymbol := (G > 0) and GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined); End;
+Var
+ G: Integer;
+Begin
+ G := FindGlobal(N);
+ NeededIndexSymbol := (G > 0) and GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined);
+End;
 
 Function MarkIndexedNeeded(InputIndex: Integer): Boolean;
-Var F: File; Count, I, Bytes, StrSize, NamePos, Offs, StrX: LongInt; N: String[8]; Little, Valid: Boolean;
+Var
+ F: File;
+ Count, I, Bytes, StrSize, NamePos, Offs, StrX: LongInt;
+ N: String[8];
+ Little, Valid: Boolean;
 Begin
  MarkIndexedNeeded := False;
  If (InputAt(InputIndex)^.IndexPos = 0) or (InputAt(InputIndex)^.IndexSize < 4) Then Exit;
@@ -1553,8 +1663,11 @@ Begin
      NamePos := InputAt(InputIndex)^.IndexPos + 4 + Count * 4;
      For I := 0 to Count - 1 do Begin N := IndexedNameAt(F, NamePos, InputAt(InputIndex)^.IndexPos + InputAt(InputIndex)^.IndexSize);
       NamePos := AfterIndexedName(F, NamePos, InputAt(InputIndex)^.IndexPos + InputAt(InputIndex)^.IndexSize);
-      If NeededIndexSymbol(N) Then Begin Offs := GetLongBEAt(F, InputAt(InputIndex)^.IndexPos + 4 + I * 4);
-       If (Offs >= 0) and SelectIndexedMember(InputIndex, Offs) Then MarkIndexedNeeded := True; End; End;
+      If NeededIndexSymbol(N) Then Begin
+       Offs := GetLongBEAt(F, InputAt(InputIndex)^.IndexPos + 4 + I * 4);
+       If (Offs >= 0) and SelectIndexedMember(InputIndex, Offs) Then MarkIndexedNeeded := True;
+      End;
+     End;
     End;
    End;
   INDEX_GNU64:
@@ -1580,8 +1693,11 @@ Begin
      If (StrSize >= 0) and (NamePos + StrSize <= InputAt(InputIndex)^.IndexPos + InputAt(InputIndex)^.IndexSize) Then
       For I := 0 to Count - 1 do Begin StrX := GetIndexLongAt(F, InputAt(InputIndex)^.IndexPos + 4 + I*8, Little);
        Offs := GetIndexLongAt(F, InputAt(InputIndex)^.IndexPos + 8 + I*8, Little);
-       If (StrX >= 0) and (StrX < StrSize) Then Begin N := IndexedNameAt(F, NamePos + StrX, NamePos + StrSize);
-        If NeededIndexSymbol(N) and (Offs >= 0) and SelectIndexedMember(InputIndex, Offs) Then MarkIndexedNeeded := True; End; End;
+       If (StrX >= 0) and (StrX < StrSize) Then Begin
+        N := IndexedNameAt(F, NamePos + StrX, NamePos + StrSize);
+        If NeededIndexSymbol(N) and (Offs >= 0) and SelectIndexedMember(InputIndex, Offs) Then MarkIndexedNeeded := True;
+      End;
+     End;
     End;
    End;
   INDEX_BSD64:
@@ -1605,54 +1721,91 @@ Begin
 End;
 
 Function GetLongEndian(Var F: File; BigEndian: Boolean): LongInt;
-Var B0, B1, B2, B3: Byte;
-Begin B0 := GetByte(F); B1 := GetByte(F); B2 := GetByte(F); B3 := GetByte(F);
+Var
+ B0, B1, B2, B3: Byte;
+Begin
+ B0 := GetByte(F);
+ B1 := GetByte(F);
+ B2 := GetByte(F);
+ B3 := GetByte(F);
  If BigEndian Then GetLongEndian := LongInt((LongWord(B0) shl 24) or (LongWord(B1) shl 16) or (LongWord(B2) shl 8) or B3)
- Else GetLongEndian := LongInt((LongWord(B3) shl 24) or (LongWord(B2) shl 16) or (LongWord(B1) shl 8) or B0); End;
+              Else GetLongEndian := LongInt((LongWord(B3) shl 24) or (LongWord(B2) shl 16) or (LongWord(B1) shl 8) or B0);
+End;
 
 Function GetWordEndian(Var F: File; BigEndian: Boolean): Word;
-Var A, B: Byte;
-Begin A := GetByte(F); B := GetByte(F); If BigEndian Then GetWordEndian := Word(A) shl 8 or B Else GetWordEndian := Word(B) shl 8 or A; End;
+Var
+ A, B: Byte;
+Begin
+ A := GetByte(F);
+ B := GetByte(F);
+ If BigEndian Then GetWordEndian := Word(A) shl 8 or B
+              Else GetWordEndian := Word(B) shl 8 or A;
+End;
 
 Function IsDRIMagicAt(Var F: File; P: LongInt): Boolean;
-Var W: Word;
+Var
+ W: Word;
 Begin
- If (P < 0) or (P + 2 > FileSize(F)) Then Begin IsDRIMagicAt := False; Exit; End;
- SeekFile(F, P); W := GetWord(F); IsDRIMagicAt := (W >= DRI_MAGIC_NORMAL) and (W <= DRI_MAGIC_4K);
+ If (P < 0) or (P + 2 > FileSize(F)) Then Begin
+  IsDRIMagicAt := False;
+  Exit;
+ End;
+ SeekFile(F, P);
+ W := GetWord(F);
+ IsDRIMagicAt := (W >= DRI_MAGIC_NORMAL) and (W <= DRI_MAGIC_4K);
 End;
 
 Procedure SkipOldArchivePad(Var F: File; Var P: LongInt; HeaderSize: Integer);
-Var B: Byte;
+Var
+ B: Byte;
 Begin
  If not Odd(P) or (P >= FileSize(F)) Then Exit;
  { Certaines productions FF6D omettent le bourrage pair. On privilegie
    la position qui conduit effectivement a un objet DRI. }
  If IsDRIMagicAt(F, P + HeaderSize) Then Exit;
- If IsDRIMagicAt(F, P + 1 + HeaderSize) Then Begin Inc(P); Exit; End;
- SeekFile(F, P); B := GetByte(F); If B in [0, 10] Then Inc(P);
+ If IsDRIMagicAt(F, P + 1 + HeaderSize) Then Begin
+  Inc(P);
+  Exit;
+ End;
+ SeekFile(F, P);
+ B := GetByte(F);
+ If B in [0, 10] Then Inc(P);
 End;
 
 Procedure ReadOldArchiveCatalog(InputIndex: Integer; Var F: File; BigEndian: Boolean);
-Var P, Sz, Dummy: LongInt; N: String; I: Integer;
+Var
+ P, Sz, Dummy: LongInt;
+ N: String;
+ I: Integer;
 Begin
  P := 2;
- While P <= FileSize(F) - 28 do
- Begin
+ While P <= FileSize(F) - 28 do Begin
   SeekFile(F, P); N := '';
-  For I := 1 to 14 do Begin If I = 1 Then N := ''; N := N + Chr(GetByte(F)); End;
+  For I := 1 to 14 do Begin
+   If I = 1 Then N := '';
+   N := N + Chr(GetByte(F));
+  End;
   While (Length(N) > 0) and (N[Length(N)] in [#0, ' ']) do Delete(N, Length(N), 1);
   If N = '' Then Exit;
-  Dummy := GetLongEndian(F, BigEndian); GetByte(F); GetByte(F); GetByte(F); GetByte(F);
+  Dummy := GetLongEndian(F, BigEndian);
+  GetByte(F);
+  GetByte(F);
+  GetByte(F);
+  GetByte(F);
   Sz := GetLongEndian(F, BigEndian);
   Dummy := GetWordEndian(F, BigEndian);
   If (Sz < 0) or (Sz > FileSize(F) - P - 28) Then Fatal(InputAt(InputIndex)^.FileName + ': membre AR68 tronque');
   AddMember(InputIndex, N, P, P + 28, Sz);
-  P := CheckedAdd(CheckedAdd(P, 28, 'AR68 member'), Sz, 'AR68 member'); SkipOldArchivePad(F, P, 28);
+  P := CheckedAdd(CheckedAdd(P, 28, 'AR68 member'), Sz, 'AR68 member');
+  SkipOldArchivePad(F, P, 28);
  End;
 End;
 
 Procedure ReadVeryOldArchiveCatalog(InputIndex: Integer; Var F: File; BigEndian: Boolean);
-Var P, Sz, Dummy: LongInt; N: String; I: Integer;
+Var
+ P, Sz, Dummy: LongInt;
+ N: String;
+ I: Integer;
 Begin
  P := 2;
  While P <= FileSize(F) - 16 do Begin
@@ -1667,24 +1820,36 @@ Begin
 End;
 
 Procedure CollectGlobalNeeds;
-Var M, G: Integer; I: LongInt; S: TSymbol;
+Var
+ M, G: Integer;
+ I: LongInt;
+ S: TSymbol;
 Begin
  ClearGlobals;
- For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do
- Begin
+ For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do Begin
   S := ModuleSymbolAt(ModuleAt(M), I)^;
   If (S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0 Then Continue;
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
   If IsCommonSymbol(S) Then Begin GlobalAt(G)^.Needed := True; GlobalAt(G)^.IsCommon := True;
-   If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value; End
-  Else If (S.SType and SYM_EXTERN) <> 0 Then GlobalAt(G)^.Needed := True
-  Else If (S.SType and SYM_DEFINED) <> 0 Then GlobalAt(G)^.Defined := True;
+   If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value;
+  End
+   Else
+  If (S.SType and SYM_EXTERN) <> 0 Then GlobalAt(G)^.Needed := True Else
+  If (S.SType and SYM_DEFINED) <> 0 Then GlobalAt(G)^.Defined := True;
  End;
 End;
 
 Function MemberDefinesNeeded(MemberIndex: Integer): Boolean;
-Var F: File; Magic: Word; TextSize, DataSize, BssSize, SymBytes, P: LongInt;
-    I: LongInt; J: Integer; N: String[8]; T: Word; C: Byte; G: Integer;
+Var
+ F: File;
+ Magic: Word;
+ TextSize, DataSize, BssSize, SymBytes, P: LongInt;
+ I: LongInt;
+ J: Integer;
+ N: String[8];
+ T: Word;
+ C: Byte;
+ G: Integer;
 Begin
  MemberDefinesNeeded := False;
  Assign(F, InputAt(MemberAt(MemberIndex)^.InputIndex)^.FileName); Reset(F, 1);
