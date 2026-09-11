@@ -1861,25 +1861,43 @@ Begin
  If (TextSize < 0) or (DataSize < 0) or (SymBytes < 0) or ((SymBytes mod 14) <> 0) or
     (P > MemberAt(MemberIndex)^.DataSize) or (TextSize > MemberAt(MemberIndex)^.DataSize - P) or
     (DataSize > MemberAt(MemberIndex)^.DataSize - P - TextSize) or
-    (SymBytes > MemberAt(MemberIndex)^.DataSize - P - TextSize - DataSize) Then Begin Close(F); Exit; End;
+    (SymBytes > MemberAt(MemberIndex)^.DataSize - P - TextSize - DataSize) Then Begin
+  Close(F);
+  Exit;
+ End;
  SeekFile(F, CheckedAdd(MemberAt(MemberIndex)^.DataPos,
   CheckedAdd(P, CheckedAdd(TextSize, DataSize, 'library symbol table'), 'library symbol table'), 'library symbol table'));
- For I := 1 to SymBytes div 14 do
- Begin
-  N := ''; For J := 1 to 8 do Begin C := GetByte(F); If C <> 0 Then N := N + Chr(C); End;
+ For I := 1 to SymBytes div 14 do Begin
+  N := '';
+  For J := 1 to 8 do Begin
+   C := GetByte(F);
+   If C <> 0 Then N := N + Chr(C);
+  End;
   T := GetWord(F); GetLong(F);
-  If ((T and (SYM_DEFINED or SYM_GLOBAL)) = (SYM_DEFINED or SYM_GLOBAL)) and ((T and SYM_EXTERN) = 0) Then
-  Begin G := FindGlobal(N); If (G > 0) and GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then Begin MemberDefinesNeeded := True; Break; End; End;
+  If ((T and (SYM_DEFINED or SYM_GLOBAL)) = (SYM_DEFINED or SYM_GLOBAL)) and ((T and SYM_EXTERN) = 0) Then Begin
+   G := FindGlobal(N);
+   If (G > 0) and GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then Begin
+    MemberDefinesNeeded := True;
+    Break;
+   End;
+  End;
  End;
  Close(F);
 End;
 
 Function MemberNameMatches(Const A, B: String): Boolean;
-Var X, Y: String;
-Begin X := UpCaseStr(A); Y := UpCaseStr(B); MemberNameMatches := (X = Y) or (UpCaseStr(BaseName68(X)) = UpCaseStr(BaseName68(Y))); End;
+Var
+ X, Y: String;
+Begin
+ X := UpCaseStr(A);
+ Y := UpCaseStr(B);
+ MemberNameMatches := (X = Y) or (UpCaseStr(BaseName68(X)) = UpCaseStr(BaseName68(Y)));
+End;
 
 Procedure LoadMember(MemberIndex: Integer);
-Var I: Integer; D: String;
+Var
+ I: Integer;
+ D: String;
 Begin
  I := MemberAt(MemberIndex)^.InputIndex; D := InputAt(I)^.FileName + '(' + MemberAt(MemberIndex)^.Name + ')';
  ReadObjectAt(InputAt(I)^.FileName, D, MemberAt(MemberIndex)^.DataPos, MemberAt(MemberIndex)^.DataSize,
@@ -1888,75 +1906,123 @@ Begin
 End;
 
 Procedure LoadInputs;
-Var I, M: Integer; F: File; S: String; B0, B1: Byte; Changed, Found: Boolean;
+Var
+ I, M: Integer;
+ F: File;
+ S: String;
+ B0, B1: Byte;
+ Changed, Found: Boolean;
 Begin
  MemberCount := 0;
- For I := 1 to InputCount do
- Begin
+ For I := 1 to InputCount do Begin
   S := ResolveInputName(InputAt(I)^.FileName);
   If S = '' Then Fatal('fichier d''entree introuvable: ' + InputAt(I)^.FileName);
-  InputAt(I)^.FileName := S; Assign(F, S); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de lire ' + S);
+  InputAt(I)^.FileName := S; Assign(F, S); Reset(F, 1);
+  If IOResult <> 0 Then Fatal('impossible de lire ' + S);
   If FileSize(F) < 2 Then Fatal(S + ': fichier vide');
-  B0 := GetByte(F); B1 := GetByte(F);
-  If (B0 = $60) and (B1 in [$1A, $1B, $1C, $1D, $1E]) Then
-  Begin Close(F); ReadObjectAt(S, S, 0, 0, LongInt(I) * 10000, InputAt(I)^.IncludeLocals, InputAt(I)^.Overlay); End
-  Else
+  B0 := GetByte(F);
+  B1 := GetByte(F);
+  If (B0 = $60) and (B1 in [$1A, $1B, $1C, $1D, $1E]) Then Begin
+   Close(F);
+   ReadObjectAt(S, S, 0, 0, LongInt(I) * 10000, InputAt(I)^.IncludeLocals, InputAt(I)^.Overlay);
+  End
+   Else
   Begin
-   SeekFile(F, 0); If (FileSize(F) >= 8) and (ReadAscii(F, 8) = '!<arch>' + Chr(10)) Then ReadUnixArchiveCatalog(I, F)
-   Else If (B0 = $FF) and (B1 = $65) Then ReadOldArchiveCatalog(I, F, True)
-   Else If (B0 = $FF) and (B1 = $66) Then ReadOldArchiveCatalog(I, F, True)
-   Else If (B0 = $65) and (B1 = $FF) Then ReadOldArchiveCatalog(I, F, False)
-   Else If (B0 = $66) and (B1 = $FF) Then ReadOldArchiveCatalog(I, F, False)
-   Else If (B0 = $FF) and (B1 = $6D) Then Begin
+   SeekFile(F, 0);
+   If (FileSize(F) >= 8) and (ReadAscii(F, 8) = '!<arch>' + Chr(10)) Then ReadUnixArchiveCatalog(I, F) Else
+   If (B0 = $FF) and (B1 = $65) Then ReadOldArchiveCatalog(I, F, True) Else
+   If (B0 = $FF) and (B1 = $66) Then ReadOldArchiveCatalog(I, F, True) Else
+   If (B0 = $65) and (B1 = $FF) Then ReadOldArchiveCatalog(I, F, False) Else
+   If (B0 = $66) and (B1 = $FF) Then ReadOldArchiveCatalog(I, F, False) Else
+   If (B0 = $FF) and (B1 = $6D) Then Begin
     If IsDRIMagicAt(F, 18) or not IsDRIMagicAt(F, 30) Then ReadVeryOldArchiveCatalog(I, F, True)
-    Else ReadOldArchiveCatalog(I, F, True); End
-   Else If (B0 = $6D) and (B1 = $FF) Then Begin
-    If IsDRIMagicAt(F, 18) or not IsDRIMagicAt(F, 30) Then ReadVeryOldArchiveCatalog(I, F, False)
-    Else ReadOldArchiveCatalog(I, F, False); End
-   Else Begin Close(F); Fatal(S + ': ni objet DRI ni bibliotheque AR68'); End;
+    Else ReadOldArchiveCatalog(I, F, True);
+   End
+    Else
+   If (B0 = $6D) and (B1 = $FF) Then Begin
+    If IsDRIMagicAt(F, 18)or not IsDRIMagicAt(F,30)Then ReadVeryOldArchiveCatalog(I,F,False)
+                                                   Else ReadOldArchiveCatalog(I,F,False);
+   End
+    Else
+   Begin
+    Close(F);
+    Fatal(S + ': ni objet DRI ni bibliotheque AR68');
+   End;
    Close(F);
   End;
  End;
- For I := 1 to InputCount do If InputAt(I)^.AllMods or (InputAt(I)^.IncludeName <> '') Then
- Begin
+ For I := 1 to InputCount do If InputAt(I)^.AllMods or (InputAt(I)^.IncludeName <> '') Then Begin
   Found := InputAt(I)^.IncludeName = '';
   For M := 1 to MemberCount do If MemberAt(M)^.InputIndex = I Then
-   If InputAt(I)^.AllMods or MemberNameMatches(MemberAt(M)^.Name, InputAt(I)^.IncludeName) Then
-   Begin If not MemberAt(M)^.Loaded Then LoadMember(M); If InputAt(I)^.IncludeName <> '' Then Found := True; End;
+   If InputAt(I)^.AllMods or MemberNameMatches(MemberAt(M)^.Name, InputAt(I)^.IncludeName) Then Begin
+   If not MemberAt(M)^.Loaded Then LoadMember(M);
+   If InputAt(I)^.IncludeName <> '' Then Found := True;
+  End;
   If not Found Then Error(InputAt(I)^.FileName + ': module INCLUDE introuvable: ' + InputAt(I)^.IncludeName);
  End;
  Repeat
   CollectGlobalNeeds; Changed := False;
   For I := 1 to InputCount do If MarkIndexedNeeded(I) Then
-   For M := 1 to MemberCount do If MemberAt(M)^.Selected and (not MemberAt(M)^.Loaded) Then Begin LoadMember(M); Changed := True; End;
+   For M := 1 to MemberCount do If MemberAt(M)^.Selected and (not MemberAt(M)^.Loaded) Then Begin
+    LoadMember(M);
+    Changed := True;
+   End;
   If Changed Then CollectGlobalNeeds;
-  For M := 1 to MemberCount do If (not MemberAt(M)^.Loaded) and MemberDefinesNeeded(M) Then
-  Begin LoadMember(M); Changed := True; CollectGlobalNeeds; End;
+  For M := 1 to MemberCount do If (not MemberAt(M)^.Loaded) and MemberDefinesNeeded(M) Then Begin
+   LoadMember(M);
+   Changed := True;
+   CollectGlobalNeeds;
+  End;
  Until not Changed;
 End;
 
 Procedure SortModules;
-Var I, J: Integer; T: TModule; A, B: PModule; ANext, BNext: PModule;
+Var
+ I, J: Integer;
+ T: TModule;
+ A, B: PModule;
+ ANext, BNext: PModule;
 Begin
  For I := 1 to ModuleCount - 1 do For J := I + 1 to ModuleCount do
   If ModuleAt(I)^.OrderKey > ModuleAt(J)^.OrderKey Then Begin
-   A := ModuleAt(I); B := ModuleAt(J); ANext := A^.Next; BNext := B^.Next;
-   T := A^; A^ := B^; B^ := T; A^.Next := ANext; B^.Next := BNext;
+   A := ModuleAt(I);
+   B := ModuleAt(J);
+   ANext := A^.Next;
+   BNext := B^.Next;
+   T := A^;
+   A^ := B^;
+   B^ := T;
+   A^.Next := ANext;
+   B^.Next := BNext;
   End;
 End;
 
 Procedure LayoutModules;
-Var I: Integer; O: POverlay; M: PModule;
+Var
+ I: Integer;
+ O: POverlay;
+ M: PModule;
 Begin
- O := FirstOverlay; While O <> Nil do Begin O^.ModuleText := 0; O^.ModuleData := 0; O^.ModuleBss := 0; O := O^.NextAll; End;
- M := FirstModule; While M <> Nil do Begin
+ O := FirstOverlay;
+ While O <> Nil do Begin
+  O^.ModuleText := 0;
+  O^.ModuleData := 0;
+  O^.ModuleBss := 0;
+  O := O^.NextAll;
+ End;
+ M := FirstModule;
+ While M <> Nil do Begin
   O := M^.Overlay; M^.TextOffset := O^.ModuleText;
   O^.ModuleText := CheckedAdd(O^.ModuleText, M^.TextSize, 'layout TEXT');
   If Odd(O^.ModuleText) Then O^.ModuleText := CheckedAdd(O^.ModuleText, 1, 'alignement TEXT');
   M := M^.Next;
  End;
- M := FirstModule; While M <> Nil do Begin O := M^.Overlay; M^.DataOffset := O^.ModuleData;
-  O^.ModuleData := CheckedAdd(O^.ModuleData, M^.DataSize, 'layout DATA'); If Odd(O^.ModuleData) Then O^.ModuleData := CheckedAdd(O^.ModuleData, 1, 'alignement DATA'); M := M^.Next; End;
+ M := FirstModule; While M <> Nil do Begin
+  O := M^.Overlay;
+  M^.DataOffset := O^.ModuleData;
+  O^.ModuleData := CheckedAdd(O^.ModuleData, M^.DataSize, 'layout DATA');
+  If Odd(O^.ModuleData) Then O^.ModuleData := CheckedAdd(O^.ModuleData, 1, 'alignement DATA'); M := M^.Next;
+ End;
  M := FirstModule; While M <> Nil do Begin O := M^.Overlay; M^.BssOffset := O^.ModuleBss;
   O^.ModuleBss := CheckedAdd(O^.ModuleBss, M^.BssSize, 'layout BSS'); If Odd(O^.ModuleBss) Then O^.ModuleBss := CheckedAdd(O^.ModuleBss, 1, 'alignement BSS'); M := M^.Next; End;
  O := FirstOverlay; While O <> Nil do Begin
@@ -1968,25 +2034,36 @@ Begin
 End;
 
 Procedure PlaceOverlay(O: POverlay; LoadBase: LongInt);
-Var C: POverlay; High: LongInt;
+Var
+ C: POverlay;
+ High: LongInt;
 Begin
  O^.TextBase := LoadBase; O^.DataBase := CheckedAdd(O^.TextBase, O^.TextSize, 'base DATA overlay');
  O^.BssBase := CheckedAdd(O^.DataBase, O^.DataSize, 'base BSS overlay'); O^.Capacity := CheckedAdd(O^.BssBase, O^.BssSize, 'fin overlay');
  High := O^.Capacity; C := O^.FirstChild;
- While C <> Nil do Begin PlaceOverlay(C, CheckedAdd(O^.BssBase, O^.BssSize, 'zone de chargement overlay')); If C^.Capacity > High Then High := C^.Capacity; C := C^.NextSibling; End;
+ While C <> Nil do Begin
+  PlaceOverlay(C, CheckedAdd(O^.BssBase, O^.BssSize, 'zone de chargement overlay'));
+  If C^.Capacity > High Then High := C^.Capacity; C := C^.NextSibling;
+ End;
  O^.Capacity := High;
 End;
 
 Function RangesOverlap(BaseA, SizeA, BaseB, SizeB: LongInt): Boolean;
-Var EndA, EndB: LongInt;
+Var
+ EndA, EndB: LongInt;
 Begin
- If (SizeA = 0) or (SizeB = 0) Then Begin RangesOverlap := False; Exit; End;
- EndA := CheckedAdd(BaseA, SizeA, 'fin de segment'); EndB := CheckedAdd(BaseB, SizeB, 'fin de segment');
+ If (SizeA = 0) or (SizeB = 0) Then Begin
+  RangesOverlap := False;
+  Exit;
+ End;
+ EndA := CheckedAdd(BaseA, SizeA, 'fin de segment');
+ EndB := CheckedAdd(BaseB, SizeB, 'fin de segment');
  RangesOverlap := (BaseA < EndB) and (BaseB < EndA);
 End;
 
 Procedure ValidateSegmentRanges;
-Var O: POverlay;
+Var
+ O: POverlay;
 Begin
  O := FirstOverlay;
  While O <> Nil do Begin
@@ -2002,8 +2079,7 @@ Begin
  End;
 End;
 
-Procedure PlaceAllOverlays;
-Begin
+Procedure PlaceAllOverlays;Begin
  If Not Opt.TextBaseSet Then Opt.TextBase := 0;
  RootOverlay^.TextBase := Opt.TextBase;
  If Opt.DataBaseSet Then RootOverlay^.DataBase := Opt.DataBase Else RootOverlay^.DataBase := CheckedAdd(RootOverlay^.TextBase, RootOverlay^.TextSize, 'base DATA');
@@ -2023,7 +2099,8 @@ Begin
 End;
 
 Function SymbolFinalValue(M: Integer; Const S: TSymbol): LongInt;
-Var O: POverlay;
+Var
+ O: POverlay;
 Begin
  O := ModuleAt(M)^.Overlay;
  Case SegmentOf(S.SType) of
@@ -2035,11 +2112,14 @@ Begin
 End;
 
 Procedure BuildGlobals;
-Var M, G: Integer; I: LongInt; S: TSymbol; GP: PGlobal;
+Var
+ M, G: Integer;
+ I: LongInt;
+ S: TSymbol;
+ GP: PGlobal;
 Begin
  ClearGlobals;
- For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do
- Begin
+ For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do Begin
   S := ModuleSymbolAt(ModuleAt(M), I)^;
   If (S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0 Then Continue;
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
@@ -2048,9 +2128,9 @@ Begin
    GlobalAt(G)^.Needed := True; GlobalAt(G)^.IsCommon := True;
    If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value;
   End
-  Else If (S.SType and SYM_EXTERN) <> 0 Then GlobalAt(G)^.Needed := True
-  Else If (S.SType and SYM_DEFINED) <> 0 Then
-  Begin
+   Else
+  If (S.SType and SYM_EXTERN) <> 0 Then GlobalAt(G)^.Needed := True Else
+  If (S.SType and SYM_DEFINED) <> 0 Then Begin
    If GlobalAt(G)^.Defined and Opt.Chained and (GlobalAt(G)^.Overlay <> RootOverlay) and
       (GlobalAt(G)^.Overlay <> ModuleAt(M)^.Overlay) Then G := AddGlobal(S.Name);
    If GlobalAt(G)^.Defined Then Error('symbole defini plusieurs fois: ' + S.Name)
@@ -2059,8 +2139,7 @@ Begin
     GlobalAt(G)^.FinalType := S.SType; GlobalAt(G)^.FinalValue := SymbolFinalValue(M, S); End;
   End;
  End;
- For G := 1 to GlobalCount do If GlobalAt(G)^.IsCommon and (not GlobalAt(G)^.Defined) Then
- Begin
+ For G := 1 to GlobalCount do If GlobalAt(G)^.IsCommon and (not GlobalAt(G)^.Defined) Then Begin
   If Odd(RootOverlay^.BssSize) Then Begin RootOverlay^.BssSize := CheckedAdd(RootOverlay^.BssSize, 1, 'alignement BSS');
    RootOverlay^.CommonBss := CheckedAdd(RootOverlay^.CommonBss, 1, 'alignement COMMON'); End;
   GlobalAt(G)^.Defined := True; GlobalAt(G)^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_BSS;
@@ -2074,8 +2153,7 @@ Begin
   If GlobalAt(G)^.ModuleIndex > 0 Then
    GlobalAt(G)^.FinalValue := SymbolFinalValue(GlobalAt(G)^.ModuleIndex,
      ModuleSymbolAt(ModuleAt(GlobalAt(G)^.ModuleIndex), GlobalAt(G)^.SymbolIndex)^);
- For G := 1 to GlobalCount do If GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then
- Begin
+ For G := 1 to GlobalCount do If GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then Begin
   GP := GlobalAt(G);
   If GP^.Name = '_etext' Then Begin GP^.Defined := True; GP^.IsSpecial := True;
    GP^.Overlay := RootOverlay; GP^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_TEXT;
@@ -2100,7 +2178,9 @@ Begin
 End;
 
 Procedure RefreshSpecialSymbols;
-Var G: Integer; GP: PGlobal;
+Var
+ G: Integer;
+ GP: PGlobal;
 Begin
  For G := 1 to GlobalCount do Begin GP := GlobalAt(G); If GP^.IsSpecial Then Begin
   If GP^.Name = '_etext' Then GP^.FinalValue := CheckedAdd(RootOverlay^.TextBase, RootOverlay^.TextSize, '_etext')
@@ -2112,20 +2192,25 @@ Begin
  End;
 End;
 
-Function ReadLongBuf(B: PByteBuffer; P: LongInt): LongInt;
-Begin ReadLongBuf := BufferLong(B, P); End;
+Function ReadLongBuf(B: PByteBuffer; P: LongInt): LongInt;Begin
+ ReadLongBuf := BufferLong(B, P);
+End;
 
-Procedure WriteLongBuf(B: PByteBuffer; P: LongInt; V: LongInt);
-Begin StoreBufferLong(B, P, V); End;
+Procedure WriteLongBuf(B: PByteBuffer; P: LongInt; V: LongInt);Begin
+ StoreBufferLong(B, P, V);
+End;
 
-Function ReadWordBuf(B: PByteBuffer; P: LongInt): Word;
-Begin ReadWordBuf := Word(BufferByte(B, P)) shl 8 or BufferByte(B, P+1); End;
+Function ReadWordBuf(B: PByteBuffer; P: LongInt): Word;Begin
+ ReadWordBuf := Word(BufferByte(B, P)) shl 8 or BufferByte(B, P+1);
+End;
 
-Procedure WriteWordBuf(B: PByteBuffer; P: LongInt; V: Word);
-Begin StoreBufferByte(B, P, Byte(V shr 8)); StoreBufferByte(B, P+1, Byte(V)); End;
+Procedure WriteWordBuf(B: PByteBuffer; P: LongInt; V: Word);Begin
+ StoreBufferByte(B, P, Byte(V shr 8)); StoreBufferByte(B, P+1, Byte(V));
+End;
 
 Function RelocBase(M, RType: Integer): LongInt;
-Var O: POverlay;
+Var
+ O: POverlay;
 Begin
  O := ModuleAt(M)^.Overlay;
  Case RType of
@@ -2137,7 +2222,8 @@ Begin
 End;
 
 Function OutputSymbolIndex(G: Integer): Integer;
-Var I, N: Integer;
+Var
+ I, N: Integer;
 Begin
  N := 0;
  For I := 1 to G do If Opt.EmitSymbols or (not GlobalAt(I)^.Defined) Then Inc(N);
@@ -2145,63 +2231,99 @@ Begin
 End;
 
 Function EncodedExternalRelocation(G: Integer): Word;
-Var N: Integer;
+Var
+ N: Integer;
 Begin
  N := OutputSymbolIndex(G);
  If (N < 0) or (N > 8191) Then Begin
   Error('external symbol index exceeds DRI relocation field: ' + GlobalAt(G)^.Name);
   EncodedExternalRelocation := REL_ABS;
- End Else EncodedExternalRelocation := Word(N shl 3) or REL_EXTERN;
+ End
+  Else
+ EncodedExternalRelocation := Word(N shl 3) or REL_EXTERN;
 End;
 
-Function IsAncestor(Ancestor, Node: POverlay): Boolean;
-Begin
+Function IsAncestor(Ancestor, Node: POverlay): Boolean;Begin
  While Node <> Nil do Begin If Node = Ancestor Then Begin IsAncestor := True; Exit; End; Node := Node^.Parent; End;
  IsAncestor := False;
 End;
 
 Function FindJump(O: POverlay; G: PGlobal): PJump;
-Var J: PJump;
-Begin J := O^.FirstJump; While (J <> Nil) and (J^.Target <> G) do J := J^.Next; FindJump := J; End;
+Var
+ J: PJump;
+Begin
+ J := O^.FirstJump;
+ While (J <> Nil) and (J^.Target <> G) do J := J^.Next; FindJump := J;
+End;
 
 Function AddJump(O: POverlay; G: PGlobal): PJump;
-Var J: PJump;
+Var
+ J: PJump;
 Begin
- J := FindJump(O, G); If J <> Nil Then Begin AddJump := J; Exit; End;
- New(J); FillChar(J^, SizeOf(TJump), 0); J^.Target := G;
- If O^.FirstJump = Nil Then O^.FirstJump := J Else O^.LastJump^.Next := J;
+ J := FindJump(O, G);
+ If J <> Nil Then Begin
+  AddJump := J;
+  Exit;
+ End;
+ New(J);
+ FillChar(J^, SizeOf(TJump), 0); J^.Target := G;
+ If O^.FirstJump = Nil Then O^.FirstJump := J
+                       Else O^.LastJump^.Next := J;
  O^.LastJump := J; Inc(O^.JumpCount); AddJump := J;
 End;
 
 Procedure CheckOverlayReference(M, SymbolIndex: Integer);
-Var G: Integer; Caller, Target: POverlay; J: PJump; N: String;
+Var
+ G: Integer;
+ Caller, Target: POverlay;
+ J: PJump;
+ N: String;
 Begin
- If (SymbolIndex < 0) or (SymbolIndex >= ModuleAt(M)^.SymCount) Then Begin Error('index de symbole externe invalide'); Exit; End;
+ If (SymbolIndex < 0) or (SymbolIndex >= ModuleAt(M)^.SymCount) Then Begin
+  Error('index de symbole externe invalide');
+  Exit;
+ End;
  N := ModuleSymbolAt(ModuleAt(M), SymbolIndex)^.Name; G := FindGlobalForModule(N, M);
  If (G = 0) or (not GlobalAt(G)^.Defined) Then Exit;
  Caller := ModuleAt(M)^.Overlay; Target := GlobalAt(G)^.Overlay;
  If IsAncestor(Target, Caller) Then Exit;
- If (Target^.Parent = Caller) and (SegmentOf(GlobalAt(G)^.FinalType) = REL_TEXT) Then Begin J := AddJump(Caller, GlobalAt(G)); Exit; End;
+ If (Target^.Parent = Caller) and (SegmentOf(GlobalAt(G)^.FinalType) = REL_TEXT) Then Begin
+  J := AddJump(Caller, GlobalAt(G));
+  Exit;
+ End;
  Error(ModuleAt(M)^.FileName + ': reference overlay illegale vers ' + N);
 End;
 
 Procedure ScanRelocationsForOverlay(M: Integer; R: PWordBuffer; Size: LongInt);
-Var I, N: LongInt; T: Integer;
+Var
+ I, N: LongInt;
+ T: Integer;
 Begin
  N := (Size + 1) div 2; I := 0;
  While I < N do Begin
   T := BufferWord(R, I) and 7;
-  If T = REL_UPPER Then Begin Inc(I); If I < N Then T := BufferWord(R, I) and 7; End;
+  If T = REL_UPPER Then Begin
+   Inc(I);
+   If I < N Then T := BufferWord(R, I) and 7;
+  End;
   If T in [REL_EXTERN, REL_PCREL] Then CheckOverlayReference(M, BufferWord(R, I) shr 3);
   Inc(I);
  End;
 End;
 
 Procedure BuildOverlayJumps;
-Var M, G: Integer; O: POverlay; J: PJump;
+Var
+ M, G: Integer;
+ O: POverlay;
+ J: PJump;
 Begin
  If OverlayCount = 0 Then Exit;
- If Opt.Chained Then Begin LayoutModules; PlaceAllOverlays; RefreshSpecialSymbols; Exit; End;
+ If Opt.Chained Then Begin
+  LayoutModules;
+  PlaceAllOverlays;
+  RefreshSpecialSymbols;
+  Exit;
+ End;
  For M := 1 to ModuleCount do Begin
   ScanRelocationsForOverlay(M, ModuleAt(M)^.TextRel, ModuleAt(M)^.TextSize);
   ScanRelocationsForOverlay(M, ModuleAt(M)^.DataRel, ModuleAt(M)^.DataSize);
@@ -2217,38 +2339,56 @@ Begin
    If J <> O^.FirstJump Then J^.Address := O^.FirstJump^.Address;
    J := J^.Next;
   End;
-  J := O^.FirstJump; G := 0; While J <> Nil do Begin J^.Address := CheckedAdd(CheckedAdd(O^.TextBase, O^.ModuleText, 'overlay jump address'),
-   CheckedMul(G, OVCALL_SIZE, 'overlay jump address'), 'overlay jump address'); Inc(G); J := J^.Next; End;
+  J := O^.FirstJump; G := 0;
+  While J <> Nil do Begin
+   J^.Address := CheckedAdd(CheckedAdd(O^.TextBase, O^.ModuleText, 'overlay jump address'),
+   CheckedMul(G, OVCALL_SIZE, 'overlay jump address'), 'overlay jump address');
+   Inc(G);
+   J := J^.Next;
+  End;
   O := O^.NextAll;
  End;
 End;
 
-Function ResolveExternal(M, G: Integer; Var Value: LongInt; Var RType: Integer): Boolean;
-Var Caller, Target: POverlay; J: PJump;
+Function ResolveExternal(M, G: Integer; Var Value: LongInt; Var RType: Integer):Boolean;
+Var
+ Caller, Target: POverlay;
+ J: PJump;
 Begin
- ResolveExternal := False; If (G = 0) or (not GlobalAt(G)^.Defined) Then Exit;
+ ResolveExternal := False;
+ If (G = 0) or (not GlobalAt(G)^.Defined) Then Exit;
  Caller := ModuleAt(M)^.Overlay; Target := GlobalAt(G)^.Overlay;
  If Opt.Chained Then Begin
-  If (Target = RootOverlay) or (Target = Caller) Then Begin Value := GlobalAt(G)^.FinalValue;
-   RType := SegmentOf(GlobalAt(G)^.FinalType); ResolveExternal := True; End
-  Else Error(ModuleAt(M)^.FileName + ': reference illegale entre modules CHAINED vers ' + GlobalAt(G)^.Name);
+  If (Target = RootOverlay) or (Target = Caller) Then Begin
+   Value := GlobalAt(G)^.FinalValue;
+   RType := SegmentOf(GlobalAt(G)^.FinalType);
+   ResolveExternal := True;
+  End
+   Else
+  Error(ModuleAt(M)^.FileName + ': reference illegale entre modules CHAINED vers ' + GlobalAt(G)^.Name);
   Exit;
  End;
  If (OverlayCount = 0) or IsAncestor(Target, Caller) Then Begin
   Value := GlobalAt(G)^.FinalValue; RType := SegmentOf(GlobalAt(G)^.FinalType); ResolveExternal := True; Exit;
  End;
  J := FindJump(Caller, GlobalAt(G));
- If J <> Nil Then Begin Value := J^.Address; RType := REL_TEXT; ResolveExternal := True; Exit; End;
+ If J <> Nil Then Begin
+  Value := J^.Address;
+  RType := REL_TEXT;
+  ResolveExternal := True;
+  Exit;
+ End;
 End;
 
 Procedure CheckShortOverflow(Value: LongInt; SignedOnly: Boolean; Const Where: String);
-Var Bad: Boolean;
+Var
+ Bad: Boolean;
 Begin
  If SignedOnly Then Bad := (Value < -32768) or (Value > 32767)
- Else Bad := (Value < -32768) or (Value > 65535);
+               Else Bad := (Value < -32768) or (Value > 65535);
  If Bad Then
   If Opt.IgnoreOverflow Then Warning('debordement 16 bits ignore: ' + Where)
-  Else Error('debordement 16 bits: ' + Where);
+                        Else Error('debordement 16 bits: ' + Where);
 End;
 
 Procedure ApplyOneRelocation(M: Integer; Src: PByteBuffer; SrcRel: PWordBuffer;
@@ -2258,43 +2398,65 @@ Var WI, Words: LongInt; RT, NextRT, SI, G: Integer; P: LongInt; V32: LongInt; V1
     AddValue, FullValue: LongInt; OutType: Word; ResType: Integer; SName: String;
 Begin
  Words := CheckedAdd(SrcSize, 1, 'relocation word count') div 2; WI := 0;
- While WI < Words do
- Begin
-  P := LongInt(WI) * 2; RT := BufferWord(SrcRel, WI) and 7; AddValue := 0; OutType := RT;
-  If RT = REL_UPPER Then
-  Begin
-   If WI + 1 >= Words Then Begin Error(ModuleAt(M)^.FileName + ': relogement long tronque'); Exit; End;
+ While WI < Words do Begin
+  P := LongInt(WI) * 2;
+  RT := BufferWord(SrcRel, WI) and 7;
+  AddValue := 0;
+  OutType := RT;
+  If RT = REL_UPPER Then Begin
+   If WI + 1 >= Words Then Begin
+    Error(ModuleAt(M)^.FileName + ': relogement long tronque');
+    Exit;
+   End;
    NextRT := BufferWord(SrcRel, WI + 1) and 7;
-   If NextRT = REL_PCREL Then Begin Error(ModuleAt(M)^.FileName + ': PCREL long invalide'); NextRT := REL_ABS; End;
-   If NextRT in [REL_TEXT, REL_DATA, REL_BSS] Then AddValue := RelocBase(M, NextRT)
-   Else If NextRT = REL_EXTERN Then
-   Begin
+   If NextRT = REL_PCREL Then Begin
+    Error(ModuleAt(M)^.FileName + ': PCREL long invalide');
+    NextRT := REL_ABS;
+   End;
+   If NextRT in [REL_TEXT, REL_DATA, REL_BSS] Then AddValue := RelocBase(M, NextRT) Else
+   If NextRT = REL_EXTERN Then Begin
     SI := BufferWord(SrcRel, WI + 1) shr 3;
-    If SI >= ModuleAt(M)^.SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
-    SName := ModuleSymbolAt(ModuleAt(M), SI)^.Name; G := FindGlobalForModule(SName, M);
-    If ResolveExternal(M, G, AddValue, NextRT) Then Begin End
-    Else If Opt.AllowUndefined and (G > 0) Then NextRT := EncodedExternalRelocation(G)
+    If SI >= ModuleAt(M)^.SymCount Then Begin
+     Error('index de symbole externe invalide');
+     SI := 0;
+    End;
+    SName := ModuleSymbolAt(ModuleAt(M), SI)^.Name;
+    G := FindGlobalForModule(SName, M);
+    If ResolveExternal(M, G, AddValue, NextRT) Then Begin
+    End
+     Else
+    If Opt.AllowUndefined and (G > 0) Then NextRT := EncodedExternalRelocation(G)
     Else NextRT := REL_ABS;
    End;
    V32 := CheckedAdd(ReadLongBuf(Src, P), AddValue, ModuleAt(M)^.FileName + ' long relocation');
    WriteLongBuf(Dst, CheckedAdd(DstBase, P, 'destination relocation'), V32);
-   If Opt.Absolute Then Begin StoreBufferWord(DstRel, (DstBase div 2) + WI, 0); StoreBufferWord(DstRel, (DstBase div 2) + WI + 1, 0); End
-   Else Begin StoreBufferWord(DstRel, (DstBase div 2) + WI, REL_UPPER); StoreBufferWord(DstRel, (DstBase div 2) + WI + 1, NextRT); End;
-   Inc(WI, 2); Continue;
+   If Opt.Absolute Then Begin
+    StoreBufferWord(DstRel, (DstBase div 2) + WI, 0); StoreBufferWord(DstRel, (DstBase div 2) + WI + 1, 0);
+   End
+    Else
+   Begin
+    StoreBufferWord(DstRel, (DstBase div 2) + WI, REL_UPPER);
+    StoreBufferWord(DstRel, (DstBase div 2) + WI + 1, NextRT);
+   End;
+   Inc(WI, 2);
+   Continue;
   End;
-  If RT in [REL_TEXT, REL_DATA, REL_BSS] Then AddValue := RelocBase(M, RT)
-  Else If RT = REL_EXTERN Then
-  Begin
+  If RT in [REL_TEXT, REL_DATA, REL_BSS] Then AddValue := RelocBase(M, RT) Else
+  If RT = REL_EXTERN Then Begin
    SI := BufferWord(SrcRel, WI) shr 3;
-   If SI >= ModuleAt(M)^.SymCount Then Begin Error('index de symbole externe invalide'); SI := 0; End;
-   SName := ModuleSymbolAt(ModuleAt(M), SI)^.Name; G := FindGlobalForModule(SName, M);
+   If SI >= ModuleAt(M)^.SymCount Then Begin
+    Error('index de symbole externe invalide');
+    SI := 0;
+   End;
+   SName := ModuleSymbolAt(ModuleAt(M), SI)^.Name;
+   G := FindGlobalForModule(SName, M);
    ResType := OutType;
-   If ResolveExternal(M, G, AddValue, ResType) Then OutType := ResType
-   Else If Opt.AllowUndefined and (G > 0) Then OutType := EncodedExternalRelocation(G)
-   Else OutType := REL_ABS;
+   If ResolveExternal(M, G, AddValue, ResType) Then OutType := ResType Else
+   If Opt.AllowUndefined and (G > 0) Then OutType := EncodedExternalRelocation(G)
+                                     Else OutType := REL_ABS;
   End
-  Else If RT = REL_PCREL Then
-  Begin
+   Else
+  If RT = REL_PCREL Then Begin
    SI := BufferWord(SrcRel, WI) shr 3;
    If SI >= ModuleAt(M)^.SymCount Then Begin Error(ModuleAt(M)^.FileName + ': index PCREL invalide'); SI := 0; End;
    SName := ModuleSymbolAt(ModuleAt(M), SI)^.Name; G := FindGlobalForModule(SName, M);
@@ -2304,27 +2466,40 @@ Begin
    Else Begin Error(ModuleAt(M)^.FileName + ': symbole PCREL non defini: ' + SName); AddValue := 0; End;
    OutType := REL_ABS;
   End
-  Else If (RT <> REL_ABS) and (RT <> REL_INSTR) Then Error(ModuleAt(M)^.FileName + ': type de relogement invalide');
+   Else
+  If (RT <> REL_ABS) and (RT <> REL_INSTR) Then Error(ModuleAt(M)^.FileName + ': type de relogement invalide');
   If P + 1 < SrcSize Then Begin
    V16 := ReadWordBuf(Src, P); FullValue := CheckedAdd(SmallInt(V16), AddValue, ModuleAt(M)^.FileName + ' word relocation');
    If RT = REL_PCREL Then CheckShortOverflow(FullValue, True, ModuleAt(M)^.FileName)
    Else If RT in [REL_TEXT, REL_DATA, REL_BSS, REL_EXTERN] Then CheckShortOverflow(FullValue, False, ModuleAt(M)^.FileName);
    WriteWordBuf(Dst, CheckedAdd(DstBase, P, 'destination relocation'), Word(FullValue));
   End
-  Else StoreBufferByte(Dst, CheckedAdd(DstBase, P, 'destination relocation'), BufferByte(Src, P));
+   Else
+  StoreBufferByte(Dst, CheckedAdd(DstBase, P, 'destination relocation'), BufferByte(Src, P));
   If Opt.Absolute Then StoreBufferWord(DstRel, (DstBase div 2) + WI, 0)
-  Else StoreBufferWord(DstRel, (DstBase div 2) + WI, OutType);
+                  Else StoreBufferWord(DstRel, (DstBase div 2) + WI, OutType);
   Inc(WI);
  End;
 End;
 
 Procedure WriteJumpBlocks(O: POverlay);
-Var J: PJump; P: LongInt; G: Integer; Handler, TableAddress: LongInt;
+Var
+ J: PJump;
+ P: LongInt;
+ G: Integer;
+ Handler, TableAddress: LongInt;
 Begin
  If Opt.Chained or (O^.FirstJump = Nil) Then Exit;
- G := FindGlobal('_ovhdlr'); If (G = 0) or (not GlobalAt(G)^.Defined) Then Begin Error('symbole _ovhdlr non defini'); Exit; End;
- If GlobalAt(G)^.Overlay <> RootOverlay Then Begin Error('_ovhdlr doit etre defini dans la racine'); Exit; End;
- Handler := GlobalAt(G)^.FinalValue; TableAddress := CheckedAdd(RootOverlay^.DataBase, RootOverlay^.ModuleData, 'overlay table address');
+ G := FindGlobal('_ovhdlr'); If (G = 0) or (not GlobalAt(G)^.Defined) Then Begin
+  Error('symbole _ovhdlr non defini');
+  Exit;
+ End;
+ If GlobalAt(G)^.Overlay <> RootOverlay Then Begin
+  Error('_ovhdlr doit etre defini dans la racine');
+  Exit;
+ End;
+ Handler := GlobalAt(G)^.FinalValue;
+ TableAddress := CheckedAdd(RootOverlay^.DataBase, RootOverlay^.ModuleData, 'overlay table address');
  J := O^.FirstJump; P := O^.ModuleText;
  While J <> Nil do Begin
   WriteWordBuf(OutText, P, $4EB9); WriteLongBuf(OutText, P + 2, Handler);
@@ -2340,11 +2515,20 @@ Begin
 End;
 
 Function FileLeaf(Const S: String): String;
-Var I: Integer;
-Begin I := Length(S); While (I > 0) and not (S[I] in ['\','/',':']) do Dec(I); FileLeaf := Copy(S, I + 1, Length(S)); End;
+Var
+ I: Integer;
+Begin
+ I := Length(S);
+ While (I > 0) and not (S[I] in ['\','/',':']) do Dec(I);
+ FileLeaf := Copy(S, I + 1, Length(S));
+End;
 
 Procedure WriteOverlayTable;
-Var O: POverlay; P: LongInt; N, B, E: String; I, DotPos: Integer;
+Var
+ O: POverlay;
+ P: LongInt;
+ N, B, E: String;
+ I, DotPos: Integer;
 Begin
  If Opt.Chained Then Exit;
  P := RootOverlay^.ModuleData; O := RootOverlay^.NextAll;
@@ -2360,10 +2544,12 @@ Begin
 End;
 
 Procedure LinkModules(O: POverlay);
-Var M: Integer;
+Var
+ M: Integer;
 Begin
  TotalText := O^.TextSize; TotalData := O^.DataSize;
- OutText := NewByteBuffer(CheckedAdd(TotalText, 1, 'output TEXT')); OutData := NewByteBuffer(CheckedAdd(TotalData, 1, 'output DATA'));
+ OutText := NewByteBuffer(CheckedAdd(TotalText, 1, 'output TEXT'));
+ OutData := NewByteBuffer(CheckedAdd(TotalData, 1, 'output DATA'));
  OutTextRel := NewByteBuffer(CheckedAdd(CheckedMul(CheckedAdd(TotalText, 1, 'output TEXT relocations') div 2, 2, 'output TEXT relocations'), 2, 'output TEXT relocations'));
  OutDataRel := NewByteBuffer(CheckedAdd(CheckedMul(CheckedAdd(TotalData, 1, 'output DATA relocations') div 2, 2, 'output DATA relocations'), 2, 'output DATA relocations'));
  For M := 1 to ModuleCount do
@@ -2379,7 +2565,10 @@ Begin
 End;
 
 Procedure DetectStackSize;
-Var G: Integer; GP: PGlobal; P: LongInt;
+Var
+ G: Integer;
+ GP: PGlobal;
+ P: LongInt;
 Begin
  G := FindGlobal('_stksize'); If G = 0 Then G := FindGlobal('__stksiz'); If G = 0 Then Exit;
  GP := GlobalAt(G);
@@ -2395,13 +2584,15 @@ Begin
 End;
 
 Function OutputSymbolCount: LongInt;
-Var M: Integer; I, N: LongInt; S: TSymbol;
+Var
+ M: Integer;
+ I, N: LongInt;
+ S: TSymbol;
 Begin
  N := 0;
  For I := 1 to GlobalCount do If Opt.EmitSymbols or (not GlobalAt(I)^.Defined) Then Inc(N);
  If Opt.EmitSymbols Then For M := 1 to ModuleCount do If ModuleAt(M)^.IncludeLocals Then
-  For I := 0 to ModuleAt(M)^.SymCount - 1 do
-  Begin
+  For I := 0 to ModuleAt(M)^.SymCount - 1 do Begin
    S := ModuleSymbolAt(ModuleAt(M), I)^;
    If ((S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0) and
       ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then Inc(N);
@@ -2410,7 +2601,13 @@ Begin
 End;
 
 Procedure WriteOutput(O: POverlay);
-Var Old: File; J, M: Integer; I, SymN: LongInt; Magic, ST: Word; NonContiguous: Boolean; S: TSymbol;
+Var
+ Old: File;
+ J, M: Integer;
+ I, SymN: LongInt;
+ Magic, ST: Word;
+ NonContiguous: Boolean;
+ S: TSymbol;
 Begin
  SymN := OutputSymbolCount;
  If O <> RootOverlay Then SymN := 0;
@@ -2430,8 +2627,7 @@ Begin
  If NonContiguous Then Begin PutLong(LinkOutputFile, O^.DataBase); PutLong(LinkOutputFile, O^.BssBase); End;
  WriteBufferBytes(LinkOutputFile, OutText, TotalText);
  WriteBufferBytes(LinkOutputFile, OutData, TotalData);
- For I := 1 to GlobalCount do If (O = RootOverlay) and (Opt.EmitSymbols or (not GlobalAt(I)^.Defined)) Then
- Begin
+ For I := 1 to GlobalCount do If (O = RootOverlay) and (Opt.EmitSymbols or (not GlobalAt(I)^.Defined)) Then Begin
   For J := 1 to 8 do If J <= Length(GlobalAt(I)^.Name) Then PutByte(LinkOutputFile, Ord(GlobalAt(I)^.Name[J])) Else PutByte(LinkOutputFile, 0);
   If GlobalAt(I)^.Defined Then Begin ST := GlobalAt(I)^.FinalType or SYM_DEFINED or SYM_GLOBAL; PutWord(LinkOutputFile, ST); PutLong(LinkOutputFile, GlobalAt(I)^.FinalValue); End
   Else Begin PutWord(LinkOutputFile, SYM_EXTERN or SYM_GLOBAL); PutLong(LinkOutputFile, 0); End;
@@ -2441,14 +2637,12 @@ Begin
   Begin
    S := ModuleSymbolAt(ModuleAt(M), I)^;
    If ((S.SType and (SYM_GLOBAL or SYM_EXTERN)) = 0) and
-      ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then
-   Begin
+      ((Length(S.Name) = 0) or (UpCase(S.Name[1]) <> 'L')) Then Begin
     For J := 1 to 8 do If J <= Length(S.Name) Then PutByte(LinkOutputFile, Ord(S.Name[J])) Else PutByte(LinkOutputFile, 0);
     PutWord(LinkOutputFile, S.SType); PutLong(LinkOutputFile, SymbolFinalValue(M, S));
    End;
   End;
- If Not Opt.Absolute Then
- Begin
+ If Not Opt.Absolute Then Begin
   WriteBufferBytes(LinkOutputFile, OutTextRel, (TotalText div 2) * 2);
   WriteBufferBytes(LinkOutputFile, OutDataRel, (TotalData div 2) * 2);
  End;
@@ -2458,19 +2652,26 @@ Begin
  PartialOutputName := '';
 End;
 
-Procedure ReleaseOutputBuffers;
-Begin
- FreeByteBuffer(OutText); FreeByteBuffer(OutData); FreeByteBuffer(OutTextRel); FreeByteBuffer(OutDataRel);
+Procedure ReleaseOutputBuffers;Begin
+ FreeByteBuffer(OutText);
+ FreeByteBuffer(OutData);
+ FreeByteBuffer(OutTextRel);
+ FreeByteBuffer(OutDataRel);
 End;
 
 Function FourDigits(N: Integer): String;
-Var S: String;
+Var
+ S: String;
 Begin
- Str(N, S); S := TrimStr(S); While Length(S) < 4 do S := '0' + S; FourDigits := S;
+ Str(N, S);
+ S := TrimStr(S);
+ While Length(S) < 4 do S := '0' + S;
+ FourDigits := S;
 End;
 
 Function TempPrefix: String;
-Var P: String;
+Var
+ P: String;
 Begin
  P := TrimStr(Opt.TempPath);
  If (P <> '') and not (P[Length(P)] in ['\','/']) Then P := P + '\';
@@ -2478,7 +2679,9 @@ Begin
 End;
 
 Procedure ChooseTempNames;
-Var P, N: String; Found: Boolean;
+Var
+ P, N: String;
+ Found: Boolean;
 Begin
  Repeat
   Inc(TempSerial); If TempSerial > 9999 Then Fatal('impossible de trouver un nom de fichier temporaire libre');
@@ -2491,88 +2694,188 @@ Begin
 End;
 
 Procedure SpillOutputToTemps;
-Var F: File; I: LongInt;
+Var
+ F: File;
+ I: LongInt;
 Begin
  ChooseTempNames;
- Assign(F, TempTextName); Rewrite(F, 1); If IOResult <> 0 Then Fatal('impossible de creer ' + TempTextName);
+ Assign(F, TempTextName);
+ Rewrite(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de creer ' + TempTextName);
  WriteBufferBytes(F, OutText, TotalText); Close(F);
- Assign(F, TempDataName); Rewrite(F, 1); If IOResult <> 0 Then Fatal('impossible de creer ' + TempDataName);
+ Assign(F, TempDataName);
+ Rewrite(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de creer ' + TempDataName);
  WriteBufferBytes(F, OutData, TotalData); Close(F);
- Assign(F, TempTextRelName); Rewrite(F, 1); If IOResult <> 0 Then Fatal('impossible de creer ' + TempTextRelName);
- WriteBufferBytes(F, OutTextRel, (TotalText div 2) * 2); Close(F);
- Assign(F, TempDataRelName); Rewrite(F, 1); If IOResult <> 0 Then Fatal('impossible de creer ' + TempDataRelName);
- WriteBufferBytes(F, OutDataRel, (TotalData div 2) * 2); Close(F);
+ Assign(F, TempTextRelName);
+ Rewrite(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de creer ' + TempTextRelName);
+ WriteBufferBytes(F, OutTextRel, (TotalText div 2) * 2);
+ Close(F);
+ Assign(F, TempDataRelName);
+ Rewrite(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de creer ' + TempDataRelName);
+ WriteBufferBytes(F, OutDataRel, (TotalData div 2) * 2);
+ Close(F);
 End;
 
 Procedure ReloadOutputFromTemps;
-Var F: File; I: LongInt;
+Var
+ F: File;
+ I: LongInt;
 Begin
  OutText := NewByteBuffer(CheckedAdd(TotalText, 1, 'temporary TEXT')); OutData := NewByteBuffer(CheckedAdd(TotalData, 1, 'temporary DATA'));
  OutTextRel := NewByteBuffer(CheckedAdd(CheckedMul(CheckedAdd(TotalText, 1, 'temporary TEXT relocations') div 2, 2, 'temporary TEXT relocations'), 2, 'temporary TEXT relocations'));
  OutDataRel := NewByteBuffer(CheckedAdd(CheckedMul(CheckedAdd(TotalData, 1, 'temporary DATA relocations') div 2, 2, 'temporary DATA relocations'), 2, 'temporary DATA relocations'));
- Assign(F, TempTextName); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de relire ' + TempTextName);
- ReadBufferBytes(F, OutText, TotalText); Close(F);
- Assign(F, TempDataName); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de relire ' + TempDataName);
- ReadBufferBytes(F, OutData, TotalData); Close(F);
- Assign(F, TempTextRelName); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de relire ' + TempTextRelName);
- ReadBufferBytes(F, OutTextRel, (TotalText div 2) * 2); Close(F);
- Assign(F, TempDataRelName); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de relire ' + TempDataRelName);
- ReadBufferBytes(F, OutDataRel, (TotalData div 2) * 2); Close(F);
+ Assign(F, TempTextName);
+ Reset(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de relire ' + TempTextName);
+ ReadBufferBytes(F, OutText, TotalText);
+ Close(F);
+ Assign(F, TempDataName); Reset(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de relire ' + TempDataName);
+ ReadBufferBytes(F, OutData, TotalData);
+ Close(F);
+ Assign(F, TempTextRelName);
+ Reset(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de relire ' + TempTextRelName);
+ ReadBufferBytes(F, OutTextRel, (TotalText div 2) * 2);
+ Close(F);
+ Assign(F, TempDataRelName); Reset(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de relire ' + TempDataRelName);
+ ReadBufferBytes(F, OutDataRel, (TotalData div 2) * 2);
+ Close(F);
 End;
 
 Procedure DeleteOneTemp(Var Name: String);
-Var F: File;
+Var
+ F: File;
 Begin
- If Name = '' Then Exit; Assign(F, Name); Erase(F); If IOResult <> 0 Then Warning('impossible de supprimer le temporaire ' + Name); Name := '';
+ If Name = '' Then Exit;
+ Assign(F, Name);
+ Erase(F);
+ If IOResult <> 0 Then Warning('impossible de supprimer le temporaire ' + Name);
+ Name := '';
 End;
 
-Procedure DeleteTempFiles;
-Begin
- DeleteOneTemp(TempTextName); DeleteOneTemp(TempDataName); DeleteOneTemp(TempTextRelName); DeleteOneTemp(TempDataRelName);
+Procedure DeleteTempFiles;Begin
+ DeleteOneTemp(TempTextName);
+ DeleteOneTemp(TempDataName);
+ DeleteOneTemp(TempTextRelName);
+ DeleteOneTemp(TempDataRelName);
 End;
 
 Procedure FreeAll;
-Var MP, MN: PModule; S, SNext: PSymbol; IP, INext: PInput; AP, AN: PMember; O, ONext: POverlay; J, JNext: PJump;
+Var
+ MP, MN: PModule;
+ S, SNext: PSymbol;
+ IP, INext: PInput;
+ AP, AN: PMember;
+ O, ONext: POverlay;
+ J, JNext: PJump;
 Begin
  MP := FirstModule; While MP <> Nil do Begin MN := MP^.Next;
-  S := MP^.FirstSymbol; While S <> Nil do Begin SNext := S^.Next; Dispose(S); S := SNext; End;
+  S := MP^.FirstSymbol;
+  While S <> Nil do Begin
+   SNext := S^.Next;
+   Dispose(S);
+   S := SNext;
+  End;
   FreeByteBuffer(MP^.TextData); FreeByteBuffer(MP^.DataData);
   FreeByteBuffer(MP^.TextRel); FreeByteBuffer(MP^.DataRel);
   Dispose(MP); MP := MN;
  End;
  ClearGlobals;
- IP := FirstInput; While IP <> Nil do Begin INext := IP^.Next; Dispose(IP); IP := INext; End;
- AP := FirstMember; While AP <> Nil do Begin AN := AP^.Next; Dispose(AP); AP := AN; End;
+ IP := FirstInput;
+ While IP <> Nil do Begin
+  INext := IP^.Next;
+  Dispose(IP);
+  IP := INext;
+ End;
+ AP := FirstMember;
+ While AP <> Nil do Begin
+  AN := AP^.Next; Dispose(AP);
+  AP := AN;
+ End;
  ReleaseOutputBuffers;
- O := FirstOverlay; While O <> Nil do Begin ONext := O^.NextAll; J := O^.FirstJump;
-  While J <> Nil do Begin JNext := J^.Next; Dispose(J); J := JNext; End;
-  Dispose(O); O := ONext;
+ O := FirstOverlay;
+ While O <> Nil do Begin
+  ONext := O^.NextAll;
+  J := O^.FirstJump;
+  While J <> Nil do Begin
+   JNext := J^.Next;
+   Dispose(J);
+   J := JNext;
+  End;
+  Dispose(O);
+  O := ONext;
  End;
 End;
 
 Procedure EmitAllOutputs;
-Var O: POverlay;
+Var
+ O: POverlay;
 Begin
- O := FirstOverlay; While (O <> Nil) and (ErrorCount = 0) do Begin
+ O := FirstOverlay;
+ While (O <> Nil) and (ErrorCount = 0) do Begin
   LinkModules(O); If O = RootOverlay Then DetectStackSize;
-  If ErrorCount = 0 Then Begin SpillOutputToTemps; ReleaseOutputBuffers; ReloadOutputFromTemps; WriteOutput(O); End;
-  ReleaseOutputBuffers; DeleteTempFiles; O := O^.NextAll;
+  If ErrorCount = 0 Then Begin
+   SpillOutputToTemps;
+   ReleaseOutputBuffers;
+   ReloadOutputFromTemps;
+   WriteOutput(O);
+  End;
+  ReleaseOutputBuffers;
+  DeleteTempFiles;
+  O := O^.NextAll;
  End;
 End;
 
-Procedure Run;
-Begin
- ErrorCount := 0; WarningCount := 0; ModuleCount := 0; GlobalCount := 0; InputCount := 0; MemberCount := 0; OverlayCount := 0; StackSize := 0; TempSerial := 0;
- FirstModule := Nil; LastModule := Nil; FirstGlobal := Nil; LastGlobal := Nil;
- FirstInput := Nil; LastInput := Nil; FirstMember := Nil; LastMember := Nil;
- FirstOverlay := Nil; LastOverlay := Nil; RootOverlay := AppendOverlay(Nil);
- OutText := Nil; OutData := Nil; OutTextRel := Nil; OutDataRel := Nil;
- PartialOutputName := ''; LinkOutputOpen := False;
- TempTextName := ''; TempDataName := ''; TempTextRelName := ''; TempDataRelName := '';
+Procedure Run;Begin
+ ErrorCount := 0;
+ WarningCount := 0;
+ ModuleCount := 0;
+ GlobalCount := 0;
+ InputCount := 0;
+ MemberCount := 0;
+ OverlayCount := 0;
+ StackSize := 0;
+ TempSerial := 0;
+ FirstModule := Nil;
+ LastModule := Nil;
+ FirstGlobal := Nil;
+ LastGlobal := Nil;
+ FirstInput := Nil;
+ LastInput := Nil;
+ FirstMember := Nil;
+ LastMember := Nil;
+ FirstOverlay := Nil;
+ LastOverlay := Nil;
+ RootOverlay := AppendOverlay(Nil);
+ OutText := Nil;
+ OutData := Nil;
+ OutTextRel := Nil;
+ OutDataRel := Nil;
+ PartialOutputName := '';
+ LinkOutputOpen := False;
+ TempTextName := '';
+ TempDataName := '';
+ TempTextRelName := '';
+ TempDataRelName := '';
  ParseCommandLine;
- LoadInputs; SortModules; ValidateObjects;
- If ErrorCount = 0 Then Begin LayoutModules; PlaceAllOverlays; BuildGlobals; ValidateSegmentRanges; End;
- If ErrorCount = 0 Then Begin BuildOverlayJumps; ValidateSegmentRanges; End;
+ LoadInputs;
+ SortModules;
+ ValidateObjects;
+ If ErrorCount = 0 Then Begin
+  LayoutModules;
+  PlaceAllOverlays;
+  BuildGlobals;
+  ValidateSegmentRanges;
+ End;
+ If ErrorCount = 0 Then Begin
+  BuildOverlayJumps;
+  ValidateSegmentRanges;
+ End;
  If ErrorCount = 0 Then EmitAllOutputs;
  TotalText := RootOverlay^.TextSize; TotalData := RootOverlay^.DataSize;
  TotalBss := RootOverlay^.Capacity - RootOverlay^.BssBase;
@@ -2585,6 +2888,6 @@ Begin
  If ErrorCount <> 0 Then Halt(1);
 End;
 
-Begin
+BEGIN
  Run;
-End.
+END.
