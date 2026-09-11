@@ -2382,6 +2382,7 @@ Type
   TerminalDosBatch: TString;   { /TERMINALDOS:fichier.bat }
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
   BashBatch       : TString;   { /BASH:fichier.sh }
+  GulamBatch      : TString;   { /GULAM:fichier.gsh }
   RexxFile        : TString;   { /REXX:fichier.rex }
   AwkFile         : TString;   { /AWK:fichier.awk }
   PerlFile        : TString;   { /PERL:fichier.pl }
@@ -10349,6 +10350,7 @@ Procedure ShowHelp;Begin
  ConRawWriteLn('  /TERMINALDOS:batchfile      Ouvrir CMD et ex'+#130+'cuter un fichier .BAT');
  ConRawWriteLn('  /TERMINALOS2:batchfile      Ouvrir OS/2 & REXX et ex'+#130+'cuter un fichier .BAT');
  ConRawWriteLn('  /BASH:fichier.sh            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter ce script');
+ ConRawWriteLn('  /GULAM:fichier.gsh          Ouvrir le Terminal en mode Gul'+#132+'m et ex'+#130+'cuter ce script');
  ConRawWriteLn('  /REXX:fichier.rex           Ouvrir OS/2 & REXX et ex'+#130+'cuter ce script REXX');
  ConRawWriteLn('  /AWK:fichier.awk            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter');
  ConRawWriteLn('                              ce script AWK');
@@ -10457,6 +10459,13 @@ Begin
     Opts.BashBatch := Copy(Arg, 7, Length(Arg) - 6);
    If (Opts.BashBatch = '') Or (Not FileExists(Opts.BashBatch)) Then
     FatalError('Fichier script introuvable: ' + Opts.BashBatch);
+  End Else
+    If (Length(Arg) >= 7) And
+      ((Copy(Arg, 1, 7) = '/GULAM:') Or (Copy(Arg, 1, 7) = '/gulam:') Or
+      (Copy(Arg, 1, 7) = '-GULAM:') Or (Copy(Arg, 1, 7) = '-gulam:')) Then Begin
+    Opts.GulamBatch := Copy(Arg, 8, Length(Arg) - 7);
+   If (Opts.GulamBatch = '') Or (Not FileExists(Opts.GulamBatch)) Then
+    FatalError('Fichier script introuvable: ' + Opts.GulamBatch);
   End Else
     If (Length(Arg) >= 6) And
       ((Copy(Arg, 1, 6) = '/REXX:') Or (Copy(Arg, 1, 6) = '/rexx:') Or
@@ -178645,6 +178654,30 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   {$I-} Assign(BatchFile, Opts.BashBatch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /GULAM:fichier.gsh - meme principe que /BASH: ci-dessus, mais ouvre le  }
+ { shell "Gulam" (SK_GULAM). }
+ If Opts.GulamBatch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_GULAM;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.GulamBatch); Reset(BatchFile); {$I+}
   If IOResult = 0 Then Begin
    While Not Eof(BatchFile) Do Begin
     ReadLn(BatchFile, BatchLine);

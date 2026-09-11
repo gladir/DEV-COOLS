@@ -78,6 +78,7 @@ Type
   Name : String[8];
   ModuleIndex, SymbolIndex : Integer;
   Defined, Needed : Boolean;
+  IsSpecial : Boolean;
   IsCommon : Boolean;
   CommonSize : LongInt;
   FinalType : Word;
@@ -142,6 +143,7 @@ Var
  OutText, OutData : PByteBuffer;
  OutTextRel, OutDataRel : PWordBuffer;
  TotalText, TotalData, TotalBss : LongInt;
+ StackSize : LongInt;
  ErrorCount, WarningCount : Integer;
 
 Function UpCaseStr(Const S: String): String;
@@ -326,7 +328,11 @@ Begin
 End;
 
 Function IsCommonSymbol(Const S: TSymbol): Boolean;
-Begin IsCommonSymbol := (S.SType and (SYM_DEFINED or SYM_EXTERN)) = (SYM_DEFINED or SYM_EXTERN); End;
+Begin
+ { Une reference externe DRI ordinaire porte aussi SYM_DEFINED, mais vaut zero.
+   Seule une taille non nulle demande une allocation COMMON. }
+ IsCommonSymbol := ((S.SType and (SYM_DEFINED or SYM_EXTERN)) = (SYM_DEFINED or SYM_EXTERN)) and (S.Value > 0);
+End;
 
 Procedure ShowHelp;
 Begin
@@ -341,6 +347,7 @@ Begin
  WriteLn('  ALLMODS (AL)   Charge tous les modules des bibliotheques');
  WriteLn('  IGNORE (IG)    Continue apres un debordement d''adresse 16 bits');
  WriteLn('  TEMPFILES[p]   Repertoire reserve aux fichiers temporaires');
+ WriteLn('  COMMAND[f] (C) Lit la commande dans le fichier f');
  WriteLn('  ABSOLUTE       Produit une image non relogeable');
  WriteLn('  TEXTBASE[n]    Adresse de base TEXT (hexadecimal)');
  WriteLn('  DATABASE[n]    Adresse de base DATA (hexadecimal)');
@@ -349,6 +356,7 @@ Begin
  WriteLn('Overlays : sortie=root,(OV1=a,b),(OV2=c,(OV3=d)); fichiers .068 par defaut');
  WriteLn('           255 overlays maximum, cinq niveaux maximum');
  WriteLn('Bibliotheques reconnues : archives Unix/AR68 .L68 (membres objets DRI)');
+ WriteLn('Symboles automatiques : _etext, _edata, _eroot, _end, _stksize');
  WriteLn;
  WriteLn('Exemple : LINK68 [U,S] TEST.68K=TEST,OSBIND');
 End;
@@ -394,6 +402,46 @@ Begin
   If (I > Length(S)) or ((S[I] = ',') and (Depth = 0)) Then
   Begin Part := Copy(S, Start, I - Start); ParseOneOption(Part); Start := I + 1; End;
  End;
+End;
+
+Procedure ParseGlobalOptions(Const S: String; Var CommandName: String);
+Var I, Start, Depth, P: Integer; Part, U, A: String;
+Begin
+ CommandName := ''; Start := 1; Depth := 0;
+ For I := 1 to Length(S) + 1 do
+ Begin
+  If (I <= Length(S)) and (S[I] = '[') Then Inc(Depth)
+  Else If (I <= Length(S)) and (S[I] = ']') Then Dec(Depth);
+  If (I > Length(S)) or ((S[I] = ',') and (Depth = 0)) Then
+  Begin
+   Part := TrimStr(Copy(S, Start, I - Start)); U := UpCaseStr(Part); P := Pos('[', U);
+   If P > 0 Then Begin
+    A := TrimStr(Copy(Part, P + 1, Length(Part) - P - 1)); U := TrimStr(Copy(U, 1, P - 1));
+   End Else A := '';
+   If IsAbbrev(U, 'COMMAND', 1) Then
+   Begin
+    If (P = 0) or (Part[Length(Part)] <> ']') or (A = '') Then Fatal('syntaxe COMMAND[nom] invalide');
+    CommandName := A; Exit;
+   End;
+   ParseOneOption(Part); Start := I + 1;
+  End;
+ End;
+End;
+
+Function ReadCommandFile(Const FileName: String): String;
+Var F: Text; Line, R: String;
+Begin
+ Assign(F, FileName); Reset(F); If IOResult <> 0 Then Fatal('impossible de lire le fichier de commandes ' + FileName);
+ R := '';
+ While not EOF(F) do Begin
+  ReadLn(F, Line); If IOResult <> 0 Then Begin Close(F); Fatal('erreur de lecture du fichier de commandes ' + FileName); End;
+  Line := TrimStr(Line);
+  If Line <> '' Then Begin
+   If Length(R) + Length(Line) + Ord(R <> '') > 255 Then Begin Close(F); Fatal('commande trop longue dans ' + FileName); End;
+   If R <> '' Then R := R + ' '; R := R + Line;
+  End;
+ End;
+ Close(F); ReadCommandFile := TrimStr(R);
 End;
 
 Procedure AddInputToOverlay(S: String; O: POverlay);
@@ -478,24 +526,32 @@ Begin
 End;
 
 Procedure ParseCommandLine;
-Var Cmd, Rest, OptText: String; I, P, Depth, ClosePos: Integer;
+Var Cmd, Rest, OptText, CommandName: String; I, P, Depth, ClosePos: Integer; CommandUsed: Boolean;
 Begin
  FillChar(Opt, SizeOf(Opt), 0); InputCount := 0; Cmd := '';
  For I := 1 to ParamCount do Begin If Cmd <> '' Then Cmd := Cmd + ' '; Cmd := Cmd + ParamStr(I); End;
  Cmd := TrimStr(Cmd);
  If (Cmd = '') or (Cmd = '/?') or (Cmd = '-?') or (Cmd = '--help') Then Begin ShowHelp; Halt(Ord(Cmd = '')); End;
- Rest := Cmd;
- If Rest[1] = '[' Then
- Begin
-  Depth := 0; ClosePos := 0;
-  For I := 1 to Length(Rest) do
+ CommandUsed := False;
+ Repeat
+  Rest := TrimStr(Cmd); CommandName := '';
+  If Rest = '' Then Fatal('commande vide');
+  If Rest[1] = '[' Then
   Begin
-   If Rest[I] = '[' Then Inc(Depth) Else If Rest[I] = ']' Then Begin Dec(Depth); If Depth = 0 Then Begin ClosePos := I; Break; End; End;
+   Depth := 0; ClosePos := 0;
+   For I := 1 to Length(Rest) do
+   Begin
+    If Rest[I] = '[' Then Inc(Depth) Else If Rest[I] = ']' Then Begin Dec(Depth); If Depth = 0 Then Begin ClosePos := I; Break; End; End;
+   End;
+   If ClosePos = 0 Then Fatal('crochet fermant manquant');
+   OptText := Copy(Rest, 2, ClosePos - 2); ParseGlobalOptions(OptText, CommandName);
+   Rest := TrimStr(Copy(Rest, ClosePos + 1, Length(Rest)));
   End;
-  If ClosePos = 0 Then Fatal('crochet fermant manquant');
-  OptText := Copy(Rest, 2, ClosePos - 2); ParseOptionList(OptText);
-  Rest := TrimStr(Copy(Rest, ClosePos + 1, Length(Rest)));
- End;
+  If CommandName <> '' Then Begin
+   If CommandUsed Then Fatal('fichiers COMMAND imbriques interdits');
+   CommandUsed := True; Cmd := ReadCommandFile(CommandName);
+  End;
+ Until CommandName = '';
  P := FindTopLevelChar(Rest, '=');
  If P > 0 Then
  Begin Opt.OutputName := TrimStr(Copy(Rest, 1, P - 1)); ParseNodeItems(Copy(Rest, P + 1, Length(Rest)), RootOverlay); End
@@ -704,7 +760,8 @@ Begin
   G := FindGlobal(S.Name); If G = 0 Then G := AddGlobal(S.Name);
   If IsCommonSymbol(S) Then Begin GlobalAt(G)^.Needed := True; GlobalAt(G)^.IsCommon := True;
    If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value; End
-  Else If (S.SType and SYM_DEFINED) <> 0 Then GlobalAt(G)^.Defined := True Else GlobalAt(G)^.Needed := True;
+  Else If (S.SType and SYM_EXTERN) <> 0 Then GlobalAt(G)^.Needed := True
+  Else If (S.SType and SYM_DEFINED) <> 0 Then GlobalAt(G)^.Defined := True;
  End;
 End;
 
@@ -858,7 +915,7 @@ Begin
 End;
 
 Procedure BuildGlobals;
-Var M, I, G: Integer; S: TSymbol;
+Var M, I, G: Integer; S: TSymbol; GP: PGlobal;
 Begin
  ClearGlobals;
  For M := 1 to ModuleCount do For I := 0 to ModuleAt(M)^.SymCount - 1 do
@@ -871,13 +928,14 @@ Begin
    GlobalAt(G)^.Needed := True; GlobalAt(G)^.IsCommon := True;
    If S.Value > GlobalAt(G)^.CommonSize Then GlobalAt(G)^.CommonSize := S.Value;
   End
+  Else If (S.SType and SYM_EXTERN) <> 0 Then GlobalAt(G)^.Needed := True
   Else If (S.SType and SYM_DEFINED) <> 0 Then
   Begin
    If GlobalAt(G)^.Defined Then Error('symbole defini plusieurs fois: ' + S.Name)
    Else Begin GlobalAt(G)^.Defined := True; GlobalAt(G)^.ModuleIndex := M; GlobalAt(G)^.SymbolIndex := I;
     GlobalAt(G)^.Overlay := ModuleAt(M)^.Overlay;
     GlobalAt(G)^.FinalType := S.SType; GlobalAt(G)^.FinalValue := SymbolFinalValue(M, S); End;
-  End Else GlobalAt(G)^.Needed := True;
+  End;
  End;
  For G := 1 to GlobalCount do If GlobalAt(G)^.IsCommon and (not GlobalAt(G)^.Defined) Then
  Begin
@@ -892,8 +950,41 @@ Begin
    GlobalAt(G)^.FinalValue := SymbolFinalValue(GlobalAt(G)^.ModuleIndex,
      ModuleAt(GlobalAt(G)^.ModuleIndex)^.Symbols^[GlobalAt(G)^.SymbolIndex]);
  For G := 1 to GlobalCount do If GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then
+ Begin
+  GP := GlobalAt(G);
+  If GP^.Name = '_etext' Then Begin GP^.Defined := True; GP^.IsSpecial := True;
+   GP^.Overlay := RootOverlay; GP^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_TEXT;
+   GP^.FinalValue := RootOverlay^.TextBase + RootOverlay^.TextSize; End
+  Else If GP^.Name = '_edata' Then Begin GP^.Defined := True; GP^.IsSpecial := True;
+   GP^.Overlay := RootOverlay; GP^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_DATA;
+   GP^.FinalValue := RootOverlay^.DataBase + RootOverlay^.DataSize; End
+  Else If GP^.Name = '_eroot' Then Begin GP^.Defined := True; GP^.IsSpecial := True;
+   GP^.Overlay := RootOverlay; GP^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_DATA;
+   GP^.FinalValue := RootOverlay^.BssBase + RootOverlay^.BssSize; End
+  Else If GP^.Name = '_end' Then Begin GP^.Defined := True; GP^.IsSpecial := True;
+   GP^.Overlay := RootOverlay; GP^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_BSS;
+   GP^.FinalValue := RootOverlay^.Capacity; End
+  Else If (GP^.Name = '_stksize') or (GP^.Name = '__stksiz') Then Begin
+   GP^.Defined := True; GP^.IsSpecial := True; GP^.Overlay := RootOverlay;
+   GP^.FinalType := SYM_DEFINED or SYM_GLOBAL or SYM_EQUATED; GP^.FinalValue := StackSize;
+  End;
+ End;
+ For G := 1 to GlobalCount do If GlobalAt(G)^.Needed and (not GlobalAt(G)^.Defined) Then
   If Opt.AllowUndefined Then Warning('symbole non defini conserve: ' + GlobalAt(G)^.Name)
   Else Error('symbole non defini: ' + GlobalAt(G)^.Name);
+End;
+
+Procedure RefreshSpecialSymbols;
+Var G: Integer; GP: PGlobal;
+Begin
+ For G := 1 to GlobalCount do Begin GP := GlobalAt(G); If GP^.IsSpecial Then Begin
+  If GP^.Name = '_etext' Then GP^.FinalValue := RootOverlay^.TextBase + RootOverlay^.TextSize
+  Else If GP^.Name = '_edata' Then GP^.FinalValue := RootOverlay^.DataBase + RootOverlay^.DataSize
+  Else If GP^.Name = '_eroot' Then GP^.FinalValue := RootOverlay^.BssBase + RootOverlay^.BssSize
+  Else If GP^.Name = '_end' Then GP^.FinalValue := RootOverlay^.Capacity
+ Else GP^.FinalValue := StackSize;
+ End;
+ End;
 End;
 
 Function ReadLongBuf(B: PByteBuffer; P: LongInt): LongInt;
@@ -983,6 +1074,7 @@ Begin
  For G := 1 to GlobalCount do If GlobalAt(G)^.Defined and (GlobalAt(G)^.ModuleIndex > 0) Then
   GlobalAt(G)^.FinalValue := SymbolFinalValue(GlobalAt(G)^.ModuleIndex,
    ModuleAt(GlobalAt(G)^.ModuleIndex)^.Symbols^[GlobalAt(G)^.SymbolIndex]);
+ RefreshSpecialSymbols;
  O := FirstOverlay; While O <> Nil do Begin
   J := O^.FirstJump; While J <> Nil do Begin
    J^.Address := O^.TextBase + O^.ModuleText;
@@ -1135,6 +1227,22 @@ Begin
  WriteJumpBlocks(O); If O = RootOverlay Then WriteOverlayTable;
 End;
 
+Procedure DetectStackSize;
+Var G: Integer; GP: PGlobal; P: LongInt;
+Begin
+ G := FindGlobal('_stksize'); If G = 0 Then G := FindGlobal('__stksiz'); If G = 0 Then Exit;
+ GP := GlobalAt(G);
+ If GP^.IsSpecial Then Exit;
+ If SegmentOf(GP^.FinalType) <> REL_DATA Then Begin Warning(GP^.Name + ' doit etre un symbole DATA pour fixer la pile'); Exit; End;
+ P := GP^.FinalValue - RootOverlay^.DataBase;
+ If (GP^.Overlay <> RootOverlay) or (P < 0) or (P + 4 > RootOverlay^.DataSize) Then Begin
+  Warning(GP^.Name + ': valeur de pile inaccessible dans le DATA racine'); Exit;
+ End;
+ StackSize := ReadLongBuf(OutData, P);
+ If StackSize = 0 Then StackSize := $1000 Else If StackSize <= 4 Then StackSize := 0;
+ RefreshSpecialSymbols;
+End;
+
 Function OutputSymbolCount: Integer;
 Var I, M, N: Integer; S: TSymbol;
 Begin
@@ -1160,7 +1268,7 @@ Begin
  If O = RootOverlay Then TotalBss := O^.BssSize + (O^.Capacity - (O^.BssBase + O^.BssSize)) Else TotalBss := O^.BssSize;
  PutWord(F, Magic); PutLong(F, TotalText); PutLong(F, TotalData); PutLong(F, TotalBss);
  If O <> RootOverlay Then SymN := 0;
- PutLong(F, LongInt(SymN) * 14); PutLong(F, 0); PutLong(F, O^.TextBase);
+ PutLong(F, LongInt(SymN) * 14); If O = RootOverlay Then PutLong(F, StackSize) Else PutLong(F, 0); PutLong(F, O^.TextBase);
  If Opt.Absolute Then PutWord(F, 1) Else PutWord(F, 0);
  If NonContiguous Then Begin PutLong(F, O^.DataBase); PutLong(F, O^.BssBase); End;
  For I := 0 to TotalText - 1 do PutByte(F, OutText^[I]);
@@ -1221,13 +1329,14 @@ Procedure EmitAllOutputs;
 Var O: POverlay;
 Begin
  O := FirstOverlay; While (O <> Nil) and (ErrorCount = 0) do Begin
-  LinkModules(O); If ErrorCount = 0 Then WriteOutput(O); ReleaseOutputBuffers; O := O^.NextAll;
+  LinkModules(O); If O = RootOverlay Then DetectStackSize;
+  If ErrorCount = 0 Then WriteOutput(O); ReleaseOutputBuffers; O := O^.NextAll;
  End;
 End;
 
 Procedure Run;
 Begin
- ErrorCount := 0; WarningCount := 0; ModuleCount := 0; GlobalCount := 0; InputCount := 0; MemberCount := 0; OverlayCount := 0;
+ ErrorCount := 0; WarningCount := 0; ModuleCount := 0; GlobalCount := 0; InputCount := 0; MemberCount := 0; OverlayCount := 0; StackSize := 0;
  FirstModule := Nil; LastModule := Nil; FirstGlobal := Nil; LastGlobal := Nil;
  FirstInput := Nil; LastInput := Nil; FirstMember := Nil; LastMember := Nil;
  FirstOverlay := Nil; LastOverlay := Nil; RootOverlay := AppendOverlay(Nil);
