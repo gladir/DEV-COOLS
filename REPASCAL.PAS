@@ -22,7 +22,7 @@ Var
  BeginTotal,EndTotal,BeginNumber,EndNumber,IndentLevel,MainBeginNumber,MainEndNumber:LongInt;
  BlockTop:Integer;BlockKind:Array[1..255]of Char;BlockBegin:Array[1..255]of LongInt;
  CommentState:TCommentState;
- OutLine:TSourceString;PreserveCommentIndent:Boolean;
+ OutLine:TSourceString;PreserveCommentIndent,AwaitingThenBegin:Boolean;
 
 Function UpperString(Const S:String):String;
 Var R:String;I:Integer;
@@ -132,7 +132,7 @@ Var S:TSourceString;I:LongInt;
 Begin
  If PreserveCommentIndent Then S:=OutLine Else S:=TrimLine(OutLine);OutLine:='';
  If S=''Then Begin WriteLn(OutputFile);PreserveCommentIndent:=False;Exit;End;
- If not PreserveCommentIndent Then For I:=1 to IndentLevel do Write(OutputFile,' ');WriteLn(OutputFile,S);PreserveCommentIndent:=False;
+ If not PreserveCommentIndent Then For I:=1 to IndentLevel do Write(OutputFile,' ');WriteLn(OutputFile,S);PreserveCommentIndent:=False;AwaitingThenBegin:=False;
  If IOResult<>0 Then Error('erreur d''ecriture');
 End;
 
@@ -142,22 +142,23 @@ Begin If TrimLine(OutLine)<>''Then EmitLine Else OutLine:='';End;
 Procedure FormatLine(Const L:TSourceString;Var State:TCommentState;Var SkipProgram:Boolean);
 Var I,J:LongInt;W,U,S:String;C:Char;
 Begin I:=1;PreserveCommentIndent:=State<>csNone;While(I<=Length(L))and not HadError do Begin C:=L[I];
- If State=csBrace Then Begin J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin Inc(I);State:=csNone;End;AppendComment(Copy(L,J,I-J));Continue;End;
- If State=csParen Then Begin J:=I;While I<=Length(L)do Begin If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin Inc(I,2);State:=csNone;Break;End;Inc(I);End;AppendComment(Copy(L,J,I-J));Continue;End;
- If C='{'Then Begin If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csBrace;J:=I;Inc(I);While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin Inc(I);State:=csNone;End;AppendComment(Copy(L,J,I-J));Continue;End;
- If(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csParen;J:=I;Inc(I,2);While I<=Length(L)do Begin If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin Inc(I,2);State:=csNone;Break;End;Inc(I);End;AppendComment(Copy(L,J,I-J));Continue;End;
- If(C='/')and(I<Length(L))and(L[I+1]='/')Then Begin If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;AppendComment(Copy(L,I,Length(L)-I+1));Break;End;
+ If State=csBrace Then Begin AwaitingThenBegin:=False;J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin Inc(I);State:=csNone;End;AppendComment(Copy(L,J,I-J));Continue;End;
+ If State=csParen Then Begin AwaitingThenBegin:=False;J:=I;While I<=Length(L)do Begin If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin Inc(I,2);State:=csNone;Break;End;Inc(I);End;AppendComment(Copy(L,J,I-J));Continue;End;
+ If C='{'Then Begin AwaitingThenBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csBrace;J:=I;Inc(I);While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin Inc(I);State:=csNone;End;AppendComment(Copy(L,J,I-J));Continue;End;
+ If(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin AwaitingThenBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csParen;J:=I;Inc(I,2);While I<=Length(L)do Begin If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin Inc(I,2);State:=csNone;Break;End;Inc(I);End;AppendComment(Copy(L,J,I-J));Continue;End;
+ If(C='/')and(I<Length(L))and(L[I+1]='/')Then Begin AwaitingThenBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;AppendComment(Copy(L,I,Length(L)-I+1));Break;End;
  If C=''''Then Begin J:=I;Inc(I);While I<=Length(L)do Begin If L[I]=''''Then Begin If(I<Length(L))and(L[I+1]='''')Then Inc(I,2)Else Begin Inc(I);Break;End;End Else Inc(I);End;If not SkipProgram Then AppendText(Copy(L,J,I-J));Continue;End;
  If IsIdentStart(C)Then Begin J:=I;While(I<=Length(L))and IsIdentChar(L[I])do Inc(I);W:=Copy(L,J,I-J);U:=UpperString(W);
   If SkipProgram Then Continue;
-  If U='BEGIN'Then Begin Inc(BeginNumber);EmitPending;If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';AppendText(S);EmitLine;Inc(IndentLevel);End
+  If U='BEGIN'Then Begin Inc(BeginNumber);If not AwaitingThenBegin Then EmitPending;If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';AppendText(S);EmitLine;Inc(IndentLevel);End
   Else If U='END'Then Begin Inc(EndNumber);EmitPending;If IndentLevel>0 Then Dec(IndentLevel);If(not IsUnit)and(EndNumber=MainEndNumber)Then S:='END'Else S:='End';AppendText(S);End
-  Else AppendText(W);Continue;
+  Else If U='THEN'Then Begin AppendText('Then');AwaitingThenBegin:=True;End
+  Else Begin AppendText(W);AwaitingThenBegin:=False;End;Continue;
  End;
  If SkipProgram Then Begin If C=';'Then SkipProgram:=False;Inc(I);Continue;End;
- AppendText(C);Inc(I);
+ AppendText(C);If not(C in[' ',#9])Then AwaitingThenBegin:=False;Inc(I);
  End;
- If TrimLine(OutLine)<>''Then EmitLine Else If not SkipProgram Then OutLine:='';
+ If(TrimLine(OutLine)<>'')and not AwaitingThenBegin Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
 End;
 
 Procedure SecondPass;
@@ -165,7 +166,7 @@ Var L:TSourceString;SkipProgram:Boolean;
 Begin
  Assign(InputFile,SourceName);Reset(InputFile);If IOResult<>0 Then Begin Error('impossible de relire le fichier');Exit;End;
  Assign(OutputFile,TempName);Rewrite(OutputFile);If IOResult<>0 Then Begin Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;End;
- OutLine:='';PreserveCommentIndent:=False;IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;SkipProgram:=HasProgram and not IsUnit;
+ OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;SkipProgram:=HasProgram and not IsUnit;
  If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
  While not HadError and ReadSourceLine(InputFile,L)do FormatLine(L,CommentState,SkipProgram);
  Close(InputFile);Close(OutputFile);If IOResult<>0 Then Error('erreur de fermeture du fichier temporaire');
