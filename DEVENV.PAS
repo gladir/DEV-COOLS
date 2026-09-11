@@ -40413,6 +40413,59 @@ Begin
  TermAddLine(TP, Sz + ' Dir(s)');
 End;
 
+{ Meme parcours qu OS9_ListDir (repertoire OS-9/6809 RBF dont le FD est   }
+{ DirFD), mais remplit un TNCPane (panneau Norton Commander) plutot      }
+{ que d ecrire des lignes de texte - utilisee par NCListDir. Cluster de  }
+{ l entree = LSN du FD enfant (repris plus tard par les operations F3/   }
+{ F5 quand elles seront etendues a OS-9, comme HPFS y range son FNode). }
+Procedure OS9_ListDirNC(Idx: Byte; DirFD: LongInt; Var Pane: TNCPane);
+Var
+ SegLsn: Array[0..47] Of LongInt;
+ SegCnt: Array[0..47] Of Word;
+ NSegs, SI, S, E: Integer;
+ DAtt: Byte;
+ DSize: LongInt;
+ Buf, FDBuf: Array[0..255] Of Byte;
+ Remain: LongInt;
+ Nm: String;
+ ChFD: LongInt;
+ ChAtt: Byte;
+ ChSize: LongInt;
+Begin
+ If Not OS9_ReadFD(Idx, DirFD, DAtt, DSize, SegLsn, SegCnt, NSegs) Then Exit;
+ Remain := DSize;
+ For SI := 0 To NSegs - 1 Do Begin
+  If Remain <= 0 Then Break;
+  For S := 0 To Integer(SegCnt[SI]) - 1 Do Begin
+   If Remain <= 0 Then Break;
+   If Not OS9_ReadSector(Idx, SegLsn[SI] + S, Buf) Then Begin Remain := 0; Break; End;
+   For E := 0 To 7 Do Begin
+    If Remain <= 0 Then Break;
+    Nm   := OS9_ReadName(Buf, E * 32, 29);
+    ChFD := OS9_BE24(Buf, E * 32 + 29);
+    Dec(Remain, 32);
+    If (Nm = '') Or (ChFD = 0) Then Continue;
+    If (Nm = '.') Or (Nm = '..') Then Continue;
+    If Pane.Count >= MAX_NC_ENTRIES Then Continue;
+    ChAtt := 0;
+    ChSize := 0;
+    If OS9_ReadSector(Idx, ChFD, FDBuf) Then Begin
+     ChAtt  := FDBuf[0];
+     ChSize := OS9_BE32(FDBuf, 9);
+    End;
+    Pane.Entries[Pane.Count].Name := Nm;
+    Pane.Entries[Pane.Count].ShortName := '';
+    Pane.Entries[Pane.Count].Size := ChSize;
+    Pane.Entries[Pane.Count].IsDir := (ChAtt And $80) <> 0;
+    Pane.Entries[Pane.Count].FTime := 0;
+    Pane.Entries[Pane.Count].FDate := 0;
+    Pane.Entries[Pane.Count].Cluster := ChFD;
+    Inc(Pane.Count);
+   End;
+  End;
+ End;
+End;
+
 { Affiche un fichier OS-9 ordinaire (dont le FD est FileFD) ligne par
   ligne, meme convention que Fat_TypeFile (coupe sur LF, tabulation
   etendue, arret au premier octet de controle hors TAB/CR/LF). }
@@ -41202,6 +41255,7 @@ Var
 Begin
  Fat_SetAttr := False;
  If Not FatVol[Idx].Mounted Then Exit;
+ If FatVol[Idx].IsOS9 Then Exit; { OS-9 RBF est lecture seule }
  Fat_SplitPath(AbsPath, NParts, Parts);
  If NParts = 0 Then Exit; { racine elle-meme : aucune vraie entree a modifier }
  ParentPath := '\';
@@ -41273,6 +41327,11 @@ Var
  ToRead: Integer;
  DotPos, J: Integer;
  Ext: String;
+ OS9Att: Byte;
+ OS9Sz: LongInt;
+ OS9SegLsn: Array[0..47] Of LongInt;
+ OS9SegCnt: Array[0..47] Of Word;
+ OS9NSegs, OS9SI, OS9S: Integer;
 Begin
  Fat_ExtractToTempFile := False;
  OutPath := GetEnv('TEMP');
@@ -41286,6 +41345,38 @@ Begin
  OutPath := OutPath + 'DEVENV_NC_FAT.' + UpCaseStr(Ext);
  {$I-} Assign(TargetFile, OutPath); Rewrite(TargetFile, 1); {$I+}
  If IOResult <> 0 Then Exit;
+ { OS-9/6809 RBF : allocation par liste de segments, pas de chaine de     }
+ { clusters FAT - Fat_NextCluster boucle indefiniment si on le laisse     }
+ { parcourir StartCluster comme un cluster (meme classe de gel que le     }
+ { bogue NCListDir deja corrige). Lecture via OS9_ReadFD/OS9_ReadSector. }
+ If FatVol[Idx].IsOS9 Then Begin
+  If Not OS9_ReadFD(Idx, StartCluster, OS9Att, OS9Sz,
+   OS9SegLsn, OS9SegCnt, OS9NSegs) Then Begin
+   {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+   Exit;
+  End;
+  Remain := Size;
+  For OS9SI := 0 To OS9NSegs - 1 Do Begin
+   If Remain <= 0 Then Break;
+   For OS9S := 0 To Integer(OS9SegCnt[OS9SI]) - 1 Do Begin
+    If Remain <= 0 Then Break;
+    If Not OS9_ReadSector(Idx, OS9SegLsn[OS9SI] + OS9S, SBuf) Then Begin
+     {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+     Exit;
+    End;
+    If Remain > OS9_SECSIZE Then ToRead := OS9_SECSIZE Else ToRead := Integer(Remain);
+    {$I-} BlockWrite(TargetFile, SBuf, ToRead); {$I+}
+    If IOResult <> 0 Then Begin
+     {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+     Exit;
+    End;
+    Dec(Remain, ToRead);
+   End;
+  End;
+  {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+  Fat_ExtractToTempFile := True;
+  Exit;
+ End;
  Cur := StartCluster;
  Remain := Size;
  While (Cur >= 2) And (Not Fat_IsEOC(Idx, Cur)) And (Remain > 0) Do Begin
@@ -42771,6 +42862,9 @@ Var
  DummyClu: LongInt;
  DummySz: LongInt;
  SrcBase: String;
+ OS9SegLsn: Array[0..47] Of LongInt;
+ OS9SegCnt: Array[0..47] Of Word;
+ OS9NSegs, OS9SI, OS9S: Integer;
 Begin
  TermCopyFile := False;
  { Si la cible se termine par ':'/'\'/'/', OU si elle designe deja un       }
@@ -42817,6 +42911,14 @@ Begin
  DstIsVirt := Term_ResolveVirtTarget(TP, Target, DstIdx, DstAbs);
  { ---- Cible sur disque virtuel : ecriture FAT ---- }
  If DstIsVirt Then Begin
+  { OS-9/6809 RBF est LECTURE SEULE (voir OS9_TryMount) - sans ce garde,   }
+  { Fat_WriteFileFromHost plus bas interpreterait a tort un LSN de FD OS-9 }
+  { comme un cluster FAT et boucler indefiniment via Fat_NextCluster, meme}
+  { classe de gel que le bogue NCListDir deja corrige. }
+  If FatVol[DstIdx].IsOS9 Then Begin
+   TermAddLine(TP, 'Volume OS-9 en lecture seule : ecriture impossible.');
+   Exit;
+  End;
   If SrcIsVirt Then Begin
    TermAddLine(TP,
     'Copie virtuel -> virtuel non supportee pour l instant.');
@@ -42882,6 +42984,42 @@ Begin
   {$I-} Rewrite(TargetFile, 1); {$I+}
   If IOResult <> 0 Then Begin
    TermAddLine(TP, 'Impossible de creer : ' + Target);
+   Exit;
+  End;
+  { OS-9/6809 RBF : allocation par liste de segments, pas de chaine de     }
+  { clusters FAT - Fat_NextCluster boucle indefiniment si on le laisse     }
+  { parcourir StartCl comme un cluster (meme classe de gel que le bogue    }
+  { NCListDir deja corrige). Lecture via OS9_ReadFD/OS9_ReadSector. }
+  If FatVol[SrcIdx].IsOS9 Then Begin
+   If Not OS9_ReadFD(SrcIdx, SrcCluster, DummyAttr, DummySz,
+    OS9SegLsn, OS9SegCnt, OS9NSegs) Then Begin
+    TermAddLine(TP, 'Erreur de lecture sur l image');
+    Close(TargetFile);
+    Exit;
+   End;
+   Remain := SrcSize;
+   For OS9SI := 0 To OS9NSegs - 1 Do Begin
+    If Remain <= 0 Then Break;
+    For OS9S := 0 To Integer(OS9SegCnt[OS9SI]) - 1 Do Begin
+     If Remain <= 0 Then Break;
+     If Not OS9_ReadSector(SrcIdx, OS9SegLsn[OS9SI] + OS9S, SBuf) Then Begin
+      TermAddLine(TP, 'Erreur de lecture sur l image');
+      Close(TargetFile);
+      Exit;
+     End;
+     If Remain > OS9_SECSIZE Then ToRead := OS9_SECSIZE
+                             Else ToRead := Integer(Remain);
+     {$I-} BlockWrite(TargetFile, SBuf, ToRead); {$I+}
+     If IOResult <> 0 Then Begin
+      TermAddLine(TP, 'Erreur d ecriture : ' + Target);
+      Close(TargetFile);
+      Exit;
+     End;
+     Dec(Remain, ToRead);
+    End;
+   End;
+   Close(TargetFile);
+   TermCopyFile := True;
    Exit;
   End;
   Cur := SrcCluster;
@@ -112626,6 +112764,18 @@ Begin
    If HPFS_ResolveDirFNode(Byte(Slot), Pane.Path, StartCl) Then
     HPFS_ListDirFNode(Byte(Slot), StartCl, Pane);
   End;
+ End Else If FatVol[Slot].IsOS9 Then Begin
+  { Repertoire OS-9/6809 RBF (BOGUE REEL 2026-09-11, signale par l          }
+  { utilisateur : selectionner le lecteur A: OS-9 dans NC gelait le         }
+  { programme - cette branche etait absente, NCListDir tombait dans le     }
+  { Else generique FAT ci-dessous qui traitait a tort StartCl comme un      }
+  { cluster FAT et bouclait indefiniment via Fat_NextCluster sur des        }
+  { donnees d allocation qui n existent pas pour ce format). Resout          }
+  { Pane.Path en LSN de FD de repertoire (racine si vide) via                }
+  { Fat_ResolveDir (deja adapte a OS-9 - voir sa branche IsOS9), puis       }
+  { enumere les entrees via OS9_ListDirNC. }
+  If Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then
+   OS9_ListDirNC(Byte(Slot), StartCl, Pane);
  End Else Begin
   { Disquette virtuelle FAT montee. }
   If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
@@ -112802,6 +112952,7 @@ Var
 Begin
  NCCmd_MkDir := False;
  If DirName = '' Then Exit;
+ If FatVol[Slot].IsOS9 Then Exit; { OS-9 RBF est lecture seule }
  If Not Fat_ResolveDir(Slot, ParentPath, IsRoot, StartCl) Then Exit;
  { Nom long (Windows 95, Stage 4) : reserver AVANT Fat_AllocCluster, pour   }
  { ne pas laisser un cluster alloue orphelin (jamais reference par aucune   }
